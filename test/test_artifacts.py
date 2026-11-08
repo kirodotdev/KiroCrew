@@ -508,15 +508,17 @@ class TestList:
 
         bad_tags = store.root / "bad-tags"
         bad_tags.mkdir()
-        # tags as an int — list(42) raises TypeError.
+        # tags as an int: the tolerant load reads it as no tags rather than
+        # refusing the whole record (see test_artifact_meta_tags_decode.py).
         (bad_tags / "meta.json").write_text(
             '{"slug": "bad-tags", "tags": 42}',
             encoding="utf-8",
         )
 
-        # list() must not raise; only the healthy artifact is returned.
-        results = store.list()
-        assert {a.slug for a in results} == {"ok"}
+        # list() must not raise; the bad version is skipped, the bad tags read as none.
+        results = {a.slug: a for a in store.list()}
+        assert set(results) == {"ok", "bad-tags"}
+        assert results["bad-tags"].tags == []
 
     def test_list_does_not_include_content(self, store: ArtifactStore) -> None:
         store.create(name="x", content="big payload")
@@ -541,9 +543,15 @@ class TestVersions:
 
 
 class TestPruning:
-    def test_old_versions_pruned(self, store: ArtifactStore) -> None:
+    def test_old_versions_pruned(
+        self, store: ArtifactStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew import artifacts
+
+        # Pins pruning, not durability (test_artifacts_disk_safety.py pins the
+        # fsync), so ~200 fsyncs do not price this test against --timeout.
+        monkeypatch.setattr(artifacts, "_sync_before_publish", lambda fh: None)
         store.create(name="x", content="v1")
-        # Create more than MAX_VERSIONS revisions.
         for i in range(2, MAX_VERSIONS + 5):
             store.update("x", content=f"v{i}", snapshot=True)
         versions = store.list_versions("x")

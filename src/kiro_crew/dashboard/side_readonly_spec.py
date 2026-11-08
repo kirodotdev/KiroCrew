@@ -54,6 +54,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import stat
 import threading
 from collections.abc import Collection
@@ -61,6 +62,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
 from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
@@ -87,9 +89,9 @@ OWNER_MARKER = "Kiro Crew derived read-only spec"
 #: narrow or list — are kept.
 _TOOL_SETTING_GRANT_PREFIXES = ("allowed", "trusted", "auto")
 
-#: The ``toolsSettings`` keys of kiro-cli's read tools (``read`` is the current
-#: name of ``fs_read``). Each gets the credential ``deniedPaths``.
-_READ_TOOL_SETTINGS = ("fs_read", "read", "grep", "glob")
+#: The ``toolsSettings`` keys of kiro-cli's read tools get the credential
+#: ``deniedPaths``: ``grep``, ``glob`` and the one key of the read alias group
+#: that survives :func:`canonical_tools_settings` (``read``, else ``fs_read``).
 
 #: Serializes a publication against the reaper's delete of the same registry.
 #: Publication holds it from reading the base spec to writing the derived file;
@@ -180,8 +182,9 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
 
     Completes the "Agent mode ... is not available" refusal the ACP layer raises,
     which puts the cause before its "Refusing to run the backend default mode"
-    sentence and the remedy after it. For an ordinary agent the file is likely
-    missing and ``kirocrew setup --agent-only`` writes the managed ones. For a
+    sentence and the remedy after it. For an ordinary agent
+    :func:`_ordinary_mode_explanation` answers: a missing file gets
+    ``kirocrew setup --agent-only``, a present one the parse check. For a
     spec THIS module published both halves of that are wrong: setup never writes
     it (a side turn does, see :func:`publish_readonly_spec`), and it is usually
     PRESENT -- kiro-cli lists its agents once, at process start, so a process
@@ -198,16 +201,93 @@ def unavailable_mode_explanation(agent: str) -> tuple[str, str]:
     """
     base = readonly_base_name(agent)
     if base is None or not _is_published_readonly_spec(agent):
-        return (
-            f"its ~/.kiro/agents/{agent}.json is likely missing.",
-            "Run `kirocrew setup --agent-only` to materialize the agent config.",
-        )
+        return _ordinary_mode_explanation(agent)
     return (
         f"{agent!r} is the read-only spec Kiro Crew derives from {base!r} for side "
         "replies: a side turn writes it, `kirocrew setup` does not, and kiro-cli lists "
         "only the agents present when its process started.",
         "A new session starts a kiro-cli that lists it. It is not a sub-agent: to spawn "
         f"its source agent, name {base!r}, or omit 'agent' when that is the default agent.",
+    )
+
+
+#: kiro-cli reads ``useLegacyMcpJson`` as a deprecated alias of ``includeMcpJson``,
+#: so a file that sets both is a duplicate field to its strict parser and the
+#: whole agent is dropped, while Python's ``json`` (last key wins) reads it fine.
+_ALIASED_SPEC_KEYS = (("includeMcpJson", "useLegacyMcpJson"),)
+
+
+def _shell_quoted(path: Path) -> str:
+    """*path* as one shell argument: POSIX single quotes, or Windows double quotes."""
+    text = str(path)
+    if os.name == "nt":
+        return f'"{text}"' if any(c.isspace() for c in text) else text
+    return shlex.quote(text)
+
+
+def _home_relative(path: Path) -> str:
+    """*path* as ``~/...`` when it sits under the home directory, else absolute."""
+    try:
+        return "~/" + path.relative_to(Path.home()).as_posix()
+    except (RuntimeError, ValueError):
+        return str(path)
+
+
+def _ordinary_mode_explanation(agent: str) -> tuple[str, str]:
+    """``(cause, remedy)`` for an agent that is not a published read-only spec.
+
+    A missing ``~/.kiro/agents/<agent>.json`` keeps the "likely missing" answer.
+    A file that IS present was found but not listed, which means kiro-cli refused
+    it or started before it was written, so the answer says that and points at
+    ``kiro-cli agent validate``, the one check that reports kiro-cli's own parse
+    error. A file that sets a key and its alias together names both
+    keys, since that is a parse failure Python's ``json`` cannot see.
+    """
+    from kiro_crew.agent import kiro_agents_dir_path
+    from kiro_crew.agent_discovery import _read_agent_spec
+
+    display = f"~/.kiro/agents/{agent}.json"
+    missing = (
+        f"its {display} is likely missing.",
+        "Run `kirocrew setup --agent-only` to materialize the agent config.",
+    )
+    # A name that is not one path component cannot name a file in the agents
+    # directory, so the probe below is not tried for it.
+    if not agent or agent in (".", "..") or "/" in agent or "\\" in agent or "\0" in agent:
+        return missing
+    target = kiro_agents_dir_path() / f"{agent}.json"
+    try:
+        present = os.path.isfile(target)
+        data = (
+            _read_agent_spec(target, operation="agent_mode_refusal", source="unknown")
+            if present
+            else None
+        )
+    except Exception:  # noqa: BLE001 -- wording only; the refusal is raised regardless
+        logger.debug("could not read %s to word a mode refusal", target, exc_info=True)
+        return missing
+    if not present:
+        return missing
+    # Name the file that was probed: ``KIRO_HOME`` can move kiro-cli's agents
+    # directory away from ``~/.kiro/agents``, and the command has to validate the
+    # file kiro-cli dropped, not a copy at the default path.
+    display = _home_relative(target)
+    validate = f"`kiro-cli agent validate --path {_shell_quoted(target)}`"
+    if isinstance(data, dict):
+        for key, alias in _ALIASED_SPEC_KEYS:
+            if key in data and alias in data:
+                return (
+                    f"its {display} is present, but kiro-cli rejected it: it sets both "
+                    f"{key!r} and {alias!r}, and kiro-cli reads {alias!r} as a deprecated "
+                    f"alias of {key!r}, so the two are one duplicate field.",
+                    f"Remove {alias!r} and keep {key!r}, then start a new session. "
+                    f"{validate} shows kiro-cli's own verdict.",
+                )
+    return (
+        f"its {display} is present, but kiro-cli did not list it: kiro-cli's own "
+        "parser rejected the file, or kiro-cli started before the file was written.",
+        f"Run {validate} to see kiro-cli's parse error. If it passes, start a new "
+        "session so a fresh kiro-cli lists the agent.",
     )
 
 
@@ -375,7 +455,14 @@ def derive_readonly_spec(
         tools_settings = spec.get("toolsSettings")
         if tools_settings is None:
             tools_settings = spec["toolsSettings"] = {}
-        for tool in _READ_TOOL_SETTINGS:
+        # kiro-cli (and Crew's KAS projection) read ONE key per alias group, the
+        # one first in its group; adding `read` beside a base `fs_read` would
+        # make that base deny the dropped one. Fold first, then add to the key
+        # that survives.
+        tools_settings, _ = canonical_tools_settings(tools_settings)
+        spec["toolsSettings"] = tools_settings
+        read_key = next((k for k in ("read", "fs_read") if k in tools_settings), "read")
+        for tool in (read_key, "grep", "glob"):
             if tools_settings.get(tool) is None:
                 tools_settings[tool] = {}
             entry = tools_settings[tool]
@@ -435,12 +522,16 @@ def _read_base_spec(base_name: str, project_dir: str | None) -> tuple[dict[str, 
 
     Mirrors kiro-cli's own order: ``$PWD/.kiro/agents`` (the session's project,
     which is also the cwd the side session is spawned in) before the user-level
-    registry. Both reads go through the hardened, size-capped reader every other
-    agent-spec consumer uses. Function-local imports keep this module off the
-    gateway boot path (``kiro_crew.agent`` is heavy and imports the ACP stack).
+    registry. A user-scope base no regular spec claims is read through links by
+    :func:`kiro_crew.member_essential_context.linked_global_template_spec`. Every
+    read goes through the hardened, size-capped reader every other agent-spec
+    consumer uses. Function-local imports keep this module off the gateway boot
+    path (``kiro_crew.agent`` is heavy and imports the ACP stack) and out of an
+    import cycle with ``agent_discovery``.
     """
-    from kiro_crew.agent import agent_spec_path
+    from kiro_crew.agent import session_agent_spec_path
     from kiro_crew.agent_discovery import _read_agent_spec, project_agent_files, project_agent_name
+    from kiro_crew.member_essential_context import linked_global_template_spec
 
     if project_dir:
         for spec_file in project_agent_files(
@@ -456,9 +547,18 @@ def _read_base_spec(base_name: str, project_dir: str | None) -> tuple[dict[str, 
                     )
                 return data, str(Path(project_dir).resolve())
     try:
-        user_path = agent_spec_path(base_name)
+        user_path = session_agent_spec_path(base_name)
+        linked = (
+            None
+            if user_path is not None
+            else linked_global_template_spec(
+                base_name, operation="side_readonly_spec", source="dashboard"
+            )
+        )
     except ValueError as exc:  # two safe specs declare the same name
         raise ReadOnlySpecError("base_spec_unreadable", str(exc)) from exc
+    if linked is not None:
+        return linked[1], None
     if user_path is None:
         raise ReadOnlySpecError(
             "base_spec_missing", f"no agent spec declares {base_name!r} in either scope"
@@ -748,11 +848,19 @@ def _user_base_resolves(base: str, agents_dir: Path) -> bool:
     """
     from kiro_crew.agent import agent_spec_path
     from kiro_crew.agent_spec_format import agent_spec_candidates
+    from kiro_crew.member_essential_context import linked_global_template_spec
 
     if any(os.path.lexists(path) for path in agent_spec_candidates(agents_dir, base)):
         return True
     try:
-        return agent_spec_path(base, agents_dir=agents_dir) is not None
+        if agent_spec_path(base, agents_dir=agents_dir) is not None:
+            return True
+        # The publisher reads a base no regular spec claims through a link
+        # (:func:`_read_base_spec`), so the reaper must count the same base.
+        return (
+            linked_global_template_spec(base, operation="side_readonly_reap", source="unknown")
+            is not None
+        )
     except ValueError:
         return True
 

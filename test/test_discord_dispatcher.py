@@ -1,10 +1,7 @@
 """The Discord dispatcher's turn: commands, monitor wakes, attachments and the queue.
 
-``transport_dispatch.py`` routes an inbound message into a turn. These tests pin
-the text commands, a monitor wake at each boundary of the session claim, the
-turn's cleanup, attachment download and its caps, steering and queueing while
-busy, ``!stop`` and ``!compact``, and that a queue shared by two people is
-answered to each sender, not as one person.
+Covers ``transport_dispatch.py``: monitor wakes at each claim boundary, turn cleanup,
+attachment caps, steering and queueing while busy, and a shared queue answered per sender.
 """
 
 from __future__ import annotations
@@ -55,6 +52,7 @@ from kiro_crew.discord.transport_dispatch import (
     _QueuedOrigin,
 )
 from kiro_crew.messaging.attachments import cleanup
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_TEXT
 from kiro_crew.messaging.link import ChannelLink, legacy_dashboard_mirror_key
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.monitoring.completion import MonitorCompletionHook
@@ -67,7 +65,7 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.session import SessionManager
 from kiro_crew.session_allocation import SessionClosingError
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # ── transport_dispatch.py ────────────────────────────────────────────────
 
@@ -124,6 +122,45 @@ class TestDispatcher:
         await d.handle_message(self._msg("my secret"))
 
         assert not spool.exists(), "an incognito message was persisted to the spool"
+
+    @pytest.mark.asyncio
+    async def test_a_shutdown_refusal_spools_the_attachment_names(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The restart notice can name the files: the spool keeps each ``filename``."""
+        from kiro_crew.messaging import inbound_spool as S
+
+        monkeypatch.setattr(S, "data_home", lambda: tmp_path)
+        d, _cli, sess = _dispatcher({"u1"})
+        sess.reserve_inbound_callback = lambda: None
+        msg = self._msg("see these")
+        msg.attachments = [{"filename": "a.pdf"}, {"url": "https://cdn.example/b"}]
+
+        await d.handle_message(msg)
+
+        entry, _held = S.peek_next(path=tmp_path / "inbound-spool" / "refused.jsonl")
+        assert entry is not None
+        assert (entry.attachments_dropped, entry.attachment_names) == (2, ("a.pdf",))
+
+    @pytest.mark.asyncio
+    async def test_the_pick_follows_a_promotion_before_the_attachment_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cleanup is an await: a prompt that starts there resets the walk."""
+        from kiro_crew.agent_sdk.drivers import acp_vocab
+
+        order: list[str] = []
+        real_follow = acp_vocab.follow_engine_promotion
+
+        def _follow(*args: Any, **kwargs: Any) -> bool:
+            order.append("follow")
+            return real_follow(*args, **kwargs)
+
+        monkeypatch.setattr(acp_vocab, "follow_engine_promotion", _follow)
+        monkeypatch.setattr(td_mod, "cleanup_attachments", lambda _paths: order.append("cleanup"))
+        d, _cli, _sess = _dispatcher({"u1"})
+        await d.handle_message(self._msg("hello"))
+        assert order == ["follow", "cleanup"]
 
     @pytest.mark.asyncio
     async def test_monitor_wake_busy_at_dispatch_boundary_is_not_steered_or_queued(
@@ -190,8 +227,7 @@ class TestDispatcher:
                 if self.pause_next_claim:
                     self.pause_next_claim = False
                     boundary_reached.set()
-                    # flake-ok: the stub waits on an event the test sets; moved verbatim
-                    await resume_monitor.wait()
+                    await await_until(resume_monitor, what="the test releasing the paused claim")
                 return await manager.get_or_create(*args, **kwargs)
 
         sessions = _PausingSessions()
@@ -206,6 +242,21 @@ class TestDispatcher:
         key = dispatcher._session_key("u1")
         await manager.get_or_create(key)
         manager.release(key)
+        # The winning user turn's engine promoted A -> B. The BUSY wake runs no
+        # prompt, so it must leave that promotion for the user turn to follow.
+        from kiro_crew.acp.engine_fallback import (
+            TRACKER_ATTR,
+            EngineFallbackTracker,
+            ModelFallbackNotice,
+        )
+
+        tracker = EngineFallbackTracker()
+        tracker.apply(
+            SimpleNamespace(_model="model-a", _resolved_model_id="model-a"),
+            [ModelFallbackNotice("model-a", "model-b", "refused", promoted=True)],
+        )
+        setattr(provider, TRACKER_ATTR, tracker)
+        dispatcher._model_pref[dispatcher._scope_id("u1")] = "model-a"
         completions: list[MonitorActionCompletion] = []
 
         async def _complete(completion: MonitorActionCompletion) -> None:
@@ -231,6 +282,8 @@ class TestDispatcher:
             assert provider.steered == []
             assert manager.dequeue(key) is None
             assert completions == []
+            assert tracker.promotion_followed is False
+            assert dispatcher._model_pref[dispatcher._scope_id("u1")] == "model-a"
         finally:
             resume_monitor.set()
             if manager.is_busy(key):
@@ -686,8 +739,10 @@ class TestDispatcher:
                 ],
             )
         )
-        # flake-ok: zero-delay yield after an awaited turn; moved verbatim
-        await asyncio.sleep(0)
+        await async_wait_until(
+            lambda: d.ctx_builder.messages and cleanup_threads,
+            describe=lambda: f"prompts={d.ctx_builder.messages!r} cleanups on {cleanup_threads!r}",
+        )
 
         prompt = d.ctx_builder.messages[-1]
         lines = prompt.splitlines()
@@ -730,8 +785,7 @@ class TestDispatcher:
         async def _slow_download(download_url: str, dest: str) -> None:
             cli.attachment_downloads.append(download_url)
             download_started.set()
-            # flake-ok: the stub waits on an event the test sets; moved verbatim
-            await finish_download.wait()
+            await await_until(finish_download, what="the test releasing the slow download")
             with open(dest, "wb") as fh:
                 fh.write(_PNG)
 
@@ -767,8 +821,7 @@ class TestDispatcher:
         assert [queued[1] for queued in sess.queued] == ["second"]
 
         finish_download.set()
-        # flake-ok: awaits the turn the line above released; moved verbatim
-        await first
+        await await_until(first, what="the first turn finishing once its download was released")
 
         assert d.ctx_builder.messages[0].splitlines()[0] == "first"
         assert d.ctx_builder.messages[1] == "second"
@@ -795,8 +848,9 @@ class TestDispatcher:
                 ],
             )
         )
-        # flake-ok: zero-delay yield after an awaited turn; moved verbatim
-        await asyncio.sleep(0)
+        await async_wait_until(
+            lambda: d.ctx_builder.messages, describe=lambda: f"prompts={d.ctx_builder.messages!r}"
+        )
 
         prompt = d.ctx_builder.messages[-1]
         assert prompt.splitlines()[0] == "!help"
@@ -825,8 +879,9 @@ class TestDispatcher:
                 ],
             )
         )
-        # flake-ok: zero-delay yield after an awaited turn; moved verbatim
-        await asyncio.sleep(0)
+        await async_wait_until(
+            lambda: d.ctx_builder.messages, describe=lambda: f"prompts={d.ctx_builder.messages!r}"
+        )
 
         prompt = d.ctx_builder.messages[-1]
         paths = [line for line in prompt.splitlines() if line.endswith(".bin")]
@@ -865,8 +920,9 @@ class TestDispatcher:
             "dashboard:chat-1", ChannelLink("discord", channel_id="c1"), accepts_inbound=True
         )
         await d._drain_queue(native_key)
-        # flake-ok: zero-delay yield after an awaited turn; moved verbatim
-        await asyncio.sleep(0)
+        await async_wait_until(
+            lambda: d.ctx_builder.messages, describe=lambda: f"prompts={d.ctx_builder.messages!r}"
+        )
 
         assert sess.get_origin_link(native_key) == ChannelLink("discord", channel_id="c1")
         prompt_path = d.ctx_builder.messages[-1].splitlines()[0]
@@ -942,6 +998,16 @@ class TestDispatcher:
         assert sess._gp.cancelled == 1
         assert sess.queued == []
         assert "Stopped" in cli.sent[-1][0]
+
+    @pytest.mark.asyncio
+    async def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        d, cli, sess = _dispatcher({"u1"})
+        sess.retiring = True
+        await d.handle_message(self._msg("!compact"))
+        assert sess.acquired == [] and sess.released == []
+        assert [text for text, _ in cli.sent] == [COMPACT_ACCOUNT_CHANGED_TEXT]
 
     @pytest.mark.asyncio
     async def test_compact_uses_try_acquire_and_releases(self) -> None:
@@ -1039,11 +1105,9 @@ class TestDispatcher:
 class TestDrainSenderIdentity:
     """A queue shared by two people must not be answered as one person.
 
-    Under ``messaging.dm_scope = "unified"`` every allow-listed person's direct chat
-    collapses into one session key -- ``build_dm_session_key`` reduces the bucket to
-    ``unified:{agent}``, dropping both channel and user -- so ONE queue holds messages
-    from several senders. A combined turn carries ONE envelope, so it may only combine
-    messages that share one.
+    Under ``messaging.dm_scope = "unified"`` every DM shares ``unified:{agent}``, so
+    one queue holds several senders. A combined turn carries ONE envelope, so it may
+    only combine messages that share one.
     """
 
     _UNIFIED = "unified:kirocrew"
@@ -1124,10 +1188,8 @@ class TestDrainSenderIdentity:
     async def test_the_receipt_counts_only_the_answered_senders_own_deferrals(self) -> None:
         """ "+N deferred" is a promise TO ONE PERSON, so it may only count their messages.
 
-        ``len(remainder)`` also counts the other sender's entries and any entry another
-        TRANSPORT recorded. Each of those drains in its own turn, in its own channel, so
-        showing them here tells this person to expect a follow-up for text they never
-        wrote -- and when their own burst fit in one turn, their true count is zero.
+        ``len(remainder)`` would also count other senders' and other transports'
+        entries, which drain in their own turns and channels.
         """
         d, _cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
         deferred: list[int] = []
@@ -1178,14 +1240,7 @@ class TestDrainSenderIdentity:
 
     @pytest.mark.asyncio
     async def test_two_senders_on_one_queue_drain_as_two_turns(self) -> None:
-        """Each drained turn names the sender who wrote its text, in its own channel.
-
-        Under ``messaging.dm_scope = "unified"`` every allow-listed person's direct chat
-        collapses into one session key -- ``build_dm_session_key`` reduces the bucket to
-        ``unified:{agent}``, dropping both channel and user -- so ONE queue holds
-        messages from several senders. A combined turn carries ONE envelope, so it may
-        only combine messages that share one.
-        """
+        """Each drained turn names the sender who wrote its text, in its own channel."""
         d, cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
         await self._queue(
             d,
@@ -1205,11 +1260,8 @@ class TestDrainSenderIdentity:
     async def test_one_senders_burst_with_distinct_message_ids_still_collapses(self) -> None:
         """The ordinary case is unchanged: one person's burst is ONE turn.
 
-        The two messages carry DISTINCT per-message ids, because Discord mints a
-        snowflake per message and two real messages never share one. Grouping on a
-        per-message identifier is the trap: it makes one person's own burst compare
-        unequal, so the collapse stops firing and every burst drains as N turns. The
-        origin records no such id, which is why the trap is avoided structurally here.
+        Real messages always carry distinct snowflake ids; grouping on them would stop
+        every burst from collapsing, so the origin records no message id.
         """
         d, cli, sess = _dispatcher({"u1"}, dm_scope="unified")
         first = _inbound_with_id("first", message_id="m-1")
@@ -1243,7 +1295,7 @@ class TestDrainSenderIdentity:
 
     @pytest.mark.asyncio
     async def test_a_deferred_entry_keeps_its_own_origin_when_requeued(self) -> None:
-        """The re-enqueue must carry the origin, or the bug returns one iteration later."""
+        """The re-enqueue must carry the origin, or the entry loses its sender next drain."""
         d, cli, sess = _dispatcher({"u1", "u2"}, dm_scope="unified")
         await self._queue(
             d,
@@ -1301,11 +1353,8 @@ class TestDrainSenderIdentity:
     def test_the_collapse_key_is_every_origin_field(self) -> None:
         """Every field on this origin names WHO or WHERE, so all of them group.
 
-        Derived from ``_fields`` minus :data:`_NOT_A_SENDER` rather than restated, so
-        adding a field joins the key by DEFAULT: a WHO field left out would let two
-        people's messages collapse under one identity, while a surplus field only costs
-        a collapse. The empty exclusion set is pinned because widening it is how the
-        identity bug would return, and how the collapse would stop firing.
+        The key is ``_fields`` minus :data:`_NOT_A_SENDER`, so a new field joins it by
+        default; the empty exclusion set is pinned so no WHO field drops out.
         """
         assert _NOT_A_SENDER == frozenset()
         assert _QueuedOrigin._fields == ("user_id", "channel_id", "thread_id")
@@ -1320,13 +1369,9 @@ class TestDrainSenderIdentity:
     async def test_an_entry_another_transport_recorded_is_deferred_not_lost(self) -> None:
         """One queue can hold two transports, and neither may answer the other's.
 
-        Every DM dispatcher is built with the orchestrator's single ``SessionManager``,
-        and ``build_dm_session_key(..., dm_scope="unified", chat_type="direct")``
-        returns ``unified:{agent}`` for EVERY channel -- it drops the channel as well
-        as the user -- so a Discord DM and a Telegram DM to the same agent share one
-        queue. A Telegram-recorded entry carries no field Discord can address, so
-        answering it here would post one transport's reply into another's conversation,
-        and raising on it would discard every message already dequeued this iteration.
+        A unified scope gives Discord and Telegram DMs to one agent the same queue.
+        Answering a Telegram entry here would misdeliver it, and raising would discard
+        every message already dequeued this iteration.
         """
         d, cli, sess = _dispatcher({"u1"}, dm_scope="unified")
         foreign = {
@@ -1372,14 +1417,9 @@ class TestDrainSenderIdentity:
     def test_a_partly_recorded_own_entry_is_a_producer_bug_not_a_fallback(self) -> None:
         """An incomplete origin from THIS channel raises instead of guessing an address.
 
-        Both producers are in this module -- ``_enqueue_with_receipt`` and the drain's
-        own re-enqueue, which passes the entry's payload straight back -- so a partial
-        record can only mean a change here dropped a field. Defaulting to empty strings
-        would address the reply to an empty channel id, a silent misdelivery.
-
-        Ownership is read off the NEUTRAL channel field, which is why an entry can be
-        "mine, and broken" at all: without it, a missing field would be indistinguishable
-        from another transport's entry and would be silently set aside forever.
+        Both producers live in this module, so a partial record is a bug here; empty
+        defaults would misdeliver silently. Ownership is read off the neutral
+        ``queued_channel`` field, so a broken own entry is not mistaken for a foreign one.
         """
         with pytest.raises(KeyError) as caught:
             _queued_origin({"queued_channel": "discord", "discord_user_id": "u1"})

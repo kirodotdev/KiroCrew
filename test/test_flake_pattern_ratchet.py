@@ -5,48 +5,14 @@ the shapes a test must not use. ``semgrep/test-determinism.yaml`` refuses the
 commonest of them on a new line (a sleep as a barrier, a ``time`` patch, a bare
 ``monkeypatch.undo()``, a reload, a naive local-time read, an unseeded draw, an autouse
 fixture on the shared ``monkeypatch``, a promise-sleep, ``waitForTimeout``). This module
-counts per file only the shapes those patterns miss: patches of ``asyncio.sleep`` or
-the ``datetime`` classes, ``sys.modules`` evictions,
-raw environment writes, duration bounds, short literal waits, literal listener ports,
-crew-log flush ceilings, unpaused removals, Event waits a test parks on an executor
-(``to_thread(<obj>.wait, ...)`` and ``run_in_executor(<any>, <obj>.wait, ...)``,
-whatever the bound, none included), and five frontend shapes (promise-sleeps
-only in the Electron tests, which the semgrep rule does not read). So no site needs
+counts per file only the shapes those patterns miss; see below.  So no site needs
 both ``# nosemgrep`` and ``# flake-ok``. In a file the pinned semgrep reads no line of
 (one over its size limit, or one it cannot parse; see ``semgrep_cannot_read``), the
 ``time`` patches its rule would refuse are counted too. The tree already holds
-thousands of these, so
-each file a change touches is held to its own count at the change's merge-base.
+thousands; each file a change touches is held to its count at its merge-base.
 
-* A file's count may not rise; a new file starts at zero, a deleted file passes, and
-  a rename git detects keeps its count. A rise is forgiven only for a site that
-  moved: the same class in an identical enclosing function (the same line in
-  TypeScript) that left another file in the same change, chains of moves included. A
-  function edited in place, or a site a ``flake-ok`` still excuses, has not left. The
-  working tree is judged, untracked files included.
-* The base and the changed-file set are read through ``scripts/ratchet_scope.py``'s
-  shared helpers (``change_merge_base``, ``change_files``, ``show_at``), the same
-  module ten other diff-scoped gates read. Precedence: ``FLAKE_RATCHET_BASE`` when
-  set; on CI the first parent of the merge commit a pull request, push or merge
-  queue run checks out; else the newer of the merge-bases with ``upstream/<base>``
-  and ``origin/<base>``, or the local ``<base>`` branch. CI's Backend Tests checkout
-  is depth 2 so that first parent is readable. When none is readable (a depth-1
-  clone), the ratchet warns and compares nothing: judging against a stored count
-  would red a change for sites that other, already merged changes added. The early,
-  fail-closed run is ``fast-gate.yml``'s ``flake-pattern-ratchet`` job: a depth-2
-  checkout whose first parent this resolver reads, and a ``compared nothing`` there
-  fails the job.
-* A line that keeps a shape on purpose carries ``# flake-ok: <reason>`` (``//
-  flake-ok: <reason>`` in TypeScript) with a reason of ten characters or more, words
-  not punctuation, on a line of the finding.
-* ``python test/test_flake_pattern_ratchet.py`` prints each file's current counts
-  as the burn-down view; no committed file holds them.
+* A file's count may not rise; a new file starts at 0, a deleted file passes.
 
-The Python detectors read the AST, so a shape named in a docstring or a comment is not
-counted; the TypeScript and JavaScript ones are line patterns. Each detector has a
-positive and a negative case below, and a mutation proof that a detector finding
-nothing fails its positive case. Only the files a change touches are read, so the
-gate costs a git diff plus those files.
 """
 
 from __future__ import annotations
@@ -65,6 +31,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from flake_pattern_js_detectors import JS_DETECTORS
 from source_corpus import repo_files, repo_root
 from test_ratchet_scope import (
     _GIT_COMMAND_LINE_CONFIG,
@@ -508,6 +475,390 @@ def _k15_parked_pool_wait(module: _Module) -> Iterable[ast.AST]:
             yield node
 
 
+def _k18_xfail_strict_false(module: _Module) -> Iterable[ast.AST]:
+    """``pytest.mark.xfail(strict=False)`` overrides the global ``xfail_strict = true``
+    in ``setup.cfg``, making an unexpected pass invisible until it silently pollutes main.
+
+    Matches ``pytest.mark.xfail(strict=False, ...)`` and ``pytest.xfail(strict=False)``;
+    does not flag calls that omit ``strict=`` (the global covers those) or that pass
+    ``strict=True`` explicitly."""
+    for node in module.calls:
+        func_name = _dotted(node.func)
+        if func_name not in ("pytest.mark.xfail", "pytest.xfail"):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "strict":
+                val = keyword.value
+                if isinstance(val, ast.Constant) and val.value is False:
+                    yield node
+                    break
+
+
+#: Duration keyword names.  Only ``timeout`` exactly, or names with a time-unit suffix.
+_DURATION_KW_SECS = re.compile(
+    r"^(timeout|.+(_s|_sec|_secs|_second|_seconds))$",
+    re.IGNORECASE,
+)
+_DURATION_KW_MS = re.compile(
+    r"(_ms|_msec|_msecs|_millisecond|_milliseconds)$",
+    re.IGNORECASE,
+)
+
+
+_K9_CALLEE_ENDS = frozenset({"wait_for", "wait", "result", "join"})
+FUNC_TYPES = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+#: Kwarg names whose component is a wait-bound word (setattr keeps _is_duration_kw).
+_KWARG_WAIT_BOUND = re.compile(
+    r"(?:^|_)(?:timeout|deadline|ttl|grace)(?:_|$)"
+    r"|(?:^|_)budget_(?:s|secs?|seconds?|ms|msecs?|milliseconds?)$",
+    re.IGNORECASE,
+)
+
+
+def _is_duration_kw(name: str) -> bool:
+    return bool(_DURATION_KW_MS.search(name) or _DURATION_KW_SECS.match(name))
+
+
+def _kc_testing_names(module: _Module) -> frozenset[str]:
+    names: set[str] = set()
+    for node in ast.walk(module.tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "kiro_crew.testing" or node.module.startswith("kiro_crew.testing."):
+                for alias in node.names:
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname and alias.name.startswith("kiro_crew.testing"):
+                    names.add(alias.asname)
+    return frozenset(names)
+
+
+def _enclosing_param_names(module: _Module, node: ast.AST) -> frozenset[str]:
+    fn = module.enclosing_function(node)
+    if fn is None:
+        return frozenset()
+    a = fn.args
+    pool = a.args + a.posonlyargs + a.kwonlyargs
+    if a.vararg:
+        pool.append(a.vararg)
+    if a.kwarg:
+        pool.append(a.kwarg)
+    return frozenset(x.arg for x in pool)
+
+
+def _kc_testing_val(node: ast.AST, kc_names: frozenset[str], param_names: frozenset[str]) -> bool:
+    if isinstance(node, ast.Constant):
+        v = node.value
+        return v is None or (not isinstance(v, bool) and isinstance(v, (int, float)) and v == 0)
+    if isinstance(node, ast.Name):
+        return node.id in kc_names or node.id in param_names
+    if isinstance(node, ast.Attribute):
+        dotted = _dotted(node)
+        if dotted.startswith("kiro_crew.testing."):
+            return True
+        root = dotted.split(".")[0]
+        return bool(root) and root in kc_names
+    if isinstance(node, ast.Call):
+        return _kc_testing_val(node.func, kc_names, frozenset())
+    return False
+
+
+def _k19_short_literal_duration_arg(module: _Module) -> Iterable[ast.AST]:
+    """Non-kc-testing value on a duration-named kwarg or ``setattr`` attr."""
+    kc_names = _kc_testing_names(module)
+
+    for node in module.calls:
+        callee_end = node.func.attr if isinstance(node.func, ast.Attribute) else _dotted(node.func)
+
+        # ── setattr(mod, "attr_name", value) shape ───────────────────
+        if callee_end == "setattr" and len(node.args) >= 3:
+            attr_arg = node.args[1]
+            if isinstance(attr_arg, ast.Constant) and isinstance(attr_arg.value, str):
+                if _is_duration_kw(attr_arg.value):
+                    val_node = node.args[2]
+                    params = _enclosing_param_names(module, node)
+                    if not _kc_testing_val(val_node, kc_names, params):
+                        yield node
+            continue  # never also check setattr's own keyword args
+
+        # ── skip K9 bounded-wait primitives ───────────────────────────
+        if callee_end in _K9_CALLEE_ENDS:
+            continue
+
+        # ── duration-named keyword arg ────────────────────────────────
+        params = _enclosing_param_names(module, node)
+        fn_names = {n.name for n in module.tree.body if isinstance(n, FUNC_TYPES)}
+        for kw in node.keywords:
+            if kw.arg is None:
+                continue
+            if not _KWARG_WAIT_BOUND.search(kw.arg):
+                continue
+            if isinstance(kw.value, ast.Lambda):
+                continue
+            if isinstance(kw.value, ast.Name) and kw.value.id in fn_names:
+                continue
+            if _kc_testing_val(kw.value, kc_names, params):
+                continue
+            yield node
+            break
+
+
+#: Session-metadata writers whose last step is ``replace_with_retry``'s rename.
+_SESSION_WRITES = frozenset({"update_metadata", "update_metadata_if"})
+
+
+def _k20_on_loop_session_write(module: _Module) -> Iterable[ast.AST]:
+    """``<log>.update_metadata(...)`` or ``update_metadata_if`` in a coroutine's own frame.
+    On the loop thread ``replace_with_retry`` makes one rename attempt, so a Windows
+    sharing violation on the transcript fails the test;
+    ``await asyncio.to_thread(log.update_metadata, ...)`` gets the retry. A call in a
+    nested ``def`` or ``lambda`` runs wherever that is sent, so it is not counted. Known
+    miss: a sync helper that writes, called from a coroutine."""
+    frames = (*FUNC_TYPES, ast.Lambda)
+    for node in module.calls:
+        if not (isinstance(node.func, ast.Attribute) and node.func.attr in _SESSION_WRITES):
+            continue
+        frame = module.parents.get(node)
+        while frame is not None and not isinstance(frame, frames):
+            frame = module.parents.get(frame)
+        if isinstance(frame, ast.AsyncFunctionDef):
+            yield node
+
+
+def _kiro_crew_module_names(module: _Module) -> frozenset[str]:
+    """Lowercase names imported from ``kiro_crew.*`` at module scope.
+
+    Covers both ``from kiro_crew.X import mod`` (ImportFrom) and
+    ``import kiro_crew.X.mod as mod`` (Import with alias).  A kiro_crew module
+    import binds a persistent object: assigning a live asyncio Task or TimerHandle
+    to one of its attributes creates state that survives the test's event loop.
+    """
+    names: set[str] = set()
+    for node in module.tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if node.module == "kiro_crew" or node.module.startswith("kiro_crew."):
+                for alias in node.names:
+                    name = alias.asname or alias.name
+                    if name and name[0].islower():
+                        names.add(name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname and (
+                    alias.name == "kiro_crew" or alias.name.startswith("kiro_crew.")
+                ):
+                    if alias.asname[0].islower():
+                        names.add(alias.asname)
+    return frozenset(names)
+
+
+def _is_task_creating_value(node: ast.AST) -> bool:
+    """True when *node* is a call that produces an asyncio Task or TimerHandle."""
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        attr = func.attr
+    elif isinstance(func, ast.Name):
+        attr = func.id
+    else:
+        return False
+    return attr in ("create_task", "ensure_future", "call_later", "call_at")
+
+
+def _k16_module_async_state(module: _Module) -> Iterable[ast.AST]:
+    """Writes a Task or TimerHandle into a kiro_crew module attribute from a test
+    function, when no autouse fixture or self-cleanup guards the state.
+
+    The module object outlives the test's event loop; a stale Task in module state
+    causes the next test on the same xdist worker to hang (asyncio.gather on a Task
+    from a closed loop never resolves) or read half-initialised state.
+
+    Detects four write shapes: plain assignment, annotated assignment, container
+    ``add``/``append`` calls, and indirect assignment (local var holds the task).
+    ``monkeypatch.setattr`` is not detected because monkeypatch always restores the
+    original attribute at teardown.  Exempts a write when:
+    - the enclosing function is an autouse fixture,
+    - an autouse fixture in the same file resets that ``<mod>.<attr>`` to ``None``
+      or calls ``.clear()`` on it (autouse fixtures protect all tests in the file),
+    - a non-autouse yield fixture resets the attribute AND the enclosing test
+      function requests that fixture (by parameter name or ``@pytest.mark.usefixtures``),
+    - the enclosing test function itself resets the same attribute to ``None``
+      (explicit inline cleanup).
+    """
+    kc_mods = _kiro_crew_module_names(module)
+    if not kc_mods:
+        return
+
+    # ── build autouse fixture set ──────────────────────────────────────────
+    autouse_fns: set[str] = set()
+    for node in ast.walk(module.tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for dec in node.decorator_list:
+            dec_text = ast.unparse(dec)
+            if "autouse" in dec_text and "True" in dec_text:
+                autouse_fns.add(node.name)
+
+    # ── collect reset pairs in two buckets ────────────────────────────────
+    # Autouse fixtures credit all tests in the file.
+    # Non-autouse yield fixtures only credit tests that request them.
+    autouse_reset_pairs: set[tuple[str, str]] = set()
+    fixture_reset_map: dict[str, set[tuple[str, str]]] = {}
+
+    for node in ast.walk(module.tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        is_autouse = node.name in autouse_fns
+        has_yield = any(isinstance(n, (ast.Yield, ast.YieldFrom)) for n in ast.walk(node))
+        if not (is_autouse or has_yield):
+            continue
+        pairs_for_fn: set[tuple[str, str]] = set()
+        for child in ast.walk(node):
+            # mod._attr = None
+            if isinstance(child, ast.Assign) and len(child.targets) == 1:
+                t = child.targets[0]
+                if (
+                    isinstance(t, ast.Attribute)
+                    and isinstance(t.value, ast.Name)
+                    and t.value.id in kc_mods
+                    and isinstance(child.value, ast.Constant)
+                    and child.value.value is None
+                ):
+                    pairs_for_fn.add((t.value.id, t.attr))
+            # mod._attr.clear() / .discard()
+            elif isinstance(child, ast.Expr) and isinstance(child.value, ast.Call):
+                call = child.value
+                if (
+                    isinstance(call.func, ast.Attribute)
+                    and call.func.attr in ("clear", "discard")
+                    and isinstance(call.func.value, ast.Attribute)
+                    and isinstance(call.func.value.value, ast.Name)
+                    and call.func.value.value.id in kc_mods
+                ):
+                    pairs_for_fn.add((call.func.value.value.id, call.func.value.attr))
+        if is_autouse:
+            autouse_reset_pairs |= pairs_for_fn
+        elif pairs_for_fn:
+            fixture_reset_map[node.name] = pairs_for_fn
+
+    def _requested_fixtures(fn: ast.AST) -> frozenset[str]:
+        """Parameter names + @pytest.mark.usefixtures names for *fn*."""
+        names: set[str] = set()
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return frozenset()
+        for arg in fn.args.args + fn.args.kwonlyargs + (fn.args.posonlyargs or []):
+            names.add(arg.arg)
+        for dec in fn.decorator_list:
+            if isinstance(dec, ast.Call):
+                func = dec.func
+                is_usefixtures = (
+                    isinstance(func, ast.Attribute) and func.attr == "usefixtures"
+                ) or (isinstance(func, ast.Name) and func.id == "usefixtures")
+                if is_usefixtures:
+                    for arg in dec.args:
+                        if isinstance(arg, ast.Constant):
+                            names.add(str(arg.value))
+        return frozenset(names)
+
+    def _fn_resets(fn: ast.AST, mod: str, attr: str) -> bool:
+        """Does *fn* itself set ``<mod>.<attr> = None`` anywhere in its body?"""
+        for child in ast.walk(fn):
+            if isinstance(child, ast.Assign) and len(child.targets) == 1:
+                t = child.targets[0]
+                if (
+                    isinstance(t, ast.Attribute)
+                    and isinstance(t.value, ast.Name)
+                    and t.value.id == mod
+                    and t.attr == attr
+                    and isinstance(child.value, ast.Constant)
+                    and child.value.value is None
+                ):
+                    return True
+        return False
+
+    def _task_locals(fn: ast.AST) -> frozenset[str]:
+        """Names bound to a task-creating call inside *fn*."""
+        names: set[str] = set()
+        for child in ast.walk(fn):
+            if isinstance(child, ast.Assign) and _is_task_creating_value(child.value):
+                for tgt in child.targets:
+                    if isinstance(tgt, ast.Name):
+                        names.add(tgt.id)
+        return frozenset(names)
+
+    def _should_yield(node: ast.AST, mod: str, attr: str, value: ast.AST) -> bool:
+        fn = module.enclosing_function(node)
+        if fn is None or getattr(fn, "name", None) in autouse_fns:
+            return False
+        task_vars = _task_locals(fn)
+        is_task = _is_task_creating_value(value) or (
+            isinstance(value, ast.Name) and value.id in task_vars
+        )
+        if not is_task:
+            return False
+        # Autouse protection: module-wide
+        if (mod, attr) in autouse_reset_pairs:
+            return False
+        # Non-autouse fixture protection: only if this test requests the fixture
+        requested = _requested_fixtures(fn)
+        for fixture_name, pairs in fixture_reset_map.items():
+            if fixture_name in requested and (mod, attr) in pairs:
+                return False
+        # Self-cleanup: the test function itself resets the attribute
+        if _fn_resets(fn, mod, attr):
+            return False
+        return True
+
+    # ── 1. plain assignment: mod._attr = task / local_task_var ────────────
+    for write in module.writes:
+        if not isinstance(write, ast.Assign):
+            continue
+        for target in write.targets:
+            if (
+                isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id in kc_mods
+            ):
+                if _should_yield(write, target.value.id, target.attr, write.value):
+                    yield write
+                    break
+
+    # ── 2. annotated assignment: mod._attr: T = task ──────────────────────
+    for node in ast.walk(module.tree):
+        if not isinstance(node, ast.AnnAssign) or node.value is None:
+            continue
+        target = node.target
+        if (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id in kc_mods
+        ):
+            if _should_yield(node, target.value.id, target.attr, node.value):
+                yield node
+
+    # ── 3. container add/append: mod._attr.add(task) / .append(...) ───────
+    for call in module.calls:
+        func = call.func
+        if not (
+            isinstance(func, ast.Attribute)
+            and func.attr in ("add", "append", "extend")
+            and isinstance(func.value, ast.Attribute)
+            and isinstance(func.value.value, ast.Name)
+            and func.value.value.id in kc_mods
+        ):
+            continue
+        if not call.args or not _is_task_creating_value(call.args[0]):
+            continue
+        if _should_yield(call, func.value.value.id, func.value.attr, call.args[0]):
+            yield call
+
+    # ── 4. monkeypatch.setattr(mod, "_attr", task): NOT detected.
+    # monkeypatch restores the original value at teardown, so no task
+    # reference persists in module state after the test ends.
+
+
 def _parenthesized_with_as(source: bytes, starts: list[int], node: ast.AST) -> bool:
     """Whether *node* is ``with (a as b, ...):``: one pair of parentheses holds every
     item and at least one binds a name. ``with (a) as b:`` and ``with (a, b):`` are not."""
@@ -583,6 +934,10 @@ PY_TRIGGERS: dict[str, tuple[str, ...]] = {
     "K13-fixed-flush-ceiling": ("flush",),
     "K14-unpaused-crew-log-rmtree": ("rmtree",),
     "K15-parked-pool-wait": ("to_thread", "run_in_executor"),
+    "K16-module-async-state": ("create_task", "call_later", "ensure_future", "call_at"),
+    "K18-xfail-strict-false": ("xfail",),
+    "K19-short-literal-duration-arg": ("(",),
+    "K20-on-loop-session-write": ("update_metadata",),
 }
 
 #: The classes whose detector also reads the source text.
@@ -599,85 +954,10 @@ PY_DETECTORS: dict[str, Callable[..., Iterable[ast.AST]]] = {
     "K13-fixed-flush-ceiling": _k13_fixed_flush_ceiling,
     "K14-unpaused-crew-log-rmtree": _k14_unpaused_crew_log_rmtree,
     "K15-parked-pool-wait": _k15_parked_pool_wait,
-}
-
-
-# ── TypeScript / JavaScript detectors (line patterns) ─────────────────
-
-_J1 = re.compile(
-    r"new Promise(?:<[^>]*>)?\(\s*\(?\s*(\w+)[^)=]*\)?\s*=>\s*\{?\s*setTimeout\(\s*\1\s*,"
-    r"\s*([1-9][\d_]*)"
-)
-_J3 = re.compile(r"\bDate\.now\(\)|\bnew Date\(\s*\)")
-_J4 = re.compile(r"\bif\s*\(\s*!?\s*\(?\s*await\b[^;{]*?\.isVisible\(")
-_J5 = re.compile(
-    r"expect\([^;]*(?:performance\.now\(\)|Date\.now\(\)|\b\w*(?:elapsed|duration|took)\w*\b)[^;]*\)"
-    r"\s*\.\s*toBeLessThan(?:OrEqual)?\(\s*\d",
-    re.IGNORECASE,
-)
-_J6 = re.compile(r"\buseFakeTimers\(")
-_STALLS = re.compile(r"\bawait\b|\bwaitFor\b|\bfindBy|\bfindAllBy")
-
-
-def _j_lines(pattern: re.Pattern[str]) -> Callable[[str, str], list[int]]:
-    def detect(rel: str, text: str) -> list[int]:
-        return [n for n, line in enumerate(text.splitlines(), 1) if pattern.search(line)]
-
-    return detect
-
-
-def _j1_electron_promise_sleep(rel: str, text: str) -> list[int]:
-    """Promise-sleeps in the Electron tests: ``kirocrew.test-promise-sleep`` reads
-    only TypeScript under ``website/src``, ``integration`` and ``playwright``."""
-    if not rel.startswith("website/electron/"):
-        return []
-    return _j_lines(_J1)(rel, text)
-
-
-def _j3_unpinned_date(rel: str, text: str) -> list[int]:
-    if "setSystemTime" in text or "mock.timers" in text:
-        return []
-    return _j_lines(_J3)(rel, text)
-
-
-def _j4_visible_branch(rel: str, text: str) -> list[int]:
-    if not rel.startswith("website/playwright/"):
-        return []
-    return _j_lines(_J4)(rel, text)
-
-
-def _restored_by_a_synchronous_finally(lines: list[str], index: int) -> bool:
-    """Whether ``useFakeTimers`` on line *index* opens a ``try`` whose ``finally``
-    restores real timers with nothing in between that a fake clock could stall."""
-    rest = "\n".join(lines[index : index + 200])
-    start = rest.find("try {")
-    end = rest.find("finally", start)
-    if start < 0 or end < 0:
-        return False
-    between = rest[:start].split("useFakeTimers", 1)[-1].replace("()", "")
-    if between.strip(" \t\n;"):
-        return False  # the try is not the next statement
-    restore = rest.find("useRealTimers", end)
-    return restore >= 0 and not _STALLS.search(rest[start:end])
-
-
-def _j6_unrestored_fake_timers(rel: str, text: str) -> list[int]:
-    if ("afterEach" in text and "useRealTimers" in text) or "onTestFinished" in text:
-        return []
-    lines = text.splitlines()
-    return [
-        n
-        for n, line in enumerate(lines, 1)
-        if _J6.search(line) and not _restored_by_a_synchronous_finally(lines, n - 1)
-    ]
-
-
-JS_DETECTORS: dict[str, Callable[[str, str], list[int]]] = {
-    "J1-electron-promise-sleep": _j1_electron_promise_sleep,
-    "J3-unpinned-date": _j3_unpinned_date,
-    "J4-playwright-visible-branch": _j4_visible_branch,
-    "J5-duration-upper-bound": _j_lines(_J5),
-    "J6-unrestored-fake-timers": _j6_unrestored_fake_timers,
+    "K16-module-async-state": _k16_module_async_state,
+    "K18-xfail-strict-false": _k18_xfail_strict_false,
+    "K19-short-literal-duration-arg": _k19_short_literal_duration_arg,
+    "K20-on-loop-session-write": _k20_on_loop_session_write,
 }
 
 
@@ -1036,6 +1316,116 @@ PY_CASES: dict[str, tuple[tuple[str, ...], str]] = {
         "    await asyncio.to_thread(work, 5)\n    await asyncio.to_thread(ev.is_set)\n"
         "    await loop.run_in_executor(None, work, 5)\n"
         "    await async_wait_until(ev.is_set)\ndef held():\n    assert ev.wait(5)\n",
+    ),
+    "K16-module-async-state": (
+        (
+            # 1. Plain assignment: create_task on imported kiro_crew module attr
+            "import asyncio\nfrom kiro_crew.apps.builtins.aws_control import hooks\n"
+            "async def test_x():\n    hooks._task = asyncio.create_task(f())\n",
+            # 2. call_later via get_running_loop()
+            "import asyncio\nfrom kiro_crew.dashboard import crewmate_feed\n"
+            "async def test_y():\n"
+            "    crewmate_feed._timer = asyncio.get_running_loop().call_later(0.4, lambda: None)\n",
+            # 3. Container add: mod._attr.add(create_task(...))
+            "import asyncio\nfrom kiro_crew.apps.builtins.aws_control import hooks\n"
+            "async def test_add():\n    hooks._pending.add(asyncio.create_task(f()))\n",
+            # 4. Plain Import alias: import kiro_crew.x.hooks as hooks
+            "import asyncio\nimport kiro_crew.apps.builtins.aws_control.hooks as hooks\n"
+            "async def test_import():\n    hooks._task = asyncio.create_task(f())\n",
+            # 5. Indirect assignment: t = create_task(); mod._attr = t
+            "import asyncio\nfrom kiro_crew.apps.builtins.aws_control import hooks\n"
+            "async def test_indirect():\n"
+            "    t = asyncio.create_task(f())\n    hooks._task = t\n",
+            # 6. Annotated assignment
+            "import asyncio\nfrom kiro_crew.apps.builtins.aws_control import hooks\n"
+            "async def test_ann():\n"
+            "    hooks._task: asyncio.Task = asyncio.create_task(f())\n",
+            # 7. Non-autouse yield fixture resets _keep; test NOT requesting it writes -> K16
+            "import asyncio\nimport pytest\nfrom kiro_crew.dashboard import crewmate_feed\n"
+            "@pytest.fixture\n"
+            "def _clean_feed():\n    crewmate_feed._keep.clear()\n    yield\n"
+            "    crewmate_feed._keep.clear()\n"
+            "async def test_no_fixture():\n"
+            "    crewmate_feed._keep.add(asyncio.create_task(f()))\n",
+        ),
+        # Near misses — all count 0:
+        # autouse resets (hooks, _task) -> test_x write exempt;
+        # non-autouse yield fixture requested -> exempt;
+        # non-kiro_crew base -> not counted; None value -> not a task;
+        # self-cleanup (same-fn None reset) -> exempt;
+        # monkeypatch.setattr -> not detected.
+        "import asyncio\nimport pytest\n"
+        "from kiro_crew.apps.builtins.aws_control import hooks\n"
+        "@pytest.fixture(autouse=True)\n"
+        "def _isolated():\n    hooks._task = None\n    yield\n    hooks._task = None\n"
+        "@pytest.fixture\n"
+        "def _opt():\n    hooks._task = None\n    yield\n    hooks._task = None\n"
+        "async def test_x():\n"
+        "    hooks._task = asyncio.create_task(g())  # autouse resets -> exempt\n"
+        "    client._task = asyncio.create_task(g())  # not a kc module -> exempt\n"
+        "    hooks._timer = None\n"  # None is not a task
+        "async def test_cleanup():\n"
+        "    hooks._task = asyncio.create_task(g())\n"
+        "    hooks._task = None\n"  # explicit self-cleanup -> exempt
+        "async def test_uses_opt(_opt):\n"
+        "    hooks._task = asyncio.create_task(g())  # requests _opt -> exempt\n"
+        "async def test_setattr(monkeypatch):\n"
+        "    monkeypatch.setattr(hooks, '_task', asyncio.create_task(g()))\n",  # not detected
+    ),
+    "K18-xfail-strict-false": (
+        (
+            "import pytest\n@pytest.mark.xfail(strict=False, reason='issue pending')\n"
+            "def test_x():\n    pass\n",
+            "import pytest\n@pytest.mark.xfail(\n    strict=False,\n    reason='known'\n)\n"
+            "def test_x():\n    pass\n",
+        ),
+        # No strict= omission is fine (global xfail_strict=true covers it);
+        # explicit strict=True is fine; strict=False on a non-xfail call is not counted.
+        "import pytest\n@pytest.mark.xfail(reason='known')\ndef test_x():\n    pass\n"
+        "@pytest.mark.xfail(strict=True, reason='known')\ndef test_y():\n    pass\n"
+        "def test_z(strict=False):\n    pass\n"
+        "def test_w():\n    obj.configure(strict=False)\n",
+    ),
+    "K19-short-literal-duration-arg": (
+        (
+            "def test_x():\n    run(timeout=1.5)\n",
+            "_T = 30\ndef test_x():\n    run(timeout=_T)\n",
+            "def test_x(mp):\n    mp.setattr(m, '_UPDATE_DRAIN_TIMEOUT_SECS', 1)\n",
+            "def test_x():\n    run(_UPDATE_DRAIN_TIMEOUT_SECS=1)\n",
+            "def test_x():\n    run(timeout=some_other_call())\n",
+            "def test_x():\n    t = 30\n    run(timeout=t)\n",
+            "def test_x():\n    run(read_timeout=5)\n",
+            "def test_x():\n    Cfg(log_budget_secs=20)\n",
+            "def test_x():\n    x(ttl_secs=30)\n",
+            "def test_x():\n    call(deadline=5)\n",
+            "def test_x():\n    run(on_timeout=5)\n",
+        ),
+        "import kiro_crew.testing.wait as kc_wait\n"
+        "from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, default_timeout\n"
+        "from kiro_crew.testing import wait\n"
+        "def cb(): pass\n"
+        "def test_x(monkeypatch, tmo):\n"
+        "    run(timeout=0)\n    run(timeout=None)\n"
+        "    run(timeout=FALLBACK_TIMEOUT_SECS)\n"
+        "    run(timeout=wait.FALLBACK_TIMEOUT_SECS)\n    run(timeout=kc_wait.FALLBACK_TIMEOUT_SECS)\n"
+        "    run(timeout=default_timeout())\n    run(timeout=wait.default_timeout())\n"
+        "    run(timeout=tmo)\n    pool.submit(task).result(timeout=60)\n"
+        "    monkeypatch.setattr(m, 'timeout_secs', 0)\n    monkeypatch.setattr(m, 'timeout_secs', FALLBACK_TIMEOUT_SECS)\n"
+        "    asyncio.wait_for(coro, timeout=30)\n    t.join(timeout=5)\n"
+        "    every_secs=60\n    idle_secs=60\n    elapsed_ms=1.0\n    age_secs=5\n    duration_ms=10\n"
+        "    run(on_timeout=cb)\n    run(on_timeout=lambda: None)\n",
+    ),
+    "K20-on-loop-session-write": (
+        (
+            "async def test_x(log):\n    log.update_metadata(k, {})\n",
+            "class T:\n    async def seed(self):\n        with lock:\n"
+            "            self.log.update_metadata_if(k, {}, ok)\n",
+        ),
+        # Off the loop: a sync test, the method handed to a worker, a nested def or lambda.
+        "def test_x(log):\n    log.update_metadata(k, {})\n"
+        "async def test_y(log):\n    await asyncio.to_thread(log.update_metadata, k, {})\n"
+        "    await asyncio.to_thread(lambda: log.update_metadata(k, {}))\n"
+        "    def seed():\n        log.update_metadata(k, {})\n",
     ),
 }
 

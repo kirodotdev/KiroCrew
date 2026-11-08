@@ -1,16 +1,14 @@
 /**
- * Mate (the first crewmate, key `mate`) is created in the background on every
- * install, but nothing about it is shown until the Crewmates preview is on. So
- * every agent list `useAgents` feeds -- the chat pop-up (`choices`), the
- * name-only pickers (`agents`) and the display-only tint list (`displayAgents`)
- * -- leaves it out while the preview is off, and lists it once it is on.
+ * Mate (the first crewmate, key `mate`) is created on every install and listed
+ * like any other crewmate in every agent list `useAgents` feeds -- the chat
+ * pop-up (`choices`), the name-only pickers (`agents`) and the display-only
+ * tint list (`displayAgents`).
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import { renderHookWithProviders } from './helpers'
 import { useAgents } from '../hooks/useAgents'
 import { api } from '../api/client'
-import { PREVIEW_CREW } from '../utils/previewFlags'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -27,25 +25,16 @@ const catalog = [
 
 const names = (rows: { name: string }[]) => rows.map(r => r.name)
 
-describe('useAgents keeps Mate out of every agent list while the Mates preview is off', () => {
+describe('useAgents lists Mate on a default install', () => {
   beforeEach(() => {
     vi.mocked(api.agentCatalog).mockReset().mockResolvedValue({ agents: catalog, default_agent: 'default' } as never)
     vi.mocked(api.kirocrewConfig).mockReset().mockResolvedValue({ dashboard: { crewmates_in_agent_picker: true } } as never)
   })
-  afterEach(() => localStorage.removeItem(PREVIEW_CREW))
 
-  it('preview off: no list offers Mate', async () => {
-    const { result } = renderHookWithProviders(() => useAgents(0))
-    await waitFor(() => expect(result.current.agents.length).toBeGreaterThan(0))
-    await waitFor(() => expect(names(result.current.choices)).toEqual(['default', 'helper']))
-    expect(names(result.current.agents)).toEqual(['default', 'helper'])
-    expect(names(result.current.displayAgents)).toEqual(['default', 'helper'])
-  })
-
-  it('preview on: Mate is listed like any other mate', async () => {
-    localStorage.setItem(PREVIEW_CREW, '1')
+  it('Mate is listed like any other mate, with no opt-in', async () => {
     const { result } = renderHookWithProviders(() => useAgents(0))
     await waitFor(() => expect(names(result.current.choices)).toEqual(['default', 'mate', 'helper']))
     expect(names(result.current.agents)).toEqual(['default', 'mate', 'helper'])
+    expect(names(result.current.displayAgents)).toEqual(['default', 'mate', 'helper'])
   })
 })

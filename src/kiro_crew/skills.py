@@ -33,7 +33,9 @@ from typing import TYPE_CHECKING, Iterable, Iterator, Literal, NamedTuple
 
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import hooks as hooks_module  # noqa: F401
-from kiro_crew import pinned_fs, skill_trust  # noqa: F401
+from kiro_crew import pinned_fs  # noqa: F401
+from kiro_crew import skill_trust  # noqa: F401
+from kiro_crew import skill_live_loaders as _live_loaders
 from kiro_crew import skills_body_reads as _body_reads
 from kiro_crew import skills_builtin_sync as _builtin_sync
 from kiro_crew import skills_candidate_tree as _candidate_tree
@@ -245,6 +247,7 @@ from kiro_crew.skills_review import (  # noqa: F401
     _VALIDATION_REPORT_MAX_STRING_CHARS,
     _VALIDATION_REPORT_TRUNCATION_KEY,
     PendingApprovalRefused,
+    PendingDismissRefused,
 )
 from kiro_crew.skills_script_validator import MAX_SCRIPT_BYTES, validate_scripts  # noqa: F401
 from kiro_crew.skills_selection import (  # noqa: F401
@@ -431,6 +434,16 @@ class SkillsLoader:
         self._catalog_drop_lock = threading.Lock()
         self._closed = False
         self._disabled_apps_cache: tuple[float, frozenset[str]] | None = None
+        self._released_apps_cache: tuple[float, frozenset[str]] | None = None
+        #: ``(deadline, apps root as spelled, (resolved apps root, resolved builtins
+        #: root))``; see ``skill_runtime.catalog._owner_roots``.
+        self._owner_roots_cache: tuple[float, str, tuple[Path, Path]] | None = None
+        #: ``id(catalog list) -> (that list, (disabled apps, released apps), visible
+        #: rows)``; see ``skill_runtime.catalog._iter_visible``.
+        self._visible_memo: dict[
+            int,
+            tuple[list[tuple[str, Path, str | None]], tuple[frozenset[str], frozenset[str]], list],
+        ] = {}
         # (canonical key, allowed) pairs already audited, so the enforcement
         # record is written on first use rather than once per message.
         self._audited_projects: set[tuple[str, bool]] = set()
@@ -518,6 +531,9 @@ class SkillsLoader:
         self._config_sub = live.subscribe(
             "skills.extra_paths", callback=self._on_config_change, name="SkillsLoader"
         )
+        # Last, once every field an invalidation touches exists: a link the app
+        # bridge adds or removes under this root clears this loader's catalog too.
+        _live_loaders.track(self)
 
     def close(self) -> None:
         """Release persistent resources owned by this loader.
@@ -574,7 +590,7 @@ class SkillsLoader:
     _read_exact_key = _body_reads._read_exact_key
 
     def _iter(self, project_dir: str | Path | None = None) -> list[tuple[str, Path, str | None]]:
-        """Return all ``(name, skill_file, within)`` triples without walking the tree."""
+        """Return the first ``(name, skill_file, within)`` triple per key, without walking."""
         return _catalog._iter(self, project_dir)
 
     def _catalog_scope_key(self, project_dir: str | Path | None) -> str:
@@ -665,6 +681,7 @@ class SkillsLoader:
     preview_pending_update = _review.preview_pending_update
     approve_pending_update_checked = _review.approve_pending_update_checked
     approve_pending_skill_checked = _review.approve_pending_skill_checked
+    approve_pending_as_read = _review.approve_pending_as_read
 
     def _iter_uncached(self, project_key: str | None = None) -> list[tuple[str, Path, str | None]]:
         """Walk the skills dir, extra paths, and an already-canonical project root."""
@@ -1033,6 +1050,8 @@ class SkillsLoader:
         target: str | None = None,
         base_version: int | None = None,
         refusal: ClaimRefusal | None = None,
+        missing_scripts: list[str] | None = None,
+        rejected_scripts: dict[str, list[str]] | None = None,
     ) -> str | None:
         """Write a skill candidate to the pending queue (not live).
 
@@ -1053,6 +1072,8 @@ class SkillsLoader:
             target=target,
             base_version=base_version,
             refusal=refusal,
+            missing_scripts=missing_scripts,
+            rejected_scripts=rejected_scripts,
         )
 
     # ── Pending candidate trees: ``kiro_crew.skills_candidate_tree`` ──
@@ -1122,12 +1143,12 @@ class SkillsLoader:
         """Return the version number to snapshot the CURRENT live body under."""
         return _versions._resolve_snapshot_version(self, versions_dir, fm_version)
 
-    def dismiss_pending_skill(self, slug: str) -> bool:
+    def dismiss_pending_skill(self, slug: str, content_sha256: str | None = None) -> bool:
         """Delete a pending candidate. Returns True if it existed.
 
         Contract and rationale: ``skill_runtime.auto_skills.dismiss_pending_skill``.
         """
-        return _auto_skills.dismiss_pending_skill(self, slug)
+        return _auto_skills.dismiss_pending_skill(self, slug, content_sha256)
 
     def dismiss_all_pending(self) -> int:
         """Delete all pending candidates. Returns count dismissed.

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { render, fireEvent, screen, waitFor } from '@testing-library/react'
+import { render, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { NotificationsPanel } from '../pages/settings/NotificationsPanel'
@@ -20,6 +20,7 @@ const CHANNELS: NotificationChannel[] = [
   { channel: 'system.heartbeat', source: 'system', registered: true, default_priority: 'passive', protected: false, settings: { muted: true } },
   { channel: 'system.member', source: 'system', registered: true, default_priority: 'passive', protected: false, settings: {} },
   { channel: 'system.apps', source: 'system', registered: true, default_priority: 'default', protected: false, settings: {} },
+  { channel: 'system.turn', source: 'system', registered: true, default_priority: 'default', protected: false, settings: {} },
   { channel: 'oncall-radar.ticket-update', source: 'oncall-radar', registered: true, default_priority: 'default', protected: false, settings: { priority: 'critical' } },
   { channel: 'oncall-radar.sync-status', source: 'oncall-radar', registered: false, default_priority: null, protected: false, settings: { muted: true } },
 ]
@@ -60,7 +61,7 @@ describe('NotificationsPanel channels section', () => {
 
   it('names the crewmate-message channel in words, not by its id', async () => {
     renderPanel()
-    expect(await screen.findByText('Mate messages')).toBeTruthy()
+    expect(await screen.findByText('Bot messages')).toBeTruthy()
     expect(screen.queryByText('member')).toBeNull()
   })
 
@@ -72,11 +73,58 @@ describe('NotificationsPanel channels section', () => {
     expect(screen.queryByText('apps')).toBeNull()
   })
 
+  it('names the dead-turn channel in words, not by its "turn" id', async () => {
+    // The bare id "turn" reads as the "turn" sound category (conversation
+    // handoffs); the label says failure so a user knows what muting costs.
+    renderPanel()
+    expect(await screen.findByText('Chat errors')).toBeTruthy()
+    expect(screen.queryByText('turn')).toBeNull()
+  })
+
+  it('keeps only the mute consequence under the Sources heading; what the section is sits in its tip', async () => {
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    expect(screen.getByText('Muted notifications stay in history but never badge, sound, or banner.')).toBeTruthy()
+    expect(screen.queryByText(/Mute notification sources or override their priority/)).toBeNull()
+    expect(screen.getByTitle(/^Mute notification sources or override their priority\./)).toBeTruthy()
+  })
+
   it('renders protected channels locked without controls', async () => {
     renderPanel()
     await waitFor(() => expect(screen.getByText('approval')).toBeTruthy())
     expect(screen.getByText('protected')).toBeTruthy()
     expect(screen.queryByRole('switch', { name: /system\.approval/ })).toBeNull()
+  })
+
+  it('explains when each system source fires, and leaves app rows without a tip', async () => {
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    const tips = screen.getAllByRole('button', { name: 'More information' })
+    // Six system rows in the fixture, each with a tip, plus the Sources section's
+    // own hint (#31472); the two app rows get none.
+    expect(tips).toHaveLength(7)
+    const cronRow = screen.getByText('cron').closest('div') as HTMLElement
+    const cronTip = within(cronRow).getByRole('button', { name: 'More information' })
+    expect(cronTip.getAttribute('title')).toBe(
+      'When a scheduled job finishes or fails. If it keeps giving the same result or error, each repeat is still noted here, marked as a repeat.',
+    )
+    // Protected row: the tip sits after the lock and the protected text is unchanged.
+    const approvalRow = screen.getByText('approval').closest('div') as HTMLElement
+    expect(within(approvalRow).getByRole('button', { name: 'More information' }).getAttribute('title'))
+      .toBe('When an agent is stopped until you approve a tool it wants to use.')
+    expect(screen.getByText('Always interrupts — cannot be muted or lowered')).toBeTruthy()
+    const appRow = screen.getByText('ticket-update').closest('div') as HTMLElement
+    expect(within(appRow).queryByRole('button', { name: 'More information' })).toBeNull()
+  })
+
+  it('shows no tip for a system channel this build does not know', async () => {
+    mockChannels.mockResolvedValue({ channels: [
+      { channel: 'system.future', source: 'system', registered: true, default_priority: 'default', protected: false, settings: {} },
+    ] })
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('future')).toBeTruthy())
+    const futureRow = screen.getByText('future').closest('div') as HTMLElement
+    expect(within(futureRow).queryByRole('button', { name: 'More information' })).toBeNull()
   })
 
   it('marks unregistered channels as retained', async () => {
@@ -102,6 +150,48 @@ describe('NotificationsPanel channels section', () => {
     expect(toggle.getAttribute('aria-checked')).toBe('false')
     fireEvent.click(toggle)
     await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith('system.heartbeat', { muted: false }))
+  })
+
+  it('a refused mute rolls back only its own channel, not a mute made while it was in flight', async () => {
+    // The first read serves the list; later reads never answer, so the cache
+    // shows what the rollback left rather than a refetch.
+    mockChannels.mockReset().mockResolvedValueOnce({ channels: CHANNELS }).mockImplementation(() => new Promise(() => {}))
+    let refuse!: (e: Error) => void
+    mockUpdate.mockImplementation((channel: string) =>
+      channel === 'system.cron' ? new Promise((_, reject) => { refuse = reject }) : Promise.resolve({}))
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    const cron = screen.getByRole('switch', { name: /system\.cron/ })
+    const member = screen.getByRole('switch', { name: /system\.member/ })
+    fireEvent.click(cron)
+    fireEvent.click(member)
+    await waitFor(() => expect(mockUpdate).toHaveBeenCalledWith('system.member', { muted: true }))
+    expect(member.getAttribute('aria-checked')).toBe('false')
+    refuse(new Error('cron refused'))
+    await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('true'))
+    expect(member.getAttribute('aria-checked')).toBe('false')
+  })
+
+  it('two refused mutes of one channel roll back to the stored value, not to the first optimistic one', async () => {
+    mockChannels.mockReset().mockResolvedValueOnce({ channels: CHANNELS }).mockImplementation(() => new Promise(() => {}))
+    const refusals: ((e: Error) => void)[] = []
+    mockUpdate.mockImplementation(() => new Promise((_, reject) => { refusals.push(reject) }))
+    renderPanel()
+    await waitFor(() => expect(screen.getByText('cron')).toBeTruthy())
+    const cron = screen.getByRole('switch', { name: /system\.cron/ })
+    fireEvent.click(cron)
+    // The first mute shows before the second click, which then unmutes.
+    await waitFor(() => expect(cron.getAttribute('aria-checked')).toBe('false'))
+    fireEvent.click(cron)
+    await waitFor(() => expect(refusals).toHaveLength(2))
+    expect(mockUpdate.mock.calls.map(c => c[1])).toEqual([{ muted: true }, { muted: false }])
+    refusals[0](new Error('first refused'))
+    refusals[1](new Error('second refused'))
+    // Each failure's settle asks for a refetch (which never answers here), so
+    // the third read means both rollbacks have run. Both saves failed, so the
+    // switch shows what the server holds: unmuted.
+    await waitFor(() => expect(mockChannels).toHaveBeenCalledTimes(3))
+    expect(cron.getAttribute('aria-checked')).toBe('true')
   })
 
   it('hides the section when the channels API fails', async () => {

@@ -50,10 +50,8 @@ class TestSessionCreateAgentKind:
     """`session_create.agent_kind` — the selection namespace rides the payload, and a
     `memory_delegation_denied` refusal tells the caller what it can actually do.
 
-    The refusal is terse on the wire by design (it names neither store nor
-    member), and that terseness left callers inventing a remedy that does not
-    exist — a memory-store setting under Settings > Crew. The tool reply names
-    the two real ones: re-send as a template dispatch, or the owner's own tab.
+    The wire refusal names neither store nor member, so the tool reply names the two
+    real remedies: re-send as a template dispatch, or use the owner's own tab.
     """
 
     _DENIED = {
@@ -113,8 +111,25 @@ class TestSessionCreateAgentKind:
         )
         assert out.startswith("Error: could not create a session:")
         assert 'agent_kind: "template"' not in out
-        assert "re-select" in out
         assert "own chat tab" in out
+        assert "start a new chat with this session's agent" in out
+        assert "member-" not in out
+
+    def test_a_refused_template_dispatch_does_not_promise_that_picking_the_agent_again_helps(
+        self,
+    ) -> None:
+        # A chat that reaches this refusal has messages, so picking its agent again
+        # is refused for a different member and never vouches for the same one. A
+        # remedy that sends the owner to the picker is one that cannot work.
+        out, _ = _call(
+            "session_create",
+            {"title": "worker", "agent": "kirocrew-worker", "agent_kind": "template"},
+            {"POST /api/session-control/create": self._DENIED},
+        )
+        lowered = out.lower()
+        for promise in ("re-select", "reselect", "re-bind", "rebind", "re-pick"):
+            assert promise not in lowered
+        assert "picking an agent again in this chat does not" in out
 
     def test_other_refusals_carry_no_remedy(self) -> None:
         out, _ = _call(
@@ -215,11 +230,8 @@ class TestSessionCreateAutocompact:
 class TestSessionCreateFolder:
     """`session_create.folder` — filing atomic with creation.
 
-    The reference resolves with `chat_folder_create`'s `parent` semantics
-    (missing segments created), which is tree shaping — so the SAME gate
-    applies, not a second authorization path. The endpoint receives the
-    resolved id and re-confirms it in the create's own synchronous window;
-    these cases cover the MCP half: gate, resolution, payload shape, refusal.
+    The folder resolves like `chat_folder_create`'s `parent` (missing segments are
+    created), so the same tree-shaping gate applies. These cases cover the MCP half.
     """
 
     CREATED = {"target": "chat-9-900", "title": "worker", "folder_id": "bbbbbbbbbbbb"}
@@ -258,6 +270,30 @@ class TestSessionCreateFolder:
         assert create.body["folder_id"] == "dddddddddddd"
         assert "created folder path" in out
 
+    def test_a_worker_folder_below_a_slash_named_folder_is_filed_inside_it(self) -> None:
+        """A conductor in a folder literally named ``a/b`` files workers under it.
+
+        Its worker folder reference is ``a/b/<agent>``. Splitting every ``/``
+        made a new top-level ``a`` > ``b`` pair for the workers instead.
+        """
+        tree = [{"id": "aaaaaaaaaaaa", "name": "a/b", "parent_id": ""}]
+        made = {"id": "dddddddddddd", "name": "kirocrew-worker", "parent_id": "aaaaaaaaaaaa"}
+        out, dash = _call(
+            "session_create",
+            {"title": "worker", "folder": "a/b/kirocrew-worker"},
+            {
+                **self._routes(),
+                "GET /api/chat/folders": tree,
+                "POST /api/chat/folders": made,
+            },
+        )
+        folder_posts = [w.body for w in _writes(dash) if w.path == "/api/chat/folders"]
+        assert folder_posts == [{"name": "kirocrew-worker", "parent_id": "aaaaaaaaaaaa"}]
+        create = _writes(dash)[-1]
+        assert create.path == "/api/session-control/create"
+        assert create.body["folder_id"] == "dddddddddddd"
+        assert "a/b/kirocrew-worker" in out
+
     def test_an_unresolvable_folder_refuses_the_whole_create(self) -> None:
         """No session may exist when the filing half cannot be honored.
 
@@ -275,11 +311,8 @@ class TestSessionCreateFolder:
     def test_folder_resolution_rides_the_tree_shaping_gate(self) -> None:
         """A caller the tree-shaping gate refuses cannot file-by-naming at create time.
 
-        Resolution can CREATE folders, so it is tree shaping: reusing the gate —
-        rather than a second authorization path — is what keeps 'could not
-        reshape the tree by creating a folder' and 'cannot reach the same write
-        through session_create' the same statement. A cron caller passes the
-        session-control gate (its key is verified) and is refused at this one.
+        Resolution can create folders, so it reuses the tree-shaping gate. A cron
+        caller passes the session-control gate (its key is verified) and is refused here.
         """
         out, dash = _call(
             "session_create",
@@ -307,11 +340,8 @@ class TestSessionCreateFolder:
     def test_an_app_scoped_caller_cannot_leave_folder_segments_behind(self) -> None:
         """The endpoint refuses `app_scoped_caller`, so resolution must not run.
 
-        An app may create folders in its own subtree, but it can never complete
-        session_create — resolving (and mkdir -p creating) the folder for it
-        would leave path segments behind for a call that cannot succeed. The
-        refusal here is a side-effect guard; the endpoint's own refusal stays
-        authoritative.
+        An app can never complete session_create, so creating its folder would leave
+        segments behind. The endpoint's own refusal stays authoritative.
         """
         out, dash = _call(
             "session_create",
@@ -340,6 +370,72 @@ class TestSessionCreateFolder:
         assert folder_write.session_key == "dashboard:gate-key"
 
 
+class TestSessionCreateFolderInCrewMode:
+    """`session_create.folder` from a chat that turned Crew Mode on.
+
+    The folder is never filed into and nothing is created; an EXISTING folder is
+    still named so the worker gets its project directory. The reference resolves
+    through the shared folder resolver, so an ambiguous, unknown or differently
+    cased reference means what it means for every other folder tool.
+    """
+
+    _CREW_ROOT = {
+        "key": "chat-1-100",
+        "title": "Conductor",
+        "crew_mode_root": True,
+        "crew_mode_agent": "kirocrew",
+    }
+
+    def _routes(self, folders: list[dict] | None = None) -> dict[str, Any]:
+        return {
+            **_reads(folders=folders, slots=[dict(self._CREW_ROOT)]),
+            "POST /api/session-control/create": lambda req: {
+                "target": "chat-9-900",
+                "title": "worker",
+                "crew_mode": True,
+                "folder_ignored": "crew_mode",
+            },
+        }
+
+    def test_an_existing_folder_rides_as_the_id_only(self) -> None:
+        out, dash = _call(
+            "session_create", {"title": "worker", "folder": "kirocrew/0811"}, self._routes()
+        )
+        (create,) = _writes(dash)
+        assert create.body["folder_id"] == "bbbbbbbbbbbb"
+        assert "folder ignored" in out
+        assert "filed in" not in out
+
+    def test_an_ambiguous_reference_is_still_refused(self) -> None:
+        # Ignoring it would pick a project directory nobody chose.
+        folders = [
+            {"id": "aaaaaaaaaaaa", "name": "kirocrew", "parent_id": None},
+            {"id": "bbbbbbbbbbbb", "name": "0811", "parent_id": "aaaaaaaaaaaa"},
+            {"id": "cccccccccccc", "name": "0811", "parent_id": "aaaaaaaaaaaa"},
+        ]
+        out, dash = _call(
+            "session_create",
+            {"title": "worker", "folder": "kirocrew/0811"},
+            self._routes(folders=folders),
+        )
+        assert out.startswith("Error:")
+        assert "render the same path" in out and "folder not found" not in out
+        assert _writes(dash) == []
+
+    def test_an_unknown_reference_is_ignored_like_the_folder_itself(self) -> None:
+        """The conductor's instructions name a goal folder created on the way; a Crew
+        Mode caller files nothing, so a reference that resolves to no existing folder
+        names no project directory and the dispatch goes ahead unfiled."""
+        out, dash = _call(
+            "session_create", {"title": "worker", "folder": "kirocrew/missing"}, self._routes()
+        )
+        assert not out.startswith("Error:")
+        (create,) = _writes(dash)
+        assert create.path == "/api/session-control/create"
+        assert "folder_id" not in create.body or not create.body["folder_id"]
+        assert "folder ignored" in out
+
+
 class TestAdvertisedSet:
     """Reaching this server means an agent spec referenced it.
 
@@ -356,7 +452,6 @@ class TestAdvertisedSet:
             "chat_folder_update",
             "chat_folder_move_session",
             "chat_folder_delete",
-            "chat_folder_file_self",
             "chat_tag_list",
             "chat_tag_create",
             "chat_tag_update",
@@ -374,6 +469,7 @@ class TestAdvertisedSet:
             "session_retry",
             "session_continue",
             "session_set_model",
+            "session_set_color",
             "session_reload",
             "session_rename",
             "session_generate_title",
@@ -386,5 +482,7 @@ class TestAdvertisedSet:
             "session_read_message",
             "session_summary",
             "session_adopt",
+            "session_handoff",
             "session_release",
+            "work_dispatch",
         }

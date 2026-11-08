@@ -9,6 +9,9 @@ const { unrecoverableGatewayDialog } = require("../../gateway-recovery");
 // dialog), so a tick this size costs nothing while still landing the retry
 // within seconds of the last part arriving.
 const INSTALLING_PROBE_MS = 5_000;
+// How long an unchanged probe result reads as stuck rather than still extracting:
+// the dialog's own text tells the user to quit and reopen after five minutes.
+const INSTALLING_STALL_MS = 5 * 60_000;
 // How long the dialog shows "Installation finished" before it closes itself.
 // Painting and closing in the same tick would give the line at most one frame.
 const INSTALLING_COMPLETE_LINGER_MS = 700;
@@ -51,6 +54,27 @@ function createFailureDialog({
   setIntervalFn,
   clearIntervalFn,
 }) {
+  // The installing dialog's stall count, counted in probe ticks so the injected
+  // interval is the only clock. It lives here, not in one dialog: Reveal Log
+  // closes and reopens the dialog, and a per-dialog count would drop the
+  // escalated copy and restart the five minutes on every reopen. A changed
+  // result restarts the count; only a complete tree clears the latch.
+  const installStall = { key: undefined, ticks: 0, stalled: false, ticker: null };
+  const observeInstallProbe = (result, { tick }) => {
+    if (Array.isArray(result) && result.length === 0) {
+      installStall.key = undefined;
+      installStall.ticks = 0;
+      installStall.stalled = false;
+      return false;
+    }
+    const key = JSON.stringify(result);
+    if (key !== installStall.key) installStall.ticks = 0;
+    else if (tick) installStall.ticks += 1;
+    installStall.key = key;
+    if (installStall.ticks * INSTALLING_PROBE_MS >= INSTALLING_STALL_MS) installStall.stalled = true;
+    return installStall.stalled;
+  };
+
   /**
    * Gateway failures need a bounded window with a scrollable launch-log pane;
    * native message boxes grow vertically with the entire detail string.
@@ -93,12 +117,18 @@ function createFailureDialog({
     // again after the probe had already shown it falling.
     const opening = typeof autoRetryProbe === "function"
       ? (() => {
-        try { return nextInstallingDialogState(autoRetryProbe(), { pruned: prunedBackend }); }
+        try {
+          const openingProbe = autoRetryProbe();
+          const stalled = observeInstallProbe(openingProbe, { tick: false });
+          return nextInstallingDialogState(openingProbe, { pruned: prunedBackend, stalled });
+        }
         catch { return null; }
       })()
       : null;
     const title = opening && !opening.complete ? opening.title : configuredTitle;
     const message = opening && !opening.complete ? opening.message : configuredMessage;
+    // A dialog reopened on a stalled bundle opens escalated, Quit accented.
+    const openingStalled = !!opening && !opening.complete && installStall.stalled;
     // The other escape hatch from the client-only state: name the crew on another
     // machine, or correct the address already stored. Without it this dialog
     // offers no way to reach a crew, so a launch that finds nothing can only
@@ -123,8 +153,13 @@ function createFailureDialog({
         minHeight: showLog ? 320 : 200,
         resizable: true,
         useContentSize: true,
+        // Parented so it stays above the window it is about. Not modal on
+        // Windows and Linux, where a modal child disables that window and the
+        // splash under this dialog offers Close window for exactly this wait.
+        // macOS keeps the sheet a modal child becomes there, which still
+        // blocks that window until the dialog is answered.
         parent: hasParent ? parentWindow : undefined,
-        modal: !!hasParent,
+        modal: !!hasParent && IS_MAC,
         backgroundColor: dark ? "#1e293b" : "#f8fafc",
         webPreferences: { nodeIntegration: false, contextIsolation: true },
       });
@@ -140,7 +175,7 @@ function createFailureDialog({
       // A pruned dialog accents Quit, so Enter presses Quit too: the keyboard
       // default is the highlighted button.
       const primaryAction = configuredPrimaryAction
-        || (noRetry || prunedBackend ? "quit" : (portConflict ? "force-retry" : "retry"));
+        || (noRetry || prunedBackend || openingStalled ? "quit" : (portConflict ? "force-retry" : "retry"));
       // Client-only mode cannot reach dashboard Settings to reverse the choice,
       // so this pre-dashboard UI carries the only in-app way back. The spawn
       // binds THIS port: on a crew's port a gateway started in place would
@@ -179,7 +214,7 @@ function createFailureDialog({
       // in this dialog, so here it sits on Quit and every other slot is a
       // secondary -- an orange Retry under text that says to quit is the
       // contradiction this removes.
-      const accentQuit = !!accentQuitAction && showQuitButton;
+      const accentQuit = (!!accentQuitAction || openingStalled) && showQuitButton;
       const retrySlotButton = `<button class="${promotedLocalStart || accentQuit ? "cancel" : "ok"}" `
         + `onclick="act('${retrySlotAction}')">${escapeHtml(retrySlotLabel)}</button>`;
       // Present whenever the route exists, accented only when it is the primary,
@@ -266,13 +301,19 @@ function createFailureDialog({
 
       let action = null;
       let probeTimer = null;
+      // Two installing dialogs can be open at once (a second window reads the
+      // same failure); only one advances the shared count, or N of them would
+      // escalate after 5/N minutes.
+      const stallTicker = {};
       const stopProbe = () => {
+        if (installStall.ticker === stallTicker) installStall.ticker = null;
         if (probeTimer === null) return;
         clearIntervalFn(probeTimer);
         probeTimer = null;
       };
       if (typeof autoRetryProbe === "function") {
         let paintedMessage = message;
+        let paintedTitle = title;
         probeTimer = setIntervalFn(() => {
           if (errorWindow.isDestroyed() || quitting() || getInstallingUpdate()) {
             stopProbe();
@@ -280,10 +321,27 @@ function createFailureDialog({
           }
           let state;
           try {
-            state = nextInstallingDialogState(autoRetryProbe(), { pruned: prunedBackend });
+            const result = autoRetryProbe();
+            if (installStall.ticker === null) installStall.ticker = stallTicker;
+            const stalled = observeInstallProbe(result, { tick: installStall.ticker === stallTicker });
+            state = nextInstallingDialogState(result, { pruned: prunedBackend, stalled });
           } catch (probeError) {
             glog(`install probe failed (${probeError && probeError.message}); will probe again`);
             return;
+          }
+          if (!state.complete && state.title !== paintedTitle) {
+            paintedTitle = state.title;
+            // The escalated copy asks for Quit, so the accent and Enter move to
+            // Quit, as a pruned opening places them.
+            errorWindow.webContents
+              .executeJavaScript(
+                `document.querySelector(".title").textContent = ${JSON.stringify(state.title)};`
+                + " for (const b of document.querySelectorAll('button')) {"
+                + " if (b.getAttribute('onclick') === \"act('retry')\") b.className = 'cancel';"
+                + " if (b.getAttribute('onclick') === \"act('quit')\") b.className = 'ok'; }"
+                + " primaryAct = \"act('quit')\";",
+              )
+              .catch(() => { /* window closing under the paint */ });
           }
           if (state.complete) {
             // Stop before closing: the closed handler also stops, but a tick

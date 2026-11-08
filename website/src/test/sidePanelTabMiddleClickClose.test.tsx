@@ -9,8 +9,9 @@
  *
  * Five contracts, each of which a plausible refactor breaks silently:
  *
- * 1. A middle-click on a file tab closes THAT tab — routed through the strip's
- *    existing close path (`usePanelTabs.closeTab`), not a second close.
+ * 1. A middle-click on a file tab closes THAT tab — through the tab's own
+ *    close guard (here one with nothing to ask) and then the strip's existing
+ *    close path (`usePanelTabs.closeTab`), not a second close.
  * 2. It closes only that tab: its neighbours stay.
  * 3. It suppresses the default action. On Linux/X11 a middle-click is also a
  *    primary-selection paste, so an unsuppressed default lands a stray paste
@@ -35,7 +36,17 @@ import { createTestStore } from './helpers'
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../components/DiffPanel', () => ({ default: () => null }))
 vi.mock('../components/DetailPanel', () => ({ default: () => null }))
-vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
+// A file tab's editor whose close guard has nothing to ask: it closes at once.
+// `sidePanelTabChipCloseGuard.test.tsx` covers a guard that asks.
+vi.mock('../components/MarkdownPanel', async () => {
+  const React = await import('react')
+  type Handle = import('../components/MarkdownPanel').MarkdownPanelHandle
+  const Stub = React.forwardRef<Handle, { onClose: () => void }>(function Stub({ onClose }, ref) {
+    React.useImperativeHandle(ref, () => ({ requestClose: () => onClose(), requestNavigate: (nav) => nav(() => true) }), [onClose])
+    return null
+  })
+  return { default: Stub }
+})
 vi.mock('../components/ArtifactPanel', () => ({ default: () => null }))
 vi.mock('../pages/chat/FolderPanel', () => ({ default: () => null }))
 vi.mock('../components/WebPreviewPanel', () => ({ default: () => null }))
@@ -49,8 +60,11 @@ vi.mock('../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => true,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
+// The chat runs on this machine, so its file tab bodies (and their guards) mount.
+vi.mock('../components/sessionEnvironmentHooks', () => ({
+  useSlotEnvironmentPlacement: () => ({ remote: null, error: null }),
+}))
 
 globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} } as never
 

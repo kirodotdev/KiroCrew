@@ -53,9 +53,15 @@ GH_STUB = r"""#!/usr/bin/env bash
 set -uo pipefail
 printf '%s\n' "$*" >> "$FIXTURES/calls.txt"
 
-# gh pr view <PR> --repo <REPO> --json headRefOid --jq .headRefOid
+# gh pr view <PR> --repo <REPO> --json headRefOid|baseRefName --jq .<field>
 if [ "$1 ${2:-}" = "pr view" ]; then
-  cat "$FIXTURES/head_sha.txt"
+  case "$*" in
+    *"--json baseRefName"*)
+      [ -f "$FIXTURES/fail_base" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
+      cat "$FIXTURES/head_base.txt" ;;
+    *"--json headRefOid"*) cat "$FIXTURES/head_sha.txt" ;;
+    *) echo "gh stub: unhandled pr view: $*" >&2; exit 90 ;;
+  esac
   exit 0
 fi
 
@@ -128,8 +134,21 @@ if [ "$1" = "api" ]; then
       # in calls.txt like every other request, so a same-repo publish can be
       # shown never to make it.
       [ -f "$FIXTURES/fail_fork_checks" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
+      # What the endpoint's default filter (latest) returns, when a test
+      # supplies it, answers a read that does not ask for filter=all.
+      if [ -f "$FIXTURES/fork_checks_latest.json" ] && [[ "$*" != *"filter=all"* ]]; then
+        cat "$FIXTURES/fork_checks_latest.json"; exit 0
+      fi
       cat "$FIXTURES/fork_checks.json"; exit 0 ;;
     *"/actions/runs/"[0-9]*)
+      # One run by id, read when a head_sha listing came back empty and the
+      # head's check-runs name the run: run_<id>.json is that run object.
+      rid="$*"
+      rid="${rid##*/actions/runs/}"
+      rid="${rid%%[/? ]*}"
+      if [ -f "$FIXTURES/run_$rid.json" ]; then
+        cat "$FIXTURES/run_$rid.json"; exit 0
+      fi
       # The triggering lane's run, read by the hold step. `--jq .status` is
       # applied by gh itself, so the stub emits the final value.
       [ -f "$FIXTURES/fail_lane_run" ] && { echo 'gh: Server Error (HTTP 500)' >&2; exit 1; }
@@ -238,6 +257,7 @@ class Runner:
             "REPO": "kirodotdev/KiroCrew",
             "PR": "2064",
             "SHA": SHA,
+            "BASE_REF": "main",
             "URL": "https://github.com/kirodotdev/KiroCrew/actions/runs/1",
             "RUNNER_TEMP": str(self.tmp),
             "GITHUB_STEP_SUMMARY": str(self.summary),
@@ -257,17 +277,21 @@ class Runner:
             "readiness: passed",
         ),
         head_sha: str = SHA,
+        head_base: str = "main",
         fail_label_delete: bool = False,
         fail_label_create: bool = False,
         fail_status: bool = False,
+        fail_base: bool = False,
     ) -> Result:
         (self.fixtures / "head_sha.txt").write_text(head_sha + "\n")
+        (self.fixtures / "head_base.txt").write_text(head_base + "\n")
         (self.fixtures / "pr_labels.txt").write_text("\n".join(pr_labels) + "\n")
         (self.fixtures / "repo_labels.txt").write_text("\n".join(repo_labels) + "\n")
         for name, on in (
             ("fail_label_delete", fail_label_delete),
             ("fail_label_create", fail_label_create),
             ("fail_status", fail_status),
+            ("fail_base", fail_base),
         ):
             flag = self.fixtures / name
             flag.unlink(missing_ok=True)
@@ -287,6 +311,7 @@ class Runner:
                 "DESCRIPTION": description,
             },
             text=True,
+            encoding="utf-8",
             capture_output=True,
         )
         return Result(proc, self.fixtures)
@@ -325,6 +350,26 @@ def test_a_stale_revision_publishes_nothing(runner: Runner) -> None:
     assert result.published is None
     assert result.deleted == []
     assert result.added == ""
+
+
+def test_a_verdict_scored_for_an_older_base_publishes_nothing(runner: Runner) -> None:
+    """A success scored while the base was main never lands once the base changed."""
+    result = runner.run(head_base="release/0.9.0")
+    assert result.ok, result.proc.stderr
+    assert result.published is None
+    assert result.deleted == []
+    assert result.added == ""
+    assert "Ignoring publish for stale base main" in result.proc.stdout
+
+
+def test_an_unreadable_base_publishes_a_stamped_pending(runner: Runner) -> None:
+    """A failed base read must not leave the SHA's earlier green standing."""
+    result = runner.run(fail_base=True, pr_labels=("readiness: passed",))
+    assert result.ok, result.proc.stderr
+    assert result.published is not None
+    assert result.published["state"] == "pending"
+    assert result.published["description"].startswith(READ_FAILURE_TOKEN)
+    assert "readiness: checking" in result.added
 
 
 # ── Losing a label race must not withhold the verdict ────────────────────────
@@ -647,6 +692,63 @@ def test_a_success_with_every_lane_done_still_publishes_success(runner: Runner) 
     assert result.published["state"] == "success"
 
 
+def _listing_empty_but_check_runs_name(runner: Runner, run: dict[str, object]) -> None:
+    """The head_sha listing answers no runs while the head's own check-runs name
+    ``run`` through an Actions job's ``details_url``."""
+    (runner.fixtures / "runs.json").write_text(json.dumps({"workflow_runs": []}))
+    checks = json.loads((runner.fixtures / "fork_checks.json").read_text())
+    checks["check_runs"].append(
+        {
+            "id": 900,
+            "name": "test",
+            "status": "in_progress",
+            "conclusion": None,
+            "details_url": (
+                f"https://github.com/kirodotdev/KiroCrew/actions/runs/{run['id']}/job/901"
+            ),
+        }
+    )
+    (runner.fixtures / "fork_checks.json").write_text(json.dumps(checks))
+    (runner.fixtures / f"run_{run['id']}.json").write_text(json.dumps(run))
+
+
+def test_a_lane_restarted_behind_an_empty_listing_still_holds_the_success(
+    runner: Runner,
+) -> None:
+    """An empty head_sha listing is not proof no lane is running: the run its
+    check-runs name answers for it, so the restarted lane holds the publish."""
+    _recheck_runner(runner, "completed")
+    _listing_empty_but_check_runs_name(
+        runner,
+        {
+            "id": 5,
+            "name": "CI",
+            "event": "pull_request",
+            "head_sha": SHA,
+            "path": ".github/workflows/ci.yml",
+            "status": "in_progress",
+            "conclusion": None,
+            "run_started_at": "2026-08-07T19:00:10Z",
+            "head_repository": {"full_name": "kirodotdev/KiroCrew"},
+            "head_branch": "feat/x",
+        },
+    )
+    result = runner.run()
+    assert result.published is not None
+    assert result.published["state"] == "pending"
+    assert "CI" in result.published["description"]
+
+
+def test_a_named_run_that_cannot_be_read_does_not_publish_success(runner: Runner) -> None:
+    _recheck_runner(runner, "completed")
+    _listing_empty_but_check_runs_name(runner, {"id": 5})
+    (runner.fixtures / "run_5.json").unlink()
+    (runner.fixtures / "fail_lane_run").touch()
+    result = runner.run()
+    assert result.published is not None
+    assert result.published["state"] == "pending"
+
+
 # ── The fork re-check ────────────────────────────────────────────────────────
 
 
@@ -696,6 +798,30 @@ def test_a_sibling_pull_requests_fork_row_never_answers_for_this_one(runner: Run
     the same head SHA. It is not this pull request's lane and must not hold it:
     the external_id binding is the whole reason the row can be trusted."""
     result = _recheck_runner(runner, "completed", fork=True).run()
+    assert result.published is not None
+    assert result.published["state"] == "success"
+
+
+def test_a_siblings_newer_row_does_not_hide_this_pull_requests_own(runner: Runner) -> None:
+    """Two PRs share the fork head and the sibling's red UX Review row
+    completed last. The endpoint's default listing can omit an older completed
+    row of a name, so a re-check that does not ask for every row never sees this
+    PR's own green verdict and holds the publish at pending."""
+    _recheck_runner(runner, "completed", fork=True)
+    rows = json.loads((runner.fixtures / "fork_checks.json").read_text())["check_runs"]
+    sibling = {
+        "id": 99,
+        "name": "UX Review",
+        "external_id": "ux-pr-9-77-1",
+        "status": "completed",
+        "conclusion": "failure",
+    }
+    latest = [r for r in rows if r["name"] != "UX Review"] + [sibling]
+    (runner.fixtures / "fork_checks.json").write_text(json.dumps({"check_runs": rows + [sibling]}))
+    (runner.fixtures / "fork_checks_latest.json").write_text(json.dumps({"check_runs": latest}))
+
+    result = runner.run()
+
     assert result.published is not None
     assert result.published["state"] == "success"
 
@@ -1056,6 +1182,28 @@ def test_no_dynamic_codeql_run_holds_nothing(runner: Runner) -> None:
     result = _recheck_runner(runner, "completed", codeql_runs_present=False).run()
     assert result.published is not None
     assert result.published["state"] == "success"
+
+
+def test_no_dynamic_run_does_not_refetch_the_runs_page_in_hand(runner: Runner) -> None:
+    """The head's check-runs name its CI run, already on the pull_request page
+    the re-check holds. With no dynamic run, that known run is not read again;
+    only a run the page does not hold is."""
+    _recheck_runner(runner, "completed", codeql_runs_present=False)
+    checks = json.loads((runner.fixtures / "fork_checks.json").read_text())
+    checks["check_runs"].append(
+        {
+            "id": 901,
+            "name": "test",
+            "status": "completed",
+            "conclusion": "success",
+            "details_url": "https://github.com/kirodotdev/KiroCrew/actions/runs/5/job/902",
+        }
+    )
+    (runner.fixtures / "fork_checks.json").write_text(json.dumps(checks))
+    result = runner.run()
+    assert result.published is not None
+    assert result.published["state"] == "success"
+    assert not [c for c in result.calls if "/actions/runs/5" in c], result.calls
 
 
 def _checked_in_codeql(

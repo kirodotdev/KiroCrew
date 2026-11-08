@@ -64,6 +64,16 @@ describe('AgentDropdownList', () => {
     // Guard against the loop passing vacuously (e.g. rows moved into a portal).
     expect(checked).toBeGreaterThan(0)
   })
+
+  it('draws the keyboard focus ring inside each row, so the host scroller cannot clip it', () => {
+    // Rows sit flush with the host's `overflow-y-auto` edge. The global
+    // `:focus-visible` outline is offset 2px OUTSIDE the box, so on the first
+    // row the scroller cut its top edge off. The inset utility opts out of it.
+    render(<AgentDropdownList agents={agents} activeAgent="kirocrew" defaultAgent="" onSelect={() => {}} />)
+    for (const option of screen.getAllByRole('option')) {
+      expect(option).toHaveClass('focus-ring-accent-inset')
+    }
+  })
 })
 
 describe('AgentDropdownList namespaces (member vs template)', () => {
@@ -88,7 +98,7 @@ describe('AgentDropdownList namespaces (member vs template)', () => {
   it('groups by kind and keeps a same-name member and template as two rows', () => {
     render(<AgentDropdownList agents={both} activeAgent="" defaultAgent="" onSelect={() => {}} />)
     const groups = screen.getAllByRole('group')
-    expect(groups.map(g => g.getAttribute('aria-label'))).toEqual(['Custom agents', 'Mates'])
+    expect(groups.map(g => g.getAttribute('aria-label'))).toEqual(['Custom agents', 'Bots'])
     expect(screen.getAllByRole('option')).toHaveLength(3)
     expect(screen.getAllByText('reviewer')).toHaveLength(2)
   })
@@ -296,7 +306,7 @@ describe('ManageAgentsFooter', () => {
   it('calls onManage when the link is activated', () => {
     const onManage = vi.fn()
     render(<ManageAgentsFooter onManage={onManage} />)
-    fireEvent.click(screen.getByText('Manage mates…'))
+    fireEvent.click(screen.getByText('Manage bots…'))
     expect(onManage).toHaveBeenCalledTimes(1)
   })
 

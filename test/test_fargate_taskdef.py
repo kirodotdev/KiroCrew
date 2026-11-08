@@ -319,20 +319,9 @@ def test_the_credential_env_name_matches_the_container_that_reads_it():
 def _container_credential_env() -> set[str]:
     """The credential variables the CONTAINER declares, read from its own source.
 
-    The container marks a name as credential-bearing in one of two ways, and both
-    are structural rather than a list anyone maintains:
-
-    * ``build_backend_env`` POPS it from the model worker's environment. That
-      worker auto-approves every tool it calls, so a name deliberately withheld
-      from it is a name whose value must not be readable by prompt content.
-    * ``seed_model_identity`` CONSUMES it from the supervisor's own environment, which
-      is how the model identity is delivered into the crew's vault. That name carries a
-      credential before it is withheld, so reading this function as well as the pop
-      keeps the DELIVERED name declared by the code that delivers it.
-
-    Variables merely mentioned in ``build_backend_env`` do not qualify: it also
-    sets the home, port, bind address and telemetry flag, none of which are
-    secret. The distinction is the treatment, not the mention.
+    A name counts if ``build_backend_env`` POPS it from the auto-approving model worker's
+    environment, or ``seed_model_identity`` CONSUMES it to deliver the model identity.
+    A name merely mentioned there (home, port, telemetry flag) does not count.
     """
     tree = _container_module(_CREW_BACKEND_SOURCE)
     constants = _env_constants(tree)
@@ -379,11 +368,8 @@ def test_only_the_execution_role_is_positioned_to_fetch_the_secrets():
 def test_neither_role_can_be_supplied_so_neither_can_be_wrong():
     """Both roles are derived from the secrets, so a swap is unconstructible.
 
-    Agreement on the crew would not have caught a swap, because both of a crew's
-    roles name that crew. The swap is an escalation rather than a typo: a
-    container's model subprocess can read the task role's credential out of its
-    own environment and act as it, so a task carrying the EXECUTION role can
-    re-read secrets, and a shared execution role holds every crew's.
+    Both roles name the crew, so crew agreement misses a swap. The model subprocess can
+    act as the task role, so a task holding the EXECUTION role can re-read secrets.
     """
     fields = {f.name for f in dataclasses.fields(td.TaskDefinitionSpec)}
     assert "execution_role_arn" not in fields
@@ -572,15 +558,8 @@ def test_the_init_process_is_on_the_definition_because_runtask_cannot_override_i
 def test_the_revision_scheme_was_bumped_when_the_document_gained_a_field():
     """A key computed under the old scheme must not describe the new document.
 
-    Two separate reasons, and the scheme covers both. The hashed FIELDS did not
-    change when ``initProcessEnabled`` was added, so without a bump a revision
-    registered before it carries an IDENTICAL key while running a DIFFERENT
-    document, and a caller confirming "revision N holds the content this spec
-    describes" would accept a task with no init process. A constant could never
-    discriminate by being hashed. The store is the other case: the hashed fields DO
-    change, and the bump says so out loud rather than leaving a reader to notice
-    that every key moved. ``stopTimeout`` is the newest such constant: it is in the
-    document but not the payload, so scheme 4 records that it was added.
+    A document constant such as ``initProcessEnabled`` or ``stopTimeout`` is not hashed,
+    so adding one must bump the scheme or an old revision gets an IDENTICAL key.
     """
     assert td.FINGERPRINT_SCHEME == 4
 

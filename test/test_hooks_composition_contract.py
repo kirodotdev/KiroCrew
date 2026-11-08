@@ -68,10 +68,15 @@ _BASE_NAMES = frozenset("""
     jsonl_util
     Any AutoReplyHook CORE_MCP_SERVER CU_CLASS_OBSERVE Callable ContextRule ContextVar
     FileTooLargeError GATE_CRASH_REASON HOOK_EVENTS HOOK_EVENTS_AGENT_REQUESTED
-    HOOK_EVENTS_ALL HOOK_EVENTS_KAS_ONLY HOOK_EVENT_AGENT_SPAWN HOOK_EVENT_FILE_CREATED
+    HOOK_EVENTS_ALL HOOK_EVENTS_KAS_ONLY
+    HOOK_EVENT_AGENT_SPAWN HOOK_EVENT_FILE_CREATED
+    _TOKEN_ALLOWED
+    _lane_dispatch_is_permitted _lane_dispatch_tasks _session_lane_matcher_context
+    _status_tag_ids dispatch_session_lane_changed_bulk
     HOOK_EVENT_FILE_DELETED HOOK_EVENT_FILE_EDITED HOOK_EVENT_POST_TASK_EXECUTION
     HOOK_EVENT_POST_TOOL_USE HOOK_EVENT_PRE_TASK_EXECUTION HOOK_EVENT_PRE_TOOL_USE
     HOOK_EVENT_STOP HOOK_EVENT_USER_PROMPT_SUBMIT HOOK_EVENT_USER_TRIGGERED
+    HOOK_EVENT_SESSION_LANE_CHANGED
     HOOK_INJECT_CONTEXT HOOK_MODIFY HOOK_PASSTHROUGH HOOK_REPLY HOOK_TIMEOUT_DEFAULT
     HOOK_TIMEOUT_MAX HOOK_TIMEOUT_MIN HookManager HookResult HooksConfig Iterable
     MAX_FILE_BYTES Mapping Path ScriptHook ScriptHookResult ScriptHookStore Sequence
@@ -200,16 +205,31 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: captured from the one-module file before the split: each keeps the kind and the
 #: signature it had there. ``safe_read_file_bytes_nolink``'s keyword-only
 #: ``admit_hardlinked`` and ``ScriptHookStore``'s callers all read these shapes.
-#: Re-pinned once since: ``_governance_denial`` gained ``alias_groups`` and
+#: Re-pinned twice since: ``_governance_denial`` gained ``alias_groups`` and
 #: ``deny_aliases`` (the KAS tool-id spellings ``gate_decision`` reads as one
-#: identity), both keyword defaults, so every pre-split caller still fits.
-_BASE_SHAPE_DIGEST = "869ba96660ec8f4ea710d6c3dcbbbec3cfcd25827358d3bac7a597102d6860bb"
+#: identity), then ``own_scopes`` (the scopes a proven non-shell call is judged
+#: in), all keyword defaults, so every pre-split caller still fits.
+#: ``run_script_hook`` and ``_hook_subprocess_env`` take trailing
+#: ``acp_session_id=None`` and ``session_model=None`` keywords,
+#: ``fire_tool_hooks`` a trailing ``session_model=None`` and
+#: ``permission_pre_tool_block`` a trailing ``acp_session_id=None``, so their
+#: callers fit too.
+#: ``safe_read_file`` and ``_opened_file_matches_validated_path`` take a keyword-only
+#: ``canonical_gate=False`` (the agent snapshot scan's inline gate), so theirs fit as well.
+#: ``safe_read_file_bytes_nolink`` and ``validate_file_path`` take the same keyword (the
+#: member start's spec read), so their callers fit too.
+#: ``safe_read_prefix`` takes a keyword-only ``refuse=None`` (a caller's fence on
+#: the opened descriptor's kernel path), so its callers fit too.
+#: ``permission_pre_tool_block`` takes a keyword ``acp_session_id=None`` that only
+#: its spec hooks read, so its callers fit too.
+_BASE_SHAPE_DIGEST = "be3447c3b6df576ccdfbf0806166a157975575bb39189416dfc69b21ca32f788"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in
 #: ``docs/system-specs/modules/memory-skills-hooks.md``'s "Hook runtime owners".
 _FACADE_DEFS = (
     "uncounted_gate",
+    "unattended_turn",
     "_fail_closed_on_gate_crash",
     "GateRule",
     "GateTier",
@@ -308,7 +328,7 @@ def _run_child(tmp_path: Path, script: str, *args: str) -> None:
 def test_every_name_the_facade_bound_at_the_base_still_resolves() -> None:
     """Over a hundred production modules and the tests read private names off this module as
     well as public ones, so every module-level binding survives the split."""
-    assert len(_BASE_NAMES) == 197
+    assert len(_BASE_NAMES) == 204
     assert sorted(name for name in _BASE_NAMES if not hasattr(hooks_mod, name)) == []
 
 
@@ -482,7 +502,7 @@ def test_every_base_definition_is_in_exactly_one_place() -> None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
     }
     assert defined == set(_FACADE_DEFS)
-    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 93
+    assert len(defined | _MOVED) == len(defined) + len(_MOVED) == 94
 
 
 def test_the_owners_log_as_the_facade() -> None:

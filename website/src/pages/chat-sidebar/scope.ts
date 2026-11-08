@@ -10,6 +10,7 @@ import type { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import type { ScrollEdges } from '../../hooks/useScrollEdges'
 import type { RootState, useAppDispatch } from '../../store'
 import type { ChatFolder } from '../../types'
+import type { KindSections } from './kindSections'
 import type { SortKey } from '../chat/sessionOrder'
 import type { useSessionRowWindowRoot } from '../chat/sessionRowWindow'
 import type { useCollapsedCrewSpaces, useCollapsedCrews, useCrewEnable } from './CrewGroups'
@@ -28,6 +29,7 @@ import type { useSidebarModels } from './models'
 import type { usePinnedKeyboardReorder, usePinnedSessionOrder } from './pinnedOrder'
 import type { useFolderRename, useSessionAutoTitle, useSessionRename } from './rename'
 import type { useSidebarResize } from './resize'
+import type { useResumeAll } from './resumeAll'
 import type { useSidebarReveal } from './reveal'
 import type { SidebarRows } from './rows'
 import type { useSearchMatches } from './search'
@@ -98,7 +100,7 @@ export interface ChatSidebarProps {
    *  window), and an omitted callback leaves the gestures unbound rather than
    *  falling back to a plain switch — a middle-click that quietly navigated
    *  would be indistinguishable from a misfire. */
-  onOpenSlotInNewTab?: (key: string, opts?: { background?: boolean }) => void
+  onOpenSlotInNewTab?: (key: string, opts?: { background?: boolean; requestSeq?: number }) => void
   /** Reveal a session's pull request / issue in the side panel instead of
    *  leaving for the provider's website.
    *
@@ -122,6 +124,14 @@ export interface ChatSidebarProps {
    *  not a live slot, because the composer stages it until send. Never fired for
    *  incognito/temporary sessions or for the already-active session. */
   onDropSessionRef?: (ref: { key: string; title: string; messages?: number }) => void
+  /** Whether staging a session reference has a composer to land in right now —
+   *  the same predicate `chatDropTarget` is gated on, passed through on its own
+   *  because the row menu's "Reference in chat" item needs the boolean (the drop
+   *  zone needs the element). False/omitted hides the menu item: an embed
+   *  sessions list, split view, or no active slot has no composer, so the row
+   *  would stage a reference nothing renders. The per-row incognito/temporary/
+   *  self refusals are decided in the row from `sessionRefBlockReason`. */
+  canStageSessionRef?: boolean
   /** Where a crew row's window opens, for a host with no chat pane of its
    *  own (embed/sessions). Omit to open it over this page's pane. */
   onOpenPeerSession?: (instanceId: string, key: string) => void
@@ -152,6 +162,7 @@ export interface SidebarScope {
   collapsible: ChatSidebarProps['collapsible']
   chatDropTarget: ChatSidebarProps['chatDropTarget']
   onDropSessionRef: ChatSidebarProps['onDropSessionRef']
+  canStageSessionRef: ChatSidebarProps['canStageSessionRef']
   staticRows: ChatSidebarProps['staticRows']
 
   // Its own state and what it derives
@@ -168,6 +179,8 @@ export interface SidebarScope {
   setFolderOfflineNotice: SetState<string>
   newChatError: string
   setNewChatError: SetState<string>
+  prStatusRefreshError: string
+  setPrStatusRefreshError: SetState<string>
   remoteCrewErrorId: string
   remoteCrewError: string
   setRemoteCrewError: SetState<string>
@@ -198,11 +211,14 @@ export interface SidebarScope {
   setCleanupOpen: SetState<boolean>
   folderCleanupOpen: boolean
   setFolderCleanupOpen: SetState<boolean>
+  /** Opens the folder cleanup on one folder's tree (folder ⋮ → "Close sessions and delete…"). */
+  setFolderCleanupRoot: SetState<ChatFolder | null>
   setManageTagsOpen: SetState<boolean>
   broadcastOpen: boolean
   setBroadcastOpen: SetState<boolean>
-  filterSortOpen: boolean
-  setFilterSortOpen: SetState<boolean>
+  /** `'folders'`: opened by the board notice's Show, for the menu's folder list. */
+  filterSortOpen: boolean | 'folders'
+  setFilterSortOpen: SetState<boolean | 'folders'>
   folders: ChatFolder[]
   foldersFailed: boolean
   foldersError: Error | null
@@ -228,7 +244,7 @@ export interface SidebarScope {
   activeDrag: { type: string; id: string } | null
   derivedHintCol: string | null
   setDerivedHintCol: SetState<string | null>
-  renameCommit: (id: string, name: string) => void
+  renameCommit: (id: string, name: string) => boolean
   closeRefused: RootState['chat']['closeRefused']
   rowActions: React.ComponentProps<typeof SessionRow>['actions']
   tintAgents: AgentInfo[]
@@ -255,6 +271,8 @@ export interface SidebarScope {
 
   // From `useSessionSources`
   historySearchResults: ReturnType<typeof useSessionSources>['historySearchResults']
+  historySearchFailed: ReturnType<typeof useSessionSources>['historySearchFailed']
+  historySearchScan: ReturnType<typeof useSessionSources>['historySearchScan']
   instanceSessions: ReturnType<typeof useSessionSources>['instanceSessions']
   remoteSessionsError: ReturnType<typeof useSessionSources>['remoteSessionsError']
   selectInstance: ReturnType<typeof useSessionSources>['selectInstance']
@@ -262,7 +280,7 @@ export interface SidebarScope {
   // From `useSessionRename`
   renameError: ReturnType<typeof useSessionRename>['renameError']
   setRenameError: ReturnType<typeof useSessionRename>['setRenameError']
-  suppressMenuRestoreRef: ReturnType<typeof useSessionRename>['suppressMenuRestoreRef']
+  suppressMenuRestore: ReturnType<typeof useSessionRename>['suppressMenuRestore']
   onMenuCloseAutoFocus: ReturnType<typeof useSessionRename>['onMenuCloseAutoFocus']
 
   // From `useSessionAutoTitle`
@@ -283,6 +301,10 @@ export interface SidebarScope {
   toggleTagFilter: ReturnType<typeof useSessionFilterState>['toggleTagFilter']
   clearTagFilter: ReturnType<typeof useSessionFilterState>['clearTagFilter']
   foldersShelved: ReturnType<typeof useSessionFilterState>['foldersShelved']
+  groupByKind: ReturnType<typeof useSessionFilterState>['groupByKind']
+  toggleGroupByKind: ReturnType<typeof useSessionFilterState>['toggleGroupByKind']
+  /** "Group by kind" while it applies (./kindSections), or null. */
+  kindSections: KindSections | null
   setFoldersShelved: ReturnType<typeof useSessionFilterState>['setFoldersShelved']
   toggleFoldersShelved: ReturnType<typeof useSessionFilterState>['toggleFoldersShelved']
   toggleFilter: ReturnType<typeof useSessionFilterState>['toggleFilter']
@@ -321,6 +343,9 @@ export interface SidebarScope {
   // From `useBulkModelSwitch`
   bulkModel: ReturnType<typeof useBulkModelSwitch>
 
+  // From `useResumeAll`
+  resumeAll: ReturnType<typeof useResumeAll>
+
   // From `usePinnedSessionOrder`
   pinned: ReturnType<typeof usePinnedSessionOrder>['pinned']
   pinnedOrderError: ReturnType<typeof usePinnedSessionOrder>['pinnedOrderError']
@@ -346,6 +371,7 @@ export interface SidebarScope {
 
   // From `useFolderRename`
   folderEditInputRef: ReturnType<typeof useFolderRename>['folderEditInputRef']
+  folderCancelEscapeRef: ReturnType<typeof useFolderRename>['folderCancelEscapeRef']
   editingId: ReturnType<typeof useFolderRename>['editingId']
   setEditingId: ReturnType<typeof useFolderRename>['setEditingId']
   editScope: ReturnType<typeof useFolderRename>['editScope']
@@ -374,6 +400,7 @@ export interface SidebarScope {
   refetchColumns: ReturnType<typeof useBoardColumns>['refetchColumns']
   tagColumnsEnabled: ReturnType<typeof useBoardColumns>['tagColumnsEnabled']
   hideEmptyFolderBody: ReturnType<typeof useBoardColumns>['hideEmptyFolderBody']
+  countSubfolderContents: ReturnType<typeof useBoardColumns>['countSubfolderContents']
   orderedColumns: ReturnType<typeof useBoardColumns>['orderedColumns']
 
   // From `useSidebarResize`
@@ -407,6 +434,8 @@ export interface SidebarScope {
   slotFolders: ReturnType<typeof useFolderVisibility>['slotFolders']
   foldersWithActiveSubtree: ReturnType<typeof useFolderVisibility>['foldersWithActiveSubtree']
   isFolderHidden: ReturnType<typeof useFolderVisibility>['isFolderHidden']
+  pinnedFolderSubtree: ReturnType<typeof useFolderVisibility>['pinnedFolderSubtree']
+  pinnedFolderAncestors: ReturnType<typeof useFolderVisibility>['pinnedFolderAncestors']
 
   // From `useSearchMatches`
   searchRanked: ReturnType<typeof useSearchMatches>['searchRanked']
@@ -507,8 +536,6 @@ export interface SidebarScope {
   refuseCreateOffline: ReturnType<typeof useFolderChatCreate>['refuseCreateOffline']
 
   // From `useSessionCreate`
-  crewPreview: ReturnType<typeof useSessionCreate>['crewPreview']
-  openCrewMembers: ReturnType<typeof useSessionCreate>['openCrewMembers']
   remoteCrewChatPreview: ReturnType<typeof useSessionCreate>['remoteCrewChatPreview']
   createChatMutation: ReturnType<typeof useSessionCreate>['createChatMutation']
   createRemoteChatMutation: ReturnType<typeof useSessionCreate>['createRemoteChatMutation']

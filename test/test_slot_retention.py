@@ -171,6 +171,20 @@ async def test_sweep_archives_only_the_idle_slot_above_high_water(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_sweep_hands_nothing_up_from_an_archived_manager(tmp_path, monkeypatch):
+    """An idle archive leaves the sessions it managed naming it, so a revive gets them back."""
+    from kiro_crew.dashboard import session_control
+
+    hand_back = AsyncMock(return_value=[])
+    monkeypatch.setattr(session_control, "hand_back_on_close", hand_back)
+    state, never_done = _sweep_state(tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER)
+    archived = await slot_retention.sweep_idle_slots(state, 7, now=_NOW.timestamp())
+    never_done.cancel()
+    assert archived == ["idle"]
+    hand_back.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_sweep_does_nothing_below_high_water(tmp_path, monkeypatch):
     state, never_done = _sweep_state(
         tmp_path, monkeypatch, fill_to=slot_retention.SWEEP_HIGH_WATER - 1
@@ -200,9 +214,9 @@ async def test_sweep_keeps_a_slot_that_turns_active_before_the_pop(tmp_path, mon
 
     real_close = chat_handlers.close_slot
 
-    async def _pin_then_close(state_, slot, name, *, pre_pop_check=None):
+    async def _pin_then_close(state_, slot, name, *, pre_pop_check=None, **kwargs):
         slot.pinned = True
-        await real_close(state_, slot, name, pre_pop_check=pre_pop_check)
+        await real_close(state_, slot, name, pre_pop_check=pre_pop_check, **kwargs)
 
     monkeypatch.setattr(chat_handlers, "close_slot", _pin_then_close)
     archived = await slot_retention.sweep_idle_slots(state, 7, now=_NOW.timestamp())

@@ -1,29 +1,13 @@
 """A NEW test that spawns a subagent must not read the host's free memory.
 
-``SubagentManager.spawn`` queues -- returning before it registers anything in
-``_tasks`` -- while the machine looks short of memory: the absolute floor
-(``check_memory_available`` against ``agent.spawn_min_memory_gb``).
-``test/conftest.py``'s ``healthy_host_memory`` pins that reading, but only for a
-file that asks for it -- so this is what stops the pinned set falling behind
-``test/``.
+``SubagentManager.spawn`` queues when the host is below ``agent.spawn_min_memory_gb``, and
+``healthy_host_memory`` pins that reading only for files that ask. A ratchet, because a
+queued spawn is still a ``SubagentInfo``: the test dies a line later on a bare ``KeyError``
+with nothing naming memory.
 
-A ratchet rather than a convention, because of how the failure reads: a queued
-spawn IS a ``SubagentInfo``, so ``assert info is not None`` still passes and the test dies on the NEXT line with
-a bare ``KeyError`` naming an id nothing else mentions. Nothing in the traceback
-says "memory"; the only evidence is a WARNING in the captured log. Measured on a
-CI runner with ~0.5 GB free, on a PR that touched none of this.
-
-Deliberately WIDER than the fixture acts on, the same way
-``test_host_isolation_floor.py``'s ratchet is: a module that names
-``SubagentManager`` AND calls ``.spawn(`` must be either pinned or excluded with
-a reason, so adding one forces a decision instead of an omission. Files whose
-``spawn`` is ``AcpRuntime.spawn`` never name ``SubagentManager`` and so are not
-swept up -- that method has no memory gate.
-
-A second ratchet below covers the other half: being pinned is not enough if the
-test throws the pin away mid-body with a bare ``monkeypatch.undo()``, which
-reverts the fixture's patches too because pytest hands the test and the fixture
-the same ``monkeypatch`` instance.
+Any module naming ``SubagentManager`` and calling ``.spawn(`` must be pinned or excluded
+with a reason (``AcpRuntime.spawn`` has no memory gate). A second ratchet forbids a bare
+``monkeypatch.undo()``, which reverts the fixture's pins too.
 """
 
 from __future__ import annotations
@@ -46,13 +30,8 @@ _FIXTURE = "healthy_host_memory"
 def _spawning_modules() -> tuple[tuple[str, bool], ...]:
     """Every ``test/`` module that reaches ``spawn``, paired with whether it is pinned.
 
-    A module qualifies when it names ``SubagentManager`` anywhere and calls some
-    ``.spawn(``. Pinned means the fixture appears inside a ``usefixtures(...)``
-    call -- at module, class, or test scope, so a file that mixes guard tests
-    with spawning ones can opt in narrowly.
-
-    Cached and returned as a tuple: parsing ``test/``'s ~1,500 modules costs
-    ~5s, and both tests below need the same answer.
+    Pinned means the fixture appears in a ``usefixtures(...)`` call at any scope. Cached:
+    parsing ``test/``'s ~1,500 modules costs ~5s and both tests below need it.
     """
     found: list[tuple[str, bool]] = []
     for path in sorted(_TEST_DIR.glob("*.py")):
@@ -192,22 +171,9 @@ def _pinned_modules_that_undo() -> tuple[str, ...]:
 class TestTheHostPinSurvivesTheTestsOwnPatches:
     """A pinned module must not throw the pin away half way through a test.
 
-    pytest hands the test function and every fixture it requests the SAME
-    ``monkeypatch`` instance, so ``monkeypatch.undo()`` inside a test body
-    reverts ``healthy_host_memory``'s two pins along with the test's own
-    patches. Everything after that line reads the runner's real free memory,
-    which is the exact state the module-scope pin exists to remove -- so the
-    file is pinned, looks pinned, and is not pinned where it matters.
-
-    Measured on a macos-15 nightly backend shard reading 2.58 GB available,
-    under the 4.5 GB floor then in force: ``test_taskq_admission_integration.py``'s drain
-    deferred a second time. The only failure text was
-    ``assert 'queued' == 'starting'``; nothing named memory, and the whole
-    nightly publish chain was skipped behind it.
-
-    The remedy is a scoped patch -- ``with monkeypatch.context() as scoped:`` --
-    which reverts only what the block set and leaves the fixture's readings in
-    place.
+    The test and its fixtures share one ``monkeypatch``, so ``monkeypatch.undo()`` reverts
+    ``healthy_host_memory``'s pins and the rest reads real free memory. Use
+    ``with monkeypatch.context() as scoped:`` instead.
     """
 
     def test_no_pinned_spawning_module_reverts_the_pin(self) -> None:

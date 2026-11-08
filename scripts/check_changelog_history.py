@@ -26,8 +26,28 @@ notice anything. Two invariants:
     2. head must contain ONLY shipped sections -- no ``## [Unreleased]``, no
        prerelease heading
 
-with **no exemptions**. A section whose heading is a bare ``X.Y.Z`` describes
-shipped software and is immutable, full stop.
+with **one exemption**, below. A section whose heading is a bare ``X.Y.Z`` describes
+shipped software and is immutable, full stop, except when a change makes it
+byte-identical to the section the release itself carries.
+
+## The one exemption: the release-to-main port
+
+``docs/build/release.md`` has the release branch write its section first and
+``main`` receive it verbatim. ``main`` usually already holds an earlier cut of that
+section, so the port is a rewrite of a shipped section as far as rule 1 can tell.
+It is exempt when ALL of these hold, each read from git and none from PR text:
+
+    * ``CHANGELOG.md`` is the only path that differs from the base ref
+    * the version is a plain ``X.Y.Z``
+    * the section at head is byte-identical to the same version's section on
+      ``origin`` at tag ``vX.Y.Z``, or at ``release/X.Y.0`` while that tag does
+      not exist yet (a port made while the release is in flight)
+
+Line endings are normalized at head as in every comparison this gate makes, and a
+release text carrying a CR or an undecodable byte is not used. Only rule 1's
+"different notes" verdict is waived, and only for a section that matches. A deleted section, a duplicate or prerelease heading, a draft heading, and
+any section that does not match its release stay violations. When the ref cannot be
+fetched the gate behaves exactly as it did before the exemption existed.
 
 Rule 2 is what makes rule 1 sufficient. Together they leave exactly one legal
 shape for a changelog diff -- prepend one new section -- because there is no
@@ -319,8 +339,14 @@ def compare(
     head_text: str,
     base_grammar: Grammar = HEAD_GRAMMAR,
     head_grammar: Grammar = HEAD_GRAMMAR,
+    release_sections: Callable[[str], list[str]] | None = None,
 ) -> list[str]:
     """Return a violation per shipped release whose rendered notes changed.
+
+    ``release_sections(version)`` returns the sections the release itself carries
+    for ``version`` (see the module docstring's exemption). A changed section that
+    is byte-identical to one of them is the port, not a rewrite. It is called only
+    for a section that changed, and ``None`` means no exemption at all.
 
     ONE invariant, replacing three separate filters that each leaked a variant of
     the same defect: *for every release the base ref documents as shipped, the
@@ -360,6 +386,8 @@ def compare(
                 f"earlier one untouched."
             )
         elif head_resolved[version] != base_resolved.get(version):
+            if release_sections is not None and head_resolved[version] in release_sections(version):
+                continue
             problems.append(
                 f"[{version}] renders DIFFERENT notes than it did at the base "
                 f"ref. A shipped section is immutable, heading and body -- and it "
@@ -422,6 +450,120 @@ def _git_show(ref: str, path: str) -> str | None:
         ).stdout
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None
+
+
+#: A version the port exemption will build a ref name from. Strict, because the
+#: name goes to ``git fetch``: a malformed spelling must not select a ref.
+_PORTABLE_VERSION = re.compile(r"([0-9]+)\.([0-9]+)\.[0-9]+")
+
+
+def release_refs(version: str) -> list[str]:
+    """Refs on ``origin`` that carry the section ``version`` shipped with.
+
+    A line's patch releases are written on that line's branch, so ``0.11.2`` is on
+    ``release/0.11.0``, next to its tag ``v0.11.2``.
+    """
+    match = _PORTABLE_VERSION.fullmatch(version)
+    if match is None:
+        return []
+    return [f"refs/heads/release/{match.group(1)}.{match.group(2)}.0", f"refs/tags/v{version}"]
+
+
+def _git_is_shallow() -> bool:
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            capture_output=True,
+            check=True,
+            text=True,
+            encoding="utf-8",
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+    return out.strip() == "true"
+
+
+def _fetch_changelog(ref: str) -> str | None:
+    """``CHANGELOG.md`` as ``origin`` holds it at ``ref``, or ``None`` when unreadable.
+
+    Reads through ``FETCH_HEAD`` and maps the fetch to no remote-tracking ref, so
+    only ``FETCH_HEAD`` (and, on a shallow checkout, the shallow file) changes.
+    ``--depth=1`` only on a checkout that is already shallow (CI): on a full clone
+    it would cut the history of the fetched commit. Never prompts for credentials.
+    """
+    depth = ["--depth=1"] if _git_is_shallow() else []
+    try:
+        subprocess.run(
+            ["git", "fetch", *depth, "--no-tags", "--write-fetch-head", "--refmap=", "origin", ref],
+            capture_output=True,
+            check=True,
+            timeout=120,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        raw = subprocess.run(
+            ["git", "show", f"FETCH_HEAD:{CHANGELOG}"], capture_output=True, check=True
+        ).stdout
+        # Strict and unnormalized: a release blob with a CR or an undecodable byte
+        # cannot be told apart from head's text once decoded the lenient way.
+        return None if b"\r" in raw else raw.decode("utf-8")
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        FileNotFoundError,
+        UnicodeDecodeError,
+    ):
+        return None
+
+
+def _tag_exists(tag_ref: str) -> bool | None:
+    """Whether ``origin`` has ``tag_ref``: ``None`` when that could not be established."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-remote", "--exit-code", "origin", tag_ref],
+            capture_output=True,
+            timeout=120,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    # ls-remote --exit-code: 0 found, 2 no matching ref, anything else a failure.
+    return {0: True, 2: False}.get(result.returncode)
+
+
+def release_sections(version: str) -> list[str]:
+    """The sections ``origin`` carries for ``version``, as the renderer resolves them.
+
+    Once the release tag exists it is the only authority: it is immutable, while the
+    line's branch keeps moving and its pull requests do not run this gate. Before the
+    tag exists (a port made while the release is in flight) the branch is read. When
+    the tag's existence cannot be established, or the tag cannot be read, nothing is.
+    """
+    refs = release_refs(version)
+    if not refs:
+        return []
+    branch, tag = refs
+    exists = _tag_exists(tag)
+    if exists is None:
+        return []
+    text = _fetch_changelog(tag if exists else branch)
+    section = resolve_as_rendered(text).get(version) if text is not None else None
+    return [] if section is None else [section]
+
+
+def only_changelog_differs(base_ref: str) -> bool:
+    """True when ``CHANGELOG.md`` is the only tracked path that differs from ``base_ref``."""
+    try:
+        out = subprocess.run(
+            ["git", "diff", "--name-only", "--no-renames", "-z", base_ref],
+            capture_output=True,
+            check=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+    return [path for path in out.split("\0") if path] == [CHANGELOG]
 
 
 def _self_test() -> int:
@@ -595,11 +737,48 @@ def _self_test() -> int:
         if bool(draft_headings(probe_text)) != should_flag:
             failures.append(f"draft-section rule: {label}")
 
+    # The port exemption. The rewrite below is the one the release branch carries;
+    # only a section matching it byte for byte passes, and nothing else is waived.
+    final = "## [0.2.0] \u2014 2026-08-12\n\nfinal body\n\n"
+    ported = f"# Changelog\n\n{latest}{final}"
+    on_release = {"0.2.0": [final]}
+    port_probes: list[tuple[str, str, dict[str, list[str]] | None, bool]] = [
+        ("the section the release carries is the port", ported, on_release, False),
+        ("the same rewrite with no release section is caught", ported, None, True),
+        ("a rewrite that is not the release's section is caught", ported, {"0.2.0": ["x\n"]}, True),
+        ("a release section for another version waives nothing", ported, {"0.3.0": [final]}, True),
+        ("a deleted section is not waived", f"# Changelog\n\n{latest}", on_release, True),
+        (
+            "a duplicate heading is not waived",
+            f"# Changelog\n\n{latest}{final}{shipped}",
+            on_release,
+            True,
+        ),
+        (
+            "a prerelease heading shadowing the port is not waived",
+            f"# Changelog\n\n{latest}## [0.2.0-rc.2]\n\ndraft\n\n{final}",
+            on_release,
+            True,
+        ),
+    ]
+    for label, probe_head, carried, should_flag in port_probes:
+        lookup = None if carried is None else lambda version, c=carried: c.get(version, [])
+        if bool(compare(base, probe_head, release_sections=lookup)) != should_flag:
+            failures.append(f"port exemption: {label}")
+    if release_refs("0.12.0") != ["refs/heads/release/0.12.0", "refs/tags/v0.12.0"]:
+        failures.append("port exemption: release_refs does not name the line branch and tag")
+    if release_refs("0.11.2")[0] != "refs/heads/release/0.11.0":
+        failures.append("port exemption: a patch release is not read from its line's branch")
+    for odd in ("Unreleased", "0.12.0-rc.1", "0.12", "0.12.0junk", "../0.1.0", "0.12.0\n"):
+        if release_refs(odd):
+            failures.append(f"port exemption: {odd!r} must not select a ref")
+
     if failures:
         for line in failures:
             print(f"self-test FAILED: {line}", file=sys.stderr)
         return 1
-    print(f"changelog-history self-test: {len(cases) + 2 + len(draft_probes)} probes, all correct")
+    probes = len(cases) + 2 + len(draft_probes) + len(port_probes) + 8
+    print(f"changelog-history self-test: {probes} probes, all correct")
     return 0
 
 
@@ -689,12 +868,19 @@ def main(argv: list[str]) -> int:
             )
             return 1
 
-    problems = compare(base_text, head_text, base_grammar, HEAD_GRAMMAR)
+    # The port exemption needs the change to be nothing BUT the changelog; any other
+    # path in the diff leaves the gate exactly as strict as before.
+    port = release_sections if only_changelog_differs(base_ref) else None
+    problems = compare(base_text, head_text, base_grammar, HEAD_GRAMMAR, port)
     if problems:
         for problem in problems:
             print(f"::error::changelog-history: {problem}", file=sys.stderr)
         print(
-            "\nIf a shipped section genuinely must change (a factual "
+            "\nPorting a release's section to main passes by itself when "
+            f"{CHANGELOG} is the only changed path and each changed section is "
+            "byte-identical to the one on origin's tag vX.Y.Z (release/X.Y.0 until "
+            "that tag exists). "
+            "If a shipped section genuinely must change (a factual "
             "correction), say so explicitly in the PR body — but prefer leaving "
             'shipped history alone. See docs/build/changelog.md.',
             file=sys.stderr,

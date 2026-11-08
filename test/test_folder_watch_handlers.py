@@ -138,7 +138,6 @@ class TestPauseSource:
             data = await resp.json()
             assert data["status"] == "paused"
 
-        # Verify DB state
         row = store.db.execute("SELECT properties, sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         props = json.loads(row["properties"])
         assert props["scan_paused"] is True
@@ -326,3 +325,84 @@ class TestRenameSource:
             resp = await client.patch(f"/api/knowledge/sources/{sid}", data="not json",
                                       headers={"Content-Type": "application/json"})
             assert resp.status == 400
+
+
+class TestEditIgnorePatterns:
+    @pytest.mark.asyncio
+    async def test_a_folder_source_takes_trimmed_patterns_and_keeps_its_other_properties(
+            self, store, tmp_path):
+        sid = store.add_source("Notes", "local_folder", str(tmp_path),
+                               properties={"recursive": True, "ignore_patterns": [".trash/*"]})
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"ignore_patterns": [" generated/** ", "", ".trash/*"]})
+            assert resp.status == 200
+            assert (await resp.json())["ignore_patterns"] == ["generated/**", ".trash/*"]
+        row = store.db.execute("SELECT name, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["name"] == "Notes"
+        assert json.loads(row["properties"]) == {
+            "recursive": True, "ignore_patterns": ["generated/**", ".trash/*"]}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source_type,patterns", [
+        ("local_file", ["*.md"]),
+        ("local_folder", "sub/*"),
+        ("local_folder", ["sub/*", 3]),
+    ])
+    async def test_a_non_folder_source_or_a_non_list_is_refused_unwritten(
+            self, store, tmp_path, source_type, patterns):
+        sid = store.add_source("Old", source_type, str(tmp_path / "x"))
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"name": "New", "ignore_patterns": patterns})
+            assert resp.status == 400
+        row = store.db.execute("SELECT name, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["name"] == "Old"
+        assert "ignore_patterns" not in json.loads(row["properties"] or "{}")
+
+    @pytest.mark.asyncio
+    async def test_a_source_deleted_before_the_write_is_a_404_not_a_success(
+            self, store, tmp_path, monkeypatch):
+        sid = store.add_source("Notes", "local_folder", str(tmp_path))
+        # The row goes between the handler's read and its write.
+        monkeypatch.setattr(store, "merge_source_properties", lambda *a, **k: None)
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}",
+                                      json={"ignore_patterns": ["generated/**"]})
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "source_not_found"
+
+
+class TestFilePathType:
+    """A non-empty file_path that is not a string is caller error, not a 500.
+
+    The sensitive-path check hands it to ``Path()`` and ``is_sensitive_path``,
+    which raise on a number, list, object or bool. An empty value of any type
+    keeps its ``file_path required`` answer.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verb", ["retry", "skip"])
+    @pytest.mark.parametrize("value", [5, 1.5, True, ["/tmp/vault/a.md"], {"p": "a"}])
+    async def test_a_non_string_file_path_is_400(self, store, verb, value):
+        sid = store.add_source("test", "local_folder", "/tmp/vault")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/files/{verb}", json={"file_path": value}
+            )
+            assert resp.status == 400
+            body = json.loads(await resp.text())
+        assert body == {"error": "file_path must be a string", "code": "invalid_field_type"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("verb", ["retry", "skip"])
+    @pytest.mark.parametrize("value", [None, 0, False, [], {}, ""])
+    async def test_an_empty_file_path_of_any_type_is_still_required(self, store, verb, value):
+        sid = store.add_source("test", "local_folder", "/tmp/vault")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/files/{verb}", json={"file_path": value}
+            )
+            assert resp.status == 400
+            body = json.loads(await resp.text())
+        assert body == {"error": "file_path required"}

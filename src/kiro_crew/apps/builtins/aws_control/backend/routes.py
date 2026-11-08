@@ -314,6 +314,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _trim_preview,
     )
     from kiro_crew.apps.builtins.aws_control.backend.routes_parts.drive_writes import (  # noqa: F401
+        _TLS_POLICY_CHECKED,
+        _confirm_tls_policy,
         _drive_object_keys,
     )
     from kiro_crew.apps.builtins.aws_control.backend.routes_parts.library import (  # noqa: F401

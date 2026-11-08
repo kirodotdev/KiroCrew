@@ -52,7 +52,7 @@ def test_attrs_carry_identity_version_and_environment():
     # The build path is read-only for the id, so materialize it first — the
     # way every non-fresh install already has it on disk.
     beacon.install_id(create=True)
-    attrs = provider._resource_attributes()
+    attrs = provider._resource_attributes("kiro")
 
     assert attrs["service.name"] == "kirocrew"
 
@@ -96,7 +96,7 @@ def test_arch_aliases_fold_to_one_label():
     assert provider._ARCH_BY_MACHINE["arm64"] == "arm64"
     machine = platform.machine().lower()
     expected = provider._ARCH_BY_MACHINE.get(machine, provider._ATTR_OTHER)
-    assert provider._resource_attributes().get("host.arch") == expected
+    assert provider._resource_attributes("kiro").get("host.arch") == expected
 
 
 def test_unknown_environment_readings_fold_to_other(monkeypatch):
@@ -105,7 +105,7 @@ def test_unknown_environment_readings_fold_to_other(monkeypatch):
     monkeypatch.setattr(provider.platform, "system", lambda: "SunOS")
     monkeypatch.setattr(provider.platform, "machine", lambda: "riscv64")
     monkeypatch.setattr(provider.platform, "python_implementation", lambda: "MicroPython")
-    attrs = provider._resource_attributes()
+    attrs = provider._resource_attributes("kiro")
     assert attrs["os.type"] == provider._ATTR_OTHER
     assert attrs["host.arch"] == provider._ATTR_OTHER
     # process.runtime.name is in the same closed set as the other two: a
@@ -118,7 +118,7 @@ def test_version_probe_failure_omits_only_that_attribute(monkeypatch):
         raise RuntimeError("release parse failed")
 
     monkeypatch.setattr(beacon, "release", _boom)
-    attrs = provider._resource_attributes()
+    attrs = provider._resource_attributes("kiro")
     assert "service.version" not in attrs
     # The other groups are untouched by the failed probe.
     assert attrs["service.name"] == "kirocrew"
@@ -130,7 +130,7 @@ def test_id_read_failure_omits_the_attribute(monkeypatch):
         raise OSError("disk unreadable")
 
     monkeypatch.setattr(beacon, "install_id", _boom)
-    attrs = provider._resource_attributes()
+    attrs = provider._resource_attributes("kiro")
     assert "service.instance.id" not in attrs
     assert "service.version" in attrs
 
@@ -139,14 +139,14 @@ def test_the_probe_is_read_only_and_the_build_path_mints(tmp_path, monkeypatch):
     # _resource_attributes itself never CREATES the id (create=False): it is a
     # pure probe, so calling it cannot have a side effect on disk.
     _own_home(monkeypatch, tmp_path)
-    attrs = provider._resource_attributes()
+    attrs = provider._resource_attributes("kiro")
     assert "service.instance.id" not in attrs
     assert beacon.install_id(create=False) == "", "the probe created the id"
 
     # The single write lives in _build_recorder's live branch, immediately
     # before the probe, so the id exists by the time the resource is built.
     beacon.install_id(create=True)
-    assert "service.instance.id" in provider._resource_attributes()
+    assert "service.instance.id" in provider._resource_attributes("kiro")
 
 
 def test_first_build_on_a_fresh_install_exports_the_id(tmp_path, monkeypatch):
@@ -242,7 +242,7 @@ def test_channel_and_install_type_stay_absent():
     # channel narrows the anonymity crowd a stable id hides in, and there is
     # no reliable install-type detection. Their absence is a decision, so it
     # gets a regression guard.
-    attrs = provider._resource_attributes()
+    attrs = provider._resource_attributes("kiro")
     for key in attrs:
         lowered = key.lower()
         assert "channel" not in lowered
@@ -283,7 +283,7 @@ def test_exported_shard_carries_the_resource(tmp_path, monkeypatch):
 def test_process_role_is_absent_unless_the_gateway_daemon_marks_itself(monkeypatch):
     """Only the MCP gateway daemon stamps a role; every other resource is unchanged."""
     monkeypatch.setattr(provider, "_is_gatewayd", False)
-    assert provider.RESOURCE_ATTR_PROCESS_ROLE not in provider._resource_attributes()
+    assert provider.RESOURCE_ATTR_PROCESS_ROLE not in provider._resource_attributes("kiro")
     provider.mark_gatewayd_process()
-    attrs = provider._resource_attributes()
+    attrs = provider._resource_attributes("kiro")
     assert attrs[provider.RESOURCE_ATTR_PROCESS_ROLE] == "gatewayd"

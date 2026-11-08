@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from instances_helpers import _body, _ConnectedMgr, _enable, _fake_reconfigure, _FakeReq, _State
+
+# 2100-01-01T00:00:00Z: a fixed stamp later than any write the test makes, so it reads as a
+# tunnel connected after the edit without reading the host clock.
+_CONNECTED_AFTER_ANY_WRITE = 4102444800.0
 
 
 class TestHandlers:
@@ -86,14 +91,9 @@ class TestHandlers:
     ):
         """The served cap covers every REGISTERED crew, connected or not.
 
-        This is the regression that produced "one random crew is broken". The cap
-        must not be the live connected count: a crew whose tunnel came up just
-        after this request was not counted, the cap arrived one short, and the
-        viewport evicted a pane to honour it. Eviction unmounts the pane and
-        cold-boots the remote SPA on the next click, which reads as a disconnect —
-        and which crew lost depended on connection order, so the victim moved on
-        every restart. Here 3 are registered and only 2 are connected; the cap
-        must still be 3.
+        A cap from the live connected count arrives one short when a tunnel comes up
+        late, and the viewport evicts a random pane (reads as a disconnect). Here 3 are
+        registered and 2 connected; the cap must still be 3.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
 
@@ -525,19 +525,16 @@ class TestHandlers:
         assert r.status == 502
         assert "token" not in _body(r)  # never serve a token we couldn't confirm
         assert "STALE_TOK" not in r.body.decode()
+        assert "expired" not in _body(r)["error"]
+        assert "check that its remote gateway is running" in _body(r)["error"]
 
     def test_connect_failure_promotes_the_diagnosis_verdict_to_a_top_level_code(
         self, tmp_path, monkeypatch
     ):
         """A failed connect names WHICH link broke where a client can read it.
 
-        The ladder's verdict already travels in ``diagnosis.code``, but the
-        dashboard's error journal reads a top-level ``code`` — so without the
-        promotion the one field that distinguishes "cannot SSH at all" from "SSH
-        works, the remote gateway is down" never reaches the surface that offers to
-        act on it. Only a NEGATIVE verdict is promoted: the stored diagnosis is the
-        last ladder run, so a stale ``ok`` must not be published as this call's
-        reason.
+        The error journal reads a top-level ``code``, so ``diagnosis.code`` is promoted.
+        Only a NEGATIVE verdict is: the stored diagnosis may be a stale ``ok``.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
@@ -668,11 +665,8 @@ class TestHandlers:
     def test_add_defaults_remote_port_to_the_stock_gateway_port(self, tmp_path, monkeypatch):
         """The ADD endpoint must not carry its own stale port default.
 
-        The registry default and the handler default were separate literals, so
-        correcting the registry left the HTTP path (which is what the Add form
-        actually calls) still handing out an earlier default dashboard port. Every
-        unit test built records via ``reg.add`` directly and so could not see it;
-        an isolated-pod run against the real endpoint did.
+        Driven through the HTTP path the Add form calls: a test via ``reg.add`` cannot
+        see a handler-side literal that drifts from the registry default.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
         from kiro_crew.instances.registry import DEFAULT_REMOTE_PORT
@@ -701,12 +695,8 @@ class TestHandlers:
     def test_add_error_bodies_carry_a_machine_readable_code(self, tmp_path, monkeypatch):
         """Every add rejection names its cause in ``code``, not only in prose.
 
-        The dashboard reads this field (``utils/errorReport``'s ``parseErrorCode``)
-        to attach the failure's cause to an agent hand-off, and a first-time setup
-        rejection is exactly the case where the user cannot diagnose it alone. A
-        duplicate is kept distinct from an invalid field because the two are
-        different user actions — rename versus correct — and a client that cannot
-        tell them apart has to match on prose.
+        ``utils/errorReport``'s ``parseErrorCode`` reads it for agent hand-offs. A
+        duplicate stays distinct from an invalid field: rename versus correct.
         """
         from kiro_crew.dashboard import handlers_instances as handlers
 
@@ -735,6 +725,19 @@ class TestHandlers:
             handlers.api_instances_add(_FakeReq(state, body={"name": "", "ssh_host": ""}))
         )
         assert rejected.status == 400 and _body(rejected)["code"] == "instance_invalid"
+
+    @pytest.mark.parametrize("field", ["remote_port", "via_remote_port"])
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    def test_add_infinite_port_is_an_invalid_field(self, tmp_path, monkeypatch, field, raw):
+        """JSON reads ``1e999`` as an infinite float: the invalid_field 400, never a 500."""
+        from kiro_crew.dashboard import handlers_instances as handlers
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        state = _State(reg)
+        body = json.loads(f'{{"name": "Bad", "ssh_host": "h", "{field}": {raw}}}')
+        resp = asyncio.run(handlers.api_instances_add(_FakeReq(state, body=body)))
+        assert resp.status == 400 and _body(resp)["code"] == "invalid_field"
 
     def test_update_paths(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import handlers_instances as handlers
@@ -995,8 +998,6 @@ class TestHandlers:
         """One teardown, inside the reconfiguration. An extra one after the write
         would hit whatever connected next — i.e. a Connect the user just made on
         the new coordinates."""
-        import time as _time
-
         from kiro_crew.dashboard import handlers_instances as handlers
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState, TunnelStatus
 
@@ -1013,13 +1014,12 @@ class TestHandlers:
                 return True
 
             def status(self, instance_id):
-                # Connected just now — i.e. after the write this handler is about
-                # to make, which is the case the dated sweep must spare.
-                # flake-ok: pre-existing live-clock stamp set 60 s ahead so it reads newer than the edit's write, moved verbatim
+                # Connected after the write this handler is about to make, which is
+                # the case the dated sweep must spare.
                 return TunnelStatus(
                     instance_id=instance_id,
                     state=TunnelState.CONNECTED,
-                    connected_at=_time.time() + 60,
+                    connected_at=_CONNECTED_AFTER_ANY_WRITE,
                 )
 
             def last_error(self, instance_id):
@@ -1113,7 +1113,7 @@ class TestHandlers:
                 events.append(f"teardown(keep_intent={keep_intent})")
                 return True
 
-            async def reconfigure(self, instance_id, apply):
+            async def reconfigure(self, instance_id, apply, needs_teardown=None):
                 events.append("enter-critical-section")
                 await self.disconnect(instance_id, keep_intent=True)
                 out = apply()
@@ -1165,7 +1165,7 @@ class TestHandlers:
         reg.update("cd-1", was_connected=True)
 
         class _WedgedManager:
-            async def reconfigure(self, instance_id, apply):
+            async def reconfigure(self, instance_id, apply, needs_teardown=None):
                 raise OSError("ssh process will not die")
 
             async def disconnect(self, instance_id, *, keep_intent=False):
@@ -1404,7 +1404,7 @@ class TestHandlers:
             def __init__(self, ok):
                 self._ok = ok
 
-            async def restart_remote(self, iid):
+            async def restart_remote(self, iid, *, force=False):
                 return {"ok": self._ok, "message": "" if self._ok else "fail"}
 
         # success -> 200

@@ -175,18 +175,11 @@ def test_servers_omitted_counts_distinct_servers_not_repeated_calls():
 
 
 def test_a_cold_fold_streams_the_log_rather_than_holding_it(monkeypatch):
-    """A long cold fold holds ONE entry at a time, and the value is unaffected.
+    """A long cold fold holds one entry at a time, and the value is unaffected.
 
-    ``fold_session`` hands the projection kernel the log as a stream and the kernel
-    folds each entry through every unit as it arrives, so what a cold fold of a long
-    log holds is one entry rather than the file. That is only safe if consuming it
-    piecemeal is invisible in the result, so this drives a log past two thousand
-    entries, compares against the from-scratch fold, AND checks the interleaving --
-    otherwise the test would still pass if the whole log were materialized first.
-
-    The interleaving is the part worth pinning: at the moment of the Nth fold step,
-    exactly N entries have come out of the reader. A pass that read the file into a
-    list would have every entry out before the first step.
+    The log is past two thousand entries and compared with the from-scratch fold. The
+    interleaving is pinned too: at the Nth fold step exactly N entries have left the reader,
+    which a pass that read the whole file into a list would fail.
     """
     handle = _log()
     _opened(handle)
@@ -211,12 +204,21 @@ def test_a_cold_fold_streams_the_log_rather_than_holding_it(monkeypatch):
     interleaving: list[tuple[int, int]] = []
     real_apply = crew_log._SessionFold.apply
 
+    real_apply_owned = crew_log._SessionFold.apply_owned
+
     def counted_apply(self, state, entry):
         interleaving.append((yielded[0], len(interleaving) + 1))
         return real_apply(self, state, entry)
 
+    # A cold fold steps through ``apply_owned`` (in place, one private state), so the
+    # probe watches both doors; either way each step must follow its own read.
+    def counted_apply_owned(self, state, entry):
+        interleaving.append((yielded[0], len(interleaving) + 1))
+        return real_apply_owned(self, state, entry)
+
     monkeypatch.setattr(CrewLog, "iter_from", counted_iter_from)
     monkeypatch.setattr(crew_log._SessionFold, "apply", counted_apply)
+    monkeypatch.setattr(crew_log._SessionFold, "apply_owned", counted_apply_owned)
 
     streamed = crew_log.fold_session(SESSION, ("tools",)).projection("tools").value
 
@@ -232,18 +234,12 @@ def test_a_cold_fold_streams_the_log_rather_than_holding_it(monkeypatch):
 
 
 def test_a_grouped_fixture_is_the_log_one_append_at_a_time_writes(monkeypatch):
-    """Writing a fixture in groups changes its COST, not the log a fold reads.
+    """Writing a fixture in groups changes its cost, not the log a fold reads.
 
-    The fixtures above reach bounds that are themselves in the hundreds or
-    thousands, and one ``append`` per entry is one ``os.fsync`` per entry. The
-    cold-fold fixture's 2049 of those measure 156-185 s on the Windows runner
-    against a 180 s per-test cap, and a breach there terminates the whole xdist
-    worker instead of failing one test, so a shard of 1600 tests dies on a file its
-    author never opened. Substituting ``append_many`` is only SAFE if the entries
-    are the same ones, and only WORTH it if the durable writes stop scaling with
-    the entry count -- so this pins both halves. Without it, an edit can quietly
-    restore the per-entry cost, and the only signal is an intermittent Windows
-    worker death with no assertion to read.
+    One ``append`` per entry is one ``os.fsync`` per entry: 2049 of them take 156-185 s on
+    the Windows runner against a 180 s per-test cap, and a breach kills the whole xdist
+    worker. So this pins that ``append_many`` writes the same entries and that durable
+    writes stop scaling with the entry count.
     """
     monkeypatch.setattr(store, "now_ms", lambda: 1_700_000_000_000)
     syncs = {"n": 0}
@@ -286,11 +282,8 @@ def test_a_grouped_fixture_is_the_log_one_append_at_a_time_writes(monkeypatch):
 def test_an_over_long_call_id_is_counted_and_not_retained():
     """An id too big to retain identifies nothing, exactly like an absent one.
 
-    A ``call_id`` comes off the wire and nothing on that path caps its length, so
-    retaining it raw would let a few frames outweigh the whole entry budget the
-    ``open`` map is counted against. It cannot be TRUNCATED to fit -- two distinct
-    ids sharing a head would become one identity and a completion would close the
-    wrong frame -- so it takes the unidentified path instead.
+    Nothing caps a wire ``call_id``, so retained raw it could outweigh the ``open`` map's
+    budget. Truncating would merge distinct ids and close the wrong frame.
     """
     handle = _log()
     _opened(handle)
@@ -380,11 +373,8 @@ def test_an_over_long_approval_id_is_counted_and_not_retained():
 def test_names_omitted_stops_counting_rather_than_counting_a_name_twice():
     """Past the dedup budget the count says it is a floor instead of inflating.
 
-    ``names_omitted`` is a count of DISTINCT names left out of the detail, and it
-    is deduplicated against a list that is itself capped. A name arriving once the
-    list is full is not recognised as already-seen, so counting it again would
-    count one name once per appearance -- a call and its completion both reach
-    here -- and the figure would climb past the number of names that exist.
+    ``names_omitted`` counts distinct names against a capped list; once it is full a repeat
+    (a call and its completion) is not recognised and would be counted twice.
     """
     handle = _log()
     _opened(handle)
@@ -458,11 +448,8 @@ def test_a_retained_label_is_cut_to_the_text_limit():
 def test_two_names_sharing_a_cut_head_do_not_merge_their_totals():
     """A label at the cut length is not keyed, so distinct tools stay distinct.
 
-    A retained label is cut to ``TEXT_LIMIT``, which means a label sitting exactly
-    at that length cannot be told apart from one that was cut. Keying on it would
-    put two unrelated tools in one row reporting each other's calls -- a wrong
-    answer, not merely a big value -- so such a label gets no detail row and is
-    counted as omitted instead.
+    A label exactly at ``TEXT_LIMIT`` may be a cut one; keyed, two tools would share a row,
+    so it is counted as omitted instead.
     """
     handle = _log()
     _opened(handle)

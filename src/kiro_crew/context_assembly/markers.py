@@ -78,6 +78,15 @@ UNTRUSTED_TODO_FENCE_CLOSE = ">>>END_UNTRUSTED_TODO_TEXT"
 _TODO_FENCE_OPEN_RE = _fence_marker_regex(UNTRUSTED_TODO_FENCE_OPEN)
 _TODO_FENCE_CLOSE_RE = _fence_marker_regex(UNTRUSTED_TODO_FENCE_CLOSE)
 
+# Delimiters that wrap a persistent cron job's own previous-run result when the
+# next run is given it as dedup context (``cron_service.identity``). That result
+# is model output and can quote whatever the previous run read from a tool, a
+# ticket or a page, so it is re-sent as data inside this fence.
+UNTRUSTED_CRON_RESULT_FENCE_OPEN = "<<<UNTRUSTED_PREVIOUS_RUN_RESULT"
+UNTRUSTED_CRON_RESULT_FENCE_CLOSE = ">>>END_UNTRUSTED_PREVIOUS_RUN_RESULT"
+_CRON_RESULT_FENCE_OPEN_RE = _fence_marker_regex(UNTRUSTED_CRON_RESULT_FENCE_OPEN)
+_CRON_RESULT_FENCE_CLOSE_RE = _fence_marker_regex(UNTRUSTED_CRON_RESULT_FENCE_CLOSE)
+
 _UNTRUSTED_FENCE_RES: tuple[re.Pattern[str], ...] = (
     _THREAD_FENCE_CLOSE_RE,
     _THREAD_FENCE_OPEN_RE,
@@ -85,13 +94,16 @@ _UNTRUSTED_FENCE_RES: tuple[re.Pattern[str], ...] = (
     _CALENDAR_FENCE_OPEN_RE,
     _TODO_FENCE_CLOSE_RE,
     _TODO_FENCE_OPEN_RE,
+    _CRON_RESULT_FENCE_CLOSE_RE,
+    _CRON_RESULT_FENCE_OPEN_RE,
 )
 
 
 def _neutralize_fence_markers(text: str) -> str:
     """Replace Unicode-normalized variants of every untrusted fence in *text*.
 
-    Covers the thread-parent, calendar-event and todo-text fences, open and close. The
+    Covers the thread-parent, calendar-event, todo-text and previous-run-result
+    fences, open and close. The
     shared marker matcher supplies NFKC, default-ignorable removal, and
     original-coordinate spans; the replacement remains fence-specific.
     """
@@ -416,6 +428,53 @@ def neutralize_untrusted_text(text: str) -> str:
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
     return ctx._neutralize_structural_markers(_neutralize_fence_markers(text))
+
+
+# The dashed turn fences the agent runtime frames a turn with
+# (``--- CONTEXT ENTRY BEGIN ---`` ... ``--- USER MESSAGE BEGIN ---`` ...). Context
+# text placed before the request carries none of them, so a copy found there is
+# rewritten to ``[marker-removed]``. Matched on the same
+# normalized view as every other marker (Unicode dashes fold to ``-``), with
+# dashes required on at least one side so ordinary prose naming a "user message"
+# is untouched.
+#
+# Deliberately NOT in ``_STRUCTURAL_MARKER_RES``: that set also scrubs the current
+# turn and ``action_context``, and two surfaces put GENUINE dashed fences there --
+# the OpenAI-compatible endpoint's flattened prompt (``dashboard/openai_compat.py``,
+# which scrubs caller content with its own ``_CALLER_FENCE_RES``) and the Slack
+# shortcut/option handlers' ``action_context``. So this scrub runs per untrusted
+# context payload instead, through :func:`_neutralize_context_payload`.
+#
+# The leading ``(?<!-)`` starts a match only at the first dash of a run. Without
+# it a long dash run with no fence after it is retried from every position, each
+# retry re-scanning the rest of the run: quadratic in the run's length.
+_DASHED_TURN_FENCE_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"(?<!-)-{3,}\s*(?:CONTEXT\s*ENTRY|USER\s*MESSAGE)\s*(?:BEGIN|END)\b(?:\s*-{3,})?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:CONTEXT\s*ENTRY|USER\s*MESSAGE)\s*(?:BEGIN|END)\s*-{3,}",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _neutralize_dashed_turn_fences(text: str) -> str:
+    """Replace dashed turn fences in *text*; span-local like the other scrubs."""
+    return _apply_marker_spans(text, _marker_spans(text, _DASHED_TURN_FENCE_RES))
+
+
+def _neutralize_context_payload(text: str) -> str:
+    """Scrub one untrusted payload ``build_message`` places ahead of the request.
+
+    The primary bracket boundaries plus the dashed turn fences. Used for the
+    session-context tail, conversation replay, channel and thread history and the
+    request-prefix channel (which carries a cron job's previous-run result).
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    return ctx._neutralize_structural_markers(_neutralize_dashed_turn_fences(text))
 
 
 # Frames a stored lesson must not carry into the per-message lessons block: the

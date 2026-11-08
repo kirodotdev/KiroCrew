@@ -129,7 +129,7 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
                 for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -200,8 +200,11 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
                                 "first_ts": ts_epoch,
                                 "last_ts": ts_epoch,
                                 "_occ": [],
+                                "transcript": "",
                             },
                         )
+                        if obj.get("transcript"):
+                            c["transcript"] = str(obj["transcript"])
                         c["credits"] = float(c["credits"]) + credits
                         c["turns"] = int(c["turns"]) + 1
                         c["first_ts"] = min(float(c["first_ts"]), ts_epoch)
@@ -261,7 +264,10 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
         )
 
     convo_rows = []
+    transcripts: dict[str, str] = {}
     for c in sorted(convos.values(), key=lambda x: -float(x["credits"]))[:_COST_TOP_CONVOS]:
+        if c["transcript"]:
+            transcripts[c["slot"]] = c["transcript"]
         occ = sorted(c.pop("_occ"))
         growth: float | None = None
         to_90: int | None = None
@@ -339,6 +345,9 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
             "by_category": _rank(by_category, prev_category),
             "context_bands": band_rows,
             "conversations": convo_rows,
+            # Slot -> the transcript its rows recorded, for the endpoint to title
+            # a closed linked tab by; the endpoint drops it from the response.
+            "transcripts": transcripts,
             "conversation_count": len(convos),
             # The one category with a route. Sent rather than duplicated in
             # the frontend so a change here cannot leave a dead link there.

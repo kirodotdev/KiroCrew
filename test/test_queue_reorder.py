@@ -107,7 +107,6 @@ class TestQueueReorderEndpoint:
         """Queued messages in slot.messages are reordered to match _queue."""
         state = _make_state()
         slot = state.get_or_create_slot("chat-1")
-        # Add a non-queued message first
         slot.append("user", "hello", "")
         id1 = slot.queue_append("a")
         id2 = slot.queue_append("b")

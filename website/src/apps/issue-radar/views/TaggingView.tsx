@@ -497,8 +497,8 @@ function TaggingDashboard() {
               }}
               disabled={generate.isPending || pending.length === 0 || noLabels}
               title={exhausted
-                ? `Re-analyse ${nextSlice} issue(s) that already have a proposal`
-                : `Analyse the next ${nextSlice} issue(s)`}
+                ? i18nT('apps.issueRadar.views.taggingView.reanalyse_issues', { count: nextSlice })
+                : i18nT('apps.issueRadar.views.taggingView.analyse_next_issues', { count: nextSlice })}
               className="inline-flex items-center gap-1.5 text-[13px] px-2.5 py-1 rounded-md border border-accent/40 text-accent hover:bg-accent-subtle disabled:opacity-40 cursor-pointer bg-transparent"
             >
               <Sparkles size={12} className={batchPending ? 'animate-pulse' : ''} />
@@ -514,7 +514,7 @@ function TaggingDashboard() {
               title={canWrite
                 ? i18nT('apps.issueRadar.views.taggingView.write_every_staged_label_to', { provider: providerTerms(active).providerName })
                 : readOnlyHint(active, i18nT('apps.issueRadar.views.taggingView.read_only_repo_needs_triage_or_push_access'))}
-              className="inline-flex items-center gap-1.5 text-[13px] px-2.5 py-1 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40 cursor-pointer"
+              className="inline-flex items-center gap-1.5 text-[13px] px-2.5 py-1 rounded-md bg-accent text-accent-fg hover:opacity-90 disabled:opacity-40 cursor-pointer"
             >
               <Check size={12} />
               {applyAll.isPending
@@ -526,13 +526,13 @@ function TaggingDashboard() {
 
         {noLabels && (
           <Banner kind="warn">
-            {owner}/{repo} {i18nT('apps.issueRadar.views.taggingView.defines_no_labels_yet_so_there_is_nothing_to_ass')}
+            {i18nT('apps.issueRadar.views.taggingView.repo_defines_no_labels_yet', { repo: `${owner}/${repo}` })}
           </Banner>
         )}
         {/* No hand-off: the label picks and selection on this queue are local until Apply. */}
         {labelsError && (
           <ErrorNotice
-            title={`${i18nT('apps.issueRadar.views.taggingView.couldn_t_load')} ${owner}/${repo}${i18nT('apps.issueRadar.views.taggingView.s_labels')}`}
+            title={i18nT('apps.issueRadar.views.taggingView.couldn_t_load_repo_labels', { repo: `${owner}/${repo}` })}
             message={`${(labelsError as Error).message} — ${i18nT('apps.issueRadar.views.taggingView.applying_is_disabled_until_they_load_because_a_s').replace(/\s+/g, ' ')}`}
           />
         )}
@@ -560,7 +560,7 @@ function TaggingDashboard() {
           </>
         ) : queue.length === 0 ? (
           <div className="text-[14px] text-muted py-2">
-            {i18nT('apps.issueRadar.views.taggingView.every_open_issue_in')} {owner}/{repo} {i18nT('apps.issueRadar.views.taggingView.carries_at_least_one_label_nothing_to_tag')}
+            {i18nT('apps.issueRadar.views.taggingView.every_open_issue_in_repo_is_labeled', { repo: `${owner}/${repo}` })}
           </div>
         ) : (
           <div className="flex flex-col gap-0.5">

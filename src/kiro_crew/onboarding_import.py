@@ -235,8 +235,8 @@ def _write_instruction(
     if vector_store is not None:
         # NOT ``write_lesson``: it deletes an existing lesson on exact-substring
         # OR >50% topic overlap ("newer replaces older"), which for an import
-        # means a foreign directive can delete a correction the USER taught the
-        # agent. Import is merge-only, so overlap yields ``existing`` (nothing
+        # means a foreign directive can delete a lesson already in the store.
+        # Import is merge-only, so overlap yields ``existing`` (nothing
         # written, nothing deleted) and only a genuinely new rule is inserted --
         # via the absent-only writer, which cannot replace anything.
         for existing in vector_store.get_lessons():

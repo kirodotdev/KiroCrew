@@ -457,9 +457,9 @@ export function Plurals({ n }: { n: number }) {
 
 /**
  * A base that is NOT a plural at all: the catalog holds `…_one` because "one" is the
- * last word of the English sentence. Three real keys have this shape
- * (`pages.channelPage.click_new_to_create_one`, `…panel_to_add_one`,
- * `…add_column_after_this_one`), which is why the suffix scan cannot be used.
+ * last word of the English sentence. Real keys have this shape
+ * (`…panel_to_add_one`, `…add_column_after_this_one`), which is why the
+ * suffix scan cannot be used.
  */
 const FALSE_PLURAL_SOURCE = `import { i18nT } from '../i18n/t'
 

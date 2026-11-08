@@ -1,17 +1,11 @@
 """A spawn queued for memory waits at most ``agent.subagent_queue_max_wait_secs``.
 
-Owner decision A1: a memory wait is finite. A row the memory floor keeps deferring
-past the bound ends in ONE delivered terminal,
-``never started: waiting for memory``, and leaves its parent's queued count at 0.
-The bound is read live (no restart) and ``0`` turns it off.
+Past the bound a deferred row ends in one delivered terminal, ``never started: waiting for
+memory``, with its parent's queued count at 0. The bound is read live and ``0`` turns it off.
 
-Every test drives the real ``SubagentManager`` pump against a real task store on
-a virtual store clock (``overload_fakes.Clock``), so "thirty minutes later" is one
-``advance`` and nothing sleeps for it. The admit wait is the production 30 s on
-that clock, so each deferral parks a row for 30 virtual seconds and the time a
-row spends parked is what the bound measures; the pump's own wall-clock wake-ups
-(``call_later(30)``) never fire inside a test, so only the passes a test drives
-run.
+Tests drive the real pump against a real task store on a virtual clock
+(``overload_fakes.Clock``). Each deferral parks a row for the production 30 s admit wait on
+that clock; the pump's wall-clock ``call_later(30)`` never fires, so only driven passes run.
 """
 
 from __future__ import annotations
@@ -27,6 +21,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from _hot_reload_helpers import change
+from idle_tab_drain_helpers import (  # noqa: F401 -- the autouse fixture registers by import
+    _idle_tab_drains_head_as_turn,
+    open_idle_tab,
+)
 from overload_fakes import (
     Clock,
     mock_ctx,
@@ -880,12 +878,9 @@ _WAVE_PARENT = "dashboard:main"
 def _through_the_gateway(h: _Harness, stream: Any = None) -> Any:
     """The real gateway ``_subagent_done`` as *h*'s ``on_done``, over an idle slot.
 
-    The slot keeps a real content-keyed delivery ledger and the dashboard settles
-    it through the real manager, as production wires ``DashboardState(subagents=
-    <the manager>)``. Yields ``(injected, marked)``: the turns injected into the
-    parent, and the run folders ``mark_delivered`` tombstoned. A channel or cron
-    parent is injected through the parent's session instead, by *stream* in
-    place of ``stream_and_collect``.
+    The slot keeps a real delivery ledger settled through the real manager. Yields
+    ``(injected, marked)``. A channel or cron parent is injected by *stream* in place of
+    ``stream_and_collect``.
     """
     from unittest.mock import patch
 
@@ -900,6 +895,7 @@ def _through_the_gateway(h: _Harness, stream: Any = None) -> Any:
     orch.ctx_builder.build_message = MagicMock(return_value=("the announce", None))
     orch.dashboard_state = _mock_dashboard_state()
     slot = MagicMock()
+    open_idle_tab(slot)
     slot.mode = "chat"
     slot.running = False
     slot.task = None
@@ -929,7 +925,7 @@ def _through_the_gateway(h: _Harness, stream: Any = None) -> Any:
             _on_consumed()
 
     with (
-        patch("kiro_crew.slack.gateway._run_chat", consuming_run_chat),
+        patch("kiro_crew.dashboard.chat_runner._run_chat", consuming_run_chat),
         patch("kiro_crew.slack.gateway.session_store_for_turn", AsyncMock(return_value="")),
         patch(
             "kiro_crew.slack.gateway.stream_and_collect",
@@ -1081,6 +1077,7 @@ class TestADigestHeldExpiryStaysOwed:
         info = subagent_mod.SubagentInfo(id="e1", task="t", error=QUEUED_WAIT_EXPIRED_TEXT)
         info._report_owed = True
         slot = MagicMock()
+        open_idle_tab(slot)
         GatewayOrchestrator._defer_queued_delivery(slot, "announce", info, flush_only=False)
         slot.note_pending_subagent_delivery.assert_called_once_with(
             "announce", [SubagentDelivery("e1", 0.0, 0.0, report_owed=True)]
@@ -1089,6 +1086,7 @@ class TestADigestHeldExpiryStaysOwed:
         # An ordinary failed run still owes no mark: its own tombstone stands.
         plain = subagent_mod.SubagentInfo(id="f1", task="t", error="boom")
         slot = MagicMock()
+        open_idle_tab(slot)
         GatewayOrchestrator._defer_queued_delivery(slot, "announce", plain, flush_only=False)
         slot.note_pending_subagent_delivery.assert_called_once_with("announce", [])
 

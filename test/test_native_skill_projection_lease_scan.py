@@ -31,6 +31,9 @@ from kiro_crew.acp import skill_projection as projection
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _no_eager_prune = native_skill_projection_helpers._no_eager_prune
 _prune_on_every_spawn = native_skill_projection_helpers._prune_on_every_spawn
+_end_projections_before_tmp_path_goes = (
+    native_skill_projection_helpers._end_projections_before_tmp_path_goes
+)
 cyclic_gc_quiesced = native_skill_projection_helpers.cyclic_gc_quiesced
 native_tree = native_skill_projection_helpers.native_tree
 
@@ -647,8 +650,24 @@ def _released_backlog(agents, project, count):
     backlog = [(_alias_file(agents, p), _metadata_file(agents, p)) for p in held]
     del held
     gc.collect()
+    # Each drop's end -- the lease release AND the eager prune -- is handed to the
+    # reaper thread (never run inline on the dropping thread; see
+    # ``_end_projection``). Wait for the reaper to drain every queued end, so the
+    # backlog's leases are released before the drain under test runs.
+    _settle_reaper()
     assert all(alias.exists() and meta.exists() for alias, meta in backlog)
     return backlog
+
+
+def _settle_reaper():
+    """Block until the reaper has run every projection end queued so far.
+
+    A dropped projection's end runs on the reaper thread in queue order, so a
+    marker queued now has run once it fires -- and so have the ends ahead of it.
+    """
+    reached = threading.Event()
+    projection._COLLECTED_ENDS.put(reached.set)
+    assert reached.wait(10), "the reaper never drained the queued projection ends"
 
 
 def _recorded_batches(monkeypatch):

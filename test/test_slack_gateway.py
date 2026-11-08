@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import threading
 import time
 from pathlib import Path
@@ -18,6 +19,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import drain, notes, open_feed, real_dashboard_state
 from slack_gateway_helpers import _mock_context_builder  # noqa: F401
 from slack_gateway_helpers import _restore_update_check_cache  # noqa: F401
 from slack_gateway_helpers import (
@@ -31,6 +34,7 @@ from slack_gateway_helpers import (
 
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.monitoring.models import (
     MonitorActionCompletion,
     MonitorActionDisposition,
@@ -38,7 +42,7 @@ from kiro_crew.monitoring.models import (
 )
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import _EPOCH_WINDOW_SECS, GatewayOrchestrator, _result_hash
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: __init__ and constructor
@@ -128,15 +132,23 @@ class TestResultHash:
     def test_different_text_different_hash(self):
         assert _result_hash("foo") != _result_hash("bar")
 
-    def test_strips_iso_timestamps(self):
-        a = _result_hash("deployed at 2026-01-15T10:30:00Z successfully")
-        b = _result_hash("deployed at 2026-05-20T22:00:00+05:00 successfully")
-        assert a == b
-
-    def test_strips_uuids(self):
-        a = _result_hash("id=550e8400-e29b-41d4-a716-446655440000 done")
-        b = _result_hash("id=a1b2c3d4-e5f6-7890-abcd-ef1234567890 done")
-        assert a == b
+    @pytest.mark.parametrize(
+        "first, second",
+        [
+            pytest.param(
+                "deployed at 2026-01-15T10:30:00Z successfully",
+                "deployed at 2026-05-20T22:00:00+05:00 successfully",
+                id="test_strips_iso_timestamps",
+            ),
+            pytest.param(
+                "id=550e8400-e29b-41d4-a716-446655440000 done",
+                "id=a1b2c3d4-e5f6-7890-abcd-ef1234567890 done",
+                id="test_strips_uuids",
+            ),
+        ],
+    )
+    def test_strips_volatile_ids(self, first, second):
+        assert _result_hash(first) == _result_hash(second)
 
     def test_strips_epoch_within_window(self):
         now_epoch = str(int(time.time()))
@@ -202,19 +214,28 @@ class TestOpenDmWithRetry:
         assert result == "D_OK"
 
     @pytest.mark.asyncio
-    async def test_raises_on_non_retryable(self):
+    @pytest.mark.parametrize(
+        "status_code, max_attempts, expected_calls",
+        [
+            pytest.param(403, 3, 1, id="test_raises_on_non_retryable"),
+            pytest.param(500, 2, 2, id="test_raises_after_max_attempts"),
+        ],
+    )
+    async def test_raises_when_not_retried_to_success(
+        self, status_code, max_attempts, expected_calls
+    ):
         from slack_sdk.errors import SlackApiError
 
         orch = _make_orchestrator(slack_enabled=True)
         mock_slack = MagicMock()
         resp = MagicMock()
-        resp.status_code = 403
-        err = SlackApiError("forbidden", resp)
+        resp.status_code = status_code
+        err = SlackApiError("slack error", resp)
         mock_slack.open_dm = AsyncMock(side_effect=err)
         orch.slack = mock_slack
         with pytest.raises(SlackApiError):
-            await orch._open_dm_with_retry("U1", "job", max_attempts=3)
-        assert mock_slack.open_dm.call_count == 1
+            await orch._open_dm_with_retry("U1", "job", max_attempts=max_attempts)
+        assert mock_slack.open_dm.call_count == expected_calls
 
     @pytest.mark.asyncio
     async def test_returns_none_when_slack_is_none(self):
@@ -235,21 +256,6 @@ class TestOpenDmWithRetry:
         orch.slack = mock_slack
         result = await orch._open_dm_with_retry("U1", "job", max_attempts=3)
         assert result == "D_OK"
-
-    @pytest.mark.asyncio
-    async def test_raises_after_max_attempts(self):
-        from slack_sdk.errors import SlackApiError
-
-        orch = _make_orchestrator(slack_enabled=True)
-        mock_slack = MagicMock()
-        resp = MagicMock()
-        resp.status_code = 500
-        err = SlackApiError("server error", resp)
-        mock_slack.open_dm = AsyncMock(side_effect=err)
-        orch.slack = mock_slack
-        with pytest.raises(SlackApiError):
-            await orch._open_dm_with_retry("U1", "job", max_attempts=2)
-        assert mock_slack.open_dm.call_count == 2
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -503,8 +509,11 @@ class TestInteractiveApproval:
 
         assert result is False
         resolver.assert_not_called()
+        # The registered id names this call: the backend's id plus a fresh suffix.
+        registered = ds.request_approval.await_args.args[0]
+        assert registered.startswith("opaque-tool-request-id-")
         ds.request_approval.assert_awaited_once_with(
-            "opaque-tool-request-id",
+            registered,
             "subagent",
             "git diff",
             tool_input="",
@@ -517,11 +526,8 @@ class TestInteractiveApproval:
     async def test_all_slots_trusted_does_not_auto_approve(self):
         """All slots trusted, no resolver → still PROMPTS (no implicit trust).
 
-        Session trust speaks for a chat session, not for an unattended job, and
-        with one trusted chat open the `all()` test is trivially satisfied.
-        Asserting the return value alone would pass vacuously, because the
-        mocked `request_approval` also returns True -- so assert the prompt was
-        actually raised.
+        Session trust speaks for a chat session, not an unattended job. The mocked
+        `request_approval` also returns True, so the test asserts the prompt was raised.
         """
         orch = _make_orchestrator(slack_enabled=False)
         ds = _mock_dashboard_state()
@@ -537,11 +543,17 @@ class TestInteractiveApproval:
         event.title = "cmd"
         event.tool_input = ""
         event.tool_purpose = ""
+        # The prompt answers "deny", so a True result could only come from implicit trust.
+        ds.request_approval = AsyncMock(return_value=False)
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
             with patch("kiro_crew.sel.sel") as mock_sel:
                 mock_sel.return_value.log_api_access = MagicMock()
-                await callback(event, "")
+                result = await callback(event, "")
+        assert result is False
         ds.request_approval.assert_awaited_once()
+        registered, source, tool = ds.request_approval.await_args.args[:3]
+        assert registered.startswith("req-6-")
+        assert (source, tool) == ("cron", "cmd")
 
     @pytest.mark.asyncio
     async def test_auto_approve_sources_config(self):
@@ -573,49 +585,84 @@ class TestDeliverResult:
     """Result routing to various surfaces."""
 
     @pytest.mark.asyncio
-    async def test_silent_logs_only(self):
+    async def test_silent_logs_only(self, caplog):
         orch = _make_orchestrator()
         orch.slack = MagicMock()
         orch.dashboard_state = _mock_dashboard_state()
-        await orch._deliver_result("Title", "summary", "result", "silent")
+        with caplog.at_level(logging.INFO, logger="kiro_crew.slack.gateway"):
+            await orch._deliver_result("Title", "summary", "result", "silent")
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.slack.gateway"]
+        assert "Title (silent): summary" in messages
         orch.dashboard_state.notify.assert_not_called()
+        assert orch.slack.method_calls == []
 
     @pytest.mark.asyncio
     async def test_dashboard_new_slot(self):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
-        slot = MagicMock()
-        slot.append = MagicMock()
+        slot = _ChatSlot("new-slot")
         ds.get_or_create_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
         await orch._deliver_result("Title", "task", "result", "dashboard")
-        slot.append.assert_called_once()
-        ds.notify.assert_called_once()
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("assistant", "Title\n\nresult")
+        ]
+        # The heartbeat seeds the slot's title from the task summary.
+        assert slot.title == "💓 task"
+        ds.notify.assert_called_once_with(
+            "heartbeat", "Title", "task\n\nresult", meta={"slot": "new-slot"}
+        )
 
     @pytest.mark.asyncio
     async def test_dashboard_specific_slot(self):
         orch = _make_orchestrator()
         ds = _mock_dashboard_state()
-        slot = MagicMock()
-        slot.append = MagicMock()
-        slot.key = "my-slot"
+        slot = _ChatSlot("my-slot")
         ds.resolve_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
         with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             await orch._deliver_result("Title", "task", "result", "dashboard:my-slot")
-        slot.append.assert_called_once()
+        ds.resolve_slot.assert_called_with("my-slot")
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("assistant", "Title\n\nresult")
+        ]
+        ds.notify.assert_called_once_with(
+            "heartbeat", "Title", "task\n\nresult", meta={"slot": "my-slot"}
+        )
 
     @pytest.mark.asyncio
-    async def test_dashboard_slot_not_found(self):
+    @pytest.mark.parametrize(
+        "deliver, operation",
+        [
+            pytest.param(
+                "dashboard:gone", "heartbeat_inject_deliver", id="test_dashboard_slot_not_found"
+            ),
+            pytest.param(
+                "prompt:dashboard:gone",
+                "heartbeat_prompt_deliver",
+                id="test_prompt_dashboard_slot_not_found",
+            ),
+        ],
+    )
+    async def test_dashboard_target_slot_not_found(self, deliver, operation, tmp_path):
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        ds.resolve_slot = MagicMock(return_value=None)
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         orch.dashboard_state = ds
         with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
-            await orch._deliver_result("Title", "task", "result", "dashboard:gone")
-        ds.notify.assert_not_called()
+            await orch._deliver_result("Title", "task", "result", deliver)
+        mock_sel.return_value.log_api_access.assert_called_once_with(
+            caller="heartbeat",
+            operation=operation,
+            outcome="not_found",
+            source="gateway",
+            resources="requested=gone",
+        )
+        assert notes(ds) == []
+        assert drain(feed) == []
+        assert list(ds._slots) == []
 
     @pytest.mark.asyncio
     async def test_slack_dm_delivery(self):
@@ -673,22 +720,18 @@ class TestDeliverResult:
             mock_sel.return_value.log_api_access = MagicMock()
             await orch._deliver_result("Title", "task", "result", "prompt:dashboard:s1")
         slot.enqueue_or_run_prompt.assert_called_once()
+        prompt, _runner, state = slot.enqueue_or_run_prompt.call_args.args
+        assert prompt == "Title\n\nresult"
+        assert state is ds
+        ds.notify.assert_called_once_with(
+            "heartbeat", "Title", "task\n\nresult", meta={"slot": "s1"}
+        )
 
     @pytest.mark.asyncio
-    async def test_prompt_dashboard_slot_not_found(self):
+    async def test_prompt_dashboard_queued(self, tmp_path):
         orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
-        ds.resolve_slot = MagicMock(return_value=None)
-        orch.dashboard_state = ds
-        with patch("kiro_crew.slack.gateway.sel") as mock_sel:
-            mock_sel.return_value.log_api_access = MagicMock()
-            await orch._deliver_result("Title", "task", "result", "prompt:dashboard:gone")
-        ds.notify.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_prompt_dashboard_queued(self):
-        orch = _make_orchestrator()
-        ds = _mock_dashboard_state()
+        ds = real_dashboard_state(tmp_path)
+        feed = open_feed(ds)
         slot = MagicMock()
         slot.key = "s1"
         slot.enqueue_or_run_prompt = MagicMock(return_value=False)
@@ -698,7 +741,9 @@ class TestDeliverResult:
         with patch("kiro_crew.slack.gateway.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             await orch._deliver_result("Title", "task", "result", "prompt:dashboard:s1")
-        ds.notify.assert_not_called()
+        assert slot.enqueue_or_run_prompt.call_args.args[0] == "Title\n\nresult"
+        assert notes(ds) == []
+        assert drain(feed) == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -712,11 +757,8 @@ class TestShutdown:
     def test_autonudge_service_has_a_declared_default(self):
         """`_init_autonudge` returns before assigning when the flag is off.
 
-        `KIROCREW_AUTONUDGE=0` makes `_init_autonudge` return at its feature-flag
-        guard, before its only `self.autonudge_svc = ...`. Without a declaration
-        the attribute does not exist, and the seven `if self.autonudge_svc:`
-        sites in the loop-CRUD handlers raise AttributeError instead of reading
-        a default -- unlike `cron_svc` and `heartbeat_svc`, which are declared.
+        With `KIROCREW_AUTONUDGE=0` and no declared default, every
+        `if self.autonudge_svc:` in the loop-CRUD handlers raises AttributeError.
         """
         orch = _make_orchestrator()
         assert orch.autonudge_svc is None
@@ -724,7 +766,8 @@ class TestShutdown:
     @pytest.mark.asyncio
     async def test_shutdown_with_no_services(self):
         orch = _make_orchestrator()
-        await orch._shutdown()  # should not raise
+        await orch._shutdown()
+        assert orch._memory_repair_stop.is_set()
 
     @pytest.mark.asyncio
     async def test_shutdown_awaits_autonudge_drain(self):
@@ -966,6 +1009,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
 
         shutdown = asyncio.create_task(orch._shutdown())
         await _within_lost_run(started.wait(), "the cancellable AutoNudge drain start")
@@ -979,13 +1023,18 @@ class TestShutdown:
         assert drained.is_set()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_a_wedged_autonudge_drain_is_cut_so_the_teardown_still_runs(self, monkeypatch):
         """A drain whose write never settles is cut on its own budget. Its window
         closes inside the graceful bound, and the teardown after it runs in full
-        instead of being cancelled before its first step."""
-        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", 1.0)
+        instead of being cancelled before its first step.
+
+        The graceful bound is a safety net, never a race: the wedged drain never
+        settles, so only this method's own cut lets ``_shutdown`` return, and a
+        regression that drops the cut still reaches the bound and fails."""
+        monkeypatch.setattr(gw, "GRACEFUL_SHUTDOWN_SECS", FALLBACK_TIMEOUT_SECS)
         # Absent before the drain had a budget of its own; set so a regression
         # reaches the graceful bound below instead of failing on the attribute.
         monkeypatch.setattr(gw, "PERSISTENCE_DRAIN_GRACE_SECS", 0.05, raising=False)
@@ -1007,6 +1056,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
         orch.sessions = _mock_sessions()
 
         # Under the graceful bound ``_shutdown_and_exit`` applies. It returns
@@ -1019,6 +1069,7 @@ class TestShutdown:
         assert drain_cut.is_set()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
         orch.sessions.close_all.assert_awaited_once()
 
     @staticmethod
@@ -1110,6 +1161,12 @@ class TestShutdown:
         orch, service, add_task, release, finished = await self._cut_drain_over_a_slow_write(
             tmp_path, monkeypatch, graceful_secs=0.3
         )
+        # Replace teardown with a no-op so ``settle_admitted_writes`` is always
+        # reached before the graceful deadline, regardless of shard load.  Once
+        # reached, the warning fires unconditionally (via deadline or via the
+        # CancelledError path in settle_admitted_writes), making the assertion
+        # deterministic.  The real teardown is not under test here.
+        orch._stop_services_and_sessions = AsyncMock(return_value=None)
         caplog.set_level("WARNING", logger="kiro_crew.autonudge")
         try:
             shutdown = orch._shutdown()
@@ -1122,6 +1179,41 @@ class TestShutdown:
                 "at the graceful shutdown deadline" in record.getMessage()
                 for record in caplog.records
             ), "shutdown ended without naming the admitted write it left pending"
+        finally:
+            release.set()
+            await _within_lost_run(
+                asyncio.gather(add_task, return_exceptions=True), "the wedged add cleanup"
+            )
+            service.stop()
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_during_the_teardown_still_names_the_wedged_write(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The graceful bound can land while the teardown is still running; the
+        write the drain cut left pending is named at WARNING all the same."""
+        orch, service, add_task, release, finished = await self._cut_drain_over_a_slow_write(
+            tmp_path, monkeypatch, graceful_secs=0
+        )
+        teardown_entered = asyncio.Event()
+
+        async def endless_teardown(**_kwargs):
+            teardown_entered.set()
+            await asyncio.Event().wait()
+
+        orch._stop_services_and_sessions = endless_teardown
+        caplog.set_level("WARNING", logger="kiro_crew.autonudge")
+        try:
+            shutdown = asyncio.create_task(orch._shutdown())
+            await _within_lost_run(teardown_entered.wait(), "the teardown after the drain cut")
+            shutdown.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await _within_lost_run(shutdown, "shutdown cancelled in its teardown")
+            assert not finished.is_set()
+            assert any(
+                "at the graceful shutdown deadline" in record.getMessage()
+                for record in caplog.records
+            ), "a cancelled teardown skipped naming the admitted write it left pending"
         finally:
             release.set()
             await _within_lost_run(
@@ -1223,6 +1315,7 @@ class TestShutdown:
         orch.cron_svc.stop = AsyncMock()
         orch.heartbeat_svc = MagicMock()
         orch.heartbeat_svc.stop = MagicMock()
+        orch.heartbeat_svc.wait_closed = AsyncMock()
         orch.secretary_svc = None
         orch.subagent_mgr = MagicMock()
         orch.subagent_mgr.cancel_all = AsyncMock()
@@ -1233,17 +1326,15 @@ class TestShutdown:
         await orch._shutdown()
         orch.cron_svc.stop.assert_awaited_once()
         orch.heartbeat_svc.stop.assert_called_once()
+        orch.heartbeat_svc.wait_closed.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_shutdown_releases_the_subagent_task_store(self):
         """Shutdown closes the manager's durable store, and only after cancel_all.
 
-        ``SubagentManager.__init__`` opens a SQLite connection plus a writer thread
-        for the durable task queue; ``cancel_all`` stops the runs but leaves that
-        store open, so a gateway that never calls ``close`` holds the descriptors
-        and the executor for the life of the process. The ORDER is the other half
-        of the contract: ``cancel_all`` is what stops the runs still writing to the
-        store, so closing first would pull the connection out from under them.
+        ``cancel_all`` leaves the SQLite store and its writer thread open, and it is
+        what stops runs still writing to it, so closing first would pull the
+        connection out from under them.
         """
         order: list[str] = []
         orch = _make_orchestrator()
@@ -1493,3 +1584,30 @@ class TestShutdown:
         assert order[0] == "watchdog_stop"
         assert "heartbeat_cancel" in order[:2]
         assert order.index("watchdog_stop") < order.index("reap")
+
+    @pytest.mark.asyncio
+    async def test_shutdown_leaves_the_clean_exit_mark_to_the_exit_path(self):
+        # The teardown after the disarm can still wedge and be killed, so the mark
+        # waits for the exit path's last step, and _shutdown() never writes it.
+        from kiro_crew.dashboard import crash_dump_store
+
+        order: list[str] = []
+        orch = _make_orchestrator()
+        orch.cron_svc = None
+        orch.heartbeat_svc = None
+        orch.secretary_svc = None
+        orch.subagent_mgr = None
+        orch.sessions = _mock_sessions()
+        orch.sessions.close_all = AsyncMock(side_effect=lambda: order.append("reap"))
+        ds = _mock_dashboard_state()
+        ds._loop_watchdog = MagicMock()
+        ds._loop_watchdog.stop = MagicMock(side_effect=lambda: order.append("watchdog_stop"))
+        orch.dashboard_state = ds
+        orch._dashboard_runner = MagicMock()
+        orch._dashboard_runner.cleanup = AsyncMock()
+        with patch.object(
+            crash_dump_store, "record_clean_exit", side_effect=lambda *_: order.append("marked")
+        ):
+            await orch._shutdown()
+        assert "watchdog_stop" in order and "reap" in order
+        assert "marked" not in order

@@ -266,7 +266,7 @@ def _from_bound_package(member: str, record: object) -> PackageRead:
         # key in the ``session:`` scope needs the lookup to use that scope rather than
         # prefix it, and that belongs to the change that introduces the key.
         logger.warning(
-            "dashboard package: %r is not a crewmate binding, so no package can be "
+            "dashboard package: %r is not a Bot binding, so no package can be "
             "bound to it; falling through to the template instance: %s",
             member,
             exc,
@@ -351,7 +351,7 @@ def _from_template_instance(member: str) -> PackageRead:
         # system -- and the ANSWER is the same either way.
         raise PackageReadError(f"the dashboard package for {slug!r} cannot be read: {exc}") from exc
     # Read DEFENSIVELY off the store, each name with the literal it stands for as its
-    # default, which is what ``read_instance`` did before this and for the same reason:
+    # default, for this reason:
     # this module resolves the store at call time so a narrower stand-in can be put in
     # its place, and an attribute lookup that raised would turn a replaced store into
     # a 500.

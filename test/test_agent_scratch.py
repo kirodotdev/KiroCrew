@@ -703,6 +703,39 @@ class TestScratchRootOverride:
         warnings = [r for r in caplog.records if "KIROCREW_SCRATCH_ROOT" in r.getMessage()]
         assert len(warnings) == 1
 
+    def test_unstatable_override_falls_back_with_one_warning(
+        self, tmp_path: Path, scratch_root: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A value whose stat is denied (on Windows a ``::$DATA`` spelling of a real
+        # directory raises PermissionError from ``Path.exists()``) must be refused as
+        # unreadable and fall back to the default root with one warning, not raise out of
+        # every scratch_root() and allocate_scratch() call.
+        monkeypatch.setattr(sys, "platform", "win32")
+        realhome = tmp_path / "realhome"
+        monkeypatch.setenv("HOME", str(realhome))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: realhome))
+        other = tmp_path / "data-drive" / "kirocrew-scratch"
+        other.mkdir(parents=True)
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(other))
+        monkeypatch.setattr(paths, "_scratch_root_override_pin", paths._UNSET)
+        resolved = other.resolve()
+        real_exists = Path.exists
+
+        def _exists(self, *args, **kwargs):
+            if self == resolved:
+                raise PermissionError(13, "Access is denied", str(self))
+            return real_exists(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "exists", _exists)
+        with caplog.at_level("WARNING"):
+            for _ in range(3):
+                assert sc.scratch_root() == scratch_root
+            allocated = sc.allocate_scratch("chat-unstatable")
+        assert allocated.parent == scratch_root
+        warnings = [r for r in caplog.records if "KIROCREW_SCRATCH_ROOT" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "is unreadable, ignoring" in warnings[0].getMessage()
+
     def test_unset_override_does_not_warn(
         self, scratch_root: Path, monkeypatch, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -937,15 +970,9 @@ def _git(
 ) -> str:
     """Run git for a fixture, with no host config and a fixed identity.
 
-    Auto-maintenance and auto-gc are off: either can start a background git that
-    creates and removes ``.git/objects/maintenance.lock`` while a test walks the
-    tree, so a snapshot could list the file and then fail to read it. ``-c`` is
-    carried to every git the command starts, the detached one included.
-
-    *trace_to* names a file that receives git's trace2 event stream, so a test
-    can see which child processes a fixture command started. *auto_maintenance*
-    turns git's auto maintenance back on; only the regression test's control
-    command sets it.
+    Auto-maintenance and auto-gc are off: a background git can create and remove
+    ``.git/objects/maintenance.lock`` mid-walk. *trace_to* receives git's trace2
+    events; *auto_maintenance* turns maintenance back on for one control command.
     """
     assert _GIT is not None
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}

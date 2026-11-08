@@ -9,13 +9,15 @@ import FolderMoveSubmenu from '../FolderMoveSubmenu'
 import OfflineMenuReason, { OfflineReasonRow } from '../OfflineMenuReason'
 import { offlineMenuRow, offlineProps } from '../../utils/offline'
 import { useConnected } from '../../hooks/useConnected'
+import { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
 import { DndDraggable, DndDroppable } from '../dnd'
 import { childFolders, isDescendantFolder, folderSubtreeStats } from '../../utils/artifactFolderTree'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { FOLDER_COLOR_PALETTE } from '../folderColorCatalog'
 import { i18nT } from '../../i18n/t'
-import { publishNoticeKey } from '../PublishHub'
+import { publicationBadgeLabel, usePublicationProviderName } from '../../lib/publicationBadge'
+import { LiveSiteLink } from './LiveSiteLink'
 import ErrorNotice from '../ErrorNotice'
 import { useOpenInEditor } from '../FilePathMenu'
 import { canOpenFileInEditor, editorAcceptsPath } from '../../lib/electron'
@@ -149,14 +151,17 @@ export function FolderGlyph({ folder, size = 16, open = false }: { folder: Artif
 /** Inline folder-name editor (create + rename) — the same native pattern the
  * chat sidebar uses for slot/folder renames: autofocused input, Enter commits,
  * Escape cancels, blur commits a non-empty value. IME-guarded. */
-export function FolderNameInput({ initial = '', placeholder = 'Folder name', onCommit, onCancel }: {
+export function FolderNameInput({ initial = '', placeholder = 'Folder name', onCommit, onCancel, onClose }: {
   initial?: string
   placeholder?: string
   onCommit: (name: string) => void
   onCancel: () => void
+  /** Called with the reason the editor closed; omit for create-only uses. */
+  onClose?: (reason: 'enter' | 'escape' | 'blur') => void
 }) {
   const [value, setValue] = useState(initial)
   const cancelledRef = useRef(false)
+  const enterRef = useRef(false)
   const noteId = useId()
   const connected = useConnected()
   const ime = useImeGuard()
@@ -178,10 +183,12 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
         className="w-full bg-transparent border border-accent rounded px-1.5 py-0.5 text-text-strong outline-hidden text-sm select-text focus-ring"
         {...ime.bindEnter<HTMLInputElement>({
           onFocus: (e) => (e.target as HTMLInputElement).select(),
-          onEnter: () => { (document.activeElement as HTMLInputElement)?.blur() },
-          onEscape: () => { cancelledRef.current = true; onCancel() },
+          onEnter: () => { enterRef.current = true; (document.activeElement as HTMLInputElement)?.blur() },
+          onEscape: () => { cancelledRef.current = true; onCancel(); onClose?.('escape') },
           onBlur: () => {
             if (cancelledRef.current) { cancelledRef.current = false; return }
+            const viaEnter = enterRef.current
+            enterRef.current = false
             const name = value.trim()
             // Gating the control that OPENS this editor only covers the open. A
             // gateway that drops while it is open still reaches this commit, whose
@@ -192,11 +199,12 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
             // no draft to keep, so it still abandons: holding it would strand the
             // editor with Escape as the only exit, which a coarse pointer lacks.
             if (!connected) {
-              if (!name) onCancel()
+              if (!name) { onCancel(); onClose?.(viaEnter ? 'enter' : 'blur') }
               return
             }
             if (name) onCommit(name)
             else onCancel()
+            onClose?.(viaEnter ? 'enter' : 'blur')
           },
         })}
       />
@@ -207,10 +215,8 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
 
           The copy promises only what the draft actually has. It survives for as
           long as this input stays mounted and no longer — unmounting the host
-          discards it, and from the folder menu that happens as soon as the menu
-          closes (characterized in ArtifactsPageCoverage's rename case). So the
-          note names that cost outright instead of asking for the field to be
-          kept open and leaving the consequence unsaid. */}
+          discards it. So the note names that cost outright instead of asking
+          for the field to be kept open and leaving the consequence unsaid. */}
       {!connected && (
         <OfflineReasonRow id={noteId} testId="folder-name-offline-held" className="mt-1" message={i18nT('utils.offline.name_not_saved_keep_field_open')} />
       )}
@@ -223,6 +229,12 @@ export function FolderNameInput({ initial = '', placeholder = 'Folder name', onC
 export function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolder; folders: ArtifactFolder[]; actions: FolderActions }) {
   const moveTargets = folders.filter(f => !isDescendantFolder(folders, folder.id, f.id))
   const connected = useConnected()
+  // Rename mounts an autofocused inline field. Opened straight from `onSelect`,
+  // the menu's focus trap pulls focus back out of it and the close then
+  // restores the trigger; the field's blur commits the unchanged name and
+  // rename mode ends before a key is typed. `openLayer` opens it after the
+  // menu's close commit and keeps that close from restoring the trigger.
+  const menuLayer = useMenuOpensDialog()
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -236,9 +248,9 @@ export function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolde
           <MoreVertical size={13} />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()} onCloseAutoFocus={menuLayer.onCloseAutoFocus}>
         <DropdownMenuItem
-          {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.artifactsPage.rename'), () => actions.onRename(folder))}
+          {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.artifactsPage.rename'), () => menuLayer.openLayer(() => actions.onRename(folder)))}
         >
           <Pencil size={13} className="text-muted shrink-0" /> {i18nT('pages.artifactsPage.rename')}
         </DropdownMenuItem>
@@ -247,8 +259,6 @@ export function FolderMenu({ folder, folders, actions }: { folder: ArtifactFolde
           folders={moveTargets}
           currentFolderId={folder.parent_id || null}
           // Dimmed with its siblings; the pick is refused here, at the sink.
-          offline={!connected}
-          offlineTitle={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') })}
           onPick={(pid) => { if (!connected) return; actions.onMove(folder, pid || '') }}
         />
         <DropdownMenuSeparator />
@@ -424,6 +434,7 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
 }) {
   // The row's own writes go to the gateway, so they gate like every other sink.
   const rowConnected = useConnected()
+  const providerName = usePublicationProviderName(a.publication)
   const inner = (setDropRef?: (el: HTMLElement | null) => void) => (
     <DndDraggable id={`artifact-row:${a.slug}`} data={{ type: 'artifact', slug: a.slug, name: a.name, folderId: a.folder_id || '' } satisfies LibraryDrag}>
       {({ setNodeRef, listeners, isDragging }) => (
@@ -461,11 +472,27 @@ export function ArtifactRow({ a, onOpen, onDelete, deletingSlug, onTogglePin, pi
                 <Share2
                   size={12}
                   className={a.publication.last_error ? 'text-danger' : a.publication.notice ? 'text-warn' : 'text-ok'}
-                  aria-label={a.publication.last_error ? i18nT('pages.artifactsPage.published_sync_issue') : a.publication.notice ? i18nT(publishNoticeKey({ rolling_out: 'pages.artifactsPage.published_rolling_out', distribution_disabled: 'pages.artifactsPage.published_distribution_disabled', notice_generic: 'pages.artifactsPage.published_notice_generic' }, a.publication.notice_code)) : i18nT('pages.artifactsPage.published', { visibility: a.publication.visibility.toLowerCase() })}
-                />
+                  aria-label={publicationBadgeLabel(a.publication, providerName)}
+                >
+                  <title>{publicationBadgeLabel(a.publication, providerName)}</title>
+                </Share2>
               )}
             </div>
             {a.description && <div className="text-[12px] text-muted truncate max-w-[400px]">{a.description}</div>}
+            <LiveSiteLink slug={a.slug} />
+            {a.publication?.last_error && (
+              <span role="presentation" className="block mt-1" onClick={(e) => e.stopPropagation()}>
+                {/* The hand-off is on: this list holds no unsaved input. */}
+                <ErrorNotice
+                  variant="inline"
+                  className="whitespace-normal"
+                  title={i18nT('pages.artifactsPage.published_sync_issue')}
+                  message={a.publication.last_error}
+                  askAgent
+                  testId="publication-sync-error"
+                />
+              </span>
+            )}
           </td>
           <td className="px-2.5 py-2 border-b border-border">
             <code className="text-[12px] text-muted">{a.slug}</code>
@@ -755,34 +782,55 @@ export function FolderRow({ folder, folders, depth, expanded, onToggle, actions,
   const stats = folderSubtreeStats(folders, folder.id)
   const Chevron = expanded ? ChevronDown : ChevronRight
   const renaming = actions.renamingId === folder.id
+  const rowRef = useRef<HTMLTableRowElement | null>(null)
+  const restoreRowFocus = (reason: 'enter' | 'escape' | 'blur') => {
+    if (reason !== 'blur') requestAnimationFrame(() => rowRef.current?.focus({ preventScroll: true }))
+  }
   return (
     <DndDroppable id={`folder-row-drop:${folder.id}`} data={{ type: 'folder-drop', folderId: folder.id }}>
       {({ setNodeRef: setDropRef, isOver }) => (
         <DndDraggable id={`folder-row:${folder.id}`} data={{ type: 'folder', id: folder.id, name: folder.name } satisfies LibraryDrag}>
           {({ setNodeRef: setDragRef, listeners, isDragging }) => (
             <tr
-              ref={(el) => { setDropRef(el); setDragRef(el) }}
+              ref={(el) => { setDropRef(el); setDragRef(el); rowRef.current = el }}
+              tabIndex={-1}
               {...(renaming ? {} : listeners)}
               onClick={() => { if (!renaming) onToggle(folder.id) }}
               style={{ opacity: isDragging ? 0.4 : 1 }}
-              className={`group cursor-pointer transition-colors ${isOver || dropHighlight ? 'bg-accent/15' : 'hover:bg-bg-hover'}`}
-              aria-expanded={expanded}
+              className={`group cursor-pointer transition-colors focus-ring-accent-inset ${isOver || dropHighlight ? 'bg-accent/15' : 'hover:bg-bg-hover'}`}
             >
               <td colSpan={9} className="px-2.5 py-1.5 border-b border-border" style={depth > 0 ? { paddingLeft: `${10 + depth * 20}px` } : undefined}>
                 <div className={`flex items-center gap-1.5 rounded transition-shadow ${isOver || dropHighlight ? 'ring-2 ring-inset ring-accent/50 px-1 -mx-1' : ''}`}>
-                  <Chevron size={13} className="text-muted shrink-0" />
-                  <FolderGlyph folder={folder} size={14} open={expanded} />
                   {renaming ? (
-                    <span className="min-w-0 flex-1 max-w-[280px]">
-                      <FolderNameInput
-                        initial={folder.name}
-                        placeholder={i18nT('pages.artifactsPage.rename_folder')}
-                        onCommit={(name) => actions.onRenameSubmit(folder, name)}
-                        onCancel={actions.onRenameCancel}
-                      />
-                    </span>
+                    <>
+                      <Chevron size={13} className="text-muted shrink-0" />
+                      <FolderGlyph folder={folder} size={14} open={expanded} />
+                      <span className="min-w-0 flex-1 max-w-[280px]">
+                        <FolderNameInput
+                          initial={folder.name}
+                          placeholder={i18nT('pages.artifactsPage.rename_folder')}
+                          onCommit={(name) => actions.onRenameSubmit(folder, name)}
+                          onCancel={actions.onRenameCancel}
+                          onClose={restoreRowFocus}
+                        />
+                      </span>
+                    </>
                   ) : (
-                    <span className="text-sm text-text-strong font-medium truncate">{folder.name}</span>
+                    // The row is not a tab stop (tabIndex -1 is only the rename
+                    // editor's focus return) and the ⋯ menu has no expand item,
+                    // so this button is the keyboard's only way into a folder.
+                    // A sibling of the menu button, never its parent. It stops
+                    // the click so the row's own handler does not toggle twice.
+                    <button
+                      type="button"
+                      aria-expanded={expanded}
+                      onClick={(e) => { e.stopPropagation(); onToggle(folder.id) }}
+                      className="flex items-center gap-1.5 min-w-0 p-0 bg-transparent border-none rounded cursor-pointer text-left focus-ring-accent"
+                    >
+                      <Chevron size={13} aria-hidden className="text-muted shrink-0" />
+                      <FolderGlyph folder={folder} size={14} open={expanded} />
+                      <span className="text-sm text-text-strong font-medium truncate">{folder.name}</span>
+                    </button>
                   )}
                   <span className="text-[11px] text-muted">
                     {stats.artifactCount}{stats.subfolderCount > 0 ? ` · ${i18nT('pages.artifactsPage.folder', { count: stats.subfolderCount })}` : ''}
@@ -790,7 +838,7 @@ export function FolderRow({ folder, folders, depth, expanded, onToggle, actions,
                   {/* The cell spans the whole table, which scrolls sideways on a
                       phone, so `ml-auto` would park the always-visible touch menu
                       past the viewport edge. Touch keeps it inline after the count. */}
-                  <span className="ml-auto [@media(hover:none)]:ml-0 opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
+                  <span className="ml-auto [@media(hover:none)]:ml-0 opacity-0 group-hover:opacity-100 has-[:focus-visible]:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity">
                     <FolderMenu folder={folder} folders={folders} actions={actions} />
                   </span>
                 </div>

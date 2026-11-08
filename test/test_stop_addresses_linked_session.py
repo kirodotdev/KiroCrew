@@ -45,6 +45,10 @@ class _FakeSlot:
         self._stop_escalated_card_id = None
         self._queue: list[dict] = []
         self._pending_steers: list[dict] = []
+        # A real slot carries both from birth (slot_ladder): a hard kill settles a
+        # take-back still in flight before it discards the pending steers.
+        self._steer_retract = None
+        self._steer_clear = None
         self.running = True
         self.key = "test-slot"
         self.agent = "kirocrew"

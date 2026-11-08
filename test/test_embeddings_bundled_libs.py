@@ -440,6 +440,164 @@ class TestBundledLinuxX86CpuGate:
         assert os.environ[embeddings_mod._LIB_PATH_ENV] == str(override)
 
 
+_DOTPROD_DIR = "linux_aarch64_dotprod"
+# One Features line per processor, the shape /proc/cpuinfo has on arm64 Linux.
+_GRAVITON3_FEATURES = (
+    "fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid "
+    "asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm"
+)
+_CORTEX_A72_FEATURES = "fp asimd evtstrm aes pmull sha1 sha2 crc32 cpuid"
+
+
+def _cpuinfo(tmp_path: Path, *features: str) -> Path:
+    path = tmp_path / "cpuinfo"
+    path.write_text(
+        "".join(f"processor\t: {i}\nFeatures\t: {f}\n\n" for i, f in enumerate(features)),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _stub_libs(root: Path, *dirs: str) -> None:
+    for plat in dirs:
+        libs = root / embeddings_mod._LIBS_DIR_NAME / plat
+        libs.mkdir(parents=True)
+        for name in embeddings_mod._REQUIRED_VENDORED_LIBS[plat]:
+            (libs / name).write_bytes(b"\x7fELF")
+
+
+def _published_libs_dir(monkeypatch, vendor: Path, plat: str, dotprod_probe) -> str | None:
+    """Run the loader for *plat* and return the directory it hands the vendored loader."""
+    published: list[Path | None] = []
+    monkeypatch.setattr(embeddings_mod, "_VENDOR_DIR", vendor)
+    monkeypatch.setattr(embeddings_mod, "_platform_libs_dirname", lambda: plat)
+    monkeypatch.setattr(embeddings_mod, "_linux_aarch64_has_dotprod", dotprod_probe)
+    monkeypatch.setattr(
+        embeddings_mod,
+        "_linux_x86_64_cpu_flags",
+        lambda: embeddings_mod._LINUX_X86_64_REQUIRED_CPU_FLAGS,
+    )
+    monkeypatch.setattr(embeddings_mod, "_macos_x86_64_missing_cpu_flags", lambda: [])
+    monkeypatch.setattr(embeddings_mod, "_missing_windows_msvc_runtime", lambda: [])
+    monkeypatch.setattr(embeddings_mod, "_publish_lib_path_for_import", published.append)
+    fake_llama_cpp = ModuleType("llama_cpp")
+    setattr(fake_llama_cpp, "Llama", object())
+    monkeypatch.setitem(sys.modules, "llama_cpp", fake_llama_cpp)
+    embeddings_mod._load_llama_class.cache_clear()
+    try:
+        assert embeddings_mod._load_llama_class() is fake_llama_cpp.Llama
+    finally:
+        embeddings_mod._load_llama_class.cache_clear()
+    assert len(published) == 1
+    return None if published[0] is None else Path(published[0]).name
+
+
+class TestBundledLinuxAarch64DotprodVariant:
+    """Linux arm64 loads the int8 dot-product build only where every core runs ``sdot``.
+
+    ``linux_aarch64_dotprod`` is built with ``-march=armv8.2-a+dotprod``. On a core
+    without the instruction (Cortex-A72, Graviton1, Raspberry Pi 4) it dies with
+    SIGILL, which no Python handler catches, so every doubt picks today's
+    ``linux_aarch64`` build.
+    """
+
+    def test_the_features_reader_intersects_every_core(self, tmp_path: Path) -> None:
+        """One AArch64 `Features` reader serves both the dotprod gate and STT preflight."""
+        path = _cpuinfo(tmp_path, _GRAVITON3_FEATURES, _CORTEX_A72_FEATURES)
+        assert embeddings_mod._linux_aarch64_cpu_features(path) == frozenset(
+            _CORTEX_A72_FEATURES.split()
+        )
+        assert embeddings_mod._linux_aarch64_cpu_features(tmp_path / "missing") is None
+
+    def test_every_core_with_asimddp_has_dotprod(self, tmp_path: Path) -> None:
+        path = _cpuinfo(tmp_path, _GRAVITON3_FEATURES, _GRAVITON3_FEATURES)
+        assert embeddings_mod._linux_aarch64_has_dotprod(path) is True
+
+    def test_one_core_without_asimddp_has_no_dotprod(self, tmp_path: Path) -> None:
+        """A big.LITTLE host can schedule the thread on its weakest core."""
+        path = _cpuinfo(tmp_path, _GRAVITON3_FEATURES, _CORTEX_A72_FEATURES)
+        assert embeddings_mod._linux_aarch64_has_dotprod(path) is False
+
+    def test_an_old_core_has_no_dotprod(self, tmp_path: Path) -> None:
+        path = _cpuinfo(tmp_path, _CORTEX_A72_FEATURES)
+        assert embeddings_mod._linux_aarch64_has_dotprod(path) is False
+
+    def test_unreadable_cpuinfo_has_no_dotprod(self, tmp_path: Path) -> None:
+        assert embeddings_mod._linux_aarch64_has_dotprod(tmp_path / "missing") is False
+
+    def test_cpuinfo_without_a_features_line_has_no_dotprod(self, tmp_path: Path) -> None:
+        path = tmp_path / "cpuinfo"
+        path.write_text("processor\t: 0\nBogoMIPS\t: 2100.00\n", encoding="utf-8")
+        assert embeddings_mod._linux_aarch64_has_dotprod(path) is False
+
+    def test_a_substring_is_not_the_feature(self, tmp_path: Path) -> None:
+        path = _cpuinfo(tmp_path, "fp asimd asimddpx")
+        assert embeddings_mod._linux_aarch64_has_dotprod(path) is False
+
+    def test_dotprod_cpu_loads_the_dotprod_dir(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _stub_libs(tmp_path, "linux_aarch64", _DOTPROD_DIR)
+        assert _published_libs_dir(monkeypatch, tmp_path, "linux_aarch64", lambda: True) == (
+            _DOTPROD_DIR
+        )
+
+    def test_cpu_without_dotprod_loads_todays_dir(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _stub_libs(tmp_path, "linux_aarch64", _DOTPROD_DIR)
+        assert _published_libs_dir(monkeypatch, tmp_path, "linux_aarch64", lambda: False) == (
+            "linux_aarch64"
+        )
+
+    def test_unreadable_cpuinfo_loads_todays_dir(self, tmp_path: Path, monkeypatch) -> None:
+        """The real probe, pointed at a missing file, through the loader."""
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _stub_libs(tmp_path, "linux_aarch64", _DOTPROD_DIR)
+        real_probe = embeddings_mod._linux_aarch64_has_dotprod
+        missing = tmp_path / "no-cpuinfo"
+        assert (
+            _published_libs_dir(monkeypatch, tmp_path, "linux_aarch64", lambda: real_probe(missing))
+            == "linux_aarch64"
+        )
+
+    def test_an_incomplete_dotprod_dir_loads_todays_dir(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _stub_libs(tmp_path, "linux_aarch64", _DOTPROD_DIR)
+        (tmp_path / embeddings_mod._LIBS_DIR_NAME / _DOTPROD_DIR / "libggml-cpu.so.0").unlink()
+        assert _published_libs_dir(monkeypatch, tmp_path, "linux_aarch64", lambda: True) == (
+            "linux_aarch64"
+        )
+
+    @pytest.mark.parametrize("plat", ["linux_x86_64", "macos_arm64", "macos_x86_64", "win_amd64"])
+    def test_other_platforms_never_probe_for_dotprod(
+        self, tmp_path: Path, monkeypatch, plat: str
+    ) -> None:
+        """Only Linux arm64 has a second build: every other platform loads its own dir."""
+        monkeypatch.delenv(embeddings_mod._LIB_PATH_ENV, raising=False)
+        _stub_libs(tmp_path, plat)
+
+        def unexpected_probe():
+            raise AssertionError(f"{plat} must not consult the arm64 dotprod probe")
+
+        assert _published_libs_dir(monkeypatch, tmp_path, plat, unexpected_probe) == plat
+
+    def test_operator_override_skips_the_dotprod_choice(self, tmp_path: Path, monkeypatch) -> None:
+        _stub_libs(tmp_path, "linux_aarch64", _DOTPROD_DIR)
+        override = tmp_path / "operator-libs"
+        override.mkdir()
+        monkeypatch.setenv(embeddings_mod._LIB_PATH_ENV, str(override))
+
+        def unexpected_probe():
+            raise AssertionError("an operator runtime must not use the bundled dotprod choice")
+
+        assert _published_libs_dir(monkeypatch, tmp_path, "linux_aarch64", unexpected_probe) is None
+
+    def test_windows_arm64_has_no_bundled_runtime(self, monkeypatch) -> None:
+        """Windows ARM64 ships no libs, so it never reaches either arm64 build."""
+        monkeypatch.setattr("kiro_crew.embeddings.sys.platform", "win32")
+        monkeypatch.setattr("kiro_crew.embeddings.platform.machine", lambda: "ARM64")
+        assert _platform_libs_dirname() is None
+
+
 class TestBundledWindowsMsvcRuntimeGate:
     """The vendored Windows libs import an MSVC runtime that is not shipped with them.
 

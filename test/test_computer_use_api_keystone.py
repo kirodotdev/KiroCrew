@@ -60,7 +60,7 @@ def _app_client(app_name: str = "pwn") -> TestClient:
 
 
 class TestAnAppTokenCannotWriteTheKeystone:
-    """The one write the keystone design exists to prevent (reviewer finding).
+    """The one write the keystone design exists to prevent.
 
     ``enable_state.save_state`` deliberately bypasses ``is_sensitive_path`` — that is
     what lets the operator's own Settings panel write a file the agent cannot read or
@@ -121,7 +121,7 @@ class TestAnAppTokenCannotWriteTheKeystone:
 
 
 class TestMixedSaveIsAllOrNothing:
-    """A mixed state+limits PUT must not half-apply (reviewer finding).
+    """A mixed state+limits PUT must not half-apply.
 
     The keystone write lands first, so a corrupt ``config.json`` can leave the
     SECURITY state applied — the feature enabled, or the real-pointer opt-in set —
@@ -388,6 +388,32 @@ class TestEnableRestartsSessions:
             resp = await client.put("/api/computer-use/config", json={"enabled": True})
         assert resp.status == 200
         assert held == [True], "the spec rebuild ran outside the config lock"
+
+    @pytest.mark.asyncio
+    async def test_the_flip_rewrites_each_app_under_its_lifecycle_lock(
+        self, state_file, monkeypatch
+    ):
+        """App agents copy the gated ``kirocrew-computer`` entry too, so the flip
+        rewrites them, each under its app's lifecycle lock (an update or disable in
+        flight must not interleave) and outside the config lock nested inside it."""
+        from kiro_crew.apps import bridges
+        from kiro_crew.apps.manager import app_lifecycle_lock
+        from kiro_crew.dashboard.handlers.agents import _get_config_lock
+
+        self._spy(monkeypatch)
+        config_lock = _get_config_lock()
+        app_lock = app_lifecycle_lock("an-app")
+        held: list[tuple[str, bool, bool]] = []
+        monkeypatch.setattr(bridges, "list_apps", lambda: [{"name": "an-app", "enabled": True}])
+        monkeypatch.setattr(
+            bridges,
+            "refresh_app_agents_if_enabled",
+            lambda name: held.append((name, app_lock.locked(), config_lock.locked())),
+        )
+        async with _client() as client:
+            resp = await client.put("/api/computer-use/config", json={"enabled": True})
+        assert resp.status == 200
+        assert held == [("an-app", True, False)]
 
     @pytest.mark.asyncio
     async def test_no_test_here_can_reach_the_REAL_spec_rebuild(self, state_file, monkeypatch):

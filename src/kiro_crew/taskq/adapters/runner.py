@@ -45,8 +45,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Any, Awaitable, Callable, Iterable
 
 from kiro_crew.recovery.ladder import L3_ACP_RUNTIME, RecoveryDecision, RecoveryLadder
@@ -67,6 +69,7 @@ from ..model import (
     QUEUED,
     RECOVERING,
     RECOVERY_MAX_ATTEMPTS,
+    RETRY_WAIT,
     RUNNING,
     SIDE_EFFECT_IDEMPOTENT_KEY,
     SIDE_EFFECT_NONE,
@@ -283,6 +286,51 @@ class RunnerAdmission:
             return fn(*args, **kw)
         return await store.run(fn, *args, **kw)
 
+    async def _db_owned(
+        self, owned: Callable[[Any], tuple[str, int | None]], fn: Any, *args: Any, **kw: Any
+    ) -> Any:
+        """:meth:`_db` for a write whose result hands the caller a row: an accept,
+        a claim. *owned* names that row from the result as ``(task_id,
+        generation)``, the two values :meth:`_end_row_on_cancel` fences on.
+
+        A caller cancel cannot stop a job the writer thread has already started.
+        The write commits all the same and plain :meth:`_db` drops the result,
+        so the row is left queued or leased with nobody to drive it or end it,
+        and these kinds have no dispatcher to pick it up. Here the job is
+        shielded instead: a caller cancelled while it runs queues
+        :meth:`_end_row_on_cancel` for that row on the writer thread as soon as
+        the job lands. A job the writer had not started yet does nothing, so a
+        cancel that wins the race still writes nothing.
+        """
+        store = self.store
+        if store is None:
+            return fn(*args, **kw)
+        abandoned = threading.Event()
+
+        def job() -> Any:
+            return None if abandoned.is_set() else fn(*args, **kw)
+
+        landing = store.post(job)
+        try:
+            return await asyncio.shield(landing)
+        except asyncio.CancelledError:
+            abandoned.set()
+            landing.add_done_callback(partial(self._end_unreceived, store, owned))
+            raise
+
+    def _end_unreceived(
+        self,
+        store: TaskStore,
+        owned: Callable[[Any], tuple[str, int | None]],
+        landing: asyncio.Future[Any],
+    ) -> None:
+        """Done-callback of a :meth:`_db_owned` job whose caller was cancelled."""
+        if landing.cancelled() or landing.exception() is not None:
+            return
+        result = landing.result()
+        if result is not None:
+            store.post(self._end_row_on_cancel, store, *owned(result))
+
     def _refuse_if_store_required(self) -> None:
         if self._require_store and self.store is None:
             why = None
@@ -447,8 +495,13 @@ class RunnerAdmission:
 
     async def accept_async(self, **kw: Any) -> TaskRecord | None:
         """:meth:`accept` for an event-loop caller: the whole accept on the
-        store's writer thread. ``RunnerAdmissionRefused`` propagates unchanged."""
-        return await self._db(self.accept, **kw)
+        store's writer thread. ``RunnerAdmissionRefused`` propagates unchanged.
+
+        A caller cancelled while the accept runs gets no row, and the row the
+        accept wrote is ended once it lands (:meth:`_db_owned`) if it is still
+        ``queued`` and unleased: the queued-orphan sweep skips a row this
+        incarnation accepted, so nothing else would end it."""
+        return await self._db_owned(lambda rec: (rec.id, None), self.accept, **kw)
 
     # -- admit ---------------------------------------------------------------
 
@@ -575,7 +628,12 @@ class RunnerAdmission:
                         self, task_id, kind, lane, 0, session_key=session_key, _state=STARTING
                     )
                 try:
-                    claimed = await self._db(store.claim, task_id)
+                    # Through _db_owned: a cancel landing while the claim runs leaves
+                    # the row ``admitted`` under this incarnation's lease, and the
+                    # cancel arm below sees no generation to end it with.
+                    claimed = await self._db_owned(
+                        lambda c: (c.record.id, c.generation), store.claim, task_id
+                    )
                 except TaskStoreUnavailable as exc:
                     self.lane.release(task_id)
                     slot_held = False
@@ -737,10 +795,18 @@ class RunnerAdmission:
         self, task_id: str, *, kind: str = KIND_TASKRUNNER_STEP, lane: str = LANE_SYSTEM
     ) -> "Admitted | None":
         """:meth:`claim_only` for an event-loop caller: the claim and the
-        ``starting`` write together on the store's writer thread."""
+        ``starting`` write together on the store's writer thread. A caller
+        cancelled while they run gets no handle, so the row they started is
+        ended once it lands (:meth:`_db_owned`)."""
         if self.store is None:
             return None
-        result = await self._db(self.claim_only, task_id, kind=kind, lane=lane)
+        result = await self._db_owned(
+            lambda handle: (handle.task_id, handle.generation),
+            self.claim_only,
+            task_id,
+            kind=kind,
+            lane=lane,
+        )
         return result if isinstance(result, Admitted) else None
 
     def claim_only(
@@ -911,6 +977,31 @@ class RunnerAdmission:
             self.on_wake(task_id)
         return woken
 
+    @staticmethod
+    def _cancel_woken_dependency(
+        store: TaskStore, task_id: str, generation: int, reason: str
+    ) -> None:
+        """End a dependency wake left unclaimed in ``retry_wait``.
+
+        A wake advances the handle's generation exactly once before its
+        coroutine reclaims the row. The state and generation fences identify
+        that handoff without reaching a later ``retry_wait`` epoch or a row an
+        admission moved to ``admitted``, ``starting`` or ``running``.
+        """
+        try:
+            store.cancel(
+                task_id,
+                reason=reason,
+                only_from=frozenset({RETRY_WAIT}),
+                generation=generation,
+            )
+        except Exception:  # noqa: BLE001 - the caller's cancellation must propagate
+            logger.warning(
+                "taskq runner: %s stayed in retry_wait after a cancelled dependency wait",
+                task_id,
+                exc_info=True,
+            )
+
     async def yield_dependency(
         self,
         handle: Admitted,
@@ -928,17 +1019,19 @@ class RunnerAdmission:
         False: the row is already ``failed``/``cancelled`` and the step must
         not retry.
 
-        A CALLER cancel delivered while the row is parked ends it: the awaiting
-        coroutine IS this incarnation's only wake path, so the wait it leaves
-        behind is one nothing can resume.
+        With the store reachable, a CALLER cancel delivered while the row is
+        parked ends it: the awaiting coroutine IS this incarnation's only wake
+        path, so the wait it leaves behind is one nothing can resume.
         """
         store = self.store
         handle.release_slot()
         ev = self._wake_event(handle.task_id)
         ev.clear()
         parked = True
+        owns_dependency_wake = False
         try:
             if self._coordinator is not None:
+                owns_dependency_wake = signal.retryable
                 verdict = await self._db(
                     self._coordinator.report,
                     handle.task_id,
@@ -946,11 +1039,13 @@ class RunnerAdmission:
                     generation=handle.generation,
                     from_state=RUNNING,
                 )
+                owns_dependency_wake = verdict.outcome == "wait"
                 if verdict.outcome != "wait":
                     self.forget(handle.task_id)
                     await handle.reacquire_slot()
                     return False
             elif store is not None:
+                owns_dependency_wake = True
                 record = WaitRecord.dependency(
                     signal.dependency_scope,
                     since=self.now(),
@@ -969,6 +1064,7 @@ class RunnerAdmission:
                     )
                 except TaskStoreUnavailable:
                     parked = False
+                owns_dependency_wake = parked
             if store is None or not parked:
                 # Nothing persisted: honour the signal's own retry instant locally.
                 wait = (
@@ -987,7 +1083,10 @@ class RunnerAdmission:
             # persisted on the row's wake event and the claimable row is
             # re-attached by ``accept``, so ending it would make the resumed
             # step ask the operator a second time.
-            handle.cancel("dependency wait cancelled")
+            reason = "dependency wait cancelled"
+            wake_generation = handle.generation + 1
+            if not handle.cancel(reason) and store is not None and owns_dependency_wake:
+                self._cancel_woken_dependency(store, handle.task_id, wake_generation, reason)
             raise
 
     async def _resume_after_wait(self, handle: Admitted) -> bool:
@@ -1010,8 +1109,9 @@ class RunnerAdmission:
             return False
         # Re-admission goes through capacity like any other start.
         await handle.reacquire_slot()
-        if rec.state == QUEUED or rec.state in CLAIMABLE:
-            # Parked in retry_wait / queued: take it back under a new claim.
+        if rec.state in CLAIMABLE:
+            # Claimable again (retry_wait, queued or recovering): take it back under a
+            # new claim.
             handle.release_slot()
             fresh = await self.admit(handle.task_id, kind=handle.kind, lane=handle.lane)
             handle.generation = fresh.generation

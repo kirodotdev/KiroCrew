@@ -82,6 +82,7 @@ port, no tunnel, ``--no-crons``, and the refusal to bind the live port.
 from __future__ import annotations
 
 import contextlib
+import html
 import locale
 import os
 import subprocess
@@ -189,9 +190,11 @@ class WindowsTaskError(RuntimeError):
     """Task Scheduler is not usable on this host."""
 
 
-# ------------------------------------------------------------------------- #
+class WindowsTaskCreateRefused(WindowsTaskError):
+    """Task Scheduler answered and refused to create this user's task: no pod can be made."""
+
+
 # Gate
-# ------------------------------------------------------------------------- #
 # require_backend() sits on the chokepoint every schtasks call funnels through,
 # and its create-and-delete probe costs two subprocess spawns. Cache the
 # SUCCESS only: a host that can create a task will not stop being able to
@@ -253,7 +256,7 @@ def require_backend() -> None:
         '"cmd.exe /c exit 0"',
     )
     if created.returncode != 0:
-        raise WindowsTaskError(
+        raise WindowsTaskCreateRefused(
             "this user cannot create a scheduled task, so pods cannot be "
             f"supervised on this host (schtasks /Create rc={created.returncode}): "
             f"{(created.stderr or created.stdout or '').strip()}\n"
@@ -264,9 +267,7 @@ def require_backend() -> None:
     _PROBE_OK = True
 
 
-# ------------------------------------------------------------------------- #
 # Naming and paths
-# ------------------------------------------------------------------------- #
 def task_name(cfg: PodConfig, name: str) -> str:
     """Full Task Scheduler path for pod *name*.
 
@@ -374,9 +375,7 @@ def log_paths(cfg: PodConfig, name: str) -> tuple[Path, Path]:
     return d / "pod.out.log", d / "pod.err.log"
 
 
-# ------------------------------------------------------------------------- #
 # The generated .cmd wrapper
-# ------------------------------------------------------------------------- #
 def _cmd_literal(value: str) -> str:
     """Quote *value* for a batch file, refusing what cmd.exe cannot express.
 
@@ -498,9 +497,41 @@ def write_task_script(cfg: PodConfig, name: str) -> Path:
     return dst
 
 
-# ------------------------------------------------------------------------- #
+#: Task Scheduler priority of a pod's task: 5 is NORMAL_PRIORITY_CLASS with a
+#: normal thread priority. ``schtasks /Create`` has no priority flag and leaves the
+#: default, 7, which is BELOW_NORMAL with low I/O and memory priority. Every process
+#: of the pod inherits it: the wrapper's cmd.exe, its console host, the boot and the
+#: gateway with its children. While other programs keep the CPUs busy at normal
+#: priority that tree barely runs, and `pod up` exhausts its readiness budget.
+TASK_PRIORITY = 5
+
+
+def render_task_xml(script: Path) -> str:
+    """The task definition :func:`start` registers for the wrapper at *script*.
+
+    It is the task ``schtasks /Create /SC ONCE /ST 00:00 /TR <script>`` makes,
+    plus :data:`TASK_PRIORITY`. No ``UserId`` and ``InteractiveToken``: Task
+    Scheduler registers it for the calling user, to run only while that user is
+    logged on, with no password. The trigger lies in the past, so the task never
+    fires on its own and runs only on ``/Run``.
+    """
+    # Element text: `&`, `<` and `>` are the only characters to escape there.
+    command = html.escape(str(script), quote=False)
+    return (
+        '<?xml version="1.0" encoding="UTF-16"?>\n'
+        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+        '  <Principals><Principal id="Author">'
+        "<LogonType>InteractiveToken</LogonType></Principal></Principals>\n"
+        "  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"
+        f"<Priority>{TASK_PRIORITY}</Priority></Settings>\n"
+        "  <Triggers><TimeTrigger><StartBoundary>2000-01-01T00:00:00</StartBoundary>"
+        "</TimeTrigger></Triggers>\n"
+        f'  <Actions Context="Author"><Exec><Command>{command}</Command></Exec></Actions>\n'
+        "</Task>\n"
+    )
+
+
 # Talking to schtasks
-# ------------------------------------------------------------------------- #
 def _schtasks_raw(exe: str, *args: str) -> subprocess.CompletedProcess:
     """Run *exe* with *args*, no gate — used by the gate's own probe."""
     return subprocess.run(
@@ -533,9 +564,23 @@ def task_exists(cfg: PodConfig, name: str) -> bool:
     return schtasks("/Query", "/TN", task_name(cfg, name)).returncode == 0
 
 
-# ------------------------------------------------------------------------- #
+def task_absent(cfg: PodConfig, name: str) -> bool:
+    """True only when Task Scheduler answered and holds no task for *name*.
+
+    ``task_exists`` keys on ``/Query /TN``'s exit code, but that code is
+    non-zero both for "no such task" and for "the service did not answer", so a
+    non-zero result alone is NOT proof of absence. A bare ``/Query`` (no
+    ``/TN``) exits zero only when Task Scheduler answers, which separates the
+    two. Only when the service answers AND holds no task is the name proven
+    gone; an unreachable service fails CLOSED here so a residue guard keyed on
+    this never deletes on an unanswered query.
+    """
+    if schtasks("/Query", "/TN", task_name(cfg, name)).returncode == 0:
+        return False  # the task is still present
+    return schtasks("/Query").returncode == 0  # bare /Query: did the service answer?
+
+
 # The supervised pid record
-# ------------------------------------------------------------------------- #
 def record_supervised_pid(cfg: PodConfig, name: str, pid: int) -> None:
     """Record the serving gateway's PID and creation identity for liveness readers.
 
@@ -569,9 +614,13 @@ def _read_pid_record(cfg: PodConfig, name: str) -> tuple[int, str] | None:
         raw = pid_record_path(cfg, name).read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return None
-    if not raw or not raw[0].strip().isdigit():
+    if not raw or not raw[0].strip().isdecimal():
         return None
-    return int(raw[0].strip()), (raw[1].strip() if len(raw) > 1 else "")
+    try:
+        pid = int(raw[0].strip())
+    except ValueError:  # past int()'s digit limit
+        return None
+    return pid, (raw[1].strip() if len(raw) > 1 else "")
 
 
 def supervised_pid(cfg: PodConfig, name: str) -> int | None:
@@ -610,12 +659,17 @@ def supervised_pid(cfg: PodConfig, name: str) -> int | None:
 
 
 def last_result(cfg: PodConfig, name: str) -> int | None:
-    """The exit code pod *name*'s last boot recorded, or ``None`` if unknown."""
+    """The exit code pod *name*'s last boot recorded, or ``None`` if unknown.
+
+    ``ValueError`` covers both a body that is not UTF-8 (``UnicodeDecodeError``)
+    and one ``isdigit`` admits but ``int()`` refuses (U+00B2, ``--1``), so a
+    torn or foreign file reads as unknown instead of crashing ``unit_state``.
+    """
     try:
         raw = result_path(cfg, name).read_text(encoding="utf-8").strip()
-    except OSError:
+        return int(raw) if raw.lstrip("-").isdigit() else None
+    except (OSError, ValueError):
         return None
-    return int(raw) if raw.lstrip("-").isdigit() else None
 
 
 def record_result(cfg: PodConfig, name: str, code: int) -> None:
@@ -668,24 +722,23 @@ def finish_boot(cfg: PodConfig, name: str, record: dict, code: int, *, certify: 
         print(f"FATAL: Windows pod completion receipt could not be published: {exc}")
 
 
-# ------------------------------------------------------------------------- #
 # Lifecycle
-# ------------------------------------------------------------------------- #
 def start(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     """Create pod *name*'s task and run it now.
 
-    ``/SC ONCE /ST 00:00`` is a schedule Task Scheduler will not fire on its
-    own: the trigger time is already in the past when the task is created, and
-    Windows does not replay a missed trigger unless the task asks it to. That
-    keeps a pod TRANSIENT, matching the systemd path (``start``, never
-    ``enable``) and the launchd path's deliberate refusal to install under
-    ``~/Library/LaunchAgents``.
+    The task is registered from :func:`render_task_xml`, because only a task
+    definition can carry :data:`TASK_PRIORITY`. Its one-time trigger is in the
+    past, a schedule Task Scheduler will not fire on its own: Windows does not
+    replay a missed trigger unless the task asks it to. That keeps a pod
+    TRANSIENT, matching the systemd path (``start``, never ``enable``) and the
+    launchd path's deliberate refusal to install under ``~/Library/LaunchAgents``.
 
-    Neither ``/RU`` nor ``/RP`` is passed, which is the documented form for "run
-    as the current logged-on user" and the only one that never prompts for a
-    password: ``/RU`` without ``/RP`` asks for one on an interactive console and
-    fails outright without one. So the task runs as the user, unelevated, which
-    is the whole reason this backend is Task Scheduler and not ``sc.exe``.
+    Neither ``/RU`` nor ``/RP`` is passed and the definition names no user, which
+    is the form for "run as the current logged-on user" and the only one that
+    never prompts for a password: ``/RU`` without ``/RP`` asks for one on an
+    interactive console and fails outright without one. So the task runs as the
+    user, unelevated, which is the whole reason this backend is Task Scheduler
+    and not ``sc.exe``. The definition file is deleted once ``/Create`` returns.
     """
     try:
         prior = runs.read(cfg, name)
@@ -703,18 +756,14 @@ def start(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         script = write_task_script(cfg, name)
         # Refuse before scheduling if readers could see an old failure result.
         result_path(cfg, name).unlink(missing_ok=True)
-        created = schtasks(
-            "/Create",
-            "/F",
-            "/SC",
-            "ONCE",
-            "/ST",
-            "00:00",
-            "/TN",
-            task_name(cfg, name),
-            "/TR",
-            f'"{script}"',
-        )
+        definition = script.with_suffix(".xml")
+        definition.write_bytes(render_task_xml(script).encode("utf-16"))
+        try:
+            created = schtasks(
+                "/Create", "/F", "/TN", task_name(cfg, name), "/XML", str(definition)
+            )
+        finally:
+            definition.unlink(missing_ok=True)
         if created.returncode != 0:
             raise WindowsTaskError(
                 f"schtasks /Create rc={created.returncode}: "
@@ -889,7 +938,7 @@ def stop(
                 # A stored receipt represents a kernel-zero proof with no further
                 # spawn/resume from that publisher. It survives cleanup retries.
         deleted = schtasks("/Delete", "/TN", task_name(cfg, name), "/F")
-        if deleted.returncode != 0 and task_exists(cfg, name):
+        if deleted.returncode != 0 and not task_absent(cfg, name):
             raise OSError("the drained pod's scheduled task could not be deleted")
         _unlink_waiting_out_sharing(task_script_path(cfg, name))
         # Supervisor cleanup is best-effort; authoritative teardown must surface
@@ -1213,9 +1262,7 @@ def supervise_gateway(
                 raise DrainUnproven(str(exc)) from exc
 
 
-# ------------------------------------------------------------------------- #
 # Probes
-# ------------------------------------------------------------------------- #
 def is_active(cfg: PodConfig, name: str) -> bool:
     """Whether this pod has a live gateway process.
 
@@ -1270,6 +1317,26 @@ def main_pid(cfg: PodConfig, name: str) -> int | None:
     return supervised_pid(cfg, name)
 
 
+def _boot_in_progress(cfg: PodConfig, name: str) -> bool:
+    """Whether a claimed boot's producer is still alive, before any gateway pid.
+
+    The producer validates the checkout and seeds HOME before it spawns the
+    gateway, so a caller that refuses under a live pod (worktree removal) must
+    refuse here too. A record or identity that cannot be read counts as a boot in
+    progress: the answer guards a deletion.
+    """
+    try:
+        record = runs.read(cfg, name)
+        if record is None or record["state"] != "preparing":
+            return False
+        handle = jobs.open_identity(*record["publisher"])
+        if handle is not None:
+            jobs.close_identity(handle)
+    except (OSError, ValueError):
+        return True
+    return handle is not None
+
+
 def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
     """``(state, restarts)`` shaped like the systemd backend's return.
 
@@ -1277,7 +1344,7 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
     so the pair is derived from two facts the wrapper records: the supervised
     pid, and the exit code of the last boot.
 
-    * a live pid -> ``("active", 0)``
+    * a live pid, or a boot whose producer is still alive -> ``("active", 0)``
     * no pid and a NON-ZERO recorded result -> ``("failed", 1)``
     * anything else -> ``("inactive", 0)``
 
@@ -1285,7 +1352,9 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
     CRASH SIGNAL ``_wait_healthy`` stops waiting on, not a tally, so it must
     never be shown to a user as a restart count.
     """
-    if supervised_pid(cfg, name) is not None:
+    # Boot first: the producer records the gateway pid BEFORE it publishes
+    # `ready`, so a read that misses `preparing` then finds the pid.
+    if _boot_in_progress(cfg, name) or supervised_pid(cfg, name) is not None:
         return "active", 0
     rc = last_result(cfg, name)
     if rc is not None and rc != 0:
@@ -1294,24 +1363,28 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
 
 
 def active_names(cfg: PodConfig) -> set[str]:
-    """Names of pods with a live gateway process.
+    """Names of pods with a live gateway process or a boot still in progress.
 
-    Enumerates this plane's pid records instead of listing tasks. A full
+    Enumerates this plane's pid and run records instead of listing tasks. A full
     ``schtasks /Query /FO CSV`` dump would have to be filtered on a localized
     status column, and it would also count a task that exists but whose process
-    is gone — which systemd's ``--state=active`` filter excludes for us.
+    is gone — which systemd's ``--state=active`` filter excludes for us. A boot
+    has no pid record until its gateway spawns, yet it is already using the
+    checkout, so its run record counts too (the same answer as :func:`unit_state`).
     """
     prefix = f"{cfg.unit_prefix}."
-    names: set[str] = set()
+    candidates: set[str] = set()
     try:
-        entries = list(cfg.pods_dir.glob(f"{prefix}*.winpid"))
+        for suffix in (".winrun", ".winpid"):
+            for path in cfg.pods_dir.glob(f"{prefix}*{suffix}"):
+                candidates.add(path.name[len(prefix) : -len(suffix)])
     except OSError:
-        return names
-    for path in entries:
-        candidate = path.name[len(prefix) : -len(".winpid")]
-        if candidate and supervised_pid(cfg, candidate) is not None:
-            names.add(candidate)
-    return names
+        return set()
+    return {
+        name
+        for name in candidates
+        if name and (_boot_in_progress(cfg, name) or supervised_pid(cfg, name) is not None)
+    }
 
 
 def journal_mark(cfg: PodConfig, name: str) -> dict[str, int]:

@@ -36,7 +36,7 @@ from work_ledger_projection_helpers import (
 from kiro_crew import work_ledger as wl
 from kiro_crew.crew_log import eager, projection
 from kiro_crew.dashboard.handlers import work_ledger as routes
-from kiro_crew.testing.wait import await_until, until_parked
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout, until_parked
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _isolated = work_ledger_projection_helpers._isolated
@@ -91,9 +91,11 @@ async def test_a_nested_legacy_boards_baseline_carries_its_lineage(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_pruned_worker_unit_refuses_the_rebuild_instead_of_erasing_its_reports(
+async def test_a_pruned_worker_unit_leaves_the_rebuilt_report_standing(
     monkeypatch,
 ):
+    """The board's copy of the report is in the conductor's log, so retention taking the
+    worker's unit costs the board nothing: the rebuild keeps the report."""
     from kiro_crew.crew_log import store
 
     _real_units(monkeypatch)
@@ -109,11 +111,7 @@ async def test_a_pruned_worker_unit_refuses_the_rebuild_instead_of_erasing_its_r
 
     with eager.paused():
         shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, "u-worker"))
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.rebuild_from_projection(CONDUCTOR)
-    assert caught.value.code == "crew_log_incomplete"
-    # The refusal names its exit: keep the cache, or drop the item's files and rebuild.
-    assert "remove that item's cached files and rebuild" in str(caught.value)
+    wl.rebuild_from_projection(CONDUCTOR)
     after = wl.read_work_item(CONDUCTOR, item_id)
     assert (after.status, after.summary, after.last_report_at) == (
         before.status,
@@ -123,13 +121,13 @@ async def test_a_pruned_worker_unit_refuses_the_rebuild_instead_of_erasing_its_r
 
 
 @pytest.mark.asyncio
-async def test_a_rebuild_keeps_the_completeness_marker_so_a_later_prune_still_refuses(
+async def test_a_rebuild_keeps_the_completeness_marker_and_a_later_prune_keeps_the_report(
     monkeypatch,
 ):
     """Entries never carry ``recorded_at``; a rebuild that copied the fold verbatim
-    would clear it, and the next completeness check would skip the item -- so a
-    rebuild, a retention prune and a second rebuild would erase the worker's
-    reports the first rebuild had just written. The stamp must survive the fold."""
+    would clear it, so the stamp must survive the fold. A retention prune of the
+    worker's unit and a second rebuild then keep the report, whose board copy is in
+    the conductor's log."""
     import shutil
 
     from kiro_crew import crew_log as lg
@@ -151,9 +149,7 @@ async def test_a_rebuild_keeps_the_completeness_marker_so_a_later_prune_still_re
 
     with eager.paused():
         shutil.rmtree(store.crew_log_dir(lg.KIND_SESSION, "u-worker"))
-    with pytest.raises(wl.WorkLedgerError) as caught:
-        wl.rebuild_from_projection(CONDUCTOR)
-    assert caught.value.code == "crew_log_incomplete"
+    wl.rebuild_from_projection(CONDUCTOR)
     after = wl.read_work_item(CONDUCTOR, item_id)
     assert after is not None
     assert (after.status, after.summary, after.last_report_at) == (
@@ -243,8 +239,7 @@ async def test_a_write_queued_behind_the_lock_rechecks_the_dirty_flag_under_it(m
     release.set()
     await await_until(holder)
 
-    # flake-ok: pre-existing unbounded await of the queued write once the lock holder is released; moved verbatim, tracked for a de-flake pass
-    status, body = await queued
+    status, body = await await_until(queued, what="the queued write behind the released board lock")
     assert (status, body["code"]) == (409, "cache_dirty"), body
     assert wl.read_work_item(CONDUCTOR, item_id).decision == ""
 
@@ -260,8 +255,7 @@ async def test_a_write_queued_behind_the_lock_rechecks_the_dirty_flag_under_it(m
     wl.mark_cache_dirty(CONDUCTOR, "the write ahead could not be undone")
     release.set()
     await await_until(holder)
-    # flake-ok: pre-existing unbounded await of the queued write once the lock holder is released; moved verbatim, tracked for a de-flake pass
-    status, body = await queued
+    status, body = await await_until(queued, what="the queued write behind the released board lock")
     assert (status, body["code"]) == (409, "cache_dirty"), body
     assert wl.read_work_item(CONDUCTOR, item_id).status is None
 
@@ -566,16 +560,32 @@ async def test_cancelled_record_drains_its_append_before_reraising(monkeypatch):
     )
     try:
         assert await asyncio.to_thread(entered.wait, 2), "the append worker was not entered"
+        # The route is parked on the future that shields the transaction, and the cancel
+        # kills that future. It has taken the cancel once it is parked on a new one (the
+        # drain waiting on the transaction again) or has ended. Only from there can the
+        # check below see an escape, so it cannot pass because the cancel is still on its
+        # way. (`until_parked` reads asyncio's private waiter list the same way.)
+        parked_on = pending._fut_waiter
         pending.cancel()
-        # flake-ok: pre-existing 50 ms window showing the cancelled write still drains its append; moved verbatim, tracked for a de-flake pass
-        done, _waiting = await asyncio.wait({pending}, timeout=0.05)
-        assert not done, "cancellation escaped before the append-or-rollback transaction drained"
+        await async_wait_until(
+            lambda: pending.done() or pending._fut_waiter not in (None, parked_on),
+            describe=lambda: (
+                f"done={pending.done()}, still parked on the cancelled future: "
+                f"{pending._fut_waiter is parked_on}"
+            ),
+        )
+        assert (
+            not pending.done()
+        ), "cancellation escaped before the append-or-rollback transaction drained"
+        # And it stays parked while the append is blocked. Shielded, so the window
+        # does not cancel the route a second time.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(pending), timeout=0.05)
     finally:
         release.set()
 
     with pytest.raises(asyncio.CancelledError):
-        # flake-ok: pre-existing unbounded await; the blocked append's own 2 s release bound ends it; moved verbatim, tracked for a de-flake pass
-        await pending
+        await await_until(pending, what="the cancelled write after its blocked append is released")
 
     item = wl.read_work_item(CONDUCTOR, item_id)
     assert item is not None and item.decision == "ship it"
@@ -664,14 +674,39 @@ def test_a_rebuild_holds_a_fold_created_items_lock_through_its_undo(monkeypatch)
         return real_read(slot, item_id, strict=strict)
 
     took_the_lock = threading.Event()
+    arrived = threading.Event()
     observed: dict[str, bool] = {}
     real_restore = wl._restore_files
+    real_open_lock = wl._open_lock
+
+    class _ArrivalLock:
+        """What ``_open_lock`` returns, reporting the probe's arrival before it takes the lock.
+
+        ``item_lock`` reads ``_open_lock`` by name when it is called, so this stands in for
+        it once the rebuild holds the new item's lock. The probe is reported at the lock,
+        which "the thread started" is not, and then takes the real lock behind it.
+        """
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __enter__(self):
+            arrived.set()
+            return self._inner.__enter__()
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
 
     def _ask_at_undo_time(snapshot):
+        monkeypatch.setattr(
+            wl, "_open_lock", lambda path, **kwargs: _ArrivalLock(real_open_lock(path, **kwargs))
+        )
         probe = threading.Thread(target=_hold_briefly, daemon=True)
         probe.start()
-        # flake-ok: pre-existing 1.5 s probe wait whose expiry is the passing answer, on a daemon probe thread it never joins; moved verbatim, tracked for a de-flake pass
-        observed["free_at_undo"] = took_the_lock.wait(1.5)
+        # Recorded here and asserted once the rebuild has raised: it swallows whatever its
+        # undo raises, so an assertion in this hook would never reach the test.
+        observed["arrived"] = arrived.wait(default_timeout())
+        observed["held_at_undo"] = not took_the_lock.wait(1.5)
         return real_restore(snapshot)
 
     def _hold_briefly() -> None:
@@ -684,7 +719,8 @@ def test_a_rebuild_holds_a_fold_created_items_lock_through_its_undo(monkeypatch)
     with pytest.raises(OSError):
         wl.rebuild_from_projection(CONDUCTOR)
 
-    assert observed["free_at_undo"] is False, (
+    assert observed["arrived"], "the probe never reached the fold-created item's lock"
+    assert observed["held_at_undo"], (
         "the fold-created item's lock was free while the undo ran, so a concurrent "
         "write could land in that window and be unlinked by it"
     )
@@ -936,7 +972,8 @@ async def test_a_header_read_that_answers_none_once_still_carries_the_generation
 
     assert status == 200, body
     assert faulted == [CONDUCTOR], "the post-commit read is the one that must fault"
-    assert [data.get("generation") for _unit, data in recorded] == [stamped.generation]
+    # The worker's copy and the board's copy carry the same generation.
+    assert [data.get("generation") for _unit, data in recorded] == [stamped.generation] * 2
     landed = wl.read_work_item(CONDUCTOR, item_id)
     assert landed is not None and landed.status == "progress"
 
@@ -1000,6 +1037,6 @@ async def test_a_board_with_no_generation_still_accepts_a_write(recorded):
     status, body = await _report(WORKER, {"status": "progress", "summary": "legacy board"})
 
     assert status == 200, body
-    assert [data.get("generation") for _unit, data in recorded] == [None]
+    assert [data.get("generation") for _unit, data in recorded] == [None, None]
     landed = wl.read_work_item(CONDUCTOR, item_id)
     assert landed is not None and landed.status == "progress"

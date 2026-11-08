@@ -23,6 +23,12 @@ because the prompts differ (a title is 3-6 words, a summary is up to 18).
 
 from __future__ import annotations
 
+#: The fixed opening sentence of every session-naming prompt (the dashboard
+#: title, its refresh, and the Slack/Telegram conversation name). The offline
+#: fake backend (``kiro_crew.testing.fake_acp_backend``) recognises a naming
+#: turn by this sentence and keeps a pinned copy of it.
+NAMING_PROMPT_OPENING = "You are a session naming agent."
+
 #: Ceiling on whitespace-separated words for a 3-6 word title. Anything
 #: materially longer is the model answering instead of naming, so the ceiling
 #: sits above any plausible real title and below a sentence.

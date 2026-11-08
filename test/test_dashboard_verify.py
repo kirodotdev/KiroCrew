@@ -22,6 +22,7 @@ import json
 import os
 import posixpath
 import random
+import shutil
 import socket
 import sys
 import tempfile
@@ -29,6 +30,7 @@ import textwrap
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -1382,6 +1384,31 @@ def test_the_browser_and_its_profile_are_gone_afterwards(monkeypatch, tmp_path, 
     (start,) = fake.records("start")
     with pytest.raises(ProcessLookupError):
         os.kill(start["pid"], 0)
+    assert list(fast.iterdir()) == [], "the throwaway profile was left behind"
+
+
+@LINUX_ONLY
+def test_the_profile_is_gone_when_a_helper_writes_into_it_while_it_is_removed(
+    monkeypatch, tmp_path, fast
+):
+    """The crash handler outlives the group kill and can write into the profile mid-removal."""
+    raced: list[str] = []
+
+    def rmtree_while_a_helper_writes(path: str, *args: Any, **kwargs: Any) -> None:
+        shutil.rmtree(path, *args, **kwargs)
+        if not raced:
+            # What that leaves: the directory, holding the entry the helper wrote.
+            raced.append(path)
+            os.makedirs(os.path.join(path, "Crash Reports"))
+
+    # The module's own binding, so no other code in the worker sees the stand-in.
+    monkeypatch.setattr(
+        dashboard_verify, "shutil", SimpleNamespace(rmtree=rmtree_while_a_helper_writes)
+    )
+
+    _run(monkeypatch, FakeBrowser(tmp_path), "<p>x</p>")
+
+    assert raced, "the profile was never removed"
     assert list(fast.iterdir()) == [], "the throwaway profile was left behind"
 
 

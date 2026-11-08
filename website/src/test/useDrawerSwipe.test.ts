@@ -615,8 +615,8 @@ describe('useDrawerSwipe', () => {
     // gesture sink.
     const { host, inner } = appendShadowScroller(false)
     mount()
-    fireThroughShadow(host, inner, touch('touchstart', 200))
-    fireThroughShadow(host, inner, touch('touchmove', 360))
+    act(() => fireThroughShadow(host, inner, touch('touchstart', 200)))
+    act(() => fireThroughShadow(host, inner, touch('touchmove', 360)))
     expect(onGestureOpen).toHaveBeenCalledTimes(1)
   })
 

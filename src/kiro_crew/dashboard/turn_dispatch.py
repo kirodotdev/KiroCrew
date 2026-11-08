@@ -11,8 +11,8 @@ never retrieved" message and a failure indistinguishable from the agent going
 quiet.
 
 The ceiling is an ordinary outcome of long-running work, not a rare edge case: a
-babysit loop polling a pull request reaches it routinely — ten review rounds at
-roughly five minutes of waiting each, plus the tool time in between.
+babysit loop polling a pull request reaches it routinely — ten rounds of feedback
+at roughly five minutes of waiting each, plus the tool time in between.
 
 This module owns the one dispatch path. Keeping the ceiling, the clamp against
 the transport's own timeout, and the visible-card guarantee together here is
@@ -29,6 +29,7 @@ from contextvars import ContextVar
 from typing import Any, Literal
 
 from kiro_crew.acp.client import resolve_prompt_timeout
+from kiro_crew.config import load_memo
 from kiro_crew.config.loader import (
     APPROVAL_TURN_MARGIN_SECS,
     CHAT_TURN_TIMEOUT_MAX,
@@ -72,6 +73,24 @@ class TurnTimeoutError(TimeoutError):
         super().__init__(f"turn exceeded the {timeout_secs:.0f}s ceiling")
         self.timeout_secs = timeout_secs
         self.native_cancel_outcome = native_cancel_outcome
+
+
+class BackgroundTurnAbandoned(TimeoutError):
+    """An unattended turn gave up waiting for a background-turn permit and never ran.
+
+    Raised by ``DashboardState.run_background_turn``. A ``TimeoutError``, so the
+    callers that treat that wait as one keep doing so (the structured nudge fire
+    settles ``BUSY``, the crew runtime renders its own card). :func:`finish_turn_task`
+    tells it apart from the turn ceiling: nothing ran, so the ceiling card's "hit
+    the limit and was stopped" would name a cause that never happened.
+    """
+
+    def __init__(self, wait_secs: float, cap: int | None) -> None:
+        super().__init__(
+            f"queued {wait_secs}s behind the background-turn cap ({cap} concurrent) "
+            "without a free slot"
+        )
+        self.wait_secs = wait_secs
 
 
 def _turn_budget_remaining() -> float | None:
@@ -118,7 +137,15 @@ def chat_turn_timeout_secs() -> float:
     ignored.
     """
     try:
-        configured = float(KiroCrewConfig.load().agent.chat_turn_timeout_secs)
+        # Read on the event loop at every turn dispatch: the config rebuild is
+        # skipped while the config files are unchanged (``config.load_memo``).
+        configured = float(
+            load_memo.memoized(
+                "agent.chat_turn_timeout_secs",
+                KiroCrewConfig.load,
+                lambda cfg: cfg.agent.chat_turn_timeout_secs,
+            )
+        )
     except Exception:
         logger.debug("chat-turn ceiling config unavailable; using default", exc_info=True)
         return CHAT_TURN_TIMEOUT
@@ -176,7 +203,13 @@ def resolve_turn_limit(slot: Any = None) -> tuple[float, str]:
 def native_cancel_ack_timeout_secs() -> float:
     """Resolve the bounded wait for a native turn-cancellation acknowledgement."""
     try:
-        configured = float(KiroCrewConfig.load().agent.soft_stop_budget_secs)
+        configured = float(
+            load_memo.memoized(
+                "agent.soft_stop_budget_secs",
+                KiroCrewConfig.load,
+                lambda cfg: cfg.agent.soft_stop_budget_secs,
+            )
+        )
     except Exception:
         logger.debug(
             "native cancel acknowledgement config unavailable; using default", exc_info=True
@@ -301,16 +334,50 @@ def format_approval_timeout_card(timeout_secs: float) -> str:
     prompt as a generic turn timeout, stating neither the actual cause nor the
     fix, which is resending.
     """
-    if timeout_secs >= 3600:
-        waited = f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".") + " hours"
-    else:
-        waited = f"{max(1, round(timeout_secs / 60))} minutes"
     return (
-        f"⏱️ A tool needed your approval and nothing came back within {waited}, "
+        f"⏱️ A tool needed your approval and nothing came back within "
+        f"{_approval_wait_phrase(timeout_secs)}, "
         "so I declined it on your behalf and carried on from the denial — nothing "
         "was rolled back. If you wanted that tool to run, send the message again "
         "and approve the prompt when it appears, or turn on YOLO mode first for an "
         "unattended run."
+    )
+
+
+def _approval_wait_phrase(timeout_secs: float) -> str:
+    """How long an approval prompt waited, in seconds, minutes or hours.
+
+    Picks the singular unit for a count of one, matching the minute/minutes
+    choice :func:`format_background_turn_abandoned_card` already makes, so the
+    note never reads "1 minutes" or "1 hours".
+    """
+    if timeout_secs >= 3600:
+        hours = f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".")
+        return f"{hours} hour" if hours == "1" else f"{hours} hours"
+    if timeout_secs < 60:
+        seconds = max(1, round(timeout_secs))
+        return f"{seconds} second" if seconds == 1 else f"{seconds} seconds"
+    minutes = round(timeout_secs / 60)
+    return f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
+
+
+#: Title of the bell-feed note an approval prompt nobody answered leaves.
+APPROVAL_EXPIRED_NOTE_TITLE = "Tool approval expired"
+
+
+def format_approval_expired_note(tool_name: str, session_title: str, timeout_secs: float) -> str:
+    """Bell-feed body for an approval prompt nobody answered in time.
+
+    The card in the chat tells someone looking at the session; this note is for
+    someone who is not, so it names the session and the tool and says the turn
+    went on without it. It names the tool, not the command: the prompt's own
+    text is agent-authored and stays on the card.
+    """
+    tool = tool_name or "A tool"
+    session = session_title or "a session"
+    return (
+        f"{tool} in {session!r} waited {_approval_wait_phrase(timeout_secs)} for "
+        "approval and was declined. The turn carried on without it."
     )
 
 
@@ -344,6 +411,59 @@ _RAISE_SESSION_LIMIT_HINT = (
 )
 
 
+def turn_timeout_notice(
+    timeout_secs: float,
+    native_cancel_outcome: "CancelOutcome | None" = None,
+    limit_scope: str = TURN_LIMIT_GLOBAL,
+) -> tuple[str, str, dict[str, str | int | float]]:
+    """The timeout card's English text, its notice token and the args its copy needs.
+
+    The English ``content`` is the channel/SSE/model fallback and is unchanged.
+    The args the dashboard localizes from are STRUCTURED, not pre-worded English:
+    the limit is a ``limit_value`` number plus a ``limit_unit`` key
+    (``minute``/``hour``), so the frontend words "30-minute" / "1.5-hour" with
+    the catalog's plural keys rather than being handed an English adjective to
+    drop into every locale. ``limit_scope`` (``session``/``global``) lets the
+    frontend pick the matching localized remedy hint; the English hint is baked
+    into ``content`` only, never passed as an arg to interpolate.
+    """
+    from kiro_crew.dashboard import gateway_notice as gn
+
+    if timeout_secs >= 3600:
+        limit_value: float = round(timeout_secs / 3600, 1)
+        limit_unit = "hour"
+        limit = f"{limit_value:.1f}".rstrip("0").rstrip(".") + "-hour"
+    else:
+        limit_value = max(1, round(timeout_secs / 60))
+        limit_unit = "minute"
+        limit = f"{limit_value}-minute"
+    hint = _RAISE_SESSION_LIMIT_HINT if limit_scope == TURN_LIMIT_SESSION else _RAISE_LIMIT_HINT
+    if native_cancel_outcome in ("timeout", "no_turn", "error"):
+        text = (
+            f"⏱️ This turn hit the {limit} limit. The native agent did not "
+            "acknowledge the stop request, so its previous tool may still be "
+            "finishing. Do not resume this session until it becomes idle. Work "
+            f"already written to disk is still there — nothing was rolled back.{hint}"
+        )
+        token = gn.GATEWAY_NOTICE_TURN_TIMEOUT_NATIVE_PENDING
+    else:
+        text = (
+            f"⏱️ This turn hit the {limit} limit and was stopped. Work already "
+            "written to disk is still there — nothing was rolled back. Send a "
+            f"message to continue from where it stopped.{hint}"
+        )
+        token = gn.GATEWAY_NOTICE_TURN_TIMEOUT
+    return (
+        text,
+        token,
+        {
+            "limit_value": limit_value,
+            "limit_unit": limit_unit,
+            "limit_scope": limit_scope,
+        },
+    )
+
+
 def format_turn_timeout_card(
     timeout_secs: float,
     native_cancel_outcome: "CancelOutcome | None" = None,
@@ -355,23 +475,40 @@ def format_turn_timeout_card(
     that sets it: the session's own menu for a session limit, Settings for the
     global one.
     """
-    if timeout_secs >= 3600:
-        limit = f"{timeout_secs / 3600:.1f}".rstrip("0").rstrip(".") + "-hour"
-    else:
-        limit = f"{max(1, round(timeout_secs / 60))}-minute"
-    hint = _RAISE_SESSION_LIMIT_HINT if limit_scope == TURN_LIMIT_SESSION else _RAISE_LIMIT_HINT
-    if native_cancel_outcome in ("timeout", "no_turn", "error"):
-        return (
-            f"⏱️ This turn hit the {limit} limit. The native agent did not "
-            "acknowledge the stop request, so its previous tool may still be "
-            "finishing. Do not resume this session until it becomes idle. Work "
-            "already written to disk is still there — nothing was rolled back." + hint
-        )
-    return (
-        f"⏱️ This turn hit the {limit} limit and was stopped. Work already "
-        "written to disk is still there — nothing was rolled back. Send a "
-        "message to continue from where it stopped." + hint
+    text, _token, _args = turn_timeout_notice(timeout_secs, native_cancel_outcome, limit_scope)
+    return text
+
+
+def background_turn_abandoned_notice(wait_secs: float) -> tuple[str, str, dict[str, int]]:
+    """The never-started card's text, its notice token and its copy args.
+
+    The English ``content`` is unchanged; the arg is the ``waited_minutes``
+    NUMBER, so the frontend words "1 minute" / "5 minutes" with the catalog's
+    plural keys rather than being handed an English string to render in every
+    locale.
+    """
+    from kiro_crew.dashboard import gateway_notice as gn
+
+    minutes = max(1, round(wait_secs / 60))
+    waited = f"{minutes} minute" if minutes == 1 else f"{minutes} minutes"
+    text = (
+        f"⏱️ This turn never started: it waited {waited} for a free background-turn "
+        "slot and gave up. Nothing ran and nothing was rolled back; the next message "
+        "or loop cycle starts a new turn. If turns keep queueing at the cap, raise "
+        "`dashboard.max_background_turns`."
     )
+    return text, gn.GATEWAY_NOTICE_BACKGROUND_TURN_ABANDONED, {"waited_minutes": minutes}
+
+
+def format_background_turn_abandoned_card(wait_secs: float) -> str:
+    """User-facing text for an unattended turn that never got a background-turn permit.
+
+    Distinct from :func:`format_turn_timeout_card`: that card describes a turn that
+    ran until its limit stopped it, and its remedy (a longer turn limit) does nothing
+    for a turn that waited behind the cap and never started.
+    """
+    text, _token, _args = background_turn_abandoned_notice(wait_secs)
+    return text
 
 
 def _report_turn_timeout(
@@ -401,11 +538,18 @@ def _report_turn_timeout(
     try:
         # slot.append persists the card AND broadcasts it once; do not also
         # broadcast_ws here or the UI renders a duplicate.
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        _card, _token, _args = turn_timeout_notice(timeout_secs, native_cancel_outcome, limit_scope)
         slot.append(
             "error",
-            format_turn_timeout_card(timeout_secs, native_cancel_outcome, limit_scope),
+            _card,
             "msg msg-err",
-            meta={"kind": TURN_TIMEOUT_KIND, "limit_scope": limit_scope},
+            meta={
+                "kind": TURN_TIMEOUT_KIND,
+                "limit_scope": limit_scope,
+                **gn.gateway_notice_meta(_token, **_args),
+            },
         )
         state.push_slots_update()
     except Exception:
@@ -436,6 +580,18 @@ def finish_turn_task(
     except asyncio.CancelledError:  # pragma: no cover - racing cancellation
         return
     if exc is None:
+        return
+    if isinstance(exc, BackgroundTurnAbandoned):
+        # Checked before the ceiling below, whose card it would otherwise get.
+        # run_background_turn already logged the wait at warning level.
+        try:
+            from kiro_crew.dashboard import gateway_notice as gn
+
+            _card, _token, _args = background_turn_abandoned_notice(exc.wait_secs)
+            slot.append("error", _card, "msg msg-err", meta=gn.gateway_notice_meta(_token, **_args))
+            state.push_slots_update()
+        except Exception:
+            logger.debug("Failed to render the background-turn abandonment card", exc_info=True)
         return
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         _report_turn_timeout(
@@ -754,6 +910,47 @@ def spawn_guarded_turn(
             # wrapper but not the input coroutine stored in its arguments.
             coro.close()
         finish_turn_task(state, slot, t, timeout, limit_scope)
+        _hand_off_if_unstarted(state, slot, t)
 
     task.add_done_callback(_finish)
     return task
+
+
+def mark_turn_unstarted(slot: Any) -> None:
+    """Record that the dispatch holding *slot* ends without starting its turn.
+
+    ``_run_chat`` hands the slot's queue off on every exit. A dispatch that
+    returns or raises before entering it -- a monitor wake refused before its
+    runner, a wait for a background-turn permit that gave up or was cancelled --
+    still held ``slot.task`` while it waited, so a send may have queued behind
+    it. The exit marks itself here, and :func:`spawn_guarded_turn`'s done
+    callback hands that queue off in its place. A slot without a turn
+    generation (a test double) is left alone, so the exit's own outcome is what
+    propagates.
+    """
+    generation = getattr(slot, "_turn_generation", None)
+    if isinstance(generation, int):
+        slot._unstarted_generation = generation
+
+
+def _hand_off_if_unstarted(state: Any, slot: Any, task: "asyncio.Task[Any]") -> None:
+    """Hand off *task*'s slot queue when its exit marked the turn unstarted.
+
+    The chat runner's ``_hand_off_unstarted_turn`` decides whether one is owed
+    and owns it; the check here only spares every other turn the import.
+    """
+    if getattr(slot, "task", None) is not task:
+        return
+    if getattr(slot, "_unstarted_generation", None) != getattr(slot, "_turn_generation", None):
+        return
+    try:
+        # circular import: the chat runner imports this module at load.
+        from kiro_crew.dashboard.chat_runner import _hand_off_unstarted_turn
+
+        _hand_off_unstarted_turn(state, slot, task)
+    except Exception:
+        logger.warning(
+            "Could not hand off the queue after a turn that never started in slot %s",
+            getattr(slot, "key", "?"),
+            exc_info=True,
+        )

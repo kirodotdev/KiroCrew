@@ -17,6 +17,7 @@ Design (see docs/request-for-change/rfc-local-notification-bus.md):
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -78,6 +79,19 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # write for a human decision. Default priority -- nothing is blocked, the
     # app keeps working on the version it has.
     "system.apps": _DEFAULT_PRIORITY,
+    # A chat turn that DIED with an error the user must act on -- a provider
+    # 5xx / throttle, a content-filter refusal, or a terminal transport death
+    # ("start a new chat" / "please retry"). Until this channel existed the
+    # only trace of a dead turn was the inline error card in the transcript,
+    # so an operator working in another session would learn work has stopped
+    # only by opening it. Its own channel, not system.agent, so the
+    # user can mute dead-turn alerts without muting the notes agents write for
+    # a human decision. Default priority: the note lands in the bell with the
+    # channel's configured sound/banner but blocks no turn -- the prompt that
+    # does (an approval) has its own critical channel. Deduped per session via
+    # group_key and attributed to the publishing session so that session's
+    # own mute applies (the note is suppressed when the user has muted it).
+    "system.turn": _DEFAULT_PRIORITY,
 }
 
 # The channel the gateway's monitor-loop stop/finish notices use. Their legacy
@@ -91,6 +105,7 @@ _FALLBACK_CHANNEL = "system.agent"
 
 _MAX_TITLE_LEN = 500
 _MAX_BODY_LEN = 20000
+_MAX_KEY_LEN = MAX_SHORT_STRING
 # Actions are rendered as buttons on every notification surface -- caps keep
 # a single note from expanding the feed layout or bloating the store (the
 # 64 KB request limit alone would admit thousands of actions).
@@ -116,6 +131,10 @@ _RESERVED_NOTE_KEYS = frozenset(
         "body",
         "ts",
         "group_key",
+        # The caller-chosen identity a later publish or dismiss names the note by.
+        # Only a producer that validated it may set it: a key smuggled through
+        # meta would let a note replace another of the same source.
+        "key",
         "actions",
         "url",
         "icon",
@@ -128,12 +147,34 @@ _RESERVED_NOTE_KEYS = frozenset(
         # Which session published the note; set only by gateway handlers from an
         # attested key, and read by the delivery sink for that session's mute.
         "publisher_session",
+        # The dashboard copy a gateway-written note renders in the reader's
+        # language. Only gateway producers set it, so an app or agent cannot
+        # make its note read as one of the gateway's own.
+        "i18n",
         # Sink/frontend-owned status fields: a caller must not be able to
         # pre-suppress or pre-acknowledge a note it is pushing.
         "silenced",
         "acked",
+        "quiet",
     }
 )
+
+
+def _finite_json(value: Any) -> Any:
+    """*value* with every NaN or infinite float, at any depth, read as ``None``.
+
+    The push route parses with plain ``json.loads``, which accepts ``NaN`` and
+    ``Infinity``; stored as is, one such meta value is written back out
+    literally, and the feed is then not JSON a browser can parse, for every
+    client, until the note ages out. ``None`` keeps the key and the note.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _finite_json(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_finite_json(v) for v in value]
+    return value
 
 
 class NotificationValidationError(ValueError):
@@ -169,7 +210,7 @@ class NotificationPayload:
     """Schema v2 notification (RFC "Notification payload").
 
     The full field set is carried so persistence and the wire format stay
-    stable; ``actions``/``url``/``icon``/``ttl`` are optional and are omitted
+    stable; ``key``/``actions``/``url``/``icon``/``ttl`` are optional and are omitted
     from the note dict entirely when unset.
     """
 
@@ -180,6 +221,9 @@ class NotificationPayload:
     priority: str | None = None  # None = use the channel default
     kind: str | None = None  # legacy kind override; None = derive from channel
     group_key: str | None = None
+    # A note carrying a key replaces the stored note with the same source and
+    # key, so the bell holds one note per key (see NotificationCoordinator).
+    key: str | None = None
     actions: list[dict[str, Any]] | None = None
     url: str | None = None
     icon: str | None = None
@@ -192,6 +236,13 @@ class NotificationPayload:
     # attested key; never caller-supplied. The delivery sink reads it to apply
     # that session's mute and drops it, so it is not stored or broadcast.
     publisher_session: str | None = None
+    # {"id", "params"?} naming the dashboard copy for a gateway-written note:
+    # the bell renders the catalog strings it maps ``id`` to in the reader's
+    # language, filled from ``params``. ``title``/``body`` stay the English for
+    # every reader with no catalog (Web Push, an agent hand-off). Not validated:
+    # the dashboard reads a malformed one as no copy and shows the English, and
+    # dropping the note over it would lose the alert itself.
+    i18n: dict[str, Any] | None = None
 
     def validate(self) -> None:
         """Raise :class:`NotificationValidationError` on any schema violation."""
@@ -220,6 +271,12 @@ class NotificationPayload:
             or self.ttl <= 0
         ):
             raise NotificationValidationError("ttl must be a positive integer")
+        if self.key is not None and (
+            not isinstance(self.key, str) or not self.key.strip() or len(self.key) > _MAX_KEY_LEN
+        ):
+            raise NotificationValidationError(
+                f"key must be a non-empty string of at most {_MAX_KEY_LEN} chars"
+            )
         if self.actions is not None:
             # isinstance BEFORE len(): a non-list (e.g. `42`) would raise
             # TypeError out of len() rather than NotificationValidationError,
@@ -332,6 +389,7 @@ def payload_from_legacy(
     channel: str | None = None,
     member: dict[str, str] | None = None,
     publisher_session: str | None = None,
+    i18n: dict[str, Any] | None = None,
 ) -> NotificationPayload:
     """Build a v2 payload from the legacy ``notify(kind, ...)`` call shape.
 
@@ -358,7 +416,8 @@ def payload_from_legacy(
 
     ``member`` attributes the note to a crewmate (see
     :attr:`NotificationPayload.member`); like ``url`` it is a schema field, so
-    an invalid value raises rather than being repaired.
+    an invalid value raises rather than being repaired. ``i18n`` names the
+    dashboard copy for the note (see :attr:`NotificationPayload.i18n`).
     """
     if channel is None:
         channel = _channel_for_kind(kind)
@@ -386,6 +445,7 @@ def payload_from_legacy(
         actions=actions,
         member=member,
         publisher_session=publisher_session,
+        i18n=i18n,
         meta=dict(meta) if meta else {},
     )
 
@@ -479,12 +539,14 @@ class NotificationBus:
         }
         for key, value in (
             ("group_key", payload.group_key),
+            ("key", payload.key),
             ("actions", payload.actions),
             ("url", payload.url),
             ("icon", payload.icon),
             ("ttl", payload.ttl),
             ("member", payload.member),
             ("publisher_session", payload.publisher_session),
+            ("i18n", payload.i18n),
         ):
             if value is not None:
                 note[key] = value
@@ -509,6 +571,6 @@ class NotificationBus:
             for key, value in payload.meta.items():
                 if key in note or key.startswith("_") or key in _RESERVED_NOTE_KEYS:
                     continue
-                note[key] = value
+                note[key] = _finite_json(value)
         self._sink(note)
         return note

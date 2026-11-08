@@ -5,7 +5,34 @@
 // content blocks; notifications and their channels; approvals; history session
 // rows. Consumers import them from `types/index.ts`.
 import type { WebAppMetadata } from './index.artifacts'
+import type { SessionAttribution } from './index.sharedCrew'
 import type { SourceProviderId } from './index.sources'
+
+/** One open ledger item that does not name a person (`crew_work.items`). */
+export interface CrewWorkItemFacts {
+  /** The bound worker's slot key; `''` for a remote or unbound worker. */
+  worker: string
+  /** Epoch ms it is stale from while its worker's turn is not running
+   *  (`work_ledger.is_stale`, read by the gateway); `0` for never. */
+  stale_at_ms: number
+  /** Its worker's own loop will wake it (`ledger_wake.worker_looping`): idle
+   *  between checks, waiting on CI, still running. Absent from an older gateway. */
+  looping?: boolean
+}
+
+/** A conductor's work ledger in brief (`crew_work` on its slot row). */
+export interface CrewWorkFacts {
+  open: number
+  /** Open items waiting on a person (`reason` approval / needs_human). */
+  person: number
+  /** The worker each of those items belongs to ("" for a remote or unbound one);
+   *  absent from a gateway that predates it. */
+  person_workers?: string[]
+  /** The conductor itself holds a live loop (its patrol), which picks a stalled
+   *  item up; absent from a gateway that predates it. */
+  conductor_looping?: boolean
+  items: CrewWorkItemFacts[]
+}
 
 export interface TodoTask {
   id: string
@@ -83,6 +110,38 @@ export interface McpSessionReport {
    * Optional because an older gateway sends no such key.
    */
   restart_to_load?: string[]
+}
+
+/** A Slack code channel a session runs in (`slack/code_channels/dashboard_view.py`).
+ *  Present only on a bound session's row, and only while code channels are on. */
+export interface CodeChannelInfo {
+  /** "" when the channel's name is not known. */
+  channel_name: string
+  status: 'active' | 'wrapped_up' | 'archived'
+  /** Slack's `app_redirect` URL (the app when installed, else the web client);
+   *  "" when the ids are malformed. */
+  web_url: string
+}
+
+/**
+ * A conductor's crew, summarised from its work ledger: a forward contract for
+ * the `work_aggregate` field the work board (#21993) will put on a conductor's
+ * dashboard slot through the ordinary slot patch. Nothing in this tree sets it
+ * yet. It is null when the conductor has no workers. The sidebar renders it as it comes
+ * and falls back to what the slot list alone says while it is null or absent
+ * (pages/chat-sidebar/codeChannelCrew.ts).
+ *
+ *   state   the crew's state, ALREADY resolved worst first by the board
+ *           (waiting > stuck > working > done > idle): never re-ranked here.
+ *           waiting: on the user; stuck: a worker gone quiet or lost.
+ *   label   the board's summary text, ALREADY redacted: rendered verbatim.
+ *   counts  items in each state; `done` with `total` reads "N of M done".
+ *           Read defensively all the same: a missing count reads as absent.
+ */
+export interface WorkAggregate {
+  state: 'waiting' | 'stuck' | 'working' | 'done' | 'idle'
+  label: string
+  counts: { working?: number; waiting?: number; stuck?: number; done?: number; total?: number }
 }
 
 export interface SessionLink {
@@ -234,9 +293,23 @@ export interface ChatSlot extends TurnIdentityFields {
   row_identity?: string
   /** Provider session identity when it differs from the dashboard slot key. */
   linked_session_key?: string
+  /** Transcript session key this slot reads and writes, from the backend
+   *  `slot_history_key` rule; what the resume endpoint reads. Absent on an older payload. */
+  history_key?: string
+  /** Opaque id of the server's slot object, new each time a session is opened
+   *  under this key. A failed close's restore keeps it; a reopen elsewhere does not.
+   *  Absent on an older payload. */
+  incarnation?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
-  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; /** Place in the gateway's pinned order, or null when it has none. */ pin_rank?: number | null; /** Revision of the pinned order the rank belongs to. */ pin_rev?: number; /** Place in the gateway's manual order (sort "Manual"), or null when it has none. */ manual_rank?: number | null; /** Revision of the manual order the rank belongs to. */ manual_rev?: number; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; ciPending?: string; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue'; identity?: string }[]; source_links_total?: number
+  /** Set when this session is a Slack code channel's (see `CodeChannelInfo`). */
+  code_channel?: CodeChannelInfo
+  /** Code channels are on but not read yet, so this Slack-linked row may still
+   *  turn out to be one: draw no Slack link on it until the next push. */
+  code_channel_pending?: boolean
+  /** The crew's work-ledger summary (see `WorkAggregate`); null with no workers. */
+  work_aggregate?: WorkAggregate | null
+  key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_scope?: string; trust_reads?: boolean; folder_id?: string; pinned?: boolean; /** Place in the gateway's pinned order, or null when it has none. */ pin_rank?: number | null; /** Revision of the pinned order the rank belongs to. */ pin_rev?: number; /** Place in the gateway's manual order (sort "Manual"), or null when it has none. */ manual_rank?: number | null; /** Revision of the manual order the rank belongs to. */ manual_rev?: number; tags?: string[]; tags_revision?: string; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; /** The Slack thread a Slack-born session lives in (not a mirror; slack_linked stays false). */ slack_origin_channel?: string; slack_origin_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; project?: string; forked_from?: string | null; source_links?: { provider: SourceProviderId; number: number; url: string; label?: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; ciPending?: string; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue'; identity?: string }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
    * | "system"; absent/"" for untagged background slots). The session-pulse
    * survey shows only on a "user" slot, so an imported Slack thread, a
@@ -251,7 +324,25 @@ export interface ChatSlot extends TurnIdentityFields {
    * (written at birth, rehydrated), so it is the one link from a crew member's
    * DM thread to the worker sessions it drives — the Crew Members drawer
    * filters the live slots on it. */
+  /** Shared Crew creator (`shared_crew.attribution`), public shape. Display only. */
+  attribution?: SessionAttribution | null
   created_by?: string
+  /** True on a Crew Mode root: a root session running a conductor template
+   *  (`crew_mode.stamp_rows`). The session list styles and filters on it. */
+  crew_mode_root?: boolean
+  /** On a session a Crew Mode root dispatched (directly or through another
+   *  worker): that root's key. The person's session list leaves such a row out;
+   *  the side panel lists it under its root. Absent on every other row. */
+  crew_root?: string
+  /** On a session a crewmate thread dispatched (directly or through another
+   *  session): that mate thread's key (`crew_mode.MATE_ROOT_FIELD`). The mate
+   *  chat shows its pending approvals and question cards, and the mate's
+   *  Sessions tab lists such rows. Absent elsewhere. */
+  mate_root?: string
+  /** The conductor the chat runs in Crew Mode (`crew_mode_agent` on the slot), "" when
+   *  it never turned on: it marks the chat as Crew Mode until the gateway moves it onto
+   *  the configured `agent.crew_mode_agent`. */
+  crew_mode_agent?: string
   /** Whether THIS gateway process stamped `created_by` at mint, rather than
    * rehydrating it from the transcript. `created_by` is restored from a metadata
    * line an agent's file tools can edit, so on its own it is a claim; this says
@@ -291,7 +382,7 @@ export interface ChatSlot extends TurnIdentityFields {
    * the creator in `slot`, which the backend resolves when the creator itself has
    * closed: the row nests where the run is owned and keeps citing its closed
    * creator. */
-  parent?: { slot: string; key: string | null; ancestor?: boolean } | null
+  parent?: { slot: string; key: string | null; ancestor?: boolean; title?: string } | null
   /** Artifact companion binding: slug of the artifact this slot is a companion
    * chat for. Set at slot create and persisted in the history meta line, so the
    * binding survives a gateway restart and a History-page resume. */
@@ -305,6 +396,11 @@ export interface ChatSlot extends TurnIdentityFields {
    * reconcile `chat.subagentQueued` on a `slots` push; absent from a
    * `slot_patch` and from an older gateway. */
   subagents_queued?: number
+  /** This session's work ledger in brief, when it conducts one: open items, the
+   * ones that name a person, and per other open item what tells moving from
+   * stalled (`lib/crewWork.ts`). Absent before the gateway has folded the board
+   * and from an older gateway, which leaves the row on its live-state reading. */
+  crew_work?: CrewWorkFacts
   /** An unanswered question card the turn is parked on, so the row would
    * otherwise read "Thinking…" with nothing able to advance it. Narrower than
    * `waiting_for_input` (true of every finished turn, and therefore no signal)
@@ -332,6 +428,13 @@ export interface ChatSlot extends TurnIdentityFields {
    * Not a turn: `running` stays false, so sends and queueing are unchanged;
    * only the chat's working indicator reads it. Absent from an older gateway. */
   preparing?: boolean
+  /** What is being prepared, built by the gateway (the warm catch-up names
+   * what it checks and its goal). Empty or absent: the client's own generic
+   * caption. */
+  preparing_text?: string
+  /** The language `preparing_text` is written in (`en`, `zh`, ...). The client
+   * shows the text only when this is its UI language. */
+  preparing_lang?: string
   /** A cooperative Stop was declined moments ago (compaction); the next press
    * escalates to the force stop. Read from the same window the backend uses. */
   stop_declined?: boolean
@@ -355,7 +458,13 @@ export interface ChatSlot extends TurnIdentityFields {
 }
 
 export interface ChatFolder {
-  id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; icon?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; icon?: string; default_agent?: string; default_destination_crew?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  /** The folder pin. Sessions filed in this folder or any of its subfolders stay
+   *  listed while the status chips, the tag chips or the folder checkboxes
+   *  narrow the sidebar; text search still applies. Server-stored like the
+   *  session pin, so it follows the person across browsers. Absent = not
+   *  pinned, mirroring the optional `color`. */
+  pinned?: boolean
   /** Epoch seconds the folder was created, written by every folder creator since
    *  the sidebar's `created` sort existed. Absent on a row from before that; such
    *  a row sorts as older than every stamped one. Read only through
@@ -364,6 +473,9 @@ export interface ChatFolder {
   /** Tag ids (from the tag vocabulary) copied onto every NEW chat filed into
    *  this folder. Absent = no tags, mirroring the optional `color`. */
   tags?: string[]
+  /** Text put in the composer of every NEW chat created in this folder, unsent.
+   *  This folder only, like `tags`. Absent = an empty composer. */
+  default_prompt?: string
   /** Extra steering directories loaded, in addition to the global and project
    *  steering, for every chat whose folder is in this folder's subtree.
    *  ACCUMULATIVE up the parent_id chain (unlike `project_dir`, which is
@@ -374,6 +486,9 @@ export interface ChatFolder {
    *  ancestor owned by ANOTHER principal is never delivered to this folder's
    *  chats, so the inherited list filters on it. */
   owner_app?: string
+  /** True on a mate's home folder: the one folder that holds every chat and
+   *  folder the mate (`owner_app` `member:<store>`) creates. */
+  mate_home?: boolean
   /** Channel namespace when this folder was created by per-channel session filing (e.g. 'discord'). */
   channel?: string
 }
@@ -415,7 +530,9 @@ export interface SideSnapshot {
   /** A side turn is in flight, so a submit would steer or queue. */
   running?: boolean
   messages?: Array<{ id: string; run_id?: string; role: 'user' | 'assistant'; content: string; ts: string; steer?: boolean; is_error?: boolean }>
-  queue?: Array<{ id: string; content: string; ts: string }>
+  /** `rev` counts the entry's edits, as the edit frame reports it, so a reader
+   *  can tell which of two copies of the entry is newer. */
+  queue?: Array<{ id: string; content: string; ts: string; rev?: number }>
 }
 
 export interface ChatMessage {
@@ -588,6 +705,9 @@ export interface ContentBlock {
   type: BlockType
   content: string
   language?: string
+  /** A code fence's info string after its language tag, trimmed (```lang title="x"
+   *  gives `title="x"`). Absent when the opening line carries only the tag. */
+  info?: string
   complete: boolean
   /** 1-based line in the original raw source where this block starts. */
   startLine?: number
@@ -610,7 +730,24 @@ export interface ContentBlock {
 export interface Notification {
   kind: string; title: string; body: string; ts: string
   acked?: boolean; job_id?: string; task_id?: string; approval_id?: string
+  /** On a cron result note: the job's `last_result_ts` for the result the note carries. */
+  result_ts?: number
+  /** OS-banner collapse tag the gateway stamps on every delivered note
+   *  (`native_notification_tag`). The service worker's Web Push banner carries
+   *  the same value, so one event shows one banner. Absent on client-made notes. */
+  tag?: string
+  /** A coordinator approval's server-issued instance: the id recurs, this
+   *  names the one request the row was raised for. */
+  approval_instance?: string
+  /** Set only on an approval row this tab raised itself (the `approval`
+   *  frame and the approvals reconcile). Client-only: the notification bus
+   *  drops every underscore-prefixed meta key, so no stored note carries it. */
+  _local?: true
   slot?: string; session_key?: string; slack_link?: string
+  /** A Crew Mode crew member's approval: the key of the crew member that waits.
+   *  `slot` then names its conductor, whose approval card is the only place it is
+   *  decided, so the note offers no Approve or Reject of its own. Client-made. */
+  crew_member?: string
   /** Transcript identity used to resume a closed slot; the slot name alone may name no history. */
   history_key?: string
   // RFC Phase 3: schema-v2 routing + per-channel settings stamps
@@ -618,10 +755,19 @@ export interface Notification {
   // RFC Phase 4: inline actions, stacking, dashboard-internal deep link
   group_key?: string; url?: string
   actions?: { id: string; label: string; url?: string }[]
+  /** Names the note within its source: a later note with the same source and
+   *  key replaces it, and `notification_dismiss` removes it. */
+  key?: string
+  /** Server-stamped on a replacement no more urgent than the note it replaced:
+   *  it lands in the bell, but no sound, banner or OS notification announces it. */
+  quiet?: boolean
   /** The crewmate that published the note, stamped by the gateway from the
    *  publishing session. Persisted rows are untrusted: read it through
    *  `noteMember`, which checks the shape. */
   member?: { slug: string; name: string }
+  /** The dashboard copy for a note the gateway wrote (`NotificationPayload.i18n`).
+   *  Persisted rows are untrusted: read it through `noteText`. */
+  i18n?: { id: string; params?: Record<string, string | number> }
 }
 
 /** One row from GET /api/notifications/channels. */
@@ -631,17 +777,23 @@ export interface NotificationChannel {
   registered: boolean
   default_priority: string | null
   protected: boolean
-  settings: { muted?: boolean; priority?: string }
+  /** `deliver_to` / `deliver_min_priority` are the channel's bridge route:
+   *  the chat apps its notes are also sent to, and the lowest priority sent. */
+  settings: { muted?: boolean; priority?: string; deliver_to?: string[]; deliver_min_priority?: string }
 }
 
 export interface PendingApproval {
   origin?: 'native' | 'coordinator'
   request_mid?: string
+  /** A coordinator record's instance: pins a decision to that one record. */
+  request_instance?: string
   tool_purpose?: string
   tool: string
   tool_input: string
   tool_kind: string
   request_id: string
+  /** "1" when the slot approve route would honor a `trust` decision for it. */
+  trust_grantable?: string
 }
 
 export interface SubagentInfo {
@@ -658,4 +810,141 @@ export interface SubagentInfo {
 
 export interface SessionInfo {
   key: string; title?: string; messages: number; created?: string; modified?: number; agent?: string; memory_mode?: 'persistent' | 'incognito' | 'temporary'
+}
+
+/** A paused crew, on the worker list while Pause all stands: the members the
+ *  pause stopped (and has not handed back) and when it was pressed. */
+export interface CrewPause {
+  stopped: string[]
+  paused_at: string
+}
+
+/** One row of a Crew Mode root's worker list (`GET /api/chat/slots/{root}/crew-workers`). */
+export interface CrewWorker {
+  key: string
+  title: string
+  agent: string
+  /** `working` while a turn runs, `needs_approval` while one waits on a tool
+   *  approval, `asking` while an old question card is open, `idle` otherwise,
+   *  `closed` once the tab is gone. */
+  status: 'working' | 'idle' | 'needs_approval' | 'asking' | 'closed'
+  /** The side panel's group: a tool approval only the person can give, moving,
+   *  waiting on its conductor, not started, finished. */
+  group: 'approval' | 'working' | 'with_conductor' | 'waiting' | 'done'
+  /** ISO time of the worker's last turn or message; "" when it has none yet. */
+  last_activity: string
+  /** The work-ledger item the worker is bound to, or "" when it is not bound. */
+  ledger_item: string
+  /** One line on the task: its latest report or title on the ledger, else its
+   *  last reply; "" when it has neither yet. */
+  summary?: string
+  /** The session that dispatched it: the root itself or another worker. */
+  created_by: string
+  /** Its direct dispatcher by the lineage the server walks (the parent edge,
+   *  `created_by`, the saved creator): the root, a sub-conductor's key, or "". */
+  dispatched_by?: string
+  /** Set when remote dispatch placed the worker on another crew: that crew's
+   *  display name (else its instance id). Its `key` names no local session, so
+   *  the row offers no open, steer or approval. Absent on a local worker. */
+  remote_crew?: string
+}
+
+/** One session's recap from records only, no model call
+ *  (`GET /api/chat/slots/{root}/crew-workers/{worker}/recap`). Every text field is
+ *  "" when the record holds none. */
+export interface CrewWorkerRecap {
+  key: string
+  root: string
+  /** The work item's title, else the session's own title. */
+  title: string
+  ledger_item: string
+  /** The worker's latest report: `progress`, `done`, `blocked`, `question`, or "". */
+  status: string
+  /** Why a `blocked` / `question` report waits: `approval`, `needs_human`, or "". */
+  reason: string
+  /** The item's state: `open`, `accepted`, `rejected`, `abandoned`, or "". */
+  state: string
+  /** The latest report's summary. */
+  summary: string
+  /** The conductor's decision on the item. */
+  decision: string
+  pr: number | null
+  /** An `https://github.com/.../pull/N` link, or "". */
+  pr_url: string
+  artifacts: Record<string, string>
+  /** ISO time of the last report, else of the session's last finished turn. */
+  last_update: string
+  open_approvals: number
+  approvals: { tool: string; requested_at: string }[]
+  open_questions: number
+  live: boolean
+}
+
+/** One bar on a Crew Mode timeline lane, from recorded transcript rows only. */
+export interface CrewTimelineSegment {
+  kind: 'turn' | 'tool' | 'waiting'
+  start: string
+  end: string
+  /** `recorded`: a row stamps the end. `next_row`: the end is not stamped, so the
+   *  bar stops at the next row the session wrote. `now`: still open. */
+  end_bound: 'recorded' | 'next_row' | 'now'
+  label: string
+}
+
+/** A point on a lane: an error row (`failed`) or a refused tool (`refused`). */
+export interface CrewTimelineMark {
+  kind: 'failed' | 'refused'
+  ts: string
+  label: string
+}
+
+/** One session's lane: the conductor first, then its workers. */
+export interface CrewTimelineLane {
+  key: string
+  title: string
+  agent: string
+  model: string
+  /** `served`: the backend reported it. `chosen`: the session's own pick.
+   *  `default`: the session runs the gateway default (`model` names it, `auto`
+   *  when the backend chooses). */
+  model_source: 'served' | 'chosen' | 'default'
+  role: 'conductor' | 'worker'
+  status: CrewWorker['status']
+  /** The Workers list's group for this session, by the same server rule. */
+  group: CrewWorker['group']
+  running: boolean
+  waiting: boolean
+  segments: CrewTimelineSegment[]
+  marks: CrewTimelineMark[]
+  credits: number
+  first_ts: string
+  last_ts: string
+  /** Older bars left out to bound the reply; 0 when every bar is here. */
+  dropped_segments: number
+  /** A closed worker's lane only: false when its saved transcript cannot be read,
+   *  so it has no bars to draw. */
+  record?: boolean
+}
+
+/** A dispatch: the sender's `session_send` call to the worker's seed row. */
+export interface CrewTimelineHandoff {
+  from: string
+  to: string
+  start: string
+  end: string
+}
+
+/** `GET /api/chat/slots/{root}/crew-timeline`. */
+export interface CrewTimeline {
+  root: string
+  now: string
+  live: boolean
+  started: string
+  ended: string
+  elapsed_ms: number
+  credits: number
+  lanes: CrewTimelineLane[]
+  handoffs: CrewTimelineHandoff[]
+  /** What the transcript does not record, so the view does not draw it. */
+  gaps: string[]
 }

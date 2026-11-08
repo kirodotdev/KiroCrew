@@ -69,14 +69,9 @@ class TestApiChatSteer:
     ):
         """The composer stamps the containment its own request was admitted under.
 
-        Its requeue runs in the turn's teardown, past the RPC's suspension, so
-        without the stamp a mirror linked during that suspension would be folded
-        into the entry's baseline and survive the drain. The LINKED exemption does
-        not save it: a new outbound mirror is never exempt, because the author does
-        not control mirror links.
-
-        Read from INSIDE the RPC, the only vantage point where "before the
-        suspension" is observable.
+        The requeue runs after the RPC's suspension, so without the stamp a mirror linked
+        meanwhile would join the baseline. Read from INSIDE the RPC, the only place
+        "before the suspension" is observable.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -359,16 +354,10 @@ class TestApiChatSteer:
     async def test_raced_steer_persists_send_id_on_new_turn_row(
         self, tmp_path, monkeypatch, _patch_sel
     ):
-        """A steer POST that lands on an IDLE slot (the POST raced chat_done)
-        falls onto the new-turn path, whose generic client-meta persistence must
-        carry the sendId onto the plain user row — with NO steer flag. That
-        non-steer row is exactly what the client reads as proof of the new-turn
-        path, so this pins the pass-through property the frontend half
-        of the fix rests on: an allowlist that later drops sendId from persisted
-        user meta would reopen the issue with every other test green.
+        """A steer that races chat_done lands as a plain user row carrying its sendId.
 
-        ``?ws=1`` requests the JSON receipt instead of the SSE stream; the row
-        persistence under test happens before that response-shape fork.
+        The client reads that non-steer row as proof of the new-turn path. ``?ws=1`` asks
+        for the JSON receipt; the row is persisted before that fork.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -485,3 +474,6 @@ class TestFlushSegmentQuietPersist:
         state, slot = self._slot_with_chunks(tmp_path, monkeypatch)
         _flush_segment(state, slot, "normal segment", broadcast=False)
         slot._on_message.assert_called_once()
+        assert [(m["role"], m["content"]) for m in slot.messages] == [
+            ("assistant", "normal segment")
+        ]

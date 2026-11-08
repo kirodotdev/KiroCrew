@@ -26,7 +26,12 @@ While `require_memory_ready()` raises `MemoryStartupUnavailable` (Global memory 
 
 - One task per line (no multiline support)
 - Lines starting with `#`, empty lines, and HTML comments (`<!-- -->`) are ignored
-- List markers (`-`, `*`, `- [ ]`, `- [x]`) are stripped
+- A closed comment (ended by `-->` or `--!>`, as in HTML) hides only what is inside it, even across lines; text before `<!--` or after `-->` on the same line is still a task
+- A deliver tag inside a comment is part of that comment, so commenting out a task together with its tag keeps it hidden
+- A `<!--` that is never closed hides only the rest of its own line, and logs a warning naming that line. It never hides later lines. This is a choice of "run them and warn" over "skip them" (how HTML reads it): a stray opener must not silently stop every task below it
+- A leading list bullet (`-`, `*`, `+`, `1.`, `1)`) and then a leading checkbox (`[ ]`, `[x]`, `[X]`) are stripped from the task text the agent gets; each is a marker only when whitespace or the end of the line follows it
+- A pass rewrites only the lines that held a finished task (`_rewrite_heartbeat_locked`). Every other line (headings, comment notes, commented-out tasks, kept tasks, line endings) is written back byte for byte and in order, so a file the heartbeat wrote itself round-trips unchanged. Dropping a finished task's line keeps any part of a multi-line comment that line opened or closed, and never takes the newline off the line before it
+- `append_heartbeat_task` starts a new line first when the file's last line has no newline, so an entry never glues onto that line
 - File is auto-created on first start with an empty template
 
 ## Task Lifecycle
@@ -53,8 +58,10 @@ Progress: 3/5 files processed. HEARTBEAT_KEEP
 
 ## Concurrency
 
-- `_processing` flag prevents overlapping ticks from double-processing tasks
-- FTS rebuild runs independently of task processing
+- Task processing runs as its own tracked task (`_process_task`), started by the tick and never awaited by it, so a turn that runs up to `HEARTBEAT_TASK_TIMEOUT_SECS` does not hold the FTS rebuild, the daily prune or idle consolidation; those keep their tick cadence
+- A tick that finds the previous pass still running (`_process_task` not done, or `_processing` set) skips the file, so passes never overlap and no task is double-processed
+- A failing pass is logged (`Heartbeat task processing failed`) by the task itself; it never reaches the tick
+- `stop()` cancels the loop, the running pass and the backup pass; `wait_closed()` awaits them (bounded by `_STOP_DRAIN_SECS`), so a cancelled turn unwinds its session release and cycle-end recycle before gateway shutdown moves on. A cancelled pass rewrites nothing: its tasks stay in `HEARTBEAT.md`
 - Uses dedicated `heartbeat:task` session key — no interference with user or cron sessions
 
 ## Per-Task Timeout (Unattended Turn Bound)
@@ -67,7 +74,7 @@ mirroring cron's `_JOB_TIMEOUT_SECS`). This is the analogue of cron's
 
 Without it, if the agent calls a non-allowlisted tool, the interactive-approval
 callback would block on the human-approval wait with no human present — wedging
-`HeartbeatService._processing=True` and freezing the whole heartbeat subsystem.
+`HeartbeatService._processing=True` so no HEARTBEAT.md task would ever run again.
 
 On `asyncio.TimeoutError`:
 1. Reset the heartbeat session (`sessions.reset(HEARTBEAT_KEY)`) BEFORE the
@@ -107,7 +114,7 @@ percentage is only logged. The next cycle's first task starts a fresh session.
 - `on_task` callback: prepends a `HEARTBEAT_KEEP` reminder to the task text, opens a session under `HEARTBEAT_KEY` with `agent="kirocrew-heartbeat"`, streams the response (gated by the heartbeat allowlist in `_heartbeat_approval`), posts the result, and releases the per-key semaphore
 - `on_cycle_end` callback: invokes `SessionManager.recycle_heartbeat` once after `asyncio.gather` completes — tears the session down unconditionally
 - Callback re-raises exceptions so heartbeat can track failures
-- Stopped during gateway shutdown
+- Stopped during gateway shutdown: `exit_path` calls `stop()` and then awaits `wait_closed()`
 
 ### Session Identity
 
@@ -147,6 +154,7 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 | `_MEMORY_BACKUP_TICKS` / `_MEMORY_BACKUP_OFFSET` | 1440 / 30 | `heartbeat.py` |
 | `_KEEP_SENTINEL` | `HEARTBEAT_KEEP` | `heartbeat.py` |
 | `HEARTBEAT_TASK_TIMEOUT_SECS` | 1800 | `heartbeat.py` |
+| `_STOP_DRAIN_SECS` | 10 | `heartbeat.py` |
 | `HEARTBEAT_FILE` | `HEARTBEAT.md` | `heartbeat.py` |
 | `HEARTBEAT_KEY` | `_hb` | `session_parts/policy.py` |
 | `_HEARTBEAT_SAFE_CORE_MCP_TOOLS` | frozenset of `kirocrew-core` reads | `slack/gateway_runtime/tool_policy.py` |
@@ -156,7 +164,7 @@ When a legitimate new read tool needs to run in heartbeat, operators observe SEL
 ## Known Limitations
 
 - No multiline tasks — each line is a separate task
-- Tasks appended to HEARTBEAT.md while a cycle runs are kept: the rewrite re-reads the file under a file lock, merges what was appended, and replaces it atomically (`_rewrite_heartbeat_locked`). Only an edit or removal of a task that was in the cycle's own snapshot is overwritten
+- Tasks appended to HEARTBEAT.md while a cycle runs are kept: the rewrite re-reads the file under a file lock, drops only the finished tasks' lines, and replaces it atomically (`_rewrite_heartbeat_locked`). A finished task is matched by its text and deliver target, first occurrence first, so a duplicate appended mid-cycle survives and the original goes
 - Exception-retried tasks have no max retry count
 
 ## Delivery Modes
@@ -184,7 +192,7 @@ A `slack:` tag with an empty channel id (`<!-- deliver:slack: -->`) falls back t
 owner's DM: posting to channel `""` would raise inside the swallowed Slack error
 handler and lose the report.
 
-The deliver tag is agent-writable — `config/prompt.md` tells the agent to append
+The deliver tag is agent-writable — the `kirocrew-dev/babysit` skill tells the agent to append
 HEARTBEAT.md entries itself, and HEARTBEAT.md is not a fenced path — so the channel
 id on a `slack:<channel_id>` tag is untrusted input. Both channel forms therefore
 require the id to be a well-formed Slack channel id (`validation.CHANNEL_ID_RE`, so

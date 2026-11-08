@@ -382,8 +382,8 @@ ships no media and nothing can fail to load.
   work, do it, and ask only when they need you."), a sample message from Mate
   with the two answers it offers, and two rows of crewmate faces drifting past
   in opposite directions (still under reduced motion), running off the card's
-  edges with a hard clip. The dialog is the poster's cream card in every theme;
-  the accent is the theme's own.
+  edges with a hard clip. The dialog wears the active theme: its card washed
+  with the accent, accent-tinted outlines and the theme's own text (#24599).
 - **What it does:** it does not create a crewmate. "Try now" opens Mate's chat
   (`/members?member=mate`); on "Not now" Mate's avatar flies from the sample
   card to the Mates rail item and lands as its "New" tag (under reduced

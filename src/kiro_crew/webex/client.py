@@ -24,10 +24,14 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
+from email.message import Message
+from email.utils import collapse_rfc2231_value
 from typing import Any, Awaitable, Callable, Mapping, cast
 from urllib.parse import urlparse
 
@@ -357,6 +361,9 @@ class WebexClient:
         # connect and on disconnect — lets the gateway keep the dashboard
         # status badge truthful after boot. Mirrors DiscordClient.
         self.on_state_change: Callable[[bool, str], None] | None = None
+        # Set by the gateway to retire this channel's process-global registrations
+        # (its queue drain) when the client closes. Mirrors DiscordClient.
+        self.on_close: Callable[[], None] | None = None
         # Live turn tasks -- prevent GC of in-flight handlers.
         self._handler_tasks: set[asyncio.Task[None]] = set()
         # Recently dispatched message ids, oldest first (see _DEDUP_WINDOW).
@@ -383,6 +390,13 @@ class WebexClient:
     async def close(self) -> None:
         """Gracefully shut down."""
         self._closed = True
+        # Retire the registrations first, so nothing routes to a dispatcher that is
+        # going away while the tasks below unwind.
+        if self.on_close is not None:
+            try:
+                self.on_close()
+            except Exception:
+                logger.debug("Webex on_close callback failed", exc_info=True)
         # Session close in a `finally` -- see DiscordClient.close() for why the
         # steps above it can raise and what leaking the session costs.
         try:
@@ -565,10 +579,7 @@ class WebexClient:
             ) as resp:
                 if not 200 <= resp.status < 300:
                     return "", "", 0
-                disposition = resp.headers.get("Content-Disposition", "")
-                name = ""
-                if "filename=" in disposition:
-                    name = disposition.split("filename=", 1)[1].strip().strip('"; ')
+                name = _disposition_filename(resp.headers.get("Content-Disposition", ""))
                 mimetype = (resp.headers.get("Content-Type") or "").split(";")[0].strip()
                 try:
                     size = int(resp.headers.get("Content-Length") or 0)
@@ -1219,6 +1230,9 @@ class WebexClient:
                             # paces exactly like a missing one. The clamp below is
                             # what bounds the wait either way.
                             retry_after = 1.0
+                        if not math.isfinite(retry_after):
+                            # NaN survives the clamp and would sleep forever.
+                            retry_after = 1.0
                         await asyncio.sleep(min(max(retry_after, 0.5), 10.0))
                         continue
                     if 200 <= resp.status < 300:
@@ -1239,11 +1253,56 @@ class WebexClient:
         return None
 
 
+def _disposition_filename(disposition: str) -> str:
+    """The file name a ``Content-Disposition`` value carries, or ``""``.
+
+    Parsed as header parameters, so a quoted name ends at its closing quote and
+    a later parameter (``; size=123``) is not read into it. The RFC 5987
+    ``filename*`` form is decoded in its charset and wins over a plain
+    ``filename`` when both are sent, as RFC 6266 asks; an empty extended form
+    falls back to the plain one. Percent-decoding can produce control characters
+    a raw header never carries, so they are dropped and a name stays one line.
+    """
+    if not disposition:
+        return ""
+    msg = Message()
+    msg["Content-Disposition"] = disposition
+    plain = extended = ""
+    for key, value in msg.get_params(header="content-disposition", failobj=[]):
+        if key.lower() != "filename":
+            continue
+        if isinstance(value, tuple):
+            extended = extended or _printable(collapse_rfc2231_value(value, errors="replace"))
+        else:
+            plain = plain or _printable(str(value))
+    return extended or plain
+
+
+def _printable(name: str) -> str:
+    """*name* without control characters or line and paragraph separators.
+
+    Only those can break a name across lines; every space character, a
+    non-breaking one included, is part of the name and stays.
+    """
+    return "".join(ch for ch in name if unicodedata.category(ch) not in _NAME_BREAKING).strip()
+
+
+#: Unicode categories dropped from a decoded file name: controls (CR, LF, NUL
+#: ...), line separators and paragraph separators.
+_NAME_BREAKING = frozenset({"Cc", "Zl", "Zp"})
+
+
 def _retry_after(headers: Any) -> float:
-    """The scan retry delay, clamped. A missing header must not mean zero."""
+    """The scan retry delay, clamped. A missing header must not mean zero.
+
+    A non-finite value counts as missing: NaN survives the clamp and would
+    make ``asyncio.sleep`` wait forever.
+    """
     try:
         value = float(headers.get("Retry-After") or _RETRY_AFTER_MIN_S)
     except (TypeError, ValueError):
+        value = _RETRY_AFTER_MIN_S
+    if not math.isfinite(value):
         value = _RETRY_AFTER_MIN_S
     return min(max(value, _RETRY_AFTER_MIN_S), _RETRY_AFTER_MAX_S)
 

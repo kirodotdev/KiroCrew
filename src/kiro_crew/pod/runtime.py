@@ -128,6 +128,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         halt_pod,
         install_backend,
         loaded_teardown_hook,
+        restart_pod,
         start_pod,
         stop_pod,
         time,
@@ -178,11 +179,9 @@ def validate_name(name: str) -> str:
     return name
 
 
-# --------------------------------------------------------------------------- #
 # Per-pod env file (pinned CHECKOUT= / PORT= / SEED= / APPROVAL= / CRONS= /
 # EMBEDDINGS=). Values are single-quoted on write and unquoted on read; unknown
 # keys are preserved on merge.
-# --------------------------------------------------------------------------- #
 
 # Approval modes a pod's gateway may boot with, mirroring the choices on
 # ``kirocrew gateway --approval``. This tuple is the ENFORCEMENT point: the env
@@ -284,7 +283,9 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
 
     Decoded through the data home's ``.env`` decoder, so a file a Windows editor
     saved as UTF-8 with a byte-order mark reads as UTF-8 with the mark dropped. A
-    UTF-16 or UTF-32 file raises :class:`PodError` naming the file and the fix:
+    file without a mark reads as UTF-8 when its bytes are valid UTF-8, whatever
+    the locale, so what :func:`write_env_file` stores reads back unchanged; other
+    bytes decode with the locale default. A UTF-16 or UTF-32 file raises :class:`PodError` naming the file and the fix:
     reading it as ``{}`` would launch the pod without the operator's variables,
     and :func:`write_env_file` would then overwrite the file it could not read.
     """
@@ -298,11 +299,16 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
     except OSError:
         return {}
     try:
-        text = decode_env_bytes(raw)
+        # The product writes this file as UTF-8, so a file without a mark is
+        # read as UTF-8 first; only bytes that are not valid UTF-8 (a file saved
+        # by hand in a legacy code page) fall back to the locale default.
+        text = decode_env_bytes(raw, "utf-8")
     except EnvFileWideEncodingError as exc:
         raise PodError(
             f"pod env file {path} is saved with a {exc.reason}; save it as UTF-8"
         ) from exc
+    except UnicodeDecodeError:
+        text = decode_env_bytes(raw)
     return _parse_env_text(text)
 
 
@@ -355,10 +361,8 @@ def pin_checkout(cfg: PodConfig, name: str, checkout: Path) -> None:
     write_env_file(cfg, name, {"CHECKOUT": str(checkout)})
 
 
-# --------------------------------------------------------------------------- #
 # Git-native worktree resolution. A friendly name maps to an absolute checkout
 # via the pinned CHECKOUT=, else `git worktree list`, else an optional root.
-# --------------------------------------------------------------------------- #
 def _git_worktrees(ref: Path) -> dict[str, Path]:
     """Map ``{basename | branch | abspath -> checkout}`` for every linked worktree
     of the repo *ref* belongs to. Empty on any git error (not a repo / git absent).
@@ -456,9 +460,7 @@ def pod_socket_path(cfg: PodConfig, name: str, port: int) -> Path:
     return pod_home(cfg, name) / dashboard_socket_name(port)
 
 
-# --------------------------------------------------------------------------- #
 # systemd --user helpers.
-# --------------------------------------------------------------------------- #
 # The runtime-dir and bus-pointer resolution is shared with the service module's
 # user-scope verbs (`kiro_crew.service.common`): both spawn `systemctl --user`
 # and both read a bus failure as a verdict about the host, so one resolver
@@ -555,34 +557,20 @@ class UserBusProbe:
     detail: str
 
 
-# systemd's load path for SYSTEM units, highest precedence first. This is
-# Table 1 ("Load path when running in system mode") of systemd.unit(5),
-# transcribed in full and verified against the systemd 261 manual. `user@.service`
-# is a system unit that PID 1 instantiates per uid, so the system table is the
-# right one, not the user table.
+# systemd's load path for SYSTEM units, highest precedence first: Table 1 ("Load
+# path when running in system mode") of systemd.unit(5), checked against the
+# systemd 261 manual. `user@.service` is a system unit PID 1 instantiates per uid,
+# so the system table is the right one.
 #
-# The list is deliberately the COMPLETE table rather than the directories that
-# seem plausible for this unit. A short search path is a false "absent": the
-# probe reports no per-user manager on a host that HAS one, and the caller then
-# names a platform limit instead of telling the reader to start the manager.
-# Transcribing the whole table makes completeness checkable against one document.
-# `/lib/systemd/system` is not in Table 1; it is the pre-usr-merge location of
-# `/usr/lib/systemd/system` and is kept for split-usr hosts.
+# The list is the COMPLETE table: a short search path is a false "absent", and the
+# caller would then name a platform limit instead of telling the reader to start
+# the manager. `/lib/systemd/system` is the pre-usr-merge location of
+# `/usr/lib/systemd/system`, kept for split-usr hosts. Order decides only which
+# path a message names; presence is "any one of these exists".
 #
-# The order decides only WHICH path a message names, because presence is "any one
-# of these exists". Naming the highest-precedence hit is the accurate choice.
-#
-# Known limitations, both from reading the load path rather than asking systemd
-# for it. A MASKED template (an entry symlinked to `/dev/null`) reads as present,
-# because `os.path.exists` follows the symlink and `/dev/null` exists; reporting
-# that correctly needs real shadowing semantics, where a mask in a
-# high-precedence directory suppresses a lower-precedence unit. And a host that
-# sets `$SYSTEMD_UNIT_PATH` moves the load path out from under this list
-# entirely. Both are deliberately out of scope: such a host was offered
-# `enable-linger` before this probe existed, so its behaviour is unchanged rather
-# than newly wrong. Asking `systemctl list-unit-files 'user@*.service'` at SYSTEM
-# scope needs no user bus and would subsume this list, the env var and the mask
-# case; that is the right shape and is tracked separately, not bolted onto a fix.
+# Only the fallback for when the system manager cannot be asked (see
+# `user_manager_unit`): this walk reads a MASKED template as present and does
+# not see `$SYSTEMD_UNIT_PATH`.
 _SYSTEMD_SYSTEM_UNIT_DIRS = (
     "/etc/systemd/system.control",
     "/run/systemd/system.control",
@@ -622,12 +610,10 @@ def _user_manager_template() -> str | None:
     out, so neither shape is present and ``loginctl enable-linger`` has nothing to
     start.
 
-    Probed by unit path rather than by asking ``systemctl``, because the question
-    is whether the machinery EXISTS at all; asking the very tool that needs it
-    returns the raw "Failed to connect to bus" that :func:`require_systemd` is
-    there to translate. Deliberately NOT keyed on the bus socket either: a stray
-    session ``dbus-daemon`` can create the socket on a host with no per-user
-    manager, which makes the socket a false positive for "pods can run".
+    Probed by unit path, the fallback for when the system manager cannot be
+    asked. Deliberately NOT keyed on the bus socket: a stray session
+    ``dbus-daemon`` can create the socket on a host with no per-user manager,
+    which makes the socket a false positive for "pods can run".
     """
     for path in _unit_paths(_USER_MANAGER_TEMPLATE_NAME):
         if os.path.exists(path):
@@ -635,8 +621,30 @@ def _user_manager_template() -> str | None:
     return None
 
 
+def _system_load_state(unit: str) -> str | None:
+    """``LoadState`` the SYSTEM manager reports for ``unit``; ``None`` if it cannot say.
+
+    System scope needs no user bus. PID 1 resolves the name as it would to start
+    it: a concrete unit file before its template, masks, its own unit path.
+    """
+    systemctl_bin = platform_compat.trusted_system_bin("systemctl")
+    if systemctl_bin is None:
+        return None
+    try:
+        cp = _run(
+            [systemctl_bin, "show", "--property=LoadState", unit],
+            timeout=_USER_BUS_PROBE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    key, _, state = cp.stdout.strip().partition("=")
+    if cp.returncode != 0 or key != "LoadState" or not state:
+        return None
+    return state
+
+
 def user_manager_unit(uid: int) -> str | None:
-    """Path of a per-user manager unit this host could start, or ``None``.
+    """Name or path of a per-user manager unit this host could start, or ``None``.
 
     Wider than :func:`_user_manager_template` on purpose, and it is this — not the
     template alone — that answers "can this host have a ``systemd --user``
@@ -652,7 +660,15 @@ def user_manager_unit(uid: int) -> str | None:
     without ever consulting the template, so keying the platform gate on the
     template alone would refuse pods on a host that followed this repo's own
     guide and has a working instance.
+
+    The system manager answers first, so a masked unit counts as absent; the
+    unit-path walk runs only when it cannot be asked.
     """
+    if uid >= 0:
+        unit = f"user@{uid}.service"
+        state = _system_load_state(unit)
+        if state is not None:
+            return None if state in ("not-found", "masked") else unit
     template = _user_manager_template()
     if template is not None:
         return template
@@ -809,14 +825,17 @@ def require_systemd() -> None:
     """Raise :class:`PodError` unless cheap systemd prerequisites exist.
 
     Pods are Linux ``systemd --user`` only (see ``pod/README.md`` → Platform).
-    This gate stays in-process because every systemd and journalctl helper calls
-    it. The authoritative connection attempt belongs at :func:`require_backend`
-    verb entry and in doctor, not before every unit query.
+    This gate spawns nothing while a bus address exists, because every systemd
+    and journalctl helper calls it. The authoritative connection attempt belongs
+    at :func:`require_backend` verb entry and in doctor, not before every unit
+    query.
 
     A missing bus has two causes with different remedies. With a per-user
     manager unit installed, ``enable-linger`` starts the stopped instance.
     Without either a template or a concrete uid unit, there is no manager for
     linger to start: name the platform limit and point at ``dev-backend.sh``.
+    Only this branch asks the system manager (:func:`user_manager_unit`), and
+    its answer picks the remedy; the refusal is ``PodBackendAbsent`` either way.
     """
     if not IS_LINUX:
         raise PodError(
@@ -830,9 +849,8 @@ def require_systemd() -> None:
         if user_manager_unit(uid) is None:
             raise PodBackendAbsent(
                 "pods require `systemd --user`, which this host does not provide: no "
-                "per-user manager unit is installed (looked for "
-                f"{_USER_MANAGER_TEMPLATE_NAME} and user@{uid}.service under "
-                f"{', '.join(_SYSTEMD_SYSTEM_UNIT_DIRS)}).\n"
+                f"per-user manager unit is installed (user@{uid}.service and the "
+                f"{_USER_MANAGER_TEMPLATE_NAME} template are absent or masked).\n"
                 "Enterprise Linux 7 derivatives (RHEL 7, CentOS 7, Amazon Linux 2) ship "
                 "systemd without it, so `loginctl enable-linger` cannot help: there is "
                 "no unit for it to start.\n"
@@ -859,6 +877,10 @@ def require_backend() -> None:
     if IS_WINDOWS:
         try:
             win_backend.require_backend()
+        except win_backend.WindowsTaskCreateRefused as exc:
+            # The scheduler answered and refused: like systemd with no user
+            # session, pods cannot exist here, so callers take the absent path.
+            raise PodBackendAbsent(str(exc)) from exc
         except win_backend.WindowsTaskError as exc:  # translate to the pod error type
             raise PodError(str(exc)) from exc
         return
@@ -1014,9 +1036,12 @@ def recent_journal(
     cp = subprocess.run(
         ["journalctl", "--user", "-u", pod_unit(cfg, name), "-n", str(lines), "--no-pager", *bound],
         capture_output=True,
-        text=True,
         timeout=10,
         env=_systemctl_env(),
+        # The journal stores UTF-8 and journalctl prints it raw, even under the
+        # LC_ALL=C that _systemctl_env pins, so a locale decode can garble or
+        # raise on a non-ASCII path in the very boot failure this surfaces.
+        **UTF8_TEXT,
     )
     return cp.stdout
 
@@ -1044,10 +1069,8 @@ def active_names(cfg: PodConfig) -> set[str]:
     return names
 
 
-# --------------------------------------------------------------------------- #
 # Lifecycle locks. Every mutating pod path cooperates on these, including the
 # per-pod env file writer above and :mod:`kiro_crew.pod.runtime_lifecycle`.
-# --------------------------------------------------------------------------- #
 _MUTEX_STATE = threading.local()
 
 
@@ -1147,13 +1170,11 @@ def pod_plane_mutex(cfg: PodConfig):
         yield
 
 
-# --------------------------------------------------------------------------- #
 # Seed sanitization — deny-by-default. A seeded pod must NEVER be able to grab a
 # live messaging identity, so we only ever return a config with the tunnel and
 # every self-activating channel DISABLED. Anything that prevents us from positively
 # guaranteeing that (missing file, bad JSON) returns None → the caller skips the
 # seed and the pod boots blank.
-# --------------------------------------------------------------------------- #
 
 # Config sections a sanitized seed boots with ``enabled=False``. Deny-by-default:
 # every channel carrying a config-level ``enabled`` is listed, because that flag is
@@ -1210,6 +1231,9 @@ def _apply_seed_config_floor(data: dict) -> None:
         if not isinstance(data.get(section), dict):
             data[section] = {}
         data[section]["enabled"] = False
+    # The tunnel section's second switch: left on, a seeded pod would dial the
+    # operator's Kiro relay with the operator's lease credential.
+    data["tunnel"]["relay_enabled"] = False
     _force_seed_agent_security(data)
 
 
@@ -1460,12 +1484,10 @@ def _ensure_pod_dir(target: Path, *, what: str) -> None:
         _close_fd(fd)
 
 
-# --------------------------------------------------------------------------- #
 # Compatibility facade. A re-exported name is ABSENT from this module's own
 # namespace on purpose: ``__getattr__`` runs only for a name the module does not
 # hold, so a binding here would shadow the owner for every later read, and a
 # patch of ``rt.<name>`` would reach nothing the owner's code reads.
-# --------------------------------------------------------------------------- #
 #: Owner module -> every name this module re-exports from it: the names the owner
 #: defines, plus the imports that moved there with their reader, so each name keeps
 #: resolving here (a patch of ``rt.find_port_listeners`` has to land where
@@ -1594,6 +1616,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "halt_pod",
         "install_backend",
         "loaded_teardown_hook",
+        "restart_pod",
         "start_pod",
         "stop_pod",
         "time",

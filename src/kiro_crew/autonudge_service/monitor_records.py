@@ -232,17 +232,12 @@ async def _add_monitor_locked(
                 existing is not None and existing.default_patrol is True and existing.active
             )
             if existing:
-                # Same split as the legacy add: create-only refuses ANY
-                # record unless the caller opted into ``replace_stopped``,
-                # which under the owner's ruling displaces only
-                # SYSTEM-imposed stops (a spent bound, a finished subject).
-                # A consumer-recorded stop — including a USER_STOP record
-                # retained by monitor_stop — is preserved; the dashboard
-                # restart route (conditional replace) is the sanctioned way
-                # to succeed one. Dashboard creates never opt in, so their
-                # any-record 409 keeps retained evidence intact. The
-                # wake-in-flight guard below still covers a terminal record
-                # that owns an accepted, uncompleted wake.
+                # Create-only refuses ANY record unless the caller opted into
+                # ``replace_stopped``, which displaces only SYSTEM-imposed stops
+                # (a spent bound, a finished subject). A consumer stop, USER_STOP
+                # included, is kept; the dashboard restart route (conditional
+                # replace) succeeds one. The wake-in-flight guard below still
+                # covers a terminal record owning an uncompleted wake.
                 if (
                     not replace_existing
                     and not displaces_default
@@ -532,16 +527,11 @@ async def apply_monitor_probe(
             staged_state.last_observation_reason_code = observation.reason_code
             provider_error = observation.provider_error or observation.supplemental_provider_error
             if is_unattempted_probe(observation):
-                # THE THIRD OUTCOME, and it moves neither counter, for the same
-                # reason ``shadow.apply_monitor_probe`` gives: the provider-error
-                # budget is finite and never refunded, so it has to measure
-                # refusals the HOST gave this watch. Charged for a request the
-                # probe declined to send, a shared cooldown that unrelated work
-                # opened retires a healthy watch on its own cadence; clearing the
-                # streak instead is the opposite error, because an outage
-                # interleaved with skips would never retire the watch it blinds.
-                # This is the PRODUCTION counting site, so the rule has to hold
-                # in both or it holds nowhere.
+                # An unattempted probe moves neither counter, as in
+                # ``shadow.apply_monitor_probe``: the finite provider-error budget
+                # measures HOST refusals, so charging a skipped request lets a
+                # shared cooldown retire a healthy watch, and clearing the streak
+                # lets an outage interleaved with skips never retire it.
                 pass
             elif provider_error is not None:
                 staged_state.provider_error_count += 1
@@ -1062,22 +1052,18 @@ async def record_monitor_turn_completion(
 ) -> None:
     """Charge one correlated action turn through the mutation drain.
 
-    Completion can start on a dashboard turn task outside the timer task
-    tree. A turn accepted before closure owns authority keyed to its monitor,
-    fingerprint, and exact task; every other caller must capture ordinary
-    admission here. Supervise the whole accounting transaction in the mutation
-    drain: shutdown drains it, and ``settle_admitted_writes`` drains one an
-    accepted turn starts after shutdown returned. Caller cancellation is
-    remembered, but reaches the caller only after the durable transaction
-    settles -- or, when its write is wedged, after the drain's bounded
-    post-cancellation window.
+    Completion can start on a dashboard turn task outside the timer task tree.
+    A turn accepted before closure owns authority keyed to its monitor,
+    fingerprint and exact task; any other caller captures ordinary admission.
+    The transaction runs in the mutation drain, so shutdown (or
+    ``settle_admitted_writes`` after it) drains it. Caller cancellation reaches
+    the caller only after the transaction settles, or after the drain's bounded
+    post-cancellation window if the write is wedged.
 
-    The owned task carries the caller's task as ``_admitted_transaction_owner``,
-    the way :func:`_run_admitted_transaction` hands it to its child. A Slack
-    monitor's wake runs its turn inside the timer task, so a completion that ends
-    the loop retires that timer from here: without the owner, ``_cancel_timer``
-    would take the timer for a foreign task and cancel it while it awaits this
-    accounting, cutting the wake's reply post and turn-row write.
+    The owned task carries the caller as ``_admitted_transaction_owner``, as in
+    :func:`_run_admitted_transaction`. A Slack wake runs its turn inside the timer
+    task; without the owner, ``_cancel_timer`` would cancel that timer mid-await,
+    cutting the reply post and turn-row write.
     """
     current = _current_task_or_none()
     key = (completion.monitor_id, completion.fingerprint)

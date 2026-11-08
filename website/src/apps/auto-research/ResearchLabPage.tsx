@@ -1,4 +1,4 @@
-import { useState, useEffect, useReducer, useRef } from 'react'
+import { useState, useEffect, useReducer, useRef, useId } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { FlaskConical, Play, Pause, Square, MessageCircle, ChevronDown, ChevronRight, Sparkles, ThumbsUp, ArrowRight, HelpCircle, XCircle, CheckCircle, AlertTriangle, Info, Lock, X, Trash2, GitFork, Flame, BookOpen, FileText, RefreshCw, ExternalLink, Loader2 } from 'lucide-react'
 import { api } from '../../api/client'
@@ -8,6 +8,7 @@ import { Btn } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
 import GrillTree from './GrillTree'
 import { grillReducer, promotedResearch, answeredClarifiers, suggestedMaxCycles, GrillNode } from './grillTreeModel'
@@ -171,6 +172,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
   const [autoApprove, setAutoApprove] = useState(false)
   const [parallelWorkers, setParallelWorkers] = useState(1)
   const [executionMode, setExecutionMode] = useState<'agent' | 'workflow'>('agent')
+  const executionModeLabelId = useId()
   // Explicit model pick for the campaign's worker. '' = inherit the research
   // agent's / backend's default (never a concrete id). Options come from the
   // shared advertised-models list (GET /api/models), same as every picker.
@@ -252,17 +254,20 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
 
       {step === 0 && <div className="space-y-4">
         <div className="p-3 rounded-md bg-bg border border-border">
-          <div className="text-xs text-muted mb-2">{i18nT('apps.autoResearch.researchLabPage.how_sub_agent_execution_is_orchestrated_both_han')}</div>
-          <div className="grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => setExecutionMode('agent')} className={`text-left p-2 rounded border ${executionMode === 'agent' ? 'border-accent bg-accent/10' : 'border-border'}`}>
+          <div id={executionModeLabelId} className="text-xs text-muted mb-2">{i18nT('apps.autoResearch.researchLabPage.how_sub_agent_execution_is_orchestrated_both_han')}</div>
+          {/* One-of-two setting for the campaign: a radio group named by the
+              line above, so the chosen mode is announced, not shown by the
+              accent border alone (#32040). */}
+          <RadioChipGroup ariaLabelledBy={executionModeLabelId} className="grid grid-cols-2 gap-2">
+            <button type="button" {...radioChip(executionMode === 'agent')} onClick={() => setExecutionMode('agent')} className={`text-left p-2 rounded border ${executionMode === 'agent' ? 'border-accent bg-accent/10' : 'border-border'}`}>
               <div className="font-medium text-sm">{i18nT('apps.autoResearch.researchLabPage.agent')} <span className="text-muted font-normal">{i18nT('apps.autoResearch.researchLabPage.adaptive')}</span></div>
               <div className="text-xs text-muted mt-0.5">{i18nT('apps.autoResearch.researchLabPage.the_ai_drives_every_round_itself_deciding_what_t')}</div>
             </button>
-            <button type="button" onClick={() => { setExecutionMode('workflow'); setModel('') }} className={`text-left p-2 rounded border ${executionMode === 'workflow' ? 'border-accent bg-accent/10' : 'border-border'}`}>
+            <button type="button" {...radioChip(executionMode === 'workflow')} onClick={() => { setExecutionMode('workflow'); setModel('') }} className={`text-left p-2 rounded border ${executionMode === 'workflow' ? 'border-accent bg-accent/10' : 'border-border'}`}>
               <div className="font-medium text-sm">{i18nT('apps.autoResearch.researchLabPage.dynamic_workflow')} <span className="text-muted font-normal">{i18nT('apps.autoResearch.researchLabPage.scripted')}</span></div>
               <div className="text-xs text-muted mt-0.5">{i18nT('apps.autoResearch.researchLabPage.the_ai_writes_an_orchestration_script_up_front_a')}</div>
             </button>
-          </div>
+          </RadioChipGroup>
           {executionMode === 'workflow' && (
             <div className="text-xs text-warn mt-2 flex items-start gap-1">
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />
@@ -292,7 +297,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
       {step === 1 && <div className="space-y-4">
         <span className="text-sm font-medium block">{i18nT('apps.autoResearch.researchLabPage.when_should_the_agent_stop')}</span>
         <div className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.stops_at_the_cycle_cap_when_the_definition_of_do')}</div>
-        <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.max_cycles')}</span><input type="number" aria-label={i18nT('apps.autoResearch.researchLabPage.max_cycles_2')} min={5} max={100} value={maxCycles} className="w-20 text-sm px-3 py-2 rounded-md bg-bg-elevated border border-border text-text outline-hidden focus-ring" onChange={e => { setMaxCyclesTouched(true); setMaxCycles(Number(e.target.value)) }} />{subCount > 0 && !maxCyclesTouched && <span className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.suggested_from')} {subCount} {i18nT('apps.autoResearch.researchLabPage.sub_questions_2')}</span>}</div>
+        <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.max_cycles')}</span><input type="number" aria-label={i18nT('apps.autoResearch.researchLabPage.max_cycles_2')} min={5} max={100} value={maxCycles} className="w-20 text-sm px-3 py-2 rounded-md bg-bg-elevated border border-border text-text outline-hidden focus-ring" onChange={e => { setMaxCyclesTouched(true); setMaxCycles(Number(e.target.value)) }} />{subCount > 0 && !maxCyclesTouched && <span className="text-xs text-muted">{i18nT('apps.autoResearch.researchLabPage.suggested_from_sub_questions', { count: subCount })}</span>}</div>
         {/* Values are seconds; SimpleSelect is string-only, so they round-trip through
             String/Number. `options` and `optionLabels` are positional — keep them in step. */}
         <div className="flex items-center gap-2"><span className="text-sm">{i18nT('apps.autoResearch.researchLabPage.idle_between_cycles')}</span><SimpleSelect aria-label={i18nT('apps.autoResearch.researchLabPage.idle_between_cycles_2')} options={['30', '60', '120']} optionLabels={[i18nT('apps.autoResearch.researchLabPage.30s'), i18nT('apps.autoResearch.researchLabPage.60s'), i18nT('apps.autoResearch.researchLabPage.120s')]} value={String(idleSecs)} onChange={v => setIdleSecs(Number(v))} /></div>
@@ -323,7 +328,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
           {validation.warnings.map((w, i) => <div key={i} className="text-sm text-warn flex items-center gap-1"><AlertTriangle size={14} /> {w}</div>)}
           <div className="mt-3 p-3 rounded text-sm bg-bg border border-border">
             <div>{i18nT('apps.autoResearch.researchLabPage.research_question', { question: `${question.slice(0, 50)}${question.length > 50 ? '...' : ''}` })}</div>
-            <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.up_to')} {maxCycles} {i18nT('apps.autoResearch.researchLabPage.cycles')} {idleSecs}{i18nT('apps.autoResearch.researchLabPage.s_idle')}{validation.estimated_duration_min} {i18nT('apps.autoResearch.researchLabPage.min')}</div>
+            <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.estimate', { count: maxCycles, idle: idleSecs, minutes: validation.estimated_duration_min })}</div>
             {successCriteria && <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.done_when')} {successCriteria}</div>}
             {executionMode === 'agent' && <div className="text-muted">{i18nT('apps.autoResearch.researchLabPage.model_line', { model: model || i18nT('apps.autoResearch.researchLabPage.model_default_inherit') })}</div>}
           </div>
@@ -665,6 +670,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
   const [answerText, setAnswerText] = useState('')
   const [questionExpanded, setQuestionExpanded] = useState(false)
   const [showReport, setShowReport] = useState(false)
+  const reportRegionId = useId()
   // In-app dialog, NOT window.confirm: the native confirm is synchronous and
   // blocks the renderer's event loop, so a Quit event arriving while it is open
   // queues behind it and fires the instant it dismisses — tearing the app down
@@ -713,7 +719,7 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
       </div>
     })()}
     <div className="flex items-center justify-between mb-4">
-      <div className="text-sm text-muted flex flex-wrap gap-x-3"><span>{i18nT('apps.autoResearch.researchLabPage.cycle')} {campaign.total_cycles}/{campaign.max_cycles} · {findings.filter(f => f.new_findings_count > 0).length} {i18nT('apps.autoResearch.researchLabPage.findings')}</span><ModelLine c={campaign} /></div>
+      <div className="text-sm text-muted flex flex-wrap gap-x-3"><span>{i18nT('apps.autoResearch.researchLabPage.cycle')} {campaign.total_cycles}/{campaign.max_cycles} · {i18nT('apps.autoResearch.researchLabPage.findings_tally', { count: findings.filter(f => f.new_findings_count > 0).length })}</span><ModelLine c={campaign} /></div>
       {isActive && <div className="flex gap-2">
         {campaign.status === 'running' && <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('pause')}><Pause size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.pause')}</button>}
         {campaign.status !== 'running' && <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => actionMut.mutate('resume')}><Play size={12} className="inline" /> {i18nT('apps.autoResearch.researchLabPage.resume')}</button>}
@@ -781,9 +787,9 @@ function CampaignDetail({ id, onBack, onFork, onOpen }: { id: string; onBack: ()
     <div className="mt-4">
       <div className="flex items-center justify-between mb-2">
         <div className="text-sm font-medium">{i18nT('apps.autoResearch.researchLabPage.findings_count', { count: findings.filter(f => f.new_findings_count > 0).length })}</div>
-        <button className="text-xs px-2 py-1 rounded bg-bg-elevated" onClick={() => setShowReport(v => !v)}>{showReport ? i18nT('apps.autoResearch.researchLabPage.hide_report') : i18nT('apps.autoResearch.researchLabPage.view_report')}</button>
+        <button type="button" className="text-xs px-2 py-1 rounded bg-bg-elevated" aria-expanded={showReport} aria-controls={reportRegionId} onClick={() => setShowReport(v => !v)}>{showReport ? i18nT('apps.autoResearch.researchLabPage.hide_report') : i18nT('apps.autoResearch.researchLabPage.view_report')}</button>
       </div>
-      {showReport && <div className="mb-3">
+      {showReport && <div id={reportRegionId} className="mb-3">
         {reportData?.report ? <ReportSections report={reportData.report} /> : <div className="text-sm text-muted">{i18nT('apps.autoResearch.researchLabPage.no_report_yet')}</div>}
       </div>}
       {sorted.filter(f => f.new_findings_count > 0 || f.cycle === 1).map(f => <FindingCard key={f.cycle} f={f} />)}
@@ -842,7 +848,7 @@ export default function ResearchLabPage() {
               <StateBadge status={c.status} />
               <div className="text-sm line-clamp-2 flex-1" title={c.question}>{c.parent_id && <span className="text-[10px] font-medium text-accent bg-accent-subtle rounded px-1 py-0.5 mr-1 inline-flex items-center gap-0.5 align-middle"><GitFork size={10} /> {i18nT('apps.autoResearch.researchLabPage.forked')}</span>}{c.question}</div>
             </div>
-            <div className="text-xs text-muted mt-1 flex flex-wrap gap-x-3"><span>{c.total_cycles} {i18nT('apps.autoResearch.researchLabPage.cycles_2')}</span><ModelLine c={c} /></div>
+            <div className="text-xs text-muted mt-1 flex flex-wrap gap-x-3"><span>{i18nT('apps.autoResearch.researchLabPage.cycles_count', { count: c.total_cycles })}</span><ModelLine c={c} /></div>
           </Clickable>
         ))}
       </div>}

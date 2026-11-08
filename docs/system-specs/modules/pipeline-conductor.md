@@ -237,6 +237,15 @@ properties matter beyond the classification:
 A malformed regex in the config is reported as malformed config with the
 offending pattern, never a crash mid-cycle.
 
+The handled-set state file is read two ways. The patrol reads it tolerantly: a
+missing, unreadable or corrupt file reads as an empty set, so the worst case is a
+handled signal firing again, never a crashed cycle. `--mark-handled` writes the
+set back, so it reads strictly: a present file that cannot be read, or is not
+UTF-8 JSON, is refused with exit 4 and left byte-for-byte unchanged, since
+writing past it would replace every recorded disposition with the one being
+marked. A missing file starts an empty set, and JSON of the wrong shape, which
+holds no handled set to lose, is rewritten as a valid one.
+
 The banned-process scan's contract:
 
 - **Built-in rules.** The pytest rule reports a run whose explicit worker count
@@ -254,6 +263,10 @@ The banned-process scan's contract:
   `unknown`), never an argument. `cmd=` carries only program names and flags,
   with the rest withheld, because a command line can carry a credential or a
   presigned URL.
+- **No scan, no count.** On a host with no `/proc` the scan does not run, and
+  the OK line prints `banned n/a | foreign n/a`, the same way `load/cpu n/a` and
+  `mem n/a` mark a field the host cannot measure. A `0` there always means a
+  scan ran and found nothing.
 
 The probe is three files. `fleet_probe.py` is the script an agent runs, and it
 loads `fleet_probe_sessions.py` and `fleet_probe_processes.py` from its own
@@ -381,6 +394,19 @@ invisible unless it keeps its own list.
   cap covering the runtime so the runtime is what ends the loop, and both are
   raised together mid-run with `monitor_update`. Coasting into the cap is a
   failure, not a finish, so `autonudge_stop` is called deliberately.
+- **One loop cannot outlive its lifetime cycle cap.** `max_cycles` counts the
+  loop's whole life and the server caps it at 1000, so a 90-second patrol lasts
+  about 25 hours, renewals included. A wake cannot replace its own loop: while
+  the loop runs `monitor_start` is refused, and once the wake stops it
+  `_refuse_stale_wake_arm` in
+  `src/kiro_crew/dashboard/session_directive_apply_monitor.py` refuses the
+  replacement. So the conductor asks for a renewal on the `10% or less left`
+  budget line and re-arms in the turn the person's own message starts; the
+  skill's Startup step 4 is the procedure. With no reply the patrol ends at its
+  bound. A `watch="work-ledger"` loop, whose spent bounds the server extends
+  while ledger items stay open, is not used: it skips the turn on a quiet cycle,
+  and this patrol's every-cycle duties (the merge reconcile, `open_rulings`, the
+  probe's idle detection) need that turn.
 - **The conductor cannot detect its own loop's death from the inside.** The
   procedure bounds what recovery it can and says so.
 - **Credit metering covers dashboard-session turns only.** Inspector `spawn_run`
@@ -437,7 +463,7 @@ derive `permissions` from the filtered list; all of them mount
 | Test | What it holds |
 |---|---|
 | `test/test_pipeline_conductor_agent.py` | Identity and charter, the owned filename, that the retired verbosity token is absent, patrol via `monitor_start` rather than `wait`, that the prompt names the tools and scripts it runs on, that no dedicated file-writing tool is mounted, that dashboard grants are create-and-read only, that core grants are named verbs rather than a whole server, that `mcpServers` is narrowed, and that a governed host withholds and audits |
-| `test/test_pipeline_conductor_skill_contract.py` | That the skill cites the script rather than a prose predicate, that every exit code has a documented action, that all five verdicts are named, that `UNKNOWN` is never permission, that a prose closure request needs author authorization, that an absent script has defined behaviour, and that a `verifier.repro_gate` outside its two declared values refuses the run instead of degrading to the generic contract |
+| `test/test_pipeline_conductor_skill_contract.py` | That the skill cites the script rather than a prose predicate, that every exit code has a documented action, that all five verdicts are named, that `UNKNOWN` is never permission, that a prose closure request needs author authorization, that an absent script has defined behaviour, that the patrol's bounds fit the server's cycle ceiling and a person's turn re-arms past it, and that a `verifier.repro_gate` outside its two declared values refuses the run instead of degrading to the generic contract |
 | `test/test_pipeline_conductor_probe_roundtrip.py` | That the probe classifies what the conversation log actually wrote, that the watchdog patterns match the constants the gateway emits, that the index needle matches the real writer, that a raw slot key finds the transcript the dashboard writes, and that `credit_spend.py` sums what the recorder wrote |
 | `test/test_pipeline_conductor_probe_banned_age.py` | That every banned-process line carries a process age or explicit unknown, and PID recycling cannot splice a new process onto stale ownership/age evidence |
 | `test/test_pipeline_conductor_claim_preflight.py` | The claim verdict lattice: merged-PR coverage and its near misses, fork PRs, prose self-claims, the `forge_claim` ownership check (foreign label or assignee skips, own claim exempt), closure requests outranking claims, and absent-symbol risk handling |

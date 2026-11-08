@@ -144,6 +144,15 @@ def closed_loopback_port() -> Iterator[int]:
 
 def _run_scenario(scenario: str, gw, website: Path, node_dir: str, tmp: Path) -> None:
     """Shell the one matching spec test at ``gw`` and require it to have run."""
+
+    def _met_mates(data: dict) -> dict:
+        # A fresh gateway offers the Meet your Mates intro on first load, and
+        # its dialog sits over the Memory tab these specs click. Mark the intro
+        # seen the way its own dismissal does, through the config key.
+        data.setdefault("dashboard", {})["crewmates_onboarded"] = True
+        return data
+
+    _patch_config(gw.home, _met_mates)
     report = tmp / f"{scenario}.json"
     configured_output = os.environ.get(EVIDENCE_DIR_ENV)
     root = Path(configured_output) if configured_output else tmp / "evidence"

@@ -13,14 +13,8 @@ import { useGuardedLeave, usePublishNavigationStake, useRegisterNavigationLeaveG
 // after", and an Advanced fold for the rest. Creating a crew from the
 // capabilities roster opens THIS same dialog: a create IS one
 // `POST /api/agents`, so the two doors share one form (the dialog's own header
-// note). This file exports the fields the dialog mounts, so the import is a
-// call-time cycle (both reference the other's bindings only inside component
-// bodies, never at module top level) — the same shape MembersPage already pulls
-// both modules in through.
+// note).
 import NewCrewmateDialog, { type CreatedCrewmate } from './members/NewCrewmateDialog'
-import { hideMateWithoutPreview } from '../lib/assistantMember'
-import { usePreviewFlag } from '../hooks/usePreviewFlag'
-import { PREVIEW_CREW } from '../utils/previewFlags'
 
 import { i18nT } from '../i18n/t'
 import { useGuidePredicate, useGuideSelection } from '../guide/guidePredicates'
@@ -48,13 +42,11 @@ export {
   displayNameFallback,
   TriggersField,
   SessionColorField,
-} from './KiroCrewAgentsPageFields'
-export type { MemberMemoryState } from './KiroCrewAgentsPageFields'
+} from '../components/crew/crewFields'
+export type { MemberMemoryState } from '../components/crew/crewFields'
 
 // The crewmate editor — the same one the Crewmates page opens in place. Lazy so
-// its code stays off the main App chunk until a crewmate is edited; it also
-// imports the shared fields from this page, so a static import here would be a
-// module cycle.
+// its code stays off the main App chunk until a crewmate is edited.
 const CrewEditorModal = lazy(() => import('../components/crew/CrewEditorModal'))
 
 function errorText(e: unknown): string {
@@ -99,8 +91,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   // (`sharedTargets`). React Query's structural sharing keeps `agentsData`
   // identical until the roster actually changes, so this is stable between
   // fetches that return the same rows.
-  const crewPreview = usePreviewFlag(PREVIEW_CREW)
-  const agents = useMemo<KiroCrewAgent[]>(() => hideMateWithoutPreview(agentsData?.agents || [], crewPreview), [agentsData, crewPreview])
+  const agents = useMemo<KiroCrewAgent[]>(() => agentsData?.agents || [], [agentsData])
   const defaultAgent = agentsData?.default_agent || ''
 
   const [filter, setFilter] = useState('')
@@ -151,8 +142,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   }
   const rosterAdmitted = !!editingCrew && rosterAdmittedRef.current === editingCrew
   const editorAgents = useMemo<KiroCrewAgent[]>(
-    () => (rosterAdmitted ? hideMateWithoutPreview(editorRosterQuery.data?.agents || [], crewPreview) : []),
-    [rosterAdmitted, editorRosterQuery.data, crewPreview],
+    () => (rosterAdmitted ? editorRosterQuery.data?.agents || [] : []),
+    [rosterAdmitted, editorRosterQuery.data],
   )
   const closeEditor = useCallback(() => {
     setEditingCrew('')

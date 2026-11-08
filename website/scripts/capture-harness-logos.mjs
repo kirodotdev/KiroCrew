@@ -10,10 +10,10 @@
  *
  *   PYTHONPATH=src python3 -c "import json; from kiro_crew.agent_sdk import backend_cards as b; \
  *     print(json.dumps({p: {**b.card_payload(i), 'id': i, 'policy_id': p} for i, p in [('', 'kiro'), \
- *     ('kas', 'kas'), ('claude', 'claude'), ('codex', 'codex'), ('deepseek', 'deepseek'), \
- *     ('goose', 'goose'), ('opencode', 'opencode'), ('pi', 'pi')]}))" > payloads.json
+ *     ('kas', 'kas'), ('claude', 'claude'), ('codex', 'codex'), ('copilot', 'copilot'), \
+ *     ('deepseek', 'deepseek'), ('goose', 'goose'), ('opencode', 'opencode'), ('pi', 'pi')]}))" > payloads.json
  *
- * A ninth row, `zephyr`, is a harness this frontend has no mark for: the frame
+ * A tenth row, `zephyr`, is a harness this frontend has no mark for: the frame
  * shows it keeps the generic glyph. Every other /api/ call is answered from the
  * fixtures below; no gateway is involved.
  */
@@ -26,7 +26,7 @@ const base = process.argv[3] || 'http://127.0.0.1:5199'
 const out = process.argv[4] || '../.github/screenshots/harness-logos'
 mkdirSync(out, { recursive: true })
 
-const IDS = ['kiro', 'kas', 'claude', 'codex', 'deepseek', 'goose', 'opencode', 'pi']
+const IDS = ['kiro', 'kas', 'claude', 'codex', 'copilot', 'deepseek', 'goose', 'opencode', 'pi']
 const row = payload => ({
   selectable: true,
   independent_setup: payload.policy_id !== 'kiro' && payload.policy_id !== 'kas',
@@ -41,7 +41,7 @@ const backends = [
   ...IDS.map(id => row({ ...PAYLOADS[id], id })),
   row({ ...PAYLOADS.codex, id: 'zephyr', policy_id: 'zephyr' }),
 ]
-const enumValues = ['kiro', 'kas', 'claude', 'codex', 'deepseek', 'goose', 'opencode', 'pi', 'zephyr']
+const enumValues = ['kiro', 'kas', 'claude', 'codex', 'copilot', 'deepseek', 'goose', 'opencode', 'pi', 'zephyr']
 
 const json = (route, body, code = 200) => route.fulfill({
   status: code, contentType: 'application/json', body: JSON.stringify(body),
@@ -73,7 +73,7 @@ async function openList(browser, theme, viewport, deviceScaleFactor) {
   await page.getByRole('radio', { name: 'zephyr' }).waitFor({ timeout: 20000 })
   const count = await page.getByRole('radio').count()
   if (count !== IDS.length + 1) throw new Error(`expected ${IDS.length + 1} rows, saw ${count}`)
-  for (const id of ['claude', 'codex', 'deepseek', 'goose', 'opencode', 'pi']) {
+  for (const id of ['claude', 'codex', 'copilot', 'deepseek', 'goose', 'opencode', 'pi']) {
     await page.getByTestId(`harness-logo-${id}`).waitFor()
   }
   const ghosts = await page.getByTestId('kiro-ghost-mark').count()

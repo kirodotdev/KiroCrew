@@ -2,15 +2,30 @@ import { useCallback, useEffect, useState, type MutableRefObject } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { api } from '../../../api/client'
+import { apiErrorCode } from '../../../api/apiError'
 import { settingsPath } from '../../../components/settingsPath'
 import { useContinuePress } from '../../../hooks/useContinuePress'
 import { SETTINGS_DEFAULT_MODEL_ID, SETTINGS_TURN_TIME_LIMIT_HIGHLIGHT } from '../../../hooks/useSettingHighlight'
 import { useAppSelector } from '../../../store'
+import { i18nT } from '../../../i18n/t'
 import { selectContinuable, selectTrailingSendUnconfirmed, selectTurnInterrupted } from '../../../store/chatSlice'
 import type { ChatMessage } from '../../../types'
 import { KIRO_SIGN_IN_PATH } from '../../developer/kiroSignInLink'
-import type { CapabilityFix, FreshSessionState } from '../ErrorCard'
+import type { CapabilityFix, FreshSessionState, RepairImagesState } from '../ErrorCard'
 import { newestErrorOwnsRecovery } from '../transcriptRenderers'
+
+/** A slot's repair-images state and the error row it was pressed for. */
+interface RepairImagesEntry { state: RepairImagesState; row: string }
+
+/** Identity of the transcript's newest error row ('' when there is none):
+ *  its timestamp and text, which survive older history being prepended. */
+function newestErrorRowKey(messages: readonly ChatMessage[]): string {
+  for (let j = messages.length - 1; j >= 0; j--) {
+    const m = messages[j]
+    if (m.role === 'error') return JSON.stringify([m.ts ?? null, m.content])
+  }
+  return ''
+}
 
 interface TurnRecoveryOptions {
   activeSlot: string | null
@@ -21,7 +36,7 @@ interface TurnRecoveryOptions {
   anchorModelBtn: (rect: DOMRect, trigger?: HTMLElement | null) => void
   setModelDropdown: (open: boolean) => void
   modelPickerReturnsFocusRef: MutableRefObject<boolean>
-  showRefusedPress: (action: 'continue' | 'fresh_session', e: unknown) => void
+  showRefusedPress: (action: 'continue' | 'fresh_session' | 'repair_images', e: unknown) => void
 }
 
 /**
@@ -159,6 +174,88 @@ export function useTurnRecovery({
   // A new turn on the active slot (the user sent again) starts its state over.
   useEffect(() => { if (slotRunning && activeSlot) setSlotFreshSession(activeSlot, 'idle') }, [slotRunning, activeSlot, setSlotFreshSession])
 
+  // Repair-images recovery, per-slot like fresh-session above: the server
+  // downscales the oversized images in the transcript and re-issues the
+  // interrupted turn. It refuses (409) while a turn or sub-agent runs; that
+  // refusal is rendered by the shared refused-press surface.
+  //
+  // Each slot's state belongs to the error row it was pressed for: a resumed
+  // turn can hit another oversized image and append a NEWER image_repair row,
+  // and that row must start at `idle` with its own Repair / fresh-session
+  // actions instead of inheriting the previous repair's `done`.
+  const newestErrorRow = newestErrorRowKey(messages)
+  const [repairImagesBySlot, setRepairImagesBySlot] = useState<Readonly<Record<string, RepairImagesEntry>>>({})
+  const setSlotRepairImages = useCallback((slot: string, state: RepairImagesState, row = '') => {
+    setRepairImagesBySlot(prev => {
+      const cur = prev[slot]
+      if (state === 'idle') {
+        if (!cur) return prev
+        const next = { ...prev }
+        delete next[slot]
+        return next
+      }
+      if (cur && cur.state === state && cur.row === row) return prev
+      return { ...prev, [slot]: { state, row } }
+    })
+  }, [])
+  const repairEntry = activeSlot ? repairImagesBySlot[activeSlot] : undefined
+  const repairImages: RepairImagesState = repairEntry && repairEntry.row === newestErrorRow ? repairEntry.state : 'idle'
+  const handleRepairImages = useCallback(() => {
+    if (!activeSlot || repairImages !== 'idle' || slotRunning) return
+    const slot = activeSlot
+    const row = newestErrorRow
+    setSlotRepairImages(slot, 'pending', row)
+    api.repairImages(slot).then(
+      (res) => {
+        // Only claim a repair when the server actually rewrote the transcript.
+        // repaired=false means there was nothing over the cap (or no transcript
+        // to repair): say nothing and fall back to idle so the re-issued turn's
+        // own state shows, rather than a false "images repaired" line. When a
+        // real repair happened but the turn did not re-issue (resumed=false: a
+        // turn started racing), keep a Resume affordance instead of claiming
+        // the reply is running.
+        if (!res.repaired) setSlotRepairImages(slot, 'idle')
+        else setSlotRepairImages(slot, res.resumed ? 'done' : 'done_not_resumed', row)
+      },
+      (e: unknown) => {
+        // Only the backup-exists refusal is a permanent dead end: a prior
+        // `.pre-image-repair.bak` sidecar blocks a second repair and only a
+        // manual file move clears it, so the card drops into `failed` and
+        // offers a fresh session. Every OTHER refusal — the generic
+        // `image_repair_failed` (a moved transcript, an unverifiable scan, an
+        // OSError) and the transient reload 409s (`turn_in_flight`,
+        // `session_rebound`, `slot_subagents_running`) — can clear on a retry,
+        // so the button stays pressable (`idle`) and the shared refused-press
+        // notice carries the specific reason.
+        const code = apiErrorCode(e)
+        // An Incognito / Temporary chat is refused before any teardown, since
+        // its reload erases the history the repair would rewrite: the same dead
+        // end, with its own reason on the card.
+        const notPersistent = code === 'image_repair_not_persistent'
+        const deadEnd = code === 'image_repair_backup_exists' || notPersistent
+        // The failed card carries its own plain-language reason, so a raw
+        // refused-press notice on top would be a second message about the same
+        // thing: suppress it for the dead end. For the genuine repair failure
+        // (`image_repair_failed`: a moved transcript, an unverifiable scan, an
+        // OSError) the raw backend text is not actionable, so show the friendly
+        // localized line (the one repair is NOT used up — a failed attempt does
+        // not count). But a transient reload 409 (`turn_in_flight`,
+        // `slot_subagents_running`, `session_rebound`) names a specific, acted-on
+        // state, so pass its own message through rather than hiding it behind the
+        // generic "something went wrong".
+        if (!deadEnd) {
+          const transient = code && code !== 'image_repair_failed'
+          const notice = transient
+            ? (e instanceof Error && e.message ? e : new Error(String(e)))
+            : new Error(i18nT('pages.chat.errorCard.repair_images_retry_hint'))
+          showRefusedPress('repair_images', notice)
+        }
+        setSlotRepairImages(slot, notPersistent ? 'failed_not_persistent' : deadEnd ? 'failed' : 'idle', row)
+      },
+    )
+  }, [activeSlot, repairImages, newestErrorRow, slotRunning, showRefusedPress, setSlotRepairImages])
+  useEffect(() => { if (slotRunning && activeSlot) setSlotRepairImages(activeSlot, 'idle') }, [slotRunning, activeSlot, setSlotRepairImages])
+
   // (The newest-error index that gates the Continue button is derived inside
   // the shared row set from the transcript it is handed -- see
   // transcriptRenderers.tsx `lastErrorIndex`.)
@@ -167,5 +264,6 @@ export function useTurnRecovery({
     openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting,
     cardOwnsRecovery,
     freshSession, handleFreshSession,
+    repairImages, handleRepairImages,
   }
 }

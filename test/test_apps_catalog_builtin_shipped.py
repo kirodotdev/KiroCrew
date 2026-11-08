@@ -71,6 +71,214 @@ class TestCatalogBuiltinRowsIntersectShippedBuiltins:
         names = {r["name"] for r in await registry.list_catalog_apps()}
         assert names == {"plain-row"}
 
+    @pytest.mark.asyncio
+    async def test_edition_builtin_row_is_listed_while_the_catalog_is_reachable(self, monkeypatch):
+        """An edition's ``registry_rows`` builtin survives the catalog replacing the seed."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [
+                {"name": "edition-app", "displayName": "Edition App", "source": {"type": "builtin"}}
+            ],
+        )
+        monkeypatch.setattr(
+            registry, "shipped_builtin_names", lambda: {"shipped-app", "edition-app"}
+        )
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        assert set(rows) == {"shipped-app", "edition-app"}
+        assert rows["edition-app"]["displayName"] == "Edition App"
+
+    @pytest.mark.asyncio
+    async def test_edition_rows_only_add_names_the_catalog_does_not_publish(self, monkeypatch):
+        """A catalog row wins a name collision, as it does over the seed."""
+        _catalog(
+            monkeypatch,
+            [{"name": "shipped-app", "displayName": "Catalog", "source": {"type": "builtin"}}],
+        )
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [
+                {"name": "shipped-app", "displayName": "Edition", "source": {"type": "builtin"}}
+            ],
+        )
+        monkeypatch.setattr(registry, "shipped_builtin_names", lambda: {"shipped-app"})
+
+        rows = await registry.list_catalog_apps()
+        assert [r["displayName"] for r in rows] == ["Catalog"]
+
+    @pytest.mark.asyncio
+    async def test_the_first_of_two_edition_rows_sharing_a_name_is_listed(self, monkeypatch):
+        """Edition rows dedupe by name as ``_load_registry_file`` does: the first wins."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [
+                {"name": "edition-app", "displayName": "First", "source": {"type": "builtin"}},
+                {"name": "edition-app", "displayName": "Second", "source": {"type": "builtin"}},
+            ],
+        )
+        monkeypatch.setattr(
+            registry, "shipped_builtin_names", lambda: {"shipped-app", "edition-app"}
+        )
+
+        rows = [r for r in await registry.list_catalog_apps() if r["name"] == "edition-app"]
+        assert [r["displayName"] for r in rows] == ["First"]
+
+    @pytest.mark.asyncio
+    async def test_edition_row_gets_its_manifest_copy_and_probe_while_the_catalog_is_reachable(
+        self, monkeypatch
+    ):
+        """A bare edition row is dressed and probed as ``list_registry`` does offline."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(registry, "shipped_builtin_names", lambda: {"shipped-app"})
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [
+                {
+                    "name": "edition-app",
+                    "repo": "example/edition-app",
+                    "detectInstalled": "true",
+                }
+            ],
+        )
+        fetched: list[str] = []
+
+        async def _resolve_manifest(entry):
+            fetched.append(entry["name"])
+            return {**entry, "displayName": "Edition App", "version": "1.2.0"}
+
+        probed: list[str] = []
+
+        async def _detect_installed_probe(entries, installed_map):
+            probed.extend(e["name"] for e in entries)
+            return {"edition-app"}
+
+        monkeypatch.setattr(registry, "_resolve_manifest", _resolve_manifest)
+        monkeypatch.setattr(registry, "_detect_installed_probe", _detect_installed_probe)
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        assert fetched == ["edition-app"], "only the edition row pays the manifest fetch"
+        assert probed == ["edition-app"]
+        edition = rows["edition-app"]
+        assert edition["displayName"] == "Edition App"
+        assert edition["version"] == "1.2.0"
+        assert edition["installed"] is True
+
+    @pytest.mark.asyncio
+    async def test_edition_row_verified_follows_its_index_author_not_its_manifest(
+        self, monkeypatch
+    ):
+        """The badge reads the edition index's author, never the app's own app.json."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(registry, "shipped_builtin_names", lambda: {"shipped-app"})
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [
+                {"name": "indexed-by-us", "repo": "example/indexed-by-us", "author": "kirocrew"},
+                {"name": "claims-us", "repo": "example/claims-us"},
+            ],
+        )
+
+        async def _resolve_manifest(entry):
+            # Each app's own manifest says the opposite of its index row.
+            author = "someone-else" if entry["name"] == "indexed-by-us" else "kirocrew"
+            return {**entry, "author": author}
+
+        monkeypatch.setattr(registry, "_resolve_manifest", _resolve_manifest)
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        assert rows["indexed-by-us"]["verified"] is True
+        assert rows["claims-us"]["verified"] is False
+
+    @pytest.mark.asyncio
+    async def test_edition_row_reports_an_update_from_its_manifest_version(self, monkeypatch):
+        """``updateAvailable`` compares the manifest's version with the installed one."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(registry, "shipped_builtin_names", lambda: {"shipped-app"})
+        monkeypatch.setattr(
+            registry,
+            "list_installed_apps",
+            lambda: [{"name": "edition-app", "version": "1.0.0", "enabled": True}],
+        )
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [{"name": "edition-app", "repo": "example/edition-app"}],
+        )
+
+        async def _resolve_manifest(entry):
+            return {**entry, "version": "1.1.0"}
+
+        monkeypatch.setattr(registry, "_resolve_manifest", _resolve_manifest)
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        assert rows["edition-app"]["updateAvailable"] is True
+
+    @pytest.mark.asyncio
+    async def test_edition_builtin_row_this_build_does_not_ship_is_dropped(self, monkeypatch):
+        """Edition rows pass the same shipped-builtin filter as catalog rows."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [{"name": "absent-app", "source": {"type": "builtin"}}],
+        )
+        monkeypatch.setattr(registry, "shipped_builtin_names", lambda: {"shipped-app"})
+
+        names = {r["name"] for r in await registry.list_catalog_apps()}
+        assert names == {"shipped-app"}
+
+    @pytest.mark.asyncio
+    async def test_edition_row_a_bundled_seed_row_shadows_is_not_listed(self, monkeypatch):
+        """Install-by-name gives a bundled seed row the name, so its edition twin is not listed."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(registry, "shipped_builtin_names", lambda: {"shipped-app"})
+        bundled = {"name": "shared-app", "repo": "example/bundled-app"}
+        monkeypatch.setattr(registry, "_load_registry_file", lambda: [bundled])
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [
+                {"name": "shared-app", "repo": "example/edition-app"},
+                {"name": "shared-app", "repo": "example/bundled-app", "displayName": "Late"},
+            ],
+        )
+
+        async def _resolve_manifest(entry):
+            return {**entry, "displayName": "Edition App"}
+
+        monkeypatch.setattr(registry, "_resolve_manifest", _resolve_manifest)
+
+        names = {r["name"] for r in await registry.list_catalog_apps()}
+        assert names == {"shipped-app"}
+
+    @pytest.mark.asyncio
+    async def test_edition_row_the_merged_seed_carries_is_still_listed(self, monkeypatch):
+        """The real seed already holds edition rows; that alone must not hide them."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(registry, "shipped_builtin_names", lambda: {"shipped-app"})
+        edition = {"name": "edition-app", "repo": "example/edition-app"}
+        monkeypatch.setattr(
+            registry,
+            "_load_registry_file",
+            lambda: [{"name": "core-app", "repo": "example/core-app"}, dict(edition)],
+        )
+        monkeypatch.setattr(registry, "_edition_registry_rows", lambda: [dict(edition)])
+
+        async def _resolve_manifest(entry):
+            return {**entry, "displayName": "Edition App"}
+
+        monkeypatch.setattr(registry, "_resolve_manifest", _resolve_manifest)
+
+        names = {r["name"] for r in await registry.list_catalog_apps()}
+        assert "edition-app" in names
+
     def test_a_manifest_registration_would_reject_is_not_in_the_shipped_set(
         self, tmp_path, monkeypatch
     ):

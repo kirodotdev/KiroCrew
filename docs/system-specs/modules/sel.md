@@ -7,6 +7,9 @@ Append-only, tamper-evident audit trail for tool invocations, MCP calls, and das
 See also the SEL section in [`security.md`](security.md) for the threat-model view of these events.
 
 Storage: the live append-only log is `~/.kiro/crew/security_events.jsonl`.
+Each append makes it owner-only (`platform_compat.restrict_to_owner`, a DACL on
+Windows) before writing, under the calling-thread rule `config.json` uses: an
+append on the event loop to a non-local Windows volume skips the DACL with a warning.
 At the size ceiling it rotates into `~/.kiro/crew/security_events.d/`; each
 closed segment is an independent HMAC-SHA256 chain and the new live log starts
 with a `sel_rotation` boundary event.
@@ -93,6 +96,7 @@ like `_bg`; other unrecognized session keys retain the legacy `slack` fallback.
 - **Key + log are on the sensitive-path floor:** the `trust` directory (whole-dir entry), the legacy `sel_hmac.key` leaf, `security_events.jsonl` and `security_events.d` are in `security._SENSITIVE_HOME_DIRS` ([security](security.md) owns the full enumeration), so the audited agent's `fs_read`/file-edit tools (gated by `is_sensitive_path()`) cannot read the key to forge the chain or rewrite the log. The gateway's own writer/reader (`sel.py` and its owner modules, `dashboard/session_health.py`) opens the files directly and bypasses that gate. Residual: the key still lives in the agent's home namespace — a deeper out-of-process signer is future hardening.
 - **Read paths pin the segment directory:** the read-side readers (`recent`, `verify_integrity`) open `security_events.d` itself through `_open_segment_dir` before enumerating; a directory that refuses to pin — planted link, non-directory, or vanished — contributes NO segments to any read (fail closed; a missing dir was already "no segments"), instead of being walked by name. Enumeration stays the bounded `_SEGMENT_SCAN_CAP` walk on every platform, but where the pin carries a descriptor it goes through `os.scandir(pin.fd)` — a path swap can neither redirect nor empty the scan (immune to the swap-mid-read-then-restore shape) — and only the identity-pin platform revalidates the directory's identity after the walk, failing closed on a mismatch. Where directory descriptors exist, every per-file open (`_open_segment` with `dir_fd`) also resolves RELATIVE to the pinned descriptor, so a swap after enumeration still cannot redirect a read; Windows has no directory descriptors, so its pin revalidates the directory's `lstat` `(st_dev, st_ino)` identity before each child open instead, with the residual between revalidations bounded by the rotation-time repair (`_ensure_segment_dir` unlinks a linked segment dir at rotation/prune). The per-file funnel (`O_NOFOLLOW`/`O_NONBLOCK`, descriptor `fstat` regular-file check, name↔descriptor identity) is unchanged, and the LIVE log is never pinned: its writer follows an operator's symlink, so its readers must too. Because the swap is itself tampering, `verify_integrity(detailed=True)` reports a THIRD outcome — `history_verifiable=False` with a `reason` — when the directory refused to pin (planted link, not a directory, an actual directory the OS refused to open, or one that vanished between the pin's `lstat` and its open — every pin failure except ABSENCE confirmed at first sight) or was replaced mid-verification, and the CLI (`kirocrew security verify`) and `GET /api/sel/verify` surface it (`Audit history UNVERIFIABLE` / `integrity: "unverifiable"`) instead of reporting intact over the live log alone; the CLI derives its live-log clause from the same pass's counts, so a tampered live log is reported as such rather than "intact". A directory that simply does not exist yet (fresh install) stays verifiable.
 - Verification: `verify_integrity()` walks the chain and reports tampered entries
+- **A chain tip that cannot be read is unknown, never genesis.** Only an absent or empty log, or one with no parseable record, starts the chain at `""`. When the log is present but cannot be opened (held open without sharing, `EACCES`), `_read_last_hash` raises. Construction still succeeds: it logs a warning and marks the tip unknown, and the first append reads the tip again under its locks. A re-anchor whose read raises keeps the live-log identity it compared against, so the next append reads the tip again too. While the read keeps failing, the append fails like any unwritable audit: a `critical=True` audit is denied, and a best-effort batch is dropped and counted in `dropped_events` (the writer retries only a transient error, and `EACCES`, which a Windows sharing violation also raises, is not one).
 - Append-only: no in-place edits; pruning rewrites with chain rebuild
 - **Second protocol anchored on this key — domain-separated:** `session_pid_sig.py`
   authenticates the `session_pid_<pid>.txt` -> session-key mapping consumed by
@@ -148,9 +152,12 @@ grant audits retain their audit-or-deny contract.
   failure exit (`platform_compat.exit_after_failed_restart_exec`) drain an
   existing SEL singleton with `flush_audit_queue_before_hard_exit`, which uses
   the teardown executor and an outer deadline, before the gateway.log tail.
-  Restart retains its inline off-loop drain. These best-effort drains avoid
-  initializing a trust root during exit. The second-signal force exit does not
-  drain SEL yet (#19042).
+  Restart retains its inline off-loop drain. The second-signal force exit
+  drains on its own non-daemon `kc-force-exit` thread with the synchronous
+  `flush_audit_queue`, once before its orphan sweep and once more before the
+  gateway.log tail, and the graceful exit parks rather than drain or exit
+  under it (see the gateway's Shutdown Sequence). These best-effort drains
+  avoid initializing a trust root during exit.
 - **Fallback**: if the writer can't be started, `log()` writes synchronously so
   an event is never silently dropped.
 - **Write failures**: when an append or the chain lock raises `OSError`, the
@@ -177,6 +184,7 @@ Two bounds, and the tighter wins:
 | Slack handler | `tool_invocation` rows (`operation` = tool name; `outcome` invoked / denied / approved / rejected / …) for tool calls and every permission decision | `slack/handler_runtime/permission_ladder.py` |
 | Dashboard chat | `tool_invocation` rows (`operation` = tool name; `outcome` invoked and every permission decision) | `dashboard/chat_turn/tool_rows.py` (invoked), `tool_approval.py` and `permission_prompt.py` (the permission decisions) |
 | Transport permission floor | `tool_invocation` refusals from `permission_floor.audit_refusal` (`source=transport_floor`, `outcome=rejected_transport_floor`) | `permission_floor.py` |
+| Batch write guard | `tool_invocation` refusals from `batch_guard.audit_refusal` (`source=batch_guard`, `outcome=rejected_batch_guard`, `metadata.mechanism=batch_write_guard`, `metadata.cause=batch_read_write`); opt-in, a timing refusal, never a security one | `acp/batch_guard.py` |
 | ACP session cancel | `approval_cancel` rows with `outcome=rejected_on_cancel` for approvals pending when the session is cancelled | `acp/client_turn_control.py` |
 | Chat persist seams | `output_anomaly` / `options_footer_glued_text` (`outcome=labelled`, `source` from the turn's session key, `metadata` `{count, chars, preview (redacted, 200 chars), directive_shaped}`) when a persisted turn carried text glued to its own `[OPTIONS:]` footer; skipped while SEL is cold so the first open never runs on the event loop | `dashboard/chat_turn/segment_flush.py` (`_log_glued_footer_text`) |
 | TaskRunner | `tool_invocation` rows for permission decisions during decomposition and step execution | `task_planner.py`, `tool_permission.py` (`TaskrunnerRows`, through `task_executor.py`'s `sel`) |
@@ -198,7 +206,7 @@ Two bounds, and the tighter wins:
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/sel/events?limit=N` | Recent security events (max 1000). **Owner only** — the rows name the resources a security decision was about, and a dashboard session is not by itself the owner, so every other caller gets `403 owner_only` from the shared owner gate and the refusal is itself audited. A session signed before an owner was configured keeps its bootstrap subject and is refused too, but that caller IS the owner, so it gets `401 stale_session_reauth` instead: re-signing in is the remedy, and a token refresh preserves the subject. A read that succeeds is audited as well, so the trail distinguishes an untouched log from one the owner has read. |
+| GET | `/api/sel/events?limit=N` | Recent security events (max 1000). **Owner only** — the rows name the resources a security decision was about, and a dashboard session is not by itself the owner, so every other caller gets `403 owner_only` from the shared owner gate and the refusal is itself audited. A session signed before an owner was configured keeps its bootstrap subject and is refused too, and so is a former owner's session (its token carries the signed `owner_mint` claim, and the owner id has since changed or been cleared); such a caller gets `401 stale_session_reauth` instead: re-signing in is the remedy, and a token refresh preserves the subject. A session minted without the claim keeps the generic denial until one fresh sign-in. A read that succeeds is audited as well, so the trail distinguishes an untouched log from one the owner has read. |
 | GET | `/api/sel/verify` | HMAC chain integrity check. Any authenticated dashboard session (no owner gate), because it returns counts and a reason only, never event rows or resource names: `total`, `valid`, `integrity` (`ok` / `compromised` / `unverifiable`), `tampered`, `detail` (the reason text, empty when verifiable), and this process's `dropped_events` |
 
 ## CLI

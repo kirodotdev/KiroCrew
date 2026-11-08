@@ -385,6 +385,28 @@ describe('DrivePage sections: preview, rename, search', () => {
     await waitFor(() => expect(screen.queryByTestId('drive-rename-row')).toBeNull())
   })
 
+  it('rename from the row menu leaves focus in the name field', async () => {
+    // The menu used to close with focus handed back to its ⋯ trigger, so the
+    // field opened but typing went nowhere.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue({
+      files: [{ key: 'docs/old.md', size: 10, modified: '2026-09-01T00:00:00Z' }],
+      folders: [],
+    })
+    await renderDrive('drive')
+
+    await chooseFromMenu((await screen.findAllByTestId('drive-more'))[0], 'drive-rename')
+    const input = await screen.findByTestId('drive-rename-input')
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(input))
+
+    // Escape closes the field and hands focus back to the ⋯ that opened it,
+    // not to the page body.
+    fireEvent.keyDown(input, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId('drive-rename-row')).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(screen.getAllByTestId('drive-more')[0]))
+  })
+
   it('a rename finishing while another row is being edited leaves that editor alone', async () => {
     // The completion belongs to the row that started it. An unconditional
     // close on success would throw away the name being typed on the other
@@ -410,8 +432,9 @@ describe('DrivePage sections: preview, rename, search', () => {
 
     // While A flies, open B and start typing.
     await chooseFromMenu((await screen.findAllByTestId('drive-more'))[1], 'drive-rename')
-    const inputB = await screen.findByTestId('drive-rename-input')
-    expect(inputB).toHaveValue('b.md')
+    // B's editor opens once the menu has closed; until then A's is the one shown.
+    await waitFor(() => expect(screen.getByTestId('drive-rename-input')).toHaveValue('b.md'))
+    const inputB = screen.getByTestId('drive-rename-input')
     fireEvent.change(inputB, { target: { value: 'b-half' } })
 
     // B's Rename button is held while A flies (one mutation observer); it
@@ -445,7 +468,8 @@ describe('DrivePage sections: preview, rename, search', () => {
     fireEvent.click(screen.getByTestId('drive-rename-save'))
     await waitFor(() => expect(awsControlApi.driveMove).toHaveBeenCalledTimes(1))
     await chooseFromMenu((await screen.findAllByTestId('drive-more'))[1], 'drive-rename')
-    await screen.findByTestId('drive-rename-input')
+    // B's editor opens once the menu has closed; until then A's is the one shown.
+    await waitFor(() => expect(screen.getByTestId('drive-rename-input')).toHaveValue('b.md'))
 
     failA(new AwsControlError('destination_exists', 409))
     const notice = await screen.findByTestId('drive-page-error')
@@ -531,6 +555,58 @@ describe('DrivePage sections: preview, rename, search', () => {
     failDelete(new Error('AccessDenied'))
     const notice = await screen.findByTestId('drive-page-error')
     expect(notice).toHaveTextContent('photo.png')
+  })
+
+  it('a delete that fails in the same tick as the swap to search is still reported page-level', async () => {
+    // The search request is sent from the same effect pass that closes the
+    // strip, so failing the delete from inside it lands the rejection before
+    // React has committed the closed strip. The routing must not depend on
+    // that commit having happened.
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    let failDelete: (e: unknown) => void = () => {}
+    vi.mocked(awsControlApi.driveDelete).mockImplementation(
+      () => new Promise((_resolve, reject) => { failDelete = reject }),
+    )
+    vi.mocked(awsControlApi.driveSearch).mockImplementation(async () => {
+      failDelete(new Error('AccessDenied'))
+      return { results: [], capped: false, limit: 200 }
+    })
+    await renderDrive('drive')
+
+    await chooseFromMenu((await screen.findAllByTestId('drive-more'))[0], 'drive-delete')
+    fireEvent.click(await screen.findByTestId('drive-delete-confirm-action'))
+    await waitFor(() => expect(awsControlApi.driveDelete).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(screen.getByTestId('drive-search-input'), { target: { value: 'zzz' } })
+    await screen.findByTestId('drive-search-empty')
+    const notice = await screen.findByTestId('drive-page-error')
+    expect(notice).toHaveTextContent('photo.png')
+  })
+
+  it('a rename that fails in the same tick as the swap to search is still reported page-level', async () => {
+    stubDrivePresent()
+    vi.mocked(awsControlApi.driveList).mockResolvedValue(listing)
+    let failRename: (e: unknown) => void = () => {}
+    vi.mocked(awsControlApi.driveMove).mockImplementation(
+      () => new Promise((_resolve, reject) => { failRename = reject }),
+    )
+    vi.mocked(awsControlApi.driveSearch).mockImplementation(async () => {
+      failRename(new AwsControlError('destination_exists', 409))
+      return { results: [], capped: false, limit: 200 }
+    })
+    await renderDrive('drive')
+
+    await chooseFromMenu((await screen.findAllByTestId('drive-more'))[0], 'drive-rename')
+    fireEvent.change(await screen.findByTestId('drive-rename-input'), { target: { value: 'photo2.png' } })
+    fireEvent.click(screen.getByTestId('drive-rename-save'))
+    await waitFor(() => expect(awsControlApi.driveMove).toHaveBeenCalledTimes(1))
+
+    fireEvent.change(screen.getByTestId('drive-search-input'), { target: { value: 'zzz' } })
+    await screen.findByTestId('drive-search-empty')
+    const notice = await screen.findByTestId('drive-page-error')
+    expect(notice).toHaveTextContent('photo.png')
+    expect(notice).toHaveTextContent(i18nT('apps.awsControl.console.rename_conflict'))
   })
 
   it('a rename that fails after the view swapped to search is reported page-level', async () => {

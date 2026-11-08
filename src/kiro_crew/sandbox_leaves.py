@@ -15,7 +15,7 @@ from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIX
 
 #: The cache leaf, mirroring ``policy_distribution.CACHE_DIR_LEAF``; spelled here so
 #: this module needs no import from the governance engine.  Pinned equal by
-#: ``test_governance_distribution``.
+#: ``test_governance_distribution_cache_trust``.
 _POLICY_CACHE_LEAF = "policy_cache"
 #: Gateway-only runtime subtree that holds authenticated macOS decoder images.
 #: The gateway opens these outside the agent sandbox; every sandbox mode must
@@ -102,6 +102,14 @@ _LIVE_TARGET_STAGING_LEAF: str = "live-target-staging"
 #: ``aws-control-staging``; the gateway process is the only writer, so unlike md-notebook it
 #: needs no backend carve-out to hand the directory back to a sandboxed app.
 _AUTH_STORE_STAGING_LEAF: str = "auth-store-staging"
+
+#: The mediated-secret request directory (``secrets_mediation.provenance.
+#: REQUEST_POLICY_DIRNAME``): the owner-signed authorization policy and its
+#: authorize lock. Hidden as a WHOLE directory and
+#: precreated before every spawn, so every name inside it -- present, future, and the
+#: temps a publication renames over them -- is covered, and a rename inside it never
+#: touches the mount point the mask sits on.
+_SECRET_REQUEST_POLICY_LEAF: str = "secret-request-policy"
 
 #: The md-notebook builtin's name, and its own state files under the crew data home.
 #: Named so the mask, the backend carve-out that lifts it, and the materialiser that
@@ -236,16 +244,32 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # :func:`app_backend_visible_targets`; the mask still applies to every OTHER
     # sandboxed process.
     _MD_NOTEBOOK_STAGING_LEAF,
-    # Browser session material. The extension token reaches the CLI through the
-    # environment, never by ``open()``, so masking the file costs nothing; the other
-    # four are retired leaves with no reader left in the tree. The LIVE browser paths
-    # (``browser-state``, ``playwright-snapshots``, ``pw``, ``playwright-cli-config.json``)
-    # are deliberately absent from the sensitive list and stay fully visible.
+    # Browser session material an earlier version's browser CLI wrote: a storage
+    # state (cookies), its extension token and three retired markers. No reader is
+    # left in the tree, and nothing creates them any more; they stay masked because
+    # a file left on disk from that version still holds the owner's sessions. The
+    # live browser paths are the Harness leaves below; ``browser-snapshots`` (the
+    # agent's own screenshots) is deliberately visible.
     "browser-cookies.txt",
     "playwright-storage-state.json",
     "playwright-extension-token",
     "browser-mode-enabled",
     "browser-engine",
+    # Browser Harness's runtime directory (``browser_harness.supervisor.IPC_LEAF``):
+    # the daemon's Unix socket (or, on Windows, the port file carrying the IPC
+    # token), its pid file, log and screenshot temp. Whoever can open the socket
+    # can issue raw CDP to the user's own Chrome -- every tab, every cookie -- so
+    # no sandboxed process may see it; the gateway is the only client. Masked as
+    # a whole DIRECTORY so the token and the socket are covered at every name,
+    # and in ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` because it is created on the
+    # first connect, i.e. absent at the first spawn.
+    "browser-harness-ipc",
+    # Kiro's Chromium profile (``browser_harness.supervisor.PROFILE_LEAF``). A
+    # takeover login leaves its cookies here, and the agent must not read them as
+    # a file: the only path to a logged-in page is the live browser, where the
+    # ``type`` op refuses password fields and the frame masks them. Same
+    # first-launch creation, same precreate entry.
+    "browser-profile",
     # Cross-session state whose authorization model is "a session reaches only its own",
     # enforced by the HTTP routes. Every legitimate reader goes through the gateway, so
     # OS-masking closes the sideways path without touching a live consumer.
@@ -253,6 +277,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # The conductor work ledger: a worker's full file toolset must not reach any
     # conductor's records except through the routes that check its binding.
     "work-ledger",
+    # Browser turn replays (``browser_harness.recording``): each chat's recorded
+    # frames and steps, logged-in pages included. Read only through the owner-only
+    # replay routes, which a sandboxed ``open()`` would skip.
+    "browser-recordings",
     # Every append-only per-unit crew log, crew and session alike (crew_log/store.py).
     # The design treats the crew log as the authority a conductor reads instead of
     # re-deriving, so an in-sandbox process able to write here could forge an
@@ -272,17 +300,6 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # race. Precreating it would re-materialise the retired name on every machine.
     "ledgers",
     "cron-history",
-    # The single-use step-up nonce that authorizes recording a flagged-file
-    # delivery grant. Whole DIRECTORY (arm renames a sibling ``.tmp`` into place),
-    # with NO in-sandbox reader: the gateway writes it on arm and the host
-    # ``kirocrew file-delivery approve`` reads it. Masked because a same-UID agent
-    # could otherwise FORGE a nonce here with a runtime-constructed shell path
-    # (the file gate's text/argv matcher does not see such a path) and then drive
-    # the owner's loopback browser to POST that chosen nonce, recording a grant
-    # with no human present -- the exact self-approval hole the step-up exists to
-    # close. Deliberately NOT under ``trust/``, which is sandbox-visible for SEL
-    # appends.
-    "file-delivery-consent-pending",
     # The cron in-flight markers, masked rather than sealed read-only because
     # nothing in the sandbox reads one: they are written and cleared by the run
     # task in the GATEWAY process, and the boot-time loop-stall breaker that acts
@@ -355,6 +372,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # it and the mask would be vacuous for the life of that sandbox, which is
     # precisely the disposition this entry exists to deny.
     "panel-dismissals",
+    # Released sessions whose records wait for deletion (``released_sessions``):
+    # each entry has the gateway delete the record it names, so a sandboxed writer
+    # could forge deletes or drop them. Created on the first release, so it is in
+    # ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too, and in ``_CREW_NO_ALIAS_LEAVES``.
+    "released-sessions",
     # Crewmate teams (``crew_teams.py``): which crewmates are on which team. The
     # same shape as ``crew-panels`` and for the same reason it is not under
     # ``trust/``: a team is the OWNER's grouping, so the crewmates it groups must
@@ -364,6 +386,16 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # hooks) and ``kirocrew agent create`` / ``delete`` from the operator's shell. Whole
     # directory: ``atomic_write`` publishes through a sibling temp.
     "crew-teams",
+    # Each crewmate's governing records (``member_records.py``): its permanent
+    # rules, its goals and its DM thread binding, one ``<slug>.json`` per kind.
+    # The person writes them through the dashboard and the gateway injects them
+    # into that crewmate's prompt or routes its thread by them, so no sandboxed
+    # process may read or write any of them. Deliberately NOT under ``trust/``,
+    # which stays sandbox read-write for SEL; an older build kept them there and
+    # the gateway moves them once (``member_records.migrate_from_trust``). Only
+    # the gateway and the operator's own CLI open it. Whole directory: every
+    # writer publishes through a sibling temp.
+    "member-records",
     # Auth stores and signing keys owned by the gateway web server alone.
     "token_signing.key",
     "refresh_chains.json",
@@ -374,6 +406,22 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     "kas",
     "ops_mission_control_secrets.json",
     "ops_mission_control_policy.json",
+    # Web Push credential stores (``notifications/push_store.py``, ``vapid_keys.py``), owned by the
+    # gateway alone: ``vapid_keys.json`` holds the VAPID EC private key and
+    # ``subscriptions.json`` each device's ``p256dh``/``auth`` secret. Masked as a whole
+    # DIRECTORY so the ``atomic_write`` temp they publish through, which holds the same
+    # bytes, is covered at every name. No in-sandbox reader exists: the fan-out runs in
+    # the gateway loop. In ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` too, because the stores
+    # are written lazily (first subscribe, first key fetch), so on a fresh install the
+    # ``isdir`` guard would otherwise skip the mask and let an agent read the key or
+    # plant an endpoint.
+    "web-push",
+    # The mediated-secret request directory: per Custom secret, the exact https origin
+    # the agent may reach with it, owner-signed. Read ONLY by the host gateway and the
+    # owner CLI; the sandboxed tool forwards over loopback and never touches it.
+    # Masked, not read-only, like ``.vault``: an agent that could read the policy
+    # learns the allowlist, and one that could write it could plant entries.
+    _SECRET_REQUEST_POLICY_LEAF,
     # No producer and no consumer left in the tree; masked so a backup restore that
     # resurrects a stale file cannot make it readable either.
     ".kiro_cli_binary_trust.json",
@@ -474,6 +522,11 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # is being prompt-injected through. The read-only mount is the load-bearing
     # half; the shell gate matches no paths.
     "decisions_consent.json",
+    # The owner's Shared Crew preview switch. A writable record lets an
+    # auto-approved agent choose whether the Crew opens to other people on its
+    # next start. The read-only mount is the load-bearing half; the shell gate
+    # matches no paths.
+    "shared_crew_preview.json",
     # The decision log that keystone's feature writes. Sealing the grant and
     # leaving the RECORD writable would be half a control: an agent that cannot
     # switch the seam on can still append a ``kind="feedback"`` line -- the exact
@@ -513,6 +566,12 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # ``_CREW_NOFOLLOW_READONLY_DIR_LEAVES``, Seatbelt through
     # ``_refuse_linked_models_leaf``.
     "models",
+    # The directory whose only entry links ``kirocrew`` to the install the gateway
+    # runs (``env_own_kirocrew``). It precedes ``~/.local/bin`` on every PATH Kiro Crew builds,
+    # so a write would choose the ``kirocrew`` every agent shell and every PATH
+    # lookup in the gateway runs. The gateway repoints it at start, outside the
+    # sandbox.
+    "kirocrew-bin",
     # The hosts a reader allowed long-query links for, per workspace. Every entry
     # relaxes the exfiltration check for that host, so a writable list lets a
     # prompt-injected agent allow the host it wants to send conversation data to.
@@ -520,14 +579,6 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # writer, an empty directory reads as "no host allowed", and a directory bind
     # shows the gateway's later writes live.
     "redaction-allow",
-    # Recorded consent to deliver a scanner-flagged file. Same class as
-    # ``aws_service_consent.json``: a writable grant lets an auto-approved agent
-    # consent, on the owner's behalf, to shipping the owner's secrets. This seal is
-    # the load-bearing half of that design -- ``is_sensitive_path`` covers the leaf
-    # on the file-tool path, but the shell gate matches no paths at all, and as the
-    # READONLY note above says a kernel write denial is what holds regardless of
-    # how a command spells the way there.
-    "file_delivery_consent.json",
     # Recorded consent to forward SSH_AUTH_SOCK into the sandbox. Same class as
     # ``aws_service_consent.json``: keeping the socket grants USE of the operator's
     # ssh-agent keys for the session, so a writable enable lets a prompt-injected
@@ -545,15 +596,18 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # what keeps the switch the owner's regardless of how a command spells the
     # way there.
     "credential_redaction.json",
-    # The browser launcher and its vendored Node package tree. Agent browser
-    # commands must read and execute this directory, while a write would choose
-    # the binary the unsandboxed gateway executes during startup reclamation or
-    # an owner address-bar launch. The gateway installer runs outside the agent
-    # sandbox, so it can still replace the managed copy.
-    "playwright-cli",
+    # The Browser Harness prefix (``browser_harness.install.PREFIX_LEAF``): the
+    # venv whose interpreter the unsandboxed gateway EXECUTES for the daemon and
+    # the helper worker, plus Kiro's Chromium beside it. A write would choose the
+    # code the gateway runs with the user's whole Chrome on the other end, so it is
+    # sealed; the installer runs in the gateway, outside the sandbox, and can
+    # still replace it. READONLY rather than hidden because a hidden EMPTY bind
+    # over an installed prefix would read as "engine absent" to any in-sandbox
+    # status probe, while a seal keeps the truth visible and only the write denied.
+    "browser-harness",
     # The KAS engine bundles Kiro Crew installs itself (``acp.kas_bundle``): a
     # pinned ``@kiro/agent`` tree and the Node runtime that executes it. Same
-    # class as ``playwright-cli``: a sandboxed KAS process must read and execute
+    # class as ``browser-harness``: a sandboxed KAS process must read and execute
     # this directory, while a write would choose the code every later KAS
     # session runs. ``kirocrew kas install`` runs in the gateway, outside the
     # sandbox, so it can still lay down a new version.
@@ -566,7 +620,7 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # rewritten ``fargate.image`` turns the owner's next launch into credential
     # delivery to an image the owner never chose. The digest rule constrains the
     # reference's FORM, not who owns the registry, so it is no obstacle. Same
-    # both-layers treatment ``playwright-cli`` gets, for the reason the READONLY note
+    # both-layers treatment ``browser-harness`` gets, for the reason the READONLY note
     # gives: ``is_sensitive_write_path`` covers the leaf on the file-tool path, while
     # a sandboxed shell's ``open(..., "w")`` reaches it however the write is spelled,
     # and only a kernel denial holds there. Nothing in the product writes this file at
@@ -603,7 +657,7 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # a writable child could plant the launcher a later session executes.
     #
     # On the precreate and no-follow lists above as well, for the same two reasons
-    # ``playwright-cli`` is: ``mount(2)`` cannot seal an absent path, so a leaf left off
+    # ``browser-harness`` is: ``mount(2)`` cannot seal an absent path, so a leaf left off
     # them stays WRITABLE in-sandbox until pi first runs, and the mounted NAME has to
     # stay the real directory because the gateway later execs out of it. Those lists are
     # walked identically for every backend and carry no per-adapter branch, so an
@@ -612,6 +666,12 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # pi launch path, before the sandbox is built, so a pi session refuses with a message
     # that names the directory it actually resolves.
     "pi-gate",
+    # KAS MCP launch snapshots (``acp.kas_env_launch``): the env values a server's
+    # spec declares, kept off the wire. The launcher a KAS child execs reads them,
+    # so the leaf must stay visible in the sandbox; a write would choose the command
+    # and environment a later server start runs, so it is sealed. Pre-created and
+    # no-follow for the ``pi-gate`` reasons above.
+    "kas-mcp-launch",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -621,6 +681,24 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # gateway ensures the file exists at startup (see apply_dev_mode's
     # reconcile) because the Linux launcher can only seal an EXISTING target.
     "apps/.dev-grants.json",
+    # Host-exec authorization grants (``apps/host_exec_grants.py``). A top-level
+    # directory holding one marker per app whose ENABLED state authorizes running
+    # code OUTSIDE the agent sandbox -- today only Dev Fleet, whose "pod" execs
+    # worktree code on the host. The pod gate reads a grant here, NEVER the
+    # ``apps/<name>/installed.json`` enablement record: that record is read at the
+    # host-exec decision but sits under the agent-writable, renamable ``apps/<name>``
+    # directory, so a sandboxed shell can rename the directory aside and plant a
+    # forged ``enabled: true`` at the original path (on the namespace launcher the
+    # read-only bind moves with the renamed parent, so the recreated path is
+    # writable). Sealing the record would not hold -- a mask covers the leaf, not its
+    # renamable ancestor. This directory does: as a DIRECT crew-home child it is the
+    # pattern that cannot be renamed around (``aws-control-staging`` above), and only
+    # the unsandboxed gateway writes it, on an owner-authenticated enable. READ-ONLY,
+    # not hidden: an in-sandbox reader (the pod gate runs in the gateway, but a script
+    # cron may check) learns only which app is host-exec-enabled, no secret. Generic
+    # name so core carries no app id (the app set lives in ``host_exec_grants``). A
+    # TOP-LEVEL leaf, pre-created in ``sandbox_precreate`` so the seal has a target.
+    "host-exec-grants",
     # The settings-seed provenance record (``acp.seed_provenance``), an
     # AUTHORIZATION record on the same footing as the dev-mode grants above: an
     # entry in it is what lets Crew OVERWRITE and then DELETE
@@ -646,6 +724,15 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # upgrade still reads and writes it, so it must stay unforgeable for that process.
     "seed-provenance",
     "settings_seeds.json",
+    # The gateway's config publication record (``config.write_provenance``): the
+    # ``(dev, ino)`` of each ``config.json`` / ``config.local.json`` the gateway itself
+    # published, read by the launcher's pin to tell the gateway's own save from a
+    # substitution. READONLY rather than hidden because the write is the whole risk: an
+    # entry an agent could add would let a swapped config file pass the pin, while the
+    # record itself holds no secret. A directory, for the ``seed-provenance`` reason: the
+    # record is rewritten through ``atomic_write`` on every config save, and the rename
+    # inside the directory leaves the directory's inode -- what its seal pins -- alone.
+    "config-provenance",
     # The crew webview template directory. A ceiling in exactly the sense above:
     # the whole value of splitting a panel into human-authored TEMPLATE and
     # agent-published DATA is that layout is authored by a person, so a crew must
@@ -696,6 +783,13 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # Gateway resolve-once artifacts choose the entry point substituted for an
     # approved npm launcher. The installer runs in the unsandboxed gateway.
     "mcp/resolved",
+    # The per-template MCP additions record (``template_mcp_additions``): the servers
+    # the user approved for a template on a change card, merged into that template's
+    # spec on the next rebuild. A sandboxed writer could add a server it chose and
+    # have it launched. Read-only, not hidden: no sandboxed reader needs it, but it
+    # holds only launch entries the agent specs carry too. Every writer runs in the
+    # gateway or the CLI, outside the sandbox.
+    "template-mcp-additions",
     # This gateway's stable random identity (``gateway_identity.GATEWAY_ID_FILE``). The
     # Remote Crew cycle guard compares it to refuse a chain that loops back on itself,
     # so a sandboxed writer would choose whether a loop is detected. The read path
@@ -803,6 +897,9 @@ _CREW_READONLY_TARGETS: list[str] = _crew_home_entries(_CREW_READONLY_LEAVES)
 _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # The per-listener gateway credential (``run/gateway-<port>.secret``).
     "run",
+    # Approved per-template MCP server entries: an entry's ``env`` or ``headers`` can
+    # carry a credential, and no foreign child reads the record.
+    "template-mcp-additions",
     # The SEL trust root and the audit key inside it.
     "trust",
     "sel_hmac.key",
@@ -871,15 +968,15 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "decisions_consent.json",
-    "file_delivery_consent.json",
+    "shared_crew_preview.json",
     "ssh_auth_sock_consent.json",
     "credential_redaction.json",
     # The paid-AWS consent grant. Unlike its sibling consent records this one stores
     # IDENTIFIERS as well as a decision -- ``Grant.to_dict`` writes ``account`` and
     # ``arn`` -- so a read tells a foreign child which AWS account and caller identity
     # the owner works as. It sits on the read+write keystone floor, so no in-sandbox
-    # reader had it before this change either: the app backend that consults it is not
-    # an enforced-harness child. Withholding it costs nothing that worked.
+    # reader has it anyway: the app backend that consults it is not an
+    # enforced-harness child. Withholding it costs nothing that works.
     "aws_service_consent.json",
     # The ONE entry here that holds no secret. It carries the launcher and sealed
     # extension of a single harness's tool gate, and only that harness's child has to
@@ -894,6 +991,15 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # one lazily to avoid a load-time cycle, so importing its constant here would
     # close the cycle from the other side. The seal lists above spell it the same way.
     "pi-gate",
+    # The Browser Harness prefix. Holds no credential, and withheld for REACH the
+    # way ``pi-gate`` is: the only process that executes anything out of it is the
+    # gateway, so no harness's child needs to read it, and a leaf no child needs is
+    # a leaf no child should get. The read-only and no-follow seals still stop any
+    # child replacing what the gateway execs.
+    "browser-harness",
+    # KAS MCP launch snapshots hold MCP servers' env values, and only a KAS child
+    # (not an enforced harness's) starts the launcher that reads them.
+    "kas-mcp-launch",
 )
 
 #: Leaves an ENFORCED harness's child MAY read. The other half of the pair above.
@@ -920,18 +1026,19 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # The empty directory a launch copy's kiro-cli starts in. It holds nothing, so a
     # foreign child that reads it learns nothing.
     "app-agent-launch",
-    # The browser launcher an agent browser command must read and execute. The only
+    # The KAS engine bundle a sandboxed KAS process must read and execute. The only
     # entry here the read gate also fences, so the only one whose exclusion changes
-    # what an enforced child can open; the rest are already outside the mask.
-    "playwright-cli",
-    # The KAS engine bundle a sandboxed KAS process must read and execute. The
-    # second entry the read gate also fences, for the same reason as the first.
+    # what an enforced child can open; the rest are already outside the mask. (The
+    # Browser Harness prefix is NOT here: no sandboxed process runs it -- the
+    # gateway does -- so a child needs no read of it; see ``_CREW_CHILD_WITHHELD_LEAVES``.)
     "engines",
     # Authorization and lineage records an in-sandbox reader resolves. Read-only
     # sealed for the same reason: a forged entry decides a later grant.
     "apps/.dev-grants.json",
+    "host-exec-grants",
     "seed-provenance",
     "settings_seeds.json",
+    "config-provenance",
     "agent_model_state.json",
     "agent_model_state.json.lock",
     # Gateway-owned run records, read to restore app authorization on a cold
@@ -950,6 +1057,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # read-only seal. Off the read-gate floor too (only edits are refused), so the
     # mask never covered it.
     "models",
+    # The link to this install's ``kirocrew``. Agent shells must resolve and run it;
+    # the risk is a write, answered by the read-only seal.
+    "kirocrew-bin",
     # Allowed hosts for the exfiltration check. Host names, not credentials; the
     # risk is a write, answered by the read-only seal.
     "redaction-allow",

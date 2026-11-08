@@ -11,8 +11,11 @@
 # notifications.jsonl in the seeded home, --no-crons, no chat channel, the
 # fixture's hook posts nothing), but a crewmate DM reply posts one, so
 # `fresh_target` runs this before any scenario that chats with a crewmate;
-# "No notifications" / "Activity will appear here" then holds on every night
-# and a retry reads the same. Only the newest three screenshots survive (harness.KEEP_IMAGES);
+# "No notifications" then holds on every night and a retry reads the same. The
+# sheet paints no panel of its own (shell/notifications/notificationSheet.tsx):
+# its one card holds the heading, the search box and "Open inbox", and the empty
+# state floats below that card, so the steps describe it that way rather than as
+# one box. Only the newest three screenshots survive (harness.KEEP_IMAGES);
 # with three actions they are the open sheet, the dismissed sheet and the
 # settled page, so the open evidence is read from the first of them.
 name: notifications-bell-sheet-open-close
@@ -29,13 +32,13 @@ preconditions:
   start_url: /chat
   fresh_target: true
 steps:
-  - You are on the chat page. In the top bar, near the right edge, find the small bell icon button named "Notifications" (it carries no number badge) and click it once. A sheet slides in from the right edge with the heading "Notifications".
-  - Read the sheet without clicking anything in it. It says "No notifications" with "Activity will appear here" beneath, and at its bottom right there is a link reading "Open inbox" -- do not click that link. Press the Escape key once.
+  - You are on the chat page. In the top bar, near the right edge, find the small bell icon button named "Notifications" (it carries no number badge) and click it once. A sheet slides in along the right edge. It has no panel background of its own; at its top is one floating card holding the heading "Notifications", a search box and, at that card's bottom right, a link reading "Open inbox".
+  - Read the sheet without clicking anything in it. Below the card, directly over the lightly blurred page, a faint bell icon sits above the words "No notifications"; that empty state has no second line and no card of its own. Do not click "Open inbox". Press the Escape key once.
   - Wait a second.
 expectations:
   - The sheet is gone; nothing is overlaying the right side of the page and no dimmed backdrop remains.
   - The chat page is unobstructed and unchanged; the top bar with the bell is still in place and the address is still the chat page, not the Notifications page.
-  - In the screenshot taken right after you clicked the bell, a sheet was open at the right edge with the heading "Notifications" and read "No notifications" with "Activity will appear here" beneath.
+  - In the screenshot taken right after you clicked the bell, the sheet was open at the right edge, with a card headed "Notifications" holding a search box and "Open inbox", and "No notifications" below that card.
   - No red error banner is visible and no text is clipped or overlapping.
 max_steps: 6
 max_seconds: 180

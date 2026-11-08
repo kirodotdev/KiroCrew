@@ -10,6 +10,7 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.handlers.agents import (
         TEMPLATE_NAME_RE,
+        Any,
         CapabilityError,
         KiroCrewAgentConfig,
         KiroCrewConfig,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
         _require_owner,
         _revalidate_crew_pin,
         _rollback_promoted_avatar,
+        _roster_mask,
         _safe_avatar,
         _safe_color,
         _sel,
@@ -91,9 +93,16 @@ async def _apply_member_approval_to_live_thread(request: web.Request, name: str,
     if slot is None:
         # No live thread: the next thread open seeds from the record.
         return
-    await apply_approval_mode(
+    from kiro_crew.approval_mode_policy import clamp_session_mode, ensure_resolved
+    from kiro_crew.config.sections import MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
+
+    # A final policy answer first: a passing deny must not refuse the saved choice.
+    await asyncio.to_thread(ensure_resolved)
+    # The thread lands on what the policy allows, as its workers and the open-time
+    # seed do (``clamp_session_mode``); a stored mode it now denies is not refused.
+    resp = await apply_approval_mode(
         state,
-        mode=mode,
+        mode=clamp_session_mode(mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE),
         slot=slot,
         slot_key=slot.key,
         request_app="",
@@ -101,16 +110,28 @@ async def _apply_member_approval_to_live_thread(request: web.Request, name: str,
         audit_caller=lambda label: "dashboard:member_profile",
     )
     # The thread now holds the record's choice; the open-time seed must not redo it.
-    slot._member_approval_seeded = True
+    # A refused apply leaves it unseeded, so a later open or turn seeds it.
+    if resp.status < 400:
+        slot._member_approval_seeded = True
 
 
 async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
-    """PUT /api/agents/{name} — update a Kiro Crew agent."""
+    """PUT /api/agents/{name} or PUT /api/agents — update a Kiro Crew agent.
+
+    In the first form the crew name comes from the URL path segment.  In the
+    second form (the proxy-safe alternative) it comes from a ``name`` field in
+    the JSON body: a reverse proxy that normalises percent-encoded paths decodes
+    ``%20`` to a literal space, which is the HTTP request-line delimiter and
+    produces a 502; putting the name in the body avoids that path entirely.
+    Both forms share the same handler; the route without ``{name}`` is
+    registered first so aiohttp's literal-path preference resolves it without
+    ambiguity.
+    """
 
     denied = await _require_owner(request, "agent.update")
     if denied is not None:
         return denied
-    name = request.match_info["name"]
+    url_name = request.match_info.get("name", "")
     try:
         body = await request.json()
     except Exception:
@@ -119,6 +140,18 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "body must be an object", "code": "body_not_object"}, status=400
         )
+    # Body-form route: extract the name from the body BEFORE the mask-removal
+    # pass below so it is never treated as a crew-record field to persist.
+    if url_name:
+        name = url_name
+    else:
+        body_name = body.pop("name", None)
+        # Use verbatim: stripping would mismatch a stored key that differs only by
+        # edge whitespace. .strip() here checks only that the value is non-empty,
+        # not the key itself.
+        name = body_name if isinstance(body_name, str) and body_name.strip() else ""
+    if not name:
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
     # WRITE-SIDE HALF of the roster mask, and it runs FIRST -- immediately after
     # the body-object check, before any validation. `GET /api/agents` replaces a
     # value it cannot show verbatim with `_SENSITIVE_MASK` (`_roster_mask`), and
@@ -285,6 +318,37 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "starred must be a boolean", "code": "invalid_starred"}, status=400
         )
+    from kiro_crew.config.sections_session import STAR_ORDER_MAX
+
+    if "star_order" in body and (
+        isinstance(body["star_order"], bool)
+        or not isinstance(body["star_order"], int)
+        or not 0 <= body["star_order"] <= STAR_ORDER_MAX
+    ):
+        return web.json_response(
+            {
+                "error": f"star_order must be an integer from 0 to {STAR_ORDER_MAX}",
+                "code": "invalid_star_order",
+            },
+            status=400,
+        )
+    if "dynamic_capabilities" in body and not isinstance(body["dynamic_capabilities"], bool):
+        return web.json_response(
+            {
+                "error": "dynamic_capabilities must be a boolean",
+                "code": "invalid_dynamic_capabilities",
+            },
+            status=400,
+        )
+    # Strictly strings, like display_name: the loader reads each as a string and
+    # turns any other type into the default, but only on the NEXT load, so a
+    # stored int or list would sit in the live record until then.
+    for _text_field in ("workspace", "description", "triggers", "source"):
+        if _text_field in body and not isinstance(body[_text_field], str):
+            return web.json_response(
+                {"error": f"{_text_field} must be a string", "code": f"invalid_{_text_field}"},
+                status=400,
+            )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
         if memory_store_reason:
@@ -299,50 +363,109 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    if "model" in body:
-        pending_reason = await _revalidate_crew_pin(pending_model, request)
+    # The crewmate's own harness pin: "" clears it, anything else must be a
+    # harness this gateway can start now. The model pins below are judged
+    # against the harness the record will hold after this save.
+    pending_backend: str | None = None
+    if "acp_backend" in body:
+        from kiro_crew.crewmate_harness import harness_pin_rejected
+
+        backend_reason = harness_pin_rejected(
+            body["acp_backend"], await asyncio.to_thread(KiroCrewConfig.load)
+        )
+        if backend_reason:
+            return web.json_response(
+                {"error": backend_reason, "code": "invalid_acp_backend"}, status=400
+            )
+        pending_backend = body["acp_backend"].strip()
+    from kiro_crew.crewmate_harness import judges_a_model_edit
+
+    # A re-sent stored value is not judged unless the harness moves; the locked
+    # check below repeats this against the record it writes.
+    prior = None
+    if "model" in body or "worker_model" in body:
+        prior = (await asyncio.to_thread(KiroCrewConfig.load)).agents.get(name)
+    prior_moves = prior is None or (
+        pending_backend is not None and pending_backend != (prior.acp_backend or "")
+    )
+    if "model" in body and judges_a_model_edit(
+        pending_model, prior.model if prior else "", prior_moves
+    ):
+        pending_reason = await _revalidate_crew_pin(
+            pending_model, request, crew=name, acp_backend=pending_backend
+        )
         if pending_reason:
             return web.json_response({"error": pending_reason, "code": "invalid_model"}, status=400)
-    if "worker_model" in body:
-        pending_reason = await _revalidate_crew_pin(pending_worker_model, request, for_workers=True)
+    if "worker_model" in body and judges_a_model_edit(
+        pending_worker_model, prior.worker_model if prior else "", prior_moves
+    ):
+        pending_reason = await _revalidate_crew_pin(
+            pending_worker_model,
+            request,
+            for_workers=True,
+            crew=name,
+            acp_backend=pending_backend,
+        )
         if pending_reason:
             return web.json_response(
                 {"error": pending_reason, "code": "invalid_worker_model"}, status=400
             )
+    harness_changed = False
+    harness_refreshed = False
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()
         if name not in cfg.agents:
             return web.json_response({"error": f"Agent '{name}' not found"}, status=404)
-        if "model" in body:
-            # Validated before the write, reusing the config loaded just above so
-            # this costs no extra read.
-            model_reason = _model_pin_rejected(
-                pending_model,
-                request,
-                cfg.agent.provider,
-                backend=_pin_entitlement_backend(cfg),
-            )
-            if model_reason:
-                return web.json_response(
-                    {"error": model_reason, "code": "invalid_model"}, status=400
-                )
-        if "worker_model" in body:
-            # Judged against the WORKER's harness: a crewmate's worker runs on
-            # its crewmate's backend (`mate_worker.crewmate_worker_backend`), and
-            # `create_session` trusts this pin for exactly that harness
-            # (`_inherited_pin_foreign_to_child`).
-            from kiro_crew.mate_worker import crewmate_worker_backend
+        from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
 
-            model_reason = _model_pin_rejected(
-                pending_worker_model,
-                request,
-                cfg.agent.provider,
-                backend=crewmate_worker_backend(cfg.agent),
-            )
-            if model_reason:
-                return web.json_response(
-                    {"error": model_reason, "code": "invalid_worker_model"}, status=400
+        # A harness change re-judges the STORED pins too: a model the record
+        # keeps but the new harness cannot serve would refuse every session.
+        harness_moves = pending_backend is not None and pending_backend != (
+            cfg.agents[name].acp_backend or ""
+        )
+        harness_pinned = bool(
+            pending_backend if pending_backend is not None else cfg.agents[name].acp_backend
+        )
+        try:
+            # The editor sends `model` with every save. Without a harness move an
+            # inherit value or the stored value judges nothing, so a stored pin that
+            # has since become unstartable must not refuse an edit to an unrelated field.
+            checked_model = pending_model if "model" in body else cfg.agents[name].model
+            if judges_a_model_edit(checked_model, cfg.agents[name].model, harness_moves):
+                # Validated before the write, reusing the config loaded just above
+                # so this costs no extra read.
+                model_reason = _model_pin_rejected(
+                    checked_model,
+                    request,
+                    cfg.agent.provider,
+                    backend=_pin_entitlement_backend(cfg, name, pending_backend),
+                    harness_pinned=harness_pinned,
                 )
+                if model_reason:
+                    return web.json_response(
+                        {"error": model_reason, "code": "invalid_model"}, status=400
+                    )
+            checked_worker = (
+                pending_worker_model if "worker_model" in body else cfg.agents[name].worker_model
+            )
+            if judges_a_model_edit(checked_worker, cfg.agents[name].worker_model, harness_moves):
+                # Judged against the WORKER's harness: a crewmate's worker runs on
+                # its crewmate's backend (`mate_worker.crewmate_worker_backend`),
+                # and `create_session` trusts this pin for exactly that harness
+                # (`_inherited_pin_foreign_to_child`).
+                model_reason = _model_pin_rejected(
+                    checked_worker,
+                    request,
+                    cfg.agent.provider,
+                    backend=_pin_entitlement_backend(cfg, name, pending_backend, for_workers=True),
+                    harness_pinned=harness_pinned,
+                )
+                if model_reason:
+                    return web.json_response(
+                        {"error": model_reason, "code": "invalid_worker_model"}, status=400
+                    )
+        except CrewmateHarnessUnavailable as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
         agent = cfg.agents[name]
         # A change card's Undo arms the crewmate its apply wrote to. A
         # same-name recreate in another process is caught by
@@ -375,12 +498,12 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             except CapabilityError as exc:
                 return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
         prior_memory_store = agent.memory_store
-        # A binding is immutable in both directions -- a private store is never
-        # shared or rebound, and a live V1 binding is kept until the owner opts in
-        # -- with one exception: a V1 binding whose name no resolver composes
-        # (``unusable_legacy_binding``) may move to the global store. Nothing is
-        # protected on it: the name resolves no directory, so the member cannot
-        # run a turn on it, and the same name is what refused every repair.
+        # A binding is immutable in both directions: a private store is never
+        # shared or rebound, and a live V1 binding is kept until the owner opts
+        # in. Every changed value is refused, the global store included, and so
+        # is a V1 binding whose name no resolver composes
+        # (``unusable_legacy_binding``). The CLI's ``agent update`` refuses the
+        # same way.
         if "memory_store" in body and body["memory_store"] != prior_memory_store:
             return web.json_response(
                 {
@@ -404,6 +527,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             "display_name": agent.display_name,
         }
         changed: list[str] = []
+        warnings: list[str] = []
         if "kiro_agent" in body:
             try:
                 owner = await asyncio.to_thread(
@@ -428,8 +552,27 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 )
             agent.kiro_agent = body["kiro_agent"]
             changed.append("kiro_agent")
-        if "workspace" in body:
-            agent.workspace = body["workspace"]
+        # Empty or whitespace keeps the current binding: "" is the create-only
+        # "a workspace of its own" sentinel and is never stored.
+        if "workspace" in body and body["workspace"].strip():
+            from kiro_crew.member_workspace import DEFAULT_WORKSPACE
+
+            _ws = body["workspace"]
+            # Saved as before, but a new name missing from ``workspaces`` falls
+            # back to another workspace's directory (which one depends on the
+            # reader), silently sharing it, so the caller is told. ``default``
+            # always resolves.
+            if (
+                _ws != agent.workspace
+                and _ws not in cfg.workspaces
+                and _ws not in (DEFAULT_WORKSPACE, cfg.default_workspace)
+            ):
+                logger.warning("crew %r bound to unconfigured workspace %r", name, _ws)
+                warnings.append(
+                    f"workspace '{_ws}' is not configured; "
+                    "the crew shares a fallback workspace directory"
+                )
+            agent.workspace = _ws
             changed.append("workspace")
         if "model" in body:
             # "auto"/"" both mean inherit; store the single "" spelling so the
@@ -449,6 +592,16 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         if "worker_reasoning_effort" in body:
             agent.worker_reasoning_effort = body["worker_reasoning_effort"].strip()
             changed.append("worker_reasoning_effort")
+        if pending_backend is not None:
+            # Validated above. "" clears the pin: the crewmate inherits again.
+            harness_changed = pending_backend != (agent.acp_backend or "")
+            agent.acp_backend = pending_backend
+            changed.append("acp_backend")
+        if "dynamic_capabilities" in body:
+            # The per-crewmate preview (``kiro_crew.crewmate_dynamic_capabilities``);
+            # validated above as a strict bool.
+            agent.dynamic_capabilities = body["dynamic_capabilities"]
+            changed.append("dynamic_capabilities")
         if "approval_mode" in body:
             # Compare-and-set: the profile sends the value it last read, and a
             # write made from a stale read is refused with the current value,
@@ -463,6 +616,22 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                         "approval_mode": agent.approval_mode,
                     },
                     status=409,
+                )
+            from kiro_crew.approval_mode_policy import session_mode_permitted
+
+            # A NEW mode the ``permission_mode`` policy denies is refused; resending
+            # the stored one saves, and its live grant is clamped where it is seeded.
+            if body["approval_mode"] != agent.approval_mode and not session_mode_permitted(
+                body["approval_mode"]
+            ):
+                return web.json_response(
+                    {
+                        "error": f"approval mode {body['approval_mode']!r} is disabled by "
+                        "your organization's policy",
+                        "code": "mode_disabled_by_policy",
+                        "mode": body["approval_mode"],
+                    },
+                    status=403,
                 )
             # Validated above. Only ever a real choice: the profile never sends
             # "" back, so a pinned mode cannot fall back to the trust default.
@@ -606,15 +775,25 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # Already validated above, before any mutation.
             agent.starred = body["starred"]
             changed.append("starred")
+        if "star_order" in body:
+            agent.star_order = body["star_order"]
+            changed.append("star_order")
+        if not agent.starred and agent.star_order:
+            # An unstarred crew holds no dock position, so starring it again
+            # puts it at the bottom instead of back in its old slot.
+            agent.star_order = 0
+            if "star_order" not in changed:
+                changed.append("star_order")
         effort_inputs_after = _effort_inputs(agent)
         # Avatar rollback applies only to ordinary failure: cancellation may
         # arrive after the drained worker published the new avatar pin. Store
         # cleanup independently checks the current locked config, so a landed
         # memory binding survives even when the request was cancelled.
-        from kiro_crew.memory_stores import MemberApprovalConflict
+        from kiro_crew.memory_stores import MemberApprovalConflict, check_member_approval_mode
 
         expected_on_disk = body.get("expected_approval_mode") if "approval_mode" in body else None
-        try:
+
+        async def _persist() -> None:
             await _drained_to_thread(
                 lambda: persist_member_config(
                     cfg,
@@ -624,6 +803,162 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                     expected_approval_mode=expected_on_disk,
                 )
             )
+            if harness_changed:
+                from kiro_crew import members as members_mod
+
+                state = request.app.get("state")
+                log = getattr(state, "conversation_log", None)
+                if log is not None:
+                    slug = members_mod.member_slug(name, cfg)
+                    binding = await asyncio.to_thread(members_mod.read_dm_binding, slug)
+                    if (
+                        binding is not None
+                        and binding["member"] == name
+                        and binding["slot_key"] not in getattr(state, "_slots", {})
+                    ):
+                        # A closed DM inherits the new harness without opening its tab.
+                        # The guarded patch preserves history and cannot recreate it.
+                        key = members_mod.member_thread_session_alias(
+                            slug, binding.get("memory_store", "")
+                        )
+                        await _drained_to_thread(
+                            lambda: log.update_metadata_if(
+                                key,
+                                {"model": "", "reasoning_effort": ""},
+                                lambda _meta: True,
+                                require_existing=True,
+                            )
+                        )
+
+        async def _save_onto_new_harness() -> tuple[web.Response | None, bool]:
+            """Write the record (``_persist``) inside a reload of the crewmate's live DM chat.
+
+            Lock order is config, then the slot locks, as member updates take them.
+            ``_persist`` runs in each reload's ``after_reset_in_lock`` hook: the busy
+            and sub-agent guards passed, the old process is gone, and the slot and
+            session locks are held, so a turn that cold-starts meanwhile waits on the
+            session lock and starts on the new harness, while a turn already running
+            makes the reset decline before anything is written. The same hook
+            refreshes the provider factory and clears the chat's own model and effort
+            picks. The transcript and resume pointer stay.
+
+            Returns ``(refusal, refreshed)``: a 409 ``crewmate_harness_busy`` with
+            nothing written, or ``None`` once the record is written.
+            """
+            import json
+
+            from kiro_crew import members as members_mod
+            from kiro_crew.dashboard.chat_handlers import (
+                _switch_target_busy,
+                effective_session_key,
+                reload_slot_session,
+            )
+
+            state = request.app.get("state")
+            slots = [
+                s
+                for s in list(getattr(state, "_slots", {}).values())
+                if s.mode == members_mod.DM_SLOT_MODE and s.agent == name
+            ]
+            if not slots:
+                await _persist()
+                return None, False
+            # The name the roster shows, never a stored value it would mask.
+            label = (agent.display_name or "").strip()
+            shown = label if label and _roster_mask(label) == label else name
+            # One reload per session: the session's switch lock is not reentrant.
+            order = list({effective_session_key(s): s for s in reversed(slots)}.values())
+            if len(order) > 1:
+                # A second chat's refusal would land after the first was torn down.
+                return (
+                    web.json_response(
+                        {
+                            "error": (
+                                f"{shown} has more than one chat open. Close the Bot's "
+                                "other chat, then change the agent harness."
+                            ),
+                            "code": "crewmate_harness_busy",
+                        },
+                        status=409,
+                    ),
+                    False,
+                )
+            # The write's permission check, run before the teardown it would follow.
+            await _drained_to_thread(check_member_approval_mode, name, expected_on_disk)
+
+            def _busy(slot: Any, session_key: str) -> bool:
+                provider = state.sessions.get_provider(session_key)
+                if provider is not None and provider.has_active_turn():
+                    return True
+                return bool(slot._queue) or _switch_target_busy(state, slot, session_key, provider)
+
+            def _refusal(response: web.Response) -> web.Response:
+                try:
+                    code = json.loads(response.text or "{}").get("code", "")
+                except (TypeError, ValueError, AttributeError):
+                    code = ""
+                if code == "slot_subagents_running":
+                    message = (
+                        f"{shown} has sub-agents running. Wait for them to finish, "
+                        "or stop them, then change the agent harness."
+                    )
+                elif code == "turn_in_flight":
+                    message = (
+                        f"{shown} is in the middle of a reply. Wait for it to finish, "
+                        "or stop it, then change the agent harness."
+                    )
+                else:
+                    message = f"{shown}'s chat changed during this save. Try again."
+                return web.json_response(
+                    {"error": message, "code": "crewmate_harness_busy"}, status=409
+                )
+
+            async def _reload(index: int) -> web.Response | None:
+                if index == len(order):
+                    await _persist()
+                    await _refresh_session_defaults(request, name)
+                    for s in slots:
+                        # The chat's own picks were made for the old harness.
+                        s.model = ""
+                        s.jev_route = False
+                        s._model_pick_gen += 1
+                        s.reasoning_effort = ""
+                        s._deferred_model_switch_key = ""
+                        s._pending_model_pick = None
+                        s._dirty = True
+                    return None
+                slot = order[index]
+                inner: list[web.Response | None] = []
+
+                async def _after_teardown(_session_key: str) -> None:
+                    inner.append(await _reload(index + 1))
+
+                response = await reload_slot_session(
+                    state,
+                    slot,
+                    slot.key,
+                    still_ours=lambda _after: state._slots.get(slot.key) is slot,
+                    denied=lambda _session_key: None,
+                    busy=lambda session_key: _busy(slot, session_key),
+                    notice=(
+                        "Session reloaded so this Bot runs on its new agent harness. "
+                        "The conversation is kept."
+                    ),
+                    after_reset_in_lock=_after_teardown,
+                )
+                # Once the hook ran its answer stands: a guard after it refuses only
+                # the respawn, and the record is written by then.
+                return inner[0] if inner else _refusal(response)
+
+            refusal = await _reload(0)
+            return refusal, refusal is None
+
+        harness_refusal: web.Response | None = None
+        try:
+            if harness_changed:
+                harness_refusal, harness_refreshed = await _save_onto_new_harness()
+            else:
+                await _persist()
         except MemberApprovalConflict as conflict:
             # Lost to a write from another process: nothing was saved and the
             # live thread is not touched.
@@ -641,6 +976,12 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             if isinstance(exc, Exception) and _avatar_promoted:
                 await _drained_to_thread(_rollback_promoted_avatar, name, _avatar_pin, _prior_pin)
             raise
+        if harness_refusal is not None:
+            # A reply or sub-agents are running on the crewmate's chat: nothing
+            # was saved and the live thread is untouched.
+            if _avatar_promoted:
+                await _drained_to_thread(_rollback_promoted_avatar, name, _avatar_pin, _prior_pin)
+            return harness_refusal
         if _avatar_promoted:
             await _drained_to_thread(_commit_promoted_avatar, name, _avatar_pin)
         if _remove_files_after_save:
@@ -650,6 +991,13 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             # the saved permission here, under the same config lock as the
             # compare-and-set above, so no browser write can land out of order.
             await _apply_member_approval_to_live_thread(request, name, agent.approval_mode)
+        if "display_name" in changed:
+            # The mate's home folder carries its display name.
+            from kiro_crew.dashboard.mate_folders import follow_display_name
+
+            await follow_display_name(
+                request.app.get("state"), agent.memory_store, agent.display_name or name
+            )
         # Best-effort per-member event log: the save succeeded, so emit a
         # config snapshot with the list of fields that actually changed.
         try:
@@ -705,7 +1053,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     # cost a cold start on every unrelated crew edit. A re-bound kiro_agent counts
     # too -- the role default reads it. Outside the config lock, because the
     # refresh takes the session locks.
-    if effort_inputs_after != effort_inputs_before:
+    # A harness pin is read by the provider factory from the config it was built
+    # with, the same staleness the effort pin has, so it takes the same refresh,
+    # unless the chat's reload already ran it after the write.
+    if (effort_inputs_after != effort_inputs_before or harness_changed) and not harness_refreshed:
         await _refresh_session_defaults(request, name)
     _sel().log_api_access(
         caller=request.get("user", "dashboard"),
@@ -714,5 +1065,7 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"{name} ({','.join(changed)})",
     )
-    result = {"ok": True, "name": name, "memory_store": agent.memory_store}
+    result: dict = {"ok": True, "name": name, "memory_store": agent.memory_store}
+    if warnings:
+        result["warnings"] = warnings
     return web.json_response(result)

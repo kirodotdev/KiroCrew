@@ -71,18 +71,16 @@ is why this harness has no ordering constraint the claude one has. ``read-only``
 still permits passive READS; ACP v1 has no way to require a prompt for those, and
 what makes the residual gap survivable is that mask.
 
-The session array is the whole tool surface, and the adapter will not check it
------------------------------------------------------------------------------
+The session array is the whole tool surface, and one bad element costs all of it
+--------------------------------------------------------------------------------
 codex reads no agent spec, so ``session/new``'s ``mcpServers`` is everything the
-session will ever have. The adapter does not validate it: an element whose
-transport it declared unsupported is ACCEPTED, and ``session/new`` returns a normal
-sessionId. Captured live -- ``mcpCapabilities`` advertising ``sse: false``, an
-``sse`` element sent anyway, session created; a control element typed
-``nonsense-type`` created one too.
+session will ever have. Since 2.3.0 the adapter validates that array against the
+ACP schema and fails the WHOLE ``session/new`` over one element it will not take:
+an ``sse`` element while ``mcpCapabilities`` advertises ``sse: false``, or a
+control element typed ``nonsense-type``. Up to 2.2.2 a bare one was ACCEPTED and
+never wired, a session running with a tool the operator declared simply absent.
 
-That failure mode is silence, which is why the narrowing matters. There is no error
-for anyone to see and no frame to react to -- just a session running with a server
-that was never wired, so a tool the operator declared is simply absent.
+Either way the narrowing matters.
 :meth:`CodexHarness.session_mcp_servers` is therefore the ONLY thing standing
 between the array Crew composed and an array the adapter will honour, narrowed
 against the capabilities THIS session's handshake reported.
@@ -125,12 +123,15 @@ not the instrument that governs it.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import tomllib
 from pathlib import Path
 from typing import Any
 
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp.codex_sqlite import SQLITE_HOME_ENV, seed_private_state
+from kiro_crew.acp.codex_subagent_wire import CODEX_CLIENT_CAPABILITIES
 from kiro_crew.acp.harness._common import MembershipHarness
 from kiro_crew.acp.harness.base import (
     NotificationAliases,
@@ -142,7 +143,6 @@ from kiro_crew.acp.harness.base import (
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
-    ACP_CLIENT_CAPABILITIES,
     METHOD_SESSION_CLOSE,
     METHOD_SESSION_UPDATE,
 )
@@ -159,9 +159,59 @@ logger = logging.getLogger(__name__)
 #: downgrade of whichever harness moved first.
 PROTOCOL_VERSION_CODEX = 1
 
-
 #: Where ``codex`` keeps its SQLite databases; defaults to ``CODEX_HOME``.
 _SQLITE_HOME_ENV = SQLITE_HOME_ENV
+
+#: The whole codex configuration directory; MCP fleet is started from its config.toml.
+_CODEX_HOME_ENV = "CODEX_HOME"
+
+
+#: Inert transport values for a disable entry. codex parses every
+#: ``mcp_servers`` entry with ``TryFrom<RawMcpServerConfig>``, which needs exactly
+#: one of ``command`` (stdio) or ``url`` (streamable HTTP) and fails the whole
+#: ``thread/start`` with ``invalid transport`` otherwise. codex re-reads
+#: ``config.toml`` on every ``thread/start`` while ``CODEX_CONFIG`` is fixed for
+#: the adapter's lifetime, so a server removed or renamed after the spawn leaves
+#: the override standing alone. Carrying the transport key the server had at spawn
+#: keeps that orphan a valid, disabled entry. Over a live entry it only replaces
+#: the command or URL of a server that ``enabled = false`` stops codex starting.
+_DISABLED_STDIO_COMMAND = "true"
+_DISABLED_HTTP_URL = "http://127.0.0.1/"
+
+
+def _read_codex_mcp_disable_overrides(config_file: Path) -> dict[str, dict[str, Any]]:
+    """Return one ``enabled = false`` entry per ``mcp_servers`` server, or ``{}``.
+
+    Each entry also carries a placeholder for the transport key the server
+    uses (``command`` or ``url``), so it still parses if the server is gone
+    from ``config.toml`` by the time codex reads it. A server with neither key
+    is left out: codex already rejects it without this override. Parsed with
+    stdlib ``tomllib``, in config.toml order. A missing, unreadable or
+    malformed file yields ``{}``, so the caller injects no override. Blocking
+    file I/O: call it through ``asyncio.to_thread``.
+    """
+    try:
+        if not config_file.is_file():
+            return {}
+        text = config_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return {}
+    servers = data.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        return {}
+    overrides: dict[str, dict[str, Any]] = {}
+    for name, entry in servers.items():
+        if not isinstance(entry, dict):
+            continue
+        if "command" in entry:
+            overrides[name] = {"enabled": False, "command": _DISABLED_STDIO_COMMAND}
+        elif "url" in entry:
+            overrides[name] = {"enabled": False, "url": _DISABLED_HTTP_URL}
+    return overrides
 
 
 def _sandbox_wrapper_generations(sandbox_mode: str) -> int:
@@ -222,6 +272,12 @@ async def resolve_spawn_masks(sandbox_mode: str) -> tuple[tuple[str, ...], tuple
 
 class CodexHarness(MembershipHarness):
     """The codex-acp host."""
+
+    #: ``CODEX_CONFIG`` disable-override built for the most recent background-runtime
+    #: spawn, or empty string when no override was computed.  Consumed by
+    #: :meth:`apply_spawn_env` which runs on the spawn worker after the full env
+    #: (including ``agent.env``) is assembled.
+    _bg_codex_config: str = ""
 
     backend = ACP_BACKEND_CODEX
 
@@ -284,19 +340,65 @@ class CodexHarness(MembershipHarness):
         # Every ``codex app-server`` opens the same SQLite files by default and
         # they lock each other out: Codex Desktop plus a Crew runtime fail new
         # sessions with ``database is locked``. So each runtime gets its own
-        # CODEX_SQLITE_HOME (the runtime's per-process scratch dir). Only the
-        # databases move: config, auth and the thread rollouts stay in CODEX_HOME,
+        # CODEX_SQLITE_HOME (a per-process directory no other process is handed).
+        # Only the databases move: config, auth and the thread rollouts stay in CODEX_HOME,
         # and a thread resumes from its rollout (measured on codex 0.159), so
         # spawn_continue still works across runtimes. Seed the private index
         # from a completed SQLite snapshot so a large rollout history does not
         # need rebuilding at every start. Each process still owns its database.
         # An operator-supplied location reaches the child without preparation.
+        #
+        # Background sessions (kirocrew-lite) additionally disable every
+        # configured MCP server via CODEX_CONFIG.  codex starts a per-session
+        # fleet (~44 processes) from config.toml for each session/new; session/close
+        # evicts the session but never terminates those children.  Injecting
+        # CODEX_CONFIG = {"mcp_servers": {<name>: {"enabled": false, ...}}} makes
+        # codex skip initializing every server (McpServerConfig.enabled, documented
+        # in codex-rs/config/src/mcp_types.rs:234).  CODEX_HOME stays shared and
+        # untouched; only the child's environment gains the override.
+        sqlite_home_set = bool(ctx.environ.get(_SQLITE_HOME_ENV))
+        from kiro_crew.session import BACKGROUND_AGENT as _bg_agent  # circular at module scope
+
+        is_background = ctx.agent == _bg_agent
+
+        # For background sessions: read config.toml once, off the event loop, and
+        # build the CODEX_CONFIG override that disables every configured MCP
+        # server.  Stored in self._bg_codex_config and consumed by apply_spawn_env
+        # after the full env (including agent.env) is assembled, so it can see
+        # whether CODEX_CONFIG is already set and leave an existing value alone.
+        #
+        # Names are read once, at spawn, while codex re-reads config.toml on
+        # every thread/start. Each entry therefore carries its own transport
+        # placeholder (see _DISABLED_STDIO_COMMAND), so a server removed or
+        # renamed later, or one read from a CODEX_HOME that agent.env then
+        # replaces, is an orphan that still parses instead of failing every
+        # background session/new.
+        #
+        # Known residuals: a server renamed after spawn starts its fleet again
+        # under the new name until the runtime recycles, and one that switches
+        # between command and url under the same name conflicts with the
+        # placeholder until then. Project-level .codex/config.toml overrides
+        # are not covered. A session/new that carries mcpServers replaces the
+        # whole mcp_servers table in codex-acp's createSessionConfig, dropping
+        # this override for any session that mounts servers that way.
+        self._bg_codex_config = ""
+        if is_background:
+            _codex_home = Path(ctx.environ.get(_CODEX_HOME_ENV) or str(ctx.home / ".codex"))
+            _overrides = await asyncio.to_thread(
+                _read_codex_mcp_disable_overrides, _codex_home / "config.toml"
+            )
+            if _overrides:
+                self._bg_codex_config = json.dumps(
+                    {"mcp_servers": _overrides},
+                    separators=(",", ":"),
+                )
+
         return SpawnPlan(
             argv=list(argv),
             rss_depth=self.CORE_RSS_DEPTH + wrapper_generations,
             extra_hidden_dirs=hidden,
             extra_expose_files=expose,
-            private_state_env=None if ctx.environ.get(_SQLITE_HOME_ENV) else _SQLITE_HOME_ENV,
+            private_state_env=None if sqlite_home_set else _SQLITE_HOME_ENV,
             private_state_seed=seed_private_state,
         )
 
@@ -354,6 +456,20 @@ class CodexHarness(MembershipHarness):
         # config. That keeps an unbound global dashboard server in place of the
         # gateway's verified mount, on both session/new and session/load.
         env["DISABLE_MCP_CONFIG_FILTERING"] = "true"
+        # Inject CODEX_CONFIG to disable the per-session MCP fleet for background
+        # sessions.  apply_spawn_env runs after agent.env is merged (launch.py:1014),
+        # so checking env.get here correctly sees operator/agent.env values and will
+        # not overwrite them.  A skipped injection is logged: without it the
+        # background runtime starts the full MCP fleet per session again.
+        if self._bg_codex_config:
+            if env.get("CODEX_CONFIG"):
+                logger.warning(
+                    "codex background runtime: CODEX_CONFIG is already set, so the "
+                    "MCP-server disable override was not applied; configured MCP "
+                    "servers will start for every background session"
+                )
+            else:
+                env["CODEX_CONFIG"] = self._bg_codex_config
 
     @property
     def verifies_agent_activation(self) -> bool:
@@ -372,7 +488,13 @@ class CodexHarness(MembershipHarness):
 
     @property
     def client_capabilities(self) -> dict[str, Any]:
-        return ACP_CLIENT_CAPABILITIES
+        """The shared declaration plus ``subagents``.
+
+        ``subagents`` is what makes codex-acp give each native subagent its own
+        ACP session, announced on the parent and streamed under the child's id.
+        The constant's comment names the handlers it promises.
+        """
+        return CODEX_CLIENT_CAPABILITIES
 
     # ── Seam 3: session/new and session/load extras ──
 
@@ -385,6 +507,10 @@ class CodexHarness(MembershipHarness):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        worker_stub_names: frozenset[str] | None = None,
+        engine_features: frozenset[str] = frozenset(),
+        session_cwd: str | Path | None = None,
+        ssh_auth_sock_forwarded: bool = False,
     ) -> SessionExtras:
         """Empty. codex has no custom-agent channel to register anything on.
 
@@ -468,8 +594,9 @@ class CodexHarness(MembershipHarness):
     def notification_aliases(self) -> NotificationAliases:
         """Plain ACP, with no forked spellings.
 
-        ``session/update`` only: codex sends no ``_kiro.dev`` alias, announces no
-        subagent roster, and stages no MCP-init frame. Declared explicitly rather
+        ``session/update`` only: codex sends no ``_kiro.dev`` alias, sends no
+        ownerless subagent roster (each child is announced by a ``session/update``
+        on its parent's session instead), and stages no MCP-init frame. Declared explicitly rather
         than inherited from the kiro family, whose ``_kiro.dev/*`` vocabulary exists
         because KAS is reached THROUGH kiro-cli's relay -- codex is not.
         """
@@ -481,61 +608,25 @@ class CodexHarness(MembershipHarness):
     def teardown(self) -> TeardownPolicy:
         """The standard ACP ``session/close``, awaited, and it evicts.
 
-        Neither kiro-family verb applies here: kiro-cli's
-        ``_kiro.dev/session/terminate`` and KAS's ``_kiro/session/delete`` are
-        extensions, and sending either would draw a method-not-found while the
-        session stayed on the process. codex-acp implements the standard verb
-        instead, and what it does with it is the fact this policy records.
+        kiro-cli's ``_kiro.dev/session/terminate`` and KAS's ``_kiro/session/delete``
+        are extensions codex-acp answers with method-not-found. Measured on
+        codex-acp 1.11.0 (``session/set_config_option`` as the liveness oracle):
+        after close the oracle answers ``-32603``, a second close returns ``{}``
+        again (double-terminate is safe), and a fresh ``session/new`` still works.
+        ``session/cancel`` only interrupts a turn and leaves the session resident,
+        so a harness tearing down with it does not belong in
+        ``ACP_BACKENDS_SESSION_EVICTION``.
 
-        **What ``session/close`` does, measured.** The adapter drops the session from
-        its local map and unsubscribes the Codex thread. Measured on
-        codex-acp 1.11.0, with ``session/set_config_option`` on the same sessionId as
-        the liveness oracle:
+        Evict, not delete: the thread record survives under ``CODEX_HOME``, and
+        ``session/load`` on the closed id replays the conversation, also from a
+        restarted adapter. ``ACP_BACKENDS_SESSION_SHARING`` membership rests on
+        this. ``session/delete`` would ARCHIVE the thread and make later loads fail.
 
-        * before close: answers with the refreshed ``configOptions``;
-        * after close (request): ``{"result": {}}`` back, then the same oracle answers
-          ``-32603`` -- the sessionId is gone;
-        * close again on the same id: ``{}`` again, so a double-terminate is safe;
-        * a fresh ``session/new`` afterwards succeeds, so the process is unharmed.
-
-        ``session/cancel``, on the same wire and the same oracle, leaves the session
-        answering: it interrupts a turn, it does not end a session. A harness that
-        sends it as its teardown does not belong in ``ACP_BACKENDS_SESSION_EVICTION``
-        -- every path that creates and destroys a session on the shared process (the
-        entitlement probe, warm pooled reuse, a refused routing write) leaves one
-        resident under it. Sending the verb that
-        evicts is what closes all of those at once.
-
-        Evict, not delete, and the difference is what makes a codex subagent
-        continuable. The Codex thread's own record survives under ``CODEX_HOME``, the
-        same shape as kiro-cli's ``terminate`` leaving its transcript on disk --
-        measured on the same run as the eviction above: a ``session/load`` on the
-        CLOSED id succeeds, replays the conversation and then answers a question about
-        the first turn, and it succeeds the same way from a RESTARTED adapter process
-        over the same ``CODEX_HOME`` (330 input tokens against 9786 cached-read, so
-        the context came from the thread and not from the prompt). That is what
-        ``ACP_BACKENDS_SESSION_SHARING`` membership rests on, and why no keep-alive
-        variant of this verb is needed: a shared subagent's session is closed at
-        teardown like any other and its conversation is reached again by loading it.
-
-        ``session/delete`` would ARCHIVE the thread -- measured too: a load afterwards
-        refuses with ``session ... is archived``. So it is the verb a release means,
-        never the verb dropping a session means, and sending it here would take the
-        continuation away.
-
-        **A REQUEST, and that is not cosmetic.** Measured on the same run: the
-        adapter answers ``session/close`` with ``{}``, and sent as a NOTIFICATION it
-        ignores it -- the session stays addressable exactly as it did under
-        ``cancel``. So ``notification=False`` is load-bearing in the direction that
-        looks like nothing is wrong: the notification form would log no error and
-        leak every session. The runtime awaits this bounded by ``_TERMINATE_TIMEOUT``
-        like the kiro family's verbs, and the adapter answers promptly, so the
-        refusal path pays one round-trip rather than a budget.
-
-        The gated test ``test_codex_session_mcp.py::test_real_codex_acp_session_close_evicts``
-        repeats the measurement above on every install that has the adapter, so an
-        adapter release that changes what ``close`` does goes red there rather than
-        silently re-opening the leak.
+        Must be a REQUEST (``notification=False``): sent as a notification the
+        adapter ignores it silently and every session leaks. Bounded by
+        ``_TERMINATE_TIMEOUT``. The gated test
+        ``test_codex_session_mcp.py::test_real_codex_acp_session_close_evicts``
+        repeats the measurement against each installed adapter.
         """
         return TeardownPolicy(method=METHOD_SESSION_CLOSE, notification=False)
 

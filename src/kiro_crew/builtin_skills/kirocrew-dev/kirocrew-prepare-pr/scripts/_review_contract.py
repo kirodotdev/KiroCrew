@@ -307,6 +307,23 @@ def override_reviewer_names(target, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS)
     return {name} if name else set()
 
 
+def disposition_reviewer_names(target, bindings, keys=DEFAULT_OVERRIDE_TARGET_KEYS):
+    """Lowercased reviewer name(s) a disposition ``target=`` answers for.
+
+    Shares the override alias map (``fable`` -> the Opus reviewer) and accepts
+    the literal reviewer name. Unlike the override path it does NOT expand
+    ``all``: a disposition covers one finding, so ``target=all`` answers for no
+    lane and a span-bearing ``target=all`` record stays cross-lane.
+    """
+    text = (target or "").lower()
+    if text == OVERRIDE_TARGET_ALL:
+        return set()
+    names = {name.lower() for name in override_reviewer_names(text, bindings, keys)}
+    if text in {name.lower() for name in (bindings or {}).values()}:
+        names.add(text)
+    return names
+
+
 def _accepted_overrides(comments, head_sha, authors):
     """Yield ``(target, actor, comment)`` for each trusted record naming ``head_sha`` EXACTLY.
 
@@ -444,8 +461,10 @@ _EDIT_COUNT_QUERY = (
 _EDIT_HISTORY_QUERY = (
     "query($id:ID!,$n:Int!,$c:String){node(id:$id){... on IssueComment{"
     "userContentEdits(first:$n,after:$c){totalCount "
-    "pageInfo{hasNextPage endCursor} nodes{editedAt diff}}}}}"
+    "pageInfo{hasNextPage endCursor} nodes{editedAt deletedAt diff}}}}}"
 )
+# GitHub keeps a comment's original and newest 99 bodies and removes the edits between.
+_EDIT_RETENTION_CAP = 100
 
 
 def count_comment_edits(node_id, run_command, notes=None):
@@ -512,8 +531,9 @@ def _note(notes, reason):
 def fetch_comment_edit_history(node_id, lane, head_sha, run_command, deadline=None, notes=None):
     """What each body this comment has held CONCLUDED; None on error.
 
-    Returns one entry per stored body as ``{at, stamped, ...shape}``, never
-    the body itself -- see the reduction in the loop.
+    Returns one entry per stored body (plus the retention cap's gap), newest
+    first, as ``{at, stamped, lost, ...shape}``, never the body itself; a lost one
+    reads as a block for this head (``_lost_bodies_as_blocks``).
 
     ``diff`` is GraphQL's name for the field, but what it returns is the whole
     body as of that edit, which is what makes a superseded verdict readable
@@ -526,14 +546,10 @@ def fetch_comment_edit_history(node_id, lane, head_sha, run_command, deadline=No
     ``deadline`` is a ``time.monotonic()`` instant past which the read gives up
     the same way, so a slow page cannot spend a caller's whole budget.
 
-    ``notes`` collects WHY a read failed. A rate limit and a genuine fault both
-    fail closed, but they ask different things of whoever reads the result -- wait
-    versus investigate -- and a bare "unreadable" cannot tell them apart. GitHub
-    reports a GraphQL secondary limit in the envelope's ``errors[]`` while its own
-    rate_limit endpoint can still show budget remaining, so the signature is read
-    from stderr and from those error entries -- never from a response this read
-    already SUCCEEDED in fetching, whose body is reviewer prose that may discuss
-    rate limits itself. See ``_failure_reason``.
+    ``notes`` collects WHY a read failed: a rate limit (wait) and a genuine fault
+    (investigate) both fail closed, and a bare "unreadable" cannot tell them apart.
+    A secondary limit shows only in the envelope's ``errors[]`` while the
+    rate_limit endpoint still reports budget; see ``_failure_reason``.
     """
     if not node_id:
         return None
@@ -575,14 +591,20 @@ def fetch_comment_edit_history(node_id, lane, head_sha, run_command, deadline=No
             # externally-authored review comment that runs to tens of KB, and a page
             # asks for a hundred of them, so keeping them would bound the entry
             # COUNT while leaving the bytes unbounded. Only the shape, the edit
-            # timestamp and the freshness flag are ever consumed, so they are all
-            # that survives the loop.
-            body = node.get("diff") or ""
+            # timestamp and the stamp and loss flags are ever consumed, so they are
+            # all that survives the loop.
+            lost = node.get("diff") is None or bool(node.get("deletedAt"))
+            body = "" if lost else node["diff"]
+            stamped = _stamped_for_head(body, lane, head_sha)
+            # This lane's verdict for another head, and not for this one too.
+            other = not stamped and any(n == lane for n, _sha in REVIEWED_STAMP_RE.findall(body))
             entries.append(
                 dict(
                     _sample_shape(body, lane, head_sha),
                     at=node.get("editedAt") or "",
-                    stamped=_stamped_for_head(body, lane, head_sha),
+                    stamped=stamped,
+                    lost=lost,
+                    other_head=other,
                 )
             )
         page_info = edits.get("pageInfo") or {}
@@ -592,11 +614,35 @@ def fetch_comment_edit_history(node_id, lane, head_sha, run_command, deadline=No
             total = edits.get("totalCount")
             if isinstance(total, int) and len(entries) < total:
                 return None
-            return entries
+            return _lost_bodies_as_blocks(entries)
         cursor = page_info.get("endCursor") or ""
         if not cursor:
             return None
     return None
+
+
+def _lost_bodies_as_blocks(entries):
+    """Read each body GitHub dropped from the history as a block for this head.
+
+    GitHub documents two losses: a deleted revision keeps its entry and time but
+    not its body, and a history at the retention cap may have lost the edits
+    between the original and the oldest entry kept after it. Read as empty, a lost
+    block would read clean, so each loss is a block dated at its entry (the cap's
+    gap at that oldest kept one), which an override for this head clears. A loss
+    is excused when a LATER body is this lane's verdict for another head: it then
+    predates this head, unless that verdict landed late or the PR returned to an
+    earlier head. Those, and a loss GitHub does not document, are accepted residuals.
+    """
+    ordered = sorted(entries, key=lambda e: e["at"], reverse=True)
+    if len(ordered) >= _EDIT_RETENTION_CAP:
+        ordered.insert(-1, {"at": ordered[-2]["at"], "lost": True, "other_head": False})
+    excused = False
+    for entry in ordered:
+        if entry["lost"]:
+            held = not excused
+            entry.update(blocking=held, downgraded=False, verdict="", findings=0, stamped=held)
+        excused = entry.pop("other_head") or excused
+    return ordered
 
 
 def _sample_shape(body, lane, head_sha):
@@ -719,7 +765,9 @@ def superseded_verdicts(
     direction that can manufacture a pass. A sample blocks in either of the two
     spellings the lanes use: ``[BLOCK-MERGE] <head>`` in the body, which GPT and
     Opus write, or a ``<Lane>-Verdict: BLOCK`` line from a whole-design lane,
-    which never writes that marker at all. See ``_sample_shape``.
+    which never writes that marker at all. See ``_sample_shape``. A body GitHub
+    lost from the history is a block too (``_lost_bodies_as_blocks``), and a named
+    lane's ``cause`` says which it was: ``replaced-sample`` or ``lost-body``.
 
     A lane is NOT named when the presented body's WORKFLOW-AUTHORED heading says
     adjudication downgraded this head: that is the repository's own record that the
@@ -844,68 +892,37 @@ def superseded_verdicts(
             "current_verdict": current["verdict"],
             "override_at": override_at[name].isoformat() if name in override_at else "",
             "superseded": samples,
+            "cause": "",
         }
         lanes.append(entry)
-        # BLOCKING DROPPED needs the presented body to be a verdict for THIS
-        # head. With the PR moved past the head asked about, the slot holds a
-        # newer head's verdict, so `current_blocking` is False for a reason that
-        # has nothing to do with a dropped block -- and staleness is already
-        # reported by the marker evaluation. Requiring current_stamped keeps this
-        # signal to the one case it names: both samples judged this head, the
-        # earlier blocked, the survivor does not.
+        # BLOCKING DROPPED needs the presented body to be a verdict for THIS head:
+        # once the PR has moved past the head asked about, the slot holds a newer
+        # head's verdict and staleness is the marker evaluation's to report. So both
+        # samples judged this head, the earlier blocked, and the survivor does not.
         #
-        # And the presented body's own WORKFLOW-AUTHORED heading must not say
-        # adjudication downgraded this head. That heading is the repository's
-        # record that this exact block was cleared by decision, rendered from the
-        # parsed decision the gate acts on, and the rewrite producing it replaces
-        # the comment in place -- so it leaves a superseded blocking body behind as
-        # a matter of course. Naming the lane there would redden the required
-        # status on a head whose current verdict is a legitimate clear, and no
-        # recompute could ever clear it, since the stored history keeps the old
-        # body forever. Read from the heading and not from a marker in the body:
-        # the marker sits in the embedded model output, so a review quoting it
-        # would forge its own clearance. See _sanctioned_downgrade.
+        # A sanctioned downgrade CLEARS a block, read from its workflow-authored
+        # heading rather than a marker the embedded model output could forge (see
+        # _sanctioned_downgrade). Its rewrite replaces the comment in place, so it
+        # always leaves the blocked body behind in a history that keeps it forever:
+        # naming that block would redden a legitimate clear no recompute could
+        # recover. But a downgrade clears only the sample it was rendered over,
+        # never every older block: block A, a clean sample, block B, an adjudication
+        # clearing B, then a later clean must still name A, or readiness merges it.
         #
-        # And a block the newest sanctioned downgrade CLEARED must not count
-        # either. But a downgrade clears the findings of the sample it adjudicated
-        # -- the blocked body it was published over -- and not every block older
-        # than itself. Excluding the whole tail would let an adjudication of one
-        # block silently absolve an unrelated earlier one: block A, a clean sample,
-        # block B, an adjudication clearing B, then a later clean leaves A
-        # unadjudicated and unreported, and readiness permits the merge.
-        #
-        # So each downgrade is paired with the nearest blocked sample BEFORE it.
-        # `samples` is newest-first, so walking it in order and letting every
-        # downgrade consume the next blocking sample it meets pairs each decision
-        # with the body it was rendered over. A blocking sample left unpaired is a
-        # block no adjudication spoke to.
-        #
-        # Reading `current["downgraded"]` alone covers only the case where the
-        # downgrade is still the presented body -- but the lane can re-run at the
-        # SAME head after adjudication and write an ordinary clean verdict over it,
-        # which a body edit alone produces, since codex-review.yml carries
-        # `edited`. The adjudicated block would then be resurrected from history
-        # into a red required status that no recompute can clear, because the
-        # stored history keeps that body forever: the exact permanent-stuck shape
-        # the downgrade reading exists to prevent. The pairing keeps that fix and
-        # drops only its over-reach.
-        #
-        # ONE rule, over the whole sequence: every downgrade -- the presented body's
-        # as much as a superseded sample's -- pairs with exactly one blocking
-        # sample, the one it was rendered over, and a blocking sample left unpaired
-        # is a block no decision spoke to. The presented body is the newest element
-        # of that sequence, so its downgrade seeds the count rather than vetoing the
-        # report. Vetoing on `current["downgraded"]` was the same over-reach this
-        # loop removes from the history side: two same-head blocks with one
-        # adjudication presented leaves the earlier one undecided, and a blanket
-        # veto hid it with no recompute able to recover it.
+        # So ONE rule runs over the whole newest-first sequence: every downgrade,
+        # the presented body's included (it seeds the count), pairs with the next
+        # blocking sample it meets, and a blocking sample left unpaired is a block
+        # no decision spoke to. That keeps an adjudicated block cleared when the
+        # lane re-runs at the SAME head and writes an ordinary clean verdict over
+        # the downgrade (codex-review.yml carries `edited`), and still names the
+        # earlier of two same-head blocks when only one was adjudicated.
         #
         # A human override record is not paired: it covers every block already
         # published when it was recorded (see the docstring). Downgrades pair
         # first, so a record never frees one to absolve an older block.
         decided = override_at.get(name)
         unpaired_downgrades = 1 if current["downgraded"] else 0
-        unadjudicated_block = False
+        unadjudicated = None
         for sample in samples:
             if sample["downgraded"]:
                 unpaired_downgrades += 1
@@ -918,14 +935,15 @@ def superseded_verdicts(
                 # in the record's own second may have landed after it.
                 if published is not None and published < decided:
                     continue
-                unadjudicated_block = True
+                unadjudicated = sample
                 break
         # `current["blocking"]` stays a veto, and is not a pairing term: a presented
         # body that still blocks is not a DROPPED block at all -- the block is being
         # reported by the lane itself, which is the state this gate exists to
         # distinguish from a block that quietly stopped being reported.
-        if entry["current_stamped"] and unadjudicated_block and not current["blocking"]:
+        if entry["current_stamped"] and unadjudicated is not None and not current["blocking"]:
             dropped.add(name)
+            entry["cause"] = "lost-body" if unadjudicated["lost"] else "replaced-sample"
     result["lanes"] = sorted(lanes, key=lambda e: e["lane"])
     result["lanes_seen"] = len(lanes)
     result["blocking_dropped"] = sorted(dropped)
@@ -1436,8 +1454,11 @@ def disposition_violations(
     so an older ``head=`` does not exempt malformed, multi-finding, or cross-lane
     claims. Lanes without parseable finding identities remain exempt from the
     requirement to claim one.
+
+    Every check resolves ``target=`` to the reviewer(s) it answers for through
+    ``disposition_reviewer_names``, so the override spelling ``fable`` and the
+    bound name ``opus`` are held to the same claim rules for the OPUS lane.
     """
-    lanes = {name.lower() for name in (bindings or {}).values()}
 
     def lane_map(for_head):
         found: dict = {}
@@ -1462,6 +1483,7 @@ def disposition_violations(
             )
             continue
         target = record.get("target") or ""
+        target_lanes = disposition_reviewer_names(target, bindings)
         spans = record.get("spans") or []
         judged_head = record.get("head") or ""
         if judged_head and len(judged_head) < 40:
@@ -1492,7 +1514,7 @@ def disposition_violations(
                 "so post one comment per finding even when the findings "
                 "share a span id".format(bullets, where, target)
             )
-        if not spans and target in lanes and (target in judged_lanes or target in current_lanes):
+        if not spans and target_lanes & (judged_lanes | current_lanes):
             out.add(
                 "disposition record claims no span= finding identity ({}; "
                 "target={}) while that lane has findings on the head it "
@@ -1501,7 +1523,7 @@ def disposition_violations(
             )
         for span in spans:
             lane = judged_map.get(span) or current_map.get(span)
-            if lane is not None and lane != target:
+            if lane is not None and lane not in target_lanes:
                 out.add(
                     "cross-lane disposition ({}; target={}) claims span {} "
                     "from lane {} - one comment covers exactly one lane, so "
@@ -1509,7 +1531,7 @@ def disposition_violations(
                         where, target, span, lane, lane
                     )
                 )
-            elif lane is None and target in lanes and target in judged_lanes:
+            elif lane is None and target_lanes & judged_lanes:
                 out.add(
                     "disposition record claims span {} that resolves to no "
                     "finding ({}; target={}) - claim the span=<id> exactly as "
@@ -1519,16 +1541,11 @@ def disposition_violations(
     return sorted(out)
 
 
-# --- Markdown fences: the one reader for every kirocrew-prepare-pr script -------
+# --- Owners: fences, disposition rounds, the blocked-push count ----------------------
 #
-# A fenced block opens with three or more backticks or tildes (up to three spaces
-# of indent; a backtick fence's info string cannot hold a backtick, that is inline
-# code) and closes only with the same character, at least as many, up to three
-# spaces of indent and nothing but blanks after. A ``` line inside a ~~~ block is
-# content. Those two rules live in pr_status_issue_links.py, which pr_status.py
-# already loads; this module loads that file the same way and builds the line
-# readers below on them, so pr_findings.py, diff_signals.py and sweep_check.py read
-# fences through the one pair of functions.
+# Three sibling modules hold these responsibilities, and every name they define is
+# bound here, so a caller keeps reading them off this module. They load in a chain
+# (pushes -> rounds -> fences), and this module takes each from that one load.
 class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
     """Load shipped source normally while suppressing cache writes."""
 
@@ -1540,10 +1557,9 @@ class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
         return None
 
 
-def _load_fence_owner():
-    """pr_status_issue_links.py, loaded by path beside this file with no cache written."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pr_status_issue_links.py")
-    name = "_prepare_pr_fence_owner"
+def _load_sibling(filename, name):
+    """Load a sibling script without cwd, sys.path, or bytecode side effects."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
     loader = _NoBytecodeSourceLoader(name, path)
     spec = importlib.util.spec_from_loader(name, loader)
     if spec is None:  # pragma: no cover - defensive
@@ -1553,249 +1569,32 @@ def _load_fence_owner():
     return module
 
 
-_fence_owner = _load_fence_owner()
-fence_opening = _fence_owner._fence_opening
-is_closing_fence = _fence_owner._is_closing_fence
-_LINE_END_RE = re.compile(r"\r\n|\n|\r")
-_QUOTE_PREFIX_RE = re.compile(r"^(?:\s*>)+")
+def _load_owner(stem):
+    """Load ``<stem>.py`` beside this script, named under this module's own package."""
+    package = __name__.rpartition(".")[0]
+    return _load_sibling(stem + ".py", package + "." + stem if package else stem)
 
 
-def split_lines(text):
-    """Lines of `text`, ended by CR, LF or CRLF only (not the other separators str.splitlines knows)."""
-    return _LINE_END_RE.split(text)
+_pushes = _load_owner("_review_pushes")
+_rounds = _pushes._rounds
+_fences = _rounds._fences
 
+fence_opening = _fences.fence_opening
+is_closing_fence = _fences.is_closing_fence
+split_lines = _fences.split_lines
+unfenced_lines = _fences.unfenced_lines
+drop_fenced_blocks = _fences.drop_fenced_blocks
 
-def unfenced_lines(text, quoted=False):
-    """The lines of `text` outside fenced blocks (fence lines excluded).
+FIX_OUTCOMES = _rounds.FIX_OUTCOMES
+OTHER_OUTCOMES = _rounds.OTHER_OUTCOMES
+OUTCOME_WORDS = _rounds.OUTCOME_WORDS
+declared_outcome = _rounds.declared_outcome
+declared_resolution = _rounds.declared_resolution
+same_head = _rounds.same_head
+disposition_rounds = _rounds.disposition_rounds
+fix_rounds = _rounds.fix_rounds
 
-    With `quoted`, fence markers are read through leading `>` markers, so a fence
-    inside a blockquote fences its content too. A block that never closes hides the
-    rest of the text, as Markdown does.
-    """
-    fence = None
-    for raw in split_lines(text):
-        line = _QUOTE_PREFIX_RE.sub("", raw) if quoted else raw
-        if fence is None:
-            fence = fence_opening(line)
-            if fence is None:
-                yield raw
-        elif is_closing_fence(line, fence[0], fence[1]):
-            fence = None
-
-
-def drop_fenced_blocks(text):
-    """`text` without its fenced blocks, fence lines included.
-
-    A block that never closes is kept as prose, so an open fence cannot hide the
-    rest of a section from a word limit.
-    """
-    kept: list = []
-    held: list = []
-    fence = None
-    for line in split_lines(text):
-        if fence is None:
-            fence = fence_opening(line)
-            if fence is None:
-                kept.append(line)
-            else:
-                held = [line]
-            continue
-        held.append(line)
-        if is_closing_fence(line, fence[0], fence[1]):
-            fence = None
-            held = []
-    return "\n".join(kept + held)
-
-
-# --- Disposition outcomes and rounds: the one reader for --rounds and the push check -----
-#
-# The outcome is read from exactly two places, never from prose:
-#   (a) the FIRST quoted line of the disposition (its rationale lead):
-#       `> fixed in <sha>`  `> Fixed: ...`  `> removed in <sha>`  `> **fixed** in <sha>`
-#       `> Rebutted: ...`  `> deferred #N`  `> accepted: ...`  `> Agreed, no change.`
-#       `> Outcome: fixed in <sha>`  `> Outcome: checked, no change needed`
-#   (b) an explicit label line: `Outcome: <word>`, `Disposition: <word>` /
-#       `**Disposition: <word>**`, or, when it starts the record, a bold token that is
-#       exactly an outcome word: `- **fixed** span=<id>`, `**rebutted** -- span=<id>`.
-# A finding's title, a bold title with other words, and the plain metadata lines
-# (`class:`, `mechanism:`, `self-added:`, `resolution:`, `[operator: ...]`) never declare
-# an outcome. A record that declares none is `undeclared` in the view, never counted as
-# a fix and never silently nothing (sample and counts: code-quality/impl/D5-FORMAT-SURVEY.md).
-FIX_OUTCOMES = frozenset({"fixed", "removed", "reverted"})
-OTHER_OUTCOMES = frozenset(
-    {
-        "rebutted",
-        "deferred",
-        "acknowledged",
-        "accepted",
-        "agreed",
-        "intended",
-        "checked",
-        "kept",
-        "declined",
-    }
-)
-OUTCOME_WORDS = FIX_OUTCOMES | OTHER_OUTCOMES
-
-_METADATA_RE = re.compile(r"^(?:self-added|mechanism|class|resolution)\s*:", re.IGNORECASE)
-_OPERATOR_RE = re.compile(r"^\[operator:[^\]]*\]\s*$", re.IGNORECASE)
-_OUTCOME_LABEL_RE = re.compile(r"^\**Outcome\**\s*:\**\s*([A-Za-z]+)", re.IGNORECASE)
-_DISPOSITION_LINE_RE = re.compile(r"^\**Disposition\**\s*:\**\s*\**([A-Za-z]+)", re.IGNORECASE)
-_BOLD_TOKEN_RE = re.compile(r"^(?:[-*]\s+)?\*\*([A-Za-z]+)\*\*(?=\s|[.:,;!]|$)")
-_QUOTED_OUTCOME_RE = re.compile(r"^>\s*\*{0,2}Outcome\*{0,2}:\*{0,2}\s*([A-Za-z]+)", re.IGNORECASE)
-_QUOTED_LEAD_RE = re.compile(r"^>\s*(\*{0,2})([A-Za-z]+)(\*{0,2})(.*)$")
-_IN_SHA_RE = re.compile(r"^\s+in\s+[0-9a-f]{7,40}\b", re.IGNORECASE)
-_RESOLUTION_LINE_RE = re.compile(r"^resolution:\s*(removed|narrowed|deferred)\b", re.IGNORECASE)
-
-
-def _quoted_lead_word(line):
-    """The outcome word that leads a quoted rationale line, or "".
-
-    `> **fixed** in <sha>` (bold) and `> fixed: ...` / `> fixed.` accept any
-    follow-on. A bare fix word needs `in <sha>` ("> Fixed point iteration" and
-    "> removed sessions still listed" are not outcomes); the other words accept a
-    following blank ("> Agreed, no change."). `> Outcome: <word>` names its word.
-    """
-    m = _QUOTED_OUTCOME_RE.match(line)
-    if m:
-        return m.group(1).lower()
-    m = _QUOTED_LEAD_RE.match(line)
-    if not m:
-        return ""
-    open_bold, word, close_bold, rest = m.groups()
-    word = word.lower()
-    if word not in OUTCOME_WORDS:
-        return ""
-    if open_bold and close_bold:
-        return word
-    if not rest or rest[0] in ":.,;!":
-        return word
-    if word in FIX_OUTCOMES:
-        return word if _IN_SHA_RE.match(rest) else ""
-    return word if rest[0].isspace() else ""
-
-
-def declared_outcome(body):
-    """The lower-case outcome word a disposition declares, or "" when it declares none.
-
-    Only the two places named above are read, outside fenced code, and the first
-    declaration in document order wins. Nothing else counts: not a finding title,
-    not a bold title with other words ("**Fixed point iteration is slow**"), not a
-    `class:` / `mechanism:` / `self-added:` / `resolution:` line, not any unquoted
-    sentence, and not a later quoted line (a rebuttal quoting "- **fixed** ..." stays
-    a rebuttal).
-    """
-    first_quote = True
-    started = False
-    for raw in unfenced_lines(body, quoted=True):
-        line = raw.strip()
-        if not line or line.startswith("<!--"):
-            continue
-        if line.startswith(">"):
-            if first_quote:
-                first_quote = False
-                word = _quoted_lead_word(line)
-                if word:
-                    return word
-            continue
-        if _METADATA_RE.match(line) or _OPERATOR_RE.match(line):
-            continue
-        for pattern in (_OUTCOME_LABEL_RE, _DISPOSITION_LINE_RE):
-            m = pattern.match(line)
-            if m and m.group(1).lower() in OUTCOME_WORDS:
-                return m.group(1).lower()
-        if not started:
-            m = _BOLD_TOKEN_RE.match(line)
-            if m and m.group(1).lower() in OUTCOME_WORDS:
-                return m.group(1).lower()
-        started = True
-    return ""
-
-
-def declared_resolution(body):
-    """`removed`, `narrowed` or `deferred` from a plain `resolution:` line, else "".
-
-    The line sits outside the quoted block, like `self-added:`; the sweep file
-    holds the same line for the push check.
-    """
-    for raw in unfenced_lines(body, quoted=True):
-        line = raw.strip()
-        if line.startswith(">"):
-            continue
-        m = _RESOLUTION_LINE_RE.match(line)
-        if m:
-            return m.group(1).lower()
-    return ""
-
-
-def same_head(a, b):
-    """True when two hex spellings (7 to 40 characters) can name one commit."""
-    a, b = a.lower(), b.lower()
-    return a.startswith(b) or b.startswith(a)
-
-
-def disposition_rounds(records, bodies):
-    """(order, rounds) from writer disposition records: one round per judged head.
-
-    `order` lists the round keys in first-disposed order; `rounds[key]` holds the
-    full `head`, the `fixed` span set, the `resolved` {span: word} map, an
-    `outcomes` count by word (`undeclared` for a record that declares none) and the
-    `undeclared` [(comment id, spans)] list. A 7-character and a 40-character
-    spelling of one head are one round.
-    """
-    order: list = []
-    rounds: dict = {}
-    for rec in records:
-        head = rec.get("head") or ""
-        if rec.get("malformed") or not head:
-            continue
-        key = next((k for k in order if same_head(rounds[k]["head"], head)), None)
-        if key is None:
-            key = head[:12]
-            rounds[key] = {
-                "head": head,
-                "fixed": set(),
-                "resolved": {},
-                "outcomes": {},
-                "undeclared": [],
-            }
-            order.append(key)
-        r = rounds[key]
-        if len(head) > len(r["head"]):
-            r["head"] = head
-        body = bodies.get(rec.get("comment_id"), "")
-        spans = list(rec.get("spans") or [])
-        word = declared_outcome(body)
-        name = word or "undeclared"
-        r["outcomes"][name] = r["outcomes"].get(name, 0) + 1
-        if not word:
-            r["undeclared"].append((rec.get("comment_id"), spans))
-        if word in FIX_OUTCOMES:
-            r["fixed"].update(spans)
-        resolution = declared_resolution(body)
-        if resolution:
-            for span in spans:
-                r["resolved"][span] = resolution
-    return order, rounds
-
-
-def fix_rounds(order, rounds):
-    """{span: [round index, ...]}: the distinct judged heads that fixed each span.
-
-    Fixes at or before the round that recorded a `resolution:` for the span do not
-    count, so a span with a recorded narrow, removal or deferral starts again.
-    """
-    fixed: dict = {}
-    resolved_at: dict = {}
-    for idx, key in enumerate(order):
-        r = rounds[key]
-        for span in r["resolved"]:
-            resolved_at[span] = idx
-        for span in sorted(r["fixed"]):
-            fixed.setdefault(span, []).append(idx)
-    out = {}
-    for span, rs in fixed.items():
-        after = [i for i in rs if i > resolved_at.get(span, -1)]
-        if after:
-            out[span] = after
-    return out
+BLOCKED_PUSH_REPEAT = _pushes.BLOCKED_PUSH_REPEAT
+BLOCKED_PUSH_LIMIT = _pushes.BLOCKED_PUSH_LIMIT
+LANE_CHECK_RE = _pushes.LANE_CHECK_RE
+blocked_push_count = _pushes.blocked_push_count

@@ -11,9 +11,10 @@ deaths and never on healthy work.
 
 Policy (enforced by the caller in ``session_handle_dispatch._dispatch_events``):
 
-- ``WORKING``     -> never act (log once per interval at most), except an
-  opaque MCP tool's ``mcp subtree active`` reading, which the tool branch
-  bounds by ``watchdog.tool_stall_hard_cap_secs``.
+- ``WORKING``     -> never act (log once per interval at most), except the
+  readings that cannot be tied to the work (an opaque MCP tool's, a Windows
+  shell tool's tree reading, a model wait's), which the dispatch loop bounds
+  by ``watchdog.tool_stall_hard_cap_secs``.
 - ``DEAD``        -> act immediately: recovery lands seconds after actual death
                      instead of at a blanket 90s/600s timeout.
 - ``STUCK_INPUT`` -> act immediately, with a cause the recovery nudge can name
@@ -63,11 +64,26 @@ CPU-only (the evidence string says so — there is no per-process IO counter to
 read). libproc's socket fd info feeds only the ``remote_flat`` scan of the
 in-flight tool's own server. What has no libproc equivalent stays exactly as
 absent: no model-wait socket evidence (so a flat model wait is UNKNOWN, never
-DEAD, and never tagged ``established_flat``), no wchan / blocked-fd evidence (so
-STUCK_INPUT is never claimed — a live tracked child whose subtree is flat is
+DEAD, and never tagged ``established_flat``; it is tagged ``platform_limited``
+and the caller gives it the same model-silent window), no wchan / blocked-fd
+evidence (so STUCK_INPUT is never claimed — a live tracked child whose subtree is flat is
 UNKNOWN tagged ``platform_limited`` instead of WORKING, so it is bounded rather
 than deferred forever). The backend is injectable (``darwin_backend`` ctor arg),
 and the Linux path is untouched by its presence.
+
+On Windows the SHELL-tool check reads the tree through :class:`WinProcessBackend`
+(selected on first use when ``platform_compat.IS_WINDOWS`` and ``proc_root`` does
+not exist), and only to prove life: one Toolhelp snapshot per check, each
+parent edge checked against creation times so a recycled pid's strays drop
+out, and ``GetProcessTimes`` CPU summed over the runtime's descendants created
+since the dispatch (on the wall clock, widened by the attribution tolerance and
+the banked park). When that sum moves between samples the verdict is WORKING;
+every other reading (flat, nothing started since the dispatch, the baseline
+sample, an unreadable tree or counter) is UNKNOWN tagged ``platform_limited``,
+as before the backend existed. A snapshot carries image names but no argv, so a
+process cannot be tied to the command: on Windows the shell check never returns
+DEAD and never ``shell_child_absent``. The MCP and model-wait probes keep their
+no-tree readings.
 
 Every probe is wrapped: any error degrades the verdict to UNKNOWN — never to a
 kill. Each check is cheap (<10ms of file reads); two-sample deltas are computed
@@ -79,19 +95,28 @@ inferred — an absent row never produces DEAD or STUCK_INPUT, and never WORKING
 on liveness alone):
 
 ======================  ==========================  ==========================  ==========================
-Evidence                Linux (``/proc``)           macOS (``libproc``)         Windows (no tree backend)
+Evidence                Linux (``/proc``)           macOS (``libproc``)         Windows (Toolhelp)
 ======================  ==========================  ==========================  ==========================
-process tree            ``task/*/children``         ``proc_listchildpids``      absent → every shell/MCP
-                                                                                verdict UNKNOWN, tagged
+process tree            ``task/*/children``         ``proc_listchildpids``      Toolhelp snapshot, shell
+                                                                                tools only, to prove
+                                                                                life; MCP verdicts
+                                                                                UNKNOWN, tagged
                                                                                 ``platform_limited``
-shell child match/exit  cmdline + ``starttime``     argv/path + start time      absent
-subtree movement        CPU jiffies + IO bytes      CPU ns only (no IO)         root-pid CPU only
-                                                                                (model-wait probe)
+shell child match/exit  cmdline + ``starttime``     argv/path + start time      absent (no argv) → never
+                                                                                DEAD, never
+                                                                                ``shell_child_absent``
+subtree movement        CPU jiffies + IO bytes      CPU ns only (no IO), at     shell tool: CPU of the
+                                                    least one 10 ms tick        processes started since
+                                                                                the dispatch, 10 ms
+                                                                                floor; else root-pid
+                                                                                CPU only (model-wait
+                                                                                probe)
 blocked on stdin        ``wchan`` + blocked fd →    absent → live+flat child    absent
 (STUCK_INPUT)           STUCK_INPUT                 is UNKNOWN tagged
                                                     ``platform_limited``
 socket / LLM wait       ``/proc/net`` established   absent → flat model wait    absent
-(``established_flat``)  → UNKNOWN or DEAD           is plain UNKNOWN,
+(``established_flat``)  → UNKNOWN or DEAD           is UNKNOWN tagged
+                                                    ``platform_limited``,
                                                     never DEAD
 business progress       stream events, ``kirocrew/status`` (platform-independent; outranks all rows)
 ======================  ==========================  ==========================  ==========================
@@ -114,8 +139,10 @@ but a runtime can host several sessions, and then that pid's process tree is not
 one session's. Which probes survive that is not uniform, so it is stated per
 probe rather than claimed for the module:
 
-- the cmdline match keys shell evidence to THIS session's in-flight command, so
-  the shell branch attributes;
+- the cmdline match keys shell liveness evidence to THIS session's in-flight
+  command; signal authority is narrower: an exact, post-dispatch match must be
+  the direct child of an identity-pinned harness, whose location comes from the
+  runtime's trusted ``sandbox_wrapped_by_crew`` spawn fact;
 - the ``remote_flat`` socket scan reads only the subtree of the process that
   was launched as the in-flight tool's own MCP server, and declines when that
   process is not found exactly once (a second copy of the server is another
@@ -148,6 +175,10 @@ from concurrent.futures import Executor
 from typing import Any, Callable, Iterable, Protocol
 
 from kiro_crew import platform_compat
+from kiro_crew.acp.liveness_cleanup import (  # noqa: F401 - re-exported for existing importers
+    _CleanupLineage,
+    _ShellCleanupMixin,
+)
 from kiro_crew.acp.liveness_command import (  # noqa: F401 - re-exported for existing importers
     _COMMAND_ELISION,
     MAX_RETAINED_COMMAND_CHARS,
@@ -157,6 +188,7 @@ from kiro_crew.acp.liveness_command import (  # noqa: F401 - re-exported for exi
     LaunchRoster,
     _command_text,
     bounded_command_text,
+    complete_command_match,
     first_program,
     launch_matches,
     match_fragment,
@@ -222,11 +254,15 @@ from kiro_crew.acp.liveness_interactive import (  # noqa: F401 - re-exported for
     non_interactive_hint,
 )
 from kiro_crew.acp.liveness_proc import (  # noqa: F401 - re-exported for existing importers
+    _DARWIN_CPU_FLOOR_NANOS,
     _DARWIN_CPU_KEY,
     _DARWIN_CPU_LABEL,
+    _FILETIME_UNIX_OFFSET_SECS,
+    _WINDOWS_CPU_LABEL,
     DarwinProcessBackend,
     LibprocBackend,
     ProcessRow,
+    WinProcessBackend,
     _is_loopback_hex,
     _read_text,
     blocked_read_fd,
@@ -242,8 +278,11 @@ from kiro_crew.acp.liveness_proc import (  # noqa: F401 - re-exported for existi
     read_wchan,
     remote_established_inodes,
     select_darwin_backend,
+    select_windows_backend,
     socket_inodes,
     steady_now,
+    strict_descendants,
+    strict_direct_children,
 )
 from kiro_crew.acp.liveness_tool_state import (  # noqa: F401 - re-exported for existing importers
     InFlightToolTracker,
@@ -259,8 +298,17 @@ from kiro_crew.session_directive import CORE_MCP_SERVER  # noqa: F401 - re-expor
 
 logger = logging.getLogger(__name__)
 
+# Marks an oracle whose Windows backend has not been chosen yet.
+_WINDOWS_UNSELECTED: Any = object()
+# Sample key for the Windows shell-tool CPU probe.
+_WINDOWS_SHELL_CPU_KEY = "windows_shell_cpu"
+# Evidence prefix of the Windows shell-tool WORKING reading. It cannot be tied to
+# the tool, so the dispatch loop bounds it by the hard cap
+# (``_working_tool_bound_reached``), as it does the opaque-MCP reading.
+EVIDENCE_WINDOWS_TREE_MOVED = f"{_WINDOWS_CPU_LABEL}: tree cpu moved"
 
-class LivenessOracle:
+
+class LivenessOracle(_ShellCleanupMixin):
     """Per-session liveness verdicts from /proc evidence (libproc on macOS).
 
     One instance per :class:`~kiro_crew.acp.session_handle.AcpSessionHandle`.
@@ -276,6 +324,9 @@ class LivenessOracle:
     ``(VERDICT_UNKNOWN, ...)``, never raises, never a kill.
     """
 
+    # The Windows shell-tool backend, chosen on first use (see :meth:`_windows`).
+    _windows_backend: Any = _WINDOWS_UNSELECTED
+
     def __init__(
         self,
         proc_root: str = "/proc",
@@ -286,7 +337,10 @@ class LivenessOracle:
         wall_now=time.time,
         steady_now_fn=steady_now,
         tenancy: Callable[[], int | None] | None = None,
+        cleanup_tenancy: Callable[[], int | None] | None = None,
+        sandbox_wrapped_by_crew: Callable[[], bool] | None = None,
         server_launches: Callable[[], LaunchRoster | None] | None = None,
+        attribution_launches: Callable[[], LaunchRoster | None] | None = None,
     ) -> None:
         self._proc = str(proc_root)
         self._now = now
@@ -303,6 +357,8 @@ class LivenessOracle:
             darwin_backend if darwin_backend is not None else select_darwin_backend(self._proc)
         )
         self._tracked_child: int | None = None
+        self._tracked_child_start_id: str | None = None
+        self._tracked_tool: ToolCallState | None = None
         self._child_gone_ts: float | None = None
         # How many sessions the probed runtime hosts, asked at verdict time
         # because a runtime gains and loses tenants while a turn runs. Only the
@@ -315,6 +371,17 @@ class LivenessOracle:
         # about tenancy keeps today's verdicts exactly; a caller whose runtime
         # CAN host a second session is the one that must pass this.
         self._tenancy = tenancy
+        # Cleanup has a stricter, separate contract: only a positive answer of
+        # one authorizes signals. Keeping this probe separate means adding shell
+        # cleanup cannot change the model-wait DEAD/UNKNOWN policy.
+        self._cleanup_tenancy = cleanup_tenancy
+        # Spawn-time fact owned by AcpRuntime. A true value on Linux's procfs
+        # path means a namespace launcher occupies runtime_pid and its sole
+        # direct child is the harness. The macOS Seatbelt wrapper execs the
+        # harness in place, so runtime_pid remains the parent there. Missing or
+        # non-boolean context can inform liveness but cannot authorize a signal.
+        self._sandbox_wrapped_by_crew = sandbox_wrapped_by_crew
+        self._cleanup_lineage: _CleanupLineage | None = None
         # How this session launched its MCP servers (see :data:`LaunchRoster`),
         # read ONLY by the socket scan behind the ``remote_flat`` tag, which
         # uses it to find the in-flight tool's own server process. Asked at
@@ -322,6 +389,11 @@ class LivenessOracle:
         # ``None`` -- undeclared, or the callable answering None -- keeps the
         # tag off.
         self._server_launches = server_launches
+        # The same roster with no ``remote_flat`` gate, read only to find the
+        # in-flight tool's own server so the opaque-MCP movement sample covers
+        # that server's subtree alone (:meth:`_attributed_server_root`).
+        # ``None`` samples the whole runtime tree, as before.
+        self._attribution_launches = attribution_launches
         # sample key -> (ts, counter). Keys: "io", "cpu".
         self._samples: dict[str, tuple[float, int]] = {}
 
@@ -341,6 +413,9 @@ class LivenessOracle:
         confine.
         """
         self._tracked_child = None
+        self._tracked_child_start_id = None
+        self._tracked_tool = None
+        self._cleanup_lineage = None
         self._child_gone_ts = None
         self._samples.clear()
 
@@ -360,7 +435,10 @@ class LivenessOracle:
             wall_now=self._wall_now,
             steady_now_fn=self._steady_now,
             tenancy=self._tenancy,
+            cleanup_tenancy=self._cleanup_tenancy,
+            sandbox_wrapped_by_crew=self._sandbox_wrapped_by_crew,
             server_launches=self._server_launches,
+            attribution_launches=self._attribution_launches,
         )
 
     # ── Public checks ──
@@ -369,9 +447,11 @@ class LivenessOracle:
         """Whether this oracle has ANY view of the runtime's process tree.
 
         True with a darwin backend or a readable ``proc_root``; False on a host
-        with neither (Windows today), where every tree-based probe reads
-        absence of evidence rather than a negative — see
-        :data:`EVIDENCE_PLATFORM_LIMITED`.
+        with neither, where every tree-based probe reads absence of evidence
+        rather than a negative — see :data:`EVIDENCE_PLATFORM_LIMITED`. On
+        Windows that stays False: the Toolhelp backend (:meth:`_windows`) feeds
+        only the shell-tool check, so the MCP and model-wait probes keep this
+        reading there.
         """
         return self._darwin is not None or os.path.isdir(self._proc)
 
@@ -404,9 +484,22 @@ class LivenessOracle:
         if tool.is_shell:
             return self._check_shell_child(runtime_pid, tool)
 
-        # Opaque MCP tool: any CPU/IO movement in the runtime's descendant
-        # tree (which contains the serving MCP server process) reads WORKING.
-        moved, evidence = self._tree_movement(runtime_pid)
+        # Opaque MCP tool: CPU/IO movement reads WORKING. When the call names
+        # its own server and that server's process is found exactly once, only
+        # that server's subtree is sampled, so the engine's own activity (the
+        # KAS relay and its Node engine, both inside the runtime's tree) or a
+        # warm sibling server cannot hold a call its server is not serving.
+        # Otherwise the whole runtime tree is sampled, as before.
+        own_root = self._attributed_server_root(runtime_pid, tool)
+        if own_root is not None:
+            moved, evidence = self._tree_movement(own_root, key_prefix=f"server{own_root}")
+            if moved:
+                return (
+                    VERDICT_WORKING,
+                    f"{EVIDENCE_MCP_SUBTREE_ACTIVE} (own server pid {own_root}: {evidence})",
+                )
+        else:
+            moved, evidence = self._tree_movement(runtime_pid)
         if moved:
             return VERDICT_WORKING, f"{EVIDENCE_MCP_SUBTREE_ACTIVE} ({evidence})"
         if evidence == "no readable counters" and not self._tree_observable():
@@ -472,6 +565,27 @@ class LivenessOracle:
                     f"own server (pid {root}) holds an established TCP connection ({evidence})",
                 )
         return VERDICT_UNKNOWN, f"mcp subtree flat ({evidence})"
+
+    def _attributed_server_root(self, runtime_pid: int, tool: ToolCallState) -> int | None:
+        """The pid of the in-flight tool's own MCP server, or None.
+
+        Found by the same rules the ``remote_flat`` scan uses
+        (:meth:`_own_server_root`): the trusted server name, a declared launch
+        roster, and exactly one topmost matching process. Anything less answers
+        None, which keeps the whole-tree sample.
+        """
+        if not tool.mcp_server_name or self._attribution_launches is None:
+            return None
+        try:
+            roster = self._attribution_launches()
+        except Exception:
+            logger.debug("liveness: attribution roster probe failed", exc_info=True)
+            return None
+        if not isinstance(roster, Mapping) or not roster.get(tool.mcp_server_name):
+            return None
+        if self._darwin is None and not os.path.isdir(self._proc):
+            return None
+        return self._own_server_root(runtime_pid, tool.mcp_server_name, roster)
 
     def _launch_roster(self) -> LaunchRoster | None:
         """The declared :data:`LaunchRoster`, or None when none is declared.
@@ -587,10 +701,14 @@ class LivenessOracle:
         return root
 
     def _check_shell_child(self, runtime_pid: int, tool: ToolCallState) -> tuple[str, str]:
+        self._observe_cleanup_tenancy(tool)
         if self._darwin is not None:
             return self._check_shell_child_darwin(self._darwin, runtime_pid, tool)
+        windows = self._windows()
+        if windows is not None:
+            return self._check_shell_child_windows(windows, runtime_pid, tool)
         if not self._tree_observable():
-            # Neither procfs nor a tree backend (Windows today): no child can be
+            # Neither procfs nor a tree backend: no child can be
             # matched, dated or watched for exit, so every shell verdict is
             # UNKNOWN. Tagged, so the caller's budget — not "alive, therefore
             # forever" — is visibly what bounds the call on this platform.
@@ -615,7 +733,7 @@ class LivenessOracle:
             self._proc_rows(runtime_pid, descendants), tool
         )
         if matched is not None:
-            return self._track_child(matched)
+            return self._track_child(matched, tool, runtime_pid)
         if possibly_running:
             return VERDICT_UNKNOWN, "no matching shell child"
         if not live_descendants and not children_interface_readable(self._proc, runtime_pid):
@@ -652,10 +770,117 @@ class LivenessOracle:
         rows = (row for row in map(backend.row, descendants) if row is not None)
         matched, live_descendants, possibly_running = self._scan_for_child(rows, tool)
         if matched is not None:
-            return self._track_child(matched)
+            return self._track_child(matched, tool, runtime_pid)
         if possibly_running:
             return VERDICT_UNKNOWN, "no matching shell child"
         return self._absent_child_verdict(live_descendants)
+
+    def _windows(self) -> WinProcessBackend | None:
+        """The Windows shell-tool backend, selected once per instance on first use.
+
+        None whenever a darwin backend is set or ``proc_root`` exists, so a fake
+        ``/proc`` tree keeps the ``/proc`` walk on every host. A test assigns
+        ``_windows_backend`` to drive the Windows paths on any host.
+        """
+        backend = self._windows_backend
+        if backend is _WINDOWS_UNSELECTED:
+            backend = None if self._darwin is not None else select_windows_backend(self._proc)
+            self._windows_backend = backend
+        return backend
+
+    def _check_shell_child_windows(
+        self, backend: WinProcessBackend, runtime_pid: int, tool: ToolCallState
+    ) -> tuple[str, str]:
+        """The shell-tool check over a Toolhelp tree (:class:`WinProcessBackend`).
+
+        Used only to prove life. A snapshot carries image names but no argv, so
+        no process can be tied to the command: a chain (``git pull && cargo
+        build``), a shell working in-process (``git fetch; Expand-Archive
+        big.zip``) or another session's same-image command on a shared runtime
+        all look alike. So this never returns DEAD and never
+        :data:`EVIDENCE_SHELL_CHILD_ABSENT`, and it tracks no child.
+
+        The runtime's live descendants (every edge attributed, see
+        :meth:`WinProcessBackend.descendants_created`) created since the
+        dispatch (see :meth:`_windows_match_floor`) are the tool's possible
+        tree. When their summed CPU moves between samples (same 10 ms floor as
+        macOS) the verdict is WORKING; a shrinking sum (a process left) is not
+        movement here, since nothing ties the leaver to the command. Every other
+        reading is UNKNOWN tagged :data:`EVIDENCE_PLATFORM_LIMITED`, the reading
+        this platform had before the backend, so the interactive narrowing and
+        the ``waiting_input`` status keep working for a prompt-shaped command.
+
+        That WORKING may come from a process that is not this tool's (another
+        session's new process on a shared runtime, or an older one a backward
+        wall-clock step admits), so the dispatch loop bounds it by the hard cap
+        through its :data:`EVIDENCE_WINDOWS_TREE_MOVED` prefix, as it bounds the
+        opaque-MCP reading. No reading here can end a turn before that cap.
+        """
+        created = backend.descendants_created(runtime_pid)
+        if created is None:
+            return (
+                VERDICT_UNKNOWN,
+                f"{EVIDENCE_PLATFORM_LIMITED}: process tree unreadable on this platform",
+            )
+        floor = self._windows_match_floor(tool)
+        pids = [] if floor is None else sorted(p for p, ts in created.items() if ts >= floor)
+        if not pids:
+            return (
+                VERDICT_UNKNOWN,
+                f"{EVIDENCE_PLATFORM_LIMITED}: windows tree has no process started "
+                "for this tool (image names only)",
+            )
+        cpu_total = 0
+        cpu_seen = False
+        for pid in pids:
+            cpu = backend.cpu_nanos(pid)
+            if cpu is not None:
+                cpu_total += cpu
+                cpu_seen = True
+        if not cpu_seen:
+            return (
+                VERDICT_UNKNOWN,
+                f"{EVIDENCE_PLATFORM_LIMITED}: windows tree cpu unreadable",
+            )
+        now = self._now()
+        prev = self._samples.get(_WINDOWS_SHELL_CPU_KEY)
+        if prev is None:
+            self._samples[_WINDOWS_SHELL_CPU_KEY] = (now, cpu_total)
+            return (
+                VERDICT_UNKNOWN,
+                f"{EVIDENCE_PLATFORM_LIMITED}: windows tree {EVIDENCE_SAMPLING}",
+            )
+        cpu_delta = cpu_total - prev[1]
+        if now - prev[0] >= self._sample_min_secs:
+            self._samples[_WINDOWS_SHELL_CPU_KEY] = (now, cpu_total)
+        evidence = f"cpu {cpu_delta:+d}ns over {len(pids)} process(es)"
+        if cpu_delta >= _DARWIN_CPU_FLOOR_NANOS:
+            return VERDICT_WORKING, f"{EVIDENCE_WINDOWS_TREE_MOVED} ({evidence})"
+        return (
+            VERDICT_UNKNOWN,
+            f"{EVIDENCE_PLATFORM_LIMITED}: windows tree has no movement ({evidence}); "
+            "command exit and stdin-block evidence unavailable on this platform",
+        )
+
+    def _windows_match_floor(self, tool: ToolCallState) -> float | None:
+        """Wall-clock seconds before which a Windows process cannot be *tool*'s.
+
+        The dispatch instant on the wall clock, read back from the monotonic
+        ``dispatch_ts`` as ``wall_now() - (now() - dispatch_ts)``, widened by the
+        dispatch tolerance and the measured consumer park. It only picks which
+        processes may prove life, so no reading of this clock can produce DEAD or
+        an absence claim. A suspend the monotonic clock skips, or a forward
+        wall-clock step, moves the floor later, which excludes processes and
+        leaves UNKNOWN. A backward step moves it earlier, which can admit an
+        older process (a long-running MCP server) and read WORKING; the hard cap
+        still bounds that. None when *tool* carries no dispatch stamp, and then
+        nothing proves life.
+        """
+        if not tool.dispatch_ts:
+            return None
+        elapsed = max(0.0, self._now() - tool.dispatch_ts)
+        tolerance = _DISPATCH_START_TOLERANCE_SECS + max(0.0, tool.dispatch_parked_secs)
+        return self._wall_now() - elapsed - tolerance
 
     def _proc_rows(self, runtime_pid: int, descendants: list[int]) -> Iterable[ProcessRow]:
         """The live, non-zombie descendants in *descendants*, read from ``/proc``.
@@ -678,35 +903,48 @@ class LivenessOracle:
 
     def _scan_for_child(
         self, rows: Iterable[ProcessRow], tool: ToolCallState
-    ) -> tuple[int | None, int, bool]:
-        """``(matched_pid, live_descendants, possibly_running)`` over *rows*.
+    ) -> tuple[ProcessRow | None, int, bool]:
+        """``(matched_row, live_descendants, possibly_running)`` over *rows*.
 
-        ``matched_pid`` is the first live descendant whose cmdline matches the
-        cached command AND that is young enough to be this dispatch's own.
-        ``possibly_running`` is True when something that could be this command
-        is running unrecognized: a descendant started since the dispatch (the
-        match heuristic may have missed a live command — a shell that exec'd
-        away, a cached input redacted past any usable fragment), or one whose
-        cmdline matches while predating a late-taken stamp. Either vetoes the
-        absence claim; the caller keeps the plain evidence and the full window.
+        ``matched_row`` is the first live descendant whose cmdline matches a
+        liveness heuristic and that is young enough to be this dispatch's own,
+        or the one topmost such match when the others sit in its tree (a shell
+        and its matching exec child). Cleanup attribution is stricter: the
+        selected root must also match the complete decoded command. Matches with
+        no single root, such as two sibling commands under a shared runtime,
+        still track that first match for liveness, but either sibling can be
+        another session's, so the call loses cleanup authority for good: a
+        sibling exiting later cannot restore it. ``possibly_running`` is True
+        when something that could be this command is running unrecognized; it
+        vetoes the absent-child claim.
         """
         fragment = match_fragment(tool.command)
         program = first_program(tool.command)
         live_descendants = 0
         started_since_dispatch = False
         matched_but_older = False
+        matched_rows: list[ProcessRow] = []
+        non_authoritative_match_pids: set[int] = set()
         for row in rows:
             live_descendants += 1
             fresh = self._started_after_dispatch(row.started, tool)
             started_since_dispatch = started_since_dispatch or fresh
             if not row.cmdline:
                 continue
-            matched = bool(fragment) and fragment in row.cmdline
+            fragment_match = bool(fragment) and fragment in row.cmdline
+            matched = fragment_match
             if not matched and program:
                 base_tokens = {t.rsplit("/", 1)[-1] for t in row.cmdline.split()}
                 matched = program in base_tokens
             if not matched:
                 continue
+            cleanup_attributable = (
+                fragment_match
+                and complete_command_match(row.cmdline, tool.command)
+                and self._started_after_dispatch_for_cleanup(row.started, tool)
+            )
+            if not cleanup_attributable:
+                non_authoritative_match_pids.add(row.pid)
             if not fresh:
                 # Cmdline matches but the process predates the dispatch stamp by
                 # more than the tolerance. Two causes the oracle cannot tell
@@ -720,17 +958,89 @@ class LivenessOracle:
                 # not evidence that nothing is running.
                 matched_but_older = True
                 continue
-            return row.pid, live_descendants, True
+            matched_rows.append(row)
+        topmost = self._unique_topmost_shell_match(matched_rows)
+        if topmost is not None:
+            if topmost.pid in non_authoritative_match_pids:
+                tool.shell_cleanup_disqualified = True
+            return topmost, live_descendants, True
+        if matched_rows:
+            # No single matching root: never cleanup authority, but still the
+            # first fresh match as liveness evidence, as before cleanup existed.
+            tool.shell_cleanup_disqualified = True
+            return matched_rows[0], live_descendants, True
         return None, live_descendants, started_since_dispatch or matched_but_older
 
-    def _track_child(self, pid: int) -> tuple[str, str]:
+    def _unique_topmost_shell_match(self, matches: list[ProcessRow]) -> ProcessRow | None:
+        """The sole matching tree root, or None when the matches are ambiguous."""
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            return None
+        match_pids = {row.pid for row in matches}
+        nested: set[int] = set()
+        for row in matches:
+            if self._darwin is not None:
+                descendants = self._darwin.descendants(row.pid)
+            else:
+                descendants = iter_descendants(self._proc, row.pid)
+                if descendants and descendants[0] == row.pid:
+                    descendants = descendants[1:]
+            if descendants is None:
+                return None
+            nested.update(match_pids.intersection(descendants))
+        topmost = [row for row in matches if row.pid not in nested]
+        return topmost[0] if len(topmost) == 1 else None
+
+    def _track_child(
+        self, row: ProcessRow, tool: ToolCallState, runtime_pid: int
+    ) -> tuple[str, str]:
+        pid = row.pid
         self._tracked_child = pid
+        self._tracked_tool = tool
+        self._cleanup_lineage = None
+        self._tracked_child_start_id = self._capture_tracked_child_start_id(row, tool, runtime_pid)
+        if self._tracked_child_start_id is None:
+            tool.shell_cleanup_disqualified = True
         self._child_gone_ts = None
         # Prime the stuck-detection movement baseline now so the NEXT check
         # can already compare deltas (otherwise stuck detection needs three
         # ticks: match, baseline, compare).
         self._tree_movement(pid, key_prefix="stuck")
         return VERDICT_WORKING, f"shell child {pid} matched command"
+
+    def _capture_tracked_child_start_id(
+        self, observed: ProcessRow, tool: ToolCallState, runtime_pid: int
+    ) -> str | None:
+        """Bind *observed* to one process incarnation, or refuse authority.
+
+        The matcher and identity reader are separate kernel calls. Read the
+        identity, then re-read the row's start instant; a PID recycled since the
+        match keeps liveness tracking but gains no later cleanup authority. The
+        oracle runs off the event loop, so tenancy is read again here: a session
+        that joined during the tree walk latches the call.
+        """
+        self._observe_cleanup_tenancy(tool)
+        if observed.started is None or tool.shell_cleanup_disqualified:
+            return None
+        lineage = self._capture_cleanup_lineage(runtime_pid, observed.pid)
+        if lineage is None:
+            return None
+        start_id = platform_compat.get_process_start_id(observed.pid)
+        if not self._valid_start_id(start_id):
+            return None
+        if self._darwin is not None:
+            current = self._darwin.row(observed.pid)
+            current_started = current.started if current is not None else None
+        else:
+            stat = read_pid_stat(self._proc, observed.pid)
+            current_started = process_start_boot_secs(stat[1]) if stat is not None else None
+        if current_started != observed.started:
+            return None
+        if not self._cleanup_lineage_is_current(lineage, observed.pid):
+            return None
+        self._cleanup_lineage = lineage
+        return start_id
 
     def _tracked_child_verdict(self, pid: int, alive: bool) -> tuple[str, str]:
         """Verdict for the tracked shell child *pid* given whether it is still alive."""
@@ -792,6 +1102,23 @@ class LivenessOracle:
             f"{EVIDENCE_SHELL_CHILD_ABSENT}: no shell child started since dispatch "
             f"({live_descendants} live descendants, none started since dispatch)",
         )
+
+    def _started_after_dispatch_for_cleanup(
+        self, started: float | None, tool: ToolCallState
+    ) -> bool:
+        """Whether *started* positively belongs to this dispatch for cleanup.
+
+        Liveness deliberately accepts an undatable process and a process inside
+        the pre-dispatch tolerance window. Signalling cannot: it requires both
+        timestamps, a stable Darwin wall clock, and a process start at or after
+        the dispatch stamp. A delayed tool-call frame may therefore keep a live
+        process in WORKING while withholding cleanup authority.
+        """
+        if tool.dispatch_boot_ts is None or started is None:
+            return False
+        if self._darwin is not None and self._wall_clock_stepped_since(tool):
+            return False
+        return started >= tool.dispatch_boot_ts
 
     def _started_after_dispatch(self, started: float | None, tool: ToolCallState) -> bool:
         """Whether a process started at *started* is young enough to be *tool*'s.
@@ -920,10 +1247,15 @@ class LivenessOracle:
         if self._darwin is not None:
             # A genuinely flat subtree, but the split below rests on socket
             # evidence that only ``/proc`` carries. Without it a flat wait is
-            # neither the lost-frame wedge nor a probable think: UNKNOWN with
-            # plain evidence, so the caller's timeout policy governs and
-            # nothing is invented in either direction.
-            return VERDICT_UNKNOWN, f"backend subtree flat ({evidence})"
+            # neither the lost-frame wedge nor a provable think: UNKNOWN, never
+            # DEAD. Tagged platform_limited so the caller gives it the
+            # model-silent window rather than the ordinary stale window: a
+            # long non-streamed think looks exactly like this here, and a probe
+            # would cancel and restart it.
+            return (
+                VERDICT_UNKNOWN,
+                f"{EVIDENCE_PLATFORM_LIMITED}: backend subtree flat ({evidence})",
+            )
         # Flat counters: distinguish the done-but-lost-frame wedge (no backend
         # connection at all) from a probably-thinking server-side silence
         # (established socket, nothing flowing yet).
@@ -986,6 +1318,14 @@ class LivenessOracle:
         moved, evidence = self._portable_movement(runtime_pid)
         if moved and platform_compat.pid_exists(runtime_pid):
             return VERDICT_WORKING, f"backend activity ({evidence}, pid alive)"
+        if (
+            not moved
+            and self._darwin is not None
+            and evidence not in (EVIDENCE_SAMPLING, "no readable counters")
+        ):
+            # A real flat delta on macOS: the same absent socket evidence as
+            # the subtree branch, so the same tag and the same window.
+            return VERDICT_UNKNOWN, f"{EVIDENCE_PLATFORM_LIMITED}: backend flat ({evidence})"
         return VERDICT_UNKNOWN, evidence
 
     def _any_established(self, runtime_pid: int) -> bool:
@@ -1076,9 +1416,11 @@ class LivenessOracle:
         if now - prev[0] < self._sample_min_secs:
             # Too soon for a fresh delta — report against the stored baseline
             # without advancing it.
-            return cpu_delta != 0, f"cpu {cpu_delta:+d}ns ({_DARWIN_CPU_LABEL}, early)"
+            return _darwin_cpu_moved(cpu_delta), (
+                f"cpu {cpu_delta:+d}ns ({_DARWIN_CPU_LABEL}, early)"
+            )
         self._samples[key] = (now, cpu_total)
-        return cpu_delta != 0, f"cpu {cpu_delta:+d}ns ({_DARWIN_CPU_LABEL})"
+        return _darwin_cpu_moved(cpu_delta), f"cpu {cpu_delta:+d}ns ({_DARWIN_CPU_LABEL})"
 
     def _portable_movement(self, root_pid: int) -> tuple[bool, str]:
         """(moved, evidence) for *root_pid*'s CPU delta, without ``/proc``.
@@ -1105,10 +1447,25 @@ class LivenessOracle:
         if prev is None:
             self._samples[_PORTABLE_CPU_KEY] = (now, cpu)
             return False, EVIDENCE_SAMPLING
+        delta = cpu - prev[1]
+        # On macOS this counter has the darwin backend's nanosecond resolution,
+        # so it takes that backend's floor too. Elsewhere it keeps its
+        # historical any-change reading.
+        moved = _darwin_cpu_moved(delta) if self._darwin is not None else delta != 0
         if now - prev[0] < self._sample_min_secs:
-            return cpu != prev[1], f"cpu {cpu - prev[1]:+d}ns (early)"
+            return moved, f"cpu {delta:+d}ns (early)"
         self._samples[_PORTABLE_CPU_KEY] = (now, cpu)
-        return cpu != prev[1], f"cpu {cpu - prev[1]:+d}ns"
+        return moved, f"cpu {delta:+d}ns"
+
+
+def _darwin_cpu_moved(cpu_delta: int) -> bool:
+    """Whether a darwin CPU delta in nanoseconds counts as movement.
+
+    A shrinking total is a process leaving the tree, which is movement in its
+    own right, as on the ``/proc`` walk. A growing one counts only from
+    :data:`_DARWIN_CPU_FLOOR_NANOS` up, so idle housekeeping reads flat.
+    """
+    return cpu_delta < 0 or cpu_delta >= _DARWIN_CPU_FLOOR_NANOS
 
 
 # ── Offloaded-consult guard (shared by AcpClient and AcpSessionHandle) ──

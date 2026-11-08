@@ -315,6 +315,38 @@ def test_a_transcript_on_disk_is_neither_refetched_nor_overwritten(tmp_path: Pat
     assert outcome.action == "present"
 
 
+def test_the_on_disk_probe_runs_off_the_event_loop(tmp_path: Path, monkeypatch) -> None:
+    """The probe opens and fstats the entry, so it must not run on the loop.
+
+    It runs on every turn, inside the slot lock, and every other filesystem step
+    of the fetch already runs in a thread. On the loop, one slow disk would stall
+    every OTHER conversation's turn behind this one. The probe is wrapped, not
+    replaced, so its link and shape refusals still decide the outcome.
+    """
+    settings = local_settings(tmp_path)
+    settings.sessions_dir.mkdir(parents=True)
+    (settings.sessions_dir / "dashboard_cust-1.jsonl").write_bytes(TRANSCRIPT_BODY)
+
+    real_probe = transcript._probe_local_entry
+    ran_on_a_loop: list[bool] = []
+
+    def recording_probe(path: Path) -> bool:
+        try:
+            asyncio.get_running_loop()
+            ran_on_a_loop.append(True)
+        except RuntimeError:
+            ran_on_a_loop.append(False)
+        return real_probe(path)
+
+    monkeypatch.setattr(transcript, "_probe_local_entry", recording_probe)
+    reader = FakeReader()
+    outcome = asyncio.run(transcript.ensure_local_transcript(settings, "cust-1", reader=reader))
+
+    assert ran_on_a_loop == [False], "the on-disk probe ran on the event loop"
+    assert outcome.action == "present"
+    assert reader.gets == []
+
+
 def test_a_transcript_that_appears_mid_fetch_is_not_clobbered(tmp_path: Path) -> None:
     """The write refuses an existing target, so the rule holds against the race.
 

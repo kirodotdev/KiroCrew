@@ -1,0 +1,163 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.19.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "stub/plain-1",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Stub/plain-1",
+            "value": "stub/plain-1"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "The default agent. Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "opencode-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "kirocrew-dashboard_session_status",
+        "tool_call_id": "call_2",
+        "tool_kind": "other",
+        "wire_title": "kirocrew-dashboard_session_status"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "shell_classified": true,
+        "title": "kirocrew-dashboard_session_status",
+        "tool_call_id": "call_2",
+        "tool_kind": "other"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "title": "kirocrew-dashboard_session_status",
+        "tool_call_id": "call_2",
+        "tool_kind": "other",
+        "wire_title": "kirocrew-dashboard_session_status"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_2",
+        "tool_final": true,
+        "tool_output": "Error: tool 'session_status' is unavailable because this server could not reach the gateway to read session member-probe's tool policy (resolution_failed): the read got no answer, or the gateway answered that it is broken (cause: URLError). No agent spec is implicated and nothing needs editing. Refusing the call rather than ignoring an operator's exclusion list; the call succeeds on retry within 60s of the gateway answering again.",
+        "tool_output_bytes": 434,
+        "tool_output_digest": "1fe83565e3f64b45b2d7b63abf7cf0f9ac0a7f0d10c2b08acf2127ff6ea04042",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "STUB-DONE \"Error: tool 'session_status' is unavailable because this server could not reach the gateway to read session member-probe's tool policy (resolution_failed): the read got no answer, or the gateway answ"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "STUB-DONE \"Error: tool 'session_status' is unavailable because this server could not reach the gateway to read session member-probe's tool policy (resolution_failed): the read got no answer, or the gateway answ",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      5,
+      1,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

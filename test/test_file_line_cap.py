@@ -13,12 +13,15 @@ pins the halves that must stay true together:
 * the backend test suite (Linux and Windows) runs this file on every change,
   including the reduced runs: the leaf-test reduction treats it as a corpus gate,
   and the frontend-only reduction keeps it because it names the website tree;
-* the docs that state the rule name the guard and the number it enforces.
+* the docs that state the rule name the guard and the number it enforces, and
+  the six homes of the 1,600-line working target and the guard's ``TARGET``
+  state one figure.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import warnings
@@ -533,6 +536,30 @@ class TestScopedVerdict:
         assert cap.main(["--root", str(repo)]) == 1
         assert "FAIL drifted.py has" in capsys.readouterr().out
 
+    def test_a_touched_file_past_the_working_target_is_reported_not_failed(
+        self,
+        repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        for rel, lines in {"near.py": cap.TARGET + 1, "at.py": cap.TARGET}.items():
+            _write_lines(repo, rel, lines)
+        _write_lines(repo, "theirs.py", cap.TARGET + 1)
+        _git(repo, "add", "-A")
+        touched = cap.Scope({"near.py", "at.py"}, "test")
+        monkeypatch.setattr(cap, "change_scope", lambda root, whole_tree=False: touched)
+        assert cap.main(["--root", str(repo)]) == 0
+        (report,) = [line for line in capsys.readouterr().out.splitlines() if "REPORT" in line]
+        assert report.startswith(
+            f"REPORT near.py has {cap.TARGET + 1:,} lines, past the {cap.TARGET:,}-line "
+            "working target"
+        )
+        assert "code-style.md#splitting-a-file" in report
+        # A whole-tree run has no change to name, so it lists no file past the target.
+        monkeypatch.setattr(cap, "change_scope", lambda root, whole_tree=False: cap.WHOLE_TREE)
+        assert cap.main(["--root", str(repo)]) == 0
+        assert "REPORT" not in capsys.readouterr().out
+
     def test_someone_elses_stale_row_beside_a_deletion_only_edit_is_main_drift(
         self, tmp_path: Path
     ) -> None:
@@ -985,20 +1012,62 @@ class TestCiWiring:
     def _runs(job: dict) -> list[str]:
         return [str(step.get("run") or "") for step in job.get("steps") or []]
 
-    @pytest.mark.parametrize("job", ["backend-lint", "frontend-lint"])
-    def test_a_lint_job_runs_the_guard_on_full_history(self, job: str) -> None:
+    #: Every gate in these jobs that scopes itself through
+    #: ``scripts/ratchet_scope.py``. The resolver needs ANCESTRY, not merely the
+    #: base commit: it diffs ``HEAD^1..HEAD`` only once
+    #: ``merge-base --is-ancestor HEAD^1 origin/main`` has confirmed ``HEAD^1``
+    #: really is a base commit, so a checkout with no reachable base makes every
+    #: one of them fall back to the whole tree at once.
+    _SCOPED_GATES = (
+        "check_file_line_cap.py",
+        "check_subprocess_encoding.py",
+        "check_agent_sdk_boundary.py",
+        "check_sync_io_in_async.py",
+    )
+
+    @pytest.mark.parametrize("job", ["backend-ratchets", "frontend-ratchets"])
+    def test_ratchet_gates_run_on_a_reachable_diff_base(self, job: str) -> None:
+        """The cap gate's two homes, and the diff base every scoped gate needs.
+
+        These gates run off ``lint-gate``'s path, in the ``*-ratchets`` siblings
+        of ``backend-lint`` and ``frontend-lint``. A sibling whose checkout
+        loses the diff base fails silently: a shallow clone leaves the scope
+        undeterminable, the guard then judges the whole tree, and a pull request
+        fails for every other change's file -- a green-to-red that names files
+        the author never opened. Nothing else reports it, so it is pinned here
+        per job rather than once.
+        """
         spec = self._job("ci.yml", job)
         checkouts = [
             step.get("with") or {}
             for step in spec["steps"]
             if str(step.get("uses", "")).startswith("actions/checkout@")
         ]
-        # A shallow clone leaves the scope undeterminable, and the guard then
-        # judges the whole tree, failing this change for every other change's file.
         assert [c.get("fetch-depth") for c in checkouts] == [0], checkouts
         runs = "\n".join(self._runs(spec))
         assert "python3 scripts/check_file_line_cap.py --test" in runs
         assert "python3 scripts/check_file_line_cap.py\n" in runs + "\n"
+        # Any OTHER scoped gate that lands in this job shares the one checkout
+        # above, so it is covered -- but a gate placed in a job that is not
+        # pinned here would not be. Assert the pin covers what the job runs.
+        present = {gate for gate in self._SCOPED_GATES if gate in runs}
+        assert present, f"{job} runs no scope-resolving gate; are its gates back in a lint job?"
+
+    @pytest.mark.parametrize("job", ["backend-lint", "frontend-lint"])
+    def test_a_lint_job_does_not_run_the_guard(self, job: str) -> None:
+        """The guard must not come onto the gate path by accident.
+
+        Adding it to a lint job puts every test shard behind it, which is the
+        wait the ratchet siblings exist to avoid; the gate's policy is the same
+        in either place, and a cap failure reds the pull request from the
+        sibling job.
+        """
+        runs = "\n".join(self._runs(self._job("ci.yml", job)))
+        assert "check_file_line_cap.py" not in runs, (
+            f"{job} feeds lint-gate, so running the cap guard there holds the heavy "
+            "matrix behind a baselined ratchet again; it belongs in the "
+            f"{job.split('-')[0]}-ratchets sibling"
+        )
 
     def test_the_main_audit_judges_the_whole_tree(self) -> None:
         spec = self._job("main-ratchet-audit.yml", "ratchet-gates")
@@ -1016,3 +1085,94 @@ class TestDocs:
     @pytest.mark.parametrize("doc", _DOCS)
     def test_the_documented_cap_is_the_enforced_one(self, doc: str) -> None:
         assert f"{CAP:,} lines" in (REPO_ROOT / doc).read_text(encoding="utf-8")
+
+
+class TestWorkingTarget:
+    """The 1,600-line working target says one figure in every place that states it.
+
+    The cap is enforced; the target is advice, so nothing but this test notices
+    when one of its homes moves and the others do not. The source is
+    ``code-style.md`` § Splitting a file, which every other home points to. Each
+    home is read down to the passage about the target (a section, a paragraph, a
+    table row, one review rule), never the whole file, so an unrelated
+    ``past 1,500 ms`` elsewhere cannot answer for it.
+    """
+
+    # Spelled out literally, so an edit to any home alone selects this test in the
+    # local related-test runner, which matches on the path text.
+    _SOURCE = "docs/system-specs/common/code-style.md"
+    _HOMES = (
+        "docs/system-specs/common/code-style.md",
+        "AGENTS.md",
+        "website/AGENTS.md",
+        "AUTOSDE.yaml",
+        "website/AUTOSDE.yaml",
+        "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md",
+    )
+    # Every phrasing the homes use for the target. A figure is \d,\d{3}: the
+    # homes write thousands with a comma, as they write the cap.
+    _FIGURE = re.compile(r"\b(?:past|already over|holds|working target is) (\d,\d{3})\b")
+
+    @staticmethod
+    def _flat(text: str) -> str:
+        return " ".join(text.split())
+
+    @classmethod
+    def _passage(cls, home: str) -> str:
+        text = (REPO_ROOT / home).read_text(encoding="utf-8")
+        if home.endswith("AUTOSDE.yaml"):
+            import yaml
+
+            rules = yaml.safe_load(text)["custom-rules"]
+            (rule,) = [r for r in rules if r["id"] == "keep-modules-small"]
+            return cls._flat(rule["rule"])
+        if home == "docs/system-specs/common/code-style.md":
+            start = text.index("### Splitting a file")
+            end = text.find("\n#", start + 1)
+            return cls._flat(text[start : end if end != -1 else None])
+        if home == "AGENTS.md":
+            start = text.index("**No hand-written file over")
+            return cls._flat(text[start : text.index("\n\n", start)])
+        # website/AGENTS.md's table row and the skill's checklist line are one line.
+        anchor = {
+            "website/AGENTS.md": "| a file nearing 2,000 lines",
+            "src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md": (
+                "**Split a code file the diff takes past"
+            ),
+        }[home]
+        start = text.index(anchor)
+        return cls._flat(text[start : text.index("\n", start)])
+
+    @classmethod
+    def _figures(cls, passage: str) -> list[int]:
+        return [int(m.replace(",", "")) for m in cls._FIGURE.findall(passage)]
+
+    @classmethod
+    def _target(cls) -> int:
+        source = cls._passage(cls._SOURCE)
+        match = re.search(r"takes a code file past (\d,\d{3}) lines", source)
+        assert match, f"{cls._SOURCE} § Splitting a file no longer states the target"
+        return int(match.group(1).replace(",", ""))
+
+    def test_the_target_leaves_room_under_the_cap(self) -> None:
+        assert 0 < self._target() < CAP
+
+    def test_the_check_reports_at_the_documented_target(self) -> None:
+        assert cap.TARGET == self._target()
+
+    @pytest.mark.parametrize("home", _HOMES)
+    def test_each_home_states_the_target_and_no_other_figure(self, home: str) -> None:
+        figures = self._figures(self._passage(home))
+        target = self._target()
+        assert figures, f"{home} no longer states the {target:,}-line working target"
+        assert set(figures) == {target}, (
+            f"{home} states {sorted(set(figures))}, but {self._SOURCE} says {target:,}: "
+            "update every home in the same change"
+        )
+
+    def test_a_stale_home_is_caught(self) -> None:
+        # The negative control: a home where one mention moved and one did not.
+        stale = "A change past 1,500 lines splits; a file already over 1,600 too."
+        assert set(self._figures(stale)) == {1500, 1600}
+        # The cap's own sentence is not a statement of the target.
+        assert self._figures("No hand-written file over 2,000 lines.") == []

@@ -17,7 +17,9 @@ import asyncio
 import hashlib
 import hmac
 import logging
+import threading
 from dataclasses import dataclass
+from typing import Any
 
 from aiohttp import web
 
@@ -35,7 +37,11 @@ from kiro_crew.hooks import safe_read_file
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.sel import sel
-from kiro_crew.session_surface import has_dashboard_surface, set_dashboard_surfaced
+from kiro_crew.session_surface import (
+    dashboard_tab_name,
+    has_dashboard_surface,
+    set_dashboard_surfaced,
+)
 from kiro_crew.validation import THEME_CONSENT_SHA_RE
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_utils")
@@ -124,6 +130,12 @@ def _history_key_for(slot_key: str) -> str:
     return f"dashboard:{slot_key}"
 
 
+def cron_tab_name(session_key: str) -> str:
+    """The tab that shows a cron session: ``cron:<id>`` is ``cron-<id>``, the
+    job's one tab, and a per-run ``cron:<id>:<run>`` is ``cron-<id>-<run>``."""
+    return "cron-" + session_key.removeprefix("cron:").replace(":", "-")
+
+
 def dashboard_slot_key(session_key: str) -> str:
     """The dashboard slot name displaying *session_key*, or ``""`` if none.
 
@@ -149,8 +161,15 @@ def dashboard_slot_key(session_key: str) -> str:
         # for stateless jobs, ``cron:<job_id>:<agent>`` for agent sequences —
         # while the surface registry only ever holds the slot's linked key
         # (``cron:<job_id>``), so the surface gate is checked against both
-        # spellings. Whichever matched, the displaying tab is the job's own.
+        # spellings. Whichever matched, the displaying tab is the job's own --
+        # unless a ``new_chat_per_run`` run has a tab of its own, linked to its
+        # exact key: minted as :func:`cron_tab_name`, or named by its transcript
+        # stem, so the published live name wins.
         job_id = session_key.removeprefix("cron:").split(":", 1)[0]
+        if session_key != f"cron:{job_id}" and has_dashboard_surface(session_key):
+            return _normalize_slot_key(
+                dashboard_tab_name(session_key) or cron_tab_name(session_key)
+            )
         if not (has_dashboard_surface(session_key) or has_dashboard_surface(f"cron:{job_id}")):
             return ""
         return _normalize_slot_key(f"cron-{job_id}")
@@ -277,15 +296,46 @@ def effective_session_key(slot: _ChatSlot) -> str:
     return session_key_for(slot.key, getattr(slot, "linked_session_key", "") or "")
 
 
+def revoke_slot_trust(state: Any, slot: Any) -> None:
+    """Clear *slot*'s trust and the ``approval_policy`` turn admission cached from it.
+
+    The spawn gate and child tool approval read the policy, not the flag. Slots
+    sharing the session are cleared too, or their next turn writes ``"auto"``
+    back. ``""`` even under yolo: both readers check yolo live. Never raises.
+    """
+    slot._trust = False
+    try:
+        key = effective_session_key(slot)
+        for sibling in list((getattr(state, "_slots", None) or {}).values()):
+            if sibling is not slot and effective_session_key(sibling) == key:
+                sibling._trust = False
+        sessions = getattr(state, "sessions", None)
+        if sessions is not None:
+            sessions.set_approval_policy(key, "")
+    except Exception:
+        logger.warning(
+            "could not clear the shared trust or cached approval policy for %s",
+            getattr(slot, "key", "?"),
+            exc_info=True,
+        )
+
+
+def transcripts_share_file(first_key: str, second_key: str) -> bool:
+    """Whether two transcript keys, in any spelling, name one ``.jsonl`` file.
+
+    ``slack:<ts>``, its filename stem ``slack_<ts>`` and the bare legacy
+    ``<ts>`` all address one channel transcript, so comparing the raw strings
+    mistakes one file for two.
+    """
+    return bool(set(transcript_stems(first_key)) & set(transcript_stems(second_key)))
+
+
 def replacement_shares_transcript(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
     """Whether a different slot at *name* writes *slot*'s transcript file."""
     current = state._slots.get(name)
     if current is None or current is slot:
         return False
-    return bool(
-        set(transcript_stems(slot_history_key(current)))
-        & set(transcript_stems(slot_history_key(slot)))
-    )
+    return transcripts_share_file(slot_history_key(current), slot_history_key(slot))
 
 
 @dataclass(frozen=True)
@@ -621,6 +671,52 @@ def _maybe_consolidate(state, slot) -> None:
         )
 
 
+# Guards ``_published_slot_keys`` and the ``_slots`` read each writer pairs with it: the
+# sync compares and stores (on or off the loop), the listing narrows.
+_PUBLISHED_SLOT_KEYS_LOCK = threading.Lock()
+
+
+def _published_keys_of(state: "DashboardState") -> frozenset[str]:
+    published: object = getattr(state, "_published_slot_keys", frozenset())
+    return published if isinstance(published, frozenset) else frozenset()
+
+
+def listing_slot_snapshot(state: "DashboardState") -> list[_ChatSlot]:
+    """The open slots the Older Sessions listing filters with, read under the publish lock.
+
+    Every published key no slot in the snapshot holds leaves ``_published_slot_keys``:
+    the listing is about to show that session as a row, so the next sync that finds
+    its slot open counts it as gained and pushes ``history``. A resume or an import
+    takes its slot out of ``_slots`` for a finalization tail after the first sync
+    published it; a listing served in that tail is the case this covers.
+    """
+    with _PUBLISHED_SLOT_KEYS_LOCK:
+        slots = list(state._slots.values())
+        published = _published_keys_of(state)
+        if published:
+            state._published_slot_keys = published & {effective_session_key(s) for s in slots}
+    return slots
+
+
+def _owe_listing_refresh(state: "DashboardState") -> None:
+    """Owe one listing refresh, paid on the next loop tick unless a ``history`` push lands first."""
+    state._listing_refresh_owed = True
+    loop = getattr(state, "serving_loop", None)
+    if loop is None or loop.is_closed():
+        _pay_listing_refresh(state)
+        return
+    loop.call_soon_threadsafe(_pay_listing_refresh, state)
+
+
+def _pay_listing_refresh(state: "DashboardState") -> None:
+    if not getattr(state, "_listing_refresh_owed", False):
+        return
+    state._listing_refresh_owed = False
+    push_listing_refresh = getattr(state, "push_listing_refresh", None)
+    if callable(push_listing_refresh):
+        push_listing_refresh()
+
+
 def _sync_dashboard_slots(state: "DashboardState") -> None:
     """Publish the open slots' session keys to SessionManager and the surface registry.
 
@@ -629,6 +725,20 @@ def _sync_dashboard_slots(state: "DashboardState") -> None:
     (see :mod:`kiro_crew.session_surface`). A channel-born slot contributes its
     channel key, which is what both consumers must match against.
     """
-    keys = {effective_session_key(s) for s in state._slots.values()}
+    with _PUBLISHED_SLOT_KEYS_LOCK:
+        tabs = {effective_session_key(s): name for name, s in state._slots.items()}
+        keys = set(tabs)
+        previous = _published_keys_of(state)
+        gained = not keys <= previous
+        lost = not previous <= keys
+        state._published_slot_keys = frozenset(keys)
     state.sessions.set_active_dashboard_slots(keys)
-    set_dashboard_surfaced(keys)
+    set_dashboard_surfaced(keys, tabs)
+    # A newly open session leaves Older Sessions, and a session whose slot leaves ``_slots``
+    # returns to it; tabs re-read only on a ``history`` frame. A shrink owes one, paid by a
+    # close or delete's direct ``history`` push.
+    push_listing_refresh = getattr(state, "push_listing_refresh", None)
+    if gained and callable(push_listing_refresh):
+        push_listing_refresh()
+    if lost:
+        _owe_listing_refresh(state)

@@ -4,10 +4,13 @@ import os
 import signal
 import subprocess
 import sys
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from kiro_crew.remote_session import workspace_tools as wt
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import wait_until
 
 posix_groups = pytest.mark.skipif(
@@ -129,6 +132,76 @@ def test_a_command_runs_under_coreutils_timeout_when_present(tmp_path, monkeypat
     timer = __import__("shutil").which("timeout")
     assert seen[0][:4] == ([timer, "-k", str(wt._KILL_GRACE_SECS), "7"] if timer else seen[0][:4])
     assert seen[0][-3:] == ["/bin/sh", "-c", "true"]
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+@pytest.mark.parametrize("op", ["git_status", "git_log", "git_bodies"])
+def test_a_timed_out_git_read_stops_under_timeout_then_reaps(tmp_path, monkeypatch, op, platform):
+    # Both branches run on every runner: the guest's own platform is pinned.
+    # POSIX wraps the read in coreutils timeout, which signals its group; Windows
+    # runs it unwrapped on its own deadline and ends the whole tree.
+    events = []
+    grace = wt._KILL_GRACE_SECS
+    posix = platform != "win32"
+    monkeypatch.setattr(wt, "sys", SimpleNamespace(platform=platform))
+    monkeypatch.setattr(wt, "_stop_tree", lambda proc: events.append("tree stopped"))
+
+    def communicate(**kwargs):
+        # Under timeout the read waits out its expiry and KILL grace first.
+        assert kwargs == {"timeout": 30 + 2 * grace if posix else 30}
+        raise subprocess.TimeoutExpired("git", 30)
+
+    process = SimpleNamespace(
+        pid=UNALLOCATABLE_PID,
+        returncode=None,
+        stdout=Mock(),
+        stderr=Mock(),
+        communicate=communicate,
+        terminate=lambda: events.append("stopped"),
+        wait=lambda **kw: events.append("reaped"),
+        kill=lambda: events.append("killed"),
+    )
+
+    def spawn(argv, **kwargs):
+        if posix:
+            # coreutils timeout, not the guest, signals the read's process group.
+            assert argv[:5] == ["/usr/bin/timeout", "-k", str(grace), "30", "git"]
+        else:
+            # A `timeout` on Windows may be System32's unrelated wait command.
+            assert argv[0] == "git"
+        assert kwargs["start_new_session"] is True
+        return process
+
+    monkeypatch.setattr(wt.shutil, "which", lambda name, path=None: f"/usr/bin/{name}")
+    monkeypatch.setattr(wt.subprocess, "Popen", spawn)
+    result = wt.browse(wt.Workspace(str(tmp_path)), {"op": op})
+    assert events == (["stopped", "reaped"] if posix else ["tree stopped", "reaped"])
+    assert result["code"] == "git_failed"
+    process.stdout.close.assert_called_once()
+    process.stderr.close.assert_called_once()
+
+
+@posix_groups
+@pytest.mark.skipif(not wt.shutil.which("timeout"), reason="needs coreutils timeout")
+def test_a_timed_out_git_read_takes_its_whole_group_with_it(tmp_path):
+    # Stands in for a filter driver: a child git started that would outlive it.
+    # It outlasts wait_until's deadline, so only the group stop can end it.
+    marker = tmp_path / "bg.pid"
+    script = f"sleep 300 & echo $! > {marker}; sleep 300"
+    with pytest.raises(subprocess.TimeoutExpired):
+        wt._run_grouped(
+            ["/bin/sh", "-c", script],
+            cwd=str(tmp_path),
+            env=dict(os.environ),
+            timeout=1,
+            stderr=subprocess.PIPE,
+        )
+    pid = _background_pid(marker)
+    try:
+        _wait_dead(pid)
+    finally:
+        if _alive(pid):
+            os.kill(pid, signal.SIGKILL)
 
 
 def test_stdio_retirement_unwinds_and_restores_signal_handler(tmp_path, monkeypatch):

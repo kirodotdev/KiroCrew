@@ -42,6 +42,11 @@ import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 
+# A gate here parses a whole tree, so the module has its own ``tree_scan`` group
+# and takes that group's per-test timeout (``TREE_SCAN_TIMEOUT_SECS`` in conftest.py).
+pytestmark = pytest.mark.xdist_group(name="tree_scan_kill_chokepoint_ratchet")
+
+
 #: The module that DEFINES the primitives. Its own calls are the primitives'
 #: implementation -- ``kill_pid_pinned`` delegating to ``kill_pid``, which issues
 #: the group signal -- not a caller deciding a process should die.
@@ -78,7 +83,7 @@ PID_KILL_PRIMITIVES = frozenset(
 #: session runtime, so an ownership gate there would consult a table that can
 #: never hold a lease for it. Raising it for a site the change itself adds is what
 #: the ratchet exists to stop.
-BYPASS_BASELINE = 67
+BYPASS_BASELINE = 63
 
 #: Functions that must say who fired before they signal anything, as module path
 #: -> function name. These are the paths every other kill funnels into: the

@@ -126,7 +126,6 @@ class TestScenarioStepOrdering:
         with patch.object(runner, "self_review", return_value=True):
             result = await runner.run(tmp_path / "TASK.md")
 
-        # Verify strict ordering
         assert execution_order == [1, 2, 3, 4]
         assert result.status == "completed"
 
@@ -224,12 +223,10 @@ class TestScenarioReplanIndexing:
             step.index = base_idx + i
         run.tasks.extend(new_steps)
 
-        # Verify no index collision
         indices = [s.index for s in run.tasks]
         assert len(indices) == len(set(indices)), f"Duplicate indices: {indices}"
         assert indices == [1, 2, 3, 4]
 
-        # Verify deps were shifted
         assert run.tasks[3].depends_on == [3]  # was [1], shifted by 2
 
 

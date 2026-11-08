@@ -5,8 +5,7 @@ a presentation is its layout, so the panel also needs the slides as pictures.
 Nothing in the dashboard can draw a slide itself: that takes an office suite,
 and the one open-source renderer with a faithful Impress import is LibreOffice
 (``soffice``), a system package the product neither ships nor installs from a
-browser request (the same stance ``apps/builtins/pptx_maker`` takes for its own
-thumbnails). So this module renders WHEN ``soffice`` is on the gateway host and
+browser request. So this module renders WHEN ``soffice`` is on the gateway host and
 reports honestly when it is not, and the panel degrades to the text outline.
 
 Two endpoints:
@@ -105,6 +104,7 @@ import math
 import os
 import shutil
 import stat
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -112,7 +112,7 @@ from typing import Any, BinaryIO
 
 from aiohttp import web
 
-from kiro_crew import platform_compat, security
+from kiro_crew import platform_compat, security, soffice_discovery
 from kiro_crew.config.loader import config_dir
 from kiro_crew.dashboard import token_secret as _token_secret
 from kiro_crew.dashboard.handlers import files as _files
@@ -184,6 +184,8 @@ _SUBKEY_DOMAIN = b"kirocrew.slide_previews.manifest.v1"
 _HMAC_KEY_MIN_BYTES = 32
 
 _TOOL_NAME = "file_office_slides"
+#: pdfium is not thread-safe even across documents: every pdfium call, closes included, holds this.
+_PDFIUM_LOCK = threading.Lock()
 
 
 def cache_root() -> Path:
@@ -195,18 +197,14 @@ def cache_root() -> Path:
 def soffice_path() -> str | None:
     """``soffice`` on this host, or ``None``.
 
-    The pptx-maker app already owns the answer -- ``PATH`` first, then the fixed
-    Windows install root a by-name lookup cannot reach -- so this asks it rather
-    than growing a second discovery. Imported lazily, the way
-    ``handlers/aws_consent.py`` reaches the AWS Control backend: the builtin
-    app package is heavier than this module and only needed on a miss.
+    Discovery is the core's own (``kiro_crew.soffice_discovery``: ``PATH`` first, then
+    the fixed Windows install root a by-name lookup cannot reach), so slide previews
+    never depend on an app being installed.
     """
-    from kiro_crew.apps.builtins.pptx_maker.backend import engine
-
-    candidate = engine.optional_dep_path("soffice")
+    candidate = soffice_discovery.find_soffice()
     if not candidate:
         return candidate
-    # `optional_dep_path` resolves via PATH (`shutil.which`) unvalidated, so an
+    # `find_soffice` resolves via PATH (`shutil.which`) unvalidated, so an
     # agent that planted a `soffice` on an agent-writable PATH directory
     # (e.g. ~/.local/bin) would otherwise have it run UNSANDBOXED against the
     # staged deck. Gate it through the same provenance check every provider CLI
@@ -220,10 +218,8 @@ def soffice_path() -> str | None:
 
 
 def soffice_hint() -> str | None:
-    """The per-OS install command the app shows for a missing ``soffice``, if any."""
-    from kiro_crew.apps.builtins.pptx_maker.backend import preview_tools
-
-    return preview_tools.soffice_hint()
+    """The per-OS install command for a missing ``soffice``, if any."""
+    return soffice_discovery.soffice_install_hint()
 
 
 def _sel():
@@ -712,6 +708,13 @@ async def _run_soffice(argv: list[str], work: _Staging | Path) -> None:
             except asyncio.TimeoutError:  # pragma: no cover - defensive
                 logger.warning("office_slides: soffice did not exit after SIGKILL")
         raise _ConvertFailed(f"soffice timed out after {CONVERT_TIMEOUT_SEC:.0f}s")
+    except asyncio.CancelledError:
+        # soffice runs in its own session, so once this coroutine stops
+        # awaiting it nothing else will stop it: no timeout is left.
+        # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+        if proc is not None and proc.returncode is None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     finally:
         if cleanup:
             await asyncio.get_running_loop().run_in_executor(
@@ -968,64 +971,69 @@ def _rasterize(
     re-read. In-process ``pypdfium2`` (a core dependency through ``pdfplumber``):
     no poppler, no second venv. The PDF is opened through the staging descriptor
     as a regular file, so a link planted at its name is refused, not rendered.
-    Blocking; runs on the transfer pool.
+    Blocking; runs on the transfer pool, one deck at a time (``_PDFIUM_LOCK``).
     """
     import pypdfium2 as pdfium
 
     slides: list[dict[str, int]] = []
     hashes: dict[str, str] = {}
     pdf = staging.open_regular(pdf_name, subdir="out")
-    doc = pdfium.PdfDocument(pdf, autoclose=True)
-    try:
-        count = min(len(doc), MAX_SLIDES)
-        screen_text, screen_truncated = _deck_text(doc, count)
-        if screen_truncated:
-            # The credential/exfil screen could not read the whole deck (its text
-            # expanded past MAX_SCREEN_TEXT_CHARS), so it cannot certify the pages
-            # beyond the boundary are clean. A slide PNG cannot be redacted after
-            # the fact, so fail closed exactly as a positive screen does: refuse
-            # to rasterize and let the panel fall back to the per-slide-redacted
-            # text outline, rather than serve a possibly credential-bearing PNG.
-            raise _ContentRedacted("deck text too large to screen fully")
-        _screen_rendered_text(screen_text)
-        for i in range(count):
-            page = doc[i]
-            try:
-                width, height = page.get_size()
-                scale = SLIDE_WIDTH_PX / width if width else 1.0
-                # Fixing output width to SLIDE_WIDTH_PX applies the same scale
-                # to height, so a tall/narrow page (a legal custom slide size)
-                # can blow the bitmap up to hundreds of MiB and OOM this
-                # in-process render. Cap the pixel AREA: if width*height at the
-                # width-fit scale would exceed MAX_SLIDE_PIXELS, reduce the
-                # scale so the rendered bitmap fits the ceiling. The slide then
-                # renders smaller (possibly narrower than SLIDE_WIDTH_PX)
-                # rather than allocating a runaway bitmap.
-                if width and height:
-                    scaled_area = (width * scale) * (height * scale)
-                    if scaled_area > MAX_SLIDE_PIXELS:
-                        # Aim for a slightly lower ceiling: pypdfium2 rounds each
-                        # scaled dimension UP to whole pixels independently, so
-                        # the realized area can exceed the exact target by up to
-                        # (w_px + h_px). The 1% headroom absorbs that rounding on
-                        # any page proportion, keeping the realized bitmap at or
-                        # under MAX_SLIDE_PIXELS.
-                        scale *= math.sqrt(MAX_SLIDE_PIXELS * 0.99 / scaled_area)
-                bitmap = page.render(scale=scale)
-                image = bitmap.to_pil()
-                buf = io.BytesIO()
-                image.save(buf, format="PNG", optimize=True)
-                data = buf.getvalue()
-                name = _SLIDE_TEMPLATE.format(n=i + 1)
-                with staging.create(name) as out:
-                    out.write(data)
-                hashes[name] = hashlib.sha256(data).hexdigest()
-                slides.append({"n": i + 1, "width": image.width, "height": image.height})
-            finally:
-                page.close()
-        truncated = len(doc) > count
-    finally:
-        doc.close()
+    with _PDFIUM_LOCK:
+        doc = pdfium.PdfDocument(pdf, autoclose=True)
+        try:
+            count = min(len(doc), MAX_SLIDES)
+            screen_text, screen_truncated = _deck_text(doc, count)
+            if screen_truncated:
+                # The credential/exfil screen could not read the whole deck (its text
+                # expanded past MAX_SCREEN_TEXT_CHARS), so it cannot certify the pages
+                # beyond the boundary are clean. A slide PNG cannot be redacted after
+                # the fact, so fail closed exactly as a positive screen does: refuse
+                # to rasterize and let the panel fall back to the per-slide-redacted
+                # text outline, rather than serve a possibly credential-bearing PNG.
+                raise _ContentRedacted("deck text too large to screen fully")
+            _screen_rendered_text(screen_text)
+            for i in range(count):
+                page = doc[i]
+                try:
+                    width, height = page.get_size()
+                    scale = SLIDE_WIDTH_PX / width if width else 1.0
+                    # Fixing output width to SLIDE_WIDTH_PX applies the same scale
+                    # to height, so a tall/narrow page (a legal custom slide size)
+                    # can blow the bitmap up to hundreds of MiB and OOM this
+                    # in-process render. Cap the pixel AREA: if width*height at the
+                    # width-fit scale would exceed MAX_SLIDE_PIXELS, reduce the
+                    # scale so the rendered bitmap fits the ceiling. The slide then
+                    # renders smaller (possibly narrower than SLIDE_WIDTH_PX)
+                    # rather than allocating a runaway bitmap.
+                    if width and height:
+                        scaled_area = (width * scale) * (height * scale)
+                        if scaled_area > MAX_SLIDE_PIXELS:
+                            # Aim for a slightly lower ceiling: pypdfium2 rounds each
+                            # scaled dimension UP to whole pixels independently, so
+                            # the realized area can exceed the exact target by up to
+                            # (w_px + h_px). The 1% headroom absorbs that rounding on
+                            # any page proportion, keeping the realized bitmap at or
+                            # under MAX_SLIDE_PIXELS.
+                            scale *= math.sqrt(MAX_SLIDE_PIXELS * 0.99 / scaled_area)
+                    bitmap = page.render(scale=scale)
+                    try:
+                        image = bitmap.to_pil()
+                        buf = io.BytesIO()
+                        image.save(buf, format="PNG", optimize=True)
+                    finally:
+                        # Closed here, not by a finalizer that could run outside the lock.
+                        bitmap.close()
+                    data = buf.getvalue()
+                    name = _SLIDE_TEMPLATE.format(n=i + 1)
+                    with staging.create(name) as out:
+                        out.write(data)
+                    hashes[name] = hashlib.sha256(data).hexdigest()
+                    slides.append({"n": i + 1, "width": image.width, "height": image.height})
+                finally:
+                    page.close()
+            truncated = len(doc) > count
+        finally:
+            doc.close()
     return slides, truncated, hashes
 
 

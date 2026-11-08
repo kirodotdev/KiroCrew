@@ -118,9 +118,17 @@ def test_the_awaitable_gate_keeps_the_loop_ticking_through_a_stalled_resolver() 
     assert ticks >= _min_ticks(elapsed), f"loop ticked {ticks}x in {elapsed:.2f}s"
 
 
-def test_the_awaitable_gate_returns_the_sync_verdict_word_for_word(tmp_path) -> None:
+def test_the_awaitable_gate_returns_the_sync_verdict_word_for_word(
+    tmp_path, _floor_monkeypatch: pytest.MonkeyPatch
+) -> None:
     mgr = HookManager(HooksConfig())
     title = f"Reading {_TARGET}"
+    # The stall reason names the degraded prefix's remaining cooldown, rounded from
+    # ``_path_resolve_clock()``. The sync and off-loop calls run a moment apart, so a
+    # live clock can round that figure to adjacent seconds (e.g. 30 vs 31) and break
+    # the word-for-word compare without any behaviour difference. Freeze the clock so
+    # both reads see the same instant and the whole reason stays comparable verbatim.
+    _floor_monkeypatch.setattr(paths, "_path_resolve_clock", lambda: 1_000.0)
     sync = mgr.on_tool_call(title, **_read_kwargs())
     paths._path_resolve_degraded.clear()
     paths._path_resolve_thread_waits.clear()

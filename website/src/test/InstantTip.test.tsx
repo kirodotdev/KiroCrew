@@ -656,28 +656,47 @@ describe('InstantTip', () => {
     })
   })
 
-  it('a below bubble that does not fit under the anchor is clamped to the bottom edge (explicit below)', () => {
-    // The top-bar pill's `below` has no above to go to; a bubble taller than
-    // the room left under its anchor ends 8px inside the bottom edge instead
-    // of off-screen.
-    const saved = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
-    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: 30 })
-    const savedHeight = window.innerHeight
-    Object.defineProperty(window, 'innerHeight', { value: 400, configurable: true })
-    try {
-      render(<BelowHarness />)
-      const anchor = screen.getByRole('button', { name: 'anchor' })
-      // Anchor bottom at 380: below wants 388, and 388 + 30 > 392.
-      anchor.getBoundingClientRect = () => ({ top: 360, left: 60, right: 160, bottom: 380, width: 100, height: 20, x: 60, y: 360, toJSON: () => ({}) }) as DOMRect
-      fireEvent.focus(anchor)
-      const tip = screen.getByRole('tooltip')
-      expect(tip).toHaveAttribute('data-placement', 'below')
-      expect(parseFloat(tip.style.top)).toBe(400 - 8 - 30)
-    } finally {
+  describe('explicit below bubbles at the viewport bottom', () => {
+    let saved: PropertyDescriptor | undefined
+    let savedHeight: number
+    function withBubble(height: number) {
+      saved = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, value: height })
+      savedHeight = window.innerHeight
+      Object.defineProperty(window, 'innerHeight', { value: 400, configurable: true })
+    }
+    afterEach(() => {
       Object.defineProperty(window, 'innerHeight', { value: savedHeight, configurable: true })
       if (saved) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', saved)
       else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetHeight
+    })
+    function focusAnchorAt(top: number, bottom: number) {
+      render(<BelowHarness />)
+      const anchor = screen.getByRole('button', { name: 'anchor' })
+      anchor.getBoundingClientRect = () => ({ top, left: 60, right: 160, bottom, width: 100, height: bottom - top, x: 60, y: top, toJSON: () => ({}) }) as DOMRect
+      fireEvent.focus(anchor)
+      return screen.getByRole('tooltip')
     }
+
+    it('opens above when it does not fit under the anchor but fits over it (a row low in a list)', () => {
+      // Clamping would push the bubble up over the anchor it explains.
+      withBubble(30)
+      // Anchor bottom at 380: below wants 388, and 388 + 30 > 392; above wants 352, and 352 - 30 >= 8.
+      const tip = focusAnchorAt(360, 380)
+      expect(tip).toHaveAttribute('data-placement', 'above')
+      expect(tip.classList.contains('-translate-y-full')).toBe(true)
+      expect(parseFloat(tip.style.top)).toBe(352)
+    })
+
+    it('is clamped to the bottom edge when it fits on neither side (a top-bar anchor)', () => {
+      // A top-bar pill has no room above; the bubble ends 8px inside the bottom
+      // edge instead of off-screen.
+      withBubble(300)
+      // Below wants 108, and 108 + 300 > 392; above wants 12, and 12 - 300 < 8.
+      const tip = focusAnchorAt(20, 100)
+      expect(tip).toHaveAttribute('data-placement', 'below')
+      expect(parseFloat(tip.style.top)).toBe(400 - 8 - 300)
+    })
   })
 
   it('lifts above a [data-tip-boundary] ancestor so wrapped rows are never covered', () => {
@@ -932,6 +951,8 @@ describe('InstantTip', () => {
         expect(tip).toHaveAttribute('data-placement', 'above')
         expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([338, 600])
         expect(tip.className).toMatch(/-translate-y-full/)
+        // The arrow follows the side the bubble ended up on, not the one it asked for.
+        expect(screen.getByTestId('instant-tip-arrow').className).toMatch(/-bottom-/)
       } finally {
         Object.defineProperty(window, 'innerHeight', { value: savedHeight, configurable: true })
       if (saved) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', saved)
@@ -961,6 +982,46 @@ describe('InstantTip', () => {
       const tip = screen.getByRole('tooltip')
       expect(tip).toHaveAttribute('data-placement', 'above')
       expect([parseFloat(tip.style.top), parseFloat(tip.style.left)]).toEqual([162, 600])
+    })
+
+    it('points an arrow at the anchor from the side that faces it, and keeps it on the anchor when the viewport clamp moves the bubble', () => {
+      // Several chips can share a line; without a pointer the reader cannot
+      // tell which one a bubble answers.
+      const saved = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetWidth')
+      Object.defineProperty(HTMLElement.prototype, 'offsetWidth', { configurable: true, value: 300 })
+      Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true })
+      try {
+        render(<FlowHarness />)
+        const a = screen.getByRole('button', { name: 'anchor A' })
+        const b = screen.getByRole('button', { name: 'anchor B' })
+        a.getBoundingClientRect = () => rect(102, 100, 180)
+        b.getBoundingClientRect = () => rect(170, 900, 980)
+        fireEvent.focus(a)
+        let arrow = screen.getByTestId('instant-tip-arrow')
+        // Above the chip: the arrow hangs off the bubble's bottom edge.
+        expect(arrow.className).toMatch(/-bottom-/)
+        expect(parseFloat(arrow.style.left)).toBe(6)
+        fireEvent.blur(a)
+        fireEvent.focus(b)
+        const tip = screen.getByRole('tooltip')
+        arrow = screen.getByTestId('instant-tip-arrow')
+        expect(tip).toHaveAttribute('data-placement', 'below')
+        expect(arrow.className).toMatch(/-top-/)
+        // 900 + 300 crosses the right edge, so the bubble moves left to 716;
+        // the arrow moves the other way and still sits at the anchor's left.
+        expect(parseFloat(tip.style.left)).toBe(716)
+        expect(parseFloat(tip.style.left) + parseFloat(arrow.style.left)).toBe(900 + 6)
+      } finally {
+        if (saved) Object.defineProperty(HTMLElement.prototype, 'offsetWidth', saved)
+        else delete (HTMLElement.prototype as unknown as Record<string, unknown>).offsetWidth
+      }
+    })
+
+    it('draws no arrow for a block anchor (any other placement)', () => {
+      render(<Harness />)
+      fireEvent.focus(screen.getByRole('button', { name: 'anchor' }))
+      expect(screen.getByRole('tooltip')).toBeInTheDocument()
+      expect(screen.queryByTestId('instant-tip-arrow')).toBeNull()
     })
   })
 })

@@ -76,9 +76,8 @@ def test_sandbox_exec_works(mock_run, mock_exists, mock_sys):
 def test_sandbox_exec_works_on_macos_26(mock_run, mock_exists, mock_sys):
     """macOS 26 (Tahoe) is NOT hard-blocked: sandbox-exec + the Seatbelt kernel
     subsystem still work there, so the probe decides empirically. A passing probe
-    returns True regardless of OS version — the old ``major >= 26 -> return False``
-    gate was removed after verifying the real profile compiles, runs kiro-cli, and
-    enforces credential-path denies on macOS 26.5."""
+    returns True regardless of OS version: the real profile compiles, runs kiro-cli,
+    and enforces credential-path denies on macOS 26.5."""
     mock_sys.platform = "darwin"
     mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
     assert _probe_sandbox_exec() is True

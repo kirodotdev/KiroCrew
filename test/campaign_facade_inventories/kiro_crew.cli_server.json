@@ -72,7 +72,7 @@
   "tcp_verified_urlopen",
   "unix_socket_urlopen"
  ],
- "note": "cli_server.py keeps the file-delivery approval, status, gateway, run, service, sandbox and logs commands; the gateway peer proof lives in cli_server_peer, the token, logout and update-approve requests in cli_server_requests, and stop, restart and update in cli_server_stop, cli_server_restart and cli_server_update, owners served through kiro_crew._facade_mirror.",
+ "note": "cli_server.py keeps the status, gateway, run, service, sandbox and logs commands; the gateway peer proof lives in cli_server_peer, the token, logout and update-approve requests in cli_server_requests, and stop, restart and update in cli_server_stop, cli_server_restart and cli_server_update, owners served through kiro_crew._facade_mirror.",
  "rebound": {
   "ContextBuilder": "kiro_crew.context",
   "ConversationLog": "kiro_crew.history",

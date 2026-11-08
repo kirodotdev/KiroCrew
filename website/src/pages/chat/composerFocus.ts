@@ -187,11 +187,11 @@ function focusedPane(): Element | null {
  * from the composer arrives today. The chord removes keystrokes from a path that
  * already exists; it does not choose a verb.
  *
- * NOTHING IS RESOLVED BY LOOKING THIS UP. The caller focuses the element and
- * stops, so the keystroke cannot answer a prompt the reader has not read — the
+ * NOTHING IS RESOLVED BY LOOKING THIS UP. The focus-approval chord focuses the
+ * element and stops, so that keystroke cannot approve a prompt unread — the
  * decision still costs a second, deliberate press on a control that is now
  * visibly focused. That is the whole reason this is a focus lookup and not an
- * approve/reject action.
+ * approve action; the only answer a chord gives is `rejectPendingApproval`'s.
  *
  * Absence is the visibility guarantee, and it is structural rather than
  * enforced: the bar is only in the DOM while its slot holds an unresolved
@@ -218,6 +218,22 @@ export function queryPendingApprovalAction(): HTMLElement | null {
   return pane
     ? pane.querySelector<HTMLElement>(sel)
     : document.querySelector<HTMLElement>(sel)
+}
+
+/** Sent to an approval row by `rejectPendingApproval`; `useToolApproval` answers it. */
+export const REJECT_APPROVAL_EVENT = 'kc-reject-approval'
+
+/**
+ * Reject the pending tool call ONCE (the reject-approval chord). A refused call
+ * runs nothing, so a chord may give this answer unread where it may not approve.
+ * The row comes from `queryPendingApprovalAction`, so the same pane rule and
+ * in-flight skip apply; the pane's own `useToolApproval` makes the decision.
+ * Typing in the side chat sends nothing: its own conversation has no approval
+ * row, so the lookup would fall back to the main conversation's prompt.
+ */
+export function rejectPendingApproval(): void {
+  if (document.activeElement?.closest('[data-side-chat-input]')) return
+  queryPendingApprovalAction()?.closest('[data-approval-actions]')?.dispatchEvent(new Event(REJECT_APPROVAL_EVENT))
 }
 
 /**
@@ -472,18 +488,25 @@ function queryComposerForSlot(key: string | undefined): HTMLElement | null {
  * `focusComposerAfter` gives: the slice records it, and there is no new
  * composer to focus.
  *
- * No still-active read here: `resumeFromHistory` moves the active slot only in
- * its fulfilled reducer, at the moment this promise settles, so there is no
- * provisional window for a keystroke to land in, and the slot the reducer
- * entered IS the one the gesture named.
+ * A displayable answer is still not proof the view moved: the reducer also
+ * declines to open a resume that answers after the user opened another session
+ * or clicked a newer row. So the store is read on the focus frame, and the
+ * caret moves only when `key` is the active slot then. On the single-chat
+ * surface the one composer belongs to the session the user moved to.
  *
  * `key` is the thunk's own payload field -- the slot the gateway resumed, which
  * is the one the reducer entered -- and names the pane to focus in split view
  * (#15937).
  */
-export function focusComposerForResumedSession(resumed: Promise<{ ok: boolean; surface?: string; key: string }>): void {
+export function focusComposerForResumedSession(
+  resumed: Promise<{ ok: boolean; surface?: string; key: string }>,
+  store: { getState(): { chat: { activeSlot: string | null } } },
+): void {
   void resumed
-    .then(result => { if (result.ok && isChatPageSurface(result.surface)) requestAnimationFrame(() => focusComposerNow(result.key)) })
+    .then(result => {
+      if (!result.ok || !isChatPageSurface(result.surface)) return
+      requestAnimationFrame(() => { if (store.getState().chat.activeSlot === result.key) focusComposerNow(result.key) })
+    })
     .catch(() => {})
 }
 

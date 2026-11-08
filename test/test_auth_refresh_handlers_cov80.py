@@ -28,6 +28,7 @@ from __future__ import annotations
 import collections
 import json
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -302,6 +303,26 @@ async def test_me_401_without_an_authenticated_user() -> None:
     response = await h.api_auth_me(_mk("GET", "/api/auth/me"))
     assert response.status == 401
     assert _body(response) == {"error": "unauthenticated"}
+
+
+@pytest.mark.asyncio
+async def test_me_reports_the_published_principal_and_unknown_without_one() -> None:
+    from kiro_crew.shared_crew.contracts import (
+        ACTOR_REQUEST_KEY,
+        ActorContext,
+        Provenance,
+        Transport,
+    )
+    from kiro_crew.shared_crew.identity import tailnet_principal
+
+    alice = tailnet_principal("alice@example.com", "laptop", Provenance.TAILSCALE_SERVE)
+    request = _mk("GET", "/api/auth/me", user="local-app")
+    request[ACTOR_REQUEST_KEY] = ActorContext(
+        principal=alice, request_id="r", transport=Transport.HTTP
+    )
+    assert _body(await h.api_auth_me(request))["principal"] == alice.to_public_dict()
+    bare = _mk("GET", "/api/auth/me", user="local-app")
+    assert _body(await h.api_auth_me(bare))["principal"]["kind"] == "unknown"
 
 
 @pytest.mark.asyncio
@@ -937,11 +958,24 @@ async def test_refresh_revokes_the_chain_when_the_cached_replacement_is_corrupt(
 # --- _rebind_rotated_token_to_peer -------------------------------------------
 
 
+def _rebind_spy(monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, str]:
+    """A spy over the real ``bind_token_peer`` and a token no other test has bound.
+
+    The pin lands in the process-wide token state, so the check reads the real
+    binding rather than only the call that was made.
+    """
+    bind = MagicMock(wraps=h.bind_token_peer)
+    monkeypatch.setattr(h, "bind_token_peer", bind)
+    return bind, f"tok-{uuid.uuid4().hex}"
+
+
 @pytest.mark.asyncio
 async def test_rebind_is_a_noop_without_tailnet_trust(monkeypatch: pytest.MonkeyPatch) -> None:
-    bind = MagicMock()
-    monkeypatch.setattr(h, "bind_token_peer", bind)
-    await h._rebind_rotated_token_to_peer(_mk(), "tok", time.time() + 60)
+    from kiro_crew.dashboard.token_auth import _state as _token_state
+
+    bind, tok = _rebind_spy(monkeypatch)
+    await h._rebind_rotated_token_to_peer(_mk(), tok, time.time() + 60)
+    assert not _token_state.has_binding(tok)
     bind.assert_not_called()
 
 
@@ -949,24 +983,28 @@ async def test_rebind_is_a_noop_without_tailnet_trust(monkeypatch: pytest.Monkey
 async def test_rebind_is_a_noop_when_no_login_is_allowlisted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    bind = MagicMock()
-    monkeypatch.setattr(h, "bind_token_peer", bind)
+    from kiro_crew.dashboard.token_auth import _state as _token_state
+
+    bind, tok = _rebind_spy(monkeypatch)
     trust = TailnetTrust(trust_identity=True, allowed_logins=())
     await h._rebind_rotated_token_to_peer(
-        _mk(app_keys={"tailnet_trust": trust}), "tok", time.time() + 60
+        _mk(app_keys={"tailnet_trust": trust}), tok, time.time() + 60
     )
+    assert not _token_state.has_binding(tok)
     bind.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_rebind_is_a_noop_when_no_peer_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
-    bind = MagicMock()
-    monkeypatch.setattr(h, "bind_token_peer", bind)
+    from kiro_crew.dashboard.token_auth import _state as _token_state
+
+    bind, tok = _rebind_spy(monkeypatch)
     monkeypatch.setattr(h, "resolve_forwarded_peer", AsyncMock(return_value=None))
     trust = TailnetTrust(trust_identity=True, allowed_logins=("alice@example.com",))
     await h._rebind_rotated_token_to_peer(
-        _mk(app_keys={"tailnet_trust": trust}), "tok", time.time() + 60
+        _mk(app_keys={"tailnet_trust": trust}), tok, time.time() + 60
     )
+    assert not _token_state.has_binding(tok)
     bind.assert_not_called()
 
 
@@ -974,14 +1012,18 @@ async def test_rebind_is_a_noop_when_no_peer_resolves(monkeypatch: pytest.Monkey
 async def test_rebind_pins_the_rotated_token_to_the_resolved_peer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    bind = MagicMock()
-    monkeypatch.setattr(h, "bind_token_peer", bind)
+    from kiro_crew.dashboard.token_auth import check_token_peer
+
+    bind, tok = _rebind_spy(monkeypatch)
     monkeypatch.setattr(h, "resolve_forwarded_peer", AsyncMock(return_value=("alice", "node")))
     monkeypatch.setattr(h, "peer_pin_key", lambda peer, scope: f"pin:{peer[0]}:{scope}")
     trust = TailnetTrust(trust_identity=True, allowed_logins=("alice",))
     exp = time.time() + 60
-    await h._rebind_rotated_token_to_peer(_mk(app_keys={"tailnet_trust": trust}), "tok", exp)
-    bind.assert_called_once_with("tok", f"pin:alice:{trust.pin_scope}", exp)
+    await h._rebind_rotated_token_to_peer(_mk(app_keys={"tailnet_trust": trust}), tok, exp)
+    # The stored pin admits the resolved peer and refuses any other one.
+    assert check_token_peer(tok, f"pin:alice:{trust.pin_scope}") == (True, "")
+    assert check_token_peer(tok, f"pin:mallory:{trust.pin_scope}")[0] is False
+    bind.assert_called_once_with(tok, f"pin:alice:{trust.pin_scope}", exp)
 
 
 # --- POST /api/auth/logout ---------------------------------------------------

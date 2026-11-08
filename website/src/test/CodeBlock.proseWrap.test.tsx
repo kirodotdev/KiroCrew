@@ -23,6 +23,7 @@ import { render } from '@testing-library/react'
 import { vi } from 'vitest'
 
 import { CodeBlock } from '../components/CodeBlock'
+import { ProseFencesContext, proseFenceSet } from '../components/codeBlockProse'
 import { __resetStagingForTests } from '../components/pierreStaging'
 
 // Pierre's real chunk never resolves under vitest, so the mount is stubbed
@@ -117,6 +118,50 @@ describe('CodeBlock: prose fences wrap, code fences keep horizontal scroll', () 
     it('passes overflow wrap to Pierre in the highlighted branch', () => {
       render(<CodeBlock code={LONG_LINE} lang="error-report" complete />)
       expect(pierreCalls.at(-1)?.options).toEqual({ overflow: 'wrap' })
+    })
+  })
+
+  describe("a host's own prose tags (ProseFencesContext, ChatEmbed's proseFences)", () => {
+    const hosted = (lang: string, complete: boolean, tags = ['ticket-update']) => render(
+      <ProseFencesContext.Provider value={proseFenceSet(tags)}>
+        <CodeBlock code={LONG_LINE} lang={lang} complete={complete} />
+      </ProseFencesContext.Provider>,
+    )
+
+    it('a listed tag wraps in both branches, matched without regard to case', () => {
+      const { container } = hosted('Ticket-Update', false)
+      expect(container.querySelector('pre')!.className).toContain('whitespace-pre-wrap')
+      hosted('ticket-update', true)
+      expect(pierreCalls.at(-1)?.options).toEqual({ overflow: 'wrap' })
+    })
+
+    it('a tag the host did not list keeps the scroll', () => {
+      hosted('json', true)
+      expect(pierreCalls.at(-1)?.options).toBeUndefined()
+    })
+
+    it('without a host list the tag is code, as before', () => {
+      render(<CodeBlock code={LONG_LINE} lang="ticket-update" complete />)
+      expect(pierreCalls.at(-1)?.options).toBeUndefined()
+    })
+
+    it('the host list is trimmed and drops empty tags', () => {
+      expect([...proseFenceSet([' Ticket-Update ', '', '  '])]).toEqual(['ticket-update'])
+    })
+  })
+
+  describe('the scrollbar gutter', () => {
+    // Pierre reserves its scrollbar height under the last line even when the
+    // block wraps and never scrolls sideways; the override removes that strip.
+    const surface = (lang: string) =>
+      render(<CodeBlock code={LONG_LINE} lang={lang} complete />).container.querySelector<HTMLElement>('.pierre-surface')!
+
+    it('a wrapped block sets the gutter override to zero', () => {
+      expect(surface('markdown').style.getPropertyValue('--diffs-scrollbar-gutter-override')).toBe('0px')
+    })
+
+    it('a scrolling block keeps the gutter for its scrollbar', () => {
+      expect(surface('ts').style.getPropertyValue('--diffs-scrollbar-gutter-override')).toBe('')
     })
   })
 })

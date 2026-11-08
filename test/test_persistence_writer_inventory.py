@@ -30,6 +30,11 @@ import pytest
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 
+# A gate here parses a whole tree, so the module has its own ``tree_scan`` group
+# and takes that group's per-test timeout (``TREE_SCAN_TIMEOUT_SECS`` in conftest.py).
+pytestmark = pytest.mark.xdist_group(name="tree_scan_persistence_writer_inventory")
+
+
 #: Methods that commit something to a persistent memory store.
 _WRITE_PRIMITIVES = frozenset(
     {
@@ -110,6 +115,12 @@ EXEMPT = {
     # tmp path (never the live store) to exercise the query-vector ranking and
     # cold-model fallback paths.
     "apps/builtins/ops_mission_control/tests/test_ledger_index.py::_real_store_with_semantic_pair": (
+        "test harness, isolated workspace"
+    ),
+    # Auto-improvement's member test seeds each role's private memory store under its
+    # own tmp path (never the live store) to prove an assignment reads only its own.
+    "apps/builtins/auto_improvement/tests/test_auto_improvement_members.py"
+    "::test_assignments_build_real_context_from_only_their_private_store": (
         "test harness, isolated workspace"
     ),
     # The CLI's own explicit `kirocrew learn add`, which carries its own check

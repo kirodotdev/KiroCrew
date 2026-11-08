@@ -19,6 +19,9 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+from named_cases_helpers import named_cases
+
 from kiro_crew.dashboard.chat_handlers import _is_interrupted
 
 
@@ -79,7 +82,14 @@ class TestInterrupted:
     def test_error_trailing_a_reply_is_interrupted(self):
         assert _is_interrupted(slot(user(), assistant(), error())) is True
 
-    def test_clean_completion_is_not_interrupted(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_clean_completion_is_not_interrupted"),
+            *named_cases("test_ordinary_completed_turn_is_finished"),
+        ],
+    )
+    def test_a_completed_turn_is_not_interrupted(self):
         assert _is_interrupted(slot(user(), assistant())) is False
 
     def test_superseded_error_is_not_interrupted(self):
@@ -210,10 +220,6 @@ class TestCompletedCompaction:
         # real reply never came. Skipping the notice is deliberate and correct
         # here -- the tag alone must not flip this shape.
         assert _is_interrupted(slot(user("do the thing"), compaction_notice())) is True
-
-    def test_ordinary_completed_turn_is_finished(self):
-        # Case E: the unchanged baseline.
-        assert _is_interrupted(slot(user(), assistant())) is False
 
     def test_compact_with_arguments_still_counts(self):
         # The runner keys ``user_requested_compaction`` on the first whitespace

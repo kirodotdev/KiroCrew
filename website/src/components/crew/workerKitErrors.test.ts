@@ -22,13 +22,25 @@ describe('workerKitErrorText', () => {
     ['invalid_request', 'crewWorkerKit.error_invalid_request'],
   ])('reads %s as its sentence', (code, key) => {
     const text = workerKitErrorText(refusal(code))
-    expect(text).toBe(i18nT(key, { action: i18nT('crewWorkerKit.copy') }))
+    expect(text).toBe(i18nT(key))
     expect(text).not.toContain(code)
   })
 
-  it('names the preview button it is given', () => {
-    expect(workerKitErrorText(refusal('stale_revision'), 'Re-copy from template')).toContain('“Re-copy from template”')
-    expect(workerKitErrorText(refusal('revision_required'))).toBe('Press “Copy into the worker” to see the changes first, then apply them.')
+  const named = (code: string, detail: string) =>
+    new ApiError(409, code, JSON.stringify({ error: code, code, detail }))
+
+  it.each([
+    ['template_restrictions_uncarried', 'toolsSettings.execute_bash', 'crewWorkerKit.error_template_restrictions_uncarried_named', 'fields'],
+    ['template_policy_backend_unsupported', 'hooks, permissions', 'crewWorkerKit.error_template_policy_backend', 'fields'],
+  ])('names the field a %s refusal is about', (code, detail, key, slot) => {
+    const text = workerKitErrorText(named(code, detail))
+    expect(text).toBe(i18nT(key, { [slot]: detail }))
+    expect(text).toContain(detail)
+  })
+
+  it('points at the preview on screen, not at a button', () => {
+    expect(workerKitErrorText(refusal('stale_revision'))).toContain('The changes below are up to date')
+    expect(workerKitErrorText(refusal('revision_required'))).toBe('Check the changes below first, then add them.')
   })
 
   it('keeps the message of a failure that names no known code', () => {

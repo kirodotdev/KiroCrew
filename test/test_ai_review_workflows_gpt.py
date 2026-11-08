@@ -11,6 +11,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 
+import ai_review_workflow_checks
 import pytest
 import yaml
 from ai_review_workflows_helpers import (
@@ -30,15 +31,10 @@ from ai_review_workflows_helpers import (
 class TestGptVerdictVisibility:
     """The same-repo GPT lane publishes through the shared guard.
 
-    An inline lookup, verdict guard or notice strip in this step is a second
-    spelling of the visibility invariant: a position-blind ``sed`` range strip
-    deletes lines of a standing verdict whenever a bare quoted begin marker
-    sits inside preserved review prose. The behavioural contract -- an
-    incomplete run never buries a posted verdict, a completed one replaces it,
-    a superseded one leaves it alone -- is the shared ``guarded_comment_upsert``
-    and is exercised for this lane by ``TestReviewLaneVerdictVisibility``. What
-    stays lane-specific is pinned here: the stamp each kind publishes under, and
-    the gate that stays outside the convergence.
+    No inline lookup, guard or strip: a position-blind ``sed`` strip deletes verdict
+    lines when a quoted begin marker sits in review prose. The behaviour is
+    ``guarded_comment_upsert``, run by ``TestReviewLaneVerdictVisibility``; this pins
+    only the per-kind stamp and the gate outside the convergence.
     """
 
     def test_the_post_step_routes_through_the_shared_guard(self) -> None:
@@ -86,17 +82,20 @@ class TestGptVerdictVisibility:
         assert "publication" not in gate
 
 
-class TestGptRefusalTerminalState:
-    """A reviewer that CRASHED and one that REFUSED both arrive as ``rc != 0``
-    or an empty pass file, but they mean opposite things: a crash is fixed by
-    re-running, while a provider refusal is caused by what the diff IS and is
-    empirically sticky across re-runs. The lane classifies a failed pass
-    against the provider's own refusal line — anchored at line start and only
-    in the tail of the captured stream, because the stream also carries
-    PR-controlled text — and publishes a distinct terminal state that still
-    fails the gate closed (a declined review is not an approval) but names
-    human adjudication instead of prescribing a re-run. The classification
-    travels as a step output; nothing downstream greps it out of model prose.
+class TestGptRefusalTerminalState(
+    ai_review_workflow_checks.ProviderEmittedRefusalLineClassifiesAsRefused,
+    ai_review_workflow_checks.EchoedSignatureInPrControlledTextStaysACrash,
+    ai_review_workflow_checks.SignatureOutsideTheStreamTailStaysACrash,
+    ai_review_workflow_checks.RefusedPassPublishesItsOwnTerminalState,
+    ai_review_workflow_checks.CrashedPassKeepsTheRerunnableIncompleteState,
+    ai_review_workflow_checks.RefusalDominatesAMixedFailure,
+    ai_review_workflow_checks.CleanRunStillPublishesPass2Verbatim,
+):
+    """A provider refusal is told apart from a crash and fails closed without a re-run.
+
+    A refusal is caused by the diff and sticks across re-runs. It is matched at line
+    start in the stream's tail only, since the stream carries PR-controlled text, and
+    travels as a step output, never grepped from model prose.
     """
 
     HEAD = "0123456789abcdef0123456789abcdef01234567"
@@ -177,29 +176,6 @@ class TestGptRefusalTerminalState:
         record = runner_temp / "codex-refused-passes"
         return record.read_text(encoding="utf-8") if record.exists() else ""
 
-    def test_provider_emitted_refusal_line_classifies_as_refused(self, tmp_path: Path) -> None:
-        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
-        log = f"some progress output\n{signature}.\nLearn more here: https://example.invalid\n"
-        assert self._classify(tmp_path, log) == " 1"
-
-    def test_echoed_signature_in_pr_controlled_text_stays_a_crash(self, tmp_path: Path) -> None:
-        # The stream carries the diff the reviewer echoed. A PR touching this
-        # workflow contains the signature verbatim — as an indented diff line,
-        # never line-leading — and a crash on such a PR must stay a crash:
-        # mislabeling it as refused points the operator at /ai-review override
-        # when the re-run it forecloses would have worked.
-        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
-        log = f'+          REFUSAL_SIGNATURE: "{signature}"\n> quoted: {signature}\n'
-        assert self._classify(tmp_path, log) == ""
-
-    def test_signature_outside_the_stream_tail_stays_a_crash(self, tmp_path: Path) -> None:
-        # The provider emits the refusal as the stream's final act. A copy of
-        # the line early in a long stream (echoed content scrolled past) must
-        # not classify a later, unrelated crash.
-        signature = self._pass_step("GPT 6.1 review (discovery pass)")["env"]["REFUSAL_SIGNATURE"]
-        log = f"{signature}.\n" + ("x" * 80 + "\n") * 100
-        assert self._classify(tmp_path, log) == ""
-
     def _assemble_verdict(
         self,
         tmp_path: Path,
@@ -239,52 +215,6 @@ class TestGptRefusalTerminalState:
         )
         assert result.returncode == 0, result.stderr
         return result.stdout, gh_output.read_text(encoding="utf-8")
-
-    def test_refused_pass_publishes_its_own_terminal_state(self, tmp_path: Path) -> None:
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes=" 2", refused_passes=" 2", pass2=None
-        )
-        assert "Reviewer refused" in out
-        # The refusal must not read as a completed review, must not prescribe
-        # the re-run that has never been observed to work, and deliberately
-        # carries NO machine marker: classification rides the step output, and
-        # a marker in the body would invite the prose-grepping that the
-        # output exists to prevent.
-        assert "[GPT-REVIEWED]" not in out
-        assert "[GPT-REFUSED]" not in out
-        assert "Re-run the workflow" not in out
-        assert "/ai-review override gpt" in out
-        # Downstream classification rides this output, never a body grep.
-        assert "refused=true" in gh_output
-
-    def test_crashed_pass_keeps_the_rerunnable_incomplete_state(self, tmp_path: Path) -> None:
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes=" 1", refused_passes=None, pass2=None
-        )
-        assert "Incomplete review" in out
-        assert "Re-run the workflow" in out
-        assert "[GPT-REFUSED]" not in out
-        assert "refused=false" in gh_output
-
-    def test_refusal_dominates_a_mixed_failure(self, tmp_path: Path) -> None:
-        # Pass 1 crashed AND pass 2 was refused: the adjudication route is the
-        # reliable exit either way, while a re-run only helps if the refusal
-        # does not recur, so the refusal is what the operator is told about.
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes=" 1 2", refused_passes=" 2", pass2=None
-        )
-        assert "Reviewer refused" in out
-        assert "Re-run the workflow" not in out
-        assert "refused=true" in gh_output
-
-    def test_clean_run_still_publishes_pass_2_verbatim(self, tmp_path: Path) -> None:
-        verdict = f"all good\n[GPT-REVIEWED] {self.HEAD}\n"
-        out, gh_output = self._assemble_verdict(
-            tmp_path, failed_passes="", refused_passes=None, pass2=verdict
-        )
-        assert f"[GPT-REVIEWED] {self.HEAD}" in out
-        assert "[GPT-REFUSED]" not in out
-        assert "refused=false" in gh_output
 
     def _run_gate(
         self, tmp_path: Path, review_output: str, *, refused: str = ""
@@ -646,15 +576,11 @@ class TestGptMediaFilterBehavior:
 
 
 class TestGptFalsificationPassSafeguards:
-    """The GPT lane's falsification pass may report a defect it found itself,
-    exactly as the Opus validation pass may (see
-    TestOpusTwoStageArchitecture.test_validation_may_add_a_finding_but_only_at_the_same_bar).
-    That permission comes with two safeguards in the Opus lane --
-    the `(origin: validation)` tag and the diff-is-not-evidence clause -- which
-    the GPT lane must carry too. The safeguard text lives in
-    shared .github/review-prompts/gpt-*.md files, so the two GPT
-    workflows cannot drift apart on it: these tests pin the clauses in
-    the shared files and assert both workflows splice the SAME files in."""
+    """The GPT falsification pass carries the Opus lane's two safeguards for new findings.
+
+    The `(origin: validation)` tag and the diff-is-not-evidence clause live in shared
+    .github/review-prompts/gpt-*.md files, which both GPT workflows splice in.
+    """
 
     LANES = ("codex-review.yml", "fork-gpt-review.yml")
     SHARED_PROMPTS = (
@@ -710,7 +636,7 @@ class TestGptFalsificationPassSafeguards:
         # ...whose cp bootstrap must itself fail closed: cp succeeds on a
         # zero-byte source, and an empty staged block would silently drop a
         # contract section while the lane still publishes a verdict.
-        assert "is empty in the checkout too" in codex
+        assert "Refusing to review against a partial contract" in codex
         loop_line = _line_containing(codex, "for p in gpt-")
         for name in self.SHARED_PROMPTS:
             assert name in loop_line, name

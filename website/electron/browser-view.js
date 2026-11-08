@@ -1,5 +1,6 @@
 // Native browser panel — the embedded Chromium view behind the dashboard's
-// Browser side panel.
+// Preview side-panel tab (the person's own local dev server; the agent never
+// drives this view).
 //
 // Instead of mirroring a headless browser as JPEG screenshots, the panel hosts a
 // real `WebContentsView` positioned over the side-panel rectangle. The view *is*
@@ -24,7 +25,10 @@
 //      input in the dashboard (all chat composers, a modal's own field) looks
 //      alive and stays deaf. So whenever this view leaves the screen while it
 //      holds focus — overlay, inactive tab, collapsed panel, close — the
-//      manager hands focus back to the host view through `focusHost`.
+//      manager hands focus back to the host view through `focusHost`. The same
+//      hand-back runs when the page TAKES focus while it is already off screen
+//      (a load or an agent navigation in a panel nobody is looking at), where
+//      no hide happens to trigger it.
 //
 // Security posture: this view renders arbitrary untrusted web content, so it is
 // deliberately the most locked-down webContents in the app.
@@ -204,6 +208,18 @@ function viewHoldsFocus(view) {
 }
 
 /**
+ * The diagnostic line logged on every focus hand-back. Names the view that held
+ * keyboard focus and the path that moved it, and nothing about the page: no
+ * URL, no title, no panel or session id. Unknown triggers are reported as
+ * "unknown" rather than echoed.
+ */
+const FOCUS_TRIGGERS = new Set(["hide", "close", "window-focus", "hidden-view-focus", "hidden-view-load"]);
+function focusHandBackMessage(trigger) {
+  const t = FOCUS_TRIGGERS.has(trigger) ? trigger : "unknown";
+  return `[browser-panel] keyboard focus was held by the embedded browser view while off screen; handed back to the dashboard view (trigger=${t})`;
+}
+
+/**
  * Build the per-window manager for the embedded browser view.
  *
  * Dependencies are injected so the module stays unit-testable without a live
@@ -213,7 +229,11 @@ function viewHoldsFocus(view) {
  *   addView(view) / removeView(view) -> attach/detach from the window
  *   onEvent(name, payload) -> notify the host (navigation state, denied popups)
  *   focusHost()       -> give keyboard focus to the host (dashboard) view; called
- *                        only when the embedded view held it as it left the screen
+ *                        only when the embedded view held it while off screen
+ *   log(message)      -> one diagnostic line per hand-back, naming which view held
+ *                        focus and what triggered it (never the page URL or title)
+ *   hostActive()      -> is the host window the active one? Gates the hand-back
+ *                        for focus the page takes while already hidden
  */
 function createBrowserViewManager(deps) {
   const {
@@ -224,6 +244,8 @@ function createBrowserViewManager(deps) {
     onEvent = () => {},
     onCreate = () => {},
     focusHost = () => {},
+    hostActive = () => true,
+    log = () => {},
   } = deps || {};
 
   let view = null;
@@ -255,8 +277,14 @@ function createBrowserViewManager(deps) {
   };
 
   /** Hand keyboard focus to the host view. A courtesy that must never break
-   *  the visibility change it follows. */
-  function handBackFocus() {
+   *  the visibility change it follows. `trigger` names the path for the log
+   *  line, so a recurrence shows which view held focus and why it moved. */
+  function handBackFocus(trigger) {
+    try {
+      log(focusHandBackMessage(trigger));
+    } catch {
+      /* logging must never block the hand-back */
+    }
     try {
       focusHost();
     } catch {
@@ -264,8 +292,33 @@ function createBrowserViewManager(deps) {
     }
   }
 
+  /** The page took keyboard focus (or a load finished) while the view is
+   *  off screen: no hide will follow to trigger the hand-back, so give focus
+   *  back now. Only for the live view — a released one is never acted on. A
+   *  visible view keeps its focus, exactly as before. Skipped while the host
+   *  window is not the active one: focusing the host could then bring the
+   *  window forward, and the window-focus `reclaimFocus` heals it on return. */
+  function healHiddenFocus(wc, trigger, { needsCheck }) {
+    if (!view || view.webContents !== wc || isVisible()) return;
+    if (!isHostActive()) return;
+    // The 'focus' event is itself the signal; a finished load is not, so it
+    // asks the webContents (and skips when unsure, same rule as on hide).
+    if (needsCheck && !viewHoldsFocus(view)) return;
+    handBackFocus(trigger);
+  }
+
   function state() {
     return { open, overlayActive, inactive, bounds, url: currentUrl, visible: isVisible() };
+  }
+
+  /** Is the host window the active one? Unsure (a throwing probe) reads as
+   *  no, so the new hand-back paths stay quiet rather than guess. */
+  function isHostActive() {
+    try {
+      return hostActive() === true;
+    } catch {
+      return false;
+    }
   }
 
   function isVisible() {
@@ -296,7 +349,7 @@ function createBrowserViewManager(deps) {
       appliedBounds = bounds;
     }
     // After the hide, so nothing below can take focus back off the host.
-    if (reclaim) handBackFocus();
+    if (reclaim) handBackFocus("hide");
   }
 
   function ensureView() {
@@ -319,10 +372,24 @@ function createBrowserViewManager(deps) {
         });
       }
       // Refuse any navigation that is not http(s) — including ones initiated by
-      // page content rather than by us.
+      // page content rather than by us — and keep page-driven navigation on
+      // loopback: the Preview tab is the person's own dev server, and the
+      // renderer's origin allowlist gates only what it asks us to open. A link
+      // in that page to an outside site is handed to the host (the person's own
+      // browser) instead of being rendered inside the view.
       if (typeof wc.on === "function") {
-        wc.on("will-navigate", (event, url) => {
-          if (!normalizeUrl(url)) event.preventDefault();
+        const keepOnLoopback = (event, url) => {
+          const safe = normalizeUrl(url);
+          if (safe && isLoopbackUrl(safe)) return;
+          event.preventDefault();
+          if (safe) emit("open-external", { url: safe });
+        };
+        wc.on("will-navigate", keepOnLoopback);
+        // A loopback URL that answers with a redirect (an OAuth sign-in) never
+        // reaches `will-navigate` again; the same rule holds its main frame.
+        wc.on("will-redirect", (details) => {
+          if (!details || details.isMainFrame === false) return;
+          keepOnLoopback(details, details.url);
         });
         wc.on("did-navigate", (_event, url) => {
           currentUrl = url;
@@ -331,6 +398,13 @@ function createBrowserViewManager(deps) {
         wc.on("page-title-updated", (_event, title) => {
           emit("title-updated", { url: currentUrl, title });
         });
+        // Header note 3, the no-transition case: focus arriving on a view that
+        // is already hidden.
+        // Deferred one tick: focusing the host from inside the 'focus' event
+        // is overridden by the native focus change still in progress (seen
+        // in a real Electron window on Linux).
+        wc.on("focus", () => setImmediate(() => healHiddenFocus(wc, "hidden-view-focus", { needsCheck: false })));
+        wc.on("did-stop-loading", () => healHiddenFocus(wc, "hidden-view-load", { needsCheck: true }));
       }
     }
     // Host-side chrome that needs real Electron APIs (context menu, and
@@ -419,7 +493,7 @@ function createBrowserViewManager(deps) {
      */
     reclaimFocus() {
       if (!view || isVisible() || !viewHoldsFocus(view)) return false;
-      handBackFocus();
+      handBackFocus("window-focus");
       return true;
     },
 
@@ -445,23 +519,47 @@ function createBrowserViewManager(deps) {
         try {
           if (doomed.webContents) doomed.webContents.close();
         } catch { /* already gone */ }
-        if (reclaim) handBackFocus();
+        if (reclaim) handBackFocus("close");
       }
       return state();
     },
 
     getState: state,
     /** The live view's webContents, or null when the panel was never opened.
-     *  This is the control plane's handle onto the page (browser-control.js). */
+     *  The annotation overlay (browser-annotate.js) runs against it. */
     getWebContents: () => (view ? view.webContents : null),
     /** Test seam: the live view, or null when the panel was never opened. */
     _view: () => view,
   };
 }
 
+/** Hosts that always resolve to this machine. */
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1"]);
+
+/**
+ * Is this an http(s) URL on a loopback host?
+ *
+ * The shell uses it to tell a gateway reached on this machine from one reached
+ * through a forwarded port, and the Preview tab's local-only rule reads the same
+ * answer. `*.localhost` is reserved for loopback (RFC 6761) and the desktop app
+ * uses it. Anything that is not a URL is never loopback.
+ */
+function isLoopbackUrl(raw) {
+  let u;
+  try {
+    u = new URL(String(raw || ""));
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+  const h = String(u.hostname || "").toLowerCase();
+  return LOOPBACK_HOSTS.has(h) || h === "localhost" || h.endsWith(".localhost");
+}
+
 module.exports = {
   ALLOWED_PROTOCOLS,
   BLANK_URL,
+  isLoopbackUrl,
   isUntrustedContents,
   normalizeUrl,
   normalizeBounds,
@@ -470,5 +568,6 @@ module.exports = {
   scaleRect,
   computeVisible,
   viewHoldsFocus,
+  focusHandBackMessage,
   createBrowserViewManager,
 };

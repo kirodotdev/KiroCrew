@@ -3,7 +3,8 @@
  * depth the gateway last published for each row (`subagents_queued`), and the
  * hook applies it to `chat.subagentQueued`. A client that kept "1 queued" after
  * missing the 0 frame is corrected by the next push, for a session nothing on
- * screen is showing.
+ * screen is showing. A `slot_patch` row that carries the depth reconciles the
+ * same way.
  *
  * Deliberately the SINGLETON store, for the reason useWebSocket.slotsFrameDedupe
  * gives: the hook dispatches through useAppDispatch() but reads slots off the
@@ -129,5 +130,47 @@ describe('useWebSocket queued-depth reconcile from slots pushes', () => {
     act(() => { ws.simulateMessage(slotsFrame([{ key: BG, subagents_queued: 0 }])) })
     act(() => { ws.simulateMessage({ type: 'subagent_queued', data: { slot: BG, queued: 3 } }) })
     expect(queuedOf(BG)).toBe(3)
+  })
+
+  it('a slot_patch carrying the depth heals a missed subagent_queued frame', () => {
+    // push_subagent_patch ships the published depth as a one-row patch on the
+    // same socket, so a tab that kept "1 queued" after missing the 0 frame is
+    // corrected by the patch exactly as by a full slots push.
+    const ws = mountOpened()
+    act(() => { ws.simulateMessage(slotsFrame([{ key: BG, subagents_queued: 0 }])) })
+    act(() => { ws.simulateMessage({ type: 'subagent_queued', data: { slot: BG, queued: 1 } }) })
+    expect(queuedOf(BG)).toBe(1)
+
+    act(() => {
+      ws.simulateMessage({
+        type: 'slot_patch',
+        data: { slots: [{ key: BG, subagents_running: false, subagents_queued: 0 }] },
+      })
+    })
+
+    expect(queuedOf(BG)).toBeUndefined()
+  })
+
+  it('a fresh page restores the wait label from the first slots push', () => {
+    // A reload sees no subagent_queued frame: the row's label is all it gets.
+    const ws = mountOpened()
+    act(() => {
+      ws.simulateMessage(slotsFrame([{
+        key: BG,
+        subagents_queued: 1,
+        subagents_queued_reason: { reason: 'low_memory', cause: 'cgroup_usage_unreadable', max_wait_secs: 0 },
+      }]))
+    })
+    expect(queuedOf(BG)).toBe(1)
+    expect(globalStore.getState().chat.subagentQueuedReason?.[BG]).toEqual({
+      reason: 'low_memory', cause: 'cgroup_usage_unreadable', max_wait_secs: 0,
+    })
+  })
+
+  it('a metadata slot_patch row without the depth leaves the count alone', () => {
+    const ws = mountOpened()
+    act(() => { ws.simulateMessage(slotsFrame([{ key: BG, subagents_queued: 2 }])) })
+    act(() => { ws.simulateMessage({ type: 'slot_patch', data: { slots: [{ key: BG, pinned: true }] } }) })
+    expect(queuedOf(BG)).toBe(2)
   })
 })

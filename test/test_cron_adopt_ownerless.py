@@ -1,18 +1,10 @@
 """Recovery path for a cron job with no owning chat session.
 
-A cron created outside a chat -- ``kirocrew cron add``, the dashboard Schedule
-page, an onboarding import -- has no originating chat session, so its
-``session_key`` is empty. That is truthful, not a defect: every consumer reads
-that field as the delivery target (``session="origin"`` resolution and
-script-result injection both strip the ``dashboard:`` prefix off it to reach a
-slot), and such a job has no chat to deliver into.
-
-What was missing is the operator's side of it: nothing displayed the field, and
-nothing could write it, so once per-session scoping treats an empty owner as
-"outside every chat session's scope" the state is invisible AND one-way. These
-tests pin the two halves of the way back -- ``cron list`` showing ownership and
-``cron adopt`` setting it -- plus the prefix invariant that keeps ``--session-of``
-the exact inverse of what the delivery consumers do.
+A cron created outside a chat (``kirocrew cron add``, the Schedule page, an
+onboarding import) has an empty ``session_key``, which is correct: the field is
+the delivery target. Per-session scoping leaves such a job outside every chat, so
+these tests pin the way back: ``cron list`` shows ownership, ``cron adopt`` sets
+it, and ``--session-of`` stays the exact inverse of the delivery transform.
 """
 
 import argparse
@@ -21,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_crew.cli_commands import _cron
+from kiro_crew.cron import CronService
 from kiro_crew.history import ConversationLog
 
 
@@ -36,6 +29,7 @@ def _job(job_id="abc12345", *, session_key="", created_by=""):
     job.schedule.at_ts = None
     job.session_key = session_key
     job.created_by = created_by
+    job.folder_id = ""
     return job
 
 
@@ -109,26 +103,28 @@ class TestCronAdopt:
         assert "results are delivered there" in out
         assert "dashboard:chat-3-1712793600" in out
 
-    def test_session_of_adds_the_prefix_the_consumers_strip(self):
+    @staticmethod
+    def _owner_after_adopt(tmp_path, session_of: str) -> str:
+        """Adopt a job held in a real store and return the owner it now carries."""
+        svc = CronService(base_dir=tmp_path)
+        job = svc.add_job(name="j", message="m", every_secs=60)
         with (
-            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.CronService", return_value=svc),
             patch("kiro_crew.cli_commands.sel"),
         ):
-            mock_svc = mock_svc_cls.return_value
-            mock_svc.adopt_job.return_value = True
-            _cron(_adopt_args(session_of="chat-3-1712793600"))
-            mock_svc.adopt_job.assert_called_once_with("abc12345", "dashboard:chat-3-1712793600")
+            _cron(_adopt_args(job.id, session_of=session_of))
+        return CronService(base_dir=tmp_path).get_job(job.id).session_key
+
+    def test_session_of_adds_the_prefix_the_consumers_strip(self, tmp_path):
+        owner = self._owner_after_adopt(tmp_path, "chat-3-1712793600")
+        assert owner == "dashboard:chat-3-1712793600"
 
     def test_session_of_round_trips_through_the_real_delivery_resolver(self):
         """Drift guard: ``--session-of`` must be the exact inverse of the
         transform the delivery path applies.
 
-        Both consumers (``_resolve_session_target`` in the dashboard messaging
-        handler and the Slack gateway's script-result delivery) turn a stored
-        key into a slot with ``removeprefix("dashboard:")``. If either side ever
-        changes prefix, adoption would silently point a job at a slot that does
-        not exist and its results would go nowhere -- so assert the round trip
-        rather than restating the literal.
+        Both consumers reach a slot with ``removeprefix("dashboard:")``; a prefix
+        drift would point adopted jobs at a missing slot, so assert the round trip.
         """
         stored = {}
 
@@ -142,18 +138,12 @@ class TestCronAdopt:
 
         assert stored["abc12345"].removeprefix("dashboard:") == "chat-7-1712793999"
 
-    def test_session_of_accepts_an_already_qualified_key_unchanged(self):
+    def test_session_of_accepts_an_already_qualified_key_unchanged(self, tmp_path):
         """A key that already carries a namespace is passed through, so an
         operator pasting a full key into ``--session-of`` is not double-prefixed
         into an undeliverable ``dashboard:dashboard:...``."""
-        with (
-            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
-            patch("kiro_crew.cli_commands.sel"),
-        ):
-            mock_svc = mock_svc_cls.return_value
-            mock_svc.adopt_job.return_value = True
-            _cron(_adopt_args(session_of="dashboard:chat-3-1712793600"))
-            mock_svc.adopt_job.assert_called_once_with("abc12345", "dashboard:chat-3-1712793600")
+        owner = self._owner_after_adopt(tmp_path, "dashboard:chat-3-1712793600")
+        assert owner == "dashboard:chat-3-1712793600"
 
     def test_release_clears_the_owner(self, capsys):
         with (
@@ -206,11 +196,8 @@ class TestCronAdopt:
 class TestAdoptTargetVisibility:
     """A typo must not silently produce a job whose output reaches nobody.
 
-    Accepting an unknown key is deliberate -- the delivery path resolves a live
-    slot first and only falls back to rehydrating from history, so a brand-new
-    tab that has logged nothing yet is a legitimate target. What is not
-    acceptable is doing it silently, which would recreate the very
-    invisible-delivery state this command exists to recover from.
+    An unknown key is accepted, since a new tab with no history is a valid live
+    target, but it must warn.
     """
 
     def _run_adopt_with_known(self, known):
@@ -238,21 +225,10 @@ class TestAdoptTargetVisibility:
     def test_a_real_existing_session_does_not_warn(self, capsys, tmp_path, monkeypatch):
         """The lookup must use the spelling the transcript store actually uses.
 
-        Every other test here mocks ``has_log``, so each one passes whichever
-        spelling the CLI passes and none of them can see a mismatch with the
-        real store. That is how this warning came to fire on EVERY correct
-        dashboard adopt: the CLI looked up the prefix-stripped slot
-        (``chat-9-...``) while this session's transcript is keyed
-        ``dashboard_chat-9-....jsonl``, so the file could never be found and
-        the operator was trained to ignore a warning that would also have been
-        the only signal for a genuine typo. That prefix is not universal --
-        a channel-origin slot's transcript carries none -- which is why the
-        check resolves the key through the delivery path's own helpers rather
-        than assuming one spelling.
-
-        So this test writes a transcript through the REAL ConversationLog and
-        drives the real lookup. It fails if the two halves disagree, which a
-        mocked assertion on the call argument cannot.
+        A dashboard transcript is keyed ``dashboard_chat-9-....jsonl``, not by the
+        stripped slot, and a channel-origin one has no prefix, so the check resolves
+        through the delivery path's helpers. The other tests mock ``has_log``; this
+        one writes through the real ConversationLog so a spelling mismatch fails.
         """
         monkeypatch.setattr("kiro_crew.history._sessions_dir", lambda: tmp_path)
         ConversationLog(base_dir=tmp_path).append("dashboard:chat-9-1712799999", "user", "hello")
@@ -275,7 +251,7 @@ class TestAdoptTargetVisibility:
             _cron(_adopt_args(session_of="chat-9-typo"))
         assert "no recorded session" in capsys.readouterr().err
 
-    def test_existence_is_checked_on_the_delivery_resolved_key(self):
+    def test_existence_is_checked_on_the_delivery_resolved_key(self, capsys, tmp_path, monkeypatch):
         """Not on the prefix-stripped slot, which no transcript is keyed by.
 
         The check must ask for the same file the DELIVERY path would read, so
@@ -283,18 +259,23 @@ class TestAdoptTargetVisibility:
         the full session key; the two tests below cover the spellings where
         delivery resolves something else.
         """
-        mock_log_cls = self._run_adopt_with_known(True)
-        mock_log_cls.return_value.has_log.assert_called_once_with("dashboard:chat-9-1712799999")
+        # A transcript under the prefix-stripped slot only: a lookup on that
+        # spelling would find it and stay quiet.
+        monkeypatch.setattr("kiro_crew.history._sessions_dir", lambda: tmp_path)
+        ConversationLog(base_dir=tmp_path).append("chat-9-1712799999", "user", "hello")
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel"),
+        ):
+            mock_svc_cls.return_value.adopt_job.return_value = True
+            _cron(_adopt_args(session_of="chat-9-1712799999"))
+        assert "no recorded session" in capsys.readouterr().err
 
     def test_a_channel_origin_slot_does_not_warn(self, capsys, tmp_path, monkeypatch):
         """``dashboard:slack_<ts>`` has no ``dashboard_`` on its transcript.
 
-        This is the owner ``cron list`` prints for an unbound channel-origin
-        slot, and its transcript is ``slack_<ts>.jsonl`` -- ``_safe_key`` folds
-        the stem and the live ``slack:<ts>`` onto one file, so the delivery path
-        deliberately does NOT prefix it. Looking the raw session key up instead
-        asks for ``dashboard_slack_<ts>.jsonl``, which never exists, so the
-        false warning this PR removes would come straight back for this key.
+        ``_safe_key`` folds it and the live ``slack:<ts>`` onto ``slack_<ts>.jsonl``,
+        so a raw lookup of ``dashboard_slack_<ts>.jsonl`` would warn falsely.
         """
         monkeypatch.setattr("kiro_crew.history._sessions_dir", lambda: tmp_path)
         ConversationLog(base_dir=tmp_path).append("slack_1785370133.085469", "user", "hello")
@@ -309,12 +290,9 @@ class TestAdoptTargetVisibility:
     def test_a_stacked_dashboard_prefix_does_not_warn(self, capsys, tmp_path, monkeypatch):
         """``--session-of dashboard_chat-N-...`` must not double the prefix.
 
-        A filename stem reaches this flag whenever someone reads a key off disk.
-        It carries no ``:``, so the CLI prefixes it to
-        ``dashboard:dashboard_chat-N-...``; looking that up raw asks for
-        ``dashboard_dashboard_chat-N-....jsonl``. ``_normalize_slot_key`` strips
-        the stacked prefix, which is why resolving through it is what keeps the
-        check honest for this spelling.
+        A filename stem has no ``:``, so the CLI prefixes it to
+        ``dashboard:dashboard_chat-N-...``; ``_normalize_slot_key`` strips the
+        stacked prefix before the lookup.
         """
         monkeypatch.setattr("kiro_crew.history._sessions_dir", lambda: tmp_path)
         ConversationLog(base_dir=tmp_path).append("dashboard:chat-9-1712799999", "user", "hello")
@@ -350,11 +328,8 @@ class TestAdoptTargetVisibility:
 class TestAdoptNamespaceHonesty:
     """Ownership and delivery do not have the same reach, and the output says so.
 
-    ``_owned_by`` matches any namespace, so a Slack or Telegram session can own
-    and manage a job. But only a ``dashboard:`` key resolves to a slot the
-    delivery path can inject into -- both consumers reach a slot with
-    ``removeprefix("dashboard:")``. Promising delivery for a ``slack:`` owner
-    would be a claim the code does not honour.
+    ``_owned_by`` matches any namespace, but only a ``dashboard:`` key resolves to
+    a slot the delivery path can inject into.
     """
 
     def _adopt(self, target):
@@ -399,12 +374,9 @@ class TestAdoptNamespaceHonesty:
 class TestAdoptIsDeniedFromBash:
     """The narrow-writer design must be enforced, not merely undocumented.
 
-    "The CLI is the only writer" is only true while a session's agent cannot run
-    the CLI. It can, through bash -- so without a denied-command rule an agent
-    could run ``cron adopt --session-of <its own slot>`` and acquire exactly the
-    power the MCP ``cron_update`` tool is denied: management scope over another
-    session's job, plus delivery of its output. The repo's spec requires new
-    destructive CLI-facing surfaces to carry a rule in ``BUILTIN_DENIED_RULES``.
+    An agent can run the CLI through bash, so without a ``BUILTIN_DENIED_RULES``
+    entry ``cron adopt --session-of <its own slot>`` would take over another
+    session's job, the power the MCP ``cron_update`` tool is denied.
     """
 
     def _rule(self):
@@ -465,24 +437,24 @@ class TestAdoptIsDeniedFromBash:
             # A command separator ends the match: the words must belong to ONE
             # simple command, so an unrelated `adopt` in a LATER command does not
             # combine with an earlier harmless `kirocrew cron` read.
-            "kirocrew cron list; echo adopt",
-            "kirocrew cron list && git adopt-nothing",
-            "kirocrew cron list | grep adopt",
-        ],
-    )
-    def test_a_command_separator_ends_the_match(self, command):
-        import re
-
-        rule = self._rule()
-        assert not re.search(rule.pattern, command, re.IGNORECASE), command
-
-    @pytest.mark.parametrize(
-        "command",
-        [
-            "kirocrew cron list",
-            "kirocrew cron add nightly 'sweep' --every 3600",
-            "kirocrew cron remove abc123",
-            "git commit -m 'adopt a cron convention'",
+            pytest.param(
+                "kirocrew cron list; echo adopt", id="a_command_separator_ends_the_match-semicolon"
+            ),
+            pytest.param(
+                "kirocrew cron list && git adopt-nothing",
+                id="a_command_separator_ends_the_match-and",
+            ),
+            pytest.param(
+                "kirocrew cron list | grep adopt", id="a_command_separator_ends_the_match-pipe"
+            ),
+            pytest.param("kirocrew cron list", id="read_and_sibling_verbs-list"),
+            pytest.param(
+                "kirocrew cron add nightly 'sweep' --every 3600", id="read_and_sibling_verbs-add"
+            ),
+            pytest.param("kirocrew cron remove abc123", id="read_and_sibling_verbs-remove"),
+            pytest.param(
+                "git commit -m 'adopt a cron convention'", id="read_and_sibling_verbs-git-commit"
+            ),
         ],
     )
     def test_the_pattern_does_not_catch_the_read_and_sibling_verbs(self, command):

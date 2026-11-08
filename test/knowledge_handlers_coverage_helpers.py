@@ -9,7 +9,7 @@ with the knowledge toggles, and ``MODULE``, the handler module's dotted path for
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from aiohttp import web
@@ -55,7 +55,7 @@ class _FakeEmbedder:
         return list(self._vec) if self._vec else None
 
 
-def _make_app(store, *, pipeline=None, embedder=None, watcher=None, pool=None):
+def _make_app(store, *, pipeline=None, embedder=None, watcher=None):
     """Minimal app + every route these tests exercise."""
     app = web.Application()
     state = MagicMock()
@@ -67,9 +67,6 @@ def _make_app(store, *, pipeline=None, embedder=None, watcher=None, pool=None):
         app["knowledge_embedder"] = embedder
     if watcher is not None:
         app["knowledge_watcher"] = watcher
-    # Our PR drops the legacy llm_pool fallback for URL sync: the fetch pool
-    # is required explicitly, so the shared _make_app must register it.
-    app["knowledge_fetch_pool"] = pool if pool is not None else MagicMock(shutdown=AsyncMock())
     app["knowledge_sync"] = MagicMock(get_connector=MagicMock(return_value=None))
 
     r = app.router

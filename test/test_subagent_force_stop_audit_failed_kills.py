@@ -56,12 +56,8 @@ _no_tree_behind_the_leader = subagent_force_stop_audit_helpers._no_tree_behind_t
 class TestReaperRecordsAFailedKill:
     """``reaper_force_kill`` never says ``reaped`` for a process the kill left alive.
 
-    ``_sigkill_session`` raises nothing -- the reap must still finish the
-    teardown it owns -- but it REPORTS what stopped the kill: the broadcast
-    guard's refusal of the pid, or the error the kill raised. ``_force_reap``
-    carries that into the run's error text (``…; kill failed: <reason>``) and
-    audits ``failed``. A swallowed refusal leaves only a log line and an audit
-    that reads ``reaped`` while the process keeps running.
+    ``_sigkill_session`` raises nothing (the reap must still finish its teardown) but reports
+    what stopped the kill, which ``_force_reap`` appends as ``…; kill failed: <reason>``.
     """
 
     @pytest.mark.asyncio
@@ -205,6 +201,45 @@ class TestReaperRecordsAFailedKill:
 
         assert _audit(mock_sel, "reaper_force_kill")["outcome"] == "reaped"
         assert "kill failed" not in info.error
+
+    @pytest.mark.asyncio
+    async def test_a_gone_root_s_unrecorded_grandchild_is_named_not_signalled(self) -> None:
+        """The cron reaper's case on the sub-agent reaper: 8181 under recorded 6161 is named."""
+        manager, info, key = _overdue_run("escaped1", pid=5151)
+        manager._sessions._sessions[key].provider._client._child_pids = {6161: ("111", b"node")}
+        _hanging_reset(manager)
+        swept: list[dict[int, Any]] = []
+
+        def _start_ids(pid: int) -> str | None:
+            # The root is gone; 6161 reads back until the sweep ends it; 8181 runs on.
+            return {6161: None if swept else "111", 8181: "888"}.get(pid)
+
+        with (
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+            patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05),
+            patch(
+                "kiro_crew.acp.client._get_child_pids",
+                side_effect=lambda pid, *_: [8181] if pid == 6161 else [],
+            ) as walk,
+            patch(
+                "kiro_crew.acp.client._kill_escaped_children",
+                side_effect=lambda pids: swept.append(dict(pids)),
+            ),
+            patch("kiro_crew.platform_compat.get_process_start_id", side_effect=_start_ids),
+            patch("kiro_crew.platform_compat.pid_exists", side_effect=lambda pid: pid != 5151),
+            patch("kiro_crew.platform_compat.pid_is_zombie", return_value=False),
+            patch("kiro_crew.subagent.write_tombstone"),
+        ):
+            await manager._force_reap("escaped1", info, 7200.0)
+
+        walk.assert_called_once_with(6161)
+        assert swept == [{6161: ("111", b"node")}], "the unrecorded grandchild was signalled"
+        named = "unrecorded descendant pid 8181 of a recorded child still running"
+        assert named in info.error, info.error
+        audit = _audit(mock_sel, "reaper_force_kill")
+        assert audit["outcome"] == "failed"
+        assert named in audit["metadata"]["kill_failed"]
 
     @pytest.mark.asyncio
     async def test_a_user_stop_whose_kill_failed_stays_stopped_but_names_the_failure(
@@ -424,11 +459,8 @@ def _orphan_on_disk(agent_id: str, pid: int) -> SubagentManager:
 class TestOrphanReconcileRecordsAFailedKill:
     """``orphan_reconcile_kill`` never says ``killed`` for a process the kill left standing.
 
-    The restart reconciliation is the third caller of a best-effort kill (after
-    the reaper and the run's own teardown); the defect shape these tests pin is
-    a ``_kill_orphan_pid`` that returns nothing and swallows every error while
-    its caller audits ``killed`` regardless -- the same shape the two other
-    paths had.
+    The restart reconciliation is the third caller of a best-effort kill; ``_kill_orphan_pid``
+    must report its errors rather than let the caller audit ``killed`` regardless.
     """
 
     @pytest.mark.asyncio
@@ -577,7 +609,8 @@ class TestALeakedProcessIsEndedWithoutASecondNotice:
     ) -> None:
         manager, info, key = self._completed_run_on_disk("leak-once", pid=5151)
         await self._fail_the_kill(manager, info, key)
-        assert "kill failed:" in (info.error or "")
+        # A completed run keeps its clean record; the survivor is the flag's.
+        assert not info.error and info._leaked_process is True
 
         mock_sel, notify = await self._restart("leak-once", kill={})
 
@@ -587,7 +620,7 @@ class TestALeakedProcessIsEndedWithoutASecondNotice:
         tombstone = read_tombstone("leak-once")
         assert tombstone is not None
         assert "leaked_process" not in tombstone, "a process already ended is retried forever"
-        assert "kill failed:" in tombstone["detail"], "clearing the flag lost the record"
+        assert tombstone["outcome"] == "completed", "clearing the flag lost the record"
 
     @pytest.mark.asyncio
     async def test_a_kill_that_fails_again_keeps_the_flag_for_the_start_after(
@@ -832,16 +865,9 @@ class TestTheOrphanKillLeavesTheLoopRunning:
 class TestTheKillFailureStaysInsideTheErrorBound:
     """The reap retains a bounded ``info.error`` through the shared ``with_kill_failure``.
 
-    Every writer of ``info.error`` holds it to ``MAX_ERROR_DETAIL_LEN`` -- the
-    one bound in ``kiro_crew.process_identity`` the sub-agent record and the cron
-    job's ``last_error`` share -- at the point of retention, and the record, the
-    tombstone and the report all carry the string as is. The kill's reason is
-    not this code's to size: a Windows tree drain that fails carries the tree's
-    own detail, one line per process the run spawned, and the error it is
-    appended to may already sit at the bound. The joining is the shared home's
-    (its own tests pin the helper's arithmetic: the reserve, the trim, the
-    verbatim short case); what is pinned HERE is that the sub-agent reap goes
-    through it.
+    ``MAX_ERROR_DETAIL_LEN`` is shared with the cron job's ``last_error``. A failed Windows
+    tree drain adds one line per process, and the error may already sit at the bound. The
+    helper's arithmetic has its own tests; this pins that the reap goes through it.
     """
 
     @pytest.mark.asyncio

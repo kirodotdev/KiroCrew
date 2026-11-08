@@ -9,10 +9,11 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from kiro_crew.auth.login.builder_id import BuilderIdAuthError
+from kiro_crew.auth.login.builder_id import BuilderIdAuthError, StartUrlRejectedError
 from kiro_crew.auth.login.device import DeviceAuthError
 from kiro_crew.auth.service import (
     InvalidRegionError,
+    InvalidStartUrlError,
     KasLoginService,
     LoopbackUnavailableError,
     MissingStartUrlError,
@@ -179,6 +180,13 @@ async def api_kas_login_begin_device(request: web.Request) -> web.Response:
             {"error": "Not a valid AWS region name.", "code": "invalid_region"},
             status=400,
         )
+    except InvalidStartUrlError as err:
+        return web.json_response({"error": str(err), "code": "invalid_start_url"}, status=400)
+    except StartUrlRejectedError as err:
+        # AWS refused what the user typed (the URL or the region): a 400 the form
+        # can fix, not an auth-service failure.
+        await _audit(request, "kas_login_begin_device", "failed", error=str(err))
+        return web.json_response({"error": str(err), "code": "invalid_start_url"}, status=400)
     except (DeviceAuthError, BuilderIdAuthError) as err:
         await _audit(request, "kas_login_begin_device", "failed", error=str(err))
         return web.json_response(
@@ -222,6 +230,20 @@ async def api_kas_login_poll(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Kiro auth service is unreachable.", "code": "auth_service_unreachable"},
             status=502,
+        )
+    if result.get("code") == "signed_out_during_login":
+        # A sign-out landed (in this gateway or from `kirocrew kas logout` in a
+        # shell) while this login was pending, so its credential was not
+        # persisted. The same 409 the begin handlers answer for the in-flight
+        # case: the card ends this sign-in and offers Start over, and never
+        # restarts the provider on another transport as it would for a plain
+        # terminal poll answer.
+        return web.json_response(
+            {
+                "error": "Signed out while the sign-in was pending.",
+                "code": "signed_out_during_login",
+            },
+            status=409,
         )
     # Only the authorized transition persists a credential — that is the state
     # change worth an audit line; a pending tick is just a read.

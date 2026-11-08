@@ -21,8 +21,12 @@ export function wakesCrew(
   isDefaultCrew: boolean,
   memberId: string,
 ): boolean {
-  if (job.script || job.command) return false
+  // `member_id` first: the server stamps it on every job a crewmate creates,
+  // script and command jobs included, so it is an explicit owner. Only the
+  // name-based fallbacks below must skip script and command jobs, which open no
+  // session and so run as no crew.
   if (job.member_id) return job.member_id === memberId
+  if (job.script || job.command) return false
   const seq = (job.agent_sequence || []).map(a => (a || '').trim()).filter(Boolean)
   if (seq.length > 1) return seq.includes(crew)
   const bound = (job.agent || '').trim()

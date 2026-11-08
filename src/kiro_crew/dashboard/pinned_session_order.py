@@ -16,12 +16,12 @@ agent cannot rewrite the order on disk and have a restart load it.
 
 Rules the writers follow:
 
-* No file at all means the person never reordered. Pinned rows then keep the
-  sidebar's own sort, which is what they had before this store existed. A
-  file holding an empty list is an order that was saved and has since emptied.
+* No file at all means no order was saved yet, by a reorder or by the
+  sidebar's first-load seed. Pinned rows then keep the sidebar's own sort,
+  which is what they had before this store existed. A file holding an empty
+  list is an order that was saved and has since emptied.
 * Pinning a session appends it to the end once an order has been saved, even
-  one that has since emptied. A person who never reordered keeps the plain
-  sort.
+  one that has since emptied. With no saved order it keeps the plain sort.
 * Unpinning a session removes it, so re-pinning later puts it at the end
   instead of back in an old slot.
 * A key whose live slot is unpinned is dropped on the next write. A key with
@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +183,7 @@ def save(path: Path, keys: list[str]) -> None:
     ``restrict_to_owner`` also refuses a linked parent, so a ``pinned-order``
     symlink planted before the directory was fenced cannot redirect the write.
     """
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(path.parent)
     atomic_write(path, json.dumps(keys), fsync=True, restrict_to_owner=True)
 
 
@@ -264,9 +265,9 @@ def after_pin_change(
 ) -> list[str]:
     """The order after *key* is pinned or unpinned.
 
-    Unpinning removes the key. Pinning appends it once the person has ordered
-    their pins at all (*stored*: an order was saved, even one that has since
-    emptied). A person who never reordered keeps the plain sort.
+    Unpinning removes the key. Pinning appends it once an order is stored at
+    all (*stored*: an order was saved, even one that has since emptied). With
+    no saved order the pin keeps the plain sort.
     """
     rest = [k for k in current if k != key]
     if now_pinned and (stored or rest):

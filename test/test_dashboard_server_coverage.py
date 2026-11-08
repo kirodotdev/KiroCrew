@@ -1,18 +1,9 @@
 """Coverage tests for the residual branches of ``kiro_crew.dashboard.server``.
 
-The module's route/middleware wiring is already pinned elsewhere
-(``test_api_server.py``, ``test_api_health.py``, ``test_dashboard_static_routes.py``,
-``test_dashboard_security_headers.py``, ``test_write_secret_file.py``,
-``test_dashboard_yolo_startup.py``). What was left untested were the *failure*
-and *edge* paths of the extracted helpers — the ones that exist precisely so a
-config hiccup, a hostile symlink, an unreachable SSH host or a raising OS
-inhibitor can never wedge or crash gateway startup. Those are exercised here
-against real behaviour (real ``aiohttp`` apps, real ``on_cleanup`` dispatch,
-real ``asyncio`` tasks) rather than by asserting internals.
-
-Everything stays inside ``tmp_path``: no network, no subprocess, no fixed port
-(``port=0`` only), and ``SleepInhibitor`` is always replaced so no
-``caffeinate`` / ``systemd-inhibit`` process is ever started.
+Route wiring is pinned elsewhere (``test_api_server.py`` and others); these are the
+failure paths that keep a config hiccup, hostile symlink, unreachable SSH host or raising
+inhibitor from crashing startup. Everything stays in ``tmp_path``, and ``SleepInhibitor``
+is always replaced so no ``caffeinate`` / ``systemd-inhibit`` process starts.
 """
 
 from __future__ import annotations
@@ -44,11 +35,9 @@ from kiro_crew.testing.wait import async_wait_until
 async def _sweep_once_released(path: Path, *, timeout: float | None = None) -> None:
     """Remove ``path`` once the server has let go of the file it served from it.
 
-    ``web.FileResponse`` closes its file on an executor thread after the client
-    already holds the body, and Windows refuses to unlink a file any handle still
-    holds (``[WinError 32]``). So the sweep retries on ``PermissionError`` under a
-    bounded deadline, off the loop so the server's close can run, and fails by name,
-    chained to the last ``PermissionError``, if the handle is never released.
+    ``web.FileResponse`` closes its file on an executor thread after the client has the
+    body, and Windows refuses to unlink an open file (``[WinError 32]``), so this retries
+    on ``PermissionError`` off the loop under a bounded deadline.
     """
 
     def _swept() -> bool:
@@ -68,12 +57,8 @@ async def _sweep_once_released(path: Path, *, timeout: float | None = None) -> N
 def virtual_wait_clock(monkeypatch):
     """Drive ``kiro_crew.testing.wait``'s deadline and evaluation bound in the test.
 
-    ``async_wait_until`` reaches its deadline through a :class:`ManualClock`, so a
-    timeout passes in virtual time at no wall-clock cost. Its per-evaluation bound,
-    which times each ``off_loop=True`` call against the real clock, is replaced with
-    one that awaits the evaluation to completion: the test's predicate is an instant
-    mock, so running it inline removes any dependence on how fast a worker thread
-    schedules. The verdict is then fixed by the mock, never by runner speed.
+    The deadline runs on a :class:`ManualClock`; the real-clock per-evaluation bound is
+    replaced with a plain await, so the verdict never depends on runner speed.
     """
     clock = ManualClock(monotonic_start=0.0)
     real_asyncio_sleep = asyncio.sleep
@@ -142,9 +127,7 @@ class TestShouldPreventSleep:
         assert await srv._should_prevent_sleep(_state(sessions=MagicMock()), 0) is False
 
     @pytest.mark.asyncio
-    async def test_opt_out_allows_sleep_without_consulting_sessions(
-        self, monkeypatch
-    ) -> None:
+    async def test_opt_out_allows_sleep_without_consulting_sessions(self, monkeypatch) -> None:
         loader = MagicMock()
         loader.load.return_value = _cfg(prevent_sleep=False)
         monkeypatch.setattr(srv, "KiroCrewConfig", loader)
@@ -175,9 +158,7 @@ class TestShouldPreventSleep:
         loader = MagicMock()
         loader.load.return_value = _cfg(prevent_sleep=True)
         monkeypatch.setattr(srv, "KiroCrewConfig", loader)
-        sessions = MagicMock(
-            any_active_turn=MagicMock(side_effect=RuntimeError("map busy"))
-        )
+        sessions = MagicMock(any_active_turn=MagicMock(side_effect=RuntimeError("map busy")))
 
         assert await srv._should_prevent_sleep(_state(sessions=sessions), 0) is False
 
@@ -186,9 +167,7 @@ class TestShouldPreventSleep:
 
 
 class TestExtraFrameAncestors:
-    def test_out_of_range_stashed_port_is_rejected_not_trusted(
-        self, monkeypatch
-    ) -> None:
+    def test_out_of_range_stashed_port_is_rejected_not_trusted(self, monkeypatch) -> None:
         """A digits-only but out-of-range stashed claim must not become an origin.
 
         ``0`` and ``70000`` pass ``.isdigit()``, so only the range check stops
@@ -253,9 +232,7 @@ class TestDiscoverAppWindowEntries:
 
 class TestWindowEntryHandler:
     @pytest.mark.asyncio
-    async def test_handler_serves_the_file_bound_at_registration(
-        self, tmp_path
-    ) -> None:
+    async def test_handler_serves_the_file_bound_at_registration(self, tmp_path) -> None:
         entry = tmp_path / "src" / "apps" / "papyrus" / "board.html"
         entry.parent.mkdir(parents=True)
         entry.write_text("<h1>board</h1>", encoding="utf-8")
@@ -293,9 +270,7 @@ class TestWindowEntryHandler:
             assert await resp.text() == "<h1>new</h1>"
 
     @pytest.mark.asyncio
-    async def test_sweep_waits_out_a_handle_released_late(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    async def test_sweep_waits_out_a_handle_released_late(self, tmp_path, monkeypatch) -> None:
         """A sharing violation that clears is retried until the tree is gone."""
         old = tmp_path / "old"
         (old / "sub").mkdir(parents=True)
@@ -343,9 +318,7 @@ class TestWindowEntryHandler:
         assert old.exists()
 
     @pytest.mark.asyncio
-    async def test_app_window_entries_are_registered_as_get_routes(
-        self, tmp_path
-    ) -> None:
+    async def test_app_window_entries_are_registered_as_get_routes(self, tmp_path) -> None:
         """``_register_dist_static_routes`` must mount every discovered window.
 
         A missing mount is not a small failure: the request falls through to the
@@ -375,12 +348,10 @@ class TestWindowEntryHandler:
 class TestPrecomputeTelemetry:
     """Telemetry is best-effort: no individual failure may abort startup."""
 
-    def test_every_stage_failure_is_swallowed(self, monkeypatch) -> None:
+    def test_every_stage_failure_is_swallowed(self, monkeypatch, caplog) -> None:
         import kiro_crew.dashboard.handlers_system as hs
 
-        monkeypatch.setattr(
-            hs, "_get_owner_hash", MagicMock(side_effect=RuntimeError("no owner"))
-        )
+        monkeypatch.setattr(hs, "_get_owner_hash", MagicMock(side_effect=RuntimeError("no owner")))
         monkeypatch.setattr(
             hs, "_get_static_system_info", MagicMock(side_effect=RuntimeError("no os"))
         )
@@ -390,15 +361,18 @@ class TestPrecomputeTelemetry:
             srv, "current_context", MagicMock(return_value=SimpleNamespace(telemetry=telemetry))
         )
 
-        srv._precompute_telemetry(_state())  # must not raise
+        with caplog.at_level(logging.WARNING, logger=srv.logger.name):
+            srv._precompute_telemetry(_state())  # must not raise
 
         telemetry.record_event.assert_called_once_with(
             "gateway_start", {"owner_id_hash": "unknown", "os_type": "", "arch": ""}
         )
+        assert [r.getMessage() for r in caplog.records if r.name == srv.logger.name] == [
+            "Failed to pre-compute owner hash",
+            "Failed to pre-compute system info",
+        ]
 
-    def test_gateway_start_event_carries_the_precomputed_fields(
-        self, monkeypatch
-    ) -> None:
+    def test_gateway_start_event_carries_the_precomputed_fields(self, monkeypatch) -> None:
         import kiro_crew.dashboard.handlers_system as hs
 
         monkeypatch.setattr(hs, "_get_owner_hash", MagicMock(return_value="hash-1"))
@@ -454,9 +428,7 @@ class TestWriteSecretFileDescriptorCleanup:
         assert closed, "the open descriptor must be closed on the failure path"
         assert not secret_path.exists()
 
-    def test_close_failure_does_not_mask_the_original_error(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    def test_close_failure_does_not_mask_the_original_error(self, tmp_path, monkeypatch) -> None:
         secret_path = tmp_path / ".local_secret"
         monkeypatch.setattr(
             srv.platform_compat,
@@ -512,7 +484,7 @@ class TestClaimedDashboardSlots:
 # ── _apply_startup_yolo ─────────────────────────────────────────────────
 
 
-def test_startup_yolo_survives_a_failing_duration_seed(monkeypatch) -> None:
+def test_startup_yolo_survives_a_failing_duration_seed(monkeypatch, caplog) -> None:
     """A broken ``yolo_duration`` seed must not abort the rest of startup."""
     monkeypatch.setattr(
         srv, "apply_config_duration", MagicMock(side_effect=RuntimeError("bad policy"))
@@ -521,9 +493,13 @@ def test_startup_yolo_survives_a_failing_duration_seed(monkeypatch) -> None:
     monkeypatch.setattr(srv, "grant_declared_yolo", granted)
     cfg = SimpleNamespace(agent=SimpleNamespace(dangerously_skip_permissions=False))
 
-    srv._apply_startup_yolo(_state(), cfg)
+    with caplog.at_level(logging.WARNING, logger=srv.logger.name):
+        srv._apply_startup_yolo(_state(), cfg)
 
     # Opt-out config: the seed failure is logged, and no grant is attempted.
+    assert [r.getMessage() for r in caplog.records if r.name == srv.logger.name] == [
+        "Could not apply the configured YOLO duration"
+    ]
     assert not granted.called
 
 
@@ -532,16 +508,21 @@ def test_startup_yolo_survives_a_failing_duration_seed(monkeypatch) -> None:
 
 class TestReviveIntendedInstances:
     @pytest.mark.asyncio
-    async def test_no_intent_means_no_connect_attempt(self) -> None:
-        registry = MagicMock(list=MagicMock(return_value=[SimpleNamespace(id="a", was_connected=False)]))
+    async def test_no_intent_means_no_connect_attempt(self, caplog) -> None:
+        registry = MagicMock(
+            list=MagicMock(return_value=[SimpleNamespace(id="a", was_connected=False)])
+        )
         manager = MagicMock(connect=AsyncMock())
 
-        await srv._revive_intended_instances(registry, manager)
+        with caplog.at_level(logging.INFO, logger=srv.logger.name):
+            await srv._revive_intended_instances(registry, manager)
 
         assert not manager.connect.called
+        # No revive round is announced when nothing was left connected.
+        assert [r.getMessage() for r in caplog.records if r.name == srv.logger.name] == []
 
     @pytest.mark.asyncio
-    async def test_one_failing_host_does_not_abort_the_rest(self) -> None:
+    async def test_one_failing_host_does_not_abort_the_rest(self, caplog) -> None:
         """Per-instance isolation is the whole point: a down host must leave its
         own tab in an error state without stopping the other revivals."""
         registry = MagicMock(
@@ -555,9 +536,7 @@ class TestReviveIntendedInstances:
         )
         results = {
             "boom": RuntimeError("ssh refused"),
-            "degraded": SimpleNamespace(
-                state=srv.TunnelState.ERROR, error="auth required"
-            ),
+            "degraded": SimpleNamespace(state=srv.TunnelState.ERROR, error="auth required"),
             "ok": SimpleNamespace(state=srv.TunnelState.CONNECTED, error=""),
         }
 
@@ -569,12 +548,21 @@ class TestReviveIntendedInstances:
 
         manager = MagicMock(connect=AsyncMock(side_effect=_connect))
 
-        await srv._revive_intended_instances(registry, manager)
+        with caplog.at_level(logging.INFO, logger=srv.logger.name):
+            await srv._revive_intended_instances(registry, manager)
 
         assert [c.args[0] for c in manager.connect.await_args_list] == [
             "boom",
             "degraded",
             "ok",
+        ]
+        # Each host's own outcome is reported, the failure included.
+        logged = [r.getMessage() for r in caplog.records if r.name == srv.logger.name]
+        assert logged == [
+            "Auto-reconnecting 3 instance(s) on startup",
+            "Startup auto-reconnect of boom failed",
+            "Startup auto-reconnect of degraded did not connect (error): auth required",
+            "Auto-reconnected instance ok",
         ]
 
 
@@ -587,7 +575,7 @@ class TestConnectionsWarmLifecycle:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from kiro_crew.connections import warm
+        from kiro_crew.connections import endpoint_migration, warm
 
         calls: list[str] = []
         scavenge_started = asyncio.Event()
@@ -611,6 +599,11 @@ class TestConnectionsWarmLifecycle:
         # the gateway boot path, so this module's globals never hold them.
         monkeypatch.setattr(warm, "scavenge_warm_mint_artifacts", _scavenge)
         monkeypatch.setattr(warm, "shutdown_warm_mint", _shutdown)
+        monkeypatch.setattr(
+            endpoint_migration,
+            "migrate_retired_endpoints",
+            lambda: calls.append("migrate") or [],
+        )
         monkeypatch.setattr(asyncio, "to_thread", _to_thread)
         app = web.Application()
         state = _state()
@@ -632,7 +625,9 @@ class TestConnectionsWarmLifecycle:
         await asyncio.gather(*state._background_tasks)
         await cleanup(app)
 
-        assert calls == ["scavenge", "shutdown"]
+        # The migration runs first, in the same worker thread, so the warm pool
+        # and the card read the current endpoint.
+        assert calls == ["migrate", "scavenge", "shutdown"]
 
     def test_both_gateway_modes_register_the_same_lifecycle(self) -> None:
         registration = "_register_connections_warm_lifecycle(app, state)"
@@ -652,57 +647,6 @@ class TestConnectionsWarmLifecycle:
                 else "await site.start()"
             )
             assert source.index(serving) < source.index(kick)
-
-
-# ── _register_browser_view_cleanup ──────────────────────────────────────
-
-
-class TestBrowserSessionsLifecycle:
-    @pytest.mark.asyncio
-    async def test_startup_reclaim_parks_in_the_state_background_tasks(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The reclaim runs off the boot path as a background task, and that task
-        lives in ``state._background_tasks`` with every other one ``server.py``
-        holds -- there is no second, module-global task set for it."""
-        started = asyncio.Event()
-        release = asyncio.Event()
-        calls: list[str] = []
-
-        def _reclaim() -> int:
-            calls.append("reclaim")
-            return 0
-
-        async def _to_thread(func: Any, *args: Any) -> Any:
-            started.set()
-            await release.wait()
-            return func(*args)
-
-        monkeypatch.setattr(srv.browser_cli_launcher, "reclaim_stranded", _reclaim)
-        monkeypatch.setattr(asyncio, "to_thread", _to_thread)
-        app = web.Application()
-        state = _state()
-        srv._register_browser_view_cleanup(app, state)
-        startup = next(
-            hook for hook in app.on_startup if hook.__name__ == "_browser_sessions_startup"
-        )
-
-        await startup(app)
-        await started.wait()
-
-        assert calls == []  # still in flight: the hook did not wait on the CLI
-        assert len(state._background_tasks) == 1
-        assert not hasattr(srv, "_startup_tasks")
-
-        release.set()
-        await asyncio.gather(*state._background_tasks)
-        assert calls == ["reclaim"]
-        assert state._background_tasks == set()  # the done callback discards it
-
-    def test_the_gateway_passes_its_state_to_the_registration(self) -> None:
-        source = inspect.getsource(srv.start_dashboard)
-        assert "_register_browser_view_cleanup(app, state)" in source
 
 
 # ── _register_prevent_sleep_shutdown ────────────────────────────────────
@@ -789,9 +733,7 @@ class TestArmPreventSleepPoll:
         return state
 
     @pytest.mark.asyncio
-    async def test_poll_applies_the_predicate_then_releases_on_cancel(
-        self, monkeypatch
-    ) -> None:
+    async def test_poll_applies_the_predicate_then_releases_on_cancel(self, monkeypatch) -> None:
         polled = asyncio.Event()
 
         async def _should(_state_arg: Any, _port: int) -> bool:
@@ -843,9 +785,7 @@ class TestArmPreventSleepPoll:
         inhibitor = _FakeInhibitor()
         with caplog.at_level(logging.ERROR, logger=srv.logger.name):
             state = self._arm(monkeypatch, inhibitor, interval="not-a-number")
-            result = await asyncio.gather(
-                state._prevent_sleep_task, return_exceptions=True
-            )
+            result = await asyncio.gather(state._prevent_sleep_task, return_exceptions=True)
             await asyncio.sleep(0)  # let the done-callback run
 
         assert isinstance(result[0], TypeError)
@@ -858,22 +798,9 @@ class TestArmPreventSleepPoll:
 async def _start_api(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     """Start the headless API server WITHOUT binding a real listener.
 
-    ``data_home`` (the server's own module-scope binding, used for
-    ``.local_secret``), ``state.config_dir`` and ``loader.config_dir`` (resolved
-    lazily by ``token_auth``) are all redirected into ``tmp_path``.
-
-    The listener is neutralised too. ``start_api_server`` constructs
-    ``web.TCPSite(runner, bind_addr, port)`` and then binds it inside
-    ``_start_site``; constructing the site is inert, so stubbing ``_start_site``
-    alone means no host port is ever bound. AUTOSDE `no-test-side-effects` is
-    `blocking: true` and forbids a test starting a service -- and an ephemeral
-    ``port=0`` does not exempt it, because the rule is about the side effect, not
-    the port number. (``test/test_api_server.py`` on main does bind for real;
-    that is a pre-existing violation, not a licence for a new one.)
-
-    Stubbing only the bind keeps every residual path this module exists to
-    cover -- notably the secret-write failure arm, which still reaches
-    ``runner.cleanup()``.
+    ``data_home``, ``state.config_dir`` and ``loader.config_dir`` point into ``tmp_path``.
+    Only ``_start_site`` is stubbed: AUTOSDE `no-test-side-effects` forbids starting a
+    service even on ``port=0``, and every other path (e.g. ``runner.cleanup()``) still runs.
     """
     import kiro_crew.config.loader as _loader
     import kiro_crew.dashboard.state as _st
@@ -959,9 +886,7 @@ class TestStartApiServerResidualPaths:
             lambda token: token.removeprefix("signed:"),
         )
 
-        runner, _state_obj = await _start_api(
-            tmp_path, monkeypatch, subagents=subagents
-        )
+        runner, _state_obj = await _start_api(tmp_path, monkeypatch, subagents=subagents)
         try:
             secret = (tmp_path / ".local_secret").read_text(encoding="utf-8").strip()
             # Drive the app through the in-process harness rather than the
@@ -993,9 +918,7 @@ class TestStartApiServerResidualPaths:
         assert "spawn exploded" in errors[-1]["error"]
 
     @pytest.mark.asyncio
-    async def test_a_successful_api_call_is_audited_as_ok(
-        self, tmp_path, monkeypatch
-    ) -> None:
+    async def test_a_successful_api_call_is_audited_as_ok(self, tmp_path, monkeypatch) -> None:
         """The success arm of the audit must record the call, not only failures.
 
         (The middleware's non-``/api/`` pass-through is unreachable on this
@@ -1011,9 +934,7 @@ class TestStartApiServerResidualPaths:
             # In-process harness, not the production listener -- see the sibling
             # test above for why.
             async with TestClient(TestServer(runner.app)) as client:
-                resp = await client.get(
-                    "/api/crons", headers={"X-Internal-Secret": secret}
-                )
+                resp = await client.get("/api/crons", headers={"X-Internal-Secret": secret})
                 assert resp.status == 200
         finally:
             await runner.cleanup()
@@ -1036,14 +957,8 @@ class TestSttHooks:
     async def test_the_engine_is_imported_off_the_event_loop(self, monkeypatch) -> None:
         """169 ms of numpy and native binding must not run inline on the loop.
 
-        The boot delay was not enough on its own: it moved the import out of
-        ``runner.setup()`` (so it does not delay the first socket bind) but leaves it
-        running on the loop, where it stalls every socket and heartbeat the gateway is
-        serving at that moment.
-
-        Asserted on the THREAD the import runs in, not on elapsed time. A timing
-        assertion cannot tell the two apart, because a blocked loop also blocks the
-        test's own assertions until it clears.
+        Asserted on the THREAD the import runs in: a blocked loop also blocks the test's
+        own timing assertions, so elapsed time cannot tell the two apart.
         """
         import threading
 
@@ -1065,13 +980,9 @@ class TestSttHooks:
 
     @pytest.mark.asyncio
     async def test_shutdown_does_not_build_an_engine_that_never_existed(self, monkeypatch) -> None:
-        """`stt.close()` resolves through `stt.session`, which imports numpy at module
-        scope and whose `shared_engine()` CREATES an engine when none exists. On a
-        gateway that never transcribed anything, closing therefore pulled the
-        recogniser binding and built a WhisperEngine purely to release nothing.
+        """Closing STT on a gateway that never transcribed must not import the engine.
 
-        Asserted as "the engine module is still not imported", which is the effect
-        rather than a stand-in for it, and needs nothing stubbed.
+        `stt.session` imports numpy and its `shared_engine()` creates an engine on demand.
         """
         import sys
 

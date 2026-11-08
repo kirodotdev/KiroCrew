@@ -697,6 +697,8 @@ class TestDepsSeams(unittest.IsolatedAsyncioTestCase):
             task = app[routes._DEPS_REFRESH_TASKS_APP_KEY]["github:github.com:o/r"]
             await await_until(task, what="the scheduled deps refresh")
         rebuild.assert_awaited_once_with(app, KEY)
+        # The finished task gives its slot back, so the next stale read can refresh.
+        self.assertNotIn("github:github.com:o/r", app[routes._DEPS_REFRESH_TASKS_APP_KEY])
 
     async def test_the_rebuild_reaches_the_patched_issue_loader(self):
         app = web.Application()

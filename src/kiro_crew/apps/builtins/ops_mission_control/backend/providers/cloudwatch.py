@@ -206,7 +206,8 @@ class CloudWatchSignalSource:
         return provider_enabled(PROVIDER_ID)
 
     async def poll(self) -> list[Signal]:
-        if not self.configured():
+        # configured() reads config.json, so it runs off the loop like the poll itself.
+        if not await asyncio.to_thread(self.configured):
             return []
         return await asyncio.to_thread(self._poll_sync)
 
@@ -219,9 +220,7 @@ class CloudWatchSignalSource:
             # as a SUCCESSFUL poll that saw nothing — indistinguishable from "nothing is
             # firing". With expired credentials that reads as an all-clear over a live
             # estate, and `all_sources_healthy` then promises absence-means-recovery, which
-            # is the one claim this app must never make falsely. Found in review; it is the
-            # same "machinery that looks deliberate while doing nothing" defect the
-            # SignalsPanel `ready / ok` row was.
+            # is the one claim this app must never make falsely.
             #
             # `configured()` is the honest place to say "no AWS here" — boto3 missing or no
             # credential chain surfaces as a per-source error the Signals tab renders, not
@@ -257,7 +256,7 @@ class CloudWatchSignalSource:
             # `poll_all` needs to see the result is over-limit and mark the poll
             # non-authoritative, while draining an unbounded estate would trade this bug for the
             # memory/rate-limit one the cap exists to prevent. `_MAX_ALARM_PAGES` additionally
-            # bounds a provider that keeps handing back a token. Found in review (GPT 5.6).
+            # bounds a provider that keeps handing back a token.
             for page in range(_MAX_ALARM_PAGES):
                 try:
                     response = client.describe_alarms(**kwargs)
@@ -402,7 +401,9 @@ class CloudWatchEvidenceSource:
         return provider_enabled(EVIDENCE_PROVIDER_ID) or provider_enabled(PROVIDER_ID)
 
     async def gather(self, signal: Signal, budget: EvidenceBudget) -> list[Evidence]:
-        if not self.configured() or signal.source != PROVIDER_ID:
+        # The source check is free, so it goes first; configured() reads config.json
+        # (twice when disabled), so it runs off the loop like the gather itself.
+        if signal.source != PROVIDER_ID or not await asyncio.to_thread(self.configured):
             return []
         return await asyncio.to_thread(self._gather_sync, signal, budget)
 

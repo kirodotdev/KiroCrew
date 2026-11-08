@@ -10,6 +10,7 @@ the configured mode clamped to the governance floor. One of the owners
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import stat
@@ -18,6 +19,7 @@ from types import ModuleType
 
 import kiro_crew as _kiro_crew_pkg
 from kiro_crew import sandbox_plan
+from kiro_crew.apps import credential_masks
 from kiro_crew.atomic_write import refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.platform import current_context
@@ -26,6 +28,8 @@ from kiro_crew.sandbox_leaves import (
     _CREW_HIDDEN_LEAVES,
     _CREW_HOME_DEFAULT,
     _CREW_HOME_PREFIXES,
+    _CREW_READONLY_LEAVES,
+    _CREW_SANDBOX_VISIBLE_LEAVES,
     _MD_NOTEBOOK_STAGING_LEAF,
     _POLICY_CACHE_LEAF,
     _RELOCATED_CREW_HIDDEN_LEAVES,
@@ -114,12 +118,11 @@ def _install_root_targets_cached(package_dir: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(spellings))
 
 
-@functools.lru_cache(maxsize=1)
-def _bundled_kas_targets_cached(bundled_kas_dir: str) -> tuple[str, ...]:
-    """Both spellings of the desktop app's staged KAS engine root, or empty."""
-    if not bundled_kas_dir:
+def _bundled_root_spellings(bundled_dir: str) -> tuple[str, ...]:
+    """Lexical and canonical spellings of a directory the desktop shell exported, or empty."""
+    if not bundled_dir:
         return ()
-    lexical = os.path.normpath(os.path.abspath(bundled_kas_dir))
+    lexical = os.path.normpath(os.path.abspath(bundled_dir))
     spellings = [lexical]
     try:
         spellings.append(os.path.realpath(lexical))
@@ -128,9 +131,22 @@ def _bundled_kas_targets_cached(bundled_kas_dir: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(spellings))
 
 
+@functools.lru_cache(maxsize=1)
+def _bundled_kas_targets_cached(bundled_kas_dir: str) -> tuple[str, ...]:
+    """Both spellings of the desktop app's staged KAS engine root, or empty."""
+    return _bundled_root_spellings(bundled_kas_dir)
+
+
+@functools.lru_cache(maxsize=1)
+def _bundled_kiro_cli_targets_cached(bundled_kiro_dir: str) -> tuple[str, ...]:
+    """Both spellings of the desktop app's bundled kiro-cli directory, or empty."""
+    return _bundled_root_spellings(bundled_kiro_dir)
+
+
 def _resolved_install_root_targets() -> list[str]:
     """The running gateway's packaged install tree, sealed read-only for every
-    sandboxed child -- plus the desktop app's staged KAS engine root, when there is one.
+    sandboxed child -- plus the desktop app's staged KAS engine root and bundled kiro-cli
+    directory, when there are any.
 
     Every write that changes the install tree changes what the gateway executes on its
     next start, with the gateway's identity. The legitimate writer is the updater, which
@@ -147,13 +163,23 @@ def _resolved_install_root_targets() -> list[str]:
     home's own ``engines/kas`` is where ``kirocrew kas install`` writes), so no
     legitimate writer is fenced.
 
-    Computed once per process: neither location moves under a running gateway, and
+    The bundled kiro-cli directory (:data:`kiro_cli_bundle.BUNDLED_KIRO_DIR_ENV`,
+    ``backend-dist/kiro-cli`` beside the package directory) is the same class again:
+    the shell runs its ``kiro-cli-chat --version`` at every gateway start and the
+    gateway spawns it, outside any sandbox, for every relay session. It is not inside
+    the package directory, so that seal does not reach it on any layout. The shell
+    exports the variable only when the build shipped the payload, and it also sets
+    ``KIRO_NO_AUTO_UPDATE=1``, so kiro-cli never rewrites its own tree; the app's own
+    update replaces the bundle from outside every sandbox.
+
+    Computed once per process: no location moves under a running gateway, and
     caching keeps the ``realpath`` calls off every later spawn. Never raises.
     """
     # Read here rather than imported at module scope: every module-level name of this
-    # module is served through the ``sandbox`` facade, and the env name is the
-    # ``constants`` module's to export, not this one's.
+    # module is served through the ``sandbox`` facade, and each env name is its
+    # defining module's to export, not this one's.
     from kiro_crew.constants import BUNDLED_KAS_DIR_ENV
+    from kiro_crew.kiro_cli_bundle import BUNDLED_KIRO_DIR_ENV
 
     targets: list[str] = []
     try:
@@ -162,6 +188,12 @@ def _resolved_install_root_targets() -> list[str]:
         pass
     try:
         targets.extend(_bundled_kas_targets_cached(os.environ.get(BUNDLED_KAS_DIR_ENV, "").strip()))
+    except Exception:
+        pass
+    try:
+        targets.extend(
+            _bundled_kiro_cli_targets_cached(os.environ.get(BUNDLED_KIRO_DIR_ENV, "").strip())
+        )
     except Exception:
         pass
     return list(dict.fromkeys(targets))
@@ -231,6 +263,174 @@ def app_backend_visible_targets(app_name: str, mode: str = "standard") -> tuple[
         if not carveout_shadowed_by_foreign_mask(target, mode=mode)
         and not carveout_chain_has_planted_link(target)
     )
+
+
+def app_declared_mask_targets(
+    app_name: str, *, builtin: bool, mode: str = "standard"
+) -> tuple[str, ...]:
+    """Absolute paths of the masks *app_name* declares in ``credentialMasks``, for its backend.
+
+    The masks an app declares hide its own credential files from every sandboxed process,
+    and the app's spawned backend is those files' reader, so ``apps/backend.py`` hands
+    exactly these paths back as ``extra_visible_dirs`` for that one spawn. Each is under
+    ``apps/<app_name>/data/`` by construction (:mod:`kiro_crew.apps.credential_masks`),
+    and a leaf that IS a core leaf of any disposition, or holds one beneath it, is dropped:
+    the mask side already covers such a leaf without the declaration, so lifting it would
+    hand back a core mask (or a READONLY ceiling) instead of what the declaration added.
+    So an app gets back only what its own declaration added. *builtin* names the code the
+    spawn executes, as ``apps/backend.py`` established it: the shipped package's manifest
+    when true, the installed tree's when false, so an installed app holding a built-in's
+    name never gets back what the built-in declared. Resolved and filtered as
+    :func:`app_backend_visible_targets` resolves and filters, so a declared path beneath
+    another mask, or reached through a planted link, is refused rather than carved.
+
+    Only a path that is absent or a regular file with ONE name is handed back
+    (:func:`_liftable_declared_file`). A second hard link makes the file's bytes another
+    path's bytes too, maybe a core credential's, and a path comparison cannot tell; a
+    directory is not a declared entry at all. Either one stays masked for the backend.
+
+    Returns ``()`` for an app that declares nothing.
+    """
+    # Every crew-home leaf core gives a disposition: lifting one, or a directory holding
+    # one, would change what core decided about it.
+    core = (
+        *_CREW_HIDDEN_LEAVES,
+        *_RELOCATED_CREW_HIDDEN_LEAVES,
+        *_CREW_READONLY_LEAVES,
+        *_CREW_SANDBOX_VISIBLE_LEAVES,
+    )
+    leaves = tuple(
+        leaf
+        for leaf in credential_masks.declared_crew_leaves_for(app_name, builtin=builtin)
+        if not any(entry == leaf or entry.startswith(leaf + "/") for entry in core)
+    )
+    if not leaves:
+        return ()
+    home = str(Path.home())
+    targets = [os.path.join(home, entry) for entry in _crew_home_entries(leaves)]
+    targets.extend(_relocated_crew_targets(leaves))
+    return tuple(
+        target
+        for target in targets
+        if not carveout_shadowed_by_foreign_mask(target, mode=mode)
+        and not carveout_chain_has_planted_link(target)
+        and _liftable_declared_file(target)
+    )
+
+
+def _liftable_declared_file(target: str) -> bool:
+    """Whether a declared *target* may go back to its app's backend: absent, or a one-name file.
+
+    Judged with ``lstat``, so a link is never followed. An absent path is liftable so the
+    backend can create its file; anything else, including a path this cannot stat, is not.
+    """
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        info = None
+    if info is not None and stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+        return True
+    logger.warning(  # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the word "credential" names the leaf CLASS; the argument is a path and no file is read.  # noqa: E501  # fmt: skip
+        "sandbox: not handing the declared credential mask %s back to its app's backend: it "
+        "is not a file with a single name (a second hard link, a directory, or unreadable), "
+        "so it stays masked for that backend too. Remove the extra link, or list files.",
+        target,
+    )
+    return False
+
+
+def enterprise_policy_cache_view(
+    mode: str = "standard", extra_hidden_dirs: tuple[str, ...] = ()
+) -> tuple[str, ...]:
+    """The governance cache to lift READ-ONLY for a sandboxed spawn, in an enterprise build.
+
+    An enterprise build always enters the central tier (RFC D2), including a Kiro Crew
+    MCP server kiro-cli starts inside the agent sandbox. That process reaches neither the
+    sign-in nor the control plane, so it resolves the ceiling from the cache in cache-only
+    mode (``policy_distribution_source.cache_only``) and fails closed without it. The cache
+    holds only the document the agent is already governed by, a digest of the build's
+    fixed source and the fetch validators; no credential. The vault and every other
+    credential path stay hidden.
+
+    Lifted the way ``apps/backend.py`` lifts it for a cache-only backend: one spelling,
+    refused when it sits beneath a foreign mask (:func:`carveout_shadowed_by_foreign_mask`),
+    and kept read-only by the plan for every spelling (``sandbox_plan.is_policy_cache_dir``).
+    ``()`` in an oss build, so an oss sandbox is unchanged.
+
+    Also ``()``, so the cache stays masked and a cache-only child fails closed, when:
+
+    * one of the caller's own *extra_hidden_dirs* is the cache or an ancestor of it. A
+      lift cancels every mask that contains it, so lifting would take down a mask the
+      caller asked for (a whole crew home hidden from agent-authored test code);
+    * the metadata is in the format older builds wrote, which recorded the source URL
+      in plain text, and a pre-signed URL is a credential. The gateway's next fetch or
+      304 rewrites it without the source.
+    """
+    try:
+        from kiro_crew.edition import is_enterprise
+
+        if not is_enterprise():
+            return ()
+        target = os.path.join(str(config_dir()), _POLICY_CACHE_LEAF)
+    except Exception:
+        logger.debug("could not resolve the governance cache for the sandbox", exc_info=True)
+        return ()
+    if extra_hidden_dirs and _caller_mask_contains(target, extra_hidden_dirs):
+        return ()
+    if carveout_shadowed_by_foreign_mask(target, mode=mode):
+        return ()
+    if _policy_cache_meta_names_its_source(target):
+        logger.warning(
+            "the governance cache still carries its source in plain text; keeping it hidden "
+            "from the sandbox until the gateway's next fetch rewrites it"
+        )
+        return ()
+    return (target,)
+
+
+def _caller_mask_contains(target: str, hidden: tuple[str, ...]) -> bool:
+    """Would a lift of *target* cancel one of the caller's *hidden* masks?
+
+    Checked both as written (the Seatbelt plan compares spellings) and with the crew-home
+    alias fold the namespace plan applies (``sandbox_plan.fold_crew_home_alias``), so a
+    mask spelled under ``$HOME`` still counts when the data home resolves elsewhere. An
+    alias table that cannot be built reads as "contains": the mask is kept.
+    """
+    try:
+        aliases = _crew_home_alias_roots()
+    except Exception:
+        logger.debug("could not resolve the crew-home aliases", exc_info=True)
+        return True
+    folded_target = sandbox_plan.fold_crew_home_alias(os.path.abspath(target), aliases)
+    for path in hidden:
+        if sandbox_plan.hidden_path_contains_visible_path(path, (target,)):
+            return True
+        folded = sandbox_plan.fold_crew_home_alias(os.path.abspath(path), aliases)
+        if sandbox_plan.hidden_path_contains_visible_path(folded, (folded_target,)):
+            return True
+    return False
+
+
+#: The cache's metadata leaf, mirroring ``policy_distribution_cache._CACHE_META_LEAF``.
+_POLICY_CACHE_META_LEAF = "policy.meta.json"
+
+
+def _policy_cache_meta_names_its_source(cache: str) -> bool:
+    """Does the cache metadata carry a plaintext ``source``? Unreadable reads as yes."""
+    try:
+        with open(os.path.join(cache, _POLICY_CACHE_META_LEAF), "rb") as handle:
+            raw = handle.read(64 * 1024)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    try:
+        meta = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return True  # the reader refuses it anyway, and its bytes are not known to be clean
+    return not isinstance(meta, dict) or "source" in meta
 
 
 def crew_home_visible_spellings(path: str) -> tuple[str, ...]:
@@ -974,7 +1174,7 @@ _AGENT_DENIED_ENV_KEYS: list[str] = [
     # list has consumers with two different matching rules: the spawn scrubs here use
     # ``startswith``, but ``cron_script._CRON_ENV_DENY`` tests exact membership and
     # ``mcp_cron`` builds ``\b``-anchored regexes from it, and a prefix entry silently
-    # matches nothing in either. ``test_governance_distribution`` pins these against
+    # matches nothing in either. ``test_governance_distribution_redaction`` pins these against
     # ``POLICY_DISTRIBUTION_ENV_VARS``, which owns the set, so a variable added there
     # cannot quietly stay agent-readable.
     "KIROCREW_POLICY_URL",
@@ -1203,8 +1403,13 @@ def _clamp_sandbox_mode_to_floor(mode: str, floor: str | None) -> str:
     reads as "floor absent".  Here, an unknown floor/mode value raises rather
     than ranking it as 0 (which would fail open).
     """
+    from kiro_crew.edition_locks import sandbox_mode_floor
     from kiro_crew.platform.governance import _ORDINAL_SCALES, OrdinalControl
 
+    # Enterprise: ``off`` reads as the shipped default tier, so no caller-supplied
+    # mode goes below Crew's own sandbox (RFC enterprise edition, "Minimum sandbox
+    # level", D7). The governance floor below still clamps it further up.
+    mode = sandbox_mode_floor(mode, _SANDBOX_MODE_FALLBACK)
     if not floor:
         return mode
     scale = _ORDINAL_SCALES["sandbox"]

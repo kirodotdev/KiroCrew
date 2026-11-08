@@ -1,11 +1,11 @@
-"""Tests for OPTIONS multi-select checkboxes + Send button."""
+"""Tests for the OPTIONS card: one-click buttons and the static answered/expired forms."""
 
 from __future__ import annotations
 
 from conftest import assert_rejected_without_backtracking
 from kiro_crew.slack.format import (
-    OPTIONS_CHECKBOXES_ACTION,
-    OPTIONS_SUBMIT_ACTION,
+    OPTIONS_ACTION_PREFIX,
+    OPTIONS_SEVERAL_ACTION,
     build_options_blocks,
     build_options_selected_blocks,
     extract_options,
@@ -80,47 +80,48 @@ class TestExtractOptions:
         assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" * n + "x")
 
 
-class TestBuildOptionsBlocks:
-    def test_returns_checkboxes_and_send_button(self):
-        blocks = build_options_blocks(["A", "B"])
-        actions = blocks[0]
-        assert actions["type"] == "actions"
-        elements = actions["elements"]
-        assert elements[0]["type"] == "checkboxes"
-        assert elements[0]["action_id"] == OPTIONS_CHECKBOXES_ACTION
-        assert elements[1]["type"] == "button"
-        assert elements[1]["action_id"] == OPTIONS_SUBMIT_ACTION
-        assert elements[1]["style"] == "primary"
+def _buttons(blocks):
+    return [
+        el
+        for blk in blocks
+        if blk["type"] == "actions"
+        for el in blk["elements"]
+        if el["type"] == "button"
+    ]
 
-    def test_checkbox_options_match_choices(self):
-        blocks = build_options_blocks(["Alpha", "Beta", "Gamma"])
-        opts = blocks[0]["elements"][0]["options"]
-        assert len(opts) == 3
-        assert opts[0]["value"] == "Alpha"
-        assert opts[2]["text"]["text"] == "Gamma"
+
+class TestBuildOptionsBlocks:
+    def test_returns_plain_buttons_and_a_choose_several_menu(self):
+        blocks = build_options_blocks(["A", "B"])
+        elements = blocks[0]["elements"]
+        assert [el["type"] for el in elements] == ["button", "button", "overflow"]
+        assert [el["action_id"] for el in elements[:2]] == [
+            f"{OPTIONS_ACTION_PREFIX}0",
+            f"{OPTIONS_ACTION_PREFIX}1",
+        ]
+        assert all("style" not in el for el in elements[:2])
+        assert elements[2]["action_id"] == OPTIONS_SEVERAL_ACTION
+
+    def test_buttons_match_choices(self):
+        buttons = _buttons(build_options_blocks(["Alpha", "Beta", "Gamma"]))
+        assert [b["value"] for b in buttons] == ["Alpha", "Beta", "Gamma"]
+        assert buttons[2]["text"]["text"] == "Gamma"
 
     def test_max_ten_choices(self):
         choices = [f"C{i}" for i in range(15)]
         blocks = build_options_blocks(choices)
-        actions = next(b for b in blocks if b["type"] == "actions")
-        opts = actions["elements"][0]["options"]
-        assert len(opts) == 10
+        assert len(_buttons(blocks)) == 10
         # Overflow does not vanish: choices 11-15 degrade to a numbered
         # context block the user can answer by typing.
         overflow = next(b for b in blocks if b["type"] == "context")
         assert "11. C10" in overflow["elements"][0]["text"]
         assert "15. C14" in overflow["elements"][0]["text"]
 
-    def test_truncates_long_choice_text(self):
+    def test_truncates_long_choice_label_only(self):
         long = "x" * 100
-        blocks = build_options_blocks([long])
-        text = blocks[0]["elements"][0]["options"][0]["text"]["text"]
-        assert len(text) <= 75
-
-    def test_send_button_text(self):
-        blocks = build_options_blocks(["A"])
-        btn = blocks[0]["elements"][1]
-        assert btn["text"]["text"] == "Send"
+        (button,) = _buttons(build_options_blocks([long]))
+        assert len(button["text"]["text"]) <= 75
+        assert button["value"] == long
 
 
 class TestBuildOptionsSelectedBlocks:

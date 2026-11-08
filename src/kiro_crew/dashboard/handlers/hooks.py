@@ -48,6 +48,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_POLICY,
     DENY_CAUSE_SURFACE_POLICY,
 )
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers.hooks_scripts import _sel
 from kiro_crew.dashboard.handlers.hooks_webhook_intake import (
     _HOOK_BODY_MAX_BYTES,
@@ -56,6 +57,7 @@ from kiro_crew.dashboard.handlers.hooks_webhook_intake import (
     _HOOK_SESSION_PREFIX,
     _HOOK_TIMEOUT_DEFAULT,
     _HOOK_TIMEOUT_MAX,
+    _hook_credential,
     _hook_inflight_sessions,
     _hook_semaphore,
     _HookBodyTooLarge,
@@ -70,12 +72,15 @@ from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, clear_session_execution
 from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool
 from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
+from kiro_crew.metrics.usage_attrs import ORIGIN_WEBHOOK, TRIGGER_WEBHOOK
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_capabilities import CapabilityStartupError
+from kiro_crew.shared_crew.admission import OperationKind
+from kiro_crew.shared_crew.turn_gate import TurnRefused, run_admitted_or_raise
 from kiro_crew.tool_gate_busy import hook_gate_busy
 
 logger = logging.getLogger(__name__)
@@ -140,18 +145,26 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             status=503,
         )
     if not switch_on:
+        from kiro_crew.webhook_sources import SOURCE_AGENT, source_refusal
+
+        # A policy refusal reads as a switched-off store; say which one refused.
+        by_policy = await asyncio.to_thread(source_refusal, SOURCE_AGENT)
         _sel().log_api_access(
             caller=request.remote or "unknown",
             operation="hooks.agent",
             outcome="denied",
             source="webhook",
-            error="webhooks disabled by operator",
+            error=by_policy or "webhooks disabled by operator",
         )
         await asyncio.to_thread(
             webhooks.run_store().record,
             outcome=webhooks.OUTCOME_DISABLED,
             name="Rejected",
-            detail="Inbound webhooks are switched off in the dashboard",
+            detail=(
+                f"Inbound webhooks: {by_policy}"
+                if by_policy
+                else "Inbound webhooks are switched off in the dashboard"
+            ),
         )
         return web.json_response(
             {"error": "inbound webhooks are disabled", "code": "webhooks_disabled"}, status=503
@@ -402,10 +415,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     try:
         timeout_secs = max(
             60,
-            min(int(body.get("timeoutSeconds", _HOOK_TIMEOUT_DEFAULT)), _HOOK_TIMEOUT_MAX),
+            min(body_int(body.get("timeoutSeconds", _HOOK_TIMEOUT_DEFAULT)), _HOOK_TIMEOUT_MAX),
         )
-    # OverflowError: json.loads reads 1e999 as inf, and int(inf) raises it.
-    except (ValueError, TypeError, OverflowError):
+    except (ValueError, TypeError):
         webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
         return web.json_response(
             {"error": "timeoutSeconds must be an integer", "code": "timeout_not_an_integer"},
@@ -587,6 +599,71 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
     return web.json_response({"status": "accepted", "sessionKey": session_key})
 
 
+async def api_hooks_agent_status(request: web.Request) -> web.Response:
+    """GET /api/hooks/agent/status?sessionKey=<key> — how a webhook run ended.
+
+    Authorized by the bearer of the source that started the run, and by nothing
+    else: it reads back only that source's turn
+    (:meth:`webhooks.WebhookRunStore.latest_turn`), so any other run is the same
+    404 as an unknown key. No signature: signing protects a body and a replayed
+    run, and a read has neither. Nothing is recorded as a run.
+    """
+    try:
+        switch_on = await asyncio.to_thread(webhooks.token_store().is_switch_on)
+    except webhooks.WebhookStoreUnreadable:
+        return web.json_response(
+            {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
+            status=503,
+        )
+    if not switch_on:
+        return web.json_response(
+            {"error": "inbound webhooks are disabled", "code": "webhooks_disabled"}, status=503
+        )
+    source = request.remote or "unknown"
+    if webhooks.auth_throttle_blocked(source):
+        return web.json_response(
+            {"error": "too many failed attempts", "code": "auth_throttled"}, status=429
+        )
+    # A page open in the operator's browser can load this GET cross-origin (GET
+    # skips the Origin check) but cannot attach a credential header. Counting such
+    # a request would let any page throttle every loopback webhook caller.
+    if not _hook_credential(request):
+        return web.json_response({"error": "unauthorized", "code": "unauthorized"}, status=401)
+    try:
+        token_id = await asyncio.to_thread(_verify_hook_token, request)
+        run = None
+        if token_id:
+            run = await asyncio.to_thread(
+                webhooks.run_store().latest_turn, request.query.get("sessionKey", ""), token_id
+            )
+    except webhooks.WebhookStoreUnreadable:
+        return web.json_response(
+            {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
+            status=503,
+        )
+    if not token_id:
+        throttled = webhooks.record_auth_failure(source)
+        _sel().log_api_access(
+            caller=source,
+            operation="hooks.agent.status",
+            outcome="denied",
+            source="webhook",
+            error="invalid token" + (" (source now throttled)" if throttled else ""),
+        )
+        return web.json_response({"error": "unauthorized", "code": "unauthorized"}, status=401)
+    webhooks.record_auth_success(source)
+    if run is None:
+        return web.json_response({"error": "run not found", "code": "run_not_found"}, status=404)
+    return web.json_response(
+        {
+            "outcome": run["outcome"],
+            "startedAt": run["started_at"],
+            "endedAt": run["started_at"] + run["duration_ms"] / 1000,
+            "missingServers": run.get("missing_servers", []),
+        }
+    )
+
+
 # The permission-request event kind, spelled locally: the agent-sdk-boundary
 # gate forbids ADDING an ACP/providers import edge in application code, and
 # kiro_crew.agent_sdk does not re-export the event vocabulary yet, so naming
@@ -655,7 +732,7 @@ def _capability_refusal_text(
     a save or could not be verified after the process ran, which a resend may
     clear, so its text asks for a resend first.
     """
-    member = (getattr(exc, "member", "") or agent or "").strip() or "this crew member"
+    member = (getattr(exc, "member", "") or agent or "").strip() or "this Bot"
     if isinstance(exc, CapabilityStartupError):
         return (
             f"Hook agent did not run: the start of {member} could not be verified "
@@ -759,6 +836,8 @@ async def _run_hook_inner(
             message,
             is_new,
             session_key,
+            # Unattended: a webhook turn has no user reading it live.
+            interactive=False,
             agent=agent,
             resumed=resumed,
             # Fallback label only: with the session's provider passed below,
@@ -974,6 +1053,8 @@ async def _run_hook_inner(
             context_window=_window,
             elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),
             model_source=client,
+            trigger=TRIGGER_WEBHOOK,
+            origin=ORIGIN_WEBHOOK,
         )
     except Exception:
         logger.debug("usage row (webhook) persist failed", exc_info=True)
@@ -1045,17 +1126,30 @@ async def _run_hook_agent(
         # instead of failing on its first read.
         await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
 
+        # Shared Crew fair admission, charged to Crew automation (a webhook
+        # caller has no principal); a refusal raises ``TurnRefused``.
         result_text = await asyncio.wait_for(
-            _run_hook_inner(
-                state,
-                session_key,
-                message,
-                agent,
-                execution_context=execution_context,
-                on_client=clients.append,
+            run_admitted_or_raise(
+                _run_hook_inner(
+                    state,
+                    session_key,
+                    message,
+                    agent,
+                    execution_context=execution_context,
+                    on_client=clients.append,
+                ),
+                session_key=session_key,
+                text=message,
+                automation=True,
+                operation=OperationKind.BACKGROUND,
             ),
             timeout=timeout_secs,
         )
+    except TurnRefused as exc:
+        outcome = "error"
+        result_text = str(exc)
+        detail = result_text
+        logger.info("Hook agent %s did not start: %s", session_key, result_text)
     except asyncio.TimeoutError:
         outcome = "timeout"
         result_text = f"Hook agent timed out after {timeout_secs}s"
@@ -1193,6 +1287,7 @@ async def _run_hook_agent(
         token_id=token_id,
         delivered=delivered,
         detail=detail,
+        missing_servers=mcp_missing,
     )
 
     _sel().log_tool_invocation(
@@ -1233,6 +1328,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         api_hooks,
         api_hooks_create,
         api_kiro_hooks,
+        api_kiro_hooks_rescan,
     )
     from kiro_crew.dashboard.handlers.hooks_webhook_intake import (  # noqa: F401
         _HOOK_READ_CHUNK_BYTES,

@@ -24,7 +24,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, AsyncContextManager
 
 from kiro_crew.acp.client import DEFAULT_MODEL, AcpClient
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_EFFORT_AT_LAUNCH
+from kiro_crew.agent_sdk.claude_transcripts import delete_claude_session_files
 from kiro_crew.config.paths import kiro_sessions_dir
+from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
+from kiro_crew.providers.acp_model_effort import launch_effort_level
 from kiro_crew.providers.cleanup import _is_safe_path
 from kiro_crew.session_work_dir import mark_run_dir, reclaim_session_work_dir
 
@@ -61,7 +65,8 @@ async def start(self: AcpProvider) -> None:
         # dead predecessor of this data home (session_work_dir); the shutdown
         # reclaim below keys on the flag and on the mark naming this process.
         await asyncio.to_thread(mark_run_dir, Path(self._client._work_dir))
-    # Re-apply the overlay on every (re)start to cover resume / model swap.
+    # Apply the overlay on every (re)start, the first spawn included, to cover
+    # resume / model swap.
     # (no-op for claude backend — that path applies effort live below.)
     # Off the loop: the cli.json lock is shared with sibling threads and
     # processes, and an acquire on the loop thread makes one attempt and
@@ -86,6 +91,9 @@ async def start(self: AcpProvider) -> None:
 
             raise AcpRuntimeError(REMOTE_NEEDS_KAS)
         self._client.member_context = self.member_context
+        if self._client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH:
+            # The launch reads it (``--effort``); a change relaunches.
+            self._client._launch_effort = launch_effort_level(self)
         await self._client.ensure_ready()
         # Startup records the advertised spelling of the pin, or the backend
         # default when every spelling was refused; the level follows a pin.
@@ -110,10 +118,13 @@ async def shutdown(self: AcpProvider) -> None:
     try:
         await self._client.shutdown()
     finally:
-        if self.memory_mode != "persistent" and session_id:
-            await self.cleanup_session(session_id)
-        if self._disposable_work_dir:
-            await self._reclaim_work_dir()
+        try:
+            if self.memory_mode != "persistent" and session_id:
+                await self.cleanup_session(session_id)
+        finally:
+            # A cancel delivered during the transcript delete must not skip the reclaim.
+            if self._disposable_work_dir:
+                await self._reclaim_work_dir()
 
 
 def set_work_dir_claim_probe(
@@ -184,13 +195,24 @@ async def _reclaim_work_dir(self: AcpProvider) -> None:
 
 
 async def cleanup_session(self: AcpProvider, session_id: str) -> None:
-    """Delete kiro-cli session files (.json + .jsonl) at ~/.kiro/sessions/cli.
+    """Delete the native session files of a disposable session.
 
-    (The claude seam's SDK transcript cleanup, ~/.claude/projects/, is
-    re-added by the internal companion alongside its Claude backend.)
+    kiro-cli's replay log is ``<sid>.json`` + ``.jsonl`` under
+    ``~/.kiro/sessions/cli``. A Claude session's record is Claude Code's own
+    store instead (``agent_sdk.claude_transcripts``), spelled from the client's work
+    directory. Either is deleted off the loop, to completion even when cancelled.
     """
     if not session_id:
         return
+    if self.is_claude_backend:
+        work_dir = str(getattr(self._client, "_work_dir", "") or "")
+        await drained_to_thread(delete_claude_session_files, session_id, work_dir)
+        return
+    await drained_to_thread(_delete_kiro_session_files, session_id)
+
+
+def _delete_kiro_session_files(session_id: str) -> None:
+    """Unlink kiro-cli's replay log of ``session_id``: blocking disk work, run in a thread."""
     sessions_dir = kiro_sessions_dir()
     for suffix in (".json", ".jsonl"):
         target = sessions_dir / f"{session_id}{suffix}"

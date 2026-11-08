@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import Modal from '../components/Modal'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 import { renderWithProviders } from './helpers'
 
 /**
@@ -133,6 +134,33 @@ describe('Modal — focus management', () => {
     outside.focus()
     fireEvent.keyDown(outside, { key: 'Tab' })
     expect(dialog).toContainElement(document.activeElement as HTMLElement)
+  })
+
+  it('wraps Tab when the last control is a radio chip group (roving tab stop)', async () => {
+    // A RadioChipGroup leaves its unchecked options as tabIndex=-1 buttons.
+    // They are not Tab stops, so the trap's "last" must be the checked chip,
+    // or Tab from it leaves the open dialog.
+    renderWithProviders(
+      <Harness>
+        <RadioChipGroup ariaLabel="Kind">
+          {['All', 'Docs', 'Images'].map(k => (
+            <button key={k} type="button" {...radioChip(k === 'All')}>{k}</button>
+          ))}
+        </RadioChipGroup>
+      </Harness>,
+    )
+    await openDialog()
+
+    const close = screen.getByRole('button', { name: 'Close' })
+    const all = screen.getByRole('radio', { name: 'All' })
+    expect(screen.getByRole('radio', { name: 'Images' }).tabIndex).toBe(-1)
+
+    all.focus()
+    fireEvent.keyDown(all, { key: 'Tab' })
+    expect(close).toHaveFocus()
+
+    fireEvent.keyDown(close, { key: 'Tab', shiftKey: true })
+    expect(all).toHaveFocus()
   })
 
   it('stands its Tab trap down while a dialog of its own is open above it (interactionDisabled)', async () => {

@@ -5,14 +5,11 @@ absolute ``command`` in it is computed, not authored, so reading it back as the
 user's makes it permanent: ``_resolve_command`` accepts an absolute existing
 executable with no PATH search, so a command resolved once can never be rebound.
 
-These run the REAL rebuild repeatedly against one on-disk config, which is the
-only way the readback participates at all. The helper is reused from
-``test_agent_mcp_merge``: seeding each rebuild identically by hand is what made this defect
-invisible.
+These run the REAL rebuild repeatedly against one on-disk config, the only way the
+readback participates; seeding each rebuild by hand would hide the bug.
 
-The record applies only to a server no other config source declares -- the one
-whose sole persisted home is this file. ``TestScopeOwnedIsExcluded`` pins that
-boundary, so narrowing it later is a visible change rather than a silent one.
+The record applies only to a server no other config source declares;
+``TestScopeOwnedIsExcluded`` pins that boundary.
 """
 
 from __future__ import annotations
@@ -32,12 +29,9 @@ from kiro_crew.mcp_provenance import DERIVED_KEY
 def _pinned_kiro_cli_version(monkeypatch):
     """Pin the kiro-cli release the spec ``permissions`` gate believes is installed.
 
-    Every rebuild here ends in ``_write_derived_permissions``, which reads
-    ``installed_kiro_cli_version`` function-locally from ``kiro_crew.kiro_cli``:
-    one real ``kiro-cli --version`` spawn per binary identity, process-cached, so
-    whichever test in the worker rebuilds first pays it against the HOST's install
-    with the checkout as the child's cwd. Pinned to the floor release, as
-    ``test_agent.py`` and the generated-writer suites pin it.
+    Every rebuild ends in ``_write_derived_permissions``, which would otherwise spawn
+    the HOST's real ``kiro-cli --version``. Pinned to the floor release, as
+    ``test_agent.py`` does.
     """
     monkeypatch.setattr(
         "kiro_crew.kiro_cli.installed_kiro_cli_version",
@@ -123,12 +117,8 @@ class TestAnAgentOnlyCommandIsReDerived:
     ) -> None:
         """Re-derivation must never cost the entry its only copy.
 
-        If the recorded source stops resolving while the emitted path still works --
-        a shim removed from PATH, its target still on disk -- restoring the source
-        would resolve to nothing, the server would be dropped from the emitted map,
-        and the file would be rewritten without it. For this population that file is
-        the only copy, so the next rebuild would have nothing to read. A
-        stale-but-working command beats a deleted server.
+        If the recorded source stops resolving (a shim removed from PATH) but the
+        emitted path works, keep the emitted path: this file is the only copy.
         """
         monkeypatch.setenv("PATH", "/usr/bin")
         cfg_dir = _bundled_defaults(tmp_path)
@@ -209,11 +199,8 @@ class TestAnAgentOnlyCommandIsReDerived:
     ) -> None:
         """A scope-owned server's record is inert, not deleted.
 
-        The record is not acted on while another source declares a command. But
-        destroying it is its own decision, and the wrong one: if that scope command
-        never resolves, or the entry later goes away, the server is agent-only again
-        with its only re-derivation source gone, and a relocated binary can never
-        rebind.
+        If the scope entry goes away, the server is agent-only again and needs the
+        record to rebind a relocated binary.
         """
         monkeypatch.setenv("PATH", "/usr/bin")
         cfg_dir = _bundled_defaults(tmp_path)
@@ -247,6 +234,33 @@ class TestAnAgentOnlyCommandIsReDerived:
             which_side_effect=lambda c, **kw: str(new) if c == "srv" else None,
         )
         assert back["s"]["command"] == str(new)
+
+    def test_a_resolving_scope_command_does_not_take_over_an_agent_only_server(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A scope switching programs rewrites a scope-owned entry, never a recorded one.
+
+        A rewrite would leave the record naming a command the entry does not run, so
+        it could not rebind the server once the scope entry goes away.
+        """
+        monkeypatch.setenv("PATH", "/usr/bin")
+        cfg_dir = _bundled_defaults(tmp_path)
+        old, other = tmp_path / "old" / "srv", tmp_path / "other" / "tool"
+        for p in (old, other):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("#!/bin/sh\n")
+            p.chmod(0o755)
+        which = lambda c, **kw: str(old) if c == "srv" else None  # noqa: E731
+
+        _emitted(tmp_path, cfg_dir, {})
+        _make_agent_only(tmp_path, "s", "srv")
+        _emitted(tmp_path, cfg_dir, {}, which_side_effect=which)
+
+        with_scope = _emitted(
+            tmp_path, cfg_dir, {"s": {"command": str(other)}}, which_side_effect=which
+        )
+        assert with_scope["s"]["command"] == str(old)
+        assert with_scope["s"][DERIVED_KEY] == {"from": "srv", "emitted": str(old)}
 
     def test_a_recovered_source_rebinds_after_being_retained(
         self, tmp_path: Path, monkeypatch
@@ -318,11 +332,8 @@ class TestUserEditsAreNotOverwritten:
 class TestTheRecordIsNotPartOfSpecIdentity:
     """The record must never make two copies of one server look like two servers.
 
-    ``_normalize_mcp_server_keys`` collapses family members whose NORMALIZED specs
-    match, and mints an ever-growing ``-2``/``-3`` suffix when they do not. Only the
-    population with no other config source is ever recorded, so comparing the record
-    would make a recorded entry differ from an otherwise-identical re-merged copy --
-    asymmetrically, and on every rebuild.
+    ``_normalize_mcp_server_keys`` mints ``-2``/``-3`` suffixes for specs that differ
+    after normalization, so the record must not count as a difference.
     """
 
     def test_the_record_is_excluded_from_the_dedup_comparison(self) -> None:
@@ -343,13 +354,10 @@ class TestTheRecordIsNotPartOfSpecIdentity:
 
 
 class TestScopeOwnedIsExcluded:
-    """The boundary this PR deliberately does not cross.
+    """A server another source declares gets no record.
 
-    For a server another source declares, choosing between the record and the live
-    declaration correctly means selecting a per-field source AFTER resolution: the
-    merge picks a winner by which command resolves, then adopts that winner's
-    args/env as a unit. That is a merge-precedence change, not a provenance one, so
-    such a server gets no record and behaves exactly as it does today.
+    Choosing between the record and a live declaration would be a merge-precedence
+    change (per-field source after resolution), not a provenance one.
     """
 
     def test_a_scope_owned_server_gets_no_record(self, tmp_path: Path, monkeypatch) -> None:
@@ -363,14 +371,9 @@ class TestScopeOwnedIsExcluded:
     ) -> None:
         """A scope keys by its own raw name; the config key was alias-normalized.
 
-        Matching by ALIAS is not merely conservative here, it is what the merge does:
-        a scope entry is copied into the config under its raw key and then normalized,
-        so a slash-keyed scope server and an alias-keyed config server become ONE
-        entry and the scope's command genuinely supplies the emitted one. Measured,
-        not assumed -- the assertion below is the evidence. A raw-key ownership probe
-        would miss that owner and let the record shadow a live declaration, which is
-        why an alias collision counts as owning even when it names a server the
-        author thought was separate.
+        The merge normalizes a scope entry's raw key, so a slash-keyed scope server and
+        an alias-keyed config server become ONE entry (the assertion below shows it). A
+        raw-key probe would miss that owner and let the record shadow it.
         """
         monkeypatch.setenv("PATH", "/usr/bin")
         cfg_dir = _bundled_defaults(tmp_path)

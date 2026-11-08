@@ -10,7 +10,6 @@ Composed onto :mod:`kiro_crew.slack.handler`; see
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,10 +21,12 @@ if TYPE_CHECKING:
         _tts_available,
         _vc,
         _voice_reply_fn,
+        config_local_path,
         config_path,
         logger,
-        read_config_text,
+        read_merged_config_files,
         resolve_configured_provider,
+        track_background_task,
         validated_config_string,
         validated_language_code,
     )
@@ -65,13 +66,10 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     restores persisted voice settings — every restart silently resets TTS to
     disabled while the dashboard's settings PUT keeps reporting success.
     """
-    # Load voice_reply defaults from config
     _vr: dict = cfg.raw.get("voice_reply", {}) if (cfg is not None and hasattr(cfg, "raw")) else {}
     if not _vr:
-        try:
-            _vr = json.loads(read_config_text(config_path())).get("voice_reply", {})
-        except Exception:
-            _vr = {}
+        # config.local.json is an overlay whose keys win, as the loader merges it.
+        _vr = read_merged_config_files(config_path(), config_local_path()).get("voice_reply", {})
     if not isinstance(_vr, dict):
         _vr = {}
     _enabled = bool(_vr.get("enabled", False))
@@ -199,15 +197,17 @@ async def _reply_by_voice(
                 _eng = _vc.engines.get(session_key, _vc.default_engine)
                 _rate = _vc.rates.get(session_key, _vc.default_rate)
                 _pitch = _vc.pitches.get(session_key, _vc.default_pitch)
-                asyncio.create_task(
-                    _safe_voice_reply(
-                        slack,
-                        channel,
-                        reply_ts,
-                        final_text,
-                        voice_id=_vid,
-                        engine=_eng,
-                        rate=_rate,
-                        pitch=_pitch,
+                track_background_task(
+                    asyncio.create_task(
+                        _safe_voice_reply(
+                            slack,
+                            channel,
+                            reply_ts,
+                            final_text,
+                            voice_id=_vid,
+                            engine=_eng,
+                            rate=_rate,
+                            pitch=_pitch,
+                        )
                     )
                 )

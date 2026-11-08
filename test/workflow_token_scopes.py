@@ -99,6 +99,9 @@ def _api_scopes(path: str, method: str) -> list[tuple[str, ...]] | None:
         return [("deployments",)]
     if head == "dispatches":
         return [("contents",)]
+    if head == "dependency-graph":
+        # compare and sbom: GitHub documents both under the contents scope.
+        return [("contents",)]
     return None
 
 

@@ -27,13 +27,17 @@ import {
 import Clickable from '../../components/Clickable'
 import { BlockEditor } from './BlockEditor'
 import { CodeFenceBlock } from './CodeFenceBlock'
+import { DetailsBlock } from './DetailsBlock'
 import { MermaidBlock } from './MermaidBlock'
-import { NoteImage } from './NoteImage'
+import { NoteEmbed, NoteImage } from './NoteImage'
+import { VaultRootCtx } from './vaultRootContext'
+import { detailsSummaryFallbackLabel } from './labels'
 import {
   FM_RE,
   LIST_MARKER_RE,
   fenceLang,
   indentPx,
+  parseDetailsBlock,
   parseMermaidBlock,
   parseTable,
   resolveNoteImageSrc,
@@ -43,16 +47,22 @@ import type { EditRange } from './types'
 import { urlTransform } from '../../utils/urlTransform'
 
 /**
- * Inline spans: code, bold, italic, wikilinks, links and images.
+ * Inline spans: code, bold, italic, wikilinks, links, images and image embeds.
  *
  * The image alternative sits last but still wins over the link one for
  * `![alt](src)`: its match starts at the `!`, one character earlier than the
  * link's `[`, and the engine takes the leftmost match before it ever considers
  * alternative order. Appending it therefore leaves every existing group number
  * untouched, which is why it is not spliced in beside the link branch.
+ *
+ * The Obsidian embed (`![[a.png]]`, `![[a.png|720]]`) is appended after it and
+ * wins over the wikilink branch the same way. It matches only a target ending
+ * in an image extension `/api/file-raw` serves (`_ALLOWED_IMAGE_EXT` in
+ * `dashboard/handlers/files.py`), hence the `i` flag; a note or PDF embed falls
+ * through to the wikilink branch and renders as before.
  */
 const INLINE_RE =
-  /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[\[([^\][|]+?)(?:\|([^\]]+?))?\]\])|(\[([^\]]+)\]\(([^)]+)\))|(!\[([^\]]*)\]\(([^)]+)\))/g
+  /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[\[([^\][|]+?)(?:\|([^\]]+?))?\]\])|(\[([^\]]+)\]\(([^)]+)\))|(!\[([^\]]*)\]\(([^)]+)\))|(!\[\[([^\][|]+?\.(?:png|jpe?g|gif|webp|bmp|svg))(?:\|([^\]]*))?\]\])/gi
 
 /**
  * Render one line's inline markup to React nodes.
@@ -64,7 +74,7 @@ const INLINE_RE =
  */
 export function inline(text: string, key: number | string, noteDir?: string): ReactNode[] {
   const nodes: ReactNode[] = []
-  const re = new RegExp(INLINE_RE.source, 'g')
+  const re = new RegExp(INLINE_RE.source, INLINE_RE.flags)
   let last = 0
   let i = 0
   let m: RegExpExecArray | null
@@ -129,6 +139,20 @@ export function inline(text: string, key: number | string, noteDir?: string): Re
       // that vanished later cannot look different to the reader.
       nodes.push(
         <NoteImage key={k} src={resolveNoteImageSrc(m[12], noteDir)} alt={m[11]} rawSrc={m[12]} />,
+      )
+    } else if (m[13]) {
+      // Obsidian's suffix is a display width (`|720`, `|720x400`) when numeric,
+      // else the alt text.
+      const suffix = (m[15] ?? '').trim()
+      const size = /^(\d+)(?:x\d+)?$/.exec(suffix)
+      nodes.push(
+        <NoteEmbed
+          key={k}
+          target={m[14].trim()}
+          noteDir={noteDir}
+          alt={size ? '' : suffix}
+          width={Number(size?.[1]) || undefined}
+        />,
       )
     }
     last = m.index + m[0].length
@@ -213,6 +237,54 @@ function tableNode(t: ParsedTable, key: number, noteDir?: string): ReactNode {
   )
 }
 
+/**
+ * Render a `<details>` body as read-only blocks.
+ *
+ * The body is not individually click-to-edit (clicking the disclosure opens the
+ * whole block's source), so this needs no line-indexed editor machinery — but it
+ * MUST keep block-level markdown readable: a fenced code run renders as a
+ * `CodeFenceBlock` (monospace, indentation and backticks preserved) rather than
+ * flattened through `inline()` line by line, which would turn ` ```py `, `*args`
+ * and leading spaces into literal text, italics and collapsed whitespace. Every
+ * non-fenced line still renders inline (escaped by React), and a blank line is a
+ * small gap. Nested `<details>`, tables and lists are out of scope here: the
+ * body is a disclosure's contents, not a second notebook.
+ */
+function detailsBodyNodes(body: string[], key: number, noteDir?: string): ReactNode[] {
+  const nodes: ReactNode[] = []
+  let i = 0
+  while (i < body.length) {
+    const line = body[i]
+    if (line.startsWith('```')) {
+      // Gather the fenced run up to the closing fence (or the body's end, for a
+      // fence left open — its lines still read best as code).
+      const lang = fenceLang(line)
+      const code: string[] = []
+      let j = i + 1
+      for (; j < body.length; j++) {
+        if (body[j].startsWith('```')) break
+        code.push(body[j])
+      }
+      nodes.push(
+        <div key={`${key}-d-${i}`} style={{ margin: '4px 0' }}>
+          <CodeFenceBlock code={code.join('\n')} lang={lang} />
+        </div>,
+      )
+      i = j < body.length ? j + 1 : j
+      continue
+    }
+    nodes.push(
+      line.trim() === '' ? (
+        <div key={`${key}-d-${i}`} style={{ height: '8px' }} />
+      ) : (
+        <div key={`${key}-d-${i}`}>{inline(line, `${key}-d-${i}`, noteDir)}</div>
+      ),
+    )
+    i++
+  }
+  return nodes
+}
+
 export interface PreviewProps {
   content: string
   onToggleCheckbox: (line: number) => void
@@ -228,6 +300,12 @@ export interface PreviewProps {
    * sources; without it those images fall back to their alt text.
    */
   noteDir?: string
+  /**
+   * Absolute content root of the open vault. Lets a root-relative image source
+   * (`/images/a.png`) fall back to that path under the vault; without it such
+   * an image is served as an absolute path only.
+   */
+  vaultRoot?: string
 }
 
 export function Preview({
@@ -240,6 +318,7 @@ export function Preview({
   onSplitEdit,
   onDirtyEdit,
   noteDir,
+  vaultRoot,
 }: PreviewProps) {
   const body = content.replace(FM_RE, '')
   // `split('\n')` yields a trailing EMPTY segment whenever the body ends with a
@@ -408,6 +487,27 @@ export function Preview({
           { fontFamily: FONT_MONO },
           { split: false },
         ),
+      )
+      return
+    }
+
+    // The third multi-line block: a <details> disclosure. Clicking it opens the
+    // whole source (open tag, optional <summary>, body, close), because editing
+    // one line of an HTML block in isolation is not a useful gesture — the same
+    // reason code and tables use {split: false}. The summary and every body line
+    // render through inline(), so the content is escaped by React: no raw HTML
+    // passes through, matching the "escape all content" contract.
+    const details = parseDetailsBlock(lines, idx)
+    if (details) {
+      skipTo = details.end
+      const summaryNode = details.summary
+        ? inline(details.summary, `${idx}-summary`, noteDir)
+        : detailsSummaryFallbackLabel()
+      const bodyNode = detailsBodyNodes(details.body, idx, noteDir)
+      out.push(
+        blk(idx, details.end, <DetailsBlock summary={summaryNode} body={bodyNode} />, undefined, {
+          split: false,
+        }),
       )
       return
     }
@@ -598,7 +698,7 @@ export function Preview({
         minHeight: '100%',
       }}
     >
-      {out}
+      <VaultRootCtx.Provider value={vaultRoot}>{out}</VaultRootCtx.Provider>
     </div>
   )
 }

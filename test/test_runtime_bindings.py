@@ -47,6 +47,14 @@ from kiro_crew.acp.runtime import AcpRuntime
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_runtime_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_field_scan_counts_every_read_and_write_shape",
+    "the_signature_digest_ignores_an_object_address_in_either_spelling",
+    "the_bound_function_scans_include_every_static_method",
+    "the_class_only_scan_can_fail",
+    "leaf_test_scope_derives_this_file_as_a_corpus_gate",
+)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
@@ -61,8 +69,10 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_RC_NO_PROCESS": ("data", False, "", "runtime_class"),
     "_REVIVE_ANSWER_DRAIN_TIMEOUT": ("data", False, "", "runtime_class"),
     "_ROOT_UNREACHED_REASON_BY_VERDICT": ("data", False, "", "runtime_class"),
-    # Takes ``launch_agent``: the app launch copy kiro-cli is asked for (``apps.agent_launch``).
-    "__init__": ("function", False, "933ec8f4a25b", "runtime_class"),
+    # Takes ``launch_agent``: the app launch copy kiro-cli is asked for (``apps.agent_launch``),
+    # and ``native_skill_projection``: off for the warm mint process, whose specs sit in ``run/``,
+    # and ``harness_pin``: the session's own Bot pin, which KAS's route rule 2 reads.
+    "__init__": ("function", False, "e6317032e444", "runtime_class"),
     "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime_mode_activation"),
     "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime_mode_activation"),
     "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime_mode_activation"),
@@ -79,7 +89,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_answer_secret_request": ("function", True, "40866b9ae753", "runtime_host_requests"),
     "_answer_unroutable_permission": ("function", True, "3c88fb3b5f4d", "runtime_host_requests"),
     "_audit_denied_off_loop": ("function", False, "bc403500636d", "runtime_host_requests"),
-    "_collect_late_start": ("function", False, "df0576b2759e", "runtime_session_create"),
+    # Both take ``request_identity``: the vault identity the ``session/new`` went out
+    # under, for the KAS catalog recorder (``kas_model_catalog``).
+    "_collect_late_start": ("function", False, "1c91d322411d", "runtime_session_create"),
     "_compose_death_summary": ("function", False, "d296f1f5d821", "runtime_liveness"),
     "_confirm_member_projection": ("function", True, "c694d7c95d1b", "runtime_session_setup"),
     "_copy_native_launch_sources": ("function", False, "b4bc0bbb71ed", "runtime_session_setup"),
@@ -90,7 +102,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_exit_reason": ("function", False, "5ea8f751c789", "runtime_liveness"),
     "_exit_watch_loop": ("function", True, "b60c5fea256e", "runtime_liveness"),
     "_failed_start_cleanup": ("function", True, "b60c5fea256e", "runtime_spawn_launch"),
-    "_finish_create_session": ("function", True, "70f51c6f9496", "runtime_session_create"),
+    "_finish_create_session": ("function", True, "417fe88faef2", "runtime_session_create"),
     "_finish_session_init": ("function", False, "eb69f6ac3aa6", "runtime_session_registry"),
     "_flush_dropped_frames": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
     "_flush_roster_overflow": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
@@ -105,7 +117,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "fa6cfecd5574",
         "runtime_mode_activation",
     ),
-    "_kas_custom_agents": ("function", True, "997f5903aa65", "runtime_session_setup"),
+    "_kas_custom_agents": ("function", True, "cceb389a5970", "runtime_session_setup"),
     "_kill_failed_start_escapees": ("function", True, "ccaec8d76f05", "runtime_spawn_launch"),
     "_kill_inner": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
     "_mark_dead": ("function", False, "e8c36427bffd", "runtime_liveness"),
@@ -120,6 +132,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_mirrored_spec_check_needed": ("function", False, "3cd7cb3cf81a", "runtime_session_setup"),
     "_mode_available": ("staticmethod", False, "08e0d5cbf178", "runtime_mode_activation"),
     "_mount_member_panel": ("function", True, "bcc6c7135aaa", "runtime_session_setup"),
+    "_note_announced_child": ("function", False, "ae18ce00a59d", "runtime_frame_accounting"),
     "_note_dropped_frame": ("function", False, "65da3cb3ad9e", "runtime_frame_accounting"),
     "_note_reaped": ("function", False, "65a401984277", "runtime_liveness"),
     "_note_reaped_after_kill": ("function", False, "0d4bde9dbb0a", "runtime_liveness"),
@@ -138,6 +151,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_reader_has_buffered_input": ("function", False, "a6632a57e602", "runtime_liveness"),
     "_reader_loop": ("function", True, "b60c5fea256e", "runtime_reader_loop"),
     "_reap_after_cancelled_tracking": ("function", True, "ae883e772e9f", "runtime_liveness"),
+    "_record_sent": ("function", False, "60178f849457", "runtime_wire"),
     "_record_tree_before_failed_start_kill": (
         "function",
         True,
@@ -152,6 +166,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_resolve_spawn_plan": ("function", True, "a6093c8b82cf", "runtime_spawn_launch"),
     "_resolve_start_alias": ("function", False, "12ab76a15b9b", "runtime_mode_activation"),
     "_retire_tracking_after_exit": ("function", True, "b60c5fea256e", "runtime_liveness"),
+    "_route_owned_child_frame": ("function", True, "ba59d8598812", "runtime_reader_loop"),
     "_returncode_label": ("function", False, "bb418bb7ece8", "runtime_liveness"),
     "_revive_after_failed_start": ("function", True, "a6632a57e602", "runtime_spawn_entry"),
     "_root_identity": ("function", False, "bb418bb7ece8", "runtime_tree_kill"),
@@ -187,11 +202,13 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "fa6cfecd5574",
         "runtime_mode_activation",
     ),
+    "_unclaimed_new_sessions": ("property", False, "67a56d539800", "runtime_class"),
+    "_unconfirmed_teardowns": ("property", False, "67a56d539800", "runtime_class"),
     "_unpooled_control_planes": ("function", True, "5255b093c0d2", "runtime_session_setup"),
     "_verify_spawn_agent_active": ("function", True, "3d143e45e940", "runtime_mode_activation"),
     "_wait_for_answer_capacity": ("function", True, "609119a8d63a", "runtime_host_requests"),
     "_wait_managed_mcp": ("function", True, "318828f7ab77", "runtime_session_load"),
-    "_write_request_bounded": ("function", True, "4ea88874f686", "runtime_wire"),
+    "_write_request_bounded": ("function", True, "905771de4943", "runtime_wire"),
     "_write_response_bounded": ("function", True, "325c14124282", "runtime_wire"),
     "acp_backend": ("property", False, "bb418bb7ece8", "runtime_class"),
     "agent_version": ("property", False, "bb418bb7ece8", "runtime_class"),
@@ -200,12 +217,16 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "create_session": ("function", True, "155a6120083d", "runtime_session_create"),
     "death_summary": ("function", False, "f21e39ec5ffb", "runtime_liveness"),
     "entitlement_probe_result_at": ("property", False, "59162e39f6f1", "runtime_class"),
+    "evict_session": ("function", True, "c284282f8a1d", "runtime_session_registry"),
     "forget_request": ("function", False, "a0b46301fd2c", "runtime_wire"),
     "has_active_or_initializing_sessions": ("function", False, "a6632a57e602", "runtime_liveness"),
     "has_active_sessions": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "hold_cloud_resume": ("function", False, "1106e4b55d16", "runtime_remote_workspace"),
     "is_alive": ("function", False, "a6632a57e602", "runtime_liveness"),
+    "is_cloud_sandbox": ("property", False, "a6632a57e602", "runtime_class"),
+    "keep_record_on_teardown": ("function", False, "4f730038263e", "runtime_session_registry"),
     "kill": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
-    "load_session": ("function", True, "abdb4c5767fc", "runtime_session_load"),
+    "load_session": ("function", True, "e76bae1fa2fd", "runtime_session_load"),
     "mark_turn_active": ("function", False, "a3b3a732c817", "runtime_session_registry"),
     "mcp_sign_in_holds": ("function", False, "dc7c165669b1", "runtime_host_requests"),
     "pid": ("property", False, "8dc15be1dfda", "runtime_class"),
@@ -222,9 +243,11 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "saw_sandbox_init_failure": ("function", False, "a6632a57e602", "runtime_liveness"),
     "send_error": ("function", True, "f8eeeb44db9e", "runtime_wire"),
     "send_notification": ("function", True, "78b195a50312", "runtime_wire"),
-    "send_request": ("function", True, "60d06c03f35b", "runtime_wire"),
+    "send_request": ("function", True, "5d6b16e9d26f", "runtime_wire"),
     "send_request_for_answer": ("function", True, "f3fe127a3feb", "runtime_wire"),
     "send_response": ("function", True, "74f287d889d6", "runtime_wire"),
+    "session_activity_at": ("function", False, "8912ecd7f5d6", "runtime_session_registry"),
+    "set_cloud_sandbox": ("function", False, "4ae712c0a572", "runtime_remote_workspace"),
     "settle_stderr": ("function", True, "8fe4e298f96b", "runtime_liveness"),
     "spawn": ("function", True, "dbecd2a33a23", "runtime_spawn_entry"),
     "spawn_monotonic": ("property", False, "c2eec8a41739", "runtime_class"),
@@ -233,7 +256,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "stdin_stall_death": ("property", False, "a6632a57e602", "runtime_class"),
     "supports_image_prompt": ("property", False, "a6632a57e602", "runtime_class"),
     "take_switched_model": ("function", False, "99d948c35ed6", "runtime_mode_activation"),
-    "terminate_session": ("function", True, "c284282f8a1d", "runtime_session_registry"),
+    "terminate_session": ("function", True, "e811c64539dd", "runtime_session_registry"),
     "turn_active_at_stall": ("function", False, "762cb291397b", "runtime_liveness"),
     "unregister_session": ("function", False, "c284282f8a1d", "runtime_session_registry"),
     "uses_kiro_identity_store": ("property", False, "a6632a57e602", "runtime_class"),
@@ -311,10 +334,10 @@ _BASE_IMPORTS = frozenset("""
     apply_pod_bundle_spawn assert_voice_runtime_outside_agent_workspace asyncio
     attach_kas_custom_agents attach_stub_session_token augmented_path authorize_runtime_kill
     backends_retired_by_host_logout bind_voice_safe_agent_workspace_async
-    browser_session_env browser_socket_env build_session_new_params cgroup_scope_argv
+    build_session_new_params cgroup_scope_argv
     create_subprocess_limited data_home deque emit_counter encode_frame
     ensure_agent_materialized ensure_directory finish_suspended_spawn functools
-    group_vouching_available harness_for has_mirror hoist_managed_servers importlib
+    group_vouching_available harness_for has_mirror hoist_servers_for_session importlib
     inject_xdist_auto_cap injection_server_names is_auth_failure_output
     is_sandbox_init_failure_output kas_client_meta_settings kas_secret_storage
     kas_wire_agent_id kiro_agents_dir launch live logging markdown_spec_for_agent
@@ -352,15 +375,6 @@ def _signature_digest(fn: Any) -> str:
         params[0] = params[0].replace(annotation=inspect.Parameter.empty)
     text = _ADDRESS.sub(" at 0x", str(sig.replace(parameters=params)))
     return hashlib.sha256(text.encode()).hexdigest()[:12]
-
-
-def test_the_signature_digest_ignores_an_object_address_in_either_spelling() -> None:
-    def f(x: object = None) -> None: ...
-
-    lower = _ADDRESS.sub(" at 0x", "(x=<object object at 0x7f1a2b3c4d5e>)")
-    upper = _ADDRESS.sub(" at 0x", "(x=<object object at 0x000001A9BFA701B0>)")
-    assert lower == upper == "(x=<object object at 0x>)"
-    assert len(_signature_digest(f)) == 12
 
 
 def _member_function(name: str) -> Any:
@@ -563,11 +577,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
     return found
 
 
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
-
-
 @pytest.mark.parametrize("owner", _OWNERS)
 def test_no_bound_function_needs_its_class_body(owner: str) -> None:
     tree = _tree(sys.modules[owner])
@@ -662,16 +671,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
     return written - members, read - written - members
 
 
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
-
-
 def _listed(doc: str, label: str) -> set[str]:
     match = re.search(rf"{label}: (.*?)\.(?:\n\n|\n?$)", doc, re.S)
     return set(re.findall(r"``(\w+)``", match.group(1))) if match else set()
@@ -691,21 +690,6 @@ def test_owners_log_under_the_runtime_logger(owner: str) -> None:
     logger = vars(sys.modules[owner]).get("logger", runtime.logger)
     assert logger is runtime.logger
     assert runtime.logger.name == "kiro_crew.acp.runtime"
-
-
-def test_the_bound_function_scans_include_every_static_method() -> None:
-    statics = {
-        name: f"{_PACKAGE}.{home}"
-        for name, (kind, _, _, home) in _MEMBERS.items()
-        if kind == "staticmethod" and home != _CLASS_HOME
-    }
-    assert statics
-    scanned = {
-        fn.name
-        for owner in set(statics.values())
-        for fn in _self_functions(_tree(sys.modules[owner]), owner)
-    }
-    assert set(statics) <= scanned
 
 
 def _owner_imports(tree: ast.Module) -> set[str]:
@@ -995,19 +979,6 @@ def test_every_base_import_stays_bound_on_the_facade() -> None:
     assert sorted(_BASE_IMPORTS - set(vars(runtime))) == []
 
 
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    import source_corpus
-
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve()
-    assert this_file.relative_to(root).as_posix() in leaf_test_scope.corpus_gates(root)
-
-
 #: ``typing.get_type_hints(AcpRuntime.__init__)`` before the class left ``runtime.py``.
 _INIT_HINTS = {
     "acp_backend": "<class 'str'>",
@@ -1015,6 +986,7 @@ _INIT_HINTS = {
     "crew_agent": "<class 'str'>",
     "expect_mcp_reports": "<class 'bool'>",
     "extra_env": "dict[str, str] | None",
+    "harness_pin": "<class 'str'>",
     "max_age_secs": "<class 'float'>",
     "max_rss_mb": "<class 'float'>",
     "mcp_gateway_overlay": "str | pathlib.Path | None",
@@ -1022,6 +994,7 @@ _INIT_HINTS = {
     "member_context": "<class 'bool'>",
     "memory_mode": "<class 'str'>",
     "model": "str | None",
+    "native_skill_projection": "<class 'bool'>",
     "sandbox_mode": "<class 'str'>",
     "shared_scratch": "pathlib.Path | None",
     "launch_agent": "<class 'str'>",

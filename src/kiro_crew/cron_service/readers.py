@@ -42,7 +42,10 @@ def referenced_skill_names() -> set[str]:
     out: set[str] = set()
     try:
         for j in _read_job_records(seams.config_dir() / _CRONS_FILE)[0]:
-            msg = j.get("message") or ""
+            msg = j.get("message")
+            # One malformed record (the store keeps those) must not drop every job's skills.
+            if not isinstance(msg, str):
+                continue
             for m in _SKILL_TOKEN_RE.finditer(msg):
                 tok = m.group(1)
                 if any(c.isalpha() for c in tok):
@@ -150,6 +153,38 @@ def job_agent_names_from_disk() -> list[tuple[str, str]]:
         ]
     except Exception:
         return []
+
+
+def bound_script_runs_from_disk(member_id: str) -> list[dict[str, Any]]:
+    """Each SCRIPT job bound to *member_id* that has run at least once.
+
+    ``{"id", "last_status", "last_error"}`` per job, for a crewmate's turn block: a
+    custom field still unseen after a bound script ran is a broken feed the crewmate
+    must hear about. Read-only + best-effort like :func:`referenced_skill_names`:
+    any error answers ``[]``, which keeps the turn block quiet rather than wrong.
+    """
+    from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+    if not member_id:
+        return []
+    out: list[dict[str, Any]] = []
+    try:
+        for j in _read_job_records(seams.config_dir() / _CRONS_FILE)[0]:
+            if j.get("member_id") != member_id or not j.get("script"):
+                continue
+            ran = j.get("last_run_ts")
+            if isinstance(ran, bool) or not isinstance(ran, (int, float)) or ran <= 0:
+                continue
+            out.append(
+                {
+                    "id": str(j.get("id") or ""),
+                    "last_status": str(j.get("last_status") or ""),
+                    "last_error": str(j.get("last_error") or ""),
+                }
+            )
+    except Exception:
+        return []
+    return out
 
 
 def enabled_count_from_disk(path: Path) -> tuple[int, bool]:

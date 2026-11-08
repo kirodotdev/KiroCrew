@@ -110,7 +110,7 @@ def _parse_token_history() -> dict[str, Any]:
                 for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -206,7 +206,6 @@ def _parse_token_history() -> dict[str, Any]:
     total_cache_create = sum(daily_cache_create.values())
     total_cache_read = sum(daily_cache_read.values())
 
-    # Build daily token history
     all_days = sorted(set(daily_input.keys()) | set(daily_output.keys()))
     daily_history = []
     for d in all_days:

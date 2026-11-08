@@ -11,7 +11,7 @@ The emitter is three parts, and the line between them is where new work goes:
 | Module | Owns | New work that belongs there |
 |---|---|---|
 | `crew_log/emit.py` and its `crew_log/emit_*.py` owners | every `on_*` entry point and what each fact records; the open-handle cache that is the writer's `open_unit` adapter; the child-origin pins; the supersede repair, and the settlement of a job the writer rejected at its ceiling; `reset_caches`, `flush`, `drain_for_shutdown`, `live_turn` and the loss counters as the public surface | a new lifecycle fact, field or emitter, in the owner the table below names |
-| `crew_log/writer.py` | `CrewLogWriter`: the per-unit buffer and its order, retention and backoff, the refusal rule, the memory ceilings, the `write/dropped` loss marker, the inline path, stall reporting and the shutdown drain, all paced by one frozen `WriterLimits`; `WriteJob`, whose named constructors (`append`, `opening`, `follow_on`) select a row of the writer's policy table; and `WarningBudget`, the one rate-limited failure report the writer and the emitter share | how an append reaches the file |
+| `crew_log/writer.py` | `CrewLogWriter`: the per-unit buffer and its order, retention and backoff, the refusal rule, the memory ceilings, the `write/dropped` loss marker, the inline path, stall reporting and the shutdown drain, all paced by one frozen `WriterLimits`; `WriteJob`, whose named constructors (`append`, `opening`, `follow_on`) select a row of the writer's policy table; the writer lanes that drain different units side by side, one unit per lane at a time; and `WarningBudget`, the one rate-limited failure report the writer and the emitter share, defined in `crew_log/writer_warnings.py` and re-exported here | how an append reaches the file |
 | `crew_log/turn_tracker.py` | `TurnTracker`: each live turn's record (its step and call ordinals, whether its closer is owed), the settle-once tool registry, the attempt counts, the supersede repair's debt, and the never-evict-a-live-turn rule the emitter's own caches are trimmed by | per-turn bookkeeping |
 
 `crew_log/emit.py` is the emitter's import path and patch surface: a `kiro_crew._facade_mirror`
@@ -27,7 +27,7 @@ the child-origin loss counters or `_child_liveness` belongs in `emit_runtime`, b
 |---|---|
 | `crew_log/emit_state.py` | `enabled`; the boot-path import gates `_crew_log` (storage) and `_note_eager` (the eager fold's wake); the session kind and the two sources; `session_id_of`; the process-wide maps and `_lock`, which guards them |
 | `crew_log/emit_tree.py` | a slot's lineage (`slot_previous_store`, `_durable_previous`, `_candidate_is_same_slot`, `_parent_citation`); the `_record_session_tree_*` folds that advance the in-memory session tree after a commit; the settled signal `_TreeSettle` and `awaiting_commit` |
-| `crew_log/emit_runtime.py` | the installed writer, turn tracker and warning budget and every function that rebinds or reads them: `reset_caches`; the handle cache that is the writer's `open_unit` adapter; `_write`, `_submit`, `_hand_over` and the settlement of a job the writer rejected at its ceiling; the supersede repair; `flush`, `drain_for_shutdown` and the loss counters; `live_turn`; the child-origin pins; `on_session_closed` |
+| `crew_log/emit_runtime.py` | the installed writer, turn tracker and warning budget and every function that rebinds or reads them: `reset_caches`; the handle cache that is the writer's `open_unit` adapter; `_write`, `_submit`, `_hand_over` and the settlement of a job the writer rejected at its ceiling; the supersede repair; `flush`, `drain_for_shutdown` and the loss counters; `live_turn` and `asking_turn`; the child-origin pins and `child_origin_attempt`; `on_session_closed` |
 | `crew_log/emit_text.py` | `_safe_text` and `safe_work_fields` (redaction), `_clip`, the one-line fit checks, `_append_body_entry`'s `message/chunk` slicing, `_payload_digest` |
 | `crew_log/emit_session.py` | `on_session_opened`, `on_session_adopted`, `on_session_released`, `on_session_spawned`, `on_class_observed` and `on_open_tab_unrestored` |
 | `crew_log/emit_turn.py` | a turn's start and end; messages, request configuration, the composed context, steps, tool calls, approvals, the plan, model selection and compaction; `close_open_tool_calls`; `background/completed` |
@@ -39,7 +39,7 @@ Both collaborators are built on first use and never at import, for the boot-path
 under "Storage runs off the event loop"; `reset_caches()` retires both -- the writer through
 `CrewLogWriter.close`, which waits a bounded moment and then discards what it could not
 write -- so the next use builds fresh ones, with test `WriterLimits` when the reset is given
-them. The writer's two seams each have two adapters: its executor is the one-worker
+them. The writer's two seams each have two adapters: its executor is the one-worker-per-lane
 crew-log pool in production and none in a test, where every pass runs on the caller's
 thread paced by an injected clock; its `open_unit` is the emitter's handle cache in
 production and a fault-injecting opener over a real temporary data home in a test.
@@ -185,15 +185,24 @@ new sid is mapped -- and stamps it on the registered session, exposed as
 `SessionManager.allocation_predecessor(key)` for the caller to consume after the claim. A
 read taken before `get_or_create` could be staled by a concurrent turn on the same key that
 allocates an intermediate session and has it recycled while the reader waits inside the
-allocation for the turn permit; the boundary's own capture cannot be. That capture is a read of
-the mapping, so it carries the same two limits as this fallback -- the replay-pending generation
-gap, and no store tier above it. It also DETERMINES nothing: it hands over whichever id the
-capture holds, and that id is empty whenever the mapping entry is gone while the slot's units
-remain. So those creates pass no determination and their units carry no predecessor key of any
-kind, which reads as the legacy silence it is. The alternative -- reading the empty id as a
-finding -- would have the entry declare a slot with units to be its own first store, in an
-append-only record, and a later fold would pass over it: the defect this section closes, written
-from the other side. `mapped_sid` rather
+allocation for the turn permit; the boundary's own capture cannot be. The capture stands where
+the dashboard's slot record does, AHEAD of the store, because it too names a store whose create
+is still queued to the writer. It is still a read of the mapping, so the two limits of this
+fallback apply to it, and the store tier answers them for a key with no registered session
+(`messaging.dispatch.predecessor_edge`). The store is read BEFORE the claim, off the loop, and
+only when no session is registered for the key (`store_predecessor`): the opener must not
+suspend between the claim and the create, and a warm turn must not pay a store listing. After
+the claim a non-empty capture is cited unless the live session owes a history replay -- asked
+there, where the session exists -- and otherwise the store's answer becomes the edge with the
+same three determinations the latch carries: a named unit is cited, a store with no unit of the
+slot states there is none, an undecided read or a mapped id inside the replay window records a
+break, and units the store cannot rank state nothing. So a restart whose mapping entry is gone
+cites the unit the slot was on instead of writing the legacy silence, and a channel slot's
+first store says so. What the store tier does not reach: a successor started behind a
+registered session (a recycle, a dead provider), which reads no store and hands over the
+capture alone as before, and a successor a concurrent claim registers between the store read
+and this claim, which that answer predates.
+`mapped_sid` rather
 than `resumable_sid`: the latter asks "can this id still be resumed", so it stats the ACP
 transcript on the calling thread (a sync store read the turn coroutine must not make) and
 PRUNES the entry when that file is gone or empty, which erases the id exactly when the two
@@ -214,7 +223,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 
 | Fact | Site | Data |
 |---|---|---|
-| `session/opened` | after `get_or_create`, on create or re-attach only -- the dashboard runner on every turn, and the Discord and Telegram dispatchers for their OWN sessions (`messaging.dispatch.open_turn_crew_log`, before `TurnDriver.run`; a dashboard session resumed into a chat is left to the runner that holds its lineage) | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot already wrote a different crew log, resolved in three tiers -- the store the slot last handed to a `session/opened` (recorded on the slot as that edge is spent, and the only source that can name a crew log whose create is still queued to the writer thread), then the slot's own newest unit IN THE STORE (the unit no other unit of that slot cites as `previous`, read off the event loop and keyed by the slot rather than the session key, which is the DURABLE answer a restart has), then `mapped_sid` (in-memory, non-pruning) for a slot with no unit at all; the mapping cannot be higher because a replay-pending allocation holds the prior resumable id there on purpose, which would name a generation behind and leave the crew log between cited by nobody, and inside that window it is not cited -- the log records `previous_undecided` instead, and a store the read proves is the slot's first records `previous_none`, because a silence the announce carries and a silence that is merely the absence of every key demand opposite treatment from a later fold. The window is asked about where a SESSION EXISTS to answer, as the edge is taken, not where the id is read: the marker is an attribute of a live session and the read runs before this turn's session is allocated, so asking there answers "no replay owed" both when none is owed and when there is nobody to ask -- and the second is a cold start, the restart this whole read exists to survive. So the mapped id is latched PROVISIONAL and downgraded to a break at the take; the slot's own record is never provisional, and a latch whose record wins over a mapped id drops the flag with it. `previous_none` is the LOOKER's statement, written only for a caller that passed a determination, and only when the store's answer is COMPLETE -- no unit of the slot at all. A store holding units it could not rank hands the question on WITHOUT a determination, so an empty mapping there is no finding about the slot and the create writes no key; the channel dispatchers hand over one captured id and determine nothing, so their units carry no predecessor key either. Both read as the legacy silence they are, rather than declaring a slot with units to be its own first store; latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; the channel dispatchers, which hold no slot record, consume the ALLOCATION's own capture instead (`SessionManager.allocation_predecessor`, read by `SessionAllocationService` inside the registration's critical section from `mapped_sid` -- live id or the `discarded_sid` stash a recycle leaves -- and handed over through `messaging.dispatch.predecessor_sid` after the claim), so no read of the mapping around `get_or_create` remains to be staled by a concurrent turn's allocate-and-recycle; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment. A slot restored from transcript metadata, with no in-process mint witness, writes a `parent` only when the seeded session tree's fold names the same creator as the restored `_created_by` (`_crew_log_inherited_parent`); transcript metadata alone is never promoted to lineage |
+| `session/opened` | after `get_or_create`, on create or re-attach only -- the dashboard runner on every turn, and the Discord and Telegram dispatchers for their OWN sessions (`messaging.dispatch.open_turn_crew_log`, before `TurnDriver.run`; a dashboard session resumed into a chat is left to the runner that holds its lineage) | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `previous {sid}` on a CREATE whose slot already wrote a different crew log, resolved in three tiers -- the store the slot last handed to a `session/opened` (recorded on the slot as that edge is spent, and the only source that can name a crew log whose create is still queued to the writer thread), then the slot's own newest unit IN THE STORE (the unit no other unit of that slot cites as `previous`, read off the event loop and keyed by the slot rather than the session key, which is the DURABLE answer a restart has), then `mapped_sid` (in-memory, non-pruning) for a slot with no unit at all; the mapping cannot be higher because a replay-pending allocation holds the prior resumable id there on purpose, which would name a generation behind and leave the crew log between cited by nobody, and inside that window it is not cited -- the log records `previous_undecided` instead, and a store the read proves is the slot's first records `previous_none`, because a silence the announce carries and a silence that is merely the absence of every key demand opposite treatment from a later fold. The window is asked about where a SESSION EXISTS to answer, as the edge is taken, not where the id is read: the marker is an attribute of a live session and the read runs before this turn's session is allocated, so asking there answers "no replay owed" both when none is owed and when there is nobody to ask -- and the second is a cold start, the restart this whole read exists to survive. So the mapped id is latched PROVISIONAL and downgraded to a break at the take; the slot's own record is never provisional, and a latch whose record wins over a mapped id drops the flag with it. `previous_none` is the LOOKER's statement, written only for a caller that passed a determination, and only when the store's answer is COMPLETE -- no unit of the slot at all. A store holding units it could not rank hands the question on WITHOUT a determination, so an empty mapping there is no finding about the slot and the create writes no key, which reads as the legacy silence it is rather than declaring a slot with units to be its own first store; the channel dispatchers' opener takes the same determinations from the store behind its capture (`messaging.dispatch.predecessor_edge`); latched on the slot by whichever allocation observes it FIRST -- the eager prefetch maps its own session over the key before the first turn runs, so a turn reading the mapping for itself would answer the successor and write no edge; the latch is write-once and is spent on one entry; the channel dispatchers, which hold no slot record, consume the ALLOCATION's own capture instead (`SessionManager.allocation_predecessor`, read by `SessionAllocationService` inside the registration's critical section from `mapped_sid` -- live id or the `discarded_sid` stash a recycle leaves -- and handed over through `messaging.dispatch.predecessor_sid` after the claim), so no read of the mapping around `get_or_create` remains to be staled by a concurrent turn's allocate-and-recycle; recorded only when the named crew log's own header names this slot, read at emit time, so a stale or recycled mapping entry yields no edge; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment. A slot restored from transcript metadata, with no in-process mint witness, writes a `parent` only when the seeded session tree's fold names the same creator as the restored `_created_by` (`_crew_log_inherited_parent`); transcript metadata alone is never promoted to lineage |
 | `turn/started` | after every dispatch gate, immediately before the stream opens | turn ordinal, actor, prompt depth |
 | `turn/refused` | each gate that refuses the dispatch | turn ordinal, actor, `reason`, prompt depth |
 | `turn/completed` | the `EVENT_COMPLETE` arm, beside `_emit_turn_metric`; the turn's `finally` when no terminal event arrived | the four `TurnUsage` token counts (only when some count is above zero, then all four), credits (only when positive and finite), `duration_ms`, `stop_reason`, model, provider, and `context {used, window}` (the provider's context occupancy, only when either is above zero) -- or `stop_reason: "failed"` with `error` and no usage |
@@ -234,11 +243,11 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `message/queued` | `chat_delivery.queue_for_next_turn` | source, bytes, queue id -- no turn |
 | `approval/requested` | `_on_permission_prompt` (`chat_turn/permission_prompt.py`), one statement before the try whose `finally` records the decision | turn, request id, tool name and the redacted title the human is shown, each omitted when the frame named neither |
 | `approval/decided` | the same prompt's `finally`, where every exit converges | turn, request id, decision, `by: host` and the host's `cause` for an auto-decline |
-| `approval/requested` / `approval/decided` (subagent spawn gate) | `_spawn_with_approval_impl` in `subagent_manager/admission/pump.py`, when a spawn needs approval, through the writer in `subagent_manager/admission/gate_reporting.py`; decided in a `finally`, including a host-attributed cancel | in the PARENT's log under the turn that asked (`dispatch_origin`): approval id `spawn:<agent_id>`, tool `spawn_run` |
+| `approval/requested` / `approval/decided` (subagent spawn gate) | `_spawn_with_approval_impl` in `subagent_manager/admission/pump.py`, when a spawn needs approval, through the writer in `subagent_manager/admission/gate_reporting.py`; decided in a `finally`, including a host-attributed cancel | in the PARENT's log under the turn that asked (`dispatch_origin`): approval id `spawn:<agent_id>`, tool `spawn_run`; `by: host` (and its `cause`) when the callback answered with nobody asked, by returning a `HostSpawnDecision` |
 | `approval/requested` / `approval/decided` (a running child's tool prompt) | `subagent_manager/run.py`, when a child asks for a tool | in the PARENT's log under the turn that asked (`child_origin`): approval id `<child_id>:<request_id>` |
 | `plan/updated` | `EVENT_TODO_UPDATE`, inside `slot.set_todo`'s own change gate | turn, the whole task list as `{id, text, state}` |
 | `background/completed` | `run_bg_oneliner` and `background_turn`, at the point they record usage, against an owner pinned BEFORE the call | kind, served model, provider, the billed token dimensions, credits, ms -- no turn |
-| `subagent/spawned` | `_log_spawned`, the one site every started run passes and no rejection does | the turn that ASKED, read from the pin taken at acceptance; child id, agent, model, the task text redacted and clipped, the three context-scope flags |
+| `subagent/spawned` | `_log_spawned`, the one site every started run passes and no rejection does | the turn that ASKED and its attempt when observed, read from the pin taken at acceptance; child id, agent, model, the task text redacted and clipped, the three context-scope flags |
 | `subagent/steered` | `steer_run` after the provider accepted, `follow_up_run` after the queue accepted | child id, `interrupt` or `follow_up` |
 | `subagent/completed` | the exclusive terminal report, for outcome `completed` | child id, elapsed ms, credits when billed |
 | `subagent/failed` | the same report, for outcome `failed` or `stopped` | child id, reason, which outcome it was, elapsed ms, credits when billed |
@@ -284,7 +293,7 @@ default, while the pin is deliberately KEPT -- the composer chip still shows it,
 clearing it would delete an explicit user setting on the evidence of one session's
 advertised list. An unpinned slot is the mirror case: it names no model of its own,
 and the model it runs on is known only after the handle exists (when only its
-mate pins a model, its pin is backfilled from the provider then).
+Bot pins a model, its pin is backfilled from the provider then).
 
 So `session/opened` and `request/configured` read `served_model`, the session fact,
 through one helper. It is empty when the backend serves its own default, and the entry
@@ -370,10 +379,16 @@ would be a second, unobserved claim.
 
 ### Writer loss is admitted before appending resumes
 
-Every writer loss creates one per-session pending-loss record: `{dropped_count, dropped_bytes}`.
-Retry exhaustion, a hard buffer-ceiling rejection and a permanent refusal all feed the same record,
-and so does a refusal on the inline path. `dropped_bytes` is the size hint the producer supplied for
-the rejected jobs.
+Every writer loss but the inline refusal below creates one per-session pending-loss record:
+`{dropped_count, dropped_bytes}`. Retry exhaustion, a hard buffer-ceiling rejection and a permanent
+refusal all feed the same record. `dropped_bytes` is the size hint the producer supplied for the
+rejected jobs.
+
+A refusal on the inline path is the exception: it is counted in `dropped_writes()` but creates no
+record, so no `write/dropped` marker follows it and a reader of the log cannot see that hole
+(`_INLINE_REFUSAL_OWES_MARKER` in `crew_log/writer.py`). Owing one would first need a rule for a
+marker the log itself refuses: a log another process owns, or one whose creation failed, refuses the
+marker as well, and a refused marker's debt is carried into the next one.
 
 The record carries no reason code, deliberately. The only site that knows a cause cannot separate
 the ones that matter: the writer's refusal check collapses a malformed entry and a well-formed entry refused
@@ -388,7 +403,8 @@ bytes merge into it. If the marker itself reaches the write-attempt ceiling, its
 back into the next marker along with ordinary jobs that could not pass it. The session is not
 poisoned: a later append retries the marker and can resume once it lands.
 
-The ordering invariant is: **no entry is ever appended after a loss until a marker naming that loss
+For every loss but the inline refusal above, the ordering invariant is: **no entry is ever appended
+after a loss until a marker naming that loss
 has been appended.** Jobs emitted before a concurrent loss may already be in flight; every ordinary
 job still waiting behind that observation is requeued behind the marker without spending its retry
 budget. `seq` remains contiguous because lost jobs never acquired a seq. A reader detects the hole
@@ -521,13 +537,16 @@ handle-holding caller. The static pin cannot see that case; a retention test cov
 ### A dying turn still records what it produced
 
 The recovery handlers -- cancellation, a signed-out CLI, a dead backend process, an
-exhausted prompt-busy retry, and branches of the generic `AcpError` arm --
-persist the turn's partial reply straight through `slot.append` rather than
-`_flush_segment`, because they purge the chunk rows first and must not broadcast a
-segment. They go through one helper, `_persist_partial_reply`, which writes the body to
-the log as well, marked `interrupted`, BEFORE the turn's closers run, and then writes the
-turn's abnormal-end usage row (`_record_abnormal_turn_usage`) whether or not there was
-partial text. One helper rather than the block inline in each handler, for the reason
+exhausted prompt-busy retry, branches of the generic `AcpError` arm, the generic
+`Exception` arm, and the four arms that complete a turn and return before the
+end-of-turn flush to queue a recovery (a stale turn, a tool stall, a failed
+compaction, a retryable `error:` failure) -- persist the turn's partial reply
+straight through `slot.append` rather than `_flush_segment`, because they purge the
+chunk rows first and must not broadcast a segment. They go through one helper,
+`_persist_partial_reply`, which writes the body to the log as well, marked
+`interrupted`, BEFORE the turn's closers run, then gives the reply its footer, and
+then writes the turn's abnormal-end usage row (`_record_abnormal_turn_usage`)
+whether or not there was partial text. One helper rather than the block inline in each handler, for the reason
 redaction lives at the emitter's boundary: a new handler cannot forget it, and a test asserts that structurally
 rather than per branch, since each branch needs its own error class, retry counter and
 depth to reach. Without the log copy the transcript holds text the user
@@ -702,6 +721,13 @@ it. A log whose seq disagrees with causality is worse than a short one, because 
 cannot detect it: a short tail is visible, a reordered one reads as fact. A synchronous
 caller therefore waits a bounded time for the batch to finish and then hands its job to
 the writer rather than racing it.
+
+The same rule binds the other way: while the shutdown thread drains inline, it holds the
+claim a pass would. It takes it in the lock hold that found no batch claimed and releases
+it in the hold that takes its last look at the buffers. A producer arriving meanwhile
+queues behind the drain instead of starting a pass that would take the session's newer
+entries and write them ahead of the batch the shutdown thread is still writing; one
+arriving after that last look starts a pass of its own.
 
 **The residual:** a batch a wedged writer still holds cannot be finished from the
 shutdown thread, and the entries buffered behind it are left alone rather than written
@@ -949,7 +975,13 @@ Two different moments, and conflating them produces two different defects.
 The **asking turn** is knowable only at acceptance: a spawn arrives as a tool call inside the
 parent's turn, while the child's own entries are produced long afterwards, usually while the parent
 is on a different turn. So `(session id, turn)` is pinned there and every later entry about that
-child reads it back.
+child reads it back. The pin also carries that turn's **attempt**, because a regenerate or rewind
+reruns the same ordinal and `turn/started` is identified by `(turn, attempt)`. The attempt is
+derived on the writer thread by the start's own job and stamped on the record that start opened,
+so a child dispatched before that job runs is pinned with the attempt unobserved, and the entry
+omits it rather than claiming attempt 1. The asking turn is read with `asking_turn`, not
+`live_turn`: a turn whose closer is already handed to the writer has ended and asks for nothing,
+though the tail repair still counts it as running.
 
 The **entry** may not be written there, because acceptance is not a start. Registration is followed
 by the spawn approval gate, and a decline returns through the finalize claim and the announce
@@ -975,6 +1007,12 @@ on an unrelated one. Its asking ordinal is pinned where the follow-up was REQUES
 is itself a tool call inside the asking turn -- and carried to the dispatch on the run record, the
 same way `_preassigned_id` and the inherited context groups already ride that call. Without it the
 continuation would be filed under a turn that did not ask for it.
+
+Every other spawn reads its origin, `(unit, turn, attempt)`, once on its first pass and carries it
+on the queued row as `_crew_log_asked`. A row the durable queue replays after a restart has no pin
+in the new process and the parent has moved to a new unit, so the replay pins to the unit that
+asked, from the row. A unit id over the emitter's session-id cap is left off the row. A row written
+before the origin was stored falls back to the parent's current unit with the turn unobserved.
 
 Several follow-ups queued across several turns are delivered as ONE continuation, so that entry can
 name only one turn, and the pin it carries is the most recent ask's. That is a choice rather than a
@@ -1173,7 +1211,6 @@ the finding: an unnamed site records `user`.
 | `slack/gateway` cron branch | a cron notification | `cron` |
 | `slack/gateway._fire_dashboard_nudge` | a nudge/monitor wake (`_directive_self_wake`) | `autonudge` |
 | `slack/gateway` sub-agent injection | a sub-agent completion | `subagent` |
-| `slack/gateway._retrigger_recovery` | re-injected sub-agent completions | `subagent` |
 | `chat_runner` synthesis dispatch | the sub-agent synthesis prompt | `subagent` |
 | `issue_radar.crew_runtime_session` | a crew-composed prompt | `crew` |
 | `handlers/taskrunner` (plan, result) | a task-runner summary | `gateway` |
@@ -1327,8 +1364,10 @@ latency preference.
 
 So an entry point does only what must be measured where it is called, builds the storage
 call as a `WriteJob`, and submits it to the installed `CrewLogWriter`, whose executor is
-`executors.crew_log_executor()` -- a pool of exactly ONE worker, because the order entries
-reach a unit's file is part of the format. The call sites stay synchronous
+`executors.crew_log_executor()` -- one worker per writer lane (`WriterLimits.lanes`, 4).
+The order entries reach a unit's file is part of the format, so a lane HOLDS a unit while
+it writes it and no other lane or inline write touches a held unit: each unit still has one
+writer. The call sites stay synchronous
 and gain no suspension point; in particular `_compaction_gate_decision` and
 `_settle_compact_cooldown` are synchronous methods called from async code, which an
 `await`-based emitter could not have served without changing their signatures.
@@ -1392,8 +1431,8 @@ is what bounds this at one extra attempt: the order the first submission was wai
 since nothing ahead of it will be written now, and a hook that re-armed itself would follow a wedged
 disk around its retry budget for as long as the disk stayed wedged. The drop counted this job as one
 missing append before the hook ran, and it is not missing, so the count is taken back out before any
-marker is authored -- a marker is written by a LATER pass of the one writer thread, so no reader can
-have seen the count. Only the count moves: a job re-submitted this way carries no body, so the
+marker is authored -- a marker is written by a LATER pass over that unit, and the lane that dropped
+the batch still holds the unit while it takes the count back, so no reader can have seen it. Only the count moves: a job re-submitted this way carries no body, so the
 marker's byte total was already exact. Debt that falls to nothing is removed rather than left at
 zero, so a session whose only dropped entry is coming back appends no marker announcing that nothing
 is missing.
@@ -1506,22 +1545,35 @@ the disk, which is the thing this path exists to prevent.
 The buffer is keyed per session, because each session is a separate file and one slow crew log
 must not reorder another's entries.
 
-What bucketing does NOT buy is latency isolation, and the distinction matters enough to state:
-ONE worker drains every session, so a write that hangs holds up every other session's entries
-until it clears or its batch is given up on. Order and content survive -- a held session's
-entries stay in its own bucket, in order, and land when the wedge clears -- but a reader
-watching a healthy session sees nothing arrive while an unrelated one is stuck. A worker per
-session would trade that for concurrent appends to one file from several threads, which
-`flock` serializes without ordering, so the cure would cost the seq-follows-causality property
-this log is for. The backlog behind a hang is bounded by the hard count and byte ceilings; the
-in-flight storage call itself has no retry bound until it returns.
+**Lanes give latency isolation up to their count.** Up to `WriterLimits.lanes` drain loops
+share the buffer. A pass claims one session at a time and HOLDS it until its batch is
+written, retained or dropped; a held session is claimed by no other lane and written inline
+by no caller, so concurrent appends to one file from several threads never happen -- `flock`
+would serialize them without ordering, which would cost the seq-follows-causality property
+this log is for. So a write that hangs or crawls holds one lane and its own session, and the
+other lanes keep draining every other session. The units of ONE slot are held together
+(`crew_log/writer_groups.py`, keyed by the slot the unit's header records): a work entry's
+append and its publish to the slot's `work-unit-order` file are two steps, and the `work`
+and `workstreams` folds read that file as "which unit holds the newest record", so two units
+of one slot on two lanes could publish in the reverse of their append order. The key is
+noted when a unit's opening entry is handed over and when the board relay resolves a
+target (on the relay's own thread, `crew_log/work_relay_feed.py`), never read under the
+writer's lock; a unit with no key is held alone. A lane stops when every owed session is held
+by another lane; that lane looks again after it lets its session go. A producer starts
+another lane while fewer than `lanes` run and more sessions are owed or held than lanes run.
+More lanes than `lanes` stuck at once is the old single-worker behaviour again: the rest
+wait. In the #31502 PR 2 bench (20 sessions at 5 Hz, one session's fsync slowed to 500 ms,
+no busy threads) the other sessions' append p50 went from 574 ms on one worker to 12 ms,
+and p99 from 1060 ms to 25 ms. The backlog behind a hang is bounded by the hard count and byte ceilings;
+the in-flight storage call itself has no retry bound until it returns.
 
 **A write that HANGS is the one failure no attempt counter bounds.** A call that
-never returns cannot advance `max_write_attempts`, and the single writer cannot
-drain another session meanwhile. Producers continue until the hard count or byte
-ceiling is reached; later tail entries are then refused and counted as overflow.
-The memory backlog is bounded, but the in-flight filesystem call itself cannot be
-cancelled safely from this thread.
+never returns cannot advance `max_write_attempts`, and its lane cannot drain another
+session meanwhile. Producers continue until the hard count or byte ceiling is reached;
+later tail entries are then refused and counted as overflow. The memory backlog is
+bounded, but the in-flight filesystem call itself cannot be cancelled safely from this
+thread. `CrewLogWriter.close` leaves a stuck lane's session held, so nothing writes beside
+that call when it returns.
 
 Visibility is therefore still required. A job past `WriterLimits.write_stall_secs` is reported
 once as a stall by a producer -- the thread that could report from the write is the
@@ -1529,9 +1581,39 @@ one blocked in it -- while `buffered_writes()`, `peak_buffered_writes()`, and th
 high-water warning expose the queued backlog. A stalled job may still land and has
 not spent a retry attempt until it returns.
 
-One worker drains it in batches. It pauses `WriterLimits.batch_deadline_seconds` before each pass, so a
+Each lane drains it in batches. It pauses `WriterLimits.batch_deadline_seconds` before each pass, so a
 turn's burst of entries becomes one pass rather than a wake per entry; the deadline is fixed
 rather than adaptive so the worst case a producer can impose on the file is a constant.
+A `flush()` waiter, a shutdown drain, and a bucket that already holds
+`WriterLimits.group_max_entries` jobs skip it.
+
+**Group commit.** The pause is also the group-commit window. A longer one buys nothing
+under load (a busy writer's next pass already finds a full bucket) and costs latency when
+idle: in the #31502 bench a 100 ms window raised the idle append p50 from 21 ms to 94 ms
+and left the loaded numbers unchanged, so it stays 20 ms. Every plain `_write` entry
+carries a `GroupPart`, and a pass writes a session's consecutive run of them with ONE
+`CrewLog.append_many`: one lock, one tail read, one `write()` and one `fsync` for up to
+`group_max_entries` entries, each with its own seq in order (they share one `time`). It
+exists because on a loaded host every syscall of an append re-takes the GIL, so the writer
+thread paid the whole lock/stat/open/fsync sequence per entry (#31502). The contract an
+acknowledgement gives does not change: a member's post-append step (`on_settled`'s "wrote",
+the eager wake, the board relay's queue put) and its `after` run only once the whole run's
+`append_many` returned, so nothing is reported recorded before it is durable. Neither
+post-append step lists the store on the lane: the eager wake is one `put_nowait`, and the
+relay's newest-unit lookup runs on its own consumer thread, which hands the copies back
+as one follow-on per board unit (`crew-log-projection.md`). A run fails, is retained
+and is dropped as a whole, with the usual `write/dropped` marker. A run that is REFUSED
+(decided before any byte, e.g. one oversize or malformed entry) is retried one job at a
+time, so the bad entry stays the only casualty. A job without a part (a lifecycle record
+with its own post-append logic, a loss marker, a follow-on) is a barrier: the run before it
+is durable before it runs. The inline path writes one entry at a time, as before. A crash
+between the write and the fsync can leave part of an unacknowledged run on disk; the
+torn-tail repair drops a partial last line, and no caller was told any of it was recorded.
+
+A synchronous caller (no event loop) whose writer thread is already in a pass or its pause
+hands its job to the writer at once instead of waiting up to
+`WriterLimits.inline_order_seconds` for it to go idle: under steady load the writer never
+goes idle, and a bounded waiter such as `on_work_recorded` spent its whole timeout there.
 
 With no event loop running the write happens inline on the calling thread. That is not the
 fallback described above: there is no loop to protect, the caller is a thread that asked for

@@ -1,0 +1,42 @@
+{
+  "_comment": "SSH hosts the deep-link resolver's isSshHost (deep-link.js) and the gateway's validate_ssh_host (src/kiro_crew/instances/validation.py) must agree on. deep-link.test.js runs every host through isSshHost; test/test_cli_open.py runs every host through validate_ssh_host. No sample carries surrounding whitespace, which the gateway strips and the link refuses, and every sample stays under the 255-character cap, so only the grammar is compared here.",
+  "valid": [
+    "devbox",
+    "h_1",
+    "_alias",
+    "0host",
+    "cd-1-alias",
+    "devbox.example.com",
+    "user@devbox.example.com",
+    "me@h",
+    "first.last@10.0.0.7",
+    "a-b_c.d"
+  ],
+  "invalid": [
+    "-oProxyCommand=x",
+    "-host",
+    "user@-oProxyCommand=x",
+    "-user@host",
+    ".host",
+    "a b",
+    "a;b",
+    "a$b",
+    "a`b",
+    "a|b",
+    "a&b",
+    "a/b",
+    "a:b",
+    "a'b",
+    "a\"b",
+    "a@b@c",
+    "@h",
+    "h@",
+    "@",
+    "host\nother",
+    "ho\u0000st",
+    "café",
+    "ａhost",
+    "[::1]",
+    "host%20x"
+  ]
+}

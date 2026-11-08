@@ -60,6 +60,28 @@ def _hold(slot: _ChatSlot, *texts: str, with_context: bool = True) -> None:
         )
 
 
+def _hold_card(slot: _ChatSlot, text: str) -> None:
+    """Put one merge card in the held queue: a note id, its ``merged_from`` range and a context half."""
+    slot._deferred_notes.append(
+        {
+            "id": "card-1",
+            "content": text,
+            "cls": "reconcile-note",
+            "session": None,
+            "merged_from": {"session": "dashboard:fork-1", "slot": "fork-1", "through": "m-2"},
+            "context": {"content": text},
+        }
+    )
+
+
+def _card_rows(slot: _ChatSlot) -> list[str]:
+    return [m["content"] for m in slot.messages if m.get("role") == "inject"]
+
+
+def _seats(slot: _ChatSlot) -> list[tuple[str, str | None]]:
+    return [(e["content"], e.get("noteId")) for e in slot._pending_context]
+
+
 def _raising_flush() -> MagicMock:
     return MagicMock(side_effect=_Boom("flush blew up"))
 
@@ -120,12 +142,43 @@ class TestPartialFlushKeepsUnwrittenNotes:
         assert [m["content"] for m in slot.messages] == ["first", "second", "third"]
         assert slot._deferred_notes == []
 
-    def test_a_restored_note_does_not_re_promote_its_context_half(self, tmp_path: Path):
-        """The context half is promoted before the visible line is appended.
+    def test_a_row_that_lands_despite_a_callback_raise_is_treated_as_written(self, tmp_path: Path):
+        """When slot.append adds a row but a callback raises, the row is in the window.
 
-        So a note whose ``append`` raised has ALREADY put its context on the
-        pending queue. Restoring the note for a retry must not queue that
-        context a second time, or the next turn reads the note twice.
+        The inject except arm detects the landing via a pre/post messages length check.
+        It must not restore the note for retry (that would duplicate the row) and must
+        still promote the context half.
+        """
+        slot = _slot()
+        _hold(slot, "first")  # has context
+
+        real_append = type(slot).append
+
+        def _land_then_raise(self, role="", content="", cls="", **kw):
+            result = real_append(self, role=role, content=content, cls=cls, **kw)
+            if role == "inject":
+                raise _Boom("callback raised after row already landed")
+            return result
+
+        with patch.object(type(slot), "append", _land_then_raise):
+            written = slot.flush_deferred_notes()  # must NOT raise
+
+        assert written == 1, "row that lands counts as written"
+        assert slot._deferred_notes == [], "note must not be queued for retry"
+        assert [m["content"] for m in slot.messages if m.get("role") == "inject"] == [
+            "first"
+        ], "row must be in the window"
+        assert [e["content"] for e in slot._pending_context] == [
+            "first"
+        ], "context must be promoted after row lands"
+
+    def test_a_restored_note_does_not_re_promote_its_context_half(self, tmp_path: Path):
+        """Context is promoted AFTER the visible row lands, not before.
+
+        With the fix, a note whose ``append`` raised has NOT yet put its context
+        on the pending queue -- the restore arm puts context back in the note so
+        the retry can promote it after the row eventually lands.  The retry must
+        not queue the context a second time either.
         """
         slot = _slot()
         _hold(slot, "first", "second")
@@ -134,17 +187,76 @@ class TestPartialFlushKeepsUnwrittenNotes:
 
         def _append(self, role="", content="", cls="", **kw):
             if content == "second":
-                raise _Boom("append failed after its context was promoted")
+                raise _Boom("append failed before context could be promoted")
             return real_append(self, role=role, content=content, cls=cls, **kw)
 
         with patch.object(type(slot), "append", _append):
             with pytest.raises(_Boom):
                 slot.flush_deferred_notes()
 
-        assert [e["content"] for e in slot._pending_context] == ["first", "second"]
+        # "second" row failed -- its context must NOT be in the queue yet.
+        assert [e["content"] for e in slot._pending_context] == ["first"]
+        # The held note regains its context half, so a save cannot replace the
+        # durable copy with a context-less retry.
+        assert slot._deferred_notes[0]["context"]["content"] == "second"
         slot.flush_deferred_notes()
-        # "second" must appear exactly once, not twice.
+        # After the retry the row lands and context is promoted exactly once.
         assert [e["content"] for e in slot._pending_context] == ["first", "second"]
+
+    def test_a_merge_card_row_that_lands_despite_a_callback_raise_keeps_one_seat(
+        self, tmp_path: Path
+    ):
+        """A merge card seats its context before its row, unlike a plain note.
+
+        When its row lands and a callback then raises, the card counts as written:
+        its seated context stays queued exactly once, and the card is not held for
+        a retry that would write a second card row.
+        """
+        slot = _slot()
+        _hold_card(slot, "merged summary")
+        real_append = type(slot).append
+
+        def _land_then_raise(self, role="", content="", cls="", **kw):
+            result = real_append(self, role=role, content=content, cls=cls, **kw)
+            if role == "inject":
+                raise _Boom("callback raised after the card row landed")
+            return result
+
+        with patch.object(type(slot), "append", _land_then_raise):
+            written = slot.flush_deferred_notes()  # must NOT raise
+
+        assert written == 1, "a card row that lands counts as written"
+        assert slot._deferred_notes == [], "the card must not be held for a retry"
+        assert _card_rows(slot) == ["merged summary"]
+        assert _seats(slot) == [("merged summary", "card-1")]
+        assert slot.flush_deferred_notes() == 0
+        assert _card_rows(slot) == ["merged summary"]
+
+    def test_a_merge_card_whose_row_fails_gives_its_seat_back_for_one_retry(self, tmp_path: Path):
+        """A card's context is queued before its row, so a failed row must give the seat back.
+
+        Otherwise the agent would read a card the transcript never shows, and the
+        retry would queue its context a second time.
+        """
+        slot = _slot()
+        _hold_card(slot, "merged summary")
+        real_append = type(slot).append
+
+        def _fail_the_card_row(self, role="", content="", cls="", **kw):
+            if role == "inject":
+                raise _Boom("the card row failed before it landed")
+            return real_append(self, role=role, content=content, cls=cls, **kw)
+
+        with patch.object(type(slot), "append", _fail_the_card_row):
+            with pytest.raises(_Boom):
+                slot.flush_deferred_notes()
+
+        assert slot._pending_context == [], "the failed card must give its seat back"
+        [held] = slot._deferred_notes
+        assert held["context"]["content"] == "merged summary"
+        assert slot.flush_deferred_notes() == 1
+        assert _card_rows(slot) == ["merged summary"]
+        assert _seats(slot) == [("merged summary", "card-1")]
 
 
 # ---------------------------------------------------------------------------

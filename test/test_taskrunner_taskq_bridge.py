@@ -72,6 +72,7 @@ async def test_a_completed_run_settles_its_row_done_with_its_progress_file(
     handle = _handle()
     runner._run_handles["r1"] = handle
     await runner._taskq_end_run(_run(tmp_path, "completed"))
+    assert "r1" not in runner._run_handles
     handle.done_async.assert_awaited_once_with(result_ref=str(tmp_path / PROGRESS_FILE))
 
 

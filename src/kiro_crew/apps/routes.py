@@ -48,7 +48,10 @@ from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
     register_app,
     register_app_crons_with_service,
+    snapshot_app_agent_configs,
 )
+from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
+from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.dependencies import clean_dependencies
 from kiro_crew.apps.dependencies import resolve_dependencies as _resolve_deps
@@ -81,6 +84,7 @@ from kiro_crew.apps.manager import (
     install_app,
     is_app_enabled,
     list_apps,
+    refresh_app_config_keys,
     register_external_app,
     resolve_mcp_backend_url,
     trust_grant_removal_blocked,
@@ -97,8 +101,12 @@ from kiro_crew.apps.proxy_auth import (
     PRINCIPAL_APP_TOKEN,
     PRINCIPAL_NONE,
     PRINCIPAL_OWNER_SESSION,
+    PROXY_NONCE_HEADER,
     PROXY_PRINCIPAL_HEADER,
+    PROXY_V2_HEADER,
+    new_proxy_nonce,
     sign_proxy_principal_claim,
+    sign_proxy_request_v2,
 )
 from kiro_crew.apps.registry import (
     _ART_IMAGE_EXTENSIONS,
@@ -117,6 +125,7 @@ from kiro_crew.apps.registry import (
     _git_target_is_unsupported,
     _git_url_host,
     _loggable_git_transport_output,
+    _manifest_shell_platform_refusal,
     _owner_designated_repo_target,
     _pinned_registries,
     _registry_identity_key,
@@ -128,6 +137,7 @@ from kiro_crew.apps.registry import (
     anonymous_git_env,
     get_registry_app_by_repo,
     get_server_platform,
+    git_unavailable_refusal,
     install_from_registry,
     is_registry_source,
     known_registry_repos,
@@ -138,6 +148,10 @@ from kiro_crew.apps.registry import (
     resolve_installed_trust_repository,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _git_network_env,
+    _proxy_env_has_credentials,
+)
 from kiro_crew.apps.routes_art import handle_app_art_file, handle_blob_proxy
 from kiro_crew.apps.routes_enable import handle_disable_app, handle_enable_app, handle_open_app
 from kiro_crew.apps.routes_install import (
@@ -249,6 +263,10 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_get("/apps/{name}/art/{path:.*}", handle_app_art_file)
     # Reverse proxy: dashboard app UI → app backend (same-origin, avoids CORS)
     app.router.add_route("*", "/apps/{name}/api/{path:.*}", handle_app_api_proxy)
+    # App frames (every frame-backed point): the sandboxed document, its mint and its fetch.
+    from kiro_crew.apps.app_frame import register_app_frame_routes
+
+    register_app_frame_routes(app)
 
 
 # This module keeps only the route table. It is the facade of the app management route
@@ -289,6 +307,13 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.apps.bridges import (  # noqa: F401
+        _prune_stale_app_resources,
+        _registration_source,
+    )
+    from kiro_crew.apps.point_grants import (  # noqa: F401
+        point_grant_families,
+    )
     from kiro_crew.apps.routes_art import (  # noqa: F401
         _BLOB_FETCH_SEMAPHORE,
         _BLOB_FETCH_TIMEOUT,
@@ -314,19 +339,26 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resync_app_crons_after_update,
     )
     from kiro_crew.apps.routes_lifecycle import (  # noqa: F401
+        _app_may_enable_after_install,
         _app_may_run_after_install,
+        _awaits_consent,
+        _backend_platform_refusal,
         _check_min_version,
         _deregister_app_off_loop,
+        _read_app_record,
         _redact_warning,
         _refuse_while_startup_hook_runs,
         _register_app_off_loop,
+        _reinstall_from_registry,
         _restore_app_after_failed_update,
+        _snapshot_agent_configs_off_loop,
         _start_backend_after_install,
         _stop_backend_and_observe,
         _suspend_app_for_session_approval_reconsent,
         _unregister_notification_channels,
     )
     from kiro_crew.apps.routes_listing import (  # noqa: F401
+        APP_RELEASED_CODE,
         _installed_app_detail,
         _listed_apps_with_trust,
         _provider_is_configured,
@@ -337,9 +369,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROXY_HOP_HEADERS,
         _PROXY_IDLE_TIMEOUT,
         _PROXY_STRIP_HEADERS,
+        _PROXY_STRIP_QUERY_PARAMS,
         _PROXY_TIMEOUT,
         _app_secret_cache,
         _end_relay_midbody,
+        _forwarded_query,
         _get_app_secret,
         _is_event_stream,
         _proxy_principal,
@@ -354,10 +388,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_static import (  # noqa: F401
         _ALLOWED_EXTENSIONS,
         _CONTENT_TYPES,
+        _GZIP_EXTENSIONS,
+        _GZIP_LEVEL,
+        _GZIP_MIN_BYTES,
         _UI_MAX_BYTES,
         _UI_STREAM_CHUNK,
         _UI_STREAM_SEMAPHORE,
         _UI_STREAM_TIMEOUT_DEFAULT,
+        _accepts_gzip,
         _open_ui_file,
         _ui_stream_timeout_secs,
     )
@@ -365,5 +403,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CRON_CLEANUP_ATTEMPTS,
         _CRON_CLEANUP_BACKOFF_SECS,
         _deregister_crons_with_retry,
+        _InProcessRequest,
         _run_uninstall,
+        uninstall_app_in_process,
+    )
+    from kiro_crew.apps.teardown import (  # noqa: F401
+        stop_app_hooks_for_uninstall,
     )

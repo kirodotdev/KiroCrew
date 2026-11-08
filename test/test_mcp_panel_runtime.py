@@ -1,19 +1,9 @@
 """Runtime behaviour of the ``kirocrew-panel`` MCP server.
 
-``test_mcp_panel_registration.py`` covers the REGISTRY wiring -- that the server
-appears in every declaration surface, that the conductor grants are exact, that no
-tool takes a session argument. None of that executes the module, so the half this
-file covers is the half the security argument actually rests on:
-
-* the strict identity gate, whose entire purpose is refusing a subagent rather
-  than resolving it to its parent's crew;
-* the redaction of gateway refusal prose, which is the justification recorded for
-  this module's ``NON_EGRESS`` output-boundary classification in
-  ``security_posture``;
-* the refusal paths, which are what a caller sees when it gets something wrong.
-
-A security claim with no executing test is a comment, so each test here names the
-claim it is holding up.
+``test_mcp_panel_registration.py`` covers the registry wiring without running the
+module. This file runs it: the identity gate that refuses a subagent instead of
+resolving it to its parent's crew, the redaction behind the ``NON_EGRESS``
+classification in ``security_posture``, and the refusal paths.
 """
 
 from __future__ import annotations
@@ -39,6 +29,21 @@ from kiro_crew.mcp_panel import (
 GOOD_KEY = "dashboard:chat-1-100"
 
 
+def _gateway_serving(key: str, reply: dict[str, Any]) -> Any:
+    """A gateway double that answers only the session it was told about.
+
+    Any other key gets the refusal a real gateway gives an unknown caller, so the
+    tool's reply text shows which key actually reached the gateway.
+    """
+
+    def _serve(_path: str, *_a: Any, session_key: str = "", **_k: Any) -> dict[str, Any]:
+        if session_key != key:
+            return {"error": f"unknown session {session_key!r}"}
+        return reply
+
+    return _serve
+
+
 @pytest.fixture(autouse=True)
 def _verified_caller() -> Any:
     """Resolve the caller strictly, the way a real parent session would.
@@ -50,7 +55,7 @@ def _verified_caller() -> Any:
         yield
 
 
-# --------------------------------------------------------------- identity gate
+# identity gate
 
 
 class TestTheStrictIdentityGate:
@@ -95,10 +100,13 @@ class TestTheStrictIdentityGate:
 
     def test_the_verified_key_reaches_the_gateway_unchanged(self) -> None:
         """Re-resolving downstream would send a different authority than was checked."""
-        with patch("kiro_crew.mcp_panel._post", return_value={"panel": {}}) as mock_post:
-            _call_tool_inner("panel_publish", {"data": {"cycle": 1}})
+        with patch(
+            "kiro_crew.mcp_panel._post", side_effect=_gateway_serving(GOOD_KEY, {"panel": {}})
+        ) as mock_post:
+            out = _call_tool_inner("panel_publish", {"data": {"cycle": 1}})
 
         assert mock_post.call_args.kwargs["session_key"] == GOOD_KEY
+        assert out.startswith("Published using the `default` template")
 
     def test_the_publishing_crew_is_never_taken_from_the_arguments(self) -> None:
         """Ownership comes from the vetted session, never from the caller's payload.
@@ -116,31 +124,19 @@ class TestTheStrictIdentityGate:
         assert "crew" not in sent and "slug" not in sent, f"caller-controlled identity in {sent}"
 
 
-# ------------------------------------------------------------------- redaction
+# redaction
 
 
 class TestRefusalProseIsRedacted:
     """The module's ``NON_EGRESS`` output-boundary classification, under test.
 
-    The two ``redact`` calls exist because gateway refusal prose is returned to the
-    agent verbatim so it can correct itself -- and that prose is built from an
-    upstream error string this module does not author. If a refusal ever quotes
-    something credential-shaped, returning it raw would hand it to the model. That
-    reasoning is the recorded justification for the classification, so it gets a
-    test rather than a comment.
+    Refusal prose goes back to the agent verbatim and is built from an upstream
+    error string, so anything credential-shaped in it must be redacted first.
     """
 
-    # ASSEMBLED AT RUNTIME, never written as literals.
-    #
-    # These have to be credential-SHAPED to reach the detectors under test, which
-    # makes them indistinguishable from real leaked keys to a scanner reading this
-    # file -- GitHub push protection rejected the Slack-shaped one outright. Joining
-    # the parts keeps the shape at runtime while the source contains no matchable
-    # string, so the test stays honest without an allowlist entry that would teach
-    # the scanner to ignore this path. Do not "simplify" these back into literals.
-    #
-    # One per detector in the shared redactor, so a single pattern regressing does
-    # not leave this test green on the strength of the others.
+    # Assembled at runtime so the source holds no string a secret scanner matches
+    # (GitHub push protection rejects the Slack-shaped one). Do not turn these into
+    # literals. One per detector, so one pattern regressing still fails the test.
     CREDENTIALS = [
         "-".join(["xoxb", "123456789012", "1234567890123", "abcdefghijklmnopqrstuvwx"]),
         "_".join(["ghp", "1234567890abcdefghijklmnopqrstuvwxyz"]),
@@ -186,7 +182,7 @@ class TestRefusalProseIsRedacted:
         assert "REDACTED" not in out
 
 
-# ---------------------------------------------------------------- publish tool
+# publish tool
 
 
 class TestPanelPublish:
@@ -238,12 +234,13 @@ class TestPanelPublish:
     def test_absent_optional_fields_are_omitted_rather_than_sent_as_null(self) -> None:
         """A null template would override the server's default with nothing."""
         with patch("kiro_crew.mcp_panel._post", return_value={"panel": {}}) as mock_post:
-            _call_tool_inner("panel_publish", {"data": {"a": 1}, "template": None})
+            out = _call_tool_inner("panel_publish", {"data": {"a": 1}, "template": None})
 
         assert "template" not in mock_post.call_args[0][1]
+        assert out.startswith("Published using the `default` template (1 top-level field).")
 
 
-# -------------------------------------------------------------- templates tool
+# templates tool
 
 
 class TestPanelTemplates:
@@ -262,7 +259,7 @@ class TestPanelTemplates:
         assert "No panel templates" in out
 
 
-# --------------------------------------------------------- dashboard read tool
+# dashboard read tool
 
 
 class TestDashboardFields:
@@ -288,10 +285,13 @@ class TestDashboardFields:
     def test_the_verified_key_reaches_the_gateway_unchanged(self) -> None:
         """The field list is keyed by crew, so re-resolving downstream would answer
         for a different crewmate than the one the gate vetted."""
-        with patch("kiro_crew.mcp_panel._get", return_value={"template": None}) as mock_get:
-            _call_tool_inner("dashboard_fields", {})
+        with patch(
+            "kiro_crew.mcp_panel._get", side_effect=_gateway_serving(GOOD_KEY, {"template": None})
+        ) as mock_get:
+            out = _call_tool_inner("dashboard_fields", {})
 
         assert mock_get.call_args.kwargs["session_key"] == GOOD_KEY
+        assert out.startswith("You have no dashboard page yet")
 
     def test_the_fields_come_back_as_prose_the_agent_can_act_on(self) -> None:
         """The payload is rendered rather than returned raw.
@@ -332,7 +332,7 @@ class TestDashboardFields:
         assert "REDACTED" in out
 
 
-# -------------------------------------------------------- dashboard write tool
+# dashboard write tool
 
 
 class TestDashboardWrite:
@@ -391,10 +391,13 @@ class TestDashboardWrite:
         mock_post.assert_not_called()
 
     def test_the_verified_key_reaches_the_gateway_unchanged(self) -> None:
-        with patch("kiro_crew.mcp_panel._post", return_value={"written": {}}) as mock_post:
-            _call_tool_inner("dashboard_write", {"field": "open_items", "value": 3})
+        with patch(
+            "kiro_crew.mcp_panel._post", side_effect=_gateway_serving(GOOD_KEY, {"written": {}})
+        ) as mock_post:
+            out = _call_tool_inner("dashboard_write", {"field": "open_items", "value": 3})
 
         assert mock_post.call_args.kwargs["session_key"] == GOOD_KEY
+        assert out == "Wrote `open_items` (value) to your dashboard."
 
     def test_the_target_dashboard_is_never_taken_from_the_arguments(self) -> None:
         """Ownership comes from the vetted session, as it does for a publish."""
@@ -488,13 +491,9 @@ class TestDashboardWrite:
 class TestDashboardWriteClear:
     """``clear: true`` empties an array or object field, through the server's whole entry.
 
-    An MCP client can drop an empty list, an empty object or a top-level null from a
-    call's arguments, so ``value: []`` or ``value: {}`` reaches this server as no
-    value at all. A boolean arrives intact, which is why emptying a field is spelled
-    as one. Which empty value to write (``[]`` or ``{}``) is read from the field list
-    the ``dashboard_fields`` tool uses, so the gateway's own type-check still applies.
-    Every case goes through ``_call_tool``, the schema included, because the schema is
-    where a call with nothing to write is answered.
+    An MCP client can drop ``value: []`` or ``value: {}`` from the arguments, but a
+    boolean arrives intact. The empty value to write comes from the ``dashboard_fields``
+    field list. Cases go through ``_call_tool`` because the schema answers an empty call.
     """
 
     WRITTEN_ARRAY = {"ok": True, "written": {"field": "for_you", "type": "array"}}
@@ -520,8 +519,9 @@ class TestDashboardWriteClear:
             patch("kiro_crew.mcp_panel._get", return_value=self._ARRAY_FIELDS),
             patch("kiro_crew.mcp_panel._post", return_value=self.WRITTEN_ARRAY) as mock_post,
         ):
-            _call_tool("dashboard_write", {"field": "for_you", "clear": True, "value": []})
+            out = _call_tool("dashboard_write", {"field": "for_you", "clear": True, "value": []})
 
+        assert out == "Wrote `for_you` (array) to your dashboard.", out
         assert mock_post.call_args[0][1] == {"field": "for_you", "value": []}
 
     def test_clear_posts_an_empty_object_for_an_object_field(self) -> None:
@@ -540,8 +540,9 @@ class TestDashboardWriteClear:
             patch("kiro_crew.mcp_panel._get", return_value=self._OBJECT_FIELDS),
             patch("kiro_crew.mcp_panel._post", return_value=self.WRITTEN_OBJECT) as mock_post,
         ):
-            _call_tool("dashboard_write", {"field": "asks", "clear": True, "value": {}})
+            out = _call_tool("dashboard_write", {"field": "asks", "clear": True, "value": {}})
 
+        assert out == "Wrote `asks` (object) to your dashboard.", out
         assert mock_post.call_args[0][1] == {"field": "asks", "value": {}}
 
     def test_clear_on_a_scalar_field_falls_through_to_the_gateway(self) -> None:
@@ -571,8 +572,9 @@ class TestDashboardWriteClear:
             patch("kiro_crew.mcp_panel._get", return_value=no_match),
             patch("kiro_crew.mcp_panel._post", return_value=self.WRITTEN_ARRAY) as mock_post,
         ):
-            _call_tool("dashboard_write", {"field": "unknown_field", "clear": True})
+            out = _call_tool("dashboard_write", {"field": "unknown_field", "clear": True})
 
+        assert not out.startswith("Error:"), out
         assert mock_post.call_args[0][1] == {"field": "unknown_field", "value": []}
 
     @pytest.mark.parametrize(
@@ -645,8 +647,9 @@ class TestDashboardWriteClear:
 
     def test_clear_false_leaves_an_ordinary_write_alone(self) -> None:
         with patch("kiro_crew.mcp_panel._post", return_value=self.WRITTEN_ARRAY) as mock_post:
-            _call_tool("dashboard_write", {"field": "open_items", "clear": False, "value": 3})
+            out = _call_tool("dashboard_write", {"field": "open_items", "clear": False, "value": 3})
 
+        assert not out.startswith("Error:"), out
         assert mock_post.call_args[0][1] == {"field": "open_items", "value": 3}
 
     def test_a_clear_that_is_not_a_boolean_is_refused(self) -> None:
@@ -660,8 +663,9 @@ class TestDashboardWriteClear:
     def test_a_write_with_a_value_posts_it_unchanged(self, value: Any) -> None:
         """A call that passes a value posts that value unchanged."""
         with patch("kiro_crew.mcp_panel._post", return_value=self.WRITTEN_ARRAY) as mock_post:
-            _call_tool("dashboard_write", {"field": "open_items", "value": value})
+            out = _call_tool("dashboard_write", {"field": "open_items", "value": value})
 
+        assert not out.startswith("Error:"), out
         assert mock_post.call_args[0][1] == {"field": "open_items", "value": value}
 
     def test_the_tool_advertises_clear_and_requires_only_the_field(self) -> None:
@@ -673,7 +677,7 @@ class TestDashboardWriteClear:
         assert "clear" in tool["description"]
 
 
-# ------------------------------------------------------------ field rendering
+# field rendering
 
 
 class TestTheFieldRendering:
@@ -857,7 +861,7 @@ class TestTheFieldRendering:
         assert "tries" not in out
 
 
-# ------------------------------------------------------------- module plumbing
+# module plumbing
 
 
 class TestTheDispatchSurface:

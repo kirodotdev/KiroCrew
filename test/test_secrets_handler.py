@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,6 +20,21 @@ from kiro_crew.dashboard.handlers.secrets import (
     setup_secrets_routes,
 )
 from kiro_crew.secrets import SecretVault
+
+
+def _channels_settings_path() -> str:
+    """The click path to the channel settings tab, as the English dashboard labels it.
+
+    Read from the UI index the dashboard build generates, so a rename of the tab
+    fails here instead of leaving the refusal pointing at a tab that is gone.
+    """
+    from kiro_crew.ui_index import load_index
+
+    idx = load_index()
+    english = idx.labels["en"]
+    page = english[idx.by_id["page.settings"]["label_key"]]
+    tab = english[idx.by_id["settings.tab.channels"]["label_key"]]
+    return f"{page} → {tab}"
 
 
 class _FakeState:
@@ -370,6 +386,105 @@ class TestApiSecretsList:
         ]
 
 
+_GERRIT_ONE = "gerrit.example.com:9080"
+_GERRIT_ONE_NAME = "GERRIT_HTTP_CREDENTIAL_6765727269742E6578616D706C652E636F6D3A39303830"
+_GERRIT_TWO = "gerritv.example.com:9081"
+_GERRIT_TWO_NAME = "GERRIT_HTTP_CREDENTIAL_676572726974762E6578616D706C652E636F6D3A39303831"
+
+
+class TestGerritManagedRows:
+    """``dashboard.gerrit_hosts`` publishes one labelled row per host.
+
+    The user fills the row by host and never derives the hex-suffixed vault
+    name, which the provider's credential lookup still reads.
+    """
+
+    def test_no_hosts_no_rows(self) -> None:
+        assert _managed_secret_catalog([], [], False, False, []) == []
+
+    def test_lone_host_offers_the_global_name(self) -> None:
+        catalog = _managed_secret_catalog([], [], False, False, [_GERRIT_ONE])
+        assert catalog == [
+            {
+                "name": "GERRIT_HTTP_CREDENTIAL",
+                "kind": "gerrit_http_credential",
+                "host": _GERRIT_ONE,
+            }
+        ]
+
+    def test_lone_host_with_stored_per_host_name_lists_that_name(self) -> None:
+        """The provider prefers the per-host entry, so the row must edit that one."""
+        catalog = _managed_secret_catalog([_GERRIT_ONE_NAME], [], False, False, [_GERRIT_ONE])
+        assert catalog == [
+            {"name": _GERRIT_ONE_NAME, "kind": "gerrit_http_credential", "host": _GERRIT_ONE}
+        ]
+
+    def test_two_hosts_get_per_host_rows_and_no_global_row(self) -> None:
+        catalog = _managed_secret_catalog(
+            ["GERRIT_HTTP_CREDENTIAL"], [], False, False, [_GERRIT_ONE, _GERRIT_TWO]
+        )
+        assert catalog == [
+            {"name": _GERRIT_ONE_NAME, "kind": "gerrit_http_credential", "host": _GERRIT_ONE},
+            {"name": _GERRIT_TWO_NAME, "kind": "gerrit_http_credential", "host": _GERRIT_TWO},
+        ]
+
+    def test_rows_follow_jira_rows_and_precede_connections(self) -> None:
+        catalog = _managed_secret_catalog([], ["jira.corp"], False, True, [_GERRIT_ONE])
+        assert [entry["kind"] for entry in catalog] == [
+            "wakatime_api_key",
+            "jira_host_token",
+            "gerrit_http_credential",
+        ]
+
+    def test_global_name_unused_reasons(self) -> None:
+        assert _unused_stored_secrets(
+            ["GERRIT_HTTP_CREDENTIAL"], [], False, False, [_GERRIT_ONE, _GERRIT_TWO]
+        ) == [{"name": "GERRIT_HTTP_CREDENTIAL", "reason": "gerrit_multi_host"}]
+        assert _unused_stored_secrets(
+            ["GERRIT_HTTP_CREDENTIAL", _GERRIT_ONE_NAME], [], False, False, [_GERRIT_ONE]
+        ) == [{"name": "GERRIT_HTTP_CREDENTIAL", "reason": "gerrit_host_precedence"}]
+        # A lone host served by the global name: nothing is unused.
+        assert (
+            _unused_stored_secrets(["GERRIT_HTTP_CREDENTIAL"], [], False, False, [_GERRIT_ONE])
+            == []
+        )
+        # No hosts listed: the stored name is an ordinary user secret, not flagged.
+        assert _unused_stored_secrets(["GERRIT_HTTP_CREDENTIAL"], [], False, False, []) == []
+
+    @pytest.mark.asyncio
+    async def test_list_reads_gerrit_hosts_from_config(self, tmp_path: Path) -> None:
+        """The endpoint threads ``dashboard.gerrit_hosts`` into rows and unused hints."""
+        vault = SecretVault(tmp_path)
+        vault._set_sync("GERRIT_HTTP_CREDENTIAL", "user:pw")
+        app = _app()
+        config = SimpleNamespace(
+            wakatime=SimpleNamespace(enabled=False),
+            dashboard=SimpleNamespace(jira_auth=[], gerrit_hosts=[_GERRIT_TWO, _GERRIT_ONE]),
+        )
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch("kiro_crew.dashboard.handlers.secrets.KiroCrewConfig.load", return_value=config),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                data = await (await client.get("/api/secrets")).json()
+
+        assert data["managed"] == [
+            {"name": _GERRIT_ONE_NAME, "kind": "gerrit_http_credential", "host": _GERRIT_ONE},
+            {"name": _GERRIT_TWO_NAME, "kind": "gerrit_http_credential", "host": _GERRIT_TWO},
+        ]
+        assert data["unused"] == [{"name": "GERRIT_HTTP_CREDENTIAL", "reason": "gerrit_multi_host"}]
+
+    def test_row_names_match_the_provider_lookup(self) -> None:
+        """The row's name is exactly the vault name the provider reads for the host."""
+        from kiro_crew.dashboard.source_providers import gerrit
+
+        assert gerrit.host_credential_name(_GERRIT_ONE) == _GERRIT_ONE_NAME
+        assert gerrit.GLOBAL_CREDENTIAL_NAME == "GERRIT_HTTP_CREDENTIAL"
+
+
 class TestApiSecretsSet:
     """Tests for POST /api/secrets."""
 
@@ -389,7 +504,6 @@ class TestApiSecretsSet:
                 data = await resp.json()
                 assert data["ok"] is True
 
-                # Verify stored
                 vault = SecretVault(tmp_path)
                 assert vault.get("NEW_KEY").reveal() == "new-value"
 
@@ -414,6 +528,86 @@ class TestApiSecretsSet:
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post("/api/secrets", json={"name": "X"})
                 assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_symlinked_vault_folder_refused_with_json_error(self, tmp_path: Path) -> None:
+        """Saving into a vault whose ``.vault`` folder is a symlink is refused with
+        a typed JSON error the page can render, not a bare 500.
+
+        ``atomic_write`` refuses to write through a symlinked parent, so the
+        secret never lands at the link's target. The handler maps that refusal to
+        a 409 carrying an ``error`` reason and a ``vault_folder_symlinked`` code,
+        and nothing is written through the link.
+        """
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        data_home = tmp_path / "home"
+        data_home.mkdir()
+        link_target = tmp_path / "elsewhere"
+        link_target.mkdir()
+        # The data home's .vault is a symlink to another folder.
+        (data_home / ".vault").symlink_to(link_target, target_is_directory=True)
+
+        with patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(data_home)):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/secrets", json={"name": "GH_TOKEN", "value": "s3cr3t"}
+                )
+                assert resp.status == 409
+                assert resp.headers["Content-Type"].startswith("application/json")
+                data = await resp.json()
+                assert data["code"] == "vault_folder_symlinked"
+                # A readable reason the page can show, with no raw server path.
+                assert isinstance(data["error"], str) and data["error"].strip()
+                assert "symlink" in data["error"]
+                assert str(data_home) not in data["error"]
+                assert str(link_target) not in data["error"]
+
+        # Nothing was written through the symlink: no encrypted store landed at
+        # the link's target.
+        assert not (link_target / "secrets.enc").exists()
+        # And the secret is not retrievable, i.e. the vault holds no entry for it.
+        assert SecretVault(data_home).get("GH_TOKEN") is None
+
+    @pytest.mark.asyncio
+    async def test_non_symlink_write_failure_is_generic_json_error(self, tmp_path: Path) -> None:
+        """A vault write that fails for a reason OTHER than a symlinked folder
+        gets a generic JSON error, not the symlink message.
+
+        A full disk, a permission denial or a read-only filesystem raises an
+        OSError that has nothing to do with a symlink. The handler must answer
+        with the ``vault_write_failed`` code and a reason that does not claim the
+        folder is a symlink (the ``.vault`` folder here is a real directory), so
+        the operator is not sent toward the wrong fix.
+        """
+        app = _app()
+
+        from aiohttp.test_utils import TestClient, TestServer
+
+        # A real .vault directory (not a link), so the symlink branch is not taken.
+        (tmp_path / ".vault").mkdir()
+
+        async def _raise_enospc(_self: SecretVault, _name: str, _value: str) -> str:
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        with (
+            patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
+            patch.object(SecretVault, "set_with_revision", _raise_enospc),
+        ):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/secrets", json={"name": "GH_TOKEN", "value": "s3cr3t"}
+                )
+                assert resp.status == 500
+                assert resp.headers["Content-Type"].startswith("application/json")
+                data = await resp.json()
+                assert data["code"] == "vault_write_failed"
+                assert isinstance(data["error"], str) and data["error"].strip()
+                # It must NOT claim a symlink: the folder is a real directory.
+                assert "symlink" not in data["error"].lower()
+                assert str(tmp_path) not in data["error"]
 
 
 class TestApiSecretsDelete:
@@ -916,7 +1110,7 @@ class TestApiSecretsChannelCredentialRemote:
 
         assert status == 409
         assert data["code"] == "managed_by_channels"
-        assert "Channels" in data["error"]
+        assert _channels_settings_path() in data["error"]
         assert SecretVault(tmp_path).get("SLACK_BOT_TOKEN").reveal() == "xoxb-original"
 
     @pytest.mark.asyncio

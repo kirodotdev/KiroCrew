@@ -42,7 +42,8 @@ def test_env_policy_composes_onto_context(monkeypatch, tmp_path):
                 "boot": {"fail_closed": True},
                 "commands": {"mode": "deny", "deny": ["git push*"]},
             }
-        )
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
     ctx = build_default_context(KiroCrewConfig.load())
@@ -52,7 +53,7 @@ def test_env_policy_composes_onto_context(monkeypatch, tmp_path):
 
 def test_unreadable_policy_aborts_boot(monkeypatch, tmp_path):
     bad = tmp_path / "policy.json"
-    bad.write_text("{ not json")
+    bad.write_text("{ not json", encoding="utf-8")
     monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(bad))
     with pytest.raises(PlatformCompositionError):
         build_default_context(KiroCrewConfig.load())
@@ -72,13 +73,15 @@ def test_looser_profile_ordinal_aborts_boot(monkeypatch, tmp_path):
                 "bind": {"type": "surface", "id": "cron"},
                 "sandbox": {"min_level": "off"},
             }
-        )
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
     gp.reset_store()
     p = tmp_path / "policy.json"
     p.write_text(
-        json.dumps({"version": 1, "boot": {"fail_closed": True}, "sandbox": {"min_level": "cc"}})
+        json.dumps({"version": 1, "boot": {"fail_closed": True}, "sandbox": {"min_level": "cc"}}),
+        encoding="utf-8",
     )
     monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
     try:
@@ -102,19 +105,23 @@ def test_profile_within_ceiling_boots(monkeypatch, tmp_path):
                 "bind": {"type": "surface", "id": "cron"},
                 "sandbox": {"min_level": "strict"},  # stricter than ceiling cc → fine
             }
-        )
+        ),
+        encoding="utf-8",
     )
     monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
     gp.reset_store()
     p = tmp_path / "policy.json"
     p.write_text(
-        json.dumps({"version": 1, "boot": {"fail_closed": True}, "sandbox": {"min_level": "cc"}})
+        json.dumps({"version": 1, "boot": {"fail_closed": True}, "sandbox": {"min_level": "cc"}}),
+        encoding="utf-8",
     )
     monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
     try:
         from kiro_crew.platform import bootstrap
 
-        bootstrap.bootstrap_context(KiroCrewConfig.load())  # no raise
+        ctx = bootstrap.bootstrap_context(KiroCrewConfig.load())
+        assert ctx.governance is not None
+        assert ctx.governance.controls["sandbox.min_level"].value == "cc"
     finally:
         gp.reset_store()
 
@@ -124,7 +131,7 @@ def test_lazy_default_carries_ceiling(monkeypatch, tmp_path):
     from kiro_crew.platform import context as ctx_mod
 
     p = tmp_path / "policy.json"
-    p.write_text(json.dumps({"version": 1, "boot": {"fail_closed": True}}))
+    p.write_text(json.dumps({"version": 1, "boot": {"fail_closed": True}}), encoding="utf-8")
     monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(p))
     # Pin standalone: this exercises the standalone lazy-default path. With the
     # companion co-installed in the same venv (the combined-build test setup), an

@@ -54,6 +54,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from kiro_crew import asset_downloader  # noqa: F401 - re-export
 from kiro_crew.config.paths import data_home  # noqa: F401 - re-export
 from kiro_crew.platform.tree_liveness import LIVENESS_LOCK, TREE_MARKER
 from kiro_crew.platform_compat import (  # noqa: F401 - re-export
@@ -1091,6 +1092,7 @@ def apply_wheel_update(
     before_promote: Callable[[], None] = lambda: None,
     held_lock_fd: int | None = None,
     trusted_env: bool = True,
+    install_engine: Callable[[Path, _BuildContext], None] | None = None,
 ) -> Path:
     """Run the full shadow flow; return the promoted tree's path.
 
@@ -1099,9 +1101,14 @@ def apply_wheel_update(
     exists, run *preflight*, fetch + verify the signed
     manifest, refuse a release the signed metadata excludes, download + verify
     the wheel, build the shadow tree, prove it serves the promised version, run
-    *before_promote*, promote the stable link, repoint the launcher, then prune
-    superseded trees. Every failure before :func:`promote` leaves the install
-    untouched; promote itself is atomic.
+    *install_engine* on the verified tree, run *before_promote*, promote the
+    stable link, repoint the launcher, then prune superseded trees. Every failure
+    before :func:`promote` leaves the install untouched; promote itself is atomic.
+
+    *install_engine* is the release step ``release_apply.apply_release`` supplies:
+    it gets the verified tree and this apply's build context (cancel, lock,
+    environment), so the new release's own engine install runs as one more child
+    of the apply, and a failure of it is a failure before promotion.
 
     *on_locked* runs once the lock is held, so a caller reports progress only
     for an apply that is actually running; a held lock raises
@@ -1132,10 +1139,31 @@ def apply_wheel_update(
             ctx=_BuildContext(cancel=cancel, lock_fd=lock_fd, trusted_env=trusted_env),
             preflight=preflight,
             before_promote=before_promote,
+            install_engine=install_engine,
         )
     finally:
         if held_lock_fd is None:
             release_update_lock(lock_fd)
+
+
+def check_policy_channel(channel: str) -> None:
+    """Refuse a wheel update from *channel* when the policy requires another one.
+
+    The one channel-pin check every wheel install passes: :func:`apply_wheel_update`
+    enforces it under the update lock immediately before ``promote`` swaps the
+    stable link, whichever route called it (dashboard approve, scheduled
+    auto-apply, ``kirocrew update``). The earlier reads are advisory, made
+    so a refusal comes before a download and names the policy: the engine's own
+    before its preflight, and the approve route's. The
+    caller picked *channel* when it read the feed or armed the request; an
+    ``updates.channel`` pin installed since then decides (``update_layout``
+    ``policy_release_channel``), as the source pin does.
+    """
+    from kiro_crew.platform.update_layout import policy_release_channel
+
+    required = policy_release_channel()
+    if required and channel != required:
+        raise WheelUpdateError(f"updates on this host follow the {required} channel")
 
 
 def _check_buildable(payload: dict[str, str]) -> None:
@@ -1203,6 +1231,7 @@ def _apply_locked(
     ctx: _BuildContext,
     preflight: Callable[[], None],
     before_promote: Callable[[], None],
+    install_engine: Callable[[Path, _BuildContext], None] | None = None,
 ) -> Path:
     """The lock-held body of :func:`apply_wheel_update`."""
     _sweep_layout_debris(layout, ctx.cancel)
@@ -1223,6 +1252,9 @@ def _apply_locked(
             (expected_tree / _SHADOW_SENTINEL).unlink(missing_ok=True)
         repoint_launcher_symlink(layout)
         return expected_tree
+    # Early refusal so a pinned host does not download a release it cannot take;
+    # the enforcing read is the one just before ``promote``.
+    check_policy_channel(channel)
     preflight()
     with tempfile.TemporaryDirectory(prefix="kirocrew-update-", dir=str(_staging_dir())) as tmp:
         workdir = Path(tmp)
@@ -1259,9 +1291,16 @@ def _apply_locked(
             build_shadow_venv(wheel_path, shadow_dir, stable_link=layout.stable_link, ctx=ctx)
             progress("Verifying the new environment…")
             verify_shadow_venv(shadow_dir, version, ctx=ctx)
+            if install_engine is not None:
+                install_engine(shadow_dir, ctx)
             before_promote()
             # The last point a cancel is honoured: past it the stable link flips.
             _raise_if_cancelled(ctx.cancel)
+            # The channel pin is enforced HERE, at the swap: the check before the
+            # download only saves the work. A policy installed while the release
+            # downloaded and built is read now, under the update lock, and a
+            # mismatch leaves this tree unpromoted debris for the handler below.
+            check_policy_channel(channel)
             progress("Promoting…")
             promote(shadow_dir, layout.stable_link)
         except BaseException:

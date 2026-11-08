@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -22,11 +22,30 @@ from apps_backend_coverage_helpers import _isolated_module_state  # noqa: F401
 from apps_backend_coverage_helpers import _fake_proc, _FakeResp, _manifest
 
 import kiro_crew.apps.backend as bmod
+import kiro_crew.apps.backend_runtime.supervision as smod
 from kiro_crew.apps.backend import AppProcess
+from kiro_crew.testing.clock import ManualClock
 
-# ---------------------------------------------------------------------------
+
+class _SweepClock(ManualClock):
+    """The health watch's clock: ``on_sleep(seconds)`` runs after each sweep sleep.
+
+    That is the moment a backend exits, or its record leaves the table, between two
+    sweeps. Installed on the supervision owner alone. Its ``time`` is the stdlib
+    module, so a hook set as ``bmod.time.sleep`` would also run for every other
+    thread's sleep in the worker.
+    """
+
+    def __init__(self, on_sleep: Callable[[float], None]) -> None:
+        super().__init__()
+        self._on_sleep = on_sleep
+
+    def sleep(self, seconds: float) -> None:
+        super().sleep(seconds)
+        self._on_sleep(seconds)
+
+
 # Accessors
-# ---------------------------------------------------------------------------
 
 
 def test_the_proxy_port_is_only_published_once_the_backend_is_healthy() -> None:
@@ -41,9 +60,7 @@ def test_the_proxy_port_is_only_published_once_the_backend_is_healthy() -> None:
     assert bmod.get_app_backend_port("absent") is None
 
 
-# ---------------------------------------------------------------------------
 # Pidfile helpers
-# ---------------------------------------------------------------------------
 
 
 class TestPidfileHelpers:
@@ -65,8 +82,10 @@ class TestPidfileHelpers:
         def _boom(*_a: Any, **_k: Any) -> None:
             raise OSError("read-only filesystem")
 
+        bmod._write_pidfile({"kept": {"pid": 7}})
         monkeypatch.setattr(bmod, "atomic_write", _boom)
-        bmod._write_pidfile({"app": {"pid": 1}})  # must not raise
+        bmod._write_pidfile({"app": {"pid": 1}})
+        assert bmod._read_pidfile() == {"kept": {"pid": 7}}
 
     def test_recording_a_pid_never_breaks_a_spawn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(_pid: int) -> str:
@@ -80,19 +99,20 @@ class TestPidfileHelpers:
         def _boom() -> dict[str, dict[str, Any]]:
             raise RuntimeError("disk gone")
 
-        monkeypatch.setattr(bmod, "_read_pidfile", _boom)
-        bmod._forget_app_pid("app")  # must not raise
+        bmod._write_pidfile({"app": {"pid": 7}})
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(bmod, "_read_pidfile", _boom)
+            bmod._forget_app_pid("app")
+        assert not bmod._pidfile_lock.locked()
+        assert bmod._read_pidfile() == {"app": {"pid": 7}}
 
 
 class TestProcStartTime:
     """The wrapper must not re-implement the per-platform probe.
 
-    Every platform source (Linux /proc field 22, the Windows creation
-    FILETIME, the BSD ``ps`` leg) and its fail-safe behaviour is pinned in
-    test_platform_compat_process_identity::TestProcessStartTime. What matters here is that this
-    module reads identity from that shim, because a /proc-or-ps probe answers
-    None for every pid on Windows and a recorded None makes the stale-reap
-    decline to confirm any backend at all.
+    The per-platform sources are pinned in
+    test_platform_compat_process_identity::TestProcessStartTime. A /proc-or-ps probe
+    answers None on Windows, and a recorded None makes the stale-reap confirm nothing.
     """
 
     def test_it_delegates_to_the_platform_shim(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -143,10 +163,9 @@ class TestGateMcpRegistration:
 
 class TestHealthCheckLoop:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's zero health-check interval, moved verbatim; tracked for a de-flake pass
-    def _instant(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(bmod, "_HEALTH_CHECK_INTERVAL", 0)
-        monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 2)
+    def _instant(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        _floor_monkeypatch.setattr(bmod, "_HEALTH_CHECK_INTERVAL", 0)
+        _floor_monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 2)
 
     def test_an_error_status_is_retried_and_then_scrubbed(
         self, monkeypatch: pytest.MonkeyPatch
@@ -201,10 +220,9 @@ class TestHealthCheckLoop:
 
 class TestRestartExitedBackend:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's recorded restart backoff, moved verbatim; tracked for a de-flake pass
-    def _fast_backoff(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    def _fast_backoff(self, _floor_monkeypatch: pytest.MonkeyPatch) -> list[float]:
         delays: list[float] = []
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             bmod,
             "shutdown_event",
             SimpleNamespace(
@@ -340,6 +358,12 @@ class TestRestartExitedBackend:
             resources="app",
             error="signature required",
         )
+        # Supervision ended for good, so the attempt counter is cleared: a derived
+        # "repeatedly failing to restart" banner (routes.handle_list_apps) must not
+        # keep telling the operator to retry a restart that policy refuses.
+        assert "app" not in bmod._restart_attempts
+        # Kept down, so the backstop sweep does not read the app as wanted either.
+        assert bmod._lifecycle_generation["app"][1] == bmod._LIFECYCLE_STOP
 
     def test_admission_revet_error_stops_restart_and_audits_denial(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1076,9 +1100,7 @@ class TestRestartExitedBackend:
             return False
 
         monkeypatch.setattr(bmod, "_health_check_loop", _startup_gate)
-        # flake-ok: a pre-existing in-test stand-in for the backend module's time.sleep, undone by monkeypatch at teardown; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-stdlib-clock-rebound -- a pre-existing in-test stand-in for the backend module's time.sleep moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(bmod.time, "sleep", _exit_after_startup)
+        _SweepClock(_exit_after_startup).install(monkeypatch, smod)
         monkeypatch.setattr(bmod, "_restart_exited_backend", _restart)
 
         bmod._supervise_backend_health(ap, "/health")
@@ -1191,9 +1213,7 @@ class TestRestartExitedBackend:
                 with bmod._lock:
                     bmod._processes.pop("app", None)
 
-        # flake-ok: a pre-existing in-test stand-in for the backend module's time.sleep, undone by monkeypatch at teardown; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-stdlib-clock-rebound -- a pre-existing in-test stand-in for the backend module's time.sleep moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(bmod.time, "sleep", _sleep)
+        _SweepClock(_sleep).install(monkeypatch, smod)
         with caplog.at_level(logging.INFO):
             bmod._watch_backend_health_sweeps(ap, "/health")
         assert sweeps == bmod._RESTART_STABLE_SWEEPS + 1

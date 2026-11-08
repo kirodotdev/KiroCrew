@@ -24,6 +24,7 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.auto_research.campaign import (
     LOGGER_NAME,
     agent_mode,
@@ -45,6 +46,21 @@ _FIRST_CYCLE_GRACE_SECS = 600
 # Worker auto-approve is capped at 24h; past this the watchdog pauses the
 # campaign to NEEDS_INPUT and it must be resumed (re-authorized) to continue.
 _TRUST_TTL_SECS = 24 * 3600
+
+
+def _awake_idle_secs(cid: str, last_ts: dict[str, float], last_alive: dict[str, float]) -> float:
+    """Seconds since ``cid`` last showed activity, leaving out time the host slept.
+
+    ``last_alive`` holds ``platform_compat.awake_now()`` stamps, a clock that
+    stands still while the host is suspended on every platform. An idle worker
+    cannot get its nudge during a sleep, so the sleep must not use up this
+    deadline either. ``last_ts`` stays wall-clock because the run boundary
+    compares it with ``started_at``; it is the fallback for a campaign with no
+    awake stamp.
+    """
+    if cid in last_alive:
+        return platform_compat.awake_now() - last_alive[cid]
+    return time.time() - last_ts[cid]
 
 
 def _unresponsive_deadline(idle_secs: int) -> int:
@@ -178,7 +194,9 @@ async def _suspend_research_loops_while_disabled(state: Any) -> None:
                 logger.warning("auto_research: could not deactivate loop %s on disable", loop.id)
         slot = state._slots.get(loop.slot_key) if state is not None else None
         if slot is not None and getattr(slot, "_trust", False):
-            slot._trust = False
+            from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
+
+            revoke_slot_trust(state, slot)
 
 
 def _stalled_campaign_verdict(
@@ -189,36 +207,35 @@ def _stalled_campaign_verdict(
 ) -> tuple[CampaignStatus, str | None]:
     """Classify an idle-deadline expiry — not every silence is a failure.
 
-    The watchdog only marks COMPLETE when a NEW cycle file arrives carrying
-    ``verification.passed=true`` (or the cycle cap is hit). A worker that ends
-    its run deliberately via ``autonudge_stop`` — goal met, nothing more to
-    write — produces no further findings, so silence up to the unresponsive
-    deadline is not evidence of a stall: stamping FAILED ("research stalled")
-    would contradict a finished report on disk. Distinguish the cases from durable
-    evidence:
+    A worker that ends via ``autonudge_stop`` writes nothing more, so silence is
+    not proof of a stall. Decided from durable evidence, in this order:
 
     - Latest finding has ``verification.passed=true`` → COMPLETE. Also heals a
-      completed campaign whose status was later reset to RUNNING (resume paths
-      allow terminal→RUNNING): with no new files the count never advances, so
-      the count>prev COMPLETE branch can never re-fire.
-    - A source-owned ``autonudge_stop`` tombstone, or as a fallback the
-      worker-written ``worker_done.json`` marker, plus a READABLE latest
-      finding → the worker ended the run on purpose → STOPPED. The tombstone
-      wins without reading the LLM-written marker. Same terminal affordances
-      as a user Stop (fork / export / add-to-knowledge), no red failure banner.
-      A stop signal alongside only unreadable findings is NOT a deliberate
-      finish — STOPPED's "findings are preserved" promise would be false — so
-      it falls through to FAILED. Mere ABSENCE of the autonudge loop is
-      deliberately NOT used as the signal: the nudge fire path also removes
-      loops for unreachable (deleted/closed) worker sessions, which is a
-      failure, not a finish.
-    - Otherwise → FAILED (genuine stall), unchanged.
+      campaign resumed from terminal to RUNNING, where the count>prev branch
+      cannot fire again.
+    - AutoNudge failure stand-down (``consecutive_failures`` or
+      ``session_start_failures``) → FAILED, "Resume to try again"; a stale
+      ``worker_done.json`` must not turn repeated failure into a finish.
+    - ``autonudge_stop`` tombstone (preferred over the LLM-written
+      ``worker_done.json``) plus a READABLE latest finding → STOPPED, like a
+      user Stop. With only unreadable findings it is FAILED, since STOPPED
+      promises preserved findings. A missing autonudge loop is NOT a signal:
+      loops are also removed for deleted/closed worker sessions.
+    - Otherwise → FAILED (genuine stall).
     """
     if cycle_files:
         latest = storage._read_finding_file(cycle_files[-1])
         verified = latest.get("verification")
         if isinstance(verified, dict) and verified.get("passed") is True:
             return CampaignStatus.COMPLETE, None
+    if stopped_reason in agent_mode.FAILURE_STANDDOWN_REASONS:
+        # The worker kept failing, which is not a finish even when a
+        # ``worker_done.json`` marker exists from an earlier turn.
+        return (
+            CampaignStatus.FAILED,
+            "The research worker kept failing and stood down. Resume to try again.",
+        )
+    if cycle_files:
         deliberate_stop = stopped_reason == agent_mode.AUTONUDGE_STOP_REASON
         if latest and (deliberate_stop or agent_mode._read_worker_done(campaign_id) is not None):
             return (
@@ -357,6 +374,9 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
     state = app.get("state") if app is not None else None
     last_counts: dict[str, int] = {}
     last_ts: dict[str, float] = {}
+    # platform_compat.awake_now() twin of last_ts, read only by the unresponsive deadline
+    # (see _awake_idle_secs).
+    last_alive: dict[str, float] = {}
     while True:
         try:
             await asyncio.sleep(POLL_INTERVAL)
@@ -390,6 +410,9 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                     db.close()
 
             active = await asyncio.to_thread(_read_active_campaigns)
+            # A settled campaign leaves last_ts; its awake stamp goes with it.
+            for gone in last_alive.keys() - last_ts.keys():
+                del last_alive[gone]
             for row in active:
                 cid = row["id"]
                 # Workflow-mode campaigns are driven by a Dynamic Workflow run;
@@ -408,7 +431,10 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                 )
                 if loop is not None and not loop.active:
                     stopped_reason = str(getattr(loop, "stopped_reason", "") or "")
-                    if stopped_reason == agent_mode.AUTONUDGE_STOP_REASON:
+                    if (
+                        stopped_reason == agent_mode.AUTONUDGE_STOP_REASON
+                        or stopped_reason in agent_mode.FAILURE_STANDDOWN_REASONS
+                    ):
                         if run_newly_observed:
                             # A resume marks the campaign RUNNING before _launch_loop
                             # removes the previous run's tombstone. Establish this
@@ -418,6 +444,7 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                             cycle_files = await asyncio.to_thread(storage._list_cycle_files, cid)
                             last_counts[cid] = len(cycle_files)
                             last_ts[cid] = time.time()
+                            last_alive[cid] = platform_compat.awake_now()
                         # The directive runs inside the worker turn. Removing
                         # its loop before that turn exits would cancel the
                         # firing timer and destroy the response/bookkeeping.
@@ -438,7 +465,9 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                 # 24h auto-approve cap: expire trust and require re-authorization.
                 if started and time.time() - started > _TRUST_TTL_SECS:
                     if slot is not None:
-                        slot._trust = False
+                        from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
+
+                        revoke_slot_trust(state, slot)
                     await _expire_trust(cid, started)
                     continue
                 # Re-establish worker trust each cycle (restart-durable; bounded above).
@@ -447,6 +476,8 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                     lifecycle._audit("campaign_trust_reestablished", cid)
                 # Re-arm the autonudge loop if a prior app-disable deactivated it
                 # (see _suspend_research_loops_while_disabled at the enabled guard).
+                # Source stops and failure stand-downs never reach here: both
+                # settle the campaign above.
                 if svc is not None and loop is not None and not loop.active:
                     await svc.update(loop.id, active=True)
                 # Attended: pause for the user. Unattended: discard the stray
@@ -470,6 +501,7 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                 if run_newly_observed:
                     last_counts[cid] = count
                     last_ts[cid] = time.time()
+                    last_alive[cid] = platform_compat.awake_now()
                     continue
                 prev = last_counts[cid]
                 if count > prev:
@@ -479,6 +511,7 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                         last_counts,
                         last_ts,
                     )
+                    last_alive[cid] = platform_compat.awake_now()
                     verified = latest.get("verification")
                     if isinstance(verified, dict) and verified.get("passed") is True:
                         await lifecycle._guarded_transition(
@@ -515,7 +548,10 @@ async def _watchdog_loop(app: web.Application | None = None) -> None:
                         # Agent is actively working this cycle (deep research can
                         # take minutes) — alive, not unresponsive. Refresh liveness.
                         last_ts[cid] = time.time()
-                    elif time.time() - last_ts[cid] > _unresponsive_deadline(row["idle_secs"]):
+                        last_alive[cid] = platform_compat.awake_now()
+                    elif _awake_idle_secs(cid, last_ts, last_alive) > _unresponsive_deadline(
+                        row["idle_secs"]
+                    ):
                         # Deadline expired — but classify before condemning: a
                         # worker that deliberately ended its run (worker_done
                         # marker; verified finding on disk) finished, it didn't

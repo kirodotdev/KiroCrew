@@ -700,6 +700,62 @@ async def test_a_failed_drain_puts_the_entry_back_instead_of_dropping_it(
 
 
 @pytest.mark.asyncio
+async def test_a_failed_drain_preserves_a_requeued_steers_identity(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.handlers.side import _drain_side_queue
+
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    parent = state.get_or_create_slot("parent")
+    parent._side = SideState(open=True)
+    parent._side.last_run_id = "run-1"
+    parent._side.is_complete = True
+    assert parent._side.queue_insert_front("must survive", steer_id="steer-requeued") is not None
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("dispatch exploded")
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side._dispatch_side_turn", _boom)
+
+    _drain_side_queue(state, parent, "run-1")
+
+    assert parent._side.queue == [
+        {
+            "id": parent._side.queue[0]["id"],
+            "content": "must survive",
+            "ts": parent._side.queue[0]["ts"],
+            "rev": 0,
+            "steer_id": "steer-requeued",
+        }
+    ]
+    pushes = [d for t, d in events if t == "chat.side_queue" and d["action"] == "push"]
+    assert len(pushes) == 1
+    push = pushes[0]
+    assert {
+        key: push[key]
+        for key in (
+            "kind",
+            "slot",
+            "action",
+            "queue_id",
+            "depth",
+            "front",
+            "steer_id",
+            "content",
+        )
+    } == {
+        "kind": "side",
+        "slot": "parent",
+        "action": "push",
+        "queue_id": parent._side.queue[0]["id"],
+        "depth": 1,
+        "front": True,
+        "steer_id": "steer-requeued",
+        "content": "must survive",
+    }
+    assert isinstance(push["ts"], float)
+
+
+@pytest.mark.asyncio
 async def test_a_FAILED_steer_cannot_queue_onto_a_replaced_sidecar(tmp_path, monkeypatch):
     """The identity check has to cover the failure path too.
 

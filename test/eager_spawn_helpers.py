@@ -31,12 +31,11 @@ def _isolate_armed_registry():
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_eager_spawn*.py modules that import it calls monkeypatch.undo()
-def _pin_prewarm_allowance(monkeypatch):
+def _pin_prewarm_allowance(_floor_monkeypatch):
     """The live-population cap is host-derived (``resource_status.prewarm_allowance``
     reads available memory). Pin it to the fixed ceiling so no test here depends
     on the memory of the machine running it; the admission tests override it."""
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         chat_runner, "_prewarm_allowance", lambda: chat_runner._RESUME_PREFETCH_MAX_LIVE
     )
 

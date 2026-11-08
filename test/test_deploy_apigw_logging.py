@@ -28,7 +28,7 @@ def _actions(doc: dict) -> set[str]:
 
 def test_apigw_templates_have_access_logging():
     for name in ("app-apigw.yaml", "app-apigw-ddb.yaml"):
-        text = (_TEMPLATES / name).read_text()
+        text = (_TEMPLATES / name).read_text(encoding="utf-8")
         assert "AccessLogSettings:" in text, name
         assert "AWS::Logs::LogGroup" in text, name
 

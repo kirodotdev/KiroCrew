@@ -41,14 +41,16 @@ phrase, and the issue-triage prompt) in
 ``test_issue_radar_routes_coverage_model_inputs.py``; and the shared request builders and
 patch helpers in ``issue_radar_routes_coverage_helpers.py``.
 """
+
 import unittest
 from unittest import mock
 from unittest.mock import AsyncMock
 from urllib.parse import urlencode
 
+import issue_radar_route_checks
 from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
-from dashboard_owner_helpers import NoConfiguredOwner
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from dashboard_owner_helpers import NoConfiguredOwner, as_owner
 from issue_radar_routes_coverage_helpers import (
     BASE,
     OTHER_SHA,
@@ -247,7 +249,9 @@ class TestPrHeadShasField(unittest.TestCase):
             self.assertEqual(_body(err)["code"], "head_shas_required")
 
     def test_a_complete_map_is_keyed_back_by_int(self):
-        out, err = routes._pr_head_shas_field({"head_shas": {"1": SHA, "2": f" {OTHER_SHA} "}}, [1, 2])
+        out, err = routes._pr_head_shas_field(
+            {"head_shas": {"1": SHA, "2": f" {OTHER_SHA} "}}, [1, 2]
+        )
         self.assertIsNone(err)
         self.assertEqual(out, {1: SHA, 2: OTHER_SHA})
 
@@ -272,7 +276,9 @@ class TestPrMergeMethodField(unittest.TestCase):
         self.assertEqual(routes._pr_merge_method_field({}, _key()), ("SQUASH", None))
 
     def test_a_lowercase_method_is_accepted(self):
-        self.assertEqual(routes._pr_merge_method_field({"method": "rebase"}, _key()), ("REBASE", None))
+        self.assertEqual(
+            routes._pr_merge_method_field({"method": "rebase"}, _key()), ("REBASE", None)
+        )
 
     def test_an_unknown_method_is_refused(self):
         _, err = routes._pr_merge_method_field({"method": "cherry-pick"}, _key())
@@ -288,10 +294,7 @@ class TestPrMergeMethodField(unittest.TestCase):
         )
 
 
-class TestItemKind(unittest.TestCase):
-    def test_absent_and_empty_default_to_issue(self):
-        self.assertEqual(routes._item_kind(None), "issue")
-        self.assertEqual(routes._item_kind(""), "issue")
+class TestItemKind(issue_radar_route_checks.AbsentAndEmptyDefaultToIssue, unittest.TestCase):
 
     def test_the_known_kinds_pass_through(self):
         self.assertEqual(routes._item_kind("pull"), "pull")
@@ -315,10 +318,9 @@ class TestValidHex6(unittest.TestCase):
             self.assertFalse(routes._valid_hex6(raw))
 
 
-class TestShortRationale(unittest.TestCase):
-    def test_a_parenthetical_citation_is_removed_as_one_unit(self):
-        # Matching the refs individually left the opening fragment behind.
-        self.assertEqual(routes._short_rationale("crashes (see #12, #34)"), "crashes")
+class TestShortRationale(
+    issue_radar_route_checks.AParentheticalCitationIsRemovedAsOneUnit, unittest.TestCase
+):
 
     def test_bare_references_outside_brackets_are_stripped(self):
         self.assertEqual(routes._short_rationale("flaky on Windows #91"), "flaky on Windows")
@@ -357,24 +359,31 @@ class TestHasWriteAccess(unittest.TestCase):
 
 class TestRepoCanWrite(unittest.TestCase):
     def test_stored_permissions_answer_without_a_provider_call(self):
-        with mock.patch.object(
-            store, "find_connected_repo", return_value={"permissions": {"push": True}}
-        ), mock.patch.object(gh, "get_repo_permissions") as fetch:
+        with (
+            mock.patch.object(
+                store, "find_connected_repo", return_value={"permissions": {"push": True}}
+            ),
+            mock.patch.object(gh, "get_repo_permissions") as fetch,
+        ):
             self.assertTrue(routes._repo_can_write(_key()))
         fetch.assert_not_called()
 
     def test_a_legacy_entry_without_permissions_self_heals(self):
-        with mock.patch.object(store, "find_connected_repo", return_value={}), \
-                mock.patch.object(gh, "get_repo_permissions", return_value={"triage": True}), \
-                mock.patch.object(store, "set_repo_permissions") as heal:
+        with (
+            mock.patch.object(store, "find_connected_repo", return_value={}),
+            mock.patch.object(gh, "get_repo_permissions", return_value={"triage": True}),
+            mock.patch.object(store, "set_repo_permissions") as heal,
+        ):
             self.assertTrue(routes._repo_can_write(_key()))
         heal.assert_called_once()
 
     def test_a_provider_failure_is_none_which_callers_treat_as_denied(self):
         # Fail-closed: a transient permissions-read failure shows the repo as
         # read-only rather than allowing an unauthorized write.
-        with mock.patch.object(store, "find_connected_repo", return_value=None), \
-                mock.patch.object(gh, "get_repo_permissions", side_effect=gh.GhCliError("boom")):
+        with (
+            mock.patch.object(store, "find_connected_repo", return_value=None),
+            mock.patch.object(gh, "get_repo_permissions", side_effect=gh.GhCliError("boom")),
+        ):
             self.assertIsNone(routes._repo_can_write(_key()))
 
 
@@ -516,10 +525,7 @@ class TestRegisterRoutes(unittest.TestCase):
     def setUp(self):
         self.app = web.Application()
         routes.register_routes(self.app)
-        self.registered = {
-            (r.method, r.get_info().get("path"))
-            for r in self.app.router.routes()
-        }
+        self.registered = {(r.method, r.get_info().get("path")) for r in self.app.router.routes()}
 
     def test_every_documented_route_is_registered(self):
         for method, path in (
@@ -574,10 +580,17 @@ class TestRegisterRoutes(unittest.TestCase):
 
     def test_a_hook_append_failure_cannot_break_gateway_startup(self):
         app = web.Application()
-        with mock.patch.object(
-            type(app.on_startup), "append", side_effect=RuntimeError("frozen")
+        with (
+            mock.patch.object(type(app.on_startup), "append", side_effect=RuntimeError("frozen")),
+            self.assertLogs(routes.logger, "WARNING") as logs,
         ):
             routes.register_routes(app)  # must not raise
+        registered = {(r.method, r.get_info().get("path")) for r in app.router.routes()}
+        self.assertIn(("GET", f"{BASE}/issues"), registered)
+        self.assertIn(
+            "issue-radar: could not register watcher lifecycle hooks",
+            [r.getMessage() for r in logs.records],
+        )
 
 
 # ── /connect ─────────────────────────────────────────────────────────────────
@@ -600,6 +613,31 @@ class TestConnect(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.status, 400)
         parse.assert_not_called()
 
+    async def test_a_non_string_url_is_a_coded_400_before_any_parse(self):
+        # Served over HTTP, so a `.strip()` crash is the 500 a client sees.
+        app = as_owner(web.Application())
+        app.router.add_post("/connect", routes._handle_connect)
+        async with TestClient(TestServer(app)) as client:
+            for url in (1, ["https://github.com/o/r"], {"u": "x"}, True):
+                with (
+                    self.subTest(url=url),
+                    mock.patch.object(routes.provider, "parse_repo_url") as parse,
+                ):
+                    res = await client.post("/connect", json={"url": url})
+                    self.assertEqual(res.status, 400)
+                    self.assertEqual(
+                        await res.json(),
+                        {"error": "url must be a string", "code": "invalid_field_type"},
+                    )
+                    parse.assert_not_called()
+
+    async def test_a_null_or_absent_url_is_still_missing(self):
+        for body in ({}, {"url": None}):
+            with self.subTest(body=body):
+                res = await self._call(body)
+                self.assertEqual(res.status, 400)
+                self.assertEqual(_body(res)["error"], "missing 'url'")
+
     async def test_an_unsupported_url_is_400(self):
         with mock.patch.object(
             routes.provider, "parse_repo_url", side_effect=gh.RepoUrlError("not a repo URL")
@@ -609,21 +647,27 @@ class TestConnect(unittest.IsolatedAsyncioTestCase):
         self.assertIn("not a repo URL", _body(res)["error"])
 
     async def test_an_upstream_failure_is_502_not_400(self):
-        with mock.patch.object(routes.provider, "parse_repo_url", return_value=_key()), \
-                mock.patch.object(gh, "verify_repo_access", side_effect=gh.GhCliError("no auth")), \
-                mock.patch.object(store, "add_connected_repo") as add:
+        with (
+            mock.patch.object(routes.provider, "parse_repo_url", return_value=_key()),
+            mock.patch.object(gh, "verify_repo_access", side_effect=gh.GhCliError("no auth")),
+            mock.patch.object(store, "add_connected_repo") as add,
+        ):
             res = await self._call({"url": "https://github.com/o/r"})
         self.assertEqual(res.status, 502)
         add.assert_not_called()
 
     async def test_a_verified_repo_is_persisted_with_its_permissions(self):
         summary = {
-            "full_name": "o/r", "private": True, "open_issues_count": 12,
+            "full_name": "o/r",
+            "private": True,
+            "open_issues_count": 12,
             "permissions": {"push": True},
         }
-        with mock.patch.object(routes.provider, "parse_repo_url", return_value=_key()), \
-                mock.patch.object(gh, "verify_repo_access", return_value=summary), \
-                mock.patch.object(store, "add_connected_repo") as add:
+        with (
+            mock.patch.object(routes.provider, "parse_repo_url", return_value=_key()),
+            mock.patch.object(gh, "verify_repo_access", return_value=summary),
+            mock.patch.object(store, "add_connected_repo") as add,
+        ):
             res = await self._call({"url": "https://github.com/o/r"})
         self.assertEqual(res.status, 200)
         body = _body(res)
@@ -633,9 +677,11 @@ class TestConnect(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(add.call_args.kwargs["permissions"], {"push": True})
 
     async def test_missing_summary_fields_fall_back_rather_than_raising(self):
-        with mock.patch.object(routes.provider, "parse_repo_url", return_value=_key()), \
-                mock.patch.object(gh, "verify_repo_access", return_value={}), \
-                mock.patch.object(store, "add_connected_repo"):
+        with (
+            mock.patch.object(routes.provider, "parse_repo_url", return_value=_key()),
+            mock.patch.object(gh, "verify_repo_access", return_value={}),
+            mock.patch.object(store, "add_connected_repo"),
+        ):
             body = _body(await self._call({"url": "https://github.com/o/r"}))
         self.assertEqual(body["full_name"], "o/r")
         self.assertFalse(body["private"])
@@ -661,24 +707,33 @@ class TestLabelsRoute(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_cache_hit_is_served_without_a_provider_call(self):
         labels = [{"name": "bug", "color": "ee0000"}]
-        with _connected(), mock.patch.object(store, "read_labels_cache", return_value=labels), \
-                mock.patch.object(gh, "list_repo_labels") as fetch:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_labels_cache", return_value=labels),
+            mock.patch.object(gh, "list_repo_labels") as fetch,
+        ):
             res = await self._call({"owner": "o", "repo": "r"})
         self.assertEqual(_body(res)["labels"], labels)
         self.assertTrue(_body(res)["from_cache"])
         fetch.assert_not_called()
 
     async def test_refresh_bypasses_the_cache(self):
-        with _connected(), mock.patch.object(store, "read_labels_cache") as read, \
-                mock.patch.object(store, "refresh_labels_cache", return_value=[]):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_labels_cache") as read,
+            mock.patch.object(store, "refresh_labels_cache", return_value=[]),
+        ):
             res = await self._call({"owner": "o", "repo": "r", "refresh": "1"})
         self.assertEqual(res.status, 200)
         self.assertFalse(_body(res)["from_cache"])
         read.assert_not_called()
 
     async def test_a_provider_failure_is_502(self):
-        with _connected(), mock.patch.object(store, "read_labels_cache", return_value=None), \
-                mock.patch.object(store, "refresh_labels_cache", side_effect=gh.GhCliError("x")):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_labels_cache", return_value=None),
+            mock.patch.object(store, "refresh_labels_cache", side_effect=gh.GhCliError("x")),
+        ):
             self.assertEqual((await self._call({"owner": "o", "repo": "r"})).status, 502)
 
     async def test_the_store_call_is_scoped_to_the_keys_data_root(self):
@@ -696,34 +751,44 @@ class TestLoadMembers(unittest.TestCase):
             {"login": "alice", "role_name": "triage"},
             {"login": ""},  # dropped: no login
         ]
-        with mock.patch.object(gh, "list_repo_collaborators", return_value=collaborators), \
-                mock.patch.object(store, "write_members_cache") as write:
+        with (
+            mock.patch.object(gh, "list_repo_collaborators", return_value=collaborators),
+            mock.patch.object(store, "write_members_cache") as write,
+        ):
             members, source = routes._load_members(_key())
         self.assertEqual(source, "collaborators")
         self.assertEqual([m["login"] for m in members], ["alice", "Zoe"])
         self.assertEqual(write.call_args.kwargs["source"], "collaborators")
 
     def test_a_missing_role_falls_back_to_member(self):
-        with mock.patch.object(gh, "list_repo_collaborators", return_value=[{"login": "a"}]), \
-                mock.patch.object(store, "write_members_cache"):
+        with (
+            mock.patch.object(gh, "list_repo_collaborators", return_value=[{"login": "a"}]),
+            mock.patch.object(store, "write_members_cache"),
+        ):
             members, _ = routes._load_members(_key())
         self.assertEqual(members[0]["role"], "member")
 
     def test_a_read_only_repo_degrades_to_the_issue_derived_set(self):
-        with mock.patch.object(
-            gh, "list_repo_collaborators", side_effect=gh.GhPermissionError("403")
-        ), mock.patch.object(store, "read_issues_cache", return_value=None), \
-                mock.patch.object(
-                    gh, "derive_members", return_value=[{"login": "bob", "association": "MEMBER"}]
-                ), mock.patch.object(store, "write_members_cache") as write:
+        with (
+            mock.patch.object(
+                gh, "list_repo_collaborators", side_effect=gh.GhPermissionError("403")
+            ),
+            mock.patch.object(store, "read_issues_cache", return_value=None),
+            mock.patch.object(
+                gh, "derive_members", return_value=[{"login": "bob", "association": "MEMBER"}]
+            ),
+            mock.patch.object(store, "write_members_cache") as write,
+        ):
             members, source = routes._load_members(_key())
         self.assertEqual(source, "derived")
         self.assertEqual(members, [{"login": "bob", "role": "MEMBER"}])
         self.assertEqual(write.call_args.kwargs["source"], "derived")
 
     def test_a_non_permission_failure_propagates_instead_of_degrading(self):
-        with mock.patch.object(gh, "list_repo_collaborators", side_effect=gh.GhCliError("net")), \
-                mock.patch.object(store, "write_members_cache") as write:
+        with (
+            mock.patch.object(gh, "list_repo_collaborators", side_effect=gh.GhCliError("net")),
+            mock.patch.object(store, "write_members_cache") as write,
+        ):
             with self.assertRaises(gh.GhCliError):
                 routes._load_members(_key())
         write.assert_not_called()
@@ -742,23 +807,32 @@ class TestMembersRoute(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_cache_hit_carries_its_source_marker(self):
         cached = {"members": [{"login": "a", "role": "admin"}], "source": "derived"}
-        with _connected(), mock.patch.object(store, "read_members_cache", return_value=cached), \
-                mock.patch.object(routes, "_load_members") as load:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_members_cache", return_value=cached),
+            mock.patch.object(routes, "_load_members") as load,
+        ):
             body = _body(await self._call({"owner": "o", "repo": "r"}))
         self.assertEqual(body["source"], "derived")
         self.assertTrue(body["from_cache"])
         load.assert_not_called()
 
     async def test_a_cache_miss_loads_the_roster(self):
-        with _connected(), mock.patch.object(store, "read_members_cache", return_value=None), \
-                mock.patch.object(routes, "_load_members", return_value=([], "collaborators")):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_members_cache", return_value=None),
+            mock.patch.object(routes, "_load_members", return_value=([], "collaborators")),
+        ):
             body = _body(await self._call({"owner": "o", "repo": "r"}))
         self.assertEqual(body["source"], "collaborators")
         self.assertFalse(body["from_cache"])
 
     async def test_a_provider_failure_is_502(self):
-        with _connected(), mock.patch.object(store, "read_members_cache", return_value=None), \
-                mock.patch.object(routes, "_load_members", side_effect=gh.GhCliError("net")):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_members_cache", return_value=None),
+            mock.patch.object(routes, "_load_members", side_effect=gh.GhCliError("net")),
+        ):
             self.assertEqual((await self._call({"owner": "o", "repo": "r"})).status, 502)
 
 
@@ -768,18 +842,23 @@ class TestReposRoute(unittest.IsolatedAsyncioTestCase):
 
     async def test_rows_with_permissions_are_returned_untouched(self):
         rows = [{"owner": "o", "repo": "r", "permissions": {"push": True}}]
-        with mock.patch.object(store, "list_connected_repos", return_value=rows), \
-                mock.patch.object(gh, "verify_repo_access") as verify:
+        with (
+            mock.patch.object(store, "list_connected_repos", return_value=rows),
+            mock.patch.object(gh, "verify_repo_access") as verify,
+        ):
             body = _body(await self._call())
         self.assertEqual(body["repos"], rows)
         verify.assert_not_called()
 
     async def test_a_legacy_row_self_heals_its_permissions(self):
         rows = [{"owner": "o", "repo": "r"}]
-        with mock.patch.object(store, "list_connected_repos", return_value=rows), \
-                mock.patch.object(
-                    gh, "verify_repo_access", return_value={"permissions": {"triage": True}}
-                ), mock.patch.object(store, "set_repo_permissions") as heal:
+        with (
+            mock.patch.object(store, "list_connected_repos", return_value=rows),
+            mock.patch.object(
+                gh, "verify_repo_access", return_value={"permissions": {"triage": True}}
+            ),
+            mock.patch.object(store, "set_repo_permissions") as heal,
+        ):
             body = _body(await self._call())
         self.assertEqual(body["repos"][0]["permissions"], {"triage": True})
         heal.assert_called_once()
@@ -792,9 +871,11 @@ class TestReposRoute(unittest.IsolatedAsyncioTestCase):
                 raise gh.GhCliError("gone")
             return {"permissions": {"push": True}}
 
-        with mock.patch.object(store, "list_connected_repos", return_value=rows), \
-                mock.patch.object(gh, "verify_repo_access", side_effect=_verify), \
-                mock.patch.object(store, "set_repo_permissions"):
+        with (
+            mock.patch.object(store, "list_connected_repos", return_value=rows),
+            mock.patch.object(gh, "verify_repo_access", side_effect=_verify),
+            mock.patch.object(store, "set_repo_permissions"),
+        ):
             body = _body(await self._call())
         healed = {r["repo"]: r.get("permissions") for r in body["repos"]}
         self.assertIsNone(healed["bad"])
@@ -832,20 +913,19 @@ class TestGetSettings(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self._call({"owner": "o", "repo": "r"})).status, 404)
 
     async def test_a_connected_repo_gets_its_settings(self):
-        with _connected(), mock.patch.object(
-            store, "read_repo_settings", return_value={"revision": 3}
+        with (
+            _connected(),
+            mock.patch.object(store, "read_repo_settings", return_value={"revision": 3}),
         ):
             body = _body(await self._call({"owner": "o", "repo": "r"}))
         self.assertEqual(body["settings"], {"revision": 3})
 
 
-class TestPutSettings(unittest.IsolatedAsyncioTestCase):
+class TestPutSettings(
+    issue_radar_route_checks.AMalformedOrNonObjectPayloadIs400, unittest.IsolatedAsyncioTestCase
+):
     async def _call(self, body: object):
         return await routes._handle_put_settings(_json_request("PUT", "settings", body))
-
-    async def test_a_malformed_or_non_object_payload_is_400(self):
-        self.assertEqual((await self._call(None)).status, 400)
-        self.assertEqual((await self._call([1])).status, 400)
 
     async def test_a_missing_repo_is_400(self):
         self.assertEqual((await self._call({"settings": {"revision": 0}})).status, 400)
@@ -875,9 +955,7 @@ class TestPutSettings(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res.status, 404)
 
     async def test_a_valid_write_returns_the_saved_document(self):
-        with mock.patch.object(
-            store, "write_repo_settings", return_value={"revision": 4}
-        ) as write:
+        with mock.patch.object(store, "write_repo_settings", return_value={"revision": 4}) as write:
             res = await self._call({"owner": "o", "repo": "r", "settings": {"revision": 3}})
         self.assertEqual(res.status, 200)
         self.assertEqual(_body(res)["settings"], {"revision": 4})
@@ -931,27 +1009,35 @@ class TestIssueDetail(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_cache_hit_skips_both_provider_calls(self):
         cached = {"detail": {"number": 5}, "timeline": [{"kind": "comment"}]}
-        with _connected(), mock.patch.object(store, "read_issue_detail_cache", return_value=cached), \
-                mock.patch.object(gh, "get_issue_detail") as detail:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_issue_detail_cache", return_value=cached),
+            mock.patch.object(gh, "get_issue_detail") as detail,
+        ):
             body = _body(await self._call({"owner": "o", "repo": "r", "number": "5"}))
         self.assertTrue(body["from_cache"])
         self.assertEqual(body["timeline"], cached["timeline"])
         detail.assert_not_called()
 
     async def test_a_cache_entry_with_no_detail_is_treated_as_a_miss(self):
-        with _connected(), \
-                mock.patch.object(store, "read_issue_detail_cache", return_value={"detail": None}), \
-                mock.patch.object(gh, "get_issue_detail", return_value={"number": 5}), \
-                mock.patch.object(gh, "list_issue_timeline", return_value=[]), \
-                mock.patch.object(store, "write_issue_detail_cache") as write:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_issue_detail_cache", return_value={"detail": None}),
+            mock.patch.object(gh, "get_issue_detail", return_value={"number": 5}),
+            mock.patch.object(gh, "list_issue_timeline", return_value=[]),
+            mock.patch.object(store, "write_issue_detail_cache") as write,
+        ):
             body = _body(await self._call({"owner": "o", "repo": "r", "number": "5"}))
         self.assertFalse(body["from_cache"])
         write.assert_called_once()
 
     async def test_a_provider_failure_is_502_and_writes_nothing(self):
-        with _connected(), mock.patch.object(store, "read_issue_detail_cache", return_value=None), \
-                mock.patch.object(gh, "get_issue_detail", side_effect=gh.GhCliError("net")), \
-                mock.patch.object(store, "write_issue_detail_cache") as write:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_issue_detail_cache", return_value=None),
+            mock.patch.object(gh, "get_issue_detail", side_effect=gh.GhCliError("net")),
+            mock.patch.object(store, "write_issue_detail_cache") as write,
+        ):
             res = await self._call({"owner": "o", "repo": "r", "number": "5"})
         self.assertEqual(res.status, 502)
         write.assert_not_called()
@@ -972,8 +1058,11 @@ class TestPullDetail(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_cache_hit_recomputes_the_check_summary_for_the_card(self):
         cached = {"detail": {"number": 7}, "timeline": [], "checks": [{"name": "ci"}]}
-        with _connected(), mock.patch.object(store, "read_pr_detail_cache", return_value=cached), \
-                mock.patch.object(gh, "summarize_checks", return_value={"total": 1}) as summarize:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=cached),
+            mock.patch.object(gh, "summarize_checks", return_value={"total": 1}) as summarize,
+        ):
             body = _body(await self._call({"owner": "o", "repo": "r", "number": "7"}))
         self.assertTrue(body["from_cache"])
         self.assertEqual(body["checks_summary"], {"total": 1})
@@ -986,18 +1075,19 @@ class TestPullDetail(unittest.IsolatedAsyncioTestCase):
             read.return_value = {"detail": {"number": 7}}
             with mock.patch.object(gh, "summarize_checks", return_value={}):
                 await self._call({"owner": "o", "repo": "r", "number": "7"})
-        self.assertEqual(
-            read.call_args.kwargs.get("max_age_sec"), store.PR_DETAIL_CACHE_TTL_SEC
-        )
+        self.assertEqual(read.call_args.kwargs.get("max_age_sec"), store.PR_DETAIL_CACHE_TTL_SEC)
 
     async def test_a_cold_read_fetches_checks_and_patches_the_list_row(self):
-        with _connected(), mock.patch.object(store, "read_pr_detail_cache", return_value=None), \
-                mock.patch.object(gh, "get_pr_detail", return_value={"head_sha": SHA}), \
-                mock.patch.object(gh, "list_pr_timeline", return_value=[]), \
-                mock.patch.object(gh, "list_pr_checks", return_value=[{"name": "ci"}]) as checks, \
-                mock.patch.object(gh, "summarize_checks", return_value={"total": 1}), \
-                mock.patch.object(store, "write_pr_detail_cache"), \
-                mock.patch.object(store, "apply_pr_checks_to_list_cache") as patch_row:
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=None),
+            mock.patch.object(gh, "get_pr_detail", return_value={"head_sha": SHA}),
+            mock.patch.object(gh, "list_pr_timeline", return_value=[]),
+            mock.patch.object(gh, "list_pr_checks", return_value=[{"name": "ci"}]) as checks,
+            mock.patch.object(gh, "summarize_checks", return_value={"total": 1}),
+            mock.patch.object(store, "write_pr_detail_cache"),
+            mock.patch.object(store, "apply_pr_checks_to_list_cache") as patch_row,
+        ):
             body = _body(await self._call({"owner": "o", "repo": "r", "number": "7"}))
         self.assertFalse(body["from_cache"])
         checks.assert_called_once()
@@ -1005,21 +1095,27 @@ class TestPullDetail(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_pull_request_with_no_head_sha_simply_has_no_checks(self):
         # A deleted fork branch leaves no head commit to hang checks off.
-        with _connected(), mock.patch.object(store, "read_pr_detail_cache", return_value=None), \
-                mock.patch.object(gh, "get_pr_detail", return_value={"head_sha": None}), \
-                mock.patch.object(gh, "list_pr_timeline", return_value=[]), \
-                mock.patch.object(gh, "list_pr_checks") as checks, \
-                mock.patch.object(gh, "summarize_checks", return_value={}), \
-                mock.patch.object(store, "write_pr_detail_cache"), \
-                mock.patch.object(store, "apply_pr_checks_to_list_cache"):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=None),
+            mock.patch.object(gh, "get_pr_detail", return_value={"head_sha": None}),
+            mock.patch.object(gh, "list_pr_timeline", return_value=[]),
+            mock.patch.object(gh, "list_pr_checks") as checks,
+            mock.patch.object(gh, "summarize_checks", return_value={}),
+            mock.patch.object(store, "write_pr_detail_cache"),
+            mock.patch.object(store, "apply_pr_checks_to_list_cache"),
+        ):
             body = _body(await self._call({"owner": "o", "repo": "r", "number": "7"}))
         self.assertEqual(body["checks"], [])
         checks.assert_not_called()
 
     async def test_a_provider_failure_is_502(self):
-        with _connected(), mock.patch.object(store, "read_pr_detail_cache", return_value=None), \
-                mock.patch.object(gh, "get_pr_detail", side_effect=gh.GhCliError("net")), \
-                mock.patch.object(gh, "list_pr_timeline", return_value=[]):
+        with (
+            _connected(),
+            mock.patch.object(store, "read_pr_detail_cache", return_value=None),
+            mock.patch.object(gh, "get_pr_detail", side_effect=gh.GhCliError("net")),
+            mock.patch.object(gh, "list_pr_timeline", return_value=[]),
+        ):
             res = await self._call({"owner": "o", "repo": "r", "number": "7"})
         self.assertEqual(res.status, 502)
 
@@ -1038,8 +1134,11 @@ class TestPullsSearch(unittest.IsolatedAsyncioTestCase):
         search.assert_not_called()
 
     async def test_a_bad_state_or_missing_person_is_a_400_client_error(self):
-        with _connected(), mock.patch.object(
-            gh, "search_pulls", side_effect=gh.PrSearchError("no person qualifier")
+        with (
+            _connected(),
+            mock.patch.object(
+                gh, "search_pulls", side_effect=gh.PrSearchError("no person qualifier")
+            ),
         ):
             res = await self._call({"owner": "o", "repo": "r"})
         self.assertEqual(res.status, 400)
@@ -1051,8 +1150,11 @@ class TestPullsSearch(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_asks_for_one_more_than_the_cap_to_answer_truncated_by_fact(self):
         rows = [{"number": n} for n in range(gh.PR_SEARCH_MAX + 1)]
-        with _connected(), mock.patch.object(gh, "search_pulls", return_value=rows) as search, \
-                mock.patch.object(gh, "enrich_pulls_by_number", side_effect=lambda o, r, p: p):
+        with (
+            _connected(),
+            mock.patch.object(gh, "search_pulls", return_value=rows) as search,
+            mock.patch.object(gh, "enrich_pulls_by_number", side_effect=lambda o, r, p: p),
+        ):
             body = _body(await self._call({"owner": "o", "repo": "r", "author": "me"}))
         self.assertEqual(search.call_args.kwargs["limit"], gh.PR_SEARCH_MAX + 1)
         self.assertTrue(body["truncated"])
@@ -1060,18 +1162,30 @@ class TestPullsSearch(unittest.IsolatedAsyncioTestCase):
 
     async def test_exactly_the_cap_is_not_labelled_truncated(self):
         rows = [{"number": n} for n in range(gh.PR_SEARCH_MAX)]
-        with _connected(), mock.patch.object(gh, "search_pulls", return_value=rows), \
-                mock.patch.object(gh, "enrich_pulls_by_number", side_effect=lambda o, r, p: p):
+        with (
+            _connected(),
+            mock.patch.object(gh, "search_pulls", return_value=rows),
+            mock.patch.object(gh, "enrich_pulls_by_number", side_effect=lambda o, r, p: p),
+        ):
             body = _body(await self._call({"owner": "o", "repo": "r", "author": "me"}))
         self.assertFalse(body["truncated"])
 
     async def test_the_person_filters_are_forwarded_and_blanks_become_none(self):
-        with _connected(), mock.patch.object(gh, "search_pulls", return_value=[]) as search, \
-                mock.patch.object(gh, "enrich_pulls_by_number", return_value=[]):
-            await self._call({
-                "owner": "o", "repo": "r", "state": "MERGED", "author": " alice ",
-                "assignee": "  ", "review_requested": "bob",
-            })
+        with (
+            _connected(),
+            mock.patch.object(gh, "search_pulls", return_value=[]) as search,
+            mock.patch.object(gh, "enrich_pulls_by_number", return_value=[]),
+        ):
+            await self._call(
+                {
+                    "owner": "o",
+                    "repo": "r",
+                    "state": "MERGED",
+                    "author": " alice ",
+                    "assignee": "  ",
+                    "review_requested": "bob",
+                }
+            )
         kwargs = search.call_args.kwargs
         self.assertEqual(kwargs["state"], "merged")
         self.assertEqual(kwargs["author"], "alice")
@@ -1081,10 +1195,13 @@ class TestPullsSearch(unittest.IsolatedAsyncioTestCase):
     async def test_search_rows_are_enriched_by_number_not_by_state(self):
         # A search hit can rank outside the recently-updated window, so the cards
         # would lose their diff-size + check row.
-        with _connected(), mock.patch.object(gh, "search_pulls", return_value=[{"number": 3}]), \
-                mock.patch.object(
-                    gh, "enrich_pulls_by_number", return_value=[{"number": 3, "additions": 1}]
-                ) as enrich:
+        with (
+            _connected(),
+            mock.patch.object(gh, "search_pulls", return_value=[{"number": 3}]),
+            mock.patch.object(
+                gh, "enrich_pulls_by_number", return_value=[{"number": 3, "additions": 1}]
+            ) as enrich,
+        ):
             body = _body(await self._call({"owner": "o", "repo": "r", "author": "me"}))
         enrich.assert_called_once()
         self.assertEqual(body["pulls"][0]["additions"], 1)
@@ -1102,9 +1219,7 @@ class TestGetInvestigation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._call({"owner": "o", "repo": "r"})).status, 400)
 
     async def test_a_bad_number_is_400(self):
-        self.assertEqual(
-            (await self._call({"owner": "o", "repo": "r", "number": "x"})).status, 400
-        )
+        self.assertEqual((await self._call({"owner": "o", "repo": "r", "number": "x"})).status, 400)
 
     async def test_an_unconnected_repo_is_404(self):
         with _connected(False):
@@ -1123,12 +1238,13 @@ class TestGetInvestigation(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["kind"], "issue")
 
     async def test_the_record_is_namespaced_by_kind(self):
-        with _connected(), mock.patch.object(
-            store, "read_investigation", return_value={"status": "done"}
-        ) as read:
-            body = _body(await self._call(
-                {"owner": "o", "repo": "r", "number": "5", "kind": "pull"}
-            ))
+        with (
+            _connected(),
+            mock.patch.object(store, "read_investigation", return_value={"status": "done"}) as read,
+        ):
+            body = _body(
+                await self._call({"owner": "o", "repo": "r", "number": "5", "kind": "pull"})
+            )
         self.assertEqual(body["kind"], "pull")
         # GitHub draws issues and PRs from ONE sequence, so the historical
         # namespace is correct there and nothing needs migrating.

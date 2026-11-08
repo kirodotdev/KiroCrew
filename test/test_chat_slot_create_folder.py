@@ -1,17 +1,9 @@
 """POST /api/chat/slots files a new slot into its folder BEFORE announcing it.
 
-The bug these pin: ``get_or_create_slot`` broadcasts the whole slot list while
-still inside the create handler, i.e. before the HTTP response reaches the
-browser. So a folder applied *after* creation (the old client-side
-``setSlotFolder`` PATCH) could never win the race — the dashboard received a
-slots frame for an unfiled slot, rendered the new session at the top level, and
-only ~200ms later moved it into the folder. Measured in a real browser: the new
-row's first paint was at root every time.
-
-The fix is ordering, so the tests assert ordering: the create handler wraps its
-whole set-up in ``suspend_slots_push()``, which means exactly ONE coalesced
-``slots`` broadcast is emitted and it already carries ``folder_id``. Asserting
-only the final state would pass even with the race reintroduced.
+``get_or_create_slot`` broadcasts before the HTTP response, so a folder set after creation
+paints the row at root first. The handler wraps set-up in ``suspend_slots_push()``, so the
+tests assert ONE ``slots`` broadcast that already carries ``folder_id``; the final state
+alone would not catch the race.
 """
 
 from __future__ import annotations
@@ -40,15 +32,31 @@ from kiro_crew.history import ConversationLog
 FOLDER_ID = "f-design"
 
 
-def _raise_on_slots(payload):
+def _raise_on_slots(state, pinned, field, seen):
     """A ``_broadcast`` double that fails the way the evidenced defect does.
 
     The exception TYPE is incidental — ``json.dumps`` on a non-serializable slot
-    value is one such shape — so these tests pin the ordering instead: any
-    raise out of the flush must not unwind past the durable write.
+    value is one such shape. Before failing, it records ``field`` as the slot's
+    metadata line holds it, so a test can pin that the durable write landed
+    before the slots frame went out.
     """
-    if payload.get("_type") == "slots":
-        raise TypeError("Object of type object is not JSON serializable")
+
+    def broadcast(payload):
+        if payload.get("_type") == "slots":
+            seen.append((state.conversation_log._read_metadata(pinned) or {}).get(field))
+            raise TypeError("Object of type object is not JSON serializable")
+
+    return broadcast
+
+
+def _logged_flush_failure(caplog) -> bool:
+    """True when the leading-edge broadcast logged the ``_raise_on_slots`` failure."""
+    return any(
+        r.getMessage().startswith("Slots broadcast failed")
+        and r.exc_info
+        and isinstance(r.exc_info[1], TypeError)
+        for r in caplog.records
+    )
 
 
 def _make_state(tmp_path):
@@ -722,11 +730,8 @@ class TestFolderTagInheritance:
     async def test_malformed_folder_tag_entry_does_not_crash_slot_creation(self, tmp_path):
         """A non-string entry in a folder's persisted tags is skipped, never raised on.
 
-        folders.json is hand-editable: a dict (or any unhashable) in `tags`
-        would blow up the set-membership test AFTER the slot was inserted,
-        turning one malformed store row into a 500 on every chat created in
-        that folder. The isinstance guard skips it and still copies the valid
-        sibling ids.
+        folders.json is hand-editable; an unhashable entry would 500 every chat created in
+        that folder. Valid sibling ids are still copied.
         """
         state = _make_state(tmp_path)
         state._folders[0]["tags"] = [{}, None, 42, "t1"]
@@ -742,23 +747,18 @@ class TestFolderTagInheritance:
 
 
 class TestDurableWriteOrdering:
-    """The durable write runs INSIDE the suspension, ahead of the broadcast.
+    """The durable write lands before ``suspend_slots_push``'s exit broadcasts.
 
-    ``suspend_slots_push``'s ``__exit__`` flushes the owed push, and on the
-    coalescing window's LEADING edge that flush broadcasts synchronously — so an
-    exception there escapes ``__exit__`` and unwinds the rest of the handler.
-    With the forced save sitting after the ``with`` block, that unwind skipped a
-    metadata mutation the request had already acknowledged, and this save is the
-    only durable record of a recreate's folder filing or pinned title.
-
-    ``session_control.py``'s create span already keeps its persist inside the
-    suspension for the same reason ("a slot whose birth write fails is never
-    broadcast at all"); these pin the ordering here, not the exception, so any
-    future raise from the flush is covered too.
+    The save is the only durable record of a recreate's folder or pinned title.
+    On the leading edge, where the exit broadcasts synchronously, the frame goes
+    out after that save, and a broadcast that fails there leaves a committed
+    create answering 200 with the failure in the log.
     """
 
     @pytest.mark.asyncio
-    async def test_raising_exit_broadcast_cannot_skip_the_folder_write(self, tmp_path):
+    async def test_the_folder_write_lands_before_a_failing_exit_broadcast(
+        self, tmp_path, caplog
+    ):
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_app(state))) as client:
             # A session that has been used, which is the case the forced save is
@@ -770,21 +770,26 @@ class TestDurableWriteOrdering:
             pinned = slot_history_key(slot)
 
             # get_or_create_slot above already consumed a leading edge. Wait the
-            # window out, or the flush below is deferred to the trailing timer,
-            # the handler returns 200, and this test proves nothing.
+            # window out, or the flush below is deferred to the trailing timer
+            # and this test never reaches the synchronous flush.
             await asyncio.sleep(_SLOTS_BROADCAST_INTERVAL_S + 0.05)
-            state._broadcast = _raise_on_slots  # type: ignore[method-assign]
+            seen: list = []
+            state._broadcast = _raise_on_slots(  # type: ignore[method-assign]
+                state, pinned, "folder_id", seen
+            )
 
-            resp = await client.post("/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID})
+            with caplog.at_level("ERROR", logger="kiro_crew.dashboard.state"):
+                resp = await client.post(
+                    "/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID}
+                )
 
-        # The failure still reaches the caller: this is an ordering fix, not a
-        # swallow. Whether an already-committed create should answer 500 at all
-        # is a separate, declined question, and folding it in here would
-        # resurrect it.
-        assert resp.status == 500
-        # But the acknowledged mutation is on disk. Outside the suspension, the
-        # escaping exception skipped this write entirely and nothing reconciled
-        # the in-memory slot against it.
+        # The create committed, so it answers 200, as it does when the trailing
+        # timer carries the same failure; the failure goes to the log.
+        assert resp.status == 200
+        assert _logged_flush_failure(caplog)
+        # The filing was on disk before the frame went out: this save is its only
+        # durable record, and nothing reconciles a placement the disk never got.
+        assert seen[:1] == [FOLDER_ID], "the slots frame went out before the durable write"
         meta = state.conversation_log._read_metadata(pinned) or {}
         assert meta.get("folder_id") == FOLDER_ID, (
             "the folder filing never reached disk — a broadcast failure unwound "
@@ -792,8 +797,10 @@ class TestDurableWriteOrdering:
         )
 
     @pytest.mark.asyncio
-    async def test_raising_exit_broadcast_cannot_skip_the_pinned_title_write(self, tmp_path):
-        """Same ordering, via the other field that reaches disk only here."""
+    async def test_the_pinned_title_write_lands_before_a_failing_exit_broadcast(
+        self, tmp_path, caplog
+    ):
+        """Same contract, via the other field that reaches disk only here."""
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_app(state))) as client:
             slot = state.get_or_create_slot("s1")
@@ -802,11 +809,17 @@ class TestDurableWriteOrdering:
             pinned = slot_history_key(slot)
 
             await asyncio.sleep(_SLOTS_BROADCAST_INTERVAL_S + 0.05)
-            state._broadcast = _raise_on_slots  # type: ignore[method-assign]
+            seen: list = []
+            state._broadcast = _raise_on_slots(  # type: ignore[method-assign]
+                state, pinned, "title", seen
+            )
 
-            resp = await client.post("/api/chat/slots", json={"name": "s1", "title": "Pinned"})
+            with caplog.at_level("ERROR", logger="kiro_crew.dashboard.state"):
+                resp = await client.post("/api/chat/slots", json={"name": "s1", "title": "Pinned"})
 
-        assert resp.status == 500
+        assert resp.status == 200
+        assert _logged_flush_failure(caplog)
+        assert seen[:1] == ["Pinned"], "the slots frame went out before the durable write"
         meta = state.conversation_log._read_metadata(pinned) or {}
         assert meta.get("title") == "Pinned", (
             "the pinned title never reached disk — a restart rehydrates the old "
@@ -817,12 +830,8 @@ class TestDurableWriteOrdering:
 class TestFreshFolderCreateStaysOffTheExecutor:
     """A brand-new session filed into a project-less folder skips the project probe.
 
-    The sidebar's "New chat" inside a folder sends ``folder_id`` and no ``name``.
-    Validating a folder's project ``stat``s the directory, so it belongs on a
-    worker thread; but most folders declare no project, and a thread hop that
-    resolves to ``""`` queues on the gateway's shared default executor inside the
-    process-wide ``suspend_slots_push``, before the response. The chain walk runs
-    on the loop and only a declared project's ``stat`` is sent to a thread.
+    A thread hop would queue on the shared executor inside the process-wide
+    ``suspend_slots_push``, so only a declared project's ``stat`` goes to a thread.
     """
 
     @pytest.mark.asyncio
@@ -894,13 +903,8 @@ class TestFreshFolderCreateStaysOffTheExecutor:
 class TestOwnerFolderCreatePersistsTheFiling:
     """A fresh owner-dashboard create in a folder has a durable writer for its filing.
 
-    On the owner path the member assignment publishes the newborn's execution
-    context through ``bind_session_execution``, whose ``update_metadata_if``
-    UPSERTS the session's metadata line. From then on the forced birth save has
-    a line to merge into, and it is the only writer of ``folder_id`` (and the
-    inherited tags, pinned title, project and colour) before the first message:
-    ``slot._dirty`` stays False, so no periodic flush would write them later. A
-    restart before the first message must rehydrate the tab filed, not at root.
+    ``slot._dirty`` stays False before the first message, so the forced birth save is the
+    only writer of ``folder_id``; a restart then must rehydrate the tab filed.
     """
 
     @pytest.mark.asyncio

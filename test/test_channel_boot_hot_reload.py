@@ -1,31 +1,14 @@
 """Config hot-reload for the CHANNEL-BOOT area.
 
-The claim under test is that a channel's CONNECTION parameters are applied by
-restarting that one channel in process, and that nothing else about a config
-reload touches a live socket:
+A channel's CONNECTION parameters apply by restarting that one channel; nothing else
+in a reload touches a live socket. Pinned: each ``_hoist_<channel>`` sets every
+attribute its boot factory reads (both sides derived by AST); ``restart_channel``
+re-points ``dispatcher.transport`` at the new handle; only ``boot_keys`` paths
+restart; Slack (host-managed socket) is reconciled in place, never restarted;
+``enterprise.reload_allowed_team_ids`` fails closed on a degraded read;
+``channel_restart_required`` answers from the SCHEMA, per field for WhatsApp.
 
-* ``GatewayOrchestrator.__init__`` hoists each channel through its own
-  ``_hoist_<channel>`` method rather than one 130-line block, and every attribute
-  the channel's own boot factory consumes is still set (both halves of that
-  comparison are DERIVED from the source by AST, so a dropped attribute goes
-  red -- a hardcoded list would only pin a copy that goes stale);
-* :meth:`GatewayOrchestrator.restart_channel` closes the previous handle,
-  re-hoists from the RELOADED section and starts a new one, and the factory's
-  ``dispatcher.transport`` re-point is what keeps the allow-list appliers
-  pushing at the live transport instead of the closed one;
-* a ``boot_keys`` path restarts the channel and any other path in the same
-  section does NOT (the live appliers rely on that, or their fields would
-  bounce a connection);
-* the Slack applier reconciles tracked/open channels, activations and the
-  phase-emoji table in place, and never restarts Slack -- its socket is
-  host-managed and its tokens are not in ``config.json``;
-* ``enterprise.reload_allowed_team_ids`` keeps the validated read as the sole
-  source, so it cannot widen from a raw load and fails closed on a degraded one;
-* ``channel_restart_required`` answers from the config SCHEMA, and the WhatsApp
-  saver reports it per FIELD rather than unconditionally.
-
-Reloads are simulated with ``live.watch().prime(cfg)`` plus a direct applier
-call -- the shape a subscriber really receives. The poll task is never started.
+Reloads use ``live.watch().prime(cfg)`` plus a direct applier call; no poll task.
 """
 
 from __future__ import annotations
@@ -53,9 +36,7 @@ from kiro_crew.slack import handler as slack_handler
 from kiro_crew.slack.gateway import GatewayOrchestrator
 from kiro_crew.testing.wait import await_until, finished
 
-# ------------------------------------------------------------------
 # Fixtures + helpers
-# ------------------------------------------------------------------
 
 
 def _make_orchestrator() -> GatewayOrchestrator:
@@ -69,9 +50,7 @@ def _bootable_types() -> tuple[str, ...]:
     return tuple(d.channel_type for d in registry.bootable(builtin_channel_descriptors()))
 
 
-# ------------------------------------------------------------------
 # 1. Hoist-attribute parity
-# ------------------------------------------------------------------
 
 
 def _self_attrs_assigned(func) -> set[str]:
@@ -161,13 +140,10 @@ class TestHoistAttributeParity:
             assert f"_{channel_type}_enabled" in _self_attrs_assigned(hoist), channel_type
 
     def test_hoist_sets_every_channel_attribute_its_boot_factory_consumes(self):
-        """The parity claim: nothing the old block set was lost in the split.
+        """The parity claim: every attribute a boot factory reads is hoisted.
 
-        Both sides are DERIVED -- the consumed set from each channel factory's
-        own reads, the produced set from the hoist's assignments -- so a
-        moved-but-forgotten attribute cannot be papered over by editing a list
-        in this test. The only list here is ``_HOIST_EXEMPT``, and an addition to
-        it is a deliberate statement that the factory owns that default.
+        Both sides are DERIVED from source. The only list is ``_HOIST_EXEMPT``: an
+        entry there says the factory owns that default.
         """
         gaps: dict[str, set[str]] = {}
         for channel_type in _bootable_types():
@@ -227,9 +203,7 @@ class TestHoistAttributeParity:
         assert len(called) == len(set(called))
 
 
-# ------------------------------------------------------------------
 # 2. restart_channel
-# ------------------------------------------------------------------
 
 
 class FakeTransport:
@@ -512,9 +486,7 @@ class TestRestartChannel:
         assert restartable.started == [["wa-primed"]]
 
 
-# ------------------------------------------------------------------
 # 3. boot-key vs live-key discrimination
-# ------------------------------------------------------------------
 
 
 async def _apply(orch, change):
@@ -763,7 +735,7 @@ class TestBootKeyVsLiveKey:
         )
         snap = _cfg_with("whatsapp", enabled=True, allowed_wa_ids=["wa-new"])
         monkeypatch.setattr(gw.live, "snapshot", lambda: snap)
-        monkeypatch.setattr(type(snap), "load_credentials", lambda self: {})
+        monkeypatch.setattr(type(snap), "load_credentials", lambda self, **kw: {})
         asyncio.run(orch._start_channel_transports())
         assert restartable.started == [["wa-new"]], "built from the snapshot, not the boot copy"
         assert orch._cfg.whatsapp.allowed_wa_ids == ["wa-new"]
@@ -786,7 +758,7 @@ class TestBootKeyVsLiveKey:
         at_start = _cfg_with("whatsapp", enabled=True, allowed_wa_ids=["wa-old"])
         reads = iter([at_census])
         monkeypatch.setattr(gw.live, "snapshot", lambda: next(reads, at_start))
-        monkeypatch.setattr(type(at_start), "load_credentials", lambda self: {})
+        monkeypatch.setattr(type(at_start), "load_credentials", lambda self, **kw: {})
         asyncio.run(orch._start_channel_transports())
         assert restartable.started == [["wa-old"]], "the start read, not the census read, wins"
 
@@ -808,7 +780,7 @@ class TestBootKeyVsLiveKey:
                 _degraded_sections=frozenset(degraded),
             )
             monkeypatch.setattr(gw.live, "snapshot", lambda snap=snap: snap)
-            monkeypatch.setattr(type(snap), "load_credentials", lambda self: {})
+            monkeypatch.setattr(type(snap), "load_credentials", lambda self, **kw: {})
             orch._channel_transports_started = False
             asyncio.run(orch._start_channel_transports())
 
@@ -861,9 +833,7 @@ class TestBootKeyVsLiveKey:
         assert seen == ["whatsapp", "discord"]
 
 
-# ------------------------------------------------------------------
 # 4. the Slack applier
-# ------------------------------------------------------------------
 
 
 class TestSlackApplierReconciles:
@@ -1102,9 +1072,7 @@ class TestPhaseEmojisFollowConfig:
             slack_handler.refresh_phase_emojis(None)
 
 
-# ------------------------------------------------------------------
 # 5. enterprise allowlist reload
-# ------------------------------------------------------------------
 
 
 class TestReloadAllowedTeamIds:
@@ -1186,9 +1154,7 @@ class TestReloadAllowedTeamIds:
         assert self.ent._allowed_team_ids == {"T_VALID", "T_A"}
 
 
-# ------------------------------------------------------------------
 # 6. channel_restart_required + the WhatsApp saver flag
-# ------------------------------------------------------------------
 
 
 class TestChannelRestartRequired:
@@ -1278,3 +1244,336 @@ class TestWhatsappSaverFlagIsPerField:
         assert channel_restart_required("whatsapp", ["session_folder"]) is False
         assert channel_restart_required("whatsapp", ["enabled"]) is True
         assert channel_restart_required("whatsapp", ["session_folder", "enabled"]) is True
+
+
+# 4. .env credential change -> channel restart
+
+
+def _cred_descriptors() -> tuple[registry.ChannelDescriptor, ...]:
+    """A bootable channel WITH credentials ('telegram') plus host-managed Slack.
+
+    telegram's ``credentials`` names ``TELEGRAM_BOT_TOKEN``, so a synthetic
+    ``credentials.TELEGRAM_BOT_TOKEN`` change must restart it; Slack declares
+    its tokens but ``start=None``, so it is never in the restart loop.
+    """
+    tele = next(d for d in builtin_channel_descriptors() if d.channel_type == "telegram")
+    slack = next(d for d in builtin_channel_descriptors() if d.channel_type == "slack")
+    return (slack, tele)
+
+
+class TestChangedCredentialKeys:
+    def test_matches_only_this_channels_declared_credentials(self):
+        tele = next(d for d in builtin_channel_descriptors() if d.channel_type == "telegram")
+        assert registry.changed_credential_keys(
+            tele, {"credentials.TELEGRAM_BOT_TOKEN"}
+        ) == frozenset({"TELEGRAM_BOT_TOKEN"})
+        # A credential that belongs to another channel does not match.
+        assert registry.changed_credential_keys(tele, {"credentials.DISCORD_BOT_TOKEN"}) == (
+            frozenset()
+        )
+        # A config path is not a credential path.
+        assert registry.changed_credential_keys(tele, {"telegram.bot_token"}) == frozenset()
+
+    def test_a_channel_with_no_credentials_never_matches(self):
+        wa = next(d for d in builtin_channel_descriptors() if d.channel_type == "whatsapp")
+        assert registry.changed_credential_keys(wa, {"credentials.TELEGRAM_BOT_TOKEN"}) == (
+            frozenset()
+        )
+
+    def test_teams_tenant_is_restart_relevant_but_not_a_readiness_credential(self):
+        """A tenant-only .env edit (MICROSOFT_APP_TENANT_ID) must restart Teams:
+        a live client authenticates against a fixed tenant and cannot adopt a
+        corrected one. The tenant is declared in ``restart_credentials`` (which
+        the matcher unions in), NOT ``credentials`` -- leaving it out of
+        ``credentials`` keeps an unset tenant from reading as a missing
+        credential, since an unset tenant is the supported multi-tenant mode."""
+        teams = next(d for d in builtin_channel_descriptors() if d.channel_type == "teams")
+        assert registry.changed_credential_keys(
+            teams, {"credentials.MICROSOFT_APP_TENANT_ID"}
+        ) == frozenset({"MICROSOFT_APP_TENANT_ID"})
+        # The required app id/password still match too.
+        assert registry.changed_credential_keys(
+            teams, {"credentials.MICROSOFT_APP_ID"}
+        ) == frozenset({"MICROSOFT_APP_ID"})
+        # The tenant is deliberately NOT a readiness credential.
+        assert "MICROSOFT_APP_TENANT_ID" not in teams.credentials
+        assert "MICROSOFT_APP_TENANT_ID" in teams.restart_credentials
+
+    def test_matching_is_case_insensitive_on_windows(self, monkeypatch):
+        """On Windows os.environ is case-insensitive, so a .env credential key
+        whose case differs from the declared constant still addresses the same
+        token; the matcher must canonicalize both sides or a rotation dispatched
+        under the other case would restart nothing. The returned key stays the
+        declared constant. (Fixes the GPT Windows credential-match finding.)"""
+        from kiro_crew import platform_compat
+
+        tele = next(d for d in builtin_channel_descriptors() if d.channel_type == "telegram")
+        # POSIX (case-sensitive): a lowercase path does NOT match.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False, raising=False)
+        assert (
+            registry.changed_credential_keys(tele, {"credentials.telegram_bot_token"})
+            == frozenset()
+        )
+        # Windows (case-insensitive): it matches, returning the declared constant.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True, raising=False)
+        assert registry.changed_credential_keys(
+            tele, {"credentials.telegram_bot_token"}
+        ) == frozenset({"TELEGRAM_BOT_TOKEN"})
+
+
+class TestTeamsCloseClearsWebhookHandler:
+    def test_closing_teams_clears_the_late_bound_webhook_handler(self):
+        """Teams' inbound webhook route is pre-registered and outlives the client,
+        dispatching to the late-bound state.teams_on_activity. Closing the Teams
+        client (e.g. on a credential removal) must clear that handler, or the
+        route would keep running turns for a closed client. The route handler
+        already 503s when the handler is None. (Fixes the GPT Teams-after-removal
+        finding.)"""
+        orch = _make_orchestrator()
+        orch._channel_transports_started = True
+        orch.dashboard_state = SimpleNamespace(
+            channel_transports={}, teams_on_activity=lambda request: None
+        )
+        orch._channel_handles["teams"] = FakeClient(FakeTransport([]))
+
+        async def run():
+            async with orch._channel_restart_lock:
+                await orch._close_channel_locked("teams")
+
+        asyncio.run(run())
+        assert (
+            orch.dashboard_state.teams_on_activity is None
+        ), "the late-bound Teams webhook handler must be cleared on close"
+
+    def test_closing_a_non_teams_channel_leaves_the_teams_handler_alone(self):
+        """Only closing Teams clears teams_on_activity; a sibling channel's close
+        must not touch it."""
+        orch = _make_orchestrator()
+        orch._channel_transports_started = True
+        sentinel = lambda request: None  # noqa: E731
+        orch.dashboard_state = SimpleNamespace(channel_transports={}, teams_on_activity=sentinel)
+        orch._channel_handles["discord"] = FakeClient(FakeTransport([]))
+
+        async def run():
+            async with orch._channel_restart_lock:
+                await orch._close_channel_locked("discord")
+
+        asyncio.run(run())
+        assert orch.dashboard_state.teams_on_activity is sentinel
+
+
+#: What a reconnect reads for an enabled, credentialed Teams (dummy values).
+_TEAMS_CREDS = {"MICROSOFT_APP_ID": "app-id", "MICROSOFT_APP_PASSWORD": "app-secret"}
+
+
+class _TeamsLikeClient(FakeClient):
+    """A started Teams client: the webhook handler the host may publish."""
+
+    def on_activity(self, request):  # pragma: no cover - identity only
+        return None
+
+
+@pytest.fixture
+def teams_restartable(monkeypatch):
+    """A bootable 'teams' descriptor whose factory never binds the webhook itself."""
+    started: list[_TeamsLikeClient] = []
+
+    async def start(orch):
+        client = _TeamsLikeClient(FakeTransport([]))
+        started.append(client)
+        return client
+
+    desc = registry.ChannelDescriptor(
+        channel_type="teams", start=start, boot_keys=frozenset({"enabled"})
+    )
+    monkeypatch.setattr(gw, "builtin_channel_descriptors", lambda: (desc,))
+    monkeypatch.setattr(gw, "_channel_transport_permitted", lambda member: True)
+    monkeypatch.setattr(GatewayOrchestrator, "_badge_unready_channels", lambda self, descs: None)
+    return started
+
+
+class TestTeamsWebhookPublishedOnlyForTheAcceptedClient:
+    def _orch(self) -> GatewayOrchestrator:
+        orch = _make_orchestrator()
+        orch._channel_transports_started = True
+        orch._cfg = replace(orch._cfg, teams=replace(orch._cfg.teams, enabled=True))
+        orch.dashboard_state = SimpleNamespace(channel_transports={}, teams_on_activity=None)
+        return orch
+
+    def test_a_start_superseded_mid_connect_never_binds_its_handler(self, teams_restartable):
+        """A second credential edit closes Teams while a reconnect is still
+        connecting. The superseded client is discarded, and because the handler
+        is bound only once a client is the accepted handle, a webhook arriving in
+        that window has nothing to reach but the route's 503. (Fixes the GPT
+        connecting-Teams-client finding.)"""
+        orch = self._orch()
+        cfg = _cfg_with("teams", enabled=True)
+
+        async def run():
+            real_start = registry.start_channels
+
+            async def start_then_supersede(*a, **k):
+                handles = await real_start(*a, **k)
+                # The window the finding names: the client exists, the connect
+                # has not been accepted, and a credential removal closes Teams.
+                assert orch.dashboard_state.teams_on_activity is None
+                async with orch._channel_restart_lock:
+                    await orch._close_channel_locked("teams")
+                return handles
+
+            with (
+                patch.object(registry, "start_channels", start_then_supersede),
+                patch.object(cfg, "load_credentials", return_value=_TEAMS_CREDS),
+            ):
+                result = await finished(
+                    orch.restart_channel("teams", cfg=cfg), "restart_channel", timeout=5.0
+                )
+            assert result is None
+            assert "teams" not in orch._channel_handles
+            assert teams_restartable and teams_restartable[-1].closed is True
+
+        asyncio.run(run())
+        assert orch.dashboard_state.teams_on_activity is None
+
+    def test_an_accepted_start_binds_its_handler(self, teams_restartable):
+        """Control: an unsuperseded restart publishes the new client's handler."""
+        orch = self._orch()
+        cfg = _cfg_with("teams", enabled=True)
+        with patch.object(cfg, "load_credentials", return_value=_TEAMS_CREDS):
+            client = asyncio.run(orch.restart_channel("teams", cfg=cfg))
+        assert client is not None and orch._channel_handles["teams"] is client
+        assert orch.dashboard_state.teams_on_activity == client.on_activity
+
+    def test_publishing_without_a_teams_handle_binds_nothing(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = SimpleNamespace(channel_transports={}, teams_on_activity=None)
+        orch._publish_teams_webhook({"discord": FakeClient(FakeTransport([]))})
+        assert orch.dashboard_state.teams_on_activity is None
+
+
+class TestCredentialChangeRestartsChannel:
+    def _orch_with_recorder(self, monkeypatch):
+        monkeypatch.setattr(gw, "builtin_channel_descriptors", _cred_descriptors)
+        orch = _make_orchestrator()
+        orch._channel_transports_started = True
+        calls: list[tuple[str, object]] = []
+
+        async def fake_restart(channel_type, *, cfg=None):
+            calls.append((channel_type, cfg))
+            return None
+
+        orch.restart_channel = fake_restart  # type: ignore[method-assign]
+        return orch, calls
+
+    def test_a_credential_change_restarts_the_owning_channel(self, monkeypatch):
+        orch, calls = self._orch_with_recorder(monkeypatch)
+        cfg = KiroCrewConfig()
+        asyncio.run(_apply(orch, _change(cfg, "credentials.TELEGRAM_BOT_TOKEN")))
+        assert [c[0] for c in calls] == ["telegram"]
+        # Rebuilt from the watcher snapshot, which re-reads load_credentials.
+        assert calls[0][1] is None
+
+    def test_an_unrelated_credential_restarts_nothing(self, monkeypatch):
+        orch, calls = self._orch_with_recorder(monkeypatch)
+        cfg = KiroCrewConfig()
+        # No bootable channel in this fixture declares KIRO_API_KEY.
+        asyncio.run(_apply(orch, _change(cfg, "credentials.KIRO_API_KEY")))
+        assert calls == []
+
+    def test_slack_credentials_do_not_enter_the_restart_loop(self, monkeypatch):
+        """Slack is host-managed (start=None): a Slack token change must not try to
+        restart Slack through the bootable loop (it has no restart path)."""
+        orch, calls = self._orch_with_recorder(monkeypatch)
+        cfg = KiroCrewConfig()
+        asyncio.run(_apply(orch, _change(cfg, "credentials.SLACK_BOT_TOKEN")))
+        assert calls == []
+
+    def test_a_credential_change_for_a_degraded_channel_is_deferred_not_dropped(self, monkeypatch):
+        """A .env rotation for a channel whose config section is degraded must be
+        DEFERRED (retried once the section validates), not restarted now and not
+        silently dropped: the credential path lives in its own namespace, not
+        under the section, so the degraded branch must defer it explicitly or the
+        transport keeps the old token until a full restart. (Fixes the Opus
+        degraded-credential finding.)"""
+        from dataclasses import replace
+
+        orch, calls = self._orch_with_recorder(monkeypatch)
+        degraded = replace(KiroCrewConfig(), _degraded_sections=frozenset({"telegram"}))
+        with pytest.raises(live.ConfigDeferred) as deferred:
+            asyncio.run(_apply(orch, _change(degraded, "credentials.TELEGRAM_BOT_TOKEN")))
+        assert calls == [], "a degraded channel is not restarted"
+        assert (
+            "credentials.TELEGRAM_BOT_TOKEN" in deferred.value.paths
+        ), "the credential path is deferred for retry, not dropped"
+
+
+class TestSlackCredentialChangeWarns:
+    def test_a_slack_token_change_logs_a_restart_needed_notice(self, caplog):
+        """Slack's socket is host-managed, so a .env token change cannot be applied
+        live; the applier tells the operator a restart is needed (the honest
+        fallback), the same shape as slack.command."""
+        import logging
+
+        orch = _make_orchestrator()
+        cfg = KiroCrewConfig()
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(orch._on_slack_config_change(_change(cfg, "credentials.SLACK_BOT_TOKEN")))
+        assert any(
+            "Slack credential" in r.message and "restart" in r.message for r in caplog.records
+        )
+        # No token VALUE is ever logged, only the key name.
+        assert "SLACK_BOT_TOKEN" in caplog.text
+
+    def test_a_non_slack_credential_change_is_silent_in_the_slack_applier(self, caplog):
+        import logging
+
+        orch = _make_orchestrator()
+        cfg = KiroCrewConfig()
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(
+                orch._on_slack_config_change(_change(cfg, "credentials.TELEGRAM_BOT_TOKEN"))
+            )
+        assert not any("Slack credential" in r.message for r in caplog.records)
+
+    def test_a_lowercase_slack_key_on_windows_still_logs_the_notice(self, monkeypatch, caplog):
+        """On Windows os.environ is case-insensitive, so a lowercase .env line
+        rotates the same entry Slack authenticates with. The match must
+        canonicalize like registry.changed_credential_keys, and the notice names
+        the declared constant. On POSIX a lowercase name is a different variable
+        and stays silent. (Fixes the GPT lowercase-Slack-rotation finding.)"""
+        import logging
+
+        from kiro_crew import platform_compat
+
+        orch = _make_orchestrator()
+        cfg = KiroCrewConfig()
+
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False, raising=False)
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(orch._on_slack_config_change(_change(cfg, "credentials.slack_bot_token")))
+        assert not any("Slack credential" in r.message for r in caplog.records)
+
+        caplog.clear()
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True, raising=False)
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(orch._on_slack_config_change(_change(cfg, "credentials.slack_bot_token")))
+        notices = [r.getMessage() for r in caplog.records if "Slack credential" in r.message]
+        assert len(notices) == 1 and "SLACK_BOT_TOKEN" in notices[0]
+
+    def test_an_owner_change_logs_the_restart_needed_notice(self, caplog):
+        """The owner id is read once at construction into ``_owner_id`` and the
+        owner allowlist, so a replaced or removed owner in .env keeps the previous
+        owner authorized until the next start. The applier names the owner key in
+        the restart-needed notice, the same as a token edit."""
+        import logging
+
+        from kiro_crew.config.loader_credentials import CRED_OWNER_ID
+
+        orch = _make_orchestrator()
+        cfg = KiroCrewConfig()
+        with caplog.at_level(logging.WARNING):
+            asyncio.run(orch._on_slack_config_change(_change(cfg, f"credentials.{CRED_OWNER_ID}")))
+        notices = [r.getMessage() for r in caplog.records if "Slack credential" in r.message]
+        assert len(notices) == 1
+        assert CRED_OWNER_ID in notices[0] and "owner" in notices[0]
+        assert "restart" in notices[0]

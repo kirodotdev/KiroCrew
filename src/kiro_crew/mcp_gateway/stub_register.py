@@ -262,6 +262,7 @@ _KIROCREW_MCP_SUBCOMMANDS = frozenset(
         "mcp-panel",
         "mcp-guide",
         "mcp-mate",
+        "mcp-secrets",
     }
 )
 

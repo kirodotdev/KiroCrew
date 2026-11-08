@@ -36,7 +36,7 @@ trying to accomplish, and what is the sanctioned path to it".
 
 ### AWS credentials (`~/.aws`, `AWS_*` env vars, IMDS)
 
-**You do not need to read them, and running AWS CLI commands is not blocked.**
+**You do not need to read them, and running AWS CLI commands is not blocked by the rule that refused the read.**
 This is the single most common misdiagnosis: the read is refused, and the
 conclusion "this host has no AWS access" is drawn from it. The SDK resolves
 credentials itself, including refreshing them through a `credential_process`
@@ -61,8 +61,7 @@ finding from "no access", and it is the one a user can act on.
 
 If nothing is configured, that is the user's action in their own terminal (for
 example `aws sso login`) — report that, do not conclude the capability is
-missing. Read-only verbs (`describe*`, `list*`, `get*`) are allowed; destructive
-ones are separately denied on purpose.
+missing. Destructive AWS operations are separately denied on purpose.
 
 #### If this host vends credentials through an MCP tool
 
@@ -96,7 +95,12 @@ keyword query can score below the match threshold while the exact id hits. So:
    started before the server was registered (a new session or an Apply & restart
    fixes it), the session runs an app agent whose policy neutralizes ungranted
    ambient servers, or the server is in `mcpServers` but never referenced from
-   the agent's `tools` array.
+   the agent's `tools` array. For the default agent, send the user to
+   **Customize → Connections → MCP Servers** to check the server is listed and
+   on; a server whose program is not found on this computer is dropped from the
+   agent's spec.
+   `~/.kiro/agents/kirocrew.json` is rebuilt on every gateway start, so never
+   tell the user to hand-edit it or run `jq`/`sed` on it.
 
 **Never invent a reason.** Claiming that a server "is only injected into CLI
 sessions" or "is not part of this product's MCP set" is the failure mode this
@@ -148,7 +152,7 @@ trick. State what would need to change and let the user edit it.
 The refusal is about what the action would DO — move a local file's contents off
 this host — not about how it is written, so it must not be re-spelled. The rule
 matches the request shape: `-d @file`, `--data-binary @file`,
-`--data-urlencode @file`, `-F field=@file`, `--upload-file`, `wget --post-file`,
+`--data-urlencode @file`, `-F field=@file`, `wget --post-file`,
 and `/dev/tcp/` redirects. A form that got past it would mean the control was
 defeated rather than satisfied, so those bytes must not leave through you by any
 route.

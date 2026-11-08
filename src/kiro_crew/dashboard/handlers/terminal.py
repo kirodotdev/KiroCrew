@@ -12,13 +12,13 @@
 #   ``terminal_shell`` -- the shell, cwd and child environment a session starts with
 #   ``terminal_transport`` -- which socket owns a session, and the PTY's bytes to and from it
 #   ``terminal_lifecycle`` -- the shell child's liveness, exit, failure notice and teardown
+#   ``terminal_placement`` -- which machine a chat's shell may run on, and retiring local ones
 #   ``terminal_complete`` -- the vetting steps of path completion
 #   ``terminal_routes`` -- the create, list and delete REST routes
 
 from __future__ import annotations
 
 import asyncio
-import heapq
 import importlib as _importlib
 import json
 import logging
@@ -39,24 +39,32 @@ from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _run_path_probe
 from kiro_crew.dashboard.handlers.terminal_complete import (
     _COMPLETE_MAX_ENTRIES,
-    _COMPLETE_MAX_SCAN,
     _COMPLETE_TOKEN_MAX,
-    _UNSAFE_NAME_RE,
-    _entry_is_sensitive,
-    _entry_sort_key,
     _log_complete,
-    _open_vetted_dir,
-    _resolve_completion_dir,
+    _resolve_vet_and_list,
     _split_path_token,
-    _vetted_completion_dir,
 )
 from kiro_crew.dashboard.handlers.terminal_lifecycle import (
     _TERMINAL_WS_CLOSE_SHELL_EXITED,
     _close_terminal_fd,
+    _end_evicted_shell,
     _handle_pty_reader_end,
     _kill_session,
+    _restore_evicted_shell,
     _sess_alive,
     _sess_pid,
+    _take_shell_to_evict,
+    apply_terminal_enabled,
+)
+from kiro_crew.dashboard.handlers.terminal_placement import (
+    _CHAT_NOT_LOADED,
+    _PLACEMENT_UNAVAILABLE,
+    _chat_gone,
+    _local_terminal_refusal,
+    _remote_pty_env,
+    _remote_terminal_argv,
+    _session_environments_on,
+    retire_local_shells_of_chat,
 )
 from kiro_crew.dashboard.handlers.terminal_session import (
     _MAX_SESSION_ID_LEN,
@@ -67,6 +75,7 @@ from kiro_crew.dashboard.handlers.terminal_session import (
     _get_registry,
     _is_enabled,
     _sel,
+    _terminal_enabled,
     _TerminalSession,
 )
 from kiro_crew.dashboard.handlers.terminal_shell import (
@@ -85,7 +94,8 @@ from kiro_crew.dashboard.handlers.terminal_transport import (
     _write_terminal_input,
 )
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
-from kiro_crew.executors import discovery_executor, subprocess_executor
+from kiro_crew.executors import subprocess_executor  # noqa: F401 -- facade name
+from kiro_crew.executors import discovery_executor
 from kiro_crew.notifications.bus import NotificationBus
 from kiro_crew.sandbox import RLIMIT_PROFILE_NONE, spawn_shim_argv
 from kiro_crew.security import (  # noqa: F401 - is_sensitive_path: tests patch it here
@@ -151,7 +161,7 @@ def _proc_cwd(pid: int) -> str | None:
     try:
         out = subprocess.run(
             [lsof, "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
-            capture_output=True, text=True, timeout=2,
+            capture_output=True, text=True, encoding="utf-8", timeout=2,
         ).stdout
         for line in out.splitlines():
             if line.startswith("n") and len(line) > 1:
@@ -202,7 +212,7 @@ async def _session_cwd_cached(sess: "_TerminalSession") -> str | None:
     if probe is not None and now - probe[0] < _CWD_PROBE_TTL_S:
         return probe[1]
     loop = asyncio.get_running_loop()
-    cwd = await loop.run_in_executor(subprocess_executor(), _session_cwd, sess)
+    cwd = await loop.run_in_executor(discovery_executor(), _session_cwd, sess)
     # _session_cwd memoizes its own probes; this covers the branches where it
     # returns without probing (no shell, non-POSIX host) so those do not re-hop
     # to the executor on every keystroke.
@@ -535,6 +545,50 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         discovery_executor(), _resolve_shell_with_fence_shells, cfg,
     )
 
+    # A terminal for a chat on a REMOTE session environment is a shell in that
+    # workspace, resolved before the reservation below (it awaits). Never a local
+    # fallback: it would send the user's commands to the wrong machine.
+    remote_argv: list[str] | None = None
+    remote_slot = request.query.get("remote_slot")
+    chat_slot = request.query.get("slot")
+    remote_error = ""
+    error_code = ""
+    refused = "remote_unavailable=1"
+    reattach_only: _TerminalSession | None = None
+    if isinstance(remote_slot, str) and remote_slot:
+        remote_argv, remote_error, error_code = await _remote_terminal_argv(request, remote_slot)
+    elif isinstance(chat_slot, str) and chat_slot:
+        live = registry.get(session_id)
+        remote_error, error_code = await _local_terminal_refusal(request, chat_slot, reattach=live)
+        if (
+            not remote_error
+            and live is not None
+            and _chat_gone(request, chat_slot)
+            and _session_environments_on()
+        ):
+            # Allowed only to take over THAT shell: no new one opens for a gone chat.
+            reattach_only = live
+        refused = "local_refused=1"
+    # A local shell remembers its chat, so binding that chat retires it.
+    local_chat_slot = chat_slot if remote_argv is None and isinstance(chat_slot, str) else ""
+    if remote_error:
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.ws.open",
+            outcome="denied",
+            source="dashboard",
+            resources=f"session={session_id},{refused},code={error_code}",
+        )
+        # A browser cannot read a refused handshake's body, so accept it and
+        # send a coded error: wrong-machine parks the tab, placement-unavailable
+        # lets it redial. No PTY and no reservation exist yet.
+        refusal_ws = web.WebSocketResponse(heartbeat=30, timeout=300)
+        await refusal_ws.prepare(request)
+        await _close_terminal_ws_bounded(
+            refusal_ws, error_message=remote_error, error_code=error_code
+        )
+        return refusal_ws
+
     # A None entry reserves this session id and capacity throughout opening,
     # including asynchronous setup and any refusal response. Reject duplicate
     # opens until the entry becomes a session or its opening handler removes
@@ -571,7 +625,27 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         del registry[session_id]
         existing = None
 
-    # Reserve slot synchronously before any await to prevent race condition
+    if reattach_only is not None and existing is not reattach_only:
+        # The gone chat's shell exited or was replaced while this dial awaited:
+        # its placement is unknown again, so no new local shell opens.
+        _sel().log_api_access(
+            caller=caller,
+            operation="terminal.ws.open",
+            outcome="denied",
+            source="dashboard",
+            resources=f"session={session_id},local_refused=1,code={_PLACEMENT_UNAVAILABLE}",
+        )
+        refusal_ws = web.WebSocketResponse(heartbeat=30, timeout=300)
+        await refusal_ws.prepare(request)
+        await _close_terminal_ws_bounded(
+            refusal_ws, error_message=_CHAT_NOT_LOADED, error_code=_PLACEMENT_UNAVAILABLE
+        )
+        return refusal_ws
+
+    # Reserve slot synchronously before any await to prevent race condition.
+    # At the cap, the longest-detached shell gives up its slot in the same step;
+    # it ends only once this open goes ahead, and returns to its slot otherwise.
+    evicted = None if existing else _take_shell_to_evict(registry, max_sessions, time.monotonic())
     if not existing and len(registry) >= max_sessions:
         _sel().log_api_access(
             caller=caller,
@@ -580,7 +654,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             source="dashboard",
             resources=f"max_sessions={max_sessions}",
         )
-        return web.Response(status=429, text=f"Max {max_sessions} terminal sessions")
+        return web.Response(status=409, text=f"Max {max_sessions} terminal sessions")
 
     # Reserve a placeholder so concurrent requests see the slot as taken
     placeholder = not existing
@@ -607,6 +681,13 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             except (OSError, ValueError, asyncio.TimeoutError, _PathProbeBusy):
                 registry.pop(session_id, None)
                 placeholder = False
+                # The placeholder held the displaced shell's slot, so the shell
+                # goes back in this same step: during the refusal's awaits below
+                # another opener sees the cap full rather than a free slot.
+                if evicted is not None:
+                    displaced, evicted = evicted, None
+                    if not _restore_evicted_shell(registry, displaced):
+                        await _end_evicted_shell(request.app, displaced, max_sessions)
                 _sel().log_api_access(
                     caller=caller,
                     operation="terminal.ws.open",
@@ -627,6 +708,11 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 )
                 return ws
         await ws.prepare(request)
+        if evicted is not None:
+            # The directory resolved and the socket is up, so the open goes
+            # ahead: only now does the shell it displaces end.
+            ending, evicted = evicted, None
+            await _end_evicted_shell(request.app, ending, max_sessions)
 
         if existing:
             # Reconnect to existing PTY.
@@ -683,6 +769,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 cwd = os.path.expanduser("~")
             env = _pty_child_env({"KIROCREW_TERMINAL": "1"})
             argv = [shell, "-NoLogo"] if "powershell" in shell.lower() else [shell]
+            if remote_argv is not None:
+                argv, cwd = remote_argv, os.path.expanduser("~")
+                env = _remote_pty_env({"KIROCREW_TERMINAL": "1"})
             try:
                 wp = WindowsPty(argv, cwd=cwd, env=env, cols=80, rows=24)
             except Exception as exc:
@@ -701,7 +790,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 return ws
             sess = _TerminalSession(
                 session_id=session_id, master_fd=-1, proc=None, winpty=wp, ws=ws, shell=shell,  # wokeignore:rule=master
-                fence_shells=fence_shells,
+                fence_shells=fence_shells, remote=remote_argv is not None,
+                chat_slot=local_chat_slot,
             )
             registry[session_id] = sess
             placeholder = False
@@ -730,6 +820,8 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 ws=ws,
                 shell=shell,
                 fence_shells=fence_shells,
+                remote=remote_argv is not None,
+                chat_slot=local_chat_slot,
             )
             ready_marker: bytes | None = None
             close_cancelled: asyncio.CancelledError | None = None
@@ -773,7 +865,12 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                     # the same ioctl single-threaded in the exec'd child, where none of
                     # that applies -- see the module docstring of _spawn_exec_shim.py.
                     argv = [shell, "-l"]
-                    if _is_bash_shell(shell):
+                    if remote_argv is not None:
+                        # The provider CLI opens the remote login shell; the local cwd
+                        # and the local bash ready-marker do not apply to it.
+                        argv, cwd = remote_argv, os.path.expanduser("~")
+                        env = _remote_pty_env({"TERM": "xterm-256color", "KIROCREW_TERMINAL": "1"})
+                    elif _is_bash_shell(shell):
                         token = uuid.uuid4().hex
                         ready_marker = (
                             f"\x1b]697;KiroCrewReady;{token}\x07".encode("ascii")
@@ -891,6 +988,30 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # release retires that ownership before another handler can reserve it.
         if placeholder:
             registry.pop(session_id, None)
+        # An open refused, failed or cancelled before going ahead leaves the
+        # displaced shell untouched: it goes back unless its id was opened afresh.
+        if evicted is not None and not _restore_evicted_shell(registry, evicted):
+            await _end_evicted_shell(request.app, evicted, max_sessions)
+
+    # A switch-off applied while this open awaited skipped its reservation: read the
+    # switch again now that the shell is published, so this read or the applier ends it.
+    cfg = _get_config(request)
+    if registry.get(session_id) is sess and not _terminal_enabled(cfg):
+        await apply_terminal_enabled(registry, cfg)
+        return ws
+
+    # The placement check above ran before this shell was published, and a bind
+    # in between skipped the then-unpublished reservation: read it again now
+    # that the shell is visible, so either this read or the bind's retire sees it.
+    if sess.chat_slot and registry.get(session_id) is sess:
+        why, code = await _local_terminal_refusal(
+            request, sess.chat_slot, reattach=sess if existing else None
+        )
+        if code:
+            await retire_local_shells_of_chat(
+                registry, sess.chat_slot, error_message=why, error_code=code
+            )
+            return ws
 
     # --- Read loop: PTY → WebSocket ---
     notification_bus: NotificationBus | None = getattr(
@@ -1063,7 +1184,7 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
         return t
 
     try:
-        redacted = await loop.run_in_executor(subprocess_executor(), _scan, text)
+        redacted = await loop.run_in_executor(discovery_executor(), _scan, text)
     except Exception:
         # Fail closed: the caller gets no text to insert.
         logger.exception("terminal: selection redaction failed")
@@ -1086,125 +1207,6 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
         resources="ok",
     )
     return web.json_response({"text": redacted})
-
-
-def _list_completions(
-    directory: str, prefix: str, folders_only: bool, limit: int
-) -> tuple[list[dict], bool]:
-    """``_list_vetted_completions`` for a not-yet-canonicalized *directory*.
-
-    Returns ``([], False)`` when the directory is missing, unreadable, or
-    sensitive — none of those is an error condition for a keystroke-rate
-    endpoint, they just have no completions."""
-    vetted = _vetted_completion_dir(directory)
-    if vetted is None:
-        return [], False
-    return _list_vetted_completions(vetted, prefix, folders_only, limit)
-
-
-def _list_vetted_completions(
-    vetted: str, prefix: str, folders_only: bool, limit: int
-) -> tuple[list[dict], bool]:
-    """Entries of an ALREADY-VETTED directory matching ``prefix`` anywhere in
-    the name.
-
-    Matching is a case-insensitive SUBSTRING search, not a prefix test, so a
-    long name can be reached by its distinctive middle: ``termi`` finds
-    ``KiroCrew-terminal-completion``. Each entry reports ``at``, the offset the
-    fragment was found at, which both ranks the results (earliest match first,
-    so a true prefix still wins) and lets the client highlight the span.
-
-    A fragment that STARTS with a dot is matched as a prefix instead. The dot is
-    what unhides hidden entries, not a distinctive part of a name, so searching
-    for it as a substring would pull in every ``foo.bar`` and defeat the very
-    filter it just switched on.
-
-    Hidden entries are included only once the user has typed a leading dot,
-    mirroring shell completion.
-
-    Only ``limit`` entries are ever RETAINED (a size-bounded heap over the same
-    ranking key), and at most ``_COMPLETE_MAX_SCAN`` entries are examined, so
-    neither a huge directory nor a hostile one can grow the response or hold the
-    worker thread. ``truncated`` reports either cap being hit."""
-    want_hidden = prefix.startswith(".")
-    lowered = prefix.lower()
-    matched = 0
-    scan_capped = False
-
-    # Pinned BEFORE the scan so the enumeration cannot be redirected by a swap
-    # of the directory name after vetting passed. See _open_vetted_dir.
-    dir_fd = _open_vetted_dir(vetted)
-    if dir_fd is None:
-        return [], False
-
-    def _candidates():
-        # Generator (not a list): heapq.nsmallest below pulls lazily and keeps
-        # only `limit` items alive, so a 100k-entry directory never materializes.
-        nonlocal matched, scan_capped
-        scanned = 0
-        with os.scandir(dir_fd) as it:
-            for entry in it:
-                if scanned >= _COMPLETE_MAX_SCAN:
-                    scan_capped = True
-                    break
-                scanned += 1
-                name = entry.name
-                if _UNSAFE_NAME_RE.search(name):
-                    continue
-                if not want_hidden and name.startswith("."):
-                    continue
-                if not lowered:
-                    at = 0
-                elif want_hidden:
-                    at = 0 if name.lower().startswith(lowered) else -1
-                else:
-                    at = name.lower().find(lowered)
-                if at < 0:
-                    continue
-                # Ordered AFTER the cheap name filters and BEFORE the stat
-                # below: only entries the user could actually receive are
-                # classified, so a huge directory does not pay the gate for
-                # every name it holds.
-                if _entry_is_sensitive(vetted, entry):
-                    continue
-                try:
-                    is_dir = entry.is_dir()  # follows symlinks, as the shell does
-                except OSError:
-                    is_dir = False
-                if folders_only and not is_dir:
-                    continue
-                matched += 1
-                yield {"name": name, "dir": is_dir, "at": at}
-
-    try:
-        entries = heapq.nsmallest(limit, _candidates(), key=_entry_sort_key)
-    except OSError:
-        return [], False
-    finally:
-        # os.scandir(fd) does NOT take ownership of the descriptor, so it is ours
-        # to close on every path out of here.
-        os.close(dir_fd)
-    return entries, scan_capped or matched > limit
-
-
-def _resolve_vet_and_list(
-    cwd: str, dir_part: str, prefix: str, folders_only: bool, limit: int
-) -> tuple[str, bool, list[dict], bool]:
-    """Everything a completion needs from the filesystem, in ONE call.
-
-    Resolution (``expanduser`` can trigger a synchronous name-service lookup for
-    ``~someuser``) and vetting (``realpath``, which can stall on an unresponsive
-    mount) are blocking just like the listing itself, so all three run together
-    on one worker thread instead of costing the caller three executor hops.
-
-    Returns ``(lexical_directory, allowed, entries, truncated)``; ``allowed`` is
-    False when the resolved directory must not be enumerated."""
-    directory = _resolve_completion_dir(cwd, dir_part)
-    vetted = _vetted_completion_dir(directory)
-    if vetted is None:
-        return directory, False, [], False
-    entries, truncated = _list_vetted_completions(vetted, prefix, folders_only, limit)
-    return directory, True, entries, truncated
 
 
 async def api_terminal_complete(request: web.Request) -> web.Response:
@@ -1346,6 +1348,15 @@ async def api_terminal_complete(request: web.Request) -> web.Response:
             {"dir": None, "prefix": prefix, "entries": [], "truncated": False}
         )
 
+    if sess.remote:
+        # A workspace shell: its directory and files are on the remote machine, so
+        # a listing here would offer this gateway's paths for the remote command
+        # line. The same empty shape as a configured silence.
+        _log_complete(caller, "ok", "remote_session")
+        return web.json_response(
+            {"dir": None, "prefix": prefix, "entries": [], "truncated": False}
+        )
+
     cwd = await _session_cwd_cached(sess)
 
     # ── Command tier ──
@@ -1453,20 +1464,27 @@ async def poll_terminal_titles(app: web.Application) -> None:
                 # probe is in flight must re-dirty the session so the next tick
                 # picks up the change instead of the flag swallowing it.
                 sess.frames_dirty = False
+                if sess.remote:
+                    # A workspace shell runs on the remote machine: the probes
+                    # below would read the local provider CLI's process, whose
+                    # cwd and title are this gateway's, not the workspace's. The
+                    # tab keeps the title the client gave it.
+                    continue
                 # _session_title / _session_cwd do blocking syscalls (tcgetpgrp
                 # ioctl, /proc reads, lsof where nothing cheaper answers) that
                 # can wedge on a D-state process or a stuck fs; run them off the
-                # loop on the subprocess pool (same rationale as the os.close
-                # offload in _kill_session) so one stuck read can never freeze
-                # the gateway event loop. Both probes share one cwd lookup via
-                # the session's memo.
+                # loop so one stuck read can never freeze the gateway event
+                # loop. They ride the discovery pool, not the subprocess pool,
+                # so process-tree walks holding every subprocess worker cannot
+                # stall the title. Both probes share one cwd lookup via the
+                # session's memo.
                 # The WS can detach (sess.ws = None) or be displaced by a
                 # reconnect while an executor probe is in flight — capture +
                 # revalidate the socket after EACH hop, and let the bounded
                 # owner-checked sender re-confirm identity under the transport
                 # lock so a displaced socket never receives a frame and a
                 # blocked transport can never park the singleton poller.
-                title = await loop.run_in_executor(subprocess_executor(), _session_title, sess)
+                title = await loop.run_in_executor(discovery_executor(), _session_title, sess)
                 ws = sess.ws
                 if ws is None or ws.closed:
                     continue
@@ -1482,7 +1500,7 @@ async def poll_terminal_titles(app: web.Application) -> None:
                 # Live cwd (full path) rides the same poll: the frontend uses it
                 # to attribute terminal output handed off to chat. Pushed only
                 # on change, like the title.
-                cwd = await loop.run_in_executor(subprocess_executor(), _session_cwd, sess)
+                cwd = await loop.run_in_executor(discovery_executor(), _session_cwd, sess)
                 ws = sess.ws
                 if ws is None or ws.closed:
                     continue
@@ -1501,6 +1519,7 @@ _OWNERS = (
     "kiro_crew.dashboard.handlers.terminal_shell",
     "kiro_crew.dashboard.handlers.terminal_transport",
     "kiro_crew.dashboard.handlers.terminal_lifecycle",
+    "kiro_crew.dashboard.handlers.terminal_placement",
     "kiro_crew.dashboard.handlers.terminal_complete",
     "kiro_crew.dashboard.handlers.terminal_routes",
 )
@@ -1514,15 +1533,36 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.dashboard.handlers.terminal_complete import (  # noqa: F401
+        _COMPLETE_MAX_SCAN,
+        _UNSAFE_NAME_RE,
+        _entry_is_sensitive,
+        _entry_sort_key,
+        _list_completions,
+        _list_vetted_completions,
+        _open_vetted_dir,
+        _resolve_completion_dir,
+        _vetted_completion_dir,
+    )
     from kiro_crew.dashboard.handlers.terminal_lifecycle import (  # noqa: F401
         _CHILD_REAP_TIMEOUT_S,
         _CONPTY_STATUS_POLL_S,
+        _ORPHAN_SWEEP_INTERVAL_S,
+        _ORPHAN_TIMEOUT_MIN_S,
         _ORPHAN_TIMEOUT_S,
         _TERMINAL_FD_CLOSE_TIMEOUT_S,
         _child_exit_status,
+        _format_idle,
         _notify_shell_failed,
+        _orphan_timeout_s,
+        _record_orphan_reap,
         _shell_failure_note,
+        _shell_to_evict,
+        _sweep_terminals,
         reap_orphaned_terminals,
+    )
+    from kiro_crew.dashboard.handlers.terminal_placement import (  # noqa: F401
+        _WRONG_MACHINE,
     )
     from kiro_crew.dashboard.handlers.terminal_routes import (  # noqa: F401
         api_terminal_create,
@@ -1532,6 +1572,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.dashboard.handlers.terminal_session import (  # noqa: F401
         _ConptyBackend,
         _enabled_cache,
+        _read_terminal_config,
     )
     from kiro_crew.dashboard.handlers.terminal_transport import (  # noqa: F401
         _OWNER_CONTROL_SEND_TIMEOUT_S,
@@ -1547,7 +1588,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
-    from kiro_crew.config.loader import config_path, read_config_text  # noqa: F401
+    from kiro_crew.config.loader import (  # noqa: F401
+        config_local_path,
+        config_path,
+        read_config_text,
+        read_merged_config_files,
+    )
+    from kiro_crew.executors import maintenance_executor  # noqa: F401
     from kiro_crew.hooks import validate_file_path  # noqa: F401
     from kiro_crew.notifications.bus import NotificationPayload  # noqa: F401
     from kiro_crew.sandbox import without_python_env  # noqa: F401

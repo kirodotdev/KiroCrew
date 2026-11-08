@@ -49,6 +49,7 @@ import {
 
 import { i18nT } from '../i18n/t'
 import { postToHost } from '../lib/hostRelay'
+import { quietNextFocus } from '../lib/quietFocusReturn'
 import { fmtDuration as fmtDurationParts, fmtUnit, fmtNumber } from '../i18n/format'
 /**
  * Crews that get a switcher entry: sticky connect intent (`was_connected`,
@@ -100,7 +101,11 @@ function instConnected(inst: InstanceView | undefined): boolean {
  * A child whose parent is NOT in *rows* (never connected, so it has no tab) is
  * treated as a root. Dropping it instead would hide a crew that is genuinely
  * connected, and re-rooting it costs only the indent — the row still names the
- * crew it goes through in its subtitle.
+ * crew it goes through in its subtitle. That name is looked up in *all* (the
+ * full instance list, not just the tab-visible rows), falling back to the
+ * parent's id, and the row reads unreachable through it: a parent with no tab
+ * is not connected, so nothing here can reach the child through its hop.
+ * A loop member appended as a root names its parent the same way.
  *
  * Visit-guarded, so a registry holding a loop terminates and every row is
  * emitted exactly once. The tab bar itself is flat; only this ordering and the
@@ -130,10 +135,16 @@ export function rowStateLabel(entry: {
     : i18nT('components.instanceTabBar.unreachable')
 }
 
-export function chainRows(rows: InstanceView[]): ChainRow[] {
+export function chainRows(rows: InstanceView[], all: InstanceView[] = rows): ChainRow[] {
   const present = new Set(rows.map(i => i.id))
   const parentOf = (i: InstanceView): string =>
     i.via_instance_id && present.has(i.via_instance_id) ? i.via_instance_id : ''
+  // The hop a re-rooted or loop-recovered row rides, named from the full list.
+  const viaName = (i: InstanceView): string => {
+    const via = i.via_instance_id
+    if (!via) return ''
+    return all.find(p => p.id === via)?.name || rows.find(p => p.id === via)?.name || via
+  }
   const children = new Map<string, InstanceView[]>()
   for (const inst of rows) {
     const key = parentOf(inst)
@@ -153,6 +164,14 @@ export function chainRows(rows: InstanceView[]): ChainRow[] {
     for (const inst of children.get(parentId) ?? []) {
       if (seen.has(inst.id)) continue
       seen.add(inst.id)
+      // A chained crew re-rooted here because its parent has no tab: name the
+      // hop, and say it is down -- the parent is not connected.
+      const absentVia = parentId === '' ? viaName(inst) : ''
+      if (absentVia) {
+        out.push({ inst, depth, parentName: absentVia, reachable: false, brokenAt: absentVia })
+        walk(inst.id, depth + 1, inst.name, false, absentVia)
+        continue
+      }
       out.push({ inst, depth, parentName, reachable, brokenAt })
       // The FIRST break on the path wins and is carried the rest of the way down:
       // everything below it is unreachable for that one reason.
@@ -171,7 +190,7 @@ export function chainRows(rows: InstanceView[]): ChainRow[] {
   // can see and disconnect is what lets them fix the registry.
   for (const inst of rows) {
     if (!seen.has(inst.id))
-      out.push({ inst, depth: 0, parentName: '', reachable: true, brokenAt: '' })
+      out.push({ inst, depth: 0, parentName: viaName(inst), reachable: true, brokenAt: '' })
   }
   return out
 }
@@ -637,6 +656,10 @@ function SwitcherMenu({
   stableOrder,
   onToggleStableOrder,
   showStableOrderToggle,
+  open,
+  onOpenChange,
+  onInteractOutside,
+  onCloseAutoFocus,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
@@ -647,8 +670,12 @@ function SwitcherMenu({
   stableOrder: boolean
   onToggleStableOrder: () => void
   showStableOrderToggle: boolean
+  /** Owned by `Switcher`, so the leading active chip opens this same menu. */
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onInteractOutside: (event: Event) => void
+  onCloseAutoFocus: (event: Event) => void
 }) {
-  const [open, setOpen] = useState(false)
   // Unread the user cannot see: everything that is neither the active pane nor a
   // chip currently on screen. A pinned crew whose chip got cut off counts, since
   // its badge went with it.
@@ -662,7 +689,7 @@ function SwitcherMenu({
       ? i18nT('components.instanceTabBar.switch_crew_unread', { n: elsewhere })
       : i18nT('components.instanceTabBar.switch_crew')
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu open={open} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -688,6 +715,8 @@ function SwitcherMenu({
         align="start"
         aria-label={i18nT('components.instanceTabBar.instances')}
         className="min-w-[240px] max-w-[340px]"
+        onInteractOutside={onInteractOutside}
+        onCloseAutoFocus={onCloseAutoFocus}
       >
         <DropdownMenuRadioGroup value={activeId ?? LOCAL_VALUE}>
           {entries.map((entry, i) => (
@@ -757,12 +786,17 @@ function SwitcherChip({
   onSelect,
   className = '',
   shrinkable = false,
+  buttonRef,
+  menuOpen,
 }: {
   entry: SwitcherEntry
   active: boolean
   onSelect: () => void
   /** Extra classes for the caller's own layout hooks (see `tb-crew-active-chip`). */
   className?: string
+  buttonRef?: React.Ref<HTMLButtonElement>
+  /** Set only on a chip that opens the switcher menu: whether that menu is open. */
+  menuOpen?: boolean
   /**
    * Let the chip give up NAME width when its row is short of room, instead of
    * holding its full width and letting the row cut whichever chip lands on the
@@ -794,8 +828,11 @@ function SwitcherChip({
   const hasBadge = entry.unread > 0
   return (
     <button
+      ref={buttonRef}
       type="button"
       onClick={onSelect}
+      aria-haspopup={menuOpen === undefined ? undefined : 'menu'}
+      aria-expanded={menuOpen}
       aria-current={active ? 'true' : undefined}
       aria-label={entry.title}
       title={entry.title}
@@ -1101,6 +1138,11 @@ function Switcher({
   const stableOrder = (stableOrderProp ?? (embedded ? false : storeStableOrder)) === true
   const toggleStableOrder = onToggleStableOrderProp ?? storeToggleStableOrder
   const [clippedPinned, setClippedPinned] = useState<Set<string>>(() => new Set())
+  // The leading active chip toggles the same menu as the caret. When the chip
+  // opened it, closing it hands focus back to the chip rather than the caret.
+  const [menuOpen, setMenuOpen] = useState(false)
+  const chipRef = useRef<HTMLButtonElement>(null)
+  const chipOpened = useRef(false)
   const active = entries.find(e => (e.id ?? null) === activeId) ?? entries[0]
   // Two orderings for the always-visible chips:
   //  • Default: the crew on screen LEADS the row and is never also a pinned chip
@@ -1131,8 +1173,13 @@ function Switcher({
         <SwitcherChip
           entry={active}
           active
-          onSelect={() => onSelect(active.id)}
+          onSelect={() => {
+            chipOpened.current = true
+            setMenuOpen(o => !o)
+          }}
           className="tb-crew-active-chip"
+          buttonRef={chipRef}
+          menuOpen={menuOpen}
         />
       ) : null}
       {chips.length > 0 ? (
@@ -1153,6 +1200,24 @@ function Switcher({
         stableOrder={stableOrder}
         onToggleStableOrder={toggleStableOrder}
         showStableOrderToggle={!relayUnsupported}
+        open={menuOpen}
+        onOpenChange={setMenuOpen}
+        onInteractOutside={e => {
+          // A press that reaches the chip (the menu is non-modal on touch devices)
+          // is the chip's own toggle, not a dismissal, or the menu would close on
+          // pointerdown and the chip's click reopen it. A modal menu blocks the
+          // press from reaching the chip and closes on it by itself.
+          if (chipRef.current?.contains(e.target as Node)) e.preventDefault()
+          else chipOpened.current = false
+        }}
+        onCloseAutoFocus={e => {
+          if (chipOpened.current && chipRef.current) {
+            e.preventDefault()
+            quietNextFocus(chipRef.current)
+            chipRef.current.focus()
+          }
+          chipOpened.current = false
+        }}
       />
     </div>
   )
@@ -1287,7 +1352,7 @@ export default function InstanceTabBar({
         title: i18nT('components.instanceTabBar.local_dashboard'),
         unread: 0,
       },
-      ...chainRows(tabInstances).map(({ inst, depth, parentName, reachable, brokenAt }) => {
+      ...chainRows(tabInstances, instances).map(({ inst, depth, parentName, reachable, brokenAt }) => {
         const st = inst.status?.state
         // An SSM crew has no ssh_host: it is reached through its managed-instance
         // target, so that is what names the machine on its row.
@@ -1327,7 +1392,7 @@ export default function InstanceTabBar({
     ],
     // `tabInstances` is derived per render; depending on it directly is what
     // keeps the menu in step with a status poll.
-    [tabInstances, unread, connectMutation.isPending, connectMutation.variables],
+    [tabInstances, instances, unread, connectMutation.isPending, connectMutation.variables],
   )
 
   // Embedded panes render the parent-relayed switcher. Hooks above

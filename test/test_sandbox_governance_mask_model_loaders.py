@@ -507,10 +507,11 @@ class TestModelLoaderPaths:
 
         argv, options = wrap_branch(branch)
         with patch.object(sandbox, "require_real_model_path") as walked:
-            _, cleanup = sandbox.wrap_argv(argv, **options)
+            wrapped, cleanup = sandbox.wrap_argv(argv, **options)
         if cleanup is not None:
             os.unlink(cleanup)
         walked.assert_not_called()
+        assert wrapped[-len(argv) :] == argv
 
     def test_the_seatbelt_branch_checks_the_models_name_once(self, crew, wrap_branch):
         from unittest.mock import patch
@@ -519,10 +520,11 @@ class TestModelLoaderPaths:
         with patch.object(
             sandbox, "_refuse_linked_models_leaf", wraps=sandbox._refuse_linked_models_leaf
         ) as checked:
-            _, cleanup = sandbox.wrap_argv(argv, **options)
+            wrapped, cleanup = sandbox.wrap_argv(argv, **options)
         if cleanup is not None:
             os.unlink(cleanup)
         checked.assert_called_once_with()
+        assert wrapped[-len(argv) :] == argv
 
     @pytest.mark.parametrize("branch", ("namespace", *_UNSEALED_BRANCHES))
     def test_other_branches_never_ask_the_seatbelt_question(self, crew, wrap_branch, branch):
@@ -530,10 +532,11 @@ class TestModelLoaderPaths:
 
         argv, options = wrap_branch(branch)
         with patch.object(sandbox, "_refuse_linked_models_leaf") as checked:
-            _, cleanup = sandbox.wrap_argv(argv, **options)
+            wrapped, cleanup = sandbox.wrap_argv(argv, **options)
         if cleanup is not None:
             os.unlink(cleanup)
         checked.assert_not_called()
+        assert wrapped[-len(argv) :] == argv
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -571,10 +574,12 @@ class TestModelLoaderPaths:
         with patch.object(
             sandbox, "_refuse_linked_models_leaf", wraps=sandbox._refuse_linked_models_leaf
         ) as checked:
-            _, cleanup = sandbox.wrap_argv(argv, **options)
+            wrapped, cleanup = sandbox.wrap_argv(argv, **options)
         if cleanup is not None:
             os.unlink(cleanup)
         checked.assert_called_once_with()
+        assert wrapped[-len(argv) :] == argv
+        assert cleanup is not None, "the Seatbelt fallback writes a profile to clean up"
 
     def test_failed_windows_delegation_fails_closed_without_a_model_check(
         self, crew, wrap_branch, monkeypatch

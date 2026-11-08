@@ -14,9 +14,17 @@ from slack_handler_helpers import _clean_approval_state  # noqa: F401
 from slack_handler_helpers import FakeProvider, FakeSessionManager, _visible_texts, _within_lost_run
 
 from conftest import MockSlackClient
+from kiro_crew.acp.client import AcpError
 from kiro_crew.hooks import HOOK_REPLY
+from kiro_crew.messaging.display_safety import canonicalize_display
 from kiro_crew.providers.base import LLMEvent
-from kiro_crew.slack.handler import _THINKING, handle_message, set_allowed_users, set_owner_id
+from kiro_crew.slack.handler import (
+    _THINKING,
+    ACTIVATION_REVIEW,
+    handle_message,
+    set_allowed_users,
+    set_owner_id,
+)
 
 
 class TestStopReasonCompactionFailed:
@@ -355,6 +363,24 @@ class TestTransientCompactionRetry:
         assert sessions.replay_gaps == [("open", "thread1"), ("close", "thread1")]
 
     @pytest.mark.asyncio
+    async def test_a_replay_ends_the_abandoned_attempt_before_its_reset(self):
+        """The abandoned turn never landed, so its attempt ends before the reset
+        and what it received inline is revoked before the replay runs."""
+
+        class _Settling(FakeSessionManager):
+            def settle_turn(self, key):
+                self.removed.append(f"settle:{key}")
+
+        provider = _SequencedProvider([_abandoned(), _answered()], transient=True)
+        sessions = _Settling(provider)
+
+        await handle_message(MockSlackClient(), sessions, "C1", "hello", "thread1", "msg1", "U1")
+
+        assert provider.turns == 2, "the message was replayed"
+        assert sessions.removed.count("settle:thread1") == 1
+        assert sessions.removed.index("settle:thread1") < sessions.removed.index("reset:thread1")
+
+    @pytest.mark.asyncio
     async def test_a_compaction_the_abandoned_attempt_reported_is_not_armed_after_it(self):
         """The reset popped the session that compacted and the replay cold-starts a
         new one, so arming the flag would make the next turn inject it twice."""
@@ -372,6 +398,20 @@ class TestTransientCompactionRetry:
 
         assert provider.turns == 2, "the message was replayed"
         assert marks == []
+
+    @pytest.mark.asyncio
+    async def test_a_replayed_options_answer_still_runs_no_command(self):
+        """An OPTIONS answer's label is the answer on its replay too, so a `!` label
+        reaches the provider twice instead of running as a command the second time."""
+        slack = MockSlackClient()
+        provider = _SequencedProvider([_abandoned(), _answered()], transient=True)
+        sessions = FakeSessionManager(provider)
+
+        await handle_message(
+            slack, sessions, "C1", "!stop hello", "thread1", "msg1", "U1", interpret_commands=False
+        )
+
+        assert provider.turns == 2, "the replay ran the label as a command"
 
     @pytest.mark.asyncio
     async def test_a_permanent_failure_keeps_the_give_up_behaviour(self):
@@ -632,7 +672,7 @@ class TestTransientCompactionRetry:
         log = MagicMock()
         log.get_metadata.return_value = {}
         log.get_metadata_status.return_value = ({}, True)
-        log.recent.return_value = [
+        log.read_messages.return_value = [
             {"role": "user", "content": "earlier question"},
             {"role": "assistant", "content": "earlier partial answer"},
         ]
@@ -718,8 +758,7 @@ class TestStopReasonCancelled:
     """Phase 4: handler response to stopReason='cancelled'."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _ensure_reactions_enabled(self, monkeypatch):
+    def _ensure_reactions_enabled(self, _floor_monkeypatch):
         import dataclasses
 
         from kiro_crew.config.loader import KiroCrewConfig
@@ -732,7 +771,7 @@ class TestStopReasonCancelled:
                 cfg, slack=dataclasses.replace(cfg.slack, reactions_enabled=True)
             )
 
-        monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
+        _floor_monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
 
     @pytest.mark.asyncio
     async def test_handler_stop_reason_cancelled_skips_record_success(self):
@@ -799,6 +838,8 @@ class TestStopReasonCancelled:
         )
 
         mock_consolidator.maybe_consolidate.assert_not_called()
+        # The turn itself ran: its partial text reached the thread.
+        assert any("partial" in t for t in _visible_texts(slack)), _visible_texts(slack)
 
     @pytest.mark.asyncio
     async def test_handler_stop_reason_end_turn_preserves_existing_behavior(self):
@@ -865,22 +906,14 @@ class TestStopReasonCancelled:
 
 
 class TestLiveTurnPresentationFailure:
-    """A presentation-side Slack call that raises mid-run must not flip the
-    placeholder to the terminal "🔧 Something went wrong" message nor record a
-    session failure while the ACP turn is still live and will finish with the
-    correct, complete reply.
+    """A raising presentation-side Slack call mid-run must not fail a live turn.
 
-    The exposed calls run on the first ``tool_call`` event, before any text has
-    streamed, so ``accumulated`` is empty. A non-ACP raise there is not caught by
-    the typed ``except`` arms (all ``kiro_crew.acp.client`` errors) and would
-    reach the generic ``except Exception`` catch-all, which renders the terminal
-    error and records a failure. These tests assert the raise is swallowed and
-    the turn still delivers.
+    These calls run on the first ``tool_call`` event, where a non-ACP raise would
+    reach the generic ``except Exception`` and render "🔧 Something went wrong".
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _ensure_reactions_enabled(self, monkeypatch):
+    def _ensure_reactions_enabled(self, _floor_monkeypatch):
         import dataclasses
 
         from kiro_crew.config.loader import KiroCrewConfig
@@ -893,7 +926,7 @@ class TestLiveTurnPresentationFailure:
                 cfg, slack=dataclasses.replace(cfg.slack, reactions_enabled=True)
             )
 
-        monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
+        _floor_monkeypatch.setattr(KiroCrewConfig, "load", _patched_load)
 
     @pytest.mark.asyncio
     async def test_progress_card_raise_does_not_render_terminal_error(self):
@@ -1043,14 +1076,10 @@ class TestLiveTurnPresentationFailure:
 
 
 class TestStreamingLoopPresentationGuards:
-    """Presentation-guard sweep: every remaining presentation-side Slack
-    call inside the streaming loop must be best-effort. The real ``SlackClient``
-    swallows its own API errors, but a client or transport that raises instead
-    would escape into the generic ``except Exception`` catch-all (the typed arms
-    are all ``kiro_crew.acp.client`` errors), rendering the terminal
-    "🔧 Something went wrong" message and recording a session failure on a turn
-    that is still live. Each test drives one guarded site with a raising client
-    and asserts: no failure recorded, no terminal placeholder, reply delivered.
+    """Every presentation-side Slack call in the streaming loop is best-effort.
+
+    Each test drives one site with a raising client and asserts no failure recorded,
+    no terminal placeholder, and the reply delivered.
     """
 
     class _TrackingSessions(FakeSessionManager):
@@ -1278,3 +1307,573 @@ class TestStreamingLoopPresentationGuards:
         assert "Something went wrong" not in all_text, slack.actions
         assert "The answer is 42" in all_text, slack.actions
         assert sessions.record_success_calls == 1
+
+
+# ── Turn verdict after delivery ──
+# A turn is booked a success only once its answer-carrying send has landed: a
+# failed final send means the reader got no answer, so the turn is a failure.
+
+
+class _TrackNativeSessions(FakeSessionManager):
+    """Counts the successes, failures and permit releases the turn books."""
+
+    def __init__(self, provider):
+        super().__init__(provider)
+        self.calls = {"success": 0, "failure": 0}
+        self.releases = 0
+
+    def record_success(self, key):
+        self.calls["success"] += 1
+
+    async def record_failure(self, key):
+        self.calls["failure"] += 1
+        return False
+
+    def release(self, key):
+        self.releases += 1
+
+
+class _NativeDeliveryFailsSlack(MockSlackClient):
+    """Stream disabled, so the answer is delivered by updating the ``_THINKING``
+    placeholder. Every update fails: the reader never gets the answer."""
+
+    async def update_message(self, channel, ts, text=""):
+        self.actions.append(("update", {"channel": channel, "ts": ts, "text": text}))
+        raise RuntimeError("slack chat.update failed — answer never delivered")
+
+
+def test_native_failed_answer_delivery_records_failure_not_success(monkeypatch):
+    slack = _NativeDeliveryFailsSlack()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the answer is 42")])
+    sessions = _TrackNativeSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert sessions.calls["success"] == 0, "booked a success for an undelivered answer"
+    assert sessions.calls["failure"] == 1
+
+
+def test_native_successful_delivery_records_success(monkeypatch):
+    slack = MockSlackClient()  # stream disabled but update_message succeeds
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the answer is 42")])
+    sessions = _TrackNativeSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert sessions.calls == {"success": 1, "failure": 0}
+
+
+class _OrderedSessions(FakeSessionManager):
+    """Records the order of release vs record_success."""
+
+    def __init__(self, provider):
+        super().__init__(provider)
+        self.events: list[str] = []
+
+    def record_success(self, key):
+        self.events.append("record_success")
+
+    async def record_failure(self, key):
+        self.events.append("record_failure")
+        return False
+
+    def release(self, key):
+        self.events.append("release")
+
+
+def test_native_permit_released_only_after_accounting(monkeypatch):
+    # If release ran first, a queued same-key turn could mutate breaker state
+    # mid-verdict, so the permit must outlive accounting.
+    slack = MockSlackClient()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the answer is 42")])
+    sessions = _OrderedSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert "record_success" in sessions.events
+    assert "release" in sessions.events
+    assert sessions.events.index("record_success") < sessions.events.index(
+        "release"
+    ), f"permit released before accounting: {sessions.events}"
+
+
+class _AcpErrorProvider:
+    """Provider whose stream raises a model-level error before any text."""
+
+    working_directory = None
+
+    async def stream(self, message, timeout=120.0):
+        raise AcpError("auth expired")
+        yield  # pragma: no cover — make it an async generator
+
+    async def approve_tool(self, request_id, option_id="allow_once"):
+        pass
+
+    async def reject_tool(self, request_id):
+        pass
+
+    async def start(self):
+        pass
+
+    async def shutdown(self):
+        pass
+
+    def context_usage_pct(self):
+        return 0.0
+
+
+class _ErrorPostFailsSlack(MockSlackClient):
+    """Every message/update send fails, so the error-text post also raises after
+    the model error already booked its failure."""
+
+    async def update_message(self, channel, ts, text=""):
+        self.actions.append(("update", {"channel": channel, "ts": ts, "text": text}))
+        raise RuntimeError("slack down")
+
+    async def post_message(self, channel, text, thread_ts=None):
+        self.actions.append(("post_message", {"channel": channel, "text": text}))
+        raise RuntimeError("slack down")
+
+
+def test_native_model_error_plus_failed_error_post_books_one_failure(monkeypatch):
+    slack = _ErrorPostFailsSlack()
+    sessions = _TrackNativeSessions(_AcpErrorProvider())
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    # The failed error-post must not book a second failure for the same turn.
+    assert sessions.calls["failure"] == 1, f"double-counted: {sessions.calls}"
+    assert sessions.calls["success"] == 0
+
+
+class _ReviewEphemeralRaisesSlack(MockSlackClient):
+    """Review path: the ephemeral draft post raises (user_not_in_channel, rate
+    limit, or any SlackApiError from chat_postEphemeral)."""
+
+    def __init__(self):
+        super().__init__()
+        self._stream_enabled = True
+
+    async def post_ephemeral(self, channel, user_id, text, blocks=None, thread_ts=None):
+        self.actions.append(("ephemeral", {"channel": channel, "text": text}))
+        raise RuntimeError("slack_api_error: user_not_in_channel")
+
+
+def _run_review_turn(slack, sessions) -> None:
+    try:
+        asyncio.run(
+            handle_message(
+                slack,
+                sessions,
+                "C1",
+                "q?",
+                None,
+                "msg1",
+                "U1",
+                channel_activation=ACTIVATION_REVIEW,
+            )
+        )
+    except RuntimeError:
+        # The raise may propagate after the finally releases; that is acceptable.
+        pass
+
+
+def test_review_ephemeral_raise_still_releases_permit(monkeypatch):
+    # A raising ephemeral post must not strand the per-session permit.
+    slack = _ReviewEphemeralRaisesSlack()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the draft answer")])
+    sessions = _TrackNativeSessions(provider)
+
+    _run_review_turn(slack, sessions)
+
+    assert sessions.releases == 1, "permit stranded (or double-released) after a raising post"
+
+
+class _CancelDuringDeliverySlack(MockSlackClient):
+    """``stop_stream`` raises CancelledError: a stop/shutdown cancelling the turn
+    after the model completed."""
+
+    def __init__(self):
+        super().__init__()
+        self._stream_enabled = True
+
+    async def stop_stream(self, channel, ts, final_text=None):
+        self.actions.append(("stop_stream", {"channel": channel, "ts": ts}))
+        raise asyncio.CancelledError()
+
+
+def test_cancelled_after_completion_still_releases_permit(monkeypatch):
+    slack = _CancelDuringDeliverySlack()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the answer is 42")])
+    sessions = _TrackNativeSessions(provider)
+
+    # The cancellation propagates, and the permit is released on the way out.
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert sessions.releases == 1, "permit stranded after a cancel mid-delivery"
+
+
+def test_native_review_ephemeral_raise_books_one_failure(monkeypatch):
+    slack = _ReviewEphemeralRaisesSlack()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the draft answer")])
+    sessions = _TrackNativeSessions(provider)
+
+    _run_review_turn(slack, sessions)
+
+    # The draft never reached the reader: exactly one failure, never no verdict.
+    assert (
+        sessions.calls["failure"] == 1
+    ), f"review ephemeral raise left no verdict: {sessions.calls}"
+    assert sessions.calls["success"] == 0
+
+
+class _OptionsFooterFailsSlack(MockSlackClient):
+    """Answer streams fine, but the footer post_blocks carrying the [OPTIONS]
+    choices fails. ``fallback_posts`` collects the plain-text re-send."""
+
+    def __init__(self):
+        super().__init__()
+        self._stream_enabled = True
+        self.fallback_posts = []
+
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
+        self.actions.append(("post_blocks", {"channel": channel}))
+        raise RuntimeError("footer post_blocks failed")
+
+    async def post_message(self, channel, text, thread_ts=None):
+        self.actions.append(("post_message", {"channel": channel, "text": text}))
+        if text.startswith("*Options:*"):
+            self.fallback_posts.append(text)
+        return await super().post_message(channel, text, thread_ts)
+
+
+def test_native_options_footer_failure_delivers_choices_as_fallback(monkeypatch):
+    slack = _OptionsFooterFailsSlack()
+    provider = FakeProvider(
+        [LLMEvent(kind="text_chunk", text="pick one [OPTIONS: Apple | Banana]")]
+    )
+    sessions = _TrackNativeSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    # The answer streamed, so the turn is a success; the failed footer's choices
+    # are re-sent as text rather than silently dropped.
+    assert sessions.calls == {"success": 1, "failure": 0}
+    assert (
+        slack.fallback_posts
+    ), "options footer failed but choices were not re-sent as fallback text"
+    joined = "\n".join(slack.fallback_posts)
+    assert "Apple" in joined and "Banana" in joined
+
+
+class _OptionsFooterAndFallbackFailSlack(MockSlackClient):
+    """Answer streams fine, but both the footer post_blocks and the plain-text
+    fallback fail, so the choices never reach the reader."""
+
+    def __init__(self):
+        super().__init__()
+        self._stream_enabled = True
+
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
+        self.actions.append(("post_blocks", {"channel": channel}))
+        raise RuntimeError("footer post_blocks failed")
+
+    async def post_message(self, channel, text, thread_ts=None):
+        self.actions.append(("post_message", {"channel": channel, "text": text}))
+        if text.startswith("*Options:*"):
+            raise RuntimeError("fallback post_message failed too")
+        return await super().post_message(channel, text, thread_ts)
+
+
+def test_native_options_footer_and_fallback_both_fail_books_failure(monkeypatch):
+    slack = _OptionsFooterAndFallbackFailSlack()
+    provider = FakeProvider(
+        [LLMEvent(kind="text_chunk", text="pick one [OPTIONS: Apple | Banana]")]
+    )
+    sessions = _TrackNativeSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    # The choices are answer-carrying and neither delivery landed.
+    assert (
+        sessions.calls["success"] == 0
+    ), "booked success though OPTIONS choices never reached the reader"
+    assert sessions.calls["failure"] == 1
+
+
+class _OptionsFallbackCapturingSlack(MockSlackClient):
+    """Footer post_blocks fails; the plain-text OPTIONS fallback is captured.
+
+    The display-safe scrub strips the ``*Options:*`` emphasis to ``Options:`` when
+    it downgrades a message carrying a credential, so the bare label is matched.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._stream_enabled = True
+        self.fallback_text = None
+
+    async def post_blocks(self, channel, blocks, text, thread_ts=None):
+        raise RuntimeError("footer failed")
+
+    async def post_message(self, channel, text, thread_ts=None):
+        if text.lstrip("*").startswith("Options:"):
+            self.fallback_text = text
+        return await super().post_message(channel, text, thread_ts)
+
+
+#: An AWS-documentation example key, built from parts so no scanner matches it here.
+_FAKE_AWS_KEY = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+
+
+def test_native_options_fallback_is_redacted(monkeypatch):
+    slack = _OptionsFallbackCapturingSlack()
+    provider = FakeProvider(
+        [LLMEvent(kind="text_chunk", text=f"pick [OPTIONS: use {_FAKE_AWS_KEY} | skip]")]
+    )
+    sessions = _TrackNativeSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert slack.fallback_text is not None, "fallback was not posted"
+    assert (
+        _FAKE_AWS_KEY not in slack.fallback_text
+    ), "credential rendered raw into the OPTIONS fallback"
+
+
+def test_native_options_fallback_redacts_markup_obfuscated_credential(monkeypatch):
+    # The literal bytes match no credential pattern, but Slack renders the ``**``
+    # away and shows an intact key; only a scan of the rendered form catches it.
+    slack = _OptionsFallbackCapturingSlack()
+    obfuscated = _FAKE_AWS_KEY[:8] + "**" + _FAKE_AWS_KEY[8:] + "**"
+    provider = FakeProvider(
+        [LLMEvent(kind="text_chunk", text=f"pick [OPTIONS: use {obfuscated} | skip]")]
+    )
+    sessions = _TrackNativeSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert slack.fallback_text is not None, "fallback was not posted"
+    rendered_fallback = canonicalize_display(slack.fallback_text)
+    assert (
+        _FAKE_AWS_KEY not in rendered_fallback
+    ), "markup-obfuscated credential rendered raw into the OPTIONS fallback"
+
+
+class _HandlerAsyncio:
+    """``asyncio`` as the handler's namespace sees it, with *overrides* swapped in.
+
+    Patching ``asyncio.sleep`` itself would reach every coroutine and thread in the
+    worker. The handler reads ``asyncio`` from its own globals, so rebinding that
+    name reaches exactly the yields the turn makes.
+    """
+
+    def __init__(self, **overrides):
+        self.__dict__.update(overrides)
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+
+def test_native_cancel_at_predelivery_yield_releases_permit(monkeypatch):
+    # The finally must not read a local bound only after the pre-delivery yield.
+    import kiro_crew.slack.handler as _h
+
+    real_sleep = asyncio.sleep
+    state = {"tripped": False}
+
+    async def _sleep(delay, *a, **k):
+        # Cancel at the first zero-delay sleep: the post-finalize yield.
+        if delay == 0 and not state["tripped"]:
+            state["tripped"] = True
+            raise asyncio.CancelledError()
+        return await real_sleep(delay, *a, **k)
+
+    monkeypatch.setattr(_h, "asyncio", _HandlerAsyncio(sleep=_sleep))
+
+    slack = MockSlackClient()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the answer is 42")])
+    sessions = _TrackNativeSessions(provider)
+
+    try:
+        asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+    except asyncio.CancelledError:
+        pass
+
+    assert state["tripped"], "the pre-delivery yield was not exercised"
+    assert sessions.releases == 1, "permit stranded by a cancellation at the pre-delivery yield"
+
+
+class _AllAppendsRefusedSlack(MockSlackClient):
+    """Streaming enabled, but every append_stream is refused for the whole turn."""
+
+    def __init__(self):
+        super().__init__()
+        self._stream_enabled = True
+
+    async def append_stream(self, channel, ts, text):
+        self.actions.append(("append_stream", {"channel": channel, "ts": ts, "text": text}))
+        return False
+
+
+def test_native_stream_all_appends_refused_books_failure(monkeypatch):
+    # Opening a stream is not delivering an answer: no append landed.
+    slack = _AllAppendsRefusedSlack()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the answer is 42")])
+    sessions = _TrackNativeSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert (
+        sessions.calls["success"] == 0
+    ), "booked success for a stream that delivered no answer text"
+    assert sessions.calls["failure"] == 1
+
+
+class _OneAppendThenRefusedSlack(MockSlackClient):
+    """First append lands, the rest are refused: the stream was used."""
+
+    def __init__(self):
+        super().__init__()
+        self._stream_enabled = True
+        self._appends = 0
+
+    async def append_stream(self, channel, ts, text):
+        self.actions.append(("append_stream", {"channel": channel, "ts": ts, "text": text}))
+        self._appends += 1
+        return self._appends == 1
+
+
+def test_native_stream_partial_delivery_stays_a_success(monkeypatch):
+    slack = _OneAppendThenRefusedSlack()
+    provider = FakeProvider(
+        [
+            LLMEvent(kind="text_chunk", text="first part "),
+            LLMEvent(kind="text_chunk", text="second part"),
+        ]
+    )
+    sessions = _TrackNativeSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    # The refused remainder is delivery debt, not a turn failure.
+    assert sessions.calls == {"success": 1, "failure": 0}
+
+
+class _StreamingSlack(MockSlackClient):
+    """Streaming enabled; start, append and stop all succeed."""
+
+    def __init__(self):
+        super().__init__()
+        self._stream_enabled = True
+
+
+def test_native_stream_reasoning_only_turn_books_success_not_failure(monkeypatch):
+    # A turn with no answer text reached its (empty) answer. A false failure here
+    # would push the consecutive-failure breaker toward a session reset.
+    slack = _StreamingSlack()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="<thinking>working</thinking>")])
+    sessions = _TrackNativeSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert sessions.calls == {"success": 1, "failure": 0}
+
+
+class _StopStreamCancelsSlack(MockSlackClient):
+    """Streaming enabled; ``stop_stream`` raises CancelledError, after delivery
+    and before the verdict step."""
+
+    def __init__(self):
+        super().__init__()
+        self._stream_enabled = True
+
+    async def stop_stream(self, channel, ts, final_text=None):
+        raise asyncio.CancelledError()
+
+
+def test_native_cancel_in_stop_stream_after_delivery_books_success(monkeypatch):
+    slack = _StopStreamCancelsSlack()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the answer is 42")])
+    sessions = _TrackNativeSessions(provider)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    # A real-text append landed before the cancel, so the finally books the
+    # decided success rather than leaving no verdict.
+    assert sessions.calls == {"success": 1, "failure": 0}
+
+
+def test_native_cancel_in_stop_stream_options_turn_books_no_success(monkeypatch):
+    # The choices ride only in the footer, which the cancellation pre-empts.
+    slack = _StopStreamCancelsSlack()
+    provider = FakeProvider(
+        [LLMEvent(kind="text_chunk", text="here are choices [OPTIONS: alpha | beta]")]
+    )
+    sessions = _TrackNativeSessions(provider)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert (
+        sessions.calls["success"] == 0
+    ), "booked success for an OPTIONS turn whose choices never delivered"
+
+
+class _ContextProbeRaisesSessions(_TrackNativeSessions):
+    """The post-completion context-usage probe raises a transient error."""
+
+    def check_context_usage(self, key, provider):
+        raise RuntimeError("transient context probe failure")
+
+
+def test_native_context_probe_failure_books_exactly_one_verdict(monkeypatch):
+    # The probe is advisory: its failure must not add a failure on top of the
+    # completed turn's success.
+    slack = MockSlackClient()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the answer is 42")])
+    sessions = _ContextProbeRaisesSessions(provider)
+
+    asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+
+    assert sessions.calls == {"success": 1, "failure": 0}
+
+
+def test_native_cancel_at_sleep0_after_stream_delivered_books_success(monkeypatch):
+    # A cancel at the post-stream yield reaches the finally before the answer
+    # verdict is recomputed; the confirmed stream append must still book success.
+    slack = _StreamingSlack()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the answer is 42")])
+    sessions = _TrackNativeSessions(provider)
+
+    import kiro_crew.slack.handler as _h
+
+    real_sleep = asyncio.sleep
+    state = {"fired": False}
+
+    async def _sleep(secs, *a, **k):
+        if secs == 0 and not state["fired"] and getattr(slack, "_saw_append", False):
+            state["fired"] = True
+            raise asyncio.CancelledError()
+        return await real_sleep(secs, *a, **k)
+
+    # Only cancel once a real-text append has landed: the post-stream yield.
+    _orig_append = slack.append_stream
+
+    async def _append(channel, ts, text):
+        if text and text.strip():
+            slack._saw_append = True
+        return await _orig_append(channel, ts, text)
+
+    slack.append_stream = _append  # type: ignore[method-assign]
+    monkeypatch.setattr(_h, "asyncio", _HandlerAsyncio(sleep=_sleep))
+
+    try:
+        asyncio.run(handle_message(slack, sessions, "C1", "q?", None, "msg1", "U1"))
+    except asyncio.CancelledError:
+        pass
+
+    assert state["fired"], "test did not hit the post-stream sleep(0) cancellation"
+    assert sessions.calls["success"] == 1 and sessions.calls["failure"] == 0

@@ -62,6 +62,85 @@ def test_write_env_updates_deletes_on_none(tmp_path: Path, monkeypatch) -> None:
     assert "SLACK_APP_TOKEN=keep" in text  # sibling untouched
 
 
+def _set_windows(monkeypatch, windows: bool) -> None:
+    """Model the platform's os.environ case rule (``_env_name_key`` reads it live)."""
+    from kiro_crew import platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", windows, raising=False)
+
+
+def test_windows_save_replaces_a_lowercase_spelling_of_the_key(tmp_path: Path, monkeypatch) -> None:
+    """On Windows ``slack_bot_token`` and ``SLACK_BOT_TOKEN`` are one os.environ
+    entry. A save must replace the hand-typed lowercase line rather than append
+    the uppercase one after it, or the first-non-empty-spelling rule boot and the
+    watcher use would re-install the OLD token while the save reported success.
+    (Fixes the GPT Windows dashboard-rotation finding.)"""
+    _set_windows(monkeypatch, True)
+    env = tmp_path / ".env"
+    env.write_text("OTHER=keepme\nslack_bot_token=old\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+
+    _write_env_updates({"SLACK_BOT_TOKEN": "xoxb-new"})
+
+    lines = env.read_text(encoding="utf-8").splitlines()
+    assert lines == ["OTHER=keepme", "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN"]
+    # The value boot / the watcher would install is the new one.
+    effective = loader._effective_entry_values(loader.parse_env_lines("\n".join(lines)))
+    assert effective[loader._env_name_key("SLACK_BOT_TOKEN")] == "secret://SLACK_BOT_TOKEN"
+
+
+def test_windows_save_collapses_every_case_spelling_to_one_line(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Several spellings of one key collapse to a single line under the declared
+    name, written where the first spelling was."""
+    _set_windows(monkeypatch, True)
+    env = tmp_path / ".env"
+    env.write_text(
+        "slack_bot_token=old-a\nOTHER=keepme\nSlack_Bot_Token=old-b\nSLACK_BOT_TOKEN=old-c\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+
+    _write_env_updates({"SLACK_BOT_TOKEN": "xoxb-new"})
+
+    assert env.read_text(encoding="utf-8").splitlines() == [
+        "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN",
+        "OTHER=keepme",
+    ]
+
+
+def test_windows_clearing_a_key_removes_every_case_spelling(tmp_path: Path, monkeypatch) -> None:
+    """A cleared credential leaves no spelling behind to keep supplying the old
+    value on Windows."""
+    _set_windows(monkeypatch, True)
+    env = tmp_path / ".env"
+    env.write_text(
+        "slack_bot_token=old\nSLACK_APP_TOKEN=keep\nSLACK_BOT_TOKEN=old2\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+
+    _write_env_updates({"SLACK_BOT_TOKEN": None})
+
+    assert env.read_text(encoding="utf-8").splitlines() == ["SLACK_APP_TOKEN=keep"]
+
+
+def test_posix_save_leaves_a_lowercase_name_alone(tmp_path: Path, monkeypatch) -> None:
+    """On POSIX names are case-sensitive: ``slack_bot_token`` is a different
+    variable, so the save updates only the declared key and leaves it untouched."""
+    _set_windows(monkeypatch, False)
+    env = tmp_path / ".env"
+    env.write_text("slack_bot_token=unrelated\nSLACK_BOT_TOKEN=old\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "env_path", lambda: env)
+
+    _write_env_updates({"SLACK_BOT_TOKEN": "xoxb-new"})
+
+    assert env.read_text(encoding="utf-8").splitlines() == [
+        "slack_bot_token=unrelated",
+        "SLACK_BOT_TOKEN=secret://SLACK_BOT_TOKEN",
+    ]
+
+
 def test_write_env_updates_handles_missing_file(tmp_path: Path, monkeypatch) -> None:
     env = tmp_path / "sub" / ".env"  # parent dir does not exist yet
     monkeypatch.setattr(loader, "env_path", lambda: env)
@@ -471,15 +550,10 @@ def test_teams_held_env_lock_leaves_legacy_credential_intact(tmp_path, monkeypat
 
 
 def test_teams_config_json_write_failure_leaves_consistent_pair(tmp_path, monkeypatch) -> None:
-    """Teams SET that rotates password+app_id: if the config write raises,
-    .env must be UNTOUCHED — the config-first ordering means a config-write
-    failure leaves old-credential + old-metadata, always a consistent pair.
+    """A Teams SET whose config write raises leaves .env untouched.
 
-    Failure scenario (config-first ordering):
-      1. config.json write attempted — raises (e.g. disk full).
-      2. .env is never written (handler raised before reaching _commit_env).
-      3. Both stores still hold their original values.
-      -> Restart sees old-pass + old app_id/tenant: consistent, no auth failure.
+    Config is written first, so a failure leaves the old password with the old
+    app_id/tenant: a consistent pair on restart.
     """
     import json
 
@@ -551,7 +625,7 @@ def test_teams_config_json_write_failure_leaves_consistent_pair(tmp_path, monkey
     assert status == 500, f"Expected 500, got {status}"
 
     # CRITICAL: .env must NOT have been written at all — config write failed
-    # before the handler reached _commit_env().
+    # before the handler reached the .env write.
     assert _write_env_calls == [], (
         "Config-first ordering: _write_env_updates must not be called when "
         f"the config write raises; got calls: {_write_env_calls}"
@@ -575,17 +649,9 @@ def test_teams_config_json_write_failure_leaves_consistent_pair(tmp_path, monkey
 def test_teams_config_write_failure_preserves_process_only_credential(
     tmp_path, monkeypatch
 ) -> None:
-    """Teams SET with config-write failure must NOT clobber a credential that
-    lives ONLY in os.environ (not in .env).
+    """A failed Teams config write keeps a password that lives only in os.environ.
 
-    Scenario:
-      - os.environ["MICROSOFT_APP_PASSWORD"] = "env-only-pass"  (process-only)
-      - .env file has no MICROSOFT_APP_PASSWORD entry at all
-      - the config.json write raises (disk full)
-
-    With config-first ordering: config write fails before _commit_env() is
-    called, so os.environ is never mutated by the handler.  The process-only
-    credential is trivially preserved — no special rollback logic needed.
+    The config write fails before the .env write, so os.environ is never touched.
     """
     import json
 
@@ -642,7 +708,7 @@ def test_teams_config_write_failure_preserves_process_only_credential(
     assert status == 500, f"Expected 500, got {status}"
 
     # CRITICAL: the process-only credential must survive intact.
-    # With config-first ordering the handler never reaches _commit_env(), so
+    # With config-first ordering the handler never reaches the .env write, so
     # os.environ is untouched by the failed request.
     assert os.environ.get("MICROSOFT_APP_PASSWORD") == "env-only-pass", (
         "Config-first ordering: process-only credential must be untouched when "
@@ -658,16 +724,10 @@ def test_teams_config_write_failure_preserves_process_only_credential(
 def test_teams_legacy_config_only_password_preserved_on_metadata_only_save(
     tmp_path, monkeypatch
 ) -> None:
-    """Finding 1 regression: editing only app_id when the password lives ONLY in
-    legacy config.json (not in .env or os.environ) must NOT cause the password to
-    be treated as absent, skipping verification and allowing Phase-2 to purge it.
+    """Editing only app_id keeps a password that lives only in legacy config.json.
 
-    Scenario:
-      - config.json has teams.app_password = "legacy-only-pass" (no .env entry)
-      - operator edits only app_id (no new password in the request body)
-
-    Expected: verification is called with the legacy password (not empty), and
-    after a successful save the password is NOT purged from config.json.
+    Verification gets the legacy password, and Phase-2 does not purge it from
+    config.json, as it would if the password were treated as absent.
     """
     import asyncio
     import json
@@ -752,19 +812,10 @@ def test_teams_legacy_config_only_password_preserved_on_metadata_only_save(
 def test_teams_cancellation_after_successful_env_write_does_not_rollback_config(
     tmp_path, monkeypatch
 ) -> None:
-    """Finding 2 regression: if the request is cancelled AFTER the .env write has
-    already committed, the config metadata must NOT be rolled back.
+    """A cancel after the .env write committed does not roll config back.
 
-    Rolling config back after a successful .env write leaves new .env paired
-    with old config — the exact mismatch the rollback is supposed to prevent.
-
-    Scenario:
-      - Teams save with a new password triggers _write_env_off_loop
-      - The env write completes (actually writes to .env), then CancelledError
-        is raised to the handler (post-commit cancellation)
-
-    Expected: config.json retains the NEW app_id (written before .env); it is
-    NOT rolled back to the original.
+    A rollback would pair the new .env with the old config, the mismatch it is
+    meant to prevent, so config.json keeps the new app_id.
     """
     import asyncio
     import json

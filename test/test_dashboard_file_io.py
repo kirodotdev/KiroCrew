@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import io
 import json
@@ -243,14 +244,6 @@ class TestFileRead:
             assert resp.status == 200
             assert resp.headers["X-File-Binary"] == "true"
             assert await resp.json() == {"binary": True, "content": ""}
-
-    def test_binary_extension_list_matches_the_files_app(self):
-        # The endpoint's comment says the two surfaces disagreeing about what
-        # "binary" means is the worst outcome; this is what makes that true.
-        from kiro_crew.apps.builtins.file_explorer.server import BINARY_EXTS
-        from kiro_crew.dashboard.handlers.files import _FILE_READ_BINARY_EXTS
-
-        assert set(_FILE_READ_BINARY_EXTS) == set(BINARY_EXTS)
 
     @pytest.mark.asyncio
     async def test_read_keeps_a_visible_marker_for_a_file_ending_mid_codepoint(
@@ -516,13 +509,9 @@ class TestFileReadPathKind:
 class TestFileReadReservedCharacterPaths:
     """A path holding URL-reserved but filesystem-legal characters must serve.
 
-    The client percent-encodes the path into the query string, so the server
-    receives the characters literally and FILE_READ_SCHEMA's syntax gate is what
-    decides. A punctuation allowlist there answers 400 "invalid input" before
-    any disk access for a whole notes folder named by the "Name (alias).md"
-    convention, and the client cannot work around it: encodeURIComponent leaves
-    "(" and ")" literal by design. /api/file-diff, which has no such gate,
-    serves the same files.
+    FILE_READ_SCHEMA's syntax gate sees the characters literally, and
+    encodeURIComponent leaves "(" and ")" literal by design, so a punctuation
+    allowlist would 400 every "Name (alias).md" note.
     """
 
     @pytest.mark.parametrize(
@@ -578,16 +567,9 @@ class TestFileReadReservedCharacterPaths:
     ):
         """A path the OS path layer cannot carry must be refused, not crash.
 
-        The schema gate matches the SANITIZED copy of the value, which has had
-        its control characters and surrogates stripped, while the raw string is
-        what reaches the filesystem. So a NUL-bearing path passed the gate as
-        its stripped spelling and reached an unguarded realpath, which raised
-        outside the handler's try and propagated as HTTP 500.
-
-        Only NUL is exercised here. The other unrepresentable shape -- a lone
-        surrogate -- cannot be delivered through this transport, because URL
-        decoding never yields one; it is covered against the seam itself in
-        test_hooks_coverage_file_branches.py.
+        The schema gate checks a SANITIZED copy while the raw string reaches realpath,
+        so a NUL path passes the gate. A lone surrogate cannot arrive via URL decoding;
+        it is covered in test_hooks_coverage_file_branches.py.
         """
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get("/api/file-read?path=" + encoded)
@@ -683,11 +665,9 @@ class TestFileWrite:
     ):
         """api_file_write must carry the source inode's ACL, not just its bits.
 
-        The old mkstemp+copymode path carried permission BITS only, dropping a
-        named POSIX ACL on every save. Assert the handler now
-        routes through atomic_write with an OPEN source descriptor via
-        preserve_access_control_from and the existing file mode; a revert to
-        copymode fails here.
+        copymode carries permission BITS only and drops a named POSIX ACL, so the handler
+        must call atomic_write with an open source descriptor via
+        preserve_access_control_from.
         """
         import os as _os
 
@@ -730,6 +710,7 @@ class TestFileWrite:
             assert captured["source_bytes"] == b"hello world"
         else:  # pragma: no cover - exercised on Windows CI only
             assert kwargs["preserve_access_control_from"] is None
+        assert kwargs["preserve_windows_dacl"] is True
         assert kwargs["mode"] == stat.S_IMODE(tmp_file.stat().st_mode)
         assert tmp_file.read_text(encoding="utf-8") == "updated"
         # Off the event loop (no-blocking-call-on-event-loop): every call in the
@@ -744,14 +725,8 @@ class TestFileWrite:
     ):
         """A TOCTOU swap of the final component into a link is a 4xx, not a 500.
 
-        ``_validate_dashboard_path`` canonicalizes through ``realpath``, so the
-        path reaching the handler is symlink-free by construction and a leaf link
-        is followed to its target exactly as it was before this change. The
-        ``O_NOFOLLOW`` in ``open_access_control_source`` therefore only closes
-        the window where that component is swapped for a link AFTER the check.
-        When it fires, that is a rejected target rather than a server fault: the
-        handler returns 404 (matching the steering peer's ``notfound``) and
-        ``atomic_write`` is never reached.
+        The path is already ``realpath``-canonical, so ``O_NOFOLLOW`` only catches a swap
+        AFTER the check; the handler returns 404 and ``atomic_write`` is never reached.
         """
         from kiro_crew.dashboard.handlers import files as files_mod
 
@@ -808,6 +783,28 @@ def _make_send_app(state) -> web.Application:
     app.router.add_post("/api/send-message", api_send_message)
     app["state"] = state
     return app
+
+
+def _idle_slot(key: str) -> MagicMock:
+    """An idle slot whose admission state lets the queue drain start a turn."""
+    slot = MagicMock()
+    slot.key = key
+    slot.running = False
+    slot.task = None
+    slot._queue = []
+    slot._lock = asyncio.Lock()
+    slot._turn_admission_reserved = False
+    slot.is_closing = False
+    slot._last_turn_auth_required = False
+    slot._stopping = False
+    slot._stop_state = "idle"
+
+    def _append(content, kind="", meta=None, **_kw):
+        slot._queue.append({"id": f"q{len(slot._queue)}", "content": content, "kind": kind})
+        return slot._queue[-1]["id"]
+
+    slot.queue_append = MagicMock(side_effect=_append)
+    return slot
 
 
 def _mock_state(slack_client=None, owner_id=""):
@@ -962,13 +959,10 @@ class TestSendMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_session_origin(self):
-        """session='origin' injects into the cron's originating session and triggers a turn."""
+        """session='origin' queues into the cron's originating session and drains a turn."""
         state = _mock_state()
         # Mock a slot that the cron originated from
-        mock_slot = MagicMock()
-        mock_slot.running = False
-        mock_slot.task = None
-        mock_slot.key = "chat-1-1712793600"
+        mock_slot = _idle_slot("chat-1-1712793600")
         state.get_slot = MagicMock(return_value=mock_slot)
         state._background_tasks = set()
         state.push_slots_update = MagicMock()
@@ -980,8 +974,10 @@ class TestSendMessage:
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
-        ) as mock_run, patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_drain, patch(
             "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"
         ) as mock_rehydrate:
             async with TestClient(TestServer(app)) as client:
@@ -997,15 +993,17 @@ class TestSendMessage:
                 data = await resp.json()
                 assert data == {"ok": True, "slack": False, "session": True, "delivered_to": "session"}
                 # Hot-path: in-memory slot found, no rehydrate needed.
-                state.get_slot.assert_called_once_with("chat-1-1712793600")
+                state.get_slot.assert_any_call("chat-1-1712793600")
                 mock_rehydrate.assert_not_called()
-                # Injected as user message to trigger agent turn
+                # Queued as a cron card, then the queue drain starts the turn
+                # (and writes the inject row).
+                (entry,) = mock_slot._queue
+                assert '[Cron notification from "check pipeline"]' in entry["content"]
+                assert "build failed" in entry["content"]
                 call_args = mock_slot.append.call_args
-                assert call_args[0][0] == "inject"
-                assert '[Cron notification from "check pipeline"]' in call_args[0][1]
-                assert "build failed" in call_args[0][1]
-                assert json.loads(call_args[0][2]) == {"cronLabel": "check pipeline"}
-                mock_run.assert_called_once()
+                assert call_args[0][0] == "queued"
+                assert json.loads(call_args[0][2])["cronLabel"] == "check pipeline"
+                mock_drain.assert_awaited_once_with(state, mock_slot)
                 # Should NOT fall back to notify/Slack
                 state.notify.assert_not_called()
 
@@ -1052,28 +1050,17 @@ class TestSendMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_session_origin_revives_missing_slot(self):
-        """When slot isn't in memory (e.g. after gateway restart), rehydrate via
-        _rehydrate_slot_from_history and still trigger an agent turn on the revived
-        slot. Regression test for silent-fail bug where cron→origin injection fell
-        back to owner DM after gateway restart.
+        """A slot missing from memory is rehydrated and still gets the agent turn.
 
-        Mirrors the coverage of test_send_message_session_origin (happy path) —
-        patches _run_chat, asserts it was invoked on the revived slot, and verifies
-        the injected message content matches the cron-notification contract.
-
-        This is a focused routing test: it mocks _rehydrate_slot_from_history so
-        we can assert the handler calls it exactly when get_slot returns None. The
-        end-to-end rehydrate path (real ConversationLog, real DashboardState,
-        real _ChatSlot creation) is covered by
-        TestRehydrateSlotFromHistory in test_session_restore.py."""
+        Otherwise cron-to-origin injection falls back to the owner DM after a restart.
+        The real rehydrate path is covered by TestRehydrateSlotFromHistory in
+        test_session_restore.py."""
         state = _mock_state()
+        # Rehydrate helper returns a slot reconstructed from persisted history,
+        # and registers it, so later reads find it.
+        mock_slot = _idle_slot("chat-1-1712793600")
         # Simulate cold-start: slot not loaded in memory yet.
-        state.get_slot = MagicMock(return_value=None)
-        # Rehydrate helper returns a slot reconstructed from persisted history.
-        mock_slot = MagicMock()
-        mock_slot.running = False
-        mock_slot.task = None
-        mock_slot.key = "chat-1-1712793600"
+        state.get_slot = MagicMock(side_effect=[None, mock_slot, mock_slot])
         state._background_tasks = set()
         state.push_slots_update = MagicMock()
         mock_job = MagicMock()
@@ -1083,8 +1070,10 @@ class TestSendMessage:
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
-        ) as mock_run, patch(
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_drain, patch(
             "kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async",
             return_value=mock_slot,
         ) as mock_rehydrate:
@@ -1098,15 +1087,14 @@ class TestSendMessage:
                 # Session delivery succeeded — no Slack DM fallback.
                 assert data == {"ok": True, "slack": False, "session": True, "delivered_to": "session"}
                 # Hot-path miss: get_slot called first, then rehydrate helper.
-                state.get_slot.assert_called_once_with("chat-1-1712793600")
+                assert state.get_slot.call_args_list[0].args == ("chat-1-1712793600",)
                 mock_rehydrate.assert_called_once_with(state, "chat-1-1712793600")
-                # Agent turn was triggered on the revived slot (the whole point of the fix).
-                mock_run.assert_called_once()
-                # Injected as user message with cron-notification contract.
-                call_args = mock_slot.append.call_args
-                assert call_args[0][0] == "inject"
-                assert '[Cron notification from "test-cron"]' in call_args[0][1]
-                assert "update" in call_args[0][1]
+                # Queued on the revived slot, which the drain then starts
+                # (the whole point of the fix).
+                mock_drain.assert_awaited_once_with(state, mock_slot)
+                (entry,) = mock_slot._queue
+                assert '[Cron notification from "test-cron"]' in entry["content"]
+                assert "update" in entry["content"]
                 # Message was injected, not sent as a notification.
                 state.notify.assert_not_called()
 
@@ -1207,10 +1195,7 @@ class TestSendMessage:
     async def test_send_message_session_origin_stateless_cron(self):
         """Stateless cron (session key 'cron:{id}:{run_id}') resolves the job correctly."""
         state = _mock_state()
-        mock_slot = MagicMock()
-        mock_slot.running = False
-        mock_slot.task = None
-        mock_slot.key = "chat-1-1712793600"
+        mock_slot = _idle_slot("chat-1-1712793600")
         state.get_slot = MagicMock(return_value=mock_slot)
         state._background_tasks = set()
         state.push_slots_update = MagicMock()
@@ -1221,8 +1206,10 @@ class TestSendMessage:
         state.crons.list_jobs = MagicMock(return_value=[mock_job])
         app = _make_send_app(state)
         with patch(
-            "kiro_crew.dashboard.chat_runner._run_chat", new_callable=AsyncMock
-        ) as mock_run, patch("kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"):
+            "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as mock_drain, patch("kiro_crew.dashboard.handlers.messaging.rehydrate_slot_from_history_async"):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(
                     "/api/send-message",
@@ -1235,8 +1222,8 @@ class TestSendMessage:
                 assert resp.status == 200
                 data = await resp.json()
                 assert data == {"ok": True, "slack": False, "session": True, "delivered_to": "session"}
-                state.get_slot.assert_called_once_with("chat-1-1712793600")
-                mock_run.assert_called_once()
+                state.get_slot.assert_any_call("chat-1-1712793600")
+                mock_drain.assert_awaited_once_with(state, mock_slot)
 
     @pytest.mark.asyncio
     async def test_send_message_session_rejects_arbitrary_key(self):

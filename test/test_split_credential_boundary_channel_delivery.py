@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 
 import pytest
+import split_credential_boundary_checks
 from split_credential_boundary_helpers import HEAD, KEY, SRC, TAIL, _name_of, _on_screen, _rejoins
 
 from kiro_crew.messaging.display_safety import joins_to_a_credential, redact_for_display
@@ -81,12 +82,8 @@ class TestWhatsAppsOwnSendPathStaysBounded:
     def test_the_stable_split_is_a_plain_prefix_stable_redacted_cut(self) -> None:
         """The stable split redacts, then cuts at the budget -- and nothing later.
 
-        A sealed chunk is a promise to the client, so this branch runs no
-        whole-body repair: it splits the display-redacted body at the budget, so
-        chunk *i* is a function of the text before it alone. The cross-message
-        seam (a chunk ending in a key PREFIX the next completes) is the turn
-        renderer's job -- it knows which chunks are still unsealed and gives up
-        only the completing span on a boundary it has not yet promised.
+        A sealed chunk is a promise, so chunk *i* depends only on the text before it.
+        A key PREFIX completed by the next chunk is the turn renderer's job.
         """
         converted = to_whatsapp_text(self._dense())
         redacted, _ = redact_for_display(converted, _redact_all)
@@ -250,11 +247,8 @@ class TestAStreamedReplyNeverRevisesADeliveredChunk:
     def test_the_finalization_repairs_against_what_was_already_sent(self) -> None:
         """The notice counts what shipped, and the repair subject is one chunk.
 
-        A chunk sealed while its tail was only a credential PREFIX is already on
-        screen, so the completion arriving later can be given up only on the side
-        not yet sent. Each send is graded against the previous one and the shipped
-        list is what the tally reads, so a reply whose only placeholder came from a
-        repair does not announce none.
+        A sealed chunk ending in a credential PREFIX is on screen, so only the unsent
+        side can be repaired; the tally reads the shipped list so a repair is counted.
         """
         tree = ast.parse((SRC / "whatsapp" / "turn_renderer.py").read_text(encoding="utf-8"))
         assigned = {
@@ -297,6 +291,8 @@ class TestTheGradeNeverRunsOnTheEventLoop:
         ("whatsapp/renderer.py", "render_chunks"),
         ("telegram/renderer.py", "_split_markdown_bounded"),
         ("whatsapp/turn_renderer.py", "repaired_after_a_sent_tail"),
+        ("weixin/turn_renderer.py", "render_chunks"),
+        ("weixin/transport.py", "_chunk"),
     ]
 
     @pytest.mark.parametrize("path,target", OFFLOADED)
@@ -403,13 +399,10 @@ class TestTheSeamGradeReadsWhatTheReaderSees:
 
 
 class TestAHardByteCapIsNeverExceeded:
-    """The splitter may answer with the text WHOLE, so a hard-capped transport
-    has to bound the result itself.
+    """The splitter may return the text WHOLE, so a hard-capped transport bounds it.
 
-    Declining to cut is the fail-closed answer when no budget is clean, and it
-    costs the caller a chunk over its budget. A client that truncates a larger
-    payload would drop the answer's tail with no notice, so that caller grades the
-    sequence once more and cuts the repair back to its budget.
+    A client that truncates would drop the tail silently, so that caller re-grades
+    and cuts the repair back to its budget.
     """
 
     def test_webex_bounds_its_own_chunks(self) -> None:
@@ -463,7 +456,12 @@ class TestAHardByteCapIsNeverExceeded:
         ],
     )
     def test_every_capped_caller_runs_the_bound(self, path: str) -> None:
-        """A transport that truncates has to bound the splitter's whole answer."""
+        """A transport that truncates has to bound the splitter's whole answer.
+
+        ``chunk_for_transport`` counts as the bound: both of its paths end in
+        ``bounded_for_delivery``, which ``test_chunk_for_transport_runs_the_bound``
+        pins, so a caller delegating to it is bounded by it.
+        """
         tree = ast.parse((SRC / path).read_text(encoding="utf-8"))
         called = {_name_of(node.func) for node in ast.walk(tree) if isinstance(node, ast.Call)}
         offloaded = {
@@ -471,9 +469,32 @@ class TestAHardByteCapIsNeverExceeded:
             for node in ast.walk(tree)
             if isinstance(node, ast.Call) and _name_of(node.func) == "to_thread" and node.args
         }
-        assert "bounded_for_delivery" in (
+        assert {"bounded_for_delivery", "chunk_for_transport"} & (
             called | offloaded
         ), f"{path} sends the splitter's answer without bounding it"
+
+    def test_chunk_for_transport_runs_the_bound(self) -> None:
+        """Every return of the shared chunker hands back a bounded answer."""
+        tree = ast.parse((SRC / "messaging" / "renderer.py").read_text(encoding="utf-8"))
+        func = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "chunk_for_transport"
+        )
+        # Its own returns only: a nested helper's return is not the chunker's answer.
+        returns: list[ast.Return] = []
+        stack: list[ast.AST] = list(func.body)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(node, ast.Return):
+                returns.append(node)
+            stack.extend(ast.iter_child_nodes(node))
+        assert returns
+        for ret in returns:
+            assert isinstance(ret.value, ast.Call), ast.dump(ret)
+            assert _name_of(ret.value.func) == "bounded_for_delivery", ast.dump(ret)
 
 
 class TestTheFramesAChannelActuallySends:
@@ -491,7 +512,9 @@ class TestTheFramesAChannelActuallySends:
         )
 
 
-class TestTelegramRotatesWithoutHandingOverAKey:
+class TestTelegramRotatesWithoutHandingOverAKey(
+    split_credential_boundary_checks.TheBudgetAloneHandsTheReaderTheKey
+):
     """The rotation cut, through the function the channel rotates with.
 
     A rotation seals every chunk but the last as its own message and redacts each
@@ -507,13 +530,6 @@ class TestTelegramRotatesWithoutHandingOverAKey:
     def _body(self) -> str:
         """Filler, then the key's halves either side of a line break."""
         return ("w " * 180) + HEAD + "\n" + TAIL + " and some trailing words after it"
-
-    def test_the_budget_alone_hands_the_reader_the_key(self) -> None:
-        """The control: without the redactor this is exactly what ships."""
-        chunks = split_markdown_safe(self._body(), self.BUDGET)
-        assert len(chunks) > 1
-        assert _rejoins(chunks)
-        assert KEY in _on_screen(chunks)
 
     def test_the_rotation_cut_moves_instead(self) -> None:
         chunks = _split_markdown(self._body(), self.BUDGET)

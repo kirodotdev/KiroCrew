@@ -11,14 +11,15 @@ from kiro_crew.dashboard.chat_delivery import (
     STEER_STATE_REQUEUED,
     attachment_meta,
     find_written_steer_row,
+    knowledge_meta,
     queued_text_for_display,
     quote_meta,
 )
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
+    COMPOSER_SEND_META,
     CRON_NOTIFICATION_KIND,
     MCP_APP_MESSAGE_KIND,
-    STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
     SUBAGENT_COMPLETION_KIND,
     _remove_queued_by_id,
@@ -27,6 +28,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_system_injection_item,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY, RESTORED_SEND_CHOSEN_KEY
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -35,6 +37,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         crew_log_emit,
         logger,
+        possibly_consumed_steers,
         settle_consumed_steers,
     )
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn
@@ -126,6 +129,11 @@ def _settle_consumed_steers(
     previous = list(slot._pending_steers)
     from kiro_crew.dashboard import responsive_chat
 
+    possibly_delivered = responsive_chat.settle_steers(
+        slot, previous, snapshot, possibly_consumed_steers
+    )
+    newly_possibly_delivered = set(possibly_delivered) - slot._steer_possibly_delivered
+    slot._steer_possibly_delivered.update(possibly_delivered)
     remaining = responsive_chat.settle_steers(slot, previous, snapshot, settle_consumed_steers)
     settled_count = len(previous) - len(remaining)
     logger.debug(
@@ -207,13 +215,48 @@ def _settle_consumed_steers(
             # cannot rehydrate the stale card.
             state.clear_question_pending(slot.key, blocking=False)
     slot._pending_steers[:] = remaining
+    from kiro_crew.dashboard.chat_handlers import crew_steer_consumed
+
     for settled_msg in set(previous) - set(remaining):
+        # A person's steer into a Crew Mode crew member lands on its ledger now.
+        crew_steer_consumed(state, slot, settled_msg)
         responsive_chat.forget_steer(slot, settled_msg)
         slot._steer_attachment_meta.pop(settled_msg, None)
         slot._steer_act_now.discard(settled_msg)
         slot._steer_automation.pop(settled_msg, None)
+        # Consumed by this turn, so no requeue will read them. The successful steer
+        # RPC leaves the admission and both origin marks in place for that requeue.
+        slot._steer_admissions.pop(settled_msg, None)
+        slot._steer_user_origin.pop(settled_msg, None)
+        slot._steer_channel_origin.pop(settled_msg, None)
+        slot._steer_owner_origin.pop(settled_msg, None)
         slot._steer_decision_strips.pop(settled_msg, None)
         slot._steer_possibly_delivered.discard(settled_msg)
+    if settled_count or newly_possibly_delivered:
+        from kiro_crew.dashboard import steer_retract
+
+        steer_retract.on_settled(slot)
+
+
+def _mark_held_steers_possibly_delivered(slot: "_ChatSlot", client: object) -> None:
+    """Mark each pending steer whose held write *client* reports unanswered.
+
+    A steer the client held while a tool ran is written later, off the steer's
+    own RPC, so a stalled write never reaches ``steer_into_running_turn``'s
+    ambiguous-delivery branch. Read before the turn drops its client, so
+    :func:`_requeue_unconsumed_steers` stamps such an entry as possibly
+    delivered. The client knows the text it was handed, so each raw entry is
+    compared through its wire form; a client without the accessor marks nothing.
+    """
+    unanswered = getattr(client, "held_steers_possibly_delivered", None)
+    if not unanswered or not isinstance(unanswered, (set, frozenset)):
+        return
+    from kiro_crew.dashboard import responsive_chat
+
+    wires = responsive_chat.turn_state(slot).steers
+    for message in slot._pending_steers:
+        if (wires.get(message, message) or "").strip() in unanswered:
+            slot._steer_possibly_delivered.add(message)
 
 
 def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> None:
@@ -231,7 +274,14 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     "discard" dismisses it with one click; nothing is ever silently lost.
     A hard kill never reaches here with pending steers (the force-stop
     handler clears ``_pending_steers`` alongside ``_queue``).
+
+    A steer the person is taking back is settled first
+    (``steer_retract.on_turn_ending``): an Unsend or an Edit never reached the
+    turn, so it is not requeued, and a Queue instead is left to this requeue.
     """
+    from kiro_crew.dashboard import steer_retract
+
+    steer_retract.on_turn_ending(state, slot)
     if not slot._pending_steers:
         return
     from kiro_crew.dashboard import responsive_chat
@@ -303,7 +353,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         _act_now: set[str] = getattr(slot, "_steer_act_now", set())
         if steer_msg in _act_now:
             _act_now.discard(steer_msg)
-            _meta[STEER_INTENT_META] = True
+            _meta[COMPOSER_SEND_META] = True
         # An automation steer (a work-ledger wake) keeps its origin on the entry,
         # so the drain writes it as a nudge row, alone, and never merges it into
         # the person's own queued text.
@@ -345,6 +395,10 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # narrower channel authority a queued channel message carries. Absent means
         # not through a channel.
         _channel = bool(getattr(slot, "_steer_channel_origin", {}).pop(steer_msg, False))
+        # The owner mark rides the same way, from its own lockstep map: the
+        # requeued steer's turn may read a peer crew's sessions only if the
+        # owner sent it. Absent means not the owner.
+        _owner = bool(getattr(slot, "_steer_owner_origin", {}).pop(steer_msg, False))
         if _channel:
             # A channel steer that re-enters the queue runs as its own turn, so it
             # takes the mark the hand-off's queued entry carries: the text is the
@@ -368,6 +422,14 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             meta=_meta,
             directive_user_origin=_requeue_user_origin,
             directive_channel_origin=_channel,
+            directive_owner_origin=_owner and _requeue_user_origin,
+        )
+        from kiro_crew.dashboard.chat_handlers import crew_steer_requeued
+
+        # A person's unread steer into a crew member is recorded when the drain
+        # delivers this entry, never if the person cancels it first.
+        crew_steer_requeued(
+            slot, steer_msg, next((item for item in slot._queue if item.get("id") == qid), None)
         )
         if responsive_chat.forget_steer(slot, steer_msg):
             entry = next(item for item in slot._queue if item["id"] == qid)
@@ -402,19 +464,23 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             # `_meta` above; the card drawn from this frame is what a cancel
             # restores, and a frame without the quote would show the raw
             # blockquote as text until a reload.
-            _push_meta = {
+            _push_meta: dict[str, object] = {
                 **attachment_meta(_meta),
                 # Same rule the entry's text follows (`queue_entry_is_user_origin`):
                 # the human's own words stay as typed, anyone else's are redacted.
                 **quote_meta(_meta, user_origin=_requeue_user_origin and not _channel),
+                **knowledge_meta(_meta),
             }
             from kiro_crew.dashboard.chat_delivery import normalize_send_id
 
             _push_send_id = normalize_send_id(_meta.get("sendId"))
             if _push_send_id:
                 _push_meta["sendId"] = _push_send_id
-            if _push_meta:
-                _push["meta"] = _push_meta
+            # Says this card is a requeued steer, so the client's drain of THIS
+            # card (matched by `queue_id`) can tie its row to the steer row. A
+            # card only: the entry and the row it drains into never carry it.
+            _push_meta["requeuedSteer"] = True
+            _push["meta"] = _push_meta
             state.broadcast_ws("queue_push", _push)
         except Exception:
             # Broadcast is best-effort — the message is already safely in the
@@ -498,12 +564,28 @@ def _has_user_queued_followup(slot: "_ChatSlot") -> bool:
     The promise-only guards use this to decide "did the USER intervene". Every
     entry that is runner/system orchestration (`_queue_entry_is_orchestration`) is
     excluded; anything left is user speech, which must block or purge a pending
-    recovery so the user's intent wins."""
-    return any(not _queue_entry_is_orchestration(q) for q in getattr(slot, "_queue", []))
+    recovery so the user's intent wins.
+
+    A restored card the user has not sent is excluded too: no drain runs it, so
+    it is not a follow-up that takes over from a retry, continuation or replay.
+    Counting it would switch those off for as long as the card waits. A restored
+    card the user chose to run counts like any other entry."""
+    return any(
+        not _queue_entry_is_orchestration(q)
+        and not (q.get(RESTORED_QUEUE_KEY) and not q.get(RESTORED_SEND_CHOSEN_KEY))
+        for q in getattr(slot, "_queue", [])
+    )
 
 
-def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
+def _drop_stale_admissions(
+    state: DashboardState, slot: _ChatSlot, *, selected_id: str | None = None
+) -> None:
     """Drop queued entries whose admission-time containment has lapsed.
+
+    A restored card the user has not sent is left out: no drain runs it, and
+    the restore path strips its containment snapshot, so judging it here would
+    delete a card the user is meant to send, edit or delete. It is judged when
+    the user sends it: a card marked chosen, or the one ``selected_id`` names.
 
     Authorization is decided when a prompt is ADMITTED (`authorize_target` for
     `session_send`, the authenticated composer for a human typing into a busy
@@ -559,6 +641,7 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
     if not slot._queue:
         return
     # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard import gateway_notice as gn
     from kiro_crew.dashboard import session_control as _sc
 
     now = _sc.containment_snapshot(state, slot, on_probe_failure=True)
@@ -576,6 +659,12 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         # a channel-born session still drains: its stamp records linked=True.
         if q.get("kind") in (CRON_NOTIFICATION_KIND, SUBAGENT_COMPLETION_KIND):
             continue
+        if (
+            q.get(RESTORED_QUEUE_KEY)
+            and not q.get(RESTORED_SEND_CHOSEN_KEY)
+            and (selected_id is None or q.get("id") != selected_id)
+        ):
+            continue
         changed = _sc.newly_held_constraints(
             now,
             q.get("meta"),
@@ -592,12 +681,13 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
         # removal is the separate, best-effort half.
         _remove_queued_by_id(slot.messages, q["id"])
         state.broadcast_ws("queue_pop", {"slot": slot.key, "content": "", "queue_id": q["id"]})
+        _change = _sc.describe_containment_change(changed, mirror_unverified=_mirror_unverified)
         slot.append(
             "notice",
-            "⚠️ Queued message dropped: "
-            + _sc.describe_containment_change(changed, mirror_unverified=_mirror_unverified)
-            + " after it was queued, so the authorization that admitted it no longer holds.",
+            f"⚠️ Queued message dropped: {_change} after it was queued, so the "
+            "authorization that admitted it no longer holds.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_QUEUED_MESSAGE_DROPPED, change=_change),
         )
         # A cross-session delivery has a SENDER waiting on it, and the notice
         # above is on the target's transcript, which that sender does not read.
@@ -651,6 +741,19 @@ def _drop_stale_admissions(state: DashboardState, slot: _ChatSlot) -> None:
                 else ""
             ),
         )
+
+
+async def _on_steer_dropped(turn: _ChatTurn, event) -> None:
+    """kiro-cli dropped the steers it held, unread, on a take-back's clear.
+
+    A copy fanned out to every session on the process names no owner, so it
+    settles nothing here.
+    """
+    if getattr(event, "runtime_global", False):
+        return
+    from kiro_crew.dashboard import steer_retract
+
+    await steer_retract.on_dropped(turn.state, turn.slot)
 
 
 async def _on_steer_consumed(turn: _ChatTurn, event) -> None:

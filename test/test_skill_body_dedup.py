@@ -31,6 +31,11 @@ HINT_HEADER = "[Relevant skills for this message]"
 SKILL_BLOCK = "[Skill: foundation]"
 SESSION = "chat-session-abc"
 
+# Every test here compares whole built prompts, and a tight or critical host
+# prepends a live ``[RESOURCES]`` line whose load figure moves between two
+# builds. Pin the probe to AMPLE so that line never appears.
+pytestmark = pytest.mark.usefixtures("ample_host_resources")
+
 
 @pytest.fixture(autouse=True)
 def _close_skills_loaders(close_skills_loaders):

@@ -520,6 +520,11 @@ class AutoNudgeService:
         #: check ("" when not every open item waits on a person). The delivered turn
         #: copies it to ``ledger_seen_fp``; see ``_holds_for_person_wait``.
         self._ledger_tick_fp: dict[str, str] = {}
+        #: ``loop id -> head`` an ungated loop's between-cycle read last woke for on a
+        #: conflict, so one conflicting head pulls one cycle forward. In
+        #: memory only (``subject_reads``): after a restart a still-standing conflict
+        #: wakes once more. Released with the loop.
+        self._subject_wake_fp: dict[str, str] = {}
         #: ``loop id -> item id -> wall-clock times`` of the pull-forwards that item
         #: bought its conductor in the last hour, and the ``(loop id, item id)`` pairs
         #: whose cap has already been logged in the current window. Read and written by
@@ -1345,6 +1350,7 @@ class AutoNudgeService:
     _cancel_timer = _timers._cancel_timer
     _arm_timer = _timers._arm_timer
     _arm_from_deadline = _timers._arm_from_deadline
+    _arm_and_announce_deadline = _timers._arm_and_announce_deadline
     _reconcile_forever = _timers._reconcile_forever
     _reconcile_once = _timers._reconcile_once
     # autonudge_service.gate

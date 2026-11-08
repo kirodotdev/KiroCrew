@@ -5,8 +5,8 @@
  * (optimistic dispatch is exercised against the real store; persistence goes
  * through the mocked api; onPicked fires so a controlled menu can close).
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import type { ReactNode } from 'react'
@@ -24,21 +24,27 @@ vi.mock('../api/client', () => ({
 }))
 // useSessionPalette reads CSS vars via useTheme (needs a ThemeProvider) — mock it
 // to a fixed palette so this stays a focused unit test of the swatch behaviour.
+const DEFAULT_PALETTE = ['#ff0000', '#00ff00', '#0000ff']
+const palette = vi.hoisted(() => ({ colors: [] as string[] }))
 vi.mock('../hooks/useSessionPalette', () => ({
-  useSessionPalette: () => ({ paletteColors: ['#ff0000', '#00ff00', '#0000ff'] }),
+  useSessionPalette: () => ({ paletteColors: palette.colors }),
 }))
 
 import { store } from '../store'
+import { sseConnected } from '../store/dashboardSlice'
 import SessionColorSwatches from '../components/SessionColorSwatches'
 
 const SLOT = 'chat-color-1'
+const RECENT_KEY = 'mc-session-colors-recent'
 // SessionColorSwatches writes via useMutation, so it needs a QueryClientProvider.
 const wrap = (ui: ReactNode) => {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(<QueryClientProvider client={qc}><Provider store={store}>{ui}</Provider></QueryClientProvider>)
+  return { qc, ...render(<QueryClientProvider client={qc}><Provider store={store}>{ui}</Provider></QueryClientProvider>) }
 }
 
 beforeEach(() => {
+  palette.colors = DEFAULT_PALETTE
+  store.dispatch(sseConnected())
   mocks.setSlotColor.mockResolvedValue({})
   mocks.setSlotColorHex.mockResolvedValue({})
   mocks.clearSlotColor.mockResolvedValue({})
@@ -106,12 +112,78 @@ describe('SessionColorSwatches', () => {
       fireEvent.change(wheel, { target: { value: '#333333' } })
       // Async advance: flushes the debounce timer AND the react-query
       // microtask chain that carries mutate() -> mutationFn.
-      await vi.advanceTimersByTimeAsync(350)
+      await act(async () => { await vi.advanceTimersByTimeAsync(350) })
       expect(mocks.setSlotColorHex).toHaveBeenCalledTimes(1)
       expect(mocks.setSlotColorHex).toHaveBeenCalledWith(SLOT, '#333333')
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('a committed custom colour comes back as a quick swatch that re-applies it', async () => {
+    const first = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByLabelText('Custom color'))
+    const hexInput = screen.getByLabelText('Hex color code') as HTMLInputElement
+    fireEvent.change(hexInput, { target: { value: '#123456' } })
+    fireEvent.keyDown(hexInput, { key: 'Enter' })
+    await waitFor(() => expect(mocks.setSlotColorHex).toHaveBeenCalledWith(SLOT, '#123456'))
+    // The open row never reflows: the colour joins the list when the menu closes.
+    expect(screen.queryByRole('button', { name: /#123456/ })).toBeNull()
+    first.unmount()
+
+    const onPicked = vi.fn()
+    wrap(<SessionColorSwatches slotKey="chat-color-2" colorIndex={null} onPicked={onPicked} />)
+    fireEvent.click(screen.getByRole('button', { name: /#123456/ }))
+    await waitFor(() => expect(mocks.setSlotColorHex).toHaveBeenCalledWith('chat-color-2', '#123456'))
+    expect(onPicked).toHaveBeenCalled()
+  })
+
+  it('a wheel drag that commits at each pause adds only the colour it ends on', async () => {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(['#abcdef']))
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const { unmount } = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByLabelText('Custom color'))
+    const wheel = document.querySelector('input[type="color"]') as HTMLInputElement
+    fireEvent.change(wheel, { target: { value: '#111111' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(350) })
+    fireEvent.change(wheel, { target: { value: '#222222' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(350) })
+    expect(mocks.setSlotColorHex).toHaveBeenCalledTimes(2)
+    unmount()
+    expect(JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')).toEqual(['#222222', '#abcdef'])
+  })
+
+  it('a wheel colour whose commit a palette pick cancels is not recorded', () => {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(['#abcdef']))
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const { unmount } = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByLabelText('Custom color'))
+    const wheel = document.querySelector('input[type="color"]') as HTMLInputElement
+    fireEvent.change(wheel, { target: { value: '#333333' } })
+    fireEvent.click(screen.getByLabelText('No color'))
+    unmount()
+    expect(mocks.setSlotColorHex).not.toHaveBeenCalled()
+    expect(JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')).toEqual(['#abcdef'])
+  })
+
+  it('picking a recent colour moves it to the front once the menu closes', () => {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(['#abcdef', '#123456']))
+    const { unmount } = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={null} />)
+    fireEvent.click(screen.getByRole('button', { name: /#123456/ }))
+    unmount()
+    expect(JSON.parse(localStorage.getItem(RECENT_KEY) ?? '[]')).toEqual(['#123456', '#abcdef'])
+  })
+
+  it('marks the wrapped swatch selected when the stored index exceeds the palette size', () => {
+    palette.colors = ['#100000', '#200000', '#300000', '#400000', '#500000', '#600000', '#700000']
+    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={10} />)
+    // [0] is No color, then the 7 swatches, then the custom cell.
+    const swatches = screen.getAllByRole('button').slice(1, 8)
+    const marked = swatches.flatMap((b, i) => (b.className.includes('border-text-strong') ? [i] : []))
+    expect(marked).toEqual([3])
+    expect(screen.getByLabelText('No color').className).toContain('border-transparent')
   })
 
   it('marks the custom cell active when a colorHex is set', () => {
@@ -132,9 +204,9 @@ describe('SessionColorSwatches', () => {
       const wheel = document.querySelector('input[type="color"]') as HTMLInputElement
       fireEvent.change(wheel, { target: { value: '#111111' } })
       // Immediate palette selection 100ms into the debounce window.
-      await vi.advanceTimersByTimeAsync(100)
+      await act(async () => { await vi.advanceTimersByTimeAsync(100) })
       fireEvent.click(screen.getAllByRole('button')[1])
-      await vi.advanceTimersByTimeAsync(500)
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
       expect(mocks.setSlotColor).toHaveBeenCalledWith(SLOT, 0)
       expect(mocks.setSlotColorHex).not.toHaveBeenCalled()
     } finally {
@@ -166,7 +238,7 @@ describe('SessionColorSwatches', () => {
     store.dispatch(sseSlotColor({ key: SLOT, color_index: 2, color_hex: null }))
     let rejectClear: (e: Error) => void = () => {}
     mocks.clearSlotColor.mockImplementation(() => new Promise((_r, rej) => { rejectClear = rej }))
-    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={2} />)
+    const { qc } = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={2} />)
     fireEvent.click(screen.getByLabelText('No color'))
     // Superseding custom pick lands while the clear is in flight.
     fireEvent.click(screen.getByLabelText('Custom color'))
@@ -174,8 +246,9 @@ describe('SessionColorSwatches', () => {
     fireEvent.change(hexInput, { target: { value: '#a1b2c3' } })
     fireEvent.keyDown(hexInput, { key: 'Enter' })
     await waitFor(() => expect(mocks.setSlotColorHex).toHaveBeenCalledWith(SLOT, '#a1b2c3'))
-    rejectClear(new Error('boom'))
-    await new Promise(r => setTimeout(r, 30))
+    await act(async () => { rejectClear(new Error('boom')) })
+    // Barrier: the failed clear has settled (its rollback, if any, has run).
+    await waitFor(() => expect(qc.isMutating()).toBe(0))
     const slot = store.getState().dashboard.slots.find(s => s.key === SLOT)
     expect(slot?.color_hex).toBe('#a1b2c3')
     expect(slot?.color_index ?? null).toBe(null)
@@ -194,7 +267,7 @@ describe('SessionColorSwatches', () => {
     mocks.setSlotColorHex.mockImplementation(
       () => new Promise((res, rej) => { resolves.push(res); rejects.push(rej) }),
     )
-    wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={2} />)
+    const { qc } = wrap(<SessionColorSwatches slotKey={SLOT} colorIndex={2} />)
     fireEvent.click(screen.getByLabelText('Custom color'))
     const hexInput = screen.getByLabelText('Hex color code') as HTMLInputElement
     fireEvent.change(hexInput, { target: { value: '#a1b2c3' } })
@@ -202,10 +275,10 @@ describe('SessionColorSwatches', () => {
     // Second commit of the same value while the first is still in flight.
     fireEvent.keyDown(hexInput, { key: 'Enter' })
     await waitFor(() => expect(mocks.setSlotColorHex).toHaveBeenCalledTimes(2))
-    resolves[1]({})
-    await new Promise(r => setTimeout(r, 10))
-    rejects[0](new Error('boom'))
-    await new Promise(r => setTimeout(r, 30))
+    await act(async () => { resolves[1]({}) })
+    await act(async () => { rejects[0](new Error('boom')) })
+    // Barrier: both hex writes have settled, so the late rollback (if any) has run.
+    await waitFor(() => expect(qc.isMutating()).toBe(0))
     const after = store.getState().dashboard.slots.find(s => s.key === SLOT)
     expect(after?.color_hex).toBe('#a1b2c3')
     expect(after?.color_index ?? null).toBe(null)

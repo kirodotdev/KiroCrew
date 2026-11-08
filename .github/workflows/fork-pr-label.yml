@@ -34,7 +34,14 @@ concurrency:
 jobs:
   label:
     name: Label fork pull requests
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, reached by its runner LABEL rather
+    # than by GROUP. The `pull_request_target` leg always executes in THIS
+    # repository, even for a fork PR, so the group would be reachable there; the
+    # `schedule` and `workflow_dispatch` legs fire in any fork holding a copy of
+    # this file, and a fork cannot reach an organization runner group. See
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # A few gh API calls: recent runs take under 20s at p95. The cap only stops
     # a hung run from holding a runner for GitHub's 6-hour default.
     timeout-minutes: 5

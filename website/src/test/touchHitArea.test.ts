@@ -2,7 +2,7 @@
  * The `mc-touch-hit*` classes grow a small icon control's HIT AREA to 44px on a
  * coarse pointer, and do nothing at all for a mouse.
  *
- * Asserted against SOURCE TEXT, as scrollbarOverlayTouch.test.ts and
+ * Asserted against SOURCE TEXT, as scrollbarRevealOnly.test.ts and
  * noPageZoom.test.ts do for this stylesheet: jsdom never loads index.css, and
  * a media query has no computed representation to read even if it did. The
  * geometry is then evaluated from the declared `inset` values, which is how the

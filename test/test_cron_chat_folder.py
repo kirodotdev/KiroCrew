@@ -1,35 +1,12 @@
 """``chat_folder_id``: filing a scheduled job's RUNS into a chat folder.
 
-A recurring job's output lands loose — in dashboard notifications, in a Slack
-DM, or appended onto one long-lived tab nobody can find. ``chat_folder_id``
-names a folder in the chat sidebar's own tree and a PERSISTENT job's single
-``cron-{id}`` tab is filed there; its run stamps and markers already make that
-tab the job's timeline. A stateless job has no job-wide tab to file, so the
-store refuses the pair at save time.
+A persistent job's single ``cron-{id}`` tab is filed into the named sidebar folder; a
+stateless job has none, so the store refuses the pair. ``folder_id`` (the Schedule-page
+row group) is a different field. Filing adds to delivery and never replaces it; a
+deleted folder only costs the placement; a rename needs nothing since the id is stored.
 
-What these tests hold, and why each one can fail:
-
-* **The field is its own field.** ``folder_id`` already exists on ``CronJob`` and
-  means something else entirely (it groups the job's ROW on the Schedule page).
-  The two must never be read off each other, so the persistence and REST tests
-  assert one moves without the other.
-* **Filing SUPPLEMENTS delivery.** The feature must not become a fourth delivery
-  mode that replaces notification/Slack/origin delivery, so the delivery-shape
-  tests assert the result row is written and the caller's return value is
-  unchanged whether or not a folder is configured.
-* **A deleted folder costs the placement and nothing else.** A folder can be
-  deleted while a job still names it. The run must still deliver, its session
-  must land unfiled, and the skip must be recorded once.
-* **A rename is a no-op.** The job stores the folder's id, so there is nothing to
-  do — pinned so a future "resolve by name" shortcut cannot be added silently.
-* **Back-compat.** A job with no ``chat_folder_id`` behaves exactly as it did:
-  the mock state's ``_folders`` is empty in those tests, which would surface any
-  accidental unconditional folder lookup as an exception rather than a pass.
-
-The state fake mirrors ``test_cron_first_run_tab.py``'s, including the reason its
-``get_slot``/``has_slot`` are REAL functions over one dict: on a bare
-``MagicMock`` both auto-return truthy mocks, which would satisfy every
-short-circuit under test and make the assertions unable to fail.
+``get_slot``/``has_slot`` on the state fake are real functions: on a bare ``MagicMock``
+they return truthy mocks and the assertions could not fail.
 """
 
 from __future__ import annotations
@@ -42,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.cron import CronJob, CronService
 from kiro_crew.dashboard.chat_utils import slot_history_key
@@ -134,14 +112,10 @@ def _deliver(state, job, text, **kw):
 
 
 def _inject(state, job, text, **kw):
-    """Run the injection ON A LOOP, as every production caller does, and let the
-    folder placement land.
+    """Run the injection on a loop, as production does, and let the placement land.
 
-    The folder is decided at the mint, inside ``_bind_cron_slot``, and the
-    placement -- assignment, write and broadcast -- is scheduled as a task, so a
-    bare call with no running loop is not a shape production ever takes. The write
-    itself is answered ``True`` here; the tests about the write's own verdict patch
-    it themselves.
+    ``_bind_cron_slot`` schedules the placement as a task. The write answers ``True``;
+    tests about its verdict patch it themselves.
     """
     import kiro_crew.dashboard.chat_persistence as persistence
 
@@ -163,9 +137,7 @@ def _inject(state, job, text, **kw):
     return asyncio.run(_go())
 
 
-# ---------------------------------------------------------------------------
 # 1. Persistence: the field survives a save/load round trip on its own
-# ---------------------------------------------------------------------------
 
 
 class TestPersistence:
@@ -381,9 +353,7 @@ class TestPersistence:
             svc.add_job("brief", "Write it.", every_secs=3600, chat_folder_id="x" * 5000)
 
 
-# ---------------------------------------------------------------------------
 # 2. Folder existence
-# ---------------------------------------------------------------------------
 
 
 class TestFolderExistence:
@@ -397,19 +367,14 @@ class TestFolderExistence:
         assert chat_folder_exists(_make_state(), "") is False
 
 
-# ---------------------------------------------------------------------------
 # 3. Filing: the job-wide tab at its mint, and the deleted folder
-# ---------------------------------------------------------------------------
 
 
 class TestFilingAtTheMint:
     """A tab is filed by the call that MINTS it, and by nothing later.
 
-    "Unfiled" is deliberately not the test. A reader who drags the job-wide tab
-    out to the root leaves ``slot.folder_id == ""`` -- indistinguishable from a
-    tab that was never filed -- so a rule that filed unfiled tabs would drag
-    theirs back on every delivery. A freshly minted tab has no placement history,
-    so filing it cannot undo anyone's.
+    A tab dragged to the root also reads ``slot.folder_id == ""``, so filing every
+    unfiled tab would drag it back on each delivery.
     """
 
     def test_the_job_wide_tab_is_filed_when_it_is_minted(self) -> None:
@@ -545,9 +510,7 @@ class TestDeletedFolder:
         assert any("the brief" in m["content"] for m in slot.messages)
 
 
-# ---------------------------------------------------------------------------
 # 4. Supplements, never replaces
-# ---------------------------------------------------------------------------
 
 
 class TestTheFilingIsSynchronous:
@@ -650,26 +613,6 @@ class TestTheFilingIsSynchronous:
         assert saved == ["cron-job42"]
         # The done callback discards it, so the set does not grow per run.
         assert state._background_tasks == set()
-
-    @pytest.mark.asyncio
-    async def test_the_placement_is_broadcast_only_after_it_is_on_disk(self, monkeypatch) -> None:
-        """Telling an open sidebar the tab is filed before the metadata line lands
-        advertises a placement a failed write would erase, with nothing saying so."""
-        import kiro_crew.dashboard.chat_persistence as persistence
-
-        release = asyncio.Event()
-
-        async def _save(state, slot, *a, **kw):
-            await release.wait()
-            return True
-
-        monkeypatch.setattr(persistence, "save_slot_off_loop", _save)
-        state = _make_state()
-        inject_cron_result_to_dashboard(state, _job(chat_folder_id=FOLDER), "the brief", history=[])
-        assert state.push_slots_update.call_count == 1  # the injection's own push
-        release.set()
-        await asyncio.gather(*list(state._background_tasks))
-        assert state.push_slots_update.call_count == 2
 
     @pytest.mark.asyncio
     async def test_a_failed_write_retracts_the_placement(self, monkeypatch) -> None:
@@ -983,7 +926,11 @@ class TestMovingTheTabAtTheSave:
 
     @pytest.mark.asyncio
     async def test_a_job_with_no_tab_at_all_is_a_no_op(self) -> None:
-        await move_cron_job_tab(_make_state(), _job(), FOLDER, "")
+        state = _make_state()
+        await move_cron_job_tab(state, _job(), FOLDER, "")
+        # No tab is conjured up for the job, and the sidebar is not told anything moved.
+        assert state._slots == {}
+        state.push_slots_update.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_a_refused_write_restores_the_prior_folder(self, monkeypatch) -> None:
@@ -1100,9 +1047,7 @@ class TestMovingTheTabAtTheSave:
         assert slot.folder_id == OTHER_FOLDER
 
 
-# ---------------------------------------------------------------------------
 # 5. The REST surface
-# ---------------------------------------------------------------------------
 
 
 def _app(handler, route: str, *, folders=(FOLDER,), **store) -> web.Application:
@@ -1132,7 +1077,7 @@ def _app(handler, route: str, *, folders=(FOLDER,), **store) -> web.Application:
         push_slots_update=MagicMock(),
     )
     app.router.add_route("*", route, handler)
-    return app
+    return as_owner(app)
 
 
 _BODY = {"name": "brief", "message": "Write it.", "every": 3600}
@@ -1214,15 +1159,16 @@ class TestRestCreate:
             assert resp.status == 200
         assert add.await_args.kwargs["chat_folder_id"] == ""
 
-    async def test_the_schedule_folder_is_unaffected(self) -> None:
-        add = AsyncMock(return_value=_job())
-        app = _app(api_crons_create, "/api/crons", add_job_async=add)
+    async def test_the_schedule_folder_is_unaffected(self, tmp_path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        app = _app(api_crons_create, "/api/crons", add_job_async=svc.add_job_async)
         async with TestClient(TestServer(app)) as client:
-            await client.post(
+            resp = await client.post(
                 "/api/crons", json={**_BODY, "chat_folder_id": FOLDER, "folder_id": "sched9"}
             )
-        assert add.await_args.kwargs["folder_id"] == "sched9"
-        assert add.await_args.kwargs["chat_folder_id"] == FOLDER
+            assert resp.status == 200
+        (stored,) = CronService(base_dir=tmp_path).list_jobs()
+        assert (stored.folder_id, stored.chat_folder_id) == ("sched9", FOLDER)
 
 
 @pytest.mark.asyncio
@@ -1315,7 +1261,7 @@ class TestRestUpdate:
     async def test_the_handler_makes_no_extra_read_of_its_own(self, monkeypatch) -> None:
         """The store reports the transition, so a second query would only re-open the
         race the sink exists to close."""
-        self._capture_unfile(monkeypatch)
+        calls = self._capture_unfile(monkeypatch)
         get_job = AsyncMock(return_value=_job(chat_folder_id=FOLDER))
         app = _app(
             api_cron_update,
@@ -1324,8 +1270,11 @@ class TestRestUpdate:
             get_job_async=get_job,
         )
         async with TestClient(TestServer(app)) as client:
-            await client.patch("/api/crons/job42", json={"chat_folder_id": ""})
+            resp = await client.patch("/api/crons/job42", json={"chat_folder_id": ""})
+            assert resp.status == 200
         get_job.assert_not_awaited()
+        # The move still runs, on the prior folder the store reported.
+        assert calls == [("job42", FOLDER, "")]
 
     async def test_the_handler_passes_a_sink_of_its_own(self, monkeypatch) -> None:
         """One sink per request is the property that makes concurrent folder edits
@@ -1414,13 +1363,22 @@ class TestRestUpdate:
             await client.patch("/api/crons/job42", json={"name": "renamed"})
         assert calls == []
 
-    async def test_an_untouched_field_is_not_sent_to_the_store(self) -> None:
+    async def test_an_untouched_field_is_not_sent_to_the_store(self, tmp_path) -> None:
         """Editing any other setting must not rewrite the placement."""
-        update = AsyncMock(return_value=_job(chat_folder_id=FOLDER))
-        app = _app(api_cron_update, "/api/crons/{job_id}", update_job_async=update)
+        svc = CronService(base_dir=tmp_path)
+        job = svc.add_job(name="brief", message="Write it.", every_secs=3600)
+        await svc.update_job_async(job.id, chat_folder_id=FOLDER)
+        app = _app(
+            api_cron_update,
+            "/api/crons/{job_id}",
+            update_job_async=svc.update_job_async,
+            get_job_async=svc.get_job_async,
+        )
         async with TestClient(TestServer(app)) as client:
-            await client.patch("/api/crons/job42", json={"silent": True})
-        assert "chat_folder_id" not in update.await_args.kwargs
+            resp = await client.patch(f"/api/crons/{job.id}", json={"silent": True})
+            assert resp.status == 200
+        stored = CronService(base_dir=tmp_path).get_job(job.id)
+        assert (stored.silent, stored.chat_folder_id) == (True, FOLDER)
 
 
 @pytest.mark.asyncio

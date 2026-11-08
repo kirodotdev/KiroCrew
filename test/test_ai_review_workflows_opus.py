@@ -230,7 +230,10 @@ class TestOpusTwoStageArchitecture:
             # Line-anchored: the surrounding prose names the number too, and a
             # comment is not a budget.
             budgets = re.findall(r"(?m)^ *--max-turns (\d+) *$", _workflow(lane))
-            assert budgets == [str(self.TURN_BUDGET)] * 2, (lane, budgets)
+            # The fork lane carries a third copy: validation's rate-limit retry,
+            # whose inputs are pinned identical to validation's.
+            stages = 3 if lane == "fork-opus-review.yml" else 2
+            assert budgets == [str(self.TURN_BUDGET)] * stages, (lane, budgets)
 
     def test_the_job_wall_leaves_room_for_two_exhausted_stages(self) -> None:
         """Both stages share one job, so the wall bounds their SUM."""
@@ -397,13 +400,10 @@ class TestOpusTwoStageArchitecture:
             assert "exit 1" in script, lane
 
     def test_an_oversized_candidate_list_fails_closed(self) -> None:
-        """Truncating the candidate list was the third fail-open in this lane.
+        """An oversized candidate list fails the step instead of being truncated.
 
-        A real candidate emitted past the byte cap never reached validation, so
-        the validator emitted a clean [OPUS-REVIEWED] verdict for a review that
-        had not seen it. Bound the size by FAILING, never by silently cutting the
-        tail -- and keep the cap generous, since candidates cross the stage
-        boundary as a file rather than as a command-line argument.
+        A cut tail never reaches validation, which then reports a clean [OPUS-REVIEWED].
+        The cap is generous because candidates cross stages as a file.
         """
         for lane in self.LANES:
             workflow = _workflow(lane)
@@ -427,12 +427,8 @@ class TestOpusTwoStageArchitecture:
     def test_scratch_dirs_are_removed_before_extraction(self) -> None:
         """`mkdir -p` alone leaves PR-committed content at these paths in place.
 
-        A tracked symlink between the two extraction targets -- say
-        `.review-base-rules/AUTOSDE.yaml` pointing at
-        `.review-prompts/opus-discovery.md` -- makes the prompt write land on the
-        rule snapshot's inode. The reviewer then loads a prompt as its rule set,
-        so every rule violation in that PR escapes BOTH stages. Deleting the
-        trees first forces each redirect to create a fresh regular file.
+        A tracked symlink from `.review-base-rules/AUTOSDE.yaml` to a prompt file would
+        make the reviewer load a prompt as its rule set. Deleting first forces fresh files.
         """
         for lane in self.LANES:
             script = _step_script(
@@ -443,13 +439,10 @@ class TestOpusTwoStageArchitecture:
             assert rm_at < mk_at, f"{lane}: must remove before creating"
 
     def test_a_missing_discovery_marker_fails_closed(self) -> None:
-        """A discovery pass that exits 0 but emits nothing usable must not be
-        allowed to produce a clean verdict.
+        """A discovery pass that exits 0 but emits no marker fails the step.
 
-        Without this, an empty candidate file makes validation legitimately
-        report "No findings." plus [OPUS-REVIEWED], and the gate PASSES on a
-        review that never happened -- the exact silent-clean failure this split
-        exists to remove.
+        An empty candidate file would let validation report "No findings." plus
+        [OPUS-REVIEWED] for a review that never happened.
         """
         for lane in self.LANES:
             script = _step_script(_workflow(lane), "Capture discovery candidates")
@@ -622,6 +615,10 @@ class TestOpusTurnBudgetOutcome:
         assert "no blocking findings" not in result.stdout
         summary = (tmp_path / "summary.md").read_text(encoding="utf-8")
         assert "turn budget spent, needs human review" in summary
+        # A re-run cannot pass, so the failure names the per-head way out.
+        override = f"/ai-review override fable {self.HEAD} <class>: <reason, 20 to 500 characters>"
+        assert override in result.stdout, _proc_log(result)
+        assert override in summary
 
     def test_same_repo_gate_unchanged_without_a_spent_budget(self, tmp_path: Path) -> None:
         clean = self._gate(tmp_path / "clean", budget="")
@@ -696,6 +693,10 @@ class TestOpusTurnBudgetOutcome:
         assert "conclusion=failure" in argv, argv
         assert "output[title]=Opus 5.5 Review — turn budget spent, needs human review" in argv
         assert any("discovery stage stopped at --max-turns" in a for a in argv), argv
+        override = (
+            f"`/ai-review override fable {self.HEAD} <class>: <reason, 20 to 500 characters>`"
+        )
+        assert any(override in a for a in argv), argv
 
     def test_fork_finalize_unchanged_without_a_spent_budget(self, tmp_path: Path) -> None:
         argv = self._finalize(tmp_path / "clean", budget="")
@@ -805,19 +806,11 @@ def _diag_values(output: str) -> dict[str, str]:
 
 
 class TestOpusDiscoveryCaptureExecutes:
-    """Run the ACTUAL `Capture discovery candidates` step from both Opus lanes,
-    with the real jq and the real redaction, against execution files of every
-    shape the extraction accepts.
+    """Run the real `Capture discovery candidates` step from both Opus lanes.
 
-    The structural tests above prove the failing branch exists and exits
-    nonzero; only executing the step proves the extraction still selects the
-    result on each accepted shape, that the cap fails rather than truncates,
-    and -- the property that matters most on this branch -- that the
-    diagnostics printed when the marker is missing carry NOTHING the model or a
-    tool wrote. A transcript echoes the diff and whatever `Read` returned, so a
-    diagnostic that quoted even its tail would be a payload leak on a public
-    repo. Every fixture therefore plants sentinel strings in exactly those
-    places and the assertion is over the whole of stdout and stderr.
+    Above all, the missing-marker diagnostics must carry nothing the model or a tool
+    wrote: a transcript echoes the diff and `Read` output, so fixtures plant sentinels
+    there and the assertion covers all of stdout and stderr.
     """
 
     LANES = ("claude-review.yml", "fork-opus-review.yml")
@@ -951,15 +944,10 @@ class TestOpusDiscoveryCaptureExecutes:
     def test_marker_in_an_earlier_assistant_message_is_reported_not_rescued(
         self, lane: str, tmp_path: Path
     ) -> None:
-        """The prompt says the marker ends the LAST message. A model that writes
-        candidates plus the marker, then keeps working and closes with a short
-        note, leaves the extraction a final `.result` with no marker. The gate
-        must still fail (the file stage 2 would read has no marker, and nothing
-        may lift the marker out of an earlier message into it), and the
-        diagnostics must say the marker WAS written -- the one boolean that
-        separates this fixture from one with no marker in scanned assistant
-        text blocks. The assistant text is model output, so its sentinel must
-        stay out of the log like the rest."""
+        """A marker only in an earlier message still fails, and diagnostics say it was seen.
+
+        The marker must end the LAST message; nothing may lift it from an earlier one.
+        The assistant text is model output, so its sentinel stays out of the log."""
         messages = _capture_messages("Re-checked the two call sites; SENTINEL_RESULT_TEXT")
         messages.insert(
             -1,
@@ -997,14 +985,10 @@ class TestOpusDiscoveryCaptureExecutes:
     def test_diagnostics_stay_one_token_per_key_under_a_padding_wc(
         self, lane: str, tmp_path: Path
     ) -> None:
-        """BSD `wc` (macOS) prints its count right-aligned in a padded field,
-        `     294` rather than `294`. Substituted raw into the diagnostics line
-        that padding split `captured_bytes=` from its value and every reader of
-        the line saw a token with no `=` (20 failures on the macOS CI matrix,
-        job 103815720826). The producer must normalise the number; the parser
-        stays strict, so a regression is a failure here and not a tolerated
-        shape. The control is deterministic on every host: a `wc` shim that pads
-        exactly as BSD does is placed ahead of PATH for the step only."""
+        """BSD `wc` pads its count (`     294`), which would split `captured_bytes=`.
+
+        The producer normalises the number and the parser stays strict. A `wc` shim
+        that pads like BSD goes ahead of PATH so this runs on every host."""
         bash = _bash()
         real_wc = shutil.which("wc")
         if bash is None or real_wc is None:
@@ -1053,14 +1037,10 @@ class TestOpusDiscoveryCaptureExecutes:
     def test_denials_are_counted_by_exact_tool_name_and_never_echoed(
         self, lane: str, tmp_path: Path
     ) -> None:
-        """`permission_denials` alone could not say WHICH tool the reviewer was
-        refused (4 denials on the run that lost its marker). The split counts
-        match `tool_name` exactly against the four tools the lane allows and
-        fold everything else into `other`: a name outside the four, a
-        lower-case variant, a non-string name, an entry with no name, and an
-        entry that is not an object at all. The five sum to the total. Tool
-        names and arguments are model-chosen text, so they are planted as
-        sentinels and must not reach stdout or stderr."""
+        """Denials are split by exact `tool_name` over the four allowed tools plus `other`.
+
+        Lower-case, non-string, missing names and non-objects go to `other`; the five
+        sum to the total. Names and arguments are model text, so they are sentinels."""
         messages = _capture_messages("CANDIDATE 1 — a.py:1 — SENTINEL_RESULT_TEXT")
         messages[-1]["permission_denials"] = [
             {"tool_name": "Read", "tool_input": {"file_path": "/x/SENTINEL_TOOL_ARG_PATH"}},
@@ -1319,13 +1299,10 @@ class TestOpusDiscoveryCaptureExecutes:
 
 
 class TestClaudeReviewQualityDimensions:
-    """The reviewer covers logic/quality, not just the AUTOSDE security rules --
-    but broadening what it LOOKS AT must not broaden what BLOCKS.
+    """The reviewer looks at logic and quality, but what it looks at does not widen what blocks.
 
-    The contract lives in `.github/review-prompts/*.md`
-    (discovery looks, validation decides), so each assertion follows the clause to
-    whichever stage owns it. A stage losing its
-    clause still fails here.
+    Each assertion follows its clause to the `.github/review-prompts/*.md` stage that
+    owns it (discovery looks, validation decides).
     """
 
     def test_all_seven_dimensions_present(self) -> None:
@@ -1377,13 +1354,10 @@ class TestClaudeReviewQualityDimensions:
         assert "Judge" in disco and "behaviour, not form" in disco
 
     def test_retired_single_user_premise_is_gone(self) -> None:
-        """Both opus lanes must not carry the retired 'single-user tool ...
-        proportional to that shape' premise. The deployment-neutral framing
-        replaces it, and the two shared prompt files must not lag the four
-        workflow-inline reviewer prompts -- a lane reading the same repo must
-        not contradict another. The replacement text still quotes "single-user
-        tool" once, as an example of forbidden reasoning -- that is intentional and
-        not the retired premise.
+        """The shared Opus prompts carry the deployment-neutral framing, not a user count.
+
+        The text still quotes "single-user tool" once, as an example of forbidden
+        reasoning.
         """
         for stage in ("opus-discovery", "opus-validate"):
             text = _flat(_review_prompt(stage))

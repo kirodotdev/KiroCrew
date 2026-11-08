@@ -42,8 +42,9 @@ export function useMobileNavRail(): MobileNavRailRenderer | null {
  * crewmate from an effect, so a bar keyed on the URL alone drew the logo row
  * for the frames before `?member=` landed, then dropped it -- a flicker on
  * every switch to the tab. Until the page reports `open` the shell keeps its
- * nav-drawer swipe on, so the navigation stays one swipe away while a slow
- * read is still out. `roster` gives the regular bar back: the page reports it
+ * nav-drawer swipe on and puts a nav-drawer toggle in the bar, so the
+ * navigation stays one swipe or one tap away while a slow read is still out.
+ * `roster` gives the regular bar back: the page reports it
  * for the bare roster with nothing to open (an empty roster, a failed read, a
  * link that names no one) and on unmount, including through its error
  * boundary. `null` outside the shell (popout and embed frames).

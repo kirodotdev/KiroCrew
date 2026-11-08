@@ -32,7 +32,11 @@ const QUESTION_NAME_MAX = 80
 /** The question a restored-answer notice quotes: the card's first question, on one line. */
 export function questionName(questions: ReadonlyArray<{ question: string }> | undefined): string {
   const text = (questions?.[0]?.question ?? '').replace(/\s+/g, ' ').trim()
-  return text.length > QUESTION_NAME_MAX ? `${text.slice(0, QUESTION_NAME_MAX - 1)}…` : text
+  if (text.length <= QUESTION_NAME_MAX) return text
+  // Cut on a code-point boundary so an emoji is never quoted as half a pair.
+  const head = text.slice(0, QUESTION_NAME_MAX - 1)
+  const last = head.charCodeAt(head.length - 1)
+  return `${last >= 0xd800 && last <= 0xdbff ? head.slice(0, -1) : head}…`
 }
 
 /** The session-view notice for an answer handed back to the composer; unnamed when the question is unknown. */

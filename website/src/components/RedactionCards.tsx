@@ -15,16 +15,21 @@
  */
 import React, { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { flushSync } from 'react-dom'
+import { OverlayPortal, useCloseWhenCrewHidden, useLocalCrewHidden } from './overlayRoot'
 import { noteInPlaceResize } from '../hooks/virtualizer/inPlaceResize'
-import { Check, ChevronRight, Copy, Link2Off, Lock, Shield, TriangleAlert, X } from 'lucide-react'
+import { TOUCH_REPLAY_WINDOW_MS } from './InstantTip'
+import { Check, ChevronRight, Copy, Link2Off, Lock, Shield, X } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import type { Element as HastElement, Root as HastRoot, RootContent, Text as HastText } from 'hast'
 import { copyToClipboard } from '../utils/clipboard'
-import ErrorNotice from './ErrorNotice'
 import { api } from '../api/client'
 import { falsePositiveIssueUrl } from '../prompts/redactionReport'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { ActionRow, btnCls, btnPrimaryCls, btnWarnCls, CODE, ErrorLine, escapeInvisibleChars, FeedbackButton, linkBtnCls, pillCls, StatusLine } from './redactionPrimitives'
+import { RevealValue, useRevealCache, type RevealCache } from './RedactedValueReveal'
+
+export { escapeInvisibleChars }
 
 
 /** Where the RFC explains redaction; every "About" link opens it. */
@@ -44,6 +49,9 @@ export interface CredentialRecord {
   source: CredentialSource | null
   view_command: string | null
   profile_command: string | null
+  /** Handle of the removed value in gateway memory, for the owner's reveal.
+   *  Null when the value was not kept (an older reply, or too large). */
+  reveal_id: string | null
 }
 
 export interface BlockedLink {
@@ -61,6 +69,8 @@ const COMMAND_MAX = 1000
 const PATH_MAX = 512
 const SECTION_RE = /^[A-Za-z0-9 _./:@-]{1,64}$/
 const CRED_KEYS = ['ordinal', 'rule', 'label', 'source', 'view_command', 'profile_command']
+const REVEAL_KEY = 'reveal_id'
+const REVEAL_ID_RE = /^rv_[A-Za-z0-9_-]{22}$/
 
 /** Control, format and bidi characters (Unicode category C): a command or
  *  path carrying one can read differently on screen from what it runs. */
@@ -90,9 +100,11 @@ export function normalizeCredentialRecords(raw: unknown): CredentialRecord[] {
   for (const item of raw.slice(0, 64)) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue
     const r = item as Record<string, unknown>
-    const keys = Object.keys(r)
+    const keys = Object.keys(r).filter(k => k !== REVEAL_KEY)
     if (keys.length !== CRED_KEYS.length || !CRED_KEYS.every(k => k in r)) continue
     const { ordinal, rule, label, source, view_command: view, profile_command: profile } = r
+    const handle = r[REVEAL_KEY]
+    if (handle !== undefined && handle !== null && !(typeof handle === 'string' && REVEAL_ID_RE.test(handle))) continue
     if (typeof ordinal !== 'number' || !Number.isInteger(ordinal) || ordinal < 0) continue
     if (typeof rule !== 'string' || !RULE_RE.test(rule)) continue
     if (typeof label !== 'string' || (label !== '' && !LABEL_RE.test(label))) continue
@@ -106,6 +118,7 @@ export function normalizeCredentialRecords(raw: unknown): CredentialRecord[] {
       source: source as CredentialSource | null,
       view_command: view as string | null,
       profile_command: profile as string | null,
+      reveal_id: typeof handle === 'string' ? handle : null,
     })
   }
   return out
@@ -136,14 +149,6 @@ export function openableBlockedLinkUrl(url: unknown, domain: string): string | n
   return url
 }
 
-/** Every control, format or bidi character as visible percent-escapes, so the
- *  text on screen cannot read differently from where it points. */
-export function escapeInvisibleChars(text: string): string {
-  const bytes = new TextEncoder()
-  return text.replace(/\p{C}/gu, ch =>
-    Array.from(bytes.encode(ch), b => `%${b.toString(16).toUpperCase().padStart(2, '0')}`).join(''),
-  )
-}
 
 /** Keep only well-formed blocked-link records, dropping a bad one individually. */
 export function normalizeBlockedLinks(raw: unknown): BlockedLink[] {
@@ -199,7 +204,7 @@ export function blockedLinksForDomain(records: readonly BlockedLink[], domain: s
  * and the server then serves this host's links as plain links with their
  * records dropped, so the card would lose what it renders from. The hold
  * keeps those records, and the "Allowed · Undo" outcome, for this one reply
- * until its card closes.
+ * until its card closes (a reply with no message time keeps it while mounted).
  */
 export interface AllowHold {
   workspace: string
@@ -208,6 +213,8 @@ export interface AllowHold {
   /** The card the host was allowed from. The reloaded reply reopens that
    *  card id; when no block lists it, no card shows. */
   cardId: string
+  /** The card entry Allow was pressed from, the one that shows the outcome. */
+  entry: number
 }
 
 /**
@@ -283,10 +290,16 @@ interface RedactionUi {
   /** This reply's message time, so an allow or undo can ask the reload to
    *  re-serve this row even when it is above the newest page (#17023). */
   messageTs?: string
+  /** This reply's allow outcomes, by host: the holds under `replyKey`, or, on
+   *  a reply with no message time, the reply's own. */
+  holds: ReadonlyMap<string, AllowHold>
+  setHold: (domain: string, hold: AllowHold) => void
   /** This is the session's first reply with removed values: it carries the
    *  coach after the first block it explains. */
   coached: boolean
   openId: string | null
+  /** The owner's revealed values for this reply, cleared when it unmounts. */
+  revealCache: RevealCache
   triggerRef: React.RefObject<HTMLElement | null>
   toggle: (id: string, trigger: HTMLElement) => void
   close: () => void
@@ -297,7 +310,10 @@ const RedactionUiCtx = createContext<RedactionUi>({
   firstCredential: -1,
   coached: false,
   blockedLinks: [],
+  holds: EMPTY_HOLDS,
+  setHold: () => {},
   openId: null,
+  revealCache: { values: new Map(), requests: new Map(), alive: false },
   triggerRef: { current: null },
   toggle: () => {},
   close: () => {},
@@ -321,6 +337,7 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
     return first ? first.cardId : null
   })
   const triggerRef = useRef<HTMLElement | null>(null)
+  const revealCache = useRevealCache()
   const close = useCallback(() => {
     setOpenId(null)
     const el = triggerRef.current
@@ -339,22 +356,35 @@ export function RedactionProvider({ credentials, blockedLinks, slotKey, replyKey
   }, [])
   // A hold lasts while its card is open: closing it, or opening another card
   // of this reply, lets the reply render from its own records again.
-  const holds = useAllowHolds(replyKey)
+  const shared = useAllowHolds(replyKey)
   useEffect(() => {
     if (!replyKey) return
-    for (const [domain, hold] of holds) if (openId !== hold.cardId) setAllowHold(replyKey, domain, null)
-  }, [openId, replyKey, holds])
+    for (const [domain, hold] of shared) if (openId !== hold.cardId) setAllowHold(replyKey, domain, null)
+  }, [openId, replyKey, shared])
+  // A reply with no message time has no shared hold, so its outcomes stay
+  // with the reply, across its card closing and reopening.
+  const [own, setOwn] = useState(EMPTY_HOLDS)
+  const holds = replyKey ? shared : own
+  const setHold = useCallback((domain: string, hold: AllowHold) => {
+    if (replyKey) setAllowHold(replyKey, domain, hold)
+    else setOwn(cur => new Map(cur).set(domain, hold))
+  }, [replyKey])
+  // The card is inline in the transcript (not portalled), so it stays mounted
+  // and comes back as it was on a Crew switch. Only the Escape key handler
+  // stands down while the local Crew is hidden, so Escape on the remote Crew
+  // cannot silently close a card the user left open.
+  const hidden = useLocalCrewHidden()
   useEffect(() => {
-    if (openId === null) return
+    if (openId === null || hidden) return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [openId, close])
+  }, [openId, close, hidden])
   const value = useMemo(() => {
     const map = new Map(credentials.map(r => [r.ordinal, r]))
     const first = credentials.length ? Math.min(...credentials.map(r => r.ordinal)) : -1
-    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, messageTs, coached, openId, triggerRef, toggle, close }
-  }, [credentials, blockedLinks, slotKey, replyKey, messageTs, coached, openId, toggle, close])
+    return { credentials: map, firstCredential: first, blockedLinks, slotKey, replyKey, messageTs, holds, setHold, coached, openId, revealCache, triggerRef, toggle, close }
+  }, [credentials, blockedLinks, slotKey, replyKey, messageTs, holds, setHold, coached, openId, revealCache, toggle, close])
   return <RedactionUiCtx.Provider value={value}>{children}</RedactionUiCtx.Provider>
 }
 
@@ -363,65 +393,8 @@ export function useRedactionUi(): RedactionUi {
 }
 
 // ── shared primitives (the prototype's .btn / .pop / .act / .disc / .foot) ──
+// The buttons, status lines and action row live in ./redactionPrimitives.
 
-// Touch targets grow to 44px on hover-less (touch) screens, as the prototype asks.
-const touchTarget = '[@media(hover:none)]:min-h-11'
-const btnBase = 'inline-flex items-center justify-center whitespace-nowrap rounded-md border bg-card px-2.5 py-[3px] text-[12px] leading-[18px] min-h-7 text-card-fg cursor-pointer hover:border-border-strong hover:bg-bg-hover disabled:cursor-default disabled:opacity-70'
-const btnCls = [btnBase, 'border-border', touchTarget].join(' ')
-const btnPrimaryCls = [btnBase, 'border-accent bg-accent-subtle', touchTarget].join(' ')
-const btnWarnCls = [btnBase, 'border-warn', touchTarget].join(' ')
-// inline-flex so the label centres inside the 44px touch box instead of
-// sitting at its top; an <a> otherwise lays its text out from the top edge.
-const linkBtnCls = ['inline-flex items-center justify-start border-0 bg-transparent px-0.5 py-1 min-h-6 text-left text-accent cursor-pointer', touchTarget].join(' ')
-const pillCls = 'inline-block whitespace-nowrap rounded-full border border-border px-[7px] text-[11px] leading-4 text-muted'
-const CODE = 'rounded border border-border bg-bg-elevated px-1 font-mono text-[12px]'
-
-/** A button whose label swaps to a confirmation for a moment ("Copied"). */
-function FeedbackButton({ className, label, done, onClick, testId }: {
-  className: string
-  label: string
-  done: string
-  onClick: () => Promise<boolean> | boolean
-  testId?: string
-}) {
-  const [busy, setBusy] = useState(false)
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current) }, [])
-  return (
-    <button
-      type="button"
-      className={className}
-      disabled={busy}
-      data-testid={testId}
-      onClick={async () => {
-        if (busy) return
-        const ok = await onClick()
-        if (!ok) return
-        setBusy(true)
-        timer.current = setTimeout(() => setBusy(false), 1600)
-      }}
-    >
-      <span aria-live="polite">{busy ? done : label}</span>
-    </button>
-  )
-}
-
-/** A persistent status line with its own action (the prototype's .fbline). */
-function StatusLine({ children, testId }: { children: React.ReactNode; testId?: string }) {
-  return (
-    <div role="status" data-testid={testId} className="mt-1.5 flex flex-wrap items-center gap-2 rounded-lg border border-ok bg-ok-subtle px-2 py-1.5 text-[12px] leading-[18px] text-card-fg">
-      {children}
-    </div>
-  )
-}
-
-function ErrorLine({ message, testId }: { message: string; testId?: string }) {
-  return (
-    <div className="mt-1.5">
-      <ErrorNotice variant="inline" askAgent message={message} testId={testId} />
-    </div>
-  )
-}
 
 /** How long a reveal takes; the exit keeps its content mounted this long. */
 export const REVEAL_MS = 180
@@ -824,34 +797,6 @@ function CardFrame() {
   )
 }
 
-/** The prototype's .act row: what an action does, and its button. */
-function ActionRow({ title, note, command, warning, children }: {
-  title: React.ReactNode
-  note?: string
-  command?: string | null
-  /** A red line under the command, for a command the reader must check. */
-  warning?: string
-  children: React.ReactNode
-}) {
-  return (
-    <div className="mt-1.5 flex items-center justify-between gap-2.5 rounded-lg border border-border bg-card px-2 py-1.5 text-[12px] leading-[18px] text-card-fg max-[640px]:flex-col max-[640px]:items-stretch">
-      <div className="min-w-0">
-        <div>
-          {title}
-          {note && <span className="text-[11px] text-muted"> {note}</span>}
-        </div>
-        {command && <code className="inline-block break-words rounded bg-bg-elevated px-[.4em] py-[.15em] font-mono text-[12px] text-text">{escapeInvisibleChars(command)}</code>}
-        {warning && (
-          <div data-testid="redaction-command-warning" className="mt-1 flex items-start gap-1 text-[11px] font-medium leading-4 text-danger">
-            <TriangleAlert size={12} aria-hidden="true" className="mt-0.5 shrink-0" />
-            <span>{warning}</span>
-          </div>
-        )}
-      </div>
-      {children}
-    </div>
-  )
-}
 
 function Foot({ children }: { children: React.ReactNode }) {
   return <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] leading-4 text-muted">{children}</div>
@@ -943,6 +888,187 @@ function TerminalAction({ title, note, command, label, primary = true, agentWrit
   )
 }
 
+// ── hover preview ────────────────────────────────────────────────────────
+
+/** How long a mouse rests on a marker before its preview opens, and how long
+ *  the preview stays after the mouse leaves, so it can cross into the panel. */
+export const PREVIEW_OPEN_MS = 300
+export const PREVIEW_CLOSE_MS = 200
+const PREVIEW_MAX_W = 340
+
+interface PreviewAnchor { left: number; top: number; below: boolean }
+
+function anchorFor(el: HTMLElement): PreviewAnchor {
+  const r = el.getBoundingClientRect()
+  const below = window.innerHeight - r.bottom >= 160 || r.top < 160
+  return { left: r.left, top: below ? r.bottom + 4 : r.top - 4, below }
+}
+
+/** Whether ``el`` still shows inside the window and inside ``scroller``, the
+ *  element that just scrolled, when that element holds it. */
+function markerInView(el: HTMLElement, scroller: EventTarget | null): boolean {
+  const r = el.getBoundingClientRect()
+  if (r.bottom < 0 || r.top > window.innerHeight) return false
+  if (scroller instanceof Element && scroller !== el && scroller.contains(el)) {
+    const box = scroller.getBoundingClientRect()
+    if (r.bottom < box.top || r.top > box.bottom) return false
+  }
+  return true
+}
+
+/**
+ * The hover/focus preview of one marker. It opens after a mouse rests on the
+ * marker, or at once on keyboard focus; a press (mouse, touch or pen) never
+ * opens it, so a tap still goes straight to the card. It stays hidden while
+ * the marker's card is open, since the card already says everything it says.
+ *
+ * The panel is read-only: it explains the marker and holds no control, so
+ * focus never enters it and no key on the marker is taken. A preview that
+ * keyboard focus opened stays while the mouse passes over and away; blur,
+ * Escape, or its marker scrolling out of view closes it. One the mouse opened
+ * keeps a short close delay so the pointer can cross into it to read.
+ *
+ * Not `useInstantTip`: that bubble closes on mouse leave, so the pointer
+ * cannot cross into it, and a focus-opened tip would close under a passing
+ * mouse. The touch-replay window is the shared one, so the two cannot drift on
+ * what counts as a tap.
+ */
+function useMarkerPreview(cardId: string) {
+  const { openId } = useRedactionUi()
+  const [open, setOpen] = useState(false)
+  const [anchor, setAnchor] = useState<PreviewAnchor | null>(null)
+  const zoneRef = useRef<HTMLElement | null>(null)
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // A press focuses the button too, and on touch that focus lands only after
+  // the tap ends; a focus this soon after a press must not open the preview.
+  const pressedAt = useRef(-Infinity)
+  // Set while keyboard focus holds the preview open; pointer leave ignores it.
+  const byFocus = useRef(false)
+  const shown = open && openId !== cardId
+  const panelId = `${cardId}-preview`
+
+  const cancel = () => clearTimeout(timer.current)
+  const cardOpen = useRef(false)
+  cardOpen.current = openId === cardId
+  const show = useCallback((viaFocus: boolean) => {
+    clearTimeout(timer.current)
+    if (cardOpen.current) return
+    if (viaFocus) byFocus.current = true
+    if (zoneRef.current) setAnchor(anchorFor(zoneRef.current))
+    setOpen(true)
+  }, [])
+  const hide = useCallback(() => { clearTimeout(timer.current); byFocus.current = false; setOpen(false) }, [])
+  // An opening card replaces the preview, so it is not waiting behind the
+  // card to reappear when the card closes.
+  useEffect(() => { if (openId === cardId) hide() }, [openId, cardId, hide])
+  const later = (fn: () => void, ms: number) => { clearTimeout(timer.current); timer.current = setTimeout(fn, ms) }
+  useEffect(() => () => clearTimeout(timer.current), [])
+  // Hide the preview when the local Crew is hidden, so the window key
+  // listener is unregistered before the remote Crew receives key events.
+  useCloseWhenCrewHidden(shown, hide)
+  // Keep the panel on its marker while the transcript scrolls under it, and
+  // close it once the marker scrolls out of view, so it never floats over
+  // unrelated content. Escape pressed anywhere closes it. While focus is on
+  // the marker the Escape is caught on the way down and stopped, so a drawer
+  // or dialog holding the transcript stays open and the first Escape closes
+  // only the preview. A preview opened by hover alone closes but lets the
+  // Escape through, so it still reaches the focused composer or dialog.
+  useEffect(() => {
+    if (!shown) return
+    const follow = (e: Event) => {
+      const el = zoneRef.current
+      if (!el) return
+      if (!markerInView(el, e.type === 'scroll' ? e.target : null)) { hide(); return }
+      setAnchor(anchorFor(el))
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (buttonRef.current === document.activeElement) e.stopPropagation()
+      hide()
+    }
+    window.addEventListener('scroll', follow, true)
+    window.addEventListener('resize', follow)
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('scroll', follow, true)
+      window.removeEventListener('resize', follow)
+      window.removeEventListener('keydown', onKey, true)
+    }
+  }, [shown, hide])
+
+  const isMouse = (e: React.PointerEvent) => e.pointerType === 'mouse'
+  const leave = (e: React.PointerEvent) => { if (isMouse(e) && !byFocus.current) later(hide, PREVIEW_CLOSE_MS) }
+
+  const zoneProps = {
+    onPointerEnter: (e: React.PointerEvent) => { if (isMouse(e)) later(() => show(false), PREVIEW_OPEN_MS) },
+    onPointerLeave: leave,
+    onPointerDown: () => { pressedAt.current = performance.now(); hide() },
+  }
+  const buttonProps = {
+    'aria-describedby': shown ? panelId : undefined,
+    onFocus: (e: React.FocusEvent) => {
+      if (performance.now() - pressedAt.current < TOUCH_REPLAY_WINDOW_MS) return
+      // Focus coming back from the closing card is not a reader arriving.
+      const from = e.relatedTarget
+      if (from instanceof Node && document.getElementById(cardId)?.contains(from)) return
+      show(true)
+    },
+    onBlur: () => hide(),
+  }
+  const panelProps = {
+    onPointerEnter: (e: React.PointerEvent) => { if (isMouse(e)) cancel() },
+    onPointerLeave: leave,
+  }
+  return { shown, anchor, panelId, zoneRef, buttonRef, panelRef, zoneProps, buttonProps, panelProps }
+}
+
+type MarkerPreview = ReturnType<typeof useMarkerPreview>
+
+/**
+ * The preview panel: what was removed and the rule in plain words. It is
+ * read-only. Every action stays on the marker's card, so the card's own
+ * confirmations and outcomes are the only path that does anything.
+ */
+function PreviewPanel({ preview, title, testId, children }: {
+  preview: MarkerPreview
+  title: string
+  testId: string
+  children: React.ReactNode
+}) {
+  // Clamp against the panel's real width, so a short panel near the right
+  // edge stays under its marker instead of moving by the full maximum width.
+  const [width, setWidth] = useState(PREVIEW_MAX_W)
+  useLayoutEffect(() => {
+    const w = preview.panelRef.current?.offsetWidth
+    if (w && w !== width) setWidth(w)
+  }, [preview.shown, preview.anchor, preview.panelRef, width])
+  if (!preview.shown || !preview.anchor) return null
+  const { anchor } = preview
+  return (
+    <OverlayPortal>
+      <div
+        ref={preview.panelRef}
+        id={preview.panelId}
+        role="tooltip"
+        data-testid={testId}
+        {...preview.panelProps}
+        className="fixed z-[130] w-max rounded-lg border border-border bg-bg-elevated p-2.5 text-[12px] leading-[18px] text-card-fg shadow-lg"
+        style={{
+          maxWidth: `min(${PREVIEW_MAX_W}px, calc(100vw - 16px))`,
+          left: Math.max(8, Math.min(anchor.left, window.innerWidth - width - 8)),
+          top: anchor.below ? anchor.top : undefined,
+          bottom: anchor.below ? undefined : window.innerHeight - anchor.top,
+        }}
+      >
+        <div className="mb-0.5 font-semibold [overflow-wrap:anywhere]">{title}</div>
+        <div data-testid="redaction-preview-body" className="[overflow-wrap:anywhere]">{children}</div>
+      </div>
+    </OverlayPortal>
+  )
+}
+
 // ── credential ───────────────────────────────────────────────────────────
 
 const SESSION_TOKEN_RULES = new Set(['aws_session_token'])
@@ -967,25 +1093,41 @@ function credentialMatched(rule: string): string {
 export function CredentialTag({ ordinal, placeholder }: { ordinal: number; placeholder: string }) {
   useLanguageGeneration()
   const { credentials, firstCredential, openId, toggle } = useRedactionUi()
+  const id = `rx-cred-${ordinal}`
+  const preview = useMarkerPreview(id)
   const record = credentials.get(ordinal)
   if (!record) return <>{placeholder}</>
-  const id = `rx-cred-${ordinal}`
+  const session = SESSION_TOKEN_RULES.has(record.rule)
   return (
     <>
       {record.label}
       <button
         type="button"
+        ref={el => { preview.zoneRef.current = el; preview.buttonRef.current = el }}
         data-testid="credential-tag"
         aria-expanded={openId === id}
         aria-controls={id}
         aria-label={i18nT('components.redaction.cred_tag_aria')}
+        {...preview.zoneProps}
+        {...preview.buttonProps}
         onClick={e => toggle(id, e.currentTarget)}
         className="relative inline-flex min-h-[18px] cursor-pointer items-center gap-1 whitespace-nowrap rounded-[5px] border border-info bg-info-subtle px-1.5 align-[-1px] font-sans text-[11px] leading-4 text-card-fg hover:bg-bg-hover max-[640px]:whitespace-normal [@media(hover:none)]:after:absolute [@media(hover:none)]:after:-inset-[13px] [@media(hover:none)]:after:content-['']"
       >
         <Lock size={12} aria-hidden="true" className="shrink-0" />
-        {i18nT(SESSION_TOKEN_RULES.has(record.rule) ? 'components.redaction.cred_tag_session' : 'components.redaction.cred_tag')}
+        {i18nT(session ? 'components.redaction.cred_tag_session' : 'components.redaction.cred_tag')}
         {ordinal === firstCredential && <span className="text-muted">· {i18nT('components.redaction.cred_why')}</span>}
       </button>
+      <PreviewPanel
+        preview={preview}
+        title={i18nT(session ? 'components.redaction.preview_session_title' : 'components.redaction.preview_cred_title')}
+        testId="credential-preview"
+      >
+        {credentialMatched(record.rule)}
+        <br />
+        {/* The floor: the value was never saved. Only the owner can reveal it,
+            from the card, while the gateway still holds it in memory. */}
+        <span data-testid="credential-preview-floor">{i18nT('components.redaction.preview_cred_floor')}</span>
+      </PreviewPanel>
     </>
   )
 }
@@ -1009,6 +1151,7 @@ function sourceLine(source: CredentialSource | null) {
 
 function CredentialCard({ record }: { record: CredentialRecord }) {
   useLanguageGeneration()
+  const ui = useRedactionUi()
   const session = SESSION_TOKEN_RULES.has(record.rule)
   const id = `rx-cred-${record.ordinal}`
   const src = record.source
@@ -1022,6 +1165,7 @@ function CredentialCard({ record }: { record: CredentialRecord }) {
         <br />
         {sourceLine(src)}
       </div>
+      <RevealValue key={`${ui.slotKey ?? ''}|${record.reveal_id ?? ''}`} revealId={record.reveal_id} slotKey={ui.slotKey} cache={ui.revealCache} />
       {primary && (
         <TerminalAction
           title={session ? i18nT('components.redaction.cred_profile_title') : i18nT('components.redaction.cred_view_title')}
@@ -1131,6 +1275,7 @@ export function RedactionCoach({ count, slotKey }: { count: number; slotKey?: st
           <li className="my-0.5"><Trans i18nKey="components.redaction.coach_fact_saved" components={[<b key="0" />, <b key="1" />]} /></li>
           <li className="my-0.5"><Trans i18nKey="components.redaction.coach_fact_always" components={[<b key="0" />, <b key="1" />]} /></li>
           <li className="my-0.5"><Trans i18nKey="components.redaction.coach_fact_source" components={[<b key="0" />, lock]} /></li>
+          <li className="my-0.5"><Trans i18nKey="components.redaction.coach_fact_secrets" components={[<b key="0" />]} /></li>
         </ol>
         <div className="mt-1.5 text-[12px] leading-[18px] text-muted">{i18nT('components.redaction.coach_foot')}</div>
         <div className="mt-2.5 flex flex-wrap items-center gap-2">
@@ -1171,6 +1316,22 @@ export function RedactionCoach({ count, slotKey }: { count: number; slotKey?: st
 /** Rules an allowed host relaxes: the host exemption skips only these. */
 const ALLOWABLE_RULES = new Set(['exfil_query_length', 'exfil_query_pattern'])
 
+/**
+ * Hosts the allowed-host list can hold: the shape `redaction_allow._HOST_RE`
+ * accepts, a DNS name with a letter TLD. An IP literal is refused there, so the
+ * card offers no Allow for it rather than one that always fails. A `*.localhost`
+ * name is refused too (`redaction_allow.LOOPBACK_SUFFIX`): browsers send it to
+ * loopback without a lookup.
+ */
+const ALLOWABLE_HOST_RE = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$/
+const LOOPBACK_SUFFIX = '.localhost'
+const MAX_TLD_LEN = 63
+function isAllowableHost(host: string): boolean {
+  const h = host.toLowerCase()
+  const tld = h.slice(h.lastIndexOf('.') + 1)
+  return ALLOWABLE_HOST_RE.test(h) && !h.endsWith(LOOPBACK_SUFFIX) && tld.length <= MAX_TLD_LEN
+}
+
 function linkReason(record: BlockedLink): string {
   switch (record.rule) {
     case 'exfil_query_length':
@@ -1209,14 +1370,18 @@ export function BlockedLinkChip({ domain, placeholder, block, tail = '' }: {
 }) {
   useLanguageGeneration()
   const { blockedLinks, openId, toggle } = useRedactionUi()
+  const id = blockedLinkCardId(domain, block)
+  const preview = useMarkerPreview(id)
   const group = blockedLinksForDomain(blockedLinks, domain)
   if (group.length === 0) return <>{placeholder}{tail}</>
-  const id = blockedLinkCardId(domain, block)
   return (
+    <>
     <span
+      ref={preview.zoneRef}
       role="group"
       aria-label={i18nT('components.redaction.link_tag')}
       data-testid="blocked-link-chip"
+      {...preview.zoneProps}
       className="inline-flex min-h-[26px] max-w-full cursor-default flex-wrap items-center gap-1.5 rounded-lg border border-dashed border-warn bg-warn-subtle py-0.5 pl-2 pr-1.5 align-middle text-[12px] leading-5 text-card-fg"
     >
       <Link2Off size={12} aria-hidden="true" className="shrink-0" />
@@ -1224,8 +1389,10 @@ export function BlockedLinkChip({ domain, placeholder, block, tail = '' }: {
       <span className="break-all font-mono text-[12px] text-card-fg [text-box:trim-both_cap_alphabetic]" data-testid="blocked-link-target">{domain}</span>
       <button
         type="button"
+        ref={preview.buttonRef}
         aria-expanded={openId === id}
         aria-controls={id}
+        {...preview.buttonProps}
         onClick={e => toggle(id, e.currentTarget)}
         data-testid="blocked-link-inspect"
         className="relative inline-flex min-h-[18px] cursor-pointer items-center rounded-[5px] border border-warn bg-transparent px-1.5 text-[11px] leading-4 text-card-fg hover:bg-bg-hover [@media(hover:none)]:after:absolute [@media(hover:none)]:after:-inset-[13px] [@media(hover:none)]:after:content-['']"
@@ -1233,6 +1400,40 @@ export function BlockedLinkChip({ domain, placeholder, block, tail = '' }: {
         <span className="[text-box:trim-both_cap_alphabetic]">{i18nT('components.redaction.link_inspect')}</span>
       </button>
     </span>
+    {/* Beside the chip, not inside it: React events bubble out of a portal to
+        its React parent, and a press in the panel must not reach the chip. */}
+    <BlockedLinkPreview preview={preview} domain={domain} group={group} />
+    </>
+  )
+}
+
+/**
+ * What the chip's preview says: the rule in plain words for one address, or a
+ * pointer to the card when the host has several. It offers no action: opening
+ * a blocked link goes through the card's own confirmation and nowhere else.
+ */
+function BlockedLinkPreview({ preview, domain, group }: { preview: MarkerPreview; domain: string; group: readonly BlockedLink[] }) {
+  const single = group.length === 1 ? group[0] : null
+  return (
+    <PreviewPanel
+      preview={preview}
+      title={i18nT('components.redaction.preview_link_title', { host: domain })}
+      testId="blocked-link-preview"
+    >
+      {single ? (
+        <>
+          {/* A withheld address shows only the withheld sentence: it already
+              gives the reason, and the rule's sentence would repeat it. */}
+          {single.url === null ? (
+            <span data-testid="blocked-link-preview-withheld">
+              {i18nT(single.url_withheld === 'length' ? 'components.redaction.link_withheld_length' : 'components.redaction.link_withheld_credential')}
+            </span>
+          ) : linkReason(single)}
+        </>
+      ) : (
+        i18nT('components.redaction.preview_link_many')
+      )}
+    </PreviewPanel>
   )
 }
 
@@ -1254,13 +1455,13 @@ function MarkedUrl({ url }: { url: string }) {
 type Confirming = null | 'open' | 'allow'
 type Feedback = null | { kind: 'opened' } | { kind: 'allowed'; workspace: string } | { kind: 'undone' }
 
-function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: string }) {
-  const { slotKey, replyKey, messageTs, blockedLinks } = useRedactionUi()
-  const hold = useAllowHolds(replyKey).get(record.domain)
+function BlockedLinkEntry({ record, cardId, entry, allowed }: { record: BlockedLink; cardId: string; entry: number; allowed: boolean }) {
+  const { slotKey, messageTs, blockedLinks, holds, setHold } = useRedactionUi()
+  const hold = holds.get(record.domain)
   const [confirming, setConfirming] = useState<Confirming>(null)
-  // A card that re-renders after the reply reloads picks its outcome up from
-  // the hold, so "Allowed · Undo" stays on screen.
-  const [feedback, setFeedback] = useState<Feedback>(() => hold ? (hold.outcome === 'allowed' ? { kind: 'allowed', workspace: hold.workspace } : { kind: 'undone' }) : null)
+  // A card that re-renders after the reply reloads, or reopens, picks its
+  // outcome up from the hold, so "Allowed · Undo" stays on screen.
+  const [feedback, setFeedback] = useState<Feedback>(() => hold?.outcome === 'allowed' && hold.entry === entry ? { kind: 'allowed', workspace: hold.workspace } : null)
   const [error, setError] = useState<string | null>(null)
   const shownFeedback = useLast(feedback)
   const shownError = useLast(error)
@@ -1269,7 +1470,11 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
   const cancelRef = useRef<HTMLButtonElement>(null)
   useEffect(() => { if (confirming) cancelRef.current?.focus() }, [confirming])
   const url = record.url
-  const allowable = url !== null && ALLOWABLE_RULES.has(record.rule) && !!slotKey
+  const allowRule = url !== null && ALLOWABLE_RULES.has(record.rule) && !!slotKey
+  const allowable = allowRule && isAllowableHost(record.domain)
+  // Where Allow would otherwise sit, say why it is missing so a reader who
+  // has allowed other hosts does not take its absence for a bug.
+  const hostRefused = allowRule && !allowable
   const openOnce = () => {
     // Re-derived at the click, so what opens is the address on screen and it
     // passes the same shape check. noopener/noreferrer: the page gets no handle
@@ -1291,7 +1496,7 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
       setFeedback({ kind: 'allowed', workspace: res.workspace })
       // The reply reloads with this host's links shown as links again; the
       // hold keeps this card open over them with its Undo.
-      if (replyKey) setAllowHold(replyKey, record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed', cardId })
+      setHold(record.domain, { workspace: res.workspace, records: blockedLinksForDomain(blockedLinks, record.domain), outcome: 'allowed', cardId, entry })
       window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
     } catch {
       setError(i18nT('components.redaction.link_allow_failed'))
@@ -1303,9 +1508,10 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
       await api.redactionRevokeHost(workspace, record.domain)
       setError(null)
       setFeedback({ kind: 'undone' })
-      if (replyKey && hold) setAllowHold(replyKey, record.domain, { ...hold, outcome: 'undone' })
+      if (hold) setHold(record.domain, { ...hold, outcome: 'undone' })
       if (slotKey) window.dispatchEvent(new CustomEvent('mc:redaction-hosts-changed', { detail: { slot: slotKey, messageTs } }))
-      setTimeout(() => setFeedback(null), 1600)
+      // Clears "Undone" only: a re-Allow meanwhile keeps its "Allowed · Undo".
+      setTimeout(() => setFeedback(f => (f?.kind === 'undone' ? null : f)), 1600)
     } catch {
       setError(i18nT('components.redaction.link_undo_failed'))
     }
@@ -1349,12 +1555,17 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
             <button type="button" className={btnCls} data-testid="blocked-link-open-once" onClick={() => setConfirming('open')}>
               {i18nT('components.redaction.link_open_once')}
             </button>
-            {allowable && (
+            {allowable && !allowed && (
               <button type="button" className={btnWarnCls} data-testid="blocked-link-allow" onClick={() => setConfirming('allow')}>
                 {i18nT('components.redaction.link_allow')}
               </button>
             )}
           </div>
+          {hostRefused && (
+            <div className="mt-1.5 text-[12px] leading-[18px] text-muted" data-testid="blocked-link-allow-unsupported">
+              {i18nT('components.redaction.link_allow_unsupported')}
+            </div>
+          )}
         </>
       ) : (
         <div className="text-[13px] leading-5" data-testid="blocked-link-withheld">
@@ -1409,19 +1620,22 @@ function BlockedLinkEntry({ record, cardId }: { record: BlockedLink; cardId: str
 
 function BlockedLinkCard({ id }: { id: string }) {
   useLanguageGeneration()
-  const { blockedLinks } = useRedactionUi()
+  const { blockedLinks, holds } = useRedactionUi()
   const domain = blockedLinkCardDomain(id)
   const group = blockedLinksForDomain(blockedLinks, domain)
   if (group.length === 0) return null
+  // Allow acts on the host, so the title and every entry's Allow read the
+  // host's one hold: once allowed, no entry offers Allow again.
+  const allowed = holds.get(domain)?.outcome === 'allowed'
   // The host's distinct blocked links in this reply, in record order: nothing the
   // reply carries ties a chip to one record, so no entry is put first, and a
   // lone record is listed the same way, under its own address, with a title
-  // that speaks of the host's blocked links rather than "this link".
+  // that speaks of the host rather than "this link".
   return (
-    <CardShell id={id} title={i18nT('components.redaction.link_title_host')} testId="blocked-link-card">
+    <CardShell id={id} title={i18nT(allowed ? 'components.redaction.link_title_host_allowed' : 'components.redaction.link_title_host')} testId="blocked-link-card">
       {group.map((record, i) => (
         <div key={i} className={i > 0 ? 'mt-2 border-t border-border pt-2' : undefined}>
-          <BlockedLinkEntry record={record} cardId={id} />
+          <BlockedLinkEntry record={record} cardId={id} entry={i} allowed={allowed} />
         </div>
       ))}
       <Foot>
@@ -1681,6 +1895,7 @@ export function RedactedCodeBlock({ code, lang, base }: { code: string; lang?: s
   for (let o = base; o < base + n; o++) if (credentials.has(o)) ids.push(`rx-cred-${o}`)
   return (
     <>
+      {/* 'code-block' is a stable theming hook — see website/docs/theming-contract.md */}
       <div className="code-block group/code my-2 overflow-hidden rounded-xl border border-border bg-bg-elevated" data-testid="redacted-code-block">
         <div className="flex min-h-7 items-center justify-between py-1 pl-3 pr-1 text-[13px] text-muted">
           <span className="font-mono">{lang || 'code'}</span>

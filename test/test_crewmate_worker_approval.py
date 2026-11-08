@@ -47,6 +47,8 @@ def test_a_new_worker_takes_the_crewmates_profile_mode_not_its_threads(home):
     worker = state.get_slot(_create(state, caller)["target"])
     assert worker.agent == MATE_WORKER_AGENT
     assert (worker._trust, worker._trust_reads) == (False, True)
+    # The Profile's grant is explicit: a later change on the thread leaves it alone.
+    assert worker._posture_inherited is False
 
 
 @pytest.mark.parametrize(

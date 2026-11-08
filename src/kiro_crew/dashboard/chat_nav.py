@@ -145,6 +145,7 @@ async def _shared_link_summaries(state: DashboardState, links: list[dict]) -> li
     """
     bounded = [_bounded_link(link) for link in links]
     key = tuple((link["url"], link["context"]) for link in bounded)
+    _prune_link_summaries_from_other_loops(asyncio.get_running_loop())
     task = _LINK_SUMMARY_INFLIGHT.get(key)
     if task is None:
         if len(_LINK_SUMMARY_INFLIGHT) >= _LINK_SUMMARY_INFLIGHT_MAX:
@@ -158,6 +159,19 @@ async def _shared_link_summaries(state: DashboardState, links: list[dict]) -> li
 
         task.add_done_callback(_forget)
     return list(await asyncio.shield(task))
+
+
+def _prune_link_summaries_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop link-label calls bound to a loop other than the running one.
+
+    The map outlives its loop (an embedded gateway restart, or a test loop per
+    test). A task whose loop was torn down never runs ``_forget``, so its entry
+    would stay: an identical request would await it from the wrong loop, and it
+    would count against ``_LINK_SUMMARY_INFLIGHT_MAX`` forever.
+    """
+    for key, task in list(_LINK_SUMMARY_INFLIGHT.items()):
+        if task.get_loop() is not loop:
+            del _LINK_SUMMARY_INFLIGHT[key]
 
 
 async def _resolve_link_summaries(state: DashboardState, links: list[dict]) -> list[str]:

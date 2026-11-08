@@ -1,21 +1,11 @@
 """Pin: no ``exc_info`` log call in ``crew_log`` sits in a frame that holds a ``CrewLog``.
 
-A handle's write lease is released by a finalizer when the handle is dropped. A log record
-carrying ``exc_info`` carries the traceback, the traceback carries every frame between
-the ``except`` and the raise, and each of those frames reaches its CALLER through
-``tb_frame.f_back`` -- so the retained frames are the whole call stack at the time of the
-``except``, not just the span the exception crossed. A handler that keeps records
-(pytest's ``caplog``, a ``MemoryHandler``) then keeps those frames -- and any ``CrewLog``
-bound in them -- for as long as it keeps the record. That is how a lease outlived its
-test in the ninth hygiene pass, and it only shows when the test order puts a
-record-keeping handler next to the failure. This pin turns that order-dependent flake
-into a deterministic one: a NEW ``exc_info`` call inside a ``CrewLog`` method, or in a
-function that names a handle anywhere (a parameter, a local, an opener call), fails here
-on the first run. A site whose own frame names no handle but whose caller's does (the
-``f_back`` case) is not caught statically; it is pinned by a retention test that drives
-the real chain, see test_crew_log_session_tree_projection.py. The package's way to log an
-exception from such a frame is ``store.log_exception_text``, which renders the traceback
-to text.
+A handle's write lease is released by a finalizer when the handle is dropped. An
+``exc_info`` record keeps the traceback, and through ``tb_frame.f_back`` the whole call
+stack, so a record-keeping handler (``caplog``, a ``MemoryHandler``) keeps any ``CrewLog``
+bound there alive. That flake only shows under some test orders; this pin makes it
+deterministic. The caller-only (``f_back``) case is pinned in
+test_crew_log_session_tree_projection.py. Use ``store.log_exception_text`` instead.
 """
 
 from __future__ import annotations
@@ -31,31 +21,20 @@ PACKAGE = Path(crew_log_pkg.__file__).parent
 # no-handle check walks the whole source tree; only the vetted list is package-scoped.
 SOURCE_ROOT = Path(kiro_crew.__file__).parent
 
-# The vetted sites: (module, enclosing function). Each one is a scan or a sweep over the
-# store's directories with no handle in scope; a traceback there pins no lease. Adding a
-# site means adding it here AND satisfying the no-handle check below -- the check is what
-# keeps the list honest, the list is what makes a new site a deliberate act. The check
-# reads the whole function body, so a handle bound as a local later on (``handle =
-# CrewLog.open(...)``) fails it too; the list is not the only guard.
+# The vetted sites: (module, enclosing function), each with no handle in scope. A new site
+# must be added here AND pass the no-handle check, which reads the whole function body.
 VETTED: frozenset[tuple[str, str]] = frozenset(
     {
         ("emit_runtime.py", "_reap_child_origin"),
         ("holders.py", "holders"),
-        ("read.py", "dispatch_view"),
+        ("read.py", "_scanned_view"),
         ("session_tree.py", "reading"),
         ("session_tree.py", "chain"),
-        # The projection is a pure in-memory fold over records another writer already
-        # committed: the module names no handle at all, opens none, and takes none as a
-        # parameter, so no frame OF ITS OWN holds one -- which is why the no-handle check
-        # skips the file and each site is listed here. What its own frames cannot say is
-        # who CALLED them: ``record_opened``, ``record_adopted``, ``record_released`` and
-        # ``_schedule_checkpoint`` (through ``apply`` and ``apply_edge``) run under the
-        # emitter's edge recorder, whose ``log`` is a live handle, and a retained
-        # traceback reaches that frame through ``f_back``. Those four render to text and
-        # are NOT here. The five below are reached only from the dashboard's seed
-        # (``ensure_seeded`` and the two it calls), the maintenance pool's debounced write
-        # (``_save_checkpoint``), or ``store.remove_unit`` (the two retention doors), none
-        # of which hold a handle.
+        # The projection names no handle, but ``record_opened``, ``record_adopted``,
+        # ``record_released`` and ``_schedule_checkpoint`` run under the edge recorder's
+        # live ``log`` (reachable via ``f_back``), so those render to text and are not
+        # here. The five below are reached only from the seed, ``_save_checkpoint`` or
+        # ``store.remove_unit``, none of which hold a handle.
         ("session_tree_projection.py", "forget_unit"),
         ("session_tree_projection.py", "reconcile_unit_edge"),
         ("session_tree_projection.py", "retract_unit_parent"),
@@ -65,13 +44,8 @@ VETTED: frozenset[tuple[str, str]] = frozenset(
         ("session_tree_projection_seed.py", "ensure_seeded"),
         ("store_removal.py", "remove_unit"),
         ("store_retention.py", "sweep_expired"),
-        # The OTel roots gauge's collect-time read, run on the SDK's own collection
-        # thread -- never the emitter's writer frame. It names no handle, opens none,
-        # and takes none: it reads only the in-memory session-tree projection (a pure
-        # fold over records another writer committed), so no frame of its own holds a
-        # handle and no caller of its own does either. Its ``exc_info`` log pins no
-        # lease, which is why it joins the list with the same standing as the
-        # projection's own in-memory reads above.
+        # The OTel roots gauge reads only the in-memory projection on the SDK's own
+        # collection thread, so neither it nor its caller holds a handle.
         ("otel_session_tree_roots.py", "read_roots_with_children"),
     }
 )
@@ -85,12 +59,8 @@ HANDLE_NAMES: frozenset[str] = frozenset({"CrewLog", *HANDLE_OPENERS})
 def _mentions_handle(fn: ast.AST) -> bool:
     """Does anything in *fn* -- a parameter annotation, a local binding, a call -- name a handle?
 
-    Over-approximate on purpose: a method of ``CrewLog`` (``self``), a parameter annotated
-    ``CrewLog``, a local bound from ``CrewLog.open(...)`` / ``CrewLog.create(...)`` /
-    ``open_session_log(...)``, an ``isinstance(x, CrewLog)`` -- any of these means a frame
-    of this function may hold a handle when the traceback is taken, so a bare ``exc_info``
-    there is refused. A function that only mentions the class in a docstring is not caught
-    (docstrings are constants, not names), which is the right side to err on.
+    Over-approximate on purpose: any mention means a frame may hold a handle. A mention
+    only in a docstring is not caught, which is the right side to err on.
     """
     for node in ast.walk(fn):
         if isinstance(node, ast.Name) and node.id in HANDLE_NAMES:
@@ -151,14 +121,8 @@ def test_the_exc_info_sites_left_in_crew_log_are_exactly_the_vetted_ones() -> No
 def test_every_log_parameter_in_the_package_is_annotated() -> None:
     """The annotation IS the guard, so it is pinned on its own.
 
-    The no-handle check above decides whether a frame can hold a handle by reading names,
-    and a parameter annotated ``Any`` is invisible to it: erode ``log: CrewLog`` back to
-    ``log: Any`` and a restored ``exc_info=True`` in that function passes the check again
-    with nothing else going red. So every parameter named ``log`` in the package -- the
-    emitter, its writer and turn tracker, the store and the folds alike -- must say what it
-    is: a handle type, which the check above then sees, or a ``logging.Logger``, which is
-    explicitly not one. The modules import the handle type under ``TYPE_CHECKING`` only, so
-    this costs the boot path nothing.
+    The no-handle check reads names, so ``log: Any`` would hide a handle from it. Every
+    ``log`` parameter must be a handle type or a ``logging.Logger``.
     """
     untyped: list[tuple[str, str, int]] = []
     seen: dict[str, int] = {}

@@ -250,12 +250,12 @@ their module docstring instead.
 |---|---|---|---|
 | `preflight.py` | 0 | repo/branch/base/auth/permission/dirty/divergence/existing-PR blockers; fails closed on fetch failure | 0 ready · 30 blocker · 2 env |
 | `resolve_profile.py [root] [base_ref]` | 0 | the project profile as JSON | 0 · 2 env/parse |
-| `diff_signals.py [base] [--check-body]` | 1 / 2 / 3 | changed files + flagged signals; `--check-body` adds the two body checks and CI's template check on `<git-dir>/prepare-pr-body.md` | **0 · 20 unaccounted area · 21 `What changed` over `WORD_LIMIT` · 22 template section · 23 sibling list · 24 proof line · 25 a `Gate proof:` line the recorded proof contradicts (all `--check-body` only) · 2 env / body file missing** |
+| `diff_signals.py [base] [--check-body]` | 1 / 2 / 3 | changed files + flagged signals; `--check-body` adds the two body checks and CI's template check on `<git-dir>/prepare-pr-body.md` | **0 · 20 unaccounted area · 21 `What changed` over `WORD_LIMIT` · 22 template section · 23 sibling list · 24 proof line · 25 a `Gate proof:` line the recorded proof contradicts · 26 Pattern harvest heading or line missing on a `fix`/`revert` (all `--check-body` only) · 2 env / body file missing** |
 | `push_guard.py` | 1 / 2 / 3 | builds every commit and guards every push; each mode is shown at the step that runs it, and each refusal names its fix | **0 safe · 40 refused · 41 stray staged paths / op mid-way · 2 env · 64 usage** |
 | `pre_push_gate.py` | 2 / 3 | **optional, advisory**: runs the cheap CI gates on the diff, prints every failure, records a proof for the tree; nothing refuses a push (`references/pre-push-gate.md`) | **0 proof written · 50 a gate failed · 51 a gate could not run, no skip, or a dirty tree · 52 `--verify` found no proof · 2 env** |
 | `pr_status.py [pr#]` | 3 | readiness, rollup, threads, current-head runs and reviewer stamps; `--reviewers` pins the fleet; `--json` appends a machine line | **0 clean · 10 running · 20 failing/findings · 2 env** |
 | `regen_shared.py [base]` | 1 | rebuild shared generated files after the rebase (`references/split-and-regen.md`) | **0 · 20 rewrote · 2 env** |
-| `green_age.py [--base B] [--pr N]` | 3 | has the base moved in this PR's files since its CI ran? Information, never a gate | **0 fresh · 30 STALE · 2 env** |
+| `green_age.py [--base B] [--pr N]` | 3 | has the base moved in this PR's files since its CI ran? Information, never a gate | **0 fresh · 30 STALE · 31 STALE but the re-sync cap is spent, hand over · 2 env** |
 | `pr_findings.py [pr#]` | 3 | failing log tails, unresolved threads, reviewer findings with stable `span=` ids, whole-design items first | 0 · 2 env |
 | `pr_findings.py [pr#] --rounds` | 1 / 3 | the loop's cross-round memory, read from the PR thread: goal, dispositions per judged head, spans, self-added code, mechanisms, recurrence | **0 · 30 retrospective due · 2 env** |
 | `local_review.py --base origin/<base>` | 2 | writes one review brief per profile reviewer, extracted from CI's own workflow | 0 · 40 parity failure · 2 env |
@@ -344,7 +344,7 @@ that view; no local round log is needed.
   ambiguous large conflict; a hard external blocker (infra, permissions, a check
   that never runs). Recurrence, round count, a re-raised finding or self-added
   code is never one. When you pause, name the option you would take.
-- `monitor_start` is bounded to `max_cycles=288` and `max_runtime_secs=86400`
+- `monitor_start` is bounded to `max_cycles=144` and `max_runtime_secs=86400`
   (24 hours, Phase 4's watch included); the agent never raises either. At
   exhaustion, hand over `--rounds` and open findings. Phase 2 separately caps
   local review at 10 passes.
@@ -410,7 +410,7 @@ full suites are CI's job and the Phase 3 poll is the authority on them.
    - **Run the Playwright E2E suite when the diff adds a dashboard heading or tab label** — a new heading breaks existing `getByRole` locators with `strict mode violation`.
    - **Every new guard or validator helper must have a non-test caller.** `grep` outside `test/`. A change under `src/kiro_crew/deploy/` must be diffed against its `scripts/*.sh` counterpart, and vice versa.
    - **Run the flake-pattern ratchet** when the diff adds or changes a test: `python -m pytest -n0 test/test_flake_pattern_ratchet.py`. It counts the flaky shapes the semgrep rules below miss and compares each changed file with your merge-base, so first fetch the remote your branch was cut from (`upstream` for a fork). CI's Backend Tests run the same comparison and fail on a rise; the related-test runner does not select it, so run it here to see that first.
-   - **Run the repository's semgrep rules on the diff** when it adds or changes code or tests: `semgrep scan --config semgrep/ --baseline-commit "$(git merge-base origin/<base> HEAD)" --error`. CI's SAST job runs the same rules diff-scoped and blocking (alongside the registry packs), and none of them is in `gates[]`.
+   - **Run the repository's semgrep rules on the diff** when it adds or changes code or tests: `semgrep scan --config semgrep/ --baseline-commit "$(git merge-base origin/<base> HEAD)" --error`. CI's SAST job runs the same rules diff-scoped and blocking (alongside the registry packs), and none of them is in `gates[]`. **On native Windows** the pinned Semgrep (1.78.0) has no Windows build: its scanner is a Linux binary, so it cannot start there. Run the same command in a Linux runtime instead, at the same pin: inside WSL2 (`pip install semgrep==1.78.0`, then the command above), or in the `semgrep/semgrep:1.78.0` container from a regular clone (a worktree's `.git` points outside the mount): `docker run --rm -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' -v "${PWD}:/src" -w /src semgrep/semgrep:1.78.0 semgrep scan --config semgrep/ --baseline-commit <merge-base sha> --error`. The scan is still required on Windows.
    - **Split a code file the diff takes past 1,600 lines**: `docs/system-specs/common/code-style.md` § Splitting a file.
 
 2. **Local review — one subagent per profile reviewer**, briefed from CI's own workflows. Run `python3 $SKILL_DIR/scripts/local_review.py --base origin/<base>` from the worktree: it resolves both SHAs itself and writes one task file per reviewer (`local-review-<name>.md`) with that reviewer's prompt **extracted literally from its `contract` workflow**, plus the base-ref `AUTOSDE.yaml` snapshots, the `BASE...HEAD` diff and the PR intent inside the workflow's own UNTRUSTED framing. It never calls a model.
@@ -473,6 +473,8 @@ comes after a record, never instead of one:
   three facts.
 - **Rerun at most once**, only what failed (`gh run rerun <run-id> --failed`, or
   `--job <job-id>`).
+- **Rerun the job; never re-push an identical tree** to re-trigger it
+  (`references/ci.md`, *Rerun, don't re-push*).
 - **A test with two or more ledger reports in 14 days is fixed before more feature work
   lands on top of it**, not rerun again.
 
@@ -480,7 +482,7 @@ comes after a record, never instead of one:
 
    **SHA-pinned force-with-lease.** Record `LEASE_SHA=$(git rev-parse origin/<branch>)` at iteration start, BEFORE Phase 1's fetch. **First push (no `origin/<branch>`): skip the clobber check and `git push -u origin <branch>`.** Otherwise check the pre-squash HEAD: `git merge-base --is-ancestor origin/<branch> HEAD` — if it fails, a maintainer commit is on the remote that local history never had; STOP, re-sync, re-include it. Do not re-run that check after the squash. Then `git push --force-with-lease=<branch>:$LEASE_SHA origin <branch>`.
 
-2. **Create/update the PR** from Phase 1 step 5's body. Run `diff_signals.py --check-body` on the finished file **before** `gh` reads it. `<body>` below is the checked file, `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — never a second copy. New → `gh pr create --base <base> --head <branch> --title "<CC title>" --body-file <body>`, plus one `--attach <path>` per evidence file (see *Screenshots*). Existing → **regenerate the whole body from the current diff**, then `gh pr edit --body-file <body>` — **BEFORE step 1's push**: the review lanes run on `opened`/`synchronize`, never on `edited`. If `gh` fails (a GraphQL error or rate limit), use the REST fallback in `references/ci.md`. Verify the body landed.
+2. **Create/update the PR** from Phase 1 step 5's body. Run `diff_signals.py --check-body` on the finished file **before** `gh` reads it. `<body>` below is the checked file, `$(git rev-parse --absolute-git-dir)/prepare-pr-body.md` — never a second copy. New → `gh pr create --base <base> --head <branch> --title "<CC title>" --body-file <body>`, plus one `--attach <path>` per evidence file (see *Screenshots*). Existing → **regenerate the whole body from the current diff**, then `gh pr edit --body-file <body>` — **BEFORE step 1's push**, and **only when it differs from the published body**. Read that back byte-exact with `gh pr view <n> --json body --template '{{.body}}'`: `--jq .body` appends a newline of its own, so comparing its output raw reports a difference every round and leaves the condition doing nothing. Why both conditions, and which lanes each one is about: `references/rationale.md`. If `gh` fails (a GraphQL error or rate limit), use the REST fallback in `references/ci.md`. Verify the body landed.
 
    **Then report the PR's full `https://.../pull/<n>` URL in your chat message.**
    **Prepare-only stops here** after one `pr_status.py` snapshot.
@@ -519,8 +521,20 @@ comes after a record, never instead of one:
    hand the PR over. **30** → re-sync through **Phase 1**, run only the related
    tests for the files the line names, push with the SHA-pinned lease, and post ONE
    comment: `Rebased: main moved in <files> since this head went green (<old-base> -> <new-base>); CI re-running.`
-   Exit 30 does NOT override the no-push-while-runs-are-in-flight rule above. After
-   three consecutive green-age re-syncs on one PR, hand it to the user.
+   Exit 30 does NOT override the no-push-while-runs-are-in-flight rule above.
+   **31** → the re-sync cap is spent: do NOT rebase, report which files the base
+   keeps moving in, and hand the PR to the user. The script decides that from the
+   count of the `Rebased: main moved in` comments posted by the PR's author or by
+   a member of the project, so after three
+   green-age re-syncs on one PR it stops being your judgement call. Each re-sync
+   discards a green the PR had already earned, which is the cost the cap exists to
+   bound. **The way back is a member of the project commenting `Re-sync budget
+   reset`**, which restarts the count and grants another three. The PR's author
+   cannot: the loop drives a PR as its author, so a budget it could re-arm bounds
+   nothing. The account you run as may be such a member, so **ask for the reset,
+   never post one** — one you wrote is the cap deciding nothing. Do not clear the
+   count by deleting the `Rebased: main moved in` comments either; they are the
+   record it is read from.
 
    Then `python3 $SKILL_DIR/scripts/pr_status.py <pr#> --reviewers <profile reviewer names>`.
    **Always pin the fleet** (Kiro Crew: `--reviewers gpt,opus`): bare `pr_status.py`
@@ -534,7 +548,7 @@ comes after a record, never instead of one:
      bounded in-turn `wait` + re-poll and disclose that fallback.
 
      Arm it with the call in `references/monitor-loop.md` (read it first, swap in the
-     real PR URL): `interval_secs=300, max_cycles=288, max_runtime_secs=86400,
+     real PR URL): `interval_secs=600, max_cycles=144, max_runtime_secs=86400,
      judge=False`. The loop is gated: an unchanged PR costs no turn and any change
      wakes it. Under a merge hold, rewrite its `Exit 0` clause as that file says; a
      hold heard after arming goes in with `monitor_update(message=...)` that turn
@@ -621,13 +635,16 @@ finished body. Both stop the loop (why: `references/rationale.md`):
 
 | check | what it measures | on breach |
 |---|---|---|
-| Accounting | every changed area (the `pr-scope.yml` unit: a module directory under `src/kiro_crew/` or `website/src/`, the top-level component elsewhere) is named in the body — by the area, a changed path or its `dir/file` tail, or a unique non-generic file name | **exit 20** — stop, fix the body or the diff |
+| Accounting | every changed area (the `PR Scope` unit, in `pr-policy.yml`: a module directory under `src/kiro_crew/` or `website/src/`, the top-level component elsewhere) is named in the body — by the area, a changed path or its `dir/file` tail, or a unique non-generic file name | **exit 20** — stop, fix the body or the diff |
 | Length | prose words in `What changed` (fences, tables, images excluded) against the 500 of section 3's paragraph rule; table rows against a picture's eight | **exit 21** — stop, compress the prose |
 
 The template check runs CI's `.github/scripts/pr-description-check.sh` from
 `origin/<base>`: a missing section is **exit 22**. A `fix:` body's `Proof:` line is
 judged by `proof_line_check.py` the same way, and a `PROVEN` line is compared with
-`prove.py`'s record: findings print, and are **exit 24** once CI enforces them. The
+`prove.py`'s record: findings print, and are **exit 24** once CI enforces them. On a
+`fix`/`revert` body a missing `## Pattern harvest` heading, or one with no line
+starting `Rule candidate:` or `Not generalizable:`, is **exit 26**: PR Hygiene fails
+the same body, and the colon right after those words is what it matches. The
 lowest code wins.
 
 ### Snapshot, not changelog

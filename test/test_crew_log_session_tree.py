@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from conftest import requires_symlinks
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import CrewLog, session_tree
+from kiro_crew.crew_log import CrewLog, CrewLogError, session_tree
 from kiro_crew.crew_log import store as crew_store
 from kiro_crew.crew_log.session_tree import (
     CHAIN_END_CAP,
@@ -1204,16 +1205,9 @@ def test_a_previous_at_the_bound_is_kept() -> None:
 def test_a_previous_that_is_not_a_mapping_contributes_no_edge() -> None:
     """The reader's shape guard, driven where it is reachable.
 
-    The write-time schema REFUSES a non-object ``previous`` (``handle.append``
-    raises), so this shape cannot be produced through the emitter. The guard is
-    still the reader's job and still exactly the guard ``parent`` already has one
-    field above: ``opened_record`` is handed JSON parsed off disk, which a damaged
-    or hand-edited segment can hold, and the alternative to guarding is a
-    ``TypeError`` out of a scan that is supposed to degrade to "no lineage known".
-
-    A bad shape costs the EDGE and not the record: a mistyped key says nothing
-    about the header identity or the slot, which the rest of the entry still
-    carries.
+    The schema refuses a non-object ``previous`` at write time, but ``opened_record``
+    reads JSON off disk, which a damaged segment can hold; unguarded, the scan would
+    raise ``TypeError``. A bad shape costs the edge, not the record.
     """
     handle = _log("sid-odd", "chat-1")
     _opened(handle, "chat-1")
@@ -1223,7 +1217,7 @@ def test_a_previous_that_is_not_a_mapping_contributes_no_edge() -> None:
 
     from kiro_crew.crew_log.schema import Entry
 
-    with pytest.raises(Exception):
+    with pytest.raises(CrewLogError):
         # The premise of this test: the emitter cannot write it.
         _opened(_log("sid-refused", "chat-1"), "chat-1", previous="sid-old")
 
@@ -1245,14 +1239,11 @@ def test_a_previous_that_is_not_a_mapping_contributes_no_edge() -> None:
 
 
 def test_a_previous_object_with_an_empty_sid_refuses_the_whole_record() -> None:
-    """An empty citation is refused exactly as an oversized one is, and for the same
-    reason: it is not a value the emitter can write.
+    """An empty citation is refused like an oversized one: the emitter cannot write it.
 
-    ``emit_session.py`` gates the write on the id's own truthiness, so ``{"sid": ""}`` never
-    reaches a log the gateway wrote. An entry carrying one is therefore not the
-    emitter's, and nothing on it is believed -- which is also precisely how the
-    ``parent.slot`` field one line above treats an empty slot, so the two citations
-    do not drift into two different ideas of a bad value.
+    ``emit_session.py`` writes only a truthy id, so an entry with ``{"sid": ""}`` is not
+    the emitter's and nothing on it is believed, matching how ``parent.slot`` treats an
+    empty slot.
     """
     handle = _log("sid-empty", "chat-1")
     # The write schema permits the shape, so the reader is the layer that refuses it.
@@ -1296,23 +1287,75 @@ def test_the_scanner_reports_a_gap_when_the_oldest_real_log_does_not_state_first
     assert reading.incomplete is False
 
 
-def test_a_predecessor_the_scan_could_not_admit_is_reported_as_incomplete(monkeypatch) -> None:
+def test_a_chain_reaches_its_predecessor_whatever_the_store_cap(monkeypatch) -> None:
+    """The walk reads the units its citations name, so the store's size and the
+    scanner's cap cannot hide a predecessor: a cap of one still reaches it."""
+    first = _log("acp-1", "chat-7")
+    _opened(first, "chat-7", previous_none=True)
+    second = _log("acp-2", "chat-7")
+    _opened(second, "chat-7", previous={"sid": "acp-1"})
+
+    monkeypatch.setattr(session_tree, "TREE_UNIT_CAP", 1)
+    reading = SessionTree().chain("acp-2")
+    assert reading.chain.sids == ("acp-2", "acp-1")
+    assert reading.chain.ended == CHAIN_END_FIRST
+    assert reading.incomplete is False
+
+
+def test_a_predecessor_whose_read_faulted_is_reported_as_incomplete(monkeypatch) -> None:
     """The one thing ``ChainReading`` exists for.
 
-    A predecessor past the scan's cap is absent from the records, so the WALK
-    reports ``missing`` for a log that is on disk and readable. Only the scan knows
-    the difference, so it must be the scan that says so -- otherwise a partial chain
-    is presented as a slot's whole life.
+    A predecessor whose bytes could not be read is absent from the records, so the
+    WALK reports ``missing`` for a log that is on disk. Only the read knows the
+    difference, so it must say so -- otherwise a partial chain is presented as a
+    slot's whole life.
     """
     first = _log("acp-1", "chat-7")
     _opened(first, "chat-7")
     second = _log("acp-2", "chat-7")
     _opened(second, "chat-7", previous={"sid": "acp-1"})
 
-    monkeypatch.setattr(session_tree, "TREE_UNIT_CAP", 1)
+    real_read = SessionTree._read
+
+    def faulting(self: SessionTree, directory: Any) -> Any:
+        if directory.name == crew_store.unit_dir_for(lg.KIND_SESSION, "acp-1").name:
+            return None, True
+        return real_read(self, directory)
+
+    monkeypatch.setattr(SessionTree, "_read", faulting)
     reading = SessionTree().chain("acp-2")
     assert reading.chain.sids == ("acp-2",)
     assert reading.chain.ended == CHAIN_END_MISSING
     assert reading.chain.cited == "acp-1"
     # The chain says "ends here"; only this bit says "and that may be my fault".
     assert reading.incomplete is True
+
+
+def test_a_chain_reads_only_its_own_units_however_many_the_store_holds(monkeypatch) -> None:
+    """A succession walk costs its chain, not the store. With many
+    unrelated units on disk, the walk reads exactly the two units of the chain and
+    never lists the store root."""
+    first = _log("acp-1", "chat-7")
+    _opened(first, "chat-7", previous_none=True)
+    second = _log("acp-2", "chat-7")
+    _opened(second, "chat-7", previous={"sid": "acp-1"})
+    for index in range(200):
+        other = _log(f"acp-other-{index}", f"chat-other-{index}")
+        _opened(other, f"chat-other-{index}", previous_none=True)
+
+    reads: list[str] = []
+    real_read = SessionTree._read
+
+    def counted(self: SessionTree, directory: Any) -> Any:
+        reads.append(directory.name)
+        return real_read(self, directory)
+
+    def no_listing(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("a chain walk listed the store root")
+
+    monkeypatch.setattr(SessionTree, "_read", counted)
+    monkeypatch.setattr(session_tree, "unit_dirs", no_listing)
+    reading = SessionTree().chain("acp-2")
+    assert reading.chain.sids == ("acp-2", "acp-1")
+    assert reading.chain.ended == CHAIN_END_FIRST
+    assert len(reads) == 2, reads

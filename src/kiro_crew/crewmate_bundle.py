@@ -30,7 +30,18 @@ from typing import Any
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_carried
 
-CREWMATE_FORMAT = "kirocrew.crewmate"
+#: The format an export writes. Its manifest entry is :data:`MANIFEST_ENTRY`.
+CREWMATE_FORMAT = "kirocrew.kirobot"
+MANIFEST_ENTRY = "kirobot.json"
+#: The formats and manifest entries of files made under the earlier names
+#: (``.crewjam``, then ``.crewmate``). The reader still takes them, through the
+#: same checks, so old files keep importing.
+LEGACY_CREWMATE_FORMATS = ("kirocrew.crewjam", "kirocrew.crewmate")
+LEGACY_MANIFEST_ENTRIES = ("crewjam.json", "crewmate.json")
+CREWMATE_FORMATS = (CREWMATE_FORMAT, *LEGACY_CREWMATE_FORMATS)
+#: The file extension an export writes (an import also takes ``.crewjam`` and
+#: ``.crewmate``).
+FILE_SUFFIX = ".kirobot"
 
 #: §5.2 caps.
 FILE_MAX_BYTES = 8 * 1024 * 1024
@@ -42,6 +53,8 @@ SKILL_FOLDER_MAX_BYTES = 1024 * 1024
 #: Bounds a bundle's lists so a card stays small; not a §5.2 cap.
 _MAX_SKILLS = 32
 _MAX_CRONS = 16
+#: The longest ``description`` an import takes (the export writer reads it too).
+DESCRIPTION_MAX_CHARS = 1000
 
 #: ``<name>`` and ``<file>`` of the two folders (§5.2): no slash, no drive letter.
 PART_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -51,7 +64,8 @@ _TEMPLATE_ID_RE = re.compile(r"^builtin:[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 SKILL_FILE = "SKILL.md"
 _JSON_ENTRIES = {
-    "crewmate.json": "crewmate",
+    MANIFEST_ENTRY: "crewmate",
+    **{entry: "crewmate" for entry in LEGACY_MANIFEST_ENTRIES},
     "agent.json": "agent",
     "rules.json": "rules",
     "goals.json": "goals",
@@ -157,18 +171,18 @@ def read_crewmate_file(data: bytes) -> CrewmateFile:
     from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory_bytes
 
     if not isinstance(data, (bytes, bytearray)) or not data:
-        raise _refuse("invalid_bundle", "this is not a .crewmate file")
+        raise _refuse("invalid_bundle", "this is not a .kirobot file")
     if len(data) > FILE_MAX_BYTES:
         raise _refuse("too_large", "the file is over 8 MiB")
     try:
         vet_zip_inventory_bytes(bytes(data), max_members=ENTRY_MAX)
     except ZipInventoryRejected as exc:
         code = "too_many_entries" if exc.reason == "too_many_members" else "invalid_bundle"
-        raise _refuse(code, "this is not a .crewmate file") from None
+        raise _refuse(code, "this is not a .kirobot file") from None
     try:
         zf = zipfile.ZipFile(io.BytesIO(bytes(data)))
     except (zipfile.BadZipFile, ValueError, OSError):
-        raise _refuse("invalid_bundle", "this is not a .crewmate file") from None
+        raise _refuse("invalid_bundle", "this is not a .kirobot file") from None
     parts: dict[str, Any] = {}
     skills: dict[str, dict[str, bytes]] = {}
     scripts: dict[str, bytes] = {}
@@ -186,6 +200,9 @@ def read_crewmate_file(data: bytes) -> CrewmateFile:
             if not _is_plain_file(info):
                 raise _refuse("invalid_entry", f"'{info.filename[:64]}' is not a plain file")
             if kind == "json":
+                if _JSON_ENTRIES[where[0]] in parts:
+                    # Every manifest name is one part; a file holds one.
+                    raise _refuse("invalid_bundle", "the file holds more than one manifest")
                 parts[_JSON_ENTRIES[where[0]]] = _json_part(
                     where[0], _read_entry(zf, info, JSON_MAX_BYTES)
                 )
@@ -208,7 +225,7 @@ def read_crewmate_file(data: bytes) -> CrewmateFile:
             total += blob_len
             if total > FILE_MAX_BYTES:
                 raise _refuse("too_large", "the file unpacks to over 8 MiB")
-    for required in ("crewmate.json", "agent.json"):
+    for required in (MANIFEST_ENTRY, "agent.json"):
         if _JSON_ENTRIES[required] not in parts:
             raise _refuse("invalid_bundle", f"the file has no {required}")
     if avatar is not None:
@@ -328,8 +345,8 @@ def crewmate_import_params(bundle: Any, files: CrewmateFile | None = None) -> di
     catalog._only(bundle, _BUNDLE_KEYS, "bundle")
     m = _bundle_part(bundle, "crewmate", dict, required=True)
     catalog._only(m, _MANIFEST_KEYS, "crewmate.json")
-    if m.get("format") != CREWMATE_FORMAT:
-        raise _refuse("invalid_bundle", "this is not a .crewmate file")
+    if m.get("format") not in CREWMATE_FORMATS:
+        raise _refuse("invalid_bundle", "this is not a .kirobot file")
     version = m.get("formatVersion")
     if type(version) is not int or version < 1:
         raise _refuse("invalid_bundle", "'formatVersion' must be a whole number")
@@ -385,7 +402,9 @@ def crewmate_import_params(bundle: Any, files: CrewmateFile | None = None) -> di
     params: dict[str, Any] = {
         "name": m.get("name"),
         "format_version": version,
-        "description": _text(m.get("description") or "", "description", max_len=1000),
+        "description": _text(
+            m.get("description") or "", "description", max_len=DESCRIPTION_MAX_CHARS
+        ),
         "goal": goals.get("longTerm") or None,
         "sender": sender.get("label"),
     }

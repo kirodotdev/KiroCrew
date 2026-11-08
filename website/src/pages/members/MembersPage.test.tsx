@@ -31,7 +31,8 @@ vi.mock('../../api/client', () => ({
     // The warm greeting's read of the crewmate's work ledger. No ledger is the
     // state every case not about the greeting wants: the chat opens bare.
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
-    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
+    // The side panel opens Files only for a slot confirmed to run locally.
+    chatSlotEnvironment: vi.fn(() => Promise.resolve({ profile: null, profiles: [] })),
     memberThread: vi.fn(),
     // Mate's first greeting: the server decides, so the page only asks.
     memberGreet: vi.fn(() => Promise.resolve({ outcome: 'started' })),
@@ -218,7 +219,6 @@ vi.mock('../../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => true,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 
 // The profile settings write the live slot; the stub shows which slot the page
 // handed it, so a refused thread is proven to get none.
@@ -235,13 +235,12 @@ const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
 const chatPaneMounts = vi.hoisted(() => ({ count: 0 }))
 vi.mock('../../components/ChatPane', async () => {
   const { useEffect } = await import('react')
-  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, crewmateGreeting, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown; crewmateGreeting?: import('react').ReactNode } & Record<string, unknown>) {
+  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown } & Record<string, unknown>) {
     // Mount count: the New crewmate card must HIDE the pane, never unmount it.
     useEffect(() => { chatPaneMounts.count += 1 }, [])
     return (
-      <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'}>
+      <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'} data-push-to-talk={rest.pushToTalk ? '1' : '0'}>
         {slotKey}
-        {crewmateGreeting}
         {/* A static opening card is gone: no host may pass one. */}
         {'assistantWelcome' in rest && <div data-testid="assistant-welcome-stub" />}
         {/* Stands in for rendered transcript links (markdown anchors). */}
@@ -318,9 +317,6 @@ beforeEach(() => {
   resetFirstGreetingRequests()
   // The remembered member must not leak between cases.
   localStorage.clear()
-  // The page is reached only with the Crewmates preview on; the cases that
-  // pin what happens with it off turn it off themselves.
-  localStorage.setItem('mc-preview-crew', '1')
   // Nor the crewmate-created receipts (browser-session record).
   sessionStorage.clear()
   chatPaneMounts.count = 0
@@ -452,7 +448,7 @@ describe('MembersPage roster', () => {
     const heroes = await screen.findAllByTestId('crewmate-empty-hero')
     expect(heroes).toHaveLength(2)
     for (const title of screen.getAllByTestId('crewmate-empty-title')) {
-      expect(title).toHaveTextContent('No mates yet')
+      expect(title).toHaveTextContent('No bots yet')
     }
     expect(screen.getAllByText(/Give it a job; it keeps working while you are away/i)).toHaveLength(2)
     // The roster's old one-line copy and in-list button are gone: one call to
@@ -497,7 +493,7 @@ describe('MembersPage roster', () => {
     await renderPage([defaultRow(), row({ name: 'mate', slug: 'mate', kiro_agent: 'kirocrew', has_dm_message: true }), row({ name: 'alpha', slug: 'alpha', last_active_ts: 50 })])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-alpha')
     // The first crewmate is shown by its label, on whatever template it runs.
-    fireEvent.click(await rosterRow('Mate'))
+    fireEvent.click(await rosterRow('Bot'))
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-mate')
     await waitFor(() => expect(api.memberGreet).toHaveBeenCalledWith('mate'))
     expect(api.memberGreet).toHaveBeenCalledTimes(1)
@@ -519,9 +515,9 @@ describe('MembersPage roster', () => {
     // Both columns say it: the roster's own notice, and — since no chat can
     // open and the hero is gated on a good read — the chat column's, so a
     // wide window is never half blank.
-    expect(await screen.findByTestId('member-roster-error')).toHaveTextContent(/Could not load your mates/i)
+    expect(await screen.findByTestId('member-roster-error')).toHaveTextContent(/Could not load your Bots/i)
     const column = screen.getByTestId('member-column-load-error')
-    expect(column).toHaveTextContent(/Could not load your mates/i)
+    expect(column).toHaveTextContent(/Could not load your Bots/i)
     expect(column.className).toMatch(/\bmd:flex\b/)
     expect(screen.queryByTestId('crewmate-empty-hero')).toBeNull()
     // No roster to count: the header says so with a dash, never "0 members"
@@ -536,7 +532,7 @@ describe('MembersPage roster', () => {
     // read the dialog cannot refuse a name that clashes with an unseen
     // crewmate (ONCALL beside oncall would share one slug and its chat could
     // never open). New team, which has no part in that check, stays live.
-    expect(await probeAddCrewmate()).toEqual({ held: true, reason: 'Could not load your mates.' })
+    expect(await probeAddCrewmate()).toEqual({ held: true, reason: 'Could not load your bots.' })
     ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: [row()], default_agent: 'kirocrew' })
     fireEvent.click(screen.getByTestId('member-column-load-retry'))
     expect(await rosterRow('oncall')).toBeInTheDocument()
@@ -573,7 +569,7 @@ describe('MembersPage roster cache (React Query)', () => {
     utils.rerender(page)
     expect(roster().getByText('oncall')).toBeInTheDocument()
     expect(roster().getByText('research')).toBeInTheDocument()
-    expect(screen.queryByText(/No mates yet/i)).toBeNull()
+    expect(screen.queryByText(/No bots yet/i)).toBeNull()
     // The roster carries its own 30s staleTime (membersRosterQuery), which
     // wins over the test client's 0: a return inside that window is served
     // from cache with NO refetch — that is the request the user stopped
@@ -675,7 +671,7 @@ describe('MembersPage roster cache (React Query)', () => {
     expect(await rosterRow('research')).toBeInTheDocument()
     // In place: the row that was already there never left the screen.
     expect(roster().getByText('oncall')).toBeInTheDocument()
-    expect(screen.queryByText(/No mates yet/i)).toBeNull()
+    expect(screen.queryByText(/No bots yet/i)).toBeNull()
   })
 
   it('a refetch failure after a good read keeps the last roster instead of flipping to the error state', async () => {
@@ -687,7 +683,7 @@ describe('MembersPage roster cache (React Query)', () => {
     })
     await waitFor(() => expect(api.members).toHaveBeenCalledTimes(2))
     expect(roster().getByText('oncall')).toBeInTheDocument()
-    expect(screen.queryByText(/Could not load your mates/i)).toBeNull()
+    expect(screen.queryByText(/Could not load your Bots/i)).toBeNull()
   })
 })
 
@@ -711,7 +707,7 @@ describe('MembersPage thread', () => {
     })
     const { queryClient } = await renderPage([row()], 'kirocrew', { thread: new Error(rawReason) })
     const notice = await screen.findByTestId('member-thread-error', undefined, PANE_READY)
-    expect(notice).toHaveTextContent(/Could not open this mate's chat/i)
+    expect(notice).toHaveTextContent(/Could not open this bot's chat/i)
     expect(notice).not.toHaveTextContent('Private memory database is unreadable')
     expect(queryClient.getQueryData(memberThreadQueryKey('oncall'))).toEqual({
       slot_key: '', failed: true, errorReport: report,
@@ -761,6 +757,9 @@ describe('MembersPage thread', () => {
     // The Crew page draws its own composer (no model / effort / permission /
     // context toolbar), not the ordinary chat one.
     expect(pane).toHaveAttribute('data-crew-composer', '1')
+    // The DM is the page's only composer, so it owns the "Start Dictation
+    // with a Key" binding the main chat owns there (#24967).
+    expect(pane).toHaveAttribute('data-push-to-talk', '1')
     // The pin is an invariant of every member thread, so the header does NOT
     // announce it — no chip, no term for a state that cannot be otherwise.
     expect(screen.queryByTestId('member-pin-chip')).toBeNull()
@@ -799,7 +798,7 @@ describe('MembersPage thread', () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
     await renderPage([row()], 'kirocrew', { thread: new Error('Create private memory in the member editor.') })
     expect(
-      await screen.findByText(/Could not open this mate's chat/i, undefined, PANE_READY),
+      await screen.findByText(/Could not open this bot's chat/i, undefined, PANE_READY),
     ).toBeInTheDocument()
     // Non-API exceptions have no journal report; do not invent a diagnostic
     // object or leak an unredacted thrown message into the localized banner.

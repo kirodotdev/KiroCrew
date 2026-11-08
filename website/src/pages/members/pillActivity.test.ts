@@ -13,7 +13,7 @@ const labelOf = (d: ToolStatusDetail): string => {
 const base: PillActivityInput = {
   streamState: 'idle',
   detail: undefined,
-  toolReturned: false,
+  quietEnd: false,
   running: false,
   delegatedOnly: false,
   labelOf,
@@ -72,8 +72,8 @@ describe('resolvePillActivity', () => {
       .toEqual({ kind: 'thinking', text: 'Thinking…' })
   })
 
-  it('a returned tool call reads as thinking — the model is reading the result', () => {
-    expect(resolvePillActivity({ ...base, streamState: 'tool_running', detail: tool('old purpose'), toolReturned: true, running: true }))
+  it('the quiet nothing_to_do end reads as thinking — it never names itself', () => {
+    expect(resolvePillActivity({ ...base, streamState: 'tool_running', detail: tool('old purpose'), quietEnd: true, running: true }))
       .toEqual({ kind: 'thinking', text: 'Thinking…' })
   })
 

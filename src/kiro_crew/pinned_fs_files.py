@@ -220,8 +220,8 @@ def copy_file_pinned(
         #     publish step to attack, and no hard link, which is also why the FAT/exFAT
         #     fallback and its overwrite hazard are simply gone rather than guarded.
         #
-        # What the first design got wrong was the CLEANUP, not the create, and the fix is
-        # to stop unlinking names: on failure the file is emptied through the descriptor we
+        # The hazard is in the CLEANUP, not the create, so no name is ever
+        # unlinked: on failure the file is emptied through the descriptor we
         # hold and the failure is reported. `O_EXCL` proves we created this entry, so
         # truncating it cannot touch anyone else's file, and a reported empty file with the
         # previous version still in the backup is a far smaller harm than either publishing
@@ -740,6 +740,7 @@ def unlink_verified_by_name(
     expect: tuple[int, int],
     *,
     on_error: Callable[[OSError], None] | None = None,
+    links_only: bool = False,
 ) -> bool:
     """Unlink *parent/name* only while it holds ``(st_dev, st_ino)`` *expect*.
 
@@ -748,9 +749,10 @@ def unlink_verified_by_name(
     the parent, delegates to :func:`unlink_verified` on POSIX, and checks the
     regular-file identity under the pin before unlinking on Windows. An absent
     or mismatched name is a deliberate refusal and returns ``False`` without
-    deleting anything.
+    deleting anything. ``links_only`` is passed to the parent's
+    :func:`pin_directory`, so a cloud-files parent is pinned rather than refused.
     """
-    pin = pin_directory(parent)
+    pin = pin_directory(parent, links_only=links_only)
     try:
         if os.name != "nt":
             return unlink_verified(pin, name, expect, on_error=on_error)

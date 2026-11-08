@@ -313,7 +313,9 @@ class TestAutoApplyGitUpdate:
         monkeypatch.setattr(gw, "is_primary_branch", lambda _branch: True)
         monkeypatch.setattr(gw, "repo_exec_config_reason", lambda _proj: "")
         monkeypatch.setattr(gw, "tracks_upstream", lambda _proj, _branch: True)
-        monkeypatch.setattr(gw, "resolve_remote_url", lambda _proj, remote: "https://example/r.git")
+        monkeypatch.setattr(
+            gw, "resolve_remote_url", lambda _proj, remote, **_k: "https://example/r.git"
+        )
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason", lambda _url: None
         )
@@ -322,6 +324,13 @@ class TestAutoApplyGitUpdate:
         # The floor gate reads the pinned commit with a real `git show`, which
         # fails against this non-repo, and a failed read refuses.
         monkeypatch.setattr(gw.dep_sync, "incoming_python_floor_breach", lambda *a, **k: None)
+        # The network fetch runs through the shared isolated helper; it returns
+        # the fetched commit the reset targets.
+        monkeypatch.setattr(
+            gw,
+            "fetch_and_pin_upstream",
+            AsyncMock(return_value="0123456789abcdef0123456789abcdef01234567"),
+        )
         spawn = self._scripted_git(monkeypatch)
         # Post-reset rebuild steps: no optional backend, frontend and deps sync
         # come back clean, and the package reload is a no-op (reloading the real

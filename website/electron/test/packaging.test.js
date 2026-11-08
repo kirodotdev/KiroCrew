@@ -2,6 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const child_process = require("node:child_process");
 
 it("Linux BrowserWindows carry the packaged application icon", () => {
   const windowLifecycle = fs.readFileSync(
@@ -224,6 +225,119 @@ describe("macOS bundle naming", () => {
       /-c\.mac\.extendInfo\.CFBundleDisplayName=Kiro Crew Nightly/
     );
     assert.doesNotMatch(buildScript, /-c\.mac\.extendInfo\.CFBundleName=/);
+  });
+});
+
+
+describe("Linux desktop naming", () => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const buildScript = fs.readFileSync(
+    path.resolve(ROOT, "..", "..", "packaging", "build-desktop.sh"),
+    "utf8"
+  );
+  // The per-target override function, executed in isolation: it is written to
+  // depend on its two parameters only, so this is the invocation contract the
+  // Linux loop actually runs, not a regex over the script text.
+  const fnMatch = buildScript.match(/^linux_target_eb_args\(\) \{\n[\s\S]*?\n\}$/m);
+  const targetArgs = (target, productName) => {
+    const out = child_process.execFileSync(
+      "bash",
+      ["-euo", "pipefail", "-c", `${fnMatch[0]}\nlinux_target_eb_args "$1" "$2"`, "_", target, productName],
+      { encoding: "utf8" }
+    );
+    return out.split("\n").filter(Boolean);
+  };
+  const bashOnly = { skip: process.platform === "win32" ? "runs the bash function" : false };
+
+  it("keeps the spaced display name out of the static package config", () => {
+    // A static linux.desktop.entry.Name reaches every Linux target, so it would
+    // rename the deb/rpm launcher that package installs already ship. The
+    // AppImage is the only target whose bundled entry is copied into a user
+    // launcher, and it gets the name per invocation instead.
+    assert.equal(pkg.build.productName, "KiroCrew"); // brand-ok -- internal package identity
+    assert.equal(pkg.build.linux.desktop, undefined);
+    assert.doesNotMatch(buildScript, /EB_ARGS\+=\([\s\S]*?-c\.linux\.desktop\.entry\.Name[\s\S]*?\n\s*\)\n\s*fi/);
+    assert.ok(fnMatch, "build-desktop.sh defines linux_target_eb_args");
+    assert.match(
+      buildScript,
+      /done < <\(linux_target_eb_args "\$target" "\$PRODUCT_NAME"\)[\s\S]*?done < <\(drop_overridden_eb_args \$\{TARGET_EB_ARGS\[@\]\+"\$\{TARGET_EB_ARGS\[@\]\}"\} -- "\$\{EB_ARGS\[@\]\}"\)[\s\S]*?run_electron_builder_with_retry "\$\{LINUX_EB_ARGS\[@\]\}" \\\n\s*\$\{TARGET_EB_ARGS\[@\]\+"\$\{TARGET_EB_ARGS\[@\]\}"\} --linux "\$target"/
+    );
+  });
+
+  it("gives electron-builder exactly one scalar linux.icon for every nightly Linux target", bashOnly, () => {
+    // The common nightly block sets -c.linux.icon=icon-nightly.png and the
+    // nightly AppImage override sets it again. electron-builder's CLI parser
+    // turns a repeated -c key into a list that its config validation rejects
+    // ("configuration.linux.icon should be a string"), so the Linux loop must
+    // drop the overridden common value before the override is appended.
+    const dropMatch = buildScript.match(/^drop_overridden_eb_args\(\) \{\n[\s\S]*?\n\}$/m);
+    assert.ok(dropMatch, "build-desktop.sh defines drop_overridden_eb_args");
+    const common = [
+      "-c.productName=KiroCrew Nightly",
+      "-c.linux.icon=icon-nightly.png",
+      "-c.win.icon=icon-nightly.png",
+    ];
+    const builderYargs = require(require.resolve("yargs", { paths: [require.resolve("electron-builder")] }));
+    const { configureBuildCommand } = require("electron-builder/out/builder");
+    const expected = { AppImage: "build/icons-nightly", deb: "icon-nightly.png", rpm: "icon-nightly.png" };
+    for (const target of Object.keys(expected)) {
+      const overrides = targetArgs(target, "KiroCrew Nightly");
+      const kept = child_process.execFileSync(
+        "bash",
+        ["-euo", "pipefail", "-c", `${dropMatch[0]}\ndrop_overridden_eb_args "$@"`, "_", ...overrides, "--", ...common],
+        { encoding: "utf8" }
+      ).split("\n").filter(Boolean);
+      const argv = [...kept, ...overrides, "--linux", target];
+      assert.equal(argv.filter((a) => a.startsWith("-c.linux.icon=")).length, 1, `${target}: ${argv.join(" ")}`);
+      const parsed = configureBuildCommand(builderYargs(argv)).parse();
+      assert.equal(parsed.config.linux.icon, expected[target], target);
+      assert.equal(parsed.config.win.icon, "icon-nightly.png", `${target} keeps unrelated common args`);
+    }
+  });
+
+  it("applies per-target overrides to the AppImage only, with exact Name and icon args", bashOnly, () => {
+    // Stable AppImage: spaced Name only. Nightly AppImage: spaced Name plus the
+    // multi-size hicolor icon directory. deb/rpm (both channels): nothing --
+    // they keep electron-builder's productName Name and the canonical
+    // per-channel icon from the common EB_ARGS block.
+    assert.deepEqual(targetArgs("AppImage", "KiroCrew"), [ // brand-ok -- product name under test
+      "-c.linux.desktop.entry.Name=Kiro Crew",
+    ]);
+    assert.deepEqual(targetArgs("AppImage", "KiroCrew Nightly"), [
+      "-c.linux.desktop.entry.Name=Kiro Crew Nightly",
+      "-c.linux.icon=build/icons-nightly",
+    ]);
+    for (const target of ["deb", "rpm"]) {
+      for (const productName of ["KiroCrew", "KiroCrew Nightly"]) { // brand-ok -- product names under test
+        assert.deepEqual(targetArgs(target, productName), [],
+          `${target} (${productName}) must receive no per-target override`);
+      }
+    }
+    // The AppImage icon override is nightly-only; stable AppImage never gets it,
+    // so the stable channel's canonical icon is untouched for every format.
+    assert.ok(
+      !targetArgs("AppImage", "KiroCrew").some((a) => a.startsWith("-c.linux.icon=")), // brand-ok -- product name under test
+      "stable AppImage must not override the icon"
+    );
+  });
+
+  it("pins the metadata helper to the packaged Linux interpreter", () => {
+    const integration = fs.readFileSync(
+      path.join(ROOT, "linux-desktop-integration.js"),
+      "utf8"
+    );
+    assert.match(
+      integration,
+      /path\.join\(resourcesPath, "backend-dist", "kirocrew-backend", "bin"\)/
+    );
+    assert.match(
+      buildScript,
+      /build_backend "\$PBS_DIR" "\$ELECTRON_DIR\/backend-dist\/kirocrew-backend" "\$\{TARGET_ARCH:-\}"/
+    );
+    assert.match(
+      buildScript,
+      /"\$out\/bin\/python3\.12"(?: -[sP]+)* -m kiro_crew --version/
+    );
   });
 });
 
@@ -598,9 +712,28 @@ describe("first-download installer design contract", () => {
       /root_uri="\$\(cd "\$ROOT" && "\$out\/python\.exe" -c[\s\S]*?sys\.stdout\.write\(Path\.cwd\(\)\.as_uri\(\)\)/
     );
     assert.match(windowsBuilder, /"kirocrew\[voice-aws\] @ \$root_uri"/);
+    assert.match(buildScript, /"\$ROOT\[voice-codex\]"/);
+    assert.doesNotMatch(windowsBuilder, /"kirocrew\[voice-codex\] @ \$root_uri"/);
     assert.match(windowsBuilder, /"kirocrew\[voice\] @ \$root_uri"/);
     assert.doesNotMatch(windowsBuilder, /"\$ROOT\[voice(?:-aws)?\]"/);
     assert.doesNotMatch(windowsBuilder, /if\s+!\s+[\s\S]*?kirocrew\[voice\]/);
+  });
+
+  it("bundles the Feishu SDK into every backend, since the app cannot install it later", () => {
+    const buildScript = fs.readFileSync(path.join(REPO_ROOT, "packaging", "build-desktop.sh"), "utf8")
+      .split("\n").filter(line => !/^\s*#/.test(line)).join("\n");
+    const between = (start, end) => {
+      const from = buildScript.indexOf(start);
+      const to = buildScript.indexOf(end, from);
+      assert.ok(from >= 0 && to > from, `${start} not found`);
+      return buildScript.slice(from, to);
+    };
+    assert.match(between("build_backend() {", "build_backend_windows() {"), /"\$ROOT\[feishu\]"/);
+    const windowsBuilder = between("build_backend_windows() {", "stdlib_probe_gate() {");
+    assert.match(windowsBuilder, /"kirocrew\[feishu\] @ \$root_uri"/);
+    // Shipped compiled, so the first Feishu start does not compile ~11k modules
+    // on the gateway loop.
+    assert.match(windowsBuilder, /precompile_windows\.py" \\\n[^\n]*--module lark_oapi\n/);
   });
 
   it("shows native progress for updates without adding setup decisions", () => {
@@ -1275,6 +1408,20 @@ describe("uninstall data preservation contract", () => {
         `build-desktop.sh must pass ${override} for the nightly channel`
       );
     }
+    // The common nightly block keeps canonical main's per-channel icon so deb
+    // and rpm are byte-identical to canonical; the multi-size hicolor directory
+    // is applied by linux_target_eb_args to the AppImage ALONE (asserted in the
+    // "Linux desktop naming" suite), never as a common override.
+    assert.match(nightlyOverrides, /-c\.linux\.icon=icon-nightly\.png/);
+    // The nightly hicolor icons are still shipped: the AppImage per-target
+    // override consumes build/icons-nightly, so each size must be a valid PNG.
+    for (const size of [16, 32, 48, 64, 128, 256, 512]) {
+      const icon = path.join(ROOT, "build", "icons-nightly", `${size}x${size}.png`);
+      const bytes = fs.readFileSync(icon);
+      assert.equal(bytes.toString("hex", 0, 8), "89504e470d0a1a0a", `${icon}: not a PNG`);
+      assert.equal(bytes.readUInt32BE(16), size, `${icon}: wrong width`);
+      assert.equal(bytes.readUInt32BE(20), size, `${icon}: wrong height`);
+    }
     // And the stable defaults they override must be the ones actually shipped,
     // so a rename on either side fails here instead of silently colliding.
     assert.equal(electronPkg.build.deb.packageName, "kirocrew");
@@ -1285,6 +1432,33 @@ describe("uninstall data preservation contract", () => {
     // StartupWMClass to desktopName; without it the nightly override above
     // would move the filename but not the window association.
     assert.equal(electronPkg.build.linux.syncDesktopName, true);
+  });
+
+  it("makes both Linux packages depend on libgbm, which the desktop binary links", () => {
+    // The desktop binary links libgbm.so.1 directly, so the loader refuses to
+    // start it when the library is absent. No other declared package requires
+    // it: at most it arrives as a recommendation or weak dependency (on Ubuntu
+    // 22.04 not even that), so a minimal install gets a package that installs
+    // cleanly and then never starts. Each name is the same on every release of
+    // its distro family the app targets, so neither needs an alternative.
+    for (const [format, name] of [["deb", "libgbm1"], ["rpm", "mesa-libgbm"]]) {
+      const declared = electronPkg.build[format].depends.flatMap(entry =>
+        entry.split("|").map(alternative => alternative.trim())
+      );
+      assert.ok(
+        declared.includes(name),
+        `${format}.depends must name ${name}, or the app fails to start where nothing else installs it`
+      );
+    }
+  });
+
+  it("keeps OSS4's ALSA stand-in from satisfying the deb's ALSA dependency", () => {
+    // On Ubuntu 24.04 OSS4's liboss4-salsa-asound2 provides an unversioned
+    // libasound2 and lacks ALSA symbols the binary links, so the app never starts.
+    // Naming libasound2t64 first fixes a clean install; the version keeps an
+    // already-installed stand-in from satisfying the dependency.
+    const alsa = electronPkg.build.deb.depends.filter(entry => entry.includes("libasound2"));
+    assert.deepEqual(alsa, ["libasound2t64 | libasound2 (>= 1.0.17)"]);
   });
 
   it("reclaims the updater cache the generated uninstaller cannot reach", () => {

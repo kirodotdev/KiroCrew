@@ -26,6 +26,17 @@ FIX_RE = re.compile(r"\b(fix(es|ed)?|revert(s|ed)?|bug|hotfix|regression|inciden
 # GitHub-style issue reference (e.g. "#204") linked from the PR body.
 GH_ISSUE_RE = re.compile(r"#(\d+)")
 
+# GitHub's own width limits: a login is 1-39 characters, a repository name at
+# most 100. The same numbers as ``kiro_crew.github_runner.GITHUB_MAX_OWNER_CHARS``
+# / ``GITHUB_MAX_REPO_CHARS``, spelled here because this module also loads on the
+# standalone path where ``kiro_crew`` is not importable; a test pins the two
+# spellings together. ``\Z``, not ``$``: ``$`` also matches before a final
+# newline, which would admit one character past the bound.
+GITHUB_MAX_OWNER_CHARS = 39
+GITHUB_MAX_REPO_CHARS = 100
+_OWNER_SEGMENT_RE = re.compile(rf"^[A-Za-z0-9._-]{{1,{GITHUB_MAX_OWNER_CHARS}}}\Z")
+_REPO_SEGMENT_RE = re.compile(rf"^[A-Za-z0-9._-]{{1,{GITHUB_MAX_REPO_CHARS}}}\Z")
+
 
 class AdapterError(ValueError):
     """Base class for adapter failures (fail-fast)."""
@@ -242,8 +253,11 @@ def parse_repo_ref(link: str, *, config: dict | None = None) -> tuple[str, str, 
     if len(parts) < 2:
         raise AdapterParseError(f"not a GitHub repo link: {link!r}")
     owner, repo = parts[0], re.sub(r"\.git$", "", parts[1])
-    _seg = re.compile(r"^[A-Za-z0-9._-]+$")
-    if owner in (".", "..") or repo in (".", "..") or not (_seg.match(owner) and _seg.match(repo)):
+    if (
+        owner in (".", "..")
+        or repo in (".", "..")
+        or not (_OWNER_SEGMENT_RE.match(owner) and _REPO_SEGMENT_RE.match(repo))
+    ):
         raise AdapterParseError(f"invalid owner/repo in {link!r}")
     return canonical_host(host), owner, repo
 

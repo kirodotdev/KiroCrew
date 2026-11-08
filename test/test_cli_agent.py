@@ -14,6 +14,13 @@ import pytest
 
 from kiro_crew.cli import main
 from kiro_crew.config.paths import data_home
+from kiro_crew.validation import (
+    _MODEL_NAME_RE,
+    MAX_SHORT_STRING,
+    MODEL_NAME_HINT,
+    TEMPLATE_NAME_HINT,
+    TEMPLATE_NAME_RE,
+)
 
 
 def _write_config(tmp_path: Path, data: dict) -> Path:
@@ -79,6 +86,34 @@ class TestAgentList:
         assert "oncall" in out
         assert "oncall-agent" in out
 
+    def test_list_prints_each_row_on_one_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A newline or control character in a stored field stays inside its row."""
+        data = _base_config()
+        data["agents"]["oncall"] = {
+            "kiro_agent": "oncall\nagent",
+            "workspace": "on\x07call-ws",
+            "memory_store": "oncall-mem",
+            "source": "kiro\ncrew",
+        }
+        cfg_path = _write_config(tmp_path, data)
+
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "agent", "list"]),
+        ):
+            main()
+
+        lines = capsys.readouterr().out.splitlines()
+        # Header plus one line per agent: the newlines did not split a row.
+        assert len(lines) == 3
+        row = next(line for line in lines if line.startswith("oncall "))
+        assert "oncall\\x0aagent" in row
+        assert "oncall-ws" in row
+        assert "kiro\\x0acrew" in row
+        assert "\x07" not in row
+
 
 class TestAgentCreate:
     """Test ``kirocrew agent create``."""
@@ -98,10 +133,10 @@ class TestAgentCreate:
         out = capsys.readouterr().out
         assert "Created agent: research" in out
 
-        # Verify persisted to disk
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert "research" in saved["agents"]
-        assert saved["agents"]["research"]["kiro_agent"] == "kirocrew"
+        # Create gives the crew its own file and binds it there.
+        assert saved["agents"]["research"]["kiro_agent"] == "research"
         store = saved["agents"]["research"]["memory_store"]
         assert store != "default"
         assert saved["memory_stores"][store]["owner_member"] == "research"
@@ -111,6 +146,44 @@ class TestAgentCreate:
         assert saved["workspaces"]["member-research"] == {"dir": "workspace-member-research"}
         assert (data_home() / "workspace-member-research").is_dir()
         assert "Workspace: member-research" in out
+
+    def test_create_defaults_to_the_name_seeded_icon(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A headless CLI create gets the same name-seeded ICON the UI posts for
+        the name, never an empty override (which renders the trait ghost)."""
+        from kiro_crew.crew_avatar_seed import default_icon_avatar
+
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("sys.argv", ["kirocrew", "agent", "create", "--name", "research"]),
+        ):
+            main()
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        avatar = saved["agents"]["research"]["avatar"]
+        assert avatar == default_icon_avatar("research")
+        assert avatar["kind"] == "icon"
+
+    def test_create_free_form_name_seeds_the_icon_from_the_label(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A free-form name is kept as the display label; its icon seeds from that
+        shown label, matching the UI preview and the API create path."""
+        from kiro_crew.crew_avatar_seed import default_icon_avatar
+
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch(
+                "sys.argv", ["kirocrew", "agent", "create", "--name", "Release Writer"]
+            ),
+        ):
+            main()
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        agent = saved["agents"]["release-writer"]
+        assert agent["display_name"] == "Release Writer"
+        assert agent["avatar"] == default_icon_avatar("Release Writer")
 
     def test_create_can_share_a_declared_workspace(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -232,7 +305,51 @@ class TestAgentCreate:
             main()
 
         assert exc_info.value.code != 0
-        assert "invalid kiro agent name" in capsys.readouterr().err
+        assert f"invalid kiro agent name ({TEMPLATE_NAME_HINT})" in capsys.readouterr().err
+
+    def test_create_refuses_another_template_before_writing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A crewmate starts as the built-in worker; the template's limits would be lost."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "create", "--name", "research", "--kiro-agent", "locked-down")
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "Bots start from the built-in worker" in captured.err
+        assert "Created agent" not in captured.out
+        assert cfg_path.read_text(encoding="utf-8") == before
+        assert not (data_home() / "workspace-member-research").exists()
+
+    def test_create_accepts_the_builtin_worker_by_name(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _base_config())
+
+        _run_agent_cli(cfg_path, "create", "--name", "research", "--kiro-agent", "kirocrew")
+
+        assert "Created agent: research" in capsys.readouterr().out
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert "research" in saved["agents"]
+
+    def test_create_naming_its_own_key_is_not_the_template_refusal(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The start-template rule admits the crew's own key; the same-name rule answers it."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "create", "--name", "research", "--kiro-agent", "research")
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "Bots start from the built-in worker" not in err
+        assert "a template is already named 'research'" in err
+        assert cfg_path.read_text(encoding="utf-8") == before
 
     def test_create_rejects_credential_shaped_member_name(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -259,7 +376,7 @@ class TestAgentCreate:
 
         assert exc_info.value.code != 0
         error = capsys.readouterr().err
-        assert "invalid Crew Member name" in error
+        assert "invalid Bot name" in error
         assert name not in error
 
 
@@ -345,7 +462,7 @@ class TestAgentUpdate:
             main()
 
         assert exc_info.value.code != 0
-        assert "invalid kiro agent name" in capsys.readouterr().err
+        assert f"invalid kiro agent name ({TEMPLATE_NAME_HINT})" in capsys.readouterr().err
 
 
 def _run_agent_cli(cfg_path: Path, *argv: str) -> None:
@@ -581,23 +698,17 @@ class TestAgentDelete:
 class TestAgentResetModel:
     """``kirocrew agent reset-model`` -- the explicit way back to the default.
 
-    Goes through ``main()`` rather than calling the handler directly: the verb
-    lives on the SAME ``agent`` subparser group as list/create/update/delete, and
-    a second group registered under the same name raises
-    ``conflicting subparser: agent`` at parser-build time, which breaks the whole
-    CLI while a handler-level test still passes. Routing through main() is what
-    pins the wiring.
+    Goes through ``main()``: a second ``agent`` subparser group raises
+    ``conflicting subparser: agent`` and breaks the whole CLI while a handler-level
+    test still passes.
     """
 
     def _isolated_spec(self, tmp_path: Path, monkeypatch, model: str | None) -> Path:
         """Install a kiro spec in a throwaway agents dir, via the override hook.
 
-        Uses ``agent.KIRO_AGENTS_DIR`` rather than ``KIRO_HOME``: that hook is
-        what ``kiro_agents_dir_path`` consults FIRST, so it short-circuits before
-        the env-based resolver and is the seam the suite's own agent-spec
-        isolation is built on. Setting only ``KIRO_HOME`` would be ignored here.
-        The containment assert makes a lapse fail loudly rather than write into a
-        real agents directory.
+        ``kiro_agents_dir_path`` consults ``agent.KIRO_AGENTS_DIR`` FIRST, so setting
+        only ``KIRO_HOME`` would be ignored. The containment assert stops a lapse from
+        writing into a real agents directory.
         """
         import kiro_crew.agent as agent_mod
 
@@ -790,7 +901,26 @@ class TestAgentModel:
         # The default row's " *" marker is one extra token before MODEL.
         assert rows["default"][column + 1] == "(inherit)"
 
-    @pytest.mark.parametrize("bad", ["-rf", "a b", "x" * 501, "../model"])
+    def test_an_over_long_model_is_refused_naming_the_length_cap(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Well-formed but over the cap: the shape hint would describe a shape it has.
+        bad = "x" * (MAX_SHORT_STRING + 1)
+        assert _MODEL_NAME_RE.match(bad)
+        cfg_path = _write_config(tmp_path, _labelled_config())
+        before = cfg_path.read_text(encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc_info:
+            _run_agent_cli(cfg_path, "update", "research", f"--model={bad}")
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert f"invalid model format (expected at most {MAX_SHORT_STRING} characters)" in err
+        assert MODEL_NAME_HINT not in err
+        assert bad not in err
+        assert cfg_path.read_text(encoding="utf-8") == before
+
+    @pytest.mark.parametrize("bad", ["-rf", "a b", "../model", "a/" + "b" * 255])
     def test_a_malformed_model_is_refused_without_echoing_it(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], bad: str
     ) -> None:
@@ -802,7 +932,7 @@ class TestAgentModel:
 
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
-        assert "invalid model format" in err
+        assert f"invalid model format ({MODEL_NAME_HINT})" in err
         assert bad not in err
         assert cfg_path.read_text(encoding="utf-8") == before
 
@@ -816,7 +946,7 @@ class TestAgentModel:
             _run_agent_cli(cfg_path, "create", "--name", "oncall", "--model", "a b")
 
         assert exc_info.value.code == 1
-        assert "invalid model format" in capsys.readouterr().err
+        assert f"invalid model format ({MODEL_NAME_HINT})" in capsys.readouterr().err
         assert cfg_path.read_text(encoding="utf-8") == before
 
     def test_a_wrong_flavour_spelling_is_refused_with_the_served_id(
@@ -894,3 +1024,111 @@ class TestAgentModel:
 
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert saved["agents"]["oncall"]["model"] == "fable-5-1m"
+
+
+class TestRefusalHintsMatchTheirGrammar:
+    """The hint a refusal prints describes what its pattern actually admits."""
+
+    @pytest.mark.parametrize("name", ["a", "a" * 63, "dr.eggbot", "my_agent-2"])
+    def test_template_hint_admits(self, name: str) -> None:
+        assert TEMPLATE_NAME_RE.fullmatch(name)
+
+    @pytest.mark.parametrize("name", ["", "a" * 64, "-agent", "agent.", "dr. eggbot"])
+    def test_template_hint_refuses(self, name: str) -> None:
+        assert not TEMPLATE_NAME_RE.fullmatch(name)
+
+    def test_template_hint_states_the_length_bound(self) -> None:
+        assert "1-63" in TEMPLATE_NAME_HINT
+
+    @pytest.mark.parametrize(
+        "model", ["auto", "test-model-1", "gpt-6-astra[high]", "ollama/qwen3:8b", "a/b/c"]
+    )
+    def test_model_hint_admits(self, model: str) -> None:
+        assert _MODEL_NAME_RE.match(model)
+
+    @pytest.mark.parametrize("model", ["-rf", "a b", "../model", "/abs", "a[x][y]"])
+    def test_model_hint_refuses(self, model: str) -> None:
+        assert not _MODEL_NAME_RE.match(model)
+
+    def test_model_hint_names_auto_and_the_qualified_form(self) -> None:
+        assert "'auto'" in MODEL_NAME_HINT
+        assert "provider/model" in MODEL_NAME_HINT
+
+    def test_model_hint_states_the_qualified_length_bound(self) -> None:
+        # The bound the hint names is the one the pattern enforces.
+        assert "at most 256 characters" in MODEL_NAME_HINT
+        assert _MODEL_NAME_RE.match("a/" + "b" * 254)
+        assert not _MODEL_NAME_RE.match("a/" + "b" * 255)
+
+
+class TestAgentUpdateWorkspace:
+    """``kirocrew agent update <name> --workspace``: blank keeps, unknown warns."""
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_keeps_the_current_workspace(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], blank: str
+    ) -> None:
+        data = _labelled_config()
+        data["workspaces"]["research-ws"] = {"dir": "research"}
+        data["agents"]["research"]["workspace"] = "research-ws"
+        cfg_path = _write_config(tmp_path, data)
+
+        _run_agent_cli(cfg_path, "update", "research", "--workspace", blank)
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]["research"]
+        # A stored "" resolves to the shared default tree, so it is never saved.
+        assert saved["workspace"] == "research-ws"
+        captured = capsys.readouterr()
+        # A blank --workspace alone leaves nothing to change.
+        assert "Updated agent" not in captured.out
+        assert "blank --workspace ignored" in captured.err
+        assert "nothing to update" in captured.err
+
+    def test_blank_beside_another_field_saves_only_that_field(self, tmp_path: Path) -> None:
+        from kiro_crew.memory_stores import persist_member_config
+
+        data = _labelled_config()
+        data["workspaces"]["research-ws"] = {"dir": "research"}
+        data["agents"]["research"]["workspace"] = "research-ws"
+        cfg_path = _write_config(tmp_path, data)
+
+        def publish(*args, **kwargs):
+            assert kwargs["changed_fields"] == {"model"}
+            return persist_member_config(*args, **kwargs)
+
+        with unittest.mock.patch(
+            "kiro_crew.cli_commands.persist_member_config", side_effect=publish
+        ):
+            _run_agent_cli(
+                cfg_path, "update", "research", "--workspace", "", "--model", "test-model-1"
+            )
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]["research"]
+        assert saved["workspace"] == "research-ws"
+        assert saved["model"] == "test-model-1"
+
+    def test_unknown_workspace_saves_with_a_warning(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_path = _write_config(tmp_path, _labelled_config())
+
+        _run_agent_cli(cfg_path, "update", "research", "--workspace", "nowhere")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]["research"]
+        assert saved["workspace"] == "nowhere"
+        captured = capsys.readouterr()
+        assert "Updated agent: research" in captured.out
+        assert "Warning: workspace 'nowhere' is not configured" in captured.err
+
+    def test_configured_workspace_saves_quietly(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        data = _labelled_config()
+        data["workspaces"]["research-ws"] = {"dir": "research"}
+        cfg_path = _write_config(tmp_path, data)
+
+        _run_agent_cli(cfg_path, "update", "research", "--workspace", "research-ws")
+
+        saved = json.loads(cfg_path.read_text(encoding="utf-8"))["agents"]["research"]
+        assert saved["workspace"] == "research-ws"
+        assert capsys.readouterr().err == ""

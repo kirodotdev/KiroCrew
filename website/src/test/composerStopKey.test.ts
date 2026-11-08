@@ -2,10 +2,10 @@
 // textarea keydown and the rich-text editor's Escape command) call this on a
 // bare Escape; it stops the running turn only when nothing else in
 // the composer owns Escape first. These pin the full precedence matrix.
-import { describe, it, expect, vi } from 'vitest'
-import { renderHook } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, renderHook } from '@testing-library/react'
 import type { RefObject } from 'react'
-import { useComposerStopKey, type StopKeyEvent } from '../components/chat-input/stopKey'
+import { ESCAPE_STOP_ARM_MS, useComposerStopKey, type StopKeyEvent } from '../components/chat-input/stopKey'
 import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
 
 type Opts = Parameters<typeof useComposerStopKey>[0]
@@ -31,7 +31,7 @@ function fakeEvent(repeat = false) {
 
 function run(opts: Opts, e = fakeEvent(), composing = false, native: Event = new KeyboardEvent('keydown', { key: 'Escape' })) {
   const { result } = renderHook(() => useComposerStopKey(opts))
-  const claimed = result.current(e, { native, composing })
+  const claimed = result.current.stopTurnOnEscape(e, { native, composing })
   return { claimed, e }
 }
 
@@ -184,5 +184,117 @@ describe('useComposerStopKey (issue #22315)', () => {
     expect(claimed).toBe(true)
     expect(e.preventDefault).toHaveBeenCalledTimes(1)
     expect(onStop).not.toHaveBeenCalled()
+  })
+})
+
+// Escape cancels an in-flight prompt optimize. The optimize is a closer
+// claimant than the turn but yields to every other Escape owner.
+describe('useComposerStopKey: in-flight optimize', () => {
+  const optimizing = (on: boolean): RefObject<boolean> => ({ current: on })
+
+  it('cancels the optimize and does NOT stop the running turn', () => {
+    const onStop = vi.fn(); const onCancelOptimize = vi.fn()
+    const { claimed, e } = run(base({ onStop, optimizingRef: optimizing(true), onCancelOptimize }))
+    expect(claimed).toBe(true)
+    expect(onCancelOptimize).toHaveBeenCalledTimes(1)
+    expect(onStop).not.toHaveBeenCalled()
+    expect(e.preventDefault).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels the optimize when no turn is running', () => {
+    const onCancelOptimize = vi.fn()
+    const { claimed } = run(base({ isRunning: false, onStop: undefined, optimizingRef: optimizing(true), onCancelOptimize }))
+    expect(claimed).toBe(true)
+    expect(onCancelOptimize).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the old behaviour when no optimize is running', () => {
+    const onStop = vi.fn(); const onCancelOptimize = vi.fn()
+    expect(run(base({ onStop, optimizingRef: optimizing(false), onCancelOptimize })).claimed).toBe(true)
+    expect(onStop).toHaveBeenCalledTimes(1)
+    expect(onCancelOptimize).not.toHaveBeenCalled()
+    expect(run(base({ isRunning: false, onStop, optimizingRef: optimizing(false), onCancelOptimize })).claimed).toBe(false)
+    expect(onStop).toHaveBeenCalledTimes(1)
+  })
+
+  it('yields to an open picker, IME composition and a voice read-back stop', () => {
+    const onCancelOptimize = vi.fn()
+    const opts = (over: Partial<Opts> = {}) => base({ optimizingRef: optimizing(true), onCancelOptimize, ...over })
+    expect(run(opts({ anyPickerOpenRef: pickerRef(true) })).claimed).toBe(false)
+    expect(run(opts(), fakeEvent(), true).claimed).toBe(false)
+    const native = new KeyboardEvent('keydown', { key: 'Escape' })
+    noteEscapeStoppedSpeech(native)
+    expect(run(opts(), fakeEvent(), false, native).claimed).toBe(false)
+    expect(onCancelOptimize).not.toHaveBeenCalled()
+  })
+})
+
+// "Require a second Escape to stop the turn" (issue #23462). Off by default, so
+// every test above runs the single-press stop with no stored setting.
+describe('useComposerStopKey: a second Escape required', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    localStorage.setItem('mc-chat-config', JSON.stringify({ doubleEscapeToStop: true }))
+  })
+  afterEach(() => { vi.useRealTimers() })
+
+  type Hook = { current: ReturnType<typeof useComposerStopKey> }
+  function press(result: Hook, e = fakeEvent()): boolean {
+    let claimed = false
+    act(() => { claimed = result.current.stopTurnOnEscape(e, { native: new KeyboardEvent('keydown', { key: 'Escape' }), composing: false }) })
+    return claimed
+  }
+
+  it('one Escape arms and sends no cancel; a second inside the window stops the turn', () => {
+    const onStop = vi.fn()
+    const { result } = renderHook(() => useComposerStopKey(base({ onStop })))
+    const first = fakeEvent()
+    expect(press(result, first)).toBe(true)
+    expect(first.preventDefault).toHaveBeenCalledTimes(1)
+    expect(onStop).not.toHaveBeenCalled()
+    expect(result.current.escapeArmed).toBe(true)
+    act(() => { vi.advanceTimersByTime(ESCAPE_STOP_ARM_MS - 1) })
+    expect(press(result)).toBe(true)
+    expect(onStop).toHaveBeenCalledTimes(1)
+    expect(result.current.escapeArmed).toBe(false)
+  })
+
+  it('a lapsed window disarms with nothing sent, and the next Escape arms again', () => {
+    const onStop = vi.fn()
+    const { result } = renderHook(() => useComposerStopKey(base({ onStop })))
+    press(result)
+    act(() => { vi.advanceTimersByTime(ESCAPE_STOP_ARM_MS) })
+    expect(result.current.escapeArmed).toBe(false)
+    expect(onStop).not.toHaveBeenCalled()
+    press(result)
+    expect(onStop).not.toHaveBeenCalled()
+    expect(result.current.escapeArmed).toBe(true)
+  })
+
+  it('an Escape armed in one session does not stop a turn after switching to another', () => {
+    // One composer serves every session, and both turns are running.
+    const onStop = vi.fn()
+    const { result, rerender } = renderHook(props => useComposerStopKey(props), { initialProps: base({ onStop, slotKey: 'chat-a' }) })
+    press(result)
+    expect(result.current.escapeArmed).toBe(true)
+    rerender(base({ onStop, slotKey: 'chat-b' }))
+    expect(result.current.escapeArmed).toBe(false)
+    press(result)
+    expect(onStop).not.toHaveBeenCalled()
+    expect(result.current.escapeArmed).toBe(true)
+  })
+
+  it('from the soft cancel on, one Escape runs the press protocol and the arm is dropped', () => {
+    // The Stop button sent the soft cancel while an Escape was armed: the hint
+    // goes, and the next Escape is the press protocol's (force kill), as it is
+    // for the button.
+    const onStop = vi.fn()
+    const { result, rerender } = renderHook(props => useComposerStopKey(props), { initialProps: base({ onStop }) })
+    press(result)
+    expect(result.current.escapeArmed).toBe(true)
+    rerender(base({ onStop, stopState: 'soft_pending' }))
+    expect(result.current.escapeArmed).toBe(false)
+    press(result)
+    expect(onStop).toHaveBeenCalledTimes(1)
   })
 })

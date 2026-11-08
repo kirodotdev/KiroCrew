@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, fireEvent, screen, waitFor } from '@testing-library/react'
+import { render, fireEvent, screen, waitFor, act } from '@testing-library/react'
 
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { SidebarFolderCtx, type SidebarFolderActions } from '../components/markdown/contexts'
@@ -189,20 +189,30 @@ describe('folder chip — a sidebar folder path in prose', () => {
     expect(onFolderReveal).toHaveBeenCalledTimes(2)
   })
 
-  it('copies the normalised path on Ctrl/Cmd+click instead of revealing', () => {
+  it('copies the normalised path on Ctrl/Cmd+click instead of revealing', async () => {
     renderWithFolders('`goal › worker`')
     const chip = chipFor('f-goal-worker')
     expect(chip).toHaveTextContent('goal › worker')
-    fireEvent.click(chip, { metaKey: true })
+    await act(async () => {
+      fireEvent.click(chip, { metaKey: true })
+    })
     expect(copyToClipboard).toHaveBeenCalledWith('goal/worker')
     expect(onFolderReveal).not.toHaveBeenCalled()
   })
 
-  it('says what a click does in its tooltip', () => {
+  it('says what a click does in its bubble, and confirms a Ctrl/Cmd+click copy there without touching the chip', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(true)
     renderWithFolders('`goal/worker`')
-    const title = chipFor('f-goal-worker').getAttribute('title') ?? ''
-    expect(title).toContain('Click to show this folder in the sidebar')
-    expect(title).toContain('Ctrl/Cmd+click to copy')
+    const chip = chipFor('f-goal-worker')
+    expect(chip).not.toHaveAttribute('title')
+    fireEvent.focus(chip)
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Click to show this folder in the sidebar')
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Ctrl/Cmd+click to copy')
+    const chipRest = chip.innerHTML
+    await act(async () => { fireEvent.click(chip, { ctrlKey: true }) })
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Copied!')
+    expect(screen.getByRole('status')).toHaveTextContent('Copied!')
+    expect(chip.innerHTML).toBe(chipRest)
   })
 
   it('leaves a bare top-level folder name as the click-to-copy span', () => {

@@ -304,7 +304,7 @@ export function CrewGroupSection({ group, rows, collapsed, onToggle, hideWhenEmp
     if (row.peer_id) { wiring.actions.onOpenPeerSession(row.peer_id, row.key); return }
     const elsewhere = opensElsewhereOf(row)
     if (elsewhere) { wiring.actions.openElsewhere(elsewhere); return }
-    dispatch(switchSlot({ key: row.key, announceOnMissing: true }))
+    dispatch(switchSlot({ key: row.key, announceOnMissing: true, gesture: true }))
     wiring.actions.onSelectSlot?.(row.key)
   }
   return (

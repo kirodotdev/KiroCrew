@@ -27,6 +27,11 @@ const { globalShortcut } = require("electron");
 // deferred to the fullscreen exit, so a summon landing in that gap is not
 // silently undone when the exit completes.
 const { cancelPendingTrayHide } = require("./hide-to-tray");
+// The chords this module is configured to hold, kept from apps while a rebind
+// has them released (see shell-shortcut-reservations.js).
+const { shellShortcutReservations } = require("./shell-shortcut-reservations");
+
+const RESERVATION_OWNER = "shell:summon-hotkey";
 
 /**
  * Platform-appropriate default, mirroring the modifier rationale documented in
@@ -48,6 +53,9 @@ const DEFAULT_GLOBAL_HOTKEY =
  * same invariant).
  */
 let liveAccelerator = "";
+
+/** What the stored preference asked for at the last bind; "" when turned off. */
+let requestedAccelerator = "";
 
 /**
  * Log sink, injected by main.js so a failed registration is visible in
@@ -180,10 +188,15 @@ function bindGlobalHotkey(saved, handler) {
   // Re-register cleanly so a rebind releases the key it really bound.
   unregisterGlobalHotkey();
   const wanted = resolveGlobalHotkey(saved);
+  requestedAccelerator = wanted;
+  shellShortcutReservations.reserve(RESERVATION_OWNER, [wanted]);
   if (!wanted) return { accelerator: "", bound: false };
   if (tryRegister(wanted, handler)) {
     liveAccelerator = wanted;
     return { accelerator: wanted, bound: true };
+  }
+  if (wanted !== DEFAULT_GLOBAL_HOTKEY) {
+    shellShortcutReservations.reserve(RESERVATION_OWNER, [wanted, DEFAULT_GLOBAL_HOTKEY]);
   }
   if (wanted !== DEFAULT_GLOBAL_HOTKEY && tryRegister(DEFAULT_GLOBAL_HOTKEY, handler)) {
     logFn(
@@ -218,6 +231,11 @@ function currentGlobalHotkey() {
   return liveAccelerator;
 }
 
+/** What the last bind asked for ("" when turned off). Read by the shortcuts UI IPC. */
+function requestedGlobalHotkey() {
+  return requestedAccelerator;
+}
+
 module.exports = {
   DEFAULT_GLOBAL_HOTKEY,
   resolveGlobalHotkey,
@@ -226,5 +244,6 @@ module.exports = {
   bindGlobalHotkey,
   unregisterGlobalHotkey,
   currentGlobalHotkey,
+  requestedGlobalHotkey,
   setGlobalHotkeyLogger,
 };

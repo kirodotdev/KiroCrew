@@ -43,6 +43,9 @@ from kiro_crew.telegram.renderer import TelegramApprovalDecider
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_telegram_dispatch")
 
+SHARED_FACADE_CHECKS = ("the_class_body_scan_can_fail",)
+
+
 FACADE = "kiro_crew.telegram.transport_dispatch"
 FACADE_PATH = Path(td.__file__).resolve()
 DISPATCH_DIR = FACADE_PATH.with_name("dispatch")
@@ -84,6 +87,7 @@ BASE_NAMES = frozenset(
         "ConversationState",
         "DENY_CAUSE_APPROVAL_TIMEOUT",
         "DM_SCOPE_UNIFIED",
+        "EmbedAdmissionTimeout",
         "InboundMessage",
         "InboundRoute",
         "IngestLimits",
@@ -198,7 +202,6 @@ BASE_NAMES = frozenset(
         "parse_mid_turn_override",
         "parse_session_key",
         "persisted_session_agent",
-        "predecessor_sid",
         "privacy_mode",
         "process_telegram_attachments",
         "publish_turn_identity",
@@ -290,6 +293,7 @@ MOVED_MEMBERS = {
     "midturn": ("_handle_busy", "_handle_resumed_busy"),
     "pickers": (
         "_agent_choices",
+        "_agent_labels",
         "_apply_agent",
         "_apply_model",
         "_consume_picker",
@@ -332,9 +336,14 @@ BASE_MEMBERS = {
     "_addresses_this_bot": ("function", "(self, msg: 'InboundMessage') -> 'bool'"),
     "_agent_choices": (
         "function",
-        "(self, names: 'list[str]') -> 'tuple[tuple[str, str], ...]'",
+        "(self, names: 'list[str]', labels: 'dict[str, str] | None' = None) "
+        "-> 'tuple[tuple[str, str], ...]'",
     ),
-    "_apply_agent": ("function", "(self, route: 'tuple[str, str]', agent_id: 'str') -> 'str'"),
+    "_apply_agent": (
+        "function",
+        "(self, route: 'tuple[str, str]', agent_id: 'str', label: 'str' = '') -> 'str'",
+    ),
+    "_agent_labels": ("staticmethod", "() -> 'dict[str, str]'"),
     "_apply_model": (
         "function",
         "(self, route: 'tuple[str, str]', model_id: 'str', session_key: 'str | None' = None, "
@@ -362,7 +371,7 @@ BASE_MEMBERS = {
         "function",
         "(self, session_key: 'str', chat_id: 'int', text: 'str', *, "
         "thread: 'int | None' = None, attachments: 'list[Any] | None' = None, "
-        "privacy_request: 'str' = '', origin: '_QueuedOrigin', "
+        "privacy_request: 'str' = '', reply_context: 'str' = '', origin: '_QueuedOrigin', "
         "person_origin: 'bool' = False) -> 'bool'",
     ),
     "_handle_agent": (
@@ -1017,7 +1026,7 @@ _FACADE_PINNED = {
     "the auto-title pin": "test_messaging_auto_title: pin_record, try_claim, is_titled",
     "a name-grant check": "test_name_grant_surfaces: name_grant",
     "the forgeable spawn title": 'test_name_grant_surfaces: title == "spawn_run"',
-    "the reservation sweep": "test_early_approval_press_13578: discard_session",
+    "the reservation sweep": "test_approval_early_press: discard_session",
     "a receipt flip": "test_queue_receipt: every flip call names its owner",
     "the queue drain": "test_queue_drain_wake: async def _drain_queue",
     "an agent-SDK import": "check_agent_sdk_boundary: kiro_crew.acp / kiro_crew.providers",
@@ -1182,11 +1191,6 @@ def test_no_owner_needs_the_class_body() -> None:
         if (hits := _class_body_reads(source))
     }
     assert offenders == {}
-
-
-def test_the_class_body_scan_can_fail() -> None:
-    planted = "def f(self):\n    super().g()\n    return __class__, self.__secret, self.__dict__\n"
-    assert _class_body_reads(planted) == ["2: super()", "3: __class__", "3: __secret"]
 
 
 def test_dashboard_imports_stay_call_time() -> None:

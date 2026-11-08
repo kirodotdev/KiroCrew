@@ -11,6 +11,7 @@ which handler each command reaches and with what.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib
 import sys
 import types
@@ -138,7 +139,6 @@ def test_a_command_hands_its_namespace_to_its_handler(
 
 # Commands whose handler the facade binds, and which take the parsed namespace.
 _FACADE_HANDLERS = [
-    (("knowledge", "stats"), "_knowledge"),
     (("consolidate",), "_consolidate_cmd"),
     (("config", "get"), "_config_cmd"),
 ]
@@ -198,6 +198,7 @@ _EXIT_HANDLERS = [
     (("sandbox", "status"), "kiro_crew.cli_server", "_sandbox_cmd"),
     (("kas", "status"), "kiro_crew.cli_kas", "kas_cmd"),
     (("cloud", "list"), None, "handle_cloud"),
+    (("knowledge", "stats"), None, "_knowledge"),
 ]
 
 
@@ -335,12 +336,11 @@ def test_computer_forwards_its_remaining_arguments(
         (("update",), "_update", ((), {"force": False})),
         (("update", "--force"), "_update", ((), {"force": True})),
         (("update", "approve"), "_update_approve", ((), {})),
-        (("file-delivery", "approve"), "_file_delivery_approve", ((), {})),
         (("stop", "--port", "7001"), "_stop", ((7001,), {"expect_pid": None})),
         (("restart", "--port", "7002"), "_restart", ((7002,), {})),
         (("gateway-pid",), "_gateway_pid", ((), {})),
     ],
-    ids=["update", "update-force", "update-approve", "file-delivery", "stop", "restart", "pid"],
+    ids=["update", "update-force", "update-approve", "stop", "restart", "pid"],
 )
 def test_a_gateway_control_command_reaches_its_server_handler(
     booted: list[str],
@@ -442,3 +442,29 @@ def test_an_unusable_kirocrew_port_stops_every_command_before_it_starts(
     assert exited.value.code == 1
     assert f"KIROCREW_PORT={raw!r} {complaint}" in capsys.readouterr().err
     assert booted == []
+
+
+def test_acceptance_check_without_an_edition_exits_2_and_prints_no_report(
+    booted: list[str], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The public build knows no check, so the evaluator reads "no edition provides it"."""
+    with pytest.raises(SystemExit) as exited:
+        _run(monkeypatch, "acceptance-check", "--json", "ci-green", "ITEM-42")
+    assert exited.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no installed edition provides the acceptance check 'ci-green'" in captured.err
+
+
+def test_acceptance_check_exits_with_the_composed_editions_answer(
+    booted: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A companion's adapter, composed like any other field, answers the core's command."""
+    calls: list[Call] = []
+    edition = types.SimpleNamespace(run_acceptance_check=_recorder(calls, result=8))
+    ctx = dataclasses.replace(cli.current_context(), acceptance_checks=edition)
+    monkeypatch.setattr(cli, "current_context", lambda: ctx)
+    with pytest.raises(SystemExit) as exited:
+        _run(monkeypatch, "acceptance-check", "--json", "ci-green", "ITEM-42")
+    assert exited.value.code == 8
+    assert calls == [(("ci-green", "ITEM-42"), {})]

@@ -1,7 +1,7 @@
 """The product's own command floors: the subcommands it must never be driven to run.
 
 The termination floor (a kill whose target is the product, by pid or by name, through
-``pkill``-style programs and computed words), the restart, update, file-delivery,
+``pkill``-style programs and computed words), the restart, update,
 gateway-restart and destructive-cloud subcommand floors, the dev-mode out-of-root
 confirmation, and the credential-mint predicates, which follow a payload through the
 carriers that can hand it to an interpreter -- an inline program, a here-document, a
@@ -12,7 +12,7 @@ new floor for one of the product's own subcommands goes here.
 
 The frame walk (``_self_token_frames``, ``_shell_payload_sources``) and the static
 reader of a flat command substitution (``_static_substitution_output``) are reused by
-the ssh self-target floor above this module and by ``perm_verb_mention``.
+the ssh self-target floor above this module.
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the shell reader,
 the inline-payload checks and the shared name vocabulary below it, and imports no other
@@ -38,6 +38,7 @@ from .shell_normalizer import (
     _PYTHON_INLINE_PROGRAM_FLAGS,
     _PYTHON_OPERAND_FLAGS,
     _PYTHON_PROGRAM_RE,
+    _REDIRECT_START_RE,
     _SHELL_WRAPPER_CHARS,
     _argv_programs,
     _backtick_closer,
@@ -54,10 +55,11 @@ from .shell_normalizer import (
     _resolve_param_defaults,
     _shell_join_continuations,
     _shell_payload_walk,
+    _strip_redirect,
     _substitution_bodies,
     _substitution_depth_delta,
 )
-from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_FILE_DELIVERY_VERBS, _SELF_NAME_RE
+from .vocabulary import _KILL_BY_NAME_PROGRAMS, _SELF_NAME_RE
 
 # ── Self-protection floor (argv-structural, not a regex) ──
 # The two self-protection rules below are enforced by TOKENIZING the command
@@ -859,7 +861,7 @@ _SELF_CLOUD_DESTRUCTIVE_VERBS: frozenset[str] = frozenset(
 )
 
 
-def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
+def _self_cli_operands(tokens: "list[str]", i: int, *, glued_words: bool) -> "list[str]":
     """Non-flag operand words the product CLI at program index *i* receives, in order.
 
     A token that stays a ``-``/``--`` word after quote/redirect normalization is a
@@ -870,6 +872,11 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
     ``kirocrew 2>/tmp/x restart`` still reads ``restart`` as the leading operand.
     Quoting is resolved by ``_normalize_operand``; the walk stops at the argv
     boundary so a chained later command's words are not attributed here.
+
+    With *glued_words*, the word a redirection is glued to (``restart>/tmp/log``) is
+    read as the operand the shell passes. Without it the whole token is skipped: the
+    dequoted token cannot show whether a separator in its target was live
+    (``status>x&&kirocrew restart``), so the floor matches either reading.
     """
     operands: "list[str]" = []
     depth = 0
@@ -885,7 +892,9 @@ def _self_cli_operands(tokens: "list[str]", i: int) -> "list[str]":
         if is_redirect:
             # The redirection operator itself is not an operand and never ends the argv.
             skip_target = expects_target
-            continue
+            if not glued_words or _REDIRECT_START_RE.match(later):
+                continue
+            later = _strip_redirect(later)
         operand = _shell_normalizer._normalize_operand(later)
         # ANSI-C ($'...') and locale ($"...") quoting: shlex strips the quotes
         # but leaves the leading ``$``, so a flag hidden as ``$'-v'`` / the hex
@@ -1039,7 +1048,10 @@ def _matches_self_subcommand(text_lower: str, spec: "tuple[object, ...]") -> boo
                 command_disqualified=disqualified,
             ):
                 continue
-            if _operands_lead_with(_self_cli_operands(tokens, prog_idx), spec):
+            if any(
+                _operands_lead_with(_self_cli_operands(tokens, prog_idx, glued_words=g), spec)
+                for g in (False, True)
+            ):
                 return True
     return False
 
@@ -1052,11 +1064,6 @@ def _is_self_restart(text_lower: str) -> bool:
 def _is_self_update(text_lower: str) -> bool:
     """``kirocrew update`` behind any shell dressing of interposed flags."""
     return _matches_self_subcommand(text_lower, ("update",))
-
-
-def _is_self_file_delivery(text_lower: str) -> bool:
-    """``kirocrew file-delivery <verb>`` behind any shell dressing of interposed flags."""
-    return _matches_self_subcommand(text_lower, ("file-delivery", _SELF_FILE_DELIVERY_VERBS))
 
 
 def _is_self_gateway_restart(text_lower: str) -> bool:

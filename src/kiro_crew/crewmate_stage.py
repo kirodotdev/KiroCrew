@@ -30,7 +30,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import data_home
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 SUFFIX = ".crewmate"
 _SHA_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -53,7 +55,7 @@ def stage_dir() -> Path:
 
 
 def _private_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True, mode=stat.S_IRWXU)
+    mkdirs_owner_only(path)
     if os.name != "nt":
         os.chmod(path, stat.S_IRWXU)  # owner-only: rwx------
     return path
@@ -75,7 +77,7 @@ def _write_private(target: Path, data: bytes) -> None:
             fh.write(data)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, target)
+        replace_with_retry(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
 

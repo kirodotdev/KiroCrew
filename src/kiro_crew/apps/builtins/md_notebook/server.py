@@ -60,7 +60,7 @@ from kiro_crew.apps.builtins.md_notebook.server_paths import (
     _discard_staged_sync,
     _make_note_dirs_checked,
     _new_staged_note_path,
-    _observed_note_mtime,
+    _observed_note_state,
     _publish_note_once,
     _read_note_text_sync,
     _reject_unportable_new_components,
@@ -69,6 +69,8 @@ from kiro_crew.apps.builtins.md_notebook.server_paths import (
     content_root,
     list_note_files,
     mutation_path_checked,
+    note_content_hash,
+    read_note_snapshot,
     read_note_text,
     reject_linked_trash,
     require_folder_path,
@@ -85,6 +87,7 @@ from kiro_crew.apps.builtins.md_notebook.server_store import (
     _clone_root,
     _coerce_auto_sync_mins,
     _home,
+    _is_app_clone,
     _write_pat_sync,
     _write_settings_sync,
     logger,
@@ -94,6 +97,7 @@ from kiro_crew.apps.builtins.md_notebook.server_store import (
     synced_cleanly,
     write_vaults,
 )
+from kiro_crew.atomic_write import rename_with_retry, replace_with_retry
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
@@ -342,13 +346,28 @@ def _gh_token_sync() -> Optional[str]:
                 [gh, "auth", "token"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 timeout=GH_TIMEOUT_SEC,
                 check=False,
                 env=_trusted_env(),
             )
             if proc.returncode == 0:
                 value = proc.stdout.strip() or None
-        except (OSError, subprocess.SubprocessError):
+            else:
+                # Normally "not logged in". Never log stdout: on success it is the token.
+                logger.debug("md-notebook: gh login lookup exited %d", proc.returncode)
+        except (OSError, subprocess.SubprocessError) as exc:
+            # A trusted gh that cannot run or times out looks like "not logged in"
+            # to every caller, so say which it was.
+            code = getattr(exc, "winerror", None) or getattr(exc, "errno", None)
+            logger.warning(
+                "md-notebook: gh login lookup could not run %s: %s (code %s);"
+                " treated as not logged in for the next %d s",
+                gh,
+                type(exc).__name__,
+                code,
+                GH_TOKEN_TTL_SEC,
+            )
             value = None
     _gh_cache["value"] = value
     _gh_cache["at"] = time.monotonic()
@@ -531,12 +550,12 @@ async def api_health(request: web.Request) -> web.Response:
 
 
 async def api_vaults(request: web.Request) -> web.Response:
-    clone_root = str(_clone_root())
     vaults = []
     for v in await read_vaults():
         # `external` = attached in place rather than cloned by this app.
         # Computed on read, never persisted.
-        vaults.append({**v, "external": not str(v["localPath"]).startswith(clone_root)})
+        cloned = await asyncio.to_thread(_is_app_clone, str(v["localPath"]))
+        vaults.append({**v, "external": not cloned})
     return web.json_response(
         {
             "vaults": vaults,
@@ -848,9 +867,10 @@ async def api_note_read(request: web.Request) -> web.Response:
         # about what the vault itself contains: a vault can be attached to any
         # folder the user picks, so containment alone would happily serve a
         # private key that lives under it. The gate is what refuses that.
-        content = await read_note_text(abs_path)
-        if content is None:
+        snap = await read_note_snapshot(abs_path)
+        if snap is None:
             raise ApiError(f"no such note: {rel}", 404, code="no_such_note")
+        content, content_hash = snap
     except FileNotFoundError as exc:
         raise ApiError(f"no such note: {rel}", 404, code="no_such_note") from exc
     cache = await get_cache(vault)
@@ -861,6 +881,9 @@ async def api_note_read(request: web.Request) -> web.Response:
             # Snapshot token for the save guard: a PUT is refused if the file
             # changed on disk since this read.
             "mtime": st.st_mtime * 1000,
+            # The precise token: the hash of exactly the bytes `content` came
+            # from, which a same-mtime external write still changes.
+            "contentHash": content_hash,
             "meta": notes_mod.parse_note(rel, content),
             "backlinks": cache["backlinks"].get(rel, []),
         }
@@ -868,7 +891,12 @@ async def api_note_read(request: web.Request) -> web.Response:
 
 
 async def _save_note_contents(
-    vault: dict[str, Any], abs_path: Path, rel: str, content: str, base_mtime: object
+    vault: dict[str, Any],
+    abs_path: Path,
+    rel: str,
+    content: str,
+    base_mtime: object,
+    base_hash: object = None,
 ) -> None:
     """Publish *content*, retrying a contended rename without losing a write.
 
@@ -883,15 +911,16 @@ async def _save_note_contents(
     silently overwritten by the next attempt -- exactly what the `baseMtime`
     guard exists to prevent.
 
-    **The lock policy depends on whether this save carries a freshness token**,
-    because that is what decides whether a writer in the gap can be DETECTED:
+    **The lock policy depends on whether this save carries a freshness token**
+    (``baseMtime`` or ``baseHash``), because that is what decides whether a
+    writer in the gap can be DETECTED:
 
-    * ``baseMtime`` supplied -- the lock is released across the backoff. Another
+    * a token supplied -- the lock is released across the backoff. Another
       writer landing in the gap is not a problem to exclude: the next attempt
       re-runs the check, sees it, and answers 409. Releasing keeps a contended
       save from blocking an external-conflict resolution behind it.
 
-    * no ``baseMtime`` (the API allows it, and the editor omits it when it has
+    * no token (the API allows it, and the editor omits it when it has
       not read an mtime) -- ``_assert_note_is_fresh`` is a no-op, so a writer in
       the gap is INVISIBLE to every later attempt. Releasing the lock there let a
       contended save resurrect itself over a later save that had already been
@@ -904,7 +933,7 @@ async def _save_note_contents(
       answer. An editor writing the file directly -- Obsidian, ``git pull``, a
       script -- never takes it, and republishing over that edit is undetectable
       after the fact. So the tokenless path derives its OWN baseline
-      (``_observed_note_mtime`` before the first attempt) and revalidates
+      (``_observed_note_state`` before the first attempt) and revalidates
       against it before every RETRY: the same 409 ESTALE the guarded path
       answers, from a baseline the server sampled instead of one the client
       supplied. The first attempt never consults it -- overwriting the sampled
@@ -922,7 +951,7 @@ async def _save_note_contents(
     # running during the backoff cannot stage it.
     #
     # WHERE it is staged differs, because the two paths serialize differently.
-    if isinstance(base_mtime, (int, float)):
+    if isinstance(base_mtime, (int, float)) or isinstance(base_hash, str):
         # Guarded: the freshness check is what orders these saves, so staging
         # outside the lock cannot reorder anything -- every attempt revalidates
         # under the lock before it may publish.
@@ -934,7 +963,7 @@ async def _save_note_contents(
         # This costs one extra stat on the happy path and weakens nothing -- the
         # per-attempt check under the lock is still the one that authorizes a
         # publish.
-        await _assert_note_is_fresh(abs_path, rel, base_mtime)
+        await _assert_note_is_fresh(abs_path, rel, base_mtime, base_hash)
         async with vault_write_lock(vault["localPath"]):
             await asyncio.to_thread(_make_note_dirs_checked, vault, rel)
         tmp = _new_staged_note_path(abs_path)
@@ -953,7 +982,7 @@ async def _save_note_contents(
                     # replaced by the publish with a 200. Same order as
                     # everywhere else: the per-note lock first.
                     async with _save_lock(str(abs_path)), vault_write_lock(vault["localPath"]):
-                        await _assert_note_is_fresh(abs_path, rel, base_mtime)
+                        await _assert_note_is_fresh(abs_path, rel, base_mtime, base_hash)
                         if await _publish_note_once(abs_path, tmp, attempt):
                             return
                     # Outside both locks: a writer arriving here -- an API save,
@@ -997,7 +1026,7 @@ async def _save_note_contents(
                 # Sampled after staging (which writes the temp, never the note)
                 # and before the first attempt, so it describes exactly what
                 # attempt 1 would replace.
-                observed = await _observed_note_mtime(abs_path)
+                observed = await _observed_note_state(abs_path)
                 for attempt in range(_SAVE_MAX_ATTEMPTS):
                     if attempt:
                         # A RETRY, so the backoff has already elapsed. The lock
@@ -1045,8 +1074,9 @@ async def api_note_save(request: web.Request) -> web.Response:
     # Components this save would CREATE are held to the portability rule on
     # every platform; existing ones stay saveable (the rename escape hatch).
     await asyncio.to_thread(_reject_unportable_new_components, root, rel)
-    base_mtime = body.get("baseMtime")
-    await _save_note_contents(vault, abs_path, rel, content, base_mtime)
+    await _save_note_contents(
+        vault, abs_path, rel, content, body.get("baseMtime"), body.get("baseHash")
+    )
     mark_self_write(abs_path)
     cache = await get_cache(vault)
     cache["index"].update(
@@ -1060,7 +1090,13 @@ async def api_note_save(request: web.Request) -> web.Response:
             contents[p] = text
     cache["backlinks"] = notes_mod.build_backlinks(contents)
     st = await asyncio.to_thread(os.stat, abs_path)
-    return web.json_response({"ok": True, "mtime": st.st_mtime * 1000})
+    return web.json_response(
+        {
+            "ok": True,
+            "mtime": st.st_mtime * 1000,
+            "contentHash": note_content_hash(content.encode("utf-8")),
+        }
+    )
 
 
 async def api_note_delete(request: web.Request) -> web.Response:
@@ -1099,8 +1135,8 @@ async def api_note_delete(request: web.Request) -> web.Response:
             try:
                 # `replace`, not `rename`: the reserved placeholder is in the
                 # way. Neither follows a final-component symlink, so an in-vault
-                # alias is moved as the link it is.
-                os.replace(abs_path, candidate)
+                # alias is moved as the link it is. Retried while a reader holds it.
+                replace_with_retry(abs_path, candidate)
             except OSError:
                 # The source was gone (or unmovable) — do not leave the empty
                 # placeholder behind as a phantom trash entry.
@@ -1278,7 +1314,7 @@ async def api_note_move(request: web.Request) -> web.Response:
             raise ApiError(f"a note already exists at {dst_rel}", 409, code="note_already_exists")
         dst.parent.mkdir(parents=True, exist_ok=True)
         try:
-            os.rename(src, dst)
+            rename_with_retry(src, dst)
         except FileNotFoundError as exc:
             raise ApiError(f"no such note: {src_rel}", 404, code="no_such_note") from exc
         return src, dst
@@ -1524,10 +1560,12 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.apps.builtins.md_notebook.server_host import (  # noqa: F401
+        _F,
         PICK_FOLDER_SCRIPT,
         PICK_FOLDER_TIMEOUT_SEC,
         REVEAL_BINARIES,
         REVEAL_TIMEOUT_SEC,
+        _timeout_as_api_error,
         _windows_gh_candidates,
     )
     from kiro_crew.apps.builtins.md_notebook.server_http import (  # noqa: F401
@@ -1540,10 +1578,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _RECREATE_SENTINEL,
         _UNPORTABLE_CHARS,
         MTIME_TOLERANCE_MS,
+        NoteState,
+        _assert_note_hash_matches,
         _atomic_write_text_sync,
+        _decode_note_bytes,
         _list_note_files_sync,
         _publish_staged_sync,
+        _raise_note_changed,
+        _read_note_bytes_sync,
+        _read_note_snapshot_sync,
         _reject_unportable_component,
+        _same_note_state,
         _stage_note_text_sync,
         linked_folder_component,
         note_folder,
@@ -1578,7 +1623,6 @@ if TYPE_CHECKING:  # names it serves from outside the owner family, from their h
     )
     from kiro_crew.atomic_write import (  # noqa: F401
         refuse_linked_parent,
-        replace_with_retry,
     )
     from kiro_crew.config.paths import (  # noqa: F401
         config_dir,

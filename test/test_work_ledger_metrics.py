@@ -193,7 +193,14 @@ def test_the_closed_states_are_the_ledgers_own_terminal_states():
 def test_the_report_enums_match_the_crew_logs_own_report_contract():
     """``failed`` is declared because the crew log's report type names it, and the
     worker half can commit only the other four -- so the route never emits it."""
-    assert work_metrics.REPORT_STATUSES == ("progress", "done", "blocked", "question", "failed")
+    assert work_metrics.REPORT_STATUSES == (
+        "progress",
+        "done",
+        "blocked",
+        "question",
+        "reply",
+        "failed",
+    )
     assert set(work_metrics.REPORT_STATUSES) == set(CREW_REPORT_STATUSES)
     assert "failed" not in WORK_WORKER_STATUSES
     assert work_metrics.REPORT_REASONS == WORK_BLOCKED_REASONS + ("none",)

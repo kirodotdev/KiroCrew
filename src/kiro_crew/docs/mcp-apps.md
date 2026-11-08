@@ -8,7 +8,23 @@ other servers ship PDF viewers, forms, and dashboards the same way. This is the
 [SEP-1865](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx)
 `ui` extension — Kiro Crew targets the **Stable 2026-01-26** revision — and it works with any conforming command-based stdio server: nothing is hardcoded per vendor.
 
-If you just want it working: **Developer → MCP Management → route the server → on**. Routing adds the server to `mcp_gateway.stub_servers`; the rest of this page explains what that changes and what to check when a render does not appear.
+If you just want it working: **Customize → Connections → MCP Servers → MCP Management → route the server → on**. Routing adds the server to `mcp_gateway.stub_servers`; the rest of this page explains what that changes and what to check when a render does not appear.
+
+## Adding a server
+
+Open **Customize > Connections > MCP Servers** and click **Add Server**.
+Search for a server, select it, and review its install plan before installing.
+Every official-registry install lands disabled: installation alone does not
+start it. In the MCP Servers list, review the installed server's spec, set any
+required environment variables, and explicitly enable it there.
+An installed-but-disabled server stays listed, but its tools are not available
+until it is enabled.
+
+To use a vault credential, save it under **Settings > Secrets** and use
+`secret://KEY` as the environment value. Route the server through **MCP
+Management**, approve the launch, and restart Crew before using it; only the
+MCP gateway resolves that reference. Routing works for command-based stdio
+servers, not URL-based HTTP/SSE servers.
 
 ## Enabling it
 
@@ -18,8 +34,7 @@ Routing is the required gate: the gateway daemon intercepts a routed server's to
 
 ### From the dashboard
 
-Both live on the **Developer** page (sidebar → **Developer**), which appears once
-Developer Mode is on:
+Both live in **MCP Management**, under the servers list on **Customize → Connections → MCP Servers**:
 
 1. **Route the server through the gateway** in MCP Management. Turning the switch on shows the exact command, arguments and environment the server will launch with, and you approve that launch there. This adds the server to `mcp_gateway.stub_servers`; applying the routing change rebuilds affected agent MCP toolsets, so do it between tasks.
 2. **Share backends across sessions** is optional. `mcp_gateway.enabled` controls whether already routed stdio servers share backends across sessions; it is independent of whether their `ui://` resources render.
@@ -30,6 +45,11 @@ Routing needs that approval. The approval is tied to the server's launch
 since you approved it, is refused: it is left unwrapped, runs directly inside each
 session, and its results render as plain text. MCP Management lists it as needing
 approval (`added_outside_dashboard`) or re-approval (`changed_needs_reapproval`).
+The MCP Servers list under Connections names each refused server with a link to
+MCP Management (`/capabilities?tab=mcp&view=mcp-servers#mcp-management`, in
+Customize → Connections → MCP Servers → MCP Management), and `kirocrew doctor` reports it
+as an issue. An approval takes effect for new
+chats after the gateway restarts.
 
 Only command-based stdio entries can be routed through a stub. URL-based HTTP/SSE entries remain direct and cannot render MCP Apps through this host.
 
@@ -74,7 +94,7 @@ preference, but two ways to say **no** hold:
 |---|---|
 | `KIROCREW_MCP_APPS` = `0`/`false`/`no`/`off` | disabled (explicit kill-switch, wins over everything) |
 | stored `mcp_gateway.apps_enabled` = `false` | disabled, even with `KIROCREW_MCP_APPS` on — a released opt-out is still honoured |
-| config unreadable | disabled (fails closed — the stored preference cannot be confirmed) |
+| config unreadable or not parseable, or a non-object `mcp_gateway` | disabled (fails closed — the stored preference cannot be confirmed) |
 | `KIROCREW_MCP_APPS` = `1`/`true`/`yes`, no stored opt-out | enabled (explicit override — tests, e2e harness) |
 | nothing set | enabled — reaching the gate already means the server was stubbed |
 
@@ -84,7 +104,8 @@ install never has it. It is read in exactly one direction: an operator-written
 an opt-out.
 
 Read live per call, so toggling the feature takes effect without restarting the
-daemon.
+daemon. A file that does not parse keeps it off while it stays unparseable; a
+non-object `mcp_gateway` keeps it off until Kiro Crew restarts.
 
 ### Worked example: excalidraw diagrams
 

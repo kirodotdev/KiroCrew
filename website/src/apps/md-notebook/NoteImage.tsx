@@ -23,13 +23,23 @@
  * SVGs get a definite width basis instead, because one authored with only a
  * `viewBox` has no intrinsic size and would collapse under a max-width cap.
  *
+ * A root-relative source (`/images/a.png`) is served as an absolute path first,
+ * so a real absolute path still loads on the first request. When that fails and
+ * the open vault is known, the image tries the same path against the vault root
+ * once, the convention Obsidian-style vaults use, and only then falls back to
+ * the alt text. The retry asks `/api/file-raw` for a path under the vault and
+ * nothing a plain absolute path could not already ask for.
+ *
  * No click handler: in this app a click means "edit the source of this line",
  * and the surrounding block already carries that gesture. Swallowing the click
  * to open a lightbox would make the image the only span in a note you cannot
  * click to edit.
  */
 import { ImageOff } from 'lucide-react'
-import { useState } from 'react'
+import { useContext, useState } from 'react'
+
+import { noteRelativeSegments, vaultRootImageSrc } from './utils'
+import { VaultRootCtx } from './vaultRootContext'
 
 /** File name of a source, used as the fallback label when alt is empty. */
 function srcLabel(src: string): string {
@@ -38,10 +48,33 @@ function srcLabel(src: string): string {
   return (slash === -1 ? clean : clean.slice(slash + 1)) || src
 }
 
-export function NoteImage({ src, alt, rawSrc }: { src: string | null; alt: string; rawSrc: string }) {
-  const [failed, setFailed] = useState(false)
+export function NoteImage({
+  src,
+  alt,
+  rawSrc,
+  fallbackSrc,
+  width,
+}: {
+  src: string | null
+  alt: string
+  rawSrc: string
+  fallbackSrc?: string | null
+  /** Requested display width in CSS px; the column width still caps it. */
+  width?: number
+}) {
+  const vaultRoot = useContext(VaultRootCtx)
+  // The second try: the caller's `fallbackSrc` when given, else the source read
+  // against the vault root, or null when it is not root-relative or cannot be
+  // placed safely inside the vault. It encodes both the source and the root, so
+  // keying the state on it starts over whenever either changes.
+  const fallback = src === null ? null : fallbackSrc !== undefined ? fallbackSrc : vaultRootImageSrc(rawSrc, vaultRoot)
+  const [triedFallback, setTriedFallback] = useState<string | null>(null)
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
-  if (src === null || failed) {
+  const onFallback = fallback !== null && triedFallback === fallback
+  const active = onFallback ? fallback : src
+  const failureKey = JSON.stringify([active, fallback])
+  if (active === null || failedSrc === failureKey) {
     // The glyph, not the muted colour, is what says "this was an image": alt
     // text alone reads as an ordinary sentence, so a renamed or refused file
     // would look like prose the author wrote. Same signal the chat renderer
@@ -59,19 +92,46 @@ export function NoteImage({ src, alt, rawSrc }: { src: string | null; alt: strin
   return (
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- `onLoad`/`onError` are resource events (release the layout floor, swap in the fallback), not gestures; the image deliberately carries no click, per the note above
     <img
-      src={src}
+      src={active}
       alt={alt}
       onLoad={() => setLoaded(true)}
-      onError={() => setFailed(true)}
+      onError={() => (fallback !== null && !onFallback ? setTriedFallback(fallback) : setFailedSrc(failureKey))}
       style={{
         maxWidth: '100%',
         maxHeight: '60vh',
         objectFit: 'contain',
         ...(isSvg ? { width: '100%', height: 'auto' } : { height: loaded ? 'auto' : undefined, minHeight: loaded ? undefined : '120px' }),
+        ...(width ? { width: `${width}px` } : {}),
         display: 'block',
         margin: '4px 0',
         borderRadius: '4px',
       }}
     />
+  )
+}
+
+/**
+ * An Obsidian `![[file]]` image embed. Obsidian reads the target as a path from
+ * the vault root, which is also where it puts new attachments by default, so
+ * that is tried first and the same path beside the note second. A target in
+ * Obsidian's relative link format (`./a.png`, `../assets/a.png`) is read from
+ * the note's folder alone. Every try goes through `vaultRootImageSrc`, so a
+ * target that is absolute, climbs above the vault root, or keeps a `.` or `..`
+ * segment anywhere else asks for nothing and shows the missing-image fallback.
+ */
+export function NoteEmbed({ target, noteDir, alt, width }: { target: string; noteDir?: string; alt: string; width?: number }) {
+  const vaultRoot = useContext(VaultRootCtx)
+  const segments = target.split(/[\\/]/)
+  // A wikilink target is literal text, so each segment is encoded here for the
+  // one decode `vaultRootImageSrc` applies to a markdown source.
+  const rooted = (s: readonly string[]) => `/${s.map(encodeURIComponent).join('/')}`
+  const relative = segments[0] === '.' || segments[0] === '..'
+  const inVault = relative ? noteRelativeSegments(segments, noteDir, vaultRoot) : null
+  const candidates = relative
+    ? [inVault && vaultRootImageSrc(rooted(inVault), vaultRoot)]
+    : [vaultRootImageSrc(rooted(segments), vaultRoot), vaultRootImageSrc(rooted(segments), noteDir)]
+  const tries = [...new Set(candidates)].filter((t): t is string => !!t)
+  return (
+    <NoteImage src={tries[0] ?? null} fallbackSrc={tries[1] ?? null} alt={alt || srcLabel(target)} rawSrc={target} width={width} />
   )
 }

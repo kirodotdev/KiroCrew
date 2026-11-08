@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import agent as agent_mod
-from kiro_crew import agent_discovery
+from kiro_crew import agent_discovery, template_mcp_additions
 from kiro_crew.agent_files import CONDUCTOR_AGENT_FILENAME as _CONDUCTOR_AGENT_FILENAME
 from kiro_crew.agent_files import (
     LEDGER_CONDUCTOR_AGENT_FILENAME as _LEDGER_CONDUCTOR_AGENT_FILENAME,
@@ -98,6 +98,33 @@ def _conductor_mcp_servers(config: dict[str, Any]) -> dict[str, Any]:
     return narrowed
 
 
+def _merge_template_additions(config: dict[str, Any], name: str) -> None:
+    """Add the servers the user approved for the *name* template to *config*.
+
+    Called right after ``_conductor_mcp_servers`` on every conductor spec. That map
+    is rebuilt to exactly the Crew servers on every pass, so an approved server
+    cannot live in the spec file; it lives in :mod:`kiro_crew.template_mcp_additions`
+    and is merged here, ADD-only, with its ``@server`` mount in ``tools``. Nothing
+    from the record reaches ``allowedTools`` or ``autoApprove``: the added server's
+    tools prompt until the user grants them, and any grant still passes the
+    ceiling in ``auto_approve.write_governed_spec``. The deprecated alias reads its
+    successor's record (it emits the same spec).
+
+    The caller holds ``agents_spec_lock`` from this read until its spec write, so
+    two installs of one conductor cannot interleave there: without it, an install
+    that read the record before a new approval could write after an install that
+    read it after, leaving a spec without the approved server until the next
+    rebuild. Lock order: the spec lock outermost, the record's own lock inner.
+    """
+    added = template_mcp_additions.merge_into_spec(name, config)
+    if added:
+        agent_mod.logger.info(
+            "%s: merged approved MCP server(s) %s from the template additions record",
+            name,
+            ", ".join(added),
+        )
+
+
 # -- Every grant any release has shipped on the four conductor specs -------------
 #
 # THIS TABLE IS THE PROVENANCE. A generated conductor spec is rewritten on every
@@ -144,9 +171,11 @@ _HISTORY_CORE_VERBS: frozenset[str] = frozenset(
         "@kirocrew-core/nothing_to_do",
     }
 )
-# The dashboard verbs every conductor ships: the folder/session reads and creates,
+# The dashboard verbs every conductor shipped: the folder/session reads and creates,
 # and ``session_status``. ``chat_folder_file_self`` is listed per spec below: the
-# pipeline conductor has never shipped it.
+# pipeline conductor never shipped it. The three folder verbs are retired: a
+# dispatcher stops managing folders (rfc-crewmate-workers-under-the-crewmate.md,
+# Design 6), and the history is what lets an existing install drop them.
 _HISTORY_DASHBOARD_VERBS: frozenset[str] = frozenset(
     {
         "@kirocrew-dashboard/chat_folder_tree",
@@ -169,6 +198,10 @@ _HISTORY_WORK_VERBS: frozenset[str] = frozenset(
         "@kirocrew-work/work_brief",
     }
 )
+#: The goal conductor's two fixed checks (``mcp_work.CHECK_TOOLS``).
+_HISTORY_CHECK_VERBS: frozenset[str] = frozenset(
+    {"@kirocrew-work/accept_eval", "@kirocrew-work/patrol_budget"}
+)
 #: Spec name -> every ``allowedTools`` grant any release has shipped on it. Retired
 #: today: the goal conductor's bare ``@kirocrew-core``. Beyond each spec's current
 #: tuple the table holds exactly that entry (pinned by test), so an entry can join
@@ -184,6 +217,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | _HISTORY_WORK_VERBS
         | {"@kirocrew-work/work_ledger_rebuild"}
+        | _HISTORY_CHECK_VERBS
     ),
     "kirocrew-ledger-conductor": (
         frozenset({"session", "report", "tool_search"})
@@ -193,6 +227,7 @@ _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {
         | {"@kirocrew-dashboard/chat_folder_file_self"}
         | _HISTORY_WORK_VERBS
         | {"@kirocrew-work/work_ledger_rebuild"}
+        | _HISTORY_CHECK_VERBS
     ),
     "kirocrew-pipeline-conductor": (
         frozenset({"session", "report", "tool_search"})
@@ -675,16 +710,13 @@ def _conductor_spec(
     config["prompt"] = agent_mod._CONDUCTOR_SYSTEM_PROMPT
     # The skills this prompt names: ``goal-conductor`` carries the operating
     # procedure it says to read first, ``dashboard`` is how it changes the page
-    # it reports on, and ``widgets`` / ``living-ui`` / ``artifacts`` are how it
-    # draws the introduction and the board in the dashboard chat: the widget
-    # pointer its contract block carries on that surface
-    # (``context_assembly.agent_spec.WIDGET_BLOCK_AGENTS``) names ``widgets`` and
-    # ``artifacts``, and ``widgets`` sends a moving picture on to ``living-ui``.
+    # it reports on, and ``WIDGET_POINTER_SKILLS`` are how it draws the
+    # introduction and the board in the dashboard chat.
     # Mapped rather than assumed reachable: this spec is a custom template, so with
     # no mapping its search scope is empty and no document can be found. The alias
     # installer emits this same body, so the alias carries the mapping too.
     skill_resources.map_prompt_skills(
-        config, "goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"
+        config, "goal-conductor", "dashboard", *skill_resources.WIDGET_POINTER_SKILLS
     )
     config["tools"] = [
         "execute_bash",
@@ -701,7 +733,7 @@ def _conductor_spec(
         "report",
         # Load-bearing, not decoration: with MCP Tool Search active the
         # session-control specs are deferred, so the conductor cannot reach
-        # ``session_create`` / ``chat_folder_*`` / ``monitor_start`` at all until
+        # ``session_create`` / ``monitor_start`` at all until
         # it loads them by id. Named in the prompt's tool inventory for that
         # reason, and auto-approved below so the load itself never prompts.
         "tool_search",
@@ -738,6 +770,7 @@ def _conductor_spec(
         return None
     config["allowedTools"] = granted
     config["mcpServers"] = _conductor_mcp_servers(config)
+    _merge_template_additions(config, name)
     # The KAS policy is NOT written here: the shared tail each installer writes
     # through (``auto_approve.write_governed_spec``) derives it from the FILTERED
     # grant list instead of restating it as a literal, so the rules come out
@@ -777,24 +810,26 @@ def _install_conductor_agent(*, clean: bool = False) -> bool:
     governance ceiling is not marked projected onto a list that was never
     rewritten (``rebuild_agent_config``).
     """
-    config = _conductor_spec(
-        name="kirocrew-conductor",
-        description=(
-            "Owns a long-horizon goal and tracks it in the work ledger: "
-            "decomposes it into items, dispatches one session per item, reads "
-            "their reported status as data rather than as a transcript, "
-            "verifies claims with the acceptance evaluator, and decides each "
-            "next round. Never does the work itself."
-        ),
-        filename=_CONDUCTOR_AGENT_FILENAME,
-        source="_install_conductor_agent",
-        clean=clean,
-    )
-    if config is None:
-        return False
-    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
-    path = agent_mod.kiro_agents_dir_path() / _CONDUCTOR_AGENT_FILENAME
-    auto_approve.write_governed_spec(path, config, source="_install_conductor_agent")
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    path = agents_dir / _CONDUCTOR_AGENT_FILENAME
+    with agent_mod.agents_spec_lock(agents_dir):
+        config = _conductor_spec(
+            name="kirocrew-conductor",
+            description=(
+                "Owns a long-horizon goal and tracks it in the work ledger: "
+                "decomposes it into items, dispatches one session per item, reads "
+                "their reported status as data rather than as a transcript, "
+                "verifies claims with the acceptance evaluator, and decides each "
+                "next round. Never does the work itself."
+            ),
+            filename=_CONDUCTOR_AGENT_FILENAME,
+            source="_install_conductor_agent",
+            clean=clean,
+        )
+        if config is None:
+            return False
+        auto_approve.write_governed_spec(path, config, source="_install_conductor_agent")
     agent_mod.logger.info("Installed conductor agent config: %s", path)
     return True
 
@@ -828,25 +863,27 @@ def _install_ledger_conductor_agent(*, clean: bool = False) -> bool:
 
     Removed next release; nothing new should name it.
     """
-    config = _conductor_spec(
-        name="kirocrew-ledger-conductor",
-        description=(
-            "Deprecated alias of kirocrew-conductor (removed next release). "
-            "Owns a long-horizon goal and tracks it in the work ledger: "
-            "decomposes it into items, dispatches one session per item, reads "
-            "their reported status as data rather than as a transcript, "
-            "verifies claims with the acceptance evaluator, and decides each "
-            "next round. Never does the work itself."
-        ),
-        filename=_LEDGER_CONDUCTOR_AGENT_FILENAME,
-        source="_install_ledger_conductor_agent",
-        clean=clean,
-    )
-    if config is None:
-        return False
-    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
-    path = agent_mod.kiro_agents_dir_path() / _LEDGER_CONDUCTOR_AGENT_FILENAME
-    auto_approve.write_governed_spec(path, config, source="_install_ledger_conductor_agent")
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    path = agents_dir / _LEDGER_CONDUCTOR_AGENT_FILENAME
+    with agent_mod.agents_spec_lock(agents_dir):
+        config = _conductor_spec(
+            name="kirocrew-ledger-conductor",
+            description=(
+                "Deprecated alias of kirocrew-conductor (removed next release). "
+                "Owns a long-horizon goal and tracks it in the work ledger: "
+                "decomposes it into items, dispatches one session per item, reads "
+                "their reported status as data rather than as a transcript, "
+                "verifies claims with the acceptance evaluator, and decides each "
+                "next round. Never does the work itself."
+            ),
+            filename=_LEDGER_CONDUCTOR_AGENT_FILENAME,
+            source="_install_ledger_conductor_agent",
+            clean=clean,
+        )
+        if config is None:
+            return False
+        auto_approve.write_governed_spec(path, config, source="_install_ledger_conductor_agent")
     agent_mod.logger.info("Installed ledger-conductor alias agent config: %s", path)
     return True
 
@@ -884,7 +921,9 @@ def _install_pipeline_conductor_agent(*, clean: bool = False) -> bool:
     # ``dashboard`` for the page. Note ``pipeline-conductor/SKILL.md`` is larger
     # than one read's capacity, so reaching it is paged -- a separate limit the
     # mapping does not change.
-    skill_resources.map_prompt_skills(config, "pipeline-conductor", "dashboard")
+    skill_resources.map_prompt_skills(
+        config, "pipeline-conductor", "dashboard", *skill_resources.WIDGET_POINTER_SKILLS
+    )
     config["tools"] = [
         "execute_bash",
         "fs_read",
@@ -900,22 +939,25 @@ def _install_pipeline_conductor_agent(*, clean: bool = False) -> bool:
         agent_mod._PIPELINE_CONDUCTOR_CORE_GRANTS,
         agent_mod._PIPELINE_CONDUCTOR_DASHBOARD_GRANTS,
     )
-    granted = _governed_grants(
-        shipped,
-        name="kirocrew-pipeline-conductor",
-        filename=_PIPELINE_CONDUCTOR_AGENT_FILENAME,
-        source="_install_pipeline_conductor_agent",
-        clean=clean,
-    )
-    if granted is None:
-        return False
-    config["allowedTools"] = granted
-    config["mcpServers"] = _conductor_mcp_servers(config)
-    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
-    path = agent_mod.kiro_agents_dir_path() / _PIPELINE_CONDUCTOR_AGENT_FILENAME
-    # The shared tail derives the KAS policy from the filtered grant list, on the
-    # same derive-don't-restate rationale as the conductor above.
-    auto_approve.write_governed_spec(path, config, source="_install_pipeline_conductor_agent")
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    path = agents_dir / _PIPELINE_CONDUCTOR_AGENT_FILENAME
+    with agent_mod.agents_spec_lock(agents_dir):
+        granted = _governed_grants(
+            shipped,
+            name="kirocrew-pipeline-conductor",
+            filename=_PIPELINE_CONDUCTOR_AGENT_FILENAME,
+            source="_install_pipeline_conductor_agent",
+            clean=clean,
+        )
+        if granted is None:
+            return False
+        config["allowedTools"] = granted
+        config["mcpServers"] = _conductor_mcp_servers(config)
+        _merge_template_additions(config, "kirocrew-pipeline-conductor")
+        # The shared tail derives the KAS policy from the filtered grant list, on the
+        # same derive-don't-restate rationale as the conductor above.
+        auto_approve.write_governed_spec(path, config, source="_install_pipeline_conductor_agent")
     agent_mod.logger.info("Installed pipeline-conductor agent config: %s", path)
     return True
 
@@ -968,11 +1010,13 @@ def _install_security_conductor_agent(*, clean: bool = False) -> bool:
         "any fix behind a human yes. Never touches the target itself."
     )
     config["prompt"] = _conductor_prompt(agent_mod._SECURITY_CONDUCTOR_SYSTEM_PROMPT)
-    # The one skill this prompt names. Its fixer dispatch hands a worker the
-    # ``kirocrew-prepare-pr`` skill, but that worker is a separate session on its
-    # own spec, so mapping it here would widen this agent's search scope past what
-    # its own charter reads.
-    skill_resources.map_prompt_skills(config, "security-conductor")
+    # The one skill this prompt names, plus the widget pointer's. Its fixer
+    # dispatch hands a worker the ``kirocrew-prepare-pr`` skill, but that worker is
+    # a separate session on its own spec, so mapping it here would widen this
+    # agent's search scope past what its own charter reads.
+    skill_resources.map_prompt_skills(
+        config, "security-conductor", *skill_resources.WIDGET_POINTER_SKILLS
+    )
     config["tools"] = [
         "execute_bash",
         "fs_read",
@@ -988,21 +1032,24 @@ def _install_security_conductor_agent(*, clean: bool = False) -> bool:
         agent_mod._PIPELINE_CONDUCTOR_CORE_GRANTS,
         agent_mod._SECURITY_CONDUCTOR_DASHBOARD_GRANTS,
     )
-    granted = _governed_grants(
-        shipped,
-        name="kirocrew-security-conductor",
-        filename=_SECURITY_CONDUCTOR_AGENT_FILENAME,
-        source="_install_security_conductor_agent",
-        clean=clean,
-    )
-    if granted is None:
-        return False
-    config["allowedTools"] = granted
-    config["mcpServers"] = _conductor_mcp_servers(config)
-    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
-    path = agent_mod.kiro_agents_dir_path() / _SECURITY_CONDUCTOR_AGENT_FILENAME
-    # The shared tail derives the KAS policy from the FILTERED grant list rather
-    # than restating it, so a ceiling that strips a grant strips its KAS rule too.
-    auto_approve.write_governed_spec(path, config, source="_install_security_conductor_agent")
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    path = agents_dir / _SECURITY_CONDUCTOR_AGENT_FILENAME
+    with agent_mod.agents_spec_lock(agents_dir):
+        granted = _governed_grants(
+            shipped,
+            name="kirocrew-security-conductor",
+            filename=_SECURITY_CONDUCTOR_AGENT_FILENAME,
+            source="_install_security_conductor_agent",
+            clean=clean,
+        )
+        if granted is None:
+            return False
+        config["allowedTools"] = granted
+        config["mcpServers"] = _conductor_mcp_servers(config)
+        _merge_template_additions(config, "kirocrew-security-conductor")
+        # The shared tail derives the KAS policy from the FILTERED grant list rather
+        # than restating it, so a ceiling that strips a grant strips its KAS rule too.
+        auto_approve.write_governed_spec(path, config, source="_install_security_conductor_agent")
     agent_mod.logger.info("Installed security-conductor agent config: %s", path)
     return True

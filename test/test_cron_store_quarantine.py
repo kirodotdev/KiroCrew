@@ -214,7 +214,8 @@ def test_no_notice_when_nothing_was_moved() -> None:
 
     gw._announce_cron_quarantine()
 
-    gw.dashboard_state.notify.assert_not_called()
+    # No bell and no other dashboard write of any kind.
+    assert gw.dashboard_state.mock_calls == []
 
 
 # ── the dashboard startup hook ───────────────────────────────────────────────

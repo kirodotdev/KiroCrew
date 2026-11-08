@@ -194,3 +194,37 @@ def test_restore_keeps_a_reapproval_that_lands_after_revoke(tmp_path):
     assert current.admits_command("SRV", new_hash)
     assert not current.admits_command("SRV", old_hash)
     assert current.approved_displays["SRV"][new_pair][0] == [_APPROVED_CMD, "new"]
+
+
+@pytest.mark.parametrize("vendor", ["creds-agent", "local-creds-agent-mcp"])
+def test_a_recorded_approval_never_lets_a_credential_vendor_spawn(vendor):
+    """An approval recorded before the vendors joined ``UNPOOLABLE_SERVERS`` must
+    not let gatewayd spawn one: its shared backend would run outside every chat
+    sandbox. Both gateway-side checks refuse it -- the target filter that builds
+    gatewayd's env and the per-spawn ``admits_launch`` -- while the same approval
+    shape still admits an ordinary server, so the refusal is the denylist's."""
+    from kiro_crew.mcp_gateway.hashing import hash_command
+
+    mod = _approval_module()
+    assert mod is not None
+    env_hash = mod.env_fingerprint({})
+    command_hash = hash_command(_APPROVED_CMD, [])
+    approvals = mod.LaunchApprovals()
+    stem = mod.target_stem(vendor)
+    for approved in (stem, "SRV"):
+        approvals.approved_pairs[approved] = {mod.launch_pair(command_hash, env_hash)}
+
+    kept, dropped = mod.filter_target_env(
+        {
+            f"KIROCREW_MCP_TARGET_{stem}": _target_spec(_APPROVED_CMD),
+            "KIROCREW_MCP_TARGET_SRV": _target_spec(_APPROVED_CMD),
+        },
+        approvals,
+    )
+    assert list(kept) == ["KIROCREW_MCP_TARGET_SRV"]
+    assert dropped == [stem]
+    # Not a refusal the person can approve away: nothing is waiting on them.
+    assert stem not in approvals.refused
+
+    assert approvals.admits_launch("SRV", command_hash, env_hash)
+    assert not approvals.admits_launch(stem, command_hash, env_hash)

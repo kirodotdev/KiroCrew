@@ -10,7 +10,8 @@
 # Linux 2 ships Python 3.7 and Amazon Linux 2023 ships 3.9 as `python3`, so
 # `python3 -m venv` produces a too-old venv and either `pip install -e .` fails
 # to resolve modern deps (AL2/3.7) or the install "succeeds" and then crashes at
-# import (AL2023/3.9). Prefer any already-usable system Python >= 3.12;
+# import (AL2023/3.9). Prefer any already-usable system Python >= 3.12 —
+# "usable" also means a venv built from it runs (see _venv_ok);
 # otherwise install one via mise, whose python-build-standalone binaries run on
 # AL2's glibc 2.26. On success the chosen interpreter's real path — symlinks
 # resolved, see _resolve — is recorded in "<data-home>/python-bin" so
@@ -33,6 +34,44 @@ _pyver() {
     "$1" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))' 2>/dev/null
 }
 
+# True if a venv built from $1 has a python that runs. `make backend` builds
+# its venv with `"$PY" -m venv`, so an interpreter that runs but cannot make a
+# working venv fails the build inside ensurepip. A shared-libpython build
+# launched through a wrapper is exactly that: Toolbox's kirocrew Python is a
+# shell script that execs `ld-linux --library-path <its lib> bin/real/python3.12`.
+# It reports the wrapper as sys.executable, but the venv links its python to
+# the real binary, which then dies with "libpython3.12.so.1.0: cannot open
+# shared object file" (exit 127). Build a throwaway venv the same way and run
+# it, so such a candidate is skipped instead of recorded.
+_venv_ok() {
+    local tmp vpy rc=1
+    # No scratch directory (unwritable TMPDIR) says nothing about the
+    # interpreter, so keep the candidate rather than reject every one.
+    tmp="$(mktemp -d 2>/dev/null)" || return 0
+    if "$1" -m venv --without-pip "$tmp/v" >/dev/null 2>&1; then
+        vpy="$tmp/v/bin/python"
+        # Git Bash on Windows lays a venv out as Scripts/python.exe.
+        [ -x "$vpy" ] || vpy="$tmp/v/Scripts/python.exe"
+        "$vpy" -c 'import encodings' >/dev/null 2>&1 && rc=0
+    fi
+    rm -rf "$tmp"
+    return "$rc"
+}
+
+# $1 resolved through symlinks (see _resolve) if it is >= the floor AND a venv
+# built from that resolved path runs; otherwise nothing and a failing status.
+# The venv check runs on the resolved path because that is what gets recorded.
+_usable() {
+    local real
+    _py_ok "$1" || return 1
+    real="$(_resolve "$1")"
+    if ! _venv_ok "$real"; then
+        echo "  ⚠️  skipping $real: a venv built from it cannot run python" >&2
+        return 1
+    fi
+    printf '%s\n' "$real"
+}
+
 # First usable system python, preferring the tested minor (3.12 is the
 # CI/build target, matching TARGET_PY above); untested 3.13 and bare
 # python3/python are last resorts so a bleeding-edge install still succeeds.
@@ -40,10 +79,7 @@ _find_system_python() {
     local c resolved
     for c in python3.12 python3.13 python3 python; do
         resolved="$(command -v "$c" 2>/dev/null)" || continue
-        if _py_ok "$resolved"; then
-            echo "$resolved"
-            return 0
-        fi
+        _usable "$resolved" && return 0
     done
     return 1
 }
@@ -89,7 +125,6 @@ _record() {
 # 1. Existing usable system python.
 PY="$(_find_system_python)"
 if [ -n "$PY" ]; then
-    PY="$(_resolve "$PY")"
     echo "  ✅ python $(_pyver "$PY") ($PY)"
     _record "$PY"
     exit 0
@@ -101,8 +136,7 @@ MISE="$(_mise_bin)"
 # `mise activate` does not reliably inject PATH in non-interactive scripts.
 if [ -n "$MISE" ]; then
     CAND="$("$MISE" which python 2>/dev/null)"
-    if _py_ok "$CAND"; then
-        CAND="$(_resolve "$CAND")"
+    if CAND="$(_usable "$CAND")"; then
         echo "  ✅ python $(_pyver "$CAND") (mise: $CAND)"
         _record "$CAND"
         exit 0
@@ -110,10 +144,18 @@ if [ -n "$MISE" ]; then
 fi
 
 # 3. Install via mise.
-echo "  → No Python >= $MIN_MAJOR.$MIN_MINOR found; installing python@$TARGET_PY via mise…"
+echo "  → No usable Python >= $MIN_MAJOR.$MIN_MINOR found; installing python@$TARGET_PY via mise…"
 if [ -z "$MISE" ]; then
     echo "  → Installing mise…"
-    curl -fsSL https://mise.run | sh
+    # A pinned release checked against a recorded sha256, never a piped script.
+    _pinned_mise_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/lib/pinned-mise.sh"
+    if [ -f "$_pinned_mise_lib" ]; then
+        # shellcheck source=scripts/lib/pinned-mise.sh
+        . "$_pinned_mise_lib"
+        MISE_INSTALL_PATH="$HOME/.local/bin/mise" install_pinned_mise || true
+    else
+        echo "  ⚠  $_pinned_mise_lib not found — not installing mise"
+    fi
     MISE="$(_mise_bin)"
 fi
 if [ -z "$MISE" ]; then
@@ -123,11 +165,10 @@ fi
 
 "$MISE" use -g "python@$TARGET_PY" 2>/dev/null
 CAND="$("$MISE" which python 2>/dev/null)"
-if _py_ok "$CAND"; then
-    CAND="$(_resolve "$CAND")"
+if CAND="$(_usable "$CAND")"; then
     echo "  ✅ python $(_pyver "$CAND") installed ($CAND)"
     _record "$CAND"
 else
-    echo "  ⚠️  Python install failed — install manually: curl https://mise.run | sh && mise use -g python@$TARGET_PY"
+    echo "  ⚠️  Python install failed — install mise (https://mise.jdx.dev/installing-mise.html), then: mise use -g python@$TARGET_PY"
     exit 1
 fi

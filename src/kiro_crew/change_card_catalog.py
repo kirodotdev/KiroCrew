@@ -64,6 +64,7 @@ from kiro_crew.change_card_catalog_kinds import (
     KIND_SCHEDULE_CREATE,
     KIND_SECRET_SAVE,
     KIND_SETTING_CHANGE,
+    KIND_TEMPLATE_MCP_SERVER,
     KIND_TEMPLATE_UPDATE,
     LIST_OP_ADD,
     LIST_OP_REMOVE,
@@ -83,6 +84,7 @@ from kiro_crew.change_card_catalog_plans import (
     _create_schedule_index,
     _crewmate_put_body,
     _folder_steering_step,
+    _goal_heartbeat_offer,
     _goal_path,
     _key_results_path,
     _q,
@@ -98,6 +100,7 @@ from kiro_crew.change_card_catalog_plans import (
     setting_write_step,
     step,
     string_items,
+    template_additions_path,
 )
 from kiro_crew.config.sections import MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
 
@@ -149,6 +152,9 @@ def extract_evidence(
         return pick("preview_token")
     if kind == KIND_CREWMATE_CAPABILITIES:
         return pick("revision")
+    if kind == KIND_TEMPLATE_MCP_SERVER:
+        # The card the addition was recorded under: its Undo removes only that one.
+        return pick("card_id")
     if kind == KIND_MCP_INSTALL:
         return pick("name")
     if kind == KIND_MCP_ADD_CUSTOM:
@@ -253,7 +259,9 @@ def _build_undo(
         if applied_steps > at and job_id:
             plan.append(step("DELETE", f"/api/crons/{_q(str(job_id))}"))
         name = ev(0).get("name") or p["name"]
-        plan.append(step("DELETE", f"/api/agents/{_q(str(name))}"))
+        from kiro_crew.agent_url_path import agent_path
+
+        plan.append(step("DELETE", agent_path(str(name))))
         return plan, None
     if kind == KIND_CREWMATE_UPDATE:
         fields = before.get("fields") or {}
@@ -267,8 +275,10 @@ def _build_undo(
         # The undo's expected mode is the one the card WROTE: a profile save
         # that landed since is a newer choice, and the route's compare-and-set
         # refuses to overwrite it (409 approval_mode_conflict).
+        from kiro_crew.agent_url_path import agent_record_write
+
         return [
-            step("PUT", f"/api/agents/{_q(p['name'])}", _crewmate_put_body(old, p["fields"]))
+            step("PUT", *agent_record_write(p["name"], _crewmate_put_body(old, p["fields"])))
         ], None
     if kind == KIND_CREWMATE_GOAL:
         # Back to the goals before the card, and only while the goal still reads
@@ -292,7 +302,23 @@ def _build_undo(
                 ),
                 "",
             )
-        return [
+        plan = []
+        offer = _goal_heartbeat_offer(p, before)
+        if offer is not None and offer["checked"] and applied_steps > 1:
+            # The card turned the Heartbeat on too: off again first, while the
+            # goal it needs is still there, and only if it still reads on.
+            plan.append(
+                step(
+                    "PUT",
+                    _check_ins_path(str(slug)),
+                    {
+                        "member": p["member"],
+                        _goals.CADENCE_HEARTBEAT: False,
+                        "expected": {_goals.CADENCE_HEARTBEAT: True},
+                    },
+                )
+            )
+        plan.append(
             step(
                 "PUT",
                 _goal_path(str(slug)),
@@ -304,7 +330,8 @@ def _build_undo(
                     "expected": p["long_term"],
                 },
             )
-        ], None
+        )
+        return plan, None
     if kind == KIND_CREWMATE_KEY_RESULTS:
         slug = before.get("slug")
         if not slug:
@@ -350,12 +377,19 @@ def _build_undo(
         # above. The inverse binds to the revision the PUT returned (step 1's
         # evidence), never a fresh read's — a write another tab landed after ours
         # would otherwise become the baseline and Undo would overwrite it.
-        ops = capability_inverse(
-            p["draft"], before.get("rows") or [], severed=before.get("mode") == "mate"
-        )
+        rows = before.get("rows") or []
+        severed = before.get("mode") == "mate"
+        ops = capability_inverse(p["draft"], rows, severed=severed)
         revision = ev(1).get("revision")
         if ops is None:
-            return None, "redacted_server_definition"
+            touched = {(op.get("section"), op.get("id")) for op in p["draft"]["operations"]}
+            listed = severed and any(
+                isinstance(r, dict)
+                and r.get("listed")
+                and (r.get("section"), r.get("id")) in touched
+                for r in rows
+            )
+            return None, "listed_skill_entry" if listed else "redacted_server_definition"
         if not revision:
             return None, "revision_unknown"
         return _capability_plan(p["member"], revision, {"operations": ops}), None
@@ -368,6 +402,14 @@ def _build_undo(
                 value = [] if k != "model" else ""
             old[k] = value
         return [step("PATCH", f"/api/agents/detail/{_q(p['template'])}", old)], None
+    if kind == KIND_TEMPLATE_MCP_SERVER:
+        # Bound to this card's own record (``remove_addition(card_id=...)``), so a
+        # later approval of the same server on another card is never taken back.
+        card_id = ev(0).get("card_id")
+        if not isinstance(card_id, str) or not card_id:
+            return None, "identity_unknown"
+        path = template_additions_path(p["template"], p["server"])
+        return [step("DELETE", path + "?" + urllib.parse.urlencode({"card_id": card_id}))], None
     if kind == KIND_MCP_TOGGLE:
         return [_toggle_step(p, bool(before.get("enabled")))], None
     if kind == KIND_FOLDER_STEERING:
@@ -435,15 +477,15 @@ def result_summary(
                     IMPORT_STEP_CRON: "its schedules",
                 }.get(roles[failed_step] if failed_step < len(roles) else "", "every part")
                 return (
-                    f"Created mate “{name}” without {part} or anything after it. "
-                    "Undo removes the mate and what was saved"
+                    f"Created Bot “{name}” without {part} or anything after it. "
+                    "Undo removes the Bot and what was saved"
                 )
             if failed_step == CREWMATE_CREATE_GOAL_STEP:
                 # A failed step stops the plan, so a schedule after it never ran.
                 rest = " or its schedule" if params.get("schedule") else ""
-                return f"Created mate “{name}”, but its goal{rest} was not saved"
+                return f"Created Bot “{name}”, but its goal{rest} was not saved"
             if failed_step == CREWMATE_CREATE_SCHEDULE_STEP:
-                return f"Created mate “{name}”, but its schedule was not saved"
+                return f"Created Bot “{name}”, but its schedule was not saved"
         return f"Partly applied: {title}"
     if status == "undone":
         return f"Restored: {title}"
@@ -487,12 +529,12 @@ def describe_manual_change(
     if route == ("PUT", "/api/members/{slug}/goals/key-results"):
         raw_items = b.get("items")
         count = len(raw_items) if isinstance(raw_items, list) else 0
-        return f"set {count} key results for mate {s(b.get('member'))}"
+        return f"set {count} key results for Bot {s(b.get('member'))}"
     if route == ("PUT", "/api/members/{slug}/goals/long-term"):
-        return f"set the goal of mate {s(b.get('member'))} to {s(b.get('long_term'))}"
+        return f"set the goal of Bot {s(b.get('member'))} to {s(b.get('long_term'))}"
     if route == ("PUT", "/api/members/{slug}/goals/schedules"):
         fields = ", ".join(s(k) for k in CHECK_IN_FIELDS if k in b)
-        return f"set the check-ins of mate {s(b.get('member'))} ({fields or 'none'})"
+        return f"set the check-ins of Bot {s(b.get('member'))} ({fields or 'none'})"
     if route == ("PUT", "/api/dashboard/config"):
         prior = before if isinstance(before, dict) else {}
         parts = []
@@ -512,12 +554,17 @@ def describe_manual_change(
     if route == ("DELETE", "/api/crons/{job_id}"):
         return f"deleted schedule {s(name)}"
     if route == ("POST", "/api/agents"):
-        return f"created mate “{s(b.get('name'))}”"
+        return f"created Bot “{s(b.get('name'))}”"
+    if route == ("PUT", "/api/agents"):
+        # Body-form route: crew name comes from the request body.
+        body_name = s(b.get("name") or name)
+        update_fields = {k for k in b if k != "name"}
+        return f"updated Bot {body_name!s} ({', '.join(sorted(str(k) for k in update_fields)[:6])})"
     if route == ("PUT", "/api/agents/{name}"):
-        return f"updated mate {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
+        return f"updated Bot {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
     if route == ("DELETE", "/api/agents/{name}"):
         shown = before if isinstance(before, str) and before else name
-        return f"deleted mate “{s(shown)}”"
+        return f"deleted Bot “{s(shown)}”"
     if route == ("PUT", "/api/agents/{name}/capabilities"):
         raw_ops = b.get("operations")
         ops: list[Any] = raw_ops if isinstance(raw_ops, list) else []
@@ -551,7 +598,8 @@ def describe_manual_change(
         verb = "enabled" if b.get("enabled", True) else "disabled"
         return f"{verb} MCP tool {s(b.get('server'))}/{s(b.get('tool'))}"
     if route == ("POST", "/api/connections/mint"):
-        return f"started connecting {s(b.get('slug'))}"
+        # Settings → MCP mints an owner-configured server by ``{"server": ...}``.
+        return f"started connecting {s(b.get('slug') or b.get('server'))}"
     if route == ("POST", "/api/connections/disconnect"):
         return f"disconnected {s(b.get('slug'))}"
     if route == ("POST", "/api/secrets"):
@@ -565,6 +613,8 @@ def describe_manual_change(
     if route == ("POST", "/api/security/denied-commands/user"):
         return f"added denied-command rule {s(b.get('pattern'))}"
     if route == ("PATCH", "/api/security/denied-commands/user/{id}"):
+        if "pattern" in b or "note" in b:
+            return f"edited denied-command rule {s(name)}"
         verb = "enabled" if b.get("enabled") else "disabled"
         return f"{verb} denied-command rule {s(name)}"
     if route == ("DELETE", "/api/security/denied-commands/user/{id}"):
@@ -585,11 +635,19 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PATCH", "/api/crons/{job_id}"),
         ("DELETE", "/api/crons/{job_id}"),
         ("POST", "/api/agents"),
+        ("PUT", "/api/agents"),
         ("PUT", "/api/agents/{name}"),
         ("DELETE", "/api/agents/{name}"),
         ("POST", "/api/agents/{name}/capabilities/preview"),
         ("PUT", "/api/agents/{name}/capabilities"),
+        # The base64url twins (`kiro_crew/agent_url_path.py`); the hook reads
+        # each as its path-form template (`change_cards.route_key`).
+        ("DELETE", "/api/agents/b64/{name_b64}"),
+        ("POST", "/api/agents/b64/{name_b64}/capabilities/preview"),
+        ("PUT", "/api/agents/b64/{name_b64}/capabilities"),
         ("PATCH", "/api/agents/detail/{name}"),
+        ("POST", "/api/agents/detail/{name}/mcp-additions"),
+        ("DELETE", "/api/agents/detail/{name}/mcp-additions/{server}"),
         ("PUT", "/api/members/{slug}/goals/long-term"),
         ("PUT", "/api/members/{slug}/goals/key-results"),
         ("PUT", "/api/members/{slug}/goals/schedules"),
@@ -614,6 +672,8 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PATCH", "/api/security/denied-commands/user/{id}"),
         ("DELETE", "/api/security/denied-commands/user/{id}"),
         ("PATCH", "/api/chat/folders/{id}"),
+        ("POST", "/api/workflows/definitions"),
+        ("PATCH", "/api/workflows/definitions/{workflow_ref}"),
     }
 )
 #: The folder PATCH is hooked only so a ``folder.steering`` card can be applied
@@ -621,15 +681,29 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: memory line. The rules PUT and the import-files routes are hooked so a
 #: ``crewmate.import`` card can write a new crewmate's rules and files; the
 #: rules are the owner's private boundary and the files are code, so neither
-#: is described in Global memory.
+#: is described in Global memory. The workflow-library routes are hooked so a
+#: ``workflow.save`` or ``workflow.update`` card can be applied through them; a
+#: saved script is code, not a setting, and an ordinary save from the Workflows
+#: tab stays off the hook entirely, so neither writes a memory line.
 MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
+    # A launch line is code, never described in Global memory; the card itself
+    # is the record.
+    ("POST", "/api/agents/detail/{name}/mcp-additions"),
+    ("DELETE", "/api/agents/detail/{name}/mcp-additions/{server}"),
     ("POST", "/api/agents/{name}/capabilities/preview"),
+    # The hook reads a base64url twin as its path-form route
+    # (``change_cards.route_key``), so only the path form is looked up here.
+    ("DELETE", "/api/agents/b64/{name_b64}"),
+    ("POST", "/api/agents/b64/{name_b64}/capabilities/preview"),
+    ("PUT", "/api/agents/b64/{name_b64}/capabilities"),
     ("GET", "/api/connections/mint"),
     ("PATCH", "/api/chat/folders/{id}"),
     ("POST", "/api/members/{slug}/dashboard/page-offer"),
     ("PUT", "/api/members/{slug}/rules"),
     ("POST", "/api/members/{slug}/import-files"),
     ("DELETE", "/api/members/{slug}/import-files"),
+    ("POST", "/api/workflows/definitions"),
+    ("PATCH", "/api/workflows/definitions/{workflow_ref}"),
 }
 
 
@@ -675,12 +749,19 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _TEMPLATE_LIST_FIELDS,
         _TEMPLATE_NAME_RE,
         _TEXT_MAX,
+        _WORKFLOW_GAP_MIN,
+        _WORKFLOW_HIDDEN_BREAKS,
+        _WORKFLOW_MARKS_MAX,
+        _WORKFLOW_SLUG_RE,
         APP_ONLY_KINDS,
         CREWMATE_FORMAT_VERSIONS,
         DEFAULT_CREWMATE_TEMPLATE,
         FOLDER_STEERING_DIR_MAX,
+        GATEWAY_RESOLVED_KINDS,
         KIND_SCHEDULE_UPDATE,
         KIND_TRUST_APP,
+        KIND_WORKFLOW_SAVE,
+        KIND_WORKFLOW_UPDATE,
         KINDS,
         NOT_IMPORTED_CODES,
         OP_UNDO,
@@ -690,6 +771,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RISK_TIGHTEN,
         RISK_WIDEN,
         SELF_ONLY_KINDS,
+        TEMPLATE_SERVER_SOURCES,
+        WORKFLOW_INDENT_MAX,
+        WORKFLOW_KINDS,
+        WORKFLOW_LINE_MAX,
+        WORKFLOW_SOURCE_MAX,
         CardCatalogError,
         KindDef,
         _check_mcp_spec_shapes,
@@ -703,25 +789,36 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _member_name,
         _obj,
         _only,
+        _refuse_hidden_line_tails,
+        _refuse_non_ascii_code,
         _str_list,
         _template_clear,
+        _workflow_source,
         check_editable,
+        escape_hidden_characters,
         list_kinds,
         valid_mcp_name,
         validate_params,
+        workflow_save_slug,
     )
     from kiro_crew.change_card_catalog_plans import (  # noqa: F401
         _BOOL_VALUES,
+        _TOOLS_SHOWN,
         _WEEKDAY_NAMES,
         CHECK_IN_LABELS,
         DASHBOARD_LIST_KEYS,
         DASHBOARD_LIST_SETTINGS,
         DASHBOARD_SETTINGS,
+        GOAL_HEARTBEAT_FIELD,
         IMPORT_STEP_CREATE,
         LIST_SETTING_WORDING,
         PATH_FILL_VALUE,
         STORE_DASHBOARD,
         STORE_KIROCREW,
+        TEMPLATE_SERVER_DOES_NOTE,
+        TEMPLATE_SERVER_RESTART_NOTE,
+        TEMPLATE_SERVER_TOOLS_NOTE,
+        TEMPLATE_SERVER_UNDO_NOTE,
         _check_in_value,
         _create_schedule_step,
         _cron_body,
@@ -743,8 +840,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _setting_risk_key,
         _step_fill,
         _step_path_fill,
+        _template_chips,
+        _template_server_preview,
         _user_fill,
+        _widening_row,
         _with_fills,
+        _workflow_save_body,
         build_preview,
         import_files_path,
         is_path_fill,
@@ -755,12 +856,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    from kiro_crew import mate_capability_catalog as _mate_catalog  # noqa: F401
     from kiro_crew.config.sections import (  # noqa: F401
         DEFAULT_MODEL,
+        FEATURE_PREVIEW_FLAGS,
         MEMBER_APPROVAL_MODES,
         effective_pin_scope,
         normalize_agent_model,
     )
+    from kiro_crew.terminal_safe import _is_invisible  # noqa: F401
 
 # This module is the facade of the change-card catalog: every name is reached through it
 # as ``kiro_crew.change_card_catalog.<name>``. A read is served by the owner that binds

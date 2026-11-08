@@ -22,7 +22,9 @@ from kiro_crew.apps.backend import spawned_backend_names, stop_app_backend
 from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
     disarm_app_crons_for_execution,
+    pending_reload_cron_rollback,
     register_app_crons_with_service,
+    retire_app_crons_for_reload,
 )
 from kiro_crew.apps.context import AppContext, build_app_context, http_app_for_manifest
 from kiro_crew.apps.execution import (
@@ -346,8 +348,9 @@ def _build_app_context_from_info(
     name = app_info.get("name", "")
     manifest = app_info.get("manifest", {})
     permissions = approved_manifest_permissions(app_info)
+    # Created by ``_prepare_app_context_from_info`` off the loop before this runs.
     data_path = app_dir(name) / "data"
-    data_path.mkdir(parents=True, exist_ok=True)
+
     # Only an app that declares a ``routes`` hook is handed the gateway's
     # Application, and only because it already has it: the registry dispatches
     # the real ``web.Request`` into that app's handlers, so ``request.app`` is
@@ -371,6 +374,7 @@ def _build_app_context_from_info(
         app_config=manifest.get("extra", {}),
         http_app=http_app,
         crewmate_host=_route_registry.http_app if _route_registry else None,
+        turn_host=_route_registry.http_app if _route_registry else None,
     )
     # The shared _jobs routes are mounted once for every app and resolve the app
     # from the URL, so they need a name -> SDK lookup. Publishing happens here,
@@ -379,6 +383,22 @@ def _build_app_context_from_info(
     if ctx.job is not None:
         register_sdk(ctx.job)
     return ctx
+
+
+async def _prepare_app_context_from_info(
+    app_info: dict[str, Any],
+    cron_service: Any = None,
+    broadcast_fn: Any = None,
+    spawn_impl: Any = None,
+) -> Any:
+    """Create the app's data dir off the loop, then build its context on it.
+
+    The ``mkdir`` is blocking disk I/O on the enable and boot paths, so it takes
+    a ``to_thread`` hop; the context is built back on the loop that owns it.
+    """
+    data_path = app_dir(app_info.get("name", "")) / "data"
+    await asyncio.to_thread(data_path.mkdir, parents=True, exist_ok=True)
+    return _build_app_context_from_info(app_info, cron_service, broadcast_fn, spawn_impl)
 
 
 async def on_app_enable(
@@ -428,6 +448,19 @@ async def on_app_enable(
     backend = manifest.get("backend", {})
     hooks = backend.get("hooks", {})
 
+    # A failed reload whose cron removal hit a busy store left this app's kept
+    # jobs owed for removal. Settle that before registering, or the reconciler's
+    # next tick removes the jobs this enable just kept and, seeing the hooks
+    # loaded, never registers them again. Still busy: enable nothing and leave
+    # the signature unrecorded, so the reconciler retries the whole enable.
+    if app_name in pending_reload_cron_rollback and cron_service is not None:
+        try:
+            await deregister_app_crons_reporting_failures(app_name, cron_service)
+        except Exception as exc:
+            logger.warning("App %s: owed cron removal still pending: %s", app_name, exc)
+            result["cron_registration"] = "deferred: owed cron removal did not complete"
+            return result
+
     # Promote app-declared crons into the running scheduler.
     try:
         # register_app_crons_with_service is async: it awaits the async CronSDK
@@ -465,21 +498,24 @@ async def on_app_enable(
     )
 
     # Build AppContext for this app (shared helper ensures consistency)
-    ctx = _build_app_context_from_info(app_info, cron_service, broadcast_fn, spawn_impl)
+    ctx = await _prepare_app_context_from_info(app_info, cron_service, broadcast_fn, spawn_impl)
 
     # Register routes if declared
     routes_hook = hooks.get("routes", "")
+    wiring_ok = True
     if routes_hook and _route_registry:
         app_root = _app_hook_root(app_name)
         registered = await _route_registry.register_app_routes(app_name, app_root, routes_hook, ctx)
         if registered:
             result["hooks_routes"] = registered
+        wiring_ok = ctx.health.status == "healthy"
 
     # Invoke on_startup hook if declared
     startup_hook = hooks.get("on_startup", "")
     if startup_hook and _lifecycle_dispatcher:
         success = await _lifecycle_dispatcher._invoke(app_name, startup_hook, ctx, phase="startup")
         result["hooks_startup"] = "ok" if success else "failed"
+        wiring_ok = wiring_ok and success
 
     # Reconcile this app's job records now that its startup hook has registered
     # the runners. The boot-time pass runs once, after the enable LOOP, so an app
@@ -512,20 +548,25 @@ async def on_app_enable(
     # Shared source of truth: record that this app's hooks are now loaded under
     # its current on-disk signature, so the out-of-process reconciler sees no
     # drift for an enable THIS handler just performed and does not re-run the
-    # startup hook on its next tick. ``_publish_hook_health`` returns a snapshot
-    # exactly when the context is NOT healthy and ``None`` when it is, so gate on
-    # that return rather than re-reading ``ctx.health`` -- the context object is
-    # the single source for both, and reusing the already-computed result avoids
-    # assuming a ``health`` attribute shape on every caller's context.
+    # startup hook on its next tick.
     #
-    # Record ONLY when the wiring came up healthy. A route or startup hook that
+    # Record ONLY when the wiring came up: routes registered without a failure
+    # mark and ``on_startup`` returned normally. A route or startup hook that
     # failed to import (or a detached/timed-out ``on_startup``) must stay
     # UN-recorded so the reconciler re-attempts it on its next tick and picks the
     # app up once a transient failure clears -- the poll-retry-after-recovery the
     # reconciler exists to provide. Freezing a degraded import as the current
     # loaded state would strand it until its code changed. A prior record is
     # cleared on failure for the same reason.
-    if health_snapshot is None:
+    #
+    # Gated on ``wiring_ok``, not on the published health: an ``on_startup`` that
+    # succeeds but calls ``ctx.health.mark_degraded`` itself (the App Kit docs
+    # tell apps to do that and keep serving) is wired fine. Treating it as a
+    # failure tore it down and re-enabled it on every tick, cutting off its own
+    # routes mid-request. Its degraded snapshot is still published above.
+    # shortcut: a ``routes`` function that itself calls ``mark_degraded`` still
+    # counts as a wiring failure; split the marks by source if an app needs that.
+    if wiring_ok:
         # Cache the declared on_shutdown callable now (files still present) so a
         # later CLI uninstall can stop background work this app spawned -- even a
         # ROUTES-ONLY app with no on_startup, and even when on_shutdown lives in a
@@ -584,12 +625,18 @@ async def stop_app_startup_hooks(app_name: str, *, bounded: bool = False) -> boo
     return await _lifecycle_dispatcher.stop_detached_startup_hooks(app_name, bounded=bounded)
 
 
-async def _cleanup_app_crons(app_name: str, result: dict[str, Any]) -> None:
+async def _cleanup_app_crons(
+    app_name: str, result: dict[str, Any], *, keep_manifest_crons: bool = False
+) -> None:
     """Remove the cron jobs this app owns, keyed off the running cron SERVICE
     rather than the manifest's ``cron`` grant -- a revoked grant must not make
     the jobs it authorized unreachable. Owner-scoped. A STORE failure is
     REPORTED rather than crashing the disable; an unexpected one propagates,
     exactly as an error outside ``OSError`` does on the jobs path.
+
+    ``keep_manifest_crons`` is for a code reload of a still-enabled app: the
+    jobs its current manifest declares stay (see
+    :func:`~kiro_crew.apps.bridges_crons.retire_app_crons_for_reload`).
     """
     # The cron service is the lifecycle dispatcher's; no service, no jobs.
     if not _lifecycle_dispatcher or not _lifecycle_dispatcher._cron_service:
@@ -597,9 +644,14 @@ async def _cleanup_app_crons(app_name: str, result: dict[str, Any]) -> None:
     # The bridges helper owns the removal, its logging and its SEL audit, and
     # raises both store classes so the note below can name which one happened.
     try:
-        removed = await deregister_app_crons_reporting_failures(
-            app_name, _lifecycle_dispatcher._cron_service
-        )
+        if keep_manifest_crons:
+            removed = await retire_app_crons_for_reload(
+                app_name, _lifecycle_dispatcher._cron_service
+            )
+        else:
+            removed = await deregister_app_crons_reporting_failures(
+                app_name, _lifecycle_dispatcher._cron_service
+            )
     except CronStoreUnreadable:
         # Reported rather than retried: an unreadable store does not heal on
         # its own, and crashing the disable is the one outcome forbidden here.
@@ -677,8 +729,14 @@ async def on_app_disable(
     run_app_hooks: bool = True,
     bounded_startup_cleanup: bool = False,
     startup_stopped: bool | None = None,
+    keep_manifest_crons: bool = False,
 ) -> dict[str, Any]:
     """Called before an app is disabled — deregister routes and invoke shutdown hook.
+
+    ``keep_manifest_crons=True`` is for a teardown that an enable of the same
+    app follows at once (a code reload): the cron jobs its current manifest
+    declares keep their id, run history and enabled state instead of being
+    removed and recreated. Every other teardown removes all of the app's jobs.
 
     ``run_app_hooks=False`` skips the app's OWN ``on_shutdown`` hook while still
     doing everything the GATEWAY owns (route deregistration, cron cleanup). The
@@ -728,7 +786,7 @@ async def on_app_disable(
         success = await _lifecycle_dispatcher._invoke(
             app_name,
             shutdown_hook,
-            _lifecycle_dispatcher._build_context(app_info, phase="shutdown"),
+            await _lifecycle_dispatcher._prepare_context(app_info, phase="shutdown"),
             phase="shutdown",
         )
         result["hooks_shutdown"] = "ok" if success else "failed"
@@ -750,7 +808,7 @@ async def on_app_disable(
 
     # Clean up cron jobs owned by this app. Keyed off the running cron
     # service, not the manifest grant -- see _cleanup_app_crons.
-    await _cleanup_app_crons(app_name, result)
+    await _cleanup_app_crons(app_name, result, keep_manifest_crons=keep_manifest_crons)
 
     # Stop and drop this app's durable job runs. Keyed off the registry, not
     # the manifest grant -- see _cleanup_app_jobs for why that distinction is
@@ -860,12 +918,14 @@ async def on_gateway_startup(
         if not hooks:
             continue
 
-        ctx = _build_app_context_from_info(app_info, cron_service, broadcast_fn, spawn_impl)
+        ctx = await _prepare_app_context_from_info(app_info, cron_service, broadcast_fn, spawn_impl)
 
         # Register routes (if declared)
         routes_hook = hooks.get("routes", "")
+        boot_wiring_ok = True
         if routes_hook and _route_registry:
             await _route_registry.register_app_routes(name, _app_hook_root(name), routes_hook, ctx)
+            boot_wiring_ok = ctx.health.status == "healthy"
 
         # Invoke on_startup hook (if declared)
         startup_hook = hooks.get("on_startup", "")
@@ -873,6 +933,7 @@ async def on_gateway_startup(
             success = await _lifecycle_dispatcher._invoke(name, startup_hook, ctx, phase="startup")
             if success:
                 logger.info("Startup hook invoked for: %s", name)
+            boot_wiring_ok = boot_wiring_ok and success
 
         # Same publication as on_app_enable: the reason a hook failed must outlive
         # the context, or boot is the one path where it is collected and dropped.
@@ -881,19 +942,19 @@ async def on_gateway_startup(
         # lifecycle.py:352,396, plus the cancelled site via
         # _mark_cancelled_startup_residual at lifecycle.py:66), so an aggregate
         # would only re-log them, and only ever for this one caller.
-        boot_health = _publish_hook_health(name, ctx)
+        _publish_hook_health(name, ctx)
 
         # Shared source of truth: record what boot loaded so the out-of-process
         # reconciler starts already agreeing with the gateway and does not
         # reimport every app on its first tick. Recorded for any hook-declaring
         # app the loop reached (it has already `continue`d past hookless apps),
         # covering routes-only apps as well as those with on_startup -- but ONLY
-        # when the wiring came up healthy (``_publish_hook_health`` returns a
-        # snapshot only when it did NOT). A boot-time import failure stays
-        # un-recorded so the reconciler re-attempts it and picks the app up once a
-        # transient failure clears, rather than freezing the degraded state as
-        # current.
-        if boot_health is None:
+        # when the wiring came up (same rule as ``on_app_enable``: an app that
+        # marks itself degraded from a successful ``on_startup`` is still wired).
+        # A boot-time import failure stays un-recorded so the reconciler
+        # re-attempts it and picks the app up once a transient failure clears,
+        # rather than freezing the degraded state as current.
+        if boot_wiring_ok:
             # Cache the declared on_shutdown regardless of on_startup (routes-only
             # apps included; dispatcher no-ops when none is declared), so a later
             # CLI uninstall can stop background work this app spawned.

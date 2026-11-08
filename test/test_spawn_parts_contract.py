@@ -26,6 +26,14 @@ import pytest
 from kiro_crew import _facade_mirror
 from kiro_crew.mcp_tools import DOMAIN_MODULES, _schemas_accepts_names_only, spawn, spawn_parts
 
+# One worker per file, so the shared checks run beside the tests that load this module.
+pytestmark = pytest.mark.xdist_group(name="spawn_parts_contract")
+
+SHARED_FACADE_CHECKS = (
+    "no_name_of_the_family_is_excluded_from_the_mirror",
+    "owners_import_only_owners_listed_before_them",
+)
+
 _FACADE = spawn.__name__
 _PACKAGE = spawn_parts.__name__
 _MIRROR: _facade_mirror.MirrorIndex = vars(spawn)[_facade_mirror.INDEX_ATTRIBUTE]
@@ -76,12 +84,6 @@ def test_the_owner_package_is_not_a_tool_domain() -> None:
     ], "the package binds a tool half of its own"
 
 
-def test_no_name_of_the_family_is_excluded_from_the_mirror() -> None:
-    """The family came from one namespace, so no name can mean two things in it."""
-    assert _MIRROR.excluded == ()
-    assert _MIRROR.divergent() == ()
-
-
 def test_both_halves_of_every_tool_resolve_on_the_facade() -> None:
     """``build_tool_list`` reads ``spawn.schemas`` and ``dispatch`` reads
     ``spawn.HANDLERS``; the descriptor builder is the owner's own function, so the
@@ -95,10 +97,12 @@ def test_both_halves_of_every_tool_resolve_on_the_facade() -> None:
 
 
 def test_the_facade_keeps_its_logger_name() -> None:
-    """No owner logs; the facade's own records keep the module name they carried."""
+    """The owner that logs binds the facade's logger for a stable module name."""
     assert spawn.logger is logging.getLogger(_FACADE)
     loggers = [vars(owner)["logger"] for owner in _owners() if "logger" in vars(owner)]
-    assert loggers == [], "an owner logs: bind it by the facade's name, as control_parts does"
+    assert loggers == [
+        spawn.logger
+    ], "wave.py is the one owner allowed to log, using the facade's logger"
 
 
 def test_a_moved_class_reports_the_owner_it_lives_in() -> None:
@@ -141,18 +145,6 @@ def test_the_names_owners_import_from_elsewhere_stay_visible_to_type_checkers() 
     assert {"visible_agent_names", "redact", "SPAWN_SUB_AGENTS_SCHEMA"} <= imported_from_elsewhere
     assert len(imported_from_elsewhere) >= 15, "the scan found too few names to measure"
     assert _reexport_group() == imported_from_elsewhere
-
-
-def test_owners_import_only_owners_listed_before_them() -> None:
-    """Lowest layer first: an owner reads a sibling only when the sibling comes earlier."""
-    order = {name: position for position, name in enumerate(_MIRROR.owners)}
-    edges = 0
-    for owner_name in _MIRROR.owners:
-        for node in ast.walk(_tree(importlib.import_module(owner_name))):
-            if isinstance(node, ast.ImportFrom) and node.module in order:
-                edges += 1
-                assert order[node.module] < order[owner_name], (owner_name, node.module)
-    assert edges > 0, "no owner imports a sibling, so this case measures nothing"
 
 
 def test_a_patch_through_the_facade_reaches_both_roster_readers() -> None:

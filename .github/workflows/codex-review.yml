@@ -34,6 +34,12 @@ permissions:
   contents: read
   pull-requests: write
   id-token: write
+  # Read-only: the push-budget count in "Write review prompt" reads this PR's
+  # timeline (GET issues/<n>/timeline) and each earlier head's check runs (GET
+  # commits/<sha>/check-runs). Without them the token gets a 403 there and the
+  # count is skipped.
+  issues: read
+  checks: read
 
 concurrency:
   group: codex-review-${{ github.event.pull_request.number }}
@@ -64,7 +70,11 @@ jobs:
     # the guard is on every step, so a step added later cannot quietly run
     # against fork content.
     name: "${{ github.event.pull_request.head.repo.full_name == github.repository && 'GPT 6.1 Review' || 'GPT 6.1 Review (same-repo lane, not applicable to forks)' }}"
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     # Runaway/hang backstop only, NOT a per-review budget: each pass carries its
     # own PASS_WALL and self-terminates first. This wall MUST therefore stay
     # above the sum of the pass walls plus setup -- otherwise it, not the named
@@ -77,6 +87,55 @@ jobs:
     # job default.
     timeout-minutes: 160
     steps:
+      # Measurement only: counts this job's GitHub API calls by kind so the
+      # shared GITHUB_TOKEN quota can be attributed per workflow. Every later
+      # `gh` resolves to a shim that appends one line to a counter file and
+      # then `exec`s the real gh with the same arguments, so arguments,
+      # stdin, stdout, stderr and exit code are the real gh's own. A counter
+      # that cannot be installed or written is skipped; it never fails the job.
+      # Pinned identical in every job by test_gh_call_counter.py.
+      - name: Count GitHub API calls (measurement only)
+        if: github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        run: |
+          real="$(command -v gh || true)"
+          dir="$RUNNER_TEMP/gh-call-count"
+          if [ -z "$real" ] || [ "$real" = "$dir/gh" ]; then exit 0; fi
+          mkdir -p "$dir" && : > "$dir/calls" || exit 0
+          {
+            echo '#!/usr/bin/env bash'
+            printf 'REAL_GH=%q\n' "$real"
+            printf 'COUNT_FILE=%q\n' "$dir/calls"
+            cat <<'SHIM'
+          # Kinds follow gh 2.103 at github.com/cli/cli: `api` is one REST
+          # request (`--paginate` one per page, so it is also tallied apart),
+          # `api graphql` one GraphQL request, `pr comment` a GraphQL lookup
+          # plus a GraphQL addComment, `pr view` and `label list` GraphQL,
+          # `label create` REST. `api rate_limit` costs no quota. Anything
+          # else is `other`, counted but unclassified.
+          {
+            kind=other n=1
+            case "${1-} ${2-}" in
+              "api rate_limit" | "api /rate_limit") kind=free ;;
+              api\ *)
+                kind=rest
+                for arg in "${@:2}"; do
+                  case "$arg" in
+                    graphql) kind=graphql ;;
+                    --paginate) printf 'paginate 1\n' >> "$COUNT_FILE" ;;
+                  esac
+                done
+                ;;
+              "pr comment") kind=graphql n=2 ;;
+              "pr view" | "label list") kind=graphql ;;
+              "label create") kind=rest ;;
+            esac
+            printf '%s %s\n' "$kind" "$n" >> "$COUNT_FILE"
+          } 2> /dev/null
+          exec "$REAL_GH" "$@"
+          SHIM
+          } > "$dir/gh" && chmod 755 "$dir/gh" && echo "$dir" >> "$GITHUB_PATH" || true
+
       # persist-credentials:false stops actions/checkout from writing the
       # GITHUB_TOKEN into .git/config, where the read-only agentic reviewer
       # could read it from untrusted PR content and leak a PR-write token.
@@ -301,20 +360,33 @@ jobs:
         run: |
           # Load the shared GPT prompt blocks from the BASE commit, mirroring
           # the Opus lanes: a PR must not edit the contract that judges it.
-          # Fall back to the checked-out copy (with a warning) only when a
-          # block is absent on the base -- the bootstrap window for the PR
-          # that introduces a block. If it is absent everywhere, fail closed.
+          # Fall back to the checked-out copy (with a warning) only when the
+          # base commit's tree has NO such path -- the bootstrap window for the
+          # PR that introduces a block. `git ls-tree` tells that apart from a
+          # read that failed (an object the checkout lacks): it prints nothing
+          # and exits 0 for an absent path, and exits non-zero when the tree
+          # cannot be read. Any failed read, and a present-but-empty block,
+          # fails closed rather than handing the PR its own contract.
           rm -rf .review-prompts-gpt
           mkdir -p .review-prompts-gpt
           for p in gpt-preamble gpt-diff-not-evidence gpt-repo-context gpt-review-core gpt-round-convergence gpt-output-contract gpt-falsification-mandate gpt-falsification-verdict; do
-            git show "$BASE_SHA:.github/review-prompts/$p.md" > ".review-prompts-gpt/$p.md" 2>/dev/null || true
-            if [ ! -s ".review-prompts-gpt/$p.md" ]; then
-              echo "::warning::.github/review-prompts/$p.md is missing or empty on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the PR that introduces it)."
-              cp ".github/review-prompts/$p.md" ".review-prompts-gpt/$p.md"
-              if [ ! -s ".review-prompts-gpt/$p.md" ]; then
-                echo "::error::.github/review-prompts/$p.md is empty in the checkout too. Refusing to review against a partial contract."
+            src=".github/review-prompts/$p.md"
+            if ! listed="$(git ls-tree --name-only "$BASE_SHA" -- "$src")"; then
+              echo "::error::Could not read the base commit's tree ($BASE_SHA) for $src. Failing closed rather than falling back to the PR's copy."
+              exit 1
+            fi
+            if [ -n "$listed" ]; then
+              if ! git show "$BASE_SHA:.github/review-prompts/$p.md" > ".review-prompts-gpt/$p.md"; then
+                echo "::error::$src is on the base commit ($BASE_SHA) but could not be read. Failing closed rather than falling back to the PR's copy."
                 exit 1
               fi
+            else
+              echo "::warning::$src is absent on the base commit ($BASE_SHA); using the checked-out copy (bootstrap for the PR that introduces it)."
+              cp ".github/review-prompts/$p.md" ".review-prompts-gpt/$p.md"
+            fi
+            if [ ! -s ".review-prompts-gpt/$p.md" ]; then
+              echo "::error::$src is empty (base commit $BASE_SHA, or the checkout on the bootstrap round). Refusing to review against a partial contract."
+              exit 1
             fi
           done
 
@@ -547,6 +619,73 @@ jobs:
               printf '%s\n' "$ledger"
               echo "ADJUDICATION_END::${nonce}"
             } >> /tmp/codex-prompt.md
+          fi
+
+          # PUSH BUDGET: a short section appended only once this PR has had
+          # PUSH_BUDGET_MIN blocked pushes, so a first-time review is exactly
+          # as long as it was. The count is the one `pr_findings.py --rounds`
+          # and `sweep_check.py` print: `blocked_push_count` in the
+          # prepare-pr skill's `_review_pushes.py`, run here as a script. It
+          # stops at PUSH_BUDGET_MIN (REVIEW_PUSHES_STOP_AT), because the
+          # section needs only "at least that many" and every replaced head
+          # costs a check-run read from the shared REST quota. A
+          # push counts when the head it replaced was blocked: the newest
+          # check run of a review lane (GPT, Opus, Design, UX, First
+          # Principles, Security Scope Review) failed on it, or a
+          # CHANGES_REQUESTED review names it that the same reviewer has not
+          # approved and nobody dismissed. A green re-run or an approval
+          # clears a head. The current head is never counted, since nothing
+          # has been pushed past it. Every read is a GET. The section is a
+          # hint, not a gate: it can only ask the reviewer to list sibling
+          # sites, so a count this step could not read leaves the prompt as
+          # it was (a notice, never a failure), unlike the ledger above, whose
+          # missing read would re-litigate disposed findings. The text AND
+          # the counting scripts are staged from the BASE commit, with no
+          # checkout fallback: a PR must not edit the instructions that judge
+          # it or the code that counts its pushes, and while either is absent
+          # on the base the section is simply off. The scripts go to a fresh
+          # directory under RUNNER_TEMP, outside the merge-ref workspace.
+          # It is deliberately a `sed` into the prompt, not a `cat` splice:
+          # the splices above mirror the unconditional prompt, and this
+          # section depends on the PR's push history.
+          PUSH_BUDGET_MIN=3
+          budget_prompt=".review-prompts-gpt/gpt-push-budget.md"
+          git show "$BASE_SHA:.github/review-prompts/gpt-push-budget.md" \
+            > "$budget_prompt" 2>/dev/null || true
+          counter_tree="src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts"
+          counter_dir="${RUNNER_TEMP:-/tmp}/push-budget-count"
+          push_budget_count() {
+            case "$PR" in ''|*[!0-9]*) return 1 ;; esac
+            [ -s "$counter_dir/$counter_tree/_review_pushes.py" ] || return 1
+            REVIEW_PUSHES_STOP_AT="$PUSH_BUDGET_MIN" \
+              python3 "$counter_dir/$counter_tree/_review_pushes.py" --repo "$REPO" --pr "$PR"
+          }
+          if [ -s "$budget_prompt" ]; then
+            # Remove before creating: a symlink at this path would redirect the write.
+            rm -rf "$counter_dir"
+            mkdir -p "$counter_dir"
+            git archive --format=tar "$BASE_SHA" -- "$counter_tree" 2>/dev/null \
+              | tar -xf - -C "$counter_dir" 2>/dev/null || true
+            blocked_pushes=""
+            for attempt in 1 2 3; do
+              if blocked_pushes="$(push_budget_count)"; then
+                break
+              fi
+              blocked_pushes=""
+              if [ "$attempt" -lt 3 ]; then
+                sleep "$attempt"
+              fi
+            done
+            case "$blocked_pushes" in
+              ''|*[!0-9]*)
+                echo "::notice::Could not count this PR's blocked pushes; the push-budget section is left out of this review prompt."
+                ;;
+              *)
+                if [ "$blocked_pushes" -ge "$PUSH_BUDGET_MIN" ]; then
+                  { echo; sed "s/%BLOCKED_PUSHES%/$blocked_pushes/g" "$budget_prompt"; } >> /tmp/codex-prompt.md
+                fi
+                ;;
+            esac
           fi
 
       # Assume the Bedrock role only now, immediately before the step that calls
@@ -1064,7 +1203,8 @@ jobs:
             #     an-async-test-respects-the-on-loop-lock, a-stopwatch-is-not-a-
             #     barrier,
             #     a-bound-bounds-every-field-it-retains, keep-modules-small,
-            #     an-operator-facing-string-states-what-was-measured, and the
+            #     an-operator-facing-string-states-what-was-measured,
+            #     a-gateway-status-row-carries-a-notice-token, and the
             #     website UI rules other than frontend-security --
             #     availability/hygiene classes with bounded harm.
             #   - fenced by the vocabulary above, not by name:
@@ -1780,7 +1920,7 @@ jobs:
           retry_comment_write() {
             local slot="$1" needle="$2" body_file="$3" target="$4"
             local attempt landed head_now ov_body
-            local occupied slot_ok slot_id mine_id slot_rc ov_rc
+            local occupied slot_ok slot_id mine_id slot_rc ov_rc head_rc
             shift 4
             # Two reads here answer two DIFFERENT questions, which is why they
             # match on two different needles.
@@ -1936,8 +2076,12 @@ jobs:
               # a body pre-image or a conditional write, and this API offers
               # neither an If-Match nor an edit history.
               if [ "$attempt" -gt 1 ]; then
-                if ! head_now="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>/dev/null)" \
-                  || [ -z "$head_now" ]; then
+                head_rc=0
+                head_now="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>"$READ_ERR_FILE")" || head_rc=$?
+                if [ "$head_rc" -ne 0 ] || [ -z "$head_now" ]; then
+                  if [ "$head_rc" -ne 0 ]; then
+                    note_read_failure "$head_rc" "reading this PR's current head to decide whether this write may be repeated" "$READ_ERR_FILE"
+                  fi
                   echo "Whether $HEAD is still this PR's head is unreadable, so this write was not repeated: a repeat can replace a newer head's verdict with a superseded one. Re-run this lane to publish this verdict."
                   retain_unpublished_verdict publication_unknown 1 "$needle" "$body_file" "$@"
                   return 1
@@ -2384,3 +2528,21 @@ jobs:
             echo "::warning::GPT 6.1 emitted a BLOCKING-labelled finding for $HEAD without the [BLOCK-MERGE] marker. Gate passes on the marker; review the prompt if this recurs."
           fi
           echo "GPT 6.1 review completed for $HEAD with no blocking findings."
+
+      # Counts only, never arguments or responses. `basis=gh-invocations`:
+      # a `--paginate` call is one `rest` however many pages it read, and
+      # calls made by actions (claude-code-action's octokit) are not seen.
+      - name: Report GitHub API call counts
+        if: always() && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        run: |
+          f="$RUNNER_TEMP/gh-call-count/calls"
+          wf="${GITHUB_WORKFLOW_REF%@*}"
+          wf="${wf##*/}"
+          if [ ! -f "$f" ]; then
+            echo "rest-calls: workflow=$wf job=$GITHUB_JOB counter=absent"
+            exit 0
+          fi
+          awk -v wf="$wf" -v job="$GITHUB_JOB" '{ c[$1] += $2 } END {
+            printf "rest-calls: workflow=%s job=%s rest=%d graphql=%d paginated=%d other=%d basis=gh-invocations\n",
+              wf, job, c["rest"], c["graphql"], c["paginate"], c["other"] }' "$f" || true

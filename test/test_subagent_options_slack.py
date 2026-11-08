@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from kiro_crew.slack.format import (
-    OPTIONS_CHECKBOXES_ACTION,
-    OPTIONS_SUBMIT_ACTION,
+    OPTIONS_ACTION_PREFIX,
+    OPTIONS_SEVERAL_ACTION,
     build_options_blocks,
     extract_options,
 )
@@ -29,7 +29,7 @@ class TestSubagentOptionsExtraction:
         assert "[OPTIONS:" not in reply_text
 
     def test_options_blocks_appended_to_footer(self):
-        """Extracted options should produce Block Kit checkboxes + Send button."""
+        """Extracted options should produce one Block Kit button per choice."""
         options = ["Choice A", "Choice B"]
         footer_blocks = [{"type": "context", "elements": [{"type": "mrkdwn", "text": "⏱ 5s"}]}]
         footer_blocks.extend(build_options_blocks(options))
@@ -37,13 +37,14 @@ class TestSubagentOptionsExtraction:
         assert len(footer_blocks) == 2
         actions = footer_blocks[1]
         assert actions["type"] == "actions"
-        assert actions["elements"][0]["type"] == "checkboxes"
-        assert actions["elements"][0]["action_id"] == OPTIONS_CHECKBOXES_ACTION
-        assert actions["elements"][1]["action_id"] == OPTIONS_SUBMIT_ACTION
-        assert len(actions["elements"][0]["options"]) == 2
+        assert [el["action_id"] for el in actions["elements"]] == [
+            f"{OPTIONS_ACTION_PREFIX}0",
+            f"{OPTIONS_ACTION_PREFIX}1",
+            OPTIONS_SEVERAL_ACTION,
+        ]
 
     def test_no_options_no_extra_blocks(self):
-        """When response has no OPTIONS tag, footer should not get checkbox blocks."""
+        """When response has no OPTIONS tag, footer should not get option blocks."""
         response = "Here is my response with no options."
         _, options = extract_options(response)
         assert options == []

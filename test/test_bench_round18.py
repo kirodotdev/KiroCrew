@@ -1,12 +1,11 @@
-"""Round-18 review finding: the re-validation was applied to one branch of two.
+"""The re-validation must run on both branches of the report write, not one.
 
-The pinned branch re-checks where the parent resolves to now. The
-no-``dir_fd`` fallback kept acting on a verdict given earlier, so a retargeted ancestor
-could still move the write -- and on that branch the write is an ``os.replace``, which
-would put report JSON where a governance file was. Same rule, one of two sites: the
-defect class this module keeps closing.
+The pinned branch re-checks where the parent resolves to now. A no-``dir_fd`` fallback
+that acts on a verdict given earlier lets a retargeted ancestor still move the write --
+and on that branch the write is an ``os.replace``, which would put report JSON where a
+governance file was.
 
-Both writers now re-validate on both branches, and where the parent cannot be pinned to
+Both writers re-validate on both branches, and where the parent cannot be pinned to
 a descriptor a reparse point in the ancestor chain is refused outright.
 """
 
@@ -54,9 +53,7 @@ def test_the_atomic_writer_refuses_a_linked_ancestor_when_it_cannot_pin(
     assert not (victim / "report.json").exists()
 
 
-def test_the_creating_writer_refuses_the_same_chain(
-    tmp_path: Path, unpinnable: None
-) -> None:
+def test_the_creating_writer_refuses_the_same_chain(tmp_path: Path, unpinnable: None) -> None:
     """Both writers, one rule -- that is the whole finding."""
     out, victim = _linked_out_dir(tmp_path)
 
@@ -66,9 +63,7 @@ def test_the_creating_writer_refuses_the_same_chain(
     assert not (victim / "corpus.json.part").exists()
 
 
-def test_a_real_directory_chain_is_still_written(
-    tmp_path: Path, unpinnable: None
-) -> None:
+def test_a_real_directory_chain_is_still_written(tmp_path: Path, unpinnable: None) -> None:
     """The ordinary case on that platform must keep working.
 
     A guard that refused every write where pinning is unavailable would satisfy the

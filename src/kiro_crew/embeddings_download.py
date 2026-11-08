@@ -20,12 +20,14 @@ from pathlib import Path
 from typing import Callable
 
 from kiro_crew import asset_downloader
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.embeddings_model import (
     _sha256_file,
     default_model_path,
     embedding_model_is_custom,
     model_file_present,
 )
+from kiro_crew.embeddings_ollama import ollama_backend_selected
 from kiro_crew.embeddings_settings import (
     _DEFAULT_MODEL_URL,
     _DOWNLOAD_BACKOFF_BASE_SECS,
@@ -167,10 +169,10 @@ class ModelDownloadManager:
         ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` escape hatch is set — test runs
         must never trigger a 610MB model download.
         """
-        if self.model_ready():
+        if await asyncio.to_thread(self.model_ready):
             self.status = {"step": "ready", "error": "", "attempt": 0}
             return True
-        if embedding_model_is_custom():
+        if await asyncio.to_thread(embedding_model_is_custom):
             # Reached via the dashboard's Enable/Retry click. Downloading the
             # bundled model here would install a second model the embedder is
             # not using, and would imply the custom one had been replaced.
@@ -185,7 +187,7 @@ class ModelDownloadManager:
             self._lock = asyncio.Lock()
         async with self._lock:
             # Re-check under the lock: a concurrent caller may have finished it.
-            if self.model_ready():
+            if await asyncio.to_thread(self.model_ready):
                 self.status = {"step": "ready", "error": "", "attempt": 0}
                 return True
             last_error = "download failed"
@@ -261,7 +263,7 @@ class ModelDownloadManager:
             else:
                 # Cross-filesystem safe: shutil.move copies when rename fails.
                 shutil.move(str(src), str(staging))
-            os.replace(staging, self._target)
+            replace_with_retry(staging, self._target)
         finally:
             staging.unlink(missing_ok=True)
 
@@ -362,14 +364,18 @@ def reset_download_manager() -> None:
 def start_background_model_download() -> "asyncio.Task[bool] | None":
     """Kick the default-on background model download. Returns the task or None.
 
-    Called from gateway/server startup. Returns None when a custom model is
-    configured (the bundled model must never overwrite or compete with it —
-    this is what makes a custom model survive a default-model version bump),
-    when the model is already present (nothing to do), or when downloads are
-    skipped via env. Idempotent: a second call while a download is in flight
-    returns the existing task instead of spawning another.
+    Called from gateway/server startup. Returns None when an Ollama server
+    backend is selected (nothing would load the bundled model), when a custom
+    model is configured (the bundled model must never overwrite or compete with
+    it — this is what makes a custom model survive a default-model version
+    bump), when the model is already present (nothing to do), or when downloads
+    are skipped via env. Idempotent: a second call while a download is in
+    flight returns the existing task instead of spawning another.
     """
     global _download_task
+    if ollama_backend_selected(_read_memory_config()):
+        logger.info("Ollama embedding backend selected — skipping the default model download")
+        return None
     if embedding_model_is_custom():
         logger.info("Custom embedding model configured — skipping the default model download")
         return None

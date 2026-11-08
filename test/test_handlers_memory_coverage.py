@@ -1,26 +1,14 @@
 """Coverage tests for ``kiro_crew.dashboard.handlers.memory``.
 
-Focused on the request/response contract of the memory HTTP handlers: method
-dispatch, body and query validation, the restricted-session 403 gate, the
-not-found 404s, the single-flight 409s, and the fail-closed 500s. Handlers are
-invoked directly with a faked ``web.Request`` (the style ``test_memory_graph.py``
-uses) so no socket is bound; the vector store, memory store, embedder and
-download manager are all mocks, so nothing here touches the network, a real
-GGUF, or a sandbox.
+Handlers are called directly with a faked ``web.Request`` (as ``test_memory_graph.py``
+does) and mocked stores, so no socket, network or GGUF is used.
+``_apply_embedding_model`` belongs to ``test_embedding_model_apply.py``.
 
-``_apply_embedding_model`` is deliberately NOT exercised here — it is owned by
-``test_embedding_model_apply.py``.
-
-This file pins the preferences, projects and history documents, the settings route and
-the config lock it writes under, value redaction and vector-store resolution, and the
-semantic, events and episodic routes. ``test_handlers_memory_coverage_maintenance.py``
-pins stats, migrate and import, the context preview and observability, promote,
-consolidate and the graph error path, ``test_handlers_memory_coverage_request_contract.py``
-the session gate and the non-object-body 400, and
-``test_handlers_memory_coverage_embeddings.py`` the embedding-model routes, the pip
-bootstrap, the apply worker's install and rollback, and the config writes that run off
-the event loop.
-``handlers_memory_coverage_helpers.py`` holds the builders and fixtures they share.
+This file covers the documents, settings and its config lock, redaction and the
+semantic, events and episodic routes. Siblings: ``test_handlers_memory_coverage_maintenance.py``,
+``test_handlers_memory_coverage_request_contract.py``,
+``test_handlers_memory_coverage_embeddings.py``; shared fixtures are in
+``handlers_memory_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -55,9 +43,7 @@ _MOD = "kiro_crew.dashboard.handlers.memory"
 _CRED = "AKIAIOSFODNN7EXAMPLE"
 
 
-# ---------------------------------------------------------------------------
 # preferences / projects / history — GET + PUT + malformed body
-# ---------------------------------------------------------------------------
 
 
 class TestPreferencesProjectsHistory:
@@ -344,9 +330,7 @@ class TestPreferencesProjectsHistory:
         getattr(mem, writer).assert_called_once_with("owner edit", **expected)
 
 
-# ---------------------------------------------------------------------------
 # settings
-# ---------------------------------------------------------------------------
 
 
 class TestRunConfigWriteCancellation:
@@ -364,14 +348,8 @@ class TestRunConfigWriteCancellation:
     def test_a_repeated_cancellation_still_drains_before_unlocking(self):
         """A SECOND cancel while draining must not release the lock either.
 
-        Awaiting the drain is itself a suspension point. A graceful shutdown
-        that escalates after its timeout cancels twice -- and that is exactly
-        when a config write is most likely to be in flight -- so a drain that
-        absorbs only the first cancellation unwinds the ``async with`` with
-        the thread still inside its read-modify-write.
-
-        The assertion is on ORDER, not on the number of cancels: the second
-        writer must not enter the critical section until the worker returns.
+        An escalating shutdown cancels twice, and the drain is itself a suspension point.
+        The check is on order: the second writer waits until the worker returns.
         """
         from kiro_crew.dashboard.chat_utils import run_config_write
         from kiro_crew.dashboard.handlers.agents import _get_config_lock
@@ -491,6 +469,44 @@ class TestMemorySettings:
         assert data["agent"]["provider"] == "acp"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("idle", "days", "want_idle", "want_days"),
+        [
+            (99, 9000, 24.0, 365),
+            ("inf", 365, 24.0, 365),
+            (24, 365, 24.0, 365),
+            # Too large for a float: float() raises OverflowError, still clamped.
+            (10**400, 10**400, 24.0, 365),
+            (-(10**400), -(10**400), 0.5, 7),
+        ],
+        ids=["above", "inf", "at-ceiling", "huge-int", "huge-negative-int"],
+    )
+    async def test_put_clamps_to_the_tab_ceilings(
+        self, tmp_path: Path, idle: object, days: int, want_idle: float, want_days: int
+    ) -> None:
+        # The Memory tab's inputs stop at 24 hours and 365 days; the route clamps
+        # to the same ceilings (never a 400), and keeps a non-finite float out of
+        # config.json.
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        state = _make_state()
+        state.consolidator = None
+        req = _make_request(
+            state,
+            method="PUT",
+            json_body={"history_idle_hours": idle, "history_max_days": days},
+        )
+        with (
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+        ):
+            resp = await mem_mod.api_memory_settings(req)
+        assert resp.status == 200
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert data["memory"]["history_idle_hours"] == want_idle
+        assert data["memory"]["history_max_days"] == want_days
+
+    @pytest.mark.asyncio
     async def test_put_rejects_non_numeric_idle_hours(self, tmp_path: Path) -> None:
         cfg_path = tmp_path / "config.json"
         state = _make_state()
@@ -517,6 +533,23 @@ class TestMemorySettings:
         assert resp.status == 400
         assert "history_max_days" in _body(resp)["error"]
 
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    @pytest.mark.asyncio
+    async def test_put_rejects_infinite_max_days(self, tmp_path: Path, raw: str) -> None:
+        """JSON reads ``1e999`` as an infinite float: the same 400, never a 500."""
+        cfg_path = tmp_path / "config.json"
+        state = _make_state()
+        body = json.loads(f'{{"history_max_days": {raw}}}')
+        req = _make_request(state, method="PUT", json_body=body)
+        with (
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+        ):
+            resp = await mem_mod.api_memory_settings(req)
+        assert resp.status == 400
+        assert _body(resp) == {"error": "history_max_days must be an integer"}
+        assert not cfg_path.exists()
+
     @pytest.mark.asyncio
     async def test_put_fails_closed_on_unreadable_config(self, tmp_path: Path) -> None:
         cfg_path = tmp_path / "config.json"
@@ -532,6 +565,47 @@ class TestMemorySettings:
         assert _body(resp)["code"] == "config_unreadable"
         # The user's file is left byte-for-byte intact.
         assert cfg_path.read_text(encoding="utf-8") == "{ not json"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("section", [[], "on", 3, None], ids=["list", "str", "int", "null"])
+    async def test_put_refuses_a_memory_entry_that_is_not_an_object(
+        self, tmp_path: Path, section: object
+    ) -> None:
+        """A non-object ``memory`` gets a 409 that names it, and the file is untouched."""
+        cfg_path = tmp_path / "config.json"
+        original = json.dumps({"agent": {"provider": "acp"}, "memory": section})
+        cfg_path.write_text(original, encoding="utf-8")
+        state = _make_state()
+        state.consolidator = None
+        req = _make_request(state, method="PUT", json_body={"history_idle_hours": 3})
+        with (
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+        ):
+            resp = await mem_mod.api_memory_settings(req)
+        assert resp.status == 409
+        assert _body(resp)["code"] == "config_section_not_object"
+        assert "'memory'" in _body(resp)["error"]
+        assert cfg_path.read_text(encoding="utf-8") == original
+
+    @pytest.mark.asyncio
+    async def test_put_with_nothing_to_save_still_succeeds_on_a_non_object_memory(
+        self, tmp_path: Path
+    ) -> None:
+        """A body naming no known field stays the no-op 200 it has always been."""
+        cfg_path = tmp_path / "config.json"
+        original = json.dumps({"memory": []})
+        cfg_path.write_text(original, encoding="utf-8")
+        state = _make_state()
+        state.consolidator = None
+        req = _make_request(state, method="PUT", json_body={"unknown": 1})
+        with (
+            patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()),
+            patch(f"{_MOD}.config_path", return_value=cfg_path),
+        ):
+            resp = await mem_mod.api_memory_settings(req)
+        assert resp.status == 200
+        assert cfg_path.read_text(encoding="utf-8") == original
 
     @pytest.mark.asyncio
     async def test_put_applies_to_running_consolidator(self, tmp_path: Path) -> None:
@@ -550,9 +624,7 @@ class TestMemorySettings:
         consolidator.reconfigure.assert_called_once_with(reloaded)
 
 
-# ---------------------------------------------------------------------------
 # _redact_memory_field / _get_vector_store
-# ---------------------------------------------------------------------------
 
 
 class TestRedactAndStoreResolution:
@@ -594,12 +666,10 @@ class TestRedactAndStoreResolution:
         assert mem.vector_store is created
 
 
-# ---------------------------------------------------------------------------
 # _get_vector_store_async — the standalone fallback's ``init()`` must
 # never run on the event loop (VectorMemoryStore's caller contract: init is
 # blocking file IO whose Windows DACL writes can block on a network volume
 # round-trip and would freeze the loop).
-# ---------------------------------------------------------------------------
 
 
 class TestGetVectorStoreAsync:
@@ -743,9 +813,7 @@ class TestGetVectorStoreAsync:
         )
 
 
-# ---------------------------------------------------------------------------
 # semantic list / write / delete, events
-# ---------------------------------------------------------------------------
 
 
 class TestSemanticEndpoints:
@@ -917,9 +985,7 @@ class TestSemanticEndpoints:
         store.get_events.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
 # episodic endpoints
-# ---------------------------------------------------------------------------
 
 
 class TestEpisodicEndpoints:

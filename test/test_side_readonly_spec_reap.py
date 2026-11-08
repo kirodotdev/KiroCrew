@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_discovery
 from kiro_crew.dashboard import side_readonly_spec as srs
@@ -121,6 +122,28 @@ def test_a_same_named_base_entry_of_any_kind_keeps_the_spec(agents_dir, tmp_path
     (agents_dir / "ghost.md").write_text("---\nname: ghost\n---\nhi\n", encoding="utf-8")
     assert srs.reap_orphaned_readonly_specs() == []
     assert derived.exists()
+
+
+@requires_symlinks
+def test_a_base_only_a_link_under_another_name_declares_keeps_the_spec(
+    agents_dir, tmp_path, monkeypatch
+):
+    """The publisher reads a linked base by declared name, so the reaper keeps its spec."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    outside = tmp_path / "dotfiles" / "writer.json"
+    outside.parent.mkdir()
+    _write(outside, dict(_BASE, name="ghost"))
+    (agents_dir / "linked-writer.json").symlink_to(outside)
+    published = srs.publish_readonly_spec("ghost")
+    derived = agents_dir / f"{published.name}.json"
+
+    assert srs.reap_orphaned_readonly_specs() == []
+    assert derived.exists()
+
+    (agents_dir / "linked-writer.json").unlink()
+    assert srs.reap_orphaned_readonly_specs() == ["ghost--readonly"]
 
 
 def test_a_spec_a_live_session_runs_under_is_kept(agents_dir):
@@ -332,14 +355,22 @@ def test_an_unreadable_or_protected_checkout_keeps_its_variant(agents_dir, tmp_p
         patch.setattr(os, "scandir", refusing_scandir)
         assert srs.reap_orphaned_readonly_specs() == []
 
+    # Resolved before os.stat is patched: on Python 3.12 ``Path.resolve()`` calls
+    # ``os.stat`` itself, so a refusal that resolves inside the patch recurses until
+    # a RecursionError keeps the variant, never the PermissionError under test.
+    checkout = str(project.resolve())
+    refused: list[str] = []
+
     def refusing_stat(path, *a, **k):
-        if isinstance(path, (str, os.PathLike)) and str(path) == str(project.resolve()):
+        if isinstance(path, (str, os.PathLike)) and str(path) == checkout:
+            refused.append(str(path))
             raise PermissionError("denied")
         return real_stat(path, *a, **k)
 
     with monkeypatch.context() as patch:
         patch.setattr(os, "stat", refusing_stat)
         assert srs.reap_orphaned_readonly_specs() == []
+    assert refused, "the checkout's stat was never refused, so nothing above was tested"
 
     with monkeypatch.context() as patch:
         patch.setattr(agent_discovery, "_project_scope_denied", lambda *a, **k: True)

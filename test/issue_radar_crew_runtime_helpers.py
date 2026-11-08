@@ -14,6 +14,7 @@ from unittest import mock
 import pytest
 from off_loop_helpers import off_loop
 
+from kiro_crew.apps import worker_auto_approve
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.crew_log import projection as crew_log_projection
@@ -41,17 +42,9 @@ def _effectively_trusted(slot: Any) -> bool:
 def _private_sel_root_per_test(sel_private_root):
     """Every test in this module gets its OWN SEL root.
 
-    The trust assertions here transitively depend on a fail-closed critical SEL
-    audit WINNING the chain lock: ``sync_trust`` → ``activate_scoped`` audits
-    before it grants, and on the event-loop thread the lock acquire is a single
-    non-blocking attempt that refuses rather than stall the loop — correct
-    product behaviour that must not be loosened. On a SHARED root that turns
-    every trust assertion into a lock race against writers this module never
-    created (another test's still-flushing events, another xdist worker on the
-    same path). ``sel_private_root`` (rootdir conftest) removes the concurrent
-    writer instead of coping with it: a fresh per-test, per-worker directory
-    that nothing else writes. ``TestSelRootIsolation`` below pins the property
-    differentially.
+    ``sync_trust`` → ``activate_scoped`` audits before it grants, and on the event-loop
+    thread the chain lock is one non-blocking attempt. On a shared root that is a lock
+    race against other tests and xdist workers. ``TestSelRootIsolation`` pins this.
     """
     yield
 
@@ -60,11 +53,19 @@ def _private_sel_root_per_test(sel_private_root):
 def _app_is_on():
     """The grant's predicate includes the APP gate, and the test host has no
     installed app -- so pin it on, the way ``test_watch`` does, and let the tests
-    that exercise a disable flip it themselves."""
-    # ``create=True`` so the pin is inert against a build that predates the gate:
-    # then the falsification run (production reverted, tests kept) reports the
-    # regression tests as FAILED rather than erroring in fixture setup.
-    with mock.patch.object(cr, "is_app_enabled", return_value=True, create=True):
+    that exercise a disable flip it themselves. The worker auto-approve seam reads
+    the same installed record (declared, approved, enabled), so it is pinned on for
+    this app alone; ``test_apps_worker_auto_approve.py`` covers its own reads."""
+    # ``create=True`` so a build without the gate makes tests FAIL rather than error in
+    # fixture setup.
+    with (
+        mock.patch.object(cr, "is_app_enabled", return_value=True, create=True),
+        mock.patch.object(
+            worker_auto_approve,
+            "app_holds_worker_auto_approve",
+            side_effect=lambda app: app == cr.APP_NAME,
+        ),
+    ):
         if hasattr(cr, "_disabling"):
             cr._disabling = False
         yield
@@ -79,9 +80,15 @@ class _FakeSlot:
     """Stand-in for _ChatSlot: records the prompt a turn would have run with."""
 
     def __init__(
-        self, key: str = "crew-c_1", agent: str = "", model: str = "", workspace: str = ""
+        self,
+        key: str = "crew-c_1",
+        agent: str = "",
+        model: str = "",
+        workspace: str = "",
+        app: str = cr.APP_NAME,
     ):
         self.key = key
+        self._app = app
         self.title = ""
         self._titled = False
         self._trust = False
@@ -122,11 +129,8 @@ class _FakeState:
     async def run_background_turn(self, slot: Any, coro: Any) -> Any:
         """The app-owned concurrency cap, recording what was charged against it.
 
-        Present on the fake precisely because the runtime MUST route every crew
-        turn through it: a fake without this method would let a dispatch that calls
-        ``_run_chat`` itself pass unnoticed, which is the defect these tests pin.
-        The real one queues at the cap and abandons the turn after its own wait
-        budget, so ``permit_timeout`` closes the coroutine rather than running it.
+        The runtime MUST route every crew turn through it. The real one abandons a
+        turn after its wait budget, so ``permit_timeout`` closes the coroutine.
         """
         self.capped.append(str(getattr(slot, "key", "")))
         if self.permit_timeout:
@@ -215,23 +219,16 @@ _UNITS: dict[str, str] = {}
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse crew-log isolation of test_issue_radar_crew_runtime.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _isolated_crew_log(monkeypatch):
+def _isolated_crew_log(_floor_monkeypatch):
     """Crew log on, in this test's own data home, and no warm state carried over.
 
-    FUNCTION-scoped: the data home is the rootdir conftest's per-test
-    ``KIROCREW_HOME`` pin, so the crew log a test writes lands in a directory that
-    test alone owns, and ``KIROCREW_CREW_LOG`` is set through ``monkeypatch`` so it
-    is gone the moment the test is. A module-scoped ``patch.dict`` here set both
-    keys for the whole worker between tests: every other suite the worker ran
-    after this file's first test saw a crew log switched on that none of them
-    asked for, and a data home none of them pinned. The seeding helpers below are
-    called from unittest classes that manage their own store roots; a crew's id is
-    minted fresh per test, so ``_UNITS`` is cleared with the rest.
+    FUNCTION-scoped, so ``KIROCREW_CREW_LOG`` (via ``_floor_monkeypatch``) and the
+    per-test ``KIROCREW_HOME`` never leak into later suites on the worker. Crew ids are
+    fresh per test, so ``_UNITS`` is cleared too.
     """
     from kiro_crew.crew_log import emit as crew_log_emit
 
-    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    _floor_monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
     crew_log_emit.reset_caches()
     crew_log_projection.forget_slot_folds()
     _UNITS.clear()
@@ -259,13 +256,8 @@ def _unit_for(crew_id: str) -> str:
 def _item(root, crew_id, number, **patch) -> dict[str, Any]:
     """Seed one work item through the real write path: one entry in the crew's log.
 
-    The write runs on a worker thread (``off_loop``), as every product caller runs
-    it (``asyncio.to_thread``). Most callers here are async tests, so a direct call
-    would run on the event-loop thread, where ``file_lock`` takes ONE attempt and
-    never waits: if the crew log's writer thread is still inside its brief critical
-    section, the read-back after the append is refused and the write raises
-    ``CrewLedgerNotRecorded``. On a worker thread the same contention is an ordinary
-    short wait.
+    Run via ``off_loop``, as product callers use ``asyncio.to_thread``: on the event-loop
+    thread ``file_lock`` takes ONE attempt, so contention raises ``CrewLedgerNotRecorded``.
     """
     return off_loop(
         cs.commit_work_progress,

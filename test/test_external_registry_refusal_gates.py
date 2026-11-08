@@ -2,8 +2,9 @@
 
 An index ``subdirectory`` that escapes the checkout is refused and the refusal never
 writes outside it, the manifest restore re-validates the subdirectory at write time,
-and the containment, identity and admission refusals restore only the restorable
-stale checkouts (``_restorable_stale``).
+the containment, identity and admission refusals restore only the restorable
+stale checkouts (``_restorable_stale``), and an update to a version older than the
+installed one is refused before the build.
 
 ``test_external_registry.py`` holds the index cache, fetch and lookup tests and names
 every sibling; shared fixtures live in ``external_registry_helpers.py``.
@@ -19,9 +20,7 @@ from external_registry_helpers import _catalog_absent  # noqa: F401
 from external_registry_helpers import _explicit_registry_execution_admission  # noqa: F401
 from external_registry_helpers import cache_dir_fixture  # noqa: F401
 
-# ---------------------------------------------------------------------------
 # Untrusted index `subdirectory` path-traversal gate (CWE-22 → RCE).
-# ---------------------------------------------------------------------------
 
 
 class TestRegistrySubdirTraversalGate:
@@ -154,16 +153,10 @@ class TestRegistrySubdirTraversalGate:
 
 
 class TestSubdirectoryEscapeRefusalNeverWritesOutsideCheckout:
-    """Regression: the subdirectory-containment refusal must never join the
-    raw, untrusted ``subdirectory`` onto ``pkg_dir`` for a filesystem write.
+    """A containment refusal never joins the raw ``subdirectory`` onto ``pkg_dir`` to write.
 
-    GPT 5.6 finding: on a containment refusal (``_contained_join`` returns
-    ``None``), the cleanup call built ``manifest_relpath`` from the raw
-    ``subdirectory`` value instead of the safely-contained path. When the
-    checkout PRE-existed, ``_unpoison_rejected_checkout`` writes the manifest
-    snapshot to ``pkg_dir / manifest_relpath`` — and a build step that
-    replaces ``subdirectory`` with a symlink pointing outside the checkout
-    made that write escape the sandbox.
+    On a pre-existing checkout the cleanup writes the manifest snapshot, and a build
+    step can make ``subdirectory`` a symlink out of the checkout.
     """
 
     @pytest.mark.asyncio
@@ -252,16 +245,10 @@ class TestSubdirectoryEscapeRefusalNeverWritesOutsideCheckout:
 
 
 class TestUnpoisonRejectedCheckoutRevalidatesSubdirectoryAtWriteTime:
-    """Regression: every call site that reaches ``_unpoison_rejected_checkout``
-    with ``checkout_preexisted=True`` (identity/admission gates before AND
-    after the install script runs) built ``manifest_relpath`` from the raw
-    ``subdirectory`` and trusted a containment check an EARLIER gate had
-    already made. A build step or ``onInstall`` script — which runs with
-    write access to the checkout between some of those gates — can replace
-    the subdirectory with a symlink escaping the checkout after that earlier
-    check passed, and this cleanup runs unsandboxed as the Kiro Crew process.
-    ``_unpoison_rejected_checkout`` must re-verify containment itself, at the
-    point of the write, rather than relying on every call site to remember.
+    """``_unpoison_rejected_checkout`` re-verifies containment at the point of the write.
+
+    A build step or ``onInstall`` script can swap the subdirectory for an escaping
+    symlink after an earlier gate checked it, and this cleanup runs unsandboxed.
     """
 
     @pytest.mark.asyncio
@@ -324,13 +311,10 @@ class TestUnpoisonRejectedCheckoutRevalidatesSubdirectoryAtWriteTime:
     async def test_manifest_restore_skipped_when_leaf_is_symlinked_inside_subdirectory(
         self, tmp_path
     ):
-        """GPT 5.6 round-5 finding: the old guard checked containment of
-        ``subdirectory`` (the directory) only, never the manifest LEAF
-        (``subdirectory/app.json``). A build step or ``onInstall`` script can
-        leave ``subdirectory`` itself an ordinary, correctly-contained
-        directory while replacing just its ``app.json`` with a symlink
-        escaping ``pkg_dir`` — that passed the old check and the raw write
-        then followed the symlink outside the checkout."""
+        """Containment is checked on the manifest LEAF, not only on ``subdirectory``.
+
+        A script can leave ``subdirectory`` contained while making its ``app.json`` a
+        symlink escaping ``pkg_dir``."""
         from kiro_crew.apps.registry import _unpoison_rejected_checkout
 
         pkg_dir = tmp_path / "app-source"
@@ -366,10 +350,8 @@ class TestUnpoisonRejectedCheckoutRevalidatesSubdirectoryAtWriteTime:
 
     @pytest.mark.asyncio
     async def test_manifest_restore_skipped_when_leaf_is_symlinked_no_subdirectory(self, tmp_path):
-        """Same attack, no ``subdirectory`` at all: the old guard was gated on
-        ``if subdirectory`` and never ran when subdirectory=="", so a
-        symlinked ``app.json`` at the checkout root was never re-checked
-        before the write."""
+        """Same attack with no ``subdirectory``: a symlinked root ``app.json`` is re-checked
+        too, so the guard must not hang on ``if subdirectory``."""
         from kiro_crew.apps.registry import _unpoison_rejected_checkout
 
         pkg_dir = tmp_path / "app-source"
@@ -401,21 +383,10 @@ class TestUnpoisonRejectedCheckoutRevalidatesSubdirectoryAtWriteTime:
 
 
 class TestContainmentRefusalRestoreFromRespectsRestorableStale:
-    """Regression: the subdirectory-containment refusal's cleanup
-    (``_checkout_preexisted=False`` branch) must filter ``restore_from`` by
-    ``_restorable_stale`` the same way every other restoration site in this
-    module does.
+    """The containment refusal's cleanup filters ``restore_from`` by ``_restorable_stale``.
 
-    Round-4 security review finding: the refusal passed the first
-    ``_pending_stale_cleanup`` entry to ``_unpoison_rejected_checkout``
-    unfiltered. When ``_clone_build_app_locked`` forces
-    ``_checkout_preexisted=False`` after an origin-mismatch (non-restorable,
-    different-repository) move-aside + a successful fresh clone/build, and
-    that fresh clone's declared ``subdirectory`` then fails containment, the
-    unfiltered ``restore_from`` renamed the origin-mismatched stale checkout
-    back into ``pkg_dir`` — exactly the "hand the build the tree the gate
-    refused" case ``_restorable_stale`` exists to prevent elsewhere in this
-    file.
+    After an origin-mismatch move-aside and a fresh clone, an unfiltered restore would
+    rename the other repository's checkout back into ``pkg_dir``.
     """
 
     @staticmethod
@@ -490,7 +461,7 @@ class TestContainmentRefusalRestoreFromRespectsRestorableStale:
     async def test_restorable_stale_is_still_restored_on_containment_refusal(self, tmp_path):
         """Control: a restorable (same-repository, branch-drift) pending
         stale IS still restored into pkg_dir on the same containment
-        refusal — the fix must narrow, not remove, this path."""
+        refusal: the filter narrows this path, it does not remove it."""
         from kiro_crew.apps.registry import install_from_registry
 
         app_source = tmp_path / "app-source"
@@ -542,16 +513,12 @@ class TestContainmentRefusalRestoreFromRespectsRestorableStale:
 
 
 class TestIdentityMismatchPreBuildRestoreFromRespectsRestorableStale:
-    """Regression: the pre-build IDENTITY GATE inside ``_clone_build_app_locked``
-    must filter ``restore_from`` through the local ``restorable_stale`` list
-    before handing it to ``_refuse_identity_mismatch`` — the same class of bug
-    fixed at the containment refusal above, just at a different call site.
+    """The pre-build IDENTITY GATE inside ``_clone_build_app_locked`` filters
+    ``restore_from`` through the local ``restorable_stale`` list, as the containment
+    refusal above does.
 
-    Round-4 security review finding (step 10, site 1/3): this gate computed
-    ``restore_from`` as ``pending_cleanup[0] if pending_cleanup else None``
-    with no ``restorable_stale`` filter, so an origin-mismatched move-aside
-    could be restored into ``pkg_dir`` for a repo whose cloned ``app.json``
-    this very gate is refusing for declaring the wrong name.
+    Unfiltered, ``restore_from`` is ``pending_cleanup[0]``, which may be an
+    origin-mismatched checkout.
     """
 
     @staticmethod
@@ -623,11 +590,9 @@ class TestIdentityMismatchPreBuildRestoreFromRespectsRestorableStale:
 
 
 class TestIdentityMismatchPostBuildRestoreFromRespectsRestorableStale:
-    """Regression: the post-build IDENTITY GATE inside ``install_from_registry``
-    (the re-check that runs right after ``_clone_build_app`` returns
-    ``ok=True``) must filter ``restore_from`` through
-    ``build_result["_restorable_stale"]`` before handing it to
-    ``_refuse_identity_mismatch`` — same class of bug, third call site.
+    """The post-build IDENTITY GATE inside ``install_from_registry`` (the re-check after
+    ``_clone_build_app`` returns ``ok=True``) filters ``restore_from`` through
+    ``build_result["_restorable_stale"]`` before ``_refuse_identity_mismatch``.
     """
 
     @staticmethod
@@ -735,10 +700,9 @@ class TestIdentityMismatchPostBuildRestoreFromRespectsRestorableStale:
 
 
 class TestAdmissionGatePreBuildRestoreFromRespectsRestorableStale:
-    """Regression: the pre-build ADMISSION GATE (second pass, on the cloned
-    manifest) inside ``_clone_build_app_locked`` must filter ``restore_from``
-    through the local ``restorable_stale`` list before handing it to
-    ``_unpoison_rejected_checkout`` — same class of bug, second call site.
+    """The pre-build ADMISSION GATE (second pass, on the cloned manifest) inside
+    ``_clone_build_app_locked`` filters ``restore_from`` through the local
+    ``restorable_stale`` list before ``_unpoison_rejected_checkout``.
     """
 
     @staticmethod
@@ -810,3 +774,80 @@ class TestAdmissionGatePreBuildRestoreFromRespectsRestorableStale:
         assert not stale_dir.exists(), "the restorable stale is renamed back into pkg_dir"
         assert app_source.exists()
         assert (app_source / "my-work.txt").read_text(encoding="utf-8") == "important"
+
+
+class TestDowngradeGateRefusesAnOlderVersionBeforeTheBuild:
+    """A registry update whose cloned manifest is older than the installed record is
+    refused with ``would_downgrade`` before the build or ``onInstall`` runs, and the
+    checkout is put back, so the installed version keeps its tree and its commit.
+    """
+
+    @staticmethod
+    def _fake_clone(version):
+        async def _clone(git_url, branch, dest, log_lines, **kwargs):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / "app.json").write_text(
+                json.dumps({"name": "testapp", "version": version}), encoding="utf-8"
+            )
+            return None
+
+        return _clone
+
+    async def _run(self, tmp_path, *, installed, incoming):
+        from kiro_crew.apps.registry import _clone_build_app
+
+        app_source = tmp_path / "app-sources" / "testapp"
+        record = None if installed is None else {"name": "testapp", "version": installed}
+        build = AsyncMock(return_value={"ok": True})
+        log_lines: list[str] = []
+        with (
+            patch("kiro_crew.apps.registry.app_source_dir", return_value=app_source),
+            patch("kiro_crew.apps.registry._git_clone_or_pull", new=self._fake_clone(incoming)),
+            patch("kiro_crew.apps.registry.app_admission_denied", return_value=None),
+            patch("kiro_crew.apps.registry.get_app", return_value=record),
+            patch("kiro_crew.apps.registry._run_app_build", new=build),
+            patch("kiro_crew.apps.registry.sel"),
+        ):
+            result = await _clone_build_app(
+                "https://example.com/app.git", "testapp", log_lines, verb="update"
+            )
+        return result, build, app_source, log_lines
+
+    @pytest.mark.asyncio
+    async def test_an_older_version_is_refused_and_never_built(self, tmp_path):
+        result, build, app_source, log_lines = await self._run(
+            tmp_path, installed="1.0.1", incoming="1.0.0"
+        )
+
+        assert result["ok"] is False
+        assert result["code"] == "would_downgrade"
+        assert "v1.0.0 is older than the installed v1.0.1" in result["error"]
+        build.assert_not_awaited()
+        assert not app_source.exists(), "the refused clone this run made is removed"
+        assert f"Refusing update: {result['error']}" in log_lines
+
+    @pytest.mark.asyncio
+    async def test_a_prerelease_of_the_installed_release_is_older(self, tmp_path):
+        result, build, _, _ = await self._run(tmp_path, installed="1.0.0", incoming="1.0.0-rc.1")
+
+        assert result.get("code") == "would_downgrade"
+        build.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("installed", "incoming"),
+        [
+            ("1.0.0", "1.0.0"),  # a re-sync of the same version
+            ("1.0.0", "1.0.1"),  # an upgrade
+            ("1.0.0-rc.1", "1.0.0"),  # the final build of an installed pre-release
+            (None, "0.1.0"),  # a fresh install has no record to compare
+            ("", "0.1.0"),  # a record with no version is not compared
+            ("latest", "0.1.0"),  # nor one whose version is not a version
+        ],
+    )
+    async def test_anything_not_older_still_builds(self, tmp_path, installed, incoming):
+        result, build, _, _ = await self._run(tmp_path, installed=installed, incoming=incoming)
+
+        assert result["ok"] is True
+        assert "code" not in result
+        build.assert_awaited_once()

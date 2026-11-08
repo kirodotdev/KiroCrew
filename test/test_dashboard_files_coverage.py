@@ -1,8 +1,6 @@
 """Coverage tests for ``kiro_crew.dashboard.handlers.files``.
 
-The handlers in that module were largely exercised only through their happy
-paths (or not at all). This file targets the endpoints and error arms the
-existing suite leaves untouched:
+Targets the endpoints and error arms beyond the happy paths:
 
 * ``/api/file-read`` — the ``resolve=1`` project-relative branch, the
   directory-vs-missing 404 discrimination, the HEAD probe, per-extension
@@ -37,6 +35,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -529,27 +528,10 @@ class TestFileWrite:
     async def test_replace_failure_is_500_and_cleans_up_temp(self, tmp_path, mock_sel, pinned):
         """A failed publish is a 500 that leaves the original intact and no temp.
 
-        Run over BOTH publish branches, because they are different syscalls with
-        different cleanup: with a pinned parent descriptor ``atomic_write``
-        publishes with ``renameat`` (``os.rename`` plus ``src_dir_fd``/
-        ``dst_dir_fd``) and reclaims the temp with ``os.unlink(name, dir_fd=)``,
-        while the by-name floor publishes with ``os.replace`` and unlinks by path.
-
-        The capability probe is FORCED rather than left to the host, and that is
-        load-bearing in both directions. ``pinned_parent_replace_supported()``
-        answers ``os.rename in os.supports_dir_fd``, and a patched ``os.rename``
-        is a mock that is not in that frozenset — so patching the syscall alone
-        would flip the probe to False and quietly exercise the by-name floor
-        twice. It is forced in BOTH modules that ask it, because they ask about
-        different things: the handler's binding decides whether a descriptor is
-        produced at all, and ``atomic_write``'s own decides whether it accepts the
-        one it is handed (it refuses rather than falling back to a by-name write).
-        The ``_mkstemp_at`` spy asserts which stager really ran, so neither case
-        can drift onto the other's branch unnoticed.
-
-        The pinned case SKIPS where the platform has no descriptor-relative walk:
-        forcing a probe cannot conjure ``os.O_DIRECTORY``, so on Windows the
-        handler has no descriptor to pass and the by-name floor is all there is.
+        Runs over the pinned (``renameat``) and by-name (``os.replace``) branches. The
+        probe is FORCED in both modules, since a patched ``os.rename`` is not in
+        ``os.supports_dir_fd``; the ``_mkstemp_at`` spy proves which stager ran. The
+        pinned case skips without ``os.O_DIRECTORY`` (Windows).
         """
         f = tmp_path / "doomed.md"
         f.write_text("original", encoding="utf-8")
@@ -576,13 +558,9 @@ class TestFileWrite:
     @pytest.mark.asyncio
     @_PUBLISH_BRANCHES
     async def test_temp_unlink_failure_still_reports_500(self, tmp_path, mock_sel, pinned):
-        """The cleanup ``os.unlink`` is itself wrapped: its OSError is swallowed
-        so the caller still gets the real 500 rather than an unhandled error.
+        """A failing cleanup ``os.unlink`` is swallowed, so the caller still gets the 500.
 
-        Both branches again: the pinned cleanup passes ``dir_fd=`` and the
-        by-name one does not, so a swallowed failure has to be proven on each.
-        See the sibling above for why the probe is forced in both modules and why
-        the pinned case skips without a descriptor-relative walk.
+        Proven on both branches (pinned passes ``dir_fd=``); see the sibling above.
         """
         f = tmp_path / "twice.md"
         f.write_text("original", encoding="utf-8")
@@ -903,6 +881,40 @@ class TestOutboxList:
                 names = {f["filename"] for f in (await resp.json())["files"]}
         assert names == {"stable.txt"}
 
+    @pytest.mark.asyncio
+    async def test_scan_runs_off_the_event_loop_thread(self, outbox, mock_sel):
+        # The outbox grows with every file an agent sends, and a stat on a
+        # mount that stopped answering blocks for as long as the kernel does:
+        # on the loop that stalls every session, so the scan must not run there.
+        (outbox / "kept.txt").write_text("kept", encoding="utf-8")
+        (outbox / "a_subdir").mkdir()
+        (outbox / ("ghp_" + "b" * 36)).write_text("x", encoding="utf-8")
+        loop_thread = threading.get_ident()
+        scan_threads: set[int] = set()
+        real_iterdir = Path.iterdir
+        real_stat = Path.stat
+
+        def tracked_iterdir(self):
+            if self == outbox:
+                scan_threads.add(threading.get_ident())
+            return real_iterdir(self)
+
+        def tracked_stat(self, *a, **kw):
+            if outbox in (self, self.parent):
+                scan_threads.add(threading.get_ident())
+            return real_stat(self, *a, **kw)
+
+        with (
+            patch.object(Path, "iterdir", tracked_iterdir),
+            patch.object(Path, "stat", tracked_stat),
+        ):
+            async with TestClient(TestServer(self._client_app())) as client:
+                resp = await client.get("/api/outbox")
+                files = (await resp.json())["files"]
+        assert [(f["filename"], f["size"]) for f in files] == [("kept.txt", len("kept"))]
+        assert scan_threads, "the listing never scanned the outbox"
+        assert loop_thread not in scan_threads
+
 
 class TestOutboxDownload:
     """Driven by calling the handler directly: the refusals under test are keyed
@@ -910,10 +922,59 @@ class TestOutboxDownload:
     normalized away by the URL layer before the handler ever sees it."""
 
     @staticmethod
-    def _request(filename: str):
+    def _request(filename: str, query: dict[str, str] | None = None):
         req = MagicMock()
         req.match_info = {"filename": filename}
+        # A bare MagicMock answers headers.get("Range") with a truthy mock.
+        req.headers = {}
+        req.query = query or {}
         return req
+
+    @staticmethod
+    def _write_pdf(outbox) -> bytes:
+        # Not valid UTF-8, so the route takes the binary branch a real PDF takes.
+        body = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n1 0 obj<<>>endobj\n%%EOF\n"
+        (outbox / "report.pdf").write_bytes(body)
+        return body
+
+    @pytest.mark.asyncio
+    async def test_pdf_is_served_inline_by_default(self, outbox, mock_sel):
+        body = self._write_pdf(outbox)
+        resp = await files_mod.api_outbox_download(self._request("report.pdf"))
+        assert resp.status == 200
+        assert resp.headers["Content-Type"] == "application/pdf"
+        assert resp.headers["Content-Disposition"] == "inline; filename*=UTF-8''report.pdf"
+        assert resp.body == body
+
+    @pytest.mark.asyncio
+    async def test_download_flag_serves_an_inline_type_as_attachment(self, outbox, mock_sel):
+        body = self._write_pdf(outbox)
+        resp = await files_mod.api_outbox_download(
+            self._request("report.pdf", {"download": "1"})
+        )
+        assert resp.status == 200
+        assert resp.headers["Content-Type"] == "application/pdf"
+        assert resp.headers["Content-Disposition"] == "attachment; filename*=UTF-8''report.pdf"
+        assert resp.body == body
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["0", "true", "", "yes"])
+    async def test_only_download_1_changes_the_disposition(self, outbox, mock_sel, value):
+        self._write_pdf(outbox)
+        resp = await files_mod.api_outbox_download(
+            self._request("report.pdf", {"download": value})
+        )
+        assert resp.headers["Content-Disposition"].startswith("inline;")
+
+    @pytest.mark.asyncio
+    async def test_download_flag_keeps_every_refusal(self, outbox, mock_sel):
+        (outbox.parent / "escape.txt").write_text("secret", encoding="utf-8")
+        (outbox / "leak.txt").write_text("ghp_" + "b" * 36, encoding="utf-8")
+        flag = {"download": "1"}
+        escaped = await files_mod.api_outbox_download(self._request("../escape.txt", flag))
+        assert escaped.status == 403
+        leaked = await files_mod.api_outbox_download(self._request("leak.txt", flag))
+        assert leaked.status == 400
 
     @pytest.mark.asyncio
     async def test_traversal_out_of_outbox_is_403(self, outbox, mock_sel):
@@ -1276,6 +1337,56 @@ class TestNativePickers:
                 assert await resp.json() == {"path": ""}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("saved", [True, False], ids=["saved", "cancelled"])
+    async def test_screenshot_fs_calls_run_off_the_event_loop_thread(
+        self, tmp_path, mock_sel, monkeypatch, trusted_dialog_bin, saved
+    ):
+        # The screenshots directory lives in the data home, and a mkdir or stat
+        # on a mount that stopped answering blocks for as long as the kernel
+        # does: on the loop that stalls every session, so neither may run there.
+        shots = tmp_path / "screenshots"
+        monkeypatch.setattr(files_mod, "_SCREENSHOT_DIR", shots)
+        loop_thread = threading.get_ident()
+        fs_threads: dict[str, set[int]] = {"mkdir": set(), "exists": set()}
+        real_mkdir = Path.mkdir
+        real_exists = Path.exists
+
+        def tracked_mkdir(self, *a, **kw):
+            if self == shots:
+                fs_threads["mkdir"].add(threading.get_ident())
+            return real_mkdir(self, *a, **kw)
+
+        def tracked_exists(self, *a, **kw):
+            if self.parent == shots:
+                fs_threads["exists"].add(threading.get_ident())
+            return real_exists(self, *a, **kw)
+
+        async def fake_exec(*argv, **kwargs):
+            if saved:
+                Path(argv[2]).write_bytes(b"\x89PNG\r\n\x1a\n")
+            return _FakeProc()
+
+        with (
+            patch("sys.platform", "darwin"),
+            patch("asyncio.create_subprocess_exec", fake_exec),
+            patch.object(Path, "mkdir", tracked_mkdir),
+            patch.object(Path, "exists", tracked_exists),
+        ):
+            async with TestClient(
+                TestServer(_app("POST", "/api/screenshot", files_mod.api_screenshot))
+            ) as client:
+                resp = await client.post("/api/screenshot")
+                assert resp.status == 200
+                path = (await resp.json())["path"]
+        if saved:
+            assert Path(path).parent == shots
+        else:
+            assert path == ""
+        for call, threads in fs_threads.items():
+            assert threads, f"the handler never ran {call} on the screenshots directory"
+            assert loop_thread not in threads, f"{call} ran on the event loop thread"
+
+    @pytest.mark.asyncio
     async def test_screenshot_timeout_returns_504(self, tmp_path, mock_sel, monkeypatch,
                                                   trusted_dialog_bin):
         monkeypatch.setattr(files_mod, "_SCREENSHOT_DIR", tmp_path / "shots")
@@ -1306,13 +1417,9 @@ def cfg_file(tmp_path):
 def config_client_app(cfg_file, mock_sel) -> web.Application:
     """The endpoint under an OWNER caller, so the body-validation paths are reachable.
 
-    ``PUT`` is owner-gated, and the gate reads ``request.app["state"]`` plus the
-    authenticated claims the token middleware normally populates. Without both,
-    every PUT below would answer 403 (or 500 on the missing state) and stop
-    testing what it names. ``owner_id = ""`` with the caller defaulting to the
-    signed local bootstrap subject is the standalone-local shape, matching
-    ``test_agent_config_owner_gate_invariant``; a test that wants a non-owner
-    sends ``X-Test-User``.
+    The owner gate reads ``request.app["state"]`` and the token claims; without both
+    every PUT answers 403. ``owner_id = ""`` is the standalone-local shape; a test that
+    wants a non-owner sends ``X-Test-User``.
     """
 
     class _State:
@@ -1519,6 +1626,7 @@ class TestDashboardConfigPut:
             "mcp_app_panel",
             "side_panel_always_open",
             "side_panel_pin_summary",
+            "new_chat_crew_mode",
         ]
         async with TestClient(TestServer(config_client_app)) as client:
             for field in bool_fields:
@@ -1535,6 +1643,7 @@ class TestDashboardConfigPut:
             "mcp_app_panel": "invalid_mcp_app_panel",
             "side_panel_always_open": "invalid_side_panel_always_open",
             "side_panel_pin_summary": "invalid_side_panel_pin_summary",
+            "new_chat_crew_mode": "invalid_new_chat_crew_mode",
         }
         async with TestClient(TestServer(config_client_app)) as client:
             for field, code in coded.items():
@@ -1565,6 +1674,19 @@ class TestDashboardConfigPut:
         async with TestClient(TestServer(config_client_app)) as client:
             resp = await client.put(
                 "/api/dashboard/config", json={"restore_window_minutes": "soon"}
+            )
+            assert resp.status == 400
+            assert "must be an integer" in (await resp.json())["error"]
+
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    @pytest.mark.asyncio
+    async def test_restore_window_minutes_rejects_infinite(self, config_client_app, raw):
+        """JSON reads ``1e999`` as an infinite float: the same 400, never a 500."""
+        async with TestClient(TestServer(config_client_app)) as client:
+            resp = await client.put(
+                "/api/dashboard/config",
+                data=f'{{"restore_window_minutes": {raw}}}',
+                headers={"Content-Type": "application/json"},
             )
             assert resp.status == 400
             assert "must be an integer" in (await resp.json())["error"]
@@ -1606,6 +1728,7 @@ class TestDashboardConfigPut:
             "topic_tags_enabled": True,
             "side_panel_always_open": True,
             "side_panel_pin_summary": True,
+            "new_chat_crew_mode": True,
         }
         async with TestClient(TestServer(config_client_app)) as client:
             resp = await client.put("/api/dashboard/config", json=payload)

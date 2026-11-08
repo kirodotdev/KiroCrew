@@ -61,7 +61,7 @@ Design of record, including what each later phase moves in here:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 # One name, because one name has a consumer: the dashboard handler that serves
 # ``GET /api/acp-backends``. The record types and the per-id projection stay inside
@@ -82,6 +82,11 @@ from kiro_crew.agent_sdk.backend_install import (
     forget_for_recheck,
     probe_backend,
     probe_backends,
+)
+from kiro_crew.agent_sdk.backends import (
+    CODEX_CLI_ADAPTER_MISSING,
+    CODEX_CLI_OVERRIDE_UNUSABLE,
+    CODEX_CLI_UNRESOLVED,
 )
 from kiro_crew.agent_sdk.capabilities import (
     MODEL_NAMESPACE_ACP,
@@ -106,6 +111,7 @@ from kiro_crew.agent_sdk.drivers.acp import (
     finish_suspended_spawn,
     kas_engine_gap,
     kas_engine_unsupported_reason,
+    kas_engine_verdict,
 )
 from kiro_crew.agent_sdk.host_auth import (
     UNKNOWN_AGENT_AUTH,
@@ -118,6 +124,9 @@ from kiro_crew.agent_sdk.host_auth import (
 from kiro_crew.agent_sdk.native_commands import NativeCommandBatch, run_kiro_native_commands
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from kiro_crew.acp.client_spawn_env import CodexCliResolution
     from kiro_crew.acp.managed_agent_shadow import AgentNameClaim
 
 
@@ -146,6 +155,74 @@ def agents_dir_competing_claim(
     return _claim(agent, agents_dir, own_file)
 
 
+def shell_command_from_tool_params(params: dict) -> str | None:
+    """The shell command the tool gate scans in a tool call's *params*, or None."""
+    from kiro_crew.acp.types import _command_from_tool_params as _command
+
+    return _command(params)
+
+
+def published_stderr_tail(
+    lines: list[str], sep: str, last: int, redact: Callable[[str], str] | None = None
+) -> str:
+    """The *last* of a child's stderr *lines* joined with *sep*, or ``""``, or the
+    withheld marker when ``acp/stderr_tail.py:safe_stderr_tail`` flags ANY of the
+    lines: all of them are judged, so a secret straddling the cut is seen whole."""
+    from kiro_crew.acp.stderr_tail import STDERR_WITHHELD, safe_stderr_tail
+
+    judged = safe_stderr_tail(lines, "\n", redact=redact)
+    return judged if judged in ("", STDERR_WITHHELD) else sep.join(lines[-last:])
+
+
+def resolve_codex_cli() -> CodexCliResolution:
+    """The ``codex`` CLI the codex-acp adapter would run, or why it cannot be found."""
+    # Imported lazily: the ACP spawn module is heavy and imports back into this package.
+    from kiro_crew.acp.client_spawn_env import resolve_codex_cli as _resolve
+
+    return _resolve()
+
+
+def session_start_concurrency() -> int:
+    """The configured ``agent.session_start_concurrency`` snapshot (off-loop caller)."""
+    from kiro_crew.acp.runtime_start import _resolve_session_start_concurrency as _resolve
+
+    return _resolve()
+
+
+def take_batch_guard_refusal(client: Any, request_id: Any) -> str | None:
+    """The batch write guard's reason for the approval *client* just refused, taken once.
+
+    The SDK surface for a consumer that writes its own audit row when
+    ``approve_tool`` returns ``False`` and must tell a guard refusal from a
+    security-floor one. Imported lazily (the ACP package imports back into this
+    one at load time)."""
+    from kiro_crew.acp.batch_guard import take_client_refusal
+
+    return take_client_refusal(client, request_id)
+
+
+def batch_guard_refusal_outcome(reason: str | None) -> tuple[str, dict[str, str] | None]:
+    """The ``(outcome, metadata)`` an audit row should carry for a refused approval:
+    the guard's own labels when *reason* is a kept guard reason, the transport-floor
+    label otherwise."""
+    from kiro_crew.acp.batch_guard import refusal_outcome
+
+    return refusal_outcome(reason)
+
+
+def watch_agent_turns(provider: object, callback: Callable[[], None] | None) -> bool:
+    """Call *callback* when *provider*'s agent starts a turn between prompts; ``None`` stops it.
+
+    False, with nothing registered, when *provider* is not an ACP session or its
+    backend starts no such turn (``AcpProvider.watch_agent_turns``).
+    """
+    from kiro_crew.providers.acp import AcpProvider
+
+    if not isinstance(provider, AcpProvider):
+        return False
+    return provider.watch_agent_turns(callback)
+
+
 TURN_STOP_REASON_CANCELLED = "cancelled"
 TURN_STOP_REASON_END_TURN = "end_turn"
 
@@ -158,6 +235,15 @@ class AgentTurnUsage(Protocol):
 
 
 __all__ = [
+    "published_stderr_tail",
+    "CODEX_CLI_ADAPTER_MISSING",
+    "CODEX_CLI_OVERRIDE_UNUSABLE",
+    "CODEX_CLI_UNRESOLVED",
+    "resolve_codex_cli",
+    "session_start_concurrency",
+    "take_batch_guard_refusal",
+    "batch_guard_refusal_outcome",
+    "watch_agent_turns",
     "tool_row_text",
     "agents_dir_competing_claim",
     "ContextPromptProvider",
@@ -198,6 +284,7 @@ __all__ = [
     "forget_for_recheck",
     "kas_engine_gap",
     "kas_engine_unsupported_reason",
+    "kas_engine_verdict",
     "probe_backend",
     "probe_backends",
     "run_kiro_native_commands",

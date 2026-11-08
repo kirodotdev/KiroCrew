@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -288,7 +287,10 @@ def outbound_redaction_enabled() -> bool:
     if not path.is_file():
         return False
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        # The undecoded bytes let ``json.loads`` detect the encoding, so a switch saved by a
+        # Windows tool as UTF-8 with a byte-order mark or as UTF-16 reads as its value.
+        # Bytes that decode as no JSON encoding raise ``UnicodeDecodeError``, a ``ValueError``.
+        raw = json.loads(path.read_bytes())
     except (ValueError, OSError) as e:
         raise RedactionSwitchUnreadable(f"{path} could not be read as JSON ({e})") from e
     if not isinstance(raw, dict):
@@ -300,8 +302,8 @@ def outbound_redaction_enabled() -> bool:
         # An ABSENT key is not an attempt to set the switch, so the default applies and the
         # default is off -- redaction is opt-IN, and off is the fail-safe direction here
         # (no rewriting means no chance of corrupting the off-host copy; the destination is
-        # owner-only either way). Review asked for this to raise, on the grounds that the
-        # refusal contract covers "anything not exactly true or false". It does not: the
+        # owner-only either way). It does not raise, although the refusal contract may read
+        # as covering "anything not exactly true or false". It does not: the
         # refusal below is for a value that IS set and cannot be interpreted -- `"true"`,
         # `1` -- where the operator plainly tried to set the switch and resolving it either
         # way would override their intent. Nothing was attempted here.
@@ -1246,9 +1248,3 @@ def _stamp_manifest(stage: Path, report: RedactionReport) -> None:
         return
     data["redaction"] = report.as_manifest_entry()
     mf.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-def stage_redacted_copy(source_stage: Path, dest: Path) -> RedactionReport:
-    """Copy *source_stage* to *dest* and redact the copy, never the original."""
-    shutil.copytree(source_stage, dest)
-    return redact_bundle_for_egress(dest)

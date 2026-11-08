@@ -3,8 +3,9 @@
 The minimum-version check, warning redaction, registering and deregistering an app off
 the event loop, starting a backend after an install and stopping one with its outcome
 observed, whether an app may run once installed, restoring an app after a failed update,
-suspending one for session-approval reconsent, the refusal while a startup hook still
-runs, and dropping an app's notification channels.
+re-installing an installed app from the registry, suspending one for session-approval
+reconsent, the refusal while a startup hook still runs, and dropping an app's
+notification channels.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
 as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
@@ -15,7 +16,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from functools import partial
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -25,12 +27,24 @@ from kiro_crew.apps.backend import (
     stop_app_backend,
     unstopped_backend_port,
 )
-from kiro_crew.apps.bridges import RegistrationResult, deregister_app, register_app
+from kiro_crew.apps.bridges import (
+    RegistrationResult,
+    _prune_stale_app_resources,
+    _registration_source,
+    deregister_app,
+    register_app,
+    snapshot_app_agent_configs,
+)
 from kiro_crew.apps.hooks_integration import stop_retained_startup_hooks
 from kiro_crew.apps.manager import get_app
+from kiro_crew.apps.registry import install_from_registry
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
+
+if TYPE_CHECKING:
+    # Annotation-only, so the routes facade does not serve them.
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger("kiro_crew.apps.routes")
 
@@ -73,7 +87,29 @@ def _unregister_notification_channels(request: web.Request, name: str) -> None:
         logger.info("Unregistered %d notification channel(s) for app %s", removed, name)
 
 
-async def _start_backend_after_install(name: str) -> None:
+async def _backend_platform_refusal(name: str, backend: Any) -> str | None:
+    """The reason *name*'s backend was refused on this host, for a route's response.
+
+    ``start_app_backend`` returns None both for "no backend declared" and for a native
+    Windows exec (shell launcher) refusal, which it only logs. After a None this reads
+    the refusal so the enable, install and update responses can carry it as
+    ``backend_refused``. The app still enables: its other parts may work without the
+    backend. Off the loop because it reads the manifest and the entry file.
+    """
+    if backend is not None:
+        return None
+    from kiro_crew.apps.backend import exec_backend_platform_refusal
+
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), exec_backend_platform_refusal, name
+        )
+    except Exception:
+        logger.warning("Backend refusal lookup failed for app %s", name, exc_info=True)
+        return None
+
+
+async def _start_backend_after_install(name: str) -> str | None:
     """Spawn an app's backend after a fresh install/register, if it has one.
 
     ``start_app_backend`` is a no-op for apps that declare no backend and is
@@ -81,16 +117,23 @@ async def _start_backend_after_install(name: str) -> None:
     It blocks on a health-check poll, so run it off the event loop. Failures are
     logged but never abort the install — the backend also gets a retry on the
     next gateway boot via ``start_enabled_app_backends``.
+
+    Returns the platform refusal (see :func:`_backend_platform_refusal`) for the
+    caller's ``backend_refused`` response field, or None.
     """
     try:
-        await asyncio.get_running_loop().run_in_executor(
+        backend = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), start_app_backend, name
         )
     except Exception:
         logger.warning("Backend auto-start after install failed for app %s", name, exc_info=True)
+        return None
+    return await _backend_platform_refusal(name, backend)
 
 
-async def _register_app_off_loop(name: str) -> RegistrationResult:
+async def _register_app_off_loop(
+    name: str, prior_agent_configs: dict[str, dict[str, Any]] | None = None
+) -> RegistrationResult:
     """Run ``register_app`` on the subprocess executor, off the event loop.
 
     ``register_app`` / ``deregister_app`` do real filesystem work under
@@ -100,69 +143,120 @@ async def _register_app_off_loop(name: str) -> RegistrationResult:
     loop they freeze every task including the liveness heartbeat until the
     stall watchdog kills the gateway.  Same offload pattern as ``install_app``
     and ``start_app_backend`` on these handlers.
+
+    ``prior_agent_configs`` is the snapshot an update took before it deregistered the
+    app (:func:`_snapshot_agent_configs_off_loop`); it is passed on to ``register_app``
+    so the user's agent edits survive. An empty one is the plain call every other
+    caller makes.
+    """
+    from kiro_crew.mcp_gateway.overlay_refresh import refresh_after_agent_change
+
+    loop = asyncio.get_running_loop()
+    box: list = []
+    job = (
+        partial(register_app, name, prior_agent_configs)
+        if prior_agent_configs
+        else partial(register_app, name)
+    )
+
+    async def _register() -> bool:
+        # Under the broker's refresh lock: no spec write between check and publish.
+        try:
+            box.append(await loop.run_in_executor(subprocess_executor(), job))
+        except BaseException as exc:
+            box.append(exc)
+            raise
+        return bool(getattr(box[0], "agents", None))
+
+    await refresh_after_agent_change(_register)
+    if not box:  # no broker serves, or the refresh failed before registering
+        box.append(await loop.run_in_executor(subprocess_executor(), job))
+    if isinstance(box[0], BaseException):
+        raise box[0]
+    return box[0]
+
+
+async def _snapshot_agent_configs_off_loop(name: str) -> dict[str, dict[str, Any]]:
+    """Read *name*'s materialized agent configs off the loop, before a deregister.
+
+    ``deregister_app`` deletes them, and they hold the user's own edits (``model``,
+    ``description``...), so an update takes this snapshot first and hands it to
+    :func:`_register_app_off_loop` (see ``snapshot_app_agent_configs``).
     """
     return await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), register_app, name
+        subprocess_executor(), snapshot_app_agent_configs, name
     )
 
 
-async def _deregister_app_off_loop(name: str) -> RegistrationResult:
+async def _deregister_app_off_loop(name: str, *, keep_agents: bool = False) -> RegistrationResult:
     """Run ``deregister_app`` off the event loop (see ``_register_app_off_loop``)."""
-    return await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), deregister_app, name
+    job = (
+        partial(deregister_app, name, keep_agents=True)
+        if keep_agents
+        else partial(deregister_app, name)
     )
+    return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), job)
 
 
 async def _stop_backend_and_observe(name: str) -> tuple[int | None, bool]:
-    """Stop *name*'s backend and report what the probe could establish.
+    """Stop *name*'s backend on uninstall and report what the probe established.
 
-    Returns the port it is STILL listening on, if any, and whether the probe had
-    gateway-owned evidence of which port to look at. Both halves are needed,
-    because ``None`` from the probe means "nothing observed", NOT "definitely
-    stopped": with no recorded port the probe falls back to the declared one in
-    ``app.json``, which sits inside the app directory and is writable by any app
-    trusted to run code. By the time the stop runs, ``onUninstall`` has already
-    executed app-controlled code in that directory, so a fixed-port backend this
-    gateway never tracked could have relabelled its port -- or dropped its
-    ``entryPoint`` -- and the fallback would then probe the wrong port and answer
-    ``None``. Reporting that as a clean stop is the same mistake as believing the
-    stop's boolean, one level further out.
-
-    ``stop_app_backend``'s own return value cannot answer the first half. It is
-    ``False`` both for "there was nothing to stop" (never started, already dead)
-    and for "something is running that I did not stop" (a fixed-port backend never
-    adopted at boot, an adoption with no usable PIDs), and ``True`` only says the
-    process it was TRACKING is gone -- which is silent about a detached worker the
-    app spawned for itself. Those need opposite handling, so the port is OBSERVED
-    rather than the flag believed. Same contract ``teardown_app_runtime`` applies
-    on disable and on trust withdrawal.
-
-    The hint is captured BEFORE the stop because the stop drops both the live
-    tracking entry and the pidfile record, and those are the only gateway-owned
-    evidence of which port this backend actually used.
+    Runs :func:`kiro_crew.apps.teardown.stop_backend_and_observe`, the one
+    spelling of the hint / stop / probe sequence that disable and trust withdrawal
+    share, with this module's bindings of the three backend functions so a patch
+    through ``kiro_crew.apps.routes`` reaches them. On uninstall ``onUninstall``
+    has already run app code in the app directory, so the declared port the probe
+    falls back to may be stale; the second half of the result says whether a
+    gateway-owned hint existed.
     """
-    loop = asyncio.get_running_loop()
-    port_hint = await loop.run_in_executor(subprocess_executor(), recorded_backend_port, name)
-    await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
-    live_port = await loop.run_in_executor(
-        subprocess_executor(), lambda: unstopped_backend_port(name, port_hint=port_hint)
+    from kiro_crew.apps.teardown import stop_backend_and_observe
+
+    return await stop_backend_and_observe(
+        name,
+        recorded=recorded_backend_port,
+        stop=stop_app_backend,
+        probe=unstopped_backend_port,
     )
-    return live_port, port_hint is not None
 
 
-async def _app_may_run_after_install(name: str, *, fresh_install: bool = False) -> bool:
-    """Read whether installed app resources may run after an install or update."""
-
-    def _read_live_state() -> bool:
-        info = get_app(name)
-        if not info or info.get("sessionApprovalConsentPending"):
-            return False
-        return fresh_install or bool(info.get("enabled"))
-
-    return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), _read_live_state)
+def _awaits_consent(info: dict[str, Any] | None) -> bool:
+    """Whether a record is missing or waits for session-approval consent."""
+    return not info or bool(info.get("sessionApprovalConsentPending"))
 
 
-async def _restore_app_after_failed_update(name: str) -> None:
+async def _read_app_record(name: str) -> dict[str, Any] | None:
+    """Read *name*'s live installed record off the event loop."""
+    return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), get_app, name)
+
+
+async def _app_may_run_after_install(name: str) -> bool:
+    """Read whether installed app resources may run after an install or update.
+
+    The live record decides, for a fresh install and an update alike: True only
+    for an app that is enabled and not waiting for session-approval consent.
+    ``register_app`` never consults ``enabled``, so this read is what keeps a
+    disabled app's agents, skills, MCP servers and crons unpublished and its
+    backend stopped. A managed install writes its record disabled, so a fresh
+    install answers False here; its resources are registered by the guarded
+    ``enable_app`` transition that turns it on.
+    """
+    info = await _read_app_record(name)
+    return not _awaits_consent(info) and bool(info and info.get("enabled"))
+
+
+async def _app_may_enable_after_install(name: str) -> bool:
+    """Read whether a just-installed app may be enabled without the user.
+
+    False for a missing record and for one waiting for session-approval consent,
+    which only the user gives from the disclosure surface. The caller still owes
+    the ``enable_app`` transition; this read does not say the app is enabled.
+    """
+    return not _awaits_consent(await _read_app_record(name))
+
+
+async def _restore_app_after_failed_update(
+    name: str, prior_agent_configs: dict[str, dict[str, Any]] | None = None
+) -> str | None:
     """Put an app back the way a failed update found it.
 
     The update stopped the backend and scrubbed the resources before it touched
@@ -177,14 +271,94 @@ async def _restore_app_after_failed_update(name: str) -> None:
     Recovery failures are logged and never escape: the caller still owes the
     failed-update audit line and the 400 body, and the cause of the failed
     update (disk full, no free port) is often what breaks the restore too.
+
+    ``prior_agent_configs`` is the update's pre-deregister snapshot, so the restored
+    agents keep the user's edits.
+
+    Returns the restarted backend's platform refusal for the 400 body's
+    ``backend_refused`` field, or None.
     """
     if not await _app_may_run_after_install(name):
-        return
+        return None
     try:
-        await _register_app_off_loop(name)
+        await _register_app_off_loop(name, prior_agent_configs)
     except Exception:
         logger.warning("Re-register after failed update failed for app %s", name, exc_info=True)
-    await _start_backend_after_install(name)
+    return await _start_backend_after_install(name)
+
+
+async def _reinstall_from_registry(
+    name: str,
+    registry_name: str,
+    log_lines: list[str] | None = None,
+    *,
+    after_failure: Callable[[bool], Awaitable[None]] | None = None,
+) -> dict[str, Any]:
+    """Re-install installed *name* from the registry, taking it down only to replace it.
+
+    ``install_from_registry`` awaits the take-down right before it copies a managed
+    app's new files in, so a refusal or a failed clone, build or ``onInstall`` leaves
+    the app running. The take-down stops the backend (on Windows the copy fails while
+    it holds a file open under the tree), then deregisters all but the agent specs: the
+    app-kit-platform §17 order. The caller's registration rewrites each spec in place,
+    so one it does not rewrite keeps its last good copy; the specs the installed
+    manifest does not declare are pruned here. A failure after the take-down
+    restores the app (:func:`_restore_app_after_failed_update`), or removes the kept
+    specs of one that may not run. An install that makes a gateway-managed app
+    self-managed (``resources: "app"``) skips the take-down, so once the record says so
+    the backend is stopped and the app fully deregistered: it registers its own from
+    then on.
+
+    ``after_failure`` is awaited once for a failed install, with whether the app was
+    taken down, before anything starts the old app again. The update route puts a
+    switched trust grant back there, so the restored local code starts under the
+    grant that covers it.
+    """
+    taken_down = False
+    loop = asyncio.get_running_loop()
+
+    async def _is_self_managed() -> bool:
+        return (await _read_app_record(name) or {}).get("resources") == "app"
+
+    was_self_managed = await _is_self_managed()
+
+    async def _take_down() -> None:
+        nonlocal taken_down
+        taken_down = True
+        await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+        await _deregister_app_off_loop(name, keep_agents=True)
+
+    def _prune_dropped() -> None:
+        manifest, app_root = _registration_source(name)
+        if manifest is not None:
+            _prune_stale_app_resources(name, manifest, app_root)
+
+    result = await install_from_registry(
+        registry_name, log_lines=log_lines, before_replace=_take_down
+    )
+    if not result.get("ok") and after_failure is not None:
+        await after_failure(taken_down)
+    if not taken_down:
+        if not was_self_managed and await _is_self_managed():
+            await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
+            await _deregister_app_off_loop(name)
+        return result
+    try:
+        await loop.run_in_executor(subprocess_executor(), _prune_dropped)
+    except Exception:
+        # The files are in place; the boot reconcile prunes what this missed.
+        logger.warning("Could not prune dropped resources for app %s", name, exc_info=True)
+    if result.get("ok"):
+        return result
+    if not await _app_may_run_after_install(name):
+        # A failure after the copy can leave the record disabled (a new
+        # ``sessionApproval``); the agent specs the take-down kept go with it.
+        await _deregister_app_off_loop(name)
+        return result
+    restore_refused = await _restore_app_after_failed_update(name)
+    if restore_refused:
+        result["backend_refused"] = restore_refused
+    return result
 
 
 async def _suspend_app_for_session_approval_reconsent(

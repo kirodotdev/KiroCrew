@@ -113,7 +113,7 @@ def hard_exit(code: int) -> None:
     os._exit(code)
 
 
-def _disarm_process_alarm_before_exec() -> None:
+def _disarm_process_alarm_before_exec() -> tuple[float, float] | None:
     """Cancel any pending process alarm before ``execv`` replaces this image.
 
     ``execve`` preserves interval timers (``ITIMER_REAL`` included) and resets
@@ -124,8 +124,35 @@ def _disarm_process_alarm_before_exec() -> None:
     no dump and no log line.  No process-wide deadline may outlive the image
     that armed it, so both exec seams cancel it here, with no await between the
     cancel and the exec.  A no-op where the timer does not exist (Windows).
+
+    Returns the ``(value, interval)`` the timer held before the cancel -- what
+    :func:`_rearm_process_alarm_after_failed_exec` restores when the exec fails
+    and returns -- or ``None`` where the timer does not exist (Windows) or the
+    cancel was a no-op.
     """
+    if not process_alarm_available():
+        return None
+    previous = signal.getitimer(signal.ITIMER_REAL)
     arm_process_alarm(0.0)
+    return previous
+
+
+def _rearm_process_alarm_after_failed_exec(previous: tuple[float, float] | None) -> None:
+    """Restore the alarm this image cancelled, after an ``os.execv`` that failed.
+
+    Cancelling ``ITIMER_REAL`` right before ``execv`` is correct only when the
+    exec succeeds -- the successor it would end never armed it.  When ``execv``
+    raises and returns instead, this process keeps running, so a deadline a
+    foreign owner (a test worker's ``pytest-timeout``, an embedding host) had
+    pending is theirs to keep and must be put back exactly as it was: the
+    remaining value AND the repeat interval, which ``arm_process_alarm`` would
+    reset to zero and so turn a periodic alarm into a one-shot.  ``None``
+    (Windows, or nothing was pending) restores nothing.
+    """
+    if previous is None:
+        return
+    value, interval = previous
+    signal.setitimer(signal.ITIMER_REAL, value, interval)
 
 
 def reexec_launcher(launcher: str, args: Sequence[str]) -> None:
@@ -143,8 +170,12 @@ def reexec_launcher(launcher: str, args: Sequence[str]) -> None:
     if IS_WINDOWS:
         argv = [subprocess.list2cmdline([arg]) for arg in argv]
     cancel_wheel_applies_in_flight("exec")
-    _disarm_process_alarm_before_exec()
-    os.execv(launcher, argv)
+    previous_alarm = _disarm_process_alarm_before_exec()
+    try:
+        os.execv(launcher, argv)
+    except OSError:
+        _rearm_process_alarm_after_failed_exec(previous_alarm)
+        raise
 
 
 def reexec_python_module(module: str, args: Sequence[str], executable: str | None = None) -> None:
@@ -178,8 +209,12 @@ def reexec_python_module(module: str, args: Sequence[str], executable: str | Non
     argv = isolated_python_argv("-P", "-m", module, *args, executable=resolved)
     argv[0] = argv0
     cancel_wheel_applies_in_flight("exec")
-    _disarm_process_alarm_before_exec()
-    os.execv(resolved, argv)
+    previous_alarm = _disarm_process_alarm_before_exec()
+    try:
+        os.execv(resolved, argv)
+    except OSError:
+        _rearm_process_alarm_after_failed_exec(previous_alarm)
+        raise
 
 
 def execv_target_available(path: str) -> bool:
@@ -410,6 +445,33 @@ def isolated_python_argv(
     return [resolved, "-s", *args]
 
 
+def _soften_non_unicode_posix_streams() -> None:
+    """Replace, not raise on, glyphs an ASCII-only POSIX stdout/stderr cannot encode.
+
+    The encoding is kept: the terminal really is ASCII, so writing UTF-8 bytes
+    would show mojibake. Only a strict stream that cannot encode the probe changes.
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        encoding = getattr(stream, "encoding", None)
+        # LANG=C gives surrogateescape, which still raises on a real glyph.
+        if stream is None or not encoding:
+            continue
+        if getattr(stream, "errors", None) not in ("strict", "surrogateescape"):
+            continue
+        try:
+            "\u2705".encode(encoding)
+            continue
+        except UnicodeEncodeError:
+            pass
+        except LookupError:
+            continue
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def ensure_utf8_console() -> None:
     """Keep Kiro Crew's process tree UTF-8 and repair current Windows streams.
 
@@ -423,10 +485,13 @@ def ensure_utf8_console() -> None:
     ``PYTHONIOENCODING`` can otherwise override POSIX UTF-8 defaults too.  On
     Windows, best-effort reconfigure (Python 3.7+) the current streams to UTF-8
     with backslashreplace so a stray un-encodable char degrades to an escape
-    instead of crashing. Idempotent and safe to call once at startup.
+    instead of crashing. On POSIX, an ASCII-only stream (``LANG=C`` with UTF-8
+    mode off) keeps its encoding but replaces un-encodable glyphs with ``?``.
+    Idempotent and safe to call once at startup.
     """
     _ensure_utf8_process_environment()
     if not IS_WINDOWS:
+        _soften_non_unicode_posix_streams()
         return
     # Repair the current streams below, and separately make the invariant
     # inheritable by MCP/session children and any later re-exec.  Environment

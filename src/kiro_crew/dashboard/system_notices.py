@@ -23,9 +23,12 @@ SESSION_RELOAD_KIND = "session_reload"
 #: The boundary row a mid-conversation agent, model, reasoning-effort or
 #: workspace switch leaves when it resets the slot's agent session.
 SESSION_SWITCH_KIND = "session_switch"
+#: A Shared Crew notice naming who replaced a preference or lessons
+#: (``shared_crew.memory_changes.NOTICE_KIND``).
+MEMORY_CHANGE_KIND = "memory_change"
 
 SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
-    {"compaction", SESSION_RELOAD_KIND, SESSION_SWITCH_KIND}
+    {"compaction", SESSION_RELOAD_KIND, SESSION_SWITCH_KIND, MEMORY_CHANGE_KIND}
 )
 
 #: What a switch notice names, per switch. The agent switch has no entry: it

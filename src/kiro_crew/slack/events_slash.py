@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.platform import current_context
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -134,17 +135,24 @@ async def _handle_agent(
         await respond("⛔ Only the owner can switch agents.")
         return
 
-    # Direct switch if arg provided
     if args:
         name = args.strip().split()[0]
         if name.lower() in ("off", "default"):
-            await run_config_write(_set_default_agent, "")
+            try:
+                await run_config_write(_set_default_agent, "")
+            except ValueError as e:
+                await respond(f"❌ {e}")
+                return
             await respond("🔄 Reset to default agent.")
             return
         # Resolution reads a spec's content; off the loop, like the listing.
         resolved = await asyncio.to_thread(_resolve_agent_name, name)
         if resolved:
-            await run_config_write(_set_default_agent, resolved)
+            try:
+                await run_config_write(_set_default_agent, resolved)
+            except ValueError as e:
+                await respond(f"❌ {e}")
+                return
             await respond(f"🔄 Switched to agent: *{resolved}*")
             return
         await respond(f"❌ Unknown agent `{name}`. Pick one below:")
@@ -222,8 +230,10 @@ async def _handle_yolo(
     arg = args.strip().lower()
     so = safety_override()
 
+    # ``gateway --approval yolo``'s grant is the dashboard's only, so Slack reads it as off.
+    slack_yolo = so.is_active() and so.is_cli_launch is not True
     if arg == "on":
-        if so.is_active():
+        if slack_yolo:
             await respond(f"🟢 YOLO mode is already *ON* ({describe_grant_lifetime()}).")
             return
         # Off-loop: activate() writes a SEL event and consults the
@@ -273,8 +283,10 @@ async def _handle_yolo(
     elif arg == "renew":
         # renew() audits fail-closed with a synchronous SEL write; keep that
         # filesystem I/O off the event loop.
-        renew_result = await asyncio.to_thread(so.renew, "slack")
-        if renew_result.renewed:
+        renew_result = (
+            None if so.is_cli_launch is True else await asyncio.to_thread(so.renew, "slack")
+        )
+        if renew_result is not None and renew_result.renewed:
             sel().log_api_access(
                 caller=caller_id,
                 operation="slack.yolo_mode",
@@ -288,7 +300,7 @@ async def _handle_yolo(
         else:
             await respond("🔴 YOLO mode is not active. Use `on` to activate first.")
     else:
-        if so.is_active():
+        if slack_yolo:
             await respond(
                 f"YOLO mode is currently *ON 🟢* ({describe_grant_lifetime()}).\nUsage: `/{orch.slack_command} yolo on|off|renew`"
             )
@@ -613,6 +625,10 @@ async def _handle_restart(
             )
     except Exception:
         logger.debug("Dashboard state save before restart failed", exc_info=True)
+    # A planned restart: the turns close_all() cuts resume on the next boot.
+    from kiro_crew.dashboard import restart_resume
+
+    await restart_resume.record_running_slots(orch.dashboard_state)
     try:
         if orch.sessions:
             # Bound the cleanup: a session close can hang waiting on a remote
@@ -667,6 +683,11 @@ async def _handle_restart(
     from kiro_crew.cli import drain_log_queue_before_hard_exit
 
     await drain_log_queue_before_hard_exit()
+    # An owner-asked restart is an orderly exit too: once its teardown is done,
+    # mark the crash dump clean so the next boot does not list it as unclean.
+    from kiro_crew.dashboard import crash_dump_store
+
+    await crash_dump_store.mark_clean_exit()
     # hard_exit cancels an update apply in flight first (its build child
     # killed) rather than leaving it writing a tree after the exit.
     from kiro_crew import platform_compat
@@ -729,7 +750,7 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
             if blocks:
                 body["blocks"] = blocks
             async with aiohttp.ClientSession() as sess:
-                await sess.post(response_url, json=body)
+                await sess.post(response_url, proxy=resolve_proxy(response_url), json=body)
         except Exception:
             logger.debug("slash response_url failed", exc_info=True)
 
@@ -782,12 +803,10 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
         _spawn(_respond("⚠️ Owner not configured."))
         return
 
-    # Parse sub-command and args
     parts = cmd_text.split(maxsplit=1)
     sub_cmd = parts[0].lower() if parts else ""
     args = parts[1] if len(parts) > 1 else ""
 
-    # Registry lookup
     entry = SLASH_REGISTRY.get(sub_cmd)
     if entry is not None:
         handler, _ = entry

@@ -233,7 +233,10 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # entry when a store sits at or beneath the directory. Each is handed the
     # ``os.path.realpath`` computed on the line itself. The walk runs inside
     # ``api_project_tree``'s ``asyncio.to_thread`` worker, never the event loop.
-    "kiro_crew/dashboard/file_api/project_tree.py": 2,
+    # ``_project_tree_ignored_dotfiles`` (``hidden=1``): each git-ignored dot-file
+    # it would add, on the ``os.path.realpath`` computed on the same line, in the
+    # same worker.
+    "kiro_crew/dashboard/file_api/project_tree.py": 3,
     # ``_validate_spec_path``: ``validate_file_path`` has already rejected the
     # candidate without following a UNC/link-laundered target.  This call only
     # recovers the 403 classification for a lexically named sensitive path; an
@@ -263,8 +266,13 @@ _EXPECTED_GATE_CALL_SITES: dict[str, int] = {
     # ``_browse_files_sync``), each handing it the ``os.path.realpath`` computed
     # on the same line from a worker thread; one rebuild of a large index
     # otherwise queued a pool hop per entry ahead of the loop's own checks.
-    # ``test_artifacts_pathres.py`` and ``test_agent_discovery_pathres.py`` pin
-    # the canonical spelling and the thread split for each caller. The store's
+    # ``hooks.safe_read_file(canonical_gate=True)`` asks it about the opened
+    # descriptor's kernel path (``_opened_file_matches_validated_path``) after
+    # ``canonical_path_refusal`` judged the ``os.path.realpath`` it computed
+    # first; the agent snapshot scan is its caller.
+    # ``test_artifacts_pathres.py``, ``test_agent_discovery_pathres.py`` and
+    # ``test_agent_snapshot_scan_pathres.py`` pin the canonical spelling and the
+    # thread split for each caller. The store's
     # root check and ``source_path`` pointers, and the reader module's project
     # root and cache key checks, stay on ``is_sensitive_path``: none of those
     # values is canonicalised first.
@@ -283,13 +291,20 @@ _EXPECTED_CONTAINMENT_CALL_SITES: dict[str, int] = {
 
 
 def _call_sites(gate: str) -> dict[str, int]:
-    """Every call of *gate* under ``src``, by module, counting hand-offs by name."""
+    """Every call of *gate* under ``src``, by module, counting hand-offs by name.
+
+    Both shapes it counts spell *gate* as an identifier -- the called Name or
+    Attribute, or a Name passed as an argument -- so only files whose text holds it
+    are parsed. Parsing every module instead cost ~20 s of CPU per call on a fast
+    host, and one composition test makes two such calls under one timeout.
+    """
     import ast
+
+    from source_corpus import parsed_candidates
 
     src = Path(skills_mod.__file__).resolve().parents[1]
     sites: dict[str, int] = {}
-    for path in sorted(src.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    for path, _source, tree in parsed_candidates(require_any=(gate,), skip_syntax_errors=False):
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -321,10 +336,15 @@ def _containment_claim_sites() -> dict[str, int]:
     """
     import ast
 
+    from source_corpus import parsed_candidates
+
+    # A counted call spells both the callee and the keyword as identifiers, so a
+    # file that lacks either text cannot hold one.
     src = Path(skills_mod.__file__).resolve().parents[1]
     sites: dict[str, int] = {}
-    for path in sorted(src.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+    for path, _source, tree in parsed_candidates(
+        require_all=("path_contains_sensitive", "pre_resolved"), skip_syntax_errors=False
+    ):
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

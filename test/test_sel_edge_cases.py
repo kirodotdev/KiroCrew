@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from datetime import timezone
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,9 @@ from sel_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
     reset_singleton,
 )
 
+from kiro_crew import sel_rotation
 from kiro_crew.sel import SecurityEventLog
+from kiro_crew.testing.clock import ManualClock
 
 # ─────────────────────────────────────────────────────────────────────────
 # Edge-case tests — paths the baseline coverage push doesn't exercise:
@@ -281,16 +284,23 @@ class TestRecentExtras:
         assert len(log.recent()) == 1
 
 
+@pytest.fixture(name="prune_clock")
+def prune_clock_fixture(monkeypatch) -> ManualClock:
+    """Freeze the clock the age prune cuts off at, so "fresh" and "old" are fixed facts."""
+    clock = ManualClock()
+    clock.install(monkeypatch, sel_rotation, time=False, datetime=True)
+    return clock
+
+
 class TestPruneExtras:
-    def test_recomputes_last_hash_after_prune(self, tmp_path: Path) -> None:
+    def test_recomputes_last_hash_after_prune(
+        self, tmp_path: Path, prune_clock: ManualClock
+    ) -> None:
         # When prune removes the chain tail, _last_hash must move back so
         # subsequent log() calls link to the surviving tail, not a phantom.
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         log.log(_make_event(event_id="old", timestamp="2020-01-01T00:00:00+00:00"))
-        from datetime import datetime, timezone
-
-        # flake-ok: pre-existing wall-clock timestamp for a record prune must keep -- moved verbatim; tracked for a de-flake pass
-        now = datetime.now(tz=timezone.utc).isoformat()
+        now = prune_clock.now(tz=timezone.utc).isoformat()
         log.log(_make_event(event_id="fresh", timestamp=now))
         log.prune()
         log.log(_make_event(event_id="newer", timestamp=now))
@@ -298,24 +308,18 @@ class TestPruneExtras:
         assert events[0]["event_id"] == "newer"
         assert events[0]["prev_hash"] == events[1]["entry_hash"]
 
-    def test_prune_removes_malformed_lines(self, tmp_path: Path) -> None:
+    def test_prune_removes_malformed_lines(self, tmp_path: Path, prune_clock: ManualClock) -> None:
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
-        from datetime import datetime, timezone
-
-        # flake-ok: pre-existing wall-clock timestamp for a record prune must keep -- moved verbatim; tracked for a de-flake pass
-        now = datetime.now(tz=timezone.utc).isoformat()
+        now = prune_clock.now(tz=timezone.utc).isoformat()
         log.log(_make_event(timestamp=now))
         path = tmp_path / "security_events.jsonl"
         path.write_text(path.read_text(encoding="utf-8") + "not-json\n")
         # Malformed line is removable (not a structured retainable entry).
         assert log.prune() == 1
 
-    def test_prune_keeps_when_nothing_old(self, tmp_path: Path) -> None:
+    def test_prune_keeps_when_nothing_old(self, tmp_path: Path, prune_clock: ManualClock) -> None:
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
-        from datetime import datetime, timezone
-
-        # flake-ok: pre-existing wall-clock timestamp for a record prune must keep -- moved verbatim; tracked for a de-flake pass
-        now = datetime.now(tz=timezone.utc).isoformat()
+        now = prune_clock.now(tz=timezone.utc).isoformat()
         log.log(_make_event(timestamp=now))
         assert log.prune() == 0
         assert len(log.recent()) == 1
@@ -388,8 +392,8 @@ class TestAsyncWriter:
         for t in threads:
             t.start()
         for t in threads:
-            # flake-ok: pre-existing unbounded join of the four writer threads -- moved verbatim; tracked for a de-flake pass
-            t.join()
+            t.join(timeout=30)
+            assert not t.is_alive(), "writer thread still running after the 30 s lost-run bound"
         total, valid = log.verify_integrity()
         assert total == 100
         assert valid == 100
@@ -526,9 +530,10 @@ class TestCriticalWrite:
         finally:
             mp.undo()
 
-    def test_non_critical_log_still_swallows_write_error(self, tmp_path: Path) -> None:
+    def test_non_critical_log_still_swallows_write_error(self, tmp_path: Path, caplog) -> None:
         """Regression guard: a NON-critical write must remain best-effort
         (swallow + warn), never propagate to the hot-path caller."""
+        caplog.set_level("WARNING", logger="kiro_crew.sel")
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         real_os_open = os.open
 
@@ -543,6 +548,9 @@ class TestCriticalWrite:
             log.log(_make_event(event_id="soft"))  # must NOT raise
         finally:
             mp.undo()
+        # Swallowed, not silent: the dropped write is reported on the SEL logger.
+        warned = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.sel"]
+        assert "SEL append failed for 1 events" in warned
 
     def test_log_api_access_critical_raises(self, tmp_path: Path) -> None:
         """``log_api_access(critical=True)`` propagates a write failure."""

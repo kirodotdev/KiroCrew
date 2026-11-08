@@ -42,6 +42,11 @@ _DYNAMIC = "<dynamic>"
 _REPO = Path(__file__).resolve().parents[1]
 _SRC = _REPO / "src" / "kiro_crew"
 
+# A gate here parses a whole tree, so the module has its own ``tree_scan`` group
+# and takes that group's per-test timeout (``TREE_SCAN_TIMEOUT_SECS`` in conftest.py).
+pytestmark = pytest.mark.xdist_group(name="tree_scan_agent_refactor_create_guard")
+
+
 #: What a ``mock.patch`` callable resolves to, per module that provides one: the
 #: standard library, its PyPI backport, and pytest-mock's ``mocker`` fixture.
 _PATCH_FORMS = {
@@ -164,12 +169,9 @@ def _rank(bound: str | None) -> int:
 class _Scope:
     """What each name in one file means, resolved to a fixed point.
 
-    A name maps to the dotted path of the module or object it is bound to,
-    ``"<local>"`` for a def, class or literal, ``"<unknown>"`` for a value only a
-    call or subscript produced, or is absent when the file never binds it (a
-    parameter, such as a fixture). String constants are kept apart, for resolving
-    patch targets spelled as text. When one name has several bindings, the one
-    closest to the facade wins.
+    A name maps to a dotted path, ``"<local>"`` (def, class, literal), ``"<unknown>"``
+    (call or subscript result), or is absent when unbound (a fixture parameter). String
+    constants are kept apart for text patch targets; the binding nearest the facade wins.
     """
 
     def __init__(self, tree: ast.AST) -> None:

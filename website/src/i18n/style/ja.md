@@ -38,9 +38,12 @@ Authorities cited:
   (`xoxb-`). A `?` opening a URL query and a `!` inside a shell snippet are code,
   not punctuation.
 - **Quotation is `「」`**, nested as `『』`. Do not carry the English `“ ”` over.
-  This applies to an interpolated value too: `「{{cmd}}」を信頼`, never
-  `"{{cmd}}"を信頼` — the same action quoted two ways is visible to one user in
-  one session.
+  This applies to an interpolated value too: `「{{version}}」からアップデート`, never
+  `"{{version}}"からアップデート` — the same value quoted two ways
+  is visible to one user in one session.
+  (Note: trust grant labels render the command in a monospace chip, not in locale
+  quotes. The rule here applies to other interpolated values such as version numbers,
+  file names and option names.)
 - **Keep the dash the English uses.** Where the source has `—`, Japanese carries
   `—`, not an ASCII `-`. A hyphen inside a compound or a Markdown bullet is not a
   dash and is left alone.

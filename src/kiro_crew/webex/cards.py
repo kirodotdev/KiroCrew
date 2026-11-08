@@ -176,7 +176,10 @@ class LiveChoices:
         minted, choices = entry
         if not minted or not nonce or not nonce_eq(minted, nonce):
             return ""
-        if not index.isdigit():
+        # The press is client-supplied, so anything int() would raise on is
+        # refused here: "²".isdigit() is True while int("²") raises, and so does
+        # int() past sys.get_int_max_str_digits(). No slot needs four digits.
+        if not (index.isascii() and index.isdigit()) or len(index) > 3:
             return ""
         position = int(index)
         if not 0 <= position < len(choices):

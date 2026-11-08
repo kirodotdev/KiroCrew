@@ -18,8 +18,12 @@ import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, waitFor, fireEvent, cleanup, act } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
+import { useAppSelector } from '../store'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { setActiveSlot } from '../store/chatSlice'
+import { setActiveId } from '../store/instancesSlice'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
+import type { NavIntent } from '../utils/popoutController'
 import App from '../App'
 import SidePanelLayout, { useSidePanelLeaveGuard } from '../components/SidePanelLayout'
 import { NavigationLeaveGuardProvider } from '../components/NavigationLeaveGuard'
@@ -34,6 +38,8 @@ vi.mock('../pages/LogsPage', () => ({ default: () => null }))
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => null }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => null }))
+vi.mock('../pages/AppDetailPage', () => ({ default: () => <div data-testid="app-detail-page">AppDetailPage</div> }))
+vi.mock('../pages/SettingsPage', () => ({ default: () => <div data-testid="settings-page">SettingsPage</div> }))
 // The page at risk, with the REAL SidePanelLayout inside it: the pane is mounted
 // conditionally on `?tab=`, which is what makes a dropped query string an
 // unmount rather than a no-op. The draft lives in component-local state, as
@@ -70,16 +76,29 @@ vi.mock('../pages/CapabilitiesPage', () => {
   return { default: CapabilitiesPageStub }
 })
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
-// Capture the main-window nav-intent handler App registers, so a test can
-// deliver the intent a popout would forward over the BroadcastChannel.
-const navIntent = vi.hoisted(() => ({ handler: null as ((intent: { path: string }) => void) | null }))
+// Capture both main-window nav-intent handlers App registers, so tests can
+// deliver the intent through the same channel as each popout kind.
+const navIntent = vi.hoisted(() => ({
+  artifactHandler: null as ((intent: NavIntent) => void) | null,
+  appHandler: null as ((intent: NavIntent) => void) | null,
+}))
 vi.mock('../utils/artifactPopout', async (importOriginal) => {
   const real = await importOriginal<typeof import('../utils/artifactPopout')>()
   return {
     ...real,
-    setNavIntentHandler: (fn: (intent: { path: string }) => void) => {
-      navIntent.handler = fn
-      return () => { if (navIntent.handler === fn) navIntent.handler = null }
+    setNavIntentHandler: (fn: (intent: NavIntent) => void) => {
+      navIntent.artifactHandler = fn
+      return () => { if (navIntent.artifactHandler === fn) navIntent.artifactHandler = null }
+    },
+  }
+})
+vi.mock('../utils/appPopout', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../utils/appPopout')>()
+  return {
+    ...real,
+    setNavIntentHandler: (fn: (intent: NavIntent) => void) => {
+      navIntent.appHandler = fn
+      return () => { if (navIntent.appHandler === fn) navIntent.appHandler = null }
     },
   }
 })
@@ -111,9 +130,35 @@ vi.mock('../api/client', () => ({
 }))
 
 /** Provider on the outside, as main.tsx mounts it around the router. */
-const renderDashboard = (route = '/capabilities?tab=drafts') =>
+let navigateInTest: ReturnType<typeof useNavigate>
+const routeCommits: string[] = []
+function RouterProbe() {
+  const location = useLocation()
+  navigateInTest = useNavigate()
+  const route = `${location.pathname}${location.search}`
+  React.useEffect(() => { routeCommits.push(route) }, [location.key, route])
+  return <div data-testid="router-location">{route}</div>
+}
+
+/** Stand-in for ChatPage's active-slot → `?sid=` URL synchronization. */
+function ChatSessionUrlProbe() {
+  const activeSlot = useAppSelector(s => s.chat.activeSlot)
+  const location = useLocation()
+  const navigate = useNavigate()
+  React.useEffect(() => {
+    if (!activeSlot || new URLSearchParams(location.search).get('sid') === activeSlot) return
+    navigate(`/chat?sid=${activeSlot}`)
+  }, [activeSlot, location.search, navigate])
+  return null
+}
+
+const renderDashboard = (route = '/capabilities?tab=drafts', syncChatSessionUrl = false) =>
   renderWithProviders(
-    <NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>,
+    <NavigationLeaveGuardProvider>
+      <RouterProbe />
+      {syncChatSessionUrl && <ChatSessionUrlProbe />}
+      <App />
+    </NavigationLeaveGuardProvider>,
     { route },
   )
 
@@ -199,8 +244,8 @@ describe('popout-forwarded navigation leave guard', () => {
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
-    await waitFor(() => expect(navIntent.handler).not.toBeNull())
-    act(() => { navIntent.handler!({ path: '/schedule' }) })
+    await waitFor(() => expect(navIntent.artifactHandler).not.toBeNull())
+    act(() => { navIntent.artifactHandler!({ path: '/schedule' }) })
     expect(confirmSpy).toHaveBeenCalled()
     expect(draftValue()).toBe('half-written prompt')
   })
@@ -210,9 +255,196 @@ describe('popout-forwarded navigation leave guard', () => {
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
-    await waitFor(() => expect(navIntent.handler).not.toBeNull())
-    act(() => { navIntent.handler!({ path: '/schedule' }) })
+    await waitFor(() => expect(navIntent.artifactHandler).not.toBeNull())
+    act(() => { navIntent.artifactHandler!({ path: '/schedule' }) })
     await waitFor(() => expect(screen.queryByLabelText('draft')).toBeNull())
+  })
+})
+
+describe('popout pending-input navigation hand-off', () => {
+  beforeEach(() => {
+    localStorage.clear(); sessionStorage.clear(); routeCommits.splice(0)
+  })
+  afterEach(() => { vi.restoreAllMocks(); cleanup() })
+
+  it('publishes pendingInput only after the destination query commits', async () => {
+    const { store } = renderDashboard('/capabilities')
+    await waitFor(() => expect(navIntent.appHandler).not.toBeNull())
+    expect(store.getState().chat.pendingInput).toBeNull()
+
+    const publishedAt: string[] = []
+    let previous = store.getState().chat.pendingInput
+    const unsubscribe = store.subscribe(() => {
+      const next = store.getState().chat.pendingInput
+      if (previous === null && next !== null) {
+        publishedAt.push(screen.getByTestId('router-location').textContent ?? '')
+      }
+      previous = next
+    })
+
+    act(() => {
+      navIntent.appHandler!({
+        path: '/chat',
+        search: '?autoSend=1&newSession=1',
+        pendingInput: 'QA prompt',
+      })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('router-location')).toHaveTextContent('/chat?autoSend=1&newSession=1'))
+    await waitFor(() => expect(store.getState().chat.pendingInput).toBe('QA prompt'))
+    expect(publishedAt).toEqual(['/chat?autoSend=1&newSession=1'])
+    unsubscribe()
+  })
+
+  it('drops pendingInput when a second forwarded destination commits first', async () => {
+    const { store } = renderDashboard('/capabilities')
+    await waitFor(() => {
+      expect(navIntent.appHandler).not.toBeNull()
+      expect(navIntent.artifactHandler).not.toBeNull()
+    })
+
+    act(() => {
+      navIntent.appHandler!({
+        path: '/chat',
+        search: '?autoSend=1&newSession=1',
+        pendingInput: 'QA prompt',
+      })
+      navIntent.artifactHandler!({ path: '/chat', slotKey: 'chat-2' })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('router-location')).toHaveTextContent('/chat'))
+    expect(screen.getByTestId('router-location')).toHaveTextContent(/^\/chat$/)
+    expect(store.getState().chat.pendingInput).toBeNull()
+  })
+
+  it('drops pendingInput when a second forwarded intent switches to another session first', async () => {
+    const { store } = renderDashboard('/capabilities')
+    await waitFor(() => {
+      expect(navIntent.appHandler).not.toBeNull()
+      expect(navIntent.artifactHandler).not.toBeNull()
+    })
+
+    act(() => {
+      navIntent.appHandler!({
+        path: '/chat',
+        slotKey: 'chat-1',
+        pendingInput: 'p',
+      })
+      navIntent.artifactHandler!({ path: '/chat', slotKey: 'chat-2' })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('router-location')).toHaveTextContent(/^\/chat$/))
+    expect(store.getState().chat.activeSlot).toBe('chat-2')
+    expect(store.getState().chat.pendingInput).toBeNull()
+  })
+
+  it('publishes session-bound pendingInput after its own slot switch commits', async () => {
+    const { store } = renderDashboard('/capabilities')
+    await waitFor(() => expect(navIntent.appHandler).not.toBeNull())
+
+    act(() => {
+      navIntent.appHandler!({
+        path: '/chat',
+        slotKey: 'chat-1',
+        pendingInput: 'p',
+      })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('router-location')).toHaveTextContent(/^\/chat$/))
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    await waitFor(() => expect(store.getState().chat.pendingInput).toBe('p'))
+  })
+
+  it('publishes pendingInput when the chat page rewrites its own destination in the same commit', async () => {
+    const { store } = renderDashboard('/chat?sid=chat-1', true)
+    await waitFor(() => expect(navIntent.appHandler).not.toBeNull())
+
+    act(() => { store.dispatch(setActiveSlot('chat-1')) })
+    expect(screen.getByTestId('router-location')).toHaveTextContent(/^\/chat\?sid=chat-1$/)
+
+    act(() => {
+      navIntent.appHandler!({
+        path: '/chat',
+        slotKey: 'chat-2',
+        pendingInput: 'p',
+      })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('router-location')).toHaveTextContent(/^\/chat\?sid=chat-2$/))
+    await waitFor(() => expect(store.getState().chat.pendingInput).toBe('p'))
+  })
+
+  it('drops pendingInput when an unrelated navigation commits instead', async () => {
+    const { store } = renderDashboard('/capabilities')
+    await waitFor(() => expect(navIntent.appHandler).not.toBeNull())
+
+    act(() => {
+      navIntent.appHandler!({
+        path: '/chat',
+        search: '?autoSend=1&newSession=1',
+        pendingInput: 'QA prompt',
+      })
+      navigateInTest('/schedule')
+    })
+
+    await waitFor(() => expect(screen.getByTestId('router-location')).toHaveTextContent('/schedule'))
+    expect(routeCommits).not.toContain('/chat?autoSend=1&newSession=1')
+    expect(store.getState().chat.pendingInput).toBeNull()
+  })
+
+  it('drops the prompt on a user navigation and publishes it on ChatPage’s own session rewrite', async () => {
+    const { store } = renderDashboard('/capabilities', true)
+    await waitFor(() => expect(navIntent.appHandler).not.toBeNull())
+
+    const published: Array<[string, string]> = []
+    let previous = store.getState().chat.pendingInput
+    const unsubscribe = store.subscribe(() => {
+      const next = store.getState().chat.pendingInput
+      if (previous === null && next !== null) {
+        published.push([screen.getByTestId('router-location').textContent ?? '', next])
+      }
+      previous = next
+    })
+
+    act(() => {
+      navIntent.appHandler!({
+        path: '/chat',
+        search: '?autoSend=1&newSession=1',
+        pendingInput: 'QA',
+      })
+      navigateInTest('/chat')
+    })
+
+    await waitFor(() => expect(screen.getByTestId('router-location')).toHaveTextContent(/^\/chat$/))
+    expect(published).toEqual([])
+
+    act(() => { store.dispatch(setActiveSlot('chat-1')) })
+    await waitFor(() => expect(screen.getByTestId('router-location')).toHaveTextContent(/^\/chat\?sid=chat-1$/))
+
+    act(() => {
+      navIntent.appHandler!({ path: '/chat', slotKey: 'chat-2', pendingInput: 'p' })
+    })
+
+    await waitFor(() => expect(screen.getByTestId('router-location')).toHaveTextContent(/^\/chat\?sid=chat-2$/))
+    expect(published).toEqual([['/chat?sid=chat-2', 'p']])
+    unsubscribe()
+  })
+
+  it('drops pendingInput when a sidebar session navigation commits first', async () => {
+    const { store } = renderDashboard('/capabilities', true)
+    await waitFor(() => expect(navIntent.appHandler).not.toBeNull())
+
+    act(() => {
+      navIntent.appHandler!({
+        path: '/chat',
+        search: '?autoSend=1&newSession=1',
+        pendingInput: 'QA',
+      })
+      navigateInTest('/chat?sid=chat-9')
+    })
+
+    await waitFor(() => expect(screen.getByTestId('router-location')).toHaveTextContent(/^\/chat\?sid=chat-9$/))
+    expect(store.getState().chat.pendingInput).toBeNull()
   })
 })
 
@@ -255,6 +487,75 @@ describe('native app-menu navigation leave guard', () => {
     expect(draftValue()).toBe('half-written prompt')
   })
 
+  it('brings the local Crew forward over a Remote Crew pane for a session deep link', async () => {
+    const store = createTestStore()
+    store.dispatch(setActiveId('remote-1'))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    expect(store.getState().instances.activeId).toBe('remote-1')
+    act(() => { nativeHandler!('/chat?sid=other') })
+    expect(store.getState().instances.activeId).toBeNull()
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('other'))
+    await waitFor(() => expect(screen.queryByLabelText('draft')).toBeNull())
+  })
+
+  it('shows the leave prompt on the local Crew and keeps the session when declined', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = createTestStore()
+    store.dispatch(setActiveId('remote-1'))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    typeDraft('half-written prompt')
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    const slotBefore = store.getState().chat.activeSlot
+    act(() => { nativeHandler!('/chat?sid=other') })
+    expect(store.getState().instances.activeId).toBeNull()
+    expect(store.getState().chat.activeSlot).toBe(slotBefore)
+    expect(draftValue()).toBe('half-written prompt')
+  })
+
+  it('brings the local Crew forward over a Remote Crew pane for an app detail link', async () => {
+    // `kirocrew://apps/detail/<name>` names an app in the local Crew. A bare
+    // navigate would route the local pane while it stays hidden behind the
+    // Remote Crew, so the link would appear to open nothing.
+    const store = createTestStore()
+    store.dispatch(setActiveId('remote-1'))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><RouterProbe /><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    act(() => { nativeHandler!('/apps/detail/demo-app') })
+    expect(store.getState().instances.activeId).toBeNull()
+    await waitFor(() => expect(screen.getByTestId('router-location').textContent).toBe('/apps/detail/demo-app'))
+  })
+
+  it('shows an app detail link\'s leave prompt on the local Crew and keeps the page when declined', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = createTestStore()
+    store.dispatch(setActiveId('remote-1'))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><RouterProbe /><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    typeDraft('half-written prompt')
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    act(() => { nativeHandler!('/apps/detail/demo-app') })
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(store.getState().instances.activeId).toBeNull()
+    expect(screen.getByTestId('router-location').textContent).toBe('/capabilities?tab=drafts')
+    expect(draftValue()).toBe('half-written prompt')
+  })
+
   it('follows the menu path once the confirm is accepted', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderDashboard()
@@ -263,6 +564,57 @@ describe('native app-menu navigation leave guard', () => {
     await waitFor(() => expect(nativeHandler).not.toBeNull())
     act(() => { nativeHandler!('/schedule') })
     await waitFor(() => expect(screen.queryByLabelText('draft')).toBeNull())
+  })
+
+  // `kirocrew://remote-crew/add` arrives as the route the desktop resolver
+  // built. Its values go to the add form through the store, never into the
+  // dashboard's own URL, and Remote Crew is the local Crew's page.
+  const addLinkRoute = '/settings/instances?host=me%40devbox.example.com&port=5476&name=Dev%20box'
+
+  it('fills in the Remote Crew add form for an add link, on the local Crew, at the bare page', async () => {
+    const store = createTestStore()
+    store.dispatch(setActiveId('remote-1'))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><RouterProbe /><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    act(() => { nativeHandler!(addLinkRoute) })
+    expect(store.getState().instances.activeId).toBeNull()
+    expect(store.getState().instances.crewForms.addLink).toEqual({ host: 'me@devbox.example.com', port: '5476', name: 'Dev box' })
+    expect(store.getState().instances.crewForms.addLinkSeq).toBe(1)
+    await waitFor(() => expect(screen.getByTestId('router-location').textContent).toBe('/settings/instances'))
+  })
+
+  it('leaves the add form and the page alone when an add link\'s leave prompt is declined', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = createTestStore()
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><RouterProbe /><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    typeDraft('half-written prompt')
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    act(() => { nativeHandler!(addLinkRoute) })
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(store.getState().instances.crewForms).toEqual({ add: null, edit: null })
+    expect(screen.getByTestId('router-location').textContent).toBe('/capabilities?tab=drafts')
+    expect(draftValue()).toBe('half-written prompt')
+  })
+
+  it('treats a plain Remote Crew path from the menu as an ordinary navigation', async () => {
+    const store = createTestStore()
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><RouterProbe /><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    act(() => { nativeHandler!('/settings/instances') })
+    await waitFor(() => expect(screen.getByTestId('router-location').textContent).toBe('/settings/instances'))
+    expect(store.getState().instances.crewForms).toEqual({ add: null, edit: null })
   })
 })
 
@@ -295,9 +647,9 @@ describe('popout hand-off to the session already on screen', () => {
   const deliver = (store: ReturnType<typeof createTestStore>, activeSlot: string) => {
     act(() => { store.dispatch(setActiveSlot(activeSlot)) })
     act(() => {
-      navIntent.handler!({
+      navIntent.artifactHandler!({
         path: '/chat', slotKey: 'chat-1', prefill: { slotKey: 'chat-1', prompt: 'ref', append: 'ref' },
-      } as Parameters<NonNullable<typeof navIntent.handler>>[0])
+      } as Parameters<NonNullable<typeof navIntent.artifactHandler>>[0])
     })
   }
 
@@ -306,7 +658,7 @@ describe('popout hand-off to the session already on screen', () => {
   it('stages the append for the composer consumers when /chat shows the target slot', async () => {
     const store = createTestStore()
     renderWithProviders(<NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>, { route: '/chat', store })
-    await waitFor(() => expect(navIntent.handler).not.toBeNull())
+    await waitFor(() => expect(navIntent.artifactHandler).not.toBeNull())
     deliver(store, 'chat-1')
     expect(store.getState().chat.mainComposerAppend).toEqual({ slot: 'chat-1', text: 'ref' })
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
@@ -315,7 +667,7 @@ describe('popout hand-off to the session already on screen', () => {
   it('seeds the prefill instead when /chat shows another slot', async () => {
     const store = createTestStore()
     renderWithProviders(<NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>, { route: '/chat', store })
-    await waitFor(() => expect(navIntent.handler).not.toBeNull())
+    await waitFor(() => expect(navIntent.artifactHandler).not.toBeNull())
     deliver(store, 'chat-2')
     expect(store.getState().chat.mainComposerAppend).toBeNull()
     expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toContain('"prompt":"ref"')

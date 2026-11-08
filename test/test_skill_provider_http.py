@@ -27,6 +27,7 @@ import urllib.request
 from unittest.mock import patch
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.skill_providers import _http
 
@@ -103,14 +104,16 @@ class TestIsInternalUrl:
         "https://example.com/x",
     ]
 
-    @pytest.mark.parametrize("url", ENCODED)
-    def test_encoded_internal_is_blocked(self, url):
+    @pytest.mark.parametrize(
+        "url",
+        [
+            *named_cases("test_encoded_internal_is_blocked", "url", ENCODED),
+            *named_cases("test_plain_internal_is_blocked", "url", PLAIN),
+        ],
+    )
+    def test_an_internal_url_is_blocked(self, url):
         # Pre-fix these raised ValueError in ip_address(), were swallowed, and the
         # URL read as "not internal" -- an SSRF-to-metadata credential read.
-        assert _http.is_internal_url(url) is True
-
-    @pytest.mark.parametrize("url", PLAIN)
-    def test_plain_internal_is_blocked(self, url):
         assert _http.is_internal_url(url) is True
 
     @pytest.mark.parametrize("url", EXTERNAL)
@@ -170,8 +173,16 @@ class TestAuditSsrfBlocked:
 
     def test_a_failing_audit_never_breaks_the_guard(self):
         # Auditing the defense must not become a way to crash the defense.
+        def _audit(url, host, canonical_host):
+            _http.audit_ssrf_blocked("skillsh", url, host, canonical_host)
+
         with patch("kiro_crew.sel.sel", side_effect=RuntimeError("sel down")):
-            _http.audit_ssrf_blocked("skillsh", "http://127.0.0.1/", "127.0.0.1", "127.0.0.1")
+            assert (
+                _http.audit_ssrf_blocked("skillsh", "http://127.0.0.1/", "127.0.0.1", "127.0.0.1")
+                is None
+            )
+            assert _http.is_internal_url("http://127.0.0.1/", audit=_audit) is True
+            assert _http.is_internal_url("http://0xa9fea9fe/", audit=_audit) is True
 
 
 # ---- the redirect allowlist -----------------------------------------------

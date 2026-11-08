@@ -21,6 +21,13 @@ async def _owner_identity(request, handler):
     return await handler(request)
 
 
+def _windows_exec_close_ack(loader) -> dict:
+    """The ack a Windows load with the exec key absent records once (windows_exec_adoption)."""
+    if loader.unsandboxed_exec_platform_default():
+        return {"agent.sandbox_allow_unsandboxed_exec": False}
+    return {}
+
+
 def _make_app() -> web.Application:
     from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
 
@@ -38,15 +45,9 @@ def _make_app_with_state(
 ) -> tuple[web.Application, MagicMock | None]:
     """Build a PATCH-handler app with a stubbed ``state.subagents``.
 
-    Returns the app and the subagents mock so tests can assert call args.
-    The ``agent.completion_keep`` / ``agent.completion_keep_chars`` PATCH
-    paths consult ``request.app["state"].subagents`` to hot-reload the
-    cached values; without the stub the handler raises ``KeyError``.
-
-    The default builds a fresh ``MagicMock``. Pass ``subagents=None``
-    explicitly to exercise the gateway-during-startup case where the
-    manager is not yet wired up. The ``_UNSET`` sentinel distinguishes
-    that from the default so an explicit ``None`` is preserved end-to-end.
+    The ``agent.completion_keep*`` paths read ``request.app["state"].subagents``, so
+    without the stub the handler raises ``KeyError``. Pass ``subagents=None`` for the
+    during-startup case; the ``_UNSET`` sentinel keeps that apart from the default.
     """
     app = _make_app()
     if subagents is _UNSET:
@@ -86,16 +87,10 @@ async def _patch(client, path, value):
 def _arm(app: web.Application, state: SimpleNamespace) -> None:
     """Wire the server's real config appliers and the watcher onto a PATCH app.
 
-    A PATCH applies none of its side effects in the handler: it writes, then
-    runs one watcher cycle, and the registered appliers -- the same ones
-    ``server._register_config_watch`` arms at boot -- do the work. Tests that pin
-    "a PATCH takes effect without a restart" therefore arm exactly that
-    registration against a stubbed state, so they exercise the real path a CLI
-    or ``$EDITOR`` write also takes. The gateway starts the watcher post-bind
-    (``_kick_config_watch``, never an ``on_startup`` hook, per
-    ``no-new-work-on-gateway-boot-path``); this harness has no bind step, so it
-    awaits the same ``start`` from an ``on_startup`` hook of its own. Cleanup
-    stops it; the suite-wide autouse fixture then drops the process watcher.
+    A PATCH writes and runs one watcher cycle; the appliers
+    ``server._register_config_watch`` arms do the work, as for a CLI write. The gateway
+    starts the watcher post-bind (``_kick_config_watch``); with no bind step here it
+    starts from an ``on_startup`` hook.
     """
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
@@ -610,6 +605,20 @@ class TestPatchGeneral:
                 headers={"Content-Type": "application/json"},
             )
             assert resp.status == 400
+
+    @pytest.mark.parametrize("raw", ["1e999", "-1e999"])
+    @pytest.mark.asyncio
+    async def test_infinite_int_value_returns_400(self, tmp_config, raw) -> None:
+        """JSON reads ``1e999`` as an infinite float: the integer 400, never a 500."""
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew",
+                data=f'{{"path": "session.timeout_secs", "value": {raw}}}',
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["error"] == "must be an integer"
+        assert json.loads(tmp_config.read_text())["session"]["timeout_secs"] == 3600
 
 
 # ── Enum validator ───────────────────────────────────────────────────────
@@ -1619,11 +1628,8 @@ class TestDefaultReasoningEffortPatch:
 class TestTelemetryEnabledPatch:
     """The Telemetry panel's switch: writable, and live without a restart.
 
-    The recorder is built once per process and memoized, so a write that only
-    lands in config.json would leave the panel reporting "on" while every metric
-    call site stayed a no-op. Dropping the cached recorder is what makes the
-    switch mean something, which is why it is pinned rather than left to the
-    next restart.
+    The recorder is memoized, so the write must drop it or every metric call stays a
+    no-op until restart.
     """
 
     @pytest.mark.asyncio
@@ -1697,12 +1703,9 @@ class TestTelemetryEnabledPatch:
 class TestTelemetryEnabledEgressGate:
     """The switch promises local-only, so it must not reach a state that exports.
 
-    `_build_recorder` attaches an OTLP reader for every destination the active
-    telemetry provider supplies, so on a host where egress is configured — through
-    `telemetry.otlp_endpoint` for the default provider, or an edition's own
-    collector — enabling collection from the dashboard would start network egress
-    under a control whose own description says "Nothing is exported". Enabling is
-    refused there; disabling always composes.
+    `_build_recorder` attaches an OTLP reader per provider destination, so where egress
+    is configured (`telemetry.otlp_endpoint` or an edition collector) enabling is
+    refused; disabling always works.
     """
 
     def _seed_endpoint(self, cfg_path, endpoint: str) -> None:
@@ -1829,12 +1832,8 @@ class TestTelemetryEnabledEgressGate:
 class TestUpdateNudgeKeys:
     """The proactive update popup's per-version snooze/skip persistence.
 
-    ONE atomic dict write: the three fields form a single verdict, so
-    per-field writes would open both a crash window (an old verdict paired
-    with a new version) and a two-client interleave assembling a verdict
-    nobody expressed. The strict dict spec (all keys required, no extras,
-    per-key scalar validation) is what keeps this from becoming a generic
-    JSON passthrough.
+    One atomic dict write, since the three fields form one verdict. The strict spec
+    (all keys required, no extras) keeps it from being a generic JSON passthrough.
     """
 
     _REC = {"version": "0.5.0", "snoozed_until": 1756000000.0, "skipped": True}
@@ -1940,7 +1939,10 @@ class TestChatTurnTimeout:
         async with TestClient(TestServer(_make_app())) as c:
             resp = await _patch(c, "agent.chat_turn_timeout_secs", 7200)
             assert resp.status == 200, await resp.text()
-        assert SD.acked_superseded() == {"agent.chat_turn_timeout_secs": 7200}
+        assert SD.acked_superseded() == {
+            "agent.chat_turn_timeout_secs": 7200,
+            **_windows_exec_close_ack(L),
+        }
         assert L.KiroCrewConfig.load().agent.chat_turn_timeout_secs == 7200
         stored = json.loads(tmp_config.read_text(encoding="utf-8"))
         assert stored["agent"]["chat_turn_timeout_secs"] == 7200
@@ -1953,7 +1955,7 @@ class TestChatTurnTimeout:
         monkeypatch.setattr(L, "config_dir", lambda: tmp_config.parent)
         async with TestClient(TestServer(_make_app())) as c:
             assert (await _patch(c, "agent.chat_turn_timeout_secs", 10800)).status == 200
-        assert SD.acked_superseded() == {}
+        assert SD.acked_superseded() == _windows_exec_close_ack(L)
 
     @pytest.mark.asyncio
     async def test_a_refused_ack_aborts_the_write(self, tmp_config, monkeypatch) -> None:

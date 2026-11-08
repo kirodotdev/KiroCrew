@@ -111,7 +111,9 @@ class ScriptedProvider:
     is raised at its position, so a script can fail mid-stream after text has
     landed. When the scripts run out every further prompt answers ``"ok"``.
     ``transient`` is what ``last_compaction_transient`` reports; ``session_id``
-    is what the crew-log emitter reads as the ACP session id.
+    is what the crew-log emitter reads as the ACP session id. ``toolless`` is what
+    the client's ``effective_spec_declares_zero_tools`` answers; each call's
+    ``authored_before_spawn`` lands in ``spec_reads``.
     """
 
     def __init__(
@@ -122,13 +124,20 @@ class ScriptedProvider:
         session_id: str = "",
         cwd: str = "",
         name: str = "provider",
+        toolless: bool = True,
     ) -> None:
         self.turns = [list(t) for t in turns]
         self.prompts: list[str] = []
         self.approved: list[Any] = []
         self.rejected: list[Any] = []
         self.steered: list[str] = []
-        self.client = SimpleNamespace(backend=backend)
+        self.spec_reads: list[bool] = []
+
+        def _confirm(*, authored_before_spawn: bool = False) -> bool:
+            self.spec_reads.append(authored_before_spawn)
+            return toolless
+
+        self.client = SimpleNamespace(backend=backend, effective_spec_declares_zero_tools=_confirm)
         self.last_compaction_transient = transient
         self.session_id = session_id
         self.served_model = ""

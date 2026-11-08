@@ -656,13 +656,34 @@ def test_a_live_tenant_stops_the_teardown_from_committing() -> None:
     """
     ro._reset_for_tests()
     runtime = _FakeSharedRuntime(pid=6412)
-    token = ro.tenancy_epoch(runtime)
     holding = ro.claim_runtime_tenancy(runtime, holder="subagent:mid-turn")
+    # The epoch is read AFTER the claim, so only the live tenant can refuse here.
+    token = ro.tenancy_epoch(runtime)
     assert ro.commit_runtime_teardown(runtime, token) is False
-    ro.release_runtime_tenancy(holding)
+    assert (
+        ro.release_runtime_tenancy(holding) is runtime
+    ), "the refused teardown is owed, so the last tenant to leave is handed the runtime"
     sibling = ro.claim_runtime_tenancy(runtime, holder="subagent:next")
     assert sibling is not None, "a refused commit leaves no barrier behind"
-    ro.release_runtime_tenancy(sibling)
+    assert (
+        ro.release_runtime_tenancy(sibling) is None
+    ), "the debt was settled by the hand-back; a later tenant owes nothing"
+    ro._reset_for_tests()
+
+
+def test_a_teardown_refused_by_a_live_tenant_is_handed_back_by_the_last_one() -> None:
+    """The killer has already dropped the provider from every registry when its
+    commit is refused, so nothing else will revisit the runtime. The refusal is
+    recorded on every live claim, and only the LAST one to leave is handed it.
+    """
+    ro._reset_for_tests()
+    runtime = _FakeSharedRuntime(pid=6413)
+    first = ro.claim_runtime_tenancy(runtime, holder="subagent:a")
+    second = ro.claim_runtime_tenancy(runtime, holder="subagent:b")
+    token = ro.tenancy_epoch(runtime)
+    assert ro.commit_runtime_teardown(runtime, token) is False
+    assert ro.release_runtime_tenancy(first) is None, "a sibling tenant is still on it"
+    assert ro.release_runtime_tenancy(second) is runtime, "the last tenant performs the teardown"
     ro._reset_for_tests()
 
 
@@ -865,6 +886,44 @@ async def test_a_turn_on_a_committed_teardown_is_told_the_process_is_gone() -> N
 
 
 @pytest.mark.asyncio
+async def test_a_claim_that_cannot_be_recorded_ends_the_turn(monkeypatch, caplog) -> None:
+    """The tenancy is the only record admitting this session's key on a shared pid.
+
+    A turn that carried on without it would have every stub call refused
+    ``peer_session_unbound``; it ends instead, with a logged reason, as the same
+    death callers already answer by getting another runtime.
+    """
+    import logging
+
+    from kiro_crew.acp import session_provider as sp
+    from kiro_crew.acp.client import AcpProcessDied
+
+    ro._reset_for_tests()
+    runtime = _FakeSharedRuntime(pid=6207)
+    provider = _shared_provider(runtime, owns=False)
+
+    def _broken(*_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("tenancy table unavailable")
+
+    monkeypatch.setattr(sp, "claim_runtime_tenancy", _broken)
+    with caplog.at_level(logging.WARNING, logger=sp.logger.name):
+        with pytest.raises(AcpProcessDied, match="tenancy claim failed"):
+            provider._claim_shared_turn()  # type: ignore[attr-defined]
+    assert any("could not be recorded" in r.getMessage() for r in caplog.records)
+    assert ro.RUNTIME_TENANCY.claims_on(runtime) == 0
+    ro._reset_for_tests()
+
+
+def test_a_provider_without_a_runtime_stays_inert() -> None:
+    """Assembled without ``__init__`` (as the translation unit tests do): nothing to
+    claim, so no error is raised into the caller."""
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    provider = object.__new__(AcpSessionProvider)
+    assert provider._claim_shared_turn() is None  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
 async def test_a_subagent_leaves_a_live_principals_runtime_running() -> None:
     """The ordinary end of a turn must not kill the process the parent is on."""
     ro._reset_for_tests()
@@ -1060,3 +1119,58 @@ def test_an_unspawned_mint_client_claims_nothing_and_keeps_polling() -> None:
     assert _claim_mint_pid(_FakeMintClient(pid=0), holdings) is False  # type: ignore[arg-type]
     assert not holdings
     ro._reset_for_tests()
+
+
+def test_the_provider_killer_commits_once_the_turn_that_came_and_went_has_left() -> None:
+    """``_sync_kill_provider`` has already dropped its provider from every registry,
+    so a refusal on the epoch alone has no later drain to revisit it. With no
+    tenant on the pid, the killer's second ask against the current epoch commits.
+    """
+    from kiro_crew.session_pid_provider_kill import _commit_teardown
+
+    ro._reset_for_tests()
+    runtime = _FakeSharedRuntime(pid=6420)
+    try:
+        token = ro.tenancy_epoch(runtime)
+        ro.release_runtime_tenancy(ro.claim_runtime_tenancy(runtime, holder="subagent:brief"))
+        assert ro.commit_runtime_teardown(runtime, token) is False, "the gate's own rule holds"
+        assert _commit_teardown(6420, token) is True, "an idle orphan is torn down"
+    finally:
+        ro.release_runtime_teardown(6420)
+        ro._reset_for_tests()
+
+
+def test_the_provider_killer_still_yields_to_a_tenant_on_its_second_ask() -> None:
+    """The second ask is no bypass: a turn on the pid now refuses it, and the debt
+    lands on that claim so its release hands the runtime back."""
+    from kiro_crew.session_pid_provider_kill import _commit_teardown
+
+    ro._reset_for_tests()
+    runtime = _FakeSharedRuntime(pid=6421)
+    try:
+        token = ro.tenancy_epoch(runtime)
+        holding = ro.claim_runtime_tenancy(runtime, holder="subagent:mid-turn")
+        assert _commit_teardown(6421, token) is False
+        assert ro.release_runtime_tenancy(holding) is runtime, "the last tenant is handed it"
+    finally:
+        ro._reset_for_tests()
+
+
+def test_an_idle_only_commit_ignores_the_epoch_but_never_a_live_tenant() -> None:
+    """The killer's second ask must not be refusable by yet another turn that came
+    and went: ``idle_only`` checks live claims and raises the barrier under one
+    lock, with no epoch read in between."""
+    ro._reset_for_tests()
+    runtime = _FakeSharedRuntime(pid=6422)
+    try:
+        token = ro.tenancy_epoch(runtime)
+        for holder in ("subagent:one", "subagent:two"):
+            ro.release_runtime_tenancy(ro.claim_runtime_tenancy(runtime, holder=holder))
+        assert ro.commit_runtime_teardown(runtime, token) is False, "the epoch rule holds"
+        holding = ro.claim_runtime_tenancy(runtime, holder="subagent:live")
+        assert ro.commit_runtime_teardown(runtime, token, idle_only=True) is False
+        assert ro.release_runtime_tenancy(holding) is runtime, "the refusal left its debt"
+        assert ro.commit_runtime_teardown(runtime, token, idle_only=True) is True
+    finally:
+        ro.release_runtime_teardown(runtime)
+        ro._reset_for_tests()

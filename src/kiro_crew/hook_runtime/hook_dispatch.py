@@ -9,16 +9,24 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Sequence
+import os
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
+        _TOKEN_ALLOWED,
         HOOK_EVENT_PRE_TOOL_USE,
+        HOOK_EVENT_SESSION_LANE_CHANGED,
         ScriptHook,
         ScriptHookStore,
+        _context_matches,
         _global_script_hook_store,
+        _lane_dispatch_tasks,
         logger,
+        read_bytes_with_retry,
+        run_script_hook,
+        sel,
         webhooks,
     )
 
@@ -50,6 +58,16 @@ def persisted_hook_store() -> ScriptHookStore:
     that one snapshot is both validated and loaded, so an edit landing mid-read
     cannot pair one version's shape check with another version's hooks. Blocking
     I/O: an event-loop caller runs it in a worker thread.
+
+    The read goes through :func:`kiro_crew.atomic_write.read_bytes_with_retry`,
+    the helper the other saved-state readers use: on Windows a momentary
+    share-deny hold on ``hooks.json`` (a foreign editor save, an AV or indexer
+    scan) raises ``PermissionError``, and the retry rides out that window. The
+    helper retries only ``PermissionError`` and only on Windows, so POSIX, a
+    missing file and a parse failure raise straight through, and a hold that
+    outlasts its budget raises so the gate fails closed. Both callers reach here
+    off the event loop (via ``asyncio.to_thread``), so the retry runs in a worker
+    thread and never sleeps the gateway loop.
     """
     store = get_global_hook_store()
     if store is not None:
@@ -58,7 +76,7 @@ def persisted_hook_store() -> ScriptHookStore:
     if not store._path.exists():
         return store
     with webhooks.locked(store._path):
-        data = json.loads(store._path.read_text(encoding="utf-8"))
+        data = json.loads(read_bytes_with_retry(store._path))
     hooks_data = data.get("hooks", []) if isinstance(data, dict) else None
     if not isinstance(hooks_data, list):
         raise ValueError(f"{store._path} does not hold a hooks list")
@@ -75,6 +93,7 @@ async def fire_tool_hooks(
     subagent_id: str | None = None,
     parent_session_key: str | None = None,
     agent_role: str | None = None,
+    session_model: str | None = None,
 ) -> None:
     """Fire PreToolUse hooks for an EVENT_TOOL_CALL event.
 
@@ -91,6 +110,7 @@ async def fire_tool_hooks(
     tool calls to the specific agent/session that fired them. Callers in
     parent contexts (dashboard chat, generic LLM helpers) leave them as
     ``None``; subagent and taskrunner callers pass real values.
+    ``session_model`` is forwarded the same way (``ScriptHookStore.fire``).
     """
     if hook_store is None:
         return
@@ -111,6 +131,7 @@ async def fire_tool_hooks(
             subagent_id=subagent_id,
             parent_session_key=parent_session_key,
             agent_role=agent_role,
+            session_model=session_model,
         )
     except Exception:
         logger.debug("PreToolUse hook error", exc_info=True)
@@ -130,18 +151,37 @@ def pre_tool_match_names(
     ``@server/tool`` and ``mcp__server__tool`` forms built from the trusted
     *mcp_server*, and the names the harness's own *harness_tool_id* stands for
     (:func:`kiro_crew.agent_sdk.spec_hooks.spec_hook_tool_names`). *spec* is the
-    same without the title, for a spec hook, whose matcher names tools; ``None``
-    when the harness stated no id, so a spec hook keeps matching the title.
+    same without the title, for a spec hook, whose matcher names tools, plus the
+    names kiro-cli's other matcher kinds meet (``@builtin``, ``@builtin/<name>``,
+    ``@server``, ``@mcp`` and the tool tags,
+    :func:`kiro_crew.agent_sdk.spec_hooks.spec_hook_kind_names`); ``None`` when the
+    harness stated no id, so a spec hook keeps matching the title.
     """
     # circular import: spec_hooks imports kiro_crew.hooks at load time.
-    from kiro_crew.agent_sdk.spec_hooks import spec_hook_tool_names
+    from kiro_crew.agent_sdk.spec_hooks import (
+        envelope_named_tool_id,
+        spec_hook_kind_names,
+        spec_hook_tool_names,
+    )
 
     harness_names = spec_hook_tool_names(harness_tool_id) or ()
     trusted = [*harness_names, tool_identity]
+    if mcp_server and tool_identity and envelope_named_tool_id(harness_tool_id):
+        # On a harness whose ids come only from Crew's gate envelope, an MCP
+        # server's tool is named by its MCP forms alone: its bare name
+        # (``web_fetch`` on ``@docs/web_fetch``) is not the built-in a spec hook
+        # written for ``web_fetch`` means.
+        trusted = [*harness_names]
     if mcp_server and tool_identity:
         trusted += [f"@{mcp_server}/{tool_identity}", f"mcp__{mcp_server}__{tool_identity}"]
     every = tuple(dict.fromkeys(n for n in [title, *trusted] if n))
-    spec = tuple(dict.fromkeys(n for n in trusted if n)) if harness_names else None
+    spec: tuple[str, ...] | None = None
+    if harness_names:
+        named = [n for n in trusted if n]
+        # kiro-cli's other matcher kinds (``@builtin``, ``@server``, the tags) go
+        # last: the first name is the one a spec hook's stdin reports.
+        named += spec_hook_kind_names(named, mcp_server=mcp_server)
+        spec = tuple(dict.fromkeys(named))
     return every, spec
 
 
@@ -158,18 +198,19 @@ async def permission_pre_tool_block(
     subagent_id: str | None = None,
     parent_session_key: str | None = None,
     agent_role: str | None = None,
+    acp_session_id: str | None = None,
 ) -> str | None:
     """Run the PreToolUse hooks on a subagent or task-runner permission request.
 
-    For a turn whose backend never receives the agent spec's ``hooks`` (see
-    :func:`kiro_crew.agent_sdk.spec_hooks.turn_spec_hooks`): on that backend the
-    projection turns every call a PreToolUse hook covers into a permission
-    request, so this is where the hooks gate. The Hooks page's hooks and the
-    spec's run together, as on the chat turn loop. Such a turn skips the
-    informational tool-call fire: KAS sends a call's tool-call frame BEFORE its
-    permission request, and every call a PreToolUse hook covers reaches this gate,
-    so firing there too would run each hook twice. Returns why the call is
-    blocked, or ``None``.
+    The Hooks page's hooks run on every backend, as on the chat turn loop.
+    *spec_hooks* are the agent spec's own, for a turn whose backend never receives
+    them (see :func:`kiro_crew.agent_sdk.spec_hooks.turn_spec_hooks`), and empty
+    where the harness runs them itself. On a backend that never receives them the
+    projection turns every call a PreToolUse hook covers into a permission request,
+    so the turn skips the informational tool-call fire: KAS sends a call's tool-call
+    frame BEFORE its permission request, and every call a PreToolUse hook covers
+    reaches this gate, so firing there too would run each hook twice. Returns why
+    the call is blocked, or ``None``.
 
     A hook matcher is compared with every name the call is known by: its title
     (what the chat turn loop matches), its canonical *tool_identity*
@@ -182,11 +223,14 @@ async def permission_pre_tool_block(
     hook meets KAS's "Fetch URL". A spec hook then matches those names and the
     trusted identity only, never the title, as on the chat turn loop.
 
-    Blocks by the same rule the chat turn loop applies: exit 2 is a delivered
-    deny, and any other nonzero exit or a fire that raises is a gate with no
-    verdict, which blocks. With no store registered in this process the saved
+    Blocks by the same rule the chat turn loop applies
+    (:attr:`ScriptHookResult.pre_tool_blocks`): for a Hooks-page hook exit 2 is a
+    delivered deny and any other nonzero exit is a gate with no verdict, which
+    blocks; a spec hook blocks on exit 2, as on kiro-cli, and when a policy refused
+    to run it, with the refusal as the reason. A fire
+    that raises blocks. With no store registered in this process the saved
     Hooks-page hooks are read from disk (:func:`persisted_hook_store`), and saved
-    hooks that cannot be read block.
+    hooks that cannot be read block. *acp_session_id* reaches the spec hooks only.
     """
     if hook_store is None:
         # No store registered in this process: the saved hooks still apply.
@@ -223,16 +267,249 @@ async def permission_pre_tool_block(
             extra_hooks_cwd=spec_hooks_cwd,
             extra_hooks_tool_names=spec_names,
             tool_match_names=match_names,
+            acp_session_id=acp_session_id,
         )
     except Exception as exc:  # noqa: BLE001 - a gate with no verdict blocks
         logger.warning("PreToolUse hook fire failed; blocking tool", exc_info=True)
         return f"PreToolUse hook could not run: {exc}"[:500]
     for r in results:
-        if r.exit_code == 2:
-            return f"{r.hook_name}: {r.stderr[:200] if r.stderr else 'hook denied'}"
-        if r.exit_code != 0:
-            detail = (
-                r.error[:200] if r.error else (r.stderr[-200:] or f"exited with code {r.exit_code}")
+        if r.exit_code == 0:
+            continue
+        if not r.pre_tool_blocks:
+            # A spec hook that crashed or timed out: kiro-cli warns and runs the tool.
+            logger.warning(
+                "Spec hook %s did not run cleanly (%s); tool allowed",
+                r.hook_name,
+                r.failure_detail,
             )
-            return f"{r.hook_name}: {detail}"
+            continue
+        if r.exit_code == 2 and not r.refused:
+            return f"{r.hook_name}: {r.stderr[:200] if r.stderr else 'hook denied'}"
+        return f"{r.hook_name}: {r.failure_detail}"
     return None
+
+
+def _session_lane_matcher_context(added: Sequence[str], removed: Sequence[str]) -> str:
+    """Build the direction-tagged matcher context for a lane transition.
+
+    Grammar, which is this event's compatibility surface once a hook binds to it::
+
+        added:<id>;  removed:<id>;
+
+    Direction is in the grammar because the motivating case is "a session ENTERED
+    Done", which an untagged context cannot express: a bare ``<id>`` matcher would
+    fire on leaving the lane too. The trailing ``;`` stops a selector for a short id
+    also matching every longer id it prefixes, and the leading ``:`` stops it matching
+    an id it is a suffix of; neither bound is forgeable, because both characters are
+    outside ``_TOKEN_ALLOWED``.
+
+    An id the allowlist refuses is SKIPPED with a warning rather than escaped or
+    rewritten: ``tags.json`` is persisted state a human can edit, and degrading
+    matching for that one tag is better than splitting it into two tokens or forging
+    the opposite direction.
+    """
+    parts: list[str] = []
+    for direction, ids in (("added", added), ("removed", removed)):
+        for tag_id in ids:
+            if not isinstance(tag_id, str) or not _TOKEN_ALLOWED.match(tag_id):
+                logger.warning(
+                    "SessionLaneChanged: skipping unmatchable tag id %r in %s",
+                    tag_id,
+                    direction,
+                )
+                continue
+            parts.append(f"{direction}:{tag_id};")
+    return "  ".join(parts)
+
+
+def _status_tag_ids(tag_ids: Sequence[object], tags_by_id: Mapping[str, object]) -> set[str]:
+    """The subset of ``tag_ids`` that name a status tag, which is what a lane is.
+
+    ``slot.tags`` holds tag IDS; the objects carrying the ``status`` field live in
+    the live vocabulary, so an id has to be resolved before it can be classified.
+    Plain truthiness of the stored ``status``, which is how the board itself reads it
+    (the tag manager's toggle is ``!!t.status``): a stricter test would reclassify a
+    hand-edited ``"status": "false"`` from a lane to an ordinary tag while the board
+    still draws it as a column.
+
+    An id absent from the vocabulary resolves to ``None`` and is therefore NOT a
+    lane. That is right for a stale id on a slot, and it is the reason the tag-DELETE
+    path cannot emit through here: by the time a deletion has stripped the id from
+    every holder, the object it would have been classified by is already gone. That
+    path is outside this change (see the RFC's write-surface table) and stays silent
+    rather than firing a half-classified delta.
+    """
+    ids: set[str] = set()
+    for tag_id in tag_ids:
+        if not isinstance(tag_id, str) or not tag_id:
+            continue
+        tag = tags_by_id.get(tag_id)
+        if isinstance(tag, dict) and tag.get("status"):
+            ids.add(tag_id)
+    return ids
+
+
+def _lane_dispatch_is_permitted(request: object) -> tuple[bool, str, str]:
+    """Whether this request may cause a lane dispatch, and who it came from.
+
+    Returns ``(permitted, source, caller)``: the two identity strings travel with the
+    verdict so the SEL row names the caller the decision was made about, rather than
+    asserting a dashboard user for every outcome.
+
+    Confines firing to the dashboard USER. An app-scoped caller reaches the tag routes
+    through the ``chat_tag_assign`` MCP tool on behalf of an agent, and a hook firing
+    under that identity would run the operator's command for a caller the operator
+    never saw move the session.
+
+    It is also why the RFC's remaining emit sites -- channel first-filing and the
+    choke point -- are a deferral rather than a hole: they have no dashboard caller to
+    check here, and a path that cannot be authorized cannot dispatch.
+    """
+    if request is None:
+        return (False, "unattributed", "unattributed")
+    app = getattr(request, "app", None)
+    if app is None or not hasattr(app, "get"):
+        return (False, "unattributed", "unattributed")
+    state = app.get("state")
+    if state is None:
+        return (False, "unattributed", "unattributed")
+    # Imported here rather than at module scope to keep the dashboard modules off
+    # this module's import graph, and deliberately NOT inside a try: a wrong path
+    # must raise rather than read as "not permitted", which no test asserting a
+    # non-fire can tell apart from a correct denial.
+    from kiro_crew.dashboard import token_auth as _auth
+    from kiro_crew.dashboard.chat_tags_policy import slot_tag_write_principal
+
+    # The SHARED enumeration the two tag routes already decide "is this the
+    # person?" with, rather than an app-claim read of our own. An absent app claim
+    # is NOT the person: a plain agent session reaches these routes over the
+    # internal-secret transport with no app claim at all, and so does an admitted
+    # crew-member principal. Keying on the app claim alone let an agent moving a
+    # session run the operator's shell hooks -- the case this gate exists to
+    # refuse -- and stamped the SEL row as a dashboard action. Deny-by-default on
+    # identity: permitted only when the caller is POSITIVELY the person.
+    request_app = _auth.effective_request_app(state, request)  # type: ignore[arg-type]
+    non_person, source, caller = slot_tag_write_principal(
+        request,  # type: ignore[arg-type]
+        request_app,
+        what="hooks.session_lane_changed",
+    )[:3]
+    return (not non_person, source or "unattributed", caller or "unattributed")
+
+
+async def dispatch_session_lane_changed_bulk(
+    moves: Sequence[tuple[str, Sequence[object], Sequence[object]]],
+    *,
+    tags_by_id: Mapping[str, object],
+    session_keys: Mapping[str, str] | None = None,
+    request: object = None,
+) -> None:
+    """Fire ``SessionLaneChanged`` for each slot whose STATUS tags actually changed.
+
+    ``moves`` is ``(slot_key, tag_ids_before, tag_ids_after)`` per session -- IDS, the
+    shape ``slot.tags`` actually holds -- and ``tags_by_id`` is a view of the live tag
+    vocabulary the ids resolve through. Both callers pass one move today; the SEL row
+    is per DECISION, so one ``log_api_access`` is written on either outcome and a host
+    with no enabled subscriber writes none.
+
+    Informational: a hook cannot veto. By the time this runs the write is applied and
+    the drag has happened, so a veto would make the board unusable when a hook breaks
+    rather than preventing anything. Callers must therefore invoke it only AFTER a
+    successful persist -- a refused or rolled-back write never fires it.
+    """
+    store = get_global_hook_store()
+    if store is None:
+        return
+    # ``list_all()``, not ``_hooks``: that attribute is a dict keyed by id, so
+    # iterating it yields ID STRINGS and every ``h.enabled`` here would raise.
+    hooks = [
+        h for h in store.list_all() if h.enabled and h.event == HOOK_EVENT_SESSION_LANE_CHANGED
+    ]
+    # Zero is the default shipping state, and it costs nothing: with no enabled
+    # subscriber there is no decision to record, so no SEL row is written either.
+    if not hooks:
+        return
+
+    permitted, source, caller = _lane_dispatch_is_permitted(request)
+    sel().log_api_access(
+        caller=caller,
+        operation="hooks.session_lane_changed",
+        outcome="allowed" if permitted else "denied",
+        source=source,
+        resources=",".join(slot for slot, _, _ in moves),
+    )
+    if not permitted:
+        return
+
+    for slot_key, before, after in moves:
+        prior = _status_tag_ids(before, tags_by_id)
+        now = _status_tag_ids(after, tags_by_id)
+        if prior == now:
+            continue
+        added = sorted(now - prior)
+        removed = sorted(prior - now)
+        # The fire gate compares the status-only sets, so the symmetric difference
+        # here always holds at least one id. That is load-bearing rather than
+        # incidental: a matcher is consulted only when the context is non-empty, so
+        # an empty delta would skip filtering and run EVERY registered hook.
+        context = _session_lane_matcher_context(added, removed)
+        payload = {
+            "hook_event_name": HOOK_EVENT_SESSION_LANE_CHANGED,
+            "cwd": os.getcwd(),
+            "slot": slot_key,
+            # All three keys unconditionally, so a hook that always reads one never
+            # KeyErrors on an addition-only or removal-only change.
+            "added": added,
+            "removed": removed,
+        }
+        # The firing session's own key, which ``run_script_hook`` resolves the
+        # ``capabilities.script_hooks`` governance scope from. Omitting it resolved
+        # the scope from an EMPTY key -- classified ``unknown`` -- so a profile that
+        # disables script hooks for this session was bypassed rather than enforced.
+        if session_keys and (session_key := session_keys.get(slot_key)):
+            payload["session_key"] = session_key
+        for hook in hooks:
+            # Awaited inside the task, not here. ``_context_matches`` reaches
+            # ``_bounded_pattern_search``, which runs a subprocess with a 2s
+            # timeout for a regex matcher, so evaluating it on this path blocked
+            # the gateway's event loop once per hook per lane change.
+            # ``ScriptHookStore.fire`` moves the same call off the loop for the
+            # same reason.
+            task = asyncio.create_task(_run_one_lane_hook(hook, context, payload))
+            _lane_dispatch_tasks.add(task)
+            task.add_done_callback(_lane_dispatch_tasks.discard)
+
+
+async def _run_one_lane_hook(hook: ScriptHook, context: str, payload: dict) -> None:
+    """Match, run and PERSIST one lane hook, entirely off the request path.
+
+    The matcher is evaluated here rather than at the dispatch site because a regex
+    matcher spawns a subprocess with a 2s timeout, which on the request path blocks
+    the gateway's single event loop.
+
+    The persist is what makes a run survive a restart. ``run_script_hook`` mutates
+    ``last_run``, ``last_status``, ``last_error`` and ``run_count`` on the hook
+    object in memory; ``ScriptHookStore.fire`` follows its own runs with
+    ``_persist_current``, and a dispatcher that calls ``run_script_hook`` directly
+    has to do the same or the completed run is lost and the Hooks page restores the
+    previous persisted values.
+    """
+    if hook.matcher:
+        matched = await asyncio.to_thread(
+            _context_matches, hook.matcher, hook.matcher_mode, context
+        )
+        if not matched:
+            return
+    try:
+        await run_script_hook(hook, context=context, hook_event=dict(payload))
+    finally:
+        store = get_global_hook_store()
+        if store is not None:
+            # Off-loop, through the store's own seam, and failure-tolerant for the
+            # reason that seam documents: losing this write loses bookkeeping, not
+            # the hook set, so it must not turn a fired hook into an exception on a
+            # task nobody awaits.
+            try:
+                await asyncio.to_thread(store._persist_current)
+            except Exception:
+                logger.debug("SessionLaneChanged: run bookkeeping not persisted", exc_info=True)

@@ -29,6 +29,7 @@ import { isWithinRecentWindow } from '../recentWindow'
 import { splitStaleSlots, type StaleSplit } from '../staleCollapse'
 import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import type { MemorySourceRow } from '../../lib/agentMemorySource'
+import { sameCrewView, type CodeChannelCrewView } from './codeChannelCrew'
 import type { AgentInfo, FilterDimension, RevealBlockingFilter, SessionFilterKey, SidebarSourceLink, Slot } from './types'
 
 /** What the chip prints. The serializer decides it; this only covers its absence,
@@ -78,8 +79,11 @@ export interface SidebarRowFilters {
    *  the chips whose eye button is on: their matches are dropped, paused or not. */
   status: { active: ReadonlySet<SessionFilterKey>; hidden: ReadonlySet<SessionFilterKey>; paused: boolean; recentWindowMs: number }
   /** The filter menu's folder hides. `active` is false while the search box holds
-   *  text, so a hidden folder never becomes a search dead end. */
-  folders: { hiddenSubtree: ReadonlySet<string>; active: boolean }
+   *  text, so a hidden folder never becomes a search dead end. `pinnedSubtree` is
+   *  the folders a folder pin covers (the pinned folders and everything under
+   *  them): a row filed there is exempt from the tag and status chips the way a
+   *  pinned session is, and `hiddenSubtree` never names one of them. */
+  folders: { hiddenSubtree: ReadonlySet<string>; pinnedSubtree: ReadonlySet<string>; active: boolean }
   /** The model filter. `passes` is the include-or-exclude predicate the model
    *  vocabulary owns (`useSidebarModels`), already answering true for every row
    *  while nothing is selected; `active` is whether a selection narrows. */
@@ -137,6 +141,9 @@ export interface ConductorRowView {
   aggregate: { needsYou: number; running: number } | null
   /** The creator this row cites but could not nest under, because it has closed. */
   orphanOf: string | null
+  /** That closed creator's last-known title, or null when the gateway does not
+   *  remember one (the glyph then reads the generic "a closed session"). */
+  orphanTitle: string | null
   /** The creator this row cites while the lane is NOT nesting it -- search flattens
    *  every match to one level, so a child would otherwise be indistinguishable from a
    *  session nobody opened. Distinct from `orphanOf`: that creator is gone, this one
@@ -173,6 +180,9 @@ export interface RowPlacement {
    *  chevron and no collapsed aggregate to carry. All the row does with it is wear
    *  the tag that says WHY it is up there. */
   folderConductor?: boolean
+  /** A Slack code channel's conductor in the folder view, with its workers folded
+   *  under it (`codeChannelCrew.ts`). Absent on every other row. */
+  crew?: CodeChannelCrewView
 }
 
 /** The shell values every row shows the same way. The shell builds it once per change
@@ -195,6 +205,13 @@ export interface RowShell {
   boost: PaletteBoost
   boostFor: (hex: string) => PaletteBoost
   recentTintCount: number
+  /** `dashboard.show_unread_dot`: false hides the per-row unread dot. Absent reads as shown. */
+  showUnreadDot?: boolean
+  /** "Group by kind" splits the list (`./kindSections`): the unpinned rows are then
+   *  no manual-order targets, like a ranked search, since the drawn order is the
+   *  sections' and a place between two rows would not be the one the order saves.
+   *  The pinned band keeps its own order. Absent reads as off. */
+  manualReorderOff?: boolean
   /** A dnd-kit drag is in flight, the raw LOCAL key of a dragged session (only local
    *  rows can be dragged), and that session's pinned rank and drawn position. */
   dragInFlight: boolean
@@ -215,6 +232,9 @@ export interface RowScene {
   /** The crew window open over the pane, naming a peer's own slot by (crew, key), or
    *  null. While one is open it is the active row, and no local row is. */
   crewWindow: { instanceId: string; key: string } | null
+  /** The LOCAL Crew Mode root whose worker the chat pane shows, or null. Workers
+   *  are not listed, so the root's row is marked as the shown worker's parent. */
+  crewParent: string | null
   shell: RowShell
   /** Local state that only some rows carry, every member keyed by LOCAL slot key. */
   local: {
@@ -257,7 +277,28 @@ export interface SessionRowView {
   conductor: ConductorRowView | null
   /** See `RowPlacement.folderConductor`. False in every lane but the folder tree. */
   folderConductor: boolean
+  /** See `RowPlacement.crew`. */
+  crew: CodeChannelCrewView | null
   isActive: boolean
+  /** Whether this row's own slot IS the sidebar's active slot — the raw
+   *  `key === activeSlot` test, independent of the crew-window logic `isActive`
+   *  folds in (a crew window over the pane makes `isActive` false while the
+   *  session is still the active one). The row menu's "Reference in chat" reads
+   *  it to refuse a self-reference, matching what the drop handler refuses. A
+   *  per-row view field so a chat switch re-renders only the two rows whose
+   *  answer flips, not every row (which carrying `activeSlot` in `rowActions`
+   *  would cause). */
+  isSidebarActiveSlot: boolean
+  /** This row is the Crew Mode root whose worker the chat pane shows: not the
+   *  active row, but the way the person found the worker, so it stays marked. */
+  isCrewParent: boolean
+  /** Whether a crew window is open over the chat pane. While it is, the active
+   *  session's composer is hidden under an opaque cover (`ChatPaneChrome`), so a
+   *  staged reference would land on a composer the user cannot see — the same
+   *  "no visible composer to land in" case `canStageSessionRef` guards. "Reference
+   *  in chat" is withheld on EVERY row while it is true, not just the active one.
+   *  Scene-global, carried per-row so the menu's availability tracks it. */
+  crewWindowCovers: boolean
   isOut: boolean
   isPinned: boolean
   isUnread: boolean
@@ -509,6 +550,7 @@ function makeStatusMatches(
     unread: slot => { const key = localKeyOf(slot); return key !== null && unread.has(key) },
     running: isRunning,
     pinned: slot => localKeyOf(slot) !== null && !!slot.pinned,
+    crew: slot => !!slot.crew_mode_root,
     recent: slot => {
       const key = localKeyOf(slot)
       return key === null
@@ -560,7 +602,18 @@ function makeDimensions(
   // which means "hide all of this". Same predicate as the Pinned chip, so a peer row
   // (never pinned) is never exempt. `narrows` is untouched: the list IS narrowed; the
   // pinned rows are exempt from it.
-  const pinnedBypass = matches.pinned
+  //
+  // A folder pin extends the same exemption to every row filed in the pinned
+  // folder or under it: the folder pin is the person's standing answer to "do I
+  // want to see these", and a chip is the narrower, momentary one. The rows are
+  // not pinned themselves (no band, no row glyph), so the exemption is the only
+  // thing the two pins share. `folderOf` refuses a peer row, so a colliding peer
+  // key cannot ride a local folder's pin into the list.
+  const inPinnedFolder = (slot: Slot): boolean => {
+    const folderId = folderOf(slot)
+    return !!folderId && folderFilter.pinnedSubtree.has(folderId)
+  }
+  const pinnedBypass = (slot: Slot): boolean => matches.pinned(slot) || inPinnedFolder(slot)
   return [
     {
       // Tags. Unlike the folder filter this does NOT go inert while searching: it
@@ -822,7 +875,7 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
   const dimensions = reuse(prev?.dimensions, [
     status.active, status.paused, status.hidden, tags.resolved, tags.raw, filters.models.passes, filters.models.active,
     search.text, search.folderMatches, searchRanks,
-    statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, slotFolders,
+    statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, folderFilter.pinnedSubtree, slotFolders,
     clears.tags, clears.models, clears.search, clears.status, clears.folder, clears.hides,
   ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears))
 
@@ -918,7 +971,17 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     rowMotionHeld: placement.rowMotionHeld ?? false,
     conductor: placement.conductor ?? null,
     folderConductor: placement.folderConductor ?? false,
+    crew: placement.crew ?? null,
     isActive: isActiveIn(scene, slot),
+    // Raw comparison, NOT isActiveIn: the self-reference refusal must hold even
+    // when a crew window covers the pane (where isActiveIn is false but the
+    // session is still active). Matches the key the drop handler refuses against.
+    isSidebarActiveSlot: local !== null && scene.activeSlot === local,
+    isCrewParent: local !== null && !scene.crewWindow && scene.crewParent === local,
+    // A crew window covers the chat pane, so no composer is visible to stage a
+    // reference into — withhold "Reference in chat" on every row, same reason as
+    // the no-active-slot case.
+    crewWindowCovers: scene.crewWindow !== null,
     isOut: local !== null && scene.local.poppedOut.has(local),
     isPinned: local !== null && model.pinned.has(local),
     isUnread: local !== null && model.unread.has(local),
@@ -959,8 +1022,8 @@ export function opensElsewhereOf(slot: Slot): string | null {
 const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
   holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
-  folderConductor: true,
-  isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
+  folderConductor: true, crew: true,
+  isActive: true, isSidebarActiveSlot: true, isCrewParent: true, crewWindowCovers: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,
   renameValue: true, revealFlash: true, pinnedOrderIndex: true, drawnOrderIndex: true, pinnedReorderEnabled: true,
   opensElsewhere: true, shell: true,
@@ -969,7 +1032,7 @@ const VIEW_KEYS = Object.keys(VIEW_FIELDS) as (keyof SessionRowView)[]
 
 /** Every `ConductorRowView` field, for the same reason as `VIEW_FIELDS`. */
 const CONDUCTOR_FIELDS: Record<keyof ConductorRowView, true> = {
-  depth: true, childCount: true, expanded: true, aggregate: true, orphanOf: true, citesParent: true, anchorOnly: true,
+  depth: true, childCount: true, expanded: true, aggregate: true, orphanOf: true, orphanTitle: true, citesParent: true, anchorOnly: true,
 }
 const CONDUCTOR_KEYS = Object.keys(CONDUCTOR_FIELDS) as (keyof ConductorRowView)[]
 
@@ -997,6 +1060,8 @@ export function sameRowView(a: SessionRowView, b: SessionRowView): boolean {
   for (const key of VIEW_KEYS) {
     if (key === 'conductor') {
       if (!sameConductor(a.conductor, b.conductor)) return false
+    } else if (key === 'crew') {
+      if (!sameCrewView(a.crew, b.crew)) return false
     } else if (!Object.is(a[key], b[key])) {
       return false
     }

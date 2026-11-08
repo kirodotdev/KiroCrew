@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.service import common as svc_common
 from kiro_crew.service import linux as svc_linux
 from kiro_crew.service import selinux as sel
 from kiro_crew.service.common import SERVICE_NAME
@@ -434,6 +435,8 @@ class TestStartFailureCoversWhatThePreflightCannotProve:
         # The gate finds nothing: this is precisely the wrapper case.
         monkeypatch.setattr(svc_linux.selinux, "blocks_system_unit", lambda _p: (False, "allowed"))
         monkeypatch.setattr(svc_linux.selinux, "is_enforcing", lambda: enforcing)
+        # The launcher comes from the PATH branch these tests stub with `which`.
+        monkeypatch.setattr(svc_common, "_running_install_bin", lambda: None)
 
         def run(argv, **_kw):
             if argv[:3] == ["sudo", "systemctl", "restart"]:
@@ -740,6 +743,7 @@ class TestInstallRefusesAnUnstartableSystemUnit:
             lambda path: (asked.append(path), (False, "allowed"))[1],
         )
         ok = MagicMock(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(svc_common, "_running_install_bin", lambda: None)
 
         with (
             patch(

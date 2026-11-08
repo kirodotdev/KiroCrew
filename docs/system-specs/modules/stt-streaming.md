@@ -4,13 +4,14 @@
 
 Live speech-to-text for the dashboard composer. The browser streams 16 kHz mono Int16 PCM over a WebSocket and the server relays partial hypotheses, one or more final transcripts, and (when enabled) an auto-submit signal.
 
-All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS`): `local` processes audio in this process, `apple` processes it on-device, and `transcribe` sends it to AWS Transcribe Streaming. The fourth selectable value, `off`, is not a recogniser: it runs nothing.
+All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS`): `local` processes audio in this process, `apple` processes it on-device, `transcribe` sends it to AWS Transcribe Streaming, and `codex` adapts Codex's experimental voice transport. The selectable value `off` is not a recogniser: it runs nothing.
 
 | `stt.provider` | Where recognition runs | Cost | Precondition |
 |---|---|---|---|
 | `local` (default) | this process, whisper.cpp held loaded by [`kiro_crew.stt`](../../../src/kiro_crew/stt/__init__.py) | free | desktop builds include the runtime; select a model and click **Download now** |
 | `apple` | the OS, on-device SpeechAnalyzer | free | macOS 26 or later, and a Swift toolchain to build the helper |
 | `transcribe` | AWS Transcribe Streaming | billed per audio-second | the `voice` extra, and a recorded AWS consent |
+| `codex` | OpenAI through Codex's ChatGPT-authenticated WebRTC transport | account-dependent usage and limits | Codex adapter (`@agentclientprotocol/codex-acp`, or `CODEX_PATH`) with voice access, ChatGPT login, and `pip install 'kirocrew[voice-codex]'` |
 | `off` | nowhere | free | none. Every speech path answers `stt_disabled`, exactly as `stt.enabled = false` does; the live socket returns a `stt_streaming_disabled` error frame because `off` is not in `_STREAMING_PROVIDERS`. Also the value an unknown stored provider degrades to ([Legacy provider values](#legacy-provider-values)) |
 
 The batch path at `POST /api/stt/transcribe` (`transcribe.transcribe_audio`)
@@ -22,6 +23,11 @@ of `local`'s outputs (whisper emits caption boilerplate on near-silence, and an
 emptied transcript is reported as nothing heard rather than written into an agent's
 notes). It is the recogniser's own artefact, so it is not applied to `apple` or
 `transcribe`.
+
+aiohttp does not cancel a handler when its client leaves, so the batch endpoint
+checks its uploader every `_CLIENT_GONE_POLL_SECS` while the decode runs and
+cancels the decode when the connection is closing. The engine answers that
+cancellation by aborting the native decode before the endpoint deletes the clip.
 
 The batch endpoint's response contract: a decode that heard nothing
 (`transcribe_audio` returns `""`) is `200 {"text": ""}`; a failed decode
@@ -135,6 +141,15 @@ Legacy provider values and the loader behavior for persisted values are in
 
 ## Retention
 
+For `codex`, audio goes to OpenAI and the account's retention rules apply. The
+connection requests an ephemeral Codex thread, keeps live audio in memory, and
+does not copy Codex credentials or use an API-key fallback. Its settings notice
+states the hosted-audio boundary and account-dependent usage. Installing Codex
+alone does not prove voice entitlement: the local availability probe checks the
+binary and optional media dependency; starting dictation checks the actual voice
+connection. Codex selects the spoken language automatically, so its settings hide
+the language picker rather than offering an ineffective preference.
+
 Neither the gateway nor the user's AWS account keeps dictation audio, and
 **Settings -> Voice** answers "Is my audio kept?" in one line under the provider
 picker, with the detail in its info tip (`pages/settings/SttRetentionNote.tsx`).
@@ -143,8 +158,11 @@ picker, with the detail in its info tip (`pages/settings/SttRetentionNote.tsx`).
   streams an upload to a temp file that its `finally` unlinks on every exit path,
   and a remuxed temp is unlinked the same way (`transcribe_aws._transcribe_aws`).
 - **Browser.** The only audio copy is the failed batch capture
-  `hooks/voiceTranscriptInbox.ts` holds in memory for Retry or Save, until the
-  tab unloads.
+  `hooks/voiceTranscriptInbox.ts` holds in memory, until the tab unloads. A
+  composer offers it for Retry or Save. A comment box offers neither: a failed
+  comment capture is discarded once its box shows the error, and one whose box
+  closed first stays held, unreachable, until the tab unloads or the next
+  recording starts ([Comment-box dictation](#comment-box-dictation)).
 - **`transcribe`.** Both paths call `StartStreamTranscription`. Nothing calls
   `StartTranscriptionJob` or writes to S3, so the user's account gets no
   transcription job, audio file or transcript, and the Transcribe console's job
@@ -154,6 +172,129 @@ picker, with the detail in its info tip (`pages/settings/SttRetentionNote.tsx`).
   documentation.
 - **Text.** The transcript becomes composer text and is kept with the message
   like typed input.
+
+
+## Codex voice adapter and offline testing
+
+`stt/codex.py` implements the existing helper-session contract and
+`dashboard/stt_adapted_stream.py` uses `_drive_helper_session`. The existing origin
+check, duration/concurrency caps, partial/final redaction, audit pair, semantic
+endpointing, and microphone recovery apply. The default stays `local`.
+A Codex session's `error` event keeps its own code when that code is in
+`stt.codex.SESSION_ERROR_CODES`, the seven `stt_codex_*` codes the dashboard has
+text for. `run_codex_session` passes them to `_drive_helper_session` as
+`relayed_codes`. A registered provider keeps the shorter
+`stt_stream.RELAYED_SESSION_ERROR_CODES` list.
+Recorded clips use the same connection, are limited to 300 seconds, and fail
+loudly over that cap. The shared decoder takes an optional shorter bound without
+loading the local recognizer. WebRTC input is paced 16 kHz mono PCM16 in 20 ms
+frames; its encoder handles the RTP rate conversion. Pending input is bounded to
+90 seconds. Stop drains it, allows four seconds of RTP silence, sends
+`{"type":"session.close"}` on the data channel, and waits up to fifteen seconds
+for `session.closed` with reason `client_request` (Codex 0.163.0), also accepting
+the documented Live spelling `close_requested`. Late input ASR is still read
+until that confirmation, even when no user `turn.done` arrives. Silence alone
+does not establish completion. A failed finalization
+emits an error and preserves the partial draft rather than claiming success.
+
+The transport is **experimental**. The verified wire contract is Codex CLI
+`0.163.0`. The initialization user-agent must identify a release at least that
+new; older, prerelease and unknown builds are refused before opening a thread,
+so an old server cannot silently ignore the handoff-control flag.
+`codex_rpc.codex_version` reads the version with exact token handling, not a
+regex. It takes the first whitespace token, requires the literal
+`kiro_crew_dictation/` prefix, and requires exactly three ASCII digit groups.
+Anything else is no version. Normal Codex
+app-server thread APIs do not constitute a stable
+transcription API. The ChatGPT voice route uses WebRTC and realtime `v3` with
+`outputModality: "audio"`. Text-only output needs realtime v2, while the observed
+ChatGPT route accepts v1 or v3. The adapter discards incoming assistant media;
+it never plays it or uses an assistant answer as a transcript.
+
+`stt/codex_rpc.py` owns a dedicated stdio app-server with fixed argv, an empty
+temporary cwd, an empty MCP-server override and no shell tool. Codex itself owns
+authentication. Dictation does no binary search of its own: it runs the `codex`
+the Codex model provider's adapter runs, resolved by
+`acp.client_spawn_env.resolve_codex_cli`. That is `CODEX_PATH` when it is set,
+made absolute against the gateway's cwd (a `.js`/`.mjs`/`.cjs` script runs with
+node; a native file must be executable; an unusable one is reported as
+`stt_codex_missing` with the reason, never skipped), else the `@openai/codex/bin/codex.js` script that
+`@agentclientprotocol/codex-acp` depends on, found from the adapter entry's real
+path the way Node resolves the adapter's import and run with the adapter's node.
+An adapter that is found but whose Codex dependency cannot be located from it (a
+Volta or asdf launcher shim, a native adapter) reports `stt_codex_cli_unresolved`,
+which asks for `CODEX_PATH` instead of an adapter install.
+The adapter itself comes from the provider's ladder (`CODEX_ACP_BIN`, a
+project-local copy, mise, then `PATH`). A user-writable install is accepted, as it
+is for the provider. Like the provider's adapter, the child runs inside Crew's
+operating-system sandbox, through `sandbox.sandboxed_spawn_argv_async` with
+resource limits and the provider's credential mask
+(`tool_gate.adapter_hidden_credential_dirs` for codex). Its
+tier is the operator's `agent.sandbox` when that is `cc` or `strict`, and
+`standard` otherwise, so it is never looser than the agent's.
+`~/.codex` is Codex's own store and is not masked, so Codex's own login keeps working.
+Codex refuses to run without real operating-system confinement even when the operator permits unsandboxed execution, which makes it unavailable on Windows.
+The decision is the provider's own predicate, `sandbox.credential_mask_applies(mode)`, which `enforce_sandbox_floor` also uses. It is read at the child's tier. Settings reads it to report `stt_codex_sandbox_unavailable`, and `CodexRpc.start` reads it again before the spawn and refuses with the same code. It is False with no backend and inside a Crew sandbox, where the nested passthrough would drop the credential mask. This PR changes no sandbox file.
+The environment allowlist excludes API keys and
+unrelated cloud credentials, and no sandbox policy or credential mask is widened. Every server-originated
+request is rejected. Only the following calls are allowed:
+
+```json
+{"id":1,"method":"initialize","params":{"clientInfo":{"name":"kiro_crew_dictation","version":"1"},"capabilities":{"experimentalApi":true}}}
+{"method":"initialized"}
+{"id":2,"method":"account/read","params":{}}
+{"id":3,"method":"thread/start","params":{"ephemeral":true,"cwd":"<temporary directory>","sandbox":"read-only","approvalPolicy":"untrusted","baseInstructions":"Dictation transport only. Never execute tasks or use tools."}}
+{"id":4,"method":"thread/realtime/start","params":{"threadId":"voice-fixture-thread","version":"v3","outputModality":"audio","includeStartupContext":false,"clientManagedHandoffs":true,"flushTranscriptTailOnSessionEnd":false,"prompt":"Listen for dictation. Do not answer or perform tasks. The client handles all work.","transport":{"type":"webrtc","sdp":"<offer>"}}}
+{"id":5,"method":"thread/realtime/stop","params":{"threadId":"voice-fixture-thread"}}
+```
+
+`clientManagedHandoffs: true` leaves work dispatch to explicit client append
+calls. The adapter never sends those calls, `turn/start`, or any task RPC. Tail
+forwarding into a Codex task is explicitly off. Instructions to remain silent
+are not an execution control. Assistant and delegation events are ignored.
+
+The RPC reader consumes `thread/realtime/sdp` to apply an answer and treats
+`thread/realtime/error`, unexpected `thread/realtime/closed`, process exit,
+malformed JSON, and queue overflow as failures. The WebRTC `oai-events` channel
+must deliver `session.started` before the microphone is ready. Only
+`input_transcript.added.item.text` contributes speech text; item IDs deduplicate
+it and fragments are concatenated exactly, preserving spaces and repeated words.
+A `turn.done` with `turn.role: "user"` commits the pending ASR fragments while
+recording; graceful session closure commits any remaining fragments. Neither
+the parallel RPC transcript notifications nor `turn.transcript` is appended,
+because that would duplicate speech.
+
+Offline tests do **not** need a voice-capable Codex, an account or WebRTC wheels:
+
+```bash
+python -m pytest -n0 test/test_codex_stt.py
+```
+
+`test/fixtures/codex_voice.json` contains synthetic, sanitized response and
+notification shapes. `FakePeer` in the tests supplies an SDP answer, connection
+state and a data channel. Patch `codex_media.create_peer` and `remote_answer`
+at the media boundary, `CodexRpc.call`/`start` at the process boundary, and
+`availability` for local prerequisites. The fake emits `session.started`, input
+ASR fragments, a user turn, assistant output and an attempted delegation; only
+the user ASR becomes a final transcript. Separate pipe-level tests exercise
+initialize/account responses, API-key-login refusal, credential scrubbing,
+approval denial, process failure and cleanup. Do not invent an
+`audio/transcriptions` RPC or substitute API-key voice as the mock: neither is
+the integration being tested. A real smoke test uses synthetic speech and
+existing Codex login; physical microphones and other OSes require separate checks.
+
+Finalization mocks must send `session.closed` only after the client sends
+`session.close`, and may deliver trailing input ASR before it. A missing final
+event is an error, including for a recording with no transcript. A user turn is
+not a substitute for this confirmation. This follows the [Live lifecycle](https://developers.openai.com/api/docs/guides/live-conversations#usage-and-graceful-close)
+and was checked against Codex's WebRTC transport; it does not replace the Codex
+authentication route with the API-key Live creation endpoint.
+
+Source installs add the `voice-codex` extra. POSIX desktop packaging installs it
+separately from the local recognizer, because sealed application bundles cannot
+install missing media packages later. The Windows bundle omits it: Windows has no
+agent sandbox, so Codex dictation is unavailable there.
+The native media imports stay lazy until Codex is selected.
 
 ## Architecture
 
@@ -225,11 +366,63 @@ Either one releases the microphone and ends the start.
 | Worklet | `website/public/pcm-worklet.js` | Float32-to-16 kHz mono Int16 PCM downsampler |
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
 | Voice hook | `website/src/hooks/useVoiceInput.ts` | Owns mic and device selection, and picks streaming or batch for the NEXT utterance. `stop`, `cancel` and `recording` route on the transport of the utterance in flight (`ownTransportRef ?? startupTransport`), never on the preference, so flipping the mode mid-utterance cannot send a commit or discard down the other transport. While a streaming session drains after the mode was switched off, `drainCancellable` exposes the "Discard dictation" control, which cancels the session and rolls the dictated region out of the composer (`cancelVoiceRollback.test.tsx`) |
-| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, owns the one-mic mutex and the frozen-prefix snapshot; `ComposerDockView.tsx` and `ChatPane.tsx` mount the root and supply only host options |
+| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, holds the one-mic mutex (`setMicOwner`, `readMicOwner`, `subscribeMic`, exported so the comment boxes' mic takes the same lock) and the frozen-prefix snapshot; `ComposerDockView.tsx`, `ChatPane.tsx` and `CrewChatWindow.tsx` mount the root and supply only host options. A crew window's transcript that settles after the window closed goes to that session's crew draft (`deliverCrewWindowTranscript`, `composerHost.crewWindowTranscript.test.tsx`), and its send ends live dictation first (`CrewChatWindow.test.tsx`) |
 | Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, and the thin bar it falls back to |
 | Composer dictation | `website/src/components/chat-input/voice.ts` | The composer's side of the Voice atom: the caret a transcript splices in at, the dictation-panel gate, Escape to discard, and on touch the hold-to-talk mode and the labels its controls carry |
 | Composer voice controls | `website/src/components/chat-input/VoiceControls.tsx` | Renders that state: the hold gesture's cancel cue, the dictation panel or status bar, the hold target, and the mic |
+| Comment dictation | `website/src/components/CommentVoiceButton.tsx` | The mic in the document comment boxes: press to record, press again to stop, and the words are added to the box's draft. Props `onText(text)`, `onError(message \| null)`, `disabled`, `className`. See [Comment-box dictation](#comment-box-dictation) |
 | Settings UI | `website/src/pages/settings/SttSettings.tsx` | Enable, provider, model, language, and the streaming knobs |
+
+### Comment-box dictation
+
+The document comment boxes are a second dictation surface beside the chat
+composer. `CommentVoiceButton` renders the mic in three boxes:
+
+| Box | Host | Keyed by |
+|---|---|---|
+| Selection comment | `ComposerBox` in `components/SelectionToolbar.tsx` | `voiceTarget`, the toolbar's `composerOpenSeq`, bumped on every open |
+| Image-box comment | `components/ImageCommentComposer.tsx`, which renders `ComposerBox` | its own mount: no `voiceTarget` |
+| Thread reply | `components/CommentThreadPopover.tsx` | the thread's `rootId` |
+
+A new key is a new button, so a dictation started for one passage or thread
+never lands in the box after it moved to another.
+
+- **Words are added, never sent.** `onText` splices the transcript into the
+  draft with `spliceDictationText`; the person still presses the box's own
+  button to post. The selection box drops a transcript that settles while its
+  post is in flight, and the button is disabled for that time.
+- **Its own session.** Each mount dictates as `comment-voice:<useId()>` through
+  `useVoiceInput` directly, with `ownsSession` matching only that id and
+  `acceptsUnowned: false`, so its text reaches only its own box and never a chat
+  draft.
+- **One mic.** A press takes the composer's lock (`setMicOwner`); the button is
+  disabled and labelled "Microphone in use elsewhere" while another owner holds it or another
+  transcription is in flight. The lock is let go once this button's capture and
+  transcription are over, and on unmount.
+- **Hidden when it cannot work.** No button outside a `QueryClient`, while
+  `GET /api/config/stt` loads, or when voice is off, unavailable or unsupported.
+  A failed settings read hides it and reports once through `onError`.
+- **Closing discards.** Unmounting or re-keying the box cancels a dictation that
+  is starting, recording or still streaming its final.
+- **No transcript polish.** `stt.polish` lives in `useComposerVoice`, which the
+  button does not use, so comment dictation always lands unpolished.
+- **Failures stay in the box.** `onError` hands the host the message, shown with
+  `ErrorNotice` beside the box, with no Retry, no Save and no agent hand-off
+  (the hand-off navigates to Chat and would discard the unsaved comment).
+  Pressing the mic again is the retry. Showing the error also calls `clearError`,
+  which lets the held failed capture go.
+
+A module-level `subscribeTranscripts` sink in `CommentVoiceButton.tsx` owns
+every `comment-voice:` session, so a transcript that settles after its button
+unmounted is dropped instead of handed to Chat. It sets
+`TranscriptSink.exclusive` (`hooks/voiceTranscriptInbox.ts`): a failure of a
+session an exclusive sink owns reaches only that session's owners, and its held
+audio is replayed only to a newly subscribing owner, so a chat composer never
+shows a Retry notice for a comment. A failed comment capture whose button is
+gone has no owner left to discard it: the inbox holds it until the tab unloads
+or the next recording starts capturing. Tests: `CommentVoiceButton.test.tsx`,
+`SelectionToolbar.voice.test.tsx`, `CommentThreadPopover.voice.test.tsx` and
+`hooks/voiceTranscriptInbox.test.ts`.
 
 ## WebSocket protocol
 
@@ -241,7 +434,7 @@ Client to server:
 
 Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider's `partial` and `final` frame types; `dashboard.stt_stream` owns the complete wire contract:
 
-- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its own client timeout, and which one it is depends on whether anything has announced work: a socket that has said nothing gets 60 seconds, while a `downloading` or `preparing` frame switches the wait to the preparation budget that frame carries in `prepare_timeout_ms`, and every later announcing frame restarts it, so the wait is bounded by SILENCE rather than by the total length of a cold load. A frame without a usable figure leaves a local 300-second fallback in place. For older servers without a valid stop-to-close allowance, the client uses 315 seconds. Every provider also advertises `max_duration_ms`, the wall-clock life of this connection (`_MAX_STREAM_DURATION_SECS`, derived at send time so a changed cap cannot leave a stale figure), so a client that outlives one connection -- the Meetings app -- can rotate to a fresh socket before the cap instead of discovering it by being ended.
+- `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its own client timeout, and which one it is depends on whether anything has announced work: a socket that has said nothing gets 60 seconds, while a `downloading` or `preparing` frame switches the wait to the preparation budget that frame carries in `prepare_timeout_ms`, and every later announcing frame restarts it, so the wait is bounded by SILENCE rather than by the total length of a cold load. A frame without a usable figure leaves a local 300-second fallback in place. For older servers without a valid stop-to-close allowance, the client uses 315 seconds. Every provider also advertises `max_duration_ms`, the wall-clock life of this connection (`_MAX_STREAM_DURATION_SECS`, derived at send time so a changed cap cannot leave a stale figure), except a registered provider whose backend owns the session limit, which gets no core cap and so no figure (see [Registered providers](#registered-providers)), so a client that outlives one connection -- the Meetings app -- can rotate to a fresh socket before the cap instead of discovering it by being ended.
 - `{"type":"status","stage":...,"downloaded_bytes":N,"total_bytes":N,"code":...,"prepare_timeout_ms":N}`
   where `stage` is `downloading`, `preparing` or `ready`, and `prepare_timeout_ms` is the preparation budget the readiness wait switches to. A first-ever local session has to
   fetch weights before it can recognise anything, and a silent transfer is
@@ -339,7 +532,13 @@ After the three gates, each provider has its own precondition and failure frame:
   `stt_native_probe_crashed` ([Native preflight and the load fuse](#native-preflight-and-the-load-fuse)).
 - **apple**: `apple_speech.availability()` decides, and separates "this macOS
   cannot run it" from "the Swift toolchain is missing", because only the second
-  has a fix.
+  has a fix. Past that, `StreamTranscribe.swift` checks the locale against the
+  installed models of the module it builds: `DictationTranscriber` (the default)
+  and `SpeechTranscriber` keep separate inventories, and a host often has a
+  dictation model for en-US only. With no dictation model but a speech model, the
+  helper streams with `SpeechTranscriber`; with neither, it fails before `ready`
+  with an error naming the missing model. A start failure is logged at WARNING as
+  well as sent to the client.
 - **transcribe**: `amazon_transcribe` must be importable, and
   `aws_consent.authorize(SERVICE_TRANSCRIBE, profile, region)` must grant. AWS
   authorizes the stream only when it opens, and the consent gate's
@@ -349,7 +548,7 @@ After the three gates, each provider has its own precondition and failure frame:
   refused custom vocabulary has its own code too
   ([Custom vocabulary](#custom-vocabulary-transcribe-only)), and so does
   mixed-language detection on an SDK too old for it
-  ([Mixed-language detection](#mixed-language-detection-transcribe-only)); any
+  ([Mixed-language detection](#mixed-language-detection)); any
   other start failure is `_CODE_SESSION_FAILED`. A stream on a named
   `stt.transcribe_profile` keeps the credentials it opened with:
   `_ProfileCredentialResolver` resolves once, because the SDK asks again for every
@@ -418,7 +617,7 @@ vocabulary.
   is loading while the list is still being read with the stored value still shown,
   and warns when the stored name is not ready in the configured region.
 
-### Mixed-language detection (`transcribe` only)
+### Mixed-language detection
 
 `stt.transcribe_languages` lists the languages speakers switch between in one
 recording (empty: off). With `TRANSCRIBE_LANGUAGES_MIN` (two) or more,
@@ -427,6 +626,15 @@ opens the stream with `IdentifyMultipleLanguages` and `LanguageOptions`, so
 Amazon Transcribe transcribes each part in the language it identifies. With
 fewer, the stream is opened exactly like the single-language one, on
 `effective_language_code`.
+
+Of the built-ins only `transcribe` identifies languages. An edition STT provider
+that sets the optional `identifies_languages = True` (exactly `True`) gets the
+same picker; it reads the candidates from
+`SttConfig.transcribe_language_identification` itself, and the bullets below on
+the stream, the SDK and the voice memo describe the `transcribe` provider only.
+`GET /api/config/stt` serves `language_identification_providers`, the built-in
+`transcribe` followed by each such edition provider
+(`speech_providers.language_identifying_stt_names`).
 
 - **No `LanguageCode` beside identification.** Amazon Transcribe fails a stream
   that names both, so `stt_stream._transcribe_language_kwargs` passes
@@ -451,7 +659,9 @@ fewer, the stream is opened exactly like the single-language one, on
   client method's signature first (`_client_identifies_languages`) and, when it
   lacks them, refuses before any audio is read with
   `stt_transcribe_sdk_outdated` and logs the install command.
-- **The panel offers the picker beside Language.** Its candidates are the
+- **The panel offers the picker beside Language** for every provider in
+  `language_identification_providers`, or for `transcribe` alone when an older
+  gateway serves no list. Its help text names no provider. Its candidates are the
   served `language_codes` (which include `vi-VN`, and any stored code the
   common list lacks, so a value set in config.json stays selectable), each named
   in the app language beside its code, as the Language picker's options are; the
@@ -541,6 +751,16 @@ in both storage and recognition; only the local provider offers `auto` in its pi
 message box has the full context the model would have had if it had never been
 streamed, followed by `filter_hallucinations`. Partials are fast and approximate
 on purpose; the final is the accurate one.
+
+Room tone left after a pause clears the digital-silence floor, so it is decoded, and
+whisper turns it into a lone "you" or "Thank you". So a later utterance (one after a
+final in the same session) whose detector never latched speech, and whose whole final
+is one of those fillers (`stt.session._SILENCE_FILLERS`), yields an empty final. The
+rule needs all three conditions. A short word after a noise-gated pause can also fail
+to latch the detector, so any other text is kept; a filler the detector heard spoken,
+or one in a session's first utterance, is kept too. The accepted residual is a lone
+filler really said after a noise-gated pause. `test/test_stt_session.py` pins each
+condition.
 
 Both batch and final recognition retry an empty decode only when the resident
 model key changed. Silence does not pay for the same inference twice; all-zero
@@ -742,7 +962,7 @@ therefore by every surface that asks whether local recognition can run
 
 | Mechanism | What it checks | Refusal code |
 |---|---|---|
-| Subprocess probe | A child interpreter (`sys.executable -I -S -c <constant> <extension path>` -- `-S` because `-I` alone still imports `site`, which executes every `.pth` in the venv's site-packages inside a child that is unsandboxed on purpose, and the child loads by explicit path so it never needed `site`; cwd pinned to the interpreter prefix, environment reduced to a fixed allow-list, and the child zeroes its own `RLIMIT_CORE` before the load so its expected death writes no core file) loads the exact `_pywhispercpp` file the parent's `binary_identity()` resolved -- by path, because `-I` hides a user-site install from the child and the two processes must judge the same binary -- and runs its `whisper_print_system_info()`, the one call that both runs `ggml_cpu_init` (the first native code an incompatible build faults in) and reports the instruction sets the build was compiled for. A child killed by `SIGILL` (or Windows `STATUS_ILLEGAL_INSTRUCTION`) is a refusal; a surviving child's feature list is compared with the host's `/proc/cpuinfo` flags (Linux only; x86-64 through `embeddings._linux_x86_64_cpu_flags`, the one cpuinfo parser this repository keeps, AArch64 through the same intersect-across-cores read of the `Features` line; unknown elsewhere -- including 32-bit ARM, whose kernel spells `neon` where AArch64 spells `asimd` -- and an unknown host is never refused on) so a build that declares `AVX512` is refused on a host without `avx512f` even if the probe executed no such instruction. Cached per installed binary (path, size, mtime), so a reinstall is probed afresh and nothing is probed twice | `stt_unsupported_cpu`; any other fatal signal `stt_native_probe_crashed` |
+| Subprocess probe | A child interpreter (`sys.executable -I -S -c <constant> <extension path>` -- `-S` because `-I` alone still imports `site`, which executes every `.pth` in the venv's site-packages inside a child that is unsandboxed on purpose, and the child loads by explicit path so it never needed `site`; cwd pinned to the interpreter prefix, environment reduced to a fixed allow-list, and the child zeroes its own `RLIMIT_CORE` before the load so its expected death writes no core file) loads the exact `_pywhispercpp` file the parent's `binary_identity()` resolved -- by path, because `-I` hides a user-site install from the child and the two processes must judge the same binary -- and runs its `whisper_print_system_info()`, the one call that both runs `ggml_cpu_init` (the first native code an incompatible build faults in) and reports the instruction sets the build was compiled for. A child killed by `SIGILL` (or Windows `STATUS_ILLEGAL_INSTRUCTION`) is a refusal; a surviving child's feature list is compared with the host's `/proc/cpuinfo` flags (Linux only; x86-64 through `embeddings._linux_x86_64_cpu_flags` and AArch64 through `embeddings._linux_aarch64_cpu_features` (the `Features` reader the Linux arm64 dotprod lib choice also uses), one cpuinfo parser per architecture; unknown elsewhere -- including 32-bit ARM, whose kernel spells `neon` where AArch64 spells `asimd` -- and an unknown host is never refused on) so a build that declares `AVX512` is refused on a host without `avx512f` even if the probe executed no such instruction. Cached per installed binary (path, size, mtime), so a reinstall is probed afresh and nothing is probed twice | `stt_unsupported_cpu`; any other fatal signal `stt_native_probe_crashed` |
 | Load marker | `_build_model_fused`, on the WORKER THREAD, writes `<models dir>/.load-in-progress.json` (via `atomic_write`, so no predictable temp name a sandboxed agent could pre-plant as a symlink; a per-process random token, the pid for a human, model path, binary identity) immediately before `_build_model` and clears it in a `finally` around it -- the marker is filesystem I/O and the loop neither writes nor clears it -- so every outcome in which the call RETURNED -- success, a Python exception, a load that outlived its timeout -- clears it, including a shutdown that has already closed the event loop (a loop done-callback would not run then, and a routine restart mid-prewarm would trip the fuse). Identity is the token, not the pid: the marker outlives the process on the models directory and a replacement container in a fresh PID namespace lands on the same low pid. A marker from another process naming the binary installed now means the last load never returned, and `probe` refuses. A marker naming a binary that is gone, or one that cannot be read, is ignored and LEFT IN PLACE: the inspector only reads, because the path is shared and an unlink here could erase another process's live fuse mid-load; the next arm's `atomic_write` replaces it whole. The read itself is bounded (`_read_marker_bounded`: `O_NOFOLLOW|O_NONBLOCK`, `fstat` must show a regular file of at most `_MARKER_MAX_BYTES` = 4 KiB, judged before a byte is read), because the name is fixed in a directory a sandboxed agent can write and the read runs on every availability check -- a planted symlink, FIFO or multi-GB file is ignored like garbage | `stt_load_crashed` |
 
 The subprocess probe answers a deterministic property of the (binary, CPU) pair and
@@ -955,7 +1175,19 @@ from the release position. The hard cap, blur, a hidden page, `pointercancel`,
 an orphaned startup and unmount also stop with no intent, and Esc and slide-up
 cancel discard, so none of them send.
 
-`useComposerVoice` arms one pending release at a `'finish'` stop over a live
+With the setting off, a plain hold-bar release only transcribes. With
+`stt.slide_to_send` also on (off by default, so the single slide-up-to-cancel
+stays unless the person opts in), the bar's up zone splits: sliding up and
+also right by `SEND_SIDE_PX` arms send, and any other upward slide still arms
+cancel. `stt.slide_to_send` has no effect while `stt.submit_on_release` is on. Its release stops with the
+`StopIntent` `'send'`, which sends whatever the setting says. Like a
+`'finish'` under the setting, it goes through the host's auto-submit and so
+takes the composer's default busy decision: it steers a running turn where
+Send would, and the cue and bar say "steer" then. Only a hold can send; a tap
+that ends in the zone still discards.
+
+`useComposerVoice` arms one pending release at a `'send'` stop, or a `'finish'`
+stop under the setting, over a live
 capture that no send has already ended. It sends once, through the host's
 auto-submit, after capture, drain, transcription and any polish have settled.
 It keeps the draft instead when the transcript is empty or failed, when the
@@ -973,6 +1205,8 @@ provider that sends anything off the machine: the TEXT leaves, the audio never d
 The switch is the consent, so `POST /api/stt/polish` refuses with 403
 `stt_polish_disabled` when it is off rather than quietly passing the transcript
 through -- a setting that is honoured only sometimes is a decoration.
+Polish runs only in the chat composer (`useComposerVoice.polishDictation`):
+comment-box dictation skips it ([Comment-box dictation](#comment-box-dictation)).
 
 Why it is an endpoint and not a frame on the speech websocket, which is the design
 decision worth recording: that socket closes shortly after the final (the server has
@@ -1244,7 +1478,12 @@ read; the post-loop size comparison is then only reachable for a *short* respons
 which is the common failure and keeps its own message. The staging file comes from
 `tempfile.mkstemp`, written through the descriptor it returns: the name is
 unpredictable and the create is exclusive, so a symlink pre-planted at a guessable
-staging path cannot redirect the write.
+staging path cannot redirect the write. The connection opens through
+`asset_downloader.build_opener` with cross-host redirects allowed, which is that
+module's policy for a url that is a source constant or the operator's environment
+override (the default model host answers with a redirect to its own download host),
+and a hop that leaves https is refused. The ffmpeg decoder fetch shares the same
+streamer (`stream_pinned_payload`) and so the same policy.
 
 A file already on disk is verified against the pin too, on every model LOAD. Not once
 per session, because `WhisperEngine.ensure_loaded` settles residency before asking the store. It is not memoised against size and mtime because
@@ -1360,7 +1599,7 @@ frame and the close, which is what lets a long-running client rotate to a fresh
 socket without loss. `ready` advertises the cap as `max_duration_ms` so that
 client can plan the rotation.
 
-The model fetch gets its own ceiling rather than borrowing the session's because it transfers a catalog entry rather than a dictation. `stt.models` uses a request timeout, while `_prepare_local_with_progress` also bounds how long a WebSocket waits. On the WebSocket timeout the transfer is shielded and left running:
+The model fetch gets its own ceiling rather than borrowing the session's because it transfers a catalog entry rather than a dictation. `stt.models` bounds each socket read with `_NETWORK_STALL_TIMEOUT_SECS`, while `_run_local_session` bounds the whole wait with `_MAX_MODEL_PREPARE_SECS` around `_relay_download_progress`. On the WebSocket timeout the transfer is shielded and left running:
 cancelling it would release the model store's transfer lock while its worker thread
 is still writing the staging file, and the next session would start a second write
 to the same path. Only the socket gives up; the bytes land for the next attempt.
@@ -1414,6 +1653,8 @@ A composed edition can add STT providers through the `speech` slot on `PlatformC
 - **Collision rule.** A registered name may not be a built-in (`local`, `apple`, `transcribe`), a retired name or `off`, may not be blank and may not repeat. `speech_providers.validate_speech_registry` refuses any of these at boot with `PlatformCompositionError`, so an edition can add a provider but never replace one.
 - **Default precedence.** A stored `stt.provider` always wins. Only an absent key takes the edition's `default_stt()`, and only when that is `None` does it take core's `local`. An unusable stored value keeps its built-in fallback below, so a typo never reaches the edition default.
 - **Streaming.** A registered provider joins the streaming grant only when its `streaming` attribute is true. Positive membership stays the rule.
+- **A session limit the backend owns.** A streaming provider whose backend decides how long one session runs may set the optional `owns_session_limit = True` (`speech_providers.owns_session_limit`; exactly `True` only, as for `streaming`). Core then arms no deadline for its sessions and its `ready` frame carries no `max_duration_ms`, so the backend's limit is the only one and can change without a client release. When the backend ends a session at its limit, the provider emits an `error` event with `code: "stt_max_duration_exceeded"` after any trailing `final`. Core relays that code, so the dashboard shows its length-limit message, and audits the end as `timeout`, as it does its own cap. Such a provider must bound its own I/O (connect and read timeouts), because no core deadline will end a session whose backend stops answering. Without the attribute, `_MAX_STREAM_DURATION_SECS` applies, as it does to the built-in providers.
+- **Error codes a session may relay.** An `error` event's `code` reaches the client only when it is in `stt_stream.RELAYED_SESSION_ERROR_CODES`, today `stt_max_duration_exceeded` alone. Any other code, or none, is sent as `stt_session_failed`, so a provider can name a condition the dashboard already renders but cannot invent one it has no text for.
 
 ### The capability `providers` list
 

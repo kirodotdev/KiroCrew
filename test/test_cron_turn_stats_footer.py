@@ -7,63 +7,61 @@ it stamps the same shape on the cron result row.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
+import pytest
 from chat_test_helpers import _make_state
 from test_cron_context_meter_seed import _inject
 from test_cron_context_meter_seed import _make_job as _make_mock_job
-from test_cron_thread_routing import _make_gateway, _make_job, _run_callback
+from test_cron_thread_routing import (  # noqa: F401 -- the fixture is used by name
+    _make_gateway,
+    _make_job,
+    _reset_surface_registry,
+    _results_in_tab,
+    _run_callback,
+    _use_real_slots,
+)
 
 from kiro_crew.acp.types import TurnUsage
 from kiro_crew.dashboard.chat_runner import turn_stats_meta
 from kiro_crew.dashboard.state import _ChatSlot
 
 
+def _run_with_usage(gateway, job, result: str) -> None:
+    with (
+        patch(
+            "kiro_crew.slack.gateway.provider_last_turn_usage",
+            return_value=TurnUsage(credits=1.23456, duration_ms=4200),
+        ),
+        patch("kiro_crew.slack.gateway.read_turn_model", return_value="claude-sonnet-4.5"),
+        patch("kiro_crew.slack.gateway.persist_token_record_async", new_callable=AsyncMock),
+    ):
+        _run_callback(gateway, job, stream_result=result)
+
+
+_RUN_STATS = {"elapsed_ms": 4200, "credits": 1.2346, "model": "claude-sonnet-4.5"}
+
+
+@pytest.mark.usefixtures("_reset_surface_registry")
 def test_cron_run_hands_its_usage_to_the_result_row() -> None:
     gateway = _make_gateway()
     gateway.slack.post_blocks = AsyncMock(return_value="1711957800.001234")
-    job = _make_job(persistent_session=True)
-    with (
-        patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject,
-        patch(
-            "kiro_crew.slack.gateway.provider_last_turn_usage",
-            return_value=TurnUsage(credits=1.23456, duration_ms=4200),
-        ),
-        patch("kiro_crew.slack.gateway.read_turn_model", return_value="claude-sonnet-4.5"),
-        patch("kiro_crew.slack.gateway.persist_token_record_async", new_callable=AsyncMock),
-    ):
-        _run_callback(gateway, job, stream_result="cron output")
-    mock_inject.assert_called_once()
-    assert mock_inject.call_args.kwargs["turn_stats"] == {
-        "elapsed_ms": 4200,
-        "credits": 1.2346,
-        "model": "claude-sonnet-4.5",
-    }
+    slots = _use_real_slots(gateway)
+    _run_with_usage(gateway, _make_job(persistent_session=True), "cron output")
+    rows = _results_in_tab(slots, "cron output")
+    assert [m["meta"].get("turn_stats") for m in rows] == [_RUN_STATS]
 
 
+@pytest.mark.usefixtures("_reset_surface_registry")
 def test_silent_cron_hands_the_real_turn_stats_to_the_result_row() -> None:
-    # The silent and duplicate-suppressed inject sites are only asserted with
-    # turn_stats=ANY in test_cron_thread_routing, so swapping them to None would
-    # stay green. Pin the real value on the silent path to close that gap.
+    # The silent path makes its own inject call, so it needs its own pin on
+    # the real value: passing None there would otherwise stay green.
     gateway = _make_gateway()
-    gateway.dashboard_state.has_slot = MagicMock(return_value=True)
-    job = _make_job(persistent_session=True, silent=True)
-    with (
-        patch("kiro_crew.slack.gateway.inject_cron_result_to_dashboard") as mock_inject,
-        patch(
-            "kiro_crew.slack.gateway.provider_last_turn_usage",
-            return_value=TurnUsage(credits=1.23456, duration_ms=4200),
-        ),
-        patch("kiro_crew.slack.gateway.read_turn_model", return_value="claude-sonnet-4.5"),
-        patch("kiro_crew.slack.gateway.persist_token_record_async", new_callable=AsyncMock),
-    ):
-        _run_callback(gateway, job, stream_result="silent output")
-    mock_inject.assert_called_once()
-    assert mock_inject.call_args.kwargs["turn_stats"] == {
-        "elapsed_ms": 4200,
-        "credits": 1.2346,
-        "model": "claude-sonnet-4.5",
-    }
+    slots = _use_real_slots(gateway)
+    gateway.dashboard_state.get_or_create_slot("cron-j1")
+    _run_with_usage(gateway, _make_job(persistent_session=True, silent=True), "silent output")
+    rows = _results_in_tab(slots, "silent output")
+    assert [m["meta"].get("turn_stats") for m in rows] == [_RUN_STATS]
 
 
 def test_injected_result_row_carries_turn_stats(tmp_path) -> None:

@@ -8,7 +8,16 @@
  * is that row after `normalizeRegistryApp`. Types only: this module holds no
  * runtime code and never imports the page.
  */
-import type { RegistryApp } from '../components/appstore/types'
+import type { AppLink } from './AppDetailLinks'
+import type {
+  AppAdoptionRow,
+  ComposerActionGrantRow,
+  LinkOpenGrantRow,
+  LinkPreviewGrantRow,
+  MessageActionGrantRow,
+  RegistryApp,
+  SelectionActionGrantRow,
+} from '../components/appstore/types'
 
 type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   catalogListed?: boolean
@@ -28,6 +37,8 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   highlights?: string[]
   useCases?: string[]
   configuration?: string[]
+  /** The app's own store-page links; `AppDetailLinks` re-checks each entry. */
+  links?: AppLink[]
   screenshots?: string[]
   screenshotsDark?: string[]
   heroImage?: string
@@ -60,14 +71,25 @@ type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
   enabled?: boolean
   sessionApprovalConsentPending?: boolean
   approvedGrants?: { api?: string[]; events?: string[] }
+  linkPreviewGrant?: LinkPreviewGrantRow
+  messageActionGrant?: MessageActionGrantRow
+  linkOpenGrant?: LinkOpenGrantRow
+  composerActionGrant?: ComposerActionGrantRow
+  selectionActionGrant?: SelectionActionGrantRow
+  /** Whether the owner approved `permissions.workerAutoApprove`; absent when undeclared. */
+  workerAutoApproveGrant?: { approved: boolean; staged: boolean }
   managed?: string
   source?: string
   installedAt?: string
   updateAvailable?: boolean
+  /** A former built-in's move to its registry copy (from the installed record). */
+  adoption?: AppAdoptionRow
   // Three-axis classification
   origin?: string     // "builtin" | "registry" | "local" | "external"
   resources?: string  // "gateway" | "app"
   lifecycle?: string  // "gateway" | "app" | "locked"
+  /** Set when the gateway skipped this built-in app at boot; see `InstalledApp.unavailable`. */
+  unavailable?: { reason: string }
   // Platform
   platform?: { os?: string[]; installMode?: string; clientInstall?: { shell?: string; postInstall?: string }
     // Set when the app's UI needs the Electron shell (native windows,
@@ -93,6 +115,8 @@ interface AppPermissions {
   network?: boolean
   memory?: boolean | string
   sessionApproval?: boolean
+  memberThreads?: boolean
+  workerAutoApprove?: boolean
   [key: string]: unknown
 }
 
@@ -116,6 +140,7 @@ interface AppManifest {
   highlights?: string[]
   useCases?: string[]
   configuration?: string[]
+  links?: AppLink[]
   screenshots?: string[]
   screenshotsDark?: string[]
   // Store-listing metadata. For built-in apps these live on the manifest

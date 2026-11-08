@@ -23,7 +23,9 @@ def _facade() -> ModuleType:
 
     Two constructs stay in ``backend.py`` because repository guards read them there by
     path: the spawn transaction (``start_app_backend``, ``_start_app_backend`` and the
-    spawn body) and ``_pid_alive``. The owners that call them look the facade up here
+    spawn body) and ``_pid_alive``. The STARTING reservation the spawn and the restart
+    both publish (``_starting_reservation``) lives there too, so every record
+    construction stays in the facade. The owners that call them look the facade up here
     when they run, never at import, so no owner imports the facade and a patch of
     ``backend._start_app_backend`` or ``backend._pid_alive`` still reaches its caller.
 

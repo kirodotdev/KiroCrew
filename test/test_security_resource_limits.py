@@ -26,8 +26,8 @@ except ImportError:
 @pytest.mark.skipif(_resource_mod is None, reason="resource module is POSIX-only")
 class TestApplyResourceLimits:
     """apply_resource_limits() returns a preexec_fn that caps a child's
-    resources (security-review bdf0d7e5). The helper existed as dead code
-    once; these tests pin its behavior AND its wiring guarantees."""
+    resources. These tests pin its behavior AND its wiring guarantees, so it
+    cannot drift into dead code."""
 
     def test_returns_callable(self) -> None:
         assert callable(apply_resource_limits())

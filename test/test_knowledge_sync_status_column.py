@@ -118,7 +118,9 @@ class TestFolderPreScanSkip:
         """The guard rejects only the two states, so 'active' still scans."""
         folder = tmp_path / "vault"
         folder.mkdir()
-        store.add_source("vault", "local_folder", str(folder), properties={"sync_status": "active"})
+        sid = store.add_source(
+            "vault", "local_folder", str(folder), properties={"sync_status": "active"}
+        )
 
         watcher = _watcher(store)
         scan = AsyncMock(return_value={})
@@ -126,6 +128,9 @@ class TestFolderPreScanSkip:
         await watcher._scan()
 
         scan.assert_called_once()
+        walked = scan.await_args.args[0]
+        assert walked["id"] == sid
+        assert walked["uri"] == str(folder)
 
 
 class TestSingleFileMissingMarker:

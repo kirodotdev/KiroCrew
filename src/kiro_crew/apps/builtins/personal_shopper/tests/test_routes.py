@@ -239,16 +239,36 @@ class TestSitesShapeValidation(RoutesTestCase):
         """Deleting sites.json during discovery must not turn GET into a 500."""
         sites_file = routes_mod._sites_path()
         sites_file.write_text('{"sites": []}', encoding="utf-8")
-        real_read_text = Path.read_text
+        real_read_bytes = Path.read_bytes
 
         def vanish_before_read(path, *args, **kwargs):
             if path == sites_file:
                 path.unlink()
                 raise FileNotFoundError(path)
-            return real_read_text(path, *args, **kwargs)
+            return real_read_bytes(path, *args, **kwargs)
 
-        with mock.patch.object(Path, "read_text", vanish_before_read):
+        with mock.patch.object(Path, "read_bytes", vanish_before_read):
             resp = await self.client.get(f"{_PREFIX}/sites")
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(await resp.json(), {"sites": []})
+
+    async def test_get_treats_a_malformed_sites_file_as_empty(self) -> None:
+        """A hand-edited sites.json that is not JSON must not turn GET into a 500."""
+        routes_mod._sites_path().write_text('{"sites": [', encoding="utf-8")
+
+        resp = await self.client.get(f"{_PREFIX}/sites")
+
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(await resp.json(), {"sites": []})
+
+    async def test_get_treats_an_undecodable_sites_file_as_empty(self) -> None:
+        """A latin-1 sites.json (e.g. a restored backup) must not turn GET into a 500."""
+        routes_mod._sites_path().write_bytes(
+            '{"sites": [{"id": "a", "name": "Caf\u00e9", "url": "x"}]}'.encode("latin-1")
+        )
+
+        resp = await self.client.get(f"{_PREFIX}/sites")
 
         self.assertEqual(resp.status, 200)
         self.assertEqual(await resp.json(), {"sites": []})

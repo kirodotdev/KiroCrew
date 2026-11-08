@@ -105,12 +105,18 @@ from __future__ import annotations
 
 import faulthandler
 import logging
+import os
 import signal
 import sys
 import threading
 import typing
 from collections.abc import Callable
 
+from kiro_crew.dashboard.crash_dump_store import (
+    FAULTHANDLER_MAX_FRAMES,
+    FAULTHANDLER_MAX_THREADS,
+    LOOP_THREAD_HEADER,
+)
 from kiro_crew.dashboard.stall_enrichment import collect_stall_enrichment, describe_loop_thread
 from kiro_crew.diag.threads import _parse_stat, _read_text, _task_dir
 from kiro_crew.platform_compat import (
@@ -371,6 +377,12 @@ class LoopStallWatchdog:
 
     # Floor between heartbeat-lag captures, across episodes.
     _LAG_CAPTURE_COOLDOWN_SECS = 60.0
+    # Sustained lag: a loop that keeps answering late, never long enough for a
+    # stall dump, still makes every request take seconds. The heartbeat sleeps
+    # this long between beats, so a gap past it is lag.
+    _HEARTBEAT_INTERVAL_SECS = 5.0
+    _SUSTAINED_LAG_SECS = 2.0
+    _SUSTAINED_LAG_SAMPLES = 3
 
     def __init__(
         self,
@@ -406,8 +418,16 @@ class LoopStallWatchdog:
         self._lag_next_at = 0.0
         self._log = log or logger
         self._last_beat = now()
-        # ``threading.get_ident()`` of the thread that last beat: the loop
-        # thread the enrichment locates.  None until the first beat.
+        # The gap the latest beat closed (loop thread writes, daemon reads).
+        self._last_gap: float | None = None
+        # Sustained-lag state, read and written on the daemon thread only.
+        self._lag_sampled_generation = 0
+        self._lag_streak = 0
+        self._lag_episode_max = 0.0
+        self.lagging = False
+        self.sustained_lag_episodes = 0
+        # ``threading.get_ident()`` of the thread that started the watchdog or
+        # last beat: the loop thread the enrichment locates.  None until then.
         self._loop_thread_id: int | None = None
         # The kernel's id for that same thread, which names its procfs row.
         self._loop_native_thread_id: int | None = None
@@ -422,6 +442,9 @@ class LoopStallWatchdog:
         # Serialises the cancel-then-arm pair between the loop thread's beat
         # and the daemon thread's paging deferral.
         self._alarm_lock = threading.Lock()
+        # Where the dump file ended before the loop thread's stack was written
+        # into it, so a recovery can truncate it back. None when not written.
+        self._loop_stack_offset: int | None = None
         self._dumped = False
         # True only between start() and stop() when exit_after is set; gates the
         # alarm so a dashboard-only process (e.g. `kirocrew chat`, where
@@ -443,7 +466,9 @@ class LoopStallWatchdog:
         beats — i.e. a real wedge, not a transient lag.  It also records the
         calling thread as the loop thread the stall enrichment locates.
         """
-        self._last_beat = self._now()
+        beat_at = self._now()
+        self._last_gap = beat_at - self._last_beat
+        self._last_beat = beat_at
         self._loop_thread_id = threading.get_ident()
         self._loop_native_thread_id = threading.get_native_id()
         self._beat_generation += 1
@@ -490,6 +515,47 @@ class LoopStallWatchdog:
                 return False
             return True
 
+    def _note_sustained_lag(self) -> None:
+        """Warn once per episode when the loop keeps beating late.
+
+        One sample per new beat: the gap that beat closed, past the heartbeat's
+        own sleep. ``_SUSTAINED_LAG_SAMPLES`` samples in a row over
+        ``_SUSTAINED_LAG_SECS`` open an episode. A loop that stops beating
+        altogether is the stall path below, not this one. Logged from this
+        thread, so the warning reaches the journal while the loop is the thing
+        that is slow.
+        """
+        generation = self._beat_generation
+        gap = self._last_gap
+        if generation == self._lag_sampled_generation or gap is None:
+            return
+        # Polls run every few seconds and beats about as often, so two beats
+        # can land between polls; the newest gap stands for both.
+        self._lag_sampled_generation = generation
+        lag = gap - self._HEARTBEAT_INTERVAL_SECS
+        if lag < self._SUSTAINED_LAG_SECS:
+            self._lag_streak = 0
+            if self.lagging:
+                self.lagging = False
+                self._log.info(
+                    "event loop recovered from sustained lag (worst %.1fs)",
+                    self._lag_episode_max,
+                )
+            self._lag_episode_max = 0.0
+            return
+        self._lag_streak += 1
+        self._lag_episode_max = max(self._lag_episode_max, lag)
+        if not self.lagging and self._lag_streak >= self._SUSTAINED_LAG_SAMPLES:
+            self.lagging = True
+            self.sustained_lag_episodes += 1
+            self._log.warning(
+                "event loop lagging: %d heartbeats in a row ran %.1fs+ late (latest %.1fs); "
+                "every request waits that long",
+                self._lag_streak,
+                self._SUSTAINED_LAG_SECS,
+                lag,
+            )
+
     def check(self) -> bool:
         """Evaluate liveness once.  Returns ``True`` iff a soft dump was emitted.
 
@@ -509,17 +575,19 @@ class LoopStallWatchdog:
         the silence measured here is monotonic, and the alarm pauses during a
         suspend, so a suspend never counts as a stall on either layer.
 
-        Enrichment deliberately never touches ``dump_file``: that file is the
-        boot-time crash sentinel (``crash_dump_store._is_header_only`` counts
-        lines), so a watchdog-side append would make a *recovered* 15–25s
-        stall read as a fatal crash on the next startup.  Only faulthandler
-        writes stacks into it.  The journal WARNING survives both outcomes —
-        the process lives to keep logging on recovery, and journald has
-        already persisted the line when the alarm ends a fatal stall.
+        The enrichment lines go to the logger only.  The one thing the
+        watchdog writes into ``dump_file`` is the loop thread's stack
+        (:meth:`_write_loop_stack`), and it truncates that away again when the
+        loop recovers: the file is the boot-time crash sentinel
+        (``crash_dump_store._is_header_only`` counts lines), so a recovered
+        stall must leave it header-only.  The journal WARNING survives both
+        outcomes — the process lives to keep logging on recovery, and journald
+        has already persisted the line when the alarm ends a fatal stall.
         """
         mono = self._now()
         self._note_resume(mono)
         silence = mono - self._last_beat
+        self._note_sustained_lag()
         self._defer_exit_while_paging(silence)
         if silence >= self._enrich_after and not self._enriched:
             self._enriched = True
@@ -534,6 +602,7 @@ class LoopStallWatchdog:
                 silence,
                 "\n".join(lines),
             )
+            self._write_loop_stack(silence)
         if silence >= self._stall_after:
             if not self._dumped:
                 self._dumped = True
@@ -565,17 +634,94 @@ class LoopStallWatchdog:
             return False
         # Healthy / recovered — silence is back below the first threshold.
         if self._dumped:
-            self._log.warning(
-                "event loop recovered after stall (last beat %.1fs ago)", silence
-            )
+            self._log.warning("event loop recovered after stall (last beat %.1fs ago)", silence)
         if self._enriched and not self._dumped:
             self._log.warning(
                 "event loop recovered after stall enrichment (last beat %.1fs ago)",
                 silence,
             )
+        self._drop_loop_stack()
         self._dumped = False
         self._enriched = False
         return False
+
+    def _write_loop_stack(self, silence: float) -> None:
+        """Write the loop thread's stack into the dump file, ahead of the fatal dump.
+
+        faulthandler lists at most :data:`FAULTHANDLER_MAX_THREADS` threads,
+        newest first, so in a gateway with more threads the loop thread (the
+        oldest) is the one it leaves out.  This block is written from the
+        daemon thread while the alarm is still pending, so the alarm's
+        all-thread dump lands after it and the readers in
+        :mod:`kiro_crew.dashboard.crash_dump_store` take it as the wedged
+        thread.  Only while the alarm is armed: that is the only case where
+        the file is not otherwise written, and :meth:`_drop_loop_stack`
+        removes the block if the loop recovers.  Nothing here runs in a
+        signal handler.  A daemon thread that cannot get the GIL in time (the
+        loop thread holds it inside a C call, or the whole host is frozen)
+        writes nothing, and the readers then say the loop thread is missing.
+        """
+        target, thread_id = self._dump_file, self._loop_thread_id
+        if target is None or thread_id is None or not self._later_active:
+            return
+        generation = self._beat_generation
+        try:
+            frames = sys._current_frames()
+            frame = frames.get(thread_id)
+            if frame is None:
+                return
+            cut = (
+                f"; only the newest {FAULTHANDLER_MAX_THREADS} are listed after this block"
+                if len(frames) > FAULTHANDLER_MAX_THREADS
+                else ""
+            )
+            lines = [
+                f"# Event-loop thread after {silence:.0f}s of silence, written by the loop "
+                f"watchdog: {len(frames)} threads were alive{cut}.\n",
+                f"{LOOP_THREAD_HEADER} 0x{thread_id:016x} (most recent call first):\n",
+            ]
+            for _depth in range(FAULTHANDLER_MAX_FRAMES):
+                if frame is None:
+                    break
+                code = frame.f_code
+                lines.append(
+                    f'  File "{code.co_filename}", line {frame.f_lineno} in {code.co_name}\n'
+                )
+                frame = frame.f_back
+            lines.append("\n")
+            fd = target.fileno()
+            offset = os.lseek(fd, 0, os.SEEK_CUR)
+            os.write(fd, "".join(lines).encode("utf-8", "replace"))
+            self._loop_stack_offset = offset
+        except Exception:  # noqa: BLE001 - a capture must never stop the watchdog
+            self._log.debug("loop watchdog could not write the loop thread's stack", exc_info=True)
+            return
+        # A beat or a stop() that landed while the block was being written makes
+        # it stale, and stop() saw no offset to drop, so the writer drops it.
+        # Nothing on the loop thread touches the file: a beat leaves a stale
+        # block to the next poll's recovery branch.
+        # shortcut: a block from a recovered stall stays until that poll, so if
+        # the loop holds the GIL in a C call within one poll of recovering and
+        # the gateway has over 100 threads, the readers show the old stack;
+        # upgrade if such dumps turn up.
+        if self._stop.is_set() or self._beat_generation != generation:
+            self._drop_loop_stack()
+
+    def _drop_loop_stack(self) -> None:
+        """Truncate the dump file back to before :meth:`_write_loop_stack`'s block."""
+        offset, self._loop_stack_offset = self._loop_stack_offset, None
+        if offset is None or self._dump_file is None:
+            return
+        try:
+            fd = self._dump_file.fileno()
+            os.ftruncate(fd, offset)
+            os.lseek(fd, offset, os.SEEK_SET)
+        except OSError:
+            self._log.warning(
+                "loop watchdog could not remove the loop thread's stack from the dump file; "
+                "the next start may report this recovered stall as a crash",
+                exc_info=True,
+            )
 
     def _defer_exit_while_paging(self, silence: float) -> None:
         """Re-arm the alarm while the silent loop thread keeps paging.
@@ -708,13 +854,23 @@ class LoopStallWatchdog:
                 self.check()
             except Exception:  # pragma: no cover - watchdog must outlive any error
                 self._log.exception("loop watchdog check raised")
+        # Stopped: no alarm can follow, so an orderly stop must not leave the
+        # block behind to read as a crash at the next start.  Dropped here,
+        # on this thread, so all dump-file I/O stays off the loop thread.
+        self._drop_loop_stack()
 
     def start(self) -> None:
-        """Arm the dump-then-exit alarm and spawn the daemon thread (idempotent)."""
+        """Arm the dump-then-exit alarm and spawn the daemon thread (idempotent).
+
+        Called on the loop thread, which it records, so a stall before the
+        first beat can still read that thread's fault count.
+        """
         if self._thread is not None:
             return
         self._stop.clear()
         self._last_beat = self._now()
+        self._loop_thread_id = threading.get_ident()
+        self._loop_native_thread_id = threading.get_native_id()
         self._last_poll_mono = None
         self._last_poll_suspend = None
         # Prime the authoritative dump-then-exit before the first beat.
@@ -726,9 +882,7 @@ class LoopStallWatchdog:
             except Exception:  # pragma: no cover - degrade to soft dump only
                 self._log.exception("loop watchdog failed to arm the stall alarm")
                 self._later_active = False
-        self._thread = threading.Thread(
-            target=self._run, name="loop-stall-watchdog", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="loop-stall-watchdog", daemon=True)
         self._thread.start()
         if self._exit_after is not None and self._enrich_after >= self._exit_after:
             # Not fatal — enrichment just never lands before the exit.  Flag it
@@ -764,6 +918,8 @@ class LoopStallWatchdog:
                     self._cancel_later()
                 except Exception:  # pragma: no cover - cancel must never crash shutdown
                     self._log.exception("loop watchdog failed to cancel the stall alarm")
+        # The daemon thread drops a loop-thread block on its way out (_run), so
+        # this method, which runs on the loop thread, does no file I/O.
         thread, self._thread = self._thread, None
         if thread is not None and thread.is_alive():
             thread.join(timeout)

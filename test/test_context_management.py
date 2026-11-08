@@ -161,7 +161,6 @@ def test_cleanup_stale_sessions(tmp_config):
     old = sessions_dir / "old-session"
     old.mkdir()
     (old / "history.jsonl").write_text("{}")
-    # Make it old
     import os
 
     old_time = time.time() - 86400 * 10

@@ -38,6 +38,7 @@ from conductor_wake_helpers import (
     _service,
     _Svc,
 )
+from crew_log_drain import assert_drained
 
 from kiro_crew import conductor_wake, work_ledger
 from kiro_crew.testing.wait import async_wait_until, default_timeout
@@ -503,7 +504,7 @@ def _write(unit: str, **fields) -> None:
     from kiro_crew.crew_log import emit as crew_log_emit
 
     assert crew_log_emit.on_work_recorded(unit, dict(fields), timeout=5.0) is True
-    crew_log_emit.flush(timeout=5.0)
+    assert_drained()
     assert crew_log_eager.drain(timeout=10.0)
 
 
@@ -523,9 +524,13 @@ def _board(unit: str, board: str, worker: str) -> None:
     _write(unit, **base, action="bind", item_id="it_p", worker_session_key=worker)
 
 
+#: Each board's own unit, where the report route writes the board's copy of a report.
+_BOARD_UNITS = {CONDUCTOR: "acp-c", OTHER: "acp-o"}
+
+
 def _report(unit: str, board: str, worker: str, stamp: str, *, status: str = "done") -> None:
-    _write(
-        unit,
+    """A worker's report as the route records it: the worker's copy, then the board's."""
+    fields = dict(
         slot=board,
         actor="worker",
         by=worker,
@@ -535,6 +540,9 @@ def _report(unit: str, board: str, worker: str, stamp: str, *, status: str = "do
         summary="s",
         last_report_at=stamp,
     )
+    _write(unit, **fields)
+    if _BOARD_UNITS[board] != unit:
+        _write(_BOARD_UNITS[board], **fields)
 
 
 async def _until(predicate, timeout: float | None = None) -> bool:
@@ -547,6 +555,15 @@ async def _sync_and_join(svc) -> None:
     """Sync the subscriptions, then wait for every join it started to land."""
     conductor_wake.sync_subscriptions(svc)
     await asyncio.gather(*list(conductor_wake._subscriptions.joining.values()))
+    # A board with no warm cell gets no baseline on the join: one background prime folds
+    # it and its first push is the board's first sight. Wait for that prime, then for the
+    # observations it scheduled on this loop, so every case starts from the board's
+    # first sight already recorded.
+    from kiro_crew.crew_log import slot_prime
+
+    assert await asyncio.to_thread(slot_prime.drain, 30.0), "a background prime never finished"
+    live = set(conductor_wake._subscriptions.live)
+    await _until(lambda: live <= set(conductor_wake._registry.boards))
 
 
 def _on_this_loop(monkeypatch, svc) -> None:
@@ -574,14 +591,10 @@ def _spy_events(monkeypatch) -> "list[tuple[str, str, str]]":
 
 
 def test_a_workers_report_wakes_its_conductor_through_the_bus(real_crew_log, monkeypatch):
-    """MUTATION-SENSITIVE. A worker's ``work_report`` append wakes the bound conductor's
-    loop within the one eager batch that folds it -- through the bus, not through a call
-    the folder makes.
+    """A ``work_report`` append wakes the bound conductor's loop through the bus.
 
-    The baseline is the board's first sight and pushes nothing; the report then moves
-    ``it_p``'s stamp and fires for that item. Re-adding a direct call from the eager
-    folder would leave this green, so ``test_the_eager_folder_names_no_conductor`` pins
-    that side.
+    A direct call from the eager folder would also pass here, so
+    ``test_the_eager_folder_names_no_conductor`` pins that side.
     """
     _board("acp-c", CONDUCTOR, WORKER)
     _unit("acp-w", WORKER)
@@ -775,13 +788,8 @@ def test_the_service_start_installs_one_observer(monkeypatch):
 def test_a_worker_session_closing_reaches_no_wake():
     """A close carries no statement from the worker, so it wakes nobody.
 
-    Structural, and that is the point: there is no hook to call. A close is the
-    dashboard's event, not the worker's word, so a push from one tells a conductor
-    something it cannot tell apart from the worker having spoken. What covers a worker
-    whose session is gone is the item's own ``stale`` flag on the next patrol tick --
-    no window needed, as ``is_stale`` answers at once for a closed worker that has
-    reported -- and that same flag is the only cover for a worker whose process dies
-    with its slot still open.
+    A gone worker is caught by the item's ``stale`` flag on the next patrol tick,
+    which ``is_stale`` answers at once for a closed worker that has reported.
     """
     import importlib
     import pkgutil
@@ -867,14 +875,10 @@ def test_a_done_item_ruled_fail_is_woken_by_the_close():
 
 
 def test_an_item_that_never_reported_keeps_the_window_even_when_closed():
-    """The bind-to-first-report gap, which is what the window was written for.
+    """The bind-to-first-report gap, which is what the window is for.
 
-    ``worker_closed`` is answered by FAILING to find a session, and for a worker that has
-    never reported that absence is as likely to mean "not registered yet" as "gone" -- a
-    slot table still rehydrating, a boot tick, a key that table does not carry. This PR
-    makes ticks land in those moments far more often (a boot tick, and a pull-forward on
-    any sibling worker's write), so without the report requirement the conductor would
-    spend a turn on "worker gone" for a worker about to register.
+    ``worker_closed`` means no session was found; for a worker that never reported,
+    that is as likely "not registered yet" as "gone", so the window still decides.
     """
     item_id = _bind()
     item = _item(item_id)
@@ -882,7 +886,7 @@ def test_an_item_that_never_reported_keeps_the_window_even_when_closed():
     assert not work_ledger.is_stale(
         item, worker_running=False, worker_closed=True, window_secs=3600
     )
-    # The window still decides it, exactly as before this input existed.
+    # With no report, the window alone decides.
     assert work_ledger.is_stale(item, worker_running=False, worker_closed=True, window_secs=0)
 
 
@@ -952,12 +956,8 @@ def test_a_table_that_cannot_answer_existence_reports_no_close():
 def test_a_reported_worker_under_construction_is_not_closed(tmp_path):
     """A rehydrating or resuming worker is open, though ``get_slot`` hides it.
 
-    Driven against a REAL ``DashboardState``, because the hiding is that class's own
-    rule and a stub table would only pin this test against itself. Both shapes the
-    construction path takes are covered: the slot registered while marked, and the
-    slot retracted from ``_slots`` across the import tail with the mark still set.
-    The control is the same key with no mark and no slot, which must read as closed --
-    otherwise the two False answers would pass for a function that never says True.
+    Uses a real ``DashboardState``, since the hiding is that class's rule. The control
+    (no mark, no slot) must read closed, so the False answers are not vacuous.
     """
     from chat_test_helpers import _make_state
 
@@ -1053,11 +1053,14 @@ def _record_close(monkeypatch, *, save_fails: bool) -> list[str]:
     events: list[str] = []
     monkeypatch.setattr(autonudge, "_INSTANCE", None)
 
-    async def _save(_state, _slot, *_a, **kw) -> None:
+    async def _save(_state, _slot, *_a, **kw) -> bool:
         if kw.get("closed"):
             events.append("save")
             if save_fails:
                 raise OSError("disk full")
+        # True: this double models the durable write itself; a bare None reads
+        # as the save's own refusal, which the close answers rather than ignores.
+        return True
 
     async def _wake(_svc, board: str, item_id: str = "") -> str:
         events.append(f"wake:{board}:{item_id}")

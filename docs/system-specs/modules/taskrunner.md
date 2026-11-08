@@ -376,6 +376,10 @@ Every `decompose_yaml` audit event carries the run's provenance — `source` and
 `spec_name` in its metadata, and the source as its caller identity (`dashboard` for
 unsourced runs), so a denial is attributed to the surface that started the run.
 
+A YAML plan with no workflow name, no `# ` line and no path is named after its first
+step's title (`auto_name`'s `first_step`), not after its first line, a YAML key such as
+`agents:`.
+
 ### Data Types
 
 Named `TaskStatus`/`Task`/`Project` live in `task_models.py`; `StepStatus`/`Step`/`TaskRun`
@@ -398,6 +402,7 @@ class Task:
     result: str = ""  # updated during streaming (partial results visible)
     verification: str = ""  # VerificationStatus value; "" until a verdict exists (see Test verification)
     resume_hint: str = ""  # "resume, do not restart" after a death that may have run the prompt
+    superseded: bool = False  # a revised plan replaced it; execute_plan never resets it
     requires_approval: bool = False
     force_approval: bool = False  # blocks even in YOLO mode
     depends_on: list[int] = field(default_factory=list)
@@ -416,6 +421,7 @@ class Project:
     replan_count: int
     memory: WorkingMemory
     task_id: str
+    agent: str             # the agent every session of the run opens with ("" = default); persisted
     work_dir: str
     last_task_time: float  # tracks activity for watchdog
     branch_name: str       # git branch for task (e.g. kirocrew/task/{task_id})
@@ -438,6 +444,7 @@ class Project:
 - `_runs: dict[str, TaskRun]` — keyed by task_id
 - `_tasks: dict[str, asyncio.Task]` — background asyncio tasks
 - `start_background()` accepts optional `agent` param, returns a collision-resistant task ID (`{spec_stem}_{time_ns}`)
+- The agent belongs to the run, not to the runner: `plan()` and `start_background()` store it on `Project.agent`, `runs.json` persists it, and every step, review, decompose (including a replan) and lesson session of the run reads `run.agent` when it opens. Starting another run, resuming, retrying or a gateway restart therefore never changes the agent of a run already planned or in flight. `status()` reports each run's `agent`; its top-level `agent` is the latest run's. `retry_from_task(..., agent=...)` re-targets the retried steps only when an agent is given; `POST /api/taskrunner/{task_id}/retry` passes none, so a retry keeps the run's agent
 - `_start_lock` serializes concurrency admission, completed-run pruning, ID allocation, durable planning-placeholder persistence, and `_tasks` registration
 - Step, review and decompose sessions are opened through `sessions.open_task_session(..., agent=...)` so the task runs with the specified agent; `get_or_create()` is only the lesson-extraction fallback when there is no runtime key
 - Each step gets its own session: `taskrunner:{task_id}:task{N}` (fresh per step, reset after)
@@ -447,6 +454,7 @@ class Project:
 - `_tasks` cleaned in `finally` block (no leaks)
 - `start_background()` and `execute_plan()` enforce `_MAX_CONCURRENT_TASKS` before changing run state, so rejected admission cannot leave a partially started run. With a task admission attached (below) the guard is skipped: the lane meters the steps, so an over-limit run queues instead of being refused.
 - Replanned steps also reset sessions after execution (no leaks in `_try_replan`)
+- Installing a revised plan marks every failed step (a parallel group can fail more than the one handed to `_try_replan`) and the original plan's steps that never started `superseded` (the latter also `PENDING` → `SKIPPED`); `execute_plan` never resets a superseded step, so a later resume runs only the revised plan. The failed step keeps `FAILED` and its error; `superseded` is persisted in `runs.json`
 
 ## Durable task queue (`taskq.adapters.runner`)
 
@@ -618,6 +626,7 @@ Tasks can be paused and resumed without losing progress:
 
 - `pause(task_id)` — sets `run.status = "pausing"` and cancels the asyncio task gracefully; the `_execute()` `finally` block promotes `"pausing"` → `"paused"` after session cleanup
 - Resume is not a dedicated method — call `execute_plan(task_id, agent="", fresh=False)` to restart a run whose status is `"planned"`, `"paused"`, `"cancelled"`, or `"failed"`. It resets incomplete (non-passed/non-skipped) tasks to `PENDING` and re-runs from there (with `fresh=True`, resets all tasks)
+- `execute_plan`'s `agent` applies only to a run that has not begun (`"planned"`), the same rule as its `workspace_dir`; an empty one keeps the planned agent. A paused, cancelled or failed run resumes on the agent it ran with, whatever the caller sends (the Projects page sends its agent selector with Resume as well as Execute)
 - Paused status visible in dashboard UI as distinct color/icon
 - API: `POST /api/taskrunner/{task_id}/pause`, `POST /api/taskrunner/{task_id}/execute` (resume/restart) — there is no `/resume` route
 
@@ -632,7 +641,9 @@ On gateway restart (`_load_runs`), a run left in an active state is settled so n
 | `planning` | `failed` (re-plan to continue) |
 | `cancelling` | `cancelled`; open tasks (`IN_PROGRESS`, `PENDING`, `REVIEWING`) become `CANCELLED` |
 
-A run recovered from `running`, `pausing` or `cancelling` also has `auto_approve` cleared and its auto-approve scope deactivated, so the user re-affirms trust on resume.
+A run recovered from `running`, `pausing` or `cancelling` also has `auto_approve` cleared and its auto-approve scope deactivated, so the user re-affirms trust on resume. Its `agent` is restored from `runs.json`, so the adoption sweep's `execute_plan(task_id)` resumes it on the agent it ran with; an entry written before the field existed loads with `""`, the default agent.
+
+A graceful gateway stop or restart ends active runs the same way a crash does. `_shutdown` calls `TaskRunner.begin_shutdown()` before it stops memory, the MCP broker or any session, because those stops break the step that is running; a set `shutdown_event` (the stop signal) counts the same from the moment it is set. From then on a run that is still `running` is not re-planned, a replan already under way that the stop cuts short does not fail it, and a failure or an exception the stop causes does not mark it `failed` or `completed`. A cancellation (`CancelledError`) is always a cancel, never read as the stop, because some cancel paths (Workflow Runs) cancel the driver without setting `cancelling` first. Its driver's `finally` saves its progress with the status still `running` and skips `_taskq_end_run` and `git_coord.finalize`, so the run row stays for the adoption sweep and the worktree stays on disk; the restart settles the run by the table above and resumes it from its checkpoint. A run the operator was pausing or cancelling (`pause()` and `cancel()` set the status before they cancel) still ends as before. A run whose driver already exited at the stop is listed in `_stop_frozen`; a later `pause()` or `cancel()` schedules `_settle_stopped_run` (held in `_stop_settles`, apart from `_tasks`, so a repeated cancel cannot cancel it), which writes the `paused` or `cancelled` outcome and ends the queue row as the driver's `finally` would have. A Workflow Runs cancel of a TaskRunner-driven run reaches it too: `WorkflowService.cancel` also calls `TaskRunner.cancel(task_id, exact=True)` when the registry accepts the cancel. `_admission_closed()` refuses new runs once `begin_shutdown()` has run.
 
 - Prevents zombie tasks that appear running but have no backing asyncio task
 - User can resume manually from dashboard
@@ -757,7 +768,7 @@ workspace is never removed.
 | POST | `/api/taskrunner/plan/cancel` | Cancel planning |
 | POST | `/api/taskrunner/from-chat` | Create or update a plan from chat-provided steps |
 | DELETE | `/api/taskrunner/{task_id}` | Delete finished run from memory + disk |
-| PATCH | `/api/taskrunner/{task_id}/name` | Rename a project |
+| PATCH | `/api/taskrunner/{task_id}/name` | Rename a project (`name` must be a string, else 400; trimmed; blank is 400 here and no change on the `PUT /api/projects/{id}` alias) |
 | PATCH | `/api/taskrunner/{task_id}/tasks/{index}` | Edit a pending task |
 | PUT | `/api/taskrunner/{task_id}/plan` | Replace the planned task list |
 | POST | `/api/taskrunner/{task_id}/retry` | Retry from step N (`{from_step}` in body) |
@@ -784,7 +795,9 @@ loop): a traversal, a missing file or a UNC/laundered link answers
 Starting is refused while the `projects` app (the Task Runner page) is
 switched off in Library: `POST /api/taskrunner` answers 409 `app_disabled`
 ("Task Runner is disabled. Enable it in Library to start tasks.") before any
-inline spec is written, the `task_run` MCP tool relays the same refusal, and
+inline spec is written. `POST /api/taskrunner/plan`, `/{task_id}/execute` and
+`/{task_id}/retry` answer the same before a plan is made or a run admitted
+(`_task_runner_disabled`). The `task_run` MCP tool relays the start refusal, and
 the chat command `task run <spec>` replies with that sentence. Only an
 explicit `enabled: false` install record counts as disabled
 (`apps.manager.app_disabled`); a host with no record runs tasks.
@@ -959,7 +972,7 @@ A task rooted in an existing git repository runs on an isolated branch via
 - **Revert on failure (git runs)**: `git reset --hard HEAD~1` when review fails, before retry.
 - **State summary**: `git log --oneline` + `git diff --stat` is injected when git coordination is active.
 - **Review diff**: the step's diff (`git_coord.get_step_diff`, capped at 8000 characters) feeds the independent review session; only a non-git run or a step whose commit failed uses the generic review prompt.
-- **Finalize**: an owned worktree is cleaned up when the run exits.
+- **Finalize**: an owned worktree is cleaned up when the run exits, except when a gateway stop cut the run short (§ Crash Recovery): that worktree is kept for the resume.
 - **Resume recovery**: a retry — and a restart of a run that already had a
   worktree — validates the saved worktree's path, repository,
   and branch before dispatching more steps. A lost worktree is recreated from
@@ -1084,7 +1097,7 @@ Independent review using separate session (`taskrunner:{task_id}:review`):
 `tool_permission.settle` with the step's ladder (`_step_permission_policy`, rebuilt
 when a mode switch changes whose spec hooks gate the turn). In order:
 
-1. The agent spec's PreToolUse hooks (with the Hooks page's), on a backend that never receives them, run first and fail closed: a deny, a hook that errors, or hooks that cannot be read block the call (`metadata.reason=spec_hook_deny`). Then the hook rules: a deny remains a denial, and an explicit hook auto-approval remains eligible. A hook auto-approval for a **shell** command is honoured only after `name_grant.refusal_for_event(event)` confirms each program name in the command still resolves to the program it appears to name; a refusal downgrades to the run's trust grant, then the interactive prompt (or the headless deny-by-default), and is audited as `outcome=auto_approve_declined` with `reason=name_grant`.
+1. The Hooks page's PreToolUse hooks, with the agent spec's own on a backend that never receives them, run first and fail closed: a deny, a hook with no verdict, or hooks that cannot be read block the call (`metadata.reason=spec_hook_deny`). Then the hook rules: a deny remains a denial, and an explicit hook auto-approval remains eligible. A hook auto-approval for a **shell** command is honoured only after `name_grant.refusal_for_event(event)` confirms each program name in the command still resolves to the program it appears to name; a refusal downgrades to the run's trust grant, then the interactive prompt (or the headless deny-by-default), and is audited as `outcome=auto_approve_declined` with `reason=name_grant`.
 2. The run's own trust grant (below).
 3. The mid-stream context check, which runs even for a request a hook or the run's trust already granted: past `_MID_STREAM_COMPACT_PCT` the request is rejected bare and the turn re-run after compaction.
 4. When nothing grants the request, `on_tool_approval` decides it if the runner has a callback; otherwise the headless path rejects the tool with `headless_no_authorization`.
@@ -1220,7 +1233,7 @@ cannot pass for a finished spec.
 The page uses a left run rail plus a detail/compose area. The rail defaults to
 260px, is resizable from 220–460px, and can collapse to a 48px strip.
 
-- **Run rail**: always present; compact run cards show status, name, progress, live auto-approve state, and cancel/delete controls. The top action starts a new task.
+- **Run rail**: always present; compact run cards show status, name, progress, live auto-approve state, and cancel/delete controls. The top action starts a new task. Runs are listed newest first by `started_at`, sorted on the client (`listedRuns` in `website/src/pages/ProjectsPage.tsx`); the API keeps the registry's insertion order. Equal stamps put the later-inserted run first. A run is stamped when it starts, when a plan is executed, and on Restart (`retry_from_task`), so a restarted run moves to the top. A plan that has not run yet has `started_at` 0 and sits at the bottom.
 - **Compose area** (no run selected): **Compose**, **From Spec**, and **From YAML** modes share `AgentSelector` and an optional workspace override.
 - **Compose mode**: task text, **Refine into Spec**, **Plan**, per-run auto-approve, and **Run** controls; planning has a cancellable `PlanningBanner`.
 - **From Spec / From YAML**: editable text plus file upload, **Run**, and **Plan**. YAML mode states that a workflow-shaped document bypasses the LLM decomposer.
@@ -1288,6 +1301,12 @@ resets interrupted task states and withdraws active runs' auto-approve grants.
 with a spec path. Ad-hoc saved plans have no spec file and create no project-visible
 progress file. Progress writes are best-effort; `load_checkpoint` returns no
 checkpoint when it cannot read one and otherwise recognizes completed task titles.
+A save rewrites the file in place, so it keeps its owner, group, mode and ACL, and
+it claims the room the file grows into before it changes a byte: on a local
+filesystem that overwrites in place (not a copy-on-write one such as btrfs or ZFS,
+nor a network mount), a save that runs out of space leaves the previous checkpoint
+whole. It is not a rename, so a process killed in the middle of the rewrite itself
+can still leave a mixed file.
 
 These writes are not a transaction across task snapshots, workflow-run files,
 project checkpoints, workspaces or external effects. A process exit after commit

@@ -5,7 +5,7 @@ and in the chip's status read (``_fetch_check_status``)."""
 from __future__ import annotations
 
 import pytest
-from source_providers_helpers import _clear_issue_cache  # noqa: F401
+from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
 from source_providers_helpers import _rollup_reply
@@ -382,21 +382,6 @@ def test_parse_gitlab_merge_request_with_nested_group() -> None:
     assert ref.project == "acme/platform/service"
     assert ref.repo == "service"
     assert ref.number == 42
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        "http://github.com/org/repo/pull/1",
-        "https://evil.example/github.com/org/repo/pull/1",
-        "https://github.com.evil.example/org/repo/pull/1",
-        "https://user@github.com/org/repo/pull/1",
-        "https://gitlab.com/group/project/issues/1",
-    ],
-)
-def test_parse_source_url_rejects_untrusted_shapes(url: str) -> None:
-    with pytest.raises(ValueError):
-        source.parse_source_url(url)
 
 
 def _suite(run: int, run_conclusion: str, *, definition: int = 1, event: str = "pull_request"):

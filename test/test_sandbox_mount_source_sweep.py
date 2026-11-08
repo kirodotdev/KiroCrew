@@ -49,7 +49,7 @@ from pathlib import Path
 import pytest
 from test_sandbox_launcher_program import CoveringLibc, launch, payload
 
-from kiro_crew import sandbox_launcher, sandbox_launcher_program, sandbox_plan
+from kiro_crew import sandbox_launcher, sandbox_launcher_program, sandbox_mount_sweep, sandbox_plan
 from kiro_crew.config.paths import config_dir
 from kiro_crew.sandbox import (
     _MOUNT_SOURCE_MAX_AGE_SECONDS,
@@ -59,6 +59,7 @@ from kiro_crew.sandbox import (
     _PinScanCoverage,
     cleanup_stale_sandbox_profiles,
 )
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import wait_until
 
 program = sandbox_launcher_program
@@ -1557,8 +1558,8 @@ class TestSweepTimeBudget:
 
         ``monkeypatch.undo()`` would also revert the autouse host-isolation floor
         — including the ``KIROCREW_HOME`` pin — and this sweep then stamps its
-        one-shot marker into the operator's REAL data home. Caught in review of
-        this very test. Every knob here is therefore undone through its own
+        one-shot marker into the operator's REAL data home. Every knob here is
+        therefore undone through its own
         context, never the shared fixture.
 
         Budget already spent, checked every SECOND entry: the check runs before
@@ -1590,6 +1591,32 @@ class TestSweepTimeBudget:
 
         # Budget restored: the remainder is reclaimed, nothing is stranded.
         assert _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)]) == 3
+        assert not list(tmp_path.iterdir())
+
+    def test_the_pin_scan_is_not_charged_to_the_keyed_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A busy host's pin scan alone outlasts the budget; the pass still reclaims."""
+        clock = ManualClock(start=time.time())
+        clock.install(monkeypatch, sandbox_mount_sweep)
+
+        def _slow_scan(proc_root: str = "/proc", *, coverage=None, **_kw):
+            clock.advance(60.0)  # longer than the whole budget
+            return (set(), True)
+
+        monkeypatch.setattr("kiro_crew.sandbox._mount_pinned_source_names", _slow_scan)
+        monkeypatch.setattr("kiro_crew.sandbox._SWEEP_BUDGET_CHECK_EVERY", 2)
+        for index in range(3):
+            _make_dir(tmp_path, f"kirocrew_sb_{_DEAD_PID}_dir{index:02d}")
+
+        # Only the scan is excused: a spent budget still ends the pass after it.
+        budget = self._spent_budget()
+        try:
+            assert _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)]) == 1
+        finally:
+            budget.undo()
+
+        assert _cleanup_stale_sandbox_mount_sources(roots=[str(tmp_path)]) == 2
         assert not list(tmp_path.iterdir())
 
     @requires_posix_modes

@@ -52,24 +52,38 @@ _MAX_FILES_WALKED = 20_000
 
 
 def hardened_git_env(**pins: str) -> dict[str, str]:
-    """An environment in which git reads no configuration anyone could plant.
+    """An environment in which git executes no program anyone could plant.
 
     This runs in the GATEWAY process, outside the sandbox, on a tree an agent
-    can write to. A ``diff.external`` / ``core.pager`` / hook in a repo,
-    global or system config, or a ``GIT_*`` variable in the inherited
-    environment, would have git run whatever it names with the gateway's
-    privileges. Repo-level config cannot be disabled by environment, so the
-    argv also pins the two settings a diff can execute (``--no-ext-diff``,
-    ``--no-textconv``) and the pager.
+    can write to. A ``diff.external`` / ``core.pager`` / ``core.fsmonitor`` /
+    hook in a repo, global or system config, or a ``GIT_*`` variable in the
+    inherited environment, would have git run whatever it names with the
+    gateway's privileges. Global and system config are switched off; the
+    repository's own config cannot be, so every fixed-name exec key in it is
+    pinned through ``GIT_CONFIG_*`` (``update_governance.git_neutralizer_env``),
+    and the argv pins the two settings a diff can execute (``--no-ext-diff``,
+    ``--no-textconv``). A repo-NAMED driver (``filter.<name>.clean``) has no
+    key to pin: a caller whose command can reach one refuses first with
+    ``update_governance.repo_exec_driver_reason``.
 
     Shared by every gateway-side git probe (the cloud launcher's release-tag
     probe reuses it) so the recipe lives once; ``pins`` adds a caller's own
     ``GIT_*`` variables on top (a ``GIT_CEILING_DIRECTORIES`` bound, say).
     """
+    # Imported here, not at module top: the update seam imports far more than a
+    # startup fingerprint should pay for, and nothing else in this module needs it.
+    from kiro_crew.platform.update_governance import git_neutralizer_env
+
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_TERMINAL_PROMPT"] = "0"
+    # The two lines above silence global and system config only. The REPO's own
+    # `.git/config` is still read, and a `core.fsmonitor` or `core.hooksPath`
+    # there is executed by the `git diff HEAD` below (measured on git 2.47:
+    # both ran). `GIT_CONFIG_*` outranks repo config, so the shared pins close
+    # every fixed-name exec key; repo-NAMED drivers are refused by the caller.
+    env.update(git_neutralizer_env())
     env.update(pins)
     return env
 
@@ -96,6 +110,14 @@ def _git_fingerprint(root: Path) -> str | None:
         if head.returncode != 0 or not head.stdout.strip():
             return None
         sha = head.stdout.strip()
+        # The worktree diff below runs a repo-named `filter.<name>.clean` on
+        # every stat-dirty file, and no environment pin reaches a name the
+        # repository chose. Such a tree gets no git fingerprint; the mtime rule
+        # answers instead, which is the same fallback as "no trusted git".
+        from kiro_crew.platform.update_governance import repo_exec_driver_reason
+
+        if repo_exec_driver_reason(str(root)):
+            return None
         # Tracked-file changes only; an untracked scratch file is not code
         # the process runs differently for. The diff TEXT is digested, not
         # just its presence: two different uncommitted states of one HEAD

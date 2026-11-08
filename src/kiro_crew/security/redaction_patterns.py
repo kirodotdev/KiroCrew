@@ -9,7 +9,8 @@ rejects is a silent leak, not a missed optimisation. The comment above
 
 The shape-only JWT branch is searched apart from the others, so one scan stays
 linear on text that repeats a lookalike. :func:`get_credential_patterns` hands
-the alternation to callers outside the package.
+the alternation to callers outside the package, and :func:`iter_credential_matches`
+scans a text with it in linear time.
 
 :mod:`kiro_crew.security.redaction` is the import path of every name defined
 here.
@@ -17,13 +18,12 @@ here.
 
 from __future__ import annotations
 
-import base64
-import json
 import re
 from collections.abc import Iterator
 
 import kiro_crew.security.pem_scan as pem_scan
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
+from kiro_crew.jwt_header import is_jwt_header
 
 # ── Credential Output Redaction ──
 # Catches raw credential patterns in LLM output / tool results,
@@ -216,8 +216,8 @@ _CREDENTIAL_PATTERNS = re.compile(
     # digest, instead of letting redaction silently stop matching.
     #
     # `generate_token` always emits 6 claims (`sub`/`exp`/`session_exp`/`iat`/`nonce`/
-    # `gen`), with a 16-hex-char nonce and float timestamps; `app`, `prompt` and
-    # `extra` only ADD. Payload length is NOT fixed. It scales with `len(sub)`, and
+    # `gen`), with a 16-hex-char nonce and float timestamps; `kind`, `app`, `prompt`
+    # and `extra` only ADD. Payload length is NOT fixed. It scales with `len(sub)`, and
     # `json.dumps` writes each float timestamp at its own repr width, which base64
     # then quantises into 4-char steps. So the floor is derived, not sampled: a
     # 1-char `sub` (the narrowest a caller passes: the app validator requires at
@@ -259,7 +259,9 @@ _CREDENTIAL_PATTERNS = re.compile(
     # the JWT); a bare JWT is still caught independently (defense in depth).
     f"|{JWT_MULTI_SEGMENT}"  # JWS (3-seg) / JWE (5-seg incl. dir/ECDH-ES), shared spelling
     r"|(?<![A-Za-z0-9_-])(?!(?<=\.)(?!eyJ[A-Za-z0-9_]*-)(?!eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_]*-)(?!eyJ[A-Za-z0-9_-](?:[A-Za-f][A-Za-z0-9_-]{3})*(?:[A-Za-f][A-Za-z0-9_-]{1,2})?\.))eyJ[A-Za-z0-9_-]{96,}\.[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"  # 2-seg link token
-    r"|(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
+    # Pass 1 keeps `bearer_prefix` and redacts only the token, so JSON still parses.
+    r"|(?P<bearer_prefix>(?i:Authorization)[\"\']?\s*[:=]\s*[\"\']?(?i:Bearer)\s+)"
+    r"[A-Za-z0-9._~+/-]+=*"  # HTTP/JSON bearer
     r")",
 )
 
@@ -285,6 +287,78 @@ _CREDENTIAL_PATTERNS_SANS_JWT = re.compile(
 # Telegram bot token, as `_CREDENTIAL_PATTERNS` spells it.
 _TELEGRAM_BRANCH = r"[0-9]{6,}:[A-Za-z0-9_-]{30,}"
 _TELEGRAM_AT_RE = re.compile(_TELEGRAM_BRANCH)
+
+# Shape-only like JWT: a CDK-generated ARN resource name (logical id + hash)
+# past 30 chars makes `...:<account-id>:<resource>` match `<digits>:<30+ run>`.
+_CREDENTIAL_PATTERNS_SANS_TELEGRAM = re.compile(
+    _CREDENTIAL_PATTERNS.pattern.replace(f"|{_TELEGRAM_BRANCH}", "", 1)
+)
+_TELEGRAM_DIGITS_RE = re.compile(r"[0-9]{6,}(?=:)")
+# A real ARN prefix ending at the rejected start; guarded so a mere lookalike
+# (`myarn:aws:s3:us-east-1:`) is not exempt.
+_ARN_ACCOUNT_ID_PREFIX_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])arn:[a-z][a-z0-9-]*:[A-Za-z0-9-]+:[a-z0-9-]*:\Z"
+)
+# The ARN exemption fires only when the hit's own digit run is an AWS account id,
+# which is ALWAYS exactly 12 digits. A Telegram bot id is 6-10 digits, so this is
+# what tells a real `arn:...:<account>:<resource>` boundary apart from a genuine
+# token placed right after an ARN prefix (`arn:p:s:r:123456789:<35-char secret>`,
+# a 9-digit bot id). Without this, that token would be exempted and -- since the
+# bare-secret pass needs 40+ chars -- leak unredacted. `{12}` with a following
+# non-digit so a 13+ digit run (not an account id) is not read as a 12-digit one.
+_ARN_ACCOUNT_ID_12_DIGITS_RE = re.compile(r"[0-9]{12}(?![0-9])")
+# The ARN-prefix check runs once per Telegram-shaped hit, and every long CDK ARN
+# this rule exists to pass is such a hit. The pattern has no left-anchor literal
+# (it opens on a negative look-behind), so an unbounded `search(text, 0, hit)`
+# retries every start offset from 0 and makes the whole scan O(hits x len(text)) --
+# the loop-stall shape `test_security_gate_liveness` guards against. The prefix
+# must end exactly at the hit (`\Z` with `endpos = hit`), so only the bytes just
+# before the hit can match: the search starts at `hit - _ARN_PREFIX_MAX_LOOKBACK`
+# instead, which caps each check at a constant and keeps the scan linear. The
+# window spans the longest real `arn:<partition>:<service>:<region>:<account>:`
+# (partition <= 10, service <= 64, region <= 24, account 12, five colons and
+# `arn`), with room to spare. A prefix longer than the window is not a real ARN
+# and simply stays redacted -- the fail-safe direction. The look-behind guard is
+# unaffected: `re` evaluates it against the true string start, not `pos`.
+_ARN_PREFIX_MAX_LOOKBACK = 256
+# A 12-digit run alone does not prove an account id: a 6-10 digit bot id padded with
+# leading zeros is 12 digits too, so `arn:p:s:r:000110201543:<secret>` would pass the
+# checks above with the bot token intact. The exemption is withheld, and the hit
+# redacts, when either shape below holds. Each one gives up some real ARNs to
+# over-redaction, which is the safe way to be wrong.
+#
+# A Telegram bot id is 6-10 digits. Leading zeros in front of one pad it out to 12;
+# a real account id can start `00`, and one that does, followed by a 30+ character
+# resource name, redacts.
+_BOT_ID_LENGTHS = range(6, 11)
+# The positive half: the exemption needs the WHOLE tail to read as a CDK-generated
+# name, because no absence of a secret marker proves a tail public. An optional
+# PascalCase stack name and `-`, a PascalCase logical id whose every word holds a
+# lowercase letter, CDK's 8-character uppercase-hex hash, then an optional
+# CloudFormation suffix of 8-13 letters and digits:
+# `MyStack-MyTopicA1B2C3D4-N1zQX9yJZ8wK`. A random secret, or one cut up behind a
+# padded account id, has uppercase-only or digit-then-lowercase runs a word cannot
+# hold, so it stays redacted. Explicitly named or unusual resources redact too.
+_CDK_WORDS = r"(?:[A-Z][a-z]+[0-9]*)+"
+_CDK_RESOURCE_NAME_RE = re.compile(
+    rf"(?:{_CDK_WORDS}-)?{_CDK_WORDS}[0-9A-F]{{8}}(?:-[A-Za-z0-9]{{8,13}})?"
+)
+# Longer tails redact unchecked, which also bounds the shape match per hit.
+_CDK_NAME_MAX_LEN = 256
+
+
+def _arn_exemption_withheld(hit: str) -> bool:
+    """Whether a Telegram-shaped hit inside an ARN is still a bot token.
+
+    *hit* is the whole Telegram-branch match, ``<12 digits>:<run>``. The tail must
+    positively match a CDK-generated name; the padded-id test after it only narrows.
+    """
+    account, _, tail = hit.partition(":")
+    if len(tail) > _CDK_NAME_MAX_LEN or not _CDK_RESOURCE_NAME_RE.fullmatch(tail):
+        return True
+    unpadded = account.lstrip("0")
+    return unpadded != account and len(unpadded) in _BOT_ID_LENGTHS
+
 
 # Leftmost start of a non-JWT branch, found in linear time. Unguarded, the Telegram
 # branch re-walks a digit run from every digit in it. A later digit has fewer digits
@@ -314,15 +388,6 @@ def _sans_jwt_start(text: str, pos: int) -> int:
         return pos
     found = _CREDENTIAL_STARTS_SANS_JWT.search(text, pos)
     return len(text) + 1 if found is None else found.start()
-
-
-def _is_json_object_segment(segment: str) -> bool:
-    """Whether *segment* base64url-decodes to a JSON object: JOSE, itsdangerous, Flask session."""
-    try:
-        header = json.loads(base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4)))
-    except (ValueError, RecursionError):
-        return False
-    return isinstance(header, dict)
 
 
 _JWT_SEGMENT_RUN_RE = re.compile(r"[A-Za-z0-9_-]*")
@@ -402,7 +467,7 @@ def _credential_search(text: str, pos: int, starts: list[int]) -> re.Match[str] 
 
 
 def _credential_matches(text: str) -> Iterator[re.Match[str]]:
-    """``_CREDENTIAL_PATTERNS.finditer(text)``, minus JWT-branch hits whose header is not JSON.
+    """``_CREDENTIAL_PATTERNS.finditer(text)``, minus JWT/Telegram shape-only false hits.
 
     A rejected hit retries the other branches at its start, then resumes one character on,
     so a credential nested inside the rejected span is still found. A header holding a
@@ -412,19 +477,34 @@ def _credential_matches(text: str) -> Iterator[re.Match[str]]:
     starts = [-1, -1, -1, -2]
     while (m := _credential_search(text, pos, starts)) is not None:
         header = m.group().split(".", 1)[0]
-        if (
-            m.group().startswith("eyJ")
-            and m.group().count(".") >= 2
-            and header.find("eyJ", 1) == -1
-            and not _is_json_object_segment(header)
-        ):
+        if m.group().startswith("eyJ") and m.group().count(".") >= 2 and not is_jwt_header(header):
             alt = _CREDENTIAL_PATTERNS_SANS_JWT.match(text, m.start())
             if alt is None:
                 pos = m.start() + 1
                 continue
             m = alt
+        elif (
+            _TELEGRAM_AT_RE.fullmatch(m.group())
+            and _ARN_ACCOUNT_ID_12_DIGITS_RE.match(text, m.start())
+            and _ARN_ACCOUNT_ID_PREFIX_RE.search(
+                text, max(0, m.start() - _ARN_PREFIX_MAX_LOOKBACK), m.start()
+            )
+            and not _arn_exemption_withheld(m.group())
+        ):
+            alt = _CREDENTIAL_PATTERNS_SANS_TELEGRAM.match(text, m.start())
+            if alt is None:
+                # Skip the whole digit run: mid-run still reads one digit short.
+                digits = _TELEGRAM_DIGITS_RE.match(text, m.start())
+                pos = digits.end() if digits else m.start() + 1
+                continue
+            m = alt
         yield m
         pos = max(m.end(), m.start() + 1)
+
+
+def iter_credential_matches(text: str) -> Iterator[re.Match[str]]:
+    """Public name for :func:`_credential_matches`, the linear scan ``redact_credentials`` runs."""
+    return _credential_matches(text)
 
 
 def _contains_credential_pattern(text: str) -> bool:
@@ -545,7 +625,7 @@ _CREDENTIAL_PREFILTER_AUTHORIZATION_RE = re.compile(r"z(?<=(?i:Authori)z)(?i:ati
 _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE = re.compile(r"Z(?<=(?i:Authori)Z)(?i:ation)")
 
 
-def _might_contain_credential(text: str) -> bool:
+def _might_contain_credential_py(text: str) -> bool:
     """Return True if *text* could contain a `_CREDENTIAL_PATTERNS` match.
 
     A strict superset of `_CREDENTIAL_PATTERNS.search(text) is not None`: it may
@@ -564,6 +644,73 @@ def _might_contain_credential(text: str) -> bool:
         or _CREDENTIAL_PREFILTER_AUTHORIZATION_RE.search(text) is not None
         or _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE.search(text) is not None
     )
+
+
+def _native_gate_fingerprint() -> str:
+    """Hash of the gate's definition; the native module is used only when it matches.
+
+    Covers every literal and anchor above plus the Unicode version, because the
+    native gate spells Python's ``\\s`` and case folding out by hand. Any edit
+    here changes the hash and turns the native gate off until it is rebuilt.
+    """
+    import hashlib
+    import unicodedata
+
+    spec = repr(
+        (
+            _CREDENTIAL_PREFILTER_LITERALS,
+            _CREDENTIAL_PREFILTER_GH_RE.pattern,
+            _CREDENTIAL_PREFILTER_TELEGRAM_RE.pattern,
+            _CREDENTIAL_PREFILTER_DISCORD_RE.pattern,
+            _CREDENTIAL_PREFILTER_URI_RE.pattern,
+            _CREDENTIAL_PREFILTER_AUTHORIZATION_RE.pattern,
+            _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE.pattern,
+            unicodedata.unidata_version,
+        )
+    )
+    return hashlib.sha256(spec.encode()).hexdigest()[:16]
+
+
+def _load_native_gate():  # type: ignore[no-untyped-def]
+    """The optional ``kc_native`` gate, or None (not built, disabled, or out of date)."""
+    import os
+
+    if os.environ.get("KIROCREW_NATIVE_REDACTION", "1") == "0":
+        return None
+    try:
+        import kc_native  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    if getattr(kc_native, "GATE_FINGERPRINT", None) != _native_gate_fingerprint():
+        # Built for another gate definition or Unicode version (the fingerprint
+        # covers unicodedata.unidata_version, so a build matches one CPython
+        # minor's Unicode tables). Safe, but the fast path is off: say so once.
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "kc_native fingerprint does not match this interpreter's credential gate; "
+            "using the Python gate"
+        )
+        return None
+    return kc_native.might_contain_credential
+
+
+_NATIVE_GATE = _load_native_gate()
+
+
+def _might_contain_credential(text: str) -> bool:
+    """Return True if *text* could contain a `_CREDENTIAL_PATTERNS` match.
+
+    Same answer as :func:`_might_contain_credential_py` for every string; uses the
+    native single-pass scan when it is available, else the Python one. A str the
+    native side cannot encode (a lone surrogate) takes the Python path.
+    """
+    if _NATIVE_GATE is not None:
+        try:
+            return _NATIVE_GATE(text)
+        except UnicodeEncodeError:
+            pass
+    return _might_contain_credential_py(text)
 
 
 # Minimum string length at which `_might_contain_credential` is cheaper than the

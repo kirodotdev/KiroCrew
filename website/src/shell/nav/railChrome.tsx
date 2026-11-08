@@ -6,6 +6,8 @@ import type { getThemeBranding } from '../../themeBranding'
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { useGuideRevealScope } from '../../guide/GuideRevealScope'
+import { OverlayPortal } from '../../components/overlayRoot'
+import { useNavTip } from './navTip'
 
 /** Glyph inside the nav-rail header's expand/collapse button — the same
  *  load-proof contract as MobileNavGlyph, with the rail's own geometry. When
@@ -51,6 +53,9 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
 }) {
   // The rail's guide scope (`shell.nav-rail`): open while it shows labels.
   useGuideRevealScope('shell.nav-rail', !effectiveCollapsed)
+  // Collapsed, the logo is the only expand control and carries no text, so it
+  // gets the same instant hover/focus label as the collapsed nav rows (#25743).
+  const { tip, tipOn, rowRef, showTip, hideTip, dismissTip, pointerProps } = useNavTip<HTMLButtonElement>(effectiveCollapsed)
   /*
    * mb-1.5 (6px) + the container's gap-0.5 (2px) = 8px between the
    * header and the first nav item, without widening the 2px item gaps.
@@ -88,11 +93,16 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
       <button
         type="button"
         className={`group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left ${effectiveCollapsed ? 'justify-center' : ''}`}
-        onClick={toggleNav}
+        onClick={() => { dismissTip(); toggleNav() }}
+        {...pointerProps}
+        onMouseEnter={showTip}
+        onMouseLeave={hideTip}
+        onFocus={showTip}
+        onBlur={hideTip}
         title={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
         aria-label={effectiveCollapsed ? i18nT('app.expand_sidebar') : i18nT('app.collapse_sidebar')}
         aria-expanded={!effectiveCollapsed}
-        {...uiLocation('shell.nav-toggle')}
+        {...uiLocation('shell.nav-toggle', rowRef)}
       >
         <span className={`flex items-center gap-2.5 min-w-0 transition-[margin] duration-300 ${effectiveCollapsed ? 'mt-1' : ''}`}>
           <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-9 h-9' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
@@ -143,6 +153,15 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
             </motion.span>
           )}
         </AnimatePresence>
+        {effectiveCollapsed && tip && <OverlayPortal>
+          <div
+            data-testid="rail-expand-tip"
+            className={`fixed flex items-center px-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
+            style={{ top: tip.top, left: tip.left + tip.width + 4, height: tip.height }}
+          >
+            {i18nT('app.expand_sidebar')}
+          </div>
+        </OverlayPortal>}
       </button>
     </div>
   )

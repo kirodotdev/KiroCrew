@@ -1,10 +1,7 @@
 """The idle sweep must find sessions left unconsolidated before a restart.
 
-``HistoryConsolidator._last_activity`` is in memory only and was written only by
-``maybe_consolidate``. After a gateway restart, a session with an unconsolidated
-tail that nobody touched again was never in that dict, so ``check_idle_sessions``
-never looked at it and its tail was never consolidated. The first sweep now seeds
-the dict once, off the event loop, from the transcripts on disk.
+``HistoryConsolidator._last_activity`` lives in memory only, so the first sweep seeds
+it once, off the event loop, from the transcripts on disk.
 """
 
 from __future__ import annotations
@@ -16,6 +13,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,6 +25,16 @@ from kiro_crew.session_map import SessionMap
 
 STEM = "dashboard_chat-left-behind"
 LIVE = "dashboard:chat-left-behind"
+
+
+def _off_loop(write: Callable[[], None]) -> None:
+    """Run a transcript seed in a worker thread and wait for it.
+
+    ``atomic_write.replace_with_retry`` retries a Windows sharing violation
+    (``[WinError 5]``) only off the event loop, and these are ``async def`` tests.
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(write).result()
 
 
 def _restarted(
@@ -42,13 +50,16 @@ def _restarted(
     """A transcript written by an earlier process, read by a fresh consolidator."""
     writer = ConversationLog(base_dir=tmp_path / "sessions")
     writer.init()
-    with history_mod.allow_on_loop_persist():
+
+    def _seed() -> None:
         for i in range(3):
             writer.append(key, "user", f"m{i}")
         if not unconsolidated:
             writer.mark_consolidated(key, 3)
         if memory_mode:
             writer.update_metadata(key, {"memory_mode": memory_mode})
+
+    _off_loop(_seed)
     old = time.time() - age_days * 86400
     os.utime(writer._path(key), (old, old))
     log = ConversationLog(base_dir=tmp_path / "sessions")
@@ -205,6 +216,8 @@ async def test_session_end_does_not_start_a_second_run_under_the_live_key(tmp_pa
         consolidator.consolidate_session("dashboard:chat-left-behind")
         consolidator.maybe_consolidate("dashboard:chat-left-behind")
 
+    assert consolidator._running == {STEM}
+    assert not consolidator._tasks
     run.assert_not_called()
 
 
@@ -329,12 +342,15 @@ def _live(
     """Sessions with a turn in this process, idle since, each fully consolidated or not."""
     log = ConversationLog(base_dir=tmp_path / "sessions")
     log.init()
-    with history_mod.allow_on_loop_persist():
+
+    def _seed() -> None:
         for key in keys:
             for i in range(3):
                 log.append(key, "user", f"m{i}")
             if consolidated:
                 log.mark_consolidated(key, 3)
+
+    _off_loop(_seed)
     memory = MagicMock()
     memory.read_preferences.return_value = ""
     memory.read_projects.return_value = ""
@@ -367,9 +383,9 @@ async def _sweep(
     reads: list[str] = []
     counts = consolidator._count_rows
 
-    def counting(key: str, floor: int | None) -> object:
+    def counting(key: str, floor: int | None, floor_generation: int | None = None) -> object:
         reads.append(key)
-        found = counts(key, floor)
+        found = counts(key, floor, floor_generation)
         if after_read is not None:
             after_read(key)
         return found
@@ -453,8 +469,7 @@ async def test_a_marker_reset_that_keeps_size_and_mtime_is_swept(tmp_path):
     await _sweep(consolidator, log)
     before = log._path(key).stat()
 
-    with history_mod.allow_on_loop_persist():
-        log.mark_consolidated(key, 0)  # all three rows are unconsolidated again
+    _off_loop(lambda: log.mark_consolidated(key, 0))  # all three rows are unconsolidated again
     after = log._path(key).stat()
     assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
 
@@ -560,8 +575,8 @@ async def test_a_deleted_session_is_forgotten_once_its_count_has_ended(tmp_path)
     entered, release = threading.Event(), threading.Event()
     counts = consolidator._count_rows
 
-    def held(k: str, floor: int | None) -> object:
-        found = counts(k, floor)  # the thread has read the transcript ...
+    def held(k: str, floor: int | None, floor_generation: int | None = None) -> object:
+        found = counts(k, floor, floor_generation)  # the thread has read the transcript ...
         entered.set()
         assert release.wait(timeout=30)  # ... and returns only after the delete
         return found
@@ -643,3 +658,28 @@ async def test_a_seed_with_nothing_left_still_goes_to_consolidate(tmp_path):
     assert reads == []  # a seed is never read on the loop
     fake.assert_awaited_once_with(LIVE, include_history=True)
     assert LIVE in consolidator._last_activity  # only ``_consolidate`` drops a finished seed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("helper", ["restarted", "live"])
+async def test_the_seed_helpers_ride_out_a_windows_sharing_violation(tmp_path, monkeypatch, helper):
+    """Pin ``_restarted`` and ``_live`` to the retrying path.
+
+    On the loop thread the marker rewrite would re-raise ``[WinError 5]``. The two
+    simulated violations land on the creating append and are retried.
+    """
+    from windows_sim import replace_sharing_violation
+
+    from kiro_crew import atomic_write, platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+    with replace_sharing_violation(match=STEM, times=2) as sim:
+        if helper == "restarted":
+            log, consolidator = _restarted(tmp_path, unconsolidated=False)
+        else:
+            log, consolidator = _live(tmp_path, [LIVE], consolidated=True)
+    await asyncio.gather(*list(consolidator._tasks), return_exceptions=True)
+
+    assert sim["n"] == 4  # two refused creates, the retry that landed, then the marker rewrite
+    assert log.get_metadata(LIVE)["last_consolidated"] == 3

@@ -18,13 +18,23 @@ const ENTRIES: Entry[] = [
 
 /** Route /api/session/archive to the list, /api/session/archive/<name> to a body. */
 function stubFetch(opts: { listFails?: boolean; body?: string; bodyFails?: boolean } = {}) {
+  // The list read now goes through the typed `api.sessionArchiveList()` (which
+  // runs `j`), so a fake Response must carry what `j`'s auth-recovery pipeline
+  // reads: `headers.get(...)` and `url`. The body read is handed back raw and
+  // only touches `ok`/`status`/`text`, but gets the same shape for consistency.
+  const resp = (url: string, init: { ok: boolean; status: number; json?: () => Promise<unknown>; text?: () => Promise<string> }) => ({
+    ...init,
+    url,
+    headers: new Headers(),
+    clone() { return resp(url, init) },
+  })
   const fetchMock = vi.fn(async (url: string) => {
     if (url === '/api/session/archive') {
-      if (opts.listFails) return { ok: false, status: 500, text: async () => 'list-blew-up' }
-      return { ok: true, status: 200, json: async () => ({ archives: ENTRIES }) }
+      if (opts.listFails) return resp(url, { ok: false, status: 500, text: async () => 'list-blew-up' })
+      return resp(url, { ok: true, status: 200, json: async () => ({ archives: ENTRIES }) })
     }
-    if (opts.bodyFails) return { ok: false, status: 404, text: async () => 'read-blew-up' }
-    return { ok: true, status: 200, text: async () => opts.body ?? 'archive-body' }
+    if (opts.bodyFails) return resp(url, { ok: false, status: 404, text: async () => 'read-blew-up' })
+    return resp(url, { ok: true, status: 200, text: async () => opts.body ?? 'archive-body' })
   })
   vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch)
   return fetchMock
@@ -51,8 +61,8 @@ describe('SessionArchive list', () => {
     await waitFor(() => expect(screen.getByText('slot-alpha')).toBeInTheDocument())
     expect(screen.getByText('2026-01-01 09:15:30')).toBeInTheDocument()
     expect(screen.getByText('512B')).toBeInTheDocument()
-    expect(screen.getByText('4.0KB')).toBeInTheDocument()
-    expect(screen.getByText('3.00MB')).toBeInTheDocument()
+    expect(screen.getByText('4.1kB')).toBeInTheDocument()
+    expect(screen.getByText('3.1MB')).toBeInTheDocument()
     // A stamp that isn't the fixed 15-char form is shown verbatim.
     expect(screen.getByText('raw-stamp')).toBeInTheDocument()
   })
@@ -78,7 +88,7 @@ describe('SessionArchive list', () => {
     stubFetch()
     renderArchive()
     await waitFor(() => expect(screen.getByText('slot-alpha')).toBeInTheDocument())
-    const filter = screen.getByPlaceholderText(/fuzzy filter/i)
+    const filter = screen.getByPlaceholderText(/filter archives/i)
     fireEvent.change(filter, { target: { value: 'BETA' } })
     expect(screen.getByText('slot-beta')).toBeInTheDocument()
     expect(screen.queryByText('slot-alpha')).not.toBeInTheDocument()
@@ -90,7 +100,7 @@ describe('SessionArchive list', () => {
     stubFetch()
     renderArchive()
     await waitFor(() => expect(screen.getByText('slot-alpha')).toBeInTheDocument())
-    fireEvent.change(screen.getByPlaceholderText(/fuzzy filter/i), { target: { value: 'zzz-nothing' } })
+    fireEvent.change(screen.getByPlaceholderText(/filter archives/i), { target: { value: 'zzz-nothing' } })
     expect(screen.getByText(/zzz-nothing/)).toBeInTheDocument()
   })
 })

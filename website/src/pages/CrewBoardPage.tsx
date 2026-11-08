@@ -32,7 +32,7 @@
  * just ran disagree about what an item is. Only prose is localized.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, ChevronDown, ChevronRight, Inbox } from 'lucide-react'
@@ -212,7 +212,15 @@ function RowActions({
   })
 
   const workerGone = item.alive === 'closed'
-  const stopDisabled = workerGone || act.isPending
+  // While a request is out both buttons are inert through `aria-disabled` and the
+  // guard in `run`, never native `disabled`: disabling the button the reader just
+  // pressed blurs it to `<body>`, so a keyboard user lands at the top of the page
+  // with the failure notice somewhere below.
+  const pending = act.isPending
+  const run = (action: CrewBoardAction) => {
+    if (!pending) act.mutate(action)
+  }
+  const pendingClass = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-30'
   const stopReason = workerGone ? i18nT('pages.crewBoard.stop_unavailable_closed') : ''
 
   // Shown as TEXT, not only as a `title`. A tooltip on a disabled button is not
@@ -237,10 +245,11 @@ function RowActions({
         <Btn
           danger
           type="button"
-          disabled={stopDisabled}
+          disabled={workerGone}
+          aria-disabled={pending || undefined}
           title={stopReason || undefined}
-          onClick={() => act.mutate('stop')}
-          className="px-1.5 py-0.5 text-[11px]"
+          onClick={() => run('stop')}
+          className={`px-1.5 py-0.5 text-[11px] ${pendingClass}`}
         >
           {i18nT('pages.crewBoard.action_stop')}
         </Btn>
@@ -248,9 +257,9 @@ function RowActions({
         {takeOverAvailable ? (
           <Btn
             type="button"
-            disabled={act.isPending}
-            onClick={() => act.mutate('take_over')}
-            className="px-1.5 py-0.5 text-[11px]"
+            aria-disabled={pending || undefined}
+            onClick={() => run('take_over')}
+            className={`px-1.5 py-0.5 text-[11px] ${pendingClass}`}
           >
             {i18nT('pages.crewBoard.action_take_over')}
           </Btn>
@@ -360,6 +369,28 @@ function ItemRow({
         </div>
       ) : null}
 
+      {/* A failed call, so it goes through the shared error surface rather than a
+          chip. The page holds no draft input, so the agent hand-off loses nothing.
+          No dismiss: the gateway clears it when a call gets through. */}
+      {item.report_undelivered && !item.terminal ? (
+        <div className="ml-[15px] mt-1">
+          <ErrorNotice
+            title={
+              item.report_undelivered.tool === 'work_brief'
+                ? i18nT('pages.crewBoard.brief_undelivered')
+                : i18nT('pages.crewBoard.report_undelivered')
+            }
+            message={i18nT('pages.crewBoard.undelivered_detail', { item: item.item_id })}
+            messagePlacement="below"
+            askAgent
+            askAgentLabel={i18nT('pages.crewBoard.ask_about_item', {
+              title: item.title || item.item_id,
+            })}
+            variant="inline"
+          />
+        </div>
+      ) : null}
+
       {item.orphaned ? (
         <div className="ml-[15px] mt-1 text-[12px]" style={{ color: C.warn }}>
           <AlertTriangle size={12} className="mr-1 inline align-[-2px]" />
@@ -452,6 +483,31 @@ export function CrewBoard({ conductor }: { conductor: string }) {
   // still loading never renders an enabled action.
   const takeOverAvailable = board.data?.take_over_available ?? false
 
+  // A 404 confirms the ledger is gone (a purge removes it), so the cached board
+  // is dropped from the query itself rather than hidden here: a later failed
+  // poll, or a remount, then has no stale board to bring back, and every other
+  // reader of this key stops showing it too. Only the data is cleared; the query
+  // keeps its 404 error and starts no fetch.
+  const queryClient = useQueryClient()
+  const notFound = isNotFoundError(board.error)
+  const purged = notFound && board.data !== undefined
+  useEffect(() => {
+    if (!purged) return
+    queryClient
+      .getQueryCache()
+      .find({ queryKey: crewBoardQueryKey(conductor), exact: true })
+      ?.setState({ data: undefined, dataUpdatedAt: 0 })
+  }, [purged, queryClient, conductor])
+
+  // Each poll of a query with no data puts it back to `pending` with no error, so
+  // without this the no-ledger state would blank out for every 10 s poll (and its
+  // retry) while the 404 is re-asked. The confirmed 404 is remembered for this
+  // conductor until an answer settles it: a board, or a different error.
+  const [absentFor, setAbsentFor] = useState<string | null>(null)
+  if (notFound && absentFor !== conductor) setAbsentFor(conductor)
+  if (absentFor !== null && !notFound && (board.data !== undefined || board.isError)) setAbsentFor(null)
+  const noLedger = notFound || (absentFor === conductor && board.data === undefined && !board.isError)
+
   if (!conductor) {
     return <EmptyState icon={<Inbox size={20} />} title={i18nT('pages.crewBoard.missing_conductor')} />
   }
@@ -460,10 +516,16 @@ export function CrewBoard({ conductor }: { conductor: string }) {
   // session dispatched through the conductor tooling opens one, so an ad-hoc
   // conductor legitimately has none. Rendering it as an error would teach people
   // the board is broken.
-  if (board.isError) {
+  // Only a read that never succeeded replaces the board, or a 404: that is the
+  // ledger's absence (a purge removes it), never a blip, so a cached board must
+  // not outlive it. Any other failed background poll keeps the last good board
+  // (React Query holds `data` beside `error`), so a gateway blip does not unmount
+  // every row with its open events and its Stop failure notice; the notice above
+  // the board says it may be out of date.
+  if (noLedger || (board.isError && !board.data)) {
     // A 404 is the ad-hoc-conductor GAP, not a failure, so it stays a neutral
     // EmptyState: rendering it as an error would teach people the board is broken.
-    if (isNotFoundError(board.error)) {
+    if (noLedger) {
       return (
         <EmptyState
           icon={<Inbox size={20} />}
@@ -489,6 +551,17 @@ export function CrewBoard({ conductor }: { conductor: string }) {
 
   const { conductor: record, items } = board.data
 
+  const refreshFailed = board.isError ? (
+    <div className="pb-2">
+      <ErrorNotice
+        title={i18nT('pages.crewBoard.refresh_failed')}
+        message={errMessage(board.error) || i18nT('components.errorBoundary.something_went_wrong')}
+        askAgent
+        variant="inline"
+      />
+    </div>
+  ) : null
+
   // The goal belongs to the LEDGER, not to the item list, so it renders on an
   // empty board too. Returning the empty state alone left a reader who followed
   // the menu entry looking at a page that named nothing -- no goal, no round, no
@@ -510,6 +583,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
   if (items.length === 0) {
     return (
       <div className="flex flex-col">
+        {refreshFailed}
         {header}
         <EmptyState icon={<Inbox size={20} />} title={i18nT('pages.crewBoard.empty_title')} />
       </div>
@@ -518,6 +592,7 @@ export function CrewBoard({ conductor }: { conductor: string }) {
 
   return (
     <div className="flex flex-col">
+      {refreshFailed}
       {header}
 
       {bands.ruling.length > 0 ? (

@@ -53,13 +53,82 @@ async def _subagents_attached_response(
     through any endpoint, so it must apply the same policy — and two copies of
     the probe block is how the two would diverge. This wrapper only shapes the
     refusal.
+
+    The body keeps ``error`` and ``code`` and adds what keeps the session
+    attached (:func:`_subagents_attached_detail`), so a user can tell which run
+    or row to stop.
     """
     if await subagents_attached_async(state, slot, session_key, operation):
+        detail = await _subagents_attached_detail(state, slot, session_key)
         return web.json_response(
-            {"error": "sub-agents are running", "code": "slot_subagents_running"},
+            {
+                "error": "sub-agents are running",
+                "code": "slot_subagents_running",
+                "runs": detail["runs"],
+                "queued": detail["queued"],
+                "queued_partial": detail["queued_partial"],
+                "deliveries_inflight": detail["deliveries_inflight"],
+            },
             status=409,
         )
     return None
+
+
+async def _subagents_attached_detail(
+    state: DashboardState, slot: _ChatSlot | None, session_key: str
+) -> dict[str, Any]:
+    """The three things that keep *session_key* attached, as the 409 body names them.
+
+    Each is the source one probe of ``subagents_attached_async`` reads:
+
+    * ``runs``: the unfinished in-memory runs ``running_agents_for`` returns, each
+      as ``{"id", "state"}`` where ``state`` is ``stalled`` or ``running``.
+      ``None`` when that probe could not answer, the case the guard fails closed on.
+    * ``queued``: the accepted spawns with no run yet, read through
+      ``handlers.messaging._queued_runs`` (the listing ``GET /api/spawn?queued=1``
+      serves): task-store rows, each with its store state (``queued``,
+      ``retry_wait``, ``recovering``, ``admitted``), and window entries with no
+      row, as ``queued``. ``queued_partial`` is that listing's own flag: True
+      when it is capped or its read failed.
+    * ``deliveries_inflight``: sub-agent results still being delivered to the slot.
+
+    A probe added to ``subagents_attached_async`` needs its own field here, or the
+    409 refuses while naming nothing.
+
+    Ids and states only: no task text, agent name or result. It is read after
+    the verdict, so a run that ended in between is simply absent. A probe that
+    raises here costs its own field, never the refusal.
+    """
+    from kiro_crew.dashboard.handlers.messaging import _queued_runs
+
+    subs = getattr(state, "subagents", None)
+    runs: list[dict[str, str]] | None = []
+    if subs is not None:
+        try:
+            running = subs.running_agents_for(session_key)
+        except Exception:
+            running = None
+        if running is None:
+            runs = None
+        else:
+            runs = []
+            for entry in running:
+                if isinstance(entry, Mapping):
+                    stalled = bool(entry.get("stalled"))
+                    run_id = str(entry.get("id") or "")
+                else:
+                    stalled, run_id = False, str(entry)
+                runs.append({"id": run_id, "state": "stalled" if stalled else "running"})
+    listing = await _queued_runs(state, session_key)
+    return {
+        "runs": runs,
+        "queued": [
+            {"id": str(q.id), "state": str(getattr(q, "state", "") or "queued")}
+            for q in listing.runs
+        ],
+        "queued_partial": bool(listing.partial),
+        "deliveries_inflight": int(getattr(slot, "_subagent_deliveries_inflight", 0) or 0),
+    }
 
 
 async def _reset_slot_session_or_warn(

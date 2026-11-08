@@ -34,9 +34,7 @@ from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-# ---------------------------------------------------------------------------
 # Validation tests
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("refuse_root", [False, True])
@@ -89,6 +87,33 @@ class TestValidation:
     def test_config_keys_rejects_invalid_entries(self):
         m = AppManifest.from_dict(_valid_manifest(config_keys=["secretary", ""]))
         assert "config_keys entries must be non-empty strings" in m.validate()
+
+    @pytest.mark.parametrize("invalid", [5, True, ["x"], "ab"])
+    def test_mcp_servers_non_object_raises_one_value_error(self, invalid):
+        # A genuinely non-object ``mcpServers`` made ``dict(...)`` raise: TypeError
+        # on a scalar/bool, ValueError on a non-empty list/string -- which escaped
+        # install/discovery as a 500. from_dict now turns both into ONE clear
+        # ValueError. A raise keeps readers that skip ``validate`` fail-closed
+        # (get_app_manifest returns None), the same as before this guard existed.
+        with pytest.raises(ValueError, match="mcpServers must be an object"):
+            AppManifest.from_dict(_valid_manifest(mcpServers=invalid))
+
+    @pytest.mark.parametrize("empty", [{}, [], ""])
+    def test_mcp_servers_empty_forms_main_accepted_stay_empty(self, empty):
+        # ``dict([])`` and ``dict("")`` returned ``{}`` on main, so a manifest with
+        # ``"mcpServers": []`` or ``""`` parsed and installed cleanly (the signed
+        # body omits an empty mcpServers). Those forms must keep parsing to an empty
+        # map, never a new rejection -- back-compat: no value main accepts is newly
+        # refused.
+        m = AppManifest.from_dict(_valid_manifest(mcpServers=empty))
+        assert m.mcpServers == {}
+        assert m.validate() == []
+
+    def test_mcp_servers_object_round_trips(self):
+        servers = {"files": {"command": "uvx", "args": ["mcp-server-files"]}}
+        m = AppManifest.from_dict(_valid_manifest(mcpServers=servers))
+        assert m.validate() == []
+        assert m.mcpServers == servers
 
     def test_config_keys_accepts_exact_count_bound(self):
         keys = [f"key-{index}" for index in range(_MAX_CONFIG_KEYS)]
@@ -445,9 +470,7 @@ class TestValidation:
         assert m.permissions.storage is True
 
 
-# ---------------------------------------------------------------------------
 # Serialization round-trip tests
-# ---------------------------------------------------------------------------
 
 
 class TestRoundTrip:
@@ -533,9 +556,7 @@ class TestRoundTrip:
         assert m2.extra == m.extra
 
 
-# ---------------------------------------------------------------------------
 # Parsing edge cases
-# ---------------------------------------------------------------------------
 
 
 class TestParsing:
@@ -576,9 +597,7 @@ class TestParsing:
             AppManifest.from_json_file(p)
 
 
-# ---------------------------------------------------------------------------
 # Property-based tests (hypothesis)
-# ---------------------------------------------------------------------------
 
 # Strategy for valid kebab-case names
 _kebab_name = st.from_regex(r"[a-z][a-z0-9]*(-[a-z0-9]+)*", fullmatch=True).filter(
@@ -691,9 +710,7 @@ class TestPropertyBased:
         assert m2.to_dict() == m1.to_dict()
 
 
-# ---------------------------------------------------------------------------
 # SetupConfig lifecycle hooks tests
-# ---------------------------------------------------------------------------
 
 
 class TestSetupConfigHooks:
@@ -753,9 +770,7 @@ class TestSetupConfigHooks:
         assert m.setup.onEnableTimeout == 90
 
 
-# ---------------------------------------------------------------------------
 # Dependencies tests
-# ---------------------------------------------------------------------------
 
 
 class TestDependencies:
@@ -820,11 +835,8 @@ class TestDependencies:
     def test_a_json_null_list_degrades_to_empty(self, payload):
         """A manifest is UNTRUSTED input, so a null list must not crash the parser.
 
-        `.get(key, [])` returns `None` for an explicit `"commands": null` — the
-        default only applies to an ABSENT key — and the comprehension then raised
-        `TypeError`, which the install endpoint surfaced as an unhandled 500 instead
-        of a validation error. A hand-written or generated app.json can easily carry
-        a JSON null for an empty list.
+        `.get(key, [])` returns `None` for an explicit `"commands": null`; the `TypeError`
+        would surface as a 500 instead of a validation error.
         """
         deps = Dependencies.from_dict(payload)
         assert deps.commands == []
@@ -888,9 +900,7 @@ class TestDependencies:
         assert m2.dependencies.capabilities.mcp == ["aws-docs"]
 
 
-# ---------------------------------------------------------------------------
 # Property tests for new dataclasses
-# ---------------------------------------------------------------------------
 
 
 class TestSignatureFields:
@@ -949,8 +959,8 @@ class TestManifestNewProperties:
         on_uninstall=st.text(max_size=30),
         on_enable=st.text(max_size=30),
         on_disable=st.text(max_size=30),
-        enable_timeout=st.integers(1, 600),
-        disable_timeout=st.integers(1, 600),
+        enable_timeout=st.integers(1, 300),
+        disable_timeout=st.integers(1, 300),
     )
     @settings(max_examples=200)
     def test_setup_config_round_trip_property(
@@ -1059,11 +1069,8 @@ class TestCapabilityDepTypesContract:
 class TestRequiresDesktopApp:
     """``platform.requiresDesktopApp`` — the surface axis, distinct from ``os``.
 
-    ``os`` constrains the machine the gateway runs on; this constrains the
-    surface the user views from (Electron shell vs browser tab). It is a UX
-    gate, so the only contract worth pinning is that it round-trips faithfully
-    and stays absent-by-default (an omitted flag must never read as True, or
-    every app would silently become desktop-only).
+    It gates the viewing surface (Electron shell vs browser tab). It must round-trip and
+    default to False, or every app would silently become desktop-only.
     """
 
     def test_defaults_to_false(self):
@@ -1119,7 +1126,7 @@ class TestRequiresDesktopApp:
         assert manifest.platform.requiresDesktopApp is True
 
     def test_windows_is_expressible(self):
-        """KiroCrew runs natively on Windows, so a manifest must be able to say so.
+        """Kiro Crew runs natively on Windows, so a manifest must be able to say so.
 
         Without the mapping row `"windows"` was accepted into the list and then
         matched NOTHING — a declaring app was silently unsupported everywhere,
@@ -1150,18 +1157,13 @@ class TestRequiresDesktopApp:
 class TestScalarGrantDoesNotBecomeAWildcard:
     """A list-valued grant given a JSON SCALAR must deny, not be coerced.
 
-    `[str(x) for x in value]` over a STRING iterates its characters, so a manifest
-    that wrote a bare string where a list belongs was handed the tokens those
-    characters spell -- including the wildcards each of these fields honours:
+    `[str(x) for x in value]` over a STRING yields its characters, wildcards included:
 
       exposeToApps  `"*"`         -> ["*"] -> every sibling app may observe my slots
       events        `"*"`         -> ["*"] -> the whole WS scope vocabulary
       api           `"/api/chat"` -> ["/", "a", ...] and `app_token_path_allowed`
                                      matches the prefix "/" against every path
       mcpTools      `"*"`         -> ["*"]
-
-    Same defect class as `bool("false")` on the boolean grants above, and the same
-    direction of fix: an unexpected value withholds the grant.
     """
 
     def test_scalar_star_never_yields_the_wildcard(self):
@@ -1208,9 +1210,7 @@ class TestScalarGrantDoesNotBecomeAWildcard:
         assert Permissions.from_dict({"events": ["*"]}).events == ["*"]
 
 
-# ---------------------------------------------------------------------------
 # UI overlays
-# ---------------------------------------------------------------------------
 
 
 def _overlay_manifest(*overlays) -> AppManifest:
@@ -1253,6 +1253,116 @@ def test_overlay_non_list_value_parses_to_empty(value):
     assert m.validate() == []
 
 
+# (field, manifest block carrying the bad value, reader of the parsed field, the
+# value a non-list degrades to). ``platform.os`` restricts where an app runs, so
+# it is not a plain degrade-to-empty field and is pinned separately below.
+_NON_LIST_FIELDS = [
+    ("ui.pages", lambda v: {"ui": {"pages": v}}, lambda m: m.ui.pages, []),
+    (
+        "dependencies.capabilities.mcp",
+        lambda v: {"dependencies": {"capabilities": {"mcp": v}}},
+        lambda m: m.dependencies.capabilities.mcp,
+        [],
+    ),
+    (
+        "dependencies.capabilities.skills",
+        lambda v: {"dependencies": {"capabilities": {"skills": v}}},
+        lambda m: m.dependencies.capabilities.skills,
+        [],
+    ),
+    (
+        "dependencies.capabilities.agents",
+        lambda v: {"dependencies": {"capabilities": {"agents": v}}},
+        lambda m: m.dependencies.capabilities.agents,
+        [],
+    ),
+    ("platform.arch", lambda v: {"platform": {"arch": v}}, lambda m: m.platform.arch, []),
+    (
+        "publishProvider.kinds",
+        lambda v: {"publishProvider": {"kinds": v}},
+        lambda m: m.publishProvider.kinds,
+        [],
+    ),
+    (
+        "notifications.channels",
+        lambda v: {"notifications": {"channels": v}},
+        lambda m: m.notifications.channels,
+        [],
+    ),
+    ("crons", lambda v: {"crons": v}, lambda m: m.crons, []),
+    ("agents", lambda v: {"agents": v}, lambda m: m.agents, []),
+    ("skills", lambda v: {"skills": v}, lambda m: m.skills, []),
+    ("sops", lambda v: {"sops": v}, lambda m: m.sops, []),
+    ("tags", lambda v: {"tags": v}, lambda m: m.tags, []),
+    ("jobFamilies", lambda v: {"jobFamilies": v}, lambda m: m.jobFamilies, []),
+]
+
+
+@pytest.mark.parametrize("value", [None, 7, True, "abc", {"id": "x"}])
+@pytest.mark.parametrize(
+    "name,block,read,expected", _NON_LIST_FIELDS, ids=[f[0] for f in _NON_LIST_FIELDS]
+)
+def test_non_list_value_for_a_list_field_degrades(name, block, read, expected, value):
+    """A present-but-not-a-list value for a list field must not raise or be split.
+
+    ``get`` returns an explicit ``null`` instead of the default, and a string must not
+    become ``["a", "b", "c"]``.
+    """
+    try:
+        m = AppManifest.from_dict(_valid_manifest(**block(value)))
+    except TypeError as exc:
+        pytest.fail(f"{name}={value!r} raised instead of degrading: {exc}")
+    assert read(m) == expected
+
+
+@pytest.mark.parametrize("value", [7, True, "windows", {"id": "x"}])
+def test_a_non_list_platform_os_fails_closed_and_is_refused(value):
+    """``os`` restricts where an app runs, so a wrong type must never widen it.
+
+    It parses to no platforms, so a reader that skips validate() (the enable
+    path's ``supports_platform`` check) refuses it everywhere, and validate()
+    reports it: ``"os": "windows"`` must not quietly become macOS + Linux.
+    """
+    try:
+        m = AppManifest.from_dict(_valid_manifest(platform={"os": value}))
+    except TypeError as exc:
+        pytest.fail(f"platform.os={value!r} raised instead of degrading: {exc}")
+    assert m.platform.os == []
+    assert not any(m.platform.supports_platform(p) for p in ("darwin", "linux", "win32"))
+    # The enable path reparses the serialized manifest and never calls validate().
+    reparsed = AppManifest.from_dict(m.to_dict()).platform
+    assert not any(reparsed.supports_platform(p) for p in ("darwin", "linux", "win32"))
+    errors = m.validate()
+    assert any(e.startswith("platform.os: unknown value") for e in errors), errors
+
+
+@pytest.mark.parametrize("value", [7, True, "html", {"id": "x"}])
+def test_a_non_list_publish_provider_kinds_offers_the_provider_for_no_kind(value):
+    """A non-list ``kinds`` offers the provider for no kind, never for all.
+
+    An empty list means every kind. A self-managed app's ``app.json`` skips install
+    validation and the artifact page reads ``to_dict()``, so the parse fails closed.
+    """
+    from kiro_crew.apps.routes import collect_publish_providers
+
+    provider = {"id": "p", "endpoint": "/api/apps/test-app/deploy", "kinds": value}
+    try:
+        m = AppManifest.from_dict(_valid_manifest(publishProvider=provider))
+    except TypeError as exc:
+        pytest.fail(f"publishProvider.kinds={value!r} raised instead of degrading: {exc}")
+    app = {"name": "test-app", "enabled": True, "manifest": m.to_dict()}
+    assert collect_publish_providers([app], configured_resolver=lambda n, pp: True) == []
+
+
+def test_a_null_platform_os_reads_as_unset():
+    try:
+        m = AppManifest.from_dict(_valid_manifest(platform={"os": None}))
+    except TypeError as exc:
+        pytest.fail(f"platform.os=None raised instead of reading as unset: {exc}")
+    assert m.platform.os == ["macos", "linux"]
+    assert m.validate() == []
+
+
 @pytest.mark.parametrize(
     "decl,expected",
     [
@@ -1285,13 +1395,9 @@ def test_overlay_replaces_must_be_a_slug():
 def test_overlay_builtins_must_not_ship_a_ui_bundle():
     """A builtin declaring ``ui.overlays`` must not also declare ``ui.entry``.
 
-    Slot ownership requires ``origin == "builtin"``, which is the only provenance a
-    self-registering app cannot forge. But ``register_builtin_apps`` re-derives origin
-    on every startup for an already-registered builtin and downgrades it to ``local``
-    when the manifest carries a ``ui.entry`` bundle. Such an app would therefore be
-    refused its own slot after the first restart, and the refusal surfaces only as a
-    browser console warning. This is a build failure instead, because the combination
-    is invisible at runtime until someone notices the surface silently reverted.
+    Slot ownership needs ``origin == "builtin"``, and ``register_builtin_apps`` downgrades
+    a builtin with a ``ui.entry`` bundle to ``local`` on restart. The app would then lose
+    its slot with only a console warning, so this fails the build instead.
     """
     offenders = []
     for entry in sorted((_REPO_ROOT / "src/kiro_crew/apps/builtins").iterdir()):
@@ -1311,11 +1417,8 @@ def test_overlay_builtins_must_not_ship_a_ui_bundle():
 def test_command_bar_builtin_is_overlay_only_and_default_on():
     """The shipped Command Bar app is the first overlay-only builtin.
 
-    Its shape is load-bearing: no page (it is not routed), no backend entry point (so
-    being enabled spawns no process), and default-ON: the launcher owns the
-    quick-search gesture on a fresh install, and the legacy palette is what a reader
-    opts back into by disabling the app. The default-on decision itself is declared
-    in ``manager._DEFAULT_ON_BUILTINS``; the opt-in policy tests read it from there.
+    No page, no backend entry point (enabling spawns no process), and default-ON, as
+    declared in ``manager._DEFAULT_ON_BUILTINS``.
     """
     raw = json.loads(
         (_REPO_ROOT / "src/kiro_crew/apps/builtins/command_bar/app.json").read_text(
@@ -1333,18 +1436,9 @@ def test_command_bar_builtin_is_overlay_only_and_default_on():
 class TestShippedManifestsAreWellFormedJson:
     """Every shipped ``app.json`` must be JSON no reader can disagree about.
 
-    A duplicate key is not a parse error in Python or in JavaScript -- both keep the LAST
-    occurrence -- so a manifest carrying two ``"platform"`` blocks loads, validates, and
-    behaves, while saying two different things to anyone reading it. That is how five
-    built-in manifests came to declare ``"os": ["macos", "linux"]`` immediately above
-    ``"os": ["macos", "linux", "windows"]``: an edit appended a second block instead of
-    changing the first, and last-wins hid it.
-
-    Two reasons that is worth a test rather than a one-time cleanup. A stricter reader
-    rejects the file outright -- ``jq`` flags it, JSON Schema validators flag it, and Rust
-    and Go parsers error by default -- so the manifests are one tool away from being
-    unreadable. And an editor who later deletes "the" ``platform`` block has even odds of
-    deleting the live one, silently dropping a platform with nothing failing.
+    Python and JavaScript keep the LAST duplicate key, so two ``"platform"`` blocks load
+    fine while saying two things. Stricter readers (``jq``, Rust and Go parsers) reject
+    the file, and an editor deleting "the" block may delete the live one.
     """
 
     def _builtin_manifests(self) -> list[Path]:
@@ -1421,3 +1515,13 @@ class TestSignedPrincipalManifest:
         )
         assert b"signedPrincipal" not in ordinary.signing_payload()
         assert b'"signedPrincipal":true' in opted_in.signing_payload()
+
+
+@pytest.mark.parametrize(
+    ("order", "expected"),
+    [(None, 10), ("top", 10), (float("nan"), 10), ({}, 10), (5, 5), ("7", 7), (True, 1)],
+)
+def test_sidebar_order_that_int_cannot_take_keeps_the_default(order, expected):
+    from kiro_crew.apps.manifest_sections import UISidebar
+
+    assert UISidebar.from_dict({"order": order}).order == expected

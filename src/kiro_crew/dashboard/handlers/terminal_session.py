@@ -9,12 +9,16 @@ family that holds the name.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
-from kiro_crew.config.loader import config_path, read_config_text
+from kiro_crew.config.loader import (  # noqa: F401 - read_config_text: served by the terminal facade
+    config_local_path,
+    config_path,
+    read_config_text,
+    read_merged_config_files,
+)
 
 if TYPE_CHECKING:
     from aiohttp import web
@@ -122,6 +126,14 @@ class _TerminalSession:
     # forwarded byte-for-byte.
     ready_marker: bytes | None = None
     ready_probe: bytearray = field(default_factory=bytearray)
+    # True for a shell in a remote Session Environment workspace (the provider
+    # CLI's login shell). This gateway cannot see that shell's directory or
+    # files, so path and command completion answer nothing for it.
+    remote: bool = False
+    # The chat a LOCAL shell was opened for (its ``slot`` query), else "". Binding
+    # that chat to a session environment retires the shell, so input typed into
+    # it cannot keep reaching the gateway after the chat moved.
+    chat_slot: str = ""
     # Serializes concurrent WS writes (reader loop + title poller + pong);
     # aiohttp's WebSocket writer is not safe for concurrent sends.
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -152,6 +164,11 @@ def _get_registry(request: web.Request) -> dict[str, _TerminalSession | None]:
 
 
 def _get_config(request: web.Request) -> dict:
+    """The ``dashboard.terminal`` object for a route handler; see ``_read_terminal_config``."""
+    return _read_terminal_config()
+
+
+def _read_terminal_config() -> dict:
     """The ``dashboard.terminal`` object, or ``{}`` for anything malformed.
 
     Every level is type-checked rather than chained, and the read fails CLOSED to
@@ -165,12 +182,8 @@ def _get_config(request: web.Request) -> dict:
     nested reads already follow: a malformed value means "nothing configured",
     which is also what an absent key means.
     """
-    try:
-        data = json.loads(read_config_text(config_path()))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(data, dict):
-        return {}
+    # config.local.json is an overlay whose keys win, as the loader merges it.
+    data = read_merged_config_files(config_path(), config_local_path())
     dashboard = data.get("dashboard")
     if not isinstance(dashboard, dict):
         return {}
@@ -186,10 +199,15 @@ def _is_enabled(request: web.Request) -> bool:
     now = time.monotonic()
     if now - _enabled_cache[1] < 30:
         return _enabled_cache[0]
-    result = bool(_get_config(request).get("enabled", True))
+    result = _terminal_enabled(_get_config(request))
     _enabled_cache[0] = result
     _enabled_cache[1] = now
     return result
+
+
+def _terminal_enabled(cfg: dict) -> bool:
+    """Whether a ``dashboard.terminal`` object leaves the panel on (the default)."""
+    return bool(cfg.get("enabled", True))
 
 
 _enabled_cache: list = [True, 0.0]  # [value, timestamp]

@@ -567,6 +567,12 @@ class TestAToolLessGuestTurn:
 
     _KEY = f"weixin:{TOOLLESS_TURN_AGENT}:direct:peerB"
 
+    @pytest.fixture(autouse=True)
+    def _guest_spec_reads_tool_less(self, _floor_monkeypatch) -> None:
+        """The pre-spawn read of the guest spec on disk answers tool-less; the
+        provider's own confirmation (``ScriptedProvider(toolless=...)``) decides."""
+        _floor_monkeypatch.setattr(D, "_toolless_spec_before_spawn", lambda _key: True)
+
     def _guest(self, **kw: Any) -> Asker:
         return _asker(self._KEY, audience=Audience.GUEST, **kw)
 
@@ -630,6 +636,44 @@ class TestAToolLessGuestTurn:
         assert renderer.shown == [TOOLLESS_TURN_REFUSAL_NOTE] and renderer.closed == 1
         assert sessions.count("record_failure") == 0 and sessions.count("release") == 1
 
+    def test_a_spec_that_mounts_anything_refuses_the_turn_and_resets_the_session(self) -> None:
+        """The spec the harness loaded is read after the acquire: one that mounts
+        anything refuses the turn before the prompt, with the same note, and the
+        session is reset so its process is not reused."""
+        provider = ScriptedProvider(toolless=False)
+        sessions = FakeSessions(provider)
+        renderer = RecordingRenderer()
+
+        outcome = _answer(_turns(sessions), asker=self._guest(), renderer=renderer)
+
+        assert outcome.verdict is Verdict.TOOLLESS_REFUSED and provider.prompts == []
+        assert renderer.shown == [TOOLLESS_TURN_REFUSAL_NOTE]
+        assert sessions.count("reset") == 1 and sessions.count("release") == 1
+        assert sessions.count("record_failure") == 0
+        assert len(provider.spec_reads) == 1
+
+    def test_a_spec_the_pre_spawn_read_refuses_never_starts_a_session(self, monkeypatch) -> None:
+        """Starting the session would run what the spec names, so a failed
+        pre-spawn read refuses before ``get_or_create``."""
+        monkeypatch.setattr(D, "_toolless_spec_before_spawn", lambda _key: False)
+        provider = ScriptedProvider()
+        sessions = FakeSessions(provider)
+        renderer = RecordingRenderer()
+
+        outcome = _answer(_turns(sessions), asker=self._guest(), renderer=renderer)
+
+        assert outcome.verdict is Verdict.TOOLLESS_REFUSED
+        assert sessions.calls("get_or_create") == [] and provider.spec_reads == []
+        assert renderer.shown == [TOOLLESS_TURN_REFUSAL_NOTE]
+        assert sessions.count("release") == 0
+
+    def test_an_owner_turn_never_reads_the_guest_spec(self) -> None:
+        provider = ScriptedProvider(answer(), toolless=False)
+
+        outcome = _answer(_turns(FakeSessions(provider)))
+
+        assert outcome.verdict is Verdict.ANSWERED and provider.spec_reads == []
+
     @pytest.mark.parametrize("backend", [ACP_BACKEND_CLAUDE, None])
     def test_a_backend_that_reads_no_agent_spec_refuses_the_turn(self, backend) -> None:
         provider = ScriptedProvider(backend=backend)
@@ -669,7 +713,10 @@ class TestAToolLessGuestTurn:
     ("audience", "minimal"),
     [(Audience.OWNER, False), (Audience.SHARED, True), (Audience.GUEST, True)],
 )
-def test_the_audience_decides_what_context_the_prompt_carries(audience, minimal, tmp_path) -> None:
+def test_the_audience_decides_what_context_the_prompt_carries(
+    audience, minimal, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(D, "_toolless_spec_before_spawn", lambda _key: True)
     ctx = RecordingCtxBuilder()
     key = f"weixin:{TOOLLESS_TURN_AGENT}:direct:x" if audience is Audience.GUEST else KEY
     _answer(_turns(FakeSessions(), ctx=ctx), asker=_asker(key, audience=audience))
@@ -1206,6 +1253,23 @@ class TestCompactionRecovery:
         assert recorder.surfaced == 0 and sessions.count("set_channel") == 1
         assert outcome.is_new is False
 
+    def test_a_replay_ends_the_abandoned_attempt_before_its_reset(self) -> None:
+        """The abandoned turn never landed, so its attempt ends before the reset
+        and what it received inline is revoked before the replay runs."""
+
+        class _Settling(FakeSessions):
+            def settle_turn(self, key: str) -> None:
+                self.ledger.append(("settle_turn", key))
+
+        first = ScriptedProvider(_abandoned(), transient=True, name="first")
+        sessions = _Settling(first, ScriptedProvider(answer("the reply"), name="second"))
+
+        _answer(_turns(sessions))
+
+        names = sessions.names()
+        assert names.count("settle_turn") == 1
+        assert names.index("settle_turn") < names.index("reset")
+
     def test_identity_is_published_before_every_attempts_build(self) -> None:
         sessions = FakeSessions(
             ScriptedProvider(_abandoned(), transient=True), ScriptedProvider(answer())
@@ -1413,6 +1477,23 @@ class _Hook:
 class TestAMonitorWake:
     def _wake(self, hook: _Hook, *, current: bool = True) -> MonitorWake:
         return MonitorWake(hook, lambda: current)  # type: ignore[arg-type]
+
+    def test_only_a_wake_builds_an_unattended_tool_gate(self, monkeypatch) -> None:
+        from kiro_crew.messaging import dispatch
+
+        built: list[bool] = []
+        real = dispatch.build_tool_gate
+
+        def _recording(*args: Any, unattended: bool = False, **kwargs: Any) -> Any:
+            built.append(unattended)
+            return real(*args, unattended=unattended, **kwargs)
+
+        monkeypatch.setattr(dispatch, "build_tool_gate", _recording)
+        sessions = FakeSessions(ScriptedProvider(answer(), answer()))
+        turns = _turns(sessions, drift=DISCORD_DRIFT)
+        _answer(turns, asker=_asker(route=None), monitor=self._wake(_Hook()))
+        _answer(turns, asker=_asker(route=None))
+        assert built == [True, False]
 
     def test_a_wake_claims_without_waiting_and_composes_no_ceiling(self, one_turn_ceiling):
         sessions = FakeSessions(ScriptedProvider(answer(), answer()))

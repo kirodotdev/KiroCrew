@@ -111,6 +111,9 @@ describe('ChatInput Lexical composer: undo uses the snapshot history', () => {
   it('Ctrl+Z after typing into the Lexical composer undoes the typed text through the same history', async () => {
     renderWithProviders(<Host />)
     const input = await screen.findByRole('textbox', undefined, LAZY_COMPOSER_MOUNT)
+    // Flush the useEffect that registers the Lexical undo-history plugin
+    // so the history entry exists before any keydown fires.
+    await act(async () => {})
     const editor = (input as unknown as { __lexicalEditor: LexicalEditor }).__lexicalEditor
     act(() => { editor.update(() => $getRoot().selectEnd(), { discrete: true }) })
     // One bulk insert is its own undo boundary in the snapshot history.

@@ -193,6 +193,73 @@ def test_edit_carrying_save_refuses_a_deleted_parent_key(editor):  # noqa: F811 
     assert spec_for(home, specs) == spec
 
 
+def _drop_key_from_both(service, home, specs, parent, key, value):
+    parent[key] = value
+    (specs / "parent.json").write_text(json.dumps(parent), encoding="utf-8")
+    spec, target, path = _enrolled(service, home, specs)
+    assert spec.get(key) == value
+    assert key in agent_state.get_capabilities(target)["reviewed_keys"]
+    del parent[key]
+    (specs / "parent.json").write_text(json.dumps(parent), encoding="utf-8")
+    del spec[key]
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    with pytest.raises(CapabilityError, match="materialization_changed"):
+        prepare_member_capabilities("A")
+    return spec, target, path
+
+
+def test_empty_review_refuses_a_key_deleted_from_parent_and_file(editor):  # noqa: F811
+    """A reviewed deny list gone from BOTH sides is still drift the review never showed."""
+    service, home, specs, parent = editor
+    spec, target, path = _drop_key_from_both(
+        service, home, specs, parent, "managedToolPolicy", {"deny": ["kirocrew-computer"]}
+    )
+    original_intent = agent_state.get_capabilities(target)
+    on_disk = path.read_bytes()
+
+    with pytest.raises(CapabilityError, match="unreviewable_drift"):
+        save(service)
+    assert agent_state.get_capabilities(target) == original_intent
+    assert path.read_bytes() == on_disk
+    with pytest.raises(CapabilityError, match="materialization_changed"):
+        prepare_member_capabilities("A")
+
+
+def test_edit_carrying_save_refuses_a_key_deleted_from_parent_and_file(editor):  # noqa: F811
+    service, home, specs, parent = editor
+    spec, target, path = _drop_key_from_both(
+        service, home, specs, parent, "managedToolPolicy", {"deny": ["kirocrew-computer"]}
+    )
+    original_intent = agent_state.get_capabilities(target)
+
+    with pytest.raises(CapabilityError, match="unreviewable_drift"):
+        save(service, [{"section": "tools", "id": "write", "action": "remove"}])
+    assert agent_state.get_capabilities(target) == original_intent
+    assert spec_for(home, specs) == spec
+
+
+def test_stamp_records_the_reviewed_keys(editor):  # noqa: F811 -- pytest fixture by name
+    service, home, specs, _ = editor
+    spec, target, _path = _enrolled(service, home, specs)
+    assert agent_state.get_capabilities(target)["reviewed_keys"] == sorted(spec)
+
+
+def test_every_stamp_refreshes_the_reviewed_keys(editor):  # noqa: F811 -- pytest fixture
+    """A baseline an older release wrote is replaced on the first save, never read stale."""
+    service, home, specs, _ = editor
+    _spec, target, _path = _enrolled(service, home, specs)
+    with agent_state._locked():
+        state = agent_state._read(strict=True)
+        state[target]["capabilities"]["reviewed_keys"] = ["aKeyNoFileEverHad"]
+        agent_state._write(state)
+    assert agent_state.get_capabilities(target)["reviewed_keys"] == ["aKeyNoFileEverHad"]
+
+    save(service, [{"section": "tools", "id": "read", "action": "remove"}])
+
+    spec = spec_for(home, specs)
+    assert agent_state.get_capabilities(spec["name"])["reviewed_keys"] == sorted(spec)
+
+
 def test_permissions_removed_for_an_old_cli_is_vouched(editor, monkeypatch):  # noqa: F811
     """On a release that refuses ``permissions``, Crew itself drops the block."""
     from kiro_crew import kiro_cli
@@ -204,6 +271,41 @@ def test_permissions_removed_for_an_old_cli_is_vouched(editor, monkeypatch):  # 
     monkeypatch.setattr(kiro_cli, "spec_permissions_supported", lambda _version: False)
     save(service, enroll=True)
     # A tools edit re-aligns permissions, which this release removes.
+    save(service, [{"section": "tools", "id": "read", "action": "remove"}])
+    spec = spec_for(home, specs)
+    target, path = spec["name"], specs / (spec["name"] + ".json")
+    assert "permissions" not in spec
+    spec["$schema"] = "https://example.invalid/agent-v1.json"
+    path.write_text(json.dumps(spec), encoding="utf-8")
+    with pytest.raises(CapabilityError, match="materialization_changed"):
+        prepare_member_capabilities("A")
+
+    save(service)
+
+    assert agent_state.get_capabilities(target)["materialized"] == _digest(spec)
+
+
+def test_permissions_removed_for_a_missing_bundled_engine_is_vouched(
+    editor, monkeypatch  # noqa: F811 -- fixture
+):
+    """On the bundle route the writer and the vouch read the SAME gate.
+
+    ``agent.kas_bundle`` on, no engine installed, an accepting kiro-cli: the
+    writer removes ``permissions`` because the engine cannot vouch for it, so the
+    missing key is Crew's output and a later save must not call it a hand edit.
+    """
+    from kiro_crew import kiro_cli
+    from kiro_crew.agent_sdk import kas_bundle
+    from kiro_crew.agent_sdk.drivers.acp import derived_agent_permissions
+
+    service, home, specs, parent = editor
+    parent["permissions"] = derived_agent_permissions(parent["allowedTools"], "parent")
+    (specs / "parent.json").write_text(json.dumps(parent), encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.agent_sdk.backend_install._kas_bundle_route", lambda: True)
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+    monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda: "/opt/kiro/bin/kiro-cli")
+    monkeypatch.setattr(kiro_cli, "spec_permissions_supported", lambda _version: True)
+    save(service, enroll=True)
     save(service, [{"section": "tools", "id": "read", "action": "remove"}])
     spec = spec_for(home, specs)
     target, path = spec["name"], specs / (spec["name"] + ".json")

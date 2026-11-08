@@ -20,6 +20,8 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps.backend import list_app_processes
+from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
+from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
 from kiro_crew.apps.hooks_integration import get_all_hook_health
 from kiro_crew.apps.manager import (
     _credential_free_source_metadata,
@@ -105,6 +107,13 @@ def _listed_apps_with_trust() -> list[dict[str, Any]]:
 
 async def handle_list_apps(request: web.Request) -> web.Response:
     """GET /api/apps — list all installed apps."""
+    from kiro_crew.dashboard.origin import is_ssm_request
+
+    # Apps stay owner-only for an SSM guest: the invite cookie is the guest's only
+    # credential and an app frame loads without cookies, so no contribution of an
+    # app can run for them. An empty list is what hides every app action.
+    if is_ssm_request(request):
+        return web.json_response([])
     # list_apps() walks the apps dir and reads two files per installed app, and
     # this endpoint re-runs it on every dashboard refresh — so the walk goes off
     # the loop (its cost scales with installed app count).
@@ -121,8 +130,58 @@ async def handle_list_apps(request: web.Request) -> web.Response:
     # than a second flat name to maintain. The envelope also keeps the subsystem
     # explicit: this is hook-wiring health, not the subprocess backend_status.
     hook_health = get_all_hook_health()
+    # Derived from the restart supervisor's existing attempt counter + the tracked
+    # process state — no second copy of state is kept. This is the one fact that
+    # lets the app page's backend-unavailable banner say "repeatedly failing to
+    # restart" with the disable/re-enable hint instead of the generic "unavailable".
+    #
+    # The boundary is subtle because `_restart_attempts` is bumped to
+    # `previous_attempts + 1` just BEFORE each spawn (`_restart_exited_backend`),
+    # while `steady_state` is `previous_attempts >= ceiling`:
+    #   - attempts > ceiling: the fast ramp is unambiguously spent — at least
+    #     `ceiling` restarts have failed and the loop is on its slow cadence.
+    #     The record may be absent in the brief spawn window; still exhausted.
+    #   - attempts == ceiling AND the backend has EXITED: the ceiling-th attempt
+    #     already failed and the loop is inside its first slow wait (the record is
+    #     kept, exited, through `shutdown_event.wait`). Exhausted — this is the
+    #     300s window the banner must cover.
+    #   - attempts == ceiling AND the backend is LIVE/in-flight: the ceiling-th
+    #     replacement is still running, only `ceiling - 1` have failed. NOT
+    #     exhausted — the count would not have been measured yet.
+    # The counter is cleared on stop, sustained recovery, and a policy denial that
+    # ends supervision, so the state clears exactly when retrying does.
+    #
+    # Imported inside the handler rather than at module scope: the counter, its lock
+    # and the ceiling live in the backend module, and binding them here as this
+    # module's own names would make the ``kiro_crew.apps.routes`` facade forward
+    # names it does not own.
+    from kiro_crew.apps import backend as _backend
+
+    ceiling = _backend._RESTART_ON_EXIT_FAST_ATTEMPTS
+    with _backend._lock:
+        attempts_by_app = dict(_backend._restart_attempts)
+
+    def _is_exhausted(name: str, proc_row: dict[str, Any] | None) -> bool:
+        attempts = attempts_by_app.get(name, 0)
+        if attempts > ceiling:
+            return True
+        if attempts == ceiling:
+            # Only once the ceiling-th replacement has exited (the slow-wait
+            # window). A still-running record means it is the in-flight attempt.
+            return proc_row is not None and not proc_row["running"]
+        return False
+
+    # A built-in app skipped at boot is listed as unavailable, with the reason, so
+    # the App Store does not present it as a working app.
+    skipped = _unavailable_builtins(request.app)
     for app in apps:
+        _mark_unavailable(app, skipped)
         proc = procs.get(app["name"])
+        # Only an app the operator still has enabled is being retried: disabling a
+        # crash-looping app persists enabled=False and ends supervision without
+        # clearing the attempt counter, so gating on the persisted flag keeps the
+        # "will keep retrying" banner off an app whose retry loop has stopped.
+        exhausted = bool(app.get("enabled")) and _is_exhausted(app["name"], proc)
         if proc:
             app["backend_status"] = {
                 # Both flags come from the tracking record rather than being asserted
@@ -132,6 +191,18 @@ async def handle_list_apps(request: web.Request) -> web.Response:
                 "port": proc["port"],
                 "healthy": proc["healthy"],
                 "pid": proc["pid"],
+            }
+            if exhausted:
+                app["backend_status"]["restart_exhausted"] = {
+                    "attempts": ceiling,
+                }
+        elif exhausted:
+            # Only in the brief spawn window after the dead record is popped and
+            # before its replacement publishes is `proc` absent while the supervisor
+            # is still retrying; report the failure on its own so the banner is not
+            # generic.
+            app["backend_status"] = {
+                "restart_exhausted": {"attempts": ceiling},
             }
         health = hook_health.get(app["name"])
         if health:
@@ -157,7 +228,7 @@ def _provider_is_configured(app_name: str, pp: dict[str, Any]) -> bool:
     cfg_path = apps_dir() / app_name / "data" / config_file
     try:
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
     return bool(isinstance(cfg, dict) and str(cfg.get(field_name, "")).strip())
 
@@ -283,8 +354,12 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
     # fail-closed CPP, same as every other publish surface.
     deploy_denied = None
     if admits_cloud:
+        # The core row's endpoint is ``/api/deploy/deploy``, which checks the
+        # publish lists itself.
         deploy_denied = await asyncio.to_thread(
-            lambda: publish_denied_reason(request, DEPLOY_WEB_PROVIDER_ID)
+            lambda: publish_denied_reason(
+                request, DEPLOY_WEB_PROVIDER_ID, lists_checked_by_caller=True
+            )
         )
 
     if not admits_cloud or deploy_denied:
@@ -306,6 +381,14 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
                 "providers": [p for p in providers if p.get("id") != DEPLOY_WEB_PROVIDER_ID],
             }
         )
+    # An app row under the core id publishes at the app's own endpoint, which does
+    # not check the publish lists, so it is dropped whenever they restrict.
+    if any(p.get("id") == DEPLOY_WEB_PROVIDER_ID for p in providers):
+        squat_denied = await asyncio.to_thread(
+            lambda: publish_denied_reason(request, DEPLOY_WEB_PROVIDER_ID)
+        )
+        if squat_denied:
+            providers = [p for p in providers if p.get("id") != DEPLOY_WEB_PROVIDER_ID]
     try:
         from kiro_crew.deploy import profiles as _deploy_profiles
 
@@ -330,24 +413,41 @@ async def handle_publish_providers(request: web.Request) -> web.Response:
     return web.json_response({"providers": providers})
 
 
+#: The ``code`` of a ``GET /api/apps/{name}`` 404 for a name with no record whose
+#: wheel copy is released (``builtin_adoption.builtin_released``).
+APP_RELEASED_CODE = "app_released"
+
+
 async def handle_get_app(request: web.Request) -> web.Response:
     """GET /api/apps/{name} — get single app details."""
     name = request.match_info["name"]
-    info = get_app(name)
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         # Compat: migrated deploy-web requests hit this generic handler before
         # the deploy module's /api/apps/deploy-web/{tail} redirect (aiohttp
         # matches in registration order). Redirect to the canonical endpoint.
         if name == "deploy-web":
             raise web.HTTPTemporaryRedirect(location="/api/deploy/list")
+        # Imported here, not at module level, so the ``routes`` facade does not
+        # serve the helper as one of its own names.
+        from kiro_crew.apps.manager import _wheel_copy_released
+
+        if await asyncio.to_thread(_wheel_copy_released, name):
+            # A former built-in uninstalled after adoption: the wheel copy serves
+            # nothing, so its legacy dashboard route shows the not-installed state
+            # rather than a compiled page with no backend behind it.
+            return web.json_response(
+                {"error": f"app {name!r} not installed", "code": APP_RELEASED_CODE}, status=404
+            )
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
-    return web.json_response(await asyncio.to_thread(_installed_app_detail, name, info))
+    detail = await asyncio.to_thread(_installed_app_detail, name, info)
+    return web.json_response(_mark_unavailable(detail, _unavailable_builtins(request.app)))
 
 
 async def handle_get_manifest(request: web.Request) -> web.Response:
     """GET /api/apps/{name}/manifest — get app manifest."""
     name = request.match_info["name"]
-    manifest = get_app_manifest(name)
+    manifest = await asyncio.to_thread(get_app_manifest, name)
     if not manifest:
         # Compat: migrated deploy-web — redirect to canonical endpoint.
         if name == "deploy-web":
@@ -366,7 +466,7 @@ async def handle_app_config(request: web.Request) -> web.Response:
     ``token_auth`` already granted it (its own app, or a manifest grant).
     """
     name = request.match_info["name"]
-    info = get_app(name)
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         # Compat: migrated deploy-web — redirect to canonical deploy config endpoint.
         if name == "deploy-web":
@@ -392,7 +492,7 @@ async def handle_app_config(request: web.Request) -> web.Response:
         try:
             text = await asyncio.to_thread(config_path.read_text, encoding="utf-8")
             return web.json_response(json.loads(text))
-        except (json.JSONDecodeError, OSError) as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             return web.json_response({"error": f"failed to read config: {exc}"}, status=500)
 
     # PUT — write config.

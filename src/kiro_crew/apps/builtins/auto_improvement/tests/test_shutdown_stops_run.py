@@ -92,10 +92,10 @@ async def test_gateway_shutdown_stops_an_active_run(
             driver._release.is_set()
         ), "shutdown did not ask the driver to stop — the run was orphaned"
         # The released driver returns at once, so the join inside `stop` observes a
-        # finished thread and the terminal status is DONE. (STOPPING would be the
+        # finished thread and the terminal status is STOPPED. (STOPPING would be the
         # honest answer only if a real measurement outran the join timeout.)
         assert (
-            _fresh_singleton.status()["status"] == runner.STATUS_DONE
+            _fresh_singleton.status()["status"] == runner.STATUS_STOPPED
         ), "the run supervisor was not stopped on gateway shutdown"
     finally:
         driver.request_stop()

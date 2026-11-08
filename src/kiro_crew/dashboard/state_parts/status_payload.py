@@ -108,6 +108,7 @@ def status_snapshot(
     update_channel: str = "",
     update_channel_move_pending: bool = False,
     update_managed_by: str = "",
+    update_policy_file: str = "",
     update_commits_ahead: int = 0,
     update_commits_behind: int = 0,
     update_last_checked_at: float | None = None,
@@ -200,6 +201,9 @@ def status_snapshot(
         # command-managed host must not render self-managed installer
         # instructions its policy exists to bypass.
         "update_managed_by": update_managed_by,
+        # The policy file a user can edit to change who manages updates; empty
+        # unless it is the one owning them. Withheld from app sockets (ws.py).
+        "update_policy_file": update_policy_file,
         # Commit distance from a git checkout's upstream, both directions.
         # DIVERGED (both > 0) reports ``update_available: False`` exactly
         # like a current checkout — the destructive apply paths must never
@@ -274,7 +278,7 @@ def status_snapshot(
         # fail-closed trip, integrity mismatch, or unverified policy this
         # session), or "unknown" (policy not yet loaded).  Pure in-memory read.
         "governance": _governance_status(),
-        # FIX 2: cap / in-flight / queued counts for unattended app-owned
+        # Cap / in-flight / queued counts for unattended app-owned
         # turns. Published so a fleet parked behind the cap is visibly
         # throttled rather than looking like a set of hung workers.
         "background_turns": self.background_turn_stats(),

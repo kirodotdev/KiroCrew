@@ -35,30 +35,21 @@ from kiro_crew.apps.manager import (
     uninstall_app,
 )
 
-# ---------------------------------------------------------------------------
 # App-name admission contract
-# ---------------------------------------------------------------------------
 
 
 class TestUnportableAppName:
     """``nul`` must be refused by EVERY door, not just the manifest one.
 
-    These are behavior-level rather than one test per gate: the defect was not
-    that a single check was wrong, it was that three doors carried three
-    different name checks and a name refused at one was admitted at another.
-    Asserting the outcome at each entry point is what actually pins the shared
-    contract — a future fourth door that grows its own check fails here.
+    Asserted at each entry point, so a door that grows its own name check fails here.
     """
 
     def test_install_refuses_it_before_anything_lands_on_disk(self, tmp_path, app_home):
         """Windows cannot create apps/nul/, so install must refuse rather than
         half-create an app that can never start.
 
-        The source directory is deliberately NOT named ``nul``: a POSIX host can
-        author that tree and hand it to a Windows host, which is the case the
-        contract exists for, and the destination name comes from the manifest
-        anyway. Naming the source dir ``nul`` would also make the test itself
-        unrunnable on Windows.
+        The source dir is not named ``nul`` (the destination name comes from the manifest),
+        so the test also runs on Windows.
         """
         src = tmp_path / "source" / "nul-src"
         src.mkdir(parents=True)
@@ -108,9 +99,7 @@ class TestUnportableAppName:
         assert (app_home / "apps" / "null-app").is_dir()
 
 
-# ---------------------------------------------------------------------------
 # Validation
-# ---------------------------------------------------------------------------
 
 
 class TestValidation:
@@ -139,11 +128,8 @@ class TestValidation:
     def test_installed_app_may_not_declare_ui_overlays(self, tmp_path):
         """An overlay must name a component compiled into the dashboard bundle.
 
-        There is no per-overlay ``entryPoint`` the way ``ui.pages`` has one, so an
-        installed app cannot supply the component its declaration points at. Accepting
-        the manifest here would install an app whose overlay can only fail later as a
-        browser console warning -- the one channel an app author never reads. The
-        refusal belongs at install, which is the channel they do read.
+        Overlays have no ``entryPoint``, so an unknown one would fail only as a browser
+        console warning; install is where the author sees the refusal.
         """
         src = _make_app_source(tmp_path)
         raw = json.loads((src / APP_MANIFEST_FILENAME).read_text())
@@ -162,9 +148,7 @@ class TestValidation:
         assert _validate_source_path(src) == []
 
 
-# ---------------------------------------------------------------------------
 # Install
-# ---------------------------------------------------------------------------
 
 
 class TestInstall:
@@ -173,11 +157,9 @@ class TestInstall:
         result = install_app(src)
         assert result.ok
         assert result.name == "test-app"
-        # Verify files copied
         installed_dir = app_home / "apps" / "test-app"
         assert installed_dir.is_dir()
         assert (installed_dir / APP_MANIFEST_FILENAME).is_file()
-        # Verify installed.json
         meta = _read_installed("test-app")
         assert meta is not None
         assert meta.name == "test-app"
@@ -211,6 +193,8 @@ class TestInstall:
         r2 = install_app(src)
         assert not r2.ok
         assert "already installed" in r2.error
+        # It points at the in-place update rather than only at uninstall.
+        assert f"kirocrew app update {r1.name}" in r2.error
 
     def test_install_with_agents_and_skills(self, tmp_path, app_home):
         src = _make_app_source(
@@ -218,7 +202,6 @@ class TestInstall:
             agents=["agents/analyst.json"],
             skills=["skills/triage"],
         )
-        # Create the referenced files
         (src / "agents").mkdir()
         (src / "agents" / "analyst.json").write_text('{"name": "analyst"}')
         (src / "skills" / "triage").mkdir(parents=True)
@@ -226,7 +209,6 @@ class TestInstall:
 
         result = install_app(src)
         assert result.ok
-        # Verify files were copied
         installed = app_home / "apps" / "test-app"
         assert (installed / "agents" / "analyst.json").is_file()
         assert (installed / "skills" / "triage" / "SKILL.md").is_file()
@@ -395,17 +377,10 @@ class TestInstall:
     def test_a_pre_existing_data_link_at_a_recordless_app_dir_is_refused_before_the_transaction(
         self, tmp_path, app_home
     ):
-        """The THIRD ask of the same predicate. An app directory already standing at
-        the destination with no `installed.json` (a prior default uninstall's
-        leftover, or an orphaned partial copy) whose `data` is a link to a directory
-        elsewhere: the move-aside skips what is not an owned directory, so the orphan
-        cleanup would `rmtree` the app directory and unlink the link, the post-copy
-        ask would see only the source's `data`, and the install would return
-        `ok=True` with a fresh empty `data/` -- the pre-existing entry gone with no
-        refusal, no log line and no error, where `update_app` and `uninstall_app`
-        refuse the identical shape before mutating. Refused here, before anything
-        moves: the link still stands and still resolves, the directory it names is
-        intact, no record and no temp copy appear."""
+        """An orphan app dir whose `data` is a link is refused before anything moves.
+
+        Otherwise orphan cleanup would unlink it and install would return `ok=True` with an
+        empty `data/`; `update_app` and `uninstall_app` refuse the same shape."""
         from kiro_crew.apps.manager import app_dir
 
         elsewhere = tmp_path / "elsewhere"
@@ -475,9 +450,7 @@ class TestInstall:
         assert not (dest.parent / ".test-app-data-tmp").exists()
 
 
-# ---------------------------------------------------------------------------
 # Uninstall
-# ---------------------------------------------------------------------------
 
 
 class TestUninstall:
@@ -570,6 +543,87 @@ class TestUninstall:
         assert result.ok
         assert not (app_home / "apps" / "test-app").exists()
 
+    @staticmethod
+    def _sharing_violation(path):
+        """The ``PermissionError`` Windows raises deleting a file another process holds open."""
+        exc = PermissionError(13, "The process cannot access the file", str(path))
+        exc.winerror = 32
+        return exc
+
+    def _hold_app_dir(self, monkeypatch, app_root, *, releases_after, exc_factory):
+        """Make ``rmtree`` of *app_root* fail ``releases_after`` times, then delete it."""
+        import kiro_crew.platform_compat_files as files_mod
+
+        monkeypatch.setattr(files_mod, "_RMTREE_BACKOFF_SECONDS", 0)
+        real_rmtree = shutil.rmtree
+        attempts = []
+
+        def held_rmtree(path, *args, **kwargs):
+            if str(path) == str(app_root):
+                attempts.append(path)
+                if releases_after is None or len(attempts) <= releases_after:
+                    raise exc_factory(Path(path) / "backend.log")
+            return real_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(shutil, "rmtree", held_rmtree)
+        return attempts
+
+    @pytest.mark.parametrize("keep_data", [False, True])
+    def test_uninstall_retries_a_file_held_open_until_it_is_released(
+        self, tmp_path, app_home, monkeypatch, keep_data
+    ):
+        """A sharing violation on the app dir delete clears once the holder lets go."""
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        attempts = self._hold_app_dir(
+            monkeypatch, app_root, releases_after=2, exc_factory=self._sharing_violation
+        )
+
+        result = uninstall_app("test-app", keep_data=keep_data)
+
+        assert result.ok, result.error
+        assert len(attempts) == 3
+        assert not (app_root / APP_MANIFEST_FILENAME).exists()
+
+    def test_uninstall_fails_naming_the_file_still_held_after_the_retries(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """A holder that never releases fails the purge, names the file, keeps the app."""
+        import kiro_crew.platform_compat_files as files_mod
+
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        attempts = self._hold_app_dir(
+            monkeypatch, app_root, releases_after=None, exc_factory=self._sharing_violation
+        )
+
+        result = uninstall_app("test-app", keep_data=False)
+
+        assert not result.ok
+        assert len(attempts) == files_mod._RMTREE_MAX_ATTEMPTS
+        assert str(app_root / "backend.log") in result.error
+        assert "held open by another process" in result.error
+        assert (app_root / APP_MANIFEST_FILENAME).is_file()
+
+    def test_uninstall_does_not_retry_a_permission_error_that_is_not_a_sharing_violation(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        """Only winerror 32/33 is transient; any other refusal fails on the first attempt."""
+        install_app(_make_app_source(tmp_path))
+        app_root = app_home / "apps" / "test-app"
+        attempts = self._hold_app_dir(
+            monkeypatch,
+            app_root,
+            releases_after=None,
+            exc_factory=lambda path: PermissionError(13, "Access is denied", str(path)),
+        )
+
+        result = uninstall_app("test-app", keep_data=False)
+
+        assert not result.ok
+        assert len(attempts) == 1
+        assert (app_root / APP_MANIFEST_FILENAME).is_file()
+
     def test_uninstall_removes_the_agent_lock_and_gateway_overlay(
         self, tmp_path, app_home, monkeypatch
     ):
@@ -658,15 +712,12 @@ class TestUninstall:
     def test_uninstall_keep_data(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)
         install_app(src)
-        # Write some data
         data_dir = app_home / "apps" / "test-app" / "data"
         (data_dir / "cache.json").write_text('{"key": "value"}')
 
         result = uninstall_app("test-app", keep_data=True)
         assert result.ok
-        # Data preserved
         assert (app_home / "apps" / "test-app" / "data" / "cache.json").is_file()
-        # App files removed
         assert not (app_home / "apps" / "test-app" / APP_MANIFEST_FILENAME).exists()
 
     def test_uninstall_keeps_data_when_the_app_dir_is_reached_through_a_link(
@@ -674,11 +725,8 @@ class TestUninstall:
     ):
         """Uninstall pins the data directory, and that walk refuses any link it meets.
 
-        Reached through a linked ancestor - a home that is itself a symlink -
-        the pin refuses before the quarantine starts and the uninstall fails
-        with the app still installed. The caller has to hand the walk a path
-        whose ancestors are already canonical, while leaving the app's own name
-        and ``data`` literal so a link at either is still refused.
+        So the caller canonicalizes the ancestors (a symlinked home) but leaves the app's
+        name and ``data`` literal, where a link is still refused.
         """
         import os as _os
 
@@ -881,14 +929,12 @@ class TestUninstall:
         """Reinstall after default uninstall must preserve user data."""
         src = _make_app_source(tmp_path)
         install_app(src)
-        # Write user data
         data_dir = app_home / "apps" / "test-app" / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         (data_dir / "priorities.md").write_text("- item1\n- item2\n")
         (data_dir / "state").mkdir(exist_ok=True)
         (data_dir / "state" / "oncall.json").write_text('{"oncall": true}')
 
-        # Uninstall with keep_data
         result = uninstall_app("test-app", keep_data=True)
         assert result.ok
         assert (data_dir / "priorities.md").is_file()
@@ -898,7 +944,6 @@ class TestUninstall:
         result = install_app(src2)
         assert result.ok
 
-        # User data must survive
         assert (data_dir / "priorities.md").read_text(encoding="utf-8") == "- item1\n- item2\n"
         assert (data_dir / "state" / "oncall.json").read_text(
             encoding="utf-8"
@@ -908,14 +953,12 @@ class TestUninstall:
         """If copytree fails after data/ was preserved, rollback must restore data/."""
         src = _make_app_source(tmp_path)
         install_app(src)
-        # Write user data
         data_dir = app_home / "apps" / "test-app" / "data"
         data_dir.mkdir(parents=True, exist_ok=True)
         (data_dir / "config.yaml").write_text("oncall:\n  rotation: my-rotation\n")
         (data_dir / "state").mkdir(exist_ok=True)
         (data_dir / "state" / "oncall.json").write_text('{"oncall": true}')
 
-        # Uninstall with keep_data
         uninstall_app("test-app", keep_data=True)
         assert (data_dir / "config.yaml").is_file()
 
@@ -927,11 +970,9 @@ class TestUninstall:
         monkeypatch.setattr("shutil.copytree", failing_copytree)
         result = install_app(src2)
 
-        # Install must fail
         assert not result.ok
         assert "failed to copy app files" in result.error
 
-        # Rollback must have restored data/
         assert data_dir.is_dir(), "data/ directory must be restored after rollback"
         assert (data_dir / "config.yaml").read_text(
             encoding="utf-8"
@@ -959,11 +1000,9 @@ class TestUninstall:
         result = install_app(src)
         assert not result.ok
         assert "unsafe app name" in result.error
-        # Verify SEL rejection event was emitted
         assert len(sel_calls) == 1
         assert sel_calls[0]["outcome"] == "rejected"
         assert sel_calls[0]["operation"] == "path_safety_check"
-        # Verify nothing was written to disk
         assert not (app_home / "apps" / "evil-app" / APP_MANIFEST_FILENAME).exists()
 
     def test_install_reclaims_stale_tmp_when_data_absent(self, tmp_path, app_home):
@@ -1030,16 +1069,13 @@ class TestUninstall:
         src = _make_app_source(tmp_path)
         result = install_app(src)
         assert result.ok
-        # Must have emitted a success event
         success_events = [c for c in sel_calls if c.get("outcome") == "success"]
         assert len(success_events) == 1
         assert success_events[0]["operation"] == "install"
         assert "test-app" in success_events[0]["resources"]
 
 
-# ---------------------------------------------------------------------------
 # App admission gate
-# ---------------------------------------------------------------------------
 
 
 class TestAppAdmission:
@@ -1289,9 +1325,7 @@ class TestAppAdmission:
         assert _signature_valid(m, policy) is False
 
 
-# ---------------------------------------------------------------------------
 # Enable / Disable
-# ---------------------------------------------------------------------------
 
 
 class TestEnableDisable:
@@ -1338,9 +1372,7 @@ class TestEnableDisable:
         assert not result.ok
 
 
-# ---------------------------------------------------------------------------
 # Listing
-# ---------------------------------------------------------------------------
 
 
 class TestListing:

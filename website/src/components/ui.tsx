@@ -64,17 +64,20 @@ export function CardTitle({ children, className, ...rest }: Omit<React.Component
  * and `text-danger` is emphatically not that. The assertion was written against
  * the `text-text` token because that was the only foreground a Btn then had;
  * it now checks the invariant it states.
+ *
+ * A disabled `primary` (and `SendBtn`) takes the muted surface, borderless and
+ * at 60%: a faded accent reads as pastel, and a full grey fill as a live button.
  */
 export const Btn = React.forwardRef<HTMLButtonElement, React.ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean; primary?: boolean }>(
   ({ children, danger, primary, className, ...rest }, ref) => (
     <button
       ref={autoSiteRef((rest as Record<string, unknown>)['data-ui-auto'], ref)}
-      className={twMerge(`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[13px] cursor-pointer font-body transition-all active:scale-[0.97] active:duration-75 disabled:opacity-30 disabled:cursor-not-allowed ${
+      className={twMerge(`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[13px] cursor-pointer font-body transition-all active:scale-[0.97] active:duration-75 disabled:cursor-not-allowed ${
         primary
-          ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)]'
+          ? 'bg-accent text-accent-fg border-accent hover:bg-accent-hover hover:shadow-[0_0_12px_var(--accent-glow)] disabled:bg-bg-hover disabled:text-muted disabled:border-transparent disabled:shadow-none disabled:opacity-60'
           : danger
-            ? 'border-border bg-transparent text-danger hover:text-danger-text hover:border-danger hover:bg-danger-subtle'
-            : 'border-border bg-transparent text-text hover:border-border-strong hover:bg-bg-hover'
+            ? 'border-border bg-transparent text-danger hover:text-danger-text hover:border-danger hover:bg-danger-subtle disabled:opacity-30'
+            : 'border-border bg-transparent text-text hover:border-border-strong hover:bg-bg-hover disabled:opacity-30'
       }`, className)}
       {...rest}
     >
@@ -94,7 +97,7 @@ export const SendBtn = React.forwardRef<HTMLButtonElement, { children: React.Rea
       // wraps is not the one it was designed at. Growing leaves the row's
       // heights uneven, which is the lesser defect: uneven is legible, clipped
       // is not.
-      className={twMerge("btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)] disabled:opacity-30 disabled:cursor-not-allowed transition-all font-body", className)}
+      className={twMerge("btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 min-h-9 text-sm font-semibold cursor-pointer hover:bg-accent-hover hover:shadow-[0_0_20px_var(--accent-glow)] disabled:bg-bg-hover disabled:text-muted disabled:shadow-none disabled:after:hidden disabled:opacity-60 disabled:cursor-not-allowed transition-all font-body", className)}
       onClick={onClick}
       disabled={disabled}
       style={style}
@@ -219,10 +222,12 @@ export function StatCard({ label, value, accent, colorClass, delay, onClick, act
   return (
     // role/tabIndex/onKeyDown are all applied together with onClick, so the card
     // is fully keyboard-accessible whenever it is interactive; eslint can't see
-    // the conditional role, hence the scoped disables.
+    // the conditional role, hence the scoped disables. The hover lift and pointer
+    // ride on onClick too: a summary card that lit up under the cursor read as a
+    // target with nothing behind it.
     /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
     <div
-      className={twMerge(`stat-accent relative overflow-hidden bg-card rounded-md px-4 py-3.5 border shadow-[inset_0_1px_0_var(--card-hl)] animate-rise hover:border-border-strong hover:shadow-md transition-all ${active ? 'border-accent ring-1 ring-accent/40' : 'border-border'} ${onClick ? 'cursor-pointer' : ''}`, className)}
+      className={twMerge(`stat-accent relative overflow-hidden bg-card rounded-md px-4 py-3.5 border shadow-[inset_0_1px_0_var(--card-hl)] animate-rise transition-all ${active ? 'border-accent ring-1 ring-accent/40' : 'border-border'} ${onClick ? 'cursor-pointer hover:border-border-strong hover:shadow-md' : ''}`, className)}
       style={delay ? { animationDelay: `${delay}ms` } : undefined}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
@@ -334,7 +339,7 @@ export function EmptyState({ icon, title, subtitle, action, testId = 'empty-stat
     <div className="flex flex-col items-center justify-center py-12 gap-2 animate-rise" data-testid={testId}>
       <div className="text-[40px] opacity-[.12] select-none">{icon}</div>
       <div className="text-muted text-sm font-medium" data-testid={`${testId}-title`}>{title}</div>
-      {subtitle && <div className="text-muted/60 text-[13px] text-center max-w-[320px]" data-testid={`${testId}-subtitle`}>{subtitle}</div>}
+      {subtitle && <div className="text-muted text-[13px] text-center max-w-[320px]" data-testid={`${testId}-subtitle`}>{subtitle}</div>}
       {action && <div className="mt-2" data-testid={`${testId}-action`}>{action}</div>}
     </div>
   )
@@ -394,7 +399,8 @@ export function FilteredEmpty({ query, onClear, noun, testId = 'filtered-empty' 
  */
 export function PanelSectionHeader({ label, count, trailing, className }: {
   label: string
-  count?: number
+  /** A number, or a translated count string such as a capped `14+`. */
+  count?: number | string
   trailing?: React.ReactNode
   className?: string
 }) {

@@ -20,10 +20,12 @@ import logging
 import aiohttp
 
 from kiro_crew.config.loader import ACTIVATION_REVIEW
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.slack.channel_policy import channel_refusal
 from kiro_crew.slack.handler import (
     APPROVAL_INTERACTIVE,
     handle_interaction,
@@ -50,7 +52,10 @@ async def _handle_tool_approval(
     # Only approve/trust are blocked outright.
     _is_reject = action_id == "reject_tool"
     if not _is_reject:
-        if not await channel_inbound_permitted("slack"):
+        if not (
+            await channel_inbound_permitted("slack")
+            and not channel_refusal(channel, operation="slack.interactive", caller=user_id)
+        ):
             logger.info(
                 "slack tool-approval (native) dropped: denied by channels governance policy"
             )
@@ -121,6 +126,7 @@ async def _post_review_auth_error(response_url: str) -> None:
         async with aiohttp.ClientSession() as sess:
             await sess.post(
                 response_url,
+                proxy=resolve_proxy(response_url),
                 json={
                     "replace_original": True,
                     "response_type": "ephemeral",
@@ -202,7 +208,9 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
-                await sess.post(response_url, json={"delete_original": True})
+                await sess.post(
+                    response_url, proxy=resolve_proxy(response_url), json={"delete_original": True}
+                )
         except Exception:
             logger.debug("Failed to delete review ephemeral", exc_info=True)
     sel().log_api_access(
@@ -253,7 +261,9 @@ async def _handle_review_edit(payload: dict, action: dict) -> None:
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
-                await sess.post(response_url, json={"delete_original": True})
+                await sess.post(
+                    response_url, proxy=resolve_proxy(response_url), json={"delete_original": True}
+                )
         except Exception:
             logger.debug("Failed to delete review ephemeral", exc_info=True)
     sel().log_api_access(
@@ -296,7 +306,9 @@ async def _handle_review_cancel(payload: dict, action: dict) -> None:
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
-                await sess.post(response_url, json={"delete_original": True})
+                await sess.post(
+                    response_url, proxy=resolve_proxy(response_url), json={"delete_original": True}
+                )
         except Exception:
             logger.debug("Failed to delete review ephemeral", exc_info=True)
     sel().log_api_access(
@@ -327,6 +339,10 @@ async def _handle_review_edit_submit(payload: dict) -> None:
     if not parsed:
         return
     channel, thread_ts, draft_key = parsed
+    if channel_refusal(channel, operation="slack.review_submit", caller=caller):
+        # The channel itself (``channels.posture.slack.allowed_channel_ids``).
+        logger.info("slack review-edit submit dropped: channel refused by policy")
+        return
 
     from kiro_crew.slack.handler import _review_drafts_get, _review_drafts_pop
 
@@ -360,7 +376,6 @@ async def _handle_review_edit_submit(payload: dict) -> None:
     logger.info("Review edited and posted by %s in %s", caller, channel)
 
 
-# Register the edit modal submission handler
 register_view_handler("mc_review_edit_submit", _handle_review_edit_submit)
 
 
@@ -400,7 +415,9 @@ async def _handle_review_revise(payload: dict, action: dict) -> None:
     if response_url:
         try:
             async with aiohttp.ClientSession() as sess:
-                await sess.post(response_url, json={"delete_original": True})
+                await sess.post(
+                    response_url, proxy=resolve_proxy(response_url), json={"delete_original": True}
+                )
         except Exception:
             logger.debug("Failed to delete review ephemeral", exc_info=True)
     sel().log_api_access(
@@ -429,6 +446,10 @@ async def _handle_review_revise_submit(payload: dict) -> None:
     if not parsed:
         return
     channel, thread_ts, draft_key = parsed
+    if channel_refusal(channel, operation="slack.review_submit", caller=caller):
+        # The channel itself (``channels.posture.slack.allowed_channel_ids``).
+        logger.info("slack review-revise submit dropped: channel refused by policy")
+        return
 
     from kiro_crew.slack.handler import _review_drafts_get, _review_drafts_pop
 
@@ -505,7 +526,9 @@ async def _handle_review_revise_submit(payload: dict) -> None:
             )
             logger.exception("Review revision failed for %s in %s", caller, channel)
 
-    asyncio.create_task(_do_revise())
+    t = asyncio.create_task(_do_revise())
+    _orch._handler_tasks.add(t)
+    t.add_done_callback(_orch._handler_tasks.discard)
 
 
 register_view_handler("mc_review_revise_submit", _handle_review_revise_submit)

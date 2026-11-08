@@ -522,8 +522,8 @@ class TestEveryCeilingFieldHasAComposeClass:
 
     #: Folded field-by-field by ``_intersect_ceilings`` (tighten-only). ``updates``
     #: folds its two restriction pins and keeps the commands the authority's; see
-    #: ``TestUpdatePinsFoldAsRestrictions``.
-    COMPOSED = frozenset({"boot", "controls", "updates"})
+    #: ``TestUpdatePinsFoldAsRestrictions``. ``yolo_max_seconds`` folds to the lower cap.
+    COMPOSED = frozenset({"boot", "controls", "updates", "yolo_max_seconds"})
     #: "Absence means no choice expressed": the highest tier that declared one wins,
     #: re-applied by ``compose_tier_ladder``.
     LOWER_MAY_SUPPLY = frozenset({"distribution"})
@@ -538,7 +538,10 @@ class TestEveryCeilingFieldHasAComposeClass:
             "agentcore_identity_posture",
             "agentcore_gateway_url",
             "agentcore_workload_name",
+            "mcp_registry_local_control_plane",
             "tier",
+            # A lower tier never supplies it; compose_tier_ladder sets it after the fold.
+            "lower_tier_folded",
         }
     )
 
@@ -567,6 +570,7 @@ class TestEveryCeilingFieldHasAComposeClass:
             agentcore_gateway_url="https://sub.example",
             agentcore_workload_name="sub-workload",
             agentcore_identity_posture="login",
+            lower_tier_folded=True,
         )
 
         merged = governance._intersect_ceilings(authority, subordinate)
@@ -893,6 +897,27 @@ class TestUpdatePinsFoldAsRestrictions:
         subordinate = governance.parse_policy(_doc("subordinate", updates={"min_version": lower}))
         merged = governance._intersect_ceilings(authority, subordinate)
         assert merged.updates.min_version == expected
+
+    @pytest.mark.parametrize(
+        ("upper", "lower", "expected"),
+        [
+            (None, False, False),  # a subordinate turning installs off narrows: kept
+            (False, True, False),  # a subordinate cannot turn them back on
+            (False, None, False),
+            (True, None, True),
+            (None, None, True),  # silent on both sides: unattended installs stay on
+        ],
+    )
+    def test_unattended_apply_folds_to_off_when_either_tier_turns_it_off(
+        self, upper, lower, expected
+    ):
+        def _updates(value):
+            return {} if value is None else {"updates": {"unattended_apply": value}}
+
+        authority = governance.parse_policy(_doc("authority", **_updates(upper)))
+        subordinate = governance.parse_policy(_doc("subordinate", **_updates(lower)))
+        merged = governance._intersect_ceilings(authority, subordinate)
+        assert merged.updates.unattended_apply is expected
 
     def test_update_commands_stay_the_authoritys_even_when_it_declares_none(self):
         authority = governance.parse_policy(_doc("authority"))
@@ -1234,3 +1259,156 @@ class TestAnUnreadableHomeFileBeneathAnAuthorityIsSkipped:
         _point_home(monkeypatch, _write_policy(tmp_path / "home.json", "operator"))
         with pytest.raises(RuntimeError, match="unanticipated"):
             load_security_policy()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# An unexpected exception while loading refuses boot, never boots ungoverned
+# ──────────────────────────────────────────────────────────────────────────
+class TestAnUnexpectedLoaderErrorRefusesBoot:
+    """Any non-composition exception from the loader is raised as a composition error.
+
+    Boot (``cli.main``, ``mcp_entry``) and ``safe_context_call`` re-raise a
+    ``PlatformCompositionError`` and DEGRADE anything else to the ungoverned default
+    context. A raw ``ValueError`` / ``KeyError`` escaping the env or central parse
+    path would therefore boot a fleet host with no ceiling at all.
+    """
+
+    @pytest.fixture(
+        params=[ValueError("bad shape"), KeyError("missing")], ids=["ValueError", "KeyError"]
+    )
+    def boom(self, request):
+        exc = request.param
+
+        def _raise(*_a, **_kw):
+            raise exc
+
+        return _raise
+
+    @staticmethod
+    def _refusal(call) -> str:
+        """Run *call*; assert it raised a composition error, and return its text.
+
+        Catches every exception rather than only the expected class, so a raw
+        ``ValueError`` escaping (the bug) fails an ASSERTION here instead of
+        erroring out of the test body.
+        """
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        with pytest.raises(Exception) as info:
+            call()
+        assert isinstance(info.value, PlatformCompositionError), (
+            f"raw {type(info.value).__name__} escaped the loader; boot would degrade "
+            "to the ungoverned default context"
+        )
+        assert "refusing to boot ungoverned" in str(info.value)
+        return str(info.value)
+
+    def test_env_path_parse_error_refuses(self, monkeypatch, tmp_path, boom):
+        env_file = _write_policy(tmp_path / "env.json", "env")
+        monkeypatch.setenv(_POLICY_ENV, str(env_file))
+        monkeypatch.setattr(governance, "parse_policy", boom)
+        text = self._refusal(load_security_policy)
+        assert str(env_file) in text
+        assert _POLICY_ENV in text
+
+    def test_central_path_error_refuses(self, monkeypatch, boom):
+        monkeypatch.setenv("KIROCREW_POLICY_URL", _TEST_SOURCE)
+        monkeypatch.setattr(pd, "load_distributed_policy", boom)
+        assert "central policy" in self._refusal(load_security_policy)
+
+    def test_boot_composition_refuses_rather_than_defaulting(self, monkeypatch, tmp_path, boom):
+        # ``build_default_context`` is the chokepoint both a real boot and the lazy
+        # ``current_context`` default go through; its refusal is what boot re-raises.
+        from kiro_crew.platform.bootstrap import build_default_context
+
+        env_file = _write_policy(tmp_path / "env.json", "env")
+        monkeypatch.setenv(_POLICY_ENV, str(env_file))
+        monkeypatch.setattr(governance, "parse_policy", boom)
+        self._refusal(lambda: build_default_context(object()))  # type: ignore[arg-type]
+
+    def test_a_composition_error_passes_through_unwrapped(self, monkeypatch, tmp_path):
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        env_file = tmp_path / "env.json"
+        env_file.write_text("{ not json", encoding="utf-8")
+        monkeypatch.setenv(_POLICY_ENV, str(env_file))
+        with pytest.raises(PlatformCompositionError, match="is unreadable") as info:
+            load_security_policy()
+        assert "refusing to boot ungoverned" not in str(info.value)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# A policy saved as "UTF-8 with BOM" loads at its own tier
+# ──────────────────────────────────────────────────────────────────────────
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+
+def _write_policy_bytes(path: Path, raw: bytes) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return path
+
+
+def _bom_doc(marker: str, **extra: object) -> bytes:
+    # Windows PowerShell 5.1 ``Set-Content -Encoding UTF8``: the mark, the text, CRLF.
+    return _UTF8_BOM + json.dumps(_doc(marker, **extra)).encode("utf-8") + b"\r\n"
+
+
+class TestAUtf8BomPolicyLoadsAtItsTier:
+    """One leading UTF-8 byte-order mark is not content: the file behaves like
+    the same file without it. Every other encoding defect still refuses."""
+
+    def test_the_home_file_loads_as_the_home_tier(self, monkeypatch, tmp_path):
+        _point_home(monkeypatch, _write_policy_bytes(tmp_path / "home.json", _bom_doc("operator")))
+        ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.tier == TIER_HOME
+        assert ceiling.identity_issuer == "operator"
+
+    def test_the_env_file_loads_as_the_env_tier(self, monkeypatch, tmp_path):
+        env_file = _write_policy_bytes(tmp_path / "env.json", _bom_doc("operator"))
+        monkeypatch.setenv(_POLICY_ENV, str(env_file))
+        ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.tier == TIER_ENV
+
+    def test_a_home_tightening_beneath_central_applies(
+        self, monkeypatch, tmp_path, central, caplog
+    ):
+        central("fleet", boot={"fail_closed": True, "allow_terminal": True})
+        home = _bom_doc("operator", boot={"fail_closed": True, "allow_terminal": False})
+        _point_home(monkeypatch, _write_policy_bytes(tmp_path / "home.json", home))
+        with caplog.at_level("WARNING", logger=governance.logger.name):
+            ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.tier == TIER_CENTRAL
+        assert ceiling.boot.allow_terminal is False
+        assert not [r for r in caplog.records if "is unusable" in r.getMessage()]
+
+    @pytest.mark.parametrize(
+        "raw",
+        [json.dumps(_doc("operator")).encode("utf-16"), _UTF8_BOM + b"{ not json"],
+        ids=["utf16", "bom_then_invalid_json"],
+    )
+    def test_any_other_defect_still_refuses_boot_standalone(self, monkeypatch, tmp_path, raw):
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        _point_home(monkeypatch, _write_policy_bytes(tmp_path / "home.json", raw))
+        with pytest.raises(PlatformCompositionError, match="is unreadable"):
+            load_security_policy()
+
+    @pytest.mark.parametrize(
+        "raw",
+        [json.dumps(_doc("operator")).encode("utf-16"), _UTF8_BOM + b"{ not json"],
+        ids=["utf16", "bom_then_invalid_json"],
+    )
+    def test_any_other_defect_is_still_skipped_beneath_central(
+        self, monkeypatch, tmp_path, central, caplog, raw
+    ):
+        central("fleet", boot={"fail_closed": True, "allow_terminal": True})
+        _point_home(monkeypatch, _write_policy_bytes(tmp_path / "home.json", raw))
+        with caplog.at_level("WARNING", logger=governance.logger.name):
+            ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.boot.allow_terminal is True
+        assert len([r for r in caplog.records if "is unusable" in r.getMessage()]) == 1

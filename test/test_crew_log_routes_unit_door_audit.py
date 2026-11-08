@@ -352,18 +352,22 @@ class TestTheNewRoutes:
         assert response.status == 200
         assert json.loads(response.text) == {"key": OWNER_KEY, "unit": SESSION}
 
-    def test_resolve_refuses_a_key_with_no_live_acp_session(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("query", "status"),
+        [
+            pytest.param(
+                "?key=dashboard:chat-gone",
+                404,
+                id="test_resolve_refuses_a_key_with_no_live_acp_session",
+            ),
+            pytest.param("", 400, id="test_resolve_needs_a_key"),
+        ],
+    )
+    def test_resolve_refuses_a_key_it_cannot_land(self, monkeypatch, query, status):
         _flag_on(monkeypatch)
-        request = _internal_request("/api/crew-log/resolve?key=dashboard:chat-gone")
+        request = _internal_request(f"/api/crew-log/resolve{query}")
         response = asyncio.run(routes.api_crew_log_resolve(request))
-        assert response.status == 404
-        assert json.loads(response.text)["code"] == "unresolvable_key"
-
-    def test_resolve_needs_a_key(self, monkeypatch):
-        _flag_on(monkeypatch)
-        request = _internal_request("/api/crew-log/resolve")
-        response = asyncio.run(routes.api_crew_log_resolve(request))
-        assert response.status == 400
+        assert response.status == status
         assert json.loads(response.text)["code"] == "unresolvable_key"
 
     def test_a_unit_with_no_log_is_unknown_rather_than_an_empty_page(self, monkeypatch):

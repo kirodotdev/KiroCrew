@@ -30,6 +30,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from source_corpus import parsed_candidates
 
 from kiro_crew import runtime_death, runtime_ownership
 from kiro_crew.acp.runtime import AcpRuntime, _proven_death_cause, _rc_phrase
@@ -91,6 +92,7 @@ def _run_shared_cron_deaths(*, limit: int, deaths: int):
     gateway._owner_id = "U000"
     gateway.subagent_mgr = None
     gateway._cron_injecting = {}
+    gateway._cron_runs_holding = set()
     gateway._no_crons = False
     gateway._interactive_approval = MagicMock(return_value="interactive_cb")
 
@@ -1107,29 +1109,34 @@ def test_every_death_handler_that_charges_a_budget_asks_whose_fault_it_was():
     boolean named as though it had, which is why the guard name is traced back to
     its binding.
 
-    Written over the whole handler population rather than one file on purpose. The
-    first version of this change guarded three of the four sites and an external
-    reviewer found the fourth (`task_executor.py`, the taskrunner's
-    ``recoveries``); a per-file test would have passed on that PR. This one fails
-    on a fifth site the moment somebody adds it.
+    Written over the whole handler population rather than one file on purpose: a
+    per-file test passes while one site (such as `task_executor.py`, the
+    taskrunner's ``recoveries``) is left unguarded. This one fails on a new site
+    the moment somebody adds it.
 
     A reset to zero is not a charge and is excluded: zeroing a budget is the
     conservative direction and needs no ownership question.
     """
     handlers = 0
     awaited: list[str] = []
-    turn_phases: dict[str, tuple[ast.Module, ast.AsyncFunctionDef]] = {}
     unguarded: list[str] = []
-    for path in sorted(_SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    # The dashboard runner's except arms run in these owners' phases, by name. An owner
+    # holds the phase, not the except clause, so it need not name ``AcpProcessDied``
+    # and the filter below cannot find it: every chat_turn module is read for phases.
+    turn_phases: dict[str, tuple[ast.Module, ast.AsyncFunctionDef]] = {}
+    for path in sorted(_SRC.rglob("chat_turn/*.py")):
+        owner = ast.parse(path.read_text(encoding="utf-8"))
+        turn_phases.update(
+            (node.name, (owner, node))
+            for node in owner.body
+            if isinstance(node, ast.AsyncFunctionDef)
+        )
+    # A counted handler names ``AcpProcessDied`` in its ``except`` clause, so only
+    # files whose text holds it are parsed.
+    for path, _text, tree in parsed_candidates(
+        require_any=("AcpProcessDied",), skip_syntax_errors=False
+    ):
         backed = _predicate_backed_guards(tree)
-        if path.parent.name == "chat_turn":
-            # The dashboard runner's except arms run in these owners' phases, by name.
-            turn_phases.update(
-                (node.name, (tree, node))
-                for node in tree.body
-                if isinstance(node, ast.AsyncFunctionDef)
-            )
         for node in ast.walk(tree):
             if not isinstance(node, ast.ExceptHandler):
                 continue

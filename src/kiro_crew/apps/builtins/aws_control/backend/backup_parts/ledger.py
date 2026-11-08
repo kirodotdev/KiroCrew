@@ -231,8 +231,8 @@ def _record_run_locked(
     # run at all when the state read or write fails, and that path still hands this
     # ``record`` to :func:`_remember_unpersisted`, so a sequence assigned only inside
     # ``mutate`` would leave every in-memory run sharing one value. And holding
-    # ``_run_lock`` across ``_locked_state_update`` is exactly the stall this change
-    # removes: this block cannot park, because nothing inside it waits.
+    # ``_run_lock`` across ``_locked_state_update`` would stall: this block cannot
+    # park, because nothing inside it waits.
     with _run_lock:
         _run_sequence += 1
         sequence = _run_sequence

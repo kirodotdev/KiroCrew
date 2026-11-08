@@ -70,6 +70,8 @@ def _track_untracks(monkeypatch, rt_mod, *, pid_exists: bool):
         rt_mod, "_untrack_root_by_identity", lambda p, tok: calls.append((p, tok)) or True
     )
     monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda p: pid_exists)
+    # The POSIX retirement. Windows drains the tree instead (pinned below).
+    monkeypatch.setattr(rt_mod.platform_compat, "IS_WINDOWS", False)
     return calls
 
 
@@ -165,6 +167,33 @@ async def test_eof_inside_an_oversize_line_retires_the_same_way(monkeypatch):
     assert calls == [(4242, "tok-4242")]
 
 
+@pytest.mark.asyncio
+async def test_observed_exit_on_windows_drains_the_tree_instead(monkeypatch):
+    """A Windows descendant has no registry line of its own, so the confirmed
+    exit drains the root's tree, which retires the root's lines itself."""
+    import kiro_crew.acp.runtime as rt_mod
+
+    rt, reader, proc = _make_runtime()
+    calls = _track_untracks(monkeypatch, rt_mod, pid_exists=False)
+    monkeypatch.setattr(rt_mod.platform_compat, "IS_WINDOWS", True)
+    drained = []
+
+    async def _drain(process):
+        drained.append(process)
+        return True
+
+    monkeypatch.setattr(rt_mod.platform_compat, "terminate_windows_asyncio_tree", _drain)
+    proc.returncode = 1
+    task = await _start_reader(rt)
+    try:
+        reader.feed_eof()
+        await await_until(task, what="the reader loop exiting")
+    finally:
+        await _stop_reader(task)
+    assert drained == [proc]
+    assert calls == []
+
+
 # ── Death-log severity: deliberate teardown vs genuine death ──
 #
 # A warm-pool TTL recycle tears runtimes down via kill() on a schedule; logging
@@ -183,17 +212,9 @@ def _neuter_kill_side_effects(monkeypatch, proc):
     """Keep kill() away from the host: never signal the fake PID (4242 could be
     a real process), never touch the PID-tracking files.
 
-    The Windows drain stand-in awaits ``process.wait()`` because the real
-    ``terminate_windows_asyncio_tree`` does, and that await is what populates
-    ``returncode``. A stand-in returning without it hands the Windows branch a
-    process whose status is unreadable, so every assertion about the post-reap
-    exit status would read the unreaped placeholder on that platform alone --
-    the double disagreeing with the code rather than the code being wrong.
-
-    That await carries the real one's BOUND as well, off the same constant: a
-    child that never exits makes the real drain raise rather than wait forever,
-    so a stand-in awaiting without the bound turns a test whose child never
-    exits into a hang instead of a failure.
+    The Windows stand-in awaits ``process.wait()`` like the real
+    ``terminate_windows_asyncio_tree``, since that populates ``returncode``, and with the
+    same bound so a child that never exits fails instead of hanging.
     """
     import kiro_crew.acp.runtime as rt_mod
 
@@ -629,13 +650,9 @@ async def test_no_amendment_when_the_status_was_already_known(caplog, monkeypatc
 
 @pytest.mark.asyncio
 async def test_kill_keeps_the_label_when_no_status_ever_arrives(caplog, monkeypatch):
-    """Both waits can time out (a child wedged in uninterruptible sleep), and
-    the status is then still unknown. ``<not reaped>`` must stay: nothing may
-    claim a code that was never observed.
+    """When both waits time out, ``<not reaped>`` stays: no unobserved code is claimed.
 
-    The two waits are the POSIX ladder's, so the platform is forced to it: on
-    Windows that ladder never runs, and this child is exactly the one whose
-    drain raises instead of returning -- a different contract, pinned by
+    Forced to the POSIX ladder; Windows is pinned by
     ``test_an_unconfirmed_windows_drain_leaves_the_placeholder``."""
     import logging
 
@@ -721,11 +738,8 @@ async def test_reader_crash_on_a_running_child_does_not_print_returncode_none(ca
 async def test_exit_reason_does_not_promote_the_last_stderr_line_to_a_cause():
     """A child's last word is not why it died.
 
-    ``Error: failed to create sandbox dir`` describes no death -- it is whatever
-    the child happened to flush last -- so the reason stays the exit status and
-    the line is kept at debug. Pasting such a line as the cause is what puts
-    ``HTTP 404 Not Found`` on the card of a death that was in fact an ordinary
-    SIGTERM teardown.
+    The reason stays the exit status and the line goes to debug; otherwise an ordinary
+    SIGTERM could show ``HTTP 404 Not Found`` as its cause.
     """
     rt, reader, proc = _make_runtime()
     proc.returncode = 1
@@ -779,6 +793,24 @@ def test_exit_reason_enospc_points_at_doctor():
     # Case-insensitive: the marker's spelling varies by libc / language runtime.
     rt._stderr_lines = ["ENOSPC: no space left on device, mkdir '/run/user/1000/tmpx'"]
     assert "kirocrew doctor" in rt._exit_reason(1)
+
+
+def test_exit_reason_eagain_points_at_the_task_ceilings():
+    """A child that panics on a refused thread spawn names the task limit."""
+    rt, _reader, _proc = _make_runtime()
+    rt._stderr_lines = [
+        "The application panicked (crashed).",
+        "Message:  called `Result::unwrap()` on an `Err` value: Os { code: 11, "
+        'kind: WouldBlock, message: "Resource temporarily unavailable" }',
+        "Location: scheduled-thread-pool-0.2.7/src/lib.rs:375",
+    ]
+    msg = rt._exit_reason(None)
+    assert "Resource temporarily unavailable" in msg
+    assert "ulimit -u" in msg
+    assert "Task ceilings" in msg
+    # A full runtime tmpfs anywhere in the tail still wins over an EAGAIN line.
+    rt._stderr_lines.append("mkdir: No space left on device")
+    assert "Runtime tmpfs" in rt._exit_reason(None)
 
 
 def test_exit_reason_finds_a_signature_that_is_not_the_last_line():

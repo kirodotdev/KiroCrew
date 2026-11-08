@@ -29,6 +29,7 @@ from kiro_crew.apps.builtins.spec_builder.tests.routes_helpers import (  # noqa:
     _redirect_state,
     _slot_stub,
 )
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.mark.asyncio
@@ -547,7 +548,7 @@ async def test_a_message_queued_behind_a_refused_reservation_is_drained(monkeypa
 
     request_task = asyncio.create_task(_refused_request())
     await request_task
-    await asyncio.wait_for(drained.wait(), timeout=1)
+    await await_until(drained, what="the queued message drain")
     if state._background_tasks:
         await asyncio.gather(*list(state._background_tasks))
 

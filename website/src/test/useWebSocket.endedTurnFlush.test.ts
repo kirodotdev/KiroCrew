@@ -23,6 +23,7 @@ import {
   switchSlot,
 } from '../store/chatSlice'
 import { sseSlots } from '../store/dashboardSlice'
+import { streamFlush } from '../store/streamFlush'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -168,7 +169,7 @@ describe('useWebSocket: a slots frame ending the active turn flushes its buffere
 
     const actionTypes = dispatchSpy.mock.calls.map(([action]) =>
       typeof action === 'object' && action !== null && 'type' in action ? action.type : null)
-    const chunkAt = actionTypes.indexOf(sseChatMessage.type)
+    const chunkAt = actionTypes.indexOf(streamFlush.type)
     expect(chunkAt).toBeGreaterThanOrEqual(0)
     expect(actionTypes.indexOf(sseSlots.type)).toBeGreaterThan(chunkAt)
 

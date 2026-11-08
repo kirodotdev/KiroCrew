@@ -117,6 +117,23 @@ def boundary_policy_document(account: str = "*") -> dict[str, Any]:
     immutable across every region the operator launches in. ``account="*"`` yields
     the fully-wildcard form used only for display/tests; the real create path
     passes the resolved 12-digit account id.
+
+    An edition's ``cloud_instance_policy`` statements (see
+    :mod:`kiro_crew.cloud.host_policy`) are appended after the two built-in ones.
+    With none, the document is exactly :func:`base_boundary_policy_document`.
+    """
+    from kiro_crew.cloud import host_policy
+
+    doc = base_boundary_policy_document(account)
+    doc["Statement"].extend(host_policy.boundary_statements())
+    return doc
+
+
+def base_boundary_policy_document(account: str = "*") -> dict[str, Any]:
+    """The instance boundary with no edition statements: SSM core + the source read.
+
+    Every account that launched before an edition added statements holds this
+    document, which is why :func:`previous_boundary_documents` names it.
     """
     return {
         "Version": "2012-10-17",
@@ -144,6 +161,19 @@ def boundary_policy_document(account: str = "*") -> dict[str, Any]:
 def boundary_policy_json(account: str = "*") -> str:
     """The boundary document as compact JSON (what ``iam create-policy`` receives)."""
     return json.dumps(boundary_policy_document(account))
+
+
+def previous_boundary_documents(account: str = "*") -> list[dict[str, Any]]:
+    """Earlier contents of the instance boundary that an admin may upgrade in place.
+
+    Only the document this launcher itself would have created before the edition
+    added statements, and only when it differs from today's. ``kirocrew cloud
+    iam-boundary --upgrade`` re-versions a boundary whose content is exactly one of
+    these and refuses anything else, so a boundary someone edited by hand is never
+    overwritten.
+    """
+    base = base_boundary_policy_document(account)
+    return [base] if base != boundary_policy_document(account) else []
 
 
 #: The OPT-IN instance boundary for orgs that pin a KMS key for Session Manager
@@ -182,7 +212,20 @@ def kms_boundary_policy_document(account: str = "*") -> dict[str, Any]:
     template, which names the one key ARN passed at launch and pins the target to
     the stack's own instance.
     """
-    doc = boundary_policy_document(account)
+    return _with_session_kms(boundary_policy_document(account))
+
+
+def previous_kms_boundary_documents(account: str = "*") -> list[dict[str, Any]]:
+    """Earlier contents of the KMS-session boundary an admin may upgrade in place.
+
+    The same rule as :func:`previous_boundary_documents`, for the opt-in boundary.
+    """
+    base = _with_session_kms(base_boundary_policy_document(account))
+    return [base] if base != kms_boundary_policy_document(account) else []
+
+
+def _with_session_kms(doc: dict[str, Any]) -> dict[str, Any]:
+    """*doc* with Session Manager's KMS decrypt appended (see the KMS boundary)."""
     doc["Statement"].append(
         {
             "Sid": "SsmSessionKms",
@@ -318,6 +361,51 @@ def crew_exec_boundary_policy_json() -> str:
 STACK_PREFIX = "kirocrew-"
 
 
+def host_policy_document() -> dict[str, Any] | None:
+    """The launcher-policy addendum for an edition's host policies, or ``None``.
+
+    A SECOND customer-managed policy, applied beside :func:`policy_document`, that
+    lets the launcher attach (and on teardown detach) exactly the edition's
+    ``cloud_instance_policy`` ARNs. ``None`` when the edition adds none, so a
+    build without them needs one policy, as before.
+
+    Separate for two reasons. The main policy is within a few dozen characters of
+    IAM's 6,144-character cap, so it has no room for another statement. And the
+    grant must reach only roles the boundary caps, which the main attach
+    statement does not limit itself to: here the resource is the role path ALONE
+    (never ``LEGACY_ROLE_ARN``, whose root-path roles may predate the boundary)
+    and the role must carry the ``kirocrew:managed`` tag, which only a
+    boundary-gated ``CreateRole`` by the launcher applies. A policy attached to a
+    role without the boundary would run uncapped. The account is ``*`` so one
+    printed document works in any account, like the main policy.
+    """
+    from kiro_crew.cloud import host_policy
+
+    arns = host_policy.managed_policy_arns("*")
+    if not arns:
+        return None
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "IamAttachHostPoliciesForInstance",
+                "Effect": "Allow",
+                "Action": ["iam:AttachRolePolicy", "iam:DetachRolePolicy"],
+                "Resource": INSTANCE_ROLE_ARN,
+                # Tag-gated like IamPutRolePolicyAndTagRoleOnManaged: a role at
+                # this path that someone created out-of-band, without our
+                # boundary, does not carry the tag, so it cannot be given these
+                # policies. Ours is tagged at CreateRole, before CloudFormation
+                # attaches managed policies.
+                "Condition": {
+                    "ArnEquals": {"iam:PolicyARN": arns},
+                    "StringEquals": {f"aws:ResourceTag/{MANAGED_TAG_KEY}": "true"},
+                },
+            }
+        ],
+    }
+
+
 def policy_document() -> dict[str, Any]:
     """Return the least-privilege customer-managed policy for the launcher."""
     statements: list[dict[str, Any]] = [
@@ -367,12 +455,11 @@ def policy_document() -> dict[str, Any]:
             # read-only, so the shared "*" resource grants nothing a split wouldn't.
             #
             # NB (Route53DnsPreflight): a private hosted zone bound to the target
-            # VPC can be authoritative for a host the bootstrap downloads from (e.g.
-            # Amazon Q's `q.<region>.amazonaws.com` endpoint zone shadows
-            # desktop-release.q.us-east-1.amazonaws.com), which makes the install
-            # fail on NXDOMAIN with no fallthrough to public DNS. The launch
-            # degrades gracefully without route53:ListHostedZonesByVPC — it just
-            # loses the early warning — so it is safe to omit on an older policy.
+            # VPC can be authoritative for a host the bootstrap downloads from,
+            # which makes the install fail on NXDOMAIN with no fallthrough to
+            # public DNS. The launch degrades gracefully without
+            # route53:ListHostedZonesByVPC — it just loses the early warning —
+            # so it is safe to omit on an older policy.
             # ListHostedZonesByVPC does not support resource-level permissions.
             #
             # ec2:Describe* is one wildcard, not a list: CloudFormation's EC2
@@ -718,6 +805,8 @@ def policy_document() -> dict[str, Any]:
             # the launcher policy could AttachRolePolicy AdministratorAccess onto
             # a kirocrew-ec2-* role and pass it to EC2 — a full escalation. The
             # allowlist is a hard cap: no other managed policy can be attached.
+            # An edition's host policies are granted by host_policy_document, a
+            # separate addendum, never here.
             "Sid": "IamAttachManagedPolicyForInstance",
             "Effect": "Allow",
             "Action": [
@@ -992,6 +1081,29 @@ def missing_credential_helper(stderr: str) -> str:
     return match.group(2) if match else ""
 
 
+def _windows_missing_helper(stderr: str, profile: str) -> str:
+    """The profile's bare ``credential_process`` program when Windows could not start it, or "".
+
+    The Windows CLI says ``[WinError 2] The system cannot find the file specified``
+    without the program's name, so the name is read back from the profile's own
+    setting, under the same bare-name rule as :data:`_MISSING_PROGRAM_RE`.
+    """
+    if "[WinError 2]" not in stderr:
+        return ""
+    try:
+        rc, out, _err = aws.run_aws(["configure", "get", "credential_process"], profile)
+    except aws.CloudActionDenied:
+        # Not on the agent-session allowlist: an agent keeps the generic note.
+        return ""
+    value = out.strip() if rc == 0 else ""
+    if value.startswith('"'):
+        # The CLI on Windows keeps a double-quoted program whole, spaces included.
+        name = value[1:].partition('"')[0]
+    else:
+        name = (value.split() or [""])[0]
+    return "" if "/" in name or "\\" in name else name
+
+
 def credential_helper_hint(name: str) -> str:
     """What to do when the profile's ``credential_process`` helper is not found."""
     return (
@@ -1023,7 +1135,7 @@ def reachability_check(profile: str, region: str = "") -> dict[str, Any]:
     rc, out, err = aws.run_aws(["sts", "get-caller-identity", "--output", "json"], profile, region)
     if rc != 0:
         result["detail"] = (err or "could not resolve credentials").strip()[:300]
-        helper = missing_credential_helper(err)
+        helper = missing_credential_helper(err) or _windows_missing_helper(err, profile)
         result["credential_helper_missing"] = helper
         result["note"] = aws.env_credentials_hint() or (
             credential_helper_hint(helper)

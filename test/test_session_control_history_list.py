@@ -76,8 +76,12 @@ def _targets(result) -> list[str]:
 
 
 def _lineage(monkeypatch, parents: dict, *, known: bool = True):
+    """Stand in for the crew log: *parents* maps an archived slot key to its creator."""
     monkeypatch.setattr(
         sc, "_slot_tree_parent", lambda slot_key: (known, parents.get(slot_key, ""), {})
+    )
+    monkeypatch.setattr(
+        sc, "_creation_parent", lambda slot_key: parents.get(slot_key, "") if known else ""
     )
 
 
@@ -422,6 +426,7 @@ def test_unfenced_caller_does_not_consult_the_lineage(tmp_path, monkeypatch):
         raise AssertionError("lineage read for an unfenced caller")
 
     monkeypatch.setattr(sc, "_slot_tree_parent", _never)
+    monkeypatch.setattr(sc, "_creation_parent", _never)
     assert _targets(_list(state, caller, caller_fenced=False)) == [key]
 
 

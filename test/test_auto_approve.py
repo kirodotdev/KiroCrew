@@ -309,10 +309,15 @@ class TestAutoApproveExecution:
         run.tasks = [step]
 
         with patch("kiro_crew.task_executor.self_review", return_value=True):
-            await runner._execute_single_task(run, step)
+            success = await runner._execute_single_task(run, step)
 
         provider.reject_tool.assert_awaited_with("req-1")
         provider.approve_tool.assert_not_called()
+        # The denial refuses one tool call; the step itself still finishes, and the
+        # run does not come out of it trusted.
+        assert success is True
+        assert step.status == StepStatus.PASSED
+        assert run.auto_approve is False
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -354,6 +359,9 @@ class TestAutoApproveRespectsHookDeny:
         provider.reject_tool.assert_awaited_with("req-1")
         provider.approve_tool.assert_not_called()
         runner._on_tool_approval.assert_not_called()
+        # No live grant exists, so consulting the run's trust would have cleared the
+        # intent flag; it is still set because the deny ended the ladder first.
+        assert run.auto_approve is True
 
     @pytest.mark.asyncio
     async def test_hook_auto_approve_reason_preserved(self, tmp_path: Path) -> None:

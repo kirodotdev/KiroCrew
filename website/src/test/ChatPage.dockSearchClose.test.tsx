@@ -121,6 +121,8 @@ vi.mock('../api/client', () => ({
       if (!(prop in apiMocks)) {
         apiMocks[prop] = vi.fn().mockResolvedValue(
           prop === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 }
+            // The side panel opens files only once the chat is confirmed local.
+            : prop === 'chatSlotEnvironment' ? { profile: null, profiles: [] }
             : prop === 'pendingQuestions' || prop === 'approvals' ? [] : {},
         )
       }

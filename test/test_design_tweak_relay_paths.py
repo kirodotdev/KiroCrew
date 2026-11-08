@@ -590,7 +590,6 @@ class TestRelayWsCredentialStripping:
                 pass
 
             def recv(self, n):
-                # Return a valid 101 handshake.
                 return b"HTTP/1.1 101 Switching\r\nUpgrade: websocket\r\n\r\n"
 
             def close(self):
@@ -636,7 +635,9 @@ class TestRelayWsHandshakeSanitization:
             b"\r\n"
         )
 
-        up_a, up_b = socket.socketpair()
+        # up_d is what the relay sees as the upstream socket; the feeder plays
+        # the dev server on up_c.
+        up_c, up_d = socket.socketpair()
         down_a, down_b = socket.socketpair()
 
         p = _make_probe(
@@ -644,37 +645,23 @@ class TestRelayWsHandshakeSanitization:
             connection=down_a,
         )
 
-        def feed_upstream():
-            # Feed the handshake response, then close to end the pump.
-            up_b.sendall(handshake_response)
-            time.sleep(0.05)
-            up_b.close()
-
-        feeder = threading.Thread(target=feed_upstream, daemon=True)
-        feeder.start()
-
-        with patch.object(server.socket, "create_connection", return_value=up_b):
-            # Cannot use up_b for both create_connection and the feeder.
-            # Instead, use a wrapper that separates the send side.
-            pass
-
-        # Redo: create_connection returns up_b, which the relay reads from.
-        # We write into up_a (the other end of the pair).
-        up_c, up_d = socket.socketpair()
-
         def feed_up():
+            # Ordered by the bytes, not a sleep: take the relay's upgrade
+            # request first, so up_c is never closed under the relay's write;
+            # then answer and half-close, so the pump reads handshake-then-EOF.
+            _read_relay_request(up_c)
             up_c.sendall(handshake_response)
-            time.sleep(0.05)
-            up_c.close()
+            up_c.shutdown(socket.SHUT_WR)
 
-        # up_d is what relay sees as the upstream socket.
         t_feed = threading.Thread(target=feed_up, daemon=True)
         t_feed.start()
 
         with patch.object(server.socket, "create_connection", return_value=up_d):
             p._relay_ws()
 
-        t_feed.join(timeout=2)
+        t_feed.join(timeout=_PUMP_LOST_RUN_SECS)
+        assert not t_feed.is_alive(), "the feeder never finished"
+        up_c.close()
 
         # Read what was sent to the downstream (client) side.
         down_a.close()
@@ -832,6 +819,9 @@ class TestRelayWsPumpSendallError:
         )
 
         def feed():
+            # Take the relay's request first so up_a is not closed under its write,
+            # which would end the relay before the pump this test covers.
+            _read_relay_request(up_a)
             up_a.sendall(handshake)
             time.sleep(0.05)
             up_a.sendall(b"frame data that will fail on dst sendall")
@@ -864,6 +854,8 @@ class TestRelayWsPumpSendallError:
         )
 
         def feed_then_break():
+            # Same ordering as above: the request first, then the answer.
+            _read_relay_request(up_a)
             up_a.sendall(handshake)
             time.sleep(0.05)
             # RST the connection so recv on up_b raises or returns empty.
@@ -907,6 +899,17 @@ def _recv_until(sock: socket.socket, complete, what: str) -> bytes:
         assert chunk, f"{what}: the peer closed first; received {received!r}"
         received += chunk
     return received
+
+
+def _read_relay_request(sock: socket.socket) -> bytes:
+    """Play the dev server's first move: read the relay's upgrade request.
+
+    The relay writes its request upstream before it reads the handshake. A feeder
+    that answers and closes without reading races that write, and on a loaded
+    runner the relay hits a closed peer and returns before sending anything
+    downstream. Reading the request first orders the two by the bytes.
+    """
+    return _recv_until(sock, lambda got: b"\r\n\r\n" in got, "the relay's upgrade request")
 
 
 class TestRelayWsPump:
@@ -1039,10 +1042,11 @@ class TestRelayWsRestAfterHandshake:
         )
 
         def feed():
-            # Send handshake + trailing frame, then close to end the pump.
+            # Take the relay's request, send handshake + trailing frame, then
+            # half-close to end the pump -- ordered by the bytes.
+            _read_relay_request(up_a)
             up_a.sendall(handshake_plus_frame)
-            time.sleep(0.05)
-            up_a.close()
+            up_a.shutdown(socket.SHUT_WR)
 
         feeder = threading.Thread(target=feed, daemon=True)
         feeder.start()
@@ -1050,7 +1054,9 @@ class TestRelayWsRestAfterHandshake:
         with patch.object(server.socket, "create_connection", return_value=up_b):
             p._relay_ws()
 
-        feeder.join(timeout=2)
+        feeder.join(timeout=_PUMP_LOST_RUN_SECS)
+        assert not feeder.is_alive(), "the feeder never finished"
+        up_a.close()
 
         # Read everything the client side received.
         down_a.close()

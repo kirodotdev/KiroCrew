@@ -26,11 +26,12 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
 from pathlib import Path
 
-from kiro_crew.atomic_write import read_json_or
+from kiro_crew.atomic_write import atomic_write, read_json_or
 
 QUEUE_FILENAME = "subquestion_queue.json"
 _WS_RE = re.compile(r"\s+")
@@ -74,7 +75,8 @@ def enqueue(
     ``candidates`` are dicts ``{"text", "priority"?}`` or plain strings.
     De-duplicates (case/whitespace-insensitive) against everything already in
     the queue AND within the batch. Admits at most ``max_admit`` of the
-    survivors, highest ``priority`` first (stable for ties). Returns the items
+    survivors, highest ``priority`` first (stable for ties). A priority that
+    is not a finite number ranks as 0.0 (see ``_priority``). Returns the items
     actually admitted (so the caller can log/emit them).
     """
     known = _known_keys(queue)
@@ -85,7 +87,7 @@ def enqueue(
     for order, c in enumerate(candidates):
         if isinstance(c, dict):
             text = str(c.get("text", "")).strip()
-            priority = float(c.get("priority", 0.0))
+            priority = _priority(c)
         else:
             text = str(c).strip()
             priority = 0.0
@@ -112,18 +114,37 @@ def enqueue(
     return admitted
 
 
+def _priority(item: dict) -> float:
+    """An item's priority, or 0.0 when the stored value is not a finite number.
+
+    The queue file is agent-writable (see ``load_queue``), so ``priority`` may
+    be ``null``, a word, or ``"nan"``/``"inf"``; that must rank last, not fail
+    the round or reorder the queue. Ingest clamps real priorities to [0, 1].
+    """
+    try:
+        value = float(item.get("priority", 0.0))
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
 def dequeue_top_k(queue: dict, k: int) -> list[dict]:
     """Remove and return up to ``k`` highest-priority pending items.
 
     Ties broken by current position (stable). Items are removed from
     ``pending``; the caller investigates them, then calls ``mark_analyzed``.
+    A pending entry that is not a dict with non-empty ``text`` cannot be
+    investigated, so it is skipped and dropped from ``pending``.
     """
     if k <= 0:
         return []
-    pending = queue.get("pending", [])
+    pending = [
+        it for it in queue.get("pending", [])
+        if isinstance(it, dict) and isinstance(it.get("text"), str) and it["text"].strip()
+    ]
     ordered = sorted(
         range(len(pending)),
-        key=lambda i: (-float(pending[i].get("priority", 0.0)), i),
+        key=lambda i: (-_priority(pending[i]), i),
     )
     take = ordered[:k]
     take_set = set(take)
@@ -162,11 +183,14 @@ def next_depth(queue: dict) -> int:
     so each successive exploration round is one level deeper — letting the
     caller decay priority by depth so deeper leads rank lower.
     """
-    depths = [
-        int(it.get("depth", 0))
-        for it in queue.get("analyzed", [])
-        if isinstance(it, dict)
-    ]
+    depths: list[int] = []
+    for it in queue.get("analyzed", []):
+        if not isinstance(it, dict):
+            continue
+        try:
+            depths.append(int(it.get("depth", 0)))
+        except (TypeError, ValueError):
+            continue  # hand-edited depth: no level to extend
     return (max(depths) + 1) if depths else 1
 
 
@@ -183,15 +207,19 @@ def load_queue(campaign_dir: Path) -> dict:
     data = read_json_or(p, None, logger=logger, what="subquestion queue")
     if not isinstance(data, dict):
         return new_queue()
-    data.setdefault("pending", [])
-    data.setdefault("analyzed", [])
+    for bucket in ("pending", "analyzed"):
+        if not isinstance(data.get(bucket), list):
+            data[bucket] = []
     return data
 
 
 def save_queue(campaign_dir: Path, queue: dict) -> None:
-    """Atomically persist the queue to the campaign dir."""
+    """Atomically persist the queue to the campaign dir.
+
+    Through ``atomic_write``, whose unique temp name keeps two writers of the
+    same campaign from sharing one staging file and whose rename retries the
+    Windows sharing-violation window.
+    """
     p = Path(campaign_dir) / QUEUE_FILENAME
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(queue, indent=2), encoding="utf-8")
-    tmp.replace(p)
+    atomic_write(p, json.dumps(queue, indent=2))

@@ -16,6 +16,7 @@ Real auth middleware and real route table, as in ``test_app_route_trust_gate``.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from unittest.mock import MagicMock
 
@@ -88,7 +89,7 @@ def _q(app_name: str = "") -> dict[str, str]:
     return {"token": token_auth.generate_token("local-app", app=app_name)}
 
 
-def _transcript(state, key: str, title: str, app_name: str = "") -> None:
+def _write_transcript(state, key: str, title: str, app_name: str) -> None:
     log = state.conversation_log
     log.append(key, "user", "hello")
     log.append(key, "assistant", "noted")
@@ -98,10 +99,21 @@ def _transcript(state, key: str, title: str, app_name: str = "") -> None:
     log.update_metadata(key, meta)
 
 
+async def _transcript(state, key: str, title: str, app_name: str = "") -> None:
+    """Seed a transcript the way an async gateway caller must: off the loop.
+
+    ``update_metadata`` ends in ``atomic_write.replace_with_retry``, which makes
+    one rename attempt on the event-loop thread by design. A Windows sharing
+    violation on the transcript just appended to then fails the setup outright.
+    On a worker thread the bounded retry applies.
+    """
+    await asyncio.to_thread(_write_transcript, state, key, title, app_name)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asked", ["chat-7-1784661951", "dashboard_chat-7-1784661951"])
 async def test_closed_session_answers_its_row_by_slot_key_or_stem(state, asked):
-    _transcript(state, "dashboard:chat-7-1784661951", "Earlier work")
+    await _transcript(state, "dashboard:chat-7-1784661951", "Earlier work")
     async with _serve(state) as client:
         resp = await client.get(f"/api/sessions/{asked}/meta", params=_q())
         assert resp.status == 200
@@ -118,7 +130,7 @@ async def test_missing_key_is_404_not_an_empty_answer(state):
 
 @pytest.mark.asyncio
 async def test_probe_reads_no_transcript_body_and_scans_no_directory(state, monkeypatch):
-    _transcript(state, "dashboard:chat-7-1784661951", "Earlier work")
+    await _transcript(state, "dashboard:chat-7-1784661951", "Earlier work")
     log = state.conversation_log
     read = MagicMock(side_effect=AssertionError("transcript body read"))
     monkeypatch.setattr(log, "read_messages", read)
@@ -141,7 +153,7 @@ async def test_probe_reads_no_transcript_body_and_scans_no_directory(state, monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner", ["", _OTHER])
 async def test_app_cannot_probe_a_transcript_it_does_not_own(state, owner):
-    _transcript(state, "dashboard:chat-7-1784661951", "Not yours", owner)
+    await _transcript(state, "dashboard:chat-7-1784661951", "Not yours", owner)
     async with _serve(state) as client:
         resp = await client.get("/api/sessions/chat-7-1784661951/meta", params=_q(_APP))
         assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
@@ -149,7 +161,7 @@ async def test_app_cannot_probe_a_transcript_it_does_not_own(state, owner):
 
 @pytest.mark.asyncio
 async def test_app_probes_its_own_transcript(state):
-    _transcript(state, "dashboard:chat-7-1784661951", "Mine", _APP)
+    await _transcript(state, "dashboard:chat-7-1784661951", "Mine", _APP)
     async with _serve(state) as client:
         resp = await client.get("/api/sessions/chat-7-1784661951/meta", params=_q(_APP))
         assert resp.status == 200
@@ -160,7 +172,7 @@ async def test_app_probes_its_own_transcript(state):
 async def test_app_ownership_is_rechecked_under_the_transcript_lock(state, monkeypatch):
     """A recreate by another owner between the first check and the read is refused."""
     key = "dashboard:chat-7-1784661951"
-    _transcript(state, key, "Mine", _APP)
+    await _transcript(state, key, "Mine", _APP)
     log = state.conversation_log
     real_locked = log._locked
     taken_over: list[bool] = []
@@ -184,7 +196,7 @@ async def test_app_ownership_is_rechecked_under_the_transcript_lock(state, monke
 
 @pytest.mark.asyncio
 async def test_app_probe_answers_busy_on_a_lock_timeout(state, monkeypatch):
-    _transcript(state, "dashboard:chat-7-1784661951", "Mine", _APP)
+    await _transcript(state, "dashboard:chat-7-1784661951", "Mine", _APP)
     monkeypatch.setattr(
         state.conversation_log, "_locked", MagicMock(side_effect=HistoryLockTimeout("busy"))
     )

@@ -36,6 +36,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _systemctl_stub,
 )
 
+from kiro_crew.service import common as svc_common
 from kiro_crew.service import controller
 from kiro_crew.service.common import (
     LAUNCHD_LABEL,
@@ -174,6 +175,8 @@ class TestLinuxUnitRendering:
         # `id -gn tester` would return some real group; mock it to a known value
         # so the test asserts both User= and Group= are populated correctly.
         gid_result = MagicMock(returncode=0, stdout="amazon\n", stderr="")
+        # The PATH branch of the resolver, not the running install's own script.
+        monkeypatch.setattr(svc_common, "_running_install_bin", lambda: None)
         with patch(
             "kiro_crew.service.common.shutil.which",
             return_value="/home/u/.toolbox/bin/kirocrew",
@@ -273,6 +276,25 @@ class TestLinuxUnitRendering:
         assert "StartLimitBurst=3" in service_block
         assert "StartLimitInterval=300" in service_block
         assert directives[0] in service_block.splitlines()
+
+    @pytest.mark.parametrize("user_scope", [False, True])
+    def test_render_unit_turns_core_dumps_off(self, monkeypatch, user_scope):
+        """A core streamed into systemd-coredump holds a crashed gateway's exit,
+        and so its restart, for up to five minutes."""
+        from kiro_crew.service import linux as svc_linux
+
+        monkeypatch.setenv("USER", "tester")
+        gid_result = MagicMock(returncode=0, stdout="amazon\n", stderr="")
+        with patch(
+            "kiro_crew.service.common.shutil.which",
+            return_value="/home/u/.toolbox/bin/kirocrew",
+        ), patch(
+            "kiro_crew.service.linux.subprocess.run", return_value=gid_result
+        ):
+            unit = svc_linux.render_unit(user_scope=user_scope)
+
+        service_block = unit.split("[Service]", 1)[1].split("[Install]", 1)[0]
+        assert "LimitCORE=0" in service_block.splitlines()
 
     def test_render_unit_carries_the_session_bus_environment(self, monkeypatch):
         """A system unit inherits no login-session env, so pods (systemd --user
@@ -400,7 +422,7 @@ class TestLinuxUnitRendering:
             for c in called
             if len(c) >= 9
             and c[:2] == ["sudo", "install"]
-            and c[-1] == f"/etc/systemd/system/{SERVICE_NAME}.service"
+            and c[-1] == str(svc_linux.UNIT_PATH)
         ]
         assert install_calls, f"expected sudo install of unit path; got {called}"
         # The destination must be set with root ownership and 0644 mode so
@@ -984,6 +1006,8 @@ class TestMacOSPlistRendering:
         from kiro_crew.service import macos as svc_macos
 
         monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", tmp_path / "live-gateway")
+        # The PATH branch of the resolver, not the running install's own script.
+        monkeypatch.setattr(svc_common, "_running_install_bin", lambda: None)
         with patch(
             "kiro_crew.service.common.shutil.which", return_value="/opt/homebrew/bin/kirocrew"
         ):

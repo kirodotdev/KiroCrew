@@ -8,7 +8,7 @@ from concurrent.futures import ProcessPoolExecutor
 from functools import wraps
 from multiprocessing import get_context
 
-BLACK_VERSION = "26.3.1"
+BLACK_VERSION = "26.10.1"
 # Retention, not concurrency, is what the measured cgroup OOM came from: a worker
 # retired after one file holds one file's tree, so its peak does not grow with the
 # pool. Raising this ceiling therefore buys wall time without reintroducing that

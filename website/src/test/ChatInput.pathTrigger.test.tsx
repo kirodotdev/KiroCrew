@@ -219,6 +219,25 @@ describe('ChatInput — ./ path completion', () => {
     await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument())
   })
 
+  it('Escape closes the picker and arrives spent at a window-level listener such as the notification banner', async () => {
+    // The banner dismisses its card on an unclaimed Escape (window bubble);
+    // the picker's own Escape must not also cost the user a card (#25202).
+    const seenByBanner: boolean[] = []
+    const banner = (e: KeyboardEvent) => { seenByBanner.push(e.defaultPrevented) }
+    window.addEventListener('keydown', banner)
+    try {
+      renderWithProviders(<Host />)
+      const ta = typeInto('read ./')
+      await screen.findByRole('listbox')
+      fireEvent.keyDown(ta, { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument())
+    } finally {
+      window.removeEventListener('keydown', banner)
+    }
+    // The picker stops the press, or marks it spent: either way no card goes.
+    expect(seenByBanner).not.toContain(false)
+  })
+
   it('leaves ~/ to the shell — home is not a completion root', async () => {
     renderWithProviders(<Host />)
     typeInto('read ~/')

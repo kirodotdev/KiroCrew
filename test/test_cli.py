@@ -1,11 +1,7 @@
 """Tests for CLI module.
 
-This file keeps the doctor's full report, the update failure paths, the banner spelling and the
-``config set`` value grammar. Its parts, which share ``cli_helpers.py``, are ``test_cli_cron.py``,
-``test_cli_setup.py``, ``test_cli_main_entry.py``, ``test_cli_gateway_client.py``,
-``test_cli_stop.py``, ``test_cli_restart.py``, ``test_cli_restart_readiness.py``,
-``test_cli_token.py``, ``test_cli_mcp_doctor.py``, ``test_cli_stt_memory_doctor.py``,
-``test_cli_chat_permission.py`` and ``test_cli_chat_consent_surface.py``.
+Covers the doctor's full report, update failure paths, banner spelling and the
+``config set`` value grammar. Sibling ``test_cli_*.py`` files share ``cli_helpers.py``.
 """
 
 import contextlib
@@ -30,47 +26,44 @@ from kiro_crew.cli_server import (
 
 class TestDoctor:
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture kept in place; no test of this class calls monkeypatch.undo()
-    def _hermetic_config(self, monkeypatch):
+    def _hermetic_config(self, _floor_monkeypatch):
         """Pin config to a pristine default (see ``_pin_default_config``)."""
-        _pin_default_config(monkeypatch)
+        _pin_default_config(_floor_monkeypatch)
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture kept in place; no test of this class calls monkeypatch.undo()
-    def _hermetic_embeddings_runtime(self, monkeypatch):
+    def _hermetic_embeddings_runtime(self, _floor_monkeypatch):
         """Pin the vendored-runtime probe host-independently: the brazil
         interpreter on a Mac can be darwin/x86_64 under Rosetta, where the
         vendored libs legitimately do not exist (designed degradation)."""
         import kiro_crew.cli_doctor as _doc
 
-        monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
-        monkeypatch.setattr(_doc, "model_file_present", lambda path=None: False)
+        _floor_monkeypatch.setattr(_doc, "_load_llama_class", lambda: object)
+        _floor_monkeypatch.setattr(_doc, "model_file_present", lambda path=None: False)
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture kept in place; no test of this class calls monkeypatch.undo()
-    def _hermetic_sandbox(self, monkeypatch):
+    def _hermetic_sandbox(self, _floor_monkeypatch):
         """Pin the Sandbox section host-independently: a CI runner can restrict
         user namespaces with no profile installed, which is a genuine issue on
         that HOST (doctor exits 1 for it) but not the subject of these tests."""
         import kiro_crew.cli_doctor as _doc
+        from kiro_crew.doctor_checks import confinement
 
-        monkeypatch.setattr(_doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace")
+        _floor_monkeypatch.setattr(
+            _doc.sandbox, "detect_backend", lambda config_mode="auto": "namespace"
+        )
+        # Unconfined: run from an agent's shell, a macOS decoder miss would read as a skip.
+        _floor_monkeypatch.setattr(confinement, "_doctor_vantage_confined", lambda: False)
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture kept in place; no test of this class calls monkeypatch.undo()
-    def _restore_path(self, monkeypatch):
+    def _restore_path(self, _floor_monkeypatch):
         """Put ``PATH`` back after each doctor run.
 
-        The doctor's media section calls ``transcribe.ensure_ffmpeg_in_path()``,
-        which PREPENDS a candidate ffmpeg directory to the process ``PATH`` when
-        the host has one there -- a permanent mutation of the worker's environment
-        that every later test on that worker then inherits (observed as a PATH
-        change leaking out of the first doctor test in a full run). Recording the
-        value through monkeypatch restores it at teardown whatever the doctor did.
+        ``transcribe.ensure_ffmpeg_in_path()`` PREPENDS to the process ``PATH``, which
+        would leak into every later test on the worker.
         """
-        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+        _floor_monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
 
-    def test_doctor_with_kiro(self, tmp_path, monkeypatch):
+    def test_doctor_with_kiro(self, tmp_path, capsys, monkeypatch):
         import kiro_crew.cli_doctor as _doc
 
         agent_file = tmp_path / "kirocrew.json"
@@ -93,6 +86,9 @@ class TestDoctor:
             patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
         ):
             _doctor()
+        out = capsys.readouterr().out
+        assert "kiro-cli 1.0.0" in out
+        assert out.endswith("✅ Kiro Crew is ready!\n")
 
     @staticmethod
     def _stt_config(monkeypatch, **fields):
@@ -116,7 +112,9 @@ class TestDoctor:
 
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _cfg()))
 
-    def test_doctor_windows_missing_stt_engine_and_ffmpeg_is_non_fatal(self, tmp_path, monkeypatch):
+    def test_doctor_windows_missing_stt_engine_and_ffmpeg_is_non_fatal(
+        self, tmp_path, capsys, monkeypatch
+    ):
         """On Windows, STT ships enabled-by-default but the recogniser extra and
         ffmpeg are not dependencies there. Reporting them as hard issues made
         `doctor` exit 1 on a healthy install and broke the guide's
@@ -155,18 +153,23 @@ class TestDoctor:
         ):
             # Must NOT raise SystemExit(1): both STT gaps are notes on Windows.
             _doctor()
+        out = capsys.readouterr().out
+        assert "  engine:      ⚠️  needs the voice extra" in out
+        assert "  ffmpeg:      ⚠️  not found" in out
+        assert out.endswith("✅ Kiro Crew is ready!\n")
 
     @pytest.mark.parametrize(
-        "is_windows, expected_mark",
-        [(False, "❌"), (True, "⚠️ ")],
-        ids=["posix-fatal", "windows-note"],
+        "is_windows, bundled, expected_mark",
+        [(False, False, "⚠️ "), (False, True, "❌"), (True, False, "⚠️ "), (True, True, "⚠️ ")],
+        ids=["posix-source-note", "posix-desktop-fatal", "windows-note", "windows-desktop-note"],
     )
     def test_doctor_stt_marker_arms_match_platform(
-        self, tmp_path, capsys, monkeypatch, is_windows, expected_mark
+        self, tmp_path, capsys, monkeypatch, is_windows, bundled, expected_mark
     ):
         """The engine/ffmpeg severity marker is derived once (stt_mark) from
-        stt_fatal: a hard-issue mark on POSIX, a note mark on Windows. Pins
-        both arms byte-for-byte — including the note mark's trailing pad
+        stt_fatal: a hard-issue mark only on a macOS/Linux desktop release that
+        ships both parts, a note mark on a source install and on Windows. Pins
+        every arm byte-for-byte — including the note mark's trailing pad
         space, which keeps the report columns aligned — AND that the twin
         report lines can never disagree, so a one-arm edit to either site
         fails here."""
@@ -176,6 +179,7 @@ class TestDoctor:
         _healthy_agent_file(agent_file)
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", is_windows)
+        monkeypatch.setattr(_doc, "bundle_carries_decoder", lambda: bundled)
         self._stt_config(monkeypatch, provider="local")
         # Neither the recogniser nor ffmpeg is present, which is what routes both
         # report lines through the marker under test.
@@ -202,9 +206,9 @@ class TestDoctor:
             patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
             patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
         ):
-            # On POSIX the two gaps are hard issues and doctor exits 1; on
-            # Windows they are notes. Exit semantics are pinned elsewhere —
-            # here only the printed markers matter.
+            # Only the macOS/Linux desktop arm makes the two gaps hard issues
+            # (exit 1). Exit semantics are pinned elsewhere — here only the
+            # printed markers matter.
             try:
                 _doctor()
             except SystemExit:
@@ -254,16 +258,14 @@ class TestDoctor:
         assert "KIROCREW_PROFILE=standalone" in out
 
     def test_doctor_without_kiro(self, tmp_path, monkeypatch):
-        """A host with no kiro-cli: ``which`` finds nothing, and neither do the
-        trusted-directory resolvers the credentials, memory-pressure and
-        source-checkout sections spawn through. Left unpinned, those sections ran
-        the REAL ``aws configure list-profiles``, ``systemctl is-active`` and
-        ``git -C <this checkout>`` on the developer's host; ``None`` from each
-        resolver is the product's own "cannot ask" arm, so no binary is reached.
-        The one spawn that resolves through no seam -- the runtime section's
-        ``<venv>/bin/python3 --version`` -- is mocked like every sibling here."""
+        """A host with no kiro-cli: ``which`` and the trusted-directory resolvers find nothing.
+
+        Unpinned resolvers would run the real ``aws``, ``systemctl`` and ``git`` on the
+        host; ``None`` is the product's "cannot ask" arm. ``python3 --version`` has no
+        seam, so it is mocked."""
         import kiro_crew.cli_doctor as _doc
 
+        monkeypatch.setattr(_doc, "resolve_kiro_cli", lambda: None)
         monkeypatch.setattr(_doc.platform_compat, "trusted_aws_bin", lambda: None)
         monkeypatch.setattr(_doc.platform_compat, "trusted_system_bin", lambda _name: None)
         monkeypatch.setattr(_doc.platform_compat, "trusted_git_bin", lambda: None)
@@ -283,7 +285,7 @@ class TestDoctor:
     @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 5.6.7.8 22"})
     def test_doctor_remote_shows_ssh_tunnel_hint(self, tmp_path, capsys):
         agent_file = tmp_path / "kirocrew.json"
-        agent_file.write_text("{}")
+        agent_file.write_text("{}", encoding="utf-8")
         mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
         with (
             patch(
@@ -401,12 +403,9 @@ def _patch_path():
 def _git_resolvable():
     """Pin git's resolution so these tests do not depend on the host's layout.
 
-    The probe resolves git from fixed system directories rather than ``PATH``, and
-    on Windows git legitimately lives under ``C:\\Program Files\\Git`` — not in
-    System32 — so the real lookup declines and the probe never reaches the mocked
-    ``subprocess.run`` these tests drive detection through. That is correct product
-    behaviour (it degrades to the on-disk repository markers), but it makes the
-    test assert the host's git layout instead of the failure handling it is about.
+    The probe resolves git from fixed system directories, and on Windows git lives
+    under ``C:\\Program Files\\Git``, so the real lookup would decline before the mocked
+    ``subprocess.run``.
     """
     with patch(
         "kiro_crew.platform.update_capability.trusted_system_bin",
@@ -454,6 +453,8 @@ class TestUpdateFailures:
 
     def test_pip_install_failure_exits(self, tmp_path, monkeypatch):
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        # The update puts the recorded node dirs first on PATH; restore it at teardown.
+        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
         monkeypatch.setattr(
             "kiro_crew.platform.update_capability.running_from_checkout",
             lambda root, **kw: True,

@@ -440,7 +440,7 @@ export function TeamsPanel() {
           <SecretField
             key={`pw-${formKey}`}
             label={i18nT('pages.settings.teamsPanel.app_password_client_secret')}
-            description={i18nT('pages.settings.teamsPanel.azure_bot_client_secret_stored_only_in_env_never')}
+            hint={i18nT('pages.settings.teamsPanel.azure_bot_client_secret_stored_only_in_env_never')}
             placeholder={i18nT('pages.settings.teamsPanel.paste_azure_bot_client_secret')}
             isSet={data.app_password_set}
             preview={SECRET_MASK}
@@ -468,14 +468,14 @@ export function TeamsPanel() {
         <SettingsCard index={3}>
           <SettingsToggle
             label={i18nT('pages.settings.teamsPanel.enable_teams_channel')}
-            description={i18nT('pages.settings.teamsPanel.start_the_channel_at_gateway_boot_when_the_app_i')}
+            hint={i18nT('pages.settings.teamsPanel.start_the_channel_at_gateway_boot_when_the_app_i')}
             checked={draft.enabled}
             onChange={v => upd({ enabled: v })}
             disabled={ro}
           />
           <TagListEditor
             label={i18nT('pages.settings.teamsPanel.allowed_users_email_or_aad_object_id')}
-            description={i18nT('pages.settings.teamsPanel.azure_ad_upns_emails_or_object_ids_permitted_to')}
+            description={i18nT('pages.settings.channels.empty_allows_nobody')} hint={i18nT('pages.settings.teamsPanel.azure_ad_upns_emails_or_object_ids_permitted_to')}
             values={draft.allowed_emails}
             placeholder={i18nT('pages.settings.teamsPanel.you_example_com_or_00000000_0000_0000_0000_00000')}
             onChange={v => upd({ allowed_emails: v })}
@@ -487,7 +487,7 @@ export function TeamsPanel() {
           <div className="border-t border-border mt-4 pt-4">
             <SettingsToggle
               label={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder')}
-              description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
+              hint={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
               checked={draft.session_folder_on}
               onChange={v => upd({ session_folder_on: v })}
               disabled={ro}
@@ -496,7 +496,7 @@ export function TeamsPanel() {
               <div className="mt-4">
                 <SettingsInput
                   label={i18nT('pages.settings.botChannelPanel.session_folder_name')}
-                  description={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
+                  hint={i18nT('pages.settings.botChannelPanel.session_folder_name_desc')}
                   value={draft.session_folder}
                   onChange={v => upd({ session_folder: v })}
                   placeholder={CHANNEL_NAME}

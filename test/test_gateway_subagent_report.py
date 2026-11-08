@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from test_gateway_subagent_wiring import _Done, harness, make_info
 
+from kiro_crew.dashboard.state import SUBAGENT_FINAL_COMPLETION_NOTE
 from kiro_crew.slack import gateway as gw_mod
 
 
@@ -168,7 +169,9 @@ async def test_a_lone_run_without_tool_calls_carries_the_claim_note(done: _Done)
     await done.done(info)
 
     ((text, _kind, _meta),) = slot.queued
-    assert text.endswith(f"\n\n⚠ Agent `a1` {gw_mod.NO_TOOL_CALLS_NOTE}")
+    assert text.endswith(
+        f"\n\n⚠ Agent `a1` {gw_mod.NO_TOOL_CALLS_NOTE}\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}"
+    )
 
 
 # ── the wave ─────────────────────────────────────────────────────────────────
@@ -239,6 +242,33 @@ async def test_a_failure_line_cuts_its_detail_at_four_hundred(done: _Done) -> No
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("user_stop", [False, True], ids=["deadline", "user stop"])
+async def test_a_finished_answer_cut_in_a_wave_line_names_its_transcript(
+    done: _Done, user_stop: bool
+) -> None:
+    """A finished answer a reap owned is cut at 400 in its wave line; the
+    line still names result.txt, as an ok line does, so the tail is reachable."""
+    slot = _busy_tab(done)
+    stopped = make_info(
+        "w0",
+        batch_id="w9",
+        batch_total=2,
+        result="FINISHED ANSWER " * 60,
+        error="" if user_stop else "reaped after 601s (deadline) — finished its answer",
+    )
+    stopped.user_stopped = user_stop
+    stopped.result_path = "/runs/w0/result.txt"
+    stopped._answer_finished = True
+
+    await done.done(stopped)
+    await done.done(make_info("w1", batch_id="w9", batch_total=2))
+
+    ((text, _kind, _meta),) = slot.queued
+    w0_line = text.split("— `w0`", 1)[1].split("— `w1`", 1)[0]
+    assert "→ /runs/w0/result.txt" in w0_line, w0_line
+
+
+@pytest.mark.asyncio
 async def test_a_digest_past_sixty_thousand_characters_is_cut(done: _Done) -> None:
     slot = _busy_tab(done)
     first = make_info("w0", batch_id="w4", batch_total=2)
@@ -249,6 +279,7 @@ async def test_a_digest_past_sixty_thousand_characters_is_cut(done: _Done) -> No
 
     ((text, _kind, _meta),) = slot.queued
     body = text.split("do NOT re-run completed agents.\n\n", 1)[1]
+    body = body.removesuffix(f"\n\n{SUBAGENT_FINAL_COMPLETION_NOTE}")
     assert body.endswith("\n…(digest truncated)")
     assert len(body) == 60_000 + len("\n…(digest truncated)")
 
@@ -320,7 +351,8 @@ async def test_a_mid_wave_chunk_carries_its_progress_facts(
     ((text, _kind, meta),) = slot.queued
     assert text.startswith(
         f"{gw_mod.SUBAGENT_BATCH_COMPLETION_PREFIX}\nBatch results 1/2 — "
-        "2 of 3 delivered, 1 still running.\nProcess these results now"
+        "2 of 3 delivered, 1 still running.\nThese counts were taken when this digest was "
+        "composed; a running agent may have finished since.\nProcess these results now"
     )
     assert meta[gw_mod.SUBAGENT_COMPLETION_META_KEY] == gw_mod.wave_chunk_meta(
         chunk=1, chunks=2, delivered=2, total=3, running=1

@@ -292,10 +292,14 @@ export function ConnectVault({
           </div>
         )}
 
+        {/* While busy: `aria-disabled` plus the guard, NOT `disabled`, which
+            leaves the tab order and drops a keyboard user's focus to the page
+            for the whole clone. An empty field still disables it natively. */}
         <button
           type="button"
-          disabled={busy || (attaching ? !folder : !url)}
-          onClick={submit}
+          disabled={!busy && (attaching ? !folder : !url)}
+          aria-disabled={busy || undefined}
+          onClick={() => { if (!busy) void submit() }}
           style={{
             marginTop: '16px',
             background: busy ? 'transparent' : ACCENT,

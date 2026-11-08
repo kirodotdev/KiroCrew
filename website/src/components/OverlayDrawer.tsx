@@ -1,4 +1,6 @@
 import { AnimatePresence, motion, useReducedMotion, type MotionValue } from 'framer-motion'
+import { coversPaneProps } from '../hooks/paneVisibility'
+import { layoutMorphActive } from '../lib/layoutFormTransition'
 
 interface Props {
   open: boolean
@@ -36,6 +38,15 @@ interface Props {
    * AFTER this, so they win any collision and this can never fight the slide.
    */
   slideStyle?: React.CSSProperties
+  /**
+   * Slide mode only: whether the drawer covers the page right now, i.e. it is
+   * OPEN, not merely mounted. The caller keeps the panel mounted through its
+   * slide-out, and a drawer on its way out must not count as covering the chat
+   * pane: a tap on a session row opens that chat and closes the drawer in one
+   * gesture, and the transcript it lands on is what the user is looking at
+   * (paneVisibility, #23564). Pass the drawer's open intent (phase === 'open').
+   */
+  coversPane?: boolean
   /** Morph mode: the panel's visible window (clip-path) collapses into
    *  `morphTarget` and expands back out — the content itself never moves or
    *  deforms. The outer width still animates for layout reflow. */
@@ -60,7 +71,13 @@ interface Props {
 const EASE = [0.32, 0.72, 0, 1] as const
 const DUR = 0.24
 
-export default function OverlayDrawer({ open, width, dragging, slideX, slideRef, slideStyle, morph, morphTarget, expandFrom, contentH, className, children }: Props) {
+/** The desktop drawer's exit: its width collapse, or nothing at all when a
+ *  form-switch view transition is moving it (`custom` is that flag). */
+const drawerExit = {
+  gone: (now: boolean) => (now ? { width: 0, transition: { duration: 0 } } : { width: 0 }),
+}
+
+export default function OverlayDrawer({ open, width, dragging, slideX, slideRef, slideStyle, coversPane = false, morph, morphTarget, expandFrom, contentH, className, children }: Props) {
   const reduce = useReducedMotion()
   // Gesture end settles from the live presentation value via a critically
   // damped spring (no overshoot, no visible jump) — never a fixed ease tween.
@@ -95,6 +112,11 @@ export default function OverlayDrawer({ open, width, dragging, slideX, slideRef,
             // in here can never override the horizontal slide.
             style={{ ...slideStyle, width, x: slideX }}
             className={`shrink-0 pb-2 overflow-hidden ${className || ''}`}
+            // Slide mode is the phone's drawer, drawn over the page at nearly
+            // full width: while OPEN the pane under it is not on screen
+            // (paneVisibility, #23564); while sliding out it no longer counts.
+            // The desktop branches below sit beside the pane instead.
+            {...(coversPane ? coversPaneProps : {})}
           >
             {children}
           </motion.div>
@@ -118,14 +140,22 @@ export default function OverlayDrawer({ open, width, dragging, slideX, slideRef,
         from: expandFrom ? insetFor(expandFrom.x, expandFrom.y, expandFrom.w, expandFrom.h, 12) : null,
       }
     : null
+  // A phone/desktop form switch the view transition is animating
+  // (lib/layoutFormTransition) mounts or unmounts this drawer as part of it:
+  // the transition slides it, so it enters already open and leaves at once
+  // rather than playing its own width and clip morph inside the new snapshot.
+  // `custom` reaches the exit too, which keeps the props it was last rendered
+  // with (AnimatePresence's documented channel for exactly that).
+  const instant = layoutMorphActive()
   return (
-    <AnimatePresence initial={false}>
+    <AnimatePresence initial={false} custom={instant}>
       {open && (
         <motion.div
           key="drawer"
-          initial={{ width: 0 }}
+          initial={instant ? false : { width: 0 }}
           animate={{ width }}
-          exit={{ width: 0 }}
+          variants={drawerExit}
+          exit="gone"
           transition={
             dragging
               ? { duration: 0 }
@@ -145,9 +175,14 @@ export default function OverlayDrawer({ open, width, dragging, slideX, slideRef,
                ~15% so the unmount never pops. */
             <motion.div
               style={{ width, height: '100%' }}
-              initial={{ clipPath: clips.from ?? clips.button, opacity: 1 }}
+              initial={instant ? false : { clipPath: clips.from ?? clips.button, opacity: 1 }}
               animate={{ clipPath: clips.full, opacity: 1 }}
-              exit={{ clipPath: clips.button, opacity: [1, 1, 0], transition: { duration: DUR, ease: EASE, opacity: { duration: DUR, times: [0, 0.85, 1] } } }}
+              variants={{
+                gone: (now: boolean) => now
+                  ? { opacity: 0, transition: { duration: 0 } }
+                  : { clipPath: clips.button, opacity: [1, 1, 0], transition: { duration: DUR, ease: EASE, opacity: { duration: DUR, times: [0, 0.85, 1] } } },
+              }}
+              exit="gone"
               transition={dragging ? { duration: 0 } : { duration: DUR, ease: EASE }}
             >
               {children}

@@ -40,6 +40,7 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import (
     get_secret,
     has_secrets,
 )
+from kiro_crew.webhook_sources import SOURCE_OPS_MISSION_CONTROL, source_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ MAX_BODY_BYTES = 256 * 1024
 #: while the earliest accepted alerts were dropped before any dispatch cycle claimed them, so
 #: an incident was paged, acknowledged with a 2xx, and then simply never appeared on the board.
 #: Refusing is strictly better because webhook senders retry: Alertmanager re-delivers on a 5xx,
-#: so a full spool becomes a delay instead of a lost page. Found in review (GPT 5.6).
+#: so a full spool becomes a delay instead of a lost page.
 REJECT_SPOOL_FULL = "spool is full"
 
 #: Rejection reason for an oversized body. Shared with the route, which enforces the same
@@ -342,6 +343,12 @@ def signals_from_payload(payload: dict[str, Any]) -> list[Signal]:
 
 def enqueue(raw_body: bytes, signature: str) -> tuple[bool, str]:
     """Verify and queue a delivery. Returns ``(accepted, detail)``."""
+    # The ``webhooks`` governance scope names the sources that may deliver; in an
+    # enterprise build none may until a policy names one (RFC enterprise edition,
+    # Red "Webhooks by source").
+    refusal = source_refusal(SOURCE_OPS_MISSION_CONTROL)
+    if refusal:
+        return False, refusal
     if not provider_enabled(PROVIDER_ID):
         return False, "webhook source is not enabled"
     if not has_secrets(PROVIDER_ID, _REQUIRED_SECRETS):

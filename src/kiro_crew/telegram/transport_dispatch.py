@@ -61,6 +61,7 @@ from kiro_crew.config.sections import _clamp_pct
 from kiro_crew.constants import DENY_CAUSE_APPROVAL_TIMEOUT  # noqa: F401
 from kiro_crew.context import session_store_for_turn  # noqa: F401
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401
+from kiro_crew.executors import EmbedAdmissionTimeout
 from kiro_crew.history import mint_row_mid  # noqa: F401
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs  # noqa: F401
 from kiro_crew.memory_stores import UnknownMemoryStore
@@ -93,7 +94,6 @@ from kiro_crew.messaging.dispatch import (  # noqa: F401
     delivery_is_muted,
     driver_turn_landed,
     open_turn_crew_log,
-    predecessor_sid,
     rearm_reinjection,
     requested_model_sid,
     rollback_skill_bodies,
@@ -296,7 +296,8 @@ _FAILURE_REASON_MAX_CHARS = 500
 def _user_safe_failure_reason(exc: BaseException) -> str | None:
     """A bounded, user-safe reason for a failed turn, or None for the generic text.
 
-    A private-memory refusal or a backend failure Kiro Crew worded for a person
+    A private-memory refusal, a memory pool still busy past the build's admission
+    bound, or a backend failure Kiro Crew worded for a person
     (``is_user_worded_failure``) yields a reason: its message is already
     user-facing and actionable (e.g. names the models the account does
     include), and the generic "please try again" placeholder would be actively
@@ -307,7 +308,8 @@ def _user_safe_failure_reason(exc: BaseException) -> str | None:
     The text is untrusted output: credentials/exfil URLs and local filesystem
     paths are redacted, newlines are collapsed, and the length is hard-capped.
     """
-    if not isinstance(exc, UnknownMemoryStore) and not is_user_worded_failure(exc):
+    memory_refusal = isinstance(exc, (UnknownMemoryStore, EmbedAdmissionTimeout))
+    if not memory_refusal and not is_user_worded_failure(exc):
         return None
     try:
         text = redact_local_paths(redact(str(exc)))[0]
@@ -424,6 +426,9 @@ class TelegramDispatcher:
         # start, popped in finally. Records text only — no buffer slicing, so
         # none of the old steer-split fragility.
         self._active_renderers: dict[str, TelegramRenderer] = {}
+        # session_key -> (chat id, provider) of the turn holding it; the mid-turn
+        # steer checks both.
+        self._turn_chats: dict[str, tuple[int, object]] = {}
         # route -> the model id the user picked with /model, applied to every
         # session this conversation starts from now on. Keyed by ROUTE, not
         # session_key, so the choice survives /new and the idle/daily rotation
@@ -587,6 +592,11 @@ class TelegramDispatcher:
             thread_id=str(reply_thread) if reply_thread else "",
             message_id=str(getattr(msg, "message_id", "") or ""),
             attachments_dropped=len(getattr(msg, "attachments", None) or ()),
+            attachment_names=tuple(
+                a.get("file_name") or ""
+                for a in getattr(msg, "attachments", None) or ()
+                if isinstance(a, dict)
+            ),
         )
         if not await admit_inbound_callback(
             self.sessions,
@@ -925,19 +935,38 @@ class TelegramDispatcher:
                 # running it with the mode dropped is the leak the modifier
                 # exists to prevent.
                 return
-        await self._run_turn(
-            msg,
-            text,
+        # Shared Crew fair admission (``shared_crew.turn_gate``): a pass-through
+        # when admission is off; a refused message is told so in its chat.
+        from kiro_crew.shared_crew.turn_gate import capacity_note, run_channel_turn
+
+        async def _refused(reason: Any) -> None:
+            nonlocal drain
+            drain = False
+            await self._notify(chat_id, capacity_note(reason), thread=reply_thread)
+
+        reached_drain = await run_channel_turn(
             session_key=session_key,
-            resumed_key=resumed_key,
-            route=route,
-            user_id=user_id,
-            chat_id=chat_id,
-            thread=thread,
-            reply_thread=reply_thread,
-            interpret_commands=interpret_commands,
-            drain=drain,
+            text=text,
+            automation=False,
+            run=lambda: self._run_turn(
+                msg,
+                text,
+                session_key=session_key,
+                resumed_key=resumed_key,
+                route=route,
+                user_id=user_id,
+                chat_id=chat_id,
+                thread=thread,
+                reply_thread=reply_thread,
+                interpret_commands=interpret_commands,
+                drain=False,
+            ),
+            refused=_refused,
         )
+        # The drain runs after this turn's admission settled, so the next queued
+        # message faces admission itself instead of waiting behind this one.
+        if drain and reached_drain is True:
+            await self._drain_queue(session_key)
 
     # dispatch/turn_engine.py
     _run_turn = _turn_engine._run_turn
@@ -1131,6 +1160,7 @@ class TelegramDispatcher:
 
     # dispatch/pickers.py
     _installed_agent_names = staticmethod(_pickers._installed_agent_names)
+    _agent_labels = staticmethod(_pickers._agent_labels)
     _agent_choices = _pickers._agent_choices
     _handle_agent = _pickers._handle_agent
     _apply_agent = _pickers._apply_agent

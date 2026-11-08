@@ -246,10 +246,45 @@ describe('selectContinuable', () => {
     ]))).toBe(true)
   })
 
-  it('is false when a queued message is waiting — the runner will resume on its own', () => {
-    // Offering Continue here would double-fire the turn.
+  it('is true even when restored queue items are present — they are never auto-drained', () => {
+    // A restored queue entry (meta.restored===true, from disk on restart) is
+    // never auto-drained, so there is no double-fire risk. The scan skips past
+    // restored queued rows to find the real conversation content.
     expect(selectContinuable(state({
-      messages: [msg('user'), msg('queued', 'next one')],
+      messages: [msg('user'), msg('queued', 'next one', { restored: true })],
+    }))).toBe(true)
+  })
+
+  it('is false when an interrupted slot has a live queued entry', () => {
+    // A live entry (no restored flag) may drain once its hold clears; Resume
+    // here would race that drain. Backend case 1b: refuses with 409.
+    expect(selectContinuable(state({
+      messages: [msg('user'), msg('error', '\u27F3 This turn was interrupted.', { kind: 'gateway_restart_interruption' }), msg('queued', 'live entry')],
+    }))).toBe(false)
+  })
+
+  it('is false when a finished turn has a queued follow-up — the runner will drain it', () => {
+    // A settled conversation (user + assistant) with a queue: not interrupted,
+    // so the runner is about to drain the queue and Continue would double-fire.
+    // The selectTurnInterrupted(state) inner call returns false, so the early
+    // return fires and selectContinuable returns false.
+    expect(selectContinuable(state({
+      messages: [msg('user'), msg('assistant', 'done'), msg('queued', 'next one')],
+    }))).toBe(false)
+  })
+
+  it('is false when a parked synthetic recovery entry is at the queue head', () => {
+    // After the first Resume press, continue_slot_turn inserts a recovery entry
+    // (kind='synthetic_recovery', no restored flag) at queue position 0. The
+    // recovery entry has no meta.restored, so selectContinuable returns false:
+    // the restored gate does not fire and the fallback return false runs.
+    // This matches backend case 1b: the recovery has no RESTORED_QUEUE_KEY.
+    expect(selectContinuable(state({
+      messages: [
+        msg('user', 'do the thing'),
+        msg('error', '\u27F3 This turn was interrupted when the app restarted.', { kind: 'gateway_restart_interruption' }),
+        msg('queued', '[Continue \u2014 requested by the user]', { kind: 'synthetic_recovery' }),
+      ],
     }))).toBe(false)
   })
 
@@ -317,11 +352,25 @@ describe('selectTurnInterrupted', () => {
     expect(selectContinuable(s)).toBe(false)
   })
 
-  it('is true with a message queued, which also cannot gate the card alone', () => {
-    // `queued` is in CONTINUE_SCAN_SKIP, so this scan walks past it rather than
-    // refusing — only selectContinuable has the queued early-return.
-    const s = state({ messages: [msg('user', 'a'), msg('error', 'boom'), msg('queued', 'next')] })
+  it('is true with a restored message queued behind an interrupted turn', () => {
+    // A restored queue entry (meta.restored===true) on an interrupted slot:
+    // both selectors return true and Resume is offered.
+    const s = state({ messages: [msg('user', 'a'), msg('error', 'boom'), msg('queued', 'next', { restored: true })] })
     expect(selectTurnInterrupted(s)).toBe(true)
+    expect(selectContinuable(s)).toBe(true)
+  })
+
+  it('reads the pane slot, not the active one, for a restored queue behind an interrupted turn', () => {
+    // Split view: the pane's own slot is interrupted with a restored queue
+    // while the active chat finished cleanly. The pane's Resume must follow
+    // the pane's transcript, and the active chat must stay unaffected.
+    const pane = [msg('user', 'a'), msg('error', 'boom'), msg('queued', 'next', { restored: true })]
+    const s = state({
+      messages: [msg('user', 'q'), msg('assistant', 'done'), msg('queued', 'later', { restored: true })],
+      slotMessages: { pane },
+      slotRun: {},
+    } as never)
+    expect(selectContinuable(s, 'pane')).toBe(true)
     expect(selectContinuable(s)).toBe(false)
   })
 
@@ -533,5 +582,41 @@ describe('slotIsRemoteBound', () => {
     // The server refuses this same half-open shape; the predicate must agree by
     // reading `executor` alone, never the presence of an `instance_id`.
     expect(slotIsRemoteBound({ instance_id: 'nobita' } as { executor?: string })).toBe(false)
+  })
+})
+
+describe('selectTurnInterrupted on a model the backend refused', () => {
+  // The terminal card a spent ladder leaves on a capacity/rollout refusal
+  // settles the turn: Resume would send it to the same refused model. Mirrors
+  // `is_model_unavailable_row` in `state_parts/transcript_rows.py`.
+  const card = (carrier: 'meta' | 'kind') =>
+    carrier === 'meta'
+      ? msg('error', "❌ Model 'claude-haiku-5.5' is unavailable", { kind: 'model_unavailable' })
+      : ({ ...msg('error', "❌ Model 'claude-haiku-5.5' is unavailable"), kind: 'model_unavailable' } as ChatMessage)
+
+  it.each(['meta', 'kind'] as const)('reads the card as settled (%s carrier)', carrier => {
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), card(carrier)] }))).toBe(false)
+  })
+
+  it('looks past the retry notices before the card', () => {
+    const retrying = msg('error', '⟳ Connection unstable — retrying…')
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), retrying, card('meta')] }))).toBe(false)
+  })
+
+  it('still counts a later unanswered turn as interrupted', () => {
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), card('meta'), msg('user', 'again')] }))).toBe(true)
+  })
+
+  it('still counts a later sub-agent completion turn as interrupted', () => {
+    const sub = msg('subagent', '[sub-agent completion]')
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), card('meta'), sub] }))).toBe(true)
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), card('meta'), sub, msg('error', '❌ HTTP 503')] }))).toBe(true)
+  })
+
+  it.each([
+    ['a throttle', msg('error', '❌ Bedrock is throttling requests.')],
+    ['another kind', msg('error', '❌ limit', { kind: 'usage_limit' })],
+  ])('keeps Resume on %s', (_label, row) => {
+    expect(selectTurnInterrupted(state({ messages: [msg('user'), row] }))).toBe(true)
   })
 })

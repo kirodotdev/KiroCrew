@@ -1,25 +1,17 @@
 """Memory must survive its own file being destroyed.
 
-Memory is the only data here that cannot be rebuilt from another source, and until
-these backups existed its whole durability story was a manual ``kirocrew snapshot``.
-An operator who never ran it had no copy — which is how a 36 MB store became 29 bytes
-with nothing to restore from.
+Memory is the only data here that cannot be rebuilt from another source. Pinned below:
 
-The properties that make a backup a backup, rather than a scheduled file copy that
-happens to usually work, and each is pinned below:
-
-* CONSISTENT UNDER A LIVE WRITER. The gateway holds the store open under WAL, so a
-  plain copy of ``memory.db`` alone takes a file whose committed tail is in a ``-wal``
-  sibling it did not take. That result PARSES, so nothing complains — it is simply
-  missing recent writes. SQLite's online backup API is what makes the copy whole.
-* BOUNDED ON DISK, and never emptied by its own retention.
-* ATOMIC — an interrupted run leaves no file that looks like a backup.
-* NON-DESTRUCTIVE ON RESTORE. A restore is done by someone who has already lost data
-  once; what it displaces may be the last copy of something.
+* Consistent under a live writer: a plain copy of ``memory.db`` misses the committed
+  tail in ``-wal`` and still parses, so SQLite's online backup API is used.
+* Bounded on disk, and never emptied by its own retention.
+* Atomic: an interrupted run leaves no file that looks like a backup.
+* Non-destructive on restore: what it displaces may be the last copy.
 """
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import shutil
@@ -54,22 +46,33 @@ _CONFIG = {
 _SEED_ROWS = 20
 
 
+@pytest.fixture
+def cyclic_gc_quiesced():
+    """Keep a cyclic-GC pass (and any finalizer it runs) out of a deep JSON parse.
+
+    The nesting test drives the parser to the bottom of the stack; a collection
+    firing there could run an inherited finalizer with no stack left. Drain
+    first, disable for the parse, then restore and drain again.
+    """
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
+        gc.collect()
+
+
 def _point_home_at(monkeypatch: pytest.MonkeyPatch, data_home: Path) -> None:
     """Make *data_home* the data home, with the default store and one silo declared.
 
-    The config is written to the SAME path the loader resolves ``KIROCREW_HOME`` to
-    (``Path.resolve()``), not to the raw ``data_home`` the fixture was handed. On
-    Windows the two can differ -- short-name (8.3) components, drive-letter casing,
-    or a long parametrized temp path -- so writing to the raw path leaves the loader
-    reading a home with no ``config.json``, degrading the load to the default store
-    alone; the declared ``fin`` silo is then unknown.
+    The config goes to the ``Path.resolve()`` form of ``KIROCREW_HOME``: on Windows the
+    raw path can differ (8.3 names, drive casing), leaving the ``fin`` silo unknown.
 
-    The three resolution memos are dropped alongside the home switch so a stale entry
-    keyed on an earlier case's home cannot answer for this one. ``config_dir()`` keys
-    on ``_resolved_home`` identity, ``_declared_stores`` memoizes on the config
-    fingerprint, and the loaded config is cached on that same fingerprint; a coarse
-    filesystem clock can leave two different homes sharing a fingerprint, so each is
-    reset explicitly rather than relied on to invalidate itself.
+    The three resolution memos are reset explicitly: a coarse filesystem clock can give
+    two homes the same config fingerprint.
     """
     import kiro_crew.config.paths as paths
     from kiro_crew import memory_stores
@@ -107,12 +110,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def seeded_memory_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """The populated default store, built ONCE per module and closed.
 
-    Every ``set_semantic`` is two durable commits (the row and its audit event), and a
-    fresh ``init`` is four more, so building the 20-row store costs 44 fsyncs. The
-    Windows shard prices an fsync in whole seconds when its disk is contended, and
-    the shard's per-test budget is 180 s counted from setup, so paying those 44 once
-    per parametrized case is what tipped a case over the cap and took the worker
-    down with it. Built here in its own home so the per-case fixture only copies it.
+    The 20-row store costs 44 fsyncs, which can take seconds each on a contended Windows
+    shard with a 180 s per-test budget, so cases copy this file instead.
     """
     seed_home = tmp_path_factory.mktemp("memory-backup-seed")
     with pytest.MonkeyPatch.context() as monkeypatch:
@@ -125,8 +124,10 @@ def seeded_memory_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
             store.close()
         db_file = resolve_store_path(DEFAULT_MEMORY_STORE)
     # Closing the last handle checkpointed the WAL, so the one file IS the database.
-    # A sidecar left behind would mean the copy below silently drops rows.
-    assert not Path(f"{db_file}-wal").exists()
+    # A -wal with content left behind would mean the copy below silently drops rows;
+    # the store keeps an emptied -wal on close (sqlite_wal.keep_wal_on_close).
+    wal = Path(f"{db_file}-wal")
+    assert not wal.exists() or wal.stat().st_size == 0
     assert _rows(db_file) == _SEED_ROWS
     return db_file
 
@@ -135,14 +136,8 @@ def seeded_memory_db(tmp_path_factory: pytest.TempPathFactory) -> Path:
 def live_store(home: Path, seeded_memory_db: Path):
     """A populated default store, left OPEN — the state a real backup runs against.
 
-    Held open deliberately: a backup taken while nothing has the file is the easy case
-    and not the one that loses data.
-
-    Populated by copying :func:`seeded_memory_db` into place and opening it, which is
-    one commit per case instead of 44. Its rows therefore sit in the main file, not the
-    WAL; a test whose property IS "the committed tail is in the WAL" needs the rows
-    written through the open handle, which :class:`TestABackupIsConsistentUnderALiveWriter`
-    does with its own ``live_store``.
+    Copied from :func:`seeded_memory_db`, so its rows sit in the main file, not the WAL;
+    :class:`TestABackupIsConsistentUnderALiveWriter` writes its own ``live_store``.
     """
     shutil.copyfile(seeded_memory_db, resolve_store_path(DEFAULT_MEMORY_STORE))
     store = VectorMemoryStore()
@@ -189,11 +184,8 @@ class TestABackupIsConsistentUnderALiveWriter:
     def live_store(self, home: Path):
         """The rows written THROUGH the open handle, so the committed tail is in the WAL.
 
-        Overrides the module fixture for this class only. The property under test is
-        that a backup captures rows a plain copy of ``memory.db`` would miss, and a
-        store seeded by file copy has nothing in its WAL for a plain copy to miss --
-        every test here would pass against a file copy. This is the one class that
-        pays the per-row writes, and it pays them for that reason.
+        A store seeded by file copy has an empty WAL, so every test here would pass
+        against a plain file copy.
         """
         store = VectorMemoryStore()
         store.init()
@@ -526,6 +518,48 @@ class TestARestartCannotShrinkTheRetentionWindow:
         assert mb.back_up_all_stores(keep=7, now=later)["backed_up"] == 1
         assert len(mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))) == 2
 
+    def test_a_backup_stamped_in_the_future_does_not_stop_the_next_ones(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        """A copy taken under a wrong clock must not read as fresh once the clock is fixed."""
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        mb.back_up_all_stores(keep=7, now=base + timedelta(days=365))
+
+        result = mb.back_up_all_stores(keep=7, now=base)
+
+        assert result["backed_up"] == 1
+        assert len(mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))) == 2
+
+    def test_a_backup_stamped_in_the_future_keeps_the_interval_guard(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        """Restarts must not each copy and prune: the guard measures from the newest real copy."""
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        mb.back_up_all_stores(keep=7, now=base + timedelta(days=365))
+        assert mb.back_up_all_stores(keep=7, now=base)["backed_up"] == 1
+
+        for hours in (1, 6, mb.MIN_BACKUP_INTERVAL_HOURS - 1):
+            result = mb.back_up_all_stores(keep=7, now=base + timedelta(hours=hours))
+            assert result["backed_up"] == 0, hours
+        assert len(mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))) == 2
+
+    @pytest.mark.parametrize("keep", [1, 2])
+    def test_retention_never_evicts_the_copy_just_taken_for_a_future_stamp(
+        self, live_store: VectorMemoryStore, keep: int
+    ) -> None:
+        """Future-stamped copies take no keep slot, so the current copy survives."""
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        for days in (365, 366):
+            mb.back_up_all_stores(keep=keep, now=base + timedelta(days=days), force=True)
+
+        assert mb.back_up_all_stores(keep=keep, now=base)["backed_up"] == 1
+
+        backups = mb.list_backups(resolve_store_path(DEFAULT_MEMORY_STORE))
+        current = [b for b in backups if mb.snapshot_time(b) <= base]
+        assert len(current) == 1
+        # The wrong-clock copies the day-366 pass kept are still restore points.
+        assert len(backups) == 1 + keep
+
     def test_the_age_is_read_from_the_stamped_name_not_the_mtime(
         self, live_store: VectorMemoryStore
     ) -> None:
@@ -556,13 +590,8 @@ class TestARestartCannotShrinkTheRetentionWindow:
 class TestTheManualVerbTakesTheCopyItWasAskedFor:
     """``kirocrew memory backup`` is an operator asking for a copy NOW.
 
-    The interval guard exists for the heartbeat, whose per-process tick counter would
-    otherwise take a copy on every restart. An operator running the verb by hand is
-    usually about to do something risky -- a restore, an out-of-band edit -- and needs
-    the store as it is now, not as it was up to a day ago. The dashboard's
-    "back up now" and the pre-update copy already bypass the guard; the CLI verb must
-    too, and the two sides of that asymmetry are pinned here so a refactor cannot
-    collapse them in either direction.
+    The interval guard is for the heartbeat, which would otherwise copy on every
+    restart. The CLI verb bypasses it, like the dashboard's "back up now".
     """
 
     @staticmethod
@@ -595,14 +624,8 @@ class TestTheManualVerbTakesTheCopyItWasAskedFor:
     ) -> None:
         """The other half of the asymmetry: the scheduled pass keeps the guard.
 
-        Forcing it too would reintroduce the restart loop the interval exists to stop,
-        so the heartbeat's own pass is driven here, against the same fresh copy the
-        CLI test copies over, and must leave the directory as it found it.
-
-        The pass FAILS SOFT -- ``_back_up_memory`` logs and swallows any exception --
-        so an unchanged directory alone would also be what a pass that never ran leaves.
-        The warning it logs on that path is asserted absent, which is what makes the
-        unchanged count evidence of a decline rather than of a crash.
+        ``_back_up_memory`` logs and swallows exceptions, so its warning is asserted
+        absent: otherwise an unchanged directory could mean a crash, not a decline.
         """
         import logging
         from unittest.mock import MagicMock
@@ -654,6 +677,25 @@ class TestAFailedCopyIsCountedAndNotMistakenForASkip:
         """The routine case stays routine: an unopened store is neither copied nor failed."""
         result = mb.back_up_all_stores(keep=7)
         assert result == {"backed_up": 0, "skipped": 2, "pruned": 0, "failed": 0}
+
+    def test_the_cli_verb_exits_one_when_a_copy_failed(
+        self, live_store: VectorMemoryStore, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A store with no fresh backup must not read as success to a script.
+
+        The clean cases above (0 failed, any skipped) run the same verb and exit 0.
+        """
+        from types import SimpleNamespace
+
+        from kiro_crew.cli_commands import _memory_backup_cmd
+
+        with mock.patch.object(mb, "backup_store", side_effect=mb.MemoryBackupFailed("disk full")):
+            with pytest.raises(SystemExit) as exc:
+                _memory_backup_cmd("backup", SimpleNamespace(keep=7))
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert out.startswith("Backed up 0 store(s); removed 0 old; ")
+        assert " 0 failed;" not in out
 
 
 class TestRetentionIsBoundedAndCannotEmptyItself:
@@ -730,6 +772,42 @@ class TestRetentionIsBoundedAndCannotEmptyItself:
         assert mb.prune_backups(src, keep=2) == 1
         assert mb.list_backups(src) == [current_2, current_1]
         assert not legacy.exists()
+
+    def test_a_stray_file_is_neither_rotated_away_nor_counted_as_newest(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        """A file with no stamp in its name is not a backup to retention or restore.
+
+        An operator's ``memory.pre-upgrade.db`` dropped beside the backups must not
+        take a ``keep`` slot (which deleted every real backup at ``keep=1``), must
+        never be deleted itself, and must not become restore's default choice.
+        """
+        src = resolve_store_path(DEFAULT_MEMORY_STORE)
+        base = datetime(2026, 1, 10, 12, tzinfo=timezone.utc)
+        older = mb.backup_store(src, now=base)
+        newer = mb.backup_store(src, now=base + timedelta(days=1))
+        assert older is not None and newer is not None
+        stray = mb.backup_dir_for(src) / f"{src.stem}.pre-upgrade.db"
+        stray.write_bytes(older.read_bytes())
+
+        assert mb.prune_backups(src, keep=1) == 1
+        assert newer.exists()
+        assert not older.exists()
+        assert stray.exists()
+        assert mb.newest_backup(DEFAULT_MEMORY_STORE) == newer
+        # A plain listing still shows the stray, so an operator can see it.
+        assert set(mb.list_backups(src)) == {newer, stray}
+
+    def test_a_stray_file_does_not_defeat_the_interval_guard(
+        self, live_store: VectorMemoryStore
+    ) -> None:
+        src = resolve_store_path(DEFAULT_MEMORY_STORE)
+        base = datetime(2026, 3, 1, 12, tzinfo=timezone.utc)
+        assert mb.back_up_all_stores(keep=7, now=base)["backed_up"] == 1
+        (mb.backup_dir_for(src) / f"{src.stem}.pre-upgrade.db").write_bytes(b"")
+        result = mb.back_up_all_stores(keep=7, now=base + timedelta(hours=1))
+        assert result["backed_up"] == 0
+        assert len(mb.list_backups(src, stamped_only=True)) == 1
 
 
 class TestAnInterruptedBackupLeavesNothingThatLooksLikeOne:
@@ -960,6 +1038,32 @@ class TestRestoreIsNonDestructive:
         finally:
             legacy.close()
 
+    def test_named_legacy_restore_can_cancel_a_too_deeply_nested_journal(
+        self, home, cyclic_gc_quiesced
+    ):
+        """Nesting past the recursion limit is refused like any invalid journal."""
+        from kiro_crew.memory_stores import ensure_memory_store_dir
+
+        ensure_memory_store_dir(_FIN)
+        target = resolve_store_path(_FIN)
+        legacy = VectorMemoryStore(db_path=target)
+        legacy.init()
+        try:
+            legacy.set_semantic("project.before", "keep", 1.0, "user_explicit")
+            snapshot = mb.backup_store(target)
+            assert snapshot is not None
+            mb.restore_from_backup(snapshot, _FIN)
+            out = mb.backup_dir_for(target)
+            # Under the 16 KiB journal cap, deeper than the interpreter allows.
+            (out / mb._V1_PENDING).write_bytes(b"[" * 15000)
+            assert mb.pending_restore_status(target)["pending"]
+            assert mb.cancel_pending_restore(target)
+            assert not mb.pending_restore_status(target)["pending"]
+            assert _rows(target) == 1
+            assert snapshot.is_file()
+        finally:
+            legacy.close()
+
     def test_journal_permission_failure_precedes_content_and_allows_retry(
         self, live_store, monkeypatch
     ):
@@ -1134,7 +1238,12 @@ class TestRestoreIsNonDestructive:
 
         mb.restore_from_backup(backup, DEFAULT_MEMORY_STORE)
         mb.apply_pending_member_restores()
-        aside = list(src.parent.glob("memory.db.superseded.*"))
+        # The closed store's emptied -wal and its -shm go aside with the file they belong to.
+        aside = [
+            p
+            for p in src.parent.glob("memory.db.superseded.*")
+            if not p.name.endswith(("-wal", "-shm"))
+        ]
         assert len(aside) == 1
         assert aside[0].read_bytes() == b"this is not a sqlite database"
 
@@ -1163,7 +1272,9 @@ class TestRestoreIsNonDestructive:
         assert good is not None
         good.write_bytes(b"not a database either")
 
-        with pytest.raises(Exception):
+        # ValueError is what the dashboard answers 409 restore_refused for; any other
+        # type becomes a 500 that says the restore broke rather than the backup.
+        with pytest.raises(ValueError, match="not a readable memory database"):
             mb.restore_from_backup(good, DEFAULT_MEMORY_STORE)
 
         # Nothing displaced, and the store still works.

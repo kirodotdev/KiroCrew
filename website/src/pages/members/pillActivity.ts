@@ -72,8 +72,10 @@ export interface PillActivityInput {
   /** The slot's live status line (`slotStatusDetail[slot]`), `undefined`
    *  before the first status frame. */
   detail: SlotStatusDetail | undefined
-  /** The tool call `detail` describes has already returned its output. */
-  toolReturned: boolean
+  /** The open call is the quiet `nothing_to_do` end, which never names itself.
+   *  A call that has RETURNED needs no input here: the store moves the status
+   *  line to thinking when its result arrives (`sseToolResult`). */
+  quietEnd: boolean
   /** The slots frame's own busy flag (main turn OR sub-agents). */
   running: boolean
   /** Sub-agents are running while the main turn is not. */
@@ -108,7 +110,7 @@ const THINKING: ToolStatusDetail = { kind: 'thinking' }
 
 /** Resolve the one line the pill shows from the slot's live readings. */
 export function resolvePillActivity(input: PillActivityInput): PillActivity {
-  const { streamState, detail, toolReturned, running, delegatedOnly, stopping = false, labelOf } = input
+  const { streamState, detail, quietEnd, running, delegatedOnly, stopping = false, labelOf } = input
   // The run-state phases the status seam has no word for.
   if (streamState === 'compacting') return { kind: 'compacting' }
   if (streamState === 'stopping' || stopping) return { kind: 'stopping' }
@@ -119,7 +121,7 @@ export function resolvePillActivity(input: PillActivityInput): PillActivity {
   if (!busy) return { kind: 'idle' }
   switch (detail?.kind) {
     case 'tool': {
-      if (toolReturned) return { kind: 'thinking', text: clampActivityText(labelOf(THINKING)) }
+      if (quietEnd) return { kind: 'thinking', text: clampActivityText(labelOf(THINKING)) }
       const label = labelOf(detail)
       return label
         ? { kind: 'tool', text: clampActivityText(label), fullText: label.replace(/\s+/g, ' ').trim() }

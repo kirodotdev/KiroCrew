@@ -23,6 +23,8 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/slack/config", handlers.api_slack_config_get)
     app.router.add_put("/api/slack/config", handlers.api_slack_config_save)
     app.router.add_get("/api/slack/manifest", handlers.api_slack_manifest)
+    app.router.add_get("/api/slack/manifest/status", handlers.api_slack_manifest_status)
+    app.router.add_get("/api/slack/code-channel-agents", handlers.api_slack_code_channel_agents)
     app.router.add_get("/api/discord/config", handlers.api_discord_config_get)
     app.router.add_put("/api/discord/config", handlers.api_discord_config_save)
     app.router.add_get("/api/telegram/config", handlers.api_telegram_config_get)
@@ -50,6 +52,7 @@ def register(app: web.Application) -> None:
     # Script Hooks
     app.router.add_get("/api/hooks", handlers.api_hooks)
     app.router.add_get("/api/kiro-hooks", handlers.api_kiro_hooks)
+    app.router.add_post("/api/kiro-hooks/rescan", handlers.api_kiro_hooks_rescan)
     app.router.add_post("/api/hooks", handlers.api_hooks_create)
     app.router.add_put("/api/hooks/{hook_id}", handlers.api_hook_detail)
     app.router.add_delete("/api/hooks/{hook_id}", handlers.api_hook_detail)

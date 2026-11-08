@@ -1,0 +1,84 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": "probe.txt"
+        },
+        "title": "mcp__probe__delete_file",
+        "tool_call_id": "tool-1",
+        "tool_input": "{\n  \"path\": \"probe.txt\"\n}",
+        "tool_kind": "delete",
+        "wire_title": "mcp__probe__delete_file"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "elicitation",
+    "elicitation": {
+      "fields": [
+        {
+          "kind": "boolean",
+          "name": "confirm",
+          "required": true,
+          "title": "Confirm"
+        },
+        {
+          "kind": "multi_enum",
+          "max_items": 2,
+          "min_items": 1,
+          "name": "tags",
+          "options": [
+            {
+              "label": "audit",
+              "value": "audit"
+            },
+            {
+              "label": "temp",
+              "value": "temp"
+            }
+          ],
+          "required": false,
+          "title": "Tags"
+        }
+      ],
+      "message": "Really delete probe.txt?",
+      "mode": "form",
+      "request_id": "11",
+      "tool_call_id": "tool-1"
+    },
+    "frame": "elicitation/create"
+  },
+  {
+    "action": "elicitation",
+    "elicitation": {
+      "elicitation_id": "elicit-1",
+      "message": "Sign in to the probe account to continue",
+      "mode": "url",
+      "request_id": "12",
+      "tool_call_id": "tool-1",
+      "url": "https://example.com/probe/authorize?state=fixture"
+    },
+    "frame": "elicitation/create"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "tool-1",
+        "tool_final": true,
+        "tool_output": "Deleted probe.txt",
+        "tool_output_bytes": 17,
+        "tool_output_digest": "e99cfd992577cd3de553ff7b3b0c4cba1ff757713cdc371e68151816a082b2d8",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

@@ -47,7 +47,21 @@ def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None]
     raising form): this reads the file directly, so a hand-edited or
     future-schema value must migrate the row as unstated rather than abort.
     """
-    for line in path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines: list[str | None] = list(path.read_text(encoding="utf-8").splitlines())
+    except UnicodeDecodeError:
+        # One bad byte costs only its own line, like a line that does not parse;
+        # a file that decodes reads exactly as before.
+        lines = []
+        for raw in path.read_bytes().splitlines():
+            try:
+                lines.append(raw.decode("utf-8"))
+            except UnicodeDecodeError:
+                lines.append(None)
+    for line in lines:
+        if line is None:
+            yield SKIP
+            continue
         line = line.strip()
         if not line:
             continue
@@ -64,7 +78,9 @@ def legacy_lessons(path: Path) -> Iterator[tuple[Any, Any, Any, Any, str | None]
                 continue
             applies = authored_lesson_applies(data.get("applies"))
             category = data.get("category", "knowledge")
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, RecursionError):
+            # RecursionError: a line nested past the interpreter's limit does not
+            # decode either, and would otherwise abort the whole migration.
             yield SKIP
             continue
         yield rule, category, negative, raw_scope, applies

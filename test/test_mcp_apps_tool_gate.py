@@ -1,11 +1,11 @@
 """An app's tools are advertised only while the app is enabled.
 
 The nine tools of the ``apps`` domain under :mod:`kiro_crew.mcp_tools` reach
-four built-in apps -- Issue Radar, Dev Fleet, Ops Mission Control and Design
-Tweak -- whose gateway routes refuse a call with HTTP 403 while the app is
-disabled (Dev Fleet's routes and the app reverse proxy Design Tweak sits behind
-name the refusal ``app_not_enabled``, Ops Mission Control ``app_disabled``,
-Issue Radar carries no code). ``tools/list`` therefore omits a tool while its
+three built-in apps -- Issue Radar, Dev Fleet and Ops Mission Control -- whose
+gateway routes refuse a call with HTTP 403 while the app is disabled (Dev Fleet's
+routes name the refusal ``app_not_enabled``, Ops Mission Control ``app_disabled``,
+Issue Radar carries no code). A tool an app declares in its manifest is the
+``app_tools`` domain's, gated by the same rule (``test_app_agent_tools.py``). ``tools/list`` therefore omits a tool while its
 app is disabled: a session with none of the apps enabled sees none of them,
 instead of tools that can only refuse.
 
@@ -29,16 +29,14 @@ from kiro_crew.mcp_tools import build_tool_list, build_tool_names, dispatch
 ISSUE_RADAR_TOOLS = frozenset(
     {"issue_radar_crew_read", "issue_radar_crew_record", "issue_radar_record_investigation"}
 )
-DEV_FLEET_TOOLS = frozenset({"pod_up", "pod_down", "pod_status", "pod_ls"})
+DEV_FLEET_TOOLS = frozenset({"pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls"})
 OPS_MISSION_CONTROL_TOOLS = frozenset({"ops_mission_control_api"})
-DESIGN_TWEAK_TOOLS = frozenset({"design_tweak_update_thread"})
 APP_TOOLS = {
     "issue-radar": ISSUE_RADAR_TOOLS,
     "dev-fleet": DEV_FLEET_TOOLS,
     "ops-mission-control": OPS_MISSION_CONTROL_TOOLS,
-    "design-tweak": DESIGN_TWEAK_TOOLS,
 }
-ALL_APP_TOOLS = ISSUE_RADAR_TOOLS | DEV_FLEET_TOOLS | OPS_MISSION_CONTROL_TOOLS | DESIGN_TWEAK_TOOLS
+ALL_APP_TOOLS = ISSUE_RADAR_TOOLS | DEV_FLEET_TOOLS | OPS_MISSION_CONTROL_TOOLS
 
 
 def _write_installed(name: str, *, enabled: bool) -> Path:
@@ -104,12 +102,9 @@ def test_listing_agrees_with_the_call_gate_from_one_predicate() -> None:
 def test_unreadable_enablement_lists_the_tools(body: str) -> None:
     """A read fault lists rather than hides, as the policy filter does.
 
-    kiro-cli calls ``tools/list`` once per session and caches it, so hiding on a
-    transient fault would hide the tools for the session's whole life; the call
-    path still refuses while the app cannot be proven enabled, so a listed tool
-    that refuses is not a hole. The read may answer ``None`` or may raise; either
-    way the descriptor build survives it, because an exception escaping
-    ``tools/list`` would withdraw every tool of the pooled server.
+    kiro-cli caches ``tools/list`` per session, so hiding on a transient fault hides the
+    tools for the whole session; the call path still refuses. A raising read must not
+    escape ``tools/list``, which would withdraw every tool of the pooled server.
     """
     _write_installed("dev-fleet", enabled=True).write_text(body, encoding="utf-8")
     try:
@@ -123,12 +118,8 @@ def test_unreadable_enablement_lists_the_tools(body: str) -> None:
 def test_the_names_only_build_lists_the_declaration_without_reading(monkeypatch) -> None:
     """The names-only build never consults the gate, so it reads no enablement record.
 
-    ``build_tool_names`` is what in-process discovery reads on the gateway's event
-    loop, keeping only tool NAMES; it takes each domain's ``schemas()`` directly,
-    the same rule that keeps ``spawn.schemas`` and ``control.schemas`` from their
-    live reads on that path. Every app is installed and disabled here, so the full
-    build (the stdio server's answer to a model) and the names-only build differ
-    visibly: the first hides the app tools, the second still names them all.
+    ``build_tool_names`` runs on the gateway's event loop. Every app is installed and
+    disabled, so the full build hides the app tools and the names-only build lists them.
     """
     for name in APP_TOOLS:
         _write_installed(name, enabled=False)
@@ -184,26 +175,18 @@ def test_declaration_and_handlers_cover_every_app_tool_regardless_of_enablement(
 def test_tool_apps_name_the_apps_whose_routes_gate_the_calls() -> None:
     """``TOOL_APPS`` is spelled in literals; each must be the name the route reads.
 
-    The listing agrees with the call only if both read the same ``installed.json``,
-    and the file is found by the app's installed name -- so a literal that drifts
-    from the app's own ``APP_NAME`` would gate the listing on a record the route
-    never consults. Design Tweak's backend keeps its constant in the server module
-    (whose import starts the process plumbing), so it is pinned to the manifest
-    name the app is installed under, which is what the app reverse proxy reads.
+    ``installed.json`` is found by installed name, so a literal that drifts from the
+    app's ``APP_NAME`` would gate the listing on a record the route never reads.
+    Issue Radar pins its rows against its own ``APP_NAME`` in its ``tests/``, so the
+    core reads none of its code; here they are the literal the app id is.
     """
-    from kiro_crew.apps.builtins import design_tweak as design_tweak_pkg
     from kiro_crew.apps.builtins.dev_fleet import agent_pod_api
-    from kiro_crew.apps.builtins.issue_radar.backend import store as issue_radar_store
     from kiro_crew.apps.builtins.ops_mission_control.backend import store as omc_store
 
-    design_tweak_manifest = json.loads(
-        (Path(design_tweak_pkg.__file__).parent / "app.json").read_text(encoding="utf-8")
-    )
     expected = {
-        **{tool: issue_radar_store.APP_NAME for tool in ISSUE_RADAR_TOOLS},
+        **{tool: "issue-radar" for tool in ISSUE_RADAR_TOOLS},
         **{tool: agent_pod_api.APP_NAME for tool in DEV_FLEET_TOOLS},
         **{tool: omc_store.APP_NAME for tool in OPS_MISSION_CONTROL_TOOLS},
-        **{tool: design_tweak_manifest["name"] for tool in DESIGN_TWEAK_TOOLS},
     }
     assert apps_tools.TOOL_APPS == expected
     assert set(expected.values()) == set(APP_TOOLS)

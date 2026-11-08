@@ -47,9 +47,7 @@ async def _upload(client, body: bytes, *, meeting: str = "m1", field: str = "fil
     return await client.post(f"{k.API_BASE}/meetings/{meeting}/note/images", data=form)
 
 
-# ---------------------------------------------------------------------------
 # Sniffing
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(name="_seed_meetings", autouse=True)
@@ -128,9 +126,7 @@ class TestFormatElapsed:
         assert images.format_elapsed(bad) == "0:00"
 
 
-# ---------------------------------------------------------------------------
 # Store
-# ---------------------------------------------------------------------------
 
 
 class TestStore:
@@ -185,9 +181,7 @@ class TestStore:
             store.note_images_dir("../escape", root)
 
 
-# ---------------------------------------------------------------------------
 # Upload route
-# ---------------------------------------------------------------------------
 
 
 class TestUpload:

@@ -4,6 +4,7 @@ import ast
 import asyncio
 import inspect
 import json
+import sqlite3
 import textwrap
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -25,7 +26,7 @@ from kiro_crew.memory_startup import (
     wait_for_memory_preparation,
 )
 from kiro_crew.slack.gateway import GatewayOrchestrator
-from kiro_crew.testing.wait import await_until, wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until, wait_until
 from kiro_crew.vector_memory import VectorMemoryStore
 
 env = _member_env
@@ -90,6 +91,100 @@ def _gateway(monkeypatch):
     gateway._repair_member_memory = AsyncMock()
     monkeypatch.setattr("kiro_crew.context.reset_memory_caches", lambda memory: None)
     return gateway
+
+
+@pytest.mark.asyncio
+async def test_a_damaged_global_memory_db_is_named_and_left_untouched(monkeypatch, tmp_path):
+    """A damaged memory.db: startup completes, the file stays, and the advice fits.
+
+    The default advice ("cancel this store's pending restore") names a restore
+    that does not exist. The file is the store's only copy, so it is not moved.
+    """
+    gateway = _gateway(monkeypatch)
+    _stub_preparation_steps(monkeypatch)
+    db = tmp_path / "memory.db"
+    db.write_bytes(b"this is not a sqlite database" * 64)
+    before = db.read_bytes()
+    gateway.vector_memory = VectorMemoryStore(db_path=db)
+    try:
+        assert await gateway._wait_for_memory_preparation() is True
+        with pytest.raises(MemoryStartupUnavailable) as caught:
+            require_memory_ready()
+        message = str(caught.value)
+        assert "is damaged; it was left untouched" in message
+        assert str(db) in message
+        assert "Do not delete it" in message
+        assert "pending restore" not in message
+        assert db.read_bytes() == before
+        assert [p.name for p in tmp_path.iterdir() if "corrupt" in p.name] == []
+    finally:
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
+async def test_a_non_damage_vector_open_failure_names_its_database(monkeypatch, tmp_path):
+    """The restore pass already ran, so a later failure is never a pending restore."""
+    gateway = _gateway(monkeypatch)
+    _stub_preparation_steps(monkeypatch)
+    gateway.vector_memory._db_path = tmp_path / "memory.db"
+    gateway.vector_memory.init.side_effect = ValueError("vector schema check failed")
+    try:
+        assert await gateway._wait_for_memory_preparation() is True
+        with pytest.raises(MemoryStartupUnavailable) as caught:
+            require_memory_ready()
+        message = str(caught.value)
+        assert f"Global memory ({tmp_path / 'memory.db'}) could not be prepared" in message
+        assert "pending restore" not in message
+    finally:
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_preferences_seeding_write_names_the_memory_files(monkeypatch, tmp_path):
+    """A seeding rename that fails (WinError 17) is not a pending restore."""
+    gateway = _gateway(monkeypatch)
+    _stub_preparation_steps(monkeypatch)
+    store = MemoryStore(workspace=tmp_path)
+    real_write = store._files.write
+
+    def failing_write(path, content, **kwargs):
+        if path.name == "preferences.md":
+            raise OSError(17, "The system cannot move the file to a different disk drive")
+        return real_write(path, content, **kwargs)
+
+    monkeypatch.setattr(store._files, "write", failing_write)
+    gateway.ctx_builder = SimpleNamespace(memory=store)
+    try:
+        assert await gateway._wait_for_memory_preparation() is True
+        with pytest.raises(MemoryStartupUnavailable) as caught:
+            require_memory_ready()
+        message = str(caught.value)
+        assert "different disk drive" in message
+        assert f"Global memory ({store._memory_dir}) could not be prepared" in message
+        assert "pending restore" not in message
+    finally:
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
+async def test_damage_outside_the_vector_open_does_not_name_memory_db(monkeypatch, tmp_path):
+    """The remedy names memory.db, so a damaged index file must not earn it."""
+    gateway = _gateway(monkeypatch)
+    _stub_preparation_steps(monkeypatch)
+    gateway.vector_memory._db_path = tmp_path / "memory.db"
+    gateway.ctx_builder.memory.rebuild_index.side_effect = sqlite3.DatabaseError(
+        "database disk image is malformed"
+    )
+    try:
+        assert await gateway._wait_for_memory_preparation() is True
+        with pytest.raises(MemoryStartupUnavailable) as caught:
+            require_memory_ready()
+        message = str(caught.value)
+        assert "could not be prepared" in message
+        assert "pending restore" not in message
+        assert "memory.db" not in message
+    finally:
+        await asyncio.to_thread(gateway._stop_memory_startup)
 
 
 @pytest.mark.asyncio
@@ -199,13 +294,8 @@ def test_run_publishes_ready_before_wait_and_starts_dispatchers_afterward():
 def test_the_crew_log_child_liveness_probe_is_registered_after_ready():
     """Registering the probe imports the emitter, so it stays off the boot path.
 
-    ``no-new-work-on-gateway-boot-path`` counts an optional, flag-off subsystem's
-    import as boot work whatever the handler checks later, and importing the
-    emitter pulls the ledger store in with it. Registering after the
-    ``KIROCREW_READY`` print keeps that cost out of every launch; registering
-    before the dashboard workers and cron start keeps it ahead of the first
-    session that could open a ledger and run its repair, which without a probe
-    would be free to close a child that is still running.
+    After ``KIROCREW_READY`` keeps the import off launch; before the dashboard workers and
+    cron start keeps it ahead of any repair, which without a probe could close a live child.
     """
     source = inspect.getsource(GatewayOrchestrator.run)
     ready = source.index('print(f"KIROCREW_READY:')
@@ -533,6 +623,57 @@ async def test_owner_shutdown_wins_while_restore_worker_remains_fenced(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_stuck_preparation_past_deadline_fails_instead_of_blocking_forever(monkeypatch):
+    # A wedged restore that never returns must not leave the fence preparing
+    # forever: past the outer deadline the supervisor flips it to a terminal
+    # failure, so turns get an actionable restart error rather than endlessly
+    # answering that recovery is still running.
+    gateway = _gateway(monkeypatch)
+    stopping = asyncio.Event()
+    monkeypatch.setattr("kiro_crew.slack.gateway.shutdown_event", stopping)
+    monkeypatch.setattr("kiro_crew.memory_startup.MEMORY_PREPARATION_DEADLINE_SECONDS", 0.05)
+    started = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    def restore(**kwargs):
+        loop.call_soon_threadsafe(started.set)
+        # Block well past the (patched) deadline; the supervisor must not wait.
+        assert release.wait(5)
+        return {}
+
+    monkeypatch.setattr(memory_backup, "apply_pending_member_restores", restore)
+    supervisor = asyncio.create_task(gateway._wait_for_memory_preparation())
+    try:
+        await await_until(started)
+        startup = gateway._memory_startup
+        # The deadline elapses while the worker is still blocked in restore, so
+        # the fence flips to a terminal failure rather than staying preparing.
+        assert await async_wait_until(lambda: bool(startup.error), timeout=2)
+        assert "did not finish" in startup.error
+        assert not startup.ready
+        # The supervisor keeps the recovery shell reachable (like any failed
+        # pass) until the owner shuts down; it has not returned yet.
+        assert not supervisor.done()
+        # The user-facing paths now surface the terminal error with a restart
+        # directive, never the transient "still running" message again.
+        with pytest.raises(MemoryStartupUnavailable, match="restart the gateway"):
+            require_memory_ready()
+        with pytest.raises(MemoryStartupUnavailable, match="did not finish"):
+            await wait_for_memory_preparation(gateway._memory_startup_task)
+        # Owner shutdown lets the supervisor unwind; consumers never started.
+        stopping.set()
+        assert await await_until(supervisor, timeout=2) is False
+        gateway.vector_memory.init.assert_not_called()
+        gateway._auto_migrate_memory.assert_not_awaited()
+    finally:
+        stopping.set()
+        release.set()
+        await asyncio.gather(supervisor, gateway._memory_startup_task, return_exceptions=True)
+        await asyncio.to_thread(gateway._stop_memory_startup)
+
+
+@pytest.mark.asyncio
 async def test_owner_stop_during_waiter_cleanup_prevents_consumer_admission(monkeypatch):
     gateway = _gateway(monkeypatch)
     stopping = asyncio.Event()
@@ -851,10 +992,12 @@ def test_global_repair_waits_for_boot_migration(monkeypatch):
     monkeypatch.setattr("kiro_crew.slack.gateway.reconcile_store_embedding_space", reconcile)
     try:
         gateway._repair_member_memory_once()
+        assert gateway.vector_memory.embed_fn is None
         gateway.vector_memory.backfill_missing_embeddings.assert_not_called()
         reconcile.assert_not_called()
         migration.done.return_value = True
         gateway._repair_member_memory_once()
+        assert callable(gateway.vector_memory.embed_fn)
         gateway.vector_memory.backfill_missing_embeddings.assert_called_once()
         reconcile.assert_called_once_with(gateway.vector_memory)
     finally:

@@ -30,6 +30,7 @@ from kiro_crew import _facade_mirror
 #   ``manager_external`` -- register_external_app: the record of a self-managed app.
 #   ``manager_uninstall`` -- uninstall_app and the agent.apps_trusted grant it drops and restores.
 #   ``manager_lookup`` -- list_apps, get_app, enablement reads, and which installed app owns an agent.
+#   ``manager_adopt`` -- adopting a builtin-owned record onto its own repository, recovering one, and sweeping an update's leftovers.
 
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
@@ -42,6 +43,7 @@ _OWNERS = (
     "kiro_crew.apps.manager_external",
     "kiro_crew.apps.manager_uninstall",
     "kiro_crew.apps.manager_lookup",
+    "kiro_crew.apps.manager_adopt",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -61,11 +63,25 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         mark_session_approval_consent_pending,
         session_approval_consent_candidates,
     )
+    from kiro_crew.apps.manager_adopt import (  # noqa: F401
+        _LEFTOVER_STEM_RE,
+        _SWAP_LEFTOVER_RE,
+        _leftover_owner_dead,
+        _retired_trees,
+        _sweep_dead_leftovers,
+        adopt_builtin_record,
+        logger,
+        recover_interrupted_adoption,
+        swap_leftover_names,
+        sweep_completed_swap_leftovers,
+        sweep_interrupted_updates,
+    )
     from kiro_crew.apps.manager_builtins import (  # noqa: F401
         _BUILTIN_APPS,
         _DEFAULT_ON_BACKFILL,
         _DEFAULT_ON_BUILTINS,
         _REQUIRED_BUILTIN_FIELDS,
+        _adoption_pin_names,
         _app_declares_backend,
         _audit_default_on_backfill,
         _builtin_owns_install,
@@ -73,9 +89,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _edition_builtin_apps,
         _edition_bundled_app_names,
         _effective_migrated_to,
+        _is_adopted_record,
         _orphaned_builtins_cache,
         _rmtree_dirfd,
         _validate_builtin_app,
+        _wheel_copy_released,
         backfill_default_on_builtins,
         builtin_owns_installed,
         cleanup_migrated_builtin,
@@ -92,6 +110,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.manager_install import (  # noqa: F401
         _LIFECYCLE_LOCKS,
         _REGISTRY_SOURCE_REPOSITORY,
+        AdoptionProvenance,
         _effective_source_repository,
         app_lifecycle_lock,
         install_app,
@@ -103,6 +122,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         TASK_RUNNER_DISABLED_MESSAGE,
         AgentOwner,
         _absence_is_genuine,
+        _add_adoption_row,
+        _adoption_rows_context,
         _app_agent_names,
         _app_agent_registration,
         _app_display_name,
@@ -117,13 +138,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         get_app,
         is_app_enabled,
         list_apps,
-        logger,
         missing_agent_reason,
         owning_app_for_agent,
         set_app_provenance,
         set_app_source,
     )
     from kiro_crew.apps.manager_records import (  # noqa: F401
+        _ALWAYS_STORED_FAMILIES,
+        _GRANT_AND_SCOPE_WIDENING,
+        _GRANT_WIDENING,
+        _SCOPE_WIDENING,
         _TREE_SWAP_LAST_CAP,
         _VALID_LIFECYCLE,
         _VALID_ORIGIN,
@@ -131,10 +155,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         APP_MANIFEST_FILENAME,
         APPROVED_GRANTS_FILENAME,
         INSTALLED_META_FILENAME,
+        MEMBER_THREADS_CONSENT_KEY,
         SESSION_APPROVAL_PENDING_KEY,
         STAGED_GRANT_FAMILIES,
         AppResult,
         InstalledApp,
+        SessionControlWidening,
         _approved_grants_after_manifest_change,
         _approved_grants_path,
         _approved_grants_row,
@@ -143,17 +169,20 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _declared_grant_entries,
         _effective_approved_grants,
         _held_back_entries,
+        _is_sidecar_entry,
         _now_iso,
         _parse_approved_grants,
         _pending_session_approval_after_manifest_change,
         _read_approved_grants,
         _read_enabled,
         _read_installed,
+        _read_schema_version,
         _record_lock_path,
         _record_lock_state,
         _scan_installed_app_config_keys,
         _session_approval_consent_unrecorded,
         _session_approval_save_rule,
+        _session_control_widening,
         _SwapState,
         _tree_swap,
         _tree_swap_guard,
@@ -200,7 +229,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.manager_uninstall import (  # noqa: F401
         _drop_trust_grant,
         _has_trust_grant,
+        _holds_base_grant,
         _restore_trust_grant,
+        _rmtree_app_dir,
         _trust_grant_local,
         _trust_grant_repository,
         trust_grant_removal_blocked,
@@ -208,6 +239,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
+    import asyncio  # noqa: F401
     import contextlib  # noqa: F401
     import functools  # noqa: F401
     import ipaddress  # noqa: F401
@@ -221,6 +253,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     import time  # noqa: F401
     from collections import (  # noqa: F401
         OrderedDict,
+    )
+    from collections.abc import (  # noqa: F401
+        Iterable,
     )
     from contextlib import (  # noqa: F401
         contextmanager,
@@ -240,6 +275,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         Any,
         Callable,
         Iterator,
+        NamedTuple,
         Sequence,
     )
     from urllib.parse import (  # noqa: F401
@@ -249,34 +285,71 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import (  # noqa: F401
         platform_compat,
     )
+    from kiro_crew.apps import (  # noqa: F401
+        credential_masks,
+    )
     from kiro_crew.apps.admission import (  # noqa: F401
         app_admission_denied,
+    )
+    from kiro_crew.apps.composer_action_grants import (  # noqa: F401
+        composer_action_grant_row,
     )
     from kiro_crew.apps.discovery import (  # noqa: F401
         discover_builtin_apps,
     )
     from kiro_crew.apps.execution import (  # noqa: F401
+        APP_NAME_RE,
         app_execution_denied,
         repository_bound_grant_denied,
         shipped_builtin_app_root,
     )
+    from kiro_crew.apps.host_exec_grants import (  # noqa: F401
+        grant_host_exec,
+        host_exec_granted,
+        revoke_host_exec,
+    )
+    from kiro_crew.apps.link_open_grants import (  # noqa: F401
+        link_open_grant_row,
+    )
+    from kiro_crew.apps.link_preview_grants import (  # noqa: F401
+        link_preview_grant_row,
+    )
     from kiro_crew.apps.manifest import (  # noqa: F401
         RESERVED_APP_NAME_CODE,
         AppManifest,
+        Permissions,
         app_name_error,
         contain_command_agents,
         cron_permission_error,
         is_reserved_app_name,
     )
-    from kiro_crew.atomic_write import (  # noqa: F401
-        atomic_write,
+    from kiro_crew.apps.message_action_grants import (  # noqa: F401
+        message_action_grant_row,
     )
+    from kiro_crew.apps.point_grants import (  # noqa: F401
+        grant_source,
+        point_grant_families,
+    )
+    from kiro_crew.apps.selection_action_grants import (  # noqa: F401
+        selection_action_grant_row,
+    )
+    from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
+        WORKER_AUTO_APPROVE_GRANT_FAMILIES,
+    )
+    from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
+        revoke_app as revoke_worker_auto_approve,
+    )
+    from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
+        worker_auto_approve_grant_row,
+    )
+    from kiro_crew.atomic_write import atomic_write  # noqa: F401
     from kiro_crew.config.loader import (  # noqa: F401
         ConfigReadError,
         config_dir,
         config_local_path,
         config_path,
         read_config_text,
+        read_endorsed_config_text,
         update_config_locked,
     )
     from kiro_crew.loop_lock import (  # noqa: F401
@@ -294,6 +367,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.platform_compat import (  # noqa: F401
         is_link_or_junction,
+        pid_exists,
     )
     from kiro_crew.sel import (  # noqa: F401
         sel,

@@ -52,8 +52,8 @@ async def _communicate_result() -> tuple[bytes, bytes]:
 
 #: git's access-rights boilerplate, emitted for every fetch/push failure, with
 #: an SSH transport diagnosis printed ABOVE it. A remote reachable only through
-#: a ``ProxyCommand``/host alias in ``~/.ssh/config`` fails exactly this way once
-#: the sandbox's ``ssh -F /dev/null`` discards that config.
+#: a ``ProxyCommand``/host alias in ``~/.ssh/config`` fails exactly this way when
+#: the sandbox falls back to ``ssh -F /dev/null`` and discards that config.
 _SSH_RESOLVE_FAILURE = (
     "ssh: Could not resolve hostname git.example.com: Name or service not known\n"
     "fatal: Could not read from remote repository.\n"
@@ -146,6 +146,24 @@ def test_an_unprefixed_transport_phrase_is_also_recognised():
     detail = git_ops._failure_detail(unprefixed)
 
     assert "Permission denied (publickey)" in detail
+
+
+def test_an_ssh_refusal_is_recognised_in_any_method_order():
+    """The server lists its auth methods in its own order; a local error has no list."""
+    tail = (
+        "fatal: Could not read from remote repository.\n"
+        "Please make sure you have the correct access rights\n"
+        "and the repository exists.\n"
+    )
+    refusal = "git@git.example.com: Permission denied (keyboard-interactive,publickey).\n"
+    local = "error: open('/x'): Permission denied (os error 13)\n"
+
+    assert "(keyboard-interactive,publickey)" in git_ops._failure_detail(refusal + tail)
+    # Method names are case-sensitive and a server may define its own.
+    assert "(publickey,SecurID)" in git_ops._failure_detail(
+        "git@host: Permission denied (publickey,SecurID).\n" + tail
+    )
+    assert git_ops._failure_detail(local + tail) == " ".join(tail.strip().splitlines())
 
 
 def test_empty_stderr_does_not_raise_inside_the_message_builder():

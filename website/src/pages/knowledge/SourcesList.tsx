@@ -1,19 +1,44 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins } from 'lucide-react'
-import { Badge, EmptyState, ContentSkeleton } from '../../components/ui'
+import { Upload, FolderSync, FolderOpen, X, RefreshCw, AlertCircle, CheckCircle, ChevronDown, ChevronRight, Pause, Play, Pencil, Check, Coins, Globe, Database } from 'lucide-react'
+import { api, type AwsConsentStatus } from '../../api/client'
+import AwsConsentGate from '../../components/AwsConsentGate'
+import BedrockKbLiveChip from './BedrockKbLiveChip'
+import IgnorePatternsEditor from './IgnorePatternsEditor'
+import { Badge, Btn, EmptyState, ContentSkeleton, Input } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import { knowledgeApi } from './api'
 import { formatRelativeDate, FALLBACK_SUPPORTED_FORMATS } from './helpers'
-import { parseSourceProps, shouldShowWordCount, syncStatusLabel } from './knowledgeUtils'
-import { fmtCompact, fmtNumber } from '../../i18n/format'
+import { parseSourceProps, shouldShowWordCount, syncStatusLabel, ingestionStatusLabel, displaySyncStatus } from './knowledgeUtils'
+import { fmtCompact, fmtList, fmtNumber } from '../../i18n/format'
 import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import { servedUploadMb } from '../../utils/fileTokens'
+import { pathBasename } from '../../utils/pathBasename'
+import { pathForFile, canPickFolderNatively } from '../../lib/electron'
 import ErrorNotice from '../../components/ErrorNotice'
+import { ConfigSetCommandRow } from '../../components/settingRef/CopyCommandButton'
+import { useConfigSetHintsV1 } from '../../hooks/useGatewayPlatform'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
+
+/** A site name as the gateway compares it: lowercase, no trailing dot. */
+function normalizeSite(site: string): string {
+  return site.trim().toLowerCase().replace(/\.$/, '')
+}
+
+/** The site of *value* when it is an https link, else null. */
+function typedHttpsSite(value: string): string | null {
+  try {
+    const url = new URL(value.trim())
+    return url.protocol === 'https:' && url.hostname ? normalizeSite(url.hostname) : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * Indexing progress and the Kiro requests a source still owes.
@@ -102,20 +127,46 @@ function NamespacePicker({ value, onChange, namespaces }: { value: string; onCha
   )
 }
 
-function DropZone({ onFiles, accept, caption }: { onFiles: (files: File[]) => void; accept?: string; caption: string }) {
+/** Split a drop into files to upload and the folders in it. A folder is
+ *  watched by its path, which only the desktop shell can read; a plain browser
+ *  gives just the name, so `path` is '' there. The item list must be read
+ *  inside the drop handler: it is emptied once the event yields. */
+export function splitDrop(dt: DataTransfer): { files: File[]; folders: { name: string; path: string }[] } {
+  const items = dt.items ? Array.from(dt.items).filter(it => it.kind === 'file') : []
+  if (!items.length) return { files: Array.from(dt.files || []), folders: [] }
+  const files: File[] = []
+  const folders: { name: string; path: string }[] = []
+  for (const item of items) {
+    const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
+    const file = item.getAsFile()
+    if (entry?.isDirectory) folders.push({ name: entry.name || file?.name || '', path: file ? pathForFile(file) : '' })
+    else if (file) files.push(file)
+  }
+  return { files, folders }
+}
+
+function DropZone({ onFiles, onFolder, inputRef, accept }: {
+  onFiles: (files: File[]) => void
+  onFolder: (folder: { name: string; path: string }) => void
+  inputRef: React.RefObject<HTMLInputElement>
+  accept?: string
+}) {
   const [over, setOver] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
   return (
     <Clickable
       onDragOver={e => { e.preventDefault(); setOver(true) }}
       onDragLeave={() => setOver(false)}
-      onDrop={e => { e.preventDefault(); setOver(false); onFiles(Array.from(e.dataTransfer.files)) }}
+      onDrop={e => {
+        e.preventDefault(); setOver(false)
+        const { files, folders } = splitDrop(e.dataTransfer)
+        if (files.length) onFiles(files)
+        if (folders.length) onFolder(folders[0])
+      }}
       onClick={() => inputRef.current?.click()}
       className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-all ${over ? 'border-accent bg-accent-subtle' : 'border-border hover:border-border-strong'}`}
     >
       <Upload size={28} className="mx-auto mb-2 text-muted" />
-      <div className="text-sm text-muted">{i18nT('pages.knowledge.sourcesList.drop_files_here_or_click_to_upload')}</div>
-      <div className="text-[11px] text-muted/50 mt-1">{caption}</div>
+      <div className="text-sm text-muted">{i18nT('pages.knowledge.sourcesList.drop_files_or_a_folder_here')}</div>
       <input ref={inputRef} type="file" multiple accept={accept} aria-label={i18nT('pages.knowledge.sourcesList.upload_files')} className="hidden" onChange={e => e.target.files && onFiles(Array.from(e.target.files))} />
     </Clickable>
   )
@@ -127,13 +178,31 @@ function IngestionProgress({ jobs }: { jobs: IngestionJob[] }) {
     <div className="space-y-1.5 mt-3">
       {jobs.map((j, i) => (
         <div key={i} className="flex items-center gap-2 text-[13px]">
-          {j.status === 'done' ? <CheckCircle size={14} className="text-ok" /> : j.status.startsWith('error') ? <AlertCircle size={14} className="text-danger" /> : <RefreshCw size={14} className="text-accent animate-spin" />}
+          {j.status === 'done' ? <CheckCircle size={14} className="text-ok" /> : j.status === 'error' ? <AlertCircle size={14} className="text-danger" /> : <RefreshCw size={14} className="text-accent animate-spin" />}
           <span className="text-text truncate flex-1">{j.name}</span>
-          <span className="text-muted text-[11px]">{j.status}</span>
+          {j.status === 'error' ? (
+            <>
+              {/* No hand-off: this list sits in the add-source panel beside the
+                  namespace picker, whose typed value is page state only — a
+                  navigation to the chat would unmount and discard it. */}
+              <ErrorNotice variant="inline" showIcon={false} className="min-w-0" message={j.error ?? i18nT('pages.knowledge.sourcesList.failed')} />
+            </>
+          ) : (
+            <span className="text-muted text-[11px]">{ingestionStatusLabel(j.status)}</span>
+          )}
         </div>
       ))}
     </div>
   )
+}
+
+/** A source's word count: exact under 1000, compact and approximate above. The
+ *  count goes into the catalog so each language picks its own plural form. */
+export function sourceWordCountLabel(wordCount: number): string {
+  if (wordCount < 1000) {
+    return i18nT('pages.knowledge.sourcesList.word_count', { count: wordCount, n: fmtNumber(wordCount) })
+  }
+  return i18nT('pages.knowledge.sourcesList.word_count_approx', { count: wordCount, n: fmtCompact(wordCount) })
 }
 
 function StalenessIndicator({ lastSynced }: { lastSynced?: string }) {
@@ -179,7 +248,7 @@ function FolderConfirmDialog({ fileCount, uri, onConfirm, onCancel, isPending }:
   )
 }
 
-function FolderProgress({ sourceId }: { sourceId: string }) {
+export function FolderProgress({ sourceId }: { sourceId: string }) {
   const queryClient = useQueryClient()
   const wasScanning = useRef(false)
   const { data } = useQuery({
@@ -239,22 +308,22 @@ function FolderProgress({ sourceId }: { sourceId: string }) {
       {scanning && (
         <div className="flex items-center gap-1.5 text-[12px]">
           <RefreshCw size={11} className="text-accent animate-spin" />
-          <span className="text-text truncate">{scanning.file_path.split('/').pop()}</span>
+          <span className="text-text truncate">{pathBasename(scanning.file_path)}</span>
         </div>
       )}
       {/* Recent done */}
       {recentDone.map(f => (
         <div key={f.file_path} className="flex items-center gap-1.5 text-[12px]">
           <CheckCircle size={11} className="text-ok" />
-          <span className="text-muted truncate">{f.file_path.split('/').pop()}</span>
-          <span className="text-[10px] text-muted ml-auto">{f.item_count} {i18nT('pages.knowledge.sourcesList.items')}</span>
+          <span className="text-muted truncate">{pathBasename(f.file_path)}</span>
+          <span className="text-[10px] text-muted ml-auto">{i18nT('pages.knowledge.sourcesList.items_count', { count: f.item_count, n: fmtNumber(f.item_count) })}</span>
         </div>
       ))}
       {/* Failed files */}
       {failed.map(f => (
         <div key={f.file_path} className="flex items-center gap-1.5 text-[12px]">
           <AlertCircle size={11} className="text-danger" />
-          <span className="text-text truncate flex-1" title={f.error_message || ''}>{f.file_path.split('/').pop()}</span>
+          <span className="text-text truncate flex-1" title={f.error_message || ''}>{pathBasename(f.file_path)}</span>
           <span className="text-[10px] text-danger truncate max-w-[120px]">{f.error_message}</span>
           <button onClick={() => retryMutation.mutate(f.file_path)} className="text-[10px] text-accent hover:underline">{i18nT('pages.knowledge.sourcesList.retry')}</button>
           <button onClick={() => skipMutation.mutate(f.file_path)} className="text-[10px] text-muted hover:underline">{i18nT('pages.knowledge.sourcesList.skip')}</button>
@@ -280,14 +349,91 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // failed read shows no figure at all, even a cached one beside the failure
   // notice: the default is not what the gateway enforces when the operator
   // changed it, so it is never presented as loaded.
-  const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
+  const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number; knowledge_upload_max_bytes?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
   const maxUploadMb = dashCfgError ? null : servedUploadMb(dashCfg?.knowledge_upload_max_mb)
+  // The MB figure is rounded for display, so the pre-check uses the exact bytes.
+  const maxUploadBytes = maxUploadMb === null ? null : servedUploadMb(dashCfg?.knowledge_upload_max_bytes)
   const [showAdd, setShowAdd] = useState(false)
-  const [addType, setAddType] = useState<'local_file' | 'local_folder'>('local_file')
+  // A file over the ceiling is refused here, before any request; the rest of
+  // the drop still uploads (each file is its own request). The panel stays open
+  // when anything was refused: the refusal and the upload rows live in it.
+  // Cleared on the next drop and when it closes.
+  const [uploadRefusal, setUploadRefusal] = useState('')
+  useEffect(() => { if (!showAdd) setUploadRefusal('') }, [showAdd])
+  const dropFiles = (files: File[]) => {
+    const big = maxUploadBytes === null ? [] : files.filter(f => f.size > maxUploadBytes)
+    const ok = files.filter(f => !big.includes(f))
+    setUploadRefusal(big.length ? i18nT('pages.knowledge.sourcesList.file_too_large', { name: fmtList(big.map(f => f.name)), max: maxUploadMb }) : '')
+    if (ok.length) onIngest(ok)
+    if (!big.length) setShowAdd(false)
+  }
+  // A file the server refused (an unsupported format, say) is known only once
+  // the drop has closed the panel, so a failed upload row opens it again.
+  const uploadFailed = ingestionJobs.some(j => j.status === 'error')
+  useEffect(() => { if (uploadFailed) setShowAdd(true) }, [uploadFailed])
+  // Files and folders share one view (#26892): files upload at once, and a
+  // folder opens the watched-folder form below the drop zone.
+  const [addType, setAddType] = useState<'local' | 'url' | 'bedrock_kb'>('local')
+  const [folderOpen, setFolderOpen] = useState(false)
+  const [folderNeedsPath, setFolderNeedsPath] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [addUri, setAddUri] = useState('')
   const [addName, setAddName] = useState('')
   const [addIgnorePatterns, setAddIgnorePatterns] = useState('')
   const [addRecursive, setAddRecursive] = useState(true)
+  // Bedrock KB fields. No secrets: the profile is a NAME resolved by the AWS
+  // credential chain on the gateway host at query time.
+  const [addKbIds, setAddKbIds] = useState('')
+  const [addKbRegion, setAddKbRegion] = useState('')
+  const [addKbProfile, setAddKbProfile] = useState('')
+  // The consent card's target binds to the BLUR-committed profile, not the
+  // live keystrokes: per-keystroke targets churned the identity probe and
+  // could record a grant for a half-typed profile.
+  const [addKbProfileCommitted, setAddKbProfileCommitted] = useState('')
+  // A submit click that only re-targets the gate (profile typed, not yet
+  // blurred) adds nothing, and the button re-disabling is the whole visible
+  // response: with the card scrolled off, that reads as a dead button. The
+  // flag paints a ring on the consent card and moves focus to it, so the
+  // click lands on the step it actually asks for; it clears once the card
+  // grants, so a later blocked click can raise it again.
+  const [consentNudge, setConsentNudge] = useState(false)
+  const consentCardRef = useRef<HTMLDivElement>(null)
+  // Bumped by each "Not enabled · Review AWS account" click, so a repeat click (the nudge
+  // already raised) still scrolls to and focuses the card.
+  const [consentFocusTick, setConsentFocusTick] = useState(0)
+  useEffect(() => {
+    if (!consentNudge) return
+    const el = consentCardRef.current
+    el?.scrollIntoView?.({ block: 'nearest' })
+    el?.focus({ preventScroll: true })
+  }, [consentNudge, consentFocusTick])
+  // Submit gates on the SAME consent query the card polls (identical key =
+  // react-query dedupes to one fetch): saving refuses server-side without a
+  // grant for exactly this (profile, region), so an enabled submit before
+  // the grant would walk a first-time user into an error the button's
+  // ready-state never warned of. The card above is the disabled-state
+  // explanation, and its grant mutation invalidates this key, so the
+  // button frees the moment consent lands.
+  const addKbRegionShapeOk = /^[a-z]{2}(-[a-z]+)+-\d$/.test(addKbRegion.trim())
+  const addKbConsentQ = useQuery<AwsConsentStatus>({
+    queryKey: ['awsConsent', 'bedrock-kb', addKbProfileCommitted, addKbRegion.trim()],
+    queryFn: () => api.awsConsent('bedrock-kb', { profile: addKbProfileCommitted, region: addKbRegion.trim() }),
+    enabled: showAdd && addType === 'bedrock_kb' && addKbRegionShapeOk,
+  })
+  const addKbConsentGranted = addKbConsentQ.data?.granted === true
+  useEffect(() => { if (addKbConsentGranted) setConsentNudge(false) }, [addKbConsentGranted])
+  // A row whose grant is gone ("Not enabled · Review AWS account") leads back to the one
+  // consent card there is: the Bedrock KB add form, targeted at that row's
+  // (profile, region), with the card focused.
+  const openKbConsent = (target: { profile: string; region: string }) => {
+    setAddType('bedrock_kb')
+    setAddKbRegion(target.region)
+    setAddKbProfile(target.profile)
+    setAddKbProfileCommitted(target.profile)
+    setShowAdd(true)
+    setConsentNudge(true)
+    setConsentFocusTick(n => n + 1)
+  }
   const [pendingConfirm, setPendingConfirm] = useState<{ id: string; uri: string; fileCount: number } | null>(null)
   const [expandedSource, setExpandedSource] = useState<string | null>(null)
   // The global staleTime is Infinity, so a reopened expanded view would serve the
@@ -299,6 +445,23 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   }
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState('')
+  // Each row's Rename button, by source id. Closing a rename unmounts whatever
+  // had focus in it (the input, or its Save or Cancel button), and a browser
+  // then drops focus to document.body, so every close hands focus back to the
+  // Rename button of the row it was opened from once that button has remounted
+  // (the pattern in MeetingTitle). The field has no blur handler, so there is
+  // no pointer-blur path to exclude.
+  const renameButtons = useRef(new Map<string, HTMLButtonElement>())
+  const closeRename = (id: string | null) => {
+    setEditingId(null)
+    if (id === null) return
+    // Only take back focus the unmount dropped: a rename can resolve after the
+    // user has already moved on to another control, and that control keeps it.
+    requestAnimationFrame(() => {
+      const at = document.activeElement
+      if (at === null || at === document.body) renameButtons.current.get(id)?.focus({ preventScroll: true })
+    })
+  }
 
   const { data: sources = [], isLoading: loading } = useQuery({
     queryKey: ['knowledge-sources'],
@@ -306,7 +469,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     // Auto-refresh when any source has a pending sync status
     refetchInterval: (query) => {
       const data = query.state.data
-      if (data?.some(s => s.sync_status === 'syncing')) return 5000
+      if (data?.some(s => displaySyncStatus(s) === 'syncing')) return 5000
       return false
     },
   })
@@ -314,7 +477,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // Invalidate items/graph when sync completes
   const wasSyncingRef = useRef(false)
   useEffect(() => {
-    const isSyncing = sources.some(s => s.sync_status === 'syncing')
+    const isSyncing = sources.some(s => displaySyncStatus(s) === 'syncing')
     if (wasSyncingRef.current && !isSyncing) {
       queryClient.invalidateQueries({ queryKey: ['knowledge-items'] })
       queryClient.invalidateQueries({ queryKey: ['knowledge-graph'] })
@@ -335,12 +498,27 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     }
   }
 
-  const { data: kbConfig } = useQuery({
+  const { data: kbConfig, error: kbConfigError } = useQuery({
     queryKey: ['knowledge-config'],
-    queryFn: () => knowledgeApi<{ enabled: boolean; supported_formats: string[]; folder_picker?: boolean }>('/config'),
+    queryFn: () => knowledgeApi<{ enabled: boolean; supported_formats: string[]; folder_picker?: boolean; url_allowed_hosts?: string[] | null }>('/config'),
     staleTime: 60_000,
   })
   const folderPickerAvailable = kbConfig?.folder_picker ?? false
+  const configSetHints = useConfigSetHintsV1()
+  // The gateway fetches a web page only from these hosts; empty by default.
+  // `null` until the list is known, so a failed or pending read is never shown
+  // as an empty list. The gateway answers `null` when it could not read it.
+  const urlAllowedHosts = kbConfig && !kbConfigError && Array.isArray(kbConfig.url_allowed_hosts) ? kbConfig.url_allowed_hosts : null
+  const urlHostsUnavailable = Boolean(kbConfigError) || (kbConfig !== undefined && !Array.isArray(kbConfig.url_allowed_hosts))
+  // The site of the typed https link, compared the way the gateway compares it
+  // (case and a trailing dot aside), so an unlisted site is named before the
+  // click rather than refused after it.
+  const typedSite = typedHttpsSite(addUri)
+  const typedSiteListed = typedSite !== null && (urlAllowedHosts ?? []).some(h => normalizeSite(h) === typedSite)
+  const typedSiteMissing = urlAllowedHosts !== null && typedSite !== null && !typedSiteListed
+  const showSiteCommand = urlAllowedHosts !== null && (urlAllowedHosts.length === 0 || typedSiteMissing)
+  // The command sets the whole list, so it starts from the listed sites plus the typed one.
+  const siteCommandValue = [...(urlAllowedHosts ?? []), ...(typedSiteMissing && typedSite ? [typedSite] : [])].join('\n')
 
   const pickFolderMutation = useMutation({
     mutationFn: () => knowledgeApi<{ path?: string | null }>('/pick-folder', { method: 'POST' }),
@@ -351,17 +529,43 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     mutationFn: (body: Record<string, unknown>) =>
       knowledgeApi<{ id: string; status?: string; file_count?: number }>('/sources', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
     onSuccess: (res) => {
+      // The committed profile and the nudge reset WITH the profile field: the
+      // consent query keys on the committed value, so leaving it behind would
+      // reopen the form with a confirmed receipt for a profile the empty field
+      // no longer names, an enabled Add, and a first click swallowed into a
+      // nudge by the typed-vs-committed check.
       if (res.status === 'pending_confirmation') {
         setPendingConfirm({ id: res.id, uri: addUri, fileCount: res.file_count ?? 0 })
         setShowAdd(false); setAddUri(''); setAddName(''); setAddIgnorePatterns('')
+        setAddKbIds(''); setAddKbRegion(''); setAddKbProfile('')
+        setAddKbProfileCommitted(''); setConsentNudge(false)
         queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
       } else {
         setShowAdd(false); setAddUri(''); setAddName(''); setAddIgnorePatterns('')
+        setAddKbIds(''); setAddKbRegion(''); setAddKbProfile('')
+        setAddKbProfileCommitted(''); setConsentNudge(false)
         queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
         if (res.id) syncSource(res.id)
       }
     },
   })
+  // A one-account conflict refusal holds for the (profile, region) it was sent
+  // with: a second click on the same target fails the same way, so Add stays
+  // off until the form names another target.
+  const addKbConflictBlocked = (() => {
+    if (!addMutation.isError) return false
+    const err = addMutation.error as { code?: string } | null
+    if (err?.code !== 'bedrock_kb_target_conflict') return false
+    const sent = (addMutation.variables?.properties ?? {}) as { region?: string; profile?: string }
+    return sent.region === addKbRegion.trim() && (sent.profile ?? '') === addKbProfile.trim()
+  })()
+  // The refusal only describes the registrations at the time it was sent.
+  // Closing the form or confirming consent again drops it, and so does a
+  // removed source (deleteMutation below), so a retry goes back to the
+  // backend, which rechecks the current registrations.
+  const resetAdd = addMutation.reset
+  useEffect(() => { if (!showAdd) resetAdd() }, [showAdd, resetAdd])
+  useEffect(() => { if (addKbConsentGranted) resetAdd() }, [addKbConsentGranted, resetAdd])
 
   const confirmMutation = useMutation({
     mutationFn: (id: string) => knowledgeApi(`/sources/${id}/confirm`, { method: 'POST' }),
@@ -384,8 +588,8 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   const renameMutation = useMutation({
     mutationFn: ({ id, name }: { id: string; name: string }) =>
       knowledgeApi(`/sources/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) }),
-    onSuccess: () => {
-      setEditingId(null)
+    onSuccess: (_data, { id }) => {
+      closeRename(id)
       queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
     },
   })
@@ -395,7 +599,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     if (!editingId) return
     const name = editDraft.trim()
     const current = sources.find(s => s.id === editingId)
-    if (!name || (current && name === current.name)) { setEditingId(null); return }
+    if (!name || (current && name === current.name)) { closeRename(editingId); return }
     renameMutation.mutate({ id: editingId, name })
   }
 
@@ -403,14 +607,18 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     mutationFn: (id: string) => knowledgeApi(`/sources/${id}`, { method: 'DELETE' }),
     onMutate: async (id) => {
       await queryClient.cancelQueries({ queryKey: ['knowledge-sources'] })
-      const prev = queryClient.getQueryData<Source[]>(['knowledge-sources'])
+      const removed = takeRow(queryClient.getQueryData<Source[]>(['knowledge-sources']), s => s.id === id)
       queryClient.setQueryData<Source[]>(['knowledge-sources'], old => old?.filter(s => s.id !== id))
-      return { prev }
+      return { removed }
     },
-    onError: (_err, _vars, ctx) => {
-      queryClient.setQueryData(['knowledge-sources'], ctx?.prev)
+    // Only this source comes back, and only into a cached list: a whole-list
+    // snapshot would revive a source another delete removed meanwhile, and an
+    // absent snapshot would blank the list.
+    onError: (_err, id, ctx) => {
+      queryClient.setQueryData<Source[]>(['knowledge-sources'], old => putRowBack(old, ctx?.removed, s => s.id === id))
     },
     onSuccess: () => {
+      resetAdd()
       queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })
       queryClient.invalidateQueries({ queryKey: ['knowledge-items'] })
       queryClient.invalidateQueries({ queryKey: ['knowledge-graph'] })
@@ -418,10 +626,65 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     },
   })
 
+  // Re-target the gate and the consent card to the profile the user actually
+  // typed, and point the user at the card: the submit otherwise adds nothing
+  // visible, because the freshly targeted card is in its ask state and the
+  // button reads disabled.
+  const commitTypedProfile = (profile: string) => {
+    setAddKbProfileCommitted(profile)
+    setConsentNudge(true)
+  }
+  // A pointer submit arrives as pointerdown -> blur -> click. The blur commits
+  // the typed profile, which re-keys the consent query and disables the button
+  // before its click fires, so the click is dropped and the nudge in
+  // `handleAdd` never runs. Catching the intent at pointerdown, and keeping the
+  // focus change from happening, is what makes the blocked submit answer.
+  const commitTypedProfileOnSubmit = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const profile = addKbProfile.trim()
+    if (profile === addKbProfileCommitted) return
+    e.preventDefault()
+    commitTypedProfile(profile)
+  }
+
   const handleAdd = () => {
+    if (addType === 'bedrock_kb') {
+      const kbIds = addKbIds.split(',').map(s => s.trim()).filter(Boolean)
+      const region = addKbRegion.trim()
+      if (kbIds.length === 0 || !region) return
+      const profile = addKbProfile.trim()
+      if (profile !== addKbProfileCommitted) {
+        // The submit gate and the consent card key on the committed profile,
+        // so a profile typed but never committed is a target no grant covers:
+        // saving it would POST past a button that read ready and the server
+        // would refuse with bedrock_kb_grant_changed. A pointer submit is
+        // caught earlier by `commitTypedProfileOnSubmit`; this branch covers a
+        // keyboard or programmatic activation that reaches the click with the
+        // typed value still uncommitted.
+        commitTypedProfile(profile)
+        return
+      }
+      // The default name names the KB the way the server retains it: the bare
+      // id, which is the trailing segment of a pasted ARN (the server's own
+      // `rsplit("/", 1)` rule). The ARN also carries the account id, and the
+      // sources list is readable by every authenticated caller, so a default
+      // that copied the pasted spelling would put that id on a shared page.
+      const firstKbId = kbIds[0].slice(kbIds[0].lastIndexOf('/') + 1)
+      addMutation.mutate({
+        // No uri: the server derives the row's bedrock-kb:// handle (its
+        // dedup key) from the validated config; the connector reads
+        // kb_ids/region/profile from properties.
+        name: addName || `Bedrock KB ${firstKbId}`,
+        source_type: 'bedrock_kb',
+        properties: { kb_ids: kbIds.join(','), region, profile },
+      })
+      return
+    }
     if (!addUri.trim()) return
-    const body: Record<string, unknown> = { name: addName || addUri, source_type: addType, uri: addUri }
-    if (addType === 'local_folder') {
+    // A pasted link often carries a trailing newline, which the gateway refuses.
+    const uri = addType === 'url' ? addUri.trim() : addUri
+    const sourceType = addType === 'url' ? 'url' : 'local_folder'
+    const body: Record<string, unknown> = { name: addName || uri, source_type: sourceType, uri }
+    if (sourceType === 'local_folder') {
       const props: Record<string, unknown> = { recursive: addRecursive }
       if (addIgnorePatterns.trim()) props.ignore_patterns = addIgnorePatterns.split('\n').map(s => s.trim()).filter(Boolean)
       if (uploadNamespace && uploadNamespace !== 'default') props.namespace = uploadNamespace
@@ -429,6 +692,80 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     }
     addMutation.mutate(body)
   }
+
+  // A folder is added by its path, so both ways in open the folder form. The
+  // desktop shell can read a dropped folder's path; a plain browser cannot.
+  // That path names a folder on this machine, so it is used only when the
+  // shell confirms the gateway runs here too (a remote-crew window gets the
+  // same bridge). The answer is read once, up front, so a drop is handled
+  // synchronously and no late answer can land on a later drop or a typed path.
+  const sameHostRef = useRef(false)
+  useEffect(() => {
+    let live = true
+    void canPickFolderNatively().then(v => { if (live) sameHostRef.current = v })
+    return () => { live = false }
+  }, [])
+  const openFolder = (folder: { name: string; path: string }) => {
+    const usable = folder.path !== '' && sameHostRef.current
+    setShowAdd(true); setFolderOpen(true)
+    setAddUri(usable ? folder.path : ''); setFolderNeedsPath(!usable)
+    if (folder.name) setAddName(folder.name)
+  }
+  // With a native picker on the gateway machine, Choose folder opens it at
+  // once; without one the button says the folder is added by its path.
+  const chooseFolder = () => {
+    setFolderOpen(true); setFolderNeedsPath(false)
+    if (folderPickerAvailable && !pickFolderMutation.isPending) pickFolderMutation.mutate()
+  }
+
+  // The watched-folder form, opened by Choose folder or by dropping a folder.
+  const folderForm = (
+    <div className="border-t border-border pt-3 space-y-3" data-testid="sources-folder-form">
+      <input value={addName} onChange={e => setAddName(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.name_optional')}
+        aria-label={i18nT('pages.knowledge.sourcesList.source_name_optional')}
+        className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
+      <div className="flex gap-2">
+        <input value={addUri} onChange={e => setAddUri(e.target.value)}
+          placeholder={i18nT('pages.knowledge.sourcesList.folder_path_e_g_home_user_notes')}
+          aria-label={i18nT('pages.knowledge.sourcesList.folder_path')}
+          className="flex-1 min-w-0 px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
+        {folderPickerAvailable && (
+          <button type="button" onClick={() => pickFolderMutation.mutate()} disabled={pickFolderMutation.isPending}
+            aria-label={i18nT('pages.knowledge.sourcesList.browse_for_a_folder')}
+            className="shrink-0 px-3 py-1.5 text-sm border border-border rounded text-text hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
+            <FolderOpen size={14} /> {pickFolderMutation.isPending ? i18nT('pages.knowledge.sourcesList.opening') : i18nT('pages.knowledge.sourcesList.browse')}
+          </button>
+        )}
+      </div>
+      {/* A dropped folder's path could not be used here: a browser hides it, and a remote gateway cannot read it. */}
+      {folderNeedsPath && <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.folder_drop_needs_path')}</div>}
+      <textarea value={addIgnorePatterns} onChange={e => setAddIgnorePatterns(e.target.value)}
+        placeholder={i18nT('pages.knowledge.sourcesList.ignore_patterns_one_per_line_e_g_trash_templates')}
+        aria-label={i18nT('pages.knowledge.sourcesList.ignore_patterns')}
+        rows={3} className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text resize-none" />
+      <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.watches_folder_recursively_supported_files_auto')}</div>
+      <label htmlFor="sources-recursive" className="flex items-center gap-2 text-[12px] text-muted cursor-pointer">
+        <input id="sources-recursive" aria-label={i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')} type="checkbox" checked={addRecursive} onChange={e => setAddRecursive(e.target.checked)} className="accent-accent" />
+        {i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')}
+      </label>
+      <div className="flex gap-2 justify-end">
+        <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
+        <button onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim()}
+          className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_folder')}</button>
+      </div>
+      {/* No hand-off: the folder form holds the unsaved name, path and ignore-pattern drafts. */}
+      <ErrorNotice
+        variant="inline"
+        testId="sources-folder-picker-error"
+        message={pickFolderMutation.isError ? (pickFolderMutation.error?.message || i18nT('pages.knowledge.sourcesList.folder_picker_failed')) : ''}
+      />
+      <ErrorNotice
+        variant="inline"
+        testId="sources-folder-error"
+        message={addMutation.isError ? (addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')) : ''}
+      />
+    </div>
+  )
 
   if (loading) return <ContentSkeleton />
 
@@ -443,25 +780,134 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
         <span>{i18nT('pages.knowledge.sourcesList.indexing_uses_kiro_requests_each_source_costs_mo')}</span>
       </div>
       <div className="flex justify-end">
-        <button onClick={() => setShowAdd(true)} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
+        <button onClick={() => {
+          // Each opening reads the site list again, so a failed read can be retried
+          // and a site added in a terminal shows up without a reload.
+          queryClient.invalidateQueries({ queryKey: ['knowledge-config'] })
+          setFolderOpen(false); setFolderNeedsPath(false)
+          setShowAdd(true)
+        }} className="px-3 py-1.5 text-[13px] bg-accent text-accent-fg rounded-md hover:bg-accent/80">{i18nT('pages.knowledge.sourcesList.add_source')}</button>
       </div>
 
       {showAdd && (
         <div className="border border-border rounded-lg p-4 bg-bg-elevated space-y-3">
-          <div className="text-sm font-medium">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
-          <div className="flex gap-2 flex-wrap">
-            {(['local_file', 'local_folder'] as const).map(t => (
-              <button key={t} onClick={() => setAddType(t)}
+          <div className="text-sm font-medium" id="knowledge-add-source-label">{i18nT('pages.knowledge.sourcesList.add_source_2')}</div>
+          <RadioChipGroup className="flex gap-2 flex-wrap" ariaLabelledBy="knowledge-add-source-label">
+            {(['local', 'url', 'bedrock_kb'] as const).map(t => (
+              <button key={t} type="button" onClick={() => setAddType(t)} {...radioChip(addType === t)}
                 className={`px-3 py-1.5 text-[13px] rounded-md border flex items-center gap-1 ${addType === t ? 'border-accent bg-accent/10 text-accent' : 'border-border text-muted'}`}>
-                {t === 'local_file' ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.local_file')}</> : <><FolderOpen size={12} /> {i18nT('pages.knowledge.sourcesList.local_folder')}</>}
+                {t === 'local'
+                  ? <><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.files_and_folders')}</>
+                  : t === 'url'
+                  ? <><Globe size={12} /> {i18nT('pages.knowledge.sourcesList.web_page')}</>
+                  : <><Database size={12} /> {i18nT('pages.knowledge.sourcesList.bedrock_kb')}</>}
               </button>
             ))}
-          </div>
-          <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />
-          {addType === 'local_file' ? (
+          </RadioChipGroup>
+          {/* A fetched page is stored in the default namespace, and a remote KB
+              holds no items at all, so neither offers a namespace picker. */}
+          {addType === 'local' && <NamespacePicker value={uploadNamespace} onChange={setUploadNamespace} namespaces={namespaces} />}
+          {addType === 'bedrock_kb' ? (
             <>
-              <DropZone onFiles={(files) => { onIngest(files); setShowAdd(false) }} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} caption={i18nT('pages.knowledge.helpers.supported_formats', { formats: supportedFormatsDisplay })} />
+              {/* Visible labels: the three look-alike fields read as one
+                  unlabelled trio once filled (UX lens). */}
+              <label htmlFor="bedrock-kb-name" className="block text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.source_name_optional')}</label>
+              <Input id="bedrock-kb-name" aria-label={i18nT('pages.knowledge.sourcesList.source_name_optional')} value={addName} onChange={e => setAddName(e.target.value)}
+                className="w-full" />
+              <label htmlFor="bedrock-kb-ids" className="block text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.knowledge_base_ids')}</label>
+              <Input id="bedrock-kb-ids" aria-label={i18nT('pages.knowledge.sourcesList.knowledge_base_ids')} value={addKbIds} onChange={e => setAddKbIds(e.target.value)}
+                className="w-full" />
+              {/* Helper text, not a placeholder: the comma/ARN guidance has to
+                  outlive the first keystroke (UX lens). */}
+              <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.kb_ids_comma_separated_id_or_arn')}</div>
+              {/* Narrow-first: the two columns stack below the sm breakpoint
+                  instead of compressing side by side at a 320px viewport. */}
+              <div className="flex flex-col sm:flex-row gap-2">
+                <div className="flex-1 min-w-0">
+                  <label htmlFor="bedrock-kb-region" className="block text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.aws_region')}</label>
+                  <Input id="bedrock-kb-region" aria-label={i18nT('pages.knowledge.sourcesList.aws_region')} value={addKbRegion} onChange={e => setAddKbRegion(e.target.value.toLowerCase())}
+                    placeholder={i18nT('pages.knowledge.sourcesList.region_example_placeholder')}
+                    className="w-full" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <label htmlFor="bedrock-kb-profile" className="block text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.aws_profile_optional')}</label>
+                  <Input id="bedrock-kb-profile" aria-label={i18nT('pages.knowledge.sourcesList.aws_profile_optional')} value={addKbProfile} onChange={e => setAddKbProfile(e.target.value)}
+                    onBlur={() => setAddKbProfileCommitted(addKbProfile.trim())}
+                    className="w-full" />
+                  <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.profile_blank_uses_default_chain')}</div>
+                </div>
+              </div>
+              <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.queried_live_at_search_time_from_your_aws_account')}</div>
+              {addKbRegion.trim() !== '' && !addKbRegionShapeOk && (
+                /* The submit gate and the consent card both key on this shape;
+                   without an inline reason a typo ("useast-1") leaves the form
+                   dead with the placeholder hint long overwritten. */
+                <div className="text-[11px] text-warn">{i18nT('pages.knowledge.sourcesList.region_format_hint')}</div>
+              )}
+              {/* Paid-service consent: adding the source refuses server-side
+                  without a grant for exactly this (profile, region), so the
+                  card must be grantable HERE, where the target is being typed.
+                  Mounted only once the region has a full AWS-region shape —
+                  mounting per keystroke would churn the identity probe
+                  through "u", "us", "us-"… */}
+              {addKbRegionShapeOk && (
+                /* tabIndex -1: a programmatic focus target only (the blocked
+                   submit moves focus here); the ring is the cue while it holds. */
+                <div ref={consentCardRef} tabIndex={-1} data-testid="bedrock-kb-consent-card"
+                  className={consentNudge ? 'rounded-md outline-none ring-2 ring-warn/60 ring-offset-2 ring-offset-bg' : 'outline-none'}>
+                  {/* While the field differs from its BLUR-committed target,
+                      the card stays mounted but renders its inert pending row.
+                      That row uses no target data and offers no Confirm, so it
+                      cannot name or approve the old profile. Blur re-targets
+                      the query to the profile the field shows. */}
+                  {/* A grant or revoke changes which rows search queries
+                      (each row's `searchable`), so the list reads it again. */}
+                  <AwsConsentGate service="bedrock-kb" compact
+                    onConsentChange={() => queryClient.invalidateQueries({ queryKey: ['knowledge-sources'] })}
+                    targetPending={addKbProfile.trim() !== addKbProfileCommitted}
+                    target={{ profile: addKbProfileCommitted, region: addKbRegion.trim() }} />
+                </div>
+              )}
+              {addKbIds.trim() !== '' && addKbRegion.trim() === '' && (
+                /* The third reason a filled form can sit with a dead Add:
+                   the region hint above needs a non-empty malformed value and
+                   the consent reason below needs a well-formed one, so an
+                   empty region fell between them with no explanation. */
+                <div role="status" className="text-[11px] text-right text-muted">{i18nT('pages.knowledge.sourcesList.enter_region_to_add')}</div>
+              )}
+              {addKbIds.trim() !== '' && addKbRegionShapeOk && !addKbConsentGranted && !addMutation.isPending && (
+                /* The disabled submit's adjacent reason: without it, a user
+                   whose consent card scrolled off sees a filled form with a
+                   dead button and no path forward. role=status announces it
+                   when it appears, which after a blocked submit is the answer
+                   to the click. */
+                <div role="status" className={`text-[11px] text-right ${consentNudge ? 'text-warn' : 'text-muted'}`}>{i18nT('pages.knowledge.sourcesList.confirm_account_to_enable')}</div>
+              )}
+              <div className="flex gap-2 justify-end">
+                <Btn type="button" onClick={() => setShowAdd(false)}>{i18nT('pages.knowledge.sourcesList.cancel')}</Btn>
+                <Btn type="button" primary onClick={handleAdd} onPointerDown={commitTypedProfileOnSubmit} disabled={addMutation.isPending || !addKbIds.trim() || !addKbRegionShapeOk || !addKbConsentGranted || addKbConflictBlocked}>
+                  {addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_knowledge_base')}
+                </Btn>
+              </div>
+              {/* No hand-off: the agent cannot see the unsaved KB ids, region,
+                  and profile still sitting in this form. */}
+              <ErrorNotice
+                variant="inline"
+                testId="bedrock-kb-add-error"
+                message={addMutation.isError ? (addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')) : ''}
+              />
+            </>
+          ) : addType === 'local' ? (
+            <>
+              <DropZone inputRef={fileInputRef} onFiles={dropFiles} onFolder={openFolder} accept={uploadAccept ?? FALLBACK_SUPPORTED_FORMATS.join(',')} />
+              {/* Browsers have no one picker for files and folders, so each gets its own button. */}
+              <div className="flex gap-2 flex-wrap">
+                <Btn type="button" onClick={() => fileInputRef.current?.click()}><Upload size={12} /> {i18nT('pages.knowledge.sourcesList.choose_files')}</Btn>
+                <Btn type="button" onClick={chooseFolder} aria-expanded={folderOpen}><FolderOpen size={12} /> {folderPickerAvailable ? i18nT('pages.knowledge.sourcesList.choose_folder') : i18nT('pages.knowledge.sourcesList.add_folder_by_path')}</Btn>
+              </div>
               <IngestionProgress jobs={ingestionJobs} />
+              {/* A local size check, not a failed request, so a validation hint rather than an ErrorNotice. */}
+              {uploadRefusal && <div role="status" data-testid="sources-upload-refusal" className="text-[11px] text-warn">{uploadRefusal}</div>}
               <div className="text-[11px] text-muted bg-bg rounded border border-border p-2">
                 {i18nT('pages.knowledge.sourcesList.supports_formats', { formats: supportedFormatsDisplay })}
                 {maxUploadMb !== null && ' ' + i18nT('pages.knowledge.sourcesList.max_file_size', { max: maxUploadMb })}
@@ -473,40 +919,56 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 testId="sources-upload-limit-notice"
                 message={dashCfgError ? i18nT('pages.knowledge.sourcesList.max_file_size_unavailable') : ''}
               />
+              {folderOpen && folderForm}
             </>
           ) : (
             <>
-              <input value={addName} onChange={e => setAddName(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.name_optional')}
+              <Input value={addName} onChange={e => setAddName(e.target.value)} placeholder={i18nT('pages.knowledge.sourcesList.name_optional')}
                 aria-label={i18nT('pages.knowledge.sourcesList.source_name_optional')}
-                className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
-              <div className="flex gap-2">
-                <input value={addUri} onChange={e => setAddUri(e.target.value)}
-                  placeholder={i18nT('pages.knowledge.sourcesList.folder_path_e_g_home_user_notes')}
-                  aria-label={i18nT('pages.knowledge.sourcesList.folder_path')}
-                  className="flex-1 min-w-0 px-3 py-1.5 text-sm bg-bg rounded border border-border text-text" />
-                {folderPickerAvailable && (
-                  <button type="button" onClick={() => pickFolderMutation.mutate()} disabled={pickFolderMutation.isPending}
-                    aria-label={i18nT('pages.knowledge.sourcesList.browse_for_a_folder')}
-                    className="shrink-0 px-3 py-1.5 text-sm border border-border rounded text-text hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
-                    <FolderOpen size={14} /> {pickFolderMutation.isPending ? i18nT('pages.knowledge.sourcesList.opening') : i18nT('pages.knowledge.sourcesList.browse')}
-                  </button>
-                )}
+                className="w-full" />
+              <Input value={addUri} onChange={e => setAddUri(e.target.value)} type="url" inputMode="url"
+                placeholder={i18nT('pages.knowledge.sourcesList.page_url_e_g')}
+                aria-label={i18nT('pages.knowledge.sourcesList.page_url')}
+                aria-describedby="sources-url-hosts"
+                className="w-full" />
+              {/* Says which sites can be fetched before the user tries one: the list
+                  is empty by default, and a refusal after the click explains less. */}
+              <div id="sources-url-hosts" className="text-[11px] text-muted">
+                {urlAllowedHosts === null ? null : <>
+                  {urlAllowedHosts.length === 0
+                    ? i18nT('pages.knowledge.sourcesList.web_page_no_hosts_allowed')
+                    : typedSiteMissing && typedSite
+                      ? i18nT('pages.knowledge.sourcesList.web_page_site_not_allowed', { site: typedSite, hosts: fmtList(urlAllowedHosts) })
+                      : i18nT('pages.knowledge.sourcesList.web_page_hosts_allowed', { hosts: fmtList(urlAllowedHosts) })}
+                  {/* The shared command row: one copyable command per shell, built
+                      from the sites in the box, so no quoting is left to the user.
+                      Keyed by its starting value so a newly typed site restarts it. */}
+                  {showSiteCommand && (
+                    <div className="mt-1.5">
+                      <ConfigSetCommandRow key={siteCommandValue} configKey="knowledge.doc_ingest_hosts" schemaType="array" initialValue={siteCommandValue || undefined} hints={configSetHints} />
+                    </div>
+                  )}
+                </>}
               </div>
-              <textarea value={addIgnorePatterns} onChange={e => setAddIgnorePatterns(e.target.value)}
-                placeholder={i18nT('pages.knowledge.sourcesList.ignore_patterns_one_per_line_e_g_trash_templates')}
-                aria-label={i18nT('pages.knowledge.sourcesList.ignore_patterns')}
-                rows={3} className="w-full px-3 py-1.5 text-sm bg-bg rounded border border-border text-text resize-none" />
-              <div className="text-[11px] text-muted">{i18nT('pages.knowledge.sourcesList.watches_folder_recursively_supported_files_auto')}</div>
-              <label htmlFor="sources-recursive" className="flex items-center gap-2 text-[12px] text-muted cursor-pointer">
-                <input id="sources-recursive" aria-label={i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')} type="checkbox" checked={addRecursive} onChange={e => setAddRecursive(e.target.checked)} className="accent-accent" />
-                {i18nT('pages.knowledge.sourcesList.include_subdirectories_recursive')}
-              </label>
               <div className="flex gap-2 justify-end">
-                <button onClick={() => setShowAdd(false)} className="px-3 py-1.5 text-xs border border-border rounded-md text-text">{i18nT('pages.knowledge.sourcesList.cancel')}</button>
-                <button onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim()}
-                  className="px-3 py-1.5 text-xs bg-accent text-accent-fg rounded-md disabled:opacity-50">{addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_folder')}</button>
+                <Btn type="button" onClick={() => setShowAdd(false)}>{i18nT('pages.knowledge.sourcesList.cancel')}</Btn>
+                {/* Nothing can be fetched from a site that is not listed, so the button waits for it. */}
+                <Btn type="button" primary onClick={handleAdd} disabled={addMutation.isPending || !addUri.trim() || !urlAllowedHosts?.length || typedSiteMissing}>
+                  {addMutation.isPending ? i18nT('pages.knowledge.sourcesList.adding') : i18nT('pages.knowledge.sourcesList.add_page')}
+                </Btn>
               </div>
-              {addMutation.isError && <div className="text-[12px] text-danger flex items-center gap-1"><AlertCircle size={12} /> {addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')}</div>}
+              {/* No hand-off: the add-source panel holds the unsaved page name and link drafts.
+                  Both failures render in one place, under the buttons. */}
+              <ErrorNotice
+                variant="inline"
+                testId="sources-web-page-hosts-error"
+                message={urlHostsUnavailable ? i18nT('pages.knowledge.sourcesList.web_page_hosts_unavailable') : ''}
+              />
+              <ErrorNotice
+                variant="inline"
+                testId="sources-web-page-error"
+                message={addMutation.isError ? (addMutation.error?.message || i18nT('pages.knowledge.sourcesList.failed_to_add_source')) : ''}
+              />
             </>
           )}
         </div>
@@ -532,10 +994,16 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
         sources.map(s => {
           const isDeleting = deleteMutation.isPending && deleteMutation.variables === s.id
           const isFolderType = s.source_type === 'local_folder' || s.source_type === 'obsidian_vault'
+          // Live-retrieval sources hold no local items and never sync: their
+          // row shows a Live badge instead of sync status, item count,
+          // staleness, or a Sync button that could never do anything.
+          const isLiveSource = s.source_type === 'bedrock_kb'
           const isExpanded = expandedSource === s.id
           const failedCount = s.spend?.files_failed ?? 0
           const isPaused = s.sync_status === 'paused'
           const isPending = s.sync_status === 'pending_confirmation'
+          const shownStatus = displaySyncStatus(s)
+          const pendingReason = shownStatus === 'pending' ? parseSourceProps(s).pendingReason : undefined
           return (
           <div key={s.id} className={`border border-border rounded-lg p-3 hover:border-border-strong transition-all ${isDeleting ? 'opacity-50' : ''}`}>
             {/* Stacks on narrow viewports: identity block on top, meta + actions below. */}
@@ -543,9 +1011,12 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               <div className="flex items-start sm:items-center gap-2 sm:gap-3 min-w-0 flex-1">
               {isFolderType ? (
                 <button onClick={() => toggleExpandedSource(s.id, isExpanded)} className="text-muted shrink-0 mt-0.5 sm:mt-0"
+                  aria-expanded={isExpanded}
                   aria-label={isExpanded ? i18nT('pages.knowledge.sourcesList.collapse_folder_details') : i18nT('pages.knowledge.sourcesList.expand_folder_details')}>
                   {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
                 </button>
+              ) : isLiveSource ? (
+                <Database size={16} className="text-muted shrink-0 mt-0.5 sm:mt-0" data-testid="bedrock-kb-source-icon" aria-hidden="true" />
               ) : (
                 <FolderSync size={16} className="text-muted shrink-0 mt-0.5 sm:mt-0" />
               )}
@@ -553,19 +1024,20 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 {editingId === s.id ? (
                   <div className="flex items-center gap-1">
                     <input autoFocus value={editDraft} onChange={e => setEditDraft(e.target.value)}
-                      {...ime.bindEnter({ onEnter: () => { if (!renameMutation.isPending) submitRename() }, onEscape: () => setEditingId(null) })}
+                      {...ime.bindEnter({ onEnter: () => { if (!renameMutation.isPending) submitRename() }, onEscape: () => closeRename(s.id) })}
                       maxLength={200} aria-label={i18nT('pages.knowledge.sourcesList.source_name')}
                       className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-hidden w-full max-w-xs focus-ring" />
                     <button aria-label={i18nT('pages.knowledge.sourcesList.save_name')} onClick={submitRename} disabled={renameMutation.isPending}
                       className="text-ok shrink-0 p-1 rounded hover:bg-bg-elevated disabled:opacity-50"><Check size={14} /></button>
-                    <button aria-label={i18nT('pages.knowledge.sourcesList.cancel_rename')} onClick={() => setEditingId(null)}
+                    <button aria-label={i18nT('pages.knowledge.sourcesList.cancel_rename')} onClick={() => closeRename(s.id)}
                       className="text-muted shrink-0 p-1 rounded hover:bg-bg-elevated"><X size={14} /></button>
                   </div>
                 ) : (
                   <div className="flex items-center gap-1 min-w-0 group/name">
                     <span className="text-sm font-medium text-text-strong truncate">{s.name}</span>
-                    <button aria-label={i18nT('pages.knowledge.sourcesList.rename_source')} onClick={() => startRename(s)}
-                      className="text-muted shrink-0 p-0.5 rounded opacity-100 sm:opacity-0 sm:group-hover/name:opacity-100 [@media(hover:none)]:opacity-100 hover:text-text transition-opacity"><Pencil size={12} /></button>
+                    <button ref={(el) => { if (el) renameButtons.current.set(s.id, el); else renameButtons.current.delete(s.id) }}
+                      aria-label={i18nT('pages.knowledge.sourcesList.rename_source')} onClick={() => startRename(s)}
+                      className="text-muted shrink-0 p-0.5 rounded opacity-100 sm:opacity-0 sm:group-hover/name:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 hover:text-text transition-opacity"><Pencil size={12} /></button>
                   </div>
                 )}
                 <div className="text-[11px] text-muted flex items-center gap-1.5 min-w-0">
@@ -576,6 +1048,8 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     ? <span className="inline-flex items-center gap-0.5 text-ok shrink-0" title={i18nT('pages.knowledge.sourcesList.auto_watches_for_file_changes_every_5_min')}>{i18nT('pages.knowledge.sourcesList.auto')}</span>
                     : isFolderType
                     ? <span className={`inline-flex items-center gap-0.5 shrink-0 ${isPaused ? 'text-warn' : isPending ? 'text-muted' : 'text-ok'}`} title={isPaused ? i18nT('pages.knowledge.sourcesList.paused') : isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : i18nT('pages.knowledge.sourcesList.watching_folder')}>● {isPaused ? i18nT('pages.knowledge.sourcesList.paused_2') : isPending ? i18nT('pages.knowledge.sourcesList.pending') : i18nT('pages.knowledge.sourcesList.folder')}</span>
+                    : isLiveSource
+                    ? <BedrockKbLiveChip source={s} onReviewConsent={openKbConsent} />
                     : s.source_type === 'agent'
                     // Like "auto" and "folder", the label names how the row updates,
                     // so it comes from the row's type; "manual" would point at a Sync
@@ -595,6 +1069,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   {failedCount > 0 && (
                     isFolderType ? (
                       <button type="button" onClick={() => toggleExpandedSource(s.id, isExpanded)}
+                        aria-expanded={isExpanded}
                         title={i18nT('pages.knowledge.sourcesList.show_failed_files')}
                         className="text-[11px] text-danger whitespace-nowrap shrink-0 underline decoration-dotted underline-offset-2 hover:decoration-solid">
                         {i18nT('pages.knowledge.sourcesList.files_failed_count', { count: failedCount })}
@@ -606,7 +1081,18 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     )
                   )}
                 </div>
-                <SourceSummaryDisplay source={s} />
+                {isLiveSource ? (
+                  /* A live source never ingests, so it has no summary to show
+                     here; the slot states what the row IS instead. Visible text,
+                     not a hover title: the row has no items, badge or Sync, and
+                     the one word "Live" does not explain their absence. */
+                  <p className="mt-1 text-[12px] text-muted leading-relaxed" data-testid="bedrock-kb-live-meaning">{i18nT('pages.knowledge.sourcesList.queried_live_at_search_time_from_your_aws_account')}</p>
+                ) : (
+                  <SourceSummaryDisplay source={s} />
+                )}
+                {pendingReason === 'import_budget' && (
+                  <p className="mt-1 text-[12px] text-muted leading-relaxed" data-testid="source-pending-reason">{i18nT('pages.knowledge.sourcesList.pending_import_budget')}</p>
+                )}
               </div>
               </div>
               {/* Meta + actions. Wraps at ANY width and never nowrap: the row carries a
@@ -615,17 +1101,29 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                   action button outside the card border and squeezed the source name to
                   nothing at mid widths. */}
               <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end shrink-0 pl-6 sm:pl-0 sm:max-w-[70%]">
-              {isDeleting ? <Badge variant="warn">{i18nT('pages.knowledge.sourcesList.deleting')}</Badge> : (
-                <Badge variant={s.sync_status === 'synced' || s.sync_status === 'active' ? 'ok' : s.sync_status === 'error' ? 'err' : s.sync_status === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : syncStatusLabel(s.sync_status, i18nT)}</Badge>
+              {isDeleting ? <Badge variant="warn">{i18nT('pages.knowledge.sourcesList.deleting')}</Badge> : isLiveSource ? (
+                /* The meta chip labels the MODE ("Live"); this badge states
+                   the one health the gateway records for the row: how its
+                   last search went. Absent until a search reaches the row.
+                   A refused or failed search did not run, so it renders as
+                   the ErrorNotice under the row instead. */
+                s.last_search?.outcome === 'ok' ? (
+                  <Badge variant="ok" data-testid="bedrock-kb-last-search">
+                    {i18nT('pages.knowledge.sourcesList.last_search_ok')}
+                  </Badge>
+                ) : null
+              ) : (
+                <Badge variant={shownStatus === 'synced' || shownStatus === 'active' ? 'ok' : shownStatus === 'error' ? 'err' : shownStatus === 'paused' ? 'warn' : 'aim'}>{isPending ? i18nT('pages.knowledge.sourcesList.awaiting_confirmation') : syncStatusLabel(shownStatus, i18nT)}</Badge>
               )}
-              <span className="text-[11px] text-muted whitespace-nowrap">{s.item_count ?? 0} {i18nT('pages.knowledge.sourcesList.items')}</span>
+              {!isLiveSource && <span className="text-[11px] text-muted whitespace-nowrap">{i18nT('pages.knowledge.sourcesList.items_count', { count: s.item_count ?? 0, n: fmtNumber(s.item_count ?? 0) })}</span>}
               {/* The failed count renders on the identity meta line (the parent owns
                   it for every row type) — this stats group shares its visual group
                   with the row's action buttons, where a third button breaks the
                   max-two-buttons-per-row rule. */}
               <SourceSpendDisplay spend={s.spend} />
-              {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{wc! < 1000 ? `${wc} words` : `~${Math.round(wc! / 1000)}k words`}</span> })()}
-              <StalenessIndicator lastSynced={s.last_synced} />
+              {(() => { const { wordCount: wc } = parseSourceProps(s); if (!shouldShowWordCount(wc)) return null; return <span className="text-[11px] text-muted whitespace-nowrap">{sourceWordCountLabel(wc!)}</span> })()}
+              {!isLiveSource && <StalenessIndicator lastSynced={s.last_synced} />}
+              {isLiveSource && s.last_search && <span className="text-[11px] text-muted whitespace-nowrap">{formatRelativeDate(s.last_search.at)}</span>}
               {/* Pause/Resume/Confirm for folder sources */}
               {isFolderType && isPending && (
                 <button aria-label={i18nT('pages.knowledge.sourcesList.confirm_scan')} onClick={() => confirmMutation.mutate(s.id)}
@@ -649,7 +1147,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               )}
               {/* The gateway marks a row it would refuse Sync on (the Auto-added
                   source: its documents arrive only when the agent submits them). */}
-              {!isFolderType && s.syncable !== false && (
+              {!isFolderType && !isLiveSource && s.syncable !== false && (
                 <button aria-label={i18nT('pages.knowledge.sourcesList.sync_source')} onClick={() => syncSource(s.id)} disabled={isDeleting || syncingIds.has(s.id)}
                   className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated disabled:opacity-50 flex items-center gap-1">
                   {syncingIds.has(s.id)
@@ -657,14 +1155,41 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                     : <><RefreshCw size={12} /> {i18nT('pages.knowledge.sourcesList.sync')}</>}
                 </button>
               )}
-              <button aria-label={i18nT('pages.knowledge.sourcesList.remove_source')} onClick={() => { if (confirm(i18nT('pages.knowledge.sourcesList.remove_this_source_and_all_its_ingested_items'))) deleteMutation.mutate(s.id) }}
+              {/* A Live row ingests nothing, so the shared "and all its ingested
+                  items" confirm would promise a deletion that cannot happen. */}
+              <button aria-label={i18nT('pages.knowledge.sourcesList.remove_source')} onClick={() => { if (confirm(i18nT(isLiveSource ? 'pages.knowledge.sourcesList.remove_this_live_source' : 'pages.knowledge.sourcesList.remove_this_source_and_all_its_ingested_items'))) deleteMutation.mutate(s.id) }}
                 disabled={isDeleting}
                 className="px-2 py-1 text-[11px] border border-border rounded hover:bg-bg-elevated text-danger/70 hover:text-danger disabled:opacity-50 flex items-center gap-0.5">
                 {isDeleting ? <RefreshCw size={12} className="animate-spin" /> : <X size={12} />}
               </button>
               </div>
             </div>
-            {/* Inline expandable progress for folder sources */}
+            {/* No hand-off: while the add form is open, navigating to the chat
+                would discard its unsaved source name, folder path, KB ids,
+                region and profile. With the form closed, the failed delete
+                concerns only a persisted row, so the hand-off is on. */}
+            {deleteMutation.isError && deleteMutation.variables === s.id && (
+              <ErrorNotice
+                message={deleteMutation.error?.message}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="source-delete-error"
+              />
+            )}
+            {/* No hand-off while the add form is open, for the same unsaved
+                drafts as the delete notice above. */}
+            {isLiveSource && s.last_search && s.last_search.outcome !== 'ok' && (
+              <ErrorNotice
+                message={i18nT(s.last_search.outcome === 'refused'
+                  ? 'pages.knowledge.sourcesList.last_search_refused'
+                  : 'pages.knowledge.sourcesList.last_search_failed')}
+                askAgent={!showAdd}
+                className="mt-2"
+                testId="bedrock-kb-last-search-error"
+              />
+            )}
+            {/* Inline expandable pattern editor and progress for folder sources */}
+            {isFolderType && isExpanded && <IgnorePatternsEditor source={s} />}
             {isFolderType && isExpanded && <FolderProgress sourceId={s.id} />}
           </div>
           )

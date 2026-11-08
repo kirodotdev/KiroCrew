@@ -24,6 +24,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from named_cases_helpers import named_cases
 
 import kiro_crew.mcp_shared as mcp_shared
 from kiro_crew.agent_sdk.mcp_refs import per_tool_grants
@@ -32,6 +33,7 @@ from kiro_crew.testing.wait import wait_until
 
 AGENT = "narrow-agent"
 CORE = "kirocrew-core"
+DASHBOARD = "kirocrew-dashboard"
 
 
 # --------------------------------------------------------------------------- #
@@ -47,24 +49,35 @@ class TestPerToolGrants:
     @pytest.mark.parametrize(
         "tools",
         [
-            [f"@{CORE}"],
-            [f"@{CORE}/skill_search", f"@{CORE}"],
-            ["*", f"@{CORE}/skill_search"],
-            [f"@{CORE}/*"],
-            [f"@{CORE}/skill_search", f"@{CORE}/artifact_*"],
-            [f"@{CORE}/"],
+            *named_cases(
+                "test_a_whole_server_grant_names_no_include",
+                "tools",
+                [
+                    [f"@{CORE}"],
+                    [f"@{CORE}/skill_search", f"@{CORE}"],
+                    ["*", f"@{CORE}/skill_search"],
+                    [f"@{CORE}/*"],
+                    [f"@{CORE}/skill_search", f"@{CORE}/artifact_*"],
+                    [f"@{CORE}/"],
+                ],
+                ids=["bare", "bare-and-tool", "star", "server-glob", "tool-glob", "empty-tool"],
+            ),
+            *named_cases(
+                "test_no_ref_to_the_server_names_no_include",
+                "tools",
+                [[], ["fs_read"], ["@kirocrew-cron/cron_add"], [f"@{CORE}-extra/x"], None, "nope"],
+                ids=[
+                    "empty",
+                    "builtin-only",
+                    "other-server",
+                    "prefix-sibling",
+                    "none",
+                    "not-a-list",
+                ],
+            ),
         ],
-        ids=["bare", "bare-and-tool", "star", "server-glob", "tool-glob", "empty-tool"],
     )
-    def test_a_whole_server_grant_names_no_include(self, tools: list[str]) -> None:
-        assert per_tool_grants(tools, CORE) is None
-
-    @pytest.mark.parametrize(
-        "tools",
-        [[], ["fs_read"], ["@kirocrew-cron/cron_add"], [f"@{CORE}-extra/x"], None, "nope"],
-        ids=["empty", "builtin-only", "other-server", "prefix-sibling", "none", "not-a-list"],
-    )
-    def test_no_ref_to_the_server_names_no_include(self, tools: Any) -> None:
+    def test_no_include_is_named(self, tools: list[str]) -> None:
         assert per_tool_grants(tools, CORE) is None
 
 
@@ -92,6 +105,45 @@ class TestGatewayPolicyAnswer:
             "exclude": ["cron_add"],
             "include": {CORE: ["skill_search", "spawn_run"]},
         }
+
+    def test_per_tool_refs_to_an_opt_in_managed_server_answer_its_include(
+        self, tmp_path: Path
+    ) -> None:
+        """Every managed server is narrowed the same way, not only kirocrew-core: a
+        spec granting the dashboard server tool by tool lists only those tools."""
+        policy = _policy_for(
+            tmp_path,
+            {
+                "tools": [f"@{DASHBOARD}/session_send", f"@{DASHBOARD}/chat_folder_tree"],
+                "managedToolPolicy": {"honourToolRefs": True},
+            },
+        )
+        assert policy == {
+            "honourToolRefs": True,
+            "include": {DASHBOARD: ["chat_folder_tree", "session_send"]},
+        }
+
+    def test_each_managed_server_is_read_on_its_own(self, tmp_path: Path) -> None:
+        """A whole-server grant on one managed server does not stop another from
+        being narrowed, and a server Kiro Crew does not ship is never narrowed."""
+        policy = _policy_for(
+            tmp_path,
+            {
+                "tools": [
+                    f"@{CORE}",
+                    f"@{DASHBOARD}/session_send",
+                    "@third-party/one_tool",
+                ],
+                "managedToolPolicy": {"honourToolRefs": True},
+            },
+        )
+        assert policy == {"honourToolRefs": True, "include": {DASHBOARD: ["session_send"]}}
+
+    def test_every_managed_server_is_eligible(self) -> None:
+        from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+
+        assert set(sessions_mod.INCLUDE_LIST_SERVERS) == set(KIROCREW_BIN_MCP_SERVERS)
+        assert {CORE, DASHBOARD} <= set(sessions_mod.INCLUDE_LIST_SERVERS)
 
     @pytest.mark.parametrize(
         "managed",
@@ -325,3 +377,57 @@ class TestManagedServerHonoursInclude:
             assert ran == ["spawn_run"]
         finally:
             loop.close()
+
+
+# --------------------------------------------------------------------------- #
+# ``excludeServers``: a managed server withheld whole
+# --------------------------------------------------------------------------- #
+
+
+class TestExcludeServers:
+    def test_each_named_server_is_answered_as_an_empty_include(self, tmp_path: Path) -> None:
+        policy = _policy_for(
+            tmp_path,
+            {"managedToolPolicy": {"exclude": ["x"], "excludeServers": ["kirocrew-cron"]}},
+        )
+        assert policy == {"exclude": ["x"], "include": {"kirocrew-cron": []}}
+
+    def test_it_overrides_an_opted_in_per_tool_include(self, tmp_path: Path) -> None:
+        policy = _policy_for(
+            tmp_path,
+            {
+                "tools": [f"@{CORE}/skill_search"],
+                "managedToolPolicy": {"honourToolRefs": True, "excludeServers": [CORE]},
+            },
+        )
+        assert policy == {"honourToolRefs": True, "include": {CORE: []}}
+
+    @pytest.mark.parametrize("value", ["kirocrew-cron", None, [3], [""], {"a": 1}])
+    def test_a_malformed_value_is_unreadable(self, tmp_path: Path, value: Any) -> None:
+        with pytest.raises(sessions_mod.ManagedToolPolicyUnreadable, match="excludeServers"):
+            _policy_for(tmp_path, {"managedToolPolicy": {"excludeServers": value}})
+
+    def test_the_server_lists_and_runs_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        ran: list[str] = []
+        withheld = mcp_shared.ToolPolicy(
+            frozenset(), "", included=types.MappingProxyType({CORE: frozenset()})
+        )
+        loop = _Loop(monkeypatch, CORE, withheld, ran)
+        try:
+            assert loop.listed(1) == []
+            refused = loop.call(2, "skill_search")
+            assert f"withholds every {CORE} tool" in refused
+            assert ran == []
+            errors = [
+                c.kwargs.get("error") for c in loop.sel_mock.log_tool_invocation.call_args_list
+            ]
+            assert "managedToolPolicy.excludeServers" in errors
+        finally:
+            loop.close()
+
+    def test_the_answer_round_trips_through_the_server_read(self, gateway) -> None:
+        gateway["body"] = json.dumps({"include": {"kirocrew-cron": []}}).encode()
+        policy = mcp_shared._resolve_tool_policy("dashboard:dave")
+        assert policy.unresolved == ""
+        assert policy.include_for("kirocrew-cron") == frozenset()
+        assert policy.include_for(CORE) is None

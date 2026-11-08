@@ -32,6 +32,7 @@ import kiro_crew  # noqa: F401
 from kiro_crew import _facade_mirror
 from kiro_crew.apps.version import versions_compatible  # noqa: F401
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     cap_effort_capability_levels,
     register_reasoning_effort_values,
@@ -47,6 +48,7 @@ from kiro_crew.dashboard.handlers_instances_gate import (
     _ADDRESSING_FIELDS,
     _CHAIN_MUTATION_LOCK,
     _PEER_FIELD_MAX_CHARS,
+    _TRANSPORT_FIELDS,
     _apply_update,
     _audit,
     _chain_refusal,
@@ -54,6 +56,7 @@ from kiro_crew.dashboard.handlers_instances_gate import (
     _instance_view,
     _is_correlated_cloud_instance,
     _manager_unavailable_response,
+    _moves_the_tunnel,
     _registry,
     _status_for,
 )
@@ -67,8 +70,10 @@ from kiro_crew.dashboard.session_transfer import (
     release_bundle_files,
     write_bundle_file,
 )
+from kiro_crew.dashboard.slot_ownership import app_owns_slot_session
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS  # noqa: F401
 from kiro_crew.history import SEARCH_MIN_CHARS
+from kiro_crew.history_search import search_coverage
 from kiro_crew.instances.constants import (  # noqa: F401
     PEER_SLOTS_REPLY_MAX_BYTES,
     PROXY_PATH_MAX_DECODE_PASSES,
@@ -85,11 +90,13 @@ from kiro_crew.instances.registry import (  # noqa: F401
     InstancesError,
     InstancesRegistry,
     InvalidInstanceError,
+    RegistryUnreadableError,
     ancestor_ids,
     descendant_ids,
     is_headless_provisioner,
     validate_ttl,
 )
+from kiro_crew.instances.remote_update import RESTART_REFUSAL_CODES, read_force_flag
 from kiro_crew.instances.ssh_tunnel_manager import ProxyRequestError, TunnelState  # noqa: F401
 from kiro_crew.instances.validation import UnsupportedConnectionMethodError
 from kiro_crew.instances.warm_set import resolve_warm_set_cap
@@ -102,6 +109,20 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers_instances")
+
+
+def _registry_unreadable_response(exc: RegistryUnreadableError) -> web.Response:
+    """503 for a mutation the registry refused because ``instances.json`` is unreadable.
+
+    The file is unchanged, so the message tells the user what to repair rather
+    than reporting a gateway fault; the path and cause go to the log.
+    """
+    logger.warning("instances registry refused a write: %s", exc)
+    message = (
+        "Your instances file (instances.json) could not be read, so nothing was "
+        "saved. Fix or restore that file, then try again."
+    )
+    return web.json_response({"error": message, "code": "instances_file_unreadable"}, status=503)
 
 
 # ── read endpoints ───────────────────────────────────────────────────────
@@ -130,6 +151,7 @@ async def api_instances_list(request: web.Request) -> web.Response:
     # connection order. Registered crews cannot race, and the count rises by
     # itself when a crew is added.
     eligible = len(items)
+    instances_cfg = KiroCrewConfig.load().instances
     _audit("list", "success")
     return web.json_response(
         {
@@ -140,9 +162,10 @@ async def api_instances_list(request: web.Request) -> web.Response:
             # active, the UI shows a "restart the gateway to activate" hint.
             "active": getattr(state, "instances_manager", None) is not None,
             "instances": items,
-            "warm_set_cap": resolve_warm_set_cap(
-                KiroCrewConfig.load().instances.warm_set_cap, eligible
-            ),
+            "warm_set_cap": resolve_warm_set_cap(instances_cfg.warm_set_cap, eligible),
+            # Served as stored: the menu resolves it against ``instances`` above,
+            # so an id naming no registered crew simply marks nothing.
+            "default_destination": instances_cfg.default_destination,
         }
     )
 
@@ -228,7 +251,7 @@ async def api_instances_add(request: web.Request) -> web.Response:
                 reg.add,
                 name=str(body.get("name", "")),
                 ssh_host=str(body.get("ssh_host", "")),
-                remote_port=int(body.get("remote_port", DEFAULT_REMOTE_PORT)),
+                remote_port=body_int(body.get("remote_port", DEFAULT_REMOTE_PORT)),
                 ttl=str(body.get("ttl", "20h")),
                 remote_bin=str(body.get("remote_bin", "")),
                 connection_method=str(body.get("connection_method", "ssh")),
@@ -237,10 +260,13 @@ async def api_instances_add(request: web.Request) -> web.Response:
                 aws_profile=str(body.get("aws_profile", "")),
                 aws_region=str(body.get("aws_region", "")),
                 via_instance_id=via_instance_id,
-                via_remote_port=int(body.get("via_remote_port", 0)),
+                via_remote_port=body_int(body.get("via_remote_port", 0)),
                 via_remote_id=via_remote_id,
                 instance_id=body.get("id"),
             )
+        except RegistryUnreadableError as e:
+            _audit("add", "denied", error=str(e))
+            return _registry_unreadable_response(e)
         except DuplicateInstanceError as e:
             # Split from InvalidInstanceError because the two are different user
             # actions: a name collision is resolved by renaming, a rejected field by
@@ -329,24 +355,6 @@ async def api_instances_update(request: web.Request) -> web.Response:
     if bad is not None:
         _audit("update", "denied", request_id=instance_id, error=bad)
         return web.json_response({"error": bad, "code": "instance_invalid"}, status=400)
-    # A tunnel is opened from these fields, so editing one of them makes a live
-    # tunnel wrong rather than merely out of date: it keeps forwarding the old
-    # port to the old host under the new label. Tear it down as part of the save
-    # so the next connect builds from what the user just entered.
-    transport_keys = {
-        "ssh_host",
-        "remote_port",
-        "connection_method",
-        "ssm_target",
-        "ssm_run_as",
-        "aws_profile",
-        "aws_region",
-        "remote_bin",
-        # The far end of a chained forward. A live tunnel holding the parent's
-        # OLD port forwards to a port nothing listens on any more, which is the
-        # same wrongness as an edited host.
-        "via_remote_port",
-    }
     current = await asyncio.to_thread(reg.get, instance_id)
     if current is None:
         _audit("update", "denied", request_id=instance_id, error="not found")
@@ -418,11 +426,11 @@ async def api_instances_update(request: web.Request) -> web.Response:
     # Disabling is a teardown too, and it takes the same locked path: the
     # tunnel closes and the flag lands in one critical section, so a connect
     # racing it is either torn down here or reads the flag and is refused.
-    # Every disable takes it, even one `current` reads as off: that read precedes
-    # the lock, so an enable and a connect can land after it.
-    transport_changed = changes.get("disabled") is True or any(
-        k in transport_keys and v != getattr(current, k) for k, v in changes.items()
-    )
+    # Every disable takes it, and every edit naming a transport field: `current`
+    # precedes the lock, so an edit and a connect can land after it. Whether a
+    # transport edit tears down is decided under the lock (`_moves_the_tunnel`).
+    disabling = changes.get("disabled") is True
+    locked_edit = disabling or not _TRANSPORT_FIELDS.isdisjoint(changes)
     # Validate the PROPOSED record before touching the tunnel. The registry
     # validates too, but that happens after the teardown — so a rejected edit
     # would answer 400 having already disconnected a healthy crew, punishing the
@@ -443,7 +451,7 @@ async def api_instances_update(request: web.Request) -> web.Response:
     mgr = getattr(state, "instances_manager", None)
 
     try:
-        if transport_changed and mgr is not None:
+        if locked_edit and mgr is not None:
             # The teardown and the coordinate rewrite must not be observable
             # apart. With the lock released between them a `connect` can read the
             # OLD record, and whether its tunnel is already CONNECTED or still
@@ -453,10 +461,16 @@ async def api_instances_update(request: web.Request) -> web.Response:
             # connect either finishes before (and is torn down inside) or starts
             # after (and reads the new coordinates).
             inst = await mgr.reconfigure(
-                instance_id, functools.partial(_apply_update, reg, instance_id, changes)
+                instance_id,
+                functools.partial(_apply_update, reg, instance_id, changes),
+                needs_teardown=(
+                    None
+                    if disabling
+                    else functools.partial(_moves_the_tunnel, reg, instance_id, changes)
+                ),
             )
         else:
-            if transport_changed:
+            if locked_edit:
                 # No manager: nothing to tear down, but say so — a silent skip
                 # would look identical to a teardown that ran.
                 logger.warning(
@@ -470,6 +484,9 @@ async def api_instances_update(request: web.Request) -> web.Response:
     except InstanceNotFoundError as e:
         _audit("update", "denied", request_id=instance_id, error=str(e))
         return web.json_response({"error": str(e), "code": "instance_not_found"}, status=404)
+    except RegistryUnreadableError as e:
+        _audit("update", "denied", request_id=instance_id, error=str(e))
+        return _registry_unreadable_response(e)
     except (InvalidInstanceError, InstancesError) as e:
         _audit("update", "denied", request_id=instance_id, error=str(e))
         return web.json_response({"error": str(e)}, status=400)
@@ -602,7 +619,12 @@ async def api_instances_remove(request: web.Request) -> web.Response:
         # above has already brought every captured crew down, deepest first; this only
         # deletes rows. The helper answers deepest-first too, so each id is audited in the
         # order it was torn down.
-        for removed_id in await asyncio.to_thread(reg.remove_cascade, instance_id):
+        try:
+            removed_ids = await asyncio.to_thread(reg.remove_cascade, instance_id)
+        except RegistryUnreadableError as e:
+            _audit("remove", "denied", request_id=instance_id, error=str(e))
+            return _registry_unreadable_response(e)
+        for removed_id in removed_ids:
             if removed_id != instance_id:
                 _audit("remove", "success", request_id=removed_id)
     if mgr is not None:
@@ -784,7 +806,12 @@ async def api_instances_connect(request: web.Request) -> web.Response:
                     request_id=instance_id,
                     error="token unconfirmed and re-mint failed",
                 )
-                body["error"] = "token expired and re-mint failed"
+                # The token may still have hours left; what failed is the far
+                # end answering for it, usually a stopped remote gateway.
+                body["error"] = (
+                    "the crew's token could not be confirmed or re-minted; "
+                    "check that its remote gateway is running"
+                )
                 body["code"] = _connect_failure_code(body, "instance_token_unconfirmed")
                 return web.json_response(body, status=502)
         # The token and the port it is paired with are one answer. `body` froze the
@@ -939,13 +966,28 @@ async def api_instances_disconnect(request: web.Request) -> web.Response:
     return web.json_response({"disconnected": instance_id, "was_connected": existed})
 
 
+async def _force_flag(request: web.Request) -> bool | None:
+    """The optional ``{"force": bool}`` body of restart and update, or ``None`` if malformed."""
+    if not request.can_read_body:
+        return False
+    try:
+        return read_force_flag(await request.json())
+    except ValueError:
+        return None
+
+
 async def api_instances_restart(request: web.Request) -> web.Response:
-    """POST /api/instances/{id}/restart — restart the remote gateway over SSH."""
+    """POST /api/instances/{id}/restart — restart the remote gateway over SSH, once idle.
+
+    A busy or too-old crew is refused 409 (``busy``, ``peer_cannot_wait``); ``force`` skips it."""
     denied = _guard(request, "restart")
     if denied is not None:
         return denied
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
+    force = await _force_flag(request)
+    if force is None:
+        return web.json_response({"error": "invalid body", "code": "invalid_body"}, status=400)
     if await asyncio.to_thread(_registry(state).get, instance_id) is None:
         _audit("restart", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found"}, status=404)
@@ -953,11 +995,25 @@ async def api_instances_restart(request: web.Request) -> web.Response:
     if mgr is None:
         _audit("restart", "denied", request_id=instance_id, error="manager unavailable")
         return _manager_unavailable_response()
-    result = await mgr.restart_remote(instance_id)
+    result = await mgr.restart_remote(instance_id, force=force)
     if result.get("ok"):
         _audit("restart", "success", request_id=instance_id)
         return web.json_response(result)
     _audit("restart", "failure", request_id=instance_id, error=result.get("message", ""))
+    code = result.get("code")
+    if code in RESTART_REFUSAL_CODES:
+        message = result.get("message", "")
+        return web.json_response(
+            {
+                "ok": False,
+                "code": code,
+                "error": message,
+                "message": message,
+                "turns": result.get("turns", 0),
+                "background": result.get("background", 0),
+            },
+            status=409,
+        )
     return web.json_response(result, status=502)
 
 
@@ -992,9 +1048,11 @@ async def api_instances_update_remote(request: web.Request) -> web.Response:
     Starts a background job that runs the fixed literal ``kirocrew update`` on
     the remote, over the same transport runner and refusals as
     ``/restart`` (a chained or headless crew is refused before anything runs),
-    then ``kirocrew restart`` when the update succeeds. The remote's own update
-    policy, install layout and updater decide what the update does. The request
-    carries no body and nothing in it reaches the remote command. Answers
+    then a restart once the remote reports no in-flight work, when the update
+    succeeds. The remote's own update policy, install layout and updater decide
+    what the update does. The optional body ``{"force": true}`` ("Restart now")
+    skips the update and restarts without waiting. It only picks between fixed
+    literals. Answers
     ``202 {ok, job}`` at once; poll ``GET`` on the same path for progress.
     One click starts one job: a second POST while one runs is refused 409.
     """
@@ -1006,6 +1064,9 @@ async def api_instances_update_remote(request: web.Request) -> web.Response:
         return denied
     state: DashboardState = request.app["state"]
     instance_id = request.match_info["id"]
+    force = await _force_flag(request)
+    if force is None:
+        return web.json_response({"error": "invalid body", "code": "invalid_body"}, status=400)
     if await asyncio.to_thread(_registry(state).get, instance_id) is None:
         _audit("update_remote", "denied", request_id=instance_id, error="not found")
         return web.json_response({"error": "not found", "code": "not_found"}, status=404)
@@ -1013,7 +1074,7 @@ async def api_instances_update_remote(request: web.Request) -> web.Response:
     if mgr is None:
         _audit("update_remote", "denied", request_id=instance_id, error="manager unavailable")
         return _manager_unavailable_response()
-    result = await mgr.start_remote_update(instance_id)
+    result = await mgr.start_remote_update(instance_id, force=force)
     if result.get("ok"):
         _audit("update_remote", "success", request_id=instance_id)
         return web.json_response(result, status=202)
@@ -1196,6 +1257,11 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
                 if isinstance(value, str) and value:
                     row[field] = redact(value)
             redacted_local.append(row)
+        # Local rows only: a peer row is rebuilt by ``_clean`` from an allowlist
+        # without ``open``, so another gateway's tabs never rank as open here.
+        from kiro_crew.dashboard.handlers.sessions import _mark_open_sessions
+
+        _mark_open_sessions(redacted_local, state)
         sources.append(redacted_local)
     for iid, result in zip(connected, results[1:]):
         if isinstance(result, BaseException):
@@ -1230,7 +1296,14 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
         if len(merged) >= limit:
             break
     _audit("search_sessions", "success", request_id=f"{len(connected)} peers")
-    return web.json_response({"sessions": merged, "unreachable": unreachable})
+    body: dict[str, object] = {"sessions": merged, "unreachable": unreachable}
+    # THIS machine's scan window, as /api/sessions/search reports it, marked
+    # ``local`` so the page says the count is this machine's; a peer's own window
+    # is its own and is not carried here.
+    coverage = search_coverage(local_rows)
+    if coverage is not None:
+        body["scan"] = {"searched": coverage[0], "total": coverage[1], "scope": "local"}
+    return web.json_response(body)
 
 
 async def api_instances_send_session(request: web.Request) -> web.Response:
@@ -1292,13 +1365,19 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
     # indistinguishable from one that does not exist, or the error code itself
     # enumerates slots across the isolation boundary (CWE-204). The real reason is
     # recorded server-side in the audit event.
+    #
+    # Owning the slot is not owning the conversation it carries: a slot linked to
+    # a channel thread, or an unbound channel-origin slot, runs on or writes a
+    # transcript the app has no claim on. ``app_owns_slot_session`` is the same
+    # three-part test the per-slot checkpoint applies to every
+    # ``/api/chat/slots/{slot}`` route, and the refusal keeps the one 404 body.
     request_app = request.get("app", "")
-    if request_app and (not getattr(slot, "_app", "") or slot._app != request_app):
+    if request_app and not app_owns_slot_session(request_app, slot):
         _audit(
             "send_session",
             "denied",
             request_id=instance_id,
-            error=f"app {request_app!r} does not own this slot",
+            error=f"app {request_app!r} does not own this slot or its conversation",
         )
         return web.json_response(
             {"error": "session not found", "code": "transfer_slot_not_found"}, status=404
@@ -1462,11 +1541,13 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
 #
 #   ``handlers_instances_gate`` -- the owner gate, audit, registry access, chain policy
 #   ``handlers_instances_peer`` -- the routes that read a peer, and the proxy to it
+#   ``handlers_instances_crew_reads`` -- the MCP-only crew-scoped session reads
 # --------------------------------------------------------------------------- #
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.dashboard.handlers_instances_gate",
     "kiro_crew.dashboard.handlers_instances_peer",
+    "kiro_crew.dashboard.handlers_instances_crew_reads",
 )
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -1477,6 +1558,32 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.dashboard.handlers_instances_crew_reads import (  # noqa: F401
+        _CREW_PROXY_TIMEOUT,
+        _FIELD_MAX_RAW_CHARS,
+        _FIELD_TOO_LONG,
+        _OFF_LOOP_BYTES,
+        _PEER_MESSAGE_MAX_CHARS,
+        _T,
+        CREW_AMBIGUOUS_CODE,
+        CREW_READS_DISABLED_CODE,
+        _audit_crew,
+        _authorize_crew_read,
+        _cap_field,
+        _crew_proxy_json,
+        _crew_refusal,
+        _decode_and_shape,
+        _peer_row_is_restricted,
+        _peer_status_error,
+        _resolve_crew_id,
+        _shape_list_rows,
+        _shape_read_messages,
+        _shape_search_rows,
+        _slot_refusal,
+        api_crew_sessions_list,
+        api_crew_sessions_read,
+        api_crew_sessions_search,
+    )
     from kiro_crew.dashboard.handlers_instances_gate import (  # noqa: F401
         MANAGER_UNAVAILABLE_CODE,
         MANAGER_UNAVAILABLE_MESSAGE,
@@ -1505,6 +1612,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cap_str,
         _clean_peer_parent,
         _clean_peer_slot,
+        _peer_version,
         _proxy_canonical_path,
         _redact_peer_payload,
         _redact_peer_value,

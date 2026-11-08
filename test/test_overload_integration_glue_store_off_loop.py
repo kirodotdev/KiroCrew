@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -73,14 +72,16 @@ class TestStoreOffLoop:
         ``loop_thread_calls`` shows nothing.
 
         Pinned by WHO released the holder, not by a wall clock: the holder is
-        released by a coroutine scheduled before the ``run``, so a loop that
-        kept control releases it at once and a frozen loop leaves it to time
-        out on its own. The timeout is the failure's cost, never the pin.
+        released by a coroutine scheduled before the ``run``, once the writer
+        thread has started the ``run``'s callable, so a loop that kept control
+        releases it at once and a frozen loop leaves it to time out on its
+        own. The timeout is the failure's cost, never the pin.
         """
         import threading
 
         holding = threading.Event()
         release = threading.Event()
+        reached_the_writer = threading.Event()
         released_by_the_loop: list[bool] = []
 
         def _hold() -> None:
@@ -94,12 +95,15 @@ class TestStoreOffLoop:
             await asyncio.get_running_loop().run_in_executor(None, holding.wait, 5.0)
 
             async def _unblock() -> None:
-                # flake-ok: one loop turn so store.run parks before the release; the holder's own 3 s wait bounds a regression; pre-existing, moved verbatim
-                await asyncio.sleep(0)
+                await async_wait_until(
+                    reached_the_writer.is_set,
+                    describe=lambda: "store.run never started its callable on the writer thread",
+                )
                 release.set()
 
-            asyncio.get_running_loop().create_task(_unblock())
-            await store.run(lambda: None)
+            unblock = asyncio.get_running_loop().create_task(_unblock())
+            await store.run(reached_the_writer.set)
+            await await_until(unblock, what="the coroutine that releases the lock holder")
         finally:
             release.set()
             holder.join(5.0)
@@ -248,8 +252,7 @@ class TestStoreOffLoop:
         mgr._drain_queue()
         task = getattr(mgr, "_drain_task", None)
         assert task is not None, "on a running loop with a store the pump is a coroutine"
-        # flake-ok: the pump coroutine ends after its pass over the seeded rows, inside the suite timeout; pre-existing, moved verbatim
-        await task
+        await await_until(task, what="the pump's pass over the two seeded rows")
 
         # Wait for the point, not toward it: the started runs settle through the
         # writer thread, and how long that takes is the host's business -- two
@@ -401,9 +404,12 @@ class TestStoreOffLoop:
         before = store.loop_thread_calls
         await mgr._drain_queue_async()
         await settle_store_writes(store)
-        for _ in range(5):
-            # flake-ok: five bounded loop turns for the announce callbacks after settle_store_writes drained the writes; pre-existing, moved verbatim
-            await asyncio.sleep(0)
+        # The refusal is announced by a task the manager holds in ``_tasks`` until
+        # it finishes, so the announce callbacks have all run once that task is gone.
+        await async_wait_until(
+            lambda: bool(announced) and "reject-ghost0" not in mgr._tasks,
+            describe=lambda: f"announced={announced!r}, held tasks={sorted(mgr._tasks)}",
+        )
         assert await store.run(store.get, "ghost0") is None
         assert [i.id for i in announced] == ["ghost0"], announced
         assert announced[0].done is True and not announced[0].queued
@@ -755,11 +761,15 @@ class TestStoreOffLoop:
         """
         import ast
 
+        from source_corpus import parsed_candidates
+
         allowed = {("chat_utils_completion.py", "_queued_depth_off_loop", "_queued_depth")}
-        src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
         offenders: list[str] = []
-        for path in sorted(src.rglob("*.py")):
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+        # A flagged call spells one of the two names as its Name or Attribute, so only
+        # the files whose text holds one are parsed.
+        for path, _text, tree in parsed_candidates(
+            require_any=("subagents_attached", "_queued_depth"), skip_syntax_errors=False
+        ):
 
             class _Visitor(ast.NodeVisitor):
                 def __init__(self) -> None:
@@ -843,8 +853,7 @@ class TestStoreOffLoop:
             granted, gen = await _park("resume-ok")
             before = store.loop_thread_calls
             assert mgr._admission.request_resume(granted, reason="answered") is True
-            # flake-ok: the pump task ends after its pass over the parked runs, inside the suite timeout; pre-existing, moved verbatim
-            await mgr._drain_task
+            await await_until(mgr._drain_task, what="the pump's grant of the answered resume")
             assert store.loop_thread_calls == before
             assert threads and all(t.startswith("taskq-writer") for t in threads), threads
             row = await store.run(store.get, granted.id)
@@ -857,8 +866,7 @@ class TestStoreOffLoop:
             count_before = mgr._running_count
             monkeypatch.setattr(store, "wake_wait", lambda *a, **kw: None)
             assert mgr._admission.request_resume(refused, reason="answered") is True
-            # flake-ok: the pump task ends after its pass over the parked runs, inside the suite timeout; pre-existing, moved verbatim
-            await mgr._drain_task
+            await await_until(mgr._drain_task, what="the pump's refusal of the resume")
             assert mgr._running_count == count_before
             assert refused._slot_released is True and refused._resume_pending is False
             assert not refused._resume_event.is_set()
@@ -938,14 +946,14 @@ class TestStoreOffLoop:
 
             monkeypatch.setattr(store, "wake_wait", _end_the_victim_inside_the_window)
             assert mgr._drain_task is not None
-            # flake-ok: the pump task ends after its pass over the parked runs, inside the suite timeout; pre-existing, moved verbatim
-            await mgr._drain_task
-            for _ in range(5):  # the refusal's own re-drain, if it scheduled one
-                # flake-ok: five bounded loop turns for the refusal's own re-drain, each followed by a check of the task; pre-existing, moved verbatim
-                await asyncio.sleep(0)
-                if mgr._drain_task is not None and not mgr._drain_task.done():
-                    # flake-ok: the pump task ends after its pass over the parked runs, inside the suite timeout; pre-existing, moved verbatim
-                    await mgr._drain_task
+            await await_until(mgr._drain_task, what="the pump's pass over the lead and the victim")
+            # The refusal asks for a re-drain from inside that pass, and the pump folds a
+            # request that lands mid-pass into one more pass of the same task: the pump is
+            # idle once no drain task is running and none is asked for.
+            await async_wait_until(
+                lambda: mgr._drain_task.done() and not getattr(mgr, "_drain_again", False),
+                describe=lambda: f"drain task {mgr._drain_task!r}",
+            )
             monkeypatch.setattr(store, "wake_wait", original_wake)
 
             assert ended, "the lead's wake never ran: this pin never reached the window"

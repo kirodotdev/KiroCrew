@@ -1,7 +1,6 @@
-"""Tests for the review findings on the first M1 SHA.
+"""Snapshot and restore guards, each asserted on its consequence.
 
-Each one asserts the consequence, not the mechanism: what state would have been
-destroyed, or what would have escaped, if the fix were not there.
+Each test checks what state would be destroyed, or what would escape, without the guard.
 """
 
 from __future__ import annotations
@@ -141,14 +140,8 @@ class TestLiveDatabasesAreStagedConsistently:
     def test_a_hardlinked_database_the_walk_skipped_is_not_rebuilt(self, tmp_path):
         """The consistency pass must not undo the walk's hardlink rejection.
 
-        The staging walk refuses a hardlink alias because the second link can point at a
-        file outside the component tree, and copying it would put content the tree does not
-        own into the bundle. That refusal is recorded as a SKIP and staging continues -- so
-        a second pass that rebuilds databases from the SOURCE, keyed only on the source
-        walk, reinstates precisely what was refused.
-
-        Reproduced before the guard existed: a `.db` hardlinked to a database outside the
-        tree was skipped as `not_regular`, then rebuilt here, and its rows rode the bundle.
+        A hardlink alias can point at a file outside the component tree, so the walk skips
+        it. A pass that rebuilds databases from the SOURCE walk alone would reinstate it.
         """
         outside = tmp_path / "outside"
         outside.mkdir()
@@ -204,18 +197,12 @@ class TestLiveDatabasesAreStagedConsistently:
 class TestADestinationRootSwappedAfterPreflightRefuses:
     """A replace that loses a memory tree mid-run must refuse, not report success.
 
-    ``_refuse_unsafe_destination_roots`` is hoisted ahead of every mutation, and its own
-    docstring gives the reason: checking inside the per-tree loop was too late, because
-    skipping an unsafe tree left memory split between two versions while the command still
-    reported success. One site kept the old behaviour -- the ``mem_roots`` build
-    ``continue``d past a root that failed the very same check -- so a root that went bad
-    AFTER the pre-flight was dropped from the set entirely, neither saved nor restored,
-    and the run still printed "Replace complete."
+    A root that goes bad AFTER the pre-flight must not be silently dropped from
+    ``mem_roots``, neither saved nor restored, while the run prints "Replace complete."
 
-    The swap is injected from INSIDE a wrapper around the pre-flight rather than planted
-    beforehand. Planting it first only proves the pre-flight works, which it does and which
-    is not this test's subject. The wrapper's fire count is asserted first, because a
-    monkeypatch that silently never ran would make every assertion after it vacuous.
+    The swap is injected inside a wrapper around the pre-flight; planting it beforehand
+    would only test the pre-flight. The fire count is asserted first, or every assertion
+    after it is vacuous.
     """
 
     def test_it_refuses_instead_of_reporting_a_complete_replace(
@@ -268,17 +255,10 @@ class TestADestinationRootSwappedAfterPreflightRefuses:
 class TestRollbackWillNotDeleteWhatItNeverSaved:
     """Recovery must not delete an occupant it cannot prove this run created.
 
-    `installed` records a core file BEFORE the save is known to have happened -- deliberately,
-    so a crash mid-write still leaves the name known to have been reached. But the save only
-    happens on two branches, a symlink or a regular file. A core file's path occupied by a
-    DIRECTORY matches neither, so nothing is saved while the name is recorded anyway, and
-    recovery's "nothing saved AND this run put it here" branch then had no evidence for the
-    second half of its own claim.
-
-    Reproduced before the fix: a directory at `crons.json` holding operator data was deleted
-    with its contents, the failure list came back empty, and the run printed "Previous state
-    restored." Data loss announced as a successful recovery, which is the one thing recovery
-    must never say.
+    `installed` records a core file BEFORE the save, so a crash mid-write still knows the
+    name was reached. A DIRECTORY at that path is neither saved branch (symlink or regular
+    file), so "recorded but nothing saved" does not prove this run created it. Deleting it
+    would be data loss reported as "Previous state restored."
     """
 
     def test_a_pre_existing_directory_at_a_core_file_name_is_kept_and_reported(self, tmp_path):
@@ -317,19 +297,12 @@ class TestRollbackWillNotDeleteWhatItNeverSaved:
 class TestMergeRefusesADestinationRootSwappedAfterPreflight:
     """Merge must refuse a root that stopped resolving inside the home, not write through it.
 
-    `_do_merge` calls the same pre-flight as replace and then had NO use-time re-check before
-    `dd.mkdir(parents=True)` and the copy. Reproduced: with `workspace` replaced by an
-    external symlink immediately after the pre-flight, merge created the tree THROUGH the link
-    and wrote four of the operator's memory files into a directory outside the data home --
-    and printed "Merge complete."
+    Per-file `O_NOFOLLOW` does not check ancestors, so a `workspace` swapped for an external
+    link after the pre-flight would take the whole tree outside the data home. Only a
+    use-time check on the ROOT catches it.
 
-    The per-file screens cannot catch this. Each final component is a fresh regular file, and
-    a by-name open does not examine its ancestors, so `O_NOFOLLOW` per file is satisfied while
-    the whole tree lands somewhere else. Refusing on the ROOT is what closes it.
-
-    The swap is injected from inside a wrapper around the pre-flight; planting it beforehand
-    would only prove the pre-flight works, which is not this test's subject. The wrapper's
-    fire count is asserted first, or every assertion after it is vacuous.
+    The swap is injected inside a wrapper around the pre-flight; planting it beforehand
+    would only test the pre-flight. The fire count is asserted first.
     """
 
     def test_it_refuses_instead_of_merging_outside_the_data_home(
@@ -368,10 +341,8 @@ class TestMergeRefusesADestinationRootSwappedAfterPreflight:
         monkeypatch.setattr(snap_mod, "_refuse_unsafe_destination_roots", _preflight_then_swap)
         capsys.readouterr()
 
-        # The flag matters for the SUBJECT, not just for getting past staging: without it,
-        # a platform with no directory descriptors would refuse this merge for the PINNING
-        # reason and `rc != 0` below would pass for the wrong reason -- green while proving
-        # nothing about the destination-root check this test exists for.
+        # Without the flag, a platform with no directory descriptors refuses for the PINNING
+        # reason and `rc != 0` below passes for the wrong reason.
         rc = restore_main([str(bundle), "--mode", "merge", "--force"] + unpinnable_argv())
         out = capsys.readouterr().out
 
@@ -392,19 +363,9 @@ class TestMergeRefusesADestinationRootSwappedAfterPreflight:
 class TestReplaceDoesNotKeepAnIndexTheArchiveOmits:
     """A derived index the archive does not carry must not survive a REPLACE.
 
-    `_backup_and_copy` skips a core file the bundle lacks -- correct for its own job, since
-    it has nothing to install -- so the live `memory_index.db` stayed put while `memory.db`
-    was replaced underneath it. The restore then ends with new memory and an index built from
-    the old, and searches answer from memory that is gone.
-
-    Reachable by the ORDINARY route, which is what makes it worth a test: the redaction pass
-    drops `memory_index.db` from an off-host bundle by design, so every restore from a
-    redacted bundle takes this path. The "restore warns about a missing index" argument that
-    justified the drop does not cover it -- that warning tests the file AFTER the restore, and
-    a surviving stale index means it never fires.
-
-    The memory-TREE loop already stated the rule ("a tree the archive does not have is a tree
-    the destination must not keep"); this is the same rule for a file.
+    `_backup_and_copy` skips a core file the bundle lacks, so a live `memory_index.db` would
+    outlive the `memory.db` it indexes. Every redacted bundle omits the index, and a stale
+    one also hides the restore's missing-index warning. Same rule as the memory-tree loop.
     """
 
     def test_the_stale_index_is_removed_and_kept_for_rollback(self, tmp_path):
@@ -477,17 +438,9 @@ class TestReplaceDoesNotKeepAnIndexTheArchiveOmits:
 class TestAnInterruptDuringReplaceStillRollsBack:
     """A Ctrl-C mid-replace must not leave live state half swapped.
 
-    The handler catches `(OSError, DatabaseCopyFailed, PinnedPathRefusal)`.
-    `KeyboardInterrupt` is a `BaseException` and matches none of them, so it propagated past
-    the rollback entirely -- and its own comment already gave the reason `PinnedPathRefusal`
-    had to be in that tuple: it fires MID-mutation, so omitting it left live state half
-    replaced. An interrupt has exactly that property.
-
-    Reproduced: a Ctrl-C after the memory component was replaced left `memory.db` holding the
-    archive's copy and `crons.json` still live, with no rollback attempted.
-
-    Both halves are asserted, because rolling back is only half the requirement -- the
-    interrupt must still terminate the command rather than be swallowed into a success.
+    `KeyboardInterrupt` is a `BaseException`, outside the handler's
+    `(OSError, DatabaseCopyFailed, PinnedPathRefusal)`, yet it can fire MID-mutation like
+    `PinnedPathRefusal`. Both halves are asserted: rollback runs AND the interrupt propagates.
     """
 
     def _home(self, tmp_path):
@@ -527,19 +480,10 @@ class TestAnInterruptDuringReplaceStillRollsBack:
 class TestABundleDeclaringAComponentItDoesNotCarryIsRefused:
     """Declared-but-hollow: the manifest says a component rode, the bundle holds none of it.
 
-    Replace then clears the live state for that component with nothing to put back. Measured
-    end to end rather than on the mutation phase, because the guard is at the decision point --
-    calling `_do_replace_mutations` directly bypasses it and would report the old behaviour.
-
-    Two facts made this worth refusing rather than tolerating. The PRODUCT writes such a bundle:
-    a snapshot of a home with no memory payload declares `memory` anyway. And the damage is a
-    PARTIAL erasure, which is worse than either extreme -- the memory trees are cleared
-    unconditionally and the derived index is removed, while `memory.db` survives because the
-    bundle has no copy to install. The database is kept and the notes indexed against it are not.
-
-    The explicit-selection branch already refused this exact situation, with the rationale that
-    replace "would move the live files of that component out to the rollback dir and have
-    nothing to put back". Only the manifest-derived branch was missing the check.
+    Replace would clear the live state with nothing to put back. The product writes such a
+    bundle (a home with no memory payload still declares `memory`), and the damage is a
+    PARTIAL erasure: trees and index cleared, `memory.db` kept. Run end to end because the
+    guard sits at the decision point, which `_do_replace_mutations` bypasses.
     """
 
     def test_a_hollow_memory_declaration_refuses_instead_of_erasing(
@@ -577,21 +521,11 @@ class TestABundleDeclaringAComponentItDoesNotCarryIsRefused:
     def test_an_explicit_selection_of_a_hollow_component_also_refuses(
         self, src, tmp_path, monkeypatch
     ):
-        """The mirror of the case above, and the half I missed when I fixed it.
+        """The mirror case: `--components memory` on a hollow bundle also refuses.
 
-        The explicit-selection branch tested `c not in declared` -- membership in the
-        declaration, not whether any payload rode. So `--components memory` on a hollow bundle
-        passed the guard that exists for exactly this situation: `memory` IS declared, so
-        nothing looked absent, and replace went on to clear the live trees and index.
-
-        Both branches now ask the same question. Guarding one of them with a stronger test than
-        the other is what left this reachable.
-
-        The return code alone would NOT have caught it. Reproducing this showed `rc == 1`
-        already -- not from a refusal but from the memory.db integrity check failing later, by
-        which point the operator's notes were gone. So the load-bearing assertion is that the
-        note SURVIVES, and the destination gets a real database to keep the integrity check
-        from deciding the outcome.
+        Being declared is not the same as carrying a payload. The return code alone is not
+        enough: a later memory.db integrity failure also gives `rc == 1`, after the notes are
+        gone. So the note must SURVIVE, and the destination gets a real database.
         """
         for name in ("memory.db", "memory_index.db"):
             if (src / name).exists():

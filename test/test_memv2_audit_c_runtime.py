@@ -11,7 +11,13 @@ import pytest
 
 from kiro_crew import embeddings as emb
 from kiro_crew import executors as pools
-from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout, wait_until
+from kiro_crew.testing.wait import (
+    FALLBACK_TIMEOUT_SECS,
+    async_wait_until,
+    await_until,
+    default_timeout,
+    wait_until,
+)
 from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 
@@ -270,18 +276,44 @@ async def test_expired_owner_still_publishes_vector_to_waiters(monkeypatch, tmp_
 
 
 @pytest.fixture
+def expire_recall_deadline(monkeypatch):
+    """Return `expire()`, which fires the timers `wait_for` armed inside a recall.
+
+    A short `RECALL_TIMEOUT_SECS` can run out between the deadline being fixed and
+    `wait_for` reading it (a GC pause, a descheduled thread), and `wait_for` then
+    cancels the handler before it runs, so the recall never enters. Here the
+    deadline is the lost-run bound, and each test expires it once the recall has
+    entered. A recall's timer is one created while `embedding_work` is set.
+    """
+    armed = []
+    arm = asyncio.timeouts.timeout
+
+    def recorded(delay):
+        timeout = arm(delay)
+        if emb.embedding_work.get() is not None:
+            armed.append(timeout)
+        return timeout
+
+    monkeypatch.setattr(pools, "RECALL_TIMEOUT_SECS", FALLBACK_TIMEOUT_SECS)
+    monkeypatch.setattr(asyncio.timeouts, "timeout", recorded)
+
+    def expire():
+        now = asyncio.get_running_loop().time()
+        assert armed, "no recall deadline was armed"
+        for timeout in armed:
+            # A finite deadline, at most what `RECALL_TIMEOUT_SECS` allows.
+            assert timeout.when() is not None and timeout.when() <= now + FALLBACK_TIMEOUT_SECS
+            timeout.reschedule(now)
+
+    return expire
+
+
+@pytest.fixture
 def entered_recall_pool(monkeypatch):
     """A recall pool whose ``submit`` returns only once the worker is RUNNING the job.
 
-    `run_with_recall_deadline` arms its timer the moment it is awaited, and
-    `run_in_embed_pool` hands the job to a thread the OS still has to schedule.
-    With `RECALL_TIMEOUT_SECS` at 100 ms the two raced on a loaded runner: the
-    deadline cancelled a future no worker had claimed yet, so `future.cancel()`
-    SUCCEEDED, the job never ran, and a test whose subject is the RUNNING
-    worker's admission failed on `entered.wait`. Blocking the submitting loop
-    thread until the worker has called `set_running_or_notify_cancel` puts the
-    entry before the first point the timer can fire, on every host -- the
-    worker-entered handshake the testing spec asks for, at the pool seam.
+    It yields one event per job it started, so a test can count the jobs the
+    recall pool ran.
     """
     started: list[threading.Event] = []
 
@@ -305,9 +337,10 @@ def entered_recall_pool(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_server_deadline_retains_running_worker_admission(monkeypatch, entered_recall_pool):
+async def test_server_deadline_retains_running_worker_admission(
+    entered_recall_pool, expire_recall_deadline
+):
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
-    monkeypatch.setattr(pools, "RECALL_TIMEOUT_SECS", 0.1)
 
     def blocked():
         entered.set()
@@ -319,8 +352,9 @@ async def test_server_deadline_retains_running_worker_admission(monkeypatch, ent
     task = asyncio.create_task(pools.run_with_recall_deadline(pools.run_in_embed_pool(blocked)))
     try:
         assert await asyncio.to_thread(entered.wait, 2)
+        expire_recall_deadline()
         with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(task, 2)
+            await await_until(task, what="the recall deadline")
         assert len(entered_recall_pool) == 1
         admission = asyncio.get_running_loop()._kirocrew_recall_admission
         assert admission._value == pools._MAX_EMBED_WORKERS - 1
@@ -349,12 +383,13 @@ def test_model_digest_cached_until_file_changes(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cold_open", [False, True])
-async def test_http_deadline_wraps_real_recall_handler(monkeypatch, cold_open, entered_recall_pool):
+async def test_http_deadline_wraps_real_recall_handler(
+    monkeypatch, cold_open, entered_recall_pool, expire_recall_deadline
+):
     from kiro_crew.dashboard.handlers import memory, memory_member
 
     release, entered, finished = threading.Event(), threading.Event(), threading.Event()
     seen = []
-    monkeypatch.setattr(pools, "RECALL_TIMEOUT_SECS", 0.1)
 
     async def resolve(*args):
         return "default", None
@@ -384,16 +419,19 @@ async def test_http_deadline_wraps_real_recall_handler(monkeypatch, cold_open, e
     request = SimpleNamespace(
         app={"state": object()}, query={"q": "query", "store": "default"}, headers={}
     )
+    task = asyncio.ensure_future(
+        memory.memory_recall_deadline(memory_member.api_memory_recall)(request)
+    )
     try:
-        response = await _finished(
-            memory.memory_recall_deadline(memory_member.api_memory_recall)(request),
-            "the recall handler's 504 response",
-        )
+        await async_wait_until(entered.is_set)
+        expire_recall_deadline()
+        response = await await_until(task, what="the recall handler's 504 response")
         assert response.status == 504
         assert b"memory_recall_timeout" in response.body
         assert entered.is_set()
         assert seen[0].cancelled.is_set()
     finally:
+        task.cancel()
         release.set()
         assert await asyncio.to_thread(finished.wait, 2)
 
@@ -508,7 +546,7 @@ async def test_store_opened_after_apply_snapshot_before_config_gets_new_width(
 
 
 @pytest.mark.asyncio
-async def test_registered_recall_route_has_server_deadline(monkeypatch):
+async def test_registered_recall_route_has_server_deadline(monkeypatch, expire_recall_deadline):
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
 
@@ -525,7 +563,6 @@ async def test_registered_recall_route_has_server_deadline(monkeypatch):
         finally:
             cancelled.set()
 
-    monkeypatch.setattr(pools, "RECALL_TIMEOUT_SECS", 0.05)
     monkeypatch.setattr(memory_member, "resolve_requested_memory_store", resolve)
     app = web.Application()
     app["state"] = object()
@@ -538,10 +575,10 @@ async def test_registered_recall_route_has_server_deadline(monkeypatch):
     assert route.handler is memory_member.api_memory_recall
     assert hasattr(route.handler, "__wrapped__")
     async with TestClient(TestServer(app, host="127.0.0.1")) as client:
-        response = await _finished(
-            client.get("/api/memory/recall?store=default&q=query"),
-            "the recall route's 504 response",
-        )
+        reply = asyncio.ensure_future(client.get("/api/memory/recall?store=default&q=query"))
+        await await_until(entered, what="the recall route reaching its store")
+        expire_recall_deadline()
+        response = await _finished(reply, "the recall route's 504 response")
         assert response.status == 504
         assert (await response.json())["code"] == "memory_recall_timeout"
     assert entered.is_set() and cancelled.is_set()

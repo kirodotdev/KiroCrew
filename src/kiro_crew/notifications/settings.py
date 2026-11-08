@@ -1,11 +1,13 @@
 """Per-channel notification settings.
 
-User preferences for each notification channel: mute and priority override.
-Stored in ``~/.kiro/crew/notification_settings.json`` as::
+User preferences for each notification channel: mute, priority override, and
+the notification bridge's route. Stored in ``~/.kiro/crew/notification_settings.json`` as::
 
     {"channel_settings": {"system.heartbeat": {"muted": true},
                           "system.monitor": {},
-                          "oncall-radar.ticket-update": {"priority": "critical"}}}
+                          "oncall-radar.ticket-update": {"priority": "critical"},
+                          "system.approval": {"deliver_to": ["slack"],
+                                              "deliver_min_priority": "critical"}}}
 
 Every file this build writes contains a ``system.monitor`` entry, possibly an
 empty one, which records that the one-time seed from ``system.agent`` is done.
@@ -19,9 +21,15 @@ Semantics (applied at the delivery sink, keeping the bus pure):
   count, sound, native banner, feed styling) skips it.
 - **priority**: user override wins over the producer-requested priority and
   the channel default.
+- **deliver_to** / **deliver_min_priority**: the channel's bridge route -- which
+  chat transports receive its notes as an owner DM, and the lowest effective
+  priority that routes. Absent means no bridging. Read by
+  ``notifications.bridge.BridgeDispatcher``, never by :meth:`ChannelSettings.apply`,
+  which shapes the note every sink sees.
 - ``system.approval`` is protected: it cannot be muted and its priority
   cannot be lowered (approval still interrupts while heartbeat can be
-  silenced everywhere).
+  silenced everywhere). Protection is about attention, so a protected channel
+  may be routed like any other.
 """
 
 from __future__ import annotations
@@ -30,13 +38,16 @@ import json
 import logging
 import os
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.notifications.bridge import BRIDGE_TRANSPORTS, DELIVER_MIN_PRIORITIES
 from kiro_crew.notifications.bus import MONITOR_CHANNEL, PRIORITIES
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +82,51 @@ _MAX_CHANNEL_LEN = 256
 _MAX_IMPORT_CHANNELS = 512
 
 
+def validate_deliver_to(value: Any) -> list[str]:
+    """*value* as a stored ``deliver_to``: known transport ids, each once, in order.
+
+    Raises :class:`ChannelSettingsError` for anything else.
+    """
+    if not isinstance(value, list) or not all(isinstance(t, str) for t in value):
+        raise ChannelSettingsError("deliver_to must be a list of transport ids")
+    unknown = [t for t in value if t not in BRIDGE_TRANSPORTS]
+    if unknown:
+        raise ChannelSettingsError(
+            f"deliver_to names unknown transports {unknown!r}; known: {BRIDGE_TRANSPORTS}"
+        )
+    return list(dict.fromkeys(value))
+
+
+def validate_deliver_min_priority(value: Any) -> str:
+    """*value* as a stored ``deliver_min_priority``; raises when it is not one."""
+    if value not in DELIVER_MIN_PRIORITIES:
+        raise ChannelSettingsError(
+            f"deliver_min_priority must be one of {DELIVER_MIN_PRIORITIES}, got {value!r}"
+        )
+    return str(value)
+
+
+def _with_route(
+    entry: dict[str, Any], deliver_to: list[str] | None, deliver_min_priority: str | None
+) -> dict[str, Any]:
+    """*entry* with a validated route change applied; raises on a floor with no route.
+
+    An empty ``deliver_to`` clears the route, floor included, so an unrouted
+    channel stores nothing about bridging.
+    """
+    if deliver_to is not None:
+        if deliver_to:
+            entry["deliver_to"] = deliver_to
+        else:
+            entry.pop("deliver_to", None)
+            entry.pop("deliver_min_priority", None)
+    if deliver_min_priority is not None:
+        if not entry.get("deliver_to"):
+            raise ChannelSettingsError("deliver_min_priority needs a non-empty deliver_to")
+        entry["deliver_min_priority"] = deliver_min_priority
+    return entry
+
+
 def _read_stored_strict() -> dict[str, dict[str, Any]]:
     """The stored mapping; ``{}`` only when the file is absent or holds none.
 
@@ -80,7 +136,7 @@ def _read_stored_strict() -> dict[str, dict[str, Any]]:
     path = _settings_path()
     if not path.exists():
         return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = loads_user_json(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{path.name} is not a JSON object")
     raw = data.get("channel_settings", {})
@@ -89,16 +145,43 @@ def _read_stored_strict() -> dict[str, dict[str, Any]]:
     return {ch: dict(entry) for ch, entry in raw.items() if isinstance(entry, dict)}
 
 
-def _read_stored() -> dict[str, dict[str, Any]]:
-    """The stored mapping, or ``{}`` when the file is absent or unusable."""
+def _read_stored() -> dict[str, dict[str, Any]] | None:
+    """The stored mapping, or ``None`` when the file exists but is unusable."""
     path = _settings_path()
     try:
         return _read_stored_strict()
     except Exception:
-        # Corrupt settings must not take down the gateway; fall back to
-        # defaults (everything unmuted, producer priorities honored).
+        # Corrupt settings must not take down the gateway; the caller falls
+        # back to defaults (everything unmuted, producer priorities honored).
         logger.warning("Failed to load %s; using defaults", path, exc_info=True)
-    return {}
+    return None
+
+
+def _move_unreadable_aside() -> None:
+    """Rename the settings file to ``<name>.corrupt-<UTC stamp>`` before a write.
+
+    Called under :data:`_lock` when the file exists but cannot be read or parsed,
+    so the write that follows never destroys the only copy of the user's mutes.
+    The file is renamed, never rewritten, so the copy holds the exact bytes. A
+    rename that fails raises ``OSError``, the same error a failed write raises,
+    and nothing is written.
+    """
+    path = _settings_path()
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    target = path.with_name(f"{path.name}.corrupt-{stamp}")
+    suffix = 1
+    while os.path.lexists(target):
+        target = path.with_name(f"{path.name}.corrupt-{stamp}-{suffix}")
+        suffix += 1
+    try:
+        os.rename(path, target)
+    except FileNotFoundError:
+        return  # Gone since the read: there is nothing left to keep.
+    logger.warning(
+        "%s could not be read; kept its contents at %s and wrote the new settings in its place",
+        path,
+        target.name,
+    )
 
 
 def _seeded(settings: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -121,7 +204,9 @@ def parse_imported_settings(text: str) -> tuple[dict[str, dict[str, Any]], int]:
     DROPPED and counted rather than failing the whole file: an unknown priority, a
     non-boolean ``muted``, a field this build does not know, an over-long channel
     name, a channel past :data:`_MAX_IMPORT_CHANNELS`, and anything that would mute
-    ``system.approval`` or lower its priority. A channel whose every field was
+    ``system.approval`` or lower its priority. A ``deliver_to`` that is not a list of
+    known transports, and a ``deliver_min_priority`` that is not a floor or has no
+    route beside it, are dropped the same way. A channel whose every field was
     refused is dropped whole rather than kept as ``{}``: an empty row would still
     land on the install (replace writes it out, and a planted ``system.monitor``
     key would mark the one-time seed complete). The archive is untrusted input, so
@@ -160,8 +245,25 @@ def parse_imported_settings(text: str) -> tuple[dict[str, dict[str, Any]], int]:
                 and (channel not in PROTECTED_CHANNELS or value == "critical")
             ):
                 clean["priority"] = value
+            elif field == "deliver_to":
+                try:
+                    route = validate_deliver_to(value)
+                except ChannelSettingsError:
+                    refused += 1
+                    continue
+                if route:
+                    clean["deliver_to"] = route
+            elif field == "deliver_min_priority":
+                if value in DELIVER_MIN_PRIORITIES:
+                    clean["deliver_min_priority"] = value
+                else:
+                    refused += 1
             else:
                 refused += 1
+        if "deliver_min_priority" in clean and "deliver_to" not in clean:
+            # A floor with no route beside it is refused, as update() refuses it.
+            del clean["deliver_min_priority"]
+            refused += 1
         dropped += refused
         if refused and not clean:
             # Every field was refused: keep no row at all (see the docstring). An
@@ -182,11 +284,34 @@ class ChannelSettings:
 
     def __init__(self) -> None:
         self._settings: dict[str, dict[str, Any]] = {}
+        # Whether memory matches the file. False after a boot read that failed,
+        # so update() reads the file again (and keeps it aside if it still
+        # cannot) before its first write, instead of writing defaults over it.
+        self._loaded = False
         self._load()
         self._seed_monitor_from_agent()
 
     def _load(self) -> None:
-        self._settings = _read_stored()
+        """Bind memory to the file, or to defaults when it cannot be read."""
+        stored = _read_stored()
+        self._loaded = stored is not None
+        self._settings = _seeded(stored or {})
+
+    def _rebase_before_write(self) -> None:
+        """Make memory match the file before the first write after a failed load.
+
+        Called under :data:`_lock`. A read that succeeds now (the holder let go)
+        rebases memory on the file. One that still fails moves the file aside
+        (:func:`_move_unreadable_aside`), so the write keeps working and the
+        stored mutes survive in the ``.corrupt-`` copy.
+        """
+        if self._loaded:
+            return
+        try:
+            self._settings = _seeded(_read_stored_strict())
+        except Exception:
+            _move_unreadable_aside()
+        self._loaded = True
 
     def _seed_monitor_from_agent(self) -> None:
         """Copy a stored ``system.agent`` entry to ``system.monitor`` once.
@@ -227,6 +352,7 @@ class ChannelSettings:
                 # that loss to disk.
                 try:
                     self._settings = _seeded(_read_stored_strict())
+                    self._loaded = True
                 except Exception:
                     logger.warning(
                         "Failed to re-read %s after a failed settings swap; "
@@ -236,9 +362,10 @@ class ChannelSettings:
                     )
                 raise
             if installed is None:
-                self._settings = _seeded(_read_stored())
+                self._load()
             else:
                 self._settings = _seeded({ch: dict(entry) for ch, entry in installed.items()})
+                self._loaded = True
 
     @staticmethod
     def _payload(channel_settings: dict[str, dict[str, Any]]) -> str:
@@ -267,12 +394,23 @@ class ChannelSettings:
         muted: bool | None = None,
         priority: str | None = None,
         clear_priority: bool = False,
+        deliver_to: list[str] | None = None,
+        deliver_min_priority: str | None = None,
     ) -> dict[str, Any]:
         """Update one channel's settings and persist. Returns the new entry.
 
-        Raises :class:`ChannelSettingsError` for an unknown priority value,
-        or an attempt to mute / lower a protected channel.
+        ``deliver_to`` replaces the route (``[]`` clears it, floor included);
+        ``deliver_min_priority`` sets the floor of a route that exists after this
+        update. ``None`` leaves either as it is.
+
+        Raises :class:`ChannelSettingsError` for an unknown priority value, an
+        attempt to mute / lower a protected channel, an unknown transport or
+        floor, or a floor with no route.
         """
+        if deliver_to is not None:
+            deliver_to = validate_deliver_to(deliver_to)
+        if deliver_min_priority is not None:
+            deliver_min_priority = validate_deliver_min_priority(deliver_min_priority)
         if priority is not None and priority not in PRIORITIES:
             raise ChannelSettingsError(f"priority must be one of {PRIORITIES}, got {priority!r}")
         if channel in PROTECTED_CHANNELS:
@@ -283,6 +421,7 @@ class ChannelSettings:
         # _lock serializes WRITERS only (read-modify-write below); readers
         # are lock-free because this method rebinds self._settings wholesale.
         with _lock:
+            self._rebase_before_write()
             entry = dict(self._settings.get(channel, {}))
             if muted is not None:
                 if muted:
@@ -293,6 +432,7 @@ class ChannelSettings:
                 entry.pop("priority", None)
             elif priority is not None:
                 entry["priority"] = priority
+            entry = _with_route(entry, deliver_to, deliver_min_priority)
             # Persist the candidate FIRST, commit memory only on success:
             # otherwise a full/read-only filesystem would leave the rejected
             # setting active in memory (until restart) while disk kept the
@@ -333,6 +473,7 @@ class ChannelSettings:
             candidate.setdefault(MONITOR_CHANNEL, {})
             atomic_write(path, self._payload(candidate))
             self._settings = candidate
+            self._loaded = True
             return True
 
     def apply(self, note: dict[str, Any]) -> dict[str, Any]:

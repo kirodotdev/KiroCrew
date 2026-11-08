@@ -55,12 +55,16 @@ from kiro_crew import history_consolidation_memory as _memory
 from kiro_crew import history_consolidation_pass as _pass
 from kiro_crew import history_consolidation_skills as _skills
 from kiro_crew import platform_compat
+from kiro_crew._facade_bindings import own_methods
 from kiro_crew.config import live
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.history_consolidation_skills import _session_touched_sensitive
 from kiro_crew.history_consolidation_span import (
+    _CONSOLIDATION_EMPTY,
+    _CONSOLIDATION_STALE,
     AttemptedSpan,
+    PrefsWindow,
     _LeaseLostMidRun,
     _no_pass_ran,
     _persistence_disabled,
@@ -89,6 +93,7 @@ from kiro_crew.skills_dedupe import (
 )
 from kiro_crew.skills_script_validator import validate_skill_script
 from kiro_crew.vector_memory_constants import (
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
@@ -111,6 +116,9 @@ _CONSOLIDATION_THRESHOLD = 30
 _CONSOLIDATION_MAX_ATTEMPTS = 5
 _CONSOLIDATION_BACKOFF_BASE_SECS = 900.0
 _CONSOLIDATION_BACKOFF_MAX_SECS = 86400.0
+# How long a preference-only window waits after a pass whose result the live
+# conversation outran (``_CONSOLIDATION_STALE``) before the next turn may start one.
+_CONSOLIDATION_STALE_RETRY_SECS = 300.0
 # Seeded sessions (restored from disk after a restart) examined per idle sweep:
 # a large backlog drains a few per heartbeat instead of all at once.
 _SEEDED_PER_SWEEP = 3
@@ -130,25 +138,15 @@ class _CountClaim:
         self.reader: asyncio.Future[Any] | None = None
 
 
-_OWNER_PREFIX = __name__ + "_"
-
-
-def _own_methods(cls: type) -> None:
-    """Make every member *cls* binds from an owner read as a method of *cls*.
-
-    An owner annotates ``self`` so mypy checks the body as a method body; here that
-    annotation is dropped from the run-time function and the function is named after the
-    class attribute, so its ``inspect.signature``, its ``__qualname__`` (coroutine and task
-    reprs read it) and its coroutine kind are the one-module class's. Only ``__module__``
-    moves: it names the owner that holds the body. A ``contextmanager`` wrapper is followed
-    through ``__wrapped__`` to the function it wraps.
-    """
-    for name, member in vars(cls).items():
-        function = getattr(member, "__func__", member)
-        while getattr(function, "__module__", "").startswith(_OWNER_PREFIX):
-            function.__annotations__.pop("self", None)
-            function.__qualname__ = f"{cls.__qualname__}.{name}"
-            function = getattr(function, "__wrapped__", None)
+#: The owner modules whose functions :class:`HistoryConsolidator` binds as its members.
+_MEMBER_OWNERS = frozenset(
+    {
+        "kiro_crew.history_consolidation_lease",
+        "kiro_crew.history_consolidation_memory",
+        "kiro_crew.history_consolidation_pass",
+        "kiro_crew.history_consolidation_skills",
+    }
+)
 
 
 class HistoryConsolidator:
@@ -273,6 +271,15 @@ class HistoryConsolidator:
         self._idle_clean: dict[str, tuple[CacheIdentity, int]] = {}
         # Separate offset for prefs-only consolidation (doesn't advance main offset)
         self._prefs_offset: dict[str, int] = {}
+        # key -> the rotation_generation _prefs_offset was counted under. A
+        # rotation or rewrite replaces the rows it counts, so an offset from
+        # another generation is dropped rather than skipped past.
+        self._prefs_generation: dict[str, int] = {}
+        # key -> (consecutive prefs passes with no usable answer, retry-at wall
+        # time). In memory like _prefs_offset: the preference-only window has no
+        # durable failure record, so this only spaces out re-sends of a prompt
+        # that keeps failing instead of re-sending it on every user turn.
+        self._prefs_retry: dict[str, tuple[int, float]] = {}
         # Session length at the last skill-detection pass, so an unchanged
         # (rotation_generation, message_count) at the last skill-detection
         # pass, so an unchanged session isn't re-judged on every history
@@ -565,9 +572,10 @@ class HistoryConsolidator:
         return True
 
     async def _note_environment_failure(self, key: str, reason: str) -> None:
-        """Arm the backoff for a consolidation that never reached the provider.
+        """Arm the backoff for a consolidation turn that spent nothing.
 
-        Deliberately does NOT touch the attempt cap. A pre-dispatch failure spends
+        Deliberately does NOT touch the attempt cap. A pre-dispatch failure, or a
+        turn the provider sent nothing back for and billed nothing, spends
         nothing, so abandoning the span over one would write the durable marker
         over messages no LLM has ever read — losing a memory pass to a broken
         kiro-cli install rather than to a genuinely unprocessable span. The
@@ -712,6 +720,8 @@ class HistoryConsolidator:
         # does. _count_rows repeats the check for a deadline armed meanwhile.
         if self._inside_retry_deadline(key):
             return
+        if _time.time() < self._prefs_retry.get(key, (0, 0.0))[1]:
+            return
         claim = self._claim_count(key)
         if claim is not None:
             self._start_counted(claim, self._threshold_pass(key, claim))
@@ -719,15 +729,20 @@ class HistoryConsolidator:
     async def _threshold_pass(self, key: str, claim: _CountClaim) -> None:
         """Count *key*'s rows off the loop, then run a prefs pass at the threshold."""
         try:
-            counted = await self._count_off_loop(key, claim, floor=self._prefs_offset.get(key, 0))
+            counted = await self._count_off_loop(
+                key,
+                claim,
+                floor=self._prefs_offset.get(key, 0),
+                floor_generation=self._prefs_generation.get(key),
+            )
             if counted is None:
                 return
-            total = counted[0]
+            total, pending = counted
             # Re-checked after the await: an idle or session-end pass may have
             # claimed this transcript, or finished one, while the count ran.
             if self._busy(key):
                 return
-            if total - self._prefs_offset.get(key, 0) < _CONSOLIDATION_THRESHOLD:
+            if pending < _CONSOLIDATION_THRESHOLD:
                 return
             # Cheap pre-check mirroring the other automatic entry points. During
             # a backoff window every message past the threshold would otherwise
@@ -742,8 +757,9 @@ class HistoryConsolidator:
             self._running.add(key)
         finally:
             self._release_count(claim)
+        window = PrefsWindow(self._prefs_offset.get(key, 0), self._prefs_generation.get(key))
         try:
-            result = await self._consolidate(key, include_history=False)
+            result = await self._consolidate(key, include_history=False, prefs_window=window)
         except Exception:
             # _consolidate has already logged it and released its claim; a
             # failed pass leaves the offset alone so the window is retried.
@@ -753,8 +769,43 @@ class HistoryConsolidator:
         # threshold test skips it until a whole new threshold of messages
         # accumulates — silently dropping its preference/project extraction.
         # A cancellation propagates and leaves the offset alone too.
+        if result is _CONSOLIDATION_EMPTY:
+            # No usable answer: the window stays pending, and the next attempt
+            # waits on the same widening interval the history path's failed
+            # attempts use, so a prompt that fails every time is not re-sent on
+            # every turn.
+            failures = self._prefs_retry.get(key, (0, 0.0))[0] + 1
+            delay = min(
+                _CONSOLIDATION_BACKOFF_MAX_SECS,
+                _CONSOLIDATION_BACKOFF_BASE_SECS * (2 ** min(failures - 1, 64)),
+            )
+            self._prefs_retry[key] = (failures, _time.time() + delay)
+            self._logger.warning(
+                "Preference-only consolidation for %s produced no usable result "
+                "(failure #%d); retrying the same window in %.0fs",
+                key,
+                failures,
+                delay,
+            )
+            return
+        if result is _CONSOLIDATION_STALE:
+            # The user spoke while the model read the window, so its answer was
+            # discarded. In a live chat that is every pass: without a wait, each
+            # later turn would start (and bill) another pass that ends the same way.
+            # Keep the window pending and the failure count as it is, and try again
+            # once the wait is over.
+            failures = self._prefs_retry.get(key, (0, 0.0))[0]
+            self._prefs_retry[key] = (failures, _time.time() + _CONSOLIDATION_STALE_RETRY_SECS)
+            return
         if not _no_pass_ran(result):
-            self._prefs_offset[key] = total
+            # To the count the pass prompted, which a tail over the prompt
+            # budget leaves short of ``total``: the next threshold pass starts
+            # there. ``end`` is unset only when nothing reported a span (a
+            # stand-in for ``_consolidate``); the scheduled count stands then.
+            self._prefs_offset[key] = total if window.end is None else window.end
+            if window.snapshot_generation is not None:
+                self._prefs_generation[key] = window.snapshot_generation
+            self._prefs_retry.pop(key, None)
 
     def _claim_count(self, key: str) -> _CountClaim | None:
         """Claim *key*'s transcript for one off-loop count; None when one is in flight."""
@@ -788,7 +839,12 @@ class HistoryConsolidator:
         del self._counting[claim.name]
 
     async def _count_off_loop(
-        self, key: str, claim: _CountClaim, *, floor: int | None
+        self,
+        key: str,
+        claim: _CountClaim,
+        *,
+        floor: int | None,
+        floor_generation: int | None = None,
     ) -> tuple[int, int] | None:
         """``(total, total - floor)`` for *key*, counted in a worker thread.
 
@@ -797,9 +853,13 @@ class HistoryConsolidator:
         to finish, and *claim* covers it until then. *floor* None means the
         transcript's consolidated offset. None means nothing was counted: the
         key is inside its retry deadline, or the read failed (logged as a
-        warning), so the check is skipped.
+        warning), so the check is skipped. *floor_generation* is the
+        ``rotation_generation`` *floor* was counted under; under another one
+        the transcript's consolidated offset is the floor instead.
         """
-        claim.reader = asyncio.ensure_future(asyncio.to_thread(self._count_rows, key, floor))
+        claim.reader = asyncio.ensure_future(
+            asyncio.to_thread(self._count_rows, key, floor, floor_generation)
+        )
         try:
             return await asyncio.shield(claim.reader)
         except Exception:
@@ -808,7 +868,9 @@ class HistoryConsolidator:
             )
             return None
 
-    def _count_rows(self, key: str, floor: int | None) -> tuple[int, int] | None:
+    def _count_rows(
+        self, key: str, floor: int | None, floor_generation: int | None = None
+    ) -> tuple[int, int] | None:
         """Worker thread: count *key*'s rows one line at a time.
 
         A key inside its retry deadline is refused by ``retry_eligible`` after
@@ -822,6 +884,9 @@ class HistoryConsolidator:
         """
         if self._inside_retry_deadline(key):
             return None
+        if floor is not None and floor_generation is not None:
+            if self._log.rotation_generation(key) != floor_generation:
+                floor = None  # counted rows a rotation or rewrite replaced
         if floor is None:
             floor = self._log.consolidated_offset(key)
         total = self._log._count_messages(key, hold_writer_lock=False)
@@ -1124,7 +1189,7 @@ class HistoryConsolidator:
         return True
 
 
-_own_methods(HistoryConsolidator)
+own_methods(HistoryConsolidator, _MEMBER_OWNERS)
 #: BASE imports this module binds for its importers and for the patches the mirror
 #: routes through it, though its own code does not read them.
 _BOUND_FOR_IMPORTERS = (
@@ -1141,6 +1206,7 @@ _BOUND_FOR_IMPORTERS = (
     VERDICT_DUP,
     VERDICT_NEW,
     VERDICT_UPDATE,
+    _MAX_CONSOLIDATION_SEMANTIC_VALUE_CHARS,
     _MAX_EPISODIC_PER_CONSOLIDATION,
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
@@ -1184,7 +1250,7 @@ _EXPORTS: dict[str, str] = {}
 _SURFACE = frozenset().union(globals(), *(vars(_sys.modules[o]) for o in _OWNERS)) - {
     n
     for n, m in vars(HistoryConsolidator).items()
-    if getattr(m, "__module__", "").startswith(_OWNER_PREFIX)
+    if getattr(m, "__module__", None) in _MEMBER_OWNERS
 }
 _EXPORTS.update(
     _facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=(), surface=_SURFACE).served
@@ -1209,15 +1275,22 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LESSON_PASSTHROUGH_FIELDS,
         _PLACEHOLDER_BODIES,
         _SEMANTIC_OMISSION_NOTICE,
+        _SEMANTIC_SNAPSHOT_PAGE,
+        _audit_oversized_semantic,
         _bounded_semantic_table,
         _BoundedTable,
         _EmbedBudget,
         _InheritGlobal,
         _is_plausible_memory_file,
         _LessonDeleteDecision,
+        _OversizedItem,
         _recency,
+        _refuse_oversized_semantic,
         _reroute_lesson_semantic_keys,
+        _semantic_snapshot_in_pages,
         _session_facets,
+        _v1_consolidation_confidence,
+        _v1_consolidation_metadata,
         _withhold_unseen_deletes,
     )
     from kiro_crew.history_consolidation_pass import (  # noqa: F401
@@ -1247,6 +1320,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _consolidation_head_content,
         _ConsolidationNotDispatched,
         _ConsolidationRefusedSentinel,
+        _ConsolidationReplyUnusable,
         _fmt_message,
         _head_exceeds_budget,
         _head_slice_ceiling_reached,

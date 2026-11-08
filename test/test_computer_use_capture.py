@@ -134,9 +134,7 @@ def _spooled(directory: Path) -> list[str]:
 def test_source_uses_tempfile_gettempdir_not_a_hardcoded_tmp():
     """The spool path must derive from ``tempfile.gettempdir()``.
 
-    Idiom and assertion shape copied from
-    ``test_mcp_playwright_proxy.py::test_source_uses_tempfile_gettempdir_not_hardcoded_slash_tmp``.
-    ``os.environ.get("TMPDIR", "/tmp")`` was the original defect there: the
+    ``os.environ.get("TMPDIR", "/tmp")`` is the defect this guards: the
     fallback does not exist on Windows and ``os.makedirs`` crashed on it.
 
     Asserted against ``macos_ffi`` and its owners (``macos_ffi_window`` owns the default
@@ -456,7 +454,7 @@ def test_ring_trim_removes_the_oldest_first(spool: Path):
 def test_ring_trim_ignores_unrelated_files(spool: Path):
     """Only our own frames are eligible — the temp dir is shared."""
     spool.mkdir(parents=True)
-    (spool / "not-ours.txt").write_text("keep me")
+    (spool / "not-ours.txt").write_text("keep me", encoding="utf-8")
     for stamp in (1000, 2000, 3000):
         (spool / f"{SCREENSHOT_FILE_PREFIX}{stamp}{SCREENSHOT_FILE_SUFFIX}").write_bytes(_JPEG)
     capture_macos.trim_shots_dir(keep=1)
@@ -507,11 +505,13 @@ def test_ring_trim_skips_a_file_removed_concurrently(spool: Path, monkeypatch: p
     # where pytest's own tmp_path cleanup calls unlink with dir_fd=.
     def _racy(path, **kwargs):
         real_unlink(path, **kwargs)
-        raise FileNotFoundError(path)
+        if os.path.basename(path).startswith(f"{SCREENSHOT_FILE_PREFIX}1000"):
+            raise FileNotFoundError(path)
 
     monkeypatch.setattr(capture_macos.os, "unlink", _racy)
     # Must not raise; the count it reports simply excludes the racy one.
-    capture_macos.trim_shots_dir(keep=1)
+    assert capture_macos.trim_shots_dir(keep=1) == 1
+    assert _spooled(spool) == [f"{SCREENSHOT_FILE_PREFIX}3000{SCREENSHOT_FILE_SUFFIX}"]
 
 
 # ── the secure-field floor ──
@@ -800,7 +800,7 @@ class TestFramePayloadRegexIsLinear:
 
 
 class TestIncompleteScanSuppressesCapture:
-    """An incomplete secure-field scan must not permit pixels (reviewer finding).
+    """An incomplete secure-field scan must not permit pixels.
 
     ``has_secure`` covers every node the walk CLASSIFIED, including those past the
     reporting budget — but the walk has hard cutoffs of its own

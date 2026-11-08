@@ -79,8 +79,8 @@ def test_full_payload_of_another_provider_never_gets_the_marker(provider) -> Non
     assert projected == {"ci": "failed", "state": "open"}
 
 
-def test_the_marker_providers_are_github_and_bitbucket_server() -> None:
-    assert projection.CI_PENDING_PROVIDERS == {"github", "bitbucket_server"}
+def test_the_marker_providers_are_github_bitbucket_server_and_gerrit() -> None:
+    assert projection.CI_PENDING_PROVIDERS == {"github", "bitbucket_server", "gerrit"}
 
 
 def test_gitlab_aggregate_never_gets_the_marker() -> None:

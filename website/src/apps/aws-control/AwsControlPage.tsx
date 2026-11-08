@@ -502,12 +502,17 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
 
   const registerM = useMutation({
     mutationFn: (names: string[]) => awsControlApi.registerProfiles(names),
-    onSuccess: () => {
+    onSuccess: (_result, names) => {
       // Invalidating the account list is what makes the just-registered profile
       // show up without a manual refresh.
       queryClient.invalidateQueries({ queryKey: appKey(['accounts']) })
       queryClient.invalidateQueries({ queryKey: appKey(['profiles-available']) })
-      setChecked(new Set())
+      // Only the registered names leave the draft: a box checked while the
+      // request ran is the user's next pick.
+      setChecked((prev) => {
+        const kept = new Set([...prev].filter((name) => !names.includes(name)))
+        return kept.size === prev.size ? prev : kept
+      })
     },
   })
 
@@ -606,7 +611,12 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
             </p>
           )}
 
-          {availableQ.isError ? null : unregistered.length === 0 ? (
+          {/* No answer yet, or no profile at all, is not "all registered". */}
+          {availableQ.isError || !data ? null : data.profiles.length === 0 ? (
+            <p className="text-[13px] text-muted" data-testid="add-accounts-no-profiles">
+              {i18nT('apps.awsControl.page.add_accounts_no_profiles')}
+            </p>
+          ) : unregistered.length === 0 ? (
             <p className="text-[13px] text-muted" data-testid="add-accounts-none">
               {i18nT('apps.awsControl.page.add_accounts_none')}
             </p>
@@ -712,6 +722,7 @@ function AccountsPane({ accountsQ, selected, onUse, openAddAccounts = false }: {
 }) {
   const [query, setQuery] = useState('')
   const data = accountsQ.data
+  const refreshAccounts = useRefreshAccounts()
   // Every hand-off on this pane is withheld while the Add-accounts disclosure
   // holds ticked-but-unregistered profiles: "Ask the agent" navigates to chat,
   // which unmounts the disclosure and drops the selection. The reconnect and
@@ -787,14 +798,18 @@ function AccountsPane({ accountsQ, selected, onUse, openAddAccounts = false }: {
           // never name two different numbers.
           <span data-testid="accounts-totals">
             {i18nT('apps.awsControl.page.totals_summary', {
+              count: data.accounts.length,
               accounts: fmtNumber(data.accounts.length),
-              keys: fmtNumber(data.totals.profiles),
-              healthy: fmtNumber(data.totals.profilesHealthy),
+              keys: i18nT('apps.awsControl.page.keys_healthy', {
+                count: data.totals.profiles,
+                n: fmtNumber(data.totals.profiles),
+                healthy: fmtNumber(data.totals.profilesHealthy),
+              }),
             })}
           </span>
         ) : undefined}
         actions={
-          <Btn onClick={() => accountsQ.refetch()} disabled={accountsQ.isFetching} data-testid="refresh">
+          <Btn onClick={() => void refreshAccounts()} disabled={accountsQ.isFetching} data-testid="refresh">
             <RefreshCw className={`h-3.5 w-3.5 ${accountsQ.isFetching ? 'animate-spin' : ''}`} />
             {i18nT('apps.awsControl.page.refresh')}
           </Btn>
@@ -946,6 +961,7 @@ function OverviewPane({ accountsQ, selected, drive, driveQ, sharesQ, onUse, onOp
 }) {
   const qc = useQueryClient()
   const appKey = useAppQueryKey()
+  const refreshAccounts = useRefreshAccounts()
   const id = selected.account
   const data = accountsQ.data
   const accounts = data?.accounts ?? []
@@ -1017,7 +1033,7 @@ function OverviewPane({ accountsQ, selected, drive, driveQ, sharesQ, onUse, onOp
 
   /** Everything this pane reads, re-read at once. */
   const refreshAll = () => {
-    void accountsQ.refetch()
+    void refreshAccounts()
     void qc.invalidateQueries({ queryKey: appKey(['drive', id]) })
     void qc.invalidateQueries({ queryKey: appKey(['costs', id]) })
     void qc.invalidateQueries({ queryKey: appKey(['shares', id]) })
@@ -1313,6 +1329,23 @@ function useAccountsQuery() {
 }
 
 /**
+ * What the Refresh buttons run. A plain read is answered from the backend's
+ * five-minute probe snapshot; `?refresh=1` re-probes every key. It writes the
+ * list's own cache entry, so every reader repaints and `isFetching` drives the
+ * spinner. `staleTime: 0` because the client's default (`Infinity`) would answer
+ * from the cache without a request.
+ */
+function useRefreshAccounts() {
+  const qc = useQueryClient()
+  const appKey = useAppQueryKey()
+  return () => qc.prefetchQuery({
+    queryKey: appKey(['accounts']),
+    queryFn: () => awsControlApi.accounts(true),
+    staleTime: 0,
+  })
+}
+
+/**
  * The local-profile scan, shared by the Add-accounts disclosure and by the
  * accounts empty state.
  *
@@ -1402,7 +1435,7 @@ function DrivePaneGate({ pane, account, drive, driveQ, children }: {
       {/* No bucket yet, so the pane carries the one action that changes that. */}
       {drive && !drive.exists && (
         <div data-testid="capability-drive-setup">
-          <SetupCard account={id} region={setupRegion} />
+          <SetupCard account={id} region={setupRegion} searchedRegion={drive.searched_region} />
         </div>
       )}
     </section>

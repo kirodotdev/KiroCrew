@@ -13,8 +13,8 @@ import asyncio
 import json
 import os
 import pathlib
+import subprocess
 import sys
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,12 +26,63 @@ from terminal_handler_helpers import (  # noqa: F401 -- the autouse fixture regi
     _make_session,
 )
 
-from kiro_crew.dashboard.handlers import terminal
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.dashboard.handlers import terminal, terminal_session
+from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import async_wait_until, await_until, finished, until_parked
+
+
+class _AsyncioNotingTheBound:
+    """The reap's own ``asyncio``, whose ``wait_for`` notes the bound it was given.
+
+    The wait itself is the real one, so the bound still runs out on a real timer, and
+    every other name on it is the real ``asyncio``'s. What the test asserts is the
+    schedule the reap asked for, with no clock reading of the host's in it.
+    """
+
+    def __init__(self) -> None:
+        self.bounds: list[float | None] = []
+
+    async def wait_for(self, fut, timeout):
+        self.bounds.append(timeout)
+        return await asyncio.wait_for(fut, timeout)
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+
+def _env_supports_default_signal() -> bool:
+    """GNU ``env --default-signal`` arrived in coreutils 8.31. An older ``env``
+    exits 125 on the flag, so the normalized case skips there instead of failing
+    on the host's tool rather than on the wrapper under test."""
+    if sys.platform != "linux":
+        return False
+    try:
+        probe = subprocess.run(
+            ["env", "--default-signal=INT", "true"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return probe.returncode == 0
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Linux runner uses GNU env")
-@pytest.mark.parametrize("normalize", [False, True])
+@pytest.mark.parametrize(
+    "normalize",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                not _env_supports_default_signal(),
+                reason="env --default-signal needs GNU coreutils 8.31 or newer",
+            ),
+        ),
+    ],
+)
 def test_runner_sigint_normalization_preserves_other_signals(tmp_path, normalize):
     """Exercise inherited SIG_IGN -> env -> Bash -> pytest without root.
 
@@ -39,7 +90,6 @@ def test_runner_sigint_normalization_preserves_other_signals(tmp_path, normalize
     this probe executes its post-transition signal boundary at our current uid.
     """
     import shlex
-    import subprocess
 
     import yaml
 
@@ -307,26 +357,27 @@ class TestChildExitStatus:
 
     @pytest.mark.asyncio
     async def test_the_posix_branch_honors_the_shared_reap_bound(self, monkeypatch):
-        """A child that never goes must not park the reader for good. The
-        ``elapsed`` assertion is load-bearing: it is the only thing proving the
-        wait reads ``_CHILD_REAP_TIMEOUT_S`` rather than a hardcoded bound."""
+        """A child that never goes must not park the reader for good. The armed
+        timer is load-bearing: it is the only thing proving the wait reads
+        ``_CHILD_REAP_TIMEOUT_S`` rather than a hardcoded bound."""
         monkeypatch.setattr(terminal, "_CHILD_REAP_TIMEOUT_S", 0.02)
         sess = _make_session()
+        outlives = asyncio.Event()
 
         async def _never_settles():
-            # flake-ok: pre-existing 5 s stand-in for a child that outlives the reap bound, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(5)
+            # A child that outlives the bound: the reap's own timeout ends the wait,
+            # and the test releases the stub in its cleanup.
+            await outlives.wait()
 
         sess.proc.wait = AsyncMock(side_effect=_never_settles)
-        # flake-ok: pre-existing real-clock start stamp for the elapsed ceiling that proves the POSIX reap honours the patched bound, moved verbatim; tracked for a de-flake pass
-        started = time.monotonic()
-        assert await terminal._child_exit_status(sess) is None
-        # flake-ok: pre-existing real-clock read of how long the POSIX reap took against the patched 0.02 s bound, moved verbatim; tracked for a de-flake pass
-        elapsed = time.monotonic() - started
-        # flake-ok: pre-existing 1 s wall-clock ceiling on the POSIX reap that proves it reads the patched bound, moved verbatim; tracked for a de-flake pass
-        assert elapsed < 1.0, (
-            f"the POSIX reap waited {elapsed:.2f}s against a patched "
+        reap = _AsyncioNotingTheBound()
+        monkeypatch.setattr(terminal, "asyncio", reap)
+        try:
+            assert await finished(terminal._child_exit_status(sess), "the POSIX reap") is None
+        finally:
+            outlives.set()
+        assert reap.bounds == [terminal._CHILD_REAP_TIMEOUT_S], (
+            f"the POSIX reap waited with a bound of {reap.bounds} against a patched "
             "_CHILD_REAP_TIMEOUT_S of 0.02s, so it is not reading that constant"
         )
 
@@ -366,21 +417,21 @@ class TestChildExitStatus:
     @pytest.mark.asyncio
     async def test_unavailable_when_the_conpty_child_outlives_the_bound(self, monkeypatch):
         """An immortal ConPTY child answers ``None`` whatever the bound, so only
-        the timing proves the poll honours ``_CHILD_REAP_TIMEOUT_S``."""
-        monkeypatch.setattr(terminal, "_CHILD_REAP_TIMEOUT_S", 0.02)
+        the number of looks proves the poll honours ``_CHILD_REAP_TIMEOUT_S``.
+
+        The bound is patched to 0, an expired deadline with no clock in it: the
+        poll gives up at its first look. A bound it did not read would keep it
+        polling, and the look count says so."""
+        monkeypatch.setattr(terminal, "_CHILD_REAP_TIMEOUT_S", 0)
         monkeypatch.setattr(terminal, "_CONPTY_STATUS_POLL_S", 0.001)
         sess = _make_session()
         sess.winpty = MagicMock()
         sess.winpty.isalive.return_value = True
-        # flake-ok: pre-existing real-clock start stamp for the elapsed ceiling that proves the ConPTY poll honours the patched bound, moved verbatim; tracked for a de-flake pass
-        started = time.monotonic()
-        assert await terminal._child_exit_status(sess) is None
-        # flake-ok: pre-existing real-clock read of how long the ConPTY poll took against the patched 0.02 s bound, moved verbatim; tracked for a de-flake pass
-        elapsed = time.monotonic() - started
-        # flake-ok: pre-existing 1 s wall-clock ceiling on the ConPTY poll that proves it reads the patched bound, moved verbatim; tracked for a de-flake pass
-        assert elapsed < 1.0, (
-            f"the ConPTY reap polled for {elapsed:.2f}s against a patched "
-            "_CHILD_REAP_TIMEOUT_S of 0.02s, so it is not reading that constant"
+        assert await finished(terminal._child_exit_status(sess), "the ConPTY reap") is None
+        looks = sess.winpty.isalive.call_count
+        assert looks == 1, (
+            f"the ConPTY reap looked {looks} times against a patched "
+            "_CHILD_REAP_TIMEOUT_S of 0, so it is not reading that constant"
         )
 
     @pytest.mark.asyncio
@@ -389,6 +440,26 @@ class TestChildExitStatus:
         sess = _make_session()
         sess.proc = None
         assert await terminal._child_exit_status(sess) is None
+
+
+class _ClientSocket:
+    """What the browser tab sees: the control frames it received and how it closed.
+
+    The real ``_send_owner_control_frame`` and ``_close_terminal_ws_bounded`` drive
+    it, so a frame here is one the handler actually put on the wire.
+    """
+
+    def __init__(self):
+        self.closed = False
+        self.frames: list[dict] = []
+        self.close_code: int | None = None
+
+    async def send_str(self, data):
+        self.frames.append(json.loads(data))
+
+    async def close(self, code=None):
+        self.closed = True
+        self.close_code = code
 
 
 class TestHandlePtyReaderEnd:
@@ -450,35 +521,28 @@ class TestHandlePtyReaderEnd:
     async def test_an_unavailable_status_is_reported_as_null(self):
         """A dead child whose code cannot be read is distinct from a code of 0,
         so the frame carries null rather than inventing one."""
-        ws = MagicMock()
+        ws = _ClientSocket()
         sess = _make_session(alive=False, ws=ws)
         sess.proc = None  # no child to ask: the status is unavailable
         registry = {sess.session_id: sess}
-        with (
-            patch.object(
-                terminal, "_send_owner_control_frame", AsyncMock(return_value=True)
-            ) as send,
-            patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()),
-            patch.object(terminal, "_kill_session", AsyncMock()) as kill,
-        ):
+        with patch.object(terminal, "_kill_session", AsyncMock()) as kill:
             await terminal._handle_pty_reader_end(registry, sess)
-        send.assert_awaited_once_with(sess, ws, {"type": "exit", "status": None})
+        assert ws.frames == [{"type": "exit", "status": None}]
+        assert ws.close_code == terminal._TERMINAL_WS_CLOSE_SHELL_EXITED
+        assert registry == {}
         kill.assert_awaited_once_with(sess)
 
     @pytest.mark.asyncio
     async def test_silent_when_the_session_was_deliberately_torn_down(self):
         """DELETE and the orphan sweep pop the entry BEFORE closing the fd, so
         the resulting OSError must not reach the client as an exit."""
-        sess = _make_session(alive=False, ws=MagicMock())
+        ws = _ClientSocket()
+        sess = _make_session(alive=False, ws=ws)
         registry: dict = {}  # already popped by the teardown path
-        with (
-            patch.object(terminal, "_send_owner_control_frame", AsyncMock()) as send,
-            patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()) as close,
-            patch.object(terminal, "_kill_session", AsyncMock()) as kill,
-        ):
+        with patch.object(terminal, "_kill_session", AsyncMock()) as kill:
             await terminal._handle_pty_reader_end(registry, sess)
-        send.assert_not_awaited()
-        close.assert_not_awaited()
+        assert (ws.frames, ws.closed) == ([], False)
+        assert sess.ws is ws
         kill.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -489,7 +553,8 @@ class TestHandlePtyReaderEnd:
         user killed themselves, and reap a freed fd twice. A non-zero status is
         used deliberately -- the note is published before the lock, so it is the
         one effect a guard inside the lock cannot hold back."""
-        sess = _make_session(alive=False, ws=MagicMock())
+        ws = _ClientSocket()
+        sess = _make_session(alive=False, ws=ws)
         registry = {sess.session_id: sess}
         bus = MagicMock()
 
@@ -499,13 +564,10 @@ class TestHandlePtyReaderEnd:
 
         with (
             patch.object(terminal, "_child_exit_status", side_effect=pop_during_status),
-            patch.object(terminal, "_send_owner_control_frame", AsyncMock()) as send,
-            patch.object(terminal, "_close_terminal_ws_bounded", AsyncMock()) as close,
             patch.object(terminal, "_kill_session", AsyncMock()) as kill,
         ):
             await terminal._handle_pty_reader_end(registry, sess, bus=bus)
-        send.assert_not_awaited()
-        close.assert_not_awaited()
+        assert (ws.frames, ws.closed) == ([], False)
         kill.assert_not_awaited()
         bus.push.assert_not_called()
 
@@ -608,8 +670,7 @@ class TestHandlePtyReaderEnd:
         async def delayed_send(_sess, ws, _frame):
             assert _sess is sess and ws is old_ws
             send_started.set()
-            # flake-ok: pre-existing unbounded Event wait that parks the fake exit-frame send until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release_send.wait()
+            await await_until(release_send, what="the test releasing the exit frame's send")
             return True
 
         with (
@@ -622,8 +683,11 @@ class TestHandlePtyReaderEnd:
             handling = asyncio.create_task(terminal._handle_pty_reader_end(registry, sess))
             await await_until(send_started, what="the exit frame's send starting")
             takeover = asyncio.create_task(terminal._replace_terminal_ws(sess, new_ws))
-            # flake-ok: pre-existing zero-second yield that lets the queued takeover reach replace_lock before the test asserts it is still pending, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0)
+            # The takeover is queued on replace_lock behind the exit frame's send.
+            await until_parked(
+                sess.replace_lock,
+                describe=lambda: "the takeover bypassed replace_lock" if takeover.done() else "",
+            )
             assert not takeover.done(), "the takeover bypassed replace_lock"
             assert sess.ws is old_ws
             new_ws.send_str.assert_not_awaited()
@@ -852,7 +916,10 @@ class TestShellExitIntegration:
             json.dumps({"dashboard": {"terminal": {"enabled": True, "shell": shell}}})
         )
         monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
-        # flake-ok: pre-existing 0.0 cache stamp the enabled check compares with the real monotonic clock so the 30 s window reads as expired, moved verbatim; tracked for a de-flake pass
+        # The enabled check compares its cache stamp with the monotonic clock it reads.
+        # Give it a clock of the test's own, well past the 30 s window, so the 0.0 stamp
+        # reads as expired whatever the host's uptime.
+        ManualClock(monotonic_start=1_000.0).install(monkeypatch, terminal_session)
         monkeypatch.setattr(terminal, "_enabled_cache", [True, 0.0])
         monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
 
@@ -873,31 +940,31 @@ class TestShellExitIntegration:
                 async with client.ws_connect(
                     "/api/ws/terminal/exit-sess", params={"cwd": str(home)}
                 ) as ws:
-                    # Wait for the prompt bytes, not the ready frame, which
-                    # /bin/sh can get before its startup finishes.
-                    loop = asyncio.get_running_loop()
-                    # flake-ok: pre-existing real-clock deadline 30 s out that bounds the wait for the shell's exit frame and close, moved verbatim; tracked for a de-flake pass
-                    deadline = loop.time() + 30
-                    # flake-ok: pre-existing real-clock read that ends the receive loop once the 30 s deadline passes, moved verbatim; tracked for a de-flake pass
-                    while loop.time() < deadline:
-                        # flake-ok: pre-existing real-clock read that sizes each receive timeout from what is left of the 30 s deadline, moved verbatim; tracked for a de-flake pass
-                        msg = await ws.receive(timeout=deadline - loop.time())
-                        if msg.type == web.WSMsgType.BINARY and not sent:
-                            await ws.send_bytes(command)
-                            sent = True
-                            continue
-                        if msg.type == web.WSMsgType.TEXT:
-                            payload = json.loads(msg.data)
-                            if payload.get("type") == "exit":
-                                exit_frame = payload
-                        elif msg.type in (
-                            web.WSMsgType.CLOSE,
-                            web.WSMsgType.CLOSING,
-                            web.WSMsgType.CLOSED,
-                            web.WSMsgType.ERROR,
-                        ):
-                            close_code = ws.close_code
-                            break
+
+                    async def _read_until_closed() -> None:
+                        nonlocal exit_frame, close_code, sent
+                        while True:
+                            msg = await ws.receive()
+                            # Wait for the prompt bytes, not the ready frame, which
+                            # /bin/sh can get before its startup finishes.
+                            if msg.type == web.WSMsgType.BINARY and not sent:
+                                await ws.send_bytes(command)
+                                sent = True
+                                continue
+                            if msg.type == web.WSMsgType.TEXT:
+                                payload = json.loads(msg.data)
+                                if payload.get("type") == "exit":
+                                    exit_frame = payload
+                            elif msg.type in (
+                                web.WSMsgType.CLOSE,
+                                web.WSMsgType.CLOSING,
+                                web.WSMsgType.CLOSED,
+                                web.WSMsgType.ERROR,
+                            ):
+                                close_code = ws.close_code
+                                return
+
+                    await finished(_read_until_closed(), "the shell's exit frame and close")
         finally:
             leftover = registry.get("exit-sess")
             if leftover is not None:

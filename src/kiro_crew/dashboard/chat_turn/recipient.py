@@ -3,15 +3,29 @@ ladder, the channel target, and the linked-Slack and cross-surface legs."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import os
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.chat_utils import slack_mirror_is_paused
+from kiro_crew.dashboard.chat_utils import (
+    RecoveryPayload,
+    is_synthetic_recovery_item,
+    slack_mirror_is_paused,
+)
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
 from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, parse_session_key
+from kiro_crew.messaging.outbound_files import (
+    OutboundFile,
+    extract_local_refs_off_loop,
+    iter_local_refs,
+    strip_url_syntax,
+)
 from kiro_crew.messaging.renderer import split_options_trailer
+from kiro_crew.messaging.upload_gate import uploads_restricted
 from kiro_crew.mirror_admission import admission_required, verify_mirror_admission
 from kiro_crew.platform import redact_via_context
 
@@ -20,6 +34,7 @@ if TYPE_CHECKING:
         _RECIPIENT_LOGGED,
         _RECIPIENT_LOGGED_CAP,
         SLACK_NAMESPACE,
+        code_channel_post_thread,
         logger,
         mirror_is_paused,
         sel,
@@ -596,7 +611,10 @@ async def _deliver_linked_slack_message(
     if not (thread_ts and channel_id):
         return
     try:
-        await slack_client.post_message(channel_id, message, thread_ts)
+        # Top-level in a code channel, like every other post its session makes.
+        await slack_client.post_message(
+            channel_id, message, code_channel_post_thread(channel_id, thread_ts)
+        )
     except Exception:
         logger.debug("Failed to deliver a message to the linked Slack thread", exc_info=True)
 
@@ -620,6 +638,138 @@ def _cross_surface_reply_text(segments: list[str], trailing: str) -> str:
         return trailing
     earlier = [split_options_trailer(s)[0] for s in segments[:-1]]
     return "\n\n".join([*(e for e in earlier if e), segments[-1]])
+
+
+#: Refusal lines a mirrored reply's follow-up names before the rest collapse into a
+#: count -- the channel renderers' own budget.
+_MAX_REJECTION_LINES = 3
+
+
+def _local_file_name(path: str) -> str:
+    """The name a reader is shown for a local file at *path*, never the path."""
+    tail = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return _upload_display_name(tail)
+
+
+def _label_local_images(text: str) -> str:
+    """*text* with each local ``![alt](path)`` replaced by ``🖼 <name>``.
+
+    The mirror never prints a path on this host: a picture it does not send is
+    named instead. The scan is the channel renderers' own
+    (``outbound_files.iter_local_refs``), so inline code, fences and remote
+    destinations are left as written. Blocking; call it off the event loop.
+    """
+    for ref in reversed(iter_local_refs(text)):
+        name = _local_file_name(strip_url_syntax(ref.dest))
+        label = f"{_ECHO_IMAGE_PREFIX}{name}" if name else ""
+        text = text[: ref.start] + label + text[ref.end :]
+    return text
+
+
+async def _mirror_upload_roots(state: Any, session_key: str) -> tuple[str, str]:
+    """``(cwd, scratch)`` a mirrored reply's pictures may come from, or ``("", "")``.
+
+    The live provider's own ``cwd`` and ``$KIROCREW_SCRATCH``, read the way the
+    channel dispatchers read them at ``bind_provider``; a reply is delivered after
+    its turn, so the provider that wrote it is still bound. A non-absolute cwd is
+    no root at all, and scratch counts only beside a valid cwd.
+    """
+    get_provider = getattr(getattr(state, "sessions", None), "get_provider", None)
+    provider = get_provider(session_key) if callable(get_provider) else None
+    root = str(getattr(provider, "cwd", "") or "")
+    if not os.path.isabs(root):
+        return "", ""
+    scratch = str(getattr(provider, "work_scratch_dir", None) or "")
+    return root, scratch if os.path.isabs(scratch) else ""
+
+
+async def _cross_surface_images(
+    state: Any, session_key: str, channel_type: str, text: str, limits: Any
+) -> tuple[str, list[OutboundFile], list[str]]:
+    """Pull a mirrored reply's local images out for upload; name every other one.
+
+    Returns ``(text, files, notes)``: the text with every local reference either
+    cut (it is in *files*) or replaced by ``🖼 <name>``, the validated files, and
+    one ``⚠`` line per refused reference, naming it rather than its path. *limits*
+    is the channel's answer for this conversation (``outbound_image_limits``, its
+    renderer's budgets), ``None`` where its renderer would send no picture there.
+    Every admission gate is the renderers' own: the shared ``uploads_restricted``
+    ceiling, extraction rooted at the provider's cwd and scratch only
+    (:func:`_mirror_upload_roots`), and the channel's budgets. A gate that does not
+    admit costs the picture, never the text.
+    """
+    # Off-loop like the renderers' scans; asked first so a reply with no picture
+    # costs no session probe and writes no restricted-session audit row.
+    if not await asyncio.to_thread(iter_local_refs, text):
+        return text, [], []
+    root, scratch = await _mirror_upload_roots(state, session_key)
+    if limits is None or not root:
+        return await asyncio.to_thread(_label_local_images, text), [], []
+    # circular import: the handlers package imports the dashboard chat world.
+    from kiro_crew.dashboard.handlers._shared import _probe_persisted_session
+
+    if await uploads_restricted(
+        state,
+        session_key,
+        channel_type=channel_type,
+        persisted_probe=_probe_persisted_session,
+    ):
+        return await asyncio.to_thread(_label_local_images, text), [], []
+    try:
+        result = await extract_local_refs_off_loop(
+            text, within_root=root, limits=limits, scratch_root=scratch
+        )
+    except Exception:
+        logger.warning("cross-surface: outbound image extraction failed", exc_info=True)
+        return await asyncio.to_thread(_label_local_images, text), [], []
+    operation = f"{channel_type}_mirror.upload_files"
+    if result.rejections:
+        sel().log_api_access(
+            caller=session_key,
+            operation=operation,
+            outcome="denied",
+            source=channel_type,
+            resources=f"{len(result.rejections)} rejection(s)",
+            # Only the closed reason CODES, never the LLM-authored destination.
+            error=",".join(sorted({item.reason for item in result.rejections})),
+        )
+    if result.files:
+        sel().log_api_access(
+            caller=session_key,
+            operation=operation,
+            outcome="allowed",
+            source=channel_type,
+            resources=f"{len(result.files)} file(s)",
+        )
+    notes = [
+        f"⚠ {_local_file_name(strip_url_syntax(item.dest)) or 'image'} not sent: {item.detail}"
+        for item in result.rejections[:_MAX_REJECTION_LINES]
+    ]
+    if len(result.rejections) > _MAX_REJECTION_LINES:
+        notes.append(f"⚠ …and {len(result.rejections) - _MAX_REJECTION_LINES} more")
+    body = await asyncio.to_thread(_label_local_images, result.rewritten_text.strip())
+    return body, list(result.files), notes
+
+
+async def _send_mirror_images(
+    transport: Any, link: Any, images: list[OutboundFile], notes: list[str]
+) -> None:
+    """Send each image through *transport*; add a ``⚠`` line naming each that failed."""
+    for image in images:
+        try:
+            sent = await transport.send_outbound_image(
+                link.channel_id, image, thread_id=link.thread_id
+            )
+        except Exception:
+            logger.debug(
+                "cross-surface: image upload to %s raised", link.channel_type, exc_info=True
+            )
+            sent = False
+        if not sent:
+            # Extraction cut this reference out of the text, so a failed upload
+            # names the picture rather than leave a reply about a picture with no
+            # picture.
+            notes.append(f"⚠ Couldn't upload: {_local_file_name(image.path) or 'image'}")
 
 
 async def _deliver_cross_surface_reply(
@@ -682,18 +832,47 @@ async def _deliver_cross_surface_reply(
     if target is None:
         return
     link, transport = target
+    # Local images first, BEFORE any splitter (the outbound-files contract): a
+    # reference cut in half by chunking is unrecognisable to extraction. The
+    # channel answers its renderer's budgets for THIS conversation, or None where
+    # its renderer would send no picture (a Feishu group, a Webex space, a channel
+    # with no upload path), and the picture is then named instead.
+    limits = None
+    budgets = getattr(transport, "outbound_image_limits", None)
+    if getattr(transport.capabilities, "files_outbound", False) and callable(budgets):
+        try:
+            limits = await budgets(link.channel_id, link.thread_id)
+        except Exception:
+            logger.debug("cross-surface: no image budget from %s", link.channel_type, exc_info=True)
+    text, images, notes = await _cross_surface_images(
+        state, session_key, link.channel_type, assistant_text, limits
+    )
     # Strip, display-redact, number the ``[OPTIONS:]`` choices (``send_message``
     # takes none, so the mirror builds no button), chunk and send: the shared
     # unattended-egress leg, ``messaging.egress``. Chunking keeps a long reply
     # whole rather than hard-truncated by the transport (Telegram caps at 4096).
-    parts = await channel_egress_parts(assistant_text, transport.capabilities, number_options=True)
+    # An answer that was nothing but images sends only the images.
+    parts = (
+        await channel_egress_parts(text, transport.capabilities, number_options=True)
+        if text or not images
+        else []
+    )
     try:
         await send_channel_parts(transport, link.channel_id, parts, thread_id=link.thread_id)
+        await _send_mirror_images(transport, link, images, notes)
+        if notes:
+            # A follow-up rather than appended text: prose after an
+            # ``[OPTIONS:]`` trailer would break its parse.
+            note_parts = await channel_egress_parts("\n".join(notes), transport.capabilities)
+            await send_channel_parts(
+                transport, link.channel_id, note_parts, thread_id=link.thread_id
+            )
         logger.info(
-            "cross-surface: mirrored reply to %s:%s (%d part(s))",
+            "cross-surface: mirrored reply to %s:%s (%d part(s), %d image(s))",
             link.channel_type,
             link.channel_id,
             len(parts),
+            len(images),
         )
     except Exception:
         logger.debug("Failed to mirror reply to %s", link.channel_type, exc_info=True)
@@ -737,6 +916,91 @@ async def _deliver_cross_surface_user_message(
         logger.debug("Failed to mirror user message to %s", link.channel_type, exc_info=True)
 
 
+#: What a dashboard attachment reads as in the cross-surface echo.
+_ECHO_IMAGE_PREFIX = "🖼 "
+_ECHO_FILE_PREFIX = "📎 "
+
+
+def _upload_display_name(name: str) -> str:
+    """*name* without the ``<32 hex>_`` prefix the dashboard upload handler adds.
+
+    ``file_api/uploads.py`` stores each upload as ``f"{uuid4().hex}_{name}"``;
+    the prefix is for uniqueness on disk and means nothing to a reader.
+    """
+    head, sep, rest = name.partition("_")
+    if sep and rest and len(head) == 32 and all(c in "0123456789abcdef" for c in head):
+        return rest
+    return name
+
+
+def _name_local_attachments(message: str, attached_files: Sequence[str] = ()) -> str:
+    """*message* with each dashboard attachment named instead of its server path.
+
+    The composer writes a pasted picture as ``![image](<uploads path>)`` and a
+    file as ``[attached_file N] <uploads path>``, *attached_files* being the
+    message's ``meta.files`` the markers index into; mirrored as typed, the
+    channel shows a path on this host that no phone can open. Each becomes its
+    file name; the file itself stays in the dashboard. The bytes are NOT sent:
+    the uploads store is no root a channel upload admits (only the provider's cwd
+    and scratch are), so sending them would widen what may leave this host. The
+    image scan is the channel renderers' own (``outbound_files.iter_local_refs``),
+    and the file marker parse is the title path's
+    (``chat_title._strip_attached_file_tokens``), given every name in full: the
+    echo's own 500-character cut (``_prepare_mirror_msg``) is the only bound, so
+    no attachment is dropped from it unseen.
+
+    Blocking (a full scan of the message); call it off the event loop.
+    """
+    # circular import: chat_title imports the dashboard state this package is part of.
+    from kiro_crew.dashboard.chat_title import _strip_attached_file_tokens
+
+    message = _label_local_images(message)
+    files = tuple(attached_files)
+    named = _strip_attached_file_tokens(
+        message,
+        files,
+        labels={path: _local_file_name(path) for path in files if path},
+        budget=[len(message) + 1],
+        label_prefix=_ECHO_FILE_PREFIX,
+    )
+    return named.strip() if named != message else message
+
+
+async def _mirror_echo_text(turn: Any, message: str) -> str:
+    """*message* as both mirror echoes show it: every dashboard attachment named.
+
+    The ``[attached_file N]`` markers index into this turn's own ``meta.files``
+    (``turn._attachment_meta``, else the flat ``turn._attachments``). Off-loop:
+    the image scan walks the whole message.
+    """
+    files = (getattr(turn, "_attachment_meta", None) or {}).get(
+        "files", getattr(turn, "_attachments", ())
+    )
+    return await asyncio.to_thread(_name_local_attachments, message, tuple(files or ()))
+
+
+_MIRROR_ECHO_LIMIT = 500
+
+#: The dashboard -> Slack mirror's working placeholder, posted under the prompt
+#: echo and deleted once the task stream, the answer or the turn's end takes over.
+_MIRROR_THINKING = "💭 _Thinking…_"
+
+
+async def _retire_mirror_thinking(slack_client: Any, channel: str | None, ts: str) -> str:
+    """Delete the mirror's "Thinking…" placeholder *ts*; return the new (empty) ts.
+
+    Best-effort and never raises: the placeholder is decoration, and a failed
+    delete must not fail a turn that already delivered. Returns ``""`` either
+    way, so the caller stops owing the delete and never repeats it.
+    """
+    if ts and channel:
+        try:
+            await slack_client.delete_message(channel, ts)
+        except Exception:
+            logger.debug("Failed to delete the mirror's Thinking placeholder", exc_info=True)
+    return ""
+
+
 def _prepare_mirror_msg(raw_user_message: str) -> str:
     """Prepare a user message for the cross-surface / Slack mirror echo.
 
@@ -753,4 +1017,69 @@ def _prepare_mirror_msg(raw_user_message: str) -> str:
     client renders the markup away.
     """
     safe, _ = redact_for_display(raw_user_message or "", redact_via_context)
-    return safe[:500]
+    if len(safe) <= _MIRROR_ECHO_LIMIT:
+        return safe
+    # Mark the cut. A bare slice ends mid-word with nothing after it, which
+    # reads as a message that broke rather than one that was shortened.
+    return safe[: _MIRROR_ECHO_LIMIT - 1] + "…"
+
+
+def _prompt_typed_in_dashboard(turn: Any) -> bool:
+    """Whether this turn's prompt is one a person typed in the dashboard.
+
+    The mirror echo (Slack's ``> 💬`` quote and the cross-surface leg) exists to
+    show a remote surface what was asked in the dashboard. It is an ALLOWLIST:
+    every condition is a positive structural stamp the dispatch set, and each
+    defaults to the answer "no", so a producer added later is never echoed
+    until it says it is the person. None is read off the message text, which
+    anyone can write to look like a banner.
+
+    * ``_directive_user_origin``: the dispatch says the session's own human sent
+      it. Every injector (monitor / autonudge / work-ledger wake, cron, task
+      runner, sub-agent completion, ``session_send``, an app, auto-resume)
+      passes False or leaves the False default; a queue batch carries it only
+      when EVERY entry does.
+    * not ``_directive_channel_origin``: a message typed in a linked channel (the
+      Slack thread or code channel itself, or a Telegram/Teams/Discord hand-off)
+      is already on that surface. A merged batch is channel-origin when ANY
+      entry is, so a mixed batch stays unechoed.
+    * the turn's actor is ``user``: no dispatch claimed it for a producer and it
+      is not a loop's self-wake.
+    * not a runner-authored payload, a recovery requeue (host-built text, or the
+      person's words a second time) or a queue entry restored from disk (its
+      stamps are a writable file's, not observed). The one recovery let through
+      is a verbatim replay of a dashboard prompt whose first attempt died before
+      its echo was posted (``_recovery_echo_owed``, carried on the requeued entry
+      by ``_mirror_echo_owed``), so the thread never shows an answer without its
+      question, and never shows the question twice.
+    """
+    return bool(
+        turn._directive_user_origin
+        and not turn._directive_channel_origin
+        and turn._crew_log_actor == "user"
+        # Read before the slash gate binds it when a turn fails that early;
+        # ``_synthetic_payload`` is its runner-text half.
+        and not getattr(turn, "_is_synthetic", turn._synthetic_payload)
+        and (not turn._synthetic_recovery_turn or turn._recovery_echo_owed)
+        and not turn._turn_provenance_restored
+    )
+
+
+#: Queue-entry meta: this verbatim recovery replay still owes the mirror its echo.
+MIRROR_ECHO_OWED_META_KEY = "mirrorEchoOwed"
+
+
+def _mirror_echo_owed(turn: Any) -> bool:
+    """Whether *turn*'s prompt qualifies for the echo and it has not been posted."""
+    return not getattr(turn, "_mirror_echo_posted", False) and _prompt_typed_in_dashboard(turn)
+
+
+def _batch_recovery_echo_owed(consumed: list[Any]) -> bool:
+    """Every consumed entry is a verbatim recovery replay stamped as still owing its echo."""
+    return bool(consumed) and all(
+        isinstance(item, dict)
+        and is_synthetic_recovery_item(item)
+        and item.get("payload") == RecoveryPayload.ORIGINAL
+        and (item.get("meta") or {}).get(MIRROR_ECHO_OWED_META_KEY) is True
+        for item in consumed
+    )

@@ -15,7 +15,7 @@ state on the instance, and a patch of the method on the class or on an instance
 reaches every caller.
 
 Instance fields read (a call on one included): ``_allowed_threads``, ``_model_pickers``,
-``_session_resume``, ``client``.
+``_session_resume``, ``client``, ``transport``.
 
 Instance fields assigned, or whose mapping is changed: ``_model_pickers``.
 """
@@ -27,7 +27,11 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew.discord.commands import build_help_text
-from kiro_crew.discord.renderer import DiscordApprovalDecider
+from kiro_crew.discord.renderer import (
+    DiscordApprovalDecider,
+    _redact_transformed,
+    full_choice_text,
+)
 from kiro_crew.discord.transport_dispatch_commands import _REPLY_COMMANDS
 from kiro_crew.discord.transport_dispatch_model_picker import _MODEL_PICKER_TTL_SECS
 from kiro_crew.messaging.identity import channel_inbound_permitted, channel_outbound_permitted
@@ -229,7 +233,7 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
         # edit is issued, which is the same contract the client's own mid-send
         # predicate states. Read here even on the arm that already read it above,
         # rather than carrying that answer forward: a value taken before a
-        # suspension is exactly the defect this change exists to close, and on an
+        # suspension can be stale by now, and on an
         # ungoverned install the read permits without writing a row, so the second
         # reading costs a row only where an operator asked for the audit trail.
         #
@@ -300,15 +304,16 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
         await self.client.edit_message(itx.channel_id, itx.message_id, outcome, components=[])
         return
 
-    # [OPTIONS:] choice: "opt:<i>:<origin-tag>" — label recovered from the
-    # button text. A bare "opt:<i>" is a pre-provenance button; Discord
+    # [OPTIONS:] choice: "opt:<ref>:<origin-tag>" — the choice is the button
+    # text, or the full text kept when its label was cut to 80 characters.
+    # A bare "opt:<i>" is a pre-provenance button; Discord
     # replays old components indefinitely, so its originating session can
     # never be verified — refuse it here, fail closed, before any echo
     # suggests the choice was sent.
     if data.startswith("opt:"):
         parts = data.split(":", 2)
         origin_tag = parts[2] if len(parts) == 3 else ""
-        choice_text = itx.label
+        choice_text = full_choice_text(origin_tag, parts[1], itx.label) if origin_tag else itx.label
         # Retire the buttons but KEEP the original answer text intact —
         # a components-only PATCH leaves the content unchanged.
         await self.client.edit_message_components(itx.channel_id, itx.message_id, [])
@@ -323,7 +328,9 @@ async def on_interaction(self: DiscordDispatcher, itx: "DiscordInteraction") -> 
             return
         # Echo the picked option as a quoted line (a button tap can't
         # render as a real user message), then re-dispatch as a fresh turn.
-        await self.client.send_message(itx.channel_id, f"> {choice_text}")
+        # The echo is display text, so it gets the same display pass as the
+        # answer body: the full choice is longer than the label that was shown.
+        await self.client.send_message(itx.channel_id, _redact_transformed(f"> {choice_text}"))
         synthetic = InboundMessage(
             channel_type="discord",
             user_id=itx.user_id,
@@ -364,8 +371,14 @@ async def _interaction_actionable(self: DiscordDispatcher, user_id: str, thread_
     if not thread_id:
         return True
     client = self.client
-    if client is None or thread_id not in self._allowed_threads:
+    if client is None:
         return False
+    if thread_id not in self._allowed_threads:
+        # A thread `auto_thread` opened before a restart is re-derived from
+        # Discord by the transport, which also pushes it into this set.
+        transport = self.transport
+        if transport is None or not await transport.readmit_own_thread(thread_id, user_id):
+            return False
     try:
         return bool(await client.is_thread_channel(thread_id))
     except Exception:

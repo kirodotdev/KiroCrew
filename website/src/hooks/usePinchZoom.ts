@@ -45,6 +45,17 @@ const WHEEL_STEP_MAX = 1.25
  *  produce a jump, only a slightly brisker or gentler notch. */
 const WHEEL_LINE_PX = 33
 
+/** One `wheel` event's zoom factor, shared so the file viewer's Alt+wheel steps
+ *  exactly like this hook's ctrl+wheel. `deltaY` is normalised to pixels first
+ *  (see the constants above); exponentiating keeps the step multiplicative. */
+export function wheelZoomFactor(e: WheelEvent): number {
+  const px =
+    e.deltaMode === 1 ? e.deltaY * WHEEL_LINE_PX
+    : e.deltaMode === 2 ? e.deltaY * (window.innerHeight || WHEEL_ZOOM_DIVISOR)
+    : e.deltaY
+  return Math.min(WHEEL_STEP_MAX, Math.max(1 / WHEEL_STEP_MAX, Math.exp(-px / WHEEL_ZOOM_DIVISOR)))
+}
+
 /** Safari's non-standard pinch events, which no DOM lib type covers. `scale` is
  *  cumulative from `gesturestart`, not per-frame. */
 type GestureEventLike = Event & { scale: number; clientX: number; clientY: number }
@@ -120,6 +131,60 @@ export type PinchZoomOptions = {
   onPinchEnd?: () => void
 }
 
+/** The translation an element is drawn with right now, from its computed
+ *  transform: `matrix()` / `matrix3d()` in a browser (the current frame of any
+ *  transition), or the authored `translate(x, y)` where the engine echoes the
+ *  inline value back. `{0, 0}` for `none`; `null` when it cannot be read. */
+function drawnTranslation(el: Element): Point | null {
+  const t = window.getComputedStyle(el).transform
+  if (!t || t === 'none') return { x: 0, y: 0 }
+  const m2 = /^matrix\(([^)]+)\)$/.exec(t)
+  if (m2) {
+    const v = m2[1].split(',').map(Number)
+    return v.length === 6 && v.every(Number.isFinite) ? { x: v[4], y: v[5] } : null
+  }
+  const m3 = /^matrix3d\(([^)]+)\)$/.exec(t)
+  if (m3) {
+    const v = m3[1].split(',').map(Number)
+    return v.length === 16 && v.every(Number.isFinite) ? { x: v[12], y: v[13] } : null
+  }
+  const tr = /translate\(\s*(-?[\d.]+)px\s*,\s*(-?[\d.]+)px\s*\)/.exec(t)
+  return tr ? { x: Number(tr[1]), y: Number(tr[2]) } : null
+}
+
+type Box = { left: number; top: number; right: number; bottom: number }
+
+/** The area the target can actually be seen in: the padding box of its nearest
+ *  ancestor that clips (any `overflow` but `visible`), cut to the viewport, or
+ *  the viewport itself. A viewer that lays its target out in a scroller padded
+ *  for the safe-area insets clips it at the scroller's edge, not the screen's,
+ *  and a pan clamped to the screen would leave the strip under the inset out
+ *  of reach. A clipping ancestor with no layout box falls back to the viewport.
+ *  The walk stops at a `position: fixed` ancestor: nothing above it clips the
+ *  target, so a viewer rendered inline inside a scrolling page pane is bounded
+ *  by the screen, not by that pane. */
+function visibleBox(el: Element): Box {
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  for (let n = el.parentElement; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+    const cs = window.getComputedStyle(n)
+    // An engine that leaves a longhand unset reports '' for it; read that as visible.
+    const shows = (v: string) => v === 'visible' || v === ''
+    if (shows(cs.overflowX) && shows(cs.overflowY)) {
+      if (cs.position === 'fixed') break
+      continue
+    }
+    const w = n.clientWidth
+    const h = n.clientHeight
+    if (w <= 0 || h <= 0) break
+    const r = n.getBoundingClientRect()
+    const left = r.left + n.clientLeft
+    const top = r.top + n.clientTop
+    return { left: Math.max(0, left), top: Math.max(0, top), right: Math.min(vw, left + w), bottom: Math.min(vh, top + h) }
+  }
+  return { left: 0, top: 0, right: vw, bottom: vh }
+}
+
 export function usePinchZoom({ targetRef, containRef, enabled = true, min, max, onPinchStart, onPinchEnd }: PinchZoomOptions) {
   const [zoom, setZoom] = useState(min)
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 })
@@ -143,19 +208,50 @@ export function usePinchZoom({ targetRef, containRef, enabled = true, min, max, 
    *  1.0000000000000002 after a pinch back down to fit. */
   const clampZoom = useCallback((z: number) => Math.min(max, Math.max(min, +z.toFixed(3))), [min, max])
 
+  /** Where the content's own centre sits on screen with no pan applied: the
+   *  point `translate(pan) scale(zoom)` scales about. It is the viewport centre
+   *  only while the overlay lays the content out edge to edge; an overlay padded
+   *  for the safe-area insets centres it in the padded area instead, and with an
+   *  uneven inset (one side, or a taller top than bottom) the two differ. Read
+   *  from the element's box, which the scale leaves centred, less the
+   *  translation it is drawn with NOW. That is the computed transform, not
+   *  `panRef`: while the pan eases between two values the box carries the
+   *  in-between translation and `panRef` already holds the target. An element
+   *  with no layout box falls back to the viewport centre. */
+  const contentCentre = useCallback((): Point => {
+    const el = targetRef.current
+    const r = el?.getBoundingClientRect()
+    if (!el || !r || (r.width === 0 && r.height === 0)) return { x: window.innerWidth / 2, y: window.innerHeight / 2 }
+    const t = drawnTranslation(el) ?? panRef.current
+    return { x: r.left + r.width / 2 - t.x, y: r.top + r.height / 2 - t.y }
+  }, [targetRef])
+
   /** Clamp a candidate pan so the content can't be flung entirely off-screen.
    *
    *  `z` is explicit because the pinch clamps against the zoom it is about to
    *  SET, not the one on screen: reading `zoomRef` there would clamp a zoomed-in
    *  pan against the smaller previous box and snap the content back toward centre
-   *  on every frame of the gesture. */
+   *  on every frame of the gesture.
+   *
+   *  Each edge of the scaled content may travel as far as its own edge of the
+   *  area it is seen in (`visibleBox`), measured from where the content is
+   *  centred with no pan (`contentCentre`). With the content centred in the
+   *  viewport the two limits are equal; an overlay padded for an uneven
+   *  safe-area inset centres it off the middle, or clips it short of the
+   *  screen, and one symmetric limit would then leave a strip unreachable. */
   const clampPan = useCallback((x: number, y: number, z: number = zoomRef.current): Point => {
     const el = targetRef.current
     if (!el) return { x, y }
-    const maxX = Math.max(0, (el.offsetWidth * z - window.innerWidth) / 2)
-    const maxY = Math.max(0, (el.offsetHeight * z - window.innerHeight) / 2)
-    return { x: Math.min(maxX, Math.max(-maxX, x)), y: Math.min(maxY, Math.max(-maxY, y)) }
-  }, [targetRef])
+    const c = contentCentre()
+    const v = visibleBox(el)
+    const hw = (el.offsetWidth * z) / 2
+    const hh = (el.offsetHeight * z) / 2
+    const maxX = Math.max(0, hw - (c.x - v.left))
+    const minX = Math.min(0, v.right - c.x - hw)
+    const maxY = Math.max(0, hh - (c.y - v.top))
+    const minY = Math.min(0, v.bottom - c.y - hh)
+    return { x: Math.min(maxX, Math.max(minX, x)), y: Math.min(maxY, Math.max(minY, y)) }
+  }, [targetRef, contentCentre])
 
   /** Live contacts, tracked in a map because pointer events carry ONE pointer
    *  each: the second finger's position is only ever knowable from what an
@@ -231,15 +327,14 @@ export function usePinchZoom({ targetRef, containRef, enabled = true, min, max, 
     // CURRENT midpoint is what keeps a corner detail under the fingers instead of
     // pushing it away as the content grows around its centre. Using the live
     // midpoint (not the seated one) also makes two fingers moving together pan.
-    const cx = window.innerWidth / 2
-    const cy = window.innerHeight / 2
+    const { x: cx, y: cy } = contentCentre()
     const anchorX = (p.startMid.x - cx - p.basePan.x) / p.baseZoom
     const anchorY = (p.startMid.y - cy - p.basePan.y) / p.baseZoom
     const mid = pinchMidpoint(pair.a, pair.b)
     setZoom(next)
     setPan(clampPan(mid.x - cx - anchorX * next, mid.y - cy - anchorY * next, next))
     return true
-  }, [clampZoom, clampPan, seatPinch])
+  }, [clampZoom, clampPan, seatPinch, contentCentre])
 
   /** Drop a contact. Ends the pinch on the FIRST lift (rather than the last),
    *  which is what stops the finger still down from being re-read as a one-finger
@@ -270,8 +365,7 @@ export function usePinchZoom({ targetRef, containRef, enabled = true, min, max, 
     const from = zoomRef.current
     const next = clampZoom(from * factor)
     if (next === from) return
-    const cx = window.innerWidth / 2
-    const cy = window.innerHeight / 2
+    const { x: cx, y: cy } = contentCentre()
     // Fall back to the centre when an event arrives without usable coordinates.
     // Pan PERSISTS, so a single non-finite focal would not just misplace one frame
     // — it would write NaN into the stored pan and leave the content invisible
@@ -282,7 +376,7 @@ export function usePinchZoom({ targetRef, containRef, enabled = true, min, max, 
     const anchorY = (fy - cy - panRef.current.y) / from
     setZoom(next)
     setPan(clampPan(fx - cx - anchorX * next, fy - cy - anchorY * next, next))
-  }, [clampZoom, clampPan])
+  }, [clampZoom, clampPan, contentCentre])
 
   /** Trackpad magnification, which reaches none of the pointer code above.
    *
@@ -325,19 +419,7 @@ export function usePinchZoom({ targetRef, containRef, enabled = true, min, max, 
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey || !inTarget(e)) return
       e.preventDefault()
-      // Exponentiating keeps the step multiplicative, so a given physical gesture
-      // covers the same proportion of the range at any current zoom. The clamp is
-      // what makes one event type serve two very different granularities: a
-      // trackpad emits many small deltas, while one mouse notch is ~100 and would
-      // otherwise jump by e^-1 in a single tick.
-      // `deltaY` carries no unit of its own — `deltaMode` names it. Normalise to
-      // pixels FIRST, or the same physical notch means different things per engine.
-      const px =
-        e.deltaMode === 1 ? e.deltaY * WHEEL_LINE_PX
-        : e.deltaMode === 2 ? e.deltaY * (window.innerHeight || WHEEL_ZOOM_DIVISOR)
-        : e.deltaY
-      const raw = Math.exp(-px / WHEEL_ZOOM_DIVISOR)
-      zoomAbout(Math.min(WHEEL_STEP_MAX, Math.max(1 / WHEEL_STEP_MAX, raw)), e.clientX, e.clientY)
+      zoomAbout(wheelZoomFactor(e), e.clientX, e.clientY)
     }
     const onGestureStart = (e: Event) => {
       if (!inTarget(e)) return
@@ -390,7 +472,7 @@ export function usePinchZoom({ targetRef, containRef, enabled = true, min, max, 
   // the hook is the only place it belongs.
   return {
     zoom, setZoom, pan, setPan, pinching,
-    zoomRef, clampPan,
+    zoomRef, clampPan, contentCentre, zoomAbout,
     trackPointerDown, trackPointerMove, trackPointerUp,
     reset,
   }

@@ -1,8 +1,7 @@
 """The signed bytes must cover the manifest fields the install chain MATERIALIZES.
 
-``AppManifest.signing_payload`` already covers ``setup``, ``mcpServers`` and
-``backend`` -- the keys whose value is literal argv or an imported module. Six more
-keys name things the install chain turns into code or into text an agent obeys:
+Beside ``setup``, ``mcpServers`` and ``backend``, six keys name things the install chain
+turns into code or into text an agent obeys:
 
 * ``ui.entry`` and each ``ui.pages[].entryPoint`` are ESM modules the dashboard
   builds ``/apps/<name>/ui/<path>`` from and dynamic-``import()``s in its own
@@ -18,21 +17,9 @@ keys name things the install chain turns into code or into text an agent obeys:
 * ``platform.clientInstall.shell`` is a one-liner ``apps/registry_pipeline/install.py`` returns
   in ``clientInstall`` (with ``needsClientInstall``) for the reader to paste into a terminal.
 
-Left out of the payload, each is a part of a signed app an attacker could rewrite
--- or merely APPEND to -- with the publisher's signature still verifying.
-
-Every key is added under a NON-EMPTY guard, the same shape ``notifications``,
-``crons``, ``contributes``, ``setup``, ``mcpServers`` and ``backend`` already use.
-That is the whole compatibility story, and
-``test_the_payload_is_byte_identical_for_a_manifest_declaring_none_of_them``
-plus ``test_no_shipped_builtin_carries_a_signature`` are what pin it: a manifest
-that declares none of the six hashes to the same literal bytes, and nothing shipped
-in-tree carries a signature for the change to invalidate.
-
-The tests assert on production symbols only -- ``signing_payload``,
-``admission.app_admission_denied``, ``admission.verified_signer``,
-``manager.install_app`` -- and nothing here re-implements the HMAC the gate
-computes.
+Outside the payload, an attacker could rewrite or APPEND to any of them with the
+signature still verifying. Each is added under a NON-EMPTY guard, so a manifest declaring
+none hashes to the same bytes. Nothing here re-implements the gate's HMAC.
 """
 
 from __future__ import annotations
@@ -161,9 +148,7 @@ def enforcing_fleet(tmp_path, monkeypatch):
     return cfg
 
 
-# ---------------------------------------------------------------------------
 # Control 1 -- a signature issued under the pre-change payload still verifies
-# ---------------------------------------------------------------------------
 
 
 def test_the_payload_is_byte_identical_for_a_manifest_declaring_none_of_them():
@@ -184,11 +169,9 @@ def test_the_payload_is_byte_identical_when_only_the_already_covered_keys_are_de
         assert absent not in payload
 
 
-def test_a_signature_issued_under_the_pre_change_payload_still_verifies(enforcing_fleet):
-    """A publisher's existing signature on a non-declaring manifest is admitted."""
-    manifest = _carrying_signature_of(PUBLISHED_PLAIN, PUBLISHED_PLAIN)
-    assert app_admission_denied(APP, manifest=manifest) is None
-    assert verified_signer(manifest) == SIGNER
+# A signature over ``PUBLISHED_PLAIN`` still verifying is checked once, in
+# ``test_app_signing_payload_executed_fields.py``: the manifest, signer, key and
+# fleet policy are the same there, byte for byte.
 
 
 def test_precondition_a_declaring_manifest_is_admitted_when_untampered(enforcing_fleet):
@@ -201,9 +184,7 @@ def test_precondition_a_declaring_manifest_is_admitted_when_untampered(enforcing
     assert verified_signer(manifest) == SIGNER
 
 
-# ---------------------------------------------------------------------------
 # Control 2 -- a legitimately signed app declaring a newly covered field verifies
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("group", sorted(DECLARATIONS))
@@ -229,9 +210,7 @@ def test_a_signed_app_declaring_all_six_still_verifies(enforcing_fleet):
     assert {"ui", "agents", "skills", "sops", "dependencies", "platform"} <= signed_keys
 
 
-# ---------------------------------------------------------------------------
 # Control 3 -- tampering a NEWLY covered field is denied
-# ---------------------------------------------------------------------------
 
 
 def _set_ui_entry(d: dict[str, Any]) -> None:
@@ -326,9 +305,7 @@ def test_appending_a_group_the_publisher_never_declared_is_denied(enforcing_flee
     assert verified_signer(manifest) == ""
 
 
-# ---------------------------------------------------------------------------
 # Control 4 -- tampering an ALREADY covered field is still denied
-# ---------------------------------------------------------------------------
 
 
 def _bump_version(d: dict[str, Any]) -> None:
@@ -351,9 +328,7 @@ def test_tampering_an_already_covered_field_is_still_denied(enforcing_fleet, lab
     ), f"a rewritten {label} must still invalidate the signature"
 
 
-# ---------------------------------------------------------------------------
 # Control 5 -- no shipped builtin is newly refused
-# ---------------------------------------------------------------------------
 
 
 def _shipped_builtin_manifests() -> list[Path]:
@@ -369,12 +344,8 @@ def test_the_builtin_census_is_not_empty():
 def test_no_shipped_builtin_carries_a_signature(manifest_path, enforcing_fleet):
     """Moving the signed bytes cannot change a verdict for an UNSIGNED manifest.
 
-    Every builtin declares a non-empty ``ui`` and a non-empty ``platform``, so
-    every builtin's payload bytes DO move. None of them is signed, so
-    ``_signature_valid`` refuses on the empty signature before it computes a
-    payload; they reach installation through ``register_builtin_apps``, which never
-    consults the admission gate, and ``enable_app`` exempts ``origin ==
-    "builtin"``.
+    Builtins' bytes do move, but none is signed: ``_signature_valid`` refuses an empty
+    signature first, and ``register_builtin_apps`` never consults the admission gate.
     """
     manifest = AppManifest.from_json_file(manifest_path)
     assert manifest.signature == ""

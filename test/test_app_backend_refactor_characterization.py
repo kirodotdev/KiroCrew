@@ -72,9 +72,7 @@ def sel(monkeypatch: pytest.MonkeyPatch) -> _Sel:
     return recorder
 
 
-# ---------------------------------------------------------------------------
 # Generation safety: a verdict about a replaced record never lands on its successor
-# ---------------------------------------------------------------------------
 
 
 class TestHealthVerdictsStayOnTheirGeneration:
@@ -157,9 +155,7 @@ class TestHealthVerdictsStayOnTheirGeneration:
         assert transitions == [True, True]
 
 
-# ---------------------------------------------------------------------------
 # The lifecycle table: stops, in-flight starts, reservations
-# ---------------------------------------------------------------------------
 
 
 class TestLifecycleGuards:
@@ -236,9 +232,7 @@ class TestLifecycleGuards:
         assert bmod._pid_is_self_or_descendant_of(1000 + depth + 1, 1000) is False
 
 
-# ---------------------------------------------------------------------------
 # PID identity persistence
-# ---------------------------------------------------------------------------
 
 
 class TestPidfileIdentity:
@@ -271,9 +265,7 @@ class TestPidfileIdentity:
         }
 
 
-# ---------------------------------------------------------------------------
 # Provisioning failures are audited once
-# ---------------------------------------------------------------------------
 
 
 class TestProvisioningFailureAudit:
@@ -313,15 +305,12 @@ class TestProvisioningFailureAudit:
         assert [row["outcome"] for row in sel.rows] == ["deps_provision_failed"]
 
 
-# ---------------------------------------------------------------------------
 # The boot wave: order across the reap, the listing, the preclaim and the spawns
-# ---------------------------------------------------------------------------
 
 
 class TestBootOrdering:
     def test_boot_reaps_before_it_lists_any_app(self, monkeypatch: pytest.MonkeyPatch) -> None:
         order: list[str] = []
-        monkeypatch.setattr(bmod, "_DEV_FLEET_DEFERRED", False)
         monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: order.append("reap") or 0)
         monkeypatch.setattr(bmod, "list_apps", lambda: order.append("list") or [])
         assert bmod.start_enabled_app_backends() == []
@@ -365,26 +354,8 @@ class TestBootOrdering:
         assert sorted(started) == ["adopted-app", "fresh-app"]
         assert registered == [(adopted, True)]
 
-    def test_a_refused_deferred_spawn_does_not_re_arm(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # The deferral is consumed before the re-checks: a Dev Fleet disabled in the
-        # window is not spawned later when it comes back.
-        spawned: list[list[str]] = []
-        monkeypatch.setattr(bmod, "_DEV_FLEET_DEFERRED", True)
-        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
-        monkeypatch.setattr(
-            bmod, "_start_backends_concurrently", lambda names: spawned.append(names) or names
-        )
-        assert bmod.start_deferred_app_backends() == []
-        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
-        assert bmod.start_deferred_app_backends() == []
-        assert spawned == [] and bmod._DEV_FLEET_DEFERRED is False
 
-
-# ---------------------------------------------------------------------------
 # Dependency activation and the path-based (no pinned walk) arm
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -511,9 +482,7 @@ class TestPathBasedPinnedDir:
             bmod._PinnedDir(tmp_path / "data")
 
 
-# ---------------------------------------------------------------------------
 # The watch's enforcement of a closed execution ceiling, verdict by verdict
-# ---------------------------------------------------------------------------
 
 
 class TestCeilingRevocationVerdicts:

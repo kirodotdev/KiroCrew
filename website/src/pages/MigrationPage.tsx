@@ -32,6 +32,9 @@ type MigrationState =
   | 'already-installed'
   | 'error'
 
+/** A busy button that stays focusable: the dimmed look `disabled` gave, on `aria-disabled`. */
+const BUSY_CLS = 'aria-disabled:opacity-30 aria-disabled:cursor-not-allowed'
+
 export default function MigrationPage() {
   const { name } = useParams<{ name: string }>()
   const navigate = useNavigate()
@@ -156,7 +159,7 @@ export default function MigrationPage() {
             <Card>
               <CardTitle>
                 <AlertTriangle size={16} className="text-warn" />
-                {displayName} {i18nT('pages.migrationPage.has_moved_to_a_standalone_app')}
+                {i18nT('pages.migrationPage.name_has_moved_to_a_standalone_app', { name: displayName })}
               </CardTitle>
               <p className="text-[13px] text-muted leading-relaxed mb-4">
                 {i18nT('pages.migrationPage.this_feature_was_previously_built_into_kirocrew')}
@@ -184,10 +187,14 @@ export default function MigrationPage() {
 
               {state === 'replace' && (
                 <div className="flex items-center gap-3 mt-4">
+                  {/* `aria-disabled` plus the guard, NOT `disabled`: the button stays
+                      mounted while cleanup runs (and after a failure), and `disabled`
+                      would drop a keyboard user's focus to the page. */}
                   <Btn
                     primary
-                    onClick={() => cleanupMutation.mutate({ thenInstall: true })}
-                    disabled={cleanupMutation.isPending}
+                    onClick={() => { if (!cleanupMutation.isPending) cleanupMutation.mutate({ thenInstall: true }) }}
+                    aria-disabled={cleanupMutation.isPending || undefined}
+                    className={BUSY_CLS}
                   >
                     {cleanupMutation.isPending ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}
                     {i18nT('pages.migrationPage.install_from_apps')}
@@ -225,8 +232,9 @@ export default function MigrationPage() {
                     </div>
                     <Btn
                       danger
-                      onClick={() => cleanupMutation.mutate({ thenInstall: false })}
-                      disabled={cleanupMutation.isPending}
+                      onClick={() => { if (!cleanupMutation.isPending) cleanupMutation.mutate({ thenInstall: false }) }}
+                      aria-disabled={cleanupMutation.isPending || undefined}
+                      className={BUSY_CLS}
                     >
                       <Trash2 size={14} /> {cleanupMutation.isPending ? i18nT('pages.migrationPage.cleaning_up') : i18nT('pages.migrationPage.clean_up_old_entry')}
                     </Btn>

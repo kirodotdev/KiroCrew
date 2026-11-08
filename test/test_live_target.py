@@ -15,6 +15,7 @@ checkout the gateway executes:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -671,6 +672,22 @@ class TestMaybeReexec:
         maybe_reexec(["gateway"])
         mock_execve.assert_not_called()
 
+    def test_marker_is_not_inherited_by_a_restart_replacement(self, tmp_path, monkeypatch):
+        """The exec'd gateway drops the marker, so a restart's replacement follows the pointer."""
+        checkout = _make_valid_checkout(tmp_path)
+        write_target(checkout)
+        monkeypatch.setattr(sys, "argv", ["/other/bin/kirocrew", "gateway"])
+        monkeypatch.setenv(EXEC_MARKER, "1")
+        mock_execve = MagicMock()
+        monkeypatch.setattr(os, "execve", mock_execve)
+        monkeypatch.setattr(os, "chdir", MagicMock())
+        maybe_reexec(["gateway"])
+        mock_execve.assert_not_called()
+        assert EXEC_MARKER not in os.environ
+        # The replacement inherits this environment and boots through the same bootstrap.
+        maybe_reexec(["gateway"])
+        mock_execve.assert_called_once()
+
     def test_returns_without_exec_when_no_pointer(self, monkeypatch):
         """No pointer file -> stay here."""
         mock_execve = MagicMock()
@@ -736,7 +753,7 @@ class TestMaybeReexec:
         path_entries = exec_env["PATH"].split(os.pathsep)
         assert path_entries[0] == str(kcbin.parent)
 
-    def test_execve_oserror_is_swallowed(self, tmp_path, monkeypatch):
+    def test_execve_oserror_is_swallowed(self, tmp_path, monkeypatch, caplog):
         """Fail-safe: OSError from execve does not propagate."""
         checkout = _make_valid_checkout(tmp_path)
         write_target(checkout)
@@ -748,8 +765,14 @@ class TestMaybeReexec:
 
         monkeypatch.setattr(os, "execve", raise_oserror)
         monkeypatch.setattr(os, "chdir", MagicMock())
-        # Must NOT raise — the caller keeps booting
-        maybe_reexec(["gateway"])
+        log = logging.getLogger("test_live_target.reexec")
+        # Must NOT raise — the caller keeps booting, and says why.
+        with caplog.at_level(logging.WARNING, logger=log.name):
+            maybe_reexec(["gateway"], log=log)
+        messages = [r.getMessage() for r in caplog.records if r.name == log.name]
+        failed = [m for m in messages if m.startswith("live-target: could not execute ")]
+        assert len(failed) == 1, messages
+        assert failed[0].endswith(": exec failed")
 
     def test_chdir_failure_warned_but_exec_still_happens(self, tmp_path, monkeypatch):
         """A cwd we cannot enter is warned, not fatal — the exec still fires."""

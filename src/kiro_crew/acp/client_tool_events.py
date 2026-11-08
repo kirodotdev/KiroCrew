@@ -13,9 +13,11 @@ Instance fields written: ``_jsonl_pos``, ``_stale_eligible``, ``_tool_call_diff_
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
 ``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_dispatched``.
 
-Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``,
-``_observed_tool_calls``, ``_session_id``, ``_session_key``,
-``_tool_call_harness_tool_name``, ``_tool_call_unclassified``, ``last_prompt_stats``.
+Instance fields read: ``_active_tool_calls``, ``_agent``, ``_audit_source``, ``_batch_window``,
+``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``,
+``_observed_tool_calls``, ``_permission_mode``, ``_sel_settled_tool_calls``,
+``_session_id``, ``_session_key``, ``_tool_call_harness_tool_name``,
+``_tool_call_unclassified``, ``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     _dumps_degraded,
     _measure_tool_output,
@@ -32,6 +35,7 @@ from kiro_crew.acp._dispatch import (
     derive_edit_diff,
     extract_tool_purpose,
     harness_tool_name,
+    is_rendered_edit_diff,
     log_unrenderable_content,
     make_unified_diff,
     redact_text,
@@ -41,8 +45,17 @@ from kiro_crew.acp._dispatch import (
     tool_call_content_text,
 )
 from kiro_crew.acp.client_timeouts import _SEL_AUDIT_TIMEOUT_SECONDS
+from kiro_crew.acp.harness.copilot import (
+    COPILOT_IDENTITY_OVERFLOW,
+    COPILOT_IDENTITY_RECORDS_MAX,
+    COPILOT_TITLE_MAX_CHARS,
+    TOOL_CALL_CACHE_MAX_KEY_CHARS,
+    note_copilot_identity_record,
+)
+from kiro_crew.acp.native_child_stamp import parent_tool_use
 from kiro_crew.acp.types import (
     ACP_BACKEND_DEEPSEEK,
+    CC_PERMISSION_MODE_AUTO,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
@@ -124,12 +137,16 @@ def _extract_text_chunk(self: AcpClient, msg: JsonRpcMessage) -> tuple[str | Non
         text = content.get("text")
         content_type = content.get("type", "text")
         is_thinking = content_type in ("thinking", "reasoning")
+        # Every reader of model text comes through here, so the batch guard's
+        # seen-token set is fed here once (``acp.batch_guard``).
+        batch_guard.note_text(getattr(self, "_batch_window", None), text)
         return text, is_thinking
     if kind == UPDATE_AGENT_THOUGHT_CHUNK:
         content = update.get("content", {})
         if not isinstance(content, dict):
             return None, True
         text = content.get("text")
+        batch_guard.note_text(getattr(self, "_batch_window", None), text)
         return text, True
     return None, False
 
@@ -185,6 +202,78 @@ async def _maybe_audit_tool_call(self: AcpClient, tool_event: "AcpEvent") -> Non
         )
     except Exception:
         logger.warning("ACP-layer SEL audit failed", exc_info=True)
+
+
+async def _maybe_audit_unasked_tool_call(self: AcpClient, tool_result_event: "AcpEvent") -> None:
+    """Write the SEL record for a claude ``auto`` call that never asked the host.
+
+    In ``auto`` mode Claude's own classifier approves a call, so the call sends no
+    ``session/request_permission``: no consumer gate runs and no consumer writes a
+    decision row for it. This writes that row once the call reaches a terminal
+    status, so every tool call of an ``auto`` session has an SEL record. A call that
+    did ask is skipped, because the consumer that answered it owns its record.
+
+    Scope: only a session whose seeded mode is ``auto``, and never an
+    ``audit_source`` client (``_maybe_audit_tool_call`` already records each of its
+    calls). ``_sel_settled_tool_calls`` holds this turn's asked or recorded ids, so a
+    call gets one row. Best-effort and bounded like ``_maybe_audit_tool_call``: an
+    SEL failure or hang is logged and never breaks dispatch.
+    """
+    if getattr(self, "_permission_mode", None) != CC_PERMISSION_MODE_AUTO:
+        return
+    if getattr(self, "_audit_source", None):
+        return
+    settled = getattr(self, "_sel_settled_tool_calls", None)
+    if settled is None:
+        return
+    status = tool_result_event.tool_status or ""
+    call_id = tool_result_event.tool_call_id or ""
+    if status not in TERMINAL_TOOL_STATUSES or not call_id:
+        return
+    if call_id in settled:
+        return
+    settled.add(call_id)
+    title, kind = self._observed_tool_calls.get(call_id, ("unknown", ""))
+    session_key = self._session_key or ""
+    agent = self._agent
+    tool_name = redact_text(title or "unknown")
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                lambda: sel().log_tool_invocation(
+                    session_key=session_key,
+                    agent=agent,
+                    source="acp",
+                    tool_name=tool_name,
+                    tool_kind=kind or "",
+                    outcome="auto_approved" if status == "completed" else status,
+                    request_id=call_id,
+                    metadata={
+                        "reason": "claude_auto_mode",
+                        "decided_by": "claude_classifier",
+                        "tool_status": status,
+                    },
+                ),
+            ),
+            timeout=_SEL_AUDIT_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        logger.warning("ACP-layer SEL audit of an unasked claude call failed", exc_info=True)
+
+
+def _note_asked_tool_call(self: AcpClient, msg: JsonRpcMessage) -> None:
+    """Mark the tool call a ``session/request_permission`` names as asked.
+
+    The consumer that answers the request writes that call's SEL record, so
+    ``_maybe_audit_unasked_tool_call`` skips it.
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    tool_call = params.get("toolCall")
+    call_id = tool_call.get("toolCallId") if isinstance(tool_call, dict) else None
+    settled = getattr(self, "_sel_settled_tool_calls", None)
+    if settled is not None and isinstance(call_id, str) and call_id:
+        settled.add(call_id)
 
 
 async def _maybe_fire_pre_tool_hooks(self: AcpClient, tool_event: "AcpEvent") -> None:
@@ -341,6 +430,22 @@ def _track_tool_call(self: AcpClient, msg: JsonRpcMessage) -> None:
         logger.debug("ACP tool_call: %s (%s)", title, kind)
 
 
+def _is_native_child_frame(client: AcpClient, params: object, update: dict) -> bool:
+    """Whether a frame belongs to a native sub-agent rather than this session's
+    own turn: on another session, or stamped with the Agent call it serves
+    (:func:`native_child_stamp.parent_tool_use`, the reader
+    ``client_native_children`` uses). Only a session that declared ``subagents``
+    is sent that form."""
+    declared = getattr(client, "_native_children_declared", None)
+    if declared is None or not declared():
+        return False
+    session_id = params.get("sessionId") if isinstance(params, dict) else None
+    own = getattr(client, "_session_id", "") or ""
+    if isinstance(session_id, str) and session_id and own and session_id != own:
+        return True
+    return bool(parent_tool_use(update))
+
+
 def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None:
     params = msg.params or {}
     update = params.get("update", {})
@@ -358,10 +463,20 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             None,
         )
         purpose = extract_tool_purpose(raw_input)
-        logger.debug(
-            "ACP tool_call raw: %s",
-            {k: v for k, v in update.items() if k != "sessionUpdate"},
-        )
+        if logger.isEnabledFor(logging.DEBUG):
+            # The frame carries the tool's raw arguments, which can hold a password
+            # or a signed URL the log filter's narrow patterns do not know, so the
+            # line goes through the same redactor as the displayed input.
+            logger.debug(
+                "ACP tool_call raw: %s",
+                redact_text(
+                    json.dumps(
+                        {k: v for k, v in update.items() if k != "sessionUpdate"},
+                        default=str,
+                        ensure_ascii=False,
+                    )
+                ),
+            )
         # Build initial tool input string from raw params
         tool_call_id = update.get("toolCallId", "")
         # Start the round-trip clock here rather than at the yield: this is
@@ -373,6 +488,12 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         # kind + adapter-authored MCP markers, never the kind alone (see
         # _dispatch.classify_tool_call).
         identity = classify_tool_call(update)
+        # What the emitted event names. The classifier's verdict, unless Copilot's
+        # title recovery (below) attributes the call to a server Crew placed.
+        event_tool_name = identity.tool_name
+        event_mcp_server = identity.mcp_server_name
+        event_tool_trusted = identity.tool_identity_trusted
+        event_mcp_trusted = identity.identity_trusted
         note_tool_call_started(
             tool_call_id,
             kind=kind,
@@ -408,6 +529,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                         input_str = diff_str
                         found_diff = True
                     break
+        _derived_redacted = False
         # Fallback when no diff content block was found: derive from the
         # edit args (strReplace pair, create/insert content). Gated on
         # the EDIT kind — "content"-shaped args exist on non-edit tools.
@@ -417,6 +539,9 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         ):
             diff_str = derive_edit_diff(raw_input)
             if diff_str:
+                # derive_edit_diff redacts each side before diffing, so the comparison
+                # below cannot see a cut it made; the params it came from can.
+                _derived_redacted = redact_text(input_str) != input_str
                 input_str = diff_str
         # Redact sensitive content before caching/displaying
         input_redacted = False
@@ -424,7 +549,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             from kiro_crew.security import redact
 
             safe_input = redact(input_str)
-            input_redacted = safe_input != input_str
+            input_redacted = safe_input != input_str or _derived_redacted
             input_str = safe_input
         if tool_call_id and input_str:
             self._tool_call_inputs[tool_call_id] = input_str
@@ -505,6 +630,18 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
                 and self.backend in ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL
             ):
                 self._tool_call_identity_unreadable[tool_call_id] = True
+            # Copilot only (H13): it names an MCP call nowhere but its title.
+            if self._is_copilot and not identity.mcp_server_name and not is_shell:
+                self._recover_copilot_mcp_identity(tool_call_id, update)
+                # The same attribution the permission event inherits, so the
+                # turn loop resolves a directive (``kirocrew-core`` +
+                # ``reset_conversation``) and records its input digest; the
+                # hyphenated wire title alone resolves no directive.
+                recovered_server = self._tool_call_mcp_server.get(tool_call_id, "")
+                if recovered_server:
+                    event_mcp_server = recovered_server
+                    event_tool_name = self._tool_call_tool_name.get(tool_call_id, "")
+                    event_tool_trusted = event_mcp_trusted = True
         title = _select_tool_title(title, raw_input, kind, is_shell=is_shell) or ""
         if title:
             from kiro_crew.security import redact
@@ -518,7 +655,7 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
         # Trusted identity from adapter-authored markers (NOT the
         # LLM-authored title), shared with the dispatch builder so both
         # event paths carry the same classifier verdict.
-        return AcpEvent(
+        tool_event = AcpEvent(
             kind=EVENT_TOOL_CALL,
             title=title,
             # The backend's OWN title, before select_tool_title swaps in a
@@ -536,13 +673,85 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # LLM-authored title). Earned only when an identity pair was
             # actually extracted from such a source: a frame with no marker
             # populates nothing and asserts no provenance.
-            tool_name=identity.tool_name,
-            mcp_server_name=identity.mcp_server_name,
-            tool_identity_trusted=identity.tool_identity_trusted,
-            mcp_identity_trusted=identity.identity_trusted,
+            tool_name=event_tool_name,
+            mcp_server_name=event_mcp_server,
+            tool_identity_trusted=event_tool_trusted,
+            mcp_identity_trusted=event_mcp_trusted,
             diff_path=_diff_path,
         )
+        # getattr: a client built without ``__init__`` keeps no window. A native
+        # sub-agent's call is not in this turn's parallel batch: the parent's open
+        # Agent call would hold that batch for the child's whole run.
+        if not _is_native_child_frame(self, params, update):
+            batch_guard.note_dispatched(getattr(self, "_batch_window", None), tool_event)
+        return tool_event
     return None
+
+
+def _recover_copilot_mcp_identity(self: AcpClient, tool_call_id: str, update: dict) -> None:
+    """Recover a Copilot CLI MCP call's server and tool from its ``tool_call`` title.
+
+    Copilot CLI 1.0.100 carries no ``_meta`` identity: its ``tool_call`` frame titles a
+    served tool ``<server>-<tool>`` (``probe-marker``, measured in
+    ``mcp-stdio-mount-live.jsonl``) and its permission frame names the bare tool
+    (``marker``). Without the server, the gate judged the call by its title and never
+    asked the ``mcp`` scope, so a ceiling denying ``@probe/marker`` permitted it. The
+    title is matched against the names Crew itself placed on this session's array --
+    the whole server universe Copilot was handed, its built-in MCP servers being off
+    (``--disable-builtin-mcps``) -- and a unique match is cached as the trusted identity
+    the permission event inherits, exactly as a ``_meta`` channel would fill it. A
+    title two placed names could both have produced (``a`` serving ``b-c`` and ``a-b``
+    serving ``c``) is recorded as ambiguous, and its permission request is refused
+    (:func:`~kiro_crew.acp.client_permissions._refuse_identity_drift`): judging it as
+    either server could permit what the other's rule denies. A title matching no
+    placed name is not an MCP call and keeps the shared reading.
+    """
+    title = update.get("title")
+    if update.get("kind") != "other" or not isinstance(title, str) or not title:
+        return
+    ambiguous = getattr(self, "_copilot_ambiguous_mcp_calls", None)
+    if ambiguous is None:
+        return
+    try:
+        elements = self._session_mcp_servers()
+    except Exception:  # noqa: BLE001 - a missing array means nothing to match
+        elements = []
+    placed: set[str] = set()
+    for element in elements:
+        name = element.get("name") if isinstance(element, dict) else None
+        if isinstance(name, str) and name:
+            placed.add(name)
+    matches = sorted(
+        name for name in placed if title.startswith(f"{name}-") and len(title) > len(name) + 1
+    )
+    if len(matches) > 1:
+        note_copilot_identity_record(ambiguous, ambiguous, tool_call_id)
+        return
+    ambiguous.discard(tool_call_id)
+    unmatched = getattr(self, "_copilot_unmatched_titles", None)
+    if not matches:
+        # Kept so the permission frame can show this was a served tool after all
+        # (``<anything>-<its bare name>``) whose server no placed name matched.
+        if unmatched is not None and "-" in title:
+            if len(title) > COPILOT_TITLE_MAX_CHARS:
+                # Too long to keep whole, and a cut title could not be matched
+                # against the permission frame: refused rather than judged blind.
+                note_copilot_identity_record(ambiguous, ambiguous, tool_call_id)
+            elif len(tool_call_id) > TOOL_CALL_CACHE_MAX_KEY_CHARS or (
+                len(unmatched) >= COPILOT_IDENTITY_RECORDS_MAX and tool_call_id not in unmatched
+            ):
+                ambiguous.add(COPILOT_IDENTITY_OVERFLOW)
+            else:
+                unmatched[tool_call_id] = title
+        return
+    if unmatched is not None:
+        unmatched.pop(tool_call_id, None)
+    server = matches[0]
+    self._tool_call_mcp_server[tool_call_id] = server
+    self._tool_call_tool_name[tool_call_id] = title[len(server) + 1 :]
+    unclassified = getattr(self, "_tool_call_unclassified", None)
+    if unclassified is not None:
+        unclassified[tool_call_id] = False
 
 
 def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None:
@@ -568,6 +777,11 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
     tool_use_id = update.get("toolCallId", "")
     if not tool_use_id:
         return None
+    if self._is_copilot and update.get("status") in ("completed", "failed"):
+        # A finished call asks nothing more, so its identity records are released;
+        # this is what keeps them bounded by the calls still in flight.
+        getattr(self, "_copilot_unmatched_titles", {}).pop(tool_use_id, None)
+        getattr(self, "_copilot_ambiguous_mcp_calls", set()).discard(tool_use_id)
     # A terminal status is useful even when output parsing finds no text: it
     # closes the observed round-trip without claiming a result body. A
     # non-terminal status leaves the clock running for the real completion.
@@ -576,6 +790,16 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
         status=update.get("status"),
         scope=getattr(self, "_session_id", "") or "",
     )
+    # The result may come in an update before an outputless terminal one: it is
+    # learned from every update, and only a terminal status ends the call.
+    if update.get("status") in TERMINAL_TOOL_STATUSES:
+        batch_guard.note_settled(
+            getattr(self, "_batch_window", None), tool_use_id, batch_guard.update_text(update)
+        )
+    else:
+        batch_guard.note_printed(
+            getattr(self, "_batch_window", None), tool_use_id, batch_guard.update_text(update)
+        )
 
     output_parts: list[str] = []
 
@@ -643,7 +867,7 @@ def _extract_tool_call_update(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent 
     # matches: with a connection URI whose "@" lands on byte 8000, the head
     # slice keeps "://user:password" and drops the "@" the prefilter needs,
     # so the password reaches the dashboard in clear text. Same ordering as
-    # `_dispatch._build_tool_result_event` and as `_compaction_detail` below.
+    # `_dispatch._build_tool_result_event`.
     _redacted = redact_text(final_joined)
     tool_output_digest, tool_output_bytes = _measure_tool_output(_redacted)
     final_output = _redacted[:8000]
@@ -711,6 +935,7 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
     # Edit-style diff content blocks: prefer the rendered unified diff over
     # the raw input dict (mirrors `_extract_tool_event`).
     _diff_path = ""
+    found_diff = False
     content_blocks = update.get("content", [])
     if isinstance(content_blocks, list):
         for cb in content_blocks:
@@ -724,13 +949,29 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
                 diff_str = _make_unified_diff(old, new, path)
                 if diff_str:
                     input_str = diff_str
+                    found_diff = True
                 break
+    _derived_redacted = False
+    # The edit-args fallback of `_extract_tool_event`; a kind-less update of a
+    # call that already shows a diff is an edit (mirrors
+    # _dispatch._build_tool_refinement_event).
+    if not found_diff and (
+        kind == "edit"
+        or is_rendered_edit_diff(self._tool_call_inputs.get(tool_use_id))
+        or (isinstance(raw_input, dict) and raw_input.get("command") == "strReplace")
+    ):
+        diff_str = derive_edit_diff(raw_input)
+        if diff_str:
+            # derive_edit_diff redacts each side before diffing, so the comparison
+            # below cannot see a cut it made; the params it came from can.
+            _derived_redacted = redact_text(input_str) != input_str
+            input_str = diff_str
     input_redacted = False
     if input_str:
         from kiro_crew.security import redact
 
         safe_input = redact(input_str)
-        input_redacted = safe_input != input_str
+        input_redacted = safe_input != input_str or _derived_redacted
         input_str = safe_input
         self._tool_call_inputs[tool_use_id] = input_str
         self._tool_call_input_redacted[tool_use_id] = input_redacted
@@ -776,7 +1017,7 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
         from kiro_crew.security import redact
 
         purpose = redact(purpose)
-    return AcpEvent(
+    refinement = AcpEvent(
         kind=EVENT_TOOL_CALL_UPDATE,
         title=title_str,
         wire_title=title if isinstance(title, str) else "",
@@ -789,11 +1030,20 @@ def _extract_tool_call_refinement(self: AcpClient, msg: JsonRpcMessage) -> AcpEv
         is_shell=is_shell,
         diff_path=_diff_path,
     )
+    # The refined input may be the first to carry the shell command, so the
+    # batch window classifies the call again (``acp.batch_guard``).
+    if is_shell and not _is_native_child_frame(self, params, update):
+        batch_guard.note_refined(getattr(self, "_batch_window", None), refinement)
+    return refinement
 
 
 async def _read_new_tool_results(self: AcpClient) -> list[AcpEvent]:
     results = await asyncio.to_thread(self._read_new_tool_results_sync)
     if results:
+        for event in results:
+            batch_guard.note_settled(
+                getattr(self, "_batch_window", None), event.tool_call_id or "", event.tool_output
+            )
         self._active_tool_calls.difference_update(event.tool_call_id or "" for event in results)
         self._tool_dispatched = self._active_tool_calls.possibly_open
         self._stale_eligible = not self._active_tool_calls.possibly_open

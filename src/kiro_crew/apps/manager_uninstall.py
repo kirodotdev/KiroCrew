@@ -19,6 +19,8 @@ import shutil
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.apps import credential_masks
+from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manager_builtins import (
     invalidate_orphan_cache,
     migrated_builtin_cleanup_applies,
@@ -36,16 +38,34 @@ from kiro_crew.apps.manager_tree import (
     _is_generated_deps_artifact_name,
     _remove_any_shape,
 )
-from kiro_crew.config.loader import (
+from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
+from kiro_crew.config.loader import (  # noqa: F401 - read_config_text: served by the apps.manager facade
     ConfigReadError,
     config_local_path,
     config_path,
     read_config_text,
+    read_endorsed_config_text,
     update_config_locked,
 )
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.manager")
+
+
+def _rmtree_app_dir(dest: Path) -> None:
+    """Remove the app tree, waiting out a Windows file held open in it.
+
+    A backend still closing its ``backend.log`` or an editor with an app file
+    open fails the delete with a sharing violation;
+    :func:`~kiro_crew.platform_compat.remove_with_retry` retries it for about
+    three seconds and then names the held file. The dashboard route runs the
+    uninstall in an executor, so the retry may sleep.
+    """
+    platform_compat.remove_with_retry(
+        dest,
+        retry_hint="Stop the app's backend or close the program using that file, "
+        "then uninstall again",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +122,12 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         granted_repository = _trust_grant_repository(name)
         granted_local = _trust_grant_local(name)
         _drop_trust_grant(name)
+        # Drop any host-exec grant too, for the same name-reuse reason: a grant left
+        # behind would authorize a pod for a different app later installed under this
+        # name. Best-effort and no-op unless this app runs code outside the sandbox.
+        revoke_host_exec(name)
+        # And its worker auto-approve grants, so none outlives the app.
+        revoke_worker_auto_approve(name)
     except Exception as exc:  # noqa: BLE001 - refuse rather than half-uninstall
         logger.warning("trust-grant cleanup on uninstall of %r failed", name, exc_info=True)
         return AppResult(
@@ -123,6 +149,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     _deps_lock: contextlib.ExitStack | None = None
     try:
         if keep_data:
+            # The manifest leaves with the app directory and the data stays: its
+            # credential masks must stand in the record first (apps.credential_masks),
+            # and a record that cannot be written refuses the uninstall.
+            credential_masks.remember_declaration(name)
             # ONE string for the pin below and every path-based step after it,
             # or verify() guards a path the renames and deletes do not use.
             dest = _pinned_ancestors(dest)
@@ -288,12 +318,12 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
                     )
             if _data_pin is not None:
                 _data_pin.close()
-            shutil.rmtree(dest)
+            _rmtree_app_dir(dest)
             if tmp_data.is_dir():
                 dest.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(tmp_data), str(data))
         else:
-            shutil.rmtree(dest)
+            _rmtree_app_dir(dest)
         # Point of commit: every destructive step succeeded, the app is
         # uninstalled - NOW the quarantined trees die. A tree that resists
         # deletion here is logged, not fatal: under its doomed name it is
@@ -491,31 +521,62 @@ def trust_grant_removal_blocked(name: str) -> str | None:
     # `apps_trusted` for OTHER apps says nothing about THIS uninstall, and gating
     # on the key's mere presence made every app un-uninstallable for any operator
     # who set it at all — a blanket refusal, not a grant-specific one.
+    #
+    # Both files are read as the load reads them, with no is_file() check first: a
+    # deleted file whose endorsed copy is still in force is that copy, and only
+    # FileNotFoundError (neither exists) means absent.
     local = config_local_path()
-    if local.is_file():
-        try:
-            raw_local = json.loads(read_config_text(local))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            raw_local = {}  # the loader ignores an unreadable overlay, so do we
-        agent_local = raw_local.get("agent") if isinstance(raw_local, dict) else None
-        if isinstance(agent_local, dict):
-            overlay_grants = agent_local.get("apps_trusted")
-            # A non-list overlay value cannot express a grant for this app, so
-            # there is nothing here that a write would have to survive.
-            if isinstance(overlay_grants, list) and name in overlay_grants:
-                return f"apps_trusted is set in {local}, which overrides config.json"
+    try:
+        raw_local = json.loads(read_endorsed_config_text(local))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raw_local = {}  # absent or unreadable: the loader ignores it, so do we
+    agent_local = raw_local.get("agent") if isinstance(raw_local, dict) else None
+    if isinstance(agent_local, dict):
+        overlay_grants = agent_local.get("apps_trusted")
+        # A non-list overlay value cannot express a grant for this app, so
+        # there is nothing here that a write would have to survive.
+        if isinstance(overlay_grants, list) and name in overlay_grants:
+            return f"apps_trusted is set in {local}, which overrides config.json"
 
     path = config_path()
-    if path.is_file():
-        try:
-            json.loads(read_config_text(path))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            # Report rather than stay silent: a quiet bail here is precisely the
-            # "uninstalled but still trusted" state the caller must not reach. The
-            # write is still refused (it would erase everything else the file
-            # holds) — it just is not refused quietly.
-            return f"{path} is unreadable: {exc}"
+    try:
+        raw = json.loads(read_endorsed_config_text(path))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        # Report rather than stay silent: a quiet bail here is precisely the
+        # "uninstalled but still trusted" state the caller must not reach. The
+        # write is still refused (it would erase everything else the file
+        # holds) — it just is not refused quietly.
+        return f"{path} is unreadable: {exc}"
+    # Dropping a grant saves config.json, which is refused while it has a change made
+    # outside Kiro Crew pending: say so before any destructive step, not inside it.
+    # Function-local, so the apps.manager facade serves no new name.
+    from kiro_crew.config import loosening_provenance
+
+    try:
+        if _holds_base_grant(raw, name) and loosening_provenance.leaf_pending(
+            loosening_provenance.LEAF_CONFIG
+        ):
+            return loosening_provenance.PENDING_SAVE_REFUSED
+    except OSError as exc:
+        return f"{path} is unreadable: {exc}"
     return None
+
+
+def _holds_base_grant(raw: object, name: str) -> bool:
+    """Whether the base document *raw* holds any execution grant for *name*."""
+    agent_raw = raw.get("agent") if isinstance(raw, dict) else None
+    if not isinstance(agent_raw, dict):
+        return False
+    base_grants = agent_raw.get("apps_trusted")
+    repositories = agent_raw.get("apps_trusted_repositories")
+    local_grants = agent_raw.get("apps_trusted_local")
+    return (
+        (isinstance(base_grants, list) and name in base_grants)
+        or (isinstance(repositories, dict) and name in repositories)
+        or (isinstance(local_grants, list) and name in local_grants)
+    )
 
 
 def _drop_trust_grant(name: str) -> None:
@@ -548,30 +609,21 @@ def _drop_trust_grant(name: str) -> None:
     # document, which also keeps the blast radius to a single key instead of
     # re-serialising the whole config from the model.
     path = config_path()
-    if not path.is_file():
-        return
     try:
-        raw = json.loads(read_config_text(path))
+        # The grant as the load sees it: where the sandbox seals config.json, a
+        # deleted or tampered file still holds the endorsed grant, which must go.
+        raw = json.loads(read_endorsed_config_text(path))
+    except FileNotFoundError:
+        return
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         # RAISE rather than return: a silent bail here is precisely the
         # "uninstalled but still trusted" state the caller must not reach. The
         # write is still refused — it would erase everything else the file holds.
         raise RuntimeError(f"{path} is unreadable: {exc}") from exc
-    if not isinstance(raw, dict):
-        return
-    agent_raw = raw.get("agent")
-    if not isinstance(agent_raw, dict):
-        return
-    base_grants = agent_raw.get("apps_trusted")
-    repositories = agent_raw.get("apps_trusted_repositories")
-    local_grants = agent_raw.get("apps_trusted_local")
-    has_name = isinstance(base_grants, list) and name in base_grants
-    has_repository = isinstance(repositories, dict) and name in repositories
-    has_local = isinstance(local_grants, list) and name in local_grants
     # Orphaned kind metadata is inert without the name grant, but uninstall still
     # clears it so a later hand edit cannot unexpectedly reactivate old consent.
     # Preserve the no-grant fast path: ordinary uninstalls perform no config write.
-    if not (has_name or has_repository or has_local):
+    if not _holds_base_grant(raw, name):
         return
 
     def _revoke(raw_locked: dict) -> dict | None:
@@ -659,10 +711,9 @@ def _has_trust_grant(name: str) -> bool:
     entry here to put back".
     """
     path = config_path()
-    if not path.is_file():
-        return False
     try:
-        raw = json.loads(read_config_text(path))
+        # Read as the load reads it; FileNotFoundError: neither file nor endorsed copy.
+        raw = json.loads(read_endorsed_config_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     if not isinstance(raw, dict):
@@ -677,10 +728,9 @@ def _has_trust_grant(name: str) -> bool:
 def _trust_grant_repository(name: str) -> str:
     """Repository binding for *name* in the BASE config, or ``""``."""
     path = config_path()
-    if not path.is_file():
-        return ""
     try:
-        raw = json.loads(read_config_text(path))
+        # Read as the load reads it; FileNotFoundError: neither file nor endorsed copy.
+        raw = json.loads(read_endorsed_config_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return ""
     agent_raw = raw.get("agent") if isinstance(raw, dict) else None
@@ -694,10 +744,9 @@ def _trust_grant_repository(name: str) -> str:
 def _trust_grant_local(name: str) -> bool:
     """Whether *name* has an explicit local grant marker in the BASE config."""
     path = config_path()
-    if not path.is_file():
-        return False
     try:
-        raw = json.loads(read_config_text(path))
+        # Read as the load reads it; FileNotFoundError: neither file nor endorsed copy.
+        raw = json.loads(read_endorsed_config_text(path))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     agent_raw = raw.get("agent") if isinstance(raw, dict) else None

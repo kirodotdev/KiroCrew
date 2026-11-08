@@ -137,7 +137,7 @@ class RunnerLane:
         so a fail, cancel or recovery -- none of which pass ``done`` with a
         committed write -- is never counted a completion. A write the store
         could not take and the admission later replays
-        (:meth:`RunnerAdmission.flush_pending_finish`) is not counted here: its
+        (:meth:`RunnerAdmission.retry_terminal_writes`) is not counted here: its
         slot is already freed and its window long past, so crediting it late
         would attribute a completion to the wrong window -- the adaptive track
         tolerates the missing evidence rather than mis-timing it."""

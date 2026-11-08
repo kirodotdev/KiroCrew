@@ -56,6 +56,14 @@ import {
   CURSOR_AWAY_WATCH_TYPE,
   watchCursorAwayNative,
 } from '../lib/cursorAway'
+import {
+  SCROLL_TOUCH_CANCEL_TYPE,
+  SCROLL_TOUCH_ID_MAX,
+  SCROLL_TOUCH_PHASE_TYPE,
+  SCROLL_TOUCH_VERSION,
+  SCROLL_TOUCH_WATCH_TYPE,
+  subscribeScrollTouchNative,
+} from '../lib/scrollTouch'
 import { NATIVE_NOTIFY_TYPE, parseNativeNotifyEnvelope, postRelayedNativeNotification } from '../lib/nativeNotify'
 import {
   PANE_CLIPBOARD_IMAGE_TYPE, PANE_CLIPBOARD_RESULT_TYPE, PANE_CLIPBOARD_VERSION, parsePaneClipboardImageRequest,
@@ -73,10 +81,12 @@ import { PANE_ACTIVE_SLOT_TYPE, PANE_SLOT_HINT_PARAM, readPaneSlot, rememberPane
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 import { reportInstanceFailure } from '../utils/instanceFailureReport'
+import { canProbePanePort, panePortUrl, probePanePort, sshForwardCommand, type PanePortProbe } from '../utils/panePortProbe'
 import type { ErrorReport } from '../utils/errorReport'
 import { isElectron, isLinuxFramelessElectron, isWinElectron } from '../lib/electron'
 import type { DragGap } from '../lib/dragGaps'
 import { useFocusMode, useFocusChromeVisible, setFocusModeEnabled, setFocusChromeVisible } from '../hooks/useFocusMode'
+import { useChatCompleteNotify } from '../hooks/chatCompleteNotify'
 
 import { i18nT } from '../i18n/t'
 // Refresh the embedded token once elapsed reaches this fraction of its TTL
@@ -99,6 +109,16 @@ const REFRESH_MIN_INTERVAL_MS = 10_000
 // deps below precisely so that a re-mint arriving inside the window cannot
 // postpone it.
 const PANE_LOAD_TIMEOUT_MS = 15_000
+// What the panel says when this browser cannot reach the pane's port. Worded as
+// the likely cause next to the restart one, because a same-host forward whose
+// far end is down fails the probe the same way. The command forwards every
+// crew's pane port, so one paste fixes every pane.
+function panePortUnreachableMessage(port: number, forwardPorts: number[]): string {
+  return i18nT('components.instancesViewport.pane_port_unreachable', {
+    port,
+    command: sshForwardCommand([...forwardPorts, port]),
+  })
+}
 // Gap between successive auto-warm iframe mounts on first load (see the
 // auto-warm effect). Long enough for a tunnel's shell + entry bundle to land
 // before the next pane starts pulling its own; short enough that four panes
@@ -177,6 +197,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // Panes whose embedded SPA has announced readiness for their CURRENT src.
   // Tests preload partial slices, so tolerate a missing map.
   const ready = useAppSelector(s => s.instances.ready) ?? {}
+  // Why the active crew's last connect from ANY path was rejected: a tab click's
+  // or auto-connect's failure never reaches this viewport's own mutation.
+  const activeConnectError = useAppSelector(s => (activeId ? s.instances.connectError?.[activeId] : undefined)) || ''
   // The crew-switcher pin preference, relayed into every embedded pane so a
   // remote pane's bar matches the local bar. Reactive: a change re-broadcasts
   // the model (see buildModelFor deps + the broadcast effect) so all panes flip
@@ -190,6 +213,8 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // bar does. Reactive like the pins: a change re-broadcasts the model, and an
   // embedded toggle routes back here via `mc-set-stable-order`.
   const [stableOrder] = useCrewSwitcherStableOrder()
+  // Relayed in the host model (`HostModel.chatCompleteNotify`).
+  const chatCompleteNotify = useChatCompleteNotify()
   // Focus mode is a property of the WINDOW, not of one pane: a remote crew shown
   // inside a focused window must hide its chrome too. Relayed down the host model
   // below, and it also gates the host drag strips (see their render site).
@@ -242,6 +267,36 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // A pane switch (or unmount) orphans the outgoing pane's watch: its reveal is
   // no longer on screen, and nothing should keep polling for it.
   useEffect(() => stopPaneCursorWatch, [activeId, stopPaneCursorWatch])
+  // Panes that asked for the trackpad's finger phases (mc-scroll-touch-watch),
+  // by pane id, with the watch id and the exact origin to answer. A pane has no
+  // preload, so this frame listens on the bridge for it and forwards each phase
+  // to the ACTIVE pane only: the fingers are on the pane on screen.
+  const paneScrollTouchRef = useRef<Map<string, { watchId: string; origin: string }>>(new Map())
+  const scrollTouchStopRef = useRef<(() => void) | null>(null)
+  // One bridge subscription while any pane is listening, none otherwise.
+  const syncScrollTouch = useCallback(() => {
+    const want = paneScrollTouchRef.current.size > 0
+    if (want && !scrollTouchStopRef.current) {
+      scrollTouchStopRef.current = subscribeScrollTouchNative(phase => {
+        const paneId = activeIdRef.current
+        const watch = paneId ? paneScrollTouchRef.current.get(paneId) : undefined
+        const frame = paneId ? iframeRefs.current.get(paneId)?.contentWindow : undefined
+        if (!watch || !frame) return
+        try {
+          frame.postMessage({ type: SCROLL_TOUCH_PHASE_TYPE, v: SCROLL_TOUCH_VERSION, id: watch.watchId, phase }, watch.origin)
+        } catch {
+          /* frame mid-navigation: its reader falls back to the gap */
+        }
+      })
+    } else if (!want && scrollTouchStopRef.current) {
+      scrollTouchStopRef.current()
+      scrollTouchStopRef.current = null
+    }
+  }, [])
+  useEffect(() => () => {
+    scrollTouchStopRef.current?.()
+    scrollTouchStopRef.current = null
+  }, [])
   const refreshingRef = useRef<Set<string>>(new Set())
   const lastRefreshRef = useRef<Map<string, number>>(new Map())
   // Reactive (mc-auth-expired) re-mints answered per pane since its last Retry
@@ -695,6 +750,27 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         const watchId = (data as { id?: unknown }).id
         const live = paneCursorWatchRef.current
         if (live && live.paneId === id && live.watchId === watchId) stopPaneCursorWatch()
+      } else if (data.type === SCROLL_TOUCH_WATCH_TYPE) {
+        // A pane's swipe reader wants the real finger-down / finger-up. The
+        // origin already named this pane (resolveTunnelOrigin above); the frame
+        // check pins the request to that pane's own iframe, and the answers go
+        // back to exactly this origin. Any pane may ask, so one that becomes
+        // active later is already listening; only the active one is answered.
+        const watchId = (data as { id?: unknown }).id
+        if (typeof watchId !== 'string' || !watchId || watchId.length > SCROLL_TOUCH_ID_MAX) return
+        if (data.v !== SCROLL_TOUCH_VERSION) return
+        const frame = iframeRefs.current.get(id)?.contentWindow
+        if (!frame || e.source !== frame) return
+        paneScrollTouchRef.current.set(id, { watchId, origin: e.origin })
+        syncScrollTouch()
+      } else if (data.type === SCROLL_TOUCH_CANCEL_TYPE) {
+        const watchId = (data as { id?: unknown }).id
+        const live = paneScrollTouchRef.current.get(id)
+        if (!live || live.watchId !== watchId) return
+        const frame = iframeRefs.current.get(id)?.contentWindow
+        if (!frame || e.source !== frame) return
+        paneScrollTouchRef.current.delete(id)
+        syncScrollTouch()
       } else if (data.type === PANE_CLIPBOARD_IMAGE_TYPE) {
         // A pane wants an image on the clipboard. Its own async Clipboard API is
         // refused (this document's header scopes the clipboard to this origin,
@@ -813,7 +889,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [dispatch, refreshToken, canRefreshNow, currentPortToId, stopPaneCursorWatch, adoptChainedCrew])
+  }, [dispatch, refreshToken, canRefreshNow, currentPortToId, stopPaneCursorWatch, adoptChainedCrew, syncScrollTouch])
 
   // Proactive refresh: when an embedded token passes REFRESH_AT_ELAPSED_FRAC of
   // its TTL, re-mint and reload that iframe ahead of the cap. Skips the active
@@ -962,6 +1038,45 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     }, PANE_LOAD_TIMEOUT_MS)
     return () => window.clearTimeout(t)
   }, [activeId, activeWarmPort, activeSeq, activeReady, nonLoopbackOrigin])
+
+  // After a load timeout, ask whether THIS browser can reach the pane's port at
+  // all (utils/panePortProbe.ts). The tunnel's `connected` is measured on the
+  // gateway host, so when the dashboard is reached through a forward of its own
+  // port only, nothing listens on the pane port on the browser's machine and the
+  // timeout is otherwise all the user sees. One probe per LOAD, keyed like the
+  // watchdog (id, port, Retry count), so Retry probes again and a re-mint does not.
+  const activeLoadKey = activeId && activeWarmPort !== undefined ? `${activeId}|${activeWarmPort}|${activeSeq}` : ''
+  const activeTimedOutNow = activeId !== null && !!timedOut[activeId] && !activeReady
+  const probeHost = window.location.hostname
+  const portProbeable = !nonLoopbackOrigin && canProbePanePort(probeHost)
+  const [portProbe, setPortProbe] = useState<{ load: string; verdict: PanePortProbe } | null>(null)
+  useEffect(() => {
+    if (!activeTimedOutNow || !portProbeable || !activeLoadKey || activeWarmPort === undefined) return
+    let cancelled = false
+    const load = activeLoadKey
+    const url = panePortUrl(probeHost, activeWarmPort)
+    void probePanePort(url).then(verdict => {
+      if (cancelled) return
+      paneLog('port-probe', { id: activeId, port: activeWarmPort, verdict })
+      setPortProbe({ load, verdict })
+    })
+    return () => { cancelled = true }
+  }, [activeTimedOutNow, portProbeable, activeLoadKey, activeWarmPort, activeId, probeHost])
+  const portProbeResult = portProbe && portProbe.load === activeLoadKey ? portProbe.verdict : undefined
+  // Pending while a probe for the current timed-out load has not answered yet.
+  const portProbePending = activeTimedOutNow && portProbeable && portProbeResult === undefined
+  // Only a refused/reset connection counts; a timed-out probe proves nothing.
+  const panePortUnreachable = activeTimedOutNow && portProbeResult === 'unreachable'
+  // Every crew's pane port, for one forward line that runs beside the user's
+  // existing dashboard forward. The dashboard port is left out: the browser
+  // sees only its LOCAL end (`ssh -L 8777:localhost:5476` reads as 8777), so a
+  // same-number forward for it would aim at the wrong gateway port. A Fargate
+  // crew has no pane, so it has no port here.
+  const forwardPorts = useMemo(() => (instancesQuery.data?.instances ?? [])
+    .filter(i => i.connection_method !== 'fargate')
+    .map(i => i.status?.local_port ?? i.local_port)
+    .filter((p): p is number => typeof p === 'number' && p > 0)
+    .sort((a, b) => a - b), [instancesQuery.data])
 
   // See iframeRefCallbacks: the callback is created once per id and reused
   // across renders, so React invokes it only on a real attach/detach. It reads
@@ -1228,7 +1343,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // Ordered as a tree, exactly as the local bar orders it, so a pane's own
       // switcher shows the same shape the window's does. A pane cannot derive
       // this: it never sees the host's registry.
-      const tabs = chainRows(visibleInstanceTabs(insts, warm)).map(
+      const tabs = chainRows(visibleInstanceTabs(insts, warm), insts).map(
         ({ inst: i, depth, parentName, reachable, brokenAt }) => ({
           id: i.id,
           name: i.name,
@@ -1260,12 +1375,13 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         // boundary in some engines and the receiver validates element-wise anyway.
         pinnedCrews,
         stableOrder,
+        chatCompleteNotify,
         // This host performs image copies for the pane (mc-clipboard-image).
         // Advertised so a pane relays only to a host that will answer.
         clipboardRelay: PANE_CLIPBOARD_VERSION,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, winInset, winCaptionReserve, focusMode, pinnedCrews, stableOrder],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, winCaptionReserve, focusMode, pinnedCrews, stableOrder, chatCompleteNotify],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -1322,7 +1438,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // to a loopback frame.
   useEffect(() => {
     for (const id of Object.keys(warm)) postModelTo(id)
-  }, [warm, activeId, unread, macInset, winInset, winCaptionReserve, instancesQuery.data, postModelTo, pinnedCrews, stableOrder])
+  }, [warm, activeId, unread, macInset, winInset, winCaptionReserve, instancesQuery.data, postModelTo, pinnedCrews, stableOrder, chatCompleteNotify])
 
   // Keep warm iframes mounted across Local<->remote switches (hide-not-unmount).
   // Also render when the active tab is a remote instance with no warm iframe
@@ -1374,6 +1490,10 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     // `connecting` state would journal as its own distinct signature, so every
     // Retry would leave a phantom entry between the real ones.
     if (inst?.status?.state === 'connecting') return
+    // Wait for the port probe (a few seconds at most) so the timeout is
+    // journaled once, with its verdict, instead of once before and once after.
+    if (showPanel && portProbePending) { setPanelReport(null); return }
+    const port = warm[activeId]?.port
     setPanelReport(reportInstanceFailure({
       id: activeId,
       name: inst?.name || activeId,
@@ -1387,11 +1507,18 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
       // The watchdog case has no backend error string at all — the tunnel claims
       // connected while the pane never loaded — so name that state explicitly
       // rather than journaling nothing for the one failure with no visible cause.
+      // A refused connect from any path (auto-connect, a tab click) is the
+      // panel's message when the status carries none, so it journals too.
       fallbackMessage: showPanel && activeTimedOut
-        ? i18nT('components.instancesViewport.pane_failed_to_load')
-        : '',
+        ? (panePortUnreachable && port !== undefined
+            ? panePortUnreachableMessage(port, forwardPorts)
+            : i18nT('components.instancesViewport.pane_failed_to_load'))
+        : (showPanel ? activeConnectError : ''),
+      unreachablePanePort: showPanel && panePortUnreachable && port !== undefined
+        ? { host: probeHost, port }
+        : undefined,
     }))
-  }, [showPanel, activeId, activeTimedOut, instancesQuery.data])
+  }, [showPanel, activeId, activeTimedOut, instancesQuery.data, portProbePending, panePortUnreachable, warm, probeHost, forwardPorts, activeConnectError])
   if (embedded || (warmIds.length === 0 && !showPanel && !showNonLoopbackCard)) return null
 
   const nameFor = (id: string) =>
@@ -1408,7 +1535,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   const connectFailure = connectMutation.isError && connectMutation.variables?.id === activeId
     ? (errMessage(connectMutation.error) || i18nT('components.instancesViewport.connection_error'))
     : ''
-  const panelError = connectFailure || activeInst?.status?.error || activeInst?.status?.diagnosis?.reason || ''
+  const panelError = connectFailure || activeInst?.status?.error || activeConnectError || activeInst?.status?.diagnosis?.reason || ''
 
   // Draggable title-bar strip for the loading/error overlays. On frameless
   // macOS the window is dragged SOLELY by `-webkit-app-region: drag`
@@ -1630,7 +1757,9 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
                 // failure, so it carries the same hand-off as the one below.
                 <ErrorNotice
                   className="w-full text-left text-xs"
-                  message={i18nT('components.instancesViewport.the_tunnel_looks_connected_but_the_remote_dashbo')}
+                  message={panePortUnreachable && activeWarmPort !== undefined
+                    ? panePortUnreachableMessage(activeWarmPort, forwardPorts)
+                    : i18nT('components.instancesViewport.the_tunnel_looks_connected_but_the_remote_dashbo')}
                   report={panelReport ?? undefined}
                   askAgent={!!panelReport}
                   onHandoff={() => dispatch(setActiveId(null))}

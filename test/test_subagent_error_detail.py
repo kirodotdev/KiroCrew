@@ -164,38 +164,44 @@ class TestTombstoneResolvesRecoveryAction:
 
         assert self._recovery(agent_root, "withresult") == "result_available"
 
-    def test_a_result_without_the_complete_flag_is_a_fragment(self, agent_root):
-        """A non-empty file without the flag is an opening sentence, not an answer."""
+    @pytest.mark.parametrize(
+        ("agent_id", "result_text", "cause", "expected"),
+        [
+            # A non-empty file without the flag is an opening sentence, not an answer.
+            pytest.param(
+                "fragmented",
+                "an opening sentence",
+                "error",
+                "partial_result",
+                id="test_a_result_without_the_complete_flag_is_a_fragment",
+            ),
+            pytest.param(
+                "noresult",
+                None,
+                "timeout",
+                "notification_pending",
+                id="test_no_result_still_owes_the_user_a_notification",
+            ),
+            # The rule is non-empty, not merely present: a 0-byte file recovers nothing.
+            pytest.param(
+                "emptyresult",
+                "",
+                "reaped",
+                "notification_pending",
+                id="test_an_empty_result_file_is_not_a_result",
+            ),
+        ],
+    )
+    def test_without_a_complete_result(self, agent_root, agent_id, result_text, cause, expected):
         from kiro_crew.subagent_persistence import create_agent_folder
 
-        create_agent_folder("fragmented", task="t")
-        (agent_root / "fragmented" / "result.txt").write_text(
-            "an opening sentence", encoding="utf-8"
-        )
+        create_agent_folder(agent_id, task="t")
+        if result_text is not None:
+            (agent_root / agent_id / "result.txt").write_text(result_text, encoding="utf-8")
 
-        SubagentManager._write_tombstone(SubagentInfo(id="fragmented", task="t"), "error")
+        SubagentManager._write_tombstone(SubagentInfo(id=agent_id, task="t"), cause)
 
-        assert self._recovery(agent_root, "fragmented") == "partial_result"
-
-    def test_no_result_still_owes_the_user_a_notification(self, agent_root):
-        from kiro_crew.subagent_persistence import create_agent_folder
-
-        create_agent_folder("noresult", task="t")
-
-        SubagentManager._write_tombstone(SubagentInfo(id="noresult", task="t"), "timeout")
-
-        assert self._recovery(agent_root, "noresult") == "notification_pending"
-
-    def test_an_empty_result_file_is_not_a_result(self, agent_root):
-        """The rule is non-empty, not merely present: a 0-byte file recovers nothing."""
-        from kiro_crew.subagent_persistence import create_agent_folder
-
-        create_agent_folder("emptyresult", task="t")
-        (agent_root / "emptyresult" / "result.txt").write_text("", encoding="utf-8")
-
-        SubagentManager._write_tombstone(SubagentInfo(id="emptyresult", task="t"), "reaped")
-
-        assert self._recovery(agent_root, "emptyresult") == "notification_pending"
+        assert self._recovery(agent_root, agent_id) == expected
 
 
 class TestTerminalArmUsesTheDescription:

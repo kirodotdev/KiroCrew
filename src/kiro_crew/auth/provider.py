@@ -22,6 +22,27 @@ from kiro_crew.auth.store import KasToken, TokenStore
 
 logger = logging.getLogger(__name__)
 
+#: The profile ARN every AWS Builder ID sign-in is served under. Builder ID is a
+#: personal free-tier account with no profile of its own: ``ListAvailableProfiles``
+#: answers it ``AccessDeniedException``, yet the Kiro runtime refuses a request
+#: that names no profile ("profileArn is required for this request"). kiro-cli
+#: answers the engine's ``_kiro/auth/getAccessToken`` for a Builder ID token with
+#: this fixed value (``BUILDER_ID_PROFILE_ARN``), and Crew sends the same one so a
+#: Builder ID sign-in works on the bundle route exactly as it does behind kiro-cli.
+BUILDER_ID_PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
+
+
+def kas_profile_arn(token: KasToken) -> str | None:
+    """The profile ARN the engine is given for *token*.
+
+    A Builder ID identity always gets :data:`BUILDER_ID_PROFILE_ARN`, as kiro-cli
+    does: the store never holds one for it, because there is none to look up.
+    Every other identity sends what its sign-in stored.
+    """
+    if token.identity == "builder_id":
+        return BUILDER_ID_PROFILE_ARN
+    return token.profile_arn
+
 
 class NotAuthenticated(Exception):
     """No usable Kiro credential is stored."""
@@ -65,8 +86,12 @@ class KasAuthProvider:
             return None
         return os.environ.get("KIRO_API_KEY") or None
 
-    async def current(self) -> KasToken:
-        """Resolve + refresh the active token, or raise NotAuthenticated."""
+    async def current(self, *, rejected_access_token: str | None = None) -> KasToken:
+        """Resolve + refresh the active token, or raise NotAuthenticated.
+
+        *rejected_access_token*: see :func:`ensure_fresh`. A refused token that is
+        still the stored one is refreshed even before its expiry.
+        """
         # KIRO_API_KEY is a headless bypass matching KAS's EnvAuthProvider: a raw bearer
         # with no refresh and no profile ARN (region falls back us-east-1).
         api_key = self._env_api_key()
@@ -85,7 +110,9 @@ class KasAuthProvider:
 
         session, temp = await self._session_or_temp()
         try:
-            return await ensure_fresh(self._store, token, session=session)
+            return await ensure_fresh(
+                self._store, token, session=session, rejected_access_token=rejected_access_token
+            )
         except IdentitySignedOut as exc:
             # A logout landed between the resolve above and the refresh: the same
             # verdict as an empty vault, so callers (the KAS callback) render the
@@ -101,7 +128,7 @@ class KasAuthProvider:
         return (await self.current()).access_token
 
     async def get_profile_arn(self) -> str | None:
-        return (await self.current()).profile_arn
+        return kas_profile_arn(await self.current())
 
     def is_authenticated(self) -> bool:
         return self._store.resolve() is not None or bool(self._env_api_key())
@@ -118,7 +145,7 @@ class KasAuthProvider:
         token = await self.current()
         return {
             "accessToken": token.access_token,
-            "profileArn": token.profile_arn,
+            "profileArn": kas_profile_arn(token),
             "provider": token.provider,
         }
 
@@ -136,8 +163,9 @@ class KasAuthProvider:
             "accessToken": token.access_token,
             "expiresAt": token.expires_at.astimezone(timezone.utc).isoformat(),
         }
-        if token.profile_arn:
-            resp["profileArn"] = token.profile_arn
+        profile_arn = kas_profile_arn(token)
+        if profile_arn:
+            resp["profileArn"] = profile_arn
         if token.provider:
             resp["provider"] = token.provider
         if token.auth_method:

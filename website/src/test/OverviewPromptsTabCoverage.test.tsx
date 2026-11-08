@@ -124,9 +124,10 @@ describe('PromptsTab query states', () => {
     expect(await screen.findByText('No prompts yet')).toBeInTheDocument()
     expect(screen.queryByText(/\.kiro\/prompts/)).not.toBeInTheDocument()
     expect(screen.getAllByText('Create New Prompt').length).toBeGreaterThan(0)
-    // The registry label is still case-folded for prose; it moved out of the
-    // install nudge and into the header InfoTip, which carries it as a title.
-    expect(screen.getByTitle(/Saved prompts from packages/)).toBeInTheDocument()
+    // The registry label sits in the header InfoTip, which carries it as a
+    // title. It is shown as the catalog spells it: case-folding a translated
+    // name is wrong in languages that capitalize nouns.
+    expect(screen.getByTitle(/Saved prompts from Packages/)).toBeInTheDocument()
   })
 })
 
@@ -350,6 +351,20 @@ describe('PromptsTab slot picker', () => {
     expect(titled).not.toHaveTextContent('chat/t')
     expect(rowOf(hints[2])).toHaveAttribute('title', 'researcher · chat/r')
     expect(rowOf(hints[2])).toHaveTextContent('researcher')
+  })
+
+  it('the Use in Chat button says whether the slot picker is open', async () => {
+    renderTab()
+    await waitFor(() => expect(mockApi.promptDetail).toHaveBeenCalled())
+    const toggle = screen.getByRole('button', { name: /Use in Chat/ })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(toggle)
+    expect(await screen.findByText('Send to…')).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(toggle)
+    expect(screen.queryByText('Send to…')).toBeNull()
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('says so when there is no chat to send to', async () => {

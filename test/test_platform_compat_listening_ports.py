@@ -14,6 +14,7 @@ import subprocess
 import types
 
 import pytest
+from named_cases_helpers import named_cases
 from platform_compat_helpers import _fake_windows_bins
 
 from kiro_crew import platform_compat as pc
@@ -131,9 +132,14 @@ class TestFindListeningPidsErrors:
         assert completed is False
         assert captured["kwargs"].get("timeout") == pc._LSOF_TIMEOUT_SECS
 
-    def test_linux_process_listener_probe_matches_the_child_socket_inode(
-        self, tmp_path, monkeypatch
-    ):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_linux_process_listener_probe_matches_the_child_socket_inode"),
+            *named_cases("test_linux_per_process_probe_runs_on_every_runner"),
+        ],
+    )
+    def test_the_linux_listener_probe_matches_the_child_socket(self, tmp_path, monkeypatch):
         proc_root = tmp_path / "proc"
         (proc_root / "net").mkdir(parents=True)
         (proc_root / "4242" / "fd").mkdir(parents=True)

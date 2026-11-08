@@ -669,17 +669,16 @@ class TestAllowedToolsIsReDerivedWhenTheCeilingTightens:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the class's empty rebuild hold, moved verbatim; tracked for a de-flake pass
-    def _no_hold_carried_in(self, monkeypatch):
+    def _no_hold_carried_in(self, _floor_monkeypatch):
         """``prime_ceiling_projection`` seeds nothing while the last real rebuild left a
         conductor spec unwritten; these tests pin the seeded baseline, so a hold a test
         elsewhere in this process left behind must not reach them."""
         from kiro_crew import agent as agent_mod
 
-        monkeypatch.setattr(agent_mod, "_conductor_spec_held", False, raising=False)
+        _floor_monkeypatch.setattr(agent_mod, "_conductor_spec_held", False, raising=False)
         # Nor may an earlier test's rebuild answer seed the baseline these tests pin.
-        monkeypatch.setattr(agent_mod, "_rebuild_answer_generation", None, raising=False)
-        monkeypatch.setattr(agent_mod, "_rebuild_incomplete", False, raising=False)
+        _floor_monkeypatch.setattr(agent_mod, "_rebuild_answer_generation", None, raising=False)
+        _floor_monkeypatch.setattr(agent_mod, "_rebuild_incomplete", False, raising=False)
 
     @staticmethod
     def _hook(monkeypatch):

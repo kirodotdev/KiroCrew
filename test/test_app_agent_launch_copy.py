@@ -463,10 +463,26 @@ class TestTheProcessStartsInTheLaunchDirectory:
         (target / ".kiro").mkdir()
         with pytest.raises(SystemExit, match="not empty"):
             program.enter_exec_cwd(launch)
-        # No directory named: the launcher stays where it was created.
+        # No directory named: the launcher enters the one it was created in again.
         monkeypatch.chdir(tmp_path)
-        program.enter_exec_cwd(SimpleNamespace(exec_cwd=""))
+        program.enter_exec_cwd(SimpleNamespace(exec_cwd="", inherited_cwd=str(tmp_path)))
         assert os.path.realpath(os.getcwd()) == os.path.realpath(tmp_path)
+
+    @pytest.mark.skipif(not hasattr(os, "statvfs"), reason="POSIX launcher")
+    def test_with_no_launch_directory_a_vanished_inherited_one_falls_back_to_the_root(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew import sandbox_launcher_program as program
+
+        inherited = tmp_path / "inherited"
+        inherited.mkdir()
+        monkeypatch.chdir(inherited)
+        inherited.rename(tmp_path / "beneath")
+        program.enter_exec_cwd(SimpleNamespace(exec_cwd="", inherited_cwd=str(inherited)))
+        assert os.getcwd() == os.sep
+        monkeypatch.chdir(tmp_path)
+        program.enter_exec_cwd(SimpleNamespace(exec_cwd="", inherited_cwd=""))
+        assert os.getcwd() == os.sep
 
 
 class TestCrewJudgesTheCopyItWrote:

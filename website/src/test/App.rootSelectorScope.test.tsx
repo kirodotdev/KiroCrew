@@ -2,8 +2,8 @@
  * Test: the app root's `dashboard` subscription is no wider than the fields it uses.
  *
  * `useAppSelector` is plain `useSelector` with reference equality, and the `dashboard`
- * slice carries much more than the two fields the root reads (the slot list, the subagent
- * maps), so under Immer a reducer touching any of them re-renders the root for nothing.
+ * slice carries much more than the two fields the root reads (the connection flag,
+ * the update progress), so under Immer a reducer touching any of them re-renders the root for nothing.
  *
  * These count renders of `App` ITSELF: `useTerminalPoppedOut` is called exactly once,
  * unconditionally, in the root's body and nowhere else, so wrapping it is an exact
@@ -24,7 +24,6 @@ import {
   sseDisconnected,
   setUpdateProgress,
   setChannelTrusted,
-  sseSubagentStatus,
 } from '../store/dashboardSlice'
 
 // Counts renders of `App`. Declared via vi.hoisted so the mock factory below can
@@ -139,27 +138,6 @@ async function rendersDuring(body: () => void) {
 describe('App root store subscription scope', () => {
   beforeEach(() => { appRenders.n = 0 })
   afterEach(() => { cleanup(); vi.clearAllMocks() })
-
-  it('does not re-render the root on a subagent-status frame', async () => {
-    const { store } = await mountSettled()
-
-    // Nothing at all happens in the window, so a non-zero count below would be
-    // background async work rather than the dispatch. Measured 0.
-    expect(await rendersDuring(() => {})).toBe(0)
-
-    // Live websocket traffic: writes only the subagent maps, which the root never
-    // reads. The slice object identity still changes, which is what used to be enough.
-    const delta = await rendersDuring(() => {
-      store.dispatch(sseSubagentStatus({ running: 2, slot: 'chat-1-1' }))
-    })
-
-    expect(store.getState().dashboard.subagentRunning['chat-1-1']).toBe(2)
-    expect(delta).toBe(0)
-    // The root did not lose the values by simply dropping the subscription.
-    expect(store.getState().dashboard.connected).toBe(true)
-    expect(store.getState().dashboard.updateProgress).toBeNull()
-    expect(screen.queryByLabelText('Gateway offline')).toBeNull()
-  })
 
   it('does not re-render the root when channel trust changes', async () => {
     const { store } = await mountSettled()

@@ -24,3 +24,16 @@ updates:
     labels:
       - "area: ci"
       - "area: tests"
+
+  # The exact claude-agent-acp version install.sh, setup.sh and
+  # minimal_install.sh install globally (read via
+  # scripts/lib/acp-adapter-pin.sh). Same cooldown, same reason: an installer
+  # should never pick up a release that has not had its week in the open.
+  - package-ecosystem: "npm"
+    directory: "/packaging/acp-adapters"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    labels:
+      - "area: packaging"

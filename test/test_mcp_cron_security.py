@@ -25,6 +25,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew import mcp_cron
 from kiro_crew.mcp_cron import (
@@ -274,16 +275,9 @@ MALICIOUS_COMMANDS = [
     # `echo p{x.\<newline>.z}s` prints `pxs pys pzs`, a real range expansion.
     "cat ~/.s{s.\\\n.s}h/id_rsa",
     'sh -c "cat ~/.s{s.\\\n.s}h/id_rsa"',
-    # UNQUOTED ESCAPE, the sibling of quote concatenation above. There the separator
-    # was moved to a different quote state; here it is escaped instead. A backslash
-    # outside quotes is the shell's own escape character, so quote removal DELETES it
-    # and the nested shell receives a bare separator -- the group has to be assembled
-    # outside the quoted run for this to bite, which is why a single-level rule and
-    # a projection that keeps backslashes both read it as separator-free. Measured
-    # with neutral tokens: `/bin/sh +B -c '/bin/sh -c "echo "p{x\,x}q'` prints
-    # `pxq pxq`, identical to the unescaped control. The third spelling carries no
-    # quote character at all -- it groups with an escaped space -- so a rule
-    # conditioned on quotes being present would still miss it.
+    # UNQUOTED ESCAPE: quote removal deletes an unquoted backslash, so the nested shell
+    # gets a bare separator (`/bin/sh +B -c '/bin/sh -c "echo "p{x\,x}q'` prints
+    # `pxq pxq`). The third spelling has no quote at all, so a quote-based rule misses it.
     'sh -c "cat "~/.a{w\\,w}s/credentials',
     'sh -c "cat "~/.a\\{w,w}s/credentials',
     "sh -c cat\\ ~/.a{w\\,w}s/credentials",
@@ -532,16 +526,10 @@ BENIGN_COMMANDS = [
     "find /tmp -name '*.log' -exec rm {} ;",
     "echo {print}",
     "awk '{print x, y}' /tmp/f",
-    # An unquoted escaped brace (`echo \{a,b\}`) is deliberately NOT in this list.
-    # It is literal as written -- verified, it prints `{a,b}` -- but an UNQUOTED
-    # backslash is the shell's escape character, so quote removal deletes it and a
-    # shell that parses the word a second time gets a bare separator: verified,
-    # `/bin/sh +B -c 'sh -c echo\ p{x\,x}q'` prints `pxq pxq`.
-    # `_strip_shell_quotes` drops unquoted backslashes for that reason and cannot
-    # tell the two spellings apart, so it refuses both. That is an over-refusal,
-    # recorded in the third column of `_BRACE_SHAPES_MEASURED_AGAINST_BASH`.
-    # An UNTERMINATED group expands to nothing; scanning to end-of-string looking
-    # for a close must not fall back to refusing.
+    # An unquoted escaped brace (`echo \{a,b\}`) is not here: it is literal, but a shell
+    # re-parsing it after quote removal expands it, so it is refused (see the third
+    # column of `_BRACE_SHAPES_MEASURED_AGAINST_BASH`).
+    # An UNTERMINATED group expands to nothing and must not fall back to refusing.
     "echo {a,b",
     # A continuation is ordinary formatting in a long one-liner and must stay usable
     # once the joined command is clean.
@@ -708,8 +696,27 @@ def test_long_prefix_never_hides_later_assignments(prefix, separator):
     assert _vet_shell_command(command) is not None
 
 
-@pytest.mark.parametrize("cmd", BENIGN_COMMANDS)
-def test_vet_shell_command_allows_benign(cmd):
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        *named_cases("test_vet_shell_command_allows_benign", "cmd", BENIGN_COMMANDS),
+        *named_cases(
+            "test_an_assignment_nothing_reads_is_ordinary",
+            "cmd",
+            [
+                # An assignment nothing reads, and reads of $HOME, stay ordinary.
+                "TZ=UTC date",
+                "TZ=UTC bash /home/u/report.sh",
+                "ssh -o ConnectTimeout=10 backup@host uptime",
+                "docker run --rm -e TZ=UTC alpine sh -c 'date'",
+                "A=hello; echo from cron",
+                "cd $HOME && ls",
+                "A='\\q'; echo x",
+            ],
+        ),
+    ],
+)
+def test_an_ordinary_command_is_allowed(cmd):
     assert _vet_shell_command(cmd) is None, f"should allow: {cmd!r}"
 
 
@@ -791,23 +798,6 @@ def test_a_variable_that_is_assigned_and_read_is_refused(cmd):
 
 
 @pytest.mark.parametrize(
-    "cmd",
-    [
-        # An assignment nothing reads, and reads of $HOME, stay ordinary.
-        "TZ=UTC date",
-        "TZ=UTC bash /home/u/report.sh",
-        "ssh -o ConnectTimeout=10 backup@host uptime",
-        "docker run --rm -e TZ=UTC alpine sh -c 'date'",
-        "A=hello; echo from cron",
-        "cd $HOME && ls",
-        "A='\\q'; echo x",
-    ],
-)
-def test_an_assignment_nothing_reads_is_ordinary(cmd):
-    assert _vet_shell_command(cmd) is None, f"should allow: {cmd!r}"
-
-
-@pytest.mark.parametrize(
     ("text", "expected"),
     [
         # A `$` before a quote or a backslash is joined to what follows by quote removal.
@@ -861,16 +851,9 @@ def test_rebinds_home(text, expected):
     assert mcp_cron._rebinds_home(text) is expected
 
 
-# (word, some shell in the chain expands it, the scan must refuse it). Every row
-# was RUN, never reasoned: the word is echoed twice, once with brace expansion on
-# and once under `+B`, and a difference in output is an expansion while identical
-# output is quote removal only. Two chains are measured per word, because the
-# string reaches more than one parser -- `bash -c 'echo W'` for the shell that runs
-# the cron, and `bash -c 'bash -c "echo W"'` for a nested shell that re-parses it
-# after quote removal.
-#
-# The third column is separate from the second on purpose. Where they differ, the
-# scan is deliberately stricter than the level-1 parser, and the comment says why.
+# (word, some shell in the chain expands it, the scan must refuse it). Every row was
+# run, with and without `+B`, under `bash -c 'echo W'` and the nested
+# `bash -c 'bash -c "echo W"'`. Where the last two columns differ the scan is stricter.
 _BRACE_SHAPES_MEASURED_AGAINST_BASH = [
     # Quoted or escaped whitespace inside an alternative does not stop bash. These
     # are the shapes a whitespace-free character class exempts, i.e. the live ones.
@@ -909,17 +892,10 @@ _BRACE_SHAPES_MEASURED_AGAINST_BASH = [
     ("p{x,x x}s", False, False),
     ("p{x,x\ty}s", False, False),
     ("p{x,x\ny}s", False, False),
-    # An escaped separator or brace is literal in BOTH chains measured here, because
-    # the nested chain quotes the word and a backslash before `{` or `,` survives
-    # double quotes -- verified, `bash -c 'bash -c "echo \\{a,b\\}"'` prints `{a,b}`.
-    # Hence column 2 is False. Column 3 is True anyway: an UNQUOTED escape is the
-    # shell's own escape character, so quote removal deletes it and a shell parsing
-    # the word a THIRD way -- nested, with the group assembled outside the quotes --
-    # sees the separator bare. Verified, `/bin/sh +B -c '/bin/sh -c "echo "p{x\,x}q'`
-    # prints `pxq pxq`, identical to the unescaped control, and the `p\{x,x}q`
-    # spelling prints it too. `_strip_shell_quotes` therefore drops an unquoted
-    # backslash, and cannot tell that chain from these two -- the same
-    # over-approximation as the single-quoted row below, in the same direction.
+    # An escaped separator or brace is literal in both measured chains (column 2). It is
+    # refused anyway: quote removal deletes an unquoted backslash, so a nested shell with
+    # the group outside the quotes sees it bare (`/bin/sh +B -c '/bin/sh -c "echo
+    # "p{x\,x}q'` prints `pxq pxq`), and `_strip_shell_quotes` cannot tell the chains apart.
     ("p{x\\,x}s", False, True),
     ("p\\{x,x\\}s", False, True),
     # DOUBLE-quoted spellings are refused FOR CAUSE, not caution. Level 1 leaves
@@ -958,17 +934,10 @@ def test_brace_scan_refuses_every_shape_some_shell_expands(word, any_shell_expan
 def test_quote_states_is_the_shared_machine_not_a_second_copy():
     """ANSI-C `$'...'` escapes a quote, and a private copy of the rules got that wrong.
 
-    `security.shell_normalizer._iter_shell_chars` is THE quote/escape machine here,
-    and its docstring records this exact escape as a real bypass: inside `$'...'` a
-    backslash escapes, so `$'a\\'b'` does not close at the escaped quote. A
-    hand-rolled copy closed early, reopened on the next quote, and then disagreed
-    for the whole rest of the string -- on `x $'a\\'b' {p,q} y` it labelled an
-    UNQUOTED `{p,q}` as single-quoted, 10 of 17 positions differing.
-
-    So this asserts the OUTCOME rather than the wiring: the group after the ANSI-C
-    string must read as unquoted. The only disagreement left with the generator is
-    the quote characters themselves, where this adapter deliberately reports the
-    state a quote is changing FROM.
+    Inside `$'...'` a backslash escapes, so `$'a\\'b'` does not close at the escaped
+    quote, and the group after it must read as unquoted. The adapter differs from
+    `security.shell_normalizer._iter_shell_chars` only on quote characters, where it
+    reports the state a quote changes from.
     """
     text = "x $'a\\'b' {p,q} y"
     states, escaped = _quote_states(text)
@@ -986,16 +955,9 @@ def test_quote_states_is_the_shared_machine_not_a_second_copy():
 def test_brace_scan_keeps_a_nested_shell_covered():
     """A group quoted at THIS level is unquoted for the shell that re-parses it.
 
-    This is the coupling that decides the shape of the rule, so it gets a test of
-    its own rather than living only in a comment. Stubbing the scan out shows it is
-    the only rule in `_vet_shell_command` that covers these commands, so if a later
-    change exempts quoted groups, this test is the one that must fail.
-
-    The third case is the spelling that a single-level scan cannot see at all: the
-    comma is produced by CONCATENATING two quoted runs, so it sits outside both
-    while the braces sit inside. Verified -- the inner shell receives
-    `cat ~/.ss{h,h}/id_rsa` and expands it -- which is why the quote-removed
-    projection is scanned rather than only the command as written.
+    The scan is the only rule in `_vet_shell_command` covering these commands. In the
+    third case the comma comes from concatenating two quoted runs, and the inner shell
+    gets `cat ~/.ss{h,h}/id_rsa`, so the quote-removed projection is scanned.
     """
     assert _has_bash_brace_expansion('sh -c "cat ~/.a{w,w}s/credentials"')
     assert _has_bash_brace_expansion("sh -c 'cp ~/.ss{h,h}/id_rsa /tmp/k'")
@@ -1005,19 +967,9 @@ def test_brace_scan_keeps_a_nested_shell_covered():
 def test_fire_time_vet_rescans_a_legacy_command_body(monkeypatch):
     """A job stored BEFORE a refusal existed must not keep running after it.
 
-    This is the whole reason `vet_job_at_fire_time` exists -- its own docstring
-    says a policy tightened after scheduling "would never be re-evaluated: the job
-    keeps running under the rules that were in force when it was created". A
-    `script` body was already re-scanned there; a `command` body was not, and that
-    asymmetry is load-bearing now that the shell resolver accepts a brace-expanding
-    bash. Measured: `_vet_command_governance`, the only fire-time check a command
-    had, ALLOWS `set -B; cat ~/.a{w,w}s/credentials` while `_vet_shell_command`
-    refuses it -- so the storage-time half of this change did not reach the
-    installed base, and the compensating control the `+B` acceptance leans on was
-    absent for exactly the jobs that predate it.
-
-    Deny semantics are the caller's existing ones: fail the run, KEEP the job, and
-    audit -- so this surfaces as a legible audited failure rather than silence.
+    `_vet_command_governance` alone allows `set -B; cat ~/.a{w,w}s/credentials`, which
+    `_vet_shell_command` refuses, so a stored `command` body is re-scanned at fire time.
+    A deny fails the run, keeps the job, and audits.
     """
     from kiro_crew.cron import CronJob
 
@@ -1062,12 +1014,8 @@ def test_fire_time_vet_still_allows_a_clean_command(monkeypatch):
 def test_fire_time_vet_evaluates_the_command_ceiling_once(monkeypatch):
     """One fire-time pass evaluates the governance ceiling exactly once.
 
-    ``vet_job_at_fire_time`` evaluates and audits the ceiling under its own
-    ``commands`` scope, then runs the composition scan. The scan must not
-    evaluate the ceiling again: the same pass also runs at claim time inside the
-    ``claim_vet_bound`` allowance, where a repeated decision spends budget a
-    short-``timeout_secs`` job does not have. The storage-time path still
-    evaluates it (asserted second), because there nothing evaluated it before.
+    The pass also runs at claim time inside ``claim_vet_bound``, where a repeat spends
+    budget a short-``timeout_secs`` job lacks. The storage-time path still evaluates it.
     """
     from kiro_crew.cron import CronJob
 
@@ -1094,26 +1042,10 @@ def test_fire_time_vet_evaluates_the_command_ceiling_once(monkeypatch):
 def test_brace_scan_cost_is_bounded_and_refuses_rather_than_hangs():
     """The brace scan is quadratic on a hostile shape, and one caller is uncapped.
 
-    A long run of `{` with no closing brace at the same state makes the inner walk
-    run to end-of-string for every one of them. Measured before the bound: 145 ms at
-    1k, 572 ms at 2k, 2.3 s at 4k, 9.2 s at 8k -- doubling the input multiplied the
-    time by ~4, so a few hundred KB hangs the process.
-
-    A length cap alone does not fix it. `cron_add` is capped at 5000 by
-    `validation.FieldSpec("command", max_len=5000)`, but `portability.py` re-vets an
-    IMPORTED job with the raw dict value and that cap does not apply there -- and
-    5000 still costs seconds, once per imported job. So the STEPS are bounded, which
-    bounds every shape rather than one of them.
-
-    And exhaustion must REFUSE: short-circuiting to "clean" would turn a denial of
-    service into a bypass, which is the worse of the two failures.
-
-    Both arms are exercised here because they bound DIFFERENT resources and a command
-    can only ever hit one of them. Below `_CRON_MAX_COMMAND_SCAN` the step budget
-    bounds the quadratic walk; above it the length ceiling refuses before any
-    per-character state is allocated at all. Asserting only the second would let the
-    step budget rot unnoticed, since every hostile shape long enough to be interesting
-    would be caught by length first.
+    A long run of unclosed `{` walks to end-of-string for each (9.2 s at 8k). Imports
+    skip the 5000-char `FieldSpec` cap, so the steps are bounded, and exhaustion must
+    refuse: answering "clean" would turn a denial of service into a bypass. Both arms
+    run: the step budget below `_CRON_MAX_COMMAND_SCAN`, the length ceiling above it.
     """
 
     def timed(cmd: str) -> tuple[float, str | None]:
@@ -1150,17 +1082,9 @@ def test_brace_scan_cost_is_bounded_and_refuses_rather_than_hangs():
 def test_glob_matching_cost_is_bounded():
     """The glob check must stay cheap on a hostile pattern.
 
-    ``fnmatch`` compiles the glob to a regex, which is superlinear on a
-    pathological one, and the vetter runs inline in the ``cron_add`` call — so an
-    unbounded pattern is a denial of the tool. ``_CRON_MAX_GLOB_WORD`` bounds the
-    word handed to fnmatch.
-
-    Asserted on the glob helper directly rather than through
-    ``_vet_shell_command``: the surrounding gates include
-    ``security.is_sensitive_bash_command``, whose own cost on a 100k-character
-    command dwarfs everything here (measured ~184s, and identical on unmodified
-    ``main`` — a pre-existing upstream issue, not this function's). Timing the
-    whole vetter would measure that instead of the invariant under test.
+    ``fnmatch`` regexes are superlinear and the vetter runs inline in ``cron_add``, so
+    ``_CRON_MAX_GLOB_WORD`` bounds the word. Timed on the helper directly, because
+    ``security.is_sensitive_bash_command`` takes ~184s on a 100k-character command.
     """
 
     def timed(cmd: str) -> float:
@@ -1235,21 +1159,10 @@ def test_vet_shell_command_error_is_redacted():
 def test_command_length_ceiling_refuses_before_allocating_scan_state():
     """A command too long to scan is refused BEFORE any per-character state exists.
 
-    The step budget in `_scan_one_level` bounds the quadratic WALK. It cannot bound
-    what `_quote_states` allocates before the walk begins: two lists of one entry per
-    character, measured at a flat 16.0 bytes/char (n = 1e4, 1e6, 1e7). On the import
-    path that allocation is itself the attack, because
-    `portability._sanitize_imported_crons` hands this function the raw dict value with
-    no field-length cap -- bounded only by the 2 GiB `_MAX_IMPORT_UNCOMPRESSED`
-    ceiling, which at 16 bytes/char asks for 32 GiB.
-
-    That path's `except Exception` does not save it: the kernel OOM killer sends
-    SIGKILL, it does not raise `MemoryError`, so the drop-the-job branch never runs.
-    The guard therefore has to come before the allocation rather than around it.
-
-    Load-bearing detail: this asserts the refusal is CHEAP. A test that only checked
-    for a refusal would pass just as well with the check placed after the fold and the
-    quote scan, which is precisely the placement that still OOMs.
+    `_quote_states` allocates 16 bytes/char before the step budget applies, and
+    `portability._sanitize_imported_crons` passes uncapped values (up to 2 GiB, so
+    32 GiB). The OOM killer sends SIGKILL, so `except Exception` cannot catch it. This
+    asserts the refusal is cheap: a check placed after the quote scan still OOMs.
     """
     over = "a" * (_CRON_MAX_COMMAND_SCAN + 1)
 
@@ -1270,11 +1183,8 @@ def test_command_length_ceiling_refuses_before_allocating_scan_state():
 def test_command_length_ceiling_sits_above_the_storable_maximum():
     """The ceiling must not refuse anything `cron_add` would accept.
 
-    Pinned against the real `FieldSpec` rather than a copy of the number, so the two
-    cannot drift apart. If someone raises the storage cap above the scan ceiling, a
-    command becomes storable and then unscannable -- refused on every fire by a guard
-    meant only for inputs that bypassed validation. That failure would surface as a
-    working job that suddenly cannot run, so it is worth failing here instead.
+    Pinned against the real `FieldSpec`. A storage cap above the scan ceiling would
+    make a command storable but refused on every fire.
     """
     from kiro_crew.validation import MCP_CRON_SCHEMAS
 

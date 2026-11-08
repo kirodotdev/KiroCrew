@@ -428,3 +428,59 @@ def test_a_row_under_another_key_is_removed_too(tmp_path, monkeypatch):
     with sqlite3.connect(db) as conn:
         rows = conn.execute(f"SELECT key FROM {AUTH_TABLE}").fetchall()
     assert [key for (key,) in rows] == [SENTINEL_ROW_KEY]
+
+
+# --- the KAS bundle route: no kiro-cli, so no store to seed ------------------
+
+
+def _write_config(path: Path, agent: dict | None) -> Path:
+    path.write_text(json.dumps({"agent": agent} if agent is not None else {}), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    "agent, expected",
+    [
+        ({"acp_backend": "kas", "kas_bundle": True}, True),
+        ({"acp_backend": "kas", "kas_bundle": False}, False),
+        ({"acp_backend": "kas"}, False),
+        ({"acp_backend": "kiro", "kas_bundle": True}, False),
+        ({"acp_backend": "kas", "kas_bundle": "true"}, False),
+        (None, False),
+    ],
+)
+def test_the_bundle_route_is_positive_on_both_halves_of_the_written_config(
+    tmp_path, agent, expected
+):
+    cfg = _write_config(tmp_path / "config.json", agent)
+    assert kiro_login_mod.kas_bundle_route(cfg) is expected
+
+
+def test_the_bundle_route_reads_the_config_the_container_actually_writes(tmp_path):
+    """The predicate compares against the backend name `build_backend_config` forces,
+    read from the file that function writes, so a respelling there cannot leave this
+    reading an old name -- and a bundle flag the arriving config carries survives the
+    forced merge, which is the only way the container ever takes the route."""
+    from container.supervisor import backend
+
+    written = backend.build_backend_config({"agent": {"kas_bundle": True}})
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps(written), encoding="utf-8")
+    assert kiro_login_mod.kas_bundle_route(cfg) is True
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps(backend.build_backend_config(None)), encoding="utf-8")
+    assert kiro_login_mod.kas_bundle_route(plain) is False
+
+
+def test_an_unreadable_or_malformed_config_reads_as_the_relay_route(tmp_path):
+    assert kiro_login_mod.kas_bundle_route(tmp_path / "missing.json") is False
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    assert kiro_login_mod.kas_bundle_route(bad) is False
+    (tmp_path / "list.json").write_text("[]", encoding="utf-8")
+    assert kiro_login_mod.kas_bundle_route(tmp_path / "list.json") is False
+
+
+def test_no_written_config_reads_as_the_relay_route():
+    """A writer that produced nothing (None) has no route to read; the seed runs."""
+    assert kiro_login_mod.kas_bundle_route(None) is False

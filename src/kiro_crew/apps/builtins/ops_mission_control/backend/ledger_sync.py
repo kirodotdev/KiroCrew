@@ -355,7 +355,7 @@ def set_settings(
     if branch_name is not None:
         # `set_top_level`, not an open-coded read/write: it holds `_ConfigLock` across the
         # read-modify-write, so a concurrent settings PUT cannot drop this key (or have its own
-        # dropped). The bare sequence here bypassed that lock. Found in review.
+        # dropped). The bare sequence here bypassed that lock.
         set_top_level(_BRANCH_KEY, branch_name.strip())
 
 
@@ -551,7 +551,7 @@ async def _ensure_repo() -> tuple[bool, str]:
 
     await asyncio.to_thread(_sync_gitignore)
 
-    if not (root / ".git").is_dir():
+    if not await asyncio.to_thread((root / ".git").is_dir):
         rc, _, err = await _git("init", "-q")
         if rc != 0:
             return False, f"git init failed: {err.strip()[:200]}"
@@ -616,10 +616,9 @@ def _credential_bearing_lines() -> list[int]:
     Uses the UNION of two detectors, because neither is a superset of the other and this is
     the last gate before bytes leave the machine:
 
-    - ``security.get_credential_patterns()`` — the core accessor, which exists specifically so
-      a downstream scan cannot be silently turned into a no-op by a rename, and which means a
-      pattern added for any other egress site starts protecting this one too. It carries the
-      AKIA/ASIA shapes.
+    - ``security.iter_credential_matches`` — the core scan, linear on a long line. It is public
+      so a rename cannot silently turn this scan into a no-op, and a pattern added for any other
+      egress site starts protecting this one too. It carries the AKIA/ASIA shapes.
     - ``secrets.redact_tokens`` — this app's own detector, which knows the PROVIDER credential
       shapes the core has no reason to: a `Bearer` header, a prefixed Datadog application key
       (`ddapp_…`), a PagerDuty token.
@@ -638,16 +637,15 @@ def _credential_bearing_lines() -> list[int]:
     would turn a missing file into an unexplained sync failure.
     """
     from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import redact_tokens
-    from kiro_crew.security import get_credential_patterns
+    from kiro_crew.security import iter_credential_matches
 
     try:
         text = ledger.ledger_path().read_text(encoding="utf-8")
     except OSError:
         return []
-    patterns = get_credential_patterns()
 
     def _bearing(line: str) -> bool:
-        if any(p.search(line) for p in patterns):
+        if any(iter_credential_matches(line)):
             return True
         # `redact_tokens` returns the line unchanged when it finds nothing, so inequality IS
         # the detection — and it keeps this in step with the write path automatically: a
@@ -753,7 +751,8 @@ async def pull() -> tuple[bool, str]:
     fingerprint lookup. Returns ``(ok, detail)`` and never raises: sync is a
     convenience, and a dispatch cycle must not fail because a remote was unreachable.
     """
-    if not configured():
+    # Off the loop: each policy_store.get re-reads the keystone policy file.
+    if not await asyncio.to_thread(configured):
         return False, "ledger sync is not configured"
     ok, err = await _ensure_repo()
     if not ok:
@@ -828,9 +827,9 @@ async def pull() -> tuple[bool, str]:
         # Off the loop: `has_conflict` reads the whole ledger and `resolve_conflict` re-parses
         # and REWRITES it, and a team ledger is the one file in this app that grows without
         # bound. `pull` is awaited from the heartbeat and from hygiene, so on a conflicted
-        # ledger this stalled the gateway — every chat token, every other app — for the length
-        # of a full parse-and-rewrite. Found in review; the async functions in this module are
-        # otherwise careful to keep file work in a thread, which is what made it stand out.
+        # ledger an inline run would stall the gateway — every chat token, every other app —
+        # for the length of a full parse-and-rewrite. The async functions in this module
+        # keep file work in a thread for the same reason.
         if await asyncio.to_thread(has_conflict):
             kept = await asyncio.to_thread(resolve_conflict)
             await _stage_and_commit("merge team ledger", allow_empty_message_only=True)
@@ -852,6 +851,12 @@ async def pull() -> tuple[bool, str]:
 TRACKED_FILES: tuple[str, ...] = ("ledger.jsonl", "rotation.yaml", ".gitignore")
 
 
+def _present_tracked_files() -> list[str]:
+    """The tracked files that exist on disk, in ``TRACKED_FILES`` order. Blocking."""
+    root = _repo_root()
+    return [name for name in TRACKED_FILES if (root / name).exists()]
+
+
 async def _stage_and_commit(message: str, *, allow_empty_message_only: bool = False) -> bool:
     """Stage every tracked file and commit if anything changed.
 
@@ -860,9 +865,10 @@ async def _stage_and_commit(message: str, *, allow_empty_message_only: bool = Fa
     push that only ever ran ``git add ledger.jsonl`` would leave the schedule committed
     nowhere and silently never reach teammates.
     """
-    for name in TRACKED_FILES:
-        if (_repo_root() / name).exists():
-            await _git("add", "--", name)
+    # Off the loop, like the rest of this module's file work: `push` and `pull` await this
+    # directly on the event loop. One worker hop for the whole set, not one per file.
+    for name in await asyncio.to_thread(_present_tracked_files):
+        await _git("add", "--", name)
     rc, out, _ = await _git("status", "--porcelain")
     if rc == 0 and not out.strip() and not allow_empty_message_only:
         return False
@@ -880,7 +886,8 @@ async def _stage_and_commit(message: str, *, allow_empty_message_only: bool = Fa
 
 async def push(*, message: str = "update ops ledger") -> tuple[bool, str]:
     """Commit and push the local ledger. Call AFTER recording a lesson."""
-    if not configured():
+    # Off the loop for the reason given in `pull`.
+    if not await asyncio.to_thread(configured):
         return False, "ledger sync is not configured"
     ok, err = await _ensure_repo()
     if not ok:
@@ -933,7 +940,7 @@ async def push(*, message: str = "update ops ledger") -> tuple[bool, str]:
     # `push` is a coroutine reached from the hygiene route. Same class as the store/ledger
     # parses already moved, but through a module-LOCAL helper, which is why the AST guard did
     # not see it — that guard matched `store.*`/`ledger.*` attribute calls only. It now also
-    # covers the local file-scanning helpers in this package. Found in review.
+    # covers the local file-scanning helpers in this package.
     leaky = await asyncio.to_thread(_credential_bearing_lines)
     if leaky:
         logger.error(
@@ -1022,7 +1029,9 @@ async def sync_safely(*, direction: str = "pull") -> str:
     that resolves in milliseconds. The retry is bounded at one and only re-runs an
     idempotent git step, so it cannot mask a genuine fault.
     """
-    if not configured():
+    # Off the loop: `run_cycle` awaits this on every heartbeat, and the check re-reads the
+    # keystone policy file each time.
+    if not await asyncio.to_thread(configured):
         return ""
     last = ""
     for attempt in (1, 2):

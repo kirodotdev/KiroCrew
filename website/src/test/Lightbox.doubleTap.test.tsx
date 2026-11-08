@@ -39,7 +39,7 @@ describe('Lightbox double-tap to zoom', () => {
   })
 
   it('toggles fit <-> 2.5x on a double-tap and back', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
     sizeHost(img)
@@ -64,7 +64,7 @@ describe('Lightbox double-tap to zoom', () => {
   })
 
   it('anchors the double-tap zoom at the tapped point rather than the center', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
     sizeHost(img)
@@ -80,7 +80,7 @@ describe('Lightbox double-tap to zoom', () => {
   })
 
   it('does not read two far-apart taps as one double-tap', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
 
@@ -94,7 +94,7 @@ describe('Lightbox double-tap to zoom', () => {
 
   it('does not read two slow taps as a double-tap', () => {
     vi.useFakeTimers()
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
 
@@ -111,7 +111,7 @@ describe('Lightbox double-tap to zoom', () => {
   })
 
   it('does not read a swipe-dismiss drag as a tap candidate', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
 
@@ -126,7 +126,7 @@ describe('Lightbox double-tap to zoom', () => {
   })
 
   it('does not close the lightbox on the click that follows a double-tap', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
 
@@ -142,7 +142,7 @@ describe('Lightbox double-tap to zoom', () => {
   })
 
   it('does not re-arm swipe-to-dismiss when the second tap stays down and drags', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
     sizeHost(img)
@@ -163,7 +163,7 @@ describe('Lightbox double-tap to zoom', () => {
   })
 
   it('does not claim mouse pointers for double-tap zoom', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { overlay, img } = surfaces(container)
 
@@ -182,7 +182,7 @@ describe('Lightbox double-tap to zoom', () => {
   })
 
   it('does not trigger double-tap zoom when rapidly tapping toolbar buttons', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const { img } = surfaces(container)
     const zoomInBtn = [...container.querySelectorAll('button')].find(b =>

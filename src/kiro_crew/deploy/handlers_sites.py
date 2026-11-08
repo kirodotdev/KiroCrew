@@ -52,6 +52,7 @@ from kiro_crew.deploy.handlers_guards import (
     _safe_err,
 )
 from kiro_crew.deploy.scan import Finding, is_credential_finding, summarize
+from kiro_crew.publish_governance import deploy_target_denied_reason
 from kiro_crew.validation import ValidationError, validate_field
 
 try:
@@ -157,8 +158,14 @@ def _safe_site_id(raw: str) -> str:
 # --- testable core (no aiohttp Request) ------------------------------------
 
 
-async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-    """Resolve artifact/dir → render → scan-gate → confirm-gate → engine.deploy."""
+async def _do_deploy(
+    params: dict[str, Any], *, session_key: str = ""
+) -> tuple[int, dict[str, Any]]:
+    """Resolve artifact/dir → render → scan-gate → confirm-gate → engine.deploy.
+
+    *session_key* is the caller's session, which picks the governance profile the
+    publish lists are asked under. It never comes from *params* (the body).
+    """
     if os.name == "nt":
         return 400, {
             "error": "Artifact Deploy requires a POSIX shell (bash) for deploy scripts. "
@@ -168,6 +175,17 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         profile, region = await _resolve_profile(params)
     except _ProfileResolveError as e:
         return 400, e.payload
+
+    # The policy's publish lists (audience, regions, accounts), asked before any
+    # content is staged or uploaded, on preview and again on confirm. Off the
+    # loop: it reads policy and profiles from disk.
+    denied = await asyncio.to_thread(deploy_target_denied_reason, session_key, region)
+    if denied:
+        _audit("deploy", str(params.get("site_id", "")), "denied", error=denied)
+        return 403, {
+            "error": f"public web deploy is disabled by policy: {denied}",
+            "code": "publish_destination_disabled",
+        }
 
     site_id = _safe_site_id(str(params.get("site_id", "")))
     if not site_id:

@@ -56,7 +56,10 @@ def pop_memory_check_cause() -> str:
 
 
 def check_memory_available(
-    min_gb: float = DEFAULT_SPAWN_MIN_MEMORY_GB, *, path: str = "/proc/meminfo"
+    min_gb: float = DEFAULT_SPAWN_MIN_MEMORY_GB,
+    *,
+    path: str = "/proc/meminfo",
+    measured_only: bool = False,
 ) -> tuple[bool, float]:
     """Check if enough memory is available to spawn a subagent.
 
@@ -70,16 +73,19 @@ def check_memory_available(
     ``platform_compat._linux_available_mib`` reads the same file the same
     way. The ``path`` keyword is keyword-only and exists for tests only;
     production callers always take the constant.
-    Native macOS/Windows readers handle the production path on those hosts.
+    Native macOS/Windows readers handle the production path on those hosts:
+    on both, the floor compares against ``platform_compat.host_available_mib``
+    through ``_host_available_gb`` (see it for why macOS does not use the
+    looser sum the auto cap and the posture read).
     Linux production reads also respect cgroup headroom. An explicit test path
     always exercises the file reader. With no readable host memory or finite
-    cgroup limit, returns (True, -1.0).
+    cgroup limit, returns (True, -1.0). ``measured_only`` leaves out a cgroup
+    level whose usage is unreadable instead of counting it as zero headroom
+    (see :func:`_container_cgroup_available_gb`).
     """
     if path == "/proc/meminfo" and not platform_compat.IS_LINUX:
-        if platform_compat.IS_MACOS:
-            avail = _macos_available_memory_gb()
-        elif platform_compat.IS_WINDOWS:
-            avail = _windows_available_memory_gb()
+        if platform_compat.IS_MACOS or platform_compat.IS_WINDOWS:
+            avail = _host_available_gb()
         else:
             avail = -1.0
         return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
@@ -97,17 +103,17 @@ def check_memory_available(
         pass
     if path == "/proc/meminfo":
         pop_memory_check_cause()  # the cgroup probe below records a fresh one
-        cgroup_gb = _cgroup_available_gb()
+        cgroup_gb = (
+            _cgroup_available_gb(measured_only=True) if measured_only else _cgroup_available_gb()
+        )
         if cgroup_gb >= 0:
             avail = cgroup_gb if avail < 0 else min(avail, cgroup_gb)
     return (True, -1.0) if avail < 0 else (avail >= min_gb, round(avail, 2))
 
 
-# Process-subtree readings come from ONE shared walker,
-# :func:`platform_compat.proc_subtree_sample`. RSS, CPU and the two counts all
-# come from that single walk, which lives above both this module and
-# ``mcp_gateway.pool``, so the 256 ceiling and the sentinels cannot drift
-# between separate copies.
+# RSS, CPU and both counts come from one shared walker,
+# :func:`platform_compat.proc_subtree_sample`, also used by ``mcp_gateway.pool``,
+# so the 256 ceiling and the sentinels cannot drift between copies.
 
 
 def _proc_subtree_sample(pid: Optional[int], *, pss: bool = False) -> platform_compat.SubtreeSample:
@@ -184,12 +190,11 @@ def _attributed_count(total: Optional[int], sharers: int, previous: Optional[int
     return max(1, round(total / sharers))
 
 
-# Legacy hard-coded concurrent cap; also the lower clamp bound for auto-sizing
-# so dynamic sizing never regresses below today's behavior.
+# Fail-safe concurrent cap, and the lower clamp bound for every computed cap.
 _LEGACY_DEFAULT_MAX = 3
 
 
-def _available_memory_gb() -> float:
+def _available_memory_gb(*, measured_only: bool = False) -> float:
     """Effective available memory (GB), dispatched per operating system.
 
     Each OS reports "available" memory through a different, non-portable
@@ -213,34 +218,57 @@ def _available_memory_gb() -> float:
     returning GB or -1.0, add an ``IS_<OS>`` flag to ``platform_compat``, and
     wire one branch below. Keep the -1.0 fail-open contract so an unmeasurable
     host degrades to the safe legacy default rather than over-spawning.
+
+    ``measured_only`` (Linux) returns the tightest reading that was actually
+    measured: a cgroup level whose usage is unreadable is left out rather than
+    counted as zero headroom, and still records its cause.
     """
     if platform_compat.IS_LINUX:
-        _ok, host_gb = check_memory_available(min_gb=0.0)
+        if measured_only:
+            _ok, host_gb = check_memory_available(min_gb=0.0, measured_only=True)
+        else:
+            _ok, host_gb = check_memory_available(min_gb=0.0)
         if host_gb <= 0:
             return host_gb  # unreadable → caller fails open
-        cg_gb = _cgroup_available_gb()
+        cg_gb = (
+            _cgroup_available_gb(measured_only=True) if measured_only else _cgroup_available_gb()
+        )
         if cg_gb < 0:
             return host_gb  # no cgroup cap (unconstrained)
         return min(host_gb, cg_gb)
     if platform_compat.IS_MACOS:
         return _macos_available_memory_gb()
     if platform_compat.IS_WINDOWS:
-        return _windows_available_memory_gb()
+        return _host_available_gb()
     # Unsupported platform: no probe yet → fail open.
     return -1.0
 
 
-def _windows_available_memory_gb() -> float:
-    """Available memory (GB) on Windows, or ``-1.0`` when it cannot be read.
+def _host_available_gb() -> float:
+    """``platform_compat.host_available_mib`` in GB, or ``-1.0`` when it cannot be read.
 
-    Delegates to ``platform_compat.host_available_mib`` instead of calling
-    ``GlobalMemoryStatusEx`` here. That shim is the single place the MiB unit
-    and the "0 means unreadable, never zero memory" contract are defined, and a
-    second reader would have to restate both to stay correct.
+    Delegates instead of calling ``GlobalMemoryStatusEx`` or the Mach counters
+    here. That shim is the single place the MiB unit and the "0 means
+    unreadable, never zero memory" contract are defined, and a second reader
+    would have to restate both to stay correct.
 
-    Without this branch the cap loses its memory term on Windows entirely and
-    falls open to ``_LEGACY_DEFAULT_MAX``, so a host with tens of GB free is
-    held to the same three concurrent sub-agents as an unmeasurable one.
+    Readers:
+
+    * Windows, everywhere: without it the cap loses its memory term on Windows
+      entirely and falls open to ``_LEGACY_DEFAULT_MAX``, so a host with tens of
+      GB free is held to the same three concurrent sub-agents as an
+      unmeasurable one.
+    * macOS, the spawn floor only (``check_memory_available``). There the shim
+      counts free plus purgeable pages plus ``min(inactive,
+      external_page_count)``. The floor promises that
+      ``agent.spawn_min_memory_gb`` stays free AFTER a start, so it reads what a
+      new process can really take. The looser ``_macos_available_memory_gb``
+      adds speculative pages a second time (``free_count`` already holds them)
+      and counts dirty anonymous inactive pages as free; on a loaded Apple
+      silicon host it reads about 3.5 GiB above this figure, so a floor compared
+      against it admits starts with less headroom than the operator set. The
+      auto cap's memory-sized fallback, the TaskRunner's memory-sized auto value
+      and the memory posture keep reading ``_macos_available_memory_gb``.
     """
     available_mib = platform_compat.host_available_mib()
     if available_mib <= 0:
@@ -264,11 +292,12 @@ def _macos_vm_reclaimable_pages() -> Optional[int]:
 
     This sum is knowingly looser than ``platform_compat.host_available_mib``,
     which bounds ``inactive`` by ``external_page_count`` and does not re-add
-    ``speculative`` (``free_count`` already contains it). The two are not
-    interchangeable: tightening this one moves the spawn memory floor's macOS
-    reading and the TaskRunner's memory-sized auto value
-    (``compute_memory_sized_parallel_cap``), figures that are documented and
-    that operators tune against.
+    ``speculative`` (``free_count`` already contains it). The spawn floor does
+    not read it: it reads the tight figure (``_host_available_gb``).
+    This sum feeds the TaskRunner's memory-sized auto value, the auto
+    cap's disabled-floor fallback (``compute_memory_sized_parallel_cap``) and
+    the memory posture, figures that are documented and that operators tune
+    against.
     """
     probe = platform_compat.macos_vm_statistics()
     if probe is None:
@@ -329,22 +358,34 @@ def _read_int_file(path: str) -> int | None:
 _MEMORY_STAT_READ_CAP = 64 * 1024
 
 
-def _read_inactive_file_bytes(directory: PurePosixPath | Path, v2: bool) -> int:
-    """Inactive page cache charged to a cgroup, in bytes; 0 when unreadable.
+def _read_reclaimable_file_bytes(directory: PurePosixPath | Path, v2: bool) -> int:
+    """Clean page cache charged to a cgroup, in bytes; 0 when unreadable.
 
     A cgroup's ``memory.current`` (v1: ``memory.usage_in_bytes``) counts the
     page cache its members touched. On a build-heavy host that cache fills the
     group up to its ceiling and stays there, so ``limit - usage`` reads as zero
     headroom while almost all of it is cache the kernel drops on demand.
-    Inactive file pages are the part it reclaims first and cheaply; subtracting
-    them gives the working set, the same figure the kubelet and cAdvisor evict
-    on. Active cache and anonymous memory stay counted as used.
+    Both file LRU lists are reclaimed before the kernel throttles at
+    ``memory.high`` or OOM-kills at ``memory.max``: active pages are only
+    demoted first. So the figure is ``active_file + inactive_file`` less the
+    dirty and writeback pages, which must reach disk before they can go.
+    Anonymous memory and ``shmem`` (tmpfs, which sits on the anon lists and
+    cannot be dropped without swap) stay counted as used. Host ``MemAvailable``
+    also counts most file cache as available, so the two probes roughly agree.
 
-    v2 ``memory.stat`` is hierarchical, so ``inactive_file`` covers the whole
-    subtree. v1 keeps the subtree figure in ``total_inactive_file``. Read
-    through ``kiro_crew.subagent``'s ``open`` for the same reason as :func:`_read_int_file`.
+    v2 ``memory.stat`` is hierarchical. v1 keeps the subtree figures in the
+    ``total_`` keys. Any unparseable value returns 0, so usage counts in full.
+    Read through ``kiro_crew.subagent``'s ``open`` for the same reason as
+    :func:`_read_int_file`.
     """
-    key = "inactive_file" if v2 else "total_inactive_file"
+    # The file LRU lists, then the dirty and writeback pages on them.
+    if v2:
+        reclaimable = ("inactive_file", "active_file")
+        unreclaimable = ("file_dirty", "file_writeback")
+    else:
+        reclaimable = ("total_inactive_file", "total_active_file")
+        unreclaimable = ("total_dirty", "total_writeback")
+    values: dict[str, int] = {}
     try:
         with open(str(directory / "memory.stat"), encoding="ascii") as fh:
             # A kernel-written file of ~40 short lines; the cap only keeps a
@@ -352,21 +393,23 @@ def _read_inactive_file_bytes(directory: PurePosixPath | Path, v2: bool) -> int:
             text = fh.read(_MEMORY_STAT_READ_CAP)
         for line in text.splitlines():
             name, _, value = line.partition(" ")
-            if name == key:
-                return max(0, int(value))
+            if name in reclaimable or name in unreclaimable:
+                values[name] = max(0, int(value))
     except (OSError, UnicodeDecodeError, ValueError):
-        pass
-    return 0
+        return 0
+    cache = sum(values.get(name, 0) for name in reclaimable)
+    pinned = sum(values.get(name, 0) for name in unreclaimable)
+    return max(0, cache - pinned)
 
 
 def _working_set(directory: PurePosixPath | Path, v2: bool, usage: int) -> int:
-    """*usage* minus the group's inactive page cache, never below zero.
+    """*usage* minus the group's clean page cache, never below zero.
 
     The two files are read at different instants, so the cache figure can
     briefly exceed the usage figure; the floor keeps headroom from ever
     reading larger than the limit itself.
     """
-    return max(0, usage - _read_inactive_file_bytes(directory, v2))
+    return max(0, usage - _read_reclaimable_file_bytes(directory, v2))
 
 
 def _cgroup_memory_roots() -> list[tuple[PurePosixPath, PurePosixPath, bool]]:
@@ -433,7 +476,7 @@ def _cgroup_memory_roots() -> list[tuple[PurePosixPath, PurePosixPath, bool]]:
     return roots
 
 
-def _cgroup_available_gb() -> float:
+def _cgroup_available_gb(*, measured_only: bool = False) -> float:
     """Cgroup memory headroom (GB) from whichever ceiling binds, or -1.0 if none.
 
     Two cgroups can bound the agents this host runs, and either may be the
@@ -452,19 +495,22 @@ def _cgroup_available_gb() -> float:
     slice term a bare host with tens of GB free reads as "ample" while agent
     process memory has already filled that ceiling, so admission keeps
     admitting into a throttle that reclaim cannot relieve. Both terms measure
-    the working set, so a slice held at ``memory.high`` only by inactive page
+    the working set, so a slice held at ``memory.high`` only by clean page
     cache is not refused; ``sandbox.agents_slice_throttling`` still reports
     that state to the cold-start handshake. The tighter of the two readings is
     returned; -1.0 only when neither constrains (``dynamic-subagent-sizing.md``
-    §9).
+    §9). ``measured_only`` is passed to :func:`_container_cgroup_available_gb`.
     """
-    readings = [
-        gb for gb in (_container_cgroup_available_gb(), _agents_slice_available_gb()) if gb >= 0
-    ]
+    container_gb = (
+        _container_cgroup_available_gb(measured_only=True)
+        if measured_only
+        else _container_cgroup_available_gb()
+    )
+    readings = [gb for gb in (container_gb, _agents_slice_available_gb()) if gb >= 0]
     return min(readings) if readings else -1.0
 
 
-def _container_cgroup_available_gb() -> float:
+def _container_cgroup_available_gb(*, measured_only: bool = False) -> float:
     """Tightest visible cgroup headroom (GB), or -1.0 if unlimited/unknown.
 
     Reads cgroup v2 (``memory.max``/``memory.current``) then v1
@@ -473,9 +519,11 @@ def _container_cgroup_available_gb() -> float:
     SAME level, including siblings charged to a parent. A finite limit with
     unknown usage contributes zero headroom, never zero usage. Ancestors
     hidden above a mount cannot be measured. Usage excludes the level's
-    inactive page cache (:func:`_read_inactive_file_bytes`). An unknown usage
+    clean page cache (:func:`_read_reclaimable_file_bytes`). An unknown usage
     records :data:`MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE` so a deferral can say
-    the headroom is unknown rather than exhausted.
+    the headroom is unknown rather than exhausted. ``measured_only`` leaves
+    such a level out of the minimum instead, so the result is the tightest
+    headroom that was measured (the cause is still recorded).
     """
     available = -1.0
     for leaf, mount, v2 in _cgroup_memory_roots():
@@ -498,9 +546,10 @@ def _container_cgroup_available_gb() -> float:
                             0.0, (limit - _working_set(directory, v2, current)) / (1024**3)
                         )
                     else:
-                        headroom = 0.0
+                        headroom = -1.0 if measured_only else 0.0
                         _memory_check_cause.value = MEMORY_CAUSE_CGROUP_USAGE_UNREADABLE
-                    available = headroom if available < 0 else min(available, headroom)
+                    if headroom >= 0:
+                        available = headroom if available < 0 else min(available, headroom)
             if directory == mount:
                 break
             directory = directory.parent
@@ -516,8 +565,8 @@ def _agents_slice_available_gb() -> float:
     ``min(high, max) - working set``, floored at zero: usage can sit ABOVE
     ``memory.high`` while the kernel reclaims, and a negative figure would
     mislead every threshold comparison downstream. The working set is
-    ``memory.current`` minus inactive page cache
-    (:func:`_read_inactive_file_bytes`); without that, a slice whose cache has
+    ``memory.current`` minus clean page cache
+    (:func:`_read_reclaimable_file_bytes`); without that, a slice whose cache has
     filled it to ``memory.high`` reads as zero headroom and raises a critical
     memory alert on a host with hundreds of GB available.
 
@@ -698,11 +747,8 @@ def resolve_max_subagents(cfg: KiroCrewConfig) -> int:
     """
     configured = _configured_max_subagents(cfg)
     if configured > 0:
-        # An explicit pin below the legacy floor (1 or 2) would silently disable
-        # auto-sizing AND run below today's default; floor it to 3. 0 stays the
-        # auto sentinel. The config loader and dashboard API also enforce this;
-        # defend here so a directly-constructed config can't drop the runtime cap
-        # below the floor.
+        # Floor an explicit pin of 1 or 2 to 3. The config loader and dashboard
+        # API enforce this too; this covers a directly constructed config.
         return max(configured, _LEGACY_DEFAULT_MAX)
     return compute_max_subagents(cfg)
 

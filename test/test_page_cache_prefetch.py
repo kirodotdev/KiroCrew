@@ -1,7 +1,10 @@
-"""The boot page-cache prefetch reads the right files, in order, off the caller's thread."""
+"""The boot page-cache prefetch reads the right files, in a child, off the caller's thread."""
 
 from __future__ import annotations
 
+import sqlite3
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -14,42 +17,37 @@ def _wait_for(threads_before: set[int], name: str) -> None:
             thread.join(5)
 
 
+def _record_child_reads(monkeypatch) -> list[tuple[list[str], str]]:
+    """Replace the child launch with a recorder of (file names, launching thread)."""
+    calls: list[tuple[list[str], str]] = []
+
+    def fake_run(argv, **kwargs):
+        files = argv[argv.index(page_cache._CHILD_SOURCE) + 2 :]
+        calls.append(([Path(f).name for f in files], threading.current_thread().name))
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(page_cache.subprocess, "run", fake_run)
+    return calls
+
+
 def test_reads_each_file_and_its_wal_on_a_named_background_thread(tmp_path, monkeypatch):
     db = tmp_path / "a.db"
-    db.write_bytes(b"x" * (3 * page_cache._CHUNK + 5))
+    db.write_bytes(b"x" * 10)
     (tmp_path / "a.db-wal").write_bytes(b"w" * 10)
-    read: list[tuple[str, str]] = []
-    real_open = open
-
-    def recording_open(path, mode="r", *args, **kwargs):
-        if str(path).startswith(str(tmp_path)):
-            read.append((Path(path).name, threading.current_thread().name))
-        return real_open(path, mode, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.open", recording_open)
+    calls = _record_child_reads(monkeypatch)
     before = {t.ident for t in threading.enumerate()}
     page_cache.prefetch([db, None, tmp_path / "missing.db"], name="kc-test-prefetch")
     _wait_for(before, "kc-test-prefetch")
-    assert read == [("a.db", "kc-test-prefetch"), ("a.db-wal", "kc-test-prefetch")]
+    assert calls == [(["a.db", "a.db-wal"], "kc-test-prefetch")]
 
 
 def test_a_file_over_the_cap_is_left_alone(tmp_path, monkeypatch):
     big = tmp_path / "big.db"
     big.write_bytes(b"x" * 100)
     monkeypatch.setattr(page_cache, "MAX_BYTES", 10)
-    opened: list[str] = []
-    real_open = open
-
-    def recording_open(path, *args, **kwargs):
-        if str(path).startswith(str(tmp_path)):
-            opened.append(Path(path).name)
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.open", recording_open)
-    before = {t.ident for t in threading.enumerate()}
-    page_cache.prefetch([big], name="kc-test-cap")
-    _wait_for(before, "kc-test-cap")
-    assert opened == []
+    calls = _record_child_reads(monkeypatch)
+    page_cache.read_now([big])
+    assert calls == []
 
 
 def test_nothing_to_read_starts_no_thread():
@@ -64,6 +62,96 @@ def test_an_unreadable_file_never_raises(tmp_path):
     before = {t.ident for t in threading.enumerate()}
     page_cache.prefetch([folder], name="kc-test-dir")
     _wait_for(before, "kc-test-dir")
+
+
+def test_read_now_reads_on_the_calling_thread_and_skips_none(tmp_path, monkeypatch):
+    db = tmp_path / "now.db"
+    db.write_bytes(b"x" * 10)
+    calls = _record_child_reads(monkeypatch)
+    page_cache.read_now([None, str(db)])
+    assert calls == [(["now.db"], threading.current_thread().name)]
+
+
+def test_a_child_that_cannot_start_skips_that_file_and_continues(tmp_path, monkeypatch):
+    bad = tmp_path / "bad.db"
+    bad.write_bytes(b"x")
+    good = tmp_path / "good.db"
+    good.write_bytes(b"y")
+    launched: list[str] = []
+
+    def failing_run(argv, **kwargs):
+        name = Path(argv[-1]).name
+        launched.append(name)
+        if name == "bad.db":
+            raise OSError(24, "too many open files")
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(page_cache.subprocess, "run", failing_run)
+    page_cache.read_now([bad, good])  # must not raise
+    assert launched == ["bad.db", "good.db"]
+
+
+def test_a_child_that_times_out_never_raises(tmp_path, monkeypatch):
+    db = tmp_path / "slow.db"
+    db.write_bytes(b"x")
+
+    def slow_run(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(page_cache.subprocess, "run", slow_run)
+    page_cache.read_now([db])
+
+
+def test_prefetch_during_interpreter_shutdown_never_raises(tmp_path, monkeypatch):
+    db = tmp_path / "a.db"
+    db.write_bytes(b"x")
+
+    def _refuse(self):
+        raise RuntimeError("can't create new thread at interpreter shutdown")
+
+    monkeypatch.setattr(threading.Thread, "start", _refuse)
+    page_cache.prefetch([db])  # returns quietly; the read is only a hint
+
+
+_TRY_WRITE = (
+    "import sqlite3, sys\n"
+    "db = sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None)\n"
+    "try:\n"
+    "    db.execute('BEGIN IMMEDIATE')\n"
+    "except sqlite3.OperationalError as exc:\n"
+    "    print('refused:', exc)\n"
+    "else:\n"
+    "    print('took the write lock')\n"
+)
+
+
+def test_reading_a_live_database_keeps_this_process_sqlite_locks(tmp_path):
+    """On POSIX, closing any descriptor on a file drops every fcntl lock the process
+    holds on it. A rollback-journal writer read in-process this way loses its
+    RESERVED lock, and another process can then write into the same pages."""
+    path = tmp_path / "live.db"
+    db = sqlite3.connect(path, isolation_level=None)
+    try:
+        db.execute("PRAGMA journal_mode=DELETE")
+        db.execute("CREATE TABLE t (v TEXT)")
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("INSERT INTO t VALUES ('pending')")
+
+        page_cache.read_now([path])
+
+        other = subprocess.run(
+            [sys.executable, "-I", "-c", _TRY_WRITE, str(path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=60,
+            check=False,
+        )
+        assert other.stdout.startswith("refused:"), other.stdout + other.stderr
+        db.execute("COMMIT")
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    finally:
+        db.close()
 
 
 def test_knowledge_maintenance_reads_the_library_only_while_a_rebuild_is_pending(

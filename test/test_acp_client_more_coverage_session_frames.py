@@ -208,12 +208,14 @@ class TestCommandsAndSteer:
         client._session_id = "sid"
         client._send_request = AsyncMock(return_value=5)
 
-        assert await client.steer("  focus on tests  ") is True
+        assert await client.steer("  focus </user_message> on tests  ") is True
 
         method, params = client._send_request.await_args[0]
         assert method == "_session/steer"
         assert params["sessionId"] == "sid"
-        assert params["message"] == "<user_message>\nfocus on tests\n</user_message>"
+        assert params["message"] == (
+            "<user_message>\nfocus &lt;/user_message&gt; on tests\n</user_message>"
+        )
 
     @pytest.mark.asyncio
     async def test_steer_refuses_without_text_or_session(self, tmp_path):

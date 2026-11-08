@@ -7,9 +7,11 @@ plus the shared read-only resolver they build on.
 
 The resolver contract under test: ``cron_folders.json`` is OWNED by the
 dashboard (its state rewrites the file wholesale), so non-dashboard surfaces
-resolve read-only — only the MCP path may create a missing folder, and it does
-so through ``POST /api/cron-folders`` (the dashboard's own endpoint) rather
-than by appending to the file.
+resolve read-only. A missing folder may be created only through the dashboard's
+own folder service, never by appending to the file: the MCP tools and the CLI
+through ``POST /api/cron-folders`` (one shared resolver, two transports), and
+app-cron registration in the gateway through the creator the dashboard wires
+onto its CronService.
 """
 
 from __future__ import annotations
@@ -258,8 +260,12 @@ class TestCronEntryFolder:
 
 
 class TestRegistrationFilesJobIntoFolder:
-    def _register(self, home, defs):
-        """Persist ``defs`` as an installed app's cron defs and register them."""
+    def _register(self, home, defs, state=None):
+        """Persist ``defs`` as an installed app's cron defs and register them.
+
+        ``state`` stands in for the gateway's dashboard: when given, its folder
+        creator is wired onto the service, as the dashboard does at startup.
+        """
         from kiro_crew.apps.bridges import _app_crons_path, register_app_crons_with_service
         from kiro_crew.cron import CronService
 
@@ -284,6 +290,13 @@ class TestRegistrationFilesJobIntoFolder:
 
         async def _go():
             svc = CronService(base_dir=home / "crons")
+            if state is not None:
+                from kiro_crew.dashboard.handlers.cron_board import (
+                    wire_app_cron_folder_creator,
+                )
+
+                state.crons = svc
+                wire_app_cron_folder_creator(state)
             await svc.start()
             try:
                 await register_app_crons_with_service("test-app", svc)
@@ -327,6 +340,119 @@ class TestRegistrationFilesJobIntoFolder:
         )
         # The job matters more than its grouping: registered, unfiled.
         assert [j.folder_id for j in jobs if j.name == "test-app/sweep"] == [""]
+
+    def test_unknown_folder_is_created_through_the_dashboard(self, folders_on_disk, monkeypatch):
+        """With the dashboard's creator wired, a missing name becomes a folder."""
+        monkeypatch.setattr("kiro_crew.apps.bridges._registration_denied", lambda *a, **k: False)
+        state = _FakeDashboardState(load_cron_folders())
+        jobs = self._register(
+            folders_on_disk,
+            [
+                {
+                    "name": f"test-app/{n}",
+                    "every": 300,
+                    "agent": "bg",
+                    "message": "go",
+                    "app": "test-app",
+                    "folder": "Pipeline",
+                }
+                for n in ("gather", "publish")
+            ],
+            state=state,
+        )
+        made = [f for f in load_cron_folders() if f["name"] == "Pipeline"]
+        assert len(made) == 1  # one folder for both jobs, saved through the state
+        assert sorted(j.folder_id for j in jobs) == [made[0]["id"]] * 2
+        assert state.refreshes == ["crons"]
+
+    def test_ambiguous_folder_is_never_created(self, folders_on_disk, monkeypatch):
+        monkeypatch.setattr("kiro_crew.apps.bridges._registration_denied", lambda *a, **k: False)
+        _write_folders(
+            [
+                {"id": "aaaa1111", "name": "Dup", "order": 0},
+                {"id": "bbbb2222", "name": "dup", "order": 1},
+            ]
+        )
+        state = _FakeDashboardState(load_cron_folders())
+        jobs = self._register(
+            folders_on_disk,
+            [{"name": "test-app/s", "every": 300, "agent": "bg", "message": "go", "folder": "Dup"}],
+            state=state,
+        )
+        assert [j.folder_id for j in jobs] == [""]
+        assert len(load_cron_folders()) == 2
+
+
+class _FakeDashboardState:
+    """The slice of ``DashboardState`` the folder creator touches."""
+
+    def __init__(self, folders, fail=False):
+        self._cron_folders = list(folders)
+        self.fail = fail
+        self.refreshes: list[str] = []
+        self.crons = None
+
+    def _reload_cron_folders_if_unknown(self):
+        """The fake's folder list always mirrors disk, so there is nothing to re-read."""
+
+    def create_cron_folder(self, name, folder_id):
+        if self.fail:
+            raise OSError("disk full")
+        folder = {"id": folder_id, "name": name, "order": len(self._cron_folders)}
+        candidate = [*self._cron_folders, folder]
+        _write_folders(candidate)
+        self._cron_folders = candidate
+        return folder
+
+    def push_refresh(self, what):
+        self.refreshes.append(what)
+
+
+class TestCreateOrAdoptCronFolder:
+    def _call(self, state, name):
+        from kiro_crew.dashboard.handlers.cron_board import create_or_adopt_cron_folder
+
+        return asyncio.run(create_or_adopt_cron_folder(state, name))
+
+    def test_creates_a_missing_name(self, folders_on_disk):
+        state = _FakeDashboardState(load_cron_folders())
+        fid, err = self._call(state, "  New  ")
+        assert err is None
+        assert {"id": fid, "name": "New", "order": 2} in load_cron_folders()
+
+    def test_adopts_an_existing_name_case_insensitively(self, folders_on_disk):
+        state = _FakeDashboardState(load_cron_folders())
+        assert self._call(state, "VEILLE") == ("aaaa1111", None)
+        assert len(load_cron_folders()) == 2
+        assert state.refreshes == []
+
+    def test_refuses_a_shared_name(self, folders_on_disk):
+        folders = [{"id": "c1", "name": "X", "order": 0}, {"id": "c2", "name": "x", "order": 1}]
+        fid, err = self._call(_FakeDashboardState(folders), "x")
+        assert fid == "" and "2 cron folders" in err
+
+    @pytest.mark.parametrize("name", ["", "   ", "deadbeef", "n" * 10_000])
+    def test_refuses_names_it_must_not_create(self, folders_on_disk, name):
+        state = _FakeDashboardState(load_cron_folders())
+        fid, err = self._call(state, name)
+        assert fid == "" and err
+        assert len(load_cron_folders()) == 2
+
+    def test_a_failed_save_is_an_error_not_a_raise(self, folders_on_disk):
+        fid, err = self._call(_FakeDashboardState(load_cron_folders(), fail=True), "New")
+        assert (fid, err) == ("", "failed to save folder")
+
+    def test_wiring_sets_a_coroutine_creator_on_the_service(self, folders_on_disk):
+        import inspect
+
+        from kiro_crew.dashboard.handlers.cron_board import wire_app_cron_folder_creator
+
+        state = _FakeDashboardState(load_cron_folders())
+        state.crons = type("Svc", (), {"folder_creator": None})()
+        wire_app_cron_folder_creator(state)
+        assert inspect.iscoroutinefunction(state.crons.folder_creator)
+        fid, err = asyncio.run(state.crons.folder_creator("Apps"))
+        assert (fid, err) == ("bbbb2222", None)
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +500,44 @@ class TestSurfacesAcceptFolder:
         svc = CronService(base_dir=config_dir())
         assert [j.folder_id for j in svc.list_jobs() if j.name == "veille-job"] == ["aaaa1111"]
 
-    def test_cli_add_refuses_unknown_folder_without_creating_a_job(self, folders_on_disk, capsys):
+    def test_cli_add_creates_a_missing_folder_through_the_gateway(
+        self, folders_on_disk, monkeypatch, capsys
+    ):
+        # Same contract as the cron_add tool: a missing NAME is created through
+        # the dashboard's endpoint (the CLI's create leg), then the job is filed.
+        import argparse
+
+        from kiro_crew import cli_commands
+        from kiro_crew.cron import CronService
+
+        calls: list[str] = []
+        monkeypatch.setattr(
+            cli_commands,
+            "_create_cron_folder",
+            lambda name: calls.append(name) or {"id": "dddd4444", "name": name},
+        )
+        before = (config_dir() / "cron_folders.json").read_bytes()
+        cli_commands._cron_dispatch(
+            argparse.Namespace(
+                cron_action="add",
+                name="fresh",
+                message="go",
+                every=300,
+                cron_expr=None,
+                channel=None,
+                approval_mode="",
+                agent="",
+                silent=False,
+                folder="Missing",
+            )
+        )
+        assert calls == ["Missing"]
+        svc = CronService(base_dir=config_dir())
+        assert [j.folder_id for j in svc.list_jobs() if j.name == "fresh"] == ["dddd4444"]
+        # The file is the dashboard's: the CLI never wrote it.
+        assert (config_dir() / "cron_folders.json").read_bytes() == before
+
+    def test_cli_add_refuses_an_unknown_id_without_creating_a_job(self, folders_on_disk, capsys):
         import argparse
 
         from kiro_crew.cli_commands import _cron_dispatch
@@ -392,7 +555,7 @@ class TestSurfacesAcceptFolder:
                     approval_mode="",
                     agent="",
                     silent=False,
-                    folder="Missing",
+                    folder="deadbeef",
                 )
             )
         assert "not found" in capsys.readouterr().err

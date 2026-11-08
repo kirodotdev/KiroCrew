@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../guide/GuideRevealScope'
@@ -12,7 +13,10 @@ import { Badge, ContentSkeleton, SearchInput } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import RestartButton from '../../components/RestartButton'
 import { findReport } from '../../utils/errorReport'
+import { OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL } from '../../utils/docsLink'
+import { safeGetSessionItem, safeSetSessionItem } from '../../utils/safeStorage'
 import McpTab from '../overview/McpTab'
+import { McpStagedEditsProvider } from './mcpStagedEditsContext'
 import {
   CONNECTION_PROVIDERS,
   serverForConnection,
@@ -22,8 +26,13 @@ import { guideAnchor } from '../../uiLocations/targetRegistry'
 import { ConnectionCard } from './ConnectionsPageCard'
 import {
   confirmedGrantPresent, connectionStateFor, disconnectFeedback, effectiveOAuth, latestOAuthByServer, mintOutcome,
-  mintRowIsOurs, undismissedOAuth, uninstallOnCancel, withMintedUrl, type ConnectionAction, type Feedback, type PendingConnect,
+  mintRowIsOurs, undismissedOAuth, uninstallOnCancel, withMintedUrl, type ConnectionAction, type Feedback, type OAuthState,
+  type PendingConnect,
 } from './connectionsPageCardState'
+
+/** Lazy: MCP Management (gateway status, servers and footprint queries) loads
+ *  only when the MCP Servers sub-tab renders it. */
+const McpManagement = lazy(() => import('../settings/McpManagement').then(m => ({ default: m.McpManagement })))
 
 // A provider card renders from `ConnectionsPageCard.tsx`, and what it shows is
 // decided in `connectionsPageCardState.ts`; neither imports this module. Callers
@@ -38,16 +47,24 @@ export type { ConnectionCardState, Feedback, MintOutcome, OAuthState, PendingCon
  *  URL promptly without spinning on a request that mostly answers `minting`. */
 const MINT_POLL_MS = 2_000
 
+/** Whether a chat banner records a consent completed after a failed check: a
+ *  newer banner, or the very banner the attempt saw open (same timestamp) that
+ *  has completed since. An older banner is never one. */
+function completedAfterFailedCheck(
+  banner: OAuthState | undefined,
+  fence: { sinceTs: number; completedBefore: boolean },
+): boolean {
+  if (!banner?.completed) return false
+  return banner.timestamp > fence.sinceTs || (banner.timestamp === fence.sinceTs && !fence.completedBefore)
+}
+
+/** The Services search text, kept in `sessionStorage` for the browser tab. */
+const SERVICES_SEARCH_KEY = 'kirocrew:connections-services-search'
+
 /** Authorization-status poll cadence. A grant changes rarely and the read is a
  *  local stat, so this is slow relative to the mint poll — it only has to notice
  *  a grant completed outside the dashboard and keep connected-since fresh. */
 const CONNECTION_STATUS_POLL_MS = 30_000
-
-/** The guide section that shows the oauth_endpoints.json entry a refused
- *  approval address needs. Linked from the mint_url_rejected feedback via
- *  `Feedback.help`, so the card's remedy ends in a link rather than a bare path. */
-const OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL =
-  'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/connecting-remote-oauth-mcp-server.md#if-the-host-is-not-recognized-the-oauth-endpoint-allowlist'
 
 /**
  * `servicesEnabled` gates the provider gallery. The gallery ships ON, so the
@@ -68,7 +85,13 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [activeTab, setActiveTab] = useConnectionsSubTab()
-  const [search, setSearch] = useState('')
+  const { hash, key: navKey } = useLocation()
+  // Kept for the browser tab: opening a chat unmounts this page, and the
+  // search must still be there on the way back (#25962).
+  const [search, setSearch] = useState(() => safeGetSessionItem(SERVICES_SEARCH_KEY) ?? '')
+  useEffect(() => {
+    safeSetSessionItem(SERVICES_SEARCH_KEY, search)
+  }, [search])
   /** Pending connect attempts. `kind` decides Cancel semantics (only a
    *  cancelled *new* connect uninstalls the entry it just created); `sinceTs`
    *  fences off stale `mcp_oauth` banners left over from an earlier grant of
@@ -77,6 +100,14 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   /** Newest chat banner timestamp seen when Cancel was pressed, per slug. A
    *  later Connect supersedes it (its own `sinceTs` fence takes over). */
   const [dismissedOAuth, setDismissedOAuth] = useState<Record<string, number>>({})
+  /** Slugs whose Connect mint failed with `mint_grant_unproven` or
+   *  `mint_sign_in_rejected`: any stored grant files are still there, but they
+   *  did not pass the check, so the card does not count them as a grant until a
+   *  later mint reports `granted`. The
+   *  attempt's banner fence stays too: a chat banner from before it (`sinceTs`)
+   *  is no proof, unless it completes only AFTER the failure
+   *  (`completedBefore` false), which is a new consent. */
+  const [unprovenGrants, setUnprovenGrants] = useState<Record<string, { sinceTs: number; completedBefore: boolean }>>({})
   const [busy, setBusy] = useState<{ slug: string; action: ConnectionAction } | null>(null)
   const [feedback, setFeedback] = useState<Record<string, Feedback>>({})
   const [highlightedSlug, setHighlightedSlug] = useState('')
@@ -98,7 +129,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
   // feed below; this never mints and never owns reachability (that stays with
   // /api/mcp). Declared before the mint feed because `waitingSlugs` reads the
   // awaiting_consent verdicts.
-  const { data: statusBySlug = {} } = useQuery<Record<string, ConnectionStatus>>({
+  const { data: statusBySlug = {}, isError: statusIsError } = useQuery<Record<string, ConnectionStatus>>({
     queryKey: ['connections-status'],
     queryFn: async () => {
       const { connections } = await api.connectionsStatus()
@@ -111,6 +142,9 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     // card is rendered, so a background poll would stat every provider's grant
     // artifacts every 30s for a surface nobody is looking at.
     refetchInterval: activeTab === 'services' ? CONNECTION_STATUS_POLL_MS : false,
+    // A cached verdict from before a Connect would show Connect again on
+    // navigating back, and a click would replace the live sign-in.
+    refetchOnMount: 'always',
   })
 
   // Minted approval URLs, keyed by slug. Fetched only while a connect is pending:
@@ -177,13 +211,16 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     // Decided BEFORE any setState: a state updater runs on a later render, so
     // collecting side-effect targets inside one leaves them empty at read time.
     const cleared: string[] = []
-    const mintFailures: Array<{ slug: string; reason?: string; endpoint?: string }> = []
+    const mintFailures: Array<{
+      slug: string; reason?: string; endpoint?: string; fence: { sinceTs: number; completedBefore: boolean }
+    }> = []
     const grantedMints: string[] = []
     for (const provider of CONNECTION_PROVIDERS) {
       const pending = locallyWaiting[provider.slug]
       if (!pending) continue
       const server = serverForConnection(provider, servers)
-      const fresh = effectiveOAuth(oauthByServer[provider.slug], pending)
+      const banner = oauthByServer[provider.slug]
+      const fresh = effectiveOAuth(banner, pending)
       const mint = mintByServer[provider.slug]
       const outcome = mintOutcome(mint, pending)
       if (!(server?.status === 'ok' || fresh?.completed || fresh?.failed || outcome.clearWait)) {
@@ -195,10 +232,20 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         || (
           mintRowIsOurs(mint, pending)
           && mint?.state === 'expired'
-          && mint.reason
         )
       ) {
-        mintFailures.push({ slug: provider.slug, reason: mint.reason, endpoint: mint.rejected_endpoint })
+        mintFailures.push({
+          slug: provider.slug,
+          // A reasonless expiry is the sign-in window running out.
+          reason: mint.reason ?? (mint.state === 'expired' ? 'expired' : undefined),
+          endpoint: mint.rejected_endpoint,
+          // Only the banner the attempt was fenced on (`sinceTs`) can say it was
+          // still open; any other newest banner leaves the fence shut.
+          fence: {
+            sinceTs: pending.sinceTs,
+            completedBefore: banner?.timestamp === pending.sinceTs ? !!banner.completed : true,
+          },
+        })
       }
       if (outcome.probe) grantedMints.push(provider.slug)
     }
@@ -215,12 +262,28 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       void api.mcpProbe().then(probed => {
         queryClient.setQueryData<McpServer[]>(['mcp-servers'], probed as McpServer[])
       }).catch(() => undefined)
+    }
+    if (grantedMints.length || mintFailures.length) {
       // Same staleness on the authorization axis: the status feed polls every
       // 30s, so its cached pre-consent verdict (grantPresent=false /
       // awaiting_consent) would outrank the grant that just landed and downgrade
-      // the card for up to a full poll interval. Invalidate rather than
-      // setQueryData: the fresh verdict is the backend's to compute.
+      // the card, or hold a failed attempt's card on waiting, for up to a full
+      // poll interval. Invalidate rather than setQueryData: the fresh verdict is
+      // the backend's to compute.
       void queryClient.invalidateQueries({ queryKey: ['connections-status'] })
+    }
+    // A refused sign-in fails only while no grant is observed or proven, so grant
+    // files still on disk then are the ones its check disproved: fence them too.
+    const unproven = mintFailures.filter(
+      failure => failure.reason === 'mint_grant_unproven' || failure.reason === 'mint_sign_in_rejected',
+    )
+    if (unproven.length || grantedMints.length) {
+      setUnprovenGrants(current => {
+        const next = { ...current }
+        for (const slug of grantedMints) delete next[slug]
+        for (const { slug, fence } of unproven) next[slug] = fence
+        return next
+      })
     }
     if (mintFailures.length) {
       setFeedback(current => {
@@ -236,8 +299,18 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
             case 'mint_process_gone':
               error = t('pages.connectionsPage.mint_failure_process_gone')
               break
+            case 'expired':
+            case 'crew_oauth_consent_expired':
+              error = t('pages.connectionsPage.mint_failure_sign_in_timed_out')
+              break
             case 'mint_server_absent':
               error = t('pages.connectionsPage.mint_failure_server_absent')
+              break
+            case 'mint_grant_unproven':
+              error = t('pages.connectionsPage.mint_failure_grant_unproven')
+              break
+            case 'mint_sign_in_rejected':
+              error = t('pages.connectionsPage.mint_failure_sign_in_rejected')
               break
             case 'mint_url_rejected':
               // Name WHICH endpoint was refused when the backend could reduce it
@@ -269,6 +342,21 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     }
   }, [servers, oauthByServer, mintByServer, locallyWaiting, queryClient, t])
 
+  // A chat consent that completes after a failed check proves the grant, so the
+  // failed-check record goes: the card must not depend on that banner staying
+  // in the transcript window to keep its Connected verdict.
+  useEffect(() => {
+    const proven = Object.entries(unprovenGrants)
+      .filter(([slug, fence]) => completedAfterFailedCheck(oauthByServer[slug], fence))
+      .map(([slug]) => slug)
+    if (!proven.length) return
+    setUnprovenGrants(current => {
+      const next = { ...current }
+      for (const slug of proven) delete next[slug]
+      return next
+    })
+  }, [oauthByServer, unprovenGrants])
+
   const filteredProviders = useMemo(() => {
     // Opted out (`connections_ui: false`): offer nothing. No card renders, so no
     // Connect button and no OAuth flow is reachable, while the panel itself still
@@ -292,6 +380,25 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
       document.getElementById(`connection-${highlightedSlug}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     })
   }, [activeTab, highlightedSlug])
+
+  // Land the MCP-Management link (MCP_MANAGEMENT_PATH's `#mcp-management`
+  // fragment, followed from the share-refused notice, the /developer?tab=mcp-pool
+  // redirect and the "Open MCP Gateway" tip) ON the section rather than at the
+  // top of the servers list. react-router does not scroll to a fragment on a
+  // client-side navigation, and the section mounts only on the MCP Servers
+  // sub-tab, so it is done here once both hold. rAF waits a frame for the panel
+  // to render after the sub-tab switch. `navKey` is in the deps so clicking the
+  // same `#mcp-management` link again (a repeat navigation to an unchanged URL,
+  // where neither `activeTab` nor `hash` changes) still re-runs the scroll.
+  // It also waits for the shared `['mcp-servers']` query McpTab renders the list
+  // from: while it loads, McpTab shows a short skeleton, and a scroll then would
+  // clamp at the top and be left behind when the taller table replaces it.
+  useEffect(() => {
+    if (activeTab !== 'mcp-servers' || hash !== '#mcp-management' || isLoading) return
+    requestAnimationFrame(() => {
+      document.getElementById('mcp-management')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+  }, [activeTab, hash, navKey, isLoading])
 
   const run = async (
     provider: ConnectionProvider,
@@ -352,7 +459,14 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         await api.mcpApply([reenable])
       }
     } else {
-      await api.mcpCustomAdd({ [provider.slug]: { url: provider.mcp_url } }, true)
+      // Request the registry's scopes, as the warm path does: an entry written
+      // without them authorizes with the provider's default grant (wider than
+      // the read-only set for Google) and no longer matches the warm plan.
+      const scopes = provider.recommended_scopes ?? []
+      await api.mcpCustomAdd(
+        { [provider.slug]: scopes.length ? { url: provider.mcp_url, scopes: [...scopes] } : { url: provider.mcp_url } },
+        true,
+      )
     }
     // Ask for the approval URL rather than waiting for one, and await it: a
     // rejected POST must reach `run`'s error path instead of leaving the card in
@@ -616,12 +730,27 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
     throw new Error(t('pages.connectionsPage.test_failed'))
   })
 
-  const relayReturnAddress = async (provider: ConnectionProvider, returnAddress: string) => run(provider, 'relay', async () => {
+  const relayReturnAddress = async (provider: ConnectionProvider, returnAddress: string, minted: boolean) => run(provider, 'relay', async () => {
     await api.mcpOAuthRelay(provider.slug, returnAddress)
     setFeedback(current => ({
       ...current,
       [provider.slug]: { kind: 'success', text: t('pages.connectionsPage.return_address_delivered') },
     }))
+    // The line above promises a verdict. A mint's verdict reaches the card only through
+    // this tab's wait, which a reload loses, so hold one when the card's URL was the
+    // mint's. A chat banner's sign-in needs none: the banner is patched in place with
+    // its own verdict, which a wait would fence off.
+    const mint = mintByServer[provider.slug]
+    if (minted && mint) {
+      setLocallyWaiting(current => current[provider.slug] ? current : {
+        ...current,
+        [provider.slug]: {
+          kind: 'reconnect',
+          sinceTs: oauthByServer[provider.slug]?.timestamp ?? 0,
+          token: mint.token,
+        },
+      })
+    }
     await queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
   })
 
@@ -705,7 +834,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
           </div>}
 
           {/* No hand-off: a card waiting for approval can hold an unsaved return address while this status re-polls. */}
-          {isError && (
+          {(isError || statusIsError) && (
             <ErrorNotice message={t('pages.connectionsPage.could_not_load_status')} className="mb-3" />
           )}
 
@@ -724,18 +853,29 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                 // banner is fenced: Cancel disposes its own mint, and a mint a
                 // sibling tab starts later is live and must keep its URL.
                 const dismissedTs = pending ? undefined : dismissedOAuth[provider.slug]
+                // After a failed check its attempt's banner fence stays, so a chat
+                // banner from before it cannot say Connected or Waiting -- unless
+                // it completed only after the failure: that is a new consent.
+                const unproven = unprovenGrants[provider.slug]
+                const banner = oauthByServer[provider.slug]
+                const fenced = !pending && unproven && banner && banner.timestamp <= unproven.sinceTs
+                  && !completedAfterFailedCheck(banner, unproven)
                 const oauth = withMintedUrl(
-                  undismissedOAuth(effectiveOAuth(oauthByServer[provider.slug], pending), dismissedTs),
+                  undismissedOAuth(effectiveOAuth(fenced ? undefined : banner, pending), dismissedTs),
                   mintByServer[provider.slug],
                 )
                 const status = statusBySlug[provider.slug]
+                // Only a CONFIRMED verdict may steer the card: an indeterminate
+                // lookup reports grantPresent=false without knowing anything, and
+                // grant files this page's Connect just failed to prove are no
+                // confirmed grant either.
+                const confirmedGrant = confirmedGrantPresent(status)
+                const grantPresent = confirmedGrant === true && unproven !== undefined ? undefined : confirmedGrant
                 const state = connectionStateFor(
                   server,
                   oauth,
                   !!pending,
-                  // Only a CONFIRMED verdict may steer the card: an indeterminate
-                  // lookup reports grantPresent=false without knowing anything.
-                  confirmedGrantPresent(status),
+                  grantPresent,
                   // The backend's mint table outlives this tab's local state, so
                   // a refresh mid-consent still renders the waiting card.
                   status?.status === 'awaiting_consent',
@@ -760,9 +900,13 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     connectedSince={status?.connectedSince}
                     // The same confirmed-only verdict the state fold received:
                     // indeterminate stays undefined so the card keeps the hedge.
-                    grantPresent={confirmedGrantPresent(status)}
+                    grantPresent={grantPresent}
+                    grantUnproven={unproven !== undefined}
                     grantSharedWith={status?.grantSharedWith}
                     grantSharedUnconfirmed={status?.grantSharedUnconfirmed}
+                    backendLacksOauth={status?.backendLacksOauth === true}
+                    signInInChat={status?.signInInChat === true}
+                    crewHeld={status?.crewHeld === true}
                     busy={cardBusy}
                     testingProvider={testingProvider}
                     feedbackSlots={feedbackSlots}
@@ -772,7 +916,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                     onDisconnect={() => server ? disconnect(provider, server) : Promise.resolve()}
                     onReconnect={() => connect(provider, server)}
                     onTest={() => testConnection(provider)}
-                    onRelay={returnAddress => relayReturnAddress(provider, returnAddress)}
+                    onRelay={returnAddress => relayReturnAddress(provider, returnAddress, oauth?.minted === true)}
                   />
                 )
               })}
@@ -781,7 +925,32 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
         </div>
       ) : (
         <div id="connections-mcp-panel" role="tabpanel" aria-labelledby="connections-mcp-tab">
-          <McpTab onManagedProviderClick={openProvider} />
+          <McpStagedEditsProvider>
+            <McpTab onManagedProviderClick={openProvider} />
+            {/* MCP Management (stubbing MCP servers and sharing their backends)
+                lives with the MCP Servers list it acts on — the
+                list is "what servers exist", this is "stub / share them" — and NOT
+                under the Services sub-tab, whose cards are a different thing. The
+                `mcp-management` anchor is what MCP_MANAGEMENT_PATH's fragment
+                scrolls to, so the share-refused notice's link lands on the section
+                rather than the top of the list. The provider lets McpManagement
+                withhold its "Ask the agent" hand-off while the list above holds
+                unapplied edits a /chat navigation would drop. The section and
+                its anchor render at once; only the panel body waits for its
+                chunk, so a Services visit never downloads it. */}
+            <section
+              id="mcp-management"
+              aria-labelledby="mcp-management-heading"
+              className="mt-8 min-w-0 border-t border-border pt-6"
+            >
+              <h2 id="mcp-management-heading" className="mb-4 text-[15px] font-semibold text-text-strong">
+                {t('pages.connectionsPage.mcp_management_heading')}
+              </h2>
+              <Suspense fallback={<ContentSkeleton rows={6} />}>
+                <McpManagement />
+              </Suspense>
+            </section>
+          </McpStagedEditsProvider>
         </div>
       )}
       </GuideRevealScope>

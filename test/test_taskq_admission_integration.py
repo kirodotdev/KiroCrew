@@ -459,6 +459,41 @@ async def test_completion_and_failure_settle_store_rows(quiet) -> None:
 
 
 @pytest.mark.asyncio
+async def test_the_settle_builds_the_result_path_off_the_event_loop(quiet, monkeypatch) -> None:
+    """The result path resolves the run directory, so it is built on the writer.
+
+    ``agent_dir_for_display`` calls ``Path.resolve``, a realpath that opens every
+    path part on Windows. Built in the caller of ``taskq_settle``, it would run on
+    the event loop for each finished run, and a busy disk turns that into a loop
+    stall the watchdog ends the gateway for.
+    """
+    import kiro_crew.subagent_persistence as persistence
+
+    real = persistence.agent_dir_for_display
+    calls: list[bool] = []
+
+    def _recording(agent_id: str) -> Path:
+        calls.append(TaskStore._on_running_loop_thread())
+        return real(agent_id)
+
+    monkeypatch.setattr(persistence, "agent_dir_for_display", _recording)
+    monkeypatch.setattr(SpawnAdmissionCoordinator, "pump_off_loop", True)
+    mgr = await _manager(max_concurrent=1)
+
+    async def run(self, info):
+        await _fake_run(mgr, info)
+
+    with patch.object(SubagentManager, "_run", new=run):
+        a = mgr.spawn("a", parent_session_key="dash:1")
+        await mgr._tasks[a.id]
+    await settle_store_writes(mgr._taskq)
+    assert mgr._taskq.state_of(a.id) == model.DONE
+    assert mgr._taskq.get(a.id).result_ref.endswith("result.txt")
+    assert calls == [False], f"result path built on the event loop: {calls}"
+    await mgr.cancel_all()
+
+
+@pytest.mark.asyncio
 async def test_user_stop_settles_as_cancelled(quiet) -> None:
     mgr = await _manager()
     with patch.object(SubagentManager, "_run", new=AsyncMock()):

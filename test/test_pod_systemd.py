@@ -73,34 +73,29 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
         assert rt.unit_mod.unit_is_current(cfg) is True
         assert "installed pod template unit" in msg
 
+    @pytest.mark.parametrize("directive", ["RestartPreventExitStatus=", "LimitCORE="])
     def test_a_unit_missing_a_required_directive_is_stale(
-        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directive: str
     ) -> None:
         """The upgrade path for a directive that was ADDED rather than removed.
 
-        `RestartPreventExitStatus` is what makes a fail-closed boot refusal
-        terminal instead of a 5s restart loop. Every machine with an existing pod
-        unit predates it, and a removal-only staleness test reports such a unit
-        "current" -- so the refresh is skipped and the directive never lands,
-        leaving the refusal looping. Caught in live pod acceptance: the rendered
-        template carried the directive while the INSTALLED unit did not, and it is
-        the installed one systemd executes."""
+        `RestartPreventExitStatus` makes a boot refusal terminal instead of a 5s loop,
+        `LimitCORE` keeps a crashed pod from waiting on its core, and an installed unit
+        lacking either must be refreshed: systemd runs the installed unit, not the
+        template."""
         unit_file = self._plane(tmp_path, monkeypatch)
         monkeypatch.setattr(rt, "systemctl", lambda *a, **k: _cp())
         rt.install_backend(cfg)
         assert rt.unit_mod.unit_is_current(cfg) is True
 
         stripped = "\n".join(
-            line
-            for line in unit_file.read_text().splitlines()
-            if not line.startswith("RestartPreventExitStatus=")
+            line for line in unit_file.read_text().splitlines() if not line.startswith(directive)
         )
         unit_file.write_text(stripped + "\n")
 
-        assert rt.unit_mod.unit_is_current(cfg) is False, (
-            "a unit predating the restart-prevention directive must be refreshed, "
-            "not accepted as current"
-        )
+        assert (
+            rt.unit_mod.unit_is_current(cfg) is False
+        ), f"a unit predating {directive} must be refreshed, not accepted as current"
 
     def test_the_rendered_template_satisfies_its_own_required_directives(
         self, cfg: PodConfig
@@ -115,13 +110,9 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
 class TestHostStateIsFenced:
     """A pod test must not be able to write the machine's own systemd unit.
 
-    Found on a real host: a suite run rewrote `~/.config/systemd/user/
-    kirocrew-pod@.service` with a test's tmpdir as
-    `Environment=KIROCREW_POD_ROOT=`, after which every `pod up` died with "no
-    pinned checkout" until someone re-ran `pod install`. `unit_path` reads
-    `Path.home()`, which no test patched, and `_up` -> `install_backend` ->
-    `install_unit` reaches it. Asserting the PATH rather than the write keeps this
-    guard from having to clobber the real unit to prove itself.
+    `unit_path` reads `Path.home()`, and `_up` -> `install_backend` -> `install_unit`
+    reaches it, so an unfenced test rewrites `kirocrew-pod@.service` with its tmpdir.
+    The PATH is asserted, so the guard never has to clobber the real unit.
     """
 
     def test_the_home_is_pinned_away_from_the_real_one(self) -> None:
@@ -240,7 +231,7 @@ class TestUnitExecSelfHeal:
         monkeypatch.setattr(rt.unit_mod, "unit_is_current", lambda c: False)
         monkeypatch.setattr(rt.unit_mod, "install_unit", lambda c: steps.append("reinstall"))
         monkeypatch.setattr(
-            rt.unit_mod, "install_dropin", lambda c, n, co: steps.append("pin-checkout")
+            rt.unit_mod, "install_dropin", lambda c, n, co, lim=None: steps.append("pin-checkout")
         )
         monkeypatch.setattr(rt, "read_env_file", lambda c, n: {"CHECKOUT": "/checkouts/demo"})
 
@@ -688,12 +679,9 @@ class TestPlatformGuard:
 class TestSessionBus:
     """``systemctl --user`` needs the per-user systemd instance's bus pointers.
 
-    A process descended from a systemd SYSTEM unit — how ``kirocrew service
-    install`` runs the gateway — inherits no login-session environment, so
-    neither ``XDG_RUNTIME_DIR`` nor ``DBUS_SESSION_BUS_ADDRESS`` is set and every
-    pod verb died with "Failed to connect to bus: No medium found" even though
-    the bus socket existed. ``_systemctl_env()`` backfills them; when the socket
-    is genuinely absent ``require_systemd()`` explains the fix instead.
+    Under a system unit (``kirocrew service install``) neither ``XDG_RUNTIME_DIR`` nor
+    ``DBUS_SESSION_BUS_ADDRESS`` is set. ``_systemctl_env()`` backfills them; when
+    the socket is absent ``require_systemd()`` explains the fix.
     """
 
     @staticmethod
@@ -862,12 +850,8 @@ class TestSessionBus:
     ) -> None:
         """No ``user@.service`` means no pod is ever possible — say so, don't misdirect.
 
-        A missing bus has two causes with different remedies. When systemd ships
-        the per-user manager template the instance merely is not running, and
-        ``enable-linger`` starts it. When the template is absent (RHEL 7, CentOS 7,
-        Amazon Linux 2 — systemd 219 with the per-user manager left out) linger has
-        nothing to instantiate, so recommending it sends the reader after a fix
-        that provably cannot work.
+        With the template, ``enable-linger`` starts the manager. Without it (RHEL 7,
+        CentOS 7, Amazon Linux 2: systemd 219) linger has nothing to instantiate.
         """
         monkeypatch.setattr(rt, "IS_LINUX", True)
         monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
@@ -911,18 +895,9 @@ class TestSessionBus:
     def test_unit_search_covers_systemd_load_path_in_precedence_order(self) -> None:
         """The search path must be systemd.unit(5) Table 1, complete and in order.
 
-        A short search path is a false "absent": the probe reports no per-user
-        manager on a host that HAS one, and :func:`require_systemd` then names a
-        platform limit instead of telling the reader to start the manager. Missing
-        any one entry can give that false "absent" on a host whose unit lives there,
-        so this pins the whole documented table rather than a chosen subset.
-
-        Asserted on the DIRECTORY list, which is what both unit shapes derive
-        from. A per-shape assertion would let one shape regress while the other
-        passed, and the two shapes would drift apart unseen.
-
-        Order is asserted because the found path is the one a message names, and
-        naming a shadowed lower-precedence unit would mislead the reader.
+        A missing entry makes :func:`require_systemd` report a platform limit on a host
+        that has a manager. Asserted on the directory list both unit shapes derive from;
+        order matters because the message names the found path.
         """
         # systemd.unit(5) Table 1, "Load path when running in system mode",
         # highest precedence first (verified against the systemd 261 manual).
@@ -962,16 +937,16 @@ class TestSessionBus:
     ) -> None:
         """A template-less host can still have a manager, so don't refuse it.
 
-        ``docs/guides/remote-and-mobile.md`` tells the reader to write
-        ``/etc/systemd/system/user@$(id -u).service`` by hand and enable it. systemd
-        loads that concrete unit without consulting the template, so a host that
-        followed this repo's own guide has a working per-user instance and no
-        template. Keying the platform gate on the template alone refused pods there.
+        ``docs/guides/remote-and-mobile.md`` has the reader hand-write
+        ``/etc/systemd/system/user@$(id -u).service``, which systemd loads without a
+        template.
         """
         vendor = tmp_path / "vendor"
         etc = tmp_path / "etc"
         vendor.mkdir()
         etc.mkdir()
+        # The unit-path walk under test is the fallback for an unanswerable system manager.
+        monkeypatch.setattr(rt, "_system_load_state", lambda _unit: None)
         monkeypatch.setattr(rt, "_SYSTEMD_SYSTEM_UNIT_DIRS", (str(etc), str(vendor)))
         assert rt.user_manager_unit(4242) is None
 
@@ -1009,25 +984,81 @@ class TestSessionBus:
         assert "Fix: loginctl enable-linger" in msg
         assert "cannot help" not in msg
 
-    def test_missing_bus_is_reported_without_spawning(
+    def test_missing_bus_spawns_only_the_system_unit_query(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         monkeypatch.setattr(rt, "IS_MACOS", False)
         monkeypatch.setattr(rt, "IS_WINDOWS", False)
         monkeypatch.setattr(rt, "IS_LINUX", True)
         monkeypatch.setattr(rt.shutil, "which", lambda _n: "/usr/bin/systemctl")
+        monkeypatch.setattr(
+            rt.platform_compat, "trusted_system_bin", lambda _n: "/usr/bin/systemctl"
+        )
+        monkeypatch.setattr(rt.os, "getuid", lambda: 4242, raising=False)
+        monkeypatch.setattr(rt, "_SYSTEMD_SYSTEM_UNIT_DIRS", (str(tmp_path / "units"),))
         self._bus(monkeypatch, tmp_path / "run", exists=False)
         spawned: list[list[str]] = []
-        monkeypatch.setattr(rt, "_run", lambda cmd, **_kwargs: spawned.append(cmd))
+
+        def _failing_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            spawned.append(cmd)
+            return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to bus")
+
+        monkeypatch.setattr(rt, "_run", _failing_run)
 
         result = rt.probe_user_bus()
         assert result.status == rt.USER_BUS_NO_SESSION
         assert result.detail == ""
+        assert spawned == []
+        # Each gate asks the SYSTEM manager which remedy applies, once, and even a
+        # failed answer leaves the refusal PodBackendAbsent.
         with pytest.raises(rt.PodBackendAbsent):
             rt.require_systemd()
         with pytest.raises(rt.PodBackendAbsent):
             rt.require_backend()
-        assert spawned == []
+        show = ["/usr/bin/systemctl", "show", "--property=LoadState", "user@4242.service"]
+        assert spawned == [show, show]
+
+    def test_user_manager_unit_takes_the_system_managers_answer(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """systemd decides presence: a masked unit is absent though its file is on disk."""
+        (tmp_path / "user@.service").touch()
+        monkeypatch.setattr(rt, "_SYSTEMD_SYSTEM_UNIT_DIRS", (str(tmp_path),))
+        monkeypatch.setattr(
+            rt.platform_compat, "trusted_system_bin", lambda _n: "/usr/bin/systemctl"
+        )
+        spawned: list[list[str]] = []
+
+        def _run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            spawned.append(cmd)
+            return answer
+
+        monkeypatch.setattr(rt, "_run", _run)
+
+        answer = _cp(stdout="LoadState=masked\n")
+        assert rt.user_manager_unit(4242) is None
+        assert spawned == [
+            ["/usr/bin/systemctl", "show", "--property=LoadState", "user@4242.service"]
+        ]
+        answer = _cp(stdout="LoadState=not-found\n")
+        assert rt.user_manager_unit(4242) is None
+        answer = _cp(stdout="LoadState=loaded\n")
+        assert rt.user_manager_unit(4242) == "user@4242.service"
+        # A manager that cannot answer falls back to the unit-path walk.
+        walked = f"{tmp_path}/user@.service"
+        answer = _cp(returncode=1, stderr="Failed to connect to bus: No such file or directory")
+        assert rt.user_manager_unit(4242) == walked
+        answer = _cp(returncode=1, stdout="LoadState=not-found\n")
+        assert rt.user_manager_unit(4242) == walked
+        for stdout in ("", "LoadState=\n", "loaded\n"):
+            answer = _cp(stdout=stdout)
+            assert rt.user_manager_unit(4242) == walked
+
+        def _hung(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess:
+            raise subprocess.TimeoutExpired(cmd, 0)
+
+        monkeypatch.setattr(rt, "_run", _hung)
+        assert rt.user_manager_unit(4242) == walked
 
     def test_systemctl_env_is_the_only_env_source_for_systemd_calls(self) -> None:
         """Anti-regression: a future direct ``subprocess.run(["systemctl", ...])``

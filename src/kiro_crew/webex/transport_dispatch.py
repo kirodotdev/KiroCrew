@@ -80,6 +80,7 @@ from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecide
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
+    COMPACT_ACCOUNT_CHANGED_TEXT,
     compact_unsupported_backend,
     compact_unsupported_reply,
     context_recycle_warning,
@@ -111,6 +112,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.messaging.queue_drain import (
     drain_until_quiet,
+    drain_when_free,
     entries_queued_by,
     entry_channel,
     entry_person_origin,
@@ -331,8 +333,12 @@ class WebexDispatcher:
         *,
         interpret_commands: bool = True,
         drain: bool = True,
+        skill_trigger_text: str | None = None,
     ) -> None:
         """Drive one authorized inbound Webex message through TurnDriver.
+
+        ``skill_trigger_text`` is what skill triggers match when the text was
+        generated rather than typed (an AutoNudge cycle); ``None`` matches the text.
 
         ``interpret_commands=False`` is used by the drain: a queued ``/new`` is
         turn content the user typed mid-turn, so it must reach the model as
@@ -344,10 +350,6 @@ class WebexDispatcher:
         the stack without bound. The outer loop owns the pumping.
         """
         assert self.client is not None, "WebexDispatcher.client must be set"
-        # Inbound channels-governance gate (off-loop) — recheck per message so a
-        # host-profile deny added after connect stops dispatch without a restart
-        # (the startup gate only blocks CONNECTING). Silently drop on deny.
-        permitted = await inbound_permitted("webex")
         email = inbound.person_email
         room_id = inbound.room_id
         text = inbound.text
@@ -367,6 +369,31 @@ class WebexDispatcher:
         ):
             return
 
+        # ── @mention strip ──
+        # In a group space Webex only delivers messages that @mention the bot, and
+        # it does NOT strip the mention from the text. Left in, every group turn
+        # would start with the bot's own name as if the user had typed it — and
+        # every path that READS the text would see it: this runs ahead of the
+        # governance gate, the approval intercept and the command parse because
+        # "@Kiro /stop" is a stop, "@Kiro 1" is an approval answer and "@Kiro /new"
+        # is a command, and matching any of them against the raw text fails in
+        # exactly the room where the mention is mandatory.
+        if inbound.room_type != ROOM_DIRECT:
+            text = strip_bot_mention(text, self._bot_name())
+            inbound = replace(inbound, text=text)
+
+        # Inbound channels-governance gate (off-loop) — recheck per message so a
+        # host-profile deny added after connect stops dispatch without a restart
+        # (the startup gate only blocks CONNECTING). Silently drop on deny. Only a
+        # typed message this dispatcher acts on as /stop claims the pure-cancel
+        # exemption; a card press is never one.
+        cmd = parse_command(text) if interpret_commands and inbound.card_inputs is None else None
+        permitted = await inbound_permitted(
+            "webex",
+            text=text if cmd == "stop" else "",
+            has_attachments=bool(inbound.file_urls),
+        )
+
         # ── Card press intercept ──
         # A press is not a message: it carries no text, so every path below would
         # read it as empty. Routed first, and by INDEX/nonce rather than by any
@@ -374,19 +401,6 @@ class WebexDispatcher:
         if inbound.card_inputs is not None:
             await self._handle_card_press(inbound, permitted=permitted)
             return
-
-        # ── @mention strip ──
-        # In a group space Webex only delivers messages that @mention the bot, and
-        # it does NOT strip the mention from the text. Left in, every group turn
-        # would start with the bot's own name as if the user had typed it — and
-        # every path that READS the text would see it: this runs ahead of the
-        # approval intercept and the command parse because "@Kiro 1" is an
-        # approval answer and "@Kiro /new" is a command, and matching either
-        # against the raw text fails in exactly the room where the mention is
-        # mandatory.
-        if inbound.room_type != ROOM_DIRECT:
-            text = strip_bot_mention(text, self._bot_name())
-            inbound = replace(inbound, text=text)
 
         # ── Approval reply intercept ──
         # Ahead of everything else, because the session semaphore is held for the
@@ -416,7 +430,6 @@ class WebexDispatcher:
                     "e.g. `/queue also check the logs`.",
                 )
                 return
-            cmd = parse_command(text)
             if cmd == "new":
                 self._conv.bump_gen(route)
                 saved = await reserve_new_generation(
@@ -564,6 +577,7 @@ class WebexDispatcher:
 
             await surface_dispatcher_session(self)
 
+        _pick_before = self._model_pref.get(email)
         try:
             await drive_turn(
                 ChannelTurn(
@@ -581,6 +595,7 @@ class WebexDispatcher:
                     conversation_id=conversation_id,
                     agent=agent,
                     user_text=body,
+                    skill_trigger_text=skill_trigger_text,
                     renderer=renderer,
                     # A GROUP space is a shared audience: the sender is allow-listed
                     # but the other members are not, and the operator's memory,
@@ -612,12 +627,24 @@ class WebexDispatcher:
                         session_key, user_text, reply, is_new, agent
                     ),
                     notice=lambda sk, provider: self._maybe_notice(inbound, sk, provider),
-                    model=self._model_pref.get(email) or None,
+                    model=_pick_before or None,
                     audit_caller=f"webex:{email}",
                     after_persist=_surface_new_session,
                 ),
                 sessions=self.sessions,
                 ctx_builder=self.ctx_builder,
+            )
+            # The person's pick is what `/model` shows and a cold start re-applies,
+            # so it follows a promotion, before any await lets the next prompt
+            # reset the walk. Imported here because this facade's bound names are
+            # pinned (composition test).
+            from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
+
+            follow_engine_promotion(
+                self._model_pref,
+                email,
+                self.sessions.get_provider(session_key),
+                before=_pick_before,
             )
         finally:
             # A reservation the driver never awaited (the prompt rendered, then the
@@ -683,6 +710,11 @@ class WebexDispatcher:
             # Running it now is safe: is_busy is False, so there is no re-entry
             # loop, and stranding the message would lose it silently.
             await self.handle_message(inbound)
+        else:
+            # A turn Webex did not start ends without draining this queue.
+            drain_when_free(
+                channel=_CHANNEL, session_key=session_key, is_busy=self.sessions.is_busy
+            )
 
     # ── Live config ────────────────────────────────────────────────────────
 
@@ -904,6 +936,24 @@ class WebexDispatcher:
             # drains; see the collapse test below for what its absence costs.
             defer_rest = False
             async with self._queue.lock:
+                # Another turn holds this session's lease (a dashboard, cron or
+                # auto-nudge turn, or another channel's under a unified scope).
+                # Replaying now only reaches the busy path, which queues the text
+                # again for this loop to dequeue straight back, flipping the receipt
+                # to "Now answering" each lap with no turn started. Leave the queue
+                # in order and drain once the lease is free.
+                if self.sessions.is_busy(session_key):
+                    drain_when_free(
+                        channel=_CHANNEL,
+                        session_key=session_key,
+                        is_busy=self.sessions.is_busy,
+                    )
+                    logger.debug(
+                        "webex: session %s is held by another turn; its queue drains "
+                        "once the lease is free",
+                        session_key,
+                    )
+                    return
                 while True:
                     item = self.sessions.dequeue(session_key)
                     if item is None:
@@ -1355,7 +1405,9 @@ class WebexDispatcher:
         # a busy session (ask the user to retry) from an absent one (nothing
         # to compact), and always release what we acquired.
         if not await self.sessions.try_acquire(session_key):
-            if self.sessions.has_session(session_key):
+            if self.sessions.is_retiring(session_key):
+                await self._reply(inbound, f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}")
+            elif self.sessions.has_session(session_key):
                 await self._reply(
                     inbound,
                     "⏳ Still working on the previous message — try `/compact` again shortly.",

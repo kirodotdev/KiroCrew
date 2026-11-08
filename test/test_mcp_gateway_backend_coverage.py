@@ -77,6 +77,7 @@ from kiro_crew.mcp_gateway.backend import (
     _PendingRequest,
     _strip_caller_meta,
 )
+from kiro_crew.mcp_gateway.backend_wire import _carry_tool_call_id
 
 # --- Pure request-shaping helpers -------------------------------------------
 
@@ -121,6 +122,32 @@ class TestFrameHelpers:
         assert out["params"]["_meta"]["progressToken"] == 7
         assert out["params"]["name"] == "t"
         assert "_meta" in msg["params"] and CALLER_META_KEY not in msg["params"]["_meta"]
+
+    def test_carry_tool_call_id_promotes_progress_token(self) -> None:
+        """The gateway carries the request's progressToken (kiro-cli's ACP
+        toolCallId) onto the caller so the authored block emits it as the
+        always-present correlation key."""
+        msg: dict[str, Any] = {
+            "method": "tools/call",
+            "params": {"_meta": {"progressToken": "toolu_9"}, "name": "t"},
+        }
+        carried = _carry_tool_call_id(CallerContext(session_key="s"), msg)
+        assert carried.tool_call_id == "toolu_9"
+        block = _inject_caller_meta(msg, carried)["params"]["_meta"][CALLER_META_KEY]
+        assert block["toolCallId"] == "toolu_9"
+
+    def test_carry_tool_call_id_is_noop_without_a_token(self) -> None:
+        """No progressToken: the caller is returned unchanged, so the backend's
+        own progressToken fallback (empty here) still applies."""
+        caller = CallerContext(session_key="s")
+        msg: dict[str, Any] = {"method": "tools/call", "params": {"name": "t"}}
+        assert _carry_tool_call_id(caller, msg) is caller
+        # A numeric token coerces to str, matching the backend reader.
+        msg_num: dict[str, Any] = {
+            "method": "tools/call",
+            "params": {"_meta": {"progressToken": 42}, "name": "t"},
+        }
+        assert _carry_tool_call_id(caller, msg_num).tool_call_id == "42"
 
     def test_strip_caller_meta_also_removes_a_forged_TENANT_block(self) -> None:
         """The nonce decides which namespace an unnamed co-tenant lands in.
@@ -672,41 +699,30 @@ class TestFirstHandshakeDeadline:
         default = inspect.signature(Backend.prime_initialize).parameters["timeout"].default
         assert default == backend_mod._DEFAULT_INITIALIZE_TIMEOUT_SECS
 
-    def test_windows_floor_lifts_the_posix_measured_default(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("is_windows", [True, False], ids=["windows", "posix"])
+    def test_cold_start_floor_lifts_the_shipped_default(
+        self, monkeypatch: pytest.MonkeyPatch, is_windows: bool
     ) -> None:
-        # A Windows host left on the POSIX-measured 10s default reaps a backend
-        # whose cold start was about to finish, then respawns it -- the crash
-        # loop. The floor gives the handshake room instead.
-        monkeypatch.setattr(backend_mod.platform_compat, "IS_WINDOWS", True)
+        # Right after a daemon restart several backends cold-start together and
+        # take 13-15s; a 10s deadline reaps them while they are about to answer.
+        # The floor applies on every platform, POSIX included.
+        monkeypatch.setattr(backend_mod.platform_compat, "IS_WINDOWS", is_windows)
         effective = backend_mod._effective_initialize_timeout_secs(
             backend_mod._DEFAULT_INITIALIZE_TIMEOUT_SECS
         )
-        assert effective == backend_mod._WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS
+        assert effective == backend_mod._INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS
         assert effective > backend_mod._DEFAULT_INITIALIZE_TIMEOUT_SECS
+        assert backend_mod._effective_initialize_timeout_secs(3.0) == effective
 
-    def test_windows_floor_never_lowers_an_explicit_higher_value(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("is_windows", [True, False], ids=["windows", "posix"])
+    def test_cold_start_floor_never_lowers_an_explicit_higher_value(
+        self, monkeypatch: pytest.MonkeyPatch, is_windows: bool
     ) -> None:
         # An operator who deliberately raised the deadline (slow runtime, remote
         # resolution) must keep their value; the floor is a floor, not a clamp.
-        monkeypatch.setattr(backend_mod.platform_compat, "IS_WINDOWS", True)
-        higher = backend_mod._WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS + 45.0
+        monkeypatch.setattr(backend_mod.platform_compat, "IS_WINDOWS", is_windows)
+        higher = backend_mod._INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS + 45.0
         assert backend_mod._effective_initialize_timeout_secs(higher) == higher
-
-    def test_posix_initialize_timeout_is_passed_through_unchanged(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # POSIX cold starts are what the 10s default was measured against, so
-        # the floor must not touch them -- it is a Windows-only lift.
-        monkeypatch.setattr(backend_mod.platform_compat, "IS_WINDOWS", False)
-        assert (
-            backend_mod._effective_initialize_timeout_secs(
-                backend_mod._DEFAULT_INITIALIZE_TIMEOUT_SECS
-            )
-            == backend_mod._DEFAULT_INITIALIZE_TIMEOUT_SECS
-        )
-        assert backend_mod._effective_initialize_timeout_secs(3.0) == 3.0
 
     @pytest.mark.asyncio
     async def test_first_handshake_arms_the_deadline(self) -> None:

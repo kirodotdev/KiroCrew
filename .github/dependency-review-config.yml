@@ -74,6 +74,16 @@ allow-dependencies-licenses:
   - pkg:pypi/regex                 # Apache-2.0 AND CNRI-Python — local model env only
   - pkg:pypi/typing-extensions     # PSF-2.0 (GPL id is a mis-detection) — local model env only
 
+  # The optional kc_native extension (native/kc_native/Cargo.lock). Two crates
+  # are flagged for compound expressions whose every part is permissive; both
+  # run only at build time (a pyo3 build script and a proc-macro dependency):
+  # - target-lexicon: Apache-2.0 WITH LLVM-exception. The exception only removes
+  #   obligations. https://github.com/bytecodealliance/target-lexicon/blob/main/LICENSE
+  # - unicode-ident: (MIT OR Apache-2.0) AND Unicode-3.0, the permissive license of
+  #   the Unicode data tables it embeds. https://github.com/dtolnay/unicode-ident/blob/1.0.26/LICENSE-UNICODE
+  - pkg:cargo/target-lexicon       # Apache-2.0 WITH LLVM-exception — build-time only
+  - pkg:cargo/unicode-ident        # (MIT OR Apache-2.0) AND Unicode-3.0 — build-time only
+
   # Example — package ships MIT but GitHub reports "unknown":
   # - pkg:pypi/example-lib            # MIT — see https://github.com/org/example-lib/blob/main/LICENSE
   
@@ -139,6 +149,20 @@ allow-dependencies-licenses:
   # -- a CI-only test fixture, never shipped, linked, or distributed with the
   # product. Evidence: https://unpkg.com/bowser@2.14.1/LICENSE
   - pkg:npm/bowser                               # MIT (+ MITNFA attribution clause) -- CI-only, via pi's @aws-sdk/core
+
+  # heic-to is LGPL-3.0-or-later: libheif and the libde265 HEVC decoder (both
+  # LGPL-3.0) compiled to JavaScript. It is the one SHIPPED exception in this
+  # list, and the reason is that no permissively licensed HEVC decoder exists to
+  # use instead: every in-browser HEIC decoder found (heic2any, libheif-js,
+  # heic-decode) wraps the same LGPL libraries. It turns iPhone HEIC photos into
+  # JPEG on the user's device before upload (website/src/utils/heicImage.ts).
+  # How the LGPL terms are met: the package is consumed unmodified at an exact
+  # pin, it is reached only through a dynamic import() and so is emitted as its
+  # own chunk (assets/heic-to-<hash>.js) that a user can replace without
+  # touching first-party code, and its license text and source location are
+  # recorded with the other notices. No first-party file includes or derives
+  # from its code. Evidence: https://github.com/hoppergee/heic-to/blob/main/LICENSE
+  - pkg:npm/heic-to                              # LGPL-3.0 -- lazily loaded, unmodified, separate chunk; see above
 
 # License gate only — vulnerability scanning is covered separately by the
 # nightly/release Dependency Audit and the Semgrep / CodeQL jobs, so we don't duplicate it here.

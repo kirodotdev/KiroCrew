@@ -36,11 +36,12 @@ def test_an_unknown_copytree_keyword_is_rejected_rather_than_dropped(tmp_path: P
 def test_the_tree_walk_capability_probe_names_a_function_that_supports_dir_fd() -> None:
     """Pins the bug that made every POSIX snapshot refuse before it was caught.
 
-    ``os.lstat`` is NOT a member of ``os.supports_dir_fd`` even where the pinned walk
-    works perfectly -- the capability belongs to ``os.stat``. Probing the wrong one
-    reports False on a fully capable platform, which turns the deliberate refusal into
-    a blanket outage. Asserted as a property of the stdlib so the probe cannot drift
-    back.
+    The capability belongs to ``os.stat``. Whether ``os.lstat`` is also listed in
+    ``os.supports_dir_fd`` depends on the CPython build (3.12.13 omits it, 3.12.16
+    lists it), so a probe on ``os.lstat`` can report False on a fully capable
+    platform, which turns the deliberate refusal into a blanket outage. The test pins
+    that ``os.stat`` carries the capability and that the probe agrees, not what the
+    stdlib says about ``os.lstat``.
 
     The membership assertions are guarded because `os.supports_dir_fd` is EMPTY on Windows,
     where "which function carries the capability" is not a meaningful question -- nothing
@@ -55,7 +56,6 @@ def test_the_tree_walk_capability_probe_names_a_function_that_supports_dir_fd() 
         return
 
     assert os.stat in os.supports_dir_fd
-    assert os.lstat not in os.supports_dir_fd
     if pinned_fs.supports_pinned_walk():
         assert pinned_fs.supports_pinned_tree_walk() is True
 
@@ -64,7 +64,7 @@ class TestFdRealPathHome:
     """``fd_real_path`` is defined in pinned_fs and every consumer binds THAT object.
 
     The primitive has cross-module consumers (hooks, sandbox, the app UI route,
-    spec_builder), and its containment guarantees — including the Windows
+    and app backends, which pin their own binding), and its containment guarantees — including the Windows
     fail-closed branch — belong with the other descriptor-pinned mechanisms.
     Pinning the location keeps a refactor from quietly forking the
     implementation into a consumer module.
@@ -77,18 +77,14 @@ class TestFdRealPathHome:
     def test_every_consumer_binds_the_pinned_fs_object(self):
         from kiro_crew import hooks, sandbox
         from kiro_crew.apps import routes as app_routes
-        from kiro_crew.apps.builtins.spec_builder.backend import repository as spec_repository
 
         assert hooks._fd_real_path is pinned_fs.fd_real_path
         assert sandbox.fd_real_path is pinned_fs.fd_real_path
         assert app_routes.fd_real_path is pinned_fs.fd_real_path
-        # spec_builder's descriptor-pinned reads live in repository.py (the
-        # handlers refactor moved them out of routes.py).
-        assert spec_repository.fd_real_path is pinned_fs.fd_real_path
 
     def test_resolves_an_open_descriptor_to_its_real_path(self, tmp_path: Path):
         target = tmp_path / "witness.txt"
-        target.write_text("x")
+        target.write_text("x", encoding="utf-8")
         fd = os.open(target, os.O_RDONLY)
         try:
             got = pinned_fs.fd_real_path(fd)

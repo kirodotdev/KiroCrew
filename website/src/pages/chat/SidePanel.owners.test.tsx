@@ -53,6 +53,8 @@ describe('SidePanel module boundary', () => {
       'SidePanelAddMenu.tsx',
       'SidePanelTabBodies.tsx',
       'SidePanelTabChip.tsx',
+      'SidePanelTabIcons.tsx',
+      'SidePanelTabNav.tsx',
       'useSidePanelSize.ts',
     ])
   })
@@ -99,6 +101,7 @@ describe('SidePanel module boundary', () => {
       'NEW_MENU_LABEL_KEY',
       'SIDE_PANEL_MIN_W',
       'SIDE_PANEL_RESERVED_W',
+      'TabChip',
       'default',
       'newMenuSections',
       'sidePanelEffectiveWidth',

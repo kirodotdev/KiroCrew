@@ -40,6 +40,7 @@ chat id, room id and thread stays inside the channel that owns it, the same boun
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import contextmanager
@@ -98,15 +99,10 @@ _ACTIVE: dict[str, set[str]] = {}
 
 #: session key -> channels a peer tried to wake while they were already draining.
 #:
-#: Refusing that wake is what bounds the cascade, but DROPPING it strands a message.
-#: A drain's pump returns as soon as an iteration finds nothing of its own to answer,
-#: while its active marker is still held across its own :func:`wake_other_drains`
-#: await -- so an entry arriving in that window is set aside by the peer running under
-#: that await, and the refused wake was the only thing that would have come back for
-#: it. Its own channel's next turn tail is not a recovery: the message is already
-#: accepted and receipted, and a channel that goes quiet never has a next turn. So the
-#: request is RETAINED here and the refusing drain re-pumps before releasing its
-#: marker.
+#: Refusing that wake bounds the cascade, but DROPPING it strands a message: the
+#: drain's pump may already have returned while its marker is held across
+#: :func:`wake_other_drains`, and a quiet channel has no next turn to recover it. So
+#: the request is RETAINED and the refusing drain re-pumps before releasing its marker.
 _PENDING: dict[str, set[str]] = {}
 
 #: How many times one drain will re-pump for a retained wake before leaving the rest to
@@ -117,6 +113,21 @@ _PENDING: dict[str, set[str]] = {}
 #: Hitting the cap leaves the request OWED rather than consumed, so the record survives
 #: for the next drain to act on: see the last round in :func:`drain_until_quiet`.
 _MAX_WAKE_ROUNDS = 8
+
+#: (channel type, session key) -> the one task waiting for that session's lease to come
+#: free so it can run that channel's drain. See :func:`drain_when_free`.
+_HELD_RETRIES: dict[tuple[str, str], asyncio.Task[None]] = {}
+
+#: First and longest pause between two looks at a held lease, in seconds. The pause
+#: doubles from the first to the longest, so a short holder (a dashboard turn) is
+#: followed closely and a long one (a cron run) costs one cheap check every few seconds.
+_HELD_POLL_FIRST_SECS = 0.25
+_HELD_POLL_MAX_SECS = 5.0
+
+#: How long one retry keeps waiting before it gives up and leaves the entries queued
+#: for the next drain of the session. Far longer than any healthy turn: a holding that
+#: outlasts it is the stale-session reaper's to end, not this wait's.
+_HELD_WAIT_LIMIT_SECS = 6 * 3600.0
 
 
 def owner_token(channel_type: str, sender_key: Iterable[object]) -> str:
@@ -221,22 +232,13 @@ def unregister_drain(channel_type: str, drain: DrainCallable | None = None) -> N
     """Drop *channel_type*'s drain (idempotent), so no peer wakes a dispatcher that is
     going away.
 
-    Waking a dead dispatcher does not merely fail: its pump dequeues the entries it owns
-    under its own lock and replays them AFTER releasing it, so a closed client raising in
-    the replay loses messages it has already taken off the queue. A registration that
-    outlives its client therefore turns every later cross-transport wake into a loss.
+    A dead dispatcher's pump dequeues its entries and replays them after releasing its
+    lock, so a closed client raising there loses messages already off the queue.
 
-    *drain* is the registration the caller believes it owns, making this a
-    COMPARE-AND-DROP. Two dispatcher lifetimes can overlap: a restart registers the
-    replacement before the OLD client's close path runs, and an unconditional pop there
-    would remove the LIVE one -- leaving the channel unwakeable until the next restart,
-    which is the very stranding this module exists to prevent. Equality, not identity,
-    because the registered drain is a bound method: each ``self._drain_queue`` access
-    mints a new object, and two compare equal exactly when they name the same method on
-    the same dispatcher.
-
-    Omitted, the drop is unconditional, for a caller holding no handle on its own
-    registration.
+    *drain* makes this COMPARE-AND-DROP: a restart registers the replacement before the
+    OLD client's close runs, and an unconditional pop would remove the LIVE one.
+    Equality, not identity: each ``self._drain_queue`` access mints a new bound method.
+    Omitted, the drop is unconditional.
     """
     if drain is not None and _DRAINS.get(str(channel_type)) != drain:
         return
@@ -248,6 +250,25 @@ def reset_drains() -> None:
     _DRAINS.clear()
     _ACTIVE.clear()
     _PENDING.clear()
+    for task in _HELD_RETRIES.values():
+        # A task whose event loop is closed can never run again, and cancelling it
+        # would schedule onto that closed loop.
+        if not task.done() and not task.get_loop().is_closed():
+            task.cancel()
+    _HELD_RETRIES.clear()
+
+
+def _prune_held_retries_from_other_loops(loop: asyncio.AbstractEventLoop) -> None:
+    """Drop held retries bound to a loop other than the running one.
+
+    The registry outlives its loop (a test loop per test). A retry whose loop was
+    torn down never runs its done callback, so its entry would stay and hold that
+    channel and session's slot: every later :func:`drain_when_free` for it would
+    answer False and schedule nothing.
+    """
+    for slot, task in list(_HELD_RETRIES.items()):
+        if task.get_loop() is not loop:
+            del _HELD_RETRIES[slot]
 
 
 def _take_pending(channel_type: str, session_key: str) -> bool:
@@ -302,6 +323,15 @@ async def drain_until_quiet(
     sequence, and a channel that got the order wrong -- waking under its own queue lock,
     or outside its own marker -- would be a defect with no local symptom.
     """
+    if str(channel) in _ACTIVE.get(str(session_key), ()):
+        # This channel is already draining this session -- a turn tail reaching here
+        # while a ``drain_when_free`` retry of the same channel is still pumping. Two
+        # pumps on one queue race each other's replays into the lease the other just
+        # took, and the inner one's exit would drop the outer one's active marker.
+        # Retained instead, exactly as a refused peer wake is, so the running drain
+        # re-pumps for it before it lets go.
+        _PENDING.setdefault(str(session_key), set()).add(str(channel))
+        return
     with draining(channel, session_key):
         for round_no in range(1, _MAX_WAKE_ROUNDS + 1):
             foreign: set[str] = set()
@@ -311,14 +341,10 @@ async def drain_until_quiet(
                 if not _take_pending(channel, session_key):
                     return
                 continue
-            # The last round cannot serve another one, so it must not CONSUME the
-            # request either: taking it here would leave the entry queued and lose the
-            # only record that a wake is owed for it. Peeked and left in place, the next
-            # drain on this session -- this channel's own turn tail, or a peer's wake --
-            # finds it and re-pumps. Calling this channel's drain again after the marker
-            # releases is the other half of what the finding suggests, and is not done:
-            # that is re-entry, and under continuous two-channel traffic nothing would
-            # bound it, which is what the cap exists for.
+            # The last round must not CONSUME the request: that would lose the only
+            # record a wake is owed. Peeked and left, so the next drain on this session
+            # re-pumps. Not re-calling the drain after release: that re-entry is what
+            # the cap bounds.
             if _peek_pending(channel, session_key):
                 logger.warning(
                     "%s: still receiving cross-transport wake requests after %d drain "
@@ -337,7 +363,8 @@ def draining(channel_type: str, session_key: str) -> Iterator[None]:
 
     Read by :func:`wake_other_drains` to refuse a target already on the stack, which
     is what bounds the cascade. Reference-counted per channel is unnecessary: a
-    channel's drain is not re-entered on one session (its own pump loops instead).
+    channel's drain is not re-entered on one session -- :func:`drain_until_quiet`
+    retains a second entry as a pending wake instead of running it.
     """
     key = str(session_key)
     active = _ACTIVE.setdefault(key, set())
@@ -383,17 +410,11 @@ async def wake_other_drains(*, waker: str, session_key: str, channels: Iterable[
         try:
             await drain(str(session_key))
         except Exception:
-            # Retire it. A drain that raises has proven its dispatcher cannot serve this
-            # queue, and waking it again would dequeue more entries only to lose them in
-            # the same replay. Compare-and-drop against the callable just invoked, so a
-            # dispatcher that RESTARTED during this wake keeps its live registration.
-            # After this the channel is simply absent, which is the same path as a
-            # channel whose dispatcher never ran here: its entries are set aside and
-            # nothing is woken for them, so they wait rather than being consumed.
-            #
-            # This covers a client that dies without an orderly shutdown, which a
-            # close-time unregister cannot. It does not replace one: the first wake after
-            # the client dies still reaches it once.
+            # Retire it: waking it again would dequeue more entries only to lose them in
+            # the same replay. Compare-and-drop, so a dispatcher that RESTARTED during this
+            # wake keeps its registration. Its entries then wait rather than being
+            # consumed. Covers a client that dies without an orderly shutdown; it does not
+            # replace the close-time unregister.
             unregister_drain(name, drain)
             logger.warning(
                 "%s: waking the %s queue drain failed for session=%s; that drain is "
@@ -403,3 +424,75 @@ async def wake_other_drains(*, waker: str, session_key: str, channels: Iterable[
                 session_key,
                 exc_info=True,
             )
+
+
+def drain_when_free(*, channel: str, session_key: str, is_busy: Callable[[str], bool]) -> bool:
+    """Run *channel*'s drain on *session_key* once its lease is free.
+
+    For a drain that found the session held by another turn -- a dashboard, cron or
+    auto-nudge turn on the same key, or another channel's turn under a unified scope.
+    Replaying a queued entry into a held session only queues it again, so the drain
+    leaves its queue in order and calls this instead.
+
+    It waits on the lease itself rather than on a hook in whatever holds it. The
+    holder may end its holding without going through ``SessionManager.release`` (a
+    compaction, a recycle or a stop hands the permit back directly), and it may be a
+    turn no channel drain follows, so no release-side hook is reached on every path.
+
+    At most one retry waits per channel and session: a second call while one waits
+    returns False and schedules nothing. The waiting task drops itself from the
+    registry BEFORE it drains, so a drain that finds the lease taken again can
+    schedule the next retry. The drain is looked up when the lease frees, so a
+    dispatcher that restarted meanwhile is the one that answers, and an unregistered
+    channel is skipped. Returns whether a retry was scheduled.
+    """
+    slot = (str(channel), str(session_key))
+    _prune_held_retries_from_other_loops(asyncio.get_running_loop())
+    if slot in _HELD_RETRIES:
+        return False
+    from kiro_crew.shared_crew.turn_gate import independent_turn
+
+    with independent_turn():
+        task = asyncio.ensure_future(_drain_after_hold(slot, is_busy))
+    _HELD_RETRIES[slot] = task
+
+    def _forget(done: asyncio.Task[None]) -> None:
+        if _HELD_RETRIES.get(slot) is done:
+            _HELD_RETRIES.pop(slot, None)
+
+    task.add_done_callback(_forget)
+    return True
+
+
+async def _drain_after_hold(slot: tuple[str, str], is_busy: Callable[[str], bool]) -> None:
+    """The wait behind :func:`drain_when_free`: back off until free, then drain once."""
+    channel, session_key = slot
+    delay = _HELD_POLL_FIRST_SECS
+    waited = 0.0
+    while is_busy(session_key):
+        if waited >= _HELD_WAIT_LIMIT_SECS:
+            logger.warning(
+                "%s: session=%s stayed held for %.0fs; its queued messages stay queued "
+                "for the next drain of this session",
+                channel,
+                session_key,
+                waited,
+            )
+            return
+        await asyncio.sleep(delay)
+        waited += delay
+        delay = min(delay * 2, _HELD_POLL_MAX_SECS)
+    if _HELD_RETRIES.get(slot) is asyncio.current_task():
+        _HELD_RETRIES.pop(slot, None)
+    drain = _DRAINS.get(channel)
+    if drain is None:
+        return
+    try:
+        await drain(session_key)
+    except Exception:
+        logger.warning(
+            "%s: the queue drain retried after a held lease failed for session=%s",
+            channel,
+            session_key,
+            exc_info=True,
+        )

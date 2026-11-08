@@ -96,15 +96,14 @@ REFRESH_GRACE_SECS = 60
 
 # Grace acceptance is CHAIN-HEAD-ONLY. We retain exactly ONE recently-consumed
 # jti per chain — the single most-recently-rotated one (the chain head) — as
-# the authenticator for a same-IP, in-window replay. An earlier design widened
-# this to a bounded history of the last N consumed jtis so several lagging tabs
-# could each authenticate a benign race; that was a deliberate weakening of the
-# RFC 6819 §5.2.2.3 reuse signal (any of the last N consumed jtis, replayed
-# same-IP within the window, resolved to the live head instead of tripping
-# chain revocation) and was flagged by the Design + Long-Term Impact reviewers.
+# the authenticator for a same-IP, in-window replay. A bounded history of the
+# last N consumed jtis would let several lagging tabs each authenticate a benign
+# race, but it deliberately weakens the RFC 6819 §5.2.2.3 reuse signal (any of
+# the last N consumed jtis, replayed same-IP within the window, resolves to the
+# live head instead of tripping chain revocation).
 # The maintainer chose the STRONGER posture: only the chain head is accepted, so
 # any OLDER rotated jti replayed within the window is treated as token reuse and
-# revokes the chain. This restores an undiluted theft signal at the cost of some
+# revokes the chain. This keeps an undiluted theft signal at the cost of some
 # multi-tab UX (a second stale tab racing a refresh may be logged out). The
 # single-tab / single-refresh false-revocation race (a duplicate request
 # presenting the just-consumed head) is still absorbed. Keep this behaviour and
@@ -839,6 +838,7 @@ def generate_refresh_token(
     boot: str = "",
     require_peer: bool = False,
     peer_key: str = "",
+    owner_mint: bool = False,
 ) -> tuple[str, str, str, float]:
     """Generate a refresh token.
 
@@ -894,6 +894,10 @@ def generate_refresh_token(
             # mirror and cannot safely be re-created by whichever allowed node
             # presents a stolen cookie first after restart.
             payload_dict["peer_key"] = peer_key
+    if owner_mint:
+        # Carried across rotation like ``boot`` so the access token a refresh
+        # mints keeps the owner-mint claim (see token_auth_tokens.OWNER_MINT_CLAIM).
+        payload_dict["owner_mint"] = "1"
     payload = json.dumps(payload_dict, separators=(",", ":")).encode()
     encoded_payload = _b64url_encode(payload)
     signature = _sign(payload)
@@ -1000,6 +1004,20 @@ def refresh_token_boot(token: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def refresh_token_owner_minted(token: str) -> bool:
+    """Whether a refresh chain was opened by an owner-identity mint.
+
+    Same read-only, validate-first contract as :func:`refresh_token_boot`. A
+    decode failure answers False: the claim only relabels a denial, so losing it
+    falls back to the generic 403.
+    """
+    try:
+        payload = json.loads(_b64url_decode(token.split(".")[0]))
+    except Exception:
+        return False
+    return isinstance(payload, dict) and str(payload.get("owner_mint", "")) == "1"
+
+
 def refresh_token_requires_peer(token: str) -> bool:
     """Whether this chain may only rotate for a daemon-verified tailnet peer.
 
@@ -1042,6 +1060,20 @@ def refresh_token_peer_key(token: str) -> str:
 def refresh_cookie_name(port: str | int) -> str:
     """Mirror the existing per-port pattern used for the access cookie."""
     return f"{REFRESH_COOKIE_PREFIX}{port}"
+
+
+def bears_session_cookie_for_host(host_header: str, cookies: Mapping[str, str]) -> bool:
+    """True if *cookies* hold an access or refresh cookie for the Host's port.
+
+    The pair is keyed by the browser-facing port in the Host header (see
+    token_auth_tokens' ``_cookie_port_from_host``), so another gateway's pair in
+    the same jar does not count. Only presence is checked: whether the session
+    is valid stays token_auth's call. A Host with no port names no cookie.
+    """
+    port = host_header.rsplit(":", 1)[-1].strip() if ":" in host_header else ""
+    if not port.isdigit():
+        return False
+    return f"{ACCESS_COOKIE_PREFIX}{port}" in cookies or refresh_cookie_name(port) in cookies
 
 
 def foreign_port_cookies(

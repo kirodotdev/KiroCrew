@@ -1,0 +1,358 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "list": {}
+      }
+    },
+    "agent_version": "1.0.100",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "off",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "https://agentclientprotocol.com/protocol/session-modes#agent",
+      "ids": [
+        "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "https://agentclientprotocol.com/protocol/session-modes#plan",
+        "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+      ]
+    },
+    "session_id": "copilot-session-1"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "off",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "on",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 4
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#autopilot",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "off",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 5
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "current_mode_update"
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "https://agentclientprotocol.com/protocol/session-modes#agent",
+        "description": "Controls how Copilot responds: a conversational agent, planning multi-step work, or autonomous autopilot.",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Default agent mode for conversational interactions",
+            "name": "Agent",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#agent"
+          },
+          {
+            "description": "Plan mode for creating and executing multi-step plans",
+            "name": "Plan",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#plan"
+          },
+          {
+            "description": "Autonomous mode that enables allow-all and runs until task completion without user interaction (experimental)",
+            "name": "Autopilot",
+            "value": "https://agentclientprotocol.com/protocol/session-modes#autopilot"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "permissions",
+        "currentValue": "off",
+        "description": "Controls whether Copilot prompts for approval before using tools, accessing paths, or fetching URLs.",
+        "id": "allow_all",
+        "name": "Allow All",
+        "options": [
+          {
+            "description": "Automatically approve all tool, path, and URL requests",
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "description": "Require approval for tool, path, and URL requests",
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 6
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Permission policy: Allow All for this session. All permissions are now enabled. Tool, path, and URL requests will be automatically approved."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Permission policy: Allow All for this session. All permissions are now enabled. Tool, path, and URL requests will be automatically approved.",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 7,
+    "stop_reason": "end_turn"
+  },
+  {
+    "error": {
+      "code": -32602,
+      "message": "Invalid allow_all value 'bogus'. Use \"on\" or \"off\"."
+    },
+    "frame": "response",
+    "id": 8
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "config_option_update"
+  },
+  {
+    "error": {
+      "code": -32602,
+      "message": "Unknown config option 'nope'."
+    },
+    "frame": "response",
+    "id": 9
+  }
+]

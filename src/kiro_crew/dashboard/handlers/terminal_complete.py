@@ -1,14 +1,15 @@
 """The vetting and listing steps of terminal path completion: splitting the typed token,
 resolving and vetting the directory it names, and filtering protected or unsafe entries.
 
-``api_terminal_complete`` and the listing it ranks stay in the facade; this module holds
-the steps they call. An owner of :mod:`kiro_crew.dashboard.handlers.terminal`: callers
+``api_terminal_complete`` stays in the facade; this module holds the steps it calls and
+the listing it ranks. An owner of :mod:`kiro_crew.dashboard.handlers.terminal`: callers
 and tests import and patch these names through that facade, which mirrors a patch into
 every module of the family that holds the name.
 """
 
 from __future__ import annotations
 
+import heapq
 import os
 import re
 
@@ -187,3 +188,122 @@ def _log_complete(caller: str, outcome: str, reason: str) -> None:
         source="dashboard",
         resources=reason,
     )
+
+
+def _list_completions(
+    directory: str, prefix: str, folders_only: bool, limit: int
+) -> tuple[list[dict], bool]:
+    """``_list_vetted_completions`` for a not-yet-canonicalized *directory*.
+
+    Returns ``([], False)`` when the directory is missing, unreadable, or
+    sensitive — none of those is an error condition for a keystroke-rate
+    endpoint, they just have no completions."""
+    vetted = _vetted_completion_dir(directory)
+    if vetted is None:
+        return [], False
+    return _list_vetted_completions(vetted, prefix, folders_only, limit)
+
+
+def _list_vetted_completions(
+    vetted: str, prefix: str, folders_only: bool, limit: int
+) -> tuple[list[dict], bool]:
+    """Entries of an ALREADY-VETTED directory matching ``prefix`` anywhere in
+    the name.
+
+    Matching is a case-insensitive SUBSTRING search, not a prefix test, so a
+    long name can be reached by its distinctive middle: ``termi`` finds
+    ``my-terminal-completion-notes``. Each entry reports ``at``, the offset the
+    fragment was found at, which both ranks the results (earliest match first,
+    so a true prefix still wins) and lets the client highlight the span.
+
+    A fragment that STARTS with a dot is matched as a prefix instead. The dot is
+    what unhides hidden entries, not a distinctive part of a name, so searching
+    for it as a substring would pull in every ``foo.bar`` and defeat the very
+    filter it just switched on.
+
+    Hidden entries are included only once the user has typed a leading dot,
+    mirroring shell completion.
+
+    Only ``limit`` entries are ever RETAINED (a size-bounded heap over the same
+    ranking key), and at most ``_COMPLETE_MAX_SCAN`` entries are examined, so
+    neither a huge directory nor a hostile one can grow the response or hold the
+    worker thread. ``truncated`` reports either cap being hit."""
+    want_hidden = prefix.startswith(".")
+    lowered = prefix.lower()
+    matched = 0
+    scan_capped = False
+
+    # Pinned BEFORE the scan so the enumeration cannot be redirected by a swap
+    # of the directory name after vetting passed. See _open_vetted_dir.
+    dir_fd = _open_vetted_dir(vetted)
+    if dir_fd is None:
+        return [], False
+
+    def _candidates():
+        # Generator (not a list): heapq.nsmallest below pulls lazily and keeps
+        # only `limit` items alive, so a 100k-entry directory never materializes.
+        nonlocal matched, scan_capped
+        scanned = 0
+        with os.scandir(dir_fd) as it:
+            for entry in it:
+                if scanned >= _COMPLETE_MAX_SCAN:
+                    scan_capped = True
+                    break
+                scanned += 1
+                name = entry.name
+                if _UNSAFE_NAME_RE.search(name):
+                    continue
+                if not want_hidden and name.startswith("."):
+                    continue
+                if not lowered:
+                    at = 0
+                elif want_hidden:
+                    at = 0 if name.lower().startswith(lowered) else -1
+                else:
+                    at = name.lower().find(lowered)
+                if at < 0:
+                    continue
+                # Ordered AFTER the cheap name filters and BEFORE the stat
+                # below: only entries the user could actually receive are
+                # classified, so a huge directory does not pay the gate for
+                # every name it holds.
+                if _entry_is_sensitive(vetted, entry):
+                    continue
+                try:
+                    is_dir = entry.is_dir()  # follows symlinks, as the shell does
+                except OSError:
+                    is_dir = False
+                if folders_only and not is_dir:
+                    continue
+                matched += 1
+                yield {"name": name, "dir": is_dir, "at": at}
+
+    try:
+        entries = heapq.nsmallest(limit, _candidates(), key=_entry_sort_key)
+    except OSError:
+        return [], False
+    finally:
+        # os.scandir(fd) does NOT take ownership of the descriptor, so it is ours
+        # to close on every path out of here.
+        os.close(dir_fd)
+    return entries, scan_capped or matched > limit
+
+
+def _resolve_vet_and_list(
+    cwd: str, dir_part: str, prefix: str, folders_only: bool, limit: int
+) -> tuple[str, bool, list[dict], bool]:
+    """Everything a completion needs from the filesystem, in ONE call.
+
+    Resolution (``expanduser`` can trigger a synchronous name-service lookup for
+    ``~someuser``) and vetting (``realpath``, which can stall on an unresponsive
+    mount) are blocking just like the listing itself, so all three run together
+    on one worker thread instead of costing the caller three executor hops.
+
+    Returns ``(lexical_directory, allowed, entries, truncated)``; ``allowed`` is
+    False when the resolved directory must not be enumerated."""
+    directory = _resolve_completion_dir(cwd, dir_part)
+    vetted = _vetted_completion_dir(directory)
+    if vetted is None:
+        return directory, False, [], False
+    entries, truncated = _list_vetted_completions(vetted, prefix, folders_only, limit)
+    return directory, True, entries, truncated

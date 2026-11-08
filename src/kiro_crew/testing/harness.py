@@ -104,28 +104,18 @@ READY_PREFIX = "KIROCREW_READY:"
 def crash_dump_diagnostic(home: Path) -> str:
     """The gateway's loop-stall stack dump, if its watchdog wrote one into *home*.
 
-    The watchdog's dump-then-exit (``dashboard/loop_watchdog.py``) writes every
-    thread's stack into ``<home>/logs/crash-dumps/`` and never into stderr, so a
-    gateway the alarm ended shows up in the captured stderr as silence followed
-    by ``exit=-14``. The harness removes the HOME right after, which makes this
-    file the one place the blocking frame can be read from: it is folded into
-    :meth:`GatewayHandle.diagnostics` so the frame reaches the test's failure
-    message instead of a directory nobody uploads.
+    The watchdog (``dashboard/loop_watchdog.py``) writes every thread's stack into
+    ``<home>/logs/crash-dumps/``, never stderr, and the harness removes the HOME
+    right after, so this is folded into :meth:`GatewayHandle.diagnostics` to get
+    the blocking frame into the test's failure message.
 
-    The stacks come through :func:`~kiro_crew.dashboard.crash_dump_store.dump_replay_lines`
-    with its journal caps lifted: every thread, wedged thread first. The
-    journal's 120-line / 8 KiB budget is wrong for a failure message. A loop
-    thread caught at a syscall boundary (``selectors.select``, ``stat``) while
-    every visible worker is parked is waiting to reacquire the GIL from some
-    OTHER thread inside a long native call, and ``faulthandler`` lists threads
-    newest-first, so a capped replay ends before that thread -- the one stack
-    that says what stalled the gateway. The reader's own file bound (a few
-    MiB) is the only cap left.
+    The journal caps of :func:`~kiro_crew.dashboard.crash_dump_store.dump_replay_lines`
+    are lifted: ``faulthandler`` lists threads newest-first, so a capped replay can
+    end before the OTHER thread holding the GIL in a long native call, which is
+    the one stack that says what stalled the gateway.
 
-    Empty when no dump with stacks exists -- a header-only file is the sentinel
-    every boot opens and says nothing. Never raises: a missing or unreadable
-    directory is a gateway that produced no dump, and the diagnostic it would
-    decorate must still be reported.
+    Empty when no dump with stacks exists (a header-only file is the per-boot
+    sentinel). Never raises: the diagnostic it decorates must still be reported.
     """
     try:
         dump = newest_dump_with_stacks(home / "logs" / "crash-dumps")
@@ -146,24 +136,16 @@ def crash_dump_diagnostic(home: Path) -> str:
 class GatewayHandle:
     """Handle on a spawned gateway.
 
-    Intentionally minimal — exposes the URL plus a few metadata fields and
-    leaves all I/O to the caller. Adding HTTP / WebSocket / MCP helpers
-    here would couple every consumer to a specific driver; keeping it
-    transport-agnostic lets each test pick its own (Playwright, plain
-    axios, urllib, websockets — whatever fits).
+    Transport-agnostic on purpose: all I/O is left to the caller, so each test
+    picks its own driver (Playwright, urllib, websockets).
 
     Attributes:
-        url: Authenticated dashboard URL with token query param. Safe to
-            ``urllib.request.urlopen`` directly or feed to a browser via
-            Playwright.
+        url: Authenticated dashboard URL with token query param.
         port: OS-assigned ephemeral port the dashboard is bound to.
-        token: Session token embedded in ``url``. Exposed separately for
-            clients that build their own URLs (e.g. WebSocket connectors).
-        home: Path to the throwaway ``KIROCREW_HOME`` directory the gateway
-            is using. Useful for tests that need to inspect on-disk state
-            (sessions, memory, lessons) after exercising the gateway.
-        proc: Underlying ``subprocess.Popen`` handle. Most tests should
-            never touch this; the context manager owns its lifecycle.
+        token: Session token embedded in ``url``, for clients that build
+            their own URLs (e.g. WebSocket connectors).
+        home: The throwaway ``KIROCREW_HOME``, for inspecting on-disk state.
+        proc: Underlying ``subprocess.Popen``; the context manager owns it.
     """
 
     url: str
@@ -200,10 +182,8 @@ class GatewayHandle:
         """Exit status plus the stderr and stdout tails of the child, for a
         failure AFTER the READY line.
 
-        The READY wait already attaches stderr to a spawn failure. A test's own
-        first request failing (connection reset, refused, a 5xx) is the other
-        common shape, and on a platform nobody can reproduce locally the child's
-        stderr is the only evidence there is. Call this in the assertion message.
+        Call this in the assertion message: on a platform nobody can reproduce
+        locally, the child's stderr is the only evidence there is.
         """
         if self._diagnostics is None:
             return f"pid {self.proc.pid} exit={self.proc.poll()!r} (no captured output)"
@@ -222,15 +202,8 @@ class GatewaySpawnError(RuntimeError):
 def _resolve_workspace_src() -> Path:
     """Locate the in-repo ``src/`` so PYTHONPATH points at feature-branch code.
 
-    Walks up from this file's location
-    (``<pkg>/src/kiro_crew/testing/harness.py``) to find the package's
-    ``src/`` directory. We deliberately avoid using the system-installed
-    ``kirocrew`` for two reasons:
-
-    1. We're testing the *current* code, not whatever the developer has
-       on PATH. A stale Toolbox install would silently mask regressions.
-    2. The system install may not have ``--test-mode`` yet, so we must run
-       the in-repo code that does.
+    The system-installed ``kirocrew`` is avoided on purpose: a stale install on
+    PATH would mask regressions, and may lack ``--test-mode``.
     """
     here = Path(__file__).resolve()
     # <pkg>/src/kiro_crew/testing/harness.py -> <pkg>/src
@@ -247,23 +220,14 @@ def _resolve_workspace_src() -> Path:
 def parse_ready_line(line: str) -> dict[str, Any]:
     """Parse and validate a single ``KIROCREW_READY:{...}`` line.
 
-    Pure (no I/O), so both the in-process pipe reader
-    (``_wait_for_ready_line``) and out-of-process consumers that tail a log
-    file (e.g. a detached-gateway supervisor) can share one source of truth
-    for the wire contract.
-
-    ``line`` must start with ``READY_PREFIX``; the primitive verifies this
-    itself so it owns the whole wire contract (callers just hand it candidate
-    lines). Returns the parsed payload dict.
+    Pure (no I/O), so the in-process pipe reader and out-of-process log tailers
+    share one wire contract. Checks the ``READY_PREFIX`` itself and returns the
+    parsed payload dict.
 
     Raises:
         ``GatewaySpawnError`` on a missing prefix, malformed JSON, a non-dict
-        payload, or a missing required key (``port`` / ``token``). Surfacing
-        these as the harness's own error type keeps the
-        always-``GatewaySpawnError`` contract callers rely on instead of
-        leaking ``JSONDecodeError`` / ``KeyError``. A gateway version drift
-        that drops one of these keys is exactly the protocol shift the harness
-        should surface clearly.
+        payload, or a missing ``port`` / ``token`` key, never a raw
+        ``JSONDecodeError`` / ``KeyError``.
     """
     if not line.startswith(READY_PREFIX):
         raise GatewaySpawnError(f"line does not start with {READY_PREFIX}: {line!r}")
@@ -286,28 +250,14 @@ def parse_ready_line(line: str) -> dict[str, Any]:
 class _StdoutPump:
     """One daemon reader over the child's stdout, for the whole run.
 
-    Why a thread and not ``selectors``: ``selectors.DefaultSelector()`` is
-    select()-based on Windows and accepts SOCKETS only, so registering a
-    subprocess PIPE there raises rather than polling it. A reader thread behaves
-    identically on all three platforms.
-
-    Why the queue: the thread would otherwise read ahead without bound, and the
-    READY waiter needs a *bounded* wait so the deadline is checked even while
-    the child is alive and silent -- the one guarantee the old selector poll
-    provided. ``queue.Queue.get(timeout=...)`` gives exactly that, without a
-    busy loop, and it does not spin on EOF the way a selector does (EOF is
-    permanently readable).
-
-    Why one thread for the whole run and not one per phase: two readers on one
-    pipe race for the same bytes. Before READY, chunks go to the queue for the
-    waiter. After :meth:`handoff`, the same thread keeps draining -- which is
-    what stops the gateway blocking on a full stdout pipe partway through a long
-    run -- into a bounded ring buffer, so a multi-minute run's whole stdout is
-    not retained.
+    A thread, not ``selectors``: on Windows the selector accepts sockets only,
+    so a subprocess PIPE raises there. The queue gives the READY waiter a bounded
+    wait that does not spin on EOF. One thread for the whole run, because two
+    readers on one pipe race for the same bytes: after :meth:`handoff` it keeps
+    draining (so the gateway never blocks on a full pipe) into a bounded tail.
     """
 
-    #: Chunks retained after handoff, for post-mortem diagnostics of a failed
-    #: run. Matches the previous ``deque(maxlen=256)`` drain.
+    #: Chunks retained after handoff, for post-mortem diagnostics.
     TAIL_CHUNKS = 256
 
     def __init__(self, stdout: IO[bytes]) -> None:
@@ -346,11 +296,9 @@ class _StdoutPump:
     def drain_until_eof(self, timeout: float) -> bytes:
         """Everything the reader captures up to EOF, bounded by ``timeout``.
 
-        Used on child exit. The child is gone, so its write end is closed and
-        the pipe EOFs promptly -- but the reader thread may not have handed the
-        last chunk over yet, and a READY line already in the pipe must not be
-        reported as "exited before READY". A plain non-blocking drain loses that
-        race; waiting for the sentinel does not.
+        Used on child exit. Waiting for the EOF sentinel, not a non-blocking
+        drain, so a READY line the reader has not handed over yet is not
+        reported as "exited before READY".
         """
         deadline = time.monotonic() + timeout
         chunks: list[bytes] = []
@@ -380,40 +328,24 @@ def fake_acp_backend_launcher(directory: Path) -> Path:
     """The path to hand ``KIROCREW_KIRO_BIN`` so the gateway spawns the packaged
     fake ACP backend, on every platform.
 
-    On POSIX that is ``fake_acp_backend.__file__`` itself: the module carries a
-    shebang and is exec'd in place. Windows has no shebang, so ``CreateProcess``
-    refuses a ``.py`` path outright; it DOES run a ``.cmd`` (handed to the
-    command interpreter), and ``.cmd`` is in ``platform_compat``'s
-    runnable-suffix set, so the candidate also survives ``is_executable_file``.
-    ``build.yml`` stages its Windows backend payload as ``kirocrew.cmd`` for the
-    same reason.
+    On POSIX that is ``fake_acp_backend.__file__`` itself (shebang, exec'd in
+    place). Windows ``CreateProcess`` refuses a ``.py`` but runs a ``.cmd``, which
+    is also in ``platform_compat``'s runnable-suffix set.
 
-    Named ``kiro-backend.cmd`` ON PURPOSE, not ``kiro-cli.exe``: delegation to
-    Kiro CLI's own sandbox must come from the reviewed ACP call site passing
-    ``is_kiro_cli=True``, never from the basename, so a launcher whose name
-    cannot satisfy ``_spawns_kiro_cli`` proves the classification is what grants
-    it. ``directory`` must outlive the gateway that runs the shim.
+    Named ``kiro-backend.cmd`` ON PURPOSE, not ``kiro-cli.exe``: Kiro CLI sandbox
+    delegation must come from the ACP call site passing ``is_kiro_cli=True``,
+    never from the basename. ``directory`` must outlive the gateway.
 
-    **A batch file is re-parsed by cmd.exe, so the interpreter path is a literal
-    that has to be escaped.** ``%`` doubles (a batch file expands ``%%`` to one
-    literal ``%``), and a double quote or a newline is REFUSED rather than
-    escaped, because cmd.exe has no escape for a quote inside a quoted token and
-    silently booting the wrong path is worse than failing here. That is the same
-    rule ``kiro_crew.pod.windows._cmd_literal`` applies to the pod wrapper; the
-    two cannot share a body because the pod one raises a pod-specific refusal that
-    must fail ``pod up``, and this one is a harness error.
+    cmd.exe re-parses the batch file, so ``%`` in the interpreter path is doubled
+    and a double quote or newline is REFUSED: cmd.exe cannot escape them, and
+    booting the wrong path is worse than failing. Same rule as
+    ``kiro_crew.pod.windows._cmd_literal``, which raises a pod-specific error.
 
-    **RESIDUAL, stated because it cannot be closed inside a batch file:** cmd.exe
-    expands ``%VAR%`` in the text ``%*`` substitutes, so an ACP argument
-    containing ``%`` reaches the backend expanded rather than verbatim, and ``^``
-    is eaten as an escape. ``%*`` is the only way a batch file forwards its
-    arguments, and the fake backend reads ``sys.argv``, so this cannot be dropped.
-    The argv the ACP client builds for a launch carries no ``%``; a caller that
-    needs one must not route through this shim.
+    RESIDUAL: cmd.exe expands ``%VAR%`` and eats ``^`` in the ``%*`` arguments,
+    the only way a batch file forwards argv. The ACP launch argv carries no
+    ``%``; a caller that needs one must not use this shim.
 
-    The file is written in the console's OEM code page, not ASCII: cmd.exe decodes
-    a ``.cmd`` in that page, and ``ascii`` additionally raised
-    ``UnicodeEncodeError`` outright on a non-ASCII interpreter path.
+    Written in the console's OEM code page, the one cmd.exe decodes a ``.cmd`` in.
     """
     backend = Path(str(fake_acp_backend.__file__))
     if not platform_compat.IS_WINDOWS:
@@ -442,20 +374,14 @@ def _wait_for_ready_line(
 ) -> dict[str, Any]:
     """Read stdout until we see ``KIROCREW_READY:{...}`` or hit the timeout.
 
-    Consumes chunks from a :class:`_StdoutPump` rather than reading the pipe
-    directly, so the deadline is enforced even when the subprocess is alive but
-    silent. A blocking ``stdout.readline()`` on a gateway stuck in a network
-    call -- writing nothing and not exiting -- would hang the harness
-    indefinitely, contradicting the documented 60s guarantee.
+    Reads through a :class:`_StdoutPump`, so the deadline holds even when the
+    child is alive but silent; a blocking ``readline()`` would hang forever.
 
-    Child exit during the wait is an IMMEDIATE failure carrying the stderr tail
-    (populated by the caller's drain thread), not a wait to the deadline. The
-    already-queued stdout is drained and scanned for READY first: a child that
-    printed READY and exited in the same breath did emit it, and reporting that
-    as "exited before READY" would be a wall-clock race rather than a verdict.
+    Child exit is an IMMEDIATE failure carrying the stderr tail, after the
+    queued stdout is scanned for READY: a child that printed READY and exited at
+    once did emit it.
 
-    ``pump`` lets the caller keep the reader alive past this function (see
-    ``spawn_feature_gateway``, which hands it off to the bounded drain). When
+    ``pump`` lets the caller keep the reader alive past this function; when
     omitted, one is created and owned here.
 
     Raises ``GatewaySpawnError`` on timeout, early exit, or malformed payload.
@@ -483,9 +409,7 @@ def _wait_for_ready_line(
         return None, buffer
 
     buf = b""
-    # Bounded tail for diagnostics: mirrors the pump's post-READY tail so
-    # a long-running silent subprocess cannot grow this without limit.
-    # Chunks beyond the cap are counted (not retained) so the timeout
+    # Bounded like the pump's tail; evicted chunks are counted so the timeout
     # message can report truncation.
     stdout_received: deque[bytes] = deque(maxlen=_StdoutPump.TAIL_CHUNKS)
     _stdout_dropped = 0  # chunks evicted by the deque cap
@@ -514,9 +438,10 @@ def _wait_for_ready_line(
             alive = proc.poll() is None
             has_any_output = bool(stdout_received) or bool(stderr_buffer)
             # Build a diagnostic that names whether the process is alive, what
-            # it wrote to stdout, and what state it is in.  The original
-            # stderr-only message left cold-import failures undiagnosable
-            # because stderr is empty for the whole Python import phase.
+            # it wrote to stdout, and what state it is in.  Stderr is empty
+            # for the whole Python import phase, so a cold-import stall is
+            # named by the liveness state and by `cold_hint`, which fires when
+            # neither stream has produced output.
             _trunc = f" [{_stdout_dropped} earlier chunk(s) dropped]" if _stdout_dropped else ""
             stdout_so_far = (
                 b"".join(stdout_received).decode("utf-8", errors="replace")[-2000:] + _trunc
@@ -584,65 +509,40 @@ def terminate_pgid(
 ) -> bool:
     """SIGTERM a process group by pid, escalate to SIGKILL after ``grace``.
 
-    POSIX ONLY. Process groups, ``setsid`` and ``killpg`` do not exist on
-    Windows; ``_terminate_process_group`` routes that platform through
-    ``platform_compat.kill_process_tree`` instead. Calling this on Windows
-    raises ``AttributeError`` from ``os.getpgid`` -- deliberately not guarded,
-    because a caller reaching here on Windows has the wrong teardown primitive
-    and should say so loudly.
+    POSIX ONLY, deliberately unguarded: on Windows ``os.getpgid`` raises
+    ``AttributeError``, which loudly flags a caller using the wrong primitive.
 
-    pid-based (no ``Popen`` handle required) so out-of-process supervisors —
-    e.g. a ``stop`` script tearing down a detached gateway it did not itself
-    spawn — share the same teardown semantics as the in-process harness. The
-    target must be a process-group leader (spawn with
-    ``start_new_session=True``).
+    pid-based so out-of-process supervisors (a ``stop`` script for a detached
+    gateway) share the harness's teardown. The target must be a process-group
+    leader (spawned with ``start_new_session=True``).
 
     Args:
         pid: Process-group leader pid.
-        grace: Seconds between SIGTERM and SIGKILL. Defaults to the module
-            constant ``TERMINATE_GRACE_SECONDS``, resolved at CALL time (not
-            import time) so tests that patch the constant are honored.
-        pgid: The group to signal, when the caller already knows it. A caller
-            that spawned the target with ``start_new_session=True`` knows the
-            child is its own group leader, so the group id IS the child's pid —
-            passing it makes teardown independent of the leader still being
-            alive, which matters because the group outlives its leader and
-            ``os.getpgid`` cannot name a group whose leader has been reaped.
-        wait: Optional exit-detection hook, called as ``wait(grace)``; it
-            should return when the target has exited or raise
-            ``subprocess.TimeoutExpired`` when the grace window elapses (i.e.
-            ``proc.wait``'s contract). Callers that own the ``Popen`` SHOULD
-            pass ``proc.wait`` — handle-based detection sees the exit
-            immediately even while the child is an unreaped zombie, which the
-            default pid poll cannot distinguish from a live process. Without a
-            hook, liveness is polled on the whole GROUP (``os.killpg(pgid,
-            0)``) so a fast-exiting leader with lingering children still
-            escalates to the group SIGKILL.
+        grace: Seconds between SIGTERM and SIGKILL. Defaults to
+            ``TERMINATE_GRACE_SECONDS``, read at CALL time so patches apply.
+        pgid: The group to signal, when known (for a ``start_new_session``
+            child it is the child's pid). Passing it keeps teardown working
+            after the leader is reaped, when ``os.getpgid`` cannot name the
+            group its children still run in.
+        wait: Optional ``proc.wait``-style hook, called as ``wait(grace)``.
+            Callers owning the ``Popen`` SHOULD pass it: it sees the exit even
+            while the child is an unreaped zombie, which a pid poll cannot.
+            Without it the whole GROUP is polled, so lingering children still
+            escalate to SIGKILL.
 
-    Does NOT reap: a supervisor that owns the ``Popen`` should ``proc.wait()``
-    afterwards; an out-of-process caller relies on init reaping the reparented
-    child. No-op if the process is already gone. ``PermissionError`` (pid
-    recycled to another user, or reduced privilege) aborts the teardown with a
-    logged diagnostic rather than crashing or silently no-opping.
+    Does NOT reap. No-op if the process is already gone. ``PermissionError``
+    (pid recycled, reduced privilege) aborts with a logged diagnostic.
 
     Returns:
-        Whether the GROUP was carried through teardown: ``True`` when it was
-        already empty or was signalled to completion, ``False`` when the
-        teardown could not be carried out — every ``PermissionError`` path,
-        where something is alive enough to refuse the signal but is not this
-        caller's to kill. The function polls the group internally either way, so
-        a caller needing the group's fate should read this rather than probe
-        again; ``_terminate_process_group`` spends it on whether the gateway's
-        HOME may be removed.
+        ``True`` when the group was already empty or was signalled to
+        completion, ``False`` on every ``PermissionError`` path.
+        ``_terminate_process_group`` spends it on whether the HOME may be removed.
     """
     if grace is None:
         grace = TERMINATE_GRACE_SECONDS
     if pgid is None:
-        # Resolved through platform_compat, which keeps the group's identity
-        # independent of the leader still being alive: a reaped leader resolves
-        # to its own pid, because the group outlives it and the children left in
-        # it keep running. Signalling nothing there would hand the caller a
-        # clean answer for a tree that is still up.
+        # A reaped leader resolves to its own pid: the group outlives it, and
+        # signalling nothing would report a still-running tree as clean.
         pgid = platform_compat.pgroup_of_leader(pid)
         if pgid is None:
             _LOGGER.warning(
@@ -728,16 +628,12 @@ GROUP_EXIT_WAIT_SECONDS = 5.0
 def _await_group_gone(pgid: int) -> bool:
     """True once no member of *pgid* remains; False if any outlives the wait.
 
-    Sending SIGKILL is not the same as the group being gone: the signal is
-    delivered instantly but each member exits when the kernel has unwound it,
-    and a child mid-write into the gateway's HOME can outlast the leader's
-    ``wait()`` by a beat. A ``True`` from here is what lets the caller remove
-    that HOME without racing a dying writer (whose late file creation would
-    otherwise leave a half-removed tree behind an ``ignore_errors`` rmtree).
+    A SIGKILLed member mid-write into the HOME can outlast the leader's
+    ``wait()``; a ``True`` here lets the caller remove that HOME without racing
+    a dying writer.
 
-    Call it only AFTER the leader has been reaped: an unreaped zombie still
-    answers ``killpg(pgid, 0)``, so probing before ``proc.wait()`` would wait
-    out the whole window on a group that is already dead.
+    Call it only AFTER the leader is reaped: an unreaped zombie still answers
+    ``killpg(pgid, 0)`` and would hold the wait for the whole window.
     """
     deadline = time.monotonic() + GROUP_EXIT_WAIT_SECONDS
     while platform_compat.pgroup_exists(pgid):
@@ -757,32 +653,17 @@ def _terminate_process_tree_windows(
 ) -> bool:
     """Tear down the gateway's tree on Windows via ``taskkill /T /F``.
 
-    Windows has no ``setsid`` / ``killpg``, so ``terminate_pgid``'s whole
-    mechanism is unavailable; ``platform_compat.kill_process_tree`` is the
-    repo's one helper for this (see platform-compat.md). It walks the real
-    parent/child tree, which is what reaches the gateway's MCP servers and
-    kiro-cli children -- ``proc.terminate()`` would signal only the parent and
-    leave them holding the ephemeral port.
+    Windows has no ``setsid`` / ``killpg``; ``platform_compat.kill_process_tree``
+    walks the real parent/child tree, reaching the MCP servers and kiro-cli
+    children that ``proc.terminate()`` would leave holding the port. There is no
+    graceful step: Windows has no SIGTERM for a child without a shared console.
 
-    There is no graceful step to attempt first: ``taskkill /F`` is a hard
-    terminate, and Windows offers no SIGTERM equivalent deliverable to a child
-    that shares no console. The child therefore gets no shutdown budget on this
-    platform, which is acceptable for a throwaway test gateway and is why the
-    grace constant is only used for the reap below.
-
-    **Returns whether the TREE is gone, not whether the root was reaped.** Those
-    are different answers, and the caller spends this one on whether it may delete
-    the gateway's HOME. ``proc.wait()`` succeeding proves only that the process this
-    harness spawned has been collected: a ``taskkill`` that failed on a protected
-    or transiently-inaccessible descendant is logged and swallowed (correctly --
-    teardown must not turn a passing test red), so deriving the verdict from the
-    reap alone reported success while a grandchild was still running, and the
-    caller then removed a tree under a live writer. The descendants are therefore
-    SNAPSHOTTED BEFORE the kill -- a kill orphans survivors out of the parent map,
-    so a post-kill walk cannot find the very processes that matter -- attributed by
-    :func:`platform_compat.attributed_descendants`, which validates EVERY
-    parent-child edge rather than only "created after the root", and re-probed
-    afterwards.
+    **Returns whether the TREE is gone, not whether the root was reaped**; the
+    caller spends it on whether it may delete the HOME. A failed ``taskkill`` on
+    a protected descendant is logged and swallowed, so the descendants are
+    SNAPSHOTTED BEFORE the kill (a kill orphans them out of the parent map),
+    attributed by :func:`platform_compat.attributed_descendants`, which validates
+    every parent-child edge, and re-probed afterwards.
     """
     # Snapshot first, with each child's creation identity, while the root is alive
     # and this process holds its handle (so the root's own pid cannot be recycled
@@ -830,20 +711,11 @@ def _terminate_process_group(
 ) -> bool:
     """Tear down the gateway's whole process tree, then reap.
 
-    The gateway spawns child processes (MCP servers, kiro-cli sessions,
-    secretary). ``proc.terminate()`` only signals the parent;
-    children can outlive it and hold the ephemeral port or cache files open.
+    ``proc.terminate()`` signals only the parent; its children (MCP servers,
+    kiro-cli sessions) can outlive it holding the port or cache files.
 
-    POSIX delegates the SIGTERM→SIGKILL group kill to ``terminate_pgid`` (shared
-    with out-of-process supervisors), passing ``proc.wait`` as the
-    exit-detection hook — handle-based detection returns the instant the
-    child exits (even before it's reaped), so a graceful SIGTERM teardown
-    doesn't burn the full grace window the way a pid poll would. Then
-    ``proc.wait()`` reaps so the child doesn't linger as a zombie.
-    ``TERMINATE_GRACE_SECONDS`` is read at call time so tests can patch it.
-
-    Windows takes ``_terminate_process_tree_windows`` instead: process groups
-    are a POSIX concept and the group primitives do not exist there.
+    POSIX uses ``terminate_pgid`` with ``proc.wait`` as the exit hook, then
+    reaps. Windows takes ``_terminate_process_tree_windows``.
 
     **A root that has already exited is NOT a tree that is gone.** Its pid may
     already name an unrelated session leader, so teardown skips the process-group
@@ -865,66 +737,38 @@ def _terminate_process_group(
     if root_already_exited:
         _end_escaped_descendants(dict(known_descendants or {}))
         return False
-    # The harness spawns with `start_new_session=True`, so this child IS its own
-    # group leader and the group id is its pid. Naming the group explicitly keeps
-    # teardown working after the leader has been reaped — deriving it from the
-    # leader cannot, and a group whose leader is gone is precisely the case where
-    # children are still running.
+    # Spawned with `start_new_session=True`, so the group id is the child's pid;
+    # naming it keeps teardown working after the leader is reaped.
     pgid = proc.pid
-    # Snapshot the descendants that are NOT in the gateway's process group
-    # before anything is signalled: a group kill cannot reach them, and once
-    # the tree is down their parent link is gone. The gateway's MCP probes
-    # (``kirocrew mcp-core`` / ``mcp-cron``, spawned by mcp_discovery with
-    # ``start_new_session=True`` so their own teardown can killpg them) are the
-    # standing example; killed mid-probe with the gateway, they keep writing
-    # security events into the HOME this function's answer allows removing.
-    # Each is attributed by creation identity (``created_after``) so a stray
-    # whose dead parent's pid was recycled to the gateway is never signalled.
+    # Snapshot descendants OUTSIDE the gateway's group before signalling: a group
+    # kill cannot reach them, and after teardown their parent link is gone. The
+    # MCP probes (``kirocrew mcp-core`` / ``mcp-cron``, own session) are the
+    # example; left running they keep writing into the HOME about to be removed.
     escaped: dict[int, str] = {}
     for child, known_token in (known_descendants or {}).items():
         group = platform_compat.pgroup_of(child)
         if group is not None and group != pgid:
             escaped[child] = known_token
-    # NOT gated on the ROOT's creation token, deliberately. Gating it there inverts
-    # this function's purpose on the one input it exists for: a gateway that has
-    # CRASHED is exactly when a detached MCP probe is left running, and it is also
-    # when the root's token is least likely to be readable (reaped before this line,
-    # or a defunct process on the macOS `ps` route). An unreadable token would then
-    # skip the loop, leave `escaped` empty, let `_end_escaped_descendants({})` report
-    # success, and the caller would remove the HOME beneath a live writer. The root
-    # token has no use on this path anyway: it feeds only a WINDOWS-only comparison
-    # that cannot run here, because this function returns through
-    # `_terminate_process_tree_windows` above before reaching it.
+    # NOT gated on the ROOT's creation token, deliberately: a CRASHED gateway is
+    # when a detached MCP probe is left running AND when the root's token is least
+    # readable. Gating would leave `escaped` empty and let the caller remove the
+    # HOME beneath a live writer. The root token feeds only the Windows path.
     #
-    # No `created_after` filter here, deliberately. It is a WINDOWS compensation:
-    # the Toolhelp snapshot records a parent as a bare pid that Windows keeps after
-    # the parent dies, so a recycled pid can appear as a child of the recycler. A
-    # POSIX parent map is read LIVE, so a descendant listed under this root is its
-    # descendant right now and there is no stale edge to compensate for. Applying it
-    # anyway MEASURABLY lost real children: it compares
-    # `int(child_token) > int(parent_token)`, and on macOS the token is
-    # `ps -o lstart=` ("Thu Sep 10 22:30:00 2026"), so `int()` raises, the guard
-    # returns False, and the filter dropped EVERY pair on that platform -- which is
-    # every MCP probe, since they are spawned during boot. What keeps the kill off a
-    # stranger is `kill_pid_pinned` below, which re-checks the creation identity in
-    # the same act as the signal. The snapshot's job is to FIND candidates.
+    # No `created_after` filter either: it compensates for Windows' stale
+    # parent-pid edges, while a POSIX parent map is read live. On macOS the token
+    # is `ps -o lstart=` text, so its `int()` comparison would drop every MCP
+    # probe. `kill_pid_pinned` below keeps the kill off a stranger; the snapshot
+    # only FINDS candidates.
     for child in platform_compat.process_descendants(proc.pid):
         token = platform_compat.process_start_time(child)
         if not token:
-            # No identity means this child cannot be pinned, so it cannot be killed
-            # safely -- and the caller spends a True here on `rmtree`. If the pid is
-            # GONE the missing token is just the race with our own listing and there
-            # is nothing to protect; if it is still ALIVE, fail CLOSED rather than
-            # certify a tree that contains a process we can neither attribute nor end.
+            # No identity means no safe kill, and a True here leads to `rmtree`.
+            # A gone pid is just a listing race; a live one fails CLOSED.
             if platform_compat.pid_exists(child):
                 return False
             continue
-        # Routed through platform_compat, which is where this platform's
-        # process primitives live: `os.getpgid` does not exist on Windows, and
-        # the portability gate reads an added line naming it as a break whether
-        # or not the branch is reachable there. `None` means the membership
-        # could not be read, and the original `except OSError: continue` is
-        # preserved for it -- an unknown group is not evidence of an escape.
+        # Through platform_compat: the portability gate flags a bare
+        # `os.getpgid`. `None` (unreadable) is not evidence of an escape.
         group = platform_compat.pgroup_of(child)
         if group is None or group == pgid:
             continue  # unknown, or the group kill covers it
@@ -941,16 +785,56 @@ def _terminate_process_group(
         proc.wait(timeout=TERMINATE_GRACE_SECONDS)
     except subprocess.TimeoutExpired:
         return False
-    # Reaping the leader says nothing about the GROUP, which is what this
-    # function certifies and what the caller spends on whether it may `rmtree`
-    # the gateway's HOME. The group teardown's answer covers whether the sweep
-    # was delivered; whether every member has actually EXITED is read now,
-    # after the reap (a zombie leader would keep the group "alive"), so the
-    # rmtree that follows never races a child still unwinding from SIGKILL.
+    # Reaping the leader says nothing about the GROUP. Whether every member has
+    # EXITED is read after the reap (a zombie leader keeps the group "alive"),
+    # so the caller's rmtree never races a child unwinding from SIGKILL.
     if not (swept and _await_group_gone(pgid)):
         return False
-    escaped_ended = _end_escaped_descendants(escaped)
-    return escaped_ended and not root_already_exited
+    return _end_escaped_descendants(escaped)
+
+
+def _sigkill_if_identity_matches(pid: int, token: str) -> None:
+    """SIGKILL *pid* only if its creation identity still equals *token*.
+
+    On POSIX ``kill_pid_pinned`` is a plain ``os.kill`` that leaves the identity
+    check to its caller, so the check is made here. Where Linux offers a pidfd,
+    the process is pinned BEFORE its identity is read: a pid reissued after the
+    pin cannot retarget the fd, and one reissued before it reads a different
+    start time. Without a pidfd (macOS) the identity is re-read just before the
+    kill, which narrows the window but cannot close it. Errors from the signal
+    propagate; the caller treats them as nothing left to end.
+    """
+    if not platform_compat.IS_WINDOWS and _pidfd_sigkill_if_identity_matches(pid, token):
+        return
+    # Windows: the primitive itself holds the verified handle across the
+    # terminate. POSIX without a usable pidfd: the re-read is the only check.
+    if platform_compat.IS_WINDOWS or platform_compat.process_start_time(pid) == token:
+        platform_compat.kill_pid_pinned(pid, token, platform_compat.SIGKILL)
+
+
+def _pidfd_sigkill_if_identity_matches(pid: int, token: str) -> bool:
+    """Pinned half of :func:`_sigkill_if_identity_matches`; False if no pidfd.
+
+    False means this host cannot pin (no wrapper, an old kernel answering
+    ENOSYS, a sandbox answering EPERM) and the caller falls back. True means the
+    pid was handled here: signalled, spared on a mismatch, or already gone.
+    """
+    pidfd_open = getattr(os, "pidfd_open", None)
+    pidfd_send_signal = getattr(signal, "pidfd_send_signal", None)
+    if pidfd_open is None or pidfd_send_signal is None:
+        return False
+    try:
+        fd = pidfd_open(pid)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    try:
+        if platform_compat.process_start_time(pid) == token:
+            pidfd_send_signal(fd, platform_compat.SIGKILL)
+    finally:
+        os.close(fd)
+    return True
 
 
 def _end_escaped_descendants(escaped: dict[int, str]) -> bool:
@@ -963,7 +847,7 @@ def _end_escaped_descendants(escaped: dict[int, str]) -> bool:
     """
     for child, token in escaped.items():
         with contextlib.suppress(OSError):
-            platform_compat.kill_pid_pinned(child, token, platform_compat.SIGKILL)
+            _sigkill_if_identity_matches(child, token)
     deadline = time.monotonic() + GROUP_EXIT_WAIT_SECONDS
     while True:
         alive = [
@@ -1018,59 +902,39 @@ def harness_environment(
 ) -> dict[str, str]:
     """The environment a harness gateway is launched with.
 
-    Layered over the caller's ``os.environ`` so supported production knobs the
-    test process exports (``KIROCREW_EMBED_MODEL_URL``, ``OLLAMA_MODELS``) reach
-    the gateway, then pinned: the data home, the agent-spec home, the test-rig
-    marker, unbuffered stdout, the app store's off-network switch
-    (``KIROCREW_SKIP_APP_STORE_FETCH=1``), and -- unless ``skip_model_download``
-    is False -- the ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` escape hatch. That flag is
-    the ONLY default a caller can drop, and only through this keyword: it is what a
-    dedicated download-failure evidence gateway needs, because the production
-    download manager honours the same flag for the dashboard's Retry click as
-    for the boot-time background task. A caller that drops it must also export
-    a loopback ``KIROCREW_EMBED_MODEL_URL`` nothing serves; the harness does not
-    check that, the CI budget does.
+    Layered over ``os.environ`` so production knobs the test exports
+    (``KIROCREW_EMBED_MODEL_URL``, ``OLLAMA_MODELS``) reach the gateway, then
+    pinned below. ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` is the ONLY default a caller
+    can drop, via ``skip_model_download``, for the download-failure evidence
+    gateway; such a caller must also export a loopback
+    ``KIROCREW_EMBED_MODEL_URL`` nothing serves (unchecked here).
     """
     env = {
         **os.environ,
         "PYTHONPATH": str(src) + os.pathsep + os.environ.get("PYTHONPATH", ""),
         "KIROCREW_HOME": str(home),
-        # Isolate the AGENT-SPEC home too, not just the data home.
-        # ``kirocrew gateway`` boot runs ``rebuild_agent_config``, which writes the
-        # managed MCP specs into ``kiro_agents_dir()``. Left at the default that
-        # resolves the operator's real machine-wide ``~/.kiro/agents`` -- and the
-        # spawned gateway is an ordinary (non-worktree) install, so ``agent_parts/shared_home.py``'s
-        # write guard takes the "writing its own shared home" branch and does NOT
-        # decline. It would then stamp this throwaway checkout's venv + tmp data
-        # home into the real install's specs, breaking every managed MCP call on
-        # the machine until the next gateway restart heals it.
-        #
-        # Pointing ``KIRO_HOME`` at ``<home>/kiro`` makes ``kiro_agents_dir()``
-        # resolve to ``<home>/kiro/agents`` -- which is EXACTLY
-        # ``isolated_agents_dir(<home>)``, the dedicated dir the write guard's
-        # private-target exemption already lets this instance own. The whole tree
-        # is removed with ``home`` on teardown, so the gateway writes only its own
-        # specs and leaves the shared install untouched.
+        # Isolate the AGENT-SPEC home too. Boot's ``rebuild_agent_config`` writes
+        # managed MCP specs into ``kiro_agents_dir()``; at the default that is the
+        # operator's real ``~/.kiro/agents``, and the write guard in
+        # ``agent_parts/shared_home.py`` would NOT decline for this ordinary
+        # install, stamping this checkout's venv and tmp home into the real specs.
+        # ``<home>/kiro/agents`` is exactly ``isolated_agents_dir(<home>)``, which
+        # the guard lets this instance own, and is removed with ``home``.
         "KIRO_HOME": str(home / "kiro"),
-        # Marks this gateway as a test rig. It grants no launch privilege —
-        # the packaged fake backend is exec'd by the ordinary in-place path
-        # like any other runnable executable.
+        # Marks a test rig; grants no launch privilege (the fake backend is
+        # exec'd by the ordinary in-place path).
         FAKE_ACP_TEST_MODE_ENV: "1",
-        # Force unbuffered Python so we see READY without waiting for the
-        # next flush. ``--json-ready`` already calls ``flush=True`` on the
-        # READY print itself, but other prints leading up to it (e.g.
-        # "Created default config") would block-buffer when stdout is a
-        # pipe and could mask early failures.
+        # Unbuffered so early prints before READY cannot block-buffer on a pipe
+        # and mask failures.
         "PYTHONUNBUFFERED": "1",
-        # The app store answers from the bundled seed, never the live CDN or a
-        # clone of a listed repository: a harness gateway is the offline rig the
-        # browser specs run against, and ``GET /api/apps/registry`` otherwise
-        # pays an uncached HTTPS round trip per listing, bounded only by the
-        # catalog's fetch timeout -- the specs' ready budget. Spelled literally,
-        # like the model-download switch below: ``apps.official_catalog`` owns
-        # the name (``SKIP_FETCH_ENV``) and this module does not import the apps
-        # package.
+        # Offline rig: the app store answers from the bundled seed, never an
+        # uncached HTTPS round trip that eats the specs' ready budget. Spelled
+        # literally (``apps.official_catalog.SKIP_FETCH_ENV``) to avoid importing apps.
         "KIROCREW_SKIP_APP_STORE_FETCH": "1",
+        # Test-owned adoption pin table, so a boot never fetches a shipped pin
+        # from GitHub; absent means empty. Spelled literally
+        # (``apps.builtin_adoption_pins.HARNESS_PINS_ENV``).
+        "KIROCREW_HARNESS_ADOPTION_PINS": str(home / "harness-adoption-pins.json"),
     }
     if skip_model_download:
         # Embeddings are default-on; never let a harness-spawned gateway
@@ -1107,11 +971,9 @@ def spawn_feature_gateway(
             ``KIROCREW_HOME`` (the harness always provides one); pass
             ``"interactive"`` only if the test will drive the approval
             UI itself.
-        crons: When ``False`` (default) the harness passes ``--no-crons``
-            to suppress all scheduled jobs — the safe default since stray
-            cron fires can pollute unrelated tests' state. Set ``True`` to
-            keep cron scheduling enabled (e.g. tests that exercise
-            ``cron_add`` end-to-end and need the scheduler thread alive).
+        crons: ``False`` (default) passes ``--no-crons``, since stray cron
+            fires pollute unrelated tests' state. ``True`` keeps the scheduler
+            alive for end-to-end ``cron_add`` tests.
         timeout: Override the ready-line timeout in seconds. Falls back to
             ``KIROCREW_HARNESS_READY_TIMEOUT`` env var, then to
             ``DEFAULT_READY_TIMEOUT``.
@@ -1128,12 +990,9 @@ def spawn_feature_gateway(
             files are preserved and gateway startup does not seed again.
             Mutating the environment copy does not alter the gateway launch.
         skip_model_download: ``True`` (default) exports
-            ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` so no harness gateway ever
-            fetches the 610MB embedding model. ``False`` leaves the production
-            download path armed for THIS gateway only -- the dedicated
-            download-failure evidence gateway, which points
-            ``KIROCREW_EMBED_MODEL_URL`` at a loopback port nothing serves.
-            See :func:`harness_environment`.
+            ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` so no harness gateway fetches
+            the 610MB embedding model. ``False`` arms the download for THIS
+            gateway only; see :func:`harness_environment`.
 
     Yields:
         ``GatewayHandle`` once the gateway has bound its dashboard port

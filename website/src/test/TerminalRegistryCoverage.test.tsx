@@ -26,7 +26,7 @@ import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../utils/fenceShell'
 import ChatInput from '../components/ChatInput'
 import { expandAll, formatToken } from '../utils/pasteTokens'
 import { renderWithProviders } from './helpers'
-import { namedCeiling } from './namedCeiling'
+import { LAZY_COMPOSER_MOUNT } from './lazyComposerReady'
 import {
   setTerminalEnabledFlag,
   isTerminalEnabled,
@@ -47,6 +47,7 @@ import {
   useTerminalConnStatus,
   useTerminalManualRetry,
   useTerminalInvalidCwd,
+  useTerminalWrongMachine,
   retryTerminalConnection,
 } from '../utils/terminalRegistry'
 
@@ -138,11 +139,6 @@ function openSocket(sessionId: string): MockWebSocket {
   return ws
 }
 
-/** The Lexical editor sits behind ChatInput's React.lazy boundary
- *  (components/chat-input/engine.tsx). A cold import of that chunk on a
- *  loaded shard outlasts waitFor's 1 s default, so the wait for the editor
- *  gets a named ceiling. */
-const LAZY_COMPOSER_MOUNT = namedCeiling('LAZY_COMPOSER_MOUNT', 5000)
 
 describe('terminalRegistry', () => {
   beforeEach(() => {
@@ -158,7 +154,8 @@ describe('terminalRegistry', () => {
       disposeTerminalConnection(id)
       unregisterTerminalWs(id)
     }
-    setTerminalEnabledFlag(false)
+    // RTL unmounts after this hook, so the flag's subscribers are still mounted: flip it inside act.
+    act(() => { setTerminalEnabledFlag(false) })
     vi.useRealTimers()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
@@ -510,6 +507,18 @@ describe('terminalRegistry', () => {
       expect(WS_INSTANCES[0].url).toContain('?cwd=%2Fhome%2Fme%2Fmy%20repo')
     })
 
+    it("names a local shell's chat so the gateway can refuse it for a remote chat", () => {
+      const id = session('dial-chat')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/w', undefined, 'chat-1')
+      expect(WS_INSTANCES[0].url).toBe(`ws://localhost:6776/api/ws/terminal/${id}?cwd=%2Fw&slot=chat-1`)
+    })
+
+    it('asks for the workspace shell alone when the chat is remote', () => {
+      const id = session('dial-remote')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/w', 'chat-1', 'chat-1')
+      expect(WS_INSTANCES[0].url).toBe(`ws://localhost:6776/api/ws/terminal/${id}?remote_slot=chat-1`)
+    })
+
     it('is idempotent — a second mount reuses the first socket', () => {
       const id = session('idempotent')
       const first = new FakeTerm()
@@ -665,6 +674,55 @@ describe('terminalRegistry', () => {
   })
 
   describe('invalid working directory', () => {
+    it("parks a shell the gateway refused to open on its machine, until the user retries", () => {
+      vi.useFakeTimers()
+      const id = session('wrong-machine')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/w', undefined, 'chat-1')
+      const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+      ws.simulateOpen()
+      const { result } = renderHook(() => ({ status: useTerminalConnStatus(id), wrongMachine: useTerminalWrongMachine(id) }))
+      act(() => { ws.simulateJson({ type: 'error', code: 'terminal_wrong_machine', message: 'x' }); ws.simulateClose() })
+      expect(result.current).toEqual({ status: 'disconnected', wrongMachine: true })
+      // No automatic redial into the same refusal.
+      act(() => { vi.advanceTimersByTime(60_000) })
+      expect(WS_INSTANCES).toHaveLength(1)
+      act(() => { retryTerminalConnection(id) })
+      expect(result.current.wrongMachine).toBe(false)
+      expect(WS_INSTANCES).toHaveLength(2)
+    })
+    it('redials a shell whose placement could not be read, instead of parking it', () => {
+      vi.useFakeTimers()
+      const id = session('placement-unreadable')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/w', undefined, 'chat-1')
+      const before = WS_INSTANCES.length
+      const ws = WS_INSTANCES[before - 1]
+      ws.simulateOpen()
+      const { result } = renderHook(() => useTerminalWrongMachine(id))
+      act(() => { ws.simulateJson({ type: 'error', code: 'terminal_placement_unavailable', message: 'x' }); ws.simulateClose() })
+      expect(result.current).toBe(false)
+      // A brief Coder or store outage: the tab comes back by itself.
+      act(() => { vi.advanceTimersByTime(60_000) })
+      expect(WS_INSTANCES.length).toBeGreaterThan(before)
+    })
+    it('backs off across repeated placement refusals, though each refused socket opened', () => {
+      vi.useFakeTimers()
+      const id = session('placement-backoff')
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/w', 'chat-1')
+      const refuse = () => {
+        const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
+        act(() => { ws.simulateOpen(); ws.simulateJson({ type: 'error', code: 'terminal_placement_unavailable', message: 'x' }); ws.simulateClose() })
+      }
+      refuse()
+      const afterFirst = WS_INSTANCES.length
+      act(() => { vi.advanceTimersByTime(1_300) })
+      expect(WS_INSTANCES.length).toBe(afterFirst + 1)
+      refuse()
+      // The second wait is longer than the first: not a 1 s loop forever.
+      act(() => { vi.advanceTimersByTime(1_300) })
+      expect(WS_INSTANCES.length).toBe(afterFirst + 1)
+      act(() => { vi.advanceTimersByTime(1_300) })
+      expect(WS_INSTANCES.length).toBe(afterFirst + 2)
+    })
     function openingSession(id: string): MockWebSocket {
       ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon(), '/missing/project')
       const ws = WS_INSTANCES[WS_INSTANCES.length - 1]
@@ -881,6 +939,61 @@ describe('terminalRegistry', () => {
       expect(result.current).toBe('reconnecting')
       act(() => { vi.advanceTimersByTime(1000) })
       expect(WS_INSTANCES).toHaveLength(3)
+    })
+
+    it('takes the terminal back on Enter in the parked pane without replaying the Enter', () => {
+      const id = session('displaced-enter')
+      vi.useFakeTimers()
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const { result } = renderHook(() => useTerminalConnStatus(id))
+      const ws = WS_INSTANCES[0]
+      act(() => {
+        ws.simulateOpen()
+        ws.simulateJson({ type: 'error', code: 'displaced' })
+        ws.simulateClose()
+      })
+      expect(result.current).toBe('disconnected')
+      const sentBefore = ws.send.mock.calls.length
+
+      act(() => { term.dataCb?.('\r') })
+      expect(WS_INSTANCES).toHaveLength(2)
+      expect(ws.send).toHaveBeenCalledTimes(sentBefore)
+      act(() => { WS_INSTANCES[1].simulateOpen() })
+      expect(result.current).toBe('connected')
+      // Only the resize handshake goes out: the Enter that asked for the
+      // terminal must not reach the reattached shell's prompt.
+      const frames = WS_INSTANCES[1].send.mock.calls.map((_, i) => decode(WS_INSTANCES[1], i))
+      expect(frames).not.toContain('\r')
+    })
+
+    it('keeps the terminal parked for keys other than a bare Enter', () => {
+      const id = session('displaced-other-keys')
+      vi.useFakeTimers()
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      ws.simulateJson({ type: 'error', code: 'displaced' })
+      ws.simulateClose()
+
+      for (const key of ['a', ' ', '\x1b', 'ls\r', '\n']) term.dataCb?.(key)
+      vi.advanceTimersByTime(60_000)
+      expect(WS_INSTANCES).toHaveLength(1)
+    })
+
+    it('does not treat Enter as a take-back while the socket is only reconnecting', () => {
+      const id = session('reconnecting-enter')
+      vi.useFakeTimers()
+      const term = new FakeTerm()
+      ensureTerminalConnection(id, term.asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      ws.simulateClose()
+      // An ordinary drop is already on its backoff redial; Enter must not
+      // start a second, competing dial.
+      term.dataCb?.('\r')
+      expect(WS_INSTANCES).toHaveLength(1)
     })
 
     it('reconnects after a generic startup error without sending the failed command', () => {
@@ -1241,18 +1354,20 @@ describe('terminalRegistry', () => {
         })
       }
       expect(result.current).toBe('disconnected')
-      retryTerminalConnection(id) // dials socket #11
+      act(() => { retryTerminalConnection(id) }) // dials socket #11
       const latest = WS_INSTANCES[WS_INSTANCES.length - 1]
       latest.readyState = MockWebSocket.CLOSING
       const before = WS_INSTANCES.length
 
-      retryTerminalConnection(id)
+      act(() => { retryTerminalConnection(id) })
       // No competing dial while CLOSING.
       expect(WS_INSTANCES).toHaveLength(before)
 
       // The deferred close now fires; the reset budget redials on schedule.
-      latest.simulateClose()
-      vi.advanceTimersByTime(60_000)
+      act(() => {
+        latest.simulateClose()
+        vi.advanceTimersByTime(60_000)
+      })
       expect(WS_INSTANCES.length).toBeGreaterThan(before)
     })
 

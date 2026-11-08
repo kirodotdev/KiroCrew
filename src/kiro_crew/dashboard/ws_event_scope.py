@@ -47,8 +47,9 @@ notification:system     Gateway-internal pushes with no source_app -- cron
                         rather than the app's own: bundling them would make
                         one declaration a broad grant, the very shape this
                         module exists to remove.
-notification_ack / notification_unack carry only a timestamp, so they cannot be
-attributed to a source at all and need `notification:all`.
+notification_ack / notification_unack / notification_dismiss carry only a
+timestamp, so they cannot be attributed to a source at all and need
+`notification:all`.
 notifications_clear carries no payload at all -- it fires when the WHOLE log is
 cleared, not one app's slice -- so it needs `notification:all` for the same reason.
 notification_channel_settings IS attributable -- its channel is `<app>.<id>` or
@@ -61,11 +62,12 @@ sessions                sessions_restarting, session_health_changed
                         moved, never what it says)
 yolo                    yolo_expired
 artifacts               artifact_update ({slug, version, deleted}; metadata only)
+lessons                 lessons.changed ({action, source, count}; global store
+                        only, never the lesson text)
 workflow_run_event      Declared by its own literal name -- already the correct
                         per-event Tier 2 shape, and the only events declaration
                         present in the tree today (the workflows app).
 log                     Gateway log stream (broad)
-browser                 browser_event (broad)
 
 ## Scope declarations are SELF-declared
 
@@ -207,6 +209,8 @@ _TIER0_ALWAYS = frozenset({
     # Dashboard-wide progress signals with no user data.
     "refresh",
     "update_progress",
+    # A harness's model list just filled; the payload is empty.
+    "models_changed",
 })
 
 # ---------------------------------------------------------------------------
@@ -236,8 +240,8 @@ _SLOT_SCOPED_EVENTS = frozenset({
     "activity_event", "session_summary",
     # Voice
     "voice_chunk", "voice_complete", "voice_error",
-    # Approvals and question cards (carry a slot field)
-    "approval", "approval_resolved", "question_card",
+    # Approvals, question cards and an MCP elicitation answer (carry a slot field)
+    "approval", "approval_resolved", "question_card", "elicitation_resolved",
     # Subagent lifecycle. Every one of these is fired through
     # ``SubagentManager._fire_event`` and reaches the wire via
     # ``broadcast_ws(etype, ...)`` with a VARIABLE etype (the ``_subagent_event``
@@ -321,6 +325,10 @@ _OWNER_ONLY_EVENTS = MEMBER_LOG_EVENTS | frozenset({
     # floor, and a later literal broadcast of this name must not silently start
     # reaching an app token.
     "dashboard_fields",
+    # The outcome of one bulk Resume run (``chat_resume_all.RESUME_ALL_DONE_FRAME``,
+    # ``broadcast_ws_owners``): slot keys and refusal codes across every slot on
+    # the install, for the owner who pressed the button and no one else.
+    "resume_all_done",
 })
 
 
@@ -369,6 +377,7 @@ _APP_SOURCE_PREFIX = "app:"
 _UNATTRIBUTED_NOTIFICATION_EVENTS = frozenset({
     "notification_ack",
     "notification_unack",
+    "notification_dismiss",
     "notifications_clear",
 })
 
@@ -393,12 +402,52 @@ def notification_source_app(source: str) -> str:
     return ""
 
 
+def is_app_channel(channel: str) -> bool:
+    """Whether a notification channel belongs to an app rather than the system."""
+    owner = notification_channel_owner(channel)
+    return bool(owner) and owner != _SYSTEM_SOURCE
+
+
+def app_origin_frame(event_type: str, data: object) -> bool:
+    """Whether a frame carries an app's own output.
+
+    An app-published event, an app's push notification, or a setting on one of an
+    app's notification channels. A socket with no app surface (a relayed teammate's,
+    see ``kiro_relay.caller.RELAY_TEAMMATE_WS_FLAG``) is withheld all three.
+    """
+    if event_type == _APP_EVENT_WS_TYPE:
+        return True
+    fields = data if isinstance(data, dict) else {}
+    if event_type in _SOURCE_FILTERED_EVENTS:
+        return bool(notification_source_app(str(fields.get("source", ""))))
+    if event_type == _CHANNEL_SETTINGS_EVENT:
+        return is_app_channel(str(fields.get("channel", "")))
+    return False
+
+
+#: Why a relayed teammate was withheld an app's output, on any transport.
+RELAY_TEAMMATE_APP_FRAME = "relay_teammate_app_frame"
+
+
+def audit_teammate_withheld(event_type: str) -> None:
+    """Record, best-effort, that a relayed teammate was withheld an app's output.
+
+    The one denied row every transport writes for that decision: the WebSocket
+    gate, the SSE stream and the notification reads.
+    """
+    try:
+        _audit_deny(DASHBOARD_USER_AUDITEE, event_type, RELAY_TEAMMATE_APP_FRAME)
+    except Exception:
+        logger.debug("ws_event_scope: SEL audit for a teammate withhold failed", exc_info=True)
+
+
 _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     "notification": "notification",
     # Present so the completeness guard sees them classified -- the ACTUAL gate is
     # the stricter branch in ws_event_allowed, which these never reach.
     "notification_ack": "notification",
     "notification_unack": "notification",
+    "notification_dismiss": "notification",
     "notifications_clear": "notification",
     # Channel mute/priority metadata only ({muted, priority}) -- same domain as
     # the notification events themselves, so it rides the same declaration.
@@ -419,6 +468,13 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     # what the user is building, so it takes an explicit declaration rather
     # than riding Tier 0. Same treatment as artifact_update above.
     "skills.pending_changed": "skills",
+    # Metadata only ({action, source, count}): no rule text, no repo scope, no row
+    # key, and only for the GLOBAL store an app token's read resolves to
+    # (``kiro_crew.lesson_events``). Still an explicit declaration rather than Tier
+    # 0, for the reason `skills.pending_changed` above gives: when the user is
+    # teaching the agent is not every app's business. Holding `lessons` is not a
+    # read grant either; the rows stay behind `permissions.api` and that route.
+    "lessons.changed": "lessons",
     # Declared by its own literal name: this is already the correct Tier 2
     # shape (per-event opt-in), and it is the one declaration that exists in
     # the tree today (the workflows app), so the name must not change.
@@ -447,7 +503,6 @@ _GLOBAL_EVENT_DECLARATIONS: dict[str, str] = {
     "dashboard_instance_changed": "panels",
     # Privileged
     "log": "log",
-    "browser_event": "browser",
 }
 
 
@@ -1408,11 +1463,24 @@ def filter_slots_for_app(
         if slot is None:
             continue
         if _slot_visible(slot, app, allowed_events, state):
-            result.append(_strip_pin_rank(_strip_source_link_status(slot_dict)))
+            result.append(_strip_pin_rank(_strip_source_link_status(_withhold_from_apps(slot_dict))))
             _audit_allow(app, "slots_item")
         else:
             _audit_deny(app, "slots_item", "slot_scope_denied")
     return result
+
+
+#: Slot-row fields for a person's dashboard only. The WS app frame is built from
+#: the dashboard-user list, so they are removed here as well as never being put
+#: on the bare list (``slack/code_channels/dashboard_view.py``).
+_PERSON_ONLY_SLOT_KEYS = ("code_channel", "code_channel_pending")
+
+
+def _withhold_from_apps(slot_dict: dict[str, Any]) -> dict[str, Any]:
+    """A copy of *slot_dict* without :data:`_PERSON_ONLY_SLOT_KEYS` (or itself)."""
+    if not any(k in slot_dict for k in _PERSON_ONLY_SLOT_KEYS):
+        return slot_dict
+    return {k: v for k, v in slot_dict.items() if k not in _PERSON_ONLY_SLOT_KEYS}
 
 
 # Credential-backed chip fields attached by ``state._project_source_links``.

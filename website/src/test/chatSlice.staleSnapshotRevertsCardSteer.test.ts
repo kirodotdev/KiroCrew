@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
-import chatReducer, { switchSlot, refreshSlot, setActiveSlot } from '../store/chatSlice'
+import chatReducer, { switchSlot, refreshSlot, setActiveSlot, sseChatMessagePatchByTs } from '../store/chatSlice'
 
 /** Regression test for GitHub #20833 (remainder after #20818 + #20904): a stale
  * slot-detail snapshot must not revert a newer card or steer row.
@@ -202,6 +202,57 @@ describe('#20833 gate-3: a stale snapshot reverts a newer card row', () => {
   })
 })
 
+describe('#22795: the row revision orders a guide card whichever way its status moved', () => {
+  const CARD_TS = '2026-08-25T08:31:00Z'
+  const CARD_MID = 'm-guide-1'
+  const guideCard = (status: string, rev?: number) => ({ surface: 'guide', id: 'g1', slot: KEY, status, ...(rev ? { rev } : {}) })
+  const guideRow = (status: string, rev?: number): Row => ({
+    role: 'card', content: 'guide offered', cls: 'msg msg-card', ts: CARD_TS, meta: { mid: CARD_MID, card: guideCard(status, rev) },
+  })
+  // The live `chat_message_update` frame `chat_cards._patch_row` broadcasts.
+  const livePatch = (status: string, rev: number) =>
+    sseChatMessagePatchByTs({ slot: KEY, ts: CARD_TS, mid: CARD_MID, meta: { mid: CARD_MID, card: guideCard(status, rev) } })
+  const newerReply: Row = { role: 'assistant', content: 'newer reply', cls: 'msg msg-a', ts: '2026-08-25T08:50:00Z', meta: { mid: 'm-new-H' } }
+  const cardStatus = (store: ReturnType<typeof makeStore>) => {
+    const cards = store.getState().chat.messages.filter(m => m.role === 'card')
+    expect(cards.length).toBe(1)
+    return (cards[0].meta?.card as { status?: string } | undefined)?.status
+  }
+
+  it('switchSlot keeps a replayed guide offered over a snapshot taken while it was completed', () => {
+    const store = makeStore()
+    store.dispatch(switchSlot.pending('seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), guideRow('completed', 1)], false), 'seed', KEY))
+    store.dispatch(livePatch('offered', 2))
+
+    store.dispatch(switchSlot.pending('req-stale', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, [guideRow('completed', 1), newerReply], true), 'req-stale', KEY))
+
+    expect(cardStatus(store), 'a replayed guide was reverted to completed by a stale snapshot').toBe('offered')
+  })
+
+  it('refreshSlot keeps a completed guide over a snapshot taken while it was offered', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), guideRow('offered')], false), 'r-seed', KEY))
+    store.dispatch(livePatch('completed', 1))
+
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [guideRow('offered'), newerReply], true), 'r-stale', KEY))
+
+    expect(cardStatus(store), 'a completed guide was reverted to offered by a stale snapshot').toBe('completed')
+  })
+
+  it('takes a newer snapshot over a local copy that missed the live patch', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot(KEY))
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [...olderServerRows(6), guideRow('completed', 1)], false), 'r-seed', KEY))
+
+    store.dispatch(refreshSlot.fulfilled(slotPayload(KEY, [guideRow('offered', 2), newerReply], true), 'r-fresh', KEY))
+
+    expect(cardStatus(store), 'a newer snapshot lost to an older local copy').toBe('offered')
+  })
+})
+
 describe('#20833 gate-3: a stale snapshot reverts a newer steer row', () => {
   const STEER_TS = '2026-08-25T08:31:00Z'
   const STEER_MID = 'm-steer-1'
@@ -276,6 +327,39 @@ describe('#20833 gate-3: a stale snapshot reverts a newer steer row', () => {
     const steers = store.getState().chat.messages.filter(m => m.meta?.steer)
     expect(steers.length).toBe(1)
     expect(steers[0].meta?.steerState).toBe('requeued')
+  })
+
+  it('keeps a taken-back steer taken back against a snapshot captured while it was written', () => {
+    const store = makeStore()
+    const liveHead: Row[] = [
+      ...olderServerRows(6),
+      {
+        role: 'user',
+        content: 'earlier request',
+        cls: 'msg msg-u',
+        ts: STEER_TS,
+        meta: { mid: STEER_MID, steer: true, steerState: 'retracted', steerRetractAction: 'unsend', sendId: 's-3' },
+      },
+    ]
+    store.dispatch(switchSlot.pending('seed', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, liveHead, false), 'seed', KEY))
+
+    const stalePage: Row[] = [
+      {
+        role: 'user',
+        content: 'earlier request',
+        cls: 'msg msg-u',
+        ts: STEER_TS,
+        meta: { mid: STEER_MID, steer: true, steerState: 'written', steerRetract: true, sendId: 's-3' },
+      },
+      { role: 'assistant', content: 'newer reply', cls: 'msg msg-a', ts: '2026-08-25T08:50:00Z', meta: { mid: 'm-new-E' } },
+    ]
+    store.dispatch(switchSlot.pending('req-stale', KEY))
+    store.dispatch(switchSlot.fulfilled(slotPayload(KEY, stalePage, true), 'req-stale', KEY))
+
+    const steers = store.getState().chat.messages.filter(m => m.meta?.steer)
+    expect(steers.length).toBe(1)
+    expect(steers[0].meta?.steerState, 'a stale snapshot revived the take-back controls').toBe('retracted')
   })
 
   it('does NOT overwrite a DISTINCT row that merely reuses the same mid (ts differs)', () => {

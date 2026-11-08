@@ -96,15 +96,20 @@ export function useNativeBrowser(
     }
   }, [api, panelId, enabled, report, state?.open])
 
-  // Hide the native view whenever SPA chrome covers the panel rect.
+  // Hide the native view whenever SPA chrome covers the panel rect, or the
+  // panel itself is moving (`data-native-overlay` on a sliding panel: a move
+  // that keeps the size is invisible to the ResizeObserver).
   useEffect(() => {
     if (!api || !panelId || !enabled) return
     let last: boolean | null = null
     const check = () => {
       const active = document.querySelector(OVERLAY_SELECTOR) !== null
       if (active === last) return
+      const lifted = last === true && !active
       last = active
       void api.setOverlayActive(panelId, active).then(apply)
+      // Shown again: where the panel is NOW, which a slide may have moved.
+      if (lifted) report()
     }
     check()
     const mo = new MutationObserver(check)
@@ -119,7 +124,7 @@ export function useNativeBrowser(
       // Never leave the view hidden because an overlay was up at unmount.
       void api.setOverlayActive(panelId, false)
     }
-  }, [api, panelId, enabled, apply])
+  }, [api, panelId, enabled, apply, report])
 
   // Reflect navigation the view performs on its own (link clicks, redirects, or
   // an agent driving it over CDP) so the panel's URL/title stay honest. Events

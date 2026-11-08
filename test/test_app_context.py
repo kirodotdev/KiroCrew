@@ -14,9 +14,7 @@ from hypothesis import strategies as st
 
 from kiro_crew.apps.context import build_app_context
 
-# ---------------------------------------------------------------------------
 # Strategies
-# ---------------------------------------------------------------------------
 
 
 def _app_name() -> st.SearchStrategy[str]:
@@ -35,9 +33,7 @@ def _permissions() -> st.SearchStrategy[dict[str, Any]]:
     })
 
 
-# ---------------------------------------------------------------------------
 # Property 10: App context permission mapping
-# ---------------------------------------------------------------------------
 
 
 class TestAppContextPermissionMapping:
@@ -104,9 +100,7 @@ class TestAppContextPermissionMapping:
             assert ctx.storage is None
 
 
-# ---------------------------------------------------------------------------
 # Property 11: App context base fields always present
-# ---------------------------------------------------------------------------
 
 
 class TestAppContextBaseFields:

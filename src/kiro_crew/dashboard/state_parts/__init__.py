@@ -36,10 +36,11 @@ shell (``chat_slot.py`` or ``dashboard_state.py``); a new slot field gets a
 collaborator's ``init_<x>_fields``.
 
 A bound function annotates ``self`` so mypy checks its body as a method body; once
-the class is built, :func:`own_methods` drops that annotation from the runtime object
-and names the function after the class attribute (``_ChatSlot.append``), so its
-``inspect.signature``, its ``__qualname__`` (which stall reports and live-config
-callback names read) and its coroutine kind are what the one-module class had. Only
+the class is built, :func:`kiro_crew._facade_bindings.own_methods` drops that
+annotation from the runtime object and names the function after the class attribute
+(``_ChatSlot.append``), so its ``inspect.signature``, its ``__qualname__`` (which
+stall reports and live-config callback names read) and its coroutine kind are what the
+one-module class had. Only
 ``__module__`` moves: it names the collaborator that holds the body. A type hint
 resolves in that collaborator's globals, so ``typing.get_type_hints`` cannot resolve
 a hint naming a class the module imports only under ``TYPE_CHECKING``;
@@ -49,15 +50,3 @@ that differ.
 """
 
 from __future__ import annotations
-
-_PREFIX = __name__ + "."
-
-
-def own_methods(cls: type) -> None:
-    """Make every member *cls* binds from an owner here read as a method of *cls*."""
-    for name, member in vars(cls).items():
-        function = getattr(member, "__func__", member)
-        while getattr(function, "__module__", "").startswith(_PREFIX):
-            function.__annotations__.pop("self", None)
-            function.__qualname__ = f"{cls.__qualname__}.{name}"
-            function = getattr(function, "__wrapped__", None)

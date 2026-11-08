@@ -99,13 +99,13 @@ def _locked() -> Iterator[None]:
         # Lazy: platform_compat pulls in executors, and this module's
         # near-leaf import contract is what keeps it out of the
         # agent <-> config.loader cycle.
-        from kiro_crew.platform_compat import file_lock
+        from kiro_crew.platform_compat import file_lock, open_create_or_existing
 
         lock_path = _state_path().with_suffix(".json.lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(
+        fd = open_create_or_existing(
             lock_path,
-            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
             0o600,
         )
         try:
@@ -205,9 +205,17 @@ def capability_transport_fields_valid(value: object) -> bool:
     """
     if not isinstance(value, dict):
         return False
-    for field in ("command", "url", "type"):
+    for field in ("command", "type"):
         if field in value and (not isinstance(value[field], str) or not value[field]):
             return False
+    # ``url`` is meaningless for a stdio transport (one with a ``command``),
+    # so a present-but-empty string there means the same as the field being
+    # absent. A remote-only entry has no such fallback, so an empty ``url``
+    # stays invalid there, the same as a non-string value everywhere.
+    if "url" in value and not isinstance(value["url"], str):
+        return False
+    if value.get("url") == "" and "command" not in value:
+        return False
     for field in ("args", "disabledTools", "oauthScopes"):
         if field in value and (
             not isinstance(value[field], list)
@@ -305,6 +313,11 @@ def _validate_capability_metadata(value: dict) -> None:
             raise ValueError("capability_state_invalid")
     if "governance_generation" in value and (
         type(value["governance_generation"]) is not int or value["governance_generation"] < 0
+    ):
+        raise ValueError("capability_state_invalid")
+    if "reviewed_keys" in value and (
+        not isinstance(value["reviewed_keys"], list)
+        or not all(isinstance(key, str) for key in value["reviewed_keys"])
     ):
         raise ValueError("capability_state_invalid")
     for field in ("catalog", "ordinary", "ordinary_local"):

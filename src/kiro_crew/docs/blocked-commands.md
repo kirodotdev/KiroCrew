@@ -7,7 +7,7 @@ own credential setup when something looks unavailable.
 
 ## The most common false alarm: "the agent says it has no AWS access"
 
-Reading credential files is blocked. **Running AWS CLI commands is not.**
+Reading credential files is blocked. **Running AWS CLI commands is not blocked by that rule.**
 
 Those two facts are easy to conflate. An agent that tries to read
 `~/.aws/config` to discover your profile names gets refused, and could wrongly
@@ -26,7 +26,7 @@ its **Credentials** section reports whether anything is actually configured.
 | Credential files | `~/.aws`, `~/.ssh`, `~/.gnupg`, `~/.netrc`, `~/.npmrc`, `~/.git-credentials`, `~/.config/gcloud`, `~/.azure`, `~/.docker/config.json`, `~/.kube/config` | The bytes are a bearer credential. An agent that can read them can act as you anywhere they are accepted. |
 | Enterprise SSO session | the SSO cookie store on a corporate host | A live session token. Fenced for reading as well as writing, so it cannot be copied into a cookie jar either. |
 | The governance trust root | `security_policy.json`, `profiles/`, `admission_policy.json`, `denied_commands.json` | This is the ceiling the agent is governed by. File tools and the tool gate refuse these files, and the OS sandbox makes them read-only to agent code, so the agent cannot write (and so cannot disable) its own ceiling. Reading them is allowed by design. |
-| Exfiltration shapes | `curl -d @file`, `--upload-file`, `wget --post-file`, `/dev/tcp/` redirects | Reading a local file into an outbound request body is indistinguishable from exfiltration, whatever the destination. |
+| Exfiltration shapes | `curl -d @file`, `wget --post-file`, `/dev/tcp/` redirects | Reading a local file into an outbound request body is indistinguishable from exfiltration, whatever the destination. |
 | Destructive operations | `rm -rf /`, `terraform destroy`, `TRUNCATE TABLE`, `aws … delete-*` | Irreversible. These are disable-able if you want them (see below); the credential ones are not. The SQL rules match the statement's text anywhere on the line, so a heredoc or `printf` that merely writes the words is refused too — see **Statement text, not just statements** below. |
 | Self-protection | minting a dashboard token, killing the gateway, an inline interpreter that imports Kiro Crew | Prevents the agent from escalating its own access or shutting down its supervisor. |
 | ssh to this machine | `ssh` to `localhost`, `scp`/`sftp`/`rsync` to a loopback address or one of this host's own names | sshd runs outside the agent sandbox, so a connection back to this host is an unsandboxed login shell. A target not yet classified as remote is refused too. |
@@ -107,6 +107,20 @@ The **Credentials** section reports:
   credentials — the recommended setup)
 - whether this host mounts an MCP server that vends credentials directly, which
   some managed and enterprise editions install
+- on Linux, whether sandboxed agents can see your Kerberos ticket. The sandbox
+  starts each agent in its own user namespace, and the kernel keeps
+  `KEYRING:persistent:` and `KEYRING:user:` ticket caches per user namespace
+  (`KEYRING:persistent:%{uid}` is the default on some distributions), so there
+  the cache is a different, empty keyring: MCP servers that need a ticket
+  report none while `klist` in your terminal shows one. A file cache works on
+  both sides. Run `kinit -c FILE:/tmp/krb5cc_$(id -u)`: Kiro Crew points agents
+  at that file automatically, and it is not renewed for you, so re-run it when
+  the ticket expires. Or, host-wide for every user, set
+  `default_ccache_name = FILE:/tmp/krb5cc_%{uid}` in the `[libdefaults]`
+  section of `krb5.conf`; after that change every user runs `kinit` again. Each
+  Kiro Crew process also logs this once as a warning. The row reads the
+  environment of the shell `doctor` runs in, which can differ from the
+  gateway's.
 
 Nothing in that section reads a secret value, and it never fails the overall
 `doctor` run — a missing AWS setup is not a Kiro Crew fault.
@@ -114,9 +128,9 @@ Nothing in that section reads a secret value, and it never fails the overall
 ## Adjusting the rules
 
 **Settings → Security** lets you disable individual built-in rules, disable them
-all, and add your own patterns. When you add your own rule, fill in the **note**
-field: that note is what the agent is shown when your rule fires, instead of a
-raw regex it has to guess the intent of.
+all, and add, edit and sort your own patterns. When you add your own rule, fill
+in the **note** field: that note is what the agent is shown when your rule fires,
+instead of a raw regex it has to guess the intent of.
 
 Two limits are deliberate:
 

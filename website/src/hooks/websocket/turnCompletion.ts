@@ -9,7 +9,7 @@ import { markSlotUnread } from '../../store/dashboardSlice'
 import { setSlotStatusDetail, refreshSlot, warmSlotCache, selectSidebarSubagentCounts, selectSidebarWorkflowActive, selectSidebarAutomationRunningKeys } from '../../store/chatSlice'
 import { dispatchMcNotification, TURN_DONE_KIND, shouldChimeOnTurnDone } from '../notificationEvent'
 import { shouldNotifyOnChatComplete } from '../chatCompleteNotify'
-import { isSlotMuted } from '../sessionMute'
+import { appsMutingSessions, isSlotMuted } from '../sessionMute'
 import { takeTurnErrored } from '../turnError'
 import { isMemberThreadSlot, takeMemberThreadSpoke } from '../unreadOnAttention'
 import { postNativeNotification } from '../../lib/nativeNotify'
@@ -19,6 +19,7 @@ import { i18nT } from '../../i18n/t'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { attendArrival, isSlotOnScreen } from './attention'
 import { takeIdleRowRefresh } from './idleRowRefresh'
+import { crewRootOf } from '../../lib/crewMode'
 import { refreshPullRequestsAfterTurn, refreshSessionControlStatusesAfterTurn } from './serverState'
 import type { FrameData } from './frames'
 
@@ -53,12 +54,17 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       if (data.slot) {
         const soundState = store.getState()
         const soundSlot = soundState.dashboard.slots.find(s => s.key === data.slot)
-        // A session muted from its own row, or by its creator's "mute sessions
-        // it opens" rule, produces no turn-done chime, no background-finished toast and no
+        // A session muted from its own row, by the user muting the app that
+        // opened it, or by its creator's "mute sessions it opens" rule, produces
+        // no turn-done chime, no background-finished toast and no
         // unread badge, from its first turn. A tool-approval prompt is NOT this
         // path (it flows through approvals.ts) and stays exempt, as criterion 2
         // requires. The creator keeps all of its own signals.
-        muted = isSlotMuted(soundState.dashboard.slots, data.slot)
+        muted = isSlotMuted(
+          soundState.dashboard.slots,
+          data.slot,
+          appsMutingSessions(queryClient.getQueryData(['kirocrewConfig'])),
+        )
         const workflows = selectSidebarWorkflowActive(soundState)
         const workflowActive = !!(
           workflows[normalizeRunSessionKey(data.slot)]
@@ -85,12 +91,17 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         // and a silenced failure stalls it unseen. The unread badge is a
         // separate axis (criterion 7), exempt only for that failure.
         const muteSuppresses = muted && !completionNeedsInput && !turnErrored
+        // A Crew Mode worker's finished turn is its conductor's to read: no chime
+        // and no toast for the person. Gated like the mute above: a worker that
+        // paused on a question or errored has stopped, and until the conductor's
+        // own routing lands nothing else would say so, so those still sound.
+        const crewWorkerQuiet = !!crewRootOf(soundSlot) && !completionNeedsInput && !turnErrored
         completionNeedsAttention = shouldChimeOnTurnDone({
           slot: data.slot,
           reconnecting: reconnectingRef.current,
           continuing,
           needsInput: completionNeedsInput,
-        }) && !muteSuppresses
+        }) && !muteSuppresses && !crewWorkerQuiet
         // A live question card already requested audio. Keep its named
         // desktop toast eligible, but do not request a second chime.
         if (completionNeedsAttention && !questionPending) dispatchMcNotification(TURN_DONE_KIND)
@@ -107,11 +118,16 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         const doneRow = store.getState().dashboard.slots.find(s => s.key === doneSlot)
         const doneTitle = doneRow ? sessionDisplayTitle(doneRow) : doneSlot
         // A toast that reads "Response ready" while the agent is waiting
-        // on the user misdescribes the handoff; two literal keys keep the
-        // reference statically checkable (see check-i18n-keys.mjs).
-        const doneBody = completionNeedsInput
-          ? i18nT('hooks.useWebSocket.waiting_for_input')
-          : i18nT('hooks.useWebSocket.response_ready')
+        // on the user misdescribes the handoff, and over a turn that ended in
+        // a terminal error it reports a stopped worker as finished. The
+        // failure wins: the worker has stopped whatever the frame hinted.
+        // Literal keys keep the reference statically checkable (see
+        // check-i18n-keys.mjs).
+        const doneBody = turnErrored
+          ? i18nT('hooks.useWebSocket.turn_failed')
+          : completionNeedsInput
+            ? i18nT('hooks.useWebSocket.waiting_for_input')
+            : i18nT('hooks.useWebSocket.response_ready')
         // Best-effort (same as approval): the helper swallows Android
         // Chrome's "Illegal constructor" and relays to the parent frame
         // when this dashboard is an embedded instance pane.
@@ -148,7 +164,7 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         dispatch(warmSlotCache(data.slot))
       }
       if (data.slot) {
-        dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle', ts: Date.now() }))
+        dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'idle' }))
       }
       // The idle `slots` row that ended this same turn already dispatched this
       // refresh (`useSlotListSync`); any other `_done` refreshes.
@@ -162,6 +178,15 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
           isActive,
         )
         refreshSessionControlStatusesAfterTurn(queryClient, data.slot, isActive)
+        // Milestones are counted at turn start and when a feature happens, so
+        // the end of the turn in view is when a new one can be due (RFC 4.3).
+        // Only when something has read them: with no milestones query in the
+        // cache (Explore off, or never mounted) there is nothing to refresh.
+        // "In view" includes a thread a non-chat page shows (the Mate DM on
+        // Members), not only the active chat (`isSlotOnScreen`).
+        if (isSlotOnScreen(data.slot) && !reconnectingRef.current && queryClient.getQueryCache().find({ queryKey: ['milestones'], exact: false })) {
+          void queryClient.invalidateQueries({ queryKey: ['milestones'] })
+        }
       }
     },
   }), [dispatch, queryClient, reconnectingRef])

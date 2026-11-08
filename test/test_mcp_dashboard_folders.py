@@ -1,20 +1,14 @@
 """Tests for the chat (sidebar) folder tools on the kirocrew-dashboard server.
 
-Covers ``chat_folder_tree/create/move/move_session/delete/file_self`` — schema
-validation, path→id resolution, mkdir -p, session-reference resolution, the
-requests sent, and result formatting. Each case runs one tools/call frame
-through ``mcp_dashboard.TABLE`` against an in-memory dashboard and asserts on
-the reply and on what the dashboard was asked; the endpoints themselves are
-tested by ``test_folder_store_writer.py`` and ``test_dashboard_chat_folders.py``.
+Covers ``chat_folder_tree/create/move/move_session/delete``, the folder-name rules
+and the folder policy. Each case runs one tools/call frame through
+``mcp_dashboard.TABLE`` against an in-memory dashboard; the endpoints are tested by
+``test_folder_store_writer.py`` and ``test_dashboard_chat_folders.py``.
 
-This file holds the tree, create, move, move_session and delete cases, the
-folder-name rules and the folder policy. The siblings hold the rest:
-``test_mcp_dashboard_folders_caller_scope.py`` (which caller a request speaks
-for, and ``chat_folder_file_self``), ``test_mcp_dashboard_folders_session_create.py``
-(``session_create`` and the advertised tool set) and
-``test_mcp_dashboard_folders_position.py`` (sibling order: ``before``/``after``
-and the folder sort mode). The shared rows and call helpers are in
-``mcp_dashboard_folders_helpers.py``.
+Siblings: ``test_mcp_dashboard_folders_caller_scope.py`` (caller scope),
+``test_mcp_dashboard_folders_session_create.py`` (``session_create`` and the tool
+set), ``test_mcp_dashboard_folders_position.py`` (sibling order). Shared helpers
+are in ``mcp_dashboard_folders_helpers.py``.
 """
 
 from __future__ import annotations
@@ -379,6 +373,66 @@ class TestSlashBearingFolderNames:
         )
         # Exactly one POST: the leaf. No "A" and no "B" were manufactured.
         assert [r.body for r in _writes(dash)] == [{"name": "leaf", "parent_id": "aaaaaaaaaaaa"}]
+
+    def test_a_path_below_a_literal_slash_name_files_inside_it(self) -> None:
+        """``A/B/worker`` extends the folder named ``A/B``; it does not rebuild it.
+
+        A conductor filed in a folder literally named ``A/B`` creates its workers
+        under ``A/B/<agent>``. Splitting every ``/`` minted a new top-level
+        ``A`` > ``B`` pair for them instead of using the existing folder.
+        """
+        made = {"id": "dddddddddddd", "name": "worker", "parent_id": "aaaaaaaaaaaa"}
+        out, dash = _call(
+            "chat_folder_create",
+            {"name": "leaf", "parent": "A/B/worker"},
+            self._routes(self.LITERAL, made=made),
+        )
+        assert not out.startswith("Error:"), out
+        # The first POST is the missing `worker` segment, under the literal folder.
+        assert _writes(dash)[0].body == {"name": "worker", "parent_id": "aaaaaaaaaaaa"}
+        assert all(r.body.get("name") not in ("A", "B") for r in _writes(dash))
+
+    def test_an_existing_folder_below_a_literal_slash_name_resolves(self) -> None:
+        worker = {"id": "dddddddddddd", "name": "worker", "parent_id": "aaaaaaaaaaaa"}
+        tree = [*self.LITERAL, worker]
+        out, dash = _call(
+            "chat_folder_move_session",
+            {"session": "chat-1-100", "folder": "A/B/worker"},
+            self._routes(tree),
+        )
+        assert not out.startswith("Error:"), out
+        assert _writes(dash)[-1].body == {"folder_id": "dddddddddddd"}
+
+    def test_a_duplicate_on_a_shallower_reading_does_not_refuse_a_unique_path(self) -> None:
+        """Two literal ``A/B`` siblings must not refuse the one ``A`` > ``B`` > ``C``.
+
+        Only one folder renders ``A/B/C``; the duplicates sit on a reading that
+        never reaches that depth, so the deeper unique reading resolves.
+        """
+        tree = [
+            {"id": "aaaaaaaaaaaa", "name": "A/B", "parent_id": ""},
+            {"id": "eeeeeeeeeeee", "name": "A/B", "parent_id": ""},
+            {"id": "bbbbbbbbbbbb", "name": "A", "parent_id": ""},
+            {"id": "cccccccccccc", "name": "B", "parent_id": "bbbbbbbbbbbb"},
+            {"id": "dddddddddddd", "name": "C", "parent_id": "cccccccccccc"},
+        ]
+        out, dash = _call(
+            "chat_folder_move_session",
+            {"session": "chat-1-100", "folder": "A/B/C"},
+            self._routes(tree),
+        )
+        assert not out.startswith("Error:"), out
+        assert _writes(dash)[-1].body == {"folder_id": "dddddddddddd"}
+
+    def test_a_path_below_both_readings_is_refused(self) -> None:
+        out, dash = _call(
+            "chat_folder_create",
+            {"name": "leaf", "parent": "A/B/worker"},
+            self._routes(self.BOTH),
+        )
+        assert out.startswith("Error:") and "ambiguous" in out
+        assert "aaaaaaaaaaaa" in out and "cccccccccccc" in out
+        assert _writes(dash) == []
 
     def test_collision_between_the_two_readings_is_refused(self) -> None:
         out, dash = _call(
@@ -824,15 +878,9 @@ class TestFolderMoveSession:
 class TestNamesTheEndpointWouldTruncate:
     """A name longer than the endpoint's limit is refused, not posted.
 
-    The folder endpoints store ``name[:100]``. Posting a longer one creates a
-    folder under a name this server cannot match afterwards, so the NEXT call
-    walks the same path, still misses, and creates another sibling — silent
-    duplicates under a path the caller never asked for.
-
-    The two arguments are bounded in different places, which is why both are
-    tested: ``name`` is capped by its own schema field, while ``parent`` is a
-    PATH bounded at 4096, so a single overlong SEGMENT inside it reaches the
-    walk and has to be refused there.
+    The endpoints store ``name[:100]``, so a longer name could never be matched
+    again and each call would create a duplicate. ``name`` is capped by its schema;
+    ``parent`` is a path capped at 4096, so an overlong segment is refused in the walk.
     """
 
     LONG = "x" * 101
@@ -851,12 +899,8 @@ class TestNamesTheEndpointWouldTruncate:
     def test_the_refusal_does_not_echo_a_credential(self) -> None:
         """The refusal quotes the name back, so it redacts what it quotes.
 
-        Every refusal this resolver mints redacts at the source, and it has to:
-        ``chat_folder_move`` and ``chat_folder_move_session`` return a resolver
-        error verbatim, with no redaction at their own return boundary. So this
-        is exercised through ``chat_folder_move`` — testing it through
-        ``chat_folder_create`` proves nothing, because that tool wraps its whole
-        error in ``redact()`` and would mask an unredacted message.
+        Run through ``chat_folder_move``, which returns resolver errors verbatim;
+        ``chat_folder_create`` wraps its error in ``redact()`` and would mask a leak.
         """
         leaky = "AKIAIOSFODNN7EXAMPLE" + "z" * 90
         out, dash = _call("chat_folder_move", {"folder": f"Travel/{leaky}"})
@@ -933,11 +977,8 @@ class TestASubagentCannotOutrankItsParent:
     def test_the_delegated_list_is_knowingly_incomplete(self) -> None:
         """Pins the position, not a claim of completeness.
 
-        The prefix tuple enumerates the delegated key forms that exist today; a
-        form added later reads as unscoped until someone adds it here. That gap
-        is accepted deliberately, so this asserts the two known forms are
-        covered AND that the code says the list is incomplete — if someone
-        deletes that admission, this fails and they have to re-argue it.
+        A new delegated key form reads as unscoped until added. That gap is accepted,
+        so this checks the two known forms and that the code still admits the gap.
         """
         assert set(mcp_dashboard._DELEGATED_CALLER_PREFIXES) == {"subagent:", "cron:"}
         src = inspect.getsource(mcp_dashboard_caller_scope)
@@ -968,11 +1009,8 @@ class TestASubagentCannotOutrankItsParent:
     def test_the_dashboard_refusal_is_not_the_declined_inversion(self) -> None:
         """Pins the SCOPE of this refusal, which is the reason it is acceptable.
 
-        Refusing every unplaceable caller would also cost Slack threads and
-        channel sessions these tools — a tradeoff that was weighed and declined.
-        This refusal is narrower by construction: it keys on the ``dashboard:``
-        prefix, which those callers do not carry. If someone later widens it
-        into the blanket inversion, this test fails and says so.
+        It keys on the ``dashboard:`` prefix, so Slack threads and channel sessions
+        keep these tools; refusing every unplaceable caller would cost them.
         """
         rows: list[dict] = []
         assert mcp_dashboard._caller_app_scope("dashboard:gone", rows) is None
@@ -999,13 +1037,10 @@ class TestASubagentCannotOutrankItsParent:
 
 
 class TestTheFolderPolicyIsTheEndpointsNotThisServers:
-    """Folders carry an owner now, so an app HAS a folder of its own to write to
-    and this server stops deciding the policy: the tool call reaches the
-    endpoint, which bounds the write to the caller's own folders under the store
-    lock. A second copy of that rule here could only drift or race it.
+    """The endpoint bounds writes to the caller's own folders under the store lock.
 
-    What this layer still decides is the one thing the endpoint cannot — whether
-    the caller can be placed at all.
+    A second copy of that rule here could drift or race it. This layer decides only
+    whether the caller can be placed at all.
     """
 
     MIXED = _reads(

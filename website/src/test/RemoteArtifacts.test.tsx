@@ -308,4 +308,41 @@ describe('ArtifactsPage remote-browse gating', () => {
     // Terminal page dropped the token → no more Load more.
     expect(screen.queryByRole('button', { name: /load more/i })).not.toBeInTheDocument()
   })
+
+  it('keeps keyboard focus on Load more while a page loads, and ignores a second press', async () => {
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({
+      providers: [mkProvider('companion')],
+      kind: 'widget',
+    })
+    // Page 2 is held open, then hands out another token, so the button stays
+    // mounted across the load and the focus it held can be checked after.
+    let releasePage2!: () => void
+    vi.mocked(api).browseRemoteArtifacts = vi.fn().mockImplementation((_p, opts) => {
+      if (opts?.pageToken === 'tok-2') {
+        return new Promise(resolve => {
+          releasePage2 = () => resolve({ artifacts: [mkRemote('ext-2')], next_page_token: 'tok-3' })
+        })
+      }
+      return Promise.resolve({ artifacts: [mkRemote('ext-1')], next_page_token: 'tok-2' })
+    })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('Remote ext-1')).toBeInTheDocument())
+
+    const loadMore = screen.getByRole('button', { name: /load more companion provider artifacts/i })
+    loadMore.focus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(loadMore).toHaveAttribute('aria-disabled', 'true'))
+    // `aria-disabled`, not `disabled`: a disabled button leaves the tab order
+    // and drops a keyboard user's focus to the page while the page loads.
+    expect(loadMore).not.toBeDisabled()
+    expect(loadMore).toHaveFocus()
+    const calls = vi.mocked(api).browseRemoteArtifacts.mock.calls.length
+    await userEvent.keyboard('{Enter}')
+    expect(vi.mocked(api).browseRemoteArtifacts.mock.calls.length).toBe(calls)
+
+    await act(async () => { releasePage2() })
+    await waitFor(() => expect(screen.getByText('Remote ext-2')).toBeInTheDocument())
+    expect(loadMore).not.toHaveAttribute('aria-disabled')
+    expect(loadMore).toHaveFocus()
+  })
 })

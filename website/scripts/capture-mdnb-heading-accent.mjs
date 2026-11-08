@@ -99,7 +99,9 @@ const mdnbApi = mdnbApiStub({ notes: NOTES_LIST, doc: NOTE_DOC })
  * `mode` is the light/dark preference (`mc-theme`) and `palette` is the named
  * colour theme (`mc-color-theme`); together they select the `data-theme` the
  * stylesheet keys off. The shared stub clears localStorage in its own init
- * script, so the palette is written in a LATER init script to survive it.
+ * script, so the palette is written in a LATER init script, which lands after
+ * that clear only while Chromium runs init scripts in registration order:
+ * Playwright does not define that order.
  */
 async function shoot(browser, base, { file, mode, palette, edit = false }) {
   const context = await browser.newContext({ viewport: VIEW, deviceScaleFactor: 2, locale: 'en-US' })

@@ -1,6 +1,10 @@
 #!/bin/sh
-# KiroCrew first-time setup script (public build)
+# Kiro Crew first-time setup script (public build, contributor / from-source layout)
 # Usage: source setup.sh   (bash or zsh), or: bash setup.sh
+#
+# Builds the clone it sits in, so the install follows the clone's branch (`main`
+# is the Nightly lane). For Stable on a laptop or server, use the signed wheel:
+#   curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 #
 # Sets up KiroCrew using only public tooling:
 #   1. Node.js (via ensure-node.sh)
@@ -20,7 +24,9 @@ else
 fi
 cd "$_kirocrew_dir" || return 1
 
-ACP_NPM_PKG="@agentclientprotocol/claude-agent-acp"
+# ACP_NPM_PKG and acp_adapter_spec (the exact pinned version).
+# shellcheck source=scripts/lib/acp-adapter-pin.sh
+. "$_kirocrew_dir/scripts/lib/acp-adapter-pin.sh"
 
 echo "👻 KiroCrew Setup"
 echo ""
@@ -157,11 +163,15 @@ echo "── Step 3: Agent Backends ──"
 if _check claude-agent-acp; then
     echo "  ✅ claude-agent-acp ($(which claude-agent-acp))"
 elif _check npm; then
-    echo "  → Installing $ACP_NPM_PKG via npm..."
-    if npm install -g "$ACP_NPM_PKG" >/dev/null 2>&1; then
-        echo "  ✅ claude-agent-acp installed"
+    if ! ACP_NPM_SPEC="$(acp_adapter_spec "$_kirocrew_dir")"; then
+        echo "  ⚠️  Could not read the pinned $ACP_NPM_PKG version (packaging/acp-adapters/package.json) — skipping"
     else
-        echo "  ⚠️  npm i -g $ACP_NPM_PKG failed — install it manually before selecting this backend"
+        echo "  → Installing $ACP_NPM_SPEC via npm..."
+        if npm install -g "$ACP_NPM_SPEC" >/dev/null 2>&1; then
+            echo "  ✅ claude-agent-acp installed"
+        else
+            echo "  ⚠️  npm i -g $ACP_NPM_SPEC failed — install it manually before selecting this backend"
+        fi
     fi
 else
     echo "  ⚠️  npm not found — install the optional agent backend later:"

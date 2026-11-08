@@ -9,6 +9,7 @@ from aiohttp import web
 
 from kiro_crew.agent_capabilities import CapabilityError, CapabilityService
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.agent_name_segment import agent_route_name, invalid_agent_name_response
 from kiro_crew.dashboard.chat_utils import drained_to_thread
 from kiro_crew.dashboard.handlers._shared import (
     enumerate_skill_catalog,
@@ -60,7 +61,9 @@ async def api_member_capabilities(request: web.Request) -> web.Response:
     if service is None:
         service = CapabilityService(_catalog, _connections)
         request.app[_SERVICE] = service
-    name = request.match_info["name"]
+    name = agent_route_name(request)
+    if name is None:
+        return invalid_agent_name_response()
     try:
         if request.method == "GET":
             result = await drained_to_thread(service.get, name)
@@ -77,6 +80,15 @@ async def api_member_capabilities(request: web.Request) -> web.Response:
                 async with _get_config_lock():
                     result = await drained_to_thread(service.put, name, body)
                 request.app["state"].push_refresh("agents")
+                if result.get("mode") == "mate":
+                    # A crewmate that owns its file: its running workers mount
+                    # what it approves, so they are reloaded onto the new file
+                    # (``crewmate_worker_reload``; a busy one at its turn end).
+                    from kiro_crew.dashboard.crewmate_worker_reload import (
+                        schedule_reload_workers,
+                    )
+
+                    schedule_reload_workers(request.app["state"], name)
                 from kiro_crew.sel import sel
 
                 sel().log_api_access(
@@ -133,7 +145,9 @@ async def api_member_capabilities_detach(request: web.Request) -> web.Response:
     if service is None:
         service = CapabilityService(_catalog, _connections)
         request.app[_SERVICE] = service
-    name = request.match_info["name"]
+    name = agent_route_name(request)
+    if name is None:
+        return invalid_agent_name_response()
     try:
         try:
             body = await request.json()

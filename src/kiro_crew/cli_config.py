@@ -7,6 +7,7 @@ import base64
 import errno
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -16,16 +17,22 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
-    _subtract_overlay,
     config_local_path,
     config_path,
     read_config_text,
+    read_endorsed_config_text,
     update_config_locked,
     workspace_dir_from_entry,
 )
-from kiro_crew.config.resolution import _SECTION_KEYS_EMITTED_ELSEWHERE
-from kiro_crew.config.sections import _migrate_workspaces
+from kiro_crew.config.resolution import (
+    _SECTION_KEYS_EMITTED_ELSEWHERE,
+    drop_extra_section_keys,
+    drop_retired_section_keys,
+)
+from kiro_crew.config.sections import _migrate_workspaces, _sanitize_bot_name
+from kiro_crew.config.sections_tailnet import TAILNET_OPENING_PATHS
 from kiro_crew.config.superseded_defaults import (
+    ack_explicit_write,
     acked_superseded,
     adopt_coerced_keys,
     adopted_superseded,
@@ -36,8 +43,11 @@ from kiro_crew.config.superseded_defaults import (
     drop_acks,
     drop_drifted_keys,
     record_acks,
+    record_adoptions,
+    stored_value_or_none,
     superseded_default_drift,
 )
+from kiro_crew.config.write_provenance import record_path
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.sel import sel
 
@@ -53,7 +63,7 @@ _SEALED_CONFIG_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS, errno
 
 
 def _names_sealed_config(exc: OSError) -> bool:
-    """Whether *exc* was raised against ``config.json`` or ``config.local.json``.
+    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or its record.
 
     The publishing ``os.replace(tmp, path)`` reports the temp as ``filename`` and the
     destination as ``filename2``; an in-place ``open(path, "w")`` reports only
@@ -61,7 +71,9 @@ def _names_sealed_config(exc: OSError) -> bool:
     neither -- ``config edit``'s ``execvp`` of an editor, a temp the data home itself
     refused -- is the caller's to report as what it is.
     """
-    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path())}
+    # The config writer records each save in the publication record first, and that
+    # record is sealed the same way, so a sandboxed save is refused there.
+    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path(), record_path())}
     for name in (exc.filename, exc.filename2):
         if isinstance(name, (str, bytes, os.PathLike)):
             if os.path.realpath(os.fsdecode(name)) in sealed:
@@ -120,6 +132,49 @@ def _refuse_missing_workspace_dirs(data: dict, current: dict) -> dict:
     return data
 
 
+def _ack_explicit_config_write(key: str, value: object) -> None:
+    """Ack only submitted keys, including children of a whole-section write.
+
+    Called under the destination config lock, before publication. Let an ack
+    refusal abort the write rather than save a choice the next load would adopt.
+    """
+    ack_explicit_write(key, value)
+    if isinstance(value, dict):
+        for child, child_value in value.items():
+            _ack_explicit_config_write(f"{key}.{child}", child_value)
+
+
+def _warn_if_bot_name_altered(key: str, parsed: object) -> None:
+    """Warn when a stored ``agent.bot_name`` will load differently from the typed value.
+
+    ``config set`` stores and echoes the raw value, but the loader runs it
+    through ``_sanitize_bot_name`` before any session reads it, dropping emoji,
+    symbols and braces and capping the length.  The echoed ``✅`` line is the
+    typed value, so without this the user learns nothing when the loaded name
+    will differ — including the case where every character is dropped and the
+    default name is used instead.  A non-text value never gets here: the
+    declared-type check refuses it first.  The warning reports the loaded
+    spelling; the write itself still succeeded, so this is advice, not a refusal.
+    """
+    if key != "agent.bot_name" or not isinstance(parsed, str):
+        return
+    loaded = _sanitize_bot_name(parsed)
+    if loaded == parsed:
+        return
+    if loaded:
+        print(
+            f"⚠️  {key} will load as {json.dumps(loaded)}, not {json.dumps(parsed)} — "
+            "the loader drops characters it cannot use in a name.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"⚠️  {key} will load as empty — the loader drops every character of "
+            f"{json.dumps(parsed)}, so the default name is used instead.",
+            file=sys.stderr,
+        )
+
+
 def _config_cmd(args: argparse.Namespace) -> None:
     """Get or set config values."""
     try:
@@ -174,7 +229,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             except PermissionError as e:
                 print(f"❌ {e}", file=sys.stderr)
                 sys.exit(1)
-            except (json.JSONDecodeError, OSError) as e:
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
                 print(f"❌ Invalid JSON: {e}", file=sys.stderr)
                 sys.exit(1)
             if not isinstance(data, dict):
@@ -187,10 +242,17 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     file=sys.stderr,
                 )
                 sys.exit(1)
+
+            def _mutate_from_file(cur: dict) -> dict:
+                _refuse_missing_workspace_dirs(data, cur)
+                for key, value in data.items():
+                    _ack_explicit_config_write(key, value)
+                return data
+
             try:
                 update_config_locked(
                     config_path(),
-                    mutate=lambda cur: _refuse_missing_workspace_dirs(data, cur),
+                    mutate=_mutate_from_file,
                     on_corrupt="reset",
                 )
             except ConfigWriteRefused as e:
@@ -242,10 +304,8 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 print(f"❌ {key}: {list_error}", file=sys.stderr)
                 sys.exit(1)
             # A declared enum is checked on EVERY write, stored or not, and what is
-            # written is the enum's own spelling. The type check below runs only on
-            # a first write, because a stored value's type stands in for the
-            # declaration; an enum has no such stand-in, and the load path's answer
-            # to a value outside it is to degrade the setting with a WARNING nobody
+            # written is the enum's own spelling. The load path's answer to a
+            # value outside it is to degrade the setting with a WARNING nobody
             # reads. `stt.provider off` was accepted this way while `off` did not
             # exist, and the loader turned it into the one provider the user was
             # trying to escape (kirodotdev/KiroCrew#13179).
@@ -270,6 +330,24 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     )
                     sys.exit(1)
                 parsed = threads
+            # The failover block is refused here rather than logged and read as
+            # off at load, for the same reason. Written whole, so its parts are
+            # always checked together.
+            if key.startswith("agent.acp_failover."):
+                print(
+                    "❌ agent.acp_failover is set as one object, e.g. "
+                    '\'{"enabled": true, "chain": ["codex", "claude"]}\'',
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            if key == "agent.acp_failover":
+                from kiro_crew.config.sections_agent_fields import validate_acp_failover
+
+                try:
+                    parsed = validate_acp_failover(parsed)
+                except ValueError as failover_error:
+                    print(f"❌ {key}: {failover_error}", file=sys.stderr)
+                    sys.exit(1)
             # Fourth write path to telemetry.beacon_enabled, after the dashboard
             # PATCH and `telemetry enable`. Gated here too, and BEFORE the
             # local/base split so it covers both: `--local` writes the overlay,
@@ -297,10 +375,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             # takes precedence over the base file) cannot become the one way to
             # store `true` on a pinned host. Only the enable direction is refused
             # (tightest-wins), matching the PATCH 403 and the startup gate.
-            if (
-                key in ("dashboard.tailscale.enabled", "dashboard.tailscale.trust_identity")
-                and parsed is True
-            ):
+            if key in TAILNET_OPENING_PATHS and parsed is True:
                 from kiro_crew.dashboard import tailnet
 
                 if tailnet.is_governance_pinned_off(audit_tool="config_set_cli_tailnet"):
@@ -320,6 +395,10 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             # looks like a pinned setting and silently does nothing
             # (kirodotdev/KiroCrew#9909: `config set --local memory.enabled false`).
             _refuse_unknown_key(key, parsed, overlay=use_local)
+            model_error = _extraction_model_error(key, parsed)
+            if model_error:
+                print(f"❌ {key}: {model_error}", file=sys.stderr)
+                sys.exit(1)
             if use_local:
                 p = config_local_path()
 
@@ -332,8 +411,14 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 # on_corrupt="reset" handles the corrupt case inside the same
                 # lock hold: the mutate callback receives {} and writes the
                 # single key from scratch. No second critical section needed.
+                dropped: list[str] = []
+
                 def _mutate_local_overlay(_existing: dict) -> dict:
+                    # Read under the same lock as the write, so the keys named
+                    # are the ones this write really removed.
+                    dropped[:] = _overlay_keys_dropped(_dict_get(_existing, key), parsed, key)
                     _dict_set_create(_existing, key, parsed)
+                    _ack_explicit_config_write(key, parsed)
                     return _existing
 
                 try:
@@ -354,6 +439,9 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     resources=f"{key}={json.dumps(parsed)}",
                 )
                 print(f"✅ {key} = {json.dumps(parsed)} (saved to config.local.json)")
+                if dropped:
+                    _print_dropped_overlay_keys(key, dropped)
+                _warn_if_bot_name_altered(key, parsed)
             else:
 
                 def _mutate_base(existing: dict) -> dict:
@@ -361,15 +449,12 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # Key was already validated above; use _dict_set_create so
                     # sections that were never written (still at defaults) get
                     # their intermediate keys created.
+                    # *existing* is config.json as stored, which holds no overlay
+                    # values to keep out, so every other key is left as it is.
                     _dict_set_create(existing, key, parsed)
-                    lp = config_local_path()
-                    if lp.is_file():
-                        try:
-                            raw_local = json.loads(read_config_text(lp))
-                            if isinstance(raw_local, dict):
-                                return _subtract_overlay(existing, raw_local)
-                        except (json.JSONDecodeError, OSError):
-                            pass
+                    _ack_explicit_config_write(key, parsed)
+                    # This raw write bypasses save(), which is what drops retired keys.
+                    drop_retired_section_keys(existing)
                     return existing
 
                 try:
@@ -393,6 +478,14 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     resources=f"{key}={json.dumps(parsed)}",
                 )
                 print(f"✅ {key} = {json.dumps(parsed)}")
+                shadowed = _overlay_shadowing_keys(_written_leaf_paths(key, parsed))
+                if shadowed:
+                    _print_overlay_shadowed_keys(sorted({_addressable_key(s) for s in shadowed}))
+                bot_name = ("agent", "bot_name")
+                if not any(bot_name[: len(s)] == s for s in shadowed):
+                    # A shadowed name never loads, so its sanitized spelling
+                    # would name a value that does not apply either.
+                    _warn_if_bot_name_altered(key, parsed)
     elif action == "edit":
 
         p = config_path()
@@ -530,11 +623,21 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         def _mutate(existing: dict) -> dict:
             # Re-detect inside the lock: the document read above is a snapshot, and
             # removing a key whose value changed since would discard a live choice.
-            fresh = [
-                e.dotted_key
-                for e in superseded_default_drift(existing, acked={})
-                if e.dotted_key in keys
+            fresh_entries = [
+                e for e in superseded_default_drift(existing, acked={}) if e.dotted_key in keys
             ]
+            fresh = [e.dotted_key for e in fresh_entries]
+            # An auto-adopt row is one-shot: record it as adopted BEFORE the removal,
+            # the same marker-first order the load path uses. Without the record, a
+            # value the operator writes back later would be auto-removed on the next
+            # load. A failed record raises and aborts this write.
+            auto = {
+                e.dotted_key: stored_value_or_none(existing, e.dotted_key)
+                for e in fresh_entries
+                if e.auto_adopt
+            }
+            if auto:
+                record_adoptions(auto)
             removed.extend(drop_drifted_keys(existing, fresh))
             # A coerced key is not dropped but REWRITTEN as what the loader resolves
             # it to (or dropped only when that is the default), so adopting never
@@ -555,6 +658,9 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
             update_config_locked(config_path(), mutate=_mutate)
         except ConfigReadError as e:
             print(f"❌ Cannot edit a corrupt config.json: {e}", file=sys.stderr)
+            sys.exit(1)
+        except ConfigWriteRefused as e:
+            print(f"❌ {e}", file=sys.stderr)
             sys.exit(1)
         except OSError as e:
             # A read-only or full data home, or a refused link: report it and stop,
@@ -613,6 +719,9 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         except ConfigReadError as e:
             print(f"❌ Cannot read a corrupt config.json: {e}", file=sys.stderr)
             sys.exit(1)
+        except ConfigWriteRefused as e:
+            print(f"❌ {e}", file=sys.stderr)
+            sys.exit(1)
         except OSError as e:
             print(f"❌ Could not record acknowledgments: {e}", file=sys.stderr)
             sys.exit(1)
@@ -669,22 +778,101 @@ def _overlay_keys(dotted_keys: list[str]) -> set[str]:
     carrying nothing: a wrong claim is worse than a missing note either way, and
     every other surface already tolerates a broken overlay.
     """
-    p = config_local_path()
-    if not p.is_file():
-        return set()
-    try:
-        raw = json.loads(read_config_text(p))
-    except (OSError, ValueError):
-        # ValueError covers malformed JSON and invalid UTF-8 alike; either way the
-        # overlay is treated as carrying nothing.
-        return set()
-    if not isinstance(raw, dict):
-        return set()
+    raw = _read_overlay()
     found = set()
     for dotted in dotted_keys:
         if _dict_get(raw, dotted) is not _MISSING:
             found.add(dotted)
     return found
+
+
+def _read_overlay() -> dict:
+    """Return ``config.local.json`` as a dict, or ``{}`` when absent or unreadable."""
+    # Read as the loader reads it, so a pending hand edit the sandbox has not
+    # endorsed (or a deleted file with an endorsed copy) answers like the load.
+    try:
+        raw = json.loads(read_endorsed_config_text(config_local_path()))
+    except (OSError, ValueError):
+        # ValueError covers malformed JSON and invalid UTF-8 alike; either way the
+        # overlay is treated as carrying nothing.
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _overlay_shadowing_keys(leaf_paths: list[tuple[str, ...]]) -> set[tuple[str, ...]]:
+    """Return the overlay key paths that decide any of *leaf_paths* at load.
+
+    The loader deep-merges ``config.local.json`` over ``config.json``: objects
+    merge, any other overlay value replaces the base value whole. So a written
+    leaf is decided by the overlay when the overlay holds a value at that leaf,
+    or a non-object value at one of its ancestors (reported as that ancestor).
+    Paths are segment tuples, so a mapping key holding a literal dot (a model
+    id such as ``custom.v1``) stays one segment. Reads only; an unreadable
+    overlay carries nothing, as in ``_overlay_keys``.
+    """
+    raw = _read_overlay()
+    found = set()
+    for parts in leaf_paths:
+        cur: object = raw
+        for i, part in enumerate(parts):
+            if not isinstance(cur, dict) or part not in cur:
+                break
+            cur = cur[part]
+            if i == len(parts) - 1 or not isinstance(cur, dict):
+                found.add(parts[: i + 1])
+                break
+    return found
+
+
+def _written_leaf_paths(key: str, value: object) -> list[tuple[str, ...]]:
+    """Return the leaf key paths a ``config set <key> <value>`` writes.
+
+    A scalar or list writes *key* itself; an object writes each of its leaves,
+    so an overlay key the object does not mention is not reported as shadowed.
+    """
+    out: list[tuple[str, ...]] = []
+
+    def walk(path: tuple[str, ...], v: object) -> None:
+        if not isinstance(v, dict) or not v:
+            out.append(path)
+            return
+        for child, child_value in v.items():
+            walk(path + (str(child),), child_value)
+
+    walk(tuple(key.split(".")), value)
+    return out
+
+
+def _addressable_key(path: tuple[str, ...]) -> str:
+    """Spell *path* as a dotted key ``config get``/``config set`` can address.
+
+    A segment holding a literal dot cannot be spelled in a dotted key, so the
+    key stops at the parent that holds it.
+    """
+    kept: list[str] = []
+    for part in path:
+        if "." in part:
+            break
+        kept.append(part)
+    return ".".join(kept)
+
+
+def _print_overlay_shadowed_keys(keys: list[str]) -> None:
+    """Say that ``config.local.json`` still decides keys a base write just stored.
+
+    The overlay deep-merges over ``config.json`` at load, so the value written
+    there does not apply while the overlay sets the key. Advice on stderr, not a
+    refusal: the write succeeded and takes effect once the overlay drops the key.
+    The overlay's value is not printed; ``config get`` shows what loads.
+    """
+    for key in keys:
+        print(
+            f"⚠️  {key} is also set in config.local.json, which overrides config.json, "
+            "so the value just saved does not apply until that key is removed there. "
+            f"`kirocrew config get {key}` shows the value that loads; "
+            f"`kirocrew config set --local {key} <value>` changes it.",
+            file=sys.stderr,
+        )
 
 
 def _dict_get(d: dict, key: str) -> object:
@@ -718,8 +906,11 @@ def _refuse_unknown_key(key: str, parsed: object, *, overlay: bool = False) -> N
     """Exit with ``Unknown key`` unless *key* is one the loaded config can hold.
 
     Validated before any lock is taken. A declared leaf counts as existing even
-    when it is not stored yet, but then its value is type-checked here: this is
-    its first write, so no stored value stands in for the declaration.
+    when it is not stored yet. Its value is type-checked on every write, stored
+    or not: the generic parser turns ``007`` into ``7`` and ``true`` into a bool,
+    so a stored string leaf would otherwise save a non-string
+    (kirodotdev/KiroCrew#24957). A ``null`` on a stored leaf keeps passing, as
+    it always has; the type check refuses it only on a first write.
 
     With *overlay* (``--local``) a ``<section>.<name>`` listed in
     ``_SECTION_KEYS_EMITTED_ELSEWHERE`` is also accepted: the loader reads it
@@ -733,16 +924,38 @@ def _refuse_unknown_key(key: str, parsed: object, *, overlay: bool = False) -> N
         ):
             _refuse_emitted_elsewhere_value(key, parts[0], parts[1], parsed)
             return
-    d = KiroCrewConfig.load().to_dict()
-    if _dict_set(d, key, parsed):
-        return
+    cfg = KiroCrewConfig.load()
+    d = cfg.to_dict()
+    # ``to_dict()`` re-emits keys a modelled section does not declare, so a
+    # save keeps them. They exist in the document but no code reads them, so
+    # existence is judged without them (the dashboard's config view does the
+    # same); ``preserved`` says the refusal is about such a key.
+    preserved = _dict_get(d, key) is not _MISSING
+    drop_extra_section_keys(d, getattr(cfg, "_extra_keys", {}))
+    preserved = preserved and _dict_get(d, key) is _MISSING
+    stored = _dict_set(d, key, parsed)
     declared = _declared_entry(key)
     if declared is None:
+        if stored:
+            return
         print(f"❌ Unknown key: {key}", file=sys.stderr)
+        if preserved:
+            print(
+                "   It is in config.json, but this version does not read it, "
+                "so setting it changes nothing.",
+                file=sys.stderr,
+            )
         sys.exit(1)
+    if stored and parsed is None:
+        return
     type_error = _declared_type_error(declared, parsed)
     if type_error:
         print(f"❌ {key}: {type_error}", file=sys.stderr)
+        if declared.type == "string":
+            print(
+                """   To store it as text, quote it as JSON, e.g. '"007"'.""",
+                file=sys.stderr,
+            )
         sys.exit(1)
 
 
@@ -773,6 +986,44 @@ def _refuse_emitted_elsewhere_value(key: str, section: str, name: str, parsed: o
         sys.exit(1)
 
 
+def _overlay_keys_dropped(old: object, new: object, prefix: str) -> list[str]:
+    """Dotted keys under *prefix* that writing *new* over *old* removes.
+
+    Only a section (a dict) can lose keys: a whole-object write keeps what the
+    object names, recursively, and drops the rest; a scalar written over a
+    section drops all of it. Nothing is dropped when *old* is not a section.
+    """
+    if not isinstance(old, dict):
+        return []
+    if not isinstance(new, dict):
+        return [f"{prefix}.{k}" for k in old]
+    out: list[str] = []
+    for k, v in old.items():
+        if k in new:
+            out.extend(_overlay_keys_dropped(v, new[k], f"{prefix}.{k}"))
+        else:
+            out.append(f"{prefix}.{k}")
+    return out
+
+
+def _print_dropped_overlay_keys(key: str, dropped: list[str]) -> None:
+    """Name the overlay keys a whole-object ``config set --local`` removed.
+
+    The replace is kept (it is the only CLI way to remove a pinned key); the
+    hint only makes it visible and names the form that keeps siblings.
+    """
+    print(
+        f"⚠️  {key} was replaced in config.local.json, so it no longer pins: "
+        f"{', '.join(dropped)}",
+        file=sys.stderr,
+    )
+    print(
+        f"   To change one key and keep the rest, set it by its dotted name: "
+        f"kirocrew config set --local {key}.<name> <value>",
+        file=sys.stderr,
+    )
+
+
 def _dict_set_create(d: dict, key: str, value: object) -> None:
     """Set a value in a nested dict, creating intermediate dicts as needed."""
     parts = key.split(".")
@@ -800,8 +1051,7 @@ def _declared_entry(key: str) -> ConfigEntry | None:
     match a concrete path here, which leaves those keys exactly as they were.
 
     The entry itself is returned, not a bool, because the caller must also check
-    the value against the declared type: this is the key's FIRST write, so there
-    is no stored value whose type could stand in for the declaration.
+    the value against the declared type.
 
     Imported lazily to mirror ``config.validation``: the registry is built at
     import time, and the CLI's other verbs should not pay for it.
@@ -831,7 +1081,7 @@ def _declared_enum_value(key: str, value: object) -> object:
     """*value* as the enum for *key* spells it, or *value* itself when *key* has no enum.
 
     Raises ``ValueError`` with the message to print when *value* is outside the
-    enum. Unlike :func:`_declared_type_error` this runs on every write, stored or
+    enum. Like :func:`_declared_type_error` this runs on every write, stored or
     not, because the load path degrades an out-of-enum value rather than rejecting
     it -- so the write is the last point at which the mistake is still attributable
     to the command that made it. A key that declares no enum, or is not declared at
@@ -894,14 +1144,18 @@ def _declared_type_error(entry: ConfigEntry, value: object) -> str | None:
     ``max_sessions`` and does ``len(registry) >= max_sessions``). Refusing at the
     write is the only place the mistake is still attributable to the command.
 
-    Checked ONLY on the first write of a declared-but-unstored key, which is the
-    path :func:`_declared_entry` opens. A key that is already in the document
-    keeps its historical behaviour, type check included: widening this to every
-    ``config set`` is a larger, separate change.
+    Checked on every write of a declared key, stored or not. A scalar union
+    (``int | str``, declared ``integer`` with ``string`` in ``other_types``)
+    accepts a value of any of its types, so ``"auto"`` stays writable there.
     """
     expected = _DECLARED_VALUE_TYPES.get(entry.type)
     if expected is None:
         return None
+    for other in entry.other_types:
+        extra = _DECLARED_VALUE_TYPES.get(other)
+        if extra is None:
+            return None
+        expected = expected + extra
     if value is None and entry.nullable:
         return None
     # bool is a subclass of int, so an integer leaf would silently accept `true`.
@@ -909,6 +1163,32 @@ def _declared_type_error(entry: ConfigEntry, value: object) -> str | None:
         return f"expected {entry.type}, got boolean"
     if not isinstance(value, expected):
         return f"expected {entry.type}, got {type(value).__name__}"
+    return None
+
+
+def _extraction_model_error(key: str, value: object) -> str | None:
+    """Why Settings would refuse this write of ``knowledge.extraction_model``, or None.
+
+    The installer copies that id into the knowledge agent's spec as written, so
+    ``config set`` holds it to the Settings PATCH spec's length bound and pattern,
+    whether it is set by its dotted key or inside a ``knowledge`` object
+    (kirodotdev/KiroCrew#30336). The other model pins keep taking any id: one no
+    catalog claims, such as a regional Bedrock profile, reaches the wire unchanged.
+    """
+    if key == "knowledge" and isinstance(value, dict):
+        value = value.get("extraction_model")
+    elif key != "knowledge.extraction_model":
+        return None
+    if not isinstance(value, str):
+        return None
+    # Deferred: it loads the whole dashboard handlers package, which only this key pays for.
+    from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
+
+    spec = _EDITABLE_CONFIG["knowledge.extraction_model"]
+    if len(value) > spec["max_len"]:
+        return f"must be at most {spec['max_len']} characters"
+    if not re.fullmatch(spec["pattern"], value):
+        return f"{value!r} is not a model id Settings accepts (a bare id, or provider/model)"
     return None
 
 

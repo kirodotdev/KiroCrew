@@ -1,11 +1,9 @@
 """The conductor work board's vocabularies, one spelling for every reader.
 
-Pure data, deliberately outside ``kiro_crew.crew_log``: the ``work/recorded`` entry
-type, the work-ledger store (``kiro_crew.work_ledger``) and the tool schemas
-(``kiro_crew.validation``) all import these tuples, and the last two sit on the
-gateway's boot path while the crew log's storage subsystem must stay unloaded
-until an entry point reaches storage. A leaf with no imports of its own is the
-only place all three can share without one of them dragging the others in.
+Pure data in a leaf with no imports of its own, outside ``kiro_crew.crew_log``: the
+``work/recorded`` entry type, the store (``kiro_crew.work_ledger``) and the tool
+schemas (``kiro_crew.validation``) all import it, and the last two sit on the
+gateway's boot path, where the crew log's storage subsystem must stay unloaded.
 """
 
 from __future__ import annotations
@@ -14,14 +12,13 @@ import hashlib
 from typing import Any, NotRequired, TypedDict
 
 #: The projection that folds ``work/recorded`` into a board, as its readers name it.
-#: Here rather than in ``crew_log``: a reader outside that package needs the name to
-#: ask for the fold, and this module is the leaf it can reach without pulling the log's
-#: storage subsystem onto the gateway's boot path. Pinned against the kernel's own
-#: registry by ``test_pipeline_board_wiring``, because a rename there would otherwise
-#: make every such read answer "no board" instead of failing.
+#: Pinned against the kernel's registry by ``test_pipeline_board_wiring``: a rename
+#: there would otherwise make every read answer "no board" instead of failing.
 WORK_FOLD_NAME: str = "work"
 
-WORK_ACTORS: tuple[str, ...] = ("conductor", "worker")
+#: ``person`` is the dashboard owner steering a worker from a Crew Mode chat's side
+#: panel: it writes one ``steer`` event on the worker's item and sets no field.
+WORK_ACTORS: tuple[str, ...] = ("conductor", "worker", "person")
 WORK_ACTIONS: tuple[str, ...] = (
     "create",
     "goal",
@@ -31,22 +28,35 @@ WORK_ACTIONS: tuple[str, ...] = (
     "close",
     "accept",
     "report",
+    "steer",
+    "retire",
+    "destroy",
 )
 WORK_ITEM_STATES: tuple[str, ...] = ("open", "accepted", "rejected", "abandoned")
 WORK_VERDICTS: tuple[str, ...] = ("pass", "fail", "pending", "refused", "error")
-WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "question")
-#: Worker statuses whose ARRIVAL needs the conductor, and the whole set that wakes
-#: it: ``done`` is a claim it must verify, ``blocked`` an external dependency it must
-#: clear, ``question`` a decision only it can make. ``progress`` is deliberately
-#: absent -- it advances the board and reaches the conductor on the next real wake,
-#: and charging a turn for it rebuilds the polling the watch exists to remove.
+#: Every status a worker report may CARRY, so every reader of a stored report (the
+#: crew-log entry types, the fold, the metrics series, the boards) knows each one.
+#: Which of them a report may be WRITTEN with is :func:`worker_statuses`: ``reply``
+#: is admitted only while :data:`WORK_REMOTE_DISPATCH_SETTING` is on.
+WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "question", "reply")
+#: Worker statuses whose arrival wakes the conductor: ``done`` is a claim to verify,
+#: ``blocked`` a dependency to clear, ``question`` a decision only it can make, and
+#: ``reply`` an answer to its follow-up that it must relay
+#: (rfc-conductor-remote-dispatch §3b). ``progress`` is absent: it reaches the
+#: conductor on the next real wake, and waking for it would rebuild polling.
 #:
-#: Here rather than in one of its two readers because BOTH need it and each sits
-#: where the other may not be imported: ``ledger_wake`` is the watch's pure gate and
-#: must not grow imports, and ``conductor_wake`` is reachable from the gateway's boot
-#: path. Two spellings of this set would let a trigger push for news the gate then
-#: refuses, which is precisely the wake nobody can see is wasted.
-WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question")
+#: Shared here by ``ledger_wake`` (the watch's pure gate) and ``conductor_wake``
+#: (on the boot path), which may not import each other; two spellings would let a
+#: trigger push news the gate refuses. Both read it through :func:`wake_statuses`,
+#: which drops ``reply`` while the preview is off.
+WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question", "reply")
+#: The statuses only the remote-dispatch Feature Preview admits. With
+#: :data:`WORK_REMOTE_DISPATCH_SETTING` off, a report carrying one is refused as an
+#: unknown status and no wake reads it, exactly as before the status existed.
+WORK_REMOTE_DISPATCH_STATUSES: tuple[str, ...] = ("reply",)
+#: The config key of the remote-dispatch Feature Preview (default off), read per call
+#: by ``work_preview.remote_dispatch``.
+WORK_REMOTE_DISPATCH_SETTING: str = "work_ledger.remote_dispatch"
 #: When a ``blocked`` or ``question`` report waits on a person, as data rather than
 #: prose: ``approval`` (a tool approval timed out or waits) or ``needs_human`` (only a
 #: person can unblock it). A work-ledger watch whose open items all carry one,
@@ -54,49 +64,130 @@ WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question")
 WORK_BLOCKED_REASONS: tuple[str, ...] = ("approval", "needs_human")
 #: The statuses a ``reason`` may ride on.
 WORK_REASON_STATUSES: tuple[str, ...] = ("blocked", "question")
-WORK_EVENT_KINDS: tuple[str, ...] = ("create", "bind", "report", "decision", "verdict", "close")
-#: Item records the crew log's ``work`` fold may HOLD for one board at once -- a
-#: memory bound on the fold, not a bound on the board's life. The fold forgets an
-#: item once it is closed and older than :data:`WORK_CLOSED_WINDOW` other closed
-#: items, so what it holds is the open items (at most 32, the store's open cap) plus
-#: that window; this ceiling is never reached by a board the store admits and only
-#: guards a log something else wrote. Also the highest goal ``item_cap`` the store
-#: accepts. It lives here because neither the fold nor the store may import the other.
+#: ``steer`` is a person's own text typed into a worker (actor ``person``). A person's
+#: steer outranks the conductor's decision: the conductor reads new steer events
+#: before it decides and never overrules them. ``retire`` is the hub moving a remote
+#: binding into the item's history (rfc-conductor-remote-dispatch §5b); only the
+#: gateway writes it, and only with :data:`WORK_REMOTE_DISPATCH_SETTING` on.
+#: ``destroy`` marks a retired binding ``destroyed`` once its peer slot is closed,
+#: under the same switch.
+WORK_EVENT_KINDS: tuple[str, ...] = (
+    "create",
+    "bind",
+    "report",
+    "decision",
+    "verdict",
+    "close",
+    "steer",
+    "retire",
+    "destroy",
+)
+#: Item records the ``work`` fold may hold for one board at once: a memory bound on
+#: the fold, not on the board's life. The fold holds the open items (at most 32) plus
+#: :data:`WORK_CLOSED_WINDOW` closed ones, so a board the store admits never reaches
+#: this; it guards a log something else wrote. Also the highest goal ``item_cap``
+#: the store accepts. Here because the fold and the store may not import each other.
 WORK_STORED_ITEM_LIMIT: int = 256
 #: Closed items the ``work`` fold keeps whole, newest-closed last, for the surfaces
 #: that draw recent history. Older closed items leave the fold; their full history
 #: stays in the crew log.
 WORK_CLOSED_WINDOW: int = 32
-#: Ids of items the ``work`` fold has forgotten, oldest first, kept so an entry for one
-#: that is folded late (a worker report in a unit read after the close) is recognised
-#: and dropped instead of parked. Ids only; past the cap the oldest id of a CREATED item
-#: goes first, and a late entry for an id past it parks and counts in ``omitted`` like
-#: any unknown id. A baseline-born id goes only once the set holds nothing else, since a
-#: late baseline for one would materialise the item again.
+#: Ids of items the ``work`` fold has forgotten, oldest first, so a late entry for one
+#: is dropped instead of parked. Past the cap the oldest CREATED id goes first (a late
+#: entry for it then parks and counts in ``omitted``); a baseline-born id goes last,
+#: since a late baseline for it would materialise the item again.
 WORK_TOMBSTONE_LIMIT: int = 4096
+
+#: The conducting depth cap's default, bounds and config key (meaning documented on
+#: ``work_ledger_records.MAX_DEPTH``). Here because the config package needs them
+#: and may not import the store.
+WORK_MAX_DEPTH_DEFAULT: int = 2
+WORK_MAX_DEPTH_MIN: int = 2
+WORK_MAX_DEPTH_MAX: int = 10
+WORK_MAX_DEPTH_SETTING: str = "work_ledger.max_depth"
 #: Fields a conductor action may set on an item. What the write route logs from
 #: the committed item is what the fold applies to the rebuilt one; the two read
 #: this one table so they cannot drift apart. A worker's fields are fixed.
 WORK_CONDUCTOR_FIELDS: dict[str, tuple[str, ...]] = {
     "create": ("title", "acceptance", "round"),
-    "bind": ("worker_session_key",),
+    "bind": ("worker_session_key", "worker_instance_id"),
     "decide": ("decision", "round"),
     "verdict": ("verdict", "fails"),
     "close": ("state", "decision"),
     "accept": ("acceptance",),
+    "retire": ("worker_session_key", "worker_instance_id", "retired_bindings"),
+    "destroy": ("retired_bindings",),
 }
 
 
-# --------------------------------------------------------------------------
-# the rendered board's SHAPE, for readers that want it checked
-# --------------------------------------------------------------------------
-#
-# Here for the same reason the tuples above are: every reader of a rendered work
-# board shares one spelling of it. ``_work_render`` narrows its return to
-# :class:`WorkBoardView`, so a reader that maps a board onto a dashboard's own
-# contract type has BOTH ends checked by mypy, and a field renamed here is an error
-# at every such reader rather than a key that silently reads as missing. A reader
-# that does not want the checking is unaffected -- these are annotations only.
+#: Most retired bindings an item keeps; past it the oldest destroyed one goes first.
+MAX_RETIRED_BINDINGS = 8
+
+#: The states a retired binding may hold.
+RETIRED_BINDING_STATES: frozenset[str] = frozenset({"retired", "destroyed"})
+
+#: The remote pair's caps, one definition for the bind that checks them and the
+#: retired history that keeps them (here, since both the store and the fold read
+#: them and neither may import the other): a peer slot key, the cap ``bind`` puts
+#: on a worker key, and a crew id, the cap the instance registry puts on an id.
+WORK_MAX_PEER_SLOT_CHARS: int = 512
+WORK_MAX_INSTANCE_ID_CHARS: int = 128
+#: An artifact value's cap, so a retired worker's pushed branch is kept whole.
+WORK_MAX_ARTIFACT_VALUE_CHARS: int = 512
+#: A retire reason and a stamp, as stored on a retired binding.
+WORK_MAX_RETIRE_REASON_CHARS: int = 64
+WORK_MAX_STAMP_CHARS: int = 64
+
+#: Each retired binding's text fields and their caps.
+_RETIRED_BINDING_TEXT: dict[str, int] = {
+    "worker_session_key": WORK_MAX_PEER_SLOT_CHARS,
+    "worker_instance_id": WORK_MAX_INSTANCE_ID_CHARS,
+    "branch": WORK_MAX_ARTIFACT_VALUE_CHARS,
+    "reason": WORK_MAX_RETIRE_REASON_CHARS,
+    "retired_at": WORK_MAX_STAMP_CHARS,
+    "destroyed_at": WORK_MAX_STAMP_CHARS,
+}
+
+
+def coerce_retired_bindings(raw: Any) -> list[dict[str, Any]]:
+    """Stored or folded *raw* as a clean retired-binding list. NEVER raises.
+
+    An entry without both halves of the pair, or with an unknown state, is
+    dropped; a text field that is not a string reads as ``None``.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in raw[-MAX_RETIRED_BINDINGS:]:
+        state = entry.get("state") if isinstance(entry, dict) else None
+        if not isinstance(state, str) or state not in RETIRED_BINDING_STATES:
+            continue
+        clean: dict[str, Any] = {"state": entry["state"]}
+        for name, cap in _RETIRED_BINDING_TEXT.items():
+            value = entry.get(name)
+            clean[name] = value[:cap] if isinstance(value, str) and value else None
+        if clean["worker_session_key"] and clean["worker_instance_id"]:
+            out.append(clean)
+    return out
+
+
+def worker_statuses(remote_dispatch: bool) -> tuple[str, ...]:
+    """The statuses a ``work_report`` may be written with, in declaration order."""
+    if remote_dispatch:
+        return WORK_WORKER_STATUSES
+    return tuple(s for s in WORK_WORKER_STATUSES if s not in WORK_REMOTE_DISPATCH_STATUSES)
+
+
+def wake_statuses(remote_dispatch: bool) -> tuple[str, ...]:
+    """The worker statuses whose arrival wakes the conductor, in declaration order."""
+    if remote_dispatch:
+        return WORK_WAKE_STATUSES
+    return tuple(s for s in WORK_WAKE_STATUSES if s not in WORK_REMOTE_DISPATCH_STATUSES)
+
+
+# The rendered board's shape. ``_work_render`` returns :class:`WorkBoardView`, so
+# mypy checks both ends of a reader that maps a board onto its own contract type,
+# and a renamed field is an error rather than a key that silently reads as missing.
 
 
 class WorkBoardEvent(TypedDict):
@@ -166,11 +257,8 @@ class WorkBoardConductor(TypedDict):
 
 class WorkBoardView(TypedDict):
     """What the ``work`` fold renders: the header, every item in creation order, and
-    the count of entries it dropped.
-
-    ``omitted`` is part of the contract rather than an internal detail: an item missing
-    from a board is not recoverable by whoever reads the board, so the count has to be
-    able to travel to every surface that renders one.
+    ``omitted``, the count of dropped entries, which every surface must be able to
+    show because a reader cannot recover a missing item.
     """
 
     conductor: WorkBoardConductor
@@ -204,27 +292,20 @@ class WorkBoardForgotten(TypedDict):
 
 
 def work_event_id(ts: str, item_id: str, kind: str, text: str, *, status: str | None = None) -> str:
-    """Content-addressed id for one work event line. THE formula, with one home.
+    """Content-addressed id for one work event line. The one copy of the formula.
 
-    It lives in this leaf because BOTH sides need it and neither may import the other.
-    The store writes these ids; the crew-log fold reproduces them for an entry that
-    carries none, and the rebuild's completeness checks match events BY id -- so two
-    spellings of this formula would let a stored id and a folded id drift apart
-    silently, which is the one divergence those checks cannot detect. The fold is
-    forbidden from importing the store directly (the work-ledger store has a fixed
-    list of permitted importers, so that a board's identity stays server-resolved),
-    and a pure content hash is not an identity question, so widening that list for it
-    would trade a real boundary for a convenience. A shared leaf costs neither.
+    The store writes these ids and the crew-log fold reproduces them for entries
+    without one; the rebuild matches events by id, so two spellings could drift
+    undetected. The fold may not import the store (it has a fixed importer list),
+    hence this leaf.
 
-    Pipe-separated rather than concatenated, matching Issue Radar's ``_event_id``: bare
-    concatenation lets two different tuples produce one string, so two distinct events
-    could collapse into each other on read.
+    Pipe-separated, as in Issue Radar's ``_event_id``, so two different tuples
+    cannot concatenate to one string.
 
-    ``status`` IS part of the identity. Timestamps are seconds-precision, so a
-    ``progress`` report and a ``blocked`` report with the same summary in the same second
-    would otherwise share an id, and first-seen-wins dedupe would drop the transition --
-    the one line the conductor most needs to see. ``None`` renders as the empty string,
-    so every non-report kind keeps a stable formula.
+    ``status`` is part of the identity: timestamps are seconds-precision, so a
+    ``progress`` and a ``blocked`` report with the same summary in one second would
+    otherwise share an id and dedupe would drop the transition. ``None`` renders as
+    the empty string.
     """
     raw = f"{ts}|{item_id}|{kind}|{status or ''}|{text}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:16]

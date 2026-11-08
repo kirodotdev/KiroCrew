@@ -310,11 +310,14 @@ describe('useWebSocket frame router', () => {
       ws.simulateMessage({ type: 'context_usage', data: { slot: ACTIVE, pct: 42, used_tokens: 4200, window_tokens: 10000 } })
       ws.simulateMessage({ type: 'chat_status', data: { slot: ACTIVE, status: 'Compacting…' } })
     })
+    // The status line lands with the frame's stream flush.
+    act(() => { const pending = rafCbs; rafCbs = []; pending.forEach(cb => cb(0)) })
     expect(chat().slotContextPct[ACTIVE]).toBe(42)
     expect(chat().slotStatusDetail[ACTIVE]).toMatchObject({ kind: 'thinking', label: 'Compacting…' })
 
     // A status frame with no text is ignored rather than clearing the detail.
     act(() => { ws.simulateMessage({ type: 'chat_status', data: { slot: ACTIVE } }) })
+    act(() => { const pending = rafCbs; rafCbs = []; pending.forEach(cb => cb(0)) })
     expect(chat().slotStatusDetail[ACTIVE]).toMatchObject({ kind: 'thinking', label: 'Compacting…' })
   })
 
@@ -437,6 +440,37 @@ describe('useWebSocket frame router', () => {
     expect(testQueryClient.getQueryData(['session-automation', ACTIVE])).toBeNull()
   })
 
+  it('keeps a running loop the slot cold read landed while the seed was in flight', async () => {
+    // The chat page's cold read writes only the per-slot query, so a slot
+    // the seed protects because of that read must still reach the map the
+    // sidebar reads, or its row loses the loop chip the header still shows.
+    const loop = {
+      id: 'loop-1', slot_key: ACTIVE, message: 'go', idle_secs: 60,
+      active: true, cycle_count: 95, max_cycles: 400, last_fire_ts: 0,
+    }
+    let resolveList!: (value: { enabled: boolean; loops: unknown[] }) => void
+    vi.mocked(api.autonudgeList).mockImplementationOnce(() => new Promise(resolve => { resolveList = resolve }))
+    renderHook(() => useWebSocket(), { wrapper })
+    await act(async () => {
+      WS_INSTANCES[0].simulateOpen()
+      await Promise.resolve()
+    })
+
+    act(() => {
+      testQueryClient.setQueryData(['session-automation', ACTIVE], normalizeAutomationRecord(loop))
+    })
+    await act(async () => {
+      resolveList({ enabled: true, loops: [loop] })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(chat().automations[ACTIVE]).toMatchObject({
+      kind: 'legacy_goal_loop', active: true, cycleCount: 95,
+    })
+  })
+
   it('ignores an autonudge frame with no slot', () => {
     const { ws } = mount()
     act(() => { ws.simulateMessage({ type: 'autonudge_state', data: { event: 'fired' } }) })
@@ -462,19 +496,6 @@ describe('useWebSocket frame router', () => {
     expect(dash().refreshTrigger).toBe(before + 2)
   })
 
-  it('tracks aggregate subagent status and per-agent text', () => {
-    const { ws } = mount()
-    act(() => {
-      ws.simulateMessage({ type: 'subagent_status', data: { slot: ACTIVE, running: 2, agents: [] } })
-      ws.simulateMessage({ type: 'subagent_text', data: { slot: ACTIVE, id: 'ag-1', text: 'progress' } })
-      // Neither arm dispatches without the identifying fields.
-      ws.simulateMessage({ type: 'subagent_status', data: { running: 5 } })
-      ws.simulateMessage({ type: 'subagent_text', data: { slot: ACTIVE, text: 'no id' } })
-    })
-    expect(dash().subagentRunning[ACTIVE]).toBe(2)
-    expect(dash().subagentText[ACTIVE]?.['ag-1']).toBe('progress')
-  })
-
   it('re-broadcasts every channel frame on one window event', () => {
     const { ws } = mount()
     const kinds: string[] = []
@@ -496,9 +517,9 @@ describe('useWebSocket frame router', () => {
     }
   })
 
-  it('re-broadcasts tool_call so the Browser panel can open on a browse', () => {
-    // ChatPage listens for this to auto-open the panel when a shell call turns out
-    // to be `playwright-cli`. Without the re-broadcast the listener is live code
+  it('re-broadcasts tool_call as a window event for page-level listeners', () => {
+    // Page-level listeners react to tool calls as they stream (the transcript's
+    // activity cues). Without the re-broadcast the listener is live code
     // that can never fire, which is exactly how the previous frame-based trigger
     // broke when its producer was removed.
     const { ws } = mount()
@@ -511,12 +532,12 @@ describe('useWebSocket frame router', () => {
           type: 'tool_call',
           data: {
             slot: ACTIVE, tool: 'execute_bash', kind: 'tool', purpose: 'open a page',
-            input_preview: 'playwright-cli open https://example.com', is_shell: true,
+            input_preview: 'curl -sS https://example.com', is_shell: true,
           },
         })
       })
       expect(seen).toHaveLength(1)
-      expect((seen[0] as { input_preview: string }).input_preview).toContain('playwright-cli')
+      expect((seen[0] as { input_preview: string }).input_preview).toContain('curl')
     } finally {
       window.removeEventListener('kirocrew-tool-call', onTool)
     }
@@ -618,5 +639,16 @@ describe('useWebSocket frame router', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it("a peer's steer echo keeps its gateway-set sender (meta.relay), and drops a malformed one", () => {
+    const { ws } = mount()
+    act(() => {
+      ws.simulateMessage({ type: 'steer_push', data: { slot: ACTIVE, content: 'peer steer', ts: '30', steerState: 'consumed', meta: { relay: { senderKey: 'chat-1', via: 'session_send' } } } })
+      ws.simulateMessage({ type: 'steer_push', data: { slot: ACTIVE, content: 'bad relay', ts: '31', meta: { relay: { via: 'session_send' } } } })
+    })
+    const steers = chat().messages.filter(m => m.meta?.steer === true)
+    expect(steers[0]?.meta?.relay).toEqual({ senderKey: 'chat-1', via: 'session_send' })
+    expect(steers[1]?.meta?.relay).toBeUndefined()
   })
 })

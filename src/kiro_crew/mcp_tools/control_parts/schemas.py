@@ -35,6 +35,7 @@ from kiro_crew.monitoring.registry import (
     publicly_armable_kinds,
     publicly_armable_objectives,
 )
+from kiro_crew.session_directive import MAX_DIRECTIVE_CHARS
 
 #: The facade's logger: records from this owner keep the module name they always carried,
 #: so log filters and captures keyed on it still match.
@@ -48,6 +49,15 @@ logger = logging.getLogger("kiro_crew.mcp_tools.control")
 #: ``probes.WORK_LEDGER`` (the kind the service resolves), which
 #: ``test_the_watch_field_is_spelled_the_same_at_every_layer`` pins.
 _WATCH_WORK_LEDGER = "work-ledger"
+
+#: The message size ``monitor_start`` and ``monitor_update`` advertise. Their request
+#: travels back inside their own tool result, which ``session_directive.encode`` caps at
+#: ``MAX_DIRECTIVE_CHARS`` encoded characters together with the confirmation text and the
+#: other arguments, so the field's own entry bound is far more than fits. Sized below the
+#: smallest measured fit for instruction text: a gated monitor_start carrying a banner of
+#: the longest allowed length (``MAX_BANNER_CHARS``).
+#: ``test_directive_tool_size_limits.py`` fails if a message this long stops fitting.
+_MONITOR_MESSAGE_BUDGET_CHARS = 1500
 
 #: The sentences in the two monitoring descriptors that decide WHICH SIDE has to
 #: justify itself before a supported pull request is armed.
@@ -94,8 +104,7 @@ def _prefers_structured_arming() -> bool:
     from needing a gateway restart: ``mcp_tools.build_tool_list`` rebuilds the
     descriptors per call and deliberately does not cache them. It does NOT
     reach a session that is already open, because kiro-cli caches a session's
-    tool list for that session's life -- the same limitation
-    ``mcp_tools/browser.py`` records for ``dashboard.use_builtin_browser``.
+    tool list for that session's life.
 
     Fails to the OFF position on any error: off is the shipped behaviour, and a
     config a gateway cannot parse must not silently re-point every arming
@@ -170,7 +179,12 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             "description": (
                 "Pause execution for a specified duration while preserving full session "
                 "context. Use when waiting for external systems (code review, CI "
-                "pipeline, deployment). Max 1800s (30 min)."
+                "pipeline, deployment). Range 60-1800s (max 30 min). After it "
+                "returns, check the results yourself. A wait can end before its "
+                "deadline (the user's End-wait button or a mid-turn steer stops "
+                "it), so read the returned end reason instead of assuming the full "
+                "duration elapsed, and do not re-issue a wait that was ended "
+                "deliberately."
             ),
             "inputSchema": {
                 "type": "object",
@@ -248,7 +262,9 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "into a dedicated agent session later. Returns the webhook URL and session "
                 "key. Use this when you need to hand off to an external process (e.g. "
                 "submit a code review, then wait for the review bot to call back with results). "
-                "The external system POSTs to the returned URL with the results."
+                "The external system POSTs to the returned URL with the results. "
+                "Call it before ending a session whose ongoing workflow another "
+                "system will call back on."
             ),
             "inputSchema": {
                 "type": "object",
@@ -298,8 +314,12 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "answer in time, or replied in chat (then read their next message), "
                 "or why no card could be shown (then ask in plain text). "
                 "Use it when a decision is genuinely "
-                "needed before the work can continue (which of these approaches, "
-                "which account, confirm before I refactor). When you are ending "
+                "needed before the work can continue (which account, a sign-in, "
+                "approval to delete someone else's work). Default to silence: "
+                "decide everything you can read, run or infer yourself and say in "
+                "one line what you picked; never ask just because a choice exists "
+                "or to confirm a step you already recommend. "
+                "When you are ending "
                 "your turn anyway a final [OPTIONS: a | b | c] tag is cheaper and "
                 "renders on every channel — the card's advantage is several "
                 "questions at once, multi-select and the free-text field. "
@@ -491,7 +511,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "actively-used session. Works from dashboard chat, Slack "
                 "threads, Discord DMs, and Webex conversations. Put the check instructions and "
                 "the exit "
-                "condition in the message, then END YOUR TURN — the loop wakes you on the "
+                "condition in the message, then reply with one line and END YOUR TURN — the "
+                "loop wakes you on the "
                 "interval. When the exit condition is met (or the user says "
                 "stop), call autonudge_stop — reaching max_cycles is a runaway "
                 "backstop, NOT a successful finish. From dashboard, Slack, or "
@@ -534,7 +555,14 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         "type": "string",
                         "description": (
                             "The recurring instruction to re-inject each cycle, "
-                            "including what to check and when to stop (max 8000 chars)"
+                            "including what to check and when to stop. Keep it under "
+                            f"about {_MONITOR_MESSAGE_BUDGET_CHARS:,} characters of plain "
+                            "text: the request returns inside this tool's result, capped "
+                            f"at {MAX_DIRECTIVE_CHARS:,} encoded characters shared with the "
+                            "confirmation, the banner and the judge brief, and a non-ASCII "
+                            "character takes six or more. A longer request is refused and "
+                            "nothing is armed, so put a long plan in a file and point the "
+                            "message at it"
                         ),
                     },
                     "interval_secs": {
@@ -605,10 +633,12 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         "type": "string",
                         "description": (
                             "Optional SHORT line shown in the transcript row "
-                            "instead of the full message (max 500 chars). The "
+                            "instead of the full message (max 500 chars). It shares "
+                            f"the {MAX_DIRECTIVE_CHARS:,}-character result cap with `message`, "
+                            "and a non-ASCII character takes six or more. The "
                             "model still receives `message` whole every cycle — "
                             "this changes only what is stored and displayed. Set "
-                            "it whenever `message` is long: a multi-KB "
+                            "it whenever `message` is long: a long "
                             "instruction is otherwise re-stored and re-broadcast "
                             "as a transcript row on every single cycle. "
                             'Something like "watching PR #123 for CI" is '
@@ -720,8 +750,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     "message": {
                         "type": "string",
                         "description": (
-                            "Replacement instruction for future cycles "
-                            "(max 8000 chars). Omit to leave it unchanged"
+                            "Replacement instruction for future cycles. Keep it under "
+                            f"about {_MONITOR_MESSAGE_BUDGET_CHARS:,} characters of plain "
+                            "text: the update returns inside this tool's result, capped at "
+                            f"{MAX_DIRECTIVE_CHARS:,} encoded characters, and a non-ASCII "
+                            "character takes six or more. A longer update is refused and "
+                            "nothing changes, so put a long plan in a file and point the "
+                            "message at it. Omit to leave it unchanged"
                         ),
                     },
                     "interval_secs": {
@@ -790,7 +825,10 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                         "type": "string",
                         "description": (
                             "Replacement SHORT transcript row for future cycles "
-                            "(max 500 chars); the model still receives `message` "
+                            "(max 500 chars; it shares the "
+                            f"{MAX_DIRECTIVE_CHARS:,}-character result cap with `message`, and "
+                            "a non-ASCII character takes six or more); the model "
+                            "still receives `message` "
                             'whole. Pass "" to CLEAR it and go back to showing '
                             "the full message. Omit to leave it unchanged. A "
                             "non-blank banner on a channel-bound loop "

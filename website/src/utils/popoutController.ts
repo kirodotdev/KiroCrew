@@ -23,8 +23,11 @@
  * BroadcastChannel.
  */
 
+import type { ChatLaunchOptions } from '../app-sdk'
 import { i18nT } from '../i18n/t'
 import { withBase } from '../lib/basePath'
+import { isElectron } from '../lib/electron'
+import { isDesktopAppPane } from '../lib/hostRelay'
 
 /** Heartbeat cadence (ms) for the main window's liveness ping. */
 export const HEARTBEAT_MS = 5_000
@@ -48,8 +51,41 @@ export const NAV_CLAIM_MS = 250
 export type NavIntent = {
   /** Destination route in the main dashboard, e.g. '/chat' or '/artifacts'. Must not carry a query string. */
   path: string
+  /**
+   * Query string to replay onto `path` in the main window, with its leading
+   * `?`. An app pop-out forwards whatever navigation the app issued, and the
+   * app's chat exits spell their options as query flags (`?autoSend=1`,
+   * `?newSession=1`, `?history=1`) that ChatPage reads on arrival; a forwarder
+   * that knows the specific intent (an artifact's "draft in chat") leaves this
+   * unset and names its fields below.
+   */
+  search?: string
   /** Chat slot to activate before navigating. */
   slotKey?: string
+  /**
+   * The Redux `pendingInput` hand-off the forwarding window staged before it
+   * navigated: the prompt a page puts in the store for ChatPage's launch intake
+   * to pick up (the Projects page's "optimize this plan", the Dev Fleet page's
+   * "open a session on this worktree"). Store state is per window, so it rides
+   * the message and the main window re-dispatches it before navigating.
+   */
+  pendingInput?: string
+  /**
+   * Error prompts staged in the forwarding window before it navigated. The
+   * hand-off queue lives in sessionStorage, which is scoped to one window, so
+   * the main window must re-stage and announce these before navigating.
+   */
+  errorHandoffs?: string[]
+  /**
+   * An app's chat launch intent, claimed off the forwarding window: what the
+   * App SDK's `openChat` stages on `window.__mc_chat_launch` before it
+   * navigates to `/chat` — the message to send (or to draft, with `autoSend:
+   * false`), the agent for a new session, the existing session to send into.
+   * The window global is per window like the store, so the main window
+   * re-stages it on its own `window` before navigating, where ChatPage's launch
+   * intake reads it. The SDK's own type, less the `ts` the window slot adds.
+   */
+  chatLaunch?: ChatLaunchOptions
   /** Composer prefill to seed for a slot (rides the message — sessionStorage is per-window).
    *  `prompt` is the whole composer to seed. `append`, when set, is just the text
    *  this hand-off adds: if the destination composer is already open on that slot,
@@ -147,6 +183,12 @@ export interface PopoutController {
   isSelfPopout(id: string): boolean
   /** From inside a popout: focus the opener and close; navigate to the main view when close is refused. */
   returnSelfToMain(): void
+  /**
+   * From inside a popout whose entity is gone: focus the opener and close; when
+   * close is refused, navigate to the main view with no entity named, since a
+   * deep link to the gone entity would only report it missing.
+   */
+  closeSelf(): void
   /** Register THIS window as the live popout for `id` (responder role). Returns cleanup. */
   registerPopout(id: string): () => void
   /**
@@ -210,6 +252,12 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
   function logWarn(msg: string): void {
     // eslint-disable-next-line no-console
     console.warn(`[${logLabel}] ${msg}`)
+  }
+
+  function tellUser(message: string): void {
+    try {
+      window.alert(message)
+    } catch { /* alert unavailable (e.g. sandboxed frame) — the warn before it still records it */ }
   }
 
   function recomputeSnapshot(): void {
@@ -359,15 +407,24 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
     const left = Math.round(availLeft + ((sc?.availWidth ?? 1280) - w) / 2)
     const top = Math.round(availTop + Math.max(0, ((sc?.availHeight ?? 900) - h) / 2))
     const features = `popup=yes,width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`
+    // A crew's pane in the desktop app runs on the crew's tunnel port, so the
+    // window-open handler would hand this URL, without its token, to the
+    // system browser and return no window. Refuse before that happens.
+    if (isDesktopAppPane()) {
+      logWarn(`popout ${id} not opened — a crew pane in the desktop app cannot open its own window`)
+      tellUser(i18nT('utils.popoutController.crew_pane_cannot_pop_out_in_desktop_app'))
+      return
+    }
     const win = window.open(buildUrl(id, title), windowName(id), features)
     if (!win) {
-      // Popup blocker (or policy) vetoed the window. Don't optimistically mark
-      // open — and don't fail silently: tell the user why nothing happened and
-      // leave an operator-diagnosable trail.
-      logWarn(`window.open blocked for ${id} — pop-up blocker or browser policy`)
-      try {
-        window.alert(i18nT('utils.popoutController.your_browser_blocked_the_pop_out_window_allow_po'))
-      } catch { /* alert unavailable (e.g. sandboxed frame) — the warn above still records it */ }
+      // The window was refused. Don't optimistically mark open — and don't fail
+      // silently: tell the user why nothing happened and leave an
+      // operator-diagnosable trail. The desktop app has no pop-up setting, so
+      // the browser advice is only given in a browser.
+      logWarn(`window.open refused for ${id} — ${isElectron ? 'desktop window-open handler' : 'pop-up blocker or browser policy'}`)
+      tellUser(i18nT(isElectron
+        ? 'utils.popoutController.desktop_app_could_not_open_pop_out_window'
+        : 'utils.popoutController.your_browser_blocked_the_pop_out_window_allow_po'))
       return
     }
     handles.set(id, win)
@@ -424,14 +481,22 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
    * instead. The control must always visibly do something.
    */
   function returnSelfToMain(): void {
+    leaveSelf(true)
+  }
+
+  function closeSelf(): void {
+    leaveSelf(false)
+  }
+
+  function leaveSelf(keepEntity: boolean): void {
     const id = selfId
     try { window.opener?.focus() } catch (e) { logDebug('opener focus vetoed', e) }
     try { window.close() } catch (e) { logDebug('self close vetoed', e) }
     // If we're still alive, the close was refused (no script opener). Fall back
-    // to becoming the main view for this entity.
+    // to becoming the main view, for this entity when it still exists.
     if (!window.closed) {
       if (id) post({ t: 'close', id }) // tell other windows this popout is gone
-      navigate(mainViewUrl(id))
+      navigate(mainViewUrl(keepEntity ? id : null))
     }
   }
 
@@ -464,17 +529,41 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
 
   /**
    * Absolute destination URL for the no-main fallback. The new tab is a fresh
-   * JS context with no Redux store to dispatch into, so the slot selection and
-   * composer prefill ride as query params the main `/chat` route already (or
-   * newly) understands: `?sid=` selects the slot, `?prefill=` seeds the
-   * composer for it.
+   * JS context with no Redux store or sessionStorage queue to receive, so the
+   * slot selection and the first available prompt ride as the query params the
+   * main `/chat` route already understands: `?sid=` selects the slot and
+   * `?prefill=` seeds its composer; with no slot named, `?new=1&prefill=` creates
+   * a session seeded with the prompt — the one cold-URL prompt channel the chat
+   * page honours (a bare `?prefill=` is an in-app sentinel there, and is dropped).
+   * A diagnostic always opens a fresh session, never the session the intent
+   * names, because keyed prefill for an existing session replaces that session's
+   * composer; the in-main path and ChatPage's own hand-off intake make the same
+   * choice. A replayed `search` is the starting point, so the flags the forwarding
+   * page spelled survive. A cold URL only seeds; it never auto-sends, and an app
+   * launch's agent, which has no URL form, is not carried. One prompt is all a
+   * URL carries, so the first error prompt wins over the rest and over a
+   * `pendingInput` sent alongside: a single click stages a single prompt, and
+   * two staged at once is a race this fallback does not try to preserve.
    */
   function navFallbackUrl(intent: NavIntent): string {
-    const params = new URLSearchParams()
-    if (intent.slotKey) params.set('sid', intent.slotKey)
-    if (intent.prefill) params.set('prefill', intent.prefill.prompt)
+    const params = new URLSearchParams(intent.search ?? '')
+    const hasErrorHandoff = Boolean(intent.errorHandoffs?.length)
+    if (hasErrorHandoff) {
+      params.delete('sid')
+      params.delete('slot')
+    } else if (intent.slotKey) {
+      params.set('sid', intent.slotKey)
+    }
+    const prompt = intent.errorHandoffs?.[0]
+      || intent.prefill?.prompt || intent.pendingInput || intent.chatLaunch?.message
+    if (prompt) {
+      params.set('prefill', prompt)
+      if (!params.get('sid') && !params.get('slot')) params.set('new', '1')
+    }
     const qs = params.toString()
-    return `${window.location.origin}${intent.path}${qs ? `?${qs}` : ''}`
+    // `intent.path` is in app space (`/chat`); the tab must open under the
+    // build base (`/crew/chat` on a sub-path build), as `navigate` above does.
+    return `${window.location.origin}${withBase(intent.path)}${qs ? `?${qs}` : ''}`
   }
 
   function forwardToMain(intent: NavIntent): void {
@@ -526,7 +615,7 @@ export function createPopoutController(opts: PopoutControllerOptions): PopoutCon
 
   return {
     subscribe, getSnapshot, openPopout, focusPopout, bringBack,
-    isSelfPopout, returnSelfToMain, registerPopout,
+    isSelfPopout, returnSelfToMain, closeSelf, registerPopout,
     forwardToMain, setNavIntentHandler,
     __setNavigateForTests, __setWindowOpenForTests, __resetForTests,
   }

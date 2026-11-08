@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         STRUCTURAL_TERMINAL_REASON,
         AgentTurnUsage,
         AutoNudgeService,
+        DirectiveTracker,
         GatewayOrchestrator,
         InboundMessage,
         LLMEvent,
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
         build_tool_gate,
         channel_inbound_permitted,
         compose_nudge_body,
+        directive_event_observer,
         disposition_for_stop_reason,
         is_monitor_completion_evidence,
         is_thread_incognito,
@@ -176,6 +178,13 @@ async def _fire_slack_inner_nudge(
         if self.autonudge_svc and wake_message is None:
             await self.autonudge_svc.remove(loop.id, stop_reason="slack_unroutable")
         return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
+    from kiro_crew.slack.channel_policy import channel_refusal
+
+    if channel_refusal(channel, operation="slack.autonudge", caller="autonudge"):
+        # The channel itself (``channels.posture.slack.allowed_channel_ids``): no
+        # unattended turn for a channel the policy does not admit.
+        logger.warning("AutoNudge: slack channel refused by policy for loop %s", loop.id)
+        return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
     if wake_message is None:
         # Snapshot message, sentinel AND config generation TOGETHER, before
         # the compose_nudge_body() await, so a concurrent PATCH during that
@@ -187,9 +196,13 @@ async def _fire_slack_inner_nudge(
         _fired_generation = loop.config_generation
         msg_body = await compose_nudge_body(_fired_message, _fired_sentinel, loop.slot_key)
         tagged = f"{nudge_cycle_header(loop)}\n{msg_body}"
+        # Skill triggers read the loop's own message, not the cycle header or
+        # the ledger snapshot Kiro Crew puts before it.
+        trigger_text: str | None = _fired_message
     else:
         tagged = wake_message
         _fired_generation = loop.config_generation
+        trigger_text = None
     # Fail closed: an unattended turn MUST run under the HookManager
     # PreToolUse governance gate (mirrors cron's default approval path).
     # Without ctx_builder there are no hooks to enforce the gate — skip.
@@ -241,6 +254,7 @@ async def _fire_slack_inner_nudge(
             provider_type=_provider,
             context_provider=client,
             resumed=_resumed,
+            skill_trigger_text=trigger_text,
         )
         _completion_hook = self._monitor_completion_hook(loop)
         if wake_message is not None and _completion_hook is None:
@@ -259,6 +273,18 @@ async def _fire_slack_inner_nudge(
                 ):
                     _raw_dispositions.append(disposition_for_stop_reason(event.stop_reason))
 
+            # The session-directive tools this turn calls (autonudge_stop,
+            # monitor_update, nothing_to_do, ...) only return a marker; this
+            # tracker applies it against THIS thread's session as the loop's
+            # own wake, as the structured branch's TurnDriver does below.
+            _directives = DirectiveTracker(
+                build_directive_consumer(
+                    session_key=key,
+                    sessions=self.sessions,
+                    wake_loop_id=loop.id,
+                ),
+                audit_caller="slack_nudge",
+            )
             response = await asyncio.wait_for(
                 stream_and_collect(
                     client,
@@ -271,10 +297,20 @@ async def _fire_slack_inner_nudge(
                     approval_policy=ToolApprovalPolicy.HOOK_BASED,
                     hooks=self.ctx_builder.hooks,
                     on_tool_approval=self._interactive_approval("autonudge", nudge_key=key),
+                    # A monitor wake runs with nobody watching: a governance
+                    # check that cannot be evaluated refuses the call.
+                    unattended=True,
                     on_complete=_capture_raw_completion,
+                    undelivered_watch_key=key,
+                    on_event=directive_event_observer(_directives),
                 ),
                 timeout=_NUDGE_TURN_TIMEOUT,
             )
+            if _directives.terminal_applied:
+                # A plain wake has no human-steer path. Its accepted quiet end
+                # is the reply, not any text the provider streams around it.
+                # Keep both Slack delivery and replay quiet.
+                response = ""
         else:
 
             async def _capture_completion(completion: Any) -> None:
@@ -292,10 +328,12 @@ async def _fire_slack_inner_nudge(
                     self.ctx_builder,
                     session_key=key,
                     agent=_get_agent_for_session(key) or "",
+                    unattended=True,
                 ),
                 directive_consumer=build_directive_consumer(
                     session_key=key,
                     sessions=self.sessions,
+                    wake_loop_id=loop.id,
                 ),
                 monitor_completion=(
                     (
@@ -311,6 +349,11 @@ async def _fire_slack_inner_nudge(
                     else None
                 ),
                 closing_gate=lambda: sessions.begin_turn(key),
+                undelivered_watch_key=key,
+                # Each session's own decline bucket and audit identity, as at the
+                # other channel constructors.
+                audit_session_key=key,
+                audit_agent=_get_agent_for_session(key) or "kirocrew",
             )
             response = await asyncio.wait_for(
                 driver.run(full_msg),
@@ -339,6 +382,7 @@ async def _fire_slack_inner_nudge(
             surface="monitor",
             agent_fallback=lambda: _get_agent_for_session(key),
             t0=_turn_t0,
+            trigger="monitor",
             usage=_turn_usage,
         )
     except SessionBusyError:
@@ -397,6 +441,7 @@ async def _fire_slack_inner_nudge(
             surface="monitor",
             agent_fallback=lambda: _get_agent_for_session(key),
             t0=_turn_t0,
+            trigger="monitor",
             usage=_turn_usage,
         )
         if wake_message is None:
@@ -572,10 +617,15 @@ async def _fire_dm_nudge(
         return _delivery_result(wake_message, MonitorDispatchResult.BUSY)
 
     if wake_message is None:
-        msg_body = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
+        fired_message = loop.message
+        msg_body = await compose_nudge_body(fired_message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"{nudge_cycle_header(loop)}\n{msg_body}"
+        # Skill triggers read the loop's own message, not the cycle header or the
+        # ledger snapshot Kiro Crew put before it, as on the Slack thread path.
+        trigger_text: str | None = fired_message
     else:
         tagged = wake_message
+        trigger_text = None
 
     try:
         conversation_id = await adapter.resolve_conversation(transport, sessions, key, principal)
@@ -592,6 +642,8 @@ async def _fire_dm_nudge(
     try:
         synthetic = adapter.build_inbound(principal, conversation_id, tagged)
         dispatch_kwargs: dict[str, Any] = {"interpret_commands": False}
+        if trigger_text is not None:
+            dispatch_kwargs["skill_trigger_text"] = trigger_text
         if adapter.supports_monitor:
             completion_hook = self._monitor_completion_hook(loop)
             if wake_message is not None and completion_hook is None:

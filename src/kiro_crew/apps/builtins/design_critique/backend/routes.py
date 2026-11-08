@@ -1062,7 +1062,7 @@ async def _discover_repo_job(value: str, vetted: list[str], git_bin: str) -> dic
     for ip in vetted:
         pin_args += ["-c", f"http.curloptResolve={pu.hostname}:{pin_port}:{ip}"]
     clone_id = uuid.uuid4().hex[:12]
-    target = _clones_dir() / clone_id
+    target = (await asyncio.to_thread(_clones_dir)) / clone_id
     rc, out, cerr = await _run(
         # Pin remote-helper transports off and pass the URL after `--` so a
         # crafted value can neither run a helper nor be read as an option.
@@ -1169,7 +1169,7 @@ async def _handle_discover(request: web.Request) -> web.Response:
                     "handle": "",
                 }
             )
-        git_bin = _tool("git")
+        git_bin = await asyncio.to_thread(_tool, "git")
         if git_bin is None:
             return web.json_response(
                 {

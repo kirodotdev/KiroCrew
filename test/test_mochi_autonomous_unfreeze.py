@@ -29,7 +29,7 @@ import pytest
 
 from kiro_crew.apps.builtins.mochi import hooks
 from kiro_crew.apps.builtins.mochi.queue_poller import QueuePoller
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class TestOwnerLoopNeverAwaitsPoll:
@@ -82,7 +82,12 @@ class TestSpawnCompletionWatcher:
                 return True
 
         runtime.watch_spawn_completion("id-1", _Spawn())
-        await asyncio.sleep(0.1)
+        # Wait on the watcher's observable result, not a fixed sleep: the probe
+        # runs on its own task, and a slow runner may not have reached it yet.
+        await async_wait_until(
+            lambda: released == ["id-1"],
+            describe=lambda: f"released={released!r}",
+        )
         assert released == ["id-1"]
 
     @pytest.mark.asyncio
@@ -161,6 +166,25 @@ class TestManagedRefsMaterialized:
         data: dict[str, Any] = {"tools": ["fs_read"]}
         _materialize_managed_refs(data)
         assert data.get("mcpServers", {}) == {}
+
+    @pytest.mark.parametrize("gate_open", [False, True])
+    def test_a_gated_server_is_copied_only_while_its_spec_gate_is_open(
+        self, monkeypatch, gate_open
+    ):
+        # A closed gate (computer use off) must not put kirocrew-computer in an app
+        # agent's spec or a policy grant: its backend advertises no tools and stalls
+        # KAS readiness. An explicitly granted opt-in server is still copied.
+        import kiro_crew.agent as agent_mod
+        from kiro_crew.apps.bridges import _managed_mcp_spec, _materialize_managed_refs
+
+        computer = agent_mod._MANAGED_MCP_SERVERS["kirocrew-computer"]
+        monkeypatch.setitem(computer, "spec_gate", lambda: gate_open)
+        data: dict[str, Any] = {"tools": ["@kirocrew-computer", "@kirocrew-work/list_work"]}
+        _materialize_managed_refs(data)
+
+        assert ("kirocrew-computer" in data["mcpServers"]) is gate_open
+        assert (_managed_mcp_spec("kirocrew-computer") is not None) is gate_open
+        assert data["mcpServers"]["kirocrew-work"]["args"][-1] == "mcp-work"
 
 
 def _ctx(tmp_path: Path) -> Any:

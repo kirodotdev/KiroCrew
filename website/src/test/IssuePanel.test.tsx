@@ -235,6 +235,33 @@ describe('IssuePanel', () => {
     expect(mockApi.fetchIssueSource).toHaveBeenLastCalledWith(openIssue.url, true)
   })
 
+  it('keeps keyboard focus on Refresh while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refresh.
+    renderPanel({ issues: [links[0]] })
+    await screen.findByText('Crash on empty label list')
+    let release: (value: typeof openIssue) => void = () => {}
+    mockApi.fetchIssueSource.mockImplementationOnce(
+      () => new Promise(resolve => { release = resolve }),
+    )
+
+    const button = screen.getByRole('button', { name: 'Refresh issue' })
+    button.focus()
+    fireEvent.click(button)
+    await screen.findByRole('button', { name: 'Refreshing issue' })
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(mockApi.fetchIssueSource).toHaveBeenCalledTimes(2)
+
+    release(openIssue)
+    await screen.findByRole('button', { name: 'Refresh issue' })
+    expect(button).not.toHaveAttribute('aria-disabled')
+    expect(button).toHaveFocus()
+  })
+
   it('renders the source strip only when the session has more than one issue', async () => {
     const single = renderPanel({ issues: [links[0]] })
     await screen.findByText('Crash on empty label list')
@@ -311,5 +338,55 @@ describe('IssuePanel', () => {
     // Localised: the longest catalogs wrap this label onto a second line.
     const retry = screen.getByRole('button', { name: 'Retry' })
     expect(retry).toHaveClass('shrink-0', 'whitespace-nowrap')
+  })
+})
+
+// Both rails follow the shared Tablist keyboard model: one Tab stop per rail
+// (the selected tab), and the arrow keys, Home and End move between tabs.
+describe('IssuePanel tab keyboard', () => {
+  beforeEach(() => {
+    mockApi.fetchIssueSource.mockReset()
+    mockApi.fetchIssueSource.mockImplementation((url: string) =>
+      Promise.resolve(url === closedIssue.url ? closedIssue : openIssue))
+  })
+
+  const tabStops = (tabs: HTMLElement[]) => tabs.filter(t => t.getAttribute('tabindex') === '0')
+
+  it('keeps the section rail to one Tab stop and moves with the arrows', async () => {
+    renderPanel()
+    await screen.findByText(/Open the panel with no labels/)
+    const rail = screen.getByRole('tablist', { name: 'Issue sections' })
+    const tabs = within(rail).getAllByRole('tab')
+    expect(tabStops(tabs)).toEqual([tabs[0]])
+
+    fireEvent.keyDown(tabs[0], { key: 'ArrowRight' })
+    expect(screen.getByText('Still happening on main.')).toBeInTheDocument()
+    const comments = within(rail).getByRole('tab', { name: /Comments/ })
+    expect(comments).toHaveFocus()
+    expect(comments).toHaveAttribute('aria-selected', 'true')
+    expect(tabStops(within(rail).getAllByRole('tab'))).toEqual([comments])
+
+    fireEvent.keyDown(comments, { key: 'End' })
+    expect(within(rail).getByRole('tab', { name: /Linked/ })).toHaveFocus()
+    fireEvent.keyDown(within(rail).getByRole('tab', { name: /Linked/ }), { key: 'ArrowRight' })
+    expect(within(rail).getByRole('tab', { name: /Description/ })).toHaveFocus()
+  })
+
+  it('keeps the issue strip to one Tab stop and selects with the arrows', async () => {
+    const onSelect = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <IssuePanel issues={links} selectedUrl={links[0].url} onSelect={onSelect} onAddToChat={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Crash on empty label list')
+    const strip = screen.getByRole('tablist', { name: 'Issues' })
+    const tabs = within(strip).getAllByRole('tab')
+    expect(tabStops(tabs)).toEqual([tabs[0]])
+
+    fireEvent.keyDown(tabs[0], { key: 'ArrowLeft' })
+    expect(onSelect).toHaveBeenCalledWith(links[1].url)
+    expect(tabs[1]).toHaveFocus()
   })
 })

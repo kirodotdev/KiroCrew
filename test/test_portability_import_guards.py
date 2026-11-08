@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 import threading
 import zipfile
@@ -958,3 +959,71 @@ def test_the_staged_notification_settings_are_replaced_not_written_through(
     assert victim.read_bytes() == victim_bytes, f"the rewrite followed the {how}"
     assert not staged.is_symlink() and staged.stat().st_nlink == 1
     assert "channel_settings" in json.loads(staged.read_text(encoding="utf-8"))
+
+
+def _zip_with_symlink(path: Path) -> None:
+    """A zip whose member names all pass the ``..``/absolute check but which ships
+    a symlink pointing outside the extraction root, plus a write through it."""
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("snap/marker.json", "{}")
+        link = zipfile.ZipInfo("snap/link")
+        # Unix mode in the upper 16 bits is what makes extract() create a symlink.
+        link.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(link, "/tmp")
+        zf.writestr("snap/link/escaped.txt", "written through the link")
+
+
+class TestZipImportRejectsLinkEntries:
+    """Import refuses symlink members. CPython's zipfile does not honor the link
+    mode, so this is defense in depth rather than a live escape."""
+
+    def test_link_entry_is_detected(self):
+        info = zipfile.ZipInfo("link")
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        assert portability._is_link_entry(info) is True
+
+    def test_plain_file_entry_is_not_flagged(self):
+        info = zipfile.ZipInfo("notes.md")
+        info.external_attr = (stat.S_IFREG | 0o644) << 16
+        assert portability._is_link_entry(info) is False
+
+    def test_entry_without_unix_mode_is_not_flagged(self):
+        # Archives written by tools that leave external_attr at 0 must still import.
+        assert portability._is_link_entry(zipfile.ZipInfo("notes.md")) is False
+
+    def test_validate_rejects_an_archive_containing_a_link(self, tmp_path):
+        zip_path = tmp_path / "eyil.zip"
+        _zip_with_symlink(zip_path)
+        ok, message, _ = portability.validate_import_zip(zip_path)
+        assert ok is False
+        assert "link" in message.lower()
+
+    def test_extraction_skips_link_entries(self, tmp_path):
+        """The guard removes link members from the extraction set."""
+        zip_path = tmp_path / "evil.zip"
+        _zip_with_symlink(zip_path)
+        with zipfile.ZipFile(zip_path) as zf:
+            kept = [i.filename for i in zf.infolist() if not portability._is_link_entry(i)]
+        assert "snap/link" not in kept
+        assert "snap/marker.json" in kept, "the guard must not drop ordinary members"
+
+    def test_cpython_zipfile_does_not_honor_the_link_mode(self, tmp_path):
+        """Pins WHY this is defense in depth rather than a live escape.
+
+        CPython writes the link target as ordinary file content, so a link member
+        cannot redirect a later write. If a future CPython (or a swapped-in
+        extractor) starts honoring S_IFLNK this fails, which is the signal that the
+        guard has become load-bearing rather than precautionary.
+        """
+        zip_path = tmp_path / "probe.zip"
+        _zip_with_symlink(zip_path)
+        out = tmp_path / "out"
+        out.mkdir()
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extract("snap/link", out)
+        extracted = out / "snap" / "link"
+        assert not extracted.is_symlink(), (
+            "zipfile now materializes symlinks -- the _is_link_entry guard is no "
+            "longer merely precautionary"
+        )
+        assert extracted.read_text(encoding="utf-8") == "/tmp"

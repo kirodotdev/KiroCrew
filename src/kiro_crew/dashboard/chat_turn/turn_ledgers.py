@@ -10,11 +10,13 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.chat_delivery import attachment_meta
 from kiro_crew.dashboard.chat_utils import RecoveryPayload
 from kiro_crew.dashboard.recovery_replays import replays_of
+from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
 from kiro_crew.wakatime.heartbeats import CADENCE_MIN_INTERVAL_SECS
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         COMMANDS_OFF_META_KEY,
+        START_BACKGROUND_META_KEY,
         SUBAGENT_COMPLETION_KIND,
         KiroCrewConfig,
         ReplayFamily,
@@ -24,11 +26,17 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.file_changes import _turn_line_changes
     from kiro_crew.dashboard.chat_turn.queue_drain import (
+        _RECOVERED_WAKE_KEY,
         _RECOVERY_TURN_META_KEY,
         _REPLAYS_COMPLETION_KEY,
         TURN_ACTOR_META_KEY,
     )
+    from kiro_crew.dashboard.chat_turn.recipient import (
+        MIRROR_ECHO_OWED_META_KEY,
+        _mirror_echo_owed,
+    )
     from kiro_crew.dashboard.chat_turn.recovery import _session_stop_generation_for
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import carry_regenerate_target
     from kiro_crew.dashboard.session_directive_apply import DirectiveOutcome
 
 
@@ -66,8 +74,22 @@ def _queue_recovery(
     kind: str,
     payload: str = "",
     extra_meta: dict | None = None,
+    keep_merge_cards: bool = False,
 ) -> str:
     """Queue a retry without losing a producer's consumption settlement.
+
+    A verbatim requeue of this turn's ``message`` goes out as
+    ``_message_without_merge_cards``: a turn that does not land puts its
+    merge-card contexts back on the queue in the finally, and the replay
+    turn drains them, so a replay still carrying the card's frame would
+    hand the model the same card twice in one prompt. The thinking-binding
+    rebuild passes ``message``, so this substitution is what strips its
+    frame. The other arms pass ``_message_without_merge_cards`` themselves
+    (the false-tool-blocker replay passes the pre-enrichment
+    ``_incoming_message``, which carries no frame either; the auth-retry
+    helper must, because it compares the text it is handed with the queue
+    before queueing). The one caller that keeps the frames, the refusal
+    fallback's replay, says so with ``keep_merge_cards``.
 
     Stamps FRESH admission context: a recovery entry replays
     externally admitted content verbatim under a new queue id, so without
@@ -88,12 +110,32 @@ def _queue_recovery(
     admitted; a row found by scanning the transcript may have been restored
     from disk, and a write target is never taken from there.
     """
+    if turn._agent_started:
+        # Every recovery replays or continues the prompt a turn answered, and a
+        # turn the agent started answered none: queueing one would send the
+        # agent a prompt no one wrote. Returns no queue id. The arms that
+        # announce a retry skip such a turn before they reach here (they take
+        # their nested-turn give-up), so a caller that still asks is one that
+        # announced nothing, such as a Stop hook's block.
+        logger.info("No recovery queued for agent-started turn on slot %s", turn.slot.key)
+        return ""
     _commands_off = turn._commands_off
     _crew_log_actor = turn._crew_log_actor
     _current_message = turn._current_message
     _current_replay_message = turn._current_replay_message
     _directive_channel_origin = turn._directive_channel_origin
     _directive_user_origin = turn._directive_user_origin
+    # The owner mark is read off the SLOT, not the turn's call: it is the
+    # dispatcher's `_directive_owner_origin` as the turn's entry adopted it and as
+    # any non-owner steer since has narrowed it, and the turn's end clears it. A recovery is a
+    # second turn of the same request, so it carries the mark exactly as it
+    # stands now -- a retried owner lookup keeps its authority, and a turn a
+    # peer steered into does not regain the authority that steer took away.
+    # Never wider than the user mark, which is the rule everywhere the owner
+    # mark is written.
+    _recovery_owner_origin = getattr(turn.slot, "_turn_owner_sent", False) is True and bool(
+        _directive_user_origin
+    )
     _on_consumed = turn._on_consumed
     _on_irreversibly_consumed = turn._on_irreversibly_consumed
     _recovery_turn_id = turn._recovery_turn_id
@@ -108,6 +150,8 @@ def _queue_recovery(
         containment_meta,
     )
 
+    if content == turn.message and not keep_merge_cards:
+        content = turn._message_without_merge_cards
     _address_keys = (CHANNEL_RECIPIENT_META_KEY, SEND_ORIGIN_META_KEY)
     _recovery_meta = containment_meta(state, slot)
     # A caller's extra meta can be the handed row's whole meta, so its
@@ -124,12 +168,20 @@ def _queue_recovery(
         # arrived as turn content stays turn content when its retry drains, or
         # the retry would run the words the original turn was told not to.
         _recovery_meta[COMMANDS_OFF_META_KEY] = True
+    if turn._turn_start_background:
+        # The same holds for a BACKGROUND start a bulk Resume asked for: nobody
+        # waits on its retry either, so the retry starts BACKGROUND too.
+        _recovery_meta[START_BACKGROUND_META_KEY] = True
     if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
         # ORIGINAL replays must preserve the triggering row's attachment
         # lists. The provider prompt already carries the full markers, but
         # without these lists the replayed transcript row falls back to a
         # whitespace-bounded path and truncates spaced attachment names.
         _recovery_meta.update(attachment_meta(_current_replay_message.get("meta")))
+    if payload == RecoveryPayload.ORIGINAL and _mirror_echo_owed(turn):
+        # The person's own words, replayed because the turn died before its
+        # mirror echo point: the replay owes that echo (``_prompt_typed_in_dashboard``).
+        _recovery_meta[MIRROR_ECHO_OWED_META_KEY] = True
     _recovery_qid = slot.queue_insert(
         index,
         content,
@@ -153,15 +205,31 @@ def _queue_recovery(
         ),
         directive_user_origin=_directive_user_origin,
         directive_channel_origin=_directive_channel_origin,
+        directive_owner_origin=_recovery_owner_origin,
     )
-    if content == turn.message and _turn_is_completion:
+    # A recovery a Regenerate turn queues before it has any reply (a replay of
+    # its message or a continuation) is the same Regenerate's next attempt: it
+    # settles the previous reply, not this turn.
+    carry_regenerate_target(slot, _recovery_qid)
+    # A recovery of a channel message is still that channel's words: it keeps
+    # the channels admission judges it by. A restriction only, so it is kept
+    # even on a turn whose channel-origin flag a restart removed.
+    stamp_source_channels(slot, _recovery_qid, getattr(turn, "_directive_source_channels", ()))
+    _replays_this_turn = content in (turn.message, turn._message_without_merge_cards)
+    if _replays_this_turn and _turn_is_completion:
         # A verbatim requeue still replays the completion; runner-written
         # text queued after it (a continuation, a retry prompt) does not.
         for _entry in slot._queue:
             if _entry.get("id") == _recovery_qid:
                 _entry[_REPLAYS_COMPLETION_KEY] = True
                 break
-    if turn._is_refusal_retry_turn and index == 0 and content == turn.message:
+    if turn._wake_cycle:
+        # A loop's own cycle retried is still that cycle: its fault charges the loop.
+        for _entry in slot._queue:
+            if _entry.get("id") == _recovery_qid:
+                _entry[_RECOVERED_WAKE_KEY] = turn._wake_cycle
+                break
+    if turn._is_refusal_retry_turn and index == 0 and _replays_this_turn:
         # A verbatim requeue of the refusal retry's own message REPLACES
         # the consumed replay, whichever recovery family issued it: carry
         # the retry identity and fresh stop snapshots onto the new entry.
@@ -183,6 +251,12 @@ def _queue_recovery(
                 getattr(state, "sessions", None), _refusal_key or session_key
             ),
         )
+    # A queued continuation means the turn is NOT a terminal dead end: it will
+    # run on this same slot. Retract any dead-turn bell a terminal arm set
+    # earlier this turn (a refusal arm whose Stop-hook continuation is queued
+    # afterward, a transient give-up that is then re-queued), so the finally
+    # choke point does not ring "a chat stopped" while the chat continues.
+    turn.died_notice = None
     return _recovery_qid
 
 
@@ -212,12 +286,16 @@ def _replay_owes_delivery(turn) -> bool:
 
 
 def _requeue_owed_completion(turn) -> None:
-    """Queue this turn's owed completion again, as a completion."""
+    """Queue this turn's owed completion again, as a completion.
+
+    Without its merge-card frames: the finally puts the cards' contexts back
+    on the queue and the replay turn drains them.
+    """
     _current_message = turn._current_message
     _queue_recovery(
         turn,
         0,
-        turn.message,
+        turn._message_without_merge_cards,
         kind=SUBAGENT_COMPLETION_KIND,
         extra_meta=(
             _current_message.get("meta")
@@ -236,6 +314,7 @@ def _record_terminal_directive(turn, kind: str, outcome: DirectiveOutcome, tcid:
     if not turn._terminal_directive_applied:
         turn._terminal_directive_applied = True
         turn._terminal_directive_kind = kind
+        turn._terminal_directive_text = outcome.text
 
 
 def _wt_maybe_cadence(turn) -> None:

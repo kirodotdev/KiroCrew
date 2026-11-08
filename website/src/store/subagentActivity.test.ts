@@ -12,6 +12,8 @@ import chatReducer, {
   switchSlot,
   sseSubagentSpawn,
   sseSubagentSnapshot,
+  clearSubagentsForSnapshot,
+  subagentReplayDone,
   sseSubagentDone,
   sseSubagentQueued,
   sseSubagentPending,
@@ -396,5 +398,84 @@ describe('subagent snapshot ownership', () => {
 
     expect(store.getState().chat.subagents['orphan-1']?.task).toBe('read-only audit')
     expect(count(store)).toBe(1)
+  })
+})
+
+describe('a nested run approved under its parent key', () => {
+  it('ends the approval card when the run ends in its root chat', () => {
+    // The approval is raised on the parent sub-agent's key, which no tab shows;
+    // the run's own frames draw in the chat its spawn tree started from.
+    const store = makeStore()
+    store.dispatch(setActiveSlot('chat1'))
+    store.dispatch(sseSubagentPending({ slot: 'subagent:b', id: 'c', task: 't', approval_id: 'spawn:c' }))
+    store.dispatch(sseSubagentSpawn({ slot: 'subagent:b', id: 'c', task: '', agent: '' }))
+    store.dispatch(sseSubagentSpawn({ slot: 'chat1', id: 'c', task: 't', agent: 'kirocrew' }))
+    expect(count(store)).toBe(1)
+    store.dispatch(sseSubagentDone({ slot: 'chat1', id: 'c', elapsed: 1, outcome: 'completed' }))
+
+    expect(store.getState().chat.subagents.c?.status).toBe('done')
+    expect(store.getState().chat.slotActivity['subagent:b']?.subagents.c).toBeUndefined()
+    expect(count(store)).toBe(0)
+  })
+
+  it('counts the run once when a reconnect replays it before and after its approval', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('chat1'))
+    const replay = () => {
+      store.dispatch(clearSubagentsForSnapshot())
+      store.dispatch(sseSubagentSnapshot({ slot: 'chat1', id: 'c', task: 't', agent: 'kirocrew', streaming: '', last_tool: '', started: 1000 }))
+      store.dispatch(subagentReplayDone())
+    }
+    store.dispatch(sseSubagentPending({ slot: 'subagent:b', id: 'c', task: 't', approval_id: 'spawn:c' }))
+    replay()
+
+    expect(store.getState().chat.subagents.c).toBeUndefined()
+    expect(isAwaitingSpawnApproval(store.getState().chat.slotActivity['subagent:b']!.subagents.c!)).toBe(true)
+    expect(count(store)).toBe(1)
+
+    // Approved while the run's own spawn frame was missed.
+    store.dispatch(sseSubagentSpawn({ slot: 'subagent:b', id: 'c', task: '', agent: '' }))
+    replay()
+
+    expect(store.getState().chat.subagents.c?.status).toBe('running')
+    expect(store.getState().chat.slotActivity['subagent:b']?.subagents.c).toBeUndefined()
+    expect(count(store)).toBe(1)
+  })
+
+  it('ends a copy the approval re-creates after the run started in its root chat', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('chat1'))
+    store.dispatch(sseSubagentSpawn({ slot: 'chat1', id: 'c', task: 't', agent: 'kirocrew' }))
+    store.dispatch(sseSubagentSpawn({ slot: 'subagent:b', id: 'c', task: '', agent: '' }))
+    store.dispatch(sseSubagentDone({ slot: 'chat1', id: 'c', elapsed: 1, outcome: 'completed' }))
+
+    expect(store.getState().chat.subagents.c?.status).toBe('done')
+    expect(count(store)).toBe(0)
+  })
+
+  it('draws a rejected run in its root chat when a reconnect replays it', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('chat1'))
+    store.dispatch(sseSubagentPending({ slot: 'subagent:b', id: 'c', task: 't', approval_id: 'spawn:c' }))
+    // The rejection ends the approval card on the key it was raised on.
+    store.dispatch(sseSubagentDone({ slot: 'subagent:b', id: 'c', elapsed: 0, error: 'Spawn rejected' }))
+    store.dispatch(clearSubagentsForSnapshot())
+    store.dispatch(sseSubagentDone({ slot: 'chat1', id: 'c', elapsed: 0, error: 'spawn rejected', outcome: 'failed', task: 't' }))
+    store.dispatch(subagentReplayDone())
+
+    expect(store.getState().chat.subagents.c?.status).toBe('error')
+    expect(count(store)).toBe(0)
+  })
+
+  it('keeps a workflow step spawn approved in its origin chat on that tab', () => {
+    // A workflow step's spawn is approved in the chat that started the run,
+    // while the run's own frames carry the step's `wf:` key, which no tab shows.
+    const store = makeStore()
+    store.dispatch(setActiveSlot('chat1'))
+    store.dispatch(sseSubagentPending({ slot: 'chat1', id: 'c', task: 't', approval_id: 'spawn:c' }))
+    store.dispatch(sseSubagentSpawn({ slot: 'chat1', id: 'c', task: '', agent: '' }))
+    store.dispatch(sseSubagentSpawn({ slot: 'wf:r1:s1', id: 'c', task: 't', agent: 'kirocrew' }))
+
+    expect(store.getState().chat.subagents.c?.status).toBe('running')
   })
 })

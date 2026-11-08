@@ -397,7 +397,6 @@ class TestTaCommandPersistence:
         log = FakeConversationLog()
 
         with patch("kiro_crew.slack.handler.Path.home", return_value=tmp_path):
-            # Create .kiro/agents structure
             kiro_agents = tmp_path / ".kiro" / "agents"
             kiro_agents.mkdir(parents=True)
             kiro_file = kiro_agents / "test-agent.json"

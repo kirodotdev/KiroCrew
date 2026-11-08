@@ -557,12 +557,13 @@ def _auto_slug_claim_lock(loader: SkillsLoader) -> Iterator[bool]:
     entries.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.platform_compat import open_create_or_existing
 
     lock_path = loader._dir / sk.AUTO_SLUG_CLAIM_LOCK_NAME
     fd: int | None = None
     try:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        fd = open_create_or_existing(str(lock_path), os.O_RDWR, 0o600)
     except OSError:
         fd = None
     if fd is None:
@@ -628,9 +629,10 @@ def _auto_slug_available(
 
     A pending UPDATE candidate reserves NOTHING in the live tree, which is
     why the ``"live"`` test reads the queued candidate's ``kind``. An update
-    is queued under a name derived from its target (``<target-slug>-update``)
-    and promotes to ``auto/<target-slug>``, so treating it as a reservation
-    would hold ``auto/<target-slug>-update`` against an unrelated skill that
+    is queued under a name derived from its target
+    (``<target-slug>-update-<8 hex>``) and promotes to ``auto/<target-slug>``,
+    so treating it as a reservation would hold that name against an unrelated
+    skill that
     slugifies to that name and drop it for good, since consolidation advances
     its message offset whatever one candidate's outcome. The kind test FAILS
     CLOSED: a pending directory whose metadata is missing, unreadable, or
@@ -659,6 +661,73 @@ def _auto_slug_available(
     return not pending_dir.exists() or loader._read_pending_meta(slug).get("kind") == "update"
 
 
+def _staged_digest(loader: SkillsLoader, pdir: Path) -> str | None:
+    """The digest of a pending candidate's ``SKILL.md`` and scripts, never its metadata.
+
+    One pinned read (``_read_candidate_pinned``) hashed with ``_candidate_digest``,
+    the reader and digest that dismiss and approve use. The metadata is left out
+    because ``staged_sha256`` itself lives in ``.meta.json``. ``None`` when the
+    pinned read refuses the tree: a link, a hardlink, a non-regular entry such as a
+    FIFO, a file over its byte cap, or a tree over its entry or depth budget. A
+    ``None`` never matches a recorded digest.
+    """
+    from kiro_crew.skills_review import _candidate_digest  # circular import via the facade
+
+    read = loader._read_candidate_pinned(pdir)
+    if read is None:
+        return None
+    body, _meta, scripts = read
+    return _candidate_digest(body, {}, scripts)
+
+
+def _replace_queued_updates(
+    loader: SkillsLoader, root: Path, target: str, keep: str
+) -> list[tuple[str, str]]:
+    """Remove every other queued UPDATE candidate for ``target`` still as it was staged.
+
+    The caller holds :func:`_auto_slug_claim_lock` and has fully written ``keep``.
+    A candidate is removed only when its ``SKILL.md`` and scripts still hash to the
+    ``staged_sha256`` its metadata recorded at staging (:func:`_staged_digest`). A
+    missing or non-string field, a tree the pinned read refuses, or a different
+    digest (the candidate was edited after staging) keeps it, and both stay queued. Returns ``(slug,
+    consumed_at)`` per removal so the caller can retire each notification.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.skills_review import _candidate_digest  # circular import via the facade
+
+    removed: list[tuple[str, str]] = []
+    try:
+        children = sorted(root.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return removed
+    for child in children:
+        slug = child.name
+        if slug == keep or not sk._AUTO_NAME_PATTERN.match(slug):
+            continue
+        if child.is_symlink() or not child.is_dir():
+            continue
+        read = loader._read_candidate_pinned(child)
+        if read is None:
+            continue
+        body, meta, scripts = read
+        if meta.get("kind") != "update" or meta.get("target") != target:
+            continue
+        recorded = meta.get("staged_sha256")
+        if not isinstance(recorded, str) or not recorded:
+            continue
+        if _candidate_digest(body, {}, scripts) != recorded:
+            continue
+        consumed_at = datetime.now(tz=timezone.utc).isoformat()
+        try:
+            shutil.rmtree(child)
+        except OSError:
+            logger.warning("Could not remove replaced pending update %s", slug)
+            continue
+        logger.info("Replaced pending skill update %s with %s (target %s)", slug, keep, target)
+        removed.append((slug, consumed_at))
+    return removed
+
+
 def stage_skill_candidate(
     loader: SkillsLoader,
     slug: str,
@@ -673,6 +742,8 @@ def stage_skill_candidate(
     target: str | None = None,
     base_version: int | None = None,
     refusal: ClaimRefusal | None = None,
+    missing_scripts: list[str] | None = None,
+    rejected_scripts: dict[str, list[str]] | None = None,
 ) -> str | None:
     """Write a skill candidate to the pending queue (not live).
 
@@ -693,8 +764,22 @@ def stage_skill_candidate(
     version the merge was based on. These are written into ``.meta.json``
     (``kind`` always; ``target`` / ``base_version`` only when provided) so
     existing new-candidate callers are unaffected.
+
+    ``missing_scripts`` names scripts the procedure cites that the candidate does
+    not ship, and ``rejected_scripts`` maps each script the static validator
+    refused to its findings. Each is written into ``.meta.json`` only when
+    non-empty, so the reviewer sees why a cited script is absent.
+
+    An update records ``staged_sha256`` (:func:`_staged_digest` of the tree it
+    wrote) in ``.meta.json``. Once it is fully written and its digest is computed,
+    every other queued update for the same ``target`` whose files still hash to
+    its own ``staged_sha256`` is removed and reported consumed with outcome
+    ``superseded``; one changed since
+    staging, or without the field, stays queued beside it. A supplied base version
+    must match the readable live version before any queued update is removed.
     """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.skills_script_refs import bound_rejected_scripts, shippable_script_name
 
     if not sk._AUTO_NAME_PATTERN.match(slug):
         logger.warning("Rejected pending skill: slug %r failed validation", slug)
@@ -776,7 +861,7 @@ def stage_skill_candidate(
                 for s in clean_scripts:
                     fn = str(s.get("filename", "")).strip()
                     # Guard the script filename against traversal / nesting.
-                    if not fn or "/" in fn or "\\" in fn or ".." in fn:
+                    if not shippable_script_name(fn):
                         continue
                     (sdir / fn).write_text(str(s.get("content", "")), encoding="utf-8")
                     script_names.append(fn)
@@ -795,6 +880,17 @@ def stage_skill_candidate(
                 meta["target"] = target
             if base_version is not None:
                 meta["base_version"] = base_version
+            if missing_scripts:
+                meta["missing_scripts"] = list(missing_scripts)
+            if rejected_scripts:
+                meta["rejected_scripts"] = bound_rejected_scripts(rejected_scripts)
+            staged_sha: str | None = None
+            if _claim == "pending-update":
+                # Read back from disk, so the digest names the bytes a later
+                # replacement compares against.
+                staged_sha = _staged_digest(loader, pdir)
+                if staged_sha is not None:
+                    meta["staged_sha256"] = staged_sha
             (pdir / ".meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
         except Exception:
             # A partial write (e.g. disk full) must not leave a CLAIMED but empty
@@ -803,6 +899,23 @@ def stage_skill_candidate(
             # Roll back the atomic claim so the slug can be re-staged cleanly.
             shutil.rmtree(pdir, ignore_errors=True)
             raise
+        # A stale merge cannot supersede an approvable queued update. An unreadable
+        # live version keeps both candidates for review rather than guessing a base,
+        # and a new candidate the pinned reader refuses never displaces a readable one.
+        replaced = []
+        if _claim == "pending-update" and target:
+            replace_queued = base_version is None
+            if base_version is not None:
+                try:
+                    replace_queued = base_version == loader.get_auto_skill_version(target)
+                except Exception:
+                    replace_queued = False
+            if replace_queued and staged_sha is not None:
+                replaced = _replace_queued_updates(loader, root, target, pdir.name)
+    for replaced_slug, consumed_at in replaced:
+        sk._emit_pending_consumed(
+            {"slug": replaced_slug, "outcome": "superseded", "consumed_at": consumed_at}
+        )
     logger.info("Staged pending skill candidate: %s (scripts=%d)", name, len(script_names))
     # Notify any registered observer (the gateway wires a bell-feed
     # notification + a ``skills.pending_changed`` WS event) so a candidate
@@ -851,8 +964,18 @@ def pending_candidate_is_staged(loader: SkillsLoader, slug: str) -> bool:
     return (loader._pending_root() / slug / "SKILL.md").exists()
 
 
-def dismiss_pending_skill(loader: SkillsLoader, slug: str) -> bool:
-    """Delete a pending candidate. Returns True if it existed."""
+def dismiss_pending_skill(
+    loader: SkillsLoader, slug: str, content_sha256: str | None = None
+) -> bool:
+    """Delete a pending candidate. Returns True if it existed.
+
+    With ``content_sha256`` (the detail read's digest, the value approve sends),
+    the candidate is deleted only if it is still those bytes: under the slug claim
+    lock a fresh pinned read is hashed and compared. A different or unreadable
+    candidate raises :class:`PendingDismissRefused` ``content_changed`` and stays
+    queued; an unacquired lock raises ``lock_unavailable``. Without it, the
+    candidate is deleted as found.
+    """
     from kiro_crew import skills as sk  # circular import: the facade imports this module
 
     if not loader._is_pending_slug_safe(slug):
@@ -860,13 +983,32 @@ def dismiss_pending_skill(loader: SkillsLoader, slug: str) -> bool:
     pdir = loader._pending_root() / slug
     if not pdir.is_dir():
         return False
+    if content_sha256 is None:
+        _remove_dismissed(pdir, slug)
+        return True
+    from kiro_crew.skills_review import _candidate_digest
+
+    with loader._auto_slug_claim_lock() as locked:
+        if not locked:
+            raise sk.PendingDismissRefused("lock_unavailable")
+        if not pdir.is_dir():
+            return False
+        read = loader._read_candidate_pinned(pdir)
+        if read is None or _candidate_digest(*read) != content_sha256:
+            raise sk.PendingDismissRefused("content_changed")
+        _remove_dismissed(pdir, slug)
+    return True
+
+
+def _remove_dismissed(pdir: Path, slug: str) -> None:
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
     # Captured BEFORE the removal so a same-slug replacement staged after
     # this instant keeps its notification (see approve_pending_skill_checked).
     consumed_at = datetime.now(tz=timezone.utc).isoformat()
     shutil.rmtree(pdir)
     logger.info("Dismissed pending skill: %s", slug)
     sk._emit_pending_consumed({"slug": slug, "outcome": "dismissed", "consumed_at": consumed_at})
-    return True
 
 
 def dismiss_all_pending(loader: SkillsLoader) -> int:

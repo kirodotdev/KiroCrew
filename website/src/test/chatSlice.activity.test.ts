@@ -22,6 +22,7 @@ import reducer, {
   sseToolActivity,
   sseToolResult,
   sseActivityEvent,
+  setSlotStatusDetail,
   sseChatMessageUpdate,
   toggleActivity,
   openActivityPanel,
@@ -241,6 +242,17 @@ describe('activity viewer reducers', () => {
     state = reducer(state, sseToolResult({ slot: 'slot-1', output: 'found 3 matches' }))
     expect(state.toolLog).toHaveLength(1)
     expect(state.toolLog[0].output).toBe('found 3 matches')
+  })
+
+  it('a final sseToolResult marks the call row done, a mid-stream one does not', () => {
+    // A row whose log entry is trimmed (100 entries) or was never there (a
+    // reload) reads its return from `meta.done`, as the server stores it.
+    const row = { role: 'tool' as const, content: '🔧 sh', cls: '', meta: { tool_call_id: 'tc1', kind: 'execute' } }
+    let state = reducer({ ...withSlot, messages: [row] }, sseToolActivity({ slot: 'slot-1', tool: 'sh', kind: 'execute', purpose: '', input_preview: '', tool_call_id: 'tc1' }))
+    state = reducer(state, sseToolResult({ slot: 'slot-1', tool_call_id: 'tc1', output: 'line 1', final: false }))
+    expect(state.messages[0].meta?.done).toBeUndefined()
+    state = reducer(state, sseToolResult({ slot: 'slot-1', tool_call_id: 'tc1', output: 'done' }))
+    expect(state.messages[0].meta?.done).toBe(true)
   })
 
   it('sseToolResult is noop without prior tool entry', () => {
@@ -800,5 +812,31 @@ describe('steer does not deadlock pending approval (#1667)', () => {
       expect(selectSlotPendingApproval(wrap(state), slot)).not.toBeNull()
       expect(selectSlotPendingApproval(wrap(state), slot)?.meta?.approval_id).toBe('req-1')
     })
+  })
+})
+
+describe('sseToolResult moves the live status line off a returned call', () => {
+  const initial = reducer(undefined, { type: '@@INIT' })
+  const running = (id: string) =>
+    reducer(initial, setSlotStatusDetail({ slot: 'slot-1', kind: 'tool', purpose: 'Reading the log', toolName: 'shell', toolCallId: id, ts: 1 }))
+
+  it('a final result for the named call reads thinking, on a slot with no tool log', () => {
+    const state = reducer(running('tc-1'), sseToolResult({ slot: 'slot-1', output: 'ok', tool_call_id: 'tc-1' }))
+    expect(state.slotStatusDetail['slot-1']).toEqual({ kind: 'thinking' })
+  })
+
+  it('a result for another call leaves the line on the running call', () => {
+    const state = reducer(running('tc-2'), sseToolResult({ slot: 'slot-1', output: 'ok', tool_call_id: 'tc-1' }))
+    expect(state.slotStatusDetail['slot-1']).toMatchObject({ kind: 'tool', toolCallId: 'tc-2' })
+  })
+
+  it('a mid-stream frame is not a return', () => {
+    const state = reducer(running('tc-1'), sseToolResult({ slot: 'slot-1', output: 'partial', tool_call_id: 'tc-1', final: false }))
+    expect(state.slotStatusDetail['slot-1']).toMatchObject({ kind: 'tool', toolCallId: 'tc-1' })
+  })
+
+  it('a result with no call id never moves the line', () => {
+    const state = reducer(running('tc-1'), sseToolResult({ slot: 'slot-1', output: 'ok' }))
+    expect(state.slotStatusDetail['slot-1']).toMatchObject({ kind: 'tool', toolCallId: 'tc-1' })
   })
 })

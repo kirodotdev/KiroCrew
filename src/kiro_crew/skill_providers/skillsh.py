@@ -334,11 +334,6 @@ def _is_allowed_host(url: str) -> bool:
     return _http.is_allowed_host(url, _ALLOWED_HOSTS)
 
 
-def _open_no_internal_redirect(req):  # type: ignore[no-untyped-def]
-    """Open a request with redirects held to ``_ALLOWED_HOSTS``. None if blocked."""
-    return _http.open_guarded(req, allowed_hosts=_ALLOWED_HOSTS, internal_check=_is_internal_url)
-
-
 def _read_bounded(resp, max_bytes: int) -> bytes | None:
     """Read a response body up to *max_bytes*. None if exceeded."""
     return _http.read_bounded(resp, max_bytes)

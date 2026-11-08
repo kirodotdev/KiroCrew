@@ -22,19 +22,19 @@ from aiohttp import web
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec
 from kiro_crew.agent_spec_format import iter_agent_spec_files
-from kiro_crew.config.loader import KiroCrewConfig, _resolve_stub_roster, read_config_text
+from kiro_crew.config.loader import KiroCrewConfig, _resolve_stub_roster, read_endorsed_config_text
 from kiro_crew.dashboard.chat_utils import run_to_completion
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.handlers.mcp_config_files import _is_valid_mcp_name, _offload_config_write
-from kiro_crew.dashboard.handlers.mcp_probe import _probe_currency
+from kiro_crew.dashboard.handlers.mcp_probe import _probe_view
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import managed_server_is_session_bound, probe_metadata
 from kiro_crew.mcp_gateway import hazards, is_gateway_supported, launch_resolve
 from kiro_crew.mcp_gateway.hashing import hash_command
-from kiro_crew.mcp_gateway.launch_approval import display_launches, refused_servers
+from kiro_crew.mcp_gateway.launch_approval import refused_servers, refused_shares
 from kiro_crew.mcp_gateway.rewriter import records_dir
-from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, assess
+from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, Strength, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
 from kiro_crew.sel import sel
 
@@ -74,6 +74,10 @@ async def api_mcp_gateway_status(request: web.Request) -> web.Response:
             # outside the sandbox. Each resolved argv is paired with its
             # redacted declared environment for an informed re-approval.
             "launch_refused": launch_refused,
+            # Share-list names (as configured) whose launch is refused, with the
+            # reason. Matched here rather than in the client because a refusal is
+            # recorded under the rewriter's alias for a slash-named server.
+            "share_refused": refused_shares(cfg.stub_servers, launch_refused),
             "running": bool(running),
             "ping_ok": bool(ping_ok),
             # Whether the broker can run on this OS at all. The UI reads this to
@@ -118,12 +122,12 @@ def _local_overlay_section() -> dict:
     from kiro_crew.config.loader import config_local_path
 
     path = config_local_path()
-    if not path.is_file():
-        return {}
     try:
-        raw = json.loads(read_config_text(path))
-    except (OSError, json.JSONDecodeError):
-        # Unreadable overlay: treat as absent. The loader logs and ignores it
+        # Read as the load reads it, with no is_file() check first: a deleted overlay
+        # whose endorsed copy is in force is that copy.
+        raw = json.loads(read_endorsed_config_text(path))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        # Absent (neither file nor endorsed copy) or unreadable overlay: treat as absent. The loader logs and ignores it
         # too, so behaving otherwise here would diverge from the runtime.
         return {}
     if not isinstance(raw, dict):
@@ -411,6 +415,10 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     Values are never collected, only env NAMES: the verdict engine needs to know
     whether a per-session rotating credential is declared, never what it is.
     """
+    # Imported here, not at module top, so the facade does not serve them.
+    from kiro_crew.mcp_gateway.launch_approval import env_fingerprint
+    from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
+
     rows: dict[str, dict[str, Any]] = {}
     agents_dir = kiro_agents_dir_path()
     if not agents_dir.is_dir():
@@ -443,21 +451,108 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
                     # distinct launch here means the row covers something nobody
                     # measured. Hashing opens no file the launch names.
                     "launch_ids": set(),
+                    # The declared ``(command, *args)`` per launch, so the
+                    # footprint reading can find this server's processes inside
+                    # a session's own tree. Never an env value.
+                    "launches": set(),
+                    # One digest per distinct declared env block (a hash, never
+                    # a value). Two blocks under one name pool as two backends,
+                    # so the footprint forecast is withheld for that server.
+                    "env_ids": set(),
                 }
                 rows[name] = row
             row["agents"].add(str(agent_name))
             command = entry.get("command")
             if isinstance(command, str) and command:
                 args = entry.get("args")
-                row["launch_ids"].add(
-                    hash_command(command, [str(a) for a in args] if isinstance(args, list) else [])
-                )
+                argv = [str(a) for a in args] if isinstance(args, list) else []
+                row["launch_ids"].add(hash_command(command, argv))
+                row["launches"].add((command, *argv))
             if entry.get("poolable") is True:
                 row["entry_poolable"] = True
             declared_env = entry.get("env")
+            row["env_ids"].add(
+                env_fingerprint(declared_env if isinstance(declared_env, dict) else {})
+            )
             if isinstance(declared_env, dict):
                 row["env_names"].update(str(k) for k in declared_env)
+            else:
+                declared_env = {}
+            # Per declaration, because the rewriter decides per declaration: one
+            # agent's ``secret://`` entry gets a private backend while another
+            # agent's entry under the same name is left unwrapped or shared. Every
+            # declaration is recorded, an env-less one included, so a row can tell
+            # "all private" from "some private". Key names only, and only WHETHER
+            # a value is a vault reference -- never the value or the secret it names.
+            row.setdefault("env_decls", []).append(
+                (
+                    frozenset(str(k) for k in declared_env),
+                    frozenset(secret_reference_keys(declared_env)),
+                )
+            )
     return rows
+
+
+def _env_pooling_outcome(
+    row: dict[str, Any], forward_declared_env: bool, identity_keys: Collection[str]
+) -> tuple[bool, bool]:
+    """``(blocked, private)`` for one row, as the rewriter decides it with sharing on.
+
+    ``blocked``: some declaration would be left UNWRAPPED because a shared backend
+    would withhold part of its env. ``private``: EVERY declaration would instead
+    get a connection-private backend, because its env names a vault secret
+    (``_needs_private_backend``) -- such a server is wrapped and started by the
+    gateway, not launched by the session, and shares no backend. One declaration
+    that pools is enough for the row to be shared, so ``private`` needs all of them.
+
+    Both go through the rewriter's own two predicates, so this row and the
+    rewrite cannot disagree about which branch a declaration takes. The
+    stand-in env handed to ``_needs_private_backend`` holds only the key names
+    the row recorded as vault references; no declared value is read here.
+    """
+    branches = _env_decl_branches(row, forward_declared_env, identity_keys)
+    blocked = "unwrapped" in branches
+    private = bool(branches) and all(b == "private" for b in branches)
+    return blocked, private
+
+
+def _env_blocks_every_share(
+    row: dict[str, Any], forward_declared_env: bool, identity_keys: Collection[str]
+) -> bool:
+    """True when, with sharing on, the env leaves this row with nothing shared.
+
+    Narrower than ``blocked`` from :func:`_env_pooling_outcome`: one declaration
+    that pools is enough for the server to share, so this needs some declaration
+    left unwrapped and none pooled.
+    """
+    branches = _env_decl_branches(row, forward_declared_env, identity_keys)
+    return "unwrapped" in branches and "pooled" not in branches
+
+
+def _env_decl_branches(
+    row: dict[str, Any], forward_declared_env: bool, identity_keys: Collection[str]
+) -> list[str]:
+    """The rewriter's branch for each declaration: pooled, unwrapped or private."""
+    from kiro_crew.mcp_gateway.rewriter import _needs_private_backend, _withheld_env_count
+    from kiro_crew.mcp_gateway.secret_uri import SECRET_URI_PREFIX
+
+    decls = row.get("env_decls")
+    if decls is None:
+        decls = [(frozenset(row.get("env_names", ())), frozenset())]
+    branches: list[str] = []
+    for names, ref_keys in decls:
+        withheld = _withheld_env_count(
+            dict.fromkeys(names, ""), forward_declared_env, identity_keys
+        )
+        if withheld and _needs_private_backend(
+            withheld, dict.fromkeys(ref_keys, SECRET_URI_PREFIX)
+        ):
+            branches.append("private")
+        elif withheld:
+            branches.append("unwrapped")
+        else:
+            branches.append("pooled")
+    return branches
 
 
 def _launch_specs_for(names: set[str]) -> dict[str, list[SimpleNamespace]]:
@@ -530,7 +625,6 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F811
     from kiro_crew.mcp_gateway.rewriter import (
         UNPOOLABLE_SERVERS,
-        _withheld_env_count,
         pool_identity_env_keys,
     )
 
@@ -549,7 +643,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     # dashboard and every chat sharing it, and would also let two rows in one
     # payload disagree about the same file.
     observed, preflights = await asyncio.to_thread(_load_shareability_state)
-    probe_current = await asyncio.to_thread(_probe_currency)
+    probe_current, probeable = await asyncio.to_thread(_probe_view)
 
     result: list[dict[str, Any]] = []
     for name in sorted(rows):
@@ -580,11 +674,36 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
         #
         # Key NAMES only, never values: the classifier is name-based, so the
         # row builder's value-free discipline holds.
-        pooling_blocked = bool(
-            gw_cfg.enabled
-            and _withheld_env_count(
-                {k: "" for k in row["env_names"]}, forward_declared_env, identity_keys
-            )
+        #
+        # A declaration whose env names a vault secret is the rewriter's one
+        # exception: it gets a connection-private backend instead of being left
+        # unwrapped, so it is neither ``direct (env)`` nor shared. Reported as
+        # ``private_backend`` so the row can say so.
+        env_blocked, env_private = (
+            _env_pooling_outcome(row, forward_declared_env, identity_keys)
+            if gw_cfg.enabled
+            else (False, False)
+        )
+        pooling_blocked = env_blocked
+        # Computed whatever the switch says: the confirm for turning sharing ON
+        # must leave out a server that will share nothing once it is on, and
+        # ``pooling_blocked_by_env`` reads false while sharing is off.
+        nothing_shared = _env_blocks_every_share(row, forward_declared_env, identity_keys)
+        single_launch = len(row["launch_ids"]) <= 1
+        verdict = _assess_server(
+            name,
+            is_stdio=is_stdio,
+            env_names=tuple(sorted(row["env_names"])),
+            observed_hazards=observed.get(name, ()),
+            # A measurement describes ONE execution identity. When this
+            # name merged more than one distinct launch, the probe
+            # measured whichever definition won the merge, so serving that
+            # result here would tell the operator it is safe to share a
+            # backend nobody ran. Same invariant the cache-side check
+            # applies, enforced at the other place the information exists.
+            preflight=(preflights.get(name) if single_launch else None),
+            identity_keys=identity_keys,
+            probe_current=probe_current.get(name, True),
         )
         result.append(
             {
@@ -592,32 +711,47 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 "stub": stubbed,
                 "can_stub": can_stub,
                 "in_allowlist": name in stub_set,
+                # The operator turned this server off by hand. Turning sharing
+                # on page-wide never re-enables it (it only enables servers
+                # nobody chose for).
+                "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
                 "entry_poolable": row["entry_poolable"],
                 "pooling_blocked_by_env": pooling_blocked,
+                "pooling_blocked_by_env_when_shared": nothing_shared,
+                "private_backend": env_private,
                 "agents": sorted(row["agents"]),
                 "transport": row["transport"],
                 "denylisted": denylisted,
                 # Advisory only. Never auto-applied: the evidence is weaker
                 # than proof (the probe handshakes as a different client than
                 # the gateway does), so the operator decides.
-                "recommendation": _assess_server(
-                    name,
-                    is_stdio=is_stdio,
-                    env_names=tuple(sorted(row["env_names"])),
-                    observed_hazards=observed.get(name, ()),
-                    # A measurement describes ONE execution identity. When this
-                    # name merged more than one distinct launch, the probe
-                    # measured whichever definition won the merge, so serving that
-                    # result here would tell the operator it is safe to share a
-                    # backend nobody ran. Same invariant the cache-side check
-                    # applies, enforced at the other place the information exists.
-                    preflight=(preflights.get(name) if len(row["launch_ids"]) <= 1 else None),
-                    identity_keys=identity_keys,
-                    probe_current=probe_current.get(name, True),
-                ).to_dict(),
+                "recommendation": verdict.to_dict(),
+                # What the Measure button counts. Rows come from every agent
+                # spec, but a pass probes only ``list_servers()``.
+                "measure_due": name in probeable
+                and _measure_due(verdict, name in preflights, single_launch),
             }
         )
     return web.json_response({"servers": result})
+
+
+def _measure_due(verdict: ShareVerdict, preflight_stored: bool, single_launch: bool) -> bool:
+    """Whether a measure pass would change *verdict*, for a server it can probe.
+
+    ``unknown`` waits on a probe; a ``handshake_not_reproducible`` row is
+    re-measured every pass by design. ``declared`` and ``no_objection`` are the
+    two tiers a pre-flight can still raise, and only while none is stored and the
+    row has one launch: with two, the row never shows the stored pre-flight.
+    """
+    if verdict.strength is Strength.UNKNOWN or any(
+        r.code == "handshake_not_reproducible" for r in verdict.reasons
+    ):
+        return True
+    return (
+        not preflight_stored
+        and single_launch
+        and verdict.strength in (Strength.DECLARED, Strength.NO_OBJECTION)
+    )
 
 
 def _load_shareability_state() -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[bool, bool]]]:
@@ -718,14 +852,9 @@ async def api_mcp_gateway_server_launch(request: web.Request) -> web.Response:
             {"error": "could not resolve the launch", "code": "launch_resolve_failed"},
             status=503,
         )
-    if name in getattr(launches, "over_cap", ()):
+    code, preview = launch_resolve.launch_preview(name, launches)
+    if code is not None:
         return web.json_response(
-            {"error": "the launch set exceeds the approval limit", "code": "launch_over_cap"},
-            status=409,
+            {"error": launch_resolve.LAUNCH_PREVIEW_ERRORS[code], "code": code}, status=409
         )
-    if not launches.get(name):
-        return web.json_response(
-            {"error": "no launch resolves for this server", "code": "launch_unresolved"},
-            status=409,
-        )
-    return web.json_response(display_launches(name, launches[name]))
+    return web.json_response(preview)

@@ -1,8 +1,8 @@
 """What a native Slack turn leaves in the thread once its answer is out.
 
 The timing footer and the OPTIONS / Link-to-Dashboard controls it carries, the review-mode
-draft post and its store, the copy of the answer a linked dashboard slot receives, and the
-thread auto-title task.
+draft post and its store, the copy of the answer a linked dashboard slot receives (a slot
+linked mid-turn included), and the thread auto-title task.
 
 Composed onto :mod:`kiro_crew.slack.handler`; see
 :mod:`kiro_crew.slack.handler_runtime`.
@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         _REVIEW_DRAFT_MAX,
         _REVIEW_DRAFT_TTL,
         _REVIEW_PLACEHOLDER_TS,
+        _SLACK_TS_META,
         HUMAN_TURN_META_KEY,
         ConversationLog,
         LLMProvider,
@@ -48,11 +49,9 @@ def _review_drafts_get(key: str) -> tuple[str, str]:
 def _review_drafts_set(key: str, draft: str, requester_user_id: str) -> None:
     """Store a draft with TTL + requester id, evicting oldest if at capacity."""
     now = time.monotonic()
-    # Evict expired entries
     expired = [k for k, (_, _, ts) in _review_drafts.items() if now - ts > _REVIEW_DRAFT_TTL]
     for k in expired:
         _review_drafts.pop(k, None)
-    # Evict oldest if still at capacity
     if len(_review_drafts) >= _REVIEW_DRAFT_MAX:
         oldest_key = min(_review_drafts, key=lambda k: _review_drafts[k][2])
         _review_drafts.pop(oldest_key, None)
@@ -112,7 +111,7 @@ def _append_footer_actions(
     dashboard_state: object | None,
     staleness_token: str | None = None,
 ) -> list[dict]:
-    """Append OPTIONS checkboxes and/or Link to Dashboard button to footer blocks.
+    """Append the OPTIONS buttons and/or Link to Dashboard button to footer blocks.
 
     *staleness_token* must be minted by the caller, which is async and can do the
     transcript read off the event loop. Absent it the control posts untokened and
@@ -123,9 +122,15 @@ def _append_footer_actions(
 
         footer_blocks.extend(build_options_blocks(options, staleness_token=staleness_token))
     if thread_ts and not linked_session_key and dashboard_state:
-        from kiro_crew.slack.format import build_link_dashboard_button
+        from kiro_crew.slack.format import build_link_dashboard_button, is_options_actions_block
 
-        if footer_blocks and footer_blocks[-1].get("type") == "actions":
+        # Its own row after an OPTIONS card: the card's last row ends in its ⋯ menu,
+        # and answering the card replaces its rows -- which must not take the link.
+        if (
+            footer_blocks
+            and footer_blocks[-1].get("type") == "actions"
+            and not is_options_actions_block(footer_blocks[-1])
+        ):
             footer_blocks[-1]["elements"].append(build_link_dashboard_button())
         else:
             footer_blocks.append({"type": "actions", "elements": [build_link_dashboard_button()]})
@@ -230,7 +235,16 @@ def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -
             # The person typed this in Slack; mirroring it into the
             # linked slot keeps it a human turn (see
             # history.HUMAN_TURN_META_KEY).
-            slot.append("user", text, "msg msg-u", meta={HUMAN_TURN_META_KEY: True})
+            # A Slack sender has no Shared Crew principal: Unknown.
+            from kiro_crew.shared_crew.attribution import stamp_principal_author
+            from kiro_crew.shared_crew.contracts import Principal
+
+            slot.append(
+                "user",
+                text,
+                "msg msg-u",
+                meta=stamp_principal_author({HUMAN_TURN_META_KEY: True}, Principal.unknown()),
+            )
             slot.append("assistant", accumulated, "msg msg-a")
             if slot._on_message:
                 slot._on_message(slot.key, {"role": "user", "content": text, "cls": "msg msg-u"})
@@ -242,3 +256,54 @@ def _mirror_to_dashboard(linked_session_key: str, text: str, accumulated: str) -
             ds.push_slots_update()  # type: ignore[attr-defined,union-attr]
     except Exception:
         logger.debug("Failed to mirror Slack message to dashboard", exc_info=True)
+
+
+def _backfill_late_link(
+    reply_ts: str,
+    msg_ts: str,
+    linked_session_key: str | None,
+    stream_ts: str | None,
+    accumulated: str,
+    rotated_ts: list[str],
+) -> None:
+    """Give a slot whose import read this turn's question or reply its final answer.
+
+    A Link click while the turn runs imports the thread as it stands then: the reply
+    streaming into ``stream_ts`` is a cut-off row, or absent if it had not started.
+    When the stream rotated after the import, that row came from an earlier stream
+    message (``rotated_ts``), so the newest imported one of them is the row. That
+    row takes the final text, even when the question was not imported (a message
+    with no text, such as a voice memo); else the answer is appended after the
+    imported question. A slot this turn mirrored into already has it.
+
+    shortcut: an import that read two stream messages of one turn keeps the older
+    one's cut-off row too; replacing it needs a way to drop a slot row.
+    """
+    try:
+        from kiro_crew.dashboard.state import chat_message_note, row_mid
+
+        ds = _dashboard_state
+        slot = ds.get_linked_slot(reply_ts)  # type: ignore[union-attr]
+        if slot is None or (linked_session_key or "").removeprefix("dashboard:") == slot.key:
+            return
+        # The loaded rows only: an import's slot is never a pending window.
+        imported = {(m.get("meta") or {}).get(_SLACK_TS_META): m for m in slot.loaded_messages()}
+        row = next(
+            (imported[t] for t in (stream_ts, *reversed(rotated_ts)) if t and t in imported),
+            None,
+        )
+        if row is not None:
+            ts, mid = row.get("ts", ""), row_mid(row)
+            slot.update_message(ts, content=accumulated, mid=mid)
+            shown = chat_message_note(slot.key, row, workspace=getattr(slot, "workspace", None))
+            ds.broadcast_ws(  # type: ignore[union-attr]
+                "chat_message_update",
+                {"slot": slot.key, "ts": ts, "mid": mid, "content": shown["content"]},
+            )
+        elif msg_ts in imported:
+            slot.append("assistant", accumulated, "msg msg-a")
+        else:
+            return
+        ds.push_slots_update()  # type: ignore[union-attr]
+    except Exception:
+        logger.debug("Failed to give a mid-turn-linked slot its answer", exc_info=True)

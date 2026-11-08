@@ -1,16 +1,25 @@
-import type React from 'react'
-import { useState } from 'react'
+import { Fragment, useId, useState, type ComponentType } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { AlertCircle, Check, ChevronRight, Loader2, Send, Server } from 'lucide-react'
 import { api, type InstanceView } from '../api/client'
 import {
   DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent, DropdownMenuItem,
+  DropdownMenuSeparator,
 } from './ui/dropdown-menu'
 import {
   ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuItem,
+  ContextMenuSeparator,
 } from './ui/context-menu'
 
+import ErrorNotice, {
+  ErrorNoticeMenuItem,
+  type ErrorNoticeMenuItemComponent,
+} from './ErrorNotice'
+import { OfflineReasonRow, REASON_ROW_WIDTH } from './OfflineMenuReason'
 import { i18nT } from '../i18n/t'
+import { resolveDefaultDestination, withDefaultFirst } from '../utils/defaultDestinationCrew'
+import { offlineProps } from '../utils/offline'
+import { useConnected } from '../hooks/useConnected'
 
 /** Per-instance outcome of the most recent send attempt in this open menu. */
 type SendState =
@@ -24,6 +33,9 @@ interface SendToInstanceSubmenuProps {
   readonly slotKey: string
   /** Which menu family this submenu nests inside — Radix Dropdown vs Context. */
   readonly variant: 'dropdown' | 'context'
+  /** The session's folder's `default_destination_crew`, which overrides the
+   *  global default destination crew for this session. */
+  readonly folderDefault?: string
 }
 
 /**
@@ -46,10 +58,10 @@ interface SendToInstanceSubmenuProps {
  * this menu produces a visible local change, so closing on click is its own
  * confirmation; a transfer's only effect happens on ANOTHER machine, so a
  * close-and-say-nothing would leave the user with no way to tell a completed
- * copy from a silently dropped one. There is no toast primitive in this app —
- * the sibling convention is an inline note next to the control
- * (InstancesPanel's `actionErr` / `connectedNote`), and the row IS the control
- * here.
+ * copy from a silently dropped one. A FAILURE renders the peer's own words on the
+ * row through `errors-use-error-notice`'s sanctioned in-menu pair — a passive
+ * inline `ErrorNotice` plus a sibling `ErrorNoticeMenuItem` carrying the hand-off,
+ * never a hand-written danger span.
  *
  * Copy semantics: the local session is untouched and the peer allocates its own
  * key, so a repeat click is harmless and sends a second copy. That is also why
@@ -64,41 +76,63 @@ interface SendToInstanceSubmenuProps {
  * `Item` is the Radix menu-item primitive of the hosting menu family; items must
  * match their parent menu's family.
  */
-export function InstanceSendItems({ instances, states, onSend, Item }: {
+export function InstanceSendItems({ instances, states, onSend, Item, Separator, defaultId = '' }: {
   readonly instances: readonly InstanceView[]
+  /** The default destination crew's id ('' = none). Its row is marked; the
+   *  caller orders it first. Marking never sends: the click still does. */
+  readonly defaultId?: string
   readonly states: Readonly<Record<string, SendState>>
   readonly onSend: (instanceId: string) => void
-  readonly Item: React.ComponentType<{
-    title?: string
-    disabled?: boolean
-    onSelect?: (event: Event) => void
-    children?: React.ReactNode
-  }>
+  readonly Item: ErrorNoticeMenuItemComponent
+  /** The hosting family's separator, used to detach the hand-off row from the
+   *  peer above it so it does not read as another send destination. */
+  readonly Separator?: ComponentType<{ className?: string }>
 }) {
+  // The gateway link, not the peer's `status.state` below — read here, as
+  // FolderPickerItems does, so no caller can omit the gate.
+  const gatewayOnline = useConnected()
   const notConnected = i18nT('components.sendToInstanceSubmenu.not_connected')
+  const defaultLabel = i18nT('components.sendToInstanceSubmenu.default_badge')
+  const sendVerb = i18nT('utils.offline.send_to_instances')
+  const errorIdBase = useId()
+  // Radix dismisses on select unless defaulted, which took the reason row with it.
+  const refuse = (event: Event) => { event.preventDefault() }
   return (
     <>
       {instances.map(inst => {
         const connected = inst.status?.state === 'connected'
         const st = states[inst.id] ?? { kind: 'idle' }
+        const isDefault = inst.id === defaultId
+        const name = isDefault ? `${inst.name} (${defaultLabel})` : inst.name
+        const errorId = `${errorIdBase}-${inst.id}`
         return (
+          <Fragment key={inst.id}>
           <Item
-            key={inst.id}
-            title={connected ? inst.name : `${inst.name} — ${notConnected}`}
+            title={connected ? name : `${name} — ${notConnected}`}
+            offline={!gatewayOnline}
+            {...(gatewayOnline ? {} : offlineProps(false, sendVerb, name))}
             disabled={!connected || st.kind === 'sending'}
-            onSelect={connected
+            onSelect={connected && gatewayOnline
               ? (event: Event) => {
                 // Keep the menu open so the row can report the outcome.
                 event.preventDefault()
                 onSend(inst.id)
               }
-              : undefined}
+              : refuse}
           >
             <Server
               size={13}
               className={connected ? 'text-accent shrink-0' : 'text-muted shrink-0'}
             />
             <span className="truncate">{inst.name}</span>
+            {isDefault && (
+              <span
+                data-testid="send-to-instance-default"
+                className="shrink-0 rounded border border-border px-1 text-[10px] text-muted"
+              >
+                {defaultLabel}
+              </span>
+            )}
             {!connected && (
               <span className="ml-auto text-[10px] text-muted shrink-0">{notConnected}</span>
             )}
@@ -121,22 +155,41 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
               </span>
             )}
             {st.kind === 'error' && (
+              // Blocked handlers: a click reaching the row would replace this with a spinner.
+              // pointerup too: Radix's item clicks itself on a pointerup with no pointerdown.
               <span
-                className="ml-auto flex items-center gap-1 text-[10px] text-danger shrink-0"
-                title={st.message}
+                className="ml-auto"
+                role="presentation"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
               >
-                <AlertCircle size={12} />
-                {i18nT('components.sendToInstanceSubmenu.failed')}
+                {/* Capped, but WRAPPING: an uncapped peer message widens the flyout,
+                    and truncating put the reason itself out of reach of touch and keyboard.
+                    The cap is wide enough for a typical peer reason to settle in about two
+                    lines; at half this it stacked four lines of red beside the peer name. */}
+                <ErrorNotice id={errorId} message={st.message} variant="inline" className="max-w-[380px]" messageClassName="whitespace-normal" messageTooltip={st.message} />
               </span>
             )}
           </Item>
+          {st.kind === 'error' && (
+            <>
+            {/* Under the hand-off row's own gate, so a gateway that drops while
+                the menu is open cannot leave a divider behind. */}
+            {gatewayOnline && st.message && Separator && <Separator />}
+            <ErrorNoticeMenuItem Item={Item} message={st.message} describedBy={errorId} />
+            </>
+          )}
+          </Fragment>
         )
       })}
     </>
   )
 }
 
-export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstanceSubmenuProps) {
+export default function SendToInstanceSubmenu({ slotKey, variant, folderDefault }: SendToInstanceSubmenuProps) {
+  // Read here, not taken as a prop: an optional one left a caller ungated.
+  const connected = useConnected()
   const [states, setStates] = useState<Record<string, SendState>>({})
 
   const { data } = useQuery({
@@ -179,26 +232,41 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
 
   const instances = data?.instances ?? []
   if (instances.length === 0) return null
+  // The default crew goes first and is marked; an offline default stays
+  // disabled like any other offline crew, and the others stay usable.
+  const defaultId = resolveDefaultDestination(
+    instances.map(i => i.id), data?.default_destination, folderDefault,
+  )
 
   const Sub = variant === 'context' ? ContextMenuSub : DropdownMenuSub
   const SubTrigger = variant === 'context' ? ContextMenuSubTrigger : DropdownMenuSubTrigger
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
+  const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
+  // Neither held closed nor `disabled`: Radix drops a disabled trigger from roving focus.
   return (
     <Sub>
-      <SubTrigger>
+      <SubTrigger
+        {...offlineProps(connected, i18nT('utils.offline.send_to_instances'))}
+        className={connected ? undefined : 'opacity-40 text-muted'}
+      >
         <Send size={13} className="shrink-0 text-muted" />
         <span className="flex-1">{i18nT('components.sendToInstanceSubmenu.send_a_copy_to')}</span>
         <ChevronRight size={12} className="text-muted" />
       </SubTrigger>
       <SubContent className="min-w-[210px] max-h-[280px] overflow-y-auto">
         <InstanceSendItems
-          instances={instances}
+          instances={withDefaultFirst(instances, defaultId)}
+          defaultId={defaultId}
           states={states}
-          onSend={(id) => sendMutation.mutate({ id })}
+          // The trigger only announces, so an opened flyout must still refuse.
+          onSend={(id) => { if (!connected) return; sendMutation.mutate({ id }) }}
           Item={Item}
+          Separator={Separator}
         />
+        {/* LAST, as the top-level menu does: a reconnect unmounts this row, and above the peers it would shift them under a mid-aim pointer. */}
+        {!connected && <OfflineReasonRow testId="send-instance-offline-reason" className={`${REASON_ROW_WIDTH} px-2 py-1`} message={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.send_to_instances') })} />}
       </SubContent>
     </Sub>
   )

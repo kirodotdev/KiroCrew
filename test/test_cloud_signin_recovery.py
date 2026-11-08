@@ -1,22 +1,12 @@
 """Recovering a cloud crew whose Kiro sign-in did not finish.
 
-A managed launch can register a working, billing crew and still end up with no
-Kiro session: the device code timed out, nobody approved it, the gateway
-restarted mid-wait, or the owner cancelled. Three seams, no AWS and no live
-gateway:
+A launch can register a billing crew with no Kiro session (code timed out, not
+approved, gateway restarted, owner cancelled). Three seams, no AWS, no live gateway:
 
-* ``cloud/login.py`` — :func:`~kiro_crew.cloud.login.cancel_device_login` stops a
-  cancelled login WITHOUT signing the box out (which ``logout`` would do to a
-  session the cancelled attempt never established).
-* ``cloud/launch_job.py`` — :func:`~kiro_crew.cloud.launch_job.run_signin_retry`
-  re-runs only the sign-in step, a cancel stops the remote login, and a restart
-  mid-sign-in keeps a crew that is already signed in.
-* ``dashboard/handlers_cloud.py`` — ``POST /api/cloud/launch/{id}/signin/restart``
-  is owner-only, serialized, and never re-provisions.
-
-The identity model itself (``KiroLoginTarget``, the pty login driver, launch-body
-field validation) is covered by ``test_cloud_login_target.py``,
-``test_cloud_login.py`` and ``test_cloud_handlers.py``.
+* ``cloud/login.py`` — ``cancel_device_login`` stops a login WITHOUT signing the box out.
+* ``cloud/launch_job.py`` — ``run_signin_retry`` re-runs only the sign-in step.
+* ``dashboard/handlers_cloud.py`` — ``POST /api/cloud/launch/{id}/signin/restart`` is
+  owner-only, serialized, and never re-provisions.
 """
 
 from __future__ import annotations
@@ -1074,7 +1064,6 @@ class _NoSigninThread(threading.Thread):
         super().start()
 
 
-@pytest.mark.asyncio
 class TestSigninRestartRoute:
     async def _unsigned_job(self, tmp_path):
         state = _state(
@@ -1085,6 +1074,7 @@ class TestSigninRestartRoute:
         )
         return state, _read(resp)["id"]
 
+    @pytest.mark.asyncio
     async def test_it_starts_a_new_sign_in(self, tmp_path):
         state, job_id = await self._unsigned_job(tmp_path)
         state.cloud_launch_engine = TargetEngine(
@@ -1096,6 +1086,7 @@ class TestSigninRestartRoute:
         assert resp.status == 202
         assert state.cloud_launch_store.get(job_id).signin_detected is True
 
+    @pytest.mark.asyncio
     async def test_the_route_never_re_provisions(self, tmp_path):
         state, job_id = await self._unsigned_job(tmp_path)
         engine = CountingEngine(FakeHandle(url="https://x/?user_code=B", signed=True))
@@ -1109,6 +1100,7 @@ class TestSigninRestartRoute:
         assert engine.signins == 1
         assert state.cloud_launch_store.get(job_id).instance_id == "i-0abc123456789def0"
 
+    @pytest.mark.asyncio
     async def test_the_claim_adopts_before_it_saves_running(self, tmp_path):
         """`reap_orphans` skips a job only when it is terminal or owned by THIS
         process, so a RUNNING retry that is not yet adopted is what a first-use
@@ -1144,6 +1136,7 @@ class TestSigninRestartRoute:
         assert store.reap_orphans() == []
         assert store.get(job_id).status == lj.RUNNING
 
+    @pytest.mark.asyncio
     async def test_a_confirmed_sign_in_is_not_restarted(self, tmp_path):
         """A stale tab restarting a sign-in another tab already confirmed: the
         claim would reset `signin_detected`, and an SSM failure after it would
@@ -1166,6 +1159,7 @@ class TestSigninRestartRoute:
         assert engine.signins == 0
         assert store.get(job_id).signin_detected is True
 
+    @pytest.mark.asyncio
     async def test_the_reprobe_refuses_a_job_whose_identity_cannot_be_read(self, tmp_path):
         """The recheck is the OTHER way into the same corruption: it probes the box
         with `job.login_target`, which is the substituted DEFAULT when the stored
@@ -1200,6 +1194,7 @@ class TestSigninRestartRoute:
         assert after.signin_detected is False
         assert lj.target_is_unreadable(after), "the unreadable marker was cleared"
 
+    @pytest.mark.asyncio
     async def test_a_job_whose_identity_cannot_be_read_is_refused(self, tmp_path):
         """`LaunchJob.from_dict` substitutes the DEFAULT identity (Builder ID) when
         the persisted `login_target` cannot be parsed, and marks the job FAILED.
@@ -1232,6 +1227,7 @@ class TestSigninRestartRoute:
         assert after.status == lj.FAILED
         assert lj.target_is_unreadable(after)
 
+    @pytest.mark.asyncio
     async def test_an_unknown_job_is_404(self, tmp_path):
         state, _ = await self._unsigned_job(tmp_path)
         resp = await hc.api_cloud_launch_signin_restart(
@@ -1239,6 +1235,7 @@ class TestSigninRestartRoute:
         )
         assert resp.status == 404
 
+    @pytest.mark.asyncio
     async def test_a_launch_that_never_created_a_crew_is_400(self, tmp_path):
         state = _state(tmp_path)
         job = state.cloud_launch_store.create(
@@ -1305,14 +1302,12 @@ class TestSigninRestartRoute:
         assert store.get(job.id).terminal
         assert hc._cancels(state).get(job.id) is later
 
+    @pytest.mark.asyncio
     async def test_the_job_is_claimed_before_the_worker_starts(self, tmp_path, monkeypatch):
         """The guard is only a guard if the state it reads is already written.
 
-        The worker persists RUNNING itself, but it runs AFTER the lock is
-        released — so a second restart arriving in that window read a terminal
-        job, passed the "nothing active" check, and raced a second remote login
-        with one cancel handle between them. Observed at the moment the worker is
-        started, which is that window's first instant.
+        The worker runs after the lock is released, so a second restart in that window
+        would read a terminal job and race a second remote login. Observed at worker start.
         """
         state, job_id = await self._unsigned_job(tmp_path)
         store = state.cloud_launch_store
@@ -1329,6 +1324,7 @@ class TestSigninRestartRoute:
         assert resp.status == 202
         assert observed == [(lj.RUNNING, lj.STEP_ACTIVE)]
 
+    @pytest.mark.asyncio
     async def test_a_second_restart_is_refused_while_the_first_runs(self, tmp_path):
         state, job_id = await self._unsigned_job(tmp_path)
         job = state.cloud_launch_store.get(job_id)
@@ -1339,6 +1335,29 @@ class TestSigninRestartRoute:
         assert resp.status == 409
         assert _read(resp)["code"] == "launch_already_running"
 
+    @pytest.mark.asyncio
+    async def test_a_restart_is_refused_while_a_job_record_is_not_utf8(self, tmp_path, monkeypatch):
+        """The race guard reads the job list, which skips a job file whose bytes are
+        not UTF-8. That record may be a launch or sign-in still running on this
+        instance, so the restart refuses rather than start a second remote login."""
+        state, job_id = await self._unsigned_job(tmp_path)
+        store = state.cloud_launch_store
+        other = store.create(profile="dev", region="us-east-1", size_key="balanced")
+        store._path(other.id).write_bytes(b'\xff\xfe{"status": "running"}')
+        monkeypatch.setattr(
+            hc, "_start_signin_worker", lambda *a, **k: pytest.fail("a sign-in worker started")
+        )
+
+        resp = await hc.api_cloud_launch_signin_restart(
+            _req("POST", "/x", state=state, match_info={"id": job_id})
+        )
+
+        assert resp.status == 409
+        body = _read(resp)
+        assert body["code"] == "launch_record_unreadable"
+        assert f"{other.id}.json" in body["error"]
+
+    @pytest.mark.asyncio
     async def test_a_launch_with_no_instance_yet_still_blocks(self, tmp_path):
         """Until `provision` returns, nothing says which instance a launch will sign
         in on, so a launch that has none yet blocks a restart on every crew."""
@@ -1357,6 +1376,7 @@ class TestSigninRestartRoute:
         assert body["code"] == "launch_already_running"
         assert body["job"]["id"] == other.id
 
+    @pytest.mark.asyncio
     async def test_a_job_on_another_crew_does_not_block_the_restart(self, tmp_path):
         """The sign-in acts on one instance. Crew B's launch, already on its own
         instance and waiting on its own code, cannot race a sign-in on crew A."""
@@ -1385,6 +1405,7 @@ class TestSigninRestartRoute:
         assert untouched.status == lj.AWAITING_SIGNIN
         assert untouched.signin is not None and untouched.signin.code == "B"
 
+    @pytest.mark.asyncio
     async def test_two_restarts_on_one_crew_start_one_login(self, tmp_path):
         """The RUNNING claim is persisted under the launch lock, so of two restarts on
         one crew arriving together one is admitted, the other gets 409, and exactly
@@ -1433,6 +1454,7 @@ class TestSigninRestartRoute:
             hc._start_signin_worker(state, job, state.cloud_launch_engine, threading.Event())
         assert touched == [], f"store I/O on the event loop path: {touched}"
 
+    @pytest.mark.asyncio
     async def test_a_cancel_landing_between_claim_and_worker_is_honoured(
         self, tmp_path, monkeypatch
     ):
@@ -1468,6 +1490,7 @@ class TestSigninRestartRoute:
         assert out.status != lj.DONE or out.signin_detected is False
         assert out.step(lj.STEP_SIGNIN).state != lj.STEP_DONE
 
+    @pytest.mark.asyncio
     async def test_a_failed_thread_start_keeps_the_preserved_code(self, tmp_path, monkeypatch):
         """The claim must not drop the old device code: the box has not replaced the
         login yet, so the old poller is still live and must stay tracked. A 503 on
@@ -1488,6 +1511,7 @@ class TestSigninRestartRoute:
         out = store.get(job_id)
         assert out.signin is not None and out.signin.code == "KEEP", "a live poller lost its record"
 
+    @pytest.mark.asyncio
     async def test_a_failed_thread_start_does_not_wedge_launches(self, tmp_path, monkeypatch):
         """`_claim_signin` persists RUNNING before the worker thread exists. If
         `Thread.start` then raises, nothing would ever move the job off RUNNING --
@@ -1527,6 +1551,7 @@ class TestSigninRestartRoute:
         )
         assert resp2.status == 202
 
+    @pytest.mark.asyncio
     async def test_it_is_owner_only(self, tmp_path):
         state, job_id = await self._unsigned_job(tmp_path)
         app = web.Application()
@@ -1539,6 +1564,7 @@ class TestSigninRestartRoute:
         resp = await hc.api_cloud_launch_signin_restart(req)
         assert resp.status == 403
 
+    @pytest.mark.asyncio
     async def test_the_route_is_registered(self):
         import inspect
 
@@ -1553,11 +1579,8 @@ class TestSigninRestartRoute:
 class TestSigninPromptReprobe:
     """A preserved code approved out of band must not badge the crew forever.
 
-    A timed-out sign-in deliberately KEEPS its code and leaves the remote login
-    polling, so the user can still approve it from the open browser tab. Nothing
-    re-probed the box after the job went terminal, so an approval that landed
-    signed the crew in while ``signin_detected`` stayed False — "Needs sign-in"
-    forever, Connect held.
+    A timed-out sign-in KEEPS its code and the remote login polling, so the user can
+    still approve it; the box is re-probed so ``signin_detected`` can turn True.
     """
 
     async def _preserved(self, tmp_path):
@@ -1580,11 +1603,8 @@ class TestSigninPromptReprobe:
     async def test_the_box_probe_itself_writes_nothing(self, tmp_path, monkeypatch):
         """The SSM query runs in an executor thread; the write must not.
 
-        This is the property that makes the lock meaningful. While the mutation
-        lived beside the query on the worker thread, nothing serialised it against
-        a restart persisting RUNNING under `_launch_lock` -- so the write moved to
-        `_record_probed_signin`, on the loop, under that lock. If a future change
-        puts a `save` back into the query path, this fails.
+        The write lives in `_record_probed_signin`, on the loop under `_launch_lock`, so
+        it is serialised against a restart persisting RUNNING.
         """
         state, job = await self._preserved(tmp_path)
         store = state.cloud_launch_store
@@ -1597,11 +1617,7 @@ class TestSigninPromptReprobe:
         assert after == before, "the probe must query only; the write is the caller's"
 
     async def test_the_recorded_write_is_a_coroutine_taking_the_lock(self) -> None:
-        """`_record_probed_signin` has to be awaitable to take the async lock.
-
-        A sync helper cannot `async with _launch_lock(...)`, which is exactly why
-        the first attempt at this fix settled for a bare re-read.
-        """
+        """`_record_probed_signin` must be a coroutine: only that can `async with _launch_lock`."""
         import inspect
 
         assert inspect.iscoroutinefunction(hc._record_probed_signin)
@@ -1634,11 +1650,8 @@ class TestSigninPromptReprobe:
     async def test_a_probe_result_is_dropped_when_the_job_moved_on(self, tmp_path, monkeypatch):
         """The probe holds a snapshot from BEFORE an SSM round trip of seconds.
 
-        If a restart was admitted in that window it has already persisted RUNNING
-        under the launch lock -- and that claim is the only thing stopping two
-        remote logins racing one cancel handle. Writing this stale terminal
-        snapshot over it would undo exactly that. The probe must re-read and drop
-        its own result.
+        A restart admitted in that window has persisted RUNNING, the claim that stops
+        two remote logins racing; the probe must re-read and drop its stale result.
         """
         state, job = await self._preserved(tmp_path)
         store = state.cloud_launch_store
@@ -1836,15 +1849,9 @@ def test_ssm_module_is_untouched_by_these_tests():
 class TestKillPatternMatchesWhatTheBoxLaunches:
     """The `pkill` pattern is only ever exercised on the remote box.
 
-    The design lane's objection is exact: `pkill` exits 1 when the pattern
-    matches nothing, the same status as a login that already exited, so an
-    assertion about our own command text proves nothing about whether the box's
-    login would be found.
-
-    Two guards stand in for a live run. This class is the static one -- it ties
-    our killer to main's launcher, so a rename on EITHER side fails here instead
-    of silently matching nothing over SSM. The runtime one is the `pgrep`
-    re-probe, which reports UNCONFIRMED rather than a clean stop.
+    `pkill` exits 1 both for no match and for a login that already exited, so this
+    ties the pattern to the real launcher: a rename on either side fails here. The
+    runtime guard is the `pgrep` re-probe, which reports UNCONFIRMED.
     """
 
     def test_the_pattern_is_a_substring_of_the_launched_command_line(self) -> None:

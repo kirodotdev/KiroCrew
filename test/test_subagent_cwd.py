@@ -1,33 +1,29 @@
 """Tests for the ``spawn_run`` ``cwd`` parameter.
 
-Covers:
-- ``validate_cwd`` helper: absolute, exists, realpath, allowlist matching,
-  symlink traversal, disabled feature.
-- ``SubagentManager.spawn`` cwd rejection path: invalid cwd returns a done
-  ``SubagentInfo`` with an ``error`` and emits a ``rejected_invalid_cwd`` SEL
-  event without consuming a concurrency slot.
-- ``SubagentManager.spawn`` cwd success path: valid cwd is resolved and
-  stored on ``SubagentInfo`` so downstream factories can pick it up.
+``validate_cwd`` (absolute, exists, realpath, allowlist, symlinks, disabled feature), and
+``SubagentManager.spawn``: an invalid cwd returns a done ``SubagentInfo`` with ``error`` and a
+``rejected_invalid_cwd`` SEL event without taking a slot; a valid one is stored resolved.
 """
 
 from __future__ import annotations
 
+import ntpath
 import os
+import posixpath
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, sandbox_plan
 from kiro_crew.subagent import SubagentManager, validate_cwd
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
-# ---------------------------------------------------------------------------
 # validate_cwd helper
-# ---------------------------------------------------------------------------
 
 
 class TestValidateCwd:
@@ -111,6 +107,7 @@ class TestValidateCwd:
     ) -> None:
         """``~`` in allowed_roots expands via ``expanduser``."""
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         project = tmp_path / "ws" / "proj"
         project.mkdir(parents=True)
         resolved, err = validate_cwd(str(project), ["~/ws"])
@@ -120,6 +117,7 @@ class TestValidateCwd:
     def test_tilde_expanded_in_cwd(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """``~`` in cwd argument expands via ``expanduser``."""
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         project = tmp_path / "proj"
         project.mkdir()
         resolved, err = validate_cwd("~/proj", [str(tmp_path)])
@@ -145,10 +143,54 @@ class TestValidateCwd:
         assert resolved == ""
         assert "not under any allowed root" in err
 
+    def test_filesystem_root_entry_admits_a_directory_below_it(self, tmp_path: Path) -> None:
+        """A filesystem-root entry (``/``, or the drive root on Windows) admits its subtree."""
+        (tmp_path / "project").mkdir()
+        real_project = os.path.realpath(str(tmp_path / "project"))
+        root = Path(real_project).anchor
+        resolved, err = validate_cwd(real_project, [root])
+        assert err == ""
+        assert resolved == real_project
 
-# ---------------------------------------------------------------------------
+
+class TestCwdRootBoundary:
+    """``validate_cwd``'s boundary (``sandbox_plan.path_within``) under both separators.
+
+    The cases swap ``sandbox_plan``'s ``os`` for an ``ntpath``- or
+    ``posixpath``-backed namespace, so both shapes are checked on any host.
+    """
+
+    @pytest.mark.parametrize(
+        ("path", "root", "windows", "expected"),
+        [
+            ("H:\\REPL\\project", "H:\\", True, True),
+            ("H:\\", "H:\\", True, True),
+            ("H:\\REPL", "H:\\REPL", True, True),
+            ("H:\\REPL\\project", "H:\\REPL", True, True),
+            ("H:\\REPL-extra", "H:\\REPL", True, False),
+            ("G:\\REPL", "H:\\", True, False),
+            ("/srv/project", "/", False, True),
+            ("/srv/project", "/srv", False, True),
+            ("/srv-extra", "/srv", False, False),
+        ],
+    )
+    def test_boundary(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+        root: str,
+        windows: bool,
+        expected: bool,
+    ) -> None:
+        """A root that already ends in the separator is not given a second one."""
+        flavour = ntpath if windows else posixpath
+        monkeypatch.setattr(
+            sandbox_plan, "os", types.SimpleNamespace(path=flavour, sep=flavour.sep)
+        )
+        assert sandbox_plan.path_within(path, root) is expected
+
+
 # SubagentManager.spawn integration — cwd is threaded onto SubagentInfo
-# ---------------------------------------------------------------------------
 
 
 def _mock_sessions() -> MagicMock:
@@ -332,17 +374,12 @@ class TestSpawnCwd:
         self,
         tmp_path: Path,
     ) -> None:
-        """A prevalidated app spawn QUEUES at capacity like any accepted row --
-        but never carries its prevalidation into the queue.
+        """A prevalidated app spawn queues at capacity but drops its prevalidation.
 
-        ``_agent_prevalidated`` skips the drain-time agent-directory scan, so a
-        queued entry that kept the flag could run a same-named FOREIGN agent
-        under the app's auto-approval if the app were disabled and its agent
-        file removed while it waited. The queue entry therefore drops the flag:
-        the drain re-validates the agent and re-proves app ownership
-        (``_validate_app_agent_ownership``) before starting, and a row that
-        fails that re-check is refused AND failed in the store. Capacity itself
-        is a scheduling fact, not a verdict on the row (write-before-ack).
+        ``_agent_prevalidated`` skips the drain-time agent scan, so a kept flag could run a
+        same-named foreign agent under the app's auto-approval if the app's agent were
+        removed meanwhile. The drain re-validates and re-proves ownership
+        (``_validate_app_agent_ownership``); a failing row is refused and failed in the store.
         """
         manager = SubagentManager(
             sessions=_mock_sessions(),

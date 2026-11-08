@@ -13,6 +13,7 @@ import json
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from named_cases_helpers import named_cases
 
 from kiro_crew.dashboard.handlers import feedback
 
@@ -266,7 +267,14 @@ class TestNewUserSessionWindow:
         assert json.loads(resp.body) == {"eligible": True}
 
     @pytest.mark.asyncio
-    async def test_past_window_but_server_dedup_not_due_stays_not_eligible(
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_past_window_but_server_dedup_not_due_stays_not_eligible"),
+            *named_cases("test_not_eligible_when_aperture_returns_null_body"),
+        ],
+    )
+    async def test_a_null_aperture_body_is_not_eligible(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The session+cooldown combo at the server layer: the new-user window is
@@ -493,16 +501,6 @@ class TestApiFeedbackEligible:
         resp = await feedback.api_feedback_eligible(self._req())
         assert resp.status == 200
         assert json.loads(resp.body) == {"eligible": True}
-
-    @pytest.mark.asyncio
-    async def test_not_eligible_when_aperture_returns_null_body(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _allow(monkeypatch)
-        _install_fake_session(monkeypatch, _FakeResp(200, json_body=None))
-        resp = await feedback.api_feedback_eligible(self._req())
-        assert resp.status == 200
-        assert json.loads(resp.body) == {"eligible": False}
 
     @pytest.mark.asyncio
     async def test_not_eligible_on_non_200(self, monkeypatch: pytest.MonkeyPatch) -> None:

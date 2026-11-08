@@ -39,18 +39,17 @@ class TestLinuxServiceScopesUninstall:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture on the shared monkeypatch, moved verbatim; tracked for a de-flake pass
-    def _not_root(self, monkeypatch, tmp_path):
+    def _not_root(self, _floor_monkeypatch, tmp_path):
         from kiro_crew.service import linux as svc_linux
 
-        monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
-        monkeypatch.setenv("USER", "tester")
+        _floor_monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        _floor_monkeypatch.setenv("USER", "tester")
         # No system unit file unless a test writes one: uninstall's system-scope
         # probe is a stat of this path. The per-user unit's own path is the
         # remedy's layout under tmp_path, so a test that writes there owns the
         # file by path and one that writes elsewhere owns it by the marker.
-        monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "absent" / _UNIT)
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "absent" / _UNIT)
+        _floor_monkeypatch.setattr(
             svc_linux,
             "user_unit_file_path",
             lambda: tmp_path / ".config" / "systemd" / "user" / _UNIT,
@@ -285,6 +284,35 @@ class TestLinuxServiceScopesUninstall:
         )
         assert report.unfinished == frozenset({"system"})
         assert "system" not in report.removed
+
+    def test_an_undecodable_overrides_file_is_kept_and_the_system_scope_still_reloads(
+        self, tmp_path, monkeypatch
+    ):
+        """``/etc/kirocrew/kirocrew.env`` is operator-edited by design, and one
+        saved in latin-1 is not UTF-8. It is not our untouched seed, so it stays,
+        and the scope still reaches its closing ``daemon-reload``."""
+        from kiro_crew.service import linux as svc_linux
+
+        unit_path = tmp_path / "kirocrew.service"
+        unit_path.write_text("")
+        env_file = tmp_path / "etc-kirocrew" / "kirocrew.env"
+        env_file.parent.mkdir()
+        env_file.write_bytes(b"# Kiro Crew overrides\nNOTE=caf\xe9\n")
+        monkeypatch.setattr(svc_linux, "UNIT_PATH", unit_path)
+        monkeypatch.setattr(svc_linux, "ENV_DIR", env_file.parent)
+        monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_file)
+        monkeypatch.setattr(svc_linux, "_SYSTEMD_BOOTED_DIR", tmp_path)
+        run = _fake_systemctl(system=_DEAD, user=None)
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            try:
+                report = svc_linux.uninstall()
+            except UnicodeDecodeError as exc:
+                pytest.fail(f"uninstall aborted before the system daemon-reload: {exc!r}")
+
+        assert not any(str(env_file) in c for c in run.calls), run.calls
+        assert ["sudo", "systemctl", "daemon-reload"] in run.calls
+        assert report.system == f"removed ({unit_path})"
+        assert "system" in report.removed
 
     def test_a_rejected_daemon_reload_after_a_stale_file_removal_is_unfinished(
         self, tmp_path, monkeypatch

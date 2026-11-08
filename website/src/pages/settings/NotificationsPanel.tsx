@@ -1,25 +1,31 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Lock, MonitorCog, Blocks, Check, RadioTower, Bell, Volume2, ListMusic, Music } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '../../components/ui/select'
 import { Toggle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
+import InfoTip from '../../components/InfoTip'
 import { api } from '../../api/client'
 import type { NotificationChannel } from '../../types'
 import {
   SOUND_PRESETS, SOUND_CATEGORIES, type SoundPreset, type SoundChoice, type SoundCategory, type SoundSettings, type ToneStep,
-  type CustomTones, validateCustomTone,
-  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, customSoundName,
+  type CustomTones, type CustomFiles, type CustomFileMeta, type StoredFileMeta, validateCustomTone, validateCustomFile, allCustomSounds,
+  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, fileSoundId, userSoundName, isSoundMuted,
 } from '../../hooks/useNotificationSound'
+import { putSoundFile, getSoundFile, deleteSoundFile, newSoundFileKey } from '../../hooks/customSoundFiles'
 import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
-import { loadChatCompleteNotify, saveChatCompleteNotify } from '../../hooks/chatCompleteNotify'
+import { PushSection } from './NotificationsPushSection'
+import { AppSessionMuteSection } from './AppSessionMuteSection'
+import { DeliverToControl, type BridgePatch } from './NotificationsBridgeRoute'
+import { saveChatCompleteNotify, useChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
 
 import { i18nT } from '../../i18n/t'
+import { fmtTime } from '../../i18n/format'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
 
 /** localStorage key the sound settings persist under. Mirrors the private
@@ -71,9 +77,12 @@ function countCategoryChanges(
 }
 const OVERRIDE_OPTIONS: string[] = [DEFAULT_SENTINEL, ...PRESET_OPTIONS]
 
-/** The user's custom sounds as picker options, after the built-ins. */
-const customOptions = (s: SoundSettings): SoundChoice[] =>
-  Object.keys(s.customTones ?? {}).map(customSoundId)
+/** The user's custom sounds as picker options, after the built-ins: tone
+ *  sounds, then sound files. */
+const customOptions = (s: SoundSettings): SoundChoice[] => [
+  ...Object.keys(s.customTones ?? {}).map(customSoundId),
+  ...Object.keys(s.customFiles ?? {}).map(fileSoundId),
+]
 
 /** Localised preset labels, positionally aligned with `PRESET_OPTIONS` plus the
  *  custom options. A custom sound is labelled with the name the user gave it;
@@ -81,7 +90,7 @@ const customOptions = (s: SoundSettings): SoundChoice[] =>
  *  other id reaching this table is a built-in with an entry. */
 const presetLabels = (s: SoundSettings): string[] => [
   ...PRESET_OPTIONS.map(p => i18nT(PRESET_LABEL_KEY[p])),
-  ...customOptions(s).map(id => i18nT('pages.settings.notificationsPanel.custom_sound_option', { name: customSoundName(id) ?? id })),
+  ...customOptions(s).map(id => i18nT('pages.settings.notificationsPanel.custom_sound_option', { name: userSoundName(id) ?? id })),
 ]
 
 /** …plus the leading "inherit the default sound" row the per-category selects
@@ -136,7 +145,47 @@ const CATEGORY_DESCRIPTION_KEY: Record<SoundCategory, string> = {
  *  `[added-lines]` i18n gate reads, and it is out of scope here — see the PR's
  *  follow-ups. */
 const PRIORITY_SENTINEL = 'Channel default'
-const PRIORITY_OPTIONS = [PRIORITY_SENTINEL, 'critical', 'default', 'passive']
+/** Catalog KEY for each priority level's label. The object keys are the wire
+ *  values the backend stores and the select compares, so they never change;
+ *  only the rendered text is translated. Keys, not strings, for the same
+ *  module-load reason as the preset table: `priorityLabel()` resolves them
+ *  during render. */
+const PRIORITY_LABEL_KEYS: Record<string, string> = {
+  critical: 'pages.settings.notificationsPanel.priority_critical',
+  default: 'pages.settings.notificationsPanel.priority_default',
+  passive: 'pages.settings.notificationsPanel.priority_passive',
+}
+const PRIORITY_OPTIONS = [PRIORITY_SENTINEL, ...Object.keys(PRIORITY_LABEL_KEYS)]
+
+/** The user-facing label for a priority wire value. A value this build does
+ *  not know (a newer backend) shows as-is rather than as a blank. */
+function priorityLabel(priority: string): string {
+  return Object.hasOwn(PRIORITY_LABEL_KEYS, priority) ? i18nT(PRIORITY_LABEL_KEYS[priority]) : priority
+}
+
+/** Timed-mute choices; while one runs the select also shows `MUTED_NOW`. */
+const MUTE_CHOICES = ['off', '1h', '2h', 'morning'] as const
+type MuteChoice = typeof MUTE_CHOICES[number]
+const MUTED_NOW = 'muted'
+const MORNING_HOUR = 8
+
+/** When a mute chosen at `now` ends: one or two hours later, or the next 8:00. */
+function muteEnd(choice: Exclude<MuteChoice, 'off'>, now: number): number {
+  if (choice !== 'morning') return now + (choice === '1h' ? 1 : 2) * 3_600_000
+  const at = new Date(now)
+  at.setHours(MORNING_HOUR, 0, 0, 0)
+  if (at.getTime() <= now) at.setDate(at.getDate() + 1)
+  return at.getTime()
+}
+
+const muteLabel = (choice: MuteChoice, now: number): string => {
+  switch (choice) {
+    case 'off': return i18nT('pages.settings.notificationsPanel.mute_off')
+    case '1h': return i18nT('pages.settings.notificationsPanel.mute_for_1h')
+    case '2h': return i18nT('pages.settings.notificationsPanel.mute_for_2h')
+    case 'morning': return i18nT('pages.settings.notificationsPanel.mute_until', { time: fmtTime(muteEnd('morning', now)) })
+  }
+}
 
 /** Shared style for the sound-preview buttons: the Sound card's "Test
  *  notification" button and the per-category "Test" buttons must stay
@@ -151,6 +200,34 @@ const CHANNEL_LABELS: Record<string, () => string> = {
   // opposite of what muting it does, which is silence only the gateway's
   // "a newer version is published" notes.
   'system.apps': () => i18nT('pages.settings.notificationsPanel.channel_apps'),
+  // The bare id is "turn", which reads as the "turn" sound category (conversation
+  // handoffs) and is jargon besides -- this channel carries the bell entry a chat
+  // raises when it STOPS with an error, so it is labelled in task language.
+  'system.turn': () => i18nT('pages.settings.notificationsPanel.channel_turn'),
+}
+
+/** Catalog KEY for each system channel's "when does this fire?" tip, one entry
+ *  per id in the backend's `SYSTEM_CHANNELS` (notifications/bus.py), pinned by
+ *  test/test_notification_channel_tips.py. A channel with no entry (an app's,
+ *  or a system channel this build does not know) shows no tip: a missing tip
+ *  is better than a wrong one. Keys, not strings, for the same module-load
+ *  reason as `PRESET_LABEL_KEY`. */
+const CHANNEL_TIP_KEY: Record<string, string> = {
+  'system.agent': 'pages.settings.notificationsPanel.channel_tip_agent',
+  'system.approval': 'pages.settings.notificationsPanel.channel_tip_approval',
+  'system.cron': 'pages.settings.notificationsPanel.channel_tip_cron',
+  'system.heartbeat': 'pages.settings.notificationsPanel.channel_tip_heartbeat',
+  'system.hook': 'pages.settings.notificationsPanel.channel_tip_hook',
+  'system.monitor': 'pages.settings.notificationsPanel.channel_tip_monitor',
+  'system.resources': 'pages.settings.notificationsPanel.channel_tip_resources',
+  'system.safety_override': 'pages.settings.notificationsPanel.channel_tip_safety_override',
+  'system.skills': 'pages.settings.notificationsPanel.channel_tip_skills',
+  'system.subagent': 'pages.settings.notificationsPanel.channel_tip_subagent',
+  'system.taskrunner': 'pages.settings.notificationsPanel.channel_tip_taskrunner',
+  'system.terminal': 'pages.settings.notificationsPanel.channel_tip_terminal',
+  'system.member': 'pages.settings.notificationsPanel.channel_tip_member',
+  'system.apps': 'pages.settings.notificationsPanel.channel_tip_apps',
+  'system.turn': 'pages.settings.notificationsPanel.channel_tip_turn',
 }
 
 /** Human label for a channel within its group (drop the source prefix apps
@@ -161,9 +238,24 @@ function channelLabel(c: NotificationChannel): string {
   return c.channel.startsWith(`${c.source}.`) ? c.channel.slice(c.source.length + 1) : c.channel
 }
 
-type ChannelsData = { channels?: NotificationChannel[] }
-type ChannelPatch = { muted?: boolean; priority?: string | null }
+/** `bridge_transports`: the chat apps the bridge has a sink for, the only ones a
+ *  route may newly name. Absent from a gateway that predates it: nothing is offered. */
+type ChannelsData = { channels?: NotificationChannel[]; bridge_transports?: string[] }
+type ChannelPatch = { muted?: boolean; priority?: string | null } & BridgePatch
+type ChannelField = 'muted' | 'priority' | 'deliver_to' | 'deliver_min_priority'
 const CHANNELS_KEY = ['notification-channels'] as const
+const CHANNEL_PATCH_KEY = ['notification-channel-patch'] as const
+
+/** The stored settings fields a channel patch writes. An emptied route also
+ *  drops the floor: the backend clears both together. */
+function channelPatchFields(patch: ChannelPatch): ChannelField[] {
+  const fields: ChannelField[] = []
+  if (patch.muted !== undefined) fields.push('muted')
+  if ('priority' in patch) fields.push('priority')
+  if (patch.deliver_to !== undefined) fields.push('deliver_to')
+  if (patch.deliver_min_priority !== undefined || patch.deliver_to?.length === 0) fields.push('deliver_min_priority')
+  return fields
+}
 
 /** Per-channel notification settings: mute + priority override,
  *  grouped by source (System first, then apps). Protected channels render
@@ -175,6 +267,14 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
     queryFn: api.notificationChannels,
   })
   const channels = channelsQuery.data?.channels
+  const bridgeTransports = channelsQuery.data?.bridge_transports
+  // Channels with a route save still in flight (its refetch included: onSettled
+  // awaits it). A route is written whole, so a later save the server handled
+  // first would be undone by the earlier one; the row holds new picks until then.
+  const routeSaving = new Set(useMutationState({
+    filters: { mutationKey: CHANNEL_PATCH_KEY, status: 'pending' },
+    select: m => m.state.variables as { channel: string; settings: ChannelPatch } | undefined,
+  }).filter(v => v && (v.settings.deliver_to !== undefined || v.settings.deliver_min_priority !== undefined)).map(v => v!.channel))
 
   if (channelsQuery.isError) {
     return (
@@ -207,8 +307,8 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
     .sort((a, b) => (a === 'system' ? -1 : b === 'system' ? 1 : a.localeCompare(b)))
 
   return (
-    <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')}>
-      <div className="text-[12px] text-muted -mt-1 mb-2" data-setting-label={i18nT('pages.settings.notificationsPanel.sources')}>{i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio')}</div>
+    <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')} hint={i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio')}>
+      <div className="text-[12px] text-muted -mt-1 mb-2" data-setting-label={i18nT('pages.settings.notificationsPanel.sources')}>{i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio_summary')}</div>
       {sources.map((source, i) => (
         <SettingsCard key={source} index={i}>
           <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted pb-1 border-b border-border">
@@ -225,13 +325,14 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
                   <div className="text-[13px] text-text flex items-center gap-1.5">
                     {channelLabel(c)}
                     {c.protected && <Lock className="lucide-inline text-muted" aria-label={i18nT('pages.settings.notificationsPanel.protected_channel')} />}
+                    {c.source === 'system' && Object.hasOwn(CHANNEL_TIP_KEY, c.channel) && <InfoTip text={i18nT(CHANNEL_TIP_KEY[c.channel])} placement="top" />}
                   </div>
                   <div className="text-[11px] text-muted">
                     {!c.registered
                       ? i18nT('pages.settings.notificationsPanel.channel_not_active_app_disabled_setting_retained')
                       : c.protected
                         ? i18nT('pages.settings.notificationsPanel.always_interrupts_cannot_be_muted_or_lowered')
-                        : i18nT('pages.settings.notificationsPanel.default_priority', { priority: c.default_priority || 'default' })}
+                        : i18nT('pages.settings.notificationsPanel.default_priority', { priority: priorityLabel(c.default_priority || 'default') })}
                   </div>
                 </div>
                 {c.protected ? (
@@ -251,7 +352,7 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
                             <SelectItem key={opt} value={opt}>
                               {opt === PRIORITY_SENTINEL
                                 ? i18nT('pages.settings.notificationsPanel.channel_default')
-                                : opt}
+                                : priorityLabel(opt)}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -266,6 +367,15 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
                     </div>
                   </>
                 )}
+                <DeliverToControl
+                  channel={c.channel}
+                  name={channelLabel(c)}
+                  deliverTo={c.settings.deliver_to}
+                  floor={c.settings.deliver_min_priority}
+                  deliverable={bridgeTransports}
+                  saving={routeSaving.has(c.channel)}
+                  patch={patch}
+                />
               </div>
             )
           })}
@@ -312,7 +422,7 @@ function SystemNotificationsRow() {
 
 export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const [settings, setSettings] = useState(() => loadSoundSettings())
-  const [notifyChatComplete, setNotifyChatComplete] = useState(() => loadChatCompleteNotify())
+  const notifyChatComplete = useChatCompleteNotify()
   const [bannerEnabled, setBannerEnabled] = useState(() => loadBannerEnabled())
   const [unreadOnAttention, setUnreadOnAttention] = useState(() => loadUnreadOnAttention())
 
@@ -402,6 +512,15 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
     applySetting(current => ({ ...current, ...partial }))
   }
 
+  // Re-render when a mute runs out, so the row reads Off again by itself.
+  const [, setMuteExpired] = useState(0)
+  useEffect(() => {
+    const left = (settings.mutedUntil ?? 0) - Date.now()
+    if (left <= 0) return
+    const timer = window.setTimeout(() => setMuteExpired(n => n + 1), left)
+    return () => window.clearTimeout(timer)
+  }, [settings.mutedUntil])
+
   const setCategoryPreset = (cat: SoundCategory, preset: SoundChoice): boolean =>
     applyCategoryEdit(current => ({ ...current, perCategory: { ...current.perCategory, [cat]: preset } }))
 
@@ -418,7 +537,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   // the save itself failed.
   const addCustomSound = (name: string, tones: ToneStep[]): string[] | null => {
     const next = loadSoundSettings()
-    const problems = validateCustomTone(name, tones, next.customTones ?? {})
+    const problems = validateCustomTone(name, tones, allCustomSounds(next))
     if (problems.length > 0) return problems
     next.customTones = { ...(next.customTones ?? {}), [name]: tones }
     if (!saveSoundSettings(next)) return null
@@ -426,24 +545,57 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
     return []
   }
 
+  // The bytes go to IndexedDB first, under a key made for this write, and the
+  // record that makes the sound pickable second, so a saved record always has
+  // bytes behind it. The record is checked twice against the sounds saved NOW:
+  // before the bytes are written, and again after, because another tab may
+  // have taken the name or the last slot while they were. Bytes whose record
+  // is not saved are deleted; the key is this write's own, so that clean-up
+  // can never touch another sound's bytes.
+  const addCustomFile = async (name: string, file: Blob, meta: CustomFileMeta): Promise<string[] | null> => {
+    const first = validateCustomFile(name, meta, allCustomSounds(loadSoundSettings()))
+    if (first.length > 0) return first
+    const key = newSoundFileKey()
+    if (!(await putSoundFile(key, file))) return null
+    const next = loadSoundSettings()
+    const problems = validateCustomFile(name, meta, allCustomSounds(next))
+    if (problems.length > 0) {
+      await deleteSoundFile(key)
+      return problems
+    }
+    const record: StoredFileMeta = { bytes: meta.bytes, seconds: meta.seconds, key }
+    next.customFiles = Object.assign(Object.create(null) as CustomFiles, next.customFiles, { [name]: record })
+    if (!saveSoundSettings(next)) {
+      await deleteSoundFile(key)
+      return null
+    }
+    setSettings(next)
+    return []
+  }
+
   // Deleting a sound also clears every category that was set to it, so no
-  // picker is left pointing at a sound that no longer exists.
-  const removeCustomSound = (name: string): (() => UndoResult) | null => {
-    const id = customSoundId(name)
+  // picker is left pointing at a sound that no longer exists. A sound file's
+  // bytes stay in IndexedDB, under its key, so Undo can restore it.
+  const removeCustomSound = (name: string): (() => UndoResult | Promise<UndoResult>) | null => {
     const before = loadSoundSettings()
-    const tones = before.customTones?.[name]
+    const isFile = !Object.hasOwn(before.customTones ?? {}, name) && Object.hasOwn(before.customFiles ?? {}, name)
+    const id: SoundChoice = isFile ? fileSoundId(name) : customSoundId(name)
+    const tones = isFile ? undefined : before.customTones?.[name]
+    const meta = isFile ? before.customFiles?.[name] : undefined
     const usedBy = (Object.entries(before.perCategory) as Array<[SoundCategory, SoundChoice]>)
       .filter(([, v]) => v === id).map(([cat]) => cat)
     const ok = applyUpdate(current => {
-      const { [name]: _gone, ...customTones } = current.customTones ?? {}
+      const { [name]: _gone, ...rest } = (isFile ? current.customFiles : current.customTones) ?? {}
       void _gone
       const perCategory = Object.fromEntries(
         Object.entries(current.perCategory).filter(([cat, v]) => v !== id || cat === 'all'),
       ) as SoundSettings['perCategory']
       if (perCategory.all === id) perCategory.all = 'chime'
-      return { ...current, customTones, perCategory }
+      return isFile
+        ? { ...current, customFiles: rest as CustomFiles, perCategory }
+        : { ...current, customTones: rest as CustomTones, perCategory }
     })
-    if (!ok || !tones) return ok ? () => 'ok' : null
+    if (!ok || !(tones || meta)) return ok ? () => 'ok' : null
     // The delete's own clean-up is not a user edit: take it in silently, then
     // remember each category's count as of now.
     lastPerCategory.current = loadSoundSettings().perCategory
@@ -451,61 +603,160 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
     // Undo puts back this one sound, and each category that used it unless
     // the user has set that category to something else since. It merges into
     // the settings as they are now, so nothing saved after the delete is lost.
-    return () => {
+    const restore = (): UndoResult => {
       let result: UndoResult = 'ok'
       const saved = applyUpdate(current => {
-        // No prototype, as on load: a sound named `__proto__` must be
-        // restored as its own entry, not hit Object.prototype's setter.
-        const customTones: CustomTones = Object.assign(Object.create(null) as CustomTones, current.customTones)
         // The same checks as adding it, always: a sound restored past the
         // limit, or over one the user has since saved under that name, would
         // be dropped on load or would replace the newer sound.
-        const problems = validateCustomTone(name, tones, customTones)
+        const problems = isFile
+          ? validateCustomFile(name, meta, allCustomSounds(current))
+          : validateCustomTone(name, tones, allCustomSounds(current))
         if (problems.includes('too_many')) result = 'full'
         else if (problems.length > 0) result = 'taken'
         if (result !== 'ok') return current
-        customTones[name] = tones
         const perCategory = { ...current.perCategory }
         for (const cat of usedBy) {
           const untouched = (categoryEdits.current[cat] ?? 0) === (editsAtDelete[cat] ?? 0)
             && (cat === 'all' ? perCategory.all === 'chime' : perCategory[cat] === undefined)
           if (untouched) perCategory[cat] = id
         }
+        // No prototype, as on load: a sound named `__proto__` must be
+        // restored as its own entry, not hit Object.prototype's setter.
+        if (isFile) {
+          const customFiles: CustomFiles = Object.assign(Object.create(null) as CustomFiles, current.customFiles)
+          customFiles[name] = meta as StoredFileMeta
+          return { ...current, customFiles, perCategory }
+        }
+        const customTones: CustomTones = Object.assign(Object.create(null) as CustomTones, current.customTones)
+        customTones[name] = tones as ToneStep[]
         return { ...current, customTones, perCategory }
       })
       if (saved) lastPerCategory.current = loadSoundSettings().perCategory
       return result !== 'ok' ? result : saved ? 'ok' : 'failed'
     }
+    if (!isFile) return restore
+    // A sound file's bytes can be gone by the time Undo is pressed: another
+    // tab opening this pane collects bytes no record points at. Restoring the
+    // record then would bring back a sound that plays nothing, so Undo says
+    // the file is gone instead.
+    const key = (meta as StoredFileMeta).key
+    return async () => ((await getSoundFile(key)) ? restore() : 'gone')
+  }
+
+  // Sound files whose bytes are not in this browser are forgotten, with the
+  // categories set to them, like a delete with no Undo. Records are matched by
+  // their storage key, not their name, so a sound saved again under the same
+  // name since the check began is left alone. This is clean-up, not a user
+  // edit, so the category counts Undo reads are moved past it.
+  const dropMissingFiles = (missingKeys: ReadonlySet<string>) => {
+    let dropped = false
+    const ok = applyUpdate(current => {
+      const customFiles: CustomFiles = Object.assign(Object.create(null) as CustomFiles, current.customFiles)
+      const ids = new Set<string>()
+      for (const [n, m] of Object.entries(customFiles)) {
+        if (missingKeys.has(m.key)) { delete customFiles[n]; ids.add(fileSoundId(n)) }
+      }
+      if (ids.size === 0) return current
+      dropped = true
+      const perCategory = Object.fromEntries(
+        Object.entries(current.perCategory).filter(([cat, v]) => !ids.has(v as string) || cat === 'all'),
+      ) as SoundSettings['perCategory']
+      if (perCategory.all && ids.has(perCategory.all)) perCategory.all = 'chime'
+      return { ...current, customFiles, perCategory }
+    })
+    if (ok && dropped) lastPerCategory.current = loadSoundSettings().perCategory
   }
 
   const fallback = settings.perCategory.all ?? 'chime'
+  const now = Date.now()
+  const muted = isSoundMuted(settings, now)
 
   // The channel save lives here, not in ChannelsSection: the rail unmounts the
   // Sources pane on switch, so an in-pane failure notice would vanish silently
   // while onError rolled the value back. The notice renders in the SubNav
   // banner slot instead, which stays mounted across rail switches.
   const qc = useQueryClient()
+  // The value the server last confirmed for each channel field that has a
+  // patch in flight, keyed `channel` + field. A rollback restores this, not
+  // the value its own patch replaced: when two patches to one field overlap,
+  // the second one's "before" is the first one's optimistic value, which the
+  // server may never have held.
+  const persistedRef = useRef(new Map<string, { value: unknown; pending: number }>())
+  const fieldKey = (channel: string, k: string) => JSON.stringify([channel, k])
   const patchMut = useMutation({
+    mutationKey: CHANNEL_PATCH_KEY,
     mutationFn: ({ channel, settings }: { channel: string; settings: ChannelPatch }) =>
       api.updateNotificationChannelSettings(channel, settings),
-    // Optimistic update; the PUT is authoritative — a failure rolls the cache
-    // back to the snapshot and the refetch below re-syncs with the server.
+    // Optimistic update; the PUT is authoritative — a failure rolls back the
+    // fields this patch set and the refetch below re-syncs with the server.
     onMutate: ({ channel, settings }) => {
-      const snap = qc.getQueryData<ChannelsData>(CHANNELS_KEY)
+      const touched = channelPatchFields(settings)
+      const before = qc.getQueryData<ChannelsData>(CHANNELS_KEY)?.channels?.find(c => c.channel === channel)?.settings
+      const applied = { ...before }
+      if (settings.muted !== undefined) { if (settings.muted) applied.muted = true; else delete applied.muted }
+      if ('priority' in settings) { if (settings.priority) applied.priority = settings.priority; else delete applied.priority }
+      if (settings.deliver_to !== undefined) {
+        if (settings.deliver_to.length) applied.deliver_to = settings.deliver_to
+        else { delete applied.deliver_to; delete applied.deliver_min_priority }
+      }
+      if (settings.deliver_min_priority !== undefined) applied.deliver_min_priority = settings.deliver_min_priority
       qc.setQueryData<ChannelsData>(CHANNELS_KEY, prev => prev && {
         ...prev,
         channels: prev.channels?.map(c => {
           if (c.channel !== channel) return c
           const next = { ...c.settings }
-          if (settings.muted !== undefined) { if (settings.muted) next.muted = true; else delete next.muted }
-          if ('priority' in settings) { if (settings.priority) next.priority = settings.priority; else delete next.priority }
+          for (const k of touched) { if (applied[k] === undefined) delete next[k]; else Object.assign(next, { [k]: applied[k] }) }
           return { ...c, settings: next }
         }),
       })
-      return { snap }
+      for (const k of touched) {
+        const key = fieldKey(channel, k)
+        const entry = persistedRef.current.get(key) ?? { value: before?.[k], pending: 0 }
+        entry.pending += 1
+        persistedRef.current.set(key, entry)
+      }
+      return { touched, applied }
     },
-    onError: (_err, _vars, ctx) => { if (ctx?.snap) qc.setQueryData(CHANNELS_KEY, ctx.snap) },
-    onSettled: () => qc.invalidateQueries({ queryKey: CHANNELS_KEY }),
+    onSuccess: (_data, { channel }, ctx) => {
+      for (const k of ctx.touched) {
+        const entry = persistedRef.current.get(fieldKey(channel, k))
+        if (entry) entry.value = ctx.applied[k]
+      }
+    },
+    // Field-scoped compare-and-set, NOT a whole-list snapshot restore: a
+    // snapshot taken before this patch would also undo every LATER patch that
+    // landed meanwhile (another channel, or the other field of this one).
+    // Restore only the fields this patch set, only where the cache still holds
+    // this patch's own value, and to the value the server last confirmed. Same
+    // rule as chat-sidebar/folders.ts.
+    onError: (_err, { channel }, ctx) => {
+      if (!ctx) return
+      qc.setQueryData<ChannelsData>(CHANNELS_KEY, prev => prev && {
+        ...prev,
+        channels: prev.channels?.map(c => {
+          if (c.channel !== channel) return c
+          const next = { ...c.settings }
+          for (const k of ctx.touched) {
+            // By value: the cache holds its own copy of a route array
+            // (setQueryData's structural sharing), never `applied`'s reference.
+            if (JSON.stringify(next[k]) !== JSON.stringify(ctx.applied[k])) continue
+            const persisted = persistedRef.current.get(fieldKey(channel, k))?.value
+            if (persisted === undefined) delete next[k]
+            else Object.assign(next, { [k]: persisted })
+          }
+          return { ...c, settings: next }
+        }),
+      })
+    },
+    onSettled: (_data, _err, { channel }, ctx) => {
+      for (const k of ctx?.touched ?? []) {
+        const key = fieldKey(channel, k)
+        const entry = persistedRef.current.get(key)
+        if (entry && --entry.pending <= 0) persistedRef.current.delete(key)
+      }
+      return qc.invalidateQueries({ queryKey: CHANNELS_KEY })
+    },
   })
   const patchChannel = (channel: string, settings: ChannelPatch) => patchMut.mutate({ channel, settings })
 
@@ -546,14 +797,20 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
       listLabel={i18nT('settings.tabs.notifications.label')}
       banner={banner}
     >
-      {active => {
+      {(active, select) => {
         switch (active) {
 
         case 'sources':
-          return <ChannelsSection patch={patchChannel} />
+          return (
+            <>
+              <ChannelsSection patch={patchChannel} />
+              <AppSessionMuteSection />
+            </>
+          )
 
         case 'alerts':
           return (
+      <>
       <SettingsSection title={i18nT('pages.settings.notificationsPanel.desktop_alerts')}>
         <SettingsCard>
           <SystemNotificationsRow />
@@ -573,7 +830,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
             label={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes')}
             hint={i18nT('pages.settings.notificationsPanel.notify_when_a_background_chat_finishes_description')}
             checked={notifyChatComplete}
-            onChange={v => { setNotifyChatComplete(v); saveChatCompleteNotify(v) }}
+            onChange={saveChatCompleteNotify}
           />
           <SettingsToggle
             label={i18nT('pages.settings.notificationsPanel.unread_only_when_done_or_waiting')}
@@ -583,6 +840,8 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
           />
         </SettingsCard>
       </SettingsSection>
+      <PushSection />
+      </>
           )
 
         case 'sound':
@@ -593,6 +852,21 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
             label={i18nT('pages.settings.notificationsPanel.play_sound_on_new_notifications')}
             checked={settings.enabled}
             onChange={v => update({ enabled: v })}
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.notificationsPanel.mute_sounds')}
+            hint={i18nT('pages.settings.notificationsPanel.mute_sounds_description')}
+            value={muted ? MUTED_NOW : 'off'}
+            options={[...(muted ? [MUTED_NOW] : []), ...MUTE_CHOICES]}
+            optionLabels={[
+              ...(muted ? [i18nT('pages.settings.notificationsPanel.muted_until', { time: fmtTime(settings.mutedUntil) })] : []),
+              ...MUTE_CHOICES.map(c => muteLabel(c, now)),
+            ]}
+            onChange={v => {
+              if (v === 'off') update({ mutedUntil: undefined })
+              else update({ mutedUntil: muteEnd(v as Exclude<MuteChoice, 'off'>, Date.now()) })
+            }}
+            disabled={!settings.enabled}
           />
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.notificationsPanel.volume')}>
             {/* Slider is correctly associated via htmlFor+id (a range input can't be nested); label-has-for's nesting requirement is a false positive here. */}
@@ -693,10 +967,14 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
           return (
             <CustomSoundsSection
               customTones={settings.customTones ?? {}}
+              customFiles={settings.customFiles ?? {}}
               volume={settings.volume}
               enabled={settings.enabled}
               onAdd={addCustomSound}
+              onAddFile={addCustomFile}
               onRemove={removeCustomSound}
+              onMissingFiles={dropMissingFiles}
+              onChooseWhereItPlays={() => select('percategory')}
             />
           )
 

@@ -27,7 +27,7 @@ from kiro_crew.dashboard.chat import (
     api_chat_slots_model,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import await_until, until_parked
 
 
 def _make_app_as(state: DashboardState, app_name: str) -> web.Application:
@@ -52,12 +52,8 @@ def _make_app_as(state: DashboardState, app_name: str) -> web.Application:
 class TestLinkedSlotSessionKey:
     """A channel-/cron-born slot runs its turns under ``linked_session_key``.
 
-    The switch handlers must probe and reset THAT session (the reload
-    handler's rule), not the ``dashboard:<slot>`` spelling that names a
-    session which never existed — otherwise the busy probe sees nothing and
-    the reset "succeeds" against nothing while the live process keeps the old
-    model. And slot ownership does not imply ownership of the linked session,
-    so an app caller may not switch a channel thread's model.
+    The switch handlers must probe and reset THAT session, not ``dashboard:<slot>``, which
+    never existed. Slot ownership is not session ownership, so an app may not switch it.
     """
 
     @pytest.mark.asyncio
@@ -75,25 +71,61 @@ class TestLinkedSlotSessionKey:
             state.sessions.reset.assert_awaited_once()
             assert state.sessions.reset.await_args.args[0] == "slack:123.456"
 
-    @pytest.mark.asyncio
-    async def test_model_switch_on_a_busy_linked_session_answers_409_not_deferred(self):
-        # A channel-linked session runs native channel turns whose loops never
-        # apply a deferred pick, so the mid-turn deferral is confined to pure
-        # dashboard sessions: a busy channel-linked slot keeps the 409, not a
-        # deferred commit. Nothing is mutated and no reset runs.
+    @staticmethod
+    def _busy_acp(backend: str):
+        """A live, mid-turn AcpProvider double carrying *backend*'s real capabilities."""
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
         from kiro_crew.providers.acp import AcpProvider
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.capabilities = capabilities_for(backend)
+        provider.has_active_turn.return_value = True
+        provider.available_models.return_value = [{"modelId": "auto"}]
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_a_live_capable_pick_on_a_busy_linked_session_is_deferred(self):
+        # A channel turn's end now lands a deferred pick live (the session
+        # manager's release observer), so a pick the live switch can express is
+        # deferred on a channel-linked session too: committed, marked with the
+        # linked key, and nothing torn down under the streaming channel reply.
+        from kiro_crew.acp.types import ACP_BACKEND_KIRO
 
         slot = _ChatSlot("test")
         slot.model = _MODEL_A
         slot.linked_session_key = "slack:123.456"
-        provider = MagicMock(spec=AcpProvider)
-        provider.has_active_turn.return_value = True
+        provider = self._busy_acp(ACP_BACKEND_KIRO)
         state = _mock_state(slot, provider=None)
         state.sessions.get_provider = MagicMock(
             side_effect=lambda key: provider if key == "slack:123.456" else None
         )
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["deferred"] is True
+            assert slot.model == _MODEL_B
+            assert slot._deferred_model_switch_key == "slack:123.456"
+            state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_reset_only_pick_on_a_busy_linked_session_answers_409(self):
+        # Auto on a provider-namespace backend has no set_model value, so it can
+        # land only through a reset, and a channel turn cold-starts on the
+        # default ladder rather than on slot.model: a reset cannot land it at a
+        # channel boundary. Such a pick keeps the 409. Nothing is mutated.
+        from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+
+        slot = _ChatSlot("test")
+        slot.model = _MODEL_A
+        slot.linked_session_key = "slack:123.456"
+        provider = self._busy_acp(ACP_BACKEND_CLAUDE)
+        state = _mock_state(slot, provider=None)
+        state.sessions.get_provider = MagicMock(
+            side_effect=lambda key: provider if key == "slack:123.456" else None
+        )
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/model", json={"model": ""})
             data = await resp.json()
             assert resp.status == 409
             assert data["code"] == "turn_in_flight"
@@ -102,22 +134,20 @@ class TestLinkedSlotSessionKey:
             state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_channel_resumed_dashboard_key_keeps_the_409_not_deferred(self):
+    async def test_a_channel_resumed_dashboard_key_keeps_the_409_for_a_reset_only_pick(self):
         # A `!sessions` resume keeps its ``dashboard:`` key but is driven by the
-        # channel (mirror link accepts inbound resume), so its native turns never
-        # apply a deferred pick. The key prefix alone says "dashboard", so the
-        # mirror-inbound signal is what keeps the mid-turn pick at 409 rather
-        # than deferring a pick nothing would land.
-        from kiro_crew.providers.acp import AcpProvider
+        # channel (mirror link accepts inbound resume). The key prefix alone says
+        # "dashboard", so the mirror-inbound signal is what keeps a reset-only
+        # mid-turn pick at 409 rather than deferring a pick no channel turn lands.
+        from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
 
         slot = _ChatSlot("test")
         slot.model = _MODEL_A
-        provider = MagicMock(spec=AcpProvider)
-        provider.has_active_turn.return_value = True
+        provider = self._busy_acp(ACP_BACKEND_CLAUDE)
         state = _mock_state(slot, provider=provider)
         state.sessions.mirror_accepts_inbound = MagicMock(return_value=True)
         async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
+            resp = await client.post("/api/chat/slots/test/model", json={"model": ""})
             data = await resp.json()
             assert resp.status == 409
             assert data["code"] == "turn_in_flight"
@@ -182,6 +212,42 @@ class TestLinkedSlotSessionKey:
             state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_bulk_switch_skips_an_app_slot_writing_a_channel_transcript(self):
+        # An unbound channel-born slot runs on its own dashboard: session but
+        # writes the channel thread's transcript, so the app does not own it:
+        # the per-slot checkpoint's rule (app_owns_slot_session).
+        slot = _ChatSlot("slack_1700000000.000100")
+        slot.model = _MODEL_A
+        slot._app = "demo-app"
+        slot.channel_origin = True
+        state = _mock_state(slot, provider=None)
+        async with TestClient(TestServer(_make_app_as(state, "demo-app"))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 200
+            assert (data["switched"], data["skipped_running"]) == ([], [])
+            assert slot.model == _MODEL_A
+            state.sessions.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bulk_switch_switches_an_apps_own_task_review_tab(self):
+        # A task-review tab runs on the session the taskrunner minted for it,
+        # which is the tab's own (own_session_key): the per-slot route lets its
+        # owner app switch it, and the bulk route agrees.
+        slot = _ChatSlot("task-review-abc")
+        slot.model = _MODEL_A
+        slot._app = "demo-app"
+        slot.linked_session_key = "taskrunner:t1:chat:abc"
+        state = _mock_state(slot, provider=None)
+        state.sessions.reset = AsyncMock(return_value=True)
+        async with TestClient(TestServer(_make_app_as(state, "demo-app"))) as client:
+            resp = await client.post("/api/chat/slots/model", json={"model": _MODEL_B})
+            data = await resp.json()
+            assert resp.status == 200
+            assert data["switched"] == ["task-review-abc"]
+            assert state.sessions.reset.await_args.args[0] == "taskrunner:t1:chat:abc"
+
+    @pytest.mark.asyncio
     async def test_workspace_switch_resets_the_linked_session(self):
         slot = _ChatSlot("test")
         slot.linked_session_key = "slack:123.456"
@@ -205,12 +271,11 @@ class TestLinkedSlotSessionKey:
                 task = asyncio.create_task(
                     client.post("/api/chat/slots/test/model", json={"model": _MODEL_B})
                 )
-                # flake-ok: pre-existing 50 ms sleep that lets the racing request reach the held lock, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep barrier, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.05)
+                # Barrier: the racing request is observed parked on the held lock
+                # before the linked binding lands, so the switch must read it after.
+                await until_parked(slot._lock, timeout=30, describe=lambda: repr(task))
                 slot.linked_session_key = "cron:job-1"
-            # flake-ok: pre-existing await of a request task the test has already unblocked, moved verbatim; tracked for a de-flake pass
-            resp = await task
+            resp = await await_until(task, timeout=30, what="model switch request")
             assert resp.status == 200
             assert slot.model == _MODEL_B
             probed = {c.args[0] for c in state.sessions.get_provider.call_args_list}
@@ -653,8 +718,7 @@ class TestLinkedSlotSessionKey:
 
         async def _blocked_warm(*_args, **_kwargs):
             entered_resolution.set()
-            # flake-ok: pre-existing unbounded wait inside the stub until the test releases it, moved verbatim; tracked for a de-flake pass
-            await release_resolution.wait()
+            await await_until(release_resolution, timeout=30, what="test releases resolution")
 
         cfg = MagicMock()
         cfg.agents = {}

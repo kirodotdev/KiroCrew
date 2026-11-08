@@ -146,7 +146,7 @@ def _read_text_nofollow(path: Path) -> str | None:
             os.set_blocking(fd, True)
         # No byte ceiling here. This reader serves the skill scan, the plan read and the
         # agent-spec read as well as nothing else, and a limit named for PROMPTS has no
-        # business refusing an oversized agent spec -- a path this change is not about. The
+        # business refusing an oversized agent spec. The
         # prompt read carries its own bound, passed to the shared guard as ``max_bytes``.
         #
         # Reading BYTES rather than text is kept: it is what makes newline translation

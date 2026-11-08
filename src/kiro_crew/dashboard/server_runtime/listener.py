@@ -22,9 +22,12 @@ from aiohttp import web
 if TYPE_CHECKING:
     from kiro_crew.dashboard.server import (
         _TIME_WAIT_BUDGET_SECS,
+        AGENT_SOCKET_HOLDER_KEY,
+        BOOTING_PEER,
         FOREIGN_HOLDER,
         HEALTHY_PEER,
         NO_HOLDER,
+        RECLAIM_FAILED,
         RECLAIMED,
         SECONDARY_LOOPBACK_FOR,
         DashboardState,
@@ -33,7 +36,9 @@ if TYPE_CHECKING:
         logger,
         platform_compat,
         reclaim_stale_gateway_port,
+        register_agent_site_cleanup,
         release_site,
+        start_agent_site,
         subprocess_executor,
     )
 
@@ -120,6 +125,62 @@ def _resolved_bound_host(runner: web.AppRunner, requested: str) -> str:
     return requested if isinstance(requested, str) else ""
 
 
+def _port_wait_message(outcome: str) -> str:
+    """The "waiting" notice for a busy port, worded by what the probe found.
+
+    Only a free-looking port (``NO_HOLDER``: the TIME_WAIT or graceful-handover
+    signature) or a stale gateway that would not die is a previous gateway being
+    waited out. When the holder could not be identified at all (``UNAVAILABLE``,
+    or a probe error), the notice must not claim it is a gateway.
+    """
+    if outcome in (NO_HOLDER, RECLAIM_FAILED):
+        return "Port %d in use — waiting up to %.0fs for the previous gateway to release it…"
+    return (
+        "Port %d in use by an unidentified process — waiting up to %.0fs in case" " it is released…"
+    )
+
+
+def _log_port_still_in_use(port: int, waited: float, outcome: str) -> None:
+    """Log the final give-up error for a port that never freed, by holder kind.
+
+    *outcome* is the reclaim probe's verdict from the first EADDRINUSE. A
+    Kiro Crew holder gets ``kirocrew stop`` (which also stops an installed
+    systemd/launchd service, so no platform-specific command is named); a
+    holder known to be another program gets only the other-port remedy; an
+    unidentified holder gets both. Every branch names ``--port``, since starting
+    on another port works whoever holds this one.
+    """
+    alt = port + 1 if port < 65535 else port - 1
+    other_port = (
+        f"start on another port: kirocrew gateway --port {alt}  " f"(or set KIROCREW_PORT={alt})"
+    )
+    if outcome == FOREIGN_HOLDER:
+        logger.error(
+            "Port %d still in use after %.0fs — it is held by another program, "
+            "not a Kiro Crew gateway.\nFree it, or %s",
+            port,
+            waited,
+            other_port,
+        )
+    elif outcome in (HEALTHY_PEER, BOOTING_PEER, RECLAIMED, RECLAIM_FAILED):
+        logger.error(
+            "Port %d still in use after %.0fs — another Kiro Crew gateway holds it.\n"
+            "Stop it with: kirocrew stop\nOr %s",
+            port,
+            waited,
+            other_port,
+        )
+    else:
+        logger.error(
+            "Port %d still in use after %.0fs — held by another program or another "
+            "Kiro Crew gateway.\nIf it is a Kiro Crew gateway, stop it with: "
+            "kirocrew stop\nOtherwise, %s",
+            port,
+            waited,
+            other_port,
+        )
+
+
 async def _start_site(
     site: web.TCPSite,
     port: int,
@@ -141,6 +202,7 @@ async def _start_site(
     """
     _reclaim = reclaim if reclaim is not None else reclaim_stale_gateway_port
     last_exc: OSError | None = None
+    outcome = ""
     for attempt in range(retries):
         try:
             await site.start()
@@ -168,25 +230,15 @@ async def _start_site(
                         "Reclaimed port %d from a stale Kiro Crew gateway — rebinding.",
                         port,
                     )
-                elif outcome not in (HEALTHY_PEER, FOREIGN_HOLDER):
+                elif outcome not in (HEALTHY_PEER, BOOTING_PEER, FOREIGN_HOLDER):
                     # NO_HOLDER / UNAVAILABLE / RECLAIM_FAILED / reclaim error:
                     # nothing safely reclaimable, so wait for a possible graceful
-                    # handover. (A healthy peer / foreign holder won't release, so
+                    # handover. (A healthy or booting peer / foreign holder won't release, so
                     # we skip this misleading "waiting" message for those.)
-                    logger.warning(
-                        "Port %d in use — waiting up to %.0fs for the previous"
-                        " gateway to release it…",
-                        port,
-                        retries * delay,
-                    )
+                    logger.warning(_port_wait_message(outcome), port, retries * delay)
             if attempt < retries - 1:
                 await asyncio.sleep(delay)
-    logger.error(
-        "Port %d still in use after %.0fs — is another Kiro Crew gateway running?\n"
-        "Stop it with: kirocrew stop  or  sudo systemctl stop kirocrew",
-        port,
-        retries * delay,
-    )
+    _log_port_still_in_use(port, retries * delay, outcome)
     raise SystemExit(1) from last_exc
 
 
@@ -206,10 +258,12 @@ def _bind_once(host: str, port: int) -> socket.socket:
         ][0]
     sock = socket.socket(family, socket.SOCK_STREAM)
     try:
-        # Match asyncio.create_server's socket posture. SO_REUSEADDR on POSIX
-        # lets our next generation rebind through TIME_WAIT. Windows requires
-        # exclusive ownership because SO_REUSEADDR allows a co-resident process
-        # to overlap a live listener.
+        # POSIX matches asyncio.create_server: SO_REUSEADDR lets our next
+        # generation rebind through TIME_WAIT. Windows deliberately goes
+        # further than asyncio (which never sets SO_EXCLUSIVEADDRUSE) so no
+        # co-resident process can overlap-bind a live listener. Windows
+        # documents that such a port can stay refused while TIME_WAIT remnants
+        # linger; the primary reservation ladder's Windows stretch covers that.
         if os.name == "posix":
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -268,6 +322,7 @@ async def _reserve_dashboard_port(
     last_exc: OSError | None = None
     budget = retries
     attempt = 0
+    outcome = ""
     while attempt < budget:
         try:
             return await asyncio.to_thread(_bind_once, host, port)
@@ -289,7 +344,7 @@ async def _reserve_dashboard_port(
                         "Reclaimed port %d from a stale Kiro Crew gateway — rebinding.",
                         port,
                     )
-                elif outcome not in (HEALTHY_PEER, FOREIGN_HOLDER):
+                elif outcome not in (HEALTHY_PEER, BOOTING_PEER, FOREIGN_HOLDER):
                     # NO_HOLDER + EADDRINUSE is the TIME_WAIT signature: the
                     # previous generation's connections still pin the port in
                     # the kernel with no process to reclaim. On Windows the
@@ -306,21 +361,11 @@ async def _reserve_dashboard_port(
                     # process) keeps the short ladder and its fast exit.
                     if outcome == NO_HOLDER and os.name == "nt":
                         budget = max(budget, int(_TIME_WAIT_BUDGET_SECS / delay))
-                    logger.warning(
-                        "Port %d in use — waiting up to %.0fs for the previous"
-                        " gateway to release it…",
-                        port,
-                        budget * delay,
-                    )
+                    logger.warning(_port_wait_message(outcome), port, budget * delay)
             attempt += 1
             if attempt < budget:
                 await asyncio.sleep(delay)
-    logger.error(
-        "Port %d still in use after %.0fs — is another Kiro Crew gateway running?\n"
-        "Stop it with: kirocrew stop  or  sudo systemctl stop kirocrew",
-        port,
-        budget * delay,
-    )
+    _log_port_still_in_use(port, budget * delay, outcome)
     raise SystemExit(1) from last_exc
 
 
@@ -466,6 +511,22 @@ async def _start_secondary_loopback_site(
 
 
 async def _start_unix_site(runner: web.AppRunner, port: int) -> Path | None:
+    """Serve the internal API on the dashboard's unix socket and the agent socket.
+
+    Returns the dashboard socket's path (see :func:`_start_dashboard_unix_site`).
+    The agent socket (``dashboard/agent_ipc.py``) is started independently of it, so
+    either one failing leaves the other, and its path is recorded in the holder
+    :func:`_register_unix_socket_cleanup` put on the app for its own cleanup.
+    """
+    path = await _start_dashboard_unix_site(runner, port)
+    agent_path = await start_agent_site(runner, port)
+    holder = runner.app.get(AGENT_SOCKET_HOLDER_KEY) if runner.app is not None else None
+    if isinstance(holder, dict):
+        holder["path"] = agent_path
+    return path
+
+
+async def _start_dashboard_unix_site(runner: web.AppRunner, port: int) -> Path | None:
     """Additionally serve the internal API on a unix socket (POSIX only).
 
     Binds ``dashboard_socket_path(port)`` on the same :class:`web.AppRunner`
@@ -481,8 +542,18 @@ async def _start_unix_site(runner: web.AppRunner, port: int) -> Path | None:
     directory gate (created here if missing) and is itself tightened to 0600,
     mirroring ``mcp_gateway/transport`` conventions. Returns the bound path,
     or ``None`` when the transport is unavailable.
+
+    *port* must be the BOUND port (``_resolved_bound_port``), never a requested
+    ``0``: clients dial the socket named for the port they resolved, and the
+    stale-socket unlink is only safe for a name whose TCP port this process
+    holds. A ``0`` therefore degrades to TCP-only rather than binding
+    ``dashboard-0.sock``, a name every ``--port auto`` gateway in the data home
+    would share and unlink from under each other.
     """
     if platform_compat.IS_WINDOWS:
+        return None
+    if not port:
+        logger.warning("dashboard bound port unknown; internal API stays TCP-only")
         return None
     try:
         path = dashboard_socket_path(port)
@@ -526,6 +597,9 @@ def _register_unix_socket_cleanup(app: web.Application, holder: dict[str, Path |
             logger.debug("dashboard unix socket cleanup failed", exc_info=True)
 
     app.on_cleanup.append(_unlink_unix_socket)
+    agent_holder: dict[str, Path | None] = {"path": None}
+    app[AGENT_SOCKET_HOLDER_KEY] = agent_holder
+    register_agent_site_cleanup(app, agent_holder)
 
 
 def _export_reserved_bind_evidence(sock: socket.socket) -> str:

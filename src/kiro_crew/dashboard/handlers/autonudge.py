@@ -36,6 +36,8 @@ from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     resolve_stop_sentinel,
 )
 from kiro_crew.autonudge_service.model import SERVICE_SHUTTING_DOWN_MESSAGE
+from kiro_crew.autonudge_service.store_loader import ADDRESSING_FIELDS
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
@@ -60,6 +62,7 @@ from kiro_crew.monitoring.models import (
     MonitorBudgets,
     MonitorOutcome,
     MonitorState,
+    monitor_frontend_contract,
     monitor_state_public_dict,
 )
 from kiro_crew.monitoring.registry import (
@@ -67,7 +70,7 @@ from kiro_crew.monitoring.registry import (
     kind_supports_objective,
     publicly_armable_kinds,
 )
-from kiro_crew.platform import redact_via_context
+from kiro_crew.platform import PlatformCompositionError, redact_via_context
 from kiro_crew.sel import sel
 from kiro_crew.session_ledger import ledger_key, render_snapshot
 from kiro_crew.validation import ValidationError, validate_judge_spec
@@ -128,7 +131,75 @@ def _redact_monitor_value(value: Any) -> Any:
     return value
 
 
+def _scrub_serialized_field(key: str, value: Any) -> Any:
+    """The ONE per-field projection rule, shared by every reader of a loop.
+
+    Three arms project a loop: ``_serialize``, the reducing arm of
+    ``_serialize_for_legacy_reader``, and the gateway's ``autonudge_state``
+    broadcast. All call HERE rather than assembling a payload of their own,
+    because a second independent assembly serves raw whatever this rule scrubs --
+    and ``stopped_reason`` is the field that exposes: agent-supplied free text,
+    neither withheld nor mapped out of the reduced row, on a route with no owner
+    gate.
+
+    ``_redact_monitor_value`` carries the walk, and two of its properties are
+    load-bearing here rather than incidental: a dict or list is WALKED instead of
+    scrubbed as a unit, so ``judge`` and ``judge_last_verdict`` reach the popover
+    as the objects it reads; and nested keys are walked WITHOUT the exemption
+    below, because a nested key sharing one of those names addresses nothing.
+
+    ``ADDRESSING_FIELDS`` is the loader's own set rather than a local copy,
+    because two copies could drift the hole open, and a scrubbed id addresses
+    nothing. ``goal_token`` is random hex the popover sends back as
+    ``expect_fingerprint``, so a scrubbed token would refuse every save as a
+    stale baseline. ``monitor`` is settled by the caller from the typed record
+    through the same walk.
+    """
+    if key in ADDRESSING_FIELDS or key in ("goal_token", "monitor"):
+        return value
+    return _redact_monitor_value(value)
+
+
+#: Served in place of a field ``_scrub_serialized_field`` could not scrub.
+REDACTION_UNAVAILABLE_PLACEHOLDER = "[redaction unavailable]"
+
+
+def _withhold_serialized_field(key: str, value: Any) -> Any:
+    """The fallback for ``_scrub_serialized_field`` when the policy cannot compose.
+
+    Exempt fields and numbers, booleans and None pass unchanged, so the frame still
+    addresses its row. Every other value is replaced, because it is exactly what the
+    scrub would have rewritten and nothing has scanned it.
+    """
+    if key in ADDRESSING_FIELDS or key in ("goal_token", "monitor"):
+        return value
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return REDACTION_UNAVAILABLE_PLACEHOLDER
+
+
+def _project_field(key: str, value: Any) -> Any:
+    """``_scrub_serialized_field``, or its placeholder when the policy cannot compose.
+
+    The REST readers render a loop after its mutation committed, so raising here
+    answers 500 for an arm that happened. Each field is either scrubbed or replaced.
+    """
+    try:
+        return _scrub_serialized_field(key, value)
+    except PlatformCompositionError:
+        return _withhold_serialized_field(key, value)
+
+
 def _serialize(loop: Any) -> dict[str, Any]:
+    """Serialize a loop for the REST surface, credential-scrubbing its text.
+
+    DENYLIST, not allowlist: every field is scrubbed unless exempted by
+    ``_scrub_serialized_field``, so a free-text field added to ``NudgeLoop`` later
+    is covered without a scrub of its own. Non-string values are NOT skipped -- an
+    agent-written store has no type discipline, so an ``isinstance(value, str)``
+    early-out would serve a list of credentials verbatim. Redaction is shape-based
+    and idempotent, so ordinary text round-trips unchanged.
+    """
     payload = asdict(loop)
     # Read positions, dropped on EVERY projection rather than only the structured
     # one. A cursor is bookkeeping with no surface: it says nothing a reader could
@@ -144,6 +215,8 @@ def _serialize(loop: Any) -> dict[str, Any]:
     # which is the watched subject's discussion by another name. No surface renders
     # it, so no reader is worse off without it.
     payload.pop("judge_pr_seen", None)
+    for key, value in payload.items():
+        payload[key] = _project_field(key, value)
     if loop.monitor is None:
         # Legacy clients predate structured monitors and require their exact shape.
         payload.pop("monitor", None)
@@ -320,7 +393,7 @@ def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
     # field on the dataclass is ``monitor``, and it is withheld. A test pins the
     # surviving key set so a new field cannot silently join or skip this route.
     payload = {
-        field.name: getattr(loop, field.name)
+        field.name: _project_field(field.name, getattr(loop, field.name))
         for field in fields(loop)
         if field.name not in _MONITOR_WITHHELD_LEGACY_FIELDS
     }
@@ -329,7 +402,7 @@ def _serialize_for_legacy_reader(loop: Any) -> dict[str, Any]:
         value: Any = monitor
         for attr in path:
             value = getattr(value, attr)
-        payload[name] = value
+        payload[name] = _project_field(name, value)
     return payload
 
 
@@ -356,7 +429,7 @@ def _autonudge_loop_reading(loop: Any) -> dict[str, Any]:
         "last_fire_ts": loop.last_fire_ts,
         "created_ts": loop.created_ts,
         "next_due_ts": loop.next_due_ts,
-        "stopped_reason": loop.stopped_reason,
+        "stopped_reason": _project_field("stopped_reason", loop.stopped_reason),
         # Active but holding: a cycle's approval went unanswered and it fires
         # nothing until a person answers one, sends a message or fires it.
         "paused_for_approval": bool(loop.approval_stalled) and not is_structured_monitor_loop(loop),
@@ -556,6 +629,28 @@ def _monitor_config(
         ),
         wake_instructions=wake.strip(),
     )
+
+
+async def api_monitor_contract(request: web.Request) -> web.Response:
+    """GET /api/monitor-contract — the monitor data contract, built at runtime.
+
+    The dashboard bundle ships a checked-in snapshot of this contract
+    (``website/src/monitoring/contract.json``) and treats a monitor whose kind is
+    absent from it as an unsupported, non-actionable record. An edition can
+    contribute its own pull-request-shaped kind at boot (``register_monitor_kind``),
+    and the backend probes it, so the snapshot's ``pullRequestMonitorKinds`` can
+    lag the kinds the gateway actually serves. This route returns the live
+    contract (``monitor_frontend_contract()``), and the dashboard prefers it over
+    the bundled copy, so a contributed kind shows its real state rather than
+    "blocked".
+
+    A read with no secret: it is the same vocabulary the bundle already carries,
+    carries no per-session or owner data, and is served under the browser's cookie
+    auth like the neighbouring ``GET /api/autonudge`` (deliberately NOT on
+    ``_STRICT_INTERNAL_API_PATHS``). An older gateway has no such route, so the
+    dashboard falls back to the bundled snapshot on 404.
+    """
+    return web.json_response(monitor_frontend_contract())
 
 
 async def api_autonudge_list(request: web.Request) -> web.Response:
@@ -955,11 +1050,31 @@ async def api_monitor_restart(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "monitor": _serialize_monitor(restarted)})
 
 
+#: Every body key ``api_autonudge_start`` reads. Closed: anything else is refused.
+_AUTONUDGE_START_FIELDS = frozenset(
+    {
+        "slot_key",
+        "session_key",
+        "message",
+        "idle_secs",
+        "max_cycles",
+        "max_runtime_secs",
+        "stop_sentinel_path",
+        "gate",
+        "banner",
+        "judge",
+    }
+)
+
+
 async def api_autonudge_start(request: web.Request) -> web.Response:
     """POST /api/autonudge — start or replace a loop on a slot.
 
     Body: { slot_key, message, idle_secs?, max_cycles?, max_runtime_secs?,
-            stop_sentinel_path?, gate?, banner? }
+            stop_sentinel_path?, gate?, banner?, judge? }
+
+    ``session_key`` is accepted in place of ``slot_key``. Any other key is a 400
+    ``unknown_field``, matching the monitor tools' refusal.
 
     ``gate`` defaults to FALSE here: this route arms whatever the goal popover was
     given, and only ``monitor_start`` has the evidence to gate by default. Pass
@@ -988,10 +1103,27 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
+    # An unknown key is REFUSED, as the monitor_start / monitor_watch tools refuse
+    # it (``validate_tool_args``): the first one in body order is named in the same
+    # ``<field>: unknown field ...`` shape. Ignoring it would arm a loop that looks
+    # like it honoured a setting it never read.
+    for _key in body:
+        if _key not in _AUTONUDGE_START_FIELDS:
+            return web.json_response(
+                {
+                    "error": f"{_key}: unknown field for POST /api/autonudge",
+                    "code": "unknown_field",
+                },
+                status=400,
+            )
     # idle_secs/max_cycles/max_runtime_secs come straight from the request
-    # body: int() raises ValueError on "abc", TypeError on null/list, and
-    # OverflowError on float("inf") (1e309 is legal JSON in aiohttp's parser),
-    # any of which would surface as a 500 instead of a 400. Non-integral
+    # body: body_int raises ValueError on "abc" and on float("inf") (1e309 is
+    # legal JSON in aiohttp's parser) and TypeError on null/list, any of which
+    # would surface as a 500 instead of a 400 if uncaught. Non-integral
     # floats are rejected rather than silently truncated (int(1.5) -> 1 would
     # store a value the caller never asked for). Coerce up front and reject
     # bad input, matching the sibling handlers_instances.api_instances_add
@@ -1004,9 +1136,9 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
                     {"error": f"{_name} must be a whole number", "code": "not_a_whole_number"},
                     status=400,
                 )
-        idle_secs = int(body.get("idle_secs", 60))
-        max_cycles = int(body.get("max_cycles", 0))
-    except (TypeError, ValueError, OverflowError):
+        idle_secs = body_int(body.get("idle_secs", 60))
+        max_cycles = body_int(body.get("max_cycles", 0))
+    except (TypeError, ValueError):
         return web.json_response(
             {"error": "idle_secs, max_cycles and max_runtime_secs must be integers"}, status=400
         )
@@ -1113,6 +1245,10 @@ async def api_autonudge_update(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
     # The goal baseline the popover read when it opened (``goal_token``). Absent skips
     # the store's stale check; a present one is compared under the store's
     # lock, so a goal another writer saved meanwhile is refused instead of overwritten.

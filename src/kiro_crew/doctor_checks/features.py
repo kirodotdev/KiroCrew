@@ -15,6 +15,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from kiro_crew import cli_doctor
+from kiro_crew.doctor_checks import confinement
 
 if TYPE_CHECKING:
     from kiro_crew.config import KiroCrewConfig
@@ -49,8 +50,12 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
 # desktop matrix ships; on any other ISA the fetch is refused and the second
 # clause is the remedy), and ``/usr/local/bin`` is both a real
 # ``_FFMPEG_CANDIDATE_DIRS`` entry and the conventional manual-install prefix.
+# Where the Speech-to-Text controls live in the dashboard: a section of the Voice
+# tab, not a tab of its own. The labels are the English catalog's
+# ``settings.tabs.voice.label`` and ``pages.settings.voicePanel.speech_to_text``.
+_STT_SETTINGS_PATH = "Settings → Voice → Speech-to-Text"
 _FFMPEG_LINUX_HINT = (
-    "download the audio decoder from the dashboard (Settings → Speech-to-Text), "
+    f"download the audio decoder from the dashboard ({_STT_SETTINGS_PATH}), "
     "or install ffmpeg into /usr/local/bin"
 )
 
@@ -186,15 +191,16 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
     stt_active = cfg.stt.enabled
 
     if not stt_active:
-        print("  status:      ⏹ disabled (enable from dashboard → Settings → Speech-to-Text)")
+        print(f"  status:      ⏹ disabled (enable from dashboard → {_STT_SETTINGS_PATH})")
     else:
         print(f"  provider:    ✅ {cfg.stt.provider}")
 
-    # Source installs may omit the optional voice extra. Preserve Windows's
-    # historical non-fatal report for that case so an enabled-by-default feature
-    # cannot block gateway startup; desktop releases gate both native components
-    # at build time and should never reach the missing branches.
-    stt_fatal = not cli_doctor.platform_compat.IS_WINDOWS
+    # STT is enabled by default, but a CLI or source install does not pull in the
+    # optional voice extra or a system ffmpeg, so a gap there is a note with its
+    # install hint and never fails doctor. Only a desktop release that ships both
+    # parts (build-gated) is broken without them, so that gap stays a hard issue.
+    # Windows keeps its historical non-fatal report everywhere.
+    stt_fatal = not cli_doctor.platform_compat.IS_WINDOWS and cli_doctor.bundle_carries_decoder()
     stt_mark = "❌" if stt_fatal else "⚠️ "
 
     if stt_active and cfg.stt.provider == "local":
@@ -202,8 +208,18 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
         if engine.ok:
             print("  engine:      ✅ local recogniser loadable (whisper.cpp, in-process)")
         else:
-            print(f"  engine:      {stt_mark} {engine.detail}")
-            if stt_fatal:
+            # Only "not installed" is optional. A recogniser that is installed but
+            # cannot run (import, CPU or load failure) is still broken on POSIX.
+            not_installed = engine.code in (
+                cli_doctor.stt.CODE_EXTRA_MISSING,
+                cli_doctor.stt.CODE_NO_WHEEL,
+            )
+            engine_fatal = stt_fatal or (
+                not cli_doctor.platform_compat.IS_WINDOWS and not not_installed
+            )
+            engine_mark = "❌" if engine_fatal else stt_mark
+            print(f"  engine:      {engine_mark} {engine.detail}")
+            if engine_fatal:
                 issues.append(f"speech recogniser ({engine.code})")
         # The weights are fetched on first use, so "not downloaded" is the normal
         # first-run state and never an issue. Naming the size is the useful part,
@@ -228,6 +244,15 @@ def _doctor_speech_to_text(cfg: KiroCrewConfig, issues: list[str]) -> None:
         # The resolved path can contain a username or a credential-bearing mount
         # name. Doctor only needs to confirm the exact resolver found a decoder.
         print("  ffmpeg:      ✅ available")
+    elif (
+        stt_active
+        and cli_doctor.platform_compat.IS_MACOS
+        and confinement._doctor_vantage_confined()
+    ):
+        # Every macOS decoder but a fixed system one runs from a snapshot staged under
+        # a root the agent sandbox denies, so a miss there looks the same as that denial.
+        print("  ffmpeg:      ⏭  not checkable from this shell")
+        print("               Run `kirocrew doctor` from your own terminal to check the decoder.")
     elif stt_active:
         # A prerequisite of every provider, not of one of them: a Slack voice memo
         # arrives as ogg/Opus and the dashboard records webm, so the only input

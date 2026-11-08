@@ -6,6 +6,7 @@
 import type { MemoryMode } from '../chat/ChatSettings'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
 import { i18nT } from '../../i18n/t'
+import { AUTO_LANGUAGE, SUPPORTED_LANGUAGES, languageLabel } from '../../i18n/languages'
 
 /**
  * Option labels are FUNCTIONS, not module-level arrays.
@@ -29,9 +30,29 @@ export function restoreLabels(): string[] {
 /** How often the feature-video cache readout re-reads while the panel is open. */
 export const FEATURE_VIDEO_POLL_MS = 15_000
 
-export const COMPACT_OPTIONS = ['20', '40', '60', '70', '80', '90']
+/** Presets for `session.autocompact_pct`, then the `custom` row that opens a typed
+ *  field. The write path refuses anything outside 5-90 (AUTOCOMPACT_PCT_MIN/MAX in
+ *  the config schema), so the typed field clamps to the same range before saving. */
+export const COMPACT_PRESETS = ['20', '40', '60', '70', '80', '90']
+export const COMPACT_CUSTOM = 'custom'
+export const COMPACT_OPTIONS = [...COMPACT_PRESETS, COMPACT_CUSTOM]
+export const AUTOCOMPACT_PCT_MIN = 5
+export const AUTOCOMPACT_PCT_MAX = 90
+export const AUTOCOMPACT_PCT_DEFAULT = 70
 export function compactLabels(): string[] {
-  return ['20%', '40%', '60%', `70% (${i18nT('components.jobForm.default')})`, '80%', '90%']
+  return [
+    '20%', '40%', '60%', `70% (${i18nT('components.jobForm.default')})`, '80%', '90%',
+    i18nT('pages.settings.chatPanel.auto_compact_custom'),
+  ]
+}
+/** The select row for a stored threshold: its preset, or `custom` for any other value. */
+export function compactSelectValue(pct: number): string {
+  const s = String(pct)
+  return COMPACT_PRESETS.includes(s) ? s : COMPACT_CUSTOM
+}
+/** Clamp a typed threshold into the range the server accepts. */
+export function clampAutocompactPct(n: number): number {
+  return Math.min(AUTOCOMPACT_PCT_MAX, Math.max(AUTOCOMPACT_PCT_MIN, n))
 }
 
 // About You — slugs shared with onboarding step 2 and context.py's prompt maps.
@@ -127,6 +148,27 @@ export function asVerbosity(value: unknown): VerbosityLevel {
   return VERBOSITY_OPTIONS.includes(value as VerbosityLevel)
     ? (value as VerbosityLevel)
     : 'default'
+}
+/**
+ * `dashboard.preferred_language` choices: `''` (auto, reply in the user's
+ * language) and then the dashboard's own UI languages, so each option reuses
+ * that language's endonym. The backend accepts exactly these codes
+ * (`config.sections.PREFERRED_LANGUAGES`); the dev-only pseudolocale is not a
+ * language anyone replies in, so it is never offered.
+ */
+export const PREFERRED_LANGUAGE_OPTIONS: string[] = [
+  AUTO_LANGUAGE,
+  ...SUPPORTED_LANGUAGES.filter(l => !l.devOnly).map(l => l.code),
+]
+export function preferredLanguageLabels(): string[] {
+  return PREFERRED_LANGUAGE_OPTIONS.map(code =>
+    code === AUTO_LANGUAGE ? i18nT('pages.settings.chatPanel.preferred_language_auto') : languageLabel(code),
+  )
+}
+/** Narrow a persisted `dashboard.preferred_language` to an option this Select can
+ *  render; anything else (a hand-edited value, a non-string) reads as auto. */
+export function asPreferredLanguage(value: unknown): string {
+  return typeof value === 'string' && PREFERRED_LANGUAGE_OPTIONS.includes(value) ? value : AUTO_LANGUAGE
 }
 export function completionKeepLabels(): string[] {
   return [

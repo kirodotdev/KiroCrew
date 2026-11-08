@@ -14,7 +14,7 @@
 #   ``usage_context`` -- context-window occupancy and a session's context trace
 #   ``usage_cost`` -- the Telemetry panel's spend breakdown
 #   ``usage_history`` -- the Usage page's per-day token history
-#   ``usage_sessions`` -- the Usage page's kiro-cli session activity and its cached parse
+#   ``usage_sessions`` -- the Usage page's kiro-cli and KAS session activity and its cached parse
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.types import TurnUsage
+from kiro_crew.dashboard.handlers.codex_usage import read_codex_rate_limits
 from kiro_crew.dashboard.handlers.usage_sessions import _CACHE_TTL, _usage_sessions_snapshot
 from kiro_crew.dashboard.handlers.usage_store import (  # noqa: F401 - usage_series reads these per row
     _coerce_int,
@@ -43,13 +44,16 @@ from kiro_crew.dashboard.handlers.usage_store import (  # noqa: F401 - usage_ser
     _usage_number,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.metrics.harness import HARNESS_UNKNOWN, harness_of
 from kiro_crew.metrics.turns import (
     OUTCOME_UNCLASSIFIED,
     emit_turn_duration,
     emit_turn_usage,
     turn_outcome,
 )
-from kiro_crew.owner_only_files import owner_only_opener_for
+from kiro_crew.metrics.usage_attrs import TRIGGER_OTHER
+from kiro_crew.owner_only_files import mkdirs_owner_only, owner_only_opener_for
+from kiro_crew.wrapper_chain import wrapper_chain
 
 logger = logging.getLogger(__name__)
 
@@ -80,71 +84,6 @@ def read_context_tokens(source: object) -> tuple[int, int]:
         return (0, 0)
 
 
-# Runaway guard for :func:`_wrapper_chain`, NOT a depth limit. The walk follows
-# the four documented holder attributes and stops at objects it has already
-# seen, so a real provider stack — a handful of wrappers around one handle and
-# one runtime — is exhausted long before this. What the bound exists for is a
-# source that SYNTHESIZES attributes: a ``MagicMock`` answers every ``getattr``
-# with a fresh child, so without a bound the walk would never end. It is sized
-# so that no plausible wrapper depth can reach it: a wrapper layer carrying all
-# four holders costs three nodes on the way down, so this admits twenty-plus
-# stacked layers, an order of magnitude past anything a session accumulates.
-_WRAPPER_CHAIN_MAX_NODES = 64
-
-# Holder attributes, in the order they are followed. ``_runtime`` is LAST on
-# purpose — see :func:`_wrapper_chain`.
-_WRAPPER_HOLDERS: tuple[str, ...] = ("client", "_client", "_handle", "_runtime")
-
-
-def _wrapper_chain(source: object) -> list[object]:
-    """Collect *source* and the provider/client/handle wrappers nested under it.
-
-    ``providers/acp.py`` keeps its inner object on ``_client`` (also exposed as
-    ``client``), ``acp/session_provider.py`` keeps the session handle on
-    ``_handle``, and both the handle and the provider keep the spawned CLI
-    runtime on ``_runtime`` (``session_handle_class.py`` ``__init__``, ``session_provider.py:61``)
-    — and these nest, because ``providers/acp_runtime_start.py`` assigns an
-    ``AcpSessionProvider`` to ``_client`` (the ``-> AcpClient`` annotation there
-    carries a ``type: ignore``). A default Kiro turn therefore hides its resolved
-    state two levels down, at ``provider.client._handle``, so probing a fixed
-    depth misses it.
-
-    Depth-first along the holder attributes, with an identity-based visited set
-    so a wrapper that points back at itself (or two wrappers that share a
-    runtime) terminates. Depth-first, not breadth-first, because the model state
-    sits at the BOTTOM of the holder chain while every wrapper layer above it —
-    a fallback wrapper, session sharing, a subagent companion, a channel-linked
-    session — carries siblings that hold nothing. A breadth-first walk with a
-    node budget spends that budget on the siblings and, a few layers down,
-    stops short of the ``_model`` node; ``_resolve_model`` then persists a blank
-    and the credits land in the read-time ``unknown`` bucket. Following the
-    chain downward first reaches the handle regardless of how many layers are
-    stacked on top; :data:`_WRAPPER_CHAIN_MAX_NODES` is a runaway guard for
-    attribute-synthesizing sources, not a depth limit.
-
-    ``_runtime`` is traversed **last** deliberately. It is the only holder of
-    ``_agent`` for the session-provider shape (``AcpRuntime._agent``), but it also
-    carries the process-level ``--model`` argument (``AcpRuntime._model``); visiting
-    it after the whole ``_handle`` subtree keeps session-level model state ahead
-    of process-level state when :func:`read_effective_model` falls through to
-    ``_model``.
-    """
-    chain: list[object] = []
-    # A stack: the LAST entry is visited next, so children are pushed in
-    # reverse holder order to come off in holder order.
-    pending: list[object] = [source]
-    while pending and len(chain) < _WRAPPER_CHAIN_MAX_NODES:
-        node = pending.pop()
-        if node is None or any(seen is node for seen in chain):
-            continue
-        chain.append(node)
-        for holder in reversed(_WRAPPER_HOLDERS):
-            inner = getattr(node, holder, None)
-            if inner is not None and not isinstance(inner, (str, bytes, int)):
-                pending.append(inner)
-    return chain
-
-
 def read_effective_agent(source: object) -> str:
     """Return the agent id that actually served the turn, or ``""``.
 
@@ -157,7 +96,7 @@ def read_effective_agent(source: object) -> str:
     same "what actually ran" precedence used for the model. Never raises.
     """
     try:
-        for node in _wrapper_chain(source):
+        for node in wrapper_chain(source):
             candidate = getattr(node, "_agent", "")
             if isinstance(candidate, str) and candidate:
                 return candidate
@@ -178,7 +117,7 @@ def read_effective_model(source: object) -> str:
     actually served the turn is strictly more informative than the alias the
     caller asked for.
 
-    Walks the wrapper chain via :func:`_wrapper_chain` rather than a fixed depth,
+    Walks the wrapper chain via :func:`~kiro_crew.wrapper_chain.wrapper_chain` rather than a fixed depth,
     because a default Kiro turn hides the resolved id two levels down.
 
     Two passes over the collected chain, because a resolved id **anywhere** beats
@@ -189,7 +128,7 @@ def read_effective_model(source: object) -> str:
     raises.
     """
     try:
-        chain = _wrapper_chain(source)
+        chain = wrapper_chain(source)
         for attr in ("_resolved_model_id", "_model"):
             for node in chain:
                 candidate = getattr(node, attr, "")
@@ -218,7 +157,7 @@ def _source_requests_auto(source: object) -> bool:
         return any(
             isinstance(candidate := getattr(node, attr, ""), str)
             and candidate.strip().lower() == "auto"
-            for node in _wrapper_chain(source)
+            for node in wrapper_chain(source)
             for attr in ("_model", "_resolved_model_id")
         )
     except Exception:
@@ -282,6 +221,8 @@ def _build_token_record(
     context_window: int = 0,
     elapsed_ms: int = 0,
     app: str = "",
+    delivered: bool | None = None,
+    transcript: str = "",
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O).
 
@@ -310,6 +251,16 @@ def _build_token_record(
     This mirrors the precedence the OTEL emit path already uses
     (``chat_runner._attach_turn_stats``: ``value = duration_ms or elapsed_ms``),
     so the histogram and the row store cannot disagree about one turn.
+
+    ``delivered`` is whether the turn streamed any reply text, so a billed turn
+    that ran only tools can be told from one that answered. Only a caller that
+    watched the stream knows it; ``None`` leaves the key off the row.
+
+    ``transcript`` is the key of the transcript the dashboard tab writes to. A
+    tab linked to another session (a task review, a workflow, a cron run)
+    writes under a key its name cannot reach, and this row is the one record
+    that outlives the tab, so it is what names a closed tab's transcript.
+    ``""`` leaves the key off the row.
     """
     # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
     # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
@@ -328,7 +279,7 @@ def _build_token_record(
     # can be joined against the row's ``agent`` field retroactively — this is
     # where per-agent stall analysis happens, deliberately NOT on metric attrs.
     _stop = getattr(event, "stop_reason", "")
-    return {
+    record: dict[str, Any] = {
         "_type": "tokens",
         "ts": now.isoformat(),
         "slot": slot_key,
@@ -350,11 +301,20 @@ def _build_token_record(
         "agent": agent or "",
         "context_used": _coerce_int(context_used),
         "context_window": _coerce_int(context_window),
+        # Additive: the context occupancy after each of the turn's model calls,
+        # added up (kiro-cli reports it per call; ``turns`` above counts the
+        # calls). Read off the turn's usage, so no caller passes it.
+        "context_sum": _coerce_int(getattr(u, "context_sum_tokens", 0)),
         # Additive: the turn's terminal stop reason ("" when the producer has
         # none). str-coerced so a non-string on a test double / legacy event
         # can't break json.dumps.
         "stop_reason": _stop if isinstance(_stop, str) else "",
     }
+    if delivered is not None:
+        record["delivered"] = delivered
+    if transcript:
+        record["transcript"] = transcript
+    return record
 
 
 def _finite_only(record: dict[str, Any]) -> dict[str, Any]:
@@ -440,7 +400,7 @@ def _write_token_record(record: dict[str, Any], now: datetime) -> None:
     parent = shard_path.parent
     # mkdir only when missing — the dir is created once per day, not per turn.
     if not parent.exists():
-        parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        mkdirs_owner_only(parent)
     # allow_nan=False turns a non-finite value into a raised ValueError instead
     # of an invalid-JSON row. Sanitizing only on that failure keeps the hot path
     # free of a per-turn scan of every field.
@@ -550,8 +510,19 @@ async def persist_token_record_async(
     app: str = "",
     model_source: object = None,
     emit_metric: bool = True,
+    trigger: str = TRIGGER_OTHER,
+    origin: str | None = None,
+    delivered: bool | None = None,
+    transcript: str = "",
 ) -> None:
     """Async variant: builds the record on-loop, offloads the file write.
+
+    ``trigger`` is who started the turn, from the closed list in
+    :mod:`kiro_crew.metrics.usage_attrs`. Each surface states its own, and
+    ``test_turn_trigger_source.py`` holds every call site to passing one; a
+    caller that passes nothing records ``other``, never ``user``. ``origin``
+    overrides the origin derived from ``slot_key`` for a surface whose key does
+    not say where the input came from (a webhook). Neither is written to the row.
 
     Called per agent turn (EVENT_COMPLETE) from the chat runner, which runs on
     the aiohttp event loop, where a synchronous open/append would block all
@@ -559,7 +530,7 @@ async def persist_token_record_async(
     (no fsync, exceptions swallowed), so off-loop write loses no durability.
     See :func:`persist_token_record` for the ``surface`` / ``agent`` /
     ``context_used`` / ``context_window`` / ``elapsed_ms`` / ``model_source``
-    fields.
+    fields, and :func:`_build_token_record` for ``delivered`` and ``transcript``.
 
     ALSO emits the per-turn OTEL family — ``kirocrew.turn.duration`` plus the
     turn's usage (``kirocrew.turn.tokens`` and whichever of
@@ -602,11 +573,24 @@ async def persist_token_record_async(
             context_window=context_window,
             elapsed_ms=elapsed_ms,
             app=app,
+            delivered=delivered,
+            transcript=transcript,
         )
         # Before the offloaded write: a file-write failure must not cost the
         # latency sample, which needs nothing from disk.
         if emit_metric:
-            _emit_turn_histogram(record, slot_key, event)
+            # The harness is read off model_source, the live provider every
+            # surface already hands in to name the model that ran: it is the one
+            # object here that knows the session's EFFECTIVE backend, overrides
+            # included. Not written to the row; it labels the turn samples only.
+            _emit_turn_histogram(
+                record,
+                slot_key,
+                event,
+                harness=harness_of(model_source),
+                trigger=trigger,
+                origin=origin,
+            )
         await asyncio.to_thread(_write_token_record, record, now)
     except Exception:
         logger.debug("Failed to persist token record for slot %s", slot_key, exc_info=True)
@@ -616,6 +600,10 @@ def _emit_turn_histogram(
     record: dict,
     slot_key: str,
     event: object,
+    *,
+    harness: str = HARNESS_UNKNOWN,
+    trigger: str = TRIGGER_OTHER,
+    origin: str | None = None,
 ) -> None:
     """Emit this turn's OTEL samples from a built record.
 
@@ -656,6 +644,9 @@ def _emit_turn_histogram(
         outcome=outcome,
         model=model,
         provider=provider,
+        harness=harness,
+        trigger=trigger,
+        origin=origin,
     )
     emit_turn_usage(
         input_tokens=record.get("input"),
@@ -664,6 +655,7 @@ def _emit_turn_histogram(
         cost_usd=record.get("cost"),
         model=model,
         provider=provider,
+        harness=harness,
     )
 
 
@@ -679,7 +671,7 @@ def get_usage_cache() -> dict:
 
 
 async def api_kiro_usage(request: web.Request) -> web.Response:
-    """GET /api/usage/kiro — local session analytics + cached billing."""
+    """GET /api/usage/kiro — local session analytics, cached billing and Codex's windows."""
     global _CACHE, _CACHE_TS
     now = time.time()
 
@@ -719,6 +711,7 @@ async def api_kiro_usage(request: web.Request) -> web.Response:
             "username": username,
             "sessions": sessions,
             "billing": billing,
+            "codex": await asyncio.to_thread(read_codex_rate_limits),
             "refreshing": refreshing,
         }
 
@@ -758,15 +751,18 @@ __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.usage_context import (  # noqa: F401
+        _CATEGORY_LABEL,
         _CONTEXT_CACHE,
         _CONTEXT_CACHE_KEY,
         _CONTEXT_CACHE_TS,
         _CONTEXT_CACHE_TTL,
         _CONTEXT_TOP_SESSIONS,
-        _engine_view,
+        _as_blocks,
         _row_iso,
+        _usage_read,
         context_occupancy,
         context_trace,
+        context_turn_detail,
     )
     from kiro_crew.dashboard.handlers.usage_cost import (  # noqa: F401
         _COMPACTION_DROP_PCT,
@@ -791,11 +787,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SESSIONS_CACHE,
         _SESSIONS_CACHE_LOCK,
         _SESSIONS_CACHE_TS,
+        _TRANSCRIPT_COUNTS,
         _USAGE_SESSION_REFRESH_TASK,
         _USAGE_SESSION_WAIT_SECONDS,
         _cached_parse_sessions,
+        _count_row,
+        _count_transcript,
         _empty_session_summary,
+        _kas_transcripts,
         _parse_sessions,
+        _pin_listing_dir,
     )
     from kiro_crew.dashboard.handlers.usage_spend import (  # noqa: F401
         _BARE_CHAT_SLOT_RE,
@@ -832,7 +833,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
-    from kiro_crew import model_registry  # noqa: F401
+    from kiro_crew import model_registry, platform_compat  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401
     from kiro_crew.context_blocks import USER_LABEL  # noqa: F401

@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { Zap, FolderOpen, ChevronRight, Check, Plus, X } from 'lucide-react'
+import { Zap, FolderOpen, ChevronRight, Check, Plus, Send, X, Loader2, MessageSquareText } from 'lucide-react'
 import Modal from './Modal'
 import ErrorNotice from './ErrorNotice'
 import { Input, Btn } from './ui'
@@ -14,9 +14,10 @@ import { resolveFolderAgent, resolveFolderProjectDir, resolveFolderSteeringDirs 
 import { ChatFolder, ChatTag } from '../types'
 import { folderAgentOptions, type FolderAgentRow } from './folderAgentOptions'
 import { i18nT } from '../i18n/t'
+import { RadioChipGroup, radioChip } from './RadioChipGroup'
 
 /** The folder fields this modal owns. */
-export type FolderConfigField = 'name' | 'color' | 'icon' | 'projectDir' | 'defaultAgent' | 'tags' | 'steeringDirs'
+export type FolderConfigField = 'name' | 'color' | 'icon' | 'projectDir' | 'defaultAgent' | 'defaultDestinationCrew' | 'defaultPrompt' | 'tags' | 'steeringDirs'
 
 export interface FolderConfigDraft {
   name: string
@@ -32,6 +33,12 @@ export interface FolderConfigDraft {
   regenerateIcon: boolean
   projectDir: string
   defaultAgent: string
+  /** Instance id of the crew *Send a copy to* lists first for this folder's
+   *  sessions; '' = use the global default destination crew. */
+  defaultDestinationCrew: string
+  /** Text put in the composer of each new chat created in this folder, unsent;
+   *  '' = an empty composer. */
+  defaultPrompt: string
   /** Tag ids the folder carries; copied onto new chats filed into it. */
   tags: string[]
   /** Extra steering directories loaded for every chat in this folder's subtree
@@ -71,9 +78,27 @@ interface Props {
    *  Retry action on the error line so recovery never requires dismissing the
    *  modal (closing would discard a mid-draft form). */
   onRetryTags: () => void
+  /** Registered crews for the Default destination crew picker. Empty/absent
+   *  hides the picker, the same way *Send a copy to* hides with no crews. */
+  destinationCrews?: readonly { id: string; name: string }[]
+  /** `instances.default_destination`, so the empty option can name the crew it
+   *  falls back to. */
+  globalDestinationCrew?: string
+  /** True when the crew list FAILED to load (not Instances being off): the
+   *  field stays, with an error line and Retry, instead of hiding as if no crew
+   *  were registered. */
+  destinationCrewsFailed?: boolean
+  /** Retries the failed crew-list query in place, like {@link onRetryTags}. */
+  onRetryDestinationCrews?: () => void
   /** Resolves on a persisted save; REJECTS on failure so the modal can stay
    *  open with the draft intact and surface the reason. */
   onSubmit: (draft: FolderConfigDraft) => Promise<void>
+  /** edit: picks an emoji for the folder WITHOUT saving it. When given,
+   *  Auto-generate puts the result straight into the Icon field, so the person
+   *  sees it before Save; Save then stores it as an ordinary icon. `avoid` is
+   *  every icon shown so far, so another click picks a different one. Absent,
+   *  Auto-generate arms `regenerateIcon` and the icon is picked after Save. */
+  onPreviewIcon?: (name: string, avoid: string[]) => Promise<string>
 }
 
 /** Ancestor chain for `id`, outermost first. Cycle-guarded like the sidebar's
@@ -90,7 +115,7 @@ function ancestorChain(folders: ChatFolder[], id: string | undefined): ChatFolde
   return out
 }
 
-const EMPTY: FolderConfigDraft = { name: '', color: '', icon: '', regenerateIcon: false, projectDir: '', defaultAgent: '', tags: [], steeringDirs: [], touched: [] }
+const EMPTY: FolderConfigDraft = { name: '', color: '', icon: '', regenerateIcon: false, projectDir: '', defaultAgent: '', defaultDestinationCrew: '', defaultPrompt: '', tags: [], steeringDirs: [], touched: [] }
 
 /** Set-equality on two tag-id lists (order-insensitive): the picker toggles
  *  membership, so "changed?" is about which ids are present, not their order. */
@@ -121,7 +146,8 @@ function sameDirs(a: string[], b: string[]): boolean {
  * spatial cue the inline input got for free from its own indentation.
  */
 export default function FolderConfigModal({
-  open, onClose, mode, parentId, folder, folders, installedAgents, globalDefaultAgent, availableTags, availableTagsFailed, onRetryTags, onSubmit,
+  open, onClose, mode, parentId, folder, folders, installedAgents, globalDefaultAgent, availableTags, availableTagsFailed, onRetryTags, onSubmit, destinationCrews, globalDestinationCrew,
+  destinationCrewsFailed, onRetryDestinationCrews, onPreviewIcon,
 }: Props) {
   const [draft, setDraft] = useState<FolderConfigDraft>(EMPTY)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -141,6 +167,18 @@ export default function FolderConfigModal({
   // server message in the modal's top alert, which names no field. Only the
   // icon codes route here; every other failure keeps the top alert.
   const [iconErr, setIconErr] = useState(false)
+  // Auto-generate preview: `generating` is a pick the person still wants
+  // (spinner, hint, Save held), `genInflight` any request not yet settled
+  // (button held: the server takes one preview per folder at a time), and
+  // `genErr` the inline failure line. `genSeq` drops a result the person no
+  // longer wants — they typed an icon, renamed the folder, or the modal
+  // re-seeded — while it ran. `shownIcons` is every icon shown in this open,
+  // sent as `avoid`.
+  const [generating, setGenerating] = useState(false)
+  const [genInflight, setGenInflight] = useState(false)
+  const [genErr, setGenErr] = useState(false)
+  const genSeq = useRef(0)
+  const shownIcons = useRef<string[]>([])
   // What the draft looked like when the modal opened — the baseline for
   // "has the user actually typed something worth protecting?".
   const seedRef = useRef<FolderConfigDraft>(EMPTY)
@@ -191,6 +229,8 @@ export default function FolderConfigModal({
         regenerateIcon: false,
         projectDir: f.project_dir ?? '',
         defaultAgent: f.default_agent ?? '',
+        defaultDestinationCrew: f.default_destination_crew ?? '',
+        defaultPrompt: f.default_prompt ?? '',
         tags: Array.isArray(f.tags) ? (known ? f.tags.filter(t => vocab.has(t)) : [...f.tags]) : [],
         steeringDirs: Array.isArray(f.steering_dirs) ? [...f.steering_dirs] : [],
         touched: [],
@@ -201,7 +241,13 @@ export default function FolderConfigModal({
     setPickerOpen(false)
     setPickerTarget('project')
     setSaving(false); setSaveErr(''); setIconErr(false)
+    genSeq.current += 1
+    shownIcons.current = seeded.icon ? [seeded.icon] : []
+    setGenerating(false); setGenErr(false)
   }, [open, mode, seedKey])
+
+  /** Drop a running preview's result: the person changed what it was for. */
+  const dropPreview = () => { genSeq.current += 1; setGenerating(false); setGenErr(false) }
 
   // Focus the name field on open. rAF + preventScroll for the same reason the
   // sidebar's inline inputs need it: these open from a Radix menu, whose teardown
@@ -255,7 +301,8 @@ export default function FolderConfigModal({
   }, [folders, mode, folder?.parent_id, folder?.owner_app, parentId])
 
   const trimmedName = draft.name.trim()
-  const canSubmit = trimmedName.length > 0
+  // Save waits for a live preview, so it never closes before the pick lands.
+  const canSubmit = trimmedName.length > 0 && !generating
 
   // A folder can reference an agent that is no longer installed (uninstalled or
   // renamed). Without an option for it the select falls back to showing the
@@ -281,6 +328,29 @@ export default function FolderConfigModal({
     ...folderAgentOptions(installedAgents),
   ]
 
+  // Hidden with *Send a copy to*: no registered crew means nothing to send to.
+  // A stored id naming no registered crew stays selectable so a save that does
+  // not touch this field never drops it.
+  const crews = destinationCrews ?? []
+  // Names what "the global default" resolves to. Like the menu, a global value
+  // naming no registered crew counts as unset, so it reads "(none)".
+  const globalDestination = globalDestinationCrew ? crews.find(c => c.id === globalDestinationCrew) : undefined
+  const globalDestinationLabel = globalDestination
+    ? i18nT('components.folderConfigModal.default_destination_global', { crew: globalDestination.name || globalDestination.id })
+    : i18nT('components.folderConfigModal.default_destination_global_unset')
+  const destinationOptions: SearchableSelectOption[] | null = crews.length === 0
+    ? null
+    : [
+      { value: '', label: globalDestinationLabel },
+      ...(draft.defaultDestinationCrew && !crews.some(c => c.id === draft.defaultDestinationCrew)
+        ? [{
+          value: draft.defaultDestinationCrew,
+          label: i18nT('components.folderConfigModal.default_destination_not_registered', { id: draft.defaultDestinationCrew }),
+        }]
+        : []),
+      ...crews.map(c => ({ value: c.id, label: c.name })),
+    ]
+
   const submit = useCallback(async () => {
     if (!canSubmit || saving) return
     const seeded = seedRef.current
@@ -302,6 +372,8 @@ export default function FolderConfigModal({
     if (draft.icon !== seeded.icon || draft.regenerateIcon) edited.push('icon')
     if (draft.projectDir !== seeded.projectDir) edited.push('projectDir')
     if (draft.defaultAgent !== seeded.defaultAgent) edited.push('defaultAgent')
+    if (draft.defaultDestinationCrew !== seeded.defaultDestinationCrew) edited.push('defaultDestinationCrew')
+    if (draft.defaultPrompt !== seeded.defaultPrompt) edited.push('defaultPrompt')
     if (tagsEdited) edited.push('tags')
     if (!sameDirs(draft.steeringDirs, seeded.steeringDirs)) edited.push('steeringDirs')
     setSaving(true); setSaveErr(''); setIconErr(false)
@@ -325,6 +397,25 @@ export default function FolderConfigModal({
     }
   }, [canSubmit, saving, draft, trimmedName, onSubmit])
 
+  const previewIcon = useCallback(async () => {
+    if (!onPreviewIcon || genInflight) return
+    const seq = ++genSeq.current
+    setIconErr(false); setGenErr(false); setGenerating(true); setGenInflight(true)
+    try {
+      // The last 8, the most the server puts in the prompt.
+      const icon = await onPreviewIcon(trimmedName, shownIcons.current.slice(-8))
+      if (seq !== genSeq.current) return
+      if (!icon) throw new Error('no icon')
+      if (!shownIcons.current.includes(icon)) shownIcons.current.push(icon)
+      setDraft(d => ({ ...d, icon, regenerateIcon: false }))
+    } catch {
+      if (seq === genSeq.current) setGenErr(true)
+    } finally {
+      setGenInflight(false)
+      if (seq === genSeq.current) setGenerating(false)
+    }
+  }, [onPreviewIcon, genInflight, trimmedName])
+
 
   // The inline input this replaced held ONE field; the modal holds four, so an
   // accidental backdrop graze now costs real work. Guard the accidental paths
@@ -336,6 +427,8 @@ export default function FolderConfigModal({
   if (draft.icon !== seed.icon || draft.regenerateIcon) touched.push('icon')
   if (draft.projectDir !== seed.projectDir) touched.push('projectDir')
   if (draft.defaultAgent !== seed.defaultAgent) touched.push('defaultAgent')
+  if (draft.defaultDestinationCrew !== seed.defaultDestinationCrew) touched.push('defaultDestinationCrew')
+  if (draft.defaultPrompt !== seed.defaultPrompt) touched.push('defaultPrompt')
   if (!sameTags(draft.tags, seed.tags)) touched.push('tags')
   if (!sameDirs(draft.steeringDirs, seed.steeringDirs)) touched.push('steeringDirs')
   const isDirty = touched.length > 0
@@ -393,7 +486,7 @@ export default function FolderConfigModal({
               data-testid="folder-config-name"
               placeholder={i18nT('components.folderConfigModal.name_placeholder')}
               value={draft.name}
-              onChange={e => setDraft(d => ({ ...d, name: e.target.value }))}
+              onChange={e => { if (generating) dropPreview(); setDraft(d => ({ ...d, name: e.target.value })) }}
               {...ime.bindComposition()}
               onKeyDown={e => { if (e.key === 'Enter' && ime.claimEnter(e)) submit() }}
             />
@@ -404,13 +497,13 @@ export default function FolderConfigModal({
            *  control. */}
           <div className="flex flex-col gap-1.5">
             <span className="text-[11.5px] font-semibold text-muted">{i18nT('components.folderConfigModal.color')}</span>
-            <div className="flex items-center gap-1 flex-wrap">
+            <RadioChipGroup className="flex items-center gap-1 flex-wrap" ariaLabel={i18nT('components.folderConfigModal.color')}>
               <button
                 type="button"
                 data-testid="folder-config-color-reset"
                 title={i18nT('components.folderConfigModal.no_color')}
                 aria-label={i18nT('components.folderConfigModal.no_color')}
-                aria-pressed={!draft.color}
+                {...radioChip(!draft.color)}
                 onClick={() => setDraft(d => ({ ...d, color: '' }))}
                 className={`relative w-5 h-5 rounded-full cursor-pointer border overflow-hidden bg-bg-elevated border-border-strong ${!draft.color ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
               >
@@ -425,21 +518,23 @@ export default function FolderConfigModal({
                     type="button"
                     title={i18nT('components.folderConfigModal.set_color_to_name', { name })}
                     aria-label={i18nT('components.folderConfigModal.set_color_to_name', { name })}
-                    aria-pressed={draft.color === value}
+                    {...radioChip(draft.color === value)}
                     onClick={() => setDraft(d => ({ ...d, color: value }))}
                     className={`w-5 h-5 rounded-full cursor-pointer border hover:brightness-125 swatch-cue ${draft.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
                     style={{ background: `color-mix(in srgb, ${value} 30%, var(--bg-elevated))`, borderColor: value }}
                   />
                 )
               })}
-            </div>
+            </RadioChipGroup>
           </div>
 
           {/* Icon — an emoji replacing the default folder glyph. Left empty,
            *  the folder keeps the default glyph — generation never runs
            *  implicitly; in edit mode "Auto-generate" asks for a fresh pick
-           *  (regenerate_icon) while clearing the field falls back to the
-           *  default glyph. Typing
+           *  while clearing the field falls back to the default glyph. With
+           *  `onPreviewIcon` the pick lands in the field at once and Save
+           *  stores it like a typed emoji; without it the pick is armed
+           *  (regenerate_icon) and runs after Save. Typing
            *  clears a pending regenerate and vice versa: the backend rejects
            *  icon + regenerate_icon in one request, so the two stay exclusive
            *  here. No client-side emoji validation — the server 400s on
@@ -461,18 +556,36 @@ export default function FolderConfigModal({
                 placeholder={i18nT('components.folderConfigModal.icon_placeholder')}
                 maxLength={16}
                 value={draft.regenerateIcon ? '' : draft.icon}
-                onChange={e => { setIconErr(false); setDraft(d => ({ ...d, icon: e.target.value, regenerateIcon: false })) }}
+                onChange={e => {
+                  // A typed icon wins over a preview still running.
+                  dropPreview(); setIconErr(false)
+                  setDraft(d => ({ ...d, icon: e.target.value, regenerateIcon: false }))
+                }}
               />
               {mode === 'edit' && (
                 <Btn
                   data-testid="folder-config-icon-regenerate"
-                  onClick={() => { setIconErr(false); setDraft(d => ({ ...d, icon: seedRef.current.icon, regenerateIcon: true })) }}
+                  disabled={genInflight}
+                  aria-busy={genInflight || undefined}
+                  onClick={onPreviewIcon
+                    ? () => { void previewIcon() }
+                    : () => { setIconErr(false); setDraft(d => ({ ...d, icon: seedRef.current.icon, regenerateIcon: true })) }}
                 >
+                  {genInflight && <Loader2 size={13} aria-hidden className="animate-spin motion-reduce:animate-none" data-testid="folder-config-icon-generating" />}
                   {i18nT('components.folderConfigModal.icon_regenerate')}
                 </Btn>
               )}
             </div>
-            {iconErr ? (
+            {genErr ? (
+              /* No hand-off, for the same reason as the icon error below: the
+                 fix is right here (click again, or type an emoji). */
+              <ErrorNotice
+                variant="inline"
+                className="text-[11px]"
+                message={i18nT('components.folderConfigModal.icon_generate_failed')}
+                testId="folder-config-icon-generate-error"
+              />
+            ) : iconErr ? (
               /* No hand-off: the rejected icon sits inside the same unsaved
                  folder form — navigating away would discard the whole draft
                  the keep-open-on-error path exists to preserve. The fix is a
@@ -487,6 +600,10 @@ export default function FolderConfigModal({
               <span className="text-[11px] text-muted-strong">
                 {draft.regenerateIcon
                   ? i18nT('components.folderConfigModal.icon_regenerate_pending')
+                  : generating
+                    ? i18nT('components.folderConfigModal.icon_generating')
+                  : mode === 'edit' && draft.icon && draft.icon !== seedRef.current.icon && shownIcons.current.includes(draft.icon)
+                    ? i18nT('components.folderConfigModal.icon_preview_hint')
                   : mode === 'create'
                     ? draft.icon
                       ? ''
@@ -715,6 +832,63 @@ export default function FolderConfigModal({
               <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_agent_hint')}</span>
             )}
           </div>
+          <div className="flex flex-col gap-1.5">
+            <span className="flex items-center gap-1.5 text-[11.5px] font-semibold text-muted">
+              <MessageSquareText size={12} className="shrink-0" /> {i18nT('components.folderConfigModal.default_prompt')}
+            </span>
+            <textarea
+              data-testid="folder-config-default-prompt"
+              aria-label={i18nT('components.folderConfigModal.default_prompt')}
+              aria-describedby="folder-config-default-prompt-hint"
+              rows={3}
+              value={draft.defaultPrompt}
+              onChange={e => setDraft(d => ({ ...d, defaultPrompt: e.target.value }))}
+              className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body outline-hidden resize-y transition-colors focus-ring"
+            />
+            <span id="folder-config-default-prompt-hint" className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_prompt_hint')}</span>
+          </div>
+          {(destinationOptions || destinationCrewsFailed) && (
+            <div className="flex flex-col gap-1.5">
+              <span className="flex items-center gap-1.5 text-[11.5px] font-semibold text-muted">
+                <Send size={12} className="shrink-0" /> {i18nT('components.folderConfigModal.default_destination_crew')}
+              </span>
+              {/* A failed refresh keeps the cached list usable: the picker stays,
+                  and the error line takes the hint's place so the person still
+                  learns the list may be out of date. */}
+              {destinationOptions && (
+                <SearchableSelect
+                  aria-label={i18nT('components.folderConfigModal.default_destination_crew')}
+                  options={destinationOptions}
+                  value={draft.defaultDestinationCrew}
+                  onChange={v => setDraft(d => ({ ...d, defaultDestinationCrew: v }))}
+                />
+              )}
+              {destinationCrewsFailed ? (
+                <span className="flex items-center gap-1.5 flex-wrap">
+                  {/* No hand-off: the same unsaved folder form (see the save
+                      notice above) — a read failure, but it sits inside it. */}
+                  <ErrorNotice
+                    variant="inline"
+                    className="text-[11px]"
+                    message={i18nT('components.folderConfigModal.default_destination_load_failed')}
+                    testId="folder-config-destination-error"
+                  />
+                  {onRetryDestinationCrews && (
+                    <button
+                      type="button"
+                      data-testid="folder-config-destination-retry"
+                      onClick={onRetryDestinationCrews}
+                      className="text-[11px] underline underline-offset-2 text-danger hover:opacity-80 bg-transparent border-none p-0 cursor-pointer"
+                    >
+                      {i18nT('components.folderConfigModal.default_destination_retry')}
+                    </button>
+                  )}
+                </span>
+              ) : (
+                <span className="text-[11px] text-muted-strong">{i18nT('components.folderConfigModal.default_destination_crew_hint')}</span>
+              )}
+            </div>
+          )}
         </div>
       </Modal>
 

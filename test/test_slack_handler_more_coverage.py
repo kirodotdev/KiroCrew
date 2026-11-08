@@ -10,7 +10,7 @@ untouched:
   (timeout / process-died / prompt-busy)
 * hook verdicts on tool calls and permission requests, plus per-session trust
 * the defence-in-depth authorisation re-checks in ``handle_interaction``
-* small module-level helpers: ``_add_phase_reaction``, ``set_orch_cfg``
+* small module-level helpers: ``set_orch_cfg``
   provider validation, ``_handle_cron_command`` list rendering,
   ``_handle_run_command`` idle status, ``_resolve_agent_name`` project lookup.
 
@@ -46,6 +46,10 @@ from kiro_crew.messaging import auto_title
 from kiro_crew.slack.handler import handle_interaction, handle_message
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_reporter import build_status
+
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
 
 # ──────────────────────────────────────────────────────────────────────
 # doubles
@@ -121,6 +125,13 @@ class FakeSessions:
 
     async def try_acquire(self, key):
         return self.has_session(key)
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     def release(self, key):
         pass
@@ -246,33 +257,6 @@ def _clean_approval_state():
     h._pending_approvals.clear()
     h._linked_approvals.clear()
     h._trusted_sessions.clear()
-
-
-# ──────────────────────────────────────────────────────────────────────
-# _add_phase_reaction
-# ──────────────────────────────────────────────────────────────────────
-class TestAddPhaseReaction:
-    @pytest.mark.asyncio
-    async def test_suppressed_phase_adds_nothing(self, monkeypatch):
-        """A ``null`` sentinel in ``slack.reactions`` means "no emoji at all"."""
-        monkeypatch.setitem(h._PHASE_EMOJIS, "done", None)
-        slack = MockSlackClient()
-        await h._add_phase_reaction(slack, "C1", "m1", "done")
-        assert slack.actions == []
-
-    @pytest.mark.asyncio
-    async def test_configured_phase_is_added(self, monkeypatch):
-        monkeypatch.setitem(h._PHASE_EMOJIS, "done", "tada")
-        slack = MockSlackClient()
-        await h._add_phase_reaction(slack, "C1", "m1", "done")
-        assert slack.actions == [("react", {"channel": "C1", "ts": "m1", "emoji": "tada"})]
-
-    @pytest.mark.asyncio
-    async def test_unknown_phase_is_ignored(self):
-        """A phase with no entry at all resolves to None -> no API call."""
-        slack = MockSlackClient()
-        await h._add_phase_reaction(slack, "C1", "m1", "not-a-phase")
-        assert slack.actions == []
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -618,16 +602,11 @@ class TestAutoTitleToolRejection:
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
 
     def test_lock_is_rebound_when_the_event_loop_changes(self):
-        """The module-global auto-title lock must keep working when the running
-        event loop changes.
+        """The module-global auto-title lock keeps working when the event loop changes.
 
-        ``pytest-asyncio`` gives every async test a fresh loop, and on
-        Python 3.10+ acquiring an ``asyncio.Lock`` from a loop other than the
-        one it was first used on raises ``RuntimeError`` — which the bare
-        ``except Exception:`` in ``_maybe_auto_title_slack`` then swallowed,
-        silently skipping the permission-rejection branch. Prove the contract
-        deterministically with two distinct loops instead of replaying the
-        order-dependent CI flake.
+        An ``asyncio.Lock`` used from a second loop raises ``RuntimeError``, which
+        ``_maybe_auto_title_slack``'s ``except Exception:`` would swallow, skipping
+        the permission-rejection branch. Two distinct loops make it deterministic.
         """
 
         def _run_once(session_key: str):
@@ -1474,9 +1453,13 @@ class TestLinkedThreadRouting:
             *,
             _directive_user_origin,
             _directive_channel_origin,
+            _directive_source_channels,
+            _commands_off,
         ):
             assert _directive_user_origin is True
             assert _directive_channel_origin is True
+            assert _directive_source_channels == ("C1",)
+            assert _commands_off is False
             ran.append(text)
 
         monkeypatch.setattr(chat_mod, "_run_chat", _fake_run_chat)
@@ -1534,51 +1517,3 @@ class TestLinkedThreadRouting:
         assert handled is True
         assert slot.appended == [] and slot.queued == []
         assert "Not authorized." in _all_text(slack)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# StatusReactionController — stall watchdog upgrade path
-# ──────────────────────────────────────────────────────────────────────
-class TestStallWatchdog:
-    @pytest.mark.asyncio
-    async def test_soft_then_hard_stall_emoji_replaces_not_stacks(self, monkeypatch):
-        monkeypatch.setattr(h, "_STALL_SOFT_SECS", 0.001)
-        monkeypatch.setattr(h, "_STALL_HARD_SECS", 0.005)
-        slack = MockSlackClient()
-        ctrl = h.StatusReactionController(slack, "C1", "m1")
-        ctrl.on_progress()
-        await asyncio.sleep(0.05)
-        reacts = [a[1]["emoji"] for a in slack.actions if a[0] == "react"]
-        unreacts = [a[1]["emoji"] for a in slack.actions if a[0] == "unreact"]
-        assert h._STALL_EMOJI_SOFT in reacts
-        assert h._STALL_EMOJI_HARD in reacts
-        # Upgrading to the hard emoji removes the soft one.
-        assert h._STALL_EMOJI_SOFT in unreacts
-        ctrl.finalize()
-        await asyncio.sleep(0)
-
-    @pytest.mark.asyncio
-    async def test_paused_watchdog_adds_nothing(self, monkeypatch):
-        monkeypatch.setattr(h, "_STALL_SOFT_SECS", 0.001)
-        monkeypatch.setattr(h, "_STALL_HARD_SECS", 0.005)
-        slack = MockSlackClient()
-        ctrl = h.StatusReactionController(slack, "C1", "m1")
-        ctrl.on_progress()
-        ctrl.pause_stall_watchdog()
-        await asyncio.sleep(0.05)
-        reacts = [a[1]["emoji"] for a in slack.actions if a[0] == "react"]
-        assert h._STALL_EMOJI_SOFT not in reacts
-        assert h._STALL_EMOJI_HARD not in reacts
-        ctrl.finalize()
-        await asyncio.sleep(0)
-
-    @pytest.mark.asyncio
-    async def test_disabled_controller_never_calls_slack(self):
-        slack = MockSlackClient()
-        ctrl = h.StatusReactionController(slack, "C1", "m1", enabled=False)
-        ctrl.set_phase("queued")
-        ctrl.on_progress()
-        ctrl.resume_stall_watchdog()
-        ctrl.finalize()
-        await asyncio.sleep(0.01)
-        assert slack.actions == []

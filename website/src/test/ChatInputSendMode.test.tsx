@@ -131,4 +131,58 @@ describe('composer send mode comes from the stored preference', () => {
     expect(fireEvent.keyDown(ta, { key: 'Enter' })).toBe(true)
     expect(onSend).not.toHaveBeenCalled()
   })
+
+  // Regression for #14725: a host that opts out of the optimize affordance
+  // (`promptOptimizer={false}`, e.g. the side panel) has no optimize branch to
+  // claim Cmd/Ctrl+Shift+Enter, so the chord must fall through to a NO-OP — it
+  // must never satisfy the `ctrl-enter` send binding and submit the draft the
+  // user was still editing. The optimize chord shares a modifier with the
+  // `ctrl-enter` send key, so the send key must exclude Shift.
+  describe("the optimize chord does not send when promptOptimizer is off", () => {
+    function mountNoOptimizer(mode: string, onSend: () => void) {
+      seedSendMode(mode)
+      renderWithProviders(<ChatInput {...baseProps} onSend={onSend} promptOptimizer={false} />)
+      return screen.getByLabelText('Message input')
+    }
+
+    it("ctrl-enter: Ctrl+Shift+Enter neither sends nor newlines (no-op)", () => {
+      const onSend = vi.fn()
+      const ta = mountNoOptimizer('ctrl-enter', onSend)
+      // fireEvent returns false when the handler called preventDefault; a true
+      // here means nobody consumed the chord, so it is a plain no-op.
+      expect(fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true, shiftKey: true })).toBe(true)
+      expect(onSend).not.toHaveBeenCalled()
+    })
+
+    it("ctrl-enter: Cmd+Shift+Enter neither sends nor newlines (no-op)", () => {
+      const onSend = vi.fn()
+      const ta = mountNoOptimizer('ctrl-enter', onSend)
+      expect(fireEvent.keyDown(ta, { key: 'Enter', metaKey: true, shiftKey: true })).toBe(true)
+      expect(onSend).not.toHaveBeenCalled()
+    })
+
+    it("ctrl-enter: a plain Ctrl+Enter still sends (no Shift)", () => {
+      const onSend = vi.fn()
+      const ta = mountNoOptimizer('ctrl-enter', onSend)
+      fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
+      expect(onSend).toHaveBeenCalledOnce()
+    })
+
+    it("enter: Ctrl+Shift+Enter does not send (Shift already excluded)", () => {
+      const onSend = vi.fn()
+      const ta = mountNoOptimizer('enter', onSend)
+      expect(fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true, shiftKey: true })).toBe(true)
+      expect(onSend).not.toHaveBeenCalled()
+    })
+  })
+
+  // With the optimize affordance present (the default), the same chord is
+  // claimed by the optimize branch and still must not reach the send path.
+  it("ctrl-enter: Ctrl+Shift+Enter optimizes (not sends) when promptOptimizer is on", () => {
+    const onSend = vi.fn()
+    const ta = mountWithStoredMode('ctrl-enter', onSend)
+    // The optimize branch calls preventDefault, so fireEvent returns false.
+    expect(fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true, shiftKey: true })).toBe(false)
+    expect(onSend).not.toHaveBeenCalled()
+  })
 })

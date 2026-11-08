@@ -44,6 +44,7 @@ from typing import Any, Awaitable, Callable
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.mcp_gateway.pool import PoolKey
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
 
@@ -234,10 +235,10 @@ class HotKeyStore:
         empty store. Blocking IO — call from a thread.
         """
         try:
-            raw = self._path.read_text()
+            raw = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             logger.warning("hot-keys: could not read %s: %s", self._path, exc)
             return
         try:
@@ -339,9 +340,9 @@ class HotKeyStore:
             # failure below so a failed write is retried.
             self._dirty = False
         try:
-            # Keep the explicit mode: atomic_write's own parent mkdir does not
-            # set one, and this directory holds identity-bearing keys.
-            self._path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Owner-only by construction: atomic_write's own parent mkdir does
+            # not set a mode, and this directory holds identity-bearing keys.
+            mkdirs_owner_only(self._path.parent)
             # restrict_to_owner is passed unconditionally rather than guarded
             # behind `not IS_POSIX`. On POSIX it is os.chmod(0o600), the same
             # mode a bare fchmod_safe(0o600) yields, and the helper applies it

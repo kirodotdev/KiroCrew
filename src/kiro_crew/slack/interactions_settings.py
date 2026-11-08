@@ -20,6 +20,7 @@ import aiohttp
 
 from kiro_crew.config.loader import ConfigReadError, config_path, update_config_locked
 from kiro_crew.dashboard.chat_utils import run_config_write
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.sel import sel
 from kiro_crew.slack.allowlist import (
     ACTION_ALLOWLIST_APPROVE,
@@ -77,7 +78,11 @@ async def _handle_ch_activation(payload: dict, action: dict) -> None:
 
     from kiro_crew.slack.handler import _persist_channel_config
 
-    await run_config_write(_persist_channel_config, cid, activation=new_mode)
+    try:
+        await run_config_write(_persist_channel_config, cid, activation=new_mode)
+    except ValueError as e:
+        logger.warning("Channel %s activation not saved: %s", cid, e)
+        return
     if _orch:
         # In place, never a rebind: ``_orch._cfg`` is the object the handler
         # module and every dispatcher hold, so rebinding it here would leave
@@ -108,7 +113,11 @@ async def _handle_ch_agent(payload: dict, action: dict) -> None:
 
     from kiro_crew.slack.handler import _persist_channel_config
 
-    await run_config_write(_persist_channel_config, cid, agent=new_agent)
+    try:
+        await run_config_write(_persist_channel_config, cid, agent=new_agent)
+    except ValueError as e:
+        logger.warning("Channel %s agent not saved: %s", cid, e)
+        return
     if _orch:
         # In place, never a rebind: ``_orch._cfg`` is the object the handler
         # module and every dispatcher hold, so rebinding it here would leave
@@ -365,6 +374,7 @@ async def _handle_agent_select(
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
+                    proxy=resolve_proxy(response_url),
                     json={"replace_original": True, "text": label, "blocks": blks},
                 )
                 return
@@ -398,10 +408,17 @@ async def _handle_users_select(
     # revert on restart.
     cp = config_path()
 
-    def _apply(data: dict) -> dict:
-        data.setdefault("slack", {})["allowed_users"] = [
-            {"slack_id": uid} for uid in sorted(new_users)
-        ]
+    skipped_not_object = False
+
+    def _apply(data: dict) -> dict | None:
+        nonlocal skipped_not_object
+        section = data.setdefault("slack", {})
+        if not isinstance(section, dict):
+            # Keep the person's entry as written and write nothing: `None`
+            # tells update_config_locked there is no change to persist.
+            skipped_not_object = True
+            return None
+        section["allowed_users"] = [{"slack_id": uid} for uid in sorted(new_users)]
         return data
 
     try:
@@ -411,6 +428,9 @@ async def _handle_users_select(
         return
     except OSError:
         logger.exception("Failed to persist users from select")
+        return
+    if skipped_not_object:
+        logger.warning("Refusing to persist users from select: config 'slack' is not an object")
         return
 
     if _orch:
@@ -444,10 +464,16 @@ async def _handle_channels_select(
     # why the order is load-bearing).
     cp = config_path()
 
-    def _apply(data: dict) -> dict:
-        data.setdefault("slack", {})["tracking_channels"] = [
-            {"channel_id": cid} for cid in sorted(new_channels)
-        ]
+    skipped_not_object = False
+
+    def _apply(data: dict) -> dict | None:
+        nonlocal skipped_not_object
+        section = data.setdefault("slack", {})
+        if not isinstance(section, dict):
+            # Same as the users-select handler: keep the entry, write nothing.
+            skipped_not_object = True
+            return None
+        section["tracking_channels"] = [{"channel_id": cid} for cid in sorted(new_channels)]
         return data
 
     # Persist FIRST (locked read-modify-write), then mutate runtime state
@@ -459,6 +485,9 @@ async def _handle_channels_select(
         return
     except OSError:
         logger.exception("Failed to persist channels from select")
+        return
+    if skipped_not_object:
+        logger.warning("Refusing to persist channels from select: config 'slack' is not an object")
         return
 
     if _orch:
@@ -504,6 +533,7 @@ async def _handle_allowlist_remove(
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
+                    proxy=resolve_proxy(response_url),
                     json={"replace_original": True, "text": "Allowlist updated", "blocks": blks},
                 )
                 return
@@ -543,6 +573,7 @@ async def _handle_channel_remove(
             async with aiohttp.ClientSession() as sess:
                 await sess.post(
                     response_url,
+                    proxy=resolve_proxy(response_url),
                     json={
                         "replace_original": True,
                         "text": "Tracked channels updated",

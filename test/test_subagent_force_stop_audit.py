@@ -1,34 +1,16 @@
 """The subagent force-stop path records what actually happened to the process.
 
-Twin of the cron reaper's contract (``test_cron_reaper_failed_kill.py``): ``_sigkill_session``
-REPORTS a refused or failed signal instead of swallowing it, its callers audit
-that as ``failed`` rather than ``reaped`` / ``sigkill`` and name it in the run's
-error text, and both callers act on a process handle taken BEFORE the reset --
-retained under the run's id -- so a stop that arrives after the reset has popped
-the session from the map, or after a completed reset that did not end the
-process, still names, verifies and signals the process.
+Twin of ``test_cron_reaper_failed_kill.py``: a refused signal is audited ``failed``, and
+the kill acts on a process handle taken BEFORE the reset, which can pop the session first.
 
-Every signal seam is stubbed (``platform_compat.kill_process_group`` /
-``kill_pid_async`` / ``kill_process_tree_pinned`` / ``get_process_start_id`` /
-``pid_exists`` and the child helpers in ``acp.client``), so no test here touches
-a real process. The kill
-and the survival check are ``kiro_crew.process_identity``'s, shared with the
-cron reaper; once a leader is gone they decide by the tree it led, and those
-two probes -- the POSIX process-group probe and the Windows exact-tree cleanup
-pin -- are pinned "gone" for this whole module (:func:`_no_tree_behind_the_leader`):
-no test here builds a tree, and an unpinned ``os.killpg(number, 0)`` on a
-made-up pid answers whatever the host running the suite happens to run. The
-tree cases themselves are the shared module's, proven in ``test_cron_reaper_kill_set.py``
-(the process group) and ``test_cron_reaper_process_identity.py`` (the Windows tree pin).
+Every signal seam is stubbed, so no test touches a real process. The tree probes are pinned
+"gone" for the whole module (:func:`_no_tree_behind_the_leader`): an unpinned
+``os.killpg(number, 0)`` on a made-up pid answers whatever the host happens to run.
 
-The suite is split by behaviour. This file keeps the process handles the kill acts on: a
-handle taken before a reset that pops the session and hangs, a completed reset that is not
-proof of death, equal handles merging their evidence, the handle retained across the pop,
-every candidate under a shared key killed on its own handle, the session a reset pops, and
-the live tree refreshed before either teardown takes its handles. The run's own record and
-report are in ``test_subagent_force_stop_audit_reports.py``, a failed kill on each of its
-three callers in ``test_subagent_force_stop_audit_failed_kills.py``, and the shared seams
-and fakes in ``subagent_force_stop_audit_helpers.py``.
+This file covers the process handles. Records and reports are in
+``test_subagent_force_stop_audit_reports.py``, failed kills per caller in
+``test_subagent_force_stop_audit_failed_kills.py``, shared fakes in
+``subagent_force_stop_audit_helpers.py``.
 """
 
 from __future__ import annotations
@@ -190,14 +172,10 @@ class TestForceStopActsAfterAResetHang:
     async def test_a_root_that_exits_during_the_child_walk_is_not_signalled_and_its_fresh_child_is_named(
         self,
     ) -> None:
-        """The start id is re-read immediately before the signal; a changed reading is a gone root, and a child the walk found is named.
+        """A start id changed just before the signal is a gone root; a walked child is named.
 
-        The child the walk FOUND (7272) was read through a pid that may already
-        have been recycled when the walk ran, so it is not swept -- and not
-        dropped either: the kill names it as a failure, unattributed and not
-        signalled, so the reap records ``failed`` rather than ``reaped`` over a
-        process that may be the run's. Only the child recorded before the reset
-        (6262) is swept.
+        The walked child (7272) came through a pid that may be recycled, so it is not swept
+        but reported unattributed. Only the child recorded before the reset (6262) is swept.
         """
         manager, _info, key = _overdue_run("walk1", pid=5555)
         manager._sessions._sessions[key].provider._client._child_pids = {6262: ("222", b"node")}
@@ -233,14 +211,9 @@ class TestForceStopActsAfterAResetHang:
     ) -> None:
         """A root that exits during the walk is nothing to kill once its tree is shown gone.
 
-        On Windows a start id still reads back for an exited process while any
-        handle to it is open, so the pre-signal identity read passes and the
-        kill reaches the pinned tree drain (``kill_process_tree_pinned``), which
-        opens the process object only if its creation time is the one just read
-        back -- and finds the identity does not answer (not drained). The
-        leader's absence hands the decision to its tree: with no exact-tree
-        cleanup pin pending for the root there is nothing left to reach, no
-        pid-scoped signal is attempted, and the kill reports no failure.
+        On Windows a start id still reads back for an exited process while a handle is open,
+        so the kill reaches ``kill_process_tree_pinned``, which finds nothing. With no
+        cleanup pin pending there is nothing left to reach and no pid-scoped signal.
         """
         manager, _info, key = _overdue_run("walk2", pid=5757)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
@@ -308,10 +281,7 @@ class TestACompletedResetIsNotProofOfDeath:
     async def test_a_process_that_survives_a_completed_reset_still_gets_the_kill(self) -> None:
         """A reset that returned True is not proof the process is gone.
 
-        The reset's own shutdown can fail without raising out of it. After every
-        completed reset the handle is asked -- pid plus recorded start id -- and
-        a process that still stands gets the fallback; its outcome, not the
-        reset's boolean, is what the record says.
+        The reset's shutdown can fail without raising, so the handle is asked afterwards.
         """
         manager, info, _key = _overdue_run("survived1", pid=5959)
         manager._sessions.reset = AsyncMock(return_value=True)
@@ -381,11 +351,8 @@ class TestACompletedResetIsNotProofOfDeath:
     ) -> None:
         """The Windows false survivor: identity alone said alive for a process the OS confirmed exited.
 
-        A start id reads back for an EXITED Windows process as long as any handle
-        to its kernel object is open (asyncio's Proactor transport keeps one until
-        GC). The survivor check asks existence FIRST through the exit-code-confirmed
-        probe (``pid_exists`` on win32), so the fallback never signals a dead pid
-        and never records that error as a failed kill.
+        A start id reads back for an exited Windows process while any handle is open
+        (asyncio's Proactor transport keeps one until GC), so ``pid_exists`` is asked first.
         """
         manager, info, _key = _overdue_run("exited1", pid=6363)
         manager._sessions.reset = AsyncMock(return_value=True)
@@ -450,11 +417,8 @@ class TestACompletedResetIsNotProofOfDeath:
     async def test_a_reset_that_finds_no_session_still_kills_through_the_handle(self) -> None:
         """``reset`` answers False when the key is already gone: it stopped nothing.
 
-        A concurrent reset popped the entry between the reap's handle and the
-        reset's lock. Whether that reset's shutdown lands is not this reap's to
-        assume: the handle says the process is standing (its recorded start id
-        reads back), so the kill goes through the handle and the record says
-        reaped only once it has been signalled.
+        A concurrent reset popped the entry first. The handle still says the process stands,
+        so the kill goes through the handle.
         """
         manager, info, _key = _overdue_run("unmapped1", pid=6262)
 
@@ -513,20 +477,12 @@ def _handle(
 class TestEqualHandlesMergeTheirEvidence:
     """A later reading of the same incarnation adds its evidence instead of being dropped.
 
-    Identity is ``(pid, start id)``; the group id and the child records are
-    ``compare=False`` evidence read at different moments. The pre-reset snapshot
-    names the children the client had recorded THEN; the handle read at the pop
-    -- or the live session's, beside an entry the other path retained minutes
-    earlier -- names the ones recorded since. A dedup that kept the first equal
-    handle dropped the later records: a recorded child that escaped the group
-    was never swept, never named as standing, and the record said ``reaped``
-    over it. One shared rule (``process_identity.add_handle``) for the kill set,
-    the sub-agent snapshot and the cron reaper's.
+    Identity is ``(pid, start id)``; group id and child records are ``compare=False``
+    evidence. Keeping only the first equal handle would drop children recorded later, so
+    an escaped child would never be swept. ``process_identity.add_handle`` is the one rule.
     """
 
     def test_the_kill_set_keeps_the_popped_readings_children(self) -> None:
-        # This PR's shared definition: imported here so the module still imports
-        # on the parent for the red-first count.
         from kiro_crew.process_identity import kill_set
 
         snapshot = _handle(9901, pgid=9901)
@@ -543,8 +499,6 @@ class TestEqualHandlesMergeTheirEvidence:
         assert targets[0].pgid == 9901, "the captured group was lost in the merge"
 
     def test_a_reading_that_adds_nothing_keeps_the_handle_object(self) -> None:
-        # Imported here, not at the top: the module must still import on the
-        # parent for the red-first count, and these two names are this fix's.
         from kiro_crew.process_identity import absorb_handle, add_handle
 
         kept = _handle(9901, pgid=9901, children={9905: ("start-9905", "node")})
@@ -740,12 +694,9 @@ def _finally_popped_and_hung(
 
 
 class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
-    """Two sessions can stand under one key at snapshot time: the run's own, popped
-    and retained by the teardown that hangs, and a live successor a cold start
-    registered under the key during that teardown's awaits. The reap ends the
-    KEY -- its reset pops the successor too -- so both are candidates, each
-    verified and signalled on its own handle; preferring either alone leaves
-    the other's process unrecorded.
+    """The run's popped session and a successor registered under the key are both killed.
+
+    The reap ends the KEY, so each candidate is verified and signalled on its own handle.
     """
 
     @pytest.mark.asyncio
@@ -851,19 +802,9 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
     ) -> None:
         """One pid, two start ids: two processes, each reached only through its own handle.
 
-        The run's teardown retained its process; that process exited and a live
-        successor under the same key was handed its pid. Neither handle stands
-        in for the other. The successor is what is alive under the pid, so only
-        its handle verifies and signals it. The stale handle is the only way
-        back to what the exited root left behind: on Windows the exact-tree
-        cleanup pin the spawn reserved under (pid, old start id) may still be
-        pending -- pins are keyed by identity, so it co-exists with the
-        successor holding the pid -- and on POSIX the group the old leader led
-        may still hold a late child under the retained group id. De-duplicating
-        by pid alone kept the stale handle and dropped the successor (it ran on,
-        audited ``reaped``); replacing the stale handle with the later reading
-        dropped the pin and the group instead (the old tree ran on, audited
-        ``reaped``). Only an exact (pid, start id) match is one process.
+        The stale handle is the only way back to the exited root's Windows tree pin or POSIX
+        group; the successor's handle is the only one that verifies the live pid. Only an
+        exact (pid, start id) match is one process.
         """
         manager, _info, key = _overdue_run("recycled4", pid=None)
         manager._process_handles["recycled4"] = [
@@ -885,11 +826,8 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
     ) -> None:
         """The stale handle drains the old tree's pin; the successor is tree-killed; one ``reaped``.
 
-        The pid reads back with the successor's start id, so the stale handle
-        is the recycled case: its leader is gone, the exact-tree cleanup pin
-        under its own identity is still pending, and the drain through that pin
-        is the kill. The successor's handle verifies and ``taskkill /T``s the
-        process now holding the pid. Both landed: the record says ``reaped``.
+        The stale handle's leader is gone but its cleanup pin is pending, so draining the pin
+        is its kill; the successor's handle ``taskkill /T``s the process now holding the pid.
         """
         manager, info, key = _overdue_run("recycled6", pid=None)
         monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
@@ -947,11 +885,8 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
     ) -> None:
         """A reset started outside the two teardown paths still leaves the process reachable.
 
-        Neither teardown path retained a handle (a dashboard reset or
-        ``cancel_all`` popped the session), so the table and the live map are
-        both empty; the session manager keeps the popped session readable
-        through ``tearing_down`` for the life of its teardown, and the reap
-        reads it there.
+        A dashboard reset or ``cancel_all`` popped the session, so only ``tearing_down``
+        still names it.
         """
         manager, info, key = _overdue_run("shared4", pid=9696)
         torn = manager._sessions._sessions.pop(key)
@@ -983,12 +918,8 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
     async def test_every_teardown_in_flight_under_the_key_is_reached(self) -> None:
         """Two hung teardowns under one key are two processes, and both are killed.
 
-        ``SessionManager.tearing_down`` returns EVERY session a reset popped
-        under the key whose teardown has not ended, in pop order: a cold start
-        registered a successor while the first teardown hung, and the
-        successor's own reset popped it and hung too. A reap that read the list
-        as one session would find no pid on it and stop neither process, while
-        its record said ``reaped``.
+        ``SessionManager.tearing_down`` returns a list, in pop order; read as one session
+        it names no pid and stops neither process.
         """
         manager, info, key = _overdue_run("shared5", pid=9797)
         first = manager._sessions._sessions.pop(key)
@@ -1034,14 +965,9 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
         assert manager._process_handles == {}
 
     def test_a_torn_down_entry_is_retained_on_the_handle_captured_at_its_pop(self) -> None:
-        """The snapshot keeps each ``TornDown`` entry's own ``handle``; it never re-derives one from the entry.
+        """The snapshot keeps each ``TornDown`` entry's own ``handle``, read at the pop.
 
-        ``tearing_down`` returns ``TornDown`` records -- the popped session and
-        the process handle read AT THE POP -- not sessions. Reading a record as
-        a session finds no provider on it, names no pid, and drops the
-        teardown's process from the snapshot; re-reading the popped session
-        instead finds the pid the hung teardown has since cleared. Only the
-        captured handle names the process that is still standing.
+        Re-reading the popped session finds the pid the hung teardown has since cleared.
         """
         manager, _info, key = _overdue_run("shared6", pid=9696)
         torn = manager._sessions._sessions.pop(key)
@@ -1067,14 +993,9 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
 
     @pytest.mark.asyncio
     async def test_a_torn_down_process_is_killed_on_its_captured_handle(self) -> None:
-        """A hung teardown whose wrapper names no pid any more is still killed, on the handle captured at its pop.
+        """A hung teardown whose wrapper has cleared its pid is killed on the captured handle.
 
-        The reset that popped the session hangs after clearing the client's pid
-        (the ACP client's reset clears it after a kill it could not confirm, then
-        hangs on the transport). The reap that reads the entry as a session, or
-        re-reads the popped session, finds no process, signals nothing, and
-        records ``reaped`` while the process runs on. Killing on the captured
-        handle reaches it, and the record says what happened.
+        The ACP client's reset clears the pid after a kill it could not confirm, then hangs.
         """
         manager, info, key = _overdue_run("shared7", pid=9696)
         torn = manager._sessions._sessions.pop(key)
@@ -1112,15 +1033,10 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
 
     @pytest.mark.asyncio
     async def test_the_real_session_map_satisfies_the_reads_the_snapshot_makes(self) -> None:
-        """The snapshot's fail-open reads are met by the real ``SessionManager``, not only by these fakes.
+        """The real ``SessionManager`` satisfies the snapshot's fail-open reads.
 
-        ``_retain_process_handles`` reads the live table through
-        ``getattr(sessions, "_sessions")`` as a ``Mapping`` and the teardowns in
-        flight through ``tearing_down``; a map exposing neither is a miss, not an
-        error, because the read runs ahead of every reset. That tolerance is only
-        safe while the real class satisfies both reads -- a rename there would
-        turn every reap into "nothing to stop" without a test going red -- so
-        the real manager is pinned here.
+        The reads treat a missing ``_sessions`` or ``tearing_down`` as a miss, so a rename
+        there would turn every reap into "nothing to stop" without a test going red.
         """
         real = SessionManager(KiroCrewConfig(), provider_factory=MagicMock())
 
@@ -1138,15 +1054,10 @@ class TestEveryCandidateUnderTheKeyIsKilledOnItsOwnHandle:
 def _reset_pops_a_late_successor(
     manager: SubagentManager, successor: Any
 ) -> tuple[list[Any], asyncio.Event]:
-    """A session manager whose reset pops ``successor`` -- registered AFTER the snapshot -- and hangs.
+    """A session manager whose reset pops ``successor`` (registered after the snapshot) and hangs.
 
-    ``teardown_scope(on_pop=...)`` records the hook a teardown path hands it and
-    answers the lifecycle's own scope (the only one ``teardown_capture`` hands
-    on); the reset then reports the session it pops through that scope
-    (``scope.note_pop``), in the same lock hold as the pop, exactly as
-    ``SessionLifecycle.reset`` does, and hangs. Returns the recorded hooks
-    (empty when the path never asked for a scope) and the event set once the
-    pop happened.
+    The reset reports the pop through ``scope.note_pop``, as ``SessionLifecycle.reset`` does.
+    Returns the recorded ``on_pop`` hooks and the event set once the pop happened.
     """
     hooks: list[Any] = []
     popped = asyncio.Event()
@@ -1192,16 +1103,9 @@ def _reset_pops_the_live_session(manager: SubagentManager) -> None:
 class TestTheSessionTheResetPopsIsKilledToo:
     """The exact session a reset pops joins the kill set, however late it registered.
 
-    The snapshot (``_retain_process_handles``) is taken before the reset. A
-    cold start -- a queued ``spawn_continue`` dispatching as the run's record
-    flips -- can register a new session under the key between that snapshot
-    and the reset's pop; it is THAT session the reset pops and hangs on, and a
-    fallback fed the snapshot alone kills the stale process and records the
-    run reaped while the successor runs on. Both teardown paths hand the reset
-    a scope whose ``on_pop`` hook takes the popped session's handle atomically
-    with the pop (``SessionManager.teardown_scope``, the cron reaper's shape);
-    a popped session with no recorded pid is a process the run cannot name --
-    a named kill failure, never ``reaped``.
+    A queued ``spawn_continue`` can register a session between the snapshot and the pop.
+    The scope's ``on_pop`` hook takes the popped session's handle atomically with the pop;
+    a popped session with no recorded pid is a named kill failure, never ``reaped``.
     """
 
     @pytest.mark.asyncio
@@ -1294,13 +1198,9 @@ class TestTheSessionTheResetPopsIsKilledToo:
 
     @pytest.mark.asyncio
     async def test_a_popped_session_the_snapshot_saw_with_no_pid_is_nothing_to_kill(self) -> None:
-        """The run's own session runs no process (an in-process provider): its pop names none, and that is not a failure.
+        """A session the snapshot saw with no pid (an in-process provider) is not a kill failure.
 
-        The snapshot read the live session and found no pid; the reset then pops
-        that same session. Naming its pop a kill failure audited every such run's
-        ordinary teardown as ``failed`` -- and, once the run's record carries the
-        teardown's kill result, would have turned a clean completion into
-        ``failed``.
+        Calling it one would turn every such run's clean completion into ``failed``.
         """
         manager, info, key = _overdue_run("seen1", pid=None)
         _session_with_pid(manager, key, None)
@@ -1334,12 +1234,10 @@ class TestTheSessionTheResetPopsIsKilledToo:
         assert "kill failed" not in (info.error or "")
 
     def test_a_manager_without_the_torn_down_table_gets_the_plain_reset_call(self) -> None:
-        """A scope is a hold on the torn-down table; no table (``tearing_down`` answers no list), no scope.
+        """No torn-down table (``tearing_down`` answers no list) means no scope is passed.
 
-        A double that answers every attribute produces a scope no reset fills, and
-        its ``reset`` may take one positional argument only: handing it
-        ``scope=`` failed the reset it was meant to observe and left the key
-        live (``test_member_continuation_identity.py``).
+        A double's ``reset`` may take one positional argument only, so ``scope=`` would fail
+        it and leave the key live (``test_member_continuation_identity.py``).
         """
         from kiro_crew.process_identity import teardown_capture
 

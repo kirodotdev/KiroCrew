@@ -885,6 +885,7 @@ class TestPostCommentProviderPush:
                     },
                 },
                 match={"slug": "doc"},
+                internal_secret=True,
             )
         )
         assert resp.status == 201

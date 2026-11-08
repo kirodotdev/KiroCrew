@@ -276,7 +276,7 @@ requires the token that hashes to the name.
 ## Out of scope
 
 - Changing `PoolKey`. It gains no dimension, in this change or any other.
-- `UNPOOLABLE_SERVERS` currently excludes nothing: the set is empty. Kiro
+- `UNPOOLABLE_SERVERS` excludes only the credential vendors. Kiro
   Crew's own MCP servers stay direct only while they are absent from
   `mcp_gateway.stub_servers`; the signed session-token mapping gives them identity
   without requiring a stub.

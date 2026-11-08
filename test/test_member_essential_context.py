@@ -314,15 +314,9 @@ def test_execution_namespace_controls_member_prompt_identity(env, entrypoint, se
 def _delegate_expectations(prompt: str, store: str, *, template_instructions: bool = True) -> None:
     """The subset a member turn with the desk WITHHELD receives.
 
-    Shared by the template-selected delegate and the member selection off its
-    desk (a plain chat on the alias, a cron or channel turn): the two arms of
-    ``_desk_withheld``, one section shape.
-
-    Identity, `[PERMANENT RULES]`, the store's anchors and the selected template's
-    own instructions stay; the desk protocol and the briefing do not, in any of
-    their spellings (the full layer, the platform placeholder, the scope
-    placeholder), and neither does the rules header's reference to a protocol
-    that is not there.
+    Shared by both arms of ``_desk_withheld``. Identity, `[PERMANENT RULES]`, anchors and
+    template instructions stay; the desk protocol and briefing go in every spelling,
+    along with the rules header's reference to the protocol.
     """
     assert "You are writer." in prompt
     assert "A careful bilingual writer" in prompt
@@ -372,11 +366,8 @@ def test_template_selected_delegate_keeps_identity_and_rules_but_not_the_desk_pr
 ):
     """The member's store under a selected template is the member's DELEGATE.
 
-    It reads and writes the member's memory, so it is that member and runs under
-    that member's rules; it was picked to do the work, so the desk protocol whose
-    second item hands substantial work to a separate session -- and the working
-    briefing that protocol maintains -- are withheld on every lifecycle the
-    envelope is rebuilt for.
+    It uses the member's memory and rules, but it was picked to do the work, so the desk
+    protocol (which hands work to another session) and its briefing are withheld.
     """
     delegate = _template_delegate(KiroCrewConfig.load())
     prompt, _ = env.builder.build_message(
@@ -442,14 +433,9 @@ def test_member_selected_off_its_desk_keeps_identity_and_rules_but_not_the_desk(
 ):
     """A member SELECTION with no desk argument is not the member's desk.
 
-    An ordinary dashboard chat that resolved to a crew alias -- every plain chat
-    lands on the stock ``default`` alias this way -- a cron turn or a channel turn
-    carries the member's record and therefore its identity, rules and memory, but
-    no caller named it as the member's DM thread. It gets exactly what a delegate
-    gets: identity and `[PERMANENT RULES]`, no `[HOW YOU WORK]`, no briefing (so
-    nothing tells it to rewrite the briefing file), and no sentence describing a
-    DM thread it is not in. Pinned on every lifecycle the section is rebuilt for
-    and on both entry points.
+    A plain chat on a crew alias, a cron turn or a channel turn gets what a delegate gets:
+    identity and `[PERMANENT RULES]`, no `[HOW YOU WORK]`, no briefing, and no DM-thread
+    sentence. Pinned on every lifecycle and both entry points.
     """
     from kiro_crew.execution_context import resolve_member_execution
 
@@ -537,17 +523,9 @@ def test_a_member_with_no_persisted_id_keeps_its_rules_when_session_create_names
 ):
     """The record shape the split cannot express, on the `session_create` arm.
 
-    A member whose record predates persisted identity is named by `selection_kind
-    == "member"` and `selection_name` alone. Rewriting those to the template's
-    namespace would leave a record ContextBuilder attributes to no member -- no
-    identity and, the part that matters, no `[PERMANENT RULES]`. The arm keeps the
-    selection and changes only the template (the record
-    `test_explicit_template_child_of_a_member_with_no_persisted_id_keeps_its_selection`
-    pins through the arm itself), so the child stays that member with its rules.
-    It does NOT keep the desk: no caller names a delegate as the member's
-    DM thread, so the surface half of ``_desk_withheld`` withholds the protocol
-    and the briefing without the record having to say "this member, under that
-    template".
+    Such a member is named only by `selection_kind` and `selection_name`; rewriting them
+    to the template's namespace would drop `[PERMANENT RULES]`. The arm changes only the
+    template, so the child keeps its rules, while ``_desk_withheld`` still drops the desk.
     """
     from dataclasses import replace
 
@@ -585,15 +563,9 @@ def test_a_member_with_no_persisted_id_keeps_its_rules_when_session_create_names
 def test_a_member_with_no_persisted_id_spawns_a_plain_template_child(env):
     """The spawn gate's `agent=` child of such a member is a template run.
 
-    `with_template` flips the selection namespace for every record, and a member
-    with no persisted id has no identity field to survive that, so its
-    `spawn_run(agent=...)` child is a plain template run on the parent's store
-    with no member section -- neither the desk protocol nor the rules (the record
-    cannot say "this member, under that template"; a record-shape change for the
-    memory model). A continuation of
-    that child is a template turn: `run_turn.py` takes the kind from the record, the
-    member refresh is skipped, the spawn template is kept, and no member is
-    looked up, so a renamed alias is not an error.
+    `with_template` flips the selection namespace, and such a member has no identity
+    field to survive it, so the child gets no member section. A continuation is a
+    template turn with no member lookup, so a renamed alias is not an error.
     """
     from unittest.mock import MagicMock
 
@@ -830,7 +802,7 @@ def test_unreadable_project_template_does_not_fall_back_to_another_soul(env, mon
     spec = env.project / ".kiro" / "agents" / "writer-template.json"
     spec.write_bytes(b"\xff")
     fallback = Mock(side_effect=AssertionError("unreadable private persona fell back"))
-    monkeypatch.setattr(agent, "agent_spec_path", fallback)
+    monkeypatch.setattr(agent, "session_agent_spec_path", fallback)
     with pytest.raises(MemberEssentialContextError, match="writer-template.json"):
         env.builder.build_message(
             "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
@@ -853,11 +825,306 @@ def test_global_template_cannot_import_managed_memory_or_peer_briefing(env, monk
     spec.write_text(
         json.dumps({"name": "writer-template", "resources": [f"file://{path.as_posix()}"]})
     )
-    monkeypatch.setattr(agent, "agent_spec_path", lambda _: spec)
+    monkeypatch.setattr(agent, "session_agent_spec_path", lambda _: spec)
     fake_home = config_dir().parent
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     with pytest.raises(MemberEssentialContextError, match="managed memory/member state"):
         documents_for_member("writer-template", None)
+
+
+def _global_agents() -> Path:
+    agents = Path.home() / ".kiro" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    return agents
+
+
+def _dotfile(tmp_path: Path, name: str, body: dict | str) -> Path:
+    target = tmp_path / "dotfiles" / name
+    target.parent.mkdir(exist_ok=True)
+    text = body if isinstance(body, str) else json.dumps(body)
+    target.write_text(text, encoding="utf-8")
+    return target
+
+
+@requires_symlinks
+def test_a_symlinked_global_template_supplies_the_members_persona(env, tmp_path):
+    agents = _global_agents()
+    target = _dotfile(
+        tmp_path, "writer-template.json", {"name": "writer-template", "prompt": "DOTFILES_PERSONA"}
+    )
+    link = agents / "writer-template.json"
+    link.symlink_to(os.path.relpath(target, agents))
+
+    message, _ = env.builder.build_message(
+        "Continue", False, memory_store=env.store, member=env.member
+    )
+
+    assert "DOTFILES_PERSONA" in message
+    assert link.is_symlink()
+    assert sorted(p.name for p in agents.iterdir()) == ["writer-template.json"]
+
+
+@requires_symlinks
+def test_a_linked_template_is_parsed_by_the_name_the_agents_directory_lists(env, tmp_path):
+    from kiro_crew.member_essential_context import documents_for_member
+
+    target = _dotfile(tmp_path, "writer-template", "---\nname: writer-template\n---\nMD_PERSONA\n")
+    (_global_agents() / "writer-template.md").symlink_to(target)
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("MD_PERSONA" in body for _, body in documents)
+
+
+@requires_symlinks
+def test_the_execution_prompt_of_a_symlinked_global_template_is_read(env, tmp_path):
+    target = _dotfile(
+        tmp_path, "task-runtime.json", {"name": "task-runtime", "prompt": "LINKED_INSTRUCTIONS"}
+    )
+    (_global_agents() / "task-runtime.json").symlink_to(target)
+
+    assert context_module.ContextBuilder._load_agent_prompt("task-runtime") == "LINKED_INSTRUCTIONS"
+
+
+@requires_symlinks
+@pytest.mark.parametrize(
+    "spec_name, leaf, body",
+    [
+        (
+            "writer-template.json",
+            "members/peer/state.json",
+            json.dumps({"name": "writer-template", "prompt": "PEER_SECRET"}),
+        ),
+        (
+            "writer-template.md",
+            "members/peer/briefing.md",
+            "---\nname: writer-template\n---\nPEER_SECRET\n",
+        ),
+        (
+            "writer-template.md",
+            "workspace/memory/preferences.md",
+            "---\nname: writer-template\n---\nPEER_SECRET\n",
+        ),
+    ],
+    ids=["json-peer-state", "md-peer-briefing", "md-global-preferences"],
+)
+def test_a_global_template_linked_into_managed_state_is_refused_and_audited(
+    env, monkeypatch, spec_name, leaf, body
+):
+    from kiro_crew import agent_discovery
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    target = config_dir() / leaf
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body, encoding="utf-8")
+    (_global_agents() / spec_name).symlink_to(target)
+    audited = []
+    monkeypatch.setattr(agent_discovery, "_audit_denied", lambda **row: audited.append(row))
+
+    with pytest.raises(MemberEssentialContextError, match="not found"):
+        documents_for_member("writer-template", None)
+    assert context_module.ContextBuilder._load_agent_prompt("writer-template") == ""
+    assert {row["error"] for row in audited} == {"consumer fence rejected"}
+    assert {row["resources"] for row in audited} == {str(target.resolve())}
+
+
+@requires_symlinks
+def test_a_linked_template_swapped_into_managed_state_before_open_is_refused(
+    env, monkeypatch, tmp_path
+):
+    from kiro_crew import agent_discovery
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    managed = config_dir() / "workspace" / "memory"
+    managed.mkdir(parents=True, exist_ok=True)
+    (managed / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "prompt": "MANAGED_PERSONA"}), encoding="utf-8"
+    )
+    folder = tmp_path / "dotfiles" / "agents"
+    folder.mkdir(parents=True)
+    (folder / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "prompt": "DOTFILES_PERSONA"}), encoding="utf-8"
+    )
+    (_global_agents() / "writer-template.json").symlink_to(folder / "writer-template.json")
+    real_read = agent_discovery._read_spec_bytes
+    swapped = False
+
+    def swap_folder_before_open(real, *, fence=None):
+        nonlocal swapped
+        if fence is not None and not swapped:
+            folder.rename(folder.with_name("agents-before"))
+            folder.symlink_to(managed, target_is_directory=True)
+            swapped = True
+        return real_read(real) if fence is None else real_read(real, fence=fence)
+
+    monkeypatch.setattr(agent_discovery, "_read_spec_bytes", swap_folder_before_open)
+
+    with pytest.raises(MemberEssentialContextError, match="not found"):
+        documents_for_member("writer-template", None)
+    assert swapped
+
+
+@requires_symlinks
+def test_an_unverifiable_managed_root_refuses_every_linked_template(env, monkeypatch, tmp_path):
+    from kiro_crew import agent_discovery, member_essential_context
+
+    target = _dotfile(
+        tmp_path, "writer-template.json", {"name": "writer-template", "prompt": "DOTFILES_PERSONA"}
+    )
+    agents = _global_agents()
+    (agents / "writer-template.json").symlink_to(target)
+    (agents / "unrelated.json").write_text(json.dumps({"name": "unrelated"}), encoding="utf-8")
+    found = member_essential_context.linked_global_template_spec(
+        "writer-template", operation="member_essentials", source="context"
+    )
+    assert found is not None
+    monkeypatch.setattr(member_essential_context, "_admitted_root", lambda _root: None)
+    audited = []
+    monkeypatch.setattr(agent_discovery, "_audit_denied", lambda **row: audited.append(row))
+
+    assert (
+        member_essential_context.linked_global_template_spec(
+            "writer-template", operation="member_essentials", source="context"
+        )
+        is None
+    )
+    assert {row["resources"] for row in audited} == {str(target.resolve())}
+
+
+@requires_symlinks
+def test_an_agents_directory_under_the_data_home_reads_its_entries_unrefused(
+    env, monkeypatch, tmp_path
+):
+    from kiro_crew import agent_discovery
+    from kiro_crew.config import config_dir
+    from kiro_crew.member_essential_context import documents_for_member
+
+    agents = config_dir() / "kiro" / "agents"
+    agents.mkdir(parents=True)
+    monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", agents)
+    monkeypatch.setattr("kiro_crew.agent_discovery._KIRO_AGENTS_DIR", agents)
+    for index in range(3):
+        (agents / f"unrelated-{index}.json").write_text(
+            json.dumps({"name": f"unrelated-{index}"}), encoding="utf-8"
+        )
+    (agents / "persona.json").write_text(
+        json.dumps({"name": "persona", "prompt": "SIBLING_PERSONA"}), encoding="utf-8"
+    )
+    (agents / "writer-alias.json").symlink_to("persona.json")
+    target = _dotfile(
+        tmp_path, "writer-template.json", {"name": "writer-template", "prompt": "DOTFILES_PERSONA"}
+    )
+    (agents / "writer-template.json").symlink_to(target)
+    audited = []
+    monkeypatch.setattr(agent_discovery, "_audit_denied", lambda **row: audited.append(row))
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("DOTFILES_PERSONA" in body for _, body in documents)
+    assert audited == []
+
+
+def test_a_regular_global_template_read_does_not_consult_managed_roots(env, monkeypatch):
+    from kiro_crew import member_essential_context
+    from kiro_crew.member_essential_context import documents_for_member
+
+    (_global_agents() / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "prompt": "REGULAR_PERSONA"}), encoding="utf-8"
+    )
+
+    def unexpected():
+        raise AssertionError("a regular template read consulted the managed roots")
+
+    monkeypatch.setattr(member_essential_context, "_managed_template_target_refused", unexpected)
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("REGULAR_PERSONA" in body for _, body in documents)
+
+
+@requires_symlinks
+def test_a_regular_global_template_wins_over_a_link_declaring_the_same_name(env, tmp_path):
+    from kiro_crew.member_essential_context import documents_for_member
+
+    agents = _global_agents()
+    (agents / "writer-template.json").write_text(
+        json.dumps({"name": "writer-template", "prompt": "REGULAR_PERSONA"}), encoding="utf-8"
+    )
+    target = _dotfile(
+        tmp_path, "other.json", {"name": "writer-template", "prompt": "DOTFILES_PERSONA"}
+    )
+    (agents / "linked-writer.json").symlink_to(target)
+
+    bodies = [body for _, body in documents_for_member("writer-template", None)]
+
+    assert any("REGULAR_PERSONA" in body for body in bodies)
+    assert not any("DOTFILES_PERSONA" in body for body in bodies)
+
+
+@requires_symlinks
+def test_two_linked_templates_with_differing_content_are_ambiguous(env, tmp_path):
+    from kiro_crew.member_essential_context import documents_for_member
+
+    agents = _global_agents()
+    first = _dotfile(tmp_path, "a.json", {"name": "writer-template", "prompt": "FIRST"})
+    second = _dotfile(tmp_path, "b.json", {"name": "writer-template", "prompt": "SECOND"})
+    (agents / "writer-template.json").symlink_to(first)
+    (agents / "writer-copy.json").symlink_to(second)
+
+    with pytest.raises(MemberEssentialContextError, match="differing content"):
+        documents_for_member("writer-template", None)
+
+
+@requires_symlinks
+def test_managed_roots_are_resolved_once_per_template_read(env, monkeypatch, tmp_path):
+    from kiro_crew import member_essential_context
+    from kiro_crew.member_essential_context import documents_for_member
+
+    agents = _global_agents()
+    target = _dotfile(
+        tmp_path, "writer-template.json", {"name": "writer-template", "prompt": "DOTFILES_PERSONA"}
+    )
+    (agents / "writer-template.json").symlink_to(target)
+    for index in range(5):
+        (agents / f"unrelated-{index}.json").write_text(
+            json.dumps({"name": f"unrelated-{index}"}), encoding="utf-8"
+        )
+    real_table = member_essential_context._managed_root_table
+    built = []
+
+    def counted(**kwargs):
+        built.append(kwargs)
+        return real_table(**kwargs)
+
+    monkeypatch.setattr(member_essential_context, "_managed_root_table", counted)
+    monkeypatch.setattr(member_essential_context, "_refuse_managed_source", lambda _path: None)
+
+    documents = documents_for_member("writer-template", None)
+
+    assert any("DOTFILES_PERSONA" in body for _, body in documents)
+    assert built.count({"refuse_unverifiable": True}) == 1
+
+
+@requires_symlinks
+def test_session_mcp_reads_the_servers_of_a_linked_global_spec(env, tmp_path):
+    from kiro_crew.acp import session_mcp
+    from kiro_crew.config import config_dir
+
+    servers = {"linked-srv": {"command": "/nonexistent/linked-server"}}
+    target = _dotfile(
+        tmp_path, "linked-agent.json", {"name": "linked-agent", "mcpServers": servers}
+    )
+    agents = _global_agents()
+    (agents / "linked-agent.json").symlink_to(target)
+    managed = config_dir() / "members" / "peer" / "managed-agent.json"
+    managed.parent.mkdir(parents=True, exist_ok=True)
+    managed.write_text(json.dumps({"name": "managed-agent", "mcpServers": servers}))
+    (agents / "managed-agent.json").symlink_to(managed)
+
+    assert session_mcp._user_agent_spec("linked-agent")["mcpServers"] == servers
+    assert session_mcp._user_agent_spec("managed-agent") is None
 
 
 def test_runtime_override_keeps_the_memory_owners_soul(env):
@@ -960,11 +1227,8 @@ def test_symlinked_root_still_refuses_a_document_outside_it(env, tmp_path):
 def test_absolute_resource_in_realpath_spelling_admits_under_a_linked_root(env, tmp_path):
     """A realpath-spelled declaration must resolve against a link-spelled root.
 
-    An installer records an absolute ``file://`` resource in its realpath spelling
-    while the declared root stays the link, which is the ordinary ``$HOME`` layout
-    wherever ``/home/<user>`` points at another filesystem. The lexical
-    ``relative_to`` then called a resource genuinely inside the root outside it
-    and refused every absolute essential source on such a host.
+    Installers record realpath spellings while the root stays a link (``/home/<user>``
+    on another filesystem), so a lexical ``relative_to`` would refuse every source.
     """
     from kiro_crew import member_essential_context as essentials
 

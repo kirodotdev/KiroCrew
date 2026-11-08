@@ -63,7 +63,11 @@ class TestLedgerCRUD:
         assert get_entry("capability/mcp/x") is None
 
     def test_uninstall_nonexistent_noop(self):
+        record_install("capability/mcp/x", "app-a", "capability.mcp")
         record_uninstall("capability/mcp/nonexistent", "app-a")  # should not raise
+        # The ledger is left exactly as it was.
+        assert get_entry("capability/mcp/nonexistent") is None
+        assert [k for k, _ in list_by_app("app-a")] == ["capability/mcp/x"]
 
     def test_get_nonexistent(self):
         assert get_entry("capability/mcp/nonexistent") is None
@@ -170,7 +174,6 @@ class TestLedgerProperties:
     def test_classify_correctness(self, target_app, other_apps, removable_deps, shared_deps):
         """**Validates: Requirements 6.6, 6.7, 6.8**"""
         _clear_ledger()
-        # Ensure target_app not in other_apps
         other_apps = [a for a in other_apps if a != target_app]
         # Ensure no overlap between dep lists
         shared_deps = [d for d in shared_deps if d not in removable_deps]

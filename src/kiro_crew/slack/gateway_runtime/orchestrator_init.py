@@ -11,7 +11,8 @@ Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
 ``_batch_progress``, ``_bot_token``, ``_cfg``, ``_channel_handles``,
 ``_channel_restart_gen``, ``_channel_restart_lock``, ``_channel_restart_tasks``,
 ``_channel_transports_started``, ``_config_subs``, ``_console_script_repair_task``,
-``_cron_armed``, ``_cron_injecting``, ``_cron_reconciled``, ``_dashboard_runner``,
+``_cron_armed``, ``_cron_injecting``, ``_cron_reconciled``, ``_cron_runs_holding``,
+``_dashboard_runner``,
 ``_feature_video_task``, ``_handler_tasks``, ``_inbound_replay_task``, ``_json_ready``,
 ``_mandatory_update_deferred_at``, ``_mandatory_update_deferred_key``,
 ``_marker_clear_pending``, ``_marker_write_task``, ``_mcp_gateway_manager``,
@@ -20,7 +21,8 @@ Orchestrator fields written: ``_adaptive_controller``, ``_allowed_users``,
 ``_memory_repair_task``, ``_memory_startup``, ``_memory_startup_task``,
 ``_model_download_task``, ``_no_crons``, ``_no_dashboard``, ``_no_open``,
 ``_open_channels``, ``_owner_id``, ``_pending_queue``, ``_pending_update_mandatory``,
-``_pending_update_mandatory_key``, ``_pending_update_respawn``, ``_port_override``,
+``_pending_update_mandatory_key``, ``_pending_update_respawn``, ``_pending_update_version``,
+``_port_override``,
 ``_profile_watch_task``, ``_runner_admission``, ``_runner_admission_adopted``,
 ``_running_script_ids``, ``_session_environments_ready``, ``_session_tasks``, ``_sign_in_refresher_task``,
 ``_slack_enabled``, ``_socket_client``, ``_subagent_coalescer_inst``, ``_test_mode``,
@@ -156,6 +158,15 @@ def __init__(
     # Wave accounting for the completion digest (batch_id -> progress).
     self._batch_progress = {}
     self._cron_injecting = {}  # parent_key → pending injection count
+    # The tasks of message cron runs, each from before its first acquire to its
+    # end (cron_fire._cron_callback): the last sub-agent's cleanup leaves a
+    # session whose permit one of them holds to that run's finalizer
+    # (_reset_cron_parent_when_idle).
+    self._cron_runs_holding = set()
+    # Completions whose inline-returned members' turn still held the parent's
+    # permit, keyed by that holding; settled at its release (_settle_inline).
+    self._inline_parked = {}
+    self._inline_tasks = set()  # settled parked completions still routing
     self._running_script_ids = set()  # job IDs with in-flight script/command execution
     self.task_runner = None
     # Runner admission over the task queue, attached by _wire_runner_admission
@@ -169,6 +180,7 @@ def __init__(
     self.channel_history = None
     self.dashboard_state = None
     self._background_tasks = set()  # prevent GC of fire-and-forget tasks
+    self._skills_sync_task = None
     # Approval-state persistence is scheduled while the MCP broker starts,
     # but its task waits for the dashboard/API readiness boundary.
     self._mcp_launch_approval_ready = asyncio.Event()
@@ -190,6 +202,9 @@ def __init__(
     # write-after-clear race without any event-loop dependency.
     self._marker_clear_pending = threading.Event()
     self._dashboard_runner = None
+    # Enterprise build: the service whose boot probe saw the kiro login, handed
+    # to the dashboard so its gate starts open on that verdict. None in oss.
+    self._boot_kiro_service = None
     self._handler_tasks = set()  # type: ignore[type-arg]
     self._session_tasks = {}  # type: ignore[type-arg]
     self._pending_queue = {}
@@ -214,12 +229,20 @@ def __init__(
     # distribution refresher, so no rebuild starts into a closing gateway.
     self._profile_watch_task = None
     self._update_apply_deferred = False
+    # The timer that reopens admission an idle restart-gate answer paused.
+    self._restart_gate_hold = None
+    # Whose update pause admission is under: "restart_gate", "auto_update" or None.
+    self._update_pause_holder = None
     self._pending_update_respawn = None
     # Whether the pending restart serves a policy floor, and its target key:
     # kept beside the respawn so every retry runs under the same mandatory
     # grace instead of restarting the clock.
     self._pending_update_mandatory = False
     self._pending_update_mandatory_key = ""
+    # The version a voluntary managed-venv pending restart would start, so each
+    # retry can honour the user's "Later" for it; empty for a policy floor's
+    # restart and for the git and provider routes, whose code is already replaced.
+    self._pending_update_version = ""
     self._mandatory_update_deferred_at = None
     self._mandatory_update_deferred_key = None
     # Managed-venv notices already sent in this process, so each reaches the

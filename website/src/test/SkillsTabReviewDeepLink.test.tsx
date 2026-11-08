@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { confirmAction } from './confirmAction'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 
 const mockApi = vi.hoisted(() => ({
@@ -94,7 +95,7 @@ beforeEach(() => {
   mockApi.skillTree.mockResolvedValue({ entries: [] })
   mockApi.skillsPending.mockResolvedValue({ pending: [ROW_A, ROW_B] })
   mockApi.skillPendingDetail.mockImplementation((slug: string) =>
-    Promise.resolve({ name: `auto/${slug}`, content: `BODY OF ${slug}`, scripts: [] }),
+    Promise.resolve({ name: `auto/${slug}`, content: `BODY OF ${slug}`, scripts: [], content_sha256: 'c'.repeat(64) }),
   )
 })
 
@@ -160,7 +161,7 @@ describe('?review=<slug> deep link', () => {
     await bodyOfBetaSkillShown()
 
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
-    await waitFor(() => expect(mockApi.approvePendingSkill).toHaveBeenCalledWith('beta-skill'))
+    await waitFor(() => expect(mockApi.approvePendingSkill).toHaveBeenCalledWith('beta-skill', 'c'.repeat(64)))
     // The queue is now empty AND the latch is cleared, so the panel unmounts
     // rather than accusing someone else of resolving the user's own candidate.
     await waitFor(() =>
@@ -173,12 +174,14 @@ describe('?review=<slug> deep link', () => {
     mockApi.skillsPending.mockResolvedValueOnce({ pending: [ROW_B] })
     mockApi.dismissPendingSkill.mockResolvedValue({ ok: true })
     mockApi.skillsPending.mockResolvedValue({ pending: [] })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderAt('/capabilities?tab=skills&review=beta-skill')
     await bodyOfBetaSkillShown()
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
-    await waitFor(() => expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('beta-skill'))
+    await confirmAction('Dismiss')
+    await waitFor(() =>
+      expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('beta-skill', 'c'.repeat(64)),
+    )
     // Waiting for the row to GO is what makes this pin the guard: the mock being
     // called only proves the request fired, which precedes the refetch, so the
     // assertion below would otherwise be checking a moment when the list is not
@@ -201,7 +204,7 @@ describe('?review=<slug> deep link', () => {
     qc.setQueryData(['skills-pending-detail', 'beta-skill'], {
       name: 'auto/beta-skill',
       content: 'STALE BODY FROM A PRIOR CANDIDATE',
-      scripts: [],
+      scripts: [], content_sha256: 'c'.repeat(64),
     })
     mockApi.skillsPending.mockResolvedValue({ pending: [ROW_B] })
     render(

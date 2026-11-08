@@ -160,7 +160,7 @@ def test_the_slot_redaction_is_the_battery_cold_and_warm(text):
 
 def test_an_exempt_host_change_is_not_answered_from_either_memo(monkeypatch):
     text = f"see {_EXFIL_URL} end"
-    exempt = {"hosts": frozenset()}
+    exempt: dict[str, frozenset[str]] = {"hosts": frozenset()}
     monkeypatch.setattr(exfil, "_exempt_exact_hosts", lambda: exempt["hosts"])
     monkeypatch.setattr(cu, "_exempt_exact_hosts", lambda: exempt["hosts"])
     blocked, blocked_preview = st._redact(text), st._last_message_preview(text)
@@ -223,6 +223,29 @@ def _reference(monkeypatch):
     monkeypatch.setattr(st, "_last_message_preview", _direct_preview)
     monkeypatch.setattr(st, "_strip_options", lambda t: st._OPTIONS_RE.sub("", t).strip())
     assert st._redact is _battery and st._parse_options is _scan_parse_options
+
+
+@pytest.mark.parametrize("stamp", [_AWS, "kirocrew-conductor", ""])
+def test_the_slot_crew_mode_stamp_uses_the_supplied_redactor(tmp_path, monkeypatch, stamp):
+    from unittest.mock import Mock
+
+    from chat_test_helpers import _make_state
+
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-conductor")
+    slot.agent = stamp
+    slot.crew_mode_agent = stamp
+    redactor = Mock(wraps=_battery)
+    monkeypatch.setattr(dashboard_state, "_redact", redactor)
+
+    row = state.serialize_slot(slot)
+
+    redactor.assert_any_call(stamp)
+    assert row["crew_mode_agent"] == _battery(stamp)
+    assert row["agent"] == stamp
+    assert slot.crew_mode_agent == stamp
+    if stamp == _AWS:
+        assert row["crew_mode_agent"] != stamp
 
 
 def test_the_slot_payload_is_byte_identical_to_the_direct_computation(tmp_path, monkeypatch):

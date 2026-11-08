@@ -6,7 +6,7 @@ state answer 404 for an unconnected repository before the write-permission check
 a read-only one before any provider write, and keep the provider error taxonomy; label
 creation replaces an invalid colour, normalizes a hash-prefixed one, bounds the description
 and adds the created label to the local cache, and issue state refuses a JSON boolean
-number, an unknown state or close reason, defaults a close to ``completed``, clears the
+number, a non-string or unknown state, an unknown close reason, defaults a close to ``completed``, clears the
 reason on reopen and applies a change to the list caches. The settings label append maps an
 unknown role to 400 and an unconnected repository to 404 and returns the whole saved
 document. The pull-request action routes live in
@@ -20,6 +20,7 @@ patch helpers in ``issue_radar_routes_coverage_helpers.py``.
 import unittest
 from unittest import mock
 
+import issue_radar_route_checks
 from issue_radar_routes_coverage_helpers import (
     _body,
     _connected,
@@ -118,16 +119,14 @@ class TestCreateLabel(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self._call(self._base())).status, 502)
 
 
-class TestAddSettingsLabel(unittest.IsolatedAsyncioTestCase):
+class TestAddSettingsLabel(
+    issue_radar_route_checks.AMalformedOrNonObjectPayloadIs400, unittest.IsolatedAsyncioTestCase
+):
     """The append endpoint that exists because the settings PUT replaces the
     WHOLE document, so a read-then-write can only serialize itself."""
 
     async def _call(self, body: object):
         return await routes._handle_add_settings_label(_json_request("POST", "settings/role", body))
-
-    async def test_a_malformed_or_non_object_payload_is_400(self):
-        self.assertEqual((await self._call(None)).status, 400)
-        self.assertEqual((await self._call([1])).status, 400)
 
     async def test_a_missing_repo_role_or_label_is_400(self):
         self.assertEqual((await self._call({"role": "triage", "label": "bug"})).status, 400)
@@ -178,6 +177,19 @@ class TestIssueState(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_unknown_state_is_400(self):
         self.assertEqual((await self._call(self._base(state="merged"))).status, 400)
+
+    async def test_a_non_string_state_is_400_not_a_500(self):
+        # A truthy non-string must not reach ``.strip()``: an exception that leaves
+        # the handler is a 500. It never reaches the repository gates.
+        with mock.patch.object(routes, "_connected") as connected:
+            for state in (1, ["closed"], {"state": "closed"}):
+                try:
+                    res = await self._call(self._base(state=state))
+                except AttributeError as exc:
+                    self.fail(f"state={state!r} escaped the handler as a 500: {exc!r}")
+                self.assertEqual(res.status, 400, state)
+                self.assertIn("state must be", _body(res)["error"])
+        connected.assert_not_called()
 
     async def test_an_unknown_close_reason_is_400(self):
         res = await self._call(self._base(state_reason="wontfix"))

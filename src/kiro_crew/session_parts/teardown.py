@@ -46,6 +46,7 @@ async def reset(
     refuse_only_on_active_turn: bool = False,
     clear_conversation: bool = False,
     ends_conversation: bool = False,
+    stop_shared_children: bool = False,
     scope: Any | None = None,
 ) -> bool:
     """Reset a live session while preserving its persistence entry.
@@ -69,6 +70,7 @@ async def reset(
             refuse_only_on_active_turn=refuse_only_on_active_turn,
             clear_conversation=clear_conversation,
             ends_conversation=ends_conversation,
+            stop_shared_children=stop_shared_children,
             scope=opened,
         )
 
@@ -141,6 +143,11 @@ async def flag_identity_stamp_mismatches(self: SessionManager, live: str) -> lis
     return await self._lifecycle_boundary().flag_identity_stamp_mismatches(live)
 
 
+def holds_kiro_process_of_unknown_account(self: SessionManager, live: str) -> bool:
+    """Whether a claimable Kiro-backed process's stamp proves neither *live* nor another account."""
+    return self._lifecycle_boundary().holds_kiro_process_of_unknown_account(live)
+
+
 async def _retire_kiro_subagent_runtimes(self: SessionManager, *, live: str = "") -> bool:
     """Retire idle companion runtimes that use Kiro's identity store.
 
@@ -201,11 +208,13 @@ async def discard_conversation(
     replay: bool = True,
     skip_if_busy: bool = False,
     refuse_only_on_active_turn: bool = False,
+    refuse_if: Callable[[], bool] | None = None,
 ) -> bool:
     """Drop native conversation state while retaining channel linkage.
 
     Returns whether a session was actually torn down; False means
-    ``skip_if_busy`` refused because a turn was in flight. See
+    ``skip_if_busy`` refused because a turn was in flight, or ``refuse_if``
+    answered true. See
     :meth:`SessionLifecycleService.discard_conversation` for the guard's
     atomicity contract.
     """
@@ -214,6 +223,7 @@ async def discard_conversation(
         replay=replay,
         skip_if_busy=skip_if_busy,
         refuse_only_on_active_turn=refuse_only_on_active_turn,
+        refuse_if=refuse_if,
     )
 
 
@@ -235,6 +245,11 @@ def absorb_orphaned_release(self: SessionManager, key: str) -> bool:
 def adopt_turn(self: SessionManager, key: str) -> None:
     """The calling task now holds *key*'s live permit; forget any orphan record."""
     self._lifecycle_boundary().adopt_turn(key)
+
+
+def retire_turn_permit(self: SessionManager, key: str, session: _Session) -> None:
+    """Record a just-popped session's permit holder and wake its parked claimants."""
+    self._lifecycle_boundary().retire_turn_permit(key, session)
 
 
 # ── Cancel ──

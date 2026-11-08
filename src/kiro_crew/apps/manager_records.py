@@ -23,9 +23,14 @@ from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, NamedTuple, Sequence
 
-from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.apps import credential_masks
+from kiro_crew.apps.host_exec_grants import revoke_host_exec
+from kiro_crew.apps.manifest import AppManifest, Permissions
+from kiro_crew.apps.point_grants import point_grant_families
+from kiro_crew.apps.worker_auto_approve import WORKER_AUTO_APPROVE_GRANT_FAMILIES
+from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.owner_only_files import ensure_directory
@@ -55,6 +60,18 @@ def apps_dir() -> Path:
 def app_dir(name: str) -> Path:
     """Return the directory for a specific installed app."""
     return apps_dir() / name
+
+
+def _is_sidecar_entry(entry_name: str) -> bool:
+    """Whether an ``apps_dir()`` entry is a gateway sidecar rather than an app.
+
+    No admissible app name starts with a dot, and every working path the gateway
+    puts beside an app directory does (``.<name>-update-old-<pid>-<hex>``,
+    ``.<name>-update-inflight``, ``.<name>-data-tmp``). A retired tree still holds
+    the app's previous ``installed.json``, so a walk that reads every entry's
+    record lists the app twice. Every walk of ``apps_dir()`` skips these.
+    """
+    return entry_name.startswith(".")
 
 
 def app_data_dir(name: str) -> Path:
@@ -96,6 +113,38 @@ def _read_enabled(data: dict[str, Any]) -> bool:
         value,
     )
     return False
+
+
+def _read_schema_version(data: dict[str, Any]) -> int:
+    """The one reading of ``schemaVersion`` that every app reader shares.
+
+    A missing key reads as 1 so the legacy-migration branch runs. Every host
+    writer stores a JSON integer; only a hand-made or corrupted record carries
+    another shape. ``int()`` raises on a non-numeric string, a list or ``null``
+    (TypeError/ValueError) and on a non-finite float (OverflowError, from a
+    ``1e400`` or ``Infinity`` that ``json.loads`` parses to ``inf``), and that
+    is the one field in ``from_dict`` whose coercion could escape -- unlike the
+    string and boolean fields, which never raise -- so a damaged
+    ``schemaVersion`` would crash a reader that another malformed field would
+    not. Read an unusable value as 1 (forcing the migration pass), matching how
+    ``enabled`` and the origin/lifecycle/resources fields degrade rather than
+    raise.
+    """
+    if "schemaVersion" not in data:
+        return 1
+    value = data["schemaVersion"]
+    if isinstance(value, bool):
+        # A JSON bool is an int subclass; it is not a real schema version.
+        value = None
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError):
+        logger.warning(
+            "InstalledApp %s has a non-integer schemaVersion %r: reading it as 1",
+            data.get("name", ""),
+            value,
+        )
+        return 1
 
 
 @dataclass
@@ -162,6 +211,11 @@ class InstalledApp:
     # consent moment. Kept separate from ``enabled`` so a normal manual disable
     # never shows the re-consent warning.
     sessionApprovalConsentPending: bool = False  # noqa: N815
+    # True once the owner consented to ``permissions.memberThreads``: set only
+    # by an enable that recorded their consent while the manifest declared the
+    # scope. A record from a host that ignored the scope never carries it, so an
+    # app consented there reaches no member thread until the owner re-consents.
+    memberThreadsConsented: bool = False  # noqa: N815
     # True once this app's approved-grants file has been written. That file
     # sits in the app tree, which an update swaps out before the new set is
     # written, so a reader can find no file for a moment. A record carrying
@@ -197,7 +251,7 @@ class InstalledApp:
             origin=str(data.get("origin", "registry")),
             resources=str(data.get("resources", "gateway")),
             lifecycle=str(data.get("lifecycle", "gateway")),
-            schemaVersion=int(data.get("schemaVersion", 1)),
+            schemaVersion=_read_schema_version(data),
             migratedTo=str(data.get("migratedTo", "")),
             dev=bool(data.get("dev", False)),
             defaultOnBackfilled=bool(data.get("defaultOnBackfilled", False)),
@@ -206,6 +260,7 @@ class InstalledApp:
             sourceCommit=str(data.get("sourceCommit", "")),
             sourceSigner=str(data.get("sourceSigner", "")),
             sessionApprovalConsentPending=bool(data.get("sessionApprovalConsentPending", False)),
+            memberThreadsConsented=data.get(MEMBER_THREADS_CONSENT_KEY) is True,
             approvedGrantsStored=data.get("approvedGrantsStored") is True,
         )
         # Migrate old "managed" field to new classification fields
@@ -348,7 +403,7 @@ def _read_installed(name: str, *, manifest: AppManifest | None = None) -> Instal
     try:
         data = json.loads(meta_path.read_text(encoding="utf-8"))
         meta = InstalledApp.from_dict(data)
-    except (json.JSONDecodeError, OSError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         logger.warning("Failed to read %s: %s", meta_path, exc)
         return None
     if _session_approval_consent_unrecorded(name, data, manifest=manifest):
@@ -357,6 +412,7 @@ def _read_installed(name: str, *, manifest: AppManifest | None = None) -> Instal
 
 
 SESSION_APPROVAL_PENDING_KEY = "sessionApprovalConsentPending"
+MEMBER_THREADS_CONSENT_KEY = "memberThreadsConsented"
 
 
 def _session_approval_consent_unrecorded(
@@ -369,9 +425,25 @@ def _session_approval_consent_unrecorded(
     host that ignored ``permissions.sessionApproval``. If the live manifest
     declares that grant, nobody ever consented to it. Key absence is only read
     in this fail-closed direction: it makes the grant pending, never approved.
+
+    The member-thread scope is held to the same rule. A record that holds the
+    grant's consent (the key present, not pending) covers
+    ``permissions.memberThreads`` only when it also says
+    ``memberThreadsConsented``, which an enable records only while the
+    manifest declares the scope. Without it -- a record consented on a host that
+    ignored the scope, or a manifest that gained the scope outside an update --
+    the consent never covered the scope, so the grant reads pending again.
     """
     if isinstance(data, dict) and SESSION_APPROVAL_PENDING_KEY in data:
-        return False
+        if data.get(SESSION_APPROVAL_PENDING_KEY) is True:
+            return False
+        if data.get(MEMBER_THREADS_CONSENT_KEY) is True:
+            return False
+        if manifest is None:
+            manifest = get_app_manifest(name)
+        return bool(
+            manifest and manifest.permissions.sessionApproval and manifest.permissions.memberThreads
+        )
     if manifest is None:
         manifest = get_app_manifest(name)
     return bool(manifest and manifest.permissions.sessionApproval)
@@ -476,11 +548,36 @@ def _write_installed(
         meta_path = app_dir(name) / INSTALLED_META_FILENAME
         meta_path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(meta_path, json.dumps(body, indent=2) + "\n")
+        # The credential masks the manifest declares must outlive it beside the data
+        # (apps.credential_masks). Best-effort here: the update and the uninstall
+        # refresh the record again, strictly, before they move the data.
+        try:
+            credential_masks.remember_declaration(name)
+        except OSError:
+            logger.warning("could not record %s's credential masks", name, exc_info=True)
+        # REVOKE-ONLY: drop any host-exec grant whenever a write leaves the app
+        # disabled, so no disable path (disable, widen-until-consent, update) can leave
+        # a stale grant that still starts a pod. Deliberately never GRANTS here: this
+        # chokepoint runs on the boot re-registration of builtins, which reads back
+        # ``installed.json`` -- a file a sandboxed shell can forge -- so minting from
+        # ``enabled`` here would let a forged record plus a restart produce a real
+        # grant. The grant is written only from the owner-authenticated ``enable_app``.
+        # No-op when no grant exists. See ``apps.host_exec_grants``.
+        if not credential_free_meta.enabled:
+            revoke_host_exec(name)
+            # Same revoke-only rule for the app's worker auto-approve grants: one
+            # minted while a disable was in flight ends once the record says so.
+            revoke_worker_auto_approve(name)
 
 
 # Grant families held back on a widening update. ``sessionApproval`` is a flag
-# with its own disable-until-consent path below; these two are entry lists.
-STAGED_GRANT_FAMILIES = ("api", "events")
+# with its own disable-until-consent path below; these are entry lists. The
+# point families (``contributes.linkPreviews`` and the other points, registered in
+# ``point_grants``) follow; a stored set from before one existed does not carry it, and a missing family approves what the manifest declares, as a missing
+# file does for an install that never stored one.
+STAGED_GRANT_FAMILIES = ("api", "events", *point_grant_families())
+#: Families every stored set carries; the others are absent from an older file.
+_ALWAYS_STORED_FAMILIES = ("api", "events")
 
 
 def _parse_approved_grants(raw: Any) -> dict[str, list[str]]:
@@ -492,6 +589,9 @@ def _parse_approved_grants(raw: Any) -> dict[str, list[str]]:
     record = raw if isinstance(raw, dict) else {}
     parsed: dict[str, list[str]] = {}
     for family in STAGED_GRANT_FAMILIES:
+        if family not in _ALWAYS_STORED_FAMILIES and isinstance(raw, dict) and family not in record:
+            # Written before this family existed: no decision recorded for it.
+            continue
         entries = record.get(family)
         parsed[family] = (
             [e for e in entries if isinstance(e, str)] if isinstance(entries, list) else []
@@ -515,7 +615,7 @@ def _read_approved_grants(name: str) -> dict[str, list[str]] | None:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         logger.warning("Failed to read %s: %s", path, exc)
         return {family: [] for family in STAGED_GRANT_FAMILIES}
     try:
@@ -549,7 +649,11 @@ def _write_approved_grants(name: str, grants: dict[str, list[str]] | None) -> No
     if grants is None:
         path.unlink(missing_ok=True)
         return
-    body = {family: list(grants.get(family, ())) for family in STAGED_GRANT_FAMILIES}
+    body = {
+        family: list(grants.get(family, ()))
+        for family in STAGED_GRANT_FAMILIES
+        if family in _ALWAYS_STORED_FAMILIES or family in grants
+    }
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(path, json.dumps(body, indent=2) + "\n")
 
@@ -583,12 +687,19 @@ def _approved_grants_after_manifest_change(
     new manifest adds is not approved, and one it drops must be approved again
     if a later version brings it back.
     """
+    old_declared = _declared_grant_entries(old_permissions) if old_permissions is not None else {}
     if existing_approved is not None:
-        baseline = existing_approved
-    elif old_permissions is not None:
-        baseline = _declared_grant_entries(old_permissions)
+        # A family the stored set predates approves what the replaced manifest declared.
+        baseline = {
+            family: (
+                existing_approved[family]
+                if family in existing_approved
+                else old_declared.get(family, [])
+            )
+            for family in STAGED_GRANT_FAMILIES
+        }
     else:
-        baseline = {}
+        baseline = old_declared
     declared = _declared_grant_entries(new_permissions)
     return {
         family: [e for e in declared[family] if e in set(baseline.get(family, ()))]
@@ -604,7 +715,11 @@ def _held_back_entries(
     if approved is None:
         return {family: [] for family in STAGED_GRANT_FAMILIES}
     return {
-        family: [e for e in declared[family] if e not in set(approved.get(family, ()))]
+        family: (
+            [e for e in declared[family] if e not in set(approved[family])]
+            if family in approved
+            else []
+        )
         for family in STAGED_GRANT_FAMILIES
     }
 
@@ -702,7 +817,7 @@ class _UpdateMarker:
         for _attempt in range(8):
             root.mkdir(parents=True, exist_ok=True)
             try:
-                token.touch(exist_ok=False)
+                token.touch(mode=0o600, exist_ok=False)
             except FileNotFoundError:
                 # Another update's cleanup removed the directory in between.
                 continue
@@ -772,8 +887,12 @@ def staged_app_grants(
                 return []
             granted = list(declared)
         else:
-            approved = set(grants.get(family, ()))
-            granted = [entry for entry in declared if entry in approved]
+            if family not in grants:
+                # The stored set predates this family: what is declared is approved.
+                granted = list(declared)
+            else:
+                approved = set(grants[family])
+                granted = [entry for entry in declared if entry in approved]
     if _tree_swap_spanned(swap_before, _tree_swap_state(name)):
         return []
     return granted
@@ -782,7 +901,16 @@ def staged_app_grants(
 def _approved_grants_row(name: str) -> dict[str, Any]:
     """The ``approvedGrants`` key for an app row, absent when no set is stored."""
     grants = _effective_approved_grants(name, _read_installed(name))
-    return {} if grants is None else {"approvedGrants": grants}
+    if grants is None:
+        return {}
+    # An empty link-preview family says nothing an app row needs: the row's
+    # ``linkPreviewGrant`` is where a provider's approved and waiting entries live.
+    shown = {
+        family: entries
+        for family, entries in grants.items()
+        if family in _ALWAYS_STORED_FAMILIES or entries
+    }
+    return {"approvedGrants": shown}
 
 
 def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:
@@ -795,7 +923,10 @@ def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:
     manifest = app_info.get("manifest") or {}
     permissions = dict(manifest.get("permissions") or {})
     for family in STAGED_GRANT_FAMILIES:
-        if family not in permissions:
+        if family not in permissions or family in WORKER_AUTO_APPROVE_GRANT_FAMILIES:
+            # ``permissions.workerAutoApprove`` is a flag, not an entry list: it stays
+            # as declared, because every grant re-reads the owner's approval itself
+            # (``worker_auto_approve.app_holds_worker_auto_approve``).
             continue
 
         def _read(family: str = family) -> list[str] | None:
@@ -806,6 +937,56 @@ def approved_manifest_permissions(app_info: dict[str, Any]) -> dict[str, Any]:
 
         permissions[family] = staged_app_grants(name, family, _read)
     return permissions
+
+
+class SessionControlWidening(NamedTuple):
+    """What a manifest newly asks of the owner's user-session consent.
+
+    ``keys`` names the manifest keys added, for the SEL row; ``words`` says the
+    same in plain words, for the operator-facing message. Both say exactly what
+    the owner has not consented to yet, so a row never reports the grant itself
+    as added when it was already held and only its member-thread scope is new.
+    """
+
+    keys: str
+    words: str
+
+
+_GRANT_WIDENING = SessionControlWidening(
+    keys="permissions.sessionApproval",
+    words="session approval control",
+)
+_GRANT_AND_SCOPE_WIDENING = SessionControlWidening(
+    keys="permissions.sessionApproval and permissions.memberThreads",
+    words="session approval control, including your chats with your Bots",
+)
+_SCOPE_WIDENING = SessionControlWidening(
+    keys="permissions.memberThreads",
+    words="session approval control over your chats with your Bots",
+)
+
+
+def _session_control_widening(
+    prior: Permissions | None, requested: Permissions
+) -> SessionControlWidening | None:
+    """What user-session control *requested* adds that the owner has not consented to.
+
+    Consent is captured when the owner enables the app, against the manifest of
+    that moment, so any later manifest that reaches further must go back through
+    it: the grant itself (``sessionApproval``) newly declared, or its
+    member-thread scope (``memberThreads``) newly declared on a held grant.
+    *prior* is the manifest consented to, ``None`` for a first install or
+    registration. A scope flag without the grant widens nothing, because it
+    grants nothing; the grant arriving later is judged then, scope included.
+    ``None`` when nothing is added.
+    """
+    if not requested.sessionApproval:
+        return None
+    if prior is None or not prior.sessionApproval:
+        return _GRANT_AND_SCOPE_WIDENING if requested.memberThreads else _GRANT_WIDENING
+    if requested.memberThreads and not prior.memberThreads:
+        return _SCOPE_WIDENING
+    return None
 
 
 def _pending_session_approval_after_manifest_change(
@@ -884,7 +1065,7 @@ def _scan_installed_app_config_keys(root: Path) -> frozenset[str]:
         return frozenset()
     keys: set[str] = set()
     for entry in root.iterdir():
-        if not entry.is_dir():
+        if _is_sidecar_entry(entry.name) or not entry.is_dir():
             continue
         manifest = get_app_manifest(entry.name)
         try:

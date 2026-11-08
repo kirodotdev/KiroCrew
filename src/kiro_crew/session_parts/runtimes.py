@@ -36,8 +36,15 @@ logger = logging.getLogger("kiro_crew.session")
 
 
 async def start_pool(self: SessionManager, *, blocking: bool = True) -> None:
-    """Delegate background and warm-pool startup."""
+    """Delegate background and warm-pool startup, then start the cleanup loop.
+
+    The loop carries the boot reclaim of sandbox artifacts, the periodic sweeps
+    and the hook for deletes an earlier process left waiting. Starting it only
+    with the first allocation left a gateway that serves dashboards and probes,
+    and never allocates, with none of them. Starting it is idempotent.
+    """
     await self._pool.start_pool(blocking=blocking)
+    self._ensure_cleanup_task()
 
 
 async def _ensure_background(
@@ -180,16 +187,18 @@ async def open_task_session(
     start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> tuple[LLMProvider, bool, bool]:
     """Open a task session on its run-scoped shared runtime (``start_priority``:
-    rule ``kiro_crew.start_priority``)."""
-    return await self._allocation_boundary().open_task_session(
-        parent_session_key,
-        session_key,
-        agent=agent,
-        cwd=cwd,
-        approval_policy=approval_policy,
-        _won_race_retries=_won_race_retries,
-        start_priority=start_priority,
-    )
+    rule ``kiro_crew.start_priority``), after the Kiro account check
+    (:meth:`_acquire_after_identity_check`)."""
+    async with self._acquire_after_identity_check(identity_checked=False):
+        return await self._allocation_boundary().open_task_session(
+            parent_session_key,
+            session_key,
+            agent=agent,
+            cwd=cwd,
+            approval_policy=approval_policy,
+            _won_race_retries=_won_race_retries,
+            start_priority=start_priority,
+        )
 
 
 async def _fill_warm_pool(self: SessionManager) -> None:
@@ -356,3 +365,20 @@ async def drain_warm_pool(self: SessionManager) -> list:
 def warm_providers(self: SessionManager) -> list[LLMProvider]:
     """Snapshot the queued warm providers without consuming them."""
     return self._pool.warm_providers()
+
+
+def _spare_pid_providers(self: SessionManager) -> list[tuple[int, LLMProvider]]:
+    """Snapshot the queued spares as ``(pid, provider)`` without consuming them."""
+    return self._pool._spare_pid_providers()
+
+
+def _remove_pooled_providers_by_pid(
+    self: SessionManager, pids: set[int]
+) -> list[tuple[int, LLMProvider]]:
+    """Take the queued providers whose runtime pid is in ``pids`` out of the pool."""
+    return self._pool._remove_pooled_providers_by_pid(pids)
+
+
+def mark_mcp_config_changed(self: SessionManager) -> None:
+    """Tell a warm-pool fill in flight that the MCP config changed (see the pool)."""
+    self._pool.mark_mcp_config_changed()

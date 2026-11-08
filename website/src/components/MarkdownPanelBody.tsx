@@ -3,7 +3,9 @@ import { MessageSquare, X, FileDiff, TriangleAlert, CaseSensitive, ChevronUp, Ch
 import { CommentList, type InlineComment } from './CommentOverlay'
 import { PierreFilePair, PierrePatch } from '../pierre'
 import { i18nT } from '../i18n/t'
+import { Badge } from './ui'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import type { PartialCause } from '../utils/fileReadQuery'
 import type { useImeGuard } from '../hooks/useImeGuard'
 import type { useMarkdownPanelFind } from './useMarkdownPanelFind'
 
@@ -15,8 +17,10 @@ import type { useMarkdownPanelFind } from './useMarkdownPanelFind'
  * them out in both the side-panel and the full-screen layouts.
  */
 
-/** Comment hint banner — shown once per session for markdown files */
-export function CommentHint({ onDismiss }: { onDismiss: () => void }) {
+/** Comment hint banner for markdown files, shown until the reader dismisses it.
+ *  `image` names the image gesture, and `isNew` badges the tip when it is back
+ *  for a reader who closed the text-only one (see `useCommentHint`). */
+export function CommentHint({ image, isNew, onDismiss }: { image: boolean; isNew: boolean; onDismiss: () => void }) {
   return (
     <div
       className="flex items-center gap-2.5 px-3 py-2.5 bg-bg-elevated border rounded-lg text-[12px] animate-scale-in mx-1 mb-2"
@@ -24,7 +28,10 @@ export function CommentHint({ onDismiss }: { onDismiss: () => void }) {
     >
       <span className="text-muted shrink-0"><MessageSquare className="lucide-inline" /></span>
       <span className="flex-1 text-text">
-        <strong className="text-text-strong font-semibold">{i18nT('components.markdownPanel.tip')}</strong> {i18nT('components.markdownPanel.select_any_text_to_add_inline_comments_then_subm')}
+        {isNew && <Badge variant="aim" className="me-1.5 align-middle text-[11px] font-sans">{i18nT('components.markdownPanel.new_badge')}</Badge>}
+        <strong className="text-text-strong font-semibold">{i18nT('components.markdownPanel.tip')}</strong> {image
+          ? i18nT('components.markdownPanel.select_any_text_or_drag_across_an_image_to_add_i')
+          : i18nT('components.markdownPanel.select_any_text_to_add_inline_comments_then_subm')}
       </span>
       <button className="text-accent hover:text-accent-hover cursor-pointer bg-transparent border-none text-[11px] font-medium shrink-0" onClick={onDismiss}>{i18nT('components.markdownPanel.got_it')}</button>
     </div>
@@ -49,19 +56,29 @@ export function CommentHint({ onDismiss }: { onDismiss: () => void }) {
  *  menu's Download fetches the path, which a gone file answers 404, so this
  *  Download hands the browser the text on screen under the file's name, and
  *  Copy content puts it on the clipboard. A PARTIAL buffer -- a read the
- *  gateway cut at 512 000 characters or redacted -- says so instead, and never
- *  calls itself the only remaining version. Same band and the same action
- *  styles as the unsaved-changes banner, so the two conditions the tab can be
- *  in read alike. */
-export function MissingFileBanner({ onDownload, onCopy, copied, partial }: { onDownload: () => void; onCopy: () => void; copied: boolean; partial: boolean }) {
+ *  gateway cut at 512 000 characters, redacted, or could not decode as UTF-8
+ *  -- says so and which, and never calls itself the only remaining version.
+ *  Same band and the same action styles as the unsaved-changes banner, so the
+ *  two conditions the tab can be in read alike. */
+export function MissingFileBanner({ onDownload, onCopy, copied, partial }: { onDownload: () => void; onCopy: () => void; copied: boolean; partial: PartialCause | false }) {
   return (
     <div data-testid="markdown-panel-missing-file" role="status" className="flex flex-wrap items-center gap-2 min-h-[40px] px-3 py-2 bg-[color-mix(in_srgb,var(--warn)_12%,transparent)] border-b border-[color-mix(in_srgb,var(--warn)_30%,transparent)] shrink-0">
       <TriangleAlert size={13} className="text-warn shrink-0" />
-      <span className="flex-1 basis-[12rem] min-w-0 text-[12px] text-text">{i18nT(partial ? 'components.markdownPanel.file_not_found_partial_copy' : 'components.markdownPanel.file_not_found_last_copy')}</span>
+      <span className="flex-1 basis-[12rem] min-w-0 text-[12px] text-text">{partial ? i18nT('components.markdownPanel.file_not_found_partial_copy', { reason: partialReason(partial) }) : i18nT('components.markdownPanel.file_not_found_last_copy')}</span>
       <button className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text border border-border bg-transparent cursor-pointer transition-colors shrink-0" onClick={onCopy}>{copied ? i18nT('components.markdownPanel.copied') : i18nT('components.markdownPanel.copy_content')}</button>
       <button className="px-3 h-[26px] rounded-md text-[11.5px] font-semibold border border-accent text-accent-fg bg-accent cursor-pointer hover:bg-accent-hover transition-all shrink-0" onClick={onDownload}>{i18nT('components.markdownPanel.download')}</button>
     </div>
   )
+}
+
+/** Why a partial buffer is partial, as the `{{reason}}` of the missing-file
+ *  banner, the close prompt and the Save notice. */
+export function partialReason(cause: PartialCause): string {
+  switch (cause) {
+    case 'truncated': return i18nT('components.markdownPanel.partial_reason_truncated')
+    case 'redacted': return i18nT('components.markdownPanel.partial_reason_redacted')
+    case 'lossy': return i18nT('components.markdownPanel.partial_reason_lossy')
+  }
 }
 
 export function ZeroDiffNotice({ onExitDiff, message }: { onExitDiff?: () => void; message?: string }) {
@@ -83,7 +100,7 @@ export function ZeroDiffNotice({ onExitDiff, message }: { onExitDiff?: () => voi
   )
 }
 
-export function DiffViewBlock({ diffMode, fileName, originalContent, content, gitPatch, lineNums, wordWrap, collapseUnchanged, flush, sideBySide = true }: {
+export function DiffViewBlock({ diffMode, fileName, originalContent, content, gitPatch, lineNums, wordWrap, collapseUnchanged, flush, sideBySide = true, autoLineByLine }: {
   diffMode: boolean; fileName: string; originalContent: string; content: string
   /** Git's own unified diff, drawn INSTEAD of comparing the two bodies. Set
    *  when the buffer is only part of the file (see `gitPatch` in the panel). */
@@ -95,6 +112,9 @@ export function DiffViewBlock({ diffMode, fileName, originalContent, content, gi
   sideBySide?: boolean
   /** Drop the rounded border box — host surface frames the content. */
   flush?: boolean
+  /** Start an over-budget pair's worker diff without the click. Set only
+   *  while this tab is the visible one, so a hidden tab computes nothing. */
+  autoLineByLine?: boolean
 }) {
   const oldFile = useMemo(
     () => (originalContent ? { name: fileName, contents: originalContent } : null),
@@ -118,21 +138,23 @@ export function DiffViewBlock({ diffMode, fileName, originalContent, content, gi
     <div className={`w-full h-full overflow-auto pierre-surface ${flush ? '' : 'border border-border rounded-md'}`}>
       {gitPatch != null
         ? <PierrePatch patch={gitPatch} options={options} />
-        : <PierreFilePair oldFile={oldFile} newFile={newFile} options={options} />}
+        : <PierreFilePair oldFile={oldFile} newFile={newFile} options={options} autoLineByLine={autoLineByLine} />}
     </div>
   )
 }
 
 /** Shared comment overlay — the pending-comment list. (The input itself lives
  *  in `SelectionToolbar`'s composer, which opens on selection.) */
-export const CommentOverlayBlock = memo(function CommentOverlayBlock({ onSubmitComments, comments, editComment, removeComment, submitAllComments, connected = true, onEditingChange }: {
+export const CommentOverlayBlock = memo(function CommentOverlayBlock({ onSubmitComments, comments, editComment, removeComment, submitAllComments, connected = true, onEditingChange, draftKey }: {
   onSubmitComments?: (message: string) => void; comments: InlineComment[]; editComment: (id: string, text: string) => void; removeComment: (id: string) => void; submitAllComments: (extraPrompt?: string) => void; connected?: boolean
   onEditingChange?: (id: string, editing: boolean) => void
+  /** The document the pending instruction belongs to (kept across an unmount). */
+  draftKey?: string
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   if (!onSubmitComments) return null
   return (
-    <CommentList comments={comments} onEdit={editComment} onRemove={removeComment} onSubmitAll={submitAllComments} enableExtraPrompt connected={connected} onEditingChange={onEditingChange} />
+    <CommentList comments={comments} onEdit={editComment} onRemove={removeComment} onSubmitAll={submitAllComments} enableExtraPrompt connected={connected} onEditingChange={onEditingChange} draftKey={draftKey} />
   )
 })
 
@@ -156,8 +178,8 @@ export function MarkdownPanelFindBar({ find, ime }: { find: ReturnType<typeof us
         className="bg-transparent border-none outline-hidden text-text placeholder:text-muted w-[170px] text-[13px]"
         aria-label={i18nT('components.markdownPanel.find_in_document_2')}
       />
-      <button onClick={() => setFindCase((c) => !c)} className={`p-0.5 rounded cursor-pointer border-none transition-colors ${findCase ? 'bg-accent/20 text-accent' : 'bg-transparent text-muted hover:text-text'}`} title={i18nT('components.markdownPanel.case_sensitive')} aria-label={i18nT('components.markdownPanel.case_sensitive')}><CaseSensitive size={15} /></button>
-      {findTerm && <span className="text-muted text-[12px] whitespace-nowrap tabular-nums">{findCount > 0 ? `${findIdx + 1} of ${findCount}` : i18nT('components.markdownPanel.no_results')}</span>}
+      <button onClick={() => setFindCase((c) => !c)} aria-pressed={findCase} className={`p-0.5 rounded cursor-pointer border-none transition-colors ${findCase ? 'bg-accent/20 text-accent' : 'bg-transparent text-muted hover:text-text'}`} title={i18nT('components.markdownPanel.case_sensitive')} aria-label={i18nT('components.markdownPanel.case_sensitive')}><CaseSensitive size={15} /></button>
+      {findTerm && <span className="text-muted text-[12px] whitespace-nowrap tabular-nums">{findCount > 0 ? i18nT('components.markdownPanel.match_position', { current: findIdx + 1, total: findCount }) : i18nT('components.markdownPanel.no_results')}</span>}
       <button onClick={() => stepFind(-1)} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.markdownPanel.previous_shift_enter')} aria-label={i18nT('components.markdownPanel.previous_match')}><ChevronUp size={15} /></button>
       <button onClick={() => stepFind(1)} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.markdownPanel.next_enter')} aria-label={i18nT('components.markdownPanel.next_match')}><ChevronDown size={15} /></button>
       <button onClick={closeFind} className="p-0.5 rounded text-muted hover:text-text cursor-pointer border-none bg-transparent" title={i18nT('components.markdownPanel.close_esc')} aria-label={i18nT('components.markdownPanel.close_find')}><X size={15} /></button>

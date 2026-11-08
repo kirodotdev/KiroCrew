@@ -17,7 +17,7 @@ from steer_requeue_helpers import _running_slot
 from kiro_crew.dashboard import session_deliver as sd
 from kiro_crew.dashboard.chat_utils import CRON_NOTIFICATION_KIND, MCP_APP_MESSAGE_KIND
 
-CRON_TEXT = '[Cron notification: "nightly"]\nstill red\n[/Cron notification]'
+CRON_TEXT = '[Cron notification from "nightly"]\nstill red\n[End of cron notification]'
 APP_TEXT = '[MCP app message from "srv/tool"]\nhello\n[End of MCP app message]'
 WAKE_TEXT = "[work-ledger wake] item=it_1 status=done"
 
@@ -52,9 +52,12 @@ class TestIdle:
         turn = MagicMock(name="turn")
         with (
             patch("kiro_crew.dashboard.chat_runner._run_chat", run_chat),
-            patch("kiro_crew.dashboard.turn_dispatch.spawn_guarded_turn", return_value=turn),
+            patch("kiro_crew.dashboard.chat_runner.spawn_guarded_turn", return_value=turn),
         ):
             assert await sd.deliver(state, slot, text, origin) == sd.DELIVERED_TURN
+
+        # Queued, then drained into the turn: the card left the queue.
+        assert slot._queue == []
 
         rows = [m for m in slot.messages if m.get("content") == text]
         assert [r["role"] for r in rows] == [role]
@@ -66,10 +69,86 @@ class TestIdle:
         assert kwargs["_synthetic_payload"] is (origin.kind == sd.ORIGIN_APP)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("_stop_state", "soft_pending"),
+            ("_stopping", True),
+            ("_last_turn_auth_required", True),
+            ("_turn_admission_reserved", True),
+        ],
+    )
+    async def test_an_idle_slot_that_cannot_admit_a_turn_keeps_the_card_queued(
+        self, state, field, value
+    ):
+        """A Stop being resolved, a sign-in hold or a send's reservation: the
+        message waits as a card for the next drain instead of starting a turn."""
+        slot = state.get_or_create_slot("idle")
+        setattr(slot, field, value)
+        spawn = MagicMock()
+        with patch("kiro_crew.dashboard.chat_runner.spawn_guarded_turn", spawn):
+            assert await sd.deliver(state, slot, CRON_TEXT, sd.cron("nightly")) == (
+                sd.DELIVERED_QUEUED
+            )
+
+        spawn.assert_not_called()
+        assert [entry["kind"] for entry in slot._queue] == [CRON_NOTIFICATION_KIND]
+
+    @pytest.mark.asyncio
+    async def test_an_entry_already_queued_runs_before_the_new_message(self, state):
+        """A message parked in the queue keeps its place ahead of the delivery."""
+        slot = state.get_or_create_slot("idle")
+        slot.queue_append("parked earlier")
+        run_chat = MagicMock(return_value=MagicMock())
+        with (
+            patch("kiro_crew.dashboard.chat_runner._run_chat", run_chat),
+            patch("kiro_crew.dashboard.chat_runner.spawn_guarded_turn", return_value=MagicMock()),
+        ):
+            assert await sd.deliver(state, slot, CRON_TEXT, sd.cron("nightly")) == (
+                sd.DELIVERED_TURN
+            )
+
+        assert run_chat.call_args.args[2] == "parked earlier"
+        assert [entry["kind"] for entry in slot._queue] == [CRON_NOTIFICATION_KIND]
+
+    @pytest.mark.asyncio
+    async def test_a_closing_slot_takes_nothing(self, state):
+        """A card queued on a closing slot would be dropped with it, so the
+        caller is told nothing was delivered and falls back."""
+        slot = state.get_or_create_slot("idle")
+        slot._closing = 1
+        assert await sd.deliver(state, slot, CRON_TEXT, sd.cron("nightly")) == sd.NOT_DELIVERED
+        assert slot._queue == [] and slot.messages == []
+
+    @pytest.mark.asyncio
+    async def test_an_idle_delivery_during_shutdown_queues_nothing(self, state, monkeypatch):
+        """An idle cron falls back because an in-memory queue cannot survive shutdown."""
+        shutdown = MagicMock()
+        shutdown.is_set.return_value = True
+        monkeypatch.setattr("kiro_crew.session.shutdown_event", shutdown)
+        slot = state.get_or_create_slot("idle")
+
+        assert await sd.deliver(state, slot, CRON_TEXT, sd.cron("nightly")) == sd.NOT_DELIVERED
+        assert slot._queue == [] and slot.messages == []
+
+    @pytest.mark.asyncio
     async def test_an_idle_wake_is_left_to_the_autonudge_fire(self, state):
         slot = state.get_or_create_slot("idle")
         assert await sd.deliver(state, slot, WAKE_TEXT, sd.automation(3, "l1")) == sd.NOT_DELIVERED
         assert slot.messages == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("running", [False, True])
+    async def test_a_wake_with_a_turn_starter_runs_it_only_on_an_idle_slot(self, state, running):
+        slot = _running_slot(state) if running else state.get_or_create_slot("idle")
+        start = AsyncMock(return_value="the starter's answer")
+        steer = AsyncMock()
+        with patch("kiro_crew.dashboard.chat_delivery.steer_into_running_turn", steer):
+            out = await sd.deliver(state, slot, WAKE_TEXT, sd.automation(3, "l1"), start_turn=start)
+        assert out == (sd.NOT_DELIVERED if running else "the starter's answer")
+        assert start.await_count == (0 if running else 1)
+        steer.assert_not_awaited()
+        assert slot.messages == [] and slot._queue == []
 
 
 class TestRunning:
@@ -264,13 +343,35 @@ class TestCallersRouteThroughDeliver:
         loop = _ledger_loop()
         slot = _slot(running=True)
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
-        deliver = AsyncMock(return_value=sd.DELIVERED_STEERED)
+        deliver = AsyncMock(side_effect=[sd.NOT_DELIVERED, sd.DELIVERED_STEERED])
         with (
             patch.object(sd, "deliver", deliver),
             patch("kiro_crew.dashboard.session_control.containment_meta", return_value={}),
             patch.object(orch, "_work_ledger_wake_text", AsyncMock(return_value=WAKE_TEXT)),
         ):
             assert await orch._fire_dashboard_nudge(loop) is True
-        origin = deliver.await_args.args[3]
+        # The running slot declines the fire's turn starter; the steer is a second
+        # delivery that brings none.
+        fire, steer = deliver.await_args_list
+        assert "start_turn" in fire.kwargs and "start_turn" not in steer.kwargs
+        origin = steer.args[3]
         assert origin.kind == sd.ORIGIN_AUTOMATION
         assert origin.nudge == {"cycle": loop.cycle_count + 1, "loop_id": loop.id}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("running", [False, True])
+    async def test_the_session_picks_whether_a_nudge_fire_starts_its_turn(self, running):
+        from test_work_ledger_wake_delivery import _ledger_loop, _orchestrator, _slot
+
+        from kiro_crew.monitoring.models import MonitorDispatchResult
+
+        orch = _orchestrator()
+        loop = _ledger_loop()
+        orch.dashboard_state.get_slot = MagicMock(return_value=_slot(running=running))
+        start = AsyncMock(return_value=MonitorDispatchResult.DISPATCHED)
+        with (
+            patch.object(orch, "_start_dashboard_wake_turn", start),
+            patch.object(orch, "_work_ledger_wake_text", AsyncMock(return_value="")),
+        ):
+            assert await orch._fire_dashboard_nudge(loop) is not running
+        assert start.await_count == (0 if running else 1)

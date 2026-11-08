@@ -98,7 +98,8 @@ describe('ArtifactsPage folder region does not scroll horizontally', () => {
 
   it('lays the folder gutter out as grid gap, not as a per-card margin', async () => {
     await renderVirtualized()
-    const cards = screen.getAllByRole('button', { name: /open folder/i })
+    // Each card is the container its open button is laid over.
+    const cards = screen.getAllByRole('button', { name: /open folder/i }).map(b => b.parentElement as HTMLElement)
     const grid = cards[0].parentElement as HTMLElement
     // Every folder card is a direct grid child and the grid owns the gutter…
     expect(grid.className).toMatch(/\bgrid\b/)

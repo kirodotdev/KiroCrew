@@ -33,8 +33,12 @@ from kiro_crew.apps.proxy_auth import (
     PRINCIPAL_APP_TOKEN,
     PRINCIPAL_NONE,
     PRINCIPAL_OWNER_SESSION,
+    PROXY_NONCE_HEADER,
     PROXY_PRINCIPAL_HEADER,
+    PROXY_V2_HEADER,
+    new_proxy_nonce,
     sign_proxy_principal_claim,
+    sign_proxy_request_v2,
 )
 from kiro_crew.sel import sel
 
@@ -108,19 +112,21 @@ _PROXY_HOP_HEADERS = frozenset(
 # X-KiroCrew-Proxy HMAC (injected below), never via user cookies or the
 # gateway's own internal-auth headers. The internal-auth set (X-Internal-Secret,
 # X-Session-Token, X-Session-Key, X-Internal-Caller) is stripped because a
-# credentialed internal caller — the design_tweak_update_thread MCP tool is the
-# first to reach an app backend through this proxy — would otherwise hand the
-# gateway-wide secret (which opens every strict internal route) to an app
-# subprocess that also serves content from the user's own projects. The HMAC is
+# credentialed internal caller — a tool an app declares in its manifest
+# (``apps.app_agent_tools``) reaches its backend through this proxy — would
+# otherwise hand the gateway-wide secret (which opens every strict internal route)
+# to an app subprocess that also serves content from the user's own projects. The HMAC is
 # all the backend needs to trust a proxied request, so dropping the rest is a
 # pure hardening with no functional loss.
 #
-# The two gateway-authored proxy headers are stripped too. For an app that has
+# The gateway-authored proxy headers are stripped too. For an app that has
 # not opted in to ``backend.signedPrincipal``, a caller-sent
 # ``x-kirocrew-principal`` would otherwise reach a backend that never asked for
-# one, and could pass for the gateway's. For ``x-kirocrew-proxy``, stripping the
-# caller's copy first keeps the outgoing request from depending on which spelling
-# of a header the HTTP client lets win when the gateway sets its own value below.
+# one, and could pass for the gateway's. For the proxy signature and nonce
+# headers, stripping the caller's copy first keeps the outgoing request from
+# depending on which spelling of a header the HTTP client lets win when the
+# gateway sets its own value below, so a page can never supply its own nonce.
+# Relay identity headers (``x-kiro-relay-*``) are dropped by prefix, ``is_relay_header``.
 _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
     {
         "cookie",
@@ -130,9 +136,43 @@ _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
         "x-session-key",
         "x-internal-caller",
         "x-kirocrew-proxy",
+        "x-kirocrew-proxy-v2",
+        "x-kirocrew-proxy-nonce",
         "x-kirocrew-principal",
+        # An app frame's capability (apps/app_frame.py): read by
+        # the gateway, never handed on to the app's backend.
+        "x-kirocrew-capability",
     }
 )
+
+# Query parameters the gateway reads as its own credential, dropped from the
+# forwarded request-target for the reason ``cookie`` and ``authorization`` are
+# dropped above. ``dashboard/token_auth.py`` reads the dashboard and app token from
+# ``request.query.get("token")`` on every request, so the name is matched after the
+# same percent-decoding aiohttp applies: ``%74oken`` is a credential to the gateway
+# and is dropped like ``token``.
+_PROXY_STRIP_QUERY_PARAMS = frozenset({"token"})
+
+
+def _forwarded_query(raw_qs: str) -> str:
+    """``raw_qs`` without the gateway's credential parameters, in its wire encoding.
+
+    Every other ``&``-separated field keeps its exact bytes and its position, so
+    the request-target the gateway signs is the one the backend receives. A query
+    with no credential parameter is returned unchanged.
+    """
+    fields = raw_qs.split("&")
+    kept = [
+        field
+        for field in fields
+        if not any(
+            key in _PROXY_STRIP_QUERY_PARAMS
+            for key in yarl.URL(f"?{field}", encoded=True).query.keys()
+        )
+    ]
+    if len(kept) == len(fields):
+        return raw_qs
+    return "&".join(kept)
 
 
 def _resolve_app_backend_url(name: str) -> str | None:
@@ -197,12 +237,19 @@ def _proxy_principal(request: web.Request) -> tuple[str, str]:
     return PRINCIPAL_NONE, ""
 
 
-async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
+async def handle_app_api_proxy(
+    request: web.Request, *, read_body: bytes | None = None
+) -> web.StreamResponse:
     """Reverse proxy: /apps/{name}/api/{path} → app backend.
 
     Allows dashboard app UIs to call their own backend through the gateway
     (same-origin), avoiding CORS issues. The gateway authenticates the
     request and forwards it to the app's backend.
+
+    *read_body* is the body of a request a gateway handler already read before
+    handing it on: once the payload is at EOF ``request.can_read_body`` is False,
+    so without it the backend would receive no body under the client's
+    ``Content-Length``.
     """
     name = request.match_info["name"]
     path = request.match_info.get("path", "")
@@ -281,21 +328,28 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
     # params so the gateway's HMAC signature matches what the backend sees on
     # self.path. `request.query_string` is DECODED by aiohttp, so signing it causes
     # HMAC verification to fail closed (401) whenever query parameters contain
-    # percent-encodable characters like spaces, non-ASCII, or '+'.
-    raw_qs = request.rel_url.raw_query_string
+    # percent-encodable characters like spaces, non-ASCII, or '+'. The gateway's
+    # own ``?token=`` credential is dropped first, so what is signed is what is sent.
+    raw_qs = _forwarded_query(request.rel_url.raw_query_string)
     target_path = f"/api/{path}" + (f"?{raw_qs}" if raw_qs else "")
     target_url = yarl.URL(f"{backend_url}{target_path}", encoded=True)
     wire_target = target_url.raw_path_qs
 
     # Forward headers (strip hop-by-hop, inject proxy auth)
+    from kiro_crew.dashboard.relay_headers import is_relay_header
+
     headers: dict[str, str] = {}
     for key, value in request.headers.items():
-        if key.lower() not in _PROXY_STRIP_HEADERS and key.lower() != "host":
+        lowered = key.lower()
+        if lowered not in _PROXY_STRIP_HEADERS and lowered != "host" and not is_relay_header(key):
             headers[key] = value
 
     # Read request body first so the HMAC can bind it (integrity: prevents
     # a MITM/compromised path from swapping the body under a valid signature).
-    body = await request.read() if request.can_read_body else None
+    if read_body is not None:
+        body: bytes | None = read_body
+    else:
+        body = await request.read() if request.can_read_body else None
 
     # Sign the proxy request with the app's secret so the backend can
     # verify it came from the gateway. Works on loopback and remote.
@@ -315,6 +369,18 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
         msg = f"{ts}:{request.method}:{wire_target}:{body_hash}"
         sig = _hmac.new(secret.encode(), msg.encode(), hashlib.sha256).hexdigest()
         headers["X-KiroCrew-Proxy"] = f"{ts}:{sig}"
+        # The replay-proof v2 signature rides in separate headers beside the
+        # unchanged v1 value, so a backend that only knows v1 ignores them.
+        nonce = new_proxy_nonce()
+        headers[PROXY_NONCE_HEADER] = nonce
+        headers[PROXY_V2_HEADER] = sign_proxy_request_v2(
+            secret=secret,
+            ts=int(ts),
+            nonce=nonce,
+            method=request.method,
+            target=wire_target,
+            body=body or b"",
+        )
     except OSError as exc:
         # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- logs the app name and the OSError only and never the secret value
         logger.warning("Failed to read app secret for %s: %s", name, exc)

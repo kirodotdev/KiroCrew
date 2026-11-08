@@ -35,14 +35,17 @@ export function extractKnowledgeQuery(text: string): string | null {
   return null
 }
 
+const KNOWLEDGE_OPEN = '[KNOWLEDGE CONTEXT — injected by user from knowledge library]'
+const KNOWLEDGE_CLOSE = '[END KNOWLEDGE CONTEXT]'
+
 /** Format knowledge block for LLM context (expanded at send time). */
 export function expandKnowledgeBlock(block: KnowledgeBlock): string {
   return [
-    '[KNOWLEDGE CONTEXT — injected by user from knowledge library]\n',
+    KNOWLEDGE_OPEN + '\n',
     ...block.items.map(item =>
       `## ${item.title}${item.source ? ` (${item.source})` : ''}\n${item.content}\n`
     ),
-    '[END KNOWLEDGE CONTEXT]\n',
+    KNOWLEDGE_CLOSE + '\n',
   ].join('\n')
 }
 

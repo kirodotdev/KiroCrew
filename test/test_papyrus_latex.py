@@ -38,6 +38,7 @@ import pytest
 
 from kiro_crew import sandbox, security
 from kiro_crew.apps.builtins.papyrus.backend import latex, procio, store
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import await_until
 
 
@@ -233,12 +234,102 @@ class TestFindCompiler:
                 mock.patch.object(latex.os, "access", return_value=True):
             assert latex.find_compiler_sync() == found
 
+    def test_userspace_globs_carry_exe_on_windows(self) -> None:
+        """On Windows the on-disk name is ``pdflatex.exe``/``tectonic.exe``.
+
+        ``glob.glob`` is a plain filesystem match and does not apply
+        ``PATHEXT``, so a bare ``pdflatex``/``tectonic`` glob never matches a
+        Windows TeX install; the pattern must carry the ``.exe`` suffix.
+        """
+        assert latex._userspace_compiler_globs(is_windows=True) == (
+            "~/texlive/*/bin/*/pdflatex.exe",
+            "~/.local/bin/tectonic.exe",
+        )
+
+    def test_userspace_globs_are_bare_on_posix(self) -> None:
+        """POSIX keeps the bare ``pdflatex``/``tectonic`` names — no ``.exe``."""
+        assert latex._userspace_compiler_globs(is_windows=False) == (
+            "~/texlive/*/bin/*/pdflatex",
+            "~/.local/bin/tectonic",
+        )
+
+    def test_finds_a_windows_userspace_tectonic(self) -> None:
+        """A Windows user install (``~/.local/bin/tectonic.exe``) is found.
+
+        End-to-end through ``find_compiler_sync`` with the Windows-shaped globs:
+        PATH empty, managed Tectonic absent, only the ``.exe`` on disk.
+        """
+        found = "/home/u/.local/bin/tectonic.exe"
+
+        def fake_glob(pattern: str) -> list[str]:
+            expanded = latex.os.path.expanduser(pattern)
+            return [found] if expanded.endswith("tectonic.exe") else []
+
+        with mock.patch.object(
+                    latex,
+                    "USERSPACE_COMPILER_GLOBS",
+                    latex._userspace_compiler_globs(is_windows=True),
+                ), \
+                mock.patch.object(latex.shutil, "which", return_value=None), \
+                mock.patch.object(latex.tectonic, "binary_installed", return_value=False), \
+                mock.patch("glob.glob", side_effect=fake_glob), \
+                mock.patch.object(latex.os.path, "isfile", return_value=True), \
+                mock.patch.object(latex.os, "access", return_value=True):
+            latex.reset_compiler_cache()
+            assert latex.find_compiler_sync() == found
+        latex.reset_compiler_cache()
+
+    def test_finds_a_windows_userspace_texlive_pdflatex(self) -> None:
+        """The Windows TeX Live route lands at ``.../bin/windows/pdflatex.exe``."""
+        found = "/home/u/texlive/2026/bin/windows/pdflatex.exe"
+
+        def fake_glob(pattern: str) -> list[str]:
+            expanded = latex.os.path.expanduser(pattern)
+            return [found] if expanded.endswith("pdflatex.exe") else []
+
+        with mock.patch.object(
+                    latex,
+                    "USERSPACE_COMPILER_GLOBS",
+                    latex._userspace_compiler_globs(is_windows=True),
+                ), \
+                mock.patch.object(latex.shutil, "which", return_value=None), \
+                mock.patch.object(latex.tectonic, "binary_installed", return_value=False), \
+                mock.patch("glob.glob", side_effect=fake_glob), \
+                mock.patch.object(latex.os.path, "isfile", return_value=True), \
+                mock.patch.object(latex.os, "access", return_value=True):
+            latex.reset_compiler_cache()
+            assert latex.find_compiler_sync() == found
+        latex.reset_compiler_cache()
+
+    def test_posix_userspace_bare_names_still_match(self) -> None:
+        """POSIX keeps the bare ``tectonic`` name — no ``.exe`` suffix leaks in."""
+        found = "/home/u/.local/bin/tectonic"
+
+        def fake_glob(pattern: str) -> list[str]:
+            expanded = latex.os.path.expanduser(pattern)
+            return [found] if expanded.endswith("/tectonic") else []
+
+        with mock.patch.object(
+                    latex,
+                    "USERSPACE_COMPILER_GLOBS",
+                    latex._userspace_compiler_globs(is_windows=False),
+                ), \
+                mock.patch.object(latex.shutil, "which", return_value=None), \
+                mock.patch.object(latex.tectonic, "binary_installed", return_value=False), \
+                mock.patch("glob.glob", side_effect=fake_glob), \
+                mock.patch.object(latex.os.path, "isfile", return_value=True), \
+                mock.patch.object(latex.os, "access", return_value=True):
+            latex.reset_compiler_cache()
+            assert latex.find_compiler_sync() == found
+        latex.reset_compiler_cache()
+
     def test_result_is_cached(self) -> None:
         with mock.patch.object(latex.shutil, "which", return_value="/usr/bin/pdflatex") as which, \
                 mock.patch.object(latex.os.path, "isfile", return_value=True), \
                 mock.patch.object(latex.os, "access", return_value=True):
             latex.find_compiler_sync()
-            latex.find_compiler_sync()
+            assert latex._compiler_cache == "/usr/bin/pdflatex"
+            assert latex.find_compiler_sync() == "/usr/bin/pdflatex"
             assert which.call_count == 1
 
     def test_a_negative_result_is_also_cached(self) -> None:
@@ -661,6 +752,94 @@ class TestRunHelper:
         assert kill.await_args is not None
         assert kill.await_args.args[0] == 4321
         assert (code, output) == (-1, "")
+
+    @staticmethod
+    def _compiler_that_runs_until_killed(started: asyncio.Event) -> mock.AsyncMock:
+        """A compiler whose output read blocks until the run is cancelled.
+
+        The first ``communicate()`` is ``_run``'s read and never returns on its
+        own. Later calls are the reap after the kill, and return at once.
+        """
+
+        async def read_then_drain() -> tuple[bytes, bytes]:
+            if not started.is_set():
+                started.set()
+                await asyncio.Event().wait()
+            return b"", b""
+
+        proc = mock.AsyncMock()
+        proc.communicate = mock.AsyncMock(side_effect=read_then_drain)
+        proc.kill = mock.Mock()
+        proc.returncode = None
+        proc.pid = UNALLOCATABLE_PID
+        return proc
+
+    async def test_a_cancel_kills_the_process_tree(self, project: Path) -> None:
+        """Cancelling the run must not orphan the compiler.
+
+        The child runs in its own session, so nothing else stops it once ``_run``
+        stops awaiting it. A cancel (app stop, gateway restart) that skipped the
+        kill would leave ``pdflatex`` running on an untrusted ``.tex`` with no
+        deadline left. The cancel must kill and reap the tree, then propagate.
+        """
+        started = asyncio.Event()
+        proc = self._compiler_that_runs_until_killed(started)
+        with mock.patch.object(
+            latex, "sandboxed_spawn_argv", return_value=(["/bin/true"], {}, None)
+        ), mock.patch(
+            "asyncio.create_subprocess_exec", mock.AsyncMock(return_value=proc)
+        ), mock.patch.object(
+            latex.platform_compat, "kill_process_tree_async", mock.AsyncMock(return_value=True)
+        ) as kill:
+            task = asyncio.create_task(
+                latex._run(["pdflatex"], cwd=project, env={}, timeout=60, operation="compile")
+            )
+            await await_until(started, what="the compiler read starting")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled run finishing")
+        assert kill.await_args is not None, "a cancelled run left the compiler running"
+        assert kill.await_args.args[0] == UNALLOCATABLE_PID
+        assert proc.communicate.await_count >= 2, "the killed compiler was not reaped"
+
+    async def test_a_second_cancel_cannot_skip_the_kill(self, project: Path) -> None:
+        """A repeated cancel while the kill is in flight must not abandon it.
+
+        Shutdown can cancel a task more than once. If the kill were awaited
+        unshielded, the second cancel would land inside it and the child would
+        survive anyway.
+        """
+        started = asyncio.Event()
+        killing = asyncio.Event()
+        release_kill = asyncio.Event()
+
+        async def slow_kill(*_args: object) -> bool:
+            killing.set()
+            await release_kill.wait()
+            return True
+
+        proc = self._compiler_that_runs_until_killed(started)
+        with mock.patch.object(
+            latex, "sandboxed_spawn_argv", return_value=(["/bin/true"], {}, None)
+        ), mock.patch(
+            "asyncio.create_subprocess_exec", mock.AsyncMock(return_value=proc)
+        ), mock.patch.object(
+            latex.platform_compat, "kill_process_tree_async", mock.AsyncMock(side_effect=slow_kill)
+        ) as kill:
+            task = asyncio.create_task(
+                latex._run(["pdflatex"], cwd=project, env={}, timeout=60, operation="compile")
+            )
+            await await_until(started, what="the compiler read starting")
+            task.cancel()
+            await await_until(killing, what="the cancel starting the kill")
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), "the second cancel abandoned the in-flight kill"
+            release_kill.set()
+            with pytest.raises(asyncio.CancelledError):
+                await await_until(task, what="the cancelled run finishing")
+        assert kill.await_count == 1
+        assert proc.communicate.await_count >= 2, "the killed compiler was not reaped"
 
     async def test_cleans_up_the_sandbox_profile(self, project: Path, tmp_path: Path) -> None:
         """The sandbox launcher/profile is a temp file the caller owns."""
@@ -1161,8 +1340,12 @@ class TestCompileRefusesSymlinkedArtifacts:
         os.symlink(project / "main.tex", project / ".git" / "objects" / "link")
         with mock.patch.object(
             latex, "find_compiler", mock.AsyncMock(return_value="/usr/bin/pdflatex")
-        ), mock.patch.object(latex, "_run", mock.AsyncMock(return_value=(0, ""))) as run:
-            await latex.compile_project(project, "main.tex")
+        ), mock.patch.object(
+            latex, "_run", mock.AsyncMock(return_value=(0, "compiled"))
+        ) as run:
+            result = await latex.compile_project(project, "main.tex")
+        # The log is the compiler's own output, not the guard's refusal text.
+        assert result.log == "compiled"
         assert run.called, "a link inside .git blocked the compile"
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
@@ -1201,7 +1384,8 @@ class TestCompileRefusesSymlinkedArtifacts:
         with mock.patch.object(
             latex, "find_compiler", mock.AsyncMock(return_value="/usr/bin/pdflatex")
         ), mock.patch.object(latex, "_run", mock.AsyncMock(return_value=(0, "ok"))) as run:
-            await latex.compile_project(project, "main.tex")
+            result = await latex.compile_project(project, "main.tex")
+        assert (result.ok, result.log) == (True, "ok")
         assert run.called, "a regular pre-existing PDF must not block the compile"
 
 

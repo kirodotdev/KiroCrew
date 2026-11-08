@@ -25,6 +25,10 @@ owns memory).
 The memory posture tier (``resource_critical_gb``) is not one of them: spawns
 are not gated on it, only on the floor (``low_memory``). Cron still defers its
 firings on posture, through its own gate.
+
+:func:`stopped_before_start` lives here for the same reason: it tells every
+surface that starts a run (the dashboard routes, the channel ``spawn`` command,
+the app spawn SDK) that a start ended in the queue without running.
 """
 
 from __future__ import annotations
@@ -137,3 +141,22 @@ def queued_wait_text(record: Mapping[str, Any]) -> str:
     if detail:
         return detail
     return QUEUED_KIND_TEXT.get(str(record.get("reason") or ""), "waiting to start")
+
+
+def stopped_before_start(info: object) -> bool:
+    """True for the record a start returns when it was stopped while it waited.
+
+    The store accepted the row, then refused its claim because the run was
+    stopped in the queue (``CLAIM_REFUSED``), so the manager answers with a
+    placeholder: ``queued``, ``done`` and ``user_stopped``, with no ``error``.
+    Nothing runs and no card or completion event follows, so a caller must not
+    report it as started. A live run stopped during its start is not ``queued``,
+    and a refusal carries an ``error``; neither is this. Each flag is compared to
+    ``True`` so a test double's auto-created attribute never reads as set.
+    """
+    return (
+        getattr(info, "queued", False) is True
+        and getattr(info, "done", False) is True
+        and getattr(info, "user_stopped", False) is True
+        and not getattr(info, "error", "")
+    )

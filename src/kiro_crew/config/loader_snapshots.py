@@ -10,13 +10,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 import uuid
 from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
+from kiro_crew.agent_spec_format import iter_agent_spec_files_strict, parse_agent_spec_text
 from kiro_crew.config import sections as _sections
 from kiro_crew.config.loader_document import (
     ConfigReadError,
@@ -100,6 +101,24 @@ _MATERIALIZED_REFRESH_APPLIED = 0
 # for a lookup: the read path stays lock-free, which is the whole point of the
 # snapshot.
 _MATERIALIZED_AGENTS_LOCK = threading.Lock()
+# The memo of :func:`refresh_materialized_agents`: the pinned revision of both
+# agents directories and the publish count a scan read, with the ticket of the
+# snapshot that scan installed. A call whose key and installed ticket both still
+# match skips its scan. The ticket is ``None`` when that scan could not be
+# reused, so the reason is logged once per key rather than once per call.
+# ``None`` until a scan lands under a provable key.
+_MemoKey = tuple[str, bytes, str, bytes, int]
+_MATERIALIZED_MEMO: tuple[_MemoKey, int | None] | None = None
+# Held across the memo check and the scan, never across the heal. A second
+# caller waits for the scan in flight and then reuses it when nothing it reads
+# moved; callers whose inputs keep moving scan one after another. Readers of the
+# snapshot take only _MATERIALIZED_AGENTS_LOCK, so they never wait on a scan.
+# Reentrant, so a refresh reached from inside a scan on the same thread (a lazy
+# build) does not deadlock; the refresh tickets then discard the older view.
+_MATERIALIZED_REFRESH_FLIGHT = threading.RLock()
+# Refreshes that reused the installed snapshot, and those that scanned. Updated
+# in place under _MATERIALIZED_AGENTS_LOCK.
+_MATERIALIZED_SCAN_COUNTS: dict[str, int] = {"hits": 0, "misses": 0}
 
 
 def _report_dropped(what: str, dropped: int, *, scope: str = "") -> None:
@@ -162,6 +181,8 @@ def _remember_seen(names: Iterable[str]) -> None:
 # one thread. A scan that skipped an unreadable or unparseable spec leaves that
 # agent's name out of the snapshot although its file is still there, so its
 # absence is not evidence of a removal (see :func:`refresh_materialized_agents`).
+# ``skipped`` beside it lists the stems of the specs that scan skipped (``None``
+# when the listing failed), so a refresh keeps only what those files declared.
 _SCAN_STATE = threading.local()
 
 
@@ -201,10 +222,23 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
     from kiro_crew.hooks import safe_read_file
 
     _SCAN_STATE.complete = True
+    # Stems of the specs this scan skipped; ``None`` when the listing itself
+    # failed, so any spec may have been skipped.
+    skipped: list[str] = []
+    _SCAN_STATE.skipped = skipped
+    # Whether a skip was a failed read rather than a spec that did not parse: a
+    # read can fail for a moment (a busy resolver, a file mid-replace) with no
+    # change to the entry's metadata, where a parse failure lasts until an edit.
+    _SCAN_STATE.read_failed = False
     try:
-        candidates = iter_agent_spec_files(agents_dir)
+        # Strict: a listing that fails is not an empty directory. A directory
+        # that does not exist is one (the crewmate folder before its first file).
+        candidates = iter_agent_spec_files_strict(agents_dir)
+    except FileNotFoundError:
+        candidates = []
     except OSError:
         _SCAN_STATE.complete = False
+        _SCAN_STATE.skipped = None
         return frozenset(), {}
     for af in candidates:
         try:
@@ -214,10 +248,16 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
             # refresh. safe_read_file re-checks the RESOLVED target and raises
             # PermissionError for a refused path — an OSError subclass, so a
             # refused entry is skipped by the same handler as an unreadable one.
-            data = parse_agent_spec_text(safe_read_file(str(af)), af)
-        except (ValueError, OSError):
+            # The canonical gate judges each resolved path inline: this scan
+            # runs off the loop and reads every spec, and the bounded gate would
+            # send each one to the resolver pool again.
+            data = parse_agent_spec_text(safe_read_file(str(af), canonical_gate=True), af)
+        except (ValueError, OSError) as exc:
             # Its agent may be one this scan now leaves out; the scan is partial.
             _SCAN_STATE.complete = False
+            skipped.append(af.stem)
+            if isinstance(exc, OSError):
+                _SCAN_STATE.read_failed = True
             continue
         # Skip stray non-object JSON a user may have dropped in the dir. The
         # filename stem is only trusted AFTER the file parses as an agent config:
@@ -231,7 +271,7 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
         # `mochi--mochi.json` with `"name": "mochi"` is listed as `mochi`, and
         # `mochi--mochi` is not listed at all. Treating the stem as dispatchable
         # would hand kiro-cli a name it does not know, which falls back to its own
-        # default silently: the exact invisible mismatch this change removes. The
+        # default silently, an invisible mismatch. The
         # stem is used ONLY when the config declares no name, where it is the only
         # identifier available.
         declared = data.get("name")
@@ -271,7 +311,7 @@ def _scan_materialized_index(agents_dir: Path) -> tuple[frozenset[str], dict[str
     return frozenset(names), kept
 
 
-def refresh_materialized_agents(*, heal_default: bool = False) -> None:
+def refresh_materialized_agents(*, heal_default: bool = False) -> bool:
     """Rescan the kiro agents directory into the in-memory snapshot.
 
     MUST be called off the event loop — it globs a directory and reads every
@@ -301,6 +341,111 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
     is not how an app agent is meant to appear (``_register_agents`` is), and the
     alternative is filesystem work on the loop, so the staleness is accepted
     rather than papered over with a per-file stat.
+
+    The scan is skipped while nothing it reads has moved: both directories'
+    :func:`agents_dir_revision` and the publish count are the same as when the
+    installed snapshot's own scan read them (:func:`_refresh_or_reuse`). Every
+    caller shares that memo, and the heal runs on a reuse as on a scan.
+
+    Returns ``True`` when this call's snapshot was installed or the installed one
+    was reused, ``False`` when the scan raised or a refresh that started later
+    had already landed.
+    """
+    with _MATERIALIZED_REFRESH_FLIGHT:
+        landed, complete = _refresh_or_reuse()
+    # Only a snapshot that read every spec may heal: one that skipped a file it
+    # could not read or parse is missing that file's agent while the file is
+    # still there, and the reset it would make is durable. Outside the flight
+    # lock, because the reset writes config.json and a lazy build can wait on the
+    # flight lock while holding the config lock.
+    if heal_default and complete:
+        reset_dangling_default_agent()
+    return landed
+
+
+def _memo_key() -> _MemoKey | None:
+    """What a scan reads, pinned: both directories' revisions and the publish count.
+
+    ``None`` when a revision cannot be proved (the memo is off, a symlinked spec,
+    too many young entries, an unlistable directory), so the scan always runs.
+    Never raises: the refresh it keys never does, and an unprovable key costs
+    only the scan.
+    """
+    # Deferred: agent_discovery imports the config package.
+    from kiro_crew.agent_discovery import _revision_pin, agents_dir_revision
+
+    try:
+        user_dir, mate_dir = kiro_agents_dir(), mate_agents_dir()
+        user = agents_dir_revision(user_dir)
+        mate = agents_dir_revision(mate_dir)
+    except Exception:  # noqa: BLE001 -- an unprovable key scans, as before the memo
+        logger.debug("agent snapshot memo key unavailable", exc_info=True)
+        return None
+    if user is None or mate is None:
+        return None
+    return (
+        str(user_dir),
+        _revision_pin(user),
+        str(mate_dir),
+        _revision_pin(mate),
+        _MATERIALIZED_AGENTS_GENERATION,
+    )
+
+
+def _refresh_or_reuse() -> tuple[bool, bool]:
+    """One refresh under the flight lock: ``(landed or reused, snapshot complete)``.
+
+    Reuses the installed snapshot when the key matches the one its scan was
+    memoized under and no other scan has landed since. Otherwise scans, and
+    memoizes the result only when the key was the same before and after the
+    scan (no write landed meanwhile) and nothing the scan skipped can change
+    without an edit: a spec that did not parse fails the same way on the same
+    bytes, while a failed read or listing can pass a moment later.
+    """
+    global _MATERIALIZED_MEMO
+    key = _memo_key()
+    with _MATERIALIZED_AGENTS_LOCK:
+        if key is not None and _MATERIALIZED_MEMO == (key, _MATERIALIZED_REFRESH_APPLIED):
+            _MATERIALIZED_SCAN_COUNTS["hits"] += 1
+            return True, _MATERIALIZED_COMPLETE
+        _MATERIALIZED_SCAN_COUNTS["misses"] += 1
+    started = time.perf_counter()
+    landed, complete, reusable, ticket = _scan_and_install()
+    logger.debug(
+        "agent snapshot scan took %.1f ms (landed=%s, hits=%d, misses=%d)",
+        (time.perf_counter() - started) * 1000,
+        landed,
+        _MATERIALIZED_SCAN_COUNTS["hits"],
+        _MATERIALIZED_SCAN_COUNTS["misses"],
+    )
+    if not landed:
+        # The installed snapshot is the one before this call, or a later scan's,
+        # and the memo still describes it.
+        return False, False
+    after = _memo_key() if key is not None else None
+    with _MATERIALIZED_AGENTS_LOCK:
+        memoize = reusable and after == key and ticket == _MATERIALIZED_REFRESH_APPLIED
+        declined = key is not None and not memoize and _MATERIALIZED_MEMO != (key, None)
+        if key is None:
+            _MATERIALIZED_MEMO = None
+        else:
+            _MATERIALIZED_MEMO = (key, ticket if memoize else None)
+    if declined:
+        logger.info(
+            "agent snapshot scan not memoized (reusable=%s, inputs moved=%s)",
+            reusable,
+            after != key,
+        )
+    return True, complete
+
+
+def _scan_and_install() -> tuple[bool, bool, bool, int]:
+    """Scan both agents directories and install the snapshot.
+
+    Returns ``(landed, complete, reusable, ticket)``: whether the snapshot was
+    installed, whether its user-level scan read every spec, whether every spec
+    either scan skipped was one that did not parse (so the same bytes skip it
+    again), and this scan's ticket.
     """
     global _MATERIALIZED_AGENTS, _MATERIALIZED_AGENTS_READY, _MATERIALIZED_REFRESH_ISSUED
     global _MATERIALIZED_REFRESH_APPLIED, _MATERIALIZED_COMPLETE, _MATERIALIZED_MATE_ONLY
@@ -311,6 +456,7 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
     try:
         agents_dir = kiro_agents_dir()
         _SCAN_STATE.complete = True
+        _SCAN_STATE.skipped = []
         snapshot, stems = _scan_materialized_index(agents_dir)
         # Crewmate scope (``rfc-mate-owned-agent-config`` §5.3). A crewmate owns a
         # custom-agent file in ``~/.kiro/mates/agents/`` whose ``kiro_agent``
@@ -328,9 +474,13 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
         # crewmate name the last snapshot held, so a file it could not read is
         # never removal evidence.
         complete_after_user = bool(getattr(_SCAN_STATE, "complete", True))
+        skipped_user: list[str] | None = getattr(_SCAN_STATE, "skipped", None)
+        user_read_failed = bool(getattr(_SCAN_STATE, "read_failed", False))
         _SCAN_STATE.complete = True
         mate_names, mate_stems = _scan_materialized_index(mate_agents_dir())
         mate_complete = bool(getattr(_SCAN_STATE, "complete", True))
+        mate_listed = getattr(_SCAN_STATE, "skipped", None) is not None
+        mate_read_failed = bool(getattr(_SCAN_STATE, "read_failed", False))
         _SCAN_STATE.complete = complete_after_user
         # The mate conductor and worker live in that folder too
         # (``agent_files.MATE_SERVICE_AGENT_FILENAMES``): declared agents, never a
@@ -342,9 +492,15 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
         snapshot = frozenset(snapshot | mate_names)
         stems = {**mate_stems, **stems}
         scan_complete = complete_after_user
+        reusable = (
+            skipped_user is not None
+            and not user_read_failed
+            and mate_listed
+            and not mate_read_failed
+        )
     except Exception:  # noqa: BLE001 — a refresh failure only costs a fallback
         logger.debug("Failed to refresh materialized agent names", exc_info=True)
-        return
+        return False, False, False, my_ticket
     with _MATERIALIZED_AGENTS_LOCK:
         if my_ticket < _MATERIALIZED_REFRESH_APPLIED:
             # A refresh that started AFTER this one already applied, so this view
@@ -352,7 +508,7 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
             # scan — resurrecting an agent deleted in between, whose config is gone
             # from disk. Drop it; the newer snapshot already reflects reality.
             logger.debug("Discarding out-of-order materialized agent refresh")
-            return
+            return False, False, False, my_ticket
         if _MATERIALIZED_AGENTS_GENERATION != generation_at_start:
             # A registration published while this scan was in flight, so the scan
             # may have globbed the directory before that write landed. Replacing
@@ -368,14 +524,39 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
             kept = _MATERIALIZED_MATE_ONLY - user_names
             snapshot = frozenset(snapshot | kept)
             mate_only = frozenset(mate_only | kept)
+        kept_stems: frozenset[str] = frozenset()
+        if not scan_complete:
+            # The user level keeps what a SKIPPED spec declared last time: that
+            # file is still on disk, and dropping its name would fail every
+            # session bound to it until the next complete refresh. Only those
+            # names stay -- the skipped file's stem, or the name its stem mapped
+            # to -- so a file really removed meanwhile (an app disable, a
+            # delete) still drops out. A failed listing skipped everything.
+            previous_user = _MATERIALIZED_AGENTS - _MATERIALIZED_MATE_ONLY
+            if skipped_user is None:
+                kept_user = previous_user
+                kept_stems = frozenset(_MATERIALIZED_STEMS)
+            else:
+                kept_stems = frozenset(s for s in skipped_user if s in _MATERIALIZED_STEMS)
+                declared = {*skipped_user, *(_MATERIALIZED_STEMS[s] for s in kept_stems)}
+                kept_user = previous_user & declared
+            snapshot = frozenset(snapshot | kept_user)
+            mate_only = frozenset(mate_only - kept_user)
         _MATERIALIZED_AGENTS = snapshot
         _MATERIALIZED_MATE_ONLY = mate_only
         # In place, new entries first: a reader between the two statements sees
         # every current stem (an old value for one just rewritten, never a hole),
-        # and the dict's identity holds across refreshes and boots.
+        # and the dict's identity holds across refreshes and boots. A skipped
+        # spec's mapping is kept, for the reason above.
         _MATERIALIZED_STEMS.update(stems)
-        for stale in [stem for stem in _MATERIALIZED_STEMS if stem not in stems]:
+        for stale in [s for s in _MATERIALIZED_STEMS if s not in stems and s not in kept_stems]:
             del _MATERIALIZED_STEMS[stale]
+        # The scan bounds what it built; the kept mappings come on top, so the
+        # merged map is bounded here too, dropping kept entries before fresh ones.
+        overflow = max(0, len(_MATERIALIZED_STEMS) - _MATERIALIZED_SEEN_MAX)
+        for extra in [s for s in _MATERIALIZED_STEMS if s not in stems][:overflow]:
+            del _MATERIALIZED_STEMS[extra]
+        _report_dropped("kept file-name mapping(s)", overflow)
         # One call per landed snapshot, so its eviction and its report happen
         # once for the whole of what it declares.
         _remember_seen([*snapshot, *stems])
@@ -392,11 +573,7 @@ def refresh_materialized_agents(*, heal_default: bool = False) -> None:
         invalidate_include_crew_context_cache()
     except Exception:  # noqa: BLE001 — best-effort; a stale flag is not fatal
         logger.debug("Failed to invalidate includeCrewContext cache", exc_info=True)
-    # Only a scan that read every spec may heal: one that skipped a file it could
-    # not read or parse is missing that file's agent while the file is still
-    # there, and the reset it would make is durable.
-    if heal_default and scan_complete:
-        reset_dangling_default_agent()
+    return True, scan_complete, reusable, my_ticket
 
 
 def _removal_evidence() -> tuple[frozenset[str] | None, frozenset[str], bool]:
@@ -411,6 +588,43 @@ def _removal_evidence() -> tuple[frozenset[str] | None, frozenset[str], bool]:
             _MATERIALIZED_SEEN.keys() - _MATERIALIZED_AGENTS - _MATERIALIZED_STEMS.keys()
         )
         return names, removed, _MATERIALIZED_COMPLETE
+
+
+def materialized_snapshot_complete() -> bool:
+    """Whether the installed snapshot came from a scan that read every spec.
+
+    A pure in-memory read, safe on the event loop. ``False`` before the first
+    refresh lands, and after one that skipped a spec it could not read: a name
+    missing then may still have its file on disk, so a caller about to fail a
+    turn or a request on that miss rescans once off the loop first
+    (``_turn_admit``, :func:`rescan_if_incomplete`).
+    """
+    return _MATERIALIZED_COMPLETE
+
+
+async def rescan_if_incomplete() -> bool:
+    """Rescan once off the loop while the installed snapshot is incomplete.
+
+    For a caller about to refuse an agent that did not resolve. The first scan in
+    a process keeps no name for a spec it could not read, so that agent is missing
+    while its file is on disk. A complete snapshot is trusted and costs no scan.
+    ``True`` when the refresh ran, so the caller resolves again; it reuses the
+    snapshot when no input moved, because a spec that did not parse fails the
+    same way on the same bytes. Never raises: a failed rescan leaves the
+    caller's refusal in place.
+    """
+    if materialized_snapshot_complete():
+        return False
+    from kiro_crew.executors import discovery_executor
+
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), refresh_materialized_agents
+        )
+    except Exception:  # noqa: BLE001 -- the caller refuses as it would without the scan
+        logger.warning("agent snapshot rescan before a refusal failed", exc_info=True)
+        return False
+    return True
 
 
 def reset_dangling_default_agent() -> bool:
@@ -587,6 +801,9 @@ def _workspace_declares(template: str, workspace_dir: Path) -> bool:
     return not complete or template in names
 
 
+_EDITION_LOOKUP = threading.local()
+
+
 def _edition_agent_names() -> frozenset[str]:
     """Names of the agents the edition contributes beside the on-disk specs.
 
@@ -594,11 +811,22 @@ def _edition_agent_names() -> frozenset[str]:
     edition's agent catalog, so the healer and the agent listing agree on which
     rows exist: its failure handling (none on an adapter error) and its row
     validation apply here unchanged. The public edition contributes none.
+
+    Re-entry on the same thread answers none, the same answer as an adapter
+    error. With no installed context the lookup builds one, which loads config,
+    which can reach this lookup again. Unguarded, that cycle runs to the
+    recursion limit, and a GC finalizer at that depth fails whatever is running.
     """
+    if getattr(_EDITION_LOOKUP, "active", False):
+        return frozenset()
     # Deferred: agent_discovery imports this package's paths at load time.
     from kiro_crew.agent_discovery import _with_edition_agents
 
-    return frozenset(agent.name for agent in _with_edition_agents([]))
+    _EDITION_LOOKUP.active = True
+    try:
+        return frozenset(agent.name for agent in _with_edition_agents([]))
+    finally:
+        _EDITION_LOOKUP.active = False
 
 
 def _dangling_template(kiro_agent: object, names: frozenset[str]) -> str | None:
@@ -1050,8 +1278,8 @@ def published_autocompact_pct() -> float:
 #
 # Defaults to "" -- the dataclass default for :attr:`KiroCrewConfig.timezone` --
 # so a read taken BEFORE the first load resolves exactly as a defaults-only load
-# would (empty falls through to UTC in both consumers) rather than inventing a
-# zone during the boot window.
+# would (empty falls through to the host's zone, as an unset config does) rather
+# than inventing a configured zone during the boot window.
 _CONFIG_TIMEZONE: str = ""
 
 _CONFIG_TIMEZONE_TICKET: int = 0
@@ -1104,9 +1332,10 @@ def published_config_timezone() -> str:
     """The published default timezone name, or ``""`` if none is configured.
 
     ``""`` is not an error and not a "cold snapshot" signal -- it is what an
-    unset :attr:`KiroCrewConfig.timezone` says, and both consumers already
-    resolve it to UTC. Callers must NOT treat it as a reason to reach for
-    ``config.json`` themselves; that is the I/O this snapshot exists to remove.
+    unset :attr:`KiroCrewConfig.timezone` says, and every consumer resolves it
+    to the host's zone (``cron_service.schedule.resolve_timezone_name``).
+    Callers must NOT treat it as a reason to reach for ``config.json``
+    themselves; that is the I/O this snapshot exists to remove.
     """
     return _CONFIG_TIMEZONE
 

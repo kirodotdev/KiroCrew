@@ -478,6 +478,17 @@ describe('ConnectionsSection', () => {
     expect(screen.queryByTestId('connection-row')).toBeNull()
   })
 
+  it("names a failing key's probe error under its row", async () => {
+    // The probe's own error names the cause before the generic Reconnect
+    // guidance, and the agent can be asked about it.
+    renderWithProviders(<ConnectionsSection account={DEGRADED} askAgent />)
+
+    const row = await screen.findByTestId('connection-row')
+    const detail = within(row).getByTestId('reconnect-detail')
+    expect(detail).toHaveTextContent('expired')
+    expect(within(detail).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+  })
+
   it('shows an inline Reconnect on a failing key and loads its command on demand', async () => {
     vi.mocked(awsControlApi.reconnectPlan).mockResolvedValue({
       method: 'terminal', kind: 'credential-process', command: 'aws sso login --profile work',
@@ -504,9 +515,9 @@ describe('ReconnectAction', () => {
 
     fireEvent.click(await screen.findByTestId('reconnect-toggle'))
     // The panel resolves to its error message, not a command block.
-    expect(await screen.findByTestId('reconnect-error')).toBeTruthy()
+    const notice = await screen.findByTestId('reconnect-error')
     expect(screen.queryByTestId('reconnect-command')).toBeNull()
-    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeTruthy()
+    expect(within(notice).getByRole('button', { name: /ask the agent/i })).toBeTruthy()
   })
 
   it('withholds the hand-off when the host says so', async () => {
@@ -551,7 +562,7 @@ describe('ReconnectAction copy command', () => {
       expect(screen.getByTestId('reconnect-copy')).toHaveTextContent(i18nT('apps.awsControl.page.copied')),
     )
 
-    vi.advanceTimersByTime(1600)
+    await act(async () => { vi.advanceTimersByTime(1600) })
     await waitFor(() =>
       expect(screen.getByTestId('reconnect-copy')).toHaveTextContent(i18nT('apps.awsControl.page.copy')),
     )
@@ -588,6 +599,29 @@ describe('SetupCard', () => {
 
     fireEvent.click(screen.getByTestId('drive-confirm-btn'))
     await waitFor(() => expect(awsControlApi.driveBootstrapConfirm).toHaveBeenCalledWith(ACCOUNT.account))
+  })
+
+  it('names the searched region when the drive status reports one (#24913)', () => {
+    renderWithProviders(
+      <SetupCard account={ACCOUNT.account} region="us-west-2" searchedRegion="ap-southeast-2" />,
+    )
+
+    const line = screen.getByTestId('drive-searched-region')
+    expect(line).toHaveTextContent(
+      i18nT('apps.awsControl.console.setup_searched_region', { region: 'ap-southeast-2' }),
+    )
+    expect(line).toHaveTextContent('ap-southeast-2')
+    // The existing copy stays as it was.
+    expect(screen.getByTestId('drive-setup')).toHaveTextContent(i18nT('apps.awsControl.console.setup_body'))
+  })
+
+  it('keeps today\'s text when an older backend sends no searched region', () => {
+    renderWithProviders(<SetupCard account={ACCOUNT.account} region="us-west-2" />)
+
+    expect(screen.queryByTestId('drive-searched-region')).toBeNull()
+    const card = screen.getByTestId('drive-setup')
+    expect(card).toHaveTextContent(i18nT('apps.awsControl.console.setup_body'))
+    expect(card).toHaveTextContent(i18nT('apps.awsControl.console.setup_costs_note'))
   })
 
   it('surfaces a preview error and does not advance to the confirm step', async () => {

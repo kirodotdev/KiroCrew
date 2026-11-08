@@ -66,23 +66,12 @@ def test_no_refusal_in_this_module_is_prose_only() -> None:
 def test_the_ratchet_can_actually_fail() -> None:
     """Self-check: a scan matching nothing would pass the assertion above vacuously.
 
-    The count moves when a refusal enters or leaves this module's own body. Two
-    corpus-read refusals now answer through `chat_utils.history_corpus_unreadable`,
-    which sets the code by construction, so the scanner does not see them here —
-    a stronger guarantee than a per-site scan, but two fewer sites to count. There
-    is no ``slot_not_persistent`` site: an incognito or temporary session forks
-    and the child inherits its mode. The one memory-mode refusal in the module is
-    ``fork_source_memory_mode_invalid``, for a parent whose persisted mode is
-    outside the allowlist. The two app-isolation refusals answer through
-    `slot_ownership.deny_app_slot_access`, the shared per-slot decision, which
-    returns ``slot_not_found`` by construction, so the scan finds those two
-    sites in that module rather than here. The no-such-slot 404 answers through
-    `slot_ownership.slot_not_found`, the same response, so it is counted there
-    too. The over-capacity corpus refusal (``fork_corpus_too_large``) adds one
-    site, and so does the read-only remote-crew refusal (``relay_archive_read_only``).
+    The count covers this module's own refusal sites. Refusals answered through
+    `chat_utils.history_corpus_unreadable`, `slot_ownership.deny_app_slot_access` and
+    `slot_ownership.slot_not_found` set the code there and are counted in those modules.
     """
     coded = [f for f in _findings() if f.bucket == "compliant"]
-    assert len(coded) == 26, f"scanner reached {len(coded)} coded sites, expected 26"
+    assert len(coded) == 28, f"scanner reached {len(coded)} coded sites, expected 28"
     assert all(f.code_value for f in coded)
 
 
@@ -131,43 +120,56 @@ async def test_a_body_that_is_not_json(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_body_that_is_json_but_not_an_object(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "payload,status,code",
+    [
+        pytest.param(
+            ["at_message_index"],
+            400,
+            "body_not_object",
+            id="test_a_body_that_is_json_but_not_an_object",
+        ),
+        pytest.param({"mode": "sideways"}, 400, "invalid_mode", id="test_an_unknown_mode"),
+        pytest.param(
+            {"direction": "sideways"}, 400, "invalid_direction", id="test_an_unknown_direction"
+        ),
+        pytest.param({"prompt": 7}, 400, "invalid_field_type", id="test_a_non_string_prompt"),
+        pytest.param(
+            {"prompt": "x" * 32_769}, 400, "prompt_too_long", id="test_an_over_long_prompt"
+        ),
+        # ``at_index < 0`` shares the branch with the type check, so it keeps that code.
+        pytest.param(
+            {"at_message_index": -1},
+            400,
+            "invalid_field_type",
+            id="test_a_negative_index_is_a_type_refusal_not_a_range_one",
+        ),
+        # ``isinstance(True, int)`` is True in Python; the handler rejects bools first.
+        pytest.param(
+            {"at_message_index": True},
+            400,
+            "invalid_field_type",
+            id="test_a_boolean_index_is_refused_as_a_type",
+        ),
+        pytest.param(
+            {"at_message_id": 7},
+            400,
+            "invalid_field_type",
+            id="test_a_non_string_message_id_is_refused",
+        ),
+        pytest.param(
+            {"at_message_id": "missing-row"},
+            409,
+            "fork_message_not_found",
+            id="test_an_unknown_message_id_is_a_stale_anchor",
+        ),
+    ],
+)
+async def test_a_refused_fork_names_its_code(tmp_path, monkeypatch, payload, status, code) -> None:
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", ["at_message_index"])
-    assert status == 400
-    assert body["code"] == "body_not_object"
-
-
-@pytest.mark.asyncio
-async def test_an_unknown_mode(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"mode": "sideways"})
-    assert status == 400
-    assert body["code"] == "invalid_mode"
-
-
-@pytest.mark.asyncio
-async def test_an_unknown_direction(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"direction": "sideways"})
-    assert status == 400
-    assert body["code"] == "invalid_direction"
-
-
-@pytest.mark.asyncio
-async def test_a_non_string_prompt(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"prompt": 7})
-    assert status == 400
-    assert body["code"] == "invalid_field_type"
-
-
-@pytest.mark.asyncio
-async def test_an_over_long_prompt(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"prompt": "x" * 32_769})
-    assert status == 400
-    assert body["code"] == "prompt_too_long"
+    got_status, body = await _fork(_seeded_state(tmp_path), "forkable", payload)
+    assert got_status == status
+    assert body["code"] == code
 
 
 @pytest.mark.asyncio
@@ -182,44 +184,6 @@ async def test_a_non_integer_index_and_an_out_of_range_one_differ(tmp_path, monk
     _, out_of_range = await _fork(_seeded_state(tmp_path), "forkable", {"at_message_index": 999})
     assert bad_type["code"] == "invalid_field_type"
     assert out_of_range["code"] == "value_out_of_range"
-
-
-@pytest.mark.asyncio
-async def test_a_negative_index_is_a_type_refusal_not_a_range_one(tmp_path, monkeypatch) -> None:
-    """``at_index < 0`` shares the branch with the type check, so it keeps that code."""
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"at_message_index": -1})
-    assert status == 400
-    assert body["code"] == "invalid_field_type"
-
-
-@pytest.mark.asyncio
-async def test_a_boolean_index_is_refused_as_a_type(tmp_path, monkeypatch) -> None:
-    """``isinstance(True, int)`` is True in Python; the handler rejects bools first."""
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"at_message_index": True})
-    assert status == 400
-    assert body["code"] == "invalid_field_type"
-
-
-@pytest.mark.asyncio
-async def test_a_non_string_message_id_is_refused(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(_seeded_state(tmp_path), "forkable", {"at_message_id": 7})
-    assert status == 400
-    assert body["code"] == "invalid_field_type"
-
-
-@pytest.mark.asyncio
-async def test_an_unknown_message_id_is_a_stale_anchor(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    status, body = await _fork(
-        _seeded_state(tmp_path),
-        "forkable",
-        {"at_message_id": "missing-row"},
-    )
-    assert status == 409
-    assert body["code"] == "fork_message_not_found"
 
 
 @pytest.mark.asyncio
@@ -300,12 +264,8 @@ async def test_a_parent_with_an_unrecognised_persisted_mode_is_refused(
 async def test_the_three_404s_stay_indistinguishable(tmp_path, monkeypatch) -> None:
     """An app-scoped caller must not be able to tell the three 404s apart.
 
-    ``404`` (not ``403``) is deliberate: it makes a slot owned by another app, an
-    unscoped slot, and a slot that does not exist look identical to a caller
-    behind the App Kit isolation boundary, so the boundary cannot be abused to
-    enumerate slots (CWE-204). The added ``code`` is a NEW field on that same
-    response, so it is a new place for the three to diverge — this pins that
-    they do not. The true reason stays recorded server-side via SEL.
+    The ``404`` hides other-app, unscoped and missing slots alike (CWE-204); the ``code``
+    field must not tell them apart either. The true reason is recorded via SEL.
     """
     monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
     state = _seeded_state(tmp_path)
@@ -364,20 +324,14 @@ async def test_every_refusal_carries_both_a_code_and_its_prose(tmp_path, monkeyp
 def test_an_unreadable_mid_rotation_corpus_refuses_instead_of_approximating() -> None:
     """The full-corpus read failing must FAIL CLOSED, by source inspection.
 
-    Driving this through the wire needs a mid-rotation chain plus a read that
-    throws only on the second call, which the seeded fixture cannot express; the
-    property that matters is structural, so it is asserted structurally.
-
-    Why it matters: a fallback prepending only THIS key's
-    rotated head, so a rotation on a LATER chain member left earlier members'
-    rotated rows missing and shifted every index. An index-addressed fork then
-    copied different messages than the reader pointed at, with nothing on screen
-    to say so. A retryable refusal is visible and recoverable; a silently wrong
-    fork is neither.
+    The seeded fixture cannot express a mid-rotation read failure. A fallback would shift
+    indexes, so an index-addressed fork would silently copy the wrong messages.
     """
     from pathlib import Path
 
-    src = (Path(__file__).resolve().parents[1] / "src/kiro_crew" / _TARGET).read_text()
+    src = (Path(__file__).resolve().parents[1] / "src/kiro_crew" / _TARGET).read_text(
+        encoding="utf-8"
+    )
     head, _, tail = src.partition("chained-full fork corpus read failed")
     assert tail, "the full-read failure branch is gone -- re-point this guard"
     # Scope to the except block itself: the `if not _rebuilt:` prepend further

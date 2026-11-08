@@ -96,11 +96,14 @@ _SENTINEL = "[[KIROCREW_SESSION_DIRECTIVE]]"
 # another module would make that dependency invisible here.
 SENTINEL = _SENTINEL
 
-# The ACP tool-result parser truncates each output part at 4000 chars
-# (``acp/_dispatch_parts/tool_result_events.py`` ``str(text)[:4000]``). The marker is the TAIL of the
-# result, so an oversized payload loses the marker entirely — the effect would be
-# silently dropped after the model was told the request was made. Encode refuses
-# above this bound instead, leaving headroom under the transport cap.
+# The ACP layer cuts a joined tool result to :data:`MAX_TOOL_RESULT_CHARS` after
+# redaction (``acp/_dispatch_parts/tool_result_events.py``). The marker is the TAIL
+# of the result, so an oversized payload loses the marker entirely — the effect
+# would be silently dropped after the model was told the request was made. Encode
+# refuses above this bound instead, leaving headroom under the transport cap.
+# The bound covers the WHOLE result: the confirmation text, the marker and the
+# JSON payload, in which a non-ASCII character is escaped to six characters or
+# more. A tool that states a size for one argument states what is left after the rest.
 MAX_DIRECTIVE_CHARS = 3800
 
 # The ACP layer truncates a joined tool result to this many characters before the
@@ -171,11 +174,71 @@ def encode(kind: str, args: dict[str, Any], human: str) -> str:
     if len(out) > MAX_DIRECTIVE_CHARS:
         return tag_refusal(
             f"Error: {kind} arguments are too large to deliver "
-            f"({len(out)} chars, limit {MAX_DIRECTIVE_CHARS}). Shorten them "
-            "(e.g. a briefer message / fewer items) and call the tool again — "
+            f"({len(out)} chars, limit {MAX_DIRECTIVE_CHARS}). "
+            f"{_shorten_hint(args, len(out) - MAX_DIRECTIVE_CHARS)} — "
             "nothing was applied."
         )
     return out
+
+
+def _shorten_hint(args: dict[str, Any], over: int) -> str:
+    """Name the argument that costs the most and how much to cut from it.
+
+    The encoded total alone does not tell a caller how long an argument may be,
+    because the confirmation text, the marker and JSON escaping share the bound.
+    A request wrapped in one object (``monitor_update`` sends ``{"patch": {...}}``)
+    is described by that object's fields, which carry the caller's own names. A
+    text argument's cut is counted from its end at each character's encoded size
+    (:func:`_tail_cut`), so the figure is one the caller can make. A tool whose
+    confirmation text depends on the argument can need a little more:
+    ``monitor_start`` names the subject it infers from the message, so a cut that
+    changes it changes the confirmation too.
+    """
+    if len(args) == 1:
+        (inner,) = args.values()
+        if isinstance(inner, dict) and inner:
+            args = inner
+    sizes = {
+        name: len(json.dumps(value, separators=(",", ":"), default=str))
+        for name, value in args.items()
+    }
+    if not sizes:
+        return "Shorten them (e.g. a briefer message / fewer items) and call the tool again"
+    name = max(sizes, key=sizes.__getitem__)
+    value = args[name]
+    advice = (
+        "or move long text into a file and pass a short pointer to it, " "then call the tool again"
+    )
+    if not isinstance(value, str):
+        return (
+            f"The largest argument is `{name}`, and the request is {over} encoded "
+            f"characters over: shorten it, {advice}"
+        )
+    cut = _tail_cut(value, over)
+    if cut is None:
+        return (
+            f"The largest argument is `{name}` ({len(value)} chars), but removing all of "
+            f"it still leaves the request over: shorten the other arguments too, {advice}"
+        )
+    return (
+        f"The largest argument is `{name}` ({len(value)} chars): shorten it from the "
+        f"end by at least {cut} characters, {advice}"
+    )
+
+
+def _tail_cut(text: str, over: int) -> int | None:
+    """How many characters to drop from the end of *text* to remove *over* encoded ones.
+
+    Each character costs what :func:`encode`'s JSON makes of it: one for plain ASCII,
+    two for a quote, backslash or newline, six or more for a non-ASCII character.
+    ``None`` when dropping all of *text* removes too little.
+    """
+    removed = 0
+    for count, char in enumerate(reversed(text), start=1):
+        removed += len(json.dumps(char)) - 2
+        if removed >= over:
+            return count
+    return None
 
 
 def neutralize_markers(text: str) -> str:
@@ -491,6 +554,26 @@ def decode(text: str, expected_tool: str) -> dict[str, Any] | None:
     return args if isinstance(args, dict) else {}
 
 
+def deferred_call_arguments(raw_args: Any) -> dict | None:
+    """The arguments inside a Tool Search deferred-call envelope, else ``None``.
+
+    A backend that defers a tool runs it through its ``tool_call`` meta-tool, so
+    the frame's input is ``{"tool_id": "<server>::<tool>", "arguments": {...}}``
+    (``tool::<server>::<tool>`` under a resource-v2 tool loader) while the server
+    receives only ``{...}`` (measured on KAS, kiro-cli 2.27.1).
+    Only an envelope carrying nothing else besides ``_meta``, with an object
+    ``arguments``, counts. ``tool_id`` is no proof of which tool runs: a caller
+    that needs identity compares it with the call it resolved on its own.
+    """
+    if (
+        isinstance(raw_args, dict)
+        and set(raw_args) - {"_meta"} == {"tool_id", "arguments"}
+        and isinstance(raw_args["arguments"], dict)
+    ):
+        return raw_args["arguments"]
+    return None
+
+
 def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
     """Select call arguments from an attributed ACP MCP envelope.
 
@@ -499,15 +582,12 @@ def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
 
     - Codex wraps them beside the adapter-resolved server and tool; unwrap only
       when both match the independently attributed call.
-    - A Tool Search deferred call reaches the server through the backend's
-      ``tool_call`` meta-tool, so the frame's input is
-      ``{"tool_id": "<server>::<tool>", "arguments": {...}}`` while the server
-      receives only ``{...}``. Unwrap only when ``tool_id`` names the core server
-      and the very directive *tool* this call already resolved to, and the
-      envelope carries nothing else besides ``_meta``. Measured on KAS
-      (kiro-cli 2.27.1), whose frame carries no ``_meta.kiro`` identity, so
-      this branch is keyed on the envelope and *tool*, not on *server*/*name*,
-      and holds for any provider that emits the same envelope.
+    - A Tool Search deferred call (:func:`deferred_call_arguments`): unwrap only
+      when ``tool_id`` names the core server and the very directive *tool* this
+      call already resolved to, as ``kirocrew-core::<tool>`` or the resource-v2
+      ``tool::kirocrew-core::<tool>``. Its KAS frame carries no ``_meta.kiro``
+      identity, so this branch is keyed on the envelope and *tool*, not on
+      *server*/*name*, and holds for any provider that emits the same envelope.
 
     Never derive identity from this input: the resolved *tool* is the gate, and
     the envelope only selects which arguments to hash.
@@ -521,13 +601,11 @@ def event_input_digest(tool: str, raw_args: Any, server: str, name: str) -> str:
         and isinstance(raw_args.get("arguments"), dict)
     ):
         raw_args = raw_args["arguments"]
-    elif (
-        isinstance(raw_args, dict)
-        and set(raw_args) - {"_meta"} == {"tool_id", "arguments"}
-        and raw_args.get("tool_id") == f"{CORE_MCP_SERVER}::{tool}"
-        and isinstance(raw_args.get("arguments"), dict)
-    ):
-        raw_args = raw_args["arguments"]
+    else:
+        inner = deferred_call_arguments(raw_args)
+        core_id = f"{CORE_MCP_SERVER}::{tool}"
+        if inner is not None and raw_args["tool_id"] in (core_id, f"tool::{core_id}"):
+            raw_args = inner
     return call_input_digest(tool, raw_args)
 
 
@@ -753,6 +831,29 @@ def strip_marker(text: str) -> str:
     # Embedded: replace each marker + its payload in place; then the refusal tag.
     out = _replace_embedded_payloads(text)
     return out.replace(_SENTINEL, _DEFANGED).replace(_REFUSAL_SENTINEL, _DEFANGED)
+
+
+def strip_quoted_markers(text: str) -> str:
+    """Drop each line of a model's reply that is only a directive marker it quoted.
+
+    The model reads a directive tool's result with its marker, so a reply that
+    repeats the result carries the marker line too, where nothing reads it: the
+    effect was applied from the tool row. :func:`strip_marker` cuts from the
+    marker to the end, which here would drop the reply's own text after it, so
+    this drops just the lines that hold nothing else: a marker that reads as a
+    directive (:func:`_reads_as_marker`), or the refusal tag, wherever it sits, a
+    code block included. Sentinel bytes inside a sentence, a marker the model
+    rewrote, or code showing the constant, stay as written.
+    """
+    if _SENTINEL not in text and _REFUSAL_SENTINEL not in text:
+        return text
+    kept: list[str] = []
+    for line in text.split("\n"):
+        bare = line.strip()
+        if bare == _REFUSAL_SENTINEL or (bare.startswith(_SENTINEL) and _reads_as_marker(bare)):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 def _payload_end(text: str, start: int) -> int:

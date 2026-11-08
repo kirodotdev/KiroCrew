@@ -747,7 +747,6 @@ export default function TasksCapacityCard() {
                 <span
                   className="font-mono tabular-nums text-text-strong shrink-0"
                   data-testid="tasks-capacity-wait-age"
-                  title={i18nT('pages.tasksCapacityCard.age_tip')}
                 >
                   {i18nT('pages.tasksCapacityCard.age_for', { age: fmtAge(entry.ageSecs) })}
                 </span>

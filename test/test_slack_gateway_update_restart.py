@@ -162,12 +162,12 @@ class TestCountInFlightWork:
     @pytest.mark.asyncio
     async def test_final_drain_collects_dashboard_and_stage_tasks(self):
         orch = _make_orchestrator()
-        # flake-ok: pre-existing parked stand-in tasks the finally cancels, moved verbatim; tracked for a de-flake pass
-        normal = asyncio.create_task(asyncio.sleep(60), name="dashboard-turn")
-        # flake-ok: pre-existing parked stand-in task the finally cancels, moved verbatim; tracked for a de-flake pass
-        remote = asyncio.create_task(asyncio.sleep(60), name="dashboard-relay")
-        # flake-ok: pre-existing parked stand-in task the finally cancels, moved verbatim; tracked for a de-flake pass
-        stage = asyncio.create_task(asyncio.sleep(60), name="dashboard-stage:slot-a")
+        # Each stand-in parks on an event nothing sets, so it stays pending until
+        # the finally cancels it. No wall-clock sleep decides when it ends.
+        gate = asyncio.Event()
+        normal = asyncio.create_task(gate.wait(), name="dashboard-turn")
+        remote = asyncio.create_task(gate.wait(), name="dashboard-relay")
+        stage = asyncio.create_task(gate.wait(), name="dashboard-stage:slot-a")
         orch.dashboard_state = SimpleNamespace(
             _slots={
                 "normal": SimpleNamespace(task=normal),
@@ -181,8 +181,10 @@ class TestCountInFlightWork:
         finally:
             for task in (normal, remote, stage):
                 task.cancel()
-            # flake-ok: pre-existing unbounded gather of the cancelled stand-ins, moved verbatim; tracked for a de-flake pass
-            await asyncio.gather(normal, remote, stage, return_exceptions=True)
+            # A cancelled stand-in finishes on its next turn. The ceiling only
+            # names a hang; it does not decide the outcome.
+            _done, pending = await asyncio.wait({normal, remote, stage}, timeout=30)
+            assert not pending, "cancelled stand-in tasks did not finish"
 
 
 class TestCallbackSafeUpdateRestart:
@@ -255,7 +257,7 @@ class TestCallbackSafeUpdateRestart:
 
     @pytest.mark.asyncio
     async def test_a_stop_signalled_during_the_restart_is_not_swallowed(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, caplog
     ):
         # The installer finished before the stop reached ``_shutdown``. Exec'ing
         # now would bring the gateway straight back up on the new version.
@@ -282,9 +284,13 @@ class TestCallbackSafeUpdateRestart:
         interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         gw.platform_compat.chmod_safe(interpreter, 0o700)
 
+        caplog.set_level("INFO", logger=gw.logger.name)
         await orch._restart_after_update(lambda: str(interpreter))
 
         reexec.assert_not_called()
+        msgs = [r.getMessage() for r in caplog.records if r.name == gw.logger.name]
+        assert "Update applied; restart skipped because the gateway is shutting down" in msgs
+        orch.sessions.close_all.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_the_restart_owns_the_bundle_gap_while_it_runs(self, monkeypatch, tmp_path):

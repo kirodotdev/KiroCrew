@@ -12,8 +12,10 @@ export function contextColor(pct: number): string {
   return p >= 90 ? 'var(--danger)' : p >= 75 ? 'var(--warn)' : 'var(--accent)'
 }
 
-/** Builds the context tooltip string. Shared so the bar and its parent pill show identical text. */
-export function contextTip(pct: number): string {
+/** Builds the context tooltip string. Shared so the bar and its parent pill show identical text.
+ *  `unknown` is a slot with no reading yet, which is said as such rather than as 0%. */
+export function contextTip(pct: number, unknown = false): string {
+  if (unknown) return i18nT('components.contextBar.context_unknown')
   return i18nT('components.contextBar.context_pct', { pct: contextPctClamped(pct) })
 }
 
@@ -62,17 +64,21 @@ export function composeContextReadout(
 
 /** Compact horizontal context-usage bar for the input bar. */
 export default function ContextBar(
-  { pct, width = 40, height = 3 }:
-    { pct: number; width?: number; height?: number },
+  { pct, width = 40, height = 3, unknown = false }:
+    { pct: number; width?: number; height?: number; unknown?: boolean },
 ) {
-  const p = contextPctClamped(pct)
+  // No reading yet: an empty track, never a measured 0% fill.
+  const p = unknown ? 0 : contextPctClamped(pct)
   const fill = contextColor(pct)
-  const tip = contextTip(pct)
+  const tip = contextTip(pct, unknown)
   const r = height / 2
   return (
     <span title={tip} aria-label={tip} className="inline-flex shrink-0">
       <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" className="block">
-        <rect x="0" y="0" width={width} height={height} rx={r} ry={r} fill="var(--text)" opacity="0.15" />
+        {unknown
+          // A dashed track reads as "no reading", where a solid empty one is a measured 0%.
+          ? <line x1="0" y1={r} x2={width} y2={r} stroke="var(--text)" strokeOpacity="0.3" strokeWidth={height} strokeDasharray={`${height} ${height}`} data-testid="context-bar-unknown" />
+          : <rect x="0" y="0" width={width} height={height} rx={r} ry={r} fill="var(--text)" opacity="0.15" />}
         <rect x="0" y="0" width={(width * p) / 100} height={height} rx={r} ry={r} fill={fill} style={{ transition: 'width 500ms' }} />
       </svg>
     </span>

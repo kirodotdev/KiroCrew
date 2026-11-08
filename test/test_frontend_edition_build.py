@@ -587,7 +587,7 @@ def test_edition_dir_survives_the_app_backend_env_allowlist(monkeypatch):
 
     # apps/backend.py must therefore add it to the explicit platform extras.
     src = Path(frontend.__file__).parent / "apps" / "backend.py"
-    body = src.read_text()
+    body = src.read_text(encoding="utf-8")
     assert '_platform_extra["KIROCREW_EDITION_DIR"]' in body, \
         "app backends can no longer detect an edition install"
     # The opt-in must NOT be propagated: a backend may detect an edition but

@@ -112,3 +112,14 @@ describe('useFilteredDropdown click-outside', () => {
     expect(hook.result.current.open).toBe(false)
   })
 })
+
+describe('useFilteredDropdown search by displayName', () => {
+  it('matches the visible displayName case-insensitively, and still matches by id', () => {
+    const items = [{ name: 'opus', displayName: 'Opus 5.5' }, { name: 'sonnet', displayName: 'Sonnet 5.5' }]
+    const hook = renderHook(() => useFilteredDropdown(items))
+    act(() => { hook.result.current.setFilter('opus 5.5') })
+    expect(hook.result.current.filtered).toEqual([items[0]])
+    act(() => { hook.result.current.setFilter('opus') })
+    expect(hook.result.current.filtered).toEqual([items[0]])
+  })
+})

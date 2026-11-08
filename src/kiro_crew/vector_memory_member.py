@@ -28,11 +28,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import memory_record_metadata as record_meta
-from kiro_crew import memory_schema, memory_stores, platform_compat
+from kiro_crew import memory_schema, memory_stores, platform_compat, sqlite_wal
 from kiro_crew.lesson_validation import (
     contains_volatile_lesson_fact,
     extracted_lesson_applies,
     utf8_encodable,
+)
+from kiro_crew.memory_kind_routing import (
+    KindRouting,
+    capture_prior_in_transaction,
+    record_kind_routing_in_transaction,
 )
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.project_scope import canonical_scope, scope_is_admissible
@@ -42,6 +47,7 @@ from kiro_crew.vector_memory_constants import (
     _MAX_LESSONS_PER_CONSOLIDATION,
     _MAX_SEMANTIC_PER_CONSOLIDATION,
 )
+from kiro_crew.vector_memory_runtime import bulk_ingest as _bulk_ingest
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -121,7 +127,7 @@ def create_member_database(path: Path, *, member_id: str, store_id: str) -> None
     platform_compat.restrict_to_owner(path)  # lockdown-ok: empty reservation; SQLite writes follow
     db = sqlite3.connect(path, isolation_level=None)
     try:
-        db.execute("PRAGMA journal_mode=WAL")
+        sqlite_wal.enable_wal(db, timeout_secs=5.0)
         db.executescript(
             "BEGIN IMMEDIATE;" + memory_schema.CREW_SCHEMA_SQL + memory_schema.MEMBER_SCHEMA_SQL
         )
@@ -418,6 +424,39 @@ def consolidation_receipt(self: VectorMemoryStore, source_id: str) -> dict | Non
         )
 
 
+def _member_consolidation_confidence(item: dict) -> float | None:
+    """The confidence :func:`apply_consolidation` validates *item* at, or ``None`` if it skips.
+
+    It skips a confidence ``float()`` cannot read or that is not finite. A number
+    outside ``0..1``, an integer too large for a float included, is clamped into range
+    with a warning by the memory import bound (``bulk_ingest._import_confidence``), so
+    the fact is kept and the pass never raises. The consolidation size screen
+    (``history_consolidation_memory._refuse_oversized_semantic``) reads the same answer.
+    """
+    raw = item.get("confidence", 0.5)
+    try:
+        if not math.isfinite(float(raw)):
+            return None
+    except OverflowError:
+        pass  # an integer too large for a float: the bound clamps it to 1.0
+    except (TypeError, ValueError):
+        return None
+    # Every value left is a number or numeric text, so the replacement is never used.
+    return _bulk_ingest._import_confidence(raw, 0.5, writer="member consolidation")
+
+
+def _member_consolidation_metadata(item: dict) -> tuple[dict, list[str]]:
+    """The metadata :func:`apply_consolidation` writes *item* with, and the names it drops.
+
+    Raises ``ValueError`` where that writer skips the item and counts it in the receipt's
+    ``metadata_rejected``: metadata that is not an object, or a known field with an
+    invalid value. The consolidation size screen
+    (``history_consolidation_memory._refuse_oversized_semantic``) asks the same question,
+    so it never refuses for size an item this writer skips for its metadata.
+    """
+    return record_meta.normalize_extracted_metadata(item.get("metadata"))
+
+
 def apply_consolidation(
     self: VectorMemoryStore,
     *,
@@ -428,11 +467,16 @@ def apply_consolidation(
     snapshot: dict,
     messages: list[dict],
     facets: memory_schema.MemoryFacets | None = None,
+    kind_routing: KindRouting | None = None,
 ) -> dict:
     """Publish one extracted span, its provenance and retry receipt atomically.
 
     Embeddings remain NULL until the writer's maintenance sweep. No provider,
     transcript or filesystem operation takes place inside this transaction.
+
+    *kind_routing* is the ``route_consolidation_by_kind`` answer for this
+    *result*; its bounded log is written inside the same transaction, so a
+    replayed span (which returns the stored receipt) logs nothing twice.
     """
 
     from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
@@ -468,6 +512,9 @@ def apply_consolidation(
                     raise ValueError("Consolidation source identity changed")
                 self.db.rollback()
                 return json.loads(previous[3])
+            if kind_routing is not None:
+                # What the store held before this span writes, read for the log only.
+                kind_routing = capture_prior_in_transaction(self.db, kind_routing)
             semantic = result.get("semantic")
             for item in (semantic if isinstance(semantic, list) else [])[
                 :_MAX_SEMANTIC_PER_CONSOLIDATION
@@ -490,11 +537,8 @@ def apply_consolidation(
                             operation="forget",
                         )
                     continue
-                try:
-                    confidence = float(item.get("confidence", 0.5))
-                except (TypeError, ValueError):
-                    continue
-                if item.get("value") is None or not math.isfinite(confidence):
+                confidence = _member_consolidation_confidence(item)
+                if confidence is None or item.get("value") is None:
                     continue
                 value = item["value"]
                 if self.validate_semantic(key, value, confidence, source) is not None:
@@ -503,9 +547,7 @@ def apply_consolidation(
                 # would roll back the whole span, and every retry re-bills the
                 # extraction that produced it.
                 try:
-                    metadata, dropped = record_meta.normalize_extracted_metadata(
-                        item.get("metadata")
-                    )
+                    metadata, dropped = _member_consolidation_metadata(item)
                 except ValueError as exc:
                     metadata_rejected += 1
                     # The reason names the field, never its untrusted value.
@@ -678,6 +720,8 @@ def apply_consolidation(
                 receipt["metadata_fields_dropped"] = fields_dropped
             if metadata_rejected:
                 receipt["metadata_rejected"] = metadata_rejected
+            if kind_routing is not None:
+                record_kind_routing_in_transaction(self, kind_routing, source)
             self.db.execute(
                 "INSERT INTO memory_consolidations VALUES (?,?,?,?,?,?)",
                 (

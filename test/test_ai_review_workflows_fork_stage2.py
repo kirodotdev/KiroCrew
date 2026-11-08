@@ -6,6 +6,7 @@ protected check name.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -19,10 +20,12 @@ from ai_review_workflows_helpers import (
     _concurrency_group,
     _flat,
     _proc_log,
+    _script_file,
     _step_env,
     _step_script,
     _stub_path,
     _workflow,
+    _write_stub,
 )
 
 FORK_STAGE2_WORKFLOW_RUN_LANES = FORK_REVIEW_LANES + ("fork-internal-content-scan.yml",)
@@ -35,6 +38,9 @@ EXACT_IDENTITY_REVIEW_LANES = (
 # The lanes whose resolver tells an obsolete head (the fork branch moved on)
 # apart from a lagging open-PR listing: every exact-identity review lane.
 OBSOLETE_HEAD_LANES = EXACT_IDENTITY_REVIEW_LANES
+# A shell function, not a PATH stub: Git for Windows' bash.exe puts its own
+# usr/bin ahead of PATH, so a stub named `sleep` never runs there.
+_RECORD_SLEEPS = 'sleep() { printf \'%s\\n\' "$1" >> "$SLEEPS"; }\n'
 
 
 def _render_trusted_event_group(template: str, event: dict) -> str:
@@ -207,10 +213,7 @@ class TestForkStage2ExactHeadIdentity:
             "exit 9\n",
             encoding="utf-8",
         )
-        sleep = tmp_path / "sleep"
-        sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
         gh.chmod(0o755)
-        sleep.chmod(0o755)
         output = tmp_path / "github-output"
         output.touch()
 
@@ -221,7 +224,8 @@ class TestForkStage2ExactHeadIdentity:
                 "-o",
                 "pipefail",
                 "-c",
-                _step_script(
+                _RECORD_SLEEPS
+                + _step_script(
                     _workflow(lane), "Resolve and validate PR (authoritative from GitHub)"
                 ),
             ],
@@ -239,6 +243,7 @@ class TestForkStage2ExactHeadIdentity:
                     "WR_HEAD_REF": self._REF if ref is None else ref,
                     "PAGES": str(pages_file),
                     "CALLS": str(calls),
+                    "SLEEPS": str(tmp_path / "sleeps"),
                     "LIST_RC": str(list_rc),
                     "BASE_SHA": self._BASE,
                     "BRANCH_TIP": branch_tip or "",
@@ -300,6 +305,19 @@ class TestForkStage2ExactHeadIdentity:
         assert result.returncode != 0, _proc_log(result)
         assert "query itself failed" in result.stdout + result.stderr
         assert "superseded or closed" not in result.stdout + result.stderr
+
+    @pytest.mark.parametrize("lane", FORK_STAGE2_WORKFLOW_RUN_LANES)
+    def test_a_refused_read_is_retried_for_75_seconds(self, lane: str, tmp_path: Path) -> None:
+        # An allowlisted api.github.com can refuse connections for about a
+        # minute, so the resolver backs off past that before the lane gives up.
+        result = self._run_review_resolver(tmp_path, lane, [[]], list_rc=7)
+
+        assert result.returncode != 0, _proc_log(result)
+        assert "failed on all 6 attempts" in result.stdout + result.stderr
+        calls = (tmp_path / "gh-calls").read_text(encoding="utf-8").splitlines()
+        assert sum("pulls?state=open" in call for call in calls) == 6, calls
+        sleeps = (tmp_path / "sleeps").read_text(encoding="utf-8").split()
+        assert sleeps == ["5", "10", "15", "20", "25"]
 
     @pytest.mark.parametrize("lane", OBSOLETE_HEAD_LANES)
     def test_zero_match_on_a_moved_branch_is_obsolete_not_red(
@@ -503,14 +521,9 @@ class TestForkLaneFinalizeRetries:
     """The fork lanes must not finalize their check-run with a bare
     `PATCH … || true`.
 
-    One transient API failure there leaves the run `in_progress` forever, and
-    pr-readiness counts ANY non-completed check-run of that name as pending --
-    including after a successful re-run -- so the PR sits at
-    `readiness: checking` with no event able to clear it. `|| true` also
-    swallowed the failure, so nothing in the log said why.
-
-    fork-first-principles-review.yml already carries the retry helper this
-    pins; these tests keep the other four from drifting back.
+    One transient failure leaves the run `in_progress` forever, and pr-readiness
+    counts any non-completed run of that name as pending, even after a re-run.
+    `|| true` would also hide the failure from the log.
     """
 
     @pytest.mark.parametrize("lane", FORK_FINALIZE_LANES)
@@ -551,6 +564,49 @@ class TestForkLaneFinalizeRetries:
             assert "sleep 5" in flat, f"{lane}: retry has no backoff"
 
 
+def test_a_scope_check_run_that_never_posts_reds_the_job(tmp_path: Path) -> None:
+    # A missing Security Scope Review row strands PR Readiness, so the publish
+    # POST backs off past a minute-long refusal and then fails the job.
+    bash = _bash()
+    if bash is None:
+        pytest.skip("the publish step is Bash; skip where Bash is absent")
+    sleeps = tmp_path / "sleeps"
+    _write_stub(tmp_path / "gh", "exit 1\n")
+    step = _step_script(_workflow("fork-security-scope-review.yml"), "Publish check-run")
+    env = {
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+        "REPO": "o/r",
+        "HEAD": "c" * 40,
+        "PR": "7",
+        "WR_RUN_ID": "11",
+        "WR_RUN_ATTEMPT": "1",
+        "CONCLUSION": "success",
+        "TITLE": "no confirmed rows",
+        "REMEDY": "",
+        "SETTLED": "yes",
+        "FOLD_RC": "",
+        "BODY": str(tmp_path / "absent.md"),
+        "HUMAN_OVERRIDE": "false",
+        "SCRUB_OUTCOME": "success",
+        "GITHUB_SERVER_URL": "https://github.com",
+        "GITHUB_RUN_ID": "42",
+        "SLEEPS": str(sleeps),
+    }
+    result = subprocess.run(
+        [bash, "-e", _script_file(tmp_path, _RECORD_SLEEPS + step)],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=tmp_path,
+        env=_child_env(env),
+    )
+
+    assert result.returncode == 1, _proc_log(result)
+    assert "::error::could not publish the check-run" in result.stdout, _proc_log(result)
+    assert sleeps.read_text(encoding="utf-8").split() == ["5", "10", "15", "20", "25"]
+
+
 # (lane file, check-run name, external_id prefix, finalize step name)
 FORK_SWEEP_LANES = (
     ("fork-design-review.yml", "Design Review", "design", "Finalize check-run"),
@@ -567,13 +623,10 @@ FORK_SWEEP_LANES = (
 
 
 class TestForkLaneStrandedRunSweeps:
-    """The retry alone still loses when BOTH attempts fail, and it cannot touch
-    a run stranded by a PREVIOUS workflow run. fork-first-principles-review.yml
-    carries the sweep that lists still-incomplete check-runs of the lane's name
-    on the head and completes every one THIS pull request created; the other
-    four fork lanes carry the same sweep. All five lanes are pinned here,
-    including the reference lane itself -- its sweep passes the run's computed
-    verdict instead of a hardcoded neutral, the shape the ported lanes share.
+    """Every fork lane sweeps incomplete check-runs this pull request created.
+
+    The retry loses when both attempts fail and cannot reach a run stranded by an
+    earlier workflow run. The sweep passes the computed verdict, not a hardcoded neutral.
     """
 
     @pytest.mark.parametrize(("lane", "check_name", "prefix", "finalize"), FORK_SWEEP_LANES)
@@ -705,8 +758,14 @@ class TestForkLaneStrandedRunSweeps:
                 bash,
                 "-uo",
                 "pipefail",
-                "-c",
-                _step_script(_workflow("fork-gpt-review.yml"), "Finalize check-run (fail closed)"),
+                # A script file, not ``-c``: MSYS re-parses a long multi-line
+                # argument on the Windows command line and can split its quotes.
+                _script_file(
+                    tmp_path,
+                    _step_script(
+                        _workflow("fork-gpt-review.yml"), "Finalize check-run (fail closed)"
+                    ),
+                ),
             ],
             check=False,
             capture_output=True,
@@ -743,19 +802,11 @@ class TestForkLaneStrandedRunSweeps:
 
 
 class TestForkReviewersAreStageTwoOfFastGate:
-    """The fork reviewers hold `pull-requests: write` and `id-token: write` on a
-    PR whose author is untrusted, so they may not be reachable from any
-    fork-controlled event: `workflow_run` is the ONLY trigger, and it fires only
-    after a workflow on the DEFAULT branch has already run against the head
-    commit.
+    """The fork reviewers' only trigger is `workflow_run` on Fast Gate.
 
-    Which trusted workflow that is, is a cost decision, not a security one. It
-    is Fast Gate, the eleven cheap blocking gates split out of CI, which finishes
-    in about a minute; CI itself, whose median wall clock is ~54 minutes (73.7%
-    of it the backend matrix), tells a code reviewer nothing. The trust boundary
-    lives in the steps: harden-runner
-    with a blocked egress policy, a checkout of the BASE commit, and the fork's
-    diff read as data that is never applied to the tree.
+    They hold write scopes on an untrusted PR, so no fork-controlled event may reach
+    them. Fast Gate is a cost choice (about a minute against CI's ~54). The trust
+    boundary is in the steps: blocked egress, a BASE checkout, the diff read as data.
     """
 
     def _triggers(self, name: str) -> dict:
@@ -824,22 +875,12 @@ class TestForkReviewersAreStageTwoOfFastGate:
 class TestProtectedCheckNameHasOnePublisherPerPrType:
     """A required review status must never be satisfied by the OTHER lane's run.
 
-    Each AI review is published by two workflows: the same-repo lane and the
-    privileged Stage-2 ``fork-*-review.yml``. GitHub resolves a required status
-    check to the NEWEST check-run of that name, and on a fork PR the same-repo
-    lane reviews nothing. While the two lanes share a name, any
-    ``pull_request`` event firing after the fork lane posted its verdict (a
-    reopen; an ``edited`` title/body on codex-review) makes the same-repo
-    lane's own run the newest one and clears the gate on a review that never
-    ran. The same-repo lane therefore renames itself on a fork PR, leaving
-    exactly one publisher of the protected name per PR type.
+    GitHub resolves a required status to the newest check-run of that name, so a
+    same-repo run on a fork PR (a reopen, an ``edited`` body) would clear the gate on
+    a review that never ran. The same-repo lane renames itself on a fork PR.
 
-    That rename only renders because the fork guard sits on every STEP rather
-    than on the job: GitHub does not evaluate a skipped job's ``name:``, so a
-    job-level guard published the raw expression source as the fork PR's check
-    name. The per-step gate is therefore load-bearing for the name AND the only
-    thing keeping fork content out of this privileged lane, so it is asserted
-    step by step -- a step added later without it would execute on a fork.
+    The fork guard sits on every step, not the job: GitHub never evaluates a skipped
+    job's ``name:``, and the step guard also keeps fork content out of this lane.
     """
 
     # (same-repo workflow, protected check name, Stage-2 fork workflow)
@@ -865,16 +906,8 @@ class TestProtectedCheckNameHasOnePublisherPerPrType:
     def _job(self, workflow: str) -> dict:
         """Return the job that PUBLISHES the protected check name.
 
-        Counting jobs was a proxy for the property this class owns -- exactly
-        one publisher of the protected name per PR type -- and it stops being
-        one as soon as a lane needs stages. The scope lane has four jobs
-        because the stage holding the Bedrock credential must not also execute
-        the reviewed change's classifier code -- neither the differential's nor
-        the validator's -- nor hold the write scope that publishes a verdict. So
-        select on the thing that makes a job a
-        publisher: its `name:` carries the fork guard, which IS the rename that
-        keeps a fork PR's required status off this lane. Two such jobs would be
-        two publishers, which is the hazard; more non-publishing jobs are not.
+        A publisher is the job whose `name:` carries the fork guard. Staged lanes
+        (the scope lane has four jobs) may have more jobs, but never two publishers.
         """
         spec = yaml.safe_load(_workflow(workflow))
         publishers = sorted(
@@ -904,18 +937,10 @@ class TestProtectedCheckNameHasOnePublisherPerPrType:
         assert f"|| '{alias}'" in name, workflow
         assert alias != check
 
-        # The guard must NOT be job-level: a skipped job's `name:` is never
-        # evaluated, so that placement publishes the raw expression above as the
-        # fork PR's check name -- the exact rendering bug the rename caused.
-        #
-        # `always()` is the one exempt expression, and it is exempt because it
-        # can never evaluate false: a job carrying exactly that is never
-        # skipped, so its `name:` is always evaluated and the bug is
-        # unreachable. A staged lane needs it -- the publishing job must report
-        # a verdict when an upstream stage failed, which is precisely the run
-        # whose verdict matters. Nothing weaker qualifies: any other condition
-        # can be false on a fork PR, and then the raw expression is the check
-        # name again.
+        # No job-level guard: a skipped job's `name:` is never evaluated, so the
+        # raw expression becomes the check name. `always()` is exempt because it
+        # never evaluates false, and a staged lane needs it to report a verdict
+        # when an upstream stage failed.
         job_if = str(job.get("if", "")).strip()
         assert job_if in ("", "always()"), (
             f"{workflow}: job-level `if: {job_if}` can evaluate false, so "

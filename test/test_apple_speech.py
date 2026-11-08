@@ -1131,10 +1131,23 @@ class TestStreamingSession:
         assert session._final_text == "hello world"
 
     @pytest.mark.asyncio
-    async def test_close_is_idempotent(self):
+    async def test_close_is_idempotent(self, tmp_path):
+        launcher = tmp_path / "launcher.sh"
+        launcher.write_text("#!/bin/sh\n", "utf-8")
+        proc = Mock(returncode=None, kill=Mock(), wait=AsyncMock())
+        pump = Mock()
         session = apple_speech.StreamingSession()
+        session._proc = proc  # type: ignore[assignment]
+        session._pump = pump  # type: ignore[assignment]
+        session._sb_cleanup = str(launcher)
         await session.close()
         await session.close()
+
+        assert proc.kill.call_count == 1
+        assert proc.wait.await_count == 1
+        assert pump.cancel.call_count == 1
+        assert not launcher.exists()
+        assert (session._proc, session._pump, session._sb_cleanup) == (None, None, None)
 
     @pytest.mark.asyncio
     async def test_a_helper_line_that_is_not_an_object_is_skipped_mid_utterance(self):
@@ -1760,16 +1773,21 @@ class TestNoBlockingCallOnEventLoop:
         assert STT_PROVIDER_LOCAL in offered
         assert "transcribe" in offered
 
-    def test_fast_swiftc_resolver_never_spawns(self):
+    def test_fast_swiftc_resolver_never_spawns(self, tmp_path):
         def boom(*args, **kwargs):
             raise AssertionError("the loop-safe resolver spawned a subprocess")
 
+        swiftc = tmp_path / "swiftc"
+        swiftc.write_text("", "utf-8")
+        fixed = (str(tmp_path / "missing"), str(swiftc))
         with (
             patch("subprocess.run", boom),
             patch("subprocess.Popen", boom),
             patch("subprocess.check_output", boom),
+            patch.object(apple_speech, "_SWIFTC_FIXED_PATHS", fixed),
+            patch.object(apple_speech, "_is_trusted_toolchain", lambda p: p == str(swiftc)),
         ):
-            apple_speech._swiftc_fast()
+            assert apple_speech._swiftc_fast() == str(swiftc)
 
     def test_blocking_resolver_is_only_reached_from_the_build_path(self):
         """`_swiftc` MAY spawn (`xcrun`), so it must not appear in a loop-safe

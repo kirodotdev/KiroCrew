@@ -61,7 +61,6 @@ if TYPE_CHECKING:
         api_remote_artifacts_clone,
         api_remote_artifacts_fork,
         handlers,
-        logger,
         setup_spawn_resume_routes,
     )
 
@@ -101,7 +100,7 @@ def _deferred(module_name: str, handler_name: str) -> Callable:
 def _deferred_work_ledger(handler_name: str) -> Callable:
     """Bind a work-ledger route without importing the subsystem at boot.
 
-    Same shape and same reason as :func:`_deferred_session_control`: the four
+    Same shape and same reason as the session-control routes :func:`_deferred` binds: the four
     handlers belong to ``kirocrew-work``, an opt-in MCP server, so they are an
     optional subsystem and a module-level import would be an eager one. Route
     registration itself is allowed at boot; only the import moves to first request,
@@ -118,8 +117,36 @@ def _deferred_work_ledger(handler_name: str) -> Callable:
     return _route
 
 
+def _deferred_instances(handler_name: str) -> Callable:
+    """Bind a crew-scoped session-read route without importing the peer module at boot.
+
+    Same shape and same reason as :func:`_deferred_work_ledger`. The three
+    ``/api/crew-sessions/*`` handlers live in the ``handlers_instances`` facade
+    family, a sibling of the ``handlers`` package rather than a submodule of it, so
+    :func:`_deferred` cannot name it. The dashboard entrypoint imports that family
+    eagerly for its connections routes; the headless ``--slack-only`` entrypoint does
+    not, and this binder keeps it that way until the first crew read arrives. The
+    handler is read through the FACADE, not its owner module, so a test that patches
+    ``handlers_instances.<name>`` reaches the route like every other instances route.
+    """
+
+    async def _route(request: web.Request) -> web.StreamResponse:
+        from kiro_crew.dashboard import handlers_instances
+
+        handler = getattr(handlers_instances, handler_name)
+        return await handler(request)
+
+    _route.__name__ = handler_name
+    return _route
+
+
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
+    # Both entrypoints register this table, so both start reading the Ultra Mode
+    # pause file off-loop at startup; the hook returns at once.
+    from kiro_crew import crew_pause
+
+    app.on_startup.append(crew_pause.startup_preload)
     app.router.add_post("/api/spawn", handlers.api_spawn)
     app.router.add_post("/api/spawn/lost", handlers.api_spawn_lost)
     app.router.add_post("/api/spawn/mark-collected", handlers.api_spawn_mark_collected)
@@ -132,6 +159,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     # (``handlers/spawn_resume.py``), registered before ``{agent_id}`` so
     # ``/api/spawn/lanes`` and ``/api/spawn/adaptive`` are not read as run ids.
     setup_spawn_resume_routes(app)
+    # The caller's own memory footprint, for ``resource_status``; a literal
+    # segment, so it too precedes ``{agent_id}``.
+    app.router.add_get(
+        "/api/spawn/session-memory",
+        _deferred("session_memory_scope", "api_spawn_session_memory"),
+    )
     app.router.add_get("/api/spawn/{agent_id}", handlers.api_spawn_status)
     app.router.add_delete("/api/spawn/{agent_id}", handlers.api_spawn_delete)
     app.router.add_post("/api/spawn/{agent_id}/retry", handlers.api_spawn_retry)
@@ -141,6 +174,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/lessons", handlers.api_lessons)
     app.router.add_post("/api/lessons", handlers.api_lessons_create)
     app.router.add_delete("/api/lessons", handlers.api_lessons_delete)
+    app.router.add_patch("/api/lessons", handlers.api_lessons_update)
     app.router.add_get("/api/session-ledger", handlers.api_session_ledger_get)
     app.router.add_post("/api/session-ledger/record", handlers.api_session_ledger_record)
     app.router.add_get("/api/work-ledger", _deferred_work_ledger("api_work_ledger_get"))
@@ -150,6 +184,24 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/work-ledger/rebuild", _deferred_work_ledger("api_work_ledger_rebuild")
     )
+    # Mediated-secret egress (kirocrew-secrets MCP tool). Both are MCP-only, loopback
+    # + gateway-IPC-secret callers — no browser posts to them (they are in
+    # ``_STRICT_INTERNAL_API_PATHS``). The capability endpoint redeems the single-use
+    # approval grant; the request endpoint does the host-side vault read + SSRF-pinned
+    # egress and always withholds the origin's response.
+    app.router.add_post(
+        "/api/mediated-secret-capability",
+        _deferred("mediated_secrets", "api_mediated_secret_capability"),
+    )
+    app.router.add_post(
+        "/api/mediated-secret-request",
+        _deferred("mediated_secrets", "api_mediated_secret_request"),
+    )
+    # Crew-owned Connection proxy (``dashboard.feature_previews.crew_oauth``): the in-session
+    # stdio bridge's only peer. Strict internal, Unix-socket only, off by default.
+    _connection_proxy = _deferred("connection_proxy", "api_connection_proxy")
+    app.router.add_post("/api/connection-proxy", _connection_proxy)
+    app.router.add_delete("/api/connection-proxy", _connection_proxy)
     # The Crew page's masked read of a conductor's work ledger (RFC Phase 4).
     # Deliberately NOT in ``_STRICT_INTERNAL_API_PATHS``: a browser is its only
     # caller, so it stays on cookie auth — the same split the agent-panel surface
@@ -218,7 +270,13 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get(
         "/api/agent-panel/dashboard/snapshot", _deferred("agent_panel", "api_dashboard_snapshot")
     )
+    app.router.add_post(
+        "/api/agent-panel/dashboard/record", _deferred("agent_panel", "api_dashboard_record")
+    )
     app.router.add_get("/api/members/{slug}/panel", _deferred("agent_panel", "api_member_panel"))
+    # The installed app's record door: an app token reaches it only through its
+    # ``permissions.api`` grant, and the handler admits nothing else.
+    app.router.add_post("/api/member-records/{slug}", _deferred("agent_panel", "api_member_record"))
     # The crewmate's dynamic dashboard. Registered through the deferred binder for the
     # reason the panel's routes are: calling the module's own
     # `register_member_dashboard_routes` would import it at boot, which the boot-path
@@ -281,6 +339,12 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("POST", "/api/members/{slug}/self-changes/{change_id}/undo", "api_member_self_undo"),
     ):
         app.router.add_route(_method, _path, _deferred("member_self", _name))
+    # The crewmate's capability catalog (``find_capabilities``), MCP-only under
+    # the same strict prefix.
+    app.router.add_post(
+        "/api/member/self/capabilities",
+        _deferred("member_capability_catalog", "api_member_self_capabilities"),
+    )
     # A crewmate's goals (``member_goals``). The Goals tab's half is owner-only
     # cookie auth under the member's own "/api/members/{slug}"; the crewmate's
     # half (the kirocrew-mate goal tools) is MCP-only under the strict
@@ -362,8 +426,57 @@ def _register_mcp_routes(app: web.Application) -> None:
         ("GET", "/api/members/import/{sha256}/files", "api_members_import_files"),
     ):
         app.router.add_route(_method, _path, _deferred("change_cards", _name))
+    # ``request_server`` (kirocrew-core): any template session asks for an MCP
+    # server; MCP-only under the same strict "/api/cards/agent" prefix.
+    for _method, _path, _name in (
+        ("POST", "/api/cards/agent/request-server", "api_cards_agent_request_server"),
+    ):
+        app.router.add_route(_method, _path, _deferred("template_server_request", _name))
+    # Its ``template.mcp_server`` card's step and Undo: owner-only cookie auth
+    # (deliberately off the strict prefix), card-hooked.
+    app.router.add_post(
+        "/api/agents/detail/{name}/mcp-additions",
+        _deferred("template_server_request", "api_template_mcp_addition_add"),
+    )
+    app.router.add_delete(
+        "/api/agents/detail/{name}/mcp-additions/{server}",
+        _deferred("template_server_request", "api_template_mcp_addition_remove"),
+    )
     app.router.add_get(
-        "/api/chat/slots/{slot}/dashboard", _deferred("member_dashboard", "api_session_dashboard")
+        "/api/chat/slots/{slot}/dashboard",
+        _deferred("member_dashboard", "api_session_dashboard"),
+    )
+    # A Crew Mode root's workers for its side panel, under the same owner-only,
+    # no-app gate as the root's dashboard read above.
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-workers", _deferred("crew_workers", "api_crew_workers")
+    )
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/{worker}/steer",
+        _deferred("crew_workers", "api_crew_worker_steer"),
+    )
+    # The conductor's approval card: a worker's pending tool approval, decided by the
+    # dashboard owner through the per-slot approve route on the WORKER slot.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/{worker}/approve",
+        _deferred("crew_workers", "api_crew_worker_approve"),
+    )
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-timeline", _deferred("crew_workers", "api_crew_timeline")
+    )
+    # One crew member's recap from the ledger and its crew log only (no model call),
+    # for the crewmate Sessions tab's in-place expand. Same gate and tree check.
+    app.router.add_get(
+        "/api/chat/slots/{slot}/crew-workers/{worker}/recap",
+        _deferred("crew_worker_recap", "api_crew_worker_recap"),
+    )
+    # Ultra Mode "Pause all" / "Resume all": the Stop and Continue mechanisms over
+    # the root's whole crew, under the same owner-only, no-app gate.
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/pause", _deferred("crew_pause", "api_crew_pause")
+    )
+    app.router.add_post(
+        "/api/chat/slots/{slot}/crew-workers/resume", _deferred("crew_pause", "api_crew_resume")
     )
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
@@ -399,6 +512,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     # here (not the dashboard-only block) so headless --slack-only mode
     # serves it too; it is on _STRICT_INTERNAL_API_PATHS like send-message.
     app.router.add_post("/api/notifications/agent", handlers.api_notification_agent_push)
+    # dismiss_notification MCP tool; the strict-internal "/api/notifications/agent"
+    # prefix covers it.
+    app.router.add_post("/api/notifications/agent/dismiss", handlers.api_notification_agent_dismiss)
     # Session control. Registered here so the headless --slack-only server
     # serves the same MCP surface as the dashboard; all three are on
     # _STRICT_INTERNAL_API_PATHS, which test_session_control_routes_are_strict
@@ -426,6 +542,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post(
         "/api/session-control/set-model",
         _deferred("session_control", "api_session_control_set_model"),
+    )
+    app.router.add_post(
+        "/api/session-control/set-color",
+        _deferred("session_control", "api_session_control_set_color"),
     )
     app.router.add_post(
         "/api/session-control/reload",
@@ -464,6 +584,10 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/session-control/adopt", _deferred("session_control", "api_session_control_adopt")
     )
     app.router.add_post(
+        "/api/session-control/handoff",
+        _deferred("session_control", "api_session_control_handoff"),
+    )
+    app.router.add_post(
         "/api/session-control/release",
         _deferred("session_control", "api_session_control_release"),
     )
@@ -474,37 +598,26 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/session-control/summary",
         _deferred("session_control", "api_session_control_summary"),
     )
-    app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
-    app.router.add_put("/api/browser/token", handlers.api_browser_token_put)
-    app.router.add_post("/api/browser/install", handlers.api_browser_install_start)
-    app.router.add_post("/api/browser/engine", handlers.api_browser_engine_install)
-    app.router.add_get("/api/browser/view", handlers.api_browser_view_get)
-    app.router.add_post("/api/browser/view/start", handlers.api_browser_view_start)
-    # Same-origin relay for the CLI browser view: the panel frames this path
-    # instead of the raw loopback URL, so the live view is reachable wherever
-    # the dashboard is (SSH forward, tunnel) with no second forwarded port.
-    # HTTP and WebSocket both. Authenticated by the per-instance capability
-    # token embedded in the path (NOT the session cookie: the panel frames it
-    # in an opaque-origin sandbox that sends none) — the prefix is on
-    # token_auth's bypass list and the handler enforces the token itself. See
-    # handlers/browser_view_relay.py for the rewrites and the full posture.
-    app.router.add_get("/browser-view", handlers.api_browser_view_relay)
-    app.router.add_get("/browser-view/{tail:.*}", handlers.api_browser_view_relay)
-    # The Browser panel's address bar on the non-native transport: opens an
-    # owner-typed URL in the gateway host's Playwright CLI browser and shows it
-    # through the view above. Owner-only (cookie/token) and deliberately NOT on
-    # any internal-path list -- the handler refuses internal-secret callers too,
-    # because agent browsing must keep going through the shell approval ladder.
-    app.router.add_post("/api/browser/open", handlers.api_browser_open)
-    # Native browser command channel (agent->Electron). Loopback + internal-secret
-    # only; see the _STRICT_INTERNAL_API_PATHS entries and each handler's re-assert.
-    app.router.add_post("/api/browser/command", handlers.api_browser_command)
-    app.router.add_post("/api/browser/command-drain", handlers.api_browser_command_drain)
-    app.router.add_post("/api/browser/command-result", handlers.api_browser_command_result)
-    # Distinctive boot marker: this line exists ONLY in the command-bus-gateway
-    # build, so its presence in gateway.log proves this worktree's backend is the
-    # one actually running (vs a stale / frozen bundled backend).
-    logger.debug("browser-cmdbus gateway: /api/browser/command{,-drain,-result} registered")
+    # Crew-scoped session reads (the crew= scope on the session read MCP tools).
+    # Registered HERE, not in the dashboard-only connections block, so both
+    # gateway entrypoints route them: a headless --slack-only gateway builds no
+    # tunnel manager, and there the handlers answer MANAGER_UNAVAILABLE_CODE
+    # rather than a route miss the tool would read as "no such endpoint". All
+    # three are on _STRICT_INTERNAL_API_PATHS (internal-secret, no browser
+    # caller), exactly like /api/sessions/summarize.
+    app.router.add_get("/api/crew-sessions/search", _deferred_instances("api_crew_sessions_search"))
+    app.router.add_get("/api/crew-sessions/list", _deferred_instances("api_crew_sessions_list"))
+    app.router.add_get("/api/crew-sessions/read", _deferred_instances("api_crew_sessions_read"))
+    # Settings -> Browser on Browser Harness (handlers/browser_harness_status.py):
+    # the engine's install state and connection, the install job, a bounded
+    # connect test and a disconnect. Owner cookie/token only; every one of them
+    # refuses an internal-secret caller, so an agent cannot install an interpreter
+    # the gateway executes or connect to the owner's Chrome by itself. The old
+    # ``/api/browser/install`` pair (Playwright CLI) is replaced here outright.
+    app.router.add_get("/api/browser/status", handlers.api_browser_harness_status)
+    app.router.add_post("/api/browser/install", handlers.api_browser_harness_install)
+    app.router.add_post("/api/browser/test", handlers.api_browser_harness_test)
+    app.router.add_post("/api/browser/disconnect", handlers.api_browser_harness_disconnect)
     # Computer use: the thin ``kirocrew-computer`` stdio shim's only call. Lives
     # HERE (rather than in the dashboard-only block, where the browser-called
     # config pair sits) so the headless ``--slack-only`` server exposes it too —
@@ -512,6 +625,20 @@ def _register_mcp_routes(app: web.Application) -> None:
     # ``_STRICT_INTERNAL_API_PATHS``: loopback + ``X-Internal-Secret`` only, no
     # cookie fall-through, because no browser ever calls it.
     app.router.add_post("/api/computer-use/invoke", handlers.api_computer_use_invoke)
+    # The ``browser`` MCP tool's forwarding leg onto the Browser Harness. Same
+    # trust class as ``invoke``: loopback + ``X-Internal-Secret`` only, listed in
+    # ``_STRICT_INTERNAL_API_PATHS``, no browser caller, headless server too.
+    app.router.add_post("/api/browser/op", handlers.api_browser_op)
+    # The forwarding leg of a tool an installed app declares (manifest
+    # ``agentTools``): the ``kirocrew-core`` server posts the call, the handler hands it
+    # to the declaring app's own route. Same trust class as ``/api/browser/op``.
+    app.router.add_post(
+        "/api/app-tools/call", _deferred("app_agent_tools", "api_app_agent_tool_call")
+    )
+    # The parked ``browser`` tool's hand-back poll while the person holds the browser.
+    app.router.add_post("/api/browser/handback", handlers.api_browser_handback)
+    # The parked ``ask`` op's poll: an outcome word, never what the person typed.
+    app.router.add_post("/api/browser/ask/poll", handlers.api_browser_ask_poll)
     # The live-view (PiP) frame ingress. Registered alongside ``invoke`` (not in
     # the dashboard-only block) because the capture that produces a frame runs on
     # BOTH entrypoints — a ``--slack-only`` gateway drives the desktop too, and its
@@ -526,6 +653,7 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/session-directive", handlers.api_session_directive)
     app.router.add_get("/api/session-tool-policy", handlers.api_session_tool_policy)
     app.router.add_post("/api/slack-profile", handlers.api_slack_profile)
+    app.router.add_post("/api/slack-history", handlers.api_slack_history)
     app.router.add_get("/api/notifications", handlers.api_notifications)
     app.router.add_post("/api/notifications/push", handlers.api_push_notification)
     app.router.add_post("/api/notifications/clear", handlers.api_notifications_clear)
@@ -539,6 +667,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_autonudge_start,
         api_autonudge_update,
         api_monitor_clear,
+        api_monitor_contract,
         api_monitor_create,
         api_monitor_restart,
         api_monitor_slot_get,
@@ -562,6 +691,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_post("/api/monitors/{monitor_id}/stop", api_monitor_stop)
     app.router.add_post("/api/monitors/{monitor_id}/clear", api_monitor_clear)
     app.router.add_post("/api/monitors/{monitor_id}/restart", api_monitor_restart)
+    # The runtime monitor data contract: a cookie-authed READ served
+    # beside the autonudge/monitor reads above. Deliberately NOT on
+    # _STRICT_INTERNAL_API_PATHS -- a browser is its only caller, so it stays on
+    # the same cookie auth as GET /api/autonudge.
+    app.router.add_get("/api/monitor-contract", api_monitor_contract)
 
     # Agent questions. The MCP ask_question tool opens a BLOCKING card through
     # /api/agent-ask/* (strict internal paths, the caller's attested session
@@ -607,6 +741,8 @@ def _register_mcp_routes(app: web.Application) -> None:
         api_workflow_run_intent,
         api_workflow_run_promote,
         api_workflow_run_rerun,
+        api_workflow_run_update_definition,
+        api_workflow_run_update_preview,
         api_workflow_runs,
     )
 
@@ -625,6 +761,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/workflows/runs", api_workflow_runs)
     app.router.add_get("/api/workflows/runs/{run_id}", api_workflow_run_get)
     app.router.add_post("/api/workflows/runs/{run_id}/promote", api_workflow_run_promote)
+    app.router.add_get(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_preview
+    )
+    app.router.add_post(
+        "/api/workflows/runs/{run_id}/update-definition", api_workflow_run_update_definition
+    )
     app.router.add_post("/api/workflows/runs/{run_id}/cancel", api_workflow_run_cancel)
     app.router.add_post("/api/workflows/runs/{run_id}/rerun", api_workflow_run_rerun)
 
@@ -642,6 +784,10 @@ def _register_mcp_routes(app: web.Application) -> None:
     from kiro_crew.dashboard.handlers.sandbox_doc import register_sandbox_doc_routes
 
     register_sandbox_doc_routes(app)
+    # An http(s) download URL for browsers that drop a blob: download.
+    from kiro_crew.dashboard.handlers.artifact_download import register_artifact_download_routes
+
+    register_artifact_download_routes(app)
     app.router.add_get("/api/artifacts/session-docs", api_artifact_session_docs)
     app.router.add_post("/api/artifacts/materialize", api_artifact_materialize)
     app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)

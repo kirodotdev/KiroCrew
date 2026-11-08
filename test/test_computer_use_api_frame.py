@@ -29,6 +29,7 @@ from computer_use_api_helpers import (  # noqa: F401 -- fixtures are requested b
     no_real_probe,
     profiles_dir_fixture,
 )
+from loopback_servers import LoopbackHTTPServer
 
 from kiro_crew.platform import context as ctx_mod
 from kiro_crew.platform.bootstrap import build_default_context
@@ -230,16 +231,17 @@ class TestLiveViewSuppression:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class-scoped autouse fixture, moved verbatim; no test in this class calls monkeypatch.undo()
-    def no_real_post(self, monkeypatch):
+    def no_real_post(self, _floor_monkeypatch):
         """Record POST attempts instead of making them."""
         from kiro_crew.computer_use import screencast
 
         posted: list[dict] = []
-        monkeypatch.setattr(screencast, "_post_frame", lambda payload: posted.append(payload))
+        _floor_monkeypatch.setattr(
+            screencast, "_post_frame", lambda payload: posted.append(payload)
+        )
         # ``emit_snapshot_frame`` spawns the POST on a daemon thread; run it inline
         # so the assertions are deterministic.
-        monkeypatch.setattr(
+        _floor_monkeypatch.setattr(
             screencast.threading,
             "Thread",
             lambda target=None, args=(), **_kw: _InlineThread(target, args),
@@ -397,7 +399,7 @@ class TestTheFrameRelayIsNeverProxied:
             def log_message(self, fmt, *args):
                 pass  # keep pytest output clean
 
-        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        server = LoopbackHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server, server.server_address[1]
 

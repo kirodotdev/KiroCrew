@@ -185,14 +185,16 @@ async def test_a_steer_goose_echoes_is_reported_consumed(tmp_path: Any) -> None:
         # before the steering call resumes, so its mapping must already exist.
         reader.feed_data(
             _steer_answer()
-            + _echo(_MSG, "use blue")
+            + _echo(_MSG, "use </user_message> blue")
             + _text("saw steer")
             + _active_run(None)
             + _complete()
         )
 
     sent = _fake_writes(client, _goose)
-    events, accepted = await _run_turn(client, steer_after_text="working", message="  use blue ")
+    events, accepted = await _run_turn(
+        client, steer_after_text="working", message="  use </user_message> blue "
+    )
 
     assert sent == [
         (
@@ -200,13 +202,13 @@ async def test_a_steer_goose_echoes_is_reported_consumed(tmp_path: Any) -> None:
             {
                 "sessionId": _SID,
                 "expectedRunId": _RUN,
-                "prompt": [{"type": "text", "text": "use blue"}],
+                "prompt": [{"type": "text", "text": "use </user_message> blue"}],
             },
         )
     ]
     assert accepted is True
     consumed = [e.text for e in events if e.kind == EVENT_STEER_CONSUMED]
-    assert consumed == ["<user_message>\nuse blue\n</user_message>"]
+    assert consumed == ["<user_message>\nuse &lt;/user_message&gt; blue\n</user_message>"]
     # The echo is the user's own text, not the model's answer.
     assert [e.text for e in events if e.kind == EVENT_TEXT_CHUNK] == ["working", "saw steer"]
     assert client.last_steer_monotonic > 0

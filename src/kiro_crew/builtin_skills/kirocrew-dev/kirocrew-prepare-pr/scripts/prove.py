@@ -47,6 +47,7 @@ Exit:   0 PROVEN | 20 NOT_PROVEN | 21 INCONCLUSIVE | 10 NOTHING_TO_PROVE
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -56,6 +57,21 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
+
+# argv[0] resolution and the batch-launcher guard every git call applies, from
+# _tool_argv.py beside this script, by path and without writing bytecode.
+_SPEC = importlib.util.spec_from_file_location(
+    "_prepare_pr_prove_tool_argv",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tool_argv.py"),
+)
+if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
+    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
+_tool_argv = importlib.util.module_from_spec(_SPEC)
+_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+try:
+    _SPEC.loader.exec_module(_tool_argv)
+finally:
+    sys.dont_write_bytecode = _WRITES_BYTECODE
 
 # Emitted into the temp dir and put on PYTHONPATH so pytest reports its own
 # counts.  Reading pytest's report objects is both safer and more precise than
@@ -185,7 +201,11 @@ GIT_PINS = ("-c", "core.hooksPath=" + os.devnull, "-c", "core.fsmonitor=false")
 
 
 def _git_argv(args: list[str]) -> list[str]:
-    return ["git", *GIT_PINS, *args]
+    """git resolved by ``_tool_argv.resolve``, then the pins; OSError when it must not run."""
+    argv, refused = _tool_argv.resolve(["git", *GIT_PINS, *args])
+    if refused:
+        raise OSError(refused[2])
+    return argv
 
 
 def _git_env() -> dict[str, str]:
@@ -202,20 +222,53 @@ def _git_env() -> dict[str, str]:
     return env
 
 
+def _decode(raw: bytes) -> str:
+    """Bytes to str with no newline translation.
+
+    surrogateescape, not replace: _git CAPTURES the diffs that feed git apply,
+    and a payload must round-trip byte-exactly through ``_encode``.
+    """
+    return raw.decode("utf-8", "surrogateescape")
+
+
+def _encode(text: str) -> bytes:
+    """Inverse of ``_decode``: the exact bytes git produced."""
+    return text.encode("utf-8", "surrogateescape")
+
+
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
-    """Run git with a fixed argv, capturing both streams as text."""
-    return subprocess.run(
+    """Run git with a fixed argv, capturing both streams as str.
+
+    Captured as bytes and decoded here, not with ``text=True``: text mode reads
+    with universal newlines, which turns a CRLF file's diff lines into LF on
+    every platform, and a patch with its CRs stripped does not apply to the file.
+    """
+    r = subprocess.run(
         _git_argv(args),
         cwd=str(cwd),
         env=_git_env(),
         capture_output=True,
-        text=True,
-        encoding="utf-8",
-        # surrogateescape, not replace: this helper CAPTURES the diffs that
-        # feed git apply below, and a payload must round-trip byte-exactly.
-        errors="surrogateescape",
         check=False,
     )
+    return subprocess.CompletedProcess(r.args, r.returncode, _decode(r.stdout), _decode(r.stderr))
+
+
+def _git_apply(args: list[str], patch: str, cwd: Path) -> subprocess.CompletedProcess:
+    """Feed *patch* to ``git apply`` on stdin as the bytes git produced.
+
+    Bytes, not ``text=True``: on Windows a text-mode pipe writes every ``\\n``
+    as ``\\r\\n``, and a patch rewritten that way does not match LF files, so
+    every hunk fails to apply.
+    """
+    r = subprocess.run(
+        _git_argv(["apply", *args, "-"]),
+        cwd=str(cwd),
+        input=_encode(patch),
+        capture_output=True,
+        env=_git_env(),
+        check=False,
+    )
+    return subprocess.CompletedProcess(r.args, r.returncode, _decode(r.stdout), _decode(r.stderr))
 
 
 def _git_ok(args: list[str], cwd: Path) -> str:
@@ -347,31 +400,18 @@ def run_pytest(worktree: Path, test_files: list[str], report: Path) -> Optional[
 
     Returns pytest's exit code, or None if it exceeded the time bound.
 
-    ``-n0`` and the addopts override are deliberate.  The repo's addopts carry
-    ``-n auto --dist loadgroup`` for the full suite; across one or two files that
-    buys nothing and costs determinism, and non-deterministic ordering would make
-    per-hunk attribution unreproducible.  With xdist off, ``--dist`` has no
-    meaning to preserve.
+    ``-n0`` and the addopts override are deliberate: xdist ordering across one or
+    two files buys nothing and makes per-hunk attribution unreproducible.
 
-    ``PYTHONDONTWRITEBYTECODE`` is load-bearing, not hygiene.  Reverting a hunk
-    frequently yields a file of the SAME byte length (``- 1`` becomes ``- 2``),
-    and CPython invalidates a cached ``.pyc`` on (mtime, size).  When the revert
-    lands in the same filesystem mtime tick as the baseline run that populated
-    ``__pycache__``, both keys match and the stale bytecode is reused: the
-    mutation never reaches the interpreter, the test passes, and a strong test is
-    reported NOT_PROVEN.  Writing no bytecode at all removes the failure mode
-    rather than racing it.
+    ``PYTHONDONTWRITEBYTECODE`` is load-bearing. A reverted hunk often keeps the
+    SAME byte length, and CPython validates ``.pyc`` on (mtime, size), so a revert
+    in the baseline run's mtime tick would reuse stale bytecode and report a strong
+    test NOT_PROVEN.
 
-    ``-p no:platformdirs`` is a consequence of the addopts override above, and it
-    is what keeps a verdict about the change from depending on the host's
-    installed packages.  ``platformdirs`` declares a ``pytest11`` entry point, so
-    pytest imports it at startup; an entry point that raises on import aborts the
-    run before collection.  This child runs with ``addopts`` replaced and often
-    in a throwaway worktree, so neither the repo config nor the target repo's own
-    config can refuse that plugin on its behalf.  A child killed that way exits
-    non-zero having asserted nothing, which ``prove`` cannot tell from a genuine
-    baseline failure -- so it would report BASELINE_RED for a reason that has
-    nothing to do with the diff under test.
+    ``-p no:platformdirs``: its ``pytest11`` entry point is imported at startup,
+    and one that raises aborts the run before collection. With ``addopts``
+    replaced no repo config can refuse it, and ``prove`` would misreport that
+    crash as BASELINE_RED.
     """
     plugin_dir = report.parent
     (plugin_dir / "_prove_reporter.py").write_text(_REPORTER_PLUGIN, encoding="utf-8")
@@ -472,8 +512,8 @@ def pin_commit(repo: Path) -> tuple[str, str]:
     still judged the commit it started from, so that commit's ids, not HEAD's at
     the end, go into the printed line and the record.
     """
-    commit = _git_ok(["rev-parse", "--verify", "HEAD^{commit}"], repo).strip()
-    tree = _git_ok(["rev-parse", "--verify", commit + "^{tree}"], repo).strip()
+    commit = _git_ok(["rev-parse", "--verify", "HEAD"], repo).strip()
+    tree = _git_ok(["rev-parse", "--verify", commit + ":"], repo).strip()
     return commit, tree
 
 
@@ -612,16 +652,7 @@ def prove(repo: Path, base: str, per_hunk: bool, commit: str = "HEAD") -> dict:
                     }
                 )
                 continue
-            applied = subprocess.run(
-                _git_argv(["apply", "-R", "-"]),
-                cwd=str(worktree),
-                input=mutation,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="surrogateescape",
-                env=_git_env(),
-            )
+            applied = _git_apply(["-R"], mutation, worktree)
             if applied.returncode != 0:
                 raise EnvironmentError(f"could not revert {label}: {applied.stderr.strip()}")
 
@@ -650,16 +681,7 @@ def prove(repo: Path, base: str, per_hunk: bool, commit: str = "HEAD") -> dict:
             )
 
             # Re-apply so each hunk is measured against the unmutated tree.
-            forward = subprocess.run(
-                _git_argv(["apply", "-"]),
-                cwd=str(worktree),
-                input=mutation,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="surrogateescape",
-                env=_git_env(),
-            )
+            forward = _git_apply([], mutation, worktree)
             if forward.returncode != 0:
                 raise EnvironmentError(
                     f"could not restore {label} in the worktree: {forward.stderr.strip()}"
@@ -708,7 +730,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    if not shutil.which("git"):
+    if not _tool_argv.which("git"):
         print("prove: git not found on PATH", file=sys.stderr)
         return EXIT_ENV
 

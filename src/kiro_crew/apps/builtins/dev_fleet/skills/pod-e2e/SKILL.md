@@ -40,8 +40,8 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5476/api/sessions   # 
 
 ## The interface — pod tools if you are an agent, the CLI if you are a human
 
-**If you are an agent session, reach for the `pod_up` / `pod_down` / `pod_status`
-/ `pod_ls` MCP tools before a shell.** A pod is a systemd `--user` unit, so every
+**If you are an agent session, reach for the `pod_up` / `pod_restart` / `pod_down`
+/ `pod_status` / `pod_ls` MCP tools before a shell.** A pod is a systemd `--user` unit, so every
 pod verb needs the systemd user bus. Whether your shell can reach that bus depends
 on the sandbox your session runs behind: under Kiro Crew's own sandbox it can (see
 `security.md`, "Scoped user-bus locator forward"), but behind an outer sandbox with
@@ -52,7 +52,9 @@ systemd part -- so they are the portable choice, and the only one on a host that
 denies you the bus.
 
 ```
-pod_up     {"worktree": "<wt>"}   -> prose: port, base_url, token (+ its two limits)
+pod_up     {"worktree": "<wt>"}   -> prose: port, base_url, checkout, token (+ its two limits)
+           (+ optional "memory": "16G", "cpu": "800%"; defaults 4G / 200%)
+pod_restart {"worktree": "<wt>"}  -> same handle, HOME KEPT (apps, config, models)
 pod_status {"worktree": "<wt>"}   -> status + port + health
 pod_ls     {}                     -> every pod active on this host
 pod_down   {"worktree": "<wt>"}   -> stopped, HOME reclaimed
@@ -77,7 +79,8 @@ The CLI is the same operations for a human at a terminal:
 # 1. bring the pod up, get a handle (JSON: base_url + token + port)
 kirocrew pod up <wt> --json
 #    → {"name":"<wt>","status":"up","port":7958,
-#       "base_url":"http://127.0.0.1:7958","token":"…","ttl":"2h"}
+#       "base_url":"http://127.0.0.1:7958","token":"…","ttl":"2h",
+#       "checkout":"/home/u/clone-a/<wt>"}
 
 # 2. test against the handle — full stack, ONE port:
 curl -s "$base_url/api/<anything>?token=$token"      # backend API
@@ -96,6 +99,23 @@ drive the pod with the session: keep curl's cookie jar from that first request
 the window is refused with `403 token expired`; `pod_up` (or `kirocrew pod token
 <wt>`) on the running pod leaves it running and returns a fresh token.
 
+**Showing a pod to the user.** Do not emit a `web-preview` marker for a pod. The
+dashboard's Preview tab frames the URL, and a pod's gateway refuses to be framed
+by any other origin (`X-Frame-Options: SAMEORIGIN`, CSP `frame-ancestors 'self'`),
+so the tab stays blank even when the pod answers 200 on the same host. Hand the
+user a link to open in a browser tab instead: the `open:` line `pod_up` prints,
+opened within its 5-minute window. The pod binds loopback only, so when it runs on
+a remote dev box and the user browses from a laptop, give them an SSH tunnel to
+start first (`ssh -L <port>:127.0.0.1:<port> <host>`). An agent cannot mint that
+link from its shell: the safety policy blocks `kirocrew pod token` from agent
+sessions by design, so the agent's only source is `pod_up`. If `pod_up` is not
+available in the session, ask the user to open the pod themselves: the **Open**
+button on its Dev Fleet row, or `kirocrew pod up <wt>` run on the pod's host,
+which leaves a running pod running and prints an `open` line with the link
+(`kirocrew pod token <wt>` prints the bare token only). Do not look for another
+way to mint it. When the user only needs to *see* the states, show the harness's
+screenshots from `ARTIFACT_DIR` inline instead.
+
 Other verbs: `ls` (list running pods) · `status <wt>` · `token <wt>` · `url <wt>`
 · `logs <wt>` · `provision <wt>`. Run `kirocrew pod --help` for the full list.
 `token`, `url`, `logs` and `provision` have no tool of their own yet: `pod_up`
@@ -107,7 +127,9 @@ own `KIROCREW_HOME`, own port, **no tunnel** (can't grab the real Slack identity
 A pod can **never** collide with the live gateway and many can run at once.
 
 **Resource ceilings are Linux-only.** On Linux the unit sets cgroup
-`MemoryMax=4G` / `CPUQuota=200%`, which the kernel enforces. **On macOS there is
+`MemoryMax=4G` / `CPUQuota=200%`, which the kernel enforces. Raise them per pod with
+`pod up <wt> --memory 16G --cpu 800%` (or the `memory` / `cpu` tool fields), and
+apply a change to a running pod with `pod restart <wt>`, which keeps its HOME. **On macOS there is
 no such ceiling and none is emitted** — macOS has no cgroups, and nothing it does
 offer bounds the total memory of a *process tree* or hard-caps CPU (`RLIMIT_AS`
 covers one process's address space, not resident memory, and the gateway spawns
@@ -167,7 +189,7 @@ own reply into the file: it is labelled prose, and `json.load` rejects it with e
 64.
 
 ```bash
-# pod_up {"worktree": "<wt>"} -> {"name": "<wt>", "base_url": ..., "token": ..., "port": ...}
+# pod_up {"worktree": "<wt>"} -> {"name": "<wt>", "base_url": ..., "token": ..., "port": ..., "checkout": ...}
 # pod_status {"worktree": "<wt>"} -> health
 # keep pod_up's name and write the fresh health code into that object, then:
 bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <wt> --handle-json "$H/handle.json" --video
@@ -175,11 +197,12 @@ bash <app-skills-dir>/pod-e2e/scripts/pod-e2e.sh <wt> --handle-json "$H/handle.j
 ```
 
 The file is a JSON object you build: `name` is the `<wt>` you passed to `pod_up`
-(its reply names it but carries no `name` field), `base_url`, `token` and `port`
-are the values its reply prints, and `health` is the code `pod_status` reports:
+(its reply names it but carries no `name` field), `base_url`, `token`, `port` and
+`checkout` are the values its reply prints, and `health` is the code `pod_status`
+reports:
 
 ```json
-{"name": "<wt>", "base_url": "http://127.0.0.1:7813", "token": "...", "port": 7813, "health": 200}
+{"name": "<wt>", "base_url": "http://127.0.0.1:7813", "token": "...", "port": 7813, "checkout": "/home/u/clone-a/<wt>", "health": 200}
 ```
 
 `name` must be a non-empty string exactly equal to the `<wt>` argument. The
@@ -202,7 +225,7 @@ payload: `base_url` is rebuilt as `http://<loopback-host>:<port>` with no path,
 field reaches the production-port refusal, curl configuration, or Playwright.
 That is not shape pedantry: validating one representation and using another can
 point the harness at the live plane. The `pod_up` producer already emits the
-canonical URL, token, and port; add only the fresh `health` code from
+canonical URL, token, port and checkout; add only the fresh `health` code from
 `pod_status`.
 
 In that mode the script calls no pod verb at all, and three things follow:
@@ -219,14 +242,13 @@ In that mode the script calls no pod verb at all, and three things follow:
   changes pod lifecycle code itself, the CLI path is the one that tests it -- a
   green handle-mode run says the branch's *gateway* boots and renders, not that
   the branch's *pod code* works.
-- **`name` ties the handle to a worktree, not to a clone.** The check refuses a
-  handle whose `name` is not the worktree you asked for, but a pod name is a
-  worktree basename, and two clones on one host can each hold a worktree of that
-  name. Run the harness from the clone whose pod you booted: with a handle from the
-  other one, the specs and the artifact directory come from here while the requests
-  go there, and the verdict is filed under the wrong checkout. Nothing in the
-  handle, and nothing the pod serves, identifies a checkout today -- closing it
-  needs `pod_up` to emit a machine-readable handle that carries one.
+- **`checkout` ties the handle to a clone.** A pod name is a worktree basename,
+  and two clones on one host can each hold a worktree of that name, so `name`
+  alone passes for both. The harness refuses a handle whose `checkout` is not the
+  checkout it resolved for `<wt>` (symlinks resolved), because the specs and the
+  artifact directory would come from here while the requests go there, and the
+  verdict would be filed under the wrong checkout. A handle without `checkout`
+  skips that check, so copy it from the `pod_up` reply.
 
 A missing or malformed handle is refused before any phase runs, naming the field
 that is wrong.
@@ -344,6 +366,51 @@ feature you're testing. The runner handles this automatically:
 Pass `--no-suppress-first-run` to let those modals appear (only if testing the
 onboarding flow itself).
 
+### Feature flags off by default — seed them ON before boot
+
+A pod home boots from the **product defaults**, so an opt-in feature is OFF in
+a pod exactly as it is on a fresh install. The one that bites a spec is the
+Remote Crew panel: `instances.enabled` defaults to `false`, so
+`GET /api/instances` answers `403` and `RemoteCrewPanel` renders the
+"Multi-instance management is off" card instead of its tabs — a spec that
+drives the **Set up a new one** launch form times out on a locator that never
+mounts. `instances.enabled` is **restart-marked** (the SSH manager and the CSP
+`frame-src` relaxation initialize at startup), so a spec cannot turn it on via
+the settings API against the running pod; the flag has to be in the home's
+`config.json` **before** boot.
+
+`pod up --seed <dir>` is the mechanism: a `--seed` argument that is a PATH (it
+has a separator, or starts with `~` or `.`) contributes just that directory's
+sanitized `config.json` to the fresh home. So point it at a one-file dir that
+enables the flag:
+
+```bash
+D=$(mktemp -d); printf '{"instances":{"enabled":true}}' > "$D/config.json"
+kirocrew pod up <wt> --seed "$D" --json          # Set-up tab reachable
+```
+
+To then drive a spec against that pod with the harness, pass its handle to
+`pod-e2e.sh --handle-json` — build that file exactly as the
+"Running the suite when you cannot reach the bus" section above describes
+(it needs the `health` code from `kirocrew pod status <wt> --json`, which
+`pod up --json` does not emit).
+
+This does NOT change the shipped product default — the seed only affects this
+one pod's home. The same recipe works for any flag off by default, with two
+exceptions the pod seed floor enforces: a self-activating channel in
+`SEED_DISABLED_SECTIONS` (tunnel, telegram, discord, …) is forced back off so a
+seeded home cannot answer real people as the operator's bot, and the agent
+sandbox floor (`agent.sandbox`, `agent.sandbox_allow_unsandboxed_exec`,
+`agent.sandbox_allow_no_isolation`) is reset so a seeded config cannot unconfine
+the pod's agent — seeding either of those is silently overridden.
+
+> **A pod inherits the host's AWS profile.** `build_pod_env` passes the real
+> `HOME` and every `AWS_*` variable into the pod (pods run agent turns), so on
+> a machine with an AWS profile the Remote Crew launch form is backed by real
+> credentials. A spec must only **render** the Set-up form (assert it mounts),
+> never **submit** it — submitting could start a real remote crew billed to the
+> operator's account.
+
 ## PRIMARY USE — dev agent delegates to a QA agent
 
 When you (the agent building a feature) want it tested, spawn a *separate QA
@@ -423,6 +490,18 @@ kirocrew pod provision <wt> --venv-only
 
 Every failure teaches the next step: no worktree → create one; no venv → auto;
 no dist → build-or-`--provision`.
+
+`<wt>` is a pod name (up to 61 letters, digits, `.`, `_`, `-`, starting with a
+letter or digit; no `/`) that names a worktree `git worktree list` shows: its
+directory **basename** (for `git worktree add ../KiroCrew-wt-foo`, it is
+`KiroCrew-wt-foo`), or a branch without a slash. `foo` also matches branch
+`feat/foo`, the only prefix tried, so a worktree on `docs/foo` is found by its
+basename alone. A path or a name with a slash, such as `feat/foo`, fails as
+"invalid pod name". The lookup runs
+`git worktree list` from `KIROCREW_POD_REPO`, else the current directory, so
+"no git worktree '<name>'" also appears when the command runs outside a checkout
+with `KIROCREW_POD_REPO` unset, even though the worktree exists. Check the name
+and where you ran from before creating a second worktree.
 
 - Playwright venv: controlled by env `KIROCREW_PW_PY`.
   If that interpreter is missing or not executable, the FE phase **fails** —

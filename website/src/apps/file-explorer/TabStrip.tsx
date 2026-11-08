@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Folder, File, Image, X, Plus } from 'lucide-react'
 import Clickable from '../../components/Clickable'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
+import { useWheelToHorizontal } from '../../hooks/useWheelToHorizontal'
 import { IMAGE_EXTS } from './constants'
 import { extOf, basename } from './utils'
 import type { FolderTab, FileTab } from './types'
@@ -26,7 +27,28 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
   const ime = useImeGuard()
   const [renameId, setRenameId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
-  const [attachScroller, fades, remeasure] = useScrollEdges<HTMLDivElement>()
+  // The tab the rename was opened from. Closing the rename unmounts the focused
+  // input and a browser then drops focus to document.body, so Enter and Escape
+  // hand focus back to the tab (the pattern in MeetingTitle). A pointer blur
+  // saves but moves nothing: redirecting focus off the element the user clicked
+  // is the context change WCAG 3.2.2 forbids.
+  const renameTriggerRef = useRef<HTMLDivElement | null>(null)
+  // restore=true for a keyboard close (Enter/Escape); a pointer blur passes false.
+  const closeRename = (restore: boolean) => {
+    setRenameId(null)
+    if (!restore) return
+    // Only take back focus the unmount dropped.
+    requestAnimationFrame(() => {
+      const at = document.activeElement
+      if (at === null || at === document.body) renameTriggerRef.current?.focus({ preventScroll: true })
+    })
+  }
+  const [attachEdges, fades, remeasure] = useScrollEdges<HTMLDivElement>()
+  const attachWheel = useWheelToHorizontal<HTMLDivElement>()
+  const attachScroller = useCallback((node: HTMLDivElement | null) => {
+    attachEdges(node)
+    attachWheel(node)
+  }, [attachEdges, attachWheel])
 
   // Opening a file appends a tab: the strip keeps its own box, so no resize is
   // observed and no scroll fires, and the cue would stay dark over tabs that
@@ -43,7 +65,7 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
             key={t.id}
             className={'mc-fe-tab mc-fe-tab-folder' + (t.id === activeFolderId && !activeFileId ? ' is-active' : '') + (t.id === activeFolderId ? ' is-current-folder' : '')}
             onClick={() => onActivateFolder(t.id)}
-            onDoubleClick={() => { setRenameId(t.id); setRenameDraft(t.label || basename(t.rootPath)) }}
+            onDoubleClick={(e) => { renameTriggerRef.current = e.currentTarget; setRenameId(t.id); setRenameDraft(t.label || basename(t.rootPath)) }}
             title={t.rootPath}
             role="tab"
             tabIndex={0}
@@ -62,9 +84,9 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
                 onChange={(e) => setRenameDraft(e.target.value)}
                 onClick={(e) => e.stopPropagation()}
                 {...ime.bindEnter({
-                  onEnter: () => { onRenameFolder(t.id, renameDraft.trim()); setRenameId(null) },
-                  onEscape: () => setRenameId(null),
-                  onBlur: () => { onRenameFolder(t.id, renameDraft.trim()); setRenameId(null) },
+                  onEnter: () => { onRenameFolder(t.id, renameDraft.trim()); closeRename(true) },
+                  onEscape: () => closeRename(true),
+                  onBlur: () => { onRenameFolder(t.id, renameDraft.trim()); closeRename(false) },
                 })}
               />
             ) : (

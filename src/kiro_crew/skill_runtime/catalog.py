@@ -6,9 +6,10 @@ One daemon ``skill-catalog-refresh`` worker walks scopes serially; a generation
 counter and the index epoch stop a walk that started before an invalidation from
 publishing over it. Rows read back from the agent-writable index are admitted
 here before they are served. The module also enumerates the configured roots in
-precedence order, filters disabled apps' skills by owning app, expands an agent's
-``skill://`` mapping into its available entries through the same provider-root
-fence, and looks an enumerated name up.
+precedence order, filters disabled apps' skills and released former built-ins'
+packaged copies by owning app, expands an agent's ``skill://`` mapping into its
+available entries through the same provider-root fence, and looks an enumerated
+name up.
 
 The tree walk itself (``skills_discovery._iter_skill_files``) and the trust verdict
 that selects a scope (``skills_body_reads``) live outside this package. All state is the loader's; the structures a
@@ -60,6 +61,46 @@ def _disabled_app_names() -> frozenset[str]:
         return frozenset()
 
 
+def _released_app_names() -> frozenset[str]:
+    """Former built-ins whose wheel copy is released (``builtin_adoption.builtin_released``).
+
+    A packaged skill naming such an app in its ``app:`` frontmatter is the core's
+    copy of a skill the adopted app now ships from its own repository, so the
+    catalog withholds that copy (:func:`_hidden_by_app`). A failure returns an
+    EMPTY set, for the same reason as :func:`_disabled_app_names`. Deferred
+    import: ``apps`` is a higher layer than this module.
+    """
+    try:
+        from kiro_crew.apps.builtin_adoption import released_builtin_names
+
+        return released_builtin_names()
+    except Exception:
+        logger.debug("skills: could not read built-in adoption state", exc_info=True)
+        return frozenset()
+
+
+@functools.lru_cache(maxsize=None)
+def _packaged_app_claims(packaged_root: str) -> dict[str, str]:
+    """``{key: app}`` for each skill under *packaged_root* naming an app in its ``app:`` line.
+
+    *packaged_root* is ``builtin_skills/``, whose copies the builtin sync installs
+    under the same key. Cached for the process lifetime, keyed by the root: the
+    installed package tree is immutable while running.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.skills_builtin_provenance import _packaged_skill_app
+
+    try:
+        claims = {
+            key: _packaged_skill_app(path)
+            for key, path in sk._iter_skill_files(Path(packaged_root))
+        }
+    except Exception:
+        logger.debug("skills: could not read packaged skills' apps", exc_info=True)
+        return {}
+    return {key: app for key, app in claims.items() if app}
+
+
 @functools.lru_cache(maxsize=None)
 def _builtin_dir_app_name(pkg_dir: str) -> str | None:
     """The manifest name of the builtin app shipped in *pkg_dir*, or ``None``.
@@ -80,6 +121,11 @@ def _builtin_dir_app_name(pkg_dir: str) -> str | None:
 
 
 _GLOB_CHARS = "*?["
+#: Catalog lists (one per scope) whose disabled-app filtering ``_iter_visible`` keeps.
+_VISIBLE_MEMO_MAX = 16
+#: Catalog rows those kept lists may hold in total; a single larger catalog is
+#: filtered per read, uncached, and never truncated.
+_VISIBLE_MEMO_MAX_ROWS = 32_768
 
 
 def _literal_split(pattern: str) -> tuple[tuple[str, ...], int]:
@@ -195,13 +241,39 @@ def _spelled_canonically(pattern: str, project_dir: str | Path | None) -> bool:
         return False
 
 
-def _with_canonical_globs(globs: list[str], project_dir: str | Path | None = None) -> list[str]:
-    """*globs* plus each one's canonical spelling, original order first, no duplicates."""
+def _canonical_spelling(pattern: str, project_dir: str | Path | None) -> str:
+    """*pattern*'s canonical spelling: *pattern* itself when already canonical."""
+    if _spelled_canonically(pattern, project_dir):
+        return pattern
+    return _canonical_glob(pattern, project_dir)
+
+
+def _with_canonical_globs(
+    globs: list[str],
+    project_dir: str | Path | None = None,
+    cache: dict[tuple[str, str], str] | None = None,
+) -> list[str]:
+    """*globs* plus each one's canonical spelling, original order first, no duplicates.
+
+    *cache* memoises each glob's canonical spelling across the calls of one
+    pass. The dashboard annotation calls this once per agent, and many agents
+    name the same skill path, so a shared memo resolves each DISTINCT glob once
+    (one ``realpath`` and at most one pooled sensitive-path check) instead of
+    once per mention. The spelling depends only on ``(glob, project_dir)`` and
+    the filesystem at that moment, so the memo is a single pass's scratch
+    space; omit it for a one-off call.
+    """
     out = list(globs)
+    scope = str(project_dir) if project_dir is not None else ""
     for glob in globs:
-        if _spelled_canonically(glob, project_dir):
-            continue
-        canonical = _canonical_glob(glob, project_dir)
+        if cache is None:
+            canonical = _canonical_spelling(glob, project_dir)
+        else:
+            key = (glob, scope)
+            hit = cache.get(key)
+            if hit is None:
+                hit = cache[key] = _canonical_spelling(glob, project_dir)
+            canonical = hit
         if canonical not in out:
             out.append(canonical)
     return out
@@ -231,7 +303,30 @@ def _matches_any(path: str, globs: list[str]) -> bool:
 def _iter(
     loader: SkillsLoader, project_dir: str | Path | None = None
 ) -> list[tuple[str, Path, str | None]]:
+    """The first row per key of :func:`_iter_rows`: the unscoped catalog."""
+    return _first_per_key(_iter_rows(loader, project_dir))
+
+
+def _first_per_key(
+    rows: list[tuple[str, Path, str | None]],
+) -> list[tuple[str, Path, str | None]]:
+    seen: set[str] = set()
+    first: list[tuple[str, Path, str | None]] = []
+    for row in rows:
+        if row[0] not in seen:
+            seen.add(row[0])
+            first.append(row)
+    return first
+
+
+def _iter_rows(
+    loader: SkillsLoader, project_dir: str | Path | None = None
+) -> list[tuple[str, Path, str | None]]:
     """Return all ``(name, skill_file, within)`` triples without walking the tree.
+
+    Rows are in precedence order and a key can repeat: an extra root's copy of
+    a key an earlier root holds is kept, so a ``skill://`` mapping can select
+    it. :func:`_iter` serves the first row per key to everything else.
 
     Local skills take precedence over extra paths, and both take precedence
     over a trusted project's own skills. Precedence is why enumeration ORDER is
@@ -442,10 +537,11 @@ def _load_catalog_snapshot(loader: SkillsLoader, project_key: str) -> _StoredCat
     The index file is an agent-WRITABLE crew-home leaf, so a stored row is not
     evidence that anything admitted the path it names. Two things therefore
     stand between a row and a read. Here, every unconfined row must name a path
-    under :meth:`_snapshot_admitted_roots` — lexical, so a whole snapshot is
-    screened without a syscall — and rows that fail are dropped rather than
-    served. Then, because lexical containment does not say where the file
-    resolves now, ``_read_enumerated_skill_bytes`` checks each unconfined path
+    under :meth:`_snapshot_admitted_roots` or under this loader's own roots as
+    the walk spelled them — lexical, so a whole snapshot is screened without a
+    syscall — and a snapshot holding a row that fails is refused whole. Then,
+    because lexical containment does not say where the file resolves now,
+    ``_read_enumerated_skill_bytes`` checks each unconfined path
     before its first read: a stored row is never vetted
     (see :meth:`_vet_unconfined_path`).
     """
@@ -456,8 +552,17 @@ def _load_catalog_snapshot(loader: SkillsLoader, project_key: str) -> _StoredCat
     stored = loader._search_index.catalog_snapshot(loader._catalog_scope_id(project_key))
     if stored is None:
         return None
-    admitted_roots = loader._snapshot_admitted_roots()
     own_roots = (loader._dir, *loader._extra_paths)
+    # A walk names its files in the spelling of the root it walked, and a root
+    # under a linked $HOME is not its own realpath. So the screen also admits
+    # those spellings, lexically, or every row a walk stored is refused and a
+    # restarted process serves no skills until a fresh walk finishes. This only
+    # admits a row; the read still vets what it resolves to against the
+    # resolved roots alone (see :meth:`_vet_unconfined_path`).
+    admitted_roots = (
+        *loader._snapshot_admitted_roots(),
+        *(os.path.abspath(root) for root in own_roots),
+    )
     provider_roots = sk._trusted_skill_roots()
     rows: list[tuple[str, Path, str | None]] = []
     for key, path, confine_root in stored.rows:
@@ -874,18 +979,244 @@ def _get_disabled_app_names(loader: SkillsLoader) -> frozenset[str]:
     return disabled
 
 
+def _get_released_app_names(
+    loader: SkillsLoader, rows: list[tuple[str, Path, str | None]]
+) -> frozenset[str]:
+    """The released apps (:func:`_released_app_names`) whose packaged copy *rows* hold.
+
+    Asked only when a row's key is a packaged skill naming an app, so a catalog
+    holding no such copy reads no adoption state. The released set is kept for the
+    catalog TTL, like the disabled set.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    claims = _packaged_app_claims(str(sk._BUILTIN_SKILLS_DIR))
+    owners = {claims[key] for key, _path, _within in rows if key in claims}
+    if not owners:
+        return frozenset()
+    now = time.monotonic()
+    if loader._released_apps_cache is not None and now < loader._released_apps_cache[0]:
+        return loader._released_apps_cache[1] & owners
+    released = _released_app_names()
+    loader._released_apps_cache = (now + sk._ITER_CACHE_TTL_SECS, released)
+    return released & owners
+
+
+def _prime_gate_frontmatter(loader: SkillsLoader, rows: list[tuple[str, Path, str | None]]) -> None:
+    """Cache each flat row's saved metadata as its frontmatter, as ``list_skills`` does.
+
+    Until a walk vets the stored rows, the gate's read of a flat row's ``app:`` line
+    pays :func:`_vet_unconfined_path`; a saved row whose stat fingerprint still
+    matches answers it instead, as it answers every gate pass after the listing.
+    """
+    if loader._search_index is None:
+        return
+    answered = (loader._fm_cache, loader._walk_vetted)
+    unread = [
+        (key, path)
+        for key, path, within in rows
+        if within is None and "/" not in key and not any(str(path) in a for a in answered)
+    ]
+    if not unread:
+        return
+    saved = loader._search_index.metadata_snapshot()
+    for key, path in unread:
+        stored = saved.get(str(path))
+        if stored is None or stored[1].get("_catalog_key") != key:
+            continue
+        try:
+            st = path.stat()
+        except (OSError, ValueError):
+            continue
+        if stored[0] == f"{st.st_dev}:{st.st_ino}:{st.st_ctime_ns}:{st.st_mtime_ns}:{st.st_size}":
+            loader._fm_cache[str(path)] = (st.st_mtime, stored[1])
+
+
+def _hidden_by_app(
+    loader: SkillsLoader,
+    row: tuple[str, Path, str | None],
+    disabled: frozenset[str],
+    released: frozenset[str],
+) -> bool:
+    """Whether an app gate withholds catalog *row*: its app is disabled, or it is a released copy.
+
+    A released copy is a skill whose owner comes ONLY from its ``app:`` frontmatter
+    (the shape of a packaged ``builtin_skills/`` copy, see :func:`_owning_app`)
+    naming an app in *released*. The adopted app's own registrations resolve
+    through their path and stay visible, so an enabled app keeps exactly one copy
+    of each skill, and an uninstalled one keeps none.
+    """
+    if not released:
+        return bool(disabled) and loader._owning_app(*row) in disabled
+    owner, from_frontmatter = _owner_and_source(loader, *row)
+    return owner is not None and (owner in disabled or (from_frontmatter and owner in released))
+
+
 def _iter_visible(
     loader: SkillsLoader, project_dir: str | Path | None = None
 ) -> list[tuple[str, Path, str | None]]:
-    """Return all ``(name, skill_file, within)`` pairs, filtering out disabled app skills."""
+    """Return the first ``(name, skill_file, within)`` per key, minus app-gated skills.
+
+    The gate is :func:`_hidden_by_app`. ``_owning_app`` resolves real paths, so
+    filtering the whole catalog costs a ``realpath`` walk per skill, and
+    context assembly asks several times a turn. ``_iter_rows`` hands back the SAME
+    cached list until the catalog is rebuilt, so the filtered rows are kept against
+    that list object and the disabled and released sets and reused while all three
+    are unchanged. A flat skill can also name its app in an
+    ``app:`` frontmatter line; an out-of-band edit of that line is seen when the
+    catalog next revalidates (``_CATALOG_REVALIDATE_AFTER_SECS``) and publishes a
+    new list.
+    """
     disabled_apps = loader._get_disabled_app_names()
     if not disabled_apps:
-        return loader._iter(project_dir)
+        served = loader._iter(project_dir)
+        if not _get_released_app_names(loader, served):
+            return served
+    rows = _iter_rows(loader, project_dir)
+    released_apps = _get_released_app_names(loader, rows)
+    gates = (disabled_apps, released_apps)
+    memo = loader._visible_memo.get(id(rows))
+    if memo is not None and memo[0] is rows and memo[1] == gates:
+        return memo[2]
+    first = _first_per_key(rows)
+    _prime_gate_frontmatter(loader, first)
+    visible = [r for r in first if not _hidden_by_app(loader, r, disabled_apps, released_apps)]
+    if len(rows) > _VISIBLE_MEMO_MAX_ROWS:
+        return visible
+    # Holding `rows` keeps its id from being reused while the entry lives; a
+    # rebuilt catalog is a new list, so a stale entry is never matched. Only the
+    # lists `_iter` still serves are kept (a superseded generation is dropped
+    # here), and the rows the memo holds stay within `_VISIBLE_MEMO_MAX_ROWS`.
+    # Readers on several threads share the memo, so it is replaced whole rather
+    # than edited in place.
+    with loader._catalog_lock:
+        live = {id(entry[1]) for entry in loader._iter_cache.values()}
+    kept: dict = {}
+    held = len(rows)
+    for key, entry in list(loader._visible_memo.items()):
+        if key in live and key != id(rows) and len(kept) < _VISIBLE_MEMO_MAX - 1:
+            if held + len(entry[0]) <= _VISIBLE_MEMO_MAX_ROWS:
+                kept[key] = entry
+                held += len(entry[0])
+    kept[id(rows)] = (rows, gates, visible)
+    loader._visible_memo = kept
+    return visible
+
+
+def _alias_selected(
+    entries: list[_ScopedSkillEntry],
+    selected: list[_ScopedSkillEntry],
+    only: list[str],
+    heads: dict[str, str | None],
+    canonicals: dict[str, str],
+    loader_roots: list[Path],
+    real_roots: list[str],
+) -> list[_ScopedSkillEntry]:
+    """Catalog rows a mapping names through a second link to the same skill.
+
+    An app skill is linked twice under the skills directory, at
+    ``<app>/<skill>`` and usually at a flat ``<skill>``, and the catalog walk
+    keeps only the spelling it reaches first. For a skill whose name sorts
+    before the app's that is the flat link, which ``<app>/*/SKILL.md`` alone
+    does not match. A row the globs missed is still selected when the path one level
+    under the mapping's literal prefix, named like the row's directory,
+    matches the mapping and resolves to the row's target. Only prefixes inside
+    a loader-owned root, spelled or validated and resolved, are tried: the
+    catalog walk already resolved those links, and a project tree is never
+    resolved before consent.
+    """
+    roots = (*(os.path.abspath(root) for root in loader_roots), *real_roots)
+    candidates = _alias_candidates(only, heads, canonicals, roots)
+    if not candidates:
+        return []
+    taken = {id(entry) for entry in selected}
+    # A confined project row is never resolved: its path may be a swapped
+    # link or junction, and project paths stay lexical.
     return [
-        (name, skill_file, within)
-        for name, skill_file, within in loader._iter(project_dir)
-        if loader._owning_app(name, skill_file, within) not in disabled_apps
+        entry
+        for entry in entries
+        if id(entry) not in taken
+        and entry.project_root is None
+        and _alias_hit(Path(entry[1]), candidates)
     ]
+
+
+def _alias_candidates(
+    only: list[str],
+    heads: dict[str, str | None],
+    canonicals: dict[str, str],
+    roots: tuple[str, ...],
+) -> list[tuple[Path, list[str]]]:
+    """``(prefix, globs)`` for each ``<prefix>/*/SKILL.md`` mapping inside *roots*."""
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    candidates: list[tuple[Path, list[str]]] = []
+    for pattern in only:
+        parts, literal = _literal_split(pattern)
+        if literal == 0 or literal != len(parts) - 2 or parts[-1] != "SKILL.md":
+            continue
+        globs = list(dict.fromkeys([pattern, canonicals[pattern]]))
+        for prefix in dict.fromkeys([str(Path(*parts[:literal])), heads[pattern]]):
+            if prefix and sk._within_any(os.path.abspath(prefix), roots):
+                candidates.append((Path(prefix), globs))
+    return candidates
+
+
+def _alias_hit(path: Path, candidates: list[tuple[Path, list[str]]]) -> bool:
+    """True when ``<prefix>/<leaf>/SKILL.md`` matches and resolves to *path*'s target."""
+    target: str | None = None
+    for base, globs in candidates:
+        alias = base / path.parent.name / "SKILL.md"
+        if not any(fnmatch.fnmatch(str(alias), g) for g in globs):
+            continue
+        if not os.path.lexists(alias):
+            continue
+        if target is None:
+            target = os.path.normcase(os.path.realpath(path))
+        if os.path.normcase(os.path.realpath(alias)) == target:
+            return True
+    return False
+
+
+def _alias_roots(loader_roots: list[Path]) -> tuple[str, ...]:
+    """*loader_roots* spelled and resolved: the fence :func:`_alias_matches` checks.
+
+    Resolving a root goes through the sensitive-path gate (a pooled IPC call), so a
+    caller matching many paths against the same roots computes this once and
+    passes it as ``roots=``.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    return (
+        *(os.path.abspath(root) for root in loader_roots),
+        *(real for root in loader_roots if (real := sk.validate_file_path(str(root)))),
+    )
+
+
+def _alias_matches(
+    path: Path,
+    globs: list[str],
+    loader_roots: list[Path],
+    *,
+    roots: tuple[str, ...] | None = None,
+) -> bool:
+    """The :func:`_alias_selected` rule for one operator-owned path outside the catalog.
+
+    Readers that match a listed path against already-expanded globs call this so a
+    skill listed under its flat link still matches ``<app>/*/SKILL.md``. Both
+    *path* and the prefix must sit inside *loader_roots*, spelled or resolved.
+    *roots* is :func:`_alias_roots` of *loader_roots*, when the caller already has it.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
+    if roots is None:
+        roots = _alias_roots(loader_roots)
+    if not sk._within_any(os.path.abspath(path), roots):
+        # A path outside the roots (a project row) is never resolved.
+        return False
+    heads: dict[str, str | None] = dict.fromkeys(globs)
+    candidates = _alias_candidates(globs, heads, {g: g for g in globs}, roots)
+    return bool(candidates) and _alias_hit(path, candidates)
 
 
 def _scoped_entries(
@@ -897,9 +1228,25 @@ def _scoped_entries(
 
     if only == []:
         return []
-    entries = [sk._ScopedSkillEntry(*entry) for entry in loader._iter_visible(project_dir)]
     if only is None:
-        return entries
+        return [sk._ScopedSkillEntry(*entry) for entry in loader._iter_visible(project_dir)]
+    # Mappings select among every copy of a key, then the first selected copy
+    # per key is served: a mapping names the file it wants even where another
+    # root's copy wins the unscoped catalog.
+    disabled = loader._get_disabled_app_names()
+    rows = _iter_rows(loader, project_dir)
+    released = _get_released_app_names(loader, rows)
+    winners: dict[str, Path] = {}
+    for key, path, _within in rows:
+        winners.setdefault(key, path)
+    admitted_copy_roots = loader._snapshot_admitted_roots()
+    if disabled or released:
+        _prime_gate_frontmatter(loader, rows)
+    entries = [
+        sk._ScopedSkillEntry(*row)
+        for row in rows
+        if not _hidden_by_app(loader, row, disabled, released)
+    ]
     project_key = loader._trusted_project_key(project_dir) if project_dir else ""
     heads = {
         pattern: _canonical_prefix(pattern, project_dir)
@@ -908,18 +1255,42 @@ def _scoped_entries(
     }
     canonicals = {pattern: _glob_with_prefix(pattern, heads[pattern]) for pattern in only}
     globs = list(dict.fromkeys([*only, *canonicals.values()]))
-    selected = [entry for entry in entries if _matches_any(str(entry[1]), globs)]
-    known = {os.path.normcase(os.path.abspath(entry[1])) for entry in entries}
     loader_roots = [loader._dir, *loader._extra_paths]
-    catalog_roots = list(loader_roots)
-    if project_dir:
-        catalog_roots.append(Path(project_dir) / ".kiro" / "skills")
     # Compared both as spelled and resolved: ``skills.extra_paths`` roots
     # are stored resolved while a ``~`` mapping may name them through a
     # symlink. Only loader-owned roots are resolved, through the same
     # UNC-gated fence as the glob prefix; the project root stays lexical
     # because a project path is never canonicalized before consent.
     real_roots = [real for root in loader_roots if (real := sk.validate_file_path(str(root)))]
+    matched = [entry for entry in entries if _matches_any(str(entry.path), globs)]
+    aliased = _alias_selected(entries, matched, only, heads, canonicals, loader_roots, real_roots)
+    chosen = {id(entry) for entry in (*matched, *aliased)}
+    selected: list[_ScopedSkillEntry] = []
+    selected_keys: set[str] = set()
+    for entry in entries:
+        if entry.key in selected_keys or id(entry) not in chosen:
+            continue
+        if entry.project_root is None and entry.path != winners[entry.key]:
+            # A key read resolves to the winning copy, so a selected losing
+            # copy is read by its own path, fenced to the narrowest admitted
+            # root that holds it.
+            target = sk.validate_file_path(str(entry.path))
+            if target is None:
+                continue
+            admitted = max(
+                (root for root in admitted_copy_roots if sk._within_any(target, (root,))),
+                key=len,
+                default=None,
+            )
+            if admitted is None:
+                continue
+            entry = entry._replace(mapping_root=admitted)
+        selected_keys.add(entry.key)
+        selected.append(entry)
+    known = {os.path.normcase(os.path.abspath(entry[1])) for entry in entries}
+    catalog_roots = list(loader_roots)
+    if project_dir:
+        catalog_roots.append(Path(project_dir) / ".kiro" / "skills")
     # An ancestor glob must not descend through a catalog's filtered
     # rows or probe a project skills junction before consent admission.
     excluded = tuple(
@@ -939,8 +1310,8 @@ def _scoped_entries(
             sk._within_any(os.path.abspath(prefix), (os.path.abspath(root),))
             for root in catalog_roots
         ) or sk._within_any(str(real_prefix), tuple(real_roots)):
-            # The regular enumerator owns precedence, disabled apps and
-            # project consent. A mapping must not re-admit a filtered row.
+            # The rows above already applied disabled apps, project consent
+            # and per-key copy choice. A mapping must not re-admit a filtered row.
             continue
         root = prefix.parent if prefix.name == "SKILL.md" else prefix
         if not root.is_absolute() or sk.validate_file_path(str(root)) is None:
@@ -997,6 +1368,9 @@ def _iter_uncached(
         )
     ]
     seen = {name for name, _, _ in results}
+    # A root listed twice, or linked into the skills dir, yields one copy twice;
+    # only distinct copies are kept, compared in the resolved form used below.
+    kept = {(name, sk.validate_file_path(str(path)) or str(path)) for name, path, _ in results}
     # (root, confine_to): only the project root is confined — see
     # _iter_skill_files. Extra paths keep the provider-root allowance.
     roots: list[tuple[Path, tuple[str, ...] | None]] = [
@@ -1011,9 +1385,11 @@ def _iter_uncached(
         roots.append((project_root, (project_key,)))
     for root, confine in roots:
         for name, skill_file in sk._iter_skill_files(root, confine_to=confine):
-            if name in seen:
-                continue
             if confine is not None:
+                if name in seen:
+                    # A project copy never sits behind an operator-installed
+                    # one, so it is not kept for a mapping to select.
+                    continue
                 # The descriptor-anchored walker already admitted this
                 # lexical name. Resolving it here would reintroduce the
                 # link-swap/UNC probe the walk exists to prevent. Reads are
@@ -1031,6 +1407,9 @@ def _iter_uncached(
             # going wrong: the key could disagree with the value handed out,
             # and a miss read unconfined. Carried in the tuple, neither is
             # expressible.
+            if (name, resolved) in kept:
+                continue
+            kept.add((name, resolved))
             results.append((name, Path(resolved), None))
             seen.add(name)
     return results
@@ -1075,6 +1454,8 @@ def _invalidate_iter_cache(loader: SkillsLoader) -> None:
     that window to the walk's own duration.
     """
     loader._disabled_apps_cache = None
+    loader._released_apps_cache = None
+    loader._visible_memo.clear()
     with loader._catalog_lock:
         # Moved BEFORE the drop: it fences every walk already in flight, and it
         # turns the snapshot tier off (`_snapshot_trusted_locked`) until the drop
@@ -1108,6 +1489,25 @@ def _invalidate_iter_cache(loader: SkillsLoader) -> None:
         loader._request_catalog_refresh(scope)
 
 
+def _owner_roots(loader: SkillsLoader) -> tuple[Path, Path]:
+    """The resolved apps and builtins roots, kept for the catalog TTL like the app sets.
+
+    Keyed on the apps root as spelled, so a moved data home is never answered stale.
+    """
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+    from kiro_crew.apps.manager import apps_dir
+
+    spelled = str(apps_dir())
+    now = time.monotonic()
+    cached = loader._owner_roots_cache
+    if cached is not None and now < cached[0] and cached[1] == spelled:
+        return cached[2]
+    package = Path(os.path.realpath(Path(sk.__file__).parent))
+    roots = (Path(os.path.realpath(spelled)), package / "apps" / "builtins")
+    loader._owner_roots_cache = (now + sk._ITER_CACHE_TTL_SECS, spelled, roots)
+    return roots
+
+
 def _owning_app(
     loader: SkillsLoader, name: str, skill_file: Path, within: str | None = None
 ) -> str | None:
@@ -1139,30 +1539,31 @@ def _owning_app(
     confined project skill (*within* set) belongs to its repository, so its
     frontmatter is not read here.
     """
-    from kiro_crew import skills as sk  # circular import: the facade imports this module
+    return _owner_and_source(loader, name, skill_file, within)[0]
 
+
+def _owner_and_source(
+    loader: SkillsLoader, name: str, skill_file: Path, within: str | None = None
+) -> tuple[str | None, bool]:
+    """:func:`_owning_app`, and whether the owner came ONLY from the ``app:`` frontmatter line."""
     head = name.split("/", 1)[0]
     if head != name:
-        return head
+        return head, False
     try:
-        from kiro_crew.apps.manager import apps_dir
-
         real = Path(os.path.realpath(skill_file))
-        # Resolved like ``real``: the default data home keeps $HOME's spelling.
-        root = Path(os.path.realpath(apps_dir()))
+        root, builtins_root = _owner_roots(loader)
         if real.is_relative_to(root):
             # <apps root>/<app>/... — the segment directly under the root.
-            return real.relative_to(root).parts[0]
-        builtins_root = Path(os.path.realpath(Path(sk.__file__).parent)) / "apps" / "builtins"
+            return real.relative_to(root).parts[0], False
         if real.is_relative_to(builtins_root):
             pkg_dir = builtins_root / real.relative_to(builtins_root).parts[0]
-            return _builtin_dir_app_name(str(pkg_dir))
+            return _builtin_dir_app_name(str(pkg_dir)), False
     except Exception:
-        return None
+        return None, False
     if within is not None:
-        return None
+        return None, False
     meta = loader._readable_frontmatter(skill_file, within=None) or {}
-    return meta.get("app", "").strip() or None
+    return meta.get("app", "").strip() or None, True
 
 
 def _resolve_path(

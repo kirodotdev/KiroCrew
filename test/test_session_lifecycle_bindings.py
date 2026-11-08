@@ -46,6 +46,11 @@ from kiro_crew.session_lifecycle import SessionLifecycleService
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_lifecycle_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_field_scan_counts_every_read_and_write_shape",
+    "the_class_only_scan_can_fail",
+)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now
 #: (``session_lifecycle`` for the class body itself).
@@ -61,7 +66,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_on_recycled": ("property", False, "67238bb9d853", "session_lifecycle"),
     "_open_teardown_fence": ("function", False, "63ea8acfe723", "parent_end"),
     "_origin_links": ("property", False, "16d9fe32838b", "session_lifecycle"),
-    "_orphan_turn_holder": ("function", False, "a6707a152144", "turn_stop"),
+    "_orphan_turn_holder": ("function", False, "516a6c6fb18b", "turn_stop"),
     "_parent_has_sparable_child": ("function", True, "1eda252b53bd", "parent_end"),
     "_parent_owes_child_work": ("function", True, "1eda252b53bd", "parent_end"),
     "_parent_owes_child_work_now": ("function", False, "1eda252b53bd", "parent_end"),
@@ -71,9 +76,11 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_respawn_as": ("function", True, "a068e8318381", "turn_stop"),
     "_retire_kiro_bg_runtime": ("function", True, "cf7d5d61b0c1", "identity_retirement"),
     "_retire_kiro_subagent_runtimes": ("function", True, "914a005c3545", "identity_retirement"),
+    "_select_shared_children": ("function", False, "197b82a5019f", "turn_stop"),
     "_send_abort_for_session": ("function", True, "a6707a152144", "turn_stop"),
     "_snapshot_parent_children": ("function", False, "4be47402b13f", "parent_end"),
     "_stop_bucket": ("function", False, "f1d40e624ae4", "turn_stop"),
+    "_stop_shared_children": ("function", True, "c4ace4d1df6b", "turn_stop"),
     "_suppress_replay": ("property", False, "67a56d539800", "session_lifecycle"),
     "_wake_turn_waiters": ("staticmethod", False, "09f69d038204", "turn_stop"),
     "absorb_orphaned_release": ("function", False, "1eda252b53bd", "turn_stop"),
@@ -85,19 +92,26 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "close_replay_gap": ("function", False, "958babeb61c8", "turn_stop"),
     "destroy": ("function", True, "90a6b2cda311", "teardown"),
     "destroy_if": ("function", True, "b2e16ab8f2dd", "teardown"),
-    "discard_conversation": ("function", True, "b225e6bcbd95", "teardown"),
+    "discard_conversation": ("function", True, "185d63c540e6", "teardown"),
     "drain_active_turns": ("function", True, "5944c6af44b2", "fleet"),
     "drain_all_providers": ("function", True, "0624c13b3dee", "fleet"),
     "end_children_for": ("function", True, "958babeb61c8", "parent_end"),
     "flag_identity_stamp_mismatches": ("function", True, "946212e80718", "identity_retirement"),
+    "holds_kiro_process_of_unknown_account": (
+        "function",
+        False,
+        "542f3ac72725",
+        "identity_retirement",
+    ),
     "note_stop": ("function", False, "1eda252b53bd", "turn_stop"),
     "open_replay_gap": ("function", False, "958babeb61c8", "turn_stop"),
     "refresh_defaults": ("function", True, "8d9c819b471f", "fleet"),
     "reload_provider_factory": ("function", True, "8d9c819b471f", "fleet"),
     "remove": ("function", True, "958babeb61c8", "teardown"),
     "remove_if_unclaimed": ("function", True, "1eda252b53bd", "teardown"),
-    "reset": ("function", True, "44042efb8303", "teardown"),
+    "reset": ("function", True, "696026fd383c", "teardown"),
     "retire_kiro_identity_sessions": ("function", True, "0929bcd2b0e5", "identity_retirement"),
+    "retire_turn_permit": ("function", False, "a6707a152144", "turn_stop"),
     "set_child_teardown_handler": ("function", False, "fdd1c8c5bbb9", "parent_end"),
     "set_recycle_callback": ("function", False, "eb879633e29d", "session_lifecycle"),
     "stop_generation": ("function", False, "028659ce42ac", "turn_stop"),
@@ -286,11 +300,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
     return found
 
 
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == ["__class__", "__hidden", "super()"]
-
-
 @pytest.mark.parametrize("owner", session_lifecycle._OWNERS)
 def test_no_bound_function_needs_its_class_body(owner: str) -> None:
     tree = _tree(sys.modules[owner])
@@ -432,16 +441,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
     return written - set(_MEMBERS), read - written - set(_MEMBERS)
-
-
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    assert _fields([tree.body[0]]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
 
 
 def _listed(doc: str, label: str) -> set[str]:

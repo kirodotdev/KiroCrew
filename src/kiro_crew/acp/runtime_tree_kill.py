@@ -70,6 +70,35 @@ def _escapee_is_still_ours(pid: int, record: ChildRecord) -> bool:
     return platform_compat.get_process_start_id(pid) == recorded
 
 
+def _release_stdin(process: asyncio.subprocess.Process) -> None:
+    """Close this gateway's write end of *process*'s stdin, discarding unsent bytes.
+
+    The kill's last word to a tree no signal reached. A root that exits before its
+    tree does -- the leader killed first, or a launcher that died under its agent --
+    leaves descendants holding the write ends of stdout and stderr, so asyncio's
+    transport never sees every pipe close, never finishes, and never closes stdin
+    either. The agent below then reads no EOF and outlives the session for as long
+    as the gateway runs. Where the leaderless group cannot be vouched
+    (``group_vouching_available`` is Linux-only), nothing else reaches it unless a
+    descendant was recorded before the root died, so on macOS this is the whole
+    teardown of a tree whose root died during the initialize handshake.
+
+    Signals nothing: only holders of the pipe's other end see the EOF, and those
+    are by construction this spawn's own tree. ``abort`` rather than ``close``,
+    because ``close`` waits for buffered bytes to drain into a reader that may
+    never read again, and the stdin pipe's transport rather than the subprocess
+    transport, whose ``close`` kills a root that is still running.
+    """
+    stdin = getattr(process, "stdin", None)
+    transport = getattr(stdin, "transport", None)
+    if transport is None or transport.is_closing():
+        return
+    try:
+        transport.abort()
+    except Exception:  # noqa: BLE001 - a teardown never fails on a pipe close
+        logger.debug("AcpRuntime kill: could not release the root's stdin", exc_info=True)
+
+
 def _prune_dead_descendants(saved: dict[int, ChildRecord]) -> list[int]:
     """Untrack the descendants that are gone; return the ones still alive.
 
@@ -92,6 +121,33 @@ def _prune_dead_descendants(saved: dict[int, ChildRecord]) -> list[int]:
                 "AcpRuntime: untracking descendant PIDs %s failed", list(dead), exc_info=True
             )
     return [pid for pid in saved if pid not in dead]
+
+
+def _untrack_killed_root(pid: int, start_token: str | None) -> None:
+    """Retire the killed root's PID-registry entry, by identity when it has one.
+
+    A synchronous unit so the caller can hand the whole thing to a worker
+    thread, the same way ``_prune_dead_descendants`` is: the untrack takes the
+    PID file's exclusive lock and rewrites it through ``atomic_write``, neither
+    of which may run on the event loop. ``unregister_protected_pid`` is
+    ``_PROTECTED_LOCK``-guarded, so it is safe on the worker thread too.
+
+    A recorded start token names the session line that is ours, so the retire
+    goes by identity; the bare line is removed only while the number is dead at
+    that moment -- never by number alone. A root whose identity could not be
+    read at spawn has no token to compare and keeps the prefix-matched untrack.
+    """
+    if start_token:
+        if not _untrack_root_by_identity(pid, start_token):
+            # No session line of ours to retire (spawn's append
+            # failed, or a successor already replaced it): the
+            # bare line still goes, but only while the number
+            # is dead -- never by number alone.
+            _untrack_pid_if_dead(pid)
+    else:
+        _untrack_pid(pid)
+        _untrack_session_pid(pid)
+    unregister_protected_pid(pid)
 
 
 async def _discard_bound_workspace(self: AcpRuntime) -> None:
@@ -605,6 +661,9 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
                 await asyncio.shield(escalate())
                 raise
             await escalate()
+        # Before the handle is dropped, whatever the ladder reached: see
+        # _release_stdin for the tree this is the whole teardown of.
+        _release_stdin(self._process)
         # Before the handle is dropped: the death line above was
         # written pre-signal and says returncode=<not reaped>.
         root_confirmed_dead = self._process.returncode is not None
@@ -631,29 +690,16 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
 
             # Untrack the PID so the orphan sweep doesn't chase a dead entry
             # (mirrors AcpClient._reset_state). Best-effort — a leftover entry
-            # is only pruned lazily otherwise.
+            # is only pruned lazily otherwise. _untrack_killed_root retires it
+            # by identity when a start token names the line that is ours.
             #
-            # By IDENTITY, the same way an observed death retires. The reap
-            # above proved THIS process dead, not that its number is still
-            # ours: the kernel can hand the number to a root this gateway
-            # spawns next before this line runs, and a prefix-matched untrack
-            # would then take the successor's lines with it. The recorded
-            # start token names the line that is ours; the bare line is
-            # removed only while the number is dead at that moment. A root
-            # whose identity could not be read at spawn has no token to
-            # compare, so it keeps the prefix-matched untrack it always had.
+            # Run off the loop: the untrack takes the PID file's exclusive lock
+            # and rewrites it through atomic_write, a syscall that blocks the
+            # event loop (and so the wait_for timeout that bounds this kill)
+            # on a slow disk. Hand it to a worker thread, the same way
+            # _prune_dead_descendants below is.
             try:
-                if self._spawn_start_token:
-                    if not _untrack_root_by_identity(pid, self._spawn_start_token):
-                        # No session line of ours to retire (spawn's append
-                        # failed, or a successor already replaced it): the
-                        # bare line still goes, but only while the number
-                        # is dead -- never by number alone.
-                        _untrack_pid_if_dead(pid)
-                else:
-                    _untrack_pid(pid)
-                    _untrack_session_pid(pid)
-                unregister_protected_pid(pid)
+                await asyncio.to_thread(_untrack_killed_root, pid, self._spawn_start_token)
             except Exception:
                 logger.debug("AcpRuntime: PID untracking failed for %s", pid, exc_info=True)
 

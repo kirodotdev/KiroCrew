@@ -35,9 +35,14 @@ _CAPS = {"TOKIO_WORKER_THREADS": "4", "RAYON_NUM_THREADS": "4"}
 
 @pytest.fixture
 def configured(monkeypatch):
-    """Make the configured mapping whatever the test says, without a config file."""
+    """Make the configured mapping whatever the test says, without a config file.
+
+    The host-sized defaults are switched off so these rows test the configured
+    map alone; ``test_host_task_sizing.py`` covers how the two combine.
+    """
 
     def _set(mapping: dict[str, str]) -> None:
+        monkeypatch.setattr(ced, "_host_defaults", dict, raising=True)
         monkeypatch.setattr(ced, "_configured_defaults", lambda: dict(mapping), raising=True)
 
     return _set
@@ -177,6 +182,7 @@ class TestOnlyWhenUnset:
             raise RuntimeError("config broken")
 
         monkeypatch.setattr("kiro_crew.config.KiroCrewConfig.load", _boom, raising=True)
+        monkeypatch.setattr(ced, "_host_defaults", dict, raising=True)
         env = {"PATH": "/bin"}
         apply_child_env_defaults(env)
         assert env == {"PATH": "/bin"}

@@ -149,6 +149,57 @@ def test_single_cjk_character_query(tmp_path, opened):
     assert _candidates(index, CJK_CAT) == {"a"}
 
 
+@pytest.mark.parametrize(
+    "mark",
+    [
+        "\u30fb",  # KATAKANA MIDDLE DOT, category Po
+        "\u309b",  # KATAKANA-HIRAGANA VOICED SOUND MARK, category Sk
+        "\u30a0",  # KATAKANA-HIRAGANA DOUBLE HYPHEN, category Pd
+    ],
+)
+def test_kana_punctuation_needle_does_not_exclude_the_hit(tmp_path, opened, mark):
+    """unicode61 has no token for a punctuation or symbol character.
+
+    A needle made of one must not become a ``session_cjk`` lookup: that MATCH
+    returns no rows, which would drop a session that really contains it.
+    """
+    index = _index(tmp_path, opened=opened)
+    name = f"\u30c8\u30e0{mark}\u30af\u30eb\u30fc\u30ba"
+    _sync(index, tmp_path, "hit", f"we talked about {name} movies")
+    _sync(index, tmp_path, "other", "nothing related here")
+    got = _candidates(index, name)
+    assert got is None or "hit" in got
+
+
+def test_kana_middle_dot_query_matches_scan_after_backfill(tmp_path, monkeypatch):
+    """An indexed search returns what a scanning search returns."""
+    from kiro_crew import history_search
+    from kiro_crew.history import ConversationLog
+
+    monkeypatch.setattr(history_search, "_INDEX_QUIET_WINDOW_SECS", 0.0)
+    name = "\u30c8\u30e0\u30fb\u30af\u30eb\u30fc\u30ba"
+    logs = {}
+    for label in ("scan", "indexed"):
+        log = ConversationLog(base_dir=tmp_path / label)
+        # A later message, so the title alone cannot satisfy the needle.
+        log.append("film", "user", "planning a movie night")
+        log.append("film", "user", f"we talked about {name} movies")
+        log.append("other", "user", "nothing related here")
+        logs[label] = log
+    logs["scan"]._catalog_projection.search_index.available = False
+    scan_keys = [r["key"] for r in logs["scan"].search_sessions(name)]
+    assert scan_keys == ["film"]
+
+    indexed = logs["indexed"]
+    report = indexed._catalog_projection.backfill_index(budget_secs=30)
+    assert report["remaining"] == 0
+    try:
+        indexed_keys = [r["key"] for r in indexed.search_sessions(name)]
+    finally:
+        indexed._catalog_projection.search_index.close()
+    assert indexed_keys == scan_keys
+
+
 def test_forge_reference_matches_any_spelling(tmp_path, opened):
     """A forge reference must find the session that wrote a different spelling."""
     index = _index(tmp_path, opened=opened)

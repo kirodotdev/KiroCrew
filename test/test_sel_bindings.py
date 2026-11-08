@@ -43,6 +43,11 @@ from kiro_crew.sel import SecurityEventLog
 # The reach check parses the test trees; keep it on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_sel_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_class_only_scan_can_fail",
+    "the_field_scan_counts_every_read_and_write_shape",
+)
+
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
@@ -95,7 +100,8 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "flush": ("function", False, "a9c45e0c08a5", "sel"),
     "log": ("function", False, "105f9e23f712", "sel"),
     "log_api_access": ("function", False, "205f9b11a348", "sel"),
-    "log_governance_decision": ("function", False, "416a40eec8a0", "sel"),
+    # `redact` added for the context-less MCP gateway daemon (OTLP host audit).
+    "log_governance_decision": ("function", False, "f3c3785395e6", "sel"),
     "log_governance_degraded": ("function", False, "9b129b9270d1", "sel"),
     "log_tool_invocation": ("function", False, "28f3ece4bc30", "sel"),
     "prune": ("function", False, "254f3f4fcb91", "sel_rotation"),
@@ -204,13 +210,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    node = tree.body[0]
-    assert isinstance(node, ast.FunctionDef)
-    assert sorted(_class_only_constructs(node)) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", sel_mod._OWNERS)
@@ -342,18 +341,6 @@ def _fields(fns: list[ast.FunctionDef | ast.AsyncFunctionDef]) -> tuple[set[str]
             ):
                 (written if func.id == "setattr" else read).add(node.args[1].value)
     return written - set(_MEMBERS), read - written - set(_MEMBERS)
-
-
-def test_the_field_scan_counts_every_read_and_write_shape() -> None:
-    tree = ast.parse(
-        "def f(self):\n"
-        "    self.a = 1\n    del self.b\n    self.c[k] = v\n    del self.d[k]\n"
-        "    self.e.add(1)\n    self.f.setdefault(k, v)\n    setattr(self, 'g', 1)\n"
-        "    return self.h, getattr(self, 'i', None), hasattr(self, 'j'), self.e\n"
-    )
-    node = tree.body[0]
-    assert isinstance(node, ast.FunctionDef)
-    assert _fields([node]) == ({"a", "b", "c", "d", "e", "f", "g"}, {"h", "i", "j"})
 
 
 def _listed(doc: str, label: str) -> set[str]:

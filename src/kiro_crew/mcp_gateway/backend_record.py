@@ -138,7 +138,7 @@ async def reap(path: Path, *, reason: str) -> int:
     signalled.
     """
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = await asyncio.to_thread(path.read_text, encoding="utf-8")
     except OSError:
         return 0
     killed = 0

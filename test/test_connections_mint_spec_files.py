@@ -11,6 +11,7 @@ still stalls.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import os
 import re
@@ -101,6 +102,25 @@ def test_an_unreadable_manifest_reads_as_empty_and_deletes_nothing(
     assert bystander.is_file()
 
 
+def test_a_manifest_that_cannot_be_read_records_nothing_and_keeps_its_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    manifest = tmp_path / "mint-specs.json"
+    monkeypatch.setattr(mint, "_mint_manifest_path", lambda: manifest)
+    mint._write_mint_manifest({str(tmp_path / "kept.json"): time.time()})
+    before = manifest.read_bytes()
+    real_read_text = Path.read_text
+
+    def read_text(self, *args, **kwargs):
+        if self == manifest:
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert mint._record_mint_spec(str(tmp_path / "new.json")) is False
+    assert manifest.read_bytes() == before
+
+
 AGED = -(mint._MINT_SPEC_ORPHAN_SECONDS + 60)
 
 
@@ -132,8 +152,8 @@ async def test_the_mint_pid_is_protected_while_readiness_is_still_stalled(monkey
         async def ensure_ready(self):
             # The spawn assigns the PID, then initialization drags on.
             self._pid = 4242
-            # flake-ok: pre-existing unbounded wait in the stubbed readiness; the finally sets ready itself; moved verbatim, tracked for a de-flake pass
-            await ready.wait()
+            # Blocks until the test's finally releases it; the bound is the test's own await_until.
+            await await_until(ready, what="stubbed readiness")
 
         def pop_pending_oauth_requests(self):
             return []
@@ -163,10 +183,8 @@ async def test_the_mint_pid_is_protected_while_readiness_is_still_stalled(monkey
 
 
 async def _until(predicate, interval: float = 0.01) -> None:
-    """Poll until the predicate holds. Bounded by the caller's wait_for."""
-    while not predicate():
-        # flake-ok: pre-existing 10 ms poll interval of the _until helper, which no test calls; its docstring leaves the bound to the caller; moved verbatim, tracked for a de-flake pass
-        await asyncio.sleep(interval)
+    """Wait until the predicate holds, under the wait helper's lost-run bound."""
+    await async_wait_until(predicate, interval=interval)
 
 
 def test_a_failed_release_unlink_keeps_its_manifest_row(monkeypatch):

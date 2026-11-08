@@ -1,21 +1,14 @@
 """The credit refresh falls back to the ``/usage`` scrape, which parks after misses.
 
-The scrape runs whenever the API path returns no plan, with no config key in front
-of it, and parks after repeated failures; a parked refresh keeps the API's partial
-fields and a prior reading only for the same account. When a refresh ends with
-no reading, its ``reason`` names a lapsed sign-in only for an auth-class API
-verdict, and a working scrape outranks that verdict. The kiro-cli children the
-refresh spawns (whoami and the scrape) carry the no-window creation flag, and the
-scrape pins the ``v2`` agent engine only on a release verified to accept it. The
-whoami bracket around the scrape is pinned in test_session_usage_account_proof.py,
-and the scrape's environment scrub and child reaping in test_session_usage.py.
+A parked refresh keeps a prior reading only for the same account. The whoami bracket
+is in test_session_usage_account_proof.py, and the environment scrub and child reaping
+in test_session_usage.py.
 """
 
 from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,7 +23,19 @@ from session_usage_helpers import (
 )
 
 import kiro_crew.dashboard.handlers.sessions as sessions_mod
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import finished
+
+
+def _park_scrape_for_an_hour(monkeypatch) -> None:
+    """Park the usage scrape an hour ahead of the product's monotonic clock.
+
+    The product compares ``time.monotonic()`` with the backoff deadline, so the
+    deadline is read from the same ManualClock the product reads, not the host clock.
+    """
+    clock = ManualClock()
+    clock.install(monkeypatch, sessions_mod)
+    sessions_mod._usage_scrape_backoff_until = clock.monotonic() + 3600
 
 
 class TestScrapeIsTheAutomaticFallback:
@@ -66,9 +71,8 @@ class TestScrapeIsTheAutomaticFallback:
     def _spawn_mock(self, stdout: bytes = b""):
         return AsyncMock(return_value=_mock_proc(stdout))
 
-    def _park(self):
-        # flake-ok: pre-existing real-clock read parking the scrape an hour ahead of the product's own monotonic clock, moved verbatim; tracked for a de-flake pass
-        sessions_mod._usage_scrape_backoff_until = time.monotonic() + 3600
+    def _park(self, monkeypatch):
+        _park_scrape_for_an_hour(monkeypatch)
 
     @pytest.mark.asyncio
     async def test_no_plan_from_the_api_runs_the_scrape_with_no_config_key(self):
@@ -94,8 +98,8 @@ class TestScrapeIsTheAutomaticFallback:
         assert sessions_mod._usage_cache == {"available": False}
 
     @pytest.mark.asyncio
-    async def test_a_parked_scrape_is_not_spawned(self):
-        self._park()
+    async def test_a_parked_scrape_is_not_spawned(self, monkeypatch):
+        self._park(monkeypatch)
         spawn = self._spawn_mock(SAMPLE_USAGE.encode())
         with patch("asyncio.create_subprocess_exec", spawn):
             outcome = await sessions_mod._fetch_usage_bg()
@@ -114,7 +118,7 @@ class TestScrapeIsTheAutomaticFallback:
     async def test_parked_keeps_partial_api_fields(self, monkeypatch):
         # The API answered but carried no plan (e.g. plan name + reset date only).
         # Keep what it gave alongside the unavailable marker instead of discarding it.
-        self._park()
+        self._park(monkeypatch)
         monkeypatch.setattr(
             sessions_mod.kiro_usage_api,
             "fetch_usage_limits",
@@ -137,7 +141,7 @@ class TestScrapeIsTheAutomaticFallback:
     @pytest.mark.asyncio
     async def test_parked_preserves_a_prior_good_value_as_stale(self, monkeypatch):
         # An earlier good reading for THIS SAME account is dimmed, not blanked.
-        self._park()
+        self._park(monkeypatch)
         monkeypatch.setattr(
             sessions_mod,
             "_fetch_whoami",
@@ -163,7 +167,7 @@ class TestScrapeIsTheAutomaticFallback:
         # Account A's reading is cached; the user switches to account B, whose API
         # returns no plan. While the scrape is parked that answer recurs for hours,
         # so preserving A would pin A's balance and email on screen under B's session.
-        self._park()
+        self._park(monkeypatch)
         monkeypatch.setattr(
             sessions_mod,
             "_fetch_whoami",
@@ -189,7 +193,7 @@ class TestScrapeIsTheAutomaticFallback:
     async def test_parked_never_preserves_an_unproven_identity(self, monkeypatch):
         # The cached reading carries no identity, so it cannot be proven to belong
         # to whoever is signed in now. Unproven means unavailable.
-        self._park()
+        self._park(monkeypatch)
         monkeypatch.setattr(
             sessions_mod,
             "_fetch_whoami",
@@ -252,11 +256,9 @@ class TestScrapeIsTheAutomaticFallback:
 class TestUnavailableReasonNamesTheRealRemedy:
     """The pill's ``reason`` names a lapsed sign-in when that is what the API saw.
 
-    ``signin_required`` renders "sign in again". It is attached only when the
-    API's own verdict was auth-class (no readable credential, or a rejected one)
-    AND the refresh still ended without a reading -- because the scrape failed
-    too, or because it was parked. A working scrape always outranks the verdict:
-    an empty candidate list does not prove kiro-cli cannot authenticate.
+    ``signin_required`` needs an auth-class API verdict and no reading at the end. A
+    working scrape outranks the verdict: an empty candidate list does not prove
+    kiro-cli cannot authenticate.
     """
 
     @pytest.fixture(autouse=True)
@@ -286,7 +288,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
     def _scrape(self, stdout: bytes = b"not a usage block"):
         return patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_mock_proc(stdout)))
 
-    # ---- the scrape ran and failed ----------------------------------------
+    # the scrape ran and failed
 
     @pytest.mark.asyncio
     async def test_expired_credential_reports_signin_required(self, monkeypatch):
@@ -417,12 +419,11 @@ class TestUnavailableReasonNamesTheRealRemedy:
             released.set()
         assert sessions_mod._usage_cache == {"available": False}
 
-    # ---- the scrape was parked --------------------------------------------
+    # the scrape was parked
 
     @pytest.mark.asyncio
     async def test_a_parked_scrape_carries_the_api_verdict(self, monkeypatch):
-        # flake-ok: pre-existing real-clock read parking the scrape an hour ahead of the product's own monotonic clock, moved verbatim; tracked for a de-flake pass
-        sessions_mod._usage_scrape_backoff_until = time.monotonic() + 3600
+        _park_scrape_for_an_hour(monkeypatch)
         self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_NO_CREDENTIAL)
         with self._scrape(SAMPLE_USAGE.encode()) as spawn:
             await sessions_mod._fetch_usage_bg()
@@ -437,8 +438,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
         # "no plan" the user is on B, and the scrape is parked. The parked path
         # must judge A's cached reading against a whoami resolved THEN, or A's
         # balance and email stay on screen under B's session.
-        # flake-ok: pre-existing real-clock read parking the scrape an hour ahead of the product's own monotonic clock, moved verbatim; tracked for a de-flake pass
-        sessions_mod._usage_scrape_backoff_until = time.monotonic() + 3600
+        _park_scrape_for_an_hour(monkeypatch)
         self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_OTHER)
         monkeypatch.setattr(
             sessions_mod, "_fetch_whoami", AsyncMock(side_effect=[_IDENTITY_A, _IDENTITY_B])
@@ -454,8 +454,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
     @pytest.mark.asyncio
     async def test_a_parked_scrape_keeps_the_same_accounts_reading_stale(self, monkeypatch):
         # Control: the adjacent whoami still says A, so A's reading is dimmed, not dropped.
-        # flake-ok: pre-existing real-clock read parking the scrape an hour ahead of the product's own monotonic clock, moved verbatim; tracked for a de-flake pass
-        sessions_mod._usage_scrape_backoff_until = time.monotonic() + 3600
+        _park_scrape_for_an_hour(monkeypatch)
         self._api(monkeypatch, None, sessions_mod.kiro_usage_api.AUTH_OTHER)
         monkeypatch.setattr(sessions_mod, "_fetch_whoami", AsyncMock(return_value=_IDENTITY_A))
         sessions_mod._usage_cache = dict(_CACHED_A)
@@ -466,8 +465,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
 
     @pytest.mark.asyncio
     async def test_partial_api_fields_are_still_kept_when_parked(self, monkeypatch):
-        # flake-ok: pre-existing real-clock read parking the scrape an hour ahead of the product's own monotonic clock, moved verbatim; tracked for a de-flake pass
-        sessions_mod._usage_scrape_backoff_until = time.monotonic() + 3600
+        _park_scrape_for_an_hour(monkeypatch)
         self._api(
             monkeypatch,
             {"plan": "KIRO POWER", "resets": "2026-09-01"},
@@ -479,7 +477,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
         assert sessions_mod._usage_cache.get("available") is False
         assert "reason" not in sessions_mod._usage_cache
 
-    # ---- the non-regression guard ---------------------------------------
+    # the non-regression guard
 
     @pytest.mark.asyncio
     async def test_the_scrape_still_runs_and_wins_without_a_readable_credential(self, monkeypatch):
@@ -494,7 +492,7 @@ class TestUnavailableReasonNamesTheRealRemedy:
         assert sessions_mod._usage_cache.get("credits_plan") == 10000.0
         assert "reason" not in sessions_mod._usage_cache
 
-    # ---- the mapping itself ---------------------------------------------
+    # the mapping itself
 
     def test_only_the_two_auth_class_states_map_to_signin_required(self):
         api = sessions_mod.kiro_usage_api
@@ -525,12 +523,8 @@ class TestSpawnSuppressesConsoleWindow:
     """The identity/usage helper spawns must thread ``creationflags`` carrying
     ``_SUBPROCESS_NO_WINDOW`` through ``spawn_supervised_oneshot``.
 
-    On Windows the gateway runs without a console, so a console-subsystem child
-    spawned without ``CREATE_NO_WINDOW`` gets a fresh console allocated that
-    flashes on screen ~every 30s. On POSIX the constant is ``0``; the kwarg is
-    forwarded untouched to ``asyncio.create_subprocess_exec`` by the spawn
-    shim, so the assertion still pins that the call threads the flag through
-    rather than dropping it.
+    On Windows a child without ``CREATE_NO_WINDOW`` flashes a console ~every 30s. On
+    POSIX the constant is ``0`` but is still forwarded, so the check holds there too.
     """
 
     @pytest.fixture(autouse=True)
@@ -545,9 +539,12 @@ class TestSpawnSuppressesConsoleWindow:
 
     @pytest.mark.asyncio
     async def test_whoami_spawn_sets_no_window(self):
-        spawn = AsyncMock(return_value=_mock_proc(b"{}"))
+        spawn = AsyncMock(side_effect=[_mock_proc(b'{"email": "me@corp.com"}'), _mock_proc(b"{}")])
         with patch("asyncio.create_subprocess_exec", spawn):
-            await sessions_mod._fetch_whoami("/bin/kiro")
+            identity = await sessions_mod._fetch_whoami("/bin/kiro")
+            empty = await sessions_mod._fetch_whoami("/bin/kiro")
+        assert identity == {"email": "me@corp.com"}
+        assert empty == {}  # a clean exit with no identity is known, not a failure
         assert spawn.await_args is not None, "whoami did not spawn"
         assert spawn.await_args.kwargs.get("creationflags") == sessions_mod._SUBPROCESS_NO_WINDOW
 
@@ -571,21 +568,65 @@ class TestSpawnSuppressesConsoleWindow:
                 patch("asyncio.create_subprocess_exec", spawn),
             ):
                 await sessions_mod._fetch_usage_bg()
+            published = dict(sessions_mod._usage_cache)
         finally:
             _reset_usage_globals()
+        assert published.get("credits_plan") == 10000.0
         assert spawn.await_args is not None, "usage scrape did not spawn"
         assert spawn.await_args.kwargs.get("creationflags") == sessions_mod._SUBPROCESS_NO_WINDOW
 
 
-class TestUsageScrapePinsTheEngine:
-    """The ``/usage`` scrape names its agent engine instead of inheriting one.
+#: ``kiro-cli chat --help`` as 2.35.1 prints the engine selector (V2 still offered).
+_HELP_WITH_V2 = """\
+      --agent-engine <ENGINE>
+          Agent engine to use: "v1", "v2" (default), or "v3"
 
-    A kiro-cli whose global ``chat.agentEngine`` is ``v3`` sends ``/usage`` to the
-    model as a prompt: it spends a model turn and prints no usage table. The
-    scrape pins ``v2``, where ``/usage`` is a local slash command, on every
-    release verified to accept the selector. Below that floor, or when the
-    version cannot be read, the argv stays as it is, since an unknown flag
-    fails the whole command.
+          [possible values: v2, v1, v3]
+
+      --mode <MODE>
+          Mode to use with the V3 agent: "default" or "spec"
+
+          [possible values: default, spec]
+"""
+#: The same selector once V2 is retired: V3 is the default and V2 is gone.
+_HELP_WITHOUT_V2 = """\
+      --agent-engine <ENGINE>
+          Agent engine to use: "v1" or "v3" (default)
+
+          [possible values: v3, v1]
+
+      --mode <MODE>
+          Mode to use with the V3 agent: "default" or "spec"
+
+          [possible values: default, spec, v2]
+"""
+
+
+class TestChatAgentEnginesParse:
+    """The engine list is read from the selector's own ``[possible values]`` line."""
+
+    def test_lists_the_selector_values(self):
+        from kiro_crew.kiro_cli import chat_agent_engines
+
+        assert chat_agent_engines(_HELP_WITH_V2) == ("v2", "v1", "v3")
+
+    def test_a_later_options_values_are_not_the_selectors(self):
+        # `--mode` lists "v2" here on purpose: only the selector's block counts.
+        from kiro_crew.kiro_cli import chat_agent_engines
+
+        assert chat_agent_engines(_HELP_WITHOUT_V2) == ("v3", "v1")
+
+    def test_no_selector_is_empty(self):
+        from kiro_crew.kiro_cli import chat_agent_engines
+
+        assert chat_agent_engines("Usage: kiro-cli chat [OPTIONS]\n  --agent <AGENT>\n") == ()
+
+
+class TestUsageScrapeEngineFollowsTheInstalledKiroCli:
+    """The ``/usage`` scrape picks its engine from what this kiro-cli offers.
+
+    ``/usage`` is local only on V2 (V3 sends it to the model), so without V2 the scrape
+    does not run. With no selector the argv stays plain: an unknown flag fails the command.
     """
 
     @staticmethod
@@ -599,15 +640,15 @@ class TestUsageScrapePinsTheEngine:
     def _pin(monkeypatch, pinned):
         monkeypatch.setattr(sessions_mod, "pin_kiro_cli", lambda: (pinned, False))
 
-    def _argv(self, monkeypatch, version):
+    def _argv(self, monkeypatch, engines):
         self._no_sandbox(monkeypatch)
         self._pin(monkeypatch, "/bin/kiro")
-        monkeypatch.setattr(sessions_mod, "kiro_cli_version_at", lambda binary: version)
+        monkeypatch.setattr(sessions_mod, "chat_agent_engines_at", lambda binary: engines)
         argv, _cleanup = sessions_mod._wrap_argv_usage_scrape("/bin/kiro")
         return argv
 
-    def test_a_verified_release_pins_the_v2_engine(self, monkeypatch):
-        argv = self._argv(monkeypatch, sessions_mod.USAGE_SCRAPE_ENGINE_PIN_MIN_VERSION)
+    def test_v2_offered_pins_v2(self, monkeypatch):
+        argv = self._argv(monkeypatch, ("v2", "v1", "v3"))
         assert argv == [
             "/bin/kiro",
             "chat",
@@ -619,14 +660,14 @@ class TestUsageScrapePinsTheEngine:
             "/usage",
         ]
 
-    def test_a_newer_release_pins_the_v2_engine(self, monkeypatch):
-        argv = self._argv(monkeypatch, (3, 0, 0))
-        assert argv[argv.index("--agent-engine") + 1] == "v2"
-        assert argv[-1] == "/usage"
+    def test_v2_retired_runs_no_scrape(self, monkeypatch):
+        # Goes red if v2 is pinned unconditionally again: a kiro-cli that no
+        # longer offers v2 would get `--agent-engine v2` and fail every scrape.
+        assert self._argv(monkeypatch, ("v3", "v1")) is None
 
-    @pytest.mark.parametrize("version", [None, (2, 27, 9)])
-    def test_an_unverified_or_unknown_release_keeps_the_plain_argv(self, monkeypatch, version):
-        argv = self._argv(monkeypatch, version)
+    @pytest.mark.parametrize("engines", [None, ()])
+    def test_no_selector_or_unknown_keeps_the_plain_argv(self, monkeypatch, engines):
+        argv = self._argv(monkeypatch, engines)
         assert argv == [
             "/bin/kiro",
             "chat",
@@ -636,7 +677,7 @@ class TestUsageScrapePinsTheEngine:
             "/usage",
         ]
 
-    def test_the_version_probe_reads_the_spawned_binary(self, monkeypatch):
+    def test_the_probe_reads_the_spawned_binary(self, monkeypatch):
         seen: list[str] = []
 
         def probe(binary):
@@ -645,24 +686,87 @@ class TestUsageScrapePinsTheEngine:
 
         self._no_sandbox(monkeypatch)
         self._pin(monkeypatch, "/opt/kiro/bin/kiro-cli")
-        monkeypatch.setattr(sessions_mod, "kiro_cli_version_at", probe)
+        monkeypatch.setattr(sessions_mod, "chat_agent_engines_at", probe)
         sessions_mod._wrap_argv_usage_scrape("/opt/kiro/bin/kiro-cli")
         assert seen == ["/opt/kiro/bin/kiro-cli"]
 
     @pytest.mark.parametrize("pinned", [None, "/opt/kiro/bin/kiro-cli"])
     def test_a_binary_that_is_not_the_pin_is_never_probed(self, monkeypatch, pinned):
         # A kiro-cli found only on the inherited PATH may sit in an
-        # agent-writable directory; the version probe runs outside the
-        # sandbox, so such a binary keeps the plain argv and is never run.
+        # agent-writable directory; the probe runs outside the sandbox, so such
+        # a binary keeps the plain argv and is never run.
         seen: list[str] = []
 
         def probe(binary):
             seen.append(binary)
-            return (3, 0, 0)
+            return ("v2", "v3")
 
         self._no_sandbox(monkeypatch)
         self._pin(monkeypatch, pinned)
-        monkeypatch.setattr(sessions_mod, "kiro_cli_version_at", probe)
+        monkeypatch.setattr(sessions_mod, "chat_agent_engines_at", probe)
         argv, _cleanup = sessions_mod._wrap_argv_usage_scrape("/tmp/venv/bin/kiro-cli")
         assert seen == []
         assert "--agent-engine" not in argv
+
+
+class TestRefreshWithV2Retired:
+    """With no engine that answers ``/usage``, the API reading stands alone."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, _floor_monkeypatch):
+        _reset_usage_globals()
+        _floor_monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.sessions.wrap_argv",
+            lambda argv, **k: (list(argv), None),
+        )
+        _floor_monkeypatch.setattr(
+            sessions_mod, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value="/bin/kiro")
+        )
+        _floor_monkeypatch.setattr(sessions_mod, "pin_kiro_cli", lambda: ("/bin/kiro", False))
+        _floor_monkeypatch.setattr(
+            sessions_mod, "chat_agent_engines_at", lambda binary: ("v3", "v1")
+        )
+        _floor_monkeypatch.setattr(
+            sessions_mod, "_fetch_whoami", AsyncMock(return_value=dict(_IDENTITY_A))
+        )
+        yield
+        _reset_usage_globals()
+
+    @pytest.mark.asyncio
+    async def test_the_api_reading_is_published(self, monkeypatch):
+        monkeypatch.setattr(
+            sessions_mod.kiro_usage_api,
+            "fetch_usage_limits",
+            lambda **k: _api_result({"credits_used": 12.0, "credits_plan": 1000.0}),
+        )
+        spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        with patch("asyncio.create_subprocess_exec", spawn):
+            outcome = await sessions_mod._fetch_usage_bg()
+        assert outcome is None
+        assert sessions_mod._usage_cache.get("credits_plan") == 1000.0
+        assert spawn.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_no_plan_spawns_nothing_and_parks_nothing(self, monkeypatch):
+        monkeypatch.setattr(
+            sessions_mod.kiro_usage_api, "fetch_usage_limits", lambda **k: _api_result(None)
+        )
+        spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        with patch("asyncio.create_subprocess_exec", spawn):
+            for _ in range(sessions_mod._USAGE_SCRAPE_FAILURE_THRESHOLD + 1):
+                assert await sessions_mod._fetch_usage_bg() is None
+        assert spawn.await_count == 0
+        assert sessions_mod._usage_scrape_failures == 0
+        assert not sessions_mod._scrape_in_backoff()
+        assert sessions_mod._usage_cache.get("available") is False
+
+    @pytest.mark.asyncio
+    async def test_no_plan_keeps_a_same_account_reading_stale(self, monkeypatch):
+        monkeypatch.setattr(
+            sessions_mod.kiro_usage_api, "fetch_usage_limits", lambda **k: _api_result(None)
+        )
+        sessions_mod._usage_cache = dict(_CACHED_A)
+        with patch("asyncio.create_subprocess_exec", AsyncMock()):
+            await sessions_mod._fetch_usage_bg()
+        assert sessions_mod._usage_cache.get("stale") is True
+        assert sessions_mod._usage_cache.get("credits_plan") == _CACHED_A["credits_plan"]

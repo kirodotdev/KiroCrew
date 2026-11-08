@@ -2,26 +2,26 @@
 
 Templates in the format `kiro_crew.dashboard_templates.manifest` defines: one
 directory per template, holding `manifest.json` and `template.html`. `load_template` is
-the registry's only gate. A page that renders on a crewmate's Dashboard tab runs its
-own script against that crewmate's task titles and summaries inside a frame that can
+the registry's only gate. A page that renders on a Bot's Dashboard tab runs its
+own script against that Bot's task titles and summaries inside a frame that can
 navigate itself, so it comes from one of two places a person put it: this directory,
 which went through review, or the operator's own folder (see "An operator's own page"
 below). Thirteen ship: the first four are below, five more are in "The round-7 set"
 further down, then `office` in "A desk that ships decks and mail", two in
-"The two views", and `kirocrew-conductor` in "A page named for its crewmate".
+"The two views", and `kirocrew-conductor` in "A page named for its Bot".
 
 | id | folds it reads | what it answers |
 |---|---|---|
-| `project-report` | `workstreams`, `panel` | what this crewmate did, what each thing cost, what came of it, what needs the reader |
+| `project-report` | `workstreams`, `panel` | what this Bot did, what each thing cost, what came of it, what needs the reader |
 | `goal-board` | `work` | the work ledger it conducts: items, states, verdicts |
 | `work-kanban` | `work` | that same board as columns, including the one waiting on the conductor's own verdict |
 | `session-ledger` | `ledger` | what a long-running session is carrying, and what it would resume from |
 
 `project-report` is a ROOT session's default: a root session that never adopted a
 template renders it in its Overview
-(`kiro_crew.dashboard_templates.instance.DEFAULT_TEMPLATE_ID`). A crewmate renders it only
+(`kiro_crew.dashboard_templates.instance.DEFAULT_TEMPLATE_ID`). A Bot renders it only
 once the page is adopted; one that adopted nothing, and has no page named for it (see
-"A page named for its crewmate"), shows no page. The three round-3 pages
+"A page named for its Bot"), shows no page. The three round-3 pages
 it replaced -- `crewmate-overview`, `work-map`, `spend-and-tools` -- were each one slice
 of the same question asked three ways, and a reader had to assemble the answer from
 three pages of engineering counters. One page answering the four questions in order
@@ -37,7 +37,7 @@ would state an amount the record never claimed. The same applies to a fold's emp
 string, which is a key the fold declares and nothing has filled.
 
 Session-wide credits gate on the SUM of `usage.credits_by_source.*.reported`, not on
-`usage.turns.credits_reported`. A crewmate that only delegates has a turn-scoped
+`usage.turns.credits_reported`. A Bot that only delegates has a turn-scoped
 reporter count of zero beside a real total.
 
 **A truncated list says so.** Every fold here is bounded and reports what it dropped
@@ -47,7 +47,10 @@ beside the list it belongs to, so a partial picture is never shown as a whole on
 ## How a page gets its values
 
 The host fills every `data-dashboard-field` element by `textContent` and sets
-`window.kirocrew = {fields, agentic, seq, stale}`. A field whose type is `array` or
+`window.kirocrew = {fields, agentic, seq, missing}`. `missing` names the cells whose
+value did not resolve; the host dims them and draws no band, and tells the Bot
+instead. A page draws no freshness or staleness message of its own either: no quiet
+band from a fold stamp and no live indicator. A field whose type is `array` or
 `object` therefore reaches its bound element as JSON, which is unreadable in a cell, so
 each page overwrites that one cell with a count and draws the real thing from
 `window.kirocrew.fields` in its own script. Every page renders on load and again on each
@@ -61,7 +64,7 @@ app ships, and `en` for anything else. Each page keeps one `I18N` table per lang
 (`en` and `zh-CN` today) and picks its own words by it: static words carry
 `data-i18n="<key>"` with the English text in the markup, script-written words go through
 `i18n(key, vars)`, and a key a language lacks falls back to English. Values from
-`fields` are never translated. In `project-report` a crewmate's `verdict.words` still
+`fields` are never translated. In `project-report` a Bot's `verdict.words` still
 wins over the table. zh-CN strings are `\u` escapes so the sources stay ASCII.
 
 No page fetches anything: the frame's CSP blocks the network, so a chart drawn from a CDN
@@ -69,10 +72,10 @@ renders as a hole. The charts are plain elements sized in the page's own JS.
 
 ## Agentic fields
 
-`session-ledger` declares exactly one, `headline`: the crewmate's own one-sentence read
+`session-ledger` declares exactly one, `headline`: the Bot's own one-sentence read
 of where the work stands. No fold records a human-facing headline, which is the bar for
 an agentic field. The page marks it from `window.kirocrew.agentic` rather than from its
-own belief, so a value the crewmate wrote never looks like one folded from the record.
+own belief, so a value the Bot wrote never looks like one folded from the record.
 
 `project-report` declares three for the same reason. `for_you` is the lines the lead
 wants its reader to act on next: the record holds which open items are blocked or asking
@@ -103,18 +106,18 @@ subtitle says "N asked before you wrote in chat" instead of "nothing waiting on 
 brings back is flashed, takes focus and is scrolled into view (instantly when the reader
 asks for reduced motion), and keeps the "You wrote in chat after this was asked" line on
 a row of its own beside a **Hide card** button (`verdict.words.hide`). **Hide card**
-folds the card again and moves focus to the fold's heading. Once the crewmate writes
+folds the card again and moves focus to the fold's heading. Once the Bot writes
 the list after the person's message, the cards it kept ask again.
 
-## What a crewmate published
+## What a Bot published
 
 `project-report` also binds `published` to `{"fold": "panel", "path": "data"}`: the
-object the crewmate last sent with `panel_publish`. One slot can carry two crews, and
+object the Bot last sent with `panel_publish`. One slot can carry two crews, and
 the fold's top level is whichever published last, so the host resolves a `panel`
-binding against the reading crewmate's OWN record, by the panel read route's own
+binding against the reading Bot's OWN record, by the panel read route's own
 rule (`agent_panel.owned_panel_record`: the publish file first, then the fold). A
-crewmate that never published, or a root session's page, reads an empty object, and
-the page draws no block. The block is always the crewmate's words, so it always wears
+Bot that never published, or a root session's page, reads an empty object, and
+the page draws no block. The block is always the Bot's words, so it always wears
 the `crewmate wrote this` tag. It draws any object the way the panel's default
 template does, every value as text: a short scalar is a tile, a long string a
 paragraph, an array of objects a table, an array of scalars a list, a nested object
@@ -182,14 +185,14 @@ two that do. `roadmap`, `flow` and `swimlane` are computed entirely from stamps 
 fold already writes, so nobody has to keep them current and a reader takes a chart for
 the record safely. The two that do declare one declare it for a fact no fold holds:
 
-`pr-watch`'s `lanes` is the crewmate's own last reading of a code host's check board.
+`pr-watch`'s `lanes` is the Bot's own last reading of a code host's check board.
 No fold reads GitHub, so a folded CI state would be the record claiming something it
 never recorded. The page marks the strip as written and draws the mark from the host's
 own `agentic` list -- which is a LIST of names, so it is read with `indexOf` and not as
 an object property. A page that asks that list for a property answers "nobody wrote
 this" on every render while looking correct in review.
 
-`standup`'s `headline` is the crewmate's one-sentence read of where the work stands,
+`standup`'s `headline` is the Bot's one-sentence read of where the work stands,
 the same reason `session-ledger` declares its own.
 
 ### The distinctions these five exist to keep
@@ -225,9 +228,9 @@ and leaving its own row count wrong.
 
 | id | folds it reads | the question it answers | agentic |
 |---|---|---|---|
-| `office` | `workstreams` | what my crewmate shipped today, what is waiting on my eye, what the week cost | `drafts`, `steps` |
+| `office` | `workstreams` | what my Bot shipped today, what is waiting on my eye, what the week cost | `drafts`, `steps` |
 
-`office` is for a person whose crewmate writes the deck, the email and the report rather
+`office` is for a person whose Bot writes the deck, the email and the report rather
 than the code. It binds the same four `workstreams` paths `project-report` does, and
 derives four sections from them: delivered today, waiting for your review, in progress,
 and credits this week.
@@ -243,7 +246,7 @@ Its two agentic fields each answer a question no fold has a field for. `drafts` 
 by task id and carries the artifact's type, its file name and the one line of meta a
 reader needs to decide whether to open it. `steps` is keyed by board id and carries the
 step that board is on right now. A row with no entry still renders from the record, so a
-crewmate that never wrote either loses the file name and the step and nothing else. A
+Bot that never wrote either loses the file name and the step and nothing else. A
 type nobody wrote draws no tag at all, rather than a hollow one a reader has to know a
 convention to read.
 
@@ -335,17 +338,17 @@ the key. A live click-through needs a host message and handler, which is a host 
 rather than a page one. `test_dashboard_template_views.py` asserts neither page names
 `worker_session_key` or binds a `slot`.
 
-## A page named for its crewmate
+## A page named for its Bot
 
 | id | folds it reads | the question it answers | agentic |
 |---|---|---|---|
 | `kirocrew-conductor` | `work`, `panel` | what is my conductor running, and what does it need from me | `needs_you` |
 
-A crewmate that adopted nothing gets the page whose id is its own slug, when one ships,
+A Bot that adopted nothing gets the page whose id is its own slug, when one ships,
 and no page otherwise (`instance.default_template_id`). This is the crew
-panel's rule that a template named after a crew is that crew's view, so a crewmate
+panel's rule that a template named after a crew is that crew's view, so a Bot
 named like a shipped page gets that page. No page here may be named `default`: a
-crewmate can be.
+Bot can be.
 
 `kirocrew-conductor` is the conductor's task board. Its tasks, states, goal and round
 come from the `work` fold, bound the way `goal-board` binds them, so the board is
@@ -353,4 +356,4 @@ current even when the conductor publishes nothing. `needs_you` is the conductor'
 list of lines the person must act on; tasks whose worker asked or is stuck join it from
 the record. `note` is the conductor's last `panel_publish`, read from its own record in
 the `panel` fold, and its `next` line is drawn under a tag that says
-the crewmate wrote it.
+the Bot wrote it.

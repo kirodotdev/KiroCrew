@@ -14,6 +14,7 @@ import {
   __resetAuthRecoveryStateForTests,
 } from '../api/client'
 import { STALE_OWNER_SESSION_CODE, __resetStaleOwnerHandlerForTests, installStaleOwnerHandler } from '../api/staleOwnerSignal'
+import { SHOW_HIDDEN_FILES_KEY } from '../api/client/files'
 import { __resetErrorJournalForTests } from '../utils/errorReport'
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel } from '../utils/resizeImage'
@@ -233,6 +234,25 @@ describe('query-string builders', () => {
     expect(call(4).url).toBe('/api/file-diff?path=%2Frepo%2Fa%20b.ts')
   })
 
+  it('the two Files listings ask for hidden files only while the toggle is on', async () => {
+    localStorage.removeItem(SHOW_HIDDEN_FILES_KEY)
+    try {
+      await api.browseFiles('/a b')
+      expect(call().url).toBe('/api/browse-files?path=%2Fa%20b')
+      await api.projectTree('/r', 'src')
+      expect(call(1).url).toBe('/api/project/tree?shallow=1&path=%2Fr&dir=src')
+      localStorage.setItem(SHOW_HIDDEN_FILES_KEY, '1')
+      await api.browseFiles('/a b')
+      expect(call(2).url).toBe('/api/browse-files?path=%2Fa%20b&hidden=1')
+      await api.browseFiles()
+      expect(call(3).url).toBe('/api/browse-files?hidden=1')
+      await api.projectTree('/r', 'src')
+      expect(call(4).url).toBe('/api/project/tree?shallow=1&path=%2Fr&dir=src&hidden=1')
+    } finally {
+      localStorage.removeItem(SHOW_HIDDEN_FILES_KEY)
+    }
+  })
+
   it('scopes fileSearch to a project and relays the abort signal under its deadline', async () => {
     const ctl = new AbortController()
     await api.fileSearch('cli', 'kirocrew', ctl.signal)
@@ -258,13 +278,15 @@ describe('query-string builders', () => {
     expect(call(1).url).toBe('/api/artifacts/session-docs?session=chat-1')
   })
 
-  it('vectorContextPreview and telemetryContextTrace encode their query', async () => {
+  it('vectorContextPreview, telemetryContextTrace and telemetryContextTurn encode their query', async () => {
     await api.vectorContextPreview()
     expect(call().url).toBe('/api/memory/context-preview')
     await api.vectorContextPreview('a b')
     expect(call(1).url).toBe('/api/memory/context-preview?q=a%20b')
     await api.telemetryContextTrace('chat 1')
     expect(call(2).url).toBe('/api/telemetry/context-trace?slot=chat%201')
+    await api.telemetryContextTurn('chat 1', 12)
+    expect(call(3).url).toBe('/api/telemetry/context-trace?slot=chat%201&turn=12')
   })
 
   it('deleteArtifactFolder states the cascade explicitly in the query', async () => {
@@ -465,7 +487,7 @@ describe('request bodies with conditionally-omitted keys', () => {
     expect(call(1).body).toEqual({ content: 'ctx', source: 'artifact', ephemeral: false })
   })
 
-  it('sideTurn flags a steer, and sideQueueCancel names the owning tab', async () => {
+  it('sideTurn flags a steer, and sideQueueCancel and sideClose name the owning tab', async () => {
     await api.sideTurn('chat-1', 'why?')
     expect(call().body).toEqual({ question: 'why?' })
     await api.sideTurn('chat-1', 'why?', { steer: true })
@@ -473,6 +495,8 @@ describe('request bodies with conditionally-omitted keys', () => {
     await api.sideQueueCancel('chat-1', 'q1')
     expect(call(2).method).toBe('DELETE')
     expect(call(2).body).toHaveProperty('client')
+    await api.sideClose('chat-1')
+    expect(call(3).body).toHaveProperty('client')
   })
 
   it('cancelTaskRunner and installDiscoveredSkill keep their optional fields optional', async () => {

@@ -146,6 +146,18 @@ def _published_queued_by_slot(subs: "SubagentManager | None") -> dict[str, int]:
     return by_slot
 
 
+def _published_queued_reason_by_slot(subs: "SubagentManager | None") -> dict[str, dict]:
+    """Each slot's ``subagents_queued_reason``: the wait label of the newest
+    labelled frame routed to it, so a client that missed that frame (a reload)
+    still shows why the rows wait. Routed like :func:`_published_queued_by_slot`."""
+    if not subs:
+        return {}
+    # circular import: chat_utils imports this module at load time.
+    from kiro_crew.dashboard.chat_utils import subagent_event_slot
+
+    return {subagent_event_slot(p): label for p, label in subs.published_queued_labels().items()}
+
+
 def _attach_slot_parents(
     rows: "list[dict]", resolve_aliases: "Callable[[], dict[str, str] | None] | None" = None
 ) -> None:
@@ -375,6 +387,7 @@ def _slots_ws_frame(
     folders: object,
     folders_gen: object,
     governance_gen: object,
+    tags_gen: object = None,
     slots_partial: bool = False,
     slots_held_keys: object = (),
     slots_hold_channels: bool = False,
@@ -399,9 +412,53 @@ def _slots_ws_frame(
     it through here would widen an app's payload, so it is a third shape by
     design, not a duplicate awaiting cleanup.
     """
-    frame = {
+    frame: dict[str, Any] = {
         "type": "slots",
         "data": slots,
+        **_slots_ws_envelope(
+            yolo=yolo,
+            channel_trusted=channel_trusted,
+            gitlab_hosts_gen=gitlab_hosts_gen,
+            folders=folders,
+            folders_gen=folders_gen,
+            governance_gen=governance_gen,
+            tags_gen=tags_gen,
+            slots_partial=slots_partial,
+            slots_held_keys=slots_held_keys,
+            slots_hold_channels=slots_hold_channels,
+        ),
+    }
+    # Same offender diagnostic as the coalesced broadcast: the
+    # dashboard-user frame serializes the ENRICHED projection, so a value that
+    # only enrichment adds raises here and nowhere else. Diagnosis only — the
+    # exception propagates unchanged. A clean-slots note ("no offending entry
+    # found") is itself evidence: the offender is in the envelope extras.
+    try:
+        return json.dumps(frame)
+    except (TypeError, ValueError) as exc:
+        exc.add_note(_slots_serialization_note(slots, path="ws-frame"))
+        raise
+
+
+def _slots_ws_envelope(
+    *,
+    yolo: bool,
+    channel_trusted: bool,
+    gitlab_hosts_gen: object,
+    folders: object,
+    folders_gen: object,
+    governance_gen: object,
+    tags_gen: object = None,
+    slots_partial: bool = False,
+    slots_held_keys: object = (),
+    slots_hold_channels: bool = False,
+) -> dict[str, Any]:
+    """The fields a ``slots`` WS frame carries beside ``type`` and ``data``, in frame order.
+
+    Shared by :func:`_slots_ws_frame` and the ``slots_diff`` sender, which ships
+    the same fields as a delta and so must name exactly the same ones.
+    """
+    frame: dict[str, Any] = {
         "yolo": yolo,
         "channelTrusted": channel_trusted,
         "gitlabHostsGeneration": gitlab_hosts_gen,
@@ -414,6 +471,10 @@ def _slots_ws_frame(
         # (``social_share_enabled``) follows the ceiling instead of waiting out
         # its stale window. Process-local, like the two counters above.
         "governanceGeneration": governance_gen,
+        # The tag vocabulary / board columns' change signal, the folder
+        # generation's twin: the client invalidates ``['chat-tags']``
+        # and ``['tag-columns']`` when it moves.
+        "tagsGeneration": tags_gen,
     }
     if slots_partial:
         frame["slotsPartial"] = True
@@ -421,16 +482,7 @@ def _slots_ws_frame(
         frame["slotsHeldKeys"] = slots_held_keys
     if slots_hold_channels:
         frame["slotsHoldChannels"] = True
-    # Same offender diagnostic as the coalesced broadcast: the
-    # dashboard-user frame serializes the ENRICHED projection, so a value that
-    # only enrichment adds raises here and nowhere else. Diagnosis only — the
-    # exception propagates unchanged. A clean-slots note ("no offending entry
-    # found") is itself evidence: the offender is in the envelope extras.
-    try:
-        return json.dumps(frame)
-    except (TypeError, ValueError) as exc:
-        exc.add_note(_slots_serialization_note(slots, path="ws-frame"))
-        raise
+    return frame
 
 
 def _link_label(channel_type: str) -> str:
@@ -600,18 +652,39 @@ def _slot_links(
     self: DashboardState, slot: _ChatSlot
 ) -> tuple[list[dict[str, Any]], bool, str, str]:
     """Build the redacted channel-neutral link projection for one slot."""
-    # circular import: chat imports state at module scope.
-    from kiro_crew.dashboard.chat_utils import (
-        effective_session_key,
-        mirror_is_paused,
-        slack_mirror_is_paused,
-    )
+    links, slack_linked, slack_channel, slack_thread_ts, _origin = _slot_link_projection(self, slot)
+    return links, slack_linked, slack_channel, slack_thread_ts
 
-    session_key = effective_session_key(slot)
+
+def _visible_slack_channel(slack_channel: str | None) -> str:
+    """The bare Slack channel id, without a ``slack:`` namespace prefix."""
+    namespaced = split_namespaced_channel_id(slack_channel)
+    return namespaced[1] if namespaced else (slack_channel or "")
+
+
+def _slot_link_projection(
+    self: DashboardState, slot: _ChatSlot
+) -> tuple[list[dict[str, Any]], bool, str, str, tuple[str, str]]:
+    """:func:`_slot_links` plus the Slack thread a Slack-BORN session lives in.
+
+    The fifth element is ``(channel_id, thread_ts)`` of that origin thread, or
+    ``("", "")``. It is reported apart from ``slack_linked``/``slack_channel``
+    on purpose: those mean "mirrored OUT to a thread", and the sidebar, the
+    channel menu and the releasable-mirror controls all read them that way. The
+    origin thread is only where the session's own conversation already is, so
+    the dashboard can link to it without treating it as a mirror.
+    """
+    # circular import: chat imports state at module scope.
+    # Module import (not from-import) avoids the _handle_fromlist __path__
+    # probe on the facade, which cost one __getattr__ per slot.
+    import kiro_crew.dashboard.chat_utils as _cu
+
+    session_key = _cu.effective_session_key(slot)
     # Resolved once per slot rather than per row: all three are storage reads,
     # and a session holds at most one Slack thread, one born-in conversation
     # and one mirror binding.
-    slack_paused = slack_mirror_is_paused(self, session_key)
+    mirror_is_paused = _cu.mirror_is_paused
+    slack_paused = _cu.slack_mirror_is_paused(self, session_key)
     mirror_paused = mirror_is_paused(self, session_key)
     origin_paused = mirror_is_paused(self, session_key, origin=True)
     mirror: ChannelLink | None = None
@@ -781,8 +854,7 @@ def _slot_links(
         )
 
     if genuine_slack and not slack_origin_self_link:
-        slack_namespace = split_namespaced_channel_id(slack_channel)
-        visible_slack_channel = slack_namespace[1] if slack_namespace else (slack_channel or "")
+        visible_slack_channel = _visible_slack_channel(slack_channel)
         # A Slack ROW accompanies `slack_linked=True` unconditionally. The
         # dashboard's channel control is built from `links` alone — it no
         # longer synthesizes a Slack row from this boolean, because a
@@ -800,8 +872,10 @@ def _slot_links(
                 slack_nonce,
                 drives_session=True,
             )
-        return links, True, visible_slack_channel, slack_ts or ""
-    return links, False, "", ""
+        return links, True, visible_slack_channel, slack_ts or "", ("", "")
+    if genuine_slack and slack_origin_self_link:
+        return links, False, "", "", (_visible_slack_channel(slack_channel), slack_ts or "")
+    return links, False, "", "", ("", "")
 
 
 def serialize_slot(
@@ -819,7 +893,8 @@ def serialize_slot(
         from kiro_crew.dashboard.session_control_parts.session_status import process_state
 
         payload["process"] = process_state(self, slot)
-    links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
+    links, slack_linked, slack_channel, slack_thread_ts, origin = _slot_link_projection(self, slot)
+    slack_origin_channel, slack_origin_thread_ts = origin
     manual = self.manual_session_order
     payload.update(
         {
@@ -833,6 +908,12 @@ def serialize_slot(
             "slack_thread_ts": slack_thread_ts,
         }
     )
+    # The thread a Slack-born session lives in. Not a mirror: `slack_linked`
+    # stays False for it. See _slot_link_projection. Only a Slack-born slot
+    # carries it, so every other slot's frame is unchanged by it.
+    if slack_origin_channel or slack_origin_thread_ts:
+        payload["slack_origin_channel"] = slack_origin_channel
+        payload["slack_origin_thread_ts"] = slack_origin_thread_ts
     return payload
 
 
@@ -867,9 +948,12 @@ def serialize_slots(
 
     under_construction = getattr(self, "_slots_under_construction", None) or ()
     queued_by_slot = _published_queued_by_slot(subs)
+    queued_reason_by_slot = _published_queued_reason_by_slot(subs)
+    saved_creators: dict[str, str] = {}
     for s in self._slots.values():
         if s.key in under_construction:
             continue
+        saved_creators[s.key] = getattr(s, "_saved_created_by", "") or ""
         self._drop_orphaned_mcp_report(s)
         d = self.serialize_slot(
             s,
@@ -878,6 +962,8 @@ def serialize_slots(
         )
         d["subagents_running"] = bool(subs and subs.running_agents_for(effective_session_key(s)))
         d["subagents_queued"] = queued_by_slot.get(s.key, 0)
+        if d["subagents_queued"] and s.key in queued_reason_by_slot:
+            d["subagents_queued_reason"] = queued_reason_by_slot[s.key]
         out.append(d)
     # The slot-key/session-key correspondence the lineage join needs, read the same
     # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over
@@ -886,16 +972,88 @@ def serialize_slots(
     # the nesting and must cost the nesting rather than the whole sidebar.
     # ``getattr`` because a stub state in the suite may not carry the method at all.
     _attach_slot_parents(out, getattr(self, "spend_slot_by_session", None))
+    # After the parents, which the worker walk reads: every row says whether it is a
+    # Crew Mode root, and each session a root dispatched names that root, so the
+    # person's own list can leave workers out and the side panel can list them.
+    # The same pass stamps ``mate_root`` / ``mate_dispatched_by`` on each session a
+    # mate thread dispatched (inert: no list or client reads them yet).
+    from kiro_crew import crew_mode
+
+    try:
+        crew_mode.stamp_rows(
+            out, settled=crew_mode.lineage_is_settled(), saved_creators=saved_creators
+        )
+    except Exception:  # pragma: no cover - a stamp fault must cost the stamp only
+        logger.warning("Crew Mode rows not stamped", exc_info=True)
+    try:
+        _attach_crew_work(self, out)
+    except Exception:  # pragma: no cover - a summary fault must cost the summary only
+        logger.warning("Crew Mode work summaries not attached", exc_info=True)
+    if dashboard_user or include_check_status:
+        # Slack code channel badge: a person's dashboard only, never the bare
+        # list (SSE, app tokens). See slack/code_channels/dashboard_view.py.
+        from kiro_crew.slack.code_channels.dashboard_view import with_code_channels
+
+        out = with_code_channels(out)
     return out
 
 
+def _attach_crew_work(self: DashboardState, rows: list[dict]) -> None:
+    """Put each conductor's open-work summary on its row (``crew_work``).
+
+    A conductor is a Crew Mode root, or a sub-conductor: a crew member that
+    dispatched another one, whose board holds that session's item. Each live
+    conductor's board is followed (its ``work`` fold kept current, and primed once
+    when nothing is held yet), so a restart does not leave its row on the old
+    reading until its ledger next moves, and a sub-conductor's report reaches its
+    root's worker list as a push. Roots are followed first, so the follow bound
+    never trades a root for a sub-conductor; a conductor that left the frame is
+    released. The summary reads the held items against this frame's live slots.
+    No I/O.
+    """
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard import crew_work
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.session_ledger_layout import ledger_key
+
+    dispatchers = {
+        row.get(crew_mode.DISPATCHER_FIELD) for row in rows if row.get(crew_mode.WORKER_FIELD)
+    }
+    conductors = [
+        row
+        for row in rows
+        if row.get(crew_mode.ROOT_FIELD)
+        or (row.get(crew_mode.WORKER_FIELD) and row.get("key") in dispatchers)
+    ]
+    conductors.sort(key=lambda row: not row.get(crew_mode.ROOT_FIELD))
+    followed: list[str] = []
+    for row in conductors:
+        key = row.get("key")
+        if not isinstance(key, str):
+            continue
+        slot = self._slots.get(key)
+        if slot is None:
+            continue
+        followed.append(key)
+        # The ledger spelling of the session key first: the identity the board's
+        # entries are recorded under, and the one primed (``chat-7`` for a dashboard
+        # slot, the channel key for a channel one). The raw key is followed too.
+        session_key = effective_session_key(slot)
+        crew_work.follow(key, (ledger_key(session_key), session_key, key))
+        summary = crew_work.summary_for_state(key, self)
+        if summary is not None:
+            row[crew_work.CREW_WORK_FIELD] = summary
+    crew_work.retain(followed)
+
+
 def serialize_slot_views(
-    self: DashboardState, *, owner: bool
+    self: DashboardState, *, owner: bool, user: bool = True
 ) -> tuple[list[dict], list[dict], list[dict] | None]:
     """One serialization pass, three audience views of the slot list.
 
     Returns ``(bare, dashboard_user, owner)``; ``owner`` is ``None`` when
-    ``owner`` is False (no owner socket to build it for).
+    ``owner`` is False (no owner socket to build it for), and ``dashboard_user``
+    is empty when ``user`` is False (nobody reads that view this pass).
 
     The three views the broadcast ships differ ONLY in each slot's
     ``source_links`` field -- the audience gates are read nowhere else in the
@@ -917,10 +1075,24 @@ def serialize_slot_views(
     tests, or a slot closed between the two loops) is carried over unchanged.
     """
     bare = self.serialize_slots()
+    from kiro_crew.slack.code_channels.dashboard_view import (
+        code_channel_views,
+        with_code_channels,
+    )
+
+    views = code_channel_views()
     return (
         bare,
-        self._reproject_slots(bare, dashboard_user=True),
-        self._reproject_slots(bare, include_check_status=True) if owner else None,
+        (
+            with_code_channels(self._reproject_slots(bare, dashboard_user=True), views)
+            if user
+            else []
+        ),
+        (
+            with_code_channels(self._reproject_slots(bare, include_check_status=True), views)
+            if owner
+            else None
+        ),
     )
 
 

@@ -211,9 +211,17 @@ def test_a_row_that_moved_on_during_the_copy_is_not_overwritten(sessions, png, m
 
 
 def test_transient_roles_are_still_not_persisted(sessions):
-    assert (
-        _build_message_entry_uncached(
-            {"role": "chunk", "content": "x"}, attachments=(sessions, "tab1")
-        )
-        is None
-    )
+    """EVERY role in ``_TRANSIENT_ROLES`` is skipped, not a copied subset of it: a
+    role the window holds but the transcript never does (an elicitation card, for
+    one) written to disk would come back stripped of its ``cls`` -- a card with no
+    request to answer -- and shift every durable row count by one."""
+    from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES
+
+    assert "elicitation" in _TRANSIENT_ROLES and "permission" in _TRANSIENT_ROLES
+    for role in sorted(_TRANSIENT_ROLES):
+        assert (
+            _build_message_entry_uncached(
+                {"role": role, "content": "x", "cls": "{}"}, attachments=(sessions, "tab1")
+            )
+            is None
+        ), role

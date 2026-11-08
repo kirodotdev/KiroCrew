@@ -602,6 +602,17 @@
           "integer": true
         },
         {
+          "name": "resumed_ts",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "resumed_turns",
+          "type": "object",
+          "optional": false
+        },
+        {
           "name": "turns",
           "type": "object",
           "optional": false
@@ -882,7 +893,7 @@
       "affects": [
         "dashboard/agentic_value"
       ],
-      "answers": "Which dashboard fields this crewmate filled itself, with what value, of what declared type and when",
+      "answers": "Which dashboard fields this Bot filled itself, with what value, of what declared type and when",
       "fields": [
         {
           "name": "fields",
@@ -911,7 +922,7 @@
       "affects": [
         "dashboard/agentic_refused"
       ],
-      "answers": "Which dashboard writes of this crewmate's were refused, grouped by reason and field, how often, and what worked instead",
+      "answers": "Which dashboard writes of this Bot's were refused, grouped by reason and field, how often, and what worked instead",
       "fields": [
         {
           "name": "groups",
@@ -943,9 +954,10 @@
         "subagent/completed",
         "subagent/failed",
         "turn/completed",
+        "work/charged",
         "work/recorded"
       ],
-      "answers": "Every workstream this crewmate is running: each board's goal and counts, each task's result, and what each task cost its own worker session",
+      "answers": "Every workstream this Bot is running: each board's goal and counts, each task's result, and what each task cost its own worker session",
       "fields": [
         {
           "name": "items",
@@ -1006,7 +1018,7 @@
       "affects": [
         "dashboard/goal_recorded"
       ],
-      "answers": "This crewmate's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts",
+      "answers": "This Bot's goal record as the gateway last recorded it: its goals, each milestone's target and latest reading, whether it is met, and the counts",
       "fields": [
         {
           "name": "changes",
@@ -1068,7 +1080,7 @@
       "affects": [
         "dashboard/waiting_changed"
       ],
-      "answers": "What this crewmate waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count",
+      "answers": "What this Bot waits on the person for: its open questions and the cards still waiting on a button, newest first, with the count",
       "fields": [
         {
           "name": "changes",
@@ -1106,6 +1118,47 @@
       ]
     },
     {
+      "name": "custom",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "dashboard/custom_failed",
+        "dashboard/custom_value"
+      ],
+      "answers": "The latest record per type a script cron bound to this Bot appended with ctx.crew_log_append: the record's data, when it landed, which job wrote it, when it goes stale and whether that job's run has failed since",
+      "fields": [
+        {
+          "name": "failures",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "failures_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "latest",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "types_omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "wrote",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
       "name": "workers",
       "mode": "slot",
       "advertised": true,
@@ -1122,7 +1175,7 @@
         "turn/started",
         "work/recorded"
       ],
-      "answers": "The worker sessions this crewmate created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said",
+      "answers": "The worker sessions this Bot created: each one's task, whether it is running, between turns, done, blocked, failed or closed, and what it last said",
       "fields": [
         {
           "name": "counts",

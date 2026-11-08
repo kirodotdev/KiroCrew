@@ -20,7 +20,6 @@ import pytest
 
 from kiro_crew.acp import session_handle as sh
 from kiro_crew.acp import skill_projection  # bound before a fixture patches its paths
-from kiro_crew.acp.kas_agents import _KAS_FALLBACK_PROMPT
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 
@@ -145,6 +144,10 @@ def crew_agent(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: agents_dir)
     monkeypatch.setattr("kiro_crew.agent.ensure_agent_materialized", lambda _a: True)
+    # The stub launches no MCP server, so a custom agent's default Crew servers
+    # (acp/default_crew_servers.py) would never report ready. These tests pin mode
+    # binding; the defaults are pinned in test_default_crew_servers.py.
+    monkeypatch.setattr("kiro_crew.acp.default_crew_servers.DEFAULT_CREW_SERVERS", ())
     return agents_dir
 
 
@@ -266,6 +269,57 @@ class TestModeBinding:
         assert [a["id"] for a in handle.kas_registered_agents] == ["kirocrew"]
 
     @pytest.mark.asyncio
+    async def test_new_and_resumed_sessions_carry_the_notice_their_spawn_recorded(
+        self, mode_stub, crew_agent, tmp_path, monkeypatch
+    ):
+        """The runtime keeps the harness that spawned its process, so the notice the
+        relay spawn recorded for kiro-cli 2.32.0 reaches session/new and session/load."""
+        from kiro_crew.acp.harness import kas as kas_harness
+
+        monkeypatch.setattr(kas_harness, "_bundle_route_selected", lambda: False)
+        monkeypatch.setattr(kas_harness, "installed_kiro_cli_version", lambda: (2, 32, 0))
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "wsn", agent="kirocrew", sandbox_mode="off", acp_backend="kas"
+        )
+        session_file = tmp_path / "prior.jsonl"
+        session_file.write_text("", encoding="utf-8")
+        try:
+            await runtime.spawn()
+            new = await runtime.create_session(cwd=tmp_path / "wsn", agent="kirocrew")
+            loaded = await runtime.load_session(
+                str(session_file), "kas-mode-session", cwd=tmp_path / "wsn", agent="kirocrew"
+            )
+        finally:
+            await runtime.kill()
+        for handle in (new, loaded):
+            assert "kiro-cli 2.32.0 is older than 2.33.1" in handle.kas_agent_prompt_notice
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("version", "recorded"),
+        [((2, 32, 0), None), (None, None), ((2, 33, 1), "You are Kiro.")],
+        ids=["dropping-release", "unknown-release", "applying-release"],
+    )
+    async def test_the_prompt_is_recorded_as_held_only_where_kas_applies_it(
+        self, mode_stub, crew_agent, tmp_path, monkeypatch, version, recorded
+    ):
+        """Only a KAS known to apply a custom agent's prompt holds a copy of it; for
+        any other the session records none and the prompt builder keeps its block."""
+        from kiro_crew.acp.harness import kas as kas_harness
+
+        monkeypatch.setattr(kas_harness, "_bundle_route_selected", lambda: False)
+        monkeypatch.setattr(kas_harness, "installed_kiro_cli_version", lambda: version)
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "wsp", agent="kirocrew", sandbox_mode="off", acp_backend="kas"
+        )
+        try:
+            await runtime.spawn()
+            handle = await runtime.create_session(cwd=tmp_path / "wsp", agent="kirocrew")
+        finally:
+            await runtime.kill()
+        assert handle.native_context_documents.get("template://kirocrew#prompt") == recorded
+
+    @pytest.mark.asyncio
     async def test_runtime_default_agent_is_activated_without_explicit_request(
         self, mode_stub, crew_agent, tmp_path
     ):
@@ -320,14 +374,14 @@ class TestModeBinding:
         assert seen["injected"][0]["prompt"] == "inlined from disk"
 
     @pytest.mark.asyncio
-    async def test_a_prompt_less_agent_falls_back_to_the_kas_prompt(
+    async def test_a_prompt_less_agent_goes_out_with_an_empty_prompt(
         self, mode_stub, crew_agent, tmp_path
     ):
-        """KAS requires a non-empty prompt where kiro-cli tolerates an empty
-        one. Crew's own prompt-less utility agents (e.g. ``kirocrew-lite``, which
-        ships ``"prompt": ""``) must fall back to the small inline KAS prompt
-        rather than crash the session. The tool allowlist still comes from the
-        spec, so the fallback never widens the agent's capabilities.
+        """A prompt-less spec runs on kiro-cli with kiro-cli's own default prompt
+        and nothing added, so on KAS it goes out with ``"prompt": ""`` and runs on
+        KAS's default alone -- not with Crew's background-worker brief,
+        which tells the model it has no tools. The tool allowlist still comes
+        from the spec.
         """
         (crew_agent / "kirocrew.json").write_text(
             json.dumps({"name": "kirocrew", "tools": ["fs_read"], "prompt": ""}),
@@ -346,19 +400,20 @@ class TestModeBinding:
             await runtime.kill()
 
         seen = json.loads(mode_stub.read_text(encoding="utf-8"))
-        assert seen["injected"][0]["prompt"] == _KAS_FALLBACK_PROMPT
-        # Tool restriction is preserved — the fallback only supplies a prompt.
+        assert seen["injected"][0]["prompt"] == ""
+        assert "prompt" in seen["injected"][0]
         assert seen["injected"][0]["tools"] == ["fs_read", "read_file", "list_directory"]
 
     @pytest.mark.asyncio
-    async def test_an_unprojectable_agent_fails_loud(self, mode_stub, crew_agent, tmp_path):
-        """A prompt that cannot be resolved AT ALL still fails loud.
+    async def test_a_missing_prompt_file_still_binds_the_agent(
+        self, mode_stub, crew_agent, tmp_path
+    ):
+        """A ``file://`` prompt naming a missing file runs the agent with no prompt.
 
-        The base-prompt fallback only covers an empty/absent prompt. A
-        ``file://`` prompt pointing at a missing file is a genuine translation
-        failure: silently continuing would run KAS's default mode instead, which
-        for a restricted app or subagent agent means a BROADER agent than the
-        caller asked for, so this must raise rather than degrade.
+        kiro-cli runs such an agent with no prompt (``resolve_global_prompt``).
+        The agent is still the one registered and activated, with its own tool
+        allowlist, so nothing broader than the spec runs; only its prompt is
+        empty, and the session-start notice says so.
         """
         (crew_agent / "kirocrew.json").write_text(
             json.dumps(
@@ -378,11 +433,13 @@ class TestModeBinding:
         )
         try:
             await runtime.spawn()
-            with pytest.raises(Exception) as exc:
-                await runtime.create_session(cwd=tmp_path / "ws3", agent="kirocrew")
-            assert "onto KAS" in str(exc.value)
+            await runtime.create_session(cwd=tmp_path / "ws3", agent="kirocrew")
         finally:
             await runtime.kill()
+
+        seen = json.loads(mode_stub.read_text(encoding="utf-8"))
+        assert seen["injected"][0]["prompt"] == ""
+        assert seen["injected"][0]["tools"] == ["fs_read", "read_file", "list_directory"]
 
     @pytest.mark.asyncio
     async def test_a_reserved_id_runs_under_its_wire_alias(self, mode_stub, crew_agent, tmp_path):
@@ -471,7 +528,7 @@ class TestModeBinding:
             await runtime.spawn()
             with pytest.raises(Exception) as exc:
                 await runtime.create_session(cwd=tmp_path / "ws5", agent="review")
-            assert str(exc.value).startswith("Rename this mate's template: “review” is reserved")
+            assert str(exc.value).startswith("Rename this Bot's template: “review” is reserved")
             assert "Agent Template tab" in str(exc.value)
             assert "kas-mode-session" not in str(exc.value)
         finally:

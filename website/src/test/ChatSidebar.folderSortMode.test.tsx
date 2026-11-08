@@ -70,7 +70,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -118,6 +125,7 @@ import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import type { ChatFolder, ChatSlot } from '../types'
 import { bySidebarOrder } from '../utils/folderTree'
+import { fmtDateTime } from '../i18n/format'
 
 /** The reporter's scheme with the stored positions a few drags left behind:
  *  the stored order reads 10, 99, 98, 02, 03, 01 -- the sidebar he screenshotted. */
@@ -177,6 +185,8 @@ function renderSidebar(folders: ChatFolder[], folderSort: unknown, opts: { confi
   return { ...utils, qc, settleConfig: (body: { dashboard: Record<string, unknown> }) => settleConfig(body) }
 }
 
+async function renderSidebarSettled(...args: Parameters<typeof renderSidebar>) { let view!: ReturnType<typeof renderSidebar>; await act(async () => { view = renderSidebar(...args) }); return view }
+
 /** Folder ids in the order the tree draws their header rows. */
 function drawnFolderIds(container: HTMLElement): string[] {
   return [...container.querySelectorAll('[data-folder-row]')].map(el => el.getAttribute('data-folder-row') ?? '')
@@ -186,35 +196,35 @@ beforeEach(() => { localStorage.clear(); patchConfig.mockClear(); kirocrewConfig
 afterEach(() => vi.clearAllMocks())
 
 describe('chat sidebar — folder order follows dashboard.folder_sort', () => {
-  it('draws the stored order in custom mode -- byte-identical to bySidebarOrder', () => {
-    const { container } = renderSidebar(NUMBERED, 'custom')
+  it('draws the stored order in custom mode -- byte-identical to bySidebarOrder', async () => {
+    const { container } = await renderSidebarSettled(NUMBERED, 'custom')
     expect(drawnFolderIds(container)).toEqual([...NUMBERED].sort(bySidebarOrder).map(f => f.id))
     expect(drawnFolderIds(container)).toEqual(['f10', 'f99', 'f98', 'f02', 'f03', 'f01'])
   })
 
-  it('treats an absent or unknown stored value as custom, so an upgrade changes nothing', () => {
-    expect(drawnFolderIds(renderSidebar(NUMBERED, undefined).container)).toEqual(['f10', 'f99', 'f98', 'f02', 'f03', 'f01'])
-    expect(drawnFolderIds(renderSidebar(NUMBERED, 'alphabetical').container)).toEqual(['f10', 'f99', 'f98', 'f02', 'f03', 'f01'])
+  it('treats an absent or unknown stored value as custom, so an upgrade changes nothing', async () => {
+    expect(drawnFolderIds((await renderSidebarSettled(NUMBERED, undefined)).container)).toEqual(['f10', 'f99', 'f98', 'f02', 'f03', 'f01'])
+    expect(drawnFolderIds((await renderSidebarSettled(NUMBERED, 'alphabetical')).container)).toEqual(['f10', 'f99', 'f98', 'f02', 'f03', 'f01'])
   })
 
-  it('draws the numbered folders in natural order in name mode', () => {
-    const { container } = renderSidebar(NUMBERED, 'name')
+  it('draws the numbered folders in natural order in name mode', async () => {
+    const { container } = await renderSidebarSettled(NUMBERED, 'name')
     expect(drawnFolderIds(container)).toEqual(['f01', 'f02', 'f03', 'f10', 'f98', 'f99'])
   })
 
-  it('draws newest first in created mode', () => {
-    const { container } = renderSidebar(NUMBERED, 'created')
+  it('draws newest first in created mode', async () => {
+    const { container } = await renderSidebarSettled(NUMBERED, 'created')
     expect(drawnFolderIds(container)).toEqual(['f99', 'f98', 'f01', 'f03', 'f02', 'f10'])
   })
 
-  it('applies the mode at every depth, not only to root folders', () => {
+  it('applies the mode at every depth, not only to root folders', async () => {
     const nested: ChatFolder[] = [
       { id: 'root', name: 'Projects', order: 0, collapsed: false },
       { id: 'c10', name: '10. late', order: 0, parent_id: 'root', collapsed: true },
       { id: 'c2', name: '2. early', order: 1, parent_id: 'root', collapsed: true },
     ]
-    expect(drawnFolderIds(renderSidebar(nested, 'custom').container)).toEqual(['root', 'c10', 'c2'])
-    expect(drawnFolderIds(renderSidebar(nested, 'name').container)).toEqual(['root', 'c2', 'c10'])
+    expect(drawnFolderIds((await renderSidebarSettled(nested, 'custom')).container)).toEqual(['root', 'c10', 'c2'])
+    expect(drawnFolderIds((await renderSidebarSettled(nested, 'name')).container)).toEqual(['root', 'c2', 'c10'])
   })
 
   it('offers the three modes under "Folder order" in the sort-and-filter menu and marks the active one', async () => {
@@ -280,6 +290,22 @@ describe('chat sidebar — folder order follows dashboard.folder_sort', () => {
     expect(note.textContent).toBe('Folders made before dates were recorded have no date; they come last, in your Custom order')
     // Beside the drag note, not instead of it: two facts about this mode.
     expect(await findByTestId('folder-order-reorder-note')).toBeInTheDocument()
+  })
+
+  it('in created mode each folder name tooltip leads with its ordering key, and outside it carries only the rename hint', async () => {
+    // Once the menu is closed the row is all a reader has to trace the order to
+    // its setting: the time it was sorted by, or -- for a folder from before the
+    // stamp -- that it has none, which is why it sits last.
+    const legacy: ChatFolder = { id: 'f00', name: 'Legacy', order: 6, collapsed: true }
+    const nameTitle = (container: HTMLElement, id: string) =>
+      container.querySelector(`[data-folder-row="${id}"] span.font-medium.truncate`)?.getAttribute('title')
+    const created = await renderSidebarSettled([...NUMBERED, legacy], 'created')
+    expect(nameTitle(created.container, 'f99')).toBe(`Created ${fmtDateTime(6_000)}\nDouble-click to rename`)
+    expect(nameTitle(created.container, 'f00')).toBe('No creation date recorded — kept in your Custom order\nDouble-click to rename')
+    created.unmount()
+    const custom = await renderSidebarSettled([...NUMBERED, legacy], 'custom')
+    expect(nameTitle(custom.container, 'f99')).toBe('Double-click to rename')
+    expect(nameTitle(custom.container, 'f00')).toBe('Double-click to rename')
   })
 
   it('the unstamped-folder line is withheld when every folder is stamped, and outside created mode', async () => {
@@ -440,7 +466,7 @@ describe('chat sidebar — folder order follows dashboard.folder_sort', () => {
   })
 
   it('outside Custom a folder row is no reorder target, and a scripted sibling drop writes nothing but says why', async () => {
-    const first = renderSidebar(NUMBERED, 'name')
+    const first = await renderSidebarSettled(NUMBERED, 'name')
     // The affordance is withdrawn at the row: with the droppable side off, no
     // pointer drag can resolve a sibling as `over`, so no slot ever opens.
     expect(dnd.sortables.get('f10')?.disabled).toEqual({ droppable: true })
@@ -466,23 +492,23 @@ describe('chat sidebar — folder order follows dashboard.folder_sort', () => {
 
     // In Custom the rows are ordinary sortables again.
     dnd.sortables.clear()
-    renderSidebar(NUMBERED, 'custom')
+    await renderSidebarSettled(NUMBERED, 'custom')
     expect(dnd.sortables.get('f10')?.disabled).toBeUndefined()
   })
 
   it('outside Custom a folder drag that finds no target is answered too, and a re-parent drop is not', async () => {
-    const view = renderSidebar(NUMBERED, 'name')
+    const view = await renderSidebarSettled(NUMBERED, 'name')
     // The pointer path: with the sibling droppables off, a reorder attempt ends
     // with `over` null -- exactly the drag that used to die with zero feedback.
-    act(() => { dnd.handlers.onDragEnd!({ active: { id: 'f10', data: { current: { type: 'folder' } } }, over: null }) })
+    await act(async () => { dnd.handlers.onDragEnd!({ active: { id: 'f10', data: { current: { type: 'folder' } } }, over: null }) })
     expect(view.getByTestId('folder-reorder-hint')).toBeInTheDocument()
     // A re-parent gesture (the header's nest band, a folder-drop hit) still
     // works in every mode, so it earns no hint; and its START retires the last
     // one, the way every new drag does.
     const reparent = { active: { id: 'f10', data: { current: { type: 'folder' } } } }
-    act(() => { dnd.handlers.onDragStart!(reparent) })
+    await act(async () => { dnd.handlers.onDragStart!(reparent) })
     expect(view.queryByTestId('folder-reorder-hint')).toBeNull()
-    act(() => { dnd.handlers.onDragEnd!({ ...reparent, over: { id: 'drop-f99', data: { current: { type: 'folder-drop', folderId: 'f99' } } } }) })
+    await act(async () => { dnd.handlers.onDragEnd!({ ...reparent, over: { id: 'drop-f99', data: { current: { type: 'folder-drop', folderId: 'f99' } } } }) })
     expect(view.queryByTestId('folder-reorder-hint')).toBeNull()
   })
 
@@ -605,7 +631,7 @@ describe('chat sidebar — folder order follows dashboard.folder_sort', () => {
   it('the drop hint stays until the next interaction away from it -- never on a clock -- and a press on its own action is not one', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
-      const view = renderSidebar(NUMBERED, 'name')
+      const view = await renderSidebarSettled(NUMBERED, 'name')
       act(() => { dnd.handlers.onDragEnd!({ active: { id: 'f10', data: { current: { type: 'folder' } } }, over: null }) })
       const hint = view.getByTestId('folder-reorder-hint')
       // A minute later it is still there: a timer took the "Switch to Custom"

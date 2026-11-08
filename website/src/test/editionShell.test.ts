@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { describe, it, expect } from 'vitest'
 import {
   parseBrandingConfig,
@@ -13,7 +15,9 @@ const SHELL = [
   '<html><head>',
   '<meta name="theme-color" content="#0d0f12" />',
   '<title>Kiro Crew</title>',
-  '</head><body></body></html>',
+  '</head><body>',
+  '<a href="https://github.com/kirodotdev/KiroCrew/issues" style="color:#93c5fd">github.com/kirodotdev/KiroCrew/issues</a>',
+  '</body></html>',
 ].join('\n')
 
 describe('parseBrandingConfig', () => {
@@ -28,7 +32,27 @@ describe('parseBrandingConfig', () => {
     expect(parseBrandingConfig('{"title": "Acme Crew"}')).toEqual({ title: 'Acme Crew' })
   })
 
-  it('accepts an empty object — both keys are optional', () => {
+  it('accepts an absolute issuesUrl', () => {
+    const url = 'https://tracker.example.com/issues'
+    expect(parseBrandingConfig(JSON.stringify({ issuesUrl: url }))).toEqual({ issuesUrl: url })
+  })
+
+  it('rejects an issuesUrl that is not an absolute http(s) URL', () => {
+    // A relative path would resolve against the dashboard and 404.
+    expect(() => parseBrandingConfig('{"issuesUrl": "tracker.example.com/issues"}')).toThrow(
+      /absolute http\(s\) URL/
+    )
+    expect(() => parseBrandingConfig('{"issuesUrl": "javascript:alert(1)"}')).toThrow(
+      /absolute http\(s\) URL/
+    )
+    // new URL() accepts a scheme with no '//', but a browser resolves that
+    // href against the dashboard's own path.
+    expect(() => parseBrandingConfig('{"issuesUrl": "https:tracker.example.com/issues"}')).toThrow(
+      /absolute http\(s\) URL/
+    )
+  })
+
+  it('accepts an empty object — every key is optional', () => {
     expect(parseBrandingConfig('{}')).toEqual({})
   })
 
@@ -105,6 +129,22 @@ describe('applyBrandingToHtml', () => {
     expect(() => applyBrandingToHtml('<html></html>', { themeColor: '#fff' })).toThrow(
       /no <meta name="theme-color">/
     )
+    expect(() =>
+      applyBrandingToHtml('<html></html>', { issuesUrl: 'https://tracker.example.com/issues' })
+    ).toThrow(/no boot-failure issues link/)
+  })
+
+  it('retargets every boot-failure issues link in the real shell', () => {
+    // The real index.html, so a link added or reshaped there cannot keep the
+    // stock tracker on an edition build.
+    const html = readFileSync(path.resolve(__dirname, '..', '..', 'index.html'), 'utf8')
+    const url = 'https://tracker.example.com/issues?q=a&b'
+    const out = applyBrandingToHtml(html, { issuesUrl: url })
+    expect(out).not.toContain('github.com/kirodotdev/KiroCrew/issues')
+    const escaped = 'https://tracker.example.com/issues?q=a&amp;b'
+    expect(out).toContain(`<a href="${escaped}"`)
+    expect(out).toContain(`>${escaped}</a>`)
+    expect(applyBrandingToHtml(html, {})).toBe(html)
   })
 
   it('applies every key parseBrandingConfig accepts', () => {

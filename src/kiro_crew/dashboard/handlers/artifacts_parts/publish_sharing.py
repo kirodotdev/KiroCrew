@@ -38,6 +38,7 @@ from kiro_crew.publish_provider import (
     KindSupport,
     NotPublishedError,
     PublishConflictError,
+    PublishDeniedError,
     PublishError,
     PublishUnavailableError,
     list_providers,
@@ -48,8 +49,9 @@ from kiro_crew.publish_provider import (
 # module doesn't carry those tools, so the constraint lives here at the sole
 # HTTP boundary that accepts a provider name. ``\Z``-anchored like
 # ``_SESSION_KEY_RE`` in route_plumbing: matched raw with ``.match``, so a ``$`` anchor would
-# admit a trailing newline.
-_ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9-]{1,32}\Z")
+# admit a trailing newline. ``_`` is allowed because an edition may register a
+# provider whose name contains one; the name is only a registry lookup key.
+_ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9_-]{1,32}\Z")
 
 
 # ── Publishing / sharing ─────────────────────────────────────────────────────
@@ -88,6 +90,8 @@ def _sync_error_response(
         status, outcome = 409, "error"
     elif isinstance(exc, NotPublishedError):
         status, outcome = 409, "denied"
+    elif isinstance(exc, PublishDeniedError):
+        status, outcome = 403, "denied"
     elif isinstance(exc, PublishError):
         status, outcome = 502, "error"
     else:
@@ -133,7 +137,7 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
     requested_provider = body.get("provider") if isinstance(body, dict) else None
     provider_name = requested_provider or DEFAULT_PROVIDER
     if not isinstance(provider_name, str) or not _ARTIFACT_PROVIDER_RE.match(provider_name):
-        return _err("provider must match ^[a-z0-9-]{1,32}$")
+        return _err("provider must match ^[a-z0-9_-]{1,32}$")
     # Resolve the EFFECTIVE destination BEFORE the governance gate. For an
     # already-published artifact, publish_sync.publish() ignores provider_name
     # and re-pushes to publication.provider — so the gate must evaluate THAT
@@ -169,7 +173,9 @@ async def api_artifact_publish(request: web.Request) -> web.Response:
     # Governance chokepoint (Plane-C): the capabilities.publish ceiling + the
     # operator destination allowlist gate publishing here — the host PreToolUse
     # gate never sees this HTTP action. Runs BEFORE any provider dispatch.
-    gov_denial = _publish_governance_denied(request, effective_provider)
+    gov_denial = await _run_off_loop(
+        lambda: _publish_governance_denied(request, effective_provider)
+    )
     if gov_denial is not None:
         _audit(
             tool="artifact_publish",
@@ -238,7 +244,7 @@ async def api_artifact_update_sharing(request: web.Request) -> web.Response:
     share_provider = (
         existing_pub.provider if existing_pub and existing_pub.provider else DEFAULT_PROVIDER
     )
-    gov_denial = _publish_governance_denied(request, share_provider)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, share_provider))
     if gov_denial is not None:
         _audit(
             tool="artifact_update_sharing",
@@ -580,7 +586,9 @@ async def api_artifact_overwrite_remote(request: web.Request) -> web.Response:
         if existing.publication is not None and existing.publication.provider
         else DEFAULT_PROVIDER
     )
-    gov_denial = _publish_governance_denied(request, overwrite_provider)
+    gov_denial = await _run_off_loop(
+        lambda: _publish_governance_denied(request, overwrite_provider)
+    )
     if gov_denial is not None:
         _audit(
             tool="artifact_overwrite_remote",
@@ -602,6 +610,8 @@ async def api_artifact_overwrite_remote(request: web.Request) -> web.Response:
             extra={"slug": slug},
         )
         return _err(str(exc), status=404)
+    except PublishDeniedError as exc:
+        return _sync_error_response("artifact_overwrite_remote", request, slug, exc)
     except Exception as exc:  # pragma: no cover — overwrite is best-effort
         _audit(
             tool="artifact_overwrite_remote",

@@ -135,11 +135,8 @@ async function shoot(mode, file) {
       if (path === '/api/apps/registries') return json(route, { registries: [] }), true
       return false
     },
+    localStorageEntries: { 'mc-onboarded': '1', 'mc-theme-mode': mode },
   })
-  await page.addInitScript((m) => {
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-theme-mode', m)
-  }, mode)
 
   await page.goto(`${base}/apps/library`, { waitUntil: 'domcontentloaded' })
   await page.waitForSelector('[data-testid="launchpad-tile-raster-tile-app"]', { timeout: 15000 })
@@ -155,8 +152,8 @@ async function shoot(mode, file) {
       if (!tile) return null
       // The plate is the AppIconTile box — the only 58px square in the tile.
       // Selecting it by geometry rather than by class keeps the probe honest if
-      // the classes move, and keeps it off the 18px pin badge, which is also a
-      // rounded box carrying an <svg>.
+      // the classes move, and keeps it off the small update badge, which is
+      // also a rounded box carrying an <svg>.
       const plate = [...tile.querySelectorAll('div')]
         .find(d => Math.round(d.getBoundingClientRect().width) === 58)
       if (!plate) return { plate: null, art: null, kind: null }

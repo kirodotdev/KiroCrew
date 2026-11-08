@@ -1,14 +1,14 @@
 /**
  * AppPage — loads an installed app via AppHost (dynamic ESM import).
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
 import { isNotFoundError } from '../api/apiError'
-import AppHost from '../components/AppHost'
 import type { AppHostProps } from '../components/AppHost'
 import ErrorNotice from '../components/ErrorNotice'
+import InstalledAppSurface from '../components/InstalledAppSurface'
 import { Btn } from '../components/ui'
 
 import { i18nT } from '../i18n/t'
@@ -27,18 +27,42 @@ export default function AppPage() {
   const [error, setError] = useState<string | null>(null)
   // Bumped by Retry; the load effect re-runs on it.
   const [attempt, setAttempt] = useState(0)
+  // A retry swaps this view for the loading line, which unmounts the focused
+  // Retry button. When that retry fails too, focus goes back to the new Retry
+  // instead of staying on <body>. The press is claimed by the one load run it
+  // starts, so a load a route change started never refocuses; and focus the
+  // user moved elsewhere meanwhile is left alone.
+  const retryRef = useRef<HTMLButtonElement>(null)
+  const retryPressed = useRef(false)
+  const [refocusRetry, setRefocusRetry] = useState(false)
+  useEffect(() => {
+    if (!refocusRetry) return
+    setRefocusRetry(false)
+    const focusLost = !document.activeElement || document.activeElement === document.body
+    if (focusLost) retryRef.current?.focus()
+  }, [refocusRetry])
 
   useEffect(() => {
     if (!name) return
+    // Every /apps/:name shares this instance, so a switch re-runs the effect while
+    // the previous app's request is still in flight. Its answer is for a page the
+    // user has left: it must neither render nor redirect.
+    let cancelled = false
     let redirecting = false
+    const fromRetry = retryPressed.current
+    retryPressed.current = false
+    let failed = false
     setError(null)
     setLoading(true)
     api.getApp(name)
       .then((data: AppData) => {
+        if (cancelled) return
         // Native builtin apps have a registered surface at their bare route —
         // redirect there. Builtins that ship a dynamic UI bundle (manifest.ui.entry)
         // have no native surface and render via AppHost below, like installed apps.
-        if (data?.origin === 'builtin' && !data?.manifest?.ui?.entry && data?.manifest?.ui?.pages?.[0]?.route) {
+        // A builtin skipped at boot has no routes behind that surface, so it stays
+        // here and AppHost shows why it is unavailable.
+        if (data?.origin === 'builtin' && !data?.unavailable && !data?.manifest?.ui?.entry && data?.manifest?.ui?.pages?.[0]?.route) {
           redirecting = true
           navigate(data.manifest.ui.pages[0].route, { replace: true })
           return
@@ -46,13 +70,21 @@ export default function AppPage() {
         setApp(data)
       })
       .catch((e: unknown) => {
+        if (cancelled) return
         setApp(null)
         // Only a 404 means the app is absent; anything else is a failure to say so.
-        if (!isNotFoundError(e)) setError(e instanceof Error ? e.message : String(e))
+        if (!isNotFoundError(e)) {
+          setError(e instanceof Error ? e.message : String(e))
+          failed = true
+        }
       })
       .finally(() => {
-        if (!redirecting) setLoading(false)
+        if (cancelled || redirecting) return
+        setLoading(false)
+        // Same batch as the loading flip, so the effect sees the Retry mounted.
+        if (fromRetry && failed) setRefocusRetry(true)
       })
+    return () => { cancelled = true }
   }, [name, navigate, attempt])
 
   if (loading) {
@@ -70,16 +102,12 @@ export default function AppPage() {
       <div className="flex-1 p-4 flex flex-col gap-3">
         <ErrorNotice title={i18nT('pages.appPage.failed_to_load_app')} message={error} askAgent />
         <div className="flex items-center gap-2">
-          <Btn onClick={() => setAttempt(a => a + 1)}>{i18nT('pages.appPage.retry')}</Btn>
+          <Btn ref={retryRef} onClick={() => { retryPressed.current = true; setAttempt(a => a + 1) }}>{i18nT('pages.appPage.retry')}</Btn>
           <Btn onClick={() => navigate('/apps')}><ArrowLeft size={14} /> {i18nT('pages.appPage.back_to_apps')}</Btn>
         </div>
       </div>
     )
   }
 
-  // AppHost internally guards a null `app` (renders "not found"); its prop type
-  // is non-null, so cast the nullable state through — behavior is unchanged.
-  // Routed pages use the same dashboard-page identity as the core API client,
-  // not whichever chat happens to be selected elsewhere in the dashboard.
-  return <AppHost app={app as AppData} sessionKey="dashboard:ui" />
+  return <InstalledAppSurface app={app} requestedName={name} />
 }

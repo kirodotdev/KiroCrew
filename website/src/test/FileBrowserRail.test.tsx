@@ -10,11 +10,12 @@
  * without loading the trees runtime, and `/api/file-grep` is stubbed so the
  * results list is asserted against a known payload rather than a live walk.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
-  render, screen, waitFor, fireEvent, within, cleanup, renderHook,
+  render, screen, waitFor, fireEvent, within, cleanup, renderHook, act,
 } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query'
+import { refocusWindow } from './focusBarrier'
 import type { ReactNode } from 'react'
 import { consumeChatHandoff, recordError } from '../utils/errorReport'
 
@@ -24,6 +25,7 @@ const H = vi.hoisted(() => ({
     projectTree: vi.fn(),
     projectGitStatus: vi.fn(),
     fileSearch: vi.fn(),
+    uploadToDirectory: vi.fn(),
   },
   fileGrep: vi.fn(),
 }))
@@ -42,6 +44,9 @@ vi.mock('../pierre/tree', () => ({
     onFileOpen?: (abs: string) => void
     onOpenFolder?: (folder: string) => void
     reveal?: { path: string; nonce: number } | null
+    active?: boolean
+    onUploadRequest?: (absDir: string) => void
+    onNewFileRequest?: (absDir: string) => void
   }) => (
     <>
       {/* Stands in for the limit row under a cut folder: present only when
@@ -58,15 +63,34 @@ vi.mock('../pierre/tree', () => ({
         data-query={p.searchQuery ?? ''}
         data-selected={p.selectedPath ?? ''}
         data-reveal={p.reveal?.path ?? ''}
+        data-active={String(p.active)}
         onClick={() => p.onFileOpen?.(H.OPENED)}
       >
         tree
+      </button>
+      {/* Stands in for a directory row's "Upload files…" context-menu action:
+          PierreWorkspaceTreeImpl.test.tsx pins that click wired to this same
+          callback, so this probe only needs to pin that FileBrowserRail
+          forwards it and reacts correctly when it fires. */}
+      <button
+        data-testid="upload-request"
+        onClick={() => p.onUploadRequest?.(`${p.projectDir}/target-dir`)}
+      >
+        upload-request
+      </button>
+      {/* Stands in for a row's "New file…" action, pinned to this callback in
+          PierreWorkspaceTreeImpl.contextMenu.test.tsx. */}
+      <button
+        data-testid="new-file-request"
+        onClick={() => p.onNewFileRequest?.(`${p.projectDir}/drafts`)}
+      >
+        new-file-request
       </button>
     </>
   ),
 }))
 
-import FileBrowserRail, { useTreeState } from '../pages/chat/FileBrowserRail'
+import FileBrowserRail, { useTreeState, CONTENT_DEBOUNCE_MS, NAME_SEARCH_DEBOUNCE_MS } from '../pages/chat/FileBrowserRail'
 import { ApiError } from '../api/apiError'
 
 const RAIL_W_KEY = 'mc-files-rail-w'
@@ -79,16 +103,22 @@ function newClient() {
 function mount(props: { onFileOpen?: (p: string, d: boolean) => void; selectedPath?: string | null; projectDir?: string; active?: boolean; onOpenFolder?: (abs: string) => void } = {}) {
   const qc = newClient()
   const onFileOpen = props.onFileOpen ?? vi.fn()
-  const utils = render(
+  const ui = (active: boolean | undefined) => (
     <QueryClientProvider client={qc}>
-      <FileBrowserRail projectDir={props.projectDir ?? DIR} onFileOpen={onFileOpen} selectedPath={props.selectedPath} active={props.active} onOpenFolder={props.onOpenFolder} />
-    </QueryClientProvider>,
+      <FileBrowserRail projectDir={props.projectDir ?? DIR} onFileOpen={onFileOpen} selectedPath={props.selectedPath} active={active} onOpenFolder={props.onOpenFolder} />
+    </QueryClientProvider>
   )
-  return { qc, onFileOpen, ...utils }
+  const utils = render(ui(props.active))
+  return { qc, onFileOpen, ...utils, setActive: (active: boolean) => utils.rerender(ui(active)) }
 }
 
 const rail = () => screen.getByRole('separator').nextElementSibling as HTMLElement
 const tree = () => screen.getByTestId('tree')
+
+afterEach(() => {
+  vi.useRealTimers()
+  focusManager.setFocused(undefined)
+})
 
 beforeEach(() => {
   localStorage.clear()
@@ -152,16 +182,27 @@ describe('FileBrowserRail mode segment', () => {
     expect(await within(screen.getByLabelText('Changed')).findByText('3')).toBeInTheDocument()
   })
 
-  it('pauses the git-status poll while kept mounted but inactive', async () => {
-    const poll = (qc: QueryClient) => qc.getQueryCache().find({ queryKey: ['git-status', DIR] })!.observers[0].options
-    const shown = mount()
+  it('reads nothing while kept mounted but inactive, not even on a window focus', async () => {
+    const { qc } = mount({ active: false })
+    expect(await screen.findByLabelText('Changed')).toBeInTheDocument()
+    await refocusWindow(qc)
+    expect(H.api.projectTree).not.toHaveBeenCalled()
+    expect(H.api.projectGitStatus).not.toHaveBeenCalled()
+  })
+
+  it('reads the tree and the status once it becomes active', async () => {
+    const { setActive } = mount({ active: false })
+    setActive(true)
+    await waitFor(() => expect(H.api.projectTree).toHaveBeenCalledWith(DIR))
     await waitFor(() => expect(H.api.projectGitStatus).toHaveBeenCalledWith(DIR))
-    expect(poll(shown.qc).refetchInterval).toBe(5_000)
+  })
+
+  it('hands its own visibility to the tree, so the tree pauses its polls with it', async () => {
+    mount({ active: false })
+    expect((await screen.findByTestId('tree')).dataset.active).toBe('false')
     cleanup()
-    const hidden = mount({ active: false })
-    await waitFor(() => expect(hidden.qc.getQueryCache().find({ queryKey: ['git-status', DIR] })?.observers.length).toBe(1))
-    expect(poll(hidden.qc).refetchInterval).toBe(false)
-    expect(poll(hidden.qc).refetchOnWindowFocus).toBe(false)
+    mount()
+    expect((await screen.findByTestId('tree')).dataset.active).toBe('true')
   })
 
   it('omits the badge when the working tree is clean', async () => {
@@ -314,6 +355,235 @@ describe('FileBrowserRail file opens', () => {
   })
 })
 
+function fileTransfer(name = 'a.txt'): DataTransfer {
+  const file = new File(['x'], name, { type: 'text/plain' })
+  return {
+    types: ['Files'],
+    items: [{ kind: 'file', type: file.type, getAsFile: () => file }],
+    files: [file],
+    dropEffect: 'none',
+  } as unknown as DataTransfer
+}
+
+describe('FileBrowserRail New file…', () => {
+  it('creates the named file in that directory and opens it, keeping the dialog open on a name that exists', async () => {
+    H.api.uploadToDirectory.mockReset()
+      .mockResolvedValueOnce({ ok: false, status: 409, code: 'name_collision', error: 'exists' })
+      .mockResolvedValueOnce({ ok: true, path: `${DIR}/drafts/notes.md`, name: 'notes.md' })
+    const { onFileOpen } = mount()
+    fireEvent.click(screen.getByTestId('new-file-request'))
+    const dialog = await screen.findByRole('dialog', { name: 'New file in drafts' })
+    const name = within(dialog).getByLabelText('File name')
+
+    fireEvent.change(name, { target: { value: 'note.md' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    expect(await within(dialog).findByTestId('new-file-error'))
+      .toHaveTextContent('“note.md” already exists in this folder. Choose another name.')
+    expect(onFileOpen).not.toHaveBeenCalled()
+    // Create stays off for the refused name, so it never reads as "replace".
+    expect(within(dialog).getByRole('button', { name: 'Create' })).toBeDisabled()
+
+    fireEvent.change(name, { target: { value: 'notes.md' } })
+    expect(within(dialog).queryByTestId('new-file-error')).toBeNull()
+    expect(within(dialog).getByRole('button', { name: 'Create' })).toBeEnabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+    await waitFor(() => expect(onFileOpen).toHaveBeenCalledWith(`${DIR}/drafts/notes.md`, false, { line: 1 }))
+    expect(H.api.uploadToDirectory.mock.calls.map(([dir, file]) => [dir, (file as File).name])).toEqual([
+      [`${DIR}/drafts`, 'note.md'],
+      [`${DIR}/drafts`, 'notes.md'],
+    ])
+    // The upload refuses an empty body, so the new file holds one empty line.
+    expect(await (H.api.uploadToDirectory.mock.calls[1][1] as File).text()).toBe('\n')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('keeps Create on after a failure the same name may pass on a retry', async () => {
+    H.api.uploadToDirectory.mockReset()
+      .mockResolvedValueOnce({ ok: false, status: 500, code: 'internal', error: 'boom' })
+    mount()
+    fireEvent.click(screen.getByTestId('new-file-request'))
+    const dialog = await screen.findByRole('dialog', { name: 'New file in drafts' })
+
+    fireEvent.change(within(dialog).getByLabelText('File name'), { target: { value: 'notes.md' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    await within(dialog).findByTestId('new-file-error')
+    expect(within(dialog).getByRole('button', { name: 'Create' })).toBeEnabled()
+  })
+
+  it('refuses a byte-backed filename without uploading it', async () => {
+    H.api.uploadToDirectory.mockReset()
+      .mockResolvedValue({ ok: true, path: `${DIR}/drafts/icon.svg`, name: 'icon.svg' })
+    mount()
+    fireEvent.click(screen.getByTestId('new-file-request'))
+    const dialog = await screen.findByRole('dialog', { name: 'New file in drafts' })
+
+    fireEvent.change(within(dialog).getByLabelText('File name'), { target: { value: 'icon.svg' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    expect(await within(dialog).findByTestId('new-file-error')).toHaveTextContent(
+      'Can\'t create “icon.svg”: use a name ending in a supported text extension, such as .md, .txt or .py.',
+    )
+    expect(within(dialog).getByRole('button', { name: 'Create' })).toBeDisabled()
+    expect(H.api.uploadToDirectory).not.toHaveBeenCalled()
+  })
+
+  it('names a refused type in words rather than echoing the upload error', async () => {
+    H.api.uploadToDirectory.mockReset()
+      .mockResolvedValueOnce({ ok: false, status: 400, code: 'unsupported_file_type', error: 'Unsupported file type: ' })
+    mount()
+    fireEvent.click(screen.getByTestId('new-file-request'))
+    const dialog = await screen.findByRole('dialog', { name: 'New file in drafts' })
+
+    fireEvent.change(within(dialog).getByLabelText('File name'), { target: { value: 'Makefile' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }))
+
+    expect(await within(dialog).findByTestId('new-file-error')).toHaveTextContent(
+      'Can\'t create “Makefile”: use a name ending in a supported text extension, such as .md, .txt or .py.',
+    )
+  })
+})
+
+describe('FileBrowserRail upload', () => {
+  beforeEach(() => {
+    H.api.uploadToDirectory.mockReset().mockResolvedValue({ ok: true, path: `${DIR}/a.txt`, name: 'a.txt' })
+  })
+
+  const railEl = () => rail()
+
+  it('shows the drop overlay naming the project root for an OS file drag over the rail', () => {
+    mount()
+    fireEvent.dragEnter(railEl(), { dataTransfer: fileTransfer() })
+    expect(screen.getByText('Drop to upload into repo')).toBeInTheDocument()
+  })
+
+  it('uploads a pane-wide drop (no specific row) into the tree root', async () => {
+    mount()
+    fireEvent.drop(railEl(), { dataTransfer: fileTransfer() })
+
+    await waitFor(() => expect(H.api.uploadToDirectory).toHaveBeenCalledWith(DIR, expect.any(File)))
+  })
+
+  it('uploads a drop released over a folder row or a file row into the tree root', async () => {
+    // The overlay hides the tree, so the row under the pointer must not pick
+    // the destination. These rows carry the attributes @pierre/trees renders.
+    mount()
+    const folderRow = document.createElement('div')
+    folderRow.setAttribute('data-item-path', 'src/')
+    folderRow.setAttribute('data-item-type', 'folder')
+    const fileRow = document.createElement('div')
+    fileRow.setAttribute('data-item-path', 'src/a.ts')
+    fileRow.setAttribute('data-item-type', 'file')
+    fileRow.setAttribute('data-item-parent-path', 'src/')
+    tree().append(folderRow, fileRow)
+
+    fireEvent.drop(folderRow, { dataTransfer: fileTransfer('one.txt') })
+    fireEvent.drop(fileRow, { dataTransfer: fileTransfer('two.txt') })
+
+    await waitFor(() => expect(H.api.uploadToDirectory).toHaveBeenCalledTimes(2))
+    expect(H.api.uploadToDirectory.mock.calls.map(([dir, file]) => [dir, (file as File).name])).toEqual([
+      [DIR, 'one.txt'],
+      [DIR, 'two.txt'],
+    ])
+  })
+
+  it('forwards onUploadRequest to the tree and uploads the picker selection into that directory', async () => {
+    mount()
+    fireEvent.click(screen.getByTestId('upload-request'))
+    const input = screen.getByLabelText('Upload files…') as HTMLInputElement
+    const file = new File(['y'], 'picked.txt', { type: 'text/plain' })
+
+    fireEvent.change(input, { target: { files: [file] } })
+
+    await waitFor(() => expect(H.api.uploadToDirectory).toHaveBeenCalledWith(`${DIR}/target-dir`, file))
+  })
+
+  it('shows an upload failure inline and lets it be dismissed', async () => {
+    H.api.uploadToDirectory.mockResolvedValue({ ok: false, status: 400, code: 'unsupported_file_type', error: 'Unsupported file type: .exe' })
+    mount()
+
+    fireEvent.drop(railEl(), { dataTransfer: fileTransfer('a.exe') })
+
+    const notice = await screen.findByTestId('file-browser-rail-upload-error')
+    expect(notice).toHaveTextContent('Unsupported file type: .exe')
+
+    fireEvent.click(within(notice).getByLabelText('Dismiss'))
+    expect(screen.queryByTestId('file-browser-rail-upload-error')).toBeNull()
+  })
+
+  it('shows a polite uploading status while a drop uploads, then a dismissible success line', async () => {
+    let resolveUpload: (value: unknown) => void = () => {}
+    H.api.uploadToDirectory.mockReturnValueOnce(new Promise((resolve) => { resolveUpload = resolve }))
+    mount()
+
+    fireEvent.drop(railEl(), { dataTransfer: fileTransfer('report.md') })
+
+    const status = await screen.findByTestId('file-browser-rail-upload-progress')
+    expect(status).toHaveAttribute('role', 'status')
+    expect(status).toHaveTextContent('Uploading report.md…')
+
+    resolveUpload({ ok: true, path: `${DIR}/report.md`, name: 'report.md' })
+    const done = await screen.findByTestId('file-browser-rail-upload-success')
+    expect(done).toHaveAttribute('role', 'status')
+    expect(done).toHaveTextContent('Uploaded report.md to repo.')
+    expect(screen.queryByTestId('file-browser-rail-upload-progress')).toBeNull()
+
+    fireEvent.click(within(done).getByLabelText('Dismiss'))
+    expect(screen.queryByTestId('file-browser-rail-upload-success')).toBeNull()
+  })
+
+  it('does not send a second drop of a file that is still uploading', async () => {
+    let resolveUpload: (value: unknown) => void = () => {}
+    H.api.uploadToDirectory.mockReturnValueOnce(new Promise((resolve) => { resolveUpload = resolve }))
+    mount()
+
+    fireEvent.drop(railEl(), { dataTransfer: fileTransfer('report.md') })
+    await screen.findByTestId('file-browser-rail-upload-progress')
+    fireEvent.drop(railEl(), { dataTransfer: fileTransfer('report.md') })
+
+    expect(H.api.uploadToDirectory).toHaveBeenCalledTimes(1)
+    resolveUpload({ ok: true, path: `${DIR}/report.md`, name: 'report.md' })
+    await screen.findByTestId('file-browser-rail-upload-success')
+    expect(H.api.uploadToDirectory).toHaveBeenCalledTimes(1)
+    expect(screen.queryByTestId('file-browser-rail-upload-error')).toBeNull()
+  })
+})
+
+describe('FileBrowserRail hidden files toggle', () => {
+  it('starts off, persists a flip and refetches both Files listings', async () => {
+    const { qc } = mount()
+    const toggle = screen.getByLabelText('Show hidden files')
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    await waitFor(() => expect(H.api.projectTree).toHaveBeenCalledTimes(1))
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+
+    expect(toggle).toHaveAttribute('title', 'Show hidden files, including dot-files that .gitignore hides')
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    expect(toggle).toHaveAttribute('title', 'Hide hidden files')
+    expect(localStorage.getItem('mc-files-show-hidden')).toBe('1')
+    expect(spy.mock.calls.map(c => (c[0] as { queryKey: unknown[] }).queryKey)).toEqual([
+      ['project-tree'],
+      ['browse-files'],
+    ])
+    await waitFor(() => expect(H.api.projectTree).toHaveBeenCalledTimes(2))
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    expect(localStorage.getItem('mc-files-show-hidden')).toBe('0')
+  })
+
+  it('remembers the choice across a remount and does not refetch on mount', async () => {
+    localStorage.setItem('mc-files-show-hidden', '1')
+    const { qc } = mount()
+    const spy = vi.spyOn(qc, 'invalidateQueries')
+    expect(screen.getByLabelText('Show hidden files')).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(H.api.projectTree).toHaveBeenCalledTimes(1))
+    expect(spy).not.toHaveBeenCalled()
+  })
+})
+
 describe('FileBrowserRail refresh', () => {
   it('hands the agent the journaled server report, not the translated sentence', async () => {
     // The notice shows a composed line ("Couldn't load the file tree — Refresh to retry"), which is
@@ -367,6 +637,7 @@ describe('FileBrowserRail refresh', () => {
       // two different answers to one query.
       ['file-grep', DIR],
     ])
+    await waitFor(() => expect(refresh).not.toHaveAttribute('aria-disabled'))
   })
 
   it('refetches both polling queries and locks the button until they land', async () => {
@@ -428,6 +699,28 @@ describe('FileBrowserRail refresh', () => {
     expect(btn).toHaveFocus()
   })
 
+  it('names Refresh for the refresh in flight while it is inert, then restores it', async () => {
+    // An `aria-disabled` "Refresh" reads as unavailable with no reason; while the
+    // refetch runs its name and tooltip say it is busy instead.
+    const { qc } = mount()
+    const releases: Array<() => void> = []
+    vi.spyOn(qc, 'refetchQueries').mockImplementation((() =>
+      new Promise<void>(res => { releases.push(res) })) as typeof qc.refetchQueries)
+
+    const btn = screen.getByRole('button', { name: 'Refresh' })
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(btn).toHaveAttribute('aria-disabled', 'true'))
+    expect(btn).toHaveAccessibleName('Refreshing…')
+    expect(btn).toHaveAttribute('title', 'Refreshing…')
+    expect(screen.queryByRole('button', { name: 'Refresh' })).toBeNull()
+
+    releases.forEach(r => r())
+    await waitFor(() => expect(btn).not.toHaveAttribute('aria-disabled'))
+    expect(btn).toHaveAccessibleName('Refresh')
+    expect(btn).toHaveAttribute('title', 'Refresh')
+  })
+
   it('ignores a second press while a refresh is in flight, and takes the next one after it lands', async () => {
     // Without `disabled` the press reaches the handler, so the handler has to refuse it: a
     // restart would cancel the round trip under way and let the first press's `finally`
@@ -445,9 +738,12 @@ describe('FileBrowserRail refresh', () => {
     await waitFor(() => expect(btn).toHaveAttribute('aria-disabled', 'true'))
     expect(spy).toHaveBeenCalledTimes(3)
 
+    // The 20ms window runs on a fake clock installed after the last real-timer wait.
+    vi.useFakeTimers()
     fireEvent.click(btn)
     fireEvent.click(btn)
-    await new Promise(r => setTimeout(r, 20))
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
+    vi.useRealTimers()
     expect(spy).toHaveBeenCalledTimes(3)
 
     releases.splice(0).forEach(r => r())
@@ -730,6 +1026,19 @@ describe('FileBrowserRail positionless hits', () => {
   })
 })
 
+describe('FileBrowserRail Windows hit labels (#27823)', () => {
+  it('shows a native Windows hit relative to the root, without a leading backslash', async () => {
+    H.fileGrep.mockResolvedValue({
+      ...GREP_PAYLOAD,
+      root: 'C:\\proj',
+      results: [{ file: 'C:\\proj\\src\\a.ts', line: 3, preview: 'the needle here', label: null }],
+    })
+    mount()
+    await searchContents('needle')
+    expect(await screen.findByText('src\\a.ts')).toBeInTheDocument()
+  })
+})
+
 describe('HighlightedPreview case folding', () => {
   it('marks the right characters when lowercasing changes length', async () => {
     // `İ`.toLowerCase() is TWO characters (`i` + U+0307), so an index into a
@@ -849,6 +1158,24 @@ describe('FileBrowserRail search-mode toggle', () => {
     await waitFor(() => expect(screen.queryByTestId('tree')).toBeNull())
   })
 
+  it('runs no content search while inactive: neither a settling debounce nor a window focus', async () => {
+    H.fileGrep.mockResolvedValue(GREP_PAYLOAD)
+    const { qc, setActive } = mount()
+    await searchContents('needle')
+    expect(H.fileGrep).toHaveBeenCalledTimes(1)
+    // A refinement typed just before the tab is left settles while hidden: the
+    // debounce is run past on a fake clock, installed after the render settled.
+    vi.useFakeTimers()
+    fireEvent.change(screen.getByLabelText('Search in files…'), { target: { value: 'needles' } })
+    setActive(false)
+    await act(async () => { await vi.advanceTimersByTimeAsync(CONTENT_DEBOUNCE_MS + 1) })
+    vi.useRealTimers()
+    await refocusWindow(qc)
+    expect(H.fileGrep).toHaveBeenCalledTimes(1)
+    setActive(true)
+    await waitFor(() => expect(H.fileGrep).toHaveBeenLastCalledWith(DIR, 'needles'))
+  })
+
   it('keeps Content mode across a remount', async () => {
     H.fileGrep.mockResolvedValue(GREP_PAYLOAD)
     mount()
@@ -861,11 +1188,13 @@ describe('FileBrowserRail search-mode toggle', () => {
   it('asks for nothing below the two-character floor', async () => {
     mount()
     fireEvent.click(screen.getByLabelText('Search file contents'))
+    // The debounce is run past on a fake clock, installed after the render settled.
+    vi.useFakeTimers()
     fireEvent.change(screen.getByLabelText('Search in files…'), { target: { value: 'n' } })
     // The hint stands in for the results list, so an empty rail never reads as
     // "searched and found nothing".
     expect(screen.getByText(/at least two characters/i)).toBeInTheDocument()
-    await new Promise(r => setTimeout(r, 320))
+    await act(async () => { await vi.advanceTimersByTimeAsync(CONTENT_DEBOUNCE_MS + 1) })
     expect(H.fileGrep).not.toHaveBeenCalled()
   })
 
@@ -1179,6 +1508,23 @@ describe('FileBrowserRail past the tree row cap', () => {
     fireEvent.click(within(results).getByText('big/late'))
     await waitFor(() => expect(tree().dataset.reveal).toBe('big/late'))
     expect((screen.getByLabelText('Filter files…') as HTMLInputElement).value).toBe('')
+  })
+
+  it('sends no filename search while inactive: neither a settling debounce nor a window focus', async () => {
+    H.api.projectTree.mockResolvedValue(truncatedTree)
+    const { qc, setActive } = mount()
+    await waitFor(() => expect(H.api.projectTree).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('Filter files…'), { target: { value: 'late' } })
+    await waitFor(() => expect(H.api.fileSearch).toHaveBeenCalledTimes(1))
+    vi.useFakeTimers()
+    fireEvent.change(screen.getByLabelText('Filter files…'), { target: { value: 'later' } })
+    setActive(false)
+    await act(async () => { await vi.advanceTimersByTimeAsync(NAME_SEARCH_DEBOUNCE_MS + 1) })
+    vi.useRealTimers()
+    await refocusWindow(qc)
+    expect(H.api.fileSearch).toHaveBeenCalledTimes(1)
+    setActive(true)
+    await waitFor(() => expect(H.api.fileSearch).toHaveBeenLastCalledWith('later', DIR, expect.anything(), undefined, 50))
   })
 
   it('adds the rows the cut tree already holds that the search missed', async () => {

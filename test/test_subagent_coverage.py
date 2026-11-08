@@ -1,21 +1,17 @@
 """Coverage tests for ``kiro_crew.subagent`` helpers and manager bookkeeping.
 
-Focused on the module-level probes (memory / CPU / cgroup readers, env
-parsing, agent + governance vetting) and the ``SubagentManager`` bookkeeping
-surfaces — slot accounting, pid and cost records, stall detection, read
-surfaces, queue depth, the stagger gate — none of which need a real agent
-process. Every process boundary is stubbed: no test here launches a
-binary, opens a socket, or writes outside ``tmp_path`` / the autouse isolated
-``KIROCREW_HOME``.
-
-What a finished run delivers is covered in ``test_subagent_coverage_completion.py``;
-steering, cancelling and reaping a live run in ``test_subagent_coverage_live_runs.py``.
+Module-level probes (memory / CPU / cgroup readers, env parsing, agent and governance vetting)
+and ``SubagentManager`` bookkeeping (slots, pid and cost records, stall detection, reads,
+queue depth, the stagger gate). Process boundaries are stubbed; nothing writes outside
+``tmp_path`` / the isolated ``KIROCREW_HOME``. Finished runs are in
+``test_subagent_coverage_completion.py``, live runs in ``test_subagent_coverage_live_runs.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import math
 import os
 from pathlib import Path, PurePosixPath
@@ -28,6 +24,9 @@ from subagent_coverage_helpers import _info, _manager
 from conftest import absent_sysconf
 from kiro_crew import subagent as sa
 from kiro_crew.subagent import SubagentInfo, SubagentManager
+from kiro_crew.subagent_cost import _cost_log_path
+from kiro_crew.subagent_persistence_layout import _subagents_dir
+from kiro_crew.subagent_persistence_state import read_tombstone
 
 # ── _safe_fire ────────────────────────────────────────────────────────────
 
@@ -46,15 +45,21 @@ class TestSafeFire:
         assert seen == ["ran"]
 
     @pytest.mark.asyncio
-    async def test_swallows_exception(self) -> None:
+    async def test_swallows_exception(self, caplog: pytest.LogCaptureFixture) -> None:
+        reached: list[str] = []
+
         async def _boom() -> None:
+            reached.append("raised")
             raise RuntimeError("nope")
 
-        sa._safe_fire(_boom())
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        # Reaching here without an unretrieved-exception crash is the assertion.
-        assert True
+        with caplog.at_level("WARNING", logger="kiro_crew.subagent"):
+            sa._safe_fire(_boom())
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        assert reached == ["raised"]
+        warnings = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.subagent"]
+        assert "Subagent callback failed" in warnings
 
 
 # ── _validate_agent ───────────────────────────────────────────────────────
@@ -236,17 +241,18 @@ class TestSubagentRolePins:
         ):
             assert sa._subagent_default_model() == ""
 
-    def test_effort_pin_returns_string(self) -> None:
+    @pytest.mark.parametrize(
+        "pinned, expected",
+        [
+            pytest.param("high", "high", id="test_effort_pin_returns_string"),
+            pytest.param(3, "", id="test_effort_pin_rejects_non_string"),
+        ],
+    )
+    def test_effort_pin(self, pinned: object, expected: str) -> None:
         cfg = MagicMock()
-        cfg.agent.role_efforts = {"subagent": "high"}
+        cfg.agent.role_efforts = {"subagent": pinned}
         with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg):
-            assert sa._subagent_default_effort() == "high"
-
-    def test_effort_pin_rejects_non_string(self) -> None:
-        cfg = MagicMock()
-        cfg.agent.role_efforts = {"subagent": 3}
-        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg):
-            assert sa._subagent_default_effort() == ""
+            assert sa._subagent_default_effort() == expected
 
     def test_effort_pin_never_raises(self) -> None:
         with patch(
@@ -294,14 +300,16 @@ class TestCheckMemoryAvailable:
         ):
             assert sa.check_memory_available(min_gb=4.0, path=str(f)) == (True, 8.0)
 
-    def test_malformed_line_fails_open(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "meminfo",
+        [
+            pytest.param("MemAvailable:  notanumber kB\n", id="test_malformed_line_fails_open"),
+            pytest.param("MemTotal: 12 kB\n", id="test_missing_key_fails_open"),
+        ],
+    )
+    def test_unreadable_meminfo_fails_open(self, tmp_path: Path, meminfo: str) -> None:
         f = tmp_path / "meminfo"
-        f.write_text("MemAvailable:  notanumber kB\n")
-        assert sa.check_memory_available(path=str(f)) == (True, -1.0)
-
-    def test_missing_key_fails_open(self, tmp_path: Path) -> None:
-        f = tmp_path / "meminfo"
-        f.write_text("MemTotal: 12 kB\n")
+        f.write_text(meminfo)
         assert sa.check_memory_available(path=str(f)) == (True, -1.0)
 
 
@@ -325,7 +333,7 @@ class TestCgroupAvailable:
         # These cases fabricate only the limit/usage files; the page-cache read
         # goes through ``open`` and would otherwise see the runner's real
         # /sys/fs/cgroup/memory.stat.
-        monkeypatch.setattr(sa, "_read_inactive_file_bytes", lambda directory, v2: 0)
+        monkeypatch.setattr(sa, "_read_reclaimable_file_bytes", lambda directory, v2: 0)
 
     def _reader(self, values: dict[str, int | None]):
         return lambda path: values.get(path)
@@ -388,7 +396,16 @@ class TestMacosAvailableMemory:
         )
         assert sa._macos_available_memory_gb() == -1.0
 
-    def test_no_reclaimable_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        "pages",
+        [
+            pytest.param(None, id="test_no_reclaimable_pages"),
+            pytest.param(0, id="test_zero_pages_fails_open"),
+        ],
+    )
+    def test_no_usable_pages_fails_open(
+        self, monkeypatch: pytest.MonkeyPatch, pages: int | None
+    ) -> None:
         real_sysconf = getattr(os, "sysconf", absent_sysconf)
         monkeypatch.setattr(
             os,
@@ -396,18 +413,7 @@ class TestMacosAvailableMemory:
             lambda n: 4096 if n == "SC_PAGE_SIZE" else real_sysconf(n),
             raising=False,
         )
-        monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: None)
-        assert sa._macos_available_memory_gb() == -1.0
-
-    def test_zero_pages_fails_open(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        real_sysconf = getattr(os, "sysconf", absent_sysconf)
-        monkeypatch.setattr(
-            os,
-            "sysconf",
-            lambda n: 4096 if n == "SC_PAGE_SIZE" else real_sysconf(n),
-            raising=False,
-        )
-        monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: 0)
+        monkeypatch.setattr(sa, "_macos_vm_reclaimable_pages", lambda: pages)
         assert sa._macos_available_memory_gb() == -1.0
 
     def test_computes_gb_from_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -502,9 +508,6 @@ class TestContextGroups:
         assert sa._context_groups_field(info) == ""
 
 
-# ── Manager: slot + finalize tokens ───────────────────────────────────────
-
-
 # ── Manager: orphan / pid helpers ─────────────────────────────────────────
 
 
@@ -528,14 +531,21 @@ class TestPidHelpers:
 
     @pytest.mark.asyncio
     async def test_kill_orphan_swallows_missing_process(self) -> None:
-        with patch.object(sa.platform_compat, "kill_pid", side_effect=ProcessLookupError):
-            await SubagentManager._kill_orphan_pid(4242)  # must not raise
+        with patch.object(sa.platform_compat, "kill_pid", side_effect=ProcessLookupError) as kill:
+            # An already-gone process is not a kill failure.
+            assert await SubagentManager._kill_orphan_pid(4242) is None
+        assert kill.call_args[0][0] == 4242
 
     @pytest.mark.asyncio
     async def test_kill_orphan_calls_platform_kill(self) -> None:
         with patch.object(sa.platform_compat, "kill_pid") as kill:
-            await SubagentManager._kill_orphan_pid(4242)
+            # A kill that went out is reported as no failure.
+            assert await SubagentManager._kill_orphan_pid(4242) is None
         assert kill.call_args[0][0] == 4242
+        # Control: a kill the OS refuses is named, not reported as a success.
+        with patch.object(sa.platform_compat, "kill_pid", side_effect=PermissionError("denied")):
+            failure = await SubagentManager._kill_orphan_pid(4242)
+        assert failure is not None and failure.startswith("PermissionError")
 
 
 class TestLiveSharedCount:
@@ -721,51 +731,86 @@ class TestReaperOffloadsTheSweep:
         assert sample.called
 
 
+def _cost_records() -> list[dict]:
+    """Every record in the cost log under the test's own data home."""
+    path = _cost_log_path()
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
 class TestRecordCost:
     def test_unsampled_run_records_nothing(self) -> None:
         mgr = _manager()
-        with patch.object(sa, "append_cost_sample") as append:
-            mgr._record_cost(_info())
-        append.assert_not_called()
+        info = _info()
+        mgr._record_cost(info)
+        assert _cost_records() == []
+        # The same run records once a sweep has sampled it, so the skip
+        # above was the never-sampled gate and not a dead path.
+        info.peak_cpu_cores = 0.5
+        mgr._record_cost(info)
+        assert [r["cpu_cores"] for r in _cost_records()] == [0.5]
 
     def test_sampled_run_appends(self) -> None:
         mgr = _manager()
         info = _info(agent="scout")
         info.peak_rss_gb = 1.5
         info.peak_cpu_cores = 0.75
-        with patch.object(sa, "append_cost_sample") as append:
-            mgr._record_cost(info)
-        append.assert_called_once_with("scout", 1.5, 0.75, shared=False, settled_gb=0.0)
+        mgr._record_cost(info)
+        (rec,) = _cost_records()
+        assert (rec["agent"], rec["mem_gb"], rec["cpu_cores"]) == ("scout", 1.5, 0.75)
+        # A dedicated run with no settled reading writes neither optional field.
+        assert "shared" not in rec and "settled_gb" not in rec
 
     def test_store_failure_is_swallowed(self) -> None:
         mgr = _manager()
         info = _info()
         info.peak_rss_gb = 1.0
-        with patch.object(sa, "append_cost_sample", side_effect=OSError):
-            mgr._record_cost(info)  # must not raise
+        info.settled_rss_gb = 0.5
+        mgr._learned_settled_dirty = False
+        with patch.object(sa, "append_cost_sample", side_effect=OSError) as append:
+            mgr._record_cost(info)
+        assert append.call_count == 1
+        # A failed append does not mark the learned map for a re-read.
+        assert mgr._learned_settled_dirty is False
 
 
 class TestSlowCommandRecord:
     def test_records_redacted_fields(self) -> None:
-        info = _info(last_tool="read /tmp/x", tool_count=4, turns=2)
-        with patch.object(sa, "record_slow_command") as rec:
-            SubagentManager._record_slow_command(info, 300.0)
-        assert rec.call_args.kwargs["idle_secs"] == 300
+        info = _info(last_tool="read /tmp/x", tool_count=4, turns=2, parent_session_key="dash:1")
+        SubagentManager._record_slow_command(info, 300.0)
+        log = _subagents_dir() / "slow_commands.jsonl"
+        (entry,) = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+        assert entry["id"] == "a1"
+        assert (entry["idle_secs"], entry["tool_count"], entry["turns"]) == (300, 4, 2)
+        assert entry["parent_session"] == "dash:1"
 
-    def test_write_failure_is_swallowed(self) -> None:
-        with patch.object(sa, "record_slow_command", side_effect=OSError):
-            SubagentManager._record_slow_command(_info(), 1.0)  # must not raise
+    def test_write_failure_is_swallowed(self, caplog: pytest.LogCaptureFixture) -> None:
+        caplog.set_level("DEBUG", logger="kiro_crew.subagent")
+        with patch.object(sa, "record_slow_command", side_effect=OSError) as rec:
+            SubagentManager._record_slow_command(_info("slow1"), 1.0)
+        assert rec.call_args.args == ("slow1",)
+        assert [r.getMessage() for r in caplog.records if r.name == "kiro_crew.subagent"] == [
+            "Failed to record slow command for slow1"
+        ]
 
 
 class TestWriteTombstone:
     def test_failure_is_swallowed(self) -> None:
-        with patch.object(sa, "write_tombstone", side_effect=OSError):
-            SubagentManager._write_tombstone(_info(), "reaped")  # must not raise
+        info = _info("ts1")
+        info.started -= 5
+        with patch.object(sa, "write_tombstone", side_effect=OSError) as write:
+            SubagentManager._write_tombstone(info, "reaped")
+        assert write.call_args.args == ("ts1",)
+        assert write.call_args.kwargs["cause"] == "reaped"
+        # The elapsed time is finalized before the write is attempted.
+        assert info.elapsed >= 5
 
     def test_passes_outcome_through(self) -> None:
-        with patch.object(sa, "write_tombstone") as write:
-            SubagentManager._write_tombstone(_info(user_stopped=True), "user_stop")
-        assert write.call_args.kwargs["outcome"] == "stopped"
+        SubagentManager._write_tombstone(_info("ts2", user_stopped=True), "user_stop")
+        tomb = read_tombstone("ts2")
+        assert tomb is not None
+        assert (tomb["cause"], tomb["outcome"]) == ("user_stop", "stopped")
 
 
 # ── Manager: stall detection ──────────────────────────────────────────────
@@ -821,6 +866,20 @@ class TestReadSurfaces:
         rows = mgr.running_agents_for("dash:1")
         assert [r["id"] for r in rows] == ["a"]
 
+    def test_running_agents_for_marks_spawn_approval_park(self) -> None:
+        """Only a row parked on the spawn approval says so; a tool prompt does not."""
+        mgr = _manager()
+        parked = _info("parked", parent_session_key="dash:1")
+        parked._awaiting_approval = True
+        tool_prompt = _info("tool", parent_session_key="dash:1")
+        tool_prompt._awaiting_approval = True
+        tool_prompt._exec_started = 1.0
+        mgr._agents["parked"] = parked
+        mgr._agents["tool"] = tool_prompt
+        mgr._agents["plain"] = _info("plain", parent_session_key="dash:1")
+        rows = {r["id"]: r["awaitingSpawnApproval"] for r in mgr.running_agents_for("dash:1")}
+        assert rows == {"parked": True, "tool": False, "plain": False}
+
     def test_running_agents_for_redacts_task(self) -> None:
         mgr = _manager()
         mgr._agents["a"] = _info(
@@ -865,6 +924,31 @@ class TestReadSurfaces:
         assert rows["fresh"]["procs"] is None
         assert rows["fresh"]["mcp"] is None
 
+    def test_task_memory_rows_report_credits_burned_so_far(self) -> None:
+        """The Sessions table charges a live task's spend to the session that
+        spawned it; a run with no settled prompt yet reports null, not zero."""
+        mgr = _manager()
+        burned = _info("burned", parent_session_key="dash:1")
+        burned.credits = 2.3456
+        mgr._agents.update({"burned": burned, "fresh": _info("fresh", parent_session_key="dash:1")})
+        rows = {r["id"]: r for r in mgr.task_memory_rows()}
+        assert rows["burned"]["credits"] == pytest.approx(2.346)
+        assert rows["fresh"]["credits"] is None
+
+    def test_task_memory_rows_count_the_prompt_in_flight(self) -> None:
+        """A prompt settles its credits only as it ends, which for a one-prompt
+        run is as the row leaves, so the row adds what the prompt has billed."""
+        mgr = _manager()
+        running = _info("running", parent_session_key="dash:1")
+        running.credits = 1.0
+        provider = SimpleNamespace(last_prompt_stats=SimpleNamespace(credits=0.0))
+        running._credit_accounting = sa._RunCreditAccounting(running)
+        running._credit_accounting.begin(provider)
+        # The runner installs fresh stats as the prompt starts; metering accrues there.
+        provider.last_prompt_stats = SimpleNamespace(credits=2.5)
+        mgr._agents["running"] = running
+        assert mgr.task_memory_rows()[0]["credits"] == pytest.approx(3.5)
+
     def test_task_memory_rows_skips_done_and_queued(self) -> None:
         mgr = _manager()
         mgr._agents["done"] = _info("done", done=True)
@@ -889,12 +973,9 @@ class TestReadSurfaces:
     def test_task_memory_rows_redact_before_truncate(self) -> None:
         """A credential straddling the 80-char cut must not leak a fragment.
 
-        The old spelling ``_redact(a.task[:80])`` sliced first, so a key cut at
-        the boundary loses its tail and does not match the credential regex —
-        the raw prefix escaped into the session-memory surface.
-        The fabricated AKIA-shaped literal is inlined rather than bound to a
-        ``secret``-named variable, which would trip CodeQL's name-based
-        sensitive-source heuristic on this real call path.
+        Redacting after slicing would leave a cut key the credential regex cannot match.
+        The AKIA-shaped literal is inlined because a ``secret``-named variable trips
+        CodeQL's name-based sensitive-source heuristic.
         """
         # cut lands 8 chars into the fabricated 20-char key
         task = "x" * 72 + "AKIAIOSFODNN7EXAMPLE" + " trailing"
@@ -976,8 +1057,17 @@ class TestQueueDepth:
         assert _manager().has_pending_work_for("dash:1") is False
 
     def test_emit_queue_depth_without_loop_is_a_noop(self) -> None:
-        mgr = _manager(on_event=AsyncMock())
-        mgr._emit_queue_depth("dash:1")  # no running loop — advisory event skipped
+        on_event = AsyncMock()
+        mgr = _manager(on_event=on_event)
+        mgr._emit_queue_depth("dash:1", wait={"reason": "capacity"})
+        # The wait label is still recorded, but with no running loop no burst
+        # is started and nothing is published.
+        assert mgr._queue_wait["dash:1"] == {"reason": "capacity"}
+        assert "dash:1" not in mgr._queue_depth_emits
+        # A request without a label records none.
+        mgr._emit_queue_depth("dash:2")
+        assert "dash:2" not in mgr._queue_wait
+        on_event.assert_not_called()
 
 
 class TestStaggerGate:
@@ -987,14 +1077,19 @@ class TestStaggerGate:
         should_queue, slot_free = mgr._should_stagger_queue(now=1e9)
         assert (should_queue, slot_free) == (True, False)
 
-    def test_slot_free_but_too_soon_queues(self) -> None:
+    @pytest.mark.parametrize(
+        "stagger_secs, now, expected",
+        [
+            pytest.param(100.0, 1001.0, (True, True), id="test_slot_free_but_too_soon_queues"),
+            pytest.param(
+                1.0, 2000.0, (False, True), id="test_slot_free_and_interval_elapsed_starts"
+            ),
+        ],
+    )
+    def test_slot_free_waits_out_the_stagger_interval(
+        self, stagger_secs: float, now: float, expected: tuple[bool, bool]
+    ) -> None:
         mgr = _manager(max_concurrent=3)
-        mgr._spawn_stagger_secs = 100.0
+        mgr._spawn_stagger_secs = stagger_secs
         mgr._last_spawn_ts = 1000.0
-        assert mgr._should_stagger_queue(now=1001.0) == (True, True)
-
-    def test_slot_free_and_interval_elapsed_starts(self) -> None:
-        mgr = _manager(max_concurrent=3)
-        mgr._spawn_stagger_secs = 1.0
-        mgr._last_spawn_ts = 1000.0
-        assert mgr._should_stagger_queue(now=2000.0) == (False, True)
+        assert mgr._should_stagger_queue(now=now) == expected

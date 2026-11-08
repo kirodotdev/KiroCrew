@@ -28,10 +28,11 @@ and skill expansion), ``_output`` (metrics, snapshots, OAuth banners, channel
 mirroring, segment flush and native subagent cards), ``_trust`` (hook verdicts, trust
 predicates and command patterns), ``_approval`` (the auto-approve rungs and the
 approval window), ``_pending`` (pending resets and discards, eager spawn, prefetch and
-steer), ``_queue`` (the queue drain and synthesis) and ``_commands`` (model guards,
-local commands and the recovery ladders). The shared builders are in
-``chat_runner_coverage_helpers.py``; this module re-exports the ones other suites
-import from it.
+steer), ``_queue`` (the queue drain and synthesis), ``_commands`` (model guards,
+local commands and the recovery ladders) and ``_merge_cards`` (the merge cards a turn
+takes from its session's other slots and carries through a verbatim replay). The
+shared builders are in ``chat_runner_coverage_helpers.py``; this module re-exports the
+ones other suites import from it.
 """
 
 from __future__ import annotations
@@ -101,12 +102,8 @@ class TestPromptSubmitTranscriptRead:
 class TestSessionClosingQuietAbort:
     """A gateway-shutdown race during turn prep is a quiet abort, not an error.
 
-    Two dashboard slots were mid ``get_or_create`` when a restart's
-    ``close_all`` set ``_closing``; the allocation gate raised
-    ``SessionClosingError`` (by design) but the generic terminal handler then
-    logged an ERROR traceback, appended an ❌ error card to the slot, and
-    recorded a spurious session failure. The dedicated arm must swallow it: no
-    card, no record_failure, no exception out of ``_run_chat``.
+    ``SessionClosingError`` from ``close_all`` mid ``get_or_create`` gets no error card,
+    no record_failure, and no exception out of ``_run_chat``.
     """
 
     @pytest.mark.asyncio
@@ -134,13 +131,8 @@ class TestSessionClosingQuietAbort:
 class TestSessionStartFailureRowKind:
     """A session start that timed out leaves a row the Continue guard can count.
 
-    ``record_failure`` cannot count this failure: it increments a counter on the
-    REGISTERED session, and a start that never answered registered none, so the
-    call returns False and nothing anywhere remembers that the start failed.
-    The structural ``session_start_failed`` row kind is that memory -- decided
-    from the exception's tag (set at the ACP raise sites on both exception
-    families), never from the prose, so the Continue endpoint and the error card
-    can count consecutive failed starts without matching on message wording.
+    ``record_failure`` needs a registered session, which a failed start lacks, so the
+    ``session_start_failed`` row kind records it, decided from the exception's tag.
     """
 
     @pytest.mark.asyncio
@@ -184,8 +176,25 @@ class TestRunChatWakaTimeCodingAccounting:
         config.wakatime.send_heartbeats = True
         return config
 
+    @pytest.fixture
+    def sent_beats(self, monkeypatch):
+        """Every heartbeat payload the turn hands to the sender, in order."""
+        from kiro_crew.wakatime import heartbeats
+
+        sent: list[dict] = []
+        monkeypatch.setattr(heartbeats, "_schedule_send", sent.append)
+        return sent
+
+    @staticmethod
+    def _shapes(beats):
+        return [{k: v for k, v in beat.items() if k != "time"} for beat in beats]
+
+    _BEAT = {"entity": "kirocrew-session", "type": "app", "category": "ai coding", "is_write": True}
+
     @pytest.mark.asyncio
-    async def test_statusless_coding_call_demotes_when_permission_is_denied(self, tmp_path):
+    async def test_statusless_coding_call_demotes_when_permission_is_denied(
+        self, tmp_path, sent_beats
+    ):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -210,21 +219,18 @@ class TestRunChatWakaTimeCodingAccounting:
                 future.set_result("rejected")
 
         state.push_slots_update.side_effect = _deny_when_registered
-        with (
-            patch.object(
-                chat_runner.KiroCrewConfig,
-                "load",
-                return_value=self._wakatime_config(),
-            ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
+        with patch.object(
+            chat_runner.KiroCrewConfig,
+            "load",
+            return_value=self._wakatime_config(),
         ):
             await _drive(state, slot)
 
         client.reject_tool.assert_awaited_once_with("req-cov-1")
-        note_activity.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_denied_coding_call_emits_no_cadence_heartbeat(self, tmp_path):
+    async def test_denied_coding_call_emits_no_cadence_heartbeat(self, tmp_path, sent_beats):
         # F1 regression: the cadence beat fires only on CONFIRMED coding, never at
         # pre-decision dispatch, so a denied write emits neither the attribution
         # beat nor a cadence beat — no is_write ai-coding row for work that never
@@ -253,23 +259,20 @@ class TestRunChatWakaTimeCodingAccounting:
                 future.set_result("rejected")
 
         state.push_slots_update.side_effect = _deny_when_registered
-        with (
-            patch.object(
-                chat_runner.KiroCrewConfig,
-                "load",
-                return_value=self._wakatime_config(),
-            ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
+        with patch.object(
+            chat_runner.KiroCrewConfig,
+            "load",
+            return_value=self._wakatime_config(),
         ):
             await _drive(state, slot)
 
         client.reject_tool.assert_awaited_once_with("req-cov-1")
-        note_activity.assert_not_called()
-        note_cadence.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_statusless_coding_call_counts_after_permission_is_approved(self, tmp_path):
+    async def test_statusless_coding_call_counts_after_permission_is_approved(
+        self, tmp_path, sent_beats
+    ):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -300,15 +303,17 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
+            patch.object(chat_runner, "note_coding_cadence"),
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
-        note_activity.assert_called_once()
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
-    async def test_statusless_coding_call_without_permission_stays_counted(self, tmp_path):
+    async def test_statusless_coding_call_without_permission_stays_counted(
+        self, tmp_path, sent_beats
+    ):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -321,14 +326,17 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=config,
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
+            patch.object(
+                chat_runner, "note_coding_activity", wraps=chat_runner.note_coding_activity
+            ) as note_activity,
+            patch.object(chat_runner, "note_coding_cadence"),
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_not_awaited()
         client.reject_tool.assert_not_awaited()
-        note_activity.assert_called_once()
         assert note_activity.call_args.kwargs["config"] is config
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
     async def test_heartbeat_project_is_the_turn_start_snapshot(self, tmp_path):
@@ -368,29 +376,36 @@ class TestRunChatWakaTimeCodingAccounting:
         assert slot.project == str(picked)
 
     @pytest.mark.asyncio
-    async def test_many_auto_approved_coding_calls_keep_one_turn_bit(self, tmp_path):
+    async def test_many_auto_approved_coding_calls_keep_one_turn_bit(self, tmp_path, sent_beats):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
         events = [_statusless_coding_tool_call(f"tc-wt-{i}") for i in range(500)]
         _set_stream(client, [*events, _complete()])
 
+        config = self._wakatime_config()
         with (
             patch.object(
                 chat_runner.KiroCrewConfig,
                 "load",
-                return_value=self._wakatime_config(),
+                return_value=config,
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
+            patch.object(
+                chat_runner, "note_coding_activity", wraps=chat_runner.note_coding_activity
+            ) as note_activity,
+            patch.object(chat_runner, "note_coding_cadence"),
         ):
             await _drive(state, slot)
 
         # Per-call ids are not retained: any number of successful coding calls
         # collapses to one bounded bit and one turn-level heartbeat.
-        note_activity.assert_called_once()
+        assert note_activity.call_args.kwargs["config"] is config
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
-    async def test_auto_approved_coding_call_emits_one_cadence_heartbeat(self, tmp_path):
+    async def test_auto_approved_coding_call_emits_one_cadence_heartbeat(
+        self, tmp_path, sent_beats
+    ):
         # Duration accrual for trusted tools: an auto-approved coding call never
         # reaches a permission decision, so _wt_note_approved never fires. Its
         # completed result frame is the point past gating where it has run, so a
@@ -417,16 +432,17 @@ class TestRunChatWakaTimeCodingAccounting:
                 return_value=self._wakatime_config(),
             ),
             patch.object(chat_runner, "note_coding_activity"),
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_not_awaited()
         client.reject_tool.assert_not_awaited()
-        note_cadence.assert_called_once()
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
-    async def test_many_auto_approved_coding_results_emit_one_throttled_cadence(self, tmp_path):
+    async def test_many_auto_approved_coding_results_emit_one_throttled_cadence(
+        self, tmp_path, sent_beats
+    ):
         # The throttle: several auto-approved coding calls completing inside one
         # turn (well under CADENCE_MIN_INTERVAL_SECS apart) collapse to a single
         # cadence beat, matching WakaTime's coalescing bucket, instead of one
@@ -448,15 +464,14 @@ class TestRunChatWakaTimeCodingAccounting:
                 return_value=self._wakatime_config(),
             ),
             patch.object(chat_runner, "note_coding_activity"),
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_not_awaited()
-        note_cadence.assert_called_once()
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
-    async def test_approved_coding_call_emits_one_cadence_heartbeat(self, tmp_path):
+    async def test_approved_coding_call_emits_one_cadence_heartbeat(self, tmp_path, sent_beats):
         # Duration accrual: an approved coding call emits a cadence heartbeat so
         # WakaTime sees a mid-turn timestamp and accrues wall-clock duration,
         # instead of a long turn collapsing to a single end-of-turn instant.
@@ -491,14 +506,14 @@ class TestRunChatWakaTimeCodingAccounting:
                 return_value=self._wakatime_config(),
             ),
             patch.object(chat_runner, "note_coding_activity"),
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
         ):
             await _drive(state, slot)
 
-        note_cadence.assert_called_once()
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
-    async def test_denied_pending_id_is_drained_before_a_later_decision(self, tmp_path):
+    async def test_denied_pending_id_is_drained_before_a_later_decision(self, tmp_path, sent_beats):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -540,20 +555,23 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
         ):
             await _drive(state, slot)
 
-        note_activity.assert_not_called()
+        client.reject_tool.assert_awaited_once_with("req-wt-deny")
+        client.approve_tool.assert_awaited_once_with("req-wt-later")
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_collapsed_coding_id_cannot_be_counted_by_unrelated_approval(self, tmp_path):
+    async def test_collapsed_coding_id_cannot_be_counted_by_unrelated_approval(
+        self, tmp_path, sent_beats
+    ):
         from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
-        coding_tool_call_id = "AKIAIOSFODNN7EXAMPLE"
+        coding_tool_call_id = "AKIA" + "IOSFODNN7EXAMPLE"
         _set_stream(
             client,
             [
@@ -601,16 +619,15 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
         ):
             await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-wt-unrelated")
         client.reject_tool.assert_awaited_once_with("req-wt-deny")
-        note_activity.assert_not_called()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_restored_queued_turn_does_not_emit_heartbeat(self, tmp_path):
+    async def test_restored_queued_turn_does_not_emit_heartbeat(self, tmp_path, sent_beats):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -623,7 +640,6 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
             _quiet_sel(),
         ):
             await chat_runner._run_chat(
@@ -634,10 +650,11 @@ class TestRunChatWakaTimeCodingAccounting:
             )
         await _settle(slot)
 
-        note_activity.assert_not_called()
+        client.stream.assert_called_once()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_restored_queued_turn_emits_no_cadence_heartbeat(self, tmp_path):
+    async def test_restored_queued_turn_emits_no_cadence_heartbeat(self, tmp_path, sent_beats):
         # Opus regression: a gateway-restart replay (restored queued prompt)
         # lost its actor stamp, so even an approved coding call must not emit a
         # cadence beat — the provenance guard keeps the user fallback from
@@ -672,8 +689,6 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity"),
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
         ):
             await chat_runner._run_chat(
                 state,
@@ -683,10 +698,11 @@ class TestRunChatWakaTimeCodingAccounting:
             )
         await _settle(slot)
 
-        note_cadence.assert_not_called()
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_mcp_name_fallback_is_not_used_by_chat_runner(self, tmp_path):
+    async def test_mcp_name_fallback_is_not_used_by_chat_runner(self, tmp_path, sent_beats):
         # A write-named MCP tool with no edit kind must not fall back to the
         # tool name to count as coding activity: only a recognised coding kind
         # counts, so a third-party MCP that happens to be named "write" stays
@@ -706,10 +722,17 @@ class TestRunChatWakaTimeCodingAccounting:
             ],
         )
 
-        with patch.object(chat_runner, "note_coding_activity") as note_activity:
+        with (
+            patch.object(
+                chat_runner.KiroCrewConfig,
+                "load",
+                return_value=self._wakatime_config(),
+            ),
+        ):
             await _drive(state, slot)
 
-        note_activity.assert_not_called()
+        client.stream.assert_called_once()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
     async def test_many_undecided_pending_coding_ids_stay_capped(self, tmp_path, caplog):
@@ -738,15 +761,19 @@ class TestRunChatWakaTimeCodingAccounting:
             await _drive(state, slot)
 
         # Exactly one shed summary for the whole turn, not one line per dropped
-        # call — the amplified-log finding.
-        shed = [r for r in caplog.records if "wakatime pending-coding cap" in r.message]
+        # call.
+        shed = [
+            r
+            for r in caplog.records
+            if r.name == chat_runner.logger.name and "wakatime pending-coding cap" in r.message
+        ]
         assert len(shed) == 1
         assert "shed" in shed[0].message
         # Unguarded execution counts once for the turn.
         note_activity.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_mcp_edit_kind_still_emits_heartbeat(self, tmp_path):
+    async def test_mcp_edit_kind_still_emits_heartbeat(self, tmp_path, sent_beats):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -762,17 +789,21 @@ class TestRunChatWakaTimeCodingAccounting:
             ],
         )
 
+        config = self._wakatime_config()
         with (
             patch.object(
                 chat_runner.KiroCrewConfig,
                 "load",
-                return_value=self._wakatime_config(),
+                return_value=config,
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
+            patch.object(
+                chat_runner, "note_coding_activity", wraps=chat_runner.note_coding_activity
+            ) as note_activity,
         ):
             await _drive(state, slot)
 
-        note_activity.assert_called_once()
+        assert note_activity.call_args.kwargs["config"] is config
+        assert self._shapes(sent_beats) == [self._BEAT]
 
     @pytest.mark.asyncio
     async def test_heartbeat_uses_project_captured_at_turn_start(self, tmp_path):
@@ -804,7 +835,7 @@ class TestRunChatWakaTimeCodingAccounting:
         assert note_activity.call_args.args[0] == project_at_start
 
     @pytest.mark.asyncio
-    async def test_injected_turn_does_not_emit_heartbeat(self, tmp_path):
+    async def test_injected_turn_does_not_emit_heartbeat(self, tmp_path, sent_beats):
         state, client = _runner_state(tmp_path)
         client.mcp_session_report = MagicMock(return_value=None)
         slot = _slot()
@@ -816,14 +847,14 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity") as note_activity,
         ):
             await _drive(state, slot, _turn_actor="cron")
 
-        note_activity.assert_not_called()
+        client.stream.assert_called_once()
+        assert sent_beats == []
 
     @pytest.mark.asyncio
-    async def test_injected_turn_emits_no_cadence_heartbeat(self, tmp_path):
+    async def test_injected_turn_emits_no_cadence_heartbeat(self, tmp_path, sent_beats):
         # The cadence beat honors the same scope as the end-of-turn beat: a
         # cron/subagent/injected (non-user) turn is outside the declared surface,
         # so even an APPROVED coding call emits no cadence beat.
@@ -857,12 +888,11 @@ class TestRunChatWakaTimeCodingAccounting:
                 "load",
                 return_value=self._wakatime_config(),
             ),
-            patch.object(chat_runner, "note_coding_activity"),
-            patch.object(chat_runner, "note_coding_cadence") as note_cadence,
         ):
             await _drive(state, slot, _turn_actor="cron")
 
-        note_cadence.assert_not_called()
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        assert sent_beats == []
 
 
 #: Fixture tokens for the glued-credential cases (made up, not real keys).
@@ -879,13 +909,8 @@ _GLUED_SK = (
 class TestBlockedLinkCardRecords:
     """What the dashboard's blocked-link card lists after a flush.
 
-    The card lists the host's records in the saved reply, each under its own
-    address, and never claims which one a chip stands for
-    (``BlockedLinkCard`` in ``website/src/components/RedactionCards.tsx``).
-    Counts cannot prove that a placeholder and a record are the same URL, so
-    these pin what each record says about itself. They stream the deltas
-    through both per-delta removers in the order the streaming loop applies
-    them, then flush.
+    Counts cannot tie a placeholder to a record (``BlockedLinkCard`` in
+    ``website/src/components/RedactionCards.tsx``), so these pin each record's own content.
     """
 
     H = "h.example-sink.net"
@@ -901,6 +926,80 @@ class TestBlockedLinkCardRecords:
             text += safe
         redacted, links, _ = chat_runner._redact_segment(slot, text)
         return redacted, links
+
+    @staticmethod
+    def _flush_ordered(deltas: list[str]) -> tuple[str, list[dict], list[bool]]:
+        slot = _slot()
+        text = ""
+        for delta in deltas:
+            safe, removed = chat_runner._redact_delta(delta)
+            chat_runner._accumulate_segment_raw(slot, delta, safe, removed)
+            text += safe
+        ordered: list[bool] = []
+        redacted, links, _ = chat_runner._redact_segment(slot, text, _ordered_out=ordered)
+        return redacted, links, ordered
+
+    def test_two_links_on_one_host_cut_across_deltas_are_vouched_in_order(self):
+        """The whole-text pass writes the records in reply order, so the row
+        vouches it and both addresses come back in place once the host is allowed."""
+        from kiro_crew.security.exfil import restore_allowed_links
+
+        first = f"https://{self.H}/first?q=" + "a" * 250
+        second = f"https://{self.H}/second?q=" + "b" * 250
+        content, links, ordered = self._flush_ordered(
+            ["one ", first[:40], first[40:], " two ", second[:30], second[30:], " end"]
+        )
+        assert [r["url"] for r in links] == [first, second]
+        assert ordered == [True]
+        meta = chat_runner._segment_row_meta(_slot(), links, links_ordered=True)
+        assert meta is not None and meta[chat_runner.BLOCKED_LINKS_ORDERED_KEY] is True
+        out, left = restore_allowed_links(content, links, frozenset({self.H}), ordered=True)
+        assert out == f"one {first} two {second} end"
+        assert left == []
+
+    def test_a_link_carrying_another_blocked_link_never_lands_in_its_place(self):
+        """``S B C C`` from review: B on the allowed host carries S (another host)
+        in its query. The allowed host must keep its placeholders: B, a redirect
+        carrying the sink address, must never be put back where a C stood."""
+        from kiro_crew.security.exfil import restore_allowed_links
+
+        allowed = "allowed.example"
+        sink = f"https://{self.H}/x?d=" + "s" * 260
+        redirect = f"https://{allowed}/r?next={sink}"
+        dash = f"https://{allowed}/c?q=" + "c" * 250
+        content, links, ordered = self._flush_ordered([f"{sink} {redirect} {dash} {dash}"])
+        assert [r["url"] for r in links if r["domain"] == allowed] == [redirect, dash]
+        out, _ = restore_allowed_links(
+            content, links, frozenset({allowed}), ordered=ordered == [True]
+        )
+        assert out == content
+        assert redirect not in out and sink not in out
+
+    def test_a_link_swallowed_by_a_credential_span_is_not_vouched_in_order(self):
+        """``A B B`` with A inside a PEM block: the link pass records A, then the
+        credential pass removes the block and A's placeholder with it. The host
+        holds records [A, B] and two placeholders, both B's, so pairing by order
+        would put A where the first B stood: the row must not vouch its order and
+        the host keeps its placeholders."""
+        from kiro_crew.security.exfil import restore_allowed_links
+
+        allowed = "allowed.example"
+        inner = f"https://{allowed}/a?q=" + "a" * 250
+        dash = f"https://{allowed}/b?q=" + "b" * 250
+        # The PEM markers are assembled so no literal key header sits in source.
+        label = "RSA " + "PRIVATE KEY"
+        pem = f"-----BEGIN {label}-----\nMIIE {inner} xyz\n-----END {label}-----"
+        redacted, links, ordered = self._flush_ordered([f"key:\n{pem}\nthen {dash} and {dash} end"])
+        assert [r["url"] for r in links] == [inner, dash]
+        assert redacted.count(f"[REDACTED: suspicious URL to {allowed}]") == 2
+        assert ordered == [False]
+        assert chat_runner.BLOCKED_LINKS_ORDERED_KEY not in (
+            chat_runner._segment_row_meta(_slot(), links) or {}
+        )
+        out, _ = restore_allowed_links(
+            redacted, links, frozenset({allowed}), ordered=ordered == [True]
+        )
+        assert out == redacted
 
     def test_one_address_on_its_host_is_its_one_record(self):
         url = f"https://{self.H}/only?q=" + "a" * 250

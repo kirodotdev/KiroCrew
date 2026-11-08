@@ -1,5 +1,5 @@
 """A session moved to another profile before its workspace existed: the reserved
-row must name the new template, which browse and the sweep verify against.
+row must name the new template, which browse, health and the sweep verify against.
 """
 
 from __future__ import annotations

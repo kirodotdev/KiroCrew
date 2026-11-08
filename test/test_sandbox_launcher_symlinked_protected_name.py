@@ -306,8 +306,8 @@ def test_every_protected_name_resolution_takes_a_no_follow_first_look() -> None:
         "a protected name is resolved with following semantics: %r" % following_the_name
     )
     # No call site may resolve a PROTECTED name for itself, outside the pin. The
-    # stand-in pin is the one other ``_O_PATH`` open, and it resolves a directory
-    # this launcher created moments ago, not a protected name.
+    # stand-in pin and the private stand-in stage are the other ``_O_PATH`` opens, and
+    # each resolves a directory this launcher created moments ago, not a protected name.
     outside = [
         line.strip()
         for line in script.splitlines()
@@ -317,6 +317,7 @@ def test_every_protected_name_resolution_takes_a_no_follow_first_look() -> None:
         and "_link_to" not in line
         and "parent_fd" not in line
         and "os.open(stand_in," not in line
+        and "os.open(stage," not in line
     ]
     assert not outside, f"a protected name is resolved outside the pin: {outside}"
 
@@ -370,11 +371,11 @@ def test_a_link_replaced_while_it_is_being_resolved_refuses(
     bed, store = _stow_bed(tmp_path)
     store_id, decoy_id = identity(store), identity(bed.decoy_dir)
     carried = _observed(bed.ssh)
-    state = _swap_the_link_during_the_follow(monkeypatch, bed.ssh, bed.decoy_dir)
+    with monkeypatch.context() as mp:
+        state = _swap_the_link_during_the_follow(mp, bed.ssh, bed.decoy_dir)
 
-    ran = _run(tmp_path, bed=bed, occupants=carried)
+        ran = _run(tmp_path, bed=bed, occupants=carried)
 
-    monkeypatch.undo()
     assert state["fired"], "the swap never ran, so this proved nothing"
     targets = ran.libc.target_ids()
     assert decoy_id not in targets, "the resolution followed the swapped entry to the decoy"
@@ -467,12 +468,12 @@ def test_control_the_shipped_source_refuses_both_substitutions(
     """
     bed = _Bed(tmp_path)
     carried = _observed(bed.ssh)
-    _substitute_link_at(monkeypatch, bed.ssh, bed.decoy_dir)
-    decoy_refusal = _run(tmp_path, bed=bed, occupants=carried).refusal
-    assert decoy_refusal is not None, "the decoy substitution was not refused"
-    assert "DIFFERENT object" in decoy_refusal
+    with monkeypatch.context() as mp:
+        _substitute_link_at(mp, bed.ssh, bed.decoy_dir)
+        decoy_refusal = _run(tmp_path, bed=bed, occupants=carried).refusal
+        assert decoy_refusal is not None, "the decoy substitution was not refused"
+        assert "DIFFERENT object" in decoy_refusal
 
-    monkeypatch.undo()
     other = tmp_path / "second"
     other.mkdir()
     bed2 = _Bed(other)

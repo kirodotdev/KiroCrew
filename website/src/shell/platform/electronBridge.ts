@@ -20,10 +20,12 @@ export function setNativeBadgeCount(count: number): void {
   api?.setBadgeCount?.(count)
 }
 
-/** The View > DevTools menu follows developer mode. */
-export function setNativeDevMode(on: boolean): void {
+/** Show the View > Toggle Developer Tools menu item. A desktop shell older
+ *  than this dashboard builds that item hidden and reveals it only on this
+ *  call, so the shell sends it once at startup. */
+export function showNativeDevTools(): void {
   const electronAPI = window.electronAPI
-  electronAPI?.setDevMode?.(on)
+  electronAPI?.setDevMode?.(true)
 }
 
 /**

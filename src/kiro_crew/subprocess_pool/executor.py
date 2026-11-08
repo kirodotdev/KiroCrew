@@ -70,9 +70,9 @@ over a warm child: measured on this host, ``python -S -c pass`` 9.9 ms,
 submitted wrapper).  That is 135 ms, not seconds, so cite the structural objection
 above rather than this one.
 
-The transport here is therefore a plain ``Popen`` of ``python -S <leaf script>``:
-a fresh exec'd interpreter, no ``multiprocessing`` pickling, no manager thread,
-no semaphores.
+The transport here is therefore a plain ``Popen`` of
+``python -I -S -c <leaf script source>``: a fresh exec'd interpreter, no
+``multiprocessing`` pickling, no manager thread, no semaphores.
 
 WHY NOT ``fork``.  A forked child inherits every lock in whatever state the other
 threads left it, and this gateway runs ~157 threads.  ``Popen`` without
@@ -84,8 +84,9 @@ Python back in the forked child.
 
 ADOPTING IT FOR ANOTHER POOL.  Four things, and only the last two need judgement:
 1. Write a leaf child script shaped like :mod:`kiro_crew.security._child_realpath`
-   that imports STDLIB ONLY and answers one op code.  Never ``-m``; always run it
-   by path, or ``kiro_crew/__init__.py`` executes and the cold-start budget is gone.
+   that imports STDLIB ONLY and answers one op code, and pass its path as
+   ``script=``: the executor runs the file's text with ``-c``.  Never ``-m``, or
+   ``kiro_crew/__init__.py`` executes and the cold-start budget is gone.
 2. Give it a request/response body in that module's shape: 4-byte
    big-endian outer length, request id, op code, payload.  Length prefixes, never
    a newline -- a filename may contain one.
@@ -124,7 +125,8 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
-# Mirrors ``_child_realpath``; pinned by ``test_protocol_round_trips``.
+# Mirrors ``_child_realpath``; the tests that resolve through a real child,
+# ``TestResolutionParity`` among them, fail on any mismatch.
 _LEN = struct.Struct(">I")
 _REQ_HEADER = struct.Struct(">IB")
 
@@ -271,9 +273,9 @@ class _Unreaped:
     syscall, where SIGKILL takes effect only when the syscall returns -- for a hung
     network mount, possibly never.  Two bounds meet here.  The slot must NOT wait for
     that exit before respawning, or one permanently wedged mount retires the slot for
-    good and, prefix by prefix, the whole pool (found in review).  But it must not
-    respawn without limit either, or the same mount grows a killed-but-alive child per
-    deadline until PIDs run out (also found in review).  So ``capacity`` is a RESPAWN
+    good and, prefix by prefix, the whole pool.  But it must not respawn without
+    limit either, or the same mount grows a killed-but-alive child per deadline until
+    PIDs run out.  So ``capacity`` is a RESPAWN
     THRESHOLD: below it a slot respawns at once; at or above it a slot stays empty
     until one exits, and the executor reports exhaustion to callers rather than
     letting them spend their budget on an empty queue.  ``add`` itself never refuses
@@ -400,10 +402,11 @@ class _Child:
         # is to read the very paths the sensitive-path gate checks -- which makes it
         # a high-value target. Without ``-I`` the interpreter honours ``PYTHONPATH``,
         # so a writable directory ahead on ``sys.path`` could plant a module named
-        # for one of the four stdlib imports below and get code execution in an
-        # unsandboxed process that can read credential files. ``-I`` implies ``-E``
-        # (no ``PYTHON*`` variables), ``-s`` (no user site) and ``-P`` (the script's
-        # own directory is not on ``sys.path``), which together close that path.
+        # for one the child imports and get code execution in an unsandboxed
+        # process that can read credential files. ``-I`` implies ``-E``
+        # (no ``PYTHON*`` variables), ``-s`` (no user site) and ``-P`` (no entry for
+        # the working directory, which ``-c`` would otherwise put first on
+        # ``sys.path``), which together close that path.
         #
         # It costs nothing here: this child runs source text passed as ``-c`` (captured
         # once, see ``_read_child_source``) and imports stdlib only, so it needs no
@@ -440,7 +443,7 @@ class _Child:
         """Kill the current child and forget it.
 
         With *wait* (a child that died or faulted, so its exit is immediate) the exit is
-        collected here.  Without it (the deadline arm) the killed process becomes the
+        collected here.  Without it (the deadline arm) the killed process joins the
         executor's ``_Unreaped`` list for its reaper to collect: it is presumed
         blocked in an uninterruptible syscall on a wedged mount, where SIGKILL takes
         effect only once the syscall returns, and waiting for that on the calling thread
@@ -488,7 +491,7 @@ class _Child:
             pass
 
     def kill(self) -> None:
-        """Reclaim this child; the next request spawns a replacement.
+        """Reclaim this child; only the reaper's :meth:`ensure_spawned` can start a replacement.
 
         Signals first, then cleans up under the lock only if no request holds it,
         so this is safe to call on a child that is mid-wedge.
@@ -712,9 +715,9 @@ class SubprocessPoolExecutor(Executor):
     this process and so would still share this GIL.
 
     ``submit`` keeps the standard contract, so an existing caller holding a
-    ``Future`` needs no change.  A callable the executor does not recognise runs on
-    an internal thread pool exactly as it does today -- the fallback is what makes
-    this substitutable for a ``ThreadPoolExecutor`` without auditing every caller.
+    ``Future`` needs no change: every callable it is given runs on an internal
+    thread pool, as on a ``ThreadPoolExecutor`` -- that pool is what makes this
+    substitutable for one without auditing every caller.
     Work for a child is reached through :meth:`submit_op`, which names the op
     explicitly instead of inferring it from the callable: inference by
     ``__qualname__`` is not usable, because the pool's callers submit a
@@ -767,9 +770,11 @@ class SubprocessPoolExecutor(Executor):
         self._qlock = threading.Lock()
         self._spawn_error: OSError | None = None
         self._failed_queued = False
-        # No thread pool for child work: it runs on the calling thread. The one
-        # pool left serves ``submit``/``map`` for callables this class does not
-        # recognise, which is what keeps it substitutable for a ThreadPoolExecutor.
+        # Child work runs on the calling thread, except a request with a deadline where
+        # ``select`` cannot watch a pipe: that request runs on ``_bounded_readers``
+        # (below) while the caller waits on its future. This pool serves every
+        # ``submit``/``map`` callable, which is what keeps the class substitutable for
+        # a ThreadPoolExecutor.
         self._fallback = ThreadPoolExecutor(
             max_workers=workers, thread_name_prefix=f"{thread_name_prefix}-inline"
         )
@@ -825,16 +830,17 @@ class SubprocessPoolExecutor(Executor):
             if self._shutdown.is_set():
                 break
             for child in list(self._children):
-                if child.ensure_spawned():
-                    if self._shutdown.is_set():
-                        # ``shutdown`` set the flag while this tick was already
-                        # past its checks; its kill loop may have run before the
-                        # ``Popen`` above, so the child it never saw is reaped by
-                        # the thread that made it. This is what closes the refill
-                        # window even when the join in ``shutdown`` times out.
-                        child.kill()
-                        continue
-                    self._enqueue(child)
+                if not child.ensure_spawned():
+                    continue
+                if self._shutdown.is_set():
+                    # ``shutdown`` set the flag while this tick was already
+                    # past its checks; its kill loop may have run before the
+                    # ``Popen`` above, so the child it never saw is reaped by
+                    # the thread that made it. This is what closes the refill
+                    # window even when the join in ``shutdown`` times out.
+                    child.kill()
+                    continue
+                self._enqueue(child)
             self._note_spawn_errors()
 
     def _enqueue(self, child: _Child) -> None:
@@ -842,18 +848,14 @@ class SubprocessPoolExecutor(Executor):
 
         The reaper works from a snapshot of the roster, so a slot ``_replace_slot``
         retired mid-tick can arrive here already spawned.  Enqueuing it would lease a
-        child no slot owns, and its next deadline would then miss the roster and raise
-        out of the resolver's classification -- the one path that could read as a
-        pool fault and keep the lexical forms.  Membership is checked under the same
-        lock the swap takes, and a retired slot's fresh child is killed here.
+        child no slot owns.  Membership is checked under the same lock the swap takes,
+        and a retired slot's fresh child is killed here.
         """
         with self._qlock:
             current = child in self._children
-            if not current:
-                pass
-            elif child.queued:
-                return
-            else:
+            if current:
+                if child.queued:
+                    return
                 child.queued = True
         if current:
             self._free.put(child)
@@ -863,7 +865,7 @@ class SubprocessPoolExecutor(Executor):
     def _note_spawn_errors(self) -> None:
         """Publish or clear the spawn-failure verdict after a reaper tick.
 
-        No live child AND every empty slot's last spawn raised means the pool cannot
+        No live child AND at least one slot's last spawn raised means the pool cannot
         start children on this host: the ``OSError`` is recorded and the
         ``_SPAWN_FAILED`` marker queued once, so callers get the error now.  Any live
         child clears it; a marker still queued is then dropped by the caller that
@@ -1073,8 +1075,8 @@ class SubprocessPoolExecutor(Executor):
     ) -> Future[_T]:
         """Standard ``Executor.submit``: runs *fn* on the internal thread pool.
 
-        Unrecognised work is NOT an error and is not sent to a child. Keeping the
-        thread-pool behaviour for it is what lets this class replace a
+        It never sends work to a child; that is :meth:`submit_op`. Keeping the
+        thread-pool behaviour is what lets this class replace a
         ``ThreadPoolExecutor`` in a factory without changing any caller.
         """
         return self._fallback.submit(fn, *args, **kwargs)
@@ -1091,13 +1093,10 @@ class SubprocessPoolExecutor(Executor):
         # checks ``_shutdown`` twice and then spawns every empty slot. A tick already
         # past that second check keeps going, so a kill loop that ran concurrently
         # could empty a slot and have the reaper refill it a moment later with a
-        # child nothing ever signals -- measured under a hygiene sweep as
-        # a ``sleep(3600)`` test child still alive at teardown in every round, and
-        # as 18 of 80 shut-down-at-once pools keeping a live child. So the reaper is
-        # joined FIRST: bounded, because it wakes on the event set above and one
-        # tick is a poll of each slot plus at most one ``Popen`` per slot. Only the
-        # calling thread may not join itself (``atexit`` never runs on it; a caller
-        # inside a submitted callable could).
+        # child nothing ever signals. So the reaper is joined FIRST: bounded,
+        # because it wakes on the event set above and one tick is a poll of each
+        # slot plus at most one ``Popen`` per slot. A call on the reaper's own thread
+        # skips the join: a thread cannot join itself.
         if self._reaper is not threading.current_thread():
             self._reaper.join(timeout=_SHUTDOWN_REAPER_JOIN_SECS)
             if self._reaper.is_alive():

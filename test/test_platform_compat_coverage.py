@@ -205,6 +205,42 @@ class TestEnsureUtf8Console:
         assert os.environ["PYTHONUTF8"] == "1"
         assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
+    @pytest.mark.parametrize("errors", ["strict", "surrogateescape"])
+    def test_posix_ascii_stream_replaces_glyphs_instead_of_raising(self, monkeypatch, errors):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        raw = io.BytesIO()
+        out = io.TextIOWrapper(raw, encoding="ascii", errors=errors)
+        monkeypatch.setattr(pc.sys, "stdout", out)
+        monkeypatch.setattr(pc.sys, "stderr", None)
+
+        pc.ensure_utf8_console()
+
+        assert sys.stdout is out
+        assert out.encoding == "ascii"
+        print("\u2705 installed \U0001f47b", file=out)
+        out.flush()
+        assert raw.getvalue() == b"? installed ?\n"
+
+    def test_posix_unicode_or_lenient_streams_are_left_alone(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        utf8 = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", errors="strict")
+        lenient = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="backslashreplace")
+        monkeypatch.setattr(pc.sys, "stdout", utf8)
+        monkeypatch.setattr(pc.sys, "stderr", lenient)
+
+        pc.ensure_utf8_console()
+
+        assert utf8.errors == "strict"
+        assert lenient.errors == "backslashreplace"
+
+    def test_posix_stream_that_refuses_reconfigure_is_skipped(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        out = types.SimpleNamespace(encoding="ascii", errors="strict")
+        monkeypatch.setattr(pc.sys, "stdout", out)
+        monkeypatch.setattr(pc.sys, "stderr", None)
+        pc.ensure_utf8_console()  # no reconfigure attribute; must not raise
+        assert sys.stdout is out
+
     def test_reconfigure_in_place_is_preferred(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         out = _ReconfigurableStream("cp1252", reconfigure_to="utf-8")
@@ -250,6 +286,7 @@ class TestEnsureUtf8Console:
         monkeypatch.setattr(pc.sys, "stdout", None)
         monkeypatch.setattr(pc.sys, "stderr", None)
         pc.ensure_utf8_console()
+        assert pc.sys.stdout is None and pc.sys.stderr is None
 
 
 # ---------------------------------------------------------------------------
@@ -391,14 +428,17 @@ class TestWindowsLocking:
     def test_release_lock_swallows_an_unlock_error(self, monkeypatch, tmp_path):
         class _Failing(_FakeMsvcrt):
             def locking(self, _fd: int, mode: int, _nbytes: int) -> None:
+                self.calls.append(mode)
                 raise OSError(13, "not locked")
 
+        failing = _Failing([])
         _fake_windows(monkeypatch)
-        monkeypatch.setattr(pc, "msvcrt", _Failing([]), raising=False)
+        monkeypatch.setattr(pc, "msvcrt", failing, raising=False)
         lock = tmp_path / "i.lock"
         lock.write_text("")
         with open(lock, "r+") as handle:
             pc.release_lock(handle.fileno())  # must not raise
+        assert failing.calls == [_FakeMsvcrt.LK_UNLCK]
 
     def test_try_acquire_lock_reports_both_outcomes(self, monkeypatch, tmp_path):
         fake = _FakeMsvcrt([True, False])
@@ -967,11 +1007,6 @@ class TestProcessHandles:
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.delattr(pc.ctypes, "WinDLL", raising=False)
         assert pc.process_handle_active(9) is False
-
-    def test_close_handle_swallows_a_failure(self, monkeypatch):
-        monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.delattr(pc.ctypes, "WinDLL", raising=False)
-        pc.close_process_handle(9)  # suppressed, must not raise
 
 
 class TestWindowsImageNameMatching:

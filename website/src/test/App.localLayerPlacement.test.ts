@@ -12,7 +12,8 @@ describe('App placement of in-place local layers', () => {
   const open = APP.indexOf('<LocalOverlayRoot hidden=')
   const close = APP.indexOf('</LocalOverlayRoot>')
 
-  it.each(['<Lightbox />', '<ImportSessionOutcomeNotice />'])('mounts %s inside the local overlay root', tag => {
+  // The dashboard's copy navigates to /chat on Open; the frames' copies route themselves.
+  it.each(['<Lightbox />', '<ImportSessionOutcomeNotice navigateToChat />'])('mounts %s inside the local overlay root', tag => {
     const at = APP.indexOf(tag, open)
     expect(open).toBeGreaterThan(-1)
     expect(at).toBeGreaterThan(open)

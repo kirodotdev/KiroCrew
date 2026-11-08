@@ -2,6 +2,10 @@ import { test, expect } from '@playwright/test'
 
 test.describe('Navigation E2E Tests', () => {
   test.beforeEach(async ({ page }) => {
+    // The rail starts collapsed; these specs click its text labels.
+    await page.addInitScript(() => {
+      if (localStorage.getItem('mc-nav') === null) localStorage.setItem('mc-nav', '0')
+    })
     await page.goto('/', { waitUntil: 'domcontentloaded' })
     // Wait for app to load by checking sidebar
     await expect(page.locator('nav[aria-label="Main navigation"]')).toBeVisible({ timeout: 10000 })

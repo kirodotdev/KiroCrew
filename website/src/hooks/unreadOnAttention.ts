@@ -29,7 +29,9 @@ const SESSION_RECYCLED_NOTICE = 'session_recycled'
  *  and has nothing new to read, so the badge would point at nothing. */
 export function chatMessageMarksUnread(role: string | undefined, notice?: unknown): boolean {
   if (notice === SESSION_RECYCLED_NOTICE) return false
-  return !loadUnreadOnAttention() || role === 'permission'
+  // An MCP server's elicitation is the same kind of wait: the tool is parked
+  // on the person until the card is answered.
+  return !loadUnreadOnAttention() || role === 'permission' || role === 'elicitation'
 }
 
 /** The rows a crewmate writes TO the user. A member DM thread is a
@@ -37,11 +39,11 @@ export function chatMessageMarksUnread(role: string | undefined, notice?: unknow
  *  something to you", never "they ran a tool": a crewmate working through a
  *  long patrol would otherwise light the Crewmates rail on every tool call and
  *  the user would open the thread to find nothing addressed to them. */
-const MEMBER_MESSAGE_ROLES: ReadonlySet<string> = new Set(['assistant', 'permission'])
+const MEMBER_MESSAGE_ROLES: ReadonlySet<string> = new Set(['assistant', 'permission', 'elicitation'])
 
 /** Whether a `chat_message` row badges a member DM thread (`slot.mode ===
  *  'member'`). Narrower than `chatMessageMarksUnread`, never wider: only an
- *  `assistant` or `permission` row qualifies, and the opt-in still applies on
+ *  `assistant`, `permission` or `elicitation` row qualifies, and the opt-in still applies on
  *  top (with it on, an `assistant` row stays quiet here too). A recycle
  *  notice never badges here either, through `chatMessageMarksUnread`. */
 export function memberThreadRowMarksUnread(role: string | undefined, notice?: unknown): boolean {
@@ -87,10 +89,21 @@ export function isMemberThreadSlot(slotKey: string, slots: ReadonlyArray<{ key: 
   return entry ? entry.mode === 'member' : slotKey.startsWith(MEMBER_SLOT_KEY_PREFIX)
 }
 
+/**
+ * A crewmate thread's slot key (`member-<slug>`, or `member-<slug>.memory-<store>`
+ * once the crewmate has a private memory store) -> that slug; anything else
+ * -> null. Mirrors the gateway's `member_slot_key` (members.py): the prefix,
+ * the slug pattern, and the store suffix that belongs to the SLOT, not the slug.
+ */
+const MEMBER_SLOT_KEY = /^member-([a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?)(?:\.memory-.+)?$/
+export function memberSlugOfSlot(slotKey: string): string | null {
+  return MEMBER_SLOT_KEY.exec(slotKey)?.[1] ?? null
+}
+
 /** Roles the gateway never saves to disk (`_TRANSIENT_ROLES` in
  *  `dashboard/state_parts/transcript_rows.py`). A gateway restart drops these rows, so the slot's
  *  `last_ts` never again reaches their timestamps. */
-const UNSAVED_ROLES: ReadonlySet<string> = new Set(['chunk', 'done', 'streaming', 'queued', 'permission'])
+const UNSAVED_ROLES: ReadonlySet<string> = new Set(['chunk', 'done', 'streaming', 'queued', 'permission', 'elicitation'])
 
 /** The unread watermark a `chat_message` row may record: its own server ts,
  *  unless the row is one the gateway never saves. A watermark taken from an

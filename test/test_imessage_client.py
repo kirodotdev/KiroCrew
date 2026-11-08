@@ -7,12 +7,16 @@ binary, no Messages database, no Mac.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import gc
 import json
 import logging
+import weakref
 from pathlib import Path
 from typing import Any
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.imessage import client as client_mod
 from kiro_crew.imessage.client import (
@@ -28,6 +32,8 @@ from kiro_crew.imessage.client import (
 )
 from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.imessage.transport import IMessageTransport
+from kiro_crew.testing.clock import ManualClock
+from kiro_crew.testing.wait import await_until
 
 #: The handle every fixture message comes from, and the one the self-chat tests
 #: put on the allowlist -- in that case it is the user's OWN handle.
@@ -489,6 +495,9 @@ class TestOverflowResume:
         ]
         await peers[0].notify("watch.overflow", {"subscription": 1, "resume_after_rowid": 1})
         await _until(lambda: len(peers[0].params_for("watch.subscribe")) == 3)
+        # The retry's answer becomes the live watch.
+        await _until(lambda: imc._subscription is not None)
+        assert imc._subscription == 4
         await imc.close()
 
     @pytest.mark.asyncio
@@ -499,6 +508,8 @@ class TestOverflowResume:
         peers[0].replies["watch.subscribe"] = [{"subscription": 2}]
         await peers[0].notify("watch.overflow", {"subscription": 1})
         await _until(lambda: len(peers[0].params_for("watch.subscribe")) == 2)
+        await _until(lambda: imc._subscription is not None)
+        assert imc._subscription == 2
         await imc.close()
 
 
@@ -628,6 +639,38 @@ class TestBridgeExit:
                 break
             await asyncio.sleep(0)
         assert len(peers) > 1, "reconnect did not spawn a new peer"
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_the_lost_peer_close_survives_a_gc_pass(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # The loop holds a task only weakly. A close parked on a future that
+        # nothing else references is a garbage cycle unless the client keeps it.
+        imc = await _client(tmp_path)
+        parked = asyncio.Event()
+        refs: list[weakref.ref[asyncio.Task[Any]]] = []
+
+        async def _close_that_parks() -> None:
+            current = asyncio.current_task()
+            assert current is not None
+            refs.append(weakref.ref(current))
+            del current
+            parked.set()
+            await asyncio.get_running_loop().create_future()
+
+        peers[0].close = _close_that_parks  # type: ignore[method-assign]
+        peers[0].on_disconnect("bridge exited")
+        await await_until(parked, what="the lost peer's close to park")
+        (ref,) = refs
+        gc.collect()
+        task = ref()
+        assert task is not None, "the lost peer's close task was garbage-collected"
+        assert task in client_mod._PEER_CLOSE_TASKS
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await await_until(task, what="the cancelled close task")
+        assert task not in client_mod._PEER_CLOSE_TASKS
         await imc.close()
 
     @pytest.mark.asyncio
@@ -965,6 +1008,7 @@ class TestOwnEchoLedger:
         with pytest.raises(RpcError):
             await imc.send(OWNER, "on it")
         assert imc._own_sends == []
+        assert not imc._sent_history
         undelivered = parse_inbound(_message(text="on it"))
         assert undelivered is not None
         assert imc.is_own_echo(undelivered) is False
@@ -1139,9 +1183,14 @@ class TestOwnEchoLedger:
         await imc.close()
 
     @pytest.mark.asyncio
-    async def test_resolved_records_are_still_bounded(
-        self, tmp_path: Path, peers: list[StubPeer]
-    ) -> None:
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_resolved_records_are_still_bounded"),
+            *named_cases("test_the_ledger_is_bounded"),
+        ],
+    )
+    async def test_the_echo_ledger_is_bounded(self, tmp_path: Path, peers: list[StubPeer]) -> None:
         # The other half: exempting in-flight records must not stop the cap from
         # bounding the resolved ones, or a long conversation grows the list.
         imc = await _client(tmp_path)
@@ -1202,6 +1251,48 @@ class TestOwnEchoLedger:
         await imc.close()
 
     @pytest.mark.asyncio
+    async def test_a_late_copy_dated_at_the_send_is_still_an_echo(
+        self, tmp_path: Path, peers: list[StubPeer], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A self-chat on an account with other devices delivers copies of a send
+        # days later: a new guid each, long past the TTL, but the sent row's date.
+        clock = ManualClock(start=1_700_000_000.25)
+        clock.install(monkeypatch, client_mod)
+        imc = await _client(tmp_path)
+        await imc.send(OWNER, "on it")
+        clock.advance(3 * 24 * 3600)
+        for guid in ("LATE-1", "LATE-2"):
+            copy = parse_inbound(
+                _message(guid=guid, text="on it", created_at="2023-11-14T22:13:20.250Z")
+            )
+            assert copy is not None
+            assert imc.is_own_echo(copy) is True
+        an_hour_later = parse_inbound(
+            _message(guid="USER", text="on it", created_at="2023-11-14T23:13:20.250Z")
+        )
+        other_words = parse_inbound(
+            _message(guid="USER-2", text="thanks", created_at="2023-11-14T22:13:20.250Z")
+        )
+        assert an_hour_later is not None and other_words is not None
+        assert imc.is_own_echo(an_hour_later) is False
+        assert imc.is_own_echo(other_words) is False
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_retained_body_key_has_one_size_however_long_the_body(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        imc = await _client(tmp_path)
+        await imc.send(OWNER, "x" * 100_000)
+        ((key, _sent_at),) = imc._sent_history
+        assert len(key) == len(_echo_key(OWNER, ""))
+        assert imc._own_sends[0].body_key == key
+        echo = parse_inbound(_message(text="x" * 100_000))
+        assert echo is not None
+        assert imc.is_own_echo(echo) is True
+        await imc.close()
+
+    @pytest.mark.asyncio
     async def test_a_composed_and_decomposed_body_compare_equal(
         self, tmp_path: Path, peers: list[StubPeer]
     ) -> None:
@@ -1213,17 +1304,6 @@ class TestOwnEchoLedger:
         decomposed = parse_inbound(_message(text="cafe\u0301 ready"))
         assert decomposed is not None
         assert imc.is_own_echo(decomposed) is True
-        await imc.close()
-
-    @pytest.mark.asyncio
-    async def test_the_ledger_is_bounded(self, tmp_path: Path, peers: list[StubPeer]) -> None:
-        # A long answer is delivered as many sends, so the ledger must not grow
-        # with the conversation.
-        imc = await _client(tmp_path)
-        peers[0].default_result = {"ok": True}
-        for i in range(ECHO_WINDOW + 40):
-            await imc.send(OWNER, f"chunk {i}")
-        assert len(imc._own_sends) <= ECHO_WINDOW
         await imc.close()
 
     @pytest.mark.asyncio

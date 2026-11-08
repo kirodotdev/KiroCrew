@@ -1,6 +1,7 @@
 "use strict";
 
 const { gatewayWaitTimeoutMs } = require("../../gateway-wait");
+const { readBakedEdition } = require("../../edition");
 const {
   classifyGatewayReadiness,
   HEALTH_IDENTITY_PATH,
@@ -321,10 +322,12 @@ function createSuccessorHandoff({
       if (settled) return;
       glog(`successor app started (pid ${successor.pid}) — waiting for its gateway to answer on :${expectPort}`);
       // The successor is a primary local gateway it spawns itself, so the budget
-      // it will apply is the watchSpawn one -- on Windows 120s, elsewhere 30s.
+      // it will apply is the watchSpawn one -- on Windows 120s, elsewhere 30s,
+      // plus the pre-bind check budget in an enterprise build.
       const readyTimeoutMs = gatewayWaitTimeoutMs({
         platform: processObj.platform,
         watchSpawn: true,
+        edition: readBakedEdition(),
       }) + SUCCESSOR_BOOT_MARGIN_MS;
       deadlineTimer = setTimeoutFn(
         () => fail(`did not answer on :${expectPort} within ${readyTimeoutMs / 1000}s`),

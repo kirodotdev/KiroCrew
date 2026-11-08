@@ -7,9 +7,18 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from kiro_crew.dashboard.slot_preparing import is_preparing
+from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
+from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
+from kiro_crew.shared_crew.attribution import public_attribution_of_slot
+
+
+def _admission_queued(slot_key: str) -> bool:
+    """Whether *slot_key*'s dispatched turn still waits in fair admission. In memory."""
+    from kiro_crew.shared_crew.admission_entry import admission_pending
+
+    return admission_pending(slot_key)
 
 
 def summary_rows(slot: Any) -> list[Any]:
@@ -37,6 +46,42 @@ def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
         return False
     current = time.monotonic() if now is None else now
     return current - at < STOP_DECLINED_ESCALATION_SECS
+
+
+OPTIONS_WAITING_MAX_AGE_SECS = 7 * 24 * 3600
+"""How long a reply ending in ``[OPTIONS:]`` keeps its session in Waiting."""
+
+
+def options_ending_is_stale(options_ts: str, now: float) -> bool:
+    """Whether an ``[OPTIONS:]`` reply stamped *options_ts* is too old to count as waiting.
+
+    An unreadable stamp is never stale: the session stays in Waiting, as before.
+    """
+    bucket, at = transcript_sort_key(options_ts)
+    if bucket != 0:
+        return False
+    return now - at > OPTIONS_WAITING_MAX_AGE_SECS
+
+
+def _history_key(slot: Any) -> str:
+    """The transcript key for *slot*, unfolded, as resume accepts it.
+
+    ``slot_history_key`` is the one rule for which transcript a slot writes.
+    It is passed through as the session key, NOT folded to a filename stem:
+    ``ConversationLog._path`` only finds a pre-migration Slack thread's bare
+    ``<ts>.jsonl`` from the ``slack:<ts>`` spelling, so the folded
+    ``slack_<ts>`` would resume an empty transcript. ``""`` for a duck-typed
+    slot the rule cannot read.
+    """
+    # Local import: chat_utils_slots imports state, which imports this module.
+    # From the owner, not the chat_utils facade: a facade read here would run
+    # once per slot on every slots flush (test_facade_read_budget).
+    from kiro_crew.dashboard.chat_utils_slots import slot_history_key
+
+    try:
+        return str(slot_history_key(slot) or "")
+    except (AttributeError, TypeError):
+        return ""
 
 
 def resolved_row_identity(slot: Any) -> str:
@@ -235,9 +280,11 @@ class SlotProjection:
         Oldest first; the projection reads only the first one for the card.
         """
         # Local import avoids the state -> slot_projection -> chat_utils -> state
-        # cycle at module import time. The value is process-local and cheap to
-        # read; it pairs the slot's restarting turn counter with its gateway.
-        from kiro_crew.dashboard.chat_utils import chunk_generation
+        # cycle at module import time. Module import (not from-import) avoids
+        # the _handle_fromlist __path__ probe on the facade per slot.
+        import kiro_crew.dashboard.chat_utils as _cu
+
+        chunk_generation = _cu.chunk_generation
 
         # The newest DURABLE row: a transient row (the turn-end ``done`` row
         # among them) is never persisted, so a slot rebuilt from disk after a
@@ -269,10 +316,16 @@ class SlotProjection:
         # must not answer (the artifact freshness nudge).
         last_agent_ts = ""
         found_conv = False
+        # A goal-loop cycle's prompt is a ``nudge`` row, and a cycle that ends with
+        # ``nothing_to_do`` writes no reply after it. The loop has run past an
+        # ``[OPTIONS:]`` ask older than that row, so that ask does not hold it.
+        cycle_after_reply = False
         for message in reversed(rows):
             role = message.get("role")
             msg_meta = message.get("meta") or {}
             notice = is_system_notice(role, msg_meta)
+            if role == "nudge" and not found_conv and not notice:
+                cycle_after_reply = True
             if not last_activity_ts and role not in transient_roles and not notice:
                 last_activity_ts = message.get("ts") or ""
             if (
@@ -287,7 +340,7 @@ class SlotProjection:
                     if not found_conv:
                         found_conv = True
                         last_conv_role = role
-                        if role == "assistant":
+                        if role == "assistant" and not cycle_after_reply:
                             options = parse_options(text)
                             has_options = bool(options)
                             if has_options:
@@ -305,6 +358,13 @@ class SlotProjection:
             # is set `last_activity_ts` is too.
             if found_conv and last_msg and last_agent_ts:
                 break
+
+        # An options ending older than the cutoff does not count as waiting.
+        # `has_options` feeds the Waiting lane and the Needs-you list, and
+        # nothing else lets a finished session leave them. `options` and
+        # `options_ts` stay, so the reply itself is unchanged.
+        if has_options and options_ending_is_stale(options_ts, time.time()):
+            has_options = False
 
         # A send queued behind a busy turn is user input with no transcript row
         # yet. The dashboard bumps `last_activity_ts` on `queue_push`, so the
@@ -390,6 +450,11 @@ class SlotProjection:
                 }
                 if meta.get("tool_purpose"):
                     pending_approval_info["tool_purpose"] = redact(meta["tool_purpose"])
+                # Whether the card's "trust" decision is grantable for this request
+                # (the slot approve route's own proof), so a card that relays it
+                # (the Crew Mode conductor's approval card) offers Trust only then.
+                if str(meta.get("trust_grantable") or "") == "1":
+                    pending_approval_info["trust_grantable"] = "1"
                 break
         if pending_approval_info is None and coordinator_pending:
             # No unresolved permission row supplied the card: the pending
@@ -404,6 +469,9 @@ class SlotProjection:
                 "tool_input": redact(str(record.get("tool_input") or "")),
                 "tool_kind": "spawn" if approval_id.startswith("spawn:") else "",
                 "request_id": redact(approval_id),
+                # Names THIS record (the id can recur), so a card that relays it
+                # (the Crew Mode conductor's approval card) pins its decision.
+                "request_instance": str(record.get("instance") or ""),
             }
             if record.get("tool_purpose"):
                 # Import after state initialization: chat_utils itself imports state.
@@ -420,6 +488,9 @@ class SlotProjection:
             "title": redact(slot.display_title),
             "agent": slot.agent,
             "agent_kind": getattr(slot, "agent_kind", ""),
+            # The agent Crew Mode turned on with, "" when it never did
+            # (``crew_mode.stamp_rows`` and the dashboard's ``runsCrewMode`` read it).
+            "crew_mode_agent": redact(getattr(slot, "crew_mode_agent", "") or ""),
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
             # Whether this session's turns ask Jev which model tier to run on
@@ -457,8 +528,12 @@ class SlotProjection:
             "instance_id": slot.instance_id,
             "row_identity": resolved_row_identity(slot),
             "artifact": slot._artifact,
-            "messages": len(rows),
+            # Durable rows only, like ``last_ts``: the save path keeps no other row.
+            "messages": sum(1 for message in rows if message.get("role") not in transient_roles),
+            # A turn waiting in fair admission is still in flight, so Stop
+            # stays available; ``admission_queued`` says it has not started.
             "running": turn_in_flight,
+            "admission_queued": _admission_queued(slot.key),
             # A loop wake is opening this running turn and its row is not in the
             # transcript yet: a structured monitor writes that row only once the
             # runner accepts the turn. Rides the same frame as `running`, so a
@@ -478,6 +553,11 @@ class SlotProjection:
             # reason as `compacting`: it must not make the slot look busy to
             # sends or queueing, only show the chat's working indicator.
             "preparing": is_preparing(slot),
+            # What is being prepared, built by the gateway, and the language
+            # it is written in. A client whose UI language differs, or a ""
+            # caption, shows its own generic caption.
+            "preparing_text": preparing_caption(slot)[0],
+            "preparing_lang": preparing_caption(slot)[1],
             # A cooperative Stop was declined moments ago (the session was
             # compacting) and the next press escalates to a force stop. Read
             # with the same window the stop route uses, so the button's hint and
@@ -495,6 +575,9 @@ class SlotProjection:
             "stop_state": slot._stop_state,
             "wait_state": slot._wait_state,
             "created": slot.created_at,
+            # The slot object's never-persisted id: a failed close's restore keeps
+            # it, a reopen under the same key builds a new object with a new one.
+            "incarnation": slot._dashboard_card_identity,
             "last_ts": last_ts,
             "last_turn_ts": last_turn_ts,
             "last_message": last_msg,
@@ -534,6 +617,13 @@ class SlotProjection:
             "memory_mode": slot.memory_mode,
             "forked_from": slot.forked_from,
             "linked_session_key": slot.linked_session_key,
+            # The transcript's session key, the one ``/api/chat/resume`` reads.
+            # Derived here, by the one rule (``slot_history_key``), because the
+            # client cannot rebuild it: an unbound channel-born slot has no
+            # ``linked_session_key`` and no origin link, yet its transcript is
+            # the channel's, not ``dashboard:<key>``. Reopen-closed-session
+            # resumes by this key.
+            "history_key": _history_key(slot),
             "app": slot._app,
             "origin": slot._origin,
             # Creator attribution: the slot key of the session that asked for
@@ -553,4 +643,7 @@ class SlotProjection:
             # a join that trusted the claim alone would nest a session under
             # whoever a transcript happened to name.
             "lineage_minted": bool(getattr(slot, "_lineage_minted", False)),
+            # Shared Crew creator (``shared_crew.attribution``), public shape:
+            # no issuer or subject. Legacy and unstamped slots read as Unknown.
+            "attribution": public_attribution_of_slot(slot),
         }

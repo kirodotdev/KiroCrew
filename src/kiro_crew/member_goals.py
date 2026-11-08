@@ -29,25 +29,23 @@ now is not part of it: that is the crewmate's work ledger.
 
 Where it lives
 --------------
-``trust/member-goals/<slug>.json``, beside the permanent rules, NOT in the
-agent-writable ``members/<slug>/`` directory that holds ``briefing.md``. A
+``member-records/member-goals/<slug>.json``, beside the permanent rules, NOT in
+the agent-writable ``members/<slug>/`` directory that holds ``briefing.md``. A
 goal needs the user's button to change, and a file the crewmate's own file
 tools can write would let it change a goal without one. The protection is
-exactly ``member-rules/``'s: ``trust/`` is in the sensitive-path floor, so the
-agent's file-write and edit tools are refused there (the tool gate). It is not
-an OS seal: ``trust/`` is a read-write leaf of the crew sandbox, so a shell
-command in a sandboxed turn can still write it, the same as the rules file. It
-is still a different file from ``member-rules/``: rules are the user's safety
-boundary, and nothing about a goal, not even an applied card, ever writes them.
+exactly ``member-rules/``'s (:mod:`kiro_crew.member_records`): the OS sandbox
+masks ``member-records/`` in every mode, and the sensitive-path floor refuses
+the agent's file tools there. It is still a different file from
+``member-rules/``: rules are the user's safety boundary, and nothing about a
+goal, not even an applied card, ever writes them.
 
-Because a sandboxed shell can write ``trust/``, it can also put a symlink there,
-and the gateway that writes this record is not sandboxed. So the record is never
-reached through a link: ``trust``, ``member-goals`` and the record itself are
-each opened relative to the one before without following a symlink, and the
-write goes into that pinned directory (:func:`_open_goals_dir`). A link at any of
-them is refused (:class:`GoalsUnreadable`), so a crewmate cannot point the
-directory at ``profiles/`` or another sealed leaf and have the gateway write
-there. Where the platform has no ``O_NOFOLLOW`` and ``dir_fd`` (Windows), each
+The gateway that writes this record is not sandboxed, so the record is never
+reached through a link: ``member-records``, ``member-goals`` and the record
+itself are each opened relative to the one before without following a symlink,
+and the write goes into that pinned directory (:func:`_open_goals_dir`). A link
+at any of them is refused (:class:`GoalsUnreadable`), so a link at one of those
+names cannot point the gateway's write at ``profiles/`` or another sealed leaf.
+Where the platform has no ``O_NOFOLLOW`` and ``dir_fd`` (Windows), each
 component is checked with ``lstat`` before the path is used.
 
 Keyed like every lossy-slug member file: the payload records the exact member
@@ -71,13 +69,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import dashboard_frame, platform_compat
+from kiro_crew import dashboard_frame, member_records, platform_compat
 from kiro_crew.atomic_write import atomic_write, fsync_dir, read_bytes_with_retry
 from kiro_crew.config.paths import data_home
 
 logger = logging.getLogger(__name__)
 
-#: Directory under ``trust/`` holding one ``<slug>.json`` per member.
+#: Directory under ``member-records/`` holding one ``<slug>.json`` per member.
 GOALS_DIR_NAME = "member-goals"
 
 #: Bounds. The record is injected into every session of the crewmate, so each
@@ -134,6 +132,14 @@ CADENCES = (CADENCE_DAILY, CADENCE_WEEKLY, CADENCE_MONTHLY, CADENCE_HEARTBEAT)
 #: 30-minute floor and an hourly default (RFC "Crewmate heartbeat", Cost and cache).
 HEARTBEAT_INTERVALS = (30, 60, 120, 240)
 DEFAULT_HEARTBEAT_INTERVAL = 60
+#: The user's answer to the Heartbeat checkbox on a ``crewmate.goal`` card, kept
+#: as the record's ``heartbeat_offer``: a decline is remembered, so no later goal
+#: card offers the Heartbeat again, and either answer tells the goal-setup turn
+#: that the card already settled it. A goal card offers the Heartbeat while it is
+#: off and this is not ``declined`` (``change_card_catalog_plans._goal_heartbeat_offer``).
+HEARTBEAT_OFFER_ACCEPTED = "accepted"
+HEARTBEAT_OFFER_DECLINED = "declined"
+HEARTBEAT_OFFER_ANSWERS = (HEARTBEAT_OFFER_ACCEPTED, HEARTBEAT_OFFER_DECLINED)
 #: Report kinds: what a weekly and a monthly check-in each produce.
 REPORT_KINDS = (CADENCE_WEEKLY, CADENCE_MONTHLY)
 #: Cron day of week (0 = Sunday); Monday by default.
@@ -183,15 +189,14 @@ def _lock_for(slug: str) -> threading.Lock:
 def member_goals_path(slug: str) -> Path:
     """Absolute path to one member's goal record.
 
-    Lexical, under the resolved data home: ``trust`` and ``member-goals`` are
-    NOT resolved, because a sandboxed shell can replace either with a symlink.
-    :func:`_open_goals_dir` refuses such a link; this path is what the
-    no-``dir_fd`` fallback and the tests use.
+    Lexical, under the resolved data home: ``member-records`` and
+    ``member-goals`` are NOT resolved. :func:`_open_goals_dir` refuses a link at
+    either; this path is what the no-``dir_fd`` fallback and the tests use.
     """
     from kiro_crew.members import MemberSlugError, validate_slug
 
     validate_slug(slug)
-    root = data_home().resolve() / "trust" / GOALS_DIR_NAME
+    root = member_records.records_dir(GOALS_DIR_NAME)
     target = root / f"{slug}.json"
     if target.parent != root:
         raise MemberSlugError(f"member slug {slug!r} escapes {root}")
@@ -245,34 +250,35 @@ def _open_dir_at(parent_fd: int, name: str, *, create: bool) -> int | None:
 
 
 def _open_goals_dir(*, create: bool) -> int | None:
-    """A pinned fd of ``trust/member-goals``, or None when it does not exist.
+    """A pinned fd of ``member-records/member-goals``, or None when it does not exist.
 
     Each component below the data home is opened relative to the one before
-    without following a link, so a symlink planted at ``trust`` or
+    without following a link, so a symlink at ``member-records`` or
     ``member-goals`` is refused instead of redirecting the gateway's write.
     """
+    member_records.ensure_migrated()
     home = os.open(str(data_home().resolve()), os.O_RDONLY | _O_DIRECTORY)
     try:
-        trust = _open_dir_at(home, "trust", create=create)
+        records = _open_dir_at(home, member_records.MEMBER_RECORDS_LEAF, create=create)
     finally:
         os.close(home)
-    if trust is None:
+    if records is None:
         return None
     try:
-        goals = _open_dir_at(trust, GOALS_DIR_NAME, create=create)
+        goals = _open_dir_at(records, GOALS_DIR_NAME, create=create)
         if goals is not None and create:
-            for fd in (trust, goals):
+            for fd in (records, goals):
                 try:
                     getattr(os, "fchmod")(fd, 0o700)
                 except OSError:
                     logger.debug("could not tighten mode on the goals dir", exc_info=True)
         return goals
     finally:
-        os.close(trust)
+        os.close(records)
 
 
 def _check_unlinked(path: Path) -> None:
-    """The no-``dir_fd`` fallback: refuse when ``trust``, the dir or *path* is a link.
+    """The no-``dir_fd`` fallback: refuse when the records leaf, the dir or *path* is a link.
 
     A Windows directory junction counts as a link: ``is_symlink`` is False for
     one, so a planted junction would otherwise redirect the write.
@@ -305,6 +311,7 @@ def empty_record() -> dict[str, Any]:
         "reports": [],
         "removed_key_result": None,
         "removed_goal": None,
+        "heartbeat_offer": None,
     }
 
 
@@ -523,6 +530,8 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
                     k for k in (links if isinstance(links, list) else []) if isinstance(k, str)
                 ],
             }
+    if data.get("heartbeat_offer") in HEARTBEAT_OFFER_ANSWERS:
+        rec["heartbeat_offer"] = data["heartbeat_offer"]
     return rec
 
 
@@ -551,7 +560,11 @@ def _read_pinned(path: Path) -> bytes | None:
 
 
 def _read_raw(slug: str) -> dict[str, Any] | None:
-    path = member_goals_path(slug)
+    try:
+        path = member_goals_path(slug)
+    except member_records.RecordsNotMoved as exc:
+        # Not moved yet is not "no goal": a write here would bury the real record.
+        raise GoalsUnreadable(f"goal record for {slug!r} has not been moved yet") from exc
     try:
         if _PINNED:
             raw = _read_pinned(path)
@@ -690,7 +703,7 @@ def _mutate(slug: str, member: str, fn: Any) -> Any:
         if data is not None and not _owned_by(data, slug, member):
             # Another exact name's record under a colliding slug: never written
             # over from here. The owner's routes refuse ambiguous slugs first.
-            raise GoalError("slug_collision", "another crewmate's goal is stored under this name")
+            raise GoalError("slug_collision", "another Bot's goal is stored under this name")
         rec = _normalize(data) if data is not None else empty_record()
         result = fn(rec)
         if _fit(slug, member, rec) and isinstance(result, dict) and "record" in result:
@@ -772,6 +785,7 @@ def set_goal(
     goal_id: str | None = None,
     expected: str | None = None,
     restore_from: str | None = None,
+    heartbeat_offer: str | None = None,
 ) -> dict[str, Any]:
     """Add a goal, or change or clear the goal *goal_id*.
 
@@ -790,13 +804,21 @@ def set_goal(
     pre-change text of that goal, read server-side from the card's private
     snapshot: the plan's body carries it scrubbed, and the raw text is what
     goes back.
+
+    *heartbeat_offer* is the user's answer to the goal card's Heartbeat
+    checkbox (:data:`HEARTBEAT_OFFER_ANSWERS`), stored in the same write as the
+    goal so the goal-setup turn that write starts already sees it.
     """
     clean = _clean_text(text, max_chars=GOAL_TEXT_MAX_CHARS, multiline=True, what="the goal")
     if goal_id is not None and not is_goal_id(goal_id):
         raise GoalError("invalid_goal_id", "a goal id is g and 8 hex digits")
+    if heartbeat_offer is not None and heartbeat_offer not in HEARTBEAT_OFFER_ANSWERS:
+        raise GoalError("invalid_heartbeat_offer", "heartbeat_offer is accepted or declined")
 
     def fn(rec: dict[str, Any]) -> dict[str, Any]:
         now = _now()
+        if heartbeat_offer is not None:
+            rec["heartbeat_offer"] = heartbeat_offer
         if goal_id is None:
             if expected is not None and (expected != "" or rec["goals"]):
                 raise GoalError("changed_meanwhile", "the goals were changed since this was shown")
@@ -1334,6 +1356,7 @@ def set_schedules(
     changes: dict[str, Any],
     *,
     expected: dict[str, Any] | None = None,
+    held_is_done: bool = False,
 ) -> dict[str, Any]:
     """Change the check-in switches and their timing. Returns the record.
 
@@ -1344,7 +1367,9 @@ def set_schedules(
     (``no_goal``). Only the owner's route and an applied card call this, so the
     crewmate never turns a switch on by itself.
     When supplied, *expected* covers every written field and is compared under
-    the write lock; omitted fields stay untouched. No expectation keeps the
+    the write lock; omitted fields stay untouched. With *held_is_done* (a goal
+    card's Undo only) a write whose *changes* already hold succeeds without
+    writing even when *expected* does not match. No expectation keeps the
     ordinary owner's partial-update behavior.
     """
     _validate_schedules(changes)
@@ -1358,6 +1383,11 @@ def set_schedules(
 
     def fn(rec: dict[str, Any]) -> dict[str, Any]:
         if expected is not None and any(rec["schedules"].get(k) != v for k, v in expected.items()):
+            if held_is_done and all(rec["schedules"].get(k) == v for k, v in changes.items()):
+                # An Undo turning off a Heartbeat the user turned off since:
+                # nothing to write and nothing to refuse. Never on Apply, where a
+                # no-op success would read as the card having turned it on.
+                return copy.deepcopy(rec)
             raise GoalError("changed_meanwhile", "the check-ins were changed since this was shown")
         if not has_goal(rec) and any(changes.get(c) is True for c in CADENCES):
             raise GoalError("no_goal", "set a goal before turning a check-in on")

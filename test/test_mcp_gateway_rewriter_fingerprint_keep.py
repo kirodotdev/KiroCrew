@@ -44,13 +44,8 @@ def test_transient_settings_read_failure_does_not_rewrite_agent_overlays(
     nothing: the injection set is unknown, not empty, so no agent overlay may
     be written from it.
 
-    A healthy pass injects each poolable settings server INTO every agent
-    overlay; the raw entry still merges from the real settings file, but it
-    runs per-session and unpooled, without the identity the stub carries.
-    Rewriting an agent overlay from an empty injection set would silently
-    unpool every globally-declared server for the rest of the gateway's
-    lifetime. The pass must refuse to rewrite instead, exactly as the
-    per-agent transient read failure does."""
+    An overlay rewritten from an empty set would silently unpool every
+    globally-declared server for the gateway's lifetime."""
     _mk_tree(tmp_path)
     _rewrite(tmp_path)  # healthy pass: global-x injected into every agent
     overlay_dir = tmp_path / "mcp-gateway" / "agents"
@@ -232,11 +227,8 @@ def test_disabling_sharing_is_not_deferred_by_a_settings_read_failure(
 def _settings_text_unreadable() -> "Iterator[None]":
     """Fault ONLY ``read_text`` on settings/mcp.json, leaving ``read_bytes`` live.
 
-    The narrow fault the wide one deliberately avoids, and it is reachable: the
-    two are separate syscalls, so a fault can hit one and not the other. The
-    fingerprint still SIGNS the file (``_stat_sig`` uses ``read_bytes``) while the
-    pass cannot parse it, which is the only state where a settings change is both
-    real and known during a settings fault.
+    The two are separate syscalls, so the fingerprint still SIGNS the file
+    (``_stat_sig`` uses ``read_bytes``) while the pass cannot parse it.
     """
     real_read_text = Path.read_text
 
@@ -256,12 +248,8 @@ def test_a_known_settings_change_refuses_the_keep(tmp_path: Path) -> None:
     """The settings input is skipped only when it cannot be SIGNED, never when it
     is signable and differs.
 
-    ``read_text`` and ``read_bytes`` are separate calls, so the fingerprint can
-    sign a NEW settings file on the same pass whose parse failed. Skipping the
-    comparison unconditionally would then keep overlays built from the old
-    settings -- so a server revoked in settings/mcp.json would stay live, wrapped,
-    in every agent overlay for the gateway's lifetime. That is an absorbed
-    instruction, not a deferred edit."""
+    The fingerprint can sign a NEW settings file on the pass whose parse failed;
+    skipping the comparison would keep a server revoked in settings/mcp.json live."""
     src = _mk_tree(tmp_path, n_agents=1)
     _rewrite(tmp_path)
     overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
@@ -372,12 +360,8 @@ def test_a_vanished_target_binary_refuses_the_keep(
 def test_a_keep_retightens_every_artifact_it_serves(tmp_path: Path) -> None:
     """A chmod changes no signature, so a keep must re-assert owner-only
     protection on everything it serves -- the kept overlay, and the env sidecars
-    and their directory. Mirrors the cache-hit path's guarantee, for the same
-    reason: on Windows the file DACL rather than the directory is what carries
-    access, and these files hold the passed-through env of non-poolable servers.
-
-    The fingerprint file is deliberately NOT in the set: this pass unlinks it
-    (uncacheable), so re-protecting a file about to be deleted is a no-op."""
+    and their directory. On Windows the file DACL carries access, and these files
+    hold non-poolable servers' env. The fingerprint file is unlinked by this pass."""
     import stat as _stat
 
     _mk_tree(tmp_path, n_agents=1)
@@ -407,14 +391,9 @@ def test_a_swallowed_stat_fault_is_unknown_not_absent(
     """``is_file()`` answers False for a missing file AND for some stat faults,
     and only the errnos in ``pathlib._IGNORED_ERRNOS`` are swallowed that way.
 
-    Measured on CPython 3.12: EACCES, EIO and EPERM RAISE out of the pass (the
-    caller logs "rewriter failed -- falling back" and touches nothing), but
-    ENOENT, EBADF, ENOTDIR and ELOOP return False. ENOTDIR is reachable without
-    the file being gone -- a directory component momentarily replaced, an atomic
-    directory swap, a symlink being re-pointed -- and reading it as "absent"
-    rewrites every overlay with an empty injection set -- the same unknown-read-as-
-    empty fault through the stat path instead of the read path. Only
-    ``FileNotFoundError`` may mean absent; every other OSError means unknown."""
+    On CPython 3.12 ENOENT, EBADF, ENOTDIR and ELOOP return False, and ENOTDIR can
+    happen with the file present (a directory swap). Only ``FileNotFoundError`` may
+    mean absent; every other OSError means unknown."""
     src = _mk_tree(tmp_path, n_agents=1)
     _rewrite(tmp_path)
     overlay = tmp_path / "mcp-gateway" / "agents" / "agent-0.json"
@@ -720,18 +699,11 @@ def test_fingerprint_file_survives_prune_and_does_not_fake_overlay_ready(
     assert not overlay_ready(overlay_dir)
 
 
-# --- Bounded transient-keep retention windows --------------------------
+# Bounded transient-keep retention windows
 #
-# The prune keep-set spares a transient victim's previous overlay, which
-# means a pass can SERVE artifacts it did not write. Two windows that opens,
-# both bounded to one pass but both avoidable:
-#
-#   1. the env sidecar published at a fixed name during stub construction,
-#      while the overlay referencing it lands later -- a kept old-args overlay
-#      paired with a new-generation env;
-#   2. a source deleted between the listing and the read, reported as
-#      FileNotFoundError and treated as a transient fault, so the deleted
-#      agent's overlay survived one more pass.
+# A kept overlay means a pass can serve artifacts it did not write. Both windows stay
+# closed: a kept old-args overlay paired with a new env sidecar, and a source deleted
+# between listing and read treated as transient.
 
 
 def _sidecar_temps(env_dir: Path) -> list[Path]:
@@ -746,18 +718,9 @@ def test_a_spec_deleted_between_listing_and_read_prunes_its_overlay_now(
 ) -> None:
     """A vanished source is a DELETE, not a transient fault.
 
-    The listing globs the spec, the user removes it, and the read raises
-    FileNotFoundError. The generic OSError arm treats that as transient and
-    keeps the deleted agent's overlay for one more pass -- the agent is gone
-    but its MCP servers stay injectable. Confirmed-absent prunes in the SAME
-    pass, exactly as a source already gone at listing time does.
-
-    The pass writes no fingerprint, and that half is load-bearing: the input
-    signatures were taken while the spec still existed, so caching would let the
-    same file, restored with the same size and mtime, match a fingerprint whose
-    outputs lack its overlay -- the agent's servers gone with nothing left to
-    invalidate. Pinned by restoring the source byte- and stat-identical
-    and requiring the overlay back.
+    A spec removed between listing and read prunes in the same pass. The pass writes
+    no fingerprint: its signatures saw the spec, so a byte- and stat-identical restore
+    would match a cache that lacks the overlay. The restore below pins that.
     """
     src = _mk_tree(tmp_path)
     _rewrite(tmp_path)
@@ -801,11 +764,8 @@ def test_a_failed_overlay_write_leaves_the_previous_generations_sidecar(
 ) -> None:
     """A kept overlay must never pair with the next generation's env.
 
-    agent-1 changes BOTH its args and its env, then its overlay write fails.
-    The kept overlay carries the old args and points --env-file at a fixed
-    sidecar name: publishing the new env there would launch old args against
-    new credentials for the pass window. The staged write is discarded instead.
-    Per-agent, not pass-wide: agent-0's overlay landed, so its env commits.
+    agent-1 changes args and env, then its overlay write fails, so its staged env is
+    discarded. Per-agent: agent-0's overlay landed, so its env commits.
     """
     src = _mk_tree(tmp_path, env={"K": "old"})
     _rewrite(tmp_path)
@@ -853,11 +813,8 @@ def test_a_staged_sidecar_is_owner_only_and_complete_before_it_is_committed(
 ) -> None:
     """Protection precedes content, and deferring the commit does not move it.
 
-    Two measurements at two seams: the descriptor is locked down while the file
-    is still zero bytes (no secret existed in a readable file at any point), and
-    at the moment the OVERLAY is written the sidecar is still staged -- already
-    0o600, already holding this generation's env, not yet at its published name.
-    The staged snapshot is also what proves the commit is deferred at all.
+    The descriptor is locked down at zero bytes, and when the OVERLAY is written the
+    sidecar is still staged: 0o600, holding this env, not yet at its published name.
     """
     src = _mk_tree(tmp_path, env={"SECRET_TOKEN": "s3cr3t"})
     env_dir = tmp_path / "mcp-gateway" / "stubs" / "env"
@@ -928,12 +885,9 @@ def test_a_failed_sidecar_commit_publishes_no_other_generations_env(
 ) -> None:
     """A sidecar that cannot be renamed into place is REMOVED, not left stale.
 
-    The overlay lands first, so its stub argv already names the sidecar. If the
-    rename then fails (a same-directory ENOSPC/EIO, a Windows sharing
-    violation), a file left at the published name would hand the new command
-    another generation's credentials. Both readers treat a MISSING sidecar as
-    "declares no env", which is the degradation a failed staging write already
-    produces, and the pass is uncacheable so the next one republishes.
+    The overlay already names the sidecar, so a stale file would hand it another
+    generation's credentials. A MISSING sidecar reads as "no env", and the pass is
+    uncacheable so the next one republishes.
     """
     src = _mk_tree(tmp_path, env={"K": "old"})
     _rewrite(tmp_path)

@@ -166,6 +166,16 @@ def _make_full_l2(root: Path, *, slug: str = "fixture-l2") -> Path:
 
 
 class TestValidateThemeDir:
+    def test_a_manifest_and_variables_saved_with_a_bom_validate(self, tmp_path: Path) -> None:
+        """Hand-edited pack files from an editor that writes a UTF-8 BOM."""
+        d = _make_theme(tmp_path)
+        for name in ("theme.json", "variables.json"):
+            f = d / name
+            f.write_bytes(b"\xef\xbb\xbf" + f.read_bytes())
+        summary, err = _validate_theme_dir(d)
+        assert err is None
+        assert summary is not None and summary["name"] == "LCARS"
+
     def test_valid_toplevel(self, tmp_path: Path) -> None:
         summary, err = _validate_theme_dir(_make_theme(tmp_path))
         assert err is None, err
@@ -1033,6 +1043,16 @@ class TestValidateThemeDirL1:
         descriptor = _theme_asset_descriptor(d, manifest, 1)
         assert descriptor["branding"] == {"welcome": f"branding/welcome.{ext}"}
 
+    @pytest.mark.parametrize("ext", ["svg", "png"])
+    def test_splash_image_accepted_and_described(self, tmp_path: Path, ext: str) -> None:
+        image = b"<svg xmlns='http://www.w3.org/2000/svg'/>" if ext == "svg" else _PNG_1PX
+        d = _make_tiered(tmp_path, level=1, extra={f"branding/splash.{ext}": image})
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert err is None, err
+        manifest = json.loads((d / "theme.json").read_text("utf-8"))
+        descriptor = _theme_asset_descriptor(d, manifest, 1)
+        assert descriptor["branding"] == {"splash": f"branding/splash.{ext}"}
+
 
 class TestValidateThemeDirL2:
     def test_valid_l2(self, tmp_path: Path) -> None:
@@ -1141,7 +1161,15 @@ class TestPureContentHelpers:
         assert _classify_theme_file(rel) == (category, min_level)
 
     @pytest.mark.parametrize(
-        "rel", ["evil.txt", "styles/x.js", "branding/logo.gif", "branding/welcome.jpg", "random/x"]
+        "rel",
+        [
+            "evil.txt",
+            "styles/x.js",
+            "branding/logo.gif",
+            "branding/welcome.jpg",
+            "branding/splash.gif",
+            "random/x",
+        ],
     )
     def test_classify_unknown(self, rel: str) -> None:
         assert _classify_theme_file(rel) == (None, 0)

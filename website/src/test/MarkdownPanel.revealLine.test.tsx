@@ -27,7 +27,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { forwardRef, useImperativeHandle } from 'react'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PierreEditorHandle } from '../pierre'
@@ -190,7 +190,7 @@ describe('MarkdownPanel — the reveal nonce is what makes a repeat click fire',
     const { rerender } = mount('/x/notes.md', 'a\nb\nc\n', { line: 2, nonce: 1 })
     await screen.findByTestId('pierre-editor')
     // Back to the rendered preview by hand.
-    screen.getByText('Preview').click()
+    await act(async () => { screen.getByText('Preview').click() })
     await waitFor(() => expect(screen.queryByTestId('pierre-editor')).toBeNull())
     rerender(<MarkdownPanel {...panelProps('/x/notes.md', 'a\nb\nc\n', { line: 3, nonce: 2 })} />)
     expect(await screen.findByTestId('pierre-editor')).toBeInTheDocument()

@@ -185,10 +185,17 @@ test("win/linux: Window menu is written out with Close on Ctrl+Shift+W", () => {
   assert.strictEqual(win.submenu[2].accelerator, "Ctrl+Shift+W");
 });
 
-test("mac: Window menu keeps the stock role (no Close entry, so Cmd+W reaches the page)", () => {
+test("mac: Window menu keeps the stock role and adds Close on Cmd+Shift+W (Cmd+W reaches the page)", () => {
+  // The role keeps AppKit's open-window list; Close takes the Shift chord because
+  // Cmd+W is "close session" in the renderer.
   const { deps } = makeDeps({ isMac: true });
   const win = buildMenuTemplate(deps).find((i) => i.id === "window-menu");
   assert.strictEqual(win.role, "windowMenu");
+  const roles = win.submenu.map((i) => i.role).filter(Boolean);
+  assert.deepStrictEqual(roles, ["minimize", "zoom", "front", "close"]);
+  const close = win.submenu.find((i) => i.role === "close");
+  assert.strictEqual(close.accelerator, "Cmd+Shift+W");
+  assert.strictEqual(close.click, undefined);
 });
 
 // ── shared structure (both platforms) ──
@@ -199,8 +206,8 @@ for (const isMac of [true, false]) {
   test(`${os}: Edit, View, Connection, Window menus survive the extraction`, () => {
     const { deps } = makeDeps({ isMac });
     const labels = topLabels(buildMenuTemplate(deps));
-    // macOS keeps the stock role; Windows/Linux write the Window menu out (see
-    // the Ctrl+W test below), so it surfaces by label there.
+    // macOS's Window menu carries the windowMenu role and no label; Windows/Linux
+    // label theirs "Window", so it surfaces by label there.
     for (const expected of ["editMenu", "View", "Connection", isMac ? "windowMenu" : "Window"]) {
       assert.ok(labels.includes(expected), `${expected} present`);
     }
@@ -224,11 +231,32 @@ for (const isMac of [true, false]) {
     assert.strictEqual(item.accelerator, "CmdOrCtrl+Alt+N");
   });
 
-  test(`${os}: devtools item keeps its id and starts hidden`, () => {
+  // Cmd/Ctrl+Shift+T is "reopen closed session" in the renderer (#18969), so
+  // Refresh Token moved to an Alt variant and nothing in the menu claims a
+  // Shift+T chord without Alt. Linux/Windows carry Shift as well: Ctrl+Alt+T
+  // is GNOME/Ubuntu's open-terminal and would never reach the app.
+  test(`${os}: Refresh Token is ${isMac ? "Cmd+Alt+T" : "Ctrl+Alt+Shift+T"}, leaving CmdOrCtrl+Shift+T unclaimed`, () => {
+    const { deps } = makeDeps({ isMac });
+    const template = buildMenuTemplate(deps);
+    const item = findItem(template, (i) => i.label === "Refresh Token");
+    assert.ok(item, "Refresh Token present");
+    assert.strictEqual(item.accelerator, isMac ? "Cmd+Alt+T" : "Ctrl+Alt+Shift+T");
+    for (const acc of ["CmdOrCtrl+Shift+T", "Cmd+Shift+T", "Ctrl+Shift+T"]) {
+      assert.strictEqual(findItem(template, (i) => i.accelerator === acc), null, `${acc} unclaimed`);
+    }
+    assert.strictEqual(
+      findItem(template, (i) => /Shift\+T$/.test(i.accelerator ?? "") && !/Alt/.test(i.accelerator ?? "")),
+      null,
+      "no item claims Shift+T without Alt",
+    );
+    assert.strictEqual(findItem(template, (i) => i.accelerator === "CmdOrCtrl+Alt+T" || i.accelerator === "Ctrl+Alt+T"), null, "Ctrl+Alt+T (GNOME terminal) unclaimed");
+  });
+
+  test(`${os}: devtools item keeps its id and starts visible`, () => {
     const { deps } = makeDeps({ isMac });
     const item = findItem(buildMenuTemplate(deps), (i) => i.id === "devtools-toggle");
     assert.ok(item, "devtools-toggle present");
-    assert.strictEqual(item.visible, false);
+    assert.strictEqual(item.visible, true);
     assert.strictEqual(item.accelerator, "CmdOrCtrl+Shift+I");
   });
 

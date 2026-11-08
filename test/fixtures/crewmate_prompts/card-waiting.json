@@ -7,5 +7,7 @@
     {"text": "README commands match the real CLI (mismatch count)", "target": "0", "readings": ["0"]}
   ],
   "milestones_card_waiting": true,
-  "heartbeat_minutes": 30
+  "heartbeat_minutes": 30,
+  "worker_servers": ["git"],
+  "gateway_has_beyond_worker": []
 }

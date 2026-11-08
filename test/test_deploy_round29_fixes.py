@@ -187,7 +187,7 @@ def _load_cfn_yaml(path: Path) -> dict:
         if isinstance(node, yaml.SequenceNode) else loader.construct_mapping(node)
     )
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return load_with(CfnLoader, f)
 
 

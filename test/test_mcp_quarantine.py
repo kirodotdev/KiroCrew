@@ -1,14 +1,8 @@
 """Tests for the consecutive-probe-failure counter and its dashboard surface.
 
-The defect this addresses: a probe verdict was display-only and forgotten between
-rounds, so nothing anywhere could say "this server has failed every probe since
-Tuesday". These cover the counter's arithmetic, the statuses that deliberately
-carry NO verdict, the fail-open behaviour of an unreadable store, the wire
-annotation, and the reset endpoint.
-
-Scope note: this does NOT unmount a failing server. That half has no safe lever in
-the generated agent config (see the spec's deferred section) and is tracked
-separately, so nothing here asserts anything about ``tools`` or ``mcpServers``.
+Covers the counter's arithmetic, statuses that carry no verdict, fail-open on an
+unreadable store, the wire annotation and the reset endpoint. Nothing here unmounts
+a failing server, so nothing asserts on ``tools`` or ``mcpServers``.
 """
 
 from __future__ import annotations
@@ -42,18 +36,12 @@ def _fail(name: str, status: str = "error", error: str = "boom"):
 def _failing() -> set[str]:
     """Names currently past the threshold, read back through the PUBLIC surface.
 
-    ``record_verdicts`` returns nothing and there is no ``failing_names`` helper, so
-    the snapshot the API serves is how every consumer learns of a crossing: the
-    dashboard renders it, and ``mcp_discovery.probe_all`` reads it to leave the
-    server out of the spawn set. Asserting through that surface is asserting what
-    both of them actually see.
+    The snapshot is what both the dashboard and ``mcp_discovery.probe_all`` read.
     """
     return {name for name, state in mcp_quarantine.snapshot().items() if state["failing"]}
 
 
-# ---------------------------------------------------------------------------
 # the counter
-# ---------------------------------------------------------------------------
 
 
 class TestCounter:
@@ -113,9 +101,7 @@ class TestCounter:
         assert len(mcp_quarantine.state_for("noisy")["lastError"]) == 400
 
 
-# ---------------------------------------------------------------------------
 # statuses that carry no verdict
-# ---------------------------------------------------------------------------
 
 
 class TestNonVerdictStatuses:
@@ -137,9 +123,7 @@ class TestNonVerdictStatuses:
         assert mcp_quarantine.snapshot() == {}
 
 
-# ---------------------------------------------------------------------------
 # the off switch
-# ---------------------------------------------------------------------------
 
 
 class TestDisabled:
@@ -170,9 +154,7 @@ class TestDisabled:
         assert _failing() == set()
 
 
-# ---------------------------------------------------------------------------
 # the store itself
-# ---------------------------------------------------------------------------
 
 
 class TestStore:
@@ -270,12 +252,8 @@ class TestStore:
     def test_any_parse_failure_is_corrupt_not_an_exception(self, store, monkeypatch):
         """The CLASS ratchet, not another instance of it.
 
-        Four review rounds found four different exception types escaping
-        successively wider tuples in this arm. The store is unfenced, so the set
-        of ways a parse can fail is open-ended and grows with the interpreter --
-        the invariant is that NOTHING from the parse escapes as an exception, so
-        this asserts it with an error type that is not in any tuple anyone would
-        have thought to write.
+        Nothing from the parse may escape, so this raises an error type no exception
+        tuple would list.
         """
 
         class Exotic(Exception):
@@ -343,23 +321,12 @@ class TestStore:
 
     @pytest.mark.parametrize("stack", [0, 300])
     def test_a_nested_extra_key_cannot_reach_the_encoder(self, store, stack):
-        """A record may hold a value that ``json.loads`` accepts and
-        ``json.dumps`` cannot re-emit: ~900 nested arrays raise ``RecursionError``
-        on the way out, which is a ``RuntimeError`` and escaped the save guard.
+        """A value ``json.loads`` accepts but ``json.dumps`` cannot re-emit is dropped.
 
-        What is asserted is deliberately NOT the resulting count. Whether ``loads``
-        succeeds and only ``dumps`` fails is a band that moves with the interpreter
-        and with the frames left at the call: verified directly, this document at a
-        300-frame stack loads fine on 3.12 and raises inside ``loads`` on 3.11.
-        Both are legitimate -- one leaves the prior record readable, the other
-        classifies the store corrupt and starts the count over -- so pinning
-        ``fails == 2`` pinned the interpreter rather than the behaviour, and broke
-        on the 3.10 shard.
-
-        The invariants that hold on BOTH paths are the real contract: nothing
-        raises, the store is still parseable afterwards, and the nested key is not
-        in it. Parametrized over stack depth because a shallow stack has enough
-        headroom to pass WITHOUT the fix, so the deep case is the load-bearing one.
+        ~900 nested arrays raise ``RecursionError`` on dump. Whether ``loads`` fails
+        too depends on interpreter and stack depth, so the count is not asserted:
+        only that nothing raises, the store parses and the key is gone. A shallow
+        stack passes without the fix, so the deep case is the load-bearing one.
         """
         store.write_text(
             '{"version": 1, "servers": {"a": {"fails": 1, "junk": ' + "[" * 900 + "]" * 900 + "}}}",
@@ -458,11 +425,8 @@ class TestStore:
     def test_a_transient_read_failure_does_not_erase_saved_counters(self, store, monkeypatch):
         """The data-loss ratchet.
 
-        A read that fails for an environmental reason -- a Windows sharing
-        violation against the antivirus scanner, EIO, a permission flip -- says
-        nothing about what is on disk. Folding it into "no records" and then
-        saving replaces real history with only what this round happened to see, so
-        a probe round during one unlucky moment silently resets every counter.
+        A sharing violation, EIO or permission flip says nothing about the disk;
+        reading it as "no records" and saving would reset every counter.
         """
         for _ in range(3):
             mcp_quarantine.record_verdicts(_fail("airbnb"))
@@ -592,9 +556,7 @@ class TestStore:
         assert mcp_quarantine.store_path() == tmp_path / "crew" / "mcp-quarantine.json"
 
 
-# ---------------------------------------------------------------------------
 # reset
-# ---------------------------------------------------------------------------
 
 
 class TestClear:
@@ -616,9 +578,7 @@ class TestClear:
         assert mcp_quarantine.clear("never-seen") is None
 
 
-# ---------------------------------------------------------------------------
 # POST /api/mcp/quarantine/clear
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -735,19 +695,15 @@ class TestResetEndpoint:
             await client.close()
 
 
-# ---------------------------------------------------------------------------
 # row annotation
-# ---------------------------------------------------------------------------
 
 
 class TestAnnotation:
     def test_every_row_returning_endpoint_annotates(self):
         """The reading has to be on the endpoint the table LOADS from.
 
-        Found by driving a real pod, not by reading code: the first version
-        annotated only the two probe endpoints, so a failing server rendered as a
-        plain error row until the user happened to press Probe. This pins all four
-        call sites, and that they run off the event loop -- the annotation reads
+        Annotating only the probe endpoints shows a plain error row until Probe is
+        pressed. Pins all four call sites, run off the loop since the annotation reads
         the store.
         """
         import inspect
@@ -777,16 +733,11 @@ class TestAnnotation:
             assert "to_thread(_record_probe_verdicts, result)" in src
 
     def test_the_reprobe_is_armed_after_the_last_await(self):
-        """The annotation I added is an ``await``, and an ``await`` after
-        ``create_task`` hands the loop to the new task: a fast probe completes and
-        its done-callback drops it from ``_background_tasks`` before the caller can
-        see a reprobe was armed. That regressed two upstream tests.
+        """``_arm_reprobe`` comes after each handler's final ``await``, next to the flag.
 
-        The fix is an ordering, so this pins the ordering rather than the symptom:
-        in every handler that arms a reprobe, the ``_arm_reprobe`` call must come
-        AFTER the handler's final ``await``. It must also be adjacent to the flag
-        set -- a flag set on a path that then fails to create the task stays True
-        for the life of the process and silently disables re-probing.
+        An ``await`` after ``create_task`` lets a fast probe finish and leave
+        ``_background_tasks`` before the caller sees it armed. A flag set apart from
+        the task creation can stay True forever and disable re-probing.
         """
         import inspect
 

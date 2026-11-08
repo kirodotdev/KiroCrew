@@ -8,10 +8,73 @@ every name here, so existing references keep working.
 from __future__ import annotations
 
 import logging
+import os
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from kiro_crew.owner_only_files import owner_only_opener
+
+#: Older gateway boots kept behind ``gateway.log.prev``, in ``boot_log_dir``.
+BOOT_LOG_GENERATIONS = 3
+#: Most bytes ``gateway.log.prev`` and its older boots hold together. Each boot's
+#: log is capped near 2 MiB by its size rollover, so this keeps every generation
+#: in the normal case and bounds the disk an oversized one can take.
+BOOT_LOG_GENERATIONS_MAX_BYTES = 16 * 1024 * 1024
+
+
+def boot_log_dir(log_file: Path) -> Path:
+    """``<data home>/logs/gateway-boots``: the older boots, and nothing else."""
+    return log_file.parent / "logs" / "gateway-boots"
+
+
+def boot_log_dir_is_linked(log_file: Path) -> bool:
+    """True when ``logs`` or ``logs/gateway-boots`` is a symlink or junction.
+
+    Such a directory points off the data home, so nothing is read from it or
+    renamed into it. Imported here, not at module top, so the slim ``mcp-*``
+    entry that imports this module does not load the Windows link helpers.
+    """
+    from kiro_crew.platform_compat_links import is_link_or_junction
+
+    archive = boot_log_dir(log_file)
+    return is_link_or_junction(archive.parent) or is_link_or_junction(archive)
+
+
+def older_boot_logs(log_file: Path, *, strict: bool = False) -> list[tuple[int, Path]]:
+    """The kept older boots as ``(sequence, path)``, newest first.
+
+    Each is ``boot_log_dir/gateway.log.<n>``, where *n* is one more than the
+    largest kept *n* when it was archived, so order never depends on the clock.
+    Only that directory is listed, which holds at most a few files. Any other
+    name is not a kept boot.
+
+    A missing directory has no boots. With *strict* (the rotation), any other
+    listing error is raised: an unreadable directory may still hold boots, and
+    guessing ``[]`` would pick a number one of them already has.
+    """
+    if boot_log_dir_is_linked(log_file):
+        return []
+    prefix = log_file.name + "."
+    found: list[tuple[int, Path]] = []
+    try:
+        with os.scandir(boot_log_dir(log_file)) as entries:
+            for entry in entries:
+                seq = entry.name[len(prefix) :]
+                if entry.name.startswith(prefix) and seq.isascii() and seq.isdigit():
+                    found.append((int(seq), Path(entry.path)))
+    except FileNotFoundError:
+        return []
+    except OSError:
+        if strict:
+            raise
+        return []
+    return sorted(found, reverse=True)
+
+
+def boot_log_paths(log_file: Path) -> list[Path]:
+    """``gateway.log.prev`` then the kept older boots, newest first."""
+    return [log_file.with_name(log_file.name + ".prev"), *(p for _, p in older_boot_logs(log_file))]
 
 
 def _open_owner_only(handler: logging.FileHandler):  # type: ignore[no-untyped-def]
@@ -36,12 +99,64 @@ def _open_owner_only(handler: logging.FileHandler):  # type: ignore[no-untyped-d
     )
 
 
+#: Seconds a failed rollover waits before the next one is tried. Meanwhile records
+#: keep landing in the live file past ``maxBytes``.
+_ROLLOVER_RETRY_SECS = 60.0
+
+
 class _OwnerOnlyRotatingFileHandler(RotatingFileHandler):
     """RotatingFileHandler whose log files are created ``0600`` (see
-    :func:`_open_owner_only`)."""
+    :func:`_open_owner_only`), and which keeps logging when a rollover fails.
+
+    CPython's ``doRollover`` closes the stream before it renames the files. When a
+    rename raises -- on Windows, ``WinError 32`` while any other process holds the
+    file open -- the stream stays closed, the record is dropped, and every later
+    record reopens the still-oversized file, retries the same rename and is
+    dropped too, each with a ``--- Logging error ---`` traceback. Here a failed
+    rollover reopens the live file in append mode, writes ONE line saying so into
+    it, and waits :data:`_ROLLOVER_RETRY_SECS` before trying again, so records are
+    kept (past the size cap) instead of lost.
+    """
+
+    _rollover_retry_at = 0.0
+    _rollover_failure_reported = False
 
     def _open(self):  # type: ignore[no-untyped-def]
         return _open_owner_only(self)
+
+    def shouldRollover(self, record: logging.LogRecord) -> bool:  # noqa: N802 - stdlib name
+        if self._rollover_retry_at and time.monotonic() < self._rollover_retry_at:
+            return False
+        return bool(super().shouldRollover(record))
+
+    def doRollover(self) -> None:  # noqa: N802 - stdlib name
+        try:
+            super().doRollover()
+        except OSError as exc:
+            if self.stream is None:
+                # Raises when the live file cannot be reopened either; the caller's
+                # ``handleError`` then reports this record as before.
+                self.stream = self._open()
+            self._rollover_retry_at = time.monotonic() + _ROLLOVER_RETRY_SECS
+            if not self._rollover_failure_reported:
+                self._rollover_failure_reported = True
+                self._note_rollover_failure(exc)
+            return
+        self._rollover_retry_at = 0.0
+        self._rollover_failure_reported = False
+
+    def _note_rollover_failure(self, exc: OSError) -> None:
+        """Write one line into the live file naming the failed rollover."""
+        line = (
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')} WARNING {__name__}: log rollover of "
+            f"{self.baseFilename} failed ({exc!r}); writing past the {self.maxBytes}-byte "
+            f"cap and retrying every {int(_ROLLOVER_RETRY_SECS)}s\n"
+        )
+        try:
+            self.stream.write(line)
+            self.stream.flush()
+        except (AttributeError, OSError, ValueError):
+            pass  # the records themselves still go through emit's own error path
 
 
 class _AppendOnlyLogFileHandler(logging.FileHandler):

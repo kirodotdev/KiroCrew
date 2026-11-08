@@ -1,4 +1,4 @@
-"""``kirocrew bench`` CLI behaviour that a reviewer flagged and a test must pin.
+"""``kirocrew bench`` CLI behaviour a test must pin.
 
 Two of these pin ``kirocrew bench`` CLI behaviour, and the third pins the
 deliberate exception to the ``top-level-imports`` rule so a future
@@ -53,7 +53,7 @@ def test_a_sensitive_path_is_refused_rather_than_read(
     with pytest.raises(Exception) as exc:  # _BenchError, caught by the dispatch
         _load_report(str(secret), "baseline")
     assert getattr(exc.value, "code", None) == 1
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "sensitive location" in out.lower()
     # The refusal must not leak the very bytes it refused to serve...
     assert "SHOULD-NEVER-BE-PRINTED" not in out
@@ -81,7 +81,7 @@ def test_a_symlink_into_a_sensitive_path_is_refused_through_the_link(
     with pytest.raises(Exception) as exc:
         _load_report(str(link), "baseline")
     assert getattr(exc.value, "code", None) == 1
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "sensitive location" in out.lower()
     assert str(link) not in out
 
@@ -92,7 +92,7 @@ def test_a_missing_report_prints_one_line_not_a_traceback(
     with pytest.raises(Exception) as exc:
         _load_report(str(tmp_path / "nope.json"), "candidate")
     assert getattr(exc.value, "code", None) == 1
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "candidate report not found" in out
     assert str(tmp_path) not in out  # the path must not be echoed
     assert "Traceback" not in out
@@ -107,7 +107,7 @@ def test_a_truncated_report_names_the_likely_cause(
     with pytest.raises(Exception) as exc:
         _load_report(str(bad), "baseline")
     assert getattr(exc.value, "code", None) == 1
-    out = capsys.readouterr().out
+    out = capsys.readouterr().err
     assert "not valid JSON" in out
     assert "interrupted run" in out
 
@@ -121,7 +121,7 @@ def test_a_json_scalar_is_rejected_as_not_a_report(
     with pytest.raises(Exception) as exc:
         _load_report(str(bad), "baseline")
     assert getattr(exc.value, "code", None) == 1
-    assert "not a report object" in capsys.readouterr().out
+    assert "not a report object" in capsys.readouterr().err
 
 
 def test_compare_returns_one_on_a_bad_path_and_zero_on_two_good_ones(

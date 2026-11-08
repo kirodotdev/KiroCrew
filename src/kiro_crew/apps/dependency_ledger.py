@@ -24,6 +24,7 @@ from typing import Any, Iterator
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,7 @@ def _locked_ledger(*, exclusive: bool = True) -> Iterator[None]:
     path = _ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(".lock")
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=OWNER_ONLY_FILE_MODE, exist_ok=True)
     # "r+" (not "r"): Windows msvcrt.locking requires write access on the fd —
     # a read-only handle fails with EACCES and platform_compat.file_lock
     # swallows it (best-effort), silently degrading this to a no-op.
@@ -193,16 +194,23 @@ def _locked_ledger(*, exclusive: bool = True) -> Iterator[None]:
             yield
 
 
-def _read_ledger_unlocked() -> dict[str, Any]:
-    """Read the ledger file without acquiring a lock (caller must hold lock)."""
-    path = _ledger_path()
-    if not path.is_file():
-        return {}
+def _read_ledger_unlocked(*, strict: bool = False) -> dict[str, Any]:
+    """The ledger (caller holds the lock); ``{}`` when missing, undecodable or not
+    an object, and when unreadable unless *strict*, where the ``OSError`` propagates.
+    """
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        data = json.loads(_ledger_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+        if strict and isinstance(exc, OSError):
+            raise
         logger.warning("Failed to read dependency ledger: %s", exc)
         return {}
+    if not isinstance(data, dict):
+        logger.warning("Failed to read dependency ledger: not a JSON object")
+        return {}
+    return data
 
 
 def _write_ledger_unlocked(data: dict[str, Any]) -> None:
@@ -218,14 +226,19 @@ def _read_ledger() -> dict[str, Any]:
         return _read_ledger_unlocked()
 
 
-def record_install(dep_key: str, app_name: str, dep_type: str) -> None:
-    """Record that an app installed a dependency.
+def record_install(dep_key: str, app_name: str, dep_type: str) -> bool:
+    """Record that an app installed a dependency; True once it is written.
 
     If the dependency is already in the ledger (installed by another app),
-    appends the current app to ``installedBy`` (no duplicates).
+    appends the current app to ``installedBy`` (no duplicates). A ledger that
+    cannot be read is left as it is, records nothing and returns False.
     """
     with _locked_ledger():
-        ledger = _read_ledger_unlocked()
+        try:
+            ledger = _read_ledger_unlocked(strict=True)
+        except OSError as exc:
+            logger.warning("Dependency ledger unreadable, %s not recorded: %s", dep_key, exc)
+            return False
         # Reuse the legacy spelling when that is where the entry already lives,
         # so an older ledger accrues refcounts in one place instead of splitting
         # across two keys for the same dependency.
@@ -244,6 +257,7 @@ def record_install(dep_key: str, app_name: str, dep_type: str) -> None:
             }
         _write_ledger_unlocked(ledger)
     logger.debug("Ledger: recorded %s install of %s", app_name, dep_key)
+    return True
 
 
 def record_uninstall(dep_key: str, app_name: str) -> None:
@@ -326,11 +340,19 @@ def classify_and_clean_for_uninstall(
     - Shared deps have the current app removed from ``installedBy``.
     - User-installed deps are untouched.
 
-    Returns the same classification dict as :func:`classify_for_uninstall`.
+    Returns the same classification dict as :func:`classify_for_uninstall`. A
+    ledger that cannot be read is left as it is and every dep classifies as
+    user-installed, so nothing is removed.
     """
     keep = set(keep_specific or [])
     with _locked_ledger():
-        ledger = _read_ledger_unlocked()
+        try:
+            ledger = _read_ledger_unlocked(strict=True)
+        except OSError as exc:
+            logger.warning(
+                "Dependency ledger unreadable, %s removes no dependency: %s", app_name, exc
+            )
+            return _classify_deps(app_name, declared_deps, {})
         result = _classify_deps(app_name, declared_deps, ledger)
 
         # Update ledger for removable deps

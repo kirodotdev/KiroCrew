@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
+import threading
 import time
 import zipfile
 from pathlib import Path
@@ -26,6 +28,7 @@ import yaml
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import agent_scratch, beacon, diagnostics, release_channel
+from kiro_crew.dashboard import crash_dump_store
 from kiro_crew.dashboard.handlers import diagnostics as dh
 from kiro_crew.diagnostics import BundleResult
 
@@ -199,6 +202,81 @@ def test_issue_body_has_no_absolute_zip_path(tmp_path, monkeypatch):
     assert "secret(s) auto-redacted" in body
 
 
+def test_bundle_includes_every_kept_boot_log(tmp_path, monkeypatch):
+    """The older boots behind gateway.log.prev ride in the bundle, redacted like it."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    boots = home / "logs" / "gateway-boots"
+    boots.mkdir(parents=True)
+    (home / "gateway.log").write_text("live run\n")
+    (home / "gateway.log.prev").write_text("boot 1 back\n")
+    (boots / "gateway.log.4").write_text("boot 2 back\n" + _GATEWAY)
+    (boots / "gateway.log.2").write_text("boot 4 back\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        names = set(z.namelist())
+        assert {
+            "gateway.log.prev",
+            "gateway-boots/gateway.log.4",
+            "gateway-boots/gateway.log.2",
+        } <= names
+        older = z.read("gateway-boots/gateway.log.4").decode()
+        assert z.read("gateway-boots/gateway.log.2").decode() == "boot 4 back\n"
+    for secret in _SECRETS:
+        assert secret not in older, f"secret leaked into bundle: {secret!r}"
+    assert older.startswith("boot 2 back\n")
+    # A boot that was never kept is neither a member nor reported as skipped.
+    assert not [m for m in r.skipped if m.startswith("gateway-boots/")]
+
+
+def test_bundle_with_no_older_boot_logs_skips_only_prev(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    (home / "gateway.log").write_text("live run\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    boot_skips = [m for m in r.skipped if "gateway.log.prev" in m or "gateway-boots" in m]
+    assert boot_skips == ["gateway.log.prev"]
+
+
+@requires_symlinks
+def test_bundle_refuses_a_symlinked_older_boot_log(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    boots = home / "logs" / "gateway-boots"
+    boots.mkdir(parents=True)
+    (home / "gateway.log").write_text("live run\n")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("not a log\n")
+    (boots / "gateway.log.2").symlink_to(outside)
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        assert "gateway-boots/gateway.log.2" not in z.namelist()
+    assert "gateway-boots/gateway.log.2" in r.skipped
+
+
+@requires_symlinks
+def test_bundle_never_lists_a_linked_boot_dir(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    (home / "logs").mkdir()
+    (home / "gateway.log").write_text("live run\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "gateway.log.1").write_text("someone else's log\n")
+    (home / "logs" / "gateway-boots").symlink_to(outside, target_is_directory=True)
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        assert not [n for n in z.namelist() if n.startswith("gateway-boots/")]
+
+
 def test_collapse_skips_root_and_single_segment_and_respects_boundary(monkeypatch):
     """Ruling 2: a root/single-segment HOME is skipped; a prefix match is segment-bounded.
 
@@ -249,6 +327,36 @@ def test_collapse_skips_root_and_single_segment_and_respects_boundary(monkeypatc
     # prefix must NOT collapse the longer one even next to such a delimiter.
     out, n = diagnostics._collapse_home_prefixes(f"{longer}:/usr/bin")
     assert out == f"{longer}:/usr/bin" and n == 0, out
+
+
+def test_collapse_keeps_a_dotted_or_accented_sibling_login(monkeypatch):
+    """A shorter home does not cut down a sibling login that goes on past it.
+
+    ``jo.doe`` and an accented ``jo`` login both continue the ``jo`` segment, so
+    neither may become ``~.doe`` or ``~`` plus the accent; a dot that ends the
+    sentence still collapses.
+    """
+    parent = "/" + "home"  # assembled so no literal home path is on a line
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: Path(f"{parent}/jo")))
+    dotted = f"{parent}/jo.doe/log"
+    accented = f"{parent}/jo\u00e9/log"
+    out, n = diagnostics._collapse_home_prefixes(f"{dotted} {accented} at {parent}/jo.")
+    assert out == f"{dotted} {accented} at ~.", out
+    assert n == 1
+
+
+def test_collapse_covers_the_resolved_spelling_of_a_linked_home(tmp_path, monkeypatch):
+    """A home reached through a link collapses where a frame wrote it resolved too."""
+    real = tmp_path / "real-home"
+    real.mkdir()
+    link = tmp_path / "linked-home"
+    make_dir_link(link, real)
+    monkeypatch.setattr(diagnostics.Path, "home", classmethod(lambda cls: link))
+    monkeypatch.setattr(diagnostics, "config_dir", lambda: link / ".kiro" / "crew")
+    resolved = os.path.realpath(link)
+    out, n = diagnostics._collapse_home_prefixes(f"{link}{os.sep}a.log {resolved}{os.sep}b.log")
+    assert out == f"~{os.sep}a.log ~{os.sep}b.log", out
+    assert n == 2
 
 
 def test_nested_data_home_keeps_relative_tail(tmp_path, monkeypatch):
@@ -371,6 +479,186 @@ def test_path_collapses_counted_apart_from_secrets(tmp_path, monkeypatch):
     # The issue body reports secrets and collapses as distinct numbers.
     assert f"{r.total_redactions} secret(s) auto-redacted" in body
     assert f"{r.path_collapses} path(s) collapsed" in body
+
+
+def test_bundle_replaces_the_host_name_crash_records_carry(tmp_path, monkeypatch):
+    """The live host name and the one the dump writer cached at boot both go.
+
+    Each is replaced in full and in its short form in every member, while a
+    longer name the short one is a prefix of survives.
+    """
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "Jane-Laptop.corp.example")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jdoe-mbp.corp.example/pid:[1]")
+    dumps = home / "logs" / "crash-dumps"
+    dumps.mkdir(parents=True)
+    (dumps / "loopstall-20261102T190508Z.txt").write_text(
+        f"# PID: 4242 @ {crash_dump_store._pid_domain()} start=99\n"
+    )
+    crash_dump_store.record_healthy_boot(dumps)
+    (home / "gateway.log").write_text("serving as JANE-LAPTOP; jane-laptop2 is another box\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        members = {n: z.read(n).decode() for n in z.namelist()}
+    for name, text in members.items():
+        lowered = text.lower().replace("jane-laptop2", "")
+        for leaked in ("jane-laptop", "jdoe-mbp", "corp.example"):
+            assert leaked not in lowered, (name, leaked)
+    assert members["crash-dumps/loopstall-20261102T190508Z.txt"].startswith("# PID: 4242 @ <host>")
+    assert members["crash-dumps/last-healthy-boot"].split()[1].startswith("<host>")
+    assert "jane-laptop2 is another box" in members["gateway.log"]
+    assert r.path_collapses >= 3
+
+
+def test_bundle_replaces_the_host_name_after_an_escaped_newline_or_tab(tmp_path, monkeypatch):
+    """A serialized log line keeps `\\n` and `\\t` as two characters, so the host
+    name that follows one sits right after a letter and must still be replaced."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jane-laptop/pid:[1]")
+    (home / "gateway.log").write_text(
+        '{"stdout":"boot\\njane-laptop\\n","err":"a\\tjane-laptop"}\n'
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert log == '{"stdout":"boot\\n<host>\\n","err":"a\\t<host>"}\n'
+
+
+def test_bundle_replaces_the_host_name_after_a_form_feed_or_a_color_code(tmp_path, monkeypatch):
+    """Any serialized escape and an ANSI color code, raw or serialized, end in a
+    letter too; the name after one is still replaced. A name this long goes inside
+    a longer token as well (short names are pinned in the test below)."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jane-laptop/pid:[1]")
+    (home / "gateway.log").write_text(
+        '{"a":"\\fjane-laptop","b":"\\u001b[32mjane-laptop\\u001b[0m"}\n'
+        "\x1b[1;32mjane-laptop\x1b[0m xjane-laptop my-jane-laptop\n"
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert "jane-laptop" not in log and log.count("<host>") == 5, log
+
+
+@pytest.mark.parametrize(
+    "before",
+    ["\\x1b", "\\u001b", "\\u001b[?25h", "\x1b[2J\x1b[H"],
+    ids=["x-escape", "u-escape", "cursor", "raw-csi"],
+)
+def test_bundle_replaces_the_host_name_after_any_escape_or_control_sequence(
+    tmp_path, monkeypatch, before
+):
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jane-laptop/pid:[1]")
+    (home / "gateway.log").write_text(f"{before}jane-laptop\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert "jane-laptop" not in log and log.endswith("<host>\n"), log
+
+
+def test_bundle_replaces_a_host_name_joined_on_by_a_stripped_control_character(
+    tmp_path, monkeypatch
+):
+    """A real form feed, vertical tab or ANSI code right before the name: the
+    hidden-character pass removes the control bytes, which would otherwise join
+    the name onto the word in front of it."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jane-laptop/pid:[1]")
+    (home / "gateway.log").write_text("boot\fjane-laptop ok\nred\x1b[31mjane-laptop\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out", note="ran on\x0bjane-laptop")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        members = {n: z.read(n).decode() for n in z.namelist()}
+    for name, text in members.items():
+        assert "jane-laptop" not in text.lower(), (name, text)
+
+
+def test_a_long_host_name_goes_inside_a_word_and_a_short_one_only_whole(tmp_path, monkeypatch):
+    """Six characters or more is specific enough to replace wherever it sits;
+    a shorter name stays a whole-word match so ordinary words survive."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop.lan")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "box/pid:[1]")
+    (home / "gateway.log").write_text("%2Fjane-laptop xjane-laptop jane-laptop2 box boxes inbox\n")
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert log == "%2F<host> x<host> jane-laptop2 <host> boxes inbox\n"
+
+
+def test_a_one_letter_host_name_leaves_serialized_escapes_intact(tmp_path, monkeypatch):
+    """A short name equal to an escape letter must not eat that letter: `\\t` stays
+    `\\t`, while the name right after a whole escape is still replaced."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "t")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "t/pid:[1]")
+    (home / "gateway.log").write_text('{"stderr":"failure\\t","host":"\\nt"}\n')
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert log == '{"stderr":"failure\\t","host":"\\n<host>"}\n', log
+
+
+def test_the_host_pass_before_redaction_keeps_a_credential_redacted(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: "jane-laptop")
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: "jane-laptop/pid:[1]")
+    (home / "gateway.log").write_text(
+        "GET https://jane-laptop:8765/api?token=abcdef1234567890SECRETxyz\n"
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert "SECRET" not in log and "<host>" in log
+
+
+@pytest.mark.parametrize("planted", ["authorization", "bearer", "token"])
+def test_a_host_name_never_defeats_credential_redaction(tmp_path, monkeypatch, planted):
+    """A host named like a credential keyword: redaction runs on the text first,
+    so replacing the name cannot hide a credential from its rule."""
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    monkeypatch.setattr(socket, "gethostname", lambda: planted)
+    monkeypatch.setattr(crash_dump_store, "_pid_domain", lambda: f"{planted}/pid:[1]")
+    (home / "gateway.log").write_text(
+        "Authorization: Basic dXNlcjpTRUNSRVRQQVNT\n"
+        "Bearer SECRETBEARERTOKEN123\n"
+        "GET https://example.test/api?token=SECRETQUERYVALUE123\n"
+    )
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        log = z.read("gateway.log").decode()
+    assert "SECRET" not in log and "dXNlcjpTRUNSRVRQQVNT" not in log, log
 
 
 def test_authorization_scheme_credential_fully_redacted(tmp_path, monkeypatch):
@@ -536,6 +824,41 @@ def test_quoted_serialized_headers_are_redacted(tmp_path, monkeypatch):
     assert "QUOTEDkeyLEAK456xyz" not in gw
     assert "QUOTEDcookieLEAK789" not in gw
     assert "keep this line" in gw
+
+
+def test_bundle_keeps_a_stall_dump_ahead_of_unexplained_exits_and_markers(tmp_path, monkeypatch):
+    """The sweep keeps an unexplained exit's header on purpose; neither those headers
+    nor an empty clean-exit marker may push a stall's stacks out of the bundle."""
+    from kiro_crew.dashboard import crash_dump_store
+
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    (home / "gateway.log").write_text("ok\n")
+    dumps = home / "logs" / "crash-dumps"
+    dumps.mkdir(parents=True)
+    stall = dumps / "loopstall-20260701T000000Z.txt"
+    stall.write_text("# opened\n# PID: 1\n#\n\nThread 0x1 (most recent call first):\n")
+    os.utime(stall, (1000, 1000))
+    # A PID that can never name a live process, so each header is a dead owner's.
+    dead_header = (
+        f"# opened {crash_dump_store._CLEAN_EXIT_AWARE_TOKEN}\n"
+        f"# PID: {2**30} @ {crash_dump_store._pid_domain()}\n#\n\n"
+    )
+    for i in range(diagnostics._MAX_CRASH_DUMPS):
+        killed = dumps / f"loopstall-2026070{i + 2}T000000Z.txt"
+        killed.write_text(dead_header)
+        os.utime(killed, (2000 + i, 2000 + i))
+    clean = dumps / "loopstall-20260709T000000Z.txt"
+    clean.write_text(dead_header)
+    (dumps / f"{clean.name}.clean").touch()
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+    with zipfile.ZipFile(r.zip_path) as z:
+        bundled = [n for n in z.namelist() if n.startswith("crash-dumps/")]
+
+    assert f"crash-dumps/{stall.name}" in bundled
+    assert not any(n.endswith(".clean") for n in bundled), bundled
+    assert len(bundled) == diagnostics._MAX_CRASH_DUMPS
 
 
 @requires_symlinks
@@ -1500,6 +1823,45 @@ def test_download_allows_and_audits_valid_zip(tmp_path, monkeypatch):
     resp = asyncio.run(dh.api_diagnostics_download(_DownloadReq("b.zip")))
     assert resp.status == 200
     assert sel.log_tool_invocation.call_args.kwargs["outcome"] == "allowed"
+
+
+@pytest.mark.parametrize("filename", ["b.zip", "../../etc/passwd"])
+def test_download_path_checks_run_off_the_event_loop_thread(tmp_path, monkeypatch, filename):
+    # ``resolve()`` and ``is_file()`` stat the data home, and a stat on a mount
+    # that stopped answering blocks for as long as the kernel does: on the loop
+    # that stalls every session, so the checks must run on a worker thread for
+    # both a served and a refused name.
+    diag = tmp_path / "diagnostics"
+    diag.mkdir()
+    (diag / "b.zip").write_bytes(b"PK\x03\x04zip")
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.diagnostics.config_dir", lambda: tmp_path)
+    sel = _stub_sel(monkeypatch)
+    loop_thread = threading.get_ident()
+    check_threads: set[int] = set()
+    real_resolve = Path.resolve
+    real_is_file = Path.is_file
+
+    def tracked_resolve(self, *a, **kw):
+        if diag in (self, *self.parents):
+            check_threads.add(threading.get_ident())
+        return real_resolve(self, *a, **kw)
+
+    def tracked_is_file(self, *a, **kw):
+        if diag in self.parents:
+            check_threads.add(threading.get_ident())
+        return real_is_file(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "resolve", tracked_resolve)
+    monkeypatch.setattr(Path, "is_file", tracked_is_file)
+    resp = asyncio.run(dh.api_diagnostics_download(_DownloadReq(filename)))
+
+    served = filename == "b.zip"
+    assert resp.status == (200 if served else 403)
+    assert sel.log_tool_invocation.call_args.kwargs["outcome"] == (
+        "allowed" if served else "denied"
+    )
+    assert check_threads, "the download never checked the bundle path"
+    assert loop_thread not in check_threads
 
 
 def test_collect_handler_returns_download_url(tmp_path, monkeypatch):

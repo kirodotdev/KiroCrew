@@ -1,17 +1,4 @@
-"""Tests for subagent session cleanup feature.
-
-Feature: subagent-session-cleanup
-
-Property-based tests (Hypothesis) and unit tests for:
-- Path safety validation (_is_safe_path)
-- ACP session file cleanup
-- Cleanup error resilience
-- Cleanup restriction to subagent sessions
-- SubagentManager cleanup integration
-- Session ID persistence
-- Tombstone pruning with session file cleanup
-- Startup sweep processing
-"""
+"""Tests for subagent session cleanup: path safety, file cleanup, tombstones, startup sweep."""
 
 from __future__ import annotations
 
@@ -37,6 +24,7 @@ from kiro_crew.subagent_persistence import (
     update_state,
     write_tombstone,
 )
+from kiro_crew.testing.wait import await_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -56,14 +44,9 @@ def agent_root(tmp_path, monkeypatch):
 async def _owning(manager):
     """Close the durable task-queue store a ``SubagentManager`` opens at construction.
 
-    ``SubagentManager.__init__`` opens ``tasks.db`` under the test's data home --
-    three descriptors (the database, its WAL, its shared-memory index) plus a
-    writer thread -- and a gateway holds its one manager for the process
-    lifetime, so nothing on the manager's surface closes them again. Left open
-    they survive the test: +3 descriptors per constructed manager, and the
-    hypothesis-driven startup sweep below constructs one per example. Closing
-    waits for the off-loop open first; a close BEFORE the attach would let the
-    late-arriving store reopen the very handles this releases.
+    Nothing on the manager closes ``tasks.db`` (3 descriptors and a writer thread),
+    and the hypothesis sweep builds one per example. Closing waits for the off-loop
+    open first, or the late store would reopen the handles.
     """
     try:
         yield manager
@@ -124,7 +107,6 @@ class TestIsSafePathTraversal:
         assert not _is_safe_path(target, root)
 
     def test_dotdot_traversal_blocked(self, tmp_path):
-        """../.. traversal is blocked."""
         root = tmp_path / "sessions"
         root.mkdir()
         target = root / ".." / ".." / "etc" / "passwd"
@@ -185,8 +167,7 @@ class TestAcpCleanupDeletesFiles:
     def test_acp_cleanup_missing_files_no_error(self, tmp_path):
         """Cleanup succeeds when files don't exist."""
         with patch("kiro_crew.subagent_persistence.Path.home", return_value=tmp_path):
-            # Should not raise
-            _cleanup_session_files_sync("nonexistent-id", "acp")
+            assert _cleanup_session_files_sync("nonexistent-id", "acp") is True
 
     def test_acp_cleanup_partial_files(self, tmp_path):
         """Cleanup works when only one file exists."""
@@ -219,22 +200,23 @@ class TestCleanupNeverRaises:
         For any session ID (including empty, special chars, non-existent paths),
         _cleanup_session_files_sync returns without raising.
         """
-        # Should never raise regardless of input
         with patch("kiro_crew.subagent_persistence.Path.home", return_value=tmp_path):
-            _cleanup_session_files_sync(session_id, "acp")
-            _cleanup_session_files_sync(session_id, "claude_code")
-            _cleanup_session_files_sync(session_id, "bedrock")
-            _cleanup_session_files_sync(session_id, "unknown_provider")
+            assert isinstance(_cleanup_session_files_sync(session_id, "acp"), bool)
+            # Without a recorded cwd only kiro-cli transcripts are reachable; any
+            # other backend reports failure so the prune keeps its retry metadata.
+            for provider in ("claude_code", "bedrock", "unknown_provider"):
+                assert _cleanup_session_files_sync(session_id, provider) is (session_id == "")
 
-    def test_cleanup_empty_string(self, tmp_path):
-        """Empty session_id is a no-op."""
+    @pytest.mark.parametrize(
+        "session_id, completed",
+        [
+            pytest.param("", True, id="empty_string_is_a_noop"),
+            pytest.param("abc\x00def", False, id="null_bytes_do_not_raise"),
+        ],
+    )
+    def test_cleanup_degenerate_id(self, tmp_path, session_id, completed):
         with patch("kiro_crew.subagent_persistence.Path.home", return_value=tmp_path):
-            _cleanup_session_files_sync("", "acp")
-
-    def test_cleanup_null_bytes(self, tmp_path):
-        """Null bytes in session_id don't raise."""
-        with patch("kiro_crew.subagent_persistence.Path.home", return_value=tmp_path):
-            _cleanup_session_files_sync("abc\x00def", "acp")
+            assert _cleanup_session_files_sync(session_id, "acp") is completed
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -308,21 +290,20 @@ class TestCleanupRestriction:
         cfg.session.pool_ttl_secs = 0
         manager = SessionManager(cfg=cfg, provider_factory=None)
 
-        # Create a mock session with a provider that has session_id
         provider = MagicMock()
         provider.session_id = "some-session-id"
         provider.cleanup_session = AsyncMock()
 
         session = MagicMock()
         session.provider = provider
-        session.semaphore = MagicMock()
+        session.semaphore = asyncio.Semaphore(0)
         manager._sessions[key] = session
+        tasks_before = asyncio.all_tasks()
 
         manager.release(key, cleanup=True)
 
-        # cleanup_session should NOT be called for non-subagent keys
-        # (asyncio.ensure_future would have been called if it were a subagent key)
-        # Verify by checking that no future was scheduled
+        assert asyncio.all_tasks() == tasks_before, "no cleanup task was scheduled"
+        assert not session.semaphore.locked(), "the permit is still released"
         provider.cleanup_session.assert_not_called()
 
     @pytest.mark.asyncio
@@ -342,13 +323,16 @@ class TestCleanupRestriction:
 
         session = MagicMock()
         session.provider = provider
-        session.semaphore = MagicMock()
+        session.semaphore = asyncio.Semaphore(0)
         manager._sessions["subagent:abc123"] = session
+        tasks_before = asyncio.all_tasks()
 
         manager.release("subagent:abc123", cleanup=True)
-        # Give the ensure_future task a chance to run
-        await asyncio.sleep(0.01)
+        scheduled = asyncio.all_tasks() - tasks_before
+        assert len(scheduled) == 1
+        await await_until(asyncio.gather(*scheduled), what="the scheduled cleanup task")
         provider.cleanup_session.assert_awaited_once_with("test-session-uuid")
+        assert not session.semaphore.locked()
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -482,7 +466,6 @@ class TestSubagentManagerCleanupIntegration:
 
         provider.stream = MagicMock(side_effect=lambda *a, **kw: _ok())
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
-        # Make release raise to simulate a cleanup failure
         sessions.release = MagicMock(side_effect=OSError("cleanup failed"))
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
@@ -585,7 +568,6 @@ class TestTombstonePruningCleansSessionFiles:
         if d.exists():
             shutil.rmtree(d)
 
-        # Create a plain subagent folder with explicit non-retention and session identity.
         create_agent_folder(agent_id, task="old task")
         update_state(agent_id, session_id=session_id, provider="acp", keep=False)
         remember_live_cleanup_identity(
@@ -603,7 +585,6 @@ class TestTombstonePruningCleansSessionFiles:
         ts["session_id"] = session_id
         ts_path.write_text(json.dumps(ts))
 
-        # Create corresponding session files
         sessions_dir = tmp_path / ".kiro" / "sessions" / "cli"
         sessions_dir.mkdir(parents=True, exist_ok=True)
         json_file = sessions_dir / f"{session_id}.json"
@@ -670,7 +651,6 @@ class TestStartupSweep:
             if d.is_dir():
                 shutil.rmtree(d)
 
-        # Create orphaned subagent folders with session_ids
         for i, sid in enumerate(session_ids):
             agent_id = f"orphan-{i}"
             create_agent_folder(agent_id, task=f"task-{i}")
@@ -694,9 +674,9 @@ class TestStartupSweep:
         from kiro_crew.subagent_persistence import _agent_dir as _adir
 
         for i in range(len(session_ids)):
-            assert (_adir(f"orphan-{i}") / "tombstone.json").exists(), (
-                f"orphan-{i} was not tombstoned"
-            )
+            assert (
+                _adir(f"orphan-{i}") / "tombstone.json"
+            ).exists(), f"orphan-{i} was not tombstoned"
 
     @pytest.mark.asyncio
     async def test_sweep_continues_on_individual_failure(self, agent_root):
@@ -709,7 +689,6 @@ class TestStartupSweep:
         from kiro_crew.subagent import SubagentManager
         from kiro_crew.subagent_persistence import _agent_dir as _adir
 
-        # Create two orphans
         create_agent_folder("fail-orphan", task="t1")
         update_state("fail-orphan", session_id="fail-sid", provider="acp", pid=88888)
         create_agent_folder("ok-orphan", task="t2")
@@ -731,13 +710,10 @@ class TestStartupSweep:
 
 
 class TestStartingPidGuard:
-    """Regression: a provider that has start()ed but isn't registered yet must
-    not be swept as an orphan during the start()->register window.
+    """A provider started but not yet registered must not be swept as an orphan.
 
-    A slow ACP cold-start writes its PID to kiro_session_pids.txt before the
-    session is in self._sessions; the periodic sweep would otherwise SIGKILL it
-    mid-init (observed as 'ACP init failed (code=-9), retrying' loops and a
-    permanently 'processing' session).
+    A slow cold start writes its PID to kiro_session_pids.txt before the session is
+    in self._sessions; a sweep would SIGKILL it mid-init ('code=-9' retry loops).
     """
 
     def _make_manager(self):
@@ -874,21 +850,37 @@ class TestCompanionRuntimeGuard:
         assert companion_pid in active, "companion runtime PID must be sweep-protected"
         assert bg_pid in active, "bg runtime PID must be sweep-protected"
 
+    def test_a_task_session_on_a_companion_runtime_keeps_the_sweep_running(self):
+        """A task-runner step session holds an ``AcpSessionProvider`` over a
+        companion runtime. The sweep must still run, and that runtime's pid must be
+        in the active set, read from the runtime's owner rather than the session."""
+        from types import SimpleNamespace
+
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+        from kiro_crew.session_pid import _collect_active_pids
+        from kiro_crew.testing.ids import unallocatable_pids
+
+        manager = self._make_manager()
+        (companion_pid,) = unallocatable_pids(1)
+        runtime = self._fake_runtime(companion_pid)
+        manager._subagent_runtimes["parent-a"] = runtime
+        step = AcpSessionProvider.__new__(AcpSessionProvider)
+        step._runtime = runtime
+        manager._sessions["task-step-1"] = SimpleNamespace(provider=step)
+
+        active, ok = _collect_active_pids(manager._sessions)
+        active.update(manager._companion_runtime_pids())
+
+        assert ok is True, "a task session must not stop the orphan sweep"
+        assert companion_pid in active, "the task session's runtime must be sweep-protected"
+
 
 class TestTheSuiteNeverRunsTheBootSandboxSweep:
     """``test/conftest.py`` pins the session module's boot sandbox sweep to a no-op.
 
-    ``SessionManager.get_or_create`` arms the cleanup loop, whose boot reclaim
-    submits ``kiro_crew.session.cleanup_stale_sandbox_profiles`` -- the real
-    ``/proc`` pin scan over the operator's data home -- to the shared
-    ``mc-maint`` executor, and ``close_all()`` cannot stop an executor thread.
-    The tenth hygiene pass measured 138 real sweeps from ``test_session.py``
-    alone, one of which logged into an unrelated test's ``caplog`` seconds
-    after its own test had torn down. ``test/conftest.py::_no_boot_sandbox_sweep``
-    is what stops that, by importing the session module itself rather than
-    asking ``sys.modules`` whether someone else already did; this test is the
-    only thing that notices if the pin goes away or stops reaching the name the
-    session module actually calls.
+    The boot reclaim submits ``kiro_crew.session.cleanup_stale_sandbox_profiles`` (a
+    real ``/proc`` scan of the operator's data home) to ``mc-maint``, which
+    ``close_all()`` cannot stop; its logs leak into later tests' ``caplog``.
     """
 
     def test_the_session_modules_binding_is_the_no_op_not_the_sandbox_sweep(self) -> None:

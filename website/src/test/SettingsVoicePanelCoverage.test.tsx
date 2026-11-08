@@ -16,8 +16,9 @@
  *  - `renderWithProviders` supplies a QueryClient with `retry: false`, so a
  *    rejected query surfaces on the first attempt.
  */
+import { Profiler } from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, fireEvent, waitFor } from '@testing-library/react'
 
 import { renderWithProviders } from './helpers'
 import { initI18n } from '../i18n'
@@ -35,11 +36,16 @@ vi.mock('../pages/settings/SttSettings', () => ({
 // environment down and throw "window is not defined" as an UNHANDLED error —
 // every test passing and the run still exiting non-zero. `shouldAdvanceTime`
 // keeps the clock moving so `findBy*` behaves as it does with real timers.
+// Testing Library ticks a fake clock inside act() for every `findBy*` and `waitFor` only when it sees a
+// `jest` global, and vitest's `vi` has the same API: the panel's chained reads (config, then the chosen
+// provider's voice list) and the Radix selects they mount all commit inside that act().
 beforeEach(async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  vi.stubGlobal('jest', vi)
   await initI18n('en')
 })
 afterEach(() => {
+  vi.unstubAllGlobals()
   vi.clearAllTimers()
   vi.useRealTimers()
   vi.restoreAllMocks()
@@ -88,12 +94,16 @@ interface SeedOpts {
   configPending?: boolean
   /** Reject the Polly catalogue query. */
   voicesFail?: boolean
+  /** Answer the catalogue with no voices, as the gateway does before AWS consent. */
+  voicesEmpty?: boolean
   /** Reject the save, driving the `onError` rollback arm. */
   saveFails?: boolean
   /** Report a host with no built-in speech engine. */
   systemUnavailable?: boolean
   /** Reject the host-voice probe, driving the inline notice + retry. */
   systemVoicesFail?: boolean
+  /** Called once per commit of the panel, after the DOM is written. */
+  onCommit?: () => void
 }
 
 function seed(over: Record<string, unknown> = {}, opts: SeedOpts = {}) {
@@ -106,6 +116,7 @@ function seed(over: Record<string, unknown> = {}, opts: SeedOpts = {}) {
 
   const voices = vi.spyOn(api, 'voiceVoices')
   if (opts.voicesFail) voices.mockRejectedValue(new Error('no aws cli'))
+  else if (opts.voicesEmpty) voices.mockResolvedValue({ voices: [] })
   else voices.mockResolvedValue(CATALOGUE)
 
   const systemVoices = vi.spyOn(api, 'voiceSystemVoices')
@@ -118,7 +129,13 @@ function seed(over: Record<string, unknown> = {}, opts: SeedOpts = {}) {
   if (opts.saveFails) save.mockRejectedValue(new Error('write refused'))
   else save.mockImplementation(async (patch: object) => ({ ...cfg, ...patch }) as VoiceConfig)
 
-  const view = renderWithProviders(<VoicePanel />)
+  // `onRender` runs in the commit phase, after the DOM is written and before
+  // passive effects, so a probe there sees exactly what one commit shows.
+  const view = renderWithProviders(
+    <Profiler id="voice" onRender={() => opts.onCommit?.()}>
+      <VoicePanel />
+    </Profiler>,
+  )
   return { ...view, cfg, load, voices, systemVoices, save }
 }
 
@@ -326,6 +343,23 @@ describe('VoicePanel polly fields', () => {
     await waitFor(() => expect(voices).toHaveBeenCalled())
   })
 
+  it('shows the stored profile and region in the first commit that has the rows', async () => {
+    // The rows are seeded from the served config in the render that first has
+    // it, not latched by a later effect: a commit showing the rows empty is a
+    // frame a user can see and a test can land on.
+    const commits: { rows: boolean; profile: string | null; region: string | null }[] = []
+    seed({ provider: 'polly', aws_profile: 'voice-prod', region: 'eu-west-1' }, {
+      onCommit: () => {
+        const profile = screen.queryByLabelText('AWS Profile (Amazon Polly)') as HTMLInputElement | null
+        const region = screen.queryByLabelText('AWS Region (Amazon Polly)') as HTMLInputElement | null
+        commits.push({ rows: profile !== null, profile: profile?.value ?? null, region: region?.value ?? null })
+      },
+    })
+    await field('AWS Profile (Amazon Polly)')
+    const first = commits.find(c => c.rows)
+    expect(first).toEqual({ rows: true, profile: 'voice-prod', region: 'eu-west-1' })
+  })
+
   it('labels catalogue voices as name (locale gender-initial)', async () => {
     seed({ provider: 'polly' })
     await field('AWS Profile (Amazon Polly)')
@@ -339,6 +373,20 @@ describe('VoicePanel polly fields', () => {
     await field('AWS Profile (Amazon Polly)')
     fireEvent.click(select(/^Voice$/))
     expect(await screen.findByRole('option', { name: 'Matthew (US M)' }, { timeout: 5_000 })).toBeTruthy()
+  })
+
+  it('offers the offline fallback list when the catalogue answers with no voices', async () => {
+    // The gateway answers `[]` before AWS consent and without the AWS CLI; an
+    // empty picker there leaves the user no voice to choose.
+    const { voices } = seed({ provider: 'polly' }, { voicesEmpty: true })
+    await field('AWS Profile (Amazon Polly)')
+    // Read the picker after the empty answer lands, not in the loading window,
+    // where the fallback shows on any version of the panel.
+    await waitFor(() => expect(voices).toHaveBeenCalled())
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    fireEvent.click(select(/^Voice$/))
+    expect(await screen.findByRole('option', { name: 'Matthew (US M)' }, { timeout: 5_000 })).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Ruth (US F)' })).toBeTruthy()
   })
 
   it('folds the engine to the first supported one when the new voice cannot do it', async () => {

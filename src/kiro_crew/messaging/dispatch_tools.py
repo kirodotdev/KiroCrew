@@ -13,11 +13,18 @@ tool-less the turn is refused (:class:`ToollessTurnUnavailable`) with
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable
 
 from kiro_crew.agent_sdk.backends import Routing, routing_for
-from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, event_is_spawn_run, hook_gate_kwargs
+from kiro_crew.hooks import (
+    TOOL_AUTO_APPROVE,
+    TOOL_DENY,
+    event_is_spawn_run,
+    hook_gate_kwargs,
+    unattended_turn,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.messaging.dispatch")
@@ -92,7 +99,9 @@ class ToollessTurnUnavailable(RuntimeError):
     """
 
 
-def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callable[[Any], str]:
+def build_tool_gate(
+    ctx_builder: Any, *, session_key: str, agent: str, unattended: bool = False
+) -> Callable[[Any], str]:
     """PreToolUse security gate, channel-neutral (off ``ctx_builder.hooks``).
 
     Sensitive-path keystone + governance ceiling + deny-list. Returns ``"deny"``
@@ -106,15 +115,20 @@ def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callab
     of reading kiro-cli's generic "User denied tool execution" -- the same
     attribute-on-a-callable shape ``ApprovalDecider.last_deny_cause`` uses. A
     plain callable without the attribute is a deny with no reason, as before.
+
+    ``unattended`` marks the turn as one nobody is watching (a monitor wake):
+    each consultation runs under ``hooks.unattended_turn``, so a governance
+    evaluation that raises refuses the call instead of allowing it.
     """
 
     def _tool_gate(event: Any) -> str:
-        result = ctx_builder.hooks.on_tool_call(
-            getattr(event, "title", "") or "",
-            session_key=session_key,
-            agent=agent,
-            **hook_gate_kwargs(event),
-        )
+        with unattended_turn(unattended):
+            result = ctx_builder.hooks.on_tool_call(
+                getattr(event, "title", "") or "",
+                session_key=session_key,
+                agent=agent,
+                **hook_gate_kwargs(event),
+            )
         denied = result.action == TOOL_DENY
         reason = str(getattr(result, "reason", "") or "") if denied else ""
         _tool_gate.last_deny_reason = reason  # type: ignore[attr-defined]
@@ -178,12 +192,65 @@ def _provider_backend(provider: Any) -> str | None:
     return backend if isinstance(backend, str) else None
 
 
-def _refuse_unless_toolless(sessions: Any, session_key: str, provider: Any) -> None:
+def _toolless_spec_before_spawn(session_key: str) -> bool:
+    """The pre-spawn read of :data:`TOOLLESS_TURN_AGENT`'s spec, in the turn's own work directory.
+
+    Taken before ``get_or_create`` can cold-start the harness, so
+    :func:`_refuse_unless_toolless` can require the spec to mount nothing both
+    before the spawn and after it. Resolved project level first, then user
+    level, in the same isolated directory the turn's cold start uses.
+
+    Blocking (creates the directory, reads the spec); callers run it with
+    ``asyncio.to_thread``. Fails closed.
+    """
+    from kiro_crew.agent_sdk.agent_specs import authored_spec_is_toolless
+
+    try:
+        work_dir = _toolless_turn_work_dir(session_key)
+    except Exception:
+        logger.warning("tool-less turn work directory unavailable", exc_info=True)
+        return False
+    return authored_spec_is_toolless(TOOLLESS_TURN_AGENT, work_dir)
+
+
+def _refuse_before_spawn_unless_toolless(session_key: str, authored_before_spawn: bool) -> None:
+    """Raise :class:`ToollessTurnUnavailable` before any session starts when the pre-spawn read failed.
+
+    Starting the session would launch whatever the spec names (an MCP server runs
+    its startup code), and a reset afterwards cannot undo that, so a spec the
+    pre-spawn read already refused is refused here, with its SEL row, before
+    ``get_or_create``.
+    """
+    if authored_before_spawn:
+        return
+    sel().log_api_access(
+        caller=session_key,
+        operation="turn_agent",
+        outcome="denied",
+        source="messaging",
+        resources=f"deny_all_tools turn: {TOOLLESS_TURN_AGENT} spec is not tool-less before spawn",
+    )
+    raise ToollessTurnUnavailable(
+        f"deny_all_tools turn refused before spawn: the {TOOLLESS_TURN_AGENT} spec mounts "
+        "a tool, a grant, an MCP server or a hook"
+    )
+
+
+async def _refuse_unless_toolless(
+    sessions: Any, session_key: str, provider: Any, *, authored_before_spawn: bool
+) -> None:
     """Raise :class:`ToollessTurnUnavailable` unless this turn can be tool-less.
 
     A ``deny_all_tools`` turn runs on :data:`TOOLLESS_TURN_AGENT`, and that holds
     only on a backend that mounts what the spec names, for a session bound to that
-    agent. Each refusal writes its SEL row first.
+    agent, whose spec mounts nothing. The last check reads the spec the harness
+    loaded (``effective_spec_declares_zero_tools``), with *authored_before_spawn*
+    the read :func:`_toolless_spec_before_spawn` took before ``get_or_create``.
+    Another program can rewrite a file under the agents directory at any time,
+    and kiro-cli runs a tool listed in ``allowedTools`` with no permission
+    request for the driver to refuse, so the spec on disk is checked on every
+    turn, warm or cold. Each refusal writes its SEL row first. A spec refusal
+    also resets the session, so the process that loaded that spec is not reused.
     """
     # The tool-less agent is a SPEC, and only a backend that mounts
     # what the spec names honours it. On any other routing the
@@ -224,6 +291,36 @@ def _refuse_unless_toolless(sessions: Any, session_key: str, provider: Any) -> N
         raise ToollessTurnUnavailable(
             "deny_all_tools turn refused: its session is bound to an agent "
             "with tools; channels must key untrusted turns separately"
+        )
+    client = getattr(provider, "client", None)
+    confirm = getattr(client, "effective_spec_declares_zero_tools", None)
+    confirmed = False
+    if callable(confirm):
+        try:
+            confirmed = (
+                await asyncio.to_thread(confirm, authored_before_spawn=authored_before_spawn)
+            ) is True
+        except Exception:
+            logger.warning("tool-less spec confirmation failed", exc_info=True)
+    if not confirmed:
+        sel().log_api_access(
+            caller=session_key,
+            operation="turn_agent",
+            outcome="denied",
+            source="messaging",
+            resources=f"deny_all_tools turn: {TOOLLESS_TURN_AGENT} spec is not tool-less",
+        )
+        try:
+            await sessions.reset(session_key)
+        except Exception:
+            logger.warning(
+                "could not reset session %s after a tool-less spec refusal",
+                session_key,
+                exc_info=True,
+            )
+        raise ToollessTurnUnavailable(
+            f"deny_all_tools turn refused: the {TOOLLESS_TURN_AGENT} spec the harness "
+            "loaded mounts a tool, a grant, an MCP server or a hook"
         )
 
 

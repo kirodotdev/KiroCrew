@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -18,7 +18,7 @@ def _make_app() -> web.Application:
     app.router.add_get("/api/file-search", api_file_search)
     # api_file_search reads app["state"].file_indexes for the index fast path
     state = MagicMock()
-    state.file_indexes.get.return_value = None  # no index → always use walk fallback
+    state.file_indexes.ensure = AsyncMock(return_value=None)  # no index → walk fallback
     # A MagicMock attribute reads as a non-empty configured owner id, which no
     # caller can equal, so the owner gate would answer every row alike.
     state.owner_id = ""
@@ -77,7 +77,6 @@ class TestFileSearch:
             assert "hello.py" in names
             assert "hello_world.py" in names
             assert "hello_util.py" in names
-            # Check fields present
             r0 = data["results"][0]
             assert "path" in r0 and "size" in r0 and "mtime" in r0
 
@@ -110,6 +109,17 @@ class TestFileSearch:
                 names = {r["name"] for r in (await resp.json())["results"]}
                 assert "target.py" in names
                 assert "target_outside.py" not in names
+
+    @pytest.mark.asyncio
+    async def test_missing_workspace_dir_does_not_fall_back(self, tmp_path, mock_sel):
+        """A named workspace whose directory is gone must not search the default roots."""
+        with patch("kiro_crew.config.loader.workspace_dir_for", return_value=tmp_path / "gone"):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/file-search?q=target&workspace=chosen")
+                assert resp.status == 404
+                data = await resp.json()
+                assert data["code"] == "workspace_not_found"
+                assert data["results"] == []
 
     @pytest.mark.asyncio
     async def test_max_results_capped(self, tmp_path, mock_sel):

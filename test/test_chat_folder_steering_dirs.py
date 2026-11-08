@@ -138,14 +138,10 @@ def test_validate_rejects_missing_directory(tmp_path):
 def test_validate_refuses_a_non_empty_list_where_the_pinned_walk_is_unavailable(
     tmp_path, monkeypatch
 ):
-    """Where the collector cannot walk pinned, the validator refuses BEFORE any
-    filesystem call.
+    """Where the collector cannot walk pinned, the validator refuses BEFORE any fs call.
 
-    A stored value would never be delivered on such a host, and validating it
-    would itself be the by-name probe the collector refuses: ``isdir`` /
-    ``realpath`` on a name an agent running as this user has swapped for a
-    junction at a share is the outbound SMB authentication. The empty list stays
-    valid so a folder can still CLEAR its steering there.
+    ``isdir``/``realpath`` on a name swapped for a junction at a share is an outbound
+    SMB authentication. The empty list stays valid so a folder can still clear its steering.
     """
     from kiro_crew.dashboard import chat_folders
 
@@ -193,10 +189,42 @@ def test_validate_proves_existence_with_a_pinned_open_that_refuses_a_link(tmp_pa
 def test_validate_rejects_sensitive_path(tmp_path, monkeypatch):
     real = tmp_path / "standards"
     real.mkdir()
-    monkeypatch.setattr("kiro_crew.dashboard.chat_folders.is_sensitive_path", lambda p: True)
+    # The validator hands the gate the realpath it already computed, through
+    # canonical_path_refusal; that is the name to patch, as the artifact store's
+    # tests do. (On the loop that helper still takes the bounded gate; it is the
+    # entry point, not the bound, that differs here.)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_folders.canonical_path_refusal",
+        lambda p: f"Blocked: access to sensitive path: {p}",
+    )
     resolved, err = _validate_steering_dirs([str(real)])
     assert resolved == []
-    assert err and "sensitive" in err.lower()
+    assert err == "steering_dirs refers to a sensitive path"
+
+
+@_needs_pinned_walk
+def test_validate_reports_a_resolver_stall_as_unverifiable_not_sensitive(tmp_path, monkeypatch):
+    """A stalled resolver is not a match: the person is told to retry, not that an
+    ordinary directory is sensitive, and the audit line keeps the two apart."""
+    import kiro_crew.dashboard.chat_folders as cf
+    from kiro_crew.security import UNVERIFIABLE_PATH_PREFIX
+
+    real = tmp_path / "standards"
+    real.mkdir()
+    monkeypatch.setattr(cf, "canonical_path_refusal", lambda p: f"{UNVERIFIABLE_PATH_PREFIX}: {p}")
+    audited: list[dict] = []
+    monkeypatch.setattr(
+        cf, "sel", lambda: MagicMock(log_api_access=lambda **kw: audited.append(kw))
+    )
+    resolved, err = _validate_steering_dirs([str(real)])
+    assert resolved == []
+    assert (
+        err == "steering_dirs could not be verified against the sensitive-path list; retry shortly"
+    )
+    (event,) = audited
+    assert event["operation"] == "chat.folder_steering_dirs"
+    assert event["outcome"] == "denied"
+    assert event["error"] == "sensitive path unverifiable"
 
 
 @_needs_pinned_walk
@@ -211,13 +239,10 @@ def test_validate_rejects_sensitive_path(tmp_path, monkeypatch):
     ],
 )
 def test_validate_rejects_a_root_that_crosses_a_memory_silo(tmp_path, monkeypatch, which, expect):
-    """A named memory store is a silo; a steering root must not be, contain, or lie
-    inside the Global workspace or the named-store tree.
+    """A steering root must not be, contain, or lie inside a memory silo.
 
-    Folder steering hands an operator-pointed directory's Markdown to every
-    chat in the folder -- a V2 member's included -- so a root at (or over) the
-    person's ``workspace/`` would carry Global preferences, projects and history
-    into that member's prompt with nothing going red.
+    Folder steering reaches every chat in the folder, a V2 member's included, so a root
+    over ``workspace/`` would leak Global memory into that member's prompt.
     """
     from kiro_crew.config.loader import config_dir
     from kiro_crew.memory import WORKSPACE_DIR_NAME
@@ -267,15 +292,30 @@ def test_silo_fence_is_case_insensitive_like_the_sensitive_path_gate():
         assert not crosses_memory_silo(Path(spelling), silos), spelling
 
 
+def test_silo_fence_holds_when_either_side_is_a_drive_root(tmp_path):
+    """A drive root (``H:\\``, or ``/``) already ends in a separator.
+
+    Appending another would make the fence clear a steering root at the drive
+    root that contains a silo, and a root inside a silo placed at a drive root.
+    Built from the host's own drive root so it runs on every platform.
+    """
+    from pathlib import Path
+
+    from kiro_crew.folder_steering import crosses_memory_silo
+
+    drive_root = Path(os.path.splitdrive(str(tmp_path))[0] + os.sep)
+    silo = tmp_path / "crew" / "workspace"
+    assert crosses_memory_silo(drive_root, (silo,))
+    assert crosses_memory_silo(tmp_path / "notes", (drive_root,))
+    assert crosses_memory_silo(drive_root, (drive_root,))
+
+
 @_needs_pinned_walk
 def test_validate_rejects_a_configured_absolute_workspace_as_a_silo(tmp_path, monkeypatch):
     """A V1 workspace configured at an ABSOLUTE path outside the data home is a silo too.
 
-    ``workspace_dir_for`` returns such a directory verbatim and the memory
-    layer opens ``preferences.md`` / ``history/`` there, so a steering root at
-    it (or inside it) would hand that person's memory to every chat in the
-    folder. The fence is built from the same resolver, so it follows the
-    config rather than assuming ``config_dir()/workspace``.
+    The fence uses ``workspace_dir_for``, so it follows the config rather than assuming
+    ``config_dir()/workspace``.
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.sections import WorkspaceConfig
@@ -366,11 +406,8 @@ def test_validate_refuses_a_unc_path_before_resolving_it(monkeypatch, unc):
 def test_validate_admits_through_the_hardened_screen_not_bare_realpath(tmp_path, monkeypatch):
     """Every entry is canonicalized by ``validate_file_path`` and its verdict wins.
 
-    The lexical UNC gate cannot see a LOCAL Windows junction aimed at a share,
-    and a bare ``realpath``/``isdir`` on the raw input follows it -- the
-    outbound SMB probe. ``validate_file_path`` screens link targets before any
-    resolution, so the validator must both call it on the raw entry and treat
-    its refusal as final, never falling back to resolving the name itself.
+    A bare ``realpath`` follows a local Windows junction aimed at a share (an outbound SMB
+    probe), so the validator must never fall back to resolving the name itself.
     """
     import kiro_crew.dashboard.chat_folders as cf
 
@@ -492,11 +529,8 @@ def test_resolver_cycle_guarded(tmp_path):
 def test_resolver_gates_app_owned_steering_by_slot_owner(tmp_path, slot_app, expect_app_dir):
     """An app's folder steers only that app's own slots.
 
-    Steering accumulates up the parent chain, and a person can file a chat into
-    (or nest a folder under) a folder an app created. Without this gate the app
-    would write rules into the person's model context through the chain -- a
-    confused deputy the tree-shaping ownership rules never intended. The
-    person's own folders keep contributing to everyone beneath them.
+    Steering accumulates up the parent chain, so without this gate an app folder would
+    write rules into a person's chat filed beneath it (a confused deputy).
     """
     app_dir = tmp_path / "app-rules"
     person_dir = tmp_path / "person-rules"
@@ -553,11 +587,8 @@ def test_slot_steering_principal_mirrors_folder_principal(app, execution, expect
 def test_member_owned_folder_steers_the_members_own_slot(tmp_path):
     """A crew member's folder (``owner_app="member:<store>"``) reaches its chat.
 
-    Before this pin, the resolver compared ``owner_app`` against ``slot._app``,
-    which is empty for a member slot, so every member-owned folder's steering
-    was skipped -- silently and on the documented member path. The fence still
-    holds against everyone else: the person's slot and another member's slot
-    receive nothing from the member's folder.
+    ``slot._app`` is empty for a member slot, so matching on it alone skips the folder.
+    The person's slot and another member's slot still get nothing from it.
     """
     member_dir = tmp_path / "member-rules"
     member_dir.mkdir()
@@ -785,11 +816,8 @@ async def test_patch_rejects_bad_dir(tmp_path):
 def test_validate_rejects_path_the_os_cannot_spell():
     """An embedded NUL is rejected, never raised.
 
-    On POSIX ``realpath``/``lstat`` raise ``ValueError`` for the NUL and the
-    validator must turn that into an ordinary rejection (a 400, not a 500).
-    Windows ``realpath`` tolerates the byte and the path then fails the normal
-    existing-directory rule -- also a rejection. The contract is the same on
-    both: no exception escapes, nothing resolves.
+    POSIX raises ``ValueError`` for the NUL; Windows fails the existing-directory rule.
+    Both must be a 400 rejection, never a 500.
     """
     resolved, err = _validate_steering_dirs(["/tmp/a\x00b"])
     assert resolved == []
@@ -819,12 +847,8 @@ def test_walk_refuses_where_descriptor_relative_opens_are_unavailable(
 ):
     """No by-name fallback: refuse rather than walk names.
 
-    A by-name walk is not a weaker mode of the pinned one -- its check-then-open
-    window is exactly what an agent running as this user can win by swapping
-    an ancestor for a junction. Where the platform cannot open relative to a
-    descriptor the walk yields nothing and says so once at warning, so folder
-    steering is simply absent on such a host rather than probed by name. Lives
-    here (not with the collector tests) because it must run on Windows too.
+    A by-name walk has a check-then-open race an agent can win with a junction, so the
+    walk yields nothing and warns once. Kept here because it must run on Windows too.
     """
     root = tmp_path / "standards"
     root.mkdir()

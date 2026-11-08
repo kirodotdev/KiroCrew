@@ -82,6 +82,7 @@ def _transcript(turns: int, *, size: int) -> list[dict]:
 _STABLE_TEXT = {
     "critical_rules": lambda: ctx._CRITICAL_RULES,
     "critical_rules_channel": lambda: ctx._CRITICAL_RULES_CHANNEL,
+    "critical_rules_subagent": lambda: ctx._CRITICAL_RULES_SUBAGENT,
     "member_how_you_work": lambda: ctx._MEMBER_HOW_YOU_WORK,
     # Item 7 included, because the ASSEMBLY includes it on this variant too: the
     # Dashboard tab is rendered from the instance store and does not depend on
@@ -103,11 +104,12 @@ _STABLE_TEXT = {
 
 _STABLE_TEXT_SHA256 = {
     "context_scope_all_withheld": "98ed04f8fca6f805d76f7fd3f518c63f221d5af6da6636fd30b28dc217207a0a",
-    "critical_rules": "16827ce030089653769a3f16a6fb96e6c9fcda799ef4750630080011b5ac1647",
-    "critical_rules_channel": "7b7ea4db70ccbc233959938b561281591e3b3c26544b383046942ce229eacf7e",
+    "critical_rules": "55287e9d4c20eee441889066653c1ccd801a38f10e67669bebbb358e2f40c597",
+    "critical_rules_channel": "dc35d4213b48db6e36c3e4e520824280eed5a84e5008724f9335cfca332dd094",
+    "critical_rules_subagent": "cf4781f0764c60bc6e8f7efe68c04719118d56ce1b6722da0ca13c78b1512aa1",
     "docs_section": "971b6008afbd9ff048c498c06cffecc6dafc7a58b0df75ff9db0b15cf9e26c09",
-    "member_how_you_work": "eaecc5424f7093f793bb68228cd9231752f7f0ba6c75204d6d7a392ad3dca3f1",
-    "member_how_you_work_unavailable": "8b763af41df7bf48da8ac0e6080746273ea8fcf2e2239c4467e1958041adf02f",
+    "member_how_you_work": "df9ee9aff3939ab17a682684f48cd06a091911e3e5774bfc3fce764809b7b946",
+    "member_how_you_work_unavailable": "b38545643c06e143e9fe9082e41aa589a13a7082345e0323b21a2a4cfbb9bbf9",
     "reply_answer_only": "f0bd694165ff81cdbe123048042070588b846bd43a224b31adc79d9f8768bfce",
     "reply_concise": "5d3e25d89e682469332237e46373f0e9aac8516eefd63047134d1ec0575aac2a",
     "response_preferences_frame": "08ee149ae459c828213d47643f1cdbd6661d8a77a2223b8be5d0aa6fbb6cdc18",
@@ -150,6 +152,9 @@ def _mask_stable_text(text: str) -> str:
 
 
 def _turn(rig: _Rig, text: str, is_new: bool, **kwargs) -> str:
+    # The matrix pins the bytes of a turn a person sent. An automation turn's
+    # guidance is covered in test_followup_guidance_origin_gate.py.
+    kwargs.setdefault("directive_user_origin", True)
     message, _hook = rig.builder.build_message(text, is_new, **kwargs)
     return message
 
@@ -375,7 +380,11 @@ def _session_context_member_mode(rig: _Rig) -> str:
 
 
 def _background_overflow(rig: _Rig) -> str:
-    """Protected preferences fill the allowance, so background is omitted by name."""
+    """Preferences larger than the whole background pool still leave it for background.
+
+    Preferences carry their own startup allowance, so they are not charged to the
+    pool and the activity, workspace and docs blocks are admitted.
+    """
     rig.seed_memory()
     rig.memory._preferences_file.write_text(
         "# Preferences\n" + "Keep this standing preference.\n" * 1_000,
@@ -513,12 +522,14 @@ _SCENARIOS = {
 #: recorded before the assembly moved into owners.
 _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
     "background_overflow": (
-        "2c4855e1f2a3372fb61f2d9abac311aeb1e524374c11dddea87a6e50d396f7e5",
+        "0ee1905bca3a3c831714e7ea6ff1b63c37f739d96b2d1c3846286110510837ef",
         [
-            ("unclassified", 173),
+            ("unclassified", 64),
             ("agent_identity", 25),
             ("surface", 197),
-            ("memory", 31487),
+            ("workspace_identity", 371),
+            ("docs_pointer", 235),
+            ("memory", 31813),
             ("memory_tools", 425),
             ("lessons", 179),
         ],
@@ -530,9 +541,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "compressed_history_replay": (
-        "52ced419172acdf39e95df4137373db1a00ec3e6e0d52a05d91172444ee64b98",
+        "03199eced70bf726879825a0f8dcf2b8015e14cb93bf79416d3c067dfc848193",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 288),
             ("agent_identity", 25),
             ("surface", 197),
@@ -540,7 +551,7 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
             ("docs_pointer", 235),
             ("memory_tools", 425),
             ("unclassified", 26),
-            ("conversation_replay", 170),
+            ("conversation_replay", 415),
             ("reply_format_rules", 1347),
             ("request_header", 53),
         ],
@@ -568,14 +579,15 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "follow_up_reinjection": (
-        "65223485bb4ae222f2e5e608ab05f015b46c775ac1e5a65173517e1a3a49d555",
+        "574673304f057314927a8ddef8191d6429c9ce7a90184ea6d152d5e9f023bf7c",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("memory", 183),
             ("memory_tools", 84),
-            ("recovery", 114),
+            ("recovery", 167),
             ("skill_index", 439),
-            ("unclassified", 18),
+            ("unclassified", 36),
+            ("lessons", 181),
             ("response_preferences", 402),
             ("reply_format_rules", 1347),
             ("request_header", 46),
@@ -627,9 +639,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "fresh_dashboard": (
-        "b2097c54e3c19b2c35f83afe4578a236eaa380dc373313db699bff7667750807",
+        "45338815bdb218ef775fb8b6a1d3763e56bfc7c9c6c1f41ec3c0f290659d948c",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 288),
             ("agent_identity", 25),
             ("surface", 197),
@@ -644,9 +656,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "fresh_dashboard_from_discord": (
-        "c7c456fb50d09c9af712dbef693e250ef93d3eae9e7b88a6b928638410f682c0",
+        "6d201343668a8604553e88f140447c40c3ee236faf79528a2746c45c1db2bd59",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 296),
             ("agent_identity", 25),
             ("surface", 175),
@@ -701,9 +713,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "profile_language_preferences": (
-        "5523005de0c44a3dd08872cfff06692a84c3ecc9275c0ee6186c0006244b9a41",
+        "4ff7fd42fd0080c96161e0c8623ca37e72a627865560e62bd87d37b85d9322b3",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 288),
             ("agent_identity", 25),
             ("surface", 698),
@@ -727,11 +739,11 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "session_context_member_mode": (
-        "758327f19b09f64d46dd8e137d69303353c0cb0645fb7b81f578f65b2200d16b",
+        "ed6df2b66be4315ed1914aeba0f5674bf60d5817cc2db223a1625d84b60da5d8",
         [
             ("unclassified", 64),
             ("agent_identity", 25),
-            ("surface", 1360),
+            ("surface", 1679),
             ("workspace_identity", 371),
             ("docs_pointer", 235),
             ("memory_tools", 425),
@@ -769,9 +781,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "skills_discovery": (
-        "49adefe0518a63058e79669270f83428ab9223b46e113e16023ee62726e31e69",
+        "6d5658d016070a55fa18f7539a70afc9f1eabf5e52ca0522becc6319421a916f",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 288),
             ("agent_identity", 25),
             ("surface", 197),
@@ -809,10 +821,10 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "subagent_scope": (
-        "d23ab1482b64c75cd64f60d870d0b716b94e0ff7d6fcaac9c8693cb2cec61620",
+        "4df13fdaeffbcf481322fbd7c75f970b3277969789fcf52fff12aeaacc00a8bc",
         [
             ("agent_instructions", 145),
-            ("session_wrapper", 296),
+            ("session_wrapper", 297),
             ("agent_identity", 25),
             ("surface", 195),
             ("context_scope", 249),
@@ -824,9 +836,9 @@ _GOLDEN: dict[str, tuple[str, list[tuple[str, int]]]] = {
         ],
     ),
     "temporary_session": (
-        "13d7a7013b1c28a6898a4b13098b94f2b3b354a906b9a348cbd8905ef4b1a8a1",
+        "a8a704d3d31006f23d34fb541dcf7ae00a38210c1665c0dd29215062eb084f78",
         [
-            ("agent_instructions", 1479),
+            ("agent_instructions", 1675),
             ("session_wrapper", 288),
             ("agent_identity", 25),
             ("surface", 197),
@@ -904,6 +916,15 @@ def test_assembled_prompt_is_byte_identical(rig: _Rig, scenario: str) -> None:
     rendered = _mask_stable_text(rig.normalize(_SCENARIOS[scenario](rig)))
     observed = (_sha(rendered), _outline(rendered))
     assert observed == _GOLDEN.get(scenario), f"{scenario}: {observed!r}"
+
+
+def test_the_replay_header_names_what_a_text_replay_does_not_carry(rig: _Rig) -> None:
+    """A replay is rebuilt from chat text alone, so its header tells the model
+    that tool calls, their results and unwritten work did not come with it."""
+    message = _compressed_history_replay(rig)
+    header = next(line for line in message.splitlines() if line.startswith("[CONVERSATION HISTORY"))
+    assert "not your earlier tool calls or their results" in header
+    assert "nothing you worked out without writing it in a reply" in header
 
 
 # ── Budget boundaries ─────────────────────────────────────────────────────────

@@ -1,13 +1,8 @@
 """The Kiro login target survives every managed launch path.
 
-Every managed launch (setup cloud step, ``cloud launch``, dashboard Remote
-Crew) signs the crew in as a NAMED identity: an IAM Identity Center user gets
-their own organization's portal, never the Builder ID one, and a valid session
-for the wrong identity reads as a mismatch, not as "signed in". These tests pin
-the target at each boundary it crosses: the shared model, the login module's
-identity-aware probe and pinned no-fallback, the durable launch job, the
-engine's start AND resume, the owner-only HTTP boundary, and the CLI's
-inherit/override resolution.
+Every managed launch signs the crew in as a NAMED identity: an IAM Identity Center user
+gets their own portal, never Builder ID, and a session for the wrong identity is a
+mismatch. Pinned at each boundary the target crosses, from the shared model to the CLI.
 
 Placeholders only — no real start URL, account or device code appears here.
 """
@@ -406,7 +401,10 @@ class TestLoginModule:
         # The directory is reaped once the login process exits.
         assert 'rm -rf "$(dirname "$0")"' in pinned
         plain = login._device_login_command(replace_existing=False)
-        assert "python3" not in plain and "nohup stdbuf" in plain and "mktemp" not in plain
+        # No driver staging for Builder ID: no python3, no pty directory. (The route
+        # prelude's own one-line `mktemp` for the probe's stderr is not that.)
+        assert "python3" not in plain and "nohup stdbuf" in plain
+        assert "kirocrew-login-pty" not in plain and "mktemp -d" not in plain
 
     def test_driver_staging_failure_is_reported_by_name(self, monkeypatch):
         _ssm_script(
@@ -433,26 +431,51 @@ class TestLoginModule:
         # Without the hint the echo would have been taken as the URL — the guard matters.
         assert login.parse_login_output(only_echo).url == IDC.start_url
 
+    # How each kiro-cli generation draws a prefilled prompt before it reads the
+    # answer, and how it repaints the line once the answer is in. 2.21 ends the
+    # prompt with a caret and a newline; 3.0 leaves the cursor on the prompt
+    # line with no caret.
+    _PROMPT_SHAPES = {
+        "caret-2.21": (
+            "    sys.stdout.write('? ' + label + ' \\u203a ' + default + '\\n'); sys.stdout.flush()\n",
+            "    sys.stdout.write('\\u2714 ' + label + ' \\u00b7 ' + ans + '\\n'); sys.stdout.flush()\n",
+        ),
+        "no-caret-3.0": (
+            "    sys.stdout.write(' ' + label + '  ' + default); sys.stdout.flush()\n",
+            "    sys.stdout.write('\\r\\x1b[2K\\u2714 ' + label + ' \\u00b7 ' + ans + '\\n')\n"
+            "    sys.stdout.flush()\n",
+        ),
+    }
+    # The fake's answer read: it gives the driver five seconds, then exits
+    # non-zero naming the prompt nobody answered. A driver that never presses
+    # Enter therefore fails the test's exit-status assertion instead of
+    # hanging it to the subprocess timeout.
+    _READ_ANSWER = (
+        "    if not select.select([sys.stdin], [], [], 5.0)[0]:\n"
+        "        sys.exit('error: no answer reached the ' + label + ' prompt')\n"
+        "    ans = sys.stdin.readline().strip() or default\n"
+    )
+
     @pytest.mark.skipif(
         importlib.util.find_spec("termios") is None,
         reason="the driver runs on the Linux instance; the host's stdlib has no pty",
     )
-    def test_pty_driver_answers_prefilled_prompts_and_filters_their_echo(self, tmp_path):
-        """Real pty run: a fake kiro-cli that prompts like 2.21.2 (reads a line
-        from the tty for start URL and region, then prints the device code)."""
+    @pytest.mark.parametrize("shape", sorted(_PROMPT_SHAPES))
+    def test_pty_driver_answers_prefilled_prompts_and_filters_their_echo(self, tmp_path, shape):
+        """Real pty run: a fake kiro-cli that prompts for the start URL and the
+        region the way one generation of kiro-cli draws them, reads each answer
+        from the tty, then prints the device code. The driver must answer on the
+        prompt's label, so the caret-less 3.0 shape signs in too."""
         import subprocess
         import sys
 
         driver = tmp_path / "driver.py"
         driver.write_text(login._LOGIN_PTY_DRIVER, encoding="utf-8")
+        draw, confirm = self._PROMPT_SHAPES[shape]
         fake = tmp_path / "fake-kiro"
         fake.write_text(
-            "import sys\n"
-            "def ask(label, default):\n"
-            "    sys.stdout.write('? ' + label + ' \\u203a ' + default + '\\n'); sys.stdout.flush()\n"
-            "    ans = sys.stdin.readline().strip() or default\n"
-            "    sys.stdout.write('\\u2714 ' + label + ' \\u00b7 ' + ans + '\\n'); sys.stdout.flush()\n"
-            "    return ans\n"
+            "import select, sys\n"
+            "def ask(label, default):\n" + draw + self._READ_ANSWER + confirm + "    return ans\n"
             "url = ask('Enter Start URL', sys.argv[sys.argv.index('--identity-provider') + 1])\n"
             "reg = ask('Enter Region', sys.argv[sys.argv.index('--region') + 1])\n"
             "if not reg: sys.exit('error: region must be a valid host label')\n"
@@ -474,6 +497,50 @@ class TestLoginModule:
         assert "\x1b[" not in out
         prompt = login.parse_login_output(out, ignore_url=IDC.start_url)
         assert prompt.code == "WXYZ-1234" and prompt.url.endswith("user_code=WXYZ-1234")
+
+    @pytest.mark.skipif(
+        importlib.util.find_spec("termios") is None,
+        reason="the driver runs on the Linux instance; the host's stdlib has no pty",
+    )
+    def test_pty_driver_answers_a_label_split_across_two_reads(self, tmp_path):
+        """A prompt label written in two pieces, with a pause between them, is
+        still one prompt: the driver answers it once, and does not answer the
+        same prompt again when its confirmation line repeats the label."""
+        import subprocess
+        import sys
+
+        driver = tmp_path / "driver.py"
+        driver.write_text(login._LOGIN_PTY_DRIVER, encoding="utf-8")
+        fake = tmp_path / "fake-kiro"
+        fake.write_text(
+            "import select, sys, time\n"
+            "def ask(label, default):\n"
+            "    sys.stdout.write(' ' + label[:7]); sys.stdout.flush(); time.sleep(0.3)\n"
+            "    sys.stdout.write(label[7:] + '  ' + default); sys.stdout.flush()\n"
+            + self._READ_ANSWER
+            + "    sys.stdout.write('\\r\\x1b[2K\\u2714 ' + label + ' \\u00b7 ' + ans + '\\n')\n"
+            "    sys.stdout.flush()\n"
+            "    return ans\n"
+            "ask('Enter Start URL', sys.argv[sys.argv.index('--identity-provider') + 1])\n"
+            "ask('Enter Region', sys.argv[sys.argv.index('--region') + 1])\n"
+            "print('Open this URL: https://device.example/start/#/device?user_code=WXYZ-1234')\n"
+            # Nothing else is asked, so any further keypress is one the driver
+            # sent to a prompt that was not there.
+            "if select.select([sys.stdin], [], [], 1.0)[0]:\n"
+            "    sys.exit('error: an unasked Enter reached the login')\n",
+            encoding="utf-8",
+        )
+        res = subprocess.run(
+            [sys.executable, str(driver), sys.executable, str(fake), "login", "--use-device-flow"]
+            + ["--identity-provider", IDC.start_url, "--license", "pro", "--region", "us-east-1"],
+            capture_output=True,
+            timeout=30,
+        )
+        out = res.stdout.decode()
+        assert res.returncode == 0, out + res.stderr.decode()
+        assert "Enter Start URL" not in out and "Enter Region" not in out
+        prompt = login.parse_login_output(out, ignore_url=IDC.start_url)
+        assert prompt.url.endswith("user_code=WXYZ-1234")
 
 
 # ── launch job durability ────────────────────────────────────────────────────
@@ -601,13 +668,9 @@ class TestEngineForwarding:
     def test_preflight_refuses_a_target_the_engine_declares_it_cannot_honour(self):
         """An engine that receives ``login_target`` may still refuse one, at preflight.
 
-        Accepting the keyword only says the engine can be handed a target.
-        An engine whose instances never sign in (the Fargate engine) declares
-        the targets it cannot honour through ``login_target_refusal``, and
-        ``_check_signin_target_supported`` turns that reason into the same
-        preflight failure a legacy engine gets, so ``provision`` never runs and
-        nothing is billed. An engine without the hook, and one whose hook
-        returns ``""``, are unaffected.
+        The Fargate engine declares targets it cannot honour via ``login_target_refusal``;
+        ``_check_signin_target_supported`` fails preflight so nothing is billed. No hook, or
+        a hook returning ``""``, is unaffected.
         """
 
         class DeclaringEngine:

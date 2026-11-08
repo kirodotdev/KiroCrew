@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -280,11 +281,8 @@ class TestKiroReadinessQueueHandoff:
     ):
         """A queued item is never lost to a readiness check.
 
-        Probing readiness on turn entry AND again before dequeueing would let
-        a third false answer drop an item already popped off the queue.
-        Both probes are gone — readiness is latched at boot and the ACP attempt
-        reports auth failures — so the successor turn simply runs. This pins the
-        no-loss invariant that outlives the probes.
+        Readiness is latched at boot and the ACP attempt reports auth failures, so a
+        probe before dequeueing could only drop an item already popped.
         """
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
@@ -380,11 +378,8 @@ class TestHistorySaveOnClose:
     async def test_resume_restores_the_channel_filing_marker(self, tmp_path, monkeypatch):
         """Resuming from History must carry the channel-filing marker into memory.
 
-        Four paths rebuild a slot from history. This one (the History page's
-        resume endpoint) is the one that reaches a channel conversation the user
-        opens by hand. Without the marker in memory the slot reports itself as
-        never-filed to every in-memory reader, and the save path would have to
-        rescue it from disk.
+        The History resume endpoint reaches channel conversations opened by hand; without
+        the marker the slot reads as never-filed to every in-memory reader.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
@@ -508,6 +503,33 @@ class TestHistorySaveOnClose:
         meta = state.conversation_log._read_metadata("dashboard:t1")
         assert meta.get("trust") is None
         assert meta.get("trust_reads") is None
+
+
+class TestResumeMetadataRead:
+    @pytest.mark.asyncio
+    async def test_metadata_read_runs_off_the_event_loop(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("dashboard:legacy", "user", "hello")
+        loop_thread = threading.get_ident()
+        read_threads = []
+        get_metadata = log.get_metadata
+
+        def record_metadata_thread(key):
+            read_threads.append(threading.get_ident())
+            return get_metadata(key)
+
+        monkeypatch.setattr(log, "get_metadata", record_metadata_thread)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/legacy/resume", json={"key": "dashboard:legacy"}
+            )
+            body = await response.json()
+
+        assert response.status == 200, body
+        assert read_threads[0] != loop_thread
 
 
 # ── Resume deduplication ──
@@ -650,6 +672,62 @@ class TestResumeDedupe:
         # Should have 4 messages (original 2 + new 2), not duplicated
         msgs = log.read_messages("dashboard:s1")
         assert len(msgs) == 4
+
+
+class TestCronTranscriptResume:
+    @pytest.mark.asyncio
+    async def test_a_resumed_cron_transcript_reopens_as_the_jobs_tab(self, tmp_path, monkeypatch):
+        """A cron chat reopened from History is its job's tab, on its own transcript.
+
+        Unbound, the tab reads ``cron_<id>.jsonl`` but saves every new turn to a
+        second ``dashboard:cron_<id>`` file under the first file's identity, so the
+        delete witness refuses each save and the turns are never kept.
+        """
+        from kiro_crew.dashboard.chat import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("cron:job1", "user", "cron prompt")
+        log.append("cron:job1", "assistant", "cron result")
+        cron_line = {"origin": "cron", "linked_session_key": "cron:job1"}
+        await asyncio.to_thread(log.update_metadata, "cron:job1", cron_line)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/cron_job1/resume", json={"key": "cron_job1"})
+            assert resp.status == 200, await resp.text()
+            assert (await resp.json())["key"] == "cron-job1"
+
+        # The name the cron binders look the job's tab up by, so a run reuses it.
+        slot = state.get_slot("cron-job1")
+        assert list(state._slots) == ["cron-job1"]
+        assert slot.linked_session_key == "cron:job1"
+        slot.append("user", "follow-up after resume")
+        slot.drain()
+        assert _save_slot_to_history(state, slot) is True, "the resumed tab's save was refused"
+        assert log.read_messages("cron:job1")[-1]["content"] == "follow-up after resume"
+        assert log.read_messages("dashboard:cron_job1") == []
+
+    @pytest.mark.asyncio
+    async def test_reopening_a_cron_transcript_returns_the_open_job_tab(
+        self, tmp_path, monkeypatch
+    ):
+        """With the job's tab open, its History row opens that tab, not a second one."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        log.append("cron:job1", "assistant", "cron result")
+        cron_line = {"origin": "cron", "linked_session_key": "cron:job1"}
+        await asyncio.to_thread(log.update_metadata, "cron:job1", cron_line)
+        tab = state.get_or_create_slot(name="cron-job1", linked_session_key="cron:job1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/cron_job1/resume", json={"key": "cron_job1"})
+            assert resp.status == 200, await resp.text()
+            assert (await resp.json())["key"] == "cron-job1"
+
+        assert list(state._slots) == ["cron-job1"]
+        assert state.get_slot("cron-job1") is tab
 
 
 # ── History key prefix handling ──

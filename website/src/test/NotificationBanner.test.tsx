@@ -8,14 +8,16 @@
  * `exitTarget` / `computeExitDelta` helpers instead, which is where the
  * reduced-motion "no travel" rule actually lives.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
-import { createRef } from 'react'
+import { createRef, useEffect, useState, type ReactNode } from 'react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationBanner, { computeExitDelta, exitTarget } from '../components/notifications/NotificationBanner'
-import { dispatchLiveNotification } from '../hooks/notificationEvent'
-import { BANNER_AUTO_HIDE_MS, BANNER_ENABLED_KEY, MEMBER_MESSAGE_CHANNEL, saveBannerEnabled, shouldBannerNote, targetsCurrentView } from '../hooks/notificationBanner'
+import { SWIPE_CLICK_SWALLOW_MS } from '../components/notifications/SwipeToDismiss'
+import { MC_LIVE_NOTIFICATION_EVENT, dispatchLiveNotification } from '../hooks/notificationEvent'
+import { BANNER_AUTO_HIDE_MS, BANNER_ENABLED_KEY, MEMBER_MESSAGE_CHANNEL, STOPPED_CHAT_CHANNEL, saveBannerEnabled, shouldBannerNote, targetsCurrentView } from '../hooks/notificationBanner'
 import { _resetViewedThreadForTests, setViewedThreadSlot } from '../lib/viewedThread'
+import { addNotification, dismissNotificationByTs } from '../store/notificationsSlice'
 import type { RootState } from '../store'
 import { setActiveId } from '../store/instancesSlice'
 import { LocalOverlayRoot } from '../components/overlayRoot'
@@ -79,7 +81,7 @@ const mkN = (over: Partial<Notification> = {}): Notification => ({
   kind: 'cron', ts: `2026-09-21T10:00:0${seq++}.000Z`, title: `Note ${seq}`, body: 'body text', acked: false, ...over,
 })
 
-function renderBanner(opts: { popoverOpen?: boolean; route?: string; activeSlot?: string | null; items?: Notification[] } = {}) {
+function renderBanner(opts: { popoverOpen?: boolean; route?: string; activeSlot?: string | null; items?: Notification[]; after?: ReactNode } = {}) {
   const store = createTestStore({
     notifications: { items: opts.items ?? [] } as RootState['notifications'],
     ...(opts.activeSlot !== undefined ? { chat: { activeSlot: opts.activeSlot } as RootState['chat'] } : {}),
@@ -89,7 +91,7 @@ function renderBanner(opts: { popoverOpen?: boolean; route?: string; activeSlot?
   const utils = renderWithProviders(
     <>
       <button ref={bellRef}>bell</button>
-      <NotificationBanner bellRef={bellRef} popoverOpen={opts.popoverOpen ?? false} onOpenNote={onOpenNote} />
+      <NotificationBanner bellRef={bellRef} popoverOpen={opts.popoverOpen ?? false} onOpenNote={onOpenNote} after={opts.after} />
     </>,
     { store, route: opts.route ?? '/settings' },
   )
@@ -127,6 +129,19 @@ describe('NotificationBanner: arrival', () => {
     expect(region.getAttribute('aria-live')).toBe('polite')
   })
 
+  it('stacks host `after` content in flow below a live card, in the same fixed region', () => {
+    // The file-menu result toast shares this corner; rendering it inside the region
+    // (not as a second fixed overlay) is what keeps it from covering a feed card.
+    renderBanner({ after: <div data-testid="after-slot">Uploaded</div> })
+    arrive(mkN({ title: 'Digest ready' }))
+    const region = screen.getByTestId('notification-banner-region')
+    const after = screen.getByTestId('after-slot')
+    expect(region.contains(after)).toBe(true)
+    expect(region.lastElementChild).toBe(after)
+    const card = cards()[0]
+    expect(card.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('never renders passive or silenced notes', () => {
     renderBanner()
     arrive(mkN({ priority: 'passive' }))
@@ -159,6 +174,36 @@ describe('NotificationBanner: arrival', () => {
     const region = screen.getByTestId('notification-banner-region')
     expect(region.getAttribute('role')).toBe('alert')
     expect(cards()[0].getAttribute('data-priority')).toBe('critical')
+  })
+})
+
+describe('NotificationBanner: publisher withdrawal', () => {
+  it('retires withdrawn keyed cards without retiring an unrelated unkeyed card', () => {
+    const replaced = mkN({ key: 'poller:ci', priority: 'critical', title: 'Poller down' })
+    const replacementView = renderBanner({ items: [replaced] })
+    arrive(replaced)
+    expect(cards()).toHaveLength(1)
+    act(() => {
+      replacementView.store.dispatch(addNotification(mkN({
+        key: 'poller:ci', priority: 'critical', quiet: true, title: 'Poller recovered',
+      })))
+    })
+    expect(cards()).toHaveLength(0)
+    replacementView.unmount()
+
+    const dismissed = mkN({ key: 'poller:build', priority: 'critical', title: 'Build down' })
+    const dismissalView = renderBanner({ items: [dismissed] })
+    arrive(dismissed)
+    act(() => { dismissalView.store.dispatch(dismissNotificationByTs(dismissed.ts)) })
+    expect(cards()).toHaveLength(0)
+    dismissalView.unmount()
+
+    const unkeyed = mkN({ priority: 'critical', title: 'Approval needed' })
+    const unrelatedView = renderBanner({ items: [unkeyed] })
+    arrive(unkeyed)
+    act(() => { unrelatedView.store.dispatch(dismissNotificationByTs('unrelated-ts')) })
+    expect(cards()).toHaveLength(1)
+    expect(screen.getByText('Approval needed')).toBeTruthy()
   })
 })
 
@@ -247,6 +292,20 @@ describe('shouldBannerNote / targetsCurrentView (pure)', () => {
     expect(targetsCurrentView(ada, { pathname: '/chat', activeSlot: 'member-ada', windowFocused: true })).toBe(true)
     // Any other note keeps the route rule.
     expect(targetsCurrentView(mkN({ url: '/members?member=Ada' }), { ...onMembers, viewedThread: 'member-bo' })).toBe(true)
+  })
+  it('treats a stopped-chat alert as on screen only while its own chat is active', () => {
+    // Deep link is /chat?sid=<dying slot>; the generic url-path branch would
+    // strip the query and match the bare /chat route, so the channel is
+    // view-targeted by slot alone.
+    const died = mkN({ channel: STOPPED_CHAT_CHANNEL, kind: 'agent', slot: 'chat-A', url: '/chat?sid=chat-A' })
+    // Viewing the dying chat: on screen, no banner.
+    expect(targetsCurrentView(died, { pathname: '/chat', activeSlot: 'chat-A', windowFocused: true })).toBe(true)
+    // On a DIFFERENT chat: the death is elsewhere, so it still banners.
+    expect(targetsCurrentView(died, { pathname: '/chat', activeSlot: 'chat-B', windowFocused: true })).toBe(false)
+    // On a chat page with no active slot: still banners (not suppressed by the bare /chat path).
+    expect(targetsCurrentView(died, { pathname: '/chat', activeSlot: null, windowFocused: true })).toBe(false)
+    // Away from the window: nothing is on screen.
+    expect(targetsCurrentView(died, { pathname: '/chat', activeSlot: 'chat-A', windowFocused: false })).toBe(false)
   })
 })
 
@@ -564,6 +623,48 @@ describe('NotificationBanner: stack and interaction', () => {
     expect(cards()[0].textContent).toContain('First')
   })
 
+  it('an Escape pressed the moment a card appears still dismisses it', async () => {
+    // A live note lands from a window event, a default-priority update. When
+    // that render runs past the scheduler's 5 ms slice React yields before it
+    // runs passive effects, so a listener attached there would miss a press in
+    // that gap. A sibling that renders slowly on the same arrival forces it.
+    function SlowOnArrival() {
+      const [arrived, setArrived] = useState(false)
+      useEffect(() => {
+        const onLive = () => setArrived(true)
+        window.addEventListener(MC_LIVE_NOTIFICATION_EVENT, onLive)
+        return () => window.removeEventListener(MC_LIVE_NOTIFICATION_EVENT, onLive)
+      }, [])
+      if (arrived) {
+        const end = performance.now() + 20
+        while (performance.now() < end) { /* outlast the scheduler slice */ }
+      }
+      return null
+    }
+    renderBanner({ after: <SlowOnArrival /> })
+
+    const g = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+    const prior = g.IS_REACT_ACT_ENVIRONMENT
+    let pressedEscape!: () => void
+    const pressed = new Promise<void>(resolve => { pressedEscape = resolve })
+    const watch = new MutationObserver(() => {
+      if (!document.querySelector('[data-testid="notification-banner-card"]')) return
+      watch.disconnect()
+      fireEvent.keyDown(document, { key: 'Escape' })
+      pressedEscape()
+    })
+    // Undone even when the test times out, so a failure cannot leak into the next test.
+    const restore = () => { watch.disconnect(); g.IS_REACT_ACT_ENVIRONMENT = prior }
+    onTestFinished(restore)
+    // Let React schedule the arrival as it does in the app, not flush it in act().
+    g.IS_REACT_ACT_ENVIRONMENT = false
+    watch.observe(document.body, { childList: true, subtree: true })
+    dispatchLiveNotification(mkN({ title: 'First' }))
+    await pressed
+    restore()
+    await waitFor(() => expect(cards()).toHaveLength(0))
+  })
+
   it('leaves the cards alone when a focused surface already handled the Escape', () => {
     // The composer's Escape-to-stop and dictation-discard both preventDefault
     // the Escape they claim, before it bubbles to document. The banner must
@@ -659,6 +760,260 @@ describe('NotificationBanner: stack and interaction', () => {
     arrive(n)
     fireEvent.click(screen.getByRole('button', { name: 'Review' }))
     expect(onOpenNote).toHaveBeenCalledWith(n.ts)
+  })
+})
+
+describe('NotificationBanner: swipe to dismiss (mobile)', () => {
+  const swipeEl = () => screen.getByTestId('notification-banner-swipe')
+  const touch = (x: number, y: number) => ({ pointerId: 7, pointerType: 'touch', clientX: x, clientY: y })
+  /** One finger: down at (x0, 100), through each `xs` step, then lifted at the last. */
+  const swipe = (steps: Array<[number, number]>) => {
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(...steps[0]))
+    for (const s of steps.slice(1)) fireEvent.pointerMove(el, touch(...s))
+    fireEvent.pointerUp(el, touch(...steps[steps.length - 1]))
+  }
+
+  it('a horizontal swipe past the threshold dismisses the card the way the X does: gone, still unread', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { store } = renderBanner({ items: [n] })
+    arrive(n)
+    expect(cards()).toHaveLength(1)
+    swipe([[200, 100], [230, 102], [300, 104]])
+    expect(cards()).toHaveLength(0)
+    // Same persistence as the close control: the note is not acked, it waits in the bell.
+    expect(mockAck).not.toHaveBeenCalled()
+    expect(store.getState().notifications.items[0].acked).toBe(false)
+  })
+
+  it('a leftward swipe dismisses too', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    swipe([[300, 100], [270, 100], [180, 100]])
+    expect(cards()).toHaveLength(0)
+  })
+
+  it('a short swipe follows the finger and then snaps back, dismissing nothing', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 100))
+    fireEvent.pointerMove(el, touch(215, 100))
+    fireEvent.pointerMove(el, touch(240, 100))
+    expect(el.style.transform).toBe('translateX(40.0px)')
+    expect(el.getAttribute('data-swiping')).toBe('true')
+    fireEvent.pointerUp(el, touch(240, 100))
+    expect(cards()).toHaveLength(1)
+    expect(el.style.transform).toBe('')
+    expect(el.getAttribute('data-swiping')).toBeNull()
+  })
+
+  it('a downward drag is declined: the card never moves, even if the finger turns sideways later', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    expect(el.className).toContain('touch-none')
+    fireEvent.pointerDown(el, touch(200, 100))
+    fireEvent.pointerMove(el, touch(202, 130))
+    fireEvent.pointerMove(el, touch(320, 160))
+    expect(el.style.transform).toBe('')
+    fireEvent.pointerUp(el, touch(320, 160))
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('an upward swipe past the threshold dismisses the card the way the X does: gone, still unread', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { store } = renderBanner({ items: [n] })
+    arrive(n)
+    const el = swipeEl()
+    // The wrapper must not hand the vertical axis to the browser, or a real
+    // engine cancels the upward swipe as a scroll before it can dismiss.
+    expect(el.className).toContain('touch-none')
+    expect(el.className).not.toContain('touch-pan-y')
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(202, 185))
+    fireEvent.pointerMove(el, touch(204, 150))
+    expect(el.style.transform).toBe('translateY(-50.0px)')
+    fireEvent.pointerUp(el, touch(205, 110))
+    expect(cards()).toHaveLength(0)
+    expect(mockAck).not.toHaveBeenCalled()
+    expect(store.getState().notifications.items[0].acked).toBe(false)
+  })
+
+  it('a short upward swipe follows the finger and then springs back, dismissing nothing', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { onOpenNote } = renderBanner()
+    arrive(n)
+    vi.useFakeTimers()
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(200, 188))
+    fireEvent.pointerMove(el, touch(200, 160))
+    expect(el.style.transform).toBe('translateY(-40.0px)')
+    // Back down past the rest position: the card stops at rest, it is not pulled down.
+    fireEvent.pointerMove(el, touch(200, 230))
+    expect(el.style.transform).toBe('')
+    fireEvent.pointerMove(el, touch(200, 170))
+    fireEvent.pointerUp(el, touch(200, 170))
+    expect(cards()).toHaveLength(1)
+    expect(el.style.transform).toBe('')
+    expect(el.getAttribute('data-swiping')).toBeNull()
+    // The release's click is swallowed, as for a sideways snap-back.
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).not.toHaveBeenCalled()
+  })
+
+  it('an upward swipe the browser cancels springs back', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(200, 185))
+    fireEvent.pointerMove(el, touch(200, 90))
+    fireEvent.pointerCancel(el, touch(200, 90))
+    expect(el.style.transform).toBe('')
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('a drag that locks sideways stays sideways: turning upward later does not dismiss', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 200))
+    fireEvent.pointerMove(el, touch(215, 198))
+    fireEvent.pointerMove(el, touch(230, 100))
+    expect(el.style.transform).toBe('translateX(30.0px)')
+    fireEvent.pointerUp(el, touch(230, 100))
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('a diagonal drag that crosses the scroll slop before the horizontal lock is declined', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 100))
+    fireEvent.pointerMove(el, touch(209, 109))
+    fireEvent.pointerMove(el, touch(320, 110))
+    expect(el.style.transform).toBe('')
+    fireEvent.pointerUp(el, touch(320, 108))
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('the click a snapped-back swipe releases does not open the note', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { onOpenNote } = renderBanner()
+    arrive(n)
+    // The swallow is a wall-clock deadline; pin the clock so the release and
+    // the click below are measured on the same instant, not on a loaded runner.
+    vi.useFakeTimers()
+    swipe([[200, 100], [215, 100], [240, 100]])
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).not.toHaveBeenCalled()
+    // The NEXT tap is an ordinary tap again.
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).toHaveBeenCalledWith(n.ts)
+  })
+
+  it('a touch that the browser cancels (it took the scroll) snaps back', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 100))
+    fireEvent.pointerMove(el, touch(215, 100))
+    fireEvent.pointerMove(el, touch(320, 100))
+    expect(el.style.transform).toBe('translateX(120.0px)')
+    fireEvent.pointerCancel(el, touch(320, 100))
+    expect(el.style.transform).toBe('')
+    expect(cards()).toHaveLength(1)
+  })
+
+  it('the click swallow after a snapped-back swipe expires: a keyboard activation 350ms later opens the note', () => {
+    vi.useFakeTimers()
+    isMobileMock = true
+    const n = mkN()
+    const { onOpenNote } = renderBanner()
+    arrive(n)
+    swipe([[200, 100], [215, 100], [240, 100]])
+    // A touch that moved past the browser's tap slop may fire no click at all,
+    // so nothing clears the swallow but time. An Enter on the card body (a
+    // click with no pointerdown) after the window must go through.
+    act(() => { vi.advanceTimersByTime(SWIPE_CLICK_SWALLOW_MS) })
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).toHaveBeenCalledWith(n.ts)
+  })
+
+  it('a cancelled swipe arms no click swallow: the next keyboard activation still opens the note', () => {
+    isMobileMock = true
+    const n = mkN()
+    const { onOpenNote } = renderBanner()
+    arrive(n)
+    const el = swipeEl()
+    fireEvent.pointerDown(el, touch(200, 100))
+    fireEvent.pointerMove(el, touch(215, 100))
+    fireEvent.pointerMove(el, touch(260, 100))
+    fireEvent.pointerCancel(el, touch(260, 100))
+    // A cancel fires no click of its own, so there is nothing to swallow; an
+    // Enter on the card body (a click with no pointerdown) must go through.
+    fireEvent.click(screen.getByRole('button', { name: `Open notification: ${n.title}` }))
+    expect(onOpenNote).toHaveBeenCalledWith(n.ts)
+  })
+
+  it('keeps the visible close button beside the swipe on mobile', () => {
+    isMobileMock = true
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    expect(screen.getByTestId('notification-banner-dismiss')).toBeTruthy()
+  })
+
+  it('does nothing on the desktop layout or for a mouse', () => {
+    const n = mkN()
+    renderBanner()
+    arrive(n)
+    swipe([[200, 100], [230, 100], [400, 100]])
+    expect(cards()).toHaveLength(1)
+    expect(swipeEl().className).not.toContain('touch-none')
+    isMobileMock = true
+    const m = mkN()
+    renderBanner()
+    arrive(m)
+    const el = screen.getAllByTestId('notification-banner-swipe')[1]
+    const mouse = (x: number) => ({ pointerId: 1, pointerType: 'mouse', clientX: x, clientY: 100 })
+    fireEvent.pointerDown(el, mouse(200))
+    fireEvent.pointerMove(el, mouse(230))
+    fireEvent.pointerMove(el, mouse(400))
+    fireEvent.pointerUp(el, mouse(400))
+    expect(cards()).toHaveLength(2)
+  })
+
+  it('snaps back without a transition under reduced motion, with one otherwise', () => {
+    isMobileMock = true
+    reducedMotionMock = true
+    renderBanner()
+    arrive(mkN())
+    expect(swipeEl().className).not.toContain('transition-transform')
+    reducedMotionMock = false
+    renderBanner()
+    arrive(mkN())
+    expect(screen.getAllByTestId('notification-banner-swipe')[1].className).toContain('transition-transform')
   })
 })
 

@@ -15,9 +15,9 @@ from typing import Any
 import pytest
 from guide_route_helpers import FakeState, agent, run_guide_app
 
-from kiro_crew import mcp_mate
+from kiro_crew import crewmate_prompts, mcp_mate
 from kiro_crew import members as members_mod
-from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
+from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, ASSISTANT_MEMBER_NAME
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, _invalidate_config_cache
 from kiro_crew.dashboard import chat_cards, member_self_changes
 from kiro_crew.dashboard.handlers import guide as guide_routes
@@ -833,6 +833,22 @@ def test_the_shim_sends_only_the_fields_it_was_given(monkeypatch) -> None:
     assert "Pebble" in out and "Undo" in out
 
 
+def test_a_rename_says_other_mates_still_reach_it_by_its_short_name(monkeypatch) -> None:
+    monkeypatch.setattr(mcp_mate, "_strict_session_key", lambda: ("dashboard:member-mate", ""))
+    monkeypatch.setattr(
+        mcp_mate,
+        "_post",
+        lambda *_a, **_k: {
+            "ok": True,
+            "member": "mate",
+            "changed": ["display_name"],
+            "after": {"display_name": "SDE Buddy"},
+        },
+    )
+    out = mcp_mate._call_tool_inner("update_self", {"display_name": "SDE Buddy"})
+    assert "other Bots still reach you by your short name, mate" in out
+
+
 def test_the_shim_says_nothing_changed_when_the_gateway_refused(monkeypatch) -> None:
     monkeypatch.setattr(mcp_mate, "_strict_session_key", lambda: ("dashboard:chat-1", ""))
     monkeypatch.setattr(
@@ -1024,35 +1040,33 @@ def test_an_undo_with_a_bad_slug_or_an_unpublishable_row_is_a_coded_refusal(monk
 def test_mates_first_welcome_asks_for_a_name_for_mate(others: bool) -> None:
     entry = KiroCrewAgentConfig(kiro_agent=DEFAULT)
     kickoff = welcome_kickoff(entry, has_other_crewmates=others)
-    assert "Introduce yourself as Mate" in kickoff
-    # The three things Mate offers, and nothing beyond them.
-    assert (
-        "getting Kiro Crew set up, sorting out anything that is not working in it, or "
-        "showing them around. Keep to those three" in kickoff
-    )
-    # It finishes on what to call it -- the name is Mate's, not the user's.
-    assert "Finish by asking what they would like to call you (you, not them)" in kickoff
-    # Asked the way a person asks it, not explained.
-    assert '"What would you like to call me?"' in kickoff
-    assert "being named" not in kickoff
-    # update_self only once the user answers with a name.
-    assert "When they answer with a name for you, call update_self with display_name" in kickoff
-    # The reply that renames says so, so the old name in the welcome above is not left unexplained.
-    assert "say plainly in that reply that you go by the new name" in kickoff
-    # The greeting turn itself still calls nothing.
-    assert "Call no tools in this reply." in kickoff
-    # Plain words for a newcomer: no session explainer, no developer terms.
-    assert "session" not in kickoff and "no developer terms" in kickoff
+    # Structure only; the wording lives in crewmate_prompts.json. The intro
+    # (name first, then what a mate is) comes before the offer.
+    names = {"name": ASSISTANT_DEFAULT_DISPLAY_NAME, "key": ASSISTANT_MEMBER_NAME}
+    intro = crewmate_prompts.text("welcome.intro").format(**names)
+    offer = crewmate_prompts.text("welcome.offer_tools").format(**names)
+    assert intro in kickoff and offer in kickoff
+    assert kickoff.index(intro) < kickoff.index(offer)
+    # The rename, then the tour of the three guidable tabs in order, then the goal.
+    tour = [
+        kickoff.index(location)
+        for location in ("members.profile-tab", "members.schedule-tab", "members.goals-tab")
+    ]
+    assert tour == sorted(tour)
+    assert kickoff.index("update_self") < kickoff.index("guide_start") < tour[0]
+    assert tour[-1] < kickoff.index("set_goal")
+    # No session explainer for a newcomer.
+    assert "session" not in kickoff
 
 
 def test_mates_welcome_fits_a_user_who_already_has_crewmates() -> None:
     entry = KiroCrewAgentConfig(kiro_agent=DEFAULT)
     alone = welcome_kickoff(entry, has_other_crewmates=False)
     crewed = welcome_kickoff(entry, has_other_crewmates=True)
-    assert "you are the first teammate on their crew" in alone
-    assert "first teammate" not in crewed
-    assert "They already have other mates" in crewed
-    assert "one more teammate" in crewed
+    assert "You are the first Bot on their crew" in alone
+    assert "first Bot" not in crewed
+    assert "They already have other Bots" in crewed
+    assert "one more Bot" in crewed
 
 
 @pytest.mark.parametrize("others", [False, True])

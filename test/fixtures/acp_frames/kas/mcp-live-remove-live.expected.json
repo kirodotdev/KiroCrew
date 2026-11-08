@@ -1,0 +1,534 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "kiro": {
+          "autoCompactionThreshold": {
+            "default": 80,
+            "max": 80,
+            "min": 0
+          },
+          "checkpoints": true,
+          "executionTargets": [
+            "local",
+            "cloud-sandbox"
+          ],
+          "extensionMethods": [
+            "_kiro/knowledge",
+            "_kiro/memory/list",
+            "_kiro/memory/get",
+            "_kiro/memory/create",
+            "_kiro/memory/update",
+            "_kiro/memory/delete",
+            "_kiro/codeIntelligence",
+            "_kiro/environment/start_ssh_session",
+            "_kiro/session/context",
+            "_kiro/session/compact",
+            "_kiro/session/export",
+            "_kiro/session/history",
+            "_kiro/config/template",
+            "_kiro/configuration/getState",
+            "_kiro/configuration/set",
+            "_kiro/workflow/new",
+            "_kiro/workflow/invoke",
+            "_kiro/workflow/load",
+            "_kiro/workflow/inspect",
+            "_kiro/workflow/list",
+            "_kiro/workflow/pause",
+            "_kiro/workflow/cancel",
+            "_kiro/workflow/delete",
+            "_kiro/workflow/listRecipes",
+            "_kiro/workflow/listWatchHandlers",
+            "_kiro/workflow/resumeAll",
+            "_kiro/workflow/retry",
+            "_kiro/workflow/update",
+            "_kiro/workflow/resume",
+            "_kiro/sourceProviders/list",
+            "_kiro/sourceProviders/listResources"
+          ],
+          "modelFallbackReporting": true,
+          "policyNotifications": true,
+          "replayMarking": true,
+          "sessionList": true,
+          "sessionListScopes": [
+            "workspace",
+            "user"
+          ],
+          "sessionSources": [
+            "local",
+            "remote"
+          ],
+          "sourceProviders": true
+        }
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "delete": {},
+        "fork": {
+          "_meta": {
+            "kiro": {
+              "messageId": true
+            }
+          }
+        },
+        "list": {}
+      }
+    },
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/tools/didChange",
+    "params": {
+      "sessionId": "kas-mcp-live-session-1",
+      "tags": [
+        {
+          "description": "read-file, diagnostics, search tools",
+          "source": "builtin",
+          "tag": "read"
+        },
+        {
+          "description": "write-file tools",
+          "source": "builtin",
+          "tag": "write"
+        },
+        {
+          "description": "run-commands tools",
+          "source": "builtin",
+          "tag": "shell"
+        },
+        {
+          "description": "web search tools",
+          "source": "builtin",
+          "tag": "web"
+        }
+      ]
+    }
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "vibe",
+      "ids": [
+        "probe-mcp"
+      ]
+    },
+    "session_id": "kas-mcp-live-session-1"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/tools/didChange",
+    "params": {
+      "sessionId": "kas-mcp-live-session-1",
+      "tags": [
+        {
+          "description": "read-file, diagnostics, search tools",
+          "source": "builtin",
+          "tag": "read"
+        },
+        {
+          "description": "Echo back the text with the marker A.",
+          "source": "mcp",
+          "tag": "@probe-a/probe_a_echo"
+        },
+        {
+          "description": "Echo back the text with the marker B.",
+          "source": "mcp",
+          "tag": "@probe-b/probe_b_echo"
+        }
+      ]
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "synthetic-toolcall-1",
+        "tool_final": true,
+        "tool_output": "{\n  \"loaded\": [\n    {\n      \"tool_id\": \"probe-b::probe_b_echo\",\n      \"description\": \"Echo back the text with the marker B.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ],\n  \"not_found\": [],\n  \"note\": \"These tools are now loaded for the rest of this session. To RUN one, call tool_call with { \\\"tool_id\\\": \\\"namespace::tool\\\", \\\"arguments\\\": { ... } } (use the tool_id shown for each result, and arguments matching its input_schema). Do not call tool_load again for tools you have already loaded.\"\n}",
+        "tool_output_bytes": 667,
+        "tool_output_digest": "a0c2ff6e5c10f6b25b1851aac6aae782fade775ebd82dcbc6142a89fe4d577db",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "tool_ids": [
+            "probe-b::probe_b_echo"
+          ]
+        },
+        "title": "Tool Load",
+        "tool_call_id": "synthetic-toolcall-1",
+        "tool_input": "{\n  \"tool_ids\": [\n    \"probe-b::probe_b_echo\"\n  ]\n}",
+        "wire_title": "Tool Load"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "mcp_server_name": "probe-b",
+        "raw_tool_params": {
+          "arguments": {
+            "text": "one"
+          },
+          "tool_id": "probe-b::probe_b_echo"
+        },
+        "title": "@probe-b/probe_b_echo",
+        "tool_call_id": "synthetic-toolcall-2",
+        "tool_input": "{\n  \"tool_id\": \"probe-b::probe_b_echo\",\n  \"arguments\": {\n    \"text\": \"one\"\n  }\n}",
+        "tool_kind": "other",
+        "wire_title": "@probe-b/probe_b_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "harness_tool_id": "mcp_probe_b_probe_b_echo",
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "mcp_server_name": "probe-b",
+        "options": [
+          {
+            "id": "accept",
+            "label": "Allow"
+          },
+          {
+            "id": "always-accept",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Deny"
+          },
+          {
+            "id": "always-reject",
+            "label": "Always deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "arguments": {
+            "text": "one"
+          },
+          "tool_id": "probe-b::probe_b_echo"
+        },
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "@probe-b/probe_b_echo",
+        "tool_call_id": "synthetic-toolcall-2",
+        "tool_input": "{\n  \"tool_id\": \"probe-b::probe_b_echo\",\n  \"arguments\": {\n    \"text\": \"one\"\n  }\n}",
+        "tool_name": "probe_b_echo"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always-accept",
+      "once": "accept",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "arguments": {
+            "text": "one"
+          },
+          "tool_id": "probe-b::probe_b_echo"
+        },
+        "tool_call_id": "synthetic-toolcall-2",
+        "tool_input": "{\n  \"tool_id\": \"probe-b::probe_b_echo\",\n  \"arguments\": {\n    \"text\": \"one\"\n  }\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "synthetic-toolcall-2",
+        "tool_final": true,
+        "tool_output": "B-ECHO:one",
+        "tool_output_bytes": 10,
+        "tool_output_digest": "321ecf82dba6775a82227a600d0bd7447bf73071484fc89cc0460ed899f4bf1d",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "arguments": {
+            "text": "one"
+          },
+          "tool_id": "probe-b::probe_b_echo"
+        },
+        "title": "@probe-b/probe_b_echo",
+        "tool_call_id": "synthetic-toolcall-2",
+        "tool_input": "{\n  \"tool_id\": \"probe-b::probe_b_echo\",\n  \"arguments\": {\n    \"text\": \"one\"\n  }\n}",
+        "wire_title": "@probe-b/probe_b_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "B-ECHO:one"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "B-ECHO:one",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  },
+  {
+    "frame": "response",
+    "id": 5
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "tool_ids": [
+            "probe-b::probe_b_echo"
+          ]
+        },
+        "title": "Tool Load",
+        "tool_call_id": "synthetic-toolcall-1",
+        "tool_input": "{\n  \"tool_ids\": [\n    \"probe-b::probe_b_echo\"\n  ]\n}",
+        "tool_kind": "other",
+        "wire_title": "Tool Load"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "synthetic-toolcall-1",
+        "tool_final": true,
+        "tool_output": "{\n  \"loaded\": [\n    {\n      \"tool_id\": \"probe-b::probe_b_echo\",\n      \"description\": \"Echo back the text with the marker B.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"text\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"text\"\n        ]\n      }\n    }\n  ],\n  \"not_found\": [],\n  \"note\": \"These tools are now loaded for the rest of this session. To RUN one, call tool_call with { \\\"tool_id\\\": \\\"namespace::tool\\\", \\\"arguments\\\": { ... } } (use the tool_id shown for each result, and arguments matching its input_schema). Do not call tool_load again for tools you have already loaded.\"\n}",
+        "tool_output_bytes": 667,
+        "tool_output_digest": "a0c2ff6e5c10f6b25b1851aac6aae782fade775ebd82dcbc6142a89fe4d577db",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "mcp_server_name": "probe-b",
+        "raw_tool_params": {
+          "arguments": {
+            "text": "one"
+          },
+          "tool_id": "probe-b::probe_b_echo"
+        },
+        "title": "@probe-b/probe_b_echo",
+        "tool_call_id": "synthetic-toolcall-2",
+        "tool_input": "{\n  \"tool_id\": \"probe-b::probe_b_echo\",\n  \"arguments\": {\n    \"text\": \"one\"\n  }\n}",
+        "tool_kind": "other",
+        "wire_title": "@probe-b/probe_b_echo"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "synthetic-toolcall-2",
+        "tool_final": true,
+        "tool_output": "B-ECHO:one",
+        "tool_output_bytes": 10,
+        "tool_output_digest": "321ecf82dba6775a82227a600d0bd7447bf73071484fc89cc0460ed899f4bf1d",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "B-ECHO:one"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "B-ECHO:one",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 6,
+    "modes": {
+      "advertised": true,
+      "current": "probe-mcp",
+      "ids": [
+        "probe-mcp"
+      ]
+    },
+    "session_id": "kas-mcp-live-session-1"
+  },
+  {
+    "action": "skip",
+    "frame": "_kiro/tools/didChange",
+    "params": {
+      "sessionId": "kas-mcp-live-session-1",
+      "tags": [
+        {
+          "description": "read-file, diagnostics, search tools",
+          "source": "builtin",
+          "tag": "read"
+        },
+        {
+          "description": "Echo back the text with the marker A.",
+          "source": "mcp",
+          "tag": "@probe-a/probe_a_echo"
+        }
+      ]
+    }
+  },
+  {
+    "frame": "response",
+    "id": 7
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "synthetic-toolcall-3",
+        "tool_output": "Tool \"probe-b::probe_b_echo\" was loaded earlier in this conversation, but it is no longer connected (its MCP server went away or the tool was withdrawn), so it cannot be run now. Check the deferred tools catalog for what is currently available.",
+        "tool_output_bytes": 244,
+        "tool_output_digest": "931632233afbd02675f2f7aea17160ae87d6376fab1779b8efa8b373b3c4364d",
+        "tool_status": "failed"
+      },
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "arguments": {
+            "text": "two"
+          },
+          "tool_id": "probe-b::probe_b_echo"
+        },
+        "title": "Tool Call",
+        "tool_call_id": "synthetic-toolcall-3",
+        "tool_input": "{\n  \"tool_id\": \"probe-b::probe_b_echo\",\n  \"arguments\": {\n    \"text\": \"two\"\n  }\n}",
+        "wire_title": "Tool Call"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "NO-TOO"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "NO-TOO",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "L-B\nSAFF"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "L-B\nSAFF",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "RON"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "RON",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 8,
+    "stop_reason": "end_turn"
+  },
+  {
+    "frame": "response",
+    "id": 9
+  }
+]

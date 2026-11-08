@@ -95,7 +95,13 @@ class OutputEvent:
     # rules (the Slack `wait` stream rollover) must key on what the tool IS.
     # Empty when the transport sent no identity; renderers then fall back to the
     # title, which is what they matched on before the identity travelled.
+    # prompt_choice: the same identity of the tool asked about, set only from a
+    # pair :func:`trusted_mcp_identity` accepts, beside ``mcp_server``.
     tool_name: str = ""
+    # prompt_choice: the MCP server the call is routed to (``_meta.kiro.mcpServerName``),
+    # so an approver can see WHERE a tool runs: ``email_send`` alone does not say which
+    # mail server sends it. "" for a built-in, a shell call or an unproven identity.
+    mcp_server: str = ""
     tool_kind: str = ""  # tool_call (e.g. "read"/"execute" — drives phase emoji)
     tool_purpose: str = ""  # tool_call / prompt_choice (human-readable purpose)
     # tool_result: the call's TERMINAL outcome as the ACP layer reported it, one
@@ -117,6 +123,21 @@ class OutputEvent:
     # the sentence to post in place of a bare placeholder when the turn closed
     # with no assistant text, ``""`` when it produced text or was cancelled.
     notice: str = ""
+    # text_chunk: this text ENDS the text that came before the last tool call.
+    # The driver's stream redactor holds a trailing run until it can see what
+    # follows, so the last word before a call ("...writes the local overlay.")
+    # is released only with the first text after it. The driver splits that
+    # held run off into its own chunk with this flag, so a renderer that keeps
+    # each tool step's text apart can put it back where it was written. May be
+    # empty: the held run could not be told apart (a redaction reached across
+    # the join), and the earlier text simply ends where it already ended.
+    continues_segment: bool = False
+    # tool_call: the text before this call is not complete yet -- its last run
+    # is still held and arrives later as a ``continues_segment`` chunk.
+    text_held: bool = False
+    # tool_call: the whole (redacted) command when ``title`` is its raw
+    # fallback cut to one line, ``""`` when ``title`` is a derived action.
+    raw_title: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +154,9 @@ class OutputEvent:
             "context_usage_pct": self.context_usage_pct,
             "stop_reason": self.stop_reason,
             "notice": self.notice,
+            "continues_segment": self.continues_segment,
+            "text_held": self.text_held,
+            "raw_title": self.raw_title,
         }
 
 
@@ -292,7 +316,12 @@ def cap_choices(
     return choices[:n], choices[n:]
 
 
-def display_safe_for(text: str, capabilities: TransportCapabilities) -> str:
+def display_safe_for(
+    text: str,
+    capabilities: TransportCapabilities,
+    *,
+    redactor: Callable[[str], str] | None = None,
+) -> str:
     """:func:`display_safe`, with the mention defang applied only where it belongs.
 
     The channel-NEUTRAL proactive sinks (the dashboard's channel-addressed send and
@@ -311,9 +340,13 @@ def display_safe_for(text: str, capabilities: TransportCapabilities) -> str:
     Control-tag comments are stripped first, same as :func:`display_safe` —
     the deterministic backstop against a dashboard-authored control tag
     reaching channel users as literal text.
+
+    ``redactor`` defaults to ``_default_redactor``. A caller in a composed host
+    passes ``redact_via_context`` so companion credential patterns apply too, the
+    same reason :func:`chunk_for_transport` takes one.
     """
     text = strip_control_comments(text or "")
-    safe, _ = redact_for_display(text, _default_redactor)
+    safe, _ = redact_for_display(text, redactor or _default_redactor)
     if not capabilities.mention_grammars:
         return safe
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
@@ -332,6 +365,23 @@ def session_provenance_tag(session_key: str) -> str:
     if not session_key:
         return ""
     return hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:12]
+
+
+def trusted_mcp_identity(event: object) -> tuple[str, str]:
+    """``(server, tool)`` of the MCP tool a permission *event* asks about, or ``("", "")``.
+
+    Read from the ``_meta.kiro`` identity the ACP layer marked ``mcp_identity_trusted``,
+    never from the title the model wrote, and only when it names a server: a built-in
+    or a shell call has no server, and an unproven pair names nothing an approver can
+    rely on. Each field is type-checked, so an event shape that lacks them (a shim, a
+    stand-in) reads as unproven rather than as an attribute that merely exists.
+    """
+    if getattr(event, "mcp_identity_trusted", False) is not True:
+        return "", ""
+    server, tool = getattr(event, "mcp_server_name", ""), getattr(event, "tool_name", "")
+    if not isinstance(server, str) or not server.strip():
+        return "", ""
+    return server, tool if isinstance(tool, str) else ""
 
 
 def new_approval_nonce() -> str:
@@ -828,6 +878,20 @@ class Renderer(ABC):
     #: reads this instead of matching the title. ``""`` when the transport sent
     #: no identity.
     current_tool_name: str = ""
+    #: Whether the text before the tool call ``on_tool_call`` is rendering is
+    #: still incomplete (``OutputEvent.text_held``), set by :meth:`dispatch`
+    #: before the hook runs. True means its last run arrives later through
+    #: :meth:`on_text_continuation`.
+    tool_text_held: bool = False
+    #: The whole command behind the raw-fallback title of the tool call
+    #: ``on_tool_call`` is rendering (``OutputEvent.raw_title``), set by
+    #: :meth:`dispatch` before the hook runs; ``""`` for a derived title.
+    current_tool_raw_title: str = ""
+    #: ``(server, tool)`` of the MCP tool the prompt ``on_prompt_choice`` is rendering
+    #: asks about (``OutputEvent.mcp_server`` / ``tool_name``), set by :meth:`dispatch`
+    #: for that one call and cleared after it, so a later direct call cannot show
+    #: another tool's server. Never model-authored, unlike ``tool_title``.
+    prompt_mcp_identity: tuple[str, str] = ("", "")
     #: The driver's empty-turn verdict for the turn being finalized
     #: (``OutputEvent.notice`` on ``DONE``), set by :meth:`dispatch` before
     #: ``on_done`` runs. Non-empty means the turn closed with no assistant text
@@ -950,6 +1014,20 @@ class Renderer(ABC):
     async def on_text_chunk(self, text: str) -> None:
         """Render a streamed assistant text chunk."""
 
+    async def on_text_continuation(self, text: str) -> None:
+        """Render the held end of the text that came before the last tool call.
+
+        The default joins it to the stream like any other chunk, which is what
+        every renderer that lays a turn's text end to end wants: the text it
+        sees is byte for byte what it saw before the chunk was split off. A
+        renderer that keeps each tool step's text apart (Slack folds the text
+        before a call into that call's step) overrides this to add the run to
+        the step it belongs to. ``text`` may be empty: the earlier text is
+        complete as it stands.
+        """
+        if text:
+            await self.on_text_chunk(text)
+
     @abstractmethod
     async def on_thinking(self, text: str) -> None:
         """Render a reasoning/thinking update."""
@@ -1029,24 +1107,33 @@ class Renderer(ABC):
     async def dispatch(self, event: OutputEvent) -> None:
         """Route ``event`` to the matching ``on_*`` handler."""
         if event.kind == TEXT_CHUNK:
-            await self.on_text_chunk(event.text)
+            if event.continues_segment:
+                await self.on_text_continuation(event.text)
+            else:
+                await self.on_text_chunk(event.text)
         elif event.kind == THINKING:
             await self.on_thinking(event.text)
         elif event.kind == TOOL_CALL:
             self.current_tool_name = event.tool_name or ""
+            self.tool_text_held = event.text_held
+            self.current_tool_raw_title = event.raw_title
             await self.on_tool_call(
                 event.tool_call_id, event.title, event.tool_kind, event.tool_purpose
             )
         elif event.kind == TOOL_RESULT:
             await self.on_tool_result(event.tool_call_id, event.tool_status)
         elif event.kind == PROMPT_CHOICE:
-            await self.on_prompt_choice(
-                event.options,
-                event.request_id,
-                event.title,
-                event.tool_purpose,
-                event.tool_input,
-            )
+            self.prompt_mcp_identity = (event.mcp_server, event.tool_name)
+            try:
+                await self.on_prompt_choice(
+                    event.options,
+                    event.request_id,
+                    event.title,
+                    event.tool_purpose,
+                    event.tool_input,
+                )
+            finally:
+                self.prompt_mcp_identity = ("", "")
         elif event.kind == COMPACTION:
             await self.on_compaction(event.context_usage_pct)
         elif event.kind == DONE:

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from named_cases_helpers import named_cases
 from tmpdir_helpers import SHORT_TMP_PREFIX, short_tmp_base
 
 from kiro_crew import platform_compat as pc
@@ -79,7 +80,17 @@ def test_get_peer_pid_refuses_a_non_unix_socket() -> None:
         s.close()
 
 
-def test_get_peer_pid_returns_none_without_a_socket() -> None:
+@pytest.mark.parametrize(
+    (),
+    [
+        *named_cases("test_get_peer_pid_returns_none_without_a_socket"),
+        *named_cases(
+            "test_an_object_with_no_socket_at_all",
+            marks=[pytest.mark.skipif(pc.IS_WINDOWS, reason="exercises the POSIX build")],
+        ),
+    ],
+)
+def test_get_peer_pid_is_none_without_a_socket() -> None:
     assert socketsec.get_peer_pid(object()) is None
 
 

@@ -28,6 +28,8 @@ from kiro_crew.session import (
     SessionManager,
 )
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.wait import await_until
 
 
 class TestRecycleBackground:
@@ -60,7 +62,6 @@ class TestRecycleBackground:
         await mgr._ensure_background()
 
         old_provider = mgr._sessions[BACKGROUND_KEY].provider
-        # Simulate high context
         old_provider.context_usage_pct = lambda: 75.0
 
         await mgr.recycle_background()
@@ -103,7 +104,6 @@ class TestRecycleBackground:
 
         await mgr.recycle_background()
 
-        # Should NOT have been shut down
         old_provider.shutdown.assert_not_awaited()
         assert mgr._sessions[BACKGROUND_KEY].provider is old_provider
         await mgr.close_all()
@@ -112,8 +112,8 @@ class TestRecycleBackground:
     async def test_recycle_no_background_session(self, cfg):
         """recycle_background() is no-op when no background session exists."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        # Don't start pool — no background session
-        await mgr.recycle_background()  # should not raise
+        await mgr.recycle_background()
+        assert not mgr.has_session(BACKGROUND_KEY), "recycling must not create one"
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -247,10 +247,8 @@ class TestRecycleBackground:
         await asyncio.sleep(0)  # let the waiter take the semaphore
 
         recycle = asyncio.create_task(_recycle())
-        # flake-ok: pre-existing unbounded await of the recycle task; the waiter frees the turn semaphore after 200 yields; moved verbatim; tracked for a de-flake pass
-        await recycle
-        # flake-ok: pre-existing unbounded await of the waiter task whose turn loop ends within 200 yields; moved verbatim; tracked for a de-flake pass
-        await waiter
+        await await_until(recycle, what="the recycle attempt to finish")
+        await await_until(waiter, what="the waiter's turn to end")
 
         assert killed_mid_turn == []
         # The turn ran to completion on the provider it picked up...
@@ -356,6 +354,7 @@ class TestReloadProviderFactory:
             await mgr.reload_provider_factory()
 
         provider.shutdown.assert_awaited_once()
+        assert not mgr.has_session("k1")
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -370,8 +369,10 @@ class TestReloadProviderFactory:
             patch.object(KiroCrewConfig, "load", return_value=cfg),
             patch.object(cfg, "create_provider_factory", return_value=_mock_provider_factory()),
         ):
-            await mgr.reload_provider_factory()  # should not raise
+            await mgr.reload_provider_factory()
 
+        provider.shutdown.assert_awaited_once()
+        assert not mgr.has_session("k1"), "the stale session is dropped despite the failure"
         await mgr.close_all()
 
 
@@ -393,7 +394,6 @@ class TestBackgroundSession:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr._ensure_background()
         await mgr._ensure_background()
-        # Should still only have one background session
         assert mgr.count == 1
         await mgr.close_all()
 
@@ -411,9 +411,7 @@ class TestGetBgSessionRecycle:
         stale.has_active_or_initializing_sessions = lambda: False
         stale._is_stale = AsyncMock(return_value="age")
         stale.kill = AsyncMock()
-        # flake-ok: pre-existing pid on the stale _bg runtime double; kill() is an AsyncMock and the recycle logs the pid; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on the stale _bg runtime double whose kill is an AsyncMock; no os.kill patch; moved verbatim; tracked for a de-flake pass
-        stale.pid = 111
+        stale.pid = UNALLOCATABLE_PID
         mgr._bg_runtime = stale
 
         rt2 = AsyncMock()
@@ -450,9 +448,7 @@ class TestGetBgSessionRecycle:
         # Inside the age cap; stale by RSS.
         stale._is_stale = AsyncMock(return_value="rss")
         stale.kill = AsyncMock()
-        # flake-ok: pre-existing pid on the stale busy _bg runtime double that is parked not killed; kill() is an AsyncMock; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a parked _bg runtime double whose kill is an AsyncMock; no os.kill patch; moved verbatim; tracked for a de-flake pass
-        stale.pid = 222
+        stale.pid = UNALLOCATABLE_PID
         stale.create_session = AsyncMock(return_value=object())
         mgr._bg_runtime = stale
 
@@ -514,9 +510,7 @@ class TestGetBgSessionBackendSwitch:
         stranded.acp_backend = ACP_BACKEND_KIRO  # spawned before the switch
         stranded._is_stale = AsyncMock(return_value=None)  # must NOT be consulted
         stranded.kill = AsyncMock()
-        # flake-ok: pre-existing pid on the old-backend runtime double; kill() is an AsyncMock and the recycle logs the pid; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a recycled _bg runtime double whose kill is an AsyncMock; no os.kill patch; moved verbatim; tracked for a de-flake pass
-        stranded.pid = 333
+        stranded.pid = UNALLOCATABLE_PID
         mgr._bg_runtime = stranded
 
         rt2 = self._fresh_runtime()
@@ -545,9 +539,7 @@ class TestGetBgSessionBackendSwitch:
         busy.acp_backend = ACP_BACKEND_KIRO  # spawned before the switch
         busy.kill = AsyncMock()
         busy.create_session = AsyncMock()
-        # flake-ok: pre-existing pid on the busy old-backend runtime double that is parked; kill() is an AsyncMock; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a parked _bg runtime double whose kill is an AsyncMock; no os.kill patch; moved verbatim; tracked for a de-flake pass
-        busy.pid = 335
+        busy.pid = UNALLOCATABLE_PID
         mgr._bg_runtime = busy
 
         rt2 = self._fresh_runtime()
@@ -619,9 +611,7 @@ class TestGetBgSessionBackendSwitch:
         cached.acp_backend = ACP_BACKEND_KAS
         cached._is_stale = AsyncMock(return_value=None)
         cached.kill = AsyncMock()
-        # flake-ok: pre-existing pid on the matching-backend _bg runtime double that is reused; kill() is an AsyncMock; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a reused _bg runtime double whose kill is an AsyncMock; no os.kill patch; moved verbatim; tracked for a de-flake pass
-        cached.pid = 334
+        cached.pid = UNALLOCATABLE_PID
         sentinel = object()
         cached.create_session = AsyncMock(return_value=sentinel)
         mgr._bg_runtime = cached
@@ -648,9 +638,7 @@ class TestRetireStaleBackendBgRuntime:
         rt.acp_backend = backend
         rt.has_active_or_initializing_sessions = lambda: busy
         rt.kill = AsyncMock()
-        # flake-ok: pre-existing pid on the retire tests' runtime double; kill() is an AsyncMock and the retire logs the pid; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on the retire tests' runtime double whose kill is an AsyncMock; no os.kill patch; moved verbatim; tracked for a de-flake pass
-        rt.pid = 444
+        rt.pid = UNALLOCATABLE_PID
         return rt
 
     @pytest.mark.asyncio
@@ -737,17 +725,23 @@ class TestRetireStaleBackendBgRuntime:
         """refresh_defaults() re-reads config, so any invocation of it (and any
         future agent.acp_backend edit surface routed through it) must also run
         the retirement check."""
+        cfg.agent.acp_backend = ACP_BACKEND_KAS
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        rt = self._runtime(backend=ACP_BACKEND_KIRO, busy=False)
+        mgr._bg_runtime = rt
 
         with (
             patch.object(mgr, "start_pool", AsyncMock()),
-            patch.object(mgr, "_retire_stale_backend_bg_runtime", AsyncMock()) as retire,
+            patch.object(
+                mgr, "_retire_stale_backend_bg_runtime", wraps=mgr._retire_stale_backend_bg_runtime
+            ) as retire,
             patch("kiro_crew.session.build_provider_factory", return_value=MagicMock()),
             patch("kiro_crew.session.KiroCrewConfig.load", return_value=cfg),
         ):
             await mgr.refresh_defaults()
 
         retire.assert_awaited_once()
+        assert mgr._bg_runtime is None, "the stale-backend runtime was retired"
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -937,9 +931,7 @@ def _run_runtime_factory(created_runtimes: list):
     def factory(session_key=None, agent=None, channel_id=None, **kwargs):
         runtime = MagicMock()
         runtime.is_alive = MagicMock(return_value=True)
-        # flake-ok: pre-existing pid on the task-run runtime double; kill() is an AsyncMock and nothing patches os.kill; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on the task-run runtime double; no os.kill or process-table patch; moved verbatim; tracked for a de-flake pass
-        runtime.pid = 4321
+        runtime.pid = UNALLOCATABLE_PID
         runtime.create_session = AsyncMock(
             side_effect=lambda **kw: MagicMock(
                 session_id="step-session", memory_mode=kw.get("memory_mode", "persistent")
@@ -999,6 +991,26 @@ class TestOpenTaskSession:
         await mgr.release_subagent_runtime(parent)
         runtime.kill.assert_awaited_once()
         assert parent not in mgr._subagent_runtimes
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("delay", [0, 1800])
+    async def test_a_step_session_carries_the_configured_delete_delay(self, cfg, delay):
+        """The handle is what ``destroy`` reads, so the delay must reach it. The later
+        delete is a cleanup-loop hook that this path would not otherwise start."""
+        cfg.session.kas_delete_delay_secs = delay
+        created: list = []
+        mgr = SessionManager(cfg, provider_factory=_run_runtime_factory(created))
+        parent = "taskrunner:run3:runtime"
+
+        provider, _is_new, _resumed = await mgr.open_task_session(
+            parent, "taskrunner:run3:task0", agent="kirocrew"
+        )
+
+        assert provider._handle.delete_delay_secs == float(delay)
+        assert (mgr._cleanup_task is not None) is (delay > 0)
+        mgr.release("taskrunner:run3:task0")
+        await mgr.release_subagent_runtime(parent)
         await mgr.close_all()
 
     @pytest.mark.asyncio

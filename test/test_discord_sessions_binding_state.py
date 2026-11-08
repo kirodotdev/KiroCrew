@@ -29,7 +29,7 @@ from kiro_crew.discord.transport_dispatch import DiscordDispatcher
 from kiro_crew.messaging import resume_expectation
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.session_map import ConversationOwnershipConflict
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 # The shared autouse fixture, bound here by name so pytest registers it for this module.
 _isolated_home = discord_sessions_helpers._isolated_home
@@ -63,18 +63,10 @@ async def _attach(dispatcher: DiscordDispatcher, client: _Client) -> ChannelLink
 
 
 class TestDashboardConnectedConversationResumes:
-    """The reported bug: replying to a message from Kiro Crew forked a new session.
+    """A reply in a dashboard-connected Discord conversation resumes that session.
 
-    A dashboard session connected to a Discord conversation, sent into it, and
-    the user replied there. Instead of continuing that session, the reply started
-    a brand-new one with no history — so the user was answered by an agent that
-    had never seen the conversation it was replying inside.
-
-    The inbound resolver was never at fault. ``resumed_session`` filters on the
-    binding's inbound marker, and the dashboard's connect never set it, so the
-    resolver correctly found no owner and the dispatcher fell through to Discord's
-    own route-derived session key. These tests pin the marker's effect on routing
-    from both sides.
+    ``resumed_session`` filters on the binding's inbound marker; without it the
+    dispatcher falls through to Discord's own session key and a fresh history.
     """
 
     @pytest.mark.asyncio
@@ -93,13 +85,9 @@ class TestDashboardConnectedConversationResumes:
 
     @pytest.mark.asyncio
     async def test_an_outbound_only_binding_still_forks(self) -> None:
-        """The bug's exact mechanism, pinned so the marker cannot be dropped.
+        """Without the inbound marker, the same binding forks to a Discord-native key.
 
-        Same binding, no inbound marker — which is all main's connect could
-        write. The reply must NOT resolve to the connected session, and the key
-        the dispatcher falls back to is a Discord-native one, i.e. a different
-        conversation with none of the dashboard transcript. This is the
-        before-state; `accepts_inbound` is the whole difference.
+        `accepts_inbound` is the whole difference.
         """
         dispatcher, _client, sessions = _dispatcher({"u1"}, _log())
         sessions.set_mirror_link(
@@ -118,11 +106,8 @@ class TestDashboardConnectedConversationResumes:
     ) -> None:
         """Why the ownership rule belongs with the inbound marker.
 
-        "No owner" and "two owners" land on the same ``None``. So setting the
-        inbound marker without enforcing one-session-per-conversation would not
-        fix the fork — it would only move it: a duplicated binding sends the
-        reply to NO session, silently forking exactly as before, and now with no
-        way for the user to tell why.
+        "No owner" and "two owners" both resolve to ``None``, so without one session per
+        conversation a duplicated binding forks the reply silently.
         """
         dispatcher, _client, sessions = _dispatcher({"u1"}, _log())
         link = ChannelLink(channel_type="discord", channel_id="c1")
@@ -255,14 +240,9 @@ class TestBindingLostUnderTheConversation:
     async def test_releasing_an_unrecorded_binding_leaves_evidence_before_mutation(self) -> None:
         """A failed release records evidence first, then changes NOTHING -- live map too.
 
-        The in-memory clear happens before the flush, so a flush failure would leave the
-        binding gone in this process while the command reported failure. Two things were
-        wrong with that pair: the very next message was refused as detached moments
-        after being told the unlink did not happen, and the map on disk
-        still held the binding, so a restart revived it and split one history in two -- the
-        exact harm the sibling test names. The release now rolls the clear back, so the
-        report, the live map and the persisted map all agree and the conversation carries
-        on where the user was told it would.
+        The in-memory clear runs before the flush, so on a flush failure the release rolls
+        it back. The report, live map and disk map then agree, and the next message is
+        not refused as detached.
         """
         dispatcher, client, sessions = _dispatcher({"u1"}, _log("Launch plan"))
         link = ChannelLink(channel_type="discord", channel_id="c1")
@@ -283,12 +263,8 @@ class TestBindingLostUnderTheConversation:
     async def test_a_rolled_back_release_keeps_a_genuine_bindings_recorded_peer(self) -> None:
         """The rollback restores each occupant's OWN row, not the bare location.
 
-        A row made from the dashboard or a ``!sessions`` pick records the peer it
-        was admitted for under the gateway's admission. Restoring the location
-        argument would put the binding back without that record, and every later
-        dashboard reply into this DM would be refused until the session was
-        re-linked -- a failed unlink silently costing the mirror its deliveries. The
-        signed row goes back byte-for-byte and still delivers.
+        Restoring the bare location would drop the signed peer record, and every later
+        dashboard reply into this DM would be refused. The signed row goes back as is.
         """
         import dataclasses
 
@@ -365,13 +341,10 @@ class TestBindingLostUnderTheConversation:
     async def test_a_rolled_back_release_restores_a_mirror_beside_a_slack_thread_link(
         self,
     ) -> None:
-        """The ownership question is asked of the row the clear removed -- the
-        entry's own mirror -- never of ``get_mirror_link``. That reader also answers
-        for bindings the clear never touched: a slot that still carries its legacy
-        Slack thread link reads back as a synthesized Slack mirror, so judged there
-        the rollback would call the key "still bound", skip the restore, and leave
-        the Discord binding cleared in this process while the user is told the
-        release did NOT complete and nothing changed.
+        """Ownership is judged on the row the clear removed, never ``get_mirror_link``.
+
+        That reader synthesizes a Slack mirror from a legacy Slack thread link, so the
+        rollback would think the key still bound and skip restoring the Discord row.
         """
         import dataclasses
 
@@ -542,8 +515,9 @@ class TestBindingLostUnderTheConversation:
             governance_calls += 1
             if governance_calls == 3:
                 third_in_governance.set()
-                # flake-ok: pre-existing unbounded wait in the stubbed governance check; the test sets release_third itself, moved verbatim, tracked for a de-flake pass
-                await release_third.wait()
+                await await_until(
+                    release_third, what="the test releasing the third sibling from governance"
+                )
             return True
 
         monkeypatch.setitem(
@@ -563,8 +537,13 @@ class TestBindingLostUnderTheConversation:
                     siblings.append(
                         asyncio.create_task(dispatcher.handle_message(_message("second")))
                     )
-                    # flake-ok: pre-existing zero yield that lets the second sibling queue on the routing lock before the count is read; moved verbatim, tracked for a de-flake pass
-                    await asyncio.sleep(0)
+                    await async_wait_until(
+                        lambda: len(dispatcher._routing_locks["c1"][1]) >= 2,
+                        describe=lambda: (
+                            f"{len(dispatcher._routing_locks['c1'][1])} decider(s) queued on "
+                            "c1's routing lock, want the first and the second sibling"
+                        ),
+                    )
                     assert len(dispatcher._routing_locks["c1"][1]) == 2
                     siblings.append(
                         asyncio.create_task(dispatcher.handle_message(_message("third")))
@@ -579,11 +558,9 @@ class TestBindingLostUnderTheConversation:
         client.send_message = _gate_waiters  # type: ignore[method-assign]
         await dispatcher.handle_message(_message("first"))
         assert len(siblings) == 2
-        # flake-ok: pre-existing unbounded await of the sibling task; moved verbatim, tracked for a de-flake pass
-        await siblings[0]
+        await await_until(siblings[0], what="the second sibling's message completing")
         release_third.set()
-        # flake-ok: pre-existing unbounded await of the sibling task once release_third is set; moved verbatim, tracked for a de-flake pass
-        await siblings[1]
+        await await_until(siblings[1], what="the third sibling's message completing")
         assert detached_sends == 3, "a pre-notice waiter was not refused"
         record = await store.get("c1")
         assert sessions.last_key == "", "a pre-notice waiter ran natively"
@@ -957,7 +934,11 @@ class TestPersistenceFailureIsFailClosed:
         """Corruption read as "no records" says never-attached, so the turn runs
         natively -- this bug's fail-open form."""
         path = _store_path()
-        path.write_bytes(payload) if isinstance(payload, bytes) else path.write_text(payload)
+        (
+            path.write_bytes(payload)
+            if isinstance(payload, bytes)
+            else path.write_text(payload, encoding="utf-8")
+        )
         store = resume_expectation.ResumeExpectations("discord")
         if loads:
             record = await store.get("c1")

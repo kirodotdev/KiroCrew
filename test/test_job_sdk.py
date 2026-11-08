@@ -55,9 +55,7 @@ from kiro_crew.apps.job_sdk import (
     registered_apps,
 )
 
-# ---------------------------------------------------------------------------
 # 1. register / kinds / is_cancellable
-# ---------------------------------------------------------------------------
 
 
 class TestRegistration:
@@ -79,9 +77,7 @@ class TestRegistration:
             sdk.register("", lambda h: {})
 
 
-# ---------------------------------------------------------------------------
 # 2. start() on an unregistered kind
-# ---------------------------------------------------------------------------
 
 
 class TestStartUnknown:
@@ -90,9 +86,7 @@ class TestStartUnknown:
             sdk.start("ghost")
 
 
-# ---------------------------------------------------------------------------
 # 3. Happy run: reaches done; the runner's return value is not recorded
-# ---------------------------------------------------------------------------
 
 
 class TestHappyRun:
@@ -105,11 +99,10 @@ class TestHappyRun:
         assert run.error == ""
 
     def test_the_runner_gets_its_handle_and_nothing_else(self, sdk: JobSDK) -> None:
-        """P1 has no params channel, so a runner is a one-argument callable.
+        """Started without params, a runner is a one-argument callable.
 
-        Pinned because the signature IS the contract a P2 consumer writes
-        against: reintroducing kwargs is a deliberate P2 change, not something
-        that should be able to drift back in unnoticed.
+        The signature is a contract app code writes against, so extra arguments
+        must not drift in unnoticed.
         """
         seen: list[object] = []
 
@@ -169,9 +162,7 @@ class TestHappyRun:
         }
 
 
-# ---------------------------------------------------------------------------
 # 4. Raising runner -> failed with truncated, recorded error
-# ---------------------------------------------------------------------------
 
 
 class TestFailingRun:
@@ -196,9 +187,7 @@ class TestFailingRun:
         assert len(run.error) == 2000
 
 
-# ---------------------------------------------------------------------------
 # 5. Cancellation
-# ---------------------------------------------------------------------------
 
 
 class TestCancellation:
@@ -246,9 +235,7 @@ class TestCancellation:
         assert sdk.cancel(run_id) is False
 
 
-# ---------------------------------------------------------------------------
 # 5a. checkpoint - the progress OBSERVATION and the observed-stop cancel
-# ---------------------------------------------------------------------------
 
 
 class TestCheckpoint:
@@ -357,9 +344,7 @@ class TestCheckpoint:
         assert issubclass(JobCancelled, Exception)
 
 
-# ---------------------------------------------------------------------------
 # 5b. the cancelling snapshot — the read side of "cancel writes nothing"
-# ---------------------------------------------------------------------------
 
 
 class TestCancellingIds:
@@ -438,9 +423,7 @@ class TestCancellingIds:
         assert run.status == DONE
 
 
-# ---------------------------------------------------------------------------
 # 6. dedupe_key
-# ---------------------------------------------------------------------------
 
 
 class TestDedupe:
@@ -473,9 +456,7 @@ class TestDedupe:
         _wait_terminal(sdk, b)
 
 
-# ---------------------------------------------------------------------------
 # 8. get / list_active / list_recent
-# ---------------------------------------------------------------------------
 
 
 class TestReadViews:
@@ -631,9 +612,7 @@ class TestLiveness:
         _wait_terminal(sdk, run_id)
 
 
-# ---------------------------------------------------------------------------
 # 9. JobRun.from_dict / JobStore.read / _path / iter_runs
-# ---------------------------------------------------------------------------
 
 
 class TestSerialization:
@@ -758,9 +737,7 @@ class TestRecordReadSurvivesTheWriterRace:
         assert got is not None and got.error == text
 
 
-# ---------------------------------------------------------------------------
 # 10. reconcile()
-# ---------------------------------------------------------------------------
 
 
 class TestReconcile:
@@ -859,9 +836,7 @@ class TestReconcile:
         _wait_terminal(sdk, run_id)
 
 
-# ---------------------------------------------------------------------------
 # 11. remove_all_async
-# ---------------------------------------------------------------------------
 
 
 class TestRemoveAll:
@@ -905,11 +880,9 @@ class TestRemoveAll:
     def test_remove_all_is_not_resurrected_by_worker(self, sdk: JobSDK) -> None:
         """A worker returning AFTER cleanup must not write its record back.
 
-        Regression pin. JobStore.write mkdirs and writes unconditionally, so it
-        cannot tell a first write from a resurrection; the guarantee comes from
-        remove_all_async marking every live handle discarded BEFORE deleting,
-        and both write paths honouring that mark. Without it this run reappears
-        on disk as `cancelled` and the second remove_all_async returns 1.
+        JobStore.write writes unconditionally, so the guarantee comes from
+        remove_all_async marking every live handle discarded BEFORE deleting, and
+        both write paths honouring that mark.
         """
         started = threading.Event()
         removed_done = threading.Event()
@@ -931,12 +904,9 @@ class TestRemoveAll:
         assert started.wait(5.0)
 
         cleanup = asyncio.run(sdk.remove_all_async())
-        # Only `removed` is asserted here. Whether this worker is still alive
-        # when cleanup returns is a race between its own wait and the join
-        # deadline, so pinning it would make this test flaky for a reason that
-        # has nothing to do with resurrection. TestCleanupDoesNotBlockTheLoop
-        # covers the still-running report deterministically, with a runner that
-        # ignores its cancel signal outright.
+        # Only `removed` is asserted: whether the worker is still alive here
+        # races the join deadline. TestCleanupDoesNotBlockTheLoop covers the
+        # still-running report deterministically.
         assert cleanup.removed == 1
         assert sdk.get(run_id) is None  # deleted at this instant
         removed_done.set()
@@ -944,15 +914,12 @@ class TestRemoveAll:
         assert finally_done.wait(5.0)
         _wait_until(lambda: not any(t.name.startswith("job:") for t in threading.enumerate()))
         time.sleep(0.05)
-        # The record stays deleted, and idempotency still holds -- a resurrected
-        # record would make this second call report 1.
+        # A record written back would make this second call report 1.
         assert sdk.get(run_id) is None
         assert asyncio.run(sdk.remove_all_async()) == CleanupResult(0, 0, 0)
 
 
-# ---------------------------------------------------------------------------
 # 11a. Disable trace — one SEL line per killed run
-# ---------------------------------------------------------------------------
 
 
 class TestDisableTrace:
@@ -1492,9 +1459,7 @@ class TestDisableTrace:
         assert killed[0]["resources"] == f"{stale.run_id} kind='work' stale"
 
 
-# ---------------------------------------------------------------------------
 # 12. Process-wide registry
-# ---------------------------------------------------------------------------
 
 
 class TestProcessRegistry:

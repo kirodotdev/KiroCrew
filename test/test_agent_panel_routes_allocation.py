@@ -34,10 +34,7 @@ from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.dashboard.handlers import agent_panel as routes
 
-pytestmark = pytest.mark.asyncio
-
-
-# ------------------------------------------------- through a real allocation
+# through a real allocation
 
 
 def _member_session_key(crew_name: str = CREW) -> str:
@@ -59,17 +56,9 @@ def _member_session_key(crew_name: str = CREW) -> str:
 def _real_allocation(crew_name: str = CREW, *, member: str | None = None):
     """A REAL ``SessionManager`` holding *crew_name*'s DM session under its real key.
 
-    Every other test here drives the resolver through ``_Sessions``, whose
-    ``get_agent_selection`` ignores the key it is handed. That blindness is what
-    let the resolver ask the registry with a key the registry never holds and
-    stay green, so the regression cannot be written against that stub: the
-    assertion needed is about WHICH key reaches a live allocation, and only a
-    real registry has an opinion about that.
-
-    ``member`` is the allocation's ``capability_member`` -- the crew binding
-    itself. Empty models the other cause the issue names: a session created with
-    a blank ``crew_agent``, which is a live allocation that genuinely selected a
-    provider template.
+    The ``_Sessions`` stub ignores the key it is handed, so only a real registry can
+    show WHICH key reaches a live allocation. ``member`` is the ``capability_member``;
+    empty models a session with a blank ``crew_agent`` that selected a provider template.
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.session import SessionManager, _Session
@@ -84,10 +73,7 @@ def _real_allocation(crew_name: str = CREW, *, member: str | None = None):
 def test_the_registry_key_is_the_slot_key_behind_a_transport_prefix():
     """The two keyspaces, pinned, so a future reader cannot merge them back.
 
-    ``_normalize_slot_key`` STRIPS the prefix, so its output addresses the slot
-    layer and nothing else. Handing it to the registry is a guaranteed miss, and
-    a guaranteed miss on the only session this tool is mounted on refused every
-    member.
+    ``_normalize_slot_key`` strips the prefix, so its output always misses the registry.
     """
     from kiro_crew.dashboard.state import _normalize_slot_key
 
@@ -98,13 +84,11 @@ def test_the_registry_key_is_the_slot_key_behind_a_transport_prefix():
     assert _normalize_slot_key(registry_key) != registry_key
 
 
+@pytest.mark.asyncio
 async def test_a_real_member_allocation_can_publish(vetted):
-    """The accepting path against a real allocation, which nothing covered.
+    """A member's DM session, the only one the panel tool is mounted on, can publish.
 
-    This is the issue's own case: a member's DM session, the one session the
-    panel tool is ever mounted on, publishing with valid arguments. It was
-    refused ``no_crew`` for every member because the resolver looked the caller
-    up by slot key in a registry keyed by session key.
+    The registry is keyed by session key, so a lookup by slot key refuses every member.
     """
     sessions = _real_allocation()
     async with _client(CREW, sessions=sessions) as c:
@@ -124,16 +108,9 @@ async def test_a_real_member_allocation_can_publish(vetted):
 def test_every_refusal_in_the_crew_resolver_audits_its_denial():
     """No denial may return without a denied SEL event, on any exit.
 
-    ``_recognize_session`` writes an ``outcome="allowed"`` event before this
-    resolver reaches its own checks, so a refusal that returns without its own
-    event leaves the audit trail ending on the ALLOW -- the record says the caller
-    was let through while the HTTP response is the only trace that it was not.
-
-    Asserted structurally over the function's AST rather than by exercising each
-    branch: a per-branch test proves only the branches someone remembered to
-    write, and this finding was exactly a branch nobody had. Every ``return None,
-    web.json_response(...)`` in the resolver must be preceded, within its own
-    block, by a ``log_api_access`` call.
+    ``_recognize_session`` already logged ``outcome="allowed"``, so a silent refusal
+    leaves the trail ending on the allow. Checked over the AST so no branch is missed:
+    each ``return None, web.json_response(...)`` needs a prior ``log_api_access``.
     """
     import ast
     import inspect
@@ -173,8 +150,9 @@ def test_every_refusal_in_the_crew_resolver_audits_its_denial():
     assert audits(tree.body[0].body) == []
 
 
+@pytest.mark.asyncio
 async def test_the_unresolved_session_denial_is_audited(vetted, monkeypatch):
-    """The finding's own case, exercised rather than only asserted structurally."""
+    """The unresolved-session refusal, exercised rather than only asserted structurally."""
     events: list[dict[str, Any]] = []
 
     class _Sel:
@@ -196,14 +174,12 @@ async def test_the_unresolved_session_denial_is_audited(vetted, monkeypatch):
     assert denied[-1]["error"] == "caller's allocation could not be resolved"
 
 
+@pytest.mark.asyncio
 async def test_a_bare_slot_key_is_refused_rather_than_re_prefixed(vetted):
     """A bare slot name resolves to nothing, and that refusal is deliberate.
 
-    Every identity source the strict gate accepts yields the full session key,
-    and it requires its caller to send back the key it returned, so no caller of
-    this route presents a bare name. Re-adding the prefix to rescue one would
-    hide the anomaly of the gate having returned something unexpected -- which is
-    the very thing the separated refusal exists to surface.
+    The strict gate always yields the full session key, so re-adding the prefix
+    would hide the anomaly this refusal exists to surface.
     """
     sessions = _real_allocation()
     async with _client(CREW, sessions=sessions) as c:
@@ -217,13 +193,11 @@ async def test_a_bare_slot_key_is_refused_rather_than_re_prefixed(vetted):
     assert _folded() is None
 
 
+@pytest.mark.asyncio
 async def test_a_real_allocation_that_selected_a_template_is_refused_no_crew(vetted):
-    """The other cause the issue names, and it keeps the ``no_crew`` message.
+    """An empty ``capability_member`` is a real absent crew binding, so ``no_crew`` fits.
 
-    A live allocation whose ``capability_member`` is empty selected the provider
-    template. That IS an absent crew binding, so this refusal is the accurate
-    one -- and it stays distinguishable from the key that reached no allocation
-    at all.
+    It stays distinct from a key that reached no allocation at all.
     """
     sessions = _real_allocation(member="")
     async with _client(CREW, sessions=sessions) as c:
@@ -237,6 +211,7 @@ async def test_a_real_allocation_that_selected_a_template_is_refused_no_crew(vet
     assert _folded() is None
 
 
+@pytest.mark.asyncio
 async def test_a_key_the_registry_does_not_hold_is_refused_as_unresolved(vetted):
     """A live member allocation exists, but not under the key the caller presents.
 
@@ -256,15 +231,12 @@ async def test_a_key_the_registry_does_not_hold_is_refused_as_unresolved(vetted)
     assert _folded() is None
 
 
+@pytest.mark.asyncio
 async def test_a_degraded_roster_refuses_takeover_rather_than_granting_it(vetted, monkeypatch):
     """ "Cannot read the roster" must not answer "the owner is gone".
 
-    The takeover path exists so a renamed or deleted crew does not hold a slug
-    forever, and it asks the config roster whether the recorded owner is still
-    live. ``KiroCrewConfig.load()`` returns a defaults-only config when the file
-    is unreadable, so an empty enumeration means either "nobody holds this slug"
-    or "we could not read which crews exist" -- and reading the second as the
-    first hands a colliding publish a live crew's record.
+    ``KiroCrewConfig.load()`` returns defaults when the file is unreadable, so an empty
+    roster may mean "unreadable", and takeover would hand a live crew's record away.
     """
     async with _client() as owner:
         assert (
@@ -300,6 +272,7 @@ async def test_a_degraded_roster_refuses_takeover_rather_than_granting_it(vetted
     assert kept["data"] == {"cycle": 47}
 
 
+@pytest.mark.asyncio
 async def test_a_free_form_name_can_read_its_panel(vetted):
     name = "dr. eggbot"
     slug = members_mod.slug_for_name(name)
@@ -315,6 +288,7 @@ async def test_a_free_form_name_can_read_its_panel(vetted):
         assert (await read_response.json())["panel"]["crew"] == name
 
 
+@pytest.mark.asyncio
 async def test_an_invalid_legacy_name_still_holds_its_panel(vetted, monkeypatch):
     legacy_name = "Cafe\u0301"
     legacy_slug = members_mod.slug_for_name(legacy_name)
@@ -361,17 +335,12 @@ async def test_an_invalid_legacy_name_still_holds_its_panel(vetted, monkeypatch)
     assert after["data"] == {"cycle": 47}
 
 
+@pytest.mark.asyncio
 async def test_a_v2_member_round_trips_through_the_resolving_slot(vetted):
     """The publish slot and the read slot must agree on the NON-FALLBACK branch.
 
-    ``_member_thread_slot`` returns ``member_slot_key(slug, store)`` for a member
-    with a V2 private store and ``member_slot_key(slug)`` for everyone else. Those
-    are different keys, so a test that only ever exercises the fallback proves
-    nothing about the crew this feature is for: the fold would miss, and the drawer
-    would show "never published" with no error at all.
-
-    Here the member really has a V2 store, so the slot carries it, and the panel is
-    published and read back through the routes rather than through the fold.
+    ``_member_thread_slot`` adds the store to the key for a V2 member, so a fallback-only
+    test proves nothing: the fold would miss and the drawer show "never published".
     """
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.paths import config_dir
@@ -401,18 +370,12 @@ async def test_a_v2_member_round_trips_through_the_resolving_slot(vetted):
         assert body["html"]
 
 
+@pytest.mark.asyncio
 async def test_a_publish_whose_append_is_skipped_is_still_what_a_reader_gets(vetted):
     """An accepted publish must never be shadowed by an older logged one.
 
-    The append is best-effort, so a publish can land in the file while its entry does
-    not: the crew log switches off between cycles, or the entry exceeds the log's
-    whole-LINE ceiling while its data is under the store's own cap. Serving the fold
-    whenever it holds any panel pinned the drawer to the last LOGGED cycle and kept
-    serving it, while the route answered the crew ok -- and a viewer cannot tell a
-    stale dashboard from a current one.
-
-    Here cycle 1 is logged and cycle 2 is not, so the two records disagree and the
-    newer one has to win.
+    The log append is best-effort (log off, or a line over its ceiling), so the file
+    can be newer than the fold, and the newer record must win.
     """
     async with _client() as c:
         # Two logged cycles, so the fold holds a history row as well as a panel.
@@ -464,6 +427,7 @@ async def test_a_publish_whose_append_is_skipped_is_still_what_a_reader_gets(vet
     assert record["history"][-1]["title"] == "logged-one"
 
 
+@pytest.mark.asyncio
 async def test_a_colliding_crews_newer_file_is_not_served_to_this_crew(vetted):
     """The file is keyed by SLUG alone, so it may hold the OTHER crew's panel.
 
@@ -505,14 +469,11 @@ async def test_a_colliding_crews_newer_file_is_not_served_to_this_crew(vetted):
         assert body["panel"]["title"] == "mine"
 
 
+@pytest.mark.asyncio
 async def test_a_colliding_crew_cannot_read_the_other_crews_panel(vetted):
     """The READ half of the ownership guard.
 
-    The fold keeps a record per ownership digest, so one crew cannot displace the
-    other's. But with the read keyed on the slug alone, the crew that did NOT
-    publish still saw the publisher's dashboard rendered in its own drawer -- the
-    guard was half-applied. Both halves check the same stored claim.
-
+    A read keyed on the slug alone would show the publisher's panel to the other crew.
     ``Oncall`` and ``oncall`` slugify to one slug, which is the whole premise.
     """
     async with _client() as c:
@@ -537,6 +498,7 @@ async def test_a_colliding_crew_cannot_read_the_other_crews_panel(vetted):
         assert body["html"] is None
 
 
+@pytest.mark.asyncio
 async def test_the_read_requires_the_exact_crew_name(vetted):
     """Required, not optional, so a mixed read is impossible by construction.
 
@@ -555,6 +517,7 @@ async def test_the_read_requires_the_exact_crew_name(vetted):
         assert (await resp.json())["code"] == "missing_member"
 
 
+@pytest.mark.asyncio
 async def test_a_hostile_member_name_is_refused_on_the_read(vetted):
     """The name is validated, not just compared."""
     async with _client() as c:
@@ -570,6 +533,7 @@ async def test_a_hostile_member_name_is_refused_on_the_read(vetted):
             assert resp.status == 400, f"{hostile!r} was accepted"
 
 
+@pytest.mark.asyncio
 async def test_a_credential_shaped_legacy_crew_can_read_its_redacted_panel(vetted):
     shaped = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
     assert agent_panel._scrub(shaped) != shaped, "fixture is no longer redacted"
@@ -595,18 +559,12 @@ async def test_a_credential_shaped_legacy_crew_can_read_its_redacted_panel(vette
     assert stored["crew_key"] == agent_panel.crew_key(shaped)
 
 
+@pytest.mark.asyncio
 async def test_a_linked_record_is_a_coded_refusal_not_a_500(vetted):
     """The store refuses to write through an alias; the route must say so with a code.
 
-    A symlink or junction standing where the record belongs is how a write reaches
-    an inode outside the fenced directory, so :func:`agent_panel.panel_path` raises
-    rather than following it. That refusal is neither the crew's fault nor the
-    drawer's, and an uncaught ``CrewSlugError`` reaches the caller as an opaque 500
-    -- telling the one party who can repair it (the operator, who removes the link)
-    nothing about what happened.
-
-    The READ path needs no such catch: ``read`` treats any ``ValueError`` as "no
-    panel published", so a linked record renders the empty state.
+    :func:`agent_panel.panel_path` refuses a link, which could reach outside the fenced
+    directory; an uncaught ``CrewSlugError`` would be an opaque 500 to the operator.
     """
     async with _client() as c:
         await c.post(
@@ -629,28 +587,18 @@ async def test_a_linked_record_is_a_coded_refusal_not_a_500(vetted):
         assert r.status == 400, f"a linked record surfaced as {r.status}"
         assert (await r.json())["code"] == "panel_record_is_a_symlink"
 
-        # The READ still serves the panel, from the crew log rather than through the
-        # link: the fold is preferred, and the first publish appended an entry. The
-        # link is never followed either way -- ``panel_path`` refuses it, so the
-        # fallback that would have read it answers nothing. A tampered file
-        # therefore costs the crew nothing: its own last publish still renders.
+        # The read serves the panel from the crew log; the link is never followed.
         body = await (await c.get(f"/api/members/{SLUG}/panel?member={CREW}")).json()
         assert body["panel"]["data"] == {"cycle": 1}, "the fold should still hold cycle 1"
         assert body["html"]
 
 
+@pytest.mark.asyncio
 async def test_a_linked_legacy_record_is_never_followed_on_the_read(vetted):
     """A LINKED legacy record reads as the empty state, not as an error.
 
-    A symlink or junction standing where the record belongs is how a read reaches
-    an inode outside the fenced directory, so :func:`agent_panel.panel_path` raises
-    rather than following it. ``read`` treats any ``ValueError`` as "no panel
-    published", so the drawer renders the empty state and the link's bytes are never
-    served as somebody's panel.
-
-    The WRITE half of this guard is gone with the writer: the record is a crew log
-    entry now, so no publish resolves this path and none can be aimed through a
-    link. The read is the whole remaining surface, and it is still guarded.
+    :func:`agent_panel.panel_path` refuses the link and ``read`` treats that
+    ``ValueError`` as "no panel published", so the link's bytes are never served.
     """
     async with _client() as c:
         # Stand a symlink where the legacy record belongs, pointing at a sibling.
@@ -674,18 +622,12 @@ async def test_a_linked_legacy_record_is_never_followed_on_the_read(vetted):
         assert body["panel"] is None and body["html"] is None
 
 
+@pytest.mark.asyncio
 async def test_an_unowned_record_is_not_served_to_anyone(vetted):
     """The read guard must fail CLOSED when ownership cannot be established.
 
-    Comparing only when the stored ``crew_key`` is truthy would let a record with
-    an empty key skip the check and reach whoever asked -- and with the query
-    parameter the only thing naming the crew, that is any caller. No publish can
-    create such a record, which leaves a forged one as the only source, and a
-    forgery is precisely what must not render in someone's drawer.
-
-    Planted in the legacy file rather than through a publish: the fold is left
-    empty on purpose so the read falls back to the file, which is the one surface
-    an outside write can still reach.
+    No publish writes an empty ``crew_key``, so such a record is forged. Planted in the
+    legacy file with an empty fold, so the read falls back to the file.
     """
     async with _client() as c:
         # Written directly, as a write outside the API would.
@@ -712,14 +654,9 @@ async def test_an_unowned_record_is_not_served_to_anyone(vetted):
         assert "planted" not in json.dumps(body)
 
 
+@pytest.mark.asyncio
 async def test_publishing_pushes_a_refresh_to_open_drawers(vetted):
-    """The drawer showed its first read forever without this.
-
-    The query client sets ``staleTime: Infinity`` because freshness is driven by
-    WebSocket push, and nothing pushed for a panel -- so a crew publishing on an
-    unattended loop was invisible after the drawer's first render, which is the one
-    thing the feature exists to do.
-    """
+    """A publish pushes a refresh, since the query client uses ``staleTime: Infinity``."""
     app = _mounted()
     async with TestClient(TestServer(app)) as c:
         await c.post(
@@ -731,6 +668,7 @@ async def test_publishing_pushes_a_refresh_to_open_drawers(vetted):
         assert ("panel_published", {"slug": SLUG}) in sent, f"no refresh pushed: {sent}"
 
 
+@pytest.mark.asyncio
 async def test_the_refresh_frame_carries_no_ownership_digest(vetted):
     """The frame says "re-read this slug" and nothing more.
 
@@ -750,6 +688,7 @@ async def test_the_refresh_frame_carries_no_ownership_digest(vetted):
         assert "crew_key" not in blob
 
 
+@pytest.mark.asyncio
 async def test_the_ownership_digest_never_reaches_the_client(vetted):
     """It is derived from a name that may itself be credential-shaped."""
     async with _client() as c:
@@ -763,15 +702,12 @@ async def test_the_ownership_digest_never_reaches_the_client(vetted):
         assert agent_panel.crew_key(CREW) not in json.dumps(body)
 
 
+@pytest.mark.asyncio
 async def test_an_app_identified_internal_caller_cannot_publish(vetted):
     """The secret gate does NOT imply "not an app".
 
-    ``token_auth`` sets ``internal_auth`` and then derives ``request["app"]`` in the
-    SAME branch, so one internal caller can carry both. An app-owned agent granted
-    the panel tools, whose slot's ``agent`` happens to name a crew, therefore
-    satisfied ``internal_secret_required`` and published as that crew -- replacing a
-    crew's own dashboard with app-authored content. The read route denied app
-    callers from the start; this is the write half of the same guard.
+    ``token_auth`` can set both ``internal_auth`` and ``request["app"]``, so an app agent
+    whose slot names a crew would pass ``internal_secret_required`` and publish as it.
     """
 
     @web.middleware
@@ -794,17 +730,12 @@ async def test_an_app_identified_internal_caller_cannot_publish(vetted):
         assert agent_panel.read(SLUG) is None, "an app's data landed in a crew's panel"
 
 
+@pytest.mark.asyncio
 async def test_an_app_token_caller_is_denied_the_panel(vetted):
     """``/api/members/{slug}/panel`` is a CHILD of ``/api/members``.
 
-    An app token scoped to the parent is admitted to this route by prefix, so the
-    denial has to be explicit. Apps are isolated from member surfaces generally --
-    ``/api/members``, ``.../thread`` and ``.../activity`` all 404 for an app token --
-    and a panel is a crew's published state plus a rendered document, squarely
-    inside what that isolation withholds.
-
-    404 rather than 403, matching the sibling: a distinct status would confirm the
-    surface exists to a caller that may not know about it.
+    An app token scoped to the parent is admitted by prefix, so the denial is explicit.
+    404, not 403, so the status does not confirm the surface exists.
     """
     async with _client() as c:
         await c.post(
@@ -833,6 +764,7 @@ async def test_an_app_token_caller_is_denied_the_panel(vetted):
             assert "cycle" not in body, "panel data leaked to an app-token caller"
 
 
+@pytest.mark.asyncio
 async def test_no_route_here_writes_from_the_browser_surface():
     """Everything under /api/members here is a read; writes are MCP-only."""
     member_routes = [
@@ -844,18 +776,12 @@ async def test_no_route_here_writes_from_the_browser_surface():
     assert {r.method for r in member_routes} <= {"GET", "HEAD"}
 
 
+@pytest.mark.asyncio
 async def test_the_gateway_registers_exactly_these_paths_without_importing_us():
     """The boot path binds these routes DEFERRED, so the paths are written twice.
 
-    ``server._register_mcp_routes`` cannot call ``register_agent_panel_routes``:
-    that would import this optional subsystem on every gateway launch before the
-    socket binds, which the boot-path rule forbids. It therefore restates each
-    path against ``server._deferred``, and a restated path is a path
-    that can drift -- a route renamed here and not there would 404 in the gateway
-    while every test in this file passed.
-
-    Compares the two SETS rather than looking for known strings, so a route added
-    to either side has to be added to both.
+    ``server._register_mcp_routes`` may not import this subsystem before the socket
+    binds, so it restates each path against ``server._deferred``. The two sets must match.
     """
     import inspect
 

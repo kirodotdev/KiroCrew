@@ -129,12 +129,11 @@ async function main() {
     return false
   }
 
-  await stubDashboardApi(page, { slots, extra })
+  await stubDashboardApi(page, { slots, extra, localStorageEntries: { 'mc-active-slot': SLOT } })
   // AFTER the shared stub so this wins: the stub swallows /api/ws to stop a retry
   // storm, but this harness needs the socket to push the run frames.
   let wsServer = null
   await page.routeWebSocket(/\/api\/ws/, ws => { wsServer = ws })
-  await page.addInitScript(slot => localStorage.setItem('mc-active-slot', slot), SLOT)
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2500)
   if (!wsServer) throw new Error('websocket route never bound')

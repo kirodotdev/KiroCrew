@@ -247,10 +247,18 @@ def test_book_success_without_a_client_records_no_interaction(recorded: _Recorde
 
 @pytest.mark.asyncio
 async def test_book_failure_books_once_and_marks_the_error(recorded: _Recorder) -> None:
-    turn = _turn(recorded, _verdict_booked=False, _had_error=False)
+    class _Reaction:
+        def finalize(self, error: bool = False) -> None:
+            recorded.calls.append(("reaction.finalize", error))
+
+    turn = _turn(recorded, _verdict_booked=False, _had_error=False, status_ctrl=_Reaction())
     await turn.book_failure()
     await turn.book_failure()
-    assert recorded.calls == [("record_failure", "slack:1.2"), ("stats.inc_message_failed",)]
+    assert recorded.calls == [
+        ("reaction.finalize", True),
+        ("record_failure", "slack:1.2"),
+        ("stats.inc_message_failed",),
+    ]
     assert turn._verdict_booked is True and turn._had_error is True
 
 
@@ -771,10 +779,12 @@ def _module_level_imports(tree: ast.Module) -> dict[str, int]:
 #: so they are the facade's surface, exported at the base. Frozen: a re-export added
 #: later is read by the facade or an owner, or it is dead, and this test says which.
 _SURFACE_ONLY_REEXPORTS = frozenset("""
+    OUTCOME_REJECTED_TRANSPORT_FLOOR
     _get_agent_for_session _review_drafts_get _review_drafts_pop adopt_default_agent
     adopt_slack_config cancel_background_tasks enable_yolo_with_ttl get_orch_cfg
     handle_interaction is_open_channel is_slack_session_trusted is_tracked_channel
-    post_linked_approval refresh_phase_emojis resolve_linked_approval set_allowed_users
+    link_agent_mismatch post_linked_approval read_config_text read_link_record
+    refresh_phase_emojis resolve_linked_approval set_allowed_users
     set_dashboard_state set_open_channels set_orch_cfg set_owner_id set_tracking_channels
     set_yolo_mode
     """.split())
@@ -925,6 +935,8 @@ _OWNER_COROUTINES = (
     ("turn", "_run_turn"),
     ("turn", "_replay_abandoned"),
     ("turn", "book_failure"),
+    ("turn", "clear_working_indicators"),
+    ("turn", "fire_stop_hooks"),
     ("permission_ladder", "_screen_tool_call"),
     ("permission_ladder", "_answer_permission_request"),
     ("permission_ladder", "_reject_orphaned_tool"),

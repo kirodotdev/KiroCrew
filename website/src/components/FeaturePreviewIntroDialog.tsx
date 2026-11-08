@@ -6,6 +6,7 @@ import { IconButton, Toggle } from './ui'
 import { useIsDark } from '../hooks/useIsDark'
 import { i18nT } from '../i18n/t'
 import { cn } from '../lib/utils'
+import { useRovingTabs } from './Tablist'
 
 /**
  * "See what it looks like" for one Feature Preview: a help button beside the
@@ -106,6 +107,8 @@ function FeaturePreviewIntroDialog({ open, onOpenChange, title, intro, checked, 
   useEffect(() => { if (open) setIndex(0) }, [open])
   const media = intro.media[Math.min(index, intro.media.length - 1)]
   const many = intro.media.length > 1
+  // The capture dots are one tab stop; Left/Right/Home/End page the captures.
+  const dots = useRovingTabs(intro.media.map((_, i) => ({ key: i })), index, setIndex)
   const descId = 'feature-preview-intro-desc'
   const toggleLabelId = 'feature-preview-intro-toggle-label'
 
@@ -172,6 +175,7 @@ function FeaturePreviewIntroDialog({ open, onOpenChange, title, intro, checked, 
                           key={m.light}
                           type="button"
                           role="tab"
+                          {...dots(i)}
                           aria-selected={i === index}
                           aria-label={i18nT('components.featurePreviewIntro.capture_n_of_m', { n: i + 1, m: intro.media.length })}
                           onClick={() => setIndex(i)}
@@ -194,12 +198,7 @@ function FeaturePreviewIntroDialog({ open, onOpenChange, title, intro, checked, 
           <DialogDescription id={descId} className="text-[13px] text-text">
             {intro.summary}
           </DialogDescription>
-          <div className="flex flex-col gap-0.5">
-            <span className="text-[11px] font-semibold uppercase tracking-[.04em] text-muted">
-              {i18nT('components.featurePreviewIntro.where_to_find')}
-            </span>
-            <p className="m-0 text-[12px] leading-relaxed text-muted">{intro.whereToFind}</p>
-          </div>
+          <p className="m-0 text-[12px] leading-relaxed text-muted">{intro.whereToFind}</p>
         </DialogBody>
         <DialogFooter className="justify-between">
           {/* The label follows the switch: "Turn this preview on" beside a

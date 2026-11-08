@@ -41,6 +41,8 @@ from kiro_crew.history import ConversationLog
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_history_bindings")
 
+SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
+
 _PACKAGE = "kiro_crew"
 _REPO = Path(__file__).resolve().parents[1]
 
@@ -75,6 +77,8 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_deletes_in_flight_guard": ("data", "", ""),
     "_dir_write_epoch": ("function", "fa6cfecd5574", "history"),
     "_dir_write_epochs": ("data", "", ""),
+    "_dir_bumped_stems": ("data", "", ""),
+    "_dir_bump_floors": ("data", "", ""),
     "_file_lock": ("function", "bc31c6c18d74", "history_locks"),
     "_file_locks": ("data", "", ""),
     "_file_locks_guard": ("data", "", ""),
@@ -83,6 +87,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_flock_hold_witness": ("function", "8a8352d8863e", "history_locks"),
     "_flock_state": ("data", "", ""),
     "_folded_content": ("function", "b927bd9ae0f3", "history"),
+    "_holds_identical_row": ("function", "1e57c2998c87", "history_append"),
     "_intent_summary_cache_path": ("function", "445450696709", "history_summaries"),
     "_invalidate_cache": ("function", "958babeb61c8", "history"),
     "_iter_message_texts": ("function", "6a8b4191d1b9", "history"),
@@ -116,13 +121,13 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_withhold_if_restricted": ("function", "958babeb61c8", "history_derivation"),
     "advance_consolidation_sub_offset": ("function", "d349ae2beaab", "history_marker"),
     "agent_usage": ("function", "e1e8f90e5eef", "history"),
-    "append": ("function", "f78c841b2d80", "history_append"),
-    "append_if_absent": ("function", "05473a22f234", "history_append"),
+    "append": ("function", "3ead16eae652", "history_append"),
+    "append_if_absent": ("function", "7702f18c3eee", "history_append"),
     "append_thread_reply": ("function", "6591823e2c38", "history_threads"),
     "atomic_appends": ("function", "e1e3936a7475", "history_locks"),
     "chain_mid_rotation": ("function", "1eda252b53bd", "history"),
     "chained_keys": ("function", "349ed17a0181", "history"),
-    "clear_closed": ("function", "f44a8f79dc9b", "history"),
+    "clear_closed": ("function", "fe163b1b1d09", "history"),
     "consolidated_offset": ("function", "028659ce42ac", "history_marker"),
     "consolidation_counts": ("function", "286ecf2c0fe3", "history_marker"),
     "consolidation_retry_state": ("function", "945c2956ab9c", "history_marker"),
@@ -134,6 +139,9 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "derive_messages": ("function", "d4d3f09b758c", "history_derivation"),
     "derive_messages_chained": ("function", "d4d3f09b758c", "history_derivation"),
     "derive_messages_chained_with_keys": ("function", "81471b1c6628", "history_derivation"),
+    "derive_messages_chained_full_with_keys": ("function", "81471b1c6628", "history_derivation"),
+    "_read_messages_with_rotated_head": ("function", "d4d3f09b758c", "history_derivation"),
+    "_derive_settled_chain_rows": ("function", "5b8db63436a5", "history_derivation"),
     "derive_recent": ("function", "cac529f460f5", "history_derivation"),
     "get_cached_intent_summary": ("function", "ffa13bebb6bc", "history_summaries"),
     "get_cached_summary": ("function", "4b576121a346", "history_summaries"),
@@ -142,6 +150,8 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "get_unconsolidated": ("function", "4c402cd67e6f", "history"),
     "has_log": ("function", "1eda252b53bd", "history"),
     "has_messages": ("function", "1eda252b53bd", "history"),
+    "listing_has_messages": ("function", "1eda252b53bd", "history"),
+    "indexed_has_messages": ("function", "5ccb54f56604", "history"),
     "init": ("function", "b60c5fea256e", "history"),
     "invalidate_tab_id_cache": ("function", "b60c5fea256e", "history"),
     "last_message_info": ("function", "5ce93cd5cafb", "history"),
@@ -149,6 +159,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "last_row_ts": ("function", "4b576121a346", "history"),
     "last_speech_info": ("function", "5c2c36671674", "history"),
     "list_sessions": ("function", "32c901f96e6a", "history"),
+    "list_sessions_indexed": ("function", "3b4687b0c546", "history"),
     "list_sessions_status": ("function", "5af52b05ca7f", "history"),
     "locked_stems": ("function", "dfeef8bbc1c0", "history_locks"),
     "mark_consolidated": ("function", "82b842603c08", "history_marker"),
@@ -164,6 +175,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "read_messages_chained_full": ("function", "d4d3f09b758c", "history"),
     "read_messages_chained_page": ("function", "053fbeec09b6", "history"),
     "read_messages_chained_tail": ("function", "ce37b325fd52", "history"),
+    "read_rotated_messages": ("function", "d4d3f09b758c", "history"),
     "read_rotated_messages_chained": ("function", "d4d3f09b758c", "history"),
     "read_threads": ("function", "fc4954d3d484", "history_threads"),
     "recent": ("function", "3151c6bfcca2", "history"),
@@ -328,15 +340,6 @@ def _class_only_constructs(fn: ast.FunctionDef) -> list[str]:
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    assert sorted(_class_only_constructs(tree.body[0])) == [  # type: ignore[arg-type]
-        "__class__",
-        "__hidden",
-        "super()",
-    ]
 
 
 @pytest.mark.parametrize("owner", history._OWNERS)

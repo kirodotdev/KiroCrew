@@ -1,7 +1,8 @@
 """Steering a live turn.
 
-The steer entry, the codex steering-request protocol, settling abandoned answers, and
-the injected, proven and denied steer bookkeeping the dispatch loop reads.
+The steer entry, kiro-cli's request to drop the steers a turn has not read, the codex
+steering-request protocol, settling abandoned answers, and the injected, proven and
+denied steer bookkeeping the dispatch loop reads.
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -11,8 +12,8 @@ Instance fields written: ``_abandoned_steering``, ``_steering_answers``,
 ``_steering_cancel_tasks``, ``_steering_settled``, ``_steers_accepted``,
 ``_steers_proven``, ``_turn_steering_denied``.
 
-Instance fields read: ``_awaiting_permission``, ``_cancelled``, ``_prompt_starts``,
-``_prompt_written``, ``_runtime``, ``_session_id``, ``_turn_done``.
+Instance fields read: ``_awaiting_permission``, ``_batch_window``, ``_cancelled``,
+``_prompt_starts``, ``_prompt_written``, ``_runtime``, ``_session_id``, ``_turn_done``.
 """
 
 from __future__ import annotations
@@ -22,18 +23,24 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeDead
 from kiro_crew.acp.types import (
+    ACP_BACKENDS_STEER_RETRACT,
     ACP_BACKENDS_STEERING_REQUEST,
     MAX_STEERING_ANSWERS,
     MAX_STEERING_TEXT_CHARS,
     METHOD_CANCEL,
+    METHOD_SESSION_STEER_CLEAR,
     METHOD_SESSION_STEERING,
+    STEER_CLEAR_ANSWER_WAIT_SECS,
     STEERING_ANSWER_WAIT_SECS,
     STEERING_INJECTED,
     STEERING_STARTED_NEW_TURN,
     STOP_REASON_END_TURN,
+    steering_advertised,
     steering_outcome,
+    wrap_user_message,
 )
 
 if TYPE_CHECKING:
@@ -70,18 +77,68 @@ async def steer(self: AcpSessionHandle, message: str) -> bool:
     if not text or not self._session_id:
         return False
     if self._runtime.acp_backend in ACP_BACKENDS_STEERING_REQUEST:
+        if not steering_advertised(self.initialize_result):
+            # The process's handshake did not advertise ``_session/steering``
+            # (``_meta.steering.supported: true``): nothing is sent, and the
+            # caller queues the text as the next turn.
+            return False
         return await self._steer_via_steering_request(text)
-    wrapped = f"<user_message>\n{text}\n</user_message>"
+    wrapped = wrap_user_message(text)
     await self._runtime.send_request(
         "_session/steer",
         {"sessionId": self._session_id, "message": wrapped},
     )
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     # Stamped HERE, at the innermost write, because this is the one point
     # every steer funnels through: the dashboard steers the inner client
     # directly while the IM transports steer the provider wrapper, and both
     # end up on this line. A reader of the stamp therefore needs no
     # per-transport wiring. See ``last_steer_monotonic``.
     self._last_steer_monotonic = time.monotonic()
+    return True
+
+
+async def clear_pending_steers(self: AcpSessionHandle) -> bool | None:
+    """Ask kiro-cli to drop every steer it holds that the turn has not read.
+
+    Only a host in ``ACP_BACKENDS_STEER_RETRACT`` has the request; anywhere else,
+    and with no session, nothing is sent and the answer is False. True means
+    kiro-cli answered the request, which it does with ``{cleared: true}`` whether or
+    not anything was pending. It is not evidence of a drop: that is the
+    ``AgentExecutionUserMessageCleared`` notification which follows the answer and
+    reaches the turn as ``EVENT_STEER_DROPPED``. False means the request was
+    refused (a build without it answers ``-32601``), so nothing was dropped and the
+    session stops offering it. None means no answer came within
+    ``STEER_CLEAR_ANSWER_WAIT_SECS``, so whether anything was dropped is unknown.
+
+    The answer is read off the session queue (``send_request_for_answer``), so the
+    turn's own dispatch loop never sees it, and this call never waits on that loop.
+    A runtime that dies under the write raises, as a steer's write does.
+    """
+    if (
+        self._runtime.acp_backend not in ACP_BACKENDS_STEER_RETRACT
+        or not self._session_id
+        or self._steer_clear_refused
+    ):
+        return False
+    answer = await self._runtime.send_request_for_answer(
+        METHOD_SESSION_STEER_CLEAR, {"sessionId": self._session_id}
+    )
+    done, _ = await asyncio.wait({answer}, timeout=STEER_CLEAR_ANSWER_WAIT_SECS)
+    if not done:
+        self._runtime.forget_request(answer)
+        return None
+    if answer.cancelled():
+        return None
+    error = answer.exception()
+    if isinstance(error, AcpRuntimeDead):
+        return None
+    if error is not None:
+        # The class only, as for a refused steering request: the text is the
+        # backend's.
+        logger.info("steer clear on %s refused: %s", self._session_id, type(error).__name__)
+        self._steer_clear_refused = True
+        return False
     return True
 
 
@@ -155,7 +212,7 @@ async def _steer_via_steering_request(self: AcpSessionHandle, text: str) -> bool
     entry: list[tuple[asyncio.Future[dict[str, Any]], int, str]] = []
 
     def _register(fut: "asyncio.Future[dict[str, Any]]") -> None:
-        entry.append((fut, aimed_at, f"<user_message>\n{text}\n</user_message>"))
+        entry.append((fut, aimed_at, wrap_user_message(text)))
         self._steering_answers.append(entry[0])
         self._steering_settled[fut] = asyncio.get_running_loop().create_future()
 
@@ -176,6 +233,7 @@ async def _steer_via_steering_request(self: AcpSessionHandle, text: str) -> bool
                     break
         self._steering_settled.pop(entry[0][0], None)
 
+    batch_guard.note_prompt(getattr(self, "_batch_window", None), text)
     try:
         answer = await self._runtime.send_request_for_answer(
             METHOD_SESSION_STEERING,

@@ -11,6 +11,7 @@ or hanging provider must degrade to a per-source error, never take down the poll
 import asyncio
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -768,6 +769,71 @@ class TestEvidenceRedaction(unittest.IsolatedAsyncioTestCase):
             "an adapter's gather() must be invoked only from gather_evidence, "
             "which is where redaction happens",
         )
+
+
+class _ThreadRecordingAdapter:
+    """Records which thread ran ``configured()``.
+
+    The real adapters' ``configured()`` reads ``config.json``, checks the secret
+    store and walks ``PATH``, so it must not run on the event-loop thread.
+    """
+
+    def __init__(self, adapter_id: str, ready: bool = True):
+        self.id = adapter_id
+        self.display_name = adapter_id
+        self._ready = ready
+        self.configured_threads: list[int] = []
+
+    def configured(self) -> bool:
+        self.configured_threads.append(threading.get_ident())
+        return self._ready
+
+    async def poll(self) -> list[Signal]:
+        return []
+
+    async def on_shift(self) -> ShiftStatus:
+        return ShiftStatus(on_shift=False)
+
+    async def gather(self, signal: Signal, budget: EvidenceBudget) -> list[Evidence]:
+        return []
+
+
+class TestConfiguredChecksRunOffTheLoop(unittest.IsolatedAsyncioTestCase):
+    """The three fan-outs ask every adapter ``configured()`` on a worker thread."""
+
+    def _assert_off_loop(self, adapter: _ThreadRecordingAdapter) -> None:
+        loop_thread = threading.get_ident()
+        self.assertTrue(adapter.configured_threads, "configured() was never asked")
+        self.assertNotIn(loop_thread, adapter.configured_threads)
+
+    async def test_poll_all_checks_configured_off_the_loop(self):
+        registry = OpsProviderRegistry()
+        ready = _ThreadRecordingAdapter("ready")
+        idle = _ThreadRecordingAdapter("idle", ready=False)
+        registry.register_signal_source(ready)
+        registry.register_signal_source(idle)
+        _signals, errors = await registry.poll_all()
+        self.assertEqual(errors, {})
+        self._assert_off_loop(ready)
+        self._assert_off_loop(idle)
+        # Only the configured source is polled and recorded.
+        self.assertEqual(set(registry.poll_health()), {"ready"})
+
+    async def test_resolve_shift_checks_configured_off_the_loop(self):
+        registry = OpsProviderRegistry()
+        rotation = _ThreadRecordingAdapter("rota")
+        registry.register_rotation_source(rotation)
+        status = await registry.resolve_shift()
+        self.assertFalse(status.on_shift)
+        self.assertFalse(status.unknown)
+        self._assert_off_loop(rotation)
+
+    async def test_gather_evidence_checks_configured_off_the_loop(self):
+        registry = OpsProviderRegistry()
+        evidence = _ThreadRecordingAdapter("logs")
+        registry.register_evidence_source(evidence)
+        self.assertEqual(await registry.gather_evidence(_signal(), EvidenceBudget()), [])
+        self._assert_off_loop(evidence)
 
 
 class _FakeSink:

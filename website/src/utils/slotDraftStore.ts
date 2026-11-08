@@ -19,10 +19,9 @@
  * `safeSetItem` / `safeSetSessionItem` so a quota hit
  * reclaims disposable cache and retries instead of silently losing the write.
  *
- * Cross-tab: `persistNow` overwrites the whole key, so two open tabs are
- * last-write-wins on the shared draft. No merge: merging breaks LRU order and
- * resurrects intentionally-deleted drafts. Accepted because the dashboard is
- * effectively single-tab.
+ * Cross-tab: `persistNow` overwrites the whole drafts key, so two open tabs
+ * are last-write-wins on the shared draft. Timestamps merge newest-wins before
+ * TTL pruning and writing; `peek` uses the same merge without changing state.
  */
 import { safeSetItem, safeSetSessionItem } from './safeStorage'
 
@@ -56,7 +55,9 @@ export interface SlotDraftStoreOpts<T> {
 
 export interface SlotDraftStore<T> {
   load(): Record<string, T>
-  save(drafts: Record<string, T>): void
+  /** Read sanitized, TTL-fresh entries without changing memory or storage. */
+  peek(): Record<string, T>
+  save(drafts: Record<string, T>): boolean
   set(drafts: Record<string, T>, slot: string, value: T): void
   /** @internal test-only: reset module state between tests. `undefined` in the
    *  prod bundle (gated on `!import.meta.env.PROD`). */
@@ -77,24 +78,32 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
   }
 
   const timestamps: Record<string, number> = {}
-  let timestampsLoaded = false
 
   const store = (): Storage => (storage === 'local' ? localStorage : sessionStorage)
   const safeWrite = (k: string, v: string): boolean =>
     storage === 'local' ? safeSetItem(k, v) : safeSetSessionItem(k, v)
 
-  function ensureTimestampsLoaded(): void {
-    if (!hasTtl || timestampsLoaded) return
-    timestampsLoaded = true
+  function readStoredTimestamps(): Record<string, number> {
+    const storedTimestamps: Record<string, number> = {}
+    if (!hasTtl) return storedTimestamps
     try {
       const raw = store().getItem(tsKey)
       const parsed = raw ? JSON.parse(raw) : {}
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-          if (typeof v === 'number') timestamps[k] = v
+          if (typeof v === 'number') storedTimestamps[k] = v
         }
       }
     } catch { /* ignore */ }
+    return storedTimestamps
+  }
+
+  function mergeStoredTimestamps(): void {
+    if (!hasTtl) return
+    // Another tab may have stamped a slot since this page read the stamps, so pruning or writing from the stale copy would expire or rewind it.
+    for (const [k, storedTimestamp] of Object.entries(readStoredTimestamps())) {
+      if (!(k in timestamps) || storedTimestamp > timestamps[k]) timestamps[k] = storedTimestamp
+    }
   }
 
   /**
@@ -173,7 +182,7 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
   }
 
   function load(): Record<string, T> {
-    ensureTimestampsLoaded()
+    mergeStoredTimestamps()
     try {
       const raw = store().getItem(key)
       const parsed = raw ? JSON.parse(raw) : {}
@@ -203,24 +212,49 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
     }
   }
 
-  function save(drafts: Record<string, T>): void {
-    ensureTimestampsLoaded()
-    if (!evictAfterWrite) { persistNow(drafts); return }
+  function peek(): Record<string, T> {
+    const knownTimestamps = { ...timestamps }
+    if (hasTtl) {
+      for (const [k, storedTimestamp] of Object.entries(readStoredTimestamps())) {
+        if (!(k in knownTimestamps) || storedTimestamp > knownTimestamps[k]) {
+          knownTimestamps[k] = storedTimestamp
+        }
+      }
+    }
+    try {
+      const raw = store().getItem(key)
+      const parsed = raw ? JSON.parse(raw) : {}
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+      const cutoff = Date.now() - (ttlMs ?? 0)
+      const fresh: Record<string, T> = {}
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        const clean = sanitize(v)
+        if (clean === null) continue
+        if (!hasTtl || !(k in knownTimestamps) || knownTimestamps[k] >= cutoff) fresh[k] = clean
+      }
+      return fresh
+    } catch {
+      return {}
+    }
+  }
+
+  function save(drafts: Record<string, T>): boolean {
+    mergeStoredTimestamps()
+    if (!evictAfterWrite) return persistNow(drafts)
     // Evict-after-write: cap a copy, persist it, and only mirror the evictions
     // back to the caller once the write actually stuck. A failed persist leaves
     // the caller's in-memory drafts whole so nothing that never reached storage
     // is silently dropped.
     const toSave = { ...drafts }
-    if (persistNow(toSave)) {
-      for (const k of Object.keys(drafts)) if (!(k in toSave)) delete drafts[k]
-    }
+    if (!persistNow(toSave)) return false
+    for (const k of Object.keys(drafts)) if (!(k in toSave)) delete drafts[k]
+    return true
   }
 
   /** Mutate `drafts` for `slot`: delete-then-reinsert a sanitized deep copy if
    *  accepted (refreshes LRU position), delete if `sanitize` rejects it (empty /
    *  corrupt). Stamps touch time for TTL eviction when the store has a TTL. */
   function set(drafts: Record<string, T>, slot: string, value: T): void {
-    ensureTimestampsLoaded()
     delete drafts[slot]
     const clean = sanitize(value)
     if (clean !== null) {
@@ -235,8 +269,7 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
     ? (undefined as unknown as () => void)
     : () => {
         for (const k of Object.keys(timestamps)) delete timestamps[k]
-        timestampsLoaded = false
       }
 
-  return { load, save, set, __resetForTests }
+  return { load, peek, save, set, __resetForTests }
 }

@@ -258,7 +258,7 @@ The `stop_event` entry is a `system` message whose structured payload is
 JSON-encoded into **both** `cls` (so `parse_cls_meta` populates `meta` on the wire,
 which is what the frontend routes on) and `content` (for consumers that read only
 content). The payload carries `kind`, `id`, `state`
-(`stopping` / `stopped` / `stop_failed_reset`), `outcome`, `ts_start` and `ts_end`.
+(`stopping` / `stopped` / `stop_failed_reset` / `force_stopped`), `outcome`, `ts_start` and `ts_end`.
 `_resolve_stop_event` rewrites it **in place** by id and re-broadcasts, so
 `StopEventCard` transitions from its pulsing "Stopping" state to a settled one.
 
@@ -275,7 +275,9 @@ concurrently drives `_stop_state` back to `idle`:
   cannot carry that fact because teardown resets it to `idle` from `killing` just as
   readily as from `soft_pending`. So the escalation path sets
   `slot._stop_escalated_card_id`, which teardown never touches, and only the **soft**
-  callback defers on it. `hard` is terminal and nothing outranks it. The marker holds
+  callback defers on it. `hard` is terminal and nothing outranks it, and
+  `_resolve_stop_event` reads the same marker to settle an escalated hard kill as
+  `force_stopped` rather than `stop_failed_reset`. The marker holds
   an **id** rather than a boolean, because a bare flag left set would make the NEXT
   card's cooperative ack defer to a hard callback that never fires, stranding that
   card at "stopping".
@@ -309,7 +311,7 @@ three shapes:
   exactly this reason, since a plain soft cancel would be ignored as redundant by the
   backend and the button would be a no-op.
 
-`StopEventCard` renders the three payload states with `lucide-react` icons and the
+`StopEventCard` renders each payload state with `lucide-react` icons and the
 danger design tokens, and the pulsing state uses a Framer Motion opacity loop rather
 than new CSS keyframes.
 
@@ -343,7 +345,7 @@ saying. Two mechanisms cover that, both reading the persisted transcript rather 
 the backend's state.
 
 **`context.build_cancelled_turn_preamble`** scans backwards for a `stop_event`
-marker, takes the user message immediately before it plus any assistant text in
+marker, takes the user message that opened the turn plus any assistant text in
 between, caps each at 2000 characters, and renders:
 
 ```
@@ -368,6 +370,20 @@ the NEW user message to the conversation log only **after** the preamble is buil
 so at that moment `recent()` holds only prior turns and the latest user entry is the
 cancelled one. It is consumed one-shot on the first prompt after a cancel, so
 subsequent prompts see only the normal ACP-held conversation.
+
+A mid-turn steer is a `user` row marked `meta.steer`: it was injected into the
+running turn and did not open it. When the newest user row before the marker is a
+steer, the request is the plain `user` row before it, and each steer the turn took
+is carried in the partial assistant response, in order, as
+`[Steered mid-turn] <text>`, outside the cap on the assistant text. A steer whose
+`meta.steerState` is `requeued` is left out: the Stop teardown moved it to the
+queue, where it runs as the next prompt, or the user dismissed it. The Resume
+restore reads its partial output through the same rule
+(`replay._partial_turn_output`). A `recovery` or `user_replay` inject (a Resume
+press, a replay of the user's own words) continues the turn above it, so the walk
+steps past it. When a nudge, a sub-agent completion or any other `inject` row sits
+between them, or the window holds no opener, the steer stays the request, because
+any of those may have opened the turn.
 
 **`context._build_stop_event_notes`** separately injects up to
 `_STOP_EVENT_CAP` (3) short system notes for recent **resolved** `stop_event`

@@ -791,6 +791,8 @@ class TestPrTimelineComesFromThreads(unittest.TestCase):
                     "body": "Looks good.",
                     "author_association": None,
                     "reactions": None,
+                    # The thread's id: a reply is posted into the thread.
+                    "thread_id": "1",
                 }
             ],
         )
@@ -820,6 +822,7 @@ class TestPrTimelineComesFromThreads(unittest.TestCase):
         self.assertEqual(events[0]["kind"], "review_comment")
         self.assertEqual(events[0]["path"], "/src/ledger.py")
         self.assertEqual(events[0]["line"], 42)
+        self.assertEqual(events[0]["id"], 7)
 
     def test_a_deleted_line_comment_falls_back_to_the_left_side(self):
         # A comment on a removed line has no rightFileStart, so reading only the

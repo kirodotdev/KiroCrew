@@ -248,6 +248,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 " If result batches from a previous spawn are still arriving,"
                 " do not start a new spawn until all of them have been"
                 " delivered and processed."
+                " A shared-session spawn costs about 200ms and little memory; a per-spawn"
+                " model or reasoning_effort runs each subagent in its own process"
+                " (~3-5s, ~0.55 GB), so check resource_status before a wide wave."
+                " A memory-pressure refusal means take a lighter path; an unknown agent"
+                " name means pick from the returned roster. awaiting_approval means the"
+                " run launched and waits on the parent's approval surface, not that it"
+                " failed: tell the user and end your turn."
             ),
             "inputSchema": {
                 "type": "object",
@@ -294,7 +301,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     "crew": {
                         "type": "string",
                         "description": (
-                            "Crew Member name from select_crew or route_crew. "
+                            "Bot name from select_crew or route_crew. "
                             "Selects that member's memory and provider template; agent "
                             "alone selects a template. Naming a member is enough; its "
                             "Triggers only steer automatic selection. Omit to inherit the "
@@ -304,7 +311,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     "target_member": {
                         "type": "string",
                         "description": (
-                            "Explicit target Crew Member. Uses its existing memory without "
+                            "Explicit target Bot. Uses its existing memory without "
                             "copying the parent's learning. Omit to inherit the current member."
                         ),
                     },
@@ -344,7 +351,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "the kiro backend list them with "
                             "`kiro-cli chat --list-models --format json`; another backend "
                             "(e.g. codex) accepts only ids from its own model list and "
-                            "refuses ids from kiro's catalog."
+                            "refuses ids from kiro's catalog. Setting it forces the "
+                            "dedicated-process path (~3-5s start, ~0.55 GB per subagent)."
                         ),
                     },
                     "backend": {
@@ -370,7 +378,7 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "= unset). Batch-wide — applies to every task in this "
                             "call and wins over the configured subagent role pin. "
                             "Setting it forces the dedicated-process path: each "
-                            "subagent runs its own process (~3-5s start, ~400MB) "
+                            "subagent runs its own process (~3-5s start, ~0.55 GB) "
                             "instead of session sharing (~200ms, near-zero memory), "
                             "so weigh it on a wide fan-out. Models that do not "
                             "support effort ignore the level, but the process cost "
@@ -416,7 +424,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "conversation_gone (files expired — re-spawn with a summary), "
                 "resume_failed (session could not be restored; never executes "
                 "context-free). Context scope is inherited from the run being "
-                "continued, so the include_* flags are not accepted here."
+                "continued, so the include_* flags are not accepted here. "
+                "A continue always means yield: report it and end your turn."
             ),
             "inputSchema": {
                 "type": "object",
@@ -568,13 +577,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
         {
             "name": "spawn_sub_agents",
             "description": (
-                "Spawn one or more sub-agents to run tasks in parallel. Each sub-agent "
-                "gets its own session with full tool access. BLOCKS until all sub-agents "
-                "complete, then returns their collected results; a sub-agent the spawn "
-                "gate deferred is reported with why it waits, and its result arrives "
-                "later as a completion event. Use for delegating "
-                "independent subtasks to specialist agents. Preferred over spawn_run when "
-                "you need results before continuing." + _cap_hint
+                "Spawn one or more sub-agents and BLOCK until all complete. Each sub-agent "
+                "gets its own session with full tool access. Returns their collected results "
+                "in one reply; a sub-agent the spawn gate deferred is reported with why it "
+                "waits, and its result arrives later as a completion event. "
+                "Use spawn_run instead unless the user explicitly asks to wait for results "
+                "before continuing — spawn_run keeps the chat responsive and shows a task "
+                "card while sub-agents work in the background." + _cap_hint
             ),
             "inputSchema": {
                 "type": "object",
@@ -622,6 +631,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "run the "
                 "heavy path now, switch to a lighter path (targeted tests, fewer "
                 "sub-agents, deferred build), or wait for memory to free. "
+                "It also reports YOUR OWN session's memory: its size, process "
+                "and MCP server counts, its sub-agents' shared runtime, and the "
+                "runs you started, as numbers only; other sessions are never "
+                "shown. "
+                "It also reports free space and inodes in /tmp and in your "
+                "$TMPDIR, since a full temp directory fails a test run with "
+                "ENOSPC however much memory is free. "
                 "Read-only and advisory — it does NOT reserve or enforce "
                 "anything, and headroom can change between the check and your "
                 "action, so treat it as guidance, not a guarantee."

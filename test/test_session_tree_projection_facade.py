@@ -28,8 +28,6 @@ import functools
 import importlib
 import inspect
 import logging
-import os
-import subprocess
 import sys
 from collections.abc import Iterable
 from pathlib import Path
@@ -37,20 +35,25 @@ from types import ModuleType
 from typing import Any
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 
 import kiro_crew
 from kiro_crew import _facade_mirror
 from kiro_crew.crew_log import session_tree_projection as facade
-from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Walks the test trees for patches and src/kiro_crew for owner imports; keep it on one worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_session_tree_projection_facade")
 
 #: Checks ``test_facade_shared_checks.py`` runs against this module's helpers; each is
 #: the same for every facade, so it is written once there and parametrized per module.
-SHARED_FACADE_CHECKS = ("known_seams", "corpus_gate")
+SHARED_FACADE_CHECKS = (
+    "known_seams",
+    "corpus_gate",
+    "the_class_body_scan_can_fail",
+    "the_facade_installs_its_mirror_when_run_as_a_script",
+)
 
 FACADE = "kiro_crew.crew_log.session_tree_projection"
 OWNER_PREFIX = "kiro_crew.crew_log.session_tree_projection_"
@@ -135,7 +138,10 @@ BASE_MEMBER_KINDS = {
 BASE_BOUND_SIGNATURES = {
     "_schedule_checkpoint": "(self) -> 'None'",
     "cancel_pending_checkpoint": "(self) -> 'None'",
-    "_debounced_write": "(self, target: \"'Path | None'\" = None, epoch: 'int' = -1) -> 'None'",
+    "_debounced_write": (
+        "(self, target: \"'Path | None'\" = None, epoch: 'int' = -1, "
+        "root: \"'str | None'\" = None) -> 'None'"
+    ),
     "flush_checkpoint": "(self) -> 'bool'",
     "ensure_seeded": "(self, live_sids: \"'tuple[str, ...]'\" = ()) -> 'None'",
     "_retry_due_locked": "(self) -> 'bool'",
@@ -257,29 +263,11 @@ def test_an_owner_imports_only_owners_below_it_and_never_its_facade() -> None:
         assert {name for name in loaded if name in OWNERS} <= set(OWNERS[:position]), owner
 
 
-def _imported_modules(node: ast.Import | ast.ImportFrom, module: str) -> list[str]:
-    """Dotted names an import statement in *module* reaches, relative spellings resolved."""
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    base = node.module or ""
-    if node.level:
-        package = module.split(".")[: -node.level]
-        base = ".".join([*package, *([node.module] if node.module else [])])
-    return [base, *(f"{base}.{alias.name}" for alias in node.names)]
-
-
 def _owner_importers(sources: Iterable[tuple[Path, str]], root: Path) -> set[str]:
     """The files among *sources* (relative to *root*) whose code imports a family owner."""
-    found = set()
-    for path, text in sources:
-        rel = path.relative_to(root)
-        module = ".".join([root.name, *rel.with_suffix("").parts])
-        for node in ast.walk(ast.parse(text)):
-            if isinstance(node, (ast.Import, ast.ImportFrom)) and any(
-                name.startswith(OWNER_PREFIX) for name in _imported_modules(node, module)
-            ):
-                found.add(rel.as_posix())
-    return found
+    return owner_import_scan.owner_importers(
+        sources, root, lambda name: name.startswith(OWNER_PREFIX)
+    )
 
 
 def test_only_the_family_imports_an_owner() -> None:
@@ -322,20 +310,6 @@ def test_every_owner_logs_under_the_facades_name() -> None:
     assert facade.logger is shared
     for owner in OWNERS:
         assert vars(_owner(owner)).get("logger") is shared, owner
-
-
-def test_the_facade_installs_its_mirror_when_run_as_a_script(tmp_path: Path) -> None:
-    """Under ``python -m`` the facade is ``__main__``: one logger by literal name keeps
-    the family to one object per name, which the mirror's install requires."""
-    result = subprocess.run(
-        [sys.executable, "-m", FACADE],
-        capture_output=True,
-        cwd=tmp_path,
-        env=dict(os.environ),
-        timeout=120,
-        **UTF8_TEXT,
-    )
-    assert result.returncode == 0, result.stderr
 
 
 # --------------------------------------------------------------------------- #
@@ -523,8 +497,3 @@ def test_no_bound_function_needs_the_class_body() -> None:
     a ``self.__name`` is never mangled. So no owner spells one; a method that needs one
     stays in the class body."""
     assert {owner: hits for owner in OWNERS if (hits := _class_body_reads(_source(owner)))} == {}
-
-
-def test_the_class_body_scan_can_fail() -> None:
-    planted = "def f(self):\n    super().g()\n    return __class__, self.__secret, self.__dict__\n"
-    assert _class_body_reads(planted) == ["2: super()", "3: __class__", "3: __secret"]

@@ -1,16 +1,8 @@
 """The transcript budget one history consolidation prompt carries.
 
-The unconsolidated tail has no natural ceiling: a session that goes a long time
-between passes, or whose consolidation kept failing, accumulates every message
-since the marker and renders all of them into a single prompt. Past some length
-no provider accepts that prompt, so the span that most needs extracting becomes
-the one that can never be extracted.
-
-Bounding the prompt is only half of it. The durable ``last_consolidated`` marker
-is what says a message has been through a memory pass, so it has to follow the
-PROMPT rather than the snapshot — on the success path and on the abandon path
-alike. These tests pin the split, the separator accounting, the oversized-message
-case, and that no offset ever advances past what a model actually read.
+An unbounded tail would grow past what any provider accepts. The durable
+``last_consolidated`` marker must follow the PROMPT, not the snapshot, on both the
+success and abandon paths, so no offset advances past what a model read.
 """
 
 import asyncio
@@ -32,6 +24,7 @@ from kiro_crew.history import (
     _fmt_message,
 )
 from kiro_crew.history_consolidation import (
+    PrefsWindow,
     _head_exceeds_budget,
     _prompt_rows,
     _slice_head_for_budget,
@@ -240,28 +233,204 @@ class TestAbandonMarksOnlyWhatWasPrompted:
         assert log.unconsolidated_count(KEY) < remaining
 
 
-class TestPrefsPassesKeepTheWholeTail:
-    @pytest.mark.asyncio
-    async def test_a_prefs_only_pass_prompts_every_unconsolidated_message(self, tmp_path) -> None:
-        """Its window is a scheduling artifact, not a durable marker.
+class TestPrefsPassesAreBoundedToo:
+    """A prefs-only pass prompts at most one budget, from its in-memory window.
 
-        ``maybe_consolidate``'s done-callback advances an in-memory offset to the
-        count it scheduled against, with no channel back from the pass. Bounding
-        this prompt without also making that offset follow the bound would drop
-        the remainder from preference and project extraction outright, so the
-        unbounded prompt is the lesser fault until the offset is durable.
-        """
-        log = _log_with(tmp_path, [f"body-{i}-" + "x" * 40_000 for i in range(6)])
+    Unbounded, one 64 MB chat sent a 12.5M-character prompt; the reply came
+    back truncated, and the pass failed and retried forever. The window has no
+    durable marker, so the pass reports the count it prompted through
+    ``PrefsWindow.end`` and the caller advances to that, never to the snapshot
+    total: the rest is prompted by later passes, not skipped.
+    """
+
+    @staticmethod
+    async def _overhead(tmp_path) -> int:
+        """The prompt's size around a one-message transcript of ``m``."""
+        log = _log_with(tmp_path / "overhead", ["m"])
         c = _make_consolidator(log)
         call = AsyncMock(return_value={})
-
         with patch.object(c, "_call_llm", call):
             await c._consolidate(KEY, include_history=False)
+        rows = log.snapshot_for_consolidation(KEY)[0]
+        return len(call.await_args.args[0]) - _rendered_size(rows)
+
+    @staticmethod
+    async def _prefs_pass(c: HistoryConsolidator, start: int) -> tuple[PrefsWindow, AsyncMock]:
+        window = PrefsWindow(start)
+        call = AsyncMock(return_value={})
+        with patch.object(c, "_call_llm", call):
+            assert await c._consolidate(KEY, include_history=False, prefs_window=window) is None
+        return window, call
+
+    @pytest.mark.asyncio
+    async def test_an_oversized_tail_gives_a_bounded_prompt(self, tmp_path) -> None:
+        overhead = await self._overhead(tmp_path)
+        bodies = [f"body-{i}-" + "x" * 40_000 for i in range(6)]
+        log = _log_with(tmp_path, bodies)
+        c = _make_consolidator(log)
+
+        window, call = await self._prefs_pass(c, 0)
 
         prompt = call.await_args.args[0]
-        for i in range(6):
-            assert f"body-{i}-" in prompt
+        assert len(prompt) - overhead <= _CONSOLIDATION_PROMPT_BUDGET_CHARS
+        assert "body-0-" in prompt and "body-5-" not in prompt, "the OLDEST chunk is prompted"
+        assert window.end == 1, "the window ends where the prompt did"
         assert log.unconsolidated_count(KEY) == 6, "a prefs pass must not move the marker"
+
+    @pytest.mark.asyncio
+    async def test_a_second_pass_picks_up_the_remainder(self, tmp_path) -> None:
+        bodies = [f"body-{i}-" + "x" * 20_000 for i in range(6)]
+        c = _make_consolidator(_log_with(tmp_path, bodies))
+
+        prompted: list[str] = []
+        start = 0
+        for _ in range(6):
+            window, call = await self._prefs_pass(c, start)
+            prompted.append(call.await_args.args[0])
+            assert window.end is not None and window.end > start, "every pass makes progress"
+            start = window.end
+            if start == 6:
+                break
+
+        assert start == 6, "the whole window drained"
+        assert len(prompted) > 1, "the tail was larger than one budget"
+        for i in range(6):
+            seen = [p for p in prompted if f"body-{i}-" in p]
+            assert len(seen) == 1, f"body-{i} was prompted {len(seen)} times"
+
+    @pytest.mark.asyncio
+    async def test_one_message_over_the_budget_does_not_wedge_the_window(self, tmp_path) -> None:
+        huge = "huge-" + "y " * _CONSOLIDATION_PROMPT_BUDGET_CHARS
+        c = _make_consolidator(_log_with(tmp_path, [huge, "after-0", "after-1"]))
+
+        window, call = await self._prefs_pass(c, 0)
+
+        prompt = call.await_args.args[0]
+        assert "huge-" in prompt and "after-0" not in prompt
+        assert (
+            len(prompt) < 2 * _CONSOLIDATION_PROMPT_BUDGET_CHARS
+        ), "the head is cut, not sent whole"
+        assert window.end == 1, "the window moves past the oversized message"
+
+        window, call = await self._prefs_pass(c, window.end)
+        prompt = call.await_args.args[0]
+        assert "after-0" in prompt and "after-1" in prompt and "huge-" not in prompt
+        assert window.end == 3
+
+    @pytest.mark.asyncio
+    async def test_a_tail_exactly_at_the_budget_is_prompted_whole(self, tmp_path) -> None:
+        envelope = len(_fmt_message(_msg("")))
+        # Two messages and their one separator land exactly on the budget.
+        first = "a" * 100
+        second = "b" * (_CONSOLIDATION_PROMPT_BUDGET_CHARS - 2 * envelope - 100 - 1)
+        log = _log_with(tmp_path, [first, second])
+        rows = log.snapshot_for_consolidation(KEY)[0]
+        assert _rendered_size(rows) == _CONSOLIDATION_PROMPT_BUDGET_CHARS
+        c = _make_consolidator(log)
+
+        window, call = await self._prefs_pass(c, 0)
+
+        prompt = call.await_args.args[0]
+        assert first in prompt and second in prompt
+        assert window.end == 2
+
+    @pytest.mark.asyncio
+    async def test_an_empty_window_makes_no_call_and_stays_covered(self, tmp_path) -> None:
+        c = _make_consolidator(_log_with(tmp_path, ["m0", "m1"]))
+
+        window, call = await self._prefs_pass(c, 2)
+
+        call.assert_not_awaited()
+        assert window.end == 2
+
+    @pytest.mark.asyncio
+    async def test_display_only_rows_are_never_prompted_but_are_covered(self, tmp_path) -> None:
+        log = _log_with(tmp_path, ["m0"])
+        with history_mod.allow_on_loop_persist():
+            log.append(KEY, "notice", "AutoNudge: keep going")
+        c = _make_consolidator(log)
+
+        # A window of the notice alone makes no call and is covered.
+        window, call = await self._prefs_pass(c, 1)
+        call.assert_not_awaited()
+        assert window.end == 2
+
+        # Beside a real row, the notice rides in the chunk unrendered.
+        window, call = await self._prefs_pass(c, 0)
+        assert "AutoNudge" not in call.await_args.args[0]
+        assert window.end == 2
+
+    @pytest.mark.asyncio
+    async def test_the_threshold_offset_follows_the_prompted_count(self, tmp_path) -> None:
+        """End to end: ``maybe_consolidate`` advances to the prompted count, not the total."""
+        bodies = [f"body-{i}-" + "x" * 8_000 for i in range(40)]
+        log = _log_with(tmp_path, bodies)
+        c = _make_consolidator(log)
+        calls = AsyncMock(return_value={})
+
+        with patch.object(c, "_call_llm", calls):
+            c.maybe_consolidate(KEY)
+            while c._tasks:
+                await asyncio.gather(*list(c._tasks))
+            first = c._prefs_offset[KEY]
+            assert 0 < first < 40, f"the offset jumped to {first}"
+            assert f"body-{first - 1}-" in calls.await_args.args[0]
+            assert f"body-{first}-" not in calls.await_args.args[0]
+
+            # The next pass starts where the first stopped.
+            c.maybe_consolidate(KEY)
+            while c._tasks:
+                await asyncio.gather(*list(c._tasks))
+        second_prompt = calls.await_args.args[0]
+        assert f"body-{first}-" in second_prompt and "body-0-" not in second_prompt
+        assert c._prefs_offset[KEY] > first
+        assert c._prefs_generation[KEY] == log.rotation_generation(KEY)
+
+    @staticmethod
+    def _rotate(log: ConversationLog) -> None:
+        """Bump the generation the way a rotation or rewrite does."""
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(KEY, {"rotation_generation": log.rotation_generation(KEY) + 1})
+
+    @pytest.mark.asyncio
+    async def test_a_window_from_the_same_generation_is_skipped(self, tmp_path) -> None:
+        log = _log_with(tmp_path, ["body-0", "body-1", "body-2"])
+        c = _make_consolidator(log)
+        window = PrefsWindow(2, log.rotation_generation(KEY))
+        call = AsyncMock(return_value={})
+        with patch.object(c, "_call_llm", call):
+            await c._consolidate(KEY, include_history=False, prefs_window=window)
+
+        prompt = call.await_args.args[0]
+        assert "body-2" in prompt and "body-0" not in prompt
+        assert window.snapshot_generation == log.rotation_generation(KEY)
+
+    @pytest.mark.asyncio
+    async def test_a_window_from_another_generation_skips_nothing(self, tmp_path) -> None:
+        """A rotation replaces the rows the offset counted: skipping by it drops new rows."""
+        log = _log_with(tmp_path, ["body-0", "body-1", "body-2"])
+        c = _make_consolidator(log)
+        old = log.rotation_generation(KEY)
+        self._rotate(log)
+        window = PrefsWindow(2, old)
+        call = AsyncMock(return_value={})
+        with patch.object(c, "_call_llm", call):
+            await c._consolidate(KEY, include_history=False, prefs_window=window)
+
+        prompt = call.await_args.args[0]
+        assert "body-0" in prompt and "body-2" in prompt
+        assert window.end == 3
+        assert window.snapshot_generation == old + 1
+
+    def test_the_threshold_count_drops_an_offset_from_another_generation(self, tmp_path) -> None:
+        log = _log_with(tmp_path, ["m0", "m1", "m2"])
+        c = _make_consolidator(log)
+        gen = log.rotation_generation(KEY)
+        assert c._count_rows(KEY, 3, gen) == (3, 0)
+
+        self._rotate(log)
+
+        assert c._count_rows(KEY, 3, gen) == (3, 3), "a stale offset held the new rows back"
 
 
 class TestSpanIdentityIsUnchangedByTheBound:
@@ -313,14 +482,8 @@ class TestTheBudgetIsNotABehaviourChangeForOrdinarySessions:
 class TestABoundedAttemptIsNotReleasedByGrowth:
     """Appending messages cannot change a prefix that was already prompted.
 
-    The attempt cap is what abandons a span that keeps failing. It is scoped to
-    the content it measured, and growth releases it so one transient
-    marker-write failure cannot refuse a session forever. Under the budget that
-    scoping needs the prompted boundary too: a permanently over-budget head
-    message renders the same chunk on every pass, so counting the turns arriving
-    behind it as new content would reset the attempts before they could ever
-    reach the cap — a session still receiving turns would be re-billed on every
-    idle window, forever.
+    An over-budget head renders the same chunk every pass. Counting turns that arrive
+    behind it as new content would reset the attempt cap forever and re-bill each idle.
     """
 
     @pytest.mark.asyncio
@@ -372,15 +535,10 @@ class TestABoundedAttemptIsNotReleasedByGrowth:
 
     @pytest.mark.asyncio
     async def test_an_over_budget_head_reaches_the_cap_in_a_growing_session(self, tmp_path) -> None:
-        """The termination argument for an oversized head under sub-chunking.
+        """An oversized head drains slice by slice under a provider that rejects everything.
 
-        A head larger than one budget is sliced rather than abandoned whole, and
-        each slice gets its own attempt budget. With the provider
-        rejecting every attempt the cap abandons ONE slice and advances the
-        durable sub-offset, so the next pass continues from the next slice and the
-        head drains slice-by-slice instead of being lost in one write. The turns
-        arriving behind the head still never reset a slice's budget — the
-        bounded-within-message accounting keeps the cap across appends.
+        Each slice has its own attempt budget, and turns arriving behind the head never
+        reset it, so the cap is reached even in a growing session.
         """
         log = _log_with(
             tmp_path,
@@ -418,11 +576,8 @@ class TestABoundedAttemptIsNotReleasedByGrowth:
     async def test_an_over_budget_head_abandons_one_slice_at_a_time(self, tmp_path) -> None:
         """The cap abandons ONE slice, not the whole head.
 
-        A head twice the budget is sliced in two. With every attempt rejected,
-        the first slice reaches the cap and is abandoned: the durable sub-offset
-        advances past it, the message marker stays put, and the next pass renders
-        the SECOND slice. So one over-budget message costs at most one slice of
-        loss per cap, never the whole message in a single write.
+        The sub-offset advances past the first slice, the message marker stays put,
+        and the next pass renders the second slice.
         """
         log = _log_with(
             tmp_path,
@@ -772,13 +927,8 @@ class TestTheReceiptDescribesThePromptedSpan:
 class TestNoticeRowsDoNotSkipSlicing:
     """An oversized head next to a display-only row must still be sliced.
 
-    ``_consolidation_chunk`` carries display-only rows (a ``notice`` such as an
-    AutoNudge) inside the prefix even though no prompt renders them, so a chunk
-    holding one oversized head plus a notice is two rows long. A slicing guard
-    keyed on ``len(chunk)`` would skip slicing for that shape, prompt the whole
-    head, and abandon the entire message at the attempt cap WITHOUT extraction —
-    the data loss the sub-chunking path exists to prevent. The guard must key on
-    the PROMPTED rows instead.
+    ``_consolidation_chunk`` keeps unrendered ``notice`` rows in the prefix, so a guard
+    keyed on ``len(chunk)`` would skip slicing; it must key on the PROMPTED rows.
     """
 
     def _notice(self, content: str) -> dict:
@@ -845,14 +995,10 @@ class TestASliceRendersWithinTheBudget:
 
 
 class TestSlicingStripsImageRefsOnceOverTheWholeHead:
-    """Opus review: slicing raw ``content[start:end]`` can cut inside a fenced
-    code block, flipping the fence parity the slice presents to
-    ``strip_image_refs``. ``strip_image_refs`` masks fenced spans (a path inside
-    a fence is documentation), so a slice that opens mid-fence reads as prose and
-    an image reference the whole-head scan would MASK gets stripped — or, cut the
-    other way, a real reference is left to be inlined into the prompt the
-    sub-chunking path exists to keep image-free. Stripping once over the whole
-    head before slicing removes the ambiguity.
+    """Image refs are stripped once over the whole head, before slicing.
+
+    A slice that opens mid-fence flips the fence parity ``strip_image_refs`` sees, so
+    stripping per slice would strip a fenced path or keep a real reference.
     """
 
     def test_a_ref_inside_a_fence_does_not_leak_into_any_slice(self, monkeypatch) -> None:
@@ -891,15 +1037,10 @@ class TestSlicingStripsImageRefsOnceOverTheWholeHead:
         assert seen == stripped_whole
 
     def test_a_mid_fence_slice_is_rendered_without_a_second_strip(self) -> None:
-        """GPT 6.1 (blocking, upheld): a slice is rendered with
-        ``prestripped=True`` so ``_fmt_message`` does NOT run ``strip_image_refs``
-        a second time. The head is stripped ONCE over its whole content, but a
-        slice that begins inside a fenced block shows a different fence parity, so
-        a re-strip would read the fenced block as prose and replace a path the
-        whole-head pass deliberately preserved — silently corrupting the
-        extraction prompt. The pre-strip removed the mid-fence AMBIGUITY in the
-        slice's content; this test pins that the RENDER path does not reintroduce
-        it.
+        """A slice renders with ``prestripped=True``, so ``_fmt_message`` does not re-strip.
+
+        A re-strip of a mid-fence slice would read the fence as prose and replace a
+        path the whole-head pass kept.
         """
         from kiro_crew.image_refs import strip_image_refs
 
@@ -953,13 +1094,9 @@ class TestSlicingStripsImageRefsOnceOverTheWholeHead:
 class TestARotationDiscardsAStaleSubOffsetFromTheCap:
     """The attempt cap must read the sub-offset through its generation stamp.
 
-    A rotation resets ``last_consolidated`` and bumps ``rotation_generation`` but
-    leaves ``consolidation_sub_offset`` at its old nonzero value. Comparing the
-    attempt's stamped sub-offset against that RAW value reads every failure on
-    the new span as a different slice and resets the cap each time, so the
-    abandon path is never reached. Reading it through
-    ``_sub_offset_for_generation`` makes the comparison see the ``0`` the slicer
-    uses for the new generation, so the cap holds across failures.
+    A rotation leaves ``consolidation_sub_offset`` at its old value. Compared raw, every
+    failure looks like a new slice and resets the cap; ``_sub_offset_for_generation``
+    reads it as ``0``.
     """
 
     def test_a_stale_sub_offset_from_a_prior_generation_does_not_reset_the_cap(
@@ -1006,15 +1143,10 @@ class TestARotationDiscardsAStaleSubOffsetFromTheCap:
 
 
 class TestAPerHeadSliceCeilingBoundsTheCost:
-    """A single over-budget head is sliced a bounded number of times — about
-    ``_CONSOLIDATION_MAX_HEAD_SLICES`` for near-span lines, up to roughly twice
-    that for lines that advance well under a span — before a genuinely
-    multi-slice remainder is retired, so one pathological message cannot spawn
-    an unbounded run of sequential consolidation LLM calls that holds up every
-    message behind it. A head whose remainder fits one more slice is never
-    retired; it drains in full. The retired remainder is FAIL-SAFE: the marker
-    is advanced past the whole head WITH a logged reason and the user-facing
-    abandon notice, never silently.
+    """An over-budget head is sliced a bounded number of times before its remainder retires.
+
+    About ``_CONSOLIDATION_MAX_HEAD_SLICES`` slices (up to twice that for short lines).
+    A retire logs a reason and posts the abandon notice; a one-slice remainder drains.
     """
 
     @pytest.mark.asyncio
@@ -1141,11 +1273,8 @@ class TestAPerHeadSliceCeilingBoundsTheCost:
     ) -> None:
         """The retire fires only when MORE THAN one slice of content remains.
 
-        A head that drains in exactly the ceiling of slices — or one more — keeps
-        its final short slice: there is no span that would fit in one more slice
-        yet is dropped unread. This pins the retire condition's lower edge, so a
-        head whose remainder is a single slice is prompted in full rather than
-        marked consolidated unread.
+        This pins the lower edge: a head that drains in the ceiling of slices, or one
+        more, is prompted in full rather than marked consolidated unread.
         """
         ceiling = history_consolidation_mod._CONSOLIDATION_MAX_HEAD_SLICES
 

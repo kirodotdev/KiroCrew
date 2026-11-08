@@ -19,7 +19,11 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_delivery import ATTACHMENT_LIST_MAX_ITEMS, ATTACHMENT_PATH_MAX_LEN
-from kiro_crew.dashboard.state import is_stop_event_row, is_turn_interrupted
+from kiro_crew.dashboard.state import (
+    is_model_unavailable_row,
+    is_stop_event_row,
+    is_turn_interrupted,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -52,12 +56,22 @@ def record_close_interruption(slot: _ChatSlot) -> bool:
     """
     if is_turn_interrupted(slot.messages) or _latest_turn_was_deliberately_stopped(slot.messages):
         return False
+    # Lazy import: the persistence facade's owner-import contract forbids a
+    # module-level import this facade does not already carry.
+    from kiro_crew.dashboard.gateway_notice import (
+        GATEWAY_NOTICE_TURN_INTERRUPTED_CLOSE,
+        gateway_notice_meta,
+    )
+
     slot.append(
         "error",
         _CLOSE_INTERRUPTION_MSG,
         "msg msg-err",
         broadcast=False,
-        meta={"kind": _CLOSE_INTERRUPTION_KIND},
+        meta={
+            "kind": _CLOSE_INTERRUPTION_KIND,
+            **gateway_notice_meta(GATEWAY_NOTICE_TURN_INTERRUPTED_CLOSE),
+        },
     )
     return True
 
@@ -209,6 +223,25 @@ def _latest_turn_was_deliberately_stopped(messages: list[dict]) -> bool:
     return False
 
 
+def _latest_turn_settled_by_refused_model(messages: list[dict]) -> bool:
+    """Whether the newest turn ends in the card a refused model's spent ladder leaves.
+
+    A tail walk that stops at the first row a later turn could have written. That
+    card settles the turn (see ``state.is_model_unavailable_row``), so a marker that outlived
+    the process after the card was written must not land an interruption row
+    that offers Resume to the same refused model.
+    """
+    for message in reversed(messages):
+        if is_model_unavailable_row(message):
+            return True
+        # Any row a later turn writes ends the walk: a newer opener (a user row,
+        # a monitor nudge, a drained sub-agent completion, an inject) or its work (assistant text, a tool row)
+        # belongs to a turn the card did not settle.
+        if message.get("role") in ("user", "assistant", "nudge", "subagent", "inject", "tool"):
+            return False
+    return False
+
+
 def _reconcile_local_turn_marker(
     slot: _ChatSlot,
     generation: int,
@@ -263,15 +296,27 @@ def _reconcile_local_turn_marker(
             broadcast=False,
             meta=dict(prompt_meta) if isinstance(prompt_meta, dict) and prompt_meta else None,
         )
-    if not is_turn_interrupted(slot.messages) and not _latest_turn_was_deliberately_stopped(
-        slot.messages
+    if (
+        not is_turn_interrupted(slot.messages)
+        and not _latest_turn_was_deliberately_stopped(slot.messages)
+        and not _latest_turn_settled_by_refused_model(slot.messages)
     ):
+        # Lazy import: the persistence facade's owner-import contract forbids a
+        # module-level import this facade does not already carry.
+        from kiro_crew.dashboard.gateway_notice import (
+            GATEWAY_NOTICE_TURN_INTERRUPTED_RESTART,
+            gateway_notice_meta,
+        )
+
         slot.append(
             "error",
             _RESTART_INTERRUPTION_MSG,
             "msg msg-err",
             broadcast=False,
-            meta={"kind": _RESTART_INTERRUPTION_KIND},
+            meta={
+                "kind": _RESTART_INTERRUPTION_KIND,
+                **gateway_notice_meta(GATEWAY_NOTICE_TURN_INTERRUPTED_RESTART),
+            },
         )
     slot._turn_in_flight_generation = 0
     slot._turn_in_flight_prompt = None

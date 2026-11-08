@@ -8,6 +8,7 @@ import {
   parseDirTokens, spliceDirTokens,
 } from '../../../utils/fileTokens'
 import { findTokenRanges } from '../../../utils/pasteTokens'
+import { NO_SLOT_TOKEN_KEY } from '../../../utils/chatFileTokenDrafts'
 import { i18nT } from '../../../i18n/t'
 import { revealComposer } from '../composerFocus'
 import type { ComposerStaging } from './composerStaging'
@@ -34,12 +35,21 @@ export function useFileMentionTokens(composerSlotRef: MutableRefObject<string | 
   // useCallback/useEffect gets a STABLE reference to depend on -- the body
   // only reads refs, which never change identity, so its deps are refs alone.
   const currentSlotTokens = useCallback(() => {
-    const slot = composerSlotRef.current
-    if (!slot) return null
+    // No slot yet (the new-chat composer): fall back to one reserved in-memory
+    // bucket (`NO_SLOT_TOKEN_KEY`) instead of returning null. Returning null
+    // here is what left that composer with no bookkeeping at all -- a picked
+    // file's chip remove could not strip its `@mention`, and the reconciliation
+    // never noticed a hand-edit (#14571). The bucket gives it the same
+    // record/reconcile/remove behaviour every real slot has; the send path
+    // captures and clears it (see composerSend), and it is never persisted
+    // (chatFileTokenDrafts drops the reserved key), so an abandoned new-chat
+    // draft's aliases cannot revive a file later.
+    const slot = composerSlotRef.current ?? NO_SLOT_TOKEN_KEY
     return pickedFileTokens.current[slot] ??= {}
   }, [composerSlotRef, pickedFileTokens])
-  /** Append `token` as an alias for `absPath` in the CURRENT slot's token map,
-   *  deduping exact repeats. No-ops outside a known slot. */
+  /** Append `token` as an alias for `absPath` in the CURRENT bucket's token map
+   *  (a real slot, or the reserved no-slot bucket in the new-chat composer),
+   *  deduping exact repeats. */
   const recordSlotToken = useCallback((absPath: string, token: string) => {
     const slotTokens = currentSlotTokens()
     if (!slotTokens) return

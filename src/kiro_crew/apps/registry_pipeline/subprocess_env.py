@@ -79,6 +79,89 @@ _SAFE_ENV_KEYS = frozenset(
 )
 
 
+#: Proxy and CA-bundle variables git (libcurl / its TLS backend) reads for a
+# network fetch. Deliberately NOT in ``_SAFE_ENV_KEYS``: a proxy URL can carry
+# ``user:password@``, so app install scripts, builds and backends never receive
+# them. Only the trusted ``git`` network spawn gets them, through
+# :func:`_git_network_env`, so an owner behind a corporate proxy can still reach the
+# remote. Index-originated clones run with ``GIT_CONFIG_GLOBAL=/dev/null``, so the
+# environment is the only proxy setting they can see. Both spellings are listed
+# because libcurl reads the lower-case ``http_proxy`` only (the upper-case one is
+# ignored to defeat httpoxy) while the other names are read in either case.
+# ``GIT_SSL_NO_VERIFY`` is deliberately absent: it turns verification off.
+_GIT_NETWORK_ENV_KEYS = frozenset(
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "CURL_CA_BUNDLE",
+        "GIT_SSL_CAINFO",
+        "GIT_SSL_CAPATH",
+    }
+)
+
+
+_GIT_PROXY_ENV_KEYS = frozenset(
+    {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"}
+)
+
+
+def _uses_http_proxy(git_url: str) -> bool:
+    """Whether git reaches *git_url* through the HTTP proxy variables at all.
+
+    Only git's HTTP(S) transport reads them. An SSH or ``git://`` remote, or a
+    local path, never does, so its spawns get neither the variables nor the split
+    path they would otherwise force (which would also drop its SSH agent socket).
+    """
+    return git_url.lower().startswith(("http://", "https://"))
+
+
+def _proxy_env_has_credentials(git_url: str) -> bool:
+    """Whether a fetch of *git_url* would carry a proxy ``user[:password]@``.
+
+    A git command that also checks out (``clone``, ``pull``) can run a filter
+    driver the repository selects, and that child inherits the command's
+    environment. So when the proxy URL holds a credential, callers take the same
+    split path as an embedded-URL credential: only the bare ``git fetch`` gets
+    :func:`_git_network_env`, and the checkout runs without it.
+    """
+    if not _uses_http_proxy(git_url):
+        return False
+    for key, value in os.environ.items():
+        if not platform_compat.env_key_allowed(key, _GIT_PROXY_ENV_KEYS):
+            continue
+        # Any `@` after the scheme counts. A password with an unencoded `/` puts
+        # its `@` past the first `/`, and isolating a password-free proxy by
+        # mistake costs only a replaced checkout.
+        if "@" in (value.partition("://")[2] if "://" in value else value):
+            return True
+    return False
+
+
+def _git_network_env(env: dict[str, str], git_url: str) -> dict[str, str]:
+    """Return a copy of *env* plus the operator's proxy and CA-bundle variables.
+
+    For the git network spawn of *git_url* alone (clone, fetch, pull); see
+    :data:`_GIT_NETWORK_ENV_KEYS` for why no other child gets them. A non-HTTP(S)
+    remote gets *env* unchanged (:func:`_uses_http_proxy`). A key already in *env*
+    is kept, so a caller's explicit value wins over the process env.
+    """
+    network_env = dict(env)
+    if not _uses_http_proxy(git_url):
+        return network_env
+    for key, value in os.environ.items():
+        if platform_compat.env_key_allowed(key, _GIT_NETWORK_ENV_KEYS):
+            network_env.setdefault(key, value)
+    return network_env
+
+
 def _is_safe_env_key(key: str) -> bool:
     """Whether *key* is allowlisted, honoring Windows' case-insensitive env.
 
@@ -161,7 +244,9 @@ def anonymous_git_env(**extra: str) -> dict[str, str]:
       ``GIT_CONFIG_GLOBAL=os.devnull``) so no HTTPS credential helper fires;
     - never prompt (``GIT_TERMINAL_PROMPT=0``, plus a batch-mode
       ``GIT_SSH_COMMAND`` with no identity/agent) so a private repo simply fails
-      to clone (→ graceful fallback) instead of authenticating as the gateway.
+      to clone (→ graceful fallback) instead of authenticating as the gateway;
+    - read no ssh config (``-F /dev/null`` in that ``GIT_SSH_COMMAND``), so no
+      user or system ``ssh_config`` entry applies to an index-chosen host.
 
     Callers must ALSO pass ``mode="strict"`` to :func:`wrap_argv` so the OS
     sandbox hides ``~/.ssh`` — env suppression and the sandbox are belt-and-
@@ -205,8 +290,14 @@ def anonymous_git_env(**extra: str) -> dict[str, str]:
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     # If a trusted-host remote is nonetheless SSH, force batch mode with no
-    # identity/agent so it can't silently authenticate as the gateway.
-    env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none"
+    # identity/agent so it can't silently authenticate as the gateway, and read
+    # no ssh config at all (`-F /dev/null`): neither the user's ~/.ssh/config
+    # (whose IdentityFile/ProxyCommand would apply to an index-chosen host) nor
+    # the system config, which inside the sandbox's user namespace reads as
+    # owned by nobody and makes ssh exit with "Bad owner or permissions".
+    env["GIT_SSH_COMMAND"] = (
+        "ssh -F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none"
+    )
     # Pin the locale (over any operator LANG/LC_ALL from os.environ) so git's
     # client-side failure text stays English for the credential-posture
     # classifier — see :data:`_GIT_CLONE_LOCALE`. A benign format hint, not a

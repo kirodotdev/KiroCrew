@@ -17,6 +17,9 @@ import { Provider } from 'react-redux'
 import { store } from '../store'
 import { MemoryRouter } from 'react-router-dom'
 import { AboutPanel } from '../pages/settings/AboutPanel'
+import { fmtSpeed } from '../api/helpers'
+import { i18next } from '../i18n/all'
+import { fmtPercent } from '../i18n/format'
 
 type UpdateState = Record<string, unknown>
 
@@ -110,6 +113,23 @@ describe('AboutPanel download states', () => {
     // The label carries the percentage and the transfer rate.
     expect(screen.getByTestId('update-progress-label').textContent).toContain('47%')
     expect(screen.getByTestId('update-progress-label').textContent).toContain('MB/s')
+  })
+
+  it('writes the percent and the rate in the active locale', async () => {
+    // A hand-built `${n}%` and `${mb.toFixed(1)} MB/s` read "47%" and "3.4 MB/s"
+    // in every language; German puts a space before % and a comma in the rate.
+    await i18next.changeLanguage('de')
+    try {
+      const { setState } = mountWithStates()
+      setState({ state: 'downloading', version: '0.1.3', percent: 47, bytesPerSecond: 3.2 * 1024 * 1024 })
+      const label = await screen.findByTestId('update-progress-label')
+      expect(label.textContent).toContain(fmtPercent(0.47))
+      expect(label.textContent).toContain(fmtSpeed(3.2 * 1024))
+      expect(label.textContent).toContain('3,4')
+      expect(label.textContent).not.toContain('47%')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('falls back to an indeterminate label before the first progress event', async () => {

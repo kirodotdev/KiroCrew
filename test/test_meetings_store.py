@@ -20,6 +20,7 @@ from meetings_helpers import (  # noqa: F401
     reset_module_state_fixture,
     root_fixture,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
@@ -36,24 +37,26 @@ class TestSafeMeetingId:
     @pytest.mark.parametrize(
         "raw",
         [
-            "../../etc/passwd",
-            "..",
-            ".hidden",
-            "a/b",
-            "a\\b",
-            "with space",
-            "semi;colon",
-            "null\x00byte",
-            "",
-            "   ",
+            *named_cases(
+                "test_rejects_unsafe",
+                "raw",
+                [
+                    "../../etc/passwd",
+                    "..",
+                    ".hidden",
+                    "a/b",
+                    "a\\b",
+                    "with space",
+                    "semi;colon",
+                    "null\x00byte",
+                    "",
+                    "   ",
+                ],
+            ),
+            *named_cases("test_rejects_non_string", "raw", [None, 5, [], {}, True]),
         ],
     )
-    def test_rejects_unsafe(self, raw):
-        with pytest.raises(store.MeetingsPathError):
-            store.safe_meeting_id(raw)
-
-    @pytest.mark.parametrize("raw", [None, 5, [], {}, True])
-    def test_rejects_non_string(self, raw):
+    def test_rejects_an_unsafe_id(self, raw):
         with pytest.raises(store.MeetingsPathError):
             store.safe_meeting_id(raw)
 
@@ -191,6 +194,83 @@ class TestMeetingMeta:
         assert store.delete_meeting("m1", root) is True
         assert not store.meeting_dir("m1", root).exists()
         assert store.list_meetings(root) == []
+
+    @staticmethod
+    def _meeting_with_sidecars(root: Path) -> list[Path]:
+        """One meeting with a transcript, an edits sidecar and a note; returns every tree."""
+        store.write_meeting_meta("m1", store.new_meeting_meta("m1", "Standup"), root)
+        store.append_transcript("m1", "Held open by an editor.", "speech", root)
+        store.write_note("m1", "Private memo", root)
+        edits = store.agent_edits_dir("m1", root)
+        edits.mkdir(parents=True)
+        (edits / "notes.md").write_text("edited")
+        return [store.meeting_dir("m1", root), edits, store.note_dir("m1", root)]
+
+    @staticmethod
+    def _hold_transcript(monkeypatch, *, times: int | None) -> list[str]:
+        """Make unlinking ``transcript.jsonl`` raise Windows' sharing violation *times* times."""
+        import kiro_crew.platform_compat_files as files_mod
+
+        monkeypatch.setattr(files_mod, "_RMTREE_BACKOFF_SECONDS", 0)
+        real_unlink = os.unlink
+        attempts: list[str] = []
+
+        def held_unlink(path, *args, **kwargs):
+            if os.path.basename(os.fspath(path)) == k.TRANSCRIPT_FILE and (
+                times is None or len(attempts) < times
+            ):
+                attempts.append(os.fspath(path))
+                exc = PermissionError(13, "in use", os.fspath(path))
+                exc.winerror = 32
+                raise exc
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, "unlink", held_unlink)
+        return attempts
+
+    def test_delete_waits_out_a_file_held_open_briefly(self, root: Path, monkeypatch):
+        trees = self._meeting_with_sidecars(root)
+        attempts = self._hold_transcript(monkeypatch, times=1)
+
+        assert store.delete_meeting("m1", root) is True
+        assert len(attempts) == 1
+        assert [tree for tree in trees if tree.exists()] == []
+
+    def test_delete_held_past_the_budget_keeps_the_marker_for_a_retry(
+        self, root: Path, monkeypatch
+    ):
+        trees = self._meeting_with_sidecars(root)
+        real_unlink = os.unlink
+        self._hold_transcript(monkeypatch, times=None)
+
+        with pytest.raises(store.MeetingsPathError, match="held open by another process") as err:
+            store.delete_meeting("m1", root)
+        assert (err.value.status, err.value.code) == (500, "meeting_delete_failed")
+        assert (store.meeting_dir("m1", root) / k.SESSION_META_FILE).is_file()
+
+        monkeypatch.setattr(os, "unlink", real_unlink)
+        assert store.delete_meeting("m1", root) is True
+        assert [tree for tree in trees if tree.exists()] == []
+
+    def test_delete_unlinks_a_directory_link_inside_the_meeting_without_following_it(
+        self, root: Path, tmp_path: Path
+    ):
+        """A symlink on POSIX, a junction on Windows (no privilege needed for one)."""
+        store.write_meeting_meta("m1", store.new_meeting_meta("m1", "Standup"), root)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep")
+        link = store.meeting_dir("m1", root) / "linked"
+        if os.name == "nt":
+            import _winapi
+
+            _winapi.CreateJunction(str(outside), str(link))
+        else:
+            link.symlink_to(outside, target_is_directory=True)
+
+        assert store.delete_meeting("m1", root) is True
+        assert not store.meeting_dir("m1", root).exists()
+        assert (outside / "keep.txt").read_text() == "keep"
 
     def test_delete_unknown_meeting_returns_false(self, root: Path):
         assert store.delete_meeting("missing", root) is False
@@ -354,6 +434,19 @@ class TestAgentOutputs:
         store.write_agent_output("m", {"id": "note-taker"}, "# Notes\n\nbody", root)
         assert "body" in store.read_agent_outputs("m", [{"id": "note-taker"}], root)["note-taker"]
 
+    def test_read_outputs_survives_a_non_utf8_file(self, root: Path):
+        # One agent writing latin-1 must not blank every other agent's panel.
+        store.meeting_dir("m", root).mkdir(parents=True)
+        store.write_agent_output("m", {"id": "note-taker"}, "# Notes\n\nbody", root)
+        store.agent_output_path("m", "summarizer.md", root).write_bytes(b"# Summary\ncaf\xe9\n")
+        agents = [{"id": "note-taker"}, {"id": "summarizer"}]
+        try:
+            outputs = store.read_agent_outputs("m", agents, root)
+        except UnicodeDecodeError as exc:
+            pytest.fail(f"one undecodable output failed the whole read: {exc!r}")
+        assert "body" in outputs["note-taker"]
+        assert outputs["summarizer"] == "# Summary\ncaf\ufffd\n"
+
 
 class TestTasks:
     def test_missing_returns_empty_doc(self, root: Path):
@@ -369,6 +462,16 @@ class TestTasks:
         store.write_tasks("m", [], root)
         store.tasks_path("m", root).write_text(json.dumps({"tasks": "oops"}))
         assert store.read_tasks("m", root)["tasks"] == []
+
+    def test_non_utf8_tasks_file_reads_as_empty_doc(self, root: Path):
+        store.write_tasks("m", [], root)
+        store.tasks_path("m", root).write_bytes(b'{"tasks": [{"id": "caf\xe9"}]}')
+        try:
+            doc = store.read_tasks("m", root)
+        except UnicodeDecodeError as exc:
+            pytest.fail(f"an undecodable tasks.json escaped the reader: {exc!r}")
+        assert doc["tasks"] == []
+        assert doc["meeting_id"] == "m"
 
 
 class TestCalendarCache:

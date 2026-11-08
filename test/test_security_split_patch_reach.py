@@ -15,7 +15,7 @@ splits had to keep, for every name the test trees patch through either module: e
 it in the family that reads it as a module global sits in the module each such write lands in,
 and every attribute read of it anywhere in the package goes to that module. A module outside
 the family that imported its own copy of a name (``argv_floor``, ``inline_payload``,
-``perm_verb_mention``, ``exfil``, ``credential_sources``) reads that copy, as it did before
+``exfil``, ``credential_sources``) reads that copy, as it did before
 these splits; a test reaching it patches that module. The patched names are scanned from the
 test trees rather than listed, so a new patch site is covered on the commit that adds it;
 ``_KNOWN_SEAMS`` keeps the scan from passing over nothing, and each detector is pinned on a
@@ -62,7 +62,6 @@ _KNOWN_SEAMS: dict[str, frozenset[str]] = {
             "SecurityEventLog",
             "maintenance_executor",
             "_emit_deny_event",
-            "_emit_deny_exception_event",
             "_deny_segment_views",
             "_STREAM_HOLDBACK_MAX",
             "_STREAM_DISCARD_MAX",

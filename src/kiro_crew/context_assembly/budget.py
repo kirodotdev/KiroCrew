@@ -272,15 +272,17 @@ def window_for_provider_client(client: object) -> int | None:
 
     Prefers a real usage-reported window via the provider's public
     :meth:`LLMProvider.context_window_tokens` accessor (0 until the backend has
-    run a turn); otherwise derives it from the resolved model id on the inner
-    ACP client (``client.client._model``) via :func:`resolve_model_window`.
-    Returns ``None`` (⇒ 1M reference) for a client that exposes neither — a
-    fail-safe that never shrinks the budget on missing data. Never raises: a
-    mis-shaped/None client yields ``None``.
+    run a turn). Otherwise it derives the window from the resolved model id on
+    the inner ACP client (``client.client._model``), or from the provider's
+    public :attr:`LLMProvider.served_model` property when there is no inner
+    client. Returns ``None`` (⇒ 1M reference) when none of those sources has a
+    usable model or window. Never raises: a mis-shaped/None client yields
+    ``None``.
 
-    Note: at a fresh (``is_new``) session — the only path that reads the budget —
-    no turn has completed, so the live window is 0 and the model-id path is what
-    actually resolves the window. The live-window branch covers later rebuilds.
+    At a fresh (``is_new``) session — the only path that reads the budget — no
+    turn has completed, so the live window is 0 and a model-id fallback resolves
+    the window. Providers with an inner ACP client use its configured model;
+    session providers expose the backend-resolved id through ``served_model``.
     """
     # Prefer the provider ABC's public accessor (per-backend dispatch, safe 0
     # default) over reaching into private attrs — a new backend that reports its
@@ -296,7 +298,13 @@ def window_for_provider_client(client: object) -> int | None:
             return live
     inner = getattr(client, "client", None)
     if inner is None:
-        return None
+        try:
+            model = getattr(client, "served_model", "")
+        except Exception:
+            return None
+        if not isinstance(model, str) or not model:
+            return None
+        return resolve_model_window(model)
     model = getattr(inner, "_model", "") or ""
     return resolve_model_window(model)
 
@@ -307,18 +315,33 @@ class ContextParts:
     A protected block -- explicit preferences, rules, identity, steering, pinned
     skill bodies -- is kept whole below the model-safe ceiling; every other block
     competes for the discretionary allowance in :func:`admit_background`.
+
+    ``authored`` names the protected blocks that are bounded outside the pool: the
+    learned-rule tier (``_LESSONS_STARTUP_CAP``) and the preferences block (its
+    ``pref.*`` rows by ``_PREFS_STARTUP_CAP``, the whole block by the model-safe
+    ceiling). Those bounds are deliberately not shares of ``_CONTEXT_BUDGET_BASE``,
+    so the blocks do not use up its pool either.
     """
 
-    __slots__ = ("parts", "protected")
+    __slots__ = ("authored", "parts", "protected")
 
     def __init__(self) -> None:
         self.parts: list[str] = []
         self.protected: set[int] = set()
+        self.authored: set[int] = set()
 
     def append_required(self, text: str) -> None:
         # User rules, preferences and steering are not disposable background.
         self.protected.add(len(self.parts))
         self.parts.append(text)
+
+    def append_authored(self, text: str) -> None:
+        """Append a protected block sized by its own startup allowance, not the pool."""
+        self.authored.add(len(self.parts))
+        self.append_required(text)
+
+    def authored_chars(self) -> int:
+        return sum(len(self.parts[index]) for index in self.authored)
 
 
 def admit_background(
@@ -334,9 +357,16 @@ def admit_background(
     Never slices the joined prompt. Protected rules and preferences are outside the
     discretionary pool, and their overflow is reported rather than silently
     truncating a safety contract.
+
+    *protected_chars* is every protected character. The authored blocks
+    (``blocks.authored``: learned rules and preferences) are subtracted from it
+    before it is charged to the pool, because each has its own startup allowance;
+    the rest of the protected content (identity, safety rules, steering, the
+    activity index, skill entries) still shares the pool with the optional blocks.
     """
     admitted: list[str] = []
-    remaining = max(0, max_context_chars - protected_chars)
+    pooled_protected = max(0, protected_chars - blocks.authored_chars())
+    remaining = max(0, max_context_chars - pooled_protected)
     omitted: set[str] = set()
     for index, part in enumerate(blocks.parts):
         if index in blocks.protected:
@@ -370,11 +400,11 @@ def admit_background(
             + ", ".join(sorted(omitted))
             + "; use memory_recall for old memory and skill_search for skills.]\n\n"
         )
-    if protected_chars > max_context_chars:
+    if pooled_protected > max_context_chars:
         logger.warning(
             "Protected context exceeds background budget: chars=%d budget=%d; "
             "mandatory content kept and model-safe lesson cap applied",
-            protected_chars,
+            pooled_protected,
             max_context_chars,
         )
     return "".join(admitted)

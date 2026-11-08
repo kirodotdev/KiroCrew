@@ -7,6 +7,7 @@ publication, and its cancellation at shutdown.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +30,7 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
     try:
         from kiro_crew.dashboard.handlers import workflows as wf_handlers
         from kiro_crew.dashboard.workflow_inject import inject_bound_workflow_result
+        from kiro_crew.dashboard.workflow_session_port import WorkflowSessionPort
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
         from kiro_crew.workflows.service import WorkflowService
 
@@ -71,7 +73,14 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
                         "came back incomplete, say that plainly and state what is "
                         "still unknown."
                     )
-                    started = slot.enqueue_or_run_prompt(prompt, _run_chat, state)
+                    # The gateway's words, not the person's: an `inject` row on the
+                    # run and queued paths alike, and a synthetic payload for its turn.
+                    started = slot.enqueue_or_run_prompt(
+                        prompt,
+                        functools.partial(_run_chat, _synthetic_payload=True),
+                        state,
+                        workflow_followup=True,
+                    )
                     state.push_slots_update()
                     logger.info(
                         "workflow %s result -> chat slot %s: agent turn %s",
@@ -134,6 +143,7 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
             now_fn=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             concurrency=_wf_concurrency,
             nudge_authorizer=_wf_nudge_authorizer,
+            session_port=WorkflowSessionPort(state),
             timeout_secs=_wf_timeout_secs,
         )
         # Cancellation cannot stop a to_thread worker. Even if the factory

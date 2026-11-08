@@ -79,8 +79,9 @@ class _FakeStderr:
     def __init__(self, data: bytes) -> None:
         self._data = data
 
-    async def read(self) -> bytes:
-        data, self._data = self._data, b""
+    async def read(self, n: int = -1) -> bytes:
+        cut = len(self._data) if n < 0 else n
+        data, self._data = self._data[:cut], self._data[cut:]
         return data
 
 
@@ -337,6 +338,30 @@ class TestCaptureStderr:
         tunnel._proc = _FakeProc(stderr=_FakeStderr(b"z" * 200))  # type: ignore[assignment]
         await tunnel._capture_stderr()
         assert len(tunnel._stderr_buf) == 16
+
+    @pytest.mark.asyncio
+    async def test_a_child_whose_stderr_never_closes_does_not_park_the_capture(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No spawn-time drain, and a surviving helper holds the write end open.
+
+        The caller is ``_monitor``: an unbounded read here would keep the exit
+        from ever being reported, so self-heal would never run. The capture
+        returns within the grace and keeps what the child wrote.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        monkeypatch.setattr(stm, "_STDERR_DRAIN_GRACE_SECS", 0.05)
+        stream = asyncio.StreamReader()
+        stream.feed_data(b"kex_exchange_identification: Connection closed\r\n")  # no EOF
+        tunnel = _tunnel()
+        tunnel._proc = _FakeProc(returncode=255, stderr=stream)  # type: ignore[assignment]
+        assert tunnel._stderr_task is None
+
+        await await_until(asyncio.ensure_future(tunnel._capture_stderr()))
+
+        assert "Connection closed" in tunnel._stderr_buf
+        assert _pending_tasks() == []
 
 
 # A stand-in tunnel child: it writes ``size`` bytes of the line ssh prints for
@@ -806,6 +831,22 @@ class TestExitErrorDetailWindow:
         assert error.startswith("ssh tunnel transport drop:")
         assert "Connection reset by peer" in error
 
+    def test_proxy_text_in_the_stream_is_a_transport_drop(self) -> None:
+        """An SSM ProxyCommand writes "Cannot perform start session" into
+        the ssh stream when its SSM session dies; ssh reads "Cann" as a packet
+        length. The known-hosts line a `UserKnownHostsFile /dev/null`
+        config prints on every connect must not lead the reason."""
+        tunnel = _tunnel()
+        tunnel._stderr_buf = (
+            "Warning: Permanently added 'cd-1' (RSA) to the list of known hosts.\n"
+            "Bad packet length 1130458734.\n"
+            "ssh_dispatch_run_fatal: Connection to UNKNOWN port 65535: Connection corrupted\n"
+        )
+        error = tunnel._exit_error(255)
+        assert error.startswith("ssh tunnel transport drop:")
+        assert "Bad packet length" in error
+        assert "Permanently added" not in error
+
     def test_unclassified_stderr_keeps_the_head_slice(self) -> None:
         tunnel = _tunnel()
         tunnel._stderr_buf = self._NOISE + "some entirely unclassified failure text"
@@ -873,3 +914,16 @@ class TestSanitizeBannerAnchor:
 
     def test_a_missing_anchor_falls_back_to_the_head(self) -> None:
         assert _sanitize_banner("b" * 300, anchor="connection refused") == "b" * 200
+
+
+class TestSilentStallWindow:
+    def test_a_silent_stall_is_torn_down_within_thirty_seconds(self) -> None:
+        """A forward that stays up but relays nothing (a proxy session that died
+        without a word) is caught only by the probe, so the probe window is how
+        long the crew tab sits on "Connecting...". Each probe must still finish
+        well inside one interval."""
+        from kiro_crew.instances import constants as c
+
+        window = c.DEFAULT_PROBE_INTERVAL_SECS * c.DEFAULT_PROBE_FAILURE_THRESHOLD
+        assert window <= 30
+        assert c.DEFAULT_PROBE_HEALTH_TIMEOUT_SECS < c.DEFAULT_PROBE_INTERVAL_SECS

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -214,6 +215,15 @@ def register_bench_parser(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Skip the vector leg entirely (keyword+graph only), to isolate the FTS contribution",
     )
+    kb.add_argument(
+        "--external",
+        action="store_true",
+        help=(
+            "Also score the externally anchored set sampled from BEIR NFCorpus, whose "
+            "relevance judgments are the benchmark's, printed after the authored set. "
+            "Downloads ~2.3 MB into the bench cache on first use."
+        ),
+    )
 
     lr = bench_sub.add_parser(
         "lesson-recall",
@@ -275,7 +285,7 @@ def bench_cmd(args: argparse.Namespace) -> int:
     except BenchRefusal as exc:
         # A refusal is a normal outcome to report: the message explains itself and
         # the exit code says it did not produce a number.
-        print(f"error: {exc}")
+        print(f"error: {exc}", file=sys.stderr)
         return 1
     except OSError as exc:
         # Not a refusal — an ordinary filesystem failure. A read-only output
@@ -283,7 +293,7 @@ def bench_cmd(args: argparse.Namespace) -> int:
         # and this command has no more to say about them than the OS does. Reported
         # rather than tracebacked, because a benchmark that cannot write its report
         # is a failed run, not a crashed program.
-        print(f"error: {exc}")
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
 
@@ -291,7 +301,10 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
     """Route to a subcommand. Returns a process exit code."""
     action = getattr(args, "bench_action", None)
     if action is None:
-        print("usage: kirocrew bench {list,fetch,retrieval,kb-retrieval,lesson-recall,compare}")
+        print(
+            "usage: kirocrew bench {list,fetch,retrieval,kb-retrieval,lesson-recall,compare}",
+            file=sys.stderr,
+        )
         return 2
 
     # Deferred deliberately, and measured. `cli.py` imports this module at module
@@ -315,7 +328,7 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
         try:
             path = datasets.ensure(args.corpus)
         except datasets.CorpusFetchError as exc:
-            print(f"error: {exc}")
+            print(f"error: {exc}", file=sys.stderr)
             return 1
         print(f"ready: {path}")
         return 0
@@ -332,7 +345,7 @@ def _bench_dispatch(args: argparse.Namespace) -> int:
     if action == "lesson-recall":
         return _lesson_recall(args)
 
-    print(f"unknown bench action: {action}")
+    print(f"unknown bench action: {action}", file=sys.stderr)
     return 2
 
 
@@ -374,14 +387,15 @@ def _load_report(path: str, label: str) -> dict:
     except PermissionError:
         print(
             f"error: refusing to read the {label} report -- it resolves to a "
-            "sensitive location (credential store or the governance trust root)."
+            "sensitive location (credential store or the governance trust root).",
+            file=sys.stderr,
         )
         raise _BenchError(1) from None
     except FileNotFoundError:
-        print(f"error: {label} report not found.")
+        print(f"error: {label} report not found.", file=sys.stderr)
         raise _BenchError(1) from None
     except OSError:
-        print(f"error: cannot read the {label} report.")
+        print(f"error: cannot read the {label} report.", file=sys.stderr)
         raise _BenchError(1) from None
 
     try:
@@ -390,12 +404,13 @@ def _load_report(path: str, label: str) -> dict:
         print(
             f"error: the {label} report is not valid JSON. A report truncated by "
             "an interrupted run is the usual cause -- re-run "
-            "'kirocrew bench retrieval' to regenerate it."
+            "'kirocrew bench retrieval' to regenerate it.",
+            file=sys.stderr,
         )
         raise _BenchError(1) from None
 
     if not isinstance(loaded, dict):
-        print(f"error: the {label} report is not a report object.")
+        print(f"error: the {label} report is not a report object.", file=sys.stderr)
         raise _BenchError(1)
     return loaded
 
@@ -436,7 +451,7 @@ def _retrieval(args: argparse.Namespace) -> int:
     try:
         corpus = _load_corpus(args.corpus)
     except Exception as exc:  # datasets.CorpusFetchError or a schema error
-        print(f"error: {exc}")
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
     if args.instances is not None or args.queries is not None:
@@ -484,13 +499,13 @@ def _retrieval(args: argparse.Namespace) -> int:
         # is the one that bites in practice: it fires whenever the embedding model is
         # not resident, which is the normal state on a host whose vendored
         # llama.cpp payload is incomplete.
-        print(f"refusing to run: {exc}")
+        print(f"refusing to run: {exc}", file=sys.stderr)
         return 1
     except ValueError as exc:
         # The embedder-identity fail-closed check. Reachable only from a
         # programmatic caller today, but a traceback is never the right output for a
         # deliberate refusal.
-        print(f"error: {exc}")
+        print(f"error: {exc}", file=sys.stderr)
         return 1
 
     from kiro_crew.eval.bench import format_report
@@ -502,7 +517,7 @@ def _retrieval(args: argparse.Namespace) -> int:
         # The report is already printed above, so the measurement is not lost --
         # only the file. Say so, rather than letting a refused write look like a
         # failed run.
-        print(f"\nnot saved: {exc}")
+        print(f"\nnot saved: {exc}", file=sys.stderr)
         return 1
     print(f"\nwrote {md}\n      {js}")
     return 0
@@ -526,13 +541,18 @@ def _kb_retrieval(args: argparse.Namespace) -> int:
 
     path = args.golden or default_golden_set_path()
     try:
-        golden = KBGoldenSet.from_json(path)
+        goldens = [KBGoldenSet.from_json(path)]
     except (KBGoldenSetError, UnicodeError) as exc:
         # UnicodeError: a golden file with invalid UTF-8 (or a lone surrogate)
         # raises from the decode inside from_json -- a corrupt input is a
         # deliberate refusal, not a traceback, same as any other malformed file.
-        print(f"refusing to run: {exc}")
+        print(f"refusing to run: {exc}", file=sys.stderr)
         return 1
+    if getattr(args, "external", False):
+        from kiro_crew.eval.bench.kb_external import load_external_golden
+
+        # Loaded before any run, so a failed fetch refuses with nothing printed.
+        goldens.append(load_external_golden())
 
     embed_fn = None
     embedder_id = "toy-hashed-bow"
@@ -553,32 +573,37 @@ def _kb_retrieval(args: argparse.Namespace) -> int:
     # catching the stdlib class there would miss every real store failure.
     from kiro_crew._sqlite_compat import sqlite3
 
-    try:
-        report = run_kb_retrieval(
-            golden,
-            embed_fn=embed_fn,
-            embedder_id=embedder_id,
-            use_embeddings=not args.no_embeddings,
-            # Include the headlined cut-off in the computed set. Otherwise a
-            # non-default -k (e.g. -k 2) is absent from every per-query dict and
-            # headline()/by_class() default it to 0.0 -- a false-zero benchmark
-            # result, the exact failure the sibling retrieval harness forbids.
-            k_values=tuple(sorted({1, 3, 5, 10, args.k})),
-        )
-    except KBGoldenSetError as exc:
-        print(f"refusing to run: {exc}")
-        return 1
-    except (sqlite3.Error, UnicodeError) as exc:
-        # The harness builds a throwaway KnowledgeStore in a temp dir; a full
-        # temp volume (or any other database-level failure) surfaces here as a
-        # sqlite3 error, and doc content that defeats UTF-8 encoding (e.g. a
-        # lone surrogate reaching the store/embedding path) as a UnicodeError.
-        # A deliberate refusal, not a traceback -- the same boundary rule every
-        # other refusal in this dispatch follows.
-        print(f"refusing to run: store error while building the eval corpus: {exc}")
-        return 1
-
-    print(format_kb_report(report, k=args.k))
+    for i, golden in enumerate(goldens):
+        try:
+            report = run_kb_retrieval(
+                golden,
+                embed_fn=embed_fn,
+                embedder_id=embedder_id,
+                use_embeddings=not args.no_embeddings,
+                # Include the headlined cut-off in the computed set. Otherwise a
+                # non-default -k (e.g. -k 2) is absent from every per-query dict and
+                # headline()/by_class() default it to 0.0 -- a false-zero benchmark
+                # result, the exact failure the sibling retrieval harness forbids.
+                k_values=tuple(sorted({1, 3, 5, 10, args.k})),
+            )
+        except KBGoldenSetError as exc:
+            print(f"refusing to run: {exc}", file=sys.stderr)
+            return 1
+        except (sqlite3.Error, UnicodeError) as exc:
+            # The harness builds a throwaway KnowledgeStore in a temp dir; a full
+            # temp volume (or any other database-level failure) surfaces here as a
+            # sqlite3 error, and doc content that defeats UTF-8 encoding (e.g. a
+            # lone surrogate reaching the store/embedding path) as a UnicodeError.
+            # A deliberate refusal, not a traceback -- the same boundary rule every
+            # other refusal in this dispatch follows.
+            print(
+                f"refusing to run: store error while building the eval corpus: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        if i:
+            print()
+        print(format_kb_report(report, k=args.k))
     return 0
 
 
@@ -598,7 +623,8 @@ def _real_embedder() -> tuple[Callable[[str], list[float] | None], str] | None:
             "embedding model did not become ready within "
             f"{_KB_REAL_EMBED_TIMEOUT_S:g} seconds. Run 'kirocrew doctor' for "
             "model diagnostics, or omit the flag to use the deterministic toy "
-            "embedder (plumbing check only)."
+            "embedder (plumbing check only).",
+            file=sys.stderr,
         )
         return None
     return embedder.embed, embedder.model
@@ -645,7 +671,7 @@ def _lesson_recall(args: argparse.Namespace) -> int:
             k_values=tuple(sorted({1, 3, 5, 10, args.k})),
         )
     except sqlite3.Error as exc:
-        print(f"refusing to run: store error while building the eval store: {exc}")
+        print(f"refusing to run: store error while building the eval store: {exc}", file=sys.stderr)
         return 1
     print(format_lesson_report(report, k=args.k))
     return 0

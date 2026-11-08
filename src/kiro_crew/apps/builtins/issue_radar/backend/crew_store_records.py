@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_json_or
 from kiro_crew.crew_log.entry_types import (
     RADAR_CLEARABLE_FIELDS,
     RADAR_CREW_LEVEL_EVENT_KIND,
@@ -94,6 +94,21 @@ CREW_LEVEL_EVENT_KIND = RADAR_CREW_LEVEL_EVENT_KIND
 #: :func:`coerce_skip_scope`.
 SKIP_SCOPES = RADAR_SKIP_SCOPES
 DEFAULT_SKIP_SCOPE = RADAR_DEFAULT_SKIP_SCOPE
+
+#: The scopes a HUMAN can hand back. A pass with one of these left the issue waiting
+#: on a person; when that person removes the needs-human label (a removal the crew
+#: made does not count) the gateway records the answer and the pass stops standing in
+#: the shared index (:func:`read_skips`). The scope-gate passes (``architecture``,
+#: ``new-feature``, ``needs-design``, ``breaking-change``) are NOT here: handing one
+#: of those back to a crew is a product decision with no accepted design yet, so they
+#: stay skipped whoever removes the label. Every other scope is a finding about the
+#: issue itself (duplicate, already fixed, not reproducible, ...) and stays skipped.
+ANSWERABLE_SKIP_SCOPES = frozenset({"needs-decision", "needs-investigation"})
+
+#: The progress-line kind an answer is filed under. An answer is the human's reply to
+#: the question the crew published, and ``reply`` is the closed vocabulary's word for
+#: that; a kind of its own would widen what the record tool accepts.
+ANSWERED_EVENT_KIND = "reply"
 
 #: Work-item fields an update may EMPTY by name. An omitted field means
 #: "unchanged"; the only way to erase one is to name it here (the route's and the
@@ -473,10 +488,9 @@ def read_settings(owner: str, repo: str, root: Path | None = None) -> dict[str, 
     path = settings_path(owner, repo, root)
     out = dict(DEFAULT_SETTINGS)
     if path.is_file():
-        try:
-            stored = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return out
+        # Retries a Windows sharing violation and logs a read that outlasts it;
+        # an absent or damaged file reads as None, the default below.
+        stored = read_json_or(path, None, logger=logger, what="issue radar settings")
         if isinstance(stored, dict):
             ttl = _validated_ttl_hours(stored.get("claim_ttl_hours"))
             if ttl is not None:
@@ -493,7 +507,7 @@ def write_settings(
 ) -> dict[str, Any]:
     """Merge *patch* into the repo's protocol settings. Returns the stored doc."""
     lock_path = crews_dir(owner, repo, root) / "settings.lock"
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_settings(owner, repo, root)
@@ -532,10 +546,7 @@ def list_crews(
         # a crew record cannot be one by name.
         if not is_crew_id(path.stem):
             continue
-        try:
-            rec = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            continue
+        rec = read_json_or(path, None, logger=logger, what="issue radar crew record")
         if not isinstance(rec, dict):
             continue
         if rec.get("retired_at") and not include_retired:
@@ -551,10 +562,7 @@ def read_crew(
     path = crew_path(owner, repo, crew_id, root)
     if not path.is_file():
         return None
-    try:
-        rec = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
+    rec = read_json_or(path, None, logger=logger, what="issue radar crew record")
     return _coerce_crew(rec) if isinstance(rec, dict) else None
 
 
@@ -639,7 +647,7 @@ def create_crew(
         raise CrewStoreError("a crew needs a name")
 
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True), _mint_lock(root):
             if name in taken_names(owner, repo, root):
@@ -733,7 +741,7 @@ def _mint_lock(root: Path | None) -> Iterator[None]:
     that order, so the two cannot deadlock.
     """
     lock_path = _app_root(root) / "crew-id-mint.lock"
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
@@ -783,7 +791,7 @@ def update_crew(
     those crews. See ``_records_lock_path``.
     """
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_crew(owner, repo, crew_id, root)
@@ -860,7 +868,7 @@ def set_crew_model_held(
     a patch field, so a request body cannot set it.
     """
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             if hold_releases(crew_id) != seen_releases:
@@ -906,7 +914,7 @@ def retire_crew(owner: str, repo: str, crew_id: str, root: Path | None = None) -
     its work log all survive."""
     record = update_crew(owner, repo, crew_id, {"enabled": False}, root)
     lock_path = _records_lock_path(owner, repo, root)
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             record = read_crew(owner, repo, crew_id, root) or record

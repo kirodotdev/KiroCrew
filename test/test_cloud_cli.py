@@ -118,6 +118,45 @@ class TestDispatch:
         assert "expired" in out
         assert "Traceback" not in out
 
+    def test_dispatch_sandbox_unavailable_fails_cleanly(self, monkeypatch, capsys):
+        # On a host with no OS-level sandbox backend, the first `aws` call a
+        # cloud verb makes goes run_aws -> wrap_argv, which fail-closes with
+        # SandboxUnavailableError BEFORE any subprocess spawns. handle_cloud must
+        # render that as the clean host-setup one-liner and exit non-zero -- never
+        # a raw Python traceback -- while the sandbox requirement stands (the verb
+        # still refuses to run).
+        from kiro_crew.sandbox import SandboxUnavailableError
+
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _a: ("dev", "us-east-1"))
+        monkeypatch.setattr(cli_cloud, "discover_local_identity", lambda: {})
+
+        def refuse(**_kwargs):
+            # Stands in for wizard.launch's first run_aws -> wrap_argv on a
+            # no-backend host: it raises before any aws subprocess spawns.
+            raise SandboxUnavailableError(
+                "Sandbox backend unavailable and allow_unsandboxed_exec is not set. "
+                "No OS-level sandbox backend is available on this host. "
+                "Probe detail: unshare(CLONE_NEWNS) failed with errno 1 (EPERM). "
+                "If this host genuinely lacks a sandbox backend, set "
+                "agent.sandbox_allow_unsandboxed_exec=true in ~/.kiro/crew/config.json "
+                "to explicitly allow unsandboxed execution.",
+                kind="no_backend",
+                detail="unshare(CLONE_NEWNS) failed with errno 1 (EPERM)",
+                remedy="",
+            )
+
+        monkeypatch.setattr(cli_cloud.wizard, "launch", refuse)
+
+        rc = cli_cloud.handle_cloud(
+            _args(cloud_action="launch", profile="", region="", size="balanced", yes=True)
+        )
+        out = capsys.readouterr().out
+        # The requirement is NOT weakened: the verb still refused (exit 1), it
+        # just refused with a clean message instead of a traceback.
+        assert rc == 1
+        assert "Sandbox backend unavailable" in out
+        assert "Traceback" not in out
+
     def test_connect_rejects_out_of_range_local_port(self, monkeypatch, capsys):
         monkeypatch.setattr(cli_cloud, "_resolve", lambda a: ("dev", "us-east-1"))
         monkeypatch.setattr(cli_cloud, "_ensure_session_manager_plugin", lambda: True)
@@ -606,6 +645,32 @@ class TestCloudLogin:
 
     def test_tunnel_is_alias_of_connect(self):
         assert cli_cloud._DISPATCH["tunnel"] is cli_cloud._DISPATCH["connect"]
+
+
+class TestEnsurePlugin:
+    def test_a_refused_plugin_is_named_not_offered_an_install(self, monkeypatch, capsys):
+        """Reinstalling a found-but-refused plugin rewrites the same file."""
+        from kiro_crew.cloud import ssm
+
+        refusal = ssm.PluginRefusal(
+            path="/usr/local/sessionmanagerplugin/bin/session-manager-plugin",
+            reason="executable is owned by another user (uid 1501)",
+            remedy_command="sudo chown -R root:wheel /usr/local/sessionmanagerplugin",
+            code="other_owner",
+        )
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+
+        def _no_prompt(*_a, **_k):
+            raise AssertionError("must not offer to install a refused plugin")
+
+        monkeypatch.setattr(cli_cloud.ui, "confirm", _no_prompt)
+        monkeypatch.setattr(ssm, "install_session_manager_plugin", _no_prompt)
+
+        assert cli_cloud._ensure_session_manager_plugin() is False
+        out = capsys.readouterr()
+        text = out.out + out.err
+        assert refusal.path in text and refusal.reason in text
 
 
 class TestDoctor:

@@ -43,9 +43,12 @@ export function useComposerStaging({ activeSlot, splitMode, composerSlotRef, pic
   // `input`: the Paste atom's state. Persisted per-slot via chatPasteDrafts
   // (localStorage, 30-day TTL) so they survive slot switches / refresh;
   // cleared on send and slot delete. The page reads them through its own
-  // `pasteBlocksRef`, which the staged persistence effect syncs -- not the
-  // atom's render-time `read()` -- and hands the editor only the slice.
-  const { blocks: pasteBlocks, set: setPasteBlocks } = useComposerPastes()
+  // `pasteBlocksRef`, which the staged persistence effect syncs, and hands the
+  // editor only the slice. The refused-send restores are the exception: they
+  // read the atom's `read()` and write through `install`, which advance at
+  // once, so two restores landing in one React batch compose instead of the
+  // second dropping the first's blocks (as the panes do).
+  const { blocks: pasteBlocks, set: setPasteBlocks, read: readPasteBlocks, install: installPasteBlocks } = useComposerPastes()
   const pasteBlocksRef = useRef(pasteBlocks)
   const pasteSlice = useMemo<ComposerPasteSlice>(() => ({ blocks: pasteBlocks, set: setPasteBlocks }), [pasteBlocks, setPasteBlocks])
   // Session references staged by dragging a session from the list onto this
@@ -107,7 +110,7 @@ export function useComposerStaging({ activeSlot, splitMode, composerSlotRef, pic
     pendingFiles, setPendingFiles, pendingFilesRef,
     pickedFileTokens, currentSlotTokens, recordSlotToken, mergeSlotTokens,
     snipFrame, setSnipFrame, snipSlotRef,
-    pasteBlocks, setPasteBlocks, pasteBlocksRef, pasteSlice,
+    pasteBlocks, setPasteBlocks, pasteBlocksRef, pasteSlice, readPasteBlocks, installPasteBlocks,
     pendingSessions, setPendingSessions, pendingSessionsRef,
     stagedNowRef,
     stageSessionRef, unstageSessionRef, canStageSessionRef,

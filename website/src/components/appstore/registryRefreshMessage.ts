@@ -8,11 +8,17 @@
  * not refresh" line that every failure keeps.
  */
 import { i18nT } from '../../i18n/t'
+import { fmtList } from '../../i18n/format'
 
 export interface RegistryRefreshResult {
   ok?: boolean
   failed?: string[]
   results?: { name: string; ok: boolean; reason?: 'auth'; host?: string }[]
+}
+
+/** Registry names joined the way the reader language joins a list. */
+function nameList(names: readonly unknown[]): string {
+  return fmtList(names.map(n => String(n ?? '')), { style: 'narrow' })
 }
 
 /** The message to show, or `''` when every registry refreshed. */
@@ -25,9 +31,9 @@ export function registryRefreshFailureMessage(res: RegistryRefreshResult | undef
     refusedByHost.set(host, [...(refusedByHost.get(host) ?? []), r.name])
   }
   const signIn = [...refusedByHost].map(([host, names]) => host
-    ? i18nT('components.registryManager.refresh_sign_in_refused', { host, names: names.join(', ') })
-    : i18nT('components.registryManager.refresh_sign_in_refused_no_host', { names: names.join(', ') }))
+    ? i18nT('components.registryManager.refresh_sign_in_refused', { host, names: nameList(names) })
+    : i18nT('components.registryManager.refresh_sign_in_refused_no_host', { names: nameList(names) }))
   const stale = i18nT('components.registryManager.could_not_refresh_still_showing_last_synced',
-    { names: res.failed.join(', ') })
+    { names: nameList(res.failed) })
   return [...signIn, stale].join(' ')
 }

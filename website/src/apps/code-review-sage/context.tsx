@@ -290,16 +290,23 @@ export function SageProvider({ children, initialRunId }: {
   // stale-while-revalidate treatment as the lists: reopening a review you have
   // already read paints its findings immediately and refetches behind that,
   // instead of showing a skeleton for the round-trip.
+  // The run's status is part of the key: the last live poll can land before the
+  // report is written, and with no staleness a status change is the only thing
+  // that fetches the finished report.
   const reportSnapshot = useMemo(
     () => (selectedRunId ? readSnapshot<RunReport>(`report:${selectedRunId}`) : undefined),
     [selectedRunId],
   )
   const reportQuery = useQuery({
-    queryKey: ['code-review-sage', 'report', selectedRunId],
+    queryKey: ['code-review-sage', 'report', selectedRunId, activeRun?.status],
     queryFn: () => sageApi.runReport(selectedRunId as string),
     enabled: !!selectedRunId,
     initialData: reportSnapshot?.data,
     initialDataUpdatedAt: reportSnapshot?.at,
+    // A ready report of the same run stays on screen while the new key loads,
+    // instead of the skeleton; another run's report never does.
+    placeholderData: (prev, prevQuery) =>
+      prev?.ready && prevQuery?.queryKey[2] === selectedRunId ? prev : undefined,
     refetchInterval: () => (activeRun?.status === 'running' ? LIVE_POLL_MS : false),
   })
 

@@ -33,12 +33,16 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "fetchRemoteToken",
     "entryUrl",
     "probePrimaryPortOwner",
+    "isCurrentBundleGateway",
     "stopForUpdate",
     "stopOnQuit",
     "reopenTunnel",
     "syncTunnel",
+    "canSwitchToRemoteCrew",
+    "switchToRemoteCrew",
     "onInstallDispatched",
     "onInstallFailed",
+    "isInstallingUpdate",
   ]);
 });
 
@@ -57,6 +61,8 @@ test("runtime gateway owners take every host dependency from the supervisor", ()
     "port-holders.js",
     "reconnect.js",
     "remote-crew-prompt.js",
+    "remote-switch.js",
+    "respawn-owner.js",
     "shutdown.js",
     "successor-handoff.js",
     "token-sources.js",
@@ -333,29 +339,13 @@ test("probePrimaryPortOwner probes only the injected primary port", async () => 
   assert.ok(!execCalls[0].args.some((arg) => String(arg).includes("65535")));
 });
 
-test("entryUrl preserves an initial path/query and encodes the token once", () => {
+test("entryUrl preserves an initial path/query", () => {
   const { supervisor } = harness();
-  const result = new URL(supervisor.entryUrl(
-    "http://localhost:5476",
-    "/chat?new=1",
-    "token with spaces & punctuation?",
-  ));
+  const result = new URL(supervisor.entryUrl("http://localhost:5476", "/chat?new=1"));
 
   assert.strictEqual(result.origin, "http://localhost:5476");
   assert.strictEqual(result.pathname, "/chat");
   assert.strictEqual(result.searchParams.get("new"), "1");
-  assert.strictEqual(
-    result.searchParams.get("token"),
-    "token with spaces & punctuation?",
-  );
-  assert.strictEqual(result.searchParams.getAll("token").length, 1);
-});
-
-test("entryUrl omits the token parameter when no token is available", () => {
-  const { supervisor } = harness();
-  const result = new URL(supervisor.entryUrl("http://localhost:5476", "/settings"));
-
-  assert.strictEqual(result.pathname, "/settings");
   assert.strictEqual(result.searchParams.has("token"), false);
 });
 
@@ -451,8 +441,12 @@ test("unexpected child exits are visible but quit exits stay file-only", async (
     unexpected.errors.some((line) => line.includes("gateway child exited code=1")),
   );
 
-  const quitting = harness({ isQuitting: () => true });
+  // The quit begins after the spawn, as in the app: a start made once quitting
+  // has begun spawns nothing.
+  let appQuitting = false;
+  const quitting = harness({ isQuitting: () => appQuitting });
   assert.strictEqual(await quitting.supervisor.start(), true);
+  appQuitting = true;
   quitting.spawnCalls[0].child.emit("exit", 0, "SIGTERM");
   assert.strictEqual(quitting.errors.length, 0);
   assert.ok(

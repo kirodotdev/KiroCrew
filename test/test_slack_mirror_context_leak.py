@@ -21,6 +21,16 @@ class TestPrepareMirrorMsg:
         result = _prepare_mirror_msg(long_msg)
         assert len(result) <= 500
 
+    def test_a_cut_message_ends_with_an_ellipsis(self):
+        """A shortened echo says so, instead of ending mid-word."""
+        result = _prepare_mirror_msg("word " * 200)
+        assert result.endswith("…")
+        assert len(result) == 500
+
+    def test_a_message_at_the_limit_is_not_marked(self):
+        msg = "x" * 500
+        assert _prepare_mirror_msg(msg) == msg
+
     def test_short_message_unchanged(self):
         """Short messages pass through without modification."""
         msg = "Hello, please investigate this ticket"
@@ -28,16 +38,10 @@ class TestPrepareMirrorMsg:
         assert result == msg
 
     def test_context_not_in_mirror_when_saved_before_prepend(self):
-        """Simulate the chat_runner logic: _user_msg_for_mirror is captured
-        BEFORE _pending_context is prepended to message, so context never
-        reaches _prepare_mirror_msg.
+        """The mirror message is captured before pending context is prepended.
 
-        The context block comes from the REAL ``drain_pending_context`` (not a
-        hand-built literal), so a frame change — e.g. the silent-
-        consumption contract line — flows through this assertion instead of
-        leaving it green against a stale copy. (The snapshot ORDER itself is
-        replicated here, not exercised; that would need a _run_chat-level
-        test.)
+        The context comes from the real ``drain_pending_context`` so a frame change flows
+        through. The snapshot order is replicated here, not exercised.
         """
         from types import SimpleNamespace
 

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         delivery_confirmed,
         display_safe_for,
         logger,
+        redact_via_context,
         render_options_as_text,
         sole_direct_target,
     )
@@ -75,9 +76,16 @@ def _owner_dm_target(transport: Any) -> str:
 
 
 async def _deliver_channel_dm(
-    state: DashboardState, channel_type: str, text: str, *, caller_session: str
+    state: DashboardState,
+    channel_type: str,
+    text: str,
+    *,
+    caller_session: str,
+    markdown: bool = False,
 ) -> tuple[bool, str, str]:
     """Deliver *text* as a DM on *channel_type*. Returns ``(sent, code, detail)``.
+
+    *markdown* sends each part through the transport's ``send_markdown``.
 
     Channel-neutral by construction: the transport is looked up by name, the
     destination comes from its own configured-target allowlist, and delivery runs
@@ -206,18 +214,20 @@ async def _deliver_channel_dm(
         # strip would otherwise leave a trailing tag hiding the trailer. The two
         # legs below do the same.
         render_options_as_text(
-            display_safe_for(text, live_transport.capabilities),
+            display_safe_for(text, live_transport.capabilities, redactor=redact_via_context),
             live_transport.capabilities,
         ),
         live_transport.capabilities,
+        redactor=redact_via_context,
     )
+    send = live_transport.send_markdown if markdown else live_transport.send_message
     try:
         for unit in units:
             # Fail on the first UNCONFIRMED unit rather than pressing on: the
             # remaining chunks of a message whose head never landed would arrive as
             # an orphaned fragment. `delivery_confirmed` owns which of the two id
             # conventions this transport follows.
-            sent = await live_transport.send_message(conversation_id, unit, thread_id=thread_id)
+            sent = await send(conversation_id, unit, thread_id=thread_id)
             if not delivery_confirmed(live_transport.capabilities, sent):
                 logger.warning(
                     "send_message: %s returned no message id; treating as undelivered",
@@ -273,7 +283,12 @@ def _cron_job_for(state: DashboardState, caller_session: str) -> Any | None:
 
 
 async def _deliver_to_channel(
-    state: DashboardState, session_key: str, text: str, *, channel_type: str = ""
+    state: DashboardState,
+    session_key: str,
+    text: str,
+    *,
+    channel_type: str = "",
+    markdown: bool = False,
 ) -> bool:
     """Governed proactive send to the channel conversation behind *session_key*.
 
@@ -288,7 +303,8 @@ async def _deliver_to_channel(
     link must match it: a session can only have one channel link, so a mismatch
     means the caller asked for a conversation this session does not have, and
     posting to the link it does have would deliver to an audience nobody asked
-    for. Empty accepts whatever the link names.
+    for. Empty accepts whatever the link names. *markdown* sends each part
+    through the transport's ``send_markdown``.
 
     Fails closed and returns ``False`` — never falls through to another
     destination — for every reason a send can be refused: no link, a link on
@@ -365,24 +381,27 @@ async def _deliver_to_channel(
     # the confirmation mean the whole message. The two legs keep separate loops on
     # purpose: this one splits plain text, while the gateway's splits markdown with
     # fence sealing, and collapsing them would silently retune one of the two.
-    parts = chunk_text(
-        render_options_as_text(
-            display_safe_for(text, transport.capabilities),
-            transport.capabilities,
-        ),
-        transport.capabilities.max_message_chars,
+    # A markdown send is the exception: each part is rendered on its own, so a cut
+    # inside a code fence would render the rest of the code as prose. It takes the
+    # fence-aware splitter, off the loop like the sibling legs.
+    safe = render_options_as_text(
+        display_safe_for(text, transport.capabilities, redactor=redact_via_context),
+        transport.capabilities,
     )
+    if markdown:
+        parts = await asyncio.to_thread(
+            chunk_for_transport, safe, transport.capabilities, redactor=redact_via_context
+        )
+    else:
+        parts = chunk_text(safe, transport.capabilities.max_message_chars)
+    send = transport.send_markdown if markdown else transport.send_message
     for part in parts:
         try:
             # "No exception" is not delivery on its own, and auditing it as such
             # would report a success for a message the user never saw -- the one
             # outcome this helper's contract exists to prevent.
             # `delivery_confirmed` owns which id convention this transport follows.
-            delivered = await transport.send_message(
-                resolved.channel_id,
-                part,
-                thread_id=resolved.thread_id,
-            )
+            delivered = await send(resolved.channel_id, part, thread_id=resolved.thread_id)
         except Exception:
             logger.warning("channel send: delivery failed for %s", session_key, exc_info=True)
             _audit("error", "transport_error")
@@ -404,10 +423,16 @@ async def _send_to_channel_target(
     text: str,
     *,
     caller_session: str = "",
+    request_app: str = "",
+    markdown: bool = False,
 ) -> web.Response:  # noqa: C901
     """Deliver *text* to an opaque configured target on a registered transport.
 
-    Four gates, all fail-closed, in the order their evidence is cheapest:
+    *markdown* sends each part through the transport's ``send_markdown``.
+
+    Four gates, all fail-closed, in the order their evidence is cheapest. The
+    governance gate also asks the calling app's own ``capabilities.messaging``
+    grant (``_vet_app_messaging``) before the ``channels`` scope:
 
     1. **A registered transport.** Expressed as membership in the registry, never
        as ``channel_type != "slack"``: a negation hands every channel added later
@@ -448,6 +473,11 @@ async def _send_to_channel_target(
     # is a non-cron caller (a browser operator, or a direct call): the host
     # sentinel is what operators bind host-side governance to.
     session_key = caller_session or HOST_SESSION_KEY
+    app_refusal = await asyncio.to_thread(_vet_app_messaging, request_app, session_key)
+    if app_refusal:
+        return web.json_response(
+            {"error": app_refusal, "code": "channel_not_permitted"}, status=403
+        )
     # Offloaded: the governance evaluation stats and reads the profile files (and
     # writes a SEL record either way), which is filesystem latency on the shared
     # gateway loop. The sibling ``_deliver_channel_dm`` already runs its own vet
@@ -487,11 +517,13 @@ async def _send_to_channel_target(
     parts = await asyncio.to_thread(
         chunk_for_transport,
         render_options_as_text(
-            display_safe_for(text, transport.capabilities),
+            display_safe_for(text, transport.capabilities, redactor=redact_via_context),
             transport.capabilities,
         ),
         transport.capabilities,
+        redactor=redact_via_context,
     )
+    send = transport.send_markdown if markdown else transport.send_message
     try:
         for index, part in enumerate(parts):
             # Most transports report a failed send by RETURNING a falsy id rather
@@ -505,7 +537,7 @@ async def _send_to_channel_target(
             # convention each transport follows, from its own declared
             # ``returns_message_id`` — the alternative is this leg reporting every
             # delivered message on those as lost.
-            sent = await transport.send_message(conversation_id, part, thread_id=thread_id)
+            sent = await send(conversation_id, part, thread_id=thread_id)
             if not delivery_confirmed(transport.capabilities, sent):
                 raise _ChannelSendFailed(f"part {index + 1} of {len(parts)} was not accepted")
     except Exception as exc:
@@ -559,5 +591,45 @@ def _vet_channel_send(channel_type: str, caller_session: str) -> str:
             return f"channel {channel_type} is denied by the active governance profile"
     except Exception:
         logger.warning("channel send governance check failed", exc_info=True)
+        return "governance evaluation unavailable"
+    return ""
+
+
+def _vet_app_messaging(
+    request_app: str, session_key: str, *, tool_name: str = "send_message"
+) -> str:
+    """The calling app's own ``capabilities.messaging`` grant; ``""`` when permitted.
+
+    The MCP ``send_message`` tool vets ``capabilities.messaging`` before it posts,
+    but in the ``kirocrew-core`` process, where no app identity is known, so a
+    per-app profile that revokes messaging never reaches that check. The gateway
+    knows the app: ``effective_request_app`` reads it off the attested token or
+    the calling session's owner. Every proactive egress leg asks this before it
+    sends, so an app whose messaging is revoked reaches no channel on any leg.
+    ``update_message``'s edit route asks it too, under its own *tool_name* in the
+    audit row: an edit publishes new text to the audience the message already has.
+
+    An empty *request_app* is the person, whose surface profile the MCP tool
+    already vets, so it is not re-asked here. Fail-closed like the ``channels``
+    vet beside it: this is an egress chokepoint, and an evaluation that errored
+    must deny.
+    """
+    if not request_app:
+        return ""
+    try:
+        from kiro_crew.platform.governance_profiles import vet_and_audit
+
+        decision = vet_and_audit(
+            "capabilities.messaging",
+            "",
+            session_key=session_key or HOST_SESSION_KEY,
+            tool_name=tool_name,
+            app=request_app,
+            fail_closed=True,
+        )
+        if not getattr(decision, "permitted", False):
+            return "outbound messaging is denied for this app by the active governance profile"
+    except Exception:
+        logger.warning("app messaging governance check failed", exc_info=True)
         return "governance evaluation unavailable"
     return ""

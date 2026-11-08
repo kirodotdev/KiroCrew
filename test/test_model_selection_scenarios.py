@@ -22,6 +22,9 @@ fresh session whose entitlement is not yet known, and an explicit unusable pick.
 
 from __future__ import annotations
 
+import pytest
+from named_cases_helpers import named_cases
+
 from kiro_crew.acp.client import (
     AcpModelUnavailable,
     _rejected_model_from_error,
@@ -114,7 +117,14 @@ class TestEntitlementPredicate:
     def test_served_model_is_usable(self):
         assert model_is_unusable("claude-sonnet-4.6", _ENTITLED) is False
 
-    def test_unserved_model_is_unusable(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_unserved_model_is_unusable"),
+            *named_cases("test_unavailable_pick_would_be_flagged_by_the_predicate"),
+        ],
+    )
+    def test_an_unserved_model_is_unusable(self):
         assert model_is_unusable("claude-opus-4.8", _FREE_TIER) is True
 
     def test_case_insensitive(self):
@@ -346,9 +356,6 @@ class TestExplicitPickRefusal:
     """An EXPLICIT user pick that the account can't run RAISES — it is never
     silently substituted (a user who chose a model should see the error)."""
 
-    def test_unavailable_pick_would_be_flagged_by_the_predicate(self):
-        assert model_is_unusable("claude-opus-4.8", _FREE_TIER) is True
-
     def test_model_unavailable_error_is_terminal_and_names_alternatives(self):
         err = AcpModelUnavailable("claude-opus-4.8", _FREE_TIER, backend=ACP_BACKEND_KIRO)
         assert err.model_id == "claude-opus-4.8"
@@ -366,13 +373,27 @@ class TestExplicitPickRefusal:
 class TestRejectionClassifier:
     """`_rejected_model_from_error` — powers the reactive retry."""
 
-    def test_matches_invalid_model_id_in_data(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_matches_invalid_model_id_in_data"),
+            *named_cases("test_matches_invalid_model_id"),
+        ],
+    )
+    def test_an_invalid_model_id_in_data_is_matched(self):
         assert (
             _rejected_model_from_error({"data": "Invalid model ID: claude-haiku-4.5"})
             == "claude-haiku-4.5"
         )
 
-    def test_matches_invalid_model_id_for_auto_in_message(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_matches_invalid_model_id_for_auto_in_message"),
+            *named_cases("test_matches_invalid_model_id_auto_in_message"),
+        ],
+    )
+    def test_an_invalid_auto_model_id_in_message_is_matched(self):
         assert _rejected_model_from_error({"message": "Invalid model ID: auto"}) == "auto"
 
     def test_matches_model_not_available_wording(self):
@@ -381,7 +402,14 @@ class TestRejectionClassifier:
             == "sonnet-x"
         )
 
-    def test_unrelated_error_returns_none(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_unrelated_error_returns_none"),
+            *named_cases("test_returns_none_for_unrelated_error"),
+        ],
+    )
+    def test_an_unrelated_error_is_not_matched(self):
         assert _rejected_model_from_error({"data": "ThrottlingException: slow down"}) is None
 
     def test_non_dict_returns_none(self):

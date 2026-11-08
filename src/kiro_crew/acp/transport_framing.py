@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import enum
 import json
-from typing import Any, Awaitable, Callable
+from typing import IO, Any, Awaitable, Callable
 
 # The proactor check lives in a neutral leaf, because the dashboard's WebSocket hub
 # needs it too and may not import this package. Bound here under the name this
@@ -90,6 +90,27 @@ def encode_frame(message: dict[str, Any]) -> bytes:
     if "\\ud" in data:
         data = json.dumps(_repair_lone_surrogates(message))
     return (data + "\n").encode()
+
+
+#: Ceiling for :func:`write_frames_blocking`: well under the smallest pipe buffer
+#: (4 KiB on some hosts), so the one write can never wait on a reader.
+_BLOCKING_FRAMES_MAX_BYTES = 4096
+
+
+def write_frames_blocking(stdin: IO[bytes], messages: list[dict[str, Any]]) -> None:
+    """Write *messages* as ndjson frames to a SYNCHRONOUS pipe, for a read-back child.
+
+    The bounded async writers above guard a live session's shared stdin. A harness's
+    read-back boots a throwaway child on a blocking ``subprocess`` pipe from a worker
+    thread and sends it a couple of fixed requests; this is that write, kept here so
+    every stdin write under ``acp/`` still passes through this module. It refuses a
+    payload over :data:`_BLOCKING_FRAMES_MAX_BYTES`, so it never blocks.
+    """
+    data = b"".join(encode_frame(message) for message in messages)
+    if len(data) > _BLOCKING_FRAMES_MAX_BYTES:
+        raise ValueError(f"read-back frames are {len(data)} bytes, over the blocking-write cap")
+    stdin.write(data)
+    stdin.flush()
 
 
 async def _drain_oversize_line(
@@ -458,9 +479,14 @@ async def write_request_frame_bounded(
     *,
     bound_secs: float,
     before_write: Callable[[], None] | None = None,
+    on_written: Callable[[bytes], None] | None = None,
 ) -> RequestWriteResult:
     """Write one REQUEST frame under the write lock and the same no-progress bound
     as :func:`write_response_frame_bounded`, but report WHICH phase stalled.
+
+    ``on_written`` is called with *data* the moment ``stdin.write`` returned,
+    before the drain: the frame recorder's hook, so its outbound file holds frames
+    in the order they reached the pipe.
 
     The write body mirrors the response writer -- bounded lock wait, bounded drain,
     ``before_write`` under the lock, lock never left held (``_release_if_acquired``)
@@ -479,6 +505,8 @@ async def write_request_frame_bounded(
         if before_write is not None:
             before_write()
         stdin.write(data)
+        if on_written is not None:
+            on_written(data)
         drained = await await_under_no_progress_bound(stdin.drain(), stdin, bound_secs=bound_secs)
         return RequestWriteResult.OK if drained else RequestWriteResult.DRAIN_STALL
     finally:
@@ -519,6 +547,7 @@ async def write_notification_best_effort(
     *,
     bound_secs: float,
     before_write: Callable[[], None] | None = None,
+    on_written: Callable[[bytes], None] | None = None,
 ) -> str:
     """Write a fire-and-forget notification (``session/cancel``) without letting
     the write lock swallow it.
@@ -533,7 +562,8 @@ async def write_notification_best_effort(
     the caller's log line: ``"drained"`` (written and drained under the lock),
     ``"appended_unlocked"`` (the lock did not come; the frame sits in the
     transport's buffer with no drain observed), or ``"stalled"`` (the locked
-    drain made no progress). Pipe errors propagate.
+    drain made no progress). Pipe errors propagate. ``on_written`` runs right
+    after ``stdin.write`` on either path, as in :func:`write_request_frame_bounded`.
     """
     acquire: asyncio.Future[bool] = asyncio.ensure_future(lock.acquire())
     try:
@@ -546,11 +576,15 @@ async def write_notification_best_effort(
         if before_write is not None:
             before_write()
         stdin.write(data)
+        if on_written is not None:
+            on_written(data)
         return "appended_unlocked"
     try:
         if before_write is not None:
             before_write()
         stdin.write(data)
+        if on_written is not None:
+            on_written(data)
         drained = await await_under_no_progress_bound(stdin.drain(), stdin, bound_secs=bound_secs)
         return "drained" if drained else "stalled"
     finally:

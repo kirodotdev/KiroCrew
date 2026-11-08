@@ -32,6 +32,7 @@ import { store } from '../src/store'
 import { sseSlots } from '../src/store/dashboardSlice'
 import { appendSlotMessage, selectSlotMessages, sseChatMessage, sseSideResult } from '../src/store/chatSlice'
 import { memberProjectionStore } from '../src/state/memberProjectionStore'
+import { installScrollReveal } from '../src/lib/scrollReveal'
 import '../src/index.css'
 
 /** The two store frames the capture script needs to fire AFTER the page is up
@@ -190,6 +191,8 @@ function Elsewhere() {
 
 async function main() {
   await initI18n()
+  // As main.tsx does: the scroll-only scrollbar needs the attribute setter.
+  installScrollReveal()
   createRoot(document.getElementById('root')!).render(
     <Provider store={store}>
       <QueryClientProvider client={queryClient}>

@@ -16,7 +16,8 @@ Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 
 Instance fields read: ``_first_session_ready``, ``_last_activity``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_pid``, ``_process``, ``_session_inits_in_flight``,
-``_session_queues``, ``_spawn_monotonic``, ``_spawn_start_token``, ``_stderr_task``,
+``_session_queues``, ``_spawn_monotonic``, ``_spawn_start_token``, ``_start_collectors``,
+``_stderr_task``, ``_subagent_roster_overflow``, ``_subagent_sessions``,
 ``_turn_active_sessions``, ``recording_allowed``.
 """
 
@@ -58,7 +59,7 @@ logger = logging.getLogger("kiro_crew.acp.runtime")
 # LAST non-empty stderr line the drain captured, truncated to this many
 # characters -- roughly one card line. The 20-line ring itself is unchanged.
 _STDERR_REASON_TAIL_CHARS = 200
-# The one stderr signature that names a host fault rather than a kiro-cli
+# A stderr signature that names a host fault rather than a kiro-cli
 # fault: every sandboxed spawn fails with it once the runtime tmpfs the
 # launcher stages mount sources on runs out of space or inodes. Point the
 # operator at the doctor check that measures that filesystem.
@@ -66,6 +67,15 @@ _ENOSPC_MARKER = "no space left on device"
 _ENOSPC_HINT = (
     "the runtime tmp filesystem is out of space or inodes; run `kirocrew doctor` "
     "(Runtime tmpfs section)"
+)
+# The other host fault: EAGAIN as libc words it. A child that unwraps a refused
+# thread or process spawn (kiro-cli's thread pool does) dies on it, usually under
+# a task limit: `ulimit -u`, or a cgroup pids.max the doctor's Task ceilings rows
+# print (Linux only).
+_EAGAIN_MARKER = "resource temporarily unavailable"
+_EAGAIN_HINT = (
+    "EAGAIN, usually a task limit refusing a new thread or process: check `ulimit -u`; "
+    "on Linux `kirocrew doctor` (Task ceilings section) shows the cgroup ceilings"
 )
 
 
@@ -88,17 +98,18 @@ def _proven_death_cause(tail: str) -> tuple[str, str] | None:
     describes a death, and an unexplained one is reported as the exit status it
     is, with the tail kept for whoever asks the log for it.
 
-    Both signatures are matched per LINE by their own helpers and searched over
-    the WHOLE retained tail rather than only its last line, because which line a
-    child printed last is a race with its own flushing and says nothing about
-    which line matters.
+    Every signature is matched per LINE and searched over the WHOLE retained
+    tail rather than only its last line, because which line a child printed last
+    is a race with its own flushing and says nothing about which line matters.
     """
     throttled = registration_throttle_line(tail)
     if throttled:
         return throttled, ""
-    for line in tail.splitlines():
-        if _ENOSPC_MARKER in line.lower():
-            return line.strip(), _ENOSPC_HINT
+    lines = tail.splitlines()
+    for marker, hint in ((_ENOSPC_MARKER, _ENOSPC_HINT), (_EAGAIN_MARKER, _EAGAIN_HINT)):
+        for line in lines:
+            if marker in line.lower():
+                return line.strip(), hint
     return None
 
 
@@ -264,6 +275,28 @@ async def _is_stale(self: AcpRuntime) -> str | None:
     return None
 
 
+def session_tenancy(self: AcpRuntime, session_id: str) -> int | None:
+    """Registered-session count only when *session_id* is a proven tenant.
+
+    Process cleanup needs a positive exclusivity statement. A session whose
+    ``session/new`` or ``session/load`` is still running may already have
+    spawned children before its queue is registered. A timed-out start collector
+    represents the same window after its caller left. A native backend subagent
+    runs in the harness's own process tree with no queue here, so an announced
+    roster entry, or a roster longer than the cap, is a tenant the count cannot
+    see. A session unregistered before the host answered its teardown may still
+    own processes there too. Each makes the answer unreadable, as does a handle
+    whose session is absent from the registry.
+    """
+    if self._session_inits_in_flight or self._start_collectors or self._unconfirmed_teardowns:
+        return None
+    if self._subagent_sessions or self._subagent_roster_overflow:
+        return None
+    if session_id not in self._session_queues:
+        return None
+    return len(self._session_queues)
+
+
 def has_active_sessions(self: AcpRuntime) -> bool:
     """True if any session is currently registered on this runtime.
 
@@ -386,41 +419,24 @@ def redacted_stderr_tail(self: AcpRuntime) -> str:
 async def _exit_watch_loop(self: AcpRuntime) -> None:
     """Fail the runtime on the root process's OWN exit, not on stdout EOF.
 
-    The reader loop observes a death only as EOF on stdout. A descendant
-    that inherited the root's write end holds that pipe open after the root
-    is gone, so EOF does not arrive and the reader -- parked on ``readuntil``
-    while nothing is being written -- cannot notice the broken pipe either.
-    The death is then invisible until the survivor exits (the pipe finally
-    closing) or idle expiry force-reaps the session, on the order of an hour.
+    A descendant that inherited the root's stdout write end keeps the pipe open
+    after the root dies, so the reader sees no EOF and the death would stay
+    invisible until the survivor exits or idle expiry reaps the session (about
+    an hour).
 
-    This watcher keys on the exit itself, by polling ``process.returncode``.
-    ``returncode`` is set by the event loop's ``_process_exited`` -- the
-    SIGCHLD/waitpid path -- the instant the root is reaped, independent of
-    whether the pipes have disconnected. ``process.wait()`` cannot serve
-    here: its waiters are woken only from ``_call_connection_lost``, after
-    ALL pipe transports disconnect, so a descendant holding stdout open
-    parks ``wait()`` exactly as long as it parks the reader -- the watcher
-    would never fire for the very case it exists to catch. The poll sees a
-    non-``None`` returncode as soon as the root is gone, whatever the pipes
-    are doing. A still-``None`` returncode is NOT an exit (a closed pipe the
-    module deliberately refuses to treat as death), so the watcher keeps
-    looping rather than marking dead.
+    So this polls ``process.returncode``, which the loop's SIGCHLD/waitpid path
+    sets the instant the root is reaped. ``process.wait()`` cannot serve: its
+    waiters wake only from ``_call_connection_lost``, after ALL pipe transports
+    disconnect, which is exactly the case this exists to catch. A ``None``
+    returncode is not an exit, so the loop keeps polling.
 
-    On the confirmed exit it first gives the reader a bounded window to
-    drain any final frame still readable on stdout -- a completed turn's
-    response the backend wrote just before exiting -- then marks the runtime
-    dead, which fails every pending request and poisons every session queue,
-    so a waiting turn surfaces ``AcpProcessDied`` in seconds instead of
-    waiting for a backstop timer. The drain yields in short slices while the
-    reader keeps routing frames (it stamps ``_last_activity`` per frame) and
-    ends the moment the reader goes quiet with an empty buffer, so it costs
-    the fail-fast path at most one idle slice on a pipe with nothing left.
-
-    The reader keeps priority: the drain window lets an EOF that arrives in
-    the same breath (the ordinary same-second close) run the reader's own
-    death+retire path first, and ``_mark_dead`` is idempotent, so the loser
-    of that race is a no-op. The exit reason is read AFTER the returncode is
-    observed, so it carries the real code rather than ``<not reaped>``.
+    On exit it first gives the reader a bounded window to drain a final frame
+    (a turn response written just before exit), in short slices that end once
+    the reader goes quiet with an empty buffer, then marks the runtime dead so
+    pending requests fail and waiting turns get ``AcpProcessDied`` in seconds.
+    The reader keeps priority: an EOF arriving in the same window runs its own
+    death path, and ``_mark_dead`` is idempotent. The exit reason is read after
+    the returncode, so it carries the real code rather than ``<not reaped>``.
     """
     process = self._process
     if process is None:
@@ -673,7 +689,11 @@ def _mark_dead(
     # operators can tell an OOM/crash from a clean exit without DEBUG logs.
     rc = self._returncode_label()
     if self.recording_allowed:
-        tail = " | ".join(self._stderr_lines[-5:]) if self._stderr_lines else "<none>"
+        # Both spellings of the tail are checked, so a secret wrapped across two
+        # stderr lines cannot hide behind the " | " separator.
+        from kiro_crew.acp.stderr_tail import safe_stderr_tail
+
+        tail = safe_stderr_tail(self._stderr_lines[-5:], " | ") or "<none>"
     else:
         # Reader exceptions and child stderr can echo session content.
         # Restricted runs retain lifecycle facts, including the exit code.
@@ -784,9 +804,11 @@ async def _retire_tracking_after_exit(self: AcpRuntime) -> None:
     removes the session line only when its recorded start token is the one
     read at THIS spawn, and the bare root line only when the number is dead
     at the moment of a probe taken under the bare file's own lock -- a live
-    holder of the number keeps its line. The root's own lines only: a
+    holder of the number keeps its line. On POSIX, the root's own lines only: a
     descendant that outlived the root is reparented and still running, and
-    its own ``kiro_pids.txt`` line is what the sweep reaps it by.
+    its own ``kiro_pids.txt`` line is what the sweep reaps it by. On Windows a
+    descendant has no such line, so the confirmed exit drains the root's
+    exact-handle tree and its job instead, which also retires the root's lines.
 
     Offloaded to a thread because the untrack takes the file locks the sweep
     contends for, and this runs on the event loop.
@@ -823,6 +845,28 @@ async def _retire_tracking_after_exit(self: AcpRuntime) -> None:
     # "killed" without naming who killed would defeat the attribution the
     # kill path's own docstring requires.
     self._note_reaped(process.returncode, after_kill=False)
+    if platform_compat.IS_WINDOWS:
+        # A Windows descendant gets no registry line of its own, so the sweep
+        # cannot reap what the root left running. Drain the tree the way
+        # ``_kill_inner`` does; the drain retires the root's tracking under its
+        # pin, and a drain it cannot confirm keeps the pins for the sweep.
+        try:
+            await platform_compat.terminate_windows_asyncio_tree(process)
+        except platform_compat.WindowsTreeDrainPending as exc:
+            logger.warning(
+                "AcpRuntime Windows tree for exited PID %s did not finish one bounded "
+                "drain pass (%d member(s) pending cleanup); the cleanup sweep keeps "
+                "reaping it",
+                pid,
+                exc.pending,
+            )
+        except (OSError, asyncio.TimeoutError):
+            logger.warning(
+                "AcpRuntime Windows tree cleanup incomplete for exited PID %s",
+                pid,
+                exc_info=True,
+            )
+        return
     if platform_compat.pid_exists(pid):
         return
     try:
@@ -902,8 +946,13 @@ async def _drain_stderr(self: AcpRuntime) -> None:
                     and is_delegate_launch_failure_output(text)
                 ):
                     self._saw_delegate_launch_failure = True
-                if self.recording_allowed:
-                    logger.debug("stderr: %s", text[:200])
+                if self.recording_allowed and logger.isEnabledFor(logging.DEBUG):
+                    # Child stderr can echo a credential (a failed login prints
+                    # the header it sent); redact before the cut so a token
+                    # split at the boundary is still recognised.
+                    from kiro_crew.platform.context import redact_log_via_context
+
+                    logger.debug("stderr: %s", redact_log_via_context(text)[:200])
     except asyncio.CancelledError:
         raise
     except Exception as exc:

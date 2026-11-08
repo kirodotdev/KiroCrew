@@ -4,9 +4,10 @@ changes, and fix versions as the milestone equivalent."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
-from source_providers_helpers import _clear_issue_cache  # noqa: F401
+from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
 
@@ -29,7 +30,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -50,7 +51,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": "secret123"}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -72,7 +73,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": "pat-token"}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -108,7 +109,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 host_key = "acme.atlassian.net".encode().hex().upper()
                 return {
                     "JIRA_API_TOKEN": "global-fallback",
@@ -144,7 +145,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 # Simulate load_credentials' setdefault seeding the .env global
                 # into the process environment during the call. Use monkeypatch
                 # so the seed is auto-reverted at test teardown and cannot leak
@@ -180,7 +181,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": "env-token"}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -210,7 +211,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": "env-token"}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -236,7 +237,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -273,7 +274,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 # env overlay would also place it here; the resolver reads the
                 # override directly from os.environ before the global vault.
                 return {"JIRA_API_TOKEN": "env-override"}
@@ -307,7 +308,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -356,7 +357,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 # load_credentials overlays the migrated secret:// ref here too.
                 return {"JIRA_API_TOKEN": "secret://JIRA_API_TOKEN"}
 
@@ -389,7 +390,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -424,7 +425,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": _ENV_FILE_TOKEN}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -472,7 +473,7 @@ class TestGetJiraAuth:
             def load(cls):
                 return cls()
 
-            def load_credentials(self):
+            def load_credentials(self, *, propagate=True):
                 return {"JIRA_API_TOKEN": _OPERATOR_TOKEN}
 
         monkeypatch.setattr(source, "KiroCrewConfig", FakeConfig)
@@ -524,6 +525,39 @@ async def test_fetch_jira_issue_no_credentials_raises_value_error(monkeypatch):
     )
     with pytest.raises(ValueError, match="jira_no_credentials"):
         await source._fetch_jira_issue(ref)
+
+
+_MCP_SEPARATE_NOTE = (
+    "This reader uses a Jira API token and is separate from the Atlassian "
+    "MCP sign-in; signing in to that MCP server does not configure it."
+)
+
+
+@pytest.mark.asyncio
+async def test_no_credentials_message_says_it_is_separate_from_mcp(monkeypatch):
+    """The backend message names the MCP sign-in as a different credential."""
+    monkeypatch.setattr(source, "_get_jira_auth", lambda host: None)
+    ref = source.SourceRef(
+        provider="jira",
+        url="https://acme.atlassian.net/browse/PROJ-123",
+        host="acme.atlassian.net",
+        owner="",
+        repo="PROJ",
+        number=123,
+        kind="issue",
+    )
+    with pytest.raises(ValueError) as excinfo:
+        await source._fetch_jira_issue(ref)
+    assert _MCP_SEPARATE_NOTE in str(excinfo.value)
+    assert "Add a jira_auth entry to config.json" in str(excinfo.value)
+
+
+def test_panel_no_credentials_copy_says_it_is_separate_from_mcp():
+    """The issue panel's English copy carries the same sentence."""
+    catalog = Path(__file__).resolve().parents[1] / "website/src/i18n/locales/en.manual.json"
+    copy = json.loads(catalog.read_text(encoding="utf-8"))["components"]["issuePanel"]
+    assert _MCP_SEPARATE_NOTE in copy["jira_no_credentials"]
+    assert "Add a jira_auth entry to config.json" in copy["jira_no_credentials"]
 
 
 def test_parse_jira_cloud_url() -> None:

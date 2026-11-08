@@ -1,5 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/react'
 import SearchResultsList from '../components/SearchResultsList'
+import { i18next } from '../i18n/all'
 import type { SearchMatch } from '../hooks/useMessageSearch'
 import type { ChatMessage } from '../types'
 
@@ -78,6 +79,15 @@ describe('SearchResultsList', () => {
     render(<SearchResultsList {...base} matches={many} onJump={vi.fn()} />)
     expect(screen.getAllByRole('option')).toHaveLength(200)
     expect(screen.getByText(/Showing 200 of 250 matches/)).toBeTruthy()
+  })
+
+  it('renders the overflow footer as one catalog sentence', async () => {
+    // en-XA brackets every catalog value, so a footer glued from fragments reads `[…] 200 […] 250 […]`.
+    await i18next.changeLanguage('en-XA')
+    const many: SearchMatch[] = Array.from({ length: 250 }, (_, k) => ({ msgIdx: 0, occ: k }))
+    render(<SearchResultsList {...base} matches={many} onJump={vi.fn()} />)
+    const footer = screen.getByText(/250/)
+    expect(footer.textContent).toMatch(/^\[[^[\]]*200[^[\]]*250[^[\]]*\]$/)
   })
 
   it('windows so the active row stays rendered when currentIdx is past MAX_ROWS', () => {

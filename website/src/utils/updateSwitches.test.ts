@@ -37,6 +37,33 @@ describe('updateSwitchesShown', () => {
     expect(gateway('unknown')).toBe(false)
   })
 
+  it('draws the gateway row in a desktop window for a reused (non-bundled) gateway', () => {
+    // Topology 2 of GH #15797: a gateway the app reuses (CLI service, SSH tunnel)
+    // manages its own bytes; its switch is shown even when the effect is not yet
+    // a definite install, because the app's updater does not cover it.
+    for (const effect of ['notify', 'unknown'] as const) {
+      expect(
+        updateSwitchesShown({ bridge: shell(), info: {}, effect, bundledByApp: false }).gateway,
+      ).toBe(true)
+    }
+  })
+
+  it('still hides the gateway row in a desktop window for the bundled gateway', () => {
+    // bundledByApp: true => the app's own gateway, which ignores the switch.
+    for (const effect of ['notify', 'unknown'] as const) {
+      expect(
+        updateSwitchesShown({ bridge: shell(), info: {}, effect, bundledByApp: true }).gateway,
+      ).toBe(false)
+    }
+  })
+
+  it('treats an unresolved bundled status conservatively (same as before)', () => {
+    // bundledByApp: undefined => status not yet loaded, keep the old rule.
+    expect(
+      updateSwitchesShown({ bridge: shell(), info: {}, effect: 'notify', bundledByApp: undefined }).gateway,
+    ).toBe(false)
+  })
+
   it('offers the app switch on a shell that can read and write it, unless the updater is disabled', () => {
     const app = (bridge: UpdateAPI | undefined, info: { disabled?: string } | null | undefined) =>
       updateSwitchesShown({ bridge, info, effect: 'notify' }).app
@@ -45,6 +72,18 @@ describe('updateSwitchesShown', () => {
     expect(app(shell(), { disabled: 'dev' })).toBe(false)
     expect(app(shell({ setAutoDownload: undefined }), {})).toBe(false)
     expect(app(shell({ getInfo: undefined }), {})).toBe(false)
+  })
+
+  it('hides the app switch when policy governs so settings search and About agree', () => {
+    // A policy provider owns updates: the app's auto-download switch is not actionable
+    // and must not appear in settings search (leading to an absent target on About).
+    expect(
+      updateSwitchesShown({ bridge: shell(), info: {}, effect: 'install', policyGoverned: true }).app,
+    ).toBe(false)
+    // Without governance the switch still shows normally.
+    expect(
+      updateSwitchesShown({ bridge: shell(), info: {}, effect: 'install', policyGoverned: false }).app,
+    ).toBe(true)
   })
 
   it.each(['dev', 'translocated', 'externally-managed'])(

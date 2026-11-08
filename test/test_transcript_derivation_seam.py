@@ -29,6 +29,7 @@ import pathlib
 from collections import Counter
 
 import pytest
+from source_corpus import parsed_candidates
 
 from kiro_crew import history as history_mod
 from kiro_crew.history import (
@@ -64,21 +65,30 @@ PLAIN_READS = frozenset(
 # goes through the derivation seam. Keep this sorted; a stale entry fails too.
 PLUMBING: frozenset[tuple[str, str]] = frozenset(
     {
+        # An app's test snapshotting a transcript it wrote, to assert it survives.
+        (
+            "kiro_crew/apps/builtins/auto_improvement/tests/test_auto_improvement_members.py",
+            "recent",
+        ),
         # An app reading its own slot's conversation for the user.
         ("kiro_crew/apps/builtins/spec_builder/backend/runtime.py", "read_messages"),
         # Channel file migration: moves rows between stems, derives nothing.
         ("kiro_crew/channel_transcript_migration.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
         ("kiro_crew/cli_commands_security.py", "recent"),
+        # `kirocrew consolidate`: a yes/no sensitive-session check on a tail
+        # consolidate_now left, to report the skip; no rows leave.
+        ("kiro_crew/cli_knowledge.py", "_read_messages"),
         # The live session's OWN rows into its OWN prompt / compaction.
         ("kiro_crew/context.py", "read_messages"),
         ("kiro_crew/context.py", "read_messages_chained"),
         ("kiro_crew/context.py", "recent"),
         ("kiro_crew/context_assembly/turn_message.py", "recent"),
         ("kiro_crew/dashboard/channel_slots.py", "read_messages"),
-        # The chat handlers' resume and slot-detail owners, composed into
-        # chat_handlers: the same resume and render reads it made.
+        # The chat handlers' resume, resume-window and slot-detail owners, composed
+        # into chat_handlers: the same resume, reconcile and render reads it made.
         ("kiro_crew/dashboard/chat_api/resume.py", "read_messages_chained"),
+        ("kiro_crew/dashboard/chat_api/resume_window.py", "read_messages_chained"),
         ("kiro_crew/dashboard/chat_api/slot_detail.py", "read_messages_chained"),
         ("kiro_crew/dashboard/chat_api/slot_detail.py", "read_messages_chained_full"),
         ("kiro_crew/dashboard/chat_backfill.py", "read_messages_chained"),
@@ -96,6 +106,10 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/dashboard/cron_inject.py", "read_messages"),
         # Rendering the transcript's own artifacts / rows to its user.
         ("kiro_crew/dashboard/handlers/artifacts_parts/session_documents.py", "read_messages"),
+        # The Files tab listing the paths this session edited, to its user.
+        ("kiro_crew/dashboard/session_files.py", "read_file_change_messages"),
+        # The same tab showing one of those edits, as the transcript's own card does.
+        ("kiro_crew/dashboard/session_files.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
         ("kiro_crew/dashboard/handlers/core_security.py", "recent"),
         ("kiro_crew/dashboard/handlers/cron_runs.py", "read_messages"),
@@ -150,8 +164,11 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
 
 def _plain_read_sites() -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
-    for path in sorted(SRC.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    # A site is an attribute spelled as one of the read names, so only the files whose
+    # text holds one are parsed.
+    for path, _text, tree in parsed_candidates(
+        require_any=sorted(PLAIN_READS), skip_syntax_errors=False
+    ):
         rel = path.relative_to(SRC).as_posix()
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in PLAIN_READS:
@@ -462,11 +479,15 @@ class TestThePublicationFence:
             "_try_embed",
         }
         offenders: list[tuple[str, int, str]] = []
-        # The log's facade and every owner it binds members from.
-        history_family = {"kiro_crew/history.py"} | {
-            f"kiro_crew/{owner.rsplit('.', 1)[-1]}.py" for owner in history_mod._OWNERS
-        }
-        for rel in sorted(_PUBLISH_MODULES | history_family):
+        # The log's facade and every owner it binds members from, plus the
+        # merge-back draft commit under the fork's hold and the note delivery
+        # holding a source transcript through its durable write.
+        holders = (
+            {"kiro_crew/history.py"}
+            | {f"kiro_crew/{owner.rsplit('.', 1)[-1]}.py" for owner in history_mod._OWNERS}
+            | {"kiro_crew/dashboard/chat_merge_back.py", "kiro_crew/dashboard/chat_handlers.py"}
+        )
+        for rel in sorted(_PUBLISH_MODULES | holders):
             tree = ast.parse((SRC / rel).read_text(encoding="utf-8"), filename=rel)
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.With, ast.AsyncWith)):
@@ -602,6 +623,9 @@ class TestTheSeam:
         assert log.derive_messages(KEY) == log.read_messages(KEY)
         plain_chained = log.read_messages_chained(KEY)
         assert log.derive_messages_chained(KEY) is plain_chained
+        full_rows, full_keys = log.derive_messages_chained_full_with_keys(KEY)
+        assert full_rows == log.read_messages_chained_full(KEY)
+        assert full_keys == (KEY,)
         assert log.derive_recent(KEY, 1) == log.recent(KEY, 1)
         assert [m["content"] for m in log.derive_recent(KEY, 5, roles={"user"})] == ["PRIVATE-1"]
 
@@ -619,6 +643,7 @@ class TestTheSeam:
         for read in (
             lambda: log.derive_messages(KEY),
             lambda: log.derive_messages_chained(KEY),
+            lambda: log.derive_messages_chained_full_with_keys(KEY),
             lambda: log.derive_recent(KEY, 5),
             lambda: log.snapshot_for_consolidation(KEY, withhold_restricted=True),
         ):
@@ -702,6 +727,9 @@ class TestTheSeamCoversTheWholeChain:
         rows = log.derive_messages_chained("dashboard:chat-1")
         assert [m["content"] for m in rows] == ["OLDER-PRIVATE", "NEWER-PUBLIC"]
         assert rows == log.read_messages_chained("dashboard:chat-1")
+        full_rows, full_keys = log.derive_messages_chained_full_with_keys("dashboard:chat-1")
+        assert full_rows == log.read_messages_chained_full("dashboard:chat-1")
+        assert full_keys == ("dashboard:chat-0", "dashboard:chat-1")
 
     @pytest.mark.parametrize("mode", ["incognito", "temporary", "Temporary"])
     def test_a_restricted_sibling_withholds_the_whole_chain(self, tmp_path, mode):
@@ -713,6 +741,8 @@ class TestTheSeamCoversTheWholeChain:
         # ...and the seam still refuses, because the sibling's line governs its rows.
         with pytest.raises(TranscriptWithheld):
             log.derive_messages_chained("dashboard:chat-1")
+        with pytest.raises(TranscriptWithheld):
+            log.derive_messages_chained_full_with_keys("dashboard:chat-1")
         with pytest.raises(TranscriptWithheld):
             with log.publication_hold("dashboard:chat-1"):
                 raise AssertionError("the publication body ran")
@@ -731,6 +761,8 @@ class TestTheSeamCoversTheWholeChain:
         monkeypatch.setattr(type(log), "_read_metadata_status", _status)
         with pytest.raises(TranscriptWithheld):
             log.derive_messages_chained("dashboard:chat-1")
+        with pytest.raises(TranscriptWithheld):
+            log.derive_messages_chained_full_with_keys("dashboard:chat-1")
 
     def test_a_chain_that_grows_while_being_locked_is_refused_as_busy(self, tmp_path, monkeypatch):
         """A file joining the chain between the resolve and the hold is unlocked and
@@ -754,6 +786,9 @@ class TestTheSeamCoversTheWholeChain:
         calls["n"] = 0
         with pytest.raises(TranscriptBusy):
             log.derive_messages_chained_with_keys("dashboard:chat-1")
+        calls["n"] = 0
+        with pytest.raises(TranscriptBusy):
+            log.derive_messages_chained_full_with_keys("dashboard:chat-1")
 
     def test_a_member_joining_after_validation_is_not_read(self, tmp_path, monkeypatch):
         """The settled, validated keys are the complete read set.
@@ -780,6 +815,28 @@ class TestTheSeamCoversTheWholeChain:
 
         assert calls["n"] == 2, "the derivation read resolved its validated chain again"
         assert [row["content"] for row in rows] == ["OLDER-PRIVATE", "NEWER-PUBLIC"]
+
+    def test_a_member_joining_after_full_validation_is_not_read(self, tmp_path, monkeypatch):
+        log = self._chain(tmp_path)
+        late = "dashboard:chat-late"
+        with history_mod.allow_on_loop_persist():
+            log.append(late, "user", "LATE-PRIVATE", tab_id="tab-legacy")
+            log.update_metadata(late, {"memory_mode": "temporary"})
+        projection = log._read_projection
+        settled = ["dashboard:chat-0", "dashboard:chat-1"]
+        calls = {"n": 0}
+
+        def _join_on_third_resolve(self, key):
+            calls["n"] += 1
+            assert key == "dashboard:chat-1"
+            return settled + ([late] if calls["n"] >= 3 else [])
+
+        monkeypatch.setattr(type(projection), "chained_keys", _join_on_third_resolve)
+        rows, keys = log.derive_messages_chained_full_with_keys("dashboard:chat-1")
+
+        assert calls["n"] == 2, "the full derivation read resolved its validated chain again"
+        assert [row["content"] for row in rows] == ["OLDER-PRIVATE", "NEWER-PUBLIC"]
+        assert keys == tuple(settled)
 
 
 class TestABusyTranscriptIsARefusalNotAnError:
@@ -813,6 +870,7 @@ class TestABusyTranscriptIsARefusalNotAnError:
         for read in (
             lambda: log.derive_messages(KEY),
             lambda: log.derive_messages_chained(KEY),
+            lambda: log.derive_messages_chained_full_with_keys(KEY),
             lambda: log.derive_recent(KEY, 5),
             lambda: log.snapshot_for_consolidation(KEY, withhold_restricted=True),
             _publish,

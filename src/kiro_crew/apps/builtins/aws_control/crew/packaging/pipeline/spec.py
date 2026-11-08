@@ -57,8 +57,8 @@ def _clean_mcp_server(name: str, server: dict, notes: list[str]) -> dict:
         block = out.pop(field_name)
         if not block:
             continue  # nothing to report, but it is still gone
-        # ``len`` only for the shapes that have one. The whole point of this change is that
-        # the value may be any type, so the note must not be the thing that raises.
+        # ``len`` only for the shapes that have one. The value may be any type, so the note
+        # must not be the thing that raises.
         try:
             count = f"{len(block)} entr(y/ies)"
         except TypeError:

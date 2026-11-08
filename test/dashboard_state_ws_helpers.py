@@ -1,12 +1,7 @@
 """The fixtures the DashboardState WebSocket tests share.
 
-``test_dashboard_state_ws.py`` and its ``_status_refresh`` and ``_unregister`` siblings
-import what they use from here by name: ``sync_event_loop``, the autouse fixture that
-gives every test, sync ones included, an event loop for the fire-and-forget broadcast
-sends (imported, it applies to every test of the importing module), and ``state``
-(declared ``@pytest.fixture(name="state")`` and imported as ``state_fixture``), a
-``DashboardState`` over mocked session, cron and lesson stores whose config directory is
-the test's ``tmp_path``.
+``sync_event_loop`` is autouse once imported. ``state`` is declared
+``@pytest.fixture(name="state")`` and imported as ``state_fixture``.
 """
 
 from __future__ import annotations
@@ -23,11 +18,7 @@ from kiro_crew.dashboard.state import DashboardState
 def sync_event_loop():
     """Provide an event loop for sync tests calling asyncio.ensure_future.
 
-    Production broadcast methods use ensure_future (fire-and-forget) which
-    requires a running event loop.  Under xdist each worker is a separate
-    process with no default loop, so we create one here.  autouse=True
-    ensures every test gets a loop without opt-in, preventing flakes when
-    new broadcast tests are added.
+    Broadcasts use ensure_future, and an xdist worker has no default loop.
     """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)

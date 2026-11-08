@@ -94,14 +94,15 @@ class JsonRpcPeer:
         # deadlocks the moment that handler issues a call of its own -- which the
         # inbound path always does, because answering a message sends one.
         #
-        # A task per notification with a tracked set is the pattern every other
-        # channel in this repo uses for exactly this (see webex/client.py's
-        # `_handler_tasks`). The set only pins the tasks against garbage
-        # collection; it does not serialize them. Ordering is NOT a property this
-        # layer provides, and the channel above does not need it: two messages
-        # for the same conversation are serialized by the per-session semaphore
-        # in `sessions.get_or_create`, and messages for different conversations
-        # have no ordering relationship worth preserving.
+        # A task per notification with a tracked set is the pattern most
+        # channels in this repo use for exactly this (see webex/client.py's
+        # `_handler_tasks`). The set pins the tasks against garbage collection and
+        # is how `close` finds them to cancel; it does not serialize them.
+        # Ordering is NOT a property this layer provides, and the channel above
+        # does not need it: two messages for the same conversation are
+        # serialized by the per-session semaphore in `sessions.get_or_create`,
+        # and messages for different conversations have no ordering
+        # relationship worth preserving.
         self._handler_tasks: set[asyncio.Task[None]] = set()
         self._pending: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._next_id = 0
@@ -209,7 +210,6 @@ class JsonRpcPeer:
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError as exc:
-            self._pending.pop(req_id, None)
             raise RpcTransportError(f"{method} timed out after {timeout:.0f}s") from exc
         finally:
             self._pending.pop(req_id, None)
@@ -244,9 +244,9 @@ class JsonRpcPeer:
             try:
                 await self._route(frame)
             except Exception:
-                # Routing itself is now cheap (resolve a future, or enqueue a
-                # notification), so this guards a malformed frame rather than a
-                # handler -- handler failures are caught in `_notify_loop`.
+                # Routing itself is cheap (resolve a future, or start a task for
+                # a notification), so this guards a malformed frame rather than a
+                # handler -- handler failures are caught in `_invoke_notification`.
                 logger.exception("imessage rpc: routing a frame failed")
         if not self._closing:
             reason = "bridge exited"
@@ -303,9 +303,9 @@ class JsonRpcPeer:
         except asyncio.CancelledError:
             raise
         except Exception:
-            # Swallowed, matching every other channel: the message is dropped and
-            # logged. Delivery is at-most-once by design -- see the client's
-            # cursor docstring -- so there is nothing to hold back or retry here.
+            # Swallowed: the message is dropped and logged. Delivery is
+            # at-most-once by design -- see the client's cursor docstring -- so
+            # there is nothing to hold back or retry here.
             logger.exception("imessage rpc: notification handler failed")
 
     async def _drain_stderr(self) -> None:

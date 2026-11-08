@@ -8,12 +8,18 @@ validation itself, ``validate_key``, stays in the facade.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import secrets
+import subprocess
 from typing import Optional
 
 from kiro_crew.deploy import engine
 from kiro_crew.deploy.engine import AWSError, _checked, _harden_bucket
+
+#: The facade's own logger (one object across the storage family), so the facade's
+#: name check sees a single ``logger`` and log lines keep the facade's name.
+logger = logging.getLogger("kiro_crew.apps.builtins.aws_control.backend.storage")
 
 BUCKET_PREFIX = "kirocrew-drive-"
 #: The complete naming scheme new_bucket_name() produces: prefix + 12 hex
@@ -49,6 +55,25 @@ def new_bucket_name() -> str:
 # --- discovery (stateless-by-tag) ------------------------------------------
 
 
+def searched_region(region: str) -> str:
+    """The one region :func:`find_drive` searches when asked with ``region``."""
+    return region or engine.DEFAULT_REGION
+
+
+def no_drive_message(region: str) -> str:
+    """What to tell the owner when :func:`find_drive` found no drive.
+
+    The drive is one per account, but the tagging API answers for one region only,
+    so "no drive" means "none in this region". Saying which region was searched is
+    what lets an owner whose drive was created from a profile in another region see
+    why it is missing, instead of creating a second one.
+    """
+    return (
+        f"this account has no drive yet in {searched_region(region)}; only that region "
+        "is searched, so a drive created from a profile in another region is not seen"
+    )
+
+
 def find_drive(profile: str, region: str, *, account: str) -> Optional[str]:
     """Resolve the account's drive bucket by tags, or None when absent.
 
@@ -75,7 +100,7 @@ def find_drive(profile: str, region: str, *, account: str) -> Optional[str]:
             "--resource-type-filters",
             "s3:bucket",
             "--region",
-            region or engine.DEFAULT_REGION,
+            searched_region(region),
             "--output",
             "json",
         ],
@@ -210,6 +235,20 @@ def create_drive(profile: str, region: str, account: str) -> str:
         profile,
         action="s3:PutBucketVersioning",
     )
+    # Best effort, and here rather than in the shared `_harden_bucket`: deploy-web
+    # writes its own bucket policy later with `put_oac_bucket_policy`, which would
+    # replace this one. Not required, because the recommended drive IAM tier
+    # deliberately has no s3:PutBucketPolicy -- with it, the same principal could
+    # grant itself reads of the write-only backup prefix.
+    try:
+        ensure_tls_only_policy(bucket, profile, region, account=account)
+    except (AWSError, OSError, subprocess.SubprocessError) as exc:
+        logger.warning(
+            "aws-control: drive %s was created without its TLS-only bucket policy "
+            "(this needs s3:GetBucketPolicy and s3:PutBucketPolicy): %s",
+            bucket,
+            exc,
+        )
     _harden_bucket(
         bucket,
         profile,
@@ -217,3 +256,77 @@ def create_drive(profile: str, region: str, account: str) -> str:
         f"{{Key={TAG_DRIVE},Value={DRIVE_ID}}}]",
     )
     return bucket
+
+
+def _partition(region: str) -> str:
+    """The ARN partition a bucket in ``region`` lives in."""
+    if region.startswith("us-gov-"):
+        return "aws-us-gov"
+    if region.startswith("cn-"):
+        return "aws-cn"
+    return "aws"
+
+
+def ensure_tls_only_policy(bucket: str, profile: str, region: str, *, account: str) -> None:
+    """Make the drive's bucket policy refuse every request not sent over TLS.
+
+    Merged, not replaced: every statement the owner wrote stays as written, even one
+    about transport. Only a statement under this code's own Sid is rewritten, and only
+    when it is not exactly the expected one. A policy that already carries exactly
+    this statement is left alone, so this costs one read once applied. Both calls pin
+    ``account`` as the bucket owner, like every other drive call.
+    """
+    rc, out, err = engine.run_aws(
+        [
+            "s3api",
+            "get-bucket-policy",
+            "--bucket",
+            bucket,
+            "--expected-bucket-owner",
+            account,
+            "--output",
+            "json",
+        ],
+        profile,
+        30,
+    )
+    if rc == 0:
+        try:
+            policy = json.loads(json.loads(out or "{}").get("Policy") or "{}")
+        except (json.JSONDecodeError, AttributeError) as exc:
+            raise AWSError(f"the bucket policy on {bucket} could not be read") from exc
+        if not isinstance(policy, dict):
+            raise AWSError(f"the bucket policy on {bucket} is not a JSON object")
+    elif "NoSuchBucketPolicy" in (err or ""):
+        policy = {}
+    else:
+        raise AWSError(
+            f"the bucket policy on {bucket} could not be read ({engine._trimmed_stderr(err)})"
+        )
+    statements = policy.get("Statement") or []
+    if isinstance(statements, dict):
+        statements = [statements]
+    wanted = engine.deny_insecure_transport_statement(bucket, _partition(region))
+    if wanted in statements:
+        return
+    statements = [
+        s
+        for s in statements
+        if not (isinstance(s, dict) and s.get("Sid") == engine.DENY_INSECURE_TRANSPORT_SID)
+    ]
+    statements.append(wanted)
+    policy = {"Version": policy.get("Version") or "2012-10-17", **policy, "Statement": statements}
+    _checked(
+        [
+            "s3api",
+            "put-bucket-policy",
+            "--bucket",
+            bucket,
+            "--expected-bucket-owner",
+            account,
+            "--policy",
+            json.dumps(policy),
+        ],
+        profile,
+        action="s3:PutBucketPolicy",
+    )

@@ -75,6 +75,7 @@ from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_args
+from kiro_crew.platform.update_governance import nested_repo_exec_driver_reason
 
 #: Config-named host execution/read vectors, disabled on OUR argv (``-c`` beats any repo
 #: config). Hooks and fsmonitor are disabled; external attributes/excludes files are pinned
@@ -83,6 +84,9 @@ from kiro_crew.git_config_hooks import ConfigHookScanError, config_hook_disable_
 #: push from recursing into submodule remotes: the egress guard validates only the SINGLE
 #: superproject origin, so an agent that set an attacker-controlled submodule remote plus
 #: recursive push could otherwise ship unscanned submodule objects to an unvalidated host.
+#: ``commit.gpgSign``/``tag.gpgSign`` off: with signing on, ``commit``, ``commit --amend``
+#: and ``rebase`` exec the repo's ``gpg.program`` (measured on git 2.47 under the other pins
+#: here). The app never signs, so the only reason git would run it is an agent's config.
 #: All options must precede the subcommand.
 GIT_SAFE_CONFIG: tuple[str, ...] = (
     "-c",
@@ -95,6 +99,23 @@ GIT_SAFE_CONFIG: tuple[str, ...] = (
     "core.excludesFile=/dev/null",
     "-c",
     "push.recurseSubmodules=no",
+    "-c",
+    "commit.gpgSign=false",
+    "-c",
+    "tag.gpgSign=false",
+    # Signature VERIFICATION also execs the signer: `log.showSignature` runs it on a
+    # plain `git log` of a signed commit. Off, and every signer program pinned to a
+    # path that cannot exec, so no reachable path runs the repository's choice.
+    "-c",
+    "log.showSignature=false",
+    "-c",
+    "merge.verifySignatures=false",
+    "-c",
+    f"gpg.program={os.devnull}",
+    "-c",
+    f"gpg.ssh.program={os.devnull}",
+    "-c",
+    f"gpg.x509.program={os.devnull}",
 )
 
 #: What gets written to ``.git/info/attributes``.
@@ -104,9 +125,20 @@ GIT_SAFE_CONFIG: tuple[str, ...] = (
 #: BUILT-IN textual differ, which unbinds any ``diff=<driver>`` so no ``textconv``/external
 #: diff command runs — while keeping the diff READABLE. ``-diff`` would instead mark every
 #: path binary and blind this app's own credential scanner; see the module docstring.
+#: ``merge`` (SET, for the same reason) pins git's BUILT-IN 3-way merge driver, which
+#: unbinds any ``merge=<driver>`` so ``apply --3way`` and ``rebase`` run no
+#: ``merge.<name>.driver`` (both measured to run one under the other pins). Set is also
+#: what an unspecified path gets by default, binary detection included, so merges are
+#: unchanged; ``-merge`` would instead turn every textual conflict into a binary one.
 #:
-#: Both forms are name-agnostic: they neutralize a driver whose name we never have to learn.
-_ATTRIBUTES_PIN = "* -filter diff\n"
+#: All three forms are name-agnostic: they neutralize a driver whose name we never learn.
+#:
+#: The two ``[attr]`` lines redefine ``diff`` and ``merge`` as inert macros FIRST. A
+#: repository can define a macro with either name (``[attr]merge filter=pwn`` in its
+#: top-level ``.gitattributes``), and SETTING ``merge`` here would expand it, inside this
+#: highest-precedence file, back into ``filter=pwn`` (reproduced on git 2.47). A macro
+#: defined in ``info/attributes`` wins over the repository's definition of the same name.
+_ATTRIBUTES_PIN = "[attr]diff -filter\n[attr]merge -filter\n* -filter diff merge\n"
 
 
 class GitSafetyError(RuntimeError):
@@ -157,8 +189,7 @@ def _resolve_gitdir(git_dir_owner: Path | str) -> Path | None:
         # repoint it at ANOTHER repository's gitdir, and we would then `O_TRUNC` that repo's
         # `info/attributes` (an arbitrary-write primitive). Git makes this backpointer
         # BIDIRECTIONAL: the real gitdir carries a `gitdir` file that points back at THIS
-        # worktree's `.git` file. Validate that round-trip and refuse a mismatch. Raised by the
-        # GPT review.
+        # worktree's `.git` file. Validate that round-trip and refuse a mismatch.
         text = dot_git.read_text(encoding="utf-8").strip()
         if "gitdir:" not in text:
             return None
@@ -191,7 +222,7 @@ def _resolve_gitdir(git_dir_owner: Path | str) -> Path | None:
         # `info/attributes`. For a linked worktree git redirects `info/` to the COMMON
         # gitdir, so a pin in the per-worktree copy leaves the in-tree `.gitattributes`
         # filter/diff drivers BOUND — the exact sandbox escape this module closes.
-        # Return the common gitdir instead. Raised (correctly) by the GPT review.
+        # Return the common gitdir instead.
         return _common_gitdir(gd)
     if dot_git.is_dir():
         return dot_git
@@ -315,8 +346,87 @@ def require_pinned(cwd: Path | str) -> None:
     sandbox escape the pin prevents. A path with NO gitdir is allowed through: there is no
     repo-local config or in-tree ``.gitattributes`` to bind a driver, so no attribute-execution
     surface exists to defend (a pre-clone probe must not be refused).
+
+    Also refuses a tree holding an initialized NESTED repo (a gitlink) whose own config
+    declares a driver: ``add``/``status``/``diff`` start a child git there, the pin above is
+    this repo's and does not reach it, and its ``filter.<name>.clean`` was measured to run
+    (git 2.47). The ``-c`` flags reach the child; a repo-named driver has no key to pin.
     """
-    _pin(cwd)  # raises GitSafetyError on a real-repo pin failure; "no-repo"/"pinned" both OK
+    if _pin(cwd) == "no-repo":  # raises GitSafetyError on a real-repo pin failure
+        return
+    # Every host-side git call here passes through this, so the git-spawning probe
+    # runs only when the index can hold a gitlink at all (see _index_may_hold_gitlink).
+    if not _index_may_hold_gitlink(Path(cwd)):
+        return
+    # Probed with the same bare `git` every host-side call here runs, so a host
+    # whose git is outside the trusted system dirs is still checked.
+    refused = nested_repo_exec_driver_reason(str(cwd), git="git")
+    if refused:
+        raise GitSafetyError(f"refusing host-side git in {cwd}: a nested {refused}")
+
+
+#: A gitlink's 32-bit big-endian index mode (``0o160000``). Index v2-v4 store every
+#: entry's mode in this form, so its absence from the file rules out a gitlink.
+_GITLINK_MODE_BYTES = (0o160000).to_bytes(4, "big")
+
+
+def _index_may_hold_gitlink(cwd: Path) -> bool:
+    """False only when the index provably records no gitlink, read with no git spawn.
+
+    The nested-repo probe costs two git spawns, and :func:`require_pinned` guards every
+    host-side git call; on Windows that cost alone timed the PR watcher out. A byte search
+    for the gitlink mode has false positives (a hash or a path can contain the bytes),
+    which only cost the probe, and none of the negatives that matter: every entry's mode is
+    stored uncompressed. Anything this cannot read plainly answers True -- a missing or
+    unreadable index, a ``.git`` file it cannot follow, or a split index (whose entries
+    live in a ``sharedindex.*`` file beside it) -- so the probe decides.
+    """
+    dot_git = cwd / ".git"
+    try:
+        if dot_git.is_file():
+            text = dot_git.read_text(encoding="utf-8").strip()
+            if not text.startswith("gitdir:"):
+                return True
+            gitdir = Path(text[len("gitdir:") :].strip())
+            if not gitdir.is_absolute():
+                gitdir = cwd / gitdir
+        else:
+            gitdir = dot_git
+        if any(gitdir.glob("sharedindex.*")):
+            return True
+        data = _read_regular_bounded(gitdir / "index")
+    except OSError:
+        return True
+    return data is None or _GITLINK_MODE_BYTES in data
+
+
+#: Largest index read in-process. A bigger one goes to the timed git probe instead.
+_INDEX_READ_CAP = 64 * 1024 * 1024
+
+
+def _read_regular_bounded(path: Path) -> bytes | None:
+    """*path*'s bytes when it is a plain, single-link file under the cap, else ``None``.
+
+    The index sits in the tree the agent writes. A FIFO there would block this read
+    forever and ``/dev/zero`` would grow memory without end, while git would have read
+    it under a timeout; so anything but a regular file is left to the timed git probe.
+    ``O_NOFOLLOW``/``O_NONBLOCK`` (0 where the platform lacks them) and an ``fstat`` on the
+    opened descriptor close the swap between the ``lstat`` and the ``open``.
+    """
+    st = path.lstat()
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > _INDEX_READ_CAP:
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > _INDEX_READ_CAP:
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as fh:
+            return fh.read(_INDEX_READ_CAP)
+    finally:
+        os.close(fd)
 
 
 def git_argv(cwd: Path | str, *args: str) -> list[str]:

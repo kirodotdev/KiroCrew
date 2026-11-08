@@ -163,7 +163,15 @@ async def test_a_row_is_the_conductor_item_shape_minus_the_masked_field():
     row = body["items"][0]
 
     item_keys = set(wl.WorkItem().to_dict()) - {"worker_session_key"}
-    derived = {"orphaned", "stale", "acceptance_concrete", "events"}
+    derived = {
+        "orphaned",
+        "stale",
+        "looping",
+        "acceptance_concrete",
+        "report_undelivered",
+        "awaits_person",
+        "events",
+    }
     joined = {"alive", "outstanding", "terminal"}
     assert set(row) == item_keys | derived | joined
 
@@ -291,10 +299,16 @@ async def test_the_board_reads_a_looping_worker_through_the_gates_resolver(monke
     monkeypatch.setattr(wlh.ledger_wake, "worker_looping", lambda _svc, key: key == WORKER)
     body, _ = await _call(state, CONDUCTOR)
     assert body["items"][0]["stale"] is False
+    # The page reads the loop itself, so the milestone shows as running.
+    assert body["items"][0]["looping"] is True
+    # A turn in flight keeps its own live reading: `looping` is for the idle wait only.
+    body, _ = await _call(_state({WORKER: _slot(running=True)}), CONDUCTOR)
+    assert body["items"][0]["looping"] is False
     monkeypatch.setattr(wlh.ledger_wake, "worker_looping", lambda _svc, _key: False)
     body, _ = await _call(state, CONDUCTOR)
     assert body["items"][0]["stale"] is True
-    assert seen == [True, False]
+    assert body["items"][0]["looping"] is False
+    assert seen == [True, True, False]
 
 
 @pytest.mark.asyncio
@@ -334,6 +348,20 @@ async def test_the_orphaned_flag_is_carried_through_to_the_page():
 
 
 # ── two conductors, two workers: isolation ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_report_the_harness_never_delivered_is_on_the_board_without_the_key():
+    """The board says "couldn't send its report" from this flag, and the flag carries
+    nothing but the tool and the time: no worker key, no harness text."""
+
+    item_id = _item()
+    _bind(item_id)
+    wl.note_undelivered(WORKER, "work_report")
+    body, response = await _call(_state({WORKER: _slot()}), CONDUCTOR)
+    flag = body["items"][0]["report_undelivered"]
+    assert set(flag) == {"tool", "at"} and flag["tool"] == "work_report"
+    assert WORKER not in response.body.decode()
 
 
 @pytest.mark.asyncio
@@ -896,6 +924,87 @@ def test_two_keys_redacting_alike_both_survive(monkeypatch):
     assert len(out) == 2
     assert sorted(out.values()) == ["[redacted]", "[redacted]"]
     assert sorted(out.keys()) == ["[redacted]", "[redacted] (2)"]
+
+
+def _old_redact_deep(value):
+    """The pre-memo walk, kept verbatim as the reference the memo must equal."""
+    if isinstance(value, str):
+        return board.redact_via_context(value)
+    if isinstance(value, dict):
+        redacted = {}
+        for key, item in value.items():
+            safe_key = board.redact_via_context(key) if isinstance(key, str) else key
+            if safe_key in redacted:
+                suffix = 2
+                while f"{safe_key} ({suffix})" in redacted:
+                    suffix += 1
+                safe_key = f"{safe_key} ({suffix})"
+            redacted[safe_key] = _old_redact_deep(item)
+        return redacted
+    if isinstance(value, list):
+        return [_old_redact_deep(item) for item in value]
+    return value
+
+
+def _repetitive_board():
+    """A board whose keys, states and prose repeat, with secrets among them."""
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    items = []
+    for n in range(40):
+        items.append(
+            {
+                "item_id": f"it_{n % 7:08x}",
+                "state": "open" if n % 3 else "accepted",
+                "summary": f"pushed {secret}" if n % 5 == 0 else "waiting on CI",
+                "artifacts": {secret: "the branch", "pr": str(n % 4), 7: None},
+                "events": [{"kind": "report", "ts": "2026-11-03", "n": n}] * 3,
+            }
+        )
+    return {"items": items, "take_over_available": False}
+
+
+def test_redact_deep_output_matches_the_per_string_walk():
+    """Memoising must not change one byte of the reply, real redactor included."""
+    payload = _repetitive_board()
+    new = board._redact_deep(payload)
+    assert json.dumps(new) == json.dumps(_old_redact_deep(payload))
+    assert "AKIAIOSFODNN7EXAMPLE" not in json.dumps(new)
+
+
+def _distinct_strings(value, seen):
+    if isinstance(value, str):
+        seen.add(value)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _distinct_strings(key, seen)
+            _distinct_strings(item, seen)
+    elif isinstance(value, list):
+        for item in value:
+            _distinct_strings(item, seen)
+    return seen
+
+
+def test_redact_deep_redacts_each_distinct_string_once_per_call(monkeypatch):
+    """One redactor call per distinct string, and a fresh memo on every call.
+
+    The second half pins that nothing is cached ACROSS calls: a memo that outlived
+    one reply would hand one user's redacted text to another's read.
+    """
+    calls: list[str] = []
+    real = board.redact_via_context
+
+    def counting(text):
+        calls.append(text)
+        return real(text)
+
+    monkeypatch.setattr(board, "redact_via_context", counting)
+    payload = _repetitive_board()
+    distinct = len(_distinct_strings(payload, set()))
+    board._redact_deep(payload)
+    assert len(calls) == distinct
+    assert len(calls) == len(set(calls))
+    board._redact_deep(payload)
+    assert len(calls) == 2 * distinct
 
 
 @pytest.mark.asyncio

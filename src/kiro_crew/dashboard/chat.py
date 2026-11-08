@@ -7,7 +7,7 @@ continue to work without changes.
 The actual implementation lives in:
 - chat_utils.py       — shared helpers, redaction, model normalization
 - chat_persistence.py — session save/restore, history
-- chat_runner.py      — _run_chat, streaming, prompt expansion
+- chat_runner.py      — _run_chat and its stream loop; its owners live in chat_turn/
 - chat_handlers.py    — HTTP API endpoints
 - chat_title.py       — title generation
 - chat_regenerate.py  — regenerate, variant switch, edit-resend
@@ -16,6 +16,8 @@ The actual implementation lives in:
 - chat_voice.py       — TTS config + synthesis (optional)
 - chat_slack.py       — Slack link, handoff, channels
 - chat_fork.py        — fork session
+- chat_merge_back.py  — merge a fork back into its parent
+- chat_resume_all.py  — bulk Resume of every interrupted idle session
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from kiro_crew.dashboard.chat_folder_scaffold import (  # noqa: F401
 from kiro_crew.dashboard.chat_folders import (  # noqa: F401
     api_chat_folder_create,
     api_chat_folder_delete,
+    api_chat_folder_icon_preview,
     api_chat_folder_reorder,
     api_chat_folder_update,
     api_chat_folders,
@@ -49,7 +52,10 @@ from kiro_crew.dashboard.chat_folders import (  # noqa: F401
     api_chat_slot_pin,
     load_pinned_order_after_listen,
 )
-from kiro_crew.dashboard.chat_fork import api_chat_slot_fork  # noqa: F401
+from kiro_crew.dashboard.chat_fork import (  # noqa: F401
+    api_chat_slot_fork,
+    api_chat_slot_promote,
+)
 from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     MAX_COLOR_INDEX,
     api_chat,
@@ -63,6 +69,7 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slot_create,
     api_chat_slot_delete,
     api_chat_slot_detail,
+    api_chat_slot_discard,
     api_chat_slot_end_wait,
     api_chat_slot_followup,
     api_chat_slot_interrupt,
@@ -74,11 +81,13 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slot_queue_reorder,
     api_chat_slot_reasoning_effort,
     api_chat_slot_reload,
+    api_chat_slot_repair_images,
     api_chat_slot_reset_conversation,
     api_chat_slot_resume,
     api_chat_slot_selection_capabilities,
     api_chat_slot_source_link_unlink,
     api_chat_slot_source_links,
+    api_chat_slot_steer_retract,
     api_chat_slot_stop,
     api_chat_slot_summary,
     api_chat_slot_summary_generate,
@@ -94,6 +103,10 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_recent_projects,
 )
 from kiro_crew.dashboard.chat_manual_order import api_chat_manual_order  # noqa: F401
+from kiro_crew.dashboard.chat_merge_back import (  # noqa: F401
+    api_chat_slot_merge_back,
+    api_chat_slot_merge_back_draft,
+)
 from kiro_crew.dashboard.chat_mirror import (  # noqa: F401
     api_channel_targets,
     api_chat_slot_mirror_link,
@@ -126,6 +139,7 @@ from kiro_crew.dashboard.chat_regenerate import (  # noqa: F401
     api_chat_slot_regenerate,
     api_chat_slot_switch_variant,
 )
+from kiro_crew.dashboard.chat_resume_all import api_chat_slots_resume_all  # noqa: F401
 from kiro_crew.dashboard.chat_rewind import api_chat_slot_rewind  # noqa: F401
 from kiro_crew.dashboard.chat_runner import (  # noqa: F401
     _expand_prompt_mention,

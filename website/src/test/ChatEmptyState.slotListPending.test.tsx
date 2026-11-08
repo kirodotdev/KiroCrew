@@ -47,7 +47,7 @@ describe('ChatEmptyState before the first slot list lands', () => {
     expect(loading()).toBeTruthy()
     expect(screen.getByRole('status').getAttribute('aria-busy')).toBe('true')
     expect(startButton()).toBeNull()
-    expect(screen.queryByText('Start a new chat to begin')).toBeNull()
+    expect(screen.queryByText('What can I do for you?')).toBeNull()
   })
 
   it('shows the empty state once a gateway with no sessions returns its empty list', () => {

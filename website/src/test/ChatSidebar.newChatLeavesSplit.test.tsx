@@ -211,7 +211,7 @@ describe('ChatSidebar – a plain create leaves Split View (#21935)', () => {
     store = renderSidebar({ onSelectSlot, onOpenSlotInNewTab: onOpen, folders: [FOLDER] })
     fireEvent.click(await screen.findByTestId('folder-new-chat-f1'), { ctrlKey: true, shiftKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false, requestSeq: expect.any(Number) }))
     await waitFor(() => expect(onSelectSlot).toHaveBeenCalledWith(NEW_KEY))
     expect(store.getState().chat.activeSlot).toBe(NEW_KEY)
   })

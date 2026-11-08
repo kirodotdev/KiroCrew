@@ -59,6 +59,7 @@ exception would cost the session over a diagnostic.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from fnmatch import fnmatchcase
 from typing import Any
 
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SPEC_SERVERS_OFF_WIRE
@@ -252,3 +253,85 @@ def unresolved_server_refs(spec: Any, wire_servers: Any, *, backend: str) -> lis
         for name in refs
         if name not in satisfied and name not in RESERVED_TOOL_NAMESPACES
     )
+
+
+def _canonical_grant_pattern(ref: str) -> str | None:
+    """An MCP entry's tool pattern; whole-server spellings select every tool."""
+    if not ref.startswith("@"):
+        return None
+    server, _, tool = ref[1:].partition("/")
+    if not server:
+        return None
+    return f"@{server}/{tool or '*'}"
+
+
+def _glob_hits(concrete: str, pattern: str) -> bool:
+    """Match as written or case-folded, conservatively counting either as a grant."""
+    return fnmatchcase(concrete, pattern) or fnmatchcase(concrete.casefold(), pattern.casefold())
+
+
+def entry_reaches(entry: str, ref: str) -> bool:
+    """Whether an approval or selector entry can grant *ref*.
+
+    MCP entries match their canonical tool pattern. Namespace-wide entries match
+    both the full ref and its bare verb. Matching more is the safe direction for
+    withholding grants, warning about unasked calls and hiding ineffective Remove.
+    A reader that skips a prompt when the answer is yes needs :func:`entry_grants`
+    instead: for it, matching more trusts too much.
+    """
+    pattern = _canonical_grant_pattern(entry)
+    ref = _canonical_grant_pattern(ref) or ref
+    if pattern is not None:
+        return _glob_hits(ref, pattern)
+    _, _, verb = ref.partition("/")
+    return _glob_hits(ref, entry) or (verb != "" and _glob_hits(verb, entry))
+
+
+#: Glob syntax kiro-cli documents in the tool part of an ``allowedTools`` entry.
+#: Anything else (brackets, braces, negation) is not pinned down for kiro-cli, so
+#: :func:`entry_grants` reads it as no grant.
+_KIRO_TOOL_GLOB_CHARS = frozenset("*?")
+_UNPINNED_GLOB_CHARS = frozenset("[]{}!")
+
+
+def entry_grants(entry: str, ref: str) -> bool:
+    """Whether an ``allowedTools`` / ``autoApprove`` entry surely grants *ref*.
+
+    The strict sibling of :func:`entry_reaches`, for readers that skip a prompt
+    when the answer is yes. Matching more is the UNSAFE direction here, so only
+    the shapes kiro-cli itself reads as a grant count:
+
+    * the exact *ref*;
+    * ``*``;
+    * a bare ``@server`` whose server is one literal name, for any of its tools;
+    * ``@server/<tool>`` with a literal server and a tool part that matches
+      case-sensitively, using only ``*`` and ``?`` as glob syntax.
+
+    A bare tool name never grants a server-qualified ref, a server-part glob
+    (``@*``, ``@kirocrew-*``) grants nothing, and neither does case folding.
+    *ref* must be one concrete ``@server/tool`` or a bare built-in name; a ref
+    that is itself a pattern is not something an entry can be shown to grant.
+    """
+    if not isinstance(entry, str) or not isinstance(ref, str) or not entry or not ref:
+        return False
+    if _TOOL_GLOB_CHARS.intersection(ref) or _UNPINNED_GLOB_CHARS.intersection(ref):
+        return False
+    ref_server = ref_tool = ""
+    if ref.startswith(_MCP_PREFIX):
+        ref_server, ref_slash, ref_tool = ref[len(_MCP_PREFIX) :].partition("/")
+        if not ref_server or not ref_slash or not ref_tool:
+            return False
+    if entry == ref or entry == _GRANT_ALL:
+        return True
+    if not ref_server or not entry.startswith(_MCP_PREFIX):
+        return False
+    server, slash, tool = entry[len(_MCP_PREFIX) :].partition("/")
+    if server != ref_server:
+        return False
+    if not slash:
+        return True
+    if not tool or _UNPINNED_GLOB_CHARS.intersection(tool):
+        return False
+    if _KIRO_TOOL_GLOB_CHARS.intersection(tool):
+        return fnmatchcase(ref_tool, tool)
+    return False

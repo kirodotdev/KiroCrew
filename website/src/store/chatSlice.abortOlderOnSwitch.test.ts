@@ -55,7 +55,6 @@ vi.mock('../api/client', () => ({
 
 import chatReducer, {
   setActiveSlot,
-  resumeFromHistory,
   loadOlderMessages,
   switchSlot,
   refreshSlot,
@@ -63,6 +62,7 @@ import chatReducer, {
   isSupersededPagingRejection,
 } from './chatSlice'
 import { api } from '../api/client'
+import { landResume } from '../test/resumeLanded'
 
 function makeStore() {
   return configureStore({
@@ -74,13 +74,7 @@ function makeStore() {
 /** Arms the cursor the way resume does: last PAGE of TOTAL, has_more true. */
 function resumed(store: ReturnType<typeof makeStore>, key = 'A') {
   store.dispatch(setActiveSlot(key))
-  store.dispatch(
-    resumeFromHistory.fulfilled(
-      { ok: true, key, nextBefore: TOTAL - PAGE, messages: HISTORY.slice(TOTAL - PAGE), hasMore: true, total: TOTAL },
-      'req-resume',
-      { key, title: key },
-    ),
-  )
+  landResume(store, { ok: true, key, nextBefore: TOTAL - PAGE, messages: HISTORY.slice(TOTAL - PAGE), hasMore: true, total: TOTAL }, 'req-resume', { key, title: key })
 }
 
 /** Lets queued microtasks (thunk settle + reducer) run. */
@@ -447,13 +441,7 @@ describe('a background refresh must not re-validate a cursor a pending switch in
     // outliving one. The shape here is the real case the retry exists for: a tab
     // holding history from before the conversation moved on.
     store.dispatch(setActiveSlot('A'))
-    store.dispatch(
-      resumeFromHistory.fulfilled(
-        { ok: true, key: 'A', nextBefore: 0, messages: HISTORY.slice(0, PAGE), hasMore: false, total: TOTAL },
-        'req-resume',
-        { key: 'A', title: 'A' },
-      ),
-    )
+    landResume(store, { ok: true, key: 'A', nextBefore: 0, messages: HISTORY.slice(0, PAGE), hasMore: false, total: TOTAL }, 'req-resume', { key: 'A', title: 'A' })
 
     store.dispatch(switchSlot('A'))
     await flush()

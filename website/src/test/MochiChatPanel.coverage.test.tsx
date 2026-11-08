@@ -19,7 +19,7 @@
  * drive turn state instead.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 type AnyFn = (...args: never[]) => unknown
@@ -39,9 +39,11 @@ function subscribe(channel: string) {
 
 /** Push a backend frame to whatever the panel registered on `channel`. */
 function emit(channel: string, ...args: unknown[]): void {
-  for (const cb of Array.from(subscribers.get(channel) ?? [])) {
-    ;(cb as (...a: unknown[]) => unknown)(...args)
-  }
+  act(() => {
+    for (const cb of Array.from(subscribers.get(channel) ?? [])) {
+      ;(cb as (...a: unknown[]) => unknown)(...args)
+    }
+  })
 }
 
 /** Chat history handed back by `getChatHistory`; set per test before render. */

@@ -24,6 +24,12 @@ from kiro_crew.service.common import (
     system_restart_command_hint,
 )
 
+#: First line of the post-install hints. A service never opens a browser, so this
+#: is the only place a new user learns how to reach the dashboard. It names the
+#: command, not a URL: ``kirocrew token`` prints the link with the real port and a
+#: sign-in token, which a hard-coded ``http://localhost:5476`` would not.
+_OPEN_HINT = "   Open:   kirocrew token   (prints a sign-in link to the dashboard)"
+
 
 def _print_headless_auth_warning() -> None:
     """Surface a dropped API-key credential right after a successful install.
@@ -72,6 +78,20 @@ def installed_unit_path() -> "Path | None":
     if plat == Platform.LAUNCHD and macos.PLIST_PATH.is_file():
         return macos.PLIST_PATH
     return None
+
+
+def unit_is_ours(unit: Path) -> bool:
+    """False for a system unit file that is an alias of another unit."""
+    if unit == linux.UNIT_PATH:
+        return linux.system_unit_is_ours()
+    return True
+
+
+def service_scope(unit: Path) -> str:
+    """Scope label for an installed definition: launchd, system or user."""
+    if unit == macos.PLIST_PATH:
+        return "launchd"
+    return "system" if unit == linux.UNIT_PATH else "user"
 
 
 def installed_service_has_managed_marker() -> "bool | None":
@@ -150,6 +170,7 @@ def install_service() -> int:
             print(f"   ⚠️ {linger_warning}")
         _print_headless_auth_warning()
         print()
+        print(_OPEN_HINT)
         print("   Status: kirocrew service status")
         print("   Logs:   kirocrew logs -f")
         print("   Remove: kirocrew service uninstall")
@@ -164,6 +185,7 @@ def install_service() -> int:
         print(f"   plist: {macos.PLIST_PATH}")
         _print_headless_auth_warning()
         print()
+        print(_OPEN_HINT)
         print("   Status: kirocrew service status")
         print(f"   Logs:   tail -f {macos.STDOUT_LOG}")
         print("   Remove: kirocrew service uninstall")
@@ -205,7 +227,15 @@ def uninstall_service() -> int:
             print(f"   {'' if profile.ok else '⚠️ '}{profile.message}")
         return 1 if report.incomplete else 0
     if plat == Platform.LAUNCHD:
-        macos.uninstall()
+        held_by = macos.uninstall()
+        if held_by:
+            print(
+                f"❌ launchd did not unload {LAUNCHD_LABEL}: it is still loaded in {held_by}.\n"
+                f"   Its plist and launcher were removed. Unload it by hand:\n"
+                f"   launchctl bootout {held_by}/{LAUNCHD_LABEL}",
+                file=sys.stderr,
+            )
+            return 1
         print("✅ kirocrew service stopped and removed.")
         return 0
     _unsupported_message()

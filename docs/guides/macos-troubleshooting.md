@@ -40,11 +40,13 @@ never reaches launchd. That is why the general fix below is a `launchctl
 setenv`, not another rc-file edit.
 
 If **only an MCP server launcher** is missing, prefer the narrower
-`mcp.extra_path_dirs` config list. It extends MCP resolution and the MCP gateway
-daemon without changing GUI applications' general `PATH`; entries must be
-absolute, and a gateway restart is required because the daemon inherits its
-`PATH` at spawn. It does not affect ordinary agent shell commands. When those are
-missing too, either add the directories as a `PATH=` line in `~/.kiro/crew/.env`
+`mcp.extra_path_dirs` config list. It extends MCP resolution without changing GUI
+applications' general `PATH`; entries must be absolute. The directories are also
+appended last to the `PATH` of each agent child process, read at every spawn, so
+the next session picks up an edit and agent shell commands find a name there only
+when it is on no earlier `PATH` entry. The MCP gateway daemon inherits its `PATH`
+when it starts, so it needs a gateway restart. When other tools are missing too,
+either add the directories as a `PATH=` line in `~/.kiro/crew/.env`
 ([Credentials](../../src/kiro_crew/docs/configuration.md#credentials)), which is
 appended behind the app's `PATH`, or use the launchd fix below.
 
@@ -124,6 +126,56 @@ app once if a command is still missing.
 
 ---
 
+## An MCP server's `${VAR}` works from Terminal but not from the app
+
+**Symptoms:** an MCP server whose `env` uses a reference, such as
+`"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PAT}"`, works when the app or gateway is
+started from Terminal. When the app is opened from Finder or the Dock, the server
+still starts, but every call fails, typically with an authorization error such as
+`401 Bad credentials`.
+
+### Why this happens
+
+An app opened from Finder or the Dock inherits launchd's environment, as above, and
+it does not run your shell profile (`~/.zprofile`, `~/.zshrc`). A variable you
+export there is not set in the gateway, so `${GITHUB_PAT}` stays the literal text
+and the server receives `${GITHUB_PAT}` as its token. Running `open` from Terminal
+is not a test of this: it passes that Terminal's environment to the app.
+
+### How to tell
+
+At the start of each session the gateway log (`~/.kiro/crew/gateway.log`) names
+the server and the variable, never a value:
+
+```
+stdio MCP server env references a variable that is not set: ... servers=github ('GITHUB_PAT'). ...
+```
+
+The session's MCP problem summary carries the same entry, so the log line for a
+run nobody is watching (a task step, a webhook run, a subagent) names it too.
+
+### The fix
+
+Supply the value in a way that does not depend on how the app was started, then
+quit the app fully and open it again:
+
+- **The encrypted vault (recommended for a credential).** Store the value in
+  **Settings → Secrets** (here as `GITHUB_PAT`), change the server's value to
+  `"secret://GITHUB_PAT"`, and turn routing on for the server in
+  **Customize → Connections → MCP Servers**. Routing is required: an unrouted
+  server with a `secret://` value is not started. Changing the value changes what
+  the server launches, so approve the launch again on that page when it asks. The
+  secret reaches that server's environment alone. See
+  [secrets-env.md](secrets-env.md).
+- **The data home's `.env` file.** A line `GITHUB_PAT=...` in `~/.kiro/crew/.env`
+  (mode `600`) is loaded into the gateway's environment at start, so `${GITHUB_PAT}`
+  resolves whether the server is routed or not. The log then warns that the key is
+  not a recognised credential: it reaches every process the gateway starts, the
+  agent included, which is why the vault is the better home for a token. See
+  [Credentials](../../src/kiro_crew/docs/configuration.md#credentials).
+
+---
+
 ## The gateway does not start after a reboot until someone logs in
 
 **Symptoms:** on a Mac with automatic login off (a headless Mac mini reached
@@ -166,6 +218,73 @@ pid. Do not delete it. If a start is refused because the lock is held, some
 process really holds it, usually a running gateway, sometimes a leftover child
 of one. `lsof ~/.kiro/crew/gateway.lock` names it, and the refusal message says
 which case it found.
+
+---
+
+## Chat shows "Connection unstable — please try again." behind a corporate proxy
+
+**Symptoms:** every chat turn fails with a "Connection unstable — please try
+again." banner (the error card reads "Could not reach the model backend"), while `kiro-cli` in a Terminal window and the
+Kiro IDE on the same machine work fine. The log shows `dispatch failure …
+error sending request for url (https://q.us-east-1.amazonaws.com/)`.
+
+Your Mac reaches the internet only through an HTTP proxy, and `HTTP_PROXY` /
+`HTTPS_PROXY` are set in your shell — but a Finder- or Dock-launched app
+inherits launchd's minimal environment, not your shell profile (the same gap
+as [a command works in Terminal but is "command not found" in the
+app](#a-command-works-in-terminal-but-is-command-not-found-in-the-app)).
+The gateway spawns its bundled `kiro-cli-chat` with the
+environment it was started with, so the child has no proxy variables, tries to
+reach the model backend directly, and the proxy-only network blocks it.
+
+The app recovers this on its own since the fix for
+[kirodotdev/KiroCrew#19821](https://github.com/kirodotdev/KiroCrew/issues/19821):
+when the gateway environment carries none of the standard proxy variables, the
+app reads the system proxy (System Settings → Network → Proxies, which GUI
+applications use directly) via `scutil --proxy` and injects
+`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` for the gateway and every child.
+That covers the gateway's own outbound traffic too, such as channel
+connectors, not only chat.
+A manual HTTP or HTTPS proxy you configured in System Settings therefore needs
+no extra step. `NO_PROXY` always includes `localhost`, `127.0.0.1` and `::1`;
+the System Settings bypass list is copied with `*.example` rewritten to
+`.example`, and the default link-local entry `169.254/16` is left out because
+`NO_PROXY` readers do not understand ranges. A bypass list with a bare `*`
+means "connect directly", so nothing is set. Anything else `NO_PROXY` cannot
+express also sets nothing: a wildcard such as `*.*` or `10.*`, any other
+range such as `10/8`, or "Bypass proxy settings for simple hostnames". That
+way traffic the system sends direct is never forced through the proxy; set
+`HTTPS_PROXY` and `NO_PROXY` yourself with `launchctl setenv` in that case. Only the uppercase names are
+set, so a proxy you put in `agent.env` (written in uppercase) fully replaces
+the discovered one for agents. Any proxy variable already in the
+environment (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` or `NO_PROXY`, in either
+case) always wins, and the system proxy is then not read at all.
+
+**Turning it off.** If your Mac has a System Settings proxy but the app works
+better connecting directly (for example, the proxy needs a password the app
+cannot read from System Settings, or it is meant only for browsers), set any proxy
+variable for launchd. A `NO_PROXY` that names only the loopback is enough to
+stop the discovery:
+
+```bash
+launchctl setenv NO_PROXY localhost,127.0.0.1
+```
+
+Then fully quit and relaunch the app. `launchctl unsetenv NO_PROXY` turns
+discovery back on.
+
+If your proxy is not in System Settings (a `.pac` auto-config script, or a
+variable only your shell exports), tell launchd directly — the same mechanism
+the PATH fix uses:
+
+```bash
+launchctl setenv HTTP_PROXY http://proxy.corp.example:7890
+launchctl setenv HTTPS_PROXY http://proxy.corp.example:7890
+```
+
+then fully quit and relaunch the app. As with `PATH`, this writes in-memory
+launchd state: re-run after a reboot/logout, or automate it with a LaunchAgent
+like the one above.
 
 ---
 

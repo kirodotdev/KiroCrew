@@ -43,10 +43,46 @@ def test_pinned_version_is_the_pin_unless_the_gateway_env_overrides_it(
     assert kas_pin.pinned_version() == "0.70.1"
 
 
-def test_the_public_surface_is_exactly_the_four_names() -> None:
+def test_the_public_surface_is_exactly_the_pin_and_the_engine_gate() -> None:
     assert sorted(kas_pin.__all__) == [
         "KAS_PIN_MANIFEST_SHA256",
         "KAS_PIN_VERSION",
+        "KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION",
         "KAS_VERSION_OVERRIDE_ENV",
+        "engine_spec_permissions_supported",
         "pinned_version",
     ]
+
+
+class TestEngineSpecPermissionsGate:
+    """The bundle route's spec ``permissions`` gate: the installed engine's version
+    against the lowest engine verified to accept the field."""
+
+    def test_the_pinned_engine_passes_the_floor(self) -> None:
+        """A floor above the pin would withhold the block on every stock install,
+        so a pin bump that forgets the floor, or a floor raised past the pin, fails here."""
+        from kiro_crew.mcp_hot_reload import parse_kiro_cli_version
+
+        assert kas_pin.engine_spec_permissions_supported(kas_pin.KAS_PIN_VERSION)
+        pinned = parse_kiro_cli_version(kas_pin.KAS_PIN_VERSION)
+        assert pinned is not None
+        assert pinned >= kas_pin.KAS_SPEC_PERMISSIONS_MIN_ENGINE_VERSION
+
+    @pytest.mark.parametrize("version", ["0.66.33", "0.66.34", "0.67.0", "1.0.0", "0.66.33-rc.1"])
+    def test_at_or_above_the_floor_accepts(self, version: str) -> None:
+        assert kas_pin.engine_spec_permissions_supported(version)
+
+    @pytest.mark.parametrize("version", ["0.66.32", "0.65.99", "0.9.0"])
+    def test_below_the_floor_withholds(self, version: str) -> None:
+        assert not kas_pin.engine_spec_permissions_supported(version)
+
+    @pytest.mark.parametrize("version", [None, "", "   ", "latest", "0.66", "v0.66.33", "0.66.x"])
+    def test_an_unknown_version_withholds(self, version: str | None) -> None:
+        """No engine, or a version the pin cannot read, is the smaller loss: the
+        block is withheld rather than written onto a reader that may refuse it."""
+        assert not kas_pin.engine_spec_permissions_supported(version)
+
+    def test_a_suffix_or_padding_does_not_change_the_verdict(self) -> None:
+        assert kas_pin.engine_spec_permissions_supported("0.66.33-beta.2+build.7")
+        assert kas_pin.engine_spec_permissions_supported(" 0.70.1 ")
+        assert not kas_pin.engine_spec_permissions_supported("0.66.32-rc.9")

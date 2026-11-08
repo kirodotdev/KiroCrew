@@ -566,7 +566,7 @@ def _load_rows() -> dict[str, tuple[str, bool]]:
         # takes ``_cache`` and ``_degraded`` together under this lock, so a
         # split install/flag would let it observe a healthy ``_degraded`` paired
         # with our fail-closed empty rows — a reserved tag then reads as a
-        # healthy rowless label (a review finding). Only touch ``_degraded``
+        # healthy rowless label. Only touch ``_degraded``
         # when we actually install, so a newer concurrent write's health is not
         # clobbered by this stale read.
         #
@@ -671,7 +671,7 @@ def _write_document(path: Path, document: dict[str, Any]) -> None:
     # with ``restrict_to_owner=True`` — it implies 0o600 on POSIX and applies
     # a real owner-only ACL on Windows, where a ``mode=`` argument is a no-op
     # and would leave this authorization store forgeable by another local
-    # account (Opus review finding; mirrors skill_trust's write).
+    # account (mirrors skill_trust's write).
     _store_dir()
     grants = document.get("grants")
     if isinstance(grants, dict):

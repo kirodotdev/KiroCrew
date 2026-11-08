@@ -372,7 +372,7 @@ class TestPolicySignatureOptIn:
         assert ceiling.signature_state == SIGNATURE_UNSIGNED
 
     def test_bundled_tier_is_NOT_exempt_when_required(self, monkeypatch, tmp_path):
-        # GPT-review finding: the plugin-admission manifest signature covers only
+        # The plugin-admission manifest signature covers only
         # name/publisher/version/capabilities, NOT the packaged
         # security_policy.json bytes, so "covered by admission" never protected
         # the resource — a tampered bundled policy loaded unchecked. Under

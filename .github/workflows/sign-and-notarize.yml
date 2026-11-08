@@ -167,7 +167,18 @@ jobs:
   sign:
     name: Sign with signing service (${{ inputs.channel }})
     if: ${{ !inputs.promote }}
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, reached by LABEL inside a
+    # repository conditional rather than by `group:`; see "Larger runners for
+    # the review lanes and CodeQL" in docs/ci/ci-and-reviews.md. This is a
+    # reusable workflow, so `runs-on` resolves in the CALLER's context, and
+    # both of its callers can be started inside a personal fork: `nightly.yml`
+    # by `workflow_dispatch`, `release.yml` by a `v*` tag push. An organization
+    # runner group is unreachable from outside the org, so a `group:` request
+    # would leave this job waiting out the 24-hour timeout there instead of
+    # running. The `||` leg degrades to the hosted image wherever the group
+    # cannot be reached, which is what keeps a fork's nightly working the way
+    # it does today.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Upload of a ~1 GB zip plus sign.sh's 45-minute poll window (MAX_WAIT)
     # must both fit; the notarize job keeps its own budget.
     timeout-minutes: 60
@@ -199,7 +210,7 @@ jobs:
       # downloads every artifact on the run into artifacts/<name>/ -- the
       # universal leg. A single-arch leg names its one build artifact, whose
       # files land directly under artifacts/.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.mac_artifact }}
           path: artifacts
@@ -447,7 +458,24 @@ jobs:
           # Submit + poll with transient-error retry (a single timed-out
           # status request must not fail the job); fail-closed on
           # Invalid/Rejected with the itemized Apple log. Budget: NOTARIZE_BUDGET_SECS.
-          bash packaging/signing/notarize.sh work/signed.zip
+          #
+          # Exit 64 means notarytool refused the zip itself before uploading
+          # anything (the universal app's zip was: "must be a zip archive", and
+          # no retry changes that). Then the same app is submitted as a disk
+          # image, which Apple notarizes just as fully; any other failure ends
+          # the step. Staple and the Gatekeeper gate below do not change.
+          if bash packaging/signing/notarize.sh work/signed.zip; then
+            :
+          else
+            rc=$?
+            [ "$rc" -eq 64 ] || exit "$rc"
+            # In a subdirectory, and removed after: the artifact steps below
+            # pick up every work/*.dmg, and this image must not be one.
+            mkdir -p work/notarize-scratch
+            IMAGE="$(bash packaging/signing/notarize-image.sh work/signed.zip work/notarize-scratch)"
+            bash packaging/signing/notarize.sh "$IMAGE"
+            rm -rf work/notarize-scratch
+          fi
 
       - name: Staple and verify
         id: staple
@@ -668,7 +696,9 @@ jobs:
       ${{ always() && inputs.write_feed && vars.CLI_DIST_BUCKET != '' &&
           ((!inputs.promote && needs.notarize.result == 'success') ||
            (inputs.promote && needs.notarize.result == 'skipped')) }}
-    runs-on: ubuntu-latest
+    # Same group, same label spelling, and the same reason for it, as `sign`
+    # above.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 15
     # Same OIDC subject alignment as the jobs above (S3 writes assume the
     # signing role). No Secrets Manager access here -- the Apple credential
@@ -718,7 +748,7 @@ jobs:
 
       - name: Download gated artifact
         if: env.HAS_SIGNING_SECRETS
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.promote && inputs.promotion_artifact || format('KiroCrew-notarized-{0}-{1}{2}', inputs.channel, inputs.version, inputs.mac_variant != '' && format('-{0}', inputs.mac_variant) || '') }}
           path: work
@@ -852,7 +882,10 @@ jobs:
       #
       # Format: electron-updater channel metadata (latest-mac.yml), the
       # exact shape electron-builder generates -- version, files[] with
-      # url + sha512 + size, legacy top-level path/sha512, releaseDate.
+      # url + sha512 + size, legacy top-level path/sha512, releaseDate,
+      # releaseNotes (scripts/feed_release_notes.py) -- plus
+      # minimumSystemVersion, which electron-builder never writes but
+      # electron-updater enforces (scripts/feed_min_system_version.py).
       # website/electron/auto-update.js reads the per-channel feed
       # DIRECTORY (updates.crew.kiro.dev/feed/<channel>/) and the library
       # appends the platform filename.
@@ -947,8 +980,19 @@ jobs:
             exit 1
           fi
           echo "advance=true" >> "$GITHUB_OUTPUT"
+          # The OS floor, read from the artifact's own Info.plist and written as
+          # the Darwin kernel version electron-updater compares with
+          # os.release(): a client below it declines the update instead of
+          # installing a build it cannot launch. Fails closed (set -e) when the
+          # ZIP names no floor this script can translate.
+          MIN_OS=$(python3 scripts/feed_min_system_version.py "work/${NOTARIZED_ZIP}")
+          echo "Feed floor: minimumSystemVersion ${MIN_OS}"
+          # The version's CHANGELOG.md section as one JSON string, which the
+          # app shows before the update installs; "" when it has none.
+          RELEASE_NOTES=$(python3 scripts/feed_release_notes.py "${VERSION}")
           cat > /tmp/latest-mac.yml <<EOF
           version: ${VERSION}
+          minimumSystemVersion: '${MIN_OS}'
           files:
             - url: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}
               sha512: '${ZIP_SHA512}'
@@ -959,6 +1003,7 @@ jobs:
           path: ${{ vars.CLI_CDN_BASE }}/${DESKTOP_KEY}
           sha512: '${ZIP_SHA512}'
           releaseDate: '$(date -u +%Y-%m-%dT%H:%M:%SZ)'
+          releaseNotes: ${RELEASE_NOTES}
           EOF
           aws s3 cp /tmp/latest-mac.yml \
             "s3://${{ vars.CLI_DIST_BUCKET }}/${FEED_PREFIX}/latest-mac.yml" \
@@ -1075,6 +1120,40 @@ jobs:
             --cache-control "public, max-age=300" > /dev/null
           echo "LATEST_DMG_KEY=${LATEST_DMG_KEY}" >> "$GITHUB_ENV"
           echo "Latest alias: ${{ vars.CLI_CDN_BASE }}/${LATEST_DMG_KEY}"
+
+      # Insider carries the newest of its RCs and stable: the insider guard
+      # already caps that lane at every bare tag, so a stable release copies
+      # its channel file to insider whenever that guard lets it advance.
+      - name: Mirror stable feed to insider
+        if: env.HAS_SIGNING_SECRETS && env.CHANNEL == 'stable' && steps.feed.outputs.advance == 'true'
+        run: |
+          set -euo pipefail
+          INSIDER_PREFIX="feed/insider${FEED_PREFIX#feed/stable}"
+          FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
+            -o /tmp/insider-feed.yml -w '%{http_code}' \
+            "${{ vars.CLI_CDN_BASE }}/${INSIDER_PREFIX}/latest-mac.yml") \
+            || { echo "::error::insider feed fetch failed (transport)"; exit 1; }
+          case "$FEED_HTTP" in
+            200) ;;
+            403|404) : > /tmp/insider-feed.yml ;;
+            *) echo "::error::insider feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+          esac
+          VERDICT=$(python3 scripts/check_feed_advance.py \
+            --new "${VERSION}" --channel insider \
+            --current-file /tmp/insider-feed.yml \
+            --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
+          if [ "$VERDICT" = "hold" ]; then
+            echo "::notice::${INSIDER_PREFIX}/latest-mac.yml already serves a newer version; insider pointer NOT moved."
+            exit 0
+          elif [ "$VERDICT" != "advance" ]; then
+            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            exit 1
+          fi
+          aws s3 cp /tmp/latest-mac.yml \
+            "s3://${{ vars.CLI_DIST_BUCKET }}/${INSIDER_PREFIX}/latest-mac.yml" \
+            --content-type text/yaml \
+            --cache-control "public, max-age=300"
+          echo "Insider feed written: ${INSIDER_PREFIX}/latest-mac.yml -> ${VERSION}"
 
       - name: Summary
         if: env.HAS_SIGNING_SECRETS

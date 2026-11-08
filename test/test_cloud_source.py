@@ -16,6 +16,15 @@ import pytest
 from kiro_crew.cloud import aws, source
 
 
+@pytest.fixture(autouse=True)
+def _no_git_attributes(_floor_monkeypatch):
+    """These rows build tarballs from plain directories with a stubbed tracked list,
+    so there is no repository to ask about ``export-ignore``/``filter``: no path
+    carries either. The real query is covered in test_host_git_repo_exec_neutralization.
+    """
+    _floor_monkeypatch.setattr(source, "_tracked_attr_values", lambda root, names, attr: {})
+
+
 class TestRepoRoot:
     def test_repo_root_has_install_sh(self):
         root = source.repo_root()
@@ -317,6 +326,9 @@ class TestBuildTarball:
     def test_clean_tree_prefers_git_archive(self, monkeypatch, tmp_path):
         # The fast path (git archive) is still used when the tree is clean.
         monkeypatch.setattr(source, "_tracked_tree_is_dirty", lambda root: False)
+        # tmp_path is no repository; a driver-free one is what this row is about.
+        monkeypatch.setattr(source, "repo_exec_driver_reason", lambda root, **_k: "")
+        monkeypatch.setattr(source, "_tracked_paths_use_a_filter", lambda root: False)
         sentinel = tmp_path / "archive.tar.gz"
         sentinel.write_bytes(b"x")
         monkeypatch.setattr(source, "_use_git_archive", lambda root, **k: sentinel)
@@ -326,13 +338,8 @@ class TestBuildTarball:
 class TestSourceChecksumPin:
     """The digest ``upload_source`` hands to S3 as ``--checksum-sha256``.
 
-    The ancestor walk can only inspect the staged path BEFORE the AWS CLI re-opens
-    it, which is the wrong side of the substitution window. This checksum is the
-    check that sits on the other side: S3 compares it against the bytes it
-    actually received, so a swapped tarball is a refused upload. For that to hold,
-    the digest must describe the bytes this process WROTE -- a digest taken from a
-    later read of the path would describe whatever the name resolves to then,
-    which is the substitution itself.
+    S3 compares it with the bytes it received, so a tarball swapped after the ancestor walk
+    is refused. The digest must describe the bytes this process WROTE, not a later read.
     """
 
     @staticmethod
@@ -404,12 +411,8 @@ class TestSourceChecksumPin:
     def test_the_digest_never_re_reads_the_staged_file(self, monkeypatch, tmp_path):
         """The digest comes from the write, through a handle, never from the name.
 
-        A read-back yields the SAME digest on a quiet host, so no value comparison
-        can tell the two apart -- what separates them is that one resolves the path
-        again and the other does not. Resolving it again is the whole bug: between
-        the mint and the write the name can come to mean a different file, which is
-        the substitution the pin exists to catch. So this asserts the writer resolves
-        the staged name ZERO times, and that reading it is never attempted.
+        A read-back gives the same digest on a quiet host, so this asserts the writer
+        resolves the staged name ZERO times: the name can be rebound before the write.
         """
         import builtins
         import hashlib
@@ -447,19 +450,10 @@ class TestSourceChecksumPin:
     def test_a_link_planted_at_the_staged_name_takes_no_tarball_bytes(self, monkeypatch, tmp_path):
         """Tarball bytes land on the minted inode, never on what its name points at.
 
-        The staging leaf sits under the data home, which a same-uid process can
-        write, so the window between minting a temp and writing it is one in which
-        that name can be replaced by a link. A writer that resolves the name again
-        sends the whole source tarball through the link and onto its target -- a
-        governance file such as ``security_policy.json``, whose absent or
-        unparseable form resolves to the permissive default -- while the launch
-        still reports success. Writing through the held descriptor puts the target
-        out of reach: ``mkstemp`` creates the inode with ``O_CREAT|O_EXCL`` and the
-        handle keeps pointing at it however the name is rebound.
-
-        POSIX only, because planting the link means unlinking a name whose
-        descriptor is still open, which Windows refuses outright -- there the
-        rebind this pin simulates cannot be staged in the first place.
+        A same-uid process can swap the name for a link to, say, ``security_policy.json``,
+        whose unparseable form resolves to the permissive default. The held ``mkstemp``
+        descriptor keeps pointing at the minted inode. POSIX only: Windows refuses to
+        unlink a name whose descriptor is open.
         """
         import tempfile as _tmp
 
@@ -501,11 +495,8 @@ class TestSourceChecksumPin:
     def test_every_tarball_writer_goes_through_the_hashing_writer(self):
         """No producer may write tarball bytes outside ``_write_tar_gz``.
 
-        Read structurally (AST), not by grepping for text: a string needle would
-        match this test's own source. A future third producer that opened a
-        ``w:gz`` tarball directly would ship bytes the pin never saw, and S3 would
-        then validate the CLI's re-read against a digest of a different file --
-        so the shared writer is the invariant, not a convention.
+        A producer opening a ``w:gz`` tarball directly would ship bytes the pin never saw.
+        AST, not a grep, which would match this test's own source.
         """
         import ast
 
@@ -550,16 +541,10 @@ class TestSourceChecksumPin:
     ):
         """A digest must never span two tarball attempts.
 
-        ``_use_git_archive`` SWALLOWS a mid-write ``_refilter_archive`` failure so it
-        can fall through to the tarfile fallback. By then the gzip header has already
-        gone through ``_HashingWriter``, so ONE shared accumulator would fold those
-        discarded bytes into the fallback's checksum -- the pin would describe bytes
-        the named file does not contain, and S3 would refuse a perfectly good
-        tarball.
-
-        Real ``_use_git_archive`` and real ``_refilter_archive`` run here. Only
-        ``git archive`` itself is stubbed, and it is stubbed to SUCCEED with a corrupt
-        archive, which is what makes the re-filter raise after it has begun writing.
+        ``_use_git_archive`` swallows a mid-write ``_refilter_archive`` failure and falls
+        back; a shared accumulator would fold the discarded gzip header into the checksum.
+        Only ``git archive`` is stubbed, to SUCCEED with a corrupt archive, so the re-filter
+        raises after it has begun writing.
         """
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -596,6 +581,9 @@ class TestSourceChecksumPin:
         (tmp_path / "app.py").write_text("x = 1\n")
         monkeypatch.setattr(source, "_git_tracked_files", lambda root: ["app.py"])
         monkeypatch.setattr(source, "_tracked_tree_is_dirty", lambda root: False)
+        # tmp_path is no repository; the archive attempt must still be reached.
+        monkeypatch.setattr(source, "repo_exec_driver_reason", lambda root, **_k: "")
+        monkeypatch.setattr(source, "_tracked_paths_use_a_filter", lambda root: False)
         handed: list[object] = []
         real_fallback = source._tar_fallback
 
@@ -1039,11 +1027,8 @@ class TestEnsureCrewBoundary:
     def test_both_lanes_verify_through_the_same_function(self, monkeypatch):
         """The extraction, asserted behaviourally rather than by reading the source.
 
-        A copied core would satisfy every other test in this class while leaving two
-        places for the fail-closed comparison to drift apart. Patching the ONE
-        function and seeing both lanes route through it is what rules that out, and
-        checking the documents differ is what stops a shared core from being shared
-        by handing both lanes the same expected content.
+        A copied core would pass every other test here. Checking the documents differ
+        stops both lanes from sharing it by getting the same expected content.
         """
         from kiro_crew.cloud import iam
 
@@ -1053,7 +1038,9 @@ class TestEnsureCrewBoundary:
         monkeypatch.setattr(
             source,
             "_verify_boundary_content",
-            lambda arn, name, expected, profile, region: seen.append((arn, name, expected)),
+            lambda arn, name, expected, profile, region, previous=(), upgrade_step="": seen.append(
+                (arn, name, expected)
+            ),
         )
 
         source.ensure_instance_boundary("dev", "us-east-1")

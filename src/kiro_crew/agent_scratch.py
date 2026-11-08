@@ -87,9 +87,10 @@ import re
 import secrets
 import shutil
 import stat
+import tempfile
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, MutableMapping
 from pathlib import Path
 from typing import Literal
 
@@ -102,6 +103,7 @@ from kiro_crew.config.loader import (
     scratch_root_writer_refusal,
     valid_scratch_root_override,
 )
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
 
@@ -471,7 +473,7 @@ def allocate_scratch(label: str) -> Path:
     # directory through a link is ordinary, and refusing it would break every
     # spawn on such a host rather than protect it.
     _refuse_linked(root, f"managed root {_SUBDIR!r}")
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(root)
     _refuse_linked(root, f"managed root {_SUBDIR!r}")
     # When the root is a relocated override (``KIROCREW_SCRATCH_ROOT``), lock it to the
     # owner. The default root inherits the owner-only ACL ``ensure_data_home`` sets on the
@@ -507,7 +509,7 @@ def allocate_scratch(label: str) -> Path:
             demote_scratch_root_override(refusal)
             fallback = config_dir() / _SUBDIR
             _refuse_linked(fallback, f"managed root {_SUBDIR!r}")
-            fallback.mkdir(mode=0o700, parents=True, exist_ok=True)
+            mkdirs_owner_only(fallback)
             _refuse_linked(fallback, f"managed root {_SUBDIR!r}")
             return fallback
 
@@ -814,6 +816,74 @@ def scratch_env(path: Path, *, shared: Path | None = None) -> dict[str, str]:
     if _CAN_CAP_LOGS:
         env[KIRO_CHAT_LOG_FILE_ENV] = str(path / KIRO_CLI_LOG_SUBDIR / KIRO_CLI_CHAT_LOG_NAME)
     return env
+
+
+#: Every key :func:`scratch_env` can write. The same set is what a child must
+#: never INHERIT: each names a directory under the managed root, and only the
+#: process the marker names may rely on that directory staying.
+SCRATCH_ENV_KEYS = ("TMPDIR", "TMP", "TEMP", "KIROCREW_SCRATCH", KIRO_CHAT_LOG_FILE_ENV)
+
+
+def drop_inherited_scratch_env(env: MutableMapping[str, str]) -> tuple[str, ...]:
+    """Remove from *env* every scratch export that names a tree under the managed root.
+
+    The gateway's own environment can carry the whole :func:`scratch_env` set
+    of whichever agent shell started it -- a restart run from inside a session
+    hands the gateway that session's ``TMPDIR``/``TMP``/``TEMP``,
+    ``KIROCREW_SCRATCH`` and ``KIRO_CHAT_LOG_FILE``. Those name a directory
+    owned by a pid this gateway is not, which the hourly sweep reclaims once
+    that owner is dead and the tree idle; a child that inherits them names a
+    dead path for its whole life. A spawn whose own allocation succeeds
+    overwrites every key (:func:`scratch_env`); one whose allocation FAILS
+    spawns "with inherited temp", and without this step the inherited temp is
+    that dead tree: ``tempfile`` raises ``ENOENT`` and npm spins. The cron
+    child has the same guard on the same keys
+    (``cron_script_child_env._clean_cron_env``).
+
+    Dropped, not re-pointed: with the key absent the child falls to its own
+    platform default (``/tmp``, ``%SystemRoot%\\Temp``), the same place a spawn
+    with no inherited temp already lands, and nothing here has to know what
+    the platform default is. A value OUTSIDE the managed root is the operator's
+    own temp directory and is kept: it is the right inheritance when scratch
+    cannot be allocated. Lexical, like every other path rule on a scratch
+    name; the root itself counts as under it. Mutates *env*; returns the keys
+    dropped, in :data:`SCRATCH_ENV_KEYS` order.
+    """
+    root = scratch_root()
+    dropped: list[str] = []
+    for key in SCRATCH_ENV_KEYS:
+        value = env.get(key)
+        if not value:
+            continue
+        path = Path(value)
+        if path == root or root in path.parents:
+            del env[key]
+            dropped.append(key)
+    return tuple(dropped)
+
+
+def drop_own_inherited_scratch_env() -> None:
+    """At gateway start: :func:`drop_inherited_scratch_env` on this process's own environment.
+
+    ``tempfile`` caches its default directory once per process, so after a drop the
+    cache is cleared and re-resolved past the tree, instead of every ``tempfile`` write
+    in the gateway raising ``ENOENT`` once the sweep reclaims it. A dropped temp key is
+    re-pointed at that default rather than left unset, as ``_clean_cron_env`` does for a
+    cron child: a native Windows child with no ``TMP``/``TEMP`` puts its temp files in
+    the user's profile directory. A host with no usable temp directory keeps them unset.
+    """
+    dropped = drop_inherited_scratch_env(os.environ)
+    if not dropped:
+        return
+    logger.info("agent-scratch: dropped inherited %s naming the scratch root", ", ".join(dropped))
+    tempfile.tempdir = None
+    try:
+        temp = tempfile.gettempdir()
+    except OSError:
+        return
+    for key in dropped:
+        if key in ("TMPDIR", "TMP", "TEMP"):
+            os.environ[key] = temp
 
 
 def cap_kiro_cli_logs(

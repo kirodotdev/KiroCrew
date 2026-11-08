@@ -67,6 +67,7 @@ class _FakeSlot:
         self.key = key
         self.linked_session_key = ""
         self._trust = False
+        self._posture_inherited = True  # as session_create leaves a dispatched worker
         self.messages: list[dict[str, str]] = []
         if request_id:
             meta = {"request_id": request_id}
@@ -375,6 +376,9 @@ class TestLinkedTrustGrant:
         assert result == _ACTION_TRUST
         assert slot._trust is True
         assert other._trust is True
+        # A person's Trust is explicit: a later change on the creator leaves it.
+        assert slot._posture_inherited is False
+        assert other._posture_inherited is False
 
     @pytest.mark.asyncio
     async def test_trust_on_a_channel_born_session_reaches_the_slack_driver(self) -> None:
@@ -393,6 +397,23 @@ class TestLinkedTrustGrant:
         result, _ = await self._click(_make_state(slot), MagicMock())
         assert result == _ACTION_TRUST
         assert handler.is_slack_session_trusted(born) is True
+
+    @pytest.mark.asyncio
+    async def test_trust_under_a_policy_deny_approves_the_one_tool(self, monkeypatch) -> None:
+        """A ``permission_mode`` deny of ``trust`` (RFC enterprise D9): the press
+        approves this tool, as every other Trust button does, and grants nothing."""
+        monkeypatch.setattr(handler, "trust_permitted", lambda: False)
+        self._arm(trust_grantable=True)
+        slot = _FakeSlot(request_id="99", grantable=True)
+        dstate = _make_state(slot)
+        sessions = MagicMock()
+        result, sel_mock = await self._click(dstate, sessions)
+        assert result == _ACTION_APPROVE
+        assert slot._trust is False
+        sessions.set_approval_policy.assert_not_called()
+        dstate.resolve_approval.assert_called_once_with("99", True)
+        audit = _audited(sel_mock, "slack.interactive.trust_linked")[0]
+        assert audit["error"] == "trust_disabled_by_policy"
 
     @pytest.mark.asyncio
     async def test_trust_denied_without_server_proof(self) -> None:

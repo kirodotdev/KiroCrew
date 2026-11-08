@@ -92,7 +92,7 @@ granted to whatever launched it, so a Linux VPS cannot serve it at all
 ([imessage-integration.md](../../src/kiro_crew/docs/imessage-integration.md)).
 **WhatsApp** runs anywhere, but it is not in the base install: it needs the
 optional `neonize` dependency (`pip install ".[whatsapp]"`) and a one-time device
-pairing from **Settings → Channels → WhatsApp**, so reach the remote dashboard
+pairing from **Settings → Messaging Channels → WhatsApp**, so reach the remote dashboard
 first (part 2 below) and scan the rotating code from there
 ([whatsapp-integration.md](../../src/kiro_crew/docs/whatsapp-integration.md)).
 
@@ -246,6 +246,13 @@ the token-auth middleware unconditionally, so a wider bind never exposes an
 unauthenticated surface beyond the three token-free liveness probes
 (`/api/health`, `/api/live`, `/api/ready`).
 
+A governance policy can narrow both: the `bind_address` list refuses a
+`KIROCREW_BIND` address it does not name (the gateway then binds `127.0.0.1`),
+and the `dashboard_origins` list drops an extra origin it does not name. An
+enterprise build allows neither until a policy names it. Tailnet access there
+follows the policy's `capabilities.tailnet_origin` alone: until a policy turns it
+on, `kirocrew tailnet up` and the dashboard card say "Tailnet is off by policy".
+
 Everything below therefore works by putting something in front of loopback.
 
 ### SSH tunnel (laptop)
@@ -291,6 +298,17 @@ remote one (`ssh -L 8777:localhost:5476`), the browser sends Origin
 with `KIROCREW_ALLOWED_LOOPBACK_PORTS` on the gateway host; the CSRF check
 deliberately does not blanket-trust every loopback port, because a malicious
 local page on an arbitrary port would otherwise pass it.
+
+**Remote Crew panes through a forwarded dashboard.** The gateway reaches each
+Remote Crew over its own forward on a local port of the *gateway* host, and the
+pane loads `http://localhost:<that port>/` in your browser. When the browser is
+on another machine and you forwarded only the dashboard port, nothing answers on
+that port on your machine: the crew reads `connected`, but its pane times out.
+The pane's error then says it cannot reach the port and names it. It also gives
+one `ssh -L` line that forwards every crew's pane port, each with the same
+number on both sides. Run it beside your dashboard forward, with your gateway
+host in place of `<gateway-host>`, or open the dashboard on the gateway host
+itself.
 
 ### Named HTTPS tunnel (phone)
 
@@ -469,7 +487,10 @@ the same and the difference is the whole security story:
   }
   ```
   `allowed_logins` is mandatory — `trust_identity` with an empty list is refused
-  at startup, and a verified peer whose login is not listed is denied. The
+  at startup, and a verified peer who is not allowed is denied. Who is allowed
+  comes from the Shared Crew access set (you, accepted invites and approvals;
+  see [Share one Crew with teammates](#share-one-crew-with-teammates)); this list
+  is read once, at the first start, as its starting point. The
   identity is resolved from the local `tailscale whois` daemon, never from a
   header. When identity cannot be resolved (daemon stopped, Tailscale absent,
   Windows — where resolution is not yet verified), a NEW login falls back to
@@ -757,15 +778,17 @@ notifications are never served from disk.
 **Two current limits**, documented here so they read as boundaries rather than
 bugs:
 
-- **Notifications need the app open.** The dashboard raises them through the
-  foreground `Notification` constructor
-  ([`website/src/hooks/useNativeNotification.ts`](../../website/src/hooks/useNativeNotification.ts))
-  and there is no Web Push subscription, so nothing arrives while the installed
-  app is closed or backgrounded. On iOS that constructor is unavailable inside an
-  installed PWA at all — notifications there require
-  `ServiceWorkerRegistration.showNotification()`. Tracked in
-  [issue #2267](https://github.com/kirodotdev/KiroCrew/issues/2267); the Android
-  symptom is [issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828).
+- **A closed app gets notifications only through Web Push.** Turn on
+  Settings → Notifications → Desktop alerts → **Notify me even when Kiro Crew is
+  closed** on each
+  device. The dashboard then registers a Web Push subscription, and every
+  delivered note that is not muted or passive also arrives while the installed
+  app is closed or backgrounded. Web Push needs the dashboard served over HTTPS;
+  on iOS it needs iOS 18.4 or later and the app added to the Home Screen. With
+  the toggle off, notifications need the app open. In page banners go through
+  `ServiceWorkerRegistration.showNotification()`, which an installed iOS PWA
+  and Android Chrome require
+  ([issue #1828](https://github.com/kirodotdev/KiroCrew/issues/1828)).
 - **Pinch zoom is off.** The installed app behaves like an application, not a
   web page: two-finger pinch and double-tap no longer scale the shell. **To
   magnify, use the OS display-zoom setting** (iOS: Settings → Display &
@@ -889,6 +912,271 @@ The proxy strips the prefix before forwarding, relays cookies, and rewrites
 
 ---
 
+### Share one Crew with teammates
+
+Sharing is a preview: turn on Shared Crew in Feature Previews and restart the
+gateway, or set `KIROCREW_SHARED_CREW_PREVIEW=1` in the gateway's environment.
+Without it, Settings > People and the direct link do not appear.
+
+Several people can use one Crew over Tailscale. With the direct link turned on
+(it is off by default) and Tailscale running on the Crew's machine, the gateway
+also listens on that machine's own Tailscale addresses, and Settings > People
+shows a plain link to share:
+
+```text
+http://<this-machine>.<your-tailnet>.ts.net:<port>/
+```
+
+The link carries no token. Tailscale tells the gateway who is connecting. By
+default (`dashboard.shared_crew.local_authorization` is `false`), any verified,
+untagged person whom the Tailscale access rules let reach this machine can open
+the Crew, even without a Crew invite. Tailscale decides who gets in: Crew has no
+waiting list and nothing to approve. Manage who can connect through Tailscale's
+users and access rules. Settings > People names each person by their Tailscale
+account under **Seen in this Crew**.
+The machine's own Tailscale account has owner rights, including settings,
+the API key and invites; irreversible actions still require confirmation.
+
+Before the first invite, while nobody else has access, Crew asks once:
+teammates will see every session and Crew memory, with real counts. This
+warning does not gate direct-link access; check Tailscale's access rules before
+turning on the direct listener.
+On a laptop the warning adds that teammates lose the Crew while it sleeps;
+while a teammate is connected or their work is running, Crew keeps the machine
+awake (`caffeinate` on macOS, `systemd-inhibit` on Linux, the system's own
+keep-awake request on Windows) and lets it sleep again when they leave. Nothing
+is installed for this; `GET /api/shared-crew/capabilities` reports `keep_awake`
+with its state and reason.
+
+The easiest way to add a teammate is to invite them from Crew:
+
+1. In the Tailscale admin console, signed in as an Owner, Admin or IT admin, open
+   [Settings > Keys](https://login.tailscale.com/admin/settings/keys) and generate
+   an **API access key**. An OAuth client will not work: Tailscale only lets a
+   user's own key create share invites. The key expires (you choose 1 to 90 days);
+   Crew warns a week before.
+2. In Crew, open **Settings > People > Invite over Tailscale**, paste the key and
+   select **Connect**. Crew stores it in its protected vault and never shows it
+   again. **Remove key** deletes it.
+3. Type one or more email addresses and select **Send invite**, or switch to
+   **Invite link** for a single-use link (or a reusable one, up to 1,000 people).
+   You can add a name and picture to show for that person.
+4. When the teammate accepts, Crew lets in the Tailscale login they accepted
+   with. That may be a different account than the email you typed. They open the
+   direct link without a token right away. (For `tailscale serve`, the first
+   accepted invite also turns on identity trust and asks for one restart.)
+5. **Revoke** removes the share in Tailscale. Tailscale determines whether the
+   person still has another way to reach the machine; Crew itself does not close
+   their tabs or stop their work.
+
+Without a key, the card links the admin console's Machines page, where you can
+share this machine by hand (**Share**). The direct link follows Tailscale's
+access rules.
+
+`dashboard.tailscale.allowed_logins` is not how you add people. The first time
+the gateway starts with this version it carries the logins and `tag:` entries
+already in that list over once. After
+that, editing the list changes nothing. A tagged device (a CI runner, a server)
+gets in only when one of its tags was carried over that way.
+
+Removing the Tailscale API key and deleting every stored session cannot be
+undone, so even you, signed in through Tailscale, confirm them once more in the
+dashboard. Each person is named by
+their Tailscale account, on Linux, macOS and Windows alike. Tailscale names the
+owner of a device, not whoever is typing on it: people who share one device
+show as one person, and each of them can sign in with their own dashboard link
+instead.
+
+The direct link is off by default. To turn it on:
+
+```bash
+kirocrew config set dashboard.shared_crew.tailnet_direct true
+```
+
+Set it back to `false` to keep only the loopback listener.
+
+The gateway binds only the Tailscale addresses (`100.x` and `fd7a:`), never your
+LAN or every interface. It does not start beside `KIROCREW_BIND`, or when
+Tailscale is not running; `GET /api/shared-crew/capabilities` then reports
+`tailnet_direct.state` and the reason.
+
+Check what the Mac sees (the second form is for the Tailscale app with no CLI
+on `PATH`):
+
+```bash
+which tailscale
+tailscale version
+tailscale ip -4
+tailscale whois --help
+tailscale whois <teammate-tailscale-ip>
+/Applications/Tailscale.app/Contents/MacOS/Tailscale version
+/Applications/Tailscale.app/Contents/MacOS/Tailscale whois <teammate-tailscale-ip>
+```
+
+The same commands are in `scripts/tailnet-direct-check.sh`.
+
+`tailscale serve` still works. Through it the gateway sees only a local
+connection, so it needs identity trust and a dashboard token, and it names each
+person only where the operating system can prove that connection came from the
+Tailscale daemon:
+
+```bash
+kirocrew config set dashboard.tailscale.trust_identity true
+```
+
+| Host | Direct Tailscale link | Through `tailscale serve` |
+|---|---|---|
+| Linux, `tailscaled` as root | Each person is named | Each person is named |
+| Linux, `tailscaled` as any other user | Each person is named | Allowed people get in, shown as Unattributed |
+| macOS | Each person is named | Allowed people get in, shown as Unattributed |
+| Windows | Each person is named | Allowed people get in, shown as Unattributed |
+
+Through `tailscale serve` on a Mac, teammates who were invited get in but their
+sessions and messages read Unattributed, and Settings > People points at the
+direct link. `GET /api/shared-crew/capabilities` reports the serve-only case as
+`attribution` `unavailable` with reason `platform_unprovable` (macOS, Windows)
+or `daemon_same_user`, and `degraded` with `daemon_not_found` when no
+`tailscaled` was running when the gateway started; with the direct link active
+it reports `available` and `attribution_via: tailscale_direct`.
+
+Where people are named, each session shows its creator (You for yourself), each
+message its author, and the People settings page lists who has connected. The
+session list shows All sessions by default; the filter above it narrows to Mine,
+one person or Unattributed, and remembers your choice for this Crew. A session a
+schedule or a webhook started reads `Scheduled: <job name>` or `Webhook: <name>`,
+never a person. Until anyone else connects and no sharing path is set up, the
+Crew is personal: the list shows no creator names and no filter.
+
+Only one person types in a session at a time. When a teammate starts typing,
+your message box turns read-only and its buttons give way to "<name> is
+typing…". Anything you had already written stays in the box. It unlocks the
+moment they send, clear their draft, or pause for 10 seconds, and you can carry
+on where you were. Stop and Steer still work on a turn that is running. Your own
+tabs never lock each other, and a personal Crew never locks. The pause length is
+a setting (3 to 60 seconds). A new value applies after a restart:
+
+```bash
+kirocrew config set dashboard.shared_crew.typing_idle_seconds 15
+```
+
+Direct-link access follows Tailscale's rules. The owner-only Invite… dialog shares
+the machine through Tailscale. There are no approval or collaborator role
+controls. Teammates who reach a cloud-hosted Crew through AWS Systems Manager
+use the invite-only SSM link instead, described in
+[Share one Crew over AWS SSM](#share-one-crew-over-aws-ssm). A teammate who
+instead forwards the dashboard port itself arrives as a local connection and
+needs a dashboard token, which makes them the person who runs the Crew: give a
+dashboard token only to people who may act as that person. An unreadable access
+configuration shows its reason in Settings > People; it is not presented as a
+personal Crew.
+
+To give every
+person a fair share of the host, turn on fair admission:
+
+```bash
+kirocrew config set dashboard.shared_crew.admission_enabled true
+```
+
+Limits, profiles, rollback and troubleshooting are in the
+[Shared Crew operations runbook](../system-specs/modules/shared-crew.md#operations).
+
+### Share one Crew over AWS SSM
+
+Also a preview (see above). Use it when the Crew runs on an AWS machine that
+teammates already reach with AWS Systems Manager Session Manager, and Tailscale
+is not an option. Each teammate is named by a Crew invite, not by their AWS
+identity: a Session Manager port forward reaches the gateway as a plain local
+connection, so the gateway cannot see who opened it.
+
+The gateway therefore listens on a second loopback port,
+`dashboard.shared_crew.ssm_port` (default `5477`), only for the SSM link. A
+connection on that port is never the owner, whatever it carries: only a Crew
+invite opens it, and neither the owner's dashboard token nor the internal secret
+means anything there. The dashboard's own port is unchanged.
+
+On the Crew's machine:
+
+1. Make it an SSM managed node: the SSM Agent running, and an instance profile
+   (or hybrid activation) that lets it register. Crew reads the node id and
+   region from the instance metadata service. Off EC2, or where metadata is not
+   reachable, set `KIROCREW_SSM_TARGET` (an `i-` or `mi-` id) and, optionally,
+   `KIROCREW_SSM_REGION` in the gateway's environment.
+2. Turn on **Settings > People > Advanced > Let teammates join over AWS SSM** and restart the
+   gateway. Crew never reads or changes your AWS configuration, credentials or
+   profiles.
+3. Create the Session document the invite command names, once per SSM port, and
+   allow it in IAM (see [The Session document](#the-session-document) below).
+4. In **Invite**, choose the **AWS SSM** tab (it is the only view when Tailscale
+   invites are not on), give the teammate a name and select **Make link**, then
+   copy the invite message. The link in it is shown once; a link you did not copy
+   cannot be shown again, so remove it and make another.
+
+Each teammate needs the AWS CLI and the
+[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html),
+and IAM permission to start a session on that node with the Session document
+below. The message tells them to run:
+
+```bash
+aws ssm start-session --target <node-id> \
+  --document-name Kiro-Crew-Shared-Crew-5477 \
+  --parameters localPortNumber=5477
+```
+
+and then open `http://localhost:5477/?ssm_invite=<invite>`. The browser keeps the
+invite in an `HttpOnly` cookie and drops it from the address.
+
+#### The Session document
+
+The command names a custom Session document, `Kiro-Crew-Shared-Crew-<ssm_port>`,
+not `AWS-StartPortForwardingSession`: the AWS-managed document lets its holder
+forward any port on the machine, and Session Manager's shell document gives a
+shell, which is already as much access as the Crew's owner has. The custom
+document fixes `portNumber` to the SSM port, so a teammate who holds only it can
+reach only the invite-gated listener. Create it once, with your SSM port in the
+name and in `portNumber` (`5477` by default):
+
+```bash
+aws ssm create-document --name Kiro-Crew-Shared-Crew-5477 --document-type Session \
+  --content '{
+    "schemaVersion": "1.0",
+    "description": "Forward one local port to the Kiro Crew SSM link",
+    "sessionType": "Port",
+    "parameters": {
+      "localPortNumber": {
+        "type": "String",
+        "description": "Local port to listen on",
+        "allowedPattern": "^[0-9]{4,5}$"
+      }
+    },
+    "properties": {
+      "portNumber": "5477",
+      "type": "LocalPortForwarding",
+      "localPortNumber": "{{ localPortNumber }}"
+    }
+  }'
+```
+
+Then allow `ssm:StartSession` on the node and on that document only, and not on
+`AWS-StartPortForwardingSession`:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "ssm:StartSession",
+  "Resource": [
+    "arn:aws:ec2:<region>:<account>:instance/<node-id>",
+    "arn:aws:ssm:<region>:<account>:document/Kiro-Crew-Shared-Crew-5477"
+  ]
+}
+```
+
+Forwarding the dashboard's main port instead gains nothing without a dashboard
+token.
+
+A link is permanent until you remove it, one link is one person, and a removed
+link stops at the next request; connections already open close within 15
+seconds. To stop sharing, remove them in Settings > People.
+
 ## 3. Keep it alive as a service
 
 ### The built-in installer
@@ -920,7 +1208,13 @@ restart). No kirocrew, MCP, or LLM code path runs under sudo. Once started the
 gateway runs as `User=$USER Group=$(id -gn)`, not root. The unit also caps
 crash-looping with `StartLimitBurst=3` / `StartLimitIntervalSec=300` and pins
 `LimitNOFILE=65536`, because a stock 1024 FD limit fails the frontend
-production build with `EMFILE`.
+production build with `EMFILE`. It sets `LimitCORE=0` too: where crashes go
+to `systemd-coredump`, a core of the multi-GB gateway can hold a crashed
+gateway's exit, and its restart, for up to 5 minutes. Processes the gateway
+starts inherit that limit; for core files, set `LimitCORE=infinity` in a
+drop-in (`sudo systemctl edit kirocrew`, or `systemctl --user edit kirocrew`
+for a user unit). An installed unit keeps its text until
+`kirocrew service install` re-renders it.
 
 The install also seeds `/etc/kirocrew/kirocrew.env`, which the unit reads as its
 `EnvironmentFile=`, so a port or environment change needs no reinstall (see
@@ -1045,6 +1339,7 @@ ExecStart=$KIROCREW_BIN gateway
 Restart=always
 RestartSec=10
 LimitNOFILE=65536
+LimitCORE=0
 WorkingDirectory=$HOME
 Environment=HOME=$HOME
 Environment=PATH=$(dirname $KIROCREW_BIN):$HOME/.local/bin:$HOME/.nvm/versions/node/$(node -v 2>/dev/null || echo v20.0.0)/bin:/usr/local/bin:/usr/bin

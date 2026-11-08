@@ -173,10 +173,11 @@ the harness keeps the verbatim id and resolves its capabilities from the SDK's
 unfiltered list. `ANTHROPIC_MODEL` (and your `~/.claude/settings.json` model)
 is what the SDK resolves when Kiro Crew does not pin a model.
 
-- A chat slot on **auto** uses `ANTHROPIC_MODEL` only until the endpoint's
-  advertised models have been cached (the first session); after that, Crew
-  seeds them as the settings file's `availableModels` and auto resolves to
-  the head of that list.
+- A chat slot on **auto** takes the model from your own settings
+  (`ANTHROPIC_MODEL`, then the `model` in `~/.claude/settings.json`). Crew
+  writes the endpoint's advertised models into the settings file's
+  `availableModels` only when another settings source (your user, project or
+  managed settings) already defines a list.
 - Pin per-slot from the dashboard model chip; the pin rides on
   `session/set_config_option` and wins over the environment.
 - `CLAUDE_CODE_SUBAGENT_MODEL` applies to subagents spawned by the harness

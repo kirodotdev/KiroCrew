@@ -9,13 +9,13 @@ triggers: dashboard template, dashboard card, data-dashboard-field, template con
 A dashboard page is HALF of a template. The other half is a type, and the two halves
 are checked by different machines, which is why they drift.
 
-> This skill is the procedure for the `kirocrew-dashboard-author` crewmate, whose spec
+> This skill is the procedure for the `kirocrew-dashboard-author` Bot, whose spec
 > is `agent-spec.md` beside this file: the charter (what it is for and what it may never
 > do) plus the narrowed toolset that makes the charter true against a tool list rather
 > than only against prose. A human or another agent following this file gets the same
 > procedure. The gateway installs the spec as the owned agent `kirocrew-dashboard-author` at
 > every start (`OWNED_KIRO_AGENT_FILES`, `_install_dashboard_author_agent`), so a
-> crewmate dispatched on it starts with this procedure as its prompt; a human or
+> Bot dispatched on it starts with this procedure as its prompt; a human or
 > another agent loads this skill directly.
 
 The page is inert html. The host sanitizes it, renders it, and binds text into it by
@@ -178,10 +178,11 @@ The frame, as `CrewDynamicDashboard.tsx` and `widgetSrcdoc.ts` build it:
   `img-src data: blob:`.
 - No link can leave the frame. A page asks the host instead:
   `parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*')`. The host
-  (`useFrameOpenLink`) opens it only from its own frame, only right after a click or
-  key press in that frame, and only for a URL matching `PR_URL_RE`, a
-  `https://github.com/<owner>/<repo>/pull/<n>` page. Anything else drops, so post it
-  from a click handler, never on a timer.
+  (`useFrameLinkBridge`) opens it only from its own frame, only right after a click or
+  key press in that frame, in a new tab, for an `http(s)` URL or a dashboard path
+  such as `/artifacts/<slug>` or `/chat?sid=<key>`. A click it cannot tie to the
+  frame gets an "Open <host>" button instead. Other schemes drop, and so does a
+  post with no click, so post it from a click handler, never on a timer.
 
 Script and buttons are for the built-in directory templates. A scaffolded page above
 stays inert, so its motion is CSS only and it links nowhere.

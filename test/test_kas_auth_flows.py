@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -164,6 +165,36 @@ def _bid_auth() -> "builder_id.DeviceAuthorization":
     )
 
 
+async def test_the_client_registration_expiry_survives_sign_in_storage_and_refresh(
+    tmp_path: Path,
+):
+    """RegisterClient's clientSecretExpiresAt is what dates a lapsed registration:
+    it rides from the registration onto the stored token and onto every refreshed
+    one, or the next refresh would forget it."""
+    session = _FakeSession(
+        [
+            _FakeResp(
+                200,
+                {"clientId": "cid", "clientSecret": "csec", "clientSecretExpiresAt": 1798000000},
+            ),
+            _FakeResp(200, {"accessToken": "at", "refreshToken": "rt", "expiresIn": 1}),
+            _FakeResp(200, {"accessToken": "new", "expiresIn": 3600}),
+        ]
+    )
+    client = await builder_id.register_client("us-east-1", session=session)
+    tok = await builder_id.poll_token(client, _bid_auth(), region="us-east-1", session=session)
+    store = TokenStore(tmp_path)
+    store.save(tok)
+    stored = store.load("builder_id")
+    assert stored is not None
+    out = await ensure_fresh(store, stored, session=session)
+    assert out.access_token == "new"
+    refreshed = store.load("builder_id")
+    assert refreshed is not None and refreshed.access_token == "new"
+    for entry in (stored, refreshed):  # the vault entry after the sign-in and after the refresh
+        assert json.loads(entry.to_json()).get("client_secret_expires_at") == 1798000000
+
+
 async def test_builder_id_register_client_failure_raises():
     session = _FakeSession([_FakeResp(400, "bad request")])
     with pytest.raises(BuilderIdAuthError, match="RegisterClient failed"):
@@ -194,6 +225,42 @@ async def test_builder_id_start_device_authorization_ok_and_failure():
         await builder_id.start_device_authorization(
             RegisteredClient("cid", "csec"), region="us-east-1", session=bad
         )
+
+
+@pytest.mark.parametrize(
+    "description, advice",
+    [
+        # Both bodies are what SSO-OIDC answered when probed: an unknown host or
+        # path, and a well-formed portal looked up in the wrong region.
+        ("Invalid start url provided", "access portal URL"),
+        ("Invalid request", "in region eu-west-1"),
+    ],
+)
+async def test_idc_start_url_refusal_says_what_to_change(description, advice):
+    body = json.dumps({"error": "invalid_request", "error_description": description})
+    session = _FakeSession([_FakeResp(400, body)])
+    with pytest.raises(builder_id.StartUrlRejectedError) as raised:
+        await builder_id.start_device_authorization(
+            RegisteredClient("cid", "csec"),
+            region="eu-west-1",
+            start_url="https://acme.awsapps.com/start",
+            session=session,
+        )
+    message = str(raised.value)
+    assert advice in message
+    assert "https://acme.awsapps.com/start" in message
+    assert f"(AWS: {description})" in message
+
+
+async def test_builder_id_400_is_not_blamed_on_a_start_url():
+    """Builder ID's start URL is Crew's own constant, so its refusal stays generic."""
+    body = json.dumps({"error": "invalid_request", "error_description": "Invalid request"})
+    session = _FakeSession([_FakeResp(400, body)])
+    with pytest.raises(BuilderIdAuthError) as raised:
+        await builder_id.start_device_authorization(
+            RegisteredClient("cid", "csec"), region="us-east-1", session=session
+        )
+    assert not isinstance(raised.value, builder_id.StartUrlRejectedError)
 
 
 async def test_builder_id_poll_slow_down_then_token():
@@ -682,3 +749,45 @@ async def test_provider_maps_rejection_to_the_same_failure_as_before(tmp_path: P
     with pytest.raises(RefreshRejected):
         await provider.current()
     assert store.refresh_rejected("social") is not None
+
+
+# ---- a forced refresh of a token a service refused before its expiry -----------
+
+
+def _new_social() -> _FakeResp:
+    body = {"accessToken": "new-at", "refreshToken": "new-rt", "expiresIn": 3600}
+    return _FakeResp(200, {**body, "profileArn": "arn:x"})
+
+
+async def test_a_rejected_token_still_stored_is_refreshed_before_expiry(tmp_path: Path):
+    store = TokenStore(tmp_path)
+    tok = _fresh("social", "Google")
+    store.save(tok)
+    session = _FakeSession([_new_social()])
+    out = await ensure_fresh(store, tok, session=session, rejected_access_token=tok.access_token)
+    assert out.access_token == "new-at"
+    assert len(session.calls) == 1
+    assert store.load("social").access_token == "new-at"
+
+
+async def test_a_rejected_token_a_peer_already_replaced_is_not_refreshed(tmp_path: Path):
+    store = TokenStore(tmp_path)
+    tok = _fresh("social", "Google")
+    from dataclasses import replace
+
+    store.save(replace(_fresh("social", "Google"), access_token="peer-at"))
+    session = _FakeSession([])  # must not be called
+    out = await ensure_fresh(store, tok, session=session, rejected_access_token=tok.access_token)
+    assert out.access_token == "peer-at"
+    assert session.calls == []
+
+
+async def test_a_rejected_token_whose_identity_is_gone_is_signed_out(tmp_path: Path):
+    tok = _fresh("social", "Google")
+    with pytest.raises(IdentitySignedOut):
+        await ensure_fresh(
+            TokenStore(tmp_path),
+            tok,
+            session=_FakeSession([]),
+            rejected_access_token=tok.access_token,
+        )

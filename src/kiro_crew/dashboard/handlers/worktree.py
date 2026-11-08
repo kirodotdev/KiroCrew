@@ -132,7 +132,7 @@ _MAX_DIR_SLUG = 60
 # Repo-local config keys that would hand git a program to run during checkout.
 # `-c` cannot generically disable these (the driver name is arbitrary), so a repo
 # declaring one is refused outright — see `_checkout_filter`.
-_FILTER_KEY_RE = re.compile(r"^filter\.(?P<name>.+)\.(process|smudge|clean)$", re.IGNORECASE)
+_FILTER_KEY_RE = re.compile(r"^filter\.(?P<name>.*)\.(process|smudge|clean)$", re.IGNORECASE)
 
 # Returned instead of a key name when a config scope could not be read at all.
 # Treated as "refuse": an unreadable scope cannot be proven filter-free.
@@ -519,7 +519,7 @@ def _claim_branch(root: str, branch: str, base_sha: str) -> bool:
 
     The empty old-value argument means "the ref must not exist", so git's ref
     lock decides the winner: exactly one of N concurrent requests for the same
-    branch gets a zero exit. A check-then-create (``_branch_head`` followed by
+    branch gets a zero exit. A check-then-create (a branch lookup followed by
     ``worktree add -b``) cannot do this: two requests could both observe the
     branch as absent, and the loser's cleanup would then delete the winner's
     branch and working tree.
@@ -828,13 +828,26 @@ def _match_allowed_root(candidate: str, roots: list[str]) -> str | None:
     ``realpath`` does not reliably canonicalize case there — without it a
     differently-cased but identical path would be refused. The prefix test is
     ``os.sep``-terminated, so ``/repo-evil`` does not pass as inside ``/repo``.
+
+    When several roots contain ``candidate`` the most specific (longest) one
+    wins, whatever the slot order: a session scoped to ``/work`` must not shadow
+    one scoped to the repository ``/work/app``, or git would probe ``/work``.
     """
-    probe = os.path.normcase(candidate)
+    # ``normcase`` neither adds nor strips Windows' ``\\?\`` prefix, and a
+    # ``realpath``-ed root can carry it while the caller's candidate does not; the
+    # prefix is folded off both sides first so the lone prefix is not read as an
+    # escape. Lexical only.
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
+    probe = os.path.normcase(strip_extended_length_prefix(candidate))
+    best: str | None = None
+    best_len = -1
     for root in roots:
-        normalized = os.path.normcase(root)
-        if probe == normalized or probe.startswith(normalized.rstrip(os.sep) + os.sep):
-            return root
-    return None
+        normalized = os.path.normcase(strip_extended_length_prefix(root))
+        prefix = normalized.rstrip(os.sep)
+        if (probe == normalized or probe.startswith(prefix + os.sep)) and len(prefix) > best_len:
+            best, best_len = root, len(prefix)
+    return best
 
 
 async def api_worktree_create(request: web.Request) -> web.Response:

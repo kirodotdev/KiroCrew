@@ -61,7 +61,9 @@ class TestProcessSlackFiles:
         assert image_paths[0].endswith(".png")
         assert os.path.exists(image_paths[0])
         os.unlink(image_paths[0])
-        assert text_blocks == []
+        folder, name = os.path.split(image_paths[0])
+        assert len(text_blocks) == 1
+        assert f"[Image {name} is saved in the folder {folder}{os.sep} " in text_blocks[0]
 
     @pytest.mark.asyncio
     async def test_image_too_large_skipped(self):
@@ -383,8 +385,9 @@ class TestProcessSlackFiles:
         image_paths, text_blocks = await process_slack_files(orch, files)
 
         assert len(image_paths) == 1
-        assert len(text_blocks) == 2  # text + pdf (could not extract)
+        assert len(text_blocks) == 3  # text + image location note + pdf (could not extract)
         assert any("[File: output.log]" in b for b in text_blocks)
+        assert any("is saved in the folder" in b for b in text_blocks)
         assert any("could not extract text" in b for b in text_blocks)
         assert call_count == 3  # image + text + pdf document
 

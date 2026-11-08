@@ -18,9 +18,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import asyncio
     import re
+    import uuid
 
     from kiro_crew.slack.gateway import (
         _BACKGROUND_APPROVAL_SOURCES,
+        DENY_CAUSE_APPROVAL_TIMEOUT,
         HEARTBEAT_KEY,
         Callable,
         DashboardState,
@@ -34,12 +36,14 @@ if TYPE_CHECKING:
         _slot_is_trusted,
         command_invokes_git,
         dashboard_slot_key,
+        escape_mrkdwn,
         is_read_only_bash,
         logger,
         name_grant,
         redact,
         redact_credentials,
         redact_exfiltration_urls,
+        redact_for_display,
         safety_override,
         sel,
     )
@@ -89,6 +93,8 @@ def _interactive_approval(
     nudge_key: str = "",
     *,
     raise_when_unreachable: bool = False,
+    requester: str = "",
+    on_host_decision: Callable[[str, str], None] | None = None,
 ) -> ToolApprovalCallback:
     """Return an approval callback that races dashboard vs Slack DM.
 
@@ -107,12 +113,42 @@ def _interactive_approval(
     received. Only the spawn gate sets it, because only the spawn gate has a
     terminal path that can report the refusal to the calling agent; a mid-run
     tool approval parks on the prompt instead.
+
+    ``requester`` names what asked, in plain text (a cron job's name, id and
+    agent), shown on the Slack card, its fallback and the answered card.
+
+    ``on_host_decision`` is told ``(request_id, cause)`` on every answer given
+    with nobody asked: an auto-approve source, the ``--approval`` mode, the YOLO
+    override, slot trust, no UI at all, or a Slack prompt whose window closed.
+    *cause* is a ``DENY_CAUSE_*`` code when one names the host's reason (an expired
+    window), ``""`` otherwise. A dashboard-only prompt's own expiry still returns a
+    bare ``False``.
     """
 
     is_background = source in _BACKGROUND_APPROVAL_SOURCES
+    # A job name is user-authored. Folded to one visible line first, so a line
+    # break or control character cannot draw a forged line (a fake "Approved")
+    # on the card; then redacted and escaped once, because Slack parses entity
+    # markup in the block text AND the top-level fallback text (a job named
+    # ``<!channel>`` would notify the channel from either sink).
+    # Redacted in display form: Slack renders emphasis away, so ``AKIA*<rest>*``
+    # would show an intact key that a literal scan sees as split.
+    requester_safe = escape_mrkdwn(
+        redact_for_display(
+            " ".join("".join(ch if ch.isprintable() else " " for ch in requester).split()),
+            redact,
+        )[0]
+    )
+    requester_md = f"From {requester_safe}" if requester_safe else ""
 
     async def _approve(event: LLMEvent, parent_session_key: str = "") -> bool:
         request_id = str(event.request_id)
+
+        def _by_host(approved: bool, cause: str = "") -> bool:
+            if on_host_decision is not None:
+                on_host_decision(request_id, cause)
+            return approved
+
         # Low-fidelity CHILD request: the structured security context is
         # absent, so every field a content-matching shortcut below would
         # judge (title, read-only classification, trust patterns) is
@@ -140,8 +176,20 @@ def _interactive_approval(
         _child_grant_eligible = (not _child_lf) or (
             getattr(event, "child_unconditional_grant_eligible", False) is True
         )
+        # A tool request's id is the backend's JSON-RPC id, counted per connection,
+        # so two runtimes ask with the same one (each sub-agent's first is ``1``).
+        # Every background source shares the dashboard's approval registry, so the
+        # id registered there names THIS call; a reused id would replace the other
+        # request's record and leave it waiting with no card. The backend is still
+        # answered through the event's own id. A spawn id already names one agent,
+        # and the spawn card and ``slot_resolver`` read its form, so it is kept.
+        approval_id = (
+            request_id
+            if request_id.startswith("spawn:")
+            else f"{request_id}-{uuid.uuid4().hex[:12]}"
+        )
         # Background callers pass the authoritative parent session key. Prefer it
-        # over a request-ID resolver because tool permission IDs are opaque UUIDs,
+        # over a request-ID resolver because a tool permission ID names no agent,
         # unlike spawn approvals (``spawn:<agent_id>``). Treating a tool request ID
         # as an agent ID loses the dashboard slot and hides the approval prompt.
         # ``dashboard_slot_key`` answers "which tab shows this conversation?", so a
@@ -152,17 +200,17 @@ def _interactive_approval(
         # autonudge) that supplies neither an authoritative parent session
         # nor a ``slot_resolver`` has no owning conversation, and there is
         # no way to guess one. Borrowing "the first slot that is running"
-        # hijacked an unrelated chat and was wrong in three directions at
+        # hijacks an unrelated chat and is wrong in three directions at
         # once:
-        #   * the prompt surfaced in a conversation that never raised it,
+        #   * the prompt surfaces in a conversation that never raised it,
         #     with a truncated label and no provenance;
-        #   * the Trust control resolved against that innocent slot, so
-        #     trusting a cron's command granted blanket auto-approval to
-        #     the borrowed session (and did nothing for the cron);
-        #   * conversely, a borrowed slot that already had trust enabled
-        #     silently auto-approved the background command below —
+        #   * the Trust control resolves against that innocent slot, so
+        #     trusting a cron's command grants blanket auto-approval to
+        #     the borrowed session (and does nothing for the cron);
+        #   * conversely, a borrowed slot that already has trust enabled
+        #     silently auto-approves the background command below —
         #     privilege the cron was never granted.
-        # Unowned approvals now carry slot="" and are surfaced ONLY on the
+        # Unowned approvals carry slot="" and are surfaced ONLY on the
         # global approvals surface (notification feed / /api/approvals).
         if parent_slot:
             approval_slot = parent_slot
@@ -190,9 +238,9 @@ def _interactive_approval(
                     "agent-authored)",
                     source,
                 )
-                return False
+                return _by_host(False)
             logger.info("Auto-approving tool %s from source %s", event.title, source)
-            return True
+            return _by_host(True)
 
         # CLI --approval flag override (composable test mode).
         # 'yolo' auto-approves all; 'reads' auto-approves read-only tools;
@@ -229,11 +277,14 @@ def _interactive_approval(
                 # (consumes no event data) and stays unverified by design.
                 _ng_refusal = await name_grant.refusal_for_event(event)
                 if _ng_refusal is not None:
-                    logger.warning(
-                        "declining a reads-mode auto-approve: %s; the "
-                        "request falls through to the interactive prompt",
-                        _ng_refusal.log_text,
-                    )
+                    # Once per session for a platform-scope code (its text is a
+                    # constant); the audit row below is still written per call.
+                    if name_grant.should_log_decline(parent_session_key, _ng_refusal):
+                        logger.warning(
+                            "declining a reads-mode auto-approve: %s; the "
+                            "request falls through to the interactive prompt",
+                            _ng_refusal.log_text,
+                        )
                     name_grant.log_decline(
                         source="background",
                         session_key=parent_session_key,
@@ -260,11 +311,11 @@ def _interactive_approval(
                     logger.warning(
                         "SEL audit failed for cli --approval auto-approve", exc_info=True
                     )
-                return True
+                return _by_host(True)
 
         # Check both YOLO sources: Slack handler (!yolo on) and dashboard UI
         if safety_override().is_active() and _child_grant_eligible:
-            return True
+            return _by_host(True)
 
         if self.dashboard_state:
             # Check if the parent slot is trusted (not all slots).
@@ -296,6 +347,9 @@ def _interactive_approval(
                 # re-checked here per request and never renewed from here.
                 _ps_trusted = bool(_ps) and _slot_is_trusted(_ps)
                 _ps_via_scope = _ps_trusted and _auto_approve_reason(_ps, False) == "trust_scope"
+                # A Crew Mode card trust ("Trust this worker") is a slot trust
+                # here like any other (``_slot_is_trusted``): it covers the
+                # worker's spawn_run and its subagents' tools.
                 if _ps_trusted and not _child_grant_eligible:
                     # Slot IS trusted; the fidelity gate is what blocks
                     # the auto-approve. A distinct audit reason — an
@@ -314,7 +368,7 @@ def _interactive_approval(
                         outcome="ok",
                         resources=f"scope:{getattr(_ps, '_trust_scope', '')} {_safe_title}",
                     )
-                    return True
+                    return _by_host(True)
                 elif _ps_trusted:
                     _sel_log(
                         caller=f"slot:{_parent_slot_key}",
@@ -322,7 +376,7 @@ def _interactive_approval(
                         outcome="ok",
                         resources=_safe_title,
                     )
-                    return True
+                    return _by_host(True)
                 elif _ps:
                     _sel_log(
                         caller=f"slot:{_parent_slot_key}",
@@ -372,8 +426,31 @@ def _interactive_approval(
                     resources=_safe_title,
                 )
 
-        # Post approval buttons to Slack DM if available
-        if self.slack and self._owner_id:
+        # Post approval buttons to Slack DM if available. Not for a Crew Mode crew
+        # member's request (its spawn, its subagents) once the routing is live: the
+        # conductor's card is the one place it is decided. Read from the lineage the
+        # slot frame reads, so a released crew member gets its buttons again; off
+        # while ``crew_mode.APPROVAL_ROUTING_LIVE`` is, and on any fault.
+        _crew_member = False
+        if approval_slot and self.dashboard_state is not None:
+            try:
+                from kiro_crew import crew_mode
+
+                if crew_mode.APPROVAL_ROUTING_LIVE:
+                    from kiro_crew.dashboard.session_control_parts.crew_filing import (
+                        _frame_parents,
+                    )
+
+                    _crew_member = bool(
+                        crew_mode.live_stamps(
+                            self.dashboard_state._slots or {},
+                            _frame_parents(self.dashboard_state),
+                            settled=crew_mode.lineage_is_settled(),
+                        ).get(approval_slot, ("", False))[0]
+                    )
+            except Exception:
+                logger.debug("Bot check failed for %s", approval_slot, exc_info=True)
+        if self.slack and self._owner_id and not _crew_member:
             try:
                 # Resolve parent thread context for threaded approval prompts
                 thread_ts: str | None = None
@@ -404,9 +481,15 @@ def _interactive_approval(
                 )
 
                 blocks = _build_approval_blocks(event, is_dm=is_dm, source=source)
+                if requester_md:
+                    blocks.append(
+                        {"type": "context", "elements": [{"type": "mrkdwn", "text": requester_md}]}
+                    )
                 title_safe, _ = redact_exfiltration_urls(event.title)
                 title_safe, _ = redact_credentials(title_safe)
                 fallback = f"🔐 [{source}] Approve: {title_safe}?"
+                if requester_safe:
+                    fallback += f" ({requester_safe})"
                 approval_ts = await self.slack.post_blocks(
                     channel, blocks, fallback, thread_ts  # type: ignore[arg-type]
                 )
@@ -427,7 +510,7 @@ def _interactive_approval(
                 if self.dashboard_state:
                     dashboard_future = asyncio.ensure_future(
                         self.dashboard_state.request_approval(
-                            request_id,
+                            approval_id,
                             source,
                             event.title,
                             tool_input=event.tool_input,
@@ -464,7 +547,7 @@ def _interactive_approval(
 
                         release_approval_hold_for(nudge_key, why="an approval was answered")
                 except asyncio.TimeoutError:
-                    outcome = "rejected"
+                    outcome = "expired"
                     # Nobody answered on either surface -- this branch also
                     # cancels the dashboard future below, so it is the single
                     # authoritative "unanswered" point for a channel-bound
@@ -481,19 +564,24 @@ def _interactive_approval(
                     _pending_approvals.pop(key, None)
                     # Resolve dashboard approval if Slack responded first
                     if self.dashboard_state:
-                        self.dashboard_state.resolve_approval(request_id, outcome == "approved")
+                        self.dashboard_state.resolve_approval(approval_id, outcome == "approved")
                     if dashboard_future and not dashboard_future.done():
                         dashboard_future.cancel()
 
                 # Clean up Slack message
                 try:
                     status = "✅ Approved" if outcome == "approved" else "🚫 Rejected"
-                    await self.slack.update_message(
-                        channel, approval_ts, text=f"🔐 *{title_safe}* — {status}"
-                    )
+                    # The answered card keeps who asked: it is the record the
+                    # user scrolls back to.
+                    resolved = f"🔐 *{title_safe}* — {status}"
+                    if requester_md:
+                        resolved += f"\n{requester_md}"
+                    await self.slack.update_message(channel, approval_ts, text=resolved)
                 except Exception:
                     pass
 
+                if outcome == "expired":
+                    return _by_host(False, DENY_CAUSE_APPROVAL_TIMEOUT)
                 return outcome == "approved"
             except Exception:
                 logger.debug("Slack approval failed, falling back to dashboard", exc_info=True)
@@ -509,7 +597,7 @@ def _interactive_approval(
             if raise_when_unreachable and not self._dashboard_client_attached():
                 raise SpawnApprovalUnreachable("no dashboard client is connected")
             return await self.dashboard_state.request_approval(
-                request_id,
+                approval_id,
                 source,
                 event.title,
                 tool_input=event.tool_input,
@@ -521,8 +609,8 @@ def _interactive_approval(
             # No human surface answered and none of the (skipped)
             # shortcuts may speak for an agent-authored request:
             # fail closed.
-            return False
-        return True  # no UI → auto-approve
+            return _by_host(False)
+        return _by_host(True)  # no UI → auto-approve
 
     return _approve
 
@@ -601,11 +689,13 @@ async def _heartbeat_approval(
         if event.is_shell:
             _ng_refusal = await name_grant.refusal_for_event(event)
             if _ng_refusal is not None:
-                logger.warning(
-                    "declining a heartbeat shell auto-approve: %s; the request "
-                    "falls through to deny-by-default",
-                    _ng_refusal.log_text,
-                )
+                # Once per session for a platform-scope code; audited per call.
+                if name_grant.should_log_decline(HEARTBEAT_KEY, _ng_refusal):
+                    logger.warning(
+                        "declining a heartbeat shell auto-approve: %s; the request "
+                        "falls through to deny-by-default",
+                        _ng_refusal.log_text,
+                    )
                 name_grant.log_decline(
                     source="heartbeat",
                     session_key=HEARTBEAT_KEY,

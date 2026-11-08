@@ -108,6 +108,10 @@ def _forget_counter(monkeypatch):
     return calls
 
 
+async def _noop_announce(_request: Any, _rows: Any) -> None:
+    return None
+
+
 def _body(resp: Any) -> dict[str, Any]:
     return json.loads(resp.body.decode("utf-8"))
 
@@ -119,6 +123,23 @@ class TestRegistryRefreshEndpoint:
         assert resp.status == 200
         assert _body(resp) == {"ok": True}
         assert sorted(_forget_counter) == ["catalog", "editorial", "order"]
+
+    async def test_the_listing_says_when_it_is_the_offline_fallback(
+        self, _stubbed_lists, monkeypatch
+    ):
+        # Offline the catalog answers nothing and the seed listing renders with a
+        # 200, so the flag is the only way a refresh can tell the user why the
+        # store shrank.
+        resp = await routes.handle_registry(_FakeRequest())  # type: ignore[arg-type]
+        assert _body(resp)["catalogUnavailable"] is True
+
+        async def _catalog():
+            return [{"name": "from-catalog"}]
+
+        monkeypatch.setattr(routes, "list_catalog_apps", _catalog)
+        monkeypatch.setattr(routes, "_announce_app_updates", _noop_announce)
+        resp = await routes.handle_registry(_FakeRequest())  # type: ignore[arg-type]
+        assert _body(resp)["catalogUnavailable"] is False
 
     async def test_the_listing_get_never_drops_a_cache(self, _stubbed_lists, _forget_counter):
         # The read path must stay read-only: a state-changing GET would be

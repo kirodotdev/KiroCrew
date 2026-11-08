@@ -22,9 +22,6 @@ from kiro_crew.crew_log import projection as crew_log_projection
 from kiro_crew.dashboard.handlers import agent_panel as routes
 from kiro_crew.dashboard_templates.instance import preview_url as instance_preview_url
 
-pytestmark = pytest.mark.asyncio
-
-
 # ------------------------------------- the page's four routes, over HTTP
 
 TEMPLATES_PATH = "/api/agent-panel/dashboard/templates"
@@ -36,14 +33,9 @@ ROLLBACK_PATH = "/api/agent-panel/dashboard/rollback"
 def _page_store(monkeypatch, **over: Any) -> SimpleNamespace:
     """A store standing in for the instance module, through this file's own seam.
 
-    The same `sys.modules` + package-attribute pair `_adopt_dashboard` uses, and for
-    the same reason: these four handlers are being tested, not the store underneath
-    them, and driving the real store would bind every case here to the shipped
-    catalogue's twelve directories and their sizes.
-
-    ``InstanceRefused`` is a REAL exception class rather than a sentinel, because
-    ``_instance_refusal`` separates a refusal from an unexpected failure with
-    ``isinstance`` -- a stub that got that wrong would make a 400 case pass as a 503.
+    Patched like `_adopt_dashboard` so the handlers are tested without the shipped
+    catalogue. ``InstanceRefused`` is a real exception class because
+    ``_instance_refusal`` uses ``isinstance`` to tell a 400 from a 503.
     """
 
     class InstanceRefused(Exception):
@@ -93,6 +85,7 @@ def _page_store(monkeypatch, **over: Any) -> SimpleNamespace:
 
 
 class TestTheTemplatesRouteOverHttp:
+    @pytest.mark.asyncio
     async def test_it_answers_the_catalog_and_marks_the_current_template(
         self, vetted, monkeypatch
     ) -> None:
@@ -116,6 +109,7 @@ class TestTheTemplatesRouteOverHttp:
         assert body["current_template_id"] == "fixture-board"
         assert body["query"] == "cost", "the query did not reach the lister"
 
+    @pytest.mark.asyncio
     async def test_the_query_is_bounded_before_it_reaches_the_lister(
         self, vetted, monkeypatch
     ) -> None:
@@ -140,6 +134,7 @@ class TestTheTemplatesRouteOverHttp:
             assert resp.status == 200, await resp.text()
         assert seen and len(seen[0]) == 200, f"query reached the lister at {len(seen[0])} chars"
 
+    @pytest.mark.asyncio
     async def test_a_registry_failure_is_a_refusal_and_not_a_500(self, vetted, monkeypatch) -> None:
         store = _page_store(monkeypatch)
 
@@ -154,6 +149,7 @@ class TestTheTemplatesRouteOverHttp:
 
 
 class TestThePreviewRouteOverHttp:
+    @pytest.mark.asyncio
     async def test_a_staged_template_comes_back_with_its_link(self, vetted, monkeypatch) -> None:
         _page_store(monkeypatch)
         async with _client() as c:
@@ -171,6 +167,7 @@ class TestThePreviewRouteOverHttp:
         assert body["preview"]["preview_url"] == f"/members?member={CREW}&dashboard=preview"
         assert "html" not in body["preview"], "the staged page itself came back on the wire"
 
+    @pytest.mark.asyncio
     async def test_a_non_string_template_id_is_refused(self, vetted, monkeypatch) -> None:
         _page_store(monkeypatch)
         async with _client() as c:
@@ -182,6 +179,7 @@ class TestThePreviewRouteOverHttp:
             assert resp.status == 400, await resp.text()
             assert (await resp.json())["code"] == "validation_error"
 
+    @pytest.mark.asyncio
     async def test_a_body_that_is_not_json_is_refused(self, vetted, monkeypatch) -> None:
         _page_store(monkeypatch)
         async with _client() as c:
@@ -196,6 +194,7 @@ class TestThePreviewRouteOverHttp:
             assert resp.status == 400, await resp.text()
             assert (await resp.json())["code"] == "invalid_json"
 
+    @pytest.mark.asyncio
     async def test_a_json_body_that_is_not_an_object_is_refused(self, vetted, monkeypatch) -> None:
         """A list parses as JSON and carries no fields, so it needs its own answer."""
         _page_store(monkeypatch)
@@ -208,6 +207,7 @@ class TestThePreviewRouteOverHttp:
             assert resp.status == 400, await resp.text()
             assert (await resp.json())["code"] == "invalid_body"
 
+    @pytest.mark.asyncio
     async def test_an_authored_page_is_refused_with_the_stores_own_sentence(
         self, vetted, monkeypatch
     ) -> None:
@@ -237,6 +237,7 @@ class TestThePreviewRouteOverHttp:
         assert seen and seen[0]["html"] == "<p></p>", "the handler swallowed the page"
         assert seen[0]["manifest"] == {"id": "mine"}
 
+    @pytest.mark.asyncio
     async def test_an_unexpected_store_failure_is_503_and_leaks_nothing(
         self, vetted, monkeypatch
     ) -> None:
@@ -263,6 +264,7 @@ class TestThePreviewRouteOverHttp:
 
 
 class TestTheApplyAndRollbackRoutesOverHttp:
+    @pytest.mark.asyncio
     async def test_apply_reports_the_new_version_and_tells_the_open_tab(
         self, vetted, monkeypatch
     ) -> None:
@@ -285,6 +287,7 @@ class TestTheApplyAndRollbackRoutesOverHttp:
         assert "saved_template_id" not in body, "apply still promises a saved template"
         assert frames == [("dashboard_instance_changed", {"slug": SLUG})], frames
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("path", "body"),
         [(APPLY_PATH, {"template_id": "fixture-board"}), (ROLLBACK_PATH, {"to_version": 2})],
@@ -307,6 +310,7 @@ class TestTheApplyAndRollbackRoutesOverHttp:
             reply = await resp.json()
         assert reply["dashboard"] == f"[DASHBOARD for {SLUG}]\nUpkeep: x"
 
+    @pytest.mark.asyncio
     async def test_apply_with_no_template_and_no_saved_page_is_a_refusal(
         self, vetted, monkeypatch
     ) -> None:
@@ -320,6 +324,7 @@ class TestTheApplyAndRollbackRoutesOverHttp:
             body = await resp.json()
         assert body["code"] == "refused" and "nothing to apply" in body["error"]
 
+    @pytest.mark.asyncio
     async def test_rollback_reports_the_version_it_landed_on(self, vetted, monkeypatch) -> None:
         """Two different numbers: the one asked for, and the one now current.
 
@@ -338,6 +343,7 @@ class TestTheApplyAndRollbackRoutesOverHttp:
         assert body["restored_from"] == 2, "the route lost the version asked for"
         assert body["instance_version"] == 7, "a rollback moves FORWARD"
 
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "to_version",
         [0, -1, "2", 1.5, True, None],

@@ -50,7 +50,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -143,6 +150,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatSidebar from '../pages/ChatSidebar'
 import { RECENT_UNIT_MS, DEFAULT_RECENT_WINDOW_MS } from '../pages/recentWindow'
+import { stubAppConfirm } from './appConfirmStub'
 
 interface TestSlot {
   key: string
@@ -159,7 +167,7 @@ const BETA: ChatFolder = { id: 'f2', name: 'Beta', order: 1 }
 const FILED: TestSlot = { key: 'k1', title: 'filed chat', running: false, messages: 2, folder_id: 'f1' }
 const LOOSE: TestSlot = { key: 'k2', title: 'loose chat', running: false, messages: 1 }
 
-function renderSidebar(opts: { slots?: TestSlot[]; folders?: ChatFolder[] } = {}) {
+function renderSidebar(opts: { slots?: TestSlot[]; folders?: ChatFolder[]; columns?: unknown[] } = {}) {
   const slots = opts.slots ?? [FILED, LOOSE]
   const folders = opts.folders ?? [ALPHA]
   mocks.chatFolders.mockResolvedValue(folders)
@@ -192,7 +200,7 @@ function renderSidebar(opts: { slots?: TestSlot[]; folders?: ChatFolder[] } = {}
     },
   })
   qc.setQueryData(['chat-folders'], folders)
-  qc.setQueryData(['tag-columns'], [])
+  qc.setQueryData(['tag-columns'], opts.columns ?? [])
   const view = render(
     <QueryClientProvider client={qc}>
       <Provider store={store}>
@@ -304,6 +312,19 @@ describe('ChatSidebar — list-view folder header', () => {
     expect(screen.getByTitle('Double-click to rename').textContent).toBe('Alpha')
   })
 
+  it('names the folder rename field in the list view', () => {
+    renderSidebar()
+    fireEvent.doubleClick(screen.getByTitle('Double-click to rename'))
+    expect(screen.getByRole('textbox', { name: 'Folder name' })).toHaveValue('Alpha')
+  })
+
+  it('names the folder rename field in the board view', () => {
+    cfg.value = { tagColumnsEnabled: true, confirmCloseSession: false }
+    renderSidebar({ columns: [{ id: 'c1', name: 'All', tag_ids: [], mode: 'any', order: 0 }] })
+    fireEvent.doubleClick(screen.getAllByTitle('Double-click to rename')[0])
+    expect(screen.getByRole('textbox', { name: 'Folder name' })).toHaveValue('Alpha')
+  })
+
   it('does not PATCH a name that trims to nothing', async () => {
     renderSidebar()
     openFolderMenu('f1')
@@ -403,15 +424,14 @@ describe('ChatSidebar — list-view folder header', () => {
   })
 
   it('deletes the folder only once the confirm is accepted', async () => {
-    const confirmFn = vi.fn().mockReturnValue(false)
-    vi.stubGlobal('confirm', confirmFn)
+    const confirmFn = stubAppConfirm(false)
     renderSidebar()
     openFolderMenu('f1')
     fireEvent.click(screen.getByTestId('folder-delete-f1'))
-    expect(confirmFn).toHaveBeenCalledWith('Delete “Alpha”? Sessions will be ungrouped.')
+    expect(confirmFn).toHaveBeenCalledWith(expect.objectContaining({ body: 'Delete “Alpha”? Sessions will be ungrouped.' }))
     expect(mocks.deleteChatFolder).not.toHaveBeenCalled()
 
-    confirmFn.mockReturnValue(true)
+    confirmFn.mockImplementation(() => Promise.resolve(true))
     openFolderMenu('f1')
     fireEvent.click(screen.getByTestId('folder-delete-f1'))
     await waitFor(() => expect(mocks.deleteChatFolder).toHaveBeenCalledWith('f1'))
@@ -433,12 +453,11 @@ describe('ChatSidebar — list-view folder header', () => {
   })
 
   it('right-click deletes only through the same confirm as the ⋯ menu', async () => {
-    const confirmFn = vi.fn().mockReturnValue(true)
-    vi.stubGlobal('confirm', confirmFn)
+    const confirmFn = stubAppConfirm(true)
     renderSidebar()
     fireEvent.contextMenu(screen.getByRole('group', { name: 'Folder Alpha' }), { clientX: 40, clientY: 20 })
     fireEvent.click(screen.getByTestId('folder-delete-f1-ctx'))
-    expect(confirmFn).toHaveBeenCalledWith('Delete “Alpha”? Sessions will be ungrouped.')
+    expect(confirmFn).toHaveBeenCalledWith(expect.objectContaining({ body: 'Delete “Alpha”? Sessions will be ungrouped.' }))
     await waitFor(() => expect(mocks.deleteChatFolder).toHaveBeenCalledWith('f1'))
   })
 
@@ -477,6 +496,17 @@ describe('ChatSidebar — list-view folder header', () => {
     // rethrows, and the sidebar maps it to the specific stale-directory
     // message naming the folder's resolved project path.
     mocks.chatSlotProject.mockRejectedValue(new ApiError(400, 'Not a directory'))
+    renderSidebar({ folders: [{ ...ALPHA, project_dir: '/renamed-away/proj' }] })
+    fireEvent.click(screen.getByLabelText('New chat in Alpha'))
+    const notice = await screen.findByTestId('folder-create-error-f1')
+    expect(notice.textContent).toContain('/renamed-away/proj')
+    expect(notice.textContent).toContain('no longer exists')
+  })
+
+  it('names the stale project directory when the create endpoint refuses the folder', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    // POST /api/chat/slots answers folder_project_invalid before any slot exists.
+    mocks.createChatSlot.mockRejectedValueOnce(new ApiError(400, 'invalid folder project: Project directory must be an existing directory'))
     renderSidebar({ folders: [{ ...ALPHA, project_dir: '/renamed-away/proj' }] })
     fireEvent.click(screen.getByLabelText('New chat in Alpha'))
     const notice = await screen.findByTestId('folder-create-error-f1')

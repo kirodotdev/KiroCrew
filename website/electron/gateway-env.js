@@ -20,6 +20,36 @@ const GATEWAY_UTF8_ENV = Object.freeze({
   PYTHONIOENCODING: "utf-8:backslashreplace",
 });
 
+// The standard proxy variables, compared case-insensitively against the
+// inherited environment (on Windows the spellings are the same variable, and
+// anywhere a lowercase export is just as explicit as an uppercase one).
+// Discovery (system-proxy-env.js) sets the uppercase spellings when it fills
+// a gap.
+const PROXY_ENV_KEYS = Object.freeze([
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+]);
+
+/**
+ * True when the environment already carries any standard proxy variable.
+ *
+ * A GUI-launched macOS app inherits launchd's environment, not the shell's,
+ * so a proxy-only network can leave this false — and the gateway's whole
+ * child tree (bundled kiro-cli-chat included) reaches the model backend
+ * directly, failing every turn as a transient 5xx (issue #19821). Any
+ * inherited spelling means an operator's explicit choice, which discovery
+ * must never override.
+ *
+ * @param {NodeJS.ProcessEnv} env
+ * @returns {boolean}
+ */
+function hasProxyConfiguration(env) {
+  const upper = new Set(Object.keys(env).map((key) => key.toUpperCase()));
+  return PROXY_ENV_KEYS.some((key) => upper.has(key));
+}
+
 // Where packaging/build-desktop.sh stages the pinned kiro-cli, relative to the
 // app's resources directory. One spelling shared with the backend's reader
 // (kiro_cli.known_kiro_cli_dirs, via the env var below) and the docs.
@@ -60,18 +90,37 @@ const BUNDLED_KAS_RECORD = "install.json";
  * deliberately override hostile inherited values such as PYTHONUTF8=0 or
  * PYTHONIOENCODING=cp1252 on every supported desktop platform.
  *
+ * `discoverProxyEnv` (system-proxy-env.js) is the gap-filler for macOS GUI
+ * launches, which inherit launchd's environment and therefore no shell-profile
+ * proxy export: on a proxy-only network every kiro-cli child would otherwise
+ * reach the model backend directly and fail every turn as a transient 5xx
+ * (issue #19821). It runs only when the inherited environment names NONE of
+ * `PROXY_ENV_KEYS` — an operator's explicit setting, in any spelling, always
+ * wins — and its answer is merged as-is (null or a protocol the system does
+ * not enable change nothing). Omitted, or returning null, this function is
+ * byte-for-byte the passthrough it has always been.
+ *
  * @param {NodeJS.ProcessEnv} baseEnv
- * @param {{bundled?: boolean, platform?: string}} options
+ * @param {{bundled?: boolean, platform?: string, discoverProxyEnv?: () => NodeJS.ProcessEnv | null}} options
  * @returns {NodeJS.ProcessEnv}
  */
 function buildGatewayEnvironment(
   baseEnv,
-  { bundled = false, platform = process.platform } = {},
+  { bundled = false, platform = process.platform, discoverProxyEnv } = {},
 ) {
   const env = {
     ...baseEnv,
     ...GATEWAY_UTF8_ENV,
   };
+  if (discoverProxyEnv && !hasProxyConfiguration(env)) {
+    const discovered = discoverProxyEnv();
+    if (discovered) {
+      for (const [key, value] of Object.entries(discovered)) {
+        // Gap-filler by exact spelling too: never displace an inherited name.
+        if (!(key in env)) env[key] = value;
+      }
+    }
+  }
   if (bundled) {
     // Bundled Python must import its packaged code and stdlib. Windows treats
     // environment keys case-insensitively, including mixed-case inherited keys.

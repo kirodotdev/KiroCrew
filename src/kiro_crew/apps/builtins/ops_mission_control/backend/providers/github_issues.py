@@ -128,11 +128,19 @@ class GitHubIssuesAdapter:
 
     # -- SignalSource ------------------------------------------------------
 
-    async def poll(self) -> list[Signal]:
+    def _poll_inputs(self) -> tuple[bool, str, list[str]]:
+        """``(configured, repo, labels)`` in one call, for one hop off the loop.
+
+        Each read opens ``config.json`` and ``configured()`` also walks PATH for ``gh``.
+        """
         if not self.configured():
+            return False, "", []
+        return True, config_value(PROVIDER_ID, "repo"), config_list(PROVIDER_ID, "labels")
+
+    async def poll(self) -> list[Signal]:
+        ok, repo, labels = await asyncio.to_thread(self._poll_inputs)
+        if not ok:
             return []
-        repo = config_value(PROVIDER_ID, "repo")
-        labels = config_list(PROVIDER_ID, "labels")
 
         args = [
             "issue",
@@ -220,7 +228,7 @@ class GitHubIssuesAdapter:
         return frozenset({ACTION_RESOLVE, ACTION_COMMENT})
 
     async def execute(self, signal: Signal, action: str, payload: dict[str, Any]) -> ActionResult:
-        if not self.configured():
+        if not await asyncio.to_thread(self.configured):
             return ActionResult(ok=False, action=action, error="github-issues is not configured")
         repo = signal.labels.get("repo", "")
         number = signal.labels.get("issue_number", "")

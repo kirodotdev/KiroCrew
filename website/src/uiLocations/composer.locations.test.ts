@@ -83,9 +83,12 @@ const EXPECTED: Record<string, Expect> = {
     [{ kind: 'condition', id: 'screen_capture_available' }],
   ),
   'composer.add-menu.sketch': menuItem('components.chatInput.sketch', 'Sketch', '草图'),
-  'composer.add-menu.slash': menuItem('components.chatInput.command', 'Command', '命令', ['components.chatInput.slash_commands']),
-  'composer.add-menu.reference-file': menuItem('components.chatInput.file', 'File', '文件', ['components.chatInput.reference_a_file']),
-  'composer.add-menu.skill': menuItem('components.chatInput.skill', 'Skill', '技能', ['components.chatInput.use_a_skill']),
+  // The rows say what they do ("Reference a file", "Use a skill", "Slash
+  // command") instead of a one-word label plus a description line; the old
+  // one-word keys survive as aliases so a find_ui for "File" still lands.
+  'composer.add-menu.slash': menuItem('components.chatInput.command', 'Slash command', '斜杠命令', ['components.chatInput.slash_commands']),
+  'composer.add-menu.reference-file': menuItem('components.chatInput.reference_a_file', 'Reference a file', '引用文件', ['components.chatInput.file']),
+  'composer.add-menu.skill': menuItem('components.chatInput.use_a_skill', 'Use a skill', '使用技能', ['components.chatInput.skill']),
   'composer.context-usage': {
     kind: 'button', labelKey: 'components.chatInput.context_usage', source: SHELF, en: 'Context usage', zh: '上下文用量',
     parents: ['page.chat'], entry: 'toolbar', requires: [OPEN, EXPANDED, { kind: 'condition', id: 'context_usage_reported' }],
@@ -122,8 +125,8 @@ const EXPECTED: Record<string, Expect> = {
   'composer.approval-mode': {
     kind: 'button', labelKey: 'uiLocations.description.composer_approval_mode', source: APPROVAL,
     aliasKeys: ['components.approvalModePicker.approval_mode'],
-    en: "The approval-mode picker in the message box's control row. It sets whether tool calls ask first (Normal), run reads without asking (Reads), trust this session (Trust), or auto-approve everything (YOLO).",
-    zh: '消息框控制栏中的审批模式选择器，用于设置工具调用是先询问（常规）、读取操作直接运行（读取）、信任本会话（信任），还是全部自动批准（YOLO）。',
+    en: "The approval-mode picker in the message box's control row. It sets whether only lookups run without asking (Normal), its own memory, chat, skill and knowledge searches run too (Reads), this session is trusted (Trust), or everything is auto-approved (YOLO).",
+    zh: '消息框控制栏中的审批模式选择器，用于设置是只有查找类操作直接运行（常规）、它自己的记忆、对话、技能和知识搜索也直接运行（读取）、信任本会话（信任），还是全部自动批准（YOLO）。',
     parents: ['page.chat'], entry: 'toolbar', requires: [OPEN, EXPANDED],
   },
 }

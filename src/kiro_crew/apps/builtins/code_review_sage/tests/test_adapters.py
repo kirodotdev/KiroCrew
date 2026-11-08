@@ -181,6 +181,41 @@ class TestEnterpriseHosts(unittest.TestCase):
             self.assertFalse(A.link_names_a_host(bare), bare)
 
 
+class TestRepoSegmentWidth(unittest.TestCase):
+    """``parse_repo_ref`` bounds owner and repo at GitHub's own widths."""
+
+    def test_owner_and_repo_at_the_limit_parse(self):
+        owner = "o" * A.GITHUB_MAX_OWNER_CHARS
+        repo = "r" * A.GITHUB_MAX_REPO_CHARS
+        self.assertEqual(
+            A.parse_repo_ref(f"https://github.com/{owner}/{repo}"),
+            ("github.com", owner, repo))
+
+    def test_owner_one_past_the_limit_is_refused(self):
+        owner = "o" * (A.GITHUB_MAX_OWNER_CHARS + 1)
+        with self.assertRaises(A.AdapterParseError):
+            A.parse_repo_ref(f"https://github.com/{owner}/repo")
+
+    def test_repo_one_past_the_limit_is_refused(self):
+        repo = "r" * (A.GITHUB_MAX_REPO_CHARS + 1)
+        with self.assertRaises(A.AdapterParseError):
+            A.parse_repo_ref(f"https://github.com/owner/{repo}")
+
+    def test_dot_git_is_stripped_before_the_width_is_judged(self):
+        repo = "r" * A.GITHUB_MAX_REPO_CHARS
+        self.assertEqual(A.parse_repo_ref(f"https://github.com/o/{repo}.git")[2], repo)
+
+    def test_limits_match_github_runner(self):
+        # The module spells the numbers itself because it also loads standalone;
+        # this keeps the two spellings from drifting apart.
+        try:
+            from kiro_crew import github_runner
+        except ImportError:  # pragma: no cover - standalone run
+            self.skipTest("kiro_crew is not importable")
+        self.assertEqual(A.GITHUB_MAX_OWNER_CHARS, github_runner.GITHUB_MAX_OWNER_CHARS)
+        self.assertEqual(A.GITHUB_MAX_REPO_CHARS, github_runner.GITHUB_MAX_REPO_CHARS)
+
+
 class TestFailFast(unittest.TestCase):
     def test_garbage_json(self):
         with self.assertRaises(A.AdapterParseError):

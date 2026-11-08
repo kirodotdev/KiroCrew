@@ -26,7 +26,7 @@ from kiro_crew.config.loader import ACTIVATION_REVIEW
 from kiro_crew.slack import handler as sh
 from kiro_crew.slack import interactions as ix
 from kiro_crew.start_priority import StartPriority
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 LOGGER = "kiro_crew.slack.interactions"
 OWNER = "UOWNER"
@@ -64,7 +64,9 @@ class _Session:
     async def __aexit__(self, *exc: object) -> bool:
         return False
 
-    async def post(self, url: str, json: dict | None = None) -> SimpleNamespace:
+    async def post(
+        self, url: str, json: dict | None = None, proxy: str | None = None
+    ) -> SimpleNamespace:
         if self._http.fail:
             raise RuntimeError("response_url unreachable")
         self._http.posts.append((url, json or {}))
@@ -124,6 +126,48 @@ def audit(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     monkeypatch.setattr(ix, "sel", lambda: recorder)
     log: MagicMock = recorder.log_api_access
     return log
+
+
+@pytest.fixture
+def sel_log(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A real, synchronous security event log under tmp_path for both modules that audit."""
+    from kiro_crew import sel as sel_mod
+
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    (tmp_path / "sel").mkdir()
+    log = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+    # Leave the process singleton unset so no other caller is handed this log.
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    monkeypatch.setattr(ix, "sel", lambda: log)
+    monkeypatch.setattr(sh, "sel", lambda: log)
+    return log
+
+
+def _rows(log: Any) -> list[tuple[str, str]]:
+    return [(e["operation"], e["outcome"]) for e in log.recent()]
+
+
+@pytest.fixture
+def pending(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Park a real approval prompt; only ``U1`` may answer it. Restores the shared maps."""
+    saved_pending = dict(sh._pending_approvals)
+    saved_trust = dict(sh._trusted_sessions)
+    sh._pending_approvals.clear()
+    sh._trusted_sessions.clear()
+    monkeypatch.setattr(sh, "is_allowed_user", lambda uid: uid == "U1")
+
+    def _park(channel: str, msg_ts: str, session_key: str = "") -> Any:
+        prompt = sh._PendingApproval(None, "req-1", session_key)  # type: ignore[arg-type]
+        sh._pending_approvals[f"{channel}:{msg_ts}"] = prompt
+        return prompt
+
+    yield _park
+    sh._pending_approvals.clear()
+    sh._pending_approvals.update(saved_pending)
+    sh._trusted_sessions.clear()
+    sh._trusted_sessions.update(saved_trust)
 
 
 @pytest.fixture
@@ -211,11 +255,15 @@ class TestNativeToolApproval:
 
     @pytest.mark.asyncio
     async def test_trust_in_a_dm_resolves_and_labels_the_prompt(
-        self, orch: MagicMock, interaction: AsyncMock
+        self, orch: MagicMock, interaction: AsyncMock, pending: Any, sel_log: Any
     ) -> None:
-        interaction.return_value = "trust_tool"
+        interaction.side_effect = sh.handle_interaction
+        prompt = pending("D1", "m1", session_key="slack:th1")
         payload = {"message": {"thread_ts": "th1"}}
         await ix._handle_tool_approval(payload, "trust_tool", "D1", "m1", "U1")
+        assert prompt.future.result() == sh._OUTCOME_APPROVED
+        assert "slack:th1" in sh._trusted_sessions
+        assert _rows(sel_log) == [("slack.interactive.approval", "allowed")]
         interaction.assert_awaited_once_with(
             "D1",
             "m1",
@@ -245,21 +293,35 @@ class TestNativeToolApproval:
 
     @pytest.mark.asyncio
     async def test_reject_on_a_denied_channel_still_resolves_and_is_labelled(
-        self, orch: MagicMock, gate: AsyncMock, interaction: AsyncMock
+        self,
+        orch: MagicMock,
+        gate: AsyncMock,
+        interaction: AsyncMock,
+        pending: Any,
+        sel_log: Any,
     ) -> None:
         gate.return_value = False
-        interaction.return_value = "reject_tool"
+        interaction.side_effect = sh.handle_interaction
+        prompt = pending("C1", "m1")
         await ix._handle_tool_approval({"message": {}}, "reject_tool", "C1", "m1", "U1")
+        assert prompt.future.result() == sh._OUTCOME_REJECTED
+        assert "C1:m1" not in sh._pending_approvals
+        assert _rows(sel_log) == [("slack.interactive.approval", "denied")]
         gate.assert_not_awaited()
         interaction.assert_awaited_once()
         orch.slack.update_message.assert_awaited_once_with("C1", "m1", text="🚫 Rejected")
 
     @pytest.mark.asyncio
     async def test_an_unprocessed_press_keeps_the_buttons(
-        self, orch: MagicMock, interaction: AsyncMock
+        self, orch: MagicMock, interaction: AsyncMock, pending: Any, sel_log: Any
     ) -> None:
-        interaction.return_value = None
+        interaction.side_effect = sh.handle_interaction
+        prompt = pending("C1", "m1")
         await ix._handle_tool_approval({"message": {}}, "approve_tool", "C1", "m1", "U9")
+        # U9 may not answer: the prompt stays parked for someone who may.
+        assert not prompt.future.done()
+        assert sh._pending_approvals["C1:m1"] is prompt
+        assert _rows(sel_log) == [("slack.interactive.approval", "denied")]
         interaction.assert_awaited_once()
         orch.slack.update_message.assert_not_awaited()
 
@@ -273,10 +335,14 @@ class TestNativeToolApproval:
 
     @pytest.mark.asyncio
     async def test_a_failing_label_edit_does_not_escape(
-        self, orch: MagicMock, interaction: AsyncMock
+        self, orch: MagicMock, interaction: AsyncMock, pending: Any, sel_log: Any
     ) -> None:
         orch.slack.update_message = AsyncMock(side_effect=RuntimeError("slack 500"))
+        interaction.side_effect = sh.handle_interaction
+        prompt = pending("C1", "m1")
         await ix._handle_tool_approval({"message": {}}, "approve_tool", "C1", "m1", "U1")
+        assert prompt.future.result() == sh._OUTCOME_APPROVED
+        assert _rows(sel_log) == [("slack.interactive.approval", "allowed")]
         interaction.assert_awaited_once()
         orch.slack.update_message.assert_awaited_once_with("C1", "m1", text="✅ Approved")
 
@@ -495,11 +561,11 @@ class TestReviewEditSubmit:
 
     @pytest.mark.asyncio
     async def test_a_malformed_private_metadata_posts_nothing(
-        self, orch: MagicMock, audit: MagicMock
+        self, orch: MagicMock, sel_log: Any
     ) -> None:
         await ix._handle_review_edit_submit(_edit_submission(OWNER, "edited", meta="bare"))
+        assert _rows(sel_log) == []
         orch.slack.post_message.assert_not_awaited()
-        audit.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_an_empty_edit_posts_nothing_and_keeps_the_draft(
@@ -579,11 +645,11 @@ class TestReviewRevise:
 
     @pytest.mark.asyncio
     async def test_a_malformed_draft_key_opens_no_modal(
-        self, orch: MagicMock, audit: MagicMock
+        self, orch: MagicMock, sel_log: Any
     ) -> None:
         await ix._handle_review_revise(_payload(OWNER, trigger_id="T1"), {"value": "x"})
+        assert _rows(sel_log) == []
         orch.slack.views_open.assert_not_awaited()
-        audit.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_the_modal_opens_even_when_the_ephemeral_delete_fails(
@@ -739,3 +805,30 @@ class TestReviewReviseSubmit:
         assert audit.call_args_list[-1].kwargs["error"] == "handle_message failed"
         assert audit.call_args_list[-1].kwargs["resources"] == "C1"
         assert f"Review revision failed for {REQUESTER} in C1" in _messages(caplog)
+
+    @pytest.mark.asyncio
+    async def test_the_orchestrator_holds_the_revision_turn_until_it_ends(
+        self, orch: MagicMock, audit: MagicMock, turns: AsyncMock
+    ) -> None:
+        # The event loop keeps only a weak reference to a task, so a revise turn
+        # nobody holds can be collected mid-turn after the modal has closed.
+        orch._handler_tasks = set()
+        release = asyncio.Event()
+
+        async def _turn(*_a: Any, **_k: Any) -> None:
+            await release.wait()
+
+        turns.side_effect = _turn
+        sh._review_drafts_set(DRAFT_KEY, "draft", REQUESTER)
+        before = asyncio.all_tasks()
+        await ix._handle_review_revise_submit(_revise_submission(REQUESTER, "shorter"))
+        (task,) = [
+            t
+            for t in asyncio.all_tasks() - before
+            if getattr(t.get_coro(), "__qualname__", "").endswith("_do_revise")
+        ]
+        assert orch._handler_tasks == {task}
+        release.set()
+        await await_until(task, what="the background revise turn")
+        await async_wait_until(lambda: not orch._handler_tasks)
+        turns.assert_awaited_once()

@@ -110,10 +110,17 @@ def _write_artifact(output: Path, text: str) -> bool:
     0o600 because a profile names code paths and file layout from the user's
     machine; it is diagnostic data, not world-readable output.
     """
+    # Expand a leading ``~``/``~user`` on the caller-supplied path, matching every
+    # other caller path in the CLI (cli_commands_app, cli_config, ...). Without it
+    # ``--output ~/x`` lands under a literal ``~`` dir in the CWD, not in $HOME.
+    # expanduser() raises RuntimeError for a ``~user`` naming no such account, so
+    # it runs inside the handler: an unwritable --output should cost a clear
+    # message and a nonzero exit, not a traceback over an already-collected profile.
     try:
+        output = output.expanduser()
         output.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(output, text, mode=0o600)
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         print(f"Could not write the profile to {output}: {exc}", file=sys.stderr)
         return False
     return True

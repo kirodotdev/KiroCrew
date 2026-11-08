@@ -155,6 +155,24 @@ async def compact_if_needed(self: SessionManager, key: str) -> str:
     return await self._compaction.compact_if_needed(key)
 
 
+async def compact_if_idle(self: SessionManager, key: str, *, generation: int | None = None) -> str:
+    """Delegate the once-per-idle-stretch compaction ``session.idle_compaction`` fires."""
+    return await self._compaction.idle.compact_if_idle(key, generation=generation)
+
+
+def cancel_idle_compaction(self: SessionManager, key: str) -> bool:
+    """End *key*'s idle-compaction stretch; the session is in use again.
+
+    Called from the claim, registry-change and config paths, some of which run
+    on a manager a test built without its compaction boundary, so a manager
+    with none answers False.
+    """
+    compaction = self.__dict__.get("_compaction")
+    if compaction is None:
+        return False
+    return bool(compaction.idle.cancel(key))
+
+
 def set_compact_callback(self: SessionManager, cb: _CompactCallback | None) -> None:
     """Register the compaction completion callback."""
     self._compaction.set_compact_callback(cb)
@@ -199,11 +217,42 @@ def provider_switch_replay_pending(self: SessionManager, key: str) -> bool:
 
 
 def mark_provider_switch_replay(self: SessionManager, key: str) -> bool:
-    """Re-arm replay after an accepted turn is discarded by cancellation."""
+    """Re-arm replay after an accepted turn is discarded by cancellation.
+
+    A re-arm keeps a delivery already noted; arming a settled lease starts it
+    undelivered.
+    """
     session = self._sessions.get(self._fold_key(key))
     if session is None:
         return False
+    if not session.provider_switch_replay:
+        session.provider_switch_replay_delivered_to = None
     session.provider_switch_replay = True
+    return True
+
+
+def provider_switch_replay_delivered(self: SessionManager, key: str, incarnation: object) -> bool:
+    """Return whether an armed lease's replay already reached *incarnation*.
+
+    *incarnation* is the provider's current ``context_incarnation``: a respawned
+    process reloading the same session id is a new one, so the replay is owed again.
+    """
+    session = self._sessions.get(self._fold_key(key))
+    return bool(
+        session is not None
+        and session.provider_switch_replay
+        and session.provider_switch_replay_delivered_to == incarnation
+    )
+
+
+def note_provider_switch_replay_delivered(
+    self: SessionManager, key: str, incarnation: object
+) -> bool:
+    """Record that a turn which did not land kept the armed lease's replay in *incarnation*."""
+    session = self._sessions.get(self._fold_key(key))
+    if session is None or not session.provider_switch_replay:
+        return False
+    session.provider_switch_replay_delivered_to = incarnation
     return True
 
 
@@ -278,7 +327,11 @@ def _trigger_compaction(
 
 
 async def _compact_session(self: SessionManager, key: str, pct: float) -> str:
-    """Delegate backend-specific compaction execution."""
+    """Delegate backend-specific compaction execution.
+
+    The trigger is not a parameter here: the coordinator records it when it
+    commits the compaction and reads it back, so this seam keeps its shape.
+    """
     return await self._compaction._compact_session(key, pct)
 
 

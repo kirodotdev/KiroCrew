@@ -105,12 +105,14 @@ import os
 import re
 import threading
 import time
+import unicodedata
 import zlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Iterator, NamedTuple, Sequence
 
 from kiro_crew._sqlite_compat import fts5_available, is_cjk_char, sqlite3
 from kiro_crew.owner_only_files import mkdirs_owner_only, prepare_owner_only_sqlite
+from kiro_crew.sqlite_wal import enable_wal
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.history_search import SearchNeedle
@@ -119,6 +121,16 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: index entry and MATCH returns nothing, so such needles are left to the exact
 #: scoring pass (which still applies them in full) rather than used as filters.
 _MIN_TRIGRAM_CHARS = 3
+
+
+def _is_unicode61_token_char(ch: str) -> bool:
+    """Whether the ``unicode61`` tokenizer keeps *ch* as part of a token.
+
+    It keeps letters and numbers and treats punctuation and symbols as
+    separators, so a ``session_cjk`` MATCH on any other character finds nothing.
+    """
+    return unicodedata.category(ch)[0] in "LN"
+
 
 #: Separator joining one session's message texts into the single folded blob
 #: that both the FTS column and the scoring pass read.
@@ -326,8 +338,8 @@ class SessionSearchIndex:
             timeout=_CONNECT_TIMEOUT_SECS,
             isolation_level=None,
         )
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        enable_wal(conn, timeout_secs=_BUSY_TIMEOUT_MS / 1000)
         # This store keeps a copy of each session's message text, so a deleted
         # session's content must not survive as readable bytes in a freed page.
         # secure_delete zeroes pages as they are released; drop() truncates the
@@ -717,7 +729,12 @@ class SessionSearchIndex:
                 # must be in the document. Space-separated characters are an
                 # implicit AND over the per-character tokens; adjacency is left to
                 # the scorer's substring check, so this stays a superset.
-                out.append((pos, "session_cjk", " ".join(text)))
+                if all(map(_is_unicode61_token_char, text)):
+                    out.append((pos, "session_cjk", " ".join(text)))
+                # Otherwise the needle holds a kana punctuation or symbol mark
+                # (the middle dot U+30FB, U+309B, U+30A0). unicode61 treats it as
+                # a separator, so MATCH would return no rows and drop real hits;
+                # it is left to the exact scoring pass instead.
                 continue
             if any(len(s) < _MIN_TRIGRAM_CHARS for s in spellings):
                 continue

@@ -58,9 +58,12 @@ class TestOverrideHandlerReRunsTheBoundForkLaneRun:
         self,
         tmp_path: Path,
         target: str,
-        check_runs: list,
+        check_runs: list | None,
         runs: dict,
         head_repo: str = "fork/repo",
+        listing: list | None = None,
+        is_fork: bool = True,
+        latest_check_runs: list | None = None,
     ):
         bash = _bash()
         if bash is None or os.name == "nt":
@@ -74,38 +77,50 @@ class TestOverrideHandlerReRunsTheBoundForkLaneRun:
         (data / "runs.json").write_text(
             json.dumps(
                 {
-                    "workflow_runs": [
-                        {
-                            "id": 900,
-                            "run_attempt": 2,
-                            "path": ".github/workflows/fast-gate.yml",
-                            "head_repository": {"full_name": "fork/repo"},
-                            "head_branch": "feature",
-                        },
-                        # Sibling pull requests' newer Fast Gates on the same head:
-                        # another fork, and the same fork's other branch.
-                        {
-                            "id": 950,
-                            "run_attempt": 1,
-                            "path": ".github/workflows/fast-gate.yml",
-                            "head_repository": {"full_name": "other/repo"},
-                            "head_branch": "feature",
-                        },
-                        {
-                            "id": 960,
-                            "run_attempt": 1,
-                            "path": ".github/workflows/fast-gate.yml",
-                            "head_repository": {"full_name": "fork/repo"},
-                            "head_branch": "other-branch",
-                        },
-                    ]
+                    "workflow_runs": (
+                        listing
+                        if listing is not None
+                        else [
+                            {
+                                "id": 900,
+                                "run_attempt": 2,
+                                "path": ".github/workflows/fast-gate.yml",
+                                "head_repository": {"full_name": "fork/repo"},
+                                "head_branch": "feature",
+                            },
+                            # Sibling pull requests' newer Fast Gates on the same head:
+                            # another fork, and the same fork's other branch.
+                            {
+                                "id": 950,
+                                "run_attempt": 1,
+                                "path": ".github/workflows/fast-gate.yml",
+                                "head_repository": {"full_name": "other/repo"},
+                                "head_branch": "feature",
+                            },
+                            {
+                                "id": 960,
+                                "run_attempt": 1,
+                                "path": ".github/workflows/fast-gate.yml",
+                                "head_repository": {"full_name": "fork/repo"},
+                                "head_branch": "other-branch",
+                            },
+                        ]
+                    )
                 }
             ),
             encoding="utf-8",
         )
-        (data / "checkruns.json").write_text(
-            json.dumps({"check_runs": check_runs}), encoding="utf-8"
+        if latest_check_runs is not None:
+            (data / "checkruns-latest.json").write_text(
+                json.dumps({"check_runs": latest_check_runs}), encoding="utf-8"
+            )
+        (data / "workflow-runs.json").write_text(
+            json.dumps({"workflow_runs": []}), encoding="utf-8"
         )
+        if check_runs is not None:  # None: the check-runs read fails
+            (data / "checkruns.json").write_text(
+                json.dumps({"check_runs": check_runs}), encoding="utf-8"
+            )
         for run_id, payload in runs.items():
             (data / f"run-{run_id}.json").write_text(json.dumps(payload), encoding="utf-8")
         _write_stub(
@@ -120,7 +135,14 @@ class TestOverrideHandlerReRunsTheBoundForkLaneRun:
             '    id="${args##*actions/runs/}"; id="${id%%/*}"\n'
             f'    touch "{calls}/cancelled-$id"; exit 0 ;;\n'
             f'  *"actions/runs?event=pull_request"*) cat "{data}/runs.json"; exit 0 ;;\n'
-            f'  *"/check-runs?"*) cat "{data}/checkruns.json"; exit 0 ;;\n'
+            f'  *"/actions/workflows/"*"/runs "*) cat "{data}/workflow-runs.json"; exit 0 ;;\n'
+            '  *"/check-runs?"*)\n'
+            # checkruns-latest.json, when present, is the default
+            # filter=latest answer: a sibling's newer row hides this PR's.
+            f'    if [[ "$args" != *filter=all* ]] && [ -f "{data}/checkruns-latest.json" ]; then\n'
+            f'      cat "{data}/checkruns-latest.json"; exit 0\n'
+            "    fi\n"
+            f'    cat "{data}/checkruns.json"; exit ;;\n'
             '  *"actions/runs/"*)\n'
             '    id="${args##*actions/runs/}"; id="${id%% *}"\n'
             "    filter=.\n"
@@ -166,7 +188,7 @@ class TestOverrideHandlerReRunsTheBoundForkLaneRun:
                 HEAD_REPO=head_repo,
                 HEAD_REF="feature",
                 TARGET=target,
-                IS_FORK="true",
+                IS_FORK="true" if is_fork else "false",
                 DEFAULT_BRANCH="main",
             ),
         )
@@ -250,6 +272,160 @@ class TestOverrideHandlerReRunsTheBoundForkLaneRun:
         assert "reading fork-design-review.yml run 777 failed" in result.stdout, _proc_log(result)
         assert "HTTP 404" in result.stdout
         assert "points at" not in result.stdout
+
+    def _job_row(self, run_id: int) -> dict:
+        """An Actions JOB's check-run on the head: Actions links it to its run."""
+        return {
+            "id": 5000 + run_id,
+            "name": "Fast Gate",
+            "status": "completed",
+            "conclusion": "success",
+            "details_url": f"https://github.com/example/repo/actions/runs/{run_id}/job/{6000 + run_id}",
+        }
+
+    def _fast_gate_run(self, run_id: int, head_sha: str | None = None) -> dict:
+        return {
+            "id": run_id,
+            "run_attempt": 2,
+            "event": "pull_request",
+            "head_sha": head_sha or self.HEAD,
+            "path": ".github/workflows/fast-gate.yml",
+            "status": "completed",
+            "head_repository": {"full_name": "fork/repo"},
+            "head_branch": "feature",
+        }
+
+    def test_an_empty_listing_reads_every_check_run_not_only_the_latest(
+        self, tmp_path: Path
+    ) -> None:
+        # A sibling pull request on the shared head has a newer same-named
+        # Fast Gate job, which is all the default filter=latest answers.
+        rows = [
+            self._check_run(11, "design", 2, "failure", self._marker("222")),
+            self._job_row(900),
+        ]
+        runs = {
+            "222": self._lane_run(222, "fork-design-review.yml"),
+            "900": self._fast_gate_run(900),
+        }
+        result, read = self._run(
+            tmp_path,
+            "design",
+            rows,
+            runs,
+            listing=[],
+            latest_check_runs=[self._job_row(950)],
+        )
+        assert result.returncode == 0, _proc_log(result)
+        assert "actions/runs/222/rerun" in read("rerun.txt"), _proc_log(result)
+        assert "Fast Gate has not run" not in result.stdout
+
+    def test_a_named_fast_gate_run_that_cannot_be_read_is_a_read_failure(
+        self, tmp_path: Path
+    ) -> None:
+        rows = [
+            self._check_run(11, "design", 2, "failure", self._marker("222")),
+            self._job_row(900),
+        ]
+        result, read = self._run(
+            tmp_path,
+            "design",
+            rows,
+            {"222": self._lane_run(222, "fork-design-review.yml")},
+            listing=[],
+        )
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "could not be read" in result.stdout, _proc_log(result)
+        assert "Fast Gate has not run" not in result.stdout
+        assert "Design Review" in read("notice.txt")
+
+    def test_a_named_run_for_another_head_or_event_does_not_bind(self, tmp_path: Path) -> None:
+        rows = [
+            self._check_run(11, "design", 2, "failure", self._marker("222")),
+            self._job_row(900),
+            self._job_row(901),
+        ]
+        runs = {
+            "222": self._lane_run(222, "fork-design-review.yml"),
+            "900": self._fast_gate_run(900, head_sha="f" * 40),
+            "901": {**self._fast_gate_run(901), "event": "push"},
+        }
+        result, read = self._run(tmp_path, "design", rows, runs, listing=[])
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "Fast Gate has not run" in result.stdout, _proc_log(result)
+
+    def test_an_empty_listing_with_no_job_check_runs_still_reads_not_run(
+        self, tmp_path: Path
+    ) -> None:
+        rows = [self._check_run(11, "design", 2, "failure", self._marker("222"))]
+        result, read = self._run(
+            tmp_path,
+            "design",
+            rows,
+            {"222": self._lane_run(222, "fork-design-review.yml")},
+            listing=[],
+        )
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "Fast Gate has not run" in result.stdout, _proc_log(result)
+
+    def _same_repo_lane_run(self, run_id: int, head_sha: str | None = None) -> dict:
+        return {
+            "id": run_id,
+            "event": "pull_request",
+            "head_sha": head_sha or self.HEAD,
+            "path": ".github/workflows/design-review.yml",
+            "status": "completed",
+            "pull_requests": [{"number": 7}],
+        }
+
+    def test_a_same_repo_empty_listing_re_runs_the_newest_named_lane_run(
+        self, tmp_path: Path
+    ) -> None:
+        # Two lane runs on one head (a reopen after the synchronize run):
+        # readiness scores the newest, so the override must re-run that one.
+        result, read = self._run(
+            tmp_path,
+            "design",
+            [self._job_row(321), self._job_row(400)],
+            {"321": self._same_repo_lane_run(321), "400": self._same_repo_lane_run(400)},
+            is_fork=False,
+        )
+        assert result.returncode == 0, _proc_log(result)
+        reruns = read("rerun.txt")
+        assert "actions/runs/400/rerun" in reruns, _proc_log(result)
+        assert "actions/runs/321/" not in reruns, reruns
+
+    def test_a_same_repo_named_run_that_cannot_be_read_is_a_read_failure(
+        self, tmp_path: Path
+    ) -> None:
+        result, read = self._run(tmp_path, "design", [self._job_row(321)], {}, is_fork=False)
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "could not be read" in result.stdout, _proc_log(result)
+        assert "no Design Review workflow run found" not in result.stdout
+
+    def test_a_same_repo_check_runs_read_failure_is_a_read_failure(self, tmp_path: Path) -> None:
+        result, read = self._run(tmp_path, "design", None, {}, is_fork=False)
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "could not be read" in result.stdout, _proc_log(result)
+
+    def test_a_same_repo_empty_listing_with_no_named_run_is_still_not_found(
+        self, tmp_path: Path
+    ) -> None:
+        result, read = self._run(
+            tmp_path,
+            "design",
+            [self._job_row(321)],
+            {"321": self._same_repo_lane_run(321, head_sha="e" * 40)},
+            is_fork=False,
+        )
+        assert result.returncode == 0, _proc_log(result)
+        assert read("rerun.txt") == ""
+        assert "no Design Review workflow run found" in result.stdout, _proc_log(result)
 
     def test_a_run_of_another_workflow_is_refused(self, tmp_path: Path) -> None:
         rows = [self._check_run(50, "design", 2, "failure", self._marker("888"))]
@@ -364,7 +540,9 @@ class TestHumanOverrideHandler:
         script = _step_script(workflow, "Re-run line reviewers with the human decision")
 
         assert 'if [ "$IS_FORK" = "true" ]; then' in script
-        assert ".details_url" not in script
+        lane_resolver = script[script.index("rerun_fork_lane() {") :]
+        lane_resolver = lane_resolver[: lane_resolver.index("\n}\n")]
+        assert ".details_url" not in lane_resolver
         assert '--arg path ".github/workflows/fast-gate.yml"' in script
         assert '"\\(.id)-\\(.run_attempt // 1)"' in script
         assert 'want="$lane-pr-$PR-$fork_trigger"' in script
@@ -420,16 +598,10 @@ class TestHumanOverrideHandler:
         assert "could not be re-run automatically" in script
 
     def test_fork_lanes_write_their_run_id_into_every_check_run_write(self) -> None:
-        # The only link from a PR head back to the workflow_run-keyed lane run
-        # is the lane-run marker in its check-run's output.text; the override
-        # handler's fork re-run path reads it back. GitHub stores an
-        # Actions-created check-run's details_url as the check-run's own page,
-        # so that field cannot carry it. EVERY write of the row carries the
-        # marker -- the opening POST, each completing PATCH and the finalize
-        # fallback POST -- because whichever write landed last is the row the
-        # handler reads. The fallback must also carry the external_id the
-        # handler and readiness bind on, or the one row holding the marker is
-        # never a candidate.
+        # The lane-run marker in output.text is the override handler's only link back
+        # to the run (an Actions check-run's details_url is its own page). Every write
+        # carries it, since the last one is what the handler reads, and the fallback
+        # POST also carries the external_id the handler and readiness bind on.
         marker = "<!-- ai-review-fork-lane run=%s -->"
         args = '"${GITHUB_SERVER_URL:-}" "$REPO" "${GITHUB_RUN_ID:-}" "${GITHUB_RUN_ID:-}")"'
         # `posts` is how many check-run POSTs the lane makes, and it is a
@@ -498,6 +670,16 @@ class TestHumanOverrideHandler:
         return _step_script(
             _workflow("ai-review-human-override.yml"), "Validate and record the decision"
         )
+
+    def test_the_step_parses_under_bash_3_2(self) -> None:
+        # macOS runs these step tests under /bin/bash 3.2, which has no
+        # `${x,,}` / `${x^^}` case expansion ("bad substitution"). Linux CI's
+        # bash 5 accepts it, so only this pin catches it before macOS does.
+        code = [
+            line for line in self._override_step().splitlines() if not line.lstrip().startswith("#")
+        ]
+        offending = [line for line in code if ",,}" in line or "^^}" in line]
+        assert offending == []
 
     @pytest.mark.parametrize(
         ("perm_mode", "want_rc", "want_notice", "want_error_annotation"),
@@ -686,13 +868,9 @@ PRIMARY_LIMIT_LANES = ("codex-review.yml",)
 class TestOverrideReadFailureFailsClosed:
     """Execute the ACTUAL override-record read from each lane with ``gh`` stubbed.
 
-    ``2>/dev/null || true`` collapses a failed comments read onto the
-    same empty string as "no override recorded", so a transient API failure
-    re-gates a verdict a human has already cleared with ``/ai-review
-    override``. These cases pin the three outcomes apart: a read that succeeds
-    resolves the recorded override, a transient failure is absorbed by the
-    bounded retry, and a read that never succeeds fails the step closed while
-    naming the read as the cause.
+    ``2>/dev/null || true`` would read a failure as "no override recorded" and re-gate a
+    cleared verdict. Success resolves the override, a transient failure is retried, and
+    a read that never succeeds fails the step closed, naming the read.
     """
 
     HEAD = "0" * 40
@@ -1283,6 +1461,20 @@ class TestOverrideHandlerRecordsAClass:
 
         assert env["ACTOR"] == "${{ github.event.sender.login }}"
         assert env["COMMENT_AUTHOR"] == "${{ github.event.comment.user.login }}"
+
+    def test_the_edited_trigger_is_what_makes_the_sender_author_split_reachable(self) -> None:
+        """`edited` is load-bearing, not a convenience: an edit is the only way `ACTOR`
+        and `COMMENT_AUTHOR` can differ, because on `created` the sender IS the comment
+        author. Drop it and the sender-vs-author comparison, and its refusal notice,
+        become unreachable. Nothing else would say so: the handler still runs, no
+        refusal is posted, and the tests that cover the comparison drive the extracted
+        shell step directly, so they pass with the trigger gone.
+        """
+        wf = load_workflow(WORKFLOWS / "ai-review-human-override.yml")
+        # PyYAML reads the bare key `on` as the boolean True.
+        triggers = wf.get("on") or wf[True]
+
+        assert {"created", "edited"} <= set(triggers["issue_comment"]["types"])
 
     @pytest.mark.parametrize(
         "body",

@@ -126,7 +126,7 @@ def test_aws_mask_with_reexposed_config_stays_writable_and_restore_succeeds(
 ) -> None:
     """A credential mask that re-exposes a file is never sealed, so the restore succeeds.
 
-    This is the regression the review caught twice: if ``.aws`` were sealed read-only,
+    If ``.aws`` were sealed read-only,
     ``restore_exposed_files``' ``open(dest, "wb")`` would raise EROFS and abort the
     spawn. ``.aws`` does not opt in, so its stand-in stays writable and the config copy
     is written back without error.

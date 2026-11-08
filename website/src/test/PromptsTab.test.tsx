@@ -210,7 +210,7 @@ describe('PromptsTab authoring', () => {
 
     await waitFor(() => expect(mockApi.updatePrompt).toHaveBeenCalledWith(
       // The 4th argument is the edit base: the hash the detail read handed out,
-      // presented back so the server can refuse a save over someone else's edit.
+      // presented back so the server can refuse a save over an edit by another writer.
       'my-prompt', 'global', '---\ndescription: mine\n---\n\nedited body', 'a'.repeat(64),
     ))
   })
@@ -665,6 +665,7 @@ describe('PromptsTab feedback', () => {
     await waitFor(() => expect(create).toBeDisabled())
     expect(mockApi.createPrompt).toHaveBeenCalledTimes(1)
     release({ ok: true })
+    await waitFor(() => expect(screen.queryByPlaceholderText('my-prompt-name')).not.toBeInTheDocument())
   })
 
   it('shows the list and detail panes side by side, with a selection', async () => {
@@ -755,6 +756,8 @@ describe('PromptsTab in-flight writes', () => {
     fireEvent.click(await screen.findByText('Edit'))
 
     fireEvent.click(screen.getByRole('option', { name: /other/ }))
+    await waitFor(() => expect(mockApi.promptDetail).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('option', { name: /other/ })).toHaveAttribute('aria-selected', 'true'))
     expect(confirmSpy).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })
@@ -829,6 +832,7 @@ describe('PromptsTab in-flight writes', () => {
     await waitFor(() => expect(screen.getByText('Cancel')).toBeDisabled())
     expect(screen.getByPlaceholderText('my-prompt-name')).toBeInTheDocument()
     release({ ok: true })
+    await waitFor(() => expect(screen.queryByPlaceholderText('my-prompt-name')).not.toBeInTheDocument())
   })
 })
 
@@ -1058,5 +1062,88 @@ describe('assemblePromptContent — the frontmatter block is the author\'s text'
     expect(round('Just body.\n')).toBe('Just body.\n')
     expect(round('Just body.\n', 'now described'))
       .toBe('---\ndescription: now described\n---\n\nJust body.\n')
+  })
+})
+
+describe('PromptsTab filter selection (#20262)', () => {
+  // A prompt listed first whose description mentions the query, then the
+  // prompt the user actually typed.
+  const MENTIONS = [
+    { ...USER_PROMPT, name: 'alpha', fullName: 'alpha', description: 'calls review', path: '~/.kiro/prompts/alpha.md' },
+    { ...USER_PROMPT, name: 'review', fullName: 'review', description: 'code review', path: '~/.kiro/prompts/review.md' },
+  ]
+  const lastOpened = () => mockApi.promptDetail.mock.calls.at(-1)?.[0]
+
+  it('opens the prompt whose name matches the filter, not the first row', async () => {
+    mockApi.prompts.mockResolvedValue(MENTIONS)
+    renderTab()
+    await waitFor(() => expect(lastOpened()).toBe('alpha'))
+
+    fireEvent.change(screen.getByPlaceholderText(/filter prompts/i), { target: { value: 'review' } })
+    await waitFor(() => expect(lastOpened()).toBe('review'))
+    expect(screen.getByRole('option', { name: /alpha/ })).toBeInTheDocument()
+  })
+
+  it('keeps a prompt the user clicked while the filter still shows it', async () => {
+    mockApi.prompts.mockResolvedValue(MENTIONS)
+    renderTab()
+    await waitFor(() => expect(lastOpened()).toBe('alpha'))
+    fireEvent.click(screen.getByRole('option', { name: /alpha/ }))
+
+    fireEvent.change(screen.getByPlaceholderText(/filter prompts/i), { target: { value: 'review' } })
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(2))
+    expect(lastOpened()).toBe('alpha')
+  })
+})
+
+
+describe('PromptsTab list-load failure', () => {
+  it('shows the error through a role=alert and a retry button that refetches', async () => {
+    // First load fails; the retry's load succeeds.
+    mockApi.prompts
+      .mockRejectedValueOnce(new StubApiError(503, 'gateway is unreachable'))
+      .mockResolvedValueOnce([USER_PROMPT])
+
+    renderTab()
+
+    // The failure renders through ErrorNotice (role="alert"), not a bare
+    // text-danger paragraph, so assistive tech announces it.
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/gateway is unreachable|failed to load/i)
+
+    // A Retry control exists and refetches the same query.
+    expect(mockApi.prompts).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }))
+    await waitFor(() => expect(mockApi.prompts).toHaveBeenCalledTimes(2))
+
+    // After the successful refetch the list renders and the error clears.
+    await screen.findByRole('option', { name: /my-prompt/ })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+})
+
+describe('PromptsTab list Retry', () => {
+  it('keeps the pressed Retry mounted and focused while the retry reads', async () => {
+    // Retry clears `error` while it reads, which used to unmount the button
+    // the user had just pressed and drop their focus to the page (#32164).
+    let settle: (value: never[]) => void = () => {}
+    mockApi.prompts
+      .mockRejectedValueOnce(new Error('prompt service is unreachable'))
+      .mockReturnValueOnce(new Promise(resolve => { settle = resolve }))
+    renderTab()
+
+    const retry = await screen.findByRole('button', { name: 'Retry' })
+    retry.focus()
+    fireEvent.click(retry)
+    await waitFor(() => expect(mockApi.prompts).toHaveBeenCalledTimes(2))
+
+    expect(retry).toBeInTheDocument()
+    expect(retry).toHaveFocus()
+    expect(retry).toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(retry)
+    expect(mockApi.prompts).toHaveBeenCalledTimes(2)
+
+    settle([])
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument())
   })
 })

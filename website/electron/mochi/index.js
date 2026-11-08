@@ -1094,7 +1094,10 @@ function startMochiWatcher() {
   // same helper the rest of the shell uses — a renderer crash and its forwarded
   // page errors are otherwise invisible in the packaged app.
   try { require("./panelWindow").setPanelLogger(glog); } catch { /* module shape changed */ }
+  try { require("./petOverlays").setPetLogger(glog); } catch { /* module shape changed */ }
   try { require("./shortcuts").setShortcutLogger(glog); } catch { /* module shape changed */ }
+  // Reserved from the first tick, enabled or not, so an app never takes them.
+  try { require("./shortcuts").reserveMochiShortcuts(shortcutsOf(machineStore)); } catch { /* module shape changed */ }
 
   /**
    * Which instances have Mochi turned on.

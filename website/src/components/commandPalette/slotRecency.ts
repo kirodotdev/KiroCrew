@@ -24,11 +24,11 @@ function timestampEpoch(timestamp: SlotTimestamp | null | undefined): number | u
  * Creation time is a fallback only when neither message-derived field parses. */
 export function slotRecency(slot: SlotRecencyInput): SlotRecency {
   const activityEpoch = timestampEpoch(slot.last_activity_ts)
-  const messageEpoch = timestampEpoch(slot.last_ts)
+  const messageEpoch = timestampEpoch(slot.last_ts) // last-ts: every caller passes selectSlotsWithLiveLastTs rows (palette, recents, command bar, Worlds, send-to-session)
 
   if (activityEpoch !== undefined || messageEpoch !== undefined) {
     if (messageEpoch !== undefined && (activityEpoch === undefined || messageEpoch >= activityEpoch)) {
-      return { timestamp: slot.last_ts ?? undefined, epoch: messageEpoch }
+      return { timestamp: slot.last_ts ?? undefined, epoch: messageEpoch } // last-ts: as above
     }
     return { timestamp: slot.last_activity_ts ?? undefined, epoch: activityEpoch ?? 0 }
   }

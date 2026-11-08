@@ -10,14 +10,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime
 
 from aiohttp import web
 
 from kiro_crew.artifacts import get_default_store
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_config_text
+from kiro_crew.dashboard.handlers.knowledge_access import _task_registry
 from kiro_crew.dashboard.handlers.knowledge_agent_context import (
     add_agent_document_route,
+    remote_search,
     search_for_context,
 )
 from kiro_crew.dashboard.handlers.knowledge_bundles import export_all, export_item, import_bundle
@@ -62,7 +65,7 @@ from kiro_crew.knowledge.connectors.base import BaseConnector
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
 from kiro_crew.knowledge.embedder import create_embedder_from_config
 from kiro_crew.knowledge.extractor import EntityExtractor
-from kiro_crew.knowledge.ingestion import IngestionPipeline
+from kiro_crew.knowledge.ingestion import IngestionPipeline, reclaim_interrupted_ingest_jobs
 from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT, LLMPool
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.sync import SyncScheduler
@@ -81,6 +84,40 @@ def _create_embedder(app):
     if not isinstance(cfg, dict):
         cfg = {}
     return create_embedder_from_config(cfg)
+
+
+async def _reclaim_interrupted_ingest_jobs(app: web.Application) -> None:
+    """Start the sweep of source-ingest jobs a previous gateway left 'processing'.
+
+    A startup hook that only schedules: the sweep scans ``ingestion_jobs``, whose
+    size grows with history, so it runs as a tracked background task and startup
+    does not wait for it. The boot cutoff taken in ``setup_knowledge_routes`` is
+    what keeps a job this process starts in the meantime out of it.
+    """
+    task = asyncio.create_task(_run_ingest_job_reclaim(app))
+    tasks = _task_registry(app, "_bg_tasks")
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+
+
+async def _run_ingest_job_reclaim(app: web.Application) -> None:
+    """Mark source-ingest jobs from before the boot cutoff 'abandoned', off the loop.
+
+    A failure is logged and dropped: the rows only misreport, they hold no lock
+    and gate no ingest.
+    """
+    store = app["state"].knowledge_store
+    try:
+        moved = await asyncio.to_thread(
+            reclaim_interrupted_ingest_jobs,
+            store,
+            created_before=app["_knowledge_ingest_boot_ts"],
+        )
+    except Exception:
+        logger.warning("could not reclaim interrupted knowledge ingest jobs", exc_info=True)
+        return
+    if moved:
+        logger.info("Marked %d interrupted knowledge ingest job(s) abandoned", moved)
 
 
 # ---------- Source Watcher ----------
@@ -218,20 +255,14 @@ async def _watch_knowledge_config(app: web.Application) -> None:
 
 
 async def _shutdown_knowledge_pools(app: web.Application) -> None:
-    """Shut down each workload pool once, including the legacy alias."""
-    seen: set[int] = set()
-    for key in (
-        "knowledge_extraction_pool",
-        "knowledge_fetch_pool",
-    ):
-        pool = app.get(key)
-        if pool is None or id(pool) in seen:
-            continue
-        seen.add(id(pool))
-        try:
-            await pool.shutdown()
-        except Exception:
-            logger.exception("Knowledge pool shutdown failed: %s", key)
+    """Shut down the extraction pool, the one LLM pool the Knowledge Library holds."""
+    pool = app.get("knowledge_extraction_pool")
+    if pool is None:
+        return
+    try:
+        await pool.shutdown()
+    except Exception:
+        logger.exception("Knowledge pool shutdown failed: knowledge_extraction_pool")
 
 
 def setup_knowledge_routes(app: web.Application) -> None:
@@ -253,7 +284,6 @@ def setup_knowledge_routes(app: web.Application) -> None:
             fallback_effort=DEFAULT_EXTRACTION_EFFORT,
             config_pool_size_key="extraction_pool_size",
         )
-        fetch_pool = LLMPool(pool_size=1)
         embedder = _create_embedder(app)
         pipeline = IngestionPipeline(
             store=store,
@@ -263,12 +293,45 @@ def setup_knowledge_routes(app: web.Application) -> None:
             embedder=embedder,
         )
         app["knowledge_extraction_pool"] = extraction_pool
-        app["knowledge_fetch_pool"] = fetch_pool
         app["knowledge_embedder"] = embedder
         connectors: dict[str, "BaseConnector"] = {}
         # Local folder connector (always available)
         connectors["local_folder"] = LocalFolderConnector()
         connectors["obsidian_vault"] = LocalFolderConnector()
+
+        # Amazon Bedrock KB: live-retrieval source with no local items. The
+        # proxy keeps the optional subsystem OFF the gateway boot path
+        # (no-new-work-on-gateway-boot-path): constructing it does no work,
+        # and the bedrock_kb module (and, inside it, boto3) loads on the
+        # first validate/sync call. The connector reports the missing
+        # [bedrock] extra itself when boto3 is absent.
+        class _LazyBedrockKBConnector(BaseConnector):
+            def _real(self) -> "BaseConnector":
+                from kiro_crew.knowledge.connectors import bedrock_kb
+
+                return bedrock_kb.BedrockKBConnector()
+
+            def source_type(self) -> str:
+                return "bedrock_kb"
+
+            def validate_config(self, config: dict) -> tuple[bool, str]:
+                return self._real().validate_config(config)
+
+            def validate_registration(self, config: dict) -> tuple[bool, str, str]:
+                from kiro_crew.knowledge.connectors import bedrock_kb
+
+                return bedrock_kb.BedrockKBConnector().validate_registration(config)
+
+            async def detect_changes(self, source: dict) -> bool:
+                # Mirrors the real connector: a live-retrieval source never
+                # syncs, and answering False here avoids loading the module
+                # from SyncScheduler.sync_all sweeps.
+                return False
+
+            async def fetch(self, source: dict) -> tuple[str, dict]:
+                return await self._real().fetch(source)
+
+        connectors["bedrock_kb"] = _LazyBedrockKBConnector()
         # Edition-contributed connectors (CPP KnowledgeProvider seam). Built-ins
         # are set FIRST so an edition can both ADD a new source_type and, if it
         # ever needs to, override a built-in. The Default returns {} → standalone
@@ -295,6 +358,12 @@ def setup_knowledge_routes(app: web.Application) -> None:
         )
         app["knowledge_pipeline"] = pipeline
         app["knowledge_sync"] = SyncScheduler(store=store, pipeline=pipeline, connectors=connectors)
+        # Settle the job rows a previous gateway left 'processing'. The sweep runs
+        # in the background; the cutoff is taken here, before the app serves a
+        # request or any hook below starts an ingest, so no job of this process
+        # can fall under it.
+        app["_knowledge_ingest_boot_ts"] = datetime.now().isoformat()
+        app.on_startup.append(_reclaim_interrupted_ingest_jobs)
         # Start source watcher (auto-watches local_file sources)
         app.on_startup.append(_start_watcher_async)
         # Start artifact ingest watcher (no-op unless auto-ingest is enabled)
@@ -339,6 +408,7 @@ def setup_knowledge_routes(app: web.Application) -> None:
     app.router.add_get("/api/knowledge/embedding/status", get_embedding_status)
     app.router.add_post("/api/knowledge/embedding/generate", batch_embed_items)
     app.router.add_get("/api/knowledge/search-for-context", search_for_context)
+    app.router.add_post("/api/knowledge/remote-search", remote_search)
 
     # Pool lifecycle: lazy start on first request, shutdown on app exit
     app.on_cleanup.append(_shutdown_knowledge_pools)

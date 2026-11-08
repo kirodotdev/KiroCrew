@@ -14,12 +14,14 @@ no chat link), the result simply isn't injected — the tab already shows it.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any, Callable, Optional
 
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import (
+    MAX_LIVE_SLOTS,
     DashboardState,
     append_and_surface,
     load_window_off_loop,
@@ -28,6 +30,29 @@ from kiro_crew.dashboard.state import (
 )
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+
+logger = logging.getLogger(__name__)
+
+
+def _fallback_slot_at_cap(state: DashboardState, run_id: str) -> bool:
+    """True (and one warning logged) when a new fallback slot would pass the ceiling.
+
+    Every other allocator refuses at ``MAX_LIVE_SLOTS``; a fallback that skipped
+    the test let a workflow whose origin is always gone fill the slot table, so
+    the person's own new chat then answered 409 ``slot_cap_reached``. At the cap
+    the result stays on the run record (``workflow_status``, the Runs view).
+    """
+    live = state.live_slot_count()
+    if live < MAX_LIVE_SLOTS:
+        return False
+    logger.warning(
+        "workflow %s: result not delivered, its chat is gone and the live session"
+        " ceiling (%d) is reached; read it with workflow_result",
+        run_id,
+        MAX_LIVE_SLOTS,
+    )
+    return True
+
 
 # Matches absolute POSIX paths to a file with an extension (artifacts a workflow
 # may have written, e.g. "/home/u/report.md"). Conservative: absolute only, must
@@ -55,6 +80,11 @@ def _redact(text: str) -> str:
     return text
 
 
+# The longest serialized result a completion message carries whole. A longer one is
+# shown as a plain-text preview with a pointer to the complete value.
+_MAX_RESULT_CHARS = 4000
+
+
 def _summarize(snapshot: dict) -> str:
     """Build the chat message body from a terminal run snapshot."""
     name = snapshot.get("name") or snapshot.get("run_id", "")
@@ -64,10 +94,18 @@ def _summarize(snapshot: dict) -> str:
     if status == "finished":
         result = snapshot.get("result")
         try:
-            body = json.dumps(result, indent=2, default=str)
+            body, fence = json.dumps(result, indent=2, default=str), "json"
         except Exception:  # noqa: BLE001
-            body = str(result)
-        lines.append("\nResult:\n```json\n" + body[:4000] + "\n```")
+            body, fence = str(result), "text"
+        if len(body) <= _MAX_RESULT_CHARS:
+            lines.append(f"\nResult:\n```{fence}\n{body}\n```")
+        else:
+            # A cut JSON document is not JSON, so the preview is never labelled json.
+            lines.append(
+                f"\nResult (truncated: first {_MAX_RESULT_CHARS} of {len(body)} characters;"
+                f" the complete value is the `result` field of workflow_result('{run_id}')):"
+                f"\n```text\n{body[:_MAX_RESULT_CHARS]}\n```"
+            )
         # Surface any artifact file paths the run produced, so the chat agent can
         # open/act on them directly instead of digging through the result blob.
         artifacts: list[str] = []
@@ -172,6 +210,12 @@ def inject_workflow_result(
             # hand the app the originating session's transcript.
             if app_holds_gateway_key(state, f"workflow-{run_id}", "workflow.inject_result"):
                 return False
+            # A re-fire reuses its existing fallback slot; only a NEW slot is
+            # an allocation, and every allocation tests the live ceiling.
+            if state.get_slot(f"workflow-{run_id}") is None and _fallback_slot_at_cap(
+                state, run_id
+            ):
+                return False
             slot = state.get_or_create_slot(name=f"workflow-{run_id}")
             if not getattr(slot, "linked_session_key", ""):
                 slot.linked_session_key = session_key
@@ -188,7 +232,56 @@ def inject_workflow_result(
                 slot.invalidate_source_links()
                 slot._dismissed_hydrated = False
                 note_crew_log_class(state, slot)
-            slot.title = f"Workflow: {snapshot.get('name') or run_id}"
+                from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+                bind_transcript(state, slot)
+            # Opt-in per-run title for the fallback slot: a webhook-driven run
+            # whose originating chat is always gone can name its own slot so many
+            # runs of one workflow are told apart. The default holds when the
+            # caller gives none. Clean the title HERE, at the one point every
+            # run path (the three HTTP handlers and the MCP tool) converges on
+            # applying it to a slot, with the same display-text cleaner a
+            # caller-explicit session title gets (redact, single line, bounded).
+            from kiro_crew.dashboard.chat_cards import _clean as _clean_display_text
+            from kiro_crew.workflows.registry import FALLBACK_TITLE_MAX
+
+            fallback_title = _clean_display_text(
+                snapshot.get("fallback_title") or "", FALLBACK_TITLE_MAX
+            )
+            if fallback_title:
+                slot.title = fallback_title
+                # A caller-explicit title is pinned exactly as slot_create pins
+                # one: mark it user-origin and bump the epoch, so a follow-up
+                # turn's background auto-titling stands down instead of silently
+                # replacing the caller's chosen name. The DEFAULT title below is
+                # left un-pinned, keeping today's behaviour for a run that named
+                # no title.
+                slot._titled = True
+                slot._title_origin = "user"
+                slot._title_epoch += 1
+            else:
+                slot.title = f"Workflow: {snapshot.get('name') or run_id}"
+            # Opt-in filing: the folder id was resolved server-side by the run
+            # handler to an EXISTING folder. File the fallback slot under it only
+            # when that folder still exists at delivery (the same existence check
+            # slot_create makes); a folder deleted meanwhile leaves the slot
+            # unfiled, and nothing is recreated. Re-check mate-home ownership
+            # against the slot's REAL store here, where it is known: the run
+            # handler refused on the caller's principal before admission, and
+            # this confirms against the run's own store before filing. A folder
+            # that now sits in another member's home leaves the slot unfiled —
+            # fail-safe, no error — the same decision cron_inject makes.
+            from kiro_crew.dashboard.cron_inject import chat_folder_refuses_store
+
+            fallback_folder_id = (snapshot.get("fallback_folder_id") or "").strip()
+            if (
+                fallback_folder_id
+                and any(f.get("id") == fallback_folder_id for f in getattr(state, "_folders", []))
+                and not chat_folder_refuses_store(
+                    state, fallback_folder_id, getattr(slot, "memory_store", "")
+                )
+            ):
+                slot.folder_id = fallback_folder_id
 
         # Dedup: don't double-inject the same result on a re-fire.
         already = any(m.get("content") == msg for m in getattr(slot, "messages", []))
@@ -266,7 +359,7 @@ def _seed_turn_timeout(slot: Any, meta: Optional[dict]) -> None:
     unhydrated, so its saves carry the on-disk value forward instead of
     replacing it with "follow the global".
     """
-    from kiro_crew.dashboard.slot_persistence.metadata_codec import _validate_turn_timeout_secs
+    from kiro_crew.dashboard.slot_persistence.metadata_values import _validate_turn_timeout_secs
 
     if meta is None:
         slot.turn_timeout_secs = None
@@ -339,6 +432,10 @@ async def inject_bound_workflow_result(
                 or getattr(slot, "memory_mode", "persistent") != execution.memory_mode
             ):
                 return False
+            # Test the ceiling before binding anything for a slot that will
+            # not be created; the test runs again at the allocation below.
+            if slot is None and _fallback_slot_at_cap(state, run_id):
+                return False
             # Bind the original identity when the parent is absent.
             # The new visible slot inherits it before any provider can start.
             await asyncio.to_thread(bind_session_execution, origin, execution)
@@ -360,6 +457,8 @@ async def inject_bound_workflow_result(
             ):
                 return False
             if slot is None:
+                if _fallback_slot_at_cap(state, run_id):
+                    return False
                 slot = state.get_or_create_slot(
                     name=fallback_name,
                     agent=agent,

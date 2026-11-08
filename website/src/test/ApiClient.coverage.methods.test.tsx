@@ -17,7 +17,7 @@ import {
   BROWSE_FILES_TIMEOUT_MS,
   FILE_SEARCH_TIMEOUT_MS,
 } from '../api/client'
-import { __resetErrorJournalForTests } from '../utils/errorReport'
+import { __resetErrorJournalForTests, recentErrors } from '../utils/errorReport'
 import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel } from '../utils/resizeImage'
 import { __resetArtifactWrites } from '../lib/artifactWrites'
@@ -27,6 +27,7 @@ import {
   fetchMock,
   call,
 } from './ApiClient.coverageTestUtils'
+import { nextXhr, stubXhr } from './fakeXhr'
 
 // `revealPath` funnels a headless host's `copy` fallback into the clipboard, and
 // `uploadFiles` downscales through the canvas helper — neither of which exists
@@ -86,7 +87,7 @@ describe('deadline-bound endpoints', () => {
   )
 
   it('rejects with the TimeoutError-named Error shape the cause-keyed notices decode', async () => {
-    // A transport default that rejects with any other shape stops `isDeadlineError` recognising
+    // A bound that rejects with any other shape stops `isDeadlineError` recognising
     // it, silently degrading every cause-keyed notice here to the generic "failed" copy.
     const { isDeadlineError } = await import('../api/queryClient')
     const { searchErrorCause } = await import('../lib/searchErrorCause')
@@ -240,7 +241,7 @@ describe('uploadCrewAvatar', () => {
       await api.uploadCrewAvatar('my crew', blob)
     } finally { spy.mockRestore() }
     const { url, init } = call()
-    expect(url).toBe('/api/agents/my%20crew/avatar')
+    expect(url).toBe('/api/agents/b64/bXkgY3Jldw/avatar')
     expect(init?.method).toBe('POST')
     expect(init?.body).toBeInstanceOf(FormData)
     expect(calls).toEqual([['file', blob, 'avatar.png']])
@@ -248,59 +249,87 @@ describe('uploadCrewAvatar', () => {
 })
 
 describe('uploadFiles', () => {
+  // The upload goes over XMLHttpRequest, the one browser API with upload
+  // progress, so these tests answer a scripted XHR instead of `fetchMock`.
   const png = (name: string) => new File(['x'], name, { type: 'image/png' })
+  beforeEach(() => stubXhr())
 
   it('keys resize details by the exact server path the attachment chip renders from', async () => {
     const info = { name: 'big.png', fromW: 4000, fromH: 3000, toW: 1000, toH: 750, fromBytes: 90, toBytes: 9 }
     vi.mocked(resizeImageForModel)
       .mockImplementationOnce(async (f: File) => ({ file: f, info }))
       .mockImplementationOnce(async (f: File) => ({ file: f, info: null }))
-    fetchMock.mockResolvedValue(okJson({ paths: ['/up/big.png', '/up/small.png'] }))
 
-    const out = await api.uploadFiles([png('big.png'), png('small.png')])
+    const pending = api.uploadFiles([png('big.png'), png('small.png')])
+    const xhr = await nextXhr()
+    expect([xhr.method, xhr.url]).toEqual(['POST', '/api/upload/file'])
+    expect(xhr.body).toBeInstanceOf(FormData)
+    xhr.respond(200, { paths: ['/up/big.png', '/up/small.png'] })
+    const out = await pending
     expect(out.paths).toEqual(['/up/big.png', '/up/small.png'])
     expect(out.resized).toEqual([info])
     // paths[i] is prepared[i]'s stored location, so the zip must key by path.
     expect(out.resizedByPath).toEqual({ '/up/big.png': info })
     expect(out.error).toBeUndefined()
-    expect(call().init?.body).toBeInstanceOf(FormData)
   })
 
   it('reports the server error and no paths on a failed upload', async () => {
-    fetchMock.mockResolvedValue(res(413, { error: 'too large' }))
-    const out = await api.uploadFiles([png('a.png')])
+    const pending = api.uploadFiles([png('a.png')])
+    ;(await nextXhr()).respond(413, { error: 'too large' })
+    const out = await pending
     expect(out).toMatchObject({ paths: [], error: 'too large' })
     expect(out.resizedByPath).toEqual({})
   })
 
   it('falls back to the status text when the failure body is unreadable', async () => {
-    fetchMock.mockResolvedValue({
-      ok: false, status: 500, statusText: 'Internal Server Error',
-      headers: { get: () => null },
-      json: async () => { throw new Error('not json') },
-    } as unknown as Response)
-    const out = await api.uploadFiles([png('a.png')])
-    expect(out).toMatchObject({ paths: [], error: 'Internal Server Error' })
+    const pending = api.uploadFiles([png('a.png')])
+    ;(await nextXhr()).respond(500, 'not json', { statusText: 'Internal Server Error' })
+    expect(await pending).toMatchObject({ paths: [], error: 'Internal Server Error' })
   })
 
-  it("hands the caller's AbortSignal to the request, so an upload can be cancelled", async () => {
+  it('hands the start and each step of the bytes going out to onProgress', async () => {
+    const onProgress = vi.fn()
+    const pending = api.uploadFiles([png('a.png')], undefined, onProgress)
+    const xhr = await nextXhr()
+    xhr.start(1024)
+    xhr.progress(256, 1024)
+    xhr.progress(1024, 1024)
+    expect(onProgress.mock.calls).toEqual([[0, 1024], [256, 1024], [1024, 1024]])
+    xhr.respond(200, { paths: ['/up/a.png'] })
+    expect((await pending).paths).toEqual(['/up/a.png'])
+  })
+
+  it("aborts the request when the caller's signal aborts, so an upload can be cancelled", async () => {
     const ac = new AbortController()
-    fetchMock.mockResolvedValue(okJson({ paths: ['/up/a.png'] }))
-    await api.uploadFiles([png('a.png')], ac.signal)
+    const pending = api.uploadFiles([png('a.png')], ac.signal)
+    const xhr = await nextXhr()
+    ac.abort()
     // Without this the composer's cancel control has nothing to abort: the
     // request runs to completion whatever the user does.
-    expect(call().init?.signal).toBe(ac.signal)
+    expect(xhr.abort).toHaveBeenCalledTimes(1)
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    // A cancel the user asked for is not a failure worth a report.
+    expect(recentErrors()).toEqual([])
   })
 
-  it('omits signal entirely when the caller passes none', async () => {
-    fetchMock.mockResolvedValue(okJson({ paths: ['/up/a.png'] }))
-    await api.uploadFiles([png('a.png')])
-    expect(call().init?.signal).toBeUndefined()
+  it('rejects a dropped connection as fetch does, and journals it with its route', async () => {
+    const pending = api.uploadFiles([png('a.png')])
+    ;(await nextXhr()).fail()
+    await expect(pending).rejects.toBeInstanceOf(TypeError)
+    expect(recentErrors()[0]).toMatchObject({ message: 'Failed to fetch', endpoint: '/api/upload/file', method: 'POST', code: 'network' })
+  })
+
+  it('reads the answer headers, so an expired session starts its recovery', async () => {
+    const pending = api.uploadFiles([png('a.png')])
+    ;(await nextXhr()).respond(403, { error: 'auth' }, { headers: { 'X-Auth-Required': 'true' } })
+    expect(await pending).toMatchObject({ paths: [], error: 'auth' })
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/auth/refresh', expect.anything()))
   })
 
   it('refuses to trust a 200 whose paths field is not an array', async () => {
-    fetchMock.mockResolvedValue(okJson({ paths: 'oops' }))
-    const out = await api.uploadFiles([png('a.png')])
+    const pending = api.uploadFiles([png('a.png')])
+    ;(await nextXhr()).respond(200, { paths: 'oops' })
+    const out = await pending
     expect(out.paths).toEqual([])
     expect(out.error).toBeTruthy()
   })
@@ -565,6 +594,8 @@ describe('every api method issues one well-formed /api request', () => {
     'favoriteProjects',
     'projectAwsProfile',
     'projectTree',
+    'sessionFiles',
+    'sessionFileDiff',
   ])
   const CALLER_SIGNAL = new AbortController().signal
 
@@ -589,16 +620,21 @@ describe('every api method issues one well-formed /api request', () => {
     // not a defect: a real caller hands this a Blob, exactly as here, and a Blob
     // body is left alone the same way a FormData one is.
     importSessionFromFile: [new Blob(['{}'], { type: 'application/gzip' })],
+    // `installThemeZip(file)` posts the archive's bytes the same way.
+    installThemeZip: [new Blob(['PK'], { type: 'application/zip' })],
     updateInstance: ['sw-1', {}, { signal: CALLER_SIGNAL }],
     chatSlotDetail: ['sw-1', undefined, undefined, CALLER_SIGNAL],
-    // The second argument is the list of routes the dashboard cannot open; a
-    // bare 'sw-2' string is not a list.
-    featureVideoNext: ['sw-1', ['/members']],
     sendChat: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],
     spawnStatus: ['sw-1', { signal: CALLER_SIGNAL }],
     fileSearch: ['sw-1', 'sw-2', CALLER_SIGNAL],
     pathComplete: ['sw-1', 'sw-2', 'sw-3', CALLER_SIGNAL],
     browseFiles: ['sw-1', CALLER_SIGNAL],
+    browserLiveRecordings: ['sw-1', CALLER_SIGNAL],
+    browserLiveRecording: ['sw-1', 'sw-2', CALLER_SIGNAL],
+    // The creator filter takes one query object (server-side filter and page).
+    sharedCrewSessions: [{ creator: 'mine', q: 'sw-1', cursor: 'sw-2', limit: 50 }],
+    sharedCrewCancelWork: ['sw-1', 3],
+    sessionArchiveRead: ['sw-1', CALLER_SIGNAL],
   }
 
   it('covers the whole surface (guards against the table silently shrinking)', () => {
@@ -682,5 +718,26 @@ describe('api.sideTurn keeps the response phases distinguishable', () => {
     await expect(api.sideTurn('s1', 'q')).rejects.toSatisfy(
       (e: unknown) => e instanceof ApiError && e.status === 409,
     )
+  })
+})
+
+describe('memory saves reject a refused write', () => {
+  // A bare `put()` resolves to the Response whatever its status, so a Save
+  // button awaiting it read a 403 as success. Each save parses with `j`.
+  const saves = [
+    ['saveMemorySettings', () => api.saveMemorySettings({ history_idle_hours: 2 })],
+    ['saveMemoryPreferences', () => api.saveMemoryPreferences('x')],
+    ['saveMemoryProjects', () => api.saveMemoryProjects('x')],
+    ['saveMemoryHistory', () => api.saveMemoryHistory('x')],
+  ] as const
+
+  it.each(saves)('%s rejects with an ApiError on a 403', async (_name, save) => {
+    fetchMock.mockResolvedValue(res(403, { error: 'owner only', code: 'owner_only' }))
+    await expect(save()).rejects.toBeInstanceOf(ApiError)
+  })
+
+  it.each(saves)('%s resolves the parsed body on a 2xx', async (_name, save) => {
+    fetchMock.mockResolvedValue(okJson({ ok: true }))
+    await expect(save()).resolves.toEqual({ ok: true })
   })
 })

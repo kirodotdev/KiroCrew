@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         is_sensitive_path,
         logger,
         platform_compat,
+        replace_with_retry_checked,
         validate_file_path,
     )
 
@@ -39,11 +40,12 @@ def _pinned_replace(
 
     The engine behind :func:`safe_write_file_nolink` (no verification) and
     :func:`verified_replace_file_nolink` (compare-and-swap). Returns an
-    outcome string: ``"ok"``, ``"refused"``, and — only when *base_hash* is
-    given — ``"conflict"`` (the file's bytes or identity differ from the
-    edit base) or ``"too_large"`` (the file outgrew *max_bytes* since the
-    base was read, which by definition is not the state the edit was made
-    against).
+    outcome string: ``"ok"``, ``"refused"``, ``"busy"`` (every check passed but
+    the final by-name rename hit another handle on the file, which on Windows
+    blocks a replace), and — only when *base_hash* is given — ``"conflict"``
+    (the file's bytes or identity differ from the edit base) or ``"too_large"``
+    (the file outgrew *max_bytes* since the base was read, which by definition
+    is not the state the edit was made against).
 
     When *base_hash* is given, the sha256 of the CURRENT bytes is computed by
     reading the SAME descriptor every other check runs against — one
@@ -419,40 +421,76 @@ def _pinned_replace(
         # expose (and which is Linux-only). The remaining window cannot be
         # closed with os.rename, so the caller keeps its own snapshot and the
         # user's newer file wins -- the safe direction.
-        try:
-            pre = (
-                os.stat(base, dir_fd=dfd, follow_symlinks=False)
-                if use_dir_fd
-                else os.stat(path, follow_symlinks=False)
-            )
-        except OSError:
-            return "refused"
-        if (pre.st_dev, pre.st_ino) != src_ident:
-            logger.warning(
-                "refusing source write to %r: the file changed on disk after validation "
-                "(concurrent save); not overwriting the newer content",
-                path,
-            )
-            return "conflict" if base_hash is not None else "refused"
-        if src_state is not None and (pre.st_mtime_ns, pre.st_size) != src_state:
-            # Same inode, different content: an IN-PLACE write landed after the
-            # descriptor-anchored verify. The identity check above cannot see
-            # it, but a changed mtime or size can — a narrowing on filesystems
-            # with coarse timestamps, never a widening, and the failure
-            # direction is the safe one: the newer file wins.
-            logger.warning(
-                "refusing verified replace of %r: the file was rewritten in place "
-                "after its base hash was verified (concurrent save)",
-                path,
-            )
-            return "conflict"
+        target: str = path
+
+        def _changed_since_verify() -> str | None:
+            try:
+                pre = (
+                    os.stat(base, dir_fd=dfd, follow_symlinks=False)
+                    if use_dir_fd
+                    else os.stat(target, follow_symlinks=False)
+                )
+            except OSError:
+                return "refused"
+            if (pre.st_dev, pre.st_ino) != src_ident:
+                logger.warning(
+                    "refusing source write to %r: the file changed on disk after validation "
+                    "(concurrent save); not overwriting the newer content",
+                    path,
+                )
+                return "conflict" if base_hash is not None else "refused"
+            if src_state is not None and (pre.st_mtime_ns, pre.st_size) != src_state:
+                # Same inode, different content: an IN-PLACE write landed after the
+                # descriptor-anchored verify. The identity check above cannot see
+                # it, but a changed mtime or size can — a narrowing on filesystems
+                # with coarse timestamps, never a widening, and the failure
+                # direction is the safe one: the newer file wins.
+                logger.warning(
+                    "refusing verified replace of %r: the file was rewritten in place "
+                    "after its base hash was verified (concurrent save)",
+                    path,
+                )
+                return "conflict"
+            return None
+
         if use_dir_fd:
+            changed = _changed_since_verify()
+            if changed is not None:
+                return changed
             os.rename(tmp_name, base, src_dir_fd=dfd, dst_dir_fd=dfd)
         else:
             # os.replace, not os.rename: on Windows rename REFUSES an existing
             # destination, while replace overwrites it -- and does so atomically,
-            # which is the property that matters here.
-            os.replace(os.path.join(parent, tmp_name), path)
+            # which is the property that matters here. Through the retry, with the
+            # re-check run before EVERY attempt: a scanner holding the staged temp
+            # fails the rename while the destination stays writable, so a save can
+            # land during the backoff, and a check made once before the retry
+            # would let the next attempt overwrite it.
+            class _ChangedOnDisk(Exception):
+                pass
+
+            def _still_unchanged() -> None:
+                changed = _changed_since_verify()
+                if changed is not None:
+                    raise _ChangedOnDisk(changed)
+
+            try:
+                replace_with_retry_checked(os.path.join(parent, tmp_name), path, _still_unchanged)
+            except _ChangedOnDisk as stale:
+                return str(stale)
+            except PermissionError as exc:
+                # A Windows sharing or lock violation (ERROR_SHARING_VIOLATION 32,
+                # ERROR_LOCK_VIOLATION 33) that outlasts the retry is another handle
+                # on the file (an editor, an indexer, an AV scan), not a check that
+                # failed: every check above already passed. It answers "busy" so a
+                # caller can say "try again" instead of naming a security refusal.
+                # Any other denial, and every PermissionError on POSIX, is genuine
+                # and stays "refused". The codes are literals because this body runs
+                # on the composed ``kiro_crew.hooks`` namespace.
+                if platform_compat.IS_WINDOWS and getattr(exc, "winerror", None) in (32, 33):
+                    logger.warning("could not replace %r: another process has the file open", path)
+                    return "busy"
+                raise
         created = False  # renamed away; nothing left to clean up
         return "ok"
     except OSError:
@@ -481,8 +519,9 @@ def safe_write_file_nolink(
     """Overwrite an EXISTING regular file, pinned to the descriptor opened.
 
     The no-verification entry point of :func:`_pinned_replace`; see there for
-    the full contract. Returns True when the bytes were written, False on any
-    rejection.
+    the full contract. Returns True when the bytes were written, False when
+    nothing was: a rejection, or a file another process held open at the
+    rename.
     """
     return _pinned_replace(raw, content, within_root=within_root) == "ok"
 
@@ -505,7 +544,9 @@ def verified_replace_file_nolink(
     (identity swap, or an in-place rewrite visible through mtime/size) answer
     ``"conflict"`` rather than overwriting: the newer file wins, never the
     stale edit. Returns ``"ok"``, ``"conflict"``, ``"too_large"`` (the file
-    outgrew *max_bytes* since the base was read), or ``"refused"``.
+    outgrew *max_bytes* since the base was read), ``"busy"`` (another process
+    held the file open at the final rename; nothing was written), or
+    ``"refused"``.
     """
     # Deny-by-default (AUTOSDE backend-security-controls): a verifying
     # primitive that accepts an unverifiable base and proceeds anyway has the

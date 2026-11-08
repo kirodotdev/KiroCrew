@@ -331,11 +331,9 @@ class TestProfileUnregister:
     def _run(self, reg, body, *, grants=None, revoke_raises=None):
         """Drive the handler over an in-memory registry.
 
-        ``grants`` maps a profile name to the services whose grant names it, which
-        is what the (mocked) ``revoke_for_profile`` sweep answers. Returns
-        ``(response, revoke_mock, invalidated_mock, credential_writers)``;
-        ``credential_writers`` are the two mocks that must stay uncalled for the
-        route to be registry-only.
+        ``grants`` is what the mocked ``revoke_for_profile`` answers. Returns
+        ``(response, revoke_mock, invalidated_mock, credential_writers)``; the two
+        credential writers must stay uncalled for the route to be registry-only.
         """
         handlers = _registered()
         grants = grants or {}
@@ -453,7 +451,10 @@ class TestProfileUnregister:
         # untouched by construction rather than by a check.
         reg = {"version": 2, "profiles": [{"name": "alpha"}], "default": "alpha"}
         with mock.patch.object(routes_mod, "run_aws", create=True) as run_aws:
-            _resp, _revoke, _inv, (configure, discover) = self._run(reg, {"names": ["alpha"]})
+            resp, _revoke, _inv, (configure, discover) = self._run(reg, {"names": ["alpha"]})
+        # The unregister still completed, through the registry alone.
+        assert resp.status == 200
+        assert reg["profiles"] == []
         configure.assert_not_called()
         discover.assert_not_called()
         run_aws.assert_not_called()

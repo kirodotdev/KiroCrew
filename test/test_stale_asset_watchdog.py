@@ -1059,6 +1059,21 @@ async def test_a_refusal_recorded_during_the_drain_is_seen_before_the_signal(
     asks = {"n": 0}
     counts = {"n": 0}
     enough = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    class _StayUpSaid(logging.Handler):
+        """Stops the run once the stay-up refusal is logged, not on a timer.
+
+        The refusal is said only after the drain, the re-entry check on its own
+        worker thread and the second drain, so a slow runner can take longer
+        than any fixed delay to get there.
+        """
+
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.levelno == logging.CRITICAL and (
+                "an update stopped before restart" in record.getMessage()
+            ):
+                loop.call_soon(enough.set)
 
     def _check():
         asks["n"] += 1
@@ -1071,14 +1086,19 @@ async def test_a_refusal_recorded_during_the_drain_is_seen_before_the_signal(
         if counts["n"] == (3 if standing else 1):
             # An update that will stay up ends while this pass drains.
             update_ownership.refuse_restart("the dependency sync did not complete")
-            asyncio.get_running_loop().call_later(0.2, enough.set)
             return 1
         return 0
 
-    with _gap():
-        fired = await _run_until(
-            shutdown, enough, reentry_check=_check, count_in_flight=_count, drain_poll=0.01
-        )
+    said = _StayUpSaid()
+    watchdog_logger = logging.getLogger(_WATCHDOG_LOGGER)
+    watchdog_logger.addHandler(said)
+    try:
+        with _gap():
+            fired = await _run_until(
+                shutdown, enough, reentry_check=_check, count_in_flight=_count, drain_poll=0.01
+            )
+    finally:
+        watchdog_logger.removeHandler(said)
 
     assert fired is False
     assert _records(caplog, level=logging.CRITICAL, text="an update stopped before restart")
@@ -1108,6 +1128,38 @@ async def test_a_probe_that_proves_the_relaunch_clears_an_earlier_stay_up(manage
 
     assert fired is True
     assert update_ownership.restart_refusal() is None
+
+
+@pytest.mark.asyncio
+async def test_a_probe_does_not_clear_a_failed_frontend_build_stay_up(managed):
+    """An import probe says nothing about the bundle a failed build left behind."""
+    from kiro_crew import update_ownership
+
+    shutdown = asyncio.Event()
+    update_ownership.refuse_restart(
+        "the frontend build after the dashboard update did not complete",
+        import_probe_clears=False,
+    )
+    enough = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    asks = {"n": 0}
+
+    def _check():
+        # A second ask means the first probed answer was applied and the refusal
+        # still held the exit: the positive signal that ends the run.
+        asks["n"] += 1
+        if asks["n"] >= 2:
+            loop.call_soon_threadsafe(enough.set)
+        return _verdict("REENTERABLE", probed=True)
+
+    with _gap():
+        fired = await _run_until(shutdown, enough, reentry_check=_check)
+
+    assert asks["n"] >= 2
+    assert fired is False
+    assert update_ownership.restart_refusal() == (
+        "the frontend build after the dashboard update did not complete"
+    )
 
 
 @pytest.mark.asyncio

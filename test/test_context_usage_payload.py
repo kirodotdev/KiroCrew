@@ -78,3 +78,19 @@ def test_payload_resets_when_used_unmeasured():
     assert payload == {"slot": "dashboard:1", "pct": 0.0, "reset": True}
     assert "used_tokens" not in payload
     assert "window_tokens" not in payload
+
+
+def test_payload_keeps_percentage_only_reading():
+    # A model whose window the registry does not know streams a percentage-only
+    # reading (kiro ``contextUsagePercentage`` / KAS ``context_usage``): a real
+    # pct with window 0. This is NOT a reset-to-unknown — the percentage IS the
+    # measurement. The frame must carry that pct unchanged (plus ``reset`` so
+    # the ring drops any stale absolute counts it cannot otherwise reconcile),
+    # never drop it, or the meter would freeze for the whole session.
+    provider = _provider_with_stats(used=0, window=0, pct=45.0)
+    payload = _context_usage_payload("dashboard:1", provider)
+    assert payload["slot"] == "dashboard:1"
+    assert payload["pct"] == 45.0
+    assert payload["reset"] is True
+    assert "used_tokens" not in payload
+    assert "window_tokens" not in payload

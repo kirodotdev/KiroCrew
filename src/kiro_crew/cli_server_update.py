@@ -32,6 +32,7 @@ from kiro_crew.cli_server_peer import (
     _owner_verified_secret_urlopen,
 )
 from kiro_crew.config.loader import read_local_secret
+from kiro_crew.env import node_augmented_path, node_bin_dirs
 from kiro_crew.frontend import build_frontend_sync
 from kiro_crew.git_divergence import (
     UNREADABLE_UNPARSEABLE,
@@ -39,6 +40,7 @@ from kiro_crew.git_divergence import (
     count_divergence_sync,
 )
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, is_bundled_kiro_cli, pin_kiro_cli
+from kiro_crew.platform import release_apply
 from kiro_crew.platform.update_capability import (
     EXTERNALLY_MANAGED_MESSAGES,
     MANAGED_BY_GIT,
@@ -70,6 +72,56 @@ def _snapshot_memory_or_exit() -> None:
     newest = memory_backup.newest_backup()
     where = f"; default store copies in {newest.parent}" if newest is not None else ""
     print(f"  💾 Memory snapshot: {copied} store(s) copied{where}\n")
+
+
+#: Branches a detached checkout may update from, in the order they are tried.
+#: Exactly the reviewed primary lines (``update_governance.PRIMARY_BRANCHES``),
+#: so the choice is never read from ``refs/remotes/origin/HEAD``, which one
+#: ``git remote set-head`` can repoint (see ``is_primary_branch``).
+_DETACHED_BRANCH_ORDER = ("main", "mainline", "master")  # wokeignore:rule=master
+
+
+def _detached_upstream_branch(proj: str, fetch_env: dict[str, str]) -> str:
+    """The first primary branch origin has, for a checkout on no branch.
+
+    Asks the remote itself with ``git ls-remote``, the same way the fetch reaches
+    it, and only about the names in :data:`_DETACHED_BRANCH_ORDER`. Exits 1 with
+    the fix when origin has none of them or cannot be read.
+    """
+    refs = [f"refs/heads/{name}" for name in _DETACHED_BRANCH_ORDER]
+    try:
+        result = subprocess.run(
+            # `--upload-pack` for the same reason as the fetch below.
+            ["git", "ls-remote", "--upload-pack=git-upload-pack", "origin", *refs],
+            cwd=proj,
+            env=fetch_env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logging.getLogger("kiro_crew.cli_server").warning(
+            "git ls-remote timed out after %ss during update", exc.timeout
+        )
+        print(
+            f"  ❌ Could not list origin's branches (git ls-remote timed out after {exc.timeout}s)"
+        )
+        sys.exit(1)
+    if result.returncode != 0:
+        print(f"  ❌ Could not list origin's branches:\n{result.stderr.strip()}")
+        sys.exit(1)
+    found = {line.split("\t", 1)[1].strip() for line in result.stdout.splitlines() if "\t" in line}
+    for name, ref in zip(_DETACHED_BRANCH_ORDER, refs):
+        if ref in found:
+            print(f"  ℹ  This checkout is on no branch; updating from origin/{name}.")
+            return name
+    names = ", ".join(_DETACHED_BRANCH_ORDER)
+    print("  ❌ This checkout is on no branch, and origin has none of these branches:")
+    print(f"      {names}")
+    print("  Check out the branch to update from, then retry:")
+    print("      git checkout -B <branch> origin/<branch>")
+    sys.exit(1)
 
 
 def _update(force: bool = False) -> None:
@@ -148,11 +200,25 @@ def _update(force: bool = False) -> None:
 
     print(f"  📂 {proj}")
 
+    from kiro_crew.platform.update_governance import (
+        git_command_env,
+        repo_exec_config_reason,
+        resolve_remote_url,
+        update_blocked_reason,
+    )
+
+    # One env for every git call below, built first: it strips an inherited
+    # `GIT_DIR`, so the branch, the guards and the reset all judge `proj`, and it
+    # reads no agent-writable global config. Only the fetch keeps the operator's
+    # transport setup (`_fetch_env`, below).
+    _git_env = git_command_env()
+
     # Detect current branch
     try:
         branch_result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             cwd=proj,
+            env=_git_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -167,26 +233,56 @@ def _update(force: bool = False) -> None:
     if branch_result.returncode != 0:
         print("❌ Could not determine current branch")
         sys.exit(1)
-    branch = branch_result.stdout.strip() or "mainline"
+    # A detached HEAD (or no branch name at all) has no branch of its own to
+    # follow. Its upstream is picked from origin's own branches further down,
+    # once the remote has passed the source pin.
+    branch = branch_result.stdout.strip()
     if branch == "HEAD":
-        branch = "mainline"
+        branch = ""
 
     # Source pin, checked before the fetch so a blocked update never touches the
     # tree. A human at a terminal is not the authorization: the fleet decides
     # which remote this host may take code from.
-    from kiro_crew.platform.update_governance import resolve_remote_url, update_blocked_reason
-
-    _blocked = update_blocked_reason(resolve_remote_url(proj, remote="origin"))
+    # The fetch reads the operator's own global config (their credential helper,
+    # ssh command), as it did before; the pin judges that same view.
+    _fetch_env = git_command_env(human_transport=True)
+    _blocked = update_blocked_reason(
+        resolve_remote_url(proj, fetch_env=_fetch_env, remote="origin")
+    )
     if _blocked:
         print(f"  🛡️  Update blocked by security policy: {_blocked}")
         sys.exit(1)
+
+    # The checkout is a tree agents can write, and `fetch`, `status` and
+    # `reset --hard` below EXEC programs its own git config names (hooks,
+    # `core.fsmonitor`, `filter.<name>.smudge`). A human typing `kirocrew update`
+    # has not agreed to run those. Fixed-name keys are pinned by `git_command_env`;
+    # a repo-named driver cannot be pinned, so it is refused, as on the dashboard
+    # and unattended paths.
+    _exec_config = repo_exec_config_reason(proj, git="git", human_transport=True)
+    if _exec_config:
+        print(f"  🛡️  Update refused: {_exec_config}, which git would run during the update.")
+        print("      Remove it from the checkout's git config, then retry.")
+        sys.exit(1)
+
+    fetch_ref = branch
+    if not branch:
+        branch = _detached_upstream_branch(proj, _fetch_env)
+        # Spelled as a full refspec: a detached clone (a tag, or `--single-branch`
+        # of another branch) may map no fetch refspec to this branch, and a bare
+        # name would then fill only FETCH_HEAD, leaving the pin below unresolved.
+        fetch_ref = f"+refs/heads/{branch}:refs/remotes/origin/{branch}"
 
     # Fetch + reset --hard: no merge conflicts, untracked files preserved
     print("  ⬇️  git fetch…")
     try:
         result = subprocess.run(
-            ["git", "fetch", "origin", branch],
+            # `--upload-pack` beats every configured upload-pack (an env pin does
+            # not: git takes the first value it reads, the repository's). The bare
+            # name is what an ssh server accepts.
+            ["git", "fetch", "--upload-pack=git-upload-pack", "origin", fetch_ref],
             cwd=proj,
+            env=_fetch_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=60,
@@ -215,6 +311,7 @@ def _update(force: bool = False) -> None:
         pin_result = subprocess.run(
             ["git", "rev-parse", "--verify", f"refs/remotes/origin/{branch}^{{commit}}"],
             cwd=proj,
+            env=_git_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -234,8 +331,12 @@ def _update(force: bool = False) -> None:
     # Check if there are new commits
     try:
         diff_result = subprocess.run(
-            ["git", "diff", "HEAD", target, "--quiet"],
+            # No textconv/external diff: a driver named by repo config planted
+            # while the fetch ran would otherwise run here, before the
+            # post-fetch exec-config re-check.
+            ["git", "diff", "--no-textconv", "--no-ext-diff", "HEAD", target, "--quiet"],
             cwd=proj,
+            env=_git_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -283,7 +384,8 @@ def _update(force: bool = False) -> None:
         * ``"diverged"`` — ahead AND behind; resettable only under ``--force``.
         * ``"fast_forward"`` — behind and not ahead; nothing of its own to lose.
         """
-        counts = count_divergence_sync(proj, target)
+        # Same env as the reset, so the guard judges the repository it resets.
+        counts = count_divergence_sync(proj, target, env=_git_env)
         if isinstance(counts, DivergenceUnreadable):
             if counts.reason == UNREADABLE_UNPARSEABLE:
                 print(f"  ❌ Could not parse the commit counts against origin/{branch}:")
@@ -329,7 +431,7 @@ def _update(force: bool = False) -> None:
     # and outside the re-classification that must stay adjacent to the reset.
     try:
         floor_breach = dep_sync.incoming_python_floor_breach(
-            Path(proj), target, Path(sys.executable)
+            Path(proj), target, Path(sys.executable), env=_git_env
         )
     except dep_sync.IncomingFloorUnreadable as exc:
         # Unreadable is not absent: a git failure here must refuse, or it is
@@ -340,11 +442,21 @@ def _update(force: bool = False) -> None:
         print(f"  ❌ Refusing to update: {floor_breach}")
         sys.exit(1)
 
+    # Re-read the repo-named driver config before `status`: the fetch above can
+    # take its full timeout, and `status` runs a `filter.<name>.clean` planted in
+    # that window on every stat-dirty file.
+    _exec_config = repo_exec_config_reason(proj, git="git", human_transport=True)
+    if _exec_config:
+        print(f"  🛡️  Update refused: {_exec_config}, which git would run during the update.")
+        print("      Remove it from the checkout's git config, then retry.")
+        sys.exit(1)
+
     # Warn about local tracked-file changes before discarding
     try:
         status = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=proj,
+            env=_git_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -394,12 +506,22 @@ def _update(force: bool = False) -> None:
         print(f"      Reconcile with: git rebase origin/{branch}")
         sys.exit(1)
 
+    # Re-read the repo-named driver config right before the reset: the fetch and
+    # the prompt above leave an unbounded gap, and a `filter.<name>.smudge`
+    # planted in it would run on the reset's checkout.
+    _exec_config = repo_exec_config_reason(proj, git="git", human_transport=True)
+    if _exec_config:
+        print(f"  🛡️  Update refused: {_exec_config}, which git would run during the reset.")
+        print("      Remove it from the checkout's git config, then retry.")
+        sys.exit(1)
+
     _snapshot_memory_or_exit()
     print(f"  🔄 git reset --hard origin/{branch} ({target[:12]})…")
     try:
         result = subprocess.run(
             ["git", "reset", "--hard", target],
             cwd=proj,
+            env=_git_env,
             stdin=subprocess.DEVNULL,
             capture_output=True,
             timeout=10,
@@ -421,7 +543,20 @@ def _update(force: bool = False) -> None:
     # an agent-writable directory, and a `which` probe's answer is not what exec
     # would run. No pin -> skip the step; a PATH-only install is reported so the
     # operator knows why it was skipped and which override puts it back.
-    kiro_cli_bin, unpinned_kiro_cli = pin_kiro_cli()
+    # On the KAS bundle route kiro-cli -- present or not -- is not part of what
+    # runs: the engine is Crew's own install, which the release install below
+    # lays down for the new release's pin (``release_apply``). Decided before the
+    # kiro-cli pin so a host without kiro-cli prints the reason, not a PATH note.
+    # Local import: this body runs on the ``cli_server`` facade's globals.
+    from kiro_crew.agent_sdk import kas_bundle
+
+    if kas_bundle.kas_bundle_route():
+        print(
+            "  ℹ️  kiro-cli update skipped: KAS runs Kiro Crew's own engine bundle, not kiro-cli."
+        )
+        kiro_cli_bin, unpinned_kiro_cli = None, False
+    else:
+        kiro_cli_bin, unpinned_kiro_cli = pin_kiro_cli()
     if kiro_cli_bin is None and unpinned_kiro_cli:
         print(f"  ⚠️  kiro-cli update skipped: {PATH_ONLY_INSTALL_NOTE}")
     if kiro_cli_bin is not None and is_bundled_kiro_cli(kiro_cli_bin, os.environ):
@@ -449,23 +584,38 @@ def _update(force: bool = False) -> None:
 
     print("  🔄 Checking Node.js…")
     _ensure_node(proj)
+    # ensure-node.sh records the node it chose in <data home>/node-bin-dir but
+    # cannot change this process's PATH. Put the node dirs first, so the build's
+    # npm lookup and npm's own `node` both resolve that toolchain.
+    node_bin_dirs.cache_clear()
+    os.environ["PATH"] = node_augmented_path(os.environ.get("PATH", ""))
 
-    # Build the dashboard frontend assets (npm), then reinstall the package.
-    build_frontend_sync(Path(proj))
+    # Build the dashboard frontend assets (npm), then reinstall the package. A
+    # failed build does not skip the install (the tree has already moved, and
+    # its dependencies must land); it fails the update after it, before the
+    # restart hint, because restarting would serve the new backend the previous
+    # bundle.
+    build = build_frontend_sync(Path(proj))
 
-    # Install the pulled revision into this CLI's own venv. `kirocrew update` is
-    # itself run FROM the console script pip would have to rewrite, so on Windows
-    # the reinstall cannot succeed and dep_sync substitutes a dependency-only sync
-    # (it reports, rather than silently tolerating, a revision that repointed the
-    # script — that is the one case still needing a terminal without kirocrew
-    # running).
+    # Install the pulled release into this CLI's own venv: its code, then the
+    # KAS engine it pins (release_apply). `kirocrew update` is itself run FROM
+    # the console script pip would have to rewrite, so on Windows the reinstall
+    # cannot succeed and dep_sync substitutes a dependency-only sync (it reports,
+    # rather than silently tolerating, a revision that repointed the script —
+    # that is the one case still needing a terminal without kirocrew running).
     print("  🔨 Installing the pulled revision…")
 
     def _emit(message: str, error: bool) -> None:
         print(f"  {'❌' if error else '•'} {message}")
 
-    rc = dep_sync.sync_or_reinstall(Path(proj), Path(sys.executable), _emit)
+    rc = release_apply.apply_release(
+        release_apply.GitRelease(Path(proj), Path(sys.executable), _emit, trusted_env=False)
+    )
     if rc != 0:
+        sys.exit(1)
+    if build.outcome == "failed":
+        print(f"  ❌ {build.failure_message()}")
+        print("      Do not restart the gateway until the dashboard builds; see the log above.")
         sys.exit(1)
 
     print("\n✅ Kiro Crew updated!")
@@ -480,6 +630,12 @@ def _update(force: bool = False) -> None:
     # has already succeeded, so a gateway that is not running or a call that
     # fails must not change the outcome or the exit code.
     _revalidate_gateway_update_check()
+
+    # A running gateway keeps serving the code it imported at boot, so the pulled
+    # revision takes effect only after a restart -- the same hint the wheel,
+    # managed-venv and provider paths print.
+    print("\n  Restart the gateway to use the new version:")
+    print("    kirocrew restart")
 
 
 def _revalidate_gateway_update_check() -> None:
@@ -810,8 +966,8 @@ def _update_managed_venv(
     update holds the lock (it would race that apply's promotion) and never for a
     refused memory copy (it would perform the un-copied update).
     """
-    from kiro_crew.platform import wheel_apply
-    from kiro_crew.platform.wheel_engine import WheelUpdateError, apply_wheel_update
+    from kiro_crew.platform import release_apply, wheel_apply
+    from kiro_crew.platform.wheel_engine import WheelUpdateError
 
     print("\n  🔄 Building the new version beside the current one…")
 
@@ -823,15 +979,19 @@ def _update_managed_venv(
     try:
         # Inside the try: a feed version outside the release grammar is refused here.
         reattach = wheel_apply.userns_reattach_needed(remote_version)
-        promoted = apply_wheel_update(
-            channel=channel,
-            feed_base=feed_base,
-            artifact_base=artifact_base,
-            expected_version=remote_version,
-            progress=_progress,
-            preflight=wheel_apply.check_memory_ready,
-            before_promote=wheel_apply.memory_snapshot_hook(_progress),
-            trusted_env=False,
+        # The release, not the wheel: the new version's KAS engine is
+        # installed before the stable link flips.
+        promoted = release_apply.apply_release(
+            release_apply.WheelRelease(
+                channel=channel,
+                feed_base=feed_base,
+                artifact_base=artifact_base,
+                expected_version=remote_version,
+                progress=_progress,
+                preflight=wheel_apply.check_memory_ready,
+                before_promote=wheel_apply.memory_snapshot_hook(_progress),
+                trusted_env=False,
+            )
         )
     except (WheelUpdateError, OSError) as exc:
         # The engine wraps its own I/O failures in WheelUpdateError, but

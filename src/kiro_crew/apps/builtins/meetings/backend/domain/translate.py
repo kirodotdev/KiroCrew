@@ -35,12 +35,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
+import re
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
+from kiro_crew.apps.agent_turn_sdk import AgentTurnSDK
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.security import redact
@@ -49,6 +50,10 @@ logger = logging.getLogger("kirocrew.app.meetings")
 
 #: How a line is handed to a model. Injected so the queue is testable without one.
 Runner = Callable[[str], Awaitable[str]]
+
+#: A leading ``Translation:`` label a model puts before its answer, in any case,
+#: with the spaces or the line break that follow it.
+_TRANSLATION_LABEL = re.compile(r"\Atranslation[ \t]*:\s*", re.IGNORECASE)
 
 
 def language_label(code: str) -> str:
@@ -94,37 +99,22 @@ def translation_prompt(text: str, language_code: str) -> str:
 async def run_oneshot_translation(sessions: Any, prompt: str) -> str:
     """One tool-less model call in an isolated ephemeral session; raw text back.
 
-    Mirrors issue-radar's ``_run_oneshot_model``, which is the sanctioned pattern
-    for this: ``kirocrew-lite`` scopes the session to ``tools: []`` and resolves a
-    cheaper model than the interactive default, and ``REJECT_ALL`` means no tool
-    can run even if one were offered. The session is destroyed as well as released
-    so no ``kiro-cli`` subprocess leaks — one per translated line would otherwise
-    accumulate for the length of the meeting.
+    :meth:`AgentTurnSDK.run_oneshot`, the App Kit's form of issue-radar's
+    ``_run_oneshot_model``: ``kirocrew-lite`` scopes the session to ``tools: []``
+    and resolves a cheaper model than the interactive default, every tool request
+    is rejected even if one were offered, and the session is destroyed as well as
+    released so no ``kiro-cli`` subprocess leaks — one per translated line would
+    otherwise accumulate for the length of the meeting.
 
     It reuses the user's own Kiro Crew backend, so live translation needs no
     separate API key or cloud account.
 
     BACKGROUND, like any start no caller claims: the live stream runs unattended,
     one start per line, whether or not anyone has the panel open (rule:
-    ``kiro_crew.start_priority``).
+    ``kiro_crew.start_priority``), and the SDK charges it to Crew automation.
     """
-    from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
-
-    key = f"{k.SLOT_PREFIX}-translate-{uuid.uuid4().hex}"
-    provider, _is_new, _resumed = await sessions.get_or_create(key, agent="kirocrew-lite")
-    try:
-        return await stream_and_collect(
-            provider, prompt, approval_policy=ToolApprovalPolicy.REJECT_ALL
-        )
-    finally:
-        try:
-            sessions.release(key)
-        except Exception:
-            logger.debug("meetings translate: session release failed", exc_info=True)
-        try:
-            await sessions.destroy(key)
-        except Exception:
-            logger.debug("meetings translate: session destroy failed", exc_info=True)
+    turns = AgentTurnSDK(k.APP_NAME, lambda: sessions)
+    return await turns.run_oneshot(prompt, label="translate")
 
 
 def clean_translation(raw: str) -> str:
@@ -135,13 +125,19 @@ def clean_translation(raw: str) -> str:
     non-empty line is dropped: the prompt asks for one line, and a model that
     ignores that is more likely to be commentating than translating.
     """
-    text = raw.strip()
+    # The label is removed on both sides of a fence: before it, so a label above a
+    # fenced answer does not hide the fence, and after it, for a label inside one.
+    text = _TRANSLATION_LABEL.sub("", raw.strip(), count=1).strip()
     if text.startswith("```"):
         # Drop the fence and its optional language tag, and any closing fence.
         body = text.split("\n")[1:]
         while body and body[-1].strip().startswith("```"):
             body.pop()
         text = "\n".join(body).strip()
+    # A leading "Translation:" label, on the line of the text or on a line of its
+    # own above it, is scaffolding. Removed before the first-line pick, or a label
+    # on its own line would be the line shown and the translation dropped.
+    text = _TRANSLATION_LABEL.sub("", text, count=1).strip()
     for line in text.split("\n"):
         candidate = line.strip()
         if candidate:

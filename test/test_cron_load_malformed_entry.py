@@ -1,16 +1,8 @@
-"""Regression tests: one malformed job entry must not drop the store.
+"""One malformed job entry must not drop the store.
 
-A naive ``CronService._load`` would deserialize the job list in a single
-all-or-nothing comprehension inside ``except (json.JSONDecodeError, KeyError)``:
-a ``KeyError`` from any ONE entry aborted the whole comprehension and the
-handler replaced the registry with an empty list — one malformed or legacy
-record silently discarded EVERY job. ``_load`` runs at startup and again from
-``_sync`` whenever the file changes externally, so a hand-edit or a future
-schema addition could wipe the live registry at runtime.
-
-The fix parses entries independently (``_job_from_record`` built per entry in
-its own try block, malformed ones warned about and skipped) and reserves the
-whole-store reset for a genuinely unparseable file (``json.JSONDecodeError``).
+``CronService._load`` builds each entry with ``_job_from_record`` in its own try block
+and skips bad ones; only an unparseable file (``json.JSONDecodeError``) resets the
+store. ``_load`` also runs from ``_sync`` on external edits, so this guards live data.
 """
 
 from __future__ import annotations
@@ -149,16 +141,10 @@ def test_top_level_non_object_resets_store_and_counts_zero(tmp_path, caplog) -> 
         assert mgr.count_enabled_from_disk() == 0, payload
 
 
-# --- Narrowing the per-record catch: a code defect is not "bad data" -------
+# The per-record catch: a code defect is not "bad data".
 #
-# ``CronService._load`` must not catch ``AttributeError`` around
-# ``_job_from_record``, which cannot raise it from any JSON-representable
-# record (proved by
-# ``test_json_shaped_malformations_raise_only_key_or_type_error`` below). The
-# rationale, and what catching it costs, lives once in ``_job_from_record``'s
-# docstring; these tests pin the behaviour. The read-only
-# ``count_enabled_from_disk`` probe keeps the wider tuple -- narrowing that
-# site is deliberately out of scope here.
+# ``CronService._load`` must not catch ``AttributeError`` around ``_job_from_record``;
+# the rationale lives in its docstring. ``count_enabled_from_disk`` keeps the wider tuple.
 
 
 def _boom_on_a_valid_record(_j: dict) -> bool:
@@ -213,16 +199,10 @@ def test_code_defect_does_not_make_the_loss_permanent(tmp_path, monkeypatch) -> 
 
 
 def test_json_shaped_malformations_raise_only_key_or_type_error() -> None:
-    """CHARACTERISATION (passes before and after): ``AttributeError`` is not a
-    bad-data signal for this builder, so dropping it from the caught tuple
-    costs no malformed-record coverage.
+    """No JSON-shaped record makes ``_job_from_record`` raise ``AttributeError``.
 
-    Every ``.get()`` in the extraction path is dominated by a ``[...]``
-    subscript on the same object (``j["id"]`` before any ``j.get(...)``;
-    ``j["schedule"]["kind"]`` before any ``j["schedule"].get(...)``). From
-    JSON only a ``dict`` survives a string subscript, and a ``dict`` always
-    has ``.get`` -- so no ``json.loads`` output can reach the ``.get`` calls
-    without a ``dict`` in hand.
+    Every ``.get()`` follows a ``[...]`` subscript on the same object, and from JSON
+    only a ``dict`` survives a string subscript.
     """
     malformed: list[object] = [
         # record itself is not an object
@@ -254,14 +234,11 @@ def test_json_shaped_malformations_raise_only_key_or_type_error() -> None:
     assert _job_from_record(_good("ok")).id == "ok"
 
 
-def test_genuine_bad_data_still_skips_and_still_drops_on_the_next_write(tmp_path) -> None:
-    """CHARACTERISATION (passes before and after): the documented contract for
-    a genuinely malformed record is unchanged.
+def test_genuine_bad_data_skips_and_the_next_write_keeps_it(tmp_path) -> None:
+    """A malformed record is skipped on load, and the next write keeps it as written.
 
-    ``docs/system-specs/modules/learn-cron-dashboard.md`` states that a
-    skipped record is dropped from disk by the first write that follows, and
-    the load warning is the operator's recovery window. Narrowing the caught
-    tuple must not alter that -- only which exceptions count as bad data.
+    Spec: ``docs/system-specs/modules/learn-cron-dashboard.md``; every writer saves
+    through ``_save``, so the record stays in the store until the operator fixes it.
     """
     mgr = CronService(base_dir=tmp_path)
     bad = {"id": "bad", "message": "m", "schedule": {"kind": "every"}}  # no "name"
@@ -270,10 +247,109 @@ def test_genuine_bad_data_still_skips_and_still_drops_on_the_next_write(tmp_path
     mgr._load()
     assert [j.id for j in mgr._jobs] == ["a"]
 
+    mgr.enable_job("a", enabled=False)  # one ordinary write
+
+    reread = json.loads(mgr._path.read_text(encoding="utf-8"))
+    assert [j["id"] for j in reread["jobs"]] == ["a", "bad"]
+    assert reread["jobs"][1] == bad, "the kept record was changed"
+    mgr._load()
+    assert [j.id for j in mgr._jobs] == ["a"], "the kept record must still be skipped"
+
+
+def test_skipped_record_obeys_the_per_record_size_cap() -> None:
+    """Small malformed records are kept, but oversized ones are not."""
+    from kiro_crew.cron_service.store import MAX_UNKNOWN_FIELDS_BYTES, decode_store
+
+    bad = {**_good("bad"), "schedule": {"kind": "every", "every_secs": "60"}}
+    small = decode_store(json.dumps({"jobs": [_good("a"), bad]}).encode("utf-8"))
+    assert small is not None
+    assert [j.id for j in small.jobs] == ["a"]
+    assert small.skipped == (bad,)
+
+    oversized = {**bad, "unknown": "x" * (MAX_UNKNOWN_FIELDS_BYTES + 1)}
+    large = decode_store(json.dumps({"jobs": [_good("a"), oversized]}).encode("utf-8"))
+    assert large is not None
+    assert [j.id for j in large.jobs] == ["a"]
+    assert large.skipped == ()
+
+
+def test_a_record_the_utc_stamp_would_push_past_the_cap_is_not_kept() -> None:
+    """A record kept now must still fit the cap once an older store's save stamps it."""
+    from kiro_crew.cron_service.store import MAX_UNKNOWN_FIELDS_BYTES, decode_store
+
+    bad = {**_good("bad"), "schedule": {"kind": "every", "every_secs": "60"}, "pad": ""}
+    bad["pad"] = "x" * (MAX_UNKNOWN_FIELDS_BYTES - len(json.dumps(bad)))
+    assert len(json.dumps(bad)) == MAX_UNKNOWN_FIELDS_BYTES
+    document = decode_store(json.dumps({"jobs": [_good("a"), bad]}).encode("utf-8"))
+    assert document is not None
+    assert document.skipped == ()
+
+
+def test_a_skipped_record_with_a_non_text_name_is_not_kept() -> None:
+    """A kept record must still let ``restore --mode merge`` read the live store."""
+    from kiro_crew.cron_service.store import decode_store
+
+    no_name = {k: v for k, v in _good("n").items() if k != "name"}
+    records = [no_name, {**_good("x"), "name": None}, {**_good("z"), "name": 5}]
+    document = decode_store(json.dumps({"jobs": [_good("a"), *records]}).encode("utf-8"))
+    assert document is not None
+    assert [j.id for j in document.jobs] == ["a"]
+    assert document.skipped == (no_name,)
+
+
+def test_empty_skipped_records_count_against_the_store_budget(monkeypatch) -> None:
+    """An empty object costs its encoded bytes, so many of them cannot pass the total cap."""
+    from kiro_crew.cron_service import store
+
+    # An empty record is charged as the ``{"timezone": "UTC"}`` an older store's save may write.
+    each = len(json.dumps({"timezone": "UTC"}))
+    monkeypatch.setattr(store, "MAX_UNKNOWN_FIELDS_STORE_BYTES", each * 5)
+    newer = {**_good("a"), "x": 1}
+    document = store.decode_store(json.dumps({"jobs": [{}] * 8 + [newer]}).encode("utf-8"))
+    assert document is not None
+    assert len(document.skipped) == 5
+    # Kept records have their own total: a later job still keeps its newer-build key.
+    assert dict(document.unknown_fields["a"].job) == {"x": 1}
+
+
+def _nested_record(job_id: str, levels: int) -> dict:
+    """A malformed record (no ``name``) whose lists and objects nest *levels* deep."""
+    value: list = []
+    for _ in range(levels - 2):
+        value = [value]
+    return {"id": job_id, "message": "m", "schedule": {"kind": "every"}, "x": value}
+
+
+def test_only_an_entry_a_snapshot_restore_accepts_is_kept(tmp_path, caplog) -> None:
+    """A snapshot restore refuses a non-object job entry and a store nested past
+    ``MAX_DOCUMENT_NESTING``, and ``_save``'s ``indent=2`` encoder raises
+    ``RecursionError`` about a thousand levels down, so only such an entry is dropped."""
+    from kiro_crew.user_json import MAX_DOCUMENT_NESTING, exceeds_nesting
+
+    mgr = CronService(base_dir=tmp_path)
+    records = [
+        _good("a"),
+        _nested_record("at-cap", MAX_DOCUMENT_NESTING - 2),
+        _nested_record("past", MAX_DOCUMENT_NESTING - 1),
+        _nested_record("deep", 1200),
+        "garbage",
+    ]
+    _write_store(mgr._path, records)
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.cron"):
+        mgr._load()
     mgr._save()
 
     reread = json.loads(mgr._path.read_text(encoding="utf-8"))
-    assert [j["id"] for j in reread["jobs"]] == ["a"]
+    assert [j["id"] for j in reread["jobs"]] == ["a", "at-cap"]
+    assert not exceeds_nesting(reread), "a snapshot restore would refuse the saved store"
+    messages = [r.getMessage() for r in caplog.records]
+    dropped = [m for m in messages if "dropped from the store" in m]
+    assert [m.split(")")[0] for m in dropped] == [
+        "Skipping malformed cron job entry (id='past'",
+        "Skipping malformed cron job entry (id='deep'",
+        "Skipping malformed cron job entry (id='<not an object>'",
+    ], dropped
 
 
 # --- Corrupted-store resilience: non-string values in string-typed fields must not crash the listing ---
@@ -508,16 +584,10 @@ def test_every_string_typed_field_is_guarded_completeness_pin(tmp_path) -> None:
 )
 @pytest.mark.asyncio
 async def test_extreme_schedule_values_load_and_render_without_dropping(tmp_path, at_ts) -> None:
-    """FINITE extreme values are tolerated at the render
-    site, never bounded in the deserializer. An extreme stored at_ts (epoch
-    milliseconds, beyond-year-9999, negative, bignum) must (a) load
-    -- a reader-side value bound not mirrored by the writer silently drops
-    jobs and the next _save erases them, the data-loss class GPT fenced --
-    and (b) render through GET /api/crons via format_schedule's fallback
-    string instead of raising inside the every-job comprehension. Non-finite
-    values are the OPPOSITE case: type-shape malformed (no writer can produce
-    one, NaN breaks comparison ordering on the fire path), so they live in
-    the skip-record group above."""
+    """Finite extreme at_ts values load and render via format_schedule's fallback.
+
+    A reader-side bound the writer lacks would drop jobs and the next _save would
+    erase them. Non-finite values no writer can produce live in the skip group above."""
     import json as _json
     from unittest.mock import MagicMock
 
@@ -545,14 +615,9 @@ async def test_extreme_schedule_values_load_and_render_without_dropping(tmp_path
 
 
 def test_build_job_refuses_non_representable_schedule_numerics(tmp_path) -> None:
-    """The writer mirror: the deserializer may skip a record with a
-    non-representable schedule numeric precisely because no write path can
-    persist one -- _build_job is the persistence chokepoint (covering CLI,
-    MCP, dashboard, apps SDK, and both onboarding-import branches) that keeps
-    reader and writer exactly aligned, so the skip drops no writer-producible
-    record. Bignum ints are refused too: int-float arithmetic on the
-    timer-arming path (`at_ts - now`) raises OverflowError at gateway
-    startup."""
+    """_build_job, the one persistence chokepoint, refuses what the reader skips.
+
+    Bignum ints too: `at_ts - now` on the timer-arming path raises OverflowError."""
     mgr = CronService(base_dir=tmp_path)
     with pytest.raises(ValueError, match="representable"):
         mgr._build_job("j", "m", at_ts=float("nan"))
@@ -609,11 +674,13 @@ _NUMERIC_FIELD_DEFAULTS = {
     "secret_env_pending_ts": 0.0,
     "last_retry_run_ts": 0.0,
     "run_generation": 0,
+    "user_pause_generation": 0,
     "consecutive_dupes": 0,
     "consecutive_failures": 0,
     "last_retry_count": 0,
     "timeout_secs": 1800,  # _JOB_TIMEOUT_SECS
     "auto_pause_after_failures": 5,  # _AUTO_PAUSE_THRESHOLD
+    "alert_after_failures": 1,  # _ALERT_AFTER_DEFAULT
     "timeout": 0,
 }
 
@@ -622,14 +689,9 @@ _NUMERIC_POISONS = [float("nan"), float("inf"), 10**400, "60", True, None]
 
 @pytest.mark.asyncio
 async def test_numeric_field_consumer_matrix_pin(tmp_path) -> None:
-    """The invariant that closes the (field x consumer) hazard matrix.
-    Field axis: every numeric CronJob field, enumerated from the dataclass,
-    poisoned with each shape json.loads can produce -- must load without
-    raising and hold its declared default afterwards. Consumer axis: with
-    the poison planted, the timer, due-decision, next-run, render, and JSON
-    envelope consumers are all driven; the api_crons payload must contain no
-    NaN/Infinity token (checked via json.loads parse_constant, the
-    machine-readable spelling of 'valid JSON')."""
+    """Every numeric CronJob field, poisoned, loads with its default and breaks no consumer.
+
+    The api_crons payload must hold no NaN/Infinity token (json.loads parse_constant)."""
     import dataclasses
     import json as _json
     from unittest.mock import MagicMock

@@ -19,6 +19,17 @@ import sys
 import warnings
 
 import pytest
+from conftest_floor_home import _account_home
+
+
+def _shared_cache_root() -> str:
+    """``$XDG_CACHE_HOME``, else ``.cache`` under the account's REAL home.
+
+    A harness that fakes ``HOME`` would otherwise get an empty cache under the fake
+    home on every run, recompiling every module and refilling the hypothesis store.
+    """
+    return os.environ.get("XDG_CACHE_HOME") or os.path.join(str(_account_home()), ".cache")
+
 
 # ── Hypothesis example database (rootdir floor) ─────────────────────────────
 # ``test/conftest.py`` registers the "default"/"thorough" profiles without a
@@ -71,10 +82,7 @@ def _redirect_hypothesis_database() -> None:
     except Exception:  # noqa: BLE001 - no active profile to inherit from
         return
     if _HYPOTHESIS_DB_DIR is None:
-        cache_root = os.environ.get("XDG_CACHE_HOME") or os.path.join(
-            os.path.expanduser("~"), ".cache"
-        )
-        candidate = os.path.join(cache_root, "kirocrew", "hypothesis")
+        candidate = os.path.join(_shared_cache_root(), "kirocrew", "hypothesis")
         try:
             os.makedirs(candidate, exist_ok=True)
             _HYPOTHESIS_DB_DIR = candidate
@@ -128,8 +136,7 @@ def _redirect_bytecode_cache() -> None:
     """
     if os.environ.get("PYTHONDONTWRITEBYTECODE"):
         return  # nothing is written anywhere; nothing to redirect
-    cache_root = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
-    candidate = os.path.join(cache_root, "kirocrew", "pycache")
+    candidate = os.path.join(_shared_cache_root(), "kirocrew", "pycache")
     try:
         os.makedirs(candidate, exist_ok=True)
     except OSError:

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         _ACTION_APPROVE,
         _ACTION_REJECT,
         _ACTION_TRUST,
+        _IDENTITY_NAME_MAX,
         _SLACK_SECTION_TEXT_LIMIT,
         _TRUNCATION_MARKER,
         LLMEvent,
@@ -34,11 +35,14 @@ if TYPE_CHECKING:
         _linked_approvals,
         add_trusted_session,
         effective_session_key,
+        escape_mrkdwn,
         is_allowed_user,
         logger,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
+        trust_permitted,
+        trusted_mcp_identity,
     )
 
 
@@ -90,16 +94,37 @@ class _LinkedApprovalEvent:
 
     The dashboard's permission event (``AcpEvent``) and the Slack-native
     ``LLMEvent`` have different shapes, so adapt the few fields the block
-    builder reads: ``request_id``, ``title``, ``tool_input``, ``tool_purpose``.
+    builder reads: ``request_id``, ``title``, ``tool_input``, ``tool_purpose``,
+    and the MCP identity with the flag that says whether it is proven.
     """
 
-    __slots__ = ("request_id", "title", "tool_input", "tool_purpose")
+    __slots__ = (
+        "request_id",
+        "title",
+        "tool_input",
+        "tool_purpose",
+        "mcp_server_name",
+        "tool_name",
+        "mcp_identity_trusted",
+    )
 
-    def __init__(self, request_id: str | int, title: str, tool_input: str = "") -> None:
+    def __init__(
+        self,
+        request_id: str | int,
+        title: str,
+        tool_input: str = "",
+        *,
+        mcp_server_name: str = "",
+        tool_name: str = "",
+        mcp_identity_trusted: bool = False,
+    ) -> None:
         self.request_id = request_id
         self.title = title
         self.tool_input = tool_input
         self.tool_purpose = ""
+        self.mcp_server_name = mcp_server_name
+        self.tool_name = tool_name
+        self.mcp_identity_trusted = mcp_identity_trusted
 
 
 def _linked_slots_for(session_key: str) -> list[Any]:
@@ -200,6 +225,8 @@ def _grant_linked_trust(linked_entry: _LinkedApproval, sessions: SessionManager 
         add_trusted_session(linked_entry.session_key, sessions, strict=True)
         for slot in slots:
             slot._trust = True
+            # A person chose this slot's mode: its creator's changes stop reaching it.
+            slot._posture_inherited = False
     except Exception:
         logger.warning(
             "Failed to grant linked session trust (session=%s)",
@@ -213,21 +240,31 @@ def _grant_linked_trust(linked_entry: _LinkedApproval, sessions: SessionManager 
 async def post_linked_approval(
     slack: SlackClientOps,
     channel: str,
-    thread_ts: str,
+    thread_ts: str | None,
     request_id: str | int,
     session_key: str,
     title: str,
     tool_input: str = "",
+    *,
+    mcp_server_name: str = "",
+    tool_name: str = "",
+    mcp_identity_trusted: bool = False,
 ) -> str | None:
     """Mirror a dashboard tool-approval prompt into a linked Slack thread.
 
     Posts Approve / Reject buttons threaded under ``thread_ts`` and registers a
     :class:`_LinkedApproval` keyed by ``channel:ts`` so a button click resolves
     the dashboard slot's approval future (see :func:`handle_interaction`).
+    ``thread_ts=None`` posts top-level: a Slack Code channel's own session
+    replies in the channel itself, so its prompts go there too.
 
     Returns the Slack message ts on success, or ``None`` if the post failed.
     The caller (``_on_permission_prompt`` in chat_turn/permission_prompt.py) treats ``None``
     as "delivery failed" and surfaces it rather than silently parking on an unanswerable prompt.
+
+    *mcp_server_name*, *tool_name* and *mcp_identity_trusted* are the permission event's
+    own identity fields, passed as they are: the card names the server only when the
+    flag proves the pair (:func:`trusted_mcp_identity`), as the native card does.
 
     Trust ("Trust session") is offered only when BOTH hold:
 
@@ -252,10 +289,17 @@ async def post_linked_approval(
     title, _ = redact_credentials(title)
     tool_input, _ = redact_exfiltration_urls(tool_input)
     tool_input, _ = redact_credentials(tool_input)
-    event = _LinkedApprovalEvent(request_id, title, tool_input)
+    event = _LinkedApprovalEvent(
+        request_id,
+        title,
+        tool_input,
+        mcp_server_name=mcp_server_name,
+        tool_name=tool_name,
+        mcp_identity_trusted=mcp_identity_trusted,
+    )
     trust_grantable = channel.startswith("D") and _linked_trust_grantable(session_key, request_id)
-    # _build_approval_blocks is typed for AcpEvent but only reads the four
-    # attributes the shim provides (request_id/title/tool_input/tool_purpose).
+    # _build_approval_blocks is typed for AcpEvent but only reads the
+    # attributes the shim provides.
     blocks = _build_approval_blocks(event, is_dm=trust_grantable)  # type: ignore[arg-type]
     try:
         approval_ts = await slack.post_blocks(
@@ -280,6 +324,25 @@ def resolve_linked_approval(channel: str, approval_ts: str) -> None:
     _linked_approvals.pop(f"{channel}:{approval_ts}", None)
 
 
+def mcp_identity_text(server: str, tool: str) -> str:
+    """The mrkdwn line naming the MCP server and tool a card asks about, or ``""``.
+
+    Both names are the trusted ``_meta.kiro`` identity (:func:`trusted_mcp_identity`),
+    not the title: ``email_send`` on a card does not say which server sends the mail,
+    and the model chooses the title. Scrubbed like every other string the card posts,
+    then bounded and escaped, so a name cannot carry a ``<!channel>``. Every Slack
+    approval card draws its identity line here, the transport card too.
+    """
+    if not server.strip():
+        return ""
+    shown: list[str] = []
+    for name in (server.strip(), tool.strip() or "unnamed tool"):
+        name, _ = redact_exfiltration_urls(name)
+        name, _ = redact_credentials(name)
+        shown.append(escape_mrkdwn(name[:_IDENTITY_NAME_MAX]))
+    return f"MCP tool: *{shown[0]}* / *{shown[1]}*"
+
+
 def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = "") -> list[dict]:
     """Build Block Kit blocks for tool approval prompt.
 
@@ -292,7 +355,8 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
 
     Shows the full command text (from tool_input) in a code block so users
     can see exactly what will run before approving.  Falls back to the
-    truncated title when tool_input is unavailable.
+    truncated title when tool_input is unavailable.  A call whose MCP identity
+    is proven also names its server beside the title (:func:`mcp_identity_text`).
 
     In DMs: Approve / Trust / Reject
     In group channels: Approve / Reject only (Trust excluded
@@ -373,7 +437,11 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
         )
 
     blocks.append({"type": "actions", "elements": buttons})
-    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": footer}]})
+    footer_elements = [{"type": "mrkdwn", "text": footer}]
+    identity = mcp_identity_text(*trusted_mcp_identity(event))
+    if identity:
+        footer_elements.append({"type": "mrkdwn", "text": identity})
+    blocks.append({"type": "context", "elements": footer_elements})
     return blocks
 
 
@@ -395,7 +463,18 @@ def _resolve_linked_click(
     """
     approved = action_id != _ACTION_REJECT
     trusted = False
-    if action_id == _ACTION_TRUST:
+    if action_id == _ACTION_TRUST and not trust_permitted():
+        # A ``permission_mode`` deny of ``trust``: the press approves this one tool,
+        # as every other Trust button does, and grants nothing.
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.interactive.trust_linked",
+            outcome="denied",
+            source="slack",
+            resources=linked_entry.session_key,
+            error="trust_disabled_by_policy",
+        )
+    elif action_id == _ACTION_TRUST:
         trusted = _grant_linked_trust(linked_entry, sessions)
         # A Trust click that could not grant must NOT be quietly downgraded to
         # a one-shot approve and labelled "Trusted": that reports a security
@@ -533,6 +612,17 @@ async def _grant_late_trust(
     # reads (see subagent.py). Poking the container directly would let a
     # revoke clear one half and leave the other, so the two are not
     # separable at a call site.
+    if not trust_permitted():
+        # A ``permission_mode`` deny of ``trust``: the late press grants nothing.
+        sel().log_api_access(
+            caller=user_id,
+            operation="slack.interactive.trust_late",
+            outcome="denied",
+            source="slack",
+            resources=session_key,
+            error="trust_disabled_by_policy",
+        )
+        return None
     add_trusted_session(session_key, sessions)
     logger.info("Trust mode ON (late click) for session %s", session_key)
     sel().log_api_access(

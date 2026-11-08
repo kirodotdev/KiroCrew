@@ -33,8 +33,9 @@ sign      (ubuntu)  flatten artifacts, attest wheel/sdist/AppImage provenance,
                     -> signed/<channel>/<version>/<AppSlug>.zip
   |
 notarize  (macOS)   notarize.sh submit + bounded polling with transient-error
-                    retries, stapler staple, spctl gate, build a DMG from the
-                    STAPLED app, sign the DMG via a second
+                    retries (the signed zip, or an image of the same app when
+                    notarytool refuses the zip), stapler staple, spctl gate,
+                    build a DMG from the STAPLED app, sign the DMG via a second
                     CDSigner task, notarize + staple + gate the DMG, attest the
                     DMG, attach the gated artifact to the run
   |
@@ -286,6 +287,41 @@ throttled request up to five times with jittered doubling backoff (at most 300s
 of waiting) and fails at once on any other answer. A throttled request created no
 task, so the resubmission is safe. Exit code 4 with "still throttled after 5
 attempts" means the service stayed saturated; rerun the failed job.
+
+**Submission answers `request entity too large` (`limit: 102400`).** The service
+refuses a request body over 102,400 bytes, and the body lists every nested
+binary, so it grows with the backend. `sign.sh` sends a manifest under 100,000
+bytes as one request. A bigger one is signed in the order the service documents
+for nested code: the backend files under `Contents/Resources` go out in parts
+(each body under 90,000 bytes, all against the one uploaded tarball, each writing
+`signed/<channel>/<version>/<AppSlug>.part-<n>.zip`), `split-manifest.py merge`
+copies each part's signed files into the local `.app` (it refuses a file the
+service left unchanged), the app is re-packed to
+`pre-signed/<channel>/<version>/<AppSlug>.merged.tar.gz`, and a final request
+signs the app over that tree, writing the usual output key. Splitting without
+that last request would leave the app's seal covering only one part. Every task
+ends with the service's app pass, which signs the frameworks under
+`Contents/Frameworks`, so every request also lists the shell entries (helper
+apps, frameworks, their Helpers, ShipIt); a request without them fails with
+`<framework>: code object is not signed at all`. `sign.sh` waits for every part
+before it fails and prints each answer. Exit 4 with the service's own text means
+a part or the final request failed; rerun the failed job. The flow adds one
+signing round, so the job takes roughly twice as long as a single request; the
+60-minute job timeout covers a normal run, not two full 45-minute waits.
+
+**`notarytool` answers `signed.zip must be a zip archive` (exit 64) within seconds.**
+`notarytool` refused the signed zip itself, before it uploaded anything, so no
+retry helps. `notarize.sh` exits 64 at once instead of retrying, and the workflow
+then runs `notarize-image.sh`, which unpacks the zip and submits an unsigned disk
+image of the same app. Apple notarizes everything inside an image, so the staple
+step that follows is unchanged; the image is never stapled or shipped. The log
+opens with `signed zip: ...` lines (size, first bytes, the end record's entry count,
+directory size and offset, whether a Zip64 locator is present, and the entries
+Python reads): they say why `notarytool` refused the file. The case seen is the
+universal app's zip, which holds about 94,000 entries, over the 65,535 a classic zip
+end record can count; the single-arch zips (about 47,000) are not affected. If the
+image is refused too, or the zip cannot be read at all, the step fails with that
+output.
 
 **Signing times out.** `sign.sh` polls for 45 minutes (`MAX_WAIT`, 30s interval)
 and gates on the explicit `success` status flag rather than elapsed time, so a

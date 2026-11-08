@@ -27,7 +27,7 @@ container receives the model credential.
 
 **Read-through for existing installs.** An install that launched before this file existed has
 its pointer in ``cloud.json``. :meth:`LaunchState.load` falls back to those fields when this
-file has nothing, so ``kirocrew cloud resume`` re-attaches exactly as it did. The fallback is
+file has nothing, so ``kirocrew cloud launch`` re-attaches exactly as it did. The fallback is
 read-only: nothing migrates the value by writing, because writing is the thing being removed.
 """
 
@@ -47,6 +47,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig, tag_is_wellformed
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import owner_only_opener_for
 from kiro_crew.sandbox import (
     SandboxCeilingUnsealable,
     require_unaliased_cloud_config,
@@ -101,7 +102,7 @@ class LaunchState:
         cloud command must not hand an operator a traceback over a file it can simply treat
         as unset. Every way the document can fail to be one answers the same thing -- there
         is no record here -- and the legacy fields are then consulted, which is what keeps
-        ``cloud resume`` working on an install that predates this file.
+        ``cloud launch`` working on an install that predates this file.
 
         Refusing about the NAME, which is the opposite call and not a contradiction. A
         malformed document is a file with nothing in it worth acting on; a file reachable
@@ -379,7 +380,7 @@ def _writer_lock(p: Path) -> "Iterator[None]":
     """
     lock_path = p.with_name(p.name + ".lock")
     with contextlib.ExitStack() as stack:
-        fh = stack.enter_context(open(lock_path, "a+"))
+        fh = stack.enter_context(open(lock_path, "a+", opener=owner_only_opener_for(lock_path)))
         stack.enter_context(platform_compat.file_lock(fh.fileno(), exclusive=True))
         yield
 

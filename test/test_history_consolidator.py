@@ -1,10 +1,6 @@
 """Tests for the background history consolidator's memory and lesson writes.
 
-Covers ``HistoryConsolidator``: its tool-free LLM turn, the offset that advances
-only on success, the writes kept off the event loop, ``consolidate_session`` and
-``consolidate_now``, the value guard, the source a consolidated memory is written
-under, the embedder breaker, and the lesson scope and applies tier. Skill
-detection and auto-skills are in ``test_history_auto_skills.py``.
+Skill detection and auto-skills are in ``test_history_auto_skills.py``.
 """
 
 from __future__ import annotations
@@ -21,19 +17,18 @@ from consolidation_lease_helpers import lease_aware_log
 
 from kiro_crew.history import _CONSOLIDATION_THRESHOLD, ConversationLog, HistoryConsolidator
 
-# ---------------------------------------------------------------------------
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 # Tests for consolidation offset only advances on success
-# ---------------------------------------------------------------------------
 
 
 class TestConsolidationToolPolicy:
     """The background consolidation LLM turn must run tool-free on ALL providers.
 
-    kiro scopes the kirocrew-lite session to tools:[] via set_mode, but the
-    Claude Code backend skips set_mode and injects the full kirocrew-core/cron
-    toolset (auto-approved). To keep parity — and prevent a background turn from
-    firing side-effecting tools like send_message/learn_add — _call_llm must
-    reject all tools regardless of provider.
+    The Claude Code backend skips set_mode and injects the full auto-approved toolset,
+    so _call_llm itself must reject every tool (send_message, learn_add, ...).
     """
 
     @pytest.mark.asyncio
@@ -128,11 +123,8 @@ class TestConsolidationOffset:
 class TestConsolidationDoesNotBlockLoop:
     """Structured-memory writes embed synchronously (blocking urllib to Ollama).
 
-    _consolidate runs as an asyncio.create_task on the event loop thread, so it
-    MUST offload _write_structured_memory to a worker thread — otherwise a slow
-    or stalled embedding endpoint freezes the whole gateway loop (heartbeats,
-    Slack, dashboard) and can trip the faulthandler hard-kill. Regression guard
-    for the loop-stall crash traced to embeddings.py urlopen on the loop thread.
+    _consolidate runs on the event loop, so it must offload _write_structured_memory
+    to a thread; a stalled embedder would freeze the gateway and trip the faulthandler.
     """
 
     @pytest.mark.asyncio
@@ -235,7 +227,7 @@ class TestConsolidationDoesNotBlockLoop:
             "via asyncio.to_thread()."
         )
 
-    def test_save_lessons_caps_oversized_list(self):
+    def test_save_lessons_caps_oversized_list(self, caplog):
         """The LLM lessons array is capped like semantic/episodic: each
         write_lesson can perform up to 6 blocking embeds, so an uncapped list
         would occupy a worker thread for minutes."""
@@ -255,9 +247,12 @@ class TestConsolidationDoesNotBlockLoop:
             {"rule": f"lesson number {i}", "category": "tool"}
             for i in range(_MAX_LESSONS_PER_CONSOLIDATION * 3)
         ]
-        c._save_lessons(oversized)
+        with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
+            c._save_lessons(oversized)
 
-        assert vector_store.write_lesson.call_count == _MAX_LESSONS_PER_CONSOLIDATION
+        cap = _MAX_LESSONS_PER_CONSOLIDATION
+        assert f"Extracted {cap} lesson(s) from chat (vector store)" in caplog.text
+        assert vector_store.write_lesson.call_count == cap
 
 
 class TestConsolidateSession:
@@ -497,7 +492,7 @@ class TestConsolidateSession:
         assert "dashboard:chat-fail" not in consolidator._running
 
     @pytest.mark.asyncio
-    async def test_consolidate_now_skips_sensitive(self, tmp_path):
+    async def test_consolidate_now_skips_sensitive(self, tmp_path, caplog):
         """consolidate_now skips sessions that touched sensitive paths."""
         from kiro_crew.memory import MemoryStore
 
@@ -511,9 +506,15 @@ class TestConsolidateSession:
             "dashboard:chat-sens2", "assistant", "read .ssh/id_rsa", tools=["cat .ssh/id_rsa"]
         )
 
-        with patch.object(consolidator, "_consolidate", new_callable=AsyncMock) as mock_consolidate:
-            await consolidator.consolidate_now("dashboard:chat-sens2")
-            mock_consolidate.assert_not_called()
+        with (
+            patch.object(consolidator, "_consolidate", new_callable=AsyncMock) as mock_consolidate,
+            caplog.at_level(logging.INFO, logger="kiro_crew.history"),
+        ):
+            assert await consolidator.consolidate_now("dashboard:chat-sens2") is True
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.history"]
+        assert "consolidate_now skipped for dashboard:chat-sens2: sensitive session" in messages
+        assert conv_log.unconsolidated_count("dashboard:chat-sens2") == 1
+        mock_consolidate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_consolidate_now_happy_path(self, tmp_path):
@@ -529,7 +530,8 @@ class TestConsolidateSession:
         conv_log.append("dashboard:chat-ok", "user", "hello world")
 
         with patch.object(consolidator, "_consolidate", new_callable=AsyncMock) as mock_consolidate:
-            await consolidator.consolidate_now("dashboard:chat-ok")
+            # A completed pass that advanced nothing still reports done.
+            assert await consolidator.consolidate_now("dashboard:chat-ok") is True
             mock_consolidate.assert_called_once_with("dashboard:chat-ok", include_history=True)
 
     @pytest.mark.asyncio
@@ -545,7 +547,7 @@ class TestConsolidateSession:
         consolidator = HistoryConsolidator(log=conv_log, memory=mem)
 
         with patch.object(consolidator, "_consolidate", new_callable=AsyncMock) as mock_consolidate:
-            await consolidator.consolidate_now("dashboard:chat-nonexist")
+            assert await consolidator.consolidate_now("dashboard:chat-nonexist") is True
             mock_consolidate.assert_not_called()
 
 
@@ -771,11 +773,8 @@ class TestConsolidationDoesNotImpersonateUser:
 class TestConsolidationEmbedBreaker:
     """One consolidation pass must not pay a slow embedder once per item.
 
-    Every memory a pass writes embeds its text inline, so an embedder that is slow
-    for the first row is slow for all of them — and each failed embed stores the
-    same NULL-vector row the repair sweep would have filled anyway. The pass
-    therefore measures its own write time and, past the budget, defers the
-    remaining embeddings instead of re-paying the latency per item.
+    Past its write-time budget the pass defers the remaining embeddings; the repair
+    sweep fills the NULL vectors later anyway.
     """
 
     @staticmethod
@@ -930,11 +929,8 @@ class TestConsolidationEmbedBreaker:
     ) -> None:
         """A row admitted without dedup must not displace one it never compared.
 
-        Deferring leaves the vector NULL, which skips the similarity dedup. On a
-        legacy V1 store at its episodic cap the insert would then tombstone the
-        lowest-importance row to make room for a possible paraphrase. The refusal
-        is the cheaper loss: the transcript is still on disk, the evicted row is
-        not.
+        A NULL vector skips dedup, so a V1 store at its episodic cap would evict a row
+        for a possible paraphrase. Refusing is cheaper: the transcript stays on disk.
         """
         from kiro_crew import history_consolidation
         from kiro_crew.vector_memory import VectorMemoryStore
@@ -1016,11 +1012,7 @@ class TestConsolidationEmbedBreaker:
 class TestConsolidationLessonScope:
     """Consolidation forwards a model-supplied ``repo_scope`` into the lesson write.
 
-    ``write_lesson`` has accepted ``repo_scope`` all along, but ``_save_lessons``
-    never passed it, so consolidation-written lessons could not be
-    project-scoped -- and since the context gate drops out-of-scope lessons
-    before ranking, the scope lever was unreachable for every consolidation
-    write. These tests pin the forwarding on both write paths.
+    Pinned on both write paths of ``_save_lessons``.
     """
 
     @staticmethod
@@ -1200,12 +1192,8 @@ class TestConsolidationLessonScope:
 class TestConsolidationLessonApplies:
     """Consolidation states the authored ``applies`` tier on both lesson write paths.
 
-    Every other write surface (``learn_add``, ``POST /api/lessons``) states the
-    tier; consolidation is the highest-volume writer, so without this its rows
-    all land unstated and are served as standing rules. The tier is untrusted
-    model output: the two literals round-trip, an omitted key lands unstated,
-    and a misspelling is logged and lands unstated rather than dropping the
-    correction.
+    Unstated rows are served as standing rules. The tier is untrusted model output: the
+    two literals round-trip, and an omitted or misspelled key (logged) lands unstated.
     """
 
     _consolidator = staticmethod(TestConsolidationLessonScope._consolidator)

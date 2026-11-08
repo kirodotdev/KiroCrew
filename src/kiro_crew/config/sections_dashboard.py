@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import overload
 
 from kiro_crew.config.fields import _meta
+from kiro_crew.config.sections_shared_crew import SharedCrewConfig
 from kiro_crew.config.sections_tailnet import TailscaleConfig
 
 # The terminal apps the desktop shell can open in a project directory
@@ -24,6 +25,25 @@ EXTERNAL_TERMINAL_APPS: tuple[str, ...] = (
     "konsole",
     "wezterm",
     "xfce4-terminal",
+)
+
+# The dashboard's feature-preview switches (Settings > Developer > Feature
+# previews) stored under ``dashboard.feature_previews``, by name. Each name is a
+# ``mc-preview-<name>`` key in ``website/src/utils/previewFlags.ts`` with its
+# hyphens written as underscores (config paths are snake_case); that file keeps
+# the browser's copy as a cache of this section, and
+# test_feature_previews_config.py pins the two lists equal.
+FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
+    "artifact_deploy",
+    "crew_mode",
+    "crew_oauth",
+    "explore",
+    "folder_conductor",
+    "layout_harness",
+    "mate_sessions",
+    "remote_crew_chat",
+    "session_environments",
+    "webhooks",
 )
 
 
@@ -129,6 +149,26 @@ VERBOSITY_LEVELS: tuple[str, ...] = ("default", "concise", "answer_only")
 LEGACY_VERBOSITY_ALIASES: dict[str, str] = {"ultra": "answer_only"}
 
 
+#: The ``dashboard.preferred_language`` codes a writer may store, each with the
+#: English name the reply rule spells out. The codes are the dashboard's own UI
+#: languages (``website/src/i18n/languages.ts``) so the picker can reuse their
+#: endonyms; ``""`` (auto) is not listed here and means "the user's language".
+PREFERRED_LANGUAGES: dict[str, str] = {
+    "en": "English",
+    "zh-CN": "Simplified Chinese",
+    "hi": "Hindi",
+    "es": "Spanish",
+    "fr": "French",
+    "bn": "Bengali",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "de": "German",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "it": "Italian",
+}
+
+
 @overload
 def normalize_verbosity(raw: str) -> str: ...
 
@@ -166,6 +206,16 @@ class DashboardConfig:
             "Reach the dashboard over your tailnet via `tailscale serve`.",
         ),
     )
+    shared_crew: SharedCrewConfig = field(
+        default_factory=SharedCrewConfig,
+        metadata=_meta(
+            "Shared Crew",
+            "Fair admission, per-person limits and the direct tailnet link for a "
+            "shared Crew. Read only while Shared Crew is turned on in Feature "
+            "Previews; otherwise every value reads as its default.",
+            restart=True,
+        ),
+    )
     restore_sessions: bool = field(
         default=False,
         metadata=_meta(
@@ -186,8 +236,8 @@ class DashboardConfig:
     crewmate_threads: bool = field(
         default=False,
         metadata=_meta(
-            "Reply threads on mate chat messages",
-            "Let any message in a mate's chat carry its own reply thread, "
+            "Reply threads on Bot chat messages",
+            "Let any message in a Bot's chat carry its own reply thread, "
             "opened in the side panel while the main chat stays visible. Off by "
             "default: the thread routes answer not-found, no thread frame is sent, "
             "and the dashboard draws no Reply in thread control. Takes effect on "
@@ -197,14 +247,36 @@ class DashboardConfig:
     crewmates_in_agent_picker: bool = field(
         default=False,
         metadata=_meta(
-            "Mates in the chat agent picker",
-            "List mates in the chat composer's agent picker, beside the agent "
-            "templates, so a chat can be switched onto a mate (and its own "
+            "Bots in the chat agent picker",
+            "List Bots in the chat composer's agent picker, beside the agent "
+            "templates, so a chat can be switched onto a Bot (and its own "
             "workspace and memory) without opening it from the Crew page. Off by "
-            "default: the picker lists templates plus any mate no listed "
+            "default: the picker lists templates plus any Bot no listed "
             "template already covers; the default agent stays even when covered, "
             "unless a template shares its name. Takes effect when the dashboard is "
             "reloaded; no gateway restart.",
+        ),
+    )
+    feature_previews: dict = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Feature previews",
+            "Which unreleased dashboard features are turned on under Settings > "
+            "Developer > Feature previews, by name, each true or false. Kept here "
+            "so a switch stays as set on every browser, device and dashboard "
+            "address of this gateway. A name that is absent reads as off. Takes "
+            "effect on the next dashboard read; no restart.",
+            properties={
+                name: {
+                    "type": "boolean",
+                    "default": False,
+                    "x-meta": {
+                        "label": f"Feature preview: {name}",
+                        "help": f"Turn on the '{name}' feature preview.",
+                    },
+                }
+                for name in FEATURE_PREVIEW_FLAGS
+            },
         ),
     )
     qr_session_until_restart: bool = field(
@@ -419,6 +491,16 @@ class DashboardConfig:
             enum=["persistent", "incognito", "temporary"],
         ),
     )
+    new_chat_crew_mode: bool = field(
+        default=False,
+        metadata=_meta(
+            "Start new chats in Ultra Mode",
+            "Open each new dashboard chat with Ultra Mode already on. It can "
+            "still be turned off before the first message. Applies only where "
+            "Ultra Mode is offered: a Persistent chat on the default agent, "
+            "with the Ultra Mode preview on.",
+        ),
+    )
     widget_density: str = field(
         default="more",
         metadata=_meta(
@@ -429,41 +511,22 @@ class DashboardConfig:
             enum=["more", "less"],
         ),
     )
-    use_builtin_browser: bool = field(
-        default=True,
-        metadata=_meta(
-            "Use Built-in Browser",
-            "When on, the browser tool opens pages in Kiro Crew's built-in panel "
-            "(desktop app only). When off, the agent browses via playwright-cli.",
-        ),
-    )
     browser_local_origins: list[str] = field(
         default_factory=list,
         metadata=_meta(
-            "Built-in Browser Local Origins",
-            "Loopback origins the browser tool may open in the built-in panel, "
+            "Local Preview Origins",
+            "Loopback origins the browser tool and the side panel's Preview tab may open, "
             "each written host:port with host localhost, 127.0.0.1 or [::1] "
-            "(e.g. localhost:5173 for a Vite dev server). Empty (the default) "
-            "keeps every loopback, private and link-local address refused. The "
-            "port is required and matched exactly, so one entry opens one dev "
+            "(e.g. localhost:5173 for a Vite dev server). The tab is for previewing "
+            "your own dev server; the agent never drives it, and an outside address "
+            "is answered with 'Open this in your Chrome, or ask Kiro'. Empty (the "
+            "default) keeps every loopback, private and link-local address refused. "
+            "The port is required and matched exactly, so one entry opens one dev "
             "server and never the rest of the machine; the gateway's own port is "
-            "refused even when listed. Entries in any other shape are dropped. "
-            "The agent cannot set this while its sandbox is on: config.json is "
-            "read-only inside the sandbox.",
-        ),
-    )
-    browser_view_port: int = field(
-        default=0,
-        metadata=_meta(
-            "Browser Live-View Port",
-            "Pin the browser live-view server (playwright-cli show) to this "
-            "loopback port. 0 (the default) picks a fresh OS-assigned ephemeral "
-            "port on every start. Set a fixed port when the dashboard is viewed "
-            "remotely through an SSH tunnel that forwards a fixed set of ports, "
-            "so the Browser panel can always reach the view. The server binds "
-            "loopback-only either way. A value outside 1-65535 is treated as "
-            "unset. A changed pin applies the next time the view server "
-            "(re)starts; an already-running server keeps its current port.",
+            "refused even when listed. Entries in any other shape are dropped; at "
+            "most 32 are kept. Edited on Settings -> Browser -> Local preview, or by "
+            "the Preview tab's own Allow button. The agent cannot set this while its "
+            "sandbox is on: config.json is read-only inside the sandbox.",
         ),
     )
     verbosity: str = field(
@@ -484,6 +547,21 @@ class DashboardConfig:
             "irreversible-action confirmations always appear but stay brief, "
             "and ordered multi-step instructions stay complete.",
             enum=list(VERBOSITY_LEVELS),
+        ),
+    )
+    preferred_language: str = field(
+        default="",
+        metadata=_meta(
+            "Preferred Reply Language",
+            "Language the agent replies in, as one of the dashboard's language "
+            "codes (e.g. 'zh-CN'). Empty (the default) replies in the language "
+            "of the user's message. A set language holds even when a message "
+            "mixes languages, until the user asks for another one in chat. "
+            "Code, commands and identifiers stay as they are, and text written "
+            "for other readers (commit messages, PR text, code comments, public "
+            "posts) keeps the project's own language. Separate from 'language', "
+            "which sets only the dashboard UI.",
+            enum=["", *PREFERRED_LANGUAGES],
         ),
     )
     link_previews: bool = field(
@@ -522,7 +600,9 @@ class DashboardConfig:
             "task is not interrupted by the machine going to sleep. Off by default. "
             "Uses caffeinate on macOS, systemd-inhibit on Linux, and "
             "SetThreadExecutionState on Windows; on a host with no keep-awake "
-            "backend it is a no-op.",
+            "backend it is a no-op. On some Windows laptops (Modern Standby), "
+            "locking the screen can still let it sleep, so keep the screen on "
+            "for long tasks.",
         ),
     )
     quick_send: bool = field(
@@ -654,7 +734,23 @@ class DashboardConfig:
                         "help": (
                             "Ceiling on concurrent terminal sessions across every chat, "
                             "server-wide. Each chat's activity bar caps its own terminals "
-                            "below this; a session beyond the ceiling is refused."
+                            "below this. At the ceiling, opening a terminal ends the shell "
+                            "that has had no browser attached the longest (at least a "
+                            "minute) and posts a notice; with none, the open is refused."
+                        ),
+                    },
+                },
+                "orphan_timeout_s": {
+                    "type": "integer",
+                    "default": 43200,
+                    "x-meta": {
+                        "label": "Detached terminal timeout (seconds)",
+                        "help": (
+                            "How long a terminal's shell keeps running with no browser "
+                            "attached, for example while your laptop sleeps, before it and "
+                            "everything running in it are ended. Default 43200 (12 hours); "
+                            "values below 60 count as 60. Run jobs that must outlive this "
+                            "inside tmux."
                         ),
                     },
                 },
@@ -830,6 +926,15 @@ class DashboardConfig:
             "graded accent stripe (0-10; 0 = off).",
         ),
     )
+    show_unread_dot: bool = field(
+        default=True,
+        metadata=_meta(
+            "Show Unread Dot on Session Cards",
+            "Show the unread dot on a sidebar session card when the agent finished "
+            "and you have not read the result. Folder and aggregate unread counts "
+            "are not affected.",
+        ),
+    )
     # Literal enum rather than FOLDER_SORT_MODES: that constant lives in
     # sections_limits with the other write/load bounds, and this field spells the
     # same list. test_config_patch.py::TestFolderSortRoundTrip::
@@ -884,6 +989,21 @@ class DashboardConfig:
             "no Settings control reads it, so it carries no schema properties.",
         ),
     )
+    translucent_panels: str = field(
+        default="",
+        metadata=_meta(
+            "Translucent Panels",
+            "Show the top bar, the tab bar, the message box, the suggestion chips and "
+            "the search fields as frosted glass over the content that scrolls under "
+            "them (the Liquid Glass primitive): 'on', or 'off' for solid cards. "
+            "Empty = never chosen on this workspace (the browser's own stored choice "
+            "holds, as before the setting was server-backed). Stored here like the "
+            "theme mode, not only in the browser, so the choice follows the user "
+            "across ports, browsers and the desktop app; the browser keeps a copy "
+            "only so the first paint already matches.",
+            enum=["", "on", "off"],
+        ),
+    )
     onboarded: bool = field(
         default=False,
         metadata=_meta(
@@ -913,11 +1033,11 @@ class DashboardConfig:
     crewmates_onboarded: bool = field(
         default=False,
         metadata=_meta(
-            "Mates Onboarded",
-            "Whether the user has finished or dismissed the first-run Meet Mates "
-            "flow (the four-step introduction that creates the first mate). "
+            "Bots Onboarded",
+            "Whether the user has finished or dismissed the first-run Meet Bots "
+            "flow (the four-step introduction that creates the first Bot). "
             "Server-backed like the other first-run flags so a second machine does "
-            "not replay it. Also set when the flow is re-run from the Mates page.",
+            "not replay it. Also set when the flow is re-run from the Bots page.",
         ),
     )
     user_role: str = field(
@@ -972,6 +1092,15 @@ class DashboardConfig:
             "Feature Videos Cache Size (MB)",
             "Disk budget for downloaded clips. Whole release folders are evicted "
             "oldest-first to fit; the running release is never evicted. 0 = no cap.",
+        ),
+    )
+    milestones_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Milestones Enabled",
+            "Show the milestones indicator, panel, new-chat feature cards and quiet "
+            "notices. Off hides them; counting continues, so turning it back on shows "
+            "true progress.",
         ),
     )
     folder_suggestions_enabled: bool = field(
@@ -1091,6 +1220,27 @@ class DashboardConfig:
             "BITBUCKET_SERVER_TOKEN_<HEX> (the host's hex encoding, as the "
             "panel's setup message names it) serves one host of several. "
             "Without a token the read is anonymous.",
+        ),
+    )
+    gerrit_hosts: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Gerrit Hosts",
+            "Exact hostnames (optionally host:port) of Gerrit Code Review "
+            "instances whose change URLs the Changes panel and session source "
+            "links may read, read-only, over the instance's REST API. Empty = "
+            "none (deny-by-default): a /c/<project>/+/<number> URL is only "
+            "fetched when its host is an exact member of this list. Suffixes "
+            "and wildcards are not matched. A host that is also listed in "
+            "gitlab_hosts, jira_hosts, github_hosts or bitbucket_server_hosts "
+            "is refused. Gerrit refuses anonymous REST reads on most instances, "
+            "so the gateway authenticates with the HTTP credential of the "
+            "listed host only: the vault secret GERRIT_HTTP_CREDENTIAL, holding "
+            "<username>:<HTTP password> as generated under the Gerrit account's "
+            "HTTP Credentials settings, serves a single listed host, and "
+            "GERRIT_HTTP_CREDENTIAL_<HEX> (the host's hex encoding) serves one "
+            "host of several. Settings > Secrets offers one labelled row per "
+            "listed host, so the name is never typed by hand.",
         ),
     )
     jira_auth: list[JiraAuthEntry] = field(

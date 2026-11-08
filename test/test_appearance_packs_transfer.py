@@ -471,6 +471,16 @@ def test_rejects_an_oversized_sprite(store):
     assert pack_transfer.save_sprite_pack(store, "big", {"meta": {"id": "big"}}, big)["ok"] is False
 
 
+def test_a_sprite_whose_base64_is_over_the_cap_is_named_too_large(store):
+    """The cap is on the stored base64 text, which is a third larger than the art."""
+    raw = b"\x89PNG\r\n\x1a\n" + b"\x00" * (pack_transfer.MAX_FILE_BYTES * 7 // 8)
+    assert len(raw) < pack_transfer.MAX_FILE_BYTES
+    art = base64.b64encode(raw).decode("ascii")
+    assert len(art) > pack_transfer.MAX_FILE_BYTES
+    result = pack_transfer.save_sprite_pack(store, "big", {"meta": {"id": "big"}}, art)
+    assert result == {"ok": False, "error": "That sprite art is too large"}
+
+
 @pytest.mark.parametrize("name", ["../x.png", "run.sh", "", None])
 def test_rejects_an_unsafe_sprite_filename(store, name):
     result = pack_transfer.save_sprite_pack(store, "s", {"meta": {"id": "s"}}, PNG, name)

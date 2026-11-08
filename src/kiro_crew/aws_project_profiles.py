@@ -8,7 +8,9 @@ not an isolation boundary: the agent can still name another profile itself.
 
 The map lives in the operator's own configuration and nowhere else. Nothing here
 reads a file inside the project checkout, so a cloned repository cannot choose
-which credentials an agent uses. Nothing here reads credential material either:
+which credentials an agent uses. The one thing asked of git is which checkout a
+crewmate's worktree was made from, and only for a path under a ``worktrees``
+folder: that names a directory to match, never a profile. Nothing here reads credential material either:
 the value is a profile NAME, and the AWS SDK or CLI the agent runs resolves it
 through the operator's own ``~/.aws`` files exactly as it would for a gateway
 started with ``AWS_PROFILE`` set.
@@ -136,10 +138,17 @@ def resolve_project_binding(mapping: Mapping[str, str], cwd: str) -> tuple[str, 
     on both sides: ``/a/proj`` contains ``/a/proj/src`` but not ``/a/project2``.
     The deepest containing directory wins. Touches the filesystem (``realpath``),
     so an async caller runs it off the event loop.
+
+    A cwd in a crewmate's worktree is matched as the same path in the
+    repository's own checkout (``crewmate_worktree.source_path``): the worktree
+    sits in the crewmate's workspace, so ``<workspace>/worktrees/<slug>/app-<hash>``
+    would otherwise miss the binding on ``/repos/app``.
     """
     if not mapping or not cwd:
         return None
-    target = _dir_parts(cwd)
+    from kiro_crew.crewmate_worktree import source_path  # git helpers import config
+
+    target = _dir_parts(source_path(cwd))
     best: tuple[str, str] | None = None
     best_depth = -1
     for directory, profile in mapping.items():

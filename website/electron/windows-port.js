@@ -57,18 +57,14 @@ function canonicalWindowsPath(candidate, realpathSync = fs.realpathSync.native) 
   }
 }
 
-function windowsGatewayExecutablePaths(
-  gatewayBin,
-  {
-    pathEnv = process.env.Path || process.env.PATH || "",
-    accessSync = fs.accessSync,
-    realpathSync = fs.realpathSync.native,
-  } = {}
-) {
+// The absolute Windows path a launch of `gatewayBin` runs: as given when
+// absolute, else the first PATH entry holding an executable of that bare name.
+// "" when it names nothing.
+function resolveWindowsGatewayBin(gatewayBin, { pathEnv, accessSync }) {
   const bin = String(gatewayBin || "").replace(/\//g, "\\");
   let resolved = bin;
   if (!path.win32.isAbsolute(resolved)) {
-    if (!resolved || /[\\/]/.test(resolved)) return [];
+    if (!resolved || /[\\/]/.test(resolved)) return "";
     resolved = "";
     for (const rawDir of String(pathEnv).split(path.win32.delimiter)) {
       const dir = rawDir.trim().replace(/^"(.*)"$/, "$1");
@@ -80,19 +76,46 @@ function windowsGatewayExecutablePaths(
         break;
       } catch { /* try the next PATH entry */ }
     }
-    if (!resolved) return [];
+    if (!resolved) return "";
   }
-  const normalized = path.win32.normalize(resolved);
+  return path.win32.normalize(resolved);
+}
+
+// A distlib console launcher: `<env>\Scripts\kirocrew.exe`.
+function isScriptsConsoleLauncher(normalized) {
+  return /^kirocrew\.exe$/i.test(path.win32.basename(normalized))
+    && /^scripts$/i.test(path.win32.basename(path.win32.dirname(normalized)));
+}
+
+// The spelled path plus its junction-resolved spelling, when that exists.
+function withCanonicalSpellings(candidates, realpathSync) {
+  const spellings = [];
+  for (const candidate of candidates) {
+    const normalized = path.win32.normalize(candidate);
+    spellings.push(normalized);
+    const canonical = canonicalWindowsPath(normalized, realpathSync);
+    if (canonical) spellings.push(canonical);
+  }
+  return [...new Set(spellings)];
+}
+
+function windowsGatewayExecutablePaths(
+  gatewayBin,
+  {
+    pathEnv = process.env.Path || process.env.PATH || "",
+    accessSync = fs.accessSync,
+    realpathSync = fs.realpathSync.native,
+  } = {}
+) {
+  const normalized = resolveWindowsGatewayBin(gatewayBin, { pathEnv, accessSync });
+  if (!normalized) return [];
   // The bundled .cmd shim is never spawned itself: the launcher unwraps it and
   // runs the interpreter at the tree root (gateway-supervisor.js), so that
   // interpreter is the only executable the shim can put on the port.
   const trusted = /\.cmd$/i.test(normalized)
     ? [path.win32.resolve(path.win32.dirname(normalized), "..", "python.exe")]
     : [normalized];
-  if (
-    /^kirocrew\.exe$/i.test(path.win32.basename(normalized))
-    && /^scripts$/i.test(path.win32.basename(path.win32.dirname(normalized)))
-  ) {
+  if (isScriptsConsoleLauncher(normalized)) {
     // A distlib console launcher delegates to the venv interpreter. Source
     // venvs keep it beside the launcher; bundled target installs keep it at
     // the environment root.
@@ -106,14 +129,85 @@ function windowsGatewayExecutablePaths(
   // reports a running process by the path the junction pointed at, so the two
   // spellings of one file must both be trusted. Only resolutions that exist
   // are added; a path that fails to resolve stays as spelled.
-  const withCanonical = [];
-  for (const candidate of trusted) {
-    const normalized = path.win32.normalize(candidate);
-    withCanonical.push(normalized);
-    const canonical = canonicalWindowsPath(normalized, realpathSync);
-    if (canonical) withCanonical.push(canonical);
+  return withCanonicalSpellings(trusted, realpathSync);
+}
+
+const DRIVE_PATH_RE = /^[A-Za-z]:\\/;
+const BASE_PYTHON_RE = /^python(?:\d+(?:\.\d+)*)?\.exe$/i;
+
+/**
+ * The base interpreters a CPython venv's `pyvenv.cfg` names: `python.exe` in
+ * its `home` directory, which the redirector starts, and its `executable` key,
+ * which can differ once the base install moved. Only drive-letter paths to a
+ * `python*.exe` count.
+ */
+function pyvenvBaseInterpreters(text) {
+  const values = {};
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const match = /^\s*([A-Za-z_-]+)\s*=\s*(.*?)\s*$/.exec(line);
+    if (match) values[match[1].toLowerCase()] = match[2].replace(/\//g, "\\");
   }
-  return [...new Set(withCanonical)];
+  const candidates = [
+    values.home ? path.win32.join(values.home, "python.exe") : "",
+    values.executable || "",
+  ];
+  const interpreters = new Map();
+  for (const candidate of candidates) {
+    if (!DRIVE_PATH_RE.test(candidate)) continue;
+    const normalized = path.win32.normalize(candidate);
+    if (!BASE_PYTHON_RE.test(path.win32.basename(normalized))) continue;
+    if (!interpreters.has(normalized.toLowerCase())) interpreters.set(normalized.toLowerCase(), normalized);
+  }
+  return [...interpreters.values()];
+}
+
+/**
+ * The launches a source or pip venv's console launcher hands to its venv's
+ * BASE interpreter.
+ *
+ * On Windows a CPython venv's `Scripts\python.exe` is a redirector: it starts
+ * the interpreter `pyvenv.cfg` names as a child, so the process that binds the
+ * gateway port runs that shared interpreter, which every Python program on the
+ * host can run. Its path alone therefore proves nothing and is never added to
+ * the trusted executables. A launch entry ties it to this venv instead: the
+ * interpreter is trusted only for a command line whose script is exactly this
+ * venv's `Scripts\kirocrew.exe` (`isKirocrewCommand`'s `trustedVenvLaunches`).
+ *
+ * Empty unless the resolved launcher is a `Scripts\kirocrew.exe` whose
+ * environment root holds a readable `pyvenv.cfg` naming one: a
+ * bundled tree or a non-venv install runs its own interpreter, which
+ * `windowsGatewayExecutablePaths` already trusts.
+ *
+ * @returns {{interpreters:string[], launchers:string[], venvInterpreters:string[]}[]}
+ */
+function windowsVenvBaseInterpreterLaunches(
+  gatewayBin,
+  {
+    pathEnv = process.env.Path || process.env.PATH || "",
+    accessSync = fs.accessSync,
+    readFileSync = fs.readFileSync,
+    realpathSync = fs.realpathSync.native,
+  } = {}
+) {
+  const launcher = resolveWindowsGatewayBin(gatewayBin, { pathEnv, accessSync });
+  if (!launcher || !DRIVE_PATH_RE.test(launcher) || !isScriptsConsoleLauncher(launcher)) {
+    return [];
+  }
+  const scripts = path.win32.dirname(launcher);
+  const config = path.win32.join(path.win32.dirname(scripts), "pyvenv.cfg");
+  let text;
+  try {
+    text = readFileSync(config, "utf8");
+  } catch {
+    return [];
+  }
+  const interpreters = pyvenvBaseInterpreters(text);
+  if (!interpreters.length) return [];
+  return [{
+    interpreters: withCanonicalSpellings(interpreters, realpathSync),
+    launchers: withCanonicalSpellings([launcher], realpathSync),
+    venvInterpreters: withCanonicalSpellings([path.win32.join(scripts, "python.exe")], realpathSync),
+  }];
 }
 
 let WINDOWS_SYSTEM_TOOLS;
@@ -177,6 +271,51 @@ async function windowsListenPids(
     timeoutMs
   );
   return parseNetstatListenPids(stdout, port);
+}
+
+function describeExecFailure(error, timeoutMs) {
+  if (error && (error.killed || error.code === "ETIMEDOUT")) {
+    return `timed out after ${timeoutMs}ms`;
+  }
+  const code = error && error.code !== undefined ? ` (exit ${error.code})` : "";
+  return `${(error && error.message) || String(error)}`.trim() + code;
+}
+
+/**
+ * windowsListenPids for the wedge-recovery force-stop, which turns ANY probe
+ * failure into a dead-end "restart required". One slow netstat spawn on a busy
+ * host (a security scanner inspecting every new process, a loop that just
+ * stalled) must not decide that. Each attempt is still bounded, and a probe that
+ * never succeeds still rejects, so the caller keeps failing closed; only a
+ * transient failure is absorbed. The rejection says how it failed, because a
+ * bare "Command failed: netstat.exe -ano" cannot tell a timeout from an exit.
+ */
+async function windowsListenPidsRetrying(
+  port,
+  {
+    attempts = 3,
+    retryDelayMs = 500,
+    timeoutMs = 10000,
+    sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
+    log = () => {},
+    listenPids = windowsListenPids,
+    ...probeOptions
+  } = {}
+) {
+  const total = positiveInteger(attempts, "attempts");
+  let lastError;
+  for (let attempt = 1; attempt <= total; attempt += 1) {
+    try {
+      return await listenPids(port, { ...probeOptions, timeoutMs });
+    } catch (error) {
+      lastError = error;
+      log(`netstat probe ${attempt}/${total} on :${port} failed: ${describeExecFailure(error, timeoutMs)}`);
+      if (attempt < total) await sleep(retryDelayMs);
+    }
+  }
+  throw new Error(
+    `netstat failed ${total} times on :${port}; last: ${describeExecFailure(lastError, timeoutMs)}`
+  );
 }
 
 function processIdentity(executablePath, commandLine) {
@@ -286,7 +425,9 @@ module.exports = {
   parseNetstatListenPids,
   windowsSystemToolPaths,
   windowsGatewayExecutablePaths,
+  windowsVenvBaseInterpreterLaunches,
   windowsListenPids,
+  windowsListenPidsRetrying,
   windowsProcessCommand,
   windowsTaskkill,
 };

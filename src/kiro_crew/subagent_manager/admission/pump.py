@@ -18,8 +18,8 @@ if TYPE_CHECKING:
     from ...subagent import (
         _RELEASE_REPUMP_SECS,
         DENY_CAUSE_APPROVAL_UNDELIVERABLE,
-        DENY_CAUSE_HOOK_ERROR,
         MEMORY_PRESSURE_NEVER_STARTED,
+        HostSpawnDecision,
         SpawnAdmissionCoordinator,
         SpawnApprovalUnreachable,
         Stats,
@@ -46,6 +46,7 @@ class _PumpMixin(ManagerComponent):
         def taskq_admit_wait_secs(self) -> float: ...
 
         async def taskq_child_registered_async(self, info: "SubagentInfo") -> None: ...
+        async def await_pending_defer(self, agent_id: str, *, dispatch: bool = False) -> None: ...
 
         @staticmethod
         def _release_taken_start(
@@ -442,8 +443,13 @@ class _PumpMixin(ManagerComponent):
             # The parent agent spec's ``availableAgents`` declaration is re-read
             # here, off the loop, so the gate's re-check at dispatch costs the
             # loop no directory scan (same reason the record read is threaded).
+            # It is read from the project directories the row was accepted
+            # under as well as the parent's live ones, so a parent that has
+            # ended still has its project-scope declaration applied.
             policy = await asyncio.to_thread(
-                parent_spawn_policy, str(params.get("parent_session_key") or "")
+                parent_spawn_policy,
+                str(params.get("parent_session_key") or ""),
+                params.get("_parent_project_dirs"),
             )
             # Neither the queued entry nor the durable row carries a policy
             # (``queue_params`` never stores one, ``taskq_build_record`` drops
@@ -496,6 +502,17 @@ class _PumpMixin(ManagerComponent):
                 # durably parked -- or refused for want of a row -- before any
                 # caller can read the answer as a queued handle.
                 first = await admission.finish_parked_defer(first)
+                # A refusal fired on this branch (the gate's commit-point
+                # re-check, an agent name that fails validation at dispatch)
+                # posted its row's FAILED write on the way out. Await it -- and
+                # verify it landed -- before the answer is returned: this
+                # branch runs under neither ``spawn_async``'s accept ``finally``
+                # nor ``claim_and_start``. The wait is the dispatcher's bounded
+                # one: this loop runs the picked rows one at a time, so a write
+                # the store refuses for this row alone must not stop the rest;
+                # past the read bound the row stays excluded and unregistered
+                # while its settle keeps retrying (``await_pending_defer``).
+                await admission.await_pending_defer(first.id, dispatch=True)
             # A re-queued (or, without a store, started) row: the W3 branch
             # runs here, awaited, instead of inline in ``spawn_impl``.
             if (
@@ -593,6 +610,17 @@ class _PumpMixin(ManagerComponent):
                     # claim retained across an outage). The row is not ours
                     # to start, and the store is not asked.
                     claimed = (generation, False, self.CLAIM_REFUSED)
+                elif self._parent_ended(point.agent_id):
+                    # The parent conversation ended while the claim was in
+                    # flight. Its teardown leaves a claimed row to this claimer,
+                    # so this claimer is the one that ends it.
+                    if not await self._cancel_torn_down_claim(store, point.agent_id, generation):
+                        self._retain_claim(point, generation, reenter, stop_params)
+                        claim_retained = True
+                        if retained_generation is None:
+                            result = reenter((generation, False, self.CLAIM_RETAINED))
+                        return result
+                    claimed = (generation, False, self.CLAIM_REFUSED)
                 else:
                     starting = _asyncio.get_running_loop().create_future()
                     self._manager.__dict__.setdefault("_starting_claims", {})[
@@ -659,6 +687,23 @@ class _PumpMixin(ManagerComponent):
                         # a reconcile, or ended. Whoever moved it wrote its
                         # state; nothing here starts or writes.
                         claimed = (generation, False, self.CLAIM_REFUSED)
+                    elif self._parent_ended(point.agent_id):
+                        # The teardown landed while the start write was in
+                        # flight: it found the row claimed and left it here.
+                        # The taken start is ended, not released for a retry,
+                        # so no later pump pass starts it either.
+                        start_taken = False
+                        if not await self._cancel_torn_down_claim(
+                            store, point.agent_id, generation
+                        ):
+                            # Retained like a start-write outage: the retry
+                            # re-reads the mark and cancels the row again.
+                            self._retain_claim(point, generation, reenter, stop_params)
+                            claim_retained = True
+                            if retained_generation is None:
+                                result = reenter((generation, False, self.CLAIM_RETAINED))
+                            return result
+                        claimed = (generation, False, self.CLAIM_REFUSED)
             # No await between a taken start and registration: nothing can
             # interleave after the write a registered start relies on. A
             # refused claim may await its terminal store write because it
@@ -717,6 +762,18 @@ class _PumpMixin(ManagerComponent):
                 self._manager.__dict__.get("_starting_claim_parents", {}).pop(point.agent_id, None)
                 if not starting.done():
                     starting.set_result(registered)
+            if not registered and not claim_retained:
+                # A claim that was refused at the gate's commit point (the
+                # conversation-busy re-check) posted its row's FAILED write on
+                # the way out. Await it here -- and verify it landed -- before
+                # the refusal is returned: this is the one re-entry path that
+                # does not run under ``spawn_async``'s accept ``finally``, and a
+                # refusal published while its durable failure is still in
+                # flight would let a lost write leave the claimed row ADMITTED
+                # for the next incarnation's reconcile to requeue and run. The
+                # dispatcher's bounded wait, as on the drained branch above;
+                # after the start's answer above, which no await may precede.
+                await self.await_pending_defer(point.agent_id, dispatch=True)
             if registered:
                 # Every registered start re-publishes the parent's queued depth.
                 # A direct spawn owes nothing to the count, so its emit reports
@@ -878,6 +935,64 @@ class _PumpMixin(ManagerComponent):
         """
         waiting = self._manager._agents.get(agent_id)
         return waiting is not None and bool(waiting.done or waiting.user_stopped or waiting.reaped)
+
+    def _parent_ended(self, agent_id: str) -> bool:
+        """Whether a parent-end teardown has marked *agent_id*.
+
+        The teardown marks every id it selects before its first await and then
+        refuses to cancel a row that is claimed but not started, leaving it to
+        the claimer. This is the claimer's half: a marked row is not started.
+        """
+        return agent_id in getattr(self._manager, "_teardown_cancelled_ids", ())
+
+    async def _cancel_torn_down_claim(
+        self, store: "_taskq.TaskStore", agent_id: str, generation: int
+    ) -> bool:
+        """Cancel the claimed row of an ended parent under the claim's generation.
+
+        ``store.cancel`` keeps the generation fence, so a row that moved under
+        another owner is left alone. Returns False only when the store could not
+        be reached. The caller then retains the claim: left ``admitted`` or
+        ``starting``, the boot reconcile would requeue or recover the row and
+        start it, because the teardown mark does not survive a restart. The
+        retained-claim retry re-reads the mark and cancels again.
+        """
+        import asyncio as _asyncio
+
+        from kiro_crew import taskq as _taskq
+
+        # Shielded and awaited to its answer, like the claim and the start write:
+        # a claimer cancelled here must not leave a taken start nothing ends.
+        job = _asyncio.ensure_future(
+            store.run(
+                store.cancel,
+                agent_id,
+                reason="parent_end",
+                only_from=frozenset({_taskq.ADMITTED, _taskq.STARTING}),
+                generation=generation,
+            )
+        )
+        try:
+            await _asyncio.shield(job)
+        except _asyncio.CancelledError:
+            try:
+                await job
+            except _taskq.TaskStoreUnavailable:
+                _glue_logger.warning(
+                    "taskq: cancelled parent-end cancel of %s failed", agent_id, exc_info=True
+                )
+            raise
+        except _taskq.TaskStoreUnavailable:
+            _glue_logger.warning(
+                "taskq: cancelling the claimed row of %s after its parent ended failed; "
+                "retaining generation %d",
+                agent_id,
+                generation,
+                exc_info=True,
+            )
+            return False
+        _glue_logger.info("taskq: %s not started -- its parent conversation ended", agent_id)
+        return True
 
     def release_reservation(self, agent_id: str) -> None:
         """Give back the slot a ``ClaimPoint`` reserved for a row that did not start."""
@@ -1120,10 +1235,21 @@ class _PumpMixin(ManagerComponent):
             and not drained.batch_id
             and self._manager._on_done
         ):
+            # The announce is the refusal PUBLISHED to the parent, and the
+            # dispatcher's own wait on the row's settle is bounded
+            # (``await_pending_defer(dispatch=True)``), so this task waits for
+            # the write itself -- the caller-style hold, as the batch announce
+            # in ``_announce_rejection`` does -- and the dispatcher moves on.
+            refused = drained
+
+            async def _settled_then_announce() -> None:
+                await self._manager._admission.await_pending_defer(refused.id)
+                await self._manager._safe_announce(refused)
+
             try:
                 self._hold_announce_task(
                     f"reject-{drained.id}",
-                    asyncio.ensure_future(self._manager._safe_announce(drained)),
+                    asyncio.ensure_future(_settled_then_announce()),
                 )
             except RuntimeError:
                 pass  # no running loop (sync/test context)
@@ -1177,7 +1303,7 @@ class _PumpMixin(ManagerComponent):
         # the same shape the chat runner's own host-cancelled approval writes.
         # Seeding them and writing in a ``finally`` is what makes the pair total
         # over every exit; an unanswered request left in the fold's ``pending``
-        # map forever is the same silence this fix removes, one step along.
+        # map forever is the same missing record of the wait, one step along.
         _log_origin: tuple[str, int] = ("", 0)
         _log_decision: str = "rejected"
         _log_by: str = "host"
@@ -1221,16 +1347,19 @@ class _PumpMixin(ManagerComponent):
                     info, approval_id=request_id, reason=f"spawn_run({task_preview})"
                 )
                 try:
-                    approved: bool = await self._manager._on_spawn_approval(
+                    answer = await self._manager._on_spawn_approval(
                         request_id, f"spawn_run({task_preview})", info.parent_session_key
                     )
                 finally:
                     info._awaiting_approval = False
-                # A person answered, at a surface this site cannot name, so the
-                # entry asserts neither who decided nor why.
+                if isinstance(answer, HostSpawnDecision):
+                    # The callback decided on its own, with nobody asked.
+                    approved, _log_by, _log_cause = answer.approved, "host", answer.cause
+                else:
+                    # A person answered, at a surface this site cannot name, so the
+                    # entry asserts neither who decided nor why.
+                    approved, _log_by, _log_cause = answer, "", ""
                 _log_decision = "approved" if approved else "rejected"
-                _log_by = ""
-                _log_cause = ""
             except SpawnApprovalUnreachable as unreachable:
                 # Not a refusal: nobody was there to refuse. Ordered ABOVE the
                 # generic handler below, which would otherwise flatten this into the
@@ -1282,7 +1411,9 @@ class _PumpMixin(ManagerComponent):
                     exc_info=info.memory_mode == "persistent",
                 )
                 approved = False
-                _log_cause = DENY_CAUSE_HOOK_ERROR
+                # The approval callback itself raised; no hook ran, so the cause
+                # is a failure to deliver the prompt, not a hook error.
+                _log_cause = DENY_CAUSE_APPROVAL_UNDELIVERABLE
         finally:
             # The request's answer, on every exit including the cancelled one.
             # A no-op when no request was written, so the two are all-or-nothing.
@@ -1401,7 +1532,11 @@ class _PumpMixin(ManagerComponent):
         # The confirmed-start funnel: recorded only for a start that is
         # actually about to run, never for one refused or ended while waiting.
         self._manager._log_spawned(info)
-        await self._manager._run(info)
+        from kiro_crew.shared_crew.containment import principal_scope, run_principal
+
+        # The child's own admitted budget, not the parent session's next sender.
+        with principal_scope(run_principal(info)):
+            await self._manager._run(info)
 
     async def _admit_released_start_impl(self, info: SubagentInfo) -> str:
         """Wait for the pump to meter *info* -- released from the approval
@@ -1451,6 +1586,13 @@ class _PumpMixin(ManagerComponent):
             "parent_session_key": info.parent_session_key,
             "batch_id": info.batch_id,
         }
+        # Metered in the lane of the person the child was admitted for, not the
+        # parent session's latest sender.
+        from kiro_crew.shared_crew.containment import run_principal
+        from kiro_crew.taskq.lanes import PRINCIPAL_LANE_PREFIX
+
+        if principal := run_principal(info, own_only=True):
+            entry["_lane"] = PRINCIPAL_LANE_PREFIX + principal
         self._manager._queue.append(entry)
         self._manager._emit_queue_depth(info.parent_session_key, info.batch_id)
         # The wait is edge-driven (PID / first answer / terminal / stagger
@@ -1669,6 +1811,7 @@ class _PumpMixin(ManagerComponent):
                 context_groups=_context_groups_field(info),
                 delegation=info.delegation,
                 backend=info.backend,
+                depth=info.depth,
                 memory_store=info.memory_store,
                 execution_context=info.execution_context,
                 memory_mode=info.memory_mode,
@@ -1684,6 +1827,7 @@ class _PumpMixin(ManagerComponent):
             # settles the failure before allocating a provider, for every store.
             info.error = "memory_unavailable: could not persist this run's memory binding"
             return
+        info._folder_seeded = True
 
         # Written HERE, past the folder write, for the reason the stat below is:
         # this is the point a start is confirmed. A run whose memory binding

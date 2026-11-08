@@ -480,11 +480,16 @@ def test_rewrite_invalidates_legacy_fingerprint(tmp_path, schema):
     # must not pin that output.
     with patch.object(rewriter, "_FINGERPRINT_SCHEMA", schema):
         rewriter.rewrite_agents(**kwargs)
+    stored = tmp_path / "overlay" / "agents" / rewriter._FINGERPRINT_NAME
+    assert json.loads(stored.read_text(encoding="utf-8"))["inputs"]["schema"] == schema
     with patch.object(
         rewriter, "_rewrite_single_spec", wraps=rewriter._rewrite_single_spec
     ) as rewrite:
         rewriter.rewrite_agents(**kwargs)
     assert rewrite.called
+    # The rebuild replaces the legacy fingerprint with the current schema's.
+    current = json.loads(stored.read_text(encoding="utf-8"))["inputs"]["schema"]
+    assert current == rewriter._FINGERPRINT_SCHEMA
 
 
 @pytest.mark.parametrize("windows", [False, True])

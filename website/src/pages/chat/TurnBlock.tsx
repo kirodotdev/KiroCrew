@@ -11,6 +11,7 @@ import { isSpawnRunTool } from './SubagentRunCard'
 import { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
 import { isSubagentCompletionMessage } from './subagentCompletion'
 import { isReasoningBurst } from './groupDisplayItems'
+import { isTurnEnd, isRecoveryInjection, isTurnStatusRow, isEnvelopeRow, isSynthesisInjection } from './groupDisplayItems'
 import { isSystemNoticeRow } from './CompactionCard'
 import { parseRecoveryMessage } from './RecoveryCard'
 import { isDiffToolMessage } from './toolDiff'
@@ -18,6 +19,30 @@ import { isAskAnsweredToolMessage } from '../../utils/askQuestionAnswers'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
+import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
+import { isSpecHooksRunNowhereNotice, useSpecHooksRunNowhereDismissed } from './SpecHooksNotice'
+
+/**
+ * Where a turn's live-browser card goes. The card belongs to the turn's FIRST
+ * `browser` call (that row is its anchor, so the binding survives a remount)
+ * and renders after the turn's LAST browser row, so while the agent browses
+ * the picture stays at the bottom of the work, next to the live Thinking line,
+ * and never has tool rows appearing below it one by one.
+ */
+function browserLivePlacement(items: TurnItem[]): { anchor: ReturnType<typeof browserLiveAnchor>; after: number } | null {
+  let first = -1
+  let last = -1
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i]
+    if (it.kind === 'single' && isBrowserToolMessage(it.msg)) {
+      if (first < 0) first = i
+      last = i
+    }
+  }
+  if (first < 0) return null
+  const anchorItem = items[first]
+  return anchorItem.kind === 'single' ? { anchor: browserLiveAnchor(anchorItem.msg), after: last } : null
+}
 
 // A workflow_run launch renders as its own always-visible inline card
 // (WorkflowRunCard), so it must never be folded into the collapsible tool-call
@@ -76,9 +101,14 @@ const isConclusion = (it: TurnItem) => it.kind === 'single' && (it.msg.role === 
  * into the steps pane hides the record of what they did behind a toggle.
  * card: a change card or guide offer — only the user can confirm it, so
  * it is never folded away with the tool steps that proposed it.
+ * crew_dispatch_notice: the Crew Mode dispatch notice and its "Open Board"
+ * button exist to make a mid-turn dispatch visible — folding it into the steps
+ * pane on the default collapseAll path would hide the one row it adds. The
+ * Pause all notice (crew_paused_notice) stays visible for the same reason.
  */
 const isAlwaysVisible = (it: TurnItem) => it.kind === 'single' && (
   it.msg.role === 'mcp_oauth' || it.msg.role === 'error' || it.msg.role === 'card' ||
+  it.msg.meta?.kind === 'crew_dispatch_notice' || it.msg.meta?.kind === 'crew_paused_notice' ||
   (it.msg.role === 'inject' && it.msg.meta?.injectKind === 'mcp_app')
 )
 
@@ -157,7 +187,7 @@ const isCrewReply = (it: TurnItem) =>
  *  workflow_run / spawn_run / workflow-completion / sub-agent-completion card,
  *  an MCP App-bearing tool call (interactive iframe anchored to the row), a
  *  diff card, an answered ask_question row, or a row the caller pins
- *  (`pinnedRows`, see findAnsweredRefusalRows).
+ *  (`pinnedRows`, see findPinnedRows).
  *  All bypass the collapse pane. */
 const NO_PINNED_ROWS: ReadonlySet<TurnItem> = new Set()
 const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>, pinnedRows = NO_PINNED_ROWS) =>
@@ -172,8 +202,10 @@ const isVisibleInline = (it: TurnItem, appToolCallIds: ReadonlySet<string>, pinn
 const LIVE_ACTIVITY_WINDOW = 5
 
 /** A hidden ✅/🚫 completion row renders nothing in every host, so it is
- *  never folded and never counted: one call is one step. */
-const isCountedRow = (it: TurnItem) => !isHiddenTool(it)
+ *  never folded and never counted: one call is one step. A notice the user
+ *  dismissed draws nothing either, so it is not a step to expand onto. */
+const isCountedRow = (it: TurnItem, noticeDismissed: boolean) =>
+  !isHiddenTool(it) && !(noticeDismissed && it.kind === 'single' && isSpecHooksRunNowhereNotice(it.msg))
 
 type FoldMode = 'interim' | 'collapseAll' | 'default'
 
@@ -192,19 +224,19 @@ type FoldMode = 'interim' | 'collapseAll' | 'default'
  * The settled set contains the running set, so completion only ever folds
  * more rows. It never opens a row the window had folded.
  */
-function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, answeredRefusalRows: ReadonlySet<TurnItem>): number[] {
-  const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it) ? [i] : [])
+function foldCandidates(items: TurnItem[], appToolCallIds: ReadonlySet<string>, mode: FoldMode, complete: boolean, pinnedRows: ReadonlySet<TurnItem>, noticeDismissed: boolean): number[] {
+  const tools = items.flatMap((it, i) => isTool(it, appToolCallIds) && isCountedRow(it, noticeDismissed) ? [i] : [])
   const out = new Set(tools.slice(0, Math.max(0, tools.length - LIVE_ACTIVITY_WINDOW)))
   if (complete && mode === 'default') tools.forEach(i => out.add(i))
   if (complete && mode !== 'default') {
     const { end, wholeTurn } = mode === 'interim'
       ? { end: items.length, wholeTurn: false }
       : collapseAllFoldRange(items)
-    const pinned = mode === 'interim' ? NO_PINNED_ROWS : answeredRefusalRows
+    const pinned = mode === 'interim' ? NO_PINNED_ROWS : pinnedRows
     for (let i = 0; i < end; i++) {
       const it = items[i]
       if (wholeTurn && !isWorkingStepRow(it)) continue
-      if (isCountedRow(it) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
+      if (isCountedRow(it, noticeDismissed) && !isVisibleInline(it, appToolCallIds, pinned)) out.add(i)
     }
   }
   return Array.from(out).sort((a, b) => a - b)
@@ -301,6 +333,55 @@ function findAnsweredRefusalRows(items: TurnItem[]): ReadonlySet<TurnItem> {
       rows.add(it)
     }
   })
+  return rows
+}
+
+/**
+ * A reply the runner ended a turn on and then resumed, plus the `recovery` row
+ * that resumed it. An error, a capacity retry or a cancel stamps the reply it
+ * cut short (`turn_stats`, see `isTurnEnd`), and the recovery inject continues
+ * the SAME turn, so the recovered remainder lands in this block as its
+ * conclusion and the first half of the answer would fold as a step: the reader
+ * gets a sentence that starts mid-thought. Between the stamped reply and the
+ * recovery only the rows that report on the turn (an error card, a system
+ * notice) or another writer's envelope may sit, the rows `answerEndIndex`
+ * passes over; text a tool call followed is working narration and still
+ * folds, as above. A cut reply without the stamp (a transcript older than the
+ * stamp) has no such signal and folds as before. The synthesis row directly
+ * above the cut reply, when there is one, is pinned with it: the grouper opens
+ * the answer's turn on that row (`isSynthesisInjection`), so with the two
+ * halves pinned it would be the one row left for a toggle to hide, and `main`
+ * shows it, its two-row turn being too short to wrap. A synthesis row a tool
+ * call separates from the reply folds with that step, as it does on `main`.
+ */
+function findResumedReplyRows(items: TurnItem[]): ReadonlySet<TurnItem> {
+  const rows = new Set<TurnItem>()
+  items.forEach((it, i) => {
+    if (it.kind !== 'single' || !isRecoveryInjection(it.msg)) return
+    let k = i - 1
+    while (k >= 0) {
+      const between = items[k]
+      if (between.kind !== 'single' || !(isTurnStatusRow(between.msg) || isEnvelopeRow(between.msg))) break
+      k--
+    }
+    const cut = k >= 0 ? items[k] : undefined
+    if (cut?.kind === 'single' && isTurnEnd(cut.msg)) {
+      rows.add(cut)
+      rows.add(it)
+      const lead = items[k - 1]
+      if (lead?.kind === 'single' && isSynthesisInjection(lead.msg)) rows.add(lead)
+    }
+  })
+  return rows
+}
+
+/** The rows a turn pins out of the collapse-all fold on top of `isVisibleInline`:
+ *  an answer and the tool-refusal card that followed it, and a reply cut short
+ *  and resumed with the recovery row that resumed it and the synthesis row
+ *  that led it. */
+function findPinnedRows(items: TurnItem[]): ReadonlySet<TurnItem> {
+  const rows = new Set<TurnItem>(findAnsweredRefusalRows(items))
+  for (const it of findResumedReplyRows(items)) rows.add(it)
   return rows
 }
 
@@ -410,7 +491,11 @@ function mergeTurnThinking(items: TurnItem[]): TurnItem[] {
  *  opened, read from its own disclosure map). Without it such a row folds
  *  after a remount, as it always did.
  */
-function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMPTY_ID_SET, disclosure, disclosureKey, onDisclosureChange, mayBeLive = NEVER_LIVE }: { turn: Extract<DisplayItem, {kind:'turn'}>; renderItem: (item: TurnItem, i: number) => ReactNode; collapseAll?: boolean; appToolCallIds?: ReadonlySet<string>; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void; mayBeLive?: (it: TurnItem) => boolean }) {
+function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMPTY_ID_SET, disclosure, disclosureKey, onDisclosureChange, mayBeLive = NEVER_LIVE, browserLiveSessionKey }: { turn: Extract<DisplayItem, {kind:'turn'}>; renderItem: (item: TurnItem, i: number) => ReactNode; collapseAll?: boolean; appToolCallIds?: ReadonlySet<string>; disclosure?: boolean; disclosureKey?: string; onDisclosureChange?: (key: string, expanded: boolean) => void; mayBeLive?: (it: TurnItem) => boolean;
+  /** The session this turn belongs to. With it, a turn that called the `browser`
+   *  tool shows its live-browser card (BrowserLiveCard); without it (a host
+   *  that cannot name the session) the turn renders as before. */
+  browserLiveSessionKey?: string }) {
   // memo() bails out of the provider-level language repaint, so this component
   // subscribes to language generation itself: its i18nT() strings must
   // re-translate even when no prop moves.
@@ -435,7 +520,8 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // turn.items, so a running turn shows one live reasoning line and a settled
   // turn shows one collapsed "Thought process" instead of a per-burst wall.
   const items = useMemo(() => mergeTurnThinking(turn.items), [turn.items])
-  const answeredRefusalRows = useMemo(() => findAnsweredRefusalRows(items), [items])
+  const pinnedRows = useMemo(() => findPinnedRows(items), [items])
+  const browserLive = useMemo(() => (browserLiveSessionKey ? browserLivePlacement(items) : null), [items, browserLiveSessionKey])
   // One React key per row of `items`, by message identity (see the block
   // comment above); `rowKey(i)` indexes THIS list.
   const msgKey = useStableMessageKey()
@@ -493,9 +579,11 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // every live row. A row that is running, awaiting approval, hosting an app,
   // opened by the user or focused never folds, whatever the disclosure says.
   const mode: FoldMode = turn.interim ? 'interim' : collapseAll ? 'collapseAll' : 'default'
+  // A dismiss drops its notice from the count at once, not on the next flush.
+  const specHooksNoticeDismissed = useSpecHooksRunNowhereDismissed()
   const candidates = useMemo(
-    () => foldCandidates(items, appToolCallIds, mode, turn.complete, answeredRefusalRows),
-    [items, appToolCallIds, mode, turn.complete, answeredRefusalRows],
+    () => foldCandidates(items, appToolCallIds, mode, turn.complete, pinnedRows, specHooksNoticeDismissed),
+    [items, appToolCallIds, mode, turn.complete, pinnedRows, specHooksNoticeDismissed],
   )
   const fold = useMemo(() => {
     const rows = new Set<number>()
@@ -548,8 +636,10 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
   // MCP App iframe reloads and loses its state). Folding collapses that same
   // element's one grid track to 0fr (with `inert`), so a row folding out of
   // the running window or a click on the toggle eases height and opacity
-  // instead of jumping; reduced motion cuts straight to the end state. Only a
-  // fold candidate clips its content, so no other row's overflow changes.
+  // instead of jumping, except a settled tool row whose content the fold drops
+  // (below), which closes at once; reduced motion cuts straight to the end
+  // state. Only a fold candidate clips its content, so no other row's
+  // overflow changes.
   // The toggle sits right above the first folded row and is
   // keyed by that row, so when it changes place it is a new element, never
   // a moved one: moving a keyed sibling makes React re-insert the rows it
@@ -580,19 +670,29 @@ function TurnBlock({ turn, renderItem, collapseAll = false, appToolCallIds = EMP
         style={inFold && open ? { '--fold-rail-left': 'max(0px, calc((100% - var(--mc-content-width, 900px)) / 2))' } as CSSProperties : undefined}
       >
         {/* A folded row keeps its content mounted while it could still go
-            live: only the content can say so. A closed settled default-mode
-            fold drops the content of the rows that cannot (as that fold always
-            did, since a settled pill costs store reads on every update): not
-            running (a live row is never in the fold, and a settled row cannot
-            start running again), no MCP App on the message, and not one the
-            host knows may be live (a pill the user opened). */}
+            live: only the content can say so. A closed settled fold, in every
+            mode, drops the content of the tool rows that cannot, since a
+            settled pill costs store reads on every update and a long turn
+            folds them by the hundred: not running (a live row is never in the
+            fold, and a settled row cannot start running again), no MCP App on
+            the message, and not one the host knows may be live (a pill the
+            user opened). */}
         <div className={candidateSet.has(i) ? 'min-h-0 min-w-0 overflow-hidden' : 'min-h-0 min-w-0'}>
-          {folded && turn.complete && mode === 'default' && !hadMcpApp(it) && !mayBeLive(it)
+          {folded && turn.complete && isTool(it, appToolCallIds) && !hadMcpApp(it) && !mayBeLive(it)
             ? null
             : <RowActivityContext.Provider value={reporterFor(k)}>{renderItem(it, i)}</RowActivityContext.Provider>}
         </div>
       </div>,
     )
+    // The live-browser card: its own row, outside the fold (a fold hides working
+    // steps; the picture is the turn's result while it runs and its record after).
+    if (browserLive && browserLiveSessionKey && i === browserLive.after) {
+      out.push(
+        <div key={`browser-live-${browserLive.anchor.key}`}>
+          <BrowserLiveCard sessionKey={browserLiveSessionKey} anchorKey={browserLive.anchor.key} anchorTs={browserLive.anchor.ts} running={!turn.complete} />
+        </div>,
+      )
+    }
   })
   return <>{out}</>
 }
@@ -603,7 +703,7 @@ function CollapseToggle({ expanded, onToggle, label }: { expanded: boolean; onTo
       {/* The visible label IS the accessible name ("Worked through 2 steps" folded,
           "Hide reasoning" open), so no aria-label; aria-expanded carries the state,
           which a rotated chevron alone never announces. */}
-      <button aria-expanded={expanded} className="flex items-center gap-2 text-[12px] leading-5 text-muted/60 hover:text-muted cursor-pointer bg-transparent border-none py-1 transition-colors" onClick={onToggle}>
+      <button aria-expanded={expanded} className="flex items-center gap-2 text-[12px] leading-5 text-muted hover:text-text cursor-pointer bg-transparent border-none py-1 transition-colors" onClick={onToggle}>
         <ChevronRight size={12} aria-hidden="true" className={`transition-transform duration-150 motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} />
         {label}
       </button>

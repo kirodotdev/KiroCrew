@@ -35,21 +35,24 @@ vi.mock('../api/client', () => ({
 }))
 
 import SessionTitleControl from '../pages/chat/SessionTitleControl'
+import { generateSlotTitle } from '../hooks/slotTitleGeneration'
 import { MOVE_UNDO_MS } from '../components/MoveUndoBar'
 import { api } from '../api/client'
-import { sseSlotTitle, updateSlotPin } from '../store/dashboardSlice'
+import { sseSlotTitle, updateSlotPin, sseDisconnected, sseConnected } from '../store/dashboardSlice'
 
 const SLOT = 'pane-a'
 const TITLE = 'Alpha session'
 const REGEN = 'Regenerate title with LLM — the current name can be restored with Undo'
+// A refused rename's notice names the refused name (#10152).
+const REFUSED = (name: string) => `Couldn't rename the session to “${name}” — the previous title stays`
 // The trigger's accessible name carries the ACTION and the title (WCAG 2.5.3
 // keeps the visible title inside the name).
 const RENAME = `${TITLE} (rename session)`
 
-function makeStore(memoryMode?: string) {
+function makeStore(memoryMode?: string, connected = true) {
   return createTestStore({
     dashboard: {
-      status: null, connected: true, slotsLoaded: true,
+      status: null, connected, slotsLoaded: true,
       slots: [
         { key: SLOT, title: TITLE, messages: 0, running: false, mode: '', ...(memoryMode ? { memory_mode: memoryMode } : {}) },
         { key: 'other', title: 'Other session', messages: 0, running: false, mode: '' },
@@ -60,8 +63,8 @@ function makeStore(memoryMode?: string) {
   })
 }
 
-function renderControl(opts: { onError?: (m: string, t: string) => void; memoryMode?: string; compact?: boolean } = {}) {
-  const store = makeStore(opts.memoryMode)
+function renderControl(opts: { onError?: (m: string, t: string) => void; memoryMode?: string; compact?: boolean; connected?: boolean } = {}) {
+  const store = makeStore(opts.memoryMode, opts.connected ?? true)
   // Mirrors the real hosts: the title prop follows the store. `slot` is a
   // prop so a test can re-target the same instance like the main header does.
   // `compact` (the pane header's typography) is the default here; the main
@@ -167,30 +170,13 @@ describe('SessionTitleControl', () => {
   it.each([
     ['split-view pane header (compact)', true],
     ['single-session header', false],
-  ])('%s: the open editor says which keys save and cancel, and is described by it (#15808)', (_host, compact) => {
+  ])('%s: the open editor has a name and says which keys save and cancel to a screen reader (#15808)', (_host, compact) => {
     renderControl({ compact })
-    // The read-only title shows no key legend.
-    expect(screen.queryByText('Enter saves · Esc cancels')).toBeNull()
     const input = openEditor()
-    const hint = screen.getByText('Enter saves · Esc cancels')
-    expect(hint.id).not.toBe('')
-    expect(input.getAttribute('aria-describedby')).toBe(hint.id)
+    expect(input).toHaveAccessibleName(`${TITLE} (rename session)`)
     expect(input).toHaveAccessibleDescription('Enter saves · Esc cancels')
-    // Beside the box, in the same row, never squeezing the box's own padding.
-    expect(hint.parentElement).toBe(input.parentElement)
-    // Touch-only devices have no Escape key, so the legend is hidden there.
-    expect(classes(hint)).toContain('[@media(hover:none)]:hidden')
-    // In a narrow pane the hint gives way instead of squeezing the box: the
-    // row it sits in is the container it hides against, and above that width
-    // it truncates.
-    // A pane's row fills the pane and is the container; the main header sizes
-    // to its content, so a container there would collapse it, and the hint
-    // keys off the viewport instead.
-    expect(classes(input.parentElement!).includes('@container')).toBe(compact)
-    expect(classes(hint)).toEqual(expect.arrayContaining(['min-w-0', 'truncate', compact ? '@max-[420px]:hidden' : 'md:block']))
-    expect(classes(hint)).not.toContain('shrink-0')
-    act(() => { fireEvent.keyDown(input, { key: 'Escape' }) })
-    expect(screen.queryByText('Enter saves · Esc cancels')).toBeNull()
+    // The instruction is for assistive tech only; nothing is drawn beside the box.
+    expect(classes(screen.getByText('Enter saves · Esc cancels'))).toContain('sr-only')
   })
 
   it.each([
@@ -295,6 +281,17 @@ describe('SessionTitleControl', () => {
     expect(storeTitle(store)).toBe(SLOT)
   })
 
+  it('a refused Undo of an untitled session names it "Untitled session" in the notice, never its key', async () => {
+    const onError = vi.fn()
+    const { store } = renderControl({ onError })
+    act(() => { store.dispatch(sseSlotTitle({ key: SLOT, title: SLOT })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: REGEN })) })
+    await waitFor(() => expect(storeTitle(store)).toBe('Generated title'))
+    vi.mocked(api.renameSlot).mockRejectedValueOnce(new Error('nope'))
+    await act(async () => { fireEvent.click(await screen.findByRole('button', { name: 'Undo: Untitled session' })) })
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('nope', REFUSED('Untitled session')))
+  })
+
   it('types out a generated title that replaces the "Untitled session" label (#20871)', async () => {
     const { store } = renderControl()
     act(() => { store.dispatch(sseSlotTitle({ key: SLOT, title: SLOT })) })
@@ -330,6 +327,8 @@ describe('SessionTitleControl', () => {
     act(() => { fireEvent.change(input, { target: { value: 'Typed by hand' } }) })
     act(() => { fireEvent.blur(input) })
     expect(screen.queryByRole('button', { name: /^Undo/ })).toBeNull()
+    // The confirmed rename is announced once renameSlot resolves.
+    await screen.findByText('Session renamed to Typed by hand')
   })
 
   it('the Undo baseline is the title on screen when the generated one lands, not the one at click time', async () => {
@@ -472,6 +471,51 @@ describe('SessionTitleControl', () => {
     expect(screen.queryByRole('button', { name: /^Undo/ })).toBeNull()
   })
 
+  it('one slot open in two panes generates once, and both panes show the spinner', async () => {
+    let resolve!: (v: { title: string }) => void
+    vi.mocked(api.generateTitle).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+    const store = makeStore()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <div className="group/header"><SessionTitleControl slotKey={SLOT} title={TITLE} compact /></div>
+          <div className="group/header"><SessionTitleControl slotKey={SLOT} title={TITLE} compact /></div>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    const [first] = screen.getAllByRole('button', { name: REGEN })
+    await act(async () => { fireEvent.click(first) })
+    // The other pane's button is gone too: it shows the spinner instead.
+    expect(screen.queryAllByRole('button', { name: REGEN })).toHaveLength(0)
+    expect(screen.getAllByText('Generating title…')).toHaveLength(2)
+    expect(api.generateTitle).toHaveBeenCalledTimes(1)
+    await act(async () => { resolve({ title: 'Done' }) })
+    await waitFor(() => expect(screen.queryAllByText('Generating title…')).toHaveLength(0))
+    expect(api.generateTitle).toHaveBeenCalledTimes(1)
+  })
+
+  it('a header press while a menu-started generation runs sends no second request', async () => {
+    let resolve!: (v: { title: string }) => void
+    vi.mocked(api.generateTitle).mockReturnValueOnce(new Promise((r) => { resolve = r }))
+    const store = makeStore()
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <div className="group/header"><SessionTitleControl slotKey={SLOT} title={TITLE} compact /></div>
+        </Provider>
+      </QueryClientProvider>,
+    )
+    let menuCall!: Promise<void> | null
+    await act(async () => { menuCall = generateSlotTitle(SLOT, store.dispatch) })
+    // The header shows the menu's generation and offers no second press.
+    expect(screen.queryAllByRole('button', { name: REGEN })).toHaveLength(0)
+    expect(screen.getByText('Generating title…')).toBeTruthy()
+    await act(async () => { resolve({ title: 'Done' }); await menuCall })
+    expect(api.generateTitle).toHaveBeenCalledTimes(1)
+  })
+
   it('shows the spinner instead of the button while a title is generating', async () => {
     let resolve!: (v: { title: string }) => void
     vi.mocked(api.generateTitle).mockReturnValueOnce(new Promise((r) => { resolve = r }))
@@ -497,7 +541,7 @@ describe('SessionTitleControl', () => {
     act(() => { fireEvent.blur(input) })
     // Optimistic first...
     expect(storeTitle(store)).toBe('Will fail')
-    await waitFor(() => expect(onError).toHaveBeenCalledWith('boom', "Couldn't rename the session"))
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('boom', REFUSED('Will fail')))
     // ...then whatever the server holds (the refused rename never landed there).
     await waitFor(() => expect(api.chatSlots).toHaveBeenCalled())
     await waitFor(() => expect(storeTitle(store)).toBe(TITLE))
@@ -551,7 +595,7 @@ describe('SessionTitleControl', () => {
     await waitFor(() => expect(storeTitle(store)).toBe(TITLE))
     expect(screen.getByText(TITLE)).toBeTruthy()
     expect(onError).toHaveBeenCalledTimes(1)
-    expect(onError).toHaveBeenCalledWith('gateway down', "Couldn't rename the session")
+    expect(onError).toHaveBeenCalledWith('gateway down', REFUSED('Refused offline'))
   })
 
   it('a delayed recovery never overwrites a newer confirmed rename to the same title', async () => {
@@ -604,7 +648,7 @@ describe('SessionTitleControl', () => {
     expect(storeTitle(store)).toBe('Title Y')
     await act(async () => { resolveX({}) })
     await act(async () => { rejectY(new Error('refused')) })
-    await waitFor(() => expect(onError).toHaveBeenCalledWith('refused', "Couldn't rename the session"))
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('refused', REFUSED('Title Y')))
     await waitFor(() => expect(storeTitle(store)).toBe('Title X'))
   })
 
@@ -621,7 +665,8 @@ describe('SessionTitleControl', () => {
   // (e) Closing the editor never leaves focus on document.body.
   const nextFrame = () => act(async () => { await new Promise(requestAnimationFrame) })
   // A real, single Enter press: keydown commits (the input blurs), then the
-  // key is released.
+  // key is released. It returns nothing, so awaiting it waits for nothing: wait
+  // for what the commit changes (the status text, the store) with waitFor/findBy.
   const pressEnter = (input: HTMLElement) => {
     act(() => { fireEvent.keyDown(input, { key: 'Enter' }) })
     act(() => { fireEvent.blur(input) })
@@ -666,6 +711,17 @@ describe('SessionTitleControl', () => {
     expect(document.activeElement).not.toBe(composer())
     await waitFor(() => expect(status().textContent).toBe('Session renamed to Renamed alpha'))
     expect(status()).toBe(region)
+  })
+
+  it('(e) the status region is one element before, during and after editing', async () => {
+    renderControl()
+    const region = status()
+    const input = openEditor()
+    expect(status()).toBe(region)
+    act(() => { fireEvent.change(input, { target: { value: 'Renamed beta' } }) })
+    pressEnter(input)
+    expect(status()).toBe(region)
+    await waitFor(() => expect(region.textContent).toBe('Session renamed to Renamed beta'))
   })
 
   it('(e) an unchanged draft closed with Enter still returns focus to the trigger, and announces nothing', async () => {
@@ -828,17 +884,17 @@ describe('SessionTitleControl', () => {
     renderControl()
     let input = openEditor()
     act(() => { fireEvent.change(input, { target: { value: 'Beta' } }) })
-    await pressEnter(input)
+    pressEnter(input)
     await waitFor(() => expect(status().textContent).toBe('Session renamed to Beta'))
     input = openEditorFor('Beta')
     act(() => { fireEvent.change(input, { target: { value: 'Gamma' } }) })
-    await pressEnter(input)
+    pressEnter(input)
     await waitFor(() => expect(status().textContent).toBe('Session renamed to Gamma'))
     let released: (v: unknown) => void = () => {}
     vi.mocked(api.renameSlot).mockReturnValueOnce(new Promise((r) => { released = r }))
     input = openEditorFor('Gamma')
     act(() => { fireEvent.change(input, { target: { value: 'Beta' } }) })
-    await pressEnter(input)
+    pressEnter(input)
     // Emptied while the write is in flight, so the confirmation is a change.
     await waitFor(() => expect(status().textContent).toBe(''))
     await act(async () => { released({}) })
@@ -884,5 +940,143 @@ describe('SessionTitleControl', () => {
     const { store } = renderControl({ memoryMode: 'incognito' })
     act(() => { store.dispatch(updateSlotPin({ key: SLOT, pinned: true })) })
     expect(screen.getByRole('button', { name: `${RENAME}, Pinned, Incognito — memory writes disabled` })).toBeTruthy()
+  })
+})
+
+describe('SessionTitleControl offline rename gate', () => {
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('refuses to open the editor while the gateway is offline and says why', () => {
+    renderControl({ connected: false })
+    act(() => { fireEvent.click(screen.getByText(TITLE)) })
+    expect(screen.queryByDisplayValue(TITLE)).toBeNull()
+    expect(screen.getByTestId('session-title-offline').textContent)
+      .toContain('reconnect to rename sessions')
+    expect(api.renameSlot).not.toHaveBeenCalled()
+  })
+
+  it('dims the trigger and names the reason while offline', () => {
+    renderControl({ connected: false })
+    const trigger = screen.getByRole('button', { name: `${RENAME} disabled — gateway offline` })
+    expect(trigger.getAttribute('aria-disabled')).toBe('true')
+    expect(trigger.getAttribute('title')).toContain('reconnect to rename sessions')
+  })
+
+  it('keeps the editor and the typed draft when the gateway drops mid-edit', async () => {
+    const { store } = renderControl()
+    const input = openEditor()
+    act(() => { fireEvent.change(input, { target: { value: 'Typed while up' } }) })
+    // The drop happens with the editor already open, which is the case the
+    // open-time gate cannot catch.
+    act(() => { store.dispatch(sseDisconnected()) })
+    act(() => { fireEvent.blur(input) })
+    await waitFor(() => {
+      expect(screen.getByTestId('session-title-offline')).toBeTruthy()
+    })
+    // The editor is STILL open carrying the draft: nothing was sent, so closing
+    // it would have discarded the name.
+    expect((screen.getByDisplayValue('Typed while up') as HTMLInputElement).value).toBe('Typed while up')
+    expect(api.renameSlot).not.toHaveBeenCalled()
+    expect(storeTitle(store)).toBe(TITLE)
+  })
+
+  it('an offline Undo leaves no latch for the next online close to swallow', async () => {
+    const { store } = renderControl()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: REGEN })) })
+    const undo = await screen.findByRole('button', { name: `Undo: ${TITLE}` })
+    act(() => { store.dispatch(sseDisconnected()) })
+    await act(async () => { fireEvent.click(undo) })
+    act(() => { store.dispatch(sseConnected()) })
+    const input = openEditorFor('Generated title')
+    act(() => { fireEvent.change(input, { target: { value: 'Renamed online' } }) })
+    act(() => { fireEvent.blur(input) })
+    await waitFor(() => expect(screen.queryByDisplayValue('Renamed online')).toBeNull())
+  })
+
+  it('puts focus back on the editor it kept, rather than on document.body', async () => {
+    const { store } = renderControl()
+    const input = openEditor()
+    act(() => { fireEvent.change(input, { target: { value: 'Typed while up' } }) })
+    act(() => { store.dispatch(sseDisconnected()) })
+    // Enter's keydown commits by calling the real `blur()`, which moves focus
+    // to body: the state the restore has to undo.
+    act(() => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await screen.findByTestId('session-title-offline')
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByDisplayValue('Typed while up'))
+    })
+  })
+
+  it('leaves focus on body when the refusal came from a click on non-focusable content', async () => {
+    const { store } = renderControl()
+    const input = openEditor()
+    act(() => { fireEvent.change(input, { target: { value: 'Typed while up' } }) })
+    act(() => { store.dispatch(sseDisconnected()) })
+    act(() => { input.blur() })
+    await screen.findByTestId('session-title-offline')
+    await act(async () => { await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame) })
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('restores focus on a SECOND refused Enter, not only the first', async () => {
+    const { store } = renderControl()
+    const input = openEditor()
+    act(() => { fireEvent.change(input, { target: { value: 'First try' } }) })
+    act(() => { store.dispatch(sseDisconnected()) })
+    act(() => { fireEvent.keyDown(input, { key: 'Enter' }) })
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByDisplayValue('First try')))
+    // The refusal flag is already set by now, so anything keyed on it alone
+    // cannot fire again and this second Enter would strand focus on body.
+    const live = screen.getByDisplayValue('First try') as HTMLInputElement
+    act(() => { fireEvent.change(live, { target: { value: 'Second try' } }) })
+    act(() => { fireEvent.keyDown(live, { key: 'Enter' }) })
+    expect(document.activeElement).toBe(document.body)
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByDisplayValue('Second try')))
+  })
+
+  it('leaves focus where a pointer put it when the refusal came from a click', async () => {
+    const { store } = renderControl()
+    const input = openEditor()
+    act(() => { fireEvent.change(input, { target: { value: 'Typed while up' } }) })
+    act(() => { store.dispatch(sseDisconnected()) })
+    const elsewhere = document.createElement('input')
+    document.body.appendChild(elsewhere)
+    try {
+      // Focusing another element blurs the editor and runs the same refusal, but
+      // the user chose this element: taking focus off it is the context change
+      // the control's own focus contract forbids.
+      act(() => { elsewhere.focus() })
+      await screen.findByTestId('session-title-offline')
+      await new Promise(r => requestAnimationFrame(() => r(null)))
+      await new Promise(r => requestAnimationFrame(() => r(null)))
+      expect(document.activeElement).toBe(elsewhere)
+    } finally {
+      elsewhere.remove()
+    }
+  })
+
+  it('gives the notice its own line instead of letting it squeeze the editor', async () => {
+    const { store } = renderControl()
+    const input = openEditor()
+    act(() => { fireEvent.change(input, { target: { value: 'Typed while up' } }) })
+    act(() => { store.dispatch(sseDisconnected()) })
+    act(() => { fireEvent.blur(input) })
+    const notice = await screen.findByTestId('session-title-offline')
+    // jsdom computes no layout, so what is assertable is the mechanism: the row
+    // WRAPS and the notice takes a full basis. Wrapping alone is not enough:
+    // the editing cluster's `flex-1 min-w-0` sizes at zero when flex collects
+    // lines, so both still fit one line. The cluster keeps `min-w-0`, which
+    // `sessionTitleSqueeze` requires for the phone-width shrink chain.
+    const row = notice.parentElement as HTMLElement
+    expect(row.className).toContain('flex-wrap')
+    expect((row.firstElementChild as HTMLElement).className).toContain('min-w-0')
+    expect(notice.className).toContain('basis-full')
+    expect(notice.className).not.toContain('shrink-0')
+  })
+
+  it('keeps the read-only notice beside the title, with no full basis', async () => {
+    renderControl({ connected: false })
+    act(() => { fireEvent.click(screen.getByText(TITLE)) })
+    expect(screen.getByTestId('session-title-offline').className).not.toContain('basis-full')
   })
 })

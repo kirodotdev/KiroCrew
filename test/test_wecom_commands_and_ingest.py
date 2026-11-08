@@ -130,6 +130,13 @@ class FakeSessions:
     async def try_acquire(self, key) -> bool:
         return not self._busy
 
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
+
     def release(self, key) -> None:
         pass
 
@@ -163,7 +170,7 @@ def _inbound(text: str = "hi", **kw: Any) -> WeComInbound:
 def _permit_inbound(monkeypatch):
     """The governance gate is not what these tests are about."""
 
-    async def _permit(_channel: str) -> bool:
+    async def _permit(_channel: str, **_kw: object) -> bool:
         return True
 
     monkeypatch.setattr("kiro_crew.wecom.transport_dispatch.inbound_permitted", _permit)
@@ -479,6 +486,33 @@ class TestStop:
 
         assert provider.cancelled is True
         assert any("已停止" in s for s in client.said)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("other_cancel", "stop"), [("!stop", "停止"), ("@Kiro !stop", "@Kiro /stop")]
+    )
+    async def test_a_typed_stop_survives_a_channels_governance_deny(
+        self, monkeypatch, other_cancel: str, stop: str
+    ) -> None:
+        from kiro_crew.messaging import dispatch
+
+        async def _denied(_channel_type):
+            return False
+
+        monkeypatch.setattr(
+            "kiro_crew.wecom.transport_dispatch.inbound_permitted", dispatch.inbound_permitted
+        )
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        provider = FakeProvider()
+        client = FakeClient()
+        d = _dispatcher(FakeSessions(provider, busy=True), client)
+
+        # A cancel word another channel spells is no stop here: it keeps the gate.
+        await d.handle_message(_inbound(other_cancel))
+        assert provider.cancelled is False and client.said == []
+        # A group requires the @mention, so the mentioned form must stop too.
+        await d.handle_message(_inbound(stop))
+        assert provider.cancelled is True
 
     @pytest.mark.asyncio
     async def test_stop_is_declined_while_the_session_compacts(self) -> None:

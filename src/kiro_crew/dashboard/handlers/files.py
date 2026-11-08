@@ -44,6 +44,7 @@ import sys  # noqa: F401
 import tempfile  # noqa: F401
 import threading  # noqa: F401
 import time
+import unicodedata  # noqa: F401 - owner: uploads
 import urllib.parse  # noqa: F401
 import uuid  # noqa: F401
 import zipfile  # noqa: F401
@@ -55,13 +56,14 @@ from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError  # noqa: F401
 from aiohttp.multipart import BodyPartReader  # noqa: F401
 
-from kiro_crew import executors, file_delivery_consent, pinned_fs, platform_compat  # noqa: F401
+from kiro_crew import executors, pinned_fs, platform_compat, sandbox_plan  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
 from kiro_crew.atomic_write import (  # noqa: F401
     atomic_write,
     open_access_control_source,
     pinned_parent_replace_supported,
 )
+from kiro_crew.cli_commands_workspace import _ws_dir_in_use  # noqa: F401
 from kiro_crew.config import loader as config_loader  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
     KiroCrewConfig,
@@ -77,10 +79,13 @@ from kiro_crew.config.sections import (  # noqa: F401
     LINK_PATTERN_PATTERN_MAX_LEN,
     LINK_PATTERN_URL_MAX_LEN,
     LINK_PATTERNS_MAX,
+    PREFERRED_LANGUAGES,
     link_pattern_url_ok,
 )
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
 from kiro_crew.dashboard import git_repo_touches as _git_repo_touches  # noqa: F401
 from kiro_crew.dashboard import part_stream, upload_destination  # noqa: F401
+from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     dashboard_slot_key,
@@ -116,7 +121,9 @@ from kiro_crew.dashboard.file_api.browse import (  # noqa: F401
     _browse_entry_is_dir,
     _browse_files_sync,
     _browse_parent,
+    _create_browse_dir_sync,
     _is_windows_drive_root,
+    api_browse_create_dir,
 )
 from kiro_crew.dashboard.file_api.channel_upload import (  # noqa: F401
     _gate_upload_file,
@@ -142,6 +149,10 @@ from kiro_crew.dashboard.file_api.editor import (  # noqa: F401
 )
 from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _GIT_PANEL_STDOUT_CAP,
+    _branch_diff,
+    _branch_file_patch,
+    _cat_file_blobs,
+    _cat_file_lines,
     _git_repo_listing,
     _is_not_a_repo_verdict,
     _porcelain_unquote,
@@ -150,6 +161,7 @@ from kiro_crew.dashboard.file_api.git_panel import (  # noqa: F401
     _repo_filter_refusal_cause,
     _run_git_bounded,
     _worktree_probe_failure_is_empty_scope,
+    api_project_git_branch_diff,
     api_project_git_log,
     api_project_git_repos,
     api_project_git_status,
@@ -179,9 +191,8 @@ from kiro_crew.dashboard.file_api.office_preview import (  # noqa: F401
     api_file_office_preview,
 )
 from kiro_crew.dashboard.file_api.outbox import (  # noqa: F401
-    _audit_consented_download,
-    _audit_owner_grant_refusal,
-    _owner_grant_releases_flagged,
+    _caller_is_owner,
+    _list_outbox_entries,
     _read_outbox_file,
     api_outbox_download,
     api_outbox_list,
@@ -213,6 +224,7 @@ from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
     _open_checked,
     _open_checked_file,
     _open_rb_nofollow,
+    _open_refusal,
     _OpenDenied,
     _OpenedFile,
     _OpenRefusal,
@@ -236,20 +248,29 @@ from kiro_crew.dashboard.file_api.project_dirs import (  # noqa: F401
     api_project_git,
 )
 from kiro_crew.dashboard.file_api.project_tree import (  # noqa: F401
+    _project_tree_add_folder_rows,
     _project_tree_allot,
     _project_tree_body,
     _project_tree_fence,
     _project_tree_file_quotas,
     _project_tree_git_layout,
+    _project_tree_has_gitmodules,
     _project_tree_identity,
+    _project_tree_ignored_dotfiles,
+    _project_tree_in_nested_repo,
     _project_tree_is_link,
     _project_tree_listing,
+    _project_tree_nested_ignored,
+    _project_tree_nested_repos,
     _project_tree_pin,
     _project_tree_rebase,
+    _project_tree_repo_ignored,
     _project_tree_scandir,
     _project_tree_scandir_entries,
+    _project_tree_shallow_git,
     _project_tree_subdir,
     _project_tree_walk,
+    _project_tree_walk_order,
     _project_tree_walk_pinned,
     _ProjectTreeFolderMoved,
     api_project_tree,
@@ -271,7 +292,9 @@ from kiro_crew.dashboard.file_api.sheet import (  # noqa: F401
     api_file_sheet,
 )
 from kiro_crew.dashboard.file_api.transfer import (  # noqa: F401
+    _download_read_chunk,
     _parse_range_header,
+    _stream_unscanned_download,
     api_file_download,
     api_file_stream,
     api_file_watch,
@@ -279,12 +302,16 @@ from kiro_crew.dashboard.file_api.transfer import (  # noqa: F401
 from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     _content_matches_ext,
     _content_mismatch_message,
+    _fit_stored_name,
     _log_upload_diagnostic,
+    _name_max,
     _resolve_raster_ext,
+    _safe_upload_name,
     _sniff_media_type,
     _stream_media_part,
     _upload_dir,
     _write_file_restricted,
+    api_directory_upload,
     api_upload_file,
 )
 from kiro_crew.dashboard.file_api.workspaces import (  # noqa: F401
@@ -296,6 +323,7 @@ from kiro_crew.dashboard.file_api.workspaces import (  # noqa: F401
     api_workspaces_update,
 )
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS  # noqa: F401
+from kiro_crew.dashboard.file_index import _dot_dir_walk_plan  # noqa: F401
 from kiro_crew.dashboard.git_repo_touches import _GIT_ROOT_WALK_LIMIT  # noqa: F401
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _probe_persisted_session,
@@ -331,6 +359,10 @@ from kiro_crew.git_config_hooks import (  # noqa: F401
     ConfigHookScanError,
     config_hook_disable_args_sandboxed,
 )
+from kiro_crew.git_no_index_diff import (  # noqa: F401 - owner: editor
+    no_index_diff,
+    patch_hunks,
+)
 from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope  # noqa: F401
 from kiro_crew.github_runner import validate_provider_executable  # noqa: F401
 from kiro_crew.hooks import (  # noqa: F401
@@ -339,10 +371,15 @@ from kiro_crew.hooks import (  # noqa: F401
     safe_read_file_bytes,
     safe_read_prefix,
 )
+from kiro_crew.image_refs import PATH_MARKS  # noqa: F401 - owner: uploads
 from kiro_crew.messaging.display_safety import redact_for_display  # noqa: F401
 from kiro_crew.messaging.outbound_files import OutboundFile  # noqa: F401
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime  # noqa: F401
-from kiro_crew.owner_only_files import ensure_directory  # noqa: F401 - owner: uploads
+from kiro_crew.owner_only_files import (  # noqa: F401 - owner: uploads
+    OWNER_ONLY_FILE_MODE,
+    ensure_directory,
+    is_owner_only_target,
+)
 from kiro_crew.pdf_extract import PdfExtraction, extract_pdf_segments  # noqa: F401
 from kiro_crew.platform import binary_content_is_flagged  # noqa: F401
 from kiro_crew.platform import wide_content_is_flagged  # noqa: F401
@@ -350,6 +387,10 @@ from kiro_crew.platform import redact_via_context as redact  # noqa: F401
 from kiro_crew.platform.context import (  # noqa: F401
     redact_log_via_context,
     redact_owner_view_via_context,
+)
+from kiro_crew.platform.update_governance import (  # noqa: F401 - owner: editor
+    git_command_env,
+    repo_exec_driver_reason,
 )
 from kiro_crew.sandbox import (  # noqa: F401
     cgroup_scope_argv,
@@ -388,8 +429,8 @@ from kiro_crew.zip_vet import (  # noqa: F401
 )
 
 # Register OOXML office MIME types explicitly. The system mimetypes
-# database on AL2/AL2023 build hosts does NOT include .docx, .xlsx, or
-# .pptx by default, so mimetypes.guess_type() returns (None, None) for
+# database on AL2/AL2023 build hosts does NOT include the OOXML types
+# by default, so mimetypes.guess_type() returns (None, None) for
 # those. Registering at module import time keeps api_file_download's
 # Content-Type header correct for the most common Word/Excel/PowerPoint
 # downloads.
@@ -401,6 +442,15 @@ mimetypes.add_type(
 )
 mimetypes.add_type(
     "application/vnd.openxmlformats-officedocument.presentationml.presentation", ".pptx",
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template", ".dotx",
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.template", ".xltx",
+)
+mimetypes.add_type(
+    "application/vnd.openxmlformats-officedocument.presentationml.template", ".potx",
 )
 
 _INLINE_DISPOSITION_PREFIXES = frozenset({"audio/", "video/", "image/", "application/pdf"})
@@ -434,7 +484,7 @@ def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str
     if manager is None:
         return ""
     try:
-        # A PROPERTY, not a method (``subagent.py`` ``@property all_agents``).
+        # A PROPERTY, not a method (``subagent_parts/manager.py`` ``@property all_agents``).
         # Calling it invoked the returned LIST, so every lookup raised TypeError,
         # the except below swallowed it, and the card was suppressed for every
         # sub-agent -- the routing this function exists to do never happened once.
@@ -544,13 +594,31 @@ _UPLOAD_DIR: Path | None = None
 
 
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per file
+#: Largest file ``/api/file-download`` reads whole into memory. A larger one is
+#: streamed in bounded chunks. The route is owner-only and does not scan content.
+_DOWNLOAD_SCAN_MAX_BYTES = _MAX_UPLOAD_BYTES
+#: How long one chunk read of an unscanned download may take before the
+#: response is dropped. A healthy disk answers a chunk in milliseconds; a hung
+#: network mount never does, and the read must not hold the response open.
+_DOWNLOAD_CHUNK_STALL_SECS = 60.0
 #: Video gets its own, larger ceiling: a 30-second retina screen recording is
 #: routinely 60-150 MB, so the 50 MB document cap would reject the dominant
 #: case and make the feature read as broken. Safe to raise only because video
-#: parts STREAM to disk (:func:`_stream_video_part`) instead of accumulating in
+#: parts STREAM to disk (:func:`_stream_media_part`) instead of accumulating in
 #: memory the way every other accepted type does.
 _MAX_VIDEO_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB per video
 _MAX_UPLOAD_FILES = 20  # max files per request
+#: Longest stored-name tail of an upload, in UTF-8 bytes. A file name is capped
+#: at 255 bytes on ext4, APFS and NTFS, and the stored name adds a 32-hex UUID
+#: and ``_`` (``_fit_stored_name``).
+_MAX_STORED_NAME_BYTES = 200
+#: Bytes the stored name spends before the tail: 32 hex digits and ``_``.
+_STORED_NAME_PREFIX_BYTES = 33
+#: Bytes the cap also leaves free: a streamed part is written under the stored
+#: name plus this temp suffix before it is committed.
+_STORED_NAME_TEMP_BYTES = len(part_stream.TEMP_SUFFIX)
+#: File-name byte limit assumed where the file system cannot report its own.
+_DEFAULT_NAME_MAX = 255
 
 # Fallback-walk budgets. ``_WALK_MAX_SCAN_*`` bounds entries scored PER KIND
 # (anti-starvation); ``_WALK_MAX_DIRS_VISITED`` bounds directories entered and is
@@ -654,15 +722,29 @@ _ALLOWED_TEXT_EXT = {
     ".cpp",
     ".h",
     ".hpp",
+    # More source and config text. Stored as uploaded bytes and read back as
+    # text: file-read answers text/plain, file-download is attachment + nosniff,
+    # and none of these is a .html/.htm the viewer would render. A server-side
+    # language extension (.php) is never executed here.
+    ".php",
+    ".sql",
+    ".kt",
+    ".swift",
+    ".cs",
+    ".vue",
+    ".toml",
 }
 _ALLOWED_DOC_EXT = {
     ".pdf",
     ".doc",
     ".docx",
+    ".dotx",
     ".xls",
     ".xlsx",
+    ".xltx",
     ".ppt",
     ".pptx",
+    ".potx",
     ".odt",
     ".ods",
     ".odp",
@@ -687,6 +769,19 @@ _ALLOWED_VIDEO_EXT = {".mp4", ".m4v", ".mov", ".webm"}
 #: bare refusal.
 _VIDEO_HINT_EXT = frozenset(
     {".mkv", ".ogv", ".avi", ".mpg", ".mpeg", ".wmv", ".flv", ".3gp"}
+)
+#: HEIC/HEIF photo names. The dashboard converts these to JPEG in the browser
+#: before upload, so one arriving here skipped that step (a page loaded before
+#: the conversion shipped, or a client other than the dashboard). The boundary
+#: still refuses it -- no model reads HEIC -- but says how to get past it.
+_HEIC_HINT_EXT = frozenset({".heic", ".heif"})
+#: Apple iWork names. Keynote, Pages and Numbers save a closed binary format
+#: no parser here reads, so the boundary refuses them, but names the export
+#: that does upload. ``.key`` is also a PEM private key's extension, hence the "if".
+_IWORK_HINT_EXT = frozenset({".key", ".pages", ".numbers"})
+_IWORK_HINT = (
+    "If it is an Apple Keynote, Pages or Numbers document, use File > Export To "
+    "in that app to save a PowerPoint, Word, Excel or PDF copy, and upload that."
 )
 #: Media type :func:`_sniff_media_type` must report for the claimed video
 #: extension. The MP4 family (mp4/m4v/mov) all carry a ``ftyp`` box at offset 4
@@ -732,7 +827,9 @@ _MEDIA_EXT_MIME: dict[str, str] = {**_VIDEO_EXT_MIME, **_AUDIO_EXT_MIME}
 # at offset 8, which a bare ``RIFF`` prefix would not check). Text formats (and
 # SVG, which is XML) have no reliable magic and remain gated by the extension
 # allowlist only.
-_ZIP_CONTAINER_EXTS = {".docx", ".xlsx", ".pptx", ".odt", ".ods", ".odp", ".zip"}
+_ZIP_CONTAINER_EXTS = {
+    ".docx", ".dotx", ".xlsx", ".xltx", ".pptx", ".potx", ".odt", ".ods", ".odp", ".zip"
+}
 #: Raster extensions and the mime :func:`sniff_raster_mime` must report for
 #: the claimed extension to be accepted.
 _RASTER_EXT_MIME: dict[str, str] = {
@@ -827,9 +924,8 @@ _CRED_RUN_REVERSED_RE = re.compile("[" + "".join(re.escape(c) for c in sorted(_C
 
 
 #: How much of a file the binary sniff reads before deciding, in BYTES. 8 KiB is
-#: the window the Files app already uses (``_is_binary_file`` in
-#: ``apps/builtins/file_explorer/server.py``); the two surfaces disagreeing about
-#: what "binary" means is a worse outcome than either window being wrong.
+#: the window the Files app's own backend uses too; the two surfaces disagreeing
+#: about what "binary" means is a worse outcome than either window being wrong.
 _FILE_READ_SNIFF_BYTES = 8192
 
 #: Extensions that are binary by format, answered BEFORE the NUL sniff.
@@ -840,10 +936,9 @@ _FILE_READ_SNIFF_BYTES = 8192
 #: hold no NUL at all. The sniff still runs after this check and remains what
 #: catches an extension-LESS binary, which is why neither half is redundant.
 #:
-#: Kept byte-identical to ``BINARY_EXTS`` in
-#: ``src/kiro_crew/apps/builtins/file_explorer/server.py`` -- the Files app and
-#: this endpoint must answer "is this binary" the same way, and
-#: ``test_dashboard_file_io.py`` fails if the two sets ever diverge.
+#: The Files app's backend keeps its own copy of this set: it and this endpoint
+#: must answer "is this binary" the same way, and that app's own tests fail if
+#: its copy ever diverges from this one. This module reads nothing from the app.
 _FILE_READ_BINARY_EXTS = frozenset(
     {
         ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tiff", ".pdf",
@@ -967,11 +1062,10 @@ _PATH_COMPLETE_MAX_SCAN = 5000
 #
 # The side-panel Files rail's Content mode: "which files CONTAIN this text".
 # ``POST``, because the query travels in the body -- see ``api_file_grep``.
-# Filename search is ``api_file_search``. The Files app's own search
-# (``apps/builtins/file_explorer/server.py``) answers the same question in a
-# separate process with its own allow-root model; the row shape is shared with
-# it (``file``/``line``/``preview``; see `_grep_hit` for why there is no column)
-# but nothing is shared at runtime -- gating here goes through this module's
+# Filename search is ``api_file_search``. The Files app's own search answers the
+# same question in a separate process with its own allow-root model; the row
+# shape is shared with it (``file``/``line``/``preview``; see `_grep_hit` for why
+# there is no column) but nothing is shared at runtime -- gating here goes through this module's
 # ``_validate_dashboard_path`` / ``is_sensitive_path`` chokepoint.
 
 #: Wall-clock budget for ONE request, shared by the text and document passes.
@@ -1124,7 +1218,8 @@ async def api_browse_files(request: web.Request) -> web.Response:
     Mirrors api_browse_dirs security model (sensitive-path filtering, access logging,
     skip set for build artifacts) but returns files alongside directories. Entries
     are sorted dirs-first then alphabetically; hidden files and common build dirs
-    are skipped.
+    are skipped. ``hidden=1`` lists dot-files as well; the skip set and the
+    sensitive-path check are unchanged by it.
     """
     owner_denied = await require_owner_dashboard_request(request, "browse_files")
     if owner_denied is not None:
@@ -1150,7 +1245,9 @@ async def api_browse_files(request: web.Request) -> web.Response:
     skip = {".git", "node_modules", "__pycache__", ".cache", ".venv", "venv", "env", ".kirocrew", ".kiro", ".aim", "build", "dist", ".next"}
     skip |= _HIDDEN_TOOL_DIRS
     try:
-        dirs, files = await _run_path_probe(_browse_files_sync, base, skip, transfer=True)
+        dirs, files = await _run_path_probe(
+            _browse_files_sync, base, skip, request.query.get("hidden") == "1", transfer=True
+        )
     except _PathProbeBusy:
         return _probe_busy_response(resource=base, operation="browse_files", caller=caller)
     _sel().log_api_access(caller=caller, operation="browse_files", outcome="allowed", resources=base)
@@ -1187,6 +1284,20 @@ _SHEET_MAX_CDIR_ENTRY_BYTES = 512
 
 
 _GIT_PROBE_STDERR_CAP = 4096
+
+# The branch diff (``api_project_git_branch_diff``) compares HEAD with the first
+# of these that exists: the remote's default branch, then a local main, then the
+# older default branch name, which is a real ref name and cannot be renamed here.
+_BRANCH_DIFF_BASE_REFS = (
+    "refs/remotes/origin/HEAD",
+    "refs/heads/main",
+    "refs/heads/master",  # wokeignore:rule=master
+)
+# It reads both sides of every file it shows, so its work per request is bounded
+# by these two numbers, not by the size of the branch. A file past either one is
+# counted as omitted, never cut.
+_BRANCH_DIFF_MAX_FILES = 100
+_BRANCH_DIFF_MAX_BLOB_BYTES = 4 * 1024 * 1024
 
 
 # Repo-scoped config keys that hand git a program to run when it touches file

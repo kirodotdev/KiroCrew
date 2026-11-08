@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from dataclasses import replace
 from typing import Any
 
 import pytest
 
+from kiro_crew import resource_status
 from kiro_crew.notifications import resource_pressure
 from kiro_crew.notifications.bus import SYSTEM_CHANNELS, NotificationBus
 from kiro_crew.notifications.resource_pressure import (
@@ -346,6 +348,86 @@ class TestMaybeSample:
             bus, probe_fn=lambda: _status(POSTURE_CRITICAL), clock=lambda: 100.0
         )
         asyncio.run(notifier.maybe_sample())  # must not raise
+
+
+def _ceiling(shmem_gb: float = 89.0):
+    """Agents at their 370 GB ceiling on a host with 165 GB available, 89 GB of
+    the agents' memory in tmpfs files unless *shmem_gb* says otherwise.
+
+    Built through the module at call time, so this file still collects when the
+    reading is absent and each case fails on its own assertion.
+    """
+    return resource_status.AgentCeiling(
+        ceiling_gb=370.0, host_available_gb=165.0, shmem_gb=shmem_gb
+    )
+
+
+def _slice_status(posture: str, gb: float = 0.0, ceiling=None) -> ResourceStatus:
+    return replace(_status(posture, gb=gb), agent_ceiling=ceiling or _ceiling())
+
+
+class TestAgentCeilingWording:
+    """A figure the agent slice binds is worded as agent memory, with the host's
+    own figure beside it, so it cannot read as a false host alarm."""
+
+    def test_critical_note_names_the_ceiling_and_the_host(self, notifier, notes) -> None:
+        notifier.observe(_slice_status(POSTURE_CRITICAL), now=0.0)
+        note = notes[0]
+        assert note["title"] == "Agent memory critically low"
+        assert note["priority"] == "critical"
+        body = note["body"]
+        assert body.startswith("Agent processes have 0.0 GB left under their 370 GB memory ceiling")
+        assert "The host itself still has 165 GB available" in body
+        assert "89 GB of agent memory is shared memory" in body
+        # The ceiling exists to keep the host responsive.
+        assert "host can become unresponsive" not in body
+
+    def test_shared_memory_below_a_tenth_is_left_out(self, notifier, notes) -> None:
+        small = _ceiling(shmem_gb=2.0)
+        notifier.observe(_slice_status(POSTURE_CRITICAL, ceiling=small), now=0.0)
+        assert "shared memory" not in notes[0]["body"]
+
+    def test_realert_keeps_the_agent_title(self, notifier, notes) -> None:
+        notifier.observe(_slice_status(POSTURE_CRITICAL), now=0.0)
+        notifier.observe(_slice_status(POSTURE_CRITICAL), now=CRITICAL_REALERT_SECS)
+        assert notes[1]["title"] == "Agent memory still critically low"
+
+    def test_sustained_tight_note_names_the_ceiling(self, notifier, notes) -> None:
+        notifier.observe(_slice_status(POSTURE_TIGHT, gb=3.5), now=0.0)
+        notifier.observe(_slice_status(POSTURE_TIGHT, gb=3.5), now=SUSTAINED_TIGHT_SECS)
+        note = notes[0]
+        assert note["title"] == "Agent memory tight for 10 minutes"
+        assert note["body"].startswith(
+            "Agent processes have had at most 4 GB left under their 370 GB memory ceiling"
+        )
+        assert "currently 3.5 GB, load 0.5/core" in note["body"]
+        assert "165 GB available" in note["body"]
+
+    def test_recovery_names_the_memory_the_alert_named(self, notifier, notes) -> None:
+        notifier.observe(_slice_status(POSTURE_CRITICAL), now=0.0)
+        # The ample reading carries no attribution; the episode remembers it.
+        notifier.observe(_status(POSTURE_AMPLE, gb=40.0), now=30.0)
+        assert notes[1]["title"] == "Agent memory pressure resolved"
+
+    def test_a_host_episode_after_an_agent_one_says_host(self, notifier, notes) -> None:
+        notifier.observe(_slice_status(POSTURE_CRITICAL), now=0.0)
+        notifier.observe(_status(POSTURE_AMPLE, gb=40.0), now=30.0)
+        notifier.observe(_status(POSTURE_CRITICAL, gb=1.0), now=60.0)
+        notifier.observe(_status(POSTURE_AMPLE, gb=40.0), now=90.0)
+        assert [n["title"] for n in notes] == [
+            "Agent memory critically low",
+            "Agent memory pressure resolved",
+            "Host memory critically low",
+            "Host memory pressure resolved",
+        ]
+
+    def test_host_bound_body_is_unchanged(self, notifier, notes) -> None:
+        notifier.observe(_status(POSTURE_CRITICAL, gb=1.2), now=0.0)
+        assert notes[0]["body"] == (
+            "Available memory is down to 1.2 GB (critical threshold 2 GB, load 0.5/core). "
+            "Agent processes may be killed and the host can become unresponsive — stop or "
+            "defer heavy work (builds, full test suites, sub-agent waves) or free memory now."
+        )
 
 
 class TestNoteShape:

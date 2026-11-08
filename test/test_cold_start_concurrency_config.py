@@ -76,7 +76,7 @@ def _widths(agent: object) -> tuple[int, int]:
 def _load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, agent: dict[str, Any]) -> KiroCrewConfig:
     home = tmp_path / "kc"
     home.mkdir()
-    (home / "config.json").write_text(json.dumps({"agent": agent}))
+    (home / "config.json").write_text(json.dumps({"agent": agent}), encoding="utf-8")
     monkeypatch.setenv("KIROCREW_HOME", str(home))
     return KiroCrewConfig.load()
 

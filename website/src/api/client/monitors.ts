@@ -35,6 +35,13 @@ export function createMonitorsEndpoints({ post, patch, j, jfetch: fetch }: Clien
       fetch('/api/autonudge').then(j),
     autonudgeForSlot: (slot: string): Promise<{ enabled: boolean; loop: unknown | null }> =>
       fetch('/api/autonudge/slot/' + encodeURIComponent(slot)).then(j),
+    /** Pause (`active: false`) or resume (`active: true`) a goal loop in place.
+     *  The body carries ONLY `active`: a pause is not a save, and the service
+     *  records a pause as `stopped_reason: "manual"`. A resume on a loop a bound
+     *  stopped resets only the spent bound's counter (the popover's Play does the
+     *  same write), so nothing has to be raised. Returns the written record. */
+    autonudgeSetActive: (id: string, active: boolean): Promise<{ loop: unknown }> =>
+      patch('/api/autonudge/' + encodeURIComponent(id), { active }).then(j) as Promise<{ loop: unknown }>,
     /** Structured monitor records include terminal outcomes for inspection. */
     monitorsList: (): Promise<{ enabled: boolean; monitors: unknown[] }> =>
       fetch('/api/monitors').then(j),
@@ -62,6 +69,14 @@ export function createMonitorsEndpoints({ post, patch, j, jfetch: fetch }: Clien
       post('/api/monitors/' + encodeURIComponent(id) + '/clear').then(j) as Promise<MonitorResponse>,
     monitorRestart: (id: string): Promise<MonitorResponse> =>
       post('/api/monitors/' + encodeURIComponent(id) + '/restart').then(j) as Promise<MonitorResponse>,
+    /** The monitor data contract the gateway builds at runtime -- the same shape
+     *  as the bundled `contract.json`, but with the kinds an edition contributed
+     *  at boot included in `pullRequestMonitorKinds`. The dashboard
+     *  prefers it over the bundled snapshot so a contributed kind is not shown as
+     *  blocked; an older gateway has no such route and 404s, and the
+     *  caller then keeps the bundled contract. */
+    monitorContract: (): Promise<{ pullRequestMonitorKinds?: string[] } & Record<string, unknown>> =>
+      fetch('/api/monitor-contract').then(j),
   }
 
   return { loops }

@@ -5,11 +5,13 @@ import { useAnchorRemeasure } from '../../hooks/useAnchorRemeasure'
 import { usePressActivation } from '../../hooks/usePressActivation'
 import { isScreenSnipSupported } from '../../hooks/useScreenSnip'
 import { i18nT } from '../../i18n/t'
+import { fmtPercent } from '../../i18n/format'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import type { ComposerControl } from '../composerControl'
 import type { useComposerPickers } from '../../chat-core/composer/pickers'
 import type { ChatInputProps } from './props'
+import { useComposerUploadProgress } from '../../utils/composerSendHolds'
 
 /* The attach control at the head of the bottom row: the "+" drop-up (upload,
    screenshot, sketch, collapse, and the `/` `@` `$` shortcuts) on a pointer
@@ -149,13 +151,39 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   return { plusOpen, setPlusOpen, sketchOpen, setSketchOpen, plusWrapRef, plusBtnRef, plusMenuRef, plusRect, togglePlus, openTrigger }
 }
 
-export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect }: {
+/* Progress sits BESIDE the cancel control as text, not as a third button, so
+   the row keeps max-two-buttons-per-row. It subscribes here, in the leaf, so a
+   progress step re-renders this note and not the composer. The status span is
+   mounted empty with the control, so a stall is announced once when it is
+   written there; the percent is not announced on every step. */
+function UploadProgressNote({ slot }: { slot: string }) {
+  const { ratio, stalled } = useComposerUploadProgress(slot)
+  const stalledText = stalled ? i18nT('components.chatInput.upload_stalled') : ''
+  // `truncate`: on a narrow phone a long translation shortens instead of
+  // pushing the row's other controls onto each other.
+  return (
+    <span className="min-w-0 truncate text-[12px] tabular-nums" title={stalledText || undefined} data-testid="composer-upload-progress">
+      {!stalled && ratio !== null && <span className="text-muted">{fmtPercent(ratio)}</span>}
+      <span role="status" className="text-warn-text">{stalledText}</span>
+    </span>
+  )
+}
+
+export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, uploadCount, uploadSlot, directFilePicker, fileInputId, openPicker, isMac, touchInput, onScreenshot, collapseMenuRow, typedCommandMenus, onFileSelect, optimizeRow = null, appActionRows = null }: {
+  /** App composer actions (`composerActions.tsx`), a group of their own after
+   *  the host's shortcuts so an app's row never sits among the host's. */
+  appActionRows?: ReactNode
+  /** "Optimize prompt" while a turn runs (#23572), a menu row because the
+   *  busy send cluster is at its button cap. Null when idle: the cluster's
+   *  own Optimize button is back then. */
+  optimizeRow?: ReactNode
   plus: ReturnType<typeof usePlusMenu>
   onUploadFiles?: (files: File[]) => void
   uploading: boolean
   onCancelUpload?: () => void
   /** Uploads the cancel control aborts; above one, its label names the count. */
   uploadCount: number
+  uploadSlot?: string | null
   directFilePicker: boolean
   fileInputId: string
   openPicker: (imageOnly: boolean) => void
@@ -287,7 +315,6 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
                 <button
                   type="button"
                   onClick={() => { setPlusOpen(false); setSketchOpen(true) }}
-                  title={i18nT('components.chatInput.sketch')}
                   {...uiLocation('composer.add-menu.sketch')}
                   className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
                 >
@@ -316,6 +343,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
                     `collapseMenuRowElement` (chat-input/collapse.tsx), which
                     also explains why touch needs a second host at all. */}
                 {collapseMenuRow}
+                {optimizeRow}
               </div>
               {/* In-input trigger shortcuts: clicking inserts the sigil
                *  and opens the matching picker (same as typing /, @, $). */}
@@ -330,43 +358,40 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
                   <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">/</span>
                   <div className="min-w-0">
                     <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.command')}</div>
-                    <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.quick_actions_like_clearing_the_chat_or_checking')}</div>
                   </div>
                 </button>}
                 {onFileSelect && (
                   <button
                     type="button"
                     onClick={() => openTrigger('@')}
-                    title={i18nT('components.chatInput.reference_a_file')}
                     {...uiLocation('composer.add-menu.reference-file')}
                     className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
                   >
                     <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">@</span>
                     <div className="min-w-0">
-                      <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.file')}</div>
-                      <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.let_the_agent_read_one_of_your_files')}</div>
+                      <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.reference_a_file')}</div>
                     </div>
                   </button>
                 )}
                 {typedCommandMenus && <button
                   type="button"
                   onClick={() => openTrigger('$')}
-                  title={i18nT('components.chatInput.use_a_skill')}
                   {...uiLocation('composer.add-menu.skill')}
                   className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-lg bg-transparent hover:bg-bg-hover transition-colors cursor-pointer text-left"
                 >
                   <span className="w-4 text-center text-[14px] font-mono leading-none text-muted shrink-0">$</span>
                   <div className="min-w-0">
-                    <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.skill')}</div>
-                    <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.apply_a_ready_made_set_of_instructions')}</div>
+                    <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.use_a_skill')}</div>
                   </div>
                 </button>}
               </div>
+              {appActionRows}
             </div>
           </OverlayPortal>}
           </GuideRevealScope>
         </div>
       )}
+      {uploadCancelControl && uploadSlot && <UploadProgressNote slot={uploadSlot} />}
       {/* Touch path: `directFilePicker` (touch AND a collapsible host, see
           ChatInput) replaces the "+" drop-up with a bare file-input label,
           so the menu's Sketch and collapse rows never mount there. They hang

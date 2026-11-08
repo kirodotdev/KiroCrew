@@ -90,6 +90,81 @@ def test_plain_prompt_streams_reply_then_end_turn(monkeypatch):
     assert msgs[-1]["result"]["stopReason"] == "end_turn"
 
 
+def _naming_prompts() -> dict[str, str]:
+    """Every session-naming prompt the host really sends, built by its own code."""
+    from kiro_crew.dashboard import chat_title
+    from kiro_crew.messaging import auto_title
+
+    convo = [
+        {"role": "user", "content": "hello from the gui test"},
+        {"role": "assistant", "content": fake.REPLY_TEXT},
+    ]
+    dashboard = chat_title._build_title_prompt(convo)
+    refresh = chat_title._build_refresh_prompt(convo, "hello from the gui test")
+    assert dashboard is not None and refresh is not None
+    return {
+        "dashboard": dashboard,
+        "dashboard-refresh": refresh,
+        "channel": auto_title.build_title_prompt("hello from the gui test", fake.REPLY_TEXT),
+    }
+
+
+@pytest.mark.parametrize("kind", ["dashboard", "dashboard-refresh", "channel"])
+def test_naming_prompt_gets_the_skip_verdict_not_the_chat_reply(monkeypatch, kind):
+    buf = _capture(monkeypatch)
+    fake._handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 40,
+            "method": "session/prompt",
+            "params": {
+                "sessionId": "s1",
+                "prompt": [{"type": "text", "text": _naming_prompts()[kind]}],
+            },
+        }
+    )
+    msgs = _messages(buf)
+    assert [m.get("method", "result") for m in msgs] == ["session/update", "result"]
+    assert msgs[0]["params"]["update"]["content"]["text"] == fake.NAMING_REPLY_TEXT
+    assert msgs[-1]["result"]["stopReason"] == "end_turn"
+
+
+def test_naming_opening_matches_the_one_the_prompts_are_built_from():
+    from kiro_crew.label_guard import NAMING_PROMPT_OPENING
+
+    assert fake.NAMING_PROMPT_OPENING == NAMING_PROMPT_OPENING
+
+
+def test_naming_reply_leaves_the_first_message_as_the_session_title():
+    """The fake's naming reply yields no model title, so the first message names it."""
+    from kiro_crew.dashboard import chat_title
+    from kiro_crew.messaging import auto_title
+
+    assert chat_title._validate_title_reply(fake.NAMING_REPLY_TEXT) == ""
+    assert auto_title.clean_title(fake.NAMING_REPLY_TEXT) == ""
+    # The chat reply, by contrast, passes as a title: what the fake must not send.
+    assert chat_title._validate_title_reply(fake.REPLY_TEXT) == fake.REPLY_TEXT
+    convo = [
+        {"role": "user", "content": "hello from the gui test"},
+        {"role": "assistant", "content": fake.REPLY_TEXT},
+    ]
+    assert chat_title._fallback_title_from_messages(convo) == "hello from the gui test"
+
+
+def test_a_chat_message_quoting_the_naming_opening_mid_text_gets_the_chat_reply(monkeypatch):
+    buf = _capture(monkeypatch)
+    text = f"please explain: {fake.NAMING_PROMPT_OPENING}"
+    fake._handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "session/prompt",
+            "params": {"sessionId": "s1", "prompt": [{"type": "text", "text": text}]},
+        }
+    )
+    assert _messages(buf)[0]["params"]["update"]["content"]["text"] == fake.REPLY_TEXT
+
+
 def test_tool_prompt_emits_tool_call_without_permission(monkeypatch):
     buf = _capture(monkeypatch)
     fake._handle(

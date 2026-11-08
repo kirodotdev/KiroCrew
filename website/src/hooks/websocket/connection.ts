@@ -4,6 +4,17 @@
 import { useMemo, useRef, type MutableRefObject } from 'react'
 import type { AppDispatch } from '../../store'
 import { markGatewayDisconnected } from './gatewayConnectivity'
+import { chunkScopeCapability } from '../../lib/chunkScopeCapability'
+
+/** The fold-watch capability this bundle declares on `/api/ws` (see
+ *  `foldWatch.ts`). A wire token, not copy. */
+export const foldDeltaCapability = 'fold_delta.1'
+
+/** Declared beside `fold_delta.1`: this bundle applies `slot_fold` delta frames
+ *  for the work board (see `workDelta.ts`). A separate token, because a bundle
+ *  that declared only `fold_delta.1` reads whole values alone. */
+export const foldApplyCapability = 'fold_delta.2'
+
 
 export type LogCallback = ((data: { level: string; msg: string }) => void) | null
 
@@ -75,7 +86,16 @@ export function useSocketConnection(): SocketConnection {
       // rename, folder move or close. A gateway that predates the frame ignores
       // the parameter and keeps sending full lists, which the router still
       // applies.
-      const ws = new WebSocket(`${proto}//${location.host}/api/ws?caps=slot_patch`)
+      // `fold_delta.1`: this bundle sends `fold_watch` once the gateway says
+      // `fold_hello` (see `foldWatch.ts`). An older gateway ignores it and
+      // keeps sending every board's slot-fold frames. `fold_delta.2`: send the
+      // work board as `slot_fold` deltas; a gateway without it sends whole values.
+      // `slot_diff.1`: this bundle rebuilds the slot list from `slots_diff`
+      // frames (see `slotList.ts`), so the gateway sends the rows that changed
+      // instead of the whole list on each coalesced push. `chunk_scope.1`:
+      // stream frames only for the slots this tab names in `chunk_watch` (see
+      // `chunkWatch.ts`); an older gateway sends them all.
+      const ws = new WebSocket(`${proto}//${location.host}/api/ws?caps=slot_patch,slot_diff.1,${foldDeltaCapability},${foldApplyCapability},${chunkScopeCapability}`)
       wsRef.current = ws
       return ws
     },

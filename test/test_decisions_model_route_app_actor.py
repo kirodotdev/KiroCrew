@@ -39,8 +39,9 @@ import pytest
 import kiro_crew.dashboard as dashboard_pkg
 
 #: Spellings a dispatch uses to read the request's app claim. ``is_dashboard_caller``
-#: is the inverted form ``openai_compat`` computes once and passes as the origin.
-_APP_TOKENS = ("request_app", '"app"', "'app'", "is_dashboard_caller")
+#: is the inverted form ``openai_compat`` computes once and passes as the origin;
+#: ``_person_send`` is ``api_chat``'s, the app claim folded with the agent-origin mark.
+_APP_TOKENS = ("request_app", '"app"', "'app'", "is_dashboard_caller", "_person_send")
 
 #: The keyword whose value tells us the site consulted the claim at all. A site that
 #: never derives provenance from an app is not this rule's subject -- a cron or a
@@ -114,7 +115,8 @@ def test_the_accepting_handler_builds_both_keys_into_its_kwargs():
     path = Path(dashboard_pkg.__file__).parent / "chat_api" / "chat_send.py"
     src = path.read_text(encoding="utf-8")
 
-    assert '_turn_kwargs: dict = {"_directive_user_origin": not bool(request_app)}' in src
+    assert '_turn_kwargs: dict = {"_directive_user_origin": _person_send}' in src
+    assert '_person_send = not request.get("app", "") and not _agent_origin' in src
     assert '_turn_kwargs["_turn_actor"] = "app"' in src
 
 

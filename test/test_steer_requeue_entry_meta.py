@@ -384,6 +384,11 @@ class TestSendIdMapLifecycle:
         slot._pending_steers = [self._TEXT]
         slot._steer_delivery_ids = {self._TEXT: "did-1"}
         slot._steer_send_ids = {self._TEXT: self._SEND_ID}
+        # An accepted steer holds its provenance until it is consumed or requeued,
+        # so the hard kill is the third exit that must release it.
+        slot._steer_admissions = {self._TEXT: {}}
+        slot._steer_user_origin = {self._TEXT: True}
+        slot._steer_channel_origin = {self._TEXT: False}
 
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/test/stop?force=true")
@@ -393,6 +398,8 @@ class TestSendIdMapLifecycle:
             "the hard kill discarded the text, so nothing downstream will ever "
             "read this id -- keeping it holds the message for the slot's lifetime"
         )
+        assert slot._steer_admissions == {} and slot._steer_user_origin == {}
+        assert slot._steer_channel_origin == {}, "the held provenance goes with the text"
 
     @pytest.mark.asyncio
     async def test_the_real_already_drained_path_finds_the_maps_already_clean(

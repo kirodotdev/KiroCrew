@@ -42,7 +42,7 @@ const TEAMS = {
   jwt_available: false, // HAS_JWT is fixed when teams.client is first imported
 }
 const WHATSAPP = {
-  configured: false, connected: false, connect_error: WA_STATUS, read_only: false,
+  configured: false, connected: false, connect_error: WA_STATUS, connect_failed: true, read_only: false,
   enabled: true, dm_policy: 'self', allowed_wa_ids: [], groups: [], session_folder: '',
   state: 'unpaired',
 }

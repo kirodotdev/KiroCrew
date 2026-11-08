@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -129,11 +131,9 @@ def test_the_dashboard_import_twins_refuse_a_dangling_link_too(tmp_path, monkeyp
 def test_a_staged_link_is_refused_where_open_cannot_refuse_links(tmp_path, monkeypatch):
     """Windows shape, simulated: no O_NOFOLLOW and no dir_fd.
 
-    There a by-name ``os.open`` follows a reparse point and the target passes the
-    regular/one-link checks, so the source must be opened through
-    ``open_file_no_reparse`` (which settles the final name in the open itself) and
-    handed over as a descriptor. The stand-in below refuses a link the way the
-    Windows ``CreateFileW(FILE_FLAG_OPEN_REPARSE_POINT)`` path does, with ELOOP.
+    A by-name ``os.open`` follows a reparse point there, so the source goes through
+    ``open_file_no_reparse``. The stand-in refuses a link with ELOOP, as
+    ``CreateFileW(FILE_FLAG_OPEN_REPARSE_POINT)`` does.
     """
     import errno
 
@@ -451,3 +451,130 @@ def test_where_the_acl_can_be_carried_the_store_is_still_replaced_atomically(tmp
 
     assert snapshot_merge._merge_crons(src, dst) is True
     assert dst.stat().st_ino != ino, "the atomic replace was dropped where it is safe to keep"
+
+
+# ── Site 6: _merge_memory imports the database its integrity check judged ──
+
+
+def _one_row_memory_db(path: Path, key: str) -> None:
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE semantic_memory (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, "
+            "confidence REAL DEFAULT 0.5, source TEXT NOT NULL, created_at TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL, is_deleted INTEGER DEFAULT 0, embedding BLOB)"
+        )
+        conn.execute(
+            "INSERT INTO semantic_memory (key, value_json, source, created_at, updated_at) "
+            "VALUES (?, '1', 't', 'c', 'u')",
+            (key,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _keys(db: Path) -> set[str]:
+    conn = sqlite3.connect(str(db))
+    try:
+        return {row[0] for row in conn.execute("SELECT key FROM semantic_memory")}
+    finally:
+        conn.close()
+
+
+def _after_the_integrity_check(monkeypatch, action: Callable[[], None]) -> None:
+    """Run ``action`` the moment the merge's integrity check returns."""
+
+    class _Conn:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+        def __getattr__(self, item: str) -> object:
+            return getattr(self._conn, item)
+
+        def execute(self, sql: str, *args: object) -> sqlite3.Cursor:
+            cursor = self._conn.execute(sql, *args)
+            if "integrity_check" in sql:
+                action()
+            return cursor
+
+    class _Driver:
+        def __getattr__(self, item: str) -> object:
+            return getattr(sqlite3, item)
+
+        @staticmethod
+        def connect(*args: object, **kwargs: object) -> object:
+            return _Conn(sqlite3.connect(*args, **kwargs))  # type: ignore[arg-type]
+
+    monkeypatch.setattr(snapshot_mod, "sqlite3", _Driver())
+
+
+def test_a_staged_memory_db_swapped_after_the_integrity_check_is_not_imported(
+    tmp_path, monkeypatch
+):
+    snap, mc, outside = _dirs(tmp_path)
+    _one_row_memory_db(snap / "memory.db", "checked")
+    _one_row_memory_db(outside / "other.db", "swapped-in")
+    _one_row_memory_db(mc / "memory.db", "live")
+    _after_the_integrity_check(
+        monkeypatch, lambda: os.replace(outside / "other.db", snap / "memory.db")
+    )
+
+    snapshot_merge._merge_memory(snap / "memory.db", mc / "memory.db")
+
+    assert _keys(mc / "memory.db") == {
+        "live",
+        "checked",
+    }, "the merge imported a database the check never judged"
+
+
+def test_a_staged_memory_db_that_fails_the_integrity_check_imports_nothing(tmp_path, capsys):
+    snap, mc, _ = _dirs(tmp_path)
+    staged = snap / "memory.db"
+    _one_row_memory_db(staged, "unchecked")
+    _one_row_memory_db(mc / "memory.db", "live")
+    # The key's last copy is in the primary-key index page: changing it there leaves the
+    # table readable and makes the index disagree with it.
+    data = bytearray(staged.read_bytes())
+    at = data.rfind(b"unchecked")
+    data[at : at + len(b"unchecked")] = b"zzzzzzzzz"
+    staged.write_bytes(bytes(data))
+
+    snapshot_merge._merge_memory(staged, mc / "memory.db")
+
+    assert "integrity check failed" in capsys.readouterr().out
+    assert _keys(mc / "memory.db") == {"live"}, "a database that failed the check was imported"
+
+
+def test_an_unreadable_live_memory_db_fails_the_merge_instead_of_skipping_it(tmp_path):
+    snap, mc, _ = _dirs(tmp_path)
+    _one_row_memory_db(snap / "memory.db", "checked")
+    (mc / "memory.db").write_bytes(b"not a database" * 100)
+
+    with pytest.raises(snapshot_mod.sqlite3.DatabaseError):
+        snapshot_merge._merge_memory(snap / "memory.db", mc / "memory.db")
+
+
+def test_a_live_write_during_the_integrity_check_does_not_drop_the_import(tmp_path, monkeypatch):
+    snap, mc, _ = _dirs(tmp_path)
+    live = mc / "memory.db"
+    _one_row_memory_db(snap / "memory.db", "checked")
+    _one_row_memory_db(live, "live")
+    sqlite3.connect(str(live)).execute("PRAGMA journal_mode=WAL").connection.close()
+
+    def write_live() -> None:
+        other = sqlite3.connect(str(live))
+        try:
+            other.execute(
+                "INSERT INTO semantic_memory (key, value_json, source, created_at, updated_at) "
+                "VALUES ('written-meanwhile', '1', 't', 'c', 'u')"
+            )
+            other.commit()
+        finally:
+            other.close()
+
+    _after_the_integrity_check(monkeypatch, write_live)
+
+    snapshot_merge._merge_memory(snap / "memory.db", live)
+
+    assert _keys(live) == {"live", "written-meanwhile", "checked"}, "the import was dropped"

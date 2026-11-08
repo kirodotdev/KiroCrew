@@ -9,6 +9,8 @@ generation, the revoked-nonce store and the app-permission cache around each tes
 ``test_token_auth.py`` and its siblings ``test_token_auth_signing_secret.py``,
 ``test_token_auth_session_lifecycle.py``, ``test_token_auth_spa_shell.py``,
 ``test_token_auth_credential_scope.py`` and ``test_token_auth_tailnet_pin.py``.
+``_session_token`` mints what the middleware sets as the cookie, for a test that
+presents one.
 """
 
 from __future__ import annotations
@@ -20,8 +22,7 @@ from aiohttp import web
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing autouse fixture, moved verbatim; three pre-existing tests of the family call monkeypatch.undo(), tracked for a de-flake pass
-def clear_nonces(tmp_path, monkeypatch):
+def clear_nonces(tmp_path, _floor_monkeypatch):
     """Isolate token state per test.
 
     Points config_dir at a tmp dir so the persisted revocation-generation file
@@ -32,19 +33,19 @@ def clear_nonces(tmp_path, monkeypatch):
     import kiro_crew.dashboard.revocation_gen as _rg
     import kiro_crew.dashboard.token_auth as _ta
 
-    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    _floor_monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
     # Pin the memoized revocation generation to 0 (skips the lazy disk load)
     # so no persisted counter from a prior test or the real home leaks in.
-    monkeypatch.setattr(_rg, "_gen", 0)
+    _floor_monkeypatch.setattr(_rg, "_gen", 0)
     # Reset the per-session revoked-nonce store so each test gets a fresh store
     # bound to its own tmp_path config_dir (the singleton would otherwise pin
     # the first test's path and leak revocations across tests).
-    monkeypatch.setattr(_ta, "_revoked_store_singleton", None)
+    _floor_monkeypatch.setattr(_ta, "_revoked_store_singleton", None)
     _ta._state.clear_all()
     _ta._app_perms_cache.clear()
     yield
-    monkeypatch.setattr(_rg, "_gen", 0)
-    monkeypatch.setattr(_ta, "_revoked_store_singleton", None)
+    _floor_monkeypatch.setattr(_rg, "_gen", 0)
+    _floor_monkeypatch.setattr(_ta, "_revoked_store_singleton", None)
     _ta._state.clear_all()
     _ta._app_perms_cache.clear()
 
@@ -54,6 +55,13 @@ def clear_nonces(tmp_path, monkeypatch):
 
 async def _ok_handler(request: web.Request) -> web.Response:
     return web.Response(text="ok")
+
+
+def _session_token(*args, **kwargs):
+    """Mint the kind of token the middleware sets as a cookie on exchange."""
+    from kiro_crew.dashboard.token_auth import generate_token
+
+    return generate_token(*args, register_nonce=False, session=True, **kwargs)
 
 
 def _make_request(

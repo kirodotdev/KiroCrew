@@ -156,8 +156,9 @@ class TestBroadcastCompactionResultBackoff:
 
         state, slot = self._make_slot_and_state(tmp_path, monkeypatch)
 
-        _broadcast_compaction_result(state, slot, self._failed_event())
+        msg = _broadcast_compaction_result(state, slot, self._failed_event())
 
+        assert msg is not None and msg.startswith("❌"), msg
         assert not [
             c for c in state.broadcast_ws.call_args_list if c.args and c.args[0] == "context_usage"
         ]
@@ -474,6 +475,52 @@ class TestRunChatCompactDeferredWait:
         notices = [m for m in slot.messages if m.get("meta", {}).get("kind") == "compaction"]
         assert len(notices) == 1
         assert notices[0]["content"].startswith("Nothing to compact yet")
+        assert not any("timed out" in m.get("content", "") for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_fresh_session_compact_returns_without_waiting(self, tmp_path, monkeypatch):
+        """A /compact as the first message of a brand-new chat ends now.
+
+        No ordinary prompt has reached the fresh provider session, so its
+        first-turn history debt is still armed and it holds no conversation:
+        kiro-cli answers "Conversation too short to compact." with ``end_turn``
+        and never sends a compaction status. Waiting for one strands the chat
+        for the whole compaction timeout and then reports a timeout. The debt
+        must stay armed for the next ordinary prompt, and no reinjection is
+        armed because nothing was compacted.
+        """
+        from kiro_crew.dashboard.chat_turn.recovery import COMPACT_FRESH_SESSION_NOTICE
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(
+            [
+                LLMEvent(kind=EVENT_TEXT_CHUNK, text="Conversation too short to compact.\n"),
+                LLMEvent(kind=EVENT_COMPLETE),
+            ]
+        )
+        client.capabilities = capabilities_for(ACP_BACKEND_KIRO)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions.provider_switch_replay_pending = MagicMock(return_value=False)
+        state.sessions.first_turn_history_owed_pending = MagicMock(return_value=True)
+        state.sessions.consume_first_turn_history_owed = MagicMock(return_value=True)
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "/compact")
+
+        client.wait_for_compaction.assert_not_called()
+        state.sessions.mark_needs_reinjection.assert_not_called()
+        state.sessions.consume_first_turn_history_owed.assert_not_called()
+        compacting_frames = [
+            c
+            for c in state.broadcast_ws.call_args_list
+            if c.args and c.args[0] == "chat_message" and c.args[1].get("role") == "compacting"
+        ]
+        assert compacting_frames == []
+        notices = [m for m in slot.messages if m.get("meta", {}).get("kind") == "compaction"]
+        assert [n["content"] for n in notices] == [COMPACT_FRESH_SESSION_NOTICE]
         assert not any("timed out" in m.get("content", "") for m in slot.messages)
 
     @staticmethod

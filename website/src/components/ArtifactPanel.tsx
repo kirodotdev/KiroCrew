@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { OverlayPortal } from './overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { Component, Copy, ExternalLink, MessageSquare, Loader2, Maximize2, Minimize2 } from 'lucide-react'
@@ -20,11 +20,13 @@ import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { useArtifactLiveReload } from '../hooks/useArtifactLiveReload'
 import { useSentCommentIds } from '../hooks/useSentCommentIds'
 import type { Artifact } from '../types'
+import type { MarkdownPanelHandle } from './MarkdownPanel'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { isEditableTarget } from '../utils/editableTarget'
 import { useLocalCrewHidden } from './overlayRoot'
+import { overlayCaptionClearancePx } from '../lib/electron'
 interface Props {
   slug: string
   /** Kind captured at open time; the live query overrides it once loaded. */
@@ -59,6 +61,11 @@ interface Props {
   scrollMemoryKey?: string
 }
 
+/** Lets a host close through the panel's own comment-draft guard, the way
+ *  `MarkdownPanelHandle.requestClose` does for a file tab (the side panel's
+ *  tab-strip × and middle-click). */
+export type ArtifactPanelHandle = Pick<MarkdownPanelHandle, 'requestClose'>
+
 const BODY_HEIGHT_STYLE: React.CSSProperties = { height: '100%', minHeight: 0 }
 
 // Non-fullscreen sidebar stacks below content (not beside it) and is
@@ -78,7 +85,7 @@ const STACKED_SIDEBAR_STYLE: React.CSSProperties = { maxHeight: 280, minHeight: 
  * `onSubmitComments` (the local-file user-message path) rather than the
  * full-page `iterateWithAgent` navigate — and only for human comments.
  */
-export default memo(function ArtifactPanel({ slug, kind, content, onClose, active: visible = true, onSubmitComments, connected = true, embedded, scrollMemoryKey }: Props) {
+export default memo(forwardRef<ArtifactPanelHandle, Props>(function ArtifactPanel({ slug, kind, content, onClose, active: visible = true, onSubmitComments, connected = true, embedded, scrollMemoryKey }: Props, ref) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const navigate = useNavigate()
   const previewRef = useRef<HTMLDivElement>(null)
@@ -94,6 +101,8 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   // instead of yanking focus and aborting the composition
   // (`useDialogFocusTrap` is the reference consumer of the same seam).
   const fsImeLatch = useDocumentImeLatch(fullscreen)
+  // Read at render time: `.embedded-win-inset` toggles at runtime.
+  const captionTop = overlayCaptionClearancePx()
 
   // Live artifact — authoritative for kind/name/content once loaded. Seeded
   // with what handleArtifactOpen captured so the panel renders immediately.
@@ -130,15 +139,20 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   // Escape / ✕ on a typed comment draft, and the panel's own full-screen and
   // close actions (each unmounts the toolbar the draft lives in), ask first —
   // in the draft's own words, since "unsaved changes" would read as file edits.
-  const { confirm, confirmDialog } = useConfirm()
-  const confirmDiscardDraft = useCallback(() => confirm({
-    title: i18nT('components.markdownPanel.discard_unsaved_comment'),
-    confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
-    // Raised from inside the full-screen shell too (Exit full screen over a
-    // draft): that shell is an opaque body portal at z-[9999], so the prompt
-    // must take the layer above it or the button looks dead.
-    layer: 'top',
-  }), [confirm])
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  // A host close's `beforePrompt`, held only while that close runs the guard.
+  const beforePromptRef = useRef<(() => void) | undefined>(undefined)
+  const confirmDiscardDraft = useCallback(() => {
+    beforePromptRef.current?.()
+    return confirm({
+      title: i18nT('components.markdownPanel.discard_unsaved_comment'),
+      confirmLabel: i18nT('components.markdownPanel.discard_comment_button'),
+      // Raised from inside the full-screen shell too (Exit full screen over a
+      // draft): that shell is an opaque body portal at z-[9999], so the prompt
+      // must take the layer above it or the button looks dead.
+      layer: 'top',
+    })
+  }, [confirm])
 
   // ── submitted-to-chat tracking ── (shared with the standalone artifact page)
   const { sentIds, markSent } = useSentCommentIds(slug)
@@ -180,6 +194,12 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
   const enterFullscreen = useCallback(() => { void guardDraft(() => setFullscreen(true)) }, [guardDraft])
   const exitFullscreen = useCallback(() => { void guardDraft(() => setFullscreen(false)) }, [guardDraft])
   const requestClose = useCallback(() => { void guardDraft(onClose) }, [guardDraft, onClose])
+  useImperativeHandle(ref, () => ({
+    requestClose: (opts) => {
+      beforePromptRef.current = opts?.beforePrompt
+      void guardDraft(onClose).finally(() => { beforePromptRef.current = undefined })
+    },
+  }), [guardDraft, onClose])
 
   // Selecting text opens the layer's type-first comment composer (see
   // `useFileArtifactComments().selectionComposer`). No row action beside it:
@@ -259,6 +279,10 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
       // already names the fullscreen icon. While a remote Crew is showing, the
       // whole local dashboard is off screen too.
       if (!visible || crewHidden) return
+      // While the discard prompt is open, Escape belongs to it: this document
+      // listener runs before Modal's window one, so re-running the guard here
+      // would ask again under the prompt. Mirrors MarkdownPanel.
+      if (confirmOpen) return
       // Don't hijack Esc while the user is in an editable field (e.g. the
       // add-instruction textarea) — let the field handle it instead of
       // closing/exiting the panel out from under them.
@@ -272,7 +296,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden])
+  }, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden, confirmOpen])
   useEffect(() => {
     if (!fullscreen) return
     document.body.style.overflow = 'hidden'
@@ -332,6 +356,9 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           activeId={layer.activeCommentId}
           unreadRootIds={layer.unreadRootIds}
           heightStyle={BODY_HEIGHT_STYLE}
+          // Inside a side panel a trackpad swipe over the frame may close the
+          // panel; the frame relays only when that page's swipe arms it.
+          relayWheel={!!embedded}
         />
       ) : (
         <ArtifactBodyNative
@@ -461,8 +488,10 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
           e.preventDefault()
           ;(wrapsBackward ? last : first).focus()
         }}>
-        {/* Header — pl-20 clears macOS traffic-light buttons */}
-        <div className="flex items-center justify-between pl-20 pr-6 h-12 shrink-0 border-b border-border">
+        {/* Header — pl-20 clears macOS traffic-light buttons; the marginTop drops
+            it below the Windows/Linux caption band (#24784). */}
+        <div data-testid="artifact-panel-fullscreen-header" className="flex items-center justify-between pl-20 pr-6 h-12 shrink-0 border-b border-border"
+          style={captionTop > 0 ? { marginTop: `${captionTop}px` } : undefined}>
           <span className="flex items-center gap-2 min-w-0">
             <Component size={14} className="text-accent shrink-0" />
             <span className="text-base font-semibold text-text-strong truncate">{name}</span>
@@ -500,4 +529,4 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, activ
     {confirmDialog}
     </>
   )
-})
+}))

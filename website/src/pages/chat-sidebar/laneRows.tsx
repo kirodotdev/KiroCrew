@@ -5,7 +5,6 @@
  *  that render's pass. */
 import { Fragment } from 'react'
 import { FolderBody } from '../../components/FolderBody'
-import { formatRecentWindow } from '../recentWindow'
 import { WindowedSessionRow } from '../chat/sessionRowWindow'
 import type { StaleSplit } from '../staleCollapse'
 import { i18nT } from '../../i18n/t'
@@ -13,10 +12,13 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import type { Slot } from './types'
 import { sessionRowIdentity } from './rowIdentity'
 import { type ConductorRowView } from './rows'
+import type { CodeChannelCrewView } from './codeChannelCrew'
 import { CrewGroupSection, LocalGroupHeader } from './CrewGroups'
-import { DisclosureChevron, FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, SIDEBAR_TEXT_CONTROL_CLS, STALE_TOGGLE_CLS } from './chrome'
+import { DisclosureChevron, FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, SIDEBAR_TEXT_CONTROL_CLS } from './chrome'
 import { SessionRow } from './SessionRow'
+import { StaleExpander } from './StaleExpander'
 import type { SidebarScope } from './scope'
+import { KindSectionHeader, sectionHeaders, sectionRows } from './kindSections'
 
 /** Rows at or past this paint ordinal share ONE `orderStamp`, so an insertion
  *  or reorder above them does not re-render them: they snap into their new
@@ -42,7 +44,7 @@ export const SIDEBAR_DISPLACEMENT_WINDOW = 48
 
 /** The lane row renderers for one shell render. */
 export function createLaneRows(shell: SidebarScope) {
-  const { collapsedCrews, collapsedSpaces, connected, crewEnable, historyOpen, hoverPinRef, isActiveRow, isStaleExempt,
+  const { collapsedCrews, collapsedSpaces, connected, crewEnable, historyOpen, hoverPinRef, isActiveRow, isStaleExempt, kindSections,
     listNarrowed, openHistoryPane, rowActions, rowAnimEnabled, rowMotionHeld, rowViews, setStaleExpanded, shownCrewGroups,
     shownCrewRows, sidebarRows, staleCollapseMs, staleExpanded, staticRows, toggleCrewCollapsed,
     toggleSpaceCollapsed } = shell
@@ -84,51 +86,35 @@ export function createLaneRows(shell: SidebarScope) {
     if (staleSlots.length === 0) return null
     const open = staleExpanded.has(containerId)
     const regionId = `stale-rows-${containerId}`
-    const lblId = `stale-lbl-${containerId}`
-    const ctxId = `stale-ctx-${containerId}`
-    // One pluralised sentence carries the count AND says where the rows went,
-    // so a folder badge of "2" over one visible row plus "1 dormant session
-    // hidden" visibly adds up. A bare noun + count pill read as a category,
-    // not as "the rest are in here" (gui-user-test friction on this row).
-    const count = staleSlots.length
-    const label = open
-      ? i18nT('pages.chatSidebar.stale_collapse_row_shown', { count })
-      : i18nT('pages.chatSidebar.stale_collapse_row_hidden', { count })
-    // The threshold is otherwise only named in the sort/filter menu; the same
-    // compact window label ("7d") ties the row back to that setting.
-    const windowLabel = formatRecentWindow(staleCollapseMs)
-    const hint = open
-      ? i18nT('pages.chatSidebar.stale_collapse_row_hint_open', { window: windowLabel })
-      : i18nT('pages.chatSidebar.stale_collapse_row_hint', { window: windowLabel })
     return (
       <Fragment key={`stale-${containerId}`}>
-        {/* aria-labelledby composes the visible sentence + a visually-hidden
-            container name, so AT announces "Show 1 sleeping session <folder>"
-            — an aria-label would override the button contents and re-composing
-            it per locale is exactly the concatenation trap the i18n rules ban. */}
-        <button type="button"
-          aria-expanded={open}
-          aria-controls={regionId}
-          aria-labelledby={`${lblId} ${ctxId}`}
-          title={hint}
-          data-testid={`stale-expander-${containerId}`}
-          onClick={() => setStaleExpanded(prev => {
+        <StaleExpander containerId={containerId} containerName={containerName} count={staleSlots.length}
+          open={open} collapseMs={staleCollapseMs} regionId={regionId}
+          onToggle={() => setStaleExpanded(prev => {
             const next = new Set(prev)
             if (next.has(containerId)) next.delete(containerId); else next.add(containerId)
             return next
-          })}
-          data-stale-toggle="" className={STALE_TOGGLE_CLS}>
-          <DisclosureChevron open={open} size={12} />
-          <span id={lblId} className="tabular-nums">{label}</span>
-          <span id={ctxId} className="sr-only">{containerName
-            ? i18nT('pages.chatSidebar.stale_collapse_ctx_in_name', { name: containerName })
-            : i18nT('pages.chatSidebar.stale_collapse_row_ungrouped')}</span>
-        </button>
+          })} />
         {/* The controlled region always exists so aria-controls never dangles
             in the collapsed state; only the rows are conditionally mounted. */}
-        <div id={regionId} data-stale-region={containerId} hidden={!open}>{open && staleSlots.map(s => renderSessionRow(s, depth, false))}</div>
+        <div id={regionId} data-stale-region={containerId} hidden={!open}>{open && renderStaleRows(staleSlots, depth, containerId)}</div>
       </Fragment>
     )
+  }
+  /** The open sleeping rows, split by "Group by kind" like the list above them
+   *  (./kindSections): its own headings, and none when they hold one kind. */
+  const renderStaleRows = (staleSlots: Slot[], depth: number, containerId: string) => {
+    const ordered = sectionRows(staleSlots, sidebarRows.isPinned, kindSections)
+    const headers = sectionHeaders(ordered, sidebarRows.isPinned, kindSections)
+    return ordered.map((s, i) => {
+      const kind = headers[i]
+      return (
+        <Fragment key={sessionRowIdentity(s)}>
+          {kind && <KindSectionHeader key={`kind-section-stale-${kind}-${containerId}`} kind={kind} />}
+          {renderSessionRow(s, depth, false)}
+        </Fragment>
+      )
+    })
   }
   // ── end stale-session collapse ─────────────────────────────────────────────
 
@@ -175,7 +161,7 @@ export function createLaneRows(shell: SidebarScope) {
   // total across scopes, which is what the clamp counts.
   const sessionRowStamps = new Map<string, Map<string, number>>()
   let sessionRowStampCount = 0
-  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope, holdContainer = navScope, conductor?: ConductorRowView, folderConductor?: boolean) => {
+  const renderSessionRow = (s: Slot, _indent: number, showDivider: boolean, scope = 'list', navScope = scope, holdContainer = navScope, conductor?: ConductorRowView, folderConductor?: boolean, crew?: CodeChannelCrewView) => {
     // Clamped, not raw: rows past the window share a stamp and bail out of a
     // displacement above them (see SIDEBAR_DISPLACEMENT_WINDOW).
     let scopeStamps = sessionRowStamps.get(scope)
@@ -191,7 +177,7 @@ export function createLaneRows(shell: SidebarScope) {
       scopeStamps.set(stampKey, orderStamp)
     }
     const view = rowViews.view(s, {
-      scope, navScope, holdContainer, showDivider, orderStamp, conductor, folderConductor,
+      scope, navScope, holdContainer, showDivider, orderStamp, conductor, folderConductor, crew,
       // staticRows (the compositor drawer) folds into the one row-animation
       // gate: projection under a WAAPI-driven ancestor mis-attributes the
       // panel's motion to the rows, so the drawer disables row animation

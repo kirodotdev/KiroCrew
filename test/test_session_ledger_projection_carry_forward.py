@@ -1,13 +1,9 @@
 """Tests for the session ledger's upgrade carry-forward and the slot control files.
 
 A pre-projection ``state.json`` is carried into the crew log at most once under a claim
-marker, and a read before the first record previews it. A permanent delete records unit
-exclusions and tombstones that document, and a refused or rolled-back delete takes back
-only what it wrote. The recorded unit order, kept under the canonical slot key, decides
-which unit's state applies last, and the control files and the unit ids they hold are
-bounded. ``_legacy_document`` writes the pre-projection document; the constants, the
-autouse home fixture, ``_unit`` and ``_entries`` live in
-``session_ledger_projection_helpers.py``.
+marker. A permanent delete excludes units and tombstones that document; a refused or
+rolled-back delete takes back only what it wrote. The constants, the autouse home
+fixture, ``_unit`` and ``_entries`` live in ``session_ledger_projection_helpers.py``.
 """
 
 from __future__ import annotations
@@ -101,6 +97,51 @@ def test_the_carry_names_what_it_could_not_bring():
     assert "1 event(s)" in note
 
 
+def test_a_carry_over_the_entry_ceiling_drops_artifacts_instead_of_wedging_the_slot():
+    """Every field is within its own clamp, yet together they overflow one crew log entry.
+
+    The carry drops the oldest artifacts until the entry fits and names them in its note,
+    so the slot can record again instead of refusing every update with a retry hint.
+    """
+    text = "\u6587" * sl._MAX_TEXT  # 6 bytes each once the store escapes it
+    _legacy_document(
+        SLOT,
+        goal=text,
+        phase="implementing",
+        next=text,
+        tried=[{"approach": text, "rejected_because": text, "at": ""}],
+        artifacts={"spec": text, "design": text, "pr": "12027"},
+    )
+    _unit()
+    outcomes = []
+    for step in ("first", "second"):
+        try:
+            sl.record(SLOT, session_id=SESSION, next_step=step)
+            outcomes.append("recorded")
+        except sl.LedgerUnavailable as exc:
+            outcomes.append(f"refused: {exc}")
+    assert outcomes == ["recorded", "recorded"]
+
+    state = sl.read_state(SLOT)
+    assert state["goal"] == text
+    assert state["phase"] == "implementing"
+    assert state["next"] == "second"
+    assert state["artifacts"]["pr"] == "12027"
+    assert "spec" not in state["artifacts"]
+    note = state["events"][0]["text"]
+    dropped = 3 - len(state["artifacts"])
+    assert f"{dropped} artifact(s)" in note
+
+
+def test_the_carry_keeps_at_most_the_artifact_cap():
+    """The carry applies the same artifact cap as an ordinary update."""
+    artifacts = {f"a{i:02d}": "v" for i in range(sl._MAX_ARTIFACTS + 3)}
+    payload = sl._legacy_carry_payload(SLOT, {"goal": "g", "artifacts": artifacts})
+
+    assert list(payload["artifacts"]) == list(artifacts)[3:]
+    assert "3 artifact(s)" in payload["event"]
+
+
 def test_the_carry_happens_once_and_never_again_for_that_slot():
     """It is consumed, not consulted: a second update adds no second carry."""
     _legacy_document(SLOT, goal="carried")
@@ -161,11 +202,9 @@ def test_a_carried_document_is_not_resurrected_after_a_permanent_delete():
 def test_a_delete_with_no_units_still_tombstones_the_legacy_document():
     """The slot's legacy document outlives a delete that had no crew log to remove.
 
-    A conversation that never recorded has no unit to exclude, so the exclusion has
-    nothing to write -- but the pre-projection document it would have carried is still
-    on disk, and the age-based sweep is the only thing that ever removes it. Returning
-    early here leaves that document claimable by the next session on the recycled slot
-    key, which is the resurrection this file exists to prevent.
+    With no unit to exclude, the pre-projection document is still on disk until the
+    age-based sweep. Returning early would leave it claimable by the next session on the
+    recycled slot key.
     """
     _legacy_document(SLOT, goal="deleted conversation", phase="implementing")
 
@@ -184,11 +223,9 @@ def test_a_delete_with_no_units_still_tombstones_the_legacy_document():
 def test_a_delete_that_did_not_happen_gives_the_tombstone_back():
     """The session still exists, so its earlier state is still owed to it.
 
-    A committed marker is permanent for every other reader, so a tombstone left behind
-    by a rolled-back delete would silence that live session's pre-projection goal and
-    phase for good -- and the sweep will not clear it, because the session is not
-    finished. This is the delete that HAD a unit: the rollback empties the exclusion
-    file and the tombstone goes with the last id out of it.
+    A committed marker is permanent, so a tombstone left by a rolled-back delete would
+    silence the live session's pre-projection goal for good. Here the delete had a unit:
+    the tombstone goes with the last id out of the exclusion file.
     """
     _legacy_document(SLOT, goal="still mine", phase="implementing")
     recorded = sl.exclude_units(SLOT, ("u-old",))
@@ -539,6 +576,86 @@ def test_a_record_written_under_the_caller_key_keeps_reading():
     assert state["next"] == "written canonically"
 
 
+def test_a_channel_key_read_without_a_session_finds_the_units_its_writer_used():
+    """A nudge cycle reads a Slack loop's ledger by ``slack:<ts>`` with no live session.
+
+    Both writers of a channel conversation head its unit with the key folded to the
+    filename charset (``slack_<ts>``), so a read of the raw key found only units an
+    older build headed ``slack:<ts>`` and injected that stale snapshot every cycle.
+    """
+    key = "slack:1785370133.085469"
+    _unit(SESSION, slot=key)  # an older build's header spelling
+    sl.record(key, session_id=SESSION, goal="old goal")
+    crew_log.forget_slot_folds()
+    _unit(LATER_SESSION, slot="slack_1785370133.085469")  # what writers record now
+    sl.record(key, session_id=LATER_SESSION, goal="current goal")
+    crew_log.forget_slot_folds()
+
+    assert sl.read_state(key)["goal"] == "current goal"
+    assert "current goal" in sl.render_snapshot(key)
+    assert sl.canonical_slot(key, "") == "slack_1785370133.085469"
+    # A key that is not a channel session keeps its own spelling.
+    assert sl.canonical_slot("cron:42", "") == "cron:42"
+
+    # A delete excludes each unit under the slot its header names; the alias unit's
+    # exclusion must still hold once the read is keyed by the folded spelling.
+    sl.exclude_units(key, (SESSION,))
+    sl.exclude_units("slack_1785370133.085469", (LATER_SESSION,))
+    crew_log.forget_slot_folds()
+    assert sl.read_state(key)["goal"] == ""
+
+
+CHANNEL_KEY = "slack:1785370133.085469"
+CHANNEL_FOLD = "slack_1785370133.085469"
+
+
+def _carries() -> int:
+    return sum(
+        1
+        for e in _entries(LATER_SESSION)
+        if e.type == sl.LEDGER_ENTRY_TYPE and "carried forward" in e.data.get("event", "")
+    )
+
+
+def test_a_channel_key_previews_the_document_its_raw_spelling_wrote():
+    """A pre-fold document sits under ``slack:<ts>``; the read is keyed by the fold."""
+    _legacy_document(CHANNEL_KEY, goal="pre-fold goal", phase="implementing")
+
+    state = sl.read_state(CHANNEL_KEY)
+    assert state["goal"] == "pre-fold goal"
+    assert state["phase"] == "implementing"
+
+
+def test_a_channel_key_carries_the_raw_spelling_document_once():
+    """The carry claims the raw key's document and names the folded slot."""
+    _legacy_document(CHANNEL_KEY, goal="pre-fold goal")
+    _unit(LATER_SESSION, slot=CHANNEL_FOLD)
+    sl.record(CHANNEL_KEY, session_id=LATER_SESSION, next_step="one")
+    sl.record(CHANNEL_KEY, session_id=LATER_SESSION, next_step="two")
+
+    assert _carries() == 1
+    carried = [e for e in _entries(LATER_SESSION) if "carried forward" in e.data.get("event", "")]
+    assert carried[0].data["slot"] == CHANNEL_FOLD
+    crew_log.forget_slot_folds()
+    state = sl.read_state(CHANNEL_KEY)
+    assert state["goal"] == "pre-fold goal"
+    assert state["next"] == "two"
+
+
+@pytest.mark.parametrize("deleted_under", [CHANNEL_KEY, CHANNEL_FOLD])
+def test_a_deleted_channel_conversation_never_previews_or_carries_its_raw_document(
+    deleted_under,
+):
+    """A delete tombstones one spelling; neither spelling may bring the document back."""
+    _legacy_document(CHANNEL_KEY, goal="deleted conversation")
+    assert sl.exclude_units(deleted_under, ()).carry_tombstoned is True
+
+    assert sl.read_state(CHANNEL_KEY)["goal"] == ""
+    _unit(LATER_SESSION, slot=CHANNEL_FOLD)
+    assert sl.record(CHANNEL_KEY, session_id=LATER_SESSION, next_step="n")["goal"] == ""
+    assert _carries() == 0
+
+
 def test_a_caller_that_is_not_the_carrier_refuses_instead_of_recording_first():
     """Recording past someone else's live carry lets the legacy state apply LAST.
 
@@ -631,11 +748,9 @@ def test_the_carry_commits_only_when_its_own_unit_grew():
 def test_a_delete_consumes_the_carry_claim_so_no_later_session_re_carries():
     """A delete removes the evidence the take-over rule rests on, so it settles the claim.
 
-    Take-over is safe only because a landed carry leaves the folded record non-empty. A
-    permanent delete removes the unit holding that entry, so the record reads empty
-    again -- and a marker left `pending` by a crash between the carry append and its
-    commit would let the next session on the recycled slot key carry the preserved
-    document back in.
+    Take-over relies on a landed carry leaving the record non-empty. After a delete the
+    record reads empty again, so a crash-left `pending` marker would let the next
+    session on the recycled slot key carry the document back in.
     """
     _legacy_document(SLOT, goal="deleted conversation")
     _unit(SESSION)
@@ -920,12 +1035,9 @@ def test_a_legacy_document_over_the_size_ceiling_is_not_parsed():
 def test_a_retried_delete_still_consumes_the_carry_claim():
     """The retry of a delete that already recorded its exclusions must settle the marker.
 
-    A delete persists exclusions and then can still fail further on, so it is retried
-    with the same units. That retry adds nothing -- and an early return on "nothing
-    added" would skip the claim consumption entirely, leaving the `pending` marker of a
-    crashed carry standing over a record the delete has since emptied. The next session
-    on the recycled slot key would then take that claim over and carry the deleted
-    document in, which is the resurrection the marker exists to prevent.
+    The retry adds no exclusions, and an early return on "nothing added" would leave a
+    crashed carry's `pending` marker standing; the next session on the recycled slot key
+    would take it over and carry the deleted document in.
     """
     _legacy_document(SLOT, goal="deleted conversation")
     _unit(SESSION)
@@ -974,13 +1086,9 @@ def test_a_failed_carry_does_not_withdraw_another_call_s_committed_marker():
 def test_a_tombstone_that_did_not_persist_refuses_the_delete(caplog):
     """A delete whose carry tombstone did not land leaves the slot CLAIMABLE.
 
-    The legacy document outlives the delete -- only the age-based sweep removes it, and
-    it may never run -- so an absent or still-pending marker lets the next session on
-    the recycled slot key carry the DELETED conversation's goal into its own record.
-
-    ``False`` cannot carry this: it already means "already committed by another call",
-    which is a slot that IS tombstoned. Refusing the delete is the recoverable side of
-    the trade, exactly as it is for an exclusion that cannot be read back.
+    The legacy document outlives the delete, so an absent or pending marker lets the
+    next session on the recycled key carry the deleted goal in. ``False`` already means
+    "committed by another call", so the delete is refused instead.
     """
     _legacy_document(SLOT, goal="deleted conversation")
     real = sl._rewrite_lines
@@ -1099,11 +1207,8 @@ def test_the_preview_folds_onto_the_log_rather_than_replacing_it():
 def test_a_tombstoned_document_is_not_previewed_on_a_recycled_slot_key():
     """The read is bound by the same marker the carry is, or it undoes a delete.
 
-    A permanent delete preserves the legacy store and tombstones the carry, so the
-    document is on disk with nothing left that may consume it. A read that consulted
-    it anyway would hand a successor on the recycled key the deleted conversation's
-    goal -- exactly the resurrection the tombstone exists to prevent, arriving through
-    the read instead of through the carry.
+    After a delete the legacy document is still on disk under a tombstone. A read that
+    consulted it would hand a successor on the recycled key the deleted goal.
     """
     _legacy_document(SLOT, goal="deleted conversation", phase="implementing")
     assert sl.exclude_units(SLOT, ()).carry_tombstoned is True
@@ -1142,11 +1247,9 @@ def test_an_unreadable_document_answers_a_read_empty_instead_of_raising():
 def test_a_refused_delete_takes_back_the_exclusions_it_already_wrote(caplog):
     """A refusal has to leave the slot as it found it.
 
-    The exclusion commits inside the hold and the tombstone is settled after it, so a
-    tombstone that cannot be written refuses a delete whose exclusions HAVE landed --
-    on a session that still exists, because nothing was unlinked. Leaving them would
-    make a live conversation's record read empty with only a hand repair, and the
-    caller answers 409 on the strength of "a refusal wrote nothing".
+    A failed tombstone refuses a delete whose exclusions have already landed on a live
+    session. Leaving them would make its record read empty, while the caller answers 409
+    assuming a refusal wrote nothing.
     """
     _unit(SESSION)
     sl.record(SLOT, session_id=SESSION, goal="a live conversation")
@@ -1203,12 +1306,9 @@ def test_a_concurrent_deletes_exclusions_survive_a_refusal_rollback(caplog):
 def test_a_late_first_record_from_a_retired_unit_does_not_freeze_the_order():
     """The order log orders units by their NEWEST record, not their first.
 
-    A request from a session the slot has replaced can reach the recorder after the
-    successor has already recorded. Ordering by FIRST record would put that retired
-    unit last and leave it there for good, because a presence check never revisits a
-    known id -- so its phase and next step would win every later fold. Moving the
-    recording unit to the end makes the successor's next record correct it, and while
-    the retired unit is last its entry genuinely IS the newest one recorded.
+    A replaced session's late request can record after its successor. Ordering by first
+    record would pin that retired unit last for good; moving the recording unit to the
+    end lets the successor's next record correct it.
     """
     _unit(SESSION)  # the retired unit, which never recorded during its own life
     _unit(LATER_SESSION)
@@ -1229,17 +1329,12 @@ def test_a_late_first_record_from_a_retired_unit_does_not_freeze_the_order():
 def test_an_append_that_did_not_land_does_not_publish_the_units_precedence():
     """A refused or still-queued append must not pin its unit ahead of the successor.
 
-    The order file's whole claim is that among units which have recorded, the one
-    recording right now holds the newest entry. A unit whose append was refused, or is
-    still queued, has NOT recorded, so publishing its precedence there asserts
-    something untrue -- and the rewrite is fsynced immediately, so no crash is needed
-    for the wrong order to survive. A successor resuming with no ledger content of its
-    own would then fold the retired unit's stale goal and phase as current and act on
-    it, which is the inversion the ordering machinery exists to prevent.
+    A unit whose append did not land has not recorded, and the order rewrite is fsynced
+    at once. A successor with no ledger content would then fold the retired unit's
+    stale goal and phase as current.
 
-    The fault is injected on the OBSERVATION rather than on the append, which makes
-    this strictly harder than the real case: the retired entry really is in its log
-    here, so the fold has it available and still must not let it win.
+    The fault is injected on the observation, not the append: the retired entry really
+    is in its log, so the fold has it and still must not let it win.
     """
     _unit(SESSION)  # the unit the slot has since replaced
     _unit(LATER_SESSION)
@@ -1264,11 +1359,8 @@ def test_an_append_that_did_not_land_does_not_publish_the_units_precedence():
 def test_a_unit_recording_repeatedly_is_not_rewritten_into_the_log_twice():
     """The ordinary path stays a bare read: already last means nothing to write.
 
-    Two properties, and dedup on READ hides both. A move that degraded into an append
-    would put one unit in the file twice, and the fold would consume its entries twice
-    the moment a reader without the dedup came along. And a record that rewrote the
-    file every time would make the common case -- one live unit recording repeatedly --
-    pay a file replace per update for an order that did not change.
+    Dedup on read would hide both failures: a move that degraded into an append (one
+    unit listed twice), and a file replace on every record by the same live unit.
     """
     _unit(SESSION)
     real = sl._rewrite_lines
@@ -1294,11 +1386,9 @@ def test_a_unit_recording_repeatedly_is_not_rewritten_into_the_log_twice():
 def test_the_tombstone_is_settled_inside_the_exclusion_hold():
     """One transaction, or the take-back can withdraw another delete's evidence.
 
-    Settling the marker after the hold is released publishes the exclusion first. A
-    concurrent delete of the same slot then reads those ids as already present, adds
-    none of its own, settles the marker, and UNLINKS its transcript -- on the strength
-    of an exclusion this call is about to take back. Holding the lock across both is
-    what makes there be no intermediate state to rely on.
+    Settling the marker after the hold publishes the exclusion first; a concurrent
+    delete would see those ids, add none, and unlink its transcript on an exclusion
+    this call is about to take back.
     """
     from kiro_crew.platform_compat import try_acquire_lock
 
@@ -1329,11 +1419,9 @@ def test_the_tombstone_is_settled_inside_the_exclusion_hold():
 def test_a_refused_delete_cannot_withdraw_a_concurrent_deletes_exclusion():
     """The interleaving the transaction exists to make impossible.
 
-    A's exclusion lands and its tombstone fails; B deletes the same slot's overlapping
-    units and proceeds. If A's take-back ran outside the hold, B would have reused A's
-    ids, added none of its own, and unlinked -- and A would then remove the only record
-    keeping B's deleted state out of the recycled slot key. Inside the hold, B cannot
-    read the file until A has already put it back, so B adds the id itself.
+    A's exclusion lands and its tombstone fails; B deletes overlapping units. Inside the
+    hold, B cannot read the file until A has put it back, so B adds the id itself rather
+    than reusing the one A then removes.
     """
     import threading
 
@@ -1384,14 +1472,9 @@ def test_a_refused_delete_cannot_withdraw_a_concurrent_deletes_exclusion():
 def test_the_tombstone_withdrawal_runs_inside_the_rollback_hold():
     """ONE acquisition, or a rollback withdraws a concurrent delete's tombstone.
 
-    A marker says `committed` and never says WHOSE, so a withdrawal cannot tell the
-    tombstone it is undoing from one a concurrent delete committed in the gap between
-    two holds. Removing that one carries the deleted conversation's legacy state into a
-    recycled slot, silently, with nothing left to put it back.
-
-    Counted rather than probed for "is a lock held right now": a withdrawal in its own
-    second hold holds the lock too, so that question cannot tell the two structures
-    apart. The number of acquisitions can, and it is what "one transaction" means.
+    A marker never says whose `committed` it is, so a withdrawal in a second hold could
+    remove a concurrent delete's tombstone. Acquisitions are counted because a second
+    hold also holds the lock, so "is it held now" cannot tell the two apart.
     """
     _legacy_document(SLOT, goal="owed to the spared session")
     recorded = sl.exclude_units(SLOT, ())
@@ -1444,11 +1527,9 @@ def test_a_withdrawal_that_did_not_persist_is_raised_not_swallowed(caplog):
 def test_every_control_file_bound_is_derived_from_the_unit_id_bound():
     """The per-id bound is the only number; the file bounds follow from it.
 
-    A hardcoded file bound is a bound on the file that says nothing about the ids in
-    it: it holds only while every id happens to be far under the per-id bound, and the
-    two drift apart with nothing to catch it. Derived, a full window of maximum-size
-    ids fits the read by construction, which is what stops the order read coming back
-    SHORT -- it does not reject an oversized file, and its caller rewrites what it read.
+    Derived, a full window of maximum-size ids fits the read, so the order read never
+    comes back short; it does not reject an oversized file, and its caller rewrites what
+    it read.
     """
     assert sl._MAX_ORDER_BYTES == sl._MAX_ORDERED_UNITS * (sl._MAX_UNIT_ID_BYTES + 1)
     assert sl._MAX_EXCLUDED_BYTES == sl._MAX_EXCLUDED_UNITS * (sl._MAX_UNIT_ID_BYTES + 1)

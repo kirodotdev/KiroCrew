@@ -154,6 +154,7 @@ from kiro_crew.connections.mint import _mint_spec_body  # noqa: F401
 from kiro_crew.connections.mint import _mint_watcher  # noqa: F401
 from kiro_crew.connections.mint import _new_mint_token  # noqa: F401
 from kiro_crew.connections.mint import (
+    _MINT_FRAME_READ_SECONDS,
     _MINT_GRANT_POLL_SECONDS,
     _MINT_TTL_SECONDS,
     MintState,
@@ -215,6 +216,7 @@ from kiro_crew.connections.warm_runtime.shared_rows import (
     _live_row_count,
     _shared_mints_pending,
     _warm_table_row,
+    fail_refused_sign_ins,
 )
 from kiro_crew.connections.warm_runtime.spec_body import _WARM_NAME_RE  # noqa: F401
 from kiro_crew.connections.warm_runtime.spec_body import _warm_spec_description  # noqa: F401
@@ -263,7 +265,7 @@ _WARM_SPAWN_TIMEOUT_SECONDS = 90.0
 _WARM_SESSION_TIMEOUT_SECONDS = 90.0
 _WARM_SESSION_DESTROY_TIMEOUT_SECONDS = 10.0
 #: How long to keep waiting for a handle whose create we already gave up on. Short, because
-#: this only buys back a session already on its way; see ``_abandon_session_creation``.
+#: this only buys back a session already on its way; see ``_abandon_session_creation_locked``.
 _WARM_SESSION_REAP_TIMEOUT_SECONDS = 10.0
 _WARM_KILL_TIMEOUT_SECONDS = 20.0
 #: One bounded drain window. A run stops after this many consecutive quiet windows,
@@ -322,7 +324,12 @@ def _disabled_provider_slugs() -> set[str]:
 
 def warm_spec_providers() -> list[Provider]:
     """The spec UNIVERSE: every provider the shared process ENUMERATES at spawn."""
+    from kiro_crew.connections import crew_oauth
+
     disabled = _disabled_provider_slugs()
+    # A Crew-owned sign-in (``dashboard.feature_previews.crew_oauth``) binds the provider's
+    # registered callback port itself, so the shared process must not hold it.
+    disabled |= {s for s in crew_oauth.SUPPORTED_SLUGS if crew_oauth.manages(s)}
     return [
         provider
         for provider in get_visible_providers()
@@ -993,6 +1000,12 @@ class _WarmMintRuntime:
                 work_dir=work_dir,
                 agent=_WARM_BASE_AGENT,
                 sandbox_mode="auto",
+                # The generation tree sits in the protected ``run/`` dir, which the
+                # skill projection's spec reader refuses, so a projected process
+                # would hide every mint mode but the base one from ``availableModes``
+                # and the activation would refuse ``_WARM_ALL_AGENT`` as missing.
+                # The mint specs carry no skills, so there is nothing to project.
+                native_skill_projection=False,
             )
             # Attach before spawn so a cancelled/failed spawn still carries the only path its
             # cleanup may remove. The marker remains provisional until spawn returns a PID.
@@ -1177,6 +1190,23 @@ class _WarmMintRuntime:
                 self._sessions.pop(activation, None)
             raise
         return activation, requests
+
+    async def failed_providers(self, activation: int) -> list[Provider]:
+        """The providers ``activation``'s session reports failed, once its queued frames are read.
+
+        Not under ``self._lock``: the read only folds frames into the handle's own report, and
+        the sweep never collects a session an adopted row still points at.
+        """
+        record = self._sessions.get(activation)
+        if record is None:
+            return []
+        await record.handle.drain_init(
+            duration=_MINT_FRAME_READ_SECONDS,
+            idle_exit=_MINT_FRAME_READ_SECONDS,
+            no_report_ceiling=0.0,
+        )
+        failed = (record.handle.mcp_session_report().payload() or {}).get("failed") or ()
+        return [p for p in record.providers if mcp_server_alias(p["slug"]) in failed]
 
     async def redrain_for(self, slug: str) -> _WarmMintResult | None:
         """Drain a current-compatible live session for ``slug`` without spawning another."""
@@ -1453,11 +1483,16 @@ async def _warm_activate() -> _WarmMintResult | None:
                 "falling back to the cold path" if last else "respawning it",
             )
         except Exception as exc:  # noqa: BLE001 — the process lives; degrade to cold
+            # The message, not only the class, for the reason the spawn warning gives:
+            # an ``AcpRuntimeError`` here names the refused mode and its remedy, and the
+            # cold path that follows hides the failure.
             logger.warning(
-                "Shared mint activation failed on a live process (%s); "
+                "Shared mint activation failed on a live process (%s: %s); "
                 "falling back to the cold path",
                 type(exc).__name__,
+                exc,
             )
+            logger.debug("Shared mint activation failed", exc_info=True)
             return None
     return None
 
@@ -1480,6 +1515,7 @@ async def _drain_parked_generations() -> None:
         await _warm_mint.sweep_retiring()
         # A parked process can also die while parked, which withdraws its cards' URLs.
         await expire_dead_mints()
+        await fail_refused_sign_ins()
         async with _mints_lock:
             in_use = _activations_in_use()
         await _warm_mint.sweep_sessions(in_use)
@@ -1500,6 +1536,7 @@ async def _warm_mint_reaper(generation: int) -> None:
             # Every generation, parked ones included: a card pointing at a process that is
             # gone must not keep its URL until this reaper's own generation is the dead one.
             await expire_dead_mints()
+            await fail_refused_sign_ins()
             # Sessions outlive the rows that needed them on every path ending a mint without
             # a new activation (grant, cancel, TTL). Collected here, not for the process life.
             async with _mints_lock:

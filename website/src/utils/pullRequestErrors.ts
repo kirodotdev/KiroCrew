@@ -9,6 +9,23 @@
  * refusal reads the same everywhere instead of only on the surface that
  * happened to be fixed first.
  */
+
+/** A vault secret name as the gateway ships it: one of the two Bitbucket Server
+ *  token names, `BITBUCKET_SERVER_TOKEN` or `BITBUCKET_SERVER_TOKEN_<HEX>` (whole
+ *  upper-case hex bytes, up to the length a per-host name reaches for the longest
+ *  listable host). Any other upper-case word could be an opaque token. */
+const SECRET_NAME_RE = /^BITBUCKET_SERVER_TOKEN(?:_(?:[0-9A-F]{2}){1,259})?$/
+/** True for the one sign-in command shape the gateway builds from its own
+ * allowlisted host: `gh auth login --hostname <host>` or `glab auth login
+ * --hostname <host>`, one host token and nothing after it. Every surface that
+ * renders a `loginCommand` as copyable accepts it only through this check (the
+ * PR-mutation envelope below and Issue Radar's coded error envelope in
+ * `apps/issue-radar/apiTypes.ts`), so a provider-controlled body cannot
+ * smuggle arbitrary text into the command. */
+export function isHostScopedLoginCommand(value: unknown): value is string {
+  return typeof value === 'string' && /^(?:gh|glab) auth login --hostname \S+$/.test(value)
+}
+
 export function pullRequestErrorDetails(error: unknown): {
   message: string
   /** The command to run: `gh auth login`, `glab auth login`, or `<gh|glab> auth login --hostname <host>` for a GitHub Enterprise or self-managed GitLab host. */
@@ -17,11 +34,14 @@ export function pullRequestErrorDetails(error: unknown): {
   confirmationRequired: boolean
   /** The gateway was at its concurrent-fetch ceiling; the same request may succeed later. */
   sourceBusy: boolean
+  /** The vault secret the message tells the reader to store or replace (a provider read over its own REST API, like Bitbucket Server), as its own field so it can be copied whole. */
+  secretName: string
 } {
   let message = error instanceof Error ? error.message : String(error || '')
   let confirmationRequired = false
   let sourceBusy = false
   let hostScoped = ''
+  let secretName = ''
   // ApiError already unwraps the human message, which discards every other
   // field, so the structured marker is read from the raw body it preserves.
   const raw = typeof (error as { body?: unknown })?.body === 'string'
@@ -33,14 +53,16 @@ export function pullRequestErrorDetails(error: unknown): {
       confirmationRequired?: unknown
       code?: unknown
       loginCommand?: unknown
+      secretName?: unknown
     }
     if (typeof payload.error === 'string') message = payload.error
-    if (
-      typeof payload.loginCommand === 'string'
-      && (payload.loginCommand.startsWith('glab auth login --hostname ')
-        || payload.loginCommand.startsWith('gh auth login --hostname '))
-    ) {
+    if (isHostScopedLoginCommand(payload.loginCommand)) {
       hostScoped = payload.loginCommand
+    }
+    // The gateway admits only a Bitbucket Server token name here; the same shape
+    // is checked again so nothing else is ever offered as a name to copy.
+    if (typeof payload.secretName === 'string' && SECRET_NAME_RE.test(payload.secretName)) {
+      secretName = payload.secretName
     }
     confirmationRequired = payload.confirmationRequired === true
     sourceBusy = payload.code === 'source_busy'
@@ -63,5 +85,5 @@ export function pullRequestErrorDetails(error: unknown): {
       : authenticationFailure && /(?:`|\b)glab auth login(?:`|\b)/i.test(message)
         ? 'glab auth login'
         : ''
-  return { message, loginCommand, confirmationRequired, sourceBusy }
+  return { message, loginCommand, confirmationRequired, sourceBusy, secretName }
 }

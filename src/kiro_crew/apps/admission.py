@@ -197,15 +197,58 @@ def verified_signer(manifest: "AppManifest | None") -> str:
     return str(getattr(manifest, "signer", "") or "")
 
 
+#: Admissions that load an app already installed, judged by its recorded version
+#: when the manifest names none.
+_ACTIVATION_ACTIONS = frozenset({"boot", "enable", "restart"})
+
+
+def app_version_refusal(
+    name: str, manifest: "AppManifest | None", version: str = "", action: str = ""
+) -> Optional[str]:
+    """Why the governance ``app_versions`` list refuses *name* at its manifest version.
+
+    *version* is the caller's own version for the app, used when *manifest* has
+    none (a registration that sends a version but no manifest). With neither, an
+    activation (*action* ``boot``, ``enable`` or ``restart``) uses the installed
+    record's version, so a registration whose manifest names no version is judged
+    by the version it was registered with. An install or update never falls back.
+
+    Asked as ``<app>@<version>`` by every admission (install, update, boot, restart,
+    enable), so a version the policy drops stops loading too. An unnamed scope
+    permits on oss; on enterprise it answers the baseline, which is off. Blocking.
+    """
+    from kiro_crew.extension_governance import app_version_denied
+
+    version = str(getattr(manifest, "version", "") or version or "")
+    if not version and action in _ACTIVATION_ACTIONS:
+        from kiro_crew.apps.manager import _read_installed
+
+        try:
+            record = _read_installed(name)
+        except Exception:  # noqa: BLE001 - an unreadable record leaves it unknown
+            record = None
+        version = str(getattr(record, "version", "") or "")
+    denied = app_version_denied(name, version)
+    return f"app {name!r} version {version!r} is not permitted: {denied}" if denied else None
+
+
 def app_admission_denied(
     name: str,
     manifest: "AppManifest | None" = None,
     action: str = "install",
+    *,
+    check_version: bool = True,
+    version: str = "",
 ) -> Optional[str]:
     """Decide whether *name* may be admitted. Returns a denial reason or None.
 
     Runs BEFORE the app's files are copied / its onInstall script runs, so a
     banned / non-allowlisted / unsigned app never lands on disk or executes.
+    Blocking (it reads the admission policy and the governance profile store):
+    an async caller offloads it. ``check_version=False`` skips
+    :func:`app_version_refusal`, for a caller on the loop that already asked it
+    off the loop. *version* is the caller's own version, used when *manifest* has
+    none.
     """
     policy = load_app_admission_policy()
     norm = _normalize_name(name)
@@ -214,6 +257,11 @@ def app_admission_denied(
     banned_norm = {_normalize_name(b) for b in policy.banned}
     if norm in banned_norm:
         return f"app {name!r} is banned (kill-switch)"
+
+    if check_version:
+        refusal = app_version_refusal(name, manifest, version, action)
+        if refusal:
+            return refusal
 
     # Whether the fleet has configured ANY active enforcement beyond the open
     # default. Only when NOTHING is configured do we take the open fast path.

@@ -29,6 +29,8 @@ from __future__ import annotations
 import pathlib
 import re
 
+import pytest
+
 from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN
 from kiro_crew.dashboard.chat_utils import (
     has_leaked_tool_call,
@@ -664,3 +666,67 @@ class TestTheBoundaryScanRunsBeforeTheReset:
             "the notice arm does not receive the boundary's recorded fact, so the "
             "card can never fire"
         )
+
+
+def _card_texts(record) -> list[str]:
+    """The notice cards a turn posted that describe a leaked tool call."""
+    return [
+        str(row.get("content", ""))
+        for row in record.window
+        if row.get("role") == "notice" and "tool call" in str(row.get("content", ""))
+    ]
+
+
+async def _leak_turn(*, calls_before: int) -> list[str]:
+    from turn_harness import TurnScript, run_turn
+
+    from kiro_crew.acp.types import (
+        EVENT_COMPLETE,
+        EVENT_TEXT_CHUNK,
+        EVENT_TOOL_CALL,
+        EVENT_TOOL_RESULT,
+        AcpEvent,
+    )
+
+    events: list = []
+    for i in range(calls_before):
+        events += [
+            AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id=f"t{i}", title="fs_read", tool_kind="read"),
+            AcpEvent(
+                kind=EVENT_TOOL_RESULT, tool_call_id=f"t{i}", tool_output="ok", tool_final=True
+            ),
+        ]
+    events += [
+        AcpEvent(kind=EVENT_TEXT_CHUNK, text=_LEAK),
+        AcpEvent(kind=EVENT_COMPLETE, stop_reason=_END),
+    ]
+    return _card_texts(await run_turn(TurnScript(events=events)))
+
+
+class TestTheCardsGiveRecoveryAdviceThatWorks:
+    """The two turn-end cards, read off a real dashboard turn.
+
+    A leaked call stays in the chat's own context, so on a re-send the model
+    tends to write the same plain-text call again. A card that promises a
+    re-send retries it sends the reader round the same loop; both cards must
+    instead say that nothing (or the last call) ran because the model wrote the
+    call as text, and point at a new chat or a compaction if it repeats.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_zero_call_card_says_nothing_ran_and_names_the_recovery(self):
+        (card,) = await _leak_turn(calls_before=0)
+        assert "as plain text" in card
+        assert "nothing was run" in card
+        assert "to retry" not in card
+        assert "start a new chat" in card and "compact" in card
+
+    @pytest.mark.asyncio
+    async def test_the_mixed_turn_card_says_earlier_calls_may_have_landed(self):
+        (card,) = await _leak_turn(calls_before=2)
+        assert "as plain text" in card
+        assert "the 2 call(s) before it were attempted" in card
+        assert "may already have taken effect" in card
+        assert "nothing was run" not in card
+        assert "to retry" not in card
+        assert "start a new chat" in card and "compact" in card

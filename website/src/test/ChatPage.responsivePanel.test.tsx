@@ -18,6 +18,7 @@ import { ThemeProvider } from '../hooks/useTheme'
 import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
 import { setSidePanelDock } from '../hooks/useSidePanelDock'
 import { switchSlot, toggleActivity } from '../store/chatSlice'
+import { paneCovered } from '../hooks/paneVisibility'
 
 // --- Stub child components (same scaffold as ChatPage.embedded test) ---
 vi.mock('react-virtuoso', () => ({ Virtuoso: () => null }))
@@ -73,7 +74,7 @@ vi.mock('../api/client', () => ({
      'chatSlotWorkspace', 'models', 'planFromChat', 'renameSlot',
      'resolveApproval', 'screenshot', 'slackChannels', 'slackLink', 'spawnList',
      'stopChatSlot', 'uploadFiles', 'voiceSynthesize', 'workspaces', 'chatSlots',
-     'notifications', 'status', 'generateTitle'].map(k => [k, vi.fn().mockResolvedValue(
+     'notifications', 'status', 'generateTitle', 'dashboardConfig'].map(k => [k, vi.fn().mockResolvedValue(
       k === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 } : {}
     )])
   ),
@@ -155,6 +156,7 @@ describe('ChatPage — pull request panel discovery', () => {
     act(() => { store.dispatch(toggleActivity()) })
     expect(store.getState().chat.activityOpen).toBe(true)
     expect(await screen.findByTestId('side-panel')).toBeInTheDocument()
+    expect(screen.queryByTestId('action-error')).toBeNull()
   })
 })
 
@@ -209,6 +211,7 @@ describe('ChatPage — activity slot self-healing', () => {
     // No slot div in the DOM -> inline fallback inside ChatPage's own tree.
     const inline = await screen.findByTestId('side-panel')
     expect(container.contains(inline)).toBe(true)
+    expect(screen.queryByTestId('action-error')).toBeNull()
 
     // The App shell (re)creates the slot — e.g. after a mobile -> desktop
     // crossing where ChatPage's lookup ran before the shell re-rendered.
@@ -220,6 +223,7 @@ describe('ChatPage — activity slot self-healing', () => {
     await waitFor(() => {
       const panel = screen.getByTestId('side-panel')
       expect(slot.contains(panel)).toBe(true)
+      expect(screen.queryByTestId('action-error')).toBeNull()
     })
   })
 
@@ -236,6 +240,7 @@ describe('ChatPage — activity slot self-healing', () => {
       expect(slot.contains(panel)).toBe(true)
       expect(panel.parentElement).toHaveClass('overflow-visible')
       expect(panel.parentElement).not.toHaveClass('overflow-hidden')
+      expect(screen.queryByTestId('action-error')).toBeNull()
     })
   })
 })
@@ -273,6 +278,22 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     expect(screen.getByRole('tooltip')).toHaveTextContent('Open activity panel')
   })
 
+  it('the toggle\'s tip does not come back stale after a click opens the panel and the panel closes again', async () => {
+    const { store } = renderWithSlot()
+    const btn = await screen.findByLabelText('Open activity panel')
+    fireEvent.mouseEnter(btn)
+    await screen.findByRole('tooltip')
+    // The click opens the panel, which takes the toggle away under the
+    // pointer: no mouseleave ever reaches it.
+    fireEvent.click(btn)
+    expect(store.getState().chat.activityOpen).toBe(true)
+    await waitFor(() => expect(screen.queryByLabelText('Open activity panel')).toBeNull())
+    // The side-panel chord closes it; the toggle returns with no tip up.
+    act(() => { window.dispatchEvent(new CustomEvent('toggle-activity-panel')) })
+    await screen.findByLabelText('Open activity panel')
+    expect(screen.queryByRole('tooltip')).toBeNull()
+  })
+
   it('stays live in the 768-880 band that used to disable it, and opens beside the chat', async () => {
     const { store } = renderWithSlot()
     await screen.findByLabelText('Open activity panel')
@@ -296,6 +317,9 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     renderWithSlot()
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
     expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '')
+    expect(screen.queryByTestId('action-error')).toBeNull()
+    // #23564: beside the chat, the transcript stays on screen.
+    expect(paneCovered(document)).toBe(false)
   })
 
   it('opens FILLING the chat column when the rail + sidebar leave too little', async () => {
@@ -303,6 +327,11 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     resizeTo(800) // 800 - 236 - 260 = 304 < 640
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
     expect(await screen.findByTestId('side-panel')).toHaveAttribute('data-fill-width', '320')
+    expect(screen.queryByTestId('action-error')).toBeNull()
+    // #23564: filling needs no mark. It squeezes the transcript to zero width,
+    // which the on-screen backstop sees (its matrix covers that box), and a
+    // bottom-docked panel leaves the transcript on screen.
+    expect(paneCovered(document)).toBe(false)
   })
 
   it('switches an already-open panel from beside to fill on resize, without remounting it', async () => {
@@ -310,10 +339,12 @@ describe('ChatPage — session-header activity toggle (relocated from the top ba
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
     const before = await screen.findByTestId('side-panel')
     expect(before).toHaveAttribute('data-fill-width', '')
+    expect(screen.queryByTestId('action-error')).toBeNull()
 
     resizeTo(800)
     const after = await screen.findByTestId('side-panel')
     expect(after).toHaveAttribute('data-fill-width', '320')
+    expect(screen.queryByTestId('action-error')).toBeNull()
     // Same DOM node: the mode change must not tear the panel down (live PTYs).
     expect(after).toBe(before)
   })
@@ -348,6 +379,10 @@ describe('ChatPage — activity toggle on mobile', () => {
     expect(store.getState().chat.activityOpen).toBe(true)
     // Mobile has no actbar grid column, so the panel renders inline.
     expect(await screen.findByTestId('side-panel')).toBeInTheDocument()
+    expect(screen.queryByTestId('action-error')).toBeNull()
+    // #23564: open, it is an opaque overlay over the whole content area, so
+    // the transcript under it does not count as on screen.
+    await waitFor(() => expect(paneCovered(document)).toBe(true))
   })
 
   it('does not disable the toggle at widths below the desktop space threshold', async () => {
@@ -399,7 +434,7 @@ describe('ChatPage — message scroller contains its scroll', () => {
  */
 describe('ChatPage — focus-mode caption reserve on the title row', () => {
   beforeEach(() => { setWindowWidth(1400); localStorage.clear(); setSidePanelDock('right') })
-  afterEach(() => { document.getElementById('activity-bar-slot')?.remove(); setSidePanelDock('right') })
+  afterEach(() => { document.getElementById('activity-bar-slot')?.remove(); act(() => { setSidePanelDock('right') }) })
 
   function renderWithSlot() {
     const store = createTestStore()
@@ -435,6 +470,7 @@ describe('ChatPage — focus-mode caption reserve on the title row', () => {
     renderWithSlot()
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
     await screen.findByTestId('side-panel')
+    expect(screen.queryByTestId('action-error')).toBeNull()
 
     // The panel is at the window's trailing edge now and carries the reserve on
     // its own strip; padding the title row too would indent it for nothing.
@@ -446,6 +482,7 @@ describe('ChatPage — focus-mode caption reserve on the title row', () => {
     renderWithSlot()
     fireEvent.click(await screen.findByLabelText('Open activity panel'))
     await screen.findByTestId('side-panel')
+    expect(screen.queryByTestId('action-error')).toBeNull()
 
     // Bottom-docked the panel sits under the chat, so the title row still owns
     // the corner even with the panel open.

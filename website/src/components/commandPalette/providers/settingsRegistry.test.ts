@@ -45,7 +45,7 @@ const AGENT_REGISTRY_FILE = path.resolve(
 const VALID_TABS = new Set([
   'overview', 'imports', 'chat', 'voice', 'display', 'browser', 'skills', 'computer-use',
   'instances', 'security', 'secrets', 'notifications', 'channels', 'developer', 'about',
-  'privacy', 'shortcuts', 'connections',
+  'privacy', 'shortcuts', 'connections', 'session-environments', 'agent',
 ])
 
 describe('settingsRegistry.gen.ts — anti-stale guard', () => {
@@ -151,7 +151,7 @@ describe('settings-registry.generated.json — bundled agent registry', () => {
   it('highlights by config key wherever the control exposes one', () => {
     // The `key:` form is a data-setting-key lookup and survives translation; the
     // id form resolves an English label against the DOM and cannot. Same rule
-    // test_tips.py enforces for the curated tips' anchors.
+    // test_tips_curated.py enforces for the curated tips' anchors.
     for (const entry of agentEntries()) {
       const highlight = decodeURIComponent(entry.route.split('highlight=')[1] ?? '')
       expect(highlight).toBe(entry.configKey ? `key:${entry.configKey}` : entry.id)

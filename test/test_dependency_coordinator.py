@@ -1023,10 +1023,10 @@ def test_a_wake_the_store_could_not_take_keeps_the_waiter_on_its_scope(
     def _down(task_id: str, **kw: object) -> int | None:
         raise TaskStoreUnavailable("the store could not be reached")
 
-    monkeypatch.setattr(store, "wake_wait", _down)
-    clock.advance(2.0)
-    assert coord.tick() == [], "an unwritten wake was reported as a wake"
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(store, "wake_wait", _down)
+        clock.advance(2.0)
+        assert coord.tick() == [], "an unwritten wake was reported as a wake"
 
     assert _events(store, "sa-1", EVENT_WAKE) == []
     kinds = [e.kind for e in store.events("sa-1")]
@@ -1082,10 +1082,10 @@ def test_a_wait_that_did_not_persist_is_not_reported_as_a_wait(
     def _down(*_a: object, **_kw: object) -> object:
         raise TaskStoreUnavailable("the store could not be reached")
 
-    monkeypatch.setattr(store, "enter_wait", _down)
-    monkeypatch.setattr(store, "transition", _down)
-    verdict = coord.report("sa-3", _signal(), generation=generation, from_state=model.RUNNING)
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(store, "enter_wait", _down)
+        mp.setattr(store, "transition", _down)
+        verdict = coord.report("sa-3", _signal(), generation=generation, from_state=model.RUNNING)
 
     assert verdict.outcome == "unpersisted"
     assert verdict.state == model.RUNNING, "the row is still where the caller reported from"
@@ -1163,15 +1163,15 @@ def test_the_schedule_lock_is_never_held_across_a_store_write(
 
         return _wrapper
 
-    for method in ("append_event", "enter_wait", "transition", "wake_wait", "finish"):
-        monkeypatch.setattr(store, method, _probing(method, getattr(store, method)))
+    with monkeypatch.context() as mp:
+        for method in ("append_event", "enter_wait", "transition", "wake_wait", "finish"):
+            mp.setattr(store, method, _probing(method, getattr(store, method)))
 
-    for tid, gen in gens.items():
-        coord.report(tid, _signal(), generation=gen)  # the wait writes
-    clock.advance(2.0)
-    assert coord.tick() == ["t0"]  # the wake write
-    coord.report("t0", _signal(), generation=store.get("t0").generation)  # type: ignore[union-attr]
-    monkeypatch.undo()
+        for tid, gen in gens.items():
+            coord.report(tid, _signal(), generation=gen)  # the wait writes
+        clock.advance(2.0)
+        assert coord.tick() == ["t0"]  # the wake write
+        coord.report("t0", _signal(), generation=store.get("t0").generation)  # type: ignore[union-attr]
 
     assert store.state_of("t1") == model.FAILED  # the give-up writes really ran
     assert {name for name, _free in seen} >= {"append_event", "enter_wait", "wake_wait", "finish"}

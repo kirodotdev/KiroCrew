@@ -9,6 +9,7 @@ re-exports every name here.
 
 from __future__ import annotations
 
+import string
 from dataclasses import dataclass
 
 from kiro_crew.acp.liveness_command import (
@@ -67,6 +68,11 @@ class ToolCallState:
 
     dispatch_ts: float = 0.0  # time.monotonic() at EVENT_TOOL_CALL
     is_shell: bool = False
+    # Sticky denial of process-cleanup authority for this call. Liveness may
+    # still track a likely child, but a shared runtime, a program-only match,
+    # or overlap with another shell call can never later become safe merely
+    # because an oracle generation was retired or a sibling exited.
+    shell_cleanup_disqualified: bool = False
     # ``boottime_now()`` at EVENT_TOOL_CALL — the SAME clock /proc dates process
     # start times against, so a child's start can be compared to its dispatch
     # without mixing clocks (see :func:`boottime_now`). Separate from
@@ -99,7 +105,9 @@ class ToolCallState:
     tool_name: str = ""
     # Trusted MCP server from the adapter identity channel, set only when the
     # tool_call frame's identity is provenance-verified
-    # (``AcpEvent.mcp_identity_trusted``); empty otherwise (fail-closed). Read by
+    # (``AcpEvent.mcp_identity_trusted``) or is KAS's half-identity for a
+    # ``kirocrew-core`` call (:meth:`identity_of`); empty otherwise
+    # (fail-closed). Read by
     # :meth:`is_trusted_wait`, and by the ``remote_flat`` scan, which reads only
     # the subtree of the server this names.
     mcp_server_name: str = ""
@@ -111,12 +119,93 @@ class ToolCallState:
     # detached consult never re-derives it from a different command string.
     interactive_risk: str = INTERACTIVE_NONE
 
+    @staticmethod
+    def identity_of(event: object) -> tuple[str, str]:
+        """``(mcp_server_name, tool_name)`` a state retains for a dispatch *event*.
+
+        A provenance-verified pair (``mcp_identity_trusted``) is kept as it is.
+        Otherwise the server is dropped, except for one shape: KAS names the
+        server on a ``tool_call`` frame (``_meta.kiro.serverName``) but stamps
+        no tool name there, so a Trust-mode call, which gets no permission
+        request, never carries the tool half. For the ``kirocrew-core`` server
+        alone, and only when the frame's server half names it, the tool half is
+        then read from what KAS itself wrote about the call it runs: the Tool
+        Search envelope's ``tool_id`` (``kirocrew-core::<tool>``, the id the
+        engine dispatches on) or the wire title KAS stamps as
+        ``@kirocrew-core/<tool>``. The display ``title`` is never read.
+        """
+        server = getattr(event, "mcp_server_name", "") or ""
+        tool = getattr(event, "tool_name", "") or ""
+        server = server if isinstance(server, str) else ""
+        tool = tool if isinstance(tool, str) else ""
+        if getattr(event, "mcp_identity_trusted", False) is True:
+            return server, tool
+        if tool or getattr(event, "is_shell", False) or server not in ("", CORE_MCP_SERVER):
+            return "", tool
+        named = ToolCallState._kas_core_tool_name(event, server_named=server == CORE_MCP_SERVER)
+        return (CORE_MCP_SERVER, named) if named else ("", "")
+
+    #: A bare MCP tool name as KAS spells it in a ``tool_id`` or a wire title.
+    _CORE_TOOL_NAME_CHARS = frozenset(string.ascii_letters + string.digits + "_-")
+    _CORE_TOOL_NAME_MAX = 128
+
+    @staticmethod
+    def _is_core_tool_name(name: str) -> bool:
+        """True when *name* is 1-128 characters, each a letter, digit, ``_`` or ``-``."""
+        return 1 <= len(name) <= ToolCallState._CORE_TOOL_NAME_MAX and all(
+            c in ToolCallState._CORE_TOOL_NAME_CHARS for c in name
+        )
+
+    #: Backend-authored prefix on a kiro-cli / KAS wire title.
+    _RUNNING_PREFIX = "Running: "
+
+    @staticmethod
+    def _kas_core_tool_name(event: object, *, server_named: bool) -> str:
+        """The ``kirocrew-core`` tool a KAS frame names, or "" (see
+        :meth:`ToolCallState.identity_of`).
+
+        The envelope is read only when it is exactly ``{tool_id, arguments}`` (plus
+        ``_meta``), the shape ``session_directive.event_input_digest`` unwraps; an
+        input naming a ``tool_id`` in any other shape names nothing. Both are
+        read only when the frame's own server half already says
+        ``kirocrew-core``, so neither the input nor a title alone names a core
+        tool.
+        """
+        if not server_named:
+            # The input is the model's; only the harness's own server half
+            # says the call went to kirocrew-core at all.
+            return ""
+        raw = getattr(event, "raw_tool_params", None)
+        if isinstance(raw, dict) and "tool_id" in raw:
+            # Any other input naming a ``tool_id`` is no envelope KAS writes, so it
+            # names nothing (``permission_requests._workspace_call_arguments``).
+            if set(raw) - {"_meta"} != {"tool_id", "arguments"} or not isinstance(
+                raw.get("arguments"), dict
+            ):
+                return ""
+            tool_id = raw.get("tool_id")
+            prefix = f"{CORE_MCP_SERVER}::"
+            if isinstance(tool_id, str) and tool_id.startswith(prefix):
+                name = tool_id[len(prefix) :]
+                return name if ToolCallState._is_core_tool_name(name) else ""
+            return ""
+        title = getattr(event, "wire_title", "")
+        if not isinstance(title, str):
+            return ""
+        if title.startswith(ToolCallState._RUNNING_PREFIX):
+            title = title[len(ToolCallState._RUNNING_PREFIX) :]
+        prefix = f"@{CORE_MCP_SERVER}/"
+        if not title.startswith(prefix):
+            return ""
+        name = title[len(prefix) :]
+        return name if ToolCallState._is_core_tool_name(name) else ""
+
     def is_trusted_wait(self) -> bool:
         """True when the adapter-authored identity names the kirocrew-core ``wait``.
 
         Keys on ``mcp_server_name`` + ``tool_name``, never on ``title``, which is
-        model-authored prose. ``mcp_server_name`` is set only from a
-        provenance-verified identity channel, so an unverified call fails closed.
+        model-authored prose. ``mcp_server_name`` is set only by
+        :meth:`identity_of`, so an unverified call fails closed.
         A server-qualified ``tool_name`` resolves to its last segment, the same
         normalization ``session_directive.match_tool`` applies to this field; the
         server itself is still authenticated by ``mcp_server_name`` alone.
@@ -160,53 +249,32 @@ class ToolCallState:
 class InFlightToolTracker:
     """The in-flight tool hand-off rule, shared by the two agent loops.
 
-    Both :class:`~kiro_crew.acp.session_handle.AcpSessionHandle` (the main
-    agent's watchdog) and ``SubagentInfo`` (the sub-agent reaper) have to answer
-    the same question — *which tool call is the one a stall verdict should be
-    read against right now* — and each would otherwise answer it with its own
-    copy of the rule. Two copies drift: one keyed the judged call to a single
-    slot that any result emptied, the other tracked calls by toolCallId. One
-    implementation keeps both honest.
+    :class:`~kiro_crew.acp.session_handle.AcpSessionHandle` (main-agent
+    watchdog) and ``SubagentInfo`` (sub-agent reaper) both need *which tool
+    call a stall verdict is read against*; one implementation keeps them from
+    drifting.
 
-    The rule, in one place:
+    * **dispatch** stores a call by id and makes it the judged call. A call with
+      no id is judged but not stored: storing it under ``""`` would let the next
+      id-less dispatch overwrite a live entry.
+    * **a terminal result** drops its call; if it was judged, the NEWEST
+      remaining dispatch (insertion order) becomes judged, else none. Progress
+      frames change nothing.
+    * **prompt start** clears everything.
 
-    * **dispatch** stores a call by its id and makes it the judged call. A call
-      with no id (a backend that omits one) still becomes the judged call but is
-      not stored — a terminal frame for it can only be matched by id, so storing
-      it under ``""`` would let the next id-less dispatch overwrite a live entry.
-    * **a terminal result** for a stored call drops it; when it was the judged
-      call, the judged call moves to the NEWEST remaining dispatch (insertion
-      order is dispatch order), or clears when none remain. A non-terminal
-      (progress) frame changes nothing — the call is still running.
-    * **prompt start** clears everything: a new turn judges nothing until it
-      dispatches.
+    Every operation returns whether the JUDGED call changed. When it does the
+    caller must retire its liveness oracle
+    (``AcpSessionHandle._retire_liveness_state`` / ``SubagentInfo``'s
+    ``_stall_oracle.fresh()`` + ``_stall_gen`` bump) so a walk against the old
+    command cannot write into the new one's baseline. The retirement stays with
+    each caller because that machinery differs.
 
-    Every operation returns whether the JUDGED call changed, because that is the
-    signal both callers act on: the liveness oracle's evidence baseline is keyed
-    to the judged command, so when the judged call changes the caller must retire
-    the oracle (``AcpSessionHandle._retire_liveness_state`` /
-    ``SubagentInfo``'s ``_stall_oracle.fresh()`` + ``_stall_gen`` bump) so a walk
-    still running against the previous command cannot write into the next one's
-    baseline. The retirement itself stays with each caller — one swaps a bound
-    oracle and releases a consult future, the other bumps a generation counter —
-    because that machinery is not shared; only the hand-off decision is.
-
-    The sub-agent uses this in its degenerate single-call shape: a native child's
-    tool call is judged on arrival (so a stall is attributed to the child's own
-    command) but its result frame never reaches the sub-agent's loop, so the
-    stored entry is simply overwritten by the next dispatch rather than popped by
-    a terminal — exactly what a single live slot does. Storing by id costs it
-    nothing (its runtime emits at most one in-flight call at a time) and keeps the
-    one rule honest for the main agent's genuinely-parallel calls.
-
-    ``acp.client`` keeps its own plain ``set`` of call ids for the tool-stall
-    timer and does NOT use this: that set only answers "is any call still open",
-    never "which call is judged", so this tracker would be apparatus it has no
-    buyer for.
-
-    The ``aux`` payload travels beside each :class:`ToolCallState` untouched: the
-    main agent carries the shell call's pre-dispatch interactive classification
-    there, and the sub-agent carries ``None``. The tracker never reads it.
+    The sub-agent's native child results never reach its loop, so its entry is
+    overwritten by the next dispatch, the same as a single live slot.
+    ``acp.client`` keeps its own ``set`` of call ids (it only asks "is any call
+    open") and does not use this. ``aux`` travels beside each
+    :class:`ToolCallState` unread (the main agent's pre-dispatch interactive
+    classification, or ``None``).
     """
 
     __slots__ = ("_calls", "_current_id", "_evicted_count", "_idless", "_max_calls")
@@ -298,14 +366,33 @@ class InFlightToolTracker:
         """
         return self._calls
 
+    @staticmethod
+    def _may_run_shell(state: object) -> bool:
+        """Whether *state* may be a shell call; one that cannot say counts as one."""
+        return getattr(state, "is_shell", True) is not False
+
     def dispatch(self, call_id: str, state: ToolCallState, aux: object = None) -> bool:
         """Record *state* under *call_id* and make it the judged call.
 
         A falsy *call_id* is judged but not stored (see the class docstring):
         it takes the id-less slot, which the next dispatch overwrites and which
-        never appears in ``active_calls``. Returns True — a dispatch always
+        never appears in ``active_calls``. Calls that overlap and may each run a
+        shell lose cleanup authority: the latch is set on every one of them that
+        carries ``shell_cleanup_disqualified``. Returns True — a dispatch always
         changes the judged call.
         """
+        if self._may_run_shell(state):
+            active_shells = [
+                existing
+                for existing_id, (existing, _aux) in self._calls.items()
+                if existing_id != (call_id or "") and self._may_run_shell(existing)
+            ]
+            if self._idless is not None and self._may_run_shell(self._idless[0]):
+                active_shells.append(self._idless[0])
+            if active_shells:
+                for shell in (state, *active_shells):
+                    if hasattr(shell, "shell_cleanup_disqualified"):
+                        shell.shell_cleanup_disqualified = True
         self._current_id = call_id or ""
         if call_id:
             self._idless = None

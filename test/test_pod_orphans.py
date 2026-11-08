@@ -11,7 +11,6 @@ import argparse
 import json
 import os
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -26,6 +25,7 @@ from kiro_crew import platform_compat
 from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
+from kiro_crew.testing.clock import ManualClock
 
 
 class TestOrphanHomes:
@@ -72,8 +72,9 @@ class TestOrphanHomes:
         handling; the HOME's mtime is the signal the report was missing."""
         c = self._plane(tmp_path, monkeypatch)
         monkeypatch.setattr(rt, "health", lambda cfg, name, port, timeout=3: 200)
-        # flake-ok: wall-clock backdate; the age floors to whole days -- moved verbatim
-        three_days = time.time() - 3 * 86400
+        clock = ManualClock()
+        clock.install(monkeypatch, pod_cli)
+        three_days = clock.time() - 3 * 86400
         os.utime(c.pod_root / "orphan", (three_days, three_days))
         pod_cli._ls(c, argparse.Namespace(json=False))
         assert "3d ago" in capsys.readouterr().out
@@ -124,8 +125,8 @@ class TestParseOlderThan:
         but overflows the float timestamp subtraction in _prune with an
         uncaught OverflowError; the largest accepted count must stay finite."""
         biggest = pod_cli._parse_older_than("999999999d")
-        # flake-ok: two wall-clock reads well inside approx's tolerance -- moved verbatim
-        assert time.time() - biggest == pytest.approx(time.time() - biggest)  # no OverflowError
+        now = ManualClock().time()
+        assert now - biggest == pytest.approx(now - biggest)  # no OverflowError
 
 
 class TestPrune:
@@ -177,9 +178,12 @@ class TestPrune:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         c = self._plane(tmp_path, monkeypatch, ("old", "young"))
-        # flake-ok: wall-clock backdate two days past the threshold -- moved verbatim
-        five_days = time.time() - 5 * 86400
+        clock = ManualClock()
+        clock.install(monkeypatch, pod_cli)
+        now = clock.time()
+        five_days = now - 5 * 86400
         os.utime(c.pod_root / "old", (five_days, five_days))
+        os.utime(c.pod_root / "young", (now, now))
         stopped: list[str] = []
         monkeypatch.setattr(rt, "stop_pod", lambda cc, n: stopped.append(n) or _cp())
         pod_cli._prune(c, self._ns(older_than="3d", prune_all=False))
@@ -484,9 +488,12 @@ class TestPrune:
         c = self._plane(tmp_path, monkeypatch, ("fresh-crash",))
         home = c.pod_root / "fresh-crash"
         (home / "logs").mkdir()
-        (home / "logs" / "gateway.log").write_text("boom")  # fresh mtime (now)
-        # flake-ok: wall-clock backdate two days past the threshold -- moved verbatim
-        five_days = time.time() - 5 * 86400
+        (home / "logs" / "gateway.log").write_text("boom")
+        clock = ManualClock()
+        clock.install(monkeypatch, pod_cli)
+        now = clock.time()
+        os.utime(home / "logs" / "gateway.log", (now, now))  # fresh mtime (now)
+        five_days = now - 5 * 86400
         os.utime(home / "logs", (five_days, five_days))
         os.utime(home, (five_days, five_days))
         monkeypatch.setattr(rt, "stop_pod", lambda cc, n: pytest.fail("reclaimed a fresh crash"))
@@ -540,7 +547,7 @@ class TestOrphanSymlinkSafety:
         monkeypatch.setattr(
             rt.shutil, "rmtree", lambda p, ignore_errors=False: seen.append(Path(p))
         )
-        # flake-ok: the retry loop's real 0.1 s pauses never reach an assert -- moved verbatim
+        monkeypatch.setattr(rt, "_HOME_RECLAIM_PAUSE_SECS", 0.0)
         rt.cleanup_home(c, "demo")
         # Asserted over EVERY call rather than as a one-element list. The reclaim
         # retries while the OS releases handles, and a faked rmtree never makes the
@@ -581,17 +588,11 @@ class TestOrphanSymlinkSafety:
 
 
 class TestOrphanJunctionSafety:
-    """The same threat as :class:`TestOrphanSymlinkSafety`, in the shape it takes on
-    Windows. A directory symlink there needs SeCreateSymbolicLinkPrivilege, so the
-    only link an unelevated same-user writer can plant under pod_root is a
-    JUNCTION -- which answers True to ``is_dir()`` and False to ``is_symlink()``.
-    Every ``is_symlink()`` guard in the orphan / reclaim path was therefore blind
-    to exactly the link that can occur. Each case runs twice: once
-    through the product's own ``symlink_or_junction`` helper (the real shape on the
-    Windows shards, a symlink elsewhere), once with the junction shape SIMULATED so
-    POSIX shards pin the guard as well -- the OS junction oracle
-    ``platform_compat._ISJUNCTION`` recognises one real directory while every
-    ``pathlib`` predicate keeps its true answer."""
+    """:class:`TestOrphanSymlinkSafety` for Windows junctions.
+
+    An unelevated writer can plant only a JUNCTION, which is ``is_dir()`` and not
+    ``is_symlink()``. Each case runs via ``symlink_or_junction`` and again with
+    ``platform_compat._ISJUNCTION`` simulating one, so POSIX shards pin the guard too."""
 
     @staticmethod
     def _plane(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PodConfig:

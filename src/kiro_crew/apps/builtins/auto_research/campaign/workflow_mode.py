@@ -132,7 +132,12 @@ async def _launch_workflow(request: web.Request, cid: str) -> None:
         return
     run_id = (res or {}).get("run_id")
     if run_id:
-        _write_workflow_run_id(cid, run_id)
+        # The write creates the campaign dir, and the action handler holds the
+        # transition lock here, so it settles before a cancellation can release
+        # the lock to a DELETE (see _settle_before_cancellation).
+        await lifecycle._settle_before_cancellation(
+            asyncio.create_task(asyncio.to_thread(_write_workflow_run_id, cid, run_id))
+        )
         lifecycle._audit("campaign_workflow_started", cid)
     else:
         logger.warning("auto_research: workflow start returned no run_id for %s: %s", cid, res)
@@ -149,7 +154,7 @@ async def _stop_workflow(request: web.Request, cid: str) -> None:
     """Cancel a campaign's Dynamic Workflow run (workflow mode). Best-effort."""
     state = request.app.get("state")
     svc = getattr(state, "workflow_service", None) if state is not None else None
-    run_id = _read_workflow_run_id(cid)
+    run_id = await asyncio.to_thread(_read_workflow_run_id, cid)
     if svc is not None and run_id:
         try:
             await svc.cancel(run_id)
@@ -180,7 +185,7 @@ async def _poll_workflow_campaign(
             return cleaned
 
         svc = getattr(state, "workflow_service", None) if state is not None else None
-        run_id = _read_workflow_run_id(campaign_id)
+        run_id = await asyncio.to_thread(_read_workflow_run_id, campaign_id)
         if svc is None or not run_id:
             return
         # svc.result() reads a file-backed snapshot (JSON on disk) — it does not
@@ -245,7 +250,7 @@ async def _poll_workflow_campaign(
                     meta = started.get(data.get("agent_id"), {})
                     if str(meta.get("label", "")).startswith("investigate") and data.get("ok"):
                         investigate.append((meta, data))
-            cycle_offset = _read_workflow_cycle_offset(campaign_id)
+            cycle_offset = await asyncio.to_thread(_read_workflow_cycle_offset, campaign_id)
             wrote = False
             # Each investigation maps to one cycle file (intentional: the UI shows
             # per-investigation progress, and total_cycles is a UI counter, not the

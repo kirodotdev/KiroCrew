@@ -6,8 +6,8 @@ redacted output. This module performs ZERO vault I/O — the caller resolves
 any literal secret values and passes them in via ``install_log_redaction``.
 
 Currently the only caller (``cli._setup_cli_logging``) passes an empty list,
-so the built-in patterns — Bearer tokens, AWS access key IDs, and standalone
-JWTs — are what is redacted in practice. Wiring resolved
+so the built-in patterns — Bearer tokens, AWS access key IDs, standalone JWTs
+and ``token`` URL parameter values — are what is redacted in practice. Wiring resolved
 vault secret values into the filter at gateway boot is a follow-up.
 
 Records are mutated only when redaction changes the rendered message — for
@@ -37,7 +37,8 @@ import logging
 import re
 from typing import Callable, Optional
 
-from kiro_crew.credential_patterns import AWS_KEY_ID_REDACTION, JWT_MULTI_SEGMENT
+from kiro_crew.credential_patterns import AWS_KEY_ID_REDACTION, JWT_MULTI_SEGMENT, TOKEN_PARAMETER
+from kiro_crew.jwt_header import is_jwt_header
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +64,35 @@ _AWS_KEY_ID_RE = re.compile(AWS_KEY_ID_REDACTION)
 # Standalone JWTs: the shared ``eyJ`` header plus 2-4 further dot-separated
 # base64url segments, covering 3-segment JWS AND 4-5-segment JWE (dir/ECDH-ES).
 # Catches tokens logged OUTSIDE a ``Bearer `` scheme -- JSON-embedded, bare, or
-# assignment-style. Same string object as the scrubber's JWS/JWE branch.
+# assignment-style. Same string object as the scrubber's JWS/JWE branch, and
+# shape-only like it, so ``_redact_jwts`` applies the scrubber's header check.
 _JWT_RE = re.compile(JWT_MULTI_SEGMENT)
+
+# ``?token=`` / ``&token=`` values: the scrubber's own spelling. Only the value is
+# replaced, so a redacted URL still reads as a token URL. None of the scrubber's
+# skips or exemptions apply here: over-masking a log line is the safe direction.
+_TOKEN_PARAM_RE = re.compile(TOKEN_PARAMETER)
+
+
+def _mask_token_value(m: re.Match[str]) -> str:
+    return m.group()[: m.start(1) - m.start()] + "[REDACTED]"
+
+
+def _redact_jwts(text: str) -> str:
+    """Replace each ``_JWT_RE`` hit whose header passes ``is_jwt_header``, as the scrubber does.
+
+    ``honeyJar.atlassian.net`` is left intact. A rejected hit is rescanned from one
+    character on, so a token glued after it (``honeyJar.<jws>``) still redacts.
+    """
+    parts: list[str] = []
+    last = pos = 0
+    while (m := _JWT_RE.search(text, pos)) is not None:
+        if not is_jwt_header(m.group().split(".", 1)[0]):
+            pos = m.start() + 1
+            continue
+        parts += (text[last : m.start()], "[REDACTED]")
+        last = pos = m.end()
+    return "".join(parts) + text[last:] if parts else text
 
 
 class SecretRedactionFilter:
@@ -92,7 +120,7 @@ class SecretRedactionFilter:
         )
 
     def redact(self, text: str) -> str:
-        """Replace secret values, Bearer tokens, AWS key IDs, and JWTs.
+        """Replace secret values, Bearer tokens, AWS key IDs, JWTs and ``token`` values.
 
         Zero I/O — only applies pre-compiled patterns.
         """
@@ -100,7 +128,8 @@ class SecretRedactionFilter:
             text = self._secret_pattern.sub("[REDACTED]", text)
         text = _BEARER_RE.sub("Bearer [REDACTED]", text)
         text = _AWS_KEY_ID_RE.sub("[REDACTED]", text)
-        text = _JWT_RE.sub("[REDACTED]", text)
+        text = _redact_jwts(text)
+        text = _TOKEN_PARAM_RE.sub(_mask_token_value, text)
         return text
 
 
@@ -205,7 +234,7 @@ def _redacting_factory(base: Callable[..., logging.LogRecord]) -> Callable[..., 
             rendered = record.getMessage()
         except Exception:
             # Render failure: args were never inspected, so "unchanged text ⇒
-            # secretless" does not hold on this branch. Fall back to the old
+            # secretless" does not hold on this branch. Fall back to
             # unconditional destruction — scan the bare template and drop args
             # wholesale. Fidelity is already lost (the record cannot format),
             # and CPython's Handler.handleError prints ``Arguments: %s`` to

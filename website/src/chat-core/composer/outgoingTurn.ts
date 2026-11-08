@@ -15,8 +15,9 @@
  *      marker N's path (send only). Absolute, so the reference survives a
  *      cwd/project mismatch and history replay; after the file pass, which is
  *      disjoint because a file token never ends in `/`;
- *   3. session references: a link per reference, appended to both texts (send
- *      only) -- deliberately a POINTER, never the referenced transcript, which
+ *   3. session references: a link per reference, appended to both texts (on
+ *      the text-only channel too, where the wire is the one text) --
+ *      deliberately a POINTER, never the referenced transcript, which
  *      would spend a large share of this session's context window in one turn
  *      and can trip autocompact. The agent follows the link through a read
  *      path that is bounded, redacted and incognito-refusing server-side. The
@@ -44,8 +45,10 @@
  * folder serialization (a marker with no `meta.dirs` to replay against would
  * truncate a spaced path, while the raw `@rel/` token stays correct under
  * replay -- serialize there only if that transport ever carries attachment
- * metadata), no session links or knowledge, and the bubble IS the wire text,
- * since nothing travels beside it to re-collapse a paste.
+ * metadata), no knowledge, and the bubble IS the wire text, since nothing
+ * travels beside it to re-collapse a paste. Session links DO ride the steer:
+ * a link is plain text, so it needs no metadata, and a steer refusal hands
+ * the whole wire text back, link included, so nothing is lost.
  *
  * Pure: no store, no side effect. The paste side-table write the bubble needs
  * on history load is returned as `storedPaste` for the host to perform.
@@ -54,6 +57,7 @@ import { prepareSendPayload, serializeDirTokens } from '../../utils/fileTokens'
 import { appendSessionRefLinks, type SessionRef } from '../../utils/sessionRefs'
 import { expandAll, pruneBlocks, type PasteBlock } from '../../utils/pasteTokens'
 import { expandKnowledgeBlock, type KnowledgeBlock } from '../../pages/chat/useKnowledgeFetch'
+import { knowledgeEnvelopeMark, type KnowledgeEnvelopeMark } from '../../utils/knowledgeEnvelope'
 import { prependQuote, type MessageQuote } from './messageQuote'
 
 export type OutgoingTurnMode = 'send' | 'steer'
@@ -66,7 +70,7 @@ export interface OutgoingTurnInput {
   files?: readonly string[]
   /** The blocks behind the text's `[ Paste #N ]` tokens. */
   pastes?: readonly PasteBlock[]
-  /** Staged session references (send only). */
+  /** Staged session references, appended as links in either mode. */
   sessionRefs?: readonly SessionRef[]
   /** A picked knowledge block (send only). */
   knowledge?: KnowledgeBlock | null
@@ -86,6 +90,9 @@ export interface KnowledgeMeta {
   tokens: number
   titles: string[]
   content: Array<{ title: string; text: string }>
+  /** The injected block's length and hash, so a bubble served back as wire
+   *  text can remove exactly that block (`stripKnowledgeEnvelope`). */
+  envelope: KnowledgeEnvelopeMark
 }
 
 /** The fields this module contributes to the message's `meta`, in wire order. */
@@ -138,6 +145,7 @@ export function knowledgeMeta(block: KnowledgeBlock): KnowledgeMeta {
     tokens: block.totalTokens,
     titles: block.items.map(i => i.title),
     content: block.items.map(i => ({ title: i.title, text: i.content.slice(0, 2000) })),
+    envelope: knowledgeEnvelopeMark(expandKnowledgeBlock(block)),
   }
 }
 
@@ -153,7 +161,7 @@ export function buildOutgoingTurn(input: OutgoingTurnInput, mode: OutgoingTurnMo
   const quote = input.quote ?? null
   const { txt, displayTxt, filePaths } = prepareSendPayload(input.text.trim(), [...(input.files ?? [])])
   const { llm: typedWire, dirPaths } = send && !input.keepFolderTokens ? serializeDirTokens(txt, input.project || '') : { llm: txt, dirPaths: [] }
-  const refs = send ? [...(input.sessionRefs ?? [])] : []
+  const refs = [...(input.sessionRefs ?? [])]
   const linked = appendSessionRefLinks(typedWire, refs)
   // On a send the bubble text is what the user sees, so it decides which
   // tokens are live; on the text-only channel the wire is the only text.

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -346,8 +347,9 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
             and not existing.abandoned
         ):
             audit("meetings.start", meeting_id, outcome="denied", error="another meeting is active")
-            # Include the blocking meeting's title and status so the client can
-            # name the blocker in the error toast and say whether it is under review.
+            # Include the blocking meeting's id, title and status so the client can
+            # name the blocker in the error notice, say whether it is under review,
+            # and offer an action that opens it.
             try:
                 blocking_meta = await asyncio.to_thread(
                     store.read_meeting_meta, existing.meeting_id, root
@@ -361,6 +363,7 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
                 {
                     "error": "another meeting is already active",
                     "code": "meeting_already_active",
+                    "blocking_meeting_id": existing.meeting_id,
                     "blocking_meeting_title": blocking_title,
                     "blocking_meeting_status": blocking_status,
                 },
@@ -859,11 +862,40 @@ async def handle_put_note(request: web.Request) -> web.Response:
             "content contains unpaired surrogate characters", code="content_not_unicode"
         )
 
-    note = await asyncio.to_thread(_save_note, meeting_id, content, root)
+    order = _note_save_order(body)
+    note = await asyncio.to_thread(_save_note, meeting_id, content, root, order)
     return web.json_response({"ok": True, **note})
 
 
-def _save_note(meeting_id: str, content: str, root: Any) -> dict[str, Any]:
+_NOTE_EDITOR_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+# JavaScript's largest exact integer: the client counts in a ``number``.
+_NOTE_SEQ_MAX = 2**53 - 1
+
+
+def _note_save_order(body: dict[str, Any]) -> store.NoteSaveOrder | None:
+    """The optional ``editor`` + ``seq`` pair that orders one editor's saves.
+
+    Both or neither. A body with neither is an unordered save (last-write-wins, as
+    before), so a client that predates the pair keeps working. A malformed pair is
+    refused rather than ignored: ignoring it would quietly turn the ordering off.
+    """
+    editor = body.get("editor")
+    seq = body.get("seq")
+    if editor is None and seq is None:
+        return None
+    if not isinstance(editor, str) or not _NOTE_EDITOR_RE.match(editor):
+        raise BadRequest("editor must be 1-64 letters, digits, '-' or '_'")
+    if isinstance(seq, bool) or not isinstance(seq, int) or not 0 < seq <= _NOTE_SEQ_MAX:
+        raise BadRequest("seq must be a positive integer")
+    return store.NoteSaveOrder(editor=editor, seq=seq)
+
+
+def _save_note(
+    meeting_id: str,
+    content: str,
+    root: Any,
+    order: store.NoteSaveOrder | None = None,
+) -> dict[str, Any]:
     """Validate the meeting exists, then persist the note. BLOCKING.
 
     Shares the metadata transaction with deletion, for the same reason ``_save_edit``
@@ -877,7 +909,9 @@ def _save_note(meeting_id: str, content: str, root: Any) -> dict[str, Any]:
     with store.meta_transaction():
         if store.read_meeting_meta(meeting_id, root) is None:
             raise BadRequest("meeting not found", status=404, code="meeting_not_found")
-        return store.write_note(meeting_id, content, root)
+        # Inside the same transaction: the order check and the write it allows are
+        # one step, so two saves from one editor cannot both pass the check first.
+        return store.write_note(meeting_id, content, root, order=order)
 
 
 def _save_note_image(meeting_id: str, filename: str, data: bytes, root: Any) -> bool:

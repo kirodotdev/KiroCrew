@@ -5,16 +5,24 @@ written before the notice exists turns a crash in between into an announcement n
 ever receives. The reconciler runs for real on a tmp_path home; its notifiers are
 recorders and ``_is_pid_alive`` says dead, so nothing is signalled or sent. No
 cleanup, sweep, prune or reap function is called.
+
+The gateway builds its manager with ``hold_orphan_notices``: the sweep ends each
+orphan's process at once and holds the notices until the dashboard has restored the
+tabs they go to. The last tests here pin that hold, its bound, and a cancelled hold.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from kiro_crew import subagent_persistence as sp
 from kiro_crew.subagent import SubagentManager
+from kiro_crew.subagent_manager import monitoring
+from kiro_crew.testing.wait import await_until, until_parked
 
 PARENT = "dashboard:chat-7"
 
@@ -166,3 +174,110 @@ async def test_a_notice_taken_without_a_tombstone_still_ends_tombstoned(monkeypa
     await first._reconcile_orphans()
     assert sp.read_tombstone("orp0008")["recovery_action"] == "result_available"
     assert await _next_boot(monkeypatch) == []
+
+
+class _HeldBoot:
+    """A gateway-built manager: notices held for the release, the gateway's two seams
+    recorded. ``tab_open`` is what the gateway's ``on_orphan_notify`` answers: False is
+    a dashboard that has not restored the parent's tab."""
+
+    def __init__(self, monkeypatch, *, tab_open: bool = True) -> None:
+        self.ended: list[str] = []
+        self.tab: list[str] = []
+        self.owner_dm: list[str] = []
+
+        async def _notify(parent_session, msg, meta=None, delivery=None):  # type: ignore[no-untyped-def]
+            if tab_open:
+                self.tab.append(parent_session)
+            return tab_open
+
+        async def _dm(msg):  # type: ignore[no-untyped-def]
+            self.owner_dm.append(msg)
+            return True
+
+        async def _end(agent_id, state, *, reason):  # type: ignore[no-untyped-def]
+            self.ended.append(agent_id)
+            return "killed"
+
+        self.manager = SubagentManager(
+            sessions=MagicMock(),
+            ctx_builder=MagicMock(),
+            on_done=AsyncMock(),
+            on_orphan_notify=_notify,
+            on_orphan_dm=_dm,
+            hold_orphan_notices=True,
+        )
+        monkeypatch.setattr(self.manager, "_end_orphan_process", _end)
+        monkeypatch.setattr(self.manager, "_is_pid_alive", lambda _pid: False)
+        monkeypatch.setattr("kiro_crew.subagent.sel", MagicMock())
+
+    async def parked_sweep(self) -> asyncio.Task[None]:
+        """Start the boot sweep and return it once it waits for the release.
+
+        Raced against the sweep itself, so a sweep that sends its notices without
+        waiting ends first and the caller's assertions name it, instead of the barrier
+        running to its lost-run bound.
+        """
+        sweep = asyncio.create_task(self.manager._reconcile_orphans())
+        parked = asyncio.create_task(until_parked(self.manager._orphan_notice_gate))
+        await asyncio.wait({sweep, parked}, return_when=asyncio.FIRST_COMPLETED)
+        if not parked.done():
+            parked.cancel()
+        return sweep
+
+
+def _running_orphan(agent_id: str) -> None:
+    """A finished run whose record still names its process."""
+    _finished_run(agent_id)
+    assert sp.update_state(agent_id, pid=4242)
+
+
+@pytest.mark.asyncio
+async def test_a_held_boot_ends_the_process_at_once_and_notifies_only_after_the_release(
+    monkeypatch,
+):
+    _running_orphan("orp0009")
+    boot = _HeldBoot(monkeypatch)
+    sweep = await boot.parked_sweep()
+    assert not sweep.done(), "the sweep sent its notices before the gateway released them"
+    assert boot.ended == ["orp0009"], "the orphan's process waited for the notice hold"
+    assert (boot.tab, boot.owner_dm) == ([], [])
+    assert sp.read_tombstone("orp0009") is None
+
+    boot.manager.release_orphan_notices()
+    boot.manager.release_orphan_notices()  # idempotent: the gateway's finally may repeat it
+    await await_until(sweep, what="the released sweep")
+
+    assert boot.tab == [PARENT]
+    assert boot.owner_dm == [], "a notice the restored tab took was also sent to the owner DM"
+    assert sp.read_tombstone("orp0009")["recovery_action"] == "delivered"
+
+
+@pytest.mark.asyncio
+async def test_a_hold_never_released_still_sends_the_owner_dm_digest(monkeypatch, caplog):
+    # The dashboard never came up: no release, and no tab to inject into.
+    _running_orphan("orp0010")
+    monkeypatch.setattr(monitoring, "_ORPHAN_NOTICE_HOLD_SECS", 0.01)
+    boot = _HeldBoot(monkeypatch, tab_open=False)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+        sweep = asyncio.create_task(boot.manager._reconcile_orphans())
+        await await_until(sweep, what="the sweep whose hold runs out")
+
+    assert any("with no release from the gateway" in r.getMessage() for r in caplog.records)
+    assert len(boot.owner_dm) == 1 and "orp0010" in boot.owner_dm[0]
+    assert sp.read_tombstone("orp0010")["recovery_action"] == "result_available"
+    assert await _next_boot(monkeypatch) == []
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_cancelled_in_the_hold_leaves_the_run_for_the_next_boot(monkeypatch):
+    # The gateway stopped during its own boot, while the notices were held.
+    _running_orphan("orp0011")
+    boot = _HeldBoot(monkeypatch)
+    sweep = await boot.parked_sweep()
+    assert not sweep.done(), "the sweep sent its notices before the gateway released them"
+    sweep.cancel()
+    await asyncio.gather(sweep, return_exceptions=True)
+
+    assert sp.read_tombstone("orp0011") is None
+    assert await _next_boot(monkeypatch) == [PARENT]

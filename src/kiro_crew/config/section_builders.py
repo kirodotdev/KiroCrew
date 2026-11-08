@@ -21,6 +21,9 @@ schema/validation.
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 # Computer-use ceilings come from the feature's constants module rather than
 # being re-spelled here (docs/system-specs/common/code-style.md: no hardcoded
 # values in business logic); its defaults are the ComputerUseConfig fields'.
@@ -42,6 +45,8 @@ from kiro_crew.config.fields import (
     _safe_int,
     _safe_list,
     _safe_nonnegative_int,
+    _safe_str,
+    field_default,
 )
 from kiro_crew.config.integration_sections import (
     ComputerUseConfig,
@@ -55,6 +60,7 @@ from kiro_crew.config.integration_sections import (
     _resolve_stub_servers,
 )
 from kiro_crew.config.memory_sections import (
+    HISTORY_IDLE_HOURS_MIN,
     STARTUP_RECALL_TIMEOUT_MAX_SECS,
     KnowledgeConfig,
     MemoryConfig,
@@ -62,8 +68,10 @@ from kiro_crew.config.memory_sections import (
     SkillsConfig,
     _coerce_embedding_provider,
     _read_auto_add_documents,
+    kind_routing_mode_from,
 )
 from kiro_crew.config.sections import (
+    CODE_CHANNEL_DEFAULT_MAX,
     DEDUP_EVERY_N_SWEEPS_MAX,
     EMBED_RATE_LIMIT_MAX,
     EXTRACTION_POOL_SIZE_MAX,
@@ -71,6 +79,7 @@ from kiro_crew.config.sections import (
     FOLDER_INGEST_CHUNK_BUDGET_MAX,
     IMPORT_CHUNK_BUDGET_MAX,
     SWEEP_CHUNK_BUDGET_MAX,
+    CodeChannelDefaultsConfig,
     DiscordConfig,
     FeishuConfig,
     IMessageConfig,
@@ -91,6 +100,7 @@ from kiro_crew.config.sections import (
     _coerce_whatsapp_groups,
     _parse_telegram_accounts,
     _threshold_pct,
+    _validate_allowed_users,
     _validate_telegram_activation,
     _validate_tracking_channels,
     _validated_stt_model,
@@ -101,11 +111,16 @@ from kiro_crew.config.service_sections import (
     CronHistoryConfig,
     MessagingConfig,
     MonitoringConfig,
+    PowerConfig,
     TaskRunnerConfig,
     WatchdogConfig,
+    WorkLedgerConfig,
+    normalize_on_battery,
 )
+from kiro_crew.effort import is_valid_effort
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT
+from kiro_crew.instances.crew_ref import clean_crew_ref
 
 # Runtime-budget policy and coercion live in the monitoring limits leaf module,
 # keeping the section builders free of duplicated bounds.
@@ -122,6 +137,9 @@ from kiro_crew.stt.limits import MIN_IDLE_EVICT_SECS as _STT_IDLE_EVICT_SECS_MIN
 from kiro_crew.stt.limits import MIN_PARTIAL_INTERVAL_MS as _STT_MIN_PARTIAL_INTERVAL_MS
 from kiro_crew.stt.limits import MIN_SILENCE_MS as _STT_MIN_SILENCE_MS
 from kiro_crew.stt.limits import MIN_TIMEOUT_SECS as _STT_MIN_TIMEOUT_SECS
+from kiro_crew.work_vocab import WORK_MAX_DEPTH_MAX, WORK_MAX_DEPTH_MIN
+
+logger = logging.getLogger("kiro_crew.config.loader")
 
 # ---------------------------------------------------------------------------
 # Service sections (DTOs in ``config.service_sections``).
@@ -173,6 +191,11 @@ def _build_monitoring_config(data: dict, prefer_structured_arming: bool) -> Moni
     )
 
 
+def _build_power_config(power_data: dict) -> PowerConfig:
+    section = SectionReader(PowerConfig, power_data)
+    return PowerConfig(on_battery=normalize_on_battery(section.get("on_battery")))
+
+
 def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
     section = SectionReader(WatchdogConfig, watchdog_data)
     return WatchdogConfig(
@@ -186,9 +209,80 @@ def _build_watchdog_config(watchdog_data: dict) -> WatchdogConfig:
     )
 
 
+def _positive_gb(data: dict, key: str) -> float:
+    """``work_ledger.<key>`` as a positive finite number, else the field default.
+
+    Named for the two estimates; the retire timeout (minutes) reads the same way.
+    """
+    default = float(field_default(WorkLedgerConfig, key))
+    value = _safe_float(data.get(key, default), default)
+    return value if value > 0 else default
+
+
+def _build_work_ledger_config(work_ledger_data: dict) -> WorkLedgerConfig:
+    return WorkLedgerConfig(
+        max_depth=_work_ledger_max_depth(work_ledger_data),
+        remote_dispatch=_safe_bool(work_ledger_data.get("remote_dispatch"), False),
+        remote_dispatch_memory_gb=_positive_gb(work_ledger_data, "remote_dispatch_memory_gb"),
+        remote_dispatch_disk_gb=_positive_gb(work_ledger_data, "remote_dispatch_disk_gb"),
+        remote_dispatch_retire_minutes=_positive_gb(
+            work_ledger_data, "remote_dispatch_retire_minutes"
+        ),
+    )
+
+
+def _work_ledger_max_depth(work_ledger_data: dict) -> int:
+    default = field_default(WorkLedgerConfig, "max_depth")
+    if "max_depth" not in work_ledger_data:
+        return default
+    raw = work_ledger_data["max_depth"]
+    depth = _safe_int(raw, -1)  # -1 is below the floor, so an unreadable value is refused
+    # Refused, not clamped: a clamped cap would read as configured while allowing a
+    # different number of levels. The default applies and the log says why.
+    if isinstance(raw, bool) or not (WORK_MAX_DEPTH_MIN <= depth <= WORK_MAX_DEPTH_MAX):
+        logger.warning(
+            "Config: work_ledger.max_depth %r is not an integer from %d to %d; using %d",
+            raw,
+            WORK_MAX_DEPTH_MIN,
+            WORK_MAX_DEPTH_MAX,
+            default,
+        )
+        return default
+    return depth
+
+
 # ---------------------------------------------------------------------------
 # Memory sections (DTOs in ``config.memory_sections``).
 # ---------------------------------------------------------------------------
+
+
+def _history_idle_hours(section: SectionReader) -> float:
+    """``memory.history_idle_hours`` as a finite number of hours, never below the floor.
+
+    Consumers multiply it by 3600, so a stored string repeats and ``None`` raises.
+    A number read from an older file (``"3"`` included) is kept; one that is not a
+    positive finite number takes the default, and a positive one below
+    ``HISTORY_IDLE_HOURS_MIN`` is raised to it. Either change is logged.
+    """
+    raw = section.get("history_idle_hours")
+    default = float(section.default("history_idle_hours"))
+    hours = _safe_float(raw, -1.0)  # -1 is below zero, so an unreadable value is refused
+    if hours <= 0:
+        logger.warning(
+            "Config: memory.history_idle_hours %r is not a positive number; using %s",
+            raw,
+            default,
+        )
+        return default
+    if hours < HISTORY_IDLE_HOURS_MIN:
+        logger.warning(
+            "Config: memory.history_idle_hours %r is below %s; using %s",
+            raw,
+            HISTORY_IDLE_HOURS_MIN,
+            HISTORY_IDLE_HOURS_MIN,
+        )
+        return HISTORY_IDLE_HOURS_MIN
+    return hours
 
 
 def _build_memory_config(memory_data: dict) -> MemoryConfig:
@@ -196,6 +290,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
     return MemoryConfig(
         embedding_provider=_coerce_embedding_provider(section.get("embedding_provider")),
         embedding_dim=section.get("embedding_dim"),
+        ollama_url=section.read("ollama_url", _safe_str),
+        ollama_model=section.read("ollama_model", _safe_str),
+        ollama_allow_remote=section.read("ollama_allow_remote", _safe_bool),
         embedding_threads=section.read("embedding_threads", _safe_int, 1, 256),
         # 0 is the documented "inherit embedding_threads" sentinel, so the
         # floor is 0 rather than 1 — clamping it to 1 would erase a
@@ -205,6 +302,15 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         # 0 is the documented "never unload" sentinel, so the floor is 0.
         embedding_idle_evict_secs=section.read(
             "embedding_idle_evict_secs", _safe_int, 0, 365 * 24 * 3600
+        ),
+        embedding_weight_repack=section.read("embedding_weight_repack", _safe_bool),
+        embedding_child_process=section.read("embedding_child_process", _safe_bool),
+        consolidation_write_child_process=section.read(
+            "consolidation_write_child_process", _safe_bool
+        ),
+        recall_pool_processes=section.read("recall_pool_processes", _safe_int, 0, 8),
+        recall_pool_worker_max_mb=section.read(
+            "recall_pool_worker_max_mb", _safe_int, 256, 1024 * 1024
         ),
         embed_model_url=section.get("embed_model_url"),
         embed_model_path=section.get("embed_model_path"),
@@ -229,13 +335,16 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
             else section.default("decay_rates")
         ),
         semantic_keys=section.get("semantic_keys"),
-        history_idle_hours=section.get("history_idle_hours"),
+        session_affinity=section.read("session_affinity", _safe_float, lo=0.0, hi=0.10),
+        recency_boost=section.read("recency_boost", _safe_float, lo=0.0, hi=1.0),
+        history_idle_hours=_history_idle_hours(section),
         history_max_days=section.read("history_max_days", _safe_nonnegative_int),
         backup_enabled=section.read("backup_enabled", _safe_bool),
         backup_keep=section.read("backup_keep", _safe_int, 1, None),
         persistence_enabled=section.read("persistence_enabled", _safe_bool),
         writes_enabled=section.read("writes_enabled", _safe_bool),
         lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
+        kind_routing=kind_routing_mode_from(section.get("kind_routing")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
@@ -360,6 +469,13 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
     )
 
 
+def _name_list(value: Any) -> list[str]:
+    """The non-blank strings of *value* when it is a list, stripped; else ``[]``."""
+    if not isinstance(value, list):
+        return []
+    return [s.strip() for s in value if isinstance(s, str) and s.strip()]
+
+
 def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
     section = SectionReader(McpGatewayConfig, mcp_gateway_data)
     _spawn_min = max(1, section.read("spawn_concurrency_min", _safe_int))
@@ -434,6 +550,9 @@ def _build_mcp_gateway_config(mcp_gateway_data: dict) -> McpGatewayConfig:
             s.strip() for s in section.get("pool_identity_env") if isinstance(s, str) and s.strip()
         ],
         prewarm_count=max(0, section.read("prewarm_count", _safe_int)),
+        # Server names: only a list of non-blank strings counts, so a stray
+        # string or object keeps nothing alive.
+        keep_alive_servers=_name_list(section.get("keep_alive_servers")),
         read_buffer_limit_bytes=max(
             1024,
             section.read("read_buffer_limit_bytes", _safe_int),
@@ -451,7 +570,9 @@ def _build_instances_config(
     section = SectionReader(InstancesConfig, instances_data)
     return InstancesConfig(
         enabled=bool(section.get("enabled")),
+        crew_reads_enabled=bool(section.get("crew_reads_enabled")),
         warm_set_cap=section.read("warm_set_cap", _safe_int),
+        default_destination=clean_crew_ref(section.get("default_destination")),
         tunnel_base_port=section.read("tunnel_base_port", _safe_int),
         ssh_compression=bool(section.get("ssh_compression")),
         connect_timeout_secs=(
@@ -476,7 +597,47 @@ def _build_tunnel_config(tunnel_data: dict) -> TunnelConfig:
         enabled=bool(section.get("enabled")),
         name_mode=str(section.get("name_mode")),
         name_override=str(section.get("name_override")),
+        # Only the JSON boolean ``true`` opens the relay path: a string or a number
+        # left by a hand edit keeps it off rather than reading as truthy.
+        relay_enabled=section.get("relay_enabled") is True,
+        relay_lease_url=str(section.get("relay_lease_url") or ""),
+        relay_lease_credential=str(section.get("relay_lease_credential") or ""),
+        relay_lease_token_type=str(section.get("relay_lease_token_type") or ""),
+        # Only the JSON boolean ``true`` turns the viewer on, as for relay_enabled.
+        relay_viewer_enabled=section.get("relay_viewer_enabled") is True,
+        **_relay_viewer_targets(section),
     )
+
+
+def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
+    """The viewer's control plane URL and credential reference, or "" for a bad one.
+
+    The URL carries the person's sign-in, so it is held to the lease URL's rule:
+    https://, or http:// only for a loopback port-forward. The credential setting
+    names where a credential is and never holds one, so a value that is not
+    secret://NAME or an absolute path is dropped, and the warning does not repeat
+    it. Imported here, not at module load, so config load pulls in no relay
+    client code while both are empty.
+    """
+    url = str(section.get("relay_viewer_cps_url") or "").strip()
+    ref = str(section.get("relay_viewer_credential") or "").strip()
+    if url or ref:
+        from kiro_crew.relay_client.lease import credential_reference_problem, lease_url_problem
+
+        problem = lease_url_problem(url) if url else None
+        if problem is not None:
+            logger.warning(
+                "tunnel.relay_viewer_cps_url ignored: %s",
+                problem.replace("lease service", "control plane"),
+            )
+            url = ""
+        if ref and credential_reference_problem(ref) is not None:
+            logger.warning(
+                "tunnel.relay_viewer_credential ignored: it must be secret://NAME or the "
+                "absolute path of a file holding the credential, never the credential itself"
+            )
+            ref = ""
+    return {"relay_viewer_cps_url": url, "relay_viewer_credential": ref}
 
 
 def _build_publish_config(_dests_raw: list, publish_data: dict) -> PublishConfig:
@@ -543,9 +704,7 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
     section = SectionReader(SlackConfig, slack_data)
     return SlackConfig(
         session_folder=_coerce_session_folder(section.get("session_folder")),
-        allowed_users=[
-            u for u in section.get("allowed_users") if isinstance(u, dict) and u.get("slack_id")
-        ],
+        allowed_users=_validate_allowed_users(section.get("allowed_users")),
         tracking_channels=_validate_tracking_channels(section.get("tracking_channels")),
         open_channels=[c for c in section.get("open_channels") if isinstance(c, str)],
         command=section.get("command"),
@@ -579,6 +738,43 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         # Default False: a missing or unparseable value must mean "open no
         # thread", never the reverse.
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
+        # Default False for both: an unparseable value must never declare the app
+        # an agent or open code channels.
+        agent_sessions=section.read("agent_sessions", _safe_bool),
+        code_channels=section.read("code_channels", _safe_bool),
+        code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
+    )
+
+
+def _code_channel_default_str(raw: object) -> str | None:
+    """A stored default as a trimmed string, or ``None`` for unset/invalid.
+
+    ``None`` is the one "no default" spelling: an empty string, a non-string and
+    an over-long value all read as unset rather than as a value that would then
+    fail every lookup downstream.
+    """
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value or len(value) > CODE_CHANNEL_DEFAULT_MAX:
+        return None
+    return value
+
+
+def _build_code_channel_defaults(raw: object) -> CodeChannelDefaultsConfig:
+    """``slack.code_channel_defaults`` with every field normalized.
+
+    A non-object reads as all-unset. An effort outside the shared level ladder is
+    dropped (``None``) rather than kept: the session layer would refuse it anyway,
+    and keeping it would make the settings page show a level nothing applies.
+    """
+    data = _safe_dict(raw)
+    effort = _code_channel_default_str(data.get("reasoning_effort"))
+    return CodeChannelDefaultsConfig(
+        folder=_code_channel_default_str(data.get("folder")),
+        agent=_code_channel_default_str(data.get("agent")),
+        model=_code_channel_default_str(data.get("model")),
+        reasoning_effort=effort if is_valid_effort(effort) else None,
     )
 
 
@@ -597,6 +793,7 @@ def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
             str(section.get("forum_activation") or section.default("forum_activation"))
         ),
         allowed_forum_chat_ids=_coerce_int_ids(section.get("allowed_forum_chat_ids")),
+        max_text_inject_kb=section.read("max_text_inject_kb", _safe_int, 1),
         # The parser reads raw JSON entries, so it is handed only a stored value;
         # an omitted key is the field default as built.
         accounts=(
@@ -633,6 +830,8 @@ def _build_whatsapp_config(whatsapp_data: dict) -> WhatsAppConfig:
         db_path=str(section.get("db_path")),
         soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
         hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+        # _safe_bool, not bool(): a hand-edited "false" must not turn on a billed service.
+        auto_reply_to_voice=section.read("auto_reply_to_voice", _safe_bool),
     )
 
 
@@ -809,6 +1008,7 @@ def _build_stt_config(stt_data: dict) -> SttConfig:
         threads=_sections._validated_stt_threads(section.get("threads")),
         endpointing=section.read("endpointing", _safe_bool),
         submit_on_release=section.read("submit_on_release", _safe_bool),
+        slide_to_send=section.read("slide_to_send", _safe_bool),
         dictation_panel=section.read("dictation_panel", _safe_bool),
         timeout_secs=section.read(
             "timeout_secs", _safe_int, lo=_STT_MIN_TIMEOUT_SECS, hi=_STT_MAX_TIMEOUT_SECS

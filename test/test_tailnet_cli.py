@@ -332,6 +332,45 @@ class TestPortResolution:
         assert "refusing to publish" in err
         assert "--port" in err, "must tell the operator how to proceed"
 
+    def test_every_command_the_refusal_names_is_a_real_command(
+        self, cfg_file, monkeypatch, capsys, tmp_path
+    ) -> None:
+        """The way out the refusal offers must be one the operator can type.
+
+        It once said to start the dashboard with ``kirocrew dashboard``, which is not
+        a command: the operator who followed it got argparse's ``invalid choice``
+        instead of a running gateway. Each ``kirocrew <command>`` it names is parsed
+        by the real CLI here, so a renamed or invented command fails this test.
+        """
+        import re
+        import sys
+
+        from kiro_crew import cli_commands
+        from kiro_crew.cli import main
+        from kiro_crew.cli_commands import _tailnet
+
+        monkeypatch.delenv("KIROCREW_PORT", raising=False)
+        monkeypatch.setattr(cli_commands, "_marker_port", lambda: None)
+        _stub_serve(monkeypatch, marker=KEEP)
+        with pytest.raises(SystemExit):
+            _tailnet(_args("up"))
+        err = capsys.readouterr().err
+
+        named = re.findall(r"`kirocrew ([a-z][a-z-]*)", err)
+        assert "gateway" in named, f"must name the command that serves the dashboard: {err!r}"
+
+        # ``main()`` auto-detects and exports a project dir unless one is pinned.
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        for command in sorted(set(named)):
+            monkeypatch.setattr(sys, "argv", ["kirocrew", command, "--help"])
+            with pytest.raises(SystemExit) as exc:
+                main()
+            captured = capsys.readouterr()
+            assert exc.value.code == 0, (
+                f"the refusal names `kirocrew {command}`, which the CLI rejects: "
+                f"{captured.err!r}"
+            )
+
 
 class TestCorruptConfigIsNeverReplaced:
     """A malformed config.json must abort the write, not get replaced by defaults.

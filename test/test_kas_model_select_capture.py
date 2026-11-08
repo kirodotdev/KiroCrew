@@ -100,14 +100,21 @@ def test_select_never_becomes_the_advertised_list() -> None:
 
 def test_concrete_default_is_never_judged_against_the_select() -> None:
     handle = _stored(_make_handle(), _kas_session_new(["claude-sonnet-4.5"], "other-model"))
+    assert handle._kas_auto_fallback == ""
+    # No switch was made: the session still runs whatever the backend chose,
+    # and that choice is what it reports serving.
+    assert handle._resolved_model_id == "other-model"
     handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 def test_kiro_ignores_the_raw_select() -> None:
     handle = _make_handle(ACP_BACKEND_KIRO)
     handle.store_session_config(_kas_session_new(["claude-sonnet-4.5"], "auto"))
+    assert handle.available_models == []
+    resolved_before = handle._resolved_model_id
     handle._runtime.send_request.reset_mock()  # type: ignore[attr-defined]
     asyncio.run(handle.ensure_served_default())
+    assert handle._resolved_model_id == resolved_before
     handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
     handle._runtime.send_request.assert_not_awaited()  # type: ignore[attr-defined]
 
@@ -128,8 +135,13 @@ def test_refused_switch_does_not_fail_the_session_start() -> None:
         side_effect=AcpError("refused")
     )
     handle.store_session_config(_kas_session_new(["claude-sonnet-4.5"], "auto"))
+    intent = handle._model
     asyncio.run(handle.ensure_served_default())  # must not raise
     handle.set_config_option.assert_awaited_once()  # type: ignore[attr-defined]
+    # The refused switch leaves the session on its backend default and its intent intact.
+    assert handle._resolved_model_id == "auto"
+    assert handle.model_pin_refused == ""
+    assert handle._model == intent
 
 
 def test_auto_listed_late_in_a_long_select_is_still_seen() -> None:
@@ -145,3 +157,55 @@ def test_non_string_select_ids_are_skipped() -> None:
     handle = _make_handle()
     handle.store_session_config(resp)
     assert handle._kas_auto_fallback == "ok"
+
+
+# ── A KAS turn is recorded with the model it ran on ──
+
+
+def test_new_kas_session_on_auto_serves_auto() -> None:
+    from kiro_crew.dashboard.handlers.usage import _resolve_model, read_turn_model
+
+    handle = _stored(_make_handle(), _kas_session_new(["auto", "claude-sonnet-4.5"], "auto"))
+    assert handle.served_model == "auto"
+    assert read_turn_model(handle) == "auto"
+    # The caller-supplied blank model is what a default chat turn passes.
+    assert _resolve_model("", handle) == "auto"
+
+
+def test_kas_session_on_a_concrete_model_records_that_model() -> None:
+    from kiro_crew.dashboard.handlers.usage import _resolve_model
+
+    handle = _stored(_make_handle(), _kas_session_new(["claude-sonnet-4.5"], "claude-sonnet-4.5"))
+    assert handle.served_model == "claude-sonnet-4.5"
+    assert _resolve_model("", handle) == "claude-sonnet-4.5"
+
+
+def test_recorded_kas_session_reports_its_current_model() -> None:
+    resp = _recorded_session_new()
+    select = model_select_envelope(resp) or {}
+    current = select.get("currentModelId")
+    assert isinstance(current, str) and current
+    handle = _stored(_make_handle(), resp)
+    assert handle.served_model == current
+
+
+def test_unlisted_auto_records_the_model_it_switched_to() -> None:
+    handle = _stored(_make_handle(), _kas_session_new(["claude-sonnet-4.5", "x"], "auto"))
+    assert handle.served_model == "claude-sonnet-4.5"
+
+
+def test_kas_models_block_still_wins_over_the_select() -> None:
+    resp = _kas_session_new(["claude-sonnet-4.5"], "auto")
+    resp["models"] = {
+        "currentModelId": "claude-opus-4.5",
+        "availableModels": [{"modelId": "claude-opus-4.5", "name": "Opus"}],
+    }
+    handle = _make_handle()
+    handle.store_session_config(resp)
+    assert handle.served_model == "claude-opus-4.5"
+
+
+def test_kiro_does_not_adopt_the_raw_select_as_served() -> None:
+    handle = _make_handle(ACP_BACKEND_KIRO)
+    handle.store_session_config(_kas_session_new(["claude-sonnet-4.5"], "claude-sonnet-4.5"))
+    assert handle.served_model == ""

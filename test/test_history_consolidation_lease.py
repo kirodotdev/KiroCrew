@@ -1,22 +1,15 @@
 """Cross-process exclusion for history consolidation.
 
-``HistoryConsolidator._running`` is an in-memory set, so it excludes a second
-pass inside one process and says nothing about another one. ``kirocrew
-consolidate`` IS another process, and it runs against the same transcripts while
-the gateway's 60s idle sweep is live. Both would snapshot the same span, both
-would spend a provider turn on it, and both would write the history entry,
-preferences and lessons that turn produced. Nothing detects it afterwards: the
-marker write is idempotent, so the damage is the duplicate spend and the doubled
-memory, not a corrupted offset.
-
-These tests pin the durable lease that closes it — who may take it, when a dead
-holder's claim stops counting, and that a refused pass leaves every piece of
-"this span has been processed" bookkeeping untouched.
+``HistoryConsolidator._running`` is per process, and ``kirocrew consolidate`` runs
+beside the gateway's idle sweep, doubling spend and memory. Pins who may take the
+durable lease, when a dead holder's claim lapses, and that a refused pass leaves the
+"processed" bookkeeping untouched.
 """
 
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import threading
 import time
@@ -80,6 +73,71 @@ def _live_lease(token: str = "someone-else", at: float | None = None) -> dict:
     if start:
         record[_LEASE_START] = start
     return record
+
+
+def test_a_held_transcript_still_grants_the_lease(tmp_path, monkeypatch):
+    """A Windows reader holding the transcript must not defeat the lease claim.
+
+    The claim's rename (``_update_metadata_locked`` -> ``atomic_write``) fails with
+    WinError 5 while a reader holds the file; an elapsed-time budget outlasts a reader
+    that a count-based retry would not.
+
+    ``os.replace`` faults 11 times (past the 10-attempt count) then succeeds, inside the
+    3 s budget, on a fake clock under the Windows simulator.
+    """
+    from windows_sim import replace_sharing_violation
+
+    from kiro_crew import atomic_write as aw
+    from kiro_crew import platform_compat
+    from kiro_crew.testing.clock import ManualClock
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+
+    # A manual clock on atomic_write's OWN time binding, so the backoff advances
+    # the virtual instant with no wall-clock wait and the rest of the worker
+    # keeps real time.
+    ManualClock(monotonic_start=0.0).install(monkeypatch, aw)
+
+    log = _seed_log(tmp_path)
+    c = _make_consolidator(log)
+
+    # 11 faults beats the count arm's 10 attempts; the metadata rewrite the lease
+    # claim makes carries the 3 s budget, so the rename lands and the lease holds.
+    with replace_sharing_violation(match=".jsonl", times=11) as sim:
+        token = c._acquire_consolidation_lease(KEY)
+
+    assert token, "the lease was refused despite a reader that closes within the budget"
+    assert sim["n"] >= 11  # the count arm would have stopped at 10
+    assert log.get_metadata(KEY)[_LEASE_TOKEN] == token
+
+
+def test_a_held_transcript_refuses_the_lease_without_the_budget(tmp_path, monkeypatch):
+    """The non-vacuity twin: the SAME faults with the count arm refuse the lease.
+
+    Proves the test above exercises the budget and not some unrelated recovery:
+    forcing the metadata rewrite through the count-based retry (no budget) against
+    the same 11 faults leaves the rename failing and ``_acquire_consolidation_lease``
+    returning ``None``.
+    """
+    from windows_sim import replace_sharing_violation
+
+    from kiro_crew import atomic_write as aw
+    from kiro_crew import history_projection, platform_compat
+
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+    # Drop the budget at the call site the lease claim takes (the durable=False
+    # metadata rewrite), forcing the count-based arm. The name is read from this
+    # module's namespace, so patch it here rather than on atomic_write.
+    monkeypatch.setattr(history_projection, "TRANSCRIPT_REPLACE_BUDGET_SECONDS", None)
+
+    log = _seed_log(tmp_path)
+    c = _make_consolidator(log)
+
+    with replace_sharing_violation(match=".jsonl", times=11):
+        token = c._acquire_consolidation_lease(KEY)
+
+    assert token is None, "the count arm should still give up under a held reader"
 
 
 class TestWhoStillHoldsALease:
@@ -191,7 +249,7 @@ class TestTheHeartbeatKeepsALiveHolder:
 
     @pytest.mark.asyncio
     async def test_the_heartbeat_stops_once_the_lease_is_someone_elses(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, caplog
     ) -> None:
         """A lost lease stops renewal rather than spinning."""
         monkeypatch.setattr(
@@ -200,8 +258,14 @@ class TestTheHeartbeatKeepsALiveHolder:
         log = _seed_log(tmp_path)
         c = _make_consolidator(log)
 
-        with patch.object(c, "_renew_consolidation_lease", return_value=False):
+        with (
+            patch.object(c, "_renew_consolidation_lease", return_value=False),
+            caplog.at_level(logging.WARNING, logger="kiro_crew.history"),
+        ):
             await asyncio.wait_for(c._heartbeat_consolidation_lease(KEY, "gone"), timeout=30)
+
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.history"]
+        assert f"Consolidation lease lost for {KEY}; aborting pass" in messages
 
     @pytest.mark.asyncio
     async def test_a_pass_renews_while_the_provider_turn_is_in_flight(
@@ -804,11 +868,9 @@ def test_the_lease_fence_reads_the_line_not_the_cache(tmp_path, write):
 async def test_empty_result_after_takeover_charges_nothing(tmp_path, prior_failures):
     """A stale holder's failed turn is not charged against the new holder's span.
 
-    With four failures already recorded, a fifth charge written before the
-    ownership check would put the span at the cap while the fenced abandon
-    marker is refused — and ``retry_eligible`` would then reject the new
-    holder's span even after its backoff expired. The charge is fenced with the
-    marker under one lock hold, so nothing is recorded at all.
+    A fifth charge before the ownership check would cap the span while the abandon
+    marker is refused, so ``retry_eligible`` would reject the new holder. The charge
+    is fenced with the marker under one lock hold.
     """
     from kiro_crew.history_consolidation import (
         _CONSOLIDATION_BACKOFF_BASE_SECS,
@@ -817,18 +879,19 @@ async def test_empty_result_after_takeover_charges_nothing(tmp_path, prior_failu
         AttemptedSpan,
     )
 
-    log = _seed_log(tmp_path)
+    # Seed and charge off the loop: a Windows rename on the loop thread is not retried.
+    log = await asyncio.to_thread(_seed_log, tmp_path)
     _, total, generation, _ = log.snapshot_for_consolidation(KEY)
     span = AttemptedSpan(total=total, generation=generation, offset=0, prompted=total)
-    with history_mod.allow_on_loop_persist():
-        for _ in range(prior_failures):
-            log.record_consolidation_failure(
-                KEY,
-                _CONSOLIDATION_BACKOFF_BASE_SECS,
-                _CONSOLIDATION_BACKOFF_MAX_SECS,
-                span,
-                now=0.0,
-            )
+    for _ in range(prior_failures):
+        await asyncio.to_thread(
+            log.record_consolidation_failure,
+            KEY,
+            _CONSOLIDATION_BACKOFF_BASE_SECS,
+            _CONSOLIDATION_BACKOFF_MAX_SECS,
+            span,
+            now=0.0,
+        )
     before = log.consolidation_retry_state(KEY, total)
     assert before[0] == prior_failures
 

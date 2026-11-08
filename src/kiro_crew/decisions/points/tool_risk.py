@@ -149,8 +149,8 @@ RISKY_CONFIDENCE_THRESHOLD = 0.80
 #: that window, let alone past it. Over five consecutive live day-files --
 #: 7,834 annotated calls, 1,526 ``caution`` rows -- the bar alone still badges
 #: 841 of them; the file-write carve-out below removes 203 of those (24%),
-#: leaving 638 (-58% from the unfiltered count). Raising to 0.90 was tried and
-#: rejected in an earlier round of this PR: it crosses the measured window on
+#: leaving 638 (-58% from the unfiltered count). Raising to 0.90 is rejected:
+#: it crosses the measured window on
 #: no new evidence, and the carve-out is what does the real work, not a
 #: second, unmeasured bar movement.
 #:

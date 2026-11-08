@@ -51,7 +51,7 @@ ds = load_skill_script("prepare_pr_diff_signals_under_test", SCRIPT)
     ],
 )
 def test_area_of_mirrors_the_pr_scope_unit(path: str, area: str) -> None:
-    """Same split as the awk in ``.github/workflows/pr-scope.yml``: three levels
+    """Same split as the awk in the PR Scope step of ``.github/workflows/pr-policy.yml``: three levels
     under the two source roots, the top-level component everywhere else."""
     assert ds.area_of(path) == area
 
@@ -61,9 +61,9 @@ def test_area_of_agrees_with_the_pr_scope_awk_program() -> None:
     """The workflow and the script each spell the area unit; run the workflow's own
     awk on a corpus and require the same answers, so a change to one spelling
     fails here instead of diverging silently."""
-    workflow = (ROOT / ".github" / "workflows" / "pr-scope.yml").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "pr-policy.yml").read_text(encoding="utf-8")
     m = re.search(r"awk -F/ '(.*?)'\s*\|", workflow, re.DOTALL)
-    assert m, "pr-scope.yml no longer carries the area awk program"
+    assert m, "pr-policy.yml no longer carries the PR Scope area awk program"
     program = m.group(1)
     corpus = [
         "src/kiro_crew/dashboard/handlers/x.py",
@@ -548,3 +548,47 @@ def test_end_to_end_base_without_the_template_check_skips_it(repo: Path) -> None
     assert rc == 0
     assert "TEMPLATE" not in out
     assert "PR template" not in out
+
+
+@pytest.mark.parametrize("git_bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+def test_windows_template_check_never_runs_the_wsl_launcher(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], git_bash: str | None
+) -> None:
+    """On Windows, ``bash`` in System32 is the WSL launcher: it never writes the
+    output file, so running it skipped the check. Git bash is used instead, and
+    with only the launcher the skip line names WSL."""
+    launcher = r"C:\Windows\System32\bash.exe"
+    monkeypatch.setattr(ds, "IS_WINDOWS", True, raising=False)
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\u\AppData\Local")
+    monkeypatch.setenv(
+        "PATH",
+        r"C:\WINDOWS\system32;C:\Users\u\AppData\Local\Microsoft\WindowsApps;C:\Program Files\Git\bin",
+    )
+
+    def which(name: str, path: str | None = None) -> str | None:
+        if path is None or "system32" in path.lower() or "windowsapps" in path.lower():
+            return launcher
+        return git_bash
+
+    ran: list[str] = []
+
+    def fake_run(argv: list[str], env: dict[str, str], **_: object) -> None:
+        ran.append(argv[0])
+        if argv[0] != launcher:
+            Path(env["GITHUB_OUTPUT"]).write_text(
+                "conclusion=failure\ntitle=missing\n", encoding="utf-8"
+            )
+
+    monkeypatch.setattr(ds.shutil, "which", which)
+    monkeypatch.setattr(ds.subprocess, "run", fake_run)
+    monkeypatch.setattr(ds, "run", lambda argv: (0, "#!/bin/bash\n", ""))
+    rc = ds.template_check("body", "main")
+    out = capsys.readouterr().out
+    assert launcher not in ran
+    if git_bash:
+        assert (rc, ran) == (22, [git_bash])
+        assert "TEMPLATE: missing" in out
+    else:
+        assert (rc, ran) == (0, [])
+        assert "only the WSL bash launcher is on PATH - template check skipped" in out

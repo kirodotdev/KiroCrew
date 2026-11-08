@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import SystemPage from '../pages/SystemPage'
 
@@ -108,15 +108,15 @@ describe('SystemPage keeps Performance history across plane flips', () => {
     // Two polls => two samples => the graph draws instead of showing the
     // empty state. Without this there is no history to lose and the test
     // would pass vacuously.
-    await vi.advanceTimersByTimeAsync(2200)
-    await vi.advanceTimersByTimeAsync(2200)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2200) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(2200) })
     expect(screen.queryByText('Collecting samples…')).toBeNull()
 
     const goTo = async (label: string) => {
       const tab = screen.getAllByRole('tab').find(t => t.textContent?.includes(label))
       expect(tab).toBeDefined()
-      fireEvent.mouseDown(tab!)
-      await vi.advanceTimersByTimeAsync(50)
+      await act(async () => { fireEvent.mouseDown(tab!) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(50) })
       const active = screen.getAllByRole('tab').find(t => t.getAttribute('aria-selected') === 'true')
       expect(active!.textContent).toContain(label)
     }

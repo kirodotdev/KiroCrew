@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -51,10 +50,14 @@ from kiro_crew.platform.policy_distribution_source import (
     POLICY_URL_ENV,
     FetchedPolicy,
     FetchRequest,
+    _assert_signed_in_unchanged,
     _body_digest,
     _fetcher_for,
+    _is_enterprise,
+    _source_identity,
     _split_url,
     cache_only,
+    host_pinned_source,
     request_headers,
     resolve_distribution,
 )
@@ -163,7 +166,7 @@ def load_distributed_policy(
     # last-known-good. Serving it would let a retired endpoint keep governing a
     # host that has been repointed — including a redirect made specifically to
     # replace a compromised source.
-    if cached is not None and cached.source_digest != _source_digest(dist.source):
+    if cached is not None and cached.source_digest != _source_digest(_source_identity(dist.source)):
         logger.info("the cached ceiling came from a different source; ignoring it after a repoint")
         cached = None
 
@@ -192,6 +195,7 @@ def load_distributed_policy(
         and not _cache_is_too_old(dist, cached)
     )
     if fresh_enough and cached is not None:
+        _assert_signed_in_unchanged(dist.source, cached.body)
         try:
             ceiling = parse_distributed_policy(cached.body, source=dist.source)
             # Record it: a ceiling served from the cache is still a ceiling this tier
@@ -252,6 +256,16 @@ def _load_cache_only(dist: PolicyDistribution) -> GovernanceCeiling:
     the failure is a disabled app rather than an unbounded one.
     """
     cached = read_cache()
+    if (
+        cached is not None
+        and _is_enterprise()
+        # The child's pin is its gateway's: it sees no sign-in of its own.
+        and cached.source_digest != _source_digest(_source_identity(dist.source))
+    ):
+        # An enterprise build has exactly one source (RFC D2), so a cache recorded
+        # against any other address is not the fleet's ceiling, even for a child.
+        logger.info("the cached ceiling came from a different source; ignoring it")
+        cached = None
     if cached is None:
         raise PlatformCompositionError(
             "cache-only policy resolution found no cached ceiling. The gateway is "
@@ -323,16 +337,17 @@ def central_ceiling_installed() -> bool:
 
 
 def _env_pins_the_source() -> bool:
-    """Is the address coming from the environment rather than from a document?
+    """Is the address coming from the host (env, or an enterprise build) rather than a document?
 
     When it is, a document's own ``distribution.source`` is already ignored:
     :func:`resolve_distribution` lets the environment win per setting, precisely so
     whatever provisions the host owns the address. So a declaration that differs is not a
     migration this host would follow, and refusing the document over it would break the
     ordinary canary — one host pinned elsewhere by env while the fleet publishes its
-    canonical address.
+    canonical address. An enterprise build always pins: its source is a build-time
+    constant (RFC D2), so no document can move it.
     """
-    return bool(os.environ.get(POLICY_URL_ENV, "").strip())
+    return bool(host_pinned_source())
 
 
 def _declared_source(body: bytes) -> str:
@@ -460,6 +475,7 @@ def _load_by_fetch(dist: PolicyDistribution, cached: Optional[CachedPolicy]) -> 
         body, provenance = cached.body, "the re-validated cached copy"
     else:
         body, provenance = fetched.body, dist.source
+    _assert_signed_in_unchanged(dist.source, body)
 
     try:
         ceiling = parse_distributed_policy(body, source=dist.source)
@@ -536,7 +552,7 @@ def _load_by_fetch(dist: PolicyDistribution, cached: Optional[CachedPolicy]) -> 
     elif not fetched.not_modified:
         published = write_cache(
             body,
-            source=dist.source,
+            source=_source_identity(dist.source, body),
             etag=fetched.etag,
             last_modified=fetched.last_modified,
             expect_pair=expect_pair,
@@ -592,11 +608,12 @@ def _load_from_cached_winner(dist: PolicyDistribution, winner: CachedPolicy) -> 
         # winner was published by another process, and that process may have been configured
         # for a different source. Re-gating parse, migration and composition but not
         # provenance would let source B's ceiling govern a host pointed at source A.
-        if winner.source_digest != _source_digest(dist.source):
+        if winner.source_digest != _source_digest(_source_identity(dist.source)):
             raise PlatformCompositionError(
-                "it was cached against a different source, so it is not this host's "
-                "last-known-good"
+                "it was cached against a different source or sign-in, so it is not this "
+                "host's last-known-good"
             )
+        _assert_signed_in_unchanged(dist.source, winner.body)
         ceiling = parse_distributed_policy(winner.body, source=dist.source)
         migrated = _declared_source(winner.body)
         if migrated and migrated != dist.source and not _env_pins_the_source():
@@ -676,6 +693,11 @@ def _from_cache_on_outage(
     """
     if cached is None:
         return None
+    # Asked again here, after the fetch: the sign-in may have changed while it ran.
+    if cached.source_digest != _source_digest(_source_identity(dist.source)):
+        logger.error("the cached ceiling was read for another sign-in, and %s", reason)
+        return None
+    _assert_signed_in_unchanged(dist.source, cached.body)
     age = cached.age_secs()
     if _cache_is_too_old(dist, cached):
         logger.error(
@@ -714,6 +736,12 @@ def _unavailable(dist: PolicyDistribution, reason: str) -> None:
         )
         return None
     mark_governance_incident("failed_closed", "policy_distribution:unavailable")
+    if _is_enterprise():
+        # No local lever to suggest: an enterprise build requires its central policy.
+        raise PlatformCompositionError(
+            f"this enterprise build requires its central policy, and no ceiling could be "
+            f"established ({detail}). Refusing to start."
+        )
     raise PlatformCompositionError(
         f"central policy distribution is configured but no ceiling could be "
         f"established ({detail}). Refusing to run ungoverned. Set "

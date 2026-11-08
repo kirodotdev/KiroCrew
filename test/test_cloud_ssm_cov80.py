@@ -1,16 +1,18 @@
 """Coverage for the SSM plugin-install plan and the polling/liveness edge paths.
 
-The local ``session-manager-plugin`` prerequisite is resolved per host — the
-one-liner hint, the download plan, and the installer sequence all branch on
-platform and available package manager, and every one of those branches is a
-place where a wrong answer silently blocks tunnels. Also pinned: ``run_command``'s
-tolerance of a mid-poll unparseable invocation, and ``wait_for_local_port``'s
-refusal to accept a listener that appeared after the SSM child died.
+The hint, download plan and installer sequence branch on platform and package manager,
+and a wrong branch silently blocks tunnels. Also pins ``run_command`` tolerating an
+unparseable mid-poll invocation and ``wait_for_local_port`` refusing a listener that
+appeared after the SSM child died.
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
+import os
+import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,18 +22,26 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.cloud import aws, ssm
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 
 def _stub_bin(name: str) -> str:
     """An absolute ``which``-style stub path that is valid on every platform.
 
-    Absolute because the PATH-hijack guards refuse a relative binary path, and with a
-    directory component because some call sites take ``Path(x).name`` -- a bare name
-    would make that assertion vacuous. Rooted at ``tempfile.gettempdir()``, the
-    portable root the cross-platform gate recommends, rather than a ``/usr/bin``
-    literal that does not exist on Windows. Nothing is created or executed here.
+    Absolute because PATH-hijack guards refuse relative paths; with a directory because
+    some call sites take ``Path(x).name``. Rooted at ``tempfile.gettempdir()`` for Windows.
     """
     return str(Path(tempfile.gettempdir()) / "stub-bin" / name)
+
+
+class _Resp(io.BytesIO):
+    """A ``urlopen`` response: the body, usable as a context manager."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
 
 
 @pytest.fixture
@@ -50,6 +60,35 @@ def fake_platform(monkeypatch):
     return _apply
 
 
+# GNU `sha256sum -c` reading "<hex>  <path>" lines from stdin: exit 0 only when
+# every file matches. Any other use exits 2, so a one-liner that grew another
+# sha256sum call is caught.
+_GNU_SHA256SUM_CHECK = """import hashlib, sys
+if sys.argv[1:] != ["-c"]:
+    sys.exit(2)
+ok = True
+for line in sys.stdin.read().splitlines():
+    digest, path = line.split("  ", 1)
+    with open(path, "rb") as f:
+        ok = ok and hashlib.sha256(f.read()).hexdigest() == digest
+sys.exit(0 if ok else 1)
+"""
+
+
+def _host_has_gnu_sha256sum() -> bool:
+    if shutil.which("sha256sum") is None:
+        return False
+    probe = subprocess.run(
+        ["sha256sum", "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+    )
+    return probe.returncode == 0 and "GNU" in probe.stdout
+
+
 class TestInstallCommandHint:
     def test_macos_prefers_brew_when_present(self, fake_platform) -> None:
         fake_platform("Darwin", "arm64", available=("brew",))
@@ -62,11 +101,11 @@ class TestInstallCommandHint:
         cmd = ssm.session_manager_plugin_install_command()
         assert "mac_arm64/session-manager-plugin.pkg" in cmd
         assert 'd="$(mktemp -d)"' in cmd
-        assert '"$d/session-manager-plugin.pkg"' in cmd
+        assert 'p="$d/session-manager-plugin.pkg"' in cmd
 
     def test_macos_intel_uses_the_non_arm_package(self, fake_platform) -> None:
         fake_platform("Darwin", "x86_64")
-        assert "latest/mac/session-manager-plugin.pkg" in (
+        assert f"/{ssm._SSM_PLUGIN_VERSION}/mac/session-manager-plugin.pkg" in (
             ssm.session_manager_plugin_install_command()
         )
 
@@ -82,11 +121,64 @@ class TestInstallCommandHint:
             ssm.session_manager_plugin_install_command()
         )
 
-    def test_rpm_host_installs_straight_from_the_url(self, fake_platform) -> None:
+    def test_rpm_host_installs_the_checked_file_not_the_url(self, fake_platform) -> None:
         fake_platform("Linux", "x86_64", available=("dnf",))
         cmd = ssm.session_manager_plugin_install_command()
-        assert cmd.startswith("sudo dnf install -y ")
         assert "linux_64bit/session-manager-plugin.rpm" in cmd
+        assert '| sha256sum -c && sudo dnf install -y "$p"' in cmd
+
+    @pytest.mark.skipif(
+        os.name == "nt" or shutil.which("bash") is None,
+        reason="runs the POSIX one-liner",
+    )
+    @pytest.mark.parametrize("matches", [True, False])
+    def test_deb_one_liner_reaches_sudo_only_on_a_matching_download(
+        self, fake_platform, monkeypatch, tmp_path, matches
+    ) -> None:
+        payload = tmp_path / "payload.deb"
+        payload.write_bytes(b"pretend deb")
+        pinned = hashlib.sha256(payload.read_bytes()).hexdigest() if matches else "0" * 64
+        monkeypatch.setitem(ssm._SSM_PLUGIN_SHA256, "ubuntu_64bit", pinned)
+        # Probed before fake_platform: it patches the shared `shutil.which`.
+        gnu_sha256sum = _host_has_gnu_sha256sum()
+        fake_platform("Linux", "x86_64", available=("dpkg",))
+        cmd = ssm.session_manager_plugin_install_command()
+        marker = tmp_path / "sudo-ran"
+        stubs = tmp_path / "bin"
+        stubs.mkdir()
+        (stubs / "curl").write_text(
+            '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = "-o" ] && out="$2"; shift; done\n'
+            f'cp "{payload}" "$out"\n',
+            encoding="utf-8",
+        )
+        (stubs / "sudo").write_text(f'#!/bin/sh\ntouch "{marker}"\n', encoding="utf-8")
+        if not gnu_sha256sum:
+            # The one-liner targets Debian's GNU `sha256sum -c`, which reads its
+            # list from stdin. macOS ships a BSD `sha256sum` that prints its
+            # usage for that, so stand in for the GNU check on such a host.
+            checker = tmp_path / "sha256sum_check.py"
+            checker.write_text(_GNU_SHA256SUM_CHECK, encoding="utf-8")
+            (stubs / "sha256sum").write_text(
+                f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(checker))} "$@"\n',
+                encoding="utf-8",
+            )
+        for stub in stubs.iterdir():
+            stub.chmod(0o755)
+        proc = subprocess.run(
+            ["bash", "-c", cmd],
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
+                "TMPDIR": str(tmp_path),
+            },
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=FALLBACK_TIMEOUT_SECS,
+            check=False,
+        )
+        assert marker.exists() is matches, proc.stdout + proc.stderr
 
     def test_linux_without_a_package_manager_has_no_one_liner(self, fake_platform) -> None:
         fake_platform("Linux", "x86_64")
@@ -102,7 +194,7 @@ class TestInstallPlan:
         fake_platform("Darwin", "arm64")
         plan = ssm._session_manager_plugin_install_plan(tmp_path)
         assert plan is not None
-        url, package_path, commands = plan
+        url, _sha256, package_path, commands = plan
         assert url.startswith("https://s3.amazonaws.com/")
         assert package_path == tmp_path / "session-manager-plugin.pkg"
         assert commands[0][:2] == ["sudo", "installer"]
@@ -116,14 +208,14 @@ class TestInstallPlan:
         fake_platform("Linux", "x86_64", available=("dpkg",))
         plan = ssm._session_manager_plugin_install_plan(tmp_path)
         assert plan is not None
-        _url, package_path, commands = plan
+        _url, _sha256, package_path, commands = plan
         assert commands == [["sudo", "dpkg", "-i", str(package_path)]]
 
     def test_rpm_plan_prefers_a_resolver_when_available(self, fake_platform, tmp_path) -> None:
         fake_platform("Linux", "aarch64", available=("rpm", "yum"))
         plan = ssm._session_manager_plugin_install_plan(tmp_path)
         assert plan is not None
-        url, package_path, commands = plan
+        url, _sha256, package_path, commands = plan
         assert "linux_arm64" in url
         assert commands == [["sudo", _stub_bin("yum"), "install", "-y", str(package_path)]]
 
@@ -131,7 +223,7 @@ class TestInstallPlan:
         fake_platform("Linux", "x86_64", available=("rpm",))
         plan = ssm._session_manager_plugin_install_plan(tmp_path)
         assert plan is not None
-        _url, package_path, commands = plan
+        _url, _sha256, package_path, commands = plan
         assert commands == [["sudo", "rpm", "-Uvh", str(package_path)]]
 
     def test_linux_without_any_package_tool_has_no_plan(self, fake_platform, tmp_path) -> None:
@@ -158,16 +250,38 @@ class TestInstallSessionManagerPlugin:
         monkeypatch.setattr(
             ssm,
             "_session_manager_plugin_install_plan",
-            lambda tmp: ("https://example.invalid/p.deb", tmp / "p.deb", []),
+            lambda tmp: ("https://example.invalid/p.deb", "0" * 64, tmp / "p.deb", []),
         )
 
-        def _boom(_url, _dest):
+        def _boom(_url, _dest, _sha256):
             raise OSError("network unreachable")
 
         monkeypatch.setattr(ssm, "_download_file", _boom)
         result = ssm.install_session_manager_plugin()
         assert result.ok is False
         assert "Could not download" in result.message
+
+    def test_a_checksum_mismatch_is_refused_before_any_install_step(self, monkeypatch) -> None:
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(
+            ssm,
+            "_session_manager_plugin_install_plan",
+            lambda tmp: (
+                "https://example.invalid/p.deb",
+                hashlib.sha256(b"the pinned package").hexdigest(),
+                tmp / "p.deb",
+                [["sudo", "dpkg", "-i", "p.deb"]],
+            ),
+        )
+        monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout=0: _Resp(b"swapped"))
+        ran: list[list[str]] = []
+        monkeypatch.setattr(
+            ssm, "_run_install_command", lambda argv: ran.append(argv) or (0, "", "")
+        )
+        result = ssm.install_session_manager_plugin()
+        assert result.ok is False
+        assert "checksum mismatch" in result.message
+        assert ran == []
 
     def test_failed_install_command_is_reported_with_its_argv(self, monkeypatch) -> None:
         monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
@@ -176,11 +290,12 @@ class TestInstallSessionManagerPlugin:
             "_session_manager_plugin_install_plan",
             lambda tmp: (
                 "https://example.invalid/p.deb",
+                "0" * 64,
                 tmp / "p.deb",
                 [["sudo", "dpkg", "-i", "p.deb"]],
             ),
         )
-        monkeypatch.setattr(ssm, "_download_file", lambda _u, _d: None)
+        monkeypatch.setattr(ssm, "_download_file", lambda _u, _d, _s: None)
         monkeypatch.setattr(ssm, "_run_install_command", lambda argv: (1, "", "dpkg: refused"))
         result = ssm.install_session_manager_plugin()
         assert result.ok is False
@@ -192,9 +307,9 @@ class TestInstallSessionManagerPlugin:
         monkeypatch.setattr(
             ssm,
             "_session_manager_plugin_install_plan",
-            lambda tmp: ("https://example.invalid/p.deb", tmp / "p.deb", []),
+            lambda tmp: ("https://example.invalid/p.deb", "0" * 64, tmp / "p.deb", []),
         )
-        monkeypatch.setattr(ssm, "_download_file", lambda _u, _d: None)
+        monkeypatch.setattr(ssm, "_download_file", lambda _u, _d, _s: None)
         result = ssm.install_session_manager_plugin()
         assert result.ok is False
         assert "was not found on PATH" in result.message
@@ -205,9 +320,14 @@ class TestInstallSessionManagerPlugin:
         monkeypatch.setattr(
             ssm,
             "_session_manager_plugin_install_plan",
-            lambda tmp: ("https://example.invalid/p.deb", tmp / "p.deb", [["sudo", "true"]]),
+            lambda tmp: (
+                "https://example.invalid/p.deb",
+                "0" * 64,
+                tmp / "p.deb",
+                [["sudo", "true"]],
+            ),
         )
-        monkeypatch.setattr(ssm, "_download_file", lambda _u, _d: None)
+        monkeypatch.setattr(ssm, "_download_file", lambda _u, _d, _s: None)
         monkeypatch.setattr(ssm, "_run_install_command", lambda argv: (0, "", ""))
         result = ssm.install_session_manager_plugin()
         assert result.ok is True
@@ -229,11 +349,8 @@ class TestPluginPrerequisite:
         """The probe resolves through the deploy engine's shared resolver,
         so it searches the well-known install dirs too.
 
-        A bare PATH lookup reported "not installed" for a plugin that WAS
-        installed (AWS's .pkg symlinks it into /usr/local/bin, absent from the
-        minimal launchd PATH a GUI-launched gateway inherits), which refused every
-        SSM tunnel at the prerequisite gate. Hence the ``path=`` kwarg below: the
-        resolver searches an explicit dir list, not just the inherited PATH.
+        AWS's .pkg links the plugin into /usr/local/bin, absent from the launchd PATH a
+        GUI-launched gateway inherits. Hence the ``path=`` kwarg below.
         """
         monkeypatch.setattr(ssm.shutil, "which", lambda name, path=None: None)
         assert ssm.session_manager_plugin_installed() is False
@@ -244,21 +361,15 @@ class TestPluginPrerequisite:
 class TestSmallHelpers:
     def test_download_refuses_non_https(self, tmp_path) -> None:
         with pytest.raises(ValueError, match="non-HTTPS"):
-            ssm._download_file("http://example.invalid/p.deb", tmp_path / "p.deb")
+            ssm._download_file("http://example.invalid/p.deb", tmp_path / "p.deb", "0" * 64)
 
     def test_download_streams_the_body_to_disk(self, monkeypatch, tmp_path) -> None:
-        class _Resp(io.BytesIO):
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_exc) -> None:
-                return None
-
         monkeypatch.setattr(
             urllib.request, "urlopen", lambda url, timeout=0: _Resp(b"package-bytes")
         )
         dest = tmp_path / "p.deb"
-        ssm._download_file("https://example.invalid/p.deb", dest)
+        sha256 = hashlib.sha256(b"package-bytes").hexdigest()
+        ssm._download_file("https://example.invalid/p.deb", dest, sha256)
         assert dest.read_bytes() == b"package-bytes"
 
     def test_missing_installer_binary_reports_127(self, monkeypatch) -> None:
@@ -420,12 +531,8 @@ class TestKillPortForward:
     def test_taskkill_is_resolved_from_the_trusted_system_dirs(self, monkeypatch) -> None:
         """A bare argv name is a PATH-hijack seam on exactly this teardown path.
 
-        `CreateProcess` searches the calling image's directory and the CWD before
-        `PATH`, and a gateway `PATH` can legitimately lead with agent-writable
-        directories, so `["taskkill", ...]` lets a planted `taskkill.exe` run with
-        this process's privileges. `AGENTS.md` names `trusted_system_bin` as the
-        required spelling for `taskkill`, and `platform_compat` already resolves the
-        same binary that way at both of its own sites.
+        `CreateProcess` searches the image dir and CWD before `PATH`, which can lead with
+        agent-writable dirs. `AGENTS.md` requires `trusted_system_bin` for `taskkill`.
         """
         calls: list[list[str]] = []
 

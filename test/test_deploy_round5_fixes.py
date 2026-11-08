@@ -49,14 +49,15 @@ class TestAttachBackendTOCTOU:
             self.mod._validate_secret_file_path(link)
         assert exc.value.code == 2
 
-    def test_regular_file_accepted_in_fallback_mode(self, tmp_path: Path):
+    def test_regular_file_accepted_in_fallback_mode(self, tmp_path: Path, capsys):
         """A regular file with correct ownership/perms passes validation."""
         secret = tmp_path / "good_secret"
         secret.write_text("s3cr3t")
         os.chmod(secret, 0o600)
 
-        # Should not raise
-        self.mod._validate_secret_file_path(secret)
+        assert self.mod._validate_secret_file_path(secret) is None
+        assert capsys.readouterr().err == ""
+        assert secret.read_text() == "s3cr3t"
 
     @requires_symlinks
     def test_safe_read_file_rejects_symlink_atomically(self, tmp_path: Path):
@@ -219,7 +220,6 @@ class TestReaperOACPending:
         mock_s3.delete_object = MagicMock()
         mock_s3.put_object = MagicMock()
 
-        # Patch the module globals
         with patch.object(self.mod, "cf", mock_cf), \
              patch.object(self.mod, "s3", mock_s3), \
              patch.object(self.mod, "botocore") as mock_bc:

@@ -266,15 +266,16 @@ def test_ci_wires_the_manifest_gate() -> None:
     gets no other content review, so a gate that exists but is not wired (or is
     hidden behind a path filter's surface outputs) guards nothing.
 
-    The job moved out of ci.yml into fast-gate.yml, which holds the eleven cheap
-    blocking gates so ci.yml's heavy matrix waits on their verdict rather than
-    racing it; ci.yml still blocks on it transitively via ``await-fast-gate``.
+    The gate runs in fast-gate.yml's ``source-gates`` job, one step among the
+    cheap blocking gates ci.yml's heavy matrix waits on rather than racing;
+    ci.yml still blocks on it transitively via ``await-fast-gate``.
     Unconditionality is asserted structurally rather than as a substring, because
     the property this test protects is not that the script name appears
-    somewhere — it is that no ``needs:`` and no ``if:`` can keep the job from
-    running on a given diff. The one condition it carries, by exact text, skips
-    a push to main only while the merge queue is on, when the merge group already
-    verified this exact tree; no diff shape enters it.
+    somewhere — it is that no ``needs:`` and no ``if:`` can keep the gate from
+    running on a given diff. The one condition the job carries, by exact text,
+    skips a push to main only while the merge queue is on, when the merge group
+    already verified this exact tree; the one condition the step carries runs it
+    unless the whole run was cancelled. No diff shape enters either.
     """
     path = _REPO_ROOT / ".github" / "workflows" / "fast-gate.yml"
     text = path.read_text(encoding="utf-8")
@@ -282,8 +283,13 @@ def test_ci_wires_the_manifest_gate() -> None:
         "scripts/verify_vendor_manifest.py" in text
     ), "fast-gate.yml does not run the manifest gate"
 
-    job = yaml.safe_load(text)["jobs"]["vendor-manifest"]
-    assert "needs" not in job, "vendor-manifest gained a dependency and can now be skipped"
+    job = yaml.safe_load(text)["jobs"]["source-gates"]
+    assert "needs" not in job, "source-gates gained a dependency and can now be skipped"
     assert (
         job.get("if") == "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
-    ), "vendor-manifest's condition is not exactly the merge-queue push skip"
+    ), "source-gates's condition is not exactly the merge-queue push skip"
+    step = next(
+        s for s in job["steps"] if "scripts/verify_vendor_manifest.py" in str(s.get("run", ""))
+    )
+    assert step.get("if") == "${{ !cancelled() }}", "the manifest step must run unless cancelled"
+    assert "continue-on-error" not in step, "a red manifest must red the job"

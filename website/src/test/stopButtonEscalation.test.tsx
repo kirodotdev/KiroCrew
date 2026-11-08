@@ -1,7 +1,7 @@
 /**
  * Tests for the stop button UX improvements:
  * 1. soft_pending: "Click again to force stop" hint label
- * 2. killing state: disabled spinner initially, re-enabled "Force reset" after 15s
+ * 2. killing state: disabled spinner initially, re-enabled "Force stop again" after 15s
  *
  * Note: The killing escape hatch timeout is 15s. For the integration test we
  * use vi.useFakeTimers({ shouldAdvanceTime: true }) to allow React's microtask
@@ -121,7 +121,7 @@ describe('Stop button — soft_pending force-stop affordance', { timeout: 30_000
     await renderWithState({ slotRunning: true, slotStopping: true, slotState: 'stopping', stopState: 'soft_pending' })
 
     const btn = screen.getByTestId('stop-button-pulsing')
-    expect(btn.getAttribute('aria-label')).toBe('Force kill session (discards in-progress work and queued messages)')
+    expect(btn.getAttribute('aria-label')).toBe('Force stop (your messages stay; in-progress work and queued messages are discarded)')
   })
 })
 
@@ -132,10 +132,10 @@ describe('Stop button — killing-state escape hatch (15s timeout)', { timeout: 
     const btn = screen.getByTestId('stop-button-killing')
     expect(btn).toBeInTheDocument()
     expect(btn).toBeDisabled()
-    expect(btn.getAttribute('aria-label')).toBe('Killing session')
+    expect(btn.getAttribute('aria-label')).toBe('Force stopping session')
   })
 
-  it('re-enables the button after 15s as "Force reset" with escape hint', async () => {
+  it('re-enables the button after 15s as "Force stop again" with escape hint', async () => {
     await renderWithState({ slotRunning: true, slotStopping: true, slotState: 'stopping', stopState: 'killing' })
 
     expect(screen.getByTestId('stop-button-killing')).toBeInTheDocument()
@@ -161,7 +161,7 @@ describe('Stop button — killing-state escape hatch (15s timeout)', { timeout: 
       expect(screen.getByTestId('stop-button-escape-hatch')).toBeInTheDocument()
     })
     const btn = screen.getByTestId('stop-button-escape-hatch')
-    expect(btn.getAttribute('aria-label')).toBe('Force reset session (taking longer than expected)')
+    expect(btn.getAttribute('aria-label')).toBe('Force stop again (taking longer than expected)')
   })
 
   it('escape hatch button is clickable (dispatches force stop)', async () => {

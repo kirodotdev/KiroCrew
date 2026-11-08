@@ -29,7 +29,7 @@ MAX_LONG_STRING = 50_000  # task specs, inline content
 # a way to occupy the event loop for as long as the caller likes.
 #
 # The VALUE is tied to ``dashboard.state.MAX_SLOTS_PER_CREATOR`` (50) and must
-# never fall below it. The broadcast's DEFAULT audience is "every live session
+# never fall below it. The broadcast's `all: true` audience is "every live session
 # this caller created" (``broadcast_audience``), and that set is bounded by the
 # per-creator slot cap and by nothing else -- so a cap under it makes the
 # documented default path refuse itself with ``too_many_targets`` as soon as a
@@ -196,7 +196,8 @@ ALLOWED_SCHEDULE_KINDS = frozenset({"every", "cron", "at"})
 # Every event a script hook may be authored against: the five the gateway fires,
 # plus the six a Kiro Agent session owns, which are stored and fired by no event
 # (``hooks.HOOK_EVENTS_KAS_ONLY``, whose header says which of the six a Kiro
-# Agent even asks for and why Test still runs one). Spelled
+# Agent even asks for and why Test still runs one), plus ``SessionLaneChanged``,
+# which the dashboard's tag writers fire. Spelled
 # out rather than imported from ``kiro_crew.hooks``, which imports this module --
 # ``test_hook_validation_parity`` pins the two sets equal, so a member added
 # there and forgotten here fails a test instead of silently refusing the new
@@ -214,14 +215,24 @@ ALLOWED_HOOK_EVENTS = frozenset(
         "FileEdited",
         "FileDeleted",
         "UserTriggered",
+        "SessionLaneChanged",
     }
 )
 
 _AGENT_NAME_RE: re.Pattern[str] = re.compile(
     r"^(?:[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]|[a-zA-Z0-9])\Z"
 )
+#: The shape ``_AGENT_NAME_RE`` (and ``WORKSPACE_NAME_RE``) admits, in words, for a
+#: CLI refusal.
+AGENT_NAME_HINT = (
+    "expected 1-64 letters, digits, '-' or '_', starting and ending with a letter or digit"
+)
 
 TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])\Z")
+#: The shape ``TEMPLATE_NAME_RE`` admits, in words, for a CLI refusal.
+TEMPLATE_NAME_HINT = (
+    "expected 1-63 letters, digits, '.', '_' or '-', starting and ending with a letter or digit"
+)
 
 #: The union of the two identifier grammars, as one pattern for ``FieldSpec``:
 #: a tool argument that names a registered agent SPEC (``spawn_run(agent=...)``,
@@ -267,6 +278,13 @@ _QUALIFIED_MODEL_MAX_CHARS = 256
 _MODEL_NAME_RE = re.compile(
     rf"(?:{_MODEL_SEGMENT}(?:\[[A-Za-z0-9._-]+\])?"
     rf"|(?=.{{1,{_QUALIFIED_MODEL_MAX_CHARS}}}\Z){QUALIFIED_MODEL_PATTERN})\Z"
+)
+#: The shape ``_MODEL_NAME_RE`` admits, in words, for a CLI refusal. The
+#: refusal names the shape and never echoes the rejected value.
+MODEL_NAME_HINT = (
+    "expected a model id of letters, digits, '.', '_' and '-' that starts with a "
+    "letter or digit (optionally with one [qualifier]), a provider/model id of at "
+    f"most {_QUALIFIED_MODEL_MAX_CHARS} characters, or 'auto'"
 )
 
 # Content-bound theme-persona consent hash: sha256 rendered as EXACTLY 64

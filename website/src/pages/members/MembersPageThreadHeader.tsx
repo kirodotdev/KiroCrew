@@ -14,8 +14,10 @@ import { PanelLeftLight, PanelLeftSolid, PanelRightSolid } from '../../component
 import { useTranslation } from 'react-i18next'
 import { type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
+import { useLabelTip } from '../../components/InstantTip'
 import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import Glass from '../../components/Glass'
+import HeaderControl from './HeaderControl'
 import CrewmateSwitcher, { CrewmateUnreadColumn } from './CrewmateSwitcher'
 import { createPortal } from 'react-dom'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -47,6 +49,34 @@ interface MembersPageThreadHeaderProps {
   active: MemberRosterRow
 }
 
+/** The side panel's opener. Icon-only, like the chat page's side-panel toggle,
+ *  so it shows its aria-label in an InstantTip on hover or keyboard focus, at
+ *  once, instead of a native title the browser holds back for about a second.
+ *  Its own component so the tip's state mounts and unmounts with the button:
+ *  a click that docks the panel removes the opener under the pointer, and a
+ *  tip held by the header would paint again, stale, when the opener returns. */
+function PanelOpener({ inBar, pressed, onToggle }: { inBar: boolean; pressed: boolean; onToggle: () => void }) {
+  const { t } = useTranslation()
+  const tip = useLabelTip(t('pages.membersPage.panel_toggle'))
+  return (
+    <HeaderControl
+      inBar={inBar}
+      chipClassName="glass-hover flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-text cursor-pointer"
+      barClassName="mc-touch-hit p-2 rounded-md shrink-0 text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none"
+      onClick={onToggle}
+      aria-pressed={pressed}
+      aria-controls="member-side-panel"
+      aria-label={t('pages.membersPage.panel_toggle')}
+      data-testid="member-panel-toggle"
+      {...uiLocation('members.details')}
+      {...tip.handlers}
+    >
+      <PanelRightSolid size={inBar ? 18 : 15} />
+      {tip.bubble}
+    </HeaderControl>
+  )
+}
+
 /** The thread header, portaled into the shell's top bar while the page has one there. */
 export function MembersPageThreadHeader({
   layout, profileCard, drawers, rosterView, thread, threadView, rosterSignals, profileFlight, navigation,
@@ -56,7 +86,7 @@ export function MembersPageThreadHeader({
   const { rosterPinned, switcherSlotRef, setRosterPin, panelVisible, showOpener } = layout
   const { pillFaceRef, openProfile, schedGuardRef, schedAtStakeRef, requestCloseProfile, togglePanel } = profileCard
   const { rosterDrawerOpen, openRosterDrawer, rosterDrawerAvailable } = drawers
-  const { isRunning, orderedMembers } = rosterView
+  const { isRunning, orderedMembers, toggleStar, starPending } = rosterView
   const { activeSlot, entranceFaceHidden } = thread
   const {
     threadHeaderRef, setSwitcherOpenRequest, switcherOpenRequest, topbarSlot, headerInBar, pillActivity,
@@ -106,20 +136,25 @@ export function MembersPageThreadHeader({
           members={orderedMembers}
           activeName={active.name}
           signals={signalsOf}
+          automationOf={automationOf}
           onPick={(name) => {
             const m = orderedMembers.find((row) => row.name === name)
             if (m) void openMember(m)
           }}
           onCreate={createHeld ? undefined : openQuick}
           onShowRoster={() => setRosterPin(true)}
+          onToggleStar={toggleStar}
+          starPending={starPending}
           openRequest={switcherOpenRequest}
           faceOnStageFor={entranceFaceHidden ? active.name : ''}
         />
         </div>
-        <Glass
-          as="button"
-          variant="chip"
-          radius={999}
+        <HeaderControl
+          inBar={headerInBar}
+          chipClassName="md:hidden glass-hover inline-flex items-center justify-center w-8 h-8 rounded-full text-text cursor-pointer"
+          // In the shell bar it is the Sessions bar's own drawer toggle, bare
+          // and the same size; over the pane it stays a Glass chip.
+          barClassName="md:hidden mc-touch-hit p-2 rounded-md text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none shrink-0"
           // Back to the roster. On a phone the roster is the drawer over
           // this chat, so the control slides it in and nothing unmounts.
           // Otherwise, when this entry was pushed from the roster on
@@ -142,7 +177,6 @@ export function MembersPageThreadHeader({
             if (!schedAtStakeRef.current()) { go(); return }
             void schedGuardRef.current().then((ok) => { if (ok) go() })
           }}
-          className="md:hidden glass-hover inline-flex items-center justify-center w-8 h-8 rounded-full text-text cursor-pointer"
           aria-label={t('pages.membersPage.toggle_roster')}
           data-testid="member-back"
           aria-expanded={rosterDrawerAvailable ? rosterDrawerOpen : undefined}
@@ -151,9 +185,9 @@ export function MembersPageThreadHeader({
           {/* On a phone this opens the roster drawer, so it wears the
               Sessions page's own drawer toggle, not a back arrow. */}
           {rosterDrawerAvailable
-            ? (rosterDrawerOpen ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />)
+            ? (rosterDrawerOpen ? <PanelLeftLight size={headerInBar ? 18 : 16} /> : <PanelLeftSolid size={headerInBar ? 18 : 16} />)
             : <ArrowLeft size={16} className="lucide-inline" />}
-        </Glass>
+        </HeaderControl>
       </div>
       {/* The identity pill is one centred Glass chip holding the face,
           name and activity line. It opens Profile, not the editor; the
@@ -206,6 +240,9 @@ export function MembersPageThreadHeader({
             slotKey={activeSlot || active.slot_key}
             running={!!isRunning(active)}
             automation={automationOf(active)}
+            // The same reading as the pill's "On watch" word and the roster
+            // row's ring: a monitor on the slot OR the heartbeat on.
+            watch={isLoopOn(active)}
             indicatorTestId="member-pill-loop-indicator"
             // Smaller in the shell bar, which is 42px tall: the pill sits
             // there with no vertical padding, at the height of the 32px
@@ -269,25 +306,10 @@ export function MembersPageThreadHeader({
             would otherwise be announced on every change. It is in the
             reading order for a reader who asks. */}
         <span className="sr-only" data-testid="member-pill-activity-sr">{pillActivity.label}{isLoopOn(active) ? ` · ${t('pages.membersPage.loop_on')}` : ''}</span>
-        {/* Glass, like the switcher opposite (#18325): on the floating
-            header a bare icon sat on scrolled text. */}
-        {showOpener && (
-          <Glass
-            as="button"
-            variant="chip"
-            radius={999}
-            onClick={togglePanel}
-            className="glass-hover flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-text cursor-pointer"
-            aria-pressed={panelVisible}
-            aria-controls="member-side-panel"
-            aria-label={t('pages.membersPage.panel_toggle')}
-            title={t('pages.membersPage.panel_toggle')}
-            data-testid="member-panel-toggle"
-            {...uiLocation('members.details')}
-          >
-            <PanelRightSolid size={15} />
-          </Glass>
-        )}
+        {/* A Glass chip over the pane, like the switcher opposite
+            (#18325): there a bare icon sat on scrolled text. Bare in the
+            shell bar, like the bell beside it and the Sessions bar. */}
+        {showOpener && <PanelOpener inBar={headerInBar} pressed={panelVisible} onToggle={togglePanel} />}
       </div>
       {/* The unread column (issue #19045), hanging under the switcher
           chip. Absolutely placed at the header's bottom edge (pulled

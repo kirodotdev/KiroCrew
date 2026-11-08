@@ -41,6 +41,7 @@ from slack_gateway_coverage_helpers import (
     _loop,
     _make_orchestrator,
     _mock_dashboard_state,
+    _slack_nudge_orchestrator,
     _within_lost_run,
 )
 
@@ -61,34 +62,6 @@ from kiro_crew.session import SessionBusyError, SessionClosingError
 from kiro_crew.slack import gateway as gw
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
-
-
-def _nudge_sessions(client: object) -> MagicMock:
-    s = MagicMock()
-    s.is_busy = MagicMock(return_value=False)
-    s.get_channel = MagicMock(return_value="C123")
-    s.get_thread = MagicMock(return_value="111.222")
-    s.get_or_create = AsyncMock(return_value=(client, True, False))
-    s.cancel_current = AsyncMock()
-    s.release = MagicMock()
-    return s
-
-
-def _slack_nudge_orchestrator() -> Any:
-    """Orchestrator wired for the Slack auto-nudge path."""
-    orch = _make_orchestrator()
-    orch.sessions = _nudge_sessions(SimpleNamespace())
-    orch.slack = MagicMock()
-    orch.slack.post_message = AsyncMock()
-    orch.ctx_builder = SimpleNamespace(hooks=object(), build_message=lambda *a, **k: ("MSG", None))
-    orch.conv_log = None
-    orch.autonudge_svc = None
-
-    async def _approve(_event: object, _parent: str = "") -> bool:
-        return True
-
-    orch._interactive_approval = lambda *a, **k: _approve
-    return orch
 
 
 def _discord_transport(*, authorized: bool = True, current_key: str | None = None) -> MagicMock:
@@ -260,6 +233,10 @@ class TestFireDiscordNudge:
         result = await orch._fire_discord_nudge(loop, "[Monitor wake]")
 
         assert result is boundary_result
+        # A wake is the monitor's own report, with no loop message to read
+        # triggers from, so it names no trigger text.
+        _, kwargs = _awaited(transport.dispatcher.handle_message)
+        assert "skill_trigger_text" not in kwargs
 
     @pytest.mark.asyncio
     async def test_structured_delivery_stays_dispatched_after_accepted_turn_error(self):
@@ -354,6 +331,8 @@ class TestFireDiscordNudge:
         assert "keep checking" in synthetic.text
         # interpret_commands=False keeps a nudge body from parsing as `!command`.
         assert kwargs["interpret_commands"] is False
+        # Skill triggers read the loop's own message, not the cycle header.
+        assert kwargs["skill_trigger_text"] == "keep checking"
 
     @pytest.mark.asyncio
     async def test_structured_monitor_supplies_completion_hook(self):

@@ -24,6 +24,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import math
 import socket
 import time
 import urllib.parse
@@ -72,16 +73,12 @@ TEAMS_MAX_ACTIVITY_TEXT_BYTES = 80 * 1024
 #: surrogate-pair escape and this multiplier is a lie. The two decisions are one.
 _MAX_UTF8_BYTES_PER_CHAR = 4
 
-# Teams text cap in CHARACTERS -- the unit the shared chunker and every capability
-# consumer count, neither of which can see bytes. Declared BYTE-SAFE at the
-# worst-case multiplier (16000 * 4 = 64 KB, leaving 16 KB for the envelope),
-# because the two consumers that trust this number fail SILENTLY when it is
-# optimistic: the dashboard mirror leg chunks on it and swallows the send error,
-# and a renderer chunk the Connector refuses as 413 takes that slice of the answer
-# with it. Pinned by test_capability_ledger.py alongside Webex, the other
-# byte-capped channel. This character budget sizes only the TEXT reservation;
-# the whole serialized activity is measured against
-# TEAMS_MAX_ACTIVITY_TEXT_BYTES by the wire guard in _post_activity.
+# Teams text cap in CHARACTERS, the unit the shared chunker and capability consumers
+# count. BYTE-SAFE at the worst-case multiplier (16000 * 4 = 64 KB, leaving 16 KB for
+# the envelope), because an optimistic value fails SILENTLY: the dashboard mirror
+# swallows the send error, and a chunk refused as 413 loses that slice of the answer.
+# Pinned by test_capability_ledger.py. The whole serialized activity is measured
+# against TEAMS_MAX_ACTIVITY_TEXT_BYTES by the wire guard in _post_activity.
 TEAMS_MAX_TEXT = 16000
 
 #: Key under which the dashboard route stashes the size-capped, parsed inbound
@@ -605,6 +602,9 @@ class TeamsClient:
         #: attribute for the same reason ``on_message`` is one: the transport is built
         #: after the client, and a constructor argument would need a cycle.
         self.on_route: Callable[[str, str, str, str], Awaitable[None]] | None = None
+        #: Set by the gateway to retire this channel's process-global registrations
+        #: (its queue drain) when the client closes. Mirrors ``DiscordClient``.
+        self.on_close: Callable[[], None] | None = None
         # Live turn tasks -- prevent GC of in-flight background handlers, and
         # bound how many a burst may start (see _MAX_INFLIGHT_TURNS).
         self._handler_tasks: set[asyncio.Task[None]] = set()
@@ -625,12 +625,9 @@ class TeamsClient:
             async with self._session_lock:
                 if self._session is None or self._session.closed:
                     # ensure_ascii=False so the body on the wire is real UTF-8.
-                    # aiohttp's default serializer escapes every non-ASCII
-                    # codepoint to \\uXXXX -- 6 bytes each, so CJK doubles and an
-                    # astral emoji (a surrogate PAIR, 12 bytes) triples. That is
-                    # what turns a reply sitting inside TEAMS_MAX_TEXT into an
-                    # activity over the Connector's byte ceiling, rejected as 413
-                    # rather than chunked.
+                    # aiohttp's default escapes non-ASCII to \\uXXXX (6 bytes, 12 for
+                    # an astral emoji), which can push a reply inside TEAMS_MAX_TEXT
+                    # over the Connector's byte ceiling and get it rejected as 413.
                     self._session = aiohttp.ClientSession(
                         json_serialize=partial(json.dumps, ensure_ascii=False)
                     )
@@ -672,26 +669,25 @@ class TeamsClient:
 
         In-flight turns are cancelled and awaited before the sessions they send
         through are closed -- the transport-shutdown quiescence invariant in
-        ``docs/system-specs/modules/messaging.md``. That drain awaits, so a
-        ``CancelledError`` landing in it (a shutdown while this coroutine is
-        itself being cancelled) would leave ``close()`` before either session
-        close; ``CancelledError`` is a ``BaseException``, so nothing below it
-        runs. Hence the drain gets its own ``try`` and the closes live in the
-        ``finally``.
+        ``docs/system-specs/modules/messaging.md``. A ``CancelledError`` (a
+        ``BaseException``) landing in that drain would skip both session closes,
+        so the drain gets its own ``try`` and the closes live in the ``finally``.
 
-        The two closes are then nested rather than consecutive, because this
-        client owns two sessions and ``ClientSession.close()`` can raise on a
-        connector whose transport the platform already tore down: as plain
-        consecutive statements, the first failure silently skipped the second.
-        Both still propagate -- a shutdown that swallows the error reports a
-        cleanup it did not perform.
+        The two closes are nested because ``ClientSession.close()`` can raise on a
+        connector the platform already tore down, and the first failure must not
+        skip the second. Both errors still propagate.
 
-        A leaked session keeps its connector and open sockets for the process
-        lifetime (aiohttp reports "Unclosed client session" at GC), and for the
-        download session also its ``_VettedResolver`` and that resolver's SSRF
-        pin map.
+        A leaked session keeps its connector and sockets for the process lifetime,
+        and for the download session also its ``_VettedResolver`` SSRF pin map.
         """
         self._closed = True
+        # Retire the registrations first, so nothing routes to a dispatcher that is
+        # going away while the turns below unwind.
+        if self.on_close is not None:
+            try:
+                self.on_close()
+            except Exception:
+                logger.debug("Teams on_close callback failed", exc_info=True)
         try:
             # Snapshot first: a cancelled handler's done-callback mutates the set.
             handler_tasks = list(self._handler_tasks)
@@ -765,7 +761,17 @@ class TeamsClient:
         Validates the bearer token (401 on failure) BEFORE processing, parses
         the Activity (400 on malformed), fast-acks with 200, and runs the turn
         in a background task so a long turn never times out the POST.
+
+        A CLOSED client refuses with 503 before any processing: the webhook
+        route is pre-registered and outlives the client, so a credential removal
+        that closes this client (``restart_channel`` leaving Teams
+        uncredentialed) must not keep running turns for authenticated,
+        allow-listed senders. The host also clears ``state.teams_on_activity``
+        on close, so this is defence in depth for a request already dispatched
+        to this bound method.
         """
+        if self._closed:
+            return web.Response(status=503, text="Teams channel is not running")
         auth = request.headers.get("Authorization", "")
         token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
         # request.remote is the peer IP when present (real aiohttp request); the
@@ -854,6 +860,14 @@ class TeamsClient:
             )
             return web.Response(status=200)
 
+        # Re-check closed AFTER every processing await (JWT verify, body read):
+        # a request that passed the entry guard can still be mid-flight when the
+        # client closes on a credential removal, and it is not yet in
+        # ``_handler_tasks`` so ``close()``'s cancel sweep cannot reach it.
+        # Without this recheck it would create and register the turn after close,
+        # running an agent turn for an allow-listed sender on a revoked channel.
+        if self._closed:
+            return web.Response(status=503, text="Teams channel is not running")
         task = asyncio.create_task(self._dispatch_activity(activity, claims))
         self._handler_tasks.add(task)
         task.add_done_callback(self._handler_tasks.discard)
@@ -966,12 +980,9 @@ class TeamsClient:
             raw_value = activity.get("value")
             raw_attachments = activity.get("attachments")
             attachments = list(raw_attachments) if isinstance(raw_attachments, list) else []
-            # Right-click -> Reply in a 1:1 chat prepends the QUOTED message to
-            # ``activity.text``, so the field everything downstream reads is the
-            # previous message with the user's own words tacked on the end. Prefer the
-            # clean text when the body attachment carries a Reply blockquote; the
-            # helper returns "" for any shape it does not recognise, so an unfamiliar
-            # client degrades to ``activity.text`` rather than losing the message.
+            # Right-click -> Reply prepends the QUOTED message to ``activity.text``.
+            # Prefer the clean text from the body's Reply blockquote; the helper returns
+            # "" for an unknown shape, so that client degrades to ``activity.text``.
             text = quoted_reply_text(attachments) or text
             inbound = TeamsInbound(
                 conversation_id=str(conversation.get("id", "")),
@@ -1134,11 +1145,9 @@ class TeamsClient:
         is what makes an agent-produced chart deliverable here at all. Built by
         :func:`kiro_crew.teams.attachments.inline_image_attachment`.
 
-        No ``text`` rides along, for the same reason ``send_card`` sends none:
-        Teams SPLITS an activity carrying both text and an attachment and withholds
-        the resulting id, so a combined send would land as two messages the caller
-        cannot address. Raises :class:`TeamsSendError` on failure -- the
-        caller must be able to tell the user the picture did not arrive.
+        No ``text`` rides along, for the same reason as in ``send_card``. Raises
+        :class:`TeamsSendError` on failure, so the caller can tell the user the
+        picture did not arrive.
         """
         result = await self._post_activity(
             conversation_id, service_url, {"type": "message", "attachments": [attachment]}
@@ -1342,20 +1351,15 @@ class TeamsClient:
     def _fit_activity(activity: dict[str, Any]) -> dict[str, Any]:
         """Tail-truncate an over-budget activity's text so the Connector accepts it.
 
-        The Connector sizes the WHOLE activity -- text plus the JSON envelope
-        (ids, serviceUrl, recipient) -- so the measurement happens here at the
-        wire, on the same ``ensure_ascii=False`` serialization the outbound
-        session uses, rather than at the character-counting splitter upstream.
-        An over-budget activity would come back HTTP 413 and that slice of the
-        answer would be lost (the dashboard mirror leg swallows the send error,
-        so silently); delivering the head with the tail cut is strictly better,
-        and the cut never splits a code point (``truncate_utf8``).
+        The Connector sizes the WHOLE activity, text plus JSON envelope, so it is
+        measured here on the same ``ensure_ascii=False`` serialization the session
+        sends. An over-budget activity would come back 413 and lose that slice of
+        the answer; delivering the head is better, and ``truncate_utf8`` never splits
+        a code point.
 
-        Pure: the caller's dict is never mutated -- a trimmed activity is a
-        shallow copy. An over-budget activity WITHOUT a text field (a card, an
-        inline image) is returned unchanged so the Connector's own refusal
-        stays visible; shrinking an attachment is not this guard's call. Only
-        byte counts are logged, never the text itself.
+        Pure: a trimmed activity is a shallow copy. One WITHOUT a text field (a card,
+        an inline image) is returned unchanged so the Connector's refusal stays
+        visible. Only byte counts are logged, never the text.
         """
         encoded = json.dumps(activity, ensure_ascii=False).encode("utf-8")
         if len(encoded) <= TEAMS_MAX_ACTIVITY_TEXT_BYTES:
@@ -1408,12 +1412,9 @@ class TeamsClient:
     ) -> dict[str, Any] | None:
         """Send/replace one activity, retrying the Connector's transient set.
 
-        Raises :class:`TeamsSendError` on any failure. Every caller treats a
-        successful return as proof of delivery -- the renderer records the answer
-        as sent, and a proactive leg reports it delivered -- so swallowing the
-        error here is what makes the gateway lie about a message the user never
-        saw. Callers that legitimately tolerate failure (typing, an in-place
-        edit) catch it explicitly at their own call site.
+        Raises :class:`TeamsSendError` on any failure: every caller treats a
+        successful return as proof of delivery. Callers that tolerate failure
+        (typing, an in-place edit) catch it at their own call site.
         """
         if not service_url or not conversation_id:
             raise TeamsSendError("missing service_url or conversation_id")
@@ -1475,10 +1476,8 @@ class TeamsClient:
                             (await resp.text())[:500],
                         )
                         raise TeamsSendError(f"HTTP {resp.status}", status=resp.status)
-                    # A delivered activity proves the credential and the route are
-                    # good, so it clears a stale failure badge. Without this edge
-                    # the dashboard stays red for the rest of the process after
-                    # one transient send error.
+                    # A delivered activity proves the credential and route are good,
+                    # so it clears a stale failure badge left by a transient error.
                     self._record_send_success()
                     try:
                         payload = await resp.json()
@@ -1500,18 +1499,19 @@ class TeamsClient:
     def _retry_delay(retry_after: str | None, attempt: int) -> float:
         """Seconds to wait before the next attempt.
 
-        Honors the Connector's ``Retry-After`` when it sends one -- Teams'
-        rate-limit guidance specifies it and the value is authoritative -- and
-        otherwise backs off exponentially. Deliberately unjittered: the retry
-        budget is 2 attempts against a per-conversation limit, so there is no
-        thundering herd to spread, and a deterministic delay keeps the wait
-        assertable in tests.
+        Honors the Connector's ``Retry-After`` (authoritative per Teams' rate-limit
+        guidance), else backs off exponentially. Unjittered: 2 retries against a
+        per-conversation limit have no herd to spread. A non-finite value counts as
+        absent: NaN passes through ``min``/``max`` and would make ``asyncio.sleep``
+        wait forever.
         """
         if retry_after:
             try:
-                return min(max(float(retry_after), 0.5), _RETRY_AFTER_CAP_SECS)
+                value = float(retry_after)
             except (TypeError, ValueError):
-                pass
+                value = math.nan
+            if math.isfinite(value):
+                return min(max(value, 0.5), _RETRY_AFTER_CAP_SECS)
         return min(0.5 * (2**attempt), _RETRY_AFTER_CAP_SECS)
 
     def _record_send_success(self) -> None:

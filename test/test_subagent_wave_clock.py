@@ -10,8 +10,9 @@ progress. Each pair reads one clock at both ends; this pins that a wall-clock st
 moves neither.
 
 The hold is driven through the real closure, each progress stamp through the real
-spawn or lost-submission method, and each sweep inside the real reaper loop. Every
-flush, reconcile, kill, release, prune and store call is a recorder. All state is
+spawn or lost-submission method, and each sweep inside the real reaper loop. A flush
+is read through a recording completion consumer and a reconcile through the wave's
+submitted count; every kill, release, prune and store call is a recorder. All state is
 under tmp_path (the conftest isolates the data home).
 """
 
@@ -83,14 +84,19 @@ async def _hold_one_member(clock: _SteppedClock) -> tuple[SubagentManager, Subag
 
 async def _reaper_tick(
     mgr: SubagentManager, clock: _SteppedClock, *, stuck_waves: bool = False
-) -> MagicMock:
-    """Run the real reaper loop on *clock* until one tick has run; return a recorder.
+) -> list[SubagentInfo]:
+    """Run the real reaper loop on *clock* until one tick has run.
 
-    The recorder belongs to the sweep under test: ``force_digest_flush`` for the digest
-    hold sweep, ``record_lost_submission`` for the stuck-wave sweep (*stuck_waves*). The
-    other sweep is a no-op, so a test reads one sweep.
+    Only the sweep under test runs; the other one is a no-op. The digest-hold sweep
+    announces through a recording completion consumer that stands in for the gateway's,
+    and the flush-only records it received are returned. With *stuck_waves* the
+    stuck-wave sweep runs instead, and its outcome is the wave's submitted count.
     """
-    recorder = MagicMock()
+    announced: list[SubagentInfo] = []
+
+    async def _record(info: SubagentInfo) -> None:
+        announced.append(info)
+
     pump = MagicMock()
     with contextlib.ExitStack() as stack:
         for patcher in (
@@ -108,15 +114,15 @@ async def _reaper_tick(
             patch.object(mgr, "release_conversation_async", AsyncMock(return_value=(True, "x"))),
         ):
             stack.enter_context(patcher)
+        stack.enter_context(patch.object(sa, "sel"))
         if stuck_waves:
             stack.enter_context(patch.object(mgr, "_sweep_digest_holds_async", new=AsyncMock()))
-            stack.enter_context(patch.object(mgr, "record_lost_submission", recorder))
         else:
             stack.enter_context(patch.object(mgr, "_sweep_stuck_waves_async", new=AsyncMock()))
             stack.enter_context(
                 patch.object(mgr, "batch_members_pending_async", new=AsyncMock(return_value=True))
             )
-            stack.enter_context(patch.object(mgr, "force_digest_flush", recorder))
+            stack.enter_context(patch.object(mgr, "_on_done", _record))
         task = asyncio.ensure_future(mgr._reaper_loop())
         try:
             await async_wait_until(
@@ -127,8 +133,9 @@ async def _reaper_tick(
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.wait_for(task, timeout=30.0)
+        await asyncio.wait_for(asyncio.gather(*mgr._tasks.values()), timeout=30.0)
     assert pump.call_count >= 2, "the reaper loop did not complete a tick"
-    return recorder
+    return [info for info in announced if info._digest_flush_only]
 
 
 @pytest.mark.asyncio
@@ -139,9 +146,8 @@ async def test_a_forward_wall_clock_step_does_not_flush_a_fresh_hold():
     clock = _SteppedClock()
     mgr, _held = await _hold_one_member(clock)
     clock.wall += 600.0
-    flush = await _reaper_tick(mgr, clock)
-    unexpected = flush.call_args
-    assert not flush.called, f"a fresh hold was force-flushed after a wall-clock step: {unexpected}"
+    flushes = await _reaper_tick(mgr, clock)
+    assert flushes == [], f"a fresh hold was force-flushed after a wall-clock step: {flushes}"
 
 
 @pytest.mark.asyncio
@@ -153,9 +159,10 @@ async def test_a_backward_wall_clock_step_does_not_keep_an_expired_hold():
     mgr, _held = await _hold_one_member(clock)
     clock.wall -= 3600.0
     clock.mono += sa.DIGEST_HOLD_SECS + 30
-    flush = await _reaper_tick(mgr, clock)
-    assert flush.called, "a hold older than the deadline was kept after a wall-clock step back"
-    assert {c.args[0] for c in flush.call_args_list} == {_WAVE}
+    flushes = await _reaper_tick(mgr, clock)
+    assert {(f.batch_id, f.parent_session_key) for f in flushes} == {
+        (_WAVE, _PARENT)
+    }, "a hold older than the deadline was kept after a wall-clock step back"
 
 
 @pytest.mark.asyncio
@@ -165,9 +172,10 @@ async def test_a_hold_past_its_deadline_still_flushes():
     mgr, _held = await _hold_one_member(clock)
     clock.wall += sa.DIGEST_HOLD_SECS + 30
     clock.mono += sa.DIGEST_HOLD_SECS + 30
-    flush = await _reaper_tick(mgr, clock)
-    assert flush.called, "a hold older than the deadline was not flushed"
-    assert {c.args[0] for c in flush.call_args_list} == {_WAVE}
+    flushes = await _reaper_tick(mgr, clock)
+    assert {(f.batch_id, f.parent_session_key) for f in flushes} == {
+        (_WAVE, _PARENT)
+    }, "a hold older than the deadline was not flushed"
 
 
 @pytest.mark.asyncio
@@ -175,8 +183,7 @@ async def test_a_fresh_hold_with_no_step_is_not_flushed():
     """Control: with no step and no time passed, the deadline is not reached."""
     clock = _SteppedClock()
     mgr, _held = await _hold_one_member(clock)
-    flush = await _reaper_tick(mgr, clock)
-    assert not flush.called
+    assert await _reaper_tick(mgr, clock) == []
 
 
 # ── the stuck-wave sweep ──────────────────────────────────────────────────────
@@ -212,8 +219,10 @@ def _wave_manager() -> SubagentManager:
     return SubagentManager(sessions=MagicMock(), ctx_builder=None)
 
 
-def _reconciled_waves(lost: MagicMock) -> set[str]:
-    return {call.args[0] for call in lost.call_args_list}
+# ``_count_one_submission`` leaves a wave at one of three submitted; one reconcile
+# counts one more lost member, and the fresh progress stamp keeps later ticks off it.
+_NOT_RECONCILED = [1, 3]
+_RECONCILED = [2, 3]
 
 
 @pytest.mark.asyncio
@@ -226,8 +235,10 @@ async def test_a_forward_wall_clock_step_does_not_reconcile_a_wave_that_just_pro
     mgr = _wave_manager()
     await _count_one_submission(mgr, clock, writer)
     clock.wall += sa._WAVE_STUCK_SECS + 60
-    lost = await _reaper_tick(mgr, clock, stuck_waves=True)
-    assert not lost.called, f"a wave that just progressed was reconciled: {lost.call_args}"
+    await _reaper_tick(mgr, clock, stuck_waves=True)
+    assert (
+        mgr._batch_submitted[_WAVE] == _NOT_RECONCILED
+    ), "a wave that just progressed was reconciled"
 
 
 @pytest.mark.asyncio
@@ -242,8 +253,8 @@ async def test_a_wave_stuck_past_the_window_is_reconciled_through_a_wall_clock_s
     await _count_one_submission(mgr, clock, writer)
     clock.wall -= 3600.0
     clock.mono += sa._WAVE_STUCK_SECS + 60
-    lost = await _reaper_tick(mgr, clock, stuck_waves=True)
-    assert _reconciled_waves(lost) == {_WAVE}, f"a stuck wave was not reconciled ({writer})"
+    await _reaper_tick(mgr, clock, stuck_waves=True)
+    assert mgr._batch_submitted[_WAVE] == _RECONCILED, f"a stuck wave was not reconciled ({writer})"
 
 
 @pytest.mark.asyncio
@@ -254,8 +265,8 @@ async def test_a_wave_stuck_past_the_window_is_reconciled_without_a_step():
     await _count_one_submission(mgr, clock, "lost-submission")
     clock.wall += sa._WAVE_STUCK_SECS + 60
     clock.mono += sa._WAVE_STUCK_SECS + 60
-    lost = await _reaper_tick(mgr, clock, stuck_waves=True)
-    assert _reconciled_waves(lost) == {_WAVE}
+    await _reaper_tick(mgr, clock, stuck_waves=True)
+    assert mgr._batch_submitted[_WAVE] == _RECONCILED
 
 
 @pytest.mark.asyncio
@@ -264,5 +275,5 @@ async def test_a_wave_that_just_progressed_is_not_reconciled_without_a_step():
     clock = _SteppedClock()
     mgr = _wave_manager()
     await _count_one_submission(mgr, clock, "lost-submission")
-    lost = await _reaper_tick(mgr, clock, stuck_waves=True)
-    assert not lost.called
+    await _reaper_tick(mgr, clock, stuck_waves=True)
+    assert mgr._batch_submitted[_WAVE] == _NOT_RECONCILED

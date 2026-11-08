@@ -17,21 +17,39 @@ const DEFAULT_GATEWAY_WAIT_MS = 30_000;
 // connection deadline on Windows. Keep the splash responsive through that cold
 // start without weakening the fail-fast child-exit path above.
 const WINDOWS_LOCAL_GATEWAY_WAIT_MS = 120_000;
+// An enterprise gateway checks the kiro login and loads the governance policy
+// before it binds (kiro_crew/enterprise_boot.py), and exits if either fails.
+// Their own limits: kiro-cli `--version` 10s and `whoami` 30s
+// (kiro_prerequisite_probe.py), the policy fetch 10s (governance
+// DEFAULT_FETCH_TIMEOUT_SECS). A signed-in user whose token refresh is slow
+// must not see "can't reach the gateway" while those run, so an enterprise
+// local gateway gets them on top of its ordinary budget, plus headroom. A
+// failed check still ends the wait at once: the child exits.
+const ENTERPRISE_PRE_BIND_CHECKS_MS = 50_000;
+const ENTERPRISE_PRE_BIND_HEADROOM_MS = 30_000;
 
 /**
  * Pick the readiness deadline for the connection being opened.
  *
- * Only the primary local gateway gets the extended Windows cold-start budget.
- * Connection tabs still fail on the ordinary deadline, and every spawned child
- * exit still wins immediately through `getFailure`.
+ * Only the primary local gateway gets the extended Windows cold-start budget,
+ * and, in an enterprise build, the pre-bind check budget on top. Connection
+ * tabs still fail on the ordinary deadline, and every spawned child exit still
+ * wins immediately through `getFailure`.
  *
- * @param {{platform?: string, watchSpawn?: boolean}} [o]
+ * @param {{platform?: string, watchSpawn?: boolean, edition?: string}} [o]
  * @returns {number}
  */
-function gatewayWaitTimeoutMs({ platform = process.platform, watchSpawn = false } = {}) {
-  return platform === "win32" && watchSpawn
+function gatewayWaitTimeoutMs({
+  platform = process.platform,
+  watchSpawn = false,
+  edition = "oss",
+} = {}) {
+  const base = platform === "win32" && watchSpawn
     ? WINDOWS_LOCAL_GATEWAY_WAIT_MS
     : DEFAULT_GATEWAY_WAIT_MS;
+  return watchSpawn && edition === "enterprise"
+    ? base + ENTERPRISE_PRE_BIND_CHECKS_MS + ENTERPRISE_PRE_BIND_HEADROOM_MS
+    : base;
 }
 
 /**
@@ -320,6 +338,8 @@ function isPortInUse(text) {
 module.exports = {
   DEFAULT_GATEWAY_WAIT_MS,
   WINDOWS_LOCAL_GATEWAY_WAIT_MS,
+  ENTERPRISE_PRE_BIND_CHECKS_MS,
+  ENTERPRISE_PRE_BIND_HEADROOM_MS,
   gatewayWaitTimeoutMs,
   waitForGateway,
   describeGatewayFailure,

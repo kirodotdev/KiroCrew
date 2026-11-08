@@ -19,14 +19,12 @@ import pytest
 from kiro_crew.acp._dispatch import parse_prompt_token_usage, parse_usage_cost
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.types import AcpPromptStats, TurnUsage
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_COPILOT
 
 # ── parse_usage_cost ─────────────────────────────────────────────────────
 
 
 class TestParseUsageCost:
-    def test_flat_cost_amount(self):
-        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": "USD"}}) == 0.42
-
     def test_nested_usage_cost_fallback(self):
         update = {"usage": {"used": 1, "size": 2, "cost": {"amount": 1.5}}}
         assert parse_usage_cost(update) == 1.5
@@ -66,32 +64,41 @@ class TestParseUsageCost:
     def test_malformed_degrades_to_absent(self, cost):
         assert parse_usage_cost({"cost": cost}) is None
 
-    def test_zero_amount_is_valid(self):
-        assert parse_usage_cost({"cost": {"amount": 0}}) == 0.0
-
-    def test_non_usd_currency_drops_cost(self):
-        # Consumers store the result in cost_usd fields — a non-USD amount
-        # must degrade to absent, never be mislabeled as USD.
-        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": "EUR"}}) is None
-
-    def test_absent_currency_is_lenient(self):
-        # Adapters that omit currency keep working; USD is assumed.
-        assert parse_usage_cost({"cost": {"amount": 0.42}}) == 0.42
-
-    def test_currency_match_is_case_sensitive_exact_usd(self):
-        # ISO 4217 codes are uppercase; a lowercase "usd" is treated as
-        # not-USD and drops the cost (exact-match posture, pinned).
-        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": "usd"}}) is None
-
-    def test_non_string_currency_drops_cost(self):
-        # A non-string currency value is present-and-not-"USD" → absent.
-        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": 42}}) is None
-
-    def test_explicit_null_currency_treated_as_absent(self):
-        # Policy: "present (not None)" — an explicit
-        # JSON null reads as the adapter omitting currency, so lenience applies.
-        # Pinned so a refactor to `"currency" in cost` can't silently flip it.
-        assert parse_usage_cost({"cost": {"amount": 0.42, "currency": None}}) == 0.42
+    @pytest.mark.parametrize(
+        ("cost", "expected"),
+        [
+            pytest.param({"amount": 0.42, "currency": "USD"}, 0.42, id="flat_cost_amount"),
+            pytest.param({"amount": 0}, 0.0, id="zero_amount_is_valid"),
+            # Consumers store the result in cost_usd fields — a non-USD amount
+            # must degrade to absent, never be mislabeled as USD.
+            pytest.param(
+                {"amount": 0.42, "currency": "EUR"}, None, id="non_usd_currency_drops_cost"
+            ),
+            # Adapters that omit currency keep working; USD is assumed.
+            pytest.param({"amount": 0.42}, 0.42, id="absent_currency_is_lenient"),
+            # ISO 4217 codes are uppercase; a lowercase "usd" is treated as
+            # not-USD and drops the cost (exact-match posture, pinned).
+            pytest.param(
+                {"amount": 0.42, "currency": "usd"},
+                None,
+                id="currency_match_is_case_sensitive_exact_usd",
+            ),
+            # A non-string currency value is present-and-not-"USD" → absent.
+            pytest.param(
+                {"amount": 0.42, "currency": 42}, None, id="non_string_currency_drops_cost"
+            ),
+            # Policy: "present (not None)" — an explicit JSON null reads as the
+            # adapter omitting currency, so lenience applies. Pinned so a refactor
+            # to `"currency" in cost` can't silently flip it.
+            pytest.param(
+                {"amount": 0.42, "currency": None},
+                0.42,
+                id="explicit_null_currency_treated_as_absent",
+            ),
+        ],
+    )
+    def test_currency_policy(self, cost, expected):
+        assert parse_usage_cost({"cost": cost}) == expected
 
     def test_nested_shape_currency_guard_applies(self):
         # The guard runs after the flat/nested resolution, so the nested
@@ -312,6 +319,25 @@ class TestClientTracking:
         u = client.last_prompt_stats.to_turn_usage()
         assert (u.input_tokens, u.output_tokens) == (100, 50)
         assert (u.cache_read_tokens, u.cache_creation_tokens) == (30, 20)
+
+    def test_copilot_prompt_usage_keeps_cache_out_of_input(self):
+        # Copilot CLI's inputTokens already holds its cache reads and writes (a
+        # recorded turn: 12690 = 12629 read + 58 written + 3 uncached), while the
+        # four counts a turn records are disjoint, as claude-agent-acp sends them.
+        client = _bare_client()
+        client._acp_backend = ACP_BACKEND_COPILOT
+        client._track_prompt_usage(
+            {
+                "stopReason": "end_turn",
+                "inputTokens": 12690,
+                "outputTokens": 6,
+                "cachedReadTokens": 12629,
+                "cachedWriteTokens": 58,
+            }
+        )
+        u = client.last_prompt_stats.to_turn_usage()
+        assert (u.input_tokens, u.output_tokens) == (3, 6)
+        assert (u.cache_read_tokens, u.cache_creation_tokens) == (12629, 58)
 
     def test_prompt_usage_kiro_response_is_noop(self):
         client = _bare_client()

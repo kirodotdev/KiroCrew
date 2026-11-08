@@ -1,14 +1,19 @@
 import { memo, useState, useEffect, useMemo, useRef, type ComponentType } from 'react'
-import { Hourglass } from 'lucide-react'
+import { Check, Circle, Hourglass, LoaderCircle, Minus } from 'lucide-react'
+import type { EnvironmentStart } from '../../components/sessionEnvironmentHooks'
 import { motion } from 'framer-motion'
 
 import { i18nT } from '../../i18n/t'
+import { fmtElapsed } from '../../i18n/format'
+import type { ChatMessage } from '../../types'
 import { GHOST_POSE_ICONS } from '../../components/GhostPoses'
 import { getThemeBranding } from '../../themeBranding'
 import { resolveThemeLoaderIcons } from '../../themeLoaderIcons'
 import { useOptionalTheme } from '../../hooks/useTheme'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
+import { useBrowserLiveInControl } from '../../hooks/useBrowserLive'
+import { PackLoaderImage } from './PackLoaderImage'
 type StopState = 'idle' | 'soft_pending' | 'killing'
 
 /** One carousel beat — the cadence the .csb4 cross-fade was built around. */
@@ -97,13 +102,24 @@ type LoaderAssets = {
   loaderImages?: readonly string[]
 }
 
+/** One component per loader-image URL. The footer resolves its loader on every
+ *  render, and a fresh component type each time would remount the image in its
+ *  carousel slot: an animated image restarts, and a held still frame goes blank
+ *  until it is painted again. */
+const loaderImageIcons = new Map<string, ComponentType>()
+
 /** A theme-supplied loader image (raster art the pack ships). Decorative: no alt
  *  text, aria-hidden, same sizing class as the mascot poses so it drops into the
- *  carousel unchanged. */
+ *  carousel unchanged, and held on its first frame under reduced motion. */
 function loaderImageIcon(url: string): ComponentType {
-  return function LoaderImage() {
-    return <img className="kp" src={url} alt="" aria-hidden="true" draggable={false} />
+  let Icon = loaderImageIcons.get(url)
+  if (!Icon) {
+    Icon = function LoaderImage() {
+      return <PackLoaderImage className="kp" src={url} />
+    }
+    loaderImageIcons.set(url, Icon)
   }
+  return Icon
 }
 
 /** The installed-pack slug behind an active theme id, or undefined for a built-in. */
@@ -244,15 +260,100 @@ export const STREAM_IDLE_MS = 700
  * One timer, re-armed on each tick: no polling interval, and nothing runs at all
  * once the stream is inactive.
  */
-export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM_IDLE_MS): boolean {
-  const [idle, setIdle] = useState(false)
+export function useStreamIdle(tick: number | string, active: boolean, ms: number = STREAM_IDLE_MS): boolean {
+  const [idle, setIdleState] = useState(false)
+  // Every tick re-arms the timer and clears `idle`; while text flows it is
+  // already false, so the ref skips the update instead of scheduling a render
+  // of the host on every tick.
+  const idleRef = useRef(false)
   useEffect(() => {
-    if (!active) { setIdle(false); return }
+    const setIdle = (v: boolean) => { if (idleRef.current !== v) { idleRef.current = v; setIdleState(v) } }
     setIdle(false)
+    if (!active) return
     const t = window.setTimeout(() => setIdle(true), ms)
     return () => window.clearTimeout(t)
   }, [tick, active, ms])
   return active && idle
+}
+
+/** Quiet time, past a slow first token, before the footer says a running turn has shown nothing new. */
+export const STALL_MS = 45_000
+
+const EMPTY_ACTIVITY_KEY = '0::0'
+
+/** Changes whenever the current turn visibly moves: a row lands, the newest row
+ *  changes role, or a row near the end grows (a reasoning burst grows a thinking
+ *  row that sits above the trailing streaming row). It reads only the newest
+ *  rows, so loading an older page above them leaves it unchanged. */
+export function transcriptActivityKey(messages: ReadonlyArray<Pick<ChatMessage, 'role' | 'content' | 'ts'>>): string {
+  if (messages.length === 0) return EMPTY_ACTIVITY_KEY
+  // shortcut: only the newest three rows are read, so growth further up is not
+  // seen; widen if a turn ever grows a row more than two rows from the end.
+  return messages.slice(-3).map(m => `${m.role}:${m.content.length}:${m.ts ?? ''}`).join('|')
+}
+
+function lastUserIndex(messages: ReadonlyArray<Pick<ChatMessage, 'role'>>): number {
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === 'user') return i
+  return -1
+}
+
+/** The current turn's opener is this tab's own optimistic send. */
+export function turnSentHere(messages: ReadonlyArray<Pick<ChatMessage, 'role' | 'meta'>>): boolean {
+  const i = lastUserIndex(messages)
+  return i >= 0 && !!messages[i].meta?.optimistic
+}
+
+/** Whether this view may watch the turn for a stall. A turn already running
+ *  when the view opened on its session (a reload, a switch, a split pane) is
+ *  read from a saved page, which cannot tell a quiet tool call from a stall,
+ *  so it is watched only once its transcript moves after the first loaded
+ *  key. A turn this view sent, or one that starts after the view
+ *  read an authoritative idle page (`activityKey` set while not running), is
+ *  watched at once. The store's running flag during a switch is provisional,
+ *  so a session change always starts as restored.
+ *  shortcut: a session already stuck when opened stays silent until it moves;
+ *  upgrade when the slot record carries the turn's live phase. */
+function useStallArmed(session: string, running: boolean, activityKey: string | undefined, sentHere: boolean): boolean {
+  const seen = useRef({ session, restored: true, base: undefined as string | undefined, moved: false })
+  if (seen.current.session !== session) seen.current = { session, restored: true, base: undefined, moved: false }
+  if (sentHere || (!running && activityKey !== undefined)) seen.current.restored = false
+  const s = seen.current
+  // The first key is the baseline, however few rows it has: a host passes no
+  // key until its authoritative page lands, so that page is not movement. A
+  // running turn always has its opener, so an empty transcript (a switch that
+  // failed and cleared it) is never that page.
+  if (s.restored && running && activityKey !== undefined && activityKey !== EMPTY_ACTIVITY_KEY) {
+    if (s.base === undefined) s.base = activityKey
+    else if (activityKey !== s.base) s.moved = true
+  }
+  return !s.restored || s.moved
+}
+
+/** When the turn last moved, once it has held still for `STALL_MS` while `active`; null until then. */
+function useStallSince(activityKey: string, active: boolean): number | null {
+  const stalled = useStreamIdle(activityKey, active, STALL_MS)
+  // The real time of the last move, not the notice's mount: a throttled
+  // background tab fires the timer late and must still show the true gap.
+  const lastMoveRef = useRef(0)
+  useEffect(() => { lastMoveRef.current = Date.now() }, [activityKey, active])
+  return stalled ? lastMoveRef.current : null
+}
+
+/** The sentence is a live region announced once; the ticking time opts out of
+ *  live announcements, including those from the surrounding transcript. */
+function StallNotice({ since }: { since: number }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [])
+  const elapsed = Math.floor(Math.max(STALL_MS, now - since) / 1000) * 1000
+  return (
+    <div data-testid="chat-footer-stall" className="mt-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[13px] text-muted">
+      <span role="status">{i18nT('pages.chat.chatFooter.stalled')}</span>
+      <span aria-live="off" className="tabular-nums" data-testid="chat-footer-stall-elapsed">{i18nT('pages.chat.chatFooter.stall_elapsed', { elapsed: fmtElapsed(elapsed, { wholeSeconds: true }) })}</span>
+    </div>
+  )
 }
 
 /** `streamIdleMs` is how long `streamTick` must hold still before a quiet
@@ -260,8 +361,29 @@ export function useStreamIdle(tick: number, active: boolean, ms: number = STREAM
  *  (ChatEmbed) passes a window wider than its poll interval, because its tick
  *  only advances once per poll and a shorter window would flash the indicator
  *  between every two reads of a reply that is still arriving. */
-const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS }: { running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean; streamIdleMs?: number }) {
+const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole, regenerating, stopState, streamTick = 0, sendUnconfirmed = false, streamIdleMs = STREAM_IDLE_MS, statusLabel, browserSessionKey = null, activityKey, sentHere = false, waitingOnUser = false }: {
+  running: boolean; stopping: boolean; state: string; lastRole: string; regenerating?: boolean; stopState?: StopState; streamTick?: number; sendUnconfirmed?: boolean; streamIdleMs?: number
+  /** `transcriptActivityKey(messages)` whenever the host's transcript is
+   *  authoritative (loaded, no switch in flight), running or not; a host may
+   *  pass it only while a turn runs. A host that passes it opts in to the
+   *  notice that the turn has shown nothing new for `STALL_MS`. */
+  activityKey?: string
+  /** `turnSentHere(messages)`: this tab sent the current turn, so its stall
+   *  watch starts at once even when the footer mounts with the turn running. */
+  sentHere?: boolean
+  /** The turn is parked on the person (a tool approval or a question card), so
+   *  its quiet is theirs to end and the stall notice stays off. */
+  waitingOnUser?: boolean
+  /** Replaces "Thinking…" while the turn is not yet thinking — a remote session
+   *  environment still starting (`useEnvironmentStartLabel`). */
+  statusLabel?: EnvironmentStart | null
+  /** The slot this footer stands under. While the person holds that session's
+   *  browser (BrowserLiveCard takeover) the line reads "Waiting for you to hand
+   *  the browser back" instead of "Thinking…", because the agent is not. */
+  browserSessionKey?: string | null
+}) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  const browserInControl = useBrowserLiveInControl(browserSessionKey)
   const slug = useThemeSlug()
   const themeState = useOptionalTheme()
   const packSlug = packSlugOf(slug)
@@ -278,6 +400,15 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
   // "still streaming", so the loader stayed hidden with nothing else moving.
   const streamingText = lastRole === 'streaming' && state === 'streaming'
   const streamQuiet = useStreamIdle(streamTick, streamingText, streamIdleMs)
+  // Off where the footer already names the wait (a tool, which may rightly run
+  // for many minutes, a stop, a compaction, an environment start, a browser
+  // hand-back), while the turn waits on the person, and while the newest send
+  // is unconfirmed.
+  const stallArmed = useStallArmed(browserSessionKey ?? '', running, activityKey, sentHere)
+  const stallWatched = stallArmed && activityKey !== undefined && running && !stopping && !sendUnconfirmed && !waitingOnUser
+    && !statusLabel && !browserInControl && state !== 'tool_running' && state !== 'compacting'
+    && stopState !== 'soft_pending' && stopState !== 'killing'
+  const stallSince = useStallSince(`${browserSessionKey ?? ''}:${activityKey ?? ''}`, stallWatched)
   // Hidden once the turn is inactive. While the turn RUNS the indicator shows for
   // thinking, tool calls, AND the gaps between steps: the backend keeps
   // slot.running true for the whole turn, so the post-tool gap stays covered
@@ -324,7 +455,9 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
           <div
             className="inline-flex items-center gap-2"
             role="status"
-            aria-label={i18nT('pages.chat.chatFooter.thinking')}
+            // The stage name only, not the ticking elapsed time, so assistive
+            // tech is not re-announced every second.
+            aria-label={browserInControl ? i18nT('pages.chat.browserLiveCard.waiting_for_hand_back') : statusLabel ? statusLabel.stage : i18nT('pages.chat.chatFooter.thinking')}
           >
             {/* A throwing theme loader must not reach the route-level boundary and
                 blank the chat; it renders nothing (the label alone then carries
@@ -336,23 +469,62 @@ const ChatFooter = memo(function ChatFooter({ running, stopping, state, lastRole
                 ? <loader.Component />
                 : loader.kind === 'image'
                   // The pack shipped a single image — rendered on its own, self-
-                  // animating if it's an animated WebP/APNG/GIF or SVG. Sized to a
-                  // carousel slot (14px) with object-contain so an intrinsically
-                  // large image cannot expand the footer band; decorative, so
-                  // aria-hidden + no alt.
-                  ? <img
+                  // animating if it's an animated WebP/APNG/GIF or SVG, and held on
+                  // its first frame under reduced motion. Sized to a carousel slot
+                  // (14px) with object-contain so an intrinsically large image
+                  // cannot expand the footer band; decorative, so aria-hidden + no alt.
+                  ? <PackLoaderImage
                       className="kp"
                       src={loader.src}
-                      alt=""
-                      aria-hidden="true"
-                      draggable={false}
                       style={{ width: 14, height: 14, objectFit: 'contain' }}
                     />
                   : <SwapCarousel icons={loader.icons} />}
             </ErrorBoundary>
             </span>}
-            <span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.chatFooter.thinking')}</span>
+            {/* A starting remote environment names its stage, with the elapsed
+                time, in place of "Thinking…". Either label is aria-hidden: the
+                status row's aria-label carries the accessible name. */}
+            {browserInControl
+              ? <span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.browserLiveCard.waiting_for_hand_back')}</span>
+              : statusLabel
+              ? <span aria-hidden="true" className="text-muted text-[13px] font-mono tabular-nums">{statusLabel.label}</span>
+              : <span aria-hidden="true" className="text-muted text-[13px] font-mono">{i18nT('pages.chat.chatFooter.thinking')}</span>}
           </div>
+        )}
+        {stallSince !== null && <StallNotice since={stallSince} />}
+        {statusLabel && !stopping && stopState !== 'soft_pending' && stopState !== 'killing' && (
+          // The whole start, not just its current stage: which steps are done,
+          // which one is running and for how long, and what is still ahead.
+          <ol className="m-0 mt-2 p-0 list-none grid gap-1" data-testid="environment-start-steps">
+            {statusLabel.steps.map((step) => (
+              <li
+                key={step.key}
+                className={`flex items-center gap-2 text-[12.5px] ${step.state === 'current' ? 'text-text' : 'text-muted'} ${step.state === 'pending' || step.state === 'skipped' ? 'opacity-60' : ''}`}
+                aria-current={step.state === 'current' ? 'step' : undefined}
+              >
+                {step.state === 'done' ? (
+                  <Check className="lucide-inline shrink-0 text-ok" aria-hidden />
+                ) : step.state === 'current' ? (
+                  <LoaderCircle className="lucide-inline shrink-0 text-accent motion-safe:animate-spin" aria-hidden />
+                ) : step.state === 'skipped' ? (
+                  <Minus className="lucide-inline shrink-0" aria-hidden />
+                ) : (
+                  <Circle className="lucide-inline shrink-0" aria-hidden />
+                )}
+                <span>{step.label}</span>
+                {step.state === 'current' && <span className="tabular-nums text-muted">{statusLabel.elapsed}</span>}
+                <span className="sr-only">
+                  {step.state === 'done'
+                    ? i18nT('sessionEnvironments.picker.stepDone')
+                    : step.state === 'skipped'
+                      ? i18nT('sessionEnvironments.picker.stepSkipped')
+                      : step.state === 'pending'
+                        ? i18nT('sessionEnvironments.picker.stepPending')
+                        : ''}
+                </span>
+              </li>
+            ))}
+          </ol>
         )}
       </div>
     </div>

@@ -1,28 +1,28 @@
 """Coverage for the untested helpers and small routes in ``chat_handlers``.
 
-Scope is deliberately the parts of the module no existing test file reaches:
-the context-meter number gate, the live model-switch path (``_wire_model_id`` /
-``_try_live_model_switch`` / ``_reapply_effort_after_live_switch``), the
-follow-up redaction + owner gate, the recent-projects store, and the small
-slot routes (color / context-inject / queue edit-cancel-reorder / workspace).
-
-Everything here is in-process: no subprocess, no git, no sandbox, no network.
-The two functions that would touch the real filesystem outside ``tmp_path``
-(``_recent_projects_path`` consumers) have ``config_dir`` redirected, and the
-one gate that is anchored on the *real* ``$HOME`` (``is_sensitive_path``) is
-injected rather than satisfied with a real credential directory.
+``_recent_projects_path`` consumers get ``config_dir`` redirected, and ``is_sensitive_path``
+(anchored on the real ``$HOME``) is injected rather than met with a real credential dir.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+from windows_sim import (
+    read_sharing_violation,
+    read_text_sharing_violation,
+    replace_sharing_violation,
+)
 
+from kiro_crew import atomic_write as aw
+from kiro_crew import platform_compat
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
@@ -73,12 +73,8 @@ def _app(state: DashboardState, method: str, path: str, handler) -> web.Applicat
 def _acp(*, backend=ACP_BACKEND_KIRO, **attrs):
     """An AcpProvider double that still satisfies ``isinstance``.
 
-    ``backend`` names which harness the double is talking to, and the double
-    carries the REAL capability record for it. ``_wire_model_id`` asks
-    ``SessionCapabilities.model_id_namespace`` rather than which backend it is, and
-    ``capabilities_of`` requires a genuine record -- a ``MagicMock(spec=...)``'s
-    attributes are all truthy, so an attribute-shaped flag would let the double
-    claim every capability at once.
+    It carries the real capability record for ``backend``: a ``MagicMock(spec=...)`` has
+    all-truthy attributes and would claim every capability.
     """
     provider = MagicMock(spec=AcpProvider)
     provider.capabilities = capabilities_for(backend)
@@ -395,12 +391,17 @@ class TestTryLiveModelSwitch:
 
 
 class TestBroadcastContextReset:
-    def test_no_provider_sends_a_zeroed_reset(self):
+    def test_no_provider_reset_carries_no_counts(self):
+        # No provider on the cold-reset path: no measurement to send, so the
+        # frame carries only {slot, reset}. The reducer keeps its stored `used`
+        # and the meter derives the percentage against the new model's window.
         state = _state()
         ch._broadcast_context_reset(state, "s1", None)
         state.broadcast_context_usage.assert_called_once()
         _, payload = state.broadcast_context_usage.call_args.args
-        assert payload == {"slot": "s1", "pct": 0.0, "reset": True}
+        assert payload == {"slot": "s1", "reset": True}
+        assert "pct" not in payload
+        assert "used_tokens" not in payload
 
     def test_live_provider_payload_carries_rebased_stats(self):
         state = _state()
@@ -415,6 +416,45 @@ class TestBroadcastContextReset:
         assert payload["slot"] == "s1"
         assert payload["pct"] == 7.2
         assert payload["reset"] is True
+        # A rebase that resolved the new window ships it, and the recomputed pct
+        # rides along as a real reading.
+        assert payload["window_tokens"] == 200_000
+
+    def test_live_provider_unknown_window_carries_used_not_pct(self):
+        # A rebase onto a model whose window is NOT yet known: window 0, but the
+        # transcript (and so `used`) is unchanged. The frame carries `used_tokens`
+        # and neither `pct` nor `window_tokens`, so the meter derives the
+        # percentage from `used` against the new model's window instead of
+        # pairing the old percentage with it.
+        state = _state()
+        provider = MagicMock()
+        provider.context_usage_pct = MagicMock(return_value=0.0)
+        provider.context_window_tokens = MagicMock(return_value=0)
+        provider.context_used_tokens = MagicMock(return_value=120_000)
+
+        ch._broadcast_context_reset(state, "s1", provider)
+
+        _, payload = state.broadcast_context_usage.call_args.args
+        assert payload == {"slot": "s1", "reset": True, "used_tokens": 120_000}
+        assert "pct" not in payload
+        assert "window_tokens" not in payload
+
+    def test_live_provider_unknown_window_and_used_clears(self):
+        # A percentage-only backend: neither a known window nor a `used` count.
+        # There is no honest number for the new window, so the frame carries no
+        # counts and the reducer clears the reading rather than guess.
+        state = _state()
+        provider = MagicMock()
+        provider.context_usage_pct = MagicMock(return_value=42.0)
+        provider.context_window_tokens = MagicMock(return_value=0)
+        provider.context_used_tokens = MagicMock(return_value=0)
+
+        ch._broadcast_context_reset(state, "s1", provider)
+
+        _, payload = state.broadcast_context_usage.call_args.args
+        assert payload == {"slot": "s1", "reset": True}
+        assert "pct" not in payload
+        assert "used_tokens" not in payload
 
     def test_broadcast_failure_is_swallowed(self):
         state = _state()
@@ -544,6 +584,132 @@ class TestRecentProjects:
             with pytest.raises(OSError):
                 ch._save_recent_project("/a")
         assert list(_recent_dir.glob("*.tmp")) == []
+
+    @staticmethod
+    def _seed(fp: Path) -> list[str]:
+        seed = [f"/seed{i}" for i in range(20)]
+        fp.write_text(json.dumps(seed), encoding="utf-8")
+        return seed
+
+    def test_a_read_that_keeps_failing_raises_and_leaves_the_list(self, _recent_dir, monkeypatch):
+        # A Windows sharing violation that outlasts the read retry: the save must not
+        # treat the unreadable file as empty and write one entry over the stored list.
+        # Both read spellings fault, so the assertion is about the save's handling of
+        # the error, not about which read call it happens to make.
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        fp = _recent_dir / "recent_projects.json"
+        self._seed(fp)
+        before = fp.read_bytes()
+        with read_sharing_violation(match=fp.name, times=10_000):
+            with read_text_sharing_violation(match=fp.name, times=10_000):
+                with pytest.raises(PermissionError):
+                    ch._save_recent_project("/new")
+        assert fp.read_bytes() == before
+        assert list(_recent_dir.glob("*.tmp")) == []
+
+    def test_a_transient_sharing_violation_is_retried_and_keeps_the_list(
+        self, _recent_dir, monkeypatch
+    ):
+        # The Windows read retry runs here on every host: one violation, then the read
+        # succeeds, and the save prepends to the full stored list.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        fp = _recent_dir / "recent_projects.json"
+        seed = self._seed(fp)
+        with read_sharing_violation(match=fp.name, times=1):
+            with read_text_sharing_violation(match=fp.name, times=1):
+                ch._save_recent_project("/new")
+        assert json.loads(fp.read_text(encoding="utf-8")) == ["/new", *seed]
+
+    def test_a_rename_sharing_violation_is_retried_and_the_save_lands(
+        self, _recent_dir, monkeypatch
+    ):
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        fp = _recent_dir / "recent_projects.json"
+        seed = self._seed(fp)
+        with replace_sharing_violation(match=fp.name, times=1):
+            ch._save_recent_project("/new")
+        assert json.loads(fp.read_text(encoding="utf-8")) == ["/new", *seed]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_the_saved_file_is_owner_only(self, _recent_dir):
+        ch._save_recent_project("/a")
+        mode = (_recent_dir / "recent_projects.json").stat().st_mode & 0o777
+        assert mode == 0o600
+
+    def test_the_save_loads_under_the_lock(self, _recent_dir):
+        # The save's read-modify-write holds _recent_projects_lock, so two saves cannot
+        # write back the same snapshot, and the picker read (below) waits for it.
+        real_load = ch._load_recent_projects
+        held: list[bool] = []
+
+        def spy_load():
+            held.append(ch._recent_projects_lock.locked())
+            return real_load()
+
+        with patch(f"{MOD}._load_recent_projects", side_effect=spy_load):
+            ch._save_recent_project("/a")
+        assert held == [True]
+
+    def test_overlapping_saves_keep_every_entry(self, _recent_dir):
+        fp = _recent_dir / "recent_projects.json"
+        seed = self._seed(fp)
+        paths = [f"/p{i}" for i in range(8)]
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                for _ in range(15):
+                    for p in paths:
+                        ch._save_recent_project(p)
+            except BaseException as exc:  # recorded for the assertion below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not any(t.is_alive() for t in threads), "a save thread never returned"
+        assert errors == []
+        stored = json.loads(fp.read_text(encoding="utf-8"))
+        assert sorted(stored) == sorted([*paths, *seed])
+
+    @pytest.mark.asyncio
+    async def test_the_picker_read_holds_the_lock(self, _recent_dir, _sel):
+        real = _recent_dir / "proj"
+        real.mkdir()
+        (_recent_dir / "recent_projects.json").write_text(json.dumps([str(real)]), "utf-8")
+        real_load = ch._load_recent_projects
+        held: list[bool] = []
+
+        def spy_load():
+            held.append(ch._recent_projects_lock.locked())
+            return real_load()
+
+        state = _state()
+        app = _app(state, "GET", "/api/recent-projects", ch.api_recent_projects)
+        with patch(f"{MOD}._load_recent_projects", side_effect=spy_load):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get("/api/recent-projects")
+                assert (await resp.json())["dirs"] == [str(real)]
+        assert held == [True]
+
+    @pytest.mark.asyncio
+    async def test_endpoint_answers_empty_when_the_read_keeps_failing(
+        self, _recent_dir, _sel, monkeypatch
+    ):
+        monkeypatch.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0)
+        fp = _recent_dir / "recent_projects.json"
+        self._seed(fp)
+        state = _state()
+        app = _app(state, "GET", "/api/recent-projects", ch.api_recent_projects)
+        with read_sharing_violation(match=fp.name, times=10_000):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get("/api/recent-projects")
+                assert resp.status == 200
+                assert (await resp.json())["dirs"] == []
 
     @pytest.mark.asyncio
     async def test_endpoint_drops_missing_and_non_string_entries(self, _recent_dir, _sel):

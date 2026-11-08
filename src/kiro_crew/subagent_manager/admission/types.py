@@ -14,6 +14,20 @@ if TYPE_CHECKING:
 #: can tell "nothing was accepted, retry later" from a policy refusal.
 TASK_STORE_UNAVAILABLE_CODE = "task_store_unavailable"
 
+#: The ``cause`` of the tombstone a persisted spawn refused BEFORE its row was
+#: claimed writes (``write_refusal_tombstone``). It is distinct from every cause
+#: a run that started can leave behind, so the boot reconcile's queued pass can
+#: settle a ``queued`` row on it (and on the queued-stop marker below) and on
+#: nothing else: a ``queued`` row may be one an earlier attempt already ran, and
+#: that attempt's ending is not this row's.
+REFUSAL_TOMBSTONE_CAUSE = "refused"
+
+#: The ``cause`` of the tombstone a queued stop writes when its store cancel did
+#: not land (``write_queued_stop_tombstone``). Like the refusal marker it is
+#: distinct from every cause a run that started can leave behind, so the boot
+#: reconcile settles a ``queued`` or ``admitted`` row on it, ``cancelled``.
+QUEUED_STOP_TOMBSTONE_CAUSE = "queued_stop"
+
 #: The shortest delay an admission re-check timer whose delay derives from
 #: ``admit_wait_secs`` or a row's wake is armed with: the pump's waiting-row
 #: wake and the retained-claim and boundary-cancel retries. A delay that reaches
@@ -115,6 +129,11 @@ def tombstone_terminal_state(cause: str, outcome: str = "") -> str | None:
         "stage_cancel": taskq.CANCELLED,
         "cancelled": taskq.CANCELLED,
         "error": taskq.FAILED,
+        # A spawn refused before its row was claimed: ``failed`` to every
+        # reader; the boot reconcile's probe answers it as ``REFUSED`` first.
+        REFUSAL_TOMBSTONE_CAUSE: taskq.FAILED,
+        # A queued run stopped before it started; the probe answers ``STOPPED`` first.
+        QUEUED_STOP_TOMBSTONE_CAUSE: taskq.CANCELLED,
         "timeout": taskq.FAILED,
         "turn_limit": taskq.FAILED,
         "child_escalation_limit": taskq.FAILED,
@@ -257,6 +276,10 @@ class QueuedRun:
     ``recovering`` row after a gateway restart (``RESUMING_AFTER_RESTART``) or a
     ``retry_wait`` row that ran before (``RESUMING_RETRY``). It is not "not
     started", and a reader must not call it that.
+
+    ``state`` is the task-store state of the row it was read from (``queued``,
+    ``retry_wait``, ``recovering``, ``admitted``), and empty for an entry held only
+    in memory, which has no row.
     """
 
     id: str
@@ -268,6 +291,7 @@ class QueuedRun:
     reason: str = ""
     reason_detail: str = ""
     resuming: str = ""
+    state: str = ""
 
 
 class QueuedReadUnavailable(Exception):

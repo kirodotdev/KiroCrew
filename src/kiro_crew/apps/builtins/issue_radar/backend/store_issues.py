@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write, read_json_or
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry, read_json_or
 
 from .store_ai import delete_issue_ai_cache
 from .store_repos import logger, repo_data_dir
@@ -57,7 +57,7 @@ def issues_cache_lock(owner: str, repo: str, root: Path | None = None, state: st
     path = issues_cache_path(owner, repo, root, state)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(".json.lock")
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
@@ -77,7 +77,7 @@ def issue_write_lock(owner: str, repo: str, number: int, root: Path | None = Non
     the network call, which is the point: ordering the writes is what matters."""
     path = repo_data_dir(owner, repo, root) / f"issue-{int(number)}.write.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch(exist_ok=True)
+    path.touch(mode=0o600, exist_ok=True)
     with open(path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
@@ -223,8 +223,8 @@ def read_issues_cache(
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict) or data.get("schema") != ISSUES_CACHE_SCHEMA:
         return None  # stale schema → treat as a miss so the route refetches
@@ -273,8 +273,8 @@ def read_issue_detail_cache(
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict):
         return None
@@ -328,8 +328,8 @@ def read_ref_summary_cache(
         except OSError:
             return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict):
         return None
@@ -353,8 +353,8 @@ def _load_list_cache(
     if not path.is_file():
         return None, path
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None, path
     return (data if isinstance(data, dict) else None), path
 
@@ -372,11 +372,11 @@ def apply_label_change_to_caches(
     dpath = issue_detail_cache_path(owner, repo, number, root)
     if dpath.is_file():
         try:
-            d = json.loads(dpath.read_text(encoding="utf-8"))
+            d = json.loads(read_bytes_with_retry(dpath).decode("utf-8"))
             if isinstance(d, dict) and isinstance(d.get("detail"), dict):
                 d["detail"]["labels"] = label_objs
                 atomic_write(dpath, json.dumps(d, indent=2))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             pass
 
     for st in ("open", "closed"):
@@ -412,12 +412,12 @@ def apply_state_change_to_caches(
     dpath = issue_detail_cache_path(owner, repo, number, root)
     if dpath.is_file():
         try:
-            d = json.loads(dpath.read_text(encoding="utf-8"))
+            d = json.loads(read_bytes_with_retry(dpath).decode("utf-8"))
             if isinstance(d, dict) and isinstance(d.get("detail"), dict):
                 d["detail"]["state"] = state
                 d["detail"]["state_reason"] = state_reason
                 atomic_write(dpath, json.dumps(d, indent=2))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             pass
 
     drop_from = "open" if state == "closed" else "closed"
@@ -445,11 +445,11 @@ def apply_assignees_change_to_caches(
     dpath = issue_detail_cache_path(owner, repo, number, root)
     if dpath.is_file():
         try:
-            d = json.loads(dpath.read_text(encoding="utf-8"))
+            d = json.loads(read_bytes_with_retry(dpath).decode("utf-8"))
             if isinstance(d, dict) and isinstance(d.get("detail"), dict):
                 d["detail"]["assignees"] = logins
                 atomic_write(dpath, json.dumps(d, indent=2))
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
             pass
 
     for st in ("open", "closed"):

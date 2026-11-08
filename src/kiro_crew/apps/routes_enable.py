@@ -40,8 +40,10 @@ from kiro_crew.apps.manager import (
     get_app,
 )
 from kiro_crew.apps.manifest import Dependencies, PlatformConfig
-from kiro_crew.apps.registry import minimal_env
+from kiro_crew.apps.point_grants import point_grant_families
+from kiro_crew.apps.registry import _manifest_shell_platform_refusal, minimal_env
 from kiro_crew.apps.routes_lifecycle import (
+    _backend_platform_refusal,
     _deregister_app_off_loop,
     _redact_warning,
     _refuse_while_startup_hook_runs,
@@ -281,7 +283,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         return denied
 
     name = request.match_info["name"]
-    info = get_app(name)
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 
@@ -297,14 +299,18 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             # same "no body" path as malformed JSON, not a 500.
             pass
     session_approval_consent = body.get("sessionApprovalConsent") is True
-    # The entries the owner was shown, as {"api": [...], "events": [...]}.
+    # Whether the disclosure the owner confirmed named member threads. Consent
+    # covers only what was shown, so it travels with the request rather than
+    # being inferred from the manifest at write time (``enable_app``).
+    member_threads_consent = session_approval_consent and body.get("memberThreadsConsent") is True
+    # The entries the owner was shown, as {"api": [...], "events": [...], ...}.
     # Anything else approves nothing: a bare flag cannot say what was seen.
     raw_grants = body.get("grantsConsent")
     grants_consent: dict[str, list[str]] | None = None
     if isinstance(raw_grants, dict):
         grants_consent = {
             family: [e for e in raw_grants.get(family) or [] if isinstance(e, str)]
-            for family in ("api", "events")
+            for family in ("api", "events", *point_grant_families())
             if isinstance(raw_grants.get(family) or [], list)
         }
     if session_approval_consent or grants_consent is not None:
@@ -320,7 +326,17 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     resources = info.get("resources", "gateway")
     manifest = info.get("manifest", {})
     on_enable = (manifest.get("setup") or {}).get("onEnable", "")
-    enable_timeout = int((manifest.get("setup") or {}).get("onEnableTimeout", 30))
+    # The record carries the timeout as `int()` read it, the form the signature
+    # covers; the 1..300 bound is applied (and a clamp logged) here, where the script
+    # runs under the app lifecycle lock. A local import keeps this helper out of the
+    # names the routes facade serves from this module.
+    from kiro_crew.apps.manifest import lifecycle_timeout_seconds
+
+    enable_timeout = lifecycle_timeout_seconds(
+        (manifest.get("setup") or {}).get("onEnableTimeout"),
+        app_name=name,
+        field_name="onEnableTimeout",
+    )
 
     # Per-app lifecycle lock: enable mutates metadata, registers resources,
     # and starts the backend — must not interleave with a concurrent
@@ -329,11 +345,12 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     async with app_lifecycle_lock(name):
         # A re-enable repeats every step but the Python hooks: the flag does not prove
         # onEnable ran (a file-only CLI enable skips it), while hook_reconcile loads hooks.
-        was_enabled = app_enabled_state(name) is True
+        was_enabled = await asyncio.to_thread(app_enabled_state, name) is True
         result = await asyncio.to_thread(
             enable_app,
             name,
             session_approval_consent=session_approval_consent,
+            member_threads_consent=member_threads_consent,
             grants_consent=grants_consent,
         )
         if not result.ok:
@@ -367,6 +384,11 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             resp["registration"] = reg.to_dict()
             if backend:
                 resp["backend"] = backend.to_dict()
+            # A native-Windows exec backend is refused with the same None as "no
+            # backend"; name the refusal so the enable does not read as a clean start.
+            backend_refused = await _backend_platform_refusal(name, backend)
+            if backend_refused:
+                resp["backend_refused"] = backend_refused
 
         # Resolve declared dependencies (if any)
         deps_data = manifest.get("dependencies")
@@ -542,7 +564,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     name = request.match_info["name"]
-    info = get_app(name)
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 
@@ -556,7 +578,7 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         if startup_refusal is not None:
             return startup_refusal
         # Teardown decides whether app code may run from `enabled`; read it under the lock.
-        if (enabled := app_enabled_state(name)) is not None:
+        if (enabled := await asyncio.to_thread(app_enabled_state, name)) is not None:
             info = {**info, "enabled": enabled}
 
         # `onDisable` is NOT run here: it runs inside `teardown_app_runtime`
@@ -596,7 +618,13 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         # multi-word builtin, which is all of them but `meetings`, `mochi` and
         # `papyrus`.
         module_name = name.replace("-", "_")
-        if module_name in BUILTIN_NAMES:
+        from kiro_crew.apps.builtin_adoption import builtin_package_released
+
+        # An adopted app's hooks are its own; the wheel package's must not run. The
+        # check walks the shipped manifests, so it runs off the loop.
+        if module_name in BUILTIN_NAMES and not await asyncio.to_thread(
+            builtin_package_released, module_name
+        ):
             try:
                 mod = importlib.import_module(f"kiro_crew.apps.builtins.{module_name}")
                 if hasattr(mod, "on_disable"):
@@ -659,8 +687,10 @@ async def handle_open_app(request: web.Request) -> web.Response:
     the manifest can declare an ``openCommand`` shell string that
     launches the app.  This endpoint executes it in the background.
 
-    On cloud/remote environments (no display), returns the command
-    for the user to run locally instead of executing it.
+    On cloud/remote environments (no display, and on Linux no desktop session
+    the user's systemd manager names), returns the command for the user to run
+    locally instead of executing it. On native Windows, which has no
+    ``/bin/sh``, answers 409 ``app_open_unsupported_platform``.
     """
     # local import: avoids a circular import with dashboard.handlers
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -669,7 +699,7 @@ async def handle_open_app(request: web.Request) -> web.Response:
     if owner_denied is not None:
         return owner_denied
     name = request.match_info["name"]
-    info = get_app(name)
+    info = await asyncio.to_thread(get_app, name)
     if not info:
         return web.json_response({"error": f"app {name!r} not found"}, status=404)
 
@@ -698,6 +728,23 @@ async def handle_open_app(request: web.Request) -> web.Response:
     if denied:
         return web.json_response({"error": denied, "code": "app_execution_denied"}, status=403)
 
+    # Native Windows has no /bin/sh to launch the command through. Refuse here,
+    # before the display test below: a Windows desktop sets no DISPLAY, so it would
+    # read as a remote host and be handed a POSIX command to "run locally".
+    platform_refusal = _manifest_shell_platform_refusal()
+    if platform_refusal:
+        error = f"openCommand not run: {platform_refusal}"
+        sel().log_api_access(
+            caller="dashboard",
+            operation="app_open",
+            outcome="denied",
+            resources=name,
+            error=error,
+        )
+        return web.json_response(
+            {"error": error, "code": "app_open_unsupported_platform"}, status=409
+        )
+
     # Detect cloud/remote — no DISPLAY and not macOS desktop
     import platform
 
@@ -706,8 +753,15 @@ async def handle_open_app(request: web.Request) -> web.Response:
         or os.environ.get("DISPLAY")
         or os.environ.get("WAYLAND_DISPLAY")
     )
-
+    # The installed Linux service is a system unit, so its own environment
+    # names no display server even on a desktop host. The checked session the
+    # user's systemd manager names decides there instead (the same lookup the
+    # file manager uses), and it holds no bus address.
+    session: dict[str, str] = {}
     if not is_local:
+        session = await asyncio.to_thread(platform_compat._user_manager_desktop_session)
+
+    if not (is_local or session):
         return web.json_response(
             {
                 "ok": False,
@@ -736,7 +790,8 @@ async def handle_open_app(request: web.Request) -> web.Response:
         # display, authority-file or bus address -- and this endpoint only
         # reaches the spawn on a host that HAS a display, so the location hints
         # in ``_OPEN_COMMAND_DESKTOP_ENV_KEYS`` are copied on top, each only
-        # when the parent actually defines it.
+        # when the parent defines it or, when the parent names no display,
+        # when the desktop session does.
         # The allowlist is shared with the install and build commands, which run
         # git against the owner's own repositories, so it carries the SSH agent
         # socket. A launcher does not need it, and an app-authored shell holding
@@ -745,7 +800,7 @@ async def handle_open_app(request: web.Request) -> web.Response:
         # home and the askpass hook.
         launch_env = scrub_env(minimal_env())
         for desktop_key in _OPEN_COMMAND_DESKTOP_ENV_KEYS:
-            desktop_value = os.environ.get(desktop_key)
+            desktop_value = session.get(desktop_key, os.environ.get(desktop_key))
             if desktop_value is not None:
                 launch_env[desktop_key] = desktop_value
         proc = await create_subprocess_limited(

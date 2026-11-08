@@ -1445,7 +1445,7 @@ export const opsApi = {
     req<{
       summary: Record<string, number>
       sync: { pull: string; push: string }
-      index: { scanned: number; written: number; skipped: number; embedded: number }
+      index: { scanned: number; written: number; skipped: number }
       incidents_pruned: number
       changed: boolean
     }>('/ledger/hygiene', { method: 'POST' }),

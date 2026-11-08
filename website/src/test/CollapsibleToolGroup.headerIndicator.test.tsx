@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest'
 import { render } from '@testing-library/react'
 import CollapsibleToolGroup from '../pages/chat/CollapsibleToolGroup'
+import RecoveryCard, { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
 
 const headerOf = (c: HTMLElement) => c.querySelector<HTMLButtonElement>('button[aria-expanded]')!
 
@@ -50,6 +51,21 @@ describe('CollapsibleToolGroup — the header keeps its own chrome and states', 
     expect(btn.className).toMatch(/\bring-border\b/)
     expect(btn.querySelector('.animate-pulse')).not.toBeNull()
     expect(btn.querySelector('svg.lucide-chevron-right')).toBeNull()
+  })
+
+  it('settled: shares the recovery card header step so stacked chevrons line up', () => {
+    const group = render(<CollapsibleToolGroup count={2}><div>row</div></CollapsibleToolGroup>)
+    const groupBtn = headerOf(group.container)
+    const parsed = parseRecoveryMessage('[Empty response — automatic recovery]\nbody')!
+    const card = render(<RecoveryCard parsed={parsed} />)
+    const cardBtn = card.getByTestId('recovery-card-toggle')
+    const padX = (cls: string) => cls.split(/\s+/).filter(c => /^(px|pl|pr)-/.test(c)).sort()
+    expect(padX(groupBtn.className)).toEqual(['px-3'])
+    expect(padX(groupBtn.className)).toEqual(padX(cardBtn.className))
+    const groupChevron = groupBtn.querySelector('svg.lucide-chevron-right')!
+    const cardChevron = cardBtn.querySelector('svg.lucide-chevron-right')!
+    expect(groupChevron.getAttribute('width')).toBe('13')
+    expect(groupChevron.getAttribute('width')).toBe(cardChevron.getAttribute('width'))
   })
 
   it('carries the a11y contract: aria-expanded plus a verb-led name', () => {

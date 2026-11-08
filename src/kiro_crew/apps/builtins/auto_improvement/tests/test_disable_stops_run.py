@@ -107,11 +107,17 @@ async def test_disabling_the_app_stops_an_active_run(
             driver._release.is_set()
         ), "disabling the app did not ask the driver to stop — the run kept going"
         # The released driver returns at once, so the join inside `stop` observes a
-        # finished thread and the terminal status is DONE. (STOPPING would be the
-        # honest answer only if a real measurement outran the join timeout.)
+        # finished thread and the terminal status is STOPPED, not DONE: the run ended
+        # because it was asked to, and must not read as a normal finish.
+        # (STOPPING would be the honest answer only if a real measurement outran the
+        # join timeout.)
+        status = _fresh_singleton.status()
         assert (
-            _fresh_singleton.status()["status"] == runner.STATUS_DONE
+            status["status"] == runner.STATUS_STOPPED
         ), "the run supervisor was not stopped when the app was disabled"
+        assert not status["error"]
+        assert status["finished_at"] > 0
+        assert status["activity"][-1]["note"] == "run stopped"
     finally:
         driver.request_stop()
         _fresh_singleton.stop()

@@ -1,9 +1,10 @@
-"""``kirocrew app``: install, import, list, enable, disable, uninstall and inspect apps.
+"""``kirocrew app``: install, import, list, enable, update, disable, uninstall and inspect apps.
 
 ``_handle_app`` dispatches every verb, ``dev``, ``info``, ``init`` and ``mcp`` (serve an
 app's MCP server, ``_run_app_mcp_server``) included. A lifecycle change goes through a
 running gateway when one answers (``_apply_through_gateway``); otherwise it is applied
-to the files alone, ``enable`` and ``disable`` say so (``_print_file_only_app_result``),
+to the files alone (``update`` has no file-only form and refuses), ``enable`` and
+``disable`` say so (``_print_file_only_app_result``),
 and the backend, cron and hook follow-ups are applied or warned about here.
 
 An owner of the mirror facade ``kiro_crew.cli_commands``: callers and tests reach every
@@ -99,7 +100,8 @@ def _apply_through_gateway(
     except app_lifecycle_client.AppGatewayError as exc:
         if action == "enable" and exc.code == _SESSION_APPROVAL_CONSENT_REQUIRED:
             _refuse_session_approval_from_cli(subject)
-        print(f"❌ gateway refused: {exc}. {hint}", file=sys.stderr)
+        # A refusal that already ends its sentence would otherwise print "..".
+        print(f"❌ gateway refused: {str(exc).rstrip('.')}. {hint}", file=sys.stderr)
         sys.exit(1)
     if result is None:
         return False
@@ -110,14 +112,69 @@ def _apply_through_gateway(
 
 
 def _print_file_only_app_result(app_name: str, *, enabled: bool) -> None:
-    """Report a persisted lifecycle change without claiming it is live."""
+    """Report a file-only lifecycle change: what a running gateway re-reads, and what waits."""
     state = "enabled" if enabled else "disabled"
-    print(
-        f"✅ Recorded {app_name} as {state}. No running gateway was reached, so "
-        "this takes effect at the next gateway start (on Windows and in sandboxed "
-        "shells the CLI always uses this path). If a gateway is running now, apply "
-        "it live from the dashboard."
+    crons, backend = ("picks up", "start") if enabled else ("drops", "stop")
+    message = (
+        f"✅ Recorded {app_name} as {state}. No running gateway was reached, so this "
+        "takes effect at the next gateway start, except that a gateway already running "
+        "(on Windows and in sandboxed shells the CLI always uses this path) "
+        f"{crons} the app's crons and hooks within a minute."
     )
+    # Only an app with a backend process has anything a restart would change.
+    if _app_declares_backend(app_name):
+        message += (
+            f" Its backend process still {backend}s only at that next start; restart the "
+            f"gateway to {backend} it now."
+        )
+    print(message)
+
+
+def _register_unrecorded_builtin(app_name: str) -> None:
+    """Write the shipped builtins' records when *app_name* is one that has none yet.
+
+    Only a gateway start registers the shipped builtins, so in a data home no
+    gateway has started in a builtin has no record, and a file-only enable or
+    disable would call it not installed. This writes what that next start
+    writes anyway, and nothing for a name no builtin ships under.
+    """
+    # Call-time import: a module-level import would make this module serve these
+    # names through the ``cli_commands`` facade it does not own.
+    from kiro_crew.apps.manager import register_builtin_apps, shipped_builtin_names
+
+    if app_name in shipped_builtin_names() and get_app(app_name) is None:
+        register_builtin_apps()
+
+
+def _refuse_unsafe_app_name(app_name: str) -> None:
+    """Exit 1 when *app_name* is not a single app directory name.
+
+    Runs before any cleanup step. The crons, skills and agents an app owns are
+    found by joining its name onto a data-home path, so an empty name, ``.`` or a
+    name with a separator or ``..`` would point that cleanup at the wrong place.
+    """
+    # Call-time imports: a module-level import would make this module serve
+    # these names through the ``cli_commands`` facade it does not own.
+    from pathlib import PurePosixPath, PureWindowsPath
+
+    from kiro_crew.apps.manager import _check_path_safety
+
+    # Both path flavours, whatever this host is: a Windows drive spec such as
+    # ``C:`` has no separator, yet joining it changes the drive.
+    one_component = all(
+        flavour(app_name).name == app_name for flavour in (PurePosixPath, PureWindowsPath)
+    )
+    if app_name in ("", ".") or not one_component or not _check_path_safety(app_name):
+        print(f"❌ unsafe app name: {app_name!r}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _deregister_or_report(app_name: str) -> bool:
+    """Deregister *app_name*'s resources; print each failure and return False on any."""
+    reg = deregister_app(app_name)
+    for err in reg.errors:
+        print(f"❌ {app_name}: {err}", file=sys.stderr)
+    return not reg.errors
 
 
 _SESSION_APPROVAL_CONSENT_REQUIRED = "session_approval_consent_required"
@@ -127,6 +184,10 @@ _SESSION_APPROVAL_DESC = (
     "Can send messages and choose response options in your chats, approve or deny "
     "tool prompts, and switch a chat's approval mode."
 )
+# The dashboard's line for ``permissions.memberThreads``
+# (``pages.appDetailPage.session_approval_member_threads``), shown only when the manifest
+# declares that scope beside the grant.
+_MEMBER_THREADS_DESC = "This includes your own chats with your Bots."
 
 
 def _refuse_session_approval_from_cli(app_name: str) -> NoReturn:
@@ -148,6 +209,10 @@ def _refuse_session_approval_from_cli(app_name: str) -> NoReturn:
         manifest = get_app_manifest(app_name)
     except Exception:  # noqa: BLE001 - an unreadable manifest must not hide the link
         manifest = None
+    if manifest is not None and manifest.permissions.memberThreads:
+        # A second line of the Chats entry, as the dashboard shows it inside the
+        # same box: the scope widens that grant and is not a grant of its own.
+        print(f"              {_MEMBER_THREADS_DESC}", file=sys.stderr)
     if manifest is not None:
         # Manifest text is app-authored, so every line goes through the sanitizer.
         for line in format_permissions_summary(manifest).splitlines():
@@ -486,16 +551,18 @@ def _handle_app(args: argparse.Namespace) -> None:
         result = install_app(args.source)
         if result.ok:
             print(f"✅ {result.message}")
-            reg = register_app(result.name)
-            if reg.agents:
-                print(f"   Agents: {', '.join(reg.agents)}")
-            if reg.skills:
-                print(f"   Skills: {', '.join(reg.skills)}")
-            if reg.crons:
-                print(f"   Crons:  {', '.join(reg.crons)}")
-            if reg.errors:
-                for e in reg.errors:
-                    print(f"   ⚠️  {e}")
+            # NOT registered here, the gateway install route's rule
+            # (``apps.routes_lifecycle._app_may_run_after_install``): the record is
+            # written disabled, and registering a disabled app publishes its
+            # agents, skills, MCP servers and crons for an app nobody enabled.
+            # ``app enable`` registers them. An app that waits for session-approval
+            # consent can only be enabled from the dashboard, which gives it.
+            info = get_app(result.name)
+            if info and info.get("sessionApprovalConsentPending"):
+                print(
+                    "   This app asks for session approval, so it stays off until "
+                    "enabled from the dashboard."
+                )
             print(f"\n   Run: kirocrew app enable {result.name}")
         else:
             print(f"❌ {result.error}", file=sys.stderr)
@@ -509,14 +576,18 @@ def _handle_app(args: argparse.Namespace) -> None:
         print(f"{'NAME':<25} {'VERSION':<10} {'STATUS':<10} {'DISPLAY NAME'}")
         for app in apps:
             status = "enabled" if app.get("enabled") else "disabled"
+            # Every cell prints the same way, on one line, so a stored value
+            # holding a newline or control character cannot break the table.
             print(
-                f"{app['name']:<25} {app.get('version', '?'):<10} "
-                f"{status:<10} {app.get('displayName', '')}"
+                f"{safe_terminal_line(str(app['name'])):<25} "
+                f"{safe_terminal_line(str(app.get('version', '?'))):<10} "
+                f"{status:<10} {safe_terminal_line(str(app.get('displayName', '')))}"
             )
 
     elif action == "enable":
         if _run_app_action_through_gateway("enable", args.name):
             return
+        _register_unrecorded_builtin(args.name)
         result = enable_app(args.name)
         if result.ok:
             reg = register_app(args.name)
@@ -533,9 +604,40 @@ def _handle_app(args: argparse.Namespace) -> None:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
 
+    elif action == "update":
+        source = getattr(args, "source", None)
+        if source is not None and not source.strip():
+            # `--source "$DIR"` with the variable unset. Resolving "" would read
+            # the current directory, so it is refused rather than read as either
+            # a directory or "use the recorded source".
+            print("❌ --source is empty; pass the app directory or omit the flag", file=sys.stderr)
+            sys.exit(1)
+        # The gateway resolves a source against its OWN working directory, not
+        # this shell's, so a given path is made absolute here as install does.
+        # With no --source the request carries no body and the gateway updates
+        # from the app's recorded source: where it was installed from, or the
+        # last --source an update used.
+        payload: dict[str, object] | None = None
+        if source is not None:
+            payload = {"source": str(Path(source).expanduser().resolve())}
+        # Gateway only, with no file-only fallback. An update stops the app's
+        # backend, swaps its tree and restarts it, and re-registers its crons
+        # with the running scheduler; from a separate process the backend
+        # would keep running the old tree and the scheduler the old jobs.
+        if _run_app_action_through_gateway("update", args.name, payload=payload):
+            return
+        print(
+            "❌ No running gateway answered, so nothing was updated. Start it "
+            "(kirocrew gateway) and run this again, or press Update on the app's page.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     elif action == "disable":
+        _refuse_unsafe_app_name(args.name)
         if _run_app_action_through_gateway("disable", args.name):
             return
+        _register_unrecorded_builtin(args.name)
         _cleanup_app_crons_from_scheduler(args.name)
         # Flip the authoritative flag BEFORE tearing resources down. A running gateway
         # is a DIFFERENT process: it watches this app's backend and re-registers its MCP
@@ -552,12 +654,19 @@ def _handle_app(args: argparse.Namespace) -> None:
         # which is the better of the two error shapes, because the alternative is a
         # silent re-registration nobody sees.
         result = disable_app(args.name)
-        deregister_app(args.name)
-        if result.ok:
-            _print_file_only_app_result(args.name, enabled=False)
-        else:
+        deregistered = _deregister_or_report(args.name)
+        if not result.ok:
             print(f"❌ {result.error}", file=sys.stderr)
             sys.exit(1)
+        if not deregistered:
+            print(
+                f"❌ {args.name} is marked disabled, but some of its resources could "
+                f"not be removed (see above). Clear the cause and run "
+                f"`kirocrew app disable {args.name}` again.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        _print_file_only_app_result(args.name, enabled=False)
 
     elif action == "uninstall":
         # Ask a running gateway first, exactly as enable and disable do above.
@@ -572,6 +681,7 @@ def _handle_app(args: argparse.Namespace) -> None:
         # The purge flag travels in the body because the handler defaults an
         # absent one to "preserve data"; without it a delegated `--purge-data`
         # would quietly keep the data it was told to destroy.
+        _refuse_unsafe_app_name(args.name)
         if _run_app_action_through_gateway(
             "uninstall",
             args.name,
@@ -594,7 +704,11 @@ def _handle_app(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         _cleanup_app_crons_from_scheduler(args.name)
-        deregister_app(args.name)
+        # A failed deregistration does not stop the uninstall: there is no
+        # `--force`, so stopping here would leave an app whose deregistration
+        # keeps failing impossible to remove from the CLI. The errors are printed
+        # now and the exit code says so once the files are gone.
+        deregistered = _deregister_or_report(args.name)
         keep_data = not getattr(args, "purge_data", False)
         # Read BEFORE the uninstall, and read BOTH: either one alone can be made to
         # say "no backend here" when there is one. The declaration is the app's own
@@ -617,6 +731,13 @@ def _handle_app(args: argparse.Namespace) -> None:
             _print_pointer_cleanup(args.name, cleanup)
             if declares_backend or recorded_port is not None:
                 _warn_backend_not_stopped(args.name)
+            if not deregistered:
+                print(
+                    f"❌ {args.name} was uninstalled, but some of its resources could "
+                    f"not be removed (see above).",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         else:
             # The pointers outlive the app, so "already gone" is the one failure
             # whose bookkeeping half is still worth doing. It is also the residual's
@@ -693,8 +814,19 @@ def _handle_app(args: argparse.Namespace) -> None:
         print(f"✅ Scaffolded app: {app_dir}")
         print("   Edit app.json, add agents and skills, then:")
         if include_ui:
-            print(f"   cd {app_dir}/ui && npm install && npm run build")
+            # One command per line: Windows PowerShell 5.1 rejects `&&`.
+            print(f"   cd {app_dir}/ui")
+            print("   npm install")
+            print("   npm run build")
         print(f"   kirocrew app install {app_dir}")
 
     else:
-        print("Usage: kirocrew app {install|list|enable|disable|uninstall|info|init}")
+        # No sub-action (the subparser is not `required`, matching every CLI
+        # subparser) or an unknown one: a usage error. Print to stderr and exit
+        # 2, the argparse convention, so `kirocrew app && …` stops instead of
+        # proceeding on a 0 after a typo.
+        print(
+            "Usage: kirocrew app {install|list|enable|update|disable|uninstall|info|init}",
+            file=sys.stderr,
+        )
+        sys.exit(2)

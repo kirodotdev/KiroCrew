@@ -137,6 +137,29 @@ describe('SttSettings Transcribe mixed languages', () => {
     expect(screen.queryByRole('button', { name: 'Mixed languages' })).toBeNull()
   })
 
+  it('is offered for an edition provider the backend lists as identifying languages', async () => {
+    mount({
+      provider: 'acme',
+      providers: ['local', 'transcribe', 'acme'],
+      language_identification_providers: ['transcribe', 'acme'],
+    })
+    expect(await trigger()).toHaveTextContent('Off (uses the language above)')
+    // The picker's help is shown under any identifying provider, so it names none.
+    const hint = screen.getByTitle(/switch between in one recording/)
+    expect(hint.getAttribute('title')).toContain('dictation detects the language of each part')
+    expect(hint.getAttribute('title')).not.toMatch(/Transcribe/)
+  })
+
+  it('is not offered for an edition provider the backend does not list', async () => {
+    mount({
+      provider: 'acme',
+      providers: ['local', 'transcribe', 'acme'],
+      language_identification_providers: ['transcribe'],
+    })
+    await screen.findByRole('combobox', { name: 'Language' })
+    expect(screen.queryByRole('button', { name: 'Mixed languages' })).toBeNull()
+  })
+
   it('offers Vietnamese and saves each tick, saying when one language is not enough', async () => {
     mount()
     await open()

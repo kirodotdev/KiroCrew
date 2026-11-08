@@ -60,18 +60,23 @@ import { useChatEventBridges, useColdFileTabHydration } from '../pages/chat/page
 import { __resetBottomTerminal, useBottomTerminal } from '../hooks/useBottomTerminal'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../utils/fenceShell'
 import { openActivityPanel, setPendingInput } from '../store/chatSlice'
-import type { ChatMessage, ChatSlot } from '../types'
+import type { ChatMessage } from '../types'
+import { api, type SlotEnvironment } from '../api/client'
+import { slotEnvironmentQueryKey } from '../components/sessionEnvironmentHooks'
+import { i18nT } from '../i18n/t'
 
 type BridgeOpts = Parameters<typeof useChatEventBridges>[0]
 
-function harness(overrides: Partial<BridgeOpts> = {}) {
+/** `placement` seeds the active chat's Session Environment read: confirmed local
+ *  by default, as on a gateway with none bound; `'unread'` leaves it loading. */
+function harness(overrides: Partial<BridgeOpts> = {}, placement: SlotEnvironment | 'unread' = { profile: null, profiles: [] }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  if (placement === 'unread') vi.spyOn(api, 'chatSlotEnvironment').mockReturnValue(new Promise(() => {}))
+  else queryClient.setQueryData(slotEnvironmentQueryKey('slot-a'), placement)
   const openView = vi.fn()
   const opts: BridgeOpts = {
     activeSlot: 'slot-a',
-    activeSlotRef: { current: 'slot-a' },
     messages: [{ role: 'assistant', content: 'hi' } as ChatMessage],
-    slots: [{ key: 'slot-a' }, { key: 'slot-b' }] as ChatSlot[],
     dispatch: vi.fn() as never,
     queryClient,
     showActionError: vi.fn(),
@@ -111,7 +116,7 @@ beforeEach(() => {
   __resetBottomTerminal()
   delete (window as { browserAPI?: unknown }).browserAPI
 })
-afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
 describe('Web Preview feed', () => {
   it('opens the Browser tab for a marker once per URL, persisting the applied key', () => {
@@ -157,34 +162,6 @@ describe('Web Preview feed', () => {
     harness()
     harness({ activeSlot: null })
     expect(preview.pending).not.toHaveBeenCalled()
-  })
-})
-
-describe('Electron built-in browser bridges', () => {
-  it('tracks every open slot and untracks one that closed, without re-registering the rest', () => {
-    const trackSession = vi.fn().mockResolvedValue(undefined)
-    ;(window as { browserAPI?: unknown }).browserAPI = { trackSession }
-    const { opts, hook } = harness()
-    expect(trackSession.mock.calls).toEqual([['slot-a', true], ['slot-b', true]])
-    hook.rerender({ ...opts, slots: [{ key: 'slot-b' }] as ChatSlot[] })
-    expect(trackSession.mock.calls.slice(2)).toEqual([['slot-a', false]])
-  })
-
-  it('surfaces the panel on agent-opened for the active slot only', () => {
-    let fire: ((e: { panelId?: string }) => void) | undefined
-    const off = vi.fn()
-    ;(window as { browserAPI?: unknown }).browserAPI = {
-      onAgentOpened: (cb: typeof fire) => { fire = cb; return off },
-    }
-    const { opts, openView, hook } = harness()
-    act(() => { fire!({ panelId: 'slot-b' }) })
-    act(() => { fire!({}) })
-    expect(openView).not.toHaveBeenCalled()
-    act(() => { fire!({ panelId: 'slot-a' }) })
-    expect(opts.dispatch).toHaveBeenCalledWith(openActivityPanel())
-    expect(openView).toHaveBeenCalledWith('browser')
-    hook.unmount()
-    expect(off).toHaveBeenCalled()
   })
 })
 
@@ -290,6 +267,25 @@ describe('Run-in-terminal scope', () => {
       window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: 'c', reqId: 'r3' } }))
     })
     expect(dock.result.current.tabs).toHaveLength(2)
+    // Each dock shell names the chat it ran for, so the gateway checks its placement.
+    expect(dock.result.current.tabs.map(t => t.chatSlot)).toEqual(['slot-a', 'slot-a'])
+  })
+})
+
+describe('Run-in-terminal for a chat on a Session Environment', () => {
+  const DEV = { id: 'dev', name: 'Coder Dev', provider: 'coder', workdir: '/w' }
+  it.each([
+    ['runs on a profile', { profile: 'dev', profiles: [DEV] } as SlotEnvironment, () => i18nT('pages.chatPage.run_in_terminal_remote_chat_error')],
+    ['placement not read yet', 'unread' as const, () => i18nT('pages.chatPage.run_in_terminal_placement_pending_error')],
+  ])('opens no dock shell on this machine when the chat %s', (_label, placement, message) => {
+    const dock = renderHook(() => useBottomTerminal())
+    const results = collect('mc:run-in-terminal-result')
+    const { opts } = harness({}, placement)
+    act(() => { window.dispatchEvent(new CustomEvent('mc:run-in-terminal', { detail: { code: 'rm -rf build', reqId: 'r9' } })) })
+    results.stop()
+    expect(dock.result.current.tabs).toHaveLength(0)
+    expect(results.results).toEqual([{ reqId: 'r9', ok: false }])
+    expect(opts.showActionError).toHaveBeenCalledWith(message())
   })
 })
 
@@ -352,14 +348,14 @@ describe('cold file tab hydration', () => {
     const { patchTab } = hydrate([{ id: 't1', kind: 'file', path: '/a.ts' }, { id: 't2', kind: 'file', path: '/b.ts', content: 'warm' }, { id: 'd', kind: 'diff', path: '/c' }])
     await waitFor(() => expect(patchTab).toHaveBeenCalledTimes(1))
     expect(fileRead.fetch).toHaveBeenCalledTimes(1)
-    expect(patchTab).toHaveBeenCalledWith('t1', expect.objectContaining({ content: 'body', savedContent: 'body', binary: false }))
+    expect(patchTab).toHaveBeenCalledWith('t1', expect.objectContaining({ content: 'body', savedContent: 'body', binary: false, placeholder: false }))
   })
 
   it('keeps a placeholder for a 404', async () => {
     fileRead.fetch.mockResolvedValue({ ok: false, status: 404 })
     const { patchTab, showActionError } = hydrate([{ id: 't1', kind: 'file', path: '/gone.ts' }])
     await waitFor(() => expect(patchTab).toHaveBeenCalledTimes(1))
-    expect(patchTab.mock.calls[0][1]).toMatchObject({ binary: false, partial: false })
+    expect(patchTab.mock.calls[0][1]).toMatchObject({ binary: false, partial: false, placeholder: true })
     expect(patchTab.mock.calls[0][1].content).toBe(patchTab.mock.calls[0][1].savedContent)
     expect(patchTab.mock.calls[0][1].content).toMatch(/./)
     expect(showActionError).not.toHaveBeenCalled()

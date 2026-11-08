@@ -105,7 +105,14 @@ def test_delete_removes_token(tmp_path: Path):
 
 
 def test_delete_missing_is_noop(tmp_path: Path):
-    TokenStore(tmp_path).delete("social")  # no store yet — must not raise
+    store = TokenStore(tmp_path)
+    store.delete("social")  # no store yet — must not raise
+    assert store.load("social") is None
+    # Deleting a missing identity must leave the other identities' tokens alone.
+    store.save(_token("builder_id"))
+    store.delete("social")
+    kept = store.load("builder_id")
+    assert kept is not None and kept.access_token == "at-value"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="contention timing assumes POSIX flock")

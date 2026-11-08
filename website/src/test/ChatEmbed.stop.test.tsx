@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { setBusySendDefault } from '../components/BusySendButton'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -39,6 +40,9 @@ async function mount() {
 const stopCalls = () => mockPost.mock.calls.filter(([p]) => String(p).includes('/stop'))
 
 beforeEach(() => {
+  // These tests are about the busy send that queues; the steer side is
+  // ChatEmbed.busySend.test.tsx. The shipped default is Steer.
+  setBusySendDefault('queue')
   vi.clearAllMocks()
   vi.useFakeTimers()
   mockPost.mockResolvedValue({ ok: true })
@@ -109,7 +113,7 @@ describe('ChatEmbed Stop', () => {
     expect(screen.getByTestId('stop-button-pulsing')).toBeInTheDocument()
     expect(screen.getByTestId('chat-embed-stop-hint')).toHaveTextContent('Click again to force stop')
     // The cost of the force stop is shown where the user decides, not only on hover.
-    expect(screen.getByTestId('chat-embed-stop-hint')).toHaveTextContent('discards in-progress work and queued messages')
+    expect(screen.getByTestId('chat-embed-stop-hint')).toHaveTextContent('in-progress work and queued messages are discarded')
     // The header carries the status with the footer; the placeholder stays
     // neutral, so a narrow embed does not say it three times.
     expect(screen.getAllByText('Stopping…').length).toBeGreaterThan(0)
@@ -137,7 +141,7 @@ describe('ChatEmbed Stop', () => {
     await mount()
     expect(screen.getByTestId('stop-button-killing')).toBeDisabled()
     // The header follows the footer's "Killing…"; the placeholder stays neutral.
-    expect(screen.getAllByText('Killing…').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Force stopping…').length).toBeGreaterThan(0)
     expect(screen.getByRole('textbox').getAttribute('placeholder')).toMatch(/^Agent is working/)
     expect(screen.queryByTestId('chat-embed-stop-hint')).toBeNull()
     await act(async () => { vi.advanceTimersByTime(KILLING_ESCAPE_MS + 100) })
@@ -156,6 +160,35 @@ describe('ChatEmbed Stop', () => {
     await act(async () => { fireEvent.click(screen.getByTestId('stop-button-armed')) })
     expect(screen.getByTestId('chat-embed-stop-error')).toHaveTextContent('crew unreachable')
     expect(screen.getByTestId('stop-button-armed')).toBeInTheDocument()
+  })
+
+  // #25064: the embed's scoped API rejects with an ApiError shaped like its
+  // ScopedApiError (`API <status>: <body>`), and sets authRequired only for the
+  // gateway's own 403 + X-Auth-Required. It never sets edgeChallenge.
+  it('says the reader is signed out when the gateway refuses the stop for auth', async () => {
+    const { ApiError } = await import('../api/apiError')
+    const body = '{"error":"auth required"}'
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'hi', ts: 1 }], running: true, title: '', stop_state: 'idle' })
+    mockPost.mockRejectedValueOnce(new ApiError(403, `API 403: ${body}`, body, true))
+    await mount()
+    await act(async () => { fireEvent.click(screen.getByTestId('stop-button-armed')) })
+    const notice = screen.getByTestId('chat-embed-stop-error')
+    expect(notice).toHaveTextContent("You're signed out, so nothing was stopped. Sign in again, then press Stop.")
+    expect(notice).not.toHaveTextContent('API 403')
+    expect(screen.getByTestId('stop-button-armed')).toBeInTheDocument()
+  })
+
+  it('shows the generic stop message, with the raw reply as detail, for a proxy sign-in page', async () => {
+    const { ApiError } = await import('../api/apiError')
+    const body = '<html>Sign in to your access proxy</html>'
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'hi', ts: 1 }], running: true, title: '', stop_state: 'idle' })
+    mockPost.mockRejectedValueOnce(new ApiError(403, `API 403: ${body}`, body))
+    await mount()
+    await act(async () => { fireEvent.click(screen.getByTestId('stop-button-armed')) })
+    const notice = screen.getByTestId('chat-embed-stop-error')
+    expect(notice).toHaveTextContent("Couldn't stop this turn. Press Stop again.")
+    expect(notice).toHaveTextContent('API 403')
+    expect(notice).not.toHaveTextContent('signed out')
   })
 
   it('after a compaction decline, reads as not stopping and warns that the next press resets the session', async () => {
@@ -235,7 +268,7 @@ describe('ChatEmbed Stop', () => {
     expect(screen.getByTestId('chat-embed-stop-error')).toHaveTextContent("That Stop didn't go through.")
     expect(screen.getByTestId('chat-embed-stop-error')).not.toHaveTextContent(/again/i)
     expect(screen.getByTestId('chat-embed-stop-hint')).toHaveTextContent('Click again to force stop')
-    expect(screen.getByTestId('chat-embed-stop-hint')).toHaveTextContent('discards in-progress work and queued messages')
+    expect(screen.getByTestId('chat-embed-stop-hint')).toHaveTextContent('in-progress work and queued messages are discarded')
     await act(async () => { vi.advanceTimersByTime(FORCE_KILL_ARMING_MS + 50) })
     await act(async () => { fireEvent.click(screen.getByTestId('stop-button-pulsing')) })
     expect(stopCalls().map(([p]) => p)).toEqual([

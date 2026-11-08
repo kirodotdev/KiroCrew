@@ -778,8 +778,11 @@ async def api_agent_template_delete(request: web.Request) -> web.Response:
         found: AgentInfo = matches[0]
         # The row's filename is a discovery string, not a path: only a plain
         # basename resolving to a regular file directly under the agents
-        # directory is a template this handler may unlink.
-        spec_path = _spec_file_beneath(kiro_agents_dir_path(), found.filename)
+        # directory is a template this handler may unlink. Its resolve and
+        # is_file calls run on a worker so a wedged mount cannot stall the loop.
+        spec_path = await asyncio.to_thread(
+            _spec_file_beneath, kiro_agents_dir_path(), found.filename
+        )
         if spec_path is None:
             return web.json_response(
                 {"error": f"Template '{name}' not found", "code": "template_not_found"}, status=404
@@ -1099,7 +1102,12 @@ def control_plane_declarations(tools: Any, servers: Any) -> dict[str, dict[str, 
     answer to the spec as re-read under the spec lock, beside whatever a
     concurrent writer saved to ``mcpServers`` in the meantime.
     """
-    from kiro_crew.agent import _MCP_REGISTRY_TYPE, _mcp_registry_mode, managed_mcp_spec_entry
+    from kiro_crew.agent import (
+        _MCP_REGISTRY_TYPE,
+        _mcp_registry_mode,
+        _registry_marker_for,
+        managed_mcp_spec_entry,
+    )
     from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
     from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 
@@ -1130,7 +1138,7 @@ def control_plane_declarations(tools: Any, servers: Any) -> dict[str, dict[str, 
                 f"Could not add {name}: Kiro Crew cannot find how to start it on this "
                 "install, so the tool would never load. The Logs panel in a chat shows why.",
             )
-        if registry_mode:
+        if _registry_marker_for(name, registry_mode):
             entry["type"] = _MCP_REGISTRY_TYPE
         out[name] = entry
     return out

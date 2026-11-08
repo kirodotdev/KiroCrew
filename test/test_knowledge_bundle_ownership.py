@@ -686,8 +686,7 @@ class TestTheSameDocumentExceptionCoversEverySite:
     def test_the_claim_site_exempts_ids_not_keys(self):
         """The exemption must be per ID. Keying it on (table, source, key) alone lets an
         empty-group marker row vouch for ids it never claimed, and it leaves a bundle that
-        ships no state row for a table judged against that table's claims anyway -- the
-        two directions two independent reviewers found."""
+        ships no state row for a table judged against that table's claims anyway."""
         source = self._store_source()
         body = source[source.index("def _contested_claims") : source.index("def _items_exist")]
         assert (

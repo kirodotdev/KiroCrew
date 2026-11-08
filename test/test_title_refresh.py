@@ -33,6 +33,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import drain, open_feed, real_dashboard_state
 from title_refresh_helpers import _fake_state, _patch_generator, _titled_slot
 
 from kiro_crew.dashboard import chat_persistence, chat_title
@@ -172,12 +174,15 @@ class TestRefreshOutcomes:
         state.push_slot_title.assert_called_with(slot.key, "Debug flaky auth test")
 
     @pytest.mark.asyncio
-    async def test_identical_title_is_not_repushed(self, monkeypatch):
+    async def test_identical_title_is_not_repushed(self, monkeypatch, tmp_path):
         _patch_generator(monkeypatch, "Initial auto title")
         slot = _titled_slot(_TITLE_REFRESH_MILESTONES[0])
-        state = _fake_state()
+        state = real_dashboard_state(tmp_path)
+        state._slots[slot.key] = slot
+        feed = open_feed(state)
         await maybe_refresh_title(state, slot)
-        state.push_slot_title.assert_not_called()
+        assert slot.title == "Initial auto title"
+        assert [e for e in drain(feed) if e.get("_type") == "slot_title"] == []
 
     @pytest.mark.asyncio
     async def test_rename_during_generation_wins(self, monkeypatch):

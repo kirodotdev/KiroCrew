@@ -19,7 +19,9 @@
  * reads, and a control carrying another registered id is never a name match
  * for it. Of several matches, a section title (a heading, or a control
  * drawn in one) gives way to a control that is not one, and for a tab or a
- * settings entry the one in the page's navigation wins. `role` narrows the candidates while that still
+ * settings entry the one in the page's navigation wins; for any other search
+ * the main navigation's entry wins over same-named controls outside every
+ * navigation region. `role` narrows the candidates while that still
  * finds a match, and is dropped when it finds none; `container`
  * narrows several matches to those whose surroundings carry that name, or,
  * as `#N` (or `N`), picks the Nth of them in the order the panel numbers
@@ -45,6 +47,7 @@
  * acted since the step began. A container no primitive registered is never
  * opened: the guide asks the person to open it.
  */
+import { flushSync } from 'react-dom'
 import { i18nT } from '../i18n/t'
 import { GUIDE_PLANS } from '../uiLocations/guidePlans.gen'
 import { closestRegistered, registeredId } from '../uiLocations/targetRegistry'
@@ -337,6 +340,18 @@ export function searchByName(q: FindQuery, root: ParentNode = document, shown: S
     const near = hint ? matches.filter(m => normalizeName(contextOf(m.el)).includes(hint)) : []
     if (near.length > 0) matches = near
   }
+  // A page's entry in the main navigation is the control that page's name
+  // means: it wins over a same-named control drawn outside any navigation
+  // region (the Mates page's switcher chip is also named "Mates"), so a tour
+  // of the rail never asks a new user which "Mates" they meant. Two entries
+  // that are both navigation (the rail link and a Customize tab of the same
+  // name) stay ambiguous, and a search for a registered control is decided
+  // by its id above, never here.
+  if (matches.length > 1 && !q.location) {
+    const rail = matches.filter(m => inMainNav(m.el))
+    const rest = matches.filter(m => !inMainNav(m.el))
+    if (rail.length === 1 && rest.every(m => !m.el.closest(NAV_REGION))) matches = rail
+  }
   // Judged on what matched, never on what was asked; and a label that only
   // CONTAINS part of a ceiling control's name is refused too, though it
   // matches nothing: the person is never told to look for that control.
@@ -598,7 +613,12 @@ async function probeOnce(q: FindQuery, opts: ProbeOptions): Promise<ProbeResult>
       const before = new Set(probeTargets().map(e => e.id))
       const saved = save(el)
       opened += 1
-      const restore = entry.open()
+      // Rendered before the settle wait starts, not when React next gets a
+      // task: on a busy machine the wait can end first, and the probe would
+      // then search a closed container and skip a restore that the open
+      // reaches the page after.
+      let restore: () => void = () => {}
+      flushSync(() => { restore = entry.open() })
       // Waited out even when aborted: the restore reads the primitive's
       // state, so what the open did must have rendered first.
       await sleep(settleMs)
@@ -614,7 +634,7 @@ async function probeOnce(q: FindQuery, opts: ProbeOptions): Promise<ProbeResult>
         }
       }
       if (interrupted) return { result: 'none' }
-      restore()
+      flushSync(restore)
       await sleep(settleMs)
       if (interrupted) return { result: 'none' }
       restoreView(saved)

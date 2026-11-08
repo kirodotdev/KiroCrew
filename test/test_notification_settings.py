@@ -13,7 +13,9 @@ from kiro_crew.dashboard.handlers.messaging import (
     api_notification_channel_settings,
     api_notification_channels,
 )
+from kiro_crew.dashboard.notification_coordinator import unread_count
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.notifications.bridge import BRIDGE_TRANSPORTS
 from kiro_crew.notifications.bus import MONITOR_CHANNEL
 from kiro_crew.notifications.settings import (
     PROTECTED_CHANNELS,
@@ -125,7 +127,7 @@ class TestSinkIntegration:
                 "body": "b",
             }
         )
-        assert state._unread_count == 1  # only the cron note counts
+        assert unread_count(state._notification_log) == 1  # only the cron note counts
         hb = state._notification_log[0]
         assert hb["silenced"] is True and hb["priority"] == "passive"
         # Still in history (mute silences, it does not destroy)
@@ -143,7 +145,7 @@ class TestSinkIntegration:
                 "body": "b",
             }
         )
-        assert state._unread_count == 0
+        assert unread_count(state._notification_log) == 0
 
     def test_approval_still_interrupts(self, monkeypatch, tmp_path):
         """system.approval cannot be silenced even with a rogue settings row
@@ -164,7 +166,7 @@ class TestSinkIntegration:
         note = state._notification_log[0]
         assert "silenced" not in note
         assert note["priority"] == "critical"
-        assert state._unread_count == 1
+        assert unread_count(state._notification_log) == 1
 
 
 def _make_app(state) -> web.Application:
@@ -190,6 +192,26 @@ class TestChannelSettingsApi:
         assert by_name["my-app.alerts"]["source"] == "my-app"
         assert by_name["system.approval"]["protected"] is True
         assert by_name["system.cron"]["default_priority"] == "default"
+
+    @pytest.mark.asyncio
+    async def test_list_names_the_bridge_transports_with_a_sink(self, monkeypatch, tmp_path):
+        # Settings offers a route only to a transport the bridge can deliver to,
+        # so the list carries exactly the registered sinks, in BRIDGE_TRANSPORTS
+        # order; a known transport with no sink is left out.
+        state = _make_state(monkeypatch, tmp_path)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/notifications/channels")
+            body = await resp.json()
+        assert body["bridge_transports"] == list(state.notification_bridge.transports)
+        # Every sink the gateway registers today is offered, Telegram's included.
+        assert {"slack", "discord", "telegram"} <= set(body["bridge_transports"])
+        assert body["bridge_transports"] == [
+            t for t in BRIDGE_TRANSPORTS if t in body["bridge_transports"]
+        ]
+        state.notification_bridge._sinks.clear()
+        async with TestClient(TestServer(_make_app(state))) as client:
+            body = await (await client.get("/api/notifications/channels")).json()
+        assert body["bridge_transports"] == []
 
     @pytest.mark.asyncio
     async def test_stored_setting_for_unregistered_channel_still_listed(

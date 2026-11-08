@@ -87,6 +87,25 @@ def test_the_summary_frame_parses_to_its_categories_and_history_split():
     assert "compacted" not in parsed
 
 
+def test_the_summary_frame_keeps_its_shares_counts_splits_window_and_media():
+    """The fields beside ``chars`` that a summary frame carries are kept as numbers:
+    each category's own percent (in tenths), the three lists' entry counts, the
+    toolIO / workspace / memory splits, the window, and the media outside the total."""
+    kiro = _update_of("turn_completion.summary.json")["_meta"]["kiro"]
+    parsed = kas_profile.parse_breakdown(kiro["contextBreakdown"])
+    assert parsed is not None
+    assert parsed["percent"]["steering"] == 305
+    assert parsed["percent"]["other"] == 1
+    assert sum(parsed["percent"].values()) == 1000
+    assert parsed["counts"] == {"agentsIndex": 0, "skillsIndex": 28, "powersIndex": 0}
+    assert parsed["parts"]["toolIO.input"] == 20
+    assert parsed["parts"]["toolIO.output"] == 82
+    assert parsed["parts"]["workspace.environment"] == 939
+    assert parsed["parts"]["memory.learnings"] == 0
+    assert parsed["window"] == {"size_tokens": 1_000_000, "usage_milli": 2867}
+    assert parsed["media"] == {"images": 0, "image_bytes": 0, "documents": 0, "document_bytes": 0}
+
+
 def test_the_agent_prompt_and_its_resources_land_in_their_own_categories():
     """On the captured frame the custom agent's 2,000-character prompt is inside
     ``kiroInstructions`` and its 3,000-character resource file is a steering item with

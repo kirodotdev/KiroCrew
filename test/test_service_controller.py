@@ -7,7 +7,7 @@ service is installed, and the per-platform installed signal.
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from service_helpers import (  # noqa: F401 -- fixtures are found by name
@@ -22,7 +22,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
 )
 
 from kiro_crew.service import controller
-from kiro_crew.service.common import RESTART_REFUSED, SERVICE_NAME, Platform
+from kiro_crew.service.common import LAUNCHD_LABEL, RESTART_REFUSED, SERVICE_NAME, Platform
 
 
 class TestControllerDispatch:
@@ -86,6 +86,27 @@ class TestControllerDispatch:
             rc = controller.install_service()
         assert rc == 0
         assert "linger" not in capsys.readouterr().out
+
+    @pytest.mark.parametrize("plat", [Platform.SYSTEMD, Platform.LAUNCHD])
+    def test_install_success_says_how_to_open_the_dashboard(self, plat, capsys):
+        """A service never opens a browser, so the success block must name
+        ``kirocrew token`` -- the one command that prints the sign-in link."""
+        from kiro_crew.service import apparmor, controller
+        from kiro_crew.service import linux as svc_linux
+        from kiro_crew.service import macos as svc_macos
+
+        with (
+            patch("kiro_crew.service.controller.current_platform", return_value=plat),
+            patch.object(svc_linux, "install", return_value=apparmor.ProfileOutcome(False, "")),
+            patch.object(svc_linux, "linger_warning_for_service_account", return_value=None),
+            patch.object(svc_macos, "install"),
+            patch.object(controller, "_print_headless_auth_warning"),
+        ):
+            rc = controller.install_service()
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Open:   kirocrew token" in out
+        assert out.index("Open:") < out.index("Status:")
 
     def test_uninstall_unsupported_returns_2(self):
         from kiro_crew.service import controller
@@ -504,11 +525,49 @@ class TestControllerDispatch:
                 "kiro_crew.service.controller.current_platform",
                 return_value=Platform.LAUNCHD,
             ),
-            patch.object(svc_macos, "uninstall") as mock_un,
+            patch.object(svc_macos, "uninstall", return_value=None) as mock_un,
         ):
             rc = controller.uninstall_service()
         assert rc == 0
         mock_un.assert_called_once()
+
+    def test_uninstall_macos_exits_1_when_bootout_leaves_agent_loaded(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A refused bootout leaves the agent running, as on Linux: say so on
+        stderr and exit 1, never the success headline."""
+        from kiro_crew.service import controller
+        from kiro_crew.service import macos as svc_macos
+
+        plist_path = tmp_path / f"{LAUNCHD_LABEL}.plist"
+        plist_path.write_text("<plist/>")
+        monkeypatch.setattr(svc_macos, "PLIST_PATH", plist_path)
+        monkeypatch.setattr(svc_macos, "LIVE_PROGRAM", tmp_path / "kirocrew-live")
+
+        gui, user = svc_macos._legacy_domains()
+
+        def _print(argv, **_kw):
+            if argv[-1] == f"{user}/{LAUNCHD_LABEL}":
+                return MagicMock(returncode=0, stdout="state = running\n", stderr="")
+            return MagicMock(returncode=113, stdout="", stderr="Could not find service")
+
+        with (
+            patch(
+                "kiro_crew.service.controller.current_platform",
+                return_value=Platform.LAUNCHD,
+            ),
+            patch.object(svc_macos, "_bootout", return_value=False),
+            patch("kiro_crew.service.macos.subprocess.run", side_effect=_print),
+        ):
+            rc = controller.uninstall_service()
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "did not unload" in captured.err
+        # The hand-run command names the domain that holds the job.
+        assert f"launchctl bootout {user}/{LAUNCHD_LABEL}" in captured.err
+        assert "stopped and removed" not in captured.out
+        # The rest of the teardown still ran.
+        assert not plist_path.exists()
 
     def test_status_routes_to_systemd_active(self, capsys):
         """status() returns 0 when the unit is UP, prints the systemctl output."""
@@ -885,6 +944,26 @@ class TestInstalledUnitPath:
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.LAUNCHD)
         monkeypatch.setattr(controller.macos, "PLIST_PATH", plist)
         assert controller.installed_unit_path() == plist
+
+    @pytest.mark.parametrize(
+        "system_id, ours",
+        [("kirocrew.service", True), ("other.service", False)],
+        ids=["our-unit", "alias-of-another-unit"],
+    )
+    def test_system_unit_is_ours_only_when_its_canonical_id_is(
+        self, monkeypatch, tmp_path, system_id, ours
+    ):
+        # The system unit file is stat'ed through any symlink, so an alias of a
+        # stopped unrelated unit looks installed; only the manager's Id says.
+        unit = tmp_path / "kirocrew.service"
+        monkeypatch.setattr(controller.linux, "UNIT_PATH", unit)
+        run = _fake_systemctl(system=_DEAD, system_id=system_id)
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            assert controller.unit_is_ours(unit) is ours
+
+    def test_a_non_system_definition_is_ours_as_returned(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(controller.linux, "UNIT_PATH", tmp_path / "kirocrew.service")
+        assert controller.unit_is_ours(tmp_path / "user.service") is True
 
     def test_absent_definition_is_not_installed(self, monkeypatch, tmp_path):
         monkeypatch.setattr(controller, "current_platform", lambda: Platform.SYSTEMD)

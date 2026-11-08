@@ -24,14 +24,20 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import _raw_config, config_dir
 from kiro_crew.dashboard.dashboard_persistence import DashboardPersistenceCoordinator
 from kiro_crew.dashboard.interaction_coordinator import ApprovalCoordinator, QuestionCoordinator
-from kiro_crew.dashboard.notification_coordinator import NotificationCoordinator
-from kiro_crew.dashboard.slot_registry import SlotRegistry
+from kiro_crew.dashboard.notification_coordinator import (
+    NATIVE_TAG_MAX_BYTES,
+    NotificationCoordinator,
+    _serialized_bytes,
+    native_notification_tag,
+)
+from kiro_crew.dashboard.slot_registry import SlotRegistry, TakeoverBasis
 from kiro_crew.dashboard.state_parts.notification_log import (
     _MAX_PERSISTED_NOTIFICATIONS,
     _notification_io_executor,
@@ -41,8 +47,11 @@ from kiro_crew.dashboard.state_parts.notification_log import (
     sweep_expired_notifications,
 )
 from kiro_crew.dashboard.state_parts.transcript_rows import _mark_permission_resolved
+from kiro_crew.dashboard.turn_dispatch import BackgroundTurnAbandoned, mark_turn_unstarted
 from kiro_crew.dashboard.websocket_hub import WebSocketHub
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.notifications.bus import NotificationValidationError, payload_from_legacy
+from kiro_crew.preview_text import strip_markdown_preview
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -54,7 +63,110 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.dashboard.state")
 
 
-def _new_notification_coordinator() -> NotificationCoordinator:
+#: Push services reject an encrypted payload larger than 4 KB with 413, which
+#: the fan-out treats as a transient, non-gone failure it never retries — so an
+#: oversized note silently never reaches the closed device this feature exists
+#: for. The notification bus permits a 20,000-char body (``_MAX_BODY_LEN``), and
+#: a multibyte (CJK) body multiplies to ~3x that in UTF-8, far past the ceiling.
+#: Every string field of the payload gets its own budget in SERIALIZED bytes:
+#: the UTF-8 length of its JSON-escaped form, as ``send_web_push`` encodes it
+#: (``ensure_ascii=False``), so a quote, backslash or control character that
+#: escapes to 2 or 6 bytes is counted at that size. The budgets plus the fixed
+#: JSON envelope (about 110 bytes) stay under ``_PUSH_PAYLOAD_BYTES``, which is
+#: the 4096 byte ceiling minus the aes128gcm framing (86 byte header, 16 byte
+#: tag, 1 byte padding delimiter) and a margin. The deep link is sent twice
+#: (``navigate`` and ``data.url``), so it is counted twice.
+_PUSH_PAYLOAD_BYTES = 3800
+_PUSH_TITLE_BYTES = 256
+_PUSH_BODY_BYTES = 2000
+_PUSH_CHANNEL_BYTES = 128
+_PUSH_TS_BYTES = 64
+_PUSH_URL_BYTES = 384
+
+
+def _truncate_bytes(text: str, byte_limit: int) -> str:
+    """Cap *text* so its serialized form is at most *byte_limit* bytes.
+
+    Counts each character at its JSON-escaped UTF-8 size (a CJK char is 3
+    bytes, a control character up to 6) and cuts only between characters, so
+    no multibyte sequence or escape is split. Marks a cut with an ellipsis,
+    which itself fits inside the budget.
+    """
+    if _serialized_bytes(text) <= byte_limit:
+        return text
+    budget = max(0, byte_limit - _serialized_bytes("…"))
+    used = 0
+    end = 0
+    for ch in text:
+        cost = _serialized_bytes(ch)
+        if used + cost > budget:
+            break
+        used += cost
+        end += 1
+    return text[:end] + "…"
+
+
+def _web_push_payload(note: dict[str, Any]) -> dict[str, Any]:
+    """Build the declarative Web Push JSON for one delivered note.
+
+    Shape follows WebKit's Declarative Web Push (``web_push: 8030`` +
+    ``notification``): on iOS/Safari 18.4+ the payload renders natively with no
+    service-worker push handler, while Chromium/Firefox receive the identical
+    JSON in a classic ``push`` event and read the same ``notification`` object.
+    The ``navigate`` URL is a same-origin dashboard path (the deep link the note
+    already carries, defaulting to the dashboard root) so a click reopens the
+    right place; ``data`` echoes the note timestamp for click bookkeeping.
+
+    Every string field is held to a serialized byte budget so the encrypted
+    payload stays under the 4 KB Web Push ceiling: an oversized push is
+    rejected with 413 and never arrives. Text fields are truncated; a deep link
+    or timestamp over budget is replaced (by the dashboard root, or dropped),
+    because a cut link or id would point nowhere.
+    """
+    title = _truncate_bytes(note.get("title") or "Kiro Crew", _PUSH_TITLE_BYTES)
+    # The body is markdown; an OS banner shows text literally. Flatten it the
+    # way the open tab's banner does (stripMd) before the byte cut, so the push
+    # banner that replaces the tab's one under the shared tag reads the same.
+    # Flattening drops format characters and markup, which can JOIN a credential
+    # that a zero-width character or emphasis had split past the delivery-time
+    # redaction, so the flattened text is redacted again before it leaves the
+    # host (strip before redact: preview_text.drop_format_chars).
+    raw_body = note.get("body")
+    flat_body = strip_markdown_preview(raw_body) if isinstance(raw_body, str) else ""
+    body = _truncate_bytes(_redact_note_value(flat_body), _PUSH_BODY_BYTES)
+    navigate = str(note.get("url") or "/")
+    if _serialized_bytes(navigate) > _PUSH_URL_BYTES:
+        navigate = "/"
+    ts = note.get("ts")
+    if not isinstance(ts, str) or _serialized_bytes(ts) > _PUSH_TS_BYTES:
+        ts = None
+    channel = note.get("channel")
+    if channel is not None:
+        channel = _truncate_bytes(str(channel), _PUSH_CHANNEL_BYTES)
+    notification: dict[str, Any] = {
+        "title": title,
+        "body": body,
+        "navigate": navigate,
+        "data": {"ts": ts, "channel": channel, "url": navigate},
+    }
+    # The tag the coordinator stamped on the note, so the service worker's
+    # banner replaces (not duplicates) the one an open tab already showed.
+    tag = note.get("tag")
+    if not isinstance(tag, str) or not tag or _serialized_bytes(tag) > NATIVE_TAG_MAX_BYTES:
+        tag = native_notification_tag(note)
+    notification["tag"] = tag
+    key = note.get("key")
+    if isinstance(key, str) and key:
+        # A keyed note shares its tag with the earlier notes under its key, so a
+        # platform would swap a banner still on screen without alerting. Only a
+        # keyed note meant to announce reaches Web Push, so each one asks to.
+        notification["renotify"] = True
+    return {"web_push": 8030, "notification": notification}
+
+
+def _new_notification_coordinator(
+    web_push_fanout: Callable[[dict[str, Any]], None] | None = None,
+) -> NotificationCoordinator:
     """Build a coordinator whose providers resolve facade seams at call time."""
     return NotificationCoordinator(
         logger_provider=lambda: logger,
@@ -66,6 +178,7 @@ def _new_notification_coordinator() -> NotificationCoordinator:
         rewrite_all=lambda notes: _rewrite_notifications(notes),
         executor_provider=lambda: _notification_io_executor(),
         max_persisted=_MAX_PERSISTED_NOTIFICATIONS,
+        web_push_fanout=web_push_fanout,
     )
 
 
@@ -251,20 +364,21 @@ async def run_background_turn(self: DashboardState, slot: "_ChatSlot", coro: Any
         await asyncio.wait_for(sema.acquire(), timeout=self._BACKGROUND_QUEUE_WAIT_SECS)
     except asyncio.TimeoutError:
         coro.close()
+        mark_turn_unstarted(slot)
         self._log.warning(
             "background turn abandoned after waiting %ds for a permit: slot=%s cap=%d",
             self._BACKGROUND_QUEUE_WAIT_SECS,
             slot.key,
             self._bg_turn_cap,
         )
-        raise TimeoutError(
-            f"queued {self._BACKGROUND_QUEUE_WAIT_SECS}s behind the background-turn "
-            f"cap ({self._bg_turn_cap} concurrent) without a free slot"
-        ) from None
+        # Its own TimeoutError, so the dispatch reports a turn that never ran
+        # rather than one the turn ceiling stopped.
+        raise BackgroundTurnAbandoned(self._BACKGROUND_QUEUE_WAIT_SECS, self._bg_turn_cap) from None
     except BaseException:
         # Cancelled while queued: the turn never ran, so close its coroutine
         # rather than leaving an un-awaited coroutine warning behind.
         coro.close()
+        mark_turn_unstarted(slot)
         raise
     finally:
         if queued:
@@ -291,6 +405,27 @@ def disable_yolo(self: DashboardState) -> None:
 def is_yolo_active(self: DashboardState) -> bool:
     """Return whether safety override is active (delegates to safety_override module)."""
     return safety_override().is_active()
+
+
+def yolo_reaches(self: DashboardState, slot: Any, *, channel_origin: bool = False) -> bool:
+    """Whether a live YOLO grant (``is_yolo_active``) reaches a dashboard turn in *slot*.
+
+    ``gateway --approval yolo``'s grant (``is_cli_launch``) is the dashboard's only: a
+    turn a channel message started or steered, or a slot linked to a channel, keeps
+    asking as it did before the flag armed a grant. Callers AND it with
+    ``is_yolo_active``.
+    """
+    if safety_override().is_cli_launch is not True:
+        return True
+    linked_key = getattr(slot, "linked_session_key", "") or ""
+    linked = is_channel_session_key(linked_key) or bool(getattr(slot, "_slack_channel", ""))
+    # The opener's provenance (``_turn_channel_origin``) holds for the whole turn,
+    # even if the slot is unlinked mid-turn, as does a channel steer's narrowing.
+    from_channel = channel_origin or any(
+        getattr(slot, name, False) is True
+        for name in ("_turn_channel_origin", "_turn_channel_narrowed")
+    )
+    return not (from_channel or linked)
 
 
 async def request_approval(
@@ -368,6 +503,8 @@ def _audit_and_broadcast_approval(
     approval_id: str,
     approved: bool,
     decision: str = "",
+    *,
+    instance: str = "",
 ) -> None:
     """Audit and broadcast one approval decision."""
     _approvals_for(self).audit_and_broadcast(
@@ -377,6 +514,7 @@ def _audit_and_broadcast_approval(
         approved,
         decision,
         audit_provider=sel,
+        instance=instance,
     )
 
 
@@ -549,14 +687,25 @@ async def request_question(
 
 
 def resolve_question(
-    self: DashboardState, ask_id: str, answers: dict[str, str] | None, *, reason: str | None = None
+    self: DashboardState,
+    ask_id: str,
+    answers: dict[str, str] | None,
+    *,
+    reason: str | None = None,
+    responder: Any = None,
+    response_id: str = "",
 ) -> bool:
     """Resolve one blocking question future if it is still pending.
 
     ``reason`` says why a ``None`` answer ended the wait (``dismissed``,
     ``composer``, ...); only a blocking MCP ask reports it back to the agent.
+    ``responder`` is the verified Shared Crew principal answering through the
+    dashboard; with it the resolution goes through the shared decision
+    registry (first valid response wins once).
     """
-    return _questions_for(self).resolve(self, ask_id, answers, reason=reason)
+    return _questions_for(self).resolve(
+        self, ask_id, answers, reason=reason, responder=responder, response_id=response_id
+    )
 
 
 async def open_agent_ask(
@@ -591,8 +740,10 @@ async def _flush_loop(self: DashboardState) -> None:
     await _persistence_for(self)._flush_loop(self)
 
 
-def flush_slot_now(self: DashboardState, slot: _ChatSlot) -> None:
-    _persistence_for(self).flush_slot_now(self, slot)
+def flush_slot_now(
+    self: DashboardState, slot: _ChatSlot, takeover_basis: TakeoverBasis | None = None
+) -> None:
+    _persistence_for(self).flush_slot_now(self, slot, takeover_basis=takeover_basis)
 
 
 def _flush_dirty_slots(self: DashboardState) -> None:
@@ -615,6 +766,7 @@ def notify(
     channel: str | None = None,
     member: dict[str, str] | None = None,
     publisher_session: str | None = None,
+    i18n: dict[str, Any] | None = None,
 ) -> None:
     """Validate and deliver a legacy notification without raising.
 
@@ -622,6 +774,7 @@ def notify(
     :func:`payload_from_legacy`); ``kind`` still reaches the frontend.
     ``member`` attributes the note to the crewmate that published it.
     ``publisher_session`` is the attested session publishing it; its mute applies.
+    ``i18n`` names the dashboard copy the bell renders in the reader's language.
     """
     _notifications_for(self).notify(
         self,
@@ -634,12 +787,122 @@ def notify(
         channel=channel,
         member=member,
         publisher_session=publisher_session,
+        i18n=i18n,
     )
+
+
+def _fan_out_web_push(self: DashboardState, note: dict[str, Any]) -> None:
+    """Schedule Web Push delivery of a note to every browser subscription.
+
+    Called from the delivery sink (synchronous). Web Push is network I/O, so
+    this only schedules the send and returns. On the event loop it creates a
+    task there. Off the loop (a note raised from a worker thread, such as
+    ``asyncio.to_thread(state.notify, ...)``) it hands the send to the serving
+    loop with ``run_coroutine_threadsafe``. Only a state that has never seen a
+    loop (a synchronous unit test) skips the push. Best-effort by contract: a
+    failed push must never affect the in-app notification that already landed.
+    """
+    running = self._running_loop()
+    if running is not None:
+        # Held until done: the loop keeps only a weak reference to a task.
+        task = running.create_task(self._send_web_push_all(note))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return
+    loop = self.serving_loop
+    if loop is None or loop.is_closed():
+        logger.debug("Web push skipped: no event loop to schedule it on")
+        return
+    asyncio.run_coroutine_threadsafe(self._send_web_push_all(note), loop)
+
+
+async def _send_web_push_all(self: DashboardState, note: dict[str, Any]) -> None:
+    """Encrypt-and-POST a note to every stored subscription; prune dead ones."""
+    # Imported here, not at module top: web_push pulls in `cryptography`, and
+    # the dashboard state sits on the tool-approval import chain
+    # (slack.gateway -> dashboard.server -> … -> state). A top-level import
+    # would drag the native wheel onto that chain and break every approval on
+    # a host whose cryptography wheel does not load
+    # (test_approval_chain_no_cryptography). The fan-out is the only user.
+    try:
+        from kiro_crew.notifications.web_push import (
+            PushResult,
+            public_push_session,
+            send_web_push,
+        )
+
+        # Offloaded: the first read loads the subscriptions file.
+        subscriptions = await asyncio.to_thread(self.push_subscription_store.all)
+        if not subscriptions:
+            return
+        payload = _web_push_payload(note)
+        async with public_push_session() as session:
+            results = await asyncio.gather(
+                *(send_web_push(session, sub, payload) for sub in subscriptions),
+                return_exceptions=True,
+            )
+        for sub, result in zip(subscriptions, results):
+            # A 404/410 is the push service's authoritative "this subscription
+            # is dead" (RFC 8030); drop it so the store does not accumulate
+            # tombstones and re-POST to it every notification. remove() does an
+            # atomic file write, so offload it rather than blocking the loop.
+            if isinstance(result, PushResult) and result.gone:
+                await asyncio.to_thread(self.push_subscription_store.remove, sub["endpoint"])
+    except Exception:
+        # The task is fire and forget, so an error here is logged rather than
+        # left as an unretrieved task exception; the in-app note already landed.
+        logger.warning("Web push fan-out failed", exc_info=True)
 
 
 def _deliver_note(self: DashboardState, note: dict[str, Any]) -> None:
     """Deliver one bus-validated note to memory, clients, and disk."""
     _notifications_for(self).deliver(self, note)
+
+
+#: The note fields (merged flat from ``meta``) that name the session a note is about.
+_BRIDGE_SESSION_FIELDS = ("session_key", "slot", "history_key")
+
+
+def bridge_subjects(
+    self: DashboardState, note: Mapping[str, Any], publisher: str
+) -> tuple[str, ...]:
+    """The session keys the notification bridge vets *note* for, besides the host.
+
+    Every field that names a session counts, and producers spell them differently:
+    the publisher may be a session key or a bare slot key (a dead-turn alert
+    publishes under ``slot.key``); a note that offers choices carries no publisher
+    but keeps its ``slot`` and ``history_key`` link; a turn-ceiling or abandoned
+    consolidation notice carries only ``session_key``. Each is resolved to the session its slot's turns run on
+    (``effective_session_key``), which is what governance classifies a surface by. A
+    session key no slot matches is vetted as written; a bare slot key no slot holds
+    raises ``LookupError``, and the bridge then sends nothing. Every name is kept,
+    so a forged or stale one can only add a denial, never remove one.
+    """
+    from kiro_crew.dashboard.chat_utils_slots import effective_session_key
+    from kiro_crew.dashboard.session_control import caller_slot_key
+
+    keys: list[str] = []
+    names = [publisher] + [note.get(field) for field in _BRIDGE_SESSION_FIELDS]
+    for name in names:
+        if not isinstance(name, str) or not name:
+            continue
+        slot = self.get_slot(caller_slot_key(self, name) or name)
+        if slot is not None:
+            keys.append(effective_session_key(slot))
+        elif ":" in name:
+            keys.append(name)
+        else:
+            # A bare slot key no slot holds any more (closed while its note was in
+            # flight): governance would read it as some other surface, so refuse.
+            raise LookupError(f"no slot for {name!r}")
+    return tuple(dict.fromkeys(keys))
+
+
+def _bridge_note(self: DashboardState, note: dict[str, Any], publisher: str = "") -> None:
+    """Hand a locally delivered note, and who published it, to the notification bridge."""
+    bridge = getattr(self, "notification_bridge", None)
+    if bridge is not None:
+        bridge.schedule(note, serving_loop=getattr(self, "serving_loop", None), publisher=publisher)
 
 
 def register_sse(self: DashboardState) -> asyncio.Queue[dict[str, Any]]:
@@ -652,14 +915,22 @@ def unregister_sse(self: DashboardState, q: asyncio.Queue[dict[str, Any]]) -> No
     _notifications_for(self).unregister_sse(self, q)
 
 
-async def _rewrite_notifications_async(self: DashboardState) -> None:
-    """Rewrite notification storage after earlier FIFO append jobs."""
-    await _notifications_for(self).rewrite(self)
+async def _rewrite_notifications_async(self: DashboardState) -> bool:
+    """Rewrite notification storage after earlier FIFO append jobs.
+
+    Returns whether the file was written.
+    """
+    return await _notifications_for(self).rewrite(self)
 
 
 async def delete_notification(self: DashboardState, ts: str) -> bool:
     """Remove a single notification by timestamp and persist to disk."""
     return await _notifications_for(self).delete(self, ts)
+
+
+async def dismiss_notification(self: DashboardState, *, source: str, key: str) -> tuple[bool, bool]:
+    """Remove the note *source* published under *key*; ``(removed, persisted)``."""
+    return await _notifications_for(self).dismiss(self, source=source, key=key)
 
 
 async def ack_notification(self: DashboardState, ts: str) -> bool:

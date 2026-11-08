@@ -403,7 +403,7 @@ def test_server_route_table_matches_the_card_module():
     )
     server = set(
         re.findall(
-            r'\("(GET|POST)", "(/api/(?:cards|members)/[a-z0-9_{}/]+)", "api_(?:cards|members)_[a-z_]+"\)',
+            r'\("(GET|POST)", "(/api/(?:cards|members)/[a-z0-9_{}/-]+)", "api_(?:cards|members)_[a-z_]+"\)',
             text,
         )
     )
@@ -816,10 +816,10 @@ def test_crewmate_delete_memory_line_uses_the_display_name():
     text = catalog.describe_manual_change(
         ("DELETE", "/api/agents/{name}"), {"name": "pr"}, None, "PR跟进"
     )
-    assert text == "deleted mate “PR跟进”"
+    assert text == "deleted Bot “PR跟进”"
     assert (
         catalog.describe_manual_change(("DELETE", "/api/agents/{name}"), {"name": "pr"}, None, None)
-        == "deleted mate “pr”"
+        == "deleted Bot “pr”"
     )
 
 

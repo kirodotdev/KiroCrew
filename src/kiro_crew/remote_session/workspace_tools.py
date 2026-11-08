@@ -8,6 +8,7 @@ capped. ``run_command`` is an unrestricted shell: the gateway approves each call
 from __future__ import annotations
 
 import argparse
+import codecs
 import contextlib
 import errno
 import fnmatch
@@ -17,11 +18,12 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 SERVER_NAME = "kirocrew-workspace"
 SERVER_VERSION = "1"
@@ -76,6 +78,368 @@ WITHHELD_ENV = frozenset(
 )
 
 
+#: Per proxied host, the remote spellings git rewrites to the proxy (each a
+#: prefix git matches). Its hosts mirror ``git_gateway.HOSTS``, which this
+#: guest-side file cannot import; ``test_remote_git_proxy`` pins the two equal.
+#: Azure's SSH form (v3/ORG/PROJECT/REPO) has a different path shape, so only
+#: its HTTPS spelling is rewritten.
+GIT_PROXY_REWRITES: Dict[str, tuple] = {
+    "github.com": ("https://github.com/", "git@github.com:", "ssh://git@github.com/"),
+    "gitlab.com": ("https://gitlab.com/", "git@gitlab.com:", "ssh://git@gitlab.com/"),
+    "bitbucket.org": ("https://bitbucket.org/", "git@bitbucket.org:", "ssh://git@bitbucket.org/"),
+    "dev.azure.com": ("https://dev.azure.com/",),
+}
+
+
+#: Beside the port file, the gateway writes the number of a proxy start that
+#: failed. Mirrors ``remote_worker.GIT_PROXY_FAILED_SUFFIX``.
+GIT_PROXY_FAILED_SUFFIX = ".failed"
+
+
+def _start_failed(port_file: str, starting: str) -> bool:
+    """Whether the gateway marked proxy start ``starting`` as failed."""
+    try:
+        with open(port_file + GIT_PROXY_FAILED_SUFFIX, encoding="ascii") as handle:
+            return handle.read(32).strip() == starting
+    except (OSError, ValueError):
+        return False
+
+
+def _proxy_port(port_file: str) -> Optional[int]:
+    """The port the proxy named in ``port_file``, when something listens there."""
+    try:
+        with open(port_file, encoding="ascii") as handle:
+            port = int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+    return port if 0 < port < 65536 and _listening(port) else None
+
+
+def _listening(port: int) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def git_proxy_env(
+    port_file: str,
+    secret: str,
+    base: Optional[Dict[str, str]] = None,
+    *,
+    startup_since: Optional[float] = None,
+    starting: str = "",
+) -> Dict[str, str]:
+    """Environment that routes this command's git traffic for lendable hosts via the gateway.
+
+    Only the hosts the gateway can lend a login for right now are routed: the
+    proxy keeps their names, beside its port file, as the gateway last
+    published them, and this re-reads that list for every command. Every other
+    host keeps the workspace's own git login (its SSH key, its askpass helper),
+    exactly as without Kiro Crew, and under ``strict`` the list is empty, so
+    nothing is routed. A list that cannot be read, or that names another
+    proxy's port, routes nothing: the fallback is the workspace's own login,
+    never the gateway's.
+
+    Git LFS also reads these aliases; the gateway returns its batch and lock
+    verification requests to their direct HTTPS endpoints without credentials.
+    Public LFS remains anonymous; private LFS needs workspace-side authentication.
+
+    Uses git's environment config (``GIT_CONFIG_COUNT``, git 2.31+), so nothing
+    is written to a git config file and a command run outside this tool is not
+    affected. ``GIT_ASKPASS`` and the terminal prompt are left as the workspace
+    set them; a credential helper scoped to the proxy's own URL answers
+    ``quit``, so git asks no one for a password for a routed request, even when
+    an anonymous fetch returns 401.
+    """
+    if not secret or not port_file:
+        return {}
+    deadline = _monotonic() + GIT_PROXY_FIRST_LEND_WAIT_SECS
+    port = _proxy_port(port_file)
+    if port is None and startup_since is not None and starting:
+        # The gateway starts this session's proxy in the background, and the
+        # proxy writes its port file only once it listens. When the gateway told
+        # this tool server a start is in flight (``starting``, its number), a
+        # command waits for that proxy, inside the same bound, so an early clone
+        # still gets the login. The wait ends as soon as the port answers or the
+        # gateway marks that start failed; with no start in flight, or past this
+        # tool server's first moments, a missing proxy costs no wait at all.
+        startup_deadline = min(deadline, startup_since + GIT_PROXY_FIRST_LEND_WAIT_SECS)
+        while (
+            port is None
+            and _monotonic() < startup_deadline
+            and not _start_failed(port_file, starting)
+        ):
+            _sleep(0.1)
+            port = _proxy_port(port_file)
+    if port is None:
+        # No proxy, or a file left by one that died: rewriting to a dead port
+        # would break even public clones, so the command runs as if no proxy existed.
+        return {}
+    lendable, complete = _lendable_hosts(port_file, port)
+    # The gateway answers the proxy's first ``lend`` request once its credential
+    # lookups finish, which can take a few seconds after the session starts. A
+    # command run before then would reach a host the gateway can lend for with
+    # no login, so it waits, bounded, for that answer. Until the lookups finish
+    # the gateway publishes each login it finds, marked partial; the command
+    # keeps waiting through those, since a host still being looked up would
+    # otherwise be left out of this command's rewrite. A complete list, even an
+    # empty one (``strict``, no login anywhere), is used at once; at the
+    # deadline the command takes what has been found; a proxy that stops ends
+    # the wait.
+    while not complete and _monotonic() < deadline:
+        _sleep(0.1)
+        if not _listening(port):
+            return {}
+        lendable, complete = _lendable_hosts(port_file, port)
+    if not lendable:
+        return {}
+    proxy = f"http://127.0.0.1:{port}/"
+    pairs = [
+        (f"url.{proxy}{host}/.insteadOf", prefix)
+        for host, prefixes in GIT_PROXY_REWRITES.items()
+        if host in lendable
+        for prefix in prefixes
+    ]
+    # The relay is on this guest's loopback: no HTTP proxy the workspace sets
+    # (``http_proxy``, ``HTTPS_PROXY``, ``all_proxy``, ``http.proxy``) can reach it,
+    # and one must never see its bearer secret. An empty URL-scoped value turns
+    # proxying off for the relay's URL only; every other host keeps the
+    # workspace's own proxy settings.
+    pairs.append((f"http.{proxy}.proxy", ""))
+    # URL-scoped; Authorization is also stripped on cross-host LFS redirects.
+    pairs.append((f"http.{proxy}.extraHeader", f"Authorization: Bearer {secret}"))
+    # No prompt for the proxy's own URL only; other hosts keep the workspace's.
+    # The empty value first empties the helper list git built for this URL from
+    # the workspace's own config (a general ``credential.helper`` such as Git
+    # Credential Manager would otherwise be asked, and could open a prompt,
+    # before the quit helper below ever ran).
+    pairs.append((f"credential.{proxy}.helper", ""))
+    pairs.append((f"credential.{proxy}.helper", "!f() { echo quit=1; }; f"))
+    # Entries the command's environment (``base``) already sets come first and
+    # are kept: these are appended after them, not written over them.
+    try:
+        start = max(0, int((base or {}).get("GIT_CONFIG_COUNT", "0")))
+    except ValueError:
+        start = 0
+    env = {"GIT_CONFIG_COUNT": str(start + len(pairs))}
+    for index, (key, value) in enumerate(pairs, start):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
+#: Beside the port file, ``git_proxy.py`` keeps ``<port> <host>...``: the hosts
+#: the gateway last said it can lend for. Mirrors ``git_proxy.lend_file``.
+GIT_PROXY_LEND_SUFFIX = ".lend"
+
+#: How long a command waits for the gateway's first list of lendable hosts.
+#: Above one credential CLI's own time limit on the gateway (15 s), so a slow
+#: ``az`` lookup still lands before the command; past it the command runs with
+#: the workspace's own login, as it would without Kiro Crew.
+GIT_PROXY_FIRST_LEND_WAIT_SECS = 20.0
+#: The wait's clock, module-local so a test can drive it without real time.
+_monotonic = time.monotonic
+_sleep = time.sleep
+
+
+def _lendable_hosts(port_file: str, port: int) -> "tuple[Optional[frozenset[str]], bool]":
+    """The hosts to route, and whether the gateway has finished looking them up.
+
+    The hosts are None while this proxy has no answer from the gateway yet:
+    ``serve`` removes the file before it writes its port and asks, so a missing
+    file, or one naming another proxy's port, means "not answered yet". A ``*``
+    after the port marks a partial list, published while other hosts' lookups
+    are still running. An unreadable file routes nothing and is final.
+    """
+    try:
+        with open(port_file + GIT_PROXY_LEND_SUFFIX, encoding="ascii") as handle:
+            fields = handle.read(4096).split()
+    except FileNotFoundError:
+        return None, False
+    except (OSError, ValueError):
+        return frozenset(), True
+    if fields[:1] != [str(port)]:
+        return None, False  # another proxy's list, or none yet
+    complete = fields[1:2] != ["*"]
+    return frozenset(fields[1:]) & frozenset(GIT_PROXY_REWRITES), complete
+
+
+def _run_grouped(
+    argv: List[str],
+    *,
+    cwd: str,
+    env: Dict[str, str],
+    timeout: float,
+    stderr: int,
+    stdout_limit: Optional[int] = None,
+) -> "subprocess.CompletedProcess[bytes]":
+    """Run ``argv`` in its own session, under coreutils ``timeout`` when present.
+
+    Like ``run_command``, the guest calls no kill primitive: ``timeout`` signals
+    the read's whole process group on expiry and when it is itself terminated,
+    which is how an unwind or a stdout cutoff stops it. Without ``timeout`` only
+    the leader is signalled. An expiry raises ``TimeoutExpired``. A stdout limit
+    keeps only that prefix and stops the read when reached; this intentional
+    cutoff reports success. Stderr keeps a bounded tail. On Windows the read
+    runs unwrapped: a ``timeout`` there may be System32's unrelated wait
+    command, and none can signal a Windows process tree, so the deadline is
+    this function's own.
+    """
+    wrapped, wait_secs = (
+        (argv, timeout) if sys.platform == "win32" else _under_timeout(argv, timeout)
+    )
+    timer = wrapped is not argv
+    # timeout would report a missing program as exit 127; keep the error.
+    if timer and shutil.which(argv[0], path=env.get("PATH", os.defpath)) is None:
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), argv[0])
+    argv = wrapped
+    started = time.monotonic()
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=stderr,
+        start_new_session=True,
+        bufsize=0 if stdout_limit is not None else -1,
+    )
+    readers: List[threading.Thread] = []
+    cutoff = False
+    try:
+        if stdout_limit is None:
+            out, err = proc.communicate(timeout=wait_secs)
+        else:
+            deadline = started + wait_secs
+            prefix = bytearray()
+            errors: List[Exception] = []
+
+            def read_prefix() -> None:
+                try:
+                    assert proc.stdout is not None
+                    while len(prefix) < stdout_limit:
+                        chunk = proc.stdout.read(stdout_limit - len(prefix))
+                        if not chunk:
+                            break
+                        prefix.extend(chunk)
+                except (OSError, ValueError) as exc:
+                    errors.append(exc)
+
+            tail = _OutputTail(MAX_OUTPUT_BYTES)
+            readers.append(threading.Thread(target=read_prefix, daemon=True))
+            if proc.stderr is not None:
+                readers.append(
+                    threading.Thread(target=tail.drain, args=(proc.stderr,), daemon=True)
+                )
+            for reader in readers:
+                reader.start()
+            # Wait for EOF before reaping so descendants holding a pipe remain killable.
+            for index, reader in enumerate(readers):
+                reader.join(max(0, deadline - time.monotonic()))
+                if reader.is_alive():
+                    raise subprocess.TimeoutExpired(argv, timeout)
+                if index == 0 and len(prefix) == stdout_limit:
+                    cutoff = True
+                    # Close our end first: git's next write then fails with a
+                    # broken pipe, which ends it and any child holding the pipe
+                    # on every platform. Windows has no group signal, and its
+                    # git.exe is a launcher, so stopping the leader alone would
+                    # leave the real git writing until the deadline.
+                    assert proc.stdout is not None
+                    with contextlib.suppress(OSError):
+                        proc.stdout.close()
+                    _stop_read(proc)
+            if errors:
+                raise errors[0]
+            proc.wait(timeout=max(0, deadline - time.monotonic()))
+            out, err = bytes(prefix), tail.snapshot()[0]
+    finally:
+        if proc.returncode is None:
+            _unwind(proc)
+        for reader in readers:
+            reader.join(_READER_GRACE_SECS)
+        for pipe in (proc.stdout, proc.stderr):
+            if pipe is not None:
+                pipe.close()
+    if timer and not cutoff and proc.returncode in (124, 137):
+        if time.monotonic() - started >= timeout:
+            raise subprocess.TimeoutExpired(argv, timeout)
+    return subprocess.CompletedProcess(argv, 0 if cutoff else proc.returncode, out, err)
+
+
+def _under_timeout(argv: List[str], timeout: float) -> Tuple[List[str], float]:
+    """``argv`` under coreutils ``timeout`` when present, and how long to wait for it.
+
+    ``timeout`` signals the command's whole process group itself, on expiry and
+    when it is terminated, then KILLs after the grace; the guest calls no kill
+    primitive. The wait covers its expiry and grace.
+    """
+    timer = shutil.which("timeout")
+    if not timer:
+        return argv, timeout
+    return [timer, "-k", str(_KILL_GRACE_SECS), str(timeout), *argv], timeout + 2 * _KILL_GRACE_SECS
+
+
+def _stop_read(proc: Any) -> None:
+    """Ask a command to stop; under ``timeout`` the signal reaches its group."""
+    with contextlib.suppress(OSError):
+        proc.terminate()
+
+
+def _unwind(proc: Any) -> None:
+    """Stop and reap a still-running command; without ``timeout``, the leader only.
+
+    On Windows the whole tree is ended instead: there is no group signal, and
+    git.exe is a launcher, so stopping the leader would orphan the real git.
+    """
+    if sys.platform == "win32":
+        _stop_tree(proc)
+    else:
+        _stop_read(proc)
+    try:
+        proc.wait(timeout=2 * _KILL_GRACE_SECS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def _windows_system_dir() -> str:
+    """The Windows system directory, from ``GetSystemDirectoryW``.
+
+    Not from ``%SystemRoot%``: the environment is the caller's to set, so a
+    planted ``taskkill.exe`` would run in its place (the rule
+    ``platform_compat_trust`` follows; this guest file ships without it).
+    """
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(260)
+        written = ctypes.windll.kernel32.GetSystemDirectoryW(buf, len(buf))  # type: ignore[attr-defined]
+        if 0 < written < len(buf):
+            return str(buf.value)
+    except (AttributeError, ImportError, OSError):
+        pass
+    return "C:\\Windows\\System32"
+
+
+def _stop_tree(proc: Any) -> None:
+    """Windows: end ``proc`` and every process under it (``taskkill /T``)."""
+    taskkill = os.path.join(_windows_system_dir(), "taskkill.exe")
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        subprocess.run(
+            [taskkill, "/T", "/F", "/PID", str(proc.pid)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2 * _KILL_GRACE_SECS,
+            check=False,
+        )
+
+
 class ToolError(Exception):
     """A refusal or failure reported to the agent as a tool error, not a crash."""
 
@@ -108,6 +472,59 @@ def _glob_regex(pattern: str) -> "re.Pattern[str]":
     return re.compile("".join(out) + r"\Z")
 
 
+#: Deepest group nesting a grep pattern may use. Python's regex compiler
+#: recurses a few frames per nested group, so a deeper pattern drives the
+#: stack to the interpreter's limit; anything that runs there meanwhile (a
+#: garbage-collected object's finalizer) overflows too and is lost, even
+#: though the compile's own RecursionError is caught.
+MAX_REGEX_GROUP_DEPTH = 100
+#: A flags group that may turn on verbose mode, where ``#`` starts a comment
+#: whose text the nesting scan below would otherwise read as pattern.
+_VERBOSE_FLAG = re.compile(r"\(\?[a-zA-Z-]*x")
+
+
+def _regex_group_depth(pattern: str) -> int:
+    """Return an upper bound on how deeply ``pattern``'s groups nest.
+
+    Escapes, character classes and ``(?#...)`` comments are skipped the way
+    the regex parser skips them. When verbose mode may be on, every ``(`` is
+    counted instead: that can only overstate the depth, never understate it.
+    """
+    if _VERBOSE_FLAG.search(pattern):
+        return pattern.count("(")
+    depth = deepest = 0
+    i, n = 0, len(pattern)
+    while i < n:
+        char = pattern[i]
+        if char == "\\":
+            i += 2
+            continue
+        if char == "[":
+            # A ``]`` first in the class (after an optional ``^``) is literal.
+            i += 1
+            if i < n and pattern[i] == "^":
+                i += 1
+            if i < n and pattern[i] == "]":
+                i += 1
+            while i < n and pattern[i] != "]":
+                i += 2 if pattern[i] == "\\" else 1
+            i += 1
+            continue
+        if pattern.startswith("(?#", i):
+            i += 3
+            while i < n and pattern[i] != ")":
+                i += 2 if pattern[i] == "\\" else 1
+            i += 1
+            continue
+        if char == "(":
+            depth += 1
+            deepest = max(deepest, depth)
+        elif char == ")":
+            depth = max(0, depth - 1)
+        i += 1
+    return deepest
+
+
 def glob_matches(rel: str, pattern: str) -> bool:
     """Whether a ``/``-separated relative path matches; a pattern with no ``/`` matches
     the file name at any depth."""
@@ -120,7 +537,26 @@ def glob_matches(rel: str, pattern: str) -> bool:
 
 
 class Workspace:
-    def __init__(self, root: str, *, lock_dir: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        root: str,
+        git_proxy_port_file: str = "",
+        *,
+        lock_dir: Optional[str] = None,
+        git_proxy_secret: str = "",
+        git_proxy_starting: str = "",
+    ) -> None:
+        #: The port file of THIS session's git proxy (``git_proxy.py --port-file``);
+        #: empty when this process runs no git (the browse and write modes).
+        self.git_proxy_port_file = git_proxy_port_file
+        self.git_proxy_secret = git_proxy_secret
+        #: The number of the git proxy start the gateway had in flight when this
+        #: tool server started, or "" when none was: only then does an early git
+        #: command wait for that proxy (git_proxy_env).
+        self.git_proxy_starting = git_proxy_starting
+        #: When this tool server started; the gateway starts the git proxy beside
+        #: it, so a command this early waits for the proxy too (git_proxy_env).
+        self.started_at = _monotonic()
         real = os.path.realpath(root)
         if not os.path.isdir(real):
             raise SystemExit(f"workspace root {root!r} is not a directory")
@@ -223,7 +659,6 @@ class Workspace:
             return self._write_file_locked(real, content)
 
     def _write_file_locked(self, path: str, content: str) -> str:
-        import stat
         import tempfile
 
         if not isinstance(content, str):
@@ -309,6 +744,8 @@ class Workspace:
         return "\n".join(found) or "(no matches)"
 
     def grep(self, pattern: str, path: str, include: str = "") -> str:
+        if _regex_group_depth(pattern) > MAX_REGEX_GROUP_DEPTH:
+            raise ToolError(f"invalid regex: groups nested more than {MAX_REGEX_GROUP_DEPTH} deep")
         try:
             regex = re.compile(pattern)
         except (re.error, OverflowError, RecursionError) as exc:
@@ -337,12 +774,17 @@ class Workspace:
         timeout = max(1, min(int(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
         workdir = self.resolve(cwd)
         env = {k: v for k, v in os.environ.items() if k not in WITHHELD_ENV}
-        argv = ["/bin/sh", "-c", command]
-        timer = shutil.which("timeout")
-        if timer:
-            # coreutils timeout signals the command's whole process group itself,
-            # on expiry and when it is terminated, then KILLs after the grace.
-            argv = [timer, "-k", str(_KILL_GRACE_SECS), str(timeout), *argv]
+        # GitHub git traffic goes through the gateway, which holds the credential.
+        env.update(
+            git_proxy_env(
+                self.git_proxy_port_file,
+                self.git_proxy_secret,
+                env,
+                startup_since=self.started_at,
+                starting=self.git_proxy_starting,
+            )
+        )
+        argv, wait_secs = _under_timeout(["/bin/sh", "-c", command], timeout)
         started = time.monotonic()
         proc = subprocess.Popen(
             argv,
@@ -359,18 +801,12 @@ class Workspace:
         reader.start()
         code: Optional[int] = None
         try:
-            code = proc.wait(timeout=timeout + (2 * _KILL_GRACE_SECS if timer else 0))
+            code = proc.wait(timeout=wait_secs)
         except subprocess.TimeoutExpired:
             code = None
         finally:
             if proc.returncode is None:
-                # Under timeout this reaches the whole group; without it, the shell only.
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2 * _KILL_GRACE_SECS)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=10)
+                _unwind(proc)
             # A detached job holding the pipe keeps only the daemon reader waiting.
             reader.join(_READER_GRACE_SECS)
         output, omitted = tail.snapshot()
@@ -548,76 +984,611 @@ def serve(server: Server, inp=None, out=None) -> None:
 
 
 def browse(ws: Workspace, request: Any) -> Dict[str, Any]:
-    """One READ-ONLY request: a ``git_status`` of the root, nothing else."""
+    """One READ-ONLY dashboard request: ``list`` or ``read``, nothing else."""
     if not isinstance(request, dict):
         return {"error": "request must be an object"}
+    op, path = request.get("op"), request.get("path") or "."
     try:
-        if request.get("op") == "git_status":
-            return _git_status(ws)
+        if op == "list":
+            real = ws.resolve(path)
+            if not os.path.isdir(real):
+                raise ToolError(f"{path!r} is not a directory")
+            names = sorted(name for name in os.listdir(real) if name != LOCK_DIR)
+            entries = [
+                {"name": n, "dir": os.path.isdir(os.path.join(real, n))}
+                for n in names[:MAX_LIST_ENTRIES]
+            ]
+            return {
+                "root": ws.root,
+                "path": ws.rel(real),
+                "entries": entries,
+                "truncated": len(names) > MAX_LIST_ENTRIES,
+            }
+        if op == "read":
+            real = ws.resolve(path)
+            if os.path.isdir(real):
+                raise ToolError(f"{path!r} is a directory")
+            with open(real, "rb") as handle:
+                data = handle.read(MAX_READ_BYTES + 1)
+            try:
+                # At the cap, a character it splits is dropped rather than an error.
+                decoder = codecs.getincrementaldecoder("utf-8")()
+                text = decoder.decode(data[:MAX_READ_BYTES], final=len(data) <= MAX_READ_BYTES)
+                undecodable = False
+            except UnicodeDecodeError:
+                text, undecodable = "", True
+            return {
+                "root": ws.root,
+                "path": ws.rel(real),
+                "content": text,
+                "binary": undecodable or b"\x00" in data[:8192],
+                "truncated": len(data) > MAX_READ_BYTES,
+            }
+        if op in ("git_status", "git_log", "git_bodies"):
+            source = request.get("from") if op == "git_bodies" else None
+            if source is not None and not isinstance(source, str):
+                raise ToolError("from must be a path")
+            return _git_read(ws, op, path, source)
+        if op == "stats":
+            return _stats(ws)
     except ToolError as exc:
         return {"error": str(exc)}
     except OSError as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
-    return {"error": "op must be git_status"}
+    return {"error": "op must be list, read, git_status, git_log, git_bodies or stats"}
 
 
-def _git_status(ws: Workspace) -> Dict[str, Any]:
-    """Read-only ``git status``: fixed argv, no shell, no hooks, and every configured
-    filter driver blanked (status would run one without command authorization).
+def _meminfo() -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    try:
+        with open("/proc/meminfo", "rb") as handle:
+            sample = handle.read(MAX_READ_BYTES + 1)
+        # Omit an oversized sample rather than report a partially read metric.
+        if len(sample) > MAX_READ_BYTES:
+            return out
+        for line in sample.decode("ascii").splitlines():
+            key, _, rest = line.partition(":")
+            fields = rest.split()
+            if key in ("MemTotal", "MemAvailable") and fields and fields[0].isdigit():
+                out[key] = int(fields[0]) * 1024
+    except (OSError, UnicodeDecodeError):
+        pass
+    return out
+
+
+def _cgroup_number(path: str) -> Optional[int]:
+    """A cgroup file's single integer, or None (absent, ``max`` or unreadable)."""
+    try:
+        with open(path, "rb") as handle:
+            text = handle.read(64).decode("ascii").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return int(text) if text.isdigit() else None
+
+
+def _cgroup_inactive_file(stat_path: str, key: str) -> int:
+    """Reclaimable file cache from a cgroup ``memory.stat``, or 0 when unreadable."""
+    try:
+        with open(stat_path, "rb") as handle:
+            sample = handle.read(MAX_READ_BYTES + 1)
+        if len(sample) > MAX_READ_BYTES:
+            return 0
+        for line in sample.decode("ascii").splitlines():
+            name, _, value = line.partition(" ")
+            if name == key and value.strip().isdigit():
+                return int(value.strip())
+    except (OSError, UnicodeDecodeError):
+        pass
+    return 0
+
+
+def _cgroup_memory() -> Optional[Tuple[int, int]]:
+    """``(limit, working set)`` in bytes when the guest runs under a cgroup memory limit.
+
+    A container workspace (Coder Docker or Kubernetes templates) sees the host
+    node in ``/proc/meminfo``; its real ceiling is the cgroup's. Usage counts
+    page cache, so reclaimable ``inactive_file`` is subtracted, the working set
+    docker and kubectl report. v2 first, then v1.
     """
-    # No hooks, and no index refresh (which would run post-index-change).
+    for limit_path, usage_path, stat_path, key in (
+        (
+            "/sys/fs/cgroup/memory.max",
+            "/sys/fs/cgroup/memory.current",
+            "/sys/fs/cgroup/memory.stat",
+            "inactive_file",
+        ),
+        (
+            "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+            "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+            "/sys/fs/cgroup/memory/memory.stat",
+            "total_inactive_file",
+        ),
+    ):
+        limit, usage = _cgroup_number(limit_path), _cgroup_number(usage_path)
+        if limit is not None and usage is not None:
+            return limit, max(0, usage - _cgroup_inactive_file(stat_path, key))
+    return None
+
+
+def _cgroup_cpus() -> Optional[int]:
+    """CPUs the cgroup's v2 ``cpu.max`` quota allows, or None without a quota."""
+    try:
+        with open("/sys/fs/cgroup/cpu.max", "rb") as handle:
+            fields = handle.read(64).decode("ascii").split()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if len(fields) != 2 or not fields[0].isdigit() or not fields[1].isdigit():
+        return None
+    quota, period = int(fields[0]), int(fields[1])
+    return max(1, -(-quota // period)) if period else None
+
+
+def _stats(ws: Workspace) -> Dict[str, Any]:
+    """Read-only machine metrics for the dashboard's environment card.
+
+    Only numbers and the architecture: no environment, no process list, no
+    paths, and only what the card shows.
+    """
+    import platform
+
+    cpus = os.cpu_count() or 0
+    quota_cpus = _cgroup_cpus()
+    # Inside a container, load average and uptime are the host node's, not the
+    # workspace's: shown beside the container's own core count they mislead, so
+    # a limited container reports neither.
+    contained = quota_cpus is not None and (cpus == 0 or quota_cpus < cpus)
+    if quota_cpus is not None and contained:
+        cpus = quota_cpus
+    result: Dict[str, Any] = {"arch": platform.machine(), "cpus": cpus}
+    mem = _meminfo()
+    if "MemTotal" in mem and "MemAvailable" in mem:
+        total, available = mem["MemTotal"], mem["MemAvailable"]
+        cgroup = _cgroup_memory()
+        if cgroup is not None and cgroup[0] < total:
+            # The container's ceiling, not the host node's.
+            contained = True
+            total = cgroup[0]
+            available = max(0, min(available, cgroup[0] - cgroup[1]))
+        result["memory"] = {"total_bytes": total, "available_bytes": available}
+    if not contained:
+        try:
+            result["load"] = [round(v, 2) for v in os.getloadavg()]
+        except (OSError, AttributeError):
+            pass
+    try:
+        disk = shutil.disk_usage(ws.root)
+        result["disk"] = {"total_bytes": disk.total, "free_bytes": disk.free}
+    except OSError:
+        pass
+    if not contained:
+        try:
+            with open("/proc/uptime", "r") as handle:
+                result["uptime_s"] = int(float(handle.read().split()[0]))
+        except (OSError, ValueError, IndexError):
+            pass
+    return result
+
+
+def _git_bool(run: Callable, key: str, default: bool) -> bool:
+    """A boolean config value as git reads it; ``default`` when it is unset."""
+    try:
+        return run(["config", "--bool", "--get", key]).strip() == b"true"
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode != 1:
+            raise
+        return default
+
+
+def _git_index_entry(run: Callable, target: str, rel: str) -> Optional[Tuple[str, str]]:
+    """The mode and object id the index records for ``rel`` (stage 0), if any."""
+    for row in run(["ls-files", "--stage", "--full-name", "-z", "--", target]).split(b"\0"):
+        meta, _, name = row.partition(b"\t")
+        fields = meta.split(b" ")
+        if name == os.fsencode(rel) and len(fields) == 3 and fields[2] == b"0":
+            return fields[0].decode("ascii", "replace"), fields[1].decode("ascii", "replace")
+    return None
+
+
+def _git_index_mode(run: Callable, target: str, rel: str) -> Optional[str]:
+    """The mode the index records for the file at ``rel`` (stage 0), if any."""
+    entry = _git_index_entry(run, target, rel)
+    return entry[0] if entry else None
+
+
+def _worktree_mode(st_mode: int) -> str:
+    """Git's mode for a worktree entry, from ``lstat`` alone."""
+    if stat.S_ISLNK(st_mode):
+        return "120000"
+    # Git records 100755 only for the owner's execute bit (ce_permissions).
+    return "100755" if st_mode & stat.S_IXUSR else "100644"
+
+
+# Control bytes git's gather_stats counts as non-printable: below 32 except
+# BS, TAB, ESC and FF (CR and LF are counted apart), and DEL.
+_GIT_NONPRINTABLE = tuple(bytes([c]) for c in (*range(32), 127) if c not in (8, 9, 10, 12, 13, 27))
+
+
+def _git_auto_text(body: bytes) -> bool:
+    """Whether git's automatic conversion would treat ``body`` as text.
+
+    Mirrors convert.c's ``convert_is_binary``: a lone CR, a NUL, or more than
+    one non-printable byte per 128 printable ones makes git leave the bytes as
+    they are, so their CRLFs must not be folded either. A trailing Ctrl-Z
+    (DOS end of file) is not counted as non-printable.
+    """
+    lone_cr = body.count(b"\r") - body.count(b"\r\n")
+    nonprintable = sum(body.count(c) for c in _GIT_NONPRINTABLE)
+    if body.endswith(b"\x1a"):
+        nonprintable -= 1
+    printable = len(body) - nonprintable - body.count(b"\r") - body.count(b"\n")
+    if body.endswith(b"\x1a"):
+        printable -= 1
+    return not lone_cr and b"\0" not in body and (printable >> 7) >= nonprintable
+
+
+def _git_bodies(
+    ws: Workspace, path: str, run: Callable, source: Optional[str] = None
+) -> Dict[str, Any]:
+    """Read the two bodies and modes, never a patch of unmasked content.
+
+    ``run`` supplies the fixed git prefix and checks every exit status. Only
+    the parent is resolved: a symlink's body is its target text, not its referent.
+    ``source`` is a rename's old path: the HEAD side is read there, confined the
+    same way, and named in ``old_path``. When the two bodies together exceed
+    ``MAX_READ_BYTES`` the reply is ``truncated`` and carries no body at all.
+    """
+    repo_root = os.fsdecode(run(["rev-parse", "--show-toplevel"])).rstrip("\r\n")
+
+    def locate(name_in_repo: str) -> "tuple[str, str]":
+        found = os.path.normpath(os.path.join(repo_root, name_in_repo))
+        if found == ws.root:
+            raise ValueError("a file path is required, not a directory")
+        parent, leaf = os.path.split(found)
+        found = os.path.join(ws.resolve(parent, must_exist=False), leaf)
+        return found, os.path.relpath(found, repo_root).replace(os.sep, "/")
+
+    target, rel = locate(path)
+    head = "HEAD"
+    try:
+        entry = run(["ls-tree", "-z", head, "--", target])
+    except subprocess.CalledProcessError:
+        # Only an unborn branch has an absent baseline; corrupt objects fail.
+        try:
+            run(["log", "-1", "--format=%h"])
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode != 128 or not re.fullmatch(
+                rb"fatal: your current branch '[^\r\n]+' does not have any commits yet\n?",
+                exc.stderr,
+            ):
+                raise
+        else:
+            raise
+        head = run(["hash-object", "-t", "tree", "--stdin"]).decode("ascii").strip()
+        entry = b""
+    old_rel = rel
+    if source is not None and head == "HEAD":
+        source_path, source_rel = locate(source)
+        if source_rel != rel:
+            source_entry = run(["ls-tree", "-z", head, "--", source_path])
+            # A source HEAD does not hold is no rename; the target's own entry stands.
+            if source_entry:
+                entry, old_rel = source_entry, source_rel
+    mode, sha = "", ""
+    if entry:
+        mode, _kind, sha = entry.split(b"\t", 1)[0].decode("ascii").split()
+        if mode == "040000":
+            raise ValueError("a file path is required, not a directory")
+    old = None
+    if sha:
+        old = (
+            f"Subproject commit {sha}\n".encode()
+            if mode == "160000"
+            else run(["cat-file", "blob", sha])[: MAX_READ_BYTES + 1]
+        )
+    try:
+        disk_mode = os.lstat(target).st_mode
+    except FileNotFoundError:
+        disk_mode = 0
+    new = None
+    new_mode: Optional[str] = None
+    # A gitlink replaced by a file or symlink is read below with the bounded
+    # worktree read; git's own diff of it would be buffered whole.
+    if stat.S_ISDIR(disk_mode) or (mode == "160000" and not disk_mode):
+        index = run(["ls-files", "--stage", "--full-name", "-z", "--", target])
+        rows = [row for row in index.split(b"\0") if row]
+        indexed_link = any(
+            row.startswith(b"160000 ") and row.split(b"\t", 1)[-1] == os.fsencode(rel)
+            for row in rows
+        )
+        # A gitlink the index replaced with files under the path is a directory
+        # of files now: refuse it before git builds that subtree's whole patch.
+        if not indexed_link and (mode != "160000" or rows):
+            raise ValueError("a file path is required, not a directory")
+        summary = run(
+            [
+                "diff",
+                "--no-color",
+                "--submodule=short",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--ignore-submodules=dirty",
+                head,
+                "--",
+                target,
+            ]
+        )
+        # The raw format uses an all-zero new id for an unstaged gitlink.
+        # The short format names its commit without running inside the submodule;
+        # only that synthetic commit line is retained, never the patch itself.
+        match = re.search(rb"^\+Subproject commit ([0-9a-f]{40}(?:[0-9a-f]{24})?)$", summary, re.M)
+        if match:
+            new = b"Subproject commit " + match[1] + b"\n"
+        elif not summary:
+            new = old
+        elif disk_mode and stat.S_ISDIR(disk_mode):
+            raise ValueError("git did not report the submodule commit")
+        if new is not None:
+            new_mode = "160000"
+    if stat.S_ISLNK(disk_mode):
+        new = os.fsencode(os.readlink(target))
+        new_mode = _worktree_mode(disk_mode)
+    elif stat.S_ISREG(disk_mode):
+        # Resolve again on hosts without O_NOFOLLOW; guest workspaces are POSIX.
+        read_path = target if hasattr(os, "O_NOFOLLOW") else ws.resolve(target)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(read_path, flags)
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ValueError("a regular file or symlink is required")
+            new = handle.read(MAX_READ_BYTES + 1)
+        new_mode = _worktree_mode(disk_mode)
+        filemode = _git_bool(run, "core.filemode", True)
+        symlinks = _git_bool(run, "core.symlinks", True)
+        if not filemode or not symlinks:
+            # Where the filesystem cannot carry a mode, git takes the one the
+            # index records (ce_mode_from_stat), so a staged chmod still shows;
+            # a path the index does not hold keeps HEAD's.
+            recorded = _git_index_mode(run, target, rel) or mode
+            if recorded == "120000" and not symlinks:
+                new_mode = recorded
+            elif recorded in ("100644", "100755") and not filemode:
+                new_mode = recorded
+    elif disk_mode and not stat.S_ISDIR(disk_mode):
+        raise ValueError("a regular file or symlink is required")
+    if old is None and new is None:
+        raise ValueError("the path is neither in HEAD nor a worktree file")
+    truncated = len(old or b"") + len(new or b"") > MAX_READ_BYTES
+    result: Dict[str, Any] = {
+        "root": ws.root,
+        "git": True,
+        "path": rel,
+        "truncated": truncated,
+        "old_mode": mode if old is not None else None,
+        "new_mode": new_mode if new is not None else None,
+    }
+    if old_rel != rel:
+        result["old_path"] = old_rel
+    if any(b"\0" in body[:8000] for body in (old, new) if body is not None):
+        if old == new:
+            # Identical bytes are no content change: only a rename or mode
+            # header can differ, so the bodies go as equal and empty.
+            return {**result, "old": "", "new": ""}
+        return {**result, "binary": True}
+    if truncated:
+        # Over the cap no body is sent: a partial body cannot give a true diff.
+        return result
+    if new is not None and stat.S_ISREG(disk_mode) and b"\r\n" in new:
+        fields = run(["check-attr", "-z", "text", "eol", "--", target]).split(b"\0")
+        attrs = dict(zip(fields[1::3], fields[2::3]))
+        text, eol = attrs.get(b"text"), attrs.get(b"eol")
+        convert = text == b"set"
+
+        def crlf_in_index() -> bool:
+            # git's has_crlf_in_index: automatic conversion leaves a file whose
+            # INDEX blob is text holding CRLF unchanged; explicit text does not.
+            # HEAD stays the old side. A staged renormalization makes the two
+            # differ, and only then is the index blob read.
+            staged = _git_index_entry(run, target, rel)
+            if staged is None or staged[0] == "160000":
+                return False
+            blob = old if staged[1] == sha else run(["cat-file", "blob", staged[1]])
+            return blob is not None and b"\r\n" in blob and _git_auto_text(blob)
+
+        if text != b"unset":
+            if text == b"auto":
+                convert = _git_auto_text(new) and not crlf_in_index()
+            elif eol in (b"lf", b"crlf"):
+                convert = True
+            elif not convert:
+                try:
+                    autocrlf = run(["config", "--get", "core.autocrlf"]).strip().lower()
+                except subprocess.CalledProcessError as exc:
+                    if exc.returncode != 1:
+                        raise
+                    autocrlf = b"false"
+                convert = (
+                    autocrlf in (b"true", b"input") and _git_auto_text(new) and not crlf_in_index()
+                )
+        if convert:
+            new = new.replace(b"\r\n", b"\n")
+    try:
+        return {
+            **result,
+            "old": old.decode("utf-8") if old is not None else None,
+            "new": new.decode("utf-8") if new is not None else None,
+        }
+    except UnicodeDecodeError:
+        if old == new:
+            # Identical bytes stay identical text: only a mode line can differ.
+            body = old.decode("utf-8", "replace") if old is not None else None
+            return {**result, "old": body, "new": body}
+        # Replacement characters would make different non-UTF-8 bytes read
+        # as equal text and hide the change, so such a body is not text here.
+        return {**result, "binary": True}
+
+
+def _git_read(ws: Workspace, op: str, path: str, source: Optional[str] = None) -> Dict[str, Any]:
+    """Read-only git views of the root: fixed argv, no shell, no hooks.
+
+    No pager, fsmonitor, external diff, textconv or signature check runs. A
+    repository's own config can name filter drivers, which status and diff would
+    run on a changed file without command authorization, so every configured one
+    is blanked, and a driver that cannot be named is a failure, not a read.
+    """
     base = [
         "git",
+        "--no-lazy-fetch",
+        "--literal-pathspecs",
         "-c",
         "core.fsmonitor=",
         "-c",
         "core.pager=cat",
+        # No hooks, and no index refresh (which would run post-index-change).
         "-c",
         "core.hooksPath=/dev/null",
+        # A config-set signature check would run gpg per commit and mix its
+        # lines into the history; older git ignores the unknown key.
+        "-c",
+        "log.showSignature=false",
+        "-C",
+        ws.root,
     ]
-    base += ["-C", ws.root]
+    argv: List[str] = []
     env = {k: v for k, v in os.environ.items() if k not in WITHHELD_ENV}
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_NO_LAZY_FETCH"] = "1"
     env["GIT_OPTIONAL_LOCKS"] = "0"
-    pipe, quiet = subprocess.PIPE, subprocess.DEVNULL
-    try:
-        # Reading config runs nothing; exit 1 just means no filter is configured.
-        listed = subprocess.run(
-            base + ["config", "--null", "--name-only", "--get-regexp", r"^filter\."],
-            env=env,
-            stdin=quiet,
-            stdout=pipe,
-            stderr=pipe,
-            timeout=30,
+    # Repository-state diagnostics must not depend on the guest's locale.
+    env["LC_ALL"] = "C"
+
+    def run(args: List[str]):
+        # A filter driver git starts must not outlive a timed-out read.
+        return _run_grouped(args, cwd=ws.root, env=env, timeout=30, stderr=subprocess.PIPE)
+
+    def unborn(proc: Any) -> bool:
+        return (
+            proc.returncode == 128
+            and re.fullmatch(
+                rb"fatal: your current branch '[^\r\n]+' does not have any commits yet\n?",
+                proc.stderr,
+            )
+            is not None
         )
-    except FileNotFoundError:
-        return {"root": ws.root, "git": False, "error_text": "git is not installed"}
-    except subprocess.TimeoutExpired:
-        raise ToolError("git did not answer in 30 seconds")
-    drivers = {
-        name.decode("utf-8", "replace")[len("filter.") :].rpartition(".")[0]
-        for name in listed.stdout.split(b"\0")
-        if name.startswith(b"filter.")
-    }
-    if listed.returncode not in (0, 1) or any("=" in d or not d for d in drivers):
-        # A driver this cannot name in ``-c`` cannot be switched off: run nothing.
-        return {"root": ws.root, "git": False, "error_text": "git filter config not checked"}
-    off = [f"filter.{d}.{key}={value}" for d in sorted(drivers) for key, value in _FILTER_OFF]
-    argv = base + [arg for item in off for arg in ("-c", item)]
-    # A submodule's own config could name filters too: never look inside one.
-    argv += ["status", "--porcelain=v1", "--branch", "--untracked-files=normal"]
-    argv.append("--ignore-submodules=dirty")
+
+    def failure(message: str) -> Dict[str, Any]:
+        return {"root": ws.root, "git": False, "code": "git_failed", "error_text": message}
+
+    unguarded_partial = False
     try:
-        proc = subprocess.run(argv, env=env, stdin=quiet, stdout=pipe, stderr=pipe, timeout=30)
+        # Config reads need no objects, so they can safely probe flag support.
+        filters = ["config", "--null", "--name-only", "--get-regexp", r"^filter\."]
+        listed = run(base + filters)
+        if (
+            listed.returncode == 129
+            and b"unknown option" in listed.stderr
+            and b"no-lazy-fetch" in listed.stderr
+        ):
+            base.remove("--no-lazy-fetch")
+            partial = run(
+                base
+                + [
+                    "config",
+                    "--null",
+                    "--name-only",
+                    "--get-regexp",
+                    r"^(extensions\.partialclone|remote\..*\.(promisor|partialclonefilter))$",
+                ]
+            )
+            if partial.returncode not in (0, 1):
+                return failure("git partial clone config not checked")
+            # Even an empty or false-valued marker counts as a partial clone.
+            if partial.returncode == 0:
+                if op == "git_bodies":
+                    # A HEAD body is a blob a partial clone may lack.
+                    return failure(
+                        "this git cannot read a partial clone without fetching; "
+                        "git 2.44 or later is needed"
+                    )
+                # GIT_NO_LAZY_FETCH arrived with the flag, so this git ignores it.
+                # A lazy fetch runs ``git fetch``, which an empty protocol allow
+                # list refuses before any transport starts: a read that needs a
+                # missing object fails instead of fetching it.
+                env["GIT_ALLOW_PROTOCOL"] = ""
+                unguarded_partial = True
+            listed = run(base + filters)
+        drivers = {
+            name.decode("utf-8", "replace")[len("filter.") :].rpartition(".")[0]
+            for name in listed.stdout.split(b"\0")
+            if name.startswith(b"filter.")
+        }
+        if listed.returncode not in (0, 1) or any("=" in d or not d for d in drivers):
+            # A driver this cannot name in ``-c`` cannot be switched off: run nothing.
+            return failure("git filter config not checked")
+        off = [f"filter.{d}.{key}={value}" for d in sorted(drivers) for key, value in _FILTER_OFF]
+        base = base + [arg for item in off for arg in ("-c", item)]
+        if op == "git_status":
+            # A submodule's own config could name filters too: never look inside one.
+            argv = base + ["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"]
+            argv.append("--ignore-submodules=dirty")
+            if unguarded_partial:
+                # Status reads trees and the worktree; only inexact rename
+                # detection reads blobs, which a blobless clone may lack.
+                argv.append("--no-renames")
+        elif op == "git_log":
+            # Unix seconds, not %ar: git words a relative date in English whatever
+            # the reader's language, and the panel formats the date itself.
+            fmt = "--pretty=format:%h%x09%an%x09%at%x09%s"
+            argv = base + ["log", "--no-color", "-n", "50", fmt]
+        if op == "git_bodies":
+
+            def checked(args: List[str]) -> bytes:
+                # Every body read is streamed to the cap, so no git output
+                # (a blob, an index listing, a submodule summary) is held whole.
+                reply = _run_grouped(
+                    base + args,
+                    cwd=ws.root,
+                    env=env,
+                    timeout=30,
+                    stderr=subprocess.PIPE,
+                    stdout_limit=MAX_READ_BYTES + 1,
+                )
+                if reply.returncode:
+                    raise subprocess.CalledProcessError(
+                        reply.returncode, args, output=reply.stdout, stderr=reply.stderr
+                    )
+                return reply.stdout
+
+            return _git_bodies(ws, path, checked, source)
+        # Bounded like the blob read: one huge commit subject cannot be buffered.
+        proc = _run_grouped(
+            argv,
+            cwd=ws.root,
+            env=env,
+            timeout=30,
+            stderr=subprocess.PIPE,
+            stdout_limit=MAX_READ_BYTES + 1,
+        )
+        if op == "git_log" and unborn(proc):
+            return {"root": ws.root, "git": True, "output": ""}
     except FileNotFoundError:
-        return {"root": ws.root, "git": False, "error_text": "git is not installed"}
+        return failure("git is not installed")
     except subprocess.TimeoutExpired:
-        raise ToolError("git did not answer in 30 seconds")
+        return failure("git did not answer in 30 seconds")
+    except subprocess.CalledProcessError as exc:
+        err = exc.stderr.decode("utf-8", "replace").strip()
+        if exc.returncode == 128 and err.startswith("fatal: not a git repository"):
+            return {"root": ws.root, "git": False}
+        return failure(err[-300:] or f"git exited with status {exc.returncode}")
+    except ValueError as exc:
+        return failure(str(exc))
+    except OSError as exc:
+        return failure(f"could not run git: {exc}")
     out = proc.stdout[:MAX_READ_BYTES].decode("utf-8", "replace")
     if proc.returncode != 0:
         err = proc.stderr.decode("utf-8", "replace").strip()
-        # Not a repository (or no commits yet) is a state, not a failure.
-        return {"root": ws.root, "git": False, "error_text": err[-300:]}
+        if proc.returncode == 128 and err.startswith("fatal: not a git repository"):
+            return {"root": ws.root, "git": False}
+        return failure(err[-300:] or f"git exited with status {proc.returncode}")
     return {
         "root": ws.root,
         "git": True,
@@ -626,26 +1597,78 @@ def _git_status(ws: Workspace) -> Dict[str, Any]:
     }
 
 
+def write_request(ws: Workspace, request: Any) -> Dict[str, Any]:
+    """The browser's one mutation: save text, refused when ``expected`` differs."""
+    if not isinstance(request, dict):
+        return {"error": "request must be an object"}
+    path, content = request.get("path"), request.get("content")
+    if not isinstance(content, str):
+        return {"error": "content must be a string"}
+    try:
+        expected = request.get("expected")
+        if not isinstance(path, str):
+            raise ToolError("path must be a non-empty string")
+        with ws.write_lock(path) as real:
+            if os.path.exists(real):
+                with open(real, "rb") as handle:
+                    current = handle.read(MAX_WRITE_BYTES + 1).decode("utf-8")
+                if isinstance(expected, str) and current != expected:
+                    return {"error": "the file changed since it was opened", "conflict": True}
+            elif isinstance(expected, str):
+                return {"error": "the file changed since it was opened", "conflict": True}
+            message = ws._write_file_locked(real, content)
+        return {"root": ws.root, "path": ws.rel(ws.resolve(path)), "ok": True, "message": message}
+    except ToolError as exc:
+        return {"error": str(exc)}
+    except (OSError, ValueError) as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="workspace_tools.py")
     p.add_argument("--root", required=True)
-    p.add_argument(
+    p.add_argument("--git-proxy-port-file", default="")
+    p.add_argument("--git-proxy-secret-stdin", action="store_true")
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
         "--browse",
         action="store_true",
         help="answer one read-only JSON request from stdin and exit",
     )
+    mode.add_argument(
+        "--write",
+        action="store_true",
+        help="save one file from a JSON request on stdin and exit",
+    )
     args = p.parse_args(argv)
+    secret = starting = ""
+    if args.git_proxy_secret_stdin:
+        # "<capability> <state>": the state says whether the gateway has a proxy
+        # start in flight ("starting:<n>") or none ("none").
+        line = sys.stdin.buffer.readline(128).decode("ascii").split()
+        secret = line[0] if line else ""
+        if re.fullmatch(r"[0-9a-f]{64}", secret) is None:
+            raise SystemExit("invalid git proxy capability")
+        state = line[1] if len(line) > 1 else ""
+        if re.fullmatch(r"starting:[0-9]{1,9}", state):
+            starting = state.split(":", 1)[1]
     os.makedirs(os.path.expanduser(args.root), exist_ok=True)
+    # The port file is resolved here: a relative path names the worker directory
+    # this starts in.
     ws = Workspace(
         os.path.expanduser(args.root),
+        os.path.abspath(args.git_proxy_port_file) if args.git_proxy_port_file else "",
         lock_dir=os.path.join(os.path.expanduser("~"), ".kirocrew-worker", "file-locks"),
+        git_proxy_secret=secret,
+        git_proxy_starting=starting,
     )
-    if args.browse:
+    if args.browse or args.write:
+        limit = (2 * MAX_WRITE_BYTES) if args.write else 65536
         try:
-            request = json.loads(sys.stdin.buffer.read(65536) or b"null")
+            request = json.loads(sys.stdin.buffer.read(limit) or b"null")
         except ValueError:
             request = None
-        result = browse(ws, request)
+        result = write_request(ws, request) if args.write else browse(ws, request)
         sys.stdout.write(json.dumps(result))
         sys.stdout.flush()
         return 0

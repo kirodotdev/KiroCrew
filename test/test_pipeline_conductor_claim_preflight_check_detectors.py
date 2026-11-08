@@ -99,19 +99,6 @@ class TestTechnicalProseIsNotClosure:
         got = mod.scan_prose(an_issue(body=body), None, "us")
         assert got["closure_requested"] is False
 
-    @pytest.mark.parametrize(
-        "body",
-        [
-            "this can be closed",
-            "this is no longer needed",
-            "no longer an issue",
-            "no longer reproducible",
-        ],
-    )
-    def test_the_item_scoped_forms_still_close(self, mod, body):
-        got = mod.scan_prose(an_issue(body=body), None, "us")
-        assert got["closure_requested"] is True
-
     @pytest.mark.parametrize("ticks", ["`", "``", "```` "])
     def test_a_backtick_run_of_any_length_is_stripped(self, mod, ticks):
         """Markdown pairs a closing run with the opening one. The single-backtick

@@ -110,10 +110,11 @@ def backfill_events(art: Artifact) -> bool:
     events field. Idempotent — sets ``events_backfilled=True`` so we
     only run once per artifact. Returns True if mutated.
 
-    Generates a synthetic ``created`` event from ``created_at`` and one
-    ``edited`` event per intermediate version (created_at → updated_at
-    gap counts as a single edit if version > 1; we don't have per-version
-    timestamps in legacy meta).
+    Generates a synthetic ``created`` event from ``created_at`` when it is
+    set, and a single ``edited`` event at ``updated_at`` when ``version > 1``
+    and ``updated_at`` is set and differs from ``created_at``. Legacy meta has
+    no per-version timestamps, so every later version collapses into that one
+    edit.
     """
     if art.events_backfilled or art.events:
         # Either explicitly backfilled before, or a fresh artifact whose
@@ -141,6 +142,28 @@ def backfill_events(art: Artifact) -> bool:
         )
     art.events_backfilled = True
     return True
+
+
+def _decode_tags(raw: Any) -> _List[str]:
+    """The ``tags`` of a parsed ``meta.json``, as the list of strings readers expect.
+
+    The store only ever writes a list of strings (``_validate_tags``), so anything
+    else came from an edit outside it. Tolerant, like the rest of this load: a bare
+    string is one tag, a number is its text, and an entry that names no label
+    (``null``, a bool, an object, a list) is dropped. A whole value that is not a list
+    or a string reads as no tags rather than refusing the record.
+    """
+    if isinstance(raw, str):
+        return [raw] if raw else []
+    if not isinstance(raw, list):
+        return []
+    tags: _List[str] = []
+    for tag in raw:
+        if isinstance(tag, str):
+            tags.append(tag)
+        elif isinstance(tag, (int, float)) and not isinstance(tag, bool):
+            tags.append(str(tag))
+    return tags
 
 
 def decode_meta(raw: Any, path: Path) -> Artifact:
@@ -193,6 +216,13 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
     ):
         logger.warning("artifact meta.json %s: malformed content_token, resetting", path)
         content_token = None
+    # A version int() cannot read is a ValueError, which every listing already
+    # skips per record; Infinity raises OverflowError instead, so it is
+    # reported the same way rather than taking down the whole listing.
+    try:
+        version = int(raw.get("version", 1))
+    except OverflowError as exc:
+        raise ValueError(f"meta.json version is not a finite number: {path}") from exc
     return Artifact(
         slug=str(slug),
         name=str(raw.get("name", slug)),
@@ -200,8 +230,8 @@ def decode_meta(raw: Any, path: Path) -> Artifact:
         kind_auto=bool(raw.get("kind_auto", False)),
         source=str(raw.get("source", "chat")),
         description=str(raw.get("description", "")),
-        tags=list(raw.get("tags", []) or []),
-        version=int(raw.get("version", 1)),
+        tags=_decode_tags(raw.get("tags")),
+        version=version,
         created_at=str(raw.get("created_at", "")),
         updated_at=str(raw.get("updated_at", "")),
         events=events,
@@ -289,7 +319,7 @@ def parse_publication(raw_pub: Any) -> "ArtifactPublication | None":
         for k, v in raw_version_map.items():
             try:
                 version_map[str(k)] = int(v)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 continue
     raw_shared = raw_pub.get("shared_with") or []
     shared_with = (
@@ -300,11 +330,11 @@ def parse_publication(raw_pub: Any) -> "ArtifactPublication | None":
     # contract by falling back to 0 (same pattern as version_map above).
     try:
         last_synced = int(raw_pub.get("last_synced_kirocrew_version", 0) or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         last_synced = 0
     try:
         wrapper_rev = int(raw_pub.get("wrapper_revision", 0) or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         wrapper_rev = 0
     return ArtifactPublication(
         artifact_id=str(artifact_id),
@@ -340,7 +370,7 @@ def parse_fork_metadata(raw_fm: Any) -> "ForkMetadata | None":
         return None
     try:
         upstream_version = int(raw_fm.get("upstream_version") or 0)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         upstream_version = 0
     return ForkMetadata(
         upstream_artifact_id=str(upstream_id),

@@ -19,7 +19,7 @@
  * a search suspends the hide entirely. Two numbers for one fact, on one screen, is the
  * defect this file also pins against.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, onTestFinished, vi } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { render, fireEvent } from '@testing-library/react'
@@ -59,8 +59,10 @@ vi.mock('framer-motion', async () => {
   const make = (tag: string) => React.forwardRef<unknown, Record<string, unknown>>(
     (props, ref) => React.createElement(tag, { ...strip(props), ref }),
   )
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
   return {
-    motion: new Proxy({} as Record<string, unknown>, { get: (_t, tag: string) => make(tag) }),
+    motion: new Proxy({} as Record<string, unknown>, { get: (_t, tag: string) => { if (!byTag.has(tag)) byTag.set(tag, make(tag)); return byTag.get(tag) } }),
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
     LayoutGroup: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
   }
@@ -296,16 +298,39 @@ describe('a board says on screen how many folders it is hiding', () => {
     expect(queryByTestId(`folder-filter-${HIDDEN_FOLDER}`)).not.toBeNull()
   })
 
-  it('carries its colour as theme tokens, so it holds in a light theme as well as a dark one', () => {
-    // Every theme in `index.css` defines `--warn` and `--warn-subtle`; a literal colour
-    // would be legible in whichever theme it was picked against and wrong in the other
-    // fifteen. Warn rather than accent is the separate point: accent is what the view
-    // toggle beside the funnel uses for "this lane is active".
+  it('lands the menu on the folder list, which sits last and can open below the fold', () => {
+    // Folders sit last in the menu, so on a menu taller than the room below the funnel
+    // the click opened the list it promised out of sight, and a keyboard reader's first
+    // arrow started from the top. The funnel's own open is the control: it starts the
+    // menu at the top, as it always has.
+    const rect = (top: number, bottom: number) => ({ x: 0, y: top, left: 0, right: 300, top, bottom, width: 300, height: bottom - top, toJSON() { return {} } }) as DOMRect
+    const rects = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      if (this.getAttribute('role') === 'menu') return rect(100, 300)
+      if (this.getAttribute('data-testid') === 'folder-filter-section') return rect(500, 600)
+      return rect(0, 0)
+    })
+    onTestFinished(() => rects.mockRestore())
+    hideFolders(HIDDEN_FOLDER)
+    const { container, getByLabelText, getByRole, getByTestId } = renderSidebar(true)
+    fireEvent.keyDown(getByLabelText('Sort and filter sessions'), { key: 'Enter' })
+    expect(getByRole('menu').scrollTop, 'the funnel scrolled the menu it opened').toBe(0)
+    fireEvent.keyDown(getByRole('menu'), { key: 'Escape' })
+    fireEvent.click(notice(container) as Element)
+    // The section ends 300 px below the menu's visible bottom and is shorter than the
+    // visible area, so the menu scrolls exactly that far and shows all of it.
+    expect(getByRole('menu').scrollTop).toBe(300)
+    expect(document.activeElement, 'focus did not land on the Folders heading').toBe(getByTestId('folder-filter-shelve'))
+  })
+
+  it('wears the same muted gray as the other lanes\' reveal row, not a warning (#14087)', () => {
+    // The hide is something the person chose, so the notice matches the tree, flat and
+    // conductor lanes' reveal row (`data-folder-hidden-reveal`, `text-muted`) instead of
+    // a warn strip. A theme token, never a literal colour, so it holds in every theme.
     hideFolders(HIDDEN_FOLDER)
     const { container } = renderSidebar(true)
     const cls = notice(container)?.className ?? ''
-    expect(cls).toMatch(/\btext-warn\b/)
-    expect(cls).toMatch(/\bbg-warn-subtle\b/)
+    expect(cls).toMatch(/\btext-muted\b/)
+    expect(cls).not.toMatch(/\bwarn/)
     expect(cls).not.toMatch(/#[0-9a-fA-F]{3,6}|rgb\(/)
   })
 })
@@ -481,7 +506,11 @@ describe('the citation glyph says whose session opened this one', () => {
     const glyph = container.querySelector('[data-orphan-of]')
     expect(glyph).not.toBeNull()
     expect(glyph?.getAttribute('role')).toBe('img')
-    expect(glyph?.getAttribute('aria-label')).toContain('k-absent')
+    // Graceful label, never the raw slot id of the closed creator (#18153); the id
+    // survives on the data attribute alone.
+    expect(glyph?.getAttribute('aria-label')).toBe('Opened by a closed session')
+    expect(glyph?.getAttribute('aria-label')).not.toContain('k-absent')
+    expect(glyph?.getAttribute('data-orphan-of')).toBe('k-absent')
     expect(glyph?.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true')
   })
 })

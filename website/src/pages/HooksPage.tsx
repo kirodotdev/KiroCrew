@@ -49,6 +49,7 @@ const EVENT_STYLE: Record<string, string> = {
   FileEdited: 'bg-ok-subtle text-ok-text border-ok/30',
   FileDeleted: 'bg-warn-subtle text-warn-text border-warn/30',
   UserTriggered: 'bg-accent/15 text-accent border-accent/30',
+  SessionLaneChanged: 'bg-accent/15 text-accent border-accent/30',
 }
 
 const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
@@ -57,6 +58,7 @@ const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
   PreTaskExecution: 'aim', PostTaskExecution: 'aim',
   FileCreated: 'ok', FileEdited: 'ok', FileDeleted: 'warn',
   UserTriggered: 'ok',
+  SessionLaneChanged: 'ok',
 }
 
 const EVENT_ORDER = Object.fromEntries(EVENTS.map((e, i) => [e, i]))
@@ -186,7 +188,7 @@ function HookForm({ hook, onSave, onCancel }: {
       <CardTitle>{hook ? i18nT('pages.hooksPage.edit_hook') : i18nT('pages.hooksPage.new_hook_2')} <InfoTip text={i18nT('pages.hooksPage.script_hooks_fire_shell_commands_on_chat_lifecyc')} /></CardTitle>
       <div className="flex flex-col gap-3">
         <div className="flex gap-2 items-center flex-wrap">
-          <Input placeholder={i18nT('pages.hooksPage.hook_name')} value={name} onChange={e => setName(e.target.value)} />
+          <Input placeholder={i18nT('pages.hooksPage.hook_name')} aria-label={i18nT('pages.hooksPage.hook_name')} value={name} onChange={e => setName(e.target.value)} />
           <SimpleSelect
             options={EVENTS}
             // The panel is the trigger's width by default, and the trigger hugs a
@@ -223,7 +225,7 @@ function HookForm({ hook, onSave, onCancel }: {
           />
         </div>
         <div>
-          <Input className="w-full font-mono" placeholder={i18nT('pages.hooksPage.echo_hook_fired')} value={command} onChange={e => setCommand(e.target.value)} />
+          <Input className="w-full font-mono" placeholder={i18nT('pages.hooksPage.echo_hook_fired')} aria-label={i18nT('pages.hooksPage.command')} value={command} onChange={e => setCommand(e.target.value)} />
         </div>
         <div className="flex gap-2 items-center flex-wrap">
           {/* The shared Input is `flex-1 min-w-0`, i.e. `flex-basis: 0%`, so its
@@ -241,7 +243,7 @@ function HookForm({ hook, onSave, onCancel }: {
               events have no payload yet. Offering the field would be a form that
               cannot save. Timeout stays — Test honours it. */}
           {!dormantMark(event) && (
-            <Input className="basis-full sm:basis-auto" placeholder={matcherPlaceholder} value={matcher} onChange={e => setMatcher(e.target.value)} />
+            <Input className="basis-full sm:basis-auto" placeholder={matcherPlaceholder} aria-label={i18nT('pages.hooksPage.matcher')} value={matcher} onChange={e => setMatcher(e.target.value)} />
           )}
           {!isToolHook && !dormantMark(event) && (
             <SimpleSelect
@@ -261,7 +263,7 @@ function HookForm({ hook, onSave, onCancel }: {
           )}
           <div className="flex items-center gap-1.5 text-[13px] text-muted shrink-0">
             <span>{i18nT('pages.hooksPage.timeout')}</span>
-            <Input type="number" min={1} max={300} className="w-16" value={timeout} onChange={e => setTimeout_(parseInt(e.target.value, 10) || 30)} />
+            <Input type="number" min={1} max={300} className="w-16" aria-label={i18nT('pages.hooksPage.timeout')} value={timeout} onChange={e => setTimeout_(parseInt(e.target.value, 10) || 30)} />
             <span>{i18nT('pages.hooksPage.s')}</span>
           </div>
         </div>
@@ -352,6 +354,15 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
     queryKey: ['provider-hooks-unsent', provider.id],
     queryFn: () => provider.fetchUnsentProviderHooks?.() ?? Promise.resolve([]),
     enabled: provider.capabilities.hooks && !!provider.fetchUnsentProviderHooks,
+  })
+  // The refetch is awaited so the "rescanned" line appears with the list it describes.
+  // Claimed synchronously on press: `isPending` only flips on the next render,
+  // so two quick presses could both read it as false.
+  const rescanClaim = useRef(false)
+  const rescanMut = useMutation({
+    mutationFn: () => provider.rescanProviderHooks!(),
+    onSuccess: async () => { await Promise.all([refetchProviderHooks(), refetchUnsentHooks()]) },
+    onSettled: () => { rescanClaim.current = false },
   })
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
@@ -585,10 +596,10 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                           // and nothing else, so a keyboard or touch user met an ON switch
                           // beside `never fires` with nothing reconciling them. The action
                           // stays first, so the control still announces what it does.
-                          aria-label={[
-                            h.enabled ? i18nT('pages.hooksPage.disable_hook') : i18nT('pages.hooksPage.enable_hook'),
-                            h.enabled ? dormantOnNote(h.event) : '',
-                          ].filter(Boolean).join(' — ')}
+                          aria-label={!h.enabled ? i18nT('pages.hooksPage.enable_hook')
+                            : dormantOnNote(h.event)
+                              ? i18nT('pages.hooksPage.disable_hook_with_note', { note: dormantOnNote(h.event) })
+                              : i18nT('pages.hooksPage.disable_hook')}
                           title={h.enabled ? dormantOnNote(h.event) : undefined}
                         >
                           <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${h.enabled ? 'left-[18px]' : 'left-0.5'}`} />
@@ -810,7 +821,19 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
         </Card>
         {provider.capabilities.hooks && (
         <Card>
-          <CardTitle>{provider.labels.hooksSection} <InfoTip text={i18nT('pages.hooksPage.read_only_view_of_provider_hooks', { path: provider.labels.configFile || i18nT('pages.hooksPage.config') })} /></CardTitle>
+          <CardTitle>
+            {provider.labels.hooksSection} <InfoTip text={i18nT('pages.hooksPage.read_only_view_of_provider_hooks', { path: provider.labels.configFile || i18nT('pages.hooksPage.config') })} />
+            {provider.rescanProviderHooks && (
+              // `aria-disabled` while rescanning, not `disabled`: the click that
+              // started it holds focus here, and a disabled button would drop
+              // that focus to <body>. The claim keeps a second press inert.
+              <span className="ml-auto"><Btn onClick={() => { if (rescanClaim.current) return; rescanClaim.current = true; rescanMut.mutate() }} aria-disabled={rescanMut.isPending} aria-busy={rescanMut.isPending}
+                className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent aria-disabled:hover:border-border aria-disabled:active:scale-100">{i18nT('pages.hooksPage.rescan')}</Btn></span>
+            )}
+          </CardTitle>
+          {rescanMut.data === true && <p role="status" className="text-[12px] text-muted mb-3">{i18nT('pages.hooksPage.rescan_done')}</p>}
+          {rescanMut.data === false && <ErrorNotice variant="inline" message={i18nT('pages.hooksPage.rescan_not_applied')} askAgent={handoffSafe} className="mb-3" testId="rescan-not-applied" />}
+          {rescanMut.error && <ErrorNotice title={i18nT('pages.hooksPage.rescan_failed')} message={rescanMut.error.message} askAgent={handoffSafe} className="mb-3" />}
           {/* The unsent-hooks read is its own request. When only it fails, the
               sent hooks below still render, so its notice sits above them rather
               than replacing the table; an empty list would read as "everything
@@ -832,7 +855,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                   hand-off while a HookForm (`creating` / `editing`) is open;
                   otherwise this read-only view holds nothing to lose. */}
               <ErrorNotice
-                title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })}
+                title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection })}
                 message={providerHookErr instanceof Error ? providerHookErr.message : String(providerHookErr)}
                 askAgent={handoffSafe}
                 className="flex-1"
@@ -910,7 +933,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                             <Badge
                               variant="muted"
                               title={reason}
-                              aria-label={`${i18nT('pages.hooksPage.stored_only')} — ${reason}`}
+                              aria-label={i18nT('pages.hooksPage.stored_only_reason', { reason })}
                               className="whitespace-normal text-[11px] leading-[1.15] max-w-[4.75rem] bg-transparent border border-dashed border-border"
                             >{i18nT('pages.hooksPage.stored_only')}</Badge>
                           </span>
@@ -927,7 +950,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
               </table>
             </div>
           ) : (
-            <EmptyState icon={<Link2 className="lucide-inline" />} title={i18nT('pages.hooksPage.none_configured', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={provider.labels.configFile ? i18nT('pages.hooksPage.configure_via', { path: provider.labels.configFile }) : ''} />
+            <EmptyState icon={<Link2 className="lucide-inline" />} title={i18nT('pages.hooksPage.none_configured', { section: provider.labels.hooksSection })} subtitle={provider.labels.configFile ? i18nT('pages.hooksPage.configure_via', { path: provider.labels.configFile }) : ''} />
           )}
         </Card>
         )}

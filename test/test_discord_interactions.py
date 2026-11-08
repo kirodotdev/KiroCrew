@@ -154,13 +154,10 @@ class TestInteractions:
 
     @pytest.mark.asyncio
     async def test_a_reject_press_still_lands_after_a_withdrawal(self) -> None:
-        """A REJECT is a denial, which is what a withdrawal wants. Dropping it would
-        strand the pending approval until it times out.
+        """A REJECT still resolves after a withdrawal, but its verdict edit is withheld.
 
-        Its CONFIRMATION is a different thing: an outbound write into the channel.
-        The reject reaches the resolution without the re-read the sibling branch does,
-        and the edit may serve no wait at all, in which case the ladder's own re-check
-        never runs and nothing else judges it. So the verdict is withheld.
+        Dropping the denial would strand the approval until timeout. The confirmation
+        is an outbound write, and nothing else re-checks it on this path.
         """
         d, cli, _ = _dispatcher({"u1"})
         key = DiscordApprovalDecider.key(d._session_key("u1"), "r1")
@@ -227,13 +224,10 @@ class TestInteractions:
     async def test_a_ceiling_denied_channel_keeps_its_card_exactly_as_posted(
         self, tmp_path, monkeypatch
     ) -> None:
-        """The reverse of the verdict-lands case: with the ceiling withdrawn, the press
-        writes NOTHING into the channel -- not the verdict, not a component strip.
+        """With the ceiling withdrawn, the press writes NOTHING: no verdict, no button strip.
 
-        The card is an ordinary channel message posted while the channel was still
-        permitted, so writing nothing leaves it in exactly that state. Asserted as the
-        fold of everything sent and every edit applied, not merely as an empty edit
-        list, because a component-only edit would also change what the channel shows.
+        Component edits are checked too, because a component-only edit would also
+        change what the channel shows.
         """
         from kiro_crew.platform import governance_profiles as gp
 
@@ -314,12 +308,9 @@ class TestInteractions:
         """An APPROVE press reads the ceiling twice: once before it resolves, once
         before it writes.
 
-        Carrying the first answer forward would be a value taken before a suspension,
-        which is the defect class this change exists to close. Pinned by answering
-        `permitted` to the first read and `denied` to the second, which no reuse of a
-        single answer can satisfy. Both entry points share one answering function
-        because the reads are on opposite sides of the resolve and read opposite
-        directions: the press arriving is inbound, the verdict written is outbound.
+        The first read answers `permitted` and the second `denied`, which no reuse of
+        one answer across the suspension can satisfy. One function answers both the
+        inbound (press) and outbound (verdict) entry points.
         """
         d, cli, _ = _dispatcher({"u1"})
         answers = [True, False]
@@ -347,12 +338,8 @@ class TestInteractions:
         """The verdict edit is a write this process makes, so the OUTBOUND ceiling
         decides it.
 
-        Both entry points read the same `channels` allowlist, so a test that only
-        watched the verdict could not tell them apart. Pinned by answering permitted
-        inbound and denied OUTBOUND: the press resolves, because the inbound gate let
-        it through, and the edit is still withheld, which only a gate reading the
-        outbound entry point can do. Filing an egress refusal under an ingress name
-        leaves an operator asking why a message did not go out reading the wrong row.
+        Inbound answers permitted and OUTBOUND denied: the press resolves and the edit
+        is withheld, which only a gate reading the outbound entry point can do.
         """
         d, cli, _ = _dispatcher({"u1"})
         read: list[str] = []
@@ -598,6 +585,121 @@ class TestInteractions:
         )
 
     @pytest.mark.asyncio
+    async def test_a_long_option_answers_with_its_full_text_not_the_cut_label(self) -> None:
+        """A choice over 80 characters shows a cut label but answers in full."""
+        from kiro_crew.discord.renderer import build_option_components
+
+        d, cli, _ = _dispatcher({"u1"})
+        tag = session_provenance_tag(d.current_session_key("u1"))
+        shared = "Deploy the release to the staging fleet and then run the full smoke suite "
+        long_a = shared + "against region us-east-1 first"
+        long_b = shared + "against region eu-west-1 first"
+        rows = build_option_components([long_a, long_b, "Short"], tag)
+        buttons = rows[0]["components"]
+        assert all(len(b["label"]) <= 80 for b in buttons)
+        assert buttons[0]["label"] == buttons[1]["label"]
+        assert buttons[2]["custom_id"] == f"opt:2:{tag}"
+
+        turns: list[str] = []
+
+        async def _record(msg, **_kw) -> None:
+            turns.append(msg.text)
+
+        d.handle_message = _record
+        await d.on_interaction(self._itx(buttons[1]["custom_id"], label=buttons[1]["label"]))
+
+        assert f"> {long_b}" in [t for t, _ in cli.sent]
+        assert turns == [long_b]
+
+    @pytest.mark.asyncio
+    async def test_the_choice_echo_goes_through_the_display_pass(self, monkeypatch) -> None:
+        """The echo is display text: it is sent as the display pass returns it."""
+        import kiro_crew.discord.transport_dispatch_interactions as tdi
+        from kiro_crew.discord.renderer import build_option_components
+
+        passed: list[str] = []
+
+        def _display(text: str) -> str:
+            passed.append(text)
+            return "[shown]"
+
+        monkeypatch.setattr(tdi, "_redact_transformed", _display)
+        d, cli, _ = _dispatcher({"u1"})
+        tag = session_provenance_tag(d.current_session_key("u1"))
+        choice = "Run the migration on the staging database, then report back " + "x" * 40
+        button = build_option_components([choice], tag)[0]["components"][0]
+
+        async def _record(msg, **_kw) -> None:
+            return None
+
+        d.handle_message = _record
+        await d.on_interaction(self._itx(button["custom_id"], label=button["label"]))
+
+        assert passed == [f"> {choice}"]
+        assert "[shown]" in [t for t, _ in cli.sent]
+        assert f"> {choice}" not in [t for t, _ in cli.sent]
+
+    def test_the_full_choice_map_is_capped_oldest_first(self, monkeypatch) -> None:
+        """A long-running bot keeps at most the cap of full choices; the oldest go first."""
+        from kiro_crew.discord import renderer_components as rc
+
+        monkeypatch.setattr(rc, "_FULL_CHOICES", rc.OrderedDict())
+        monkeypatch.setattr(rc, "_FULL_CHOICES_MAX", 3)
+        refs = []
+        for n in range(5):
+            text = f"{n} " + "x" * 90
+            button = rc.build_option_components([text], "a" * 12)[0]["components"][0]
+            refs.append((button["custom_id"].split(":")[1], text, button["label"]))
+
+        assert len(rc._FULL_CHOICES) == 3
+        # The two oldest are gone: no text, never the cut label. The rest keep theirs.
+        for ref, text, label in refs[:2]:
+            assert rc.full_choice_text("a" * 12, ref, label) == ""
+        for ref, text, label in refs[2:]:
+            assert rc.full_choice_text("a" * 12, ref, label) == text
+
+    def test_a_choice_past_the_length_ceiling_is_not_kept(self, monkeypatch) -> None:
+        """The map is bounded in characters too: an oversized choice is never stored."""
+        from kiro_crew.discord import renderer_components as rc
+
+        monkeypatch.setattr(rc, "_FULL_CHOICES", rc.OrderedDict())
+        huge = "y" * (rc._FULL_CHOICE_MAX_CHARS + 1)
+        at_cap = "z" * rc._FULL_CHOICE_MAX_CHARS
+        buttons = rc.build_option_components([huge, at_cap], "b" * 12)[0]["components"]
+        huge_ref = buttons[0]["custom_id"].split(":")[1]
+        cap_ref = buttons[1]["custom_id"].split(":")[1]
+
+        assert len(rc._FULL_CHOICES) == 1
+        assert rc.full_choice_text("b" * 12, huge_ref, buttons[0]["label"]) == ""
+        assert rc.full_choice_text("b" * 12, cap_ref, buttons[1]["label"]) == at_cap
+
+    @pytest.mark.asyncio
+    async def test_a_cut_choice_not_kept_asks_to_type_instead_of_sending_the_cut_label(
+        self, monkeypatch
+    ) -> None:
+        """After a restart the map is empty: a cut button must not answer with its label."""
+        from kiro_crew.discord import renderer_components as rc
+        from kiro_crew.discord.renderer import build_option_components
+
+        d, cli, _ = _dispatcher({"u1"})
+        tag = session_provenance_tag(d.current_session_key("u1"))
+        long_text = (
+            "Deploy the release to the staging fleet and then run the full smoke suite on us-east-1"
+        )
+        button = build_option_components([long_text], tag)[0]["components"][0]
+        monkeypatch.setattr(rc, "_FULL_CHOICES", rc.OrderedDict())
+        turns: list[str] = []
+
+        async def _record(msg, **_kw) -> None:
+            turns.append(msg.text)
+
+        d.handle_message = _record
+        await d.on_interaction(self._itx(button["custom_id"], label=button["label"]))
+
+        assert turns == []
+        assert any("type it instead" in t for t, _ in cli.sent)
+
+    @pytest.mark.asyncio
     async def test_untagged_option_press_fails_closed(self) -> None:
         """A pre-provenance button press is refused — its origin is unprovable."""
         d, cli, sess = _dispatcher({"u1"})
@@ -766,6 +868,33 @@ class TestModelPicker:
         assert sess._gp.set_models == ["m-fast"]
 
     @pytest.mark.asyncio
+    async def test_a_session_the_account_check_retires_defers_to_the_next_message(self) -> None:
+        d, _cli, sess = _dispatcher({"u1"})
+
+        async def _retire_then_refuse(key: str) -> bool:
+            # The acquire's Kiro account check retired the session: it held another
+            # account, so nothing is live by the time the lease would be taken.
+            sess._has = False
+            return False
+
+        sess.try_acquire = _retire_then_refuse  # type: ignore[method-assign]
+        outcome = await d._apply_model(d._scope_id("u1", ""), "discord:dm:u1", "m-fast")
+
+        assert outcome == "✅ Model set to m-fast — it applies to your next message."
+        assert sess._gp.set_models == []
+
+    @pytest.mark.asyncio
+    async def test_a_session_the_account_check_flags_defers_to_the_next_message(self) -> None:
+        # Flagged, not retired (an idle parent the check spared for its running
+        # sub-agents): refused, yet still registered, and no reply is running.
+        d, _cli, sess = _dispatcher({"u1"})
+        sess.retiring = True
+        outcome = await d._apply_model(d._scope_id("u1", ""), "discord:dm:u1", "m-fast")
+
+        assert outcome == "✅ Model set to m-fast — it applies to your next message."
+        assert sess._gp.set_models == [] and sess.acquired == []
+
+    @pytest.mark.asyncio
     async def test_a_second_press_is_refused_rather_than_applied_twice(self) -> None:
         d, cli, sess = _dispatcher({"u1"})
         sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]
@@ -858,11 +987,8 @@ class TestModelPicker:
 class TestCommandSurfaceParity:
     """Every catalogued command must actually do something on BOTH surfaces.
 
-    This is the drift guard the two-surface design needs: adding a row to
-    ``COMMAND_SPEC`` publishes it to Discord's menu, so a row with no handler
-    ships a visible command that silently does nothing. Walking the catalogue
-    rather than a hand-written list is the point, since the hand-written list is
-    what goes stale.
+    A ``COMMAND_SPEC`` row is published to Discord's menu, so a row with no handler
+    ships a command that silently does nothing. The test walks the catalogue itself.
     """
 
     @pytest.mark.asyncio

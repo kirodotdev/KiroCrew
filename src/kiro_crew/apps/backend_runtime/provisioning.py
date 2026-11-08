@@ -259,7 +259,13 @@ def _open_contained_nofollow(base: Path, target: Path) -> int:
     backed by symlink creation being privileged there; junction swaps of
     the DATA dir are separately caught by _PinnedDir.verify.
     """
-    rel_parts = target.relative_to(base).parts
+    # Windows' ``\\?\`` prefix folded off both sides first, so a resolve that
+    # kept it on one operand is not read as an escape. Lexical only.
+    rel_parts = (
+        platform_compat.strip_extended_length_prefix(target)
+        .relative_to(platform_compat.strip_extended_length_prefix(base))
+        .parts
+    )
     if not rel_parts:
         raise OSError("requirements path resolves to the app root itself")
     if not pinned_fs.supports_pinned_walk():
@@ -566,7 +572,7 @@ def provision_app_deps(app_name: str, root: Path) -> str:
             # macOS; the shared helper elects one creator, then lets contenders
             # open its existing inode, and never recreates a lock that
             # disappears before the reopen.
-            lfd = platform_compat.open_create_or_existing(lock_name, lflags, 0o644, dir_fd=pin.fd)
+            lfd = platform_compat.open_create_or_existing(lock_name, lflags, 0o600, dir_fd=pin.fd)
             with os.fdopen(lfd, "r+") as lf:
                 with platform_compat.file_lock(lf.fileno(), exclusive=True):
                     provision_error = _provision_app_deps_locked(app_name, root, pin)

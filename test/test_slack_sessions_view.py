@@ -68,9 +68,7 @@ def _write_jsonl(
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-# ---------------------------------------------------------------------------
 # _classify_session_key / _default_session_title
-# ---------------------------------------------------------------------------
 
 
 class TestClassifySessionKey:
@@ -92,14 +90,38 @@ class TestClassifySessionKey:
 
 
 class TestDefaultSessionTitle:
-    def test_dashboard_colon(self):
-        assert _default_session_title("dashboard:chat-1-123", _SESSION_KIND_DASHBOARD) == "Dashboard chat-1-123"
 
-    def test_dashboard_underscore(self):
-        assert _default_session_title("dashboard_chat-1-123", _SESSION_KIND_DASHBOARD) == "Dashboard chat-1-123"
-
-    def test_taskrunner_underscore(self):
-        assert _default_session_title("taskrunner_run-foo", _SESSION_KIND_TASKRUNNER) == "Task Runner run-foo"
+    @pytest.mark.parametrize(
+        ("key", "kind", "expected"),
+        [
+            pytest.param(
+                "dashboard:chat-1-123",
+                _SESSION_KIND_DASHBOARD,
+                "Dashboard chat-1-123",
+                id="test_dashboard_colon",
+            ),
+            pytest.param(
+                "dashboard_chat-1-123",
+                _SESSION_KIND_DASHBOARD,
+                "Dashboard chat-1-123",
+                id="test_dashboard_underscore",
+            ),
+            pytest.param(
+                "taskrunner_run-foo",
+                _SESSION_KIND_TASKRUNNER,
+                "Task Runner run-foo",
+                id="test_taskrunner_underscore",
+            ),
+            pytest.param(
+                "taskrunner:run:42",
+                _SESSION_KIND_TASKRUNNER,
+                "Task Runner 42",
+                id="test_taskrunner_colon",
+            ),
+        ],
+    )
+    def test_default_title(self, key, kind, expected):
+        assert _default_session_title(key, kind) == expected
 
     def test_taskrunner_underscore_run_id_format(self):
         # Production format is ``taskrunner_run_<task_id>`` (after _safe_key
@@ -114,16 +136,11 @@ class TestDefaultSessionTitle:
             == "Task Runner step1"
         )
 
-    def test_taskrunner_colon(self):
-        assert _default_session_title("taskrunner:run:42", _SESSION_KIND_TASKRUNNER) == "Task Runner 42"
-
     def test_other_returns_key_unchanged(self):
         assert _default_session_title("cron:abc", _SESSION_KIND_OTHER) == "cron:abc"
 
 
-# ---------------------------------------------------------------------------
 # _collect_recent_sessions
-# ---------------------------------------------------------------------------
 
 
 class TestCollectRecentSessions:
@@ -305,14 +322,10 @@ class TestCollectRecentSessions:
         assert row["msgs"] == [{"role": "user", "content": "keep"}]
 
 
-# ---------------------------------------------------------------------------
 # _build_sessions_blocks
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
 # Ended rows
-# ---------------------------------------------------------------------------
 
 
 class _LiveKeys:
@@ -382,11 +395,8 @@ class TestEndedRowsLeaveTheList:
     def test_a_later_write_does_not_undo_the_dismissal(self, sess_dir):
         """Housekeeping writes must not resurface the row.
 
-        Consolidation, skill extraction and auto-titling all write the file on
-        the way out of an End, after the dismissal is stamped. A rule that
-        compared the file's mtime against ``closed_at`` would read those as the
-        user coming back and put the row straight back at the top, which is the
-        reported bug.
+        Consolidation, skill extraction and auto-titling write the file after the
+        dismissal is stamped, so an mtime-vs-``closed_at`` rule would resurface the row.
         """
         path = sess_dir / "slack_C1.200.jsonl"
         stamped = time.time() - 60
@@ -594,7 +604,14 @@ class TestSessionsIncludeEndedArgument:
             assert sessions_include_ended(f"sessions {word}") is True
 
     @pytest.mark.asyncio
-    async def test_keyword_handler_forwards_the_opt_in(self):
+    @pytest.mark.parametrize(
+        ("command", "include_ended"),
+        [
+            pytest.param("sessions all", True, id="test_keyword_handler_forwards_the_opt_in"),
+            pytest.param("sessions", False, id="test_keyword_handler_defaults_to_hiding_ended"),
+        ],
+    )
+    async def test_keyword_handler_include_ended(self, command, include_ended):
         seen: dict = {}
 
         async def _fake(sessions, **kwargs):
@@ -603,25 +620,8 @@ class TestSessionsIncludeEndedArgument:
 
         slack = MockSlackClient()
         with patch("kiro_crew.slack.handler._collect_recent_sessions_off_loop", _fake):
-            await _handle_sessions_command(
-                "sessions all", slack, "C1", "1.0", "1.0", "slack:C1", None
-            )
-        assert seen["include_ended"] is True
-
-    @pytest.mark.asyncio
-    async def test_keyword_handler_defaults_to_hiding_ended(self):
-        seen: dict = {}
-
-        async def _fake(sessions, **kwargs):
-            seen.update(kwargs)
-            return []
-
-        slack = MockSlackClient()
-        with patch("kiro_crew.slack.handler._collect_recent_sessions_off_loop", _fake):
-            await _handle_sessions_command(
-                "sessions", slack, "C1", "1.0", "1.0", "slack:C1", None
-            )
-        assert seen["include_ended"] is False
+            await _handle_sessions_command(command, slack, "C1", "1.0", "1.0", "slack:C1", None)
+        assert seen["include_ended"] is include_ended
 
 
 class TestBuildSessionsBlocks:
@@ -670,61 +670,60 @@ class TestBuildSessionsBlocks:
         assert blocks[2]["type"] == "divider"
         assert blocks[5]["type"] == "divider"
 
-    def test_active_session_uses_in_progress_status(self):
+    @pytest.mark.parametrize(
+        ("key", "title", "active", "status", "icon"),
+        [
+            pytest.param(
+                "dashboard:active",
+                "running",
+                True,
+                "in_progress",
+                "🟢",
+                id="test_active_session_uses_in_progress_status",
+            ),
+            pytest.param(
+                "dashboard:done",
+                "done",
+                False,
+                "complete",
+                "⚫",
+                id="test_inactive_session_uses_complete_status",
+            ),
+        ],
+    )
+    def test_session_status(self, key, title, active, status, icon):
         rows = [
             {
-                "key": "dashboard:active",
-                "title": "running",
+                "key": key,
+                "title": title,
                 "agent": "kirocrew",
                 "mtime": 0.0,
-                "active": True,
+                "active": active,
                 "kind": _SESSION_KIND_DASHBOARD,
                 "msgs": [],
             }
         ]
         card = _build_sessions_blocks(rows)[0]
-        assert card["status"] == "in_progress"
-        assert "🟢" in card["title"]
+        assert card["status"] == status
+        assert icon in card["title"]
 
-    def test_inactive_session_uses_complete_status(self):
-        rows = [
-            {
-                "key": "dashboard:done",
-                "title": "done",
-                "agent": "kirocrew",
-                "mtime": 0.0,
-                "active": False,
-                "kind": _SESSION_KIND_DASHBOARD,
-                "msgs": [],
-            }
-        ]
-        card = _build_sessions_blocks(rows)[0]
-        assert card["status"] == "complete"
-        assert "⚫" in card["title"]
-
-    def test_redacts_credentials_in_title(self):
+    @pytest.mark.parametrize(
+        ("title", "agent"),
+        [
+            # ASK-style credential pattern is redacted by redact_credentials
+            pytest.param(
+                "AKIAIOSFODNN7EXAMPLE secret", "kirocrew", id="test_redacts_credentials_in_title"
+            ),
+            # Parity with title: agent strings are redacted before reaching session_task_card.
+            pytest.param("ok", "AKIAIOSFODNN7EXAMPLE", id="test_redacts_credentials_in_agent"),
+        ],
+    )
+    def test_redacts_credentials(self, title, agent):
         rows = [
             {
                 "key": "dashboard:k",
-                # ASK-style credential pattern is redacted by redact_credentials
-                "title": "AKIAIOSFODNN7EXAMPLE secret",
-                "agent": "kirocrew",
-                "mtime": 0.0,
-                "active": False,
-                "kind": _SESSION_KIND_DASHBOARD,
-                "msgs": [],
-            }
-        ]
-        card = _build_sessions_blocks(rows)[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in card["title"]
-
-    def test_redacts_credentials_in_agent(self):
-        """Parity with title — agent strings are redacted before reaching session_task_card."""
-        rows = [
-            {
-                "key": "dashboard:k",
-                "title": "ok",
-                "agent": "AKIAIOSFODNN7EXAMPLE",
+                "title": title,
+                "agent": agent,
                 "mtime": 0.0,
                 "active": False,
                 "kind": _SESSION_KIND_DASHBOARD,
@@ -758,12 +757,8 @@ class TestBuildSessionsBlocks:
     def test_redacts_exfiltration_urls_in_message_content(self):
         """Message content is redacted before it is posted to Slack.
 
-        The pre-refactor inline code applied BOTH ``redact_exfiltration_urls()``
-        and ``redact_credentials()`` to message content before posting to Slack.
-        The refactor delegates message redaction to ``session_task_card()`` →
-        ``blocks._msg_elements()`` → ``security.redact_and_truncate()``. Locks
-        in that the exfiltration-URL redaction half is still applied to message
-        content even after the delegation.
+        Redaction runs through ``session_task_card()`` → ``blocks._msg_elements()`` →
+        ``security.redact_and_truncate()``; this pins the exfiltration-URL half.
         """
         # Long-query-string URL with a base64-like blob is the canonical
         # exfiltration pattern detected by redact_exfiltration_urls.
@@ -791,11 +786,7 @@ class TestBuildSessionsBlocks:
     def test_dual_redaction_in_home_tab_message_path(self):
         """Same dual-redaction guarantee for the Home Tab path (for_home_tab=True).
 
-        Note: the Home Tab section row only renders title + agent (no message
-        bullets), so this test exercises the title path's dual redaction.
-        Message content for the Home Tab is not currently surfaced in the
-        section block, but if that ever changes the dual-redaction guarantee
-        must still hold.
+        The Home Tab row renders only title + agent, so this exercises the title path.
         """
         blob = "A" * 50
         url = f"https://evil.example.com/x?data={blob}&{'x' * 200}"
@@ -816,9 +807,7 @@ class TestBuildSessionsBlocks:
         assert url not in rendered
 
 
-# ---------------------------------------------------------------------------
 # handler._handle_sessions_command — delegates to events.py helpers
-# ---------------------------------------------------------------------------
 
 
 class TestHandleSessionsCommandDelegation:
@@ -1003,9 +992,7 @@ class TestHandleSessionsCommandDelegation:
         assert leaked_key not in kwargs["error"]
 
 
-# ---------------------------------------------------------------------------
 # events._handle_sessions — slash command SEL audit
-# ---------------------------------------------------------------------------
 
 
 class TestSlashSessionsAudit:
@@ -1096,11 +1083,8 @@ class TestSlashSessionsAudit:
     ):
         """The slash command enforces the authorization rule.
 
-        Per the deny-by-default guideline, the slash command must reject
-        callers that are neither the owner nor an explicitly-allowed user,
-        and the rejection must be recorded via SEL with outcome=denied so
-        unauthorized read attempts show up in the audit pipeline.
-        Mirror of the keyword path's gate in handler.py:1868.
+        Callers neither owner nor allowed are rejected (deny by default), and the
+        rejection is recorded via SEL with outcome=denied. Mirrors the keyword path's gate.
         """
         from kiro_crew.slack.events import _handle_sessions
 
@@ -1268,9 +1252,7 @@ class TestSlashSessionsAudit:
         assert leaked_key not in kwargs["error"]
 
 
-# ---------------------------------------------------------------------------
 # Bounded reads: only the newest ``limit`` matching transcripts are opened
-# ---------------------------------------------------------------------------
 
 
 class TestWithMessagesBoundsTheRead:
@@ -1396,9 +1378,7 @@ class TestBoundedTranscriptReads:
         assert [r["title"] for r in rows] == [f"session {i}" for i in range(9, -1, -1)]
 
 
-# ---------------------------------------------------------------------------
 # Event-loop offload: async surfaces must not run the collector on the loop
-# ---------------------------------------------------------------------------
 
 
 class TestCollectorEventLoopOffload:
@@ -1427,12 +1407,8 @@ class TestCollectorEventLoopOffload:
         """Seeded sessions dir (many files, one large); the keyword handler
         must leave the event loop free while the collector reads them.
 
-        Deterministic proof, no timing races: the collector is gated on a
-        ``threading.Event`` that only a coroutine on the event loop sets.
-        If the handler ran the collector ON the loop, that coroutine could
-        never run while the collector waits, the 5s gate would time out and
-        ``released`` would be False. With the offload, the loop stays free,
-        sets the event, and the collector proceeds.
+        The collector waits on a ``threading.Event`` that only a loop coroutine sets, so
+        an on-loop collector times out its 5s gate and ``released`` is False.
         """
         sess_dir = tmp_path / "sessions"
         sess_dir.mkdir()
@@ -1494,28 +1470,16 @@ class TestCollectorEventLoopOffload:
 class TestOffLoopStructuralRatchet:
     """Pin every async surface to the off-loop chokepoints, structurally.
 
-    The functional tests above prove the keyword handler offloads; these
-    AST-level pins keep the slash-command and Home-Tab call sites (whose
-    handlers need heavyweight orchestrator setup), the resume-context
-    transcript read, and any FUTURE module from regressing to on-loop
-    calls. AST checks cannot be fooled by comments or docstrings that
-    happen to mention the guarded names.
+    AST pins for call sites too heavy to drive (slash command, Home Tab), the
+    resume-context transcript read, and any new module; comments cannot fool them.
     """
 
     def test_sync_collector_is_private_to_sessions_view(self):
-        """No module outside sessions_view.py may import or reference the
-        synchronous collector — async callers must go through
-        _collect_recent_sessions_off_loop, which owns the thread hop.
+        """Only sessions_view.py may reference the synchronous collector.
 
-        Routed through the shared corpus helper instead of an own rglob +
-        ast.parse of all ~1,555 package modules, which cost ~4 s of CPU per
-        run to answer a question four files hold. The narrowing cannot hide
-        an offender: neither AST pattern below can match unless the literal
-        ``_collect_recent_sessions`` is in the module's text, and
-        ``candidate_sources`` filters on NFKC-normalised text, so a Unicode
-        compatibility homoglyph of the name — which CPython folds to this
-        ASCII identifier at parse time, making it a real AST match — is
-        still a candidate.
+        Async callers go through _collect_recent_sessions_off_loop. The text filter cannot
+        hide an offender: ``candidate_sources`` filters NFKC-normalised text, so a
+        homoglyph CPython folds to ``_collect_recent_sessions`` is still a candidate.
         """
         import ast
 

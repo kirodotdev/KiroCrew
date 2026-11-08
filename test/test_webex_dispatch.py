@@ -24,6 +24,7 @@ from webex_dispatch_helpers import (
 )
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_TEXT
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.webex import client as webex_client
 from kiro_crew.webex import transport_dispatch as webex_dispatch
@@ -280,6 +281,22 @@ class TestCommands:
         assert provider.compacted is False
         assert sessions.released == []
         assert any("/compact" in m for (_, m) in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider, acquire=False, has_session=True)
+        sessions.retiring = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert provider.compacted is False
+        assert sessions.released == []
+        assert [m for (_, m) in client.sent] == [f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}"]
 
     @pytest.mark.asyncio
     async def test_compact_without_active_session(self) -> None:
@@ -555,6 +572,30 @@ class TestStop:
         assert provider.cancelled == [0]
         assert sessions.cleared == [d._session_key(_EMAIL)]
         assert "🛑 Stopped." in client.sent[-1][1]
+
+    @pytest.mark.asyncio
+    async def test_a_typed_stop_survives_a_channels_governance_deny(self, monkeypatch) -> None:
+        """The mention is stripped first: in a space the stop arrives as "@Kiro /stop"."""
+        from kiro_crew.messaging import dispatch
+
+        async def _denied(_channel_type):
+            return False
+
+        monkeypatch.setattr(dispatch, "channel_inbound_permitted", _denied)
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider)
+        sessions._busy = True
+        client = FakeClient()
+        client.bot_name = "Kiro"
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        # A cancel word another channel spells is no stop here: it keeps the gate.
+        await d.handle_message(_inbound("!stop"))
+        assert provider.cancelled == [] and client.sent == []
+        await d.handle_message(
+            WebexInbound(person_email=_EMAIL, room_id="ROOM", text="@Kiro /stop", room_type="group")
+        )
+        assert provider.cancelled == [0]
 
     @pytest.mark.asyncio
     async def test_a_decline_webex_could_not_post_leaves_the_next_press_a_first_press(
@@ -845,6 +886,40 @@ class TestMirrorBinding:
 # ------------------------------------------------------------------
 # Interactive approvals (typed reply)
 # ------------------------------------------------------------------
+
+
+class TestEnginePromotionFollow:
+    @pytest.mark.asyncio
+    async def test_the_pick_follows_a_promotion_before_the_attachment_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cleanup is an await: a prompt that starts there resets the walk."""
+        from kiro_crew.agent_sdk.drivers import acp_vocab
+
+        order: list[str] = []
+        real_follow = acp_vocab.follow_engine_promotion
+
+        def _follow(*args, **kwargs):
+            order.append("follow")
+            return real_follow(*args, **kwargs)
+
+        async def _ingest(_client, _inbound):
+            return SimpleNamespace(temp_paths=["/nonexistent/attachment"])
+
+        async def _turn(turn, *, sessions, ctx_builder):
+            order.append("turn")
+
+        monkeypatch.setattr(acp_vocab, "follow_engine_promotion", _follow)
+        monkeypatch.setattr(webex_dispatch, "process_webex_attachments", _ingest)
+        monkeypatch.setattr(webex_dispatch, "append_attachment_context", lambda b, _i: b)
+        monkeypatch.setattr(
+            webex_dispatch, "cleanup_attachments", lambda _p: order.append("cleanup")
+        )
+        provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
+        d = _dispatcher(FakeSessions(provider), FakeCtx(), FakeClient())
+        with mock.patch("kiro_crew.webex.transport_dispatch.drive_turn", _turn):
+            await d.handle_message(replace(_inbound("hello"), file_urls=("https://x/f",)))
+        assert order == ["turn", "follow", "cleanup"]
 
 
 class TestApprovals:

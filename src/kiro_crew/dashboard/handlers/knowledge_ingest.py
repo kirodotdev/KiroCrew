@@ -20,7 +20,7 @@ from pathlib import Path
 from aiohttp import web
 
 from kiro_crew.dashboard import part_stream
-from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.handlers._shared import open_multipart, read_bounded_json
 from kiro_crew.dashboard.handlers.files import _ZIP_CONTAINER_EXTS, _content_matches_ext
 from kiro_crew.dashboard.handlers.knowledge_access import (
     _audited_write,
@@ -38,6 +38,8 @@ from kiro_crew.dashboard.handlers.knowledge_sync import (
 )
 from kiro_crew.dashboard.upload_limits import bytes_to_mb_figure, knowledge_upload_max_bytes
 from kiro_crew.knowledge.ingestion import ImportChunkBudgetError, _redact
+from kiro_crew.knowledge.readers import FileReader
+from kiro_crew.knowledge.store import _ACCOUNT_BOUND_SOURCE_TYPE
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.knowledge")
@@ -60,6 +62,20 @@ async def ingest_text(request: web.Request) -> web.Response:
         source = await asyncio.to_thread(_source_row, store, source_id)
         if not source:
             return web.json_response({"error": "source not found"}, status=404)
+        # A live-retrieval source holds no items: the store refuses the write
+        # (LiveSourceHoldsNoItems), and refusing here, before the body is read
+        # and extraction runs, turns that into a coded 409 instead of a 500 at
+        # the end of the pipeline. Any authenticated caller can read a
+        # bedrock_kb id off the sources list, so the target is checked, not
+        # the caller.
+        if source["source_type"] == _ACCOUNT_BOUND_SOURCE_TYPE:
+            return web.json_response(
+                {
+                    "error": "a live-retrieval source holds no items; it is queried at search time",
+                    "code": "live_source_holds_no_items",
+                },
+                status=409,
+            )
         body, body_err = await read_bounded_json(request, max_bytes=None)
         if body_err is not None:
             return body_err
@@ -67,10 +83,21 @@ async def ingest_text(request: web.Request) -> web.Response:
         text = body.get("text", "")
         if not text:
             return web.json_response({"error": "no text provided"}, status=400)
+        if not isinstance(text, str):
+            return web.json_response(
+                {"error": "text must be a string", "code": "invalid_field_type"}, status=400
+            )
         redacted = _redact(text)
         text = redacted if redacted is not None else text
         name = body.get("name", source["name"])
+        # The pipeline reads the name as a file path, so a non-string one would
+        # fail the whole ingest; the source's own name is the default anyway.
+        if not isinstance(name, str):
+            name = source["name"]
         namespace = body.get("namespace", "default")
+        # SQLite cannot store a list or an object, so one would fail the ingest.
+        if isinstance(namespace, (list, dict)):
+            namespace = "default"
         # Write to temp file and ingest
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".md", prefix="agent_sync_")
         try:
@@ -183,7 +210,9 @@ async def ingest_file(request: web.Request) -> web.Response:
         return web.json_response({"error": "ingestion pipeline not configured"}, status=503)
 
     namespace = request.query.get("namespace", "default")
-    reader = await request.multipart()
+    reader, not_multipart = await open_multipart(request)
+    if reader is None:
+        return not_multipart  # type: ignore[return-value]
     field = await reader.next()
     if not field or not hasattr(field, "read_chunk") or field.name != "file":  # type: ignore[union-attr]
         return web.json_response({"error": "missing 'file' field"}, status=400)
@@ -191,6 +220,14 @@ async def ingest_file(request: web.Request) -> web.Response:
     filename = getattr(field, "filename", None) or "upload"
     suffix = Path(filename).suffix
     ext = suffix.lower()
+    # A format with a reader but kept out of SUPPORTED (.pptx) is not supported:
+    # refuse it here instead of answering 'processing' and failing later.
+    if ext in FileReader._DISPATCH and ext not in FileReader.SUPPORTED:
+        _sel_log("ingest", filename=filename, outcome="rejected", reason="unsupported_type")
+        return web.json_response(
+            {"error": f"Unsupported file type: {ext}", "code": "unsupported_file_type"},
+            status=400,
+        )
     staged = Path(tempfile.gettempdir()) / f"kn_{uuid.uuid4().hex}{suffix}"
     max_ingest_bytes = await asyncio.to_thread(knowledge_upload_max_bytes)
     try:

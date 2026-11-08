@@ -8,6 +8,7 @@ where the API is gone. The project-dir pointer path is pinned here too.
 """
 
 import hashlib
+import importlib
 import os
 import stat
 import subprocess
@@ -21,19 +22,14 @@ from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by impo
 )
 
 from kiro_crew import platform_compat
+from kiro_crew.platform_compat_offloop_spawn import gateway_loop_factory
 
 
 class TestPortEnvValidatedAtEntry:
     """`main()` rejects an unusable KIROCREW_PORT before any subcommand runs.
 
-    Type alone is not enough. 70000 parses as an int, so a type-only check let
-    `KIROCREW_PORT=70000 kirocrew service install` bake an unbindable port into
-    a service definition and report success -- leaving a gateway that dies on
-    every start, with the failure surfacing far from its cause.
-
-    Rejecting here rather than in the consumer keeps ONE policy for every entry
-    point. It must reject rather than silently drop: dropping would install the
-    DEFAULT port while the operator believes they set theirs.
+    70000 parses as an int, so a type-only check would bake an unbindable port into a
+    service unit. It must reject, not drop: dropping installs the default port silently.
     """
 
     def test_out_of_range_port_exits_before_dispatch(self, monkeypatch, capsys):
@@ -72,11 +68,8 @@ class TestPortEnvValidatedAtEntry:
 class TestSandboxActiveMarkerCleared:
     """cli.main() must drop an INHERITED KIROCREW_SANDBOX_ACTIVE marker.
 
-    The marker is trusted by sandbox.wrap_argv to skip re-wrapping (nested
-    passthrough); its only legitimate setter is the namespace launcher's
-    in-sandbox main() (a separate process). A value present at the CLI
-    entrypoint can only be forged/inherited from the gateway's environment, so
-    honoring it would be a full sandbox bypass for every agent/tool spawn.
+    sandbox.wrap_argv trusts the marker to skip re-wrapping, and only the in-sandbox
+    launcher sets it, so a value seen at the CLI entry would be a full sandbox bypass.
     """
 
     def test_main_clears_inherited_sandbox_active_marker(self, monkeypatch):
@@ -168,13 +161,26 @@ class TestMcpBuiltinDispatch:
         # mcp_server module resolves — make the synthetic one resolve.
         monkeypatch.setattr(cli_mod, "_builtin_mcp_server_available", lambda _name: True)
         mock_module = MagicMock()
+        # The server's own exit status must reach the caller unchanged.
+        mock_module.run_mcp_server.side_effect = SystemExit(7)
+
+        target = f"kiro_crew.apps.builtins.{builtin_name}.mcp_server"
+        real_import = importlib.import_module
+
+        def fake_import(name, *args):
+            # Only the synthetic module is faked; every other import stays real.
+            return mock_module if name == target else real_import(name, *args)
 
         monkeypatch.setattr(sys, "argv", ["kirocrew", f"mcp-{builtin_name}"])
-        with patch("importlib.import_module", return_value=mock_module) as mock_import:
+        with (
+            patch("importlib.import_module", side_effect=fake_import) as mock_import,
+            pytest.raises(SystemExit) as exc_info,
+        ):
             cli_mod.main()
 
-        mock_import.assert_called_once_with(f"kiro_crew.apps.builtins.{builtin_name}.mcp_server")
-        mock_module.run_mcp_server.assert_called_once()
+        assert exc_info.value.code == 7
+        assert target in [c.args[0] for c in mock_import.call_args_list]
+        mock_module.run_mcp_server.assert_called_once_with()
 
 
 class TestProjectDirFile:
@@ -205,7 +211,7 @@ class TestSeedDispatch:
         mock_gateway = MagicMock(side_effect=lambda **_kw: order.append("gateway") or object())
         with (
             patch(
-                "kiro_crew.dashboard.loop_watchdog.disarm_inherited_alarm",
+                "kiro_crew.cli.disarm_inherited_alarm",
                 side_effect=lambda: order.append("disarm") or True,
             ) as disarm,
             patch("kiro_crew.cli_server._gateway", mock_gateway),
@@ -239,9 +245,16 @@ class TestSeedDispatch:
         line_buffer.assert_called_once_with()
         assert order == ["line-buffer", "gateway"]
 
-    def test_seed_calls_seed_cmd(self, monkeypatch):
-        """When --seed is provided, seed_cmd should be called before gateway."""
-        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", "--seed", "demo"])
+    @pytest.mark.parametrize(
+        "extra_argv, expect_replace",
+        [
+            pytest.param([], False, id="test_seed_calls_seed_cmd"),
+            pytest.param(["--seed-replace"], True, id="test_seed_with_replace_flag"),
+        ],
+    )
+    def test_seed_runs_before_gateway(self, monkeypatch, extra_argv, expect_replace):
+        """--seed (optionally with --seed-replace) hands the parsed flags to seed_cmd, then the gateway runs."""
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", "--seed", "demo", *extra_argv])
         mock_seed = MagicMock(return_value=0)
         gateway_call = object()
         mock_gateway = MagicMock(return_value=gateway_call)
@@ -254,8 +267,10 @@ class TestSeedDispatch:
 
             main()
         mock_seed.assert_called_once()
+        seed_args = mock_seed.call_args.args[0]
+        assert (seed_args.seed, seed_args.seed_replace) == ("demo", expect_replace)
         mock_gateway.assert_called_once()
-        mock_run.assert_called_once_with(gateway_call)
+        mock_run.assert_called_once_with(gateway_call, loop_factory=gateway_loop_factory())
 
     def test_seed_nonzero_exits(self, monkeypatch):
         """When seed_cmd returns non-zero, CLI should sys.exit with that code."""
@@ -284,41 +299,15 @@ class TestSeedDispatch:
             main()
         mock_seed.assert_not_called()
         mock_gateway.assert_called_once()
-        mock_run.assert_called_once_with(gateway_call)
-
-    def test_seed_with_replace_flag(self, monkeypatch):
-        """--seed with --seed-replace should call seed_cmd."""
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            ["kirocrew", "gateway", "--seed", "demo", "--seed-replace"],
-        )
-        mock_seed = MagicMock(return_value=0)
-        gateway_call = object()
-        mock_gateway = MagicMock(return_value=gateway_call)
-        with (
-            patch("kiro_crew.cli.seed_cmd", mock_seed),
-            patch("kiro_crew.cli_server._gateway", mock_gateway),
-            patch("kiro_crew.cli.asyncio.run") as mock_run,
-        ):
-            from kiro_crew.cli import main
-
-            main()
-        mock_seed.assert_called_once()
-        mock_gateway.assert_called_once()
-        mock_run.assert_called_once_with(gateway_call)
+        mock_run.assert_called_once_with(gateway_call, loop_factory=gateway_loop_factory())
 
 
 class TestGatewayLockRefusalExit:
     """How ``kirocrew gateway`` exits when the home's lock refuses it.
 
-    A supervisor reads nothing but the exit status, so the status has to say
-    whether relaunching can help. A live holder is a sibling gateway that keeps
-    serving the home for as long as it runs, so a relaunch meets the identical
-    refusal every time; every other refusal is one a later attempt may find
-    cleared. The systemd unit exempts exactly the first status from
-    ``Restart=always`` (see ``test_service.py``), so the mapping here and the
-    rendered unit must agree on one constant.
+    The exit status tells a supervisor whether a relaunch can help: a live holder refuses
+    every relaunch. The systemd unit exempts that status from ``Restart=always`` (see
+    ``test_service.py``), so both must agree on one constant.
     """
 
     def _refused_exit_code(self, monkeypatch, error):
@@ -373,11 +362,8 @@ class TestGatewayLockRefusalExit:
     ):
         """The recorded pid is alive and on the port, but no surface names the acquirer.
 
-        Built from the REAL diagnosis rather than a hand-made error: without
-        ``/proc/locks`` (or on a filesystem it never matches) the lock file's pid
-        is the only fact, and a reused pid number that happens to listen on the
-        port must not stand the unit down. The refusal keeps exit 1 so systemd
-        retries; only a positively identified acquirer earns the terminal code.
+        Built from the REAL diagnosis. Without ``/proc/locks`` a reused pid on the port
+        must not stand the unit down, so the exit stays 1 and systemd retries.
         """
         from kiro_crew import gateway_lock, platform_compat
 
@@ -404,11 +390,8 @@ class TestGatewayLockRefusalExit:
     ):
         """Built from the REAL diagnosis: ``/proc/locks`` names a live acquirer on the port.
 
-        Answering HTTP is what makes it a gateway serving this home, and only
-        then does the process exit the terminal code. A holder that listens
-        without answering is a wedged gateway: a hung process keeps its socket
-        bound, and a terminal exit here would park the unit `failed` with nothing
-        left to relaunch once that process dies -- so the exit stays 1.
+        Only a holder that answers HTTP earns the terminal code. One that listens without
+        answering is wedged, and a terminal exit would park the unit `failed` for good.
         """
         from kiro_crew import gateway_lock, platform_compat
 
@@ -432,16 +415,11 @@ class TestGatewayLockRefusalExit:
         expected = gateway_lock.LIVE_HOLDER_EXIT_CODE if answers_http else 1
         assert self._refused_exit_code(monkeypatch, error) == expected
 
-    # The serving-holder predicate's truth table (``GatewayLock._serving_verdict``),
-    # one row per shape a refusal can take. ``owner`` is what ``/proc/locks`` names
-    # (None = no owner surface: macOS, Windows, a filesystem the lock table never
-    # matches); ``recorded`` is the pid stamped in the lock file; ``listeners`` are
-    # the LISTEN sockets the enumeration finds on the configured port, as
-    # ``(pid, address, family)``; ``answers_at`` is the set of addresses at which
-    # the port answers HTTP; ``bind`` is what this gateway is configured to bind
-    # (``KIROCREW_BIND``); ``replaced`` reaches the lock through the
-    # deleted-lock-file path (the home anchor's acquirer). Expectation:
-    # ``live_holder`` and the exit code ``kirocrew gateway`` takes.
+    # Truth table of ``GatewayLock._serving_verdict``. ``owner``: what ``/proc/locks``
+    # names (None = no owner surface); ``recorded``: the lock file's pid; ``listeners``:
+    # LISTEN sockets on the port as ``(pid, address, family)``; ``answers_at``: addresses
+    # that answer HTTP; ``bind``: ``KIROCREW_BIND``; ``replaced``: the lock is reached via
+    # the deleted-lock-file path. Expected: ``live_holder`` and the exit code.
     _OWN = (16968, "127.0.0.1", "4")
     _TRUTH_TABLE = [
         # -- identified acquirer (the /proc/locks owner), lock-file path -------------
@@ -594,15 +572,9 @@ class TestGatewayLockRefusalExit:
     def test_live_holder_truth_table(self, monkeypatch, tmp_path, row, live):
         """Every row of the serving-holder predicate, judged by the REAL diagnosis and exit.
 
-        The lock is forced to read as held; the owner surface, liveness, the
-        listener enumeration (pid and bound address) and the HTTP probe are the
-        parameters. Exactly one shape is terminal -- an identified acquirer,
-        alive, whose OWN socket on the configured port is the one the probe
-        reaches at the address this gateway is configured to bind, answering
-        HTTP there -- and every other row keeps the restartable exit 1: the
-        residual "bound elsewhere" row, a stranger answering at the probe
-        address on the same port, and an owner whose socket address the
-        platform did not report included.
+        Only one shape is terminal: a live, identified acquirer whose OWN socket answers
+        HTTP at the configured bind address. Every other row, including a stranger on the
+        same port, keeps the restartable exit 1.
         """
         from kiro_crew import gateway_lock, platform_compat
 
@@ -685,6 +657,63 @@ class TestGatewayLockRefusalExit:
         )
 
 
+class TestGatewayLogRotatesOnlyUnderTheLock:
+    """``kirocrew gateway`` moves gateway.log aside only once it holds the gateway lock.
+
+    A start the lock refuses runs the whole logging setup first, so before the
+    rotation waited for the lock every stray start renamed the running gateway's
+    log, and a fifth one pruned it.
+    """
+
+    @staticmethod
+    def _start(monkeypatch, lock_cls):
+        from kiro_crew.cli_logging import _stop_log_queue_listener
+
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway"])
+        with (
+            patch("kiro_crew.cli.GatewayLock", lock_cls),
+            patch("kiro_crew.cli_server._gateway"),
+            patch("kiro_crew.cli.asyncio.run"),
+            patch("kiro_crew.cli.faulthandler.enable"),
+        ):
+            from kiro_crew.cli import main
+
+            try:
+                main()
+            except SystemExit:
+                pass
+            finally:
+                _stop_log_queue_listener()
+
+    def test_five_refused_starts_leave_the_running_log_in_place(self, monkeypatch, tmp_path):
+        from kiro_crew.config import config_dir
+        from kiro_crew.gateway_lock import GatewayLockError
+
+        log_file = config_dir() / "gateway.log"
+        log_file.write_text("running gateway\n", encoding="utf-8")
+        before = log_file.stat()
+        lock_cls = MagicMock()
+        lock_cls.return_value.acquire.side_effect = GatewayLockError(
+            tmp_path, 4242, "another gateway already owns this home", live_holder=True
+        )
+        for _ in range(5):
+            self._start(monkeypatch, lock_cls)
+        after = log_file.stat()
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        assert log_file.read_text(encoding="utf-8").startswith("running gateway\n")
+        assert not log_file.with_name("gateway.log.prev").exists()
+        assert not (config_dir() / "logs" / "gateway-boots").exists()
+
+    def test_the_start_that_holds_the_lock_rotates(self, monkeypatch):
+        from kiro_crew.config import config_dir
+
+        log_file = config_dir() / "gateway.log"
+        log_file.write_text("last run\n", encoding="utf-8")
+        self._start(monkeypatch, MagicMock())
+        prev = log_file.with_name("gateway.log.prev")
+        assert prev.read_text(encoding="utf-8").startswith("last run\n")
+
+
 @pytest.mark.skipif(
     not hasattr(__import__("asyncio"), "set_child_watcher"),
     reason="asserts the 3.10-3.13 child-watcher semantics; the API was removed in 3.14",
@@ -693,26 +722,14 @@ class TestInstallPidfdChildWatcher:
     """Verify _install_child_watcher's platform behavior."""
 
     @staticmethod
-    def _install_then_spawn_in_child(expected_watcher: str, cwd: Path) -> None:
+    def _assert_install_then_spawn_in_child(expected_watcher: str, cwd: Path) -> None:
         """Run "_install_child_watcher() then asyncio.run(subprocess)" in a CLEAN
         child Python process, and assert it exits 0.
 
-        *cwd* is the caller's ``tmp_path``: the child imports ``kiro_crew`` off the
-        propagated ``PYTHONPATH``, never off its working directory, so the one
-        thing the process cwd could still do is let a ``-c`` child run inside the
-        developer's checkout.
+        *cwd* is the caller's ``tmp_path`` so the child never runs inside the checkout.
 
-        Why a subprocess instead of an in-process ``asyncio.run``: on CPython
-        3.10 the child watcher is bound to the loop inside asyncio's
-        ``set_event_loop()``, which only calls ``attach_loop`` when
-        ``threading.current_thread() is threading.main_thread()``. pytest-xdist
-        runs test bodies on a NON-main worker thread, so an in-process
-        ``asyncio.run`` here skips ``attach_loop`` and the freshly-installed
-        watcher reports inactive -> ``create_subprocess_exec`` raises
-        "child watcher not activated" (a harness artifact, not a product bug).
-        A child ``python -c`` always runs on its own MAIN thread -- exactly like
-        ``kirocrew gateway`` -- so this deterministically exercises the real
-        install-before-run attach path regardless of the worker thread.
+        A subprocess, because ``set_event_loop()`` attaches the watcher only on the main
+        thread and pytest-xdist runs test bodies on a worker thread.
         """
         import os
         import textwrap
@@ -884,22 +901,11 @@ class TestInstallPidfdChildWatcher:
 
     @pytest.mark.skipif(sys.platform != "linux", reason="pidfd watcher is Linux-only")
     def test_real_subprocess_works_after_install_on_linux(self, tmp_path: Path) -> None:
-        """End-to-end: after installing the watcher the way the gateway does
-        (before asyncio.run, on the main thread), asyncio subprocess support must
-        still work. This is the property the mocked test above cannot prove — it
-        guards against the watcher being installed but never attached to the loop
-        (which would make every create_subprocess_exec raise RuntimeError).
+        """Subprocesses still work after the gateway-style watcher install.
 
-        Runs in a clean child process (its own main thread) so it is immune to
-        pytest-xdist executing this test body on a non-main worker thread, where
-        set_event_loop's main-thread-guarded attach_loop would be skipped.
-
-        The expected watcher is derived from the SAME probe the installer uses
-        rather than hard-coded: a Python build that omits the ``os.pidfd_open``
-        wrapper (observed on uv-managed CPython) correctly installs
-        SafeChildWatcher instead — the documented fallback. Asserting
-        PidfdChildWatcher unconditionally made this test fail on such an
-        interpreter even though the product behaved exactly as designed.
+        Pins that the watcher is attached, not just installed. The expected watcher uses
+        the installer's own probe: builds without ``os.pidfd_open`` (seen on uv-managed
+        CPython) fall back to SafeChildWatcher.
         """
         try:
             fd = os.pidfd_open(os.getpid())
@@ -908,7 +914,7 @@ class TestInstallPidfdChildWatcher:
             expected = "SafeChildWatcher"
         else:
             expected = "PidfdChildWatcher"
-        self._install_then_spawn_in_child(expected_watcher=expected, cwd=tmp_path)
+        self._assert_install_then_spawn_in_child(expected_watcher=expected, cwd=tmp_path)
 
     @pytest.mark.skipif(
         sys.platform == "linux" or not hasattr(__import__("asyncio"), "SafeChildWatcher"),
@@ -917,34 +923,20 @@ class TestInstallPidfdChildWatcher:
     def test_real_subprocess_works_after_safe_watcher_install_on_macos(
         self, tmp_path: Path
     ) -> None:
-        """End-to-end on macOS: after the REAL _install_child_watcher() installs
-        SafeChildWatcher the way the gateway does (before asyncio.run, on the main
-        thread), asyncio subprocess support must still work.
+        """On macOS, subprocesses still work after the real SafeChildWatcher install.
 
-        This is the macOS counterpart to the Linux end-to-end test and the
-        property the fully-mocked test_installs_safe_watcher_on_macos cannot
-        prove: that SafeChildWatcher actually ATTACHES to the loop (its SIGCHLD
-        handler) rather than being installed but inert — which would make every
-        create_subprocess_exec raise RuntimeError('...not activated...').
-
-        Runs in a clean child process (its own main thread): SafeChildWatcher's
-        attach_loop installs a SIGCHLD handler via loop.add_signal_handler, which
-        is itself main-thread-only, so an in-process run under a non-main
-        pytest-xdist worker thread would fail spuriously.
+        Pins that the watcher attaches its SIGCHLD handler, which the mocked
+        test_installs_safe_watcher_on_macos cannot prove. That handler is main-thread-only,
+        so this runs in a child process.
         """
-        self._install_then_spawn_in_child(expected_watcher="SafeChildWatcher", cwd=tmp_path)
+        self._assert_install_then_spawn_in_child(expected_watcher="SafeChildWatcher", cwd=tmp_path)
 
 
 class TestChildWatcherApiRemoved:
     """``_install_child_watcher()`` must no-op when the child-watcher API is gone.
 
-    CPython 3.14 removed ``set_child_watcher`` / ``PidfdChildWatcher`` /
-    ``SafeChildWatcher`` (the event loop reaps children directly). The Linux
-    pidfd branch referenced those names unconditionally, so on 3.14 the FIRST
-    thing ``kirocrew gateway`` did was raise ``AttributeError: module 'asyncio'
-    has no attribute 'set_child_watcher'`` -- the gateway died before binding
-    its port, while every other subcommand (``chat``, ``doctor``) kept working
-    because this installer is only called on the gateway path.
+    CPython 3.14 removed ``set_child_watcher`` and the watcher classes, so referencing
+    them raises ``AttributeError`` and ``kirocrew gateway`` dies before binding its port.
     """
 
     @staticmethod
@@ -994,13 +986,9 @@ class TestChildWatcherApiRemoved:
         reason="only meaningful on a runtime that really removed the API (3.14+)",
     )
     def test_real_subprocess_works_after_noop_install(self) -> None:
-        """On a real 3.14+ runtime, the gateway's install-before-run call must be
-        survivable AND leave subprocess support working.
+        """On a real 3.14+ runtime the install is a no-op and subprocesses still work.
 
-        No monkeypatching: the API is genuinely absent here, so this asserts the
-        property that actually matters (spawning still works after the no-op)
-        rather than the mechanism. 3.14 reaps children in the event loop with a
-        single non-thread reaper, so nothing is lost by not installing a watcher.
+        No monkeypatching: the API is really absent, and 3.14 reaps children in the loop.
         """
         import asyncio
 

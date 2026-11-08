@@ -7,14 +7,15 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from typing import Any, Literal
+from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 from aiohttp import web
 
 from kiro_crew.connections import get_provider
 from kiro_crew.connections.ownership import remove_provider_entry
-from kiro_crew.connections.registry import Provider
+from kiro_crew.connections.registry import Provider, is_visible
+from kiro_crew.dashboard.handlers._shared import COMPOSITION_REFUSED_LOG
 from kiro_crew.dashboard.handlers.mcp import (
     _get_mcp_lock,
     _is_valid_mcp_name,
@@ -22,9 +23,14 @@ from kiro_crew.dashboard.handlers.mcp import (
     _scrub_preregistered_oauth_copies,
 )
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.platform import PlatformCompositionError
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
+
+#: ``_refresh_client_projections``' answer when the rebuild stopped on a
+#: ``PlatformCompositionError``.
+COMPOSITION_REFUSED: Literal["composition_refused"] = "composition_refused"
 
 _MAX_RETURN_ADDRESS_BYTES = 8192
 _MAX_REQUEST_TARGET_BYTES = 6144
@@ -102,16 +108,18 @@ def _validated_loopback_return_address(value: object) -> _LoopbackCallback | Non
         for values in query.values()
         for value in values
     )
-    if (
-        len(codes) != 1
-        or not codes[0]
-        or not set(query).issubset(_ALLOWED_CALLBACK_QUERY_KEYS)
-        or contains_control
-    ):
+    if len(codes) != 1 or not codes[0] or contains_control:
         return None
 
+    # Forward only the OAuth callback keys. A provider may add its own (Coda sends
+    # ``client_id``), so a paste is not refused for one; it is left out instead.
+    forwarded_query = "&".join(
+        segment
+        for segment in parsed.query.split("&")
+        if unquote_plus(segment.partition("=")[0]) in _ALLOWED_CALLBACK_QUERY_KEYS
+    )
     path = parsed.path or "/"
-    request_target = path + (f"?{parsed.query}" if parsed.query else "")
+    request_target = f"{path}?{forwarded_query}"
     if (
         not request_target.isascii()
         or any(character in request_target for character in "\r\n ")
@@ -190,6 +198,25 @@ def _approval_superseded(error: str, code: str) -> web.Response:
     return web.json_response({"error": error, "code": code}, status=409)
 
 
+def _log_relay_outcome(server: str, outcome: str, status: int | None = None) -> None:
+    """Write one gateway-log line per relay outcome.
+
+    The audit log alone leaves an operator unable to tell a refused paste from
+    a spent listener or a failed token exchange. ``server`` has already passed
+    the name check; the return address, code and state are never logged.
+    """
+    suffix = "" if status is None else f" status={status}"
+    if outcome == "delivered":
+        logger.info(
+            "MCP OAuth relay for %s: code delivered to the local callback%s; "
+            "the listener finishes the token exchange",
+            server,
+            suffix,
+        )
+    else:
+        logger.warning("MCP OAuth relay for %s: %s%s", server, outcome, suffix)
+
+
 async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
     """POST /api/mcp/oauth/relay — deliver a failed browser redirect locally."""
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
@@ -226,6 +253,7 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
         return _bad_request("invalid server", "invalid_server")
     callback = _validated_loopback_return_address(body.get("redirect_url"))
     if callback is None:
+        _log_relay_outcome(server, "refused the pasted return address")
         return _bad_request(
             "invalid loopback return address",
             "invalid_loopback_return_address",
@@ -240,6 +268,7 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
         # fresh listener on the same port never saw the verifier. Answering with
         # the delivery-failure message below would blame the paste for an
         # approval that is simply spent.
+        _log_relay_outcome(server, "no local callback listener (approval spent)")
         sel().log_api_access(
             caller="dashboard",
             operation="mcp_oauth_callback_relay",
@@ -250,7 +279,8 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
             "the approval this return address belongs to is no longer live",
             "approval_superseded",
         )
-    except (asyncio.TimeoutError, OSError, ValueError):
+    except (asyncio.TimeoutError, OSError, ValueError) as exc:
+        _log_relay_outcome(server, f"local callback unreachable ({type(exc).__name__})")
         sel().log_api_access(
             caller="dashboard",
             operation="mcp_oauth_callback_relay",
@@ -263,6 +293,7 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
         )
 
     if callback_status >= 400:
+        _log_relay_outcome(server, "local callback rejected the return address", callback_status)
         sel().log_api_access(
             caller="dashboard",
             operation="mcp_oauth_callback_relay",
@@ -274,6 +305,7 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
             "oauth_callback_rejected",
         )
 
+    _log_relay_outcome(server, "delivered", callback_status)
     sel().log_api_access(
         caller="dashboard",
         operation="mcp_oauth_callback_relay",
@@ -379,7 +411,9 @@ async def _mint_request(
     a mint starts a kiro-cli process and a disconnect deletes stored grant
     artifacts, so the slug has to resolve to a provider we ship rather than to
     arbitrary caller-supplied text. Shared by every provider-scoped endpoint so
-    that bound is enforced in one place.
+    that bound is enforced in one place. Visibility is checked by the callers that
+    start work (Mint, Test), not here, so Cancel and Disconnect still reach a
+    hidden provider.
     """
     try:
         body = await request.json()
@@ -431,7 +465,11 @@ async def _start_cold_mint(
     path never loads it.
     """
     from kiro_crew.connections.mint import _dispose_mint, reserve_mint_row, start_oauth_mint
+    from kiro_crew.dashboard.mcp_banner_dedupe import note_mcp_sign_in_retry
 
+    # A sign-in the user started here is a retry: a chat that stopped repeating
+    # this server's unchanged rejection banner shows the next one again.
+    note_mcp_sign_in_retry(slug)
     token, prior = await reserve_mint_row(slug)
     try:
         task = asyncio.create_task(
@@ -485,6 +523,8 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     if isinstance(parsed, web.Response):
         return parsed
     _body, provider = parsed
+    if not is_visible(provider):
+        return _bad_request("unknown provider", "unknown_provider")
     slug = str(provider["slug"])
 
     # A pre-registered provider (registry ``auth.mode``) has nothing to mint
@@ -498,6 +538,15 @@ async def api_connections_mint(request: web.Request) -> web.Response:
             "client_not_configured",
             slug=slug,
         )
+
+    from kiro_crew.connections import crew_oauth
+
+    if await asyncio.to_thread(crew_oauth.owns, slug):
+        # ``dashboard.feature_previews.crew_oauth``: the gateway runs the sign-in itself and keeps
+        # the tokens in the vault; the card polls the same mint row as before. An
+        # entry routing keeps native (its own credential header) mints natively.
+        token = await crew_oauth.start_mint_row(slug)
+        return web.json_response({"ok": True, "slug": slug, "state": "minting", "token": token})
 
     # Function-local by DESIGN, not for a cycle: this handlers package is imported
     # on the gateway boot path, and the warm engine drags in the ACP runtime and
@@ -516,6 +565,10 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     # provider warming never covered.
     adopted = await adopt_shared_mint(slug, str(provider["mcp_url"]))
     if adopted is not None:
+        from kiro_crew.dashboard.mcp_banner_dedupe import note_mcp_sign_in_retry
+
+        # A retry, like the cold path's (see _start_cold_mint).
+        note_mcp_sign_in_retry(slug)
         # ONE event, outcome ``ok``: unlike the cold path below, this request both
         # starts and finishes here, so a ``started`` with no completion would leave the
         # audit trail showing a mint that never ended. A bare enqueue — SEL is
@@ -654,7 +707,17 @@ async def api_connections_test(request: web.Request) -> web.Response:
     if isinstance(parsed, web.Response):
         return parsed
     _body, provider = parsed
+    if not is_visible(provider):
+        return _bad_request("unknown provider", "unknown_provider")
     slug = str(provider["slug"])
+    if await asyncio.to_thread(_routed_through_crew_oauth, slug):
+        # Test enumerates through kiro-cli's own grant, which a Crew-held sign-in
+        # does not create; a KAS chat is where this Connection is used.
+        return _conflict(
+            "Kiro Crew holds this sign-in; try the Connection from a chat instead",
+            "crew_oauth_test_unsupported",
+            slug=slug,
+        )
 
     global _testing_slug
     async with _TEST_SLUG_GUARD:
@@ -728,6 +791,13 @@ async def api_connections_cancel(request: web.Request) -> web.Response:
         resources=f"provider:{slug} dropped={dropped}",
     )
     return web.json_response({"ok": True, "slug": slug, "dropped": dropped})
+
+
+def _routed_through_crew_oauth(slug: str) -> bool:
+    """Whether projection puts *slug*'s configured entry on Crew's sign-in. Blocking."""
+    from kiro_crew.connections import crew_oauth
+
+    return crew_oauth.configured_entry_routed(slug) is True
 
 
 def _open_project_dirs(state: Any) -> tuple[Path, ...]:
@@ -812,6 +882,30 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
     # Read from slot state BEFORE the transaction and handed in, so the census and
     # the purge judge one snapshot of which checkouts are open rather than two.
     scope = await remove_provider_entry(slug, mcp_url, _open_project_dirs(request.app.get("state")))
+    from kiro_crew.connections import crew_oauth
+
+    crew_result: dict[str, bool] | None = None
+    # With the flag on, always. With it off, only a pair the vault confirms is
+    # there (one stored while it was on): an unreadable vault is not a Crew pair,
+    # so a flag-off Disconnect answers exactly as on main.
+    if await asyncio.to_thread(crew_oauth.manages, slug) or (
+        await asyncio.to_thread(crew_oauth.holds_grant, slug) is True
+    ):
+        # Crew holds one grant per provider and nothing else shares it, so
+        # Disconnect always revokes it upstream and deletes the vault entry. Live
+        # bridges stay registered: with no stored pair the proxy answers each call
+        # "reconnect it" (409) and sends nothing upstream, and a later Connect
+        # makes the same bridges work again. The native-artifact census above
+        # governs only the runtime's own grant.
+        try:
+            crew_result = await crew_oauth.disconnect(slug)
+        except Exception as exc:  # noqa: BLE001 -- reported, never silently skipped
+            logger.warning("Crew-held grant cleanup failed for %s (%s)", slug, type(exc).__name__)
+            crew_result = {"removed": False, "revoked": False, "failed": True}
+            # The pair may still be stored: fail closed and cut every live bridge.
+            from kiro_crew.connections import crew_oauth_proxy
+
+            crew_oauth_proxy.drop_slug(slug)
     removed = scope.grant_removed
     # Asked rather than inferred from ``removed``: a survivor is what decides
     # whether this Disconnect actually held. Read outside the lock on purpose --
@@ -830,7 +924,7 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
         # No `or grant_shared_with` escape: only ATTEMPTED pairs are re-stat'd,
         # so a survivor is always a failed unlink rather than a deliberate keep
         # that needs excusing.
-        outcome="partial" if surviving else "ok",
+        outcome="partial" if surviving or (crew_result or {}).get("failed") else "ok",
         source="dashboard",
         resources=(
             f"provider:{slug} artifacts_removed={len(removed)} "
@@ -839,16 +933,43 @@ async def api_connections_disconnect(request: web.Request) -> web.Response:
             f"census_incomplete={scope.census_incomplete}"
         ),
     )
+    if crew_result is not None and crew_result.get("failed"):
+        # Everything else is done; the Crew-held sign-in may still be stored and
+        # live upstream, so the card must show a failure, not a disconnect.
+        return web.json_response(
+            {
+                "error": (
+                    "Kiro Crew could not remove its stored GitHub sign-in. " "Try Disconnect again."
+                ),
+                "code": "crew_cleanup_failed",
+                "slug": slug,
+                "entryRemoved": scope.entry_removed,
+            },
+            status=502,
+        )
+    # Option B: Crew's grant is always revoked, never "kept for a sharer".
+    crew_held = crew_result is not None and bool(crew_result.get("removed"))
+    # The native census is hidden only while Crew owns this Connection, as on the
+    # card; a pair left over from a flag now off says nothing about the native grant.
+    crew_custody = crew_held and await asyncio.to_thread(crew_oauth.owns, slug)
     return web.json_response(
         {
             "ok": True,
-            "grantRemoved": bool(removed),
+            "grantRemoved": bool(removed) or crew_held,
             "grantSurviving": surviving,
             "entryRemoved": scope.entry_removed,
-            "grantSharedWith": list(scope.grant_shared_with),
-            "grantCensusIncomplete": scope.census_incomplete,
-            "grantCensusUnreadable": list(scope.census_unreadable),
+            "grantSharedWith": [] if crew_custody else list(scope.grant_shared_with),
+            "grantCensusIncomplete": False if crew_custody else scope.census_incomplete,
+            "grantCensusUnreadable": [] if crew_custody else list(scope.census_unreadable),
             "agentSpecRewritten": scope.agent_spec_rewritten,
+            **(
+                {}
+                if crew_result is None
+                else {
+                    "crewGrantRemoved": crew_result["removed"],
+                    "upstreamRevoked": crew_result["revoked"],
+                }
+            ),
         }
     )
 
@@ -1006,7 +1127,7 @@ def _oauth_client_configured(provider: Provider) -> bool:
     return bool(oauth_client_view(provider, config=config, vault_names=names).get("configured"))
 
 
-async def _refresh_client_projections(slug: str) -> bool | None:
+async def _refresh_client_projections(slug: str) -> bool | None | Literal["composition_refused"]:
     """Bring every runtime projection of ``slug``'s client in line with the record.
 
     The vault and config.json are the source of truth; the emitted agent spec and
@@ -1030,7 +1151,10 @@ async def _refresh_client_projections(slug: str) -> bool | None:
     spec still carrying the old client is a fact the response must state so the
     operator retries or restarts rather than assuming the rotation took. The
     mint withdrawal is best-effort and logged; a mint that cannot be cancelled is
-    a process the TTL reaps, not a projection that persists.
+    a process the TTL reaps, not a projection that persists. Returns
+    :data:`COMPOSITION_REFUSED` when the rebuild stopped on a
+    ``PlatformCompositionError``: the same stale-projection failure, whose cause
+    is this host's enterprise setup, so the response names governance.
     """
     from kiro_crew.connections.mint import cancel_mint
 
@@ -1061,6 +1185,9 @@ async def _refresh_client_projections(slug: str) -> bool | None:
         from kiro_crew.agent import rebuild_agent_config_reporting  # circular at module scope
 
         _spec_path, wrote = await asyncio.to_thread(rebuild_agent_config_reporting)
+    except PlatformCompositionError:
+        logger.error(COMPOSITION_REFUSED_LOG, "an OAuth client change", exc_info=True)
+        return COMPOSITION_REFUSED
     except Exception:  # noqa: BLE001 -- reported to the caller, see docstring
         logger.warning("rebuild_agent_config failed after an OAuth client change", exc_info=True)
         return False
@@ -1074,15 +1201,23 @@ async def _refresh_client_projections(slug: str) -> bool | None:
     return True
 
 
-def _projection_stale_response(slug: str, current: dict | None) -> web.Response:
+def _projection_stale_response(
+    slug: str, current: dict | None, *, composition_refused: bool = False
+) -> web.Response:
     """The response for a committed record whose agent-spec projection did not refresh."""
+    error = (
+        "the client was saved but the agent spec was not rewritten: this host's enterprise "
+        "setup could not be built (governance); see the gateway log"
+        if composition_refused
+        else (
+            "the client was saved but the agent spec could not be rebuilt; new sessions "
+            "may still load the previous client until a rebuild succeeds"
+        )
+    )
     return web.json_response(
         {
             "ok": False,
-            "error": (
-                "the client was saved but the agent spec could not be rebuilt; new sessions "
-                "may still load the previous client until a rebuild succeeds"
-            ),
+            "error": error,
             "code": "projection_refresh_failed",
             "slug": slug,
             "client": current,
@@ -1274,10 +1409,12 @@ async def api_connections_oauth_client_put(request: web.Request) -> web.Response
                 return failure
             refreshed = await _refresh_client_projections(slug)
             spec_rewritten[0] = refreshed is True
-            if refreshed is False:
+            if refreshed is False or refreshed == COMPOSITION_REFUSED:
                 views_now = await asyncio.to_thread(_oauth_client_views)
                 return _projection_stale_response(
-                    slug, next((v for v in views_now if v.get("slug") == slug), None)
+                    slug,
+                    next((v for v in views_now if v.get("slug") == slug), None),
+                    composition_refused=refreshed == COMPOSITION_REFUSED,
                 )
             return None
 
@@ -1373,10 +1510,12 @@ async def api_connections_oauth_client_delete(request: web.Request) -> web.Respo
                 )
             refreshed = await _refresh_client_projections(slug)
             spec_rewritten[0] = refreshed is True
-            if refreshed is False:
+            if refreshed is False or refreshed == COMPOSITION_REFUSED:
                 views_now = await asyncio.to_thread(_oauth_client_views)
                 return _projection_stale_response(
-                    slug, next((v for v in views_now if v.get("slug") == slug), None)
+                    slug,
+                    next((v for v in views_now if v.get("slug") == slug), None),
+                    composition_refused=refreshed == COMPOSITION_REFUSED,
                 )
             return None
 

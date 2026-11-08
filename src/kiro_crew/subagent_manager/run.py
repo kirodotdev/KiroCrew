@@ -239,6 +239,7 @@ class RunEventCoordinator(ManagerComponent):
     update_completion_keep_impl = _run_lifecycle.update_completion_keep_impl
     _teardown_run_session_impl = _run_lifecycle._teardown_run_session_impl
     _record_reap_ending_impl = _run_lifecycle._record_reap_ending_impl
+    _leave_for_next_start_impl = _run_lifecycle._leave_for_next_start_impl
     _run_impl = _run_lifecycle._run_impl
     _touch_activity_impl = _run_lifecycle._touch_activity_impl
     _fire_event_impl = _run_lifecycle._fire_event_impl
@@ -273,8 +274,14 @@ class RunEventCoordinator(ManagerComponent):
     _get_parent_runtime_impl = _run_start._get_parent_runtime_impl
 
     def running_agents_for_impl(self, parent_key: str) -> list[dict]:
-        """Return summary dicts for agents belonging to *parent_key*."""
+        """Return summary dicts for agents belonging to *parent_key*.
+
+        ``awaitingSpawnApproval`` marks a row parked on the spawn approval: it has
+        no process yet and starts only if a person answers the card.
+        """
+        # circular import: kiro_crew.subagent imports this package at module level.
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+        from kiro_crew.subagent import _parked_at_spawn_approval
 
         def _r(s: str) -> str:
             s, _ = redact_exfiltration_urls(s)
@@ -291,6 +298,7 @@ class RunEventCoordinator(ManagerComponent):
                 "tool_count": a.tool_count,
                 "stalled": a.stalled,
                 "startedAt": a.started,
+                "awaitingSpawnApproval": _parked_at_spawn_approval(a),
             }
             for a in self._manager._agents.values()
             if not a.done and a.parent_session_key == parent_key
@@ -912,24 +920,26 @@ class RunEventCoordinator(ManagerComponent):
         *,
         spec: Any,
         parent_policy: str,
+        ask_key: str,
         consult: Callable[[LLMEvent], object],
         sel: Callable[[], Any],
         log: _logging.Logger,
+        parent_revoked: Callable[[], bool] | None = None,
     ) -> Policy:
         """The subagent surface's permission ladder for one run and its current agent.
 
         In order: the agent spec's PreToolUse hooks; the hook gate (*consult*);
         ``parent_policy=auto`` (BEFORE the gate's grant for a low-fidelity child,
-        AFTER it otherwise); then the per-subagent approval factory, the gateway's
-        approver, and with neither the headless refusal. A low-fidelity child
-        request -- a backend child whose security context is absent, so any
-        auto-approve would rest on the agent-authored title alone -- honours only
-        an unconditional grant it is eligible for and the identity-keyed hook
-        grant, and is handed to an attached approver under an UNVERIFIED title; an
-        approver that raises there counts as a rejection. Only a truly headless run
-        refuses it outright. A refusal row the audit cannot write is logged and the
-        request still answered. *sel* and *log* are the facade's own bindings, so
-        its audit and log seams see every row and line.
+        AFTER it otherwise; withheld while *parent_revoked* answers true); then the
+        per-subagent approval factory, the gateway's approver (asked under *ask_key*),
+        and with neither the headless refusal. A low-fidelity child request -- a backend
+        child whose security context is absent, so any auto-approve would rest on the
+        agent-authored title alone -- honours only an unconditional grant it is eligible
+        for and the identity-keyed hook grant, and is handed to an attached approver under
+        an UNVERIFIED title; an approver that raises there counts as a rejection. Only a
+        truly headless run refuses it outright. A refusal row the audit cannot write is
+        logged and the request still answered. *sel* and *log* are the facade's own
+        bindings, so its audit and log seams see every row and line.
 
         The facade's deny reasons are imported inside the body on purpose. This
         method does NOT end in ``_impl``, so it keeps this module's own globals.
@@ -953,13 +963,17 @@ class RunEventCoordinator(ManagerComponent):
 
         def _ask_parent(event: LLMEvent) -> Awaitable[object]:
             approve = cast("ToolApprovalCallback", manager._on_tool_approval)
-            return approve(event, info.parent_session_key)
+            return approve(event, ask_key)
 
         def _ask_for_child(event: LLMEvent) -> Awaitable[object]:
             if manager._on_tool_approval_factory:
                 return _factory_approver()(event)
             return _ask_parent(event)
 
+        # The operator's ``auto_approve_subagent_tools`` grant is not a Trust, so a
+        # ``permission_mode`` deny of ``trust`` does not end it.
+        _hooks = manager._ctx_builder.hooks if manager._ctx_builder else None
+        _trust_gated = not (_hooks is not None and _hooks.auto_approve_subagent_tools is True)
         return Policy(
             gate=HookGate(consult),
             audit=SelAudit(rows, on_refusal_failure="answer", sel=sel, log=log),
@@ -975,7 +989,10 @@ class RunEventCoordinator(ManagerComponent):
                     agent_role=info.agent or None,
                 ),
             ),
-            grants=(GATE_GRANT, ParentPolicyAuto(parent_policy)),
+            grants=(
+                GATE_GRANT,
+                ParentPolicyAuto(parent_policy, parent_revoked, trust_gated=_trust_gated),
+            ),
             responders=(
                 CallbackResponder(
                     _factory_approver,
@@ -993,7 +1010,10 @@ class RunEventCoordinator(ManagerComponent):
             child=ChildRule.enforce(
                 # For such a child the unconditional grant is tried BEFORE the
                 # gate's (identity-keyed) one.
-                grants=(ParentPolicyAuto(parent_policy), GATE_GRANT),
+                grants=(
+                    ParentPolicyAuto(parent_policy, parent_revoked, trust_gated=_trust_gated),
+                    GATE_GRANT,
+                ),
                 unattended=Refusal.host(
                     "child_unattended", _LOW_FIDELITY_DENY_REASON, DENY_CAUSE_SURFACE_POLICY
                 ),

@@ -3,11 +3,22 @@ answers (``_on_permission_request``): the hooks, the trust reads, the grants and
 
 from __future__ import annotations
 
+import functools
 import json
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
-from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool
+from kiro_crew.agent_sdk.spec_hooks import post_tool_identity
+from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool, open_construct_at_end
+from kiro_crew.dashboard.deny_override import (
+    DENY_OVERRIDE_META_KEY,
+    DenyOverrideOffer,
+    client_accepts_deny_waivers,
+    deny_key_family,
+    override_offer_key,
+    slot_deny_waivers,
+)
 from kiro_crew.dashboard.state import DENY_CAUSE_POLICY
 from kiro_crew.deny_guidance import (
     DENY_CLASS_AWS_CREDENTIAL,
@@ -24,9 +35,15 @@ from kiro_crew.hooks import (
     ToolHookResult,
     hook_gate_kwargs,
     identity_grant_covers_child,
+    unattended_turn,
 )
+from kiro_crew.mcp_oauth_projection import oauth_servers_in
 from kiro_crew.name_grant import log_decline, shell_command_for_event, should_log_decline
-from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
+
+# Kept on the runner facade's surface (its base-name contract); the refusal label
+# is now chosen by ``_audit_approve_refused`` through ``batch_guard.refusal_outcome``.
+from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR  # noqa: F401
+from kiro_crew.security.deny_waiver import deny_key_description
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.tool_gate_busy import hook_gate_busy
 from kiro_crew.trust_patterns import GrantEnded, approval_command
@@ -41,8 +58,9 @@ if TYPE_CHECKING:
         _matches_trusted_pattern,
         _name_grant_refusal_off_loop,
         _validate_tool_name,
+        capabilities_of,
+        is_claude_backend_name,
         logger,
-        open_construct_at_end,
         read_effective_agent,
         redact_credentials,
         redact_exfiltration_urls,
@@ -64,6 +82,32 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _cut_segment
     from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire
     from kiro_crew.trust_patterns import GrantDeadline
+
+
+def _audit_approve_refused(
+    client: Any, sel: Any, *, session_key: str, agent: str, event: Any
+) -> None:
+    """Record the SEL row for an auto-approve that ``approve_tool`` answered ``False``.
+
+    The transport floor and the batch write guard both answer a refusal with
+    ``False``; ``client.take_batch_refusal`` tells the two apart (it is taken once),
+    so the row says batch guard when the guard refused and transport floor otherwise.
+    """
+    from kiro_crew import agent_sdk
+
+    outcome, metadata = agent_sdk.batch_guard_refusal_outcome(
+        agent_sdk.take_batch_guard_refusal(client, event.request_id)
+    )
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=agent or "kirocrew",
+        source="dashboard",
+        tool_name=_redact_display_text(event.title),
+        tool_kind=event.tool_kind,
+        outcome=outcome,
+        request_id=event.request_id,
+        **({"metadata": metadata} if metadata else {}),
+    )
 
 
 def _pre_tool_hooks_should_block(pre_hook_results: Any) -> bool:
@@ -102,11 +146,31 @@ _SPEC_HOOKS_UNREADABLE_BLOCK = "BLOCKED:system:the agent spec's hooks could not 
 
 
 def _spec_keys_notice(agent: str, keys: list[str]) -> str:
-    """The session-start notice for spec keys this backend never receives."""
-    return (
+    """The session-start notice for spec keys this backend never receives.
+
+    A remote MCP server's ``oauth`` block (``mcpServers.<name>.oauth``) gets one
+    more sentence, because what it costs is sign-in, not a setting. So does a
+    refused ``permissions`` block, because it is what keeps the agent's granted
+    shell and file tools asking.
+    """
+    notice = (
         f"ℹ️ Agent {agent} sets {' and '.join(keys)}, which this backend does not "
         "receive, so they have no effect in this session."
     )
+    servers = oauth_servers_in(keys)
+    if servers:
+        noun = "server" if len(servers) == 1 else "servers"
+        notice += (
+            f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this "
+            "backend. The kiro-cli backend supports it."
+        )
+    if "permissions" in keys:
+        notice += (
+            " A permissions block is not sent at all when it names a policies bundle "
+            "or is malformed or too large. With a policies bundle, the agent's shell "
+            "and file tools also ask for approval even where allowedTools grants them."
+        )
+    return notice
 
 
 def _spec_confirm_hooks_notice(agent: str, count: int) -> str:
@@ -140,6 +204,22 @@ def _spec_withheld_hooks_notice(agent: str, *, user_hooks_run: bool) -> str:
     if user_hooks_run:
         return f"{lead} The hooks in your user-level spec for agent {agent} still run."
     return f"{lead} To run a hook you trust, add it to your user-level spec for agent {agent}."
+
+
+def _project_hook_files_notice() -> str:
+    """The session-start notice for standalone ``<project>/.kiro/hooks/*.json`` files.
+
+    These do not run in a dashboard session: a project hook is a command from a
+    checkout, and Crew cannot read this backend's workspace-trust verdict. Your
+    own ``~/.kiro/hooks/*.json`` files do run. Said so they are never withheld
+    silently.
+    """
+    return (
+        "ℹ️ This project has hook files in .kiro/hooks that do not run in this "
+        "session: Crew cannot read this backend's workspace-trust decision, so it "
+        "does not run commands from a project checkout. Your own ~/.kiro/hooks "
+        "files still run."
+    )
 
 
 #: Deny classes a credential-vending MCP server can actually resolve. Only these
@@ -233,10 +313,17 @@ def _persistable_session_policy(slot: Any, yolo_active: bool) -> str:
     A scope-trusted worker is not left stalling: its own tool approvals never
     consult this value. They go through :func:`_slot_is_trusted` per event, which
     re-checks the scope each time.
+
+    A Crew Mode card trust ("Trust this worker", ``slot._trust_card_scoped``) is
+    a ``slot._trust`` too and IS cached: trusting a worker trusts the subagents it
+    spawns (``approval_posture.trust_reaches_subagents``). The sessions it creates
+    read the slot, not this value, and keep asking (``trust_carries``).
     """
-    if yolo_active or getattr(slot, "_trust", False):
+    if yolo_active:
         return "auto"
-    return ""
+    from kiro_crew.dashboard.approval_posture import trust_reaches_subagents
+
+    return "auto" if trust_reaches_subagents(slot) else ""
 
 
 def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
@@ -258,8 +345,74 @@ def _native_crew_should_auto_approve(native_tracker, state, slot) -> bool:
     return bool(
         (state.context_builder and state.context_builder.hooks.auto_approve_subagent_tools)
         or _slot_is_trusted(slot)
-        or state.is_yolo_active()
+        or (state.is_yolo_active() and state.yolo_reaches(slot))
     )
+
+
+#: The reads a conductor makes of its own crew members. ``session_send`` is NOT here:
+#: the conductor skill pins that a send is never auto-approved (it runs text as the
+#: target's user turn under the target's grants, and a conductor reads untrusted
+#: content), so a send keeps prompting as it does on every other session.
+_CREW_ROOT_OWN_WORKER_VERBS = frozenset({"session_status", "session_read_message"})
+
+
+def _vouched_creator_of(target: str, slots: Mapping[str, Any]) -> str:
+    """The slot that created live slot *target*, by gateway-vouched lineage only, or ``""``.
+
+    The settled session tree's parent edge first (the crew log's own record, which
+    an adoption moves and a ``session_release`` clears); with no settled tree, the
+    birth stamp ``_created_by`` ONLY when ``_lineage_minted`` says THIS process
+    stamped it at ``session_create`` time. Never the saved ``created_by`` a restore
+    reads back from transcript metadata: that file is editable by an agent's file
+    tools, and the slot list's display stamp (``crew_mode.live_stamps``) falls back
+    to it, so a display rule cannot be the proof an approval exemption rests on.
+    """
+    from kiro_crew import crew_mode
+
+    if crew_mode.lineage_is_settled():
+        tracked = crew_mode.persisted_tree_slots()
+        if tracked is not None and target in tracked:
+            return crew_mode.persisted_parents().get(target, "")
+    child = slots.get(target)
+    if child is None or not bool(getattr(child, "_lineage_minted", False)):
+        return ""
+    return str(getattr(child, "_created_by", "") or "")
+
+
+def _crew_root_own_worker_call(state: Any, slot: Any, event: Any) -> bool:
+    """A Crew Mode conductor's OWN read of one of ITS crew members.
+
+    Keyed on the verified ``kirocrew-dashboard`` identity, a read verb
+    (:data:`_CREW_ROOT_OWN_WORKER_VERBS`), and the verified ``target`` argument,
+    which must be the exact key of a live session whose gateway-vouched creator
+    (:func:`_vouched_creator_of`) is this conductor. Anything else (a send, a
+    subagent's call, a title-only or unverified identity, another session, a target
+    by title, a creator known only from saved metadata) keeps asking. Inert
+    (``False`` for every call) until ``crew_mode.APPROVAL_ROUTING_LIVE`` is on,
+    which the Crew panel part turns on.
+    """
+    from kiro_crew import crew_mode
+
+    if not crew_mode.APPROVAL_ROUTING_LIVE:
+        return False
+    if event.sub_session_id or not (event.mcp_identity_trusted and event.raw_params_trusted):
+        return False
+    if event.mcp_server_name != "kirocrew-dashboard":
+        return False
+    if event.tool_name not in _CREW_ROOT_OWN_WORKER_VERBS:
+        return False
+    params = event.raw_tool_params or {}
+    # A deferred tool runs through tool_search's ``tool_call``: the real arguments
+    # sit under ``arguments``, named by a ``tool_id`` that must be this same tool.
+    if params.get("tool_id") == f"{event.mcp_server_name}::{event.tool_name}":
+        params = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+    target = params.get("target")
+    slots = getattr(state, "_slots", {}) or {}
+    if not isinstance(target, str) or target == slot.key or target not in slots:
+        return False
+    if not crew_mode.slot_is_crew_mode_root(slot):
+        return False
+    return _vouched_creator_of(target, slots) == slot.key
 
 
 async def _name_grant_refusal_for(event: object) -> Refusal | None:
@@ -313,18 +466,83 @@ def _audit_name_grant_refusal(
     )
 
 
+def _pay_permission_cut(turn: _ChatTurn) -> None:
+    """Cut the segment owed at a permission request, now that a row lands for it."""
+    if turn.assistant_text and not open_construct_at_end(turn.assistant_text):
+        _cut_segment(turn)
+        _turn_flushed_visible_text = True
+        turn._turn_flushed_visible_text = _turn_flushed_visible_text
+
+
 async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTINUE] | None:
+    """Decide a permission request, cutting the segment only where a row lands.
+
+    The cut is owed, not made: a grant answered with no row (YOLO, session
+    trust, a native crew) leaves the reply running, and cutting there saved one
+    message as several rows with nothing between them. Codex sends a sub-agent's
+    approvals on the parent session in the middle of the parent's message. The
+    slot pays the cut before the first durable row the decision appends, and
+    the interactive card gets it before it is drawn.
+    """
+    slot = turn.slot
+    # The id the request names the tool by is what the call's PostToolUse
+    # spec hooks match on, as PreToolUse's do here.
+    if event.tool_call_id:
+        _post_identity = post_tool_identity(
+            turn.client,
+            event,
+            is_shell=False,
+            earlier=turn._pending_tool_ids.get(event.tool_call_id),
+        )
+        if _post_identity is not None:
+            turn._pending_tool_ids[event.tool_call_id] = _post_identity
+        # A backend may name the tool only on its permission request; a
+        # ``session_send`` it names picks up its delivery receipt on its result.
+        from kiro_crew.dashboard import session_send_receipts
+
+        _selectors = getattr(turn, "_send_receipt_selectors", None)
+        if _selectors is not None:
+            session_send_receipts.note_call(_selectors, event, initial=False)
+    if turn.assistant_text and not open_construct_at_end(turn.assistant_text):
+        slot._owed_segment_cut = functools.partial(_pay_permission_cut, turn)
+    try:
+        flow = await _decide_permission_request(turn, event)
+    finally:
+        owed = getattr(slot, "_owed_segment_cut", None)
+        slot._owed_segment_cut = None
+    if flow is None and owed is not None:
+        owed()
+    return flow
+
+
+async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTINUE] | None:
     """Decide a permission request the turn can answer itself: hooks, trust reads, grants and auto-approve."""
     _deferred_cut_text = turn._deferred_cut_text
     _native_tracker = turn._native_tracker
     _refusal_notices = turn._refusal_notices
     _refusal_reasons = turn._refusal_reasons
-    _turn_flushed_visible_text = turn._turn_flushed_visible_text
     _wt_pending_coding = turn._wt_pending_coding
     client = turn.client
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
+    # Set only by a deny-rules refusal this request may override (below), and read
+    # by _on_permission_prompt's card; every request starts with none.
+    turn._deny_override = None
+    # Set once the gate below has fired this request's PreToolUse hooks and they
+    # passed. The trust arm and _on_permission_prompt's approved answer read it so
+    # the hooks run once per call; every request starts unfired.
+    turn._pre_tool_hooks_fired = False
+    # A call an earlier sub-agent activity event named is a native child's, on any
+    # transport (the set the directive refusal reads), so neither the card nor the
+    # parent's session overrides reach it (``deny_override.slot_may_override``).
+    _tc = getattr(event, "tool_call_id", "") or ""
+    if _tc and _tc in (getattr(turn, "_native_child_tc", None) or ()):
+        event.native_child_call = True
+    # The rules a person overrode for this session on the deny card, if any apply
+    # to this request (``deny_override``): the gate and every transport approval
+    # of the request below carry the same keys.
+    turn._session_deny_waivers = _request_deny_waivers(slot, event, client)
     # Drain the key as soon as its permission decision begins. The
     # stream handles one decision at a time, so one bounded key is
     # enough for every approval arm below and in _on_permission_prompt;
@@ -336,18 +554,16 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
         _wt_pending_coding.discard(_wt_key)
     # Permission is part of the tool group, not a break in it —
     # leaving in_tool_group True ensures the post-tool text fallback
-    # (in _run_chat's EVENT_TEXT_CHUNK arm) still fires once the tool resolves
+    # (in _on_text_chunk, chat_turn/stream_chunks.py) still fires once the tool resolves
     # and the LLM continues with text. Resetting it here was the
     # cause of pills staying in "running" state until the next tool
     # call or message end.
-    # Flush accumulated text as a finalized segment before the
-    # permission flow so the frontend renders them in order. The
-    # same open-construct deferral as the tool-call cut applies: an
-    # approval-gated call (parent or child) that lands inside an
-    # open options marker, fence or widget would otherwise split it
-    # and undo a deferral the tool-call site just made. Like the tool
-    # call, the prompt does not end the reply: the run the wire
-    # redactor still withholds waits for the text after it.
+    # The segment cut before a row this decision lands is owed by
+    # _on_permission_request. The same open-construct deferral as the
+    # tool-call cut applies: an approval-gated call (parent or child)
+    # that lands inside an open options marker, fence or widget would
+    # otherwise split it and undo a deferral the tool-call site just
+    # made.
     _open_construct = open_construct_at_end(turn.assistant_text)
     if turn.assistant_text and _open_construct:
         _deferred_cut_text = turn.assistant_text
@@ -357,11 +573,6 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
             slot.key,
             _open_construct,
         )
-    elif turn.assistant_text:
-        _cut_segment(turn)
-        _turn_flushed_visible_text = True
-        turn._turn_flushed_visible_text = _turn_flushed_visible_text
-    _pre_tool_hooks_fired = False
     # "Not applied — approve this command explicitly" notices from a
     # rung that declined its grant. Held until the request actually
     # reaches the interactive card: a later unconditional rung
@@ -424,20 +635,35 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
         # so the security gate evaluates what actually executes.
         # event.title may be an LLM-authored description that hides
         # a dangerous command (see HookManager.on_tool_call).
-        tool_result = await run_in_tool_gate_pool(
-            state.context_builder.hooks.on_tool_call,
-            event.title,
-            on_queue_timeout=hook_gate_busy,
-            session_key=session_key,
-            agent=slot.agent or "",
-            app=slot._app or "",
-            **hook_gate_kwargs(event),
-            # The RESOLVED agent (what actually served the turn), not
-            # slot.agent — that is an alias resolve_agent_bindings
-            # maps to a concrete kiro agent, so it must never decide
-            # which builtin app an agent belongs to.
-            resolved_agent=read_effective_agent(client),
-        )
+        # A monitor wake (the loop's own delivered turn, set only by the
+        # dispatch) runs with nobody watching: a governance check that cannot
+        # be evaluated refuses the call instead of allowing it.
+        with unattended_turn(bool(turn._directive_self_wake)):
+            tool_result = await run_in_tool_gate_pool(
+                state.context_builder.hooks.on_tool_call,
+                event.title,
+                on_queue_timeout=hook_gate_busy,
+                session_key=session_key,
+                agent=slot.agent or "",
+                app=slot._app or "",
+                **hook_gate_kwargs(event),
+                # The RESOLVED agent (what actually served the turn), not
+                # slot.agent — that is an alias resolve_agent_bindings
+                # maps to a concrete kiro agent, so it must never decide
+                # which builtin app an agent belongs to.
+                resolved_agent=read_effective_agent(client),
+                # The slot's Reads approval mode, so the gate's read-only
+                # tier may prove one of Kiro Crew's OWN read-only MCP
+                # tools by its trusted identity (``@kirocrew-core/
+                # memory_recall`` and its siblings). A surface fact, like
+                # ``classifier_only``: it unlocks that one proof and
+                # nothing else, and the auto-approve it yields walks the
+                # same hook branch below -- PreToolUse hooks and all.
+                trust_reads=bool(slot._trust_reads),
+                # The rules a person overrode for this session on the deny card,
+                # passed only when there are any (``deny_override``).
+                **_deny_waiver_kwargs(turn),
+            )
         if tool_result.action == TOOL_DENY:
             # Surface WHY: carry the deny reason into the pill so
             # the user sees "Blocked by security policy: ..." rather
@@ -447,6 +673,32 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
             _deny_title = _redact_display_text(event.title)
             _deny_msg, _ = redact_exfiltration_urls(_deny_reason)
             _deny_msg, _ = redact_credentials(_deny_msg)
+            # A deny-rules refusal in a session a person drives from the dashboard
+            # goes to the approval card instead, every approval mode included:
+            # returning here skips every auto-approve rung below, so trust and
+            # YOLO never answer it. The card's own answer decides
+            # (_on_permission_prompt); an ineligible refusal is unchanged.
+            # The offer reads governance pins from profile storage, so it runs on
+            # the tool-gate pool like the gate call above, never on the loop. A
+            # queue timeout offers nothing: the flat refusal below stands.
+            _override_key = (
+                await run_in_tool_gate_pool(
+                    override_offer_key,
+                    tool_result,
+                    slot,
+                    event,
+                    on_queue_timeout=_no_override_offer,
+                )
+                if client_accepts_deny_waivers(client)
+                else None
+            )
+            if _override_key is not None:
+                turn._deny_override = DenyOverrideOffer(
+                    key=_override_key,
+                    reason=_deny_msg,
+                    detail=deny_key_description(_override_key),
+                )
+                return None
             # Audit FIRST, before any wire I/O for this decision
             # (see _reject_hook_blocked): a stalled ACP reader
             # cancels this coroutine at the turn deadline, and an
@@ -496,6 +748,13 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
             # fragments, paths, or credentials.
             _refusal_reasons.append((_deny_title, _deny_msg))
             return _Flow.CONTINUE
+        if tool_result.action == TOOL_ALLOW and tool_result.reason:
+            # The gate's note on why this call asks (an allowedCommands
+            # entry kept off by shell composition). Fixed gate text, shown
+            # on the card like the other declined-grant notices.
+            _declined_grant_notices.setdefault(
+                "ask_note", f"🛡 Auto-approve not applied — {tool_result.reason}"
+            )
         if _child_low_fidelity:
             # Backend-subagent origin whose tool_call frames never
             # reached us (cache miss): command bytes are absent, so
@@ -630,16 +889,12 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                         refusal_notices=_refusal_notices,
                     )
                     return _Flow.CONTINUE
-                approval_sent = await client.approve_tool(event.request_id)
+                approval_sent = await client.approve_tool(
+                    event.request_id, **_deny_waiver_kwargs(turn)
+                )
                 if approval_sent is False:
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        agent=slot.agent or "kirocrew",
-                        source="dashboard",
-                        tool_name=_redact_display_text(event.title),
-                        tool_kind=event.tool_kind,
-                        outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                        request_id=event.request_id,
+                    _audit_approve_refused(
+                        client, sel, session_key=session_key, agent=slot.agent, event=event
                     )
                     return _Flow.CONTINUE
                 _wt_note_approved(turn, event)
@@ -724,7 +979,7 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 refusal_notices=_refusal_notices,
             )
             return _Flow.CONTINUE
-        _pre_tool_hooks_fired = True
+        turn._pre_tool_hooks_fired = True
         # Hooks passed — fall through to patterns/trust-reads/trust/yolo/interactive
     # Native crew auto-approve: when a native subagent (crew pipeline)
     # is active and the session is configured to auto-approve subagent
@@ -732,22 +987,26 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
     # parent turn. Deny-by-default (CWE-1188): with no active crew this
     # predicate is False no matter the trust flags, so the tool falls
     # through to the normal trust gate below, then _on_permission_prompt's card.
-    if _native_crew_should_auto_approve(_native_tracker, state, slot) and _child_grant_eligible:
+    # The claude backend never takes either path. Its permission requests do not
+    # say which session sent them, so an open child card cannot tell a child's
+    # request from the parent's, and the parent's own tool calls would be approved
+    # with no card; for the same reason a subagent's send to a crew member would
+    # read as the conductor's own.
+    _claude_backend = is_claude_backend_name(capabilities_of(client).backend)
+    _own_worker_call = not _claude_backend and _crew_root_own_worker_call(state, slot, event)
+    if (
+        _own_worker_call
+        or (not _claude_backend and _native_crew_should_auto_approve(_native_tracker, state, slot))
+    ) and _child_grant_eligible:
         logger.debug(
             "Native crew auto-approve: %r (request_id=%s)",
             _safe_native_crew_debug_title(event.title),
             event.request_id,
         )
-        approval_sent = await client.approve_tool(event.request_id)
+        approval_sent = await client.approve_tool(event.request_id, **_deny_waiver_kwargs(turn))
         if approval_sent is False:
-            sel().log_tool_invocation(
-                session_key=session_key,
-                agent=slot.agent or "kirocrew",
-                source="dashboard",
-                tool_name=_redact_display_text(event.title),
-                tool_kind=event.tool_kind,
-                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                request_id=event.request_id,
+            _audit_approve_refused(
+                client, sel, session_key=session_key, agent=slot.agent, event=event
             )
             return _Flow.CONTINUE
         _wt_note_approved(turn, event)
@@ -774,7 +1033,7 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
             tool_kind=event.tool_kind,
             outcome="auto_approved",
             request_id=event.request_id,
-            metadata={"reason": "native_crew"},
+            metadata={"reason": "crew_mode_own_worker" if _own_worker_call else "native_crew"},
         )
         return _Flow.CONTINUE
     # Session-trusted patterns: auto-approve commands matching user globs.
@@ -921,7 +1180,9 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 )
                 return _Flow.CONTINUE
             if _tp_deadline is None:
-                approval_sent = await client.approve_tool(event.request_id)
+                approval_sent = await client.approve_tool(
+                    event.request_id, **_deny_waiver_kwargs(turn)
+                )
             else:
                 # A timed grant backs this approval: the transport
                 # checks its deadline again after the floor and, if it
@@ -929,20 +1190,14 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 # falls through to the normal prompt in _on_permission_prompt.
                 try:
                     approval_sent = await client.approve_tool(
-                        event.request_id, deadline=_tp_deadline
+                        event.request_id, deadline=_tp_deadline, **_deny_waiver_kwargs(turn)
                     )
                 except GrantEnded:
                     approval_sent = None
             if approval_sent is not None:
                 if approval_sent is False:
-                    sel().log_tool_invocation(
-                        session_key=session_key,
-                        agent=slot.agent or "kirocrew",
-                        source="dashboard",
-                        tool_name=_redact_display_text(event.title),
-                        tool_kind=event.tool_kind,
-                        outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                        request_id=event.request_id,
+                    _audit_approve_refused(
+                        client, sel, session_key=session_key, agent=slot.agent, event=event
                     )
                     return _Flow.CONTINUE
                 _wt_note_approved(turn, event)
@@ -975,7 +1230,9 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
     # Trust-reads: auto-approve read-only bash commands
     # Detect bash tools by tool_input content (title is human-readable)
     cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
-    yolo_active = state.is_yolo_active()
+    yolo_active = state.is_yolo_active() and state.yolo_reaches(
+        slot, channel_origin=turn._directive_channel_origin
+    )
     # Evaluated ONCE for both branches below. Two separate calls could
     # straddle a scoped grant's expiry and disagree with each other, and
     # a scope check is not a pure read — it retires a lapsed grant and
@@ -1023,16 +1280,10 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                     state=state,
                 )
                 return _Flow.CONTINUE
-            approval_sent = await client.approve_tool(event.request_id)
+            approval_sent = await client.approve_tool(event.request_id, **_deny_waiver_kwargs(turn))
             if approval_sent is False:
-                sel().log_tool_invocation(
-                    session_key=session_key,
-                    agent=slot.agent or "kirocrew",
-                    source="dashboard",
-                    tool_name=_redact_display_text(event.title),
-                    tool_kind=event.tool_kind,
-                    outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                    request_id=event.request_id,
+                _audit_approve_refused(
+                    client, sel, session_key=session_key, agent=slot.agent, event=event
                 )
                 return _Flow.CONTINUE
             _wt_note_approved(turn, event)
@@ -1082,7 +1333,7 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 refusal_reasons=_refusal_reasons,
             )
             return _Flow.CONTINUE
-        if not _pre_tool_hooks_fired:
+        if not turn._pre_tool_hooks_fired:
             try:
                 _parsed_input = json.loads(event.tool_input) if event.tool_input else None
             except Exception:
@@ -1122,16 +1373,10 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
                 return _Flow.CONTINUE
         # always=False — Kiro Crew owns trust scope; per-call request_permission
         # is required for PreToolUse hooks to run on every tool invocation.
-        approval_sent = await client.approve_tool(event.request_id)
+        approval_sent = await client.approve_tool(event.request_id, **_deny_waiver_kwargs(turn))
         if approval_sent is False:
-            sel().log_tool_invocation(
-                session_key=session_key,
-                agent=slot.agent or "kirocrew",
-                source="dashboard",
-                tool_name=_redact_display_text(event.title),
-                tool_kind=event.tool_kind,
-                outcome=OUTCOME_REJECTED_TRANSPORT_FLOOR,
-                request_id=event.request_id,
+            _audit_approve_refused(
+                client, sel, session_key=session_key, agent=slot.agent, event=event
             )
             return _Flow.CONTINUE
         _wt_note_approved(turn, event)
@@ -1153,3 +1398,155 @@ async def _on_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CONTIN
         )
         return _Flow.CONTINUE
     return None
+
+
+# ── Deny-rule override card (kiro_crew.dashboard.deny_override) ──
+#
+# The turn's side of the card: its fields, the second judgement an allow gets, and
+# the refusal when the card is declined or that judgement still denies. Here, beside
+# the gate consultation and the policy refusal they mirror, so each guarded construct
+# keeps its one home (test_chat_runner_composition_contract.py).
+
+#: Card fields an override card never carries: each offers a standing grant, and
+#: no grant but the override itself may come from this card.
+_OVERRIDE_WITHHELD_FIELDS = (
+    "trust_grantable",
+    "trust_command_grantable",
+    "trust_command_key",
+    "trust_base_grantable",
+    "base_command",
+    "is_read_only",
+)
+
+
+def _request_deny_waivers(slot: Any, event: Any, client: Any) -> frozenset[str]:
+    """The session overrides that apply to *event*: none unless *client* can carry them.
+
+    Set on the turn once per request (``turn._session_deny_waivers``), so the gate
+    and every transport approval of that request read the same keys.
+    """
+    if not client_accepts_deny_waivers(client):
+        return frozenset()
+    return slot_deny_waivers(slot, event)
+
+
+def _no_override_offer(_waited: float) -> str | None:
+    """The offer when no gate worker took the lookup in time: none, so the refusal stands."""
+    return None
+
+
+def _deny_waiver_kwargs(turn: Any) -> dict[str, frozenset[str]]:
+    """``{"deny_waivers": ...}`` for the gate or the transport floor, else ``{}``.
+
+    The request's session overrides (``turn._session_deny_waivers``). Empty when
+    there are none, so every other call reaches the gate and the floor exactly as
+    before. A session override has to reach the floor too: it judges the call
+    again on approval, and without the keys it would refuse what the gate let by.
+    """
+    waivers = getattr(turn, "_session_deny_waivers", None) or frozenset()
+    return {"deny_waivers": waivers} if waivers else {}
+
+
+def _deny_override_card_meta(perm_meta: dict[str, str], offer: DenyOverrideOffer) -> None:
+    """Turn *perm_meta* into an override card's: the rule named, no grant offered."""
+    for field in _OVERRIDE_WITHHELD_FIELDS:
+        perm_meta.pop(field, None)
+    shown, _ = redact_exfiltration_urls(offer.key)
+    shown, _ = redact_credentials(shown)
+    # Non-empty on every card: the approve route reads the field as the marker.
+    perm_meta[DENY_OVERRIDE_META_KEY] = shown or "?"
+    perm_meta["deny_override_reason"] = offer.reason
+    # The family slug picks the card's one translated line on what the rule
+    # protects; the expert text below sits behind the card's "Details".
+    family = deny_key_family(offer.key)
+    if family:
+        perm_meta["deny_override_family"] = family
+    if offer.detail:
+        detail, _ = redact_exfiltration_urls(offer.detail)
+        detail, _ = redact_credentials(detail)
+        perm_meta["deny_override_detail"] = detail
+
+
+def _override_waivers(turn: Any, offer: DenyOverrideOffer) -> frozenset[str]:
+    """The keys an allowed override call is judged with: the card's, plus the
+    session overrides that apply to this request (``turn._session_deny_waivers``,
+    already filtered by ``slot_deny_waivers``), never the slot's raw set."""
+    return frozenset(getattr(turn, "_session_deny_waivers", None) or ()) | {offer.key}
+
+
+async def _rejudge_overridden_call(
+    turn: _ChatTurn, event: Any, offer: DenyOverrideOffer
+) -> str | None:
+    """Judge *event* again with the override's keys; the refusal if it still denies.
+
+    The same gate call the request first met, so every other tier and every
+    other rule still applies, and each waiver it uses writes its audit event or
+    refuses.
+    """
+    slot = turn.slot
+    builder = turn.state.context_builder
+    if builder is None:
+        # No gate to judge it again: the first refusal stands.
+        return offer.reason
+    result = await run_in_tool_gate_pool(
+        builder.hooks.on_tool_call,
+        event.title,
+        on_queue_timeout=hook_gate_busy,
+        session_key=turn.session_key,
+        agent=slot.agent or "",
+        app=slot._app or "",
+        **hook_gate_kwargs(event),
+        resolved_agent=read_effective_agent(turn.client),
+        trust_reads=bool(slot._trust_reads),
+        deny_waivers=_override_waivers(turn, offer),
+    )
+    if result.action == TOOL_DENY:
+        return (result.reason or "blocked").strip()
+    return None
+
+
+async def _refuse_overridden_call(turn: _ChatTurn, event: Any, reason: str, *, why: str) -> None:
+    """Refuse a call an override card was offered for, as the policy refusal it was.
+
+    Used when the card is declined, times out or gets any answer but an allow
+    (*why* ``deny_override_declined``), and when an allowed call's second
+    judgement still denies on another rule (``deny_override_still_denied``), and
+    when an earlier rejection in the batch cascades over it before any card is
+    shown (``batch_rejection``). The
+    agent reads the rule's refusal, as it does for a refusal no card was offered
+    for, rather than kiro-cli's "User denied tool execution".
+    """
+    slot = turn.slot
+    _refusal_notices = turn._refusal_notices
+    _refusal_reasons = turn._refusal_reasons
+    title = _redact_display_text(event.title)
+    shown_reason = _redact_display_text(reason)
+    sel().log_tool_invocation(
+        session_key=turn.session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name=title,
+        tool_kind=event.tool_kind,
+        outcome="denied",
+        request_id=event.request_id,
+        error="hook_deny",
+        metadata={"reason": why},
+    )
+    await _steer_policy_notice(turn.client, title, shown_reason, _refusal_notices, slot, turn.state)
+    await _reject_attributed(turn.client, event.request_id, attribution="steered")
+    slot.append("tool", f"🚫 {title} — {shown_reason}", "msg msg-tool", meta=_tool_meta(event))
+    turn.state.broadcast_ws(
+        "activity_event",
+        {"slot": slot.key, "kind": "permission", "text": f"Blocked: {title} — {shown_reason}"},
+    )
+    _refusal_reasons.append((title, shown_reason))
+
+
+def _note_override_used(slot: Any, offer: DenyOverrideOffer) -> None:
+    """Show in the transcript that a person let a security rule step aside."""
+    shown = _redact_display_text(offer.key)
+    if offer.scope == "session":
+        text = f"⚠️ Security rule {shown} overridden for the rest of this session."
+    else:
+        text = f"⚠️ Security rule {shown} overridden for this one call."
+    slot.append("system", text, "msg msg-info")

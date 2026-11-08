@@ -27,7 +27,7 @@ from terminal_handler_helpers import (  # noqa: F401 -- the autouse fixture regi
 )
 
 from kiro_crew import platform_compat
-from kiro_crew.dashboard.handlers import terminal
+from kiro_crew.dashboard.handlers import terminal, terminal_lifecycle
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import async_wait_until, await_until
 
@@ -640,22 +640,46 @@ class TestResolveCwd:
 # ── _kill_session ──
 
 
+@contextlib.contextmanager
+def _teardown_close(side_effect=None):
+    """Mock ``os.close`` as the terminal handler modules see it, and nowhere else.
+
+    Patching ``os.close`` itself records every close in the process while the
+    patch is active, so another thread's close could become the last call. The
+    patch goes through the ``terminal`` facade, which mirrors ``os`` into
+    ``terminal_lifecycle``, the module whose ``_close_terminal_fd`` closes the fd.
+    """
+    mock_close = MagicMock(side_effect=side_effect)
+
+    class _Os:
+        close = mock_close
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    proxy = _Os()
+    with patch.object(terminal, "os", proxy):
+        assert terminal_lifecycle.os is proxy
+        yield mock_close
+
+
 class TestKillSession:
     @pytest.mark.asyncio
     async def test_cancels_reader_task(self):
-        task = AsyncMock()
-        task.cancel = MagicMock()
+        # flake-ok: a never-set Event parks the stand-in reader until teardown cancels it
+        task = asyncio.ensure_future(asyncio.Event().wait())
         sess = _make_session()
         sess.reader_task = task
         with patch("os.close"), patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
             await terminal._kill_session(sess)
-        task.cancel.assert_called_once()
+        assert task.cancelled()
+        assert sess.master_fd == -1  # wokeignore:rule=master
 
     @pytest.mark.asyncio
     async def test_closes_master_fd(self):
         sess = _make_session()
         sess.master_fd = 42
-        with patch("os.close") as mock_close, patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
+        with _teardown_close() as mock_close, patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
             await terminal._kill_session(sess)
         mock_close.assert_called_with(42)
         assert sess.master_fd == -1
@@ -664,7 +688,7 @@ class TestKillSession:
     async def test_skips_close_when_fd_negative(self):
         sess = _make_session()
         sess.master_fd = -1
-        with patch("os.close") as mock_close, patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
+        with _teardown_close() as mock_close, patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
             await terminal._kill_session(sess)
         mock_close.assert_not_called()
 
@@ -678,6 +702,7 @@ class TestKillSession:
                 patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
             await terminal._kill_session(sess)
         mock_kill.assert_any_call(UNALLOCATABLE_PID, platform_compat.SIGTERM)
+        assert sess.master_fd == -1  # wokeignore:rule=master
 
     @pytest.mark.asyncio
     async def test_the_process_tree_is_hung_up_and_ended_before_the_pty_is_closed(self):
@@ -699,7 +724,7 @@ class TestKillSession:
             order.append(f"kill:{sig}")
             return True
 
-        with patch("os.close", side_effect=lambda fd: order.append("close")), patch(
+        with _teardown_close(side_effect=lambda fd: order.append("close")), patch(
             "kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree",
             side_effect=_kill,
         ):
@@ -716,6 +741,8 @@ class TestKillSession:
                 patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree") as mock_kill:
             await terminal._kill_session(sess)
         mock_kill.assert_not_called()
+        # An exited child still leaves a PTY descriptor to close.
+        assert sess.master_fd == -1  # wokeignore:rule=master
 
     @pytest.mark.asyncio
     async def test_handles_process_lookup_error_on_sigterm(self):
@@ -724,7 +751,9 @@ class TestKillSession:
                 patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree",
                       side_effect=ProcessLookupError):
             await terminal._kill_session(sess)
-        # Should not raise
+        # A child that vanished between the liveness check and the signal must not
+        # stop the rest of teardown.
+        assert sess.master_fd == -1  # wokeignore:rule=master
 
     @pytest.mark.asyncio
     async def test_sigkill_on_timeout(self):
@@ -756,7 +785,7 @@ class TestKillSession:
         async def _kill(pid, sig):
             order.append(("kill", sig))
 
-        with patch("os.close", side_effect=lambda fd: order.append(("close", fd))), patch(
+        with _teardown_close(side_effect=lambda fd: order.append(("close", fd))), patch(
             "kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree_async",
             AsyncMock(side_effect=_kill),
         ):
@@ -887,7 +916,7 @@ class TestKillSession:
         sess.proc.wait = _wait
         monkeypatch.setattr(terminal.platform_compat, "REAP_TIMEOUT_SECS", 0.05)
 
-        with patch("os.close") as mock_close, patch(
+        with _teardown_close() as mock_close, patch(
             "kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree_async",
             AsyncMock(),
         ):
@@ -905,7 +934,7 @@ class TestKillSession:
     async def test_handles_os_error_on_close(self):
         sess = _make_session()
         sess.master_fd = 42
-        with patch("os.close", side_effect=OSError), patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
+        with _teardown_close(side_effect=OSError), patch("kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"):
             await terminal._kill_session(sess)
         assert sess.master_fd == -1
 
@@ -923,7 +952,7 @@ class TestKillSession:
 
         sess = _make_session()
         sess.master_fd = 42
-        with patch("os.close", side_effect=_record_close), patch(
+        with _teardown_close(side_effect=_record_close), patch(
             "kiro_crew.dashboard.handlers.terminal.platform_compat.kill_process_tree"
         ):
             await terminal._kill_session(sess)
@@ -1041,7 +1070,22 @@ class TestApiTerminalCreate:
         ), patch.object(terminal, "_sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_create(req)
-        assert resp.status == 429
+        assert resp.status == 409
+
+    @pytest.mark.asyncio
+    async def test_at_the_cap_a_detached_shell_leaves_room(self):
+        # The WebSocket open that follows ends the detached shell to make room,
+        # so the create goes through and leaves that shell to the open.
+        detached = _make_session(session_id="detached", disconnect=-1e9)
+        registry = {"connected": _make_session(session_id="connected"), "detached": detached}
+        req = _make_request(registry=registry)
+        with patch.object(
+            terminal, "_get_config", return_value={"enabled": True, "max_sessions": 2}
+        ), patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_create(req)
+        assert resp.status == 200
+        assert registry["detached"] is detached and set(registry) == {"connected", "detached"}
 
     @pytest.mark.asyncio
     async def test_respects_custom_max_sessions(self):
@@ -1052,7 +1096,7 @@ class TestApiTerminalCreate:
         ), patch.object(terminal, "_sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             resp = await terminal.api_terminal_create(req)
-        assert resp.status == 429
+        assert resp.status == 409
 
     @pytest.mark.asyncio
     async def test_uses_configured_shell(self, monkeypatch):

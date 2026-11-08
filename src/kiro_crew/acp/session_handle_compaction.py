@@ -30,6 +30,7 @@ from kiro_crew.acp._dispatch import (
     redact_text,
 )
 from kiro_crew.acp.client import compaction_failure_detail, parse_slash_command
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_INLINE_COMPACTION,
@@ -263,6 +264,8 @@ async def wait_for_compaction(
                 params = msg.params or {}
                 status = params.get("status", {})
                 s_type = status.get("type", "") if isinstance(status, dict) else str(status)
+                if consume_stale_compaction_status(self, msg):
+                    continue
                 if s_type in ("completed", "failed"):
                     if s_type == "completed":
                         # This drain path bypasses the prompt dispatch
@@ -311,7 +314,8 @@ async def _drain_post_compaction_metadata(
     counts against the kept served window. Returns on the first metadata
     frame carrying a real percentage — a credits-only/empty metadata frame
     is consumed but does not end the drain (the usage frame behind it
-    would be stranded). Gives up quietly at the grace deadline.
+    would be stranded). Gives up quietly at the grace deadline. A cancelled
+    kiro turn reads its billing frame here too (see ``_dispatch_events``).
 
     ``buffered``: when the caller (``wait_for_compaction``) passes its own
     frame buffer, non-metadata frames are appended to it and the CALLER
@@ -365,7 +369,8 @@ async def _drain_post_compaction_metadata(
 def _track_prompt_usage(self: AcpSessionHandle, result: Any) -> None:
     """Fold a PromptResponse's turn-scoped token counts into the stats.
 
-    Mirrors ``AcpClient._track_prompt_usage``: the claude-agent-acp adapter
+    Mirrors ``AcpClient._track_prompt_usage`` less its Copilot branch (Copilot
+    never runs on the shared runtime): the claude-agent-acp adapter
     reports per-turn token counts on the prompt response; kiro-cli's
     response carries only ``stopReason``, so ``parse_prompt_token_usage``
     returns None there and the stats are untouched (harness parity).
@@ -407,6 +412,10 @@ def _track_metadata(self: AcpSessionHandle, msg: JsonRpcMessage) -> None:
         self._between_turn_credits = getattr(self, "_between_turn_credits", 0.0) + credits
     else:
         self.last_prompt_stats.credits += credits
+        # Per-call context readings and the metered call count, shared with the
+        # AcpClient tracker so both transports report the same turn. A
+        # between-turns frame belongs to no turn's window, like its credits.
+        self.last_prompt_stats.note_metadata_frame(pct_f, params.get("meteringUsage"))
     # Gated on membership, exactly as the AcpClient path gates the same read.
     # The shared runtime carries hosts outside ACP_BACKENDS_STRUCTURED_REFUSAL,
     # so an unconditional read here hands a parser written for one vocabulary

@@ -24,6 +24,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.dashboard import tailnet
 from kiro_crew.dashboard.urls import build_allowed_hosts, build_allowed_origins
@@ -81,45 +82,46 @@ class TestValidation:
     @pytest.mark.parametrize(
         "raw",
         [
-            "https://desk.tail1a2b3c.ts.net",   # scheme
-            "desk.tail1a2b3c.ts.net:8443",      # port
-            "desk.tail1a2b3c.ts.net/admin",     # path
-            "user@desk.tail1a2b3c.ts.net",      # userinfo
-            "desk.tail1a2b3c.ts.net?x=1",       # query
-            "desk.tail1a2b3c.ts.net#f",         # fragment
-            "desk tail1a2b3c.ts.net",           # space
-            "desk\ttail1a2b3c.ts.net",          # tab
-            "desk\ntail1a2b3c.ts.net",          # newline
-            "desk\\tail1a2b3c.ts.net",          # backslash
-            "DESK.tail1a2b3c.ts.net",           # uppercase
-            "-bad.tail1a2b3c.ts.net",           # label may not start with a hyphen
-            "",
-            "   ",
+            *named_cases(
+                "test_rejects_structurally_bad_names",
+                "raw",
+                [
+                    "https://desk.tail1a2b3c.ts.net",  # scheme
+                    "desk.tail1a2b3c.ts.net:8443",  # port
+                    "desk.tail1a2b3c.ts.net/admin",  # path
+                    "user@desk.tail1a2b3c.ts.net",  # userinfo
+                    "desk.tail1a2b3c.ts.net?x=1",  # query
+                    "desk.tail1a2b3c.ts.net#f",  # fragment
+                    "desk tail1a2b3c.ts.net",  # space
+                    "desk\ttail1a2b3c.ts.net",  # tab
+                    "desk\ntail1a2b3c.ts.net",  # newline
+                    "desk\\tail1a2b3c.ts.net",  # backslash
+                    "DESK.tail1a2b3c.ts.net",  # uppercase
+                    "-bad.tail1a2b3c.ts.net",  # label may not start with a hyphen
+                    "",
+                    "   ",
+                ],
+            ),
+            *named_cases(
+                "test_rejects_names_outside_the_reported_suffix",
+                "raw",
+                [
+                    "evil.example.com",  # different domain entirely
+                    "desk.tail1a2b3c.ts.net.evil.com",  # suffix present but not a suffix
+                    "tail1a2b3c.ts.net",  # the bare suffix, no host label
+                    "desk.other9z8y7x.ts.net",  # a DIFFERENT tailnet's suffix
+                ],
+            ),
+            *named_cases("test_rejects_non_strings", "raw", [None, 42, [], {}, True]),
         ],
     )
-    def test_rejects_structurally_bad_names(self, raw: str) -> None:
-        assert tailnet._valid_magicdns_name(raw, _SUFFIX) is None
-
-    @pytest.mark.parametrize(
-        "raw",
-        [
-            "evil.example.com",                     # different domain entirely
-            "desk.tail1a2b3c.ts.net.evil.com",      # suffix present but not a suffix
-            "tail1a2b3c.ts.net",                    # the bare suffix, no host label
-            "desk.other9z8y7x.ts.net",              # a DIFFERENT tailnet's suffix
-        ],
-    )
-    def test_rejects_names_outside_the_reported_suffix(self, raw: str) -> None:
+    def test_rejects_an_invalid_name(self, raw: object) -> None:
         assert tailnet._valid_magicdns_name(raw, _SUFFIX) is None
 
     @pytest.mark.parametrize("suffix", [None, "", "   ", 42, [], {}])
     def test_rejects_a_missing_or_non_string_suffix(self, suffix: object) -> None:
         """No tailnet reported means no origin to add."""
         assert tailnet._valid_magicdns_name(_GOOD, suffix) is None
-
-    @pytest.mark.parametrize("raw", [None, 42, [], {}, True])
-    def test_rejects_non_strings(self, raw: object) -> None:
-        assert tailnet._valid_magicdns_name(raw, _SUFFIX) is None
 
     def test_rejects_an_over_long_name(self) -> None:
         assert tailnet._valid_magicdns_name("a" * 250 + f".{_SUFFIX}", _SUFFIX) is None

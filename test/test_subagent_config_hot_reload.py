@@ -1,13 +1,8 @@
 """SubagentManager live config: every constructor-captured limit follows config.json.
 
-``SubagentManager`` copies nine ``agent.*`` limits (plus ``session.pool_size``
-through the auto-sized cap) at construction. ``reconfigure`` re-derives every
-copy from a reloaded config, and the manager subscribes itself on the process
-watcher so a write from ANY writer reaches it. These tests pin: each derived
-field, the ``0`` timeout / stall sentinels, that a raised cap admits a queued
-spawn through the real pump, that a lowered cap cancels nothing in flight, that
-freed capacity also reaches the gate that lives outside this manager (the runner
-lane), and that an unrelated change is ignored.
+``SubagentManager`` copies nine ``agent.*`` limits (plus ``session.pool_size`` via the auto
+cap) at construction; ``reconfigure`` re-derives them, and the manager subscribes on the
+process watcher so a write from any writer reaches it.
 """
 
 from __future__ import annotations
@@ -143,10 +138,15 @@ class TestReconfigureDerivesEveryField:
 
     @pytest.mark.asyncio
     async def test_untouched_change_is_ignored(self) -> None:
-        mgr = _mgr()
-        mgr.reconfigure = AsyncMock()  # type: ignore[method-assign]
-        await _dispatch(KiroCrewConfig(), "agent.model")
-        mgr.reconfigure.assert_not_awaited()
+        mgr = _mgr(max_concurrent=4)
+        fresh = KiroCrewConfig()
+        fresh.agent.max_subagents = 7
+        await _dispatch(fresh, "agent.model")
+        assert mgr.max_concurrent == 4
+        # A watched path through the same dispatcher does reach the manager, so
+        # the unchanged cap above is the prefix filter and not a detached manager.
+        await _dispatch(fresh, "agent.max_subagents")
+        assert mgr.max_concurrent == 7
 
     @pytest.mark.asyncio
     async def test_pool_size_change_recomputes_the_cap(self) -> None:
@@ -233,6 +233,14 @@ class TestCapChangesAndTheQueue:
         fresh.agent.max_subagents = 3
         mgr.apply_limits(fresh)
         mgr._drain_queue.assert_not_called()
+        assert mgr.max_concurrent == 3
+        assert mgr._queue == [{"task": "queued"}]
+        mgr.apply_limits(fresh)  # unchanged cap
+        mgr._drain_queue.assert_not_called()
+        # Raising past the old cap is what pumps the queue.
+        fresh.agent.max_subagents = 9
+        mgr.apply_limits(fresh)
+        mgr._drain_queue.assert_called_once_with()
 
     def test_lowered_cap_cancels_nothing_in_flight(self) -> None:
         mgr = _mgr(max_concurrent=8)
@@ -300,8 +308,11 @@ class TestCapChangeVersusAdaptiveClamp:
         mgr.spawn = MagicMock(return_value=None)  # type: ignore[method-assign]
         mgr._emit_queue_depth = MagicMock()  # type: ignore[method-assign]
         mgr._queue.append({"task": "queued work", "parent_session_key": "p", "batch_id": ""})
-        mgr.set_effective_cap(4)
+        assert mgr.set_effective_cap(4) == 4
+        assert mgr._queue == []
         mgr.spawn.assert_called_once()
+        assert mgr.spawn.call_args.kwargs["task"] == "queued work"
+        assert mgr.spawn.call_args.kwargs["_from_queue"] is True
 
     def test_adaptive_pause_admits_nothing_and_cancels_nothing(self) -> None:
         mgr = _mgr(max_concurrent=8)
@@ -331,13 +342,9 @@ class TestCapChangeVersusAdaptiveClamp:
 class TestCapRaiseReachesTheRunnerLane:
     """Freed capacity has to reach the gate that is NOT this manager's queue.
 
-    The runner lane (TaskRunner steps, workflow ``ctx.agent()`` calls) reads
-    ``max_concurrent`` as its ceiling on every decision, so it always SEES the
-    new cap -- but its waiters hold a bare future, and a waiter parked while the
-    cap was 0 holds no slot, so no release of its own will ever wake it. The
-    raise is its only edge, whichever writer produced it. Neither raise site is
-    allowed to grant more than the new cap, and neither may cancel in-flight
-    work on the way down.
+    A runner-lane waiter parked while the cap was 0 holds no slot, so no release wakes it;
+    the raise is its only edge. No raise grants more than the new cap, and a lowered cap
+    cancels nothing in flight.
     """
 
     @staticmethod

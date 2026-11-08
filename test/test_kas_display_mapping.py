@@ -86,10 +86,18 @@ def test_a_built_in_of_the_crewmates_name_is_a_separate_mode() -> None:
     # Crewmate ``vibe`` runs as ``vibe-crewmate``; the engine's own ``vibe`` is a
     # different mode, so the switch to it is not swallowed as a repeat and does
     # not inherit the crewmate's approvals.
-    from kiro_crew.acp.kas_agents import AUTO_APPROVABLE_CAPABILITIES
+    from kiro_crew.acp.kas_permissions import HOOK_GATEABLE_CAPABILITIES
 
     handle = _handle(ACP_BACKEND_KAS)
-    handle.kas_registered_agents = [{"id": "vibe", "prompt": "p", "permissions": {"rules": []}}]
+    # The crewmate's batch asks for the shell, so it lets KAS decide less alone
+    # than the engine's own mode, which Crew never projected.
+    handle.kas_registered_agents = [
+        {
+            "id": "vibe",
+            "prompt": "p",
+            "permissions": {"rules": [{"capability": "shell", "effect": "ask"}]},
+        }
+    ]
     handle.kas_projected_agent = "vibe"
     first = _update(
         handle, {"sessionUpdate": "current_mode_update", "currentModeId": "vibe-crewmate"}
@@ -98,7 +106,7 @@ def test_a_built_in_of_the_crewmates_name_is_a_separate_mode() -> None:
     crewmate_approved = handle.kas_auto_approved
     second = _update(handle, {"sessionUpdate": "current_mode_update", "currentModeId": "vibe"})
     assert len(second) == 1
-    assert handle.kas_auto_approved == frozenset(AUTO_APPROVABLE_CAPABILITIES)
+    assert handle.kas_auto_approved == frozenset(HOOK_GATEABLE_CAPABILITIES)
     assert handle.kas_auto_approved != crewmate_approved
 
 

@@ -80,11 +80,13 @@ def _entry(
     return out
 
 
-def _check(mod, clone_dir, text, monkeypatch, *, enforced=True, counts=None):
+def _check(mod, clone_dir, text, monkeypatch, *, enforced=True, counts=None, pushes=None):
     git_dir = _git(clone_dir, "rev-parse", "--absolute-git-dir")
     _write_sweep(git_dir, text)
     monkeypatch.setattr(mod, "SWEEP_ENFORCED", enforced)
-    return mod.run("main", git_dir, cwd=clone_dir, prior_counts=lambda: counts)
+    return mod.run(
+        "main", git_dir, cwd=clone_dir, prior_counts=lambda: counts, blocked_pushes=lambda: pushes
+    )
 
 
 def _write_sweep(git_dir, text):
@@ -126,6 +128,11 @@ _FAKE_GH_SOURCE = (
     "    print(json.dumps(data['comments']))\n"
     "elif a[0] == 'api' and '/collaborators/' in a[1]:\n"
     "    print(json.dumps({'permission': 'write'}))\n"
+    "elif a[0] == 'api' and '/timeline' in a[1]:\n"
+    "    print(json.dumps(data.get('timeline', [])))\n"
+    "elif a[0] == 'api' and '/check-runs' in a[1]:\n"
+    "    rows = data.get('checks', {}).get(a[1].split('/commits/')[1].split('/')[0], [])\n"
+    "    print(json.dumps({'total_count': len(rows), 'check_runs': rows}))\n"
     "else:\n"
     "    sys.exit(1)\n"
 )
@@ -182,7 +189,8 @@ class TestGreenPath:
     def test_no_sweep_file_passes_silently(self, clone, capsys):
         mod = _mod()
         git_dir = _git(clone, "rev-parse", "--absolute-git-dir")
-        assert mod.run("main", git_dir, cwd=clone, prior_counts=lambda: {}) == 0
+        rc = mod.run("main", git_dir, cwd=clone, prior_counts=lambda: {}, blocked_pushes=lambda: 2)
+        assert rc == 0
         assert capsys.readouterr() == ("", "")
         row = json.loads(Path(git_dir, "prepare-pr-metrics.jsonl").read_text().splitlines()[-1])
         assert row["outcome"] == "no-file" and row["entries"] == 0 and row["findings"] == 0
@@ -395,6 +403,7 @@ class TestSeamRules:
         mod = _mod()
         seen: list = []
         monkeypatch.setattr(mod, "_prior_fix_counts", lambda cwd: seen.append(cwd) or {SPAN: 4})
+        monkeypatch.setattr(mod, "_blocked_pushes", lambda cwd: None)
         git_dir = _git(clone, "rev-parse", "--absolute-git-dir")
         _write_sweep(git_dir, _entry())
         monkeypatch.setattr(mod, "SWEEP_ENFORCED", True)
@@ -527,6 +536,7 @@ class TestPushGuardWiring:
             real(self, module)
             module.SWEEP_ENFORCED = True
             module._prior_fix_counts = lambda cwd: {}
+            module._blocked_pushes = lambda cwd: None
 
         monkeypatch.setattr(loader, "exec_module", enforced)
         monkeypatch.chdir(clone)
@@ -583,8 +593,13 @@ def test_agents_md_and_the_skill_point_at_the_sweep():
     assert len(skill.encode("utf-8")) <= 56000
 
 
-def _fake_gh(tmp_path, monkeypatch, *, heads, head_now="9" * 40, klass=CLASS):
-    """Point the fake gh (see `_hermetic_gh`) at one PR, its dispositions and a writer."""
+def _fake_gh(
+    tmp_path, monkeypatch, *, heads, head_now="9" * 40, klass=CLASS, timeline=(), checks=None
+):
+    """Point the fake gh (see `_hermetic_gh`) at one PR, its dispositions and a writer.
+
+    `timeline` is the PR's timeline events and `checks` {head sha: [check run, ...]}.
+    """
     comments = [
         {
             "id": 100 + i,
@@ -598,7 +613,12 @@ def _fake_gh(tmp_path, monkeypatch, *, heads, head_now="9" * 40, klass=CLASS):
     ]
     pr = {"number": 7, "url": "https://github.com/o/r/pull/7", "headRefOid": head_now}
     data = tmp_path / "gh.json"
-    data.write_text(json.dumps({"pr": pr, "comments": comments}), encoding="utf-8")
+    data.write_text(
+        json.dumps(
+            {"pr": pr, "comments": comments, "timeline": list(timeline), "checks": checks or {}}
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("FAKE_GH", str(data))
 
 
@@ -647,6 +667,200 @@ class TestSeamPathReadsThePrThread:
     def test_one_fix_so_far_is_the_second_fix(self, clone, tmp_path, monkeypatch):
         _fake_gh(tmp_path, monkeypatch, heads=["1" * 40])
         assert self._run(_mod(), clone, _entry(), monkeypatch) == 0
+
+
+PUSHED = [format(i, "x") * 40 for i in range(1, 8)]
+LANE_RED = [{"name": "GPT 6.1 Review", "conclusion": "failure", "status": "completed"}]
+
+
+def _blocked_thread(n):
+    """A timeline of n+1 force pushes where the first n heads each failed a review lane."""
+    events = [{"event": "head_ref_force_pushed", "commit_id": h} for h in PUSHED[: n + 1]]
+    return {"timeline": events, "checks": {h: LANE_RED for h in PUSHED[:n]}}
+
+
+class TestPrLevelPushCount:
+    """No marker anywhere: the pushes that followed a blocked head speak for the PR."""
+
+    def test_the_constants_match_the_contract_and_the_check_stays_warn_only(self):
+        mod = _mod()
+        contract = mod._sibling("_review_contract.py")
+        assert (mod.BLOCKED_PUSH_REPEAT, mod.BLOCKED_PUSH_LIMIT) == (
+            contract.BLOCKED_PUSH_REPEAT,
+            contract.BLOCKED_PUSH_LIMIT,
+        )
+        assert mod.SWEEP_ENFORCED is False
+
+    @pytest.mark.parametrize("pushes", [None, 0, 2])
+    def test_below_three_pushes_or_unreadable_adds_no_finding(self, clone, monkeypatch, pushes):
+        assert _check(_mod(), clone, _entry(), monkeypatch, counts={}, pushes=pushes) == 0
+
+    @pytest.mark.parametrize("pushes", [3, 4])
+    def test_three_pushes_apply_the_repeat_text(self, clone, monkeypatch, capsys, pushes):
+        rc, err = _refused(_mod(), clone, _entry(), monkeypatch, capsys, counts={}, pushes=pushes)
+        assert rc == 40
+        nth = "4th" if pushes == 3 else "5th"
+        assert f"this is the {nth} push of this PR after a blocked head: change the approach" in err
+        assert "record `resolution:`, or patch once with a `branches:` table" in err
+
+    def test_a_branches_table_or_a_resolution_answers_the_repeat_text(self, clone, monkeypatch):
+        table = (
+            "- final drain, first PUT fails  fixed",
+            "- slot mid-cycle  covered-by test/test_a.py",
+        )
+        mod = _mod()
+        assert _check(mod, clone, _entry(branches=table), monkeypatch, counts={}, pushes=3) == 0
+        extra = "resolution: narrowed -- redo the hook lookup without the include path\n"
+        assert _check(mod, clone, _entry(extra=extra), monkeypatch, counts={}, pushes=4) == 0
+
+    @pytest.mark.parametrize("pushes", [5, 8])
+    def test_five_pushes_need_a_resolution_and_a_table_is_not_enough(
+        self, clone, monkeypatch, capsys, pushes
+    ):
+        table = (
+            "- final drain, first PUT fails  fixed",
+            "- slot mid-cycle  covered-by test/test_a.py",
+        )
+        mod = _mod()
+        rc, err = _refused(
+            mod, clone, _entry(branches=table), monkeypatch, capsys, counts={}, pushes=pushes
+        )
+        assert rc == 40
+        assert "push of this PR after a blocked head: narrow the scope or defer it" in err
+        extra = (
+            "resolution: removed -- the second writer is gone and the hook list has one source\n"
+        )
+        assert _check(mod, clone, _entry(extra=extra), monkeypatch, counts={}, pushes=pushes) == 0
+
+    def test_the_marker_count_is_used_first_when_it_reaches_a_seam(
+        self, clone, monkeypatch, capsys
+    ):
+        rc, err = _refused(_mod(), clone, _entry(), monkeypatch, capsys, counts={SPAN: 2}, pushes=9)
+        assert rc == 40
+        assert "this is the 3rd fix of one span" in err and "push of this PR" not in err
+
+    def test_unreadable_rounds_still_get_the_push_finding(self, clone, monkeypatch, capsys):
+        rc, err = _refused(_mod(), clone, _entry(), monkeypatch, capsys, counts=None, pushes=3)
+        assert rc == 40
+        assert "seam rules skipped" in err and "4th push of this PR after a blocked head" in err
+
+    def test_with_no_sweep_file_three_pushes_warn_and_the_exit_stays_zero(self, clone, capsys):
+        mod = _mod()
+        git_dir = _git(clone, "rev-parse", "--absolute-git-dir")
+        rc = mod.run("main", git_dir, cwd=clone, prior_counts=lambda: {}, blocked_pushes=lambda: 3)
+        assert rc == 0, "SWEEP_ENFORCED is False: the finding prints and nothing is refused"
+        err = capsys.readouterr().err
+        assert "WARNING (warn period, not refused)" in err
+        assert "no sweep file: this is the 4th push of this PR after a blocked head" in err
+        row = json.loads(Path(git_dir, "prepare-pr-metrics.jsonl").read_text().splitlines()[-1])
+        assert row["outcome"] == "warned" and row["entries"] == 0 and row["findings"] == 1
+
+    def test_with_no_sweep_file_the_finding_would_refuse_once_enforced(
+        self, clone, monkeypatch, capsys
+    ):
+        mod = _mod()
+        monkeypatch.setattr(mod, "SWEEP_ENFORCED", True)
+        git_dir = _git(clone, "rev-parse", "--absolute-git-dir")
+        rc = mod.run("main", git_dir, cwd=clone, prior_counts=lambda: {}, blocked_pushes=lambda: 5)
+        assert rc == 40
+        assert "no sweep file: this is the 6th push" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("pushes", [None, 0, 2])
+    def test_with_no_sweep_file_fewer_pushes_stay_silent(self, clone, capsys, pushes):
+        mod = _mod()
+        git_dir = _git(clone, "rev-parse", "--absolute-git-dir")
+        rc = mod.run(
+            "main", git_dir, cwd=clone, prior_counts=lambda: {}, blocked_pushes=lambda: pushes
+        )
+        assert rc == 0 and capsys.readouterr() == ("", "")
+
+    @pytest.mark.parametrize(
+        "text", ["", "\n\n", "# Class sweep\n", "# Class sweep\n\n(none yet)\n"]
+    )
+    def test_a_file_with_no_entry_gets_the_pr_level_finding_not_a_clean_line(
+        self, clone, monkeypatch, capsys, text
+    ):
+        rc, err = _refused(
+            _mod(), clone, text, monkeypatch, capsys, enforced=False, counts={}, pushes=3
+        )
+        assert rc == 0
+        assert "WARNING (warn period, not refused)" in err
+        assert "no sweep entries: this is the 4th push of this PR after a blocked head" in err
+        assert "change the approach" in err
+
+    def test_a_file_with_no_entry_keeps_its_parse_findings_beside_the_pr_level_one(
+        self, clone, monkeypatch, capsys
+    ):
+        text = "## span = abc\n"
+        rc, err = _refused(_mod(), clone, text, monkeypatch, capsys, counts={}, pushes=5)
+        assert rc == 40
+        assert "a span heading is exactly" in err
+        assert "no sweep entries: this is the 6th push of this PR after a blocked head" in err
+        assert "narrow the scope or defer it" in err
+
+    @pytest.mark.parametrize("pushes", [None, 0, 2])
+    def test_a_file_with_no_entry_and_fewer_pushes_is_still_clean(
+        self, clone, monkeypatch, capsys, pushes
+    ):
+        rc = _check(_mod(), clone, "", monkeypatch, counts={}, pushes=pushes)
+        assert rc == 0
+        assert "0 sweep entries checked, no findings" in capsys.readouterr().out
+
+    def test_an_entry_in_the_file_does_not_also_get_the_no_entry_finding(
+        self, clone, monkeypatch, capsys
+    ):
+        rc, err = _refused(_mod(), clone, _entry(), monkeypatch, capsys, counts={}, pushes=3)
+        assert rc == 40 and "no sweep entries" not in err
+
+    def test_an_empty_file_end_to_end_through_gh(self, clone, tmp_path, monkeypatch, capsys):
+        _fake_gh(tmp_path, monkeypatch, heads=[], **_blocked_thread(3))
+        assert self._run(_mod(), clone, monkeypatch, sweep="") == 40
+        assert "no sweep entries: this is the 4th push" in capsys.readouterr().err
+
+    def _run(self, mod, clone_dir, monkeypatch, sweep=None):
+        git_dir = _git(clone_dir, "rev-parse", "--absolute-git-dir")
+        if sweep is not None:
+            _write_sweep(git_dir, sweep)
+        monkeypatch.setattr(mod, "SWEEP_ENFORCED", True)
+        guard = mod._sibling("push_guard.py")
+        real = guard.tool_argv
+
+        def argv(args):
+            if args[0] == "gh":
+                return [sys.executable, os.environ["FAKE_GH_SCRIPT"], *args[1:]]
+            return real(args)
+
+        monkeypatch.setattr(guard, "tool_argv", argv)
+        return mod.run("main", git_dir, cwd=clone_dir)
+
+    def test_the_default_reads_the_timeline_and_check_runs_through_gh(
+        self, clone, tmp_path, monkeypatch, capsys
+    ):
+        _fake_gh(tmp_path, monkeypatch, heads=[], **_blocked_thread(3))
+        assert self._run(_mod(), clone, monkeypatch, sweep=_entry()) == 40
+        assert "this is the 4th push of this PR after a blocked head" in capsys.readouterr().err
+
+    def test_the_default_with_no_sweep_file_end_to_end(self, clone, tmp_path, monkeypatch, capsys):
+        _fake_gh(tmp_path, monkeypatch, heads=[], **_blocked_thread(5))
+        assert self._run(_mod(), clone, monkeypatch) == 40
+        assert "no sweep file: this is the 6th push" in capsys.readouterr().err
+
+    def test_two_blocked_pushes_end_to_end_find_nothing(self, clone, tmp_path, monkeypatch):
+        _fake_gh(tmp_path, monkeypatch, heads=[], **_blocked_thread(2))
+        assert self._run(_mod(), clone, monkeypatch, sweep=_entry()) == 0
+
+    def test_a_red_test_shard_on_green_lane_heads_finds_nothing(self, clone, tmp_path, monkeypatch):
+        shard = [{"name": "Backend Tests (3.12, 2)", "conclusion": "failure"}]
+        events = [{"event": "head_ref_force_pushed", "commit_id": h} for h in PUSHED[:6]]
+        _fake_gh(
+            tmp_path, monkeypatch, heads=[], timeline=events, checks={h: shard for h in PUSHED}
+        )
+        assert self._run(_mod(), clone, monkeypatch, sweep=_entry()) == 0
+
+    def test_a_pr_gh_cannot_read_is_unknown(self, clone, monkeypatch):
+        mod = _mod()
+        monkeypatch.setattr(mod, "_run", lambda args, cwd=None, timeout=0: (1, "", "no PR"))
+        assert mod._blocked_pushes(str(clone)) is None
 
 
 class TestSearchSemantics:
@@ -811,7 +1025,9 @@ class TestBatchShimLaunch:
         git_dir = _git(clone, "rev-parse", "--absolute-git-dir")
         _write_sweep(git_dir, text)
         monkeypatch.setattr(mod, "SWEEP_ENFORCED", True)
-        rc = mod.run("main", git_dir, cwd=clone, prior_counts=lambda: {})
+        rc = mod.run(
+            "main", git_dir, cwd=clone, prior_counts=lambda: {}, blocked_pushes=lambda: None
+        )
         assert rc == 40 and "refusing batch-file launch" in capsys.readouterr().err
 
 

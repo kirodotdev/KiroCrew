@@ -143,11 +143,12 @@ def parse_targets(
     # default to what the MESSAGE names. Both shapes, not just pull requests -- a
     # conductor's instruction names the sessions it patrols, and requiring those to be
     # repeated in ``targets`` would mean a brief that looks armed and watches nothing.
+    # Not cut at MAX_TARGETS: the collector reads only the first MAX_TARGETS and
+    # counts the rest as dropped, and cutting here would hide that overflow from it,
+    # so a calm reading of the sessions that fit would pass for a complete one.
     for match in SESSION_TARGET_IN_TEXT_RE.findall(message or ""):
         if match not in out and SESSION_TARGET_RE.fullmatch(match):
             out.append(match)
-        if len(out) >= MAX_TARGETS:
-            break
     if _pr_subject(message):
         # The whole message, because pull-request inference reads the original
         # spelling (it carries the host a URL-armed watch is entitled to) rather
@@ -1185,17 +1186,17 @@ READ_ONLY_BUILTIN_TOOLS: frozenset[str] = _HOST_READ_ONLY_BUILTIN_TOOLS | frozen
 
 #: An MCP tool call ALWAYS counts as mutating. There is deliberately no read-only
 #: allowlist for the MCP tier, and that is a conclusion from evidence rather than an
-#: oversight. Three review rounds on this change found three separate tools whose names
+#: oversight. At least three separate tools have names that
 #: read but whose implementations lazily BUILD what they serve, each on an ordinary
 #: cold-cache path: ``local_knowledge_search`` reaches the FTS index migration,
 #: ``skill_search`` reaches ``SkillSearchIndex.sync`` (DDL, INSERT, and a DROP on a
 #: tokenizer bump), and ``list_sessions(summarize=true)`` persists a summary sidecar and
-#: spends an LLM call. The set that named them held 25 entries, each asserting "this
-#: cannot write", and nothing anywhere checked one of those claims.
+#: spends an LLM call. A read-only set would assert "this cannot write" for each entry,
+#: and nothing would check one of those claims.
 #:
-#: A fourth round settled it past argument by naming ``memory_recall``, ``learn_list`` and
-#: ``search_chat_history`` -- including the one entry that had been audited and judged the
-#: right SHAPE, because it issues a GET rather than a POST. The shape was irrelevant: the
+#: ``memory_recall``, ``learn_list`` and ``search_chat_history`` show the same thing,
+#: including the one entry that looks like the right SHAPE because it issues a GET rather
+#: than a POST. The shape is irrelevant: the
 #: handler behind that GET reaches ``_repair_notebook_index``, and
 #: ``search_chat_history`` reaches ``history_index._ensure_open``, which does ``mkdir``,
 #: sets ``journal_mode=WAL`` and runs ``DROP TABLE IF EXISTS`` on an index-version bump.
@@ -1215,6 +1216,11 @@ READ_ONLY_BUILTIN_TOOLS: frozenset[str] = _HOST_READ_ONLY_BUILTIN_TOOLS | frozen
 #: say -- labelled acted. That is one flat row in the curve, the error this module
 #: already prices as cheap. ``test_wake_judge_feedback`` pins the absence, so re-adding
 #: a tier reddens rather than passing quietly.
+#:
+#: The approval gate's ``hooks._FIRST_PARTY_READ_ONLY_MCP_TOOLS`` is not that tier and
+#: is deliberately not reused here. It answers a different question -- whether the
+#: agent can change the USER'S world, which an index build inside the gateway's own
+#: data directory does not -- so a name on it still counts as acted for this label.
 
 
 def tool_changed_something(

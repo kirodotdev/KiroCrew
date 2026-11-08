@@ -35,7 +35,7 @@ from kiro_crew.mcp_core import _post as _real_mcp_post
 pytestmark = pytest.mark.asyncio
 
 
-# ----------------------------------- the dynamic dashboard's agentic surface
+# the dynamic dashboard's agentic surface
 
 
 #: A template with one field of each SOURCE. Both are needed: the field list has
@@ -75,14 +75,8 @@ WRITE_PATH = "/api/agent-panel/dashboard/write"
 def _adopt_dashboard(monkeypatch, *, state: str = "live", version: int = 4) -> None:
     """Present an adopted dashboard to the one function that reads the registry.
 
-    Through the registry SEAM rather than by committing a real instance: what
-    these routes need from the registry is a parsed manifest and a version, and
-    driving the store's own adopt path would bind every case here to the
-    catalogue's shipped templates.
-
-    Both spellings are replaced because ``read_instance`` imports inside the
-    call: once the real module is imported, ``from kiro_crew.dashboard_templates
-    import instance`` reads the package attribute rather than ``sys.modules``.
+    Uses the registry seam so cases do not depend on shipped templates. Both spellings
+    are patched: once imported, ``from ... import instance`` reads the package attribute.
     """
     record = SimpleNamespace(
         slug=SLUG,
@@ -100,15 +94,8 @@ def _adopt_dashboard(monkeypatch, *, state: str = "live", version: int = 4) -> N
 def _default_dashboard(monkeypatch, *, ships_default: bool = True) -> None:
     """Present a crewmate that adopted NOTHING, beside a registry default to fall to.
 
-    Through the same registry seam ``_adopt_dashboard`` uses, and for the same reason:
-    the shipped built-in pages arrive in the stacked page change, so a case driven off
-    the catalogue would pin this surface to a directory this change does not carry.
-    What these routes need from the EMPTY state is that ``read`` answers a record in it
-    and ``default_instance`` answers the page being shown, which is what this presents.
-
-    ``ships_default=False`` presents the other half -- a registry carrying the loader
-    and no template -- by answering ``None`` rather than raising, because that is what
-    the real ``default_instance`` does when the id it resolves is absent.
+    Same registry seam as ``_adopt_dashboard``. ``ships_default=False`` answers ``None``,
+    as the real ``default_instance`` does when its id is absent.
     """
     empty = SimpleNamespace(slug=SLUG, instance_version=0, state="empty", manifest={})
     fallback = (
@@ -254,30 +241,35 @@ async def test_a_field_the_template_does_not_declare_is_refused_with_the_valid_n
         assert "open_items" in body["error"]
 
 
-async def test_a_host_filled_field_is_refused_rather_than_overwritten(vetted, monkeypatch):
-    """A write into a fold-sourced cell would be replaced on the next fold, so
-    reporting it as stored would promise a value that does not survive."""
+@pytest.mark.parametrize(
+    ("field", "value", "code"),
+    [
+        # A write into a fold-sourced cell would be replaced on the next fold, so
+        # reporting it as stored would promise a value that does not survive.
+        pytest.param(
+            "entries",
+            3,
+            "field_not_agentic",
+            id="test_a_host_filled_field_is_refused_rather_than_overwritten",
+        ),
+        pytest.param(
+            "open_items",
+            "three",
+            "wrong_type",
+            id="test_a_value_of_the_wrong_declared_type_is_refused",
+        ),
+    ],
+)
+async def test_a_write_the_field_cannot_store_is_refused(vetted, monkeypatch, field, value, code):
     _adopt_dashboard(monkeypatch)
     async with _client() as c:
         resp = await c.post(
             WRITE_PATH,
-            json={"field": "entries", "value": 3},
+            json={"field": field, "value": value},
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
         assert resp.status == 400, await resp.text()
-        assert (await resp.json())["code"] == "field_not_agentic"
-
-
-async def test_a_value_of_the_wrong_declared_type_is_refused(vetted, monkeypatch):
-    _adopt_dashboard(monkeypatch)
-    async with _client() as c:
-        resp = await c.post(
-            WRITE_PATH,
-            json={"field": "open_items", "value": "three"},
-            headers={"X-Session-Key": "dashboard:chat-1"},
-        )
-        assert resp.status == 400, await resp.text()
-        assert (await resp.json())["code"] == "wrong_type"
+        assert (await resp.json())["code"] == code
 
 
 @pytest.mark.parametrize(
@@ -292,11 +284,8 @@ async def test_a_write_is_refused_for_every_package_state_that_has_no_model(
 ):
     """A refusal survives for each state that actually describes one, with its own code.
 
-    The route's Model now comes from the PACKAGE, through
-    ``dashboard_package.read_package_model``, so this drives that reader rather than
-    the retired template seam. Three states and three codes, because the remedy
-    differs: create a package, or have a human repair it. Keeping these cases is what stops the default fallback above from being
-    read as "writes are never refused".
+    The Model comes from ``dashboard_package.read_package_model``. Three codes, because
+    the remedy differs: create a package, or have a human repair it.
     """
     from kiro_crew import dashboard_package
 
@@ -468,44 +457,44 @@ async def test_a_write_that_answers_a_recorded_mistake_reports_the_correction(ve
         assert (await resp.json())["corrected"] is True
 
 
-async def test_a_write_is_refused_when_the_gateway_records_no_crew_log(vetted, monkeypatch):
-    """The log is an agentic value's ONLY record -- no host Python computes one,
-    so there is no file beside it. Reporting success would promise a cell that
-    never fills, which is why this refuses rather than shrugging the way a panel
-    publish does.
-    """
+@pytest.mark.parametrize(
+    ("field", "status", "code"),
+    [
+        # The log is an agentic value's ONLY record -- no host Python computes
+        # one, so there is no file beside it. Reporting success would promise a
+        # cell that never fills, which is why this refuses rather than shrugging
+        # the way a panel publish does.
+        pytest.param(
+            "open_items",
+            503,
+            "crew_log_off",
+            id="test_a_write_is_refused_when_the_gateway_records_no_crew_log",
+        ),
+        # Recording the mistake is best-effort, unlike the value append. By the
+        # time it runs the caller is already being refused, so a log that is off
+        # costs the mistake book this row and nothing else. Failing here would
+        # turn "we could not remember your mistake" into "your write was not
+        # refused".
+        pytest.param(
+            "open",
+            400,
+            "unknown_field",
+            id="test_a_refusal_with_the_log_off_still_refuses_the_write",
+        ),
+    ],
+)
+async def test_a_write_with_the_crew_log_off(vetted, monkeypatch, field, status, code):
     _adopt_dashboard(monkeypatch)
     async with _client() as c:
         monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
         crew_log_emit.reset_caches()
         resp = await c.post(
             WRITE_PATH,
-            json={"field": "open_items", "value": 3},
+            json={"field": field, "value": 3},
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
-        assert resp.status == 503, await resp.text()
-        assert (await resp.json())["code"] == "crew_log_off"
-    crew_log_emit.reset_caches()
-
-
-async def test_a_refusal_with_the_log_off_still_refuses_the_write(vetted, monkeypatch):
-    """Recording the mistake is best-effort, unlike the value append.
-
-    By the time it runs the caller is already being refused, so a log that is off
-    costs the mistake book this row and nothing else. Failing here would turn
-    "we could not remember your mistake" into "your write was not refused".
-    """
-    _adopt_dashboard(monkeypatch)
-    async with _client() as c:
-        monkeypatch.setenv("KIROCREW_CREW_LOG", "0")
-        crew_log_emit.reset_caches()
-        resp = await c.post(
-            WRITE_PATH,
-            json={"field": "open", "value": 3},
-            headers={"X-Session-Key": "dashboard:chat-1"},
-        )
-        assert resp.status == 400, await resp.text()
-        assert (await resp.json())["code"] == "unknown_field"
+        assert resp.status == status, await resp.text()
+        assert (await resp.json())["code"] == code
     crew_log_emit.reset_caches()
 
 
@@ -645,13 +634,10 @@ async def test_a_write_succeeds_for_a_crewmate_that_adopted_nothing(vetted, monk
 
 
 async def test_an_unadopted_conductor_writes_needs_you_to_its_own_board(vetted):
-    """A crewmate named ``kirocrew-conductor`` that adopted nothing is shown the shipped
-    page of that id, so its ``needs_you`` write lands through THIS route, and the
-    ``goal-board`` field ``asks`` is refused, as the goal-conductor skill says.
+    """An unadopted ``kirocrew-conductor`` writes ``needs_you`` to its shipped page.
 
-    Driven off the REAL registry and instance store rather than the seam stubs above:
-    what is pinned is that this route resolves the same slug-named page the read route
-    renders.
+    The ``goal-board`` field ``asks`` is refused. Uses the real registry, so the route
+    resolves the same page the read route renders.
     """
     async with _client("kirocrew-conductor") as c:
         resp = await c.post(
@@ -674,12 +660,8 @@ async def test_an_unadopted_conductor_writes_needs_you_to_its_own_board(vetted):
 async def test_clear_through_the_panel_server_empties_an_array_field(vetted, monkeypatch):
     """``dashboard_write`` ``clear: true`` empties a field, end to end past the client.
 
-    An MCP client can drop ``value: []`` from a call before the panel server reads it,
-    so ``clear: true`` is how a crewmate empties its board. This drives the server's
-    own entry point (argument schema, handler, and its real loopback POST) into this
-    route, the real registry and the real instance store, then reads the field back
-    through the field list. Two writes, so the read proves the clear REPLACED a
-    value rather than finding a field nobody wrote.
+    An MCP client can drop ``value: []``. Two writes, so the read proves the clear
+    replaced a value rather than finding a field nobody wrote.
     """
     from kiro_crew import mcp_core, mcp_panel
 
@@ -773,14 +755,9 @@ async def test_clear_through_the_panel_server_empties_an_object_field(vetted, mo
 async def test_an_unadopted_crewmate_is_refused_when_the_registry_ships_no_default(
     vetted, monkeypatch
 ):
-    """``default_instance`` ANSWERS ``None`` rather than raising, so the EMPTY branch
-    has to read its answer and not merely guard the call.
+    """A ``None`` from ``default_instance`` answers ``no_instance``, not a server fault.
 
-    This is the state of a build whose registry carries the loader and no template,
-    and it is the one case where ``no_instance`` still describes the world: there is
-    no manifest to validate a write against and no page being shown to write for. A
-    branch that treated the ``None`` as a resolved record would hand ``parse_manifest``
-    an attribute lookup on ``None`` and report a crewmate's write as a server fault.
+    A registry with the loader and no template has no manifest to validate against.
     """
     _default_dashboard(monkeypatch, ships_default=False)
     async with _client() as c:
@@ -796,14 +773,8 @@ async def test_an_unadopted_crewmate_is_refused_when_the_registry_ships_no_defau
 async def test_two_crews_sharing_one_slug_cannot_reach_the_dashboard_surface(vetted, monkeypatch):
     """``Oncall`` and ``oncall`` resolve to ONE instance directory.
 
-    Slugification is lossy and an instance is one directory per slug, so either
-    crew could replace the other's staged or installed page, and a rollback by one
-    would restore a version the other wrote. The browser's own resolver refuses
-    that slug outright (``dashboard_slug_ambiguous``); this surface reaches the same
-    files through MCP and owes the same refusal.
-
-    Asked at ``_resolve_dashboard_caller``, so the refusal covers fields and write
-    as well as the page's four -- and a route added later inherits it.
+    The browser resolver refuses it (``dashboard_slug_ambiguous``) and so must MCP.
+    Checked in ``_resolve_dashboard_caller``, so every route inherits it.
     """
     upper, lower = "Oncall", "oncall"
     shared = members_mod.member_slug(lower)
@@ -854,7 +825,7 @@ async def test_a_crew_that_is_not_a_configured_member_still_reaches_its_own_page
         assert response.status == 200, await response.text()
 
 
-# ----------------------------------- nested shapes on the agentic surface
+# nested shapes on the agentic surface
 
 
 #: A Needs-you list whose rows must carry ``text``, the key the page draws.

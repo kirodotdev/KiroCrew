@@ -20,13 +20,17 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
+    ACP_BACKENDS_MCP_WIRE_REINJECT,
 )
 from kiro_crew.mcp_hot_reload import (
     MCP_HOT_RELOAD_MIN_KIRO_CLI_VERSION,
+    live_sessions_apply_mcp_live,
     live_sessions_hot_reload,
+    mark_reinjecting_providers,
     mcp_hot_reload_supported,
     parse_kiro_cli_version,
     provider_hot_reloads,
+    provider_reinjects_mcp,
 )
 
 
@@ -212,3 +216,122 @@ class TestLiveSessionsGate:
 
     def test_one_undeclared_process_forces_the_reset(self) -> None:
         assert not live_sessions_hot_reload([_provider(True), _provider(MagicMock())])
+
+
+# ── the second mechanism: wire re-injection ──
+
+
+def _reinjector(declares: object, mark: object = None) -> SimpleNamespace:
+    """A provider carrying the ``LLMProvider.mcp_config_wire_reinject`` declaration."""
+    shape = SimpleNamespace(mcp_config_hot_reload=False, mcp_config_wire_reinject=declares)
+    if mark is not None:
+        shape.mark_mcp_config_changed = mark
+    return shape
+
+
+class TestWireReinjectMembership:
+    def test_kas_is_the_only_member(self) -> None:
+        """Measured on the engine: the close+load+set_mode sequence is a KAS
+        property (``test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl``);
+        no other host has been driven through it."""
+        assert ACP_BACKENDS_MCP_WIRE_REINJECT == frozenset({ACP_BACKEND_KAS})
+
+    def test_the_two_mechanisms_are_disjoint_sets(self) -> None:
+        """A file watcher and a re-sent projection are different properties with
+        different failure modes, so no host is in both."""
+        assert not (ACP_BACKENDS_MCP_WIRE_REINJECT & ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD)
+
+    def test_every_other_known_backend_is_outside(self) -> None:
+        for backend in ACP_BACKENDS_KNOWN - {ACP_BACKEND_KAS}:
+            assert backend not in ACP_BACKENDS_MCP_WIRE_REINJECT
+
+
+class TestProviderReinjectGate:
+    def test_reads_the_declared_capability(self) -> None:
+        assert provider_reinjects_mcp(_reinjector(True))
+        assert not provider_reinjects_mcp(_reinjector(False))
+
+    def test_only_a_literal_true_counts(self) -> None:
+        assert not provider_reinjects_mcp(_reinjector(MagicMock()))
+        assert not provider_reinjects_mcp(_reinjector(1))
+
+    def test_a_provider_predating_the_declaration_is_false(self) -> None:
+        """No attribute at all reads as False, never as an error."""
+        assert not provider_reinjects_mcp(_provider(True))
+
+    def test_the_abc_defaults(self) -> None:
+        """A harness that has not declared the capability does not inherit the
+        skip (H6/H14), and the default mark is a no-op."""
+        from kiro_crew.providers.base import LLMProvider
+
+        fget = LLMProvider.mcp_config_wire_reinject.fget
+        assert fget is not None
+        assert fget(SimpleNamespace()) is False
+        assert LLMProvider.mark_mcp_config_changed(SimpleNamespace()) is None
+
+
+class TestAcpProviderReinjectDeclaration:
+    """``AcpProvider.mcp_config_wire_reinject`` reads the INNER provider's answer."""
+
+    @staticmethod
+    def _acp(inner: object) -> bool:
+        from kiro_crew.providers.acp import AcpProvider
+
+        fget = AcpProvider.mcp_config_wire_reinject.fget
+        assert fget is not None
+        return fget(SimpleNamespace(_client=inner))
+
+    def test_a_started_session_provider_answers(self) -> None:
+        assert self._acp(SimpleNamespace(mcp_config_wire_reinject=True))
+        assert not self._acp(SimpleNamespace(mcp_config_wire_reinject=False))
+
+    def test_the_placeholder_client_is_false(self) -> None:
+        """Before startup ``_client`` is the placeholder ``AcpClient``: no session
+        exists to re-load, so a session still starting is reset."""
+        assert not self._acp(SimpleNamespace(backend=ACP_BACKEND_KAS))
+
+    def test_only_a_literal_true_passes(self) -> None:
+        assert not self._acp(SimpleNamespace(mcp_config_wire_reinject=MagicMock()))
+
+    def test_the_mark_is_handed_to_the_inner_provider(self) -> None:
+        from test_kas_mcp_live_reinject import _provider, _runtime
+
+        from kiro_crew.providers.acp import AcpProvider
+
+        inner = _provider(_runtime())
+        AcpProvider.mark_mcp_config_changed(SimpleNamespace(_client=inner))
+        assert inner._mcp_reinject_pending is True
+        # The placeholder has no mark to hand it to; nothing raises.
+        AcpProvider.mark_mcp_config_changed(SimpleNamespace(_client=SimpleNamespace()))
+
+
+class TestLiveApplyGate:
+    def test_no_live_process_means_nothing_to_reset(self) -> None:
+        assert live_sessions_apply_mcp_live([])
+
+    def test_either_mechanism_satisfies_each_provider(self) -> None:
+        assert live_sessions_apply_mcp_live([_provider(True), _reinjector(True)])
+
+    def test_one_provider_with_neither_forces_the_reset(self) -> None:
+        assert not live_sessions_apply_mcp_live([_reinjector(True), _provider(False)])
+        assert not live_sessions_apply_mcp_live([_reinjector(False)])
+
+    def test_the_old_gate_still_ignores_re_injection(self) -> None:
+        """``live_sessions_hot_reload`` keeps its file-watcher meaning: a
+        re-injecting provider does not read as a reconciling one there."""
+        assert not live_sessions_hot_reload([_reinjector(True)])
+
+
+class TestMarkReinjectingProviders:
+    def test_marks_exactly_the_reinjecting_providers(self) -> None:
+        kas_mark = MagicMock()
+        kiro_mark = MagicMock()
+        kiro = _provider(True)
+        kiro.mark_mcp_config_changed = kiro_mark
+        count = mark_reinjecting_providers([_reinjector(True, kas_mark), kiro])
+        assert count == 1
+        kas_mark.assert_called_once_with()
+        kiro_mark.assert_not_called()
+
+    def test_a_declaring_provider_without_a_mark_is_skipped_not_raised(self) -> None:
+        assert mark_reinjecting_providers([_reinjector(True)]) == 0

@@ -328,7 +328,8 @@ def _git_push_args(segment: str) -> list[str] | None:
     non-flag token after ``git`` — so a segment that merely contains the word
     "push" (e.g. ``echo remember-to-push``) is NOT treated as a push and
     returns None. Skips leading flags, and a single non-flag value that a flag
-    may take (e.g. ``-C <path>``) — but never swallows ``push`` itself.
+    may take (e.g. ``-C <path>``) — but never swallows ``push`` itself. A
+    skipped word carrying an unquoted expansion leads the returned tokens.
     """
     # Strip glued shell operators for the same reason as ``_dequote_token``:
     # ``(git`` IS the git program to bash, and ``main)&`` IS the ref ``main``.
@@ -413,7 +414,26 @@ def _git_push_args(segment: str) -> list[str] | None:
         # operator-CUT words erases the shapes it classifies by (``origin>``
         # reading as a plain remote, ``@(main)`` as the ambiguous ref ``@``, a
         # lone ``&`` as an empty token).
-        args: list[str] = []
+        #
+        # A skipped word with an UNQUOTED expansion word-splits at run time, so
+        # its words can reach git as the subcommand and refspecs (with
+        # ``d='x push origin main'``, ``git -C $d push origin feature`` can push
+        # main). It is returned first, where the caller's ``$`` check ungates it.
+        # A ``$`` that opens a quote (``$'...'``, ``$"..."``) is quoting: one word.
+        # On Windows the shell is PowerShell, which does not word-split a variable.
+        from kiro_crew import platform_compat
+
+        args: list[str] = [
+            word
+            for word in raw_tokens[start + 1 : i]
+            if not platform_compat.IS_WINDOWS
+            and any(
+                step.active
+                and step.char == "$"
+                and word[step.offset + 1 : step.offset + 2] not in ("'", '"')
+                for step in _iter_shell_chars(word)
+            )
+        ]
         raw_args = raw_tokens[i + 1 :]
         k = 0
         while k < len(raw_args):

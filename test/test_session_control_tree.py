@@ -1,13 +1,10 @@
 """The two verbs that move a session in the tree: ``session_adopt`` / ``session_release``.
 
-Split from the other session-control tests because what they can get wrong is
-different. The send and stop verbs act on a target's WORK; these act on where the
-sidebar puts it, so the failures worth catching are an authorization that admits the
-wrong caller and a record that says the tree moved when it did not.
+The failures worth catching are an authorization that admits the wrong caller and a
+record that says the tree moved when it did not.
 
-Every refusal is asserted against the REAL slot objects, the same rule the rest of the
-session-control suite follows: the guards read ``memory_mode`` / ``workspace`` / ``_app``
-off the production class, and a permissive double would let a dead guard look alive.
+Refusals use the REAL slot objects: the guards read ``memory_mode`` / ``workspace`` /
+``_app`` off the production class, and a permissive double would let a dead guard look alive.
 """
 
 from __future__ import annotations
@@ -23,6 +20,7 @@ from kiro_crew.crew_log import session_tree_projection as stp
 from kiro_crew.crew_log.session_tree import EdgeRecord, OpenedRecord
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -86,14 +84,9 @@ def _key(slot) -> str:
 def _live(state, slot, sid: str):
     """Make *slot* live in the mapping, tree projection, and store-reader view.
 
-    The mapping names the target log, the projection makes the slot visible to tree
-    checks, and the packaged store-reader answer names the log for cross-slot citations.
-    ``provider_switch_replay_pending`` and ``has_session`` are both stubbed because the
-    harness session store is a mock whose unstubbed answer is truthy -- and for
-    ``has_session`` that truthiness is the wrong default twice over: it would report a
-    live session for every slot ever named, including ones a test never made live.
-    A slot is live here exactly when it is mapped, which is what the real registry's
-    fold answers for these keys.
+    ``provider_switch_replay_pending`` and ``has_session`` are stubbed because the harness
+    store is a mock whose unstubbed answer is truthy, which would make every named slot
+    live. Here a slot is live exactly when it is mapped, as the real registry answers.
     """
     mapping = _SIDS.setdefault(id(state), {})
     mapping[f"dashboard:{slot.key}"] = sid
@@ -129,14 +122,12 @@ def _run(coro):
 def _emitted(monkeypatch, *, landed: bool = True) -> list[dict]:
     """Capture what the verb hands the emitter, instead of draining the writer.
 
-    The emitter's own path is covered where the entry's bytes matter
-    (``test_crew_log_session_tree_adopt``). What these tests are about is WHICH call the
-    verb makes and with what -- and a refusal must make none at all.
+    The entry's bytes are covered in ``test_crew_log_session_tree_adopt``; here only WHICH
+    call the verb makes matters, and a refusal must make none.
 
-    The stub SETTLES the append, because the verb waits for it: the real emitter reports
-    the durable outcome through ``on_settled`` and a stub that recorded the call and
-    stayed silent would leave every success path sitting on the wait until it timed out.
-    Pass ``landed=False`` to stand in for a write the writer gave up on.
+    The stub SETTLES the append through ``on_settled``, because the verb waits for it and a
+    silent stub would leave every success path waiting until timeout. ``landed=False``
+    stands in for a write the writer gave up on.
     """
     calls: list[dict] = []
 
@@ -508,17 +499,146 @@ def test_a_release_the_writer_gave_up_on_is_refused_not_reported(tmp_path, monke
     assert [c["op"] for c in calls] == ["release"]
 
 
+def _notices(slot) -> list[str]:
+    return [m["content"] for m in slot.messages if m.get("role") == "notice"]
+
+
+@pytest.mark.parametrize(
+    "previous, expected",
+    [
+        (
+            "chat-old",
+            "This session was adopted: it hangs under chat-new now, in place of chat-old.",
+        ),
+        ("", "This session was adopted: it hangs under chat-new now."),
+        ("chat-new", "This session was adopted: it hangs under chat-new now."),
+    ],
+    ids=["takeover", "first-parent", "same-parent"],
+)
+def test_an_adoption_notes_the_new_and_previous_parent_in_the_targets_transcript(
+    tmp_path, monkeypatch, previous, expected
+):
+    """A reader of the adopted session sees who took it over; no other parent, no clause."""
+    _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    caller = _live(state, _slot(state, "chat-new"), "sid-new")
+    target = _live(state, _slot(state, "chat-worker"), "sid-worker")
+    if previous:
+        if previous != caller.key:
+            _live(state, _slot(state, previous), "sid-old")
+        _hold(state, target.key, previous, sid="sid-worker")
+    _run(sc.adopt_target(state, caller_session_key=_key(caller), target=target.key))
+    assert _notices(target) == [expected]
+    assert _notices(caller) == []
+
+
+def test_a_target_moved_mid_turn_gets_its_note_when_the_turn_ends(tmp_path, monkeypatch):
+    """A row under the turn's open tool or chunk rows would stop that turn's backward scans."""
+    _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    caller = _live(state, _slot(state, "chat-new"), "sid-new")
+    target = _live(state, _slot(state, "chat-worker"), "sid-worker")
+
+    async def _drive():
+        turn_ends = asyncio.Event()
+        target.task = asyncio.ensure_future(turn_ends.wait())
+        await sc.adopt_target(state, caller_session_key=_key(caller), target=target.key)
+        assert _notices(target) == []
+        turn_ends.set()
+        await async_wait_until(
+            lambda: _notices(target), describe=lambda: "the note never landed after the turn"
+        )
+
+    _run(_drive())
+    assert _notices(target) == ["This session was adopted: it hangs under chat-new now."]
+
+
+@pytest.mark.parametrize(
+    "by_itself, expected",
+    [(False, ["This session was released: it no longer hangs under chat-1."]), (True, [])],
+    ids=["by-parent", "by-itself"],
+)
+def test_a_release_notes_the_parent_it_left_in_the_targets_transcript(
+    tmp_path, monkeypatch, by_itself, expected
+):
+    """A session releasing itself is mid-turn on that call, and its own tool row says so."""
+    _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    parent = _live(state, _slot(state, "chat-1"), "sid-parent")
+    target = _live(state, _slot(state, "chat-2"), "sid-target")
+    _hold(state, target.key, parent.key, sid="sid-target")
+    caller = target if by_itself else parent
+    _run(sc.release_target(state, caller_session_key=_key(caller), target=target.key))
+    assert _notices(target) == expected
+
+
+@pytest.mark.parametrize(
+    "verb, expected",
+    [
+        ("adopted", "This session was adopted: it hangs under chat-a now."),
+        ("released", "This session was released: it no longer hangs under chat-a."),
+    ],
+    ids=["adopt", "release"],
+)
+def test_a_move_that_lands_after_the_verb_timed_out_still_gets_its_note(
+    tmp_path, monkeypatch, verb, expected
+):
+    """The caller was told ``tree_write_pending``, but the session did move in the end."""
+    settles: list = []
+    monkeypatch.setattr(
+        emit, f"on_session_{verb}", lambda _sid, *, on_settled, **_kw: settles.append(on_settled)
+    )
+    monkeypatch.setattr(sc, "_TREE_APPEND_TIMEOUT", 0)
+    state = _make_state(tmp_path)
+    caller = _live(state, _slot(state, "chat-a"), "sid-a")
+    target = _live(state, _slot(state, "chat-t"), "sid-target")
+    if verb == "released":
+        _hold(state, target.key, caller.key, sid="sid-target")
+    run = sc.adopt_target if verb == "adopted" else sc.release_target
+
+    async def _drive():
+        with pytest.raises(sc.SessionControlError) as excinfo:
+            await run(state, caller_session_key=_key(caller), target=target.key)
+        assert excinfo.value.code == "tree_write_pending"
+        assert _notices(target) == []
+        settles[0](True)
+        await async_wait_until(
+            lambda: _notices(target), describe=lambda: "the late append never wrote its note"
+        )
+
+    _run(_drive())
+    assert _notices(target) == [expected]
+
+
+@pytest.mark.parametrize("verb", ["adopted", "released"])
+def test_a_target_replaced_while_its_move_lands_gets_no_note(tmp_path, monkeypatch, verb):
+    """The move stands, but the row would land in a session that never moved."""
+    state = _make_state(tmp_path)
+    caller = _live(state, _slot(state, "chat-a"), "sid-a")
+    target = _live(state, _slot(state, "chat-t"), "sid-target")
+    if verb == "released":
+        _hold(state, target.key, caller.key, sid="sid-target")
+    replacement: list = []
+
+    def _replace_then_land(_sid, *, on_settled, **_kw):
+        state._slots.pop(target.key, None)
+        replacement.append(_live(state, _slot(state, "chat-t"), "sid-impostor"))
+        on_settled(True)
+
+    monkeypatch.setattr(emit, f"on_session_{verb}", _replace_then_land)
+    run = sc.adopt_target if verb == "adopted" else sc.release_target
+    _run(run(state, caller_session_key=_key(caller), target=target.key))
+    assert _notices(target) == []
+    assert _notices(replacement[0]) == []
+
+
 def test_two_takeovers_of_one_session_serialize(tmp_path, monkeypatch):
     """The second takeover decides from the tree the first one COMMITTED.
 
-    Two conductors adopting the same session read the tree, then write to it. Unless the
-    read and the commit are one region, both read "no parent" and the second's record
-    claims it took the session from nobody -- so the log of who held it loses a step, and
-    a release authorized against the first parent can land after the second adoption and
-    return the session to a conductor that had already handed it on.
+    Unless read and commit are one region, both read "no parent" and the second record
+    claims it took the session from nobody, losing a step of who held it.
 
-    The stub advances the projection the way the writer's own job does, on settle, so the
-    tree this asserts against moves exactly when a real append would move it.
+    The stub advances the projection on settle, as the writer's job does.
     """
     seq = itertools.count(1)
     applied: list[str] = []
@@ -578,6 +698,234 @@ def test_two_takeovers_of_one_session_serialize(tmp_path, monkeypatch):
     assert {r["previous_parent"] or "none" for r in results} == set(applied)
 
 
+def test_a_spawn_edge_in_flight_is_seen_by_an_overlapping_adoptions_loop_guard(
+    tmp_path, monkeypatch
+):
+    """A spawn queues ``child -> creator``; an overlapping adoption of the creator under
+    the child must be refused.
+
+    Neither edge is in the settled fold yet, so a guard reading only the settled tree would
+    close the cycle ``child -> creator -> child``. The spawn registers its queued edge for
+    the in-flight window so the adoption's guard sees it.
+    """
+    from kiro_crew.dashboard.session_control_parts import session_create as scc
+
+    state = _make_state(tmp_path)
+    creator = _live(state, _slot(state, "chat-creator"), "sid-creator")
+    child = _live(state, _slot(state, "chat-child"), "sid-child")
+
+    # Hold the spawn append unsettled: capture its on_settled, do not call it, so the
+    # queued edge is still in flight when the adoption runs.
+    held: dict = {}
+
+    def _hold_spawn(sid, **kw):
+        held["on_settled"] = kw.get("on_settled")
+
+    monkeypatch.setattr(emit, "on_session_spawned", _hold_spawn)
+
+    # The adoption, if it were wrongly allowed, would settle into the tree -- stubbed the
+    # same way the two-takeover test stubs it, so the folded result is realistic.
+    def _settle_adopt(sid, **kw):
+        settle = kw.pop("on_settled", None)
+        stp.projection().apply_edge(
+            EdgeRecord(slot=kw["slot"], parent_slot=kw["parent_slot"], at=200, sid=sid, seq=9)
+        )
+        if settle is not None:
+            settle(True)
+
+    monkeypatch.setattr(emit, "on_session_adopted", _settle_adopt)
+
+    # A minimal child carrying what _record_spawn reads: a minted lineage whose creator is
+    # the creator slot. _created_by is a SLOT key (session_create sets it to caller_key),
+    # the same namespace the loop guard and the edge store use.
+    child_obj = type(
+        "_Child",
+        (),
+        {
+            "_lineage_minted": True,
+            "_created_by": creator.key,
+            "_created_by_sid": "sid-creator",
+            "key": child.key,
+        },
+    )()
+
+    async def _race():
+        spawn = asyncio.create_task(scc._record_spawn(creator.key, child_obj))
+        await asyncio.sleep(0)  # let the spawn hand its append over and register the edge
+        try:
+            await sc.adopt_target(state, caller_session_key=_key(child), target=creator.key)
+            refused = None
+        except sc.SessionControlError as exc:
+            refused = exc.code
+        # Settle the held spawn so its task completes and the edge is dropped.
+        if held.get("on_settled") is not None:
+            held["on_settled"](True)
+        await spawn
+        return refused
+
+    refused = _run(_race())
+    assert refused == "would_cycle"
+    # The edge is dropped once the spawn settles, so it leaves nothing behind.
+    assert sc._tree_pending_edges == {}
+
+
+def test_a_spawn_settle_from_the_writer_thread_resolves_the_fence_on_the_loop(
+    tmp_path, monkeypatch
+):
+    """The append settles on the crew-log writer thread, not the loop; the fence must be
+    resolved back on the loop and the queued edge dropped.
+
+    ``_record_spawn`` resolves its fence through ``call_soon_threadsafe``. The settle runs
+    on a real thread with asyncio debug on, so a cross-thread Future mutation is flagged.
+    """
+    import threading
+
+    from kiro_crew.dashboard.session_control_parts import session_create as scc
+
+    state = _make_state(tmp_path)
+    creator = _live(state, _slot(state, "chat-creator"), "sid-creator")
+    child = _live(state, _slot(state, "chat-child"), "sid-child")
+
+    # Capture the settle callback and fire it from a NON-loop thread, as the writer does.
+    held: dict = {}
+
+    def _hold_spawn(sid, **kw):
+        held["on_settled"] = kw.get("on_settled")
+
+    monkeypatch.setattr(emit, "on_session_spawned", _hold_spawn)
+
+    child_obj = type(
+        "_Child",
+        (),
+        {
+            "_lineage_minted": True,
+            "_created_by": creator.key,
+            "_created_by_sid": "sid-creator",
+            "key": child.key,
+        },
+    )()
+
+    async def _drive():
+        spawn = asyncio.create_task(scc._record_spawn(creator.key, child_obj))
+        # Let the spawn register its edge and hand its append over.
+        for _ in range(100):
+            await asyncio.sleep(0)
+            if held.get("on_settled") is not None:
+                break
+        assert held.get("on_settled") is not None, "spawn never handed its append over"
+        # The queued edge is visible while the append is in flight.
+        assert sc._tree_pending_edges.get(child.key) == (child.key, creator.key)
+        # Settle from a worker thread, the way the crew-log writer does. A direct
+        # fence.set_result here (without the threadsafe hop) would be an off-loop Future
+        # mutation; debug mode makes that a failure instead of a silent hazard. The whole
+        # settle+drain is bounded, so the broken resolver (which never schedules the drop
+        # on the loop) FAILS the wait fast rather than hanging the test and CI.
+        done = threading.Event()
+
+        def _settle_off_loop():
+            held["on_settled"](True)
+            done.set()
+
+        threading.Thread(target=_settle_off_loop).start()
+
+        async def _await_drop():
+            await async_wait_until(
+                lambda: done.is_set() and not sc._tree_pending_edges,
+                describe=lambda: "the off-loop settle never dropped the edge on the loop",
+            )
+            return await await_until(spawn, what="the spawn append")
+
+        return await _await_drop()
+
+    landed = asyncio.run(_drive(), debug=True)
+    # The spawn reported the settled value, and the edge was dropped on the loop.
+    assert landed is True
+    assert sc._tree_pending_edges == {}
+
+
+def test_a_spawn_whose_commit_times_out_keeps_its_edge_until_the_write_settles(
+    tmp_path, monkeypatch
+):
+    """awaiting_commit returning False on a timeout does NOT withdraw the append -- the
+    write is still queued -- so the edge must stand until the real settle, and an
+    overlapping adopt(child -> creator) stays refused in the meantime.
+
+    Dropping the edge on that False would let the adoption commit creator -> child and close
+    a cycle once the slow append lands. Same rule as adopt's fence on a timeout.
+    """
+    from kiro_crew.dashboard.session_control_parts import session_create as scc
+
+    state = _make_state(tmp_path)
+    creator = _live(state, _slot(state, "chat-creator"), "sid-creator")
+    child = _live(state, _slot(state, "chat-child"), "sid-child")
+
+    # The spawn emitter captures its on_settled but does NOT call it (the writer is held).
+    held: dict = {}
+
+    def _hold_spawn(sid, **kw):
+        held["on_settled"] = kw.get("on_settled")
+
+    monkeypatch.setattr(emit, "on_session_spawned", _hold_spawn)
+
+    # awaiting_commit queues the append (so the edge registers and on_settled is captured)
+    # and then returns False WITHOUT settling -- exactly the timeout outcome: job queued,
+    # settle still to come.
+    async def _commit_times_out(emit_one, *, what, timeout=None):
+        emit_one(lambda wrote: None)  # a throwaway settle; the held emitter ignores it
+        return False
+
+    monkeypatch.setattr(emit, "awaiting_commit", _commit_times_out)
+
+    # The adoption would settle into the tree if it were wrongly allowed, so it is stubbed
+    # realistically (same as the other spawn-guard test).
+    def _settle_adopt(sid, **kw):
+        settle = kw.pop("on_settled", None)
+        stp.projection().apply_edge(
+            EdgeRecord(slot=kw["slot"], parent_slot=kw["parent_slot"], at=200, sid=sid, seq=9)
+        )
+        if settle is not None:
+            settle(True)
+
+    monkeypatch.setattr(emit, "on_session_adopted", _settle_adopt)
+
+    child_obj = type(
+        "_Child",
+        (),
+        {
+            "_lineage_minted": True,
+            "_created_by": creator.key,
+            "_created_by_sid": "sid-creator",
+            "key": child.key,
+        },
+    )()
+
+    async def _drive():
+        # The spawn "times out" (awaiting_commit returns False) but its edge is still held.
+        landed = await scc._record_spawn(creator.key, child_obj)
+        assert landed is False, "the stubbed commit timed out"
+        assert held.get("on_settled") is not None, "the append was queued"
+        # The edge survived the False: the write is still in flight.
+        assert sc._tree_pending_edges.get(child.key) == (child.key, creator.key)
+        # So an overlapping adopt(child -> creator) is refused -- the cycle is caught.
+        try:
+            await sc.adopt_target(state, caller_session_key=_key(child), target=creator.key)
+            refused = None
+        except sc.SessionControlError as exc:
+            refused = exc.code
+        # Now the slow write settles for real; the edge clears on the loop.
+        held["on_settled"](True)
+
+        await async_wait_until(
+            lambda: not sc._tree_pending_edges,
+            describe=lambda: "the settled spawn never cleared its pending edge",
+        )
+        return refused
+
+    refused = asyncio.run(_drive())
+    assert refused == "would_cycle"
+    assert sc._tree_pending_edges == {}
+
+
 # ── the tool surface ─────────────────────────────────────────────────────────
 
 
@@ -621,15 +969,10 @@ def test_the_routes_are_registered_and_carry_the_internal_secret():
 def test_an_authorization_that_lapsed_during_the_lock_wait_does_not_write(tmp_path, monkeypatch):
     """The decision that gates the write is taken INSIDE the lock, not before it.
 
-    The wait for the mutation lock is unbounded: the verb ahead awaits its own append, so
-    anything the gate reads can move meanwhile -- the target can be closed, the caller's
-    grant withdrawn. A verb that wrote on the answer it got before the wait would record a
-    takeover nobody was entitled to at the moment it landed.
+    The lock wait is unbounded, so the target can close or the grant lapse meanwhile.
 
-    The lock is held by the TEST rather than by a first verb, so the target stops being
-    addressable in the one window that matters: after the pre-lock gate has already said
-    yes, and before the write. A pop before that window is caught by the pre-lock gate and
-    would prove nothing about the one inside it.
+    The TEST holds the lock so the target goes away after the pre-lock gate said yes and
+    before the write; a pop earlier would only exercise the pre-lock gate.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -708,12 +1051,9 @@ def test_releasing_refuses_when_the_target_closes_during_id_resolution(tmp_path,
 def test_adopting_refuses_a_same_key_replacement_target_after_the_final_gate(tmp_path, monkeypatch):
     """A key is not an identity: a close plus a same-key reopen must not be adopted.
 
-    The gate re-resolves BY KEY and ``_live_sid_of`` reads the mapping BY KEY, so a target
-    that closes and reopens a NEW session under the same slot key inside the final gate's
-    thread hop passes every key-only check: the replacement is open, fences the same, and
-    the mapping now names its log. Without the identity capture the adoption is appended
-    naming a session that was never adopted. The capture makes the verb refuse instead,
-    and -- because the record IS the edge -- NOTHING is handed to the writer.
+    The gate and ``_live_sid_of`` both read BY KEY, so a reopen inside the final gate's
+    thread hop passes every key-only check. The identity capture refuses, and NOTHING is
+    handed to the writer.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -848,13 +1188,10 @@ def test_adopting_refuses_on_a_fold_that_could_not_read_every_unit(tmp_path, mon
 
 
 def test_both_verbs_warm_the_config_read_off_the_loop_before_every_gate(tmp_path, monkeypatch):
-    """``authorize_target`` is synchronous and its enabled check re-reads the config file
-    on the first call after an edit, so an unwarmed gate blocks the shared loop for every
-    other session.
+    """``authorize_target`` re-reads config synchronously; an unwarmed gate blocks the loop.
 
-    Two gates per verb -- the cheap pre-lock refusal and the in-lock re-check -- and the
-    lock wait between them is exactly the suspension that invalidates the first warm, so
-    each one owes its own. Asserted as a COUNT for that reason.
+    The lock wait between the pre-lock and in-lock gates invalidates the first warm, so
+    each gate owes its own; asserted as a COUNT.
     """
     _emitted(monkeypatch)
     warms: list[int] = []
@@ -877,12 +1214,9 @@ def test_both_verbs_warm_the_config_read_off_the_loop_before_every_gate(tmp_path
 def test_a_timed_out_append_fences_the_slot_against_the_next_verb(tmp_path, monkeypatch):
     """A verb that times out waiting for its own append leaves that append QUEUED.
 
-    The timeout raises out of the mutation lock, which releases it, so without a fence the
-    next verb reads a tree the writer is about to change and commits against it -- the
-    former parent's release lands authorized by a parent the queued adoption is about to
-    replace, and the two commit in the wrong order. Holding the lock until settlement
-    instead would pin the serialized region to a wedged filesystem, which is the thing the
-    timeout exists to avoid, so the SLOT is fenced and the loop stays free.
+    Without a fence the next verb commits against a tree the writer is about to change, in
+    the wrong order. Holding the lock instead would pin it to a wedged filesystem, so the
+    SLOT is fenced.
     """
     handed: list[str] = []
 
@@ -1045,14 +1379,9 @@ def test_the_releases_previous_parent_sid_is_that_slots_store(tmp_path, monkeypa
 def _advance_on_final_warm(monkeypatch, slot, sid: str) -> "list[int]":
     """Have *slot* open store *sid* inside the FINAL gate's own suspension.
 
-    The real window this reproduces: a verb resolves its ids before that gate because
-    nothing may suspend after it, the gate's config warm hops to a thread, and a slot
-    that starts its next turn while the verb is off the loop advances its own
-    ``_crew_log_opened_sid`` there. Driven on the SECOND warm, which is the in-lock one
-    -- the gate the append actually follows.
+    Driven on the SECOND (in-lock) warm, the gate the append follows.
 
-    Returns the warm counter so a caller can assert the hop really happened; an
-    assertion about a stale id proves nothing if the store never advanced.
+    Returns the warm counter: a stale-id assertion proves nothing if the store never advanced.
     """
     warms: list[int] = []
 
@@ -1119,12 +1448,9 @@ def test_the_releases_previous_parent_sid_is_refreshed_across_the_final_gates_ho
 def test_a_parent_that_closes_during_the_hop_keeps_the_id_already_resolved(tmp_path, monkeypatch):
     """The refresh may only ever REPLACE an id, never erase one.
 
-    A slot gone from ``_slots`` has no opened record to read, and that absence is not
-    news about which log it was on -- the durable store answered that before the hop.
-    Falling back to ``""`` there would turn a named parent into a parent whose log is
-    unnamed, which is a different claim and an equally permanent one. This is the control
-    on the three tests above: a refresh written as an unconditional overwrite passes all
-    of them and fails this.
+    A slot gone from ``_slots`` has no opened record, but the store already named its log;
+    falling back to ``""`` would record a different claim. Control for the three tests
+    above: an unconditional overwrite passes them and fails this.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -1150,13 +1476,9 @@ def test_a_parent_that_closes_during_the_hop_keeps_the_id_already_resolved(tmp_p
 def test_a_same_key_reopen_during_the_hop_does_not_move_the_id(tmp_path, monkeypatch):
     """A key is not an identity, and the refresh must not follow a replacement object.
 
-    The hazard the refresh itself could introduce: close the parent and reopen a new
-    session under the SAME slot key inside the hop, and every key-only read now answers
-    for a session that never held the target. Refreshing from its opened-store record
-    would replace a right answer with a confident wrong one -- in an append-only entry.
-
-    So the refresh is conditional on the slot object being the one the id was resolved
-    against. With the empty-record rule, that makes it never worse than not refreshing.
+    A same-key reopen inside the hop makes every key-only read answer for a session that
+    never held the target. The refresh applies only when the slot object is the one the id
+    was resolved against.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -1185,13 +1507,9 @@ def test_a_same_key_reopen_during_the_hop_does_not_move_the_id(tmp_path, monkeyp
 def test_a_slot_appearing_during_the_hop_does_not_supply_the_id(tmp_path, monkeypatch):
     """The other half of "a key is not an identity": nothing there, then something is.
 
-    The store named the parent's log for a slot this process holds no object for -- a
-    restart's view of a session it did not open. A slot appearing under that key inside
-    the hop is a NEW session, not the one the store answered about, so its opened-store
-    record must not replace the store's answer.
-
-    Distinct from the reopen case above because the capture is ``None`` rather than an
-    object, and a guard that only compares two objects lets this one through.
+    A slot appearing under the key inside the hop is a NEW session, so its record must not
+    replace the store's answer. Here the capture is ``None``, which a guard comparing two
+    objects lets through.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -1302,11 +1620,8 @@ def test_the_slot_capture_precedes_the_resolutions_own_suspension(verb: str, res
 def test_the_mapping_is_refused_inside_the_replay_pending_window(tmp_path, monkeypatch):
     """The window where the map deliberately names the generation BEFORE the store.
 
-    Allocation leaves the prior resumable id mapped for a replay-pending ACP session on
-    purpose, so a restart can still resume it. With no store record to lead, the map is
-    the only source left -- and inside this window its answer is a real id belonging to a
-    real log, which is exactly what makes reading it worse than answering nothing: an
-    absent field is visibly absent, while the prior generation's id reads as a finding.
+    Allocation keeps the prior id mapped for a replay-pending session so a restart can
+    resume it. That id is real, so recording it is worse than an absent field.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -1336,17 +1651,9 @@ def test_the_mapping_is_refused_inside_the_replay_pending_window(tmp_path, monke
 def test_a_slot_with_no_live_session_does_not_license_the_mapping(tmp_path, monkeypatch):
     """Having no session to ask is not the same as being owed no replay.
 
-    Only the second licenses the map.
-
-    ``provider_switch_replay_pending`` is ``bool(session is not None and
-    session.provider_switch_replay)``, so a closed slot and a live one that owes nothing
-    both answer ``False``. Reading the map on that answer is worst precisely here: the
-    map keeps answering an id after a session closes, so the shape this admits is a
-    dropped generation written into an append-only entry as the parent's log.
-
-    The second half is the control -- the same slot with a live session and no replay
-    owed DOES read the map -- so this pins a tri-state rather than a resolver that
-    stopped reading the map at all.
+    ``provider_switch_replay_pending`` answers ``False`` for both, and the map keeps an id
+    after a close. The second half is the control: a live session owing no replay DOES
+    read the map.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -1400,11 +1707,8 @@ def test_the_replay_read_is_unknown_when_the_registry_cannot_be_asked(tmp_path):
 def test_an_undetermined_parent_is_not_recorded_as_no_parent(tmp_path, monkeypatch):
     """A parent whose log could not be named is not recorded as no parent at all.
 
-    The two must not reach a reader as the same entry, and they differ in the SLOT
-    half rather than the id half. A parent whose log could not be named still writes
-    its slot, so the citation is present and incomplete; a session with no parent
-    writes no citation at all. A reader walking lineage can act on the first -- the
-    edge exists and one end is unnamed -- and must not read it as the second.
+    They differ in the SLOT half: an unnamed parent log still writes its slot, while no
+    parent writes no citation at all.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -1474,16 +1778,11 @@ def _boom(_key: str) -> bool:
 def test_no_suspension_between_the_final_authorization_and_the_append(verb: str, emitter: str):
     """Structural, because the hazard is an ORDERING no behaviour test fully covers.
 
-    A close takes no tree-mutation lock, so it runs inside any suspension these verbs
-    take. Once the last ``authorize_target`` has said yes, a suspension before the append
-    lets the target stop being addressable while the entry is still written -- and the
-    entry is append-only, so nothing later corrects it. The same rule is why
-    ``_close_slot``'s pre-pop check is synchronous.
+    A close takes no tree lock, so a suspension after the last ``authorize_target`` lets
+    the target vanish before the append-only entry is written.
 
-    Read off the AST rather than asserted through a scenario: a behaviour test proves one
-    interleaving is refused, while this proves there is no window for any of them. The
-    resolutions are still REQUIRED to suspend somewhere earlier in the verb, which the
-    control below pins -- otherwise deleting them outright would satisfy this test.
+    The control below requires the resolutions to suspend earlier, else deleting them would
+    pass this.
     """
     import ast
     import inspect
@@ -1542,11 +1841,8 @@ def test_no_suspension_between_the_final_authorization_and_the_append(verb: str,
 def _pending_adopt(child: str, parent: str) -> None:
     """Stand in for an ADOPTION whose append is queued but has NOT settled.
 
-    Registers the target fence and the queued edge exactly as the production path does
-    (``_tree_append_waiter(child)`` plus ``_note_pending_edge``), with the future
-    deliberately never resolved -- the append is handed to the writer and still in
-    flight. The edge is NOT folded into the settled tree, which is the window the hazard
-    lives in. The fixture clears the registry between tests.
+    Registers ``_tree_append_waiter(child)`` and ``_note_pending_edge`` with a future never
+    resolved; the edge is NOT in the settled tree. The fixture clears the registry.
     """
     loop = asyncio.get_event_loop()
     future: "asyncio.Future[bool]" = loop.create_future()
@@ -1557,11 +1853,8 @@ def _pending_adopt(child: str, parent: str) -> None:
 def test_a_second_adopt_cannot_close_a_cycle_through_a_queued_edge(tmp_path, monkeypatch):
     """Two overlapping adoptions must not persist a cycle.
 
-    ``chat-t`` is being adopted under ``chat-a`` (edge t->a), handed to the writer and
-    not yet settled. A second adoption of ``chat-a`` under ``chat-t`` (edge a->t) decided
-    in that window would close the cycle t->a->t: the settled fold has neither edge, so a
-    settled-only walk does not see that ``chat-t`` is about to be ``chat-a``'s parent. The
-    loop guard follows the queued t->a edge and refuses it.
+    Edge t->a is queued, not settled; adopting a->t would close t->a->t. The loop guard
+    follows the queued edge and refuses.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -1588,12 +1881,8 @@ def test_a_longer_cycle_through_a_queued_edge_is_refused_with_no_fence_in_the_wa
 ):
     """The overlay alone refuses a loop whose closing adoption fences no endpoint.
 
-    Settled ``chat-a -> chat-x`` and ``chat-y -> chat-t``; ``chat-t -> chat-a`` queued,
-    not settled. Adopting ``chat-x`` under ``chat-y`` (edge x->y) would close
-    x->y->t->a->x. Only ``chat-t`` is fenced by the pending append, and neither endpoint
-    of this adoption is ``chat-t``, so no fence catches the call -- the loop guard, reading
-    the settled parents AND the queued t->a edge, is the only thing that can refuse it, and
-    it must.
+    Settled a->x and y->t, queued t->a; adopting x->y closes x->y->t->a->x. Only ``chat-t``
+    is fenced, so the loop guard reading the queued edge is the only refusal.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -1619,12 +1908,8 @@ def test_a_longer_cycle_through_a_queued_edge_is_refused_with_no_fence_in_the_wa
 def test_a_queued_edge_does_not_hide_a_slots_settled_ancestry(tmp_path, monkeypatch):
     """A pending edge is ADDED to a slot's settled parent, never substituted for it.
 
-    Settled ``chat-z -> chat-x``, ``chat-x -> chat-b``, ``chat-b -> chat-y``; a slow
-    ``chat-x -> chat-a`` adoption is queued. Adopting ``chat-y`` under ``chat-z`` (edge
-    y->z) would close y->z->x->b->y, which stays durable if the queued chat-x append then
-    fails after its retries while this one lands. Reading the queued x->a edge INSTEAD of
-    the settled x->b would hide chat-x's real ancestry and admit the adoption; reading it
-    in ADDITION keeps x->b in view, so the loop is seen and refused.
+    Settled z->x, x->b, b->y and queued x->a; adopting y->z closes y->z->x->b->y if the
+    queued append later fails. Substituting x->a for x->b would hide that loop.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)
@@ -1655,11 +1940,8 @@ def test_a_queued_edge_does_not_hide_a_slots_settled_ancestry(tmp_path, monkeypa
 def test_a_release_is_refused_while_the_target_has_a_pending_append(tmp_path, monkeypatch):
     """A release decided against a slot with a queued reparent is refused.
 
-    ``chat-c`` is being adopted under ``chat-p`` (edge c->p), queued and not settled.
-    A release of ``chat-c`` from its CURRENT parent ``chat-old`` decided in that window
-    reads a tree the writer is about to replace: the queued adoption moves ``chat-c``'s
-    parent, and committing a release under the old parent races it. ``chat-c`` is the
-    fenced slot, so the release is refused rather than decided against a stale tree.
+    With c->p queued, releasing ``chat-c`` from ``chat-old`` would race the reparent;
+    ``chat-c`` is fenced, so the release is refused.
     """
     calls = _emitted(monkeypatch)
     state = _make_state(tmp_path)

@@ -166,6 +166,14 @@ def active_custom_agent(params: dict[str, Any], agent: str) -> dict[str, Any] | 
     return None
 
 
+def mounted_servers(params: dict[str, Any], agent: str) -> tuple[str, ...]:
+    """Every server sent for the ACTIVE agent and session, named as frames name them."""
+    active = active_custom_agent(params, agent) or {}
+    block = [{"name": name} for name in active.get("mcpServers", {})]
+    servers = params.get("mcpServers")
+    return roster_names([*(servers if isinstance(servers, list) else []), *block])
+
+
 def required_managed_servers(params: dict[str, Any], agent: str) -> tuple[str, ...]:
     """Managed declarations actually sent for the ACTIVE agent and session."""
     names = set(roster_names(params.get("mcpServers")))
@@ -203,6 +211,30 @@ def _server_source(server: dict[str, Any]) -> dict[str, Any] | None:
     resource = kiro.get("resource") if isinstance(kiro, dict) else None
     source = resource.get("source") if isinstance(resource, dict) else None
     return source if isinstance(source, dict) else None
+
+
+#: ``_kiro/mcp/status`` fields in which a registry-governed host names the
+#: servers it dropped instead of starting. Captured on KAS 0.66.62 under an
+#: enterprise MCP registry: ``servers`` stays empty and the dropped managed
+#: server is listed in ``accessModeFilteredServers``. ``unresolvedRegistryServers``
+#: is deliberately not read: no capture shows whether a server listed there is
+#: final or still resolving, and treating a pending one as final would refuse a
+#: start that succeeds today.
+REGISTRY_FILTER_FIELDS = ("accessModeFilteredServers",)
+
+
+def _registry_filtered(params: dict[str, Any], required: tuple[str, ...]) -> dict[str, str]:
+    """Required names a status snapshot lists as dropped by the host's registry."""
+    found: dict[str, str] = {}
+    for key in REGISTRY_FILTER_FIELDS:
+        listed = params.get(key)
+        if not isinstance(listed, list):
+            continue
+        for item in listed:
+            name = item.get("name") if isinstance(item, dict) else item
+            if isinstance(name, str) and name in required:
+                found.setdefault(name, key)
+    return found
 
 
 @dataclass
@@ -249,6 +281,13 @@ class KasMcpReadiness:
     #: under that name here, which is what :attr:`never_reported` reads; a
     #: foreign same-named server counts as mentioned, so it never reads as absent.
     seen: set[str] = field(default_factory=set)
+    #: Required names the latest status snapshot lists in
+    #: :data:`REGISTRY_FILTER_FIELDS`, mapped to the field that listed them: the
+    #: host's own positive statement that its MCP registry dropped the server.
+    #: Replaced by every snapshot. A name the same snapshot also has a status
+    #: entry for (any state or origin) is left out, so only a server the host
+    #: did not start under that name counts.
+    filtered: dict[str, str] = field(default_factory=dict)
 
     @property
     def advertised(self) -> set[str]:
@@ -306,6 +345,7 @@ class KasMcpReadiness:
             self.states.clear()
             self.errors.clear()
             self.intentionally_hidden.clear()
+            self.filtered = _registry_filtered(params, self.required)
             entries = [server for server in servers if isinstance(server, dict)]
             # Servers whose connected entry carries its catalog: fresh exposure
             # evidence from this very snapshot (see the class docstring).
@@ -321,6 +361,10 @@ class KasMcpReadiness:
                 if not isinstance(name, str) or name not in self.required:
                     continue
                 self.seen.add(name)
+                # Any entry under this name, a foreign same-named one included,
+                # means the host is running something under it: the list does not
+                # decide that name, the usual states and timeout do.
+                self.filtered.pop(name, None)
                 source = _server_source(server)
                 if provenance and (source is None or source.get("origin") != "client"):
                     # A same-named inherited global server is not the private
@@ -412,10 +456,33 @@ class KasMcpReadiness:
             + (
                 "tools not advertised"
                 if self.states.get(name) == "connected"
-                else self.states.get(name, "unreported")
+                else self.states.get(
+                    name, "filtered by the MCP registry" if name in self.filtered else "unreported"
+                )
             )
             for name in self.pending_names
         )
+
+    @property
+    def registry_filtered(self) -> tuple[str, ...]:
+        """Pending servers the host's latest snapshot says its registry dropped.
+
+        In required order. Unlike :attr:`never_reported` this is not read off
+        silence: the host listed each one in :data:`REGISTRY_FILTER_FIELDS`, so
+        waiting longer cannot make it start.
+        """
+        return tuple(name for name in self.pending_names if name in self.filtered)
+
+    @property
+    def all_pending_filtered(self) -> bool:
+        """Whether every pending server is one the host's registry dropped."""
+        pending = self.pending_names
+        return bool(pending) and all(name in self.filtered for name in pending)
+
+    @property
+    def filtered_detail(self) -> str:
+        """``name (field)`` for each :attr:`registry_filtered` server."""
+        return ", ".join(f"{name} ({self.filtered[name]})" for name in self.registry_filtered)
 
     @property
     def never_reported(self) -> tuple[str, ...]:
@@ -567,6 +634,19 @@ def _joined(names: list[str]) -> str:
     return f"{joined} (+{rest} more)" if rest > 0 else joined
 
 
+def _guard_entries(entries: Any) -> tuple[str, ...]:
+    """A guard's ``server (...)`` entries as a bucket: strings only, each sanitized
+    and bounded at :data:`_ERROR_CAP`, de-duplicated, capped at :data:`_BUCKET_CAP`."""
+    seen: list[str] = []
+    for raw in entries if isinstance(entries, (list, tuple)) else ():
+        if not isinstance(raw, str):
+            continue
+        entry = sanitize_sink_text(raw, _ERROR_CAP)
+        if entry and entry not in seen:
+            seen.append(entry)
+    return tuple(seen[:_BUCKET_CAP])
+
+
 @dataclass
 class McpSessionReport:
     """Mutable accumulator for one session's MCP registration frames.
@@ -596,6 +676,12 @@ class McpSessionReport:
     #: Affected servers past the guard's or this report's cap, counted rather
     #: than dropped without a word.
     header_secret_refs_omitted: int = 0
+    #: stdio servers whose ``env`` references a variable that is not set, each as
+    #: ``server ('NAME', ...)``; such a server starts with the literal text. Set by
+    #: :meth:`record_env_placeholder_refs`.
+    env_placeholder_refs: tuple[str, ...] = ()
+    #: Affected servers past the guard's cap, counted like the header bucket's.
+    env_placeholder_refs_omitted: int = 0
     #: Servers that started and that the spec grants, yet gave this session no
     #: tool (see :func:`servers_exposing_no_tools`). Usually a tool-name clash
     #: with another server: the backend kept the other server's tools and
@@ -652,6 +738,8 @@ class McpSessionReport:
         self.unresolved_refs = ()
         self.header_secret_refs = ()
         self.header_secret_refs_omitted = 0
+        self.env_placeholder_refs = ()
+        self.env_placeholder_refs_omitted = 0
         self.no_tools = ()
         self.no_tools_omitted = 0
         self.pruned_omitted = 0
@@ -724,8 +812,12 @@ class McpSessionReport:
 
     def declared_unreported(self) -> tuple[str, ...]:
         """Declared servers that have not reported at all yet, in spec order."""
+        return self.unreported(self.declared)
+
+    def unreported(self, names: tuple[str, ...]) -> tuple[str, ...]:
+        """*names* with no ready, failed or awaiting-authorization report yet, in order."""
         reported = {*self._ready, *self._failed, *self._awaiting_auth}
-        return tuple(name for name in self.declared if name not in reported)
+        return tuple(name for name in names if name not in reported)
 
     def declared_never_reported(self) -> tuple[str, ...]:
         """Declared servers with no report at all, for the run's notice.
@@ -812,15 +904,19 @@ class McpSessionReport:
         bounded at :data:`_ERROR_CAP`. *omitted* is the guard's own count of
         servers it did not list; the guard caps its entries below the bucket.
         """
-        seen: list[str] = []
-        for raw in entries if isinstance(entries, (list, tuple)) else ():
-            if not isinstance(raw, str):
-                continue
-            entry = sanitize_sink_text(raw, _ERROR_CAP)
-            if entry and entry not in seen:
-                seen.append(entry)
-        self.header_secret_refs = tuple(seen[:_BUCKET_CAP])
+        self.header_secret_refs = _guard_entries(entries)
         self.header_secret_refs_omitted = omitted if isinstance(omitted, int) and omitted > 0 else 0
+
+    def record_env_placeholder_refs(self, entries: Any, omitted: int = 0) -> None:
+        """Record the stdio servers whose ``env`` references an unset variable.
+
+        The twin of :meth:`record_header_secret_refs`, for
+        ``mcp_ref_guard.warn_unset_env_placeholders``.
+        """
+        self.env_placeholder_refs = _guard_entries(entries)
+        self.env_placeholder_refs_omitted = (
+            omitted if isinstance(omitted, int) and omitted > 0 else 0
+        )
 
     def record_no_tools(self, names: Any) -> bool:
         """Record the servers that started but gave this session no tool.
@@ -1004,6 +1100,7 @@ class McpSessionReport:
             self.configured
             or self.unresolved_refs
             or self.header_secret_refs
+            or self.env_placeholder_refs
             or self.no_tools
             or self._ready
             or self._failed
@@ -1041,7 +1138,9 @@ class McpSessionReport:
         control characters and length, none of which neutralizes a natural-language
         instruction. That is harmless in a log a person reads and is not harmless
         in a model's prompt, so the sink that feeds a model asks for the summary
-        without it instead of trusting a scrubber to disarm prose.
+        without it instead of trusting a scrubber to disarm prose. That reading
+        also leaves out the env-placeholder bucket: such a server did start, and
+        the model sink tells a run its servers are not mounted.
         """
         parts: list[str] = []
         if self._failed:
@@ -1083,6 +1182,17 @@ class McpSessionReport:
                 + (
                     f" (+{self.header_secret_refs_omitted} not listed)"
                     if self.header_secret_refs_omitted
+                    else ""
+                )
+            )
+        if self.env_placeholder_refs and include_reasons:
+            parts.append(
+                "stdio server env references a variable that is not set, so the server "
+                "starts with the literal ${NAME} text: "
+                + _joined(list(self.env_placeholder_refs))
+                + (
+                    f" (+{self.env_placeholder_refs_omitted} not listed)"
+                    if self.env_placeholder_refs_omitted
                     else ""
                 )
             )

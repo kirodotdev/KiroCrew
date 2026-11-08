@@ -326,8 +326,17 @@ class TestTheCommittedTreeAgrees:
         workflow = yaml.safe_load(
             (ROOT / ".github" / "workflows" / "fast-gate.yml").read_text(encoding="utf-8")
         )
-        job = workflow["jobs"]["builtin-skill-scope"]
-        assert "needs" not in job, "builtin-skill-scope gained a dependency and can now be skipped"
+        job = workflow["jobs"]["source-gates"]
+        assert "needs" not in job, "source-gates gained a dependency and can now be skipped"
         assert (
             job.get("if") == "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
-        ), "builtin-skill-scope's condition is not exactly the merge-queue push skip"
+        ), "source-gates's condition is not exactly the merge-queue push skip"
+        step = next(
+            s
+            for s in job["steps"]
+            if "scripts/check_builtin_skill_scope.py" in str(s.get("run", ""))
+        )
+        # The step's own condition only keeps a cancelled run from spending its
+        # runner; it admits every diff shape.
+        assert step.get("if") == "${{ !cancelled() }}"
+        assert "continue-on-error" not in step

@@ -15,8 +15,9 @@ from kiro_crew.testing.wait import await_until, wait_until
 @pytest.mark.parametrize(
     "settings,configured,effective",
     [
-        ({}, (4, 1), (4, 1)),
-        ({"embedding_threads": 4, "embedding_bulk_threads": 6}, (4, 6), (4, 6)),
+        # 16 usable cores: the default (absent, or the declared 4) is the large-host 6.
+        ({}, (4, 1), (6, 1)),
+        ({"embedding_threads": 4, "embedding_bulk_threads": 6}, (4, 6), (6, 6)),
         ({"embedding_threads": 999, "embedding_bulk_threads": 999}, (256, 256), (16, 16)),
     ],
 )

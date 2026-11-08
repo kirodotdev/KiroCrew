@@ -20,15 +20,15 @@ from kiro_crew.apps import registry
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the registry suites' module-wide pin, moved verbatim; no test in a module that imports this fixture calls monkeypatch.undo()
-def _explicit_registry_execution_admission(monkeypatch):
+def _explicit_registry_execution_admission(_floor_monkeypatch):
     """These tests must reach admitted registry subprocess paths."""
-    monkeypatch.setattr("kiro_crew.apps.execution.third_party_execution_allowed", lambda: True)
+    _floor_monkeypatch.setattr(
+        "kiro_crew.apps.execution.third_party_execution_allowed", lambda: True
+    )
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the registry suites' module-wide pin, moved verbatim; no test in a module that imports this fixture calls monkeypatch.undo()
-def _catalog_absent(monkeypatch):
+def _catalog_absent(_floor_monkeypatch):
     """Pin "official catalog reachable, app absent" for the whole module.
 
     ``get_registry_app`` (patched to a stub in most tests here) is, in its real
@@ -39,15 +39,14 @@ def _catalog_absent(monkeypatch):
     test that wants a different catalog answer overrides this by monkeypatching
     the same seam itself (see ``TestCatalogAppsIncludesExternalRegistries``).
     """
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         "kiro_crew.apps.official_catalog.inventory_for_install",
         lambda name: None,
     )
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the registry suites' module-wide pin, moved verbatim; no test in a module that imports this fixture calls monkeypatch.undo()
-def unsandboxed_spawn(monkeypatch):
+def unsandboxed_spawn(_floor_monkeypatch):
     """Decouple this module's timeout/reap tests from the host's sandbox capability.
 
     Every test here asserts process-group signalling and reaping, and they mock
@@ -61,7 +60,20 @@ def unsandboxed_spawn(monkeypatch):
     """
     from kiro_crew import sandbox
 
-    monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+    _floor_monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _install_script_runs_on_this_host(_floor_monkeypatch):
+    """Let ``setup.onInstall`` reach its (mocked) spawn on every host.
+
+    On native Windows the install transaction refuses ``onInstall`` before any
+    spawn, because the hook runs through ``/bin/bash``. These suites drive the
+    POSIX script path with a faked subprocess and assert what follows it, so
+    they pin the platform refusal off; the refusal itself is covered by its own
+    tests in ``test_apps_registry_timeout_reaping.py``, which put it back.
+    """
+    _floor_monkeypatch.setattr(registry, "_install_script_platform_refusal", lambda: None)
 
 
 def _identity_harness(monkeypatch, src, *, cloned_manifest, prefetched=None):

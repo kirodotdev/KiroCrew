@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 
+import conductor_agent_checks
+
 from kiro_crew import agent, subagent
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
@@ -68,7 +70,10 @@ def _stub_environment(
     monkeypatch.setattr(agent, "_may_auto_approve", may_auto_approve or (lambda ref: True))
 
 
-class TestSecurityConductorInstaller:
+class TestSecurityConductorInstaller(
+    conductor_agent_checks.PromptDoesNotCarryTheRetiredVerbosityToken,
+    conductor_agent_checks.PromptDrivesPatrolWithMonitorStartNotWait,
+):
     def _install(self, tmp_path, monkeypatch, *, may_auto_approve=None, cli_version="accepts"):
         _stub_environment(
             tmp_path, monkeypatch, may_auto_approve=may_auto_approve, cli_version=cli_version
@@ -96,18 +101,6 @@ class TestSecurityConductorInstaller:
         since it has no file-writing tool."""
         assert "kirocrew-security-conductor" in subagent.UNADVERTISED_AGENTS
 
-    def test_prompt_does_not_carry_the_retired_verbosity_token(self, tmp_path, monkeypatch):
-        data = self._install(tmp_path, monkeypatch)
-        # Reply style now arrives as session-context chrome for every
-        # agent; a token left here would reach the model as a literal.
-        assert "{{VERBOSITY_BLOCK}}" not in data["prompt"]
-
-    def test_prompt_drives_patrol_with_monitor_start_not_wait(self, tmp_path, monkeypatch):
-        data = self._install(tmp_path, monkeypatch)
-        prompt = " ".join(data["prompt"].split())
-        assert "Patrol with `monitor_start`, never with `wait`" in prompt
-        assert "autonudge_stop" in prompt
-
     def test_prompt_names_the_three_child_roles(self, tmp_path, monkeypatch):
         """The fleet's shape is the design: an auditor per surface, an
         INDEPENDENT verifier per finding (false positives are the dominant noise
@@ -122,7 +115,7 @@ class TestSecurityConductorInstaller:
         one; without the verb in the tool line the finished session stays open and the
         operator cleans up by hand."""
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
-        assert "`session_close` (close a child once its item is terminal)" in prompt
+        assert "`session_close` (close a child once its item is terminal;" in prompt
 
     def test_prompt_delegates_scope_and_acceptance_to_scripts(self, tmp_path, monkeypatch):
         """Both decisions this agent must NOT make by judgment: whether a target
@@ -201,12 +194,8 @@ class TestSecurityConductorInstaller:
         # The roster read: narrower than the transcript read above, and asked on
         # every unattended cycle, so it is granted rather than gated.
         assert "@kirocrew-dashboard/session_status" in allowed
-        assert "@kirocrew-dashboard/chat_folder_tree" in allowed
-        assert "@kirocrew-dashboard/chat_folder_create" in allowed
-        # Writes only the caller's own placement, so it sits on the
-        # create/read side of the invariant: the conductor files ITSELF
-        # in the audit's folder without a prompt.
-        assert "@kirocrew-dashboard/chat_folder_file_self" in allowed
+        # A dispatcher does not manage folders (rfc-crewmate-workers-under-the-crewmate.md).
+        assert not [g for g in allowed if "chat_folder_" in g]
         for gated in (
             "@kirocrew-dashboard/session_send",
             # The fan-out write, withheld on session_send's own reason: the
@@ -243,14 +232,10 @@ class TestSecurityConductorInstaller:
             assert gated not in allowed, gated
         assert "@kirocrew-core" in data["tools"]
 
-    def test_grants_match_the_pipeline_conductor_plus_self_filing(self, tmp_path, monkeypatch):
+    def test_grants_match_the_pipeline_conductor(self, tmp_path, monkeypatch):
         """The tuples are SHARED, not copied: the security set is the pipeline
-        set plus exactly one verb, ``chat_folder_file_self``, so any other
-        divergence a future copy introduces is visible here instead of silently
-        narrowing one agent's patrol. The one difference is deliberate: this
-        conductor's procedure files itself in the audit's folder before the
-        first dispatch, and the pipeline conductor's does not yet -- a grant
-        nothing in a skill exercises is surface without a user."""
+        set, so any divergence a future copy introduces is visible here instead
+        of silently narrowing one agent's patrol. Neither carries a folder verb."""
         _stub_environment(tmp_path, monkeypatch)
         agent._install_security_conductor_agent()
         agent._install_pipeline_conductor_agent()
@@ -262,20 +247,12 @@ class TestSecurityConductorInstaller:
         pipeline = json.loads(
             (tmp_path / PIPELINE_CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8")
         )
-        extra = set(security["allowedTools"]) - set(pipeline["allowedTools"])
-        assert extra == {"@kirocrew-dashboard/chat_folder_file_self"}
-        assert set(pipeline["allowedTools"]) <= set(security["allowedTools"])
+        assert set(security["allowedTools"]) == set(pipeline["allowedTools"])
         assert security["tools"] == pipeline["tools"]
 
-    def test_skill_files_the_conductor_itself_before_the_first_dispatch(self):
-        """The audit's folder holds the conductor too, not only its fleet.
-
-        Same shape as the goal conductor's pin: the session driving the audit
-        must not float at the top level while auditors and verifiers sit in a
-        folder. The skill names ``chat_folder_file_self`` (never prompts; writes
-        only the caller's own placement) and the ``<audit>/<agent>`` path every
-        child is created under.
-        """
+    def test_skill_gives_no_folder_guidance(self):
+        """Dispatchers stop managing folders (rfc-crewmate-workers-under-the-crewmate.md,
+        Design 6): the skill names no folder verb and no ``<audit>/<agent>`` path."""
         from pathlib import Path
 
         skill = (
@@ -287,8 +264,9 @@ class TestSecurityConductorInstaller:
             / "SKILL.md"
         )
         text = skill.read_text(encoding="utf-8")
-        assert "`chat_folder_file_self`" in text
-        assert "`<audit>/<agent>`" in text
+        assert "chat_folder_" not in text
+        assert "<audit>/<agent>" not in text
+        assert "**Do not manage folders.**" in text
 
     def test_mcp_servers_are_narrowed(self, tmp_path, monkeypatch):
         """kirocrew-core plus the hand-built dashboard and work entries the shared

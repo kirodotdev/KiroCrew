@@ -637,7 +637,7 @@ class TestStreamAndCollectThrottleFallback:
 
     @pytest.mark.asyncio
     async def test_marker_seeded_primary_survives_second_walk(self) -> None:
-        """REGRESSION (review finding): a session already sitting on a
+        """A session already sitting on a
         fallback (marker P->F1, restore failing) that exhausts again must
         keep P as the primary — never record F1 as the primary — and must
         not re-try the currently-failing F1."""

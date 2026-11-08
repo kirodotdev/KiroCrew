@@ -20,6 +20,7 @@ from kiro_crew.acp.client import (
     _resolve_vendored_claude_acp,
     _vendored_acp_roots,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
 
 class TestVendoredClaudeAcp:
@@ -248,6 +249,33 @@ class TestResolveClaudeAcpBin:
         assert argv is None
         assert search_path == client_mod.augmented_path(os.environ.get("PATH", ""))
 
+    def test_shim_next_to_another_package_is_left_alone(self, tmp_path, monkeypatch):
+        """Only the shim npm wrote for the named bin is mapped to its target."""
+        from kiro_crew.acp import launch as launch_mod
+
+        shim = tmp_path / "claude-agent-acp.cmd"
+        shim.write_text("@echo off\n", encoding="utf-8")
+        assert (
+            launch_mod._npm_windows_shim_target(
+                str(shim), "claude-agent-acp", _CLAUDE_ACP_PKG_ENTRY
+            )
+            is None
+        )
+        other = tmp_path / "codex-acp.cmd"
+        other.write_text("@echo off\n", encoding="utf-8")
+        entry = tmp_path / "node_modules" / _CLAUDE_ACP_PKG_ENTRY
+        entry.parent.mkdir(parents=True)
+        entry.write_text("// adapter\n", encoding="utf-8")
+        assert (
+            launch_mod._npm_windows_shim_target(
+                str(other), "claude-agent-acp", _CLAUDE_ACP_PKG_ENTRY
+            )
+            is None
+        )
+        assert launch_mod._npm_windows_shim_target(
+            str(shim), "claude-agent-acp", _CLAUDE_ACP_PKG_ENTRY
+        ) == str(entry)
+
 
 class TestResolveClaudeCodeExecutable:
     def test_env_override_wins(self, tmp_path, monkeypatch):
@@ -290,6 +318,34 @@ class TestResolveClaudeCodeExecutable:
         )
         assert client_mod._resolve_claude_code_executable() == "/srv/u/.toolbox/bin/claude"
 
+    @_POSIX_EXEC_PATHS_ONLY
+    def test_windows_toolbox_claude_off_the_inherited_path_is_found(self, monkeypatch, tmp_path):
+        """A Toolbox install on Windows lands in ``%LOCALAPPDATA%\\Toolbox\\bin``.
+
+        The gateway's own PATH may not hold that dir, and the Agent Harness
+        probe must still find the ``claude`` there.
+        """
+        from kiro_crew import env as env_mod
+        from kiro_crew.acp import client as client_mod
+
+        bin_dir = tmp_path / "Local" / "Toolbox" / "bin"
+        bin_dir.mkdir(parents=True)
+        claude = bin_dir / "claude"
+        claude.write_text("#!/bin/sh\n")
+        claude.chmod(0o755)
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
+        monkeypatch.setattr(env_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+        # The fixed well-known dirs (``/usr/local/bin`` and the like) sit ahead of
+        # the Toolbox dir, so a ``claude`` the host already has there would win.
+        # Empty them so only the fixture tree can answer.
+        monkeypatch.setattr(env_mod, "_EXTRA_PATH_DIRS", ())
+        monkeypatch.setattr(env_mod, "_node_all_bin_dirs", lambda *a, **k: [])
+        assert client_mod._resolve_claude_code_executable() == str(claude)
+
     def test_none_when_absent(self, monkeypatch):
         from kiro_crew.acp import client as client_mod
 
@@ -297,6 +353,63 @@ class TestResolveClaudeCodeExecutable:
         monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
         monkeypatch.setattr(client_mod.shutil, "which", lambda name, path=None: None)
         assert client_mod._resolve_claude_code_executable() is None
+
+    @staticmethod
+    def _npm_windows_claude(bin_dir: Path, *, with_exe: bool) -> tuple[Path, Path]:
+        """The layout ``npm i -g @anthropic-ai/claude-code`` leaves on Windows."""
+        bin_dir.mkdir(parents=True)
+        shim = bin_dir / "claude.cmd"
+        shim.write_text("@echo off\n", encoding="utf-8")
+        exe = bin_dir / "node_modules" / "@anthropic-ai" / "claude-code" / "bin" / "claude.exe"
+        if with_exe:
+            exe.parent.mkdir(parents=True)
+            exe.write_bytes(b"MZ")
+        return shim, exe
+
+    @pytest.mark.parametrize("via", ["path", "mise"])
+    def test_windows_npm_cmd_shim_is_replaced_by_its_exe(self, tmp_path, monkeypatch, via):
+        """The adapter execFile()s CLAUDE_CODE_EXECUTABLE with no shell.
+
+        Node refuses a ``.cmd`` there with ``spawn EINVAL`` (CVE-2024-27980), so the
+        npm shim must never be the value: the ``claude.exe`` it runs is.
+        """
+        from kiro_crew.acp import client as client_mod
+
+        shim, exe = self._npm_windows_claude(tmp_path / "npm", with_exe=True)
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        monkeypatch.setattr(client_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            client_mod, "_mise_which", lambda tool: str(shim) if via == "mise" else None
+        )
+        monkeypatch.setattr(
+            client_mod.shutil,
+            "which",
+            lambda name, path=None: str(shim) if via == "path" and name == "claude" else None,
+        )
+        assert client_mod._resolve_claude_code_executable() == str(exe)
+
+    def test_windows_cmd_shim_without_an_exe_is_not_passed(self, tmp_path, monkeypatch, caplog):
+        """A batch shim Node cannot spawn is withheld, with a warning naming it."""
+        from kiro_crew.acp import client as client_mod
+
+        shim, _exe = self._npm_windows_claude(tmp_path / "npm", with_exe=False)
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        monkeypatch.setattr(client_mod.platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
+        monkeypatch.setattr(client_mod.shutil, "which", lambda name, path=None: str(shim))
+        with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
+            assert client_mod._resolve_claude_code_executable() is None
+        assert str(shim) in caplog.text
+
+    def test_cmd_shim_is_kept_off_windows(self, tmp_path, monkeypatch):
+        """The swap is a Windows rule: POSIX Node spawns any executable file."""
+        from kiro_crew.acp import client as client_mod
+
+        shim, _exe = self._npm_windows_claude(tmp_path / "npm", with_exe=True)
+        monkeypatch.delenv("CLAUDE_CODE_EXECUTABLE", raising=False)
+        monkeypatch.setattr(client_mod.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(client_mod, "_mise_which", lambda tool: str(shim))
+        assert client_mod._resolve_claude_code_executable() == str(shim)
 
 
 class TestMiseWhich:
@@ -353,6 +466,41 @@ class TestMiseWhich:
         mock_sub.TimeoutExpired = subprocess.TimeoutExpired
         monkeypatch.setattr(client_mod, "subprocess_mod", mock_sub)
         assert _mise_which("claude-agent-acp") is None
+
+    @pytest.mark.parametrize("host_encoding", ["cp1252", "ascii"])
+    def test_non_ascii_path_survives_a_non_utf8_host_codepage(
+        self, tmp_path, monkeypatch, host_encoding
+    ):
+        """mise prints the path as UTF-8; a profile dir like ``José`` must resolve.
+
+        The stand-in decodes the way ``subprocess`` does: with ``encoding=`` when
+        given, else the host code page. cp1252 mangles the path (no such file, so
+        the lookup falls through to None); ascii raises ``UnicodeDecodeError``,
+        which escapes the ``TimeoutExpired``/``OSError`` handler.
+        """
+        import subprocess
+
+        from kiro_crew.acp import client as client_mod
+        from kiro_crew.acp.client import _mise_which
+
+        script = tmp_path / "José" / "node"
+        script.parent.mkdir()
+        script.write_text("#!/bin/sh\n", encoding="utf-8")
+        payload = (str(script) + "\n").encode("utf-8")
+
+        def _decoding_run(argv, **kwargs):
+            codec = kwargs.get("encoding") or host_encoding
+            return subprocess.CompletedProcess(argv, 0, payload.decode(codec), "")
+
+        monkeypatch.setattr(
+            client_mod.shutil,
+            "which",
+            lambda name: str(tmp_path / "mise") if name == "mise" else None,
+        )
+        mock_sub = MagicMock(run=_decoding_run)
+        mock_sub.TimeoutExpired = subprocess.TimeoutExpired
+        monkeypatch.setattr(client_mod, "subprocess_mod", mock_sub)
+        assert _mise_which("node") == str(script)
 
 
 class TestResolveKiroBinEnvOverride:
@@ -434,8 +582,7 @@ class TestResolveKiroBinEnvOverride:
         fake.write_bytes(b"#!/bin/sh\n# original\n")
         fake.chmod(0o755)
         mock_exec = AsyncMock()
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing literal pid on a mocked process; tracked for a de-flake pass
-        mock_exec.return_value.pid = 12345
+        mock_exec.return_value.pid = UNALLOCATABLE_PID
         with (
             patch.dict("os.environ", {"KIROCREW_KIRO_BIN": str(fake)}),
             patch("kiro_crew.session._track_pid"),
@@ -466,7 +613,15 @@ class TestResolveKiroBinEnvOverride:
 
             client = AcpClient(work_dir=tmp_path / "workspace")
             await client._spawn()
-            mock_exec.assert_awaited()
+            assert mock_exec.await_count == 1
+            launched = [
+                a
+                for a in mock_exec.await_args.args
+                if isinstance(a, str) and os.path.realpath(a) == os.path.realpath(fake)
+            ]
+            assert launched, mock_exec.await_args.args
+            # The path launched holds the updated bytes, not a pre-update copy.
+            assert Path(launched[0]).read_bytes() == b"#!/bin/sh\n# self-updated\n"
 
             await _stop_stderr_drain(client)
 
@@ -535,20 +690,10 @@ class TestResolveKiroBinEnvOverride:
             "--agent",
             client._agent,
         )
-        # No inherited snapshot descriptor: the installed binary is exec'd in
-        # place, so there is nothing to hand down to the wrapper chain.
-        #
-        # macOS is the exception, and for a different fd:
-        # bind_voice_safe_agent_workspace opens the agent workspace as a
-        # directory descriptor there so the child enters it by fchdir instead of
-        # re-resolving a pathname a same-UID symlink retarget could aim
-        # elsewhere. _spawn hands that descriptor to create_subprocess_limited
-        # as chdir_fd, which folds exactly that one fd into pass_fds so the
-        # spawn shim inherits it. Off darwin the binding returns None, so
-        # chdir_fd is None and pass_fds stays absent. The binding is also gated
-        # on the harness owning an internal sandbox (ACP_BACKENDS_INTERNAL_SANDBOX,
-        # which the default Kiro backend built here belongs to), so a backend
-        # outside that set stays on the pathname cwd whatever the platform says.
+        # No inherited snapshot descriptor: the installed binary is exec'd in place.
+        # On macOS bind_voice_safe_agent_workspace passes one directory fd as chdir_fd
+        # (fchdir resists a symlink retarget), so pass_fds holds exactly that fd. Off
+        # darwin, or outside ACP_BACKENDS_INTERNAL_SANDBOX, pass_fds stays absent.
         if sys.platform == "darwin":
             pass_fds = spawn_call.kwargs["pass_fds"]
             # Exactly the bound workspace descriptor, nothing else: no snapshot
@@ -675,18 +820,14 @@ class TestResolveKiroBinEnvOverride:
 class TestMiseNodeInstallsDir:
     """ACP node resolution must honour mise's real data root.
 
-    ``_mise_node_installs_dir`` must not hardcode ``~/.local/share/mise``,
-    silently missing installs whenever ``MISE_DATA_DIR`` or ``XDG_DATA_HOME``
-    relocated the data dir — while ``env.mise_data_dir`` already resolved the
-    same root correctly for the build toolchain. These pin the consolidated
-    behaviour for the helper and both of its consumers' entry points.
+    ``_mise_node_installs_dir`` must follow ``MISE_DATA_DIR`` and ``XDG_DATA_HOME`` like
+    ``env.mise_data_dir``, for the helper and both consumers.
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _clean_env(self, monkeypatch):
-        monkeypatch.delenv("MISE_DATA_DIR", raising=False)
-        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    def _clean_env(self, _floor_monkeypatch):
+        _floor_monkeypatch.delenv("MISE_DATA_DIR", raising=False)
+        _floor_monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
     def test_default_layout_is_unchanged(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod

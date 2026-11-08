@@ -1,0 +1,113 @@
+{
+  "fixture": "backend/renew-crew-lease.request",
+  "kind": "backend-request",
+  "contract": "Kiro Relay protocol v1",
+  "contractFile": "rc-relay-protocol-v1.md",
+  "protocolVersion": 1,
+  "section": "10.1",
+  "status": "provisional",
+  "summary": "RenewCrewLease request, at start and then every minute, with the Crew's own credential, in the backend model's shape.",
+  "provisional": [
+    {
+      "field": "envelope",
+      "why": "awsJson1_0 per the backend model. That the server routes on X-Amz-Target at POST / is pending the backend team, contract section 13 item 18."
+    },
+    {
+      "field": "leaseVersion",
+      "why": "Omitted after a start and after a 4401 or 4403 close, so the backend mints a host token. Pending the backend team, contract section 13 item 22."
+    },
+    {
+      "field": "team Crew credential",
+      "why": "How a team Crew's key or JWT-SVID becomes a bearer the backend accepts here is pending, contract section 13 item 21."
+    }
+  ],
+  "planPosition": [
+    "crewVersion at most 32 characters, the Crew's own limit. The model sets none.",
+    "connectedCount counts the people connected now. The model says it is for display only."
+  ],
+  "operation": "RenewCrewLease",
+  "caller": "The Crew host, with the owner's Kiro sign-in for a personal Crew, or a team Crew's credential.",
+  "wire": {
+    "method": "POST",
+    "path": "/",
+    "headers": {
+      "X-Amz-Target": "KiroControlPlaneBearerService.RenewCrewLease",
+      "Content-Type": "application/x-amz-json-1.0",
+      "Authorization": "Bearer <the caller's credential>",
+      "TokenType": "Matched case-sensitively. A team Crew sends its crew API key as the Bearer, as is, with TokenType API_KEY. A personal Crew sends its owner's sign-in: TokenType omitted for IAM Identity Center, AWS Builder ID and Kiro social sign-ins, and EXTERNAL_IDP for an Okta or Microsoft Entra ID sign-in. KIRO_MACHINE_TOKEN is refused on this operation. SSO_OIDC is not accepted. An unrecognized value counts as an omitted header and fails as a generic authentication failure. With the backend's Crew-for-Teams switch on, anything but API_KEY is refused today, a personal Crew included, pending contract section 13 item 29."
+    }
+  },
+  "fields": {
+    "crewInstanceId": "Required. The lower-case UUID the Crew generated once.",
+    "name": "Required. The model's CrewName: 1 to 64 characters, ^[A-Za-z0-9][A-Za-z0-9 ._-]*$. A team Crew shows its administrator's name instead.",
+    "crewVersion": "Required. A version string.",
+    "protocolVersion": "Required. A string, \"1\" in version 1.",
+    "hostKind": "Required. CREW.",
+    "relay": "Required. connectionStatus, CONNECTED or NOT_CONNECTED, and endpointId once the Crew has one.",
+    "connectedCount": "Optional. 0 or more, the model's range. For display only.",
+    "leaseVersion": "Optional. The leaseVersion of the last answer. Omitted after a start and after a 4401 or 4403 close, which asks for a fresh host token."
+  },
+  "examples": [
+    {
+      "name": "first call after a start, no leaseVersion",
+      "body": {
+        "crewInstanceId": "3f2b8c1e-7a4d-4e9b-9c61-2d5a8f0e4b17",
+        "name": "Work laptop",
+        "crewVersion": "0.9.1.0",
+        "protocolVersion": "1",
+        "hostKind": "CREW",
+        "relay": {
+          "connectionStatus": "NOT_CONNECTED"
+        },
+        "connectedCount": 0
+      }
+    },
+    {
+      "name": "a later call, connected, the owner on",
+      "body": {
+        "crewInstanceId": "3f2b8c1e-7a4d-4e9b-9c61-2d5a8f0e4b17",
+        "name": "Work laptop",
+        "crewVersion": "0.9.1.0",
+        "protocolVersion": "1",
+        "hostKind": "CREW",
+        "relay": {
+          "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra",
+          "connectionStatus": "CONNECTED"
+        },
+        "connectedCount": 1,
+        "leaseVersion": 7
+      }
+    },
+    {
+      "name": "after a 4401 close, no leaseVersion so the backend mints a host token",
+      "body": {
+        "crewInstanceId": "3f2b8c1e-7a4d-4e9b-9c61-2d5a8f0e4b17",
+        "name": "Work laptop",
+        "crewVersion": "0.9.1.0",
+        "protocolVersion": "1",
+        "hostKind": "CREW",
+        "relay": {
+          "endpointId": "k7qm3x2vtzr4hbn6cwapfe5dj3q2m7ra",
+          "connectionStatus": "NOT_CONNECTED"
+        },
+        "connectedCount": 0
+      }
+    },
+    {
+      "name": "a team Crew with a teammate on",
+      "body": {
+        "crewInstanceId": "9d0c4e2a-1b7f-4a63-8e25-6f3b1c9d7a02",
+        "name": "Release team Crew",
+        "crewVersion": "0.9.1.0",
+        "protocolVersion": "1",
+        "hostKind": "CREW",
+        "relay": {
+          "endpointId": "t4nw2q7hzk5rmc3xvbp6ld2fe7x5kt3n",
+          "connectionStatus": "CONNECTED"
+        },
+        "connectedCount": 1,
+        "leaseVersion": 42
+      }
+    }
+  ]
+}

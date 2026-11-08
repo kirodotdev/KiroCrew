@@ -46,7 +46,7 @@ _ResultT = TypeVar("_ResultT")
 
 _FETCH_TIMEOUT_SECS = 15
 #: The token used when exactly one Bitbucket Server host is listed.
-GLOBAL_TOKEN_NAME = "BITBUCKET_SERVER_TOKEN"
+GLOBAL_TOKEN_NAME = contract.BITBUCKET_SERVER_TOKEN_NAME
 _PAGE_LIMIT = projection._SECONDARY_PAGE_SIZE
 _CHANGES_PAGE_LIMIT = 500
 _MAX_COMMENTS = 300
@@ -110,6 +110,18 @@ def _token_secret_name(host: str) -> str:
     if hosts._allowed_bitbucket_server_hosts() == frozenset({host}):
         return GLOBAL_TOKEN_NAME
     return host_token_name(host)
+
+
+def token_secret_names() -> frozenset[str]:
+    """Every vault name a token error can tell the reader about, from config alone.
+
+    One per listed host, by the rule :func:`_token_secret_name` names them. A
+    value on a provider error ships to the client as ``secretName`` only when it
+    is one of these: its shape cannot prove it is a name and not an opaque token
+    the provider repeated in its own text, but a name derived from the operator's
+    allowlist carries nothing a provider supplied.
+    """
+    return frozenset(_token_secret_name(host) for host in hosts._allowed_bitbucket_server_hosts())
 
 
 def _setup_guidance(host: str) -> str:
@@ -176,16 +188,25 @@ class _Client:
         try:
             async with self.session.get(url, allow_redirects=False) as resp:
                 if resp.status in {401, 403}:
+                    # Every remedy here names the token's vault entry, so it also
+                    # rides as its own field: with two or more hosts listed the
+                    # per-host name runs past 60 characters, and the panel shows
+                    # it as copyable text rather than inside the wrapped sentence.
+                    secret_name = _token_secret_name(host)
                     if not self.has_token:
-                        raise SourceProviderNotConfigured(_setup_guidance(host))
+                        raise SourceProviderNotConfigured(
+                            _setup_guidance(host), secret_name=secret_name
+                        )
                     if resp.status == 401:
                         raise SourceProviderError(
                             f"Bitbucket Server at {host} rejected the configured token. "
-                            f"{_replace_token_guidance(host)}"
+                            f"{_replace_token_guidance(host)}",
+                            secret_name=secret_name,
                         )
                     raise SourceProviderError(
                         f"The Bitbucket Server token for {host} cannot read this pull request. "
-                        f"{_replace_token_guidance(host)}"
+                        f"{_replace_token_guidance(host)}",
+                        secret_name=secret_name,
                     )
                 if resp.status == 404:
                     raise SourceProviderError(

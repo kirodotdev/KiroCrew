@@ -20,17 +20,21 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
 import OverlayDrawer from '../components/OverlayDrawer'
+import { paneCovered } from '../hooks/paneVisibility'
 
 let reduceMotion = false
+/** A phone/desktop form-switch view transition is in progress (layoutFormTransition). */
+let morphing = false
 
 /** The framer-motion props this mock READS; every other prop lands in `rest` and
  *  is forwarded to the plain DOM element, which is what the index signature is for. */
 interface MotionMockProps {
   [prop: string]: unknown
   children?: React.ReactNode
-  initial?: { clipPath?: string }
+  initial?: { clipPath?: string } | false
   animate?: { clipPath?: string }
-  exit?: { clipPath?: string }
+  exit?: { clipPath?: string } | string
+  variants?: Record<string, (custom: boolean) => { clipPath?: string; transition?: { duration?: number } }>
   transition?: unknown
 }
 
@@ -40,17 +44,23 @@ vi.mock('framer-motion', async () => {
   const React = await import('react')
   const make = (tag: string) =>
     React.forwardRef((props: MotionMockProps, ref: React.Ref<unknown>) => {
-      const { children, initial, animate, exit, transition: _transition, ...rest } = props
+      const { children, initial, animate, exit, variants, transition: _transition, ...rest } = props
+      // A variant-label exit resolves the way AnimatePresence's `custom` would:
+      // with the form-switch flag this test sets.
+      const resolved = typeof exit === 'string' ? variants?.[exit]?.(morphing) : exit
       return React.createElement(tag, {
         ...rest,
         ref,
-        'data-initial-clip': initial?.clipPath ?? '',
+        'data-initial-clip': initial === false ? 'none' : initial?.clipPath ?? '',
         'data-animate-clip': animate?.clipPath ?? '',
-        'data-exit-clip': typeof exit?.clipPath === 'string' ? exit.clipPath : '',
+        'data-exit-clip': typeof resolved?.clipPath === 'string' ? resolved.clipPath : '',
+        'data-exit-duration': resolved?.transition?.duration ?? '',
       }, children)
     })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
   return {
-    motion: new Proxy({}, { get: (_t, tag: string) => make(tag) }),
+    motion: new Proxy({}, { get: (_t, tag: string) => { if (!byTag.has(tag)) byTag.set(tag, make(tag)); return byTag.get(tag) } }),
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
     useReducedMotion: () => reduceMotion,
   }
@@ -92,6 +102,24 @@ describe('OverlayDrawer morph clip', () => {
     reduceMotion = false
     const { container } = mount()
     expect(clipped(container)!.getAttribute('data-exit-clip')).toBe('inset(9px 224px 563px 8px round 6px)')
+  })
+
+  // During a form switch the view transition slides the drawer, so the drawer
+  // neither plays its opening clip nor its collapse.
+  it('enters already open and leaves at once while a form switch is being animated', () => {
+    reduceMotion = false
+    morphing = true
+    document.documentElement.dataset.layoutMorph = 'unfold'
+    try {
+      const { container } = mount()
+      const el = clipped(container)!
+      expect(el.getAttribute('data-initial-clip')).toBe('none')
+      expect(el.getAttribute('data-exit-clip')).toBe('')
+      expect(el.getAttribute('data-exit-duration')).toBe('0')
+    } finally {
+      morphing = false
+      delete document.documentElement.dataset.layoutMorph
+    }
   })
 
   it('expandFrom replaces the OPENING clip so the panel grows out of the flyout', () => {
@@ -197,5 +225,26 @@ describe('OverlayDrawer slide mode', () => {
     expect(style).toContain('width: 320px')
     expect(style).toContain('x: X-MOTION-VALUE')
     expect(panel.querySelector('[data-testid="panel"]')).toBeTruthy()
+  })
+})
+
+// #23564: the phone's slide-mode drawer is drawn over the chat pane, so it
+// marks itself as covering it (paneVisibility); the desktop drawer sits beside
+// the pane and does not.
+describe('OverlayDrawer: covering the chat pane', () => {
+  it('marks the slide-mode drawer as covering only while it is open, and never the desktop drawer', () => {
+    // The same stand-in MotionValue the slide-mode test above uses: the
+    // framer-motion mock forwards it untouched.
+    const X = 'X-MOTION-VALUE' as unknown as import('framer-motion').MotionValue<number>
+    const slide = render(<OverlayDrawer open width={320} slideX={X} coversPane><div>x</div></OverlayDrawer>)
+    expect(paneCovered(document)).toBe(true)
+    // Sliding out: still mounted (the caller holds `open` until the slide-out
+    // ends), but no longer covering, so a tap that opened a chat and closed the
+    // drawer lands on a visible transcript.
+    slide.rerender(<OverlayDrawer open width={320} slideX={X} coversPane={false}><div>x</div></OverlayDrawer>)
+    expect(paneCovered(document)).toBe(false)
+    slide.unmount()
+    render(<OverlayDrawer open width={280}><div>x</div></OverlayDrawer>)
+    expect(paneCovered(document)).toBe(false)
   })
 })

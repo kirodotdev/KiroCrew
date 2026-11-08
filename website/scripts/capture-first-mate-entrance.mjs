@@ -55,8 +55,6 @@ async function openMate(ctx, theme, { outcome = 'started', reduceMotion = false 
   if (reduceMotion) await page.emulateMedia({ reducedMotion: 'reduce' })
   await page.addInitScript(() => {
     localStorage.setItem('mc-lang', 'en')
-    // Crew Members is preview-gated, and so is Mate's greeting.
-    localStorage.setItem('mc-preview-crew', '1')
   })
   const greets = { count: 0 }
   await routeMembersApi(page, EMPTY_THREAD, { members: [MATE] })
@@ -97,7 +95,7 @@ async function run(theme) {
       && (await page.getByTestId('mate-entrance-bubble').innerText()).trim() === LINE
       && (await page.getByTestId('mate-entrance-face').count()) === 1)
   const pillFace = page.getByTestId('member-pill-face')
-  const rowFace = page.getByTestId('member-row-face').first()
+  const rowFace = page.getByTestId('member-face').first()
   const pillBox = await pillFace.boundingBox()
   check(`${theme}: header pill slot and roster row hold their face empty, width kept`,
     await hasAttr(pillFace, 'data-entrance-empty') && await hasAttr(rowFace, 'data-entrance-empty') && !!pillBox && pillBox.width > 0,
@@ -167,7 +165,7 @@ await run('light')
       && (await page.getByTestId('mate-entrance-face').count()) === 0
       && (await page.getByTestId('mate-entrance-bubble').innerText()).trim() === LINE
       && !(await hasAttr(page.getByTestId('member-pill-face'), 'data-entrance-empty'))
-      && !(await hasAttr(page.getByTestId('member-row-face').first(), 'data-entrance-empty')))
+      && !(await hasAttr(page.getByTestId('member-face').first(), 'data-entrance-empty')))
   await page.screenshot({ path: `${OUT}/dark-04-reduced-motion.png` })
   await entrance.waitFor({ state: 'detached', timeout: 4000 })
   check('reduced motion: the line is gone after the hold', (await page.getByTestId('mate-entrance').count()) === 0)

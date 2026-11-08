@@ -142,9 +142,9 @@ _EXCLUDED_PARTS = ("kiro_crew/testing/", "container_tests/")
 #: A site the pool itself owns carries this marker as a comment on one of the
 #: lines the site spans, and is counted separately instead of against the total.
 #: Two readings are legitimate: the pool that spawns a runtime owns its pid, and
-#: the one function that ends the process needs it. Nothing else does. Neither of
-#: those lives in ``src`` on this branch, so the marker appears nowhere here; the
-#: change that lands the ownership module marks its own sites rather than raising
+#: the one function that ends the process needs it. Nothing else does. The pool
+#: marks the sites where it reads its own spare's pid to hand it out for
+#: measurement and teardown, so those sites carry the marker rather than raising
 #: the total, which the exact-count rule would otherwise refuse. Spelled like the
 #: tree's other in-line exemptions (``brand-ok``, ``testpaths-ok``).
 _OWNER_MARKER = "pid-owner" + "-ok"
@@ -154,11 +154,11 @@ _OWNER_MARKER = "pid-owner" + "-ok"
 #: readers silently buys room for ten new ones. A change that removes a site
 #: lowers this number in the same commit. A change that wants a new reader takes
 #: the lease handle instead, or marks the site as the pool's own.
-_BASELINE_SITES = 144
+_BASELINE_SITES = 143
 
 #: Owner-marked sites in ``src``. Pinned for the same reason the total is: marking
 #: an ordinary reader would otherwise move a site out of the total for free.
-_BASELINE_OWNER_MARKED = 3
+_BASELINE_OWNER_MARKED = 7
 
 #: Files that hold sites at the baseline and are not yet migrated. Each must still
 #: be found, so a scanner that matches nothing cannot pass as a clean tree. Drop a

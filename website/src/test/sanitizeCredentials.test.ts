@@ -64,7 +64,9 @@ describe('sanitizeCredentials: JWT family', () => {
     // link-token alternative's right boundary is satisfied by a `.`, so running
     // it first matches `header.payload` and leaves `.signature` rendered.
     const sig = 'C'.repeat(43)
-    const crafted = `eyJ${'A'.repeat(100)}.${'B'.repeat(43)}.${sig}`
+    // A header that decodes to a JSON object, as a real JWS header does, 125 chars past `eyJ`.
+    const header = btoa(JSON.stringify({ alg: 'HS256', kid: 'k'.repeat(72) })).replace(/=+$/, '')
+    const crafted = `${header}.${'B'.repeat(43)}.${sig}`
 
     const out = sanitizeCredentials(`log: ${crafted}`)
 
@@ -101,6 +103,16 @@ describe('sanitizeCredentials: JWT family', () => {
     ]) {
       expect(sanitizeCredentials(text)).toBe(text)
     }
+  })
+
+  it('leaves a hostname holding eyJ intact and still redacts a JWS glued after one', () => {
+    // A JWS/JWE-shaped hit counts only when its header decodes to a JSON object, as in
+    // the backend, so the host label is not cut in half. The rejected hit is read past,
+    // not skipped, so a real token after it with only a dot between still redacts.
+    const url = 'https://honeyJar.atlassian.net/wiki/spaces/ABC/pages/1234567890/Design+Doc'
+
+    expect(sanitizeCredentials(`see ${url}`)).toBe(`see ${url}`)
+    expect(sanitizeCredentials(`https://honeyJar.${JWS}/x`)).toBe('https://honeyJar.[REDACTED]/x')
   })
 
   it('redacts a token a renderer concatenated straight onto a label', () => {

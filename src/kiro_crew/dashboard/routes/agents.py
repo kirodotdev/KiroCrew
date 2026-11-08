@@ -13,7 +13,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import handlers
-from kiro_crew.dashboard.handlers import agent_templates
+from kiro_crew.dashboard.handlers import agent_templates, member_export
 from kiro_crew.dashboard.handlers.agent_catalog import api_agent_catalog
 
 
@@ -58,12 +58,38 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/agents/resolved-model", handlers.api_kirocrew_agent_resolved_model)
     app.router.add_post("/api/agents", handlers.api_kirocrew_agents_create)
     app.router.add_post("/api/agents/sync", handlers.api_kirocrew_agents_sync)
+    # Body-form route registered first: PUT /api/agents with name in JSON body,
+    # the proxy-safe alternative for crew names that contain characters needing
+    # percent-encoding. Must precede the path-form route so aiohttp resolves
+    # the literal path /api/agents without the {name} variable pattern.
+    app.router.add_put("/api/agents", handlers.api_kirocrew_agent_update)
     app.router.add_put("/api/agents/{name}", handlers.api_kirocrew_agent_update)
     app.router.add_delete("/api/agents/{name}", handlers.api_kirocrew_agent_delete)
     # Per-crew uploaded avatar (the "image" tier; file under the data home,
     # served through the authenticated API so remote dashboards work)
     app.router.add_get("/api/agents/{name}/avatar", handlers.api_kirocrew_agent_avatar_get)
     app.router.add_post("/api/agents/{name}/avatar", handlers.api_kirocrew_agent_avatar_upload)
+    # The same crew routes with the name as a base64url segment, for a name a
+    # path-normalising proxy would decode into a bare space and answer 502 on
+    # (`kiro_crew/agent_url_path.py`). Same handlers, so the same
+    # owner gate. aiohttp tries the longer static prefix `/api/agents/b64`
+    # first whatever the order here, so what keeps a crew named `b64` on its
+    # own routes is that no twin shares a method AND segment pattern with a
+    # path-form route (`test_no_b64_twin_shadows_a_path_form_route`).
+    app.router.add_delete("/api/agents/b64/{name_b64}", handlers.api_kirocrew_agent_delete)
+    app.router.add_get("/api/agents/b64/{name_b64}/avatar", handlers.api_kirocrew_agent_avatar_get)
+    app.router.add_post(
+        "/api/agents/b64/{name_b64}/avatar", handlers.api_kirocrew_agent_avatar_upload
+    )
+    app.router.add_get("/api/agents/b64/{name_b64}/capabilities", api_member_capabilities)
+    app.router.add_post("/api/agents/b64/{name_b64}/capabilities/preview", api_member_capabilities)
+    app.router.add_post(
+        "/api/agents/b64/{name_b64}/capabilities/detach", api_member_capabilities_detach
+    )
+    app.router.add_put("/api/agents/b64/{name_b64}/capabilities", api_member_capabilities)
+    app.router.add_get("/api/agents/b64/{name_b64}/worker-kit", api_member_worker_kit)
+    app.router.add_post("/api/agents/b64/{name_b64}/worker-kit/preview", api_member_worker_kit)
+    app.router.add_put("/api/agents/b64/{name_b64}/worker-kit", api_member_worker_kit)
     # Edition capability agents
     app.router.add_get("/api/capability/agents", handlers.api_capability_agents_list)
     app.router.add_post("/api/capability/agents/install", handlers.api_capability_agents_install)
@@ -81,9 +107,13 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/members/{slug}/activity", handlers.api_member_activity)
     app.router.add_get("/api/members/{slug}/projections", handlers.api_member_projections)
     app.router.add_get("/api/members/{slug}/briefing", handlers.api_member_briefing)
-    app.router.add_get("/api/members/{slug}/recap", handlers.api_member_recap)
     app.router.add_get("/api/members/{slug}/rules", handlers.api_member_rules_get)
     app.router.add_put("/api/members/{slug}/rules", handlers.api_member_rules_put)
+    # Export one crewmate as a .crewmate file (rfc-crewmate-share.md §5.3): owner-only.
+    app.router.add_post("/api/members/{slug}/export", member_export.api_member_export)
+    app.router.add_post(
+        "/api/members/{slug}/export/lessons-draft", member_export.api_member_export_lessons_draft
+    )
     # Crewmate teams (a name + an ordered member list; the Crewmates page's
     # roster grouping and team view). Same dashboard-only posture as the
     # members routes; the writes are owner actions.

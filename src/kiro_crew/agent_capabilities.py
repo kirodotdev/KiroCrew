@@ -14,15 +14,16 @@ import hmac
 import json
 import logging
 import secrets
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any, Callable
 
-from kiro_crew import agent_state, kiro_cli, mate_capabilities
+from kiro_crew import agent_state, mate_capabilities
 from kiro_crew.agent import (
     OWNED_KIRO_AGENT_FILES,
     _is_confirmed_managed_dashboard_author,
     _read_spec_capped,
+    _spec_permissions_accepted,
     agents_spec_lock,
     kiro_agents_dir_path,
 )
@@ -112,14 +113,14 @@ def _digest(value: Any) -> str:
 def _read_spec(path: Path) -> dict:
     from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 
-    try:
-        raw = safe_read_file_bytes_nolink(str(path), str(path.parent), max_bytes=MAX_DOCUMENT_BYTES)
+    with suppress(ValueError, FileTooLargeError):
+        raw = safe_read_file_bytes_nolink(
+            str(path), str(path.parent), max_bytes=MAX_DOCUMENT_BYTES, canonical_gate=True
+        )
         result = parse_agent_spec_bytes(raw, path) if raw is not None else None
-    except (ValueError, FileTooLargeError):
-        raise CapabilityError("source_unreadable") from None
-    if not isinstance(result, dict):
-        raise CapabilityError("source_unreadable")
-    return result
+        if isinstance(result, dict):
+            return result
+    raise CapabilityError("source_unreadable")
 
 
 def _source(name: str, project: str, *, allow_private: bool = False) -> tuple[Path, dict, dict]:
@@ -221,14 +222,14 @@ def _materialize(base: dict, rows: dict[str, dict], catalog: dict[str, str]) -> 
             result["mcpServers"][server].setdefault("autoApprove", []).append(tool)
     for section in ("tools", "allowedTools"):
         result[section] = list(rows[section])
+    # Ambient loading serves the global mcp.json, whose servers can back a grant too.
+    ambient, servers = result.get("includeMcpJson", True) is not False, result["mcpServers"]
     result["allowedTools"] = [
         ref
         for ref in result["allowedTools"]
         if not ref.startswith("@")
-        or (
-            ref[1:].split("/", 1)[0] in result["mcpServers"]
-            and not result["mcpServers"][ref[1:].split("/", 1)[0]].get("disabled")
-        )
+        or (ambient and ref[1:].split("/", 1)[0] not in servers)
+        or not servers.get(ref[1:].split("/", 1)[0], {"disabled": True}).get("disabled")
     ]
     # Preserve the relative order of all surviving custom resource entries.
     wanted = list(rows["resources"].values()) + list(rows["skills"].values())
@@ -789,17 +790,15 @@ def _unvouched(snap: dict, spec: dict) -> list[str]:
         spec.get("allowedTools"), str(spec.get("name", ""))
     ):
         vouched.add("permissions")
-    parent = snap["parent_spec"]
+    parent, reviewed = snap["parent_spec"], set((snap["intent"] or {}).get("reviewed_keys", ()))
     if "permissions" not in spec and "permissions" in parent:
-        # ``_write_derived_permissions`` removes the block itself on a release
-        # that refuses it, so its absence is then Crew's output, not a hand edit.
-        if not kiro_cli.spec_permissions_supported(kiro_cli.installed_kiro_cli_version()):
+        # The writer's own gate removed it, so it is Crew's output, not a hand edit.
+        if not _spec_permissions_accepted():
             vouched.add("permissions")
-    # A deleted key is drift too: kiro-cli reads an absent key as its default
-    # (``includeMcpJson`` absent means true), so a dropped parent key can grant.
+    # A deleted key can grant (absent ``includeMcpJson`` reads true): it is drift too.
     return sorted(
         key
-        for key in (set(spec) | set(parent)) - vouched
+        for key in (set(spec) | set(parent) | reviewed) - vouched
         if key not in spec or key not in parent or spec[key] != parent[key]
     )
 
@@ -818,6 +817,7 @@ def _stamp_reviewed(snap: dict, spec: dict, intent: dict) -> bool:
         error.file = snap["target"] + ".json"
         raise error
     intent["materialized"] = _digest(spec)
+    intent["reviewed_keys"] = sorted(spec)  # every stamp, so no baseline is read stale
     return drifted
 
 
@@ -961,7 +961,7 @@ class CapabilityService:
         error = ""
         try:
             parent_path, parent, descriptor = _source(parent_name, project)
-            if intent and descriptor != intent["parent"]:
+            if intent and _parent_identity(descriptor) != _parent_identity(intent["parent"]):
                 raise CapabilityError("parent_identity_changed")
         except CapabilityError as exc:
             if not lineage:
@@ -1098,7 +1098,7 @@ class CapabilityService:
                         "oauthScopes",
                         "oauth",
                     }
-                    if set(value) - allowed or ("command" in value and "url" in value):
+                    if set(value) - allowed or ("command" in value and value.get("url", "") != ""):
                         raise CapabilityError("invalid_transport", 400)
                     if "oauth" in value and (
                         not isinstance(value["oauth"], dict)
@@ -1835,14 +1835,14 @@ def require_unmanaged_template(name: str) -> None:
 
 
 def _parent_identity(descriptor: dict) -> dict:
-    """The Parent file a descriptor names, without the project it was resolved from.
+    """The Parent file a descriptor names, as two resolutions of it are compared.
 
-    ``_source`` records the project it searched in, but a global Parent is the
-    same file from every project that does not shadow its name, so that field
-    alone never makes two resolutions different Parents. Name, scope, source and
-    resolved path still must all match.
+    A global Parent is the same file from every project that does not shadow its
+    name, so there the project never counts; a project Parent belongs to its own
+    project, so it does. Name, scope, source and resolved path must all match.
     """
-    return {key: value for key, value in descriptor.items() if key != "project"}
+    glob = descriptor.get("scope") == "global"
+    return {key: value for key, value in descriptor.items() if key != "project" or not glob}
 
 
 def prepare_member_capabilities(member: str, project_dir: str | Path | None = None) -> dict:
@@ -1974,8 +1974,8 @@ def member_backend_warning(spec: dict) -> dict | None:
         if code is None:
             continue
         warning: dict[str, Any] = {"code": code, "backend": backend, "setting": setting}
-        # Also on a harness refusal: switching to a member backend that loads
-        # saved specs (kas) would then refuse these, so the page names both fixes.
+        # Also on a harness refusal: some member backends that load saved specs
+        # (claude, codex, deepseek, pi) would then refuse these, so the page names both fixes.
         if limited:
             warning["servers"] = list(limited)
         return warning

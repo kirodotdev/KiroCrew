@@ -81,6 +81,26 @@ def test_a_queue_without_a_required_check_fails() -> None:
     assert "no required_status_checks" in message
 
 
+def test_a_queue_with_empty_required_checks_fails() -> None:
+    # A required_status_checks rule that names ZERO checks lands every merge
+    # group unexamined -- the same "queue waits on nothing" state as having no
+    # rule at all -- so the gate must fail it, with a message that says the rule
+    # exists but requires nothing (not the "no rule" message).
+    rules = [rule for rule in _LIVE_WITHOUT_QUEUE if rule["type"] != "required_status_checks"]
+    empty = {
+        "type": "required_status_checks",
+        "ruleset_id": 20088190,
+        "parameters": {
+            "strict_required_status_checks_policy": False,
+            "required_status_checks": [],
+        },
+    }
+    ok, message = gate.verdict([*rules, empty, _MERGE_QUEUE])
+    assert not ok
+    assert "requires no checks" in message
+    assert "no required_status_checks" not in message
+
+
 def test_a_non_list_body_fails_closed() -> None:
     assert gate.verdict({"message": "Not Found"})[0] is False
 

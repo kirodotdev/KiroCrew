@@ -35,15 +35,6 @@ class TestChmodShims:
         # Windows — a non-existent path must not raise either way.
         pc.chmod_safe(os.path.join(tempfile.gettempdir(), "no-such-mc-file"), 0o600)
 
-    def test_fchmod_safe_on_real_fd_is_safe(self, tmp_path):
-        f = tmp_path / "f.txt"
-        f.write_text("x")
-        fd = os.open(str(f), os.O_RDONLY)
-        try:
-            pc.fchmod_safe(fd, 0o600)  # applies on POSIX, no-op on Windows
-        finally:
-            os.close(fd)
-
 
 class TestRestrictToOwnerArgvOnLinux:
     """Regression guard for the Windows owner-only DACL, exercised on Linux.
@@ -263,7 +254,7 @@ class TestChmodShimsApply:
         finally:
             os.close(fd)
 
-    def test_fchmod_safe_swallows_oserror(self, tmp_path, monkeypatch):
+    def test_fchmod_safe_swallows_oserror(self, tmp_path, monkeypatch, caplog):
         # The except branch: os.fchmod raising OSError must be logged + swallowed,
         # never propagated. Force the error since a real fd would just succeed.
         if not pc.IS_POSIX:
@@ -277,9 +268,12 @@ class TestChmodShimsApply:
 
         monkeypatch.setattr(pc.os, "fchmod", boom)
         try:
-            pc.fchmod_safe(fd, 0o600)  # must NOT raise out
+            with caplog.at_level(logging.WARNING, logger=pc.logger.name):
+                pc.fchmod_safe(fd, 0o600)  # must NOT raise out
         finally:
             os.close(fd)
+        warnings = [r.getMessage() for r in caplog.records if r.name == pc.logger.name]
+        assert warnings == [f"Cannot set permissions on fd {fd}"]
 
     def test_chmod_safe_applies_mode_on_posix(self, tmp_path):
         # POSIX: chmod_safe must apply the mode to the path on disk.
@@ -289,7 +283,7 @@ class TestChmodShimsApply:
         if pc.IS_POSIX:
             assert oct(os.stat(str(f)).st_mode & 0o777) == "0o640"
 
-    def test_chmod_safe_swallows_oserror(self, tmp_path, monkeypatch):
+    def test_chmod_safe_swallows_oserror(self, tmp_path, monkeypatch, caplog):
         # The except branch: os.chmod raising OSError is logged + swallowed.
         if not pc.IS_POSIX:
             pytest.skip("POSIX os.chmod branch")
@@ -300,7 +294,10 @@ class TestChmodShimsApply:
             raise OSError("forced")
 
         monkeypatch.setattr(pc.os, "chmod", boom)
-        pc.chmod_safe(str(f), 0o640)  # must NOT raise out
+        with caplog.at_level(logging.WARNING, logger=pc.logger.name):
+            pc.chmod_safe(str(f), 0o640)  # must NOT raise out
+        warnings = [r.getMessage() for r in caplog.records if r.name == pc.logger.name]
+        assert warnings == [f"Cannot set permissions on {f}"]
 
 
 #: An ACE that icacls prints with a bare ``(I)`` flag is INHERITED, so its presence
@@ -380,11 +377,10 @@ class TestOwnerOnlyDaclPredicate:
 class TestRestrictToOwner:
     """Fail-loud owner-only lockdown used by every ~/.kirocrew secret writer.
 
-    The review finding was that the earlier
-    ``if IS_POSIX: os.chmod(...)`` guard left Windows with NO per-file owner-only
-    restriction on the token signing key, per-app secrets, refresh-token state,
-    snapshot tarball, and cron internal-secret temp file — a secret-at-rest
-    posture regression. ``restrict_to_owner`` closes that: POSIX chmod 0o600,
+    A bare ``if IS_POSIX: os.chmod(...)`` guard would leave Windows with NO per-file
+    owner-only restriction on the token signing key, per-app secrets, refresh-token
+    state, snapshot tarball, and cron internal-secret temp file.
+    ``restrict_to_owner`` covers both: POSIX chmod 0o600,
     Windows an owner-only DACL applied via icacls (S-1-3-4 = Owner Rights).
     """
 

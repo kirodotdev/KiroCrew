@@ -108,9 +108,11 @@ class TestTierArming(_HomeIsolated):
 
         With tier arming as the agent's job, the only thing stopping it pausing
         `rotation-check` — the sole always-tier job, so the only one that can re-arm a
-        gated instance — is a sentence of SOP prose. Prose is not enforcement, and
-        `mcpTools` is declarative only (nothing calls `check_tool_permission` at runtime),
-        so the manifest entry is not a gate either. Arming lives in
+        gated instance — is a sentence of SOP prose. Prose is not enforcement. `mcpTools`
+        now IS enforced for an app's own agent sessions (the framework excludes every
+        undeclared managed tool via managedToolPolicy), but this app's crons run on the
+        host default agent (no `agent:` set), which that enforcement does not scope, so
+        the manifest entry alone is not a gate here. Arming lives in
         `rotation.apply_tiers`; the capability must be absent from the manifest, or
         a future SOP edit can quietly hand the loaded gun back.
         """
@@ -514,7 +516,7 @@ class TestArmingOnAnAlreadyUnreadableStore(unittest.IsolatedAsyncioTestCase):
             # NEGATIVE CONTROL: the probe must not fire on a store that is merely
             # empty. Without this the guard could be satisfied by refusing always,
             # which would break every honestly-empty install.
-            store.write_text(json.dumps({"jobs": []}))
+            store.write_text(json.dumps({"jobs": []}), encoding="utf-8")
             healthy = CronService(base_dir=Path(tmp))
             await healthy.list_jobs_async(True)
             healthy.raise_if_store_unreadable()

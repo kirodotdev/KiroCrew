@@ -1,5 +1,5 @@
 import { savePrefExplicitly } from '../lib/uiPrefs'
-import { Fragment, useEffect, useState, useMemo } from 'react'
+import { Fragment, useEffect, useRef, useState, useMemo } from 'react'
 import { X, Keyboard } from 'lucide-react'
 import { DEFAULT_SHORTCUTS, formatShortcut, formatChordCaps, resolveShortcutDef, SHORTCUT_GROUPS, shortcutGroupLabel, shortcutLabel, SHORTCUTS_ENABLED_KEY, SHORTCUTS_ENABLED_EVENT, IS_MAC, MAC_CTRL_DIGITS_KEY, type ShortcutDef } from '../hooks/useKeyboardShortcuts'
 import { useQuickSearchShortcut } from '../hooks/useQuickSearchShortcut'
@@ -9,11 +9,19 @@ import { formatQuickSearchKeys, formatChordKeys } from '../lib/quickSearchShortc
 import { PANEL_TOGGLE_IDS, TERMINAL_PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcuts'
 import { formatAcceleratorKeys } from '../lib/globalHotkey'
 import { isElectron } from '../lib/electron'
+import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
 import { Toggle, SearchInput, FilteredEmpty } from './ui'
 import ErrorNotice from './ErrorNotice'
+import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+import { shortcutPlatform, useShortcutBindings } from '../hooks/useKeyboardShortcuts'
+import { matchShortcutEvent } from '../lib/shortcutRegistry'
 
 import { i18nT } from '../i18n/t'
+
+// Escape stays on the modal's own document listener, which clears the search
+// before it closes, so the trap is wired with Escape off and a no-op in its place.
+const NO_ESCAPE = () => {}
 /**
  * Shortcut group ids + heading resolver, re-exported from the hook that owns
  * them.
@@ -72,8 +80,12 @@ export function groupShortcuts(group: string, macCtrl: boolean): ShortcutDef[] {
   // handler never binds (see useInstanceShortcuts). Don't advertise a binding
   // the host environment will steal.
   if (group === 'remote-crews' && !isElectron) return []
+  // Only the plain message input indents a list line on Tab; with Style Markdown
+  // While Typing on, Tab leaves the editor, so the two Tab rows are not listed.
+  const tabIndents = !loadChatConfig().inlineMarkdown
   const out: ShortcutDef[] = []
   for (const s of DEFAULT_SHORTCUTS.filter(s => s.group === group)) {
+    if (!tabIndents && (s.id === 'list-indent' || s.id === 'list-outdent')) continue
     // When Mac user toggles back to Alt+digit, adjust the display
     if (IS_MAC && !macCtrl && s.id.startsWith('chat-') && s.ctrl) {
       out.push({ ...s, ctrl: false, alt: true })
@@ -148,22 +160,37 @@ export function ShortcutGroupRows({ entries, hintClass }: { entries: readonly Sh
  * primary after an "or", muted. A legacy alias is just muted (it works too); a
  * browser-reserved chord demoted in a browser host carries an inline tag naming
  * where it works, because muted alone would read as "also works" there.
+ *
+ * Below `sm`, the row stacks a full-width label above its chords so narrow
+ * windows never squeeze a short label into a one-word column. From the `sm`
+ * breakpoint up the label does not shrink: when two full chords plus a tag
+ * outrun the row (reopen-chat in a browser host), the caps column wraps onto a
+ * second line while the short label stays on one. There it is also capped at
+ * 55% of the row. At every width, a combo never breaks: its keys stay together
+ * and the caps line breaks only between combos ("or" and a tag), never between
+ * "Alt" and "S".
  */
 export function ShortcutRow({ label, keys, secondary, status }: { label: string; keys: string[]; secondary?: readonly SecondaryChord[]; status?: string }) {
   return (
-    <div className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">
-      <span className="text-[13px] text-text">{label}</span>
-      <span className="flex items-center gap-1 flex-wrap justify-end">
+    <div className="flex flex-col items-stretch justify-between gap-1 py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors sm:flex-row sm:items-center sm:gap-3">
+      <span className="w-full text-[13px] text-text sm:w-auto sm:shrink-0 sm:max-w-[55%]">{label}</span>
+      <span className="flex w-full items-center gap-1 flex-wrap justify-start sm:w-auto sm:justify-end">
         {/* `status` renders muted text (e.g. "Off") in the value slot instead of
             a Kbd cap, so a disabled shortcut does not read as a key literally
             named "Off". It is mutually exclusive with `keys`. */}
         {status
           ? <span className="text-[12px] text-muted">{status}</span>
-          : keys.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}
+          : (
+            <span data-testid="shortcut-combo" className="flex items-center gap-1 flex-nowrap">
+              {keys.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}
+            </span>
+          )}
         {secondary?.map((sc, j) => (
-          <span key={j} className="flex items-center gap-1 opacity-60">
+          <span key={j} className="flex items-center gap-1 flex-wrap justify-start sm:justify-end opacity-60">
             <span className="text-muted text-[11px] mx-1">{i18nT('components.shortcutsModal.or')}</span>
-            {sc.caps.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}
+            <span data-testid="shortcut-combo" className="flex items-center gap-1 flex-nowrap">
+              {sc.caps.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}
+            </span>
             {/* A div, not a span: "or" and the tag are separate catalog units, and a
                 block element ends the inline text run so the i18n render gate never
                 sees them glued into one string (it is a flex item, so layout is the same). */}
@@ -268,6 +295,11 @@ export const PANEL_TOGGLE_LABEL_KEY: Record<PanelToggleId, string> = {
   'terminal': 'hooks.useKeyboardShortcuts.toggle_terminal',
   // Reuses the terminal panel's own "+" button label, so every locale already has it.
   'terminal-new': 'components.bottomTerminalPanel.new_terminal',
+  // Reuses the tab's own × label, for the same reason.
+  'terminal-close': 'components.bottomTerminalPanel.close_terminal',
+  'terminal-prev': 'hooks.useKeyboardShortcuts.previous_terminal',
+  'terminal-next': 'hooks.useKeyboardShortcuts.next_terminal',
+  'side-terminal': 'hooks.useKeyboardShortcuts.toggle_side_terminal',
 }
 
 /**
@@ -306,30 +338,30 @@ export function PanelToggleRows({ ids }: { ids: PanelToggleId[] }) {
  * DEFAULT_SHORTCUTS because it is not a renderer chord at all: the desktop
  * shell's main process registers it OS-wide (electron/global-hotkey.js) and it
  * works while the app is in the background. Renders the accelerator as
- * ACTUALLY bound — {@link useGlobalHotkey} returns null in a plain browser and
- * when nothing could be bound, and the whole row is hidden rather than
- * advertising a chord that does not work.
+ * ACTUALLY bound, plus a one-line notice when that is not what the stored
+ * preference asked for. {@link useGlobalHotkey} returns null in a plain
+ * browser, which hides the row. `onHandoff` lets an overlay host (the shortcuts
+ * modal) close itself once the notice hands off to the chat underneath it.
  */
-export function GlobalHotkeyRow() {
+export function GlobalHotkeyRow({ onHandoff }: { onHandoff?: () => void } = {}) {
   const hotkey = useGlobalHotkey()
   if (!hotkey) return null
-  // Unbound on a desktop build (e.g. the opt-out default on a fresh install):
-  // show the row as "Off" with how-to-enable guidance below, rather than
-  // hiding it — a hidden switch cannot be turned back on.
-  if (!hotkey.accelerator) {
-    return (
+  const { accelerator, requested } = hotkey
+  // A requested chord other than the bound one fell back to the default, or
+  // nothing could be registered. An older shell sends no `requested`.
+  const notice = requested && requested !== accelerator
+    ? i18nT(accelerator ? 'components.shortcutsModal.global_hotkey_fell_back' : 'components.shortcutsModal.global_hotkey_unavailable')
+    : null
+  return (
+    <>
+      {/* Unbound shows "Off" rather than hiding: a hidden switch cannot be turned back on. */}
       <ShortcutRow
         label={i18nT('components.shortcutsModal.show_or_focus_the_kiro_crew_window')}
-        keys={[]}
-        status={i18nT('components.shortcutsModal.global_hotkey_off')}
+        keys={formatAcceleratorKeys(accelerator, IS_MAC)}
+        status={accelerator ? undefined : i18nT('components.shortcutsModal.global_hotkey_off')}
       />
-    )
-  }
-  return (
-    <ShortcutRow
-      label={i18nT('components.shortcutsModal.show_or_focus_the_kiro_crew_window')}
-      keys={formatAcceleratorKeys(hotkey.accelerator, IS_MAC)}
-    />
+      {notice && <ErrorNotice variant="inline" message={notice} askAgent onHandoff={onHandoff} testId="global-hotkey-notice" className="px-2" />}
+    </>
   )
 }
 
@@ -361,6 +393,28 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
   }, [onClose, searchQuery])
+
+  // Tab stays inside the dialog and focus returns to the opener on close.
+  const dialogRef = useRef<HTMLDivElement>(null)
+  useDialogFocusTrap(dialogRef, NO_ESCAPE, { handleEscape: false })
+  // The search box takes the first focus, not the trap's first control (the
+  // close button). Declared after the trap, so it runs after the trap's
+  // focus-in, which has already captured the opener to restore.
+  useEffect(() => {
+    dialogRef.current?.querySelector<HTMLInputElement>('input')?.focus({ preventScroll: true })
+  }, [])
+
+  // Keep keystrokes inside the dialog away from the page's global shortcuts,
+  // as `Modal` does: one of those (the command palette) would open a second
+  // trapped overlay that fights this one for Tab. Two keys still travel:
+  // Escape, for the listener above, and the chord that opened this dialog,
+  // which closes it again.
+  const bindings = useShortcutBindings()
+  const isolateKeys = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') return
+    if (matchShortcutEvent(e.nativeEvent, bindings, shortcutPlatform()) === 'shortcuts-modal') return
+    e.stopPropagation()
+  }
 
   const filteredGroups = useMemo(() => {
     return SHORTCUT_GROUPS.map(group => {
@@ -438,8 +492,8 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
     // Backdrop click-to-dismiss is a supplementary mouse affordance; keyboard
     // users close via Escape, already wired through the document keydown
     // listener above, so the dialog role stays keyboard-accessible.
-    // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-noninteractive-element-interactions
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise" role="dialog" aria-modal="true" aria-label={i18nT('components.shortcutsModal.keyboard_shortcuts')} onClick={onClose}>
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
+    <div ref={dialogRef} className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/60 backdrop-blur-xs animate-rise p-safe" role="dialog" aria-modal="true" aria-label={i18nT('components.shortcutsModal.keyboard_shortcuts')} onClick={onClose} onKeyDown={isolateKeys}>
       {/* onClick only stops propagation so inner clicks don't hit the backdrop
           dismiss handler; it is event plumbing, not an interactive control. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions */}
@@ -454,7 +508,6 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
             placeholder={i18nT('components.shortcutsModal.search')}
-            autoFocus
             aria-label={i18nT('components.shortcutsModal.search')}
             className="[&>input]:pr-8"
           />
@@ -503,7 +556,7 @@ export default function ShortcutsModal({ onClose }: { onClose: () => void }) {
               <div className="mb-5 last:mb-0">
                 <div className="text-[12px] font-medium text-muted uppercase tracking-wider mb-2">{i18nT('components.shortcutsModal.desktop_app')}</div>
                 <div className="grid gap-1">
-                  <GlobalHotkeyRow />
+                  <GlobalHotkeyRow onHandoff={onClose} />
                 </div>
                 <div className="text-[11px] text-muted mt-1 px-2">{i18nT(globalHotkey?.accelerator ? 'components.shortcutsModal.global_hotkey_hint' : 'components.shortcutsModal.global_hotkey_hint_off')}</div>
               </div>

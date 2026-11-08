@@ -73,7 +73,7 @@ export default function LabelPicker({
             onClick={() => onAddMany(suggestions.map((s) => s.name))}
             className="inline-flex items-center gap-1 text-[12px] px-2.5 py-1.5 rounded-md border border-accent/40 text-accent hover:bg-accent-subtle cursor-pointer bg-transparent whitespace-nowrap"
           >
-            <Sparkles size={12} /> {i18nT('apps.issueRadar.components.labelPicker.add')} {suggestions.length} {i18nT('apps.issueRadar.components.labelPicker.suggested')}
+            <Sparkles size={12} /> {i18nT('apps.issueRadar.components.labelPicker.add_suggested', { count: suggestions.length })}
           </button>
         )}
       </div>

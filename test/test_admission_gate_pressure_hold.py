@@ -219,7 +219,7 @@ class TestSpawnAdmissionGatePressureHold(_TestSpawnAdmissionGateHarness):
         monkeypatch.setattr(
             crew_log_emit,
             "remember_child_origin",
-            lambda agent_id, sid, turn: pinned.append((agent_id, sid, turn)),
+            lambda agent_id, sid, turn, attempt=0: pinned.append((agent_id, sid, turn)),
         )
         mgr = self._mgr()
         self._busy(mgr)
@@ -1275,7 +1275,7 @@ class TestSpawnAdmissionGatePressureHold(_TestSpawnAdmissionGateHarness):
 
         for name in ("LINUX", "WINDOWS", "MACOS"):
             monkeypatch.setattr(platform_compat, "IS_" + name, name == "MACOS")
-        monkeypatch.setattr(subagent_mod, "_macos_available_memory_gb", lambda: -1.0)
+        monkeypatch.setattr(subagent_mod, "_host_available_gb", lambda: -1.0)
         mgr = self._mgr()
         self._busy(mgr)
         self._level(monkeypatch, 2)
@@ -1299,7 +1299,7 @@ class TestSpawnAdmissionGatePressureHold(_TestSpawnAdmissionGateHarness):
         for name in ("LINUX", "WINDOWS", "MACOS"):
             monkeypatch.setattr(platform_compat, "IS_" + name, name == "MACOS")
         # 8 GB reclaimable clears the 4.0 GB floor plus warming-start reserves.
-        monkeypatch.setattr(subagent_mod, "_macos_available_memory_gb", lambda: 8.0)
+        monkeypatch.setattr(subagent_mod, "_host_available_gb", lambda: 8.0)
         self._level(monkeypatch, platform_compat.MEMORY_PRESSURE_WARN)
         mgr = self._mgr()
         self._busy(mgr)

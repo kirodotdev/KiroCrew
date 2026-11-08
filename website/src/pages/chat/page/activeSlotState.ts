@@ -6,13 +6,16 @@ import { selectComposerBusy, selectProjectChipLocked, selectSlotSubagentsActive,
 import type { TurnItem } from '../types'
 import { messageRowKey } from '../ChatPageMessageContent'
 import { devWatchMessages, inspectorOn, devLog } from '../../../dev/scrollInspector'
-import { type PromptHistoryItem, promptHistoryFromMessages, samePromptHistory } from '../../../components/composerPromptHistory'
+import { useSentPromptHistory } from '../../../components/useSentPromptHistory'
 import { countCompletedTurns } from '../../../lib/completedTurns'
 import { runBelongsToSlot } from '../../../apps/workflows/runModel'
 import { useTipTrigger } from '../../../components/TipCard'
 import { useKnowledgeFetch } from '../useKnowledgeFetch'
 import { closeCrewWindow, useCrewWindow } from '../crew-window/crewWindowStore'
 import { useGuideRevealScope } from '../../../guide/GuideRevealScope'
+import { slotRowByKey } from '../../../store/slotIndex'
+import { crewRootOf } from '../../../lib/crewMode'
+import { useEnvironmentStartLabel } from '../../../components/sessionEnvironmentHooks'
 
 // Stable identity for the "no follow-up cards" case: returning a fresh {} from
 // the selector would make it a new reference on every store update.
@@ -62,13 +65,6 @@ export function useActiveSlotState({
   const knowledgeFetch = useKnowledgeFetch(activeSlot)
   const knowledgeFetchRef = useRef(knowledgeFetch)
   knowledgeFetchRef.current = knowledgeFetch
-  // User-sent messages (oldest → newest) for ↑/↓ prompt history in the input.
-  // Deduplicate consecutive identical prompts to match shell/REPL behavior.
-  // `messages` gets a new reference on every streaming chunk; preserve the
-  // previous array when user-message content is unchanged so `sentMessages`
-  // stays referentially stable and doesn't re-run downstream effects.
-  const sentMessagesRef = useRef<PromptHistoryItem[]>([])
-  const sentMessagesSlotRef = useRef<string | null>(null)
   // Per-slot timestamp (ms) of the last soft-stop press, used to arm the
   // force-kill. A force press (second click while soft_pending) arriving
   // within FORCE_KILL_ARMING_MS of that slot's soft stop is treated as an
@@ -76,29 +72,22 @@ export function useActiveSlotState({
   // mashing Stop. Keyed by slot so switching slots can't measure one slot's
   // press against another slot's timestamp.
   const softStopAtMapRef = useRef<Map<string, number>>(new Map())
-  const sentMessages = useMemo(() => {
-    const out = promptHistoryFromMessages(messages)
-    // Reset the cached reference when switching slots — otherwise two
-    // conversations with matching length+tail would share the prior array.
-    if (sentMessagesSlotRef.current !== activeSlot) {
-      sentMessagesSlotRef.current = activeSlot ?? null
-      sentMessagesRef.current = out
-      return out
-    }
-    // Append-only within a slot — full element-wise compare (array is small).
-    const prev = sentMessagesRef.current
-    if (samePromptHistory(prev, out)) {
-      return prev
-    }
-    sentMessagesRef.current = out
-    return out
-  }, [messages, activeSlot])
+  // User-sent prompts (oldest → newest) for ↑/↓ prompt history in the input,
+  // consecutive duplicates collapsed, plus any submitted prompt the transcript
+  // lost; referentially stable while unchanged.
+  const sentMessages = useSentPromptHistory(messages, activeSlot)
   const slotRunning = useAppSelector(s => s.chat.slotRunning)
   // Live mirror for `autoFollowAllowed`, a stable callback several effects
   // depend on: taking `slotRunning` as a dependency would re-attach those
   // observers on every turn boundary.
   const slotRunningRef = useRef(!!slotRunning)
   slotRunningRef.current = !!slotRunning
+  // A first remote turn spends its opening minute(s) creating compute; the
+  // turn indicator names that stage instead of "Thinking…".
+  // A reply on record means this session's environment connected before, so a
+  // later engine restart is a reconnect, not setup.
+  const sessionHasReplied = useMemo(() => messages.some(m => m.role === 'assistant'), [messages])
+  const environmentStart = useEnvironmentStartLabel(activeSlot, slotRunning, sessionHasReplied)
   // Turn disclosure ("N tool calls" / "Worked through N steps"), keyed by the
   // virtualizer's stable row key. This lives HERE rather than in TurnBlock
   // because the transcript is virtualised: a row is unmounted once it leaves
@@ -187,6 +176,32 @@ export function useActiveSlotState({
    * Keep every prop handed to ChatSidebar referentially stable.
    */
   const clearSplitOnSelect = useCallback(() => { setSplitMode(false); closeCrewWindow() }, [])
+  // A create that activated its new session leaves Split View, the rule the
+  // sidebar's New already follows through `onSelectSlot` (#21935). The grid
+  // seeds from the active slot only when empty, so the new chat would
+  // otherwise show nowhere. Keyed on the store's record of the activation, so
+  // the creates that never call `onSelectSlot` (the new-chat shortcut, the
+  // command palette, the command bar, the collapsed sidebar's flyout) follow
+  // it too. A background create or one the user switched away from records no
+  // activation, so it keeps the split. The value present at mount is not a
+  // new activation: Split View starts off, and an auto-enter must not be undone.
+  const lastCreatedActivation = useAppSelector(s => s.chat.lastCreatedActivation)
+  const seenActivationRef = useRef(lastCreatedActivation)
+  useEffect(() => {
+    if (lastCreatedActivation === seenActivationRef.current) return
+    seenActivationRef.current = lastCreatedActivation
+    if (lastCreatedActivation) setSplitMode(false)
+  }, [lastCreatedActivation])
+  // A resume whose caller asked for it (the reopen-closed-session shortcut)
+  // leaves Split View on the same rule, once it has taken the view: the grid
+  // would otherwise keep showing its own panes and the reopened chat nowhere.
+  const lastResumeActivation = useAppSelector(s => s.chat.lastResumeActivation)
+  const seenResumeRef = useRef(lastResumeActivation)
+  useEffect(() => {
+    if (lastResumeActivation === seenResumeRef.current) return
+    seenResumeRef.current = lastResumeActivation
+    if (lastResumeActivation?.leaveSplit) setSplitMode(false)
+  }, [lastResumeActivation])
   // A crew session opens as a window over the pane (see CrewChatWindow); a
   // local session taking focus closes it. Only a MOVE between two local
   // sessions counts, so the reload restore (none -> restored) keeps it open.
@@ -209,17 +224,23 @@ export function useActiveSlotState({
     if (prevActiveSlotRef.current && activeSlot !== prevActiveSlotRef.current) closeCrewWindow()
     prevActiveSlotRef.current = activeSlot
   }, [activeSlot])
+  // A Crew Mode worker opened from its root's Workers panel leaves Split View, as
+  // a sidebar pick does: the grid never shows a worker, so it would hide it.
+  const activeIsCrewWorker = useAppSelector(s => !!crewRootOf(s.dashboard.slots.find(sl => sl.key === s.chat.activeSlot)))
+  useEffect(() => { if (activeIsCrewWorker) setSplitMode(false) }, [activeIsCrewWorker, activeSlot])
   /** Same contract as `clearSplitOnSelect`, for the `embedMode === 'sessions'`
    *  frame where the sidebar IS the whole page. */
   const navigateToEmbeddedSlot = useCallback((key: string) => navigate(`/embed/chat/${key}`), [navigate])
   const [splitAnchor, setSplitAnchor] = useState<string | null>(null)
   // Temporary sessions ("no memory reads or writes") must never show
   // memory-personalized tips.
-  const tipTemporary = useAppSelector(s => s.dashboard.slots.find(sl => sl.key === s.chat.activeSlot)?.memory_mode === 'temporary')
+  const tipTemporary = useAppSelector(s => slotRowByKey(s.dashboard.slots, s.chat.activeSlot)?.memory_mode === 'temporary')
   const tipBlocked = tipTemporary || splitMode || embedMode === 'sessions'
   const { tip: activeTip, dismiss: dismissTip } = useTipTrigger(!!slotRunning, tipSuppressed, activeSlot, tipBlocked)
   const slotState = useAppSelector(s => s.chat.slotState)
-  const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''] ?? 0)
+  // Undefined until the slot has a reading: the meter renders that as unknown,
+  // not as a measured 0%.
+  const contextPct = useAppSelector(s => s.chat.slotContextPct[s.chat.activeSlot ?? ''])
   const contextTokens = useAppSelector(s => s.chat.slotContextTokens?.[s.chat.activeSlot ?? ''])
   // Length only. The two arrays themselves are mutated per streamed sub-agent /
   // tool chunk, and their only consumer is the Activity panel (SidePanel), which
@@ -244,6 +265,6 @@ export function useActiveSlotState({
     messages, messagesRef, kiroCrewVersion, completedTurnCount, knowledgeFetch, knowledgeFetchRef, softStopAtMapRef, sentMessages, slotRunning, slotRunningRef, turnDisclosure, setTurnDisclosureFor,
     toolDisclosure, setToolDisclosureFor, turnRowMayBeLive, composerBusy, projectLocked, slotStopping, slotLoading, slotSwitchTarget, pendingQuestion, restoredQuestionNotice, pendingFollowup,
     folderSuggestion, followupTsBySlot, splitMode, setSplitMode, clearSplitOnSelect, crewWindow, openEmbeddedCrewWindow, navigateToEmbeddedSlot, splitAnchor, setSplitAnchor, activeTip, dismissTip,
-    slotState, contextPct, contextTokens, activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, olderFailed, activeViewIsBoundedPage, history, historyHasMore,
+    slotState, contextPct, contextTokens, activityOpen, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, olderFailed, activeViewIsBoundedPage, history, historyHasMore, environmentStart,
   }
 }

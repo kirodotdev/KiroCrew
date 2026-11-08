@@ -1,0 +1,251 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.19.1",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "stub/plain-1",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Stub/plain-1",
+            "value": "stub/plain-1"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "The default agent. Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "opencode-session-1"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "cwd": "<cwd>"
+        },
+        "title": "bash",
+        "tool_call_id": "call_sleep",
+        "tool_input": "{\n  \"cwd\": \"<cwd>\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 6 && echo first-done",
+          "cwd": "<cwd>",
+          "description": "wait then echo"
+        },
+        "title": "wait then echo",
+        "tool_call_id": "call_sleep",
+        "tool_input": "{\n  \"command\": \"sleep 6 && echo first-done\",\n  \"description\": \"wait then echo\",\n  \"cwd\": \"<cwd>\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "sleep 6 && echo first-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "once",
+            "label": "Allow once"
+          },
+          {
+            "id": "always",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "sleep 6 && echo first-done",
+          "cwd": "<cwd>",
+          "description": "wait then echo"
+        },
+        "shell_classified": true,
+        "title": "sleep 6 && echo first-done",
+        "tool_call_id": "call_sleep",
+        "tool_input": "{\n  \"command\": \"sleep 6 && echo first-done\",\n  \"description\": \"wait then echo\",\n  \"cwd\": \"<cwd>\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always",
+      "once": "once",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 6 && echo first-done",
+          "cwd": "<cwd>",
+          "description": "wait then echo"
+        },
+        "title": "wait then echo",
+        "tool_call_id": "call_sleep",
+        "tool_input": "{\n  \"command\": \"sleep 6 && echo first-done\",\n  \"description\": \"wait then echo\",\n  \"cwd\": \"<cwd>\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "sleep 6 && echo first-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_sleep",
+        "tool_output": "first-done\n",
+        "tool_output_bytes": 11,
+        "tool_output_digest": "8419772cb50b484dc040b44ee1d2a934abb576428ee71104ffd0656b256bf14f",
+        "tool_status": "in_progress"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 6 && echo first-done",
+          "cwd": "<cwd>",
+          "description": "wait then echo"
+        },
+        "title": "wait then echo",
+        "tool_call_id": "call_sleep",
+        "tool_input": "{\n  \"command\": \"sleep 6 && echo first-done\",\n  \"description\": \"wait then echo\",\n  \"cwd\": \"<cwd>\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "sleep 6 && echo first-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_sleep",
+        "tool_final": true,
+        "tool_output": "first-done\n",
+        "tool_output_bytes": 11,
+        "tool_output_digest": "8419772cb50b484dc040b44ee1d2a934abb576428ee71104ffd0656b256bf14f",
+        "tool_status": "completed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "title": "wait then echo",
+        "tool_call_id": "call_sleep",
+        "wire_title": "sleep 6 && echo first-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "msg-1",
+        "text": "first-done pineapple"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "first-done pineapple",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      5,
+      1,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      5,
+      1,
+      0,
+      0
+    ],
+    "stop_reason": "end_turn"
+  }
+]

@@ -1,12 +1,9 @@
 """AWS Control storage engine — the security-sensitive S3 layer.
 
-This file pins the BEHAVIOUR CONTRACTS the docstring in ``storage.py`` calls
-load-bearing: bucket creation and hardening ORDER, key-validation rejections,
-presign expiry clamping, section prefixing, and every branch that REFUSES.
-It intentionally leans on the same conventions as ``test_aws_control_app.py``:
-patch ``storage._checked`` / ``storage.engine.run_aws``, assert on the argv
-handed to the AWS CLI, and build tag-discovery JSON payloads by hand. Comments
-explain WHY a case matters, not what the code does.
+Pins the contracts ``storage.py`` calls load-bearing: bucket hardening ORDER, key
+validation, presign expiry clamping, section prefixing, and every branch that
+REFUSES. Tests patch ``storage._checked`` / ``storage.engine.run_aws`` and assert on
+the AWS CLI argv.
 """
 
 from __future__ import annotations
@@ -14,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest import mock
@@ -30,13 +28,9 @@ from kiro_crew.deploy.engine import AWSError
 def _crew_home_pinned_to(parent_dir: Path):
     """Build the sandbox mask universe from *parent_dir*, not the real home.
 
-    Every preview test points the staging seam at a temp directory, and this
-    suite's temp root can itself sit INSIDE the real crew home (conftest puts
-    it under KIROCREW_SCRATCH). A masked crew leaf is then a genuine foreign
-    ancestor of that fake staging root, so the site's shadow guard refuses a
-    transfer for a layout production never has. Pinning the home the mask
-    universe is built from to the temp tree makes the verdict independent of
-    TMPDIR, and leaves the guard itself running for real in every test.
+    The temp root can sit INSIDE the real crew home (under KIROCREW_SCRATCH), where
+    the shadow guard would refuse a layout production never has. The guard itself
+    still runs for real.
     """
     with (
         mock.patch.object(sandbox.Path, "home", staticmethod(lambda: parent_dir)),
@@ -45,11 +39,9 @@ def _crew_home_pinned_to(parent_dir: Path):
         yield
 
 
-# ---------------------------------------------------------------------------
 # Section prefixing — a raw prefix must never cross the HTTP boundary, so the
 # section->prefix mapping is the only place a caller-supplied section becomes a
 # key prefix. section_key() is what every object-I/O path funnels through.
-# ---------------------------------------------------------------------------
 
 
 class TestSectionKey:
@@ -75,10 +67,8 @@ class TestNewBucketName:
         assert storage._BUCKET_NAME_RE.fullmatch(name), name
 
 
-# ---------------------------------------------------------------------------
 # Discovery — the trust decision. These pin the branches find_drive() takes
 # on empty results, malformed JSON, and a single clean hit.
-# ---------------------------------------------------------------------------
 
 
 class TestFindDrive:
@@ -185,11 +175,9 @@ class TestFindDrive:
         assert f"Key={engine.TAG_MANAGED},Values=true" in joined
 
 
-# ---------------------------------------------------------------------------
 # Creation — the hardening ORDER is the whole point. A discovered drive
 # promises versioning + BPA + SSE, and the discovery TAGS are what make it
 # discoverable, so everything must hold BEFORE the tags land.
-# ---------------------------------------------------------------------------
 
 
 class TestCreateDrive:
@@ -225,7 +213,7 @@ class TestCreateDrive:
         # that it cannot happen.
         bucket, calls = self._run_create("us-west-2")
         kinds = [c[0] for c in calls]
-        assert kinds == ["checked", "run_aws", "checked", "harden"]
+        assert kinds == ["checked", "run_aws", "checked", "run_aws", "checked", "harden"]
 
         create_args = calls[0][1]
         assert create_args[:2] == ["s3api", "create-bucket"]
@@ -237,7 +225,7 @@ class TestCreateDrive:
 
         # The tags handed to hardening carry BOTH discovery tags — this is what
         # a later find_drive() will require.
-        _bucket, tagset = calls[3][1]
+        _bucket, tagset = calls[-1][1]
         assert f"Key={engine.TAG_MANAGED},Value=true" in tagset
         assert f"Key={storage.TAG_DRIVE},Value={storage.DRIVE_ID}" in tagset
 
@@ -301,13 +289,129 @@ class TestCreateDrive:
         assert "--create-bucket-configuration" in create_args
         assert "LocationConstraint=eu-central-1" in create_args
 
+    def _policy_put(self, calls):
+        return next(
+            a for k, a in calls if k == "checked" and a[:2] == ["s3api", "put-bucket-policy"]
+        )
 
-# ---------------------------------------------------------------------------
+    def test_a_new_drive_gets_a_tls_only_bucket_policy_before_its_tags(self):
+        # Before the discovery tags, so a drive that can be found already has it
+        # whenever the profile is allowed to write bucket policies.
+        bucket, calls = self._run_create("us-west-2")
+        put = self._policy_put(calls)
+        assert calls.index(("checked", put)) < [c[0] for c in calls].index("harden")
+        assert put[put.index("--expected-bucket-owner") + 1] == "123456789012"
+        policy = json.loads(put[put.index("--policy") + 1])
+        assert policy["Statement"] == [
+            {
+                "Sid": "KiroCrewDenyInsecureTransport",
+                "Effect": "Deny",
+                "Principal": "*",
+                "Action": "s3:*",
+                "Resource": [f"arn:aws:s3:::{bucket}", f"arn:aws:s3:::{bucket}/*"],
+                "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+            }
+        ]
+
+    @pytest.mark.parametrize("failure", ["denied", "timeout"])
+    def test_a_failed_tls_policy_still_creates_the_drive(self, failure):
+        # The recommended drive IAM tier has no bucket-policy rights, on purpose.
+        def run_aws(args, profile, timeout=30):
+            if args[:2] == ["s3api", "get-bucket-policy"]:
+                if failure == "timeout":
+                    raise subprocess.TimeoutExpired("aws", 30)
+                return 255, "", "An error occurred (AccessDenied)"
+            return 0, "", ""
+
+        calls: list[str] = []
+        with (
+            mock.patch.object(
+                storage, "_checked", side_effect=lambda a, p, **k: calls.append(a[1])
+            ),
+            mock.patch.object(
+                storage, "_harden_bucket", side_effect=lambda *a: calls.append("harden")
+            ),
+            mock.patch.object(storage.engine, "run_aws", side_effect=run_aws),
+        ):
+            bucket = storage.create_drive("p", "us-west-2", "123456789012")
+        assert bucket.startswith("kirocrew-drive-")
+        assert "put-bucket-policy" not in calls
+        assert calls[-1] == "harden"
+
+    def test_a_govcloud_drive_names_its_own_partition_in_the_policy(self):
+        bucket, calls = self._run_create("us-gov-west-1")
+        put = self._policy_put(calls)
+        policy = json.loads(put[put.index("--policy") + 1])
+        assert policy["Statement"][0]["Resource"][0] == f"arn:aws-us-gov:s3:::{bucket}"
+
+
+class TestEnsureTlsOnlyPolicy:
+    """Existing drives get the TLS-only statement merged into whatever policy they hold."""
+
+    def _run(self, get_result):
+        puts: list[list[str]] = []
+
+        def checked(args, profile, *, action, timeout=30):
+            puts.append(args)
+            return ""
+
+        with (
+            mock.patch.object(storage, "_checked", side_effect=checked),
+            mock.patch.object(storage.engine, "run_aws", return_value=get_result),
+        ):
+            storage.ensure_tls_only_policy("b", "p", "us-west-2", account="123456789012")
+        return puts
+
+    def test_a_bucket_without_a_policy_gets_one(self):
+        puts = self._run((254, "", "An error occurred (NoSuchBucketPolicy)"))
+        assert len(puts) == 1
+        statements = json.loads(puts[0][puts[0].index("--policy") + 1])["Statement"]
+        assert [s["Sid"] for s in statements] == ["KiroCrewDenyInsecureTransport"]
+
+    def test_an_owner_statement_is_kept_beside_the_new_one(self):
+        own = {"Sid": "OwnerRule", "Effect": "Deny", "Principal": "*", "Action": "s3:Get*"}
+        existing = json.dumps({"Policy": json.dumps({"Version": "2012-10-17", "Statement": [own]})})
+        puts = self._run((0, existing, ""))
+        statements = json.loads(puts[0][puts[0].index("--policy") + 1])["Statement"]
+        assert statements[0] == own
+        assert statements[1]["Sid"] == "KiroCrewDenyInsecureTransport"
+
+    def test_a_policy_that_already_has_it_is_left_alone(self):
+        stmt = engine.deny_insecure_transport_statement("b")
+        existing = json.dumps({"Policy": json.dumps({"Statement": [stmt]})})
+        assert self._run((0, existing, "")) == []
+
+    def test_a_stale_copy_of_our_own_statement_is_replaced(self):
+        weak = dict(engine.deny_insecure_transport_statement("b"), Resource=["arn:aws:s3:::b"])
+        existing = json.dumps({"Policy": json.dumps({"Statement": [weak]})})
+        puts = self._run((0, existing, ""))
+        statements = json.loads(puts[0][puts[0].index("--policy") + 1])["Statement"]
+        assert statements == [engine.deny_insecure_transport_statement("b")]
+
+    def test_an_owner_transport_rule_is_kept_however_it_is_named(self):
+        # An owner's stricter rule, even under the common Sid, must never be removed.
+        strict = {
+            "Sid": "DenyInsecureTransport",
+            "Effect": "Deny",
+            "Principal": "*",
+            "Action": "s3:*",
+            "Resource": ["arn:aws:s3:::b", "arn:aws:s3:::b/*"],
+            "Condition": {"NumericLessThan": {"s3:TlsVersion": "1.3"}},
+        }
+        existing = json.dumps({"Policy": json.dumps({"Statement": [strict]})})
+        puts = self._run((0, existing, ""))
+        statements = json.loads(puts[0][puts[0].index("--policy") + 1])["Statement"]
+        assert statements == [strict, engine.deny_insecure_transport_statement("b")]
+
+    def test_an_unreadable_policy_is_an_error_not_an_overwrite(self):
+        with pytest.raises(storage.AWSError):
+            self._run((255, "", "AccessDenied"))
+
+
 # Listing — one delimited page. The load-bearing behaviour is (a) the section
 # prefix is STRIPPED off returned keys, (b) the folder placeholder is dropped,
 # and (c) every name is run through the credential/exfiltration redactors
 # because keys can be authored outside this app.
-# ---------------------------------------------------------------------------
 
 
 class TestListSection:
@@ -396,10 +500,8 @@ class TestListSection:
         assert result == {"files": [], "folders": [], "nextToken": ""}
 
 
-# ---------------------------------------------------------------------------
 # Object I/O — thin wrappers over the CLI. The contract worth pinning is the
 # exact argv: the S3 URI is built from section_key(), and timeouts propagate.
-# ---------------------------------------------------------------------------
 
 
 class TestListLibraryFolders:
@@ -570,10 +672,12 @@ class TestObjectIO:
         # chokepoint rather than a hardcoded default.
         local = tmp_path / "a.txt"
         local.write_bytes(b"x")
-        with mock.patch.object(storage, "_checked", return_value="{}") as checked:
-            storage.put_file(
+        payload = json.dumps({"VersionId": "v-999"})
+        with mock.patch.object(storage, "_checked", return_value=payload) as checked:
+            version = storage.put_file(
                 "p", "r", "b", "drive", "a.txt", str(local), timeout=999, account="111122223333"
             )
+        assert version == "v-999"
         assert checked.call_args.kwargs["timeout"] == 999
 
     def test_put_file_refuses_a_body_too_large_to_pin(self, tmp_path, monkeypatch):
@@ -646,12 +750,10 @@ class TestCopyObject:
         assert argv[argv.index("--copy-source") + 1] == "b/drive/my%20file.txt"
 
 
-# ---------------------------------------------------------------------------
 # Folder create — a folder exists ONLY as a zero-byte, '/'-terminated
 # placeholder, and its key must be exactly the shape list_section() filters out
 # of `files` (obj["Key"] == prefix). If the two drift, a created folder shows up
 # as a phantom file.
-# ---------------------------------------------------------------------------
 
 
 class TestFolderPlaceholderKey:
@@ -693,13 +795,11 @@ class TestCreateFolder:
         assert checked.call_args.kwargs["action"] == "s3:PutObject"
 
 
-# ---------------------------------------------------------------------------
 # Folder delete (delete_prefix) — the blast-radius surface. The contract:
 # (a) anchor on section/path/ WITH the trailing slash so a name-prefixed sibling
 # is not swept; (b) page the batch API, honouring the 1000-key cap rather than
 # assuming one call clears the folder; (c) every call owner-pinned; (d) return
 # the true count removed.
-# ---------------------------------------------------------------------------
 
 
 class TestDeletePrefix:
@@ -854,17 +954,9 @@ class TestDeletePrefix:
         # A folder larger than one batch must still be fully deleted, and the walk
         # deliberately does NOT resume with --starting-token.
         #
-        # `--max-items` is CLIENT-side pagination: when the CLI truncates inside a
-        # server page it emits a COMPOSITE token carrying an intra-page offset
-        # (boto_truncate_amount). S3 is free to return a short page, so the CLI
-        # can fetch another to reach the requested count and truncate mid-page.
-        # Resuming with that token re-lists and skips N items - but those N were
-        # just DELETED, so the skip lands on surviving keys, which are then never
-        # removed while the call reports completion.
-        #
-        # Re-listing from the prefix each round has no such offset to get wrong:
-        # what was deleted is simply gone, so the next listing begins at the next
-        # survivor. It is also memory-bounded, unlike collecting every key first.
+        # `--max-items` truncates client-side with a token carrying an intra-page
+        # offset (boto_truncate_amount). After a delete that offset skips surviving
+        # keys, so the walk re-lists from the prefix each round instead.
         removed, calls = self._run(
             [
                 {"Contents": [{"Key": "drive/photos/a"}], "NextToken": "T1"},
@@ -990,10 +1082,8 @@ class TestObjectExists:
             assert storage.head_object_meta("p", "r", "b", "drive", "a", account="1") == {}
 
 
-# ---------------------------------------------------------------------------
 # Presign — a bearer URL. Clamp both ends of the expiry, and REFUSE any output
 # that is not an https URL rather than handing back a broken share.
-# ---------------------------------------------------------------------------
 
 
 class TestPresign:
@@ -1048,11 +1138,9 @@ class TestPresign:
             self._presign(3600, out="")
 
 
-# ---------------------------------------------------------------------------
 # Usage — objects + bytes per section, folded from a full-bucket listing. The
 # contract: attribute each key to exactly ONE section by prefix, tolerate
 # malformed rows, and sum honestly.
-# ---------------------------------------------------------------------------
 
 
 class TestUsage:
@@ -1106,11 +1194,9 @@ class TestUsage:
         assert result["sections"]["drive"] == {"objects": 1, "bytes": 0}
 
 
-# ---------------------------------------------------------------------------
 # Upload Content-Type — inline preview rendering depends on the stored header,
 # so the guess must land on the argv when the extension is known and must NOT
 # override S3's default when it is not.
-# ---------------------------------------------------------------------------
 
 
 class TestPutFileContentType:
@@ -1156,11 +1242,9 @@ class TestPutFileContentType:
         assert "--content-type" not in argv
 
 
-# ---------------------------------------------------------------------------
 # Preview head bytes — the gateway-proxied read behind /drive/{account}/preview.
 # The range bound, the owner pin, the full-size answer, and the temp-file
 # cleanup are each load-bearing.
-# ---------------------------------------------------------------------------
 
 
 class TestGetObjectHeadBytes:
@@ -1416,10 +1500,8 @@ class TestGetObjectHeadBytes:
                 )
 
 
-# ---------------------------------------------------------------------------
 # Filename search — bounded pagination is the contract: a broad query on a
 # large drive must stop at the cap instead of listing the world.
-# ---------------------------------------------------------------------------
 
 
 def _search_page(keys: list[str], next_token: str = "") -> str:
@@ -1501,11 +1583,9 @@ class TestSearchKeys:
         assert second_argv[second_argv.index("--starting-token") + 1] == "t2"
 
 
-# ---------------------------------------------------------------------------
 # Version-pinned reads — a version id is the first value in this module that
 # becomes a BARE ARGV ELEMENT rather than a field inside a JSON document, so it
 # is the first one the AWS CLI's own option grammar can misread.
-# ---------------------------------------------------------------------------
 
 
 class TestValidateVersionId:

@@ -327,11 +327,8 @@ class TestListServers:
         file the IDE edits, or a provider global) and held by no other source
         still gets a row.
 
-        This is the post-sync state: discovery skips disabled entries and the
-        rebuild never adds a disabled shared server to the agent config, so the
-        agent file does not know the name. Dropping the row here is what made
-        the panel show 6 of 7 configured servers after Discover & Sync while
-        the IDE kept listing all 7 (three of them greyed)."""
+        After a sync the agent file never holds a disabled shared server, so without
+        this row the panel lists fewer servers than the IDE does."""
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
         (agent_dir / "defaults.json").write_text(
@@ -373,11 +370,8 @@ class TestListServers:
         """A disabled shared entry whose ``command`` or ``url`` is not a string
         (``"command": {"not": "a string"}``) still gets its row -- and the row's
         display fields are STRINGS. ``command``/``url`` reach the page as React
-        children (``{s.command || s.url}``), and an object there throws and takes
-        the whole Connections page down; a disabled entry is never probed, so
-        nothing else ever inspects the value. The text is the value's own bounded
-        JSON, so the malformation is what the user sees. Red before
-        ``_display_transport``: ``to_dict()["command"]`` was the dict itself."""
+        children (``{s.command || s.url}``), and an object there takes the whole
+        Connections page down. The text is the value's own bounded JSON."""
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
         (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))
@@ -479,16 +473,10 @@ class TestListServers:
     ) -> None:
         """``"disabled": "false"`` (a string) is a config error, read FAIL-CLOSED.
 
-        The listing shares the launch predicate (``mcp_entry_is_muted``) with
-        the gateway rewriter and the session projections, and that predicate
-        mutes anything but an absent key or a literal ``false``: the row is
-        listed Disabled -- the same row no session starts -- and says WHY
-        (``disabled_reason == "invalid"``), while the log names the value's type
-        and size (``str(len 5)``, never the text -- the line is retained) and
-        says the server is disabled, so an operator who wrote ``"false"`` and
-        meant "on" learns the switch did not take. Read as "enabled" instead,
-        the string would have listed -- and spawned -- a server whose value
-        neither schema accepts."""
+        The listing shares ``mcp_entry_is_muted`` with the launch paths, which mutes
+        anything but an absent key or a literal ``false``. The row says why
+        (``disabled_reason == "invalid"``); the log names type and size (``str(len 5)``),
+        never the text, since the line is retained."""
         self._seed_shared_scope(tmp_path, monkeypatch, "false")
         with caplog.at_level(logging.WARNING):
             rows = list_servers()
@@ -703,17 +691,11 @@ class TestListServers:
     def test_non_boolean_disabled_reads_as_disabled_at_every_read(
         self, tmp_path, monkeypatch, caplog
     ) -> None:
-        """One predicate, every read. The listing reported the string and then
-        read it again at three later sites -- the agent-config pass, the
-        introduce arm, and the aggregate flag pass (3c) -- and the sync offer
-        read it a fourth time. Each now takes ``mcp_entry_is_muted``: the
-        existing agent row whose shared entry carries the string is flagged, the
-        shared-only entry is listed Disabled, the agent entry carrying it takes
-        the path a literal ``true`` takes there (no scope copy, so no row -- the
-        pre-existing shape for a disabled agent-only entry), and the sync offer
-        withholds the shared-only one, because syncing is how it would reach the
-        config the sessions load. Red under a reader that took the value as
-        absent or as the literal ``True`` alone."""
+        """One predicate, every read.
+
+        The agent-config pass, the introduce arm, the flag pass (3c) and the sync offer
+        all use ``mcp_entry_is_muted``. The sync offer withholds the shared-only entry,
+        since syncing is how it would reach the config sessions load."""
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir(exist_ok=True)
         (agent_dir / "defaults.json").write_text(
@@ -771,12 +753,9 @@ class TestListServers:
         """One warning per (server, value shape), however often the list is read
         and whichever path reads it.
 
-        The ledger is a bounded set of ``(truncated name, type descriptor)``
-        pairs and is never pruned: a process says each config error once. So a
-        value that is fixed stops being a defect without a second line, and one
-        re-broken the same way is NOT announced again -- the row's own
-        ``disabled_reason`` is the durable signal, and the pruning/re-arm
-        machinery that would have re-announced it cost more than it bought."""
+        The ledger of ``(truncated name, type descriptor)`` pairs is bounded and never
+        pruned, so a value re-broken the same way is NOT announced again; the row's
+        ``disabled_reason`` is the durable signal."""
         shared_mcp = self._seed_shared_scope(tmp_path, monkeypatch, "false")
         with caplog.at_level(logging.WARNING):
             list_servers()
@@ -1232,7 +1211,7 @@ class TestExtraScopeSeam:
         """A seam scope whose id is NOT 'cc' (e.g. vendorGlobal) must appear in
         every server's presence. If it were omitted, the frontend reads the
         absent key as False and an unrelated apply would DELETE the server from
-        the vendor's global config (GPT 5.6 HIGH data-loss finding)."""
+        the vendor's global config, which would lose its data."""
         agent_dir = tmp_path / "agents"
         agent_dir.mkdir()
         (agent_dir / "defaults.json").write_text(json.dumps({"mcpServers": {}}))

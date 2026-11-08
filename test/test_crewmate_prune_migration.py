@@ -926,19 +926,31 @@ class TestCandidates:
         assert "kirocrew-conductor" in KiroCrewConfig.load().agents
         assert mig.marker_path().exists()
 
-    def test_a_spec_that_became_runtime_owned_under_the_lock_refuses_the_delete(
-        self, old_style_config, bindings_dir, log
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            # The bound file is now one of ``OWNED_KIRO_AGENT_FILES``: discovery
+            # still derives ``builtin`` from it (the stem is not ``<pkg>-scout``),
+            # so only the ``kirocrew_owned`` re-check can refuse.
+            pytest.param(
+                "kirocrew-conductor.json",
+                id="test_a_spec_that_became_runtime_owned_under_the_lock_refuses_the_delete",
+            ),
+            pytest.param(
+                "kirocrew.json", id="test_a_spec_replaced_by_a_kirocrew_source_refuses_the_delete"
+            ),
+        ],
+    )
+    def test_a_spec_replaced_by_a_runtime_file_refuses_the_delete(
+        self, old_style_config, bindings_dir, log, filename
     ):
-        # The bound file is now one of ``OWNED_KIRO_AGENT_FILES``: discovery
-        # still derives ``builtin`` from it (the stem is not ``<pkg>-scout``),
-        # so only the ``kirocrew_owned`` re-check can refuse.
         specs = dict(old_style_config)
-        specs["scout"] = _spec("scout", filename="kirocrew-conductor.json")
+        specs["scout"] = _spec("scout", filename=filename)
         original = mig.remove_never_chatted
 
         def _replace_spec_then_remove(cfg_, cands, **kw):
-            (Path(kiro_agents_dir_path()) / "kirocrew-conductor.json").write_text(
-                json.dumps({"name": "scout", "description": "now the conductor"})
+            (Path(kiro_agents_dir_path()) / filename).write_text(
+                json.dumps({"name": "scout", "description": "runtime replacement"})
             )
             return original(cfg_, cands, **kw)
 
@@ -996,25 +1008,6 @@ class TestCandidates:
 
         with patch.object(mig, "remove_never_chatted", _make_spec_private_then_remove):
             report = _run(old_style_config, log)
-        assert report.refused == ["scout"]
-        assert "scout" in KiroCrewConfig.load().agents
-        assert not mig.marker_path().exists()
-
-    def test_a_spec_replaced_by_a_kirocrew_source_refuses_the_delete(
-        self, old_style_config, bindings_dir, log
-    ):
-        specs = dict(old_style_config)
-        specs["scout"] = _spec("scout", filename="kirocrew.json")
-        original = mig.remove_never_chatted
-
-        def _replace_spec_then_remove(cfg_, cands, **kw):
-            (Path(kiro_agents_dir_path()) / "kirocrew.json").write_text(
-                json.dumps({"name": "scout", "description": "runtime replacement"})
-            )
-            return original(cfg_, cands, **kw)
-
-        with patch.object(mig, "remove_never_chatted", _replace_spec_then_remove):
-            report = _run(specs, log)
         assert report.refused == ["scout"]
         assert "scout" in KiroCrewConfig.load().agents
         assert not mig.marker_path().exists()
@@ -1502,8 +1495,12 @@ class TestAwaitSettled:
         waiter = asyncio.ensure_future(
             server_mod.await_crewmate_prune_settled(state, before="cron")
         )
-        await asyncio.sleep(0.2)
-        assert state.crewmate_prune_abandon.is_set()
+        # Poll for the flag: a stalled loop can start the waiter late, so any
+        # fixed sleep can end before its 0.05 s budget does.
+        await async_wait_until(
+            state.crewmate_prune_abandon.is_set,
+            describe=lambda: "the prune gate never set crewmate_prune_abandon",
+        )
         assert not waiter.done()  # the writer does not start beside the pass
         state.crewmate_prune_settled.set()
         await await_until(waiter, what="the prune gate's waiter finishing")
@@ -1607,12 +1604,27 @@ class TestOneProcess:
                 holding.set()
                 release.wait(5)
 
+        # Released from inside the wait loop, on its second expired wait, so the
+        # count does not depend on how much of a wall-clock window the runner
+        # spent before the first wait began.
+        real_warning = mig.logger.warning
+        expired_waits = 0
+
+        def _counting_warning(msg, *args, **kwargs):
+            nonlocal expired_waits
+            if msg.startswith("crewmate prune still waiting"):
+                expired_waits += 1
+                if expired_waits == 2:
+                    release.set()
+            real_warning(msg, *args, **kwargs)
+
+        monkeypatch.setattr(mig.logger, "warning", _counting_warning)
         other = threading.Thread(target=_other_gateway)
         other.start()
         assert holding.wait(5)
-        threading.Timer(0.45, release.set).start()
         report = _run(old_style_config, log)
         other.join(5)
+        assert not other.is_alive()
         # It waited through more than one budget rather than returning.
         assert report.lock_waits >= 2
         assert report.skipped_marker is False
@@ -1661,7 +1673,8 @@ class TestOneProcess:
         from kiro_crew.platform_compat import file_lock, open_lock_file
 
         log.dm("radar")
-        _run(old_style_config, log)
+        report = _run(old_style_config, log)
+        assert report.removed == ["scout"]
         # A second opener can take it at once: the pass did not leak its hold.
         with open_lock_file(mig.lock_path()) as fd:
             with file_lock(fd, exclusive=True, wait=False):

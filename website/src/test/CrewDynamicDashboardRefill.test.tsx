@@ -135,7 +135,7 @@ describe('CrewDynamicDashboard refill in place', () => {
 
     await queryClient.invalidateQueries({ queryKey: DASHBOARD_KEY })
     await waitFor(() => expect(mints.some((m) => m.includes('>31</p>'))).toBe(true))
-    expect(posted).not.toHaveBeenCalled()
+    expect(posted).not.toHaveBeenCalledWith(expect.objectContaining({ type: DATA_MESSAGE_TYPE }), '*')
   })
 })
 

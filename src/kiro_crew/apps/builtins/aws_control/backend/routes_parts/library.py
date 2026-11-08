@@ -73,7 +73,7 @@ async def _reconciled_remote_slugs(request: web.Request) -> tuple[set[str] | Non
     except AWSError as exc:
         return None, _safe_error(exc)
     if not bucket:
-        return None, "this account has no drive yet"
+        return None, storage_mod.no_drive_message(region)
     # Taken BEFORE the listing, never after: the cutoff must not postdate the
     # snapshot it describes. Reading it early only widens the set of records the
     # prune leaves alone, which is the safe direction.

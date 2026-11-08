@@ -47,7 +47,9 @@ import { useGuideTrustRootAttrs } from '../guide/trustRoot'
  *   above from the first line of its flow container (`FLOW_CONTAINER`) and below
  *   from any lower line while it fits inside that container, so it never covers the words that lead up to
  *   the anchor (`flowPlacement`). A held outcome re-anchors the bubble, so the
- *   viewport clamp is re-measured for the new content.
+ *   viewport clamp is re-measured for the new content. A flow bubble also
+ *   draws a pointer arrow at the anchor's left edge: several chips can share a
+ *   line, and a bubble with no arrow does not say which one it answers.
  */
 export interface TipPos {
   top: number
@@ -61,13 +63,20 @@ export interface TipPos {
    *  anchor's bounding-box `below` position for viewport fitting. A `flow`
    *  `below` carries `above` (first fragment, boundary lift) when it would
    *  cross the viewport bottom or `floor`. A `flow` `above` has no candidate
-   *  below, to spare the following prose. An explicit `below` has no above
-   *  to go to (its anchor is in the top bar) and is clamped instead. */
+   *  below, to spare the following prose. An explicit `below` carries `above`
+   *  too, but takes it only when the whole bubble fits there (`flipNeedsRoom`):
+   *  a top-bar anchor has no room above and is clamped instead, while a row low
+   *  in a scrolling list opens above rather than being pushed up over itself. */
   flip?: { top: number; left: number }
+  /** Set for an explicit `below`: take `flip` only when the bubble fits above
+   *  the anchor, otherwise clamp to the viewport. */
+  flipNeedsRoom?: boolean
   /** The bottom edge a `below` bubble must stay inside: a flow anchor's
    *  container bottom (`flowFloor`) — the message's own box. A bubble that
    *  would cross it lands on what follows the message, so it takes `flip`. */
   floor?: number
+  /** Set for a `flow` anchor: the bubble draws its pointer arrow. */
+  flow?: boolean
 }
 export type TipPlacement = 'above' | 'below'
 /** What a consumer may ask for. `flow` is decided per show (`flowPlacement`):
@@ -299,7 +308,8 @@ export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false
     // line two, so a bubble placed there floats over unrelated text. For a
     // block anchor, or an inline one on a single line, the two rects are equal.
     const r = el.getClientRects()[0] ?? el.getBoundingClientRect()
-    const side: TipPlacement = placement === 'flow' ? flowPlacement(el, r) : placement
+    const flow = placement === 'flow'
+    const side: TipPlacement = flow ? flowPlacement(el, r) : placement
     // Lift above the nearest [data-tip-boundary] ancestor, when one exists.
     // In a wrapped chip row the anchor can sit in row 2+, and a bubble opening
     // just above IT covers the row above — the exact chips the user is
@@ -321,14 +331,15 @@ export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false
       // fit in the viewport (a chip on the last line of a full-height pane) or
       // would cross the floor (a chip on or near the message's last line — the
       // bubble would sit on the timestamp and action row under the message) the
-      // bubble goes above after all; the explicit below consumer has no above
-      // to go to and is clamped.
+      // bubble goes above after all. An explicit below goes above only when it
+      // fits there (a row low in the sidebar); a top-bar anchor has no room
+      // above and is clamped.
       const b = el.getBoundingClientRect()
-      setTip({ top: b.bottom + 8, left: b.left, placement: side, flip: placement === 'flow' ? above : undefined, floor: placement === 'flow' ? flowFloor(el) : undefined })
+      setTip({ top: b.bottom + 8, left: b.left, placement: side, flip: above, flipNeedsRoom: flow ? undefined : true, floor: flow ? flowFloor(el) : undefined, flow })
       return
     }
     const b = el.getBoundingClientRect()
-    setTip({ ...above, flip: placement === 'above' ? { top: b.bottom + 8, left: b.left } : undefined })
+    setTip({ ...above, flip: placement === 'above' ? { top: b.bottom + 8, left: b.left } : undefined, flow })
   }
   const hide = () => {
     openBubbles.delete(entry)
@@ -469,7 +480,7 @@ export function InstantTip({ tip, tipId, className = '', children }: {
   const ref = useRef<HTMLDivElement | null>(null)
   // Where the bubble ended up once its size is known; null while `tip`'s own
   // position stands.
-  const [fit, setFit] = useState<{ top: number; left: number; placement: TipPlacement } | null>(null)
+  const [fit, setFit] = useState<{ top: number; left: number; placement: TipPlacement; nub: number } | null>(null)
   // The anchor position is measured before the bubble exists, so its size is
   // unknowable at show time. Fit it to the viewport after first paint — and
   // again for every new `tip`, which is how a content change (hint -> outcome
@@ -486,6 +497,8 @@ export function InstantTip({ tip, tipId, className = '', children }: {
   // its prose-aware placement. Vertically for `below`: a chip on the last line
   // of a full-height pane would open the bubble off the bottom; a flow anchor
   // goes above after all (its `flip`), an explicit `below` is clamped to the bottom edge.
+  // A flow bubble's arrow (`nub`, its offset from the bubble's left) moves the
+  // other way when the clamp moves the bubble, so it stays on the anchor.
   useLayoutEffect(() => {
     setFit(null)
     if (!tip) return
@@ -497,11 +510,13 @@ export function InstantTip({ tip, tipId, className = '', children }: {
     if (wanted === 'below') {
       // The lower of the viewport's bottom edge and the flow floor (the
       // message's own box): a flow bubble that would cross either takes its
-      // flip; the explicit top-bar below is clamped to the viewport.
+      // flip; an explicit below takes it only when the bubble fits above, and
+      // is clamped to the viewport otherwise.
       const limit = Math.min(window.innerHeight - 8, tip.floor ?? Infinity)
       const maxTop = limit - el.offsetHeight
       if (top > maxTop) {
-        if (tip.flip) { placement = 'above'; top = tip.flip.top; left = tip.flip.left }
+        const flip = tip.flip && (!tip.flipNeedsRoom || tip.flip.top - el.offsetHeight >= 8) ? tip.flip : undefined
+        if (flip) { placement = 'above'; top = flip.top; left = flip.left }
         else top = Math.max(8, maxTop)
       }
     } else if (tip.flip && top - el.offsetHeight < 8) {
@@ -512,9 +527,11 @@ export function InstantTip({ tip, tipId, className = '', children }: {
         left = tip.flip.left
       } else top = el.offsetHeight + 8
     }
+    const anchorLeft = left
     const maxLeft = window.innerWidth - 8 - el.offsetWidth
     left = Math.max(8, Math.min(left, maxLeft))
-    if (top !== tip.top || left !== tip.left || placement !== wanted) setFit({ top, left, placement })
+    const nub = Math.max(0, Math.min(anchorLeft - left, el.offsetWidth - 24))
+    if (top !== tip.top || left !== tip.left || placement !== wanted) setFit({ top, left, placement, nub })
   }, [tip])
   if (!tip) return null
   const placement = fit?.placement ?? tip.placement ?? 'above'
@@ -532,6 +549,14 @@ export function InstantTip({ tip, tipId, className = '', children }: {
       style={{ top: fit?.top ?? tip.top, left: fit?.left ?? tip.left }}
     >
       {children}
+      {/* A rotated square astride the edge that faces the anchor, painted in
+          the bubble's own border and fill so it reads as part of it. */}
+      {tip.flow && <span
+        aria-hidden="true"
+        data-testid="instant-tip-arrow"
+        className={`absolute h-2 w-2 rotate-45 border-border-strong bg-bg-elevated ${placement === 'below' ? '-top-[5px] border-l border-t' : '-bottom-[5px] border-b border-r'}`}
+        style={{ left: 6 + (fit?.nub ?? 0) }}
+      />}
     </div>
   </OverlayPortal>
 }

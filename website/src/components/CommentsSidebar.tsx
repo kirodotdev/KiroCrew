@@ -86,6 +86,7 @@ export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => v
         value={text}
         rows={2}
         placeholder={i18nT('components.commentsSidebar.reply')}
+        aria-label={i18nT('components.commentsSidebar.reply_2')}
         onChange={e => setText(e.target.value)}
         {...ime.bindComposition()}
         onKeyDown={e => {
@@ -132,6 +133,7 @@ export function EditBox({ initial, onSubmit, onCancel }: { initial: string; onSu
         value={text}
         rows={2}
         placeholder={i18nT('components.commentsSidebar.edit_comment')}
+        aria-label={i18nT('components.commentsSidebar.edit_comment_2')}
         onChange={e => setText(e.target.value)}
         {...ime.bindComposition()}
         onKeyDown={e => {
@@ -266,8 +268,13 @@ export function CommentRow({
       ) : (
         <div className={bodyClass}>{body}</div>
       )}
-      {/* actions — always visible, comfortable touch targets */}
-      <div className="flex items-center gap-1 mt-1.5 px-0.5" style={isEditing ? { display: 'none' } : undefined}>
+      {/* actions — always visible, comfortable touch targets. The row wraps:
+          in the 360px thread popover on a phone, five actions do not fit on
+          one line, and the popover's overflow-hidden would clip the last.
+          Delete stays in the left-to-right flow (no ml-auto): pushed to the
+          right edge on a wrapped line, it sat alone above the reply card and
+          read as the reply's Delete. */}
+      <div className="flex flex-wrap items-center gap-1 mt-1.5 px-0.5" style={isEditing ? { display: 'none' } : undefined}>
         <button
           type="button"
           onClick={() => onReply(comment)}
@@ -313,7 +320,7 @@ export function CommentRow({
         <button
           type="button"
           onClick={() => onDelete(comment)}
-          className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md text-muted hover:text-danger-text hover:bg-danger-subtle bg-transparent border-none cursor-pointer transition-colors ml-auto"
+          className="inline-flex items-center gap-1 text-[12px] px-2 py-1 rounded-md text-muted hover:text-danger-text hover:bg-danger-subtle bg-transparent border-none cursor-pointer transition-colors"
           title={i18nT('components.commentsSidebar.delete')}
           style={(restrictActions || hideDeleteEff) ? { display: 'none' } : undefined}
         ><X size={13} /> {i18nT('components.commentsSidebar.delete')}</button>
@@ -655,9 +662,12 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
           <button
             type="button"
             onClick={() => setShowResolved(v => !v)}
+            aria-expanded={showResolved}
             className="w-full inline-flex items-center justify-center gap-1 text-[11px] text-muted hover:text-text bg-transparent border-none cursor-pointer py-1.5 transition-colors"
           >
-            <CheckCircle2 size={12} /> {showResolved ? i18nT('components.commentsSidebar.hide') : i18nT('components.commentsSidebar.show')} {resolvedCount} {i18nT('components.commentsSidebar.resolved')}
+            <CheckCircle2 size={12} aria-hidden="true" /> {showResolved
+              ? i18nT('components.commentsSidebar.hide_resolved_count', { count: resolvedCount })
+              : i18nT('components.commentsSidebar.show_resolved_count', { count: resolvedCount })}
           </button>
         )}
       </div>
@@ -672,6 +682,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
               value={addText}
               rows={2}
               placeholder={i18nT('components.commentsSidebar.add_a_comment_on_the_whole_artifact')}
+              aria-label={i18nT('components.commentsSidebar.add_comment')}
               onChange={e => setAddText(e.target.value)}
               {...ime.bindComposition()}
               onKeyDown={e => {

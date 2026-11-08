@@ -1,4 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ReactElement } from 'react'
+import { Provider } from 'react-redux'
+import { fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { Slot } from './types'
 import type { LaneSignals } from './board'
@@ -9,6 +11,10 @@ vi.mock('../../chat-core/transport/sendTurn', () => ({ sendTurn }))
 
 import BroadcastPanel from './BroadcastPanel'
 import { fmtRelative } from '../../i18n/format'
+import { store } from '../../store'
+
+/** The panel reads the live message-recency overlay from the store. */
+const render = (ui: ReactElement) => rtlRender(<Provider store={store}>{ui}</Provider>)
 
 const slots: Slot[] = [
   { key: 'loop-busy', title: 'Babysit', running: true },
@@ -38,7 +44,7 @@ afterEach(() => { vi.clearAllMocks() })
 describe('BroadcastPanel', () => {
   it('defaults to looping sessions with mates excluded', () => {
     setup()
-    expect(screen.getByTestId('broadcast-crew-exclude').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTestId('broadcast-crew-exclude').getAttribute('aria-checked')).toBe('true')
     expect(screen.getByTestId('broadcast-row-loop-busy')).toBeTruthy()
     expect(screen.getByTestId('broadcast-row-loop-idle')).toBeTruthy()
     expect(screen.queryByTestId('broadcast-row-crew-loop')).toBeNull()
@@ -233,7 +239,7 @@ describe('BroadcastPanel', () => {
     expect(screen.getByTestId('broadcast-state-loop').getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByTestId('broadcast-state-working').getAttribute('aria-pressed')).toBe('false')
     fireEvent.click(screen.getByTestId('broadcast-state-idle'))
-    expect(screen.getByTestId('broadcast-preset-custom').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTestId('broadcast-preset-custom').getAttribute('aria-checked')).toBe('true')
     // Custom states now: loop, idle -> the idle non-crewmate row joins.
     expect(screen.getByTestId('broadcast-row-plain')).toBeTruthy()
   })
@@ -252,8 +258,8 @@ describe('BroadcastPanel', () => {
     render(<BroadcastPanel slots={[{ key: 'busy', title: 'Busy', running: true }, { key: 'quiet', title: 'Quiet', running: false }]}
       folders={[]} tags={[]} agents={agents} signals={signals} onClose={vi.fn()} onOpenSession={vi.fn()} />)
     // No loops, so the panel skips In a loop and opens on In progress.
-    expect(screen.getByTestId('broadcast-preset-loop').getAttribute('aria-pressed')).toBe('false')
-    expect(screen.getByTestId('broadcast-preset-running').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByTestId('broadcast-preset-loop').getAttribute('aria-checked')).toBe('false')
+    expect(screen.getByTestId('broadcast-preset-running').getAttribute('aria-checked')).toBe('true')
     expect(screen.getByTestId('broadcast-row-busy')).toBeTruthy()
   })
 

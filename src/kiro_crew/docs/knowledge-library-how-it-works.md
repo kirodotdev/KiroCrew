@@ -15,6 +15,14 @@ into overlapping chunks so a match can be quoted in context, and entities and
 relations found in each chunk are linked into a graph that connects passages
 across different files.
 
+A single web page can be added too: Add Source, then Web Page, then paste an
+`https://` link. Kiro Crew fetches it once itself, with no agent involved, and stores
+the text, with the link and the fetch time on the source row; Sync fetches it
+again. Only hosts listed in `knowledge.doc_ingest_hosts` are fetched, and that list
+is empty by default, so nothing is fetched until you add a host, for example
+`kirocrew config set knowledge.doc_ingest_hosts '["example.com"]'`. A host matches
+exactly: `example.com` does not cover `docs.example.com`.
+
 ## What search returns
 
 A ranked list of passages, each with a citation naming where it came from:

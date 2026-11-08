@@ -6,10 +6,10 @@ escalation below holds, so each is asserted directly rather than trusted from th
 script's own self-test -- and the self-test is additionally executed here, so
 `--test` rotting is a test failure rather than a silent no-op.
 
-Two of these tests exist because a reviewer found the hole: `test_workflows_presence`
-reaches the `test/` tree via `Path(__file__).resolve().parent` + `.glob(...)` and was
-missed by the first version's `/ "test"` regex, and five files reach a test module
-through `importlib.import_module`, which no import-statement pattern sees.
+Two reach paths need their own tests: `test_workflows_presence` reaches the `test/`
+tree via `Path(__file__).resolve().parent` + `.glob(...)`, which a `/ "test"` regex
+misses, and five files reach a test module through `importlib.import_module`, which
+no import-statement pattern sees.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _reason(paths: list[str], code: str = "M") -> str:
 
 @pytest.fixture(scope="module")
 def clean_leaf(all_corpus_gates: list[str]) -> str:
-    """A leaf nothing imports, nothing mentions, and that is not itself a gate.
+    """A leaf nothing imports, mentions or reads by name, and that is not itself a gate.
 
     Discovered rather than hardcoded: naming one in a string literal would make
     `mentions_of` find it (that scan covers `scripts/` and `test/`), so the
@@ -60,6 +60,8 @@ def clean_leaf(all_corpus_gates: list[str]) -> str:
         if mod.importers_of({candidate.stem}, REPO_ROOT):
             continue
         if mod.mentions_of({candidate.stem}, REPO_ROOT):
+            continue
+        if mod.readers_of({candidate.stem}, REPO_ROOT):
             continue
         return rel
     pytest.fail("no clean leaf test file found in this repo")
@@ -171,7 +173,7 @@ def test_reverse_import_scan_finds_a_function_body_import() -> None:
 
 
 def test_a_dynamically_imported_test_module_escalates() -> None:
-    """The gap a reviewer found: `importlib.import_module` on a test module.
+    """`importlib.import_module` on a test module must escalate.
 
     Five files reach `test_slack_golden_transcript` that way. No import-statement
     pattern sees it, so the mention check -- which is spelling-independent -- is
@@ -248,9 +250,8 @@ def test_known_corpus_gates_are_derived(gate: str, all_corpus_gates: list[str]) 
 def test_the_missed_gate_needs_the_file_relative_rule(clean_leaf: str) -> None:
     """Mutation guard: the `/ "test"` join alone must not be enough to find it.
 
-    This is the regression the reviewer caught. If someone narrows the derivation
-    back to the join spelling, `test_workflows_presence` drops out and a diff that
-    orphans a `workflows/` module merges green.
+    If someone narrows the derivation to the join spelling,
+    `test_workflows_presence` drops out and a diff that orphans a `workflows/` module merges green.
     """
     presence = REPO_ROOT.joinpath("test", "test_workflows_presence.py")
     text = presence.read_text(encoding="utf-8")
@@ -259,6 +260,45 @@ def test_the_missed_gate_needs_the_file_relative_rule(clean_leaf: str) -> None:
         "exercises the file-relative rule -- pick another file-relative gate"
     )
     assert mod._SCANS_A_DIR.search(text) and mod._REACHES_TEST_TREE.search(text)
+
+
+# The fleet-probe suite's two self-scans read every file of the suite through
+# `pipeline_conductor_fleet_probe_helpers.SUITE_FILES`, a glob in the helper.
+_HELPER_GATES = (
+    "test/test_pipeline_conductor_fleet_probe_cycle.py",
+    "test/test_pipeline_conductor_fleet_probe_host_lines.py",
+)
+
+
+@pytest.mark.parametrize("gate", _HELPER_GATES)
+def test_a_gate_that_reads_the_tree_through_a_helper_is_derived(
+    gate: str, all_corpus_gates: list[str]
+) -> None:
+    """Mutation guard: each of these is a gate ONLY through the helper rule.
+
+    Neither file enumerates a directory or joins `/ "test"`, so the per-file rule
+    alone drops them, and a diff to a third file of the suite runs neither scan.
+    """
+    text = REPO_ROOT.joinpath(gate).read_text(encoding="utf-8")
+    assert "SUITE_FILES" in text, f"{gate} no longer reads SUITE_FILES; pick another"
+    scans_itself = mod._SCANS_A_DIR.search(text) or mod._JOINS_TEST_DIR.search(text)
+    assert not scans_itself, f"{gate} now scans the tree itself; pick another helper gate"
+    assert "pipeline_conductor_fleet_probe_helpers" in mod._tree_reading_helpers(TEST_DIR)
+    assert gate in all_corpus_gates
+
+
+def test_an_edit_to_one_suite_file_runs_the_scans_over_the_suite() -> None:
+    """The case that went green: `_argv_row` is read by both self-scans as data.
+
+    A cwd `symlink_to` added there fails `_host_lines`'s scan in the full suite,
+    and before the helper rule the leaf run held neither scan.
+    """
+    part = "test/test_pipeline_conductor_fleet_probe_argv_row.py"
+    assert part not in _HELPER_GATES
+    resolved = _resolved([part])
+    assert isinstance(resolved, tuple), _reason([part])
+    _changed, gates = resolved
+    assert set(_HELPER_GATES) <= set(gates)
 
 
 def test_accepted_run_always_includes_the_corpus_gates(
@@ -276,6 +316,95 @@ def test_a_broken_corpus_scan_forfeits_the_reduction(
     """Mutation guard: if the derivation returns nothing, escalate, never reduce."""
     monkeypatch.setattr(mod, "corpus_gates", lambda root: [])
     assert _resolved([clean_leaf]) is None
+
+
+def test_an_edit_to_a_file_another_test_reads_by_name_runs_that_test(
+    all_corpus_gates: list[str],
+) -> None:
+    """The case that went green: the reader neither scans, joins, nor is a mention.
+
+    `test_history_locking_remediation` parses `test_member_memory_runtime.py` and
+    fails when a named test function leaves it. Before the reader lookup, a diff
+    renaming that function ran the edited file alone and merged green.
+    """
+    reader = "test/test_history_locking_remediation.py"
+    text = REPO_ROOT.joinpath(reader).read_text(encoding="utf-8")
+    assert '"test_member_memory_runtime.py"' in text, f"{reader} stopped reading it; pick another"
+    scans_itself = (
+        mod._SCANS_A_DIR.search(text) and mod._REACHES_TEST_TREE.search(text)
+    ) or mod._JOINS_TEST_DIR.search(text)
+    assert not scans_itself, f"{reader} now scans the tree itself; pick another reader"
+    assert reader not in all_corpus_gates, "a reader runs for the file it reads, not as a gate"
+
+    resolved = _resolved(["test/test_member_memory_runtime.py"])
+    assert isinstance(resolved, tuple), _reason(["test/test_member_memory_runtime.py"])
+    _changed, gates = resolved
+    assert reader in gates
+
+
+def test_an_edit_to_a_listed_test_runs_the_audit_of_that_list(
+    all_corpus_gates: list[str],
+) -> None:
+    """`test_windows_gap_list` reads every module its list names, through the list.
+
+    Renaming a listed test leaves an entry that names nothing, which the audit
+    fails on. The module picked here is one the audit's own source never names,
+    so only the list connects the two.
+    """
+    audit = "test/test_windows_gap_list.py"
+    text = REPO_ROOT.joinpath(audit).read_text(encoding="utf-8")
+    assert '"windows-expected-failures.txt"' in text, f"{audit} stopped reading the list"
+    assert audit not in all_corpus_gates, f"{audit} became a gate; this no longer tests the list"
+    listing = TEST_DIR.joinpath("windows-expected-failures.txt").read_text(encoding="utf-8")
+    for line in listing.splitlines():
+        module = line.partition("::")[0].strip()
+        stem = Path(module).stem
+        if not (module.startswith("test/") and mod._LEAF_NAME.match(module[len("test/") :])):
+            continue
+        if f"{stem}.py" in text:
+            continue
+        if mod.importers_of({stem}, REPO_ROOT) or mod.mentions_of({stem}, REPO_ROOT):
+            continue
+        break
+    else:
+        pytest.fail("no listed leaf left that only the list names; update this test")
+
+    resolved = _resolved([module])
+    assert isinstance(resolved, tuple), _reason([module])
+    _changed, gates = resolved
+    assert audit in gates
+
+
+def test_a_reader_runs_only_for_a_diff_that_touches_a_file_it_names(tmp_path: Path) -> None:
+    """Every spelling of a read finds its reader, and none runs for another file."""
+    test_dir = tmp_path / "test"
+    test_dir.mkdir()
+    files = {
+        "test_gate.py": "FILES = sorted(Path(__file__).parent.glob('test_*.py'))\n",
+        "test_target.py": "def test_kept():\n    pass\n",
+        "test_other.py": "def test_unrelated():\n    pass\n",
+        "test_bare.py": 'SOURCE = Path(__file__).parent / "test_target.py"\n',
+        "test_rooted.py": 'SOURCE = ROOT / "test/test_target.py"\n',
+        "test_node_id.py": 'NODE = "test/test_target.py::test_kept"\n',
+        "test_list_audit.py": 'LISTING = Path(__file__).with_name("audit-list.txt")\n',
+        "audit-list.txt": "test/test_target.py::test_kept\n",
+    }
+    for name, body in files.items():
+        test_dir.joinpath(name).write_text(body, encoding="utf-8")
+
+    def gates_for(path: str) -> list[str]:
+        resolved, reason = mod.classify({path: "M"}, tmp_path)
+        assert isinstance(resolved, tuple), reason
+        return resolved[1]
+
+    assert gates_for("test/test_target.py") == [
+        "test/test_bare.py",
+        "test/test_gate.py",
+        "test/test_list_audit.py",
+        "test/test_node_id.py",
+        "test/test_rooted.py",
+    ]
+    assert gates_for("test/test_other.py") == ["test/test_gate.py"]
 
 
 # ── the accepted case ─────────────────────────────────────────────────────────
@@ -445,10 +574,10 @@ def test_the_leaf_scope_step_survives_set_u_on_the_full_suite_paths(
 ) -> None:
     """Both full-suite paths skip the assignments, so every var must be pre-set.
 
-    A reviewer caught `gates` unset here: the step runs `set -uo pipefail`, the
-    heredoc expands `$gates` unconditionally, and only the `else` branch assigned
-    it -- so a push to main and every `ci-full-run` PR crashed the `changes` job
-    and took all dependent jobs with it. This runs the REAL step body under the
+    The step runs `set -uo pipefail` and the heredoc expands `$gates`
+    unconditionally, so a var assigned only in the `else` branch crashes the
+    `changes` job on a push to main and every `ci-full-run` PR, and takes all
+    dependent jobs with it. This runs the REAL step body under the
     same shell flags GitHub Actions uses, so any future unbound variable in that
     step fails here instead of in CI.
     """
@@ -491,7 +620,7 @@ def test_ci_keeps_an_escape_hatch_to_the_full_matrix() -> None:
 
 
 def test_the_coverage_jobs_know_about_leaf_runs() -> None:
-    """A reviewer found this: a leaf run uploads no coverage artifacts.
+    """A leaf run uploads no coverage artifacts.
 
     `coverage-combine` is gated on `only_frontend != 'true'`, which is FALSE for a
     leaf diff (it is a backend diff), so without naming the leaf flag the job runs

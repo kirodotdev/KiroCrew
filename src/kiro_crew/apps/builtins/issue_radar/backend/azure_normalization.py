@@ -11,6 +11,7 @@ from .azure_transport import (
     _bad_segment,
     _url_path_segments,
 )
+from .comment_batch import thread_id_or_none
 from .errors import ProviderCliError
 
 _GUID_RE = re.compile(
@@ -345,6 +346,9 @@ def _norm_thread_comment(thread: dict, comment: dict) -> dict | None:
         return None
     context = _obj(thread.get("threadContext"))
     path = context.get("filePath")
+    # Every pull-request comment, general or inline, lives in a thread, and a reply
+    # is posted into that thread.
+    thread_id = thread_id_or_none(thread.get("id"))
     if not path:
         return {
             "kind": "comment",
@@ -355,12 +359,14 @@ def _norm_thread_comment(thread: dict, comment: dict) -> dict | None:
             "body": body,
             "author_association": None,
             "reactions": None,
+            "thread_id": thread_id,
         }
     line = _obj(context.get("rightFileStart")).get("line") or _obj(
         context.get("leftFileStart")
     ).get("line")
     return {
         "kind": "review_comment",
+        "id": comment.get("id"),
         "actor": _identity_login(comment.get("author")),
         "created_at": comment.get("publishedDate"),
         "body": body,
@@ -368,6 +374,7 @@ def _norm_thread_comment(thread: dict, comment: dict) -> dict | None:
         "path": path,
         "line": line,
         "url": None,
+        "thread_id": thread_id,
     }
 
 

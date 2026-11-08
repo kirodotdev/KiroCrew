@@ -416,10 +416,14 @@ describe('focusComposerForOpenedSession — a quick-search surface opened a sess
 describe('focusComposerForResumedSession — only once the resume entered the session', () => {
   const RESUMED = 'zzq-resumed'
   const entered = { ok: true, surface: '', key: RESUMED }
+  // The store as the fulfilled reducer leaves it when the resume took the view.
+  let viewing: string | null = RESUMED
+  const store = { getState: () => ({ chat: { activeSlot: viewing } }) }
+  beforeEach(() => { viewing = RESUMED })
 
   it('does NOT focus while the resume is in flight, then focuses once it has entered', async () => {
     let resolve!: (r: { ok: boolean; surface?: string; key: string }) => void
-    focusComposerForResumedSession(new Promise(r => { resolve = r }))
+    focusComposerForResumedSession(new Promise(r => { resolve = r }), store)
     await flushFrame()
     expect(document.activeElement).not.toBe(composer)
     resolve(entered)
@@ -428,13 +432,23 @@ describe('focusComposerForResumedSession — only once the resume entered the se
   })
 
   it('focuses nothing for an `ok: false` answer — the reducer left the active slot where it was', async () => {
-    focusComposerForResumedSession(Promise.resolve({ ok: false, surface: '', key: RESUMED }))
+    focusComposerForResumedSession(Promise.resolve({ ok: false, surface: '', key: RESUMED }), store)
     await flushFrame()
     expect(document.activeElement).not.toBe(composer)
   })
 
   it('focuses nothing for a surface the chat page cannot display (#3624)', async () => {
-    focusComposerForResumedSession(Promise.resolve({ ok: true, surface: 'slack', key: RESUMED }))
+    focusComposerForResumedSession(Promise.resolve({ ok: true, surface: 'slack', key: RESUMED }), store)
+    await flushFrame()
+    expect(document.activeElement).not.toBe(composer)
+  })
+
+  it('focuses nothing when the resume answered but did not take the view (the user moved meanwhile)', async () => {
+    // The fulfilled reducer declined to open it: the composer on the page
+    // belongs to the session the user moved to.
+    viewing = 'zzq-moved-to'
+    focusComposerForResumedSession(Promise.resolve(entered), store)
+    await flushFrame()
     await flushFrame()
     expect(document.activeElement).not.toBe(composer)
   })
@@ -442,7 +456,7 @@ describe('focusComposerForResumedSession — only once the resume entered the se
   it('focuses nothing when the resume rejects, and does not leak the rejection', async () => {
     const unhandled = vi.fn()
     process.on('unhandledRejection', unhandled)
-    focusComposerForResumedSession(Promise.reject(new Error('404')))
+    focusComposerForResumedSession(Promise.reject(new Error('404')), store)
     await flushFrame()
     await flushFrame()
     process.off('unhandledRejection', unhandled)
@@ -478,7 +492,7 @@ describe('focusComposerForResumedSession — only once the resume entered the se
     })
 
     it('focuses the composer of the pane bound to the resumed key, never the grid-focused pane\'s', async () => {
-      focusComposerForResumedSession(Promise.resolve(entered))
+      focusComposerForResumedSession(Promise.resolve(entered), store)
       await flushFrame()
       await flushFrame()
       expect(document.activeElement).toBe(resumedPane.ta)
@@ -487,7 +501,7 @@ describe('focusComposerForResumedSession — only once the resume entered the se
 
     it('focuses nothing when panes are mounted and none is bound to the resumed key', async () => {
       resumedPane.pane.setAttribute('data-pane-slot', 'zzq-some-other-slot')
-      focusComposerForResumedSession(Promise.resolve(entered))
+      focusComposerForResumedSession(Promise.resolve(entered), store)
       await flushFrame()
       await flushFrame()
       expect(document.activeElement).not.toBe(focusedPane.ta)

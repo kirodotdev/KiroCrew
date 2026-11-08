@@ -2,19 +2,24 @@ import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
-import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, fetchSlots, remoteSlotRead, sseSubagentStatus, sseSubagentText, type SubagentDetail } from '../store/dashboardSlice'
-import { addNotification, ackNotificationByTs, unackNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
+import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
+import { addNotification, ackNotificationByTs, unackNotificationByTs, dismissNotificationByTs, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
-  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, sseContextUsage, clearMessages, clearSlotCache, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, setSlotStatusDetail, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, queueEntryAttachments, isTerminalWorkflowStatus,
+  fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveByApprovalId, sseSubagentPending, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
+  forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
+  takeSideQueueEditForClose,
 } from '../store/chatSlice'
 import { store } from '../store'
 import { TAB_ID } from '../api/tabId'
+import { readSideChatDraft, writeSideChatDraft } from '../chat-core/composer/sideChatDrafts'
+import { mergeIntoDraft } from '../utils/chatDrafts'
 import { applyGuideUpdate } from '../api/guide'
 import { handleGuideObserveFrame } from '../guide/liveObservation'
 import { applyCardUpdate } from '../api/cards'
 import type { Notification, TodoList, McpSessionReport } from '../types'
 import { i18nT } from '../i18n/t'
+import { CONFIG_PENDING_QUERY_KEY } from '../pages/settings/configPendingQuery'
 import { teamRoots } from '../pages/chat/command-center/model'
 import {
   applySessionProjection,
@@ -33,6 +38,10 @@ import {
   takeFoldedSlotProjection,
 } from './websocket/slotProjection'
 import { useSocketConnection } from './websocket/connection'
+import { createFoldWatch, FOLD_HELLO_FRAME, type FoldWatch } from './websocket/foldWatch'
+import { applySlotFoldFrame, readSlotFoldFrame, resetWorkDeltaBases, SLOT_DELTA_FRAME, type SlotFoldFrame, type SlotFoldOutcome } from './websocket/workDelta'
+import { appWatchedSlots, noteAppSlotChanged, noteAppSlotFrame, onAppWatchedSlotsChange } from '../utils/appSlotPush'
+import { catchupSlots, createChunkWatch, type ChunkWatch } from './websocket/chunkWatch'
 import { decodeFrame } from './websocket/frames'
 import { useStreamBuffers } from './websocket/streamBuffers'
 import { useVoicePlayback } from './websocket/voicePlayback'
@@ -40,6 +49,7 @@ import { useRowDeliveryWatchdog } from './websocket/rowDeliveryWatchdog'
 import { useApprovalRegistry } from './websocket/approvals'
 import { useComposerCards } from './websocket/composerCards'
 import { useAutomationSeed } from './websocket/automationSeed'
+import { useMonitorContract } from './useMonitorContract'
 import { useWorkflowRunReconcile } from './websocket/workflowRuns'
 import { useSlotListSync } from './websocket/slotList'
 import { useBundleReload, handleUpdateProgress } from './websocket/bundleReload'
@@ -49,16 +59,20 @@ import {
   handleDashboardMoved,
   handleMemberProjection,
   handleMembersSubscribed,
+  handleSlotFoldMoved,
   handleSourceStatus,
   handleThreadReply,
+  invalidateChatPins,
   invalidateRefreshQueries,
 } from './websocket/serverState'
 import { DASHBOARD_FIELDS_FRAME, handleDashboardFields } from './websocket/dashboardFields'
 import { useChatStream } from './websocket/chatStream'
 import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay, focusedSlotForCurrentSurface } from './websocket/attention'
-import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory } from './websocket/browserEvents'
+import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory, emitResumeAllDone } from './websocket/browserEvents'
 import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
+import { browserLiveStore } from './useBrowserLive'
+import { applySharedCrewFrame, onSharedCrewSocketOpen, setSharedCrewSender } from './sharedCrew/sharedCrewSocket'
 import { batchedUnlessOpen } from '../lib/streamBatch'
 
 /* The dashboard's single multiplexed WebSocket. `useWebSocket` composes the
@@ -81,7 +95,7 @@ export { DASHBOARD_FIELDS_FRAME, subscribeDashboardFields } from './websocket/da
 export { identityOf, askIdsOf, reconcileQuestions, staleAskIds } from './websocket/composerCards'
 export { resolvedSince } from './websocket/retiredIds'
 export { UPDATE_RESTART_LATCH_KEY, UPDATE_RESTART_LATCH_TTL_MS, consumeUpdateRestartLatch } from './websocket/bundleReload'
-export { emitSlotFocused } from './websocket/attention'
+export { emitSlotFocused, endSplitPaneFocus } from './websocket/attention'
 // The revision ledger is module state, so it has one home and is reached through
 // this facade like every other owner binding.
 // The crew-log panel's cache key and frame applier, reached through this facade
@@ -119,6 +133,8 @@ export const WS_SILENCE_CHECK_MS = 5_000
 export const WS_SILENCE_MAX_MS = 300_000
 
 /** Single multiplexed WebSocket replacing all SSE + polling connections. */
+const getDashboardState = () => store.getState().dashboard
+
 export function useWebSocket() {
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
@@ -136,14 +152,28 @@ export function useWebSocket() {
   const silentReconnectsRef = useRef(0)
   const voice = useVoicePlayback(dispatch)
   const automations = useAutomationSeed(dispatch, queryClient)
+  // Prefer the gateway's runtime monitor kind list over the bundled snapshot so
+  // a contributed kind is not shown as blocked. When it adds kinds,
+  // re-run the automation seed so the Redux projection (which a contributed-kind
+  // record entered as non-actionable before the contract arrived) is
+  // re-normalized. Fallback-safe: an older gateway 404s and the bundled list
+  // stays in force. Mounted here, beside the seed it drives, rather than at the
+  // app root.
+  useMonitorContract(automations.seedAutomations)
   const approvals = useApprovalRegistry(dispatch, queryClient)
   const cards = useComposerCards(dispatch)
   const syncWorkflowRuns = useWorkflowRunReconcile(dispatch, queryClient)
-  const buffers = useStreamBuffers({ dispatch, socket, onActiveSlotFlushed: voice.speakStreamedDelta })
+  const buffers = useStreamBuffers({ dispatch, socket, onVoiceSlotFlushed: voice.speakStreamedDelta })
   const slotList = useSlotListSync(dispatch, queryClient, buffers)
-  const bundle = useBundleReload(dispatch)
-  const chatStream = useChatStream({ dispatch, buffers, voice, reconnectingRef })
+  const bundle = useBundleReload(dispatch, getDashboardState)
+  const chatStream = useChatStream({ dispatch, queryClient, buffers, voice, reconnectingRef })
   const turnCompletion = useTurnCompletion({ dispatch, queryClient, reconnectingRef })
+  // Which work boards this tab shows, sent as `fold_watch` once a gateway that
+  // routes by watch set says `fold_hello`. Created with the hook's lifetime.
+  const foldWatchRef = useRef<FoldWatch | null>(null)
+  // Which slots this tab renders a stream for, sent as `chunk_watch` on every
+  // open and change. Created with the hook's lifetime.
+  const chunkWatchRef = useRef<ChunkWatch | null>(null)
 
   /** Reconcile coordinator approvals against the authority on every open.
    *  The registry decides what to retire and adopt; the permission row an
@@ -176,18 +206,31 @@ export function useWebSocket() {
       silenceClockStartedAtRef.current = Date.now()
       lastFrameAtRef.current = silenceClockStartedAtRef.current
       slotList.resetForConnection()
+      // A new socket starts unwatched; the gateway's hello re-sends the set.
+      foldWatchRef.current?.reset()
+      // The gateway scopes stream frames per socket, so a new one starts empty.
+      chunkWatchRef.current?.onOpen()
       // A fold revision is minted by the gateway process that folded, so numbers
       // from the previous socket are not comparable with this one's: carried over,
       // a restarted gateway's frames would all read as stale.
       resetSlotProjectionRevisions()
+      // Same reason for the work boards' delta bases: the next read re-labels them.
+      resetWorkDeltaBases(queryClient)
       // The crew-log panel's cached read carries the PREVIOUS process's revisions,
       // which a restarted gateway's frames would all fall below. One re-read per
       // connection re-bases it on the process now serving.
       void queryClient.invalidateQueries({ queryKey: ['crew-log-projections'] }, { cancelRefetch: false })
+      // `config_pending_changed` is one-shot: a change while the socket was down
+      // is only seen by re-reading.
+      void queryClient.invalidateQueries({ queryKey: CONFIG_PENDING_QUERY_KEY }, { cancelRefetch: false })
       // The Context tab's usage revisions belong to the previous process too.
       resetContextTraceRefresh()
       // Cache auto-speak preference
       voice.refreshAutoSpeak()
+      // Shared Crew: this socket carries the tab's activity frames, and its
+      // presence, work and decision state is re-read from the server.
+      setSharedCrewSender(payload => socket.sendIfOpen(payload))
+      onSharedCrewSocketOpen(queryClient)
       const catchUp = {
         dispatch,
         queryClient,
@@ -214,6 +257,10 @@ export function useWebSocket() {
     // handler context is shared; the other arms are written inline. One
     // try/catch covers the table: a throw ends that frame's effects and the
     // next frame routes normally.
+    // Binary messages arrive as ArrayBuffer, never Blob: a Blob needs an async
+    // read, which would reorder frames behind the JSON events that follow them.
+    ws.binaryType = 'arraybuffer'
+
     ws.onmessage = (e) => {
       if (socket.wsRef.current === ws) lastFrameAtRef.current = Date.now()
       // The look-preview frame (utils/lookPreview.ts) is a still picture of the
@@ -221,8 +268,23 @@ export function useWebSocket() {
       // user's real sessions, runs or notices. The socket stays open only so
       // the frame never shows a disconnected state.
       if (isLookPreviewFrame()) return
+      // The one binary family: a live-browser screencast frame (owner sockets
+      // only). It never touches the JSON router, the store or React: the
+      // live-browser store acks it, keeps it for Replay and paints it.
+      if (e.data instanceof ArrayBuffer) {
+        browserLiveStore.applyBinary(e.data)
+        return
+      }
+      if (typeof Blob !== 'undefined' && e.data instanceof Blob) {
+        // A socket that ignored `binaryType` (a test double, an old shim):
+        // still a frame, read asynchronously.
+        e.data.arrayBuffer().then((buf) => browserLiveStore.applyBinary(buf), () => {})
+        return
+      }
       try {
         const { type, data, msg } = decodeFrame(e.data)
+        // App embeds watching this frame's slot re-read it (utils/appSlotPush.ts).
+        noteAppSlotFrame(type, data)
         switch (type) {
           case 'dashboard':
             bundle.onDashboardStatus(data)
@@ -230,8 +292,29 @@ export function useWebSocket() {
           case 'slots':
             slotList.onSlots(msg, data, e.data as string)
             break
+          case 'shared_crew.presence':
+          case 'shared_crew.work':
+          case 'shared_crew.decision':
+          case 'shared_crew.capacity':
+          case 'shared_crew.send_state':
+          case 'shared_crew.typing_lease':
+          case 'shared_crew.memory_change':
+          case 'shared_crew.people':
+            applySharedCrewFrame(queryClient, data)
+            break
+          case 'slots_diff':
+            slotList.onSlotsDiff(data, e.data as string, () => {
+              if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'slots_resync' }))
+            })
+            break
           case 'credential_redaction_changed':
             handleCredentialRedactionChanged(queryClient, msg.data as { enabled?: unknown; changed_at?: unknown } | undefined)
+            break
+          case 'config_pending_changed':
+            // Owner-only frame: a settings file edited outside the dashboard went
+            // pending or was resolved. The Settings nav dot and the Security cards
+            // read this one query (pages/settings/configPendingQuery.ts).
+            void queryClient.invalidateQueries({ queryKey: CONFIG_PENDING_QUERY_KEY })
             break
           case 'skills.pending_changed': {
             // A skill candidate (new or an update proposal) was just staged for
@@ -311,13 +394,16 @@ export function useWebSocket() {
             // slot_key only — no pin content — so nothing sensitive crosses the
             // WebSocket to any listener.
             const slotKey = (data as { slot_key?: string }).slot_key
-            if (slotKey) {
-              queryClient.invalidateQueries({ queryKey: ['chat-pins', slotKey] })
-            }
+            if (slotKey) invalidateChatPins(queryClient, slotKey)
             break
           }
           case 'artifact_update':
             handleArtifactUpdate(queryClient, data)
+            break
+          case 'resume_all_done':
+            // Owner-only frame: one bulk Resume run's outcome. The sidebar row
+            // that started the run shows it; the slots push already moved the rows.
+            emitResumeAllDone(data)
             break
           case 'notification': {
             const n = data as Notification
@@ -326,8 +412,9 @@ export function useWebSocket() {
             // configured sound — the Redux action alone only drives the
             // toast/badge, not the sound.
             // RFC Phase 3: muted-channel (silenced) and passive notes are
-            // feed-only — no sound.
-            if (!n.silenced && n.priority !== 'passive') {
+            // feed-only — no sound. So is a quiet replacement: a keyed note
+            // moving along its lifecycle at no higher priority.
+            if (!n.silenced && n.priority !== 'passive' && !n.quiet) {
               dispatchMcNotification(n.kind)
             }
             // The in-app banner hears LIVE arrivals only. A reconnect catch-up
@@ -338,7 +425,7 @@ export function useWebSocket() {
             // The boot snapshot never reaches here at all (it arrives through
             // `fetchNotifications`, not this frame), so mount replay is
             // excluded by construction.
-            if (!reconnectingRef.current) dispatchLiveNotification(n)
+            if (!reconnectingRef.current && !n.quiet) dispatchLiveNotification(n)
             break
           }
           case 'panel_published':
@@ -373,6 +460,10 @@ export function useWebSocket() {
             break
           case 'notification_unack':
             dispatch(unackNotificationByTs(data.ts))
+            break
+          case 'notification_dismiss':
+            // The note's publisher withdrew it; every view drops it.
+            dispatch(dismissNotificationByTs(data.ts))
             break
           case 'notifications_clear':
             // Another view cleared the inbox; drop this view's copy so the
@@ -422,10 +513,26 @@ export function useWebSocket() {
             // which the command center reads too.
             approvals.onApprovalResolved(data)
             break
+          case 'elicitation_resolved':
+            // An MCP server's question was answered (by the person, or cancelled
+            // when its window ran out): stamp the card's row so it stops offering
+            // buttons. Same row-by-approval_id write the permission rows take.
+            if (typeof data.id === 'string' && typeof data.slot === 'string') {
+              dispatch(resolveByApprovalId({
+                id: data.id,
+                slot: data.slot,
+                decision: String(data.action || 'cancel'),
+                ...(typeof data.mid === 'string' && data.mid ? { mid: data.mid } : {}),
+                // The accepted form's values, so the card's summary fills in
+                // without waiting for a transcript reload.
+                ...(data.answer && typeof data.answer === 'object' && !Array.isArray(data.answer) ? { answer: data.answer as Record<string, unknown> } : {}),
+              }))
+            }
+            break
           case 'refresh': {
-            const kinds: string[] = data.kinds || []
+            const kinds: string[] = Array.isArray(data.kinds) ? data.kinds.filter((k: unknown): k is string => typeof k === 'string') : []
             dispatch(triggerRefresh())
-            invalidateRefreshQueries(queryClient)
+            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()))
             if (kinds.includes('history')) dispatch(fetchHistory(false))
             break
           }
@@ -517,7 +624,7 @@ export function useWebSocket() {
             chatStream.onToolCall(data)
             break
           case 'tool_result':
-            dispatch(batchedUnlessOpen(data.slot, sseToolResult(data as { slot: string; output: string; tool_call_id?: string; final?: boolean })))
+            dispatch(batchedUnlessOpen(data.slot, sseToolResult(data as { slot: string; output: string; tool_call_id?: string; final?: boolean; slim?: boolean })))
             break
           case 'mcp_app_render':
             // MCP App (SEP-1865) render payload from the gateway. Stored by
@@ -572,6 +679,11 @@ export function useWebSocket() {
             dispatch(sseActivityEvent(ev))
             break
           }
+          case 'models_changed':
+            // A cold model list was filled by a background session the server
+            // started for it (no chat spawned, so no `spawned` frame came).
+            queryClient.invalidateQueries({ queryKey: ['available-models'] })
+            break
           case 'subagent_spawn':
             dispatch(sseSubagentSpawn(data as { slot: string; id: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; batch_id?: string }))
             break
@@ -611,7 +723,7 @@ export function useWebSocket() {
           case 'subagent_snapshot': {
             // Clear any buffered chunks for this agent — the snapshot's streaming
             // field is authoritative and already includes any in-flight text.
-            const snapData = data as { id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; batch_id?: string; streaming: string; last_tool: string; started: number; tool_count?: number; stalled?: boolean }
+            const snapData = data as { id: string; slot: string; task: string; agent: string; label?: string; model?: string; requested_model?: string; batch_id?: string; streaming: string; last_tool: string; last_tool_call_id?: string; started: number; tool_count?: number; stalled?: boolean }
             buffers.dropSubagentKey(snapData.slot, snapData.id)
             dispatch(sseSubagentSnapshot(snapData))
             break
@@ -654,6 +766,10 @@ export function useWebSocket() {
             }
             break
           }
+          case 'subagent_replay_done':
+            // The replay above is complete: drop the cards it did not name.
+            dispatch(subagentReplayDone())
+            break
           case 'spawn_batch_started':
           case 'batch_finished':
             // Wave lifecycle markers — no dedicated UI yet; the chip derives
@@ -674,6 +790,22 @@ export function useWebSocket() {
             onUsageFrame(queryClient, frame)
             break
           }
+          case 'chunk_watch_ack':
+            // Slots that joined this tab's watch set mid-turn: their earlier
+            // chunks were held back, so re-read them now that every later one
+            // reaches this socket. The same pair the reconnect catch-up uses,
+            // plus any app embed showing the slot, which reads its own query.
+            for (const slot of catchupSlots(data)) {
+              if (slot === store.getState().chat.activeSlot) dispatch(refreshSlot(slot))
+              else dispatch(warmSlotCache(slot))
+              noteAppSlotChanged(slot)
+            }
+            break
+          case FOLD_HELLO_FRAME:
+            // This gateway sends a board's slot-fold frames only to tabs that
+            // watch it: tell it which boards this tab shows.
+            foldWatchRef.current?.onHello()
+            break
           case 'slot_projection/subscribed':
             // The revisions this process has published per cell, carrying no
             // values. Nothing acts on it: a revision this tab has not received
@@ -682,6 +814,40 @@ export function useWebSocket() {
             // reconnect invalidates the whole `command-center` prefix, and the
             // work board pulls on its own timer besides.
             break
+          case SLOT_DELTA_FRAME: {
+            // A work board's advance as a delta on a base revision, sent instead
+            // of `slot_projection` to a tab that declared `fold_delta.2` and
+            // watches the board. Applied on the cached board when its base is the
+            // one held; otherwise the board is re-read (see workDelta.ts).
+            if (typeof data.slot !== 'string') break
+            const frame = readSlotFoldFrame(data)
+            if (!frame) break
+            const roots = teamRoots(store.getState().dashboard.slots, data.slot)
+            const pull = (next: SlotFoldFrame, outcome: SlotFoldOutcome, all: readonly string[]) => {
+              if (outcome === 'stale') return
+              // The frame's own board needs a read only when the delta could not
+              // be applied. An ancestor reads ITS OWN board over a different unit
+              // set, so it is re-read on every frame, exactly as for
+              // `slot_projection`.
+              for (const root of all) {
+                if (root === next.slot && outcome !== 'snapshot' && outcome !== 'ignored') continue
+                const key = ['command-center', root, 'work']
+                const inFlight = queryClient.getQueryCache().find({ queryKey: key, exact: true })
+                if (inFlight?.state.fetchStatus === 'fetching' && inFlight.promise) {
+                  void inFlight.promise.catch(() => undefined).finally(() => { void queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false }) })
+                } else queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false })
+              }
+            }
+            // A held frame replayed after a read pulls only its own board: the
+            // ancestors were re-read when it first arrived.
+            const outcome = applySlotFoldFrame(queryClient, frame, (next, replayed) => pull(next, replayed, [next.slot]))
+            pull(frame, outcome, roots)
+            // Even on `stale`: that means the work BOARD already holds this
+            // revision (its own poll can land first), not that the separately
+            // cached Overview does.
+            handleSlotFoldMoved(queryClient, roots)
+            break
+          }
           case 'slot_projection': {
             // A slot's crew log grew. A work board folds its conductor's units
             // with its bound workers', so the boards that move are this slot's
@@ -715,7 +881,8 @@ export function useWebSocket() {
               // moved -- the push is an optimisation, never the only channel.
               if (seedFoldedProjection(queryClient, read.frame.slot, read.frame)) seededRoot = read.frame.slot
             }
-            for (const root of teamRoots(store.getState().dashboard.slots, data.slot)) {
+            const roots = teamRoots(store.getState().dashboard.slots, data.slot)
+            for (const root of roots) {
               if (root === seededRoot) continue
               const key = ['command-center', root, 'work']
               const inFlight = queryClient.getQueryCache().find({ queryKey: key, exact: true })
@@ -723,6 +890,7 @@ export function useWebSocket() {
                 void inFlight.promise.catch(() => undefined).finally(() => { void queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false }) })
               } else queryClient.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false })
             }
+            handleSlotFoldMoved(queryClient, roots)
             break
           }
           case 'workflow_run_event': {
@@ -742,6 +910,110 @@ export function useWebSocket() {
           case 'chat.side_result':
             dispatch(sseSideResult(data as { slot: string; run_id: string; role: 'user' | 'assistant'; content: string; ts?: number; final?: boolean; is_error?: boolean; steer?: boolean; message_id?: string }))
             break
+          case 'chat.side_closed': {
+            // The slot's side conversation was closed (Refresh context in another
+            // tab, or an app), so this tab clears it too: its next question would
+            // otherwise open a fresh conversation under rows the model has
+            // dropped. The tab that closed it cleared its panel when it sent the close.
+            const closed = data as { slot?: unknown; origin_client?: unknown; dropped?: unknown }
+            if (typeof closed.slot !== 'string') break
+            const slot = closed.slot
+            const dropped: { queueId: string; steerId?: string }[] = Array.isArray(closed.dropped)
+              ? closed.dropped
+                .flatMap(entry => {
+                  if (typeof entry !== 'object' || entry === null) return []
+                  const queueId = (entry as Record<string, unknown>).queue_id
+                  const steerId = (entry as Record<string, unknown>).steer_id
+                  if (typeof queueId !== 'string' || queueId.length === 0) return []
+                  return [{
+                    queueId,
+                    ...(typeof steerId === 'string' && steerId.length > 0 ? { steerId } : {}),
+                  }]
+                })
+                .slice(0, 50)
+              : []
+            const handBackOrNoteDropped = (
+              handedBackQueueIds: ReadonlySet<string> = new Set(),
+              handedBackSteerIds: ReadonlySet<string> = new Set(),
+            ): boolean => {
+              const unowned: { queueId: string; steerId?: string }[] = []
+              let handedBack = false
+              for (const entry of dropped) {
+                if (handedBackQueueIds.has(entry.queueId)
+                  || (!!entry.steerId && handedBackSteerIds.has(entry.steerId))) continue
+                const content = entry.steerId
+                  ? readSideSteerSubmittedText(slot, entry.steerId)
+                  : undefined
+                if (content !== undefined && entry.steerId) {
+                  writeSideChatDraft(slot, mergeIntoDraft(readSideChatDraft(slot), content))
+                  forgetSideSteerSubmittedText(slot, entry.steerId)
+                  handedBack = true
+                } else unowned.push(entry)
+              }
+              noteSideQueueDroppedByClose(slot, unowned)
+              return handedBack
+            }
+            let closing = store.getState().chat.slotSide[closed.slot]
+            // This tab clears before sending the request. Rows, a run id, or a queue
+            // card present on its echo therefore came back from the gateway after that
+            // clear and still belong to the conversation the close dropped. A lone
+            // optimistic row, accepted or not, has no frame ahead of the echo, so its
+            // send belongs to the conversation that follows the close.
+            const hasGatewayState = !!closing && (
+              closing.messages.some(message => !message.optimistic)
+              || typeof closing.lastRunId === 'string'
+              || !!closing.queue?.length
+            )
+            if (closed.origin_client === TAB_ID && !hasGatewayState) {
+              handBackOrNoteDropped()
+              break
+            }
+            // A panel can be showing another slot, or be unmounted, when the requeued
+            // card arrives. Mark only cards whose submitted steer text this tab retained;
+            // a raw card already holds newer local wording and remains authoritative.
+            for (const entry of closing?.queue ?? []) {
+              if (entry.raw || !entry.steerId) continue
+              const content = readSideSteerSubmittedText(closed.slot, entry.steerId)
+              if (content !== undefined) {
+                dispatch(sseSideQueue({
+                  slot: closed.slot,
+                  action: 'edit',
+                  queue_id: entry.id,
+                  content,
+                  raw: true,
+                }))
+              }
+            }
+            closing = store.getState().chat.slotSide[closed.slot]
+            // The gateway dropped the queue with the conversation. A question this tab
+            // typed into it has no other copy, so it goes back to this tab's composer,
+            // after one already cancelled here that still waits for this slot's panel.
+            if (closing?.releasedText) {
+              writeSideChatDraft(closed.slot, mergeIntoDraft(readSideChatDraft(closed.slot), closing.releasedText))
+            }
+            const handedBackQueueIds = new Set<string>()
+            const handedBackSteerIds = new Set<string>()
+            for (const entry of closing?.queue ?? []) {
+              if (entry.raw) {
+                const content = takeSideQueueEditForClose(closed.slot, entry.id) ?? entry.content
+                writeSideChatDraft(closed.slot, mergeIntoDraft(readSideChatDraft(closed.slot), content))
+                handedBackQueueIds.add(entry.id)
+                if (entry.steerId) handedBackSteerIds.add(entry.steerId)
+              }
+              if (entry.steerId) forgetSideSteerSubmittedText(closed.slot, entry.steerId)
+            }
+            const handedBackDropped = handBackOrNoteDropped(handedBackQueueIds, handedBackSteerIds)
+            dispatch(sideClose(closed.slot))
+            // Another tab's Refresh context emptied this panel, or took back a question
+            // this tab had in the conversation. Without a word the conversation just
+            // vanishes and the question returns unsent, so the panel says why.
+            const closedByAnotherTab = typeof closed.origin_client === 'string'
+              && closed.origin_client !== '' && closed.origin_client !== TAB_ID
+            const showedConversation = !!closing && (closing.messages.length > 0 || !!closing.queue?.length)
+            const handedBack = !!closing?.releasedText || handedBackQueueIds.size > 0 || handedBackDropped
+            if (closedByAnotherTab && (showedConversation || handedBack)) dispatch(sideClosedElsewhere(closed.slot))
+            break
+          }
           case 'chat.thread_reply':
             handleThreadReply(queryClient, data)
             break
@@ -764,10 +1036,16 @@ export function useWebSocket() {
           case 'heartbeat':
             break
           case 'context_usage':
-            dispatch(sseContextUsage(data as { slot: string; pct: number; used_tokens?: number; window_tokens?: number; reset?: boolean }))
+            dispatch(sseContextUsage(data as { slot: string; pct?: number; used_tokens?: number; window_tokens?: number; reset?: boolean }))
             break
           case 'chat_thinking':
             chatStream.onChatThinking(data)
+            break
+          case 'chat_phase':
+            chatStream.onChatPhase(data)
+            break
+          case 'tool_status':
+            chatStream.onToolStatus(data)
             break
           case 'chat_segment': {
             buffers.flushChunks()
@@ -776,12 +1054,31 @@ export function useWebSocket() {
             break
           }
           case 'chat_status':
+            // Buffered with the slot's chunks: the label and the text around
+            // it land in the frame's one flush, in arrival order.
             if (data.slot && data.status) {
-              dispatch(setSlotStatusDetail({ slot: data.slot, kind: 'thinking', label: data.status, ts: Date.now() }))
+              // The generic thinking status is the one label the server sends
+              // in a fixed English phrase; store it as the bare `thinking`
+              // phase so `toolStatusLabel` resolves the catalog key in the
+              // current UI language instead of painting the English text
+              // verbatim. Any other (genuinely distinct) server label still
+              // passes through unchanged.
+              const isGenericThinking =
+                data.status === i18nT('pages.chatSidebar.thinking', { lng: 'en' })
+              buffers.bufferStatusLabel(
+                data.slot,
+                isGenericThinking ? { kind: 'thinking' } : { kind: 'thinking', label: data.status },
+              )
             }
             break
           case 'chat_variant_switch':
-            if (data.slot) dispatch(refreshSlot(data.slot))
+            if (data.slot) {
+              // A Regenerate swap names the rows it retired: drop them first, so
+              // the refetch's decided-row merge cannot re-seat a retired card.
+              const retired = data.retired as { mids?: unknown; approval_ids?: unknown } | undefined
+              if (retired) dispatch(retireSwappedRows({ slot: data.slot, mids: retired.mids, approvalIds: retired.approval_ids }))
+              dispatch(refreshSlot(data.slot))
+            }
             break
           case 'chat_done': {
             buffers.flushChunks()
@@ -810,21 +1107,15 @@ export function useWebSocket() {
           case 'sessions_restarting':
             // Backend pushed session restart status (restarting/ready)
             dispatch(triggerRefresh())
-            invalidateRefreshQueries(queryClient)
+            invalidateRefreshQueries(queryClient, undefined, () => dispatch(triggerCronRefresh()))
             break
           case 'update_progress':
             handleUpdateProgress(dispatch, data)
             break
-          case 'subagent_status':
-            if (data.slot) dispatch(sseSubagentStatus(data as { running: number; slot: string; agents?: SubagentDetail[] }))
-            break
-          case 'subagent_text':
-            if (data.slot && data.id) dispatch(sseSubagentText(data as { slot: string; id: string; text: string }))
-            break
           case 'refine':
             // Handled by ProjectsPage via Redux
             dispatch(triggerRefresh())
-            invalidateRefreshQueries(queryClient)
+            invalidateRefreshQueries(queryClient, undefined, () => dispatch(triggerCronRefresh()))
             break
           case 'channel_message':
           case 'channel_agent_status':
@@ -844,6 +1135,11 @@ export function useWebSocket() {
             break
           case 'computer_use_frame':
             emitComputerUseFrame(data)
+            break
+          case 'browser_live':
+            // The live-browser card's state (owner sockets only). The store
+            // checks every field; the card reads it through useBrowserLive.
+            browserLiveStore.applyEvent(data)
             break
         }
       } catch { /* ignore malformed */ }
@@ -934,6 +1230,24 @@ export function useWebSocket() {
 
   useEffect(() => {
     socket.resume()
+    const foldWatch = createFoldWatch(queryClient, (payload) => socket.sendIfOpen(payload))
+    foldWatchRef.current = foldWatch
+    const chunkWatch = createChunkWatch({
+      queryClient,
+      activeSlot: () => store.getState().chat.activeSlot,
+      appSlots: appWatchedSlots,
+      hidden: () => document.hidden,
+    }, (payload) => socket.sendIfOpen(payload))
+    chunkWatchRef.current = chunkWatch
+    let watchedActive = store.getState().chat.activeSlot
+    const detachActiveWatch = store.subscribe(() => {
+      const active = store.getState().chat.activeSlot
+      if (active === watchedActive) return
+      watchedActive = active
+      chunkWatch.sync()
+    })
+    const detachAppWatch = onAppWatchedSlotsChange(chunkWatch.sync)
+    document.addEventListener('visibilitychange', chunkWatch.sync)
     connect()
     const detachQuestionRetirements = store.subscribe(cards.onQuestionStateChange)
     const detachVoice = voice.attachWindowEvents()
@@ -950,8 +1264,15 @@ export function useWebSocket() {
       detachQuestionRetirements()
       detachVoice()
       detachFocus()
+      foldWatch.dispose()
+      if (foldWatchRef.current === foldWatch) foldWatchRef.current = null
+      detachActiveWatch()
+      detachAppWatch()
+      document.removeEventListener('visibilitychange', chunkWatch.sync)
+      chunkWatch.dispose()
+      if (chunkWatchRef.current === chunkWatch) chunkWatchRef.current = null
     }
-  }, [socket, connect, voice, buffers, cards])
+  }, [socket, connect, voice, buffers, cards, queryClient])
 
   return { subscribeLogs: socket.subscribeLogs, subscribeSubagents: socket.subscribeSubagents, forceReconnect }
 }

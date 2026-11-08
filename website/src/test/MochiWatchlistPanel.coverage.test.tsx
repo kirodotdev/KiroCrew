@@ -20,9 +20,13 @@
 // Interactions go through `fireEvent`, not `userEvent`, so each step stays
 // synchronous against the same fake clock the timers are stepped on.
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HistoryEntry, WatchItem } from '../apps/mochi/src/shared/watchlistTypes'
+import { i18next } from '../i18n/index'
+import '../i18n/all'
+import { i18nT } from '../i18n/t'
 
 const mocks = vi.hoisted(() => {
   type Listener = (items: unknown[]) => void
@@ -105,17 +109,35 @@ async function mountWith(
   return { onClose }
 }
 
-/** The clickable row for `label` — the row itself carries role="button". */
+/** The list row for `label`: its "open" button plus, beside it, the action strip. */
 function row(label: string): HTMLElement {
-  const rows = screen.getAllByRole('button').filter(el => el.textContent?.includes(label))
-  const found = rows.find(el => el.getAttribute('tabindex') === '0')
+  const rows = Array.from(document.querySelectorAll<HTMLElement>('.wl-row'))
+  const found = rows.find(el => el.textContent?.includes(label))
   if (!found) throw new Error(`no watch row for ${label}`)
   return found
 }
 
+/** The button that opens `label`'s detail view — the first control in its row. */
+function openButton(label: string): HTMLElement {
+  const button = row(label).querySelector<HTMLElement>('button')
+  if (!button) throw new Error(`no open button for ${label}`)
+  return button
+}
+
+/**
+ * A real keyboard driver. Testing Library drains each user-event call with a
+ * zero-length setTimeout, which this file's frozen fake clock would never fire,
+ * so the clock is re-armed to also follow real time (at the same NOW).
+ */
+function keyboardUser(): ReturnType<typeof userEvent.setup> {
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  vi.setSystemTime(NOW)
+  return userEvent.setup()
+}
+
 /** Open the detail view for `label` and let the 250ms view transition settle. */
 async function openDetail(label: string): Promise<void> {
-  fireEvent.click(row(label))
+  fireEvent.click(openButton(label))
   await tick(250)
 }
 
@@ -386,6 +408,16 @@ describe('WatchlistPanel list mode', () => {
     expect(screen.queryByText('Just done')).not.toBeInTheDocument()
   })
 
+  it('says whether the completed items are shown on its toggle', async () => {
+    await mountWith([
+      makeItem({ id: 'w-2', label: 'Just done', status: 'done', completedAt: minutesAgo(30) }),
+    ])
+    const show = screen.getByRole('button', { name: 'Show completed (1)' })
+    expect(show).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(show)
+    expect(screen.getByRole('button', { name: 'Hide completed' })).toHaveAttribute('aria-expanded', 'true')
+  })
+
   it('omits the section heading a partition has no members for', async () => {
     await mountWith([
       makeItem({ id: 'w-2', label: 'Just done', status: 'done', completedAt: minutesAgo(30) }),
@@ -426,38 +458,50 @@ describe('WatchlistPanel list mode', () => {
   })
 
   it('opens the detail view from the keyboard with Enter and Space', async () => {
+    const user = keyboardUser()
     await mountWith([makeItem()])
-    fireEvent.keyDown(row('Ticket price drop'), { key: 'Enter' })
+    openButton('Ticket price drop').focus()
+    await user.keyboard('{Enter}')
     await tick(250)
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Back' }))
     await tick(250)
-    fireEvent.keyDown(row('Ticket price drop'), { key: ' ' })
+    openButton('Ticket price drop').focus()
+    await user.keyboard(' ')
     await tick(250)
     expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument()
   })
 
   it('ignores other keys on a row', async () => {
+    const user = keyboardUser()
     await mountWith([makeItem()])
-    fireEvent.keyDown(row('Ticket price drop'), { key: 'a' })
+    openButton('Ticket price drop').focus()
+    await user.keyboard('a')
     await tick(250)
     expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument()
   })
 
-  it('does not open the detail view from a keystroke inside the action strip', async () => {
+  it.each(['{Enter}', ' '])('runs a row action from the keyboard (%s) without opening the row', async (key) => {
+    const user = keyboardUser()
     await mountWith([
       makeItem({ id: 'w-1' }),
       makeItem({ id: 'w-2', label: 'Done one', status: 'done', completedAt: minutesAgo(5) }),
     ])
     fireEvent.click(screen.getByRole('button', { name: 'Show completed (1)' }))
 
-    // The action strip is revealed on hover/focus-within and swallows key events,
-    // so Enter on a revealed button must not also select the row behind it.
-    for (const label of ['Ticket price drop', 'Done one']) {
-      const strip = row(label).querySelector('.wl-actions') as HTMLElement
-      fireEvent.keyDown(strip, { key: 'Enter' })
+    // Each action is a sibling of the row's open button, not nested inside a
+    // role="button" row, so its keystroke reaches it and nothing else.
+    for (const [label, name, status] of [
+      ['Ticket price drop', 'Complete', 'done'],
+      ['Done one', 'Reopen', 'watching'],
+    ] as const) {
+      const action = within(row(label)).getByRole('button', { name })
+      expect(action.parentElement?.closest('button, [role="button"]')).toBeNull()
+      action.focus()
+      await user.keyboard(key)
       await tick(250)
+      expect(api.setWatchItemStatus).toHaveBeenLastCalledWith(label === 'Done one' ? 'w-2' : 'w-1', status)
       expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument()
     }
   })
@@ -492,9 +536,66 @@ describe('WatchlistPanel clear completed', () => {
   it('states the count before deleting anything', async () => {
     const dialog = await openConfirm()
     expect(within(dialog).getByText('Clear completed?')).toBeInTheDocument()
-    expect(within(dialog).getByText('Deletes 2 completed item(s). This cannot be undone.'))
+    expect(within(dialog).getByText('Deletes 2 completed items. This cannot be undone.'))
       .toBeInTheDocument()
     expect(api.clearCompletedWatchItems).not.toHaveBeenCalled()
+  })
+
+  it('states one completed item in the singular', async () => {
+    await mountWith([
+      makeItem({ id: 'w-1', label: 'Active one' }),
+      makeItem({ id: 'w-2', label: 'Done one', status: 'done', completedAt: minutesAgo(30) }),
+    ])
+    fireEvent.click(screen.getByRole('button', { name: 'Show completed (1)' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear all completed' }))
+    expect(within(screen.getByRole('dialog')).getByText('Deletes 1 completed item. This cannot be undone.'))
+      .toBeInTheDocument()
+  })
+
+  it('picks each language plural form for the clear confirm', async () => {
+    const desc = (count: number) => i18nT('apps.mochi.watchPanel.clear_confirm_desc', { count })
+    try {
+      await i18next.changeLanguage('de')
+      expect(desc(1)).toBe('Löscht 1 erledigten Eintrag. Das kannst du nicht zurücknehmen.')
+      await i18next.changeLanguage('fr')
+      expect(desc(3)).not.toContain('(s)')
+      await i18next.changeLanguage('ru')
+      expect(desc(1)).toMatch(/^Будет удалена 1 завершённая запись\./)
+      expect(desc(5)).toMatch(/^Будет удалено 5 завершённых записей\./)
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
+  // The confirm is aria-modal: focus left on the list behind it, or a Tab that
+  // walks out of it, reaches controls the overlay hides.
+  it('moves focus into the confirm, keeps Tab inside, and returns it on close', async () => {
+    await mountWith(seed())
+    fireEvent.click(screen.getByRole('button', { name: 'Show completed (2)' }))
+    const trigger = screen.getByRole('button', { name: 'Clear all completed' })
+    trigger.focus()
+    fireEvent.click(trigger)
+    const dialog = screen.getByRole('dialog')
+    const keep = within(dialog).getByRole('button', { name: 'Keep them' })
+    const clear = within(dialog).getByRole('button', { name: 'Clear' })
+    expect(document.activeElement).toBe(keep)
+
+    // jsdom has no layout, so give the buttons an offsetParent for the trap's visibility filter.
+    for (const b of [keep, clear]) {
+      Object.defineProperty(b, 'offsetParent', { configurable: true, get: () => dialog })
+    }
+    clear.focus()
+    fireEvent.keyDown(clear, { key: 'Tab' })
+    expect(document.activeElement).toBe(keep)
+    fireEvent.keyDown(keep, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(clear)
+    trigger.focus()
+    fireEvent.keyDown(trigger, { key: 'Tab' })
+    expect(document.activeElement).toBe(keep)
+
+    fireEvent.click(keep)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(document.activeElement).toBe(trigger)
   })
 
   it('keeps everything when the confirmation is declined', async () => {

@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from chat_test_helpers import _make_state
 from prompts_helpers import _isolate_home  # noqa: F401
 from prompts_helpers import _no_turn_tail  # noqa: F401
 from prompts_helpers import aim_dir_fixture  # noqa: F401
@@ -72,6 +73,15 @@ class TestExtractSopDescription:
         p = self._write(tmp_path, b"---\nname: t\ndescription: \xff\xfe\n---\n", binary=True)
         assert _extract_sop_description(p) == ""
 
+    def test_bom_frontmatter(self, tmp_path):
+        # A file saved "UTF-8 with BOM" keeps its frontmatter description.
+        p = self._write(
+            tmp_path,
+            b"\xef\xbb\xbf---\nname: t\ndescription: My desc\n---\n# Body heading\n",
+            binary=True,
+        )
+        assert _extract_sop_description(p) == "My desc"
+
 
 # ── _list_aim_prompts ──
 
@@ -123,6 +133,18 @@ class TestListAimPrompts:
         assert any(r["source"] == "local" for r in _list_aim_prompts(proj))
         # With no project_dir the same local prompt is NOT discovered.
         assert not any(r["source"] == "local" for r in _list_aim_prompts())
+
+    def test_local_prompt_with_bom_lists_its_frontmatter_description(self, tmp_path):
+        # A prompt saved "UTF-8 with BOM" lists the description its frontmatter
+        # declares, not its first body heading.
+        proj = tmp_path / "proj"
+        d = proj / ".kiro" / "prompts"
+        d.mkdir(parents=True)
+        (d / "review.md").write_bytes(
+            b"\xef\xbb\xbf---\ndescription: Review a pull request\n---\n# Heading in body\n"
+        )
+        rows = [r for r in _list_aim_prompts(proj) if r["source"] == "local"]
+        assert [r["description"] for r in rows] == ["Review a pull request"]
 
     def test_empty(self, tmp_path):
         assert _list_aim_prompts() == []
@@ -777,6 +799,16 @@ class TestApiPrompts:
         assert resp.status == 200 and "World." in body["content"]
         mock_sel.log_tool_invocation.assert_called_once()
 
+    def test_detail_of_bom_prompt_shows_its_frontmatter_description(self, tmp_path, mock_sel):
+        # The detail pane agrees with the listing for a prompt saved with a BOM.
+        _user_prompt(
+            tmp_path, "bom", "\ufeff---\ndescription: Review a pull request\n---\n# Body heading\n"
+        )
+        resp = asyncio.run(api_prompt_detail(_write_request("GET", "bom")))
+        body = json.loads(resp.body)
+        assert resp.status == 200
+        assert body["description"] == "Review a pull request"
+
     def test_detail_not_found(self, mock_sel):
         assert asyncio.run(api_prompt_detail(_api_request("nope"))).status == 404
 
@@ -1160,23 +1192,29 @@ class TestRunChatPrompts:
         asyncio.run(_run_chat(s, sl, "/prompts get agent-sop:secret"))
         assert any("blocked" in m[1].lower() for m in sl.messages)
 
-    @pytest.mark.skip(
-        reason="Broken by chat.py split (6d4e4493) — mock setup needs updating for new _run_chat flow."
-    )
-    def test_at_prompt_blocked(self, aim_dir, mock_sel, monkeypatch):
+    def test_at_prompt_blocked(self, aim_dir, mock_sel, monkeypatch, tmp_path):
         """@mention prompt blocked at read time by chat-level check."""
         _aim_pkg(aim_dir, "Pkg-1.0", "1", {"secret": "# S"})
+        # The owners of chat_turn run on the runner's globals, so the runner's
+        # name is the one the read-time check calls.
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.is_sensitive_path", lambda p: True)
-        # @prompt path runs after session acquisition — needs full mock
-        captured = []
-        slot = MagicMock(key="t", agent="kirocrew", model=None, _trust=False, _queue=[])
-        slot.append = lambda r, t, c: captured.append((r, t, c))
-        slot._pending_subagent_failures = []
-        state = MagicMock(_hook_store=None, _yolo=False)
-        state.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
-        state.sessions.get_pid = MagicMock(return_value=None)
+        # The @mention path runs after session acquisition, so it needs a real
+        # DashboardState and slot rather than the minimal stubs.
+        state = _make_state(tmp_path)
+        client = MagicMock()
+        client.shutdown = AsyncMock()
+        state.sessions.get_or_create = AsyncMock(return_value=(client, False, False))
+        state.sessions.release = MagicMock()
+        state.sessions.record_failure = AsyncMock()
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = MagicMock()
+        state._background_tasks = set()
+        slot = state.get_or_create_slot("t")
         asyncio.run(_run_chat(state, slot, "@agent-sop:secret"))
-        assert any("blocked" in m[1].lower() for m in captured)
+        texts = [m.get("content", "") for m in slot.messages]
+        assert any("Prompt blocked" in t for t in texts), texts
+        # A blocked mention never reaches the model.
+        client.stream.assert_not_called()
 
     def test_api_prompts_does_not_corrupt_cache(self, aim_dir, mock_sel):
         """GET /api/prompts must not mutate cached paths (regression)."""
@@ -1282,7 +1320,8 @@ class TestPromptExpansionStaysOffTheEventLoop:
         ]
         offloaded = [
             node
-            for node in ast.walk(tree)
+            for module_tree in trees
+            for node in ast.walk(module_tree)
             if isinstance(node, ast.Call)
             and ast.unparse(node.func) == "asyncio.to_thread"
             and node.args

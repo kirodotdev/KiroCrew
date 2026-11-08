@@ -281,10 +281,8 @@ def test_tr_u_15d_handler_rate_limiter_per_ip_isolation():
 
 def test_tr_u_15e_handler_rate_limiter_empty_ip_fails_closed():
     """Empty client_ip MUST fail closed: an empty IP means we cannot
-    rate-limit, so we deny outright. Defense-in-depth per review-bot
-    security-controls (deny-by-default). Per security-review finding
-    #2 on bucketing under a shared sentinel still allowed
-    60/min, which contradicted the docstring claim of fail-closed.
+    rate-limit, so we deny outright (deny-by-default). Bucketing under a
+    shared sentinel would still allow 60/min, which is not fail-closed.
     """
     from kiro_crew.dashboard.handlers import auth_refresh
 
@@ -1190,7 +1188,6 @@ def test_tr_u_19_atomic_write_no_partial_state(tmp_path: Path):
     """Concurrent writes don't produce a partial file readable as truncated state."""
     state_file = tmp_path / "rt.json"
     mgr = RefreshStateManager(state_path=state_file)
-    # Write a big payload
     for i in range(100):
         mgr.mark_consumed(
             f"jti{i}",
@@ -1212,8 +1209,7 @@ def test_tr_u_23_logout_revokes_chain_and_clears_cookies(
     isolated_state: RefreshStateManager,
 ):
     """POST /api/auth/logout must revoke the refresh chain AND clear both
-    cookies, so a stolen refresh cookie cannot survive logout. Per
-    security-review finding #3.
+    cookies, so a stolen refresh cookie cannot survive logout.
     """
     from unittest.mock import MagicMock
 

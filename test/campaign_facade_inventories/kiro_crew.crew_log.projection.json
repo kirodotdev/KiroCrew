@@ -3,8 +3,6 @@
   "APPROVAL_TYPES",
   "CODE_BAD_DATA",
   "CONTEXT_ORDINAL_MEMO_LIMIT",
-  "CONTEXT_SOURCES_PER_TURN_LIMIT",
-  "CONTEXT_TURNS_LIMIT",
   "CREDIT_SOURCES",
   "Checkpoint",
   "CrewLog",
@@ -187,6 +185,7 @@
   "units_in_succession",
   "work_slots_naming_board"
  ],
+ "note": "CONTEXT_SOURCES_PER_TURN_LIMIT and CONTEXT_TURNS_LIMIT left with the per-turn row list of the usage fold: its context part is a bounded state with nothing they bound. CONTEXT_ORDINAL_MEMO_LIMIT stays: it bounds the ordinal memo a rewind reads.",
  "rebound": {
   "CODE_BAD_DATA": "kiro_crew.crew_log.errors",
   "CrewLog": "kiro_crew.crew_log.store",

@@ -43,6 +43,7 @@ from kiro_crew.metrics.events import (
     emit_counter,
     emit_histogram,
 )
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER, default_ladder
 from kiro_crew.sandbox import _SENSITIVE_ENV_PREFIXES as _SANDBOX_SENSITIVE_ENV_PREFIXES
 
@@ -53,6 +54,11 @@ _GATEWAYD_LOG_MAX_BYTES = 10 * 1024 * 1024
 
 # Max time to wait for the gateway's unix socket to appear after spawn.
 _SOCKET_READY_TIMEOUT_SECS = 5.0
+# Total wait while the spawned daemon is still running past the fast bound. A
+# cold start on a slow host (on-access antivirus scanning every imported file is
+# common on Windows) can take longer than 5s to bind; killing that daemon drops
+# every session to per-session MCP, which spawns many more cold processes.
+_SOCKET_READY_SLOW_START_SECS = 30.0
 # Polling interval while waiting for the socket.
 _SOCKET_POLL_INTERVAL_SECS = 0.1
 # Ping/pong round-trip deadline after the socket appears. The daemon is
@@ -210,6 +216,8 @@ class GatewaySpec:
     max_backends: int = 64  # keep in sync w/ McpGatewayConfig.max_backends (cover N agents x S servers)
     mcp_target_env: dict[str, str] = None  # type: ignore[assignment]
     prewarm_count: int = 0  # keep in sync w/ McpGatewayConfig.prewarm_count; 0 = disabled
+    # McpGatewayConfig.keep_alive_servers; empty = every backend idles out.
+    keep_alive_servers: tuple[str, ...] = ()
     # Admission (keep in sync w/ McpGatewayConfig.spawn_concurrency_* etc.).
     spawn_concurrency_initial: int = 4
     spawn_concurrency_min: int = 1
@@ -621,11 +629,22 @@ class GatewayManager:
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
             return None
 
-        ok = await self._wait_for_socket(self._spec.socket_path, _SOCKET_READY_TIMEOUT_SECS)
+        waited = _SOCKET_READY_TIMEOUT_SECS
+        ok = await self._wait_for_socket(self._spec.socket_path, waited)
+        if not ok and self.is_running and not self._stopping:
+            logger.info(
+                "mcp-gateway daemon is still starting after %.1fs; waiting up to %.1fs",
+                waited,
+                _SOCKET_READY_SLOW_START_SECS,
+            )
+            ok = await self._wait_for_socket(
+                self._spec.socket_path, _SOCKET_READY_SLOW_START_SECS - waited
+            )
+            waited = _SOCKET_READY_SLOW_START_SECS
         if not ok:
             logger.warning(
                 "mcp-gateway socket did not appear within %.1fs; gateway unreachable",
-                _SOCKET_READY_TIMEOUT_SECS,
+                waited,
             )
             await self._terminate_process(grace_secs=_SHUTDOWN_GRACE_SECS)
             return None
@@ -640,8 +659,7 @@ class GatewayManager:
         # answer -- fingerprint warming, prewarm, socket setup -- so the fast
         # bound can time out against a daemon that is coming up correctly, and
         # killing it reports the start as failed and drops every stub to
-        # per-session exec, which is the process pile-up this change exists to
-        # avoid.
+        # per-session exec, a process pile-up.
         pong = await self._ping_with_escalation()
         if pong is None:
             logger.warning("mcp-gateway ping failed — treating start as failure")
@@ -695,8 +713,9 @@ class GatewayManager:
         env = {**base_env, **self._spec.mcp_target_env}
         # Repair the Kerberos ccache pointer for pooled MCP backends so a
         # long-lived background daemon's forked children inherit a usable
-        # ticket for any credential-gated MCP server.
-        resolve_krb5_ccname(env)
+        # ticket for any credential-gated MCP server. Off the loop: it stats
+        # the ccache candidates and may read the krb5 config files.
+        await asyncio.to_thread(resolve_krb5_ccname, env)
         # A background daemon can inherit a minimal PATH (e.g. launched from
         # Electron or under systemd-user), so extend it with the well-known MCP
         # launcher dirs. This MUST be ``mcp_runtime_path``: operator-contributed
@@ -731,6 +750,9 @@ class GatewayManager:
         # stays unchanged (and tests stay byte-identical) in the default case.
         if self._spec.prewarm_count > 0:
             argv += ["--prewarm-count", str(self._spec.prewarm_count)]
+        # Same rule: nothing on the command line unless the operator named one.
+        for name in self._spec.keep_alive_servers:
+            argv += ["--keep-alive-server", name]
         # Admission: the spawn gate's fixed capacity and bounds, the queue wait
         # and initialize budgets, and the host-budget ceilings. Ceilings left at
         # 0 are derived in the daemon from ``--host-available-mb``, which is
@@ -760,7 +782,7 @@ class GatewayManager:
         # This file persists across restarts so operators can diagnose
         # startup failures and stub rejections without attaching a debugger.
         log_path = self._gatewayd_log_path()
-        log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        mkdirs_owner_only(log_path.parent)
         try:
             log_path.parent.chmod(0o700)
         except OSError:
@@ -944,29 +966,18 @@ class GatewayManager:
         already closed its accept loop, so it is no longer adoptable, whereas one
         that refused is still serving and is.
 
-        Voluntary by design. The starting gateway must not take the endpoint
-        itself: :meth:`_clear_stale_socket` is a connect-probe-then-unlink, and
-        in its documented false-stale window that unlinks a LIVE incumbent's
-        socket -- the socket-theft class the flock guard exists to prevent. Here
-        the incumbent runs its own SIGTERM-equivalent drain and removes its own
-        endpoint, so there is no stale-vs-live judgement to get wrong.
+        Voluntary by design: :meth:`_clear_stale_socket` can unlink a LIVE
+        incumbent's socket in its false-stale window, so the incumbent drains
+        and removes its own endpoint. ``need`` lets a daemon that resolves every
+        stem refuse (see ``gatewayd._apply_stand_down``).
 
-        ``need`` travels with the request so a daemon that already resolves every
-        requested stem can refuse (see ``gatewayd._apply_stand_down``).
+        Waits for the singleton LOCK to free, not the endpoint to vanish: a
+        draining daemon drops the endpoint first and the lock last (on Windows
+        for its whole drain). A replacement spawned in that gap loses the lock,
+        exits rc=0, and the start fails with no watchdog to retry.
 
-        What is waited ON is the singleton LOCK becoming free, not the endpoint
-        disappearing, and the difference is load-bearing. A draining daemon stops
-        accepting first and releases the lock last, so the endpoint goes away
-        while the lock is still held -- on Windows for the daemon's whole drain,
-        since the kernel drops a pipe name as soon as the last handle closes. A
-        replacement spawned in that gap loses the lock, exits rc=0 without
-        binding, and ``_wait_for_socket`` then fails the start with no watchdog
-        left to retry. The lock is precisely what the replacement must win, so it
-        is the only correct readiness signal.
-
-        Bounded by the daemon's own published shutdown budget, and abandoned as
-        soon as ``_stopping`` is set so a shutdown racing a start is not made to
-        wait out another process's drain.
+        Bounded by the daemon's published shutdown budget; abandoned once
+        ``_stopping`` is set.
         """
         self._stand_downs_issued += 1
         frame: dict[str, Any] = {"type": "stand-down", "need": sorted(need)}
@@ -1303,34 +1314,15 @@ class GatewayManager:
             proc = self._process
             if proc is None:
                 if self._adopted:
-                    # Supervise a foreign-owned (adopted) daemon by ping —
-                    # we hold no process handle. While it answers, keep
-                    # watching; when it dies, surface it and re-elect: drop
-                    # adoption and try to become the owner. The flock
-                    # arbitrates if a sibling races us; a flock-loser exits
-                    # rc=0 and we re-adopt on the next loop.
-                    #
-                    # The reply also carries the daemon's target coverage,
-                    # so the round-trip that proves liveness re-checks
-                    # drift too: an adopted daemon never re-applies a spec,
-                    # so without this a survivor that goes stale after
-                    # adoption stays stale for its whole life.
-                    # A miss here gets the same escalated probe the owned path
-                    # uses, and then acts on it -- deliberately, on ONE miss,
-                    # unlike the owned path's three-cycle grace. The two paths
-                    # differ in what a slow verdict costs. If an adopted daemon
-                    # really is gone, nothing is listening on its address, and
-                    # every attached stub is unable to serve a call until a
-                    # replacement binds -- so here the verdict's latency IS the
-                    # outage. One escalated miss displaces at 26s worst case
-                    # (2+2+2 fast, then 20 escalated); three cycles would take
-                    # 26 + 30 + 26 + 30 + 26 = 138s, five times the outage for
-                    # evidence the escalation already provides. The owned path
-                    # can afford its grace because its own socket stays bound
-                    # while it waits, so waiting there costs nothing.
-                    # The load misverdict this change exists to fix is already
-                    # handled by the escalation: a daemon that answers either
-                    # probe is alive and is never displaced.
+                    # Supervise an adopted daemon by ping (no process handle).
+                    # When it dies, drop adoption and re-elect; the flock
+                    # arbitrates a racing sibling. The pong also re-checks
+                    # drift, since an adopted daemon never re-applies a spec.
+                    # Act on ONE escalated miss, not the owned path's
+                    # three-cycle grace: a gone adopted daemon leaves nothing
+                    # listening, so the verdict's latency IS the outage (26s
+                    # worst case vs 138s). A daemon answering either probe is
+                    # alive and never displaced.
                     pong = await self._ping_with_escalation(observe=True)
                     if pong is not None:
                         if await self._reconcile_adopted(pong):
@@ -1591,21 +1583,12 @@ class GatewayManager:
         ``transport.probe_live`` reports live in place. See the daemon-lifecycle
         spec.
 
-        Observability (``observe=True`` only): the escalation itself is the
-        precursor state to every kill/reconnect cycle — the fast bound missed,
-        so the daemon is loaded, and this longer probe is the only thing that
-        can tell loaded-but-alive from dead. That state is otherwise silent, so
-        the watchdog callers surface it: a counter of escalated probes
-        (``answered`` distinguishes loaded-but-alive from dead) and, when the
-        daemon answers, the OBSERVED round-trip latency the fast bound throws
-        away — the load evidence an operator needs to see saturation before it
-        becomes an outage, and the field data against which
-        ``_LIVENESS_ESCALATED_TIMEOUT_SECS`` can be checked. ``observe`` is
-        False for the start-up confirmation caller: a fast miss there is a
-        daemon still coming up, not a saturated one, and would pollute the
-        series with start-up noise. The emit is fire-and-forget so telemetry
-        never gates the verdict — on the adopted path this probe's duration IS
-        the outage, and an awaited emit on a saturated executor would extend it.
+        ``observe=True`` (watchdog callers) emits a counter of escalated probes
+        (``answered`` tells loaded-but-alive from dead) and the observed
+        round-trip latency, so saturation is visible before it is an outage.
+        The start-up caller passes False: a miss there is a daemon still coming
+        up. The emit is fire-and-forget: on the adopted path this probe's
+        duration IS the outage.
         """
         pong = await self._ping_payload()
         if pong is not None:
@@ -1670,16 +1653,22 @@ class GatewayManager:
             # SIGKILL skips gatewayd's pool.shutdown_all(), so its pooled MCP
             # backends (each a session leader via start_new_session) reparent to
             # init and leak. Reap the pgids gatewayd persisted out-of-band.
-            await self._reap_orphaned_backends()
+            await self._reap_orphaned_backends("supervisor SIGKILLed a wedged gatewayd")
+            return
+        if platform_compat.IS_WINDOWS:
+            # SIGTERM on Windows is TerminateProcess: gatewayd never ran its
+            # drain, so its backends are as orphaned as after a SIGKILL.
+            logger.info("mcp-gateway: reaping pooled backends of terminated pid=%s", proc.pid)
+            await self._reap_orphaned_backends("TerminateProcess skips gatewayd's drain on Windows")
 
-    async def _reap_orphaned_backends(self) -> None:
-        """Best-effort tree-kill of pooled backends left orphaned by a SIGKILLed
-        gatewayd, read from the ``<socket>.backends`` record the daemon
-        maintains. Only entries whose start id still matches the live process
-        are signalled (:mod:`~kiro_crew.mcp_gateway.backend_record`)."""
+    async def _reap_orphaned_backends(self, reason: str) -> None:
+        """Best-effort tree-kill of pooled backends left orphaned by a gatewayd
+        that died without draining, read from the ``<socket>.backends`` record
+        the daemon maintains. Only entries whose start id still matches the live
+        process are signalled (:mod:`~kiro_crew.mcp_gateway.backend_record`)."""
         await backend_record.reap(
             backend_record.record_path(self._spec.socket_path),
-            reason="supervisor SIGKILLed a wedged gatewayd",
+            reason=reason,
         )
 
     async def _clear_stale_socket(self) -> None:

@@ -17,10 +17,35 @@ stdin (JSON):
     {"items": [
         {"id": "item-1", "accept": {"kind": "pr_checks", "pr": 123,
                                      "repo": "owner/name"}},
-        {"id": "item-2", "accept": {"kind": "file", "path": "/abs/path",
+        {"id": "item-2", "accept": {"kind": "pr_merged", "pr": 123,
+                                     "repo": "owner/name"}},
+        {"id": "item-3", "accept": {"kind": "file", "path": "/abs/path",
                                      "exists": true}},
-        {"id": "item-3", "accept": {"kind": "human_approval"}}
+        {"id": "item-4", "accept": {"kind": "human_approval"}},
+        {"id": "item-5", "accept": {"kind": "edition_check",
+                                     "check": "name", "ref": "ID-1"}}
     ]}
+
+Kinds:
+    pr_checks       every check on a GitHub pull request is green
+                    (``gh pr checks``).
+    pr_merged       a GitHub pull request is merged (``gh pr view``; an open
+                    one is pending, a closed-unmerged one fails). ``repo`` is
+                    required here.
+    file            a path exists (or, with ``"exists": false``, does not).
+    human_approval  never machine-evaluated; always ``pending``.
+    edition_check   an installed edition answers a named check (below).
+
+``edition_check`` asks an installed edition. It runs
+``kirocrew acceptance-check --json <check> <ref>``, which the public build
+answers with exit 2 for every check, so here it answers ``error`` ("no edition
+provides the acceptance check"). An edition that provides the check prints one JSON object
+naming the same ``check``, ``ref`` and ``verdict`` as its exit code: 0 pass,
+8 pending, 1 fail, 3 needs a person (read as ``refused``), 4 could not answer
+(read as ``error``). Exit 2 means only that no edition provides that check.
+The check names are the edition's; the core knows none of them. The edition
+contract, and how an edition provides the command, is specified in
+``docs/system-specs/modules/platform-context.md`` ("Acceptance check command").
 
 stdout (JSON):
     {"results": [{"id": "...", "verdict": "pass|fail|pending|refused|error",
@@ -36,19 +61,17 @@ THE SECURITY INVARIANT (deliberate, do not weaken):
 
 A spec is written by a model, and this script runs as an approved wrapper, so a
 spec that could name a command would make this script a general way to run one.
-That is not a hypothetical: an earlier revision accepted a generic ``cmd`` kind
-with an allowlist, and it took three review rounds to establish that no
-constraint on ``argv`` fixes the shape. In order, the allowlist was defeated by
-(1) bare interpreters on it, so ``python -c <payload>`` ran anything;
-(2) a basename-only check, so ``/tmp/git`` executed an arbitrary binary under an
-allowlisted name; and (3) plain ``git reset --hard`` - allowlisted, and
-destructive. (3) is the one that settles it. Kiro Crew's denied-command floor
+No constraint on ``argv`` fixes that shape. A generic ``cmd`` kind with an
+allowlist is defeated by (1) bare interpreters on it, so ``python -c <payload>``
+runs anything; (2) a basename-only check, so ``/tmp/git`` executes an arbitrary
+binary under an allowlisted name; and (3) plain ``git reset --hard`` -
+allowlisted, and destructive. (3) is the one that settles it. Kiro Crew's denied-command floor
 inspects the ``execute_bash`` command string, which here reads
 ``python3 .../accept_eval.py``; the real argv arrives on stdin and is executed
 with ``shell=False``, so a denied command never appears in any string the hook
 examines. A generic executor behind an approved wrapper therefore REMOVES the
 deny floor for whatever it accepts, and the bypass is the wrapper rather than
-the list - which is why the list was dropped and not tightened again.
+the list - which is why there is no command list to tighten.
 
 So every argv this script runs is built HERE, from a fixed template, out of
 narrowly-typed spec fields. ``_SELF_BUILT_COMMANDS`` is the internal assertion
@@ -86,6 +109,8 @@ Stdlib-only, Python 3.8+.
 """
 
 import json
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -94,15 +119,42 @@ from pathlib import Path
 #: allowlist - nothing in a spec can name a command at all. This exists so a
 #: handler that ever passes spec input into `_exec` fails closed instead of
 #: executing it, which is the regression the `cmd` kind's removal prevents.
-#: Both invocations here are `gh` (`pr checks` and the `pr view` draft probe),
-#: so a second entry would widen the surface for nothing.
-_SELF_BUILT_COMMANDS = {"gh"}
+#: `gh` serves `pr_checks`, its draft probe and `pr_merged`'s `pr view`;
+#: `kirocrew` serves `edition_check` and runs exactly one fixed subcommand,
+#: `acceptance-check --json <check> <ref>`.
+_SELF_BUILT_COMMANDS = {"gh", "kirocrew"}
 
 TIMEOUT_SECS = 300
 EVIDENCE_TAIL_CHARS = 500
 
 #: gh pr checks exits 8 when checks are still running (gh >= 2.30).
 _GH_PENDING_EXIT = 8
+
+#: The GitHub ``owner/name`` ``pr_merged`` accepts. Applied with ``fullmatch``:
+#: a ``$`` anchor also matches before a trailing newline. ASCII classes only,
+#: and an owner cannot start with ``-``, so the value can never read as a flag.
+_GH_REPO = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}")
+
+#: ``edition_check``'s two fields, applied with ``fullmatch``: a ``$`` anchor
+#: also matches before a trailing newline. ASCII classes only, and both must
+#: start with a letter or digit, so neither can ever read as a flag.
+_CHECK_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+_CHECK_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+
+#: ``kirocrew acceptance-check`` exit codes and the report verdict each must
+#: carry. The report has to agree with the exit code before either is
+#: believed: a crash also exits 1, and a crash is not a failed check. Exit 4 is
+#: the edition's own "this check exists but could not answer" (a ref the check
+#: does not accept, or its system unreachable); it reads as ``error``, with the
+#: edition's summary as the evidence.
+_EDITION_EXIT_VERDICTS = {0: "pass", 1: "fail", 3: "needs_person", 4: "error", 8: "pending"}
+
+#: Exit 2 has one meaning: no installed edition provides the check. The
+#: evaluator validated both fields and always passes both, so it is a check name
+#: no installed edition knows (the public ``kirocrew`` knows none), or a
+#: ``kirocrew`` too old to have ``acceptance-check``, whose argparse exits 2. A
+#: check that exists but rejects a ref answers exit 4 instead.
+_EDITION_USAGE_EXIT = 2
 
 
 def _tail(text: str) -> str:
@@ -191,6 +243,126 @@ def _pr_is_draft(pr, repo=None):
     return proc.stdout.strip().lower() == "true"
 
 
+def _pr_merged(accept):
+    """Has this GitHub pull request merged? ``MERGED`` passes.
+
+    ``OPEN`` is ``pending``, because it can still merge; ``CLOSED`` fails,
+    because a closed pull request that did not merge carries no merged code. A
+    ``gh`` that cannot answer (no such PR, no auth) is an ``error``, never a
+    ``fail``: it says nothing about the work.
+
+    ``repo`` is required, unlike ``pr_checks``: without it ``gh`` resolves the
+    number against whatever checkout the evaluator runs in.
+    """
+    pr = accept.get("pr")
+    # bool is an int subclass; a non-positive number would reach gh as a flag.
+    if not isinstance(pr, int) or isinstance(pr, bool) or pr < 1:
+        return ("error", "pr_merged spec needs a positive integer pr")
+    repo = accept.get("repo")
+    if not isinstance(repo, str) or not _GH_REPO.fullmatch(repo):
+        return ("error", "pr_merged spec needs a repo of the form owner/name")
+    argv = ["gh", "pr", "view", str(pr), "--repo", repo, "--json", "state", "-q", ".state"]
+    problem, proc = _exec(argv)
+    if proc is None:
+        return problem or ("error", "could not run")
+    output = _tail(proc.stdout + "\n" + proc.stderr)
+    if proc.returncode != 0:
+        return ("error", f"could not read PR #{pr} in {repo}: exit {proc.returncode}: {output}")
+    state = proc.stdout.strip().upper()
+    if state == "MERGED":
+        return ("pass", f"PR #{pr} in {repo} is merged")
+    if state == "OPEN":
+        return ("pending", f"PR #{pr} in {repo} is open and not merged yet")
+    if state == "CLOSED":
+        return ("fail", f"PR #{pr} in {repo} was closed without merging")
+    return ("error", f"PR #{pr} in {repo} reported an unknown state: {output}")
+
+
+def _kirocrew_on_path():
+    """Name the ``kirocrew`` this evaluator runs, for evidence only.
+
+    The argv stays the bare name, resolved from ``PATH`` by the operating
+    system, so this never picks the binary; it only says which one ``PATH``
+    holds. That one need not be the install the gateway runs from (a shim
+    beside a virtual environment, say), and an answer of ``error`` is easier
+    to act on when it names it.
+    """
+    found = shutil.which("kirocrew")
+    return f"kirocrew on PATH is {found}" if found else "no kirocrew on PATH"
+
+
+def _edition_report(stdout):
+    """The one JSON object ``kirocrew acceptance-check --json`` prints, or ``None``."""
+    try:
+        report = json.loads(stdout or "")
+    except (ValueError, RecursionError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def _edition_check(accept):
+    """Has an edition's own check on this reference passed?
+
+    The edition does the reading and judging; this handler validates the two
+    fields, builds the one fixed argv, and maps the answer. The exit code and the
+    report's ``verdict`` must agree, and the report must name the check and the
+    reference that were asked about, before either is believed. Anything else is
+    an ``error``: an unexpected exit is a broken environment, not a verdict on the
+    work, so it must never read as ``fail`` - or, worse, as ``pass``.
+
+    ``needs_person`` (exit 3) becomes ``refused``: the check says waiting cannot
+    change its answer and a person decides, and the conductor surfaces a
+    ``refused`` verdict to the user rather than polling it. ``error`` (exit 4)
+    stays ``error``, carrying the edition's own reason: the check exists but
+    could not answer, which is never a verdict on the work.
+    """
+    check = accept.get("check")
+    if not isinstance(check, str) or not _CHECK_NAME.fullmatch(check):
+        return (
+            "error",
+            "edition_check spec needs a check name: a lower-case letter, then up to 31 "
+            "lower-case letters, digits or hyphens",
+        )
+    ref = accept.get("ref")
+    if not isinstance(ref, str) or not _CHECK_REF.fullmatch(ref):
+        return (
+            "error",
+            "edition_check spec needs a ref: a letter or digit, then up to 127 letters, "
+            "digits, dots, underscores or hyphens",
+        )
+    problem, proc = _exec(["kirocrew", "acceptance-check", "--json", check, ref])
+    if proc is None:
+        return problem or ("error", "could not run")
+    output = _tail(proc.stdout + "\n" + proc.stderr)
+    if proc.returncode == _EDITION_USAGE_EXIT:
+        return (
+            "error",
+            f"no installed edition provides the acceptance check {check!r}: "
+            f"kirocrew acceptance-check exited 2 ({output or 'no output'}); "
+            f"{_kirocrew_on_path()}",
+        )
+    expected = _EDITION_EXIT_VERDICTS.get(proc.returncode)
+    report = _edition_report(proc.stdout)
+    if (
+        expected is None
+        or report is None
+        or report.get("verdict") != expected
+        or report.get("check") != check
+        or report.get("ref") != ref
+    ):
+        return (
+            "error",
+            f"kirocrew acceptance-check exit {proc.returncode} came without a matching "
+            f"report for {check} {ref}: {output}; {_kirocrew_on_path()}",
+        )
+    summary = _tail(str(report.get("summary") or "")) or f"{check} {ref}: {expected}"
+    if expected == "error":
+        return ("error", f"{summary} -- the edition's check could not answer")
+    if expected == "needs_person":
+        return ("refused", f"{summary} -- waiting will not change this; a person decides")
+    return (expected, summary)
+
+
 def _evaluate(item):
     accept = item.get("accept") or {}
     kind = accept.get("kind")
@@ -205,25 +377,15 @@ def _evaluate(item):
         if repo:
             argv += ["--repo", str(repo)]
         verdict, evidence = _run(argv)
-        # The draft probe runs HERE, behind a pending verdict, and nowhere else.
+        # The draft probe runs only behind a pending verdict. A draft's checks
+        # can still pass in repos with no check gated on the draft flag, so the
+        # probe must not pre-empt `gh pr checks`, and skipping it on pass/fail
+        # costs nothing.
         #
-        # A draft PR is not unconditionally unsatisfiable, so the probe must not
-        # pre-empt the check: where a repo has no aggregate check gated on the
-        # draft flag, a draft's checks resolve and `gh pr checks` exits 0 - a
-        # `pass` this script keeps returning, since this skill ships to
-        # arbitrary repos. Probing only a pending run also costs nothing on the
-        # pass and fail paths, which is every cycle that was never going to
-        # loop.
-        #
-        # A PENDING draft is refused on the spec, not on a prediction about CI.
-        # The two ways a draft's checks stay pending - a readiness check gated
-        # on the draft flag, which never resolves, and ordinary checks still
-        # running, which do - are indistinguishable to a stateless evaluator,
-        # and this returns the same answer for both ON PURPOSE. A draft is the
-        # author's own "not ready for review", so an unfinished check run on one
-        # is a person's turn; "mark it ready for review" is a step they owe
-        # regardless, and it is bounded. Waiting instead is not: guessing wrong
-        # in that direction is the reported defect, an hour of polling a
+        # A pending draft is refused ON PURPOSE even when its checks are merely
+        # still running: a stateless evaluator cannot tell that apart from a
+        # draft-gated check that never resolves. Marking it ready is a bounded
+        # step the author owes anyway; waiting can poll for an hour on a
         # condition no cycle could change.
         if verdict == "pending" and _pr_is_draft(pr, repo):
             return (
@@ -234,6 +396,10 @@ def _evaluate(item):
                 "review or change the acceptance kind",
             )
         return (verdict, evidence)
+    if kind == "pr_merged":
+        return _pr_merged(accept)
+    if kind == "edition_check":
+        return _edition_check(accept)
     if kind == "file":
         path = accept.get("path")
         if not isinstance(path, str) or not path:
@@ -299,11 +465,24 @@ def main() -> int:
         return 2
     try:
         payload = json.load(sys.stdin)
+    except Exception:
+        payload = None
+    document, code = evaluate_document(payload)
+    print(json.dumps(document, indent=2) if code == 0 else json.dumps(document))
+    return code
+
+
+def evaluate_document(payload) -> tuple:
+    """Evaluate one parsed ``{"items": [...]}`` document; return ``(document, exit code)``.
+
+    The whole contract behind stdin, so the ``kirocrew-work`` ``accept_eval`` tool
+    imports this rather than a copy of it: same kinds, same refusals, same output.
+    """
+    try:
         items = payload["items"]
         assert isinstance(items, list)
     except Exception:
-        print(json.dumps({"error": 'stdin must be JSON: {"items": [...]}'}))
-        return 2
+        return {"error": 'stdin must be JSON: {"items": [...]}'}, 2
     results = []
     for position, item in enumerate(items):
         # ID extraction happens INSIDE the guard. A non-object entry
@@ -321,8 +500,7 @@ def main() -> int:
         except Exception as exc:  # one bad spec must not hide the rest
             verdict, evidence = "error", f"evaluator bug on this item: {exc}"
         results.append({"id": item_id, "verdict": verdict, "evidence": evidence})
-    print(json.dumps({"results": results}, indent=2))
-    return 0
+    return {"results": results}, 0
 
 
 if __name__ == "__main__":

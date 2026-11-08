@@ -4,13 +4,7 @@
 machine namespaces. Both serve the same pane and both are opt-in, so they are
 tested together.
 
-The sidebar's Older-sessions pane renders the complement of the open tabs listed
-above it. The endpoint listed every session file on disk, so every open tab was
-repeated in that pane — the newest one, the conversation the user is in, always
-landing at its top.
-
-The exclusion is opt-in, applied server-side, and counted before pagination.
-Each of those three is load-bearing and has a test here:
+The Older-sessions pane shows the complement of the open tabs. Each property has a test:
 
 - opt-in, because the full inventory is what memory consolidation and the
   command palette's recents read;
@@ -55,7 +49,7 @@ def _make_request(
 ) -> web.Request:
     """Build a minimal ``web.Request`` with a fake ``conversation_log`` + ``_slots``."""
     conv_log = MagicMock()
-    conv_log.list_sessions.return_value = sessions
+    conv_log.list_sessions_indexed.return_value = sessions
     # The handler folds stacked ``dashboard_`` prefixes through this; wire the
     # real implementation so the fold is actually exercised, not mocked away.
     conv_log._canonical_key = ConversationLog._canonical_key
@@ -197,13 +191,10 @@ async def test_last_filtered_page_reports_no_more() -> None:
 
 @pytest.mark.asyncio
 async def test_user_only_drops_the_machine_namespaces() -> None:
-    """The defect: a titleless subagent transcript renders its own key as a row.
+    """A titleless subagent transcript must not render its own key as a row.
 
-    ``wf-worker_`` rides along to pin a sibling the telemetry registry never registered,
-    which is why this list is spelled literally rather than derived. ``secretary_`` and
-    ``channel_`` are here so that every member of the tuple is covered by some assertion:
-    an unasserted member can be deleted without any test noticing, and the failure mode
-    that leaves is silent — its rows simply come back.
+    Spelled literally: ``wf-worker_`` is not in the telemetry registry, and every tuple
+    member is asserted so none can be deleted unnoticed.
     """
     sessions = [
         {"key": "dashboard_chat-1"},
@@ -346,9 +337,8 @@ async def test_user_only_keeps_a_taskrunner_row_as_the_declared_residual() -> No
     The namespace holds both runs (``taskrunner:run:<spec stem>``) and real
     conversations: ``POST /api/taskrunner/{id}/to-chat`` opens a titled chat slot on
     ``taskrunner:<task_id>:chat:<token>``. The key cannot reliably separate them once
-    ``_safe_key`` has folded every ``:``, so the whole namespace stays listed. Showing
-    a machine row costs less than hiding a conversation, and this test is what stops a
-    later edit from quietly taking the other side of that trade.
+    ``_safe_key`` has folded every ``:``, so the whole namespace stays listed: a machine
+    row costs less than a hidden conversation.
     """
     sessions = [
         {"key": "taskrunner_5f2a_chat_3f9c1a24e8b7455da0c6ef1290bd7c58"},
@@ -422,3 +412,31 @@ async def test_user_only_drops_a_never_used_session(tmp_path) -> None:
 
     full = await _call(_real_request(log, {}))
     assert "dashboard_chat-3-1790874654" in _keys(full), "the full inventory must still list it"
+
+
+@pytest.mark.asyncio
+async def test_exclude_open_forgets_the_published_keys_it_lists_as_rows() -> None:
+    """A session this listing shows as a row leaves the published set, so the sync
+    that next finds its slot open pushes ``history`` and the tabs re-read."""
+    sessions = [{"key": "dashboard_chat-1"}, {"key": "dashboard_chat-2"}]
+    request = _make_request(
+        sessions, slots={"chat-1": _FakeSlot("chat-1")}, query={"exclude_open": "1"}
+    )
+    state = request.app["state"]
+    state._published_slot_keys = frozenset({"dashboard:chat-1", "dashboard:chat-2"})
+
+    body = await _call(request)
+
+    assert _keys(body) == ["dashboard_chat-2"]
+    assert state._published_slot_keys == frozenset({"dashboard:chat-1"})
+
+
+@pytest.mark.asyncio
+async def test_the_full_inventory_leaves_the_published_keys_alone() -> None:
+    request = _make_request([{"key": "dashboard_chat-2"}], slots={})
+    state = request.app["state"]
+    state._published_slot_keys = frozenset({"dashboard:chat-2"})
+
+    await _call(request)
+
+    assert state._published_slot_keys == frozenset({"dashboard:chat-2"})

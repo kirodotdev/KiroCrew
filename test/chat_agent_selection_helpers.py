@@ -1,15 +1,7 @@
 """The template chat, turn state and bounded waits the chat agent-selection tests share.
 
-``test_chat_agent_selection.py`` and its ``_switch_rollback`` and ``_member_binding``
-siblings import these by name: ``TEMPLATE``, the discovered template a chat opens on;
-``_turn_state``, a dashboard state whose turn ends after one stubbed reply;
-``_template_chat``, a ``template-chat`` slot created on ``TEMPLATE`` through the real slot
-route, its template then synced into a same-named crewmate with private memory; and
-``_finished`` and ``_signalled``, which wait for a coroutine or a worker thread's
-``threading.Event`` under the lost-run bound and fail by name. Nothing here is a fixture.
-``test_chat_agent_selection.py`` re-exports ``TEMPLATE``, ``_template_chat`` and
-``_turn_state`` for ``test_agent_slash_command.py``, ``test_app_command_agent_guard.py``,
-``test_chat_agent_kind.py`` and ``test_pruned_crewmate_records.py``.
+Nothing here is a fixture. ``test_chat_agent_selection.py`` re-exports ``TEMPLATE``,
+``_template_chat`` and ``_turn_state`` for other test modules, so keep those names.
 """
 
 from __future__ import annotations
@@ -34,19 +26,16 @@ from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
 
-TEMPLATE = "kirocrew-conductor"
+# Not a conductor: every conductor is Crew Mode, and a Crew Mode root refuses another
+# agent (crew_mode_locked), which these switch tests are not about.
+TEMPLATE = "kirocrew-research"
 
 
 async def _finished(coro, what: str, *, timeout: float | None = None):
     """Run ``coro`` to completion under the lost-run bound, failing by name (D8).
 
-    ``await_until`` takes a future the test already holds; a coroutine the test
-    itself calls (a chat turn, a request, the background drain) is wrapped in a
-    task here so a hang is a named failure instead of the runner's kill. The task
-    is cancelled on every early exit -- the bound expiring, or an enclosing wait
-    cancelling this one -- as ``wait_for`` did, so a hung step never outlives its
-    test. A wait nested inside another ``_finished`` passes a smaller ``timeout``
-    so the inner step is the one that fails by name.
+    The task is cancelled on every early exit, so a hung step never outlives its test. A
+    nested ``_finished`` passes a smaller ``timeout`` so the inner step fails by name.
     """
     task = asyncio.ensure_future(coro)
     try:

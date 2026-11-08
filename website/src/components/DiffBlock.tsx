@@ -1,4 +1,4 @@
-import { memo, useState, useMemo } from 'react'
+import { memo, useContext, useState, useMemo } from 'react'
 import { Copy, Check, Columns2, Rows2 } from 'lucide-react'
 import { copyToClipboard } from '../utils/clipboard'
 import { usePathKind } from '../hooks/usePathKind'
@@ -6,7 +6,7 @@ import { isSafePath } from '../utils/safePath'
 import { splitPatchSections, type PatchSection } from '../utils/diffLineCounts'
 import { PierrePatch } from '../pierre'
 import { PlainCodeFallback, PlainFilePairHeader, PlainPatchBodyContext, type PlainPatchBodyOwner } from '../pierre/PlainCodeFallback'
-import { PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS } from '../pierre/config'
+import { PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR_BG_CSS, PIERRE_PLAIN_LINE_NUMBER_CSS, type PierreDiffOptions } from '../pierre/config'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 import { useDiffSplit } from '../hooks/useDiffSplit'
 import { usePlainDiff } from '../hooks/usePlainDiff'
@@ -14,6 +14,11 @@ import { usePlainDiff } from '../hooks/usePlainDiff'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { pathBasename, decodePathForDisplay } from '../utils/pathBasename'
+import { ChatProjectDirCtx } from './markdown/contexts'
+import { joinProjectRelative } from './markdown/pathReferences'
+import { useCanOpenFile } from './FilePathMenu'
+import { canPickFolderNatively, hasNativeFolderPicker } from '../lib/electron'
+import { isMac } from '../utils/platform'
 
 /** Extract the target file path from unified-diff header lines.
  *
@@ -96,6 +101,41 @@ const ROOTLESS_ABS_RE = /^(home|Users|tmp|var|opt|workplace)\//
 
 const basename = pathBasename
 
+/** `path` as the `vscode://file` link the desktop app opens after asking
+ *  (`electron/external-scheme.js`). Each segment is percent-encoded, `!'()*`
+ *  included, so a space or `(` stays inside that link's path characters. */
+export function vscodeFileUrl(path: string, line?: number): string {
+  const encoded = path.split('/')
+    .map(segment => encodeURIComponent(segment).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`))
+    .join('/')
+  return `vscode://file${encoded}${line === undefined ? '' : `:${line}`}`
+}
+
+/** On a click with the platform's primary modifier (Cmd on macOS, Ctrl
+ *  elsewhere), opens `path` in VS Code once the desktop shell says this window's
+ *  gateway runs on this machine; any other click, or a no, runs `otherwise`.
+ *  The gateway cannot say it: a tunnel from another machine looks local to it. */
+function editorClick(path: string | null, e: { metaKey: boolean; ctrlKey: boolean }, otherwise: () => void, line?: number): void {
+  if (path == null || !(isMac ? e.metaKey : e.ctrlKey)) {
+    otherwise()
+    return
+  }
+  void canPickFolderNatively().then(here => {
+    if (here) window.open(vscodeFileUrl(path, line), '_blank', 'noopener,noreferrer')
+    else otherwise()
+  })
+}
+
+/** A hunk header that says where the hunk sits in the file. */
+const PLACED_HUNK_RE = /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/
+
+/** Whether a one-file patch's gutter counts lines of the file: every hunk is
+ *  placed. A bare `@@`, or none, is counted from 1 for display. */
+function hunksPlaced(patch: string): boolean {
+  const heads = patch.split('\n').filter(line => line.startsWith('@@'))
+  return heads.length > 0 && heads.every(line => PLACED_HUNK_RE.test(line))
+}
+
 /** What a file's header row is titled: the basename, and for a rename the old
  *  basename, an arrow, the new one. The full path is the wrapper's tooltip and
  *  the Open button's target; the row only has to tell the files of one patch
@@ -156,7 +196,9 @@ function changeNote(words: string[]) {
   )
 }
 
-export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string }) {
+/** `lineLinks={false}`: the gutter is not the file's lines even where the hunks
+ *  carry numbers, so no line number opens the editor. */
+export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, lineLinks = true }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string; lineLinks?: boolean }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [copied, setCopied] = useState(false)
   // Shares the app-wide `mc-diff-split` preference with the side panel and
@@ -198,7 +240,15 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
   // affordance, because no button beats a guessed target.
   const ambiguousRootless = extracted != null && extracted.prefixStripped && ROOTLESS_ABS_RE.test(extracted.path)
   const corroboratedRooted = ambiguousRootless && extracted != null && pathHint === '/' + extracted.path ? pathHint : null
-  const probePath = ambiguousRootless ? corroboratedRooted : headerPath
+  // A relative header (`+++ b/src/a.ts`) names a file in THIS chat's project,
+  // the same rule the inline path chips follow: joined here, it is probed and
+  // opened as that absolute path rather than resolved by the backend against
+  // the gateway's own directory, which is a different tree whenever the chat
+  // has a project of its own. A header that climbs above the project joins to
+  // `null` and gets no Open, the backend's own answer for it.
+  const projectDir = useContext(ChatProjectDirCtx)
+  const unjoinedProbePath = ambiguousRootless ? corroboratedRooted : headerPath
+  const probePath = unjoinedProbePath == null ? null : joinProjectRelative(unjoinedProbePath, projectDir)
   // The path the Open button acts on. `usePathKind` keys its verdict to the path
   // it was measured for, so a verdict for a PREVIOUS header is never rendered
   // against the current one: during the render after a header change the kind
@@ -209,6 +259,10 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
     probePath && headerPath && isSafePath(probePath) && onFileOpen ? probePath : null,
   )
   const filePath = probeKind === 'file' ? probePath : null
+  // Desktop app window only (it has the shell's `folderPickAPI` bridge): the
+  // shell asks before it opens an editor link.
+  const canOpenFile = useCanOpenFile('file')
+  const editorPath = filePath?.startsWith('/') && canOpenFile && hasNativeFolderPicker() ? filePath : null
 
   // Diff layout follows the shared, persisted split preference (toggled from
   // this block's own header); wrap because chat/side-panel columns are
@@ -230,6 +284,14 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
     }),
     [sideBySide],
   )
+  // A new-side number is a line of today's file; an old-side one is not.
+  const editorOptions = useMemo<PierreDiffOptions>(() => editorPath == null || !lineLinks ? options : {
+    ...options,
+    unsafeCSS: options.unsafeCSS + PIERRE_PLAIN_LINE_NUMBER_CSS,
+    onLineNumberClick: ({ annotationSide, lineNumber, event }) => {
+      if (annotationSide === 'additions') editorClick(editorPath, event, () => {}, lineNumber)
+    },
+  }, [options, editorPath, lineLinks])
 
   const copy = async () => { if (await copyToClipboard(code)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }
 
@@ -303,7 +365,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
       {reserveOpen && (
         <button
           className={`px-1.5 py-0.5 rounded text-[12px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer ${filePath ? '' : 'invisible pointer-events-none'}`}
-          onClick={filePath && onFileOpen ? () => onFileOpen(filePath) : undefined}
+          onClick={filePath && onFileOpen ? e => editorClick(editorPath, e, () => onFileOpen(filePath)) : undefined}
           disabled={!filePath}
           aria-hidden={!filePath}
           tabIndex={filePath ? undefined : -1}
@@ -365,6 +427,9 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
         )}
         {sections.map((section, i) => {
           const words = changeWords(section)
+          // Only the file Open names gets line links (one section of a multi-file
+          // card), and only where its hunks place the gutter in that file.
+          const lineLinked = editorOptions !== options && (sections.length === 1 || section.name === extracted?.path) && hunksPlaced(section.text)
           return (
             <div key={`${section.name ?? ''}:${i}`} data-diff-section={i} className="contents">
               <PlainFilePairHeader
@@ -382,7 +447,7 @@ export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint }:
               <PlainPatchBodyContext.Provider value={plain ? null : plainBodyOwner}>
                 {standInForStream
                   ? <PlainCodeFallback text={section.text} />
-                  : <PierrePatch patch={section.text} options={options} />}
+                  : <PierrePatch patch={section.text} options={lineLinked ? editorOptions : options} />}
               </PlainPatchBodyContext.Provider>
             </div>
           )

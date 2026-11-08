@@ -44,6 +44,8 @@ vi.mock('../api/client', () => ({
     screenshot: vi.fn().mockResolvedValue({ path: null }),
     fileSearch: vi.fn().mockResolvedValue({ root: '/repo', results: [] }),
     chatSlotAgent: vi.fn().mockResolvedValue(undefined),
+    // Confirmed local: `!` commands wait for the chat's Session Environment placement.
+    chatSlotEnvironment: vi.fn().mockResolvedValue({ profile: null, profiles: [] }),
   },
   SEARCH_MIN_CHARS: 2,
   ApiError: class ApiError extends Error {
@@ -232,6 +234,24 @@ describe('ChatPane agent switch — failures reach the shared notice', () => {
     fireEvent.click(await screen.findByText('reviewer'))
 
     await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalledWith('pane-agent', 'reviewer'))
+    await waitFor(() =>
+      expect(store.getState().chat.agentSwitchNotice?.message).toBe('invalid agent name'),
+    )
+  })
+
+  it('reports in the pane without a second live region, so the failure is announced once', async () => {
+    const { ApiError } = await import('../api/client') as unknown as {
+      ApiError: new (s: number, m: string, b?: string) => Error
+    }
+    ;(api.chatSlotAgent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new ApiError(400, 'invalid agent name', JSON.stringify({ error: 'invalid agent name' })),
+    )
+    const store = await openAgentPicker()
+    fireEvent.click(await screen.findByText('reviewer'))
+
+    const inPane = await screen.findByTestId('chat-pane-switch-error')
+    expect(inPane).toHaveTextContent('invalid agent name')
+    expect(inPane.getAttribute('role')).toBeNull()
     await waitFor(() =>
       expect(store.getState().chat.agentSwitchNotice?.message).toBe('invalid agent name'),
     )
@@ -623,7 +643,7 @@ describe('ChatPane native question card (#10634) — steer while the turn is liv
 
   function seedNativeCard(store: ReturnType<typeof nativeStore>, slot: string) {
     // The native card shape: a server `card_id` plus the `native` mark
-    // (chat_runner.py posts it through post_question_card(native=True)).
+    // (chat_turn/native_cards.py posts it through post_question_card(native=True)).
     act(() => {
       store.dispatch(setQuestionCard({
         slot,
@@ -807,7 +827,9 @@ describe('ChatPane terminal attachment and session boundaries', () => {
     vi.spyOn(terminalPopout, 'bringBack').mockImplementation(() => {})
   })
   afterEach(() => {
-    terminalRegistry.setTerminalEnabledFlag(false)
+    // The pane is still mounted here, and the flag feeds the composer's
+    // terminal hook through useSyncExternalStore, so flip it inside act().
+    act(() => { terminalRegistry.setTerminalEnabledFlag(false) })
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
   })
@@ -847,7 +869,7 @@ describe('ChatPane terminal attachment and session boundaries', () => {
     expect(dialog).toHaveTextContent('/work/pane-project')
     expect(bottomTerminal.addTab).not.toHaveBeenCalled()
     await user.click(within(dialog).getByRole('button', { name: 'Run', exact: true }))
-    expect(bottomTerminal.addTab).toHaveBeenCalledExactlyOnceWith('/work/pane-project')
+    expect(bottomTerminal.addTab).toHaveBeenCalledExactlyOnceWith('/work/pane-project', 'pane-terminal-folder')
     expect(terminalRegistry.sendToTerminalSession).toHaveBeenCalledExactlyOnceWith('pane-terminal', 'pwd ', { preserveTrailingWhitespace: true })
     expect(box).toHaveValue('! pwd ')
     expect(api.sendChat).not.toHaveBeenCalled()
@@ -880,5 +902,36 @@ describe('ChatPane terminal attachment and session boundaries', () => {
     expect(terminalRegistry.sendToTerminalSession).not.toHaveBeenCalled()
     expect(terminalPopout.bringBack).not.toHaveBeenCalled()
     expect(api.sendChat).not.toHaveBeenCalled()
+  })
+})
+
+/* The grid pane's composer recalls with ↑ on the same terms as ChatPage (it
+ * was passed no history list before), and its send is recorded the same way. */
+describe('ChatPane ↑ prompt recall', () => {
+  it('recalls a prompt from the pane transcript', async () => {
+    const { store } = renderPane('pane-recall')
+    const box = await screen.findByRole('textbox', { name: 'Message input' })
+    act(() => store.dispatch(sseChatMessage({ slot: 'pane-recall', role: 'user', content: 'from the transcript', meta: { mid: 'm-1' } })))
+    await act(async () => { fireEvent.keyDown(box, { key: 'ArrowUp' }) })
+    expect(box).toHaveValue('from the transcript')
+  })
+
+  it('records its send for recall, and ↑ offers it once', async () => {
+    vi.mocked(api.sendChat).mockImplementationOnce(() => new Promise(() => {}))
+    const { store } = renderPane('pane-sent')
+    const box = await screen.findByRole('textbox', { name: 'Message input' })
+    await act(async () => {
+      fireEvent.change(box, { target: { value: 'lost in the pane' } })
+      fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+    })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    const sendId = (vi.mocked(api.sendChat).mock.calls[0][4] as { sendId: string }).sendId
+    expect(store.getState().chat.sendAttempts?.['pane-sent']).toEqual([{ text: 'lost in the pane', sendId }])
+    expect(box).toHaveValue('')
+    await act(async () => { fireEvent.keyDown(box, { key: 'ArrowUp' }) })
+    expect(box).toHaveValue('lost in the pane')
+    // Its bubble is still on screen, so the record adds no second entry.
+    await act(async () => { fireEvent.keyDown(box, { key: 'ArrowUp' }) })
+    expect(box).toHaveValue('lost in the pane')
   })
 })

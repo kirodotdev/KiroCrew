@@ -123,6 +123,8 @@ class TestIngestTextGroupReplace:
         pipeline._maybe_dedup = MagicMock()
         await pipeline.ingest_text("body", title="A", source_id=sid, old_item_ids=[])
         pipeline._maybe_dedup.assert_not_called()
+        # Skipping dedup must not skip the write itself.
+        assert any("body" in c for c in _contents(kstore, sid))
         await pipeline.ingest_text("other", title="B", source_id=sid)
         # The just-written document's hash is passed too: a source id alone is
         # ambiguous once one source holds several documents.
@@ -973,6 +975,11 @@ class TestArtifactKnowledgeSync:
         # Raises OnLoopStoreError if ensure_artifact_source, _get_state or
         # release_stale_claim is taken on the loop.
         await sync._handle("upsert", art.slug)
+        # The handler got all the way to the ingest, so every store call before
+        # it ran under strict mode rather than being skipped by an early return.
+        assert pipeline.ingest_file.await_count == 1
+        row = await asyncio.to_thread(kstore.get_source_by_uri, ARTIFACT_SOURCE_URI)
+        assert row is not None
 
     @pytest.mark.asyncio
     async def test_handle_upsert_of_a_changed_artifact_stays_off_the_loop(
@@ -982,19 +989,21 @@ class TestArtifactKnowledgeSync:
         ``release_stale_claim`` (a write-lock take). Ingest once off strict, then
         edit and re-upsert under strict: the second upsert exercises the
         ``_get_state`` read AND the ``release_stale_claim`` write, both of which
-        must be offloaded.
+        must be offloaded. The real ingest runs, so the stored text proves the
+        changed-content branch ran rather than the unchanged short-circuit.
         """
         sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
         art = art_store.create(name="Doc", content="v1 body", kind="markdown")
         await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
         art_store.update(art.slug, content="v2 body", snapshot=True)
-        monkeypatch.setattr(
-            pipeline, "ingest_file", AsyncMock(return_value=None))
         monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
         sync = ArtifactKnowledgeSync(
             art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
             loop=asyncio.get_running_loop())
         await sync._handle("upsert", art.slug)  # raises if a store take is on-loop
+        contents = await asyncio.to_thread(lambda: _contents(kstore, sid))
+        assert len(contents) == 1
+        assert "v2 body" in contents[0]
 
     @pytest.mark.asyncio
     async def test_handle_delete_takes_no_db_connection_on_the_loop(
@@ -1197,6 +1206,9 @@ class TestKindChangeReconciliation:
             art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
             loop=asyncio.get_running_loop())
         await sync._handle("upsert", "never-existed")
+        sid = kstore.get_source_by_uri(ARTIFACT_SOURCE_URI)["id"]
+        assert _contents(kstore, sid) == []
+        assert not sync._lock.locked()
 
 
 class TestKindChangeFiresAnEvent:

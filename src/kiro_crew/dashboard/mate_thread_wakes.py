@@ -13,7 +13,9 @@ envelope ``[Worker report]``).
   crewmate's changed cron result reports the same way (:func:`note_cron_result`).
 * **One wake per turn end, deferred while busy**: one pending entry per worker,
   delivered when the thread's own turn task ends, never on a timer, never twice.
-  Pending reports live in memory.
+  Pending reports live in memory. A worker turn that ends quietly
+  (``nothing_to_do``, and no text written in the turn) reports nothing and
+  wakes nobody.
 
 The same flush delivers a moved crewmate's one upgrade notice first
 (:mod:`kiro_crew.mate_upgrade_notice`). Per-gateway state lives on the dashboard
@@ -46,15 +48,20 @@ _PREAMBLE = crewmate_prompts.text("wake.preamble")
 _GUIDANCE = crewmate_prompts.text("worker_report.guidance")
 
 
-#: Said under a report whose worker names a capability it lacks
-#: (``mate_worker.MISSING_CAPABILITY_PREFIX``).
-_MISSING_CAPABILITY_NOTE = crewmate_prompts.text("worker_report.missing_capability")
 _MISSING_CAPABILITY_CHARS = 240
 _LINE_DECORATION = " \t*_`#>-"
 
 
-def _missing_capability_line(missing: str) -> str:
-    """The line under a worker's gap: ask the user for it on a card."""
+def _missing_capability_line(missing: str, manual: bool = False) -> str:
+    """The line under a worker's gap: find it and raise the card, or ask the user.
+
+    *manual* when the crewmate's Dynamic capabilities preview is off
+    (``kiro_crew.crewmate_dynamic_capabilities``): its conductor has
+    neither find_capabilities nor request_capabilities, so it is told to ask the
+    user to add the capability in its advanced settings, in one plain line, no card.
+    """
+    if manual:
+        return crewmate_prompts.fill("worker_report.missing_capability_manual", missing=missing)
     return crewmate_prompts.fill("worker_report.missing_capability", missing=missing)
 
 
@@ -201,8 +208,20 @@ def _excerpt(text: str) -> tuple[str, bool]:
     return clean[:MAX_REPORT_CHARS].rstrip(), True
 
 
-def report_prompt(reports: list[dict[str, Any]], member: str = "") -> str:
-    """The hidden turn that hands crewmate *member* its workers' latest replies."""
+def report_prompt(
+    reports: list[dict[str, Any]], member: str = "", *, manual: bool | None = None
+) -> str:
+    """The hidden turn that hands crewmate *member* its workers' latest replies.
+
+    *manual* is *member*'s Dynamic capabilities preview being off
+    (``crewmate_dynamic_capabilities.restricted_for``), which picks the gap line;
+    when not given it is read here (a config read), and no crewmate named reads
+    as off. The wake loop reads it off the event loop and passes it in.
+    """
+    if manual is None:
+        from kiro_crew import crewmate_dynamic_capabilities
+
+        manual = crewmate_dynamic_capabilities.restricted_for(member)
     lines = [WORKER_REPORT_PREFIX + " " + _PREAMBLE.rstrip(), ""]
     for report in reports:
         turns = report["turns"]
@@ -227,7 +246,7 @@ def report_prompt(reports: list[dict[str, Any]], member: str = "") -> str:
             lines.extend([_BEGIN, text, _END])
             missing = missing_capability(text)
             if missing:
-                lines.append(_missing_capability_line(missing))
+                lines.append(_missing_capability_line(missing, manual))
         lines.append("")
     lines.append(_GUIDANCE)
     return "\n".join(lines)
@@ -258,6 +277,15 @@ def _notices(state: Any) -> set[str]:
     return notices
 
 
+def _notice_prompts(state: Any) -> dict[str, str]:
+    """The prompt of each thread's claimed upgrade notice, when it names what changed."""
+    prompts = getattr(state, "_mate_notice_prompts", None)
+    if not isinstance(prompts, dict):
+        prompts = {}
+        state._mate_notice_prompts = prompts
+    return prompts
+
+
 def _kept_notices(state: Any) -> dict[str, str]:
     """Threads whose claimed kept notice (its prompt) is still to be delivered."""
     kept = getattr(state, "_mate_kept_notices", None)
@@ -285,14 +313,16 @@ async def offer_upgrade_notice(state: Any, slot: Any) -> bool:
     if not is_crewmate_thread(slot) or slot.key in _notice_checked(state):
         return False
     _notice_checked(state).add(slot.key)
-    from kiro_crew.mate_upgrade_notice import claim_kept_notice, claim_notice
+    from kiro_crew.mate_upgrade_notice import claim_kept_notice, claim_notice_prompt
 
     binding = await asyncio.to_thread(members_mod.read_dm_binding_for_slot, slot.key)
     slug = members_mod.slug_from_dm_slot_key(slot.key)
     if not binding or binding.get("member") != slot.agent or not slug:
         return False
-    if await asyncio.to_thread(claim_notice, slug, slot.agent):
+    prompt = await asyncio.to_thread(claim_notice_prompt, slug, slot.agent)
+    if prompt:
         _notices(state).add(slot.key)
+        _notice_prompts(state)[slot.key] = prompt
     else:
         # Not moved: a crewmate the migration left where it was says why, once.
         kept = await asyncio.to_thread(claim_kept_notice, slug, slot.agent)
@@ -341,7 +371,8 @@ async def _flush(state: Any, key: str) -> None:
             from kiro_crew.mate_upgrade_notice import NOTICE_PROMPT
 
             _notices(state).discard(key)
-            dispatch_hidden_turn(state, slot, NOTICE_PROMPT, human_seen=False)
+            prompt = _notice_prompts(state).pop(key, NOTICE_PROMPT)
+            dispatch_hidden_turn(state, slot, prompt, human_seen=False)
             logger.info("upgrade notice started on %s", key)
             continue
         if _idle(slot) and key in _kept_notices(state):
@@ -351,7 +382,20 @@ async def _flush(state: Any, key: str) -> None:
         # The Dashboard line reads the page store: off the loop, before the idle check.
         slug = (members_mod.slug_from_dm_slot_key(key) or "") if reports else ""
         page = await asyncio.to_thread(page_line, slug) if slug else ""
-        if slug and (
+        # The crewmate's own Dynamic capabilities preview picks the gap line. It is
+        # a config read, so it runs off the loop too, and only when a report names a
+        # gap; the re-check below covers both reads.
+        manual = False
+        gap = False
+        if reports:
+            gap = any(missing_capability(_excerpt(r["reply"])[0]) for r in reports.values())
+        if gap:
+            from kiro_crew import crewmate_dynamic_capabilities
+
+            manual = await asyncio.to_thread(
+                crewmate_dynamic_capabilities.restricted_for, slot.agent
+            )
+        if (slug or gap) and (
             state.get_slot(key) is not slot
             or not is_crewmate_thread(slot)
             or getattr(slot, "is_closing", False)
@@ -366,7 +410,7 @@ async def _flush(state: Any, key: str) -> None:
             dispatch_hidden_turn(
                 state,
                 slot,
-                with_page(report_prompt(list(reports.values()), slot.agent), page),
+                with_page(report_prompt(list(reports.values()), slot.agent, manual=manual), page),
                 human_seen=False,
             )
             logger.info("worker report woke %s (%d worker(s))", key, len(reports))
@@ -475,16 +519,22 @@ async def note_cron_result(state: Any, job: Any, session_key: str, reply_text: s
         return False
 
 
-def note_turn_end(state: Any, slot: Any, reply_text: str | None) -> None:
+def note_turn_end(
+    state: Any, slot: Any, reply_text: str | None, *, quiet_end: bool = False
+) -> None:
     """Called once at the end of every top-level turn. Never raises.
 
     A worker's turn end records its report for its crewmate and schedules the
     wake; *reply_text* is ``None`` for a turn that ended before it reached the
-    model, which reports nothing. A crewmate thread's own turn end schedules the
-    delivery of anything still pending for it.
+    model, which reports nothing. *quiet_end* is an applied ``nothing_to_do``
+    ending a turn that wrote no reply text: a quiet cycle, which reports nothing
+    either and leaves a report already pending as it was. A
+    crewmate thread's own turn end schedules the delivery of anything still
+    pending for it.
     """
     try:
-        creator = reporting_creator(state, slot) if reply_text is not None else None
+        quiet = quiet_end and not (reply_text or "").strip()
+        creator = reporting_creator(state, slot) if reply_text is not None and not quiet else None
         if creator is not None:
             _record_report(
                 state,

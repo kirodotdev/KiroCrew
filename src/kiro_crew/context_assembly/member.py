@@ -55,24 +55,17 @@ def _fit_folder_steering_into_envelope(
     """The prefix of *folder_docs* that fits the essentials envelope beside *documents*.
 
     ``render_essentials`` REFUSES an envelope over ``ESSENTIAL_MAX_CHARS`` or
-    ``_MAX_DOCUMENTS`` -- correct for a member's own essentials, which must
-    never be silently cut, but folder steering is operator-pointed task
-    guidance that the non-member path already truncates. One plausible 64 KB
-    guide must not abort every turn of every member chat in the folder, so
-    folder documents are admitted in order while both bounds still hold and
-    the tail is dropped. The character arithmetic mirrors the renderer part for
-    part (same header, same scrub, same neutralization) so the fitted envelope
-    renders without ever reaching its refusal.
+    ``_MAX_DOCUMENTS``, which is right for a member's own essentials. Folder
+    steering is operator-pointed guidance the non-member path truncates, so
+    documents are admitted in order while both bounds hold and the tail is
+    dropped. The cost arithmetic mirrors the renderer part for part, so the
+    fitted envelope never reaches its refusal.
 
-    A dropped tail is never silent: whenever this fit leaves documents out, or
-    the collection itself hit a ceiling, ONE extra essentials document
-    (``FOLDER_STEERING_OMISSION_SOURCE``) states the counts, and its own cost is
-    reserved inside both bounds -- fitted documents are given back from the
-    tail until the notice fits -- so the notice is the last thing to go, not
-    the first, and past the count room it may take one extra slot (that ceiling
-    bounds the member's OWN declared essentials, not the envelope). A member turn
-    whose essentials leave no room even for a minimal notice
-    gets no folder steering at all, logged at warning.
+    A dropped tail is never silent: ONE extra document
+    (``FOLDER_STEERING_OMISSION_SOURCE``) states the counts, and fitted
+    documents are given back from the tail until it fits, so the notice is the
+    last thing to go. If even a minimal notice does not fit, the turn gets no
+    folder steering, logged at warning.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
 
@@ -128,13 +121,10 @@ def _fit_folder_steering_into_envelope(
                 f"The standards above are incomplete.]"
             )
         notice = (ctx.FOLDER_STEERING_OMISSION_SOURCE, "\n".join(lines))
-        # The document-count ceiling bounds the member's OWN declared essentials
-        # (member_essential_context enforces it on the declaration); the
-        # renderer enforces only the character bound. So the notice may take
-        # ONE slot past ``count_room`` -- otherwise a member whose own essentials
-        # fill every slot would lose folder steering with no trace in the
-        # envelope that replaces every prior snapshot. Folder DOCUMENTS still
-        # respect the count room above; only the notice is exempt.
+        # The count ceiling bounds the member's OWN declared essentials; the
+        # renderer enforces only characters. So the notice alone may take ONE
+        # slot past ``count_room``, or a full member would lose folder steering
+        # without a trace.
         if used + _essential_part_cost(*notice) <= ctx.ESSENTIAL_MAX_CHARS:
             logger.debug(
                 "folder steering truncated for member %s: %d of %d documents fit the envelope",
@@ -274,50 +264,32 @@ _MEMBER_BRIEFING_ITEM = _prompt("conductor.briefing_item")
 _MEMBER_BRIEFING_ITEM_UNAVAILABLE = _prompt("conductor.briefing_item_unavailable")
 
 # Item 6 for a crewmate whose sessions mount no built-in that writes files
-# (``member_mate_tools.binding_has_file_write``): every conductor template is built
-# that way on purpose ("no tool that can write a file",
-# ``agent_materialization/conductor_agents.py``). The upkeep instruction above is
-# one such a crewmate can follow only by writing the file some other way, past the
-# property its template exists to hold and on an approval prompt an unattended
-# cycle cannot answer, or not at all. So name the gap and keep the working memory
-# in the DM thread, as the platform variant does. The layer itself stays: a
-# briefing already on disk is still read. Nothing the member holds can change
-# that file any more, so it is the USER's note now, and the text says so: it can
-# be out of date, the thread wins where the two disagree, and a stale one is the
-# member's to report and the user's to edit or delete (the header names the
-# file). No ``kirocrew-mate`` tool writes the briefing (``update_self`` takes a
-# name, a description and a face), so there is no tool to name instead. The text
-# speaks of the TEMPLATE, not of what the session can reach: a harness that does
-# not enforce a spec's ``tools`` (claude, codex) still offers its own writers,
-# and the template's no-write charter holds there too.
+# (``member_mate_tools.binding_has_file_write``), as every conductor template does
+# on purpose (``agent_materialization/conductor_agents.py``). It names the gap and
+# keeps working memory in the DM thread. A briefing on disk is still read, but it
+# is now the USER's note: it may be out of date and the thread wins. A crewmate
+# with the ``kirocrew-mate`` tools writes through ``save_notes`` and never gets
+# this item. The text speaks of the TEMPLATE, since a harness that does not
+# enforce a spec's ``tools`` (claude, codex) still offers its own writers.
 _MEMBER_BRIEFING_ITEM_NO_FILE_TOOLS = _prompt("conductor.briefing_item_no_file_tools")
 
-# Item 7 — the crewmate's own Dashboard page. Appended to EVERY briefing variant,
-# unlike item 6: the tab is rendered by the gateway from the instance store and does
-# not depend on layer 4, so a platform whose briefing reads fail closed still has a
-# page and still has the two tools that fill it.
+# Item 7 — the crewmate's own Dashboard page, appended to EVERY briefing variant:
+# the gateway renders the tab from the instance store, independent of layer 4.
 #
-# The SUBAGENT name is a WIRE STRING: kiro-cli resolves an agent by reading
-# ``<agents dir>/<name>.json``, so a name that does not match the installed spec's
-# filename routes the member to an agent that does not resolve -- which fails the turn
-# rather than degrading the feature, on an unattended cycle where nobody is reading.
-#
-# It is spelled here rather than read from ``agent_files.DASHBOARD_MANAGER_AGENT_NAME``
-# because an owner in this package imports no Kiro Crew module at module scope
-# (``TestPlacement``), and this text is a module-level constant. So the duplication is
-# guarded by a TEST instead of by construction:
+# The SUBAGENT name is a WIRE STRING (kiro-cli reads ``<agents dir>/<name>.json``);
+# a mismatch fails the turn. It is spelled out rather than read from
+# ``agent_files.DASHBOARD_MANAGER_AGENT_NAME`` because owners here import no Kiro
+# Crew module at module scope (``TestPlacement``); a test guards it:
 # ``test_dashboard_manager_agent.py::test_the_base_prompt_names_the_agent_the_installer_writes``
-# reads the name off the installed spec and asserts it appears in this prompt.
 #
-# THE CREWMATE drives its own page, which is a correction. An earlier wording sent
-# every page request to the `kirocrew-dashboard-manager` subagent and told the
-# crewmate it had no tools for it -- while ``_MEMBER_PANEL_GRANTS`` grants it all six
-# verbs. The crewmate is also the only one of the two whose identity the panel's
-# tools can resolve: they go through ``mcp_core.require_strict_session_key``, which
-# resolves the CALLING session and never a parent through a ``/proc`` walk, because
-# that walk is how a subagent would reach a page that is not its own. A member DM
-# session has that identity; a subagent is a weaker place to stand. So the subagent is
-# extra capacity for a long page job, and the crewmate's own hands are the path.
+# THE CREWMATE drives its own page: ``_MEMBER_PANEL_GRANTS`` grants it every tool
+# this item names. The crewmate is also the only one of the two whose identity the
+# panel's tools can resolve: they go through ``mcp_core.require_strict_session_key``,
+# which resolves the CALLING session and never a parent through a ``/proc`` walk,
+# because that walk is how a subagent would reach a page that is not its own. A
+# member DM session has that identity; a subagent is a weaker place to stand. So the
+# subagent is extra capacity for a long page job, and the crewmate's own hands are
+# the path.
 _MEMBER_DASHBOARD_ITEM = _prompt("conductor.dashboard_item")
 
 
@@ -330,6 +302,11 @@ _MEMBER_HOW_YOU_WORK = _MEMBER_HOW_YOU_WORK_COMMON + _MEMBER_BRIEFING_ITEM + _ME
 #: The identity sentence about the crewmate's own record when its sessions load
 #: the ``kirocrew-mate`` tools (:func:`member_mate_tools.binding_has_mate_tools`).
 _MATE_TOOLS_IDENTITY = _prompt("conductor.mate_tools_identity")
+
+#: The same sentence while the crewmate's Dynamic capabilities preview is off
+#: (``kiro_crew.crewmate_dynamic_capabilities``): no find_capabilities or
+#: request_capabilities, and a worker's gap goes to the user as one line.
+_MATE_TOOLS_IDENTITY_MANUAL = _prompt("conductor.mate_tools_identity_manual")
 
 #: The same sentence for a crewmate whose sessions do not load those tools: the
 #: user makes each of these changes on the crewmate's own pages.
@@ -373,12 +350,12 @@ def build_member_section(
        (:data:`_MEMBER_HOW_YOU_WORK`), identical for every member except
        item 6, which follows whether layer 4 is injected and whether the
        member's spec can write its briefing.
-    3. ``[PERMANENT RULES]`` — user-owned. Read from the keystone-gated
-       ``member-rules/`` subtree, so the member's own file tools cannot rewrite
-       it; omitted entirely when the user has not written rules.
+    3. ``[PERMANENT RULES]`` — user-owned. Read from the gateway-only
+       ``member-records/member-rules/`` directory, so nothing the member runs can
+       rewrite it; omitted entirely when the user has not written rules.
     3b. ``[YOUR GOALS]`` — the goals (user-owned, numbered) and the key results'
        text, target and linked goal numbers (no readings, so a reading never
-       changes the section), from ``trust/member-goals/``
+       changes the section), from ``member-records/member-goals/``
        (:mod:`kiro_crew.member_goals`), bounded; omitted when there is none.
     4. ``[CURRENT ASSIGNMENT]`` — member-owned working memory, read
        (capped) from the member's own agent-writable briefing file. A member
@@ -454,21 +431,13 @@ def build_member_section(
     from kiro_crew.member_mate_tools import binding_has_file_write, binding_has_mate_tools
 
     has_mate_tools = binding_has_mate_tools(crew)
-    # Layer-4 availability decides both the briefing read and the wording
-    # around it (item 6 above, the placeholder below): where the pinned
-    # briefing read fails closed (Windows — member_briefing_supported),
-    # instructing upkeep of a never-injected file is a futile loop, so the
-    # section says the layer is unavailable instead. A turn with the desk
-    # withheld gets neither the layer nor a placeholder, so its briefing
-    # is not read at all.
+    # Layer-4 availability decides the briefing read and the wording of item 6 and
+    # the placeholder: where the briefing read fails closed (Windows,
+    # member_briefing_supported) the section says the layer is unavailable. A turn
+    # with the desk withheld reads no briefing at all.
     briefing_ok = include_briefing and not desk_withheld and ctx.member_briefing_supported()
-    # Whether the member can keep that layer itself. Asked only where the layer is
-    # injected, since it picks the wording of item 6 and the placeholder: a member
-    # whose spec mounts no file writer (a conductor template) still has its briefing
-    # read, and is told it cannot write it rather than to write it with tools it
-    # does not have, and that the user's copy may be out of date. A crewmate with
-    # the ``kirocrew-mate`` tools keeps it through ``save_notes`` whatever its
-    # template mounts, which is how a Crewmate 2.0 conductor keeps its own notes.
+    # Whether the member can keep that layer itself: a file writer in its spec, or
+    # the ``kirocrew-mate`` tools (``save_notes``) whatever its template mounts.
     briefing_writable = briefing_ok and (has_mate_tools or binding_has_file_write(crew))
     briefing = ""
     briefing_path = ""
@@ -508,10 +477,24 @@ def build_member_section(
         # (Tool Search defers their schemas): what is its to change at once and
         # what is the user's to grant through a card. Only when its sessions
         # actually load them: a spec without the server gets the pages instead.
-        identity.append(
-            (_MATE_TOOLS_IDENTITY if has_mate_tools else _NO_MATE_TOOLS_IDENTITY)
-            + _prompt("conductor.tracking")
+        from kiro_crew import crewmate_dynamic_capabilities
+
+        # This crewmate's own Dynamic capabilities preview, off by default.
+        manual = crewmate_dynamic_capabilities.restricted_for(member)
+        if not has_mate_tools:
+            mate_tools_identity = _NO_MATE_TOOLS_IDENTITY
+        elif manual:
+            mate_tools_identity = _MATE_TOOLS_IDENTITY_MANUAL
+        else:
+            mate_tools_identity = _MATE_TOOLS_IDENTITY
+        # The ledger tools are named only where this chat's spec mounts and grants
+        # them (``member_mate_tools.binding_has_ledger_tools``).
+        from kiro_crew.member_mate_tools import binding_has_ledger_tools
+
+        tracking = (
+            "conductor.tracking_ledger" if binding_has_ledger_tools(crew) else "conductor.tracking"
         )
+        identity.append(mate_tools_identity + _prompt(tracking))
 
     parts = ["\n".join(identity)]
     if not desk_withheld:
@@ -532,7 +515,18 @@ def build_member_section(
             + _MEMBER_DASHBOARD_ITEM
         )
         # Every crewmate-only concept and tool, named once in one compact block.
-        parts.append(_prompt("conductor.crew_log_section"))
+        # Its worker line names request_capabilities only while this crewmate's
+        # Dynamic capabilities preview is on
+        # (``kiro_crew.crewmate_dynamic_capabilities``).
+        from kiro_crew import crewmate_dynamic_capabilities
+
+        parts.append(
+            _prompt(
+                "conductor.crew_log_section_manual"
+                if crewmate_dynamic_capabilities.restricted_for(member)
+                else "conductor.crew_log_section"
+            )
+        )
     if rules:
         # The header names what it outranks. Without the protocol layer there
         # is no "working protocol above" to name, so that clause goes with it.
@@ -561,31 +555,24 @@ def build_member_section(
             + (briefing if briefing else _prompt("conductor.assignment_empty_read_only"))
         )
     elif desk_withheld:
-        # No layer 4 and no placeholder either, the scope notice below
-        # included: the placeholders tell a MEMBER AT ITS DESK why its own
-        # working memory is missing this turn and not to fill that gap from
-        # the briefing file or recall; a turn off the desk (an ordinary chat
-        # on the alias, a delegate) has no layer 4 to miss. Its memory scope
-        # is stated where every non-member session's is -- the [CONTEXT
-        # SCOPE] block for a narrowed spawn or a privacy mode, nowhere for
-        # the operator's standing toggle -- and this arm is ordered ahead of
-        # the scope arm so that a withheld memory group cannot re-mint a
-        # placeholder that names a layer the delegate never has.
+        # No layer 4 and no placeholder: placeholders speak to a member AT ITS
+        # DESK, and a turn off the desk has no layer 4 to miss. Its memory scope
+        # is stated as for any non-member session ([CONTEXT SCOPE]). Ordered
+        # before the scope arm so a withheld memory group cannot mint a
+        # placeholder naming a layer the delegate never has.
         pass
     elif not include_briefing:
         parts.append(_prompt("conductor.assignment_withheld"))
     else:
         parts.append(_prompt("conductor.assignment_unavailable"))
     if not desk_withheld:
-        # Which page is in force, which of its fields are the member's, and the one
-        # pointer line naming its upkeep skill. Rides with item 7: both describe the
-        # desk's own Dashboard tab, and with this section the pointer is re-injected
-        # after a compaction. The shapes and the mistake book stay behind
-        # `dashboard_fields`, the upkeep behind the skill; this block is paid for on
-        # every build.
+        # The page in force, the member's fields, and a pointer to its upkeep
+        # skill. Rides with item 7 so it is re-injected after a compaction; the
+        # detail stays behind `dashboard_fields` and the skill, since this block
+        # is paid for on every build.
         from kiro_crew import dashboard_agentic
 
-        dashboard = dashboard_agentic.turn_block(slug)
+        dashboard = dashboard_agentic.turn_block(slug, member)
         if dashboard:
             parts.append("\n\n" + dashboard)
     parts.append("\n[END MEMBER IDENTITY]\n\n")
@@ -599,6 +586,7 @@ def build_v2_essentials(
     member: str,
     member_is_id: bool,
     project: str | None,
+    template_dir: str | None = None,
     workspace: str | None,
     blocks_reads: bool,
     context_groups: frozenset[str] | None,
@@ -627,6 +615,9 @@ def build_v2_essentials(
     the harness is not known to be kiro-cli, so the opt-out is not read and
     the snapshot keeps inheriting: a caller that omits it can never drop the
     global steering on a harness that has nothing delivering it instead.
+
+    ``template_dir`` is a directory whose ``.kiro/agents`` is searched for the
+    templates when ``project`` is ``None``; no project guide is read from it.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.member_essential_context import (
@@ -641,19 +632,13 @@ def build_v2_essentials(
     template = member_template or template
     if not owner:
         return ""
-    # Same config intersection as build_session_context: this builder is a
-    # second context entry point, so a group the operator disabled must be
-    # withheld here too rather than only on the main path.
+    # Same config intersection as build_session_context, so a group the operator
+    # disabled is withheld here too.
     #
-    # EXCEPT when profile_overrides is supplied. That argument makes this a
-    # VALIDATOR (_validate_private_profile_update), not a context build: the
-    # candidate profile is appended only under the memory-group gate below,
-    # and render_essentials' combined-budget refusal is what rejects a
-    # profile that fits per-file but overflows the combined cap. Scoping the
-    # groups here would drop that gate whenever injection is disabled, so an
-    # oversized profile would save and then break every later member build.
-    # A validation pass must see the complete candidate set regardless of
-    # what the operator currently injects.
+    # EXCEPT with profile_overrides, which makes this a VALIDATOR
+    # (_validate_private_profile_update): it must see the full candidate set, or
+    # a profile over the combined cap would save while injection is off and then
+    # break every later member build.
     if profile_overrides is None:
         context_groups = ctx._config_scoped_groups(context_groups)
     reads = not blocks_reads and _inclusion._group_included(
@@ -687,6 +672,7 @@ def build_v2_essentials(
         include_project=include_project,
         inherits_default_resources=inherits_default_resources,
         core_sources_out=core_sources,
+        template_dir=template_dir,
     )
     if execution_template and execution_template != template:
         sources = dict(documents)
@@ -699,6 +685,7 @@ def build_v2_essentials(
             include_project=include_project,
             inherits_default_resources=inherits_default_resources,
             core_sources_out=core_sources,
+            template_dir=template_dir,
         ):
             if source in sources and sources[source] != body:
                 raise MemberEssentialContextError(
@@ -706,31 +693,18 @@ def build_v2_essentials(
                 )
             sources[source] = body
         documents = list(sources.items())
-    # Folder-inherited steering rides INSIDE the essentials envelope for a
-    # member chat (the envelope IS its session-start context), through the
-    # same reader the non-member path uses. After the template/project
-    # documents so global and project steering keep precedence; before the
-    # memory files. None of these sources is declared host-native
-    # (kiro_launch_documents never sees the folder dirs), so the native
-    # envelope keeps their bodies. The envelope's bounds -- 64 documents AND
-    # ``ESSENTIAL_MAX_CHARS`` rendered -- are applied to folder steering as
-    # a BUDGET, not a fault: the member's own sources already occupy part
-    # of both, and an operator pointing a folder at a large standards tree
-    # must degrade the way the non-member path does (by dropping the tail)
-    # rather than abort every turn of every member chat in that folder
-    # until the folder shrinks. The character budget depends on the memory
-    # documents appended below, so the candidates are collected here (their
-    # position recorded) and fitted just before the envelope renders.
+    # Folder steering rides INSIDE the member's essentials envelope, after the
+    # template/project documents (which keep precedence) and before the memory
+    # files; the native envelope keeps their bodies (none is host-native). The
+    # envelope's bounds (64 documents, ``ESSENTIAL_MAX_CHARS``) are a BUDGET for
+    # it, not a fault: a large folder drops its tail rather than abort every
+    # member turn. Candidates are collected here and fitted just before render,
+    # once the memory documents are known.
     #
-    # The project and global ``.kiro/steering`` trees are skipped as already
-    # delivered only while the snapshot above actually delivered them: a
-    # kiro-cli workspace that opts out of the default resources gets them
-    # only as far as the template declares them, so a folder that declares
-    # one of those roots must carry the rest of its documents itself. A
-    # folder document whose canonical path the template already delivered
-    # is not collected again under the opt-out. Same verdict as the
-    # snapshot, read once above; the non-member path takes the same
-    # decision in _render_folder_steering_section.
+    # The ``.kiro/steering`` trees count as delivered only while the snapshot
+    # delivered them; under kiro-cli's default-resources opt-out, a folder
+    # carries the documents the template did not. Same decision as
+    # _render_folder_steering_section.
     guide_sources = frozenset(source for source, _ in documents) - core_sources
     folder_docs: SteeringCollection = ctx.SteeringCollection()
     folder_insert_at = len(documents)
@@ -778,7 +752,7 @@ def build_v2_essentials(
                 "current conversation already answers the question.",
             )
         )
-    # Guides first, folder steering into what is left, as before. Every guide
+    # Guides first, then folder steering into what is left. Every guide
     # sits before ``folder_insert_at`` and the notice is appended last, so the
     # insertion point moves back by exactly the number left out.
     documents, left_out = _fit_member_guides_into_envelope(
@@ -810,7 +784,7 @@ def build_v2_essentials(
     return envelope
 
 
-def operating_mode_block(agent_label: str) -> str:
+def operating_mode_block(agent_label: str, *, ledger: bool = False) -> str:
     """The ``[CREW MEMBER OPERATING MODE]`` block for a member's pinned DM session.
 
     The member is a CONTROLLER: its DM thread stays the identity/management loop
@@ -820,8 +794,39 @@ def operating_mode_block(agent_label: str) -> str:
     and the server authorizes member callers automatically
     (``dashboard/session_control_parts/caller_access.py``), bounded to sessions the member created
     itself -- so the instructions hold with zero configuration.
+
+    *ledger* is :func:`kiro_crew.member_mate_tools.binding_has_ledger_tools` for
+    the crewmate: only then is ``conductor.patrol`` appended, which teaches the
+    record-create-bind-seed dispatch for tracked work and the gated
+    ``watch="work-ledger"`` patrol with its renewal. Without it the worker report
+    is the patrol and no loop is armed.
     """
-    return _fill("conductor.operating_mode", agent_label=agent_label)
+    # The label is the crewmate's config key, a user-written payload: scrub it the
+    # way build_member_section scrubs it for [MEMBER IDENTITY], so both blocks
+    # name the crewmate identically and neither carries a forged marker.
+    block = _fill(
+        "conductor.operating_mode", agent_label=_markers._scrub_member_payload(agent_label)
+    )
+    if ledger:
+        block += ledger_rules_block("conductor.patrol")
+    return block
+
+
+def ledger_rules_block(key: str) -> str:
+    """Crewmate piece *key* with each placeholder filled by the ledger-conductor rule
+    of that name (``agent_parts/spec_prompts.py`` ``_LEDGER_CONDUCTOR_RULES``).
+
+    Those rules are the one copy the root conductor's charter is assembled from as
+    well, so a rule both conductors carry cannot drift between them. A placeholder
+    that names no rule raises ``KeyError``, so a renamed rule fails at the first
+    render rather than reaching a crewmate as a hole. The charter's own outer
+    spacing is stripped; the piece lays its rules out itself.
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew import crewmate_prompts
+
+    rules = agent_mod._LEDGER_CONDUCTOR_RULES
+    return _fill(key, **{name: rules[name].strip() for name in crewmate_prompts.placeholders(key)})
 
 
 def resolve_turn_owner(

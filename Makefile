@@ -78,8 +78,11 @@ frontend:
 backend:
 	bash ensure-python.sh || true
 	# Same `|| true` reasoning as the frontend target: an absent marker file must
-	# fall back to $(PY), not abort the recipe.
-	PY="$$(cat "$${KIROCREW_HOME:-$$HOME/.kiro/crew}/python-bin" 2>/dev/null || true)"; [ -n "$$PY" ] || PY="$(PY)"; \
+	# fall back to $(PY), not abort the recipe. A non-empty `PY=` on the make
+	# command line is the caller's explicit choice and skips the marker, which
+	# would otherwise keep winning and make `make backend PY=python3.12` a silent
+	# no-op -- the same precedence make.ps1 gives `-Py`.
+	PY="$(if $(and $(filter command line,$(origin PY)),$(strip $(PY))),,$$(cat "$${KIROCREW_HOME:-$$HOME/.kiro/crew}/python-bin" 2>/dev/null || true))"; [ -n "$$PY" ] || PY="$(PY)"; \
 	  if [ -x $(VENV)/bin/python ] && ! $(VENV)/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)'; then \
 	    echo "  → recreating $(VENV) (existing interpreter < 3.12)"; rm -rf $(VENV); fi; \
 	  if ! "$$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3,12) else 1)' 2>/dev/null; then \

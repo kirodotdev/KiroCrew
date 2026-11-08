@@ -1,6 +1,7 @@
 import * as React from 'react'
 import { useGuideTrustRootAttrs } from '../../guide/trustRoot'
 import * as ContextMenuPrimitive from '@radix-ui/react-context-menu'
+import { Slot } from '@radix-ui/react-slot'
 import { cn } from '../../lib/utils'
 import { useCloseOnFileDrag } from '../../hooks/useCloseOnFileDrag'
 import { useIsTouchDevice } from '../../hooks/useIsTouchDevice'
@@ -36,6 +37,51 @@ function ContextMenu({ onOpenChange, modal = true, ...rest }: ContextMenuProps) 
   return <ContextMenuPrimitive.Root open={open} onOpenChange={handleOpenChange} modal={modal} {...rest} />
 }
 const ContextMenuTrigger = ContextMenuPrimitive.Trigger
+
+const StableTriggerChild = React.createContext<React.ReactElement | null>(null)
+
+/**
+ * The trigger's child as seen by Radix: one element that never changes. The
+ * real element arrives through context, and `Slot` merges the trigger's props
+ * and ref onto it exactly as `ContextMenuTrigger asChild` would.
+ */
+const StableTriggerOutlet = React.forwardRef<HTMLElement, React.HTMLAttributes<HTMLElement>>(
+  function StableTriggerOutlet(props, ref) {
+    return <Slot ref={ref} {...props}>{React.useContext(StableTriggerChild)}</Slot>
+  },
+)
+const STABLE_TRIGGER_OUTLET = <StableTriggerOutlet />
+
+/**
+ * `<ContextMenu><ContextMenuTrigger asChild>{children}</ContextMenuTrigger>{content}</ContextMenu>`
+ * for a trigger element that is rebuilt on every render of its owner, such as
+ * a sidebar row. Radix's Root, Menu and Popper layers re-render whenever their
+ * children prop changes, and the trigger child is a new element each time, so
+ * every row render also re-rendered about a dozen menu components and
+ * re-attached the Popper anchor. Here the menu tree is built once per change of
+ * `content`; a new `children` re-renders only the outlet that
+ * hands it to the trigger. The DOM, the handlers on the element and the
+ * keyboard, right-click and focus behaviour are the same as the plain form.
+ * Pass a referentially stable `content` (memoized by the caller): a new
+ * element on every render rebuilds the tree each time and saves nothing.
+ *
+ * `disabled` is the trigger's own `disabled`. A draggable row passes its drag
+ * state, so a touch hold that lifted the row cannot also open the menu 700 ms in.
+ */
+function ContextMenuStableTrigger({ children, content, disabled = false }: {
+  children: React.ReactElement
+  content: React.ReactNode
+  disabled?: boolean
+}) {
+  const menu = React.useMemo(() => (
+    <ContextMenu>
+      <ContextMenuTrigger asChild disabled={disabled}>{STABLE_TRIGGER_OUTLET}</ContextMenuTrigger>
+      {content}
+    </ContextMenu>
+  ), [content, disabled])
+  return <StableTriggerChild.Provider value={children}>{menu}</StableTriggerChild.Provider>
+}
+
 const ContextMenuGroup = ContextMenuPrimitive.Group
 // Portals into the owning pane's overlay root, so content opened in the local
 // dashboard hides with it behind a remote Crew (see components/overlayRoot).
@@ -261,6 +307,7 @@ ContextMenuSubContent.displayName = ContextMenuPrimitive.SubContent.displayName
 export {
   ContextMenu,
   ContextMenuTrigger,
+  ContextMenuStableTrigger,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuLabel,

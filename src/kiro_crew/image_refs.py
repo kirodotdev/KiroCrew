@@ -32,7 +32,7 @@ exactly such a path: its ``__init__`` pulls ``driver`` -> ``acp.types`` ->
 ``acp/__init__`` -> ``acp.client`` -> ``prompt_blocks`` -> back into this module
 half-built, raising ``ImportError`` on ``_PATH_RE``. So the two scanners that
 live under ``kiro_crew.messaging`` are imported where they are USED, and
-``test_replay_image_refs`` pins a cold ``import kiro_crew.image_refs`` in a
+``test_image_refs_replay_strip`` pins a cold ``import kiro_crew.image_refs`` in a
 subprocess so the rule cannot regress unnoticed. ``kiro_crew.widget_parse``
 reaches no ACP module and stays at module scope.
 """
@@ -44,7 +44,9 @@ import logging
 import os
 import re
 import tempfile
+import unicodedata
 
+from kiro_crew.terminal_safe import _is_invisible
 from kiro_crew.widget_parse import mask_inline_code
 
 logger = logging.getLogger(__name__)
@@ -89,9 +91,6 @@ _SUFFIX_GROUP = r"(?:png|jpg|jpeg|gif|webp|bmp)"
 # than this stays text.
 _MAX_PATH_SCAN_CHARS = 512
 
-#: Space and tab only -- NEVER `\s`. See note 2 above.
-_PATH_CHARS = r"[\w./@~ \t()\-]"
-
 # Scan through symbols so unsupported path characters cannot hide later separators.
 # Punctuation ends a token: ASCII, Latin-1, General and Supplemental Punctuation,
 # the arrow blocks, and the CJK/fullwidth punctuation sub-ranges. Whitespace and
@@ -108,6 +107,28 @@ _TOKEN_BREAK = (
     r"\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65"
 )
 _RUN_CHARS = rf"[^{_TOKEN_BREAK}]"
+
+
+def _path_marks() -> frozenset[str]:
+    """Every visible combining mark (category M) that does not end a token.
+
+    ``\\w`` matches no mark and ``re`` has no ``\\p{M}``. Visible marks exist only in
+    planes 0 and 1; plane 14 holds invisible variation selectors alone.
+    """
+    breaks = re.compile(f"[{_TOKEN_BREAK}]")
+    return frozenset(
+        ch
+        for ch in map(chr, range(0x20000))
+        if unicodedata.category(ch)[0] == "M" and not breaks.match(ch) and not _is_invisible(ch)
+    )
+
+
+#: The combining marks both path bodies hold; upload names keep exactly these.
+PATH_MARKS = _path_marks()
+_MARKS = "".join(sorted(PATH_MARKS))
+
+#: Space and tab only -- NEVER `\s`. See note 2 above.
+_PATH_CHARS = rf"[\w{_MARKS}./@~ \t()\-]"
 
 #: A path begins at the text start or after a token break, never mid-token:
 #: rules out "https://host/...", a "/" already inside a longer path, and the
@@ -159,7 +180,7 @@ _POSIX_PATH_RE = re.compile(
 # such a temp dir stayed prose -- then its temp file was swept at end of turn,
 # leaving a dead reference. The POSIX class has always held ``~``; this keeps the
 # two grammars symmetric on the one character a real Windows temp path needs.
-_WINDOWS_PATH_CHARS = r"[\w\\/.@~ \t()\-]"
+_WINDOWS_PATH_CHARS = rf"[\w{_MARKS}\\/.@~ \t()\-]"
 # A drive colon glued into a token continues it: without this the colon ends
 # the run and a second absolute path glued on by prose hides from both guards,
 # so the first picture is attached alone where the POSIX grammar attaches none.
@@ -372,18 +393,128 @@ def _mask_code_spans(text: str, iter_fence_spans) -> str:
     return "".join(_MASKED if m != o and m == " " else m for m, o in zip(masked, text, strict=True))
 
 
+#: One line of text, newline excluded.
+_LINE_RE = re.compile(r"[^\n]+")
+
+
+def mask_literal_spans(text: str, *, first_line_indent_is_code: bool = True) -> str:
+    """*text* with every span written as literal text masked, length preserved.
+
+    A literal span is one a reader takes as text ABOUT a path rather than a
+    reference to a picture: a closed fenced block and inline code
+    (:func:`_mask_code_spans`), a four-column-indented line (indented code), and
+    escaped ``\\![x](...)`` markup. The last two are judged by the same
+    predicate :func:`~kiro_crew.messaging.outbound_files.iter_local_refs` uses
+    for a markdown marker. Every masked character becomes :data:`_MASKED`,
+    which no path class holds, and newlines are kept, so offsets from a scan of
+    the result index straight into *text*.
+
+    Both :func:`~kiro_crew.acp.prompt_blocks.build_prompt_blocks` and
+    :func:`strip_image_refs` scan ``_PATH_RE`` over this view, so literal text
+    the scrubber keeps in a history row is text the builder attaches nothing
+    from when that row is replayed. Reads no files.
+
+    ``first_line_indent_is_code=False`` reads an indent on the first line as
+    prose, for an indented line and an image marker alike. The history scrubber
+    needs that: replay puts a role label in front of a row's first line, so its
+    indent is gone by the time the builder reads it, and a path the scrubber
+    kept there would be attached again.
+
+    A fence that never closes is NOT masked. A channel appends its attachment
+    paths as bare lines after the user's text (``append_attachment_context``),
+    so a dangling opener the user typed would otherwise turn the real
+    attachments that follow it into code. Reading it as prose on both sides
+    keeps the agreement above. The channel also closes such a fence before the
+    paths (:func:`~kiro_crew.messaging.split.close_open_fence`), so a delimiter
+    line in an attached file's body cannot close it after them.
+    """
+    # Deferred: see this module's IMPORT RULE.
+    from kiro_crew.messaging.outbound_files import (
+        _MarkerReader,
+        is_code_indent,
+        iter_image_destinations,
+    )
+    from kiro_crew.messaging.split import iter_fence_spans
+
+    fenced = list(iter_fence_spans(text))
+    if fenced and fenced[-1][1] == len(text):
+        # A fence that closes on the last line also ends at len(text). Probe
+        # with one more line: a closed fence still ends where it did (plus the
+        # newline its closer now carries), an open one runs on into the probe.
+        probe = list(iter_fence_spans(text + "\n" + _MASKED))
+        if probe and probe[-1][1] == len(text) + 2:
+            fenced.pop()
+    masked = _mask_code_spans(text, lambda _text: fenced)
+    spans: list[tuple[int, int]] = [
+        m.span()
+        for m in _LINE_RE.finditer(text)
+        if (first_line_indent_is_code or m.start() > 0)
+        and is_code_indent(text[m.start() : m.start() + 4])
+    ]
+    if "![" in text:
+        reader = _MarkerReader(text, fenced)
+        for match, dest, consumed in iter_image_destinations(text):
+            if dest and reader.literal(
+                match.start, first_line_indent_is_code=first_line_indent_is_code
+            ):
+                spans.append((match.start, match.end + consumed))
+    if not spans:
+        return masked
+    chars = list(masked)
+    for start, end in spans:
+        for i in range(start, end):
+            if chars[i] != "\n":
+                chars[i] = _MASKED
+    return "".join(chars)
+
+
+def mask_user_literal_text(message: str) -> str:
+    """*message* with literal text masked in each user segment, judged alone.
+
+    Every :data:`~kiro_crew.prompt_segments.SOURCE_USER` segment goes through
+    :func:`mask_literal_spans` on its own, so no fence
+    pairs across a segment boundary: injected text that ends inside a fence it
+    never closes (a cancelled turn's partial answer, a Slack thread root) cannot
+    turn the user's picture into code. Injected segments are kept as written;
+    nothing in them is upgraded anyway. A plain string is one user segment and
+    is judged whole. Length is preserved, so offsets index straight into
+    *message*.
+
+    The one view both :func:`~kiro_crew.acp.prompt_blocks.build_prompt_blocks`
+    and the unsupported-image recovery scan, so the two cannot disagree about
+    which path is a reference. ``prompt_segments`` is imported here, where it
+    is used, per this module's import rule.
+    """
+    from kiro_crew.prompt_segments import SOURCE_USER, segments_of
+
+    pieces: list[str] = []
+    pos = 0
+    for source, segment in segments_of(message):
+        if source == SOURCE_USER:
+            # A segment that starts mid-line has lost that line's indent to the
+            # text in front of it, so its first line reads as prose.
+            starts_line = pos == 0 or message[pos - 1] == "\n"
+            segment = mask_literal_spans(segment, first_line_indent_is_code=starts_line)
+        pieces.append(segment)
+        pos += len(segment)
+    return "".join(pieces)
+
+
 def _bare_path_spans(text: str) -> list[tuple[int, int]]:
     """Spans of *text* holding a standalone local image path, in order."""
     # Deferred: see this module's IMPORT RULE. kiro_crew.messaging.__init__
     # reaches kiro_crew.acp.types, and prompt_blocks imports this module at its
     # own module scope, so importing it above would close that cycle.
     from kiro_crew.messaging.outbound_files import is_remote_destination
-    from kiro_crew.messaging.split import iter_fence_spans
 
     try:
-        masked = _mask_code_spans(text, iter_fence_spans)
+        # A replayed row is framed with a role label in front of its first line
+        # (``replay_text``: ``f"{role}: {content}"``), which takes that line's
+        # indent away, so the builder reads it as prose. Only the first line
+        # loses its indent; every later line keeps it.
+        masked = mask_literal_spans(text, first_line_indent_is_code=False)
     except Exception:  # pragma: no cover - defensive: a scan must never break a turn
-        logger.debug("image refs: code-span mask failed", exc_info=True)
+        logger.debug("image refs: literal-span mask failed", exc_info=True)
         return []
     spans: list[tuple[int, int]] = []
     line_starts: list[int] | None = None
@@ -459,20 +590,22 @@ def strip_image_refs(text: str) -> str:
 
     The bare-path pass is ``_PATH_RE`` -- the same pattern the builder reads, so
     the two cannot drift into a path this function leaves behind for that one to
-    pick up -- narrowed by conditions the builder does not need, because its
-    rewrite happens only after a file was actually read while a substitution has
-    no such condition:
+    pick up -- read over the same view and narrowed by one condition the builder
+    does not need, because its rewrite happens only after a file was actually
+    read while a substitution has no such condition:
 
-    * code is masked (:func:`_mask_code_spans`), so a fenced or inline-code
-      path is documentation and stays readable;
+    * literal text is masked (:func:`mask_literal_spans`), so a fenced,
+      inline-code, 4-space-indented or escaped ``\\![x](...)`` path is
+      documentation and stays readable -- the builder scans the same view, so
+      it attaches none of these either;
     * the path must stand alone (:data:`_STANDALONE_LEAD_RE`), so a path inside
       a URL query is left as part of its URL.
 
-    Those two are corruption when rewritten, which is strictly worse than the
-    residue of not rewriting them: a URL-embedded path naming a file that still
-    exists can still be inlined out of a replayed row, exactly as it would be
-    out of the current turn's text without this function. Narrowing here does
-    not change that behaviour in either direction.
+    Rewriting either is corruption, which is strictly worse than the residue of
+    not rewriting it: a URL-embedded path naming a file that still exists can
+    still be inlined out of a replayed row, exactly as it would be out of the
+    current turn's text without this function. Narrowing here does not change
+    that behaviour in either direction.
 
     One more shape is read conservatively, because the grammar cannot settle it
     and the scrubber has no file to ask. A span holding a space or tab may be a
@@ -495,23 +628,17 @@ def strip_image_refs(text: str) -> str:
     BOTH grammars and only the predicate can tell a genuine URL from a stored
     UNC attachment on a roaming profile's share.
 
-    Two residues remain, both inherited. ``_PATH_RE`` is platform-gated, so a bare
+    One residue remains, inherited. ``_PATH_RE`` is platform-gated, so a bare
     Windows path in a transcript transferred to a POSIX host is not matched --
     it is not inlined there either, and the markdown shape is matched on both
     hosts -- and on either host the builder reads the same gated grammar, so a
     shape this pass leaves is one the builder finds only when the file is still
-    there. And escaped ``\\![x](...)`` markup and 4-space-indented code are not
-    treated as code here, so a genuine absolute path inside one is replaced by
-    the marker; the builder rewrites those same spans to ``[image: <name>]``
-    whenever the file is readable, so this is that established rewrite extended
-    to the unreadable case, on a per-build copy, with the on-disk row untouched.
+    there.
 
     NOT for a caller with its own image handling. ``chat_title._title_text``
     keeps an ESCAPED or code-quoted ``![x](...)`` readable in a title prompt
-    (``test_prompt_preserves_escaped_and_code_quoted_markdown_images``). A
-    code-quoted one survives both passes here, but the bare-path pass replaces
-    the destination inside an escaped one, deliberately, so that path strips
-    image references its own way and does not call this.
+    (``test_prompt_preserves_escaped_and_code_quoted_markdown_images``) and
+    strips image references its own way, so it does not call this.
 
     Reads no files and mutates nothing: it returns a new string. Every rule
     above is lexical, so a history build makes no filesystem call at all. That

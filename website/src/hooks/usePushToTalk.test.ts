@@ -862,3 +862,150 @@ describe('disabled key (issue #13078)', () => {
     expect(voice.start).toHaveBeenCalledTimes(2)
   })
 })
+
+describe('disabling the hook never strands a running capture', () => {
+  beforeEach(() => savePttConfig(MAC_ALT_RIGHT))
+
+  // A host disables the key while something covers the chat. A latch that was
+  // already running when that happened must still be stoppable with the key:
+  // the hook's blur/visibility guards skip an idle phase and the cap timer only
+  // arms for a hold, so the key is the only thing that can end it.
+  it('a press still stops a latch that was running when disabled turned on', () => {
+    const voice = makeVoice()
+    const { rerender } = renderHook(
+      ({ disabled }) => usePushToTalk(voice, { disabled }),
+      { initialProps: { disabled: false } },
+    )
+    down('AltRight', { altKey: true }); act(() => { vi.advanceTimersByTime(200) }); up('AltRight')
+    expect(voice.recording).toBe(true)
+
+    rerender({ disabled: true })
+    down('AltRight', { altKey: true })
+    expect(voice.calls).toEqual(['start', 'stop'])
+    expect(voice.recording).toBe(false)
+
+    // Stopped, still disabled: the next press must not open a new capture.
+    up('AltRight')
+    down('AltRight', { altKey: true })
+    act(() => { vi.advanceTimersByTime(500) })
+    up('AltRight')
+    expect(voice.start).toHaveBeenCalledTimes(1)
+    expect(voice.calls).toEqual(['start', 'stop'])
+  })
+
+  it('a press while disabled with nothing capturing does not start', () => {
+    const voice = makeVoice()
+    renderHook(() => usePushToTalk(voice, { disabled: true }))
+    down('AltRight', { altKey: true })
+    act(() => { vi.advanceTimersByTime(500) })
+    up('AltRight')
+    expect(voice.start).not.toHaveBeenCalled()
+    expect(voice.calls).toEqual([])
+  })
+
+  it('an unrelated key while disabled does not stop a running latch', () => {
+    const voice = makeVoice()
+    const { rerender } = renderHook(
+      ({ disabled }) => usePushToTalk(voice, { disabled }),
+      { initialProps: { disabled: false } },
+    )
+    down('AltRight', { altKey: true }); act(() => { vi.advanceTimersByTime(200) }); up('AltRight')
+    rerender({ disabled: true })
+    down('KeyA')
+    expect(voice.calls).toEqual(['start'])
+    expect(voice.recording).toBe(true)
+  })
+
+  // A hold in progress when disabled flips is committed at the flip, without
+  // waiting for a keyup that may never come, and the later keystrokes that
+  // used to reconcile it find nothing left to end.
+  it('a held press commits as soon as disabled turns on', () => {
+    const voice = makeVoice()
+    const { rerender } = renderHook(
+      ({ disabled }) => usePushToTalk(voice, { disabled }),
+      { initialProps: { disabled: false } },
+    )
+    down('AltRight', { altKey: true })
+    act(() => { vi.advanceTimersByTime(500) })
+    rerender({ disabled: true })
+    expect(voice.calls).toEqual(['start', 'stop'])
+    // Committed, not finished: the person did not choose to send.
+    expect(voice.stop).toHaveBeenCalledWith(undefined)
+    down('KeyA')
+    up('AltRight')
+    expect(voice.calls).toEqual(['start', 'stop'])
+  })
+
+  it('a press still arming is discarded when disabled turns on', () => {
+    const voice = makeVoice()
+    const { rerender } = renderHook(
+      ({ disabled }) => usePushToTalk(voice, { disabled }),
+      { initialProps: { disabled: false } },
+    )
+    down('AltRight', { altKey: true })
+    act(() => { vi.advanceTimersByTime(200) })
+    rerender({ disabled: true })
+    expect(voice.calls).toEqual(['start', 'cancel'])
+    // The release is not a tap any more, so it latches nothing.
+    up('AltRight')
+    expect(voice.calls).toEqual(['start', 'cancel'])
+    expect(voice.recording).toBe(false)
+  })
+})
+
+describe('the binding follows its owner across composers', () => {
+  beforeEach(() => savePttConfig(MAC_ALT_RIGHT))
+
+  // Two composers mounted at once, as in split view: the host enables the key
+  // on exactly one of them (the focused pane) and the rest stay disabled.
+  function twoComposers() {
+    const a = makeVoice()
+    const b = makeVoice()
+    const hookA = renderHook(({ owner }) => usePushToTalk(a, { disabled: !owner }), { initialProps: { owner: true } })
+    const hookB = renderHook(({ owner }) => usePushToTalk(b, { disabled: !owner }), { initialProps: { owner: false } })
+    const own = (who: 'a' | 'b' | null) => {
+      hookA.rerender({ owner: who === 'a' })
+      hookB.rerender({ owner: who === 'b' })
+    }
+    const hold = () => {
+      down('AltRight', { altKey: true })
+      act(() => { vi.advanceTimersByTime(500) })
+      up('AltRight')
+    }
+    return { a, b, own, hold }
+  }
+
+  it('only the owning composer records, and ownership moves with focus', () => {
+    const { a, b, own, hold } = twoComposers()
+
+    hold()
+    expect(a.calls).toEqual(['start', 'stop'])
+    expect(b.calls).toEqual([])
+
+    own('b')
+    hold()
+    expect(a.calls).toEqual(['start', 'stop'])
+    expect(b.calls).toEqual(['start', 'stop'])
+
+    own(null)
+    hold()
+    expect(a.start).toHaveBeenCalledTimes(1)
+    expect(b.start).toHaveBeenCalledTimes(1)
+  })
+
+  it('moving ownership mid-hold commits the old owner without arming the new one', () => {
+    const { a, b, own } = twoComposers()
+
+    down('AltRight', { altKey: true })
+    act(() => { vi.advanceTimersByTime(500) })
+    own('b')
+    expect(a.calls).toEqual(['start', 'stop'])
+    expect(a.recording).toBe(false)
+
+    // The key is still down: its auto-repeat and its release must not open a
+    // capture in the new owner.
+    down('AltRight', { altKey: true, repeat: true })
+    up('AltRight')
+    expect(b.calls).toEqual([])
+  })
+})

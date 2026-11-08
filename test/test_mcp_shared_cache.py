@@ -1,15 +1,8 @@
 """Tests for ``_resolve_tool_policy`` cache + warning suppression.
 
-Covers:
-- Successful resolution caches and short-circuits subsequent calls.
-- No-session-key path uses the SHORT (5s) cache and audits the no-key event.
-- 404 ``agent not resolved`` uses the SHORT cache and audits ``agent_not_resolved``.
-- Other HTTP errors and connection failures use the LONG (60s) cache.
-- Repeated long-cache failures only emit ``_MAX_WARNING_FAILURES`` warnings,
-  then a single suppression notice, then go silent.
-- Both cache windows are consulted independently (long-failure cache hit
-  while startup-race window is expired, and vice versa).
-- Cache hits emit the ``negative_cache_hit`` audit event without re-querying.
+No session key and a 404 use the SHORT (5s) cache; other failures use the LONG (60s)
+cache, warn ``_MAX_WARNING_FAILURES`` times, then go silent. The two windows are read
+independently.
 """
 
 from __future__ import annotations
@@ -31,6 +24,7 @@ def reset_module_state(monkeypatch):
     """Reset the module-level cache between tests."""
     mcp_shared._excluded_tools_by_session.clear()
     mcp_shared._last_failure_time = 0.0
+    mcp_shared._last_probe_time = 0.0
     mcp_shared._last_startup_race_time = 0.0
     mcp_shared._last_startup_race_key = ""
     mcp_shared._failure_count = 0
@@ -38,6 +32,7 @@ def reset_module_state(monkeypatch):
     yield
     mcp_shared._excluded_tools_by_session.clear()
     mcp_shared._last_failure_time = 0.0
+    mcp_shared._last_probe_time = 0.0
     mcp_shared._last_startup_race_time = 0.0
     mcp_shared._last_startup_race_key = ""
     mcp_shared._failure_count = 0
@@ -54,11 +49,13 @@ def fake_sel():
 
 # Helpers ──────────────────────────────────────────────────────────────
 
+
 def _make_http_response(payload: dict) -> MagicMock:
     body = MagicMock()
     body.read.return_value = b'{"exclude": ["bad-tool"]}'
     if payload is not None:
         import json
+
         body.read.return_value = json.dumps(payload).encode("utf-8")
     body.__enter__ = MagicMock(return_value=body)
     body.__exit__ = MagicMock(return_value=False)
@@ -89,6 +86,7 @@ def patch_session_setup(monkeypatch, tmp_path):
 # ─────────────────────────────────────────────────────────────────────
 # Successful resolution path.
 # ─────────────────────────────────────────────────────────────────────
+
 
 class TestSuccessCaching:
     @pytest.mark.parametrize("explicit_port", [None, "49876"])
@@ -166,18 +164,14 @@ class TestSuccessCaching:
     ):
         """Enforcing only the entries that parse would enforce a policy nobody wrote."""
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
-        urlopen = MagicMock(
-            return_value=_make_http_response({"exclude": ["foo", 42, None, "bar"]})
-        )
+        urlopen = MagicMock(return_value=_make_http_response({"exclude": ["foo", 42, None, "bar"]}))
         with patch.object(mcp_shared, "loopback_urlopen", urlopen):
             policy = mcp_shared._resolve_tool_policy()
         assert policy.excluded == set()
         assert policy.unresolved == "policy_unreadable"
         assert "managedToolPolicy.exclude" in policy.detail
 
-    def test_a_well_formed_exclude_resolves(
-        self, fake_sel, patch_session_setup, monkeypatch
-    ):
+    def test_a_well_formed_exclude_resolves(self, fake_sel, patch_session_setup, monkeypatch):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(return_value=_make_http_response({"exclude": ["foo", "bar"]}))
         with patch.object(mcp_shared, "loopback_urlopen", urlopen):
@@ -190,10 +184,9 @@ class TestSuccessCaching:
 # Startup-race short cache (no session key, 404).
 # ─────────────────────────────────────────────────────────────────────
 
+
 class TestShortCacheStartupRace:
-    def test_no_session_key_uses_short_cache(
-        self, fake_sel, patch_session_setup, monkeypatch
-    ):
+    def test_no_session_key_uses_short_cache(self, fake_sel, patch_session_setup, monkeypatch):
         monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
         # No session_pid file in cfg_dir → resolver can't find a key.
         # urlopen should never be called.
@@ -212,9 +205,7 @@ class TestShortCacheStartupRace:
         assert mcp_shared._last_startup_race_time > 0
         assert mcp_shared._last_failure_time == 0.0
 
-    def test_404_response_uses_short_cache(
-        self, fake_sel, patch_session_setup, monkeypatch
-    ):
+    def test_404_response_uses_short_cache(self, fake_sel, patch_session_setup, monkeypatch):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=_make_http_error(404))
         with patch.object(mcp_shared, "loopback_urlopen", urlopen):
@@ -227,9 +218,7 @@ class TestShortCacheStartupRace:
         assert mcp_shared._last_startup_race_time > 0
         assert mcp_shared._last_failure_time == 0.0
 
-    def test_short_cache_window_short_circuits(
-        self, fake_sel, patch_session_setup, monkeypatch
-    ):
+    def test_short_cache_window_short_circuits(self, fake_sel, patch_session_setup, monkeypatch):
         # Trip the short cache, then ensure the next call doesn't re-query.
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=_make_http_error(404))
@@ -251,9 +240,7 @@ class TestShortCacheStartupRace:
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
         assert "tool_policy.negative_cache_hit" in ops
 
-    def test_short_cache_expires_after_ttl(
-        self, fake_sel, patch_session_setup, monkeypatch
-    ):
+    def test_short_cache_expires_after_ttl(self, fake_sel, patch_session_setup, monkeypatch):
         # Simulate the short TTL expiry by advancing monotonic.
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=_make_http_error(404))
@@ -267,16 +254,19 @@ class TestShortCacheStartupRace:
             + mcp_shared._STARTUP_RACE_CACHE_TTL
             + 1,
         ):
-            urlopen.reset_mock()
+            # The gateway now answers, so only a real retry can return its policy.
+            urlopen = MagicMock(return_value=_make_http_response({"exclude": ["foo"]}))
             with patch.object(mcp_shared, "loopback_urlopen", urlopen):
-                mcp_shared._resolve_tool_policy()
+                policy = mcp_shared._resolve_tool_policy()
             # Cache window expired → resolver retried (urlopen called once).
             assert urlopen.call_count == 1
+            assert policy.excluded == {"foo"}
 
 
 # ─────────────────────────────────────────────────────────────────────
 # Long failure cache.
 # ─────────────────────────────────────────────────────────────────────
+
 
 class TestLongCacheFailures:
     def test_409_is_unreadable_and_is_not_negative_cached(
@@ -284,11 +274,8 @@ class TestLongCacheFailures:
     ):
         """A 409 means the gateway read a spec and could not determine its policy.
 
-        It must mark the policy unresolved so the call is refused, and must NOT
-        populate either negative cache: the windows exist to debounce 5s urlopen
-        timeouts and this answer is immediate, while both clocks are
-        process-global, so caching a single session's malformed spec there would
-        refuse tool calls for every sibling session in a pooled backend.
+        The call is refused but no negative cache is set: both clocks are process-global,
+        so caching one session's bad spec would refuse every sibling in a pooled backend.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         urlopen = MagicMock(side_effect=_make_http_error(409))
@@ -311,12 +298,8 @@ class TestLongCacheFailures:
     ):
         """A declined caller gets its own reason, out of the failure catch-all.
 
-        403 is ``member_session_unverified``: the gateway answered and would not
-        tell THIS caller. Folding it into the catch-all would make one reason mean
-        both "the gateway is down" and "the gateway is enforcing a boundary", and
-        a refusal derived from that would deny every private member session
-        permanently. Like the 409, it answers instantly and is specific to one
-        caller's identity, so neither process-global clock may record it.
+        403 is ``member_session_unverified``: an enforced boundary, not an outage. Like the
+        409 it is specific to one caller, so neither process-global clock records it.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         for status in (403, 400):
@@ -333,18 +316,35 @@ class TestLongCacheFailures:
         ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
         assert "tool_policy.forbidden" in ops
 
+    def test_403_from_a_closed_enterprise_gate_refuses_the_call(
+        self, fake_sel, patch_session_setup, monkeypatch
+    ):
+        """The enterprise gate's 403 is not a decision about this caller.
+
+        It refuses every route while closed, this read included, so the exclusion
+        list is unread: the call must be refused, not served as ``policy_forbidden``.
+        Not cached, so the first read after the gate reopens succeeds.
+        """
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
+        body = b'{"error": "locked", "code": "enterprise_gate_closed", "reason": "login_required"}'
+        urlopen = MagicMock(side_effect=_make_http_error(403, body))
+        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
+            policy = mcp_shared._resolve_tool_policy()
+        assert policy.excluded == set()
+        assert policy.unresolved == "gateway_locked"
+        assert policy.unresolved in mcp_shared._UNRESOLVED_REFUSES_CALL
+        assert mcp_shared._last_failure_time == 0.0
+        assert mcp_shared._last_startup_race_time == 0.0
+        ops = [c.kwargs.get("operation") for c in fake_sel.log_api_access.call_args_list]
+        assert "tool_policy.gateway_locked" in ops
+
     def test_409_member_identity_unavailable_is_identity_unattested(
         self, fake_sel, patch_session_setup, monkeypatch
     ):
         """The attestation gate's 409 is not the unreadable-spec 409.
 
-        ``internal_memory_scope`` answers 409 ``member_identity_unavailable`` when
-        the declared key reached the gateway without an attestation. No spec was
-        read, so reporting it as ``policy_unreadable`` sends the reader to the
-        agents directory for a token that never left this process. It stays in
-        the refusing set -- the withheld-deny argument is identical -- under its
-        own reason and audit event, and like the spec 409 it is never
-        negative-cached: immediate, and specific to this caller.
+        ``member_identity_unavailable`` means the key arrived without an attestation; no
+        spec was read. It still refuses, under its own reason, and is never negative-cached.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:chat-2")
         monkeypatch.delenv("KIROCREW_STUB_SESSION_TOKEN", raising=False)
@@ -442,12 +442,8 @@ class TestLongCacheFailures:
     ):
         """The 4xx test is the status CLASS, so an unfamiliar code cannot brick.
 
-        This is the property, not the specific codes: whatever the endpoint grows
-        next, a 4xx means it ANSWERED and decided something about this caller. If
-        the decision were driven by an enumerated list instead, a status the list
-        never learned would fall into the failure catch-all and be refused, which
-        would deny a whole class of callers over something that is not a failure.
-        401 and 422 are here precisely because no arm names them.
+        A 4xx means the endpoint ANSWERED; an enumerated list would refuse a new code as an
+        outage. 401 and 422 are used because no arm names them.
         """
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
         for status in (401, 422, 451):
@@ -537,18 +533,6 @@ class TestLongCacheFailures:
             assert mcp_shared._resolve_tool_policy().excluded == set()
         assert mcp_shared._last_failure_time > 0
 
-    def test_long_cache_short_circuits_repeated_calls(
-        self, fake_sel, patch_session_setup, monkeypatch
-    ):
-        monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
-        urlopen = MagicMock(side_effect=_make_http_error(500))
-        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
-            mcp_shared._resolve_tool_policy()
-        urlopen.reset_mock()
-        with patch.object(mcp_shared, "loopback_urlopen", urlopen):
-            mcp_shared._resolve_tool_policy()
-        assert urlopen.call_count == 0
-
 
 class TestFailureCause:
     """A ``resolution_failed`` read names the exception that caused it."""
@@ -573,7 +557,11 @@ class TestFailureCause:
         assert policy.detail == "ConnectionRefusedError"
         event = self._failed_event(fake_sel)
         assert event["error"] == "ConnectionRefusedError: gateway port closed"
-        assert event["resources"] == "error_class=ConnectionRefusedError"
+        # The port it dialled and the chain rung that chose it ride beside the
+        # class, so a foreign ``env`` port is visible in the audit row itself.
+        assert event["resources"] == (
+            "error_class=ConnectionRefusedError,port=5476,port_source=config"
+        )
 
     def test_message_is_redacted_and_capped(self, fake_sel, patch_session_setup, monkeypatch):
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
@@ -608,6 +596,7 @@ class TestFailureCause:
 # Warning suppression.
 # ─────────────────────────────────────────────────────────────────────
 
+
 class TestWarningSuppression:
     def _drive_failures(self, fake_sel, patch_session_setup, monkeypatch, n: int):
         """Trigger *n* sequential long-cache failures by busting the cache
@@ -621,15 +610,11 @@ class TestWarningSuppression:
             with patch.object(mcp_shared, "loopback_urlopen", urlopen):
                 mcp_shared._resolve_tool_policy()
 
-    def test_first_failures_emit_warnings(
-        self, caplog, fake_sel, patch_session_setup, monkeypatch
-    ):
+    def test_first_failures_emit_warnings(self, caplog, fake_sel, patch_session_setup, monkeypatch):
         caplog.set_level(logging.WARNING, logger="kiro_crew.mcp_shared")
         self._drive_failures(fake_sel, patch_session_setup, monkeypatch, n=2)
         warning_messages = [r.getMessage() for r in caplog.records]
-        warn_count = sum(
-            1 for m in warning_messages if "Tool policy resolution failed" in m
-        )
+        warn_count = sum(1 for m in warning_messages if "Tool policy resolution failed" in m)
         assert warn_count == 2
 
     def test_warning_after_threshold_is_suppressed_with_notice(
@@ -641,23 +626,15 @@ class TestWarningSuppression:
         self._drive_failures(fake_sel, patch_session_setup, monkeypatch, n=3)
         msgs = [r.getMessage() for r in caplog.records]
         full_warns = sum(1 for m in msgs if "Tool policy resolution failed" in m)
-        suppressed_notice = sum(
-            1 for m in msgs if "further warnings suppressed" in m
-        )
+        suppressed_notice = sum(1 for m in msgs if "further warnings suppressed" in m)
         assert full_warns == 2
         assert suppressed_notice == 1
 
-    def test_subsequent_failures_silent(
-        self, caplog, fake_sel, patch_session_setup, monkeypatch
-    ):
+    def test_subsequent_failures_silent(self, caplog, fake_sel, patch_session_setup, monkeypatch):
         caplog.set_level(logging.WARNING, logger="kiro_crew.mcp_shared")
         # 5 failures total — only 3 log lines (2 warnings + 1 suppression notice).
         self._drive_failures(fake_sel, patch_session_setup, monkeypatch, n=5)
-        msgs = [
-            r.getMessage()
-            for r in caplog.records
-            if r.name == "kiro_crew.mcp_shared"
-        ]
+        msgs = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.mcp_shared"]
         assert len(msgs) == 3
 
 
@@ -665,10 +642,9 @@ class TestWarningSuppression:
 # Cross-cache interaction.
 # ─────────────────────────────────────────────────────────────────────
 
+
 class TestCachesAreIndependent:
-    def test_short_cache_hit_alone_short_circuits(
-        self, fake_sel, patch_session_setup, monkeypatch
-    ):
+    def test_short_cache_hit_alone_short_circuits(self, fake_sel, patch_session_setup, monkeypatch):
         # Set the env var so the resolver would otherwise reach urlopen —
         # the cache short-circuit at the top is the ONLY thing preventing
         # the call, which is exactly what this test asserts.
@@ -683,9 +659,7 @@ class TestCachesAreIndependent:
             assert mcp_shared._resolve_tool_policy().excluded == set()
         assert urlopen.call_count == 0
 
-    def test_long_cache_hit_alone_short_circuits(
-        self, fake_sel, patch_session_setup, monkeypatch
-    ):
+    def test_long_cache_hit_alone_short_circuits(self, fake_sel, patch_session_setup, monkeypatch):
         # See ``test_short_cache_hit_alone_short_circuits`` rationale — set
         # the session key so urlopen would be reachable absent the cache.
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
@@ -696,20 +670,20 @@ class TestCachesAreIndependent:
             assert mcp_shared._resolve_tool_policy().excluded == set()
         assert urlopen.call_count == 0
 
-    def test_neither_cache_hit_does_query(
-        self, fake_sel, patch_session_setup, monkeypatch
-    ):
+    def test_neither_cache_hit_does_query(self, fake_sel, patch_session_setup, monkeypatch):
         # Both caches expired (or never set) → resolver MUST query.
         monkeypatch.setenv("KIROCREW_SESSION_KEY", "subagent:abc")
-        urlopen = MagicMock(return_value=_make_http_response({"exclude": []}))
+        urlopen = MagicMock(return_value=_make_http_response({"exclude": ["foo"]}))
         with patch.object(mcp_shared, "loopback_urlopen", urlopen):
-            mcp_shared._resolve_tool_policy()
+            policy = mcp_shared._resolve_tool_policy()
         assert urlopen.call_count == 1
+        assert policy.excluded == {"foo"}
 
 
 # ─────────────────────────────────────────────────────────────────────
 # The caller block's token reaches the read.
 # ─────────────────────────────────────────────────────────────────────
+
 
 class TestCallerTokenOnTheRead:
     """A pooled control-plane backend holds the per-session token in ONE place:

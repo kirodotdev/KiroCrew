@@ -156,16 +156,46 @@ class WaveDigestCoordinator(ManagerComponent):
         children of this wave's members, so a sibling wave under the same
         parent cannot make this True. It is read-only and never withholds the
         digest — it only informs the wording.
+
+        Reads manager state only. A nested child queued outside the dispatch
+        window exists only as a task-store row, which
+        :meth:`wave_has_live_nested_spawns_async_impl` also counts.
         """
-        if not batch_id:
+        member_keys = self._wave_member_keys(batch_id)
+        return bool(member_keys) and self._nested_live_in_memory(batch_id, member_keys)
+
+    async def wave_has_live_nested_spawns_async_impl(self, batch_id: str) -> bool:
+        """:meth:`wave_has_live_nested_spawns_impl` plus the task store: a
+        member's child accepted while the dispatch window was full has a
+        queued row and nothing in memory. The in-memory halves are read on the
+        loop, each member's store count off it. A store nobody could read
+        answers True (``UNKNOWN_PENDING``), so the digest does not claim a
+        completion it could not check."""
+        member_keys = self._wave_member_keys(batch_id)
+        if not member_keys:
             return False
-        member_keys = {
+        if self._nested_live_in_memory(batch_id, member_keys):
+            return True
+        admission = self._manager._admission
+        for key in sorted(member_keys):
+            if await admission.taskq_overflow_async(key) > 0:
+                return True
+        return False
+
+    def _wave_member_keys(self, batch_id: str) -> set[str]:
+        """The session keys of *batch_id*'s members: the parent key their own
+        spawns carry (``conversation_key`` else ``subagent:<id>``)."""
+        if not batch_id:
+            return set()
+        return {
             (a.conversation_key or f"subagent:{a.id}")
             for a in self._manager._agents.values()
             if a.batch_id == batch_id
         }
-        if not member_keys:
-            return False
+
+    def _nested_live_in_memory(self, batch_id: str, member_keys: set[str]) -> bool:
+        """Whether a running or in-memory queued spawn outside *batch_id* has
+        one of *member_keys* as its parent."""
         if any(
             not a.done and a.batch_id != batch_id and a.parent_session_key in member_keys
             for a in self._manager._agents.values()
@@ -239,13 +269,10 @@ class WaveDigestCoordinator(ManagerComponent):
         )
         if self._manager._on_done:
             try:
-                # Synthetic record created ``done=True`` with a batch_id and
-                # routed to a DEFERRED announce: arm the hold synchronously
-                # here, before the ensure_future yield, so a sibling completion
-                # cannot read this member as done-but-unarmed and close the
-                # wave early. The ``_safe_announce`` arm is an
-                # idempotent backstop; the done-callback is the strand-guard
-                # for a task cancelled before its first run.
+                # Arm before the ensure_future yield, so a sibling cannot see
+                # this member done-but-unarmed and close the wave early. The
+                # done-callback releases the hold if the task is cancelled
+                # before its first run.
                 self._manager.arm_report_in_flight(info)
                 _lost_task = asyncio.ensure_future(self._manager._safe_announce(info))
                 self._hold_announce_task(f"lost-{info.id}", _lost_task)
@@ -366,22 +393,13 @@ class WaveDigestCoordinator(ManagerComponent):
         for hold in self._expired_digest_holds(now):
             if not self._manager.batch_members_pending(hold[0]):
                 if self._manager.batch_reports_in_flight(hold[0]):
-                    # The wave is closing on its own -- the final member's
-                    # report is in flight and the real wave-close flush lands
-                    # when it is consumed. Forcing a partial digest here would
-                    # race it and could emit a duplicate chunk for the same
-                    # members. (The consumer clears every hold in the same
-                    # synchronous block that fires the chunk, so this skip
-                    # cannot observe a just-flushed wave's stale state.)
+                    # The final member's report is in flight and its
+                    # wave-close flush will land; forcing one here could emit
+                    # a duplicate chunk.
                     continue
-                # No pending members AND no report in flight, yet a hold has
-                # aged past the deadline: the wave-close flush is never coming.
-                # A terminal report ended without reaching the consumer (the
-                # injection-timeout / announce-failure arms release the hold
-                # but land no accounting), so no further completion event will
-                # re-enter the consumer for this wave -- the held sibling
-                # results would strand until gateway restart. Fall through and
-                # force the flush: this sweep is the only remaining exit.
+                # Nothing pending or in flight: a report ended without
+                # reaching the consumer, so no wave-close flush is coming.
+                # Force it, or the held results strand until restart.
             self._force_digest_flush_for(hold)
 
     async def _sweep_digest_holds_async_impl(self, now: float) -> None:
@@ -567,11 +585,10 @@ class WaveDigestCoordinator(ManagerComponent):
                     # A restart orphan's notice: its own record, outcome included.
                     await asyncio.to_thread(write_tombstone, agent_id, **delivery.tombstone)
                 else:
+                    # Through the batch settle, so a leaked completed run's
+                    # tombstone keeps ``leaked_process`` the way a digest's does.
                     await asyncio.to_thread(
-                        mark_delivered,
-                        agent_id,
-                        elapsed=delivery.elapsed,
-                        credits=delivery.credits,
+                        settle_delivered_batch, (delivery,), writer=mark_delivered
                     )
             except Exception:
                 logger.debug(
@@ -614,19 +631,11 @@ class WaveDigestCoordinator(ManagerComponent):
         if not deliveries:
             return
         try:
-            # Off the loop: the tombstone write reads the existing file to
-            # preserve a recorded terminal outcome, and both callers of this
-            # settlement are coroutines. The swap above precedes the single
-            # await, so the re-entry guard still holds across the suspension.
-            #
-            # Handed over as ONE batch rather than awaited per delivery: the swap
-            # detaches them from ``info`` irrevocably, a per-delivery await makes
-            # every one after the first a cancellation point, and
-            # ``CancelledError`` is not an ``Exception`` -- so a shutdown landing
-            # mid-batch would discard the rest with nothing holding them, and each
-            # unwritten tombstone is a folder restart reconciliation admits, i.e. a
-            # duplicate completion. The batch carries each delivery's own elapsed
-            # and credits, so the tombstone still records the run's terminal usage.
+            # Off the loop: the write reads the existing file to keep a recorded
+            # terminal outcome. ONE batch, not an await per delivery: the swap
+            # above detached them irrevocably, and a CancelledError (not an
+            # ``Exception``) between per-delivery awaits would drop the rest,
+            # each replaying on restart as a duplicate completion.
             await asyncio.to_thread(
                 settle_delivered_batch, tuple(deliveries), writer=mark_delivered
             )

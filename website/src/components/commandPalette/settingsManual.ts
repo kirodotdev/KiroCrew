@@ -53,6 +53,7 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     labelKey: 'pages.developer.featurePreviewsTab.decisions_tool_args',
     descriptionKey: 'pages.developer.featurePreviewsTab.decisions_tool_args_desc',
     tab: 'developer',
+    params: { sub: 'feature-previews' },
     type: 'toggle',
     occurrence: 1,
   },
@@ -61,6 +62,7 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     labelKey: 'pages.developer.featurePreviewsTab.decisions_compaction',
     descriptionKey: 'pages.developer.featurePreviewsTab.decisions_compaction_desc',
     tab: 'developer',
+    params: { sub: 'feature-previews' },
     type: 'toggle',
     occurrence: 1,
   },
@@ -69,6 +71,7 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     labelKey: 'pages.developer.featurePreviewsTab.decisions_memory_text',
     descriptionKey: 'pages.developer.featurePreviewsTab.decisions_memory_text_desc',
     tab: 'developer',
+    params: { sub: 'feature-previews' },
     type: 'toggle',
     occurrence: 1,
   },
@@ -105,6 +108,22 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     type: 'toggle',
     occurrence: 1,
     params: { section: 'redaction' },
+  },
+  // The review cards for settings files edited outside the dashboard
+  // (SecurityPanelConfigPending.tsx). They render in the Security sub-nav's banner,
+  // above every section, so any section mounts them: `posture` is the one a bare
+  // `/settings/security` opens, which is what the gateway's bell note links to.
+  // They mount only after the config-pending read, so `settingId` makes the
+  // highlight wait for them.
+  {
+    id: 'security.config-pending',
+    labelKey: 'pages.settings.securityPanel.configPending.nav_dot',
+    descriptionKey: 'pages.settings.securityPanel.configPending.search_description',
+    tab: 'security',
+    type: 'buttonGroup',
+    occurrence: 1,
+    params: { section: 'posture' },
+    settingId: 'security.config-pending',
   },
   {
     id: 'security.trust-this-machine-s-tailnet-name',
@@ -291,15 +310,6 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
   },
   {
-    // Playwright attach token: a credential field with Save/Clear semantics the
-    // SettingsInput primitive has no shape for.
-    id: 'browser.attach-token',
-    labelKey: 'pages.settings.browserPanel.token_label',
-    tab: 'browser',
-    type: 'input',
-    occurrence: 1,
-  },
-  {
     // Color-dot swatch row — circular color buttons don't fit
     // SettingsButtonGroup's text-button pattern (comment at the render site).
     id: 'display.default-for-new-sessions',
@@ -338,6 +348,40 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     tab: 'secrets',
     type: 'input',
     occurrence: 1,
+  },
+  // BotChannelPanel's SecretFields take their labels from the channel's spec, so the
+  // extractor never sees them; FeishuPanel's spec passes literal catalog keys.
+  {
+    id: 'channels.feishu-app-id',
+    labelKey: 'pages.settings.feishuPanel.app_id_label',
+    descriptionKey: 'pages.settings.feishuPanel.app_id_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'feishu' },
+  },
+  {
+    id: 'channels.feishu-app-secret',
+    labelKey: 'pages.settings.feishuPanel.app_secret_label',
+    descriptionKey: 'pages.settings.feishuPanel.app_secret_description',
+    tab: 'channels',
+    type: 'input',
+    occurrence: 1,
+    params: { channel: 'feishu' },
+  },
+  // The Kiro sign-in card on Agent Harness, where Sign out and Switch account
+  // live. It is built from raw markup inside the KAS row's detail, so the
+  // extractor never sees it. `settingId` is the card's `data-setting-id`: the
+  // highlight waits for it while AgentBackendTab opens the KAS row for this id
+  // (`KIRO_SIGN_IN_SETTING_ID` in pages/developer/kiroSignInLink.ts).
+  {
+    id: 'agent.kiro-sign-in',
+    labelKey: 'pages.developer.kiroSignInCard.search_label',
+    descriptionKey: 'pages.developer.kiroSignInCard.search_description',
+    tab: 'agent',
+    type: 'buttonGroup',
+    occurrence: 1,
+    settingId: 'kiro-sign-in',
   },
   // Settings → OAuth Apps renders one card per PRE-REGISTERED registry
   // provider, so the cards are data, not JSX the extractor can see. Derive an

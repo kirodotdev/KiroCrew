@@ -40,7 +40,7 @@ from dashboard_owner_helpers import as_owner
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew import hooks, mcp_grant
-from kiro_crew.connections import mint
+from kiro_crew.connections import mint, registry, tool_test
 from kiro_crew.dashboard.handlers import connections
 from kiro_crew.testing.wait import async_wait_until, await_until
 
@@ -593,7 +593,13 @@ def test_the_handlers_package_does_not_import_the_mint_engine():
         "import sys; import kiro_crew.dashboard.handlers;"
         " print('MINT' if 'kiro_crew.connections.mint' in sys.modules else 'CLEAN')"
     )
-    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, timeout=180)
+    out = subprocess.run(
+        [sys.executable, "-X", "utf8", "-c", probe],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=180,
+    )
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().endswith("CLEAN"), out.stdout
 
@@ -667,6 +673,7 @@ async def _client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     app = web.Application()
     app.router.add_post("/api/connections/mint", connections.api_connections_mint)
     app.router.add_get("/api/connections/mint", connections.api_connections_mint_state)
+    app.router.add_post("/api/connections/test", connections.api_connections_test)
     as_owner(app)
     client = TestClient(TestServer(app))
     await client.start_server()
@@ -867,10 +874,18 @@ def test_row_tokens_do_not_repeat_across_a_gateway_restart():
         "from kiro_crew.connections.mint import _new_mint_token as t; print(t())"
     )
     first = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+        [sys.executable, "-X", "utf8", "-c", probe],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     ).stdout.strip()
     second = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+        [sys.executable, "-X", "utf8", "-c", probe],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     ).stdout.strip()
 
     assert first and second and first != second
@@ -967,6 +982,39 @@ async def test_post_refuses_anything_that_is_not_a_shipped_provider(
     try:
         resp = await client.post("/api/connections/mint", json={"slug": slug})
         # Registry membership bounds what a caller can make the gateway spawn.
+        assert resp.status == 400
+        assert (await resp.json())["code"] == "unknown_provider"
+        await asyncio.sleep(0)
+        assert spawned == []
+    finally:
+        await client.close()
+
+
+@pytest.mark.parametrize("slug", ["figma", "sentry"])
+@pytest.mark.parametrize("route", ["/api/connections/mint", "/api/connections/test"])
+@pytest.mark.asyncio
+async def test_a_provider_the_gallery_hides_is_never_started(
+    monkeypatch: pytest.MonkeyPatch, route: str, slug: str
+):
+    # figma is vendor-blocked and sentry launch-gated: registry entries the gallery
+    # never shows, so a stale tab or a hand-built request must not start a sign-in
+    # or a Test session for either.
+    assert registry.get_provider(slug) is not None
+    assert slug not in {p["slug"] for p in registry.get_visible_providers()}
+    spawned: list[str] = []
+
+    async def _fake_start(slug_: str, url: str, token: str | None = None, prior=None) -> None:
+        spawned.append(slug_)
+
+    async def _fake_test(provider: dict[str, Any]) -> dict[str, Any]:
+        spawned.append(str(provider["slug"]))
+        return {}
+
+    monkeypatch.setattr(mint, "start_oauth_mint", _fake_start)
+    monkeypatch.setattr(tool_test, "test_connection_tools", _fake_test)
+    client = await _client(monkeypatch)
+    try:
+        resp = await client.post(route, json={"slug": slug})
         assert resp.status == 400
         assert (await resp.json())["code"] == "unknown_provider"
         await asyncio.sleep(0)

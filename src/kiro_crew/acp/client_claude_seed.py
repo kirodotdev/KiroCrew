@@ -13,7 +13,7 @@ Instance fields written: ``_claude_inline_settings``,
 ``_claude_settings_written``, ``_permission_surface_share_validated``.
 
 Instance fields read: ``_agent``, ``_model``, ``_permission_mode``, ``_seed_owner``,
-``_work_dir``.
+``_session_key``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -30,8 +30,11 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, pinned_fs
 from kiro_crew.acp import seed_provenance
+from kiro_crew.acp.claude_settings_sources import other_sources_define_available_models
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.session_mcp import session_mcp_deny_rules
+from kiro_crew.acp.spec_tools_allowlists import claude_ask_rules, session_allowlist_spec
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.security import is_sensitive_path
 
@@ -180,9 +183,10 @@ def _share_sibling_settings_seed(self: AcpClient, local_settings: Path, payload:
     Only the model half (``availableModels``, ``model``) may differ from
     *payload*. It grants no permission, and :meth:`_apply_startup_model` pushes
     this session's model live -- a push the adapter accepts only for an
-    ``availableModels`` entry. So the seed must list *payload*'s ``model``, or
-    name none when *payload* names none. Its bytes are read only as the durable
-    record's, and the share then validates exactly those bytes.
+    ``availableModels`` entry. So the seed must list *payload*'s ``model``, name none
+    when *payload* names none, or, when neither carries ``availableModels``, leave the
+    adapter on its own list, where the push is accepted. Its bytes are read only as the
+    durable record's, and the share then validates exactly those bytes.
     """
     if self._share_settings_seed_if_identical(local_settings, payload):
         return True
@@ -200,10 +204,14 @@ def _share_sibling_settings_seed(self: AcpClient, local_settings: Path, payload:
         return False
     own = json.loads(payload)
     model = own.get("model")
+    offered = seed.get("availableModels")
     if model is None:
         runs_own_model = "model" not in seed
+    elif offered is None and "availableModels" not in own:
+        # Neither seed carries a list, so the adapter offers its own advertised
+        # list and accepts the live push of this session's model.
+        runs_own_model = True
     else:
-        offered = seed.get("availableModels")
         runs_own_model = isinstance(offered, list) and model in offered
     same_permissions = all(
         seed.get(key) == own.get(key)
@@ -268,10 +276,27 @@ def _render_claude_settings_payload(self: AcpClient) -> str:
     if self._permission_mode:
         perms["defaultMode"] = self._permission_mode
     # Same resolution as the wire array: a project-only agent's disabledTools
-    # are a restriction, and resolving only the user level would drop them.
-    deny_rules = session_mcp_deny_rules(self._agent, work_dir=self._work_dir)
+    # are a restriction, and resolving only the user level would drop them. A
+    # crewmate's worker reads its own per-session spec, keyed by the session.
+    from kiro_crew.acp.session_mcp_crewmate import crewmate_worker_deny_rules
+
+    deny_rules = crewmate_worker_deny_rules(
+        self._agent,
+        work_dir=self._work_dir,
+        session_key=self._session_key or "",
+        backend=self.backend,
+    )
+    if deny_rules is None:
+        deny_rules = session_mcp_deny_rules(self._agent, work_dir=self._work_dir)
     if deny_rules:
         perms["deny"] = list(deny_rules)
+    # The spec's `toolsSettings` shell and write allowlists are refused at Crew's
+    # gate, which sees only a call claude asks about; these rules make the shell and
+    # the file-write tools ask while either is set (`spec_tools_allowlists`).
+    if self.backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS and self._agent:
+        ask_rules = claude_ask_rules(session_allowlist_spec(self._agent, self._work_dir))
+        if ask_rules:
+            perms["ask"] = ask_rules
     if perms:
         data["permissions"] = perms
     # Namespace-keyed (claude_code here), the registry index this backend's ids
@@ -279,26 +304,38 @@ def _render_claude_settings_payload(self: AcpClient) -> str:
     # backend actually advertised (cached from a prior session/new), so the seed
     # reflects what the account is served and a served-but-unregistered model
     # gets its real window. A cold cache returns nothing rather than falling
-    # back to the static registry, and the else branch below omits both model
-    # keys — the adapter's own provider list is already right, and a stale
-    # allowlist merged over it is not.
+    # back to the static registry. Both keys need a warm cache. ``model`` is then
+    # written whenever the session pinned one: with Crew's list beside it the
+    # folded id is one of its entries, and without one the adapter resolves it
+    # against its own advertised list. ``availableModels`` is written only when
+    # another settings source already defines one: a specific id in Crew's list
+    # would disable that family's alias wildcard (haiku would resolve to an older
+    # model), which a ``model`` key never does.
     allowlist = model_registry.seed_available_models(self._model_registry_namespace)
     if allowlist:
-        data["availableModels"] = allowlist
+        if other_sources_define_available_models(Path(self._work_dir)):
+            data["availableModels"] = allowlist
+        else:
+            logger.info(
+                "advertised-model cache is warm but no settings file Crew checks defines "
+                "availableModels; the settings payload for %s omits availableModels "
+                "so family aliases keep resolving to their current model.",
+                self._claude_local_settings_path(),
+            )
         # DEFAULT_MODEL ("auto") is not a provider id, and omitting the key is
-        # what lets the adapter pick the allowlist head. Written only ALONGSIDE
-        # the allowlist: a model key that names no entry in the list it ships
-        # with is the exact shape that resolves to the base window.
+        # what lets the adapter pick its default.
         if self._model and self._model != DEFAULT_MODEL:
             # Folded onto the advertised spelling HERE rather than trusting a
             # caller to have folded self._model first. The re-seed runs beside
             # the model-cache persist, which is BEFORE _apply_startup_model, so
             # depending on that fold would be an ordering coupling between two
             # distant steps -- and the failure it buys is silent (a bare id
-            # writes a model key that is not in the allowlist beside it, i.e.
-            # exactly the base-window bug this file exists to close). The
-            # allowlist above is non-empty here, so the cache is warm and the
-            # fold is the same one _apply_startup_model and set_model perform.
+            # names no model the adapter advertised and resolves to the base
+            # window). The advertised list is non-empty here, so the cache is
+            # warm and the fold is the same one _apply_startup_model and
+            # set_model perform. The key is written whether or not
+            # availableModels is written beside it: a model key never narrows
+            # a family alias.
             data["model"] = model_registry.resolve_wire_model_id(
                 self._model, self._model_registry_namespace
             )
@@ -312,12 +349,13 @@ def _render_claude_settings_payload(self: AcpClient) -> str:
         # matches nothing in it resolves to the base window. Writing neither
         # key leaves the adapter on its own provider list, which already
         # carries the versioned [1m] ids. This session's capture then warms the
-        # cache and the post-capture re-seed fills both keys in.
+        # cache, and the post-capture re-seed writes ``model`` (and ``availableModels``
+        # when another settings source defines one).
         logger.info(
             "advertised-model cache is cold; the settings payload for %s omits "
             "availableModels/model so claude-agent-acp resolves the model from its own "
-            "provider list. The re-seed after this session's model capture fills both "
-            "keys in.",
+            "provider list. The re-seed after this session's model capture writes model, "
+            "and availableModels too when another settings source defines one.",
             self._claude_local_settings_path(),
         )
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
@@ -334,23 +372,31 @@ def _write_claude_local_settings(self: AcpClient) -> None:
        ``bypassPermissions``; every other mode keeps forwarding tool
        decisions to the host as ``session/request_permission``, which is what
        puts a claude session under the same gate kiro-cli sessions run under.
-       Omitted when no mode was requested, leaving the adapter's own default
-       (ask) rather than asserting one.
+       Omitted when no mode was requested: the user's own settings then name
+       the starting mode. With ``KIROCREW_CC_PIN_INHERITED_MODE`` on,
+       :meth:`_pin_claude_starting_mode` moves an ``auto`` or
+       ``bypassPermissions`` start of a session that carries Crew's tools to
+       ``default``.
     2. ``permissions.deny``, from
        :func:`~kiro_crew.acp.session_mcp.session_mcp_deny_rules`: the agent
        spec's ``disabledTools`` cannot ride along in the ``mcpServers`` array,
        and silently dropping a restriction while forwarding the server it
        narrows would widen the tool surface.
-    3. ``availableModels`` plus the resolved ``model``, and ONLY once the
-       backend has actually advertised a list. The adapter merges
-       ``availableModels`` union+dedup across every settings source, so a user
-       ``~/.claude`` carrying ``['opus','sonnet']`` is enough to collapse a
+    3. The resolved ``model`` once the backend has actually advertised a list,
+       and ``availableModels`` only when, in addition, another settings source
+       (user, project or managed) defines ``availableModels``. The adapter
+       merges ``availableModels`` union+dedup across every settings source, so a
+       user ``~/.claude`` carrying ``['opus','sonnet']`` is enough to collapse a
        versioned ``[1m]`` id (1M-token window) back to 200K -- and a
        registry-derived list seeded here does exactly the same thing to any
        model the registry has not caught up on. So on a cold advertised-model
        cache both keys are omitted (the adapter's own provider list is
        already right) and the re-seed after this session's capture fills them
-       in. See :func:`~kiro_crew.model_registry.seed_available_models`.
+       in. With a warm cache and no other source defining a list, only
+       ``model`` is written: a specific id in Crew's list disables that
+       family's alias wildcard, and a ``model`` key does not. See
+       :func:`~kiro_crew.acp.claude_settings_sources.other_sources_define_available_models`
+       and :func:`~kiro_crew.model_registry.seed_available_models`.
 
     **Crew touches only the file it owns.** Ownership is not the path -- a
     path under a checked-out repository is not Crew's to claim -- it is having
@@ -751,7 +797,9 @@ def _write_claude_local_settings(self: AcpClient) -> None:
                         break
                     time.sleep(0.05)
                 self._invalidate_session_mcp_projection()
-                self._log_declined_share(local_settings)
+                # The same guarded exclusion as a file that was there before.
+                if not self._exclude_foreign_local_settings(local_settings, payload):
+                    self._log_declined_share(local_settings)
                 return
             with os.fdopen(fd, "wb") as handle:
                 handle.write(payload.encode("utf-8"))

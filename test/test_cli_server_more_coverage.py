@@ -1,30 +1,16 @@
 """Coverage for the thinly-tested command dispatchers in ``kiro_crew.cli_server``.
 
-Every file of this family injects a fake at the seam the product actually reaches:
+Fakes sit at the seams the product reaches: ``subprocess.run`` / ``os.execvp`` (a CI
+runner has no systemd, launchd or writable checkout), ``current_platform`` and the log
+paths (so no ``skipif``), and ``sel()`` (so the audit contract is asserted directly).
 
-* ``subprocess.run`` / ``os.execvp`` — the CLI shells out to git, journalctl and
-  tail. A CI runner has no installed systemd unit, no launchd, and (for the
-  update path) no writable checkout, so every spawn is replaced by a recorder.
-* ``current_platform`` / ``svc_linux.UNIT_PATH`` / ``svc_macos.STDOUT_LOG`` —
-  patched so the platform-specific log sources are exercised on any host without
-  a ``skipif``. Nothing here reads a real journal or plist.
-* ``sel()`` — replaced with a recorder so the audit contract can be asserted
-  directly instead of inferred from the security log on disk.
-
-The gateway/taskrunner coroutines are driven with ``asyncio.run`` (the repo does
-not enable pytest-asyncio auto mode).
-
-This file pins ``_update`` -- the git checkout path, the gateway poke, the hardened
-subprocess calls, and the wheel path's dispatch, feed validation and installer -- and
-the ``status`` count and memory lines. ``test_cli_server_more_coverage_client.py``
-pins the client side (``resolve_client_port_ex``, the dashboard health probe, the
-``token`` and ``logout`` refusals and port ownership, and the owner-verified secret
-transport), and ``test_cli_server_more_coverage_lifecycle.py`` pins ``_stop`` and
-``restart``, the service and sandbox commands, ``_logs_cmd``, ``_gateway`` and
-``_run_task``. The SEL recorder fixture and the fake ``urlopen`` response they share
-live in ``cli_server_more_coverage_helpers.py``.
+This file pins ``_update`` and the ``status`` count and memory lines.
+``test_cli_server_more_coverage_client.py`` pins the client side and
+``test_cli_server_more_coverage_lifecycle.py`` pins ``_stop``, ``restart`` and the
+service commands; shared fixtures live in ``cli_server_more_coverage_helpers.py``.
 """
 
+import os
 import subprocess
 import sys
 import types
@@ -37,12 +23,11 @@ from cli_server_more_coverage_helpers import (  # noqa: F401 -- the fixture is r
     sel_rec_fixture,
 )
 
-from kiro_crew import cli_server, kiro_cli
+from kiro_crew import cli_server, kiro_cli, platform_compat
+from kiro_crew.frontend import FrontendBuildResult
 from kiro_crew.platform.update_layout import InstallLayout
 
-# --------------------------------------------------------------------------
 # _update — git checkout path
-# --------------------------------------------------------------------------
 
 
 # The OID the stub pins origin/<branch> to: what every later git call and the
@@ -62,16 +47,28 @@ class _GitStub:
         self.rev_list_out = "0\t5\n"
         self.show_out: bytes | None = None
         self.show_fails = False
+        # What `rev-parse --abbrev-ref HEAD` prints, and the branches origin
+        # lists to `ls-remote` for a checkout on no branch.
+        self.branch_out = "main\n"
+        self.remote_heads: tuple[str, ...] = ()
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
+        if argv[:2] == ["git", "ls-remote"]:
+            asked = [a for a in argv if a.startswith("refs/heads/")]
+            out = "".join(f"{_PIN}\t{ref}\n" for ref in asked if ref[11:] in self.remote_heads)
+            return subprocess.CompletedProcess(
+                argv, self.rc.get("ls_remote", 0), out, "could not read from remote"
+            )
         if argv[:3] == ["git", "rev-parse", "--verify"]:
             # The upstream pin, taken right after the fetch.
             return subprocess.CompletedProcess(
                 argv, self.rc.get("rev_parse_verify", 0), _PIN + "\n", "unknown revision"
             )
         if argv[:2] == ["git", "rev-parse"]:
-            return subprocess.CompletedProcess(argv, self.rc.get("rev_parse", 0), "main\n", "")
+            return subprocess.CompletedProcess(
+                argv, self.rc.get("rev_parse", 0), self.branch_out, ""
+            )
         if argv[:2] == ["git", "fetch"]:
             return subprocess.CompletedProcess(argv, self.rc.get("fetch", 0), "", "no remote")
         if argv[:2] == ["git", "diff"]:
@@ -139,10 +136,15 @@ def git_checkout(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.resolve_remote_url",
-        lambda p, remote="", branch="": "https://github.com/kirodotdev/KiroCrew.git",
+        lambda p, remote="", branch="", **_k: "https://github.com/kirodotdev/KiroCrew.git",
     )
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.update_blocked_reason", lambda url: ""
+    )
+    # The fake `subprocess.run` below cannot answer the repo-config probe; that
+    # refusal is covered against a real repo in test_host_git_repo_exec_neutralization.
+    monkeypatch.setattr(
+        "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
     )
     monkeypatch.setattr(cli_server.shutil, "which", lambda name: None)
     # The optional kiro-cli step spawns only a PINNED install (resolved with the
@@ -150,8 +152,10 @@ def git_checkout(monkeypatch, tmp_path):
     # cannot leak into these tests. Tests that want the step reachable resolve
     # one explicitly.
     monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: None)
-    monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: None)
+    monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: FrontendBuildResult("built"))
     monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *a: None)
+    # The update puts the recorded node dirs first on PATH; restore it at teardown.
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
     # Pin the install ROUTE. The real probe reads the test interpreter's own
     # Scripts dir, so on a Windows dev box running from a checkout these tests
     # would silently take the dependency-only branch instead of the reinstall
@@ -187,17 +191,13 @@ class TestUpdateGitPath:
         assert exc.value.code == 1
         assert "Could not determine current branch" in capsys.readouterr().out
 
-    def test_detached_head_is_treated_as_mainline_and_pin_is_checked_first(
+    def test_detached_head_checks_the_pin_before_asking_the_remote(
         self, monkeypatch, git_checkout, capsys
     ) -> None:
         stub = _GitStub()
-
-        def _run(argv, **kw):
-            if argv[:2] == ["git", "rev-parse"]:
-                return subprocess.CompletedProcess(argv, 0, "HEAD\n", "")
-            return stub(argv, **kw)
-
-        monkeypatch.setattr(subprocess, "run", _run)
+        stub.branch_out = "HEAD\n"
+        stub.remote_heads = ("main",)
+        monkeypatch.setattr(subprocess, "run", stub)
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason",
             lambda url: "remote not on the fleet allowlist",
@@ -208,8 +208,100 @@ class TestUpdateGitPath:
         out = capsys.readouterr().out
         assert "blocked by security policy" in out
         assert "fleet allowlist" in out
-        # Blocked before any fetch touched the tree.
+        # Blocked before the remote was contacted or the tree touched.
+        assert not any(c[:2] in (["git", "fetch"], ["git", "ls-remote"]) for c in stub.calls)
+
+    @pytest.mark.parametrize("branch_out", ["HEAD\n", "\n"], ids=["detached", "empty"])
+    @pytest.mark.parametrize(
+        ("remote_heads", "expected"),
+        [
+            (("main",), "main"),
+            (("mainline",), "mainline"),
+            (("master",), "master"),  # wokeignore:rule=master
+            (("master", "mainline", "main"), "main"),  # wokeignore:rule=master
+            (("master", "mainline"), "mainline"),  # wokeignore:rule=master
+        ],
+    )
+    def test_a_checkout_on_no_branch_updates_from_the_primary_branch_origin_has(
+        self, monkeypatch, git_checkout, capsys, branch_out, remote_heads, expected
+    ) -> None:
+        """A checkout on no branch fetches a primary branch origin really has."""
+        stub = _GitStub()
+        stub.branch_out = branch_out
+        stub.remote_heads = remote_heads
+        monkeypatch.setattr(subprocess, "run", stub)
+        cli_server._update()
+        fetches = [c for c in stub.calls if c[:2] == ["git", "fetch"]]
+        # A full refspec, so a clone whose fetch refspec maps no such branch (a
+        # tag or a `--single-branch` clone) still gets the tracking ref pinned below.
+        refspec = f"+refs/heads/{expected}:refs/remotes/origin/{expected}"
+        assert len(fetches) == 1 and fetches[0][-2:] == ["origin", refspec]
+        pin = next(c for c in stub.calls if c[:3] == ["git", "rev-parse", "--verify"])
+        assert pin[3] == f"refs/remotes/origin/{expected}^{{commit}}"
+        assert f"updating from origin/{expected}" in capsys.readouterr().out
+        assert any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_a_checkout_on_no_branch_never_reads_the_local_origin_head(
+        self, monkeypatch, git_checkout
+    ) -> None:
+        stub = _GitStub()
+        stub.branch_out = "HEAD\n"
+        stub.remote_heads = ("main",)
+        monkeypatch.setattr(subprocess, "run", stub)
+        cli_server._update()
+        assert not any("origin/HEAD" in arg for c in stub.calls for arg in c)
+        ls_remote = next(c for c in stub.calls if c[:2] == ["git", "ls-remote"])
+        assert ls_remote[2:] == [
+            "--upload-pack=git-upload-pack",
+            "origin",
+            "refs/heads/main",
+            "refs/heads/mainline",
+            "refs/heads/master",  # wokeignore:rule=master
+        ]
+
+    def test_a_checkout_on_no_branch_refuses_when_origin_has_no_primary_branch(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        stub = _GitStub()
+        stub.branch_out = "HEAD\n"
+        monkeypatch.setattr(subprocess, "run", stub)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "on no branch" in out
+        assert "git checkout -B <branch> origin/<branch>" in out
         assert not any(c[:2] == ["git", "fetch"] for c in stub.calls)
+
+    def test_a_checkout_on_no_branch_refuses_when_origin_cannot_be_listed(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        stub = _GitStub(ls_remote=128)
+        stub.branch_out = "HEAD\n"
+        monkeypatch.setattr(subprocess, "run", stub)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Could not list origin's branches" in out
+        assert "could not read from remote" in out
+        assert not any(c[:2] == ["git", "fetch"] for c in stub.calls)
+
+    def test_a_checkout_on_a_branch_never_asks_the_remote(self, monkeypatch, git_checkout) -> None:
+        stub = _GitStub()
+        monkeypatch.setattr(subprocess, "run", stub)
+        cli_server._update()
+        assert not any(c[:2] == ["git", "ls-remote"] for c in stub.calls)
+        fetch = next(c for c in stub.calls if c[:2] == ["git", "fetch"])
+        assert fetch[-2:] == ["origin", "main"]
+
+    def test_the_detached_order_is_exactly_the_reviewed_primary_branches(self) -> None:
+        from kiro_crew import cli_server_update
+        from kiro_crew.platform.update_governance import PRIMARY_BRANCHES
+
+        order = cli_server_update._DETACHED_BRANCH_ORDER
+        assert order[0] == "main"
+        assert len(order) == len(set(order)) and set(order) == PRIMARY_BRANCHES
 
     def test_fetch_failure_exits(self, monkeypatch, git_checkout, capsys) -> None:
         monkeypatch.setattr(subprocess, "run", _GitStub(fetch=1))
@@ -422,6 +514,74 @@ class TestUpdateGitPath:
         # pip's own reason reaches the console, not just the exit code.
         assert "wheel error" in capsys.readouterr().out
 
+    def test_frontend_build_failure_installs_then_exits(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """The moved tree still gets its install; the update then fails and names its log."""
+        from kiro_crew.platform import release_apply
+
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        log_path = git_checkout / "frontend-build.log"
+        monkeypatch.setattr(
+            cli_server,
+            "build_frontend_sync",
+            lambda p: FrontendBuildResult("failed", log_path, "vite: build failed"),
+        )
+        installs: list[object] = []
+        monkeypatch.setattr(release_apply, "apply_release", lambda *a, **k: installs.append(a) or 0)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        assert len(installs) == 1
+        out = capsys.readouterr().out
+        assert str(log_path) in out
+        assert "vite: build failed" in out
+        assert "Kiro Crew updated!" not in out
+
+    def test_frontend_build_sees_the_node_ensure_node_recorded(
+        self, monkeypatch, git_checkout, tmp_path
+    ) -> None:
+        """A node ensure-node.sh installed off PATH is first on PATH when the build runs.
+
+        Without it the build's npm lookup missed that node, skipped with "npm not
+        found", and the update still reported success over the old dashboard.
+        """
+        from kiro_crew import env
+
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        monkeypatch.delenv("KIROCREW_NODE_BIN_DIR", raising=False)
+        node_dir = tmp_path / "mise" / "node" / "24" / "bin"
+        node_dir.mkdir(parents=True)
+        node = node_dir / ("node.exe" if platform_compat.IS_WINDOWS else "node")
+        node.write_text("#!/bin/sh\n")
+        node.chmod(0o755)
+        env.node_bin_dirs()  # cached before the script records its choice
+
+        def _ensure_node(*_a) -> bool:
+            (env.data_home() / "node-bin-dir").write_text(f"{node_dir}\n", encoding="utf-8")
+            return True
+
+        monkeypatch.setattr("kiro_crew.cli._ensure_node", _ensure_node)
+        seen: list[str] = []
+        monkeypatch.setattr(
+            cli_server,
+            "build_frontend_sync",
+            lambda p: seen.append(os.environ["PATH"]) or FrontendBuildResult("built"),
+        )
+        try:
+            cli_server._update()
+        finally:
+            env.node_bin_dirs.cache_clear()
+        assert seen and seen[0].split(os.pathsep)[0] == str(node_dir)
+
+    def test_skipped_frontend_build_still_updates(self, monkeypatch, git_checkout, capsys) -> None:
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        monkeypatch.setattr(
+            cli_server, "build_frontend_sync", lambda p: FrontendBuildResult("skipped")
+        )
+        cli_server._update()
+        assert "Kiro Crew updated!" in capsys.readouterr().out
+
     def test_success_updates_kiro_cli_and_refreshes_agent_config(
         self, monkeypatch, git_checkout, capsys
     ) -> None:
@@ -429,7 +589,11 @@ class TestUpdateGitPath:
         monkeypatch.setattr(subprocess, "run", stub)
         monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
         built: list[Path] = []
-        monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: built.append(p))
+        monkeypatch.setattr(
+            cli_server,
+            "build_frontend_sync",
+            lambda p: built.append(p) or FrontendBuildResult("built"),
+        )
         cli_server._update()
         out = capsys.readouterr().out
         assert "Kiro Crew updated!" in out
@@ -463,6 +627,23 @@ class TestUpdateGitPath:
         cli_server._update()
         assert "Kiro Crew updated!" in capsys.readouterr().out
         assert poked == [True], "the completed update never poked the gateway"
+
+    def test_success_tells_the_user_to_restart(self, monkeypatch, git_checkout, capsys) -> None:
+        """The git path prints the same restart hint as the other paths."""
+        monkeypatch.setattr(subprocess, "run", _GitStub())
+        cli_server._update()
+        out = capsys.readouterr().out
+        assert "Restart the gateway to use the new version:" in out
+        assert "kirocrew restart" in out
+        assert out.index("Kiro Crew updated!") < out.index("kirocrew restart")
+
+    def test_a_failed_update_prints_no_restart_hint(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        monkeypatch.setattr(subprocess, "run", _GitStub(reset=1))
+        with pytest.raises(SystemExit):
+            cli_server._update()
+        assert "kirocrew restart" not in capsys.readouterr().out
 
 
 class TestUpdateGatewayPoke:
@@ -589,11 +770,8 @@ class TestUpdateGatewayPoke:
 class TestUpdateSubprocessHardening:
     """The six ``subprocess.run`` calls in ``_update()``.
 
-    Two gap classes: (a) every captured-output call must also pass
-    ``stdin=subprocess.DEVNULL`` so a child prompt can never block invisibly on
-    the parent terminal; (b) ``TimeoutExpired`` — which ``subprocess.run``
-    RAISES rather than returns — must land on the same branch that the site's
-    existing failure path already takes, never escape ``_update()``.
+    Each captured-output call passes ``stdin=subprocess.DEVNULL`` so a child prompt
+    cannot block, and a raised ``TimeoutExpired`` takes the site's failure branch.
     """
 
     @staticmethod
@@ -720,9 +898,7 @@ class TestUpdateWheelDispatch:
         assert seen[0].kind == "wheel"
 
 
-# --------------------------------------------------------------------------
 # _update_wheel — feed validation and installer failures
-# --------------------------------------------------------------------------
 
 
 _LAYOUT = InstallLayout(
@@ -744,6 +920,9 @@ def wheel_feed(monkeypatch):
     )
     monkeypatch.setattr(
         "kiro_crew.platform.update_governance.update_blocked_reason", lambda url: ""
+    )
+    monkeypatch.setattr(
+        "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
     )
 
     def _no_network(*a, **k):
@@ -1040,11 +1219,8 @@ class TestUpdateWheelInstaller:
     ) -> None:
         """A raw OSError from the staging filesystem must not escape as a traceback.
 
-        The engine wraps its own I/O failures in WheelUpdateError, but a full
-        or unwritable disk at mkdir/tempdir time raises OSError outside those
-        conversion sites — the CLI must route it through the same
-        operator-facing failure path (redacted message + fallback command +
-        exit 1).
+        A full disk at mkdir/tempdir time raises OSError outside the WheelUpdateError
+        wrapping; it takes the same redacted message, fallback command and exit 1.
         """
         from kiro_crew.platform import wheel_engine
 
@@ -1324,10 +1500,35 @@ class TestStatusMemoryLine:
         assert "Memory:      412 MiB rss, session ceiling 1536 MiB" in out
 
 
+def test_status_prints_the_session_map_remedy_only_while_writes_are_refused(
+    monkeypatch, capsys
+) -> None:
+    import io
+    import json
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    payloads = [
+        {"session_map_writes_refused": True, "session_map_remedy": "restart it"},
+        {"session_map_writes_refused": False, "session_map_remedy": ""},
+    ]
+
+    @contextmanager
+    def _urlopen(url, timeout):
+        yield io.BytesIO(json.dumps(payloads.pop(0)).encode())
+
+    monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+    monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 7777)
+    cli_server._status(SimpleNamespace(port=None))
+    assert "  Session map: restart it\n" in capsys.readouterr().out
+    cli_server._status(SimpleNamespace(port=None))
+    assert "Session map:" not in capsys.readouterr().out
+
+
 class TestApproveBusyVsDown:
-    """The update-approve and file-delivery-approve CLI paths report a slow
-    gateway as busy, and a refused connection as not running. Both carry a
-    single-use nonce, so the busy line points at the dashboard, never a retry.
+    """The update-approve CLI path reports a slow gateway as busy, and a
+    refused connection as not running. It carries a single-use nonce, so the
+    busy line points at the dashboard, never a retry.
     """
 
     def test_update_approve_timeout_reports_busy(self, monkeypatch, capsys) -> None:
@@ -1355,26 +1556,6 @@ class TestApproveBusyVsDown:
         with pytest.raises(SystemExit) as exc:
             cli_server._update_approve()
         assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "busy" in out
-        assert "is not running" not in out
-
-    def test_file_delivery_approve_timeout_reports_busy(self, monkeypatch, capsys) -> None:
-        from kiro_crew import file_delivery_consent
-
-        pending = types.SimpleNamespace(destination_class="owner", expires_in=60, nonce="n" * 64)
-        monkeypatch.setattr(file_delivery_consent, "read_pending_grant", lambda: pending)
-        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _p: 7777)
-        monkeypatch.setattr(cli_server, "read_local_secret", lambda _p, **_kw: "")
-
-        def _timeout(*a, **k):
-            raise TimeoutError("timed out")
-
-        # The proven send is the one transport seam, socket or TCP alike.
-        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", _timeout)
-        with pytest.raises(SystemExit) as exc:
-            cli_server._file_delivery_approve()
-        assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "busy" in out
-        assert "is not running" not in out
+        err = capsys.readouterr().err
+        assert "busy" in err
+        assert "is not running" not in err

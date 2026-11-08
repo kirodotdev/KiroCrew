@@ -186,11 +186,8 @@ class TestWaitForResponseDeferral:
     def test_session_timeout_progress_ignores_prior_attempt_frames(self, tmp_path):
         """A timed-out ``session/load``'s frames are not this attempt's progress.
 
-        ``_drain_notifications`` clears the buffer only at the end of
-        ``_initialize_session``, so the load -> ``session/new`` fallback still
-        holds the previous attempt's ``server_initialized`` frames. The progress
-        summary must honour the per-attempt floor ``_begin_session_report`` sets,
-        or it asserts the stall is not in those servers on stale evidence.
+        The buffer is cleared only at the end of ``_initialize_session``, so the fallback
+        still holds old frames; the summary must honour ``_begin_session_report``'s floor.
         """
         from kiro_crew.acp.types import JsonRpcMessage
 
@@ -303,34 +300,38 @@ class TestProcessMessageUnknownServerRequest:
     """F5: unknown server->client requests are classified for a -32601 reply,
     not silently skipped."""
 
-    def test_unknown_server_request_classified(self, tmp_path):
+    @pytest.mark.parametrize(
+        ("msg_id", "method", "params", "expected"),
+        [
+            pytest.param(
+                12,
+                "fs/read_text_file",
+                {"path": "/x"},
+                "server_request_unknown",
+                id="unknown_server_request_classified",
+            ),
+            pytest.param(
+                3, "terminal/create", {}, "server_request_unknown", id="terminal_create_classified"
+            ),
+            # Unknown notification (method, NO id) is not a request -> skip.
+            pytest.param(
+                None, "some/unknown_notification", {}, "skip", id="notification_still_skipped"
+            ),
+            pytest.param(
+                2,
+                "session/request_permission",
+                {},
+                "permission",
+                id="known_permission_request_not_unknown",
+            ),
+        ],
+    )
+    def test_process_message_classification(self, tmp_path, msg_id, method, params, expected):
         from kiro_crew.acp.types import JsonRpcMessage
 
         client = AcpClient(work_dir=tmp_path)
-        msg = JsonRpcMessage(id=12, method="fs/read_text_file", params={"path": "/x"})
-        assert client._process_message(msg, req_id=1) == "server_request_unknown"
-
-    def test_terminal_create_classified(self, tmp_path):
-        from kiro_crew.acp.types import JsonRpcMessage
-
-        client = AcpClient(work_dir=tmp_path)
-        msg = JsonRpcMessage(id=3, method="terminal/create", params={})
-        assert client._process_message(msg, req_id=1) == "server_request_unknown"
-
-    def test_notification_still_skipped(self, tmp_path):
-        from kiro_crew.acp.types import JsonRpcMessage
-
-        client = AcpClient(work_dir=tmp_path)
-        # Unknown notification (method, NO id) is not a request -> skip.
-        msg = JsonRpcMessage(method="some/unknown_notification", params={})
-        assert client._process_message(msg, req_id=1) == "skip"
-
-    def test_known_permission_request_not_unknown(self, tmp_path):
-        from kiro_crew.acp.types import JsonRpcMessage
-
-        client = AcpClient(work_dir=tmp_path)
-        msg = JsonRpcMessage(id=2, method="session/request_permission", params={})
-        assert client._process_message(msg, req_id=1) == "permission"
+        msg = JsonRpcMessage(id=msg_id, method=method, params=params)
+        assert client._process_message(msg, req_id=1) == expected
 
     @pytest.mark.asyncio
     async def test_reject_sends_method_not_found_error(self, tmp_path):
@@ -350,26 +351,25 @@ class TestProcessMessageUnknownServerRequest:
         assert "terminal/create" in payload["error"]["message"]
 
     @pytest.mark.asyncio
-    async def test_reject_noop_when_no_id(self, tmp_path):
+    async def test_reject_noop_when_no_id(self, tmp_path, caplog):
         from kiro_crew.acp.types import JsonRpcMessage
 
         client = AcpClient(work_dir=tmp_path)
         client._process = _scripted_process([])
         msg = JsonRpcMessage(id=None, method="terminal/create", params={})
 
-        await client._reject_unknown_server_request(msg)
-        client._process.stdin.write.assert_not_called()
+        with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
+            await client._reject_unknown_server_request(msg)
+        # A notification has no id to answer, so nothing is written or reported.
+        assert client._process.stdin.write.call_count == 0
+        assert [r.getMessage() for r in caplog.records if r.name == "kiro_crew.acp.client"] == []
 
 
 class TestFormatAcpError:
     """Tests for _format_acp_error — Bedrock-aware error rewriting.
 
-    Covers the bug filed at task 86089e43: ACP backend errors used
-    to be surfaced as the raw JSON-RPC dict (`Prompt error: {'code': -32603,
-    ...}`), which dead-ends users when the picker can't expose a valid
-    alternative. The helper rewrites known Bedrock failures into actionable
-    text while preserving the request_id for support correlation, and scrubs
-    embedded credentials / exfiltration URLs as defense-in-depth.
+    Known Bedrock failures become actionable text instead of the raw JSON-RPC dict,
+    keeping the request_id and scrubbing credentials and exfiltration URLs.
     """
 
     def test_non_dict_falls_back(self):
@@ -407,7 +407,7 @@ class TestFormatAcpError:
         assert "unavailable on the backend" in out
         assert "'opus'" in out
         assert "model picker" in out
-        # Must NOT point at ~/.claude/settings.json — KiroCrew never reads it;
+        # Must NOT point at ~/.claude/settings.json — Kiro Crew never reads it;
         # the model lives in config.json / the agent spec.
         assert "settings.json" not in out
         assert "config.json" in out
@@ -492,10 +492,28 @@ class TestFormatAcpError:
         assert "wait" in out.lower()
         assert "aaaa1111-bbbb-2222-cccc-333344445555" in out
 
-    def test_too_many_requests_rewrite(self):
-        err = {"code": -32603, "message": "x", "data": "TooManyRequestsException: rate limited"}
-        out = _format_acp_error(err)
-        assert "throttling" in out.lower()
+    @pytest.mark.parametrize(
+        ("message", "data", "expected"),
+        [
+            pytest.param(
+                "x",
+                "TooManyRequestsException: rate limited",
+                "throttling",
+                id="too_many_requests_rewrite",
+            ),
+            pytest.param(
+                "x",
+                "ExpiredToken: signature expired",
+                "authentication failed",
+                id="expired_token_rewrite",
+            ),
+            # Some backends put the trigger word in `message` rather than `data`.
+            pytest.param("Rate limit exceeded", "", "throttling", id="throttle_keyword_in_message"),
+        ],
+    )
+    def test_rewrite_names_the_failure_class(self, message, data, expected):
+        err = {"code": -32603, "message": message, "data": data}
+        assert expected in _format_acp_error(err).lower()
 
     def test_access_denied_rewrite(self):
         err = {
@@ -507,11 +525,6 @@ class TestFormatAcpError:
         assert "authentication failed" in out.lower()
         assert "aws sso login" in out.lower()
 
-    def test_expired_token_rewrite(self):
-        err = {"code": -32603, "message": "x", "data": "ExpiredToken: signature expired"}
-        out = _format_acp_error(err)
-        assert "authentication failed" in out.lower()
-
     def test_missing_request_id_omits_suffix(self):
         err = {
             "code": -32603,
@@ -522,20 +535,11 @@ class TestFormatAcpError:
         assert "request_id" not in out
         assert "'sonnet'" in out
 
-    def test_throttle_keyword_in_message(self):
-        # Some backends put the trigger word in `message` rather than `data`.
-        err = {"code": -32603, "message": "Rate limit exceeded", "data": ""}
-        out = _format_acp_error(err)
-        assert "throttling" in out.lower()
-
     def test_credentials_in_data_are_redacted(self):
         """AWS access keys embedded in upstream errors must not leak to the UI.
 
-        Recognized error patterns (auth/throttle/model-unavailable) already drop
-        the `data` field when constructing the rewritten message, so the secret
-        is gone simply by virtue of the rewrite. The redaction layer is the
-        defense-in-depth fallback for the unknown-shape path; this test pins
-        the absence guarantee on the recognized-pattern path.
+        Recognized patterns drop `data` in the rewrite; this pins that path. Redaction
+        covers the unknown-shape path.
         """
         err = {
             "code": -32603,
@@ -625,36 +629,64 @@ class TestFormatAcpError:
         # Must not dead-end the user with the raw dict.
         assert "Prompt error: {" not in out
 
-    def test_please_try_again_phrasing_rewrite(self):
-        """A bare 'please try again' transient hint (no explicit 5xx token)
-
-        still classifies as transient.
-        """
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": "Service hiccup, please try again.",
-        }
+    @pytest.mark.parametrize(
+        ("data", "absent"),
+        [
+            # A bare 'please try again' transient hint (no explicit 5xx token)
+            # still classifies as transient.
+            pytest.param(
+                "Service hiccup, please try again.",
+                "Prompt error: {",
+                id="please_try_again_phrasing_rewrite",
+            ),
+            pytest.param(
+                "InternalServerError occurred",
+                "request_id",
+                id="transient_5xx_missing_request_id_omits_suffix",
+            ),
+            # kiro-cli's pre-stream generation failure wrapper gets the friendly
+            # retry guidance instead of the raw-dict fallback: data carried no
+            # request_id and no error class, only the generic wrapper string.
+            pytest.param(
+                "Kiro failed to generate a response",
+                "Prompt error: {",
+                id="kiro_generic_generation_failure_formats_as_transient",
+            ),
+        ],
+    )
+    def test_transient_rewrite(self, data, absent):
+        err = {"code": -32603, "message": "Internal error", "data": data}
         out = _format_acp_error(err)
         assert "transient error" in out.lower()
-        assert "Prompt error: {" not in out
+        assert absent not in out
 
-    def test_dispatch_failure_rewrite(self):
-        """DispatchFailure / connection-reset shapes are transient too."""
-        err = {
-            "code": -32603,
-            "message": "x",
-            "data": "DispatchFailure: ConnectionReset (request_id: bbbb2222-cccc-3333-dddd-444455556666)",
-        }
+    @pytest.mark.parametrize(
+        ("message", "data", "request_id", "card"),
+        [
+            # DispatchFailure / connection-reset shapes are transient too, and
+            # take the connection card: the request never got a provider answer.
+            pytest.param(
+                "x",
+                "DispatchFailure: ConnectionReset (request_id: bbbb2222-cccc-3333-dddd-444455556666)",
+                "bbbb2222-cccc-3333-dddd-444455556666",
+                "could not reach the model backend",
+                id="dispatch_failure_rewrite",
+            ),
+            # An HTTP/status-anchored 50x token IS a genuine transient signal.
+            pytest.param(
+                "Internal error",
+                "upstream returned HTTP 503 (request_id: aaaa1111-bbbb-2222-cccc-333344445555)",
+                "aaaa1111-bbbb-2222-cccc-333344445555",
+                "transient error",
+                id="http_500_status_context_still_classifies_transient",
+            ),
+        ],
+    )
+    def test_transient_rewrite_keeps_the_request_id(self, message, data, request_id, card):
+        err = {"code": -32603, "message": message, "data": data}
         out = _format_acp_error(err)
-        assert "transient error" in out.lower()
-        assert "bbbb2222-cccc-3333-dddd-444455556666" in out
-
-    def test_transient_5xx_missing_request_id_omits_suffix(self):
-        err = {"code": -32603, "message": "Internal error", "data": "InternalServerError occurred"}
-        out = _format_acp_error(err)
-        assert "transient error" in out.lower()
-        assert "request_id" not in out
+        assert card in out.lower()
+        assert request_id in out
 
     def test_transient_branch_does_not_leak_credentials(self):
         """Defense-in-depth on the new transient path: an AWS key embedded in
@@ -673,19 +705,50 @@ class TestFormatAcpError:
         assert "AKIAIOSFODNN7EXAMPLE" not in out
         assert "transient error" in out.lower()
 
-    def test_throttle_precedence_over_transient(self):
-        """A throttle that also says 'please try again' stays a throttle —
-
-        throttling precedence must survive the new transient branch.
-        """
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": "ThrottlingException: slow down, please try again",
-        }
-        out = _format_acp_error(err)
-        assert "throttling" in out.lower()
-        assert "transient error" not in out.lower()
+    @pytest.mark.parametrize(
+        ("message", "data", "present", "absent"),
+        [
+            # A throttle that also says 'please try again' stays a throttle —
+            # throttling precedence must survive the transient branch.
+            pytest.param(
+                "Internal error",
+                "ThrottlingException: slow down, please try again",
+                "throttling",
+                "transient error",
+                id="throttle_precedence_over_transient",
+            ),
+            # An aborted request leaves a transport error beside the rejection; the
+            # credential branch is checked first so the 5xx family cannot win.
+            pytest.param(
+                "Encountered an error in the response stream",
+                "DispatchFailure ConnectionResetError: the bearer token is invalid",
+                "kiro-cli login",
+                "transient error",
+                id="invalid_bearer_token_wins_over_transport_error",
+            ),
+            # The auth-status branch must not swallow real 5xx errors.
+            pytest.param(
+                "Internal error",
+                "ServiceUnavailableException: HTTP 503",
+                "transient",
+                "kiro-cli login",
+                id="genuine_5xx_still_transient_with_auth_absent",
+            ),
+            # Session expiry checked before 5xx: a DispatchFailure wrapping a
+            # session-expired message must surface as auth, not transient.
+            pytest.param(
+                "Internal error",
+                "DispatchFailure ConnectionResetError: session expired",
+                "kiro-cli login",
+                "transient error",
+                id="session_expired_with_5xx_token_wins",
+            ),
+        ],
+    )
+    def test_classification_precedence(self, message, data, present, absent):
+        out = _format_acp_error({"code": -32603, "message": message, "data": data}).lower()
+        assert present in out
+        assert absent not in out
 
     def test_non_transient_minus_32603_falls_through_to_fallback(self):
         """A non-transient -32603 whose only 'internal'-ish signal is the
@@ -708,58 +771,39 @@ class TestFormatAcpError:
         # The -32603 boilerplate message is dropped as noise next to that.
         assert "Internal error" not in out
 
-    def test_bare_500_token_is_not_treated_as_5xx(self):
-        """A standalone numeric (e.g. a token-limit value) must not match the
-
-        5xx branch — the numeric match is anchored to an HTTP/status context,
-        not a bare 500/502/503 token.
-        """
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": "max_tokens 500 exceeds the model limit of 200000",
-        }
+    @pytest.mark.parametrize(
+        ("message", "data"),
+        [
+            # A standalone numeric (e.g. a token-limit value) must not match the
+            # 5xx branch — the numeric match is anchored to an HTTP/status
+            # context, not a bare 500/502/503 token.
+            pytest.param(
+                "Internal error",
+                "max_tokens 500 exceeds the model limit of 200000",
+                id="bare_500_token_is_not_treated_as_5xx",
+            ),
+            # The generation-failure pattern is scoped to `data` — the phrase
+            # appearing only in the JSON-RPC `message` field must not trigger the
+            # friendly transient branch (mirrors the model-unavailable scoping).
+            pytest.param(
+                "Kiro failed to generate a response",
+                "ValidationException: input contains an unsupported field 'foo'",
+                id="generation_failure_phrase_in_message_only_is_not_transient",
+            ),
+            # Scoped to `data` like its sibling: the phrase in the JSON-RPC
+            # `message` alone must not flip a deterministic failure to transient.
+            pytest.param(
+                "The service failed to process the request",
+                "ValidationException: input contains an unsupported field 'foo'",
+                id="process_failure_phrase_in_message_only_is_not_transient",
+            ),
+        ],
+    )
+    def test_not_transient_and_shows_the_cause(self, message, data):
+        err = {"code": -32603, "message": message, "data": data}
         out = _format_acp_error(err)
         assert "transient error" not in out.lower()
-        assert "max_tokens 500 exceeds the model limit of 200000" in out
-
-    def test_http_500_status_context_still_classifies_transient(self):
-        """An HTTP/status-anchored 50x token IS a genuine transient signal."""
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": "upstream returned HTTP 503 (request_id: aaaa1111-bbbb-2222-cccc-333344445555)",
-        }
-        out = _format_acp_error(err)
-        assert "transient error" in out.lower()
-        assert "aaaa1111-bbbb-2222-cccc-333344445555" in out
-
-    def test_kiro_generic_generation_failure_formats_as_transient(self):
-        """kiro-cli's pre-stream generation failure wrapper gets the friendly
-        retry guidance instead of the raw-dict fallback: data carried no
-        request_id and no error class, only the generic wrapper string.
-        """
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": "Kiro failed to generate a response",
-        }
-        out = _format_acp_error(err)
-        assert "transient error" in out.lower()
-        assert "Prompt error: {" not in out
-
-    def test_generation_failure_phrase_in_message_only_is_not_transient(self):
-        """The generation-failure pattern is scoped to `data` — the phrase
-        appearing only in the JSON-RPC `message` field must not trigger the
-        friendly transient branch (mirrors the model-unavailable scoping)."""
-        err = {
-            "code": -32603,
-            "message": "Kiro failed to generate a response",
-            "data": "ValidationException: input contains an unsupported field 'foo'",
-        }
-        out = _format_acp_error(err)
-        assert "transient error" not in out.lower()
-        assert "ValidationException: input contains an unsupported field 'foo'" in out
+        assert data in out
 
     def test_kiro_process_failure_formats_as_transient_and_keeps_request_id(self):
         """kiro-cli's post-stream sibling wrapper ("The service failed to
@@ -786,26 +830,12 @@ class TestFormatAcpError:
         assert is_transient_backend_error(str(err["data"])) is True
         assert is_transient_backend_error(out) is True
 
-    def test_process_failure_phrase_in_message_only_is_not_transient(self):
-        """Scoped to `data` like its sibling: the phrase in the JSON-RPC
-        `message` alone must not flip a deterministic failure to transient."""
-        err = {
-            "code": -32603,
-            "message": "The service failed to process the request",
-            "data": "ValidationException: input contains an unsupported field 'foo'",
-        }
-        out = _format_acp_error(err)
-        assert "transient error" not in out.lower()
-        assert "ValidationException: input contains an unsupported field 'foo'" in out
-
     def test_session_expired_rewrite(self):
         """An expired session gets actionable sign-in guidance rather than the
         misleading transient-5xx retry advice.
 
-        The sign-in half is the failing harness's own declared remedy, so this
-        asserts it is rendered verbatim rather than pinning the wording here: a
-        second copy of that wording is what let the message name `kiro-cli login`
-        to an operator on a harness that signs in some other way.
+        The sign-in half is the harness's own declared remedy, rendered verbatim; a copy
+        of the wording here could name `kiro-cli login` on another harness.
         """
         err = {
             "code": -32603,
@@ -819,7 +849,7 @@ class TestFormatAcpError:
         # nothing, and it deliberately makes no state claim.
         assert host_auth.signed_out_message("") in out
         assert "kiro-cli login" in out.lower()
-        assert "retry" in out.lower() and "will not help" in out.lower()
+        assert "switching models will not help" in out.lower()
         # Must NOT show the misleading 5xx message.
         assert "transient error" not in out.lower()
         assert "retry in a moment" not in out.lower()
@@ -827,16 +857,8 @@ class TestFormatAcpError:
     def test_session_expired_names_the_failing_harness(self):
         """A harness that signs in elsewhere gets ITS message, not kiro-cli's.
 
-        The regression this guards: the arm hardcoded `kiro-cli login`, so an
-        expiry on a harness with its own credential file told the operator to run
-        a command that could not fix it. The retry verdict is this arm's own
-        finding about the error, so it must survive on every backend.
-
-        Reads ``signed_out_message`` and not ``sign_in_remedy``, and the
-        difference is the point: this arm HAS evidence -- a 401, or prose saying
-        the session expired -- so it may assert the state. The remedy is the
-        register for the places that render a standing line having measured
-        nothing, and using it here would drop the diagnosis.
+        The model-switch verdict must survive on every backend. It reads ``signed_out_message``,
+        not ``sign_in_remedy``: this arm has evidence (a 401), so it may state the state.
         """
         err = {"code": -32603, "message": "Internal error", "data": "HTTP 401"}
         for backend in ("claude", "codex"):
@@ -880,22 +902,10 @@ class TestFormatAcpError:
         }
         out = _format_acp_error(err)
         assert "kiro-cli login" in out.lower()
-        assert "retry" in out.lower() and "will not help" in out.lower()
+        assert "switching models will not help" in out.lower()
         # Must NOT show the misleading transient-5xx advice.
         assert "transient error" not in out.lower()
         assert "retry in a moment" not in out.lower()
-
-    def test_invalid_bearer_token_wins_over_transport_error(self):
-        """An aborted request leaves a transport error beside the rejection; the
-        credential branch is checked first so the 5xx family cannot win."""
-        err = {
-            "code": -32603,
-            "message": "Encountered an error in the response stream",
-            "data": "DispatchFailure ConnectionResetError: the bearer token is invalid",
-        }
-        out = _format_acp_error(err)
-        assert "kiro-cli login" in out.lower()
-        assert "transient error" not in out.lower()
 
     def test_unrelated_invalid_does_not_read_as_credential_failure(self):
         """The fenced gap must not let an unrelated 'invalid' in a combined
@@ -909,17 +919,6 @@ class TestFormatAcpError:
             ),
         }
         out = _format_acp_error(err)
-        assert "kiro-cli login" not in out.lower()
-
-    def test_genuine_5xx_still_transient_with_auth_absent(self):
-        """The new auth-status branch must not swallow real 5xx errors."""
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": "ServiceUnavailableException: HTTP 503",
-        }
-        out = _format_acp_error(err)
-        assert "transient" in out.lower()
         assert "kiro-cli login" not in out.lower()
 
     def test_session_expired_variants(self):
@@ -938,18 +937,6 @@ class TestFormatAcpError:
             out = _format_acp_error(err)
             assert "transient error" not in out.lower(), f"Failed for: {text!r}"
             assert "kiro-cli login" in out.lower(), f"No login guidance for: {text!r}"
-
-    def test_session_expired_with_5xx_token_wins(self):
-        """Session expiry checked before 5xx: a DispatchFailure wrapping a
-        session-expired message must surface as auth, not transient."""
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": "DispatchFailure ConnectionResetError: session expired",
-        }
-        out = _format_acp_error(err)
-        assert "transient error" not in out.lower()
-        assert "kiro-cli login" in out.lower()
 
 
 class TestCompactionFailureDetail:

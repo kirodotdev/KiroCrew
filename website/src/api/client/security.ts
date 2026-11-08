@@ -1,8 +1,8 @@
 /**
  * Settings > Security and the credential vault: posture and stats, denied
  * commands, redaction allowed hosts, third-party app trust, registry git-identity
- * trust, the read-only governance policy, vault secrets, and the paid-AWS,
- * flagged-file-delivery and credential-redaction consents.
+ * trust, the read-only governance policy, vault secrets, and the paid-AWS and
+ * credential-redaction consents.
  */
 
 import type { ClientTransport } from './transport'
@@ -59,33 +59,6 @@ export interface AwsConsentStatus {
   grant: { account: string; region: string; profile: string; granted_at: string } | null
 }
 
-/** One recorded consent to deliver scanner-flagged files to a destination class. */
-export interface FileDeliveryGrant {
-  destination_class: string
-  granted_at: string
-}
-
-/**
- * Which flagged-file delivery destinations the owner has confirmed.
- *
- * Every list here is SERVER-OWNED and rendered as returned. The panel keeps no
- * copy of which classes are grantable, so a class moving between `grantable` and
- * `never_grantable` cannot leave the UI offering a control the backend would
- * refuse — the handler validates `destination_class` against its own grantable
- * set and answers `unknown_destination_class` otherwise.
- *
- * `grants` is keyed by destination class with `null` meaning "not confirmed",
- * which is the same fail-closed reading the backend applies to a missing or
- * unparseable record.
- */
-export interface FileDeliveryConsentStatus {
-  ok?: boolean
-  grantable: string[]
-  never_grantable: string[]
-  labels: Record<string, string>
-  grants: Record<string, FileDeliveryGrant | null>
-}
-
 /**
  * The owner's credential-redaction switch (Settings > Security > Credential
  * redaction). `enabled` is the position as RECORDED by the backend, which reads a
@@ -95,18 +68,6 @@ export interface FileDeliveryConsentStatus {
 export interface CredentialRedactionState {
   enabled: boolean
   changed_at: string
-}
-
-/** The SPA-safe view of an armed grant request. The approval NONCE is never
- *  sent to the browser: finishing the grant needs `approve_command` run on the
- *  host, which is the human-presence proof an agent-driven browser cannot fake. */
-export interface ArmedFileDeliveryConsent {
-  ok?: boolean
-  armed: boolean
-  request_id?: string
-  destination_class?: string
-  expires_in?: number
-  approve_command?: string
 }
 
 /** Full denied-commands snapshot returned by every denied-commands endpoint. */
@@ -406,7 +367,38 @@ export interface SecretsListResponse {
   managed_error?: boolean
 }
 
-export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch: fetch }: ClientTransport) {
+/** One changed key in a settings file edited outside the dashboard. `before` /
+ *  `after` are present only when the value cannot carry a credential; `redacted`
+ *  marks a value the gateway withheld. */
+export interface ConfigPendingChange {
+  path: string[]
+  change: 'added' | 'removed' | 'changed'
+  before?: unknown
+  after?: unknown
+  redacted?: true
+}
+
+/** A sealed settings file whose on-disk edit is waiting for the owner. */
+export interface ConfigPendingLeaf {
+  leaf: string
+  /** Identity of the reviewed on-disk version; echoed back on Apply/Discard. */
+  signature: string
+  /** False when the edited file is not valid JSON: it can only be discarded. */
+  disk_valid: boolean
+  /** True when the file was deleted (or cannot be read): Discard puts it back. */
+  removed?: boolean
+  changes: ConfigPendingChange[]
+  truncated: boolean
+}
+
+/** GET /api/security/config-pending, and the answer to every write there. */
+export interface ConfigPendingData {
+  enforcing: boolean
+  count: number
+  pending: ConfigPendingLeaf[]
+}
+
+export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch: fetch, jConfigPending }: ClientTransport) {
   const posture = {
     // Counts are derived server-side from the controls they describe, so a null
     // means "temporarily unresolvable", never "zero".
@@ -426,6 +418,10 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
       post('/api/security/denied-commands/user', { pattern, note }).then(j) as Promise<DeniedCommandsData>,
     toggleUserDeniedCommand: (id: string, enabled: boolean) =>
       patch('/api/security/denied-commands/user/' + encodeURIComponent(id), { enabled }).then(j) as Promise<DeniedCommandsData>,
+    // Same route as the toggle. Sets only the fields given; the server checks
+    // each exactly as an add does.
+    editUserDeniedCommand: (id: string, fields: { pattern?: string; note?: string }) =>
+      patch('/api/security/denied-commands/user/' + encodeURIComponent(id), fields).then(j) as Promise<DeniedCommandsData>,
     deleteUserDeniedCommand: (id: string) =>
       del('/api/security/denied-commands/user/' + encodeURIComponent(id)).then(j) as Promise<DeniedCommandsData>,
     // Redaction cards: the per-workspace allowed-host list (Settings → Security →
@@ -498,9 +494,17 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
     // Paid-AWS-service consent (Amazon Polly for TTS, Amazon Transcribe for STT).
     // The GET reports what would be billed AND performs the identity probe, so it
     // is the call that surfaces the account before the operator agrees to it.
-    awsConsent: (service: string) =>
-      fetch('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<AwsConsentStatus>,
-    grantAwsConsent: (service: string, shown: { profile: string; region: string; account: string }) =>
+    awsConsent: (service: string, target?: { profile: string; region: string }) =>
+      fetch('/api/aws/consent?service=' + encodeURIComponent(service)
+        // bedrock-kb only: the target lives in the add-source form until the
+        // source is saved, so the card probes the requested target explicitly.
+        // Both fields must be real strings — a malformed target is dropped
+        // rather than serialized into the URL.
+        + (target && typeof target.profile === 'string' && typeof target.region === 'string'
+          ? '&profile=' + encodeURIComponent(target.profile) + '&region=' + encodeURIComponent(target.region)
+          : '')
+      ).then(j) as Promise<AwsConsentStatus>,
+    grantAwsConsent: (service: string, shown: { profile: string; region: string; account: string }, target?: { profile: string; region: string }) =>
       post('/api/aws/consent', {
         service,
         // Echo back exactly what was on screen. The backend rejects a mismatch, so
@@ -508,43 +512,34 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
         expectedProfile: shown.profile,
         expectedRegion: shown.region,
         expectedAccount: shown.account,
+        ...(target ? { targetProfile: target.profile, targetRegion: target.region } : {}),
       }).then(j) as Promise<{ ok?: boolean; error?: string; code?: string; identityDetail?: string }>,
     revokeAwsConsent: (service: string) =>
       del('/api/aws/consent?service=' + encodeURIComponent(service)).then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
 
-    // Flagged-file delivery consent (Settings > Security > Flagged-file delivery).
-    // FOUR EXPLICIT VERBS, deliberately not one helper that takes a method: the
-    // handler re-applies the owner gate on each separately, and a caller that
-    // collapsed them onto a shared path would be expressing a read and a write as
-    // the same grant. Read #8514 for why that shape is a hazard -- a fence keyed on
-    // a path PREFIX cannot tell the verbs apart, so admitting the read admits the
-    // write in the same stroke.
-    //
-    // Recording a grant is a two-step STEP-UP (issue #7770): POST only ARMS a
-    // request (writing a host-only nonce the browser never sees), and the grant is
-    // recorded by `kirocrew file-delivery approve` on the machine. That closes the
-    // hole where an owner-authenticated but agent-DRIVEN browser could self-grant.
-    //
-    // The class travels in the query string, not a body, because that is what the
-    // handler reads (`request.query.get("destination_class")`) on the writes.
-    fileDeliveryConsent: () =>
-      fetch('/api/file-delivery/consent').then(j) as Promise<FileDeliveryConsentStatus>,
-    armFileDeliveryConsent: (destinationClass: string) =>
-      post('/api/file-delivery/consent?destination_class=' + encodeURIComponent(destinationClass))
-        .then(j) as Promise<ArmedFileDeliveryConsent>,
-    fileDeliveryConsentArmStatus: () =>
-      fetch('/api/file-delivery/consent/arm').then(j) as Promise<ArmedFileDeliveryConsent>,
-    revokeFileDeliveryConsent: (destinationClass: string) =>
-      del('/api/file-delivery/consent?destination_class=' + encodeURIComponent(destinationClass))
-        .then(j) as Promise<{ ok?: boolean; removed?: boolean }>,
     // Credential-redaction switch (Settings > Security > Credential redaction).
-    // Two explicit verbs for the same reason the consent helpers above keep
-    // theirs: the handler applies the owner gate to the read and the write
-    // separately, and the write is the ONLY writer of the keystone.
+    // Two explicit verbs, not one helper that takes a method: the handler
+    // applies the owner gate to the read and the write separately, and the
+    // write is the ONLY writer of the keystone.
     credentialRedaction: () =>
       fetch('/api/security/credential-redaction').then(j) as Promise<CredentialRedactionState>,
     setCredentialRedaction: (enabled: boolean) =>
       put('/api/security/credential-redaction', { enabled }).then(j) as Promise<CredentialRedactionState>,
+    /** Reveal one removed credential to the owner. The value lives only in
+     *  gateway memory; a 410 means it is gone (restart or expiry). The caller
+     *  keeps the answer in memory only: never in storage or a query cache. */
+    revealRedactedValue: (slot: string, id: string) =>
+      post('/api/security/redacted-value', { slot, id }).then(j) as Promise<{ value: string }>,
+
+    // Settings files edited outside the dashboard (Settings > Security). Owner
+    // only. Both writes echo the reviewed `signature` and answer with the
+    // refreshed snapshot; a 409 `pending_changed` means the file moved since.
+    configPending: () =>
+      get('/api/security/config-pending').then(jConfigPending) as Promise<ConfigPendingData>,
+    applyConfigPending: (leaf: string, signature: string) =>
+      post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/apply', { signature }).then(j) as Promise<ConfigPendingData>,
+    discardConfigPending: (leaf: string, signature: string) =>
+      post('/api/security/config-pending/' + encodeURIComponent(leaf) + '/discard', { signature }).then(j) as Promise<ConfigPendingData>,
   }
 
   return { posture, policies, secrets, consents }

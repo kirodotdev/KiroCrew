@@ -17,7 +17,7 @@
  * tree and let a "the folder is visible" assertion pass for the wrong reason.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -45,7 +45,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -245,7 +252,7 @@ describe('chat sidebar — reveal a folder row', () => {
     try {
       const utils = renderSidebar()
       await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
-      utils.store.dispatch(requestFolderReveal('f-other'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-other')) })
       await waitFor(() => expect(scroll.spy).toHaveBeenCalled())
       const row = utils.container.querySelector('[data-folder-row="f-other"]')
       expect(row?.className).toContain('session-reveal-flash')
@@ -261,7 +268,7 @@ describe('chat sidebar — reveal a folder row', () => {
     try {
       const utils = renderSidebar()
       await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
-      utils.store.dispatch(requestFolderReveal('f-other'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-other')) })
       await waitFor(() => expect(scroll.spy).toHaveBeenCalled())
       // The flash is keyed by (kind, id): a folder reveal must never light up a
       // session row, whose keys live in a different namespace that can collide.
@@ -300,7 +307,7 @@ describe('chat sidebar — reveal a folder row', () => {
       expect(utils.container.querySelector(`[data-folder-row="${COLLIDE}"]`)).not.toBeNull()
       expect(utils.container.querySelector(`[data-session-row="${COLLIDE}"]`)).not.toBeNull()
 
-      utils.store.dispatch(requestFolderReveal(COLLIDE))
+      act(() => { utils.store.dispatch(requestFolderReveal(COLLIDE)) })
       await waitFor(() => expect(scroll.spy).toHaveBeenCalled())
 
       const flashed = [...utils.container.querySelectorAll('.session-reveal-flash')]
@@ -321,7 +328,7 @@ describe('chat sidebar — reveal a folder row', () => {
       await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
       typeSearch(utils, 'ladder')
       await waitFor(() => expect(utils.queryByText('Archive')).toBeNull())
-      utils.store.dispatch(requestFolderReveal('f-archive'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-archive')) })
       // The filter that was hiding it is dropped, so the row exists to scroll to.
       await waitFor(() => expect(utils.queryByText('Archive')).not.toBeNull())
       expect((utils.getByPlaceholderText('Search sessions…') as HTMLInputElement).value).toBe('')
@@ -344,7 +351,7 @@ describe('chat sidebar — reveal a folder row', () => {
         ],
       })
       await waitFor(() => expect(utils.queryByText('Sydney Property')).not.toBeNull())
-      utils.store.dispatch(requestFolderReveal('f-nested'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-nested')) })
       // Landing on a folder means seeing what is in it, so the target's OWN
       // disclosure opens too — not just the ancestors above it.
       await waitFor(() => expect(updateChatFolder).toHaveBeenCalledWith('f-nested', { collapsed: false }))
@@ -362,7 +369,7 @@ describe('chat sidebar — reveal a folder row', () => {
       const utils = renderSidebar({ hiddenFolders: ['f-syd', 'f-nested'] })
       await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
       expect(utils.queryByText('Inspections')).toBeNull()
-      utils.store.dispatch(requestFolderReveal('f-nested'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-nested')) })
       await waitFor(() => expect(utils.queryByText('Inspections')).not.toBeNull())
       expect(utils.queryByText('Sydney Property')).not.toBeNull()
       // The un-hiding is persisted, like every other write to this filter.
@@ -377,7 +384,7 @@ describe('chat sidebar — reveal a folder row', () => {
     try {
       localStorage.setItem('mc-sidebar-flat-view', '1')
       const utils = renderSidebar()
-      utils.store.dispatch(requestFolderReveal('f-other'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-other')) })
       // The lane really does switch -- a folder row only exists in the tree lane, so
       // the reveal has nothing to scroll to until it does.
       await waitFor(() => expect(utils.container.querySelector('[data-folder-row="f-other"]')).not.toBeNull())
@@ -397,7 +404,7 @@ describe('chat sidebar — reveal a folder row', () => {
     try {
       const utils = renderSidebar()
       await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
-      utils.store.dispatch(requestFolderReveal('f-deleted'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-deleted')) })
       await waitFor(() => expect(utils.store.getState().chat.revealRequest).toBeNull())
       // Nothing to scroll to, and nothing flashes — but the request is consumed
       // rather than left to re-fire on the next mount.
@@ -429,7 +436,7 @@ describe('chat sidebar — reveal a folder row', () => {
       // Precondition: the flag really does keep the row out of the lane.
       expect(utils.container.querySelector('[data-folder-row="f-hidden"]')).toBeNull()
 
-      utils.store.dispatch(requestFolderReveal('f-hidden'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-hidden')) })
       // The row appears and is scrolled to…
       await waitFor(() => expect(utils.container.querySelector('[data-folder-row="f-hidden"]')).not.toBeNull())
       await waitFor(() => expect(scroll.spy).toHaveBeenCalled())
@@ -457,7 +464,7 @@ describe('chat sidebar — reveal a folder row', () => {
       await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
       expect(utils.container.querySelector('[data-folder-row="f-kid"]')).toBeNull()
 
-      utils.store.dispatch(requestFolderReveal('f-kid'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-kid')) })
       await waitFor(() => expect(utils.container.querySelector('[data-folder-row="f-kid"]')).not.toBeNull())
       expect(utils.container.querySelector('[data-folder-row="f-par"]')).not.toBeNull()
     } finally {
@@ -476,7 +483,7 @@ describe('chat sidebar — reveal a folder row', () => {
     try {
       const utils = renderSidebar({ folders })
       await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
-      utils.store.dispatch(requestFolderReveal('f-other'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-other')) })
       await waitFor(() => expect(scroll.spy).toHaveBeenCalled())
       expect(utils.container.querySelector('[data-folder-row="f-hidden"]')).toBeNull()
     } finally {
@@ -494,8 +501,8 @@ describe('chat sidebar — reveal a folder row', () => {
     try {
       const utils = renderSidebar()
       await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
-      utils.store.dispatch(requestFolderReveal('f-other'))
-      utils.store.dispatch(requestSlotReveal('k-loose'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-other')) })
+      act(() => { utils.store.dispatch(requestSlotReveal('k-loose')) })
       // Only the second survived to be consumed.
       await waitFor(() => expect(utils.container.querySelectorAll('.session-reveal-flash').length).toBe(1))
       const flashed = utils.container.querySelector('.session-reveal-flash')
@@ -698,7 +705,7 @@ describe('chat sidebar — revealing a folder in the BOARD lane', () => {
       // Precondition: this lane really has no header row to fall back on.
       expect(utils.container.querySelector('[data-folder-row="f-other"]')).toBeNull()
 
-      utils.store.dispatch(requestFolderReveal('f-other'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-other')) })
       await waitFor(() => expect(scroll.spy).toHaveBeenCalled())
       const flashed = [...utils.container.querySelectorAll('.session-reveal-flash')]
         .find(el => el.getAttribute('data-folder-drop') === 'f-other')
@@ -713,7 +720,7 @@ describe('chat sidebar — revealing a folder in the BOARD lane', () => {
     try {
       const utils = renderSidebar({ columns: COLUMNS })
       await waitFor(() => expect(utils.container.querySelector('[data-folder-drop="f-other"]')).not.toBeNull())
-      utils.store.dispatch(requestFolderReveal('f-other'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-other')) })
       await waitFor(() => expect(scroll.spy).toHaveBeenCalled())
       const marked = [...utils.container.querySelectorAll('.session-reveal-flash')]
         .map(el => el.getAttribute('data-folder-drop'))
@@ -732,7 +739,7 @@ describe('chat sidebar — revealing a folder in the BOARD lane', () => {
     try {
       const utils = renderSidebar()
       await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
-      utils.store.dispatch(requestFolderReveal('f-other'))
+      act(() => { utils.store.dispatch(requestFolderReveal('f-other')) })
       await waitFor(() => expect(scroll.spy).toHaveBeenCalled())
       expectCanPaint(utils.container.querySelector('[data-folder-row="f-other"]'))
     } finally {

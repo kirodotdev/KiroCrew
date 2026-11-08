@@ -48,11 +48,6 @@ vi.mock('../../api/client', () => ({
     // crash on an undefined queryFn; the section's behaviour is covered in
     // SecurityPanel.tailnet.test.tsx.
     tailnetStatus: vi.fn(),
-    // Read by the rail on every mount to summarise the flagged-file-delivery
-    // section, for the same reason as `tailnetStatus` above. The section's own
-    // behaviour is covered in SecurityPanel.fileDelivery.test.tsx.
-    fileDeliveryConsent: vi.fn(),
-    revokeFileDeliveryConsent: vi.fn(),
     listTrustedApps: vi.fn(),
     trustApp: vi.fn(),
     untrustApp: vi.fn(),
@@ -68,7 +63,7 @@ import { api } from '../../api/client'
 import type { TrustedRegistriesData } from '../../api/client'
 import { SecurityPanel } from './SecurityPanel'
 import { i18nT } from '../../i18n/t'
-import { TAILNET_OFF, CONSENT_NONE, snapshot, posture, govNoPolicy } from '../../test/SecurityPanelTestUtils'
+import { TAILNET_OFF, snapshot, posture, govNoPolicy } from '../../test/SecurityPanelTestUtils'
 
 /** Registry-trust copy, resolved the way the panel resolves it.
  *
@@ -154,7 +149,6 @@ describe('SecurityPanel — registries trusted with the git identity', () => {
     ;(api.securityPosture as ReturnType<typeof vi.fn>).mockResolvedValue(posture())
     ;(api.kirocrewConfig as ReturnType<typeof vi.fn>).mockResolvedValue({})
     ;(api.tailnetStatus as ReturnType<typeof vi.fn>).mockResolvedValue(TAILNET_OFF)
-    ;(api.fileDeliveryConsent as ReturnType<typeof vi.fn>).mockResolvedValue(CONSENT_NONE)
     ;(api.listTrustedRegistries as ReturnType<typeof vi.fn>).mockResolvedValue(registries())
     ;(api.grantTrustedRegistry as ReturnType<typeof vi.fn>).mockResolvedValue(
       registries({

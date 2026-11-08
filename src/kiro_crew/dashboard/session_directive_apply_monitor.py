@@ -16,7 +16,6 @@ import logging
 import time
 from typing import Any
 
-from kiro_crew.apps.builtins.auto_research.session_keys import is_owned_research_slot
 from kiro_crew.autonudge import (
     APPROVAL_STALL_REASON,
     AUTONUDGE_STOP_REASON,
@@ -336,7 +335,8 @@ async def _monitor_start(
         f"(user messages defer a due fire "
         f"to their turn's end without restarting the countdown){cap}"
         + (f"; {first_wake}" if first_wake else "")
-        + ". End your turn now — the loop wakes you. Call autonudge_stop when the "
+        + ". Reply with one line saying the watch is armed, then end your turn — the "
+        "loop wakes you. Call autonudge_stop when the "
         "exit condition is met."
     )
 
@@ -660,9 +660,8 @@ async def _monitor_update(
     # legacy chokepoint ``authorize_and_update_nudge`` holds an opaque loop id
     # and no session identity (its REST caller is user-token gated), so the mode
     # rule has to be applied HERE, where the provenance lives: ``message`` is
-    # the instruction every future wake executes, and before this PR a
-    # crew/member slot could hold no loop at all, so a revision of one is a
-    # NEW surface. Only the session's own turn (``self_arm_ok``) may revise it;
+    # the instruction every future wake executes. Only the session's own turn
+    # (``self_arm_ok``) may revise it;
     # a cron injection, an app-driven turn or a sub-agent sharing the slot is
     # refused with the same reason the arm path gives. Same predicate as the
     # arm path (``is_self_arm``) so the two never drift apart. The mode is read
@@ -854,6 +853,26 @@ def _structured_stop_reason(args: dict[str, Any]) -> str:
     )
 
 
+def _keeps_stopped_loop(slot: Any, binding: str) -> bool:
+    """Whether a stop of the legacy loop on *binding* keeps its row for an app to read.
+
+    Asks the ``stopped_loop_tombstone`` seam (:mod:`kiro_crew.apps.seams`) with the
+    slot's persisted app provenance. With no provider nothing is kept, and a provider
+    that raises keeps nothing either, so the stop removes the row as it does for every
+    other legacy loop.
+    """
+    from kiro_crew.apps.seams import stopped_loop_tombstone
+
+    tombstone = stopped_loop_tombstone()
+    if tombstone is None:
+        return False
+    try:
+        return bool(tombstone.keeps_stopped_loop(binding, str(getattr(slot, "_app", "") or "")))
+    except Exception:
+        logger.warning("the stopped_loop_tombstone seam could not answer", exc_info=True)
+        return False
+
+
 async def _stop_resolved_loop(
     slot: Any,
     svc: Any,
@@ -872,9 +891,10 @@ async def _stop_resolved_loop(
 
     Routing is asymmetric because the data model is. A structured monitor goes
     through ``authorize_and_stop_monitor``, which RETAINS a terminal record for
-    later inspection. A legacy loop has no such record: a research-owned slot is
-    deactivated with a tombstone reason a Research Lab consumer reads, and every
-    other legacy loop is REMOVED, leaving no row behind. So a stop of a legacy
+    later inspection. A legacy loop has no such record: on a slot an app
+    keeps a tombstone for (:func:`_keeps_stopped_loop`) it is deactivated with a reason
+    that app's consumer reads, and every other legacy loop is REMOVED, leaving no
+    row behind. So a stop of a legacy
     loop cannot be inspected afterward -- ``monitor_inspect`` reports it as not
     armed; only the WARNING stop line in ``gateway.log`` says why it went (the
     agent's own explanation rides along on the removal path only). Callers that
@@ -903,8 +923,8 @@ async def _stop_resolved_loop(
             + (f" (reason: {reason})" if reason else "")
             + ". No further monitor wakes will fire."
         )
-    # Research Lab consumes a persisted stop record to distinguish deliberate
-    # completion from unreachable-session cleanup. The canonical name is not
+    # An app that drives a worker slot may consume a persisted stop record to tell
+    # deliberate completion from unreachable-session cleanup. A slot name is not
     # ownership evidence: users may give an ordinary dashboard slot the same
     # shape, while the slot's persisted app provenance cannot be user-selected.
     # Ordinary dashboard/channel monitors have no tombstone consumer, so retain
@@ -912,9 +932,9 @@ async def _stop_resolved_loop(
     # SESSION'S binding names the slot, not the loop's own slot_key: they are the
     # same for a bound loop, and the binding is the identity the ownership check
     # reads.
-    # Both legacy writes take the guard: the tombstone is read by Research Lab
-    # as a deliberate finish, so stamping it over a person's pause would settle
-    # the campaign exactly as deleting the row would lose it.
+    # Both legacy writes take the guard: the tombstone is read by the app as a
+    # deliberate finish, so stamping it over a person's pause would settle the
+    # app's work exactly as deleting the row would lose it.
     # Only a RECORDED outcome decides. A refusal refuses. A row the service found
     # missing under the lock is success only if nothing replaced it (the guard's
     # ``on_absent`` checks the slot in that same hold); a replacement refuses,
@@ -932,7 +952,7 @@ async def _stop_resolved_loop(
         absent_outcome.append("replaced" if replaced else "gone")
 
     on_absent = guard.on_absent if guard is not None else _mark_absent
-    if is_owned_research_slot(binding, str(getattr(slot, "_app", "") or "")):
+    if _keeps_stopped_loop(slot, binding):
         update_kwargs: dict[str, Any] = {
             "active": False,
             "stopped_reason": AUTONUDGE_STOP_REASON,

@@ -20,7 +20,6 @@ import reducer, {
   confirmCloseHold,
   armConfirmedCloseHold,
   sseSlotPatch,
-  sseSubagentStatus,
 } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 
@@ -476,19 +475,6 @@ describe('dashboardSlice close tombstone', () => {
     expect(keys(s)).toEqual(['chat-a'])
     // C's confirmed hold has retired; B's in-flight hold has not.
     expect(Object.keys(s.closingSlots)).toEqual(['chat-b'])
-  })
-
-  it('does not evict a held slot\'s subagent state before the server confirms', () => {
-    // Existing invariant: only an authoritative list that OMITS the key may
-    // tear down sub-agent state, because a failed close leaves the slot live.
-    let s = live()
-    s = reducer(s, sseSubagentStatus({ slot: 'chat-b', running: 1 } as never))
-    s = closing(s)
-    s = reducer(s, sseSlots([A, B, C]))
-    expect(s.subagentRunning['chat-b']).toBeDefined()
-    // Teardown follows the frame's membership, not the hold.
-    s = reducer(s, sseSlots([A, C]))
-    expect(s.subagentRunning['chat-b']).toBeUndefined()
   })
 
   it('refuses prototype keys instead of throwing inside the pending reducer', () => {

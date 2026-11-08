@@ -15,6 +15,33 @@ export function noteHostOrigin(origin: string | null): void {
   hostOrigin = typeof origin === 'string' && isEmbeddableHubOrigin(origin) ? origin : null
 }
 
+// Reads the stored host model's `electron` field. This module stays store-free
+// (the chat composer reaches it through the pop-out controller), so
+// EmbeddedHostBridge injects the read instead of this file importing the store.
+// The value itself lives only in Redux.
+let readHostElectron: () => boolean = () => false
+
+/**
+ * Install the reader `isDesktopAppPane` uses for the host model's `electron`
+ * field. EmbeddedHostBridge sets it while mounted; `null` restores the default
+ * (`false`).
+ */
+export function setHostElectronReader(reader: (() => boolean) | null): void {
+  readHostElectron = reader ?? (() => false)
+}
+
+/**
+ * True when this dashboard is a crew's pane inside the desktop app, read off
+ * the `electron` field of the host model EmbeddedHostBridge stores. The pane is
+ * served from the crew's tunnel port, so its origin is never the window's own;
+ * the desktop window-open handler sends such a `window.open` to the system
+ * browser and returns no window. Callers that would open a same-origin window
+ * use this to refuse up front with the real reason.
+ */
+export function isDesktopAppPane(): boolean {
+  return readHostElectron() && isEmbeddedPane()
+}
+
 /**
  * Pane side: post `payload` up to the embedding Instances hub.
  *

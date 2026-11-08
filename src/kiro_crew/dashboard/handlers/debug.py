@@ -60,11 +60,14 @@ content stays behind the crew-log tools, and nothing here reads a transcript.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Final
 
@@ -615,6 +618,37 @@ def _stale_grant_refusal(
     return _forbidden(refusal)
 
 
+async def _offload_then_recheck(
+    request: web.Request,
+    view: str,
+    operation: str,
+    read: Callable[[], Any],
+    respond: Callable[[Any], web.Response],
+    *,
+    reads_past_own: bool = True,
+) -> web.Response:
+    """Run *read* off the loop, re-check the grant it suspended, then *respond*.
+
+    The one way a debug route builds a payload, so no route can answer before the
+    re-check: the route hands over the bound read and its own shaping, and the
+    shaping runs only once the grant still holds. An exception from *read*
+    propagates for the route to map. ``crew_log`` keeps its own copy because its
+    re-check is async and has no ``reads_past_own``.
+    """
+    payload = await asyncio.to_thread(read)
+    stale = _stale_grant_refusal(request, view, operation, reads_past_own=reads_past_own)
+    if stale is not None:
+        return stale
+    return respond(payload)
+
+
+def _redacted_json(payload: Any) -> web.Response:
+    """*payload* as JSON, every string passed through the context's redactor."""
+    from kiro_crew.platform import redact_via_context as redact
+
+    return web.json_response(json.loads(redact(json.dumps(payload, default=str))))
+
+
 def _audit_debug_read(caller: str, source: str, operation: str, outcome: str, error: str) -> None:
     """SEL for one debug read.
 
@@ -800,15 +834,14 @@ async def api_debug_gateway(request: web.Request) -> web.Response:
     denied = await _authorize_debug_read(request, "gateway", "debug.gateway")
     if denied is not None:
         return denied
-    import asyncio
-
     from kiro_crew.platform import redact_via_context as redact
 
-    payload = await asyncio.to_thread(_gateway_payload)
-    stale = _stale_grant_refusal(request, "gateway", "debug.gateway")
-    if stale is not None:
-        return stale
-    return web.json_response(json.loads(redact(json.dumps(payload))))
+    def _respond(payload: Any) -> web.Response:
+        return web.json_response(json.loads(redact(json.dumps(payload))))
+
+    return await _offload_then_recheck(
+        request, "gateway", "debug.gateway", _gateway_payload, _respond
+    )
 
 
 def _gateway_payload() -> dict[str, Any]:
@@ -996,8 +1029,6 @@ def _read_refusals(*, keys: set[str] | None, since_ts: float | None, limit: int)
 
 async def api_debug_refusals(request: web.Request) -> web.Response:
     """GET /api/debug/refusals — why calls were refused, each one classed."""
-    import asyncio
-
     wants = (request.query.get("session") or SELF).strip()
     denied = await _authorize_debug_read(
         request, "refusals", "debug.refusals", target_session=wants
@@ -1017,20 +1048,22 @@ async def api_debug_refusals(request: web.Request) -> web.Response:
         )
     limit = max(1, min(limit, MAX_REFUSALS))
     since_ts = _parse_window(request.query.get("since") or "")
-    payload = await asyncio.to_thread(_read_refusals, keys=keys, since_ts=since_ts, limit=limit)
+
+    def _respond(payload: Any) -> web.Response:
+        payload["scope"] = wants
+        return web.json_response(payload)
+
     # The re-check applies only when this read reached PAST the caller's own rows.
     # A self-narrowed read did not, so re-testing the class would refuse exactly the
     # view a channel-linked session is entitled to.
-    stale = _stale_grant_refusal(
+    return await _offload_then_recheck(
         request,
         "refusals",
         "debug.refusals",
+        functools.partial(_read_refusals, keys=keys, since_ts=since_ts, limit=limit),
+        _respond,
         reads_past_own=keys is None or keys != {session_key},
     )
-    if stale is not None:
-        return stale
-    payload["scope"] = wants
-    return web.json_response(payload)
 
 
 # --------------------------------------------------------------------------- #
@@ -1059,6 +1092,23 @@ def _diag_module(name: str) -> Any:
         return None
 
 
+def _threads_read(threads: Any, request: web.Request) -> Callable[[], dict[str, Any]]:
+    """The requested ``threads`` mode as one bound read; a bad argument raises here."""
+    mode = (request.query.get("mode") or "now").strip()
+    if mode == "dumps":
+        name = (request.query.get("read") or "").strip()
+        return lambda: {
+            "mode": mode,
+            "dumps": threads.read_dump(name) if name else threads.list_dumps(),
+        }
+    if mode == "sample":
+        seconds = min(float(request.query.get("seconds") or 5), 60.0)
+        hz = max(1, min(int(request.query.get("hz") or 100), 1000))
+        deep = request.query.get("deep") in ("1", "true", "True")
+        return lambda: {"mode": mode, **threads.sample(seconds, hz, deep)}
+    return lambda: {"mode": "now", **threads.ledger_now()}
+
+
 async def api_debug_threads(request: web.Request) -> web.Response:
     """GET /api/debug/threads — GIL and thread state, or 501 without diag."""
     denied = await _authorize_debug_read(request, "threads", "debug.threads")
@@ -1067,30 +1117,10 @@ async def api_debug_threads(request: web.Request) -> web.Response:
     threads = _diag_module("threads")
     if threads is None:
         return _diag_unavailable()
-    import asyncio
-
-    from kiro_crew.platform import redact_via_context as redact
-
-    mode = (request.query.get("mode") or "now").strip()
     try:
-        if mode == "dumps":
-            name = (request.query.get("read") or "").strip()
-            result = (
-                await asyncio.to_thread(threads.read_dump, name)
-                if name
-                else await asyncio.to_thread(threads.list_dumps)
-            )
-            payload: dict[str, Any] = {"mode": mode, "dumps": result}
-        elif mode == "sample":
-            seconds = min(float(request.query.get("seconds") or 5), 60.0)
-            hz = max(1, min(int(request.query.get("hz") or 100), 1000))
-            deep = request.query.get("deep") in ("1", "true", "True")
-            payload = {
-                "mode": mode,
-                **(await asyncio.to_thread(threads.sample, seconds, hz, deep)),
-            }
-        else:
-            payload = {"mode": "now", **(await asyncio.to_thread(threads.ledger_now))}
+        return await _offload_then_recheck(
+            request, "threads", "debug.threads", _threads_read(threads, request), _redacted_json
+        )
     except ValueError as exc:
         return web.json_response({"error": str(exc), "code": "bad_range"}, status=400)
     except FileNotFoundError as exc:
@@ -1100,10 +1130,6 @@ async def api_debug_threads(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc), "code": "dump_missing"}, status=404)
     except OSError as exc:
         return web.json_response({"error": str(exc), "code": "dump_unreadable"}, status=503)
-    stale = _stale_grant_refusal(request, "threads", "debug.threads")
-    if stale is not None:
-        return stale
-    return web.json_response(json.loads(redact(json.dumps(payload, default=str))))
 
 
 #: Guards the one-time construction of the process roster's rate baseline.
@@ -1138,10 +1164,6 @@ async def api_debug_processes(request: web.Request) -> web.Response:
     procs = _diag_module("procs")
     if procs is None:
         return _diag_unavailable()
-    import asyncio
-
-    from kiro_crew.platform import redact_via_context as redact
-
     filters: dict[str, Any] = {}
     for key in ("kind", "owner"):
         if request.query.get(key):
@@ -1156,11 +1178,9 @@ async def api_debug_processes(request: web.Request) -> web.Response:
         # the baseline they need is this route's to hold.
         return procs.tree(procs.scan_with_rates(_process_rate_baseline(procs)), fmt, **filters)
 
-    payload = await asyncio.to_thread(_scan)
-    stale = _stale_grant_refusal(request, "processes", "debug.processes")
-    if stale is not None:
-        return stale
-    return web.json_response(json.loads(redact(json.dumps(payload, default=str))))
+    return await _offload_then_recheck(
+        request, "processes", "debug.processes", _scan, _redacted_json
+    )
 
 
 async def api_debug_snapshots(request: web.Request) -> web.Response:
@@ -1171,35 +1191,30 @@ async def api_debug_snapshots(request: web.Request) -> web.Response:
     recorder_mod = _diag_module("recorder")
     if recorder_mod is None:
         return _diag_unavailable()
-    import asyncio
-
-    from kiro_crew.platform import redact_via_context as redact
-
     recorder = recorder_mod.get_recorder()
     if recorder is None:
         return web.json_response(
             {"error": "the diagnostic recorder is not running", "code": "recorder_off"}, status=422
         )
     fields = request.query.getall("fields", []) or None
+    read = functools.partial(
+        recorder.query,
+        request.query.get("since") or None,
+        request.query.get("until") or None,
+        request.query.get("around") or None,
+        request.query.get("radius") or None,
+        fields,
+        request.query.get("events_only") in ("1", "true", "True"),
+        request.query.get("cursor") or None,
+    )
     try:
-        payload = await asyncio.to_thread(
-            recorder.query,
-            request.query.get("since") or None,
-            request.query.get("until") or None,
-            request.query.get("around") or None,
-            request.query.get("radius") or None,
-            fields,
-            request.query.get("events_only") in ("1", "true", "True"),
-            request.query.get("cursor") or None,
+        return await _offload_then_recheck(
+            request, "snapshots", "debug.snapshots", read, _redacted_json
         )
     except ValueError as exc:
         # A malformed window value (``radius=5x``, an unparsable ``around``) is
         # the caller's error and names its field; it must not read as a crash.
         return web.json_response({"error": str(exc), "code": "bad_range"}, status=400)
-    stale = _stale_grant_refusal(request, "snapshots", "debug.snapshots")
-    if stale is not None:
-        return stale
-    return web.json_response(json.loads(redact(json.dumps(payload, default=str))))
 
 
 # ``api_debug_refusals`` is named as member-scoped; the other four are not, and the

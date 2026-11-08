@@ -2,9 +2,13 @@ import { useState, useCallback, useMemo, type RefObject } from 'react'
 import type { CrewmateIdentity } from '../pages/chat/CrewmateMessage'
 import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { store, type AppDispatch, type RootState } from '../store'
-import { capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, resolveOptimisticSteer, selectSendAccepted, selectSendConfirmed, appendSlotMessage, pendingQuestionFor } from '../store/chatSlice'
+import { capturePendingAskId, confirmOptimisticSend, markSendUnconfirmed, recordSendAttempt, resolveOptimisticSteer, selectSendAccepted, selectSendConfirmed, selectSlotRunEpoch, appendSlotMessage, pendingQuestionFor } from '../store/chatSlice'
+import { warnDeliveryUnconfirmed } from '../utils/deliveryWarning'
+import { announceIfRemovedSendDelivered } from './useDeliveryWarningStrip'
 import { readPaneDraft, writePaneDraft } from '../utils/chatPaneDrafts'
-import { expandAll as expandPasteTokens } from '../utils/pasteTokens'
+import { expandAll as expandPasteTokens, carryPastes, type PasteBlock } from '../utils/pasteTokens'
+import { prependQuote, type MessageQuote } from '../chat-core/composer/messageQuote'
+import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { sendTurn, mintSendId, type SendReceiptStatus } from '../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../chat-core/transport/steerReceipt'
 import { useMessageQuote } from '../chat-core/composer/useMessageQuote'
@@ -14,6 +18,7 @@ import { revealComposer } from '../pages/chat/composerFocus'
 import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { agentSwitchTarget, interceptSlashCommand, isInterceptedSlashCommand, isSideCommand } from '../pages/chat/ChatInput'
 import { extractKnowledgeQuery } from '../pages/chat/useKnowledgeFetch'
+import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import type { ComposerHandle } from '../chat-core/composer/Composer'
 import { isComposerSendHeld } from '../utils/composerSendHolds'
@@ -30,12 +35,36 @@ import type { useChatPaneDraft } from './useChatPaneDraft'
  * was typed into, through the draft's `restoreIntoComposer`.
  */
 
-/** Client-only commands the pane never runs: it has no knowledge picker. */
-const PANE_REFUSED_COMMANDS: readonly string[] = ['/kb']
+/** Client-only commands the pane never runs: it has no knowledge picker, and
+ *  `/fork` opens its fork in the main chat. */
+const PANE_REFUSED_COMMANDS: readonly string[] = ['/kb', '/fork']
 
 /** Delay before the post-send bottom pin, so the optimistic bubble's commit has
  *  landed in the tail window the pin mounts (ChatPage uses the same figure). */
 const SCROLL_AFTER_RENDER_MS = 100
+
+/** What a pane send consumed, in the shape the pane's `restoreIntoComposer` puts back. A crewmate
+ *  pane raises none: its transcript draws messages only, so the notice that a removed send was
+ *  delivered after all could never reach the user there. */
+export interface PaneSentRestore {
+  text: string
+  files: string[]
+  pastes: PasteBlock[]
+  quote: MessageQuote | null
+}
+
+/** Two pane sends' payloads as one, so a single restore puts both back. The stage holds one
+ *  quote, so a second goes into its own text. */
+export function mergePaneSends(earlier: PaneSentRestore, later: PaneSentRestore): PaneSentRestore {
+  const laterText = earlier.quote && later.quote ? prependQuote(later.text, later.quote) : later.text
+  const carried = carryPastes(laterText, later.pastes, earlier.pastes)
+  return {
+    text: mergeRecoveredDraft(earlier.text, carried.text),
+    files: [...new Set([...earlier.files, ...later.files])],
+    pastes: carried.pastes,
+    quote: earlier.quote ?? later.quote,
+  }
+}
 
 export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRef, busy, running, paneSlot, scrollToBottom, openSideChat, agentLocked, paneAgentName, pendingQuestion, markCrewmateSent }: {
   slotKey: string
@@ -54,6 +83,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
   markCrewmateSent: (sendId: string) => void
 }) {
   const { input, setInput, pendingFiles, setPendingFiles, pasteBlocks, setPasteBlocks, readPastes, slotKeyRef, inputRef, mountedRef, restoreIntoComposer } = draft
+  const project = paneSlot?.project
   // In-pane report of a client-only slash command that did not run, keyed by
   // the slot it was typed in so a rebind does not carry it to another thread.
   const [slashError, setSlashError] = useState<{ slot: string; message: string; elsewhere?: boolean } | null>(null)
@@ -99,8 +129,9 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
   // `/onboarding`) and the knowledge-fetch prefixes (`/kb`, `@kb`): the same
   // matchers and the same `interceptSlashCommand` ChatPage.send runs, so the
   // pane never posts them to the agent as text. The pane has no knowledge
-  // picker, and a host may give it no Side Chat (`openSideChat` omitted);
-  // those commands are refused here with the composer kept. Returns true when
+  // picker, `/fork` opens its fork in the main chat, and a host may give it no
+  // Side Chat (`openSideChat` omitted); those commands are refused here with
+  // the composer kept. Returns true when
   // the composer text was a command (handled or refused), so the caller must
   // not send it.
   // Commands the pane refuses (see interceptPaneSlash), kept out of its menu
@@ -125,8 +156,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       setSlashError({ slot: sentSlot, message: i18nT('pages.chatPage.agent_locked_command', { agent: paneAgentName }) })
       return true
     }
-    if (knowledge || (isSideCommand(raw) && !openSideChat)) {
-      const command = raw.split(/\s/, 1)[0]
+    const command = raw.split(/\s/, 1)[0]
+    if (knowledge || PANE_REFUSED_COMMANDS.includes(command) || (isSideCommand(raw) && !openSideChat)) {
       setSlashError({ slot: sentSlot, message: i18nT('pages.chatPage.command_not_available_here', { command }), elsewhere: true })
       return true
     }
@@ -230,12 +261,12 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // the ORDERED non-image list on `meta.files` (the agent's image extraction
     // matches absolute paths in the PROMPT TEXT, and the bubble renders images
     // only from their markdown); folder tokens as `[attached_dir N]`
-    // markers with `meta.dirs` (the pane has no project context, so tokens are
-    // absolute and serialize as-is); the live paste tokens expanded on the wire
-    // while the bubble keeps them plus `meta.pastes`, and the side table
+    // markers with `meta.dirs`, a picked `@rel/` resolved against the slot's
+    // project the way the picker inserted it; the live paste tokens expanded
+    // on the wire while the bubble keeps them plus `meta.pastes`, and the side table
     // re-collapses the server's expanded echo to that chip on history load; the
     // quoted message opening both texts.
-    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote }, 'send')
+    const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote, project }, 'send')
     const { wire: llm, bubble: displayTxt, pastes: bubblePastes } = turn
     storeSentPastes(turn.storedPaste)
     // sendId correlation (same contract as ChatPage): the wire text differs
@@ -259,7 +290,10 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         slot: slotKey,
         message: { role: 'user', content: displayTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { ...meta, ...(crewmate ? { responsiveSend: true } : {}) } },
       }))
+      // Same record as ChatPage's send: ↑ can recall it if the bubble is lost.
+      dispatch(recordSendAttempt({ slot: slotKey, text: displayTxt, sendId, pastes: bubblePastes }))
     }
+    const sendEpoch = selectSlotRunEpoch(store.getState(), slotKey)
     // Sending is explicit intent to be at the end, so the pane force-pins the
     // transcript exactly as ChatPage does after its own optimistic append: the
     // reader lands on the bubble they just sent, and follow is re-armed for the
@@ -268,7 +302,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     // a crewmate DM sent from mid-history streamed its answer below the fold.
     // Through the virtualizer's own handle, not a raw scrollTop write, so the
     // follow guard accounts for the move (followPolicy's write invariant).
-    setTimeout(scrollToBottom, SCROLL_AFTER_RENDER_MS)
+    // Settings -> Chat can turn the send-time jump off (#25754).
+    if (loadChatConfig().scrollOnSend) setTimeout(scrollToBottom, SCROLL_AFTER_RENDER_MS)
     // A failed send has to say so on the pane it was typed into. This path
     // reported nothing at all: the composer had already cleared and a rejected
     // fetch was swallowed by `.catch(() => undefined)`, so an undelivered
@@ -326,7 +361,8 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         warnUnconfirmed: () => {
           if (bubbleMinted) {
             dispatch(markSendUnconfirmed({ slot: slotKey, sendId }))
-            dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_pending'), cls: '' } }))
+            if (!crewmate) warnDeliveryUnconfirmed<PaneSentRestore>(slotKey, { sendId, surface: 'pane', epoch: sendEpoch, sent: { text, files, pastes: bubblePastes, quote: sentQuote } })
+            dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT(crewmate ? 'pages.chatPage.delivery_unconfirmed_resend_manually' : 'pages.chatPage.delivery_unconfirmed_pending'), cls: '', meta: { deliveryNoticeFor: sendId } } }))
           } else if (!optionText) {
             dispatch(appendSlotMessage({ slot: slotKey, message: { role: 'notice', content: '\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed'), cls: '' } }))
           }
@@ -355,6 +391,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
             sendId,
             mid: typeof receipt.body.mid === 'string' ? receipt.body.mid : undefined,
           }))
+          announceIfRemovedSendDelivered(dispatch, slotKey, sendId)
         },
         // The receipt names the queue entry this send became: bind the pre-send
         // composer state to it so cancelling that card restores the TYPED text
@@ -375,7 +412,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
       if (!askAtSend) return
       void resolveAskAfterSend(receipt.body, askAtSend, dispatch, slotKey)
     })
-  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
+  }, [input, pendingFiles, pasteBlocks, setPasteBlocks, busy, crewmate, slotKey, project, dispatch, restoreIntoComposer, reportSendFailure, scrollToBottom, consumeQuote, recoverQuoteInto, interceptPaneSlash, markCrewmateSent, composerRef, mountedRef, slotKeyRef, setInput, setPendingFiles])
 
   // Mid-turn steer: inject the composer content into the RUNNING turn instead
   // of queueing behind it. The pane's counterpart to ChatPage.steer, on the

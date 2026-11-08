@@ -22,11 +22,15 @@ vi.mock('../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => false,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => false }))
+// These editor tests run on a positively confirmed local session.
+vi.mock('../components/sessionEnvironmentHooks', () => ({
+  useSlotEnvironmentPlacement: () => ({ remote: null, error: null }),
+}))
 vi.mock('../pages/chat/FileBrowserRail', () => ({
   default: () => null,
   useTreeState: () => 'ready',
+  useTreeQuery: () => ({ error: null }),
 }))
 vi.mock('../components/MarkdownPanel', async () => {
   const React = await vi.importActual<typeof import('react')>('react')
@@ -165,7 +169,7 @@ describe('cold file tab hydration', () => {
     act(() => fetchCalls[0].settle({ ok: true, text: '# README (a prefix)', truncated: true }))
     await screen.findByTestId('markdown-panel')
     const tab = tabsCtl?.tabs.find(t => t.id === 'file:/repo/README.md')
-    expect(tab?.partial).toBe(true)
+    expect(tab?.partial).toBe('truncated')
     expect(tab?.content).toBe('# README (a prefix)')
     // The store persists per slot on a short debounce.
     await waitFor(() => expect(localStorage.getItem('mc-panel-tabs:slot-a')).toContain('file:/repo/README.md'), { timeout: 2000 })

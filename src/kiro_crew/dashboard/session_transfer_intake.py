@@ -162,6 +162,10 @@ _memory_reserved = 0
 #: all three working without asking any caller to relabel what it already sends.
 _GZIP_MAGIC = b"\x1f\x8b"
 
+#: A zip's local file header signature (PKWARE APPNOTE 4.3.7). Kiro IDE exports
+#: a session as a zip; it is refused by name, not as bad JSON.
+_ZIP_MAGIC = b"PK\x03\x04"
+
 
 def _reject(reason: str, code: str) -> web.Response:
     """Return a 400 validation failure carrying a machine-readable ``code``.
@@ -514,6 +518,12 @@ def _load_json_file(path: Path) -> Any:
         return json.loads(f.read())
 
 
+def _is_zip_file(path: Path) -> bool:
+    """Whether the file at *path* starts with :data:`_ZIP_MAGIC`. **Blocking IO.**"""
+    with open(path, "rb") as f:
+        return f.read(len(_ZIP_MAGIC)) == _ZIP_MAGIC
+
+
 def _new_import_temp(suffix: str) -> Path:
     """Create an empty temp file for an arrival and return its path. **Blocking.**
 
@@ -752,6 +762,15 @@ async def _read_bundle_body(
             # Nothing durable was created beyond the temp cleaned up below.
             return None, _reject("could not read the request body", "transfer_body_unreadable")
 
+        # Before the expansion permit and the memory reservation: no parse of
+        # a zip can succeed.
+        if not is_gzip and await asyncio.to_thread(_is_zip_file, raw_path):
+            return None, _reject(
+                "this file is a zip archive, such as a Kiro IDE export, not a session "
+                "exported from Kiro Crew",
+                "transfer_unsupported_format",
+            )
+
         # Taken only once the body is on disk: an upload holds one chunk of
         # memory however long it takes, so a slow sender must not hold a permit
         # that every other import is waiting on.
@@ -759,8 +778,8 @@ async def _read_bundle_body(
             await keep.enter_async_context(_expansion_admission())
         except _ExpansionBusy:
             # Retryable and the sender is at no fault, so it gets a status that
-            # says so. 429 rather than 400 for the same reason the slot cap does:
-            # the body was fine, the host is busy.
+            # says so. 429 rather than 400: the body was fine and the host is
+            # busy, so a retry can win.
             return None, web.json_response(
                 {
                     "error": "too many imports are arriving; please retry",

@@ -29,6 +29,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from kiro_crew.config.paths import data_home
+from kiro_crew.git_tmp_packs import reap_stale_tmp_packs
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform_compat import (
     IS_WINDOWS,
@@ -50,6 +52,40 @@ from ..spine.git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 logger = logging.getLogger(__name__)
+
+#: git's access-rights advisory, printed after EVERY transport or auth fatal. It names
+#: no cause, so a summary that keeps it reports "and the repository exists." instead
+#: of the ``Permission denied (publickey).`` line printed above it.
+_GIT_ADVISORY = re.compile(
+    r"^(?:Please make sure you have the correct access rights|and the repository exists\.?)\s*$"
+)
+
+#: The progress line ``git clone`` prints first, even when stderr is not a TTY. It
+#: names the absolute scratch path and says nothing about the failure, and kept, it
+#: would push a single ``fatal:`` cause past the caller's length bound.
+_GIT_CLONE_PROGRESS = re.compile(r"^Cloning into (?:bare repository )?'.*'\.\.\.\s*$")
+
+#: How many diagnostic lines a git failure summary keeps, counted from the end.
+_GIT_SUMMARY_LINES = 2
+
+
+def _git_stderr_summary(stderr: str | None) -> str:
+    """git's last diagnostic stderr lines, with the access-rights advisory removed.
+
+    Blank lines, the advisory block and the clone progress line are dropped, then
+    the last ``_GIT_SUMMARY_LINES`` remaining lines are joined with a space. A
+    stream that holds nothing but those falls back to its last line. Callers redact
+    the result before bounding it, so the bound can never cut a credential mid-match.
+    """
+    lines = [ln.strip() for ln in (stderr or "").strip().splitlines()]
+    kept = [
+        ln
+        for ln in lines
+        if ln and not _GIT_ADVISORY.match(ln) and not _GIT_CLONE_PROGRESS.match(ln)
+    ]
+    if not kept:
+        return lines[-1] if lines else ""
+    return " ".join(kept[-_GIT_SUMMARY_LINES:])
 
 
 def _git_cwd(repo: Path | str) -> str:
@@ -152,8 +188,7 @@ class IsolationProbeError(RuntimeError):
 
 
 #: Signatures only the namespace-sandbox launcher emits on stderr, matched
-#: STRUCTURALLY so repository-influenced text cannot satisfy them (raised by
-#: the Opus review of this branch): a repo may legally be NAMED
+#: STRUCTURALLY so repository-influenced text cannot satisfy them: a repo may legally be NAMED
 #: ``kirocrew_sandbox_x`` (``_GITHUB_RE`` admits ``_``), which puts that
 #: substring into the clone PATH that git echoes on path-printing fatals — so
 #: the script-filename marker only counts inside a real Python traceback frame
@@ -462,8 +497,7 @@ def _retire_unsafe_clone(repo: Path) -> Path | None:
 #: ``apps/auto-improvement/data/`` would sit beneath a directory an agent CAN rename, taking
 #: the mount with it. At the top level the only ancestors are the data home and ``$HOME``,
 #: the residual every other fenced leaf already stands on. This mirrors
-#: ``aws_control.storage.STAGING_DIR_LEAF``, top-level for exactly this reason. Raised by the
-#: GPT review of this branch.
+#: ``aws_control.storage.STAGING_DIR_LEAF``, top-level for exactly this reason.
 _QUARANTINE_DIR_LEAF = "quarantined-clones"
 
 
@@ -493,7 +527,7 @@ def _quarantine_root() -> Path | None:
         if is_link_or_junction(root) or first_linked_ancestor(root):
             logger.error("quarantine marker root %s is under a link; refusing to use it", root)
             return None
-        root.mkdir(parents=True, mode=0o700, exist_ok=True)
+        mkdirs_owner_only(root)
         if is_link_or_junction(root):
             return None
         probe = root / f".probe-{secrets.token_hex(8)}"
@@ -842,12 +876,12 @@ def _setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> 
         # Do not race-delete a path another same-UID process may have created.
         return {}, f"git clone could not start: {exc}"
     if proc.returncode != 0:
-        tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
+        detail = _git_stderr_summary(proc.stderr)
         rmtree_force(dest)
         # Redact BEFORE the bound (here and at every sibling site below): the slice
         # can cut a credential in the echoed remote URL mid-match, leaving a fragment
         # no downstream redaction pass recognises.
-        return {}, f"git clone failed: {redact_via_context(tail[0])[:200]}"
+        return {}, f"git clone failed: {redact_via_context(detail)[:200]}"
     try:
         safe = _repository_is_safe(dest)
     except IsolationProbeError:
@@ -921,8 +955,8 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
         **UTF8_TEXT,
     )
     if proc.returncode != 0:
-        tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
-        return [], f"could not list branches: {redact_via_context(tail[0])[:160]}"
+        detail = _git_stderr_summary(proc.stderr)
+        return [], f"could not list branches: {redact_via_context(detail)[:160]}"
     names: list[str] = []
     seen: set[str] = set()
     for raw in (proc.stdout or "").splitlines():
@@ -1068,7 +1102,7 @@ def resolve_origin_url(config: dict) -> str:
         # form whenever `gh` prefers it, and refusing that would degrade every ssh install
         # to queue-only. A LOCAL path has no slug and stays allowed — it cannot exfiltrate.
         # Fail closed: when the two disagree, or `target_url` is missing/invalid so there is
-        # nothing to pin against, there is no push target. Raised by the GPT review.
+        # nothing to pin against, there is no push target.
         direct_slug = _remote_slug(direct)
         if direct_slug:
             pinned = str((config or {}).get("target_url") or "").strip()
@@ -1200,7 +1234,6 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
         # via `require_pinned` — exactly like the other host-side helpers, through the ONE
         # shared config. Was re-declaring the `-c` pair inline, which both missed the
         # attribute vector and re-introduced the per-call-site drift the shared module removed.
-        # Raised by the Opus 5 review.
         require_pinned(clone)
         where = _git_cwd(clone)
         return subprocess.run(
@@ -1226,13 +1259,21 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
     if (cur.stdout or "").strip() == bare:
         return True, f"already on {bare}"
 
-    fetched = _run("fetch", "--quiet", "origin", bare)
+    # The fetch is subject to `_run`'s timeout, and a fetch killed by a timeout
+    # leaves its in-progress ``tmp_pack_*`` in this clone (TerminateProcess
+    # gives git no cleanup chance), and those orphans accumulate without bound.
+    # Reap in a ``finally`` so the raised ``TimeoutExpired`` is covered too; the
+    # reaper's mtime threshold protects a live pack.
+    try:
+        fetched = _run("fetch", "--quiet", "origin", bare)
+    finally:
+        reap_stale_tmp_packs(str(clone))
     if fetched.returncode == 0:
         co = _run("checkout", "-B", bare, f"origin/{bare}")
         if co.returncode == 0:
             return True, f"checked out {bare} @ origin/{bare}"
-        err = (co.stderr or "").strip().splitlines()[-1:] or [""]
-        return False, f"could not check out {bare}: {redact_via_context(err[0])[:160]}"
+        detail = _git_stderr_summary(co.stderr)
+        return False, f"could not check out {bare}: {redact_via_context(detail)[:160]}"
     # The fetch failed. That is the NORMAL case here, not an edge case: this clone's
     # origin is neutralized to DISABLED_NO_PUSH (both urls — see `_disable_push`), so
     # `git fetch origin <branch>` always exits 128. Measured against a local bare repo.
@@ -1245,8 +1286,8 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
     # while the operator believes it is working on the one they configured. No network is
     # needed to fix it: the ref is already in the clone.
     #
-    # Raised by the GPT review of this branch; same root cause as the one-click-commit
-    # fetch bug (`commit.py`) — code inside a deliberately push-disabled clone cannot
+    # Same root cause as the one-click-commit fetch in `commit.py`: code inside a
+    # deliberately push-disabled clone cannot
     # reach the remote for READS either.
     remote_ref = f"origin/{bare}"
     if _run("rev-parse", "--verify", "--quiet", remote_ref, tmo=30).returncode == 0:
@@ -1260,8 +1301,8 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
         co = _run("checkout", bare)
         if co.returncode == 0:
             return True, f"checked out local {bare} (fetch failed — offline?)"
-    err = (fetched.stderr or "").strip().splitlines()[-1:] or [""]
-    return False, f"could not fetch {bare}: {redact_via_context(err[0])[:160]}"
+    detail = _git_stderr_summary(fetched.stderr)
+    return False, f"could not fetch {bare}: {redact_via_context(detail)[:160]}"
 
 
 def _ok(spec: CloneSpec, dest: Path, *, reused: bool) -> dict:
@@ -1276,4 +1317,6 @@ def _ok(spec: CloneSpec, dest: Path, *, reused: bool) -> dict:
         # The real remote, for the trusted publishers only. Kept in config rather than in
         # the clone so agent-run Bash inside the clone cannot discover it from git.
         "origin_url": spec.clone_url,
+        # Rebuilt from the validated owner/repo, so nothing else in the pasted URL is stored.
+        "target_url": f"https://github.com/{spec.display}",
     }

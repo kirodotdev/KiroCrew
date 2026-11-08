@@ -20,6 +20,7 @@ import time
 import weakref
 from pathlib import Path
 
+from kiro_crew.embeddings_child import ChildLlama, is_vendored_llama_class
 from kiro_crew.embeddings_gguf import _GGUF_CAUSAL_SUFFIX, _model_context_policy
 from kiro_crew.embeddings_model import (
     _is_sensitive_model_path,
@@ -53,7 +54,9 @@ from kiro_crew.embeddings_settings import (
     _work_for_priority,
     bulk_embed_threads,
     bulk_pace_delay,
+    embedding_child_process_enabled,
     embedding_idle_evict_secs,
+    embedding_weight_repack,
     embedding_work,
 )
 from kiro_crew.metrics.provider import get_recorder
@@ -136,7 +139,7 @@ def _install_bounded_decode(llm: object) -> bool:
     model unloads. The vendored ``Llama.embed`` is told to decode a longer batch
     as consecutive slices of at most ``n_ubatch`` tokens (its
     ``kiro_crew_max_decode_tokens`` divergence), so the buffer never holds more
-    than ``n_ubatch`` rows: 149 MiB for the shipped model's 256.
+    than ``n_ubatch`` rows: 75 MiB for the shipped model's 128.
 
     ``n_ubatch`` and not anything smaller, because a unified-cache decode splits a
     batch into consecutive ``n_ubatch`` slices in batch order (``split_simple``):
@@ -192,6 +195,20 @@ def _free_llama(llm: object) -> None:
             closer()
         except Exception:  # noqa: BLE001 - freeing must not propagate
             logger.debug("Freeing abandoned model failed", exc_info=True)
+
+
+def _construct_llama(llama_cls: object, kwargs: dict, stamp: "tuple[int, ...] | None") -> object:
+    """Build the model: in this process by default, in a child process when switched on.
+
+    The child (``memory.embedding_child_process``, default off) takes native
+    inference and its Python wrapper off this process's GIL and CPU priority; see
+    :mod:`kiro_crew.embeddings_child`. Only the vendored runtime can be rebuilt in
+    another interpreter, so any other class (a test fake, a future backend)
+    keeps running here, as does everything when the switch is ``false``.
+    """
+    if embedding_child_process_enabled() and is_vendored_llama_class(llama_cls):
+        return ChildLlama(kwargs, stamp=stamp)
+    return llama_cls(**kwargs)  # type: ignore[operator]
 
 
 def _chars_bucket(chars: int) -> str:
@@ -363,6 +380,12 @@ class LlamaCppEmbedder(EmbeddingBackend):
     daemon thread (``kc-embed-infer``), so the process holds exactly one
     compute pool no matter how many threads embed. ``_lock`` already serializes
     inference, so the hand-off adds no extra queueing.
+
+    With ``memory.embedding_child_process`` on, the published model is a
+    :class:`~kiro_crew.embeddings_child.ChildLlama`:
+    the model itself lives in a child process and ``kc-embed-infer`` only waits
+    on a pipe, so inference runs outside this process's GIL. Queueing,
+    priorities, pacing and eviction are unchanged and stay here.
     """
 
     def __init__(
@@ -581,7 +604,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                     policy.n_ctx,
                     policy.n_ctx,
                 )
-            llm = llama_cls(
+            llama_kwargs = dict(
                 model_path=str(self._model_path),
                 embedding=True,
                 # From the model's id, passed for every file: a model whose id
@@ -597,7 +620,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # against input length. Both are
                 # clamped to the trained position count the GGUF declares, at
                 # most 2,048 (see _model_context_policy). Decoder models keep the
-                # lower-RSS 256-token micro-batch, bounded by that batch; non-causal
+                # lower-RSS 128-token micro-batch, bounded by that batch; non-causal
                 # models (cache-less encoder architectures, or a GGUF declaring
                 # `.attention.causal = false`) need one physical micro-batch to
                 # hold every token, so all three coincide. So does any model
@@ -605,7 +628,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # its own and keeps only the last one's result, which would store
                 # the mean, or the first token, of a longer input's tail. The
                 # token last-token pooling reads is always in the last micro-batch,
-                # so only a last-token decoder keeps the 256.
+                # so only a last-token decoder keeps the 128.
                 n_ctx=policy.n_ctx,
                 n_batch=policy.n_batch,
                 n_ubatch=(
@@ -619,6 +642,12 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 n_threads_batch=threads,
                 verbose=False,
             )
+            if not embedding_weight_repack():
+                # Opt-out (memory.embedding_weight_repack: false): drop llama.cpp's
+                # CPU-repacked second copy of the weights. Passed only when off, so
+                # the default call is the one every earlier release made.
+                llama_kwargs["use_extra_bufts"] = False
+            llm = _construct_llama(llama_cls, llama_kwargs, stamp)
             _install_metadata_kv_clear(llm)
             _install_bounded_decode(llm)
             try:
@@ -785,22 +814,105 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # no worker will serve this queue again — fail them explicitly.
                 self._drain_orphans(jobs)
                 return
-            try:
+            if prio >= PRIORITY_BULK and len(job.texts) > 1:
+                self._run_bulk_yielding(jobs, prio, job)
+            else:
+                self._run_job(prio, job)
+
+    def _run_job(self, prio: int, job: "_InferJob") -> None:
+        """Run one queued job to the end on this worker and complete it."""
+        try:
+            with self._lock:
+                if job.work.expired():
+                    job.error = TimeoutError("embedding work expired before inference")
+                    return
+                self._apply_thread_class(job.llm, prio)
+                job.started = time.monotonic()
+                job.result = self._infer(job.llm, job.texts, job.work)
+        except BaseException as exc:  # noqa: BLE001 - relayed to the caller verbatim
+            job.error = exc
+        finally:
+            if prio >= PRIORITY_BULK and job.started:
+                self._bulk_ready_at = time.monotonic() + bulk_pace_delay(
+                    time.monotonic() - job.started
+                )
+            job.done.set()
+            # job.error's traceback holds this finished frame; without this the
+            # frame holds the job back (a cycle), and with it the retired model,
+            # until a gc pass. A child-process model is only stopped when freed.
+            del job
+
+    @staticmethod
+    def _infer(llm: object, texts: "list[str]", work: EmbeddingWork) -> object:
+        # A child-process model can stop waiting at the caller's
+        # deadline; an in-process native call cannot be interrupted.
+        # Takes no job: a raised error's traceback keeps this frame.
+        if isinstance(llm, ChildLlama):
+            return llm.create_embedding_for(texts, work)
+        return llm.create_embedding(texts)  # type: ignore[attr-defined]
+
+    def _run_bulk_yielding(
+        self,
+        jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]",
+        prio: int,
+        job: "_InferJob",
+    ) -> None:
+        """Run a bulk batch one text at a time, serving waiting callers in between.
+
+        A started native call cannot be stopped, so a chat-turn embed that lands
+        just after a bulk batch starts would otherwise wait for every text in it.
+        Between texts, any queued interactive or normal job runs first; the wait
+        is then at most one text. Each text is embedded exactly once and the
+        result keeps input order. ``_lock`` is released between texts, so the
+        model is re-checked each time: a close() or idle unload in that gap fails
+        the batch (the caller gets None and its rows stay pending) rather than
+        touching a retired model.
+        """
+        data: list[object] = []
+        busy = 0.0
+        try:
+            for index, text in enumerate(job.texts):
+                # promote_pending() can lift this batch while it runs: a person
+                # now waits on it, so it stops yielding to other callers.
+                if index and job.work.priority >= PRIORITY_BULK:
+                    self._serve_waiting(jobs)
                 with self._lock:
                     if job.work.expired():
-                        job.error = TimeoutError("embedding work expired before inference")
-                        continue
+                        raise TimeoutError("embedding work expired before inference")
+                    if job.llm is not self._llm:
+                        raise RuntimeError("embedding backend retired during a bulk batch")
                     self._apply_thread_class(job.llm, prio)
-                    job.started = time.monotonic()
-                    job.result = job.llm.create_embedding(job.texts)  # type: ignore[attr-defined]
-            except BaseException as exc:  # noqa: BLE001 - relayed to the caller verbatim
-                job.error = exc
-            finally:
-                if prio >= PRIORITY_BULK and job.started:
-                    self._bulk_ready_at = time.monotonic() + bulk_pace_delay(
-                        time.monotonic() - job.started
-                    )
-                job.done.set()
+                    started = time.monotonic()
+                    job.started = job.started or started
+                    out = self._infer(job.llm, [text], job.work)
+                    busy += time.monotonic() - started
+                item = dict(out["data"][0])  # type: ignore[index]
+                item["index"] = index
+                data.append(item)
+            job.result = {"data": data}
+        except BaseException as exc:  # noqa: BLE001 - relayed to the caller verbatim
+            job.error = exc
+        finally:
+            # Pace on this batch's own model time, not the time it lent to others.
+            if busy:
+                self._bulk_ready_at = time.monotonic() + bulk_pace_delay(busy)
+            job.done.set()
+            del job  # same traceback cycle as _run_job
+
+    def _serve_waiting(
+        self, jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]"
+    ) -> None:
+        """Run every queued job that outranks bulk work. Leaves the sentinel queued."""
+        while True:
+            # Same peek-then-take as _next_infer_job: only this worker removes jobs.
+            with self._dispatch_lock:
+                with jobs.mutex:
+                    head = jobs.queue[0] if jobs.queue else None
+                if head is None or head[2] is None or head[0] >= PRIORITY_BULK:
+                    return
+                prio, _seq, waiting = jobs.get_nowait()
+            if waiting is not None:
+                self._run_job(prio, waiting)
 
     def _apply_thread_class(self, llm: object, priority: int) -> None:
         """Program llama.cpp's compute pools for this job's scheduling class.
@@ -1086,8 +1198,17 @@ class LlamaCppEmbedder(EmbeddingBackend):
             thread.join(0.05)
 
     def _start_evictor(self) -> None:
-        """Start the idle evictor for the model just published. Idempotent."""
+        """Start the idle evictor for the model just published. Idempotent.
+
+        Guarded by ``_load_lock`` so it cannot race ``_close_retiring_worker``:
+        if ``retire()`` or ``close()`` cleared ``_llm`` (or set ``_closed``)
+        before this call acquires the lock, the evictor must not start -- the
+        next ``_close_retiring_worker`` already saw ``_evict_thread=None`` and
+        returned without a join, so a thread started here would be orphaned.
+        """
         with self._load_lock:
+            if self._closed or self._llm is None:
+                return
             if self._evict_thread is not None and self._evict_thread.is_alive():
                 return
             self._evict_wake = threading.Event()

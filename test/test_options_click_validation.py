@@ -171,9 +171,9 @@ class TestTheTurnIsDurableBeforeItsControlGoesOut:
         from kiro_crew.slack import handler
 
         src = "".join(inspect.getsource(getattr(handler, n)) for n in SLACK_TURN_FUNCTIONS)
-        assert "if options and thread_ts" not in src, (
-            "gating the token mint on thread_ts strands every root-thread control"
-        )
+        assert (
+            "if options and thread_ts" not in src
+        ), "gating the token mint on thread_ts strands every root-thread control"
         mint = src.find("mint_options_token")
         assert mint != -1, "the footer must still mint a token"
         window = src[mint : mint + 220]
@@ -228,9 +228,9 @@ class TestTheTurnIsDurableBeforeItsControlGoesOut:
         # The queued second turn lands.
         await save_conversation_turn_off_loop(log, OWNER, "next question", "answered")
 
-        assert await options_control_is_stale(state, token, THREAD) is True, (
-            "the first control is superseded and its clicks must be refused"
-        )
+        assert (
+            await options_control_is_stale(state, token, THREAD) is True
+        ), "the first control is superseded and its clicks must be refused"
         # Contrast, and the reason the fix is not cosmetic: minting by re-reading
         # the tail HERE names the second turn, and the same superseded control
         # then reads as live.
@@ -266,15 +266,16 @@ class TestTheAnswerGoesToTheConversationThatAsked:
             inspect.getsource(importlib.import_module(name))
             for name in (interactions.__name__, *interactions._OWNERS)
         )
-        assert src.count("_asker = decode_options_token(") == 2, (
-            "both click paths must read the asker from the control's own token"
-        )
-        assert "slack_options_linked_slot" not in src, (
-            "pinning the thread's CURRENT owner reintroduces the handover bug"
-        )
-        assert src.count("route_pinned=_route_pinned") == 2, (
-            "both dispatches must pass the pin through to routing"
-        )
+        # One answer path now serves the click and the "Choose several..." modal.
+        assert (
+            src.count("_asker = decode_options_token(") == 1
+        ), "the answer path must read the asker from the control's own token"
+        assert (
+            "slack_options_linked_slot" not in src
+        ), "pinning the thread's CURRENT owner reintroduces the handover bug"
+        assert (
+            src.count("route_pinned=_route_pinned") == 1
+        ), "the dispatch must pass the pin through to routing"
 
     def test_an_untokened_control_pins_nothing(self):
         """No token means no claim about the destination, so keep today's routing.
@@ -291,9 +292,9 @@ class TestTheAnswerGoesToTheConversationThatAsked:
             inspect.getsource(importlib.import_module(name))
             for name in (interactions.__name__, *interactions._OWNERS)
         )
-        assert src.count("_route_pinned = _asker_key is not None") == 2, (
-            "the pin must be conditional on a token being present"
-        )
+        assert (
+            src.count("_route_pinned = _asker_key is not None") == 1
+        ), "the pin must be conditional on a token being present"
 
     def test_a_pinned_answer_never_claims_the_thread(self):
         """Routing the answer must not rewrite who OWNS the thread.
@@ -319,14 +320,14 @@ class TestTheAnswerGoesToTheConversationThatAsked:
             path.read_text(encoding="utf-8")
             for path in sorted((Path(handler.__file__).parent / "handler_runtime").glob("*.py"))
         )
-        assert "if thread_owner_key is None and not route_pinned:" in src, (
-            "a pinned answer must never claim the thread, however empty the index"
-        )
+        assert (
+            "if thread_owner_key is None and not route_pinned:" in src
+        ), "a pinned answer must never claim the thread, however empty the index"
         # The old spelling steered the claim off a variable the pin path
         # deliberately falsified to None, which is why the claim fired.
-        assert "if not linked_session_key:\n" not in src, (
-            "the claim must not read the falsified mirror value"
-        )
+        assert (
+            "if not linked_session_key:\n" not in src
+        ), "the claim must not read the falsified mirror value"
 
 
 class TestTheRuleItself:

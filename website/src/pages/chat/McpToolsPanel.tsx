@@ -77,8 +77,8 @@ const SESSION_LABEL_KEY: Record<McpSessionServerState, string> = {
  * false authority this split exists to remove.
  *
  * The tool rows' loaded/deferred/disabled dot is a third thing again — a
- * client-side approximation derived from this session's tool_search results (see
- * deriveLoadedMcpTools), which starts empty after a reload.
+ * client-side approximation derived from the tool_search results and MCP tool
+ * calls in the messages this tab holds (see deriveLoadedMcpTools).
  */
 export default function McpToolsPanel({
   servers,
@@ -133,11 +133,6 @@ export default function McpToolsPanel({
       <div className="text-[11px] text-muted mb-2 leading-snug">
         {toolSearchOn ? i18nT('pages.chatPage.tool_search_deferred_hint') : i18nT('pages.chatPage.tool_search_full_hint')}
       </div>
-      {!loading && servers.length > 0 && hasSessionReport && (
-        <div className="text-[10px] text-muted mb-2 leading-snug">
-          {i18nT('pages.chatPage.mcp_session_source_note')}
-        </div>
-      )}
       {!loading && servers.length > 0 && (
         <div className="flex items-center gap-2.5 flex-wrap text-[10px] text-muted mb-2">
           <span className="inline-flex items-center gap-1">

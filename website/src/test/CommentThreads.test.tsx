@@ -4,7 +4,7 @@
 // so grouping is where the real logic lives — and the reason the tab is usable at
 // all, since a reply separated from the line it answers says nothing.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -137,6 +137,16 @@ describe('reading threads', () => {
     expect(screen.getByText('2 messages')).toBeTruthy()
   })
 
+  it('says whether a comment is collapsed and hides its chevron from the name', async () => {
+    mount(source([comment({ id: 'c1', body: 'Cap this' })]))
+    const toggle = screen.getByRole('button', { name: 'Collapse comment' })
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    for (const svg of toggle.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+    await userEvent.click(toggle)
+    expect(screen.getByRole('button', { name: 'Expand comment' })).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('anchors the thread to its file and line', () => {
     mount(source([comment({ path: 'src/jar.py', line: 42 })]))
     expect(screen.getByText('src/jar.py:42')).toBeTruthy()
@@ -149,6 +159,16 @@ describe('reading threads', () => {
     ]))
     expect(screen.getByText(/1 open · 1 resolved/)).toBeTruthy()
     expect(screen.queryByText(/Settled thing/)).toBeNull()
+  })
+
+  it('says whether resolved threads are showing', async () => {
+    mount(source([
+      comment({ id: 'c1', threadId: 'T1' }),
+      comment({ id: 'c2', threadId: 'T2', body: 'Settled thing', resolved: true }),
+    ]))
+    expect(screen.getByRole('button', { name: /Show resolved/ })).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.click(screen.getByRole('button', { name: /Show resolved/ }))
+    expect(screen.getByRole('button', { name: /Hide resolved/ })).toHaveAttribute('aria-expanded', 'true')
   })
 
   it('reveals resolved threads on request', async () => {
@@ -258,6 +278,47 @@ describe('writing', () => {
     await userEvent.type(screen.getByRole('textbox', { name: /Reply/ }), 'Agreed')
     await userEvent.click(screen.getByRole('button', { name: /^Reply$/ }))
     await waitFor(() => expect(screen.queryByRole('textbox', { name: /Reply/ })).toBeNull())
+  })
+
+  it.each([
+    ['Escape', async () => { await userEvent.keyboard('{Escape}') }],
+    ['Cancel', async () => { await userEvent.click(screen.getByRole('button', { name: 'Cancel' })) }],
+  ])('returns focus to the Reply button when %s closes the box', async (_how, closeBox) => {
+    mount(source([comment({ threadId: 'T1' })]))
+    await userEvent.click(screen.getByRole('button', { name: /^Reply$/ }))
+    expect(screen.getByRole('textbox', { name: /Reply/ })).toHaveFocus()
+    await closeBox()
+    expect(screen.queryByRole('textbox', { name: /Reply/ })).toBeNull()
+    expect(screen.getByRole('button', { name: /^Reply$/ })).toHaveFocus()
+  })
+
+  it('returns focus to the Reply button once a reply lands', async () => {
+    mount(source([comment({ threadId: 'T1' })]))
+    await userEvent.click(screen.getByRole('button', { name: /^Reply$/ }))
+    await userEvent.type(screen.getByRole('textbox', { name: /Reply/ }), 'Agreed')
+    await userEvent.click(screen.getByRole('button', { name: /^Reply$/ }))
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: /Reply/ })).toBeNull())
+    expect(screen.getByRole('button', { name: /^Reply$/ })).toHaveFocus()
+  })
+
+  it('leaves focus where the user moved it while a reply was still sending', async () => {
+    let land: (v: unknown) => void = () => {}
+    mockApi.replyToPullRequestThread.mockReturnValue(new Promise(r => { land = r }))
+    mount(source([
+      comment({ id: 'c1', threadId: 'T1' }),
+      comment({ id: 'c2', threadId: 'T2', body: 'Other thread' }),
+    ]))
+    const [first, second] = screen.getAllByRole('listitem')
+    await userEvent.click(within(first).getByRole('button', { name: /^Reply$/ }))
+    await userEvent.type(within(first).getByRole('textbox', { name: /Reply/ }), 'Agreed')
+    await userEvent.click(within(first).getByRole('button', { name: /^Reply$/ }))
+    await userEvent.click(within(second).getByRole('button', { name: /^Reply$/ }))
+    const otherBox = within(second).getByRole('textbox', { name: /Reply/ })
+    expect(otherBox).toHaveFocus()
+
+    await act(async () => { land({ posted: true }) })
+    await waitFor(() => expect(within(first).queryByRole('textbox', { name: /Reply/ })).toBeNull())
+    expect(otherBox).toHaveFocus()
   })
 
   it('offers reply on a GitLab merge request thread', () => {

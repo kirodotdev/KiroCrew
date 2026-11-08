@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import NotificationFeed from '../components/notifications/NotificationFeed'
 import { safeInternalUrl } from '../components/notifications/notifMeta'
 import { approvalNotificationBody } from '../lib/approvalNotificationBody'
 import type { RootState } from '../store'
 import type { Notification } from '../types'
+import { i18next } from '../i18n/index'
+import '../i18n/all'
 
 const mockResolveApproval = vi.fn().mockResolvedValue({})
 const mockDeleteNotification = vi.fn().mockResolvedValue({})
@@ -63,16 +65,27 @@ describe('NotificationFeed Phase 4: inline approval actions', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it('one-click approve resolves via the approvals endpoint', () => {
+  it('one-click approve resolves via the approvals endpoint', async () => {
     renderFeed([approval])
-    fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
+    })
     expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'approve')
   })
 
-  it('one-click reject resolves via the approvals endpoint', () => {
+  it('one-click reject resolves via the approvals endpoint', async () => {
     renderFeed([approval])
-    fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
+    })
     expect(mockResolveApproval).toHaveBeenCalledWith('apr-123', 'reject')
+  })
+
+  it("a crew member's approval row offers no Approve or Reject: only its conductor's card decides it", () => {
+    renderFeed([mkN({ ...approval, slot: 'root', crew_member: 'w1', title: 'Flag A needs approval' })])
+    expect(screen.getByText('Flag A needs approval')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Reject/ })).toBeNull()
   })
 
   it('acked approval rows show no inline buttons', () => {
@@ -189,6 +202,17 @@ describe('NotificationFeed Phase 4: group_key stacking', () => {
     expect(screen.queryByText('Build 2 failed')).toBeNull()
     expect(screen.queryByText('Build 1 failed')).toBeNull()
     expect(screen.getByRole('button', { name: /2 more/ })).toBeTruthy()
+  })
+
+  it('names the count pill in the active language', async () => {
+    await i18next.changeLanguage('de')
+    try {
+      renderFeed(stack)
+      expect(screen.getByRole('button', { name: /2 weitere/ })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /2 more/ })).toBeNull()
+    } finally {
+      await i18next.changeLanguage('en')
+    }
   })
 
   it('expands and collapses the stack on pill click', () => {

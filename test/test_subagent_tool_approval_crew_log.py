@@ -1,31 +1,12 @@
 """A subagent's MID-RUN tool approval reaches the crew log.
 
-The reported shape: a running subagent hits a tool call that needs the user's
-answer, parks on the prompt, and the crew log holds nothing about the wait -- no
-``approval/requested`` while it is open and no ``approval/decided`` once it is
-answered. ``fold_approvals`` is therefore empty for a session whose child is
-blocked on a human, while the parent's OWN mid-turn prompts do land because the
-dashboard chat runner writes both halves around its permission await.
+Each of the three awaited approval arms in ``subagent_manager/run.py`` (per-subagent factory,
+gateway fallback, low-fidelity child branch) writes ``approval/requested`` under the parent
+turn before the await and ``approval/decided`` on every exit: yes, no, raised, cancelled.
+The recorded id is scoped to the child: wire ids are unique only per connection.
 
-This is the sibling of the spawn gate: that prompt is the one before the child
-starts, and ``test_spawn_approval_crew_log.py`` pins it. This one is a prompt
-raised by a child that is already running, which is a different population --
-potentially many per run -- and a different origin reader.
-
-What these tests pin is the pair at all THREE awaited approval arms in
-``subagent_manager/run.py``: the per-subagent factory, the gateway-level
-fallback, and the low-fidelity child branch that downgrades to whichever of the
-two is attached. One entry before the await, keyed by the request's own id and
-filed under the PARENT turn that asked for the child, and one answering entry on
-every exit -- a yes, a no, a callback that raised, and a wait that was cancelled
-rather than answered. The recorded id is scoped to the child, because the id a
-child answers on is unique only to its own connection while the parent's fold
-keys every pending request by that id alone.
-
-Deliberately NOT covered, because the change does not make them: the child's own
-crew log (no subagent path opens one), the dashboard's rendering of the folded
-pending row, and the auto-approve rungs, which answer without a prompt and so
-have no approval to record.
+The spawn-time prompt is in ``test_spawn_approval_crew_log.py``. Auto-approve rungs raise no
+prompt, so they record nothing.
 """
 
 from __future__ import annotations
@@ -38,6 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from crew_log_drain import assert_drained
 from off_loop_helpers import off_loop
 
 from kiro_crew.crew_log import crew_log_path, emit
@@ -86,9 +68,7 @@ def _isolated_crew_log(tmp_path, monkeypatch):
     emit._child_origin.clear()
 
 
-# --------------------------------------------------------------------------
 # reading the log
-# --------------------------------------------------------------------------
 
 
 def _entries() -> list[dict]:
@@ -106,11 +86,8 @@ def _of(kind: str) -> list[dict]:
 def _folded() -> dict:
     """The ``approvals`` fold over the session's whole log, as a reader sees it.
 
-    Read off the event-loop thread, the way the dashboard's own handlers reach
-    the store. A crew-log read takes the unit's append lock, and an acquire on
-    the loop thread makes a single attempt -- so a read from an ``async def``
-    body is refused outright whenever the writer thread or the eager folder
-    holds that lock.
+    Read off the event-loop thread: on the loop the append lock is tried once, so a read is
+    refused whenever the writer thread or the eager folder holds it.
     """
 
     def _read() -> dict:
@@ -135,9 +112,7 @@ def _open_session() -> None:
     emit.on_turn_started(SESSION, ASKING_TURN, "user")
 
 
-# --------------------------------------------------------------------------
 # a running child that raises one permission request
-# --------------------------------------------------------------------------
 
 
 def _permission_event(**kw: object) -> LLMEvent:
@@ -252,9 +227,7 @@ async def _reach_the_prompt(approval: _ParkedApproval) -> None:
     await await_until(approval.entered, what="the approval callback being reached")
 
 
-# --------------------------------------------------------------------------
 # the bug
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -272,7 +245,7 @@ async def test_a_child_waiting_on_a_human_is_pending_in_the_approvals_fold():
     )
     task = asyncio.ensure_future(_drive(manager, info))
     await _reach_the_prompt(approval)
-    assert emit.flush()
+    assert_drained()
 
     folded = _folded()
     assert folded["pending"] == 1, folded
@@ -297,7 +270,7 @@ async def test_an_approved_child_tool_is_decided_without_naming_who_answered():
     )
     approval.gate.set()
     await _drive(manager, info)
-    assert emit.flush()
+    assert_drained()
 
     provider.approve_tool.assert_awaited_once_with(REQUEST_ID)
     (decided,) = _of("approval/decided")
@@ -322,7 +295,7 @@ async def test_a_declined_child_tool_is_recorded_as_rejected():
         _permission_event(), on_tool_approval_factory=lambda _info: _declined
     )
     await _drive(manager, info)
-    assert emit.flush()
+    assert_drained()
 
     provider.reject_tool.assert_awaited_once_with(REQUEST_ID)
     folded = _folded()
@@ -346,12 +319,12 @@ async def test_the_gateway_level_arm_records_its_own_pair():
     manager, info, provider = _manager(_permission_event(), on_tool_approval=approval)
     task = asyncio.ensure_future(_drive(manager, info))
     await _reach_the_prompt(approval)
-    assert emit.flush()
+    assert_drained()
     assert _folded()["pending"] == 1, "the gateway arm's wait is visible too"
 
     approval.gate.set()
     await task
-    assert emit.flush()
+    assert_drained()
 
     provider.approve_tool.assert_awaited_once_with(REQUEST_ID)
     (requested,) = _of("approval/requested")
@@ -378,7 +351,7 @@ async def test_the_low_fidelity_child_arm_records_its_own_pair():
     )
     task = asyncio.ensure_future(_drive(manager, info))
     await _reach_the_prompt(approval)
-    assert emit.flush()
+    assert_drained()
 
     folded = _folded()
     assert folded["pending"] == 1, folded
@@ -388,7 +361,7 @@ async def test_the_low_fidelity_child_arm_records_its_own_pair():
 
     approval.gate.set()
     await task
-    assert emit.flush()
+    assert_drained()
 
     provider.approve_tool.assert_awaited_once_with(REQUEST_ID)
     (decided,) = _of("approval/decided")
@@ -413,7 +386,7 @@ async def test_a_callback_that_raised_answers_its_own_request():
         _low_fidelity_event(), on_tool_approval_factory=lambda _info: _broken
     )
     await _drive(manager, info)
-    assert emit.flush()
+    assert_drained()
 
     provider.reject_tool.assert_awaited_once_with(REQUEST_ID)
     assert [row["approval_id"] for row in _of("approval/requested")] == [LOGGED_ID]
@@ -437,7 +410,7 @@ async def test_a_cancelled_wait_still_answers_its_own_request():
     )
     task = asyncio.ensure_future(_drive(manager, info))
     await _reach_the_prompt(approval)
-    assert emit.flush()
+    assert_drained()
     assert _folded()["pending"] == 1
 
     task.cancel()
@@ -445,7 +418,7 @@ async def test_a_cancelled_wait_still_answers_its_own_request():
         if task.done():
             break
         await asyncio.sleep(0)
-    assert emit.flush()
+    assert_drained()
 
     (decided,) = _of("approval/decided")
     assert decided["approval_id"] == LOGGED_ID
@@ -472,7 +445,7 @@ async def test_an_unpinned_child_writes_neither_half():
     )
     emit.forget_child_origin(AGENT_ID)
     await _drive(manager, info)
-    assert emit.flush()
+    assert_drained()
 
     folded = _folded()
     assert folded["requested"] == 0 and folded["decided"] == 0
@@ -482,19 +455,10 @@ async def test_an_unpinned_child_writes_neither_half():
 def test_two_children_of_one_parent_sharing_a_wire_id_keep_separate_rows():
     """The id a child answers on is unique to its own connection, not to the log.
 
-    ``event.request_id`` is the JSON-RPC message id of one child's ACP
-    connection, which each backend counts up from zero on its own, so two
-    children of one parent routinely raise the SAME id. They share that parent's
-    crew log, the fold keys pending requests by the recorded id alone, and the
-    parent's own prompts share that map -- so recording the bare wire id would
-    let the second request overwrite the first: answering one would clear the row
-    while the other child is still parked, and pair that decision with the wrong
-    tool.
-
-    Driven through the recorder pair rather than two concurrent runs. Each arm's
-    own test above already proves it records through ``_crew_log_approval_id``;
-    what is unproven until here is that the ids that helper mints for two
-    children survive together in one parent's fold.
+    Each backend counts ``event.request_id`` up from zero, and the parent's fold keys pending
+    rows by id alone, so a bare wire id would let one child's answer clear the other's row.
+    Driven through the recorder pair; the arms' own tests prove they use
+    ``_crew_log_approval_id``.
     """
     from kiro_crew.subagent_manager.run import RunEventCoordinator
 
@@ -525,7 +489,7 @@ def test_two_children_of_one_parent_sharing_a_wire_id_keep_separate_rows():
     second_origin = recorder._record_crew_log_tool_approval_requested(
         second, approval_id=second_id, tool="fs_write", reason="Write: src/app.py"
     )
-    assert emit.flush()
+    assert_drained()
 
     folded = _folded()
     assert folded["pending"] == 2, folded
@@ -536,7 +500,7 @@ def test_two_children_of_one_parent_sharing_a_wire_id_keep_separate_rows():
     recorder._record_crew_log_approval_decided(
         first_origin, approval_id=first_id, decision="approved"
     )
-    assert emit.flush()
+    assert_drained()
     folded = _folded()
     assert folded["pending"] == 1, folded
     (still_open,) = folded["pending_requests"]
@@ -548,16 +512,14 @@ def test_two_children_of_one_parent_sharing_a_wire_id_keep_separate_rows():
     recorder._record_crew_log_approval_decided(
         second_origin, approval_id=second_id, decision="rejected"
     )
-    assert emit.flush()
+    assert_drained()
     folded = _folded()
     assert folded["pending"] == 0
     assert folded["by_decision"] == {"approved": 1, "rejected": 1}
     assert folded["unmatched_decisions"] == 0
 
 
-# --------------------------------------------------------------------------
 # the reader the run needs
-# --------------------------------------------------------------------------
 
 
 def test_child_origin_is_the_right_reader_for_a_prompt_raised_mid_run():
@@ -580,9 +542,7 @@ def test_child_origin_refuses_a_child_with_no_pin_at_all():
     assert emit.child_origin("") == ("", 0)
 
 
-# --------------------------------------------------------------------------
 # the pair is all-or-nothing by construction
-# --------------------------------------------------------------------------
 
 
 def test_the_decision_helper_is_a_no_op_for_a_request_that_was_not_written():
@@ -600,5 +560,5 @@ def test_the_decision_helper_is_a_no_op_for_a_request_that_was_not_written():
         approval_id="orphan",
         decision="approved",
     )
-    assert emit.flush()
+    assert_drained()
     assert _of("approval/decided") == []

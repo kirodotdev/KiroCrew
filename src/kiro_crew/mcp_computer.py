@@ -138,6 +138,7 @@ from kiro_crew.mcp_core import (
     _session_token_header,
     require_strict_session_key,
 )
+from kiro_crew.mcp_instructions import COMPUTER as _INSTRUCTIONS
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.validation import MCP_COMPUTER_SCHEMAS, ValidationError, validate_tool_args
 
@@ -878,7 +879,7 @@ def _invoke(session_key: str, name: str, args: dict[str, Any]) -> dict[str, Any]
 #: backend advertised this capability — so without the advertisement the block
 #: never arrives, and this server's resolver reads an empty identity no matter how
 #: correctly it is written. Nothing declines to POOL an unadvertised backend
-#: (``rewriter.UNPOOLABLE_SERVERS`` is empty and documents that the capability is
+#: (``rewriter.UNPOOLABLE_SERVERS`` lists only credential vendors and documents that the capability is
 #: read only to decide injection), so the unadvertised state was not "per-session
 #: spawn" — it was pooled AND identity-blind. For this server that silently
 #: degraded every pooled call to the unresolved-identity path: the call still
@@ -900,4 +901,5 @@ def run_mcp_server() -> None:
         _list_tools,
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+        instructions=_INSTRUCTIONS,
     )

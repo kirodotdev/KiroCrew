@@ -176,11 +176,9 @@ def test_both_readers_of_a_region_refuse_the_same_values(region):
 def test_the_crew_charset_is_one_rule_whoever_asks(crew):
     """The same table the ARN readers refuse, refused by the name check on its own.
 
-    A crew name is read before any ARN exists -- the bundle builder decides one while the
-    operator is still choosing what the bundle carries -- so the charset has to be askable
-    without an ARN to wrap it in. Sharing the table with
-    ``test_a_name_outside_the_crew_charset_is_refused`` is the point: one table rather than
-    two, because two tables that have to agree is the trap two validators already were.
+    The bundle builder reads a crew name before any ARN exists, so the charset must be
+    askable alone. The table is shared with ``test_a_name_outside_the_crew_charset_is_refused``
+    so two validators cannot drift apart.
     """
     with pytest.raises(DocumentRefused):
         ident.validated_crew_name(crew)
@@ -225,10 +223,8 @@ UNUSABLE_SECRET_REFERENCES = [
     # No six-character suffix: resolved by search, so it can return a
     # different secret than the one written.
     ident.SecretRef(GOOD_NAME, _arn(GOOD_NAME)),
-    # A longer tail. This is the complete ARN of a secret whose own name ends in
-    # a suffix-shaped segment, so claiming it is KIRO_API_KEY names a different
-    # secret than the one the ARN resolves to. This is the reading the previous
-    # pattern accepted.
+    # A longer tail: the full ARN of a secret whose own name ends in a suffix-shaped
+    # segment, so calling it KIRO_API_KEY names a different secret.
     ident.SecretRef(GOOD_NAME, _arn(f"{GOOD_NAME}-AbCdEf-XyZ123")),
     # A name outside the crew convention: an ENV_NAME segment has no hyphen, so
     # the module refuses to deliver a secret it cannot name.
@@ -267,11 +263,8 @@ def test_both_readers_of_a_reference_refuse_the_same_ones(ref, reader):
 def test_no_reader_recovers_a_destination_from_an_arn_alone():
     """The inversion is enforced by the signature, not just performed once.
 
-    A secret's destination variable can only be read from a reference that states
-    the secret's name, because an ARN alone does not say where the name ends. This
-    fails if either reader is given back a plain-string entry point, which is how
-    the practice would return: one convenient overload, and the split is being
-    guessed again.
+    An ARN alone does not say where the secret's name ends, so both readers take a
+    ``SecretRef`` that states it; a plain-string overload would guess the split.
     """
     for reader in (ident.parse_secret_arn, ident.secret_env_name):
         first = list(inspect.signature(reader).parameters)[0]
@@ -286,12 +279,8 @@ def test_no_reader_recovers_a_destination_from_an_arn_alone():
 def test_a_role_arn_is_recovered_by_round_trip_because_it_is_totally_derivable():
     """Why the role parser needs no second field and the secret reader does.
 
-    A role ARN has no service-generated component, so re-deriving it from a
-    candidate crew reproduces the input exactly and the round trip can BE the
-    parse. A secret ARN ends in six characters the service chose, which nothing
-    here can reproduce, so there is no round trip to verify against and the name
-    is carried instead. Same defect, two different fixes, because the strings
-    differ in whether they are derivable.
+    A role ARN has no service-generated part, so the round trip can be the parse. A secret
+    ARN ends in six service-chosen characters nothing can reproduce, so the name is carried.
     """
     for crew in ROUND_TRIP_CREWS:
         arn = ident.execution_role_arn(binding(crew))
@@ -301,11 +290,9 @@ def test_a_role_arn_is_recovered_by_round_trip_because_it_is_totally_derivable()
 def test_a_name_ending_in_a_suffix_shape_is_no_longer_read_as_a_different_secret():
     """The destination is not recovered by choosing where the name ends.
 
-    A reference states the name, so the ARN is checked against it rather than
-    split on the guess that its last six characters are the service's. Both
-    readings of the ambiguous string are refused: one because the ARN is not the
-    stated name plus one suffix, the other because the stated name is not a crew
-    secret name.
+    The ARN is checked against the stated name, not split on a guess. Both readings of the
+    ambiguous string are refused: the ARN is not name plus one suffix, or the name is not a
+    crew secret name.
     """
     arn = _arn(f"{GOOD_NAME}-AbCdEf-XyZ123")
     with pytest.raises(DocumentRefused, match="followed by one six-character"):

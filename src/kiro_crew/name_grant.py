@@ -131,7 +131,7 @@ import threading
 from collections import OrderedDict
 from typing import Any, Callable
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, sandbox_plan
 from kiro_crew.env import augmented_path
 from kiro_crew.github_runner import agent_writable_roots
 from kiro_crew.name_grant_lookup import (  # noqa: F401
@@ -523,15 +523,16 @@ def _agent_writable_roots() -> tuple[str, ...] | None:
 def _within(path: str, roots: tuple[str, ...] | None) -> bool:
     """Whether *path* sits inside one of *roots*, refusing when *roots* is None.
 
-    Compared against ``root + os.sep`` rather than by bare prefix, so a sibling
-    that merely starts with the same characters (``…/workspace-other`` next to
-    ``…/workspace``) is outside.
+    Compared through ``sandbox_plan.path_within``, so a sibling that merely
+    starts with the same characters (``…/workspace-other`` next to
+    ``…/workspace``) is outside, and a root that already ends in a separator (a
+    drive root such as ``H:\\``, or ``/``) still contains every path below it.
     """
 
     if roots is None:
         return True
     real = os.path.normcase(path)
-    return any(real == root or real.startswith(root + os.sep) for root in roots)
+    return any(sandbox_plan.path_within(real, root) for root in roots)
 
 
 def program_names(command: str) -> list[str] | None:

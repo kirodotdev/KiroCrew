@@ -13,6 +13,7 @@ import { useEffect } from 'react'
 
 import { IconButton } from '../../components/ui'
 import ListDetailBack from '../../components/ListDetailBack'
+import ResizeHandle from '../../components/ResizeHandle'
 import { type CollapseConfig, useColumnResize } from '../../hooks/useColumnResize'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import EmptyState from './components/EmptyState'
@@ -30,24 +31,6 @@ import SettingsView from './views/SettingsView'
 import type { ListTab, MainView } from './lib/types'
 
 import { i18nT } from '../../i18n/t'
-/** The 6px vertical drag handle between two columns. */
-function Splitter({ handleProps, label }: {
-  handleProps: ReturnType<typeof useColumnResize>['handleProps']
-  label: string
-}) {
-  return (
-    <div
-      {...handleProps}
-      role="separator"
-      aria-orientation="vertical"
-      aria-label={label}
-      title={i18nT('apps.codeReviewSage.workspace.drag_to_resize')}
-      className="w-1.5 flex-shrink-0 cursor-col-resize hover:bg-accent/30 transition-colors"
-      style={{ touchAction: 'none' }}
-    />
-  )
-}
-
 // Module-level so the resize hook's memoised resolver isn't invalidated every
 // render. `whenNarrow` collapses the rail to its strip on a phone, where a 280px
 // minimum would otherwise leave the report pane ~100px of a 390px viewport. The
@@ -182,7 +165,15 @@ export default function Workspace() {
       {/* The drag handle is a pointer affordance and costs width a phone does
           not have; the strip's expand button is the narrow-width control. */}
       {!isMobile && (
-        <Splitter handleProps={rail.handleProps} label={i18nT('apps.codeReviewSage.workspace.resize_sidebar')} />
+        <ResizeHandle
+          handleProps={rail.handleProps}
+          label={i18nT('apps.codeReviewSage.workspace.resize_sidebar')}
+          title={i18nT('apps.codeReviewSage.workspace.drag_to_resize')}
+          onNudge={rail.nudge}
+          value={rail.width}
+          min={MIN_RAIL_WIDTH}
+          max={MAX_RAIL_WIDTH}
+        />
       )}
 
       {mainView === 'reviews' ? (

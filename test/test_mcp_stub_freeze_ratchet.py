@@ -8,9 +8,9 @@ to ``enabled``, so a writer that leaves the file still riding the deprecated
 operator was looking at.
 
 ``_freeze_stub_servers`` closes that, but only for the writers that call it.
-These tests fail when a NEW writer appears without the freeze, which is the
-failure mode a reviewer flagged as invisible: correctness resting on two call
-sites with no guard against a third.
+These tests fail when a NEW writer appears without the freeze. Otherwise that
+failure is invisible: correctness resting on two call sites with no guard against
+a third.
 """
 
 from __future__ import annotations

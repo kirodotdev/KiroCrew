@@ -40,6 +40,7 @@ if TYPE_CHECKING:
         read_session_execution,
         readonly_base_name,
         redact_via_context,
+        sandbox_plan,
         sel,
     )
 
@@ -393,6 +394,12 @@ def spawn_allowlist(spec: Mapping[str, Any]) -> tuple[str, ...] | None:
     settings = spec.get("toolsSettings")
     if not isinstance(settings, Mapping):
         return None
+    # The one key of the sub-agent alias group kiro-cli reads (``crew``,
+    # ``agentCrew``, ``subagent``, ...), the same one the KAS projection reads.
+    from kiro_crew.platform.tools_settings_aliases import canonical_tools_settings
+
+    settings, _ = canonical_tools_settings(dict(settings))
+    # The fold files every sub-agent spelling under `subagent`.
     subagent = settings.get("subagent")
     if not isinstance(subagent, Mapping) or "availableAgents" not in subagent:
         return None
@@ -560,10 +567,17 @@ def _scope_spawn_allowlists(
         logger.warning("agents directory %s is not scannable (%s); refusing spawn", agents_dir, exc)
         return None, False
     try:
+        from kiro_crew.agent_spec_pins import pinned_memo_key, spec_pins
+
+        # A pin change is a miss: the pin chooses which claimant's list applies.
+        # One snapshot keys and scans, so a concurrent pin write cannot cross them.
+        pins = spec_pins()
         return memo.get(
             agents_dir,
-            parent_template,
-            lambda: _scan_parent_spawn_allowlists(agents_dir, parent_template, operation),
+            pinned_memo_key(parent_template, pins),
+            lambda: _scan_parent_spawn_allowlists(
+                agents_dir, parent_template, operation, pins=pins
+            ),
         )
     except OSError as exc:  # the directory walk itself failed: an unknown answer
         logger.warning("agents directory %s is not scannable (%s); refusing spawn", agents_dir, exc)
@@ -668,7 +682,11 @@ _PARENT_PROJECT_ALLOWLIST_MEMO: AgentsDirMemo[_ScopeAllowlists] = AgentsDirMemo(
 
 
 def _scan_parent_spawn_allowlists(
-    agents_dir: Path, parent_template: str, operation: str = "spawn_available_agents"
+    agents_dir: Path,
+    parent_template: str,
+    operation: str = "spawn_available_agents",
+    *,
+    pins: Mapping[str, str] | None = None,
 ) -> _ScopeAllowlists:
     """One fresh walk of *agents_dir* for :func:`parent_spawn_allowlists`.
 
@@ -707,7 +725,31 @@ def _scan_parent_spawn_allowlists(
             unreadable.append(path)
         else:
             rows.append((data, path))
-    declared = [data for data, _path in rows if data.get("name") == parent_template]
+    from kiro_crew import agent_spec_pins
+
+    declared_rows = [(data, path) for data, path in rows if data.get("name") == parent_template]
+    if operation == "spawn_available_agents_project":
+        # ``agent.spec_pins`` chooses among the USER-level agents directory only;
+        # every project claimant's allowlist stays in the intersection.
+        decision, pin = "none", None
+    else:
+        decision, pin = agent_spec_pins.pin_decision(
+            parent_template, [path.name for _data, path in declared_rows], pins
+        )
+    if decision == "broken":
+        # The resolver refuses this parent's spec, so its allowlist is UNKNOWN: no
+        # other claimant's list, and no filename fallback, stands in for it.
+        logger.warning(
+            "parent agent %r is pinned to %r, which no spec declaring it is; "
+            "refusing spawn (fail-closed)",
+            parent_template,
+            pin,
+        )
+        return None, False
+    # The parent session runs the pinned claimant when ``agent.spec_pins`` chooses
+    # one, so its allowlist is the one that applies. Any other case keeps every
+    # claimant, the strictest reading.
+    declared = [data for data, path in declared_rows if decision != "use" or path.name == pin]
     if not declared:
         # No readable spec declares the name. kiro-cli resolves a name by the
         # DECLARED ``name`` first, so the declaration may sit in a spec file the
@@ -770,7 +812,19 @@ def _parent_template_for_spawn(parent_session_key: str) -> str:
 ParentSpawnPolicy = tuple[str, "tuple[tuple[str, ...], ...] | None"]
 
 
-def parent_spawn_policy(parent_session_key: str) -> ParentSpawnPolicy:
+def _accepted_project_dirs(value: object) -> tuple[str, ...]:
+    """The parent project directories a queued spawn row recorded at accept time.
+
+    The row is read back from the durable store, so anything but a list of
+    non-empty strings is ignored (``()``): a malformed value can only drop the
+    recorded scope, and the drain then still applies the parent's live one.
+    """
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(v for v in value if isinstance(v, str) and v)
+
+
+def parent_spawn_policy(parent_session_key: str, accepted_dirs: object = ()) -> ParentSpawnPolicy:
     """Resolve the parent's template and its ``availableAgents`` declaration.
 
     Two reads that must not run on the gateway event loop -- the session
@@ -781,16 +835,19 @@ def parent_spawn_policy(parent_session_key: str) -> ParentSpawnPolicy:
     ``_parent_spawn_policy``, the same shape ``_record`` / ``_execution_context``
     already use for the record read. The synchronous ``spawn()`` computes it
     inline for callers that are not on the loop.
+
+    *accepted_dirs* are the project directories a queued row recorded when it
+    was accepted; see :func:`parent_template_allowlists`.
     """
     try:
         template = _parent_template_for_spawn(parent_session_key)
     except ParentRecordUnreadable:
         return "", None
-    return template, parent_template_allowlists(parent_session_key, template)
+    return template, parent_template_allowlists(parent_session_key, template, accepted_dirs)
 
 
 def parent_template_allowlists(
-    parent_session_key: str, template: str
+    parent_session_key: str, template: str, accepted_dirs: object = ()
 ) -> tuple[tuple[str, ...], ...] | None:
     """:func:`parent_spawn_allowlists` for *template*, in the parent session's project.
 
@@ -798,12 +855,23 @@ def parent_template_allowlists(
     template, so each resolves the user scope AND the parent session's project
     scope (:func:`parent_project_dirs`) the same way. Blocking: call it off the
     event loop.
+
+    A queued spawn passes the directories it was accepted under as
+    *accepted_dirs*. They are applied together with the parent's live ones, so
+    a parent that ended or moved project while the row waited still has the
+    project-scope declaration it was admitted under re-read at the drain, and
+    a directory in only one of the two sets can only add restrictions.
     """
     if not template:
         return ()
+    dirs = tuple(
+        dict.fromkeys(
+            (*parent_project_dirs(parent_session_key), *_accepted_project_dirs(accepted_dirs))
+        )
+    )
     return parent_spawn_allowlists(
         template,
-        parent_project_dirs(parent_session_key),
+        dirs,
         parent_session_key=parent_session_key,
     )
 
@@ -824,7 +892,7 @@ def conductor_spawn_refusal(parent_template: str) -> str | None:
     if parent_template != MATE_CONDUCTOR_AGENT:
         return None
     return (
-        "a crewmate's own chat starts no sub-agents: hand the work to a worker session "
+        "a Bot's own chat starts no sub-agents: hand the work to a worker session "
         "with session_create, give it the brief with session_send, and read its answer "
         "with session_read_message"
     )
@@ -936,8 +1004,16 @@ def validate_cwd(cwd: str, allowed_roots: list[str]) -> tuple[str, str]:
         return ("", f"cwd resolution failed: {exc}")
     if not os.path.isdir(resolved):
         return ("", "cwd does not exist or is not a directory")
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
     resolved_roots = [os.path.realpath(os.path.expanduser(r)) for r in allowed_roots]
+    # Windows' ``\\?\`` prefix is folded off both sides before the compare:
+    # ``realpath`` can keep it on one operand and not the other, and the lone
+    # prefix would read as an escape. Lexical, so no redirect is blessed.
+    plain_resolved = strip_extended_length_prefix(resolved)
     for root in resolved_roots:
-        if resolved == root or resolved.startswith(root + os.sep):
+        # ``path_within`` strips a trailing separator before adding one, so a
+        # filesystem-root entry (``/``, ``H:\``) admits the directories below it.
+        if sandbox_plan.path_within(plain_resolved, strip_extended_length_prefix(root)):
             return (resolved, "")
     return ("", f"cwd is not under any allowed root: {allowed_roots}")

@@ -22,8 +22,11 @@ that every retained refusal is bounded and cleaned before it is kept.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 import json
+import logging
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,11 +45,42 @@ TOGGLED = {**MANAGED, "disabled": False, "disabledTools": ["learn_add"]}
 
 @pytest.fixture
 def tree(tmp_path, monkeypatch):
+    with _tree(tmp_path, monkeypatch) as built:
+        yield built
+
+
+@contextlib.contextmanager
+def _tree(tmp_path, monkeypatch):
     """A kiro home, a project and the global settings file, all under tmp.
 
     ``kirocrew`` is a search agent by name; ``plain`` maps no skill and never asks
     for the element, so it shows which agents a restriction touches.
+
+    Every projection prepared here is released when the tree closes, before
+    ``tmp_path`` is removed. A projection left to its finalizer ends whenever the
+    collector frees it, on the reaper or a prune thread, and that prune recreates
+    ``kiro/agents`` and the side directory under a path pytest has already removed
+    and may hand, by the same name, to the next test while its setup runs.
     """
+    prepared: list[projection.NativeSkillProjection] = []
+    real_prepare = projection.prepare_native_skill_projection
+
+    def _prepare(*args, **kwargs):
+        result = real_prepare(*args, **kwargs)
+        if result is not None:
+            prepared.append(result)
+        return result
+
+    monkeypatch.setattr(projection, "prepare_native_skill_projection", _prepare)
+    try:
+        yield _build_tree(tmp_path, monkeypatch)
+    finally:
+        # Off the event loop, so each end prunes inline and is done on return.
+        for each in prepared:
+            each.release()
+
+
+def _build_tree(tmp_path, monkeypatch) -> SimpleNamespace:
     monkeypatch.delenv("KIROCREW_NATIVE_SKILL_PROJECTION", raising=False)
     home = tmp_path / "kiro"
     agents = home / "agents"
@@ -566,6 +600,25 @@ async def test_a_restriction_written_after_the_spawn_refuses_the_next_session_by
     assert message == f"Agent 'kirocrew': {_withheld(fresh, tree)}"
 
 
+def test_the_tree_ends_its_projections_before_tmp_path_is_removed(tmp_path, monkeypatch):
+    """Once the tree closes, no projection it prepared can still prune into it.
+
+    pytest removes a passing test's ``tmp_path`` and reuses the name for the next
+    test, so a prune that runs after the removal recreates ``kiro/agents`` under
+    that next test's setup. The late end is run here by hand, where the collector
+    would run it, so the race is reproduced without waiting for the collector.
+    """
+    with _tree(tmp_path, monkeypatch) as built:
+        prepared = projection.prepare_native_skill_projection(built.project)
+        assert prepared is not None
+        late_end = prepared._lease_finalizer
+    shutil.rmtree(tmp_path / "kiro")
+    shutil.rmtree(tmp_path / "crew", ignore_errors=True)
+    if late_end is not None and late_end.alive:
+        late_end()
+    assert not built.agents.exists(), "a projection ended after its tree was removed"
+
+
 @pytest.mark.asyncio
 async def test_a_stub_ahead_of_the_element_does_not_carry_a_session_started_after_the_edit(tree):
     """The stub array comes from an overlay written before the edit, so the stub
@@ -689,6 +742,71 @@ def test_an_unreadable_settings_file_is_named_with_its_cause(tree):
     assert caught.value.path == _project_settings(tree)
     assert isinstance(caught.value.__cause__, ValueError)
     assert isinstance(caught.value, ValueError)
+
+
+_GOOD_SETTINGS = json.dumps({"mcpServers": {"x": {"command": "x"}}})
+
+
+@pytest.mark.parametrize(
+    ("raw", "reason"),
+    [
+        # Windows PowerShell 5.1's ``>`` and ``Out-File`` save UTF-16 LE with a mark.
+        (b"\xff\xfe" + _GOOD_SETTINGS.encode("utf-16-le"), "saved as UTF-16; re-save it as UTF-8"),
+        (b"\xfe\xff" + _GOOD_SETTINGS.encode("utf-16-be"), "saved as UTF-16; re-save it as UTF-8"),
+        (
+            b"\xff\xfe\x00\x00" + _GOOD_SETTINGS.encode("utf-32-le"),
+            "saved as UTF-32; re-save it as UTF-8",
+        ),
+        (_GOOD_SETTINGS.encode("cp1252") + b"\xe9", "not UTF-8 text; re-save it as UTF-8"),
+        (b'{"mcpServers": {', "not valid JSON (line 1, column 17)"),
+        (b'{"mcpServers": []}', "does not hold an object of servers"),
+    ],
+)
+def test_the_refusal_says_why_the_settings_file_was_unreadable(tree, raw, reason):
+    """The refusal names the cause, so a user can repair the file.
+
+    A UTF-16 file is refused, not decoded: kiro-cli refuses it as well, so
+    decoding it here would enforce restrictions kiro-cli never loads.
+    """
+    tree.settings.parent.mkdir(parents=True, exist_ok=True)
+    tree.settings.write_bytes(raw)
+    with pytest.raises(session_mcp.NativeSettingsUnreadable) as caught:
+        session_mcp.native_settings_sources(None)
+    assert reason in caught.value.explain("skill search")
+    assert caught.value.explain("skill search").startswith(
+        f"the global MCP settings ({tree.settings}) could not be read safely because it "
+    )
+
+
+def test_the_mount_warning_repeats_why_the_settings_file_was_unreadable(tree, caplog):
+    """The gateway log names the cause too, not only the user-facing message."""
+    tree.settings.parent.mkdir(parents=True, exist_ok=True)
+    tree.settings.write_bytes(b"\xff\xfe" + _GOOD_SETTINGS.encode("utf-16-le"))
+    prepared = projection.prepare_native_skill_projection(tree.project)
+    with caplog.at_level(logging.WARNING, logger=session_mcp.__name__):
+        _mount(prepared, tree)
+    warnings = [
+        r.getMessage() for r in caplog.records if "MCP settings unreadable" in r.getMessage()
+    ]
+    assert warnings, caplog.text
+    assert "because it is saved as UTF-16; re-save it as UTF-8" in warnings[0]
+
+
+def test_a_utf8_settings_file_with_a_mark_still_reads(tree):
+    tree.settings.parent.mkdir(parents=True, exist_ok=True)
+    tree.settings.write_bytes(b"\xef\xbb\xbf" + _GOOD_SETTINGS.encode())
+    [source] = session_mcp.native_settings_sources(None)
+    assert set(source.servers) == {"x"}
+
+
+def test_the_refusal_says_the_file_could_not_be_opened_when_the_safe_open_fails(tree, monkeypatch):
+    tree.settings.parent.mkdir(parents=True, exist_ok=True)
+    tree.settings.write_text(_GOOD_SETTINGS, encoding="utf-8")
+    monkeypatch.setattr(session_mcp, "_SETTINGS_READ_BACKOFF_SECS", (0.0, 0.0))
+    monkeypatch.setattr("kiro_crew.hooks.safe_read_file_bytes", lambda raw: None)
+    with pytest.raises(session_mcp.NativeSettingsUnreadable) as caught:
+        session_mcp.native_settings_sources(None)
+    assert "could not be opened as a plain local file" in caught.value.explain("skill search")
 
 
 def test_the_message_bounds_a_long_tool_list_and_types_a_malformed_one():

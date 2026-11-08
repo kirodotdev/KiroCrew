@@ -11,6 +11,7 @@ browser, and that a failure to draw never changes the route's answer.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,9 +19,11 @@ import pytest
 from body_stream_helpers import attach_body
 
 from kiro_crew.dashboard import chat_cards
+from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.history import ConversationLog
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
 
+_CRON_LOGGER = "kiro_crew.dashboard.handlers.cron"
 SLOT = "chat-1"
 AGENT_KEY = "dashboard_chat-1"
 
@@ -95,10 +98,14 @@ class TestRecordLessonSaved:
     def test_no_slot_draws_nothing_and_does_not_raise(self) -> None:
         chat_cards.record_lesson_saved(_State(None), SLOT, "always use pnpm", "inserted")
 
-    def test_an_append_failure_does_not_raise(self) -> None:
+    def test_an_append_failure_does_not_raise(self, caplog: pytest.LogCaptureFixture) -> None:
         slot = _Slot()
         slot.append = MagicMock(side_effect=RuntimeError("disk full"))  # type: ignore[method-assign]
-        chat_cards.record_lesson_saved(_State(slot), SLOT, "always use pnpm", "inserted")
+        with caplog.at_level(logging.WARNING, logger=chat_cards.logger.name):
+            chat_cards.record_lesson_saved(_State(slot), SLOT, "always use pnpm", "inserted")
+        assert [r.getMessage() for r in caplog.records if r.name == chat_cards.logger.name] == [
+            "could not record a card row in the conversation"
+        ]
 
 
 @pytest.mark.asyncio
@@ -113,11 +120,16 @@ class TestLessonsRouteDrawsTheRow:
         internal: bool = True,
         slot_key: str = SLOT,
         record: MagicMock | None = None,
+        slot: Any = None,
     ) -> tuple[Any, MagicMock]:
+        """With ``slot``, the real ``record_lesson_saved`` draws into that slot."""
         from kiro_crew.dashboard.handlers import cron
 
         request = MagicMock()
         state = MagicMock()
+        if slot is not None:
+            state.get_slot = _State(slot).get_slot
+            record = record or chat_cards.record_lesson_saved
         state.conversation_log = ConversationLog()
         state._background_tasks = set()
         request.app = {"state": state}
@@ -157,14 +169,18 @@ class TestLessonsRouteDrawsTheRow:
         assert (slot_key, rule, outcome) == (SLOT, "always use pnpm", "inserted")
 
     async def test_the_memory_tab_add_draws_nothing(self) -> None:
-        _resp, record = await self._post(
-            LessonWriteOutcome.INSERTED, session_key="dashboard:ui", internal=False
+        slot = _ChatSlot(SLOT)
+        resp, _ = await self._post(
+            LessonWriteOutcome.INSERTED, session_key="dashboard:ui", internal=False, slot=slot
         )
-        record.assert_not_called()
+        assert resp.status == 200
+        assert _lesson_rows(slot) == []
 
     async def test_a_caller_without_the_internal_secret_draws_nothing(self) -> None:
-        _resp, record = await self._post(LessonWriteOutcome.INSERTED, internal=False)
-        record.assert_not_called()
+        slot = _ChatSlot(SLOT)
+        resp, _ = await self._post(LessonWriteOutcome.INSERTED, internal=False, slot=slot)
+        assert resp.status == 200
+        assert _lesson_rows(slot) == []
 
     async def test_a_key_with_no_live_slot_draws_nothing(self) -> None:
         _resp, record = await self._post(LessonWriteOutcome.INSERTED, slot_key="")
@@ -182,12 +198,13 @@ class TestLessonsRouteDrawsTheRow:
             "superseded": [],
         }
 
-    async def test_the_helper_swallows_a_failure(self) -> None:
+    async def test_the_helper_swallows_a_failure(self, caplog: pytest.LogCaptureFixture) -> None:
         from kiro_crew.dashboard.handlers import cron
 
         request = MagicMock()
         request.get = lambda key, default=None: True if key == "internal_auth" else default
         with (
+            caplog.at_level(logging.WARNING, logger=_CRON_LOGGER),
             patch("kiro_crew.dashboard.session_control.caller_slot_key", return_value=SLOT),
             patch.object(
                 chat_cards,
@@ -196,3 +213,6 @@ class TestLessonsRouteDrawsTheRow:
             ),
         ):
             await cron._surface_lesson_saved(request, MagicMock(), AGENT_KEY, "r", "inserted")
+        assert [r.getMessage() for r in caplog.records if r.name == _CRON_LOGGER] == [
+            "could not draw a saved lesson in its conversation"
+        ]

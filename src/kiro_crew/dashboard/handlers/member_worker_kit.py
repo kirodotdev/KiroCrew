@@ -1,8 +1,8 @@
 """Owner-only worker-kit routes: ``/api/agents/{name}/worker-kit``.
 
-``GET`` reads which template the crewmate's worker kit was last copied from;
-``POST .../preview`` says what copying a template would change in the
-crewmate's own file; ``PUT`` copies it, once, after that preview. All disk work
+``GET`` reads the crewmate's own file revision; ``POST .../preview`` says what
+adding another agent's abilities would add to that file, and what it skips as
+already present; ``PUT`` adds them, once, after that preview. All disk work
 runs off the event loop through :mod:`kiro_crew.mate_worker_kit`.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from aiohttp import web
 
+from kiro_crew.dashboard.agent_name_segment import agent_route_name, invalid_agent_name_response
 from kiro_crew.dashboard.chat_utils import drained_to_thread
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.mate_worker_kit import WorkerKitError
@@ -22,7 +23,9 @@ async def api_member_worker_kit(request: web.Request) -> web.Response:
     denied = await require_owner_dashboard_request(request, operation)
     if denied is not None:
         return denied
-    name = request.match_info["name"]
+    name = agent_route_name(request)
+    if name is None:
+        return invalid_agent_name_response()
     try:
         if request.method == "GET":
             return web.json_response(await drained_to_thread(mate_worker_kit.view, name))
@@ -35,8 +38,20 @@ async def api_member_worker_kit(request: web.Request) -> web.Response:
         from kiro_crew.dashboard.handlers.agents import _get_config_lock
 
         async with _get_config_lock():
-            result = await drained_to_thread(mate_worker_kit.apply, name, body)
+            result, policy_changed = await drained_to_thread(
+                mate_worker_kit.apply_reporting, name, body
+            )
         request.app["state"].push_refresh("agents")
+        if policy_changed:
+            # A live worker keeps the KAS permission batch it registered, so a
+            # new restriction holds only once it is reloaded onto the file
+            # (``crewmate_worker_reload``; a busy one at its turn end).
+            from kiro_crew.dashboard.crewmate_worker_reload import schedule_reload_workers
+
+            schedule_reload_workers(request.app["state"], name)
         return web.json_response(result)
     except WorkerKitError as exc:
-        return web.json_response({"error": exc.code, "code": exc.code}, status=exc.status)
+        # ``detail`` names the field or rule a refusal is about ("" when none).
+        return web.json_response(
+            {"error": exc.code, "code": exc.code, "detail": exc.detail}, status=exc.status
+        )

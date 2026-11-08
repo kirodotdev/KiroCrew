@@ -9,6 +9,10 @@ rasterizes, through the ``PATH`` :func:`provision.mcp_tools_path` renders). A fi
 only the first reports LibreOffice present while every thumbnail still fails, so both
 are pinned here.
 
+The Windows install-root lookup itself is the core's (``kiro_crew.soffice_discovery``,
+pinned by ``test/test_soffice_discovery.py``); what is pinned here is how this app
+ranks it against ``PATH`` and its own managed launcher.
+
 The resolver is stubbed and the platform flag monkeypatched, per the repo rule that a
 test must not depend on what the host has installed: these assertions run identically
 on a Windows shard with LibreOffice, one without, and on Linux CI.
@@ -17,12 +21,11 @@ on a Windows shard with LibreOffice, one without, and on Linux CI.
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 import pytest
 
-from kiro_crew import platform_compat
+from kiro_crew import platform_compat, soffice_discovery
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, provision
 
 
@@ -47,7 +50,7 @@ def install_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     """A fake fixed install root for ``soffice``, registered as Windows' own."""
     root = tmp_path / "LibreOffice" / "program"
     root.mkdir(parents=True)
-    monkeypatch.setattr(engine, "_SOFFICE_WINDOWS_DIRS", (str(root),))
+    monkeypatch.setattr(soffice_discovery, "_SOFFICE_WINDOWS_DIRS", (str(root),))
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
     return str(root)
 
@@ -194,79 +197,3 @@ def test_the_rendered_path_never_gains_an_empty_element(
     )
 
     assert "" not in provision.mcp_tools_path().split(os.pathsep)
-
-
-def test_the_shipped_table_resolves_through_no_environment_variable():
-    """``%ProgramFiles%`` is attacker-writable without elevation.
-
-    Resolving through it would let a poisoned value redirect the lookup into a
-    directory the user can plant a binary in, which is what pinning literal roots
-    avoids — the same reasoning ``platform_compat._WINDOWS_GIT_DIRS`` records.
-    """
-    entries = engine._SOFFICE_WINDOWS_DIRS
-    assert entries
-    for entry in entries:
-        assert "%" not in entry
-        assert "$" not in entry
-        assert entry.startswith("C:")
-        assert "LibreOffice" in entry
-
-
-def test_which_within_rejects_a_hit_from_outside_the_asked_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A resolver answering with a path outside the probed directory is refused.
-
-    Platform-independent on purpose: the parent comparison is pure path logic, and the
-    Windows CWD precedence that makes it necessary is measured separately. Gating this
-    on Windows would leave the guard unexercised on every other shard.
-    """
-    asked = tmp_path / "trusted-root"
-    asked.mkdir()
-    elsewhere = tmp_path / "somewhere-writable"
-    elsewhere.mkdir()
-    monkeypatch.setattr(engine.shutil, "which", lambda *a, **k: str(elsewhere / "soffice"))
-    assert engine._which_within("soffice", asked) is None
-
-
-def test_which_within_accepts_a_hit_inside_the_asked_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The guard must not reject a genuine install, and returns it absolute."""
-    asked = tmp_path / "trusted-root"
-    asked.mkdir()
-    monkeypatch.setattr(engine.shutil, "which", lambda *a, **k: str(asked / "soffice"))
-    found = engine._which_within("soffice", asked)
-    assert found is not None
-    assert os.path.isabs(found), "a relative hit is what reaches PATH as `.`"
-    assert Path(found).parent == asked
-
-
-@pytest.mark.skipif(not platform_compat.IS_WINDOWS, reason="Windows CWD precedence")
-def test_a_planted_binary_in_the_working_directory_is_not_accepted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The measurement the guard exists for -- real ``shutil.which``, no stub.
-
-    ``shutil.which(path=...)`` searches the working directory FIRST on a default
-    Windows host: ``_winapi.NeedCurrentDirectoryForExePath`` says to unless
-    ``NoDefaultCurrentDirectoryInExePath`` is set, and a host that sets it is the
-    exception. This test DELETES that variable rather than trusting the developer's own
-    environment -- measured on 3.12.14, with it left alone the hazard is invisible and
-    the assertion passes for the wrong reason.
-
-    Unguarded, the call answers ``.\\soffice.COM`` from the working directory and
-    :func:`engine.system_install_dirs` hands ``.`` -- a RELATIVE entry -- to the MCP
-    ``PATH``, which is arbitrary code execution in the process that rasterizes slides.
-    """
-    monkeypatch.delenv("NoDefaultCurrentDirectoryInExePath", raising=False)
-    planted = tmp_path / "agent-writable-cwd"
-    planted.mkdir()
-    (planted / "soffice.com").write_bytes(b"@echo planted\n")
-    empty_root = tmp_path / "fake-libreoffice-program"
-    empty_root.mkdir()
-    monkeypatch.chdir(planted)
-
-    # The plant is real: without this a broken fixture reads as a working guard.
-    assert shutil.which(os.path.join(".", "soffice")) is not None
-    assert engine._which_within("soffice", empty_root) is None

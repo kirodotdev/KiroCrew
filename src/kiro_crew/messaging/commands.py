@@ -62,6 +62,7 @@ from kiro_crew.cron import (
     compute_next_run_ts,
     format_schedule,
     get_local_tz,
+    job_zone_name,
 )
 from kiro_crew.messaging.queue_drain import entries_queued_by
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface
@@ -75,7 +76,7 @@ from kiro_crew.session_lifecycle import (
     decline_stop,
     force_stop_keeping_others,
 )
-from kiro_crew.subagent_wait_reasons import DEFERRED_QUEUED_REASONS
+from kiro_crew.subagent_wait_reasons import DEFERRED_QUEUED_REASONS, stopped_before_start
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import edge
     from kiro_crew.cron import CronService
@@ -687,6 +688,22 @@ def compact_unsupported_reply_zh(backend: str) -> str:
 COMPACT_TIMED_OUT_REPLY_ZH = "⚠️ 压缩超时。"
 
 
+#: The manual ``/compact`` refusal for a session the Kiro account check flagged
+#: (``SessionManager.is_retiring``). ``try_acquire`` refuses it while it stays
+#: registered, so it would otherwise read as busy, yet waiting would not help even
+#: when a reply is still finishing on it: the next message's claim retires it and
+#: starts a new conversation on the current account. Plain text, so every surface
+#: can send it, with or without a glyph.
+COMPACT_ACCOUNT_CHANGED_TEXT = (
+    "The Kiro account changed, so this conversation restarts with your next message. "
+    "There is nothing to compact until then."
+)
+#: :data:`COMPACT_ACCOUNT_CHANGED_TEXT` for the three Chinese-language surfaces.
+COMPACT_ACCOUNT_CHANGED_REPLY_ZH = (
+    "ℹ️ Kiro 账号已变更，这段对话会在你发下一条消息时重新开始，在此之前没有可压缩的内容。"
+)
+
+
 #: How much of a cron job's message body a list row shows.
 _CRON_MESSAGE_PREVIEW_CHARS = 50
 #: How much of a subagent's task a list row shows.
@@ -871,6 +888,8 @@ async def spawn_task_reply(
         # would stack a second clause on "was not started: ".
         reason = refusal.removeprefix("spawn refused: ").removeprefix("never started: ")
         return f"⚠️ Subagent `{info.id}` was not started: {_redact(reason)}"
+    if stopped_before_start(info):
+        return f"⚠️ Subagent `{info.id}` was stopped before it started; nothing ran."
     # A row the gate DEFERRED (memory floor, critical posture, paused cap) is
     # accepted under its id but not running, and may not run for a long time;
     # say so with the gate's own sentence instead of announcing a start. The
@@ -910,7 +929,7 @@ def _cron_list(cron_service: "CronService | Any") -> str:
     lines = ["*Your cron jobs:*"]
     for job in jobs:
         status = "✅" if job.enabled else "⏸️"
-        schedule = _redact(format_schedule(job.schedule, tz_name=job.timezone or tz_name))
+        schedule = _redact(format_schedule(job.schedule, tz_name=job_zone_name(job) or tz_name))
         last = ""
         if job.last_status == "ok":
             last = " ✓"
@@ -952,13 +971,10 @@ async def cron_remove_all_reply(
             return _cron_unreadable(exc)
     if not jobs:
         return "No cron jobs to remove."
-    # ``job.name`` is free-form user/LLM text reaching a chat reply and the
-    # persisted conversation log; ``job.id`` is a generated UUID and is left as-is.
-    lines = [f"- `{job.id}` — {_redact(job.name)}" for job in jobs]
     # One batch lock/reload/save, offloaded by the service itself, so a chat
     # gateway's loop is never parked on the store lock.
     try:
-        await cron_service.remove_jobs(
+        removed, _ = await cron_service.remove_jobs(
             [job.id for job in jobs],
             actor=caller or source or "system",
             source=source or "messaging",
@@ -967,6 +983,14 @@ async def cron_remove_all_reply(
         return _CRON_BUSY
     except CronStoreUnreadable as exc:
         return _cron_unreadable(exc)
+    # The listing above is cache-only; ``removed`` is what the store re-read
+    # and actually deleted, so only those jobs are reported.
+    gone = set(removed)
+    # ``job.name`` is free-form user/LLM text reaching a chat reply and the
+    # persisted conversation log; ``job.id`` is a generated UUID and is left as-is.
+    lines = [f"- `{job.id}` — {_redact(job.name)}" for job in jobs if job.id in gone]
+    if not lines:
+        return "No cron jobs to remove."
     return f"✅ Removed {len(lines)} cron job(s):\n" + "\n".join(lines)
 
 

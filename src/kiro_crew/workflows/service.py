@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import functools
 import hashlib
 import logging
 import secrets
@@ -48,6 +49,7 @@ from kiro_crew.workflow_memory import (
     admission_errors,
 )
 
+from . import update_from_run
 from .agent_exec import build_agent_fn
 from .agent_pool import admitted_agent_fn, build_pooled_agent_fn
 from .events import EventStream
@@ -56,6 +58,8 @@ from .library import (
     SOURCE_FORMAT_TASK_PLAN,
     SensitiveWorkflowSourceError,
     WorkflowDefinitionLibrary,
+    WorkflowSlugTakenError,
+    declared_lineage,
 )
 from .registry import (
     STATUS_CANCELLED,
@@ -130,8 +134,9 @@ not invent one.
 BUDGET — ctx.budget is a host-owned Budget object, NOT a number or a timeout.
 Never assign to or delete ctx.budget. The caller sets the run's token ceiling
 with budget_total when starting the workflow. Read ctx.budget.total,
-ctx.budget.spent(), or ctx.budget.remaining() to inspect it. Keep any script-local
-limit in a local variable instead of replacing the runtime object.
+ctx.budget.spent(), or ctx.budget.remaining() to inspect it; remaining() is
+float('inf') when total is None, so do not return or log it raw. Keep any
+script-local limit in a local variable instead of replacing the runtime object.
 
 ASYNC vs SYNC — get this right or the script crashes at runtime:
   * AWAIT these (they are async): ctx.agent(...), ctx.parallel(...),
@@ -212,6 +217,7 @@ class WorkflowService:
         store: Any = None,
         pool_agents: bool = True,
         nudge_authorizer: Optional[Callable[..., Any]] = None,
+        session_port: Any = None,
         timeout_secs: Optional[int] = None,
         definition_library: Any = None,
         task_runner: Any = None,
@@ -248,6 +254,12 @@ class WorkflowService:
         # teardown drains its own arms before the terminal transition.
         self._nudge_authorizer = nudge_authorizer
         self._nudge_tasks: dict[str, set[Any]] = {}
+        # Injected by the gateway: an object with async ``open_session`` /
+        # ``send_to_session`` / ``set_session_mode`` that act AS the run's launching
+        # session through the session-control verbs (deny-by-default + SEL audit).
+        # None in tests / non-dashboard hosts, and then the three ctx methods are
+        # not wired, so a script naming them is rejected before exec.
+        self._session_port = session_port
         self._now_fn = now_fn or (lambda: "1970-01-01T00:00:00Z")
         self._concurrency = concurrency
         # Default wall-clock ceiling for runs started through this service. The
@@ -774,7 +786,24 @@ class WorkflowService:
         def _nudge(**kw: Any) -> None:
             self._nudge_port(run_id=run_id, **kw)
 
-        ports = {"nudge": _nudge}
+        ports: dict[str, Any] = {"nudge": _nudge}
+        session_port = self._session_port
+        if session_port is not None:
+            # Bound to THIS run's id so the gateway's audit names the run, and to
+            # the run's captured memory mode (the strictest it inherited, which a
+            # rerun keeps even when the caller differs) so a restricted run never
+            # reaches a persistent transcript. The runner supplies the launching
+            # session key at call time.
+            run_mode = str(getattr(memory_scope, "memory_mode", "") or "")
+            ports["open_session"] = functools.partial(
+                session_port.open_session, run_id=run_id, memory_mode=run_mode
+            )
+            ports["send_to_session"] = functools.partial(
+                session_port.send_to_session, run_id=run_id, memory_mode=run_mode
+            )
+            ports["set_session_mode"] = functools.partial(
+                session_port.set_session_mode, run_id=run_id
+            )
 
         async def _drain() -> None:
             # Awaited by the runner BEFORE each terminal event: nudge outcome
@@ -999,6 +1028,9 @@ class WorkflowService:
                     resumed=_resumed,
                     agent="kirocrew-lite",
                     cwd=None,
+                    # Triggers read the operator's intent, not the authoring
+                    # instructions or the reference workflows quoted around it.
+                    skill_trigger_text=intent,
                 )
                 stop_reasons.clear()
                 text = await stream_and_collect(
@@ -1065,6 +1097,8 @@ class WorkflowService:
         execution_context=None,
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
+        fallback_title: str = "",
+        fallback_folder_id: str = "",
     ) -> dict:
         """Launch a background run that AUTHORS its own script from ``intent``.
 
@@ -1128,6 +1162,8 @@ class WorkflowService:
             budget_total=budget_total,
             intent=intent,
             author_fn=_author_fn,
+            fallback_title=fallback_title,
+            fallback_folder_id=fallback_folder_id,
         )
         if not started:
             return {"error": "gateway admission is closed"}
@@ -1149,6 +1185,8 @@ class WorkflowService:
         workflow_id: str = "",
         workflow_slug: str = "",
         workflow_revision: int = 0,
+        fallback_title: str = "",
+        fallback_folder_id: str = "",
     ) -> dict:
         """Validate + launch a background run; return {run_id} or {error}.
 
@@ -1198,6 +1236,8 @@ class WorkflowService:
             workflow_id=workflow_id,
             workflow_slug=workflow_slug,
             workflow_revision=workflow_revision,
+            fallback_title=fallback_title,
+            fallback_folder_id=fallback_folder_id,
         )
         if not started:
             return {"error": "gateway admission is closed"}
@@ -1235,8 +1275,13 @@ class WorkflowService:
         slug: str = "",
         derived_from: Any = None,
         source_format: str = SOURCE_FORMAT_PYTHON,
+        exact_slug: bool = False,
     ) -> dict[str, Any]:
-        """Validate and explicitly promote a source definition into the library."""
+        """Validate and explicitly promote a source definition into the library.
+
+        With *exact_slug* a used slug is answered ``slug_taken`` rather than saved
+        under a suffixed one.
+        """
         with self._definition_lock:
             errors: list[str] = []
             meta: dict[str, Any] = {}
@@ -1266,20 +1311,21 @@ class WorkflowService:
                     slug=slug,
                     derived_from=derived_from,
                     source_format=source_format,
+                    exact_slug=exact_slug,
                 )
+            except WorkflowSlugTakenError as exc:
+                return {"ok": False, "error": str(exc), "errors": [str(exc)], "slug_taken": True}
             except SensitiveWorkflowSourceError as exc:
                 return {"ok": False, "error": str(exc), "errors": [str(exc)]}
         return {"ok": True, "definition": definition}
 
-    async def promote_run_definition(
-        self,
-        run_id: str,
-        *,
-        name: str = "",
-        description: str = "",
-        slug: str = "",
-    ) -> dict[str, Any]:
-        """Promote a reusable run source from its unredacted server snapshot."""
+    def _reusable_run(self, run_id: str) -> RunHandle | dict[str, Any]:
+        """The run whose original source may enter the library, or the refusal.
+
+        Promotion and run-to-revision updates share this: the run must be an ad-hoc
+        one (a saved invocation is already in the library), finished (or a paused
+        TaskRunner plan), and still hold the exact source it ran.
+        """
         handle = self.registry.get(run_id)
         if handle is None:
             return {"ok": False, "error": "no such workflow run", "not_found": True}
@@ -1302,9 +1348,23 @@ class WorkflowService:
                 "error": "the original workflow source is no longer available",
                 "source_not_original": True,
             }
-        source = handle.source
-        if not source:
+        if not handle.source:
             return {"ok": False, "error": "workflow run has no source", "no_source": True}
+        return handle
+
+    async def promote_run_definition(
+        self,
+        run_id: str,
+        *,
+        name: str = "",
+        description: str = "",
+        slug: str = "",
+    ) -> dict[str, Any]:
+        """Promote a reusable run source from its unredacted server snapshot."""
+        handle = self._reusable_run(run_id)
+        if isinstance(handle, dict):
+            return handle
+        source = handle.source
         if handle.source_format == SOURCE_FORMAT_PYTHON:
             validated = validate(source)
             if not validated.ok:
@@ -1313,7 +1373,7 @@ class WorkflowService:
                     "error": "; ".join(validated.errors),
                     "errors": validated.errors,
                 }
-            derived_from = _declared_lineage(validated.meta or {})
+            derived_from = declared_lineage(validated.meta or {})
         elif handle.source_format == SOURCE_FORMAT_TASK_PLAN:
             try:
                 decompose_yaml(source)
@@ -1392,6 +1452,29 @@ class WorkflowService:
             }
         return {"ok": True, "definition": definition}
 
+    async def update_run_definition(
+        self,
+        run_id: str,
+        workflow_ref: str,
+        *,
+        expected_revision: int,
+        expected_source_sha256: str,
+    ) -> dict[str, Any]:
+        """Append a finished run's source to a saved workflow (``update_from_run``)."""
+        return await update_from_run.update(
+            self,
+            run_id,
+            workflow_ref,
+            expected_revision=expected_revision,
+            expected_source_sha256=expected_source_sha256,
+        )
+
+    async def preview_run_definition_update(
+        self, run_id: str, workflow_ref: str = ""
+    ) -> dict[str, Any]:
+        """What :meth:`update_run_definition` would do (``update_from_run``)."""
+        return await update_from_run.preview(self, run_id, workflow_ref)
+
     @admission_errors
     async def start_definition(
         self,
@@ -1405,6 +1488,8 @@ class WorkflowService:
         execution_context=None,
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
+        fallback_title: str = "",
+        fallback_folder_id: str = "",
     ) -> dict[str, Any]:
         """Run the exact current revision of a named saved workflow."""
         from kiro_crew.workflow_memory import capture_admission_execution
@@ -1461,6 +1546,8 @@ class WorkflowService:
             workflow_id=str(definition["id"]),
             workflow_slug=str(definition["slug"]),
             workflow_revision=int(definition["revision"]),
+            fallback_title=fallback_title,
+            fallback_folder_id=fallback_folder_id,
         )
         if "run_id" in started:
             started.update(
@@ -1482,7 +1569,15 @@ class WorkflowService:
         return self.registry.list()
 
     async def cancel(self, run_id: str) -> bool:
-        return await self.registry.cancel(run_id)
+        cancelled = await self.registry.cancel(run_id)
+        handle = self.registry.get(run_id)
+        runner = self._task_runner
+        if cancelled and handle is not None and handle.driver == "taskrunner" and handle.task_id:
+            # The TaskRunner records the operator's cancel and settles a run the
+            # gateway stop froze, whose driver task has already finished.
+            if runner is not None and hasattr(runner, "cancel"):
+                runner.cancel(handle.task_id, exact=True)
+        return cancelled
 
     @admission_errors
     async def rerun_subtree(
@@ -1588,6 +1683,14 @@ class WorkflowService:
         replay_results = {} if edited else dict(prior.agent_results)
         replay_fingerprints = {} if edited else dict(prior.agent_fingerprints)
         label = "rerun-edited" if edited else f"rerun@{from_index}"
+        # An edited rerun of a saved invocation keeps that definition only as
+        # ancestry, as an adapted TaskRunner plan does; any other rerun carries the
+        # prior run's ancestry forward.
+        if edited and prior.workflow_id and prior.workflow_revision:
+            derived_id, derived_revision = prior.workflow_id, prior.workflow_revision
+        else:
+            derived_id = prior.derived_from_workflow_id
+            derived_revision = prior.derived_from_revision
         started = await self._runner(
             new_id,
             timeout_secs=timeout_secs,
@@ -1613,6 +1716,8 @@ class WorkflowService:
             workflow_id="" if edited else prior.workflow_id,
             workflow_slug="" if edited else prior.workflow_slug,
             workflow_revision=0 if edited else prior.workflow_revision,
+            derived_from_workflow_id=derived_id,
+            derived_from_revision=derived_revision,
         )
         if not started:
             return {"error": "gateway admission is closed"}
@@ -1707,7 +1812,7 @@ def _authoring_references(matches: list[dict[str, Any]]) -> str:
 def _verified_lineage(
     meta: dict[str, Any], matches: list[dict[str, Any]]
 ) -> Optional[dict[str, Any]]:
-    lineage = _declared_lineage(meta)
+    lineage = declared_lineage(meta)
     if lineage is None:
         return None
     workflow_id = lineage["workflow_id"]
@@ -1717,18 +1822,6 @@ def _verified_lineage(
         for definition in matches
     )
     return lineage if exists else None
-
-
-def _declared_lineage(meta: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """Parse a validated workflow's optional ``META.adapted_from`` reference."""
-    reference = meta.get("adapted_from")
-    if not isinstance(reference, str) or "@" not in reference:
-        return None
-    workflow_id, revision_text = reference.rsplit("@", 1)
-    if not revision_text.isdigit():
-        return None
-    revision = int(revision_text)
-    return {"workflow_id": workflow_id, "revision": revision}
 
 
 def _lineage_exists(value: Any, definitions: list[dict[str, Any]]) -> bool:

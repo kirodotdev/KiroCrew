@@ -262,7 +262,6 @@ class TestRedactExfiltrationUrls:
         )
         text = f"Bad: {bad_url} Good: {good_url}"
         result, warnings = redact_exfiltration_urls(text)
-        # Bad URL should be redacted
         assert "[REDACTED" in result
         # Good presigned URL should survive
         assert "my-bucket.s3.us-east-1.amazonaws.com" in result
@@ -344,7 +343,7 @@ class TestRedactExfiltrationUrls:
 
 
 class TestExfilUrlPathAndRawIp:
-    """security-review 78224f3f: secrets embedded in the URL PATH (no ``?``) and raw-IP /
+    """Secrets embedded in the URL PATH (no ``?``) and raw-IP /
     IPv6 literal hosts must be scanned/redacted — both otherwise bypass
     scan_exfiltration_urls (query-only scan + letter-TLD-only host regex)."""
 
@@ -371,7 +370,7 @@ class TestExfilUrlPathAndRawIp:
 
     def test_ipv4_mapped_ipv6_imds_host_scanned(self) -> None:
         # IPv4-mapped IPv6 literal (dotted-quad suffix) must match _URL_RE — a
-        # concrete IMDS bypass otherwise (security-review 78224f3f).
+        # concrete IMDS bypass otherwise.
         text = "curl http://[::ffff:169.254.169.254]/latest/AKIAIOSFODNN7EXAMPLE"
         assert scan_exfiltration_urls(text), "IPv4-mapped IPv6 IMDS host must be flagged"
 
@@ -1219,9 +1218,7 @@ class TestTrustedIssueLinkChannel:
     """
 
     @pytest.fixture(autouse=True)
-    # flake-ok: pre-existing class autouse stub that keeps the kiro-cli version probe off a spawn; moved verbatim
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse stub moved verbatim; no test in this class calls monkeypatch.undo()
-    def _stub_host_probe(self, monkeypatch) -> None:
+    def _stub_host_probe(self, _floor_monkeypatch) -> None:
         """Keep the builder off the real `kiro-cli --version` subprocess.
 
         Every test here calls ``_issue_url`` or ``terminal_issue_url``, and both
@@ -1236,7 +1233,7 @@ class TestTrustedIssueLinkChannel:
         """
         from kiro_crew import diagnostics
 
-        monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
+        _floor_monkeypatch.setattr(diagnostics, "_kiro_cli_version", lambda: "kiro-cli 2.14.2")
 
     def _bundle(self) -> object:
         from kiro_crew import diagnostics

@@ -60,6 +60,7 @@ describe('WelcomeView brand mark', () => {
   })
 
   afterEach(() => {
+    vi.restoreAllMocks()
     localStorage.clear()
     document.getElementById('mc-theme-favicon')?.remove()
     document.documentElement.style.removeProperty('--theme-logo')
@@ -76,6 +77,23 @@ describe('WelcomeView brand mark', () => {
     expect(img).toHaveAttribute('alt', '')
     expect(img).toHaveAttribute('aria-hidden', 'true')
     expect(heroBlock().querySelector('svg')).toBeNull()
+  })
+
+  it('holds an animated welcome image on a still canvas under reduced motion', async () => {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query: string) => ({
+      matches: query === '(prefers-reduced-motion: reduce)',
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }) as unknown as MediaQueryList)
+    installPack({ welcome: 'branding/welcome.gif' })
+    renderWithProviders(<WelcomeView setInput={vi.fn()} />)
+    await waitFor(() =>
+      expect(heroBlock().querySelector('img')).toHaveAttribute('src', `${ASSETS}/branding/welcome.gif`),
+    )
+    // The only <img> is the decode-only copy: nothing animating is on screen.
+    expect(heroBlock().querySelector('img')).toHaveStyle({ display: 'none' })
+    expect(heroBlock().querySelector('canvas')).not.toBeNull()
   })
 
   it("falls back to the pack's logo when it ships no welcome image", async () => {

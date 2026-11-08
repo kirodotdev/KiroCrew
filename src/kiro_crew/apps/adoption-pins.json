@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "pins": [
+    {
+      "name": "personal-shopper",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-personal-shopper",
+      "commit": "e3d71dec00e904c742b9992dbe043b06084c7fac",
+      "version": "0.1.1",
+      "treeSha256": "518e8b06f8ba46738c6a6830d753aa7741a5ff6d81fb5676b0610dd7b9e67f70",
+      "archiveSha256": "9121c38fb76ddfbd89bc208516475b7fd2e56cefa5b558348d7d8175d57724db",
+      "minAppSdkLevel": 1,
+      "legacyNav": {
+        "route": "/personal-shopper",
+        "icon": "ShoppingBag"
+      }
+    },
+    {
+      "name": "papyrus",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-papyrus",
+      "commit": "6ca7bc697f39b78a5a4dba7bdf8d3e5eaa11348f",
+      "version": "0.2.1",
+      "treeSha256": "b1824326e63a22eb8577d24e7f511defaaf14f29bcd1d4acc87ddf35b3b50bbf",
+      "archiveSha256": "7627a4a3ad11134f8838365afff52e68e53f119c7804ad4c1552f320204965d2",
+      "minAppSdkLevel": 1,
+      "legacyNav": {
+        "route": "/papyrus",
+        "icon": "ScrollText"
+      }
+    },
+    {
+      "name": "file-explorer",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-file-explorer",
+      "commit": "e68646984d6825eade82dfbf067879d8b55441ab",
+      "version": "1.0.1",
+      "treeSha256": "3b252a4744f68365370b270125b01c3cf87ec02341c1c52594d6a91feecd1799",
+      "archiveSha256": "8e23a62ec7b608e771968970339f4ddf7cf832c8aad2b76a9cf8281df34f3c2b",
+      "minAppSdkLevel": 1,
+      "legacyNav": {
+        "route": "/file-explorer",
+        "icon": "FolderTree"
+      }
+    },
+    {
+      "name": "design-critique",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-design-critique",
+      "commit": "2f57dc551dd8c7c59452bdbde09071dcb3b8123b",
+      "version": "1.0.2",
+      "treeSha256": "b2e1616e3daff837f509a37b211325fc9cd172399afbadda0bae8ffce41ff18d",
+      "archiveSha256": "9bf18cdf9afaed07d1fcfb1e43f362e6a3c4f8dc84e222ef10b9d7d9496abd2a",
+      "minAppSdkLevel": 1,
+      "legacyNav": {
+        "route": "/design-critique",
+        "icon": "PencilRuler"
+      }
+    },
+    {
+      "name": "pptx-maker",
+      "repository": "https://github.com/KiroCrewCaptain/kirocrew-app-pptx-maker",
+      "commit": "1c47c5099df4302f74de828407f87f193edea758",
+      "version": "0.3.1",
+      "treeSha256": "f0388d8923475bbd5a2b146dae4d39a18feabeda914d6bb7739709765c8fa723",
+      "archiveSha256": "fce718daf223b63a74a8cf43013efe8db7090fb05ad777cea38b6933fdb0f386",
+      "minAppSdkLevel": 1,
+      "legacyNav": {
+        "route": "/pptx-maker",
+        "icon": "Presentation"
+      }
+    }
+  ]
+}

@@ -15,6 +15,9 @@
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6821 --strictPort   # in another shell
  *   node scripts/capture-mochi-trust-label.mjs http://127.0.0.1:6821 ../temp-screenshots/mochi-trust-label
+ *
+ * The `quoted` scene asserts that a command ending in '"' renders
+ * the closing quote ONCE, not doubled by the former catalog delimiter.
  */
 import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
@@ -32,6 +35,10 @@ const SCENES = [
   // RENDERED text still carries it -- the DOM text is exact either way, so a
   // collapse is visible only through a real browser's innerText.
   { name: 'mochi-approval-spaced', cmd: 'spaced', runOf: '  ' },
+  // #12371: a command ending in a straight double-quote.  `endsQuote: true`
+  // asserts the label does NOT end with a double-quote (which would indicate
+  // the catalog's former closing delimiter is still there).
+  { name: 'mochi-approval-quoted', cmd: 'quoted', endsQuote: true },
 ]
 
 const browser = await chromium.launch()
@@ -47,7 +54,7 @@ for (const s of SCENES) {
   // The exact-command row is the button whose label carries the quoted command
   // (apps.mochi.approval.trust_this_command). Located by TEXT, not by [title]:
   // the before-frames run against the base code, which has no title attribute.
-  const exactBtn = page.getByRole('button', { name: /Trust “/ }).first()
+  const exactBtn = page.getByRole('button', { name: /^Trust / }).first()
   await exactBtn.waitFor()
   const label = (await exactBtn.innerText()).trim()
   const title = await exactBtn.getAttribute('title')
@@ -62,11 +69,23 @@ for (const s of SCENES) {
   // Whitespace is part of an exact-string grant, so a collapsed run is a
   // misleading frame: gate on it in after-mode, the same way the tooltip is.
   const keptRun = !s.runOf || label.includes(s.runOf)
-  const ok = (!EXPECT_DISTINCT || Boolean(title && title.includes(s.runOf ? 'grep' : 'gh api')))
+  // #12371: a command ending in '"' should show that quote ONCE — not doubled
+  // by a catalog delimiter that is now gone.  The correct label ends with
+  // the command's last character ('"') and has nothing appended after it.
+  // `!label.endsWith('"' + '"')` catches ASCII doubling; also check for the
+  // RIGHT DOUBLE QUOTATION MARK (U+201D) that English and pt catalogs used.
+  const noDoubledQuote = !s.endsQuote || (
+    !label.endsWith('"\u201d') &&  // ASCII " then U+201D (was: English/pt catalog close)
+    !label.endsWith('"\u00bb') &&  // ASCII " then U+00BB (was: es/it/ru/bn/hi)
+    !label.endsWith('"\u300d') &&  // ASCII " then U+300D (was: ja)
+    !label.endsWith('"\u2019')     // ASCII " then U+2019 (was: ko)
+  )
+  const ok = (!EXPECT_DISTINCT || Boolean(title && title.includes(s.runOf || s.endsQuote ? 'grep' : 'gh api')))
     && (!EXPECT_DISTINCT || keptRun)
+    && noDoubledQuote
   console.log(
     `${s.name}: label=${JSON.stringify(label)} title=${JSON.stringify(title)} ` +
-    `keptRun=${s.runOf ? keptRun : '-'} ${ok ? 'OK' : 'MISMATCH'}`,
+    `keptRun=${s.runOf ? keptRun : '-'} noDoubledQuote=${s.endsQuote ? noDoubledQuote : '-'} ${ok ? 'OK' : 'MISMATCH'}`,
   )
   if (!ok) { failed = true; continue }
   if (s.pair) labels.push(label)

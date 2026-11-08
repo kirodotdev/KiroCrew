@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import date
 from functools import partial
 
 from aiohttp import web
@@ -118,8 +119,9 @@ def _attach_file_paths(store, items: list[dict]) -> None:
 
 _NO_SOURCE = "__none__"
 
-# Candidate-pool escalation for a source-scoped hybrid search: start here, then
-# double until retrieval is exhausted. Capped so a pathological corpus cannot
+# Candidate-pool escalation for a filtered hybrid search: start here, then
+# double until retrieval is exhausted (a type/status/namespace filter also stops
+# once the page is filled). Capped so a pathological corpus cannot
 # turn one request into an unbounded scan.
 # Ids bound per `IN (...)` statement. Comfortably under the 999-variable floor
 # of older SQLite builds (SQLITE_MAX_VARIABLE_NUMBER).
@@ -180,8 +182,31 @@ def _load_items_by_id(store, item_ids: list[str]) -> dict[str, dict]:
     return out
 
 
+# The list's orders. The default groups by source; a date order sorts by the day
+# the item was added (``created_at``), with the rowid making page edges stable.
+_SOURCE_ORDER = "s.updated_at DESC, i.chunk_index ASC"
+_DATE_ORDER = {
+    "newest": "i.created_at DESC, i.rowid DESC",
+    "oldest": "i.created_at ASC, i.rowid ASC",
+}
+
+
+def _is_day(value: str) -> bool:
+    """True for a calendar day spelled ``YYYY-MM-DD``, the prefix ``created_at`` carries."""
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def _added_within(item: dict, added_from: str, added_to: str) -> bool:
+    """True when the item's added day is inside the inclusive range (an empty bound is open)."""
+    day = (item.get("created_at") or "")[:10]
+    return (not added_from or day >= added_from) and (not added_to or day <= added_to)
+
+
 def _items_page(
-    store, where_clause: str, params: list, limit: int, offset: int
+    store, where_clause: str, params: list, limit: int, offset: int, order_by: str
 ) -> tuple[int, list[dict]]:
     """One page of the item listing, with its total, in one off-loop take.
 
@@ -197,7 +222,7 @@ def _items_page(
         f"SELECT COUNT(*) FROM items i WHERE {where_clause}", params  # noqa: S608
     ).fetchone()[0]
     rows = store.db.execute(
-        f"SELECT i.* FROM items i LEFT JOIN sources s ON i.source_id = s.id WHERE {where_clause} ORDER BY s.updated_at DESC, i.chunk_index ASC LIMIT ? OFFSET ?",  # noqa: S608, E501
+        f"SELECT i.* FROM items i LEFT JOIN sources s ON i.source_id = s.id WHERE {where_clause} ORDER BY {order_by} LIMIT ? OFFSET ?",  # noqa: S608, E501
         [*params, limit, offset],
     ).fetchall()
     items = [store._serialize_item(r) for r in rows]
@@ -219,11 +244,21 @@ async def list_items(request: web.Request) -> web.Response:
     # group, so its pager math must see that source's total, not the global one.
     # The sentinel "__none__" selects items with no source at all.
     source_id = request.query.get("source_id")
+    sort = request.query.get("sort") or ""
+    added_from = request.query.get("added_from") or ""
+    added_to = request.query.get("added_to") or ""
     try:
         page = max(1, int(request.query.get("page", 1)))
         limit = min(100, max(1, int(request.query.get("limit", 20))))
     except ValueError:
         return web.json_response({"error": "invalid page/limit"}, status=400)
+    if (sort and sort not in _DATE_ORDER) or not all(
+        _is_day(d) for d in (added_from, added_to) if d
+    ):
+        return web.json_response(
+            {"error": "invalid sort/added_from/added_to", "code": "invalid_query_params"},
+            status=400,
+        )
 
     if q:
         # Use hybrid search: FTS5 keyword + graph traversal + optional vector + RRF fusion.
@@ -241,36 +276,66 @@ async def list_items(request: web.Request) -> web.Response:
         # later pages could never reach the real ones. Under a source scope,
         # escalate the candidate pool until retrieval is exhausted (it returns
         # fewer rows than asked for), which makes the scoped total exact.
-        # Unscoped searches keep the cheap limit * 3 window.
-        if source_id:
-            all_results = await _search_until_exhausted(retriever, q, limit)
-        else:
-            all_results = await run_in_embed_pool(retriever.search, q, limit=limit * 3)
-        # Batch fetch all candidate items (avoid N+1). A scoped search escalates
-        # its candidate pool, so this query and the row serialization can both be
-        # large: run them in a worker thread rather than on the event loop.
-        # `store.db` is a thread-local property, so the thread gets its own
-        # connection.
-        result_ids = [r["id"] for r in all_results]
-        items_by_id = await asyncio.to_thread(_load_items_by_id, store, result_ids)
-        filtered = []
-        for r in all_results:
-            item = items_by_id.get(r["id"])
-            if not item:
-                continue
-            if status and item.get("status") != status:
-                continue
-            if item_type and item.get("item_type") != item_type:
-                continue
-            if namespace and item.get("namespace") != namespace:
-                continue
-            if source_id and not _matches_source(item, source_id):
-                continue
-            item["_score"] = r["score"]
-            item["_match_type"] = r["match_type"]
-            filtered.append(item)
-        total = len(filtered)
         offset = (page - 1) * limit
+
+        async def _ranked_matches(results: list[dict]) -> list[dict]:
+            # Batch fetch all candidate items (avoid N+1). The candidate pool
+            # can escalate, so this query and the row serialization can both be
+            # large: run them in a worker thread rather than on the event loop.
+            # `store.db` is a thread-local property, so the thread gets its own
+            # connection.
+            result_ids = [r["id"] for r in results]
+            items_by_id = await asyncio.to_thread(_load_items_by_id, store, result_ids)
+            matches = []
+            for r in results:
+                item = items_by_id.get(r["id"])
+                if not item:
+                    continue
+                if status and item.get("status") != status:
+                    continue
+                if item_type and item.get("item_type") != item_type:
+                    continue
+                if namespace and item.get("namespace") != namespace:
+                    continue
+                if source_id and not _matches_source(item, source_id):
+                    continue
+                if not _added_within(item, added_from, added_to):
+                    continue
+                item["_score"] = r["score"]
+                item["_match_type"] = r["match_type"]
+                matches.append(item)
+            return matches
+
+        if source_id:
+            filtered = await _ranked_matches(await _search_until_exhausted(retriever, q, limit))
+        else:
+            # type/status/namespace are post-ranking filters too, but the
+            # dashboard sends status=active on every search, so exhausting the
+            # ranking for them would make every search pay the full escalation.
+            # Start from the cheap limit * 3 window and widen it only while the
+            # filter leaves the requested page short and retrieval still has
+            # rows: a narrow filter finds its matches, and a filter most hits
+            # pass costs one retriever call, as an unfiltered search does.
+            want = limit * 3
+            # A date order re-sorts the whole window, so its size must not
+            # depend on the page asked for, or pages would slice different orders.
+            need = want if sort else max(want, offset + limit)
+            narrowed = bool(item_type or status or namespace or added_from or added_to)
+            while True:
+                results = await run_in_embed_pool(retriever.search, q, limit=want)
+                filtered = await _ranked_matches(results)
+                if (
+                    not narrowed
+                    or len(filtered) >= need
+                    or len(results) < want
+                    or want >= _SCOPED_SEARCH_MAX
+                ):
+                    break
+                want = min(max(want * 2, _SCOPED_SEARCH_START), _SCOPED_SEARCH_MAX)
+        if sort:
+            # Stable, so items added at the same moment keep their relevance order.
+            filtered.sort(key=lambda i: i.get("created_at") or "", reverse=sort == "newest")
+        total = len(filtered)
         items = filtered[offset : offset + limit]
         await asyncio.to_thread(_attach_file_paths, store, items)
         return web.json_response({"items": items, "total": total, "page": page, "limit": limit})
@@ -290,13 +355,25 @@ async def list_items(request: web.Request) -> web.Response:
         elif source_id:
             where.append("i.source_id = ?")
             params.append(source_id)
+        if added_from:
+            where.append("substr(i.created_at, 1, 10) >= ?")
+            params.append(added_from)
+        if added_to:
+            where.append("substr(i.created_at, 1, 10) <= ?")
+            params.append(added_to)
         where_clause = " AND ".join(where)
         # The derived offset is bound as a SQLite parameter below, so it takes
         # the same ceiling every offset-binding route applies; the search branch
         # above slices a Python list and needs none.
         offset = clamp_query_offset((page - 1) * limit)
         total, items = await asyncio.to_thread(
-            _items_page, store, where_clause, params, limit, offset
+            _items_page,
+            store,
+            where_clause,
+            params,
+            limit,
+            offset,
+            _DATE_ORDER.get(sort, _SOURCE_ORDER),
         )
         return web.json_response({"items": items, "total": total, "page": page, "limit": limit})
 
@@ -381,6 +458,11 @@ async def update_item(request: web.Request) -> web.Response:
     assert body is not None  # read_bounded_json returns (dict, None) on success
     allowed = {"tags", "item_type", "status", "title", "summary", "namespace"}
     fields = {k: v for k, v in body.items() if k in allowed}
+    # ``title`` and ``item_type`` are NOT NULL columns; a null there means "no
+    # change", not a write the store would refuse with an integrity error.
+    for column in ("title", "item_type"):
+        if column in fields and fields[column] is None:
+            del fields[column]
     if not fields:
         return web.json_response({"error": "no valid fields"}, status=400)
     await _audited_write(
@@ -403,9 +485,8 @@ async def delete_item(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
 
     # BEGIN IMMEDIATE takes the write lock eagerly (busy_timeout 10s, so a
-    # concurrent writer can park this call for that long) and the commit is
-    # followed by _load_graph(), a full scan of entities and entity_relations
-    # that grows linearly with the library -- never on the event loop.
+    # concurrent writer can park this call for that long) and the delete
+    # scales with the library -- never on the event loop.
     # The SEL record rides in the same worker as the commit: a client
     # disconnect cancels this coroutine at the await, and a cancellation
     # landing after the worker committed must not skip the audit line. The
@@ -493,12 +574,12 @@ async def get_entity_graph(request: web.Request) -> web.Response:
     # the event loop, where the loop-stall watchdog is armed -- so the scan has
     # to happen on a worker thread, the same way this module already offloads
     # the store's SQL.
-    await asyncio.to_thread(store.ensure_graph_loaded)
-    # get_entity_subgraph pins one graph reference internally and does the
-    # existence check against it, so the 404 decision and the walk read the SAME
-    # snapshot even if a worker-thread mutation swaps in a rebuilt graph; it
-    # returns None when the entity is absent.
-    result = store.get_entity_subgraph(entity_id, depth)
+    # The whole read runs on a worker: a delete on another thread can mark the
+    # graph stale at any moment, and the next `.graph` read would then rebuild
+    # wherever it runs. get_entity_subgraph pins one graph reference internally
+    # and does the existence check against it, so the 404 decision and the walk
+    # read the SAME snapshot; it returns None when the entity is absent.
+    result = await asyncio.to_thread(store.get_entity_subgraph, entity_id, depth)
     if result is None:
         return web.json_response({"error": "entity not found"}, status=404)
     return web.json_response(result)
@@ -610,14 +691,14 @@ async def get_full_graph(request: web.Request) -> web.Response:
     # Materialise the graph off-loop before any `.graph` read below. The store
     # defers the load to its first reader; this handler already offloads its SQL
     # for the same reason, and an inline graph read would stall the event loop.
-    await asyncio.to_thread(store.ensure_graph_loaded)
-
-    # Pin one graph reference for every read below. ``_load_graph`` publishes a
-    # rebuilt graph by swapping ``store._graph``; re-reading
-    # ``store.graph`` at each step (degree ranking, then per-node attribute
-    # reads, then edges) could otherwise mix an old and a new graph and drop a
-    # node between steps. One capture means this response is a single snapshot.
-    graph = store.graph
+    #
+    # Pin the graph the worker saw loaded and use it for every read below.
+    # Re-reading ``store.graph`` here could find it marked stale by a delete on
+    # another thread and rebuild on the event loop; and ``_load_graph`` publishes
+    # a rebuilt graph by swapping ``store._graph``, so re-reading at each step
+    # (degree ranking, then per-node attribute reads, then edges) could mix an
+    # old and a new graph. One capture means this response is a single snapshot.
+    graph = await asyncio.to_thread(store.ensure_graph_loaded)
 
     # Source filter: restrict to entities mentioned in items from specific sources
     source_id_param = request.query.get("source_id", "").strip()

@@ -553,3 +553,155 @@ async def test_a_reset_while_a_claimant_is_still_parked_wakes_it_and_absorbs_the
     assert successor.semaphore.locked(), "T's release must not unlock the successor's turn"
     assert t_task not in _orphans(sm, key)
     successor.semaphore.release()
+
+
+# --------------------------------------------------------------------------
+# Bug: teardown verbs other than reset strand waiters and let the old turn
+# unlock the next session's permit
+# --------------------------------------------------------------------------
+
+
+async def _discard(sm: SessionManager, key: str) -> None:
+    await sm.discard_conversation(key)
+
+
+async def _remove(sm: SessionManager, key: str) -> None:
+    await sm.remove(key)
+
+
+async def _destroy(sm: SessionManager, key: str) -> None:
+    await sm.destroy(key)
+
+
+async def _evict(sm: SessionManager, key: str) -> None:
+    await sm._evict_stale_session(key, sm._sessions[key])
+
+
+_TEARDOWNS = pytest.mark.parametrize(
+    "teardown",
+    [_discard, _remove, _destroy, _evict],
+    ids=["discard_conversation", "remove", "destroy", "evict_stale_session"],
+)
+
+
+@_TEARDOWNS
+@pytest.mark.asyncio
+async def test_a_teardown_while_a_claimant_is_parked_wakes_it_and_absorbs_the_holders_release(
+    cfg, teardown
+):
+    """Every teardown verb, not only reset, settles a held permit: the turn T
+    holding it is recorded, the claimant W parked on it wakes and finds the
+    session gone, and T's later key-only release does not unlock the turn
+    another task is running on the successor."""
+    sm = SessionManager(cfg)
+    key = "sess:teardown-parked-waiter"
+    sess = _live_session()
+    sm._sessions[key] = sess
+    t_done = asyncio.Event()
+
+    async def _turn() -> None:
+        assert await sm._reacquire_and_validate(key, sess)
+        await asyncio.wait_for(t_done.wait(), timeout=_LOST_RUN_CEILING_SECS)
+        sm.release(key)
+
+    t_task = asyncio.ensure_future(_turn())
+    try:
+        await _until(lambda: sess.turn_owner is t_task, "T holds the turn")
+        w_task = asyncio.ensure_future(sm._reacquire_and_validate(key, sess))
+        await _until(lambda: bool(sess.semaphore._waiters), "W parked on the permit")
+
+        await asyncio.wait_for(teardown(sm, key), timeout=_LOST_RUN_CEILING_SECS)
+        assert t_task in _orphans(sm, key)
+        assert await await_until(w_task, what="the parked claimant") is False
+
+        successor = _live_session()
+        sm._sessions[key] = successor
+        assert await sm.try_acquire(key)  # another task's turn on the successor
+        t_done.set()
+        await await_until(t_task, what="the holder's release")
+        assert successor.semaphore.locked(), "T's release must not unlock the successor's turn"
+        assert not await sm.try_acquire(key), "a second turn started on the successor"
+        assert t_task not in _orphans(sm, key)
+        successor.semaphore.release()
+    finally:
+        await _cancel_and_drain(t_task)
+
+
+@pytest.mark.parametrize("later", [_remove, _destroy], ids=["remove", "destroy"])
+@pytest.mark.asyncio
+async def test_a_later_teardown_keeps_the_holder_an_earlier_reset_recorded(cfg, later):
+    """A reset records the turn still holding the popped permit. A later
+    teardown of the idle successor must not erase that record, or the holder's
+    late release lands on whichever session is registered next."""
+    sm = SessionManager(cfg)
+    key = "sess:teardown-keeps-orphan"
+    sess = _live_session()
+    sm._sessions[key] = sess
+    t_done = asyncio.Event()
+
+    async def _turn() -> None:
+        assert await sm._reacquire_and_validate(key, sess)
+        await asyncio.wait_for(t_done.wait(), timeout=_LOST_RUN_CEILING_SECS)
+        sm.release(key)
+
+    t_task = asyncio.ensure_future(_turn())
+    try:
+        await _until(lambda: sess.turn_owner is t_task, "T holds the turn")
+        await asyncio.wait_for(sm.reset(key), timeout=_LOST_RUN_CEILING_SECS)
+        assert t_task in _orphans(sm, key)
+
+        sm._sessions[key] = _live_session()
+        await asyncio.wait_for(later(sm, key), timeout=_LOST_RUN_CEILING_SECS)
+        assert t_task in _orphans(sm, key), "the idle teardown erased the reset's record"
+
+        third = _live_session()
+        sm._sessions[key] = third
+        assert await sm.try_acquire(key)
+        t_done.set()
+        await await_until(t_task, what="the holder's release")
+        assert third.semaphore.locked(), "T's release unlocked the next session's turn"
+        third.semaphore.release()
+    finally:
+        await _cancel_and_drain(t_task)
+
+
+@pytest.mark.asyncio
+async def test_a_reset_right_after_a_release_handed_the_permit_on_does_not_release_it_twice(cfg):
+    """T's release hands the permit to the parked claimant W, and a reset pops
+    the session before W has run. The permit belongs to W now, not to anyone the
+    reset could record, so the reset must leave it alone: W gives it back itself
+    when it finds the session gone, instead of over-releasing it
+    (``ValueError: BoundedSemaphore released too many times``)."""
+    sm = SessionManager(cfg)
+    key = "sess:reset-after-handoff"
+    sess = _live_session()
+    sm._sessions[key] = sess
+    assert await sm._reacquire_and_validate(key, sess)  # T: this test's own task
+    w_task = asyncio.ensure_future(sm._reacquire_and_validate(key, sess))
+    await _until(lambda: bool(sess.semaphore._waiters), "W parked on the permit")
+
+    sm.release(key)  # hands the permit to W, which has not run yet
+    # Awaited directly, not through ``wait_for`` (which would run it as a task
+    # and let W go first): the lock is free, so the reset pops and settles the
+    # permit before W's wake-up runs.
+    await sm.reset(key)
+
+    assert await await_until(w_task, what="the handed-off claimant") is False
+    assert not sess.semaphore.locked()
+    assert not _orphans(sm, key)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_claim_clears_the_holder_it_named(cfg):
+    """A claim ``_reacquire_and_validate`` refuses gives the permit back, and
+    the holder it named goes with it, so a later pop cannot record a task that
+    holds nothing as the permit's owner."""
+    sm = SessionManager(cfg)
+    key = "sess:refused-claim-owner"
+    sess = _live_session()
+    sess.retire_on_identity_change = True
+    sm._sessions[key] = sess
+
+    assert await sm._reacquire_and_validate(key, sess) is False
+    assert sess.turn_owner is None
+    assert not sess.semaphore.locked()

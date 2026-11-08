@@ -25,9 +25,7 @@ from kiro_crew.apps.manifest import AppManifest
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-# ---------------------------------------------------------------------------
 # MCP server registration
-# ---------------------------------------------------------------------------
 
 
 class TestMCPRegistration:
@@ -424,9 +422,7 @@ class TestMCPRegistration:
         assert "test-app:backend" in result.mcp_servers
 
 
-# ---------------------------------------------------------------------------
 # MCP property tests
-# ---------------------------------------------------------------------------
 
 
 _app_name_st = st.from_regex(r"[a-z][a-z0-9\-]{0,15}", fullmatch=True)
@@ -501,20 +497,16 @@ class TestMCPProperties:
         # Backend live → HTTP url servers register (dead-port skip only with no backend).
         monkeypatch.setattr(backend_mod, "get_app_backend_port", lambda _n: 9000)
 
-        # Register both apps
         _register_mcp_servers(app_a, AppManifest(name=app_a, mcpServers=servers_a))
         _register_mcp_servers(app_b, AppManifest(name=app_b, mcpServers=servers_b))
 
-        # Deregister app_a
         _deregister_mcp_servers(app_a)
 
         data = json.loads(mcp_path.read_text(encoding="utf-8")) if mcp_path.is_file() else {}
         remaining = data.get("mcpServers", {})
 
-        # app_a entries gone
         for name in servers_a:
             assert f"{app_a}:{name}" not in remaining
-        # app_b entries preserved
         for name in servers_b:
             assert f"{app_b}:{name}" in remaining
 
@@ -575,11 +567,11 @@ class TestBootReconcile:
         assert "other:keep" in remaining  # unrelated entry untouched
 
     def test_enabled_app_never_healthy_mcp_entry_scrubbed(self, tmp_path, app_env, monkeypatch):
-        # Review scenario: an ENABLED port:"auto" app registered with an optimistic
-        # pre-health port whose backend never passes /health must NOT leave a dead HTTP MCP
-        # url behind — that's the exact shape that broke every kiro-cli session. The
-        # health-gated path calls _gate_mcp_registration(healthy=False) on health failure,
-        # which scrubs the entry. (Closes the disabled-only asymmetry the reviewer flagged.)
+        # An ENABLED port:"auto" app registered with an optimistic pre-health port whose
+        # backend never passes /health must NOT leave a dead HTTP MCP url behind: that
+        # shape breaks every kiro-cli session. The health-gated path calls
+        # _gate_mcp_registration(healthy=False) on health failure, which scrubs the entry
+        # the same way the disabled path does.
         import kiro_crew.apps.backend as backend_mod
         import kiro_crew.apps.bridges as bmod
 
@@ -667,14 +659,11 @@ class TestBootReconcile:
 
 
 class TestRebuildPreservesTheLiveMcpSpec:
-    """A rebuild must keep the health-registered live-port spec, not re-copy the
-    manifest's illustrative port.
+    """A rebuild must keep the health-registered live-port spec, not the manifest's port.
 
-    An auto-port app's manifest carries a fixed illustrative port; the reachable
-    one is written to the app mcp.json only after the backend starts. Reading the
-    manifest on every rebuild would stamp the dead port back over the live one,
-    and kiro-cli dials every configured server — so the app's tools would break
-    until the next reregister.
+    An auto-port app's manifest port is illustrative; the live one is written after the
+    backend starts. kiro-cli dials every configured server, so a dead port breaks the
+    app's tools until the next reregister.
     """
 
     def test_live_registered_spec_wins_over_the_manifest(self, monkeypatch):
@@ -959,11 +948,8 @@ class TestScrubFallsBackWhenTheManifestCannotSay:
 class TestLifecycleWritersShareTheHealthSerialization:
     """Both families of writer hold one lock.
 
-    An app's mcp.json entries and its materialized agents are written by the lifecycle
-    paths here AND by the backend's health watch. Unserialized, the two can interleave
-    their decisions — each doing a correct read-modify-write, with the STALE one landing
-    last. Closing that per call site is what this review kept re-finding; the writers now
-    share the guard instead.
+    The lifecycle paths here AND the backend's health watch write an app's mcp.json and
+    agents; unserialized, a correct but STALE read-modify-write can land last.
     """
 
     def _lock_held(self):
@@ -1053,12 +1039,8 @@ class TestLifecycleWritersShareTheHealthSerialization:
 class TestScrubNeverDeletesMaterializedAgents:
     """The scrub fallback must not delete agent files.
 
-    Deleting them is unrecoverable — it takes the user-owned fields
-    `_preserve_user_agent_edits` carries across every refresh — while what it would
-    prevent, an agent naming a removed server, costs failed tool calls until the next
-    refresh rewrites it. An unreadable manifest is also frequently TRANSIENT, so
-    destroying data over it trades a temporary fault for a permanent one. Only
-    `deregister_app` owns deleting these files.
+    Deleting loses the user-owned fields `_preserve_user_agent_edits` carries, and an
+    unreadable manifest is often TRANSIENT. Only `deregister_app` deletes these files.
     """
 
     def test_an_unreadable_manifest_keeps_the_agents(self, monkeypatch):
@@ -1142,11 +1124,8 @@ class TestUnreadableManifestIsNotASilentRegistration:
 class TestScrubDoesNotRematerializeAgents:
     """The scrub must not write agents.
 
-    `reregister_app_mcp_servers` calls `_register_agents` internally, so routing the
-    scrub through it re-materialized this app's agent configs BEFORE the caller's
-    enablement check ran — making a disabled app's agents dispatchable in the gap. The
-    scrub needs only the mcp.json half; the agent refresh belongs to the caller, which
-    gates it.
+    `reregister_app_mcp_servers` calls `_register_agents`, which would re-materialize a
+    disabled app's agents BEFORE the caller's enablement check.
     """
 
     def test_the_scrub_touches_mcp_only(self, monkeypatch):

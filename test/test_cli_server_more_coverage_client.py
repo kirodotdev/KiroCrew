@@ -1,12 +1,8 @@
 """The client side of ``kiro_crew.cli_server``: how the CLI finds and talks to its gateway.
 
-This file pins ``resolve_client_port_ex`` falling through a malformed port variable,
-the dashboard health probe warning only on the stale-dashboard marker, ``token``
-reporting the reason a gateway refuses with, ``token`` and ``logout`` sending the
-owner-minting secret only to this install's own gateway, and the owner-verified secret
-transport binding its ownership proof to the connected socket on every path. It is one
-of three files on ``cli_server``'s command dispatchers; the family's seams are
-described in ``test_cli_server_more_coverage.py``.
+Covers port resolution, the health probe, ``token`` refusal reasons, and the owner-minting
+secret going only to this install's own gateway. Shared seams are described in
+``test_cli_server_more_coverage.py``.
 """
 
 import argparse
@@ -31,19 +27,16 @@ from kiro_crew.testing.wait import wait_until
 _REAL_OWNER_VERIFIED_SECRET_URLOPEN = cli_server._owner_verified_secret_urlopen
 
 
-# --------------------------------------------------------------------------
 # resolve_client_port_ex — malformed env values must fall through, not raise
-# --------------------------------------------------------------------------
 
 
 class TestResolveClientPortExFallThrough:
     """A non-numeric port env var degrades to the next source, never ValueError."""
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class-scoped autouse fixture moved verbatim and no test in the cli_server coverage files calls monkeypatch.undo()
-    def _no_other_sources(self, monkeypatch):
-        monkeypatch.setattr(cli_server, "_config_url_port", lambda: None)
-        monkeypatch.setattr(cli_server, "_marker_port", lambda: None)
+    def _no_other_sources(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(cli_server, "_config_url_port", lambda: None)
+        _floor_monkeypatch.setattr(cli_server, "_marker_port", lambda: None)
 
     def test_garbage_kirocrew_port_falls_to_default(self, monkeypatch) -> None:
         monkeypatch.setenv("KIROCREW_PORT", "not-a-number")
@@ -63,9 +56,7 @@ class TestResolveClientPortExFallThrough:
         assert cli_server.resolve_client_port_ex(None) == (9931, True)
 
 
-# --------------------------------------------------------------------------
 # _probe_dashboard_health
-# --------------------------------------------------------------------------
 
 
 class TestProbeDashboardHealth:
@@ -93,9 +84,7 @@ class TestProbeDashboardHealth:
         assert capsys.readouterr().err == ""
 
 
-# --------------------------------------------------------------------------
 # _token
-# --------------------------------------------------------------------------
 
 
 class TestTokenRefusal:
@@ -123,7 +112,8 @@ class TestTokenRefusal:
 
         reason = (
             "The gateway could not verify this process as the local owner. "
-            "Open the dashboard using its CLI login link."
+            "Make this request inside the gateway's own host or container, not "
+            "from an agent's shell or a sandbox."
         )
         body = json.dumps({"error": reason, "code": "member_owner_token_refused"}).encode()
 
@@ -145,6 +135,85 @@ class TestTokenRefusal:
         assert "HTTP 403" in err and "could not verify this process as the local owner" in err
         assert "Could not reach gateway" not in err
         assert "kirocrew service install" not in err
+
+    @pytest.mark.parametrize(
+        "code,remedy",
+        [
+            ("loopback_only", "as the user that runs the gateway"),
+            ("invalid_secret", "second gateway"),
+            ("member_owner_token_refused", "not from an agent's shell or a sandbox"),
+        ],
+    )
+    def test_403_names_the_refusing_code_and_its_remedy(
+        self, monkeypatch, capsys, code, remedy
+    ) -> None:
+        """The three gates refuse for unrelated reasons, so the line under the
+        gateway's reason names which code refused and the step that answers it."""
+        import io
+        import json
+
+        body = json.dumps({"error": "refused", "code": code}).encode()
+
+        def refused(req, port, timeout, *, operation=""):
+            raise urllib.error.HTTPError(
+                "http://127.0.0.1/api/token/local", 403, "Forbidden", {}, io.BytesIO(body)
+            )
+
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", refused)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        assert exc.value.code == 1
+        out, err = capsys.readouterr()
+        first, _, rest = err.partition("\n")
+        assert first == "❌ Gateway refused the token request (HTTP 403): refused"
+        assert f"code {code}:" in rest and remedy in rest
+        # Each remedy is its own gate's: no line names another gate's code.
+        for other in cli_server._TOKEN_REFUSAL_REMEDIES:
+            if other != code:
+                assert other not in err
+        assert out == ""
+        if code != "member_owner_token_refused":
+            # A remote mint keeps only the first 300 characters of stderr; these
+            # two gates' server text names no remedy, so the remedy line must fit.
+            # (The owner-process gate's own text carries the remedy on line one.)
+            assert len(err.rstrip("\n")) <= 300
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"error": "refused", "code": "some_future_gate"}',
+            b'{"error": "refused", "code": ["loopback_only"]}',
+            b'{"error": "refused"}',
+            b"not json",
+            b"[]",
+        ],
+        ids=["unknown-code", "non-string-code", "no-code", "not-json", "not-object"],
+    )
+    def test_403_without_a_known_code_prints_only_the_reason(
+        self, monkeypatch, capsys, body
+    ) -> None:
+        """A code the CLI does not know, or none at all, gets no remedy line: the
+        CLI does not guess which gate refused."""
+        import io
+
+        def refused(req, port, timeout, *, operation=""):
+            raise urllib.error.HTTPError(
+                "http://127.0.0.1/api/token/local", 403, "Forbidden", {}, io.BytesIO(body)
+            )
+
+        monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
+        monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", refused)
+        with pytest.raises(SystemExit):
+            cli_server._token(argparse.Namespace(ttl="1h", port=None))
+        err = capsys.readouterr().err
+        assert err.startswith("❌ Gateway refused the token request (HTTP 403): ")
+        assert err.count("\n") == 1
+        assert "code " not in err
 
     def test_connection_refused_still_reports_unreachable(self, monkeypatch, capsys) -> None:
         def boom(req, port, timeout, *, operation=""):
@@ -199,25 +268,16 @@ class TestTokenRefusal:
         assert seen["timeout"] >= 15
 
 
-# --------------------------------------------------------------------------
 # _logout
-# --------------------------------------------------------------------------
 
 
 class TestPortOwnershipGuard:
-    """token and logout send the owner-minting local secret only to this
-    install's own gateway, proven on the live connection in
-    _owner_verified_secret_urlopen (_connected_peer_verdict on TCP, SO_PEERCRED
-    on the unix socket). The proof writes the secret only on a positively
-    confirmed MATCH and refuses (fail closed) on a foreign peer or one it cannot
-    resolve; it audits the allowed / denied decision itself, like the
-    neighboring _stop / _restart gateway decisions. No pre-flight port snapshot
-    precedes it -- the connection-bound proof is the single authoritative gate
-    (the end-to-end proof, refusal and audit are covered by
-    TestOwnerVerifiedSecretTransport). stop's authenticated-shutdown fallback
-    deliberately does NOT gate on ownership: the argv-declined arm already
-    carries a positive proof and the empty-lookup arm is an intentionally
-    unverified fallback."""
+    """token and logout send the owner-minting secret only to this install's gateway.
+
+    The connection-bound proof in _owner_verified_secret_urlopen is the only gate (no
+    port snapshot first); it fails closed and audits its decision. stop's shutdown
+    fallback does NOT gate on ownership: one arm already carries a proof and the
+    empty-lookup arm is an intended unverified fallback."""
 
     @pytest.fixture(autouse=True)
     def _route_secret_transport(self, _floor_monkeypatch):
@@ -293,9 +353,9 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "ownership not verified" in out
-        assert "Gateway not running" not in out
+        err = capsys.readouterr().err
+        assert "ownership not verified" in err
+        assert "Gateway not running" not in err
 
     def test_shutdown_never_consults_ownership_and_reaches_the_secret(self, monkeypatch) -> None:
         # The authenticated-shutdown fallback applies no port-lookup pre-check
@@ -414,7 +474,7 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        assert "Gateway not running" in capsys.readouterr().out
+        assert "Gateway not running" in capsys.readouterr().err
 
     def test_ok_response_reports_success(self, monkeypatch, secret_home, capsys) -> None:
         monkeypatch.setattr(cli_server, "loopback_urlopen", lambda *a, **k: _Resp(b'{"ok": true}'))
@@ -430,7 +490,7 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        assert "store locked" in capsys.readouterr().out
+        assert "store locked" in capsys.readouterr().err
 
     def test_http_error_reports_status_code(self, monkeypatch, secret_home, capsys) -> None:
         def boom(*a, **k):
@@ -440,7 +500,7 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        assert "HTTP 403" in capsys.readouterr().out
+        assert "HTTP 403" in capsys.readouterr().err
 
     def test_connection_refused_reports_gateway_down(
         self, monkeypatch, secret_home, capsys
@@ -452,7 +512,7 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        assert "Gateway not running" in capsys.readouterr().out
+        assert "Gateway not running" in capsys.readouterr().err
 
     def test_timeout_reports_busy_not_down(self, monkeypatch, secret_home, capsys) -> None:
         def boom(*a, **k):
@@ -462,34 +522,38 @@ class TestPortOwnershipGuard:
         with pytest.raises(SystemExit) as exc:
             cli_server._logout(5476)
         assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "busy" in out
-        assert "Gateway not running" not in out
+        err = capsys.readouterr().err
+        assert "busy" in err
+        assert "Gateway not running" not in err
+
+    def test_logout_failure_writes_only_to_stderr(self, monkeypatch, secret_home, capsys) -> None:
+        # The error stream contract: a failed `kirocrew logout` prints its reason
+        # to stderr and leaves stdout empty, so `kirocrew logout >/dev/null`
+        # still shows the reason and a script reading stdout never parses a
+        # refusal as a result. The success line ("revoked") is the only thing
+        # stdout carries, pinned by test_ok_response_reports_success above.
+        def boom(*a, **k):
+            raise urllib.error.URLError("refused")
+
+        monkeypatch.setattr(cli_server, "loopback_urlopen", boom)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._logout(5476)
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Gateway not running" in captured.err
 
 
-# --------------------------------------------------------------------------
 # _owner_verified_secret_urlopen — the secret rides a proof-bound transport
-# --------------------------------------------------------------------------
 
 
 class TestOwnerVerifiedSecretTransport:
-    """The secret-bearing send binds its ownership proof to the connected
-    socket on every path, verifying the PEER OF THE ESTABLISHED CONNECTION, not
-    who owns the port now. With the gateway's own unix socket present (the
-    ordinary POSIX case) it goes over that socket (which no other user can
-    answer) with a verify_peer hook (SO_PEERCRED via check_peer_is_self) that
-    refuses a non-self peer before any byte is written. When no AF_UNIX socket
-    exists -- a TCP-only gateway (a supported config) or native Windows (no
-    AF_UNIX) -- the secret rides TCP, but the proof is bound to the connection
-    via tcp_verified_urlopen's verify_peer, which resolves the pid on the far
-    end of this exact 4-tuple connection (get_tcp_peer_pid, not a port snapshot)
-    and proves it is this install's gateway owned by this account -- by uid on
-    POSIX, by access-token owner SID on Windows. The secret is sent ONLY on a
-    positive MATCH: a resolved foreign peer (MISMATCH) and a peer that cannot be
-    resolved at all (UNAVAILABLE -- e.g. lsof-less macOS) BOTH refuse (fail
-    closed), so the owner-minting secret never rides an unproven connection. The
-    POSIX uid proof is what lets a legitimate TCP-only gateway reach MATCH, so a
-    supported loopback-TCP config works without the no-proof path failing open."""
+    """The secret-bearing send verifies the peer of the established connection.
+
+    Over the unix socket SO_PEERCRED refuses a non-self peer before any byte. Over TCP
+    the far end of this 4-tuple (get_tcp_peer_pid) must be this install's gateway,
+    owned by this account (uid on POSIX, token SID on Windows). Only MATCH sends:
+    MISMATCH and UNAVAILABLE (e.g. lsof-less macOS) both fail closed."""
 
     @pytest.mark.skipif(
         not hasattr(__import__("socket"), "AF_UNIX"),
@@ -601,12 +665,27 @@ class TestOwnerVerifiedSecretTransport:
         )
         verify_peer(object())  # must not raise
 
-    def test_posix_tcp_fallback_refuses_a_resolved_foreign_peer(
-        self, monkeypatch, tmp_path
+    @pytest.mark.parametrize(
+        "scenario",
+        [
+            pytest.param(
+                "resolved foreign peer",
+                id="test_posix_tcp_fallback_refuses_a_resolved_foreign_peer",
+            ),
+            pytest.param(
+                "unresolvable peer",
+                id="test_posix_tcp_fallback_refuses_when_the_peer_is_unresolvable",
+            ),
+        ],
+    )
+    def test_posix_tcp_fallback_refuses_a_mismatched_peer(
+        self, scenario, monkeypatch, tmp_path
     ) -> None:
         # The co-resident-rival hole stays closed on the TCP fallback: a resolved
-        # foreign peer (MISMATCH) refuses the secret, exactly as the unix path
-        # refuses a non-self peer.
+        # foreign peer refuses the secret, exactly as the unix path refuses a
+        # non-self peer. A peer the host cannot resolve at all (lsof-less macOS)
+        # fails closed the same way: _connected_peer_verdict folds both into
+        # MISMATCH, which is why both scenarios drive that one verdict here.
         monkeypatch.setattr(
             cli_server, "dashboard_socket_path", lambda _p: tmp_path / "absent.sock"
         )
@@ -627,34 +706,6 @@ class TestOwnerVerifiedSecretTransport:
         )
         with pytest.raises(cli_server._GatewayPeerRefused):
             verify_peer(object())
-
-    def test_posix_tcp_fallback_refuses_when_the_peer_is_unresolvable(
-        self, monkeypatch, tmp_path
-    ) -> None:
-        # Fail closed: on a host that cannot resolve the connected peer at all
-        # (lsof-less macOS), the verdict is MISMATCH and the owner-minting secret
-        # must NOT be sent -- an unprovable peer is exactly where a foreign
-        # listener on a crash-freed port could be the far end.
-        monkeypatch.setattr(
-            cli_server, "dashboard_socket_path", lambda _p: tmp_path / "absent.sock"
-        )
-        captured: dict = {}
-
-        def fake_tcp(req, timeout, *, verify_peer):
-            captured["verify_peer"] = verify_peer
-            return _Resp(b"{}")
-
-        monkeypatch.setattr(cli_server, "tcp_verified_urlopen", fake_tcp)
-        req = urllib.request.Request("http://127.0.0.1:5476/api/logout")
-        cli_server._owner_verified_secret_urlopen(req, 5476, timeout=5, operation="gateway_logout")
-        verify_peer = captured["verify_peer"]
-        monkeypatch.setattr(
-            cli_server,
-            "_connected_peer_verdict",
-            lambda _s: cli_server._ConnectedPeerVerdict.MISMATCH,
-        )
-        with pytest.raises(cli_server._GatewayPeerRefused):
-            verify_peer(object())  # fail closed -- unprovable peer is refused
 
     def test_connection_bound_denial_emits_a_denied_sel_audit_event(
         self, monkeypatch, tmp_path, sel_rec
@@ -947,18 +998,9 @@ class TestOwnerVerifiedSecretTransport:
     def test_connected_peer_verdict_on_a_real_loopback_socket_unmocked(
         self, monkeypatch, tmp_path
     ) -> None:
-        # Design blocker: every other verdict test stubs get_tcp_peer_pid or
-        # _connected_peer_verdict itself, so none proves the resolver actually
-        # names the peer of a live connection. This one opens a REAL loopback TCP
-        # connection, writes a REAL pid record for this process, and runs
-        # _connected_peer_verdict UNSTUBBED. The kernel 4-tuple resolver
-        # (get_tcp_peer_pid: /proc on Linux, GetExtendedTcpTable on Windows) runs
-        # for real on every OS this test runs on -- it has no POSIX skip, so it
-        # exercises the Windows CI leg too. Both ends live in this process, so the
-        # resolved peer pid IS this process's pid and ownership (uid on POSIX, SID
-        # on Windows) is this account's -- the steady state a live same-user
-        # gateway presents. Proves the MATCH path works end to end, then flips the
-        # recorded pid to prove a foreign peer is refused.
+        # The only verdict test with get_tcp_peer_pid UNSTUBBED: a real loopback
+        # connection and pid record, on every OS (no POSIX skip). Both ends are this
+        # process, so MATCH is expected; flipping the recorded pid must refuse.
         import socket
 
         import kiro_crew.cli_server as cs

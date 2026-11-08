@@ -1,26 +1,12 @@
 """Every cron-create path captures a MEMBER selection for a member-named agent.
 
-``--agent`` / the ``agent`` field is the one slot every create surface offers for
-naming either a provider template or a crew member. The dashboard UI resolves a
-member pick client-side and sends a separate ``member_id``, but the CLI, the MCP
-``cron_add`` tool and a scripted dashboard POST send the member NAME in
-``agent``. Without resolution the schedule captures ``selection_kind='template'``
-with the member name mistaken for a provider template, so the next reply in the
-cron chat resolves that name as a template, finds none, and fails to bind the
-agent.
+The CLI, the MCP ``cron_add`` tool and a scripted dashboard POST send a member NAME
+in ``agent``. ``split_cron_agent_member`` records it as a member selection
+(``member_id`` set, ``agent_id`` cleared); otherwise the cron chat looks the name up
+as a template, finds none, and fails to bind the agent.
 
-Those three owner-driven create paths share one resolver,
-``split_cron_agent_member``: when a member name is given in ``agent`` (and no
-explicit ``member_id``), it is recorded as a member selection (``member_id`` set,
-``agent_id`` cleared). A real provider template name, and the record-level
-``add_job(agent_id=...)`` field, both stay templates -- that contract is pinned by
-``test_member_memory_runtime.test_v1_provider_template_does_not_become_a_member``.
-
-The App Kit SDK (``ctx.cron.add_job``) is DELIBERATELY NOT promoted: apps are
-confined (Spawn SDK gates app agent scope), so an installed app must not reach a
-crewmate's private V2 memory by naming it. An app cron behaves exactly as on
-main -- the name passes through as ``agent_id`` and reaches only global V1 memory
-(``test_sdk_add_job_naming_a_member_stays_a_template``).
+The App Kit SDK (``ctx.cron.add_job``) is not promoted: an installed app must not
+reach a crewmate's private V2 memory by naming it.
 """
 
 from __future__ import annotations
@@ -32,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from dashboard_owner_helpers import as_owner
 
 from kiro_crew.cli_commands import _cron
 from kiro_crew.config.loader import (
@@ -101,12 +88,9 @@ def member_with_distinct_template(tmp_path, monkeypatch):
 def member_also_a_materialized_template(tmp_path, monkeypatch):
     """A crew member whose NAME also has a materialized ``~/.kiro/agents`` spec.
 
-    This is the real-install case the review named: a member like
-    ``kirocrew-conductor`` ships both a ``config.agents`` entry (with a durable
-    ``member_id``) AND a ``kirocrew-conductor.json`` kiro agent spec. The live
-    resolver checks the member alias FIRST, so the schedule must still record a
-    member -- the materialized template of the same name must not win. The
-    snapshot is seeded warm so the test is deterministic regardless of process.
+    A member like ``kirocrew-conductor`` ships both a ``config.agents`` entry and a
+    ``kirocrew-conductor.json`` spec; the member alias must win. The snapshot is
+    seeded warm so the test is deterministic regardless of process.
     """
     import kiro_crew.config.loader as loader
 
@@ -245,11 +229,8 @@ async def test_member_with_materialized_spec_records_a_member_on_every_path(
 ):
     """A member whose name also has a materialized agent spec records a member.
 
-    The three create paths an owner drives (CLI, MCP, dashboard) must behave the
-    same, and none may lose the member's memory to a same-named template -- the
-    regression the review found. The App Kit SDK path is deliberately excluded:
-    an app must not reach a member's private memory by naming it (see
-    ``test_sdk_add_job_naming_a_member_stays_a_template``).
+    Covers the CLI, MCP and dashboard paths. The App Kit SDK is excluded on purpose
+    (``test_sdk_add_job_naming_a_member_stays_a_template``).
     """
     if path == "cli":
         _create_via_cli()
@@ -303,7 +284,7 @@ def _dashboard_app(add_job_async) -> web.Application:
         push_refresh=MagicMock(),
     )
     app.router.add_route("*", "/api/crons", api_crons_create)
-    return app
+    return as_owner(app)
 
 
 @pytest.mark.asyncio
@@ -337,14 +318,10 @@ async def test_dashboard_create_naming_a_member_captures_a_member_selection(
 def test_sdk_add_job_naming_a_member_stays_a_template(
     member_with_distinct_template,
 ):
-    """An app creating a cron with a member NAME in ``agent`` does NOT bind that
-    member -- it stays a template and reaches only global V1 memory.
+    """An app naming a member in ``agent`` gets a template and global V1 memory only.
 
-    Apps are confined (Spawn SDK gates app agent scope); an installed app must
-    not reach a crewmate's private V2 memory just by knowing its name, so
-    ``CronSDK._add_job_kwargs`` passes the name through as ``agent_id`` without
-    promotion, exactly as on main. Reaching member memory from an app would need
-    an explicit manifest grant with app attribution, which is out of scope here.
+    Apps are confined, so ``CronSDK._add_job_kwargs`` passes the name through as
+    ``agent_id``: knowing a crewmate's name must not reach its private V2 memory.
     """
     from kiro_crew.apps.cron_sdk import CronSDK
 

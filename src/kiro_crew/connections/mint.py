@@ -11,8 +11,8 @@ provider's redirect is one of that session's MCP children, so a mint torn down
 after the drain leaves a redirect port that accepts a connect and then resets
 every real exchange -- consent the provider renders and no paste can redeem. The
 hold ends on a terminal condition only: a grant appears on disk, the TTL
-expires, a newer mint supersedes this one, or the server initializes without
-challenging.
+expires, a newer mint supersedes this one, the server initializes without
+challenging, or it reports the sign-in failed after the URL went out.
 
 Because the process is held while nothing claims it as a session, its PID is
 registered with the orphan-sweep protection set for exactly that span. Without
@@ -92,6 +92,9 @@ _GRANT_REVALIDATION_INTERVAL_SECONDS = 60.0
 # still-initializing mint. Cheap: an attribute read, no I/O.
 _MINT_PID_CLAIM_POLL_SECONDS = 0.05
 _CLIENT_SHUTDOWN_TIMEOUT_SECONDS = 10.0
+# A ceiling on reading the frames already queued from a held process, not a wait for
+# new ones: a watcher tick reads what arrived since the last.
+_MINT_FRAME_READ_SECONDS = 0.05
 
 # Ephemeral single-server specs a mint writes under the kiro agents directory.
 # Deliberately absent from the owned-spec allowlist: that is an exact-name set
@@ -270,11 +273,17 @@ def _mint_manifest_path() -> Path:
     return data_home() / "connections" / _MINT_MANIFEST_NAME
 
 
-def _read_mint_manifest() -> dict[str, float]:
-    """Recorded spec paths -> creation time. Unreadable or malformed reads as empty."""
+def _read_mint_manifest(*, strict: bool = False) -> dict[str, float]:
+    """Recorded spec paths -> creation time; ``{}`` when missing or malformed, and
+    when unreadable unless *strict*, where the ``OSError`` propagates.
+    """
     try:
         raw = json.loads(_mint_manifest_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        if strict and isinstance(exc, OSError):
+            raise
         return {}
     if not isinstance(raw, dict):
         return {}
@@ -342,7 +351,11 @@ def _sweep_mint_specs() -> None:
 def _record_mint_spec(spec_path: str) -> bool:
     """Record the intent to create a spec. Returns False if the row missed disk."""
     with _MINT_MANIFEST_LOCK:
-        rows = _read_mint_manifest()
+        try:
+            rows = _read_mint_manifest(strict=True)
+        except OSError:
+            logger.debug("mint spec manifest read failed", exc_info=True)
+            return False
         rows[spec_path] = time.time()
         return _write_mint_manifest(rows)
 
@@ -590,6 +603,27 @@ async def _grant_change_proven(
     return await _validate_existing_grant(slug, mcp_url, pinned)
 
 
+async def _sign_in_refused(client: Any, slug: str) -> bool:
+    """Whether the held process reports ``slug``'s server failed since its URL went out.
+
+    kiro-cli answers the loopback callback BEFORE it exchanges the code. A refused
+    exchange then reaches us only as a ``server_init_failure`` frame, and the
+    listener closes, so no grant can ever land. Nothing else reads a held mint's
+    frames, and the private ``_drain_notifications`` is the only drain the client
+    has. Never raises: a read failure is no verdict, and the watcher still owes the
+    row its TTL expiry.
+    """
+    try:
+        await client._drain_notifications(
+            duration=_MINT_FRAME_READ_SECONDS, idle_exit=_MINT_FRAME_READ_SECONDS
+        )
+        failed = (client.mcp_session_report().payload() or {}).get("failed") or ()
+    except Exception:  # noqa: BLE001 — a read failure is no verdict
+        logger.debug("OAuth mint frame read failed [%s]", slug, exc_info=True)
+        return False
+    return mcp_server_alias(slug) in failed
+
+
 async def _mint_watcher(
     slug: str,
     mcp_url: str,
@@ -620,15 +654,26 @@ async def _mint_watcher(
     revalidation: list[float] = []
     try:
         deadline = time.monotonic() + _MINT_TTL_SECONDS
+        refused = False
         while time.monotonic() < deadline:
             await asyncio.sleep(_MINT_GRANT_POLL_SECONDS)
-            if not await grant_observed(mcp_url):
-                continue
-            if require_proof and not await (
-                _grant_change_proven(slug, mcp_url, baseline, revalidation)
-                if pinned is None
-                else _grant_change_proven(slug, mcp_url, baseline, revalidation, pinned)
-            ):
+            entry = _mints.get(slug)
+            # A warm row owns no client: ``warm.fail_refused_sign_ins`` reads its session.
+            client = entry.get("client") if entry and entry.get("token") == token else None
+            refused = client is not None and await _sign_in_refused(client, slug)
+            # A grant still wins over a refusal: the server can fail its own start after
+            # a good exchange.
+            granted = await grant_observed(mcp_url) and (
+                not require_proof
+                or await (
+                    _grant_change_proven(slug, mcp_url, baseline, revalidation)
+                    if pinned is None
+                    else _grant_change_proven(slug, mcp_url, baseline, revalidation, pinned)
+                )
+            )
+            if refused and not granted:
+                break
+            if not granted:
                 continue
             doomed: MintState | None = None
             async with _mints_lock:
@@ -651,11 +696,16 @@ async def _mint_watcher(
                 and entry.get("token") == token
                 and entry.get("state") == "waiting"
             ):
-                entry["state"] = "expired"
+                entry["state"] = "failed" if refused else "expired"
+                if refused:
+                    entry["reason"] = "mint_sign_in_rejected"
                 doomed = entry
         if doomed is not None:
             await _dispose_mint(doomed)
-        logger.info("OAuth mint for %r expired after %.0fs", slug, _MINT_TTL_SECONDS)
+        if refused:
+            logger.info("OAuth mint for %r failed: the server refused the sign-in", slug)
+        else:
+            logger.info("OAuth mint for %r expired after %.0fs", slug, _MINT_TTL_SECONDS)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 — watcher must never take the gateway down

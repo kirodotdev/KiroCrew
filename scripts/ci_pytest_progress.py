@@ -209,8 +209,21 @@ class Progress:
             {"event": "worker_collected", "worker": self.worker_label(node), "selected": len(ids)}
         )
 
+    def channel_fields(self):
+        """On an xdist worker, whether its channel had stopped receiving.
+
+        A worker's loop ends cleanly on a shutdown command or on its channel
+        closing; this tells the two apart. execnet is unpinned and the flag is
+        private, so a missing one records nothing rather than failing the run.
+        """
+        for plugin in self.config.pluginmanager.get_plugins():
+            if type(plugin).__name__ == "WorkerInteractor":
+                closed = getattr(plugin.channel, "_receiveclosed", None)
+                return {} if closed is None else {"channel_closed": closed.is_set()}
+        return {}
+
     def pytest_sessionfinish(self, session, exitstatus):
-        self.emit("session_end", exitstatus=int(exitstatus))
+        self.emit("session_end", exitstatus=int(exitstatus), **self.channel_fields())
         if not hasattr(self.config, "workerinput"):
             self.notice({"event": "session_end", "exitstatus": int(exitstatus)})
         self.close()

@@ -65,7 +65,10 @@ def _sub(session_id, name, role, query, status_type, message=""):
 class TestNativeSubagentSync:
     def test_ignores_non_list(self):
         state = _make_state()
-        _native_subagent_sync(state, _make_slot(), None, {})
+        # A stale live card: a non-list update must not reconcile it away.
+        tracker: dict = {"s1": {"started": 0.0, "last_activity": 0.0, "done": False}}
+        _native_subagent_sync(state, _make_slot(), None, tracker)
+        assert tracker == {"s1": {"started": 0.0, "last_activity": 0.0, "done": False}}
         state.broadcast_ws.assert_not_called()
 
     def test_spawns_one_card_per_subagent(self):
@@ -222,7 +225,9 @@ class TestNativeSubagentSync:
 
     def test_skips_entry_without_session_id(self):
         state = _make_state()
-        _native_subagent_sync(state, _make_slot(), [{"sessionName": "x"}], {})
+        tracker: dict = {}
+        _native_subagent_sync(state, _make_slot(), [{"sessionName": "x"}], tracker)
+        assert tracker == {}
         state.broadcast_ws.assert_not_called()
 
     def test_skips_non_dict_entries_in_list(self):
@@ -292,6 +297,13 @@ class TestNativeSubagentCloseAll:
         tracker = {"s1": {"started": 0.0, "done": False, "agent": "w", "task": "t1"}}
         _native_subagent_close_all(state, slot, tracker)
         assert _ws_calls(state)["subagent_done"][0]["result"] == "(output in chat)"
+
+    def test_close_all_carries_the_given_error(self):
+        state = _make_state()
+        tracker = {"s1": {"started": 0.0, "done": False, "agent": "w", "task": "t1"}}
+        _native_subagent_close_all(state, _make_slot(), tracker, error="interrupted")
+        assert _ws_calls(state)["subagent_done"][0]["error"] == "interrupted"
+        assert tracker["s1"]["error"] == "interrupted"
 
 
 class TestEmptyTaskSkip:

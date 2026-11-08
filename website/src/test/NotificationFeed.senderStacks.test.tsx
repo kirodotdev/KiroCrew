@@ -279,6 +279,54 @@ describe('NotificationFeed: clear sits on what it clears', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open notification: From yesterday' }))
   })
 
+  it('a stack clear whose header unmounts before the last deletion hands focus on at once', async () => {
+    // The header goes when one note is left, taking the focused clear with it.
+    // Waiting on <body> for the last deletion would let the inbox page's side
+    // detail focus hook send focus to the first row instead.
+    const pending = new Map<string, () => void>()
+    mockDeleteNotification.mockImplementation((ts: string) => new Promise(resolve => { pending.set(ts, () => resolve({})) }))
+    renderFeed([
+      mkN({ ts: '2026-07-24T10:58:00Z', title: 'Below' }),
+      ...notes.map(n => ({ ...n, job_id: 'triage' })),
+      mkN({ ts: '2026-07-24T11:00:20Z', title: 'Top' }),
+    ])
+    fireEvent.click(screen.getByRole('button', { name: /1 more/ }))
+    const clear = screen.getByRole('button', { name: 'Clear Cron Job' })
+    clear.focus()
+    fireEvent.click(clear)
+    fireEvent.click(clear)
+    await waitFor(() => expect(pending.size).toBe(2))
+    await act(async () => { pending.get('2026-07-24T11:00:00Z')!() })
+    expect(clear.isConnected).toBe(false)
+    const below = screen.getByRole('button', { name: 'Open notification: Below' })
+    expect(document.activeElement).toBe(below)
+    await act(async () => { pending.get('2026-07-24T10:59:00Z')!() })
+    expect(document.activeElement).toBe(below)
+  })
+
+  for (const variant of ['mac', 'panel'] as const) {
+    it(`${variant}: a partial clear of the only stack hands focus to the row that survived`, async () => {
+      // Both notes are targets, so there is no neighbour to hand focus to, and
+      // the stack shrinking to one note unmounts the focused header clear.
+      mockDeleteNotification.mockImplementation((ts: string) => ts === '2026-07-24T10:59:00Z'
+        ? Promise.reject(new Error('offline'))
+        : Promise.resolve({}))
+      renderFeed(notes.map(n => ({ ...n, job_id: 'triage' })), variant)
+      fireEvent.click(screen.getByRole('button', { name: variant === 'mac' ? /Expand 2 grouped notifications/ : /1 more/ }))
+      const clear = screen.getByRole('button', { name: 'Clear Cron Job' })
+      clear.focus()
+      fireEvent.click(clear)
+      fireEvent.click(clear)
+      await screen.findByRole('alert')
+      expect(screen.queryByText('Second')).toBeNull()
+      expect(clear.isConnected).toBe(false)
+      // The refocus effect fires after React commits the refocusTick state
+      // update; waitFor awaits that commit rather than reading activeElement
+      // before the effect has run.
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open notification: First' })))
+    })
+  }
+
   it('a failed day clear leaves focus on the clear it pressed', async () => {
     mockDeleteNotification.mockRejectedValue(new Error('boom'))
     renderFeed([

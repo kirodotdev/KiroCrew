@@ -80,7 +80,6 @@ class TestExport:
         assert "hostname" in manifest
         assert "contents" in manifest
 
-        # Verify it's a valid zip
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
         names = zf.namelist()
         assert any("MANIFEST.json" in n for n in names)
@@ -137,6 +136,28 @@ class TestExport:
         assert any("2026-05-17.md" in n for n in names)
         zf.close()
 
+    @pytest.mark.skipif(
+        not platform_compat.IS_WINDOWS, reason="only ntpath has the \\\\?\\ spelling"
+    )
+    def test_export_includes_files_under_extended_length_home(self, patched_config_dir):
+        # The SQLite backup builds a file URI that rejects this spelling; it is a separate path.
+        for db in ("memory.db", "memory_index.db"):
+            (patched_config_dir / db).unlink()
+        # A fenced credential under the workspace must stay out under this spelling too.
+        pat = patched_config_dir / "workspace" / "md-notebook" / "pat"
+        pat.parent.mkdir(parents=True, exist_ok=True)
+        pat.write_text("secret")
+        prefixed = "\\\\?\\" + os.path.realpath(patched_config_dir)
+        with patch.dict(os.environ, {"KIROCREW_HOME": prefixed}):
+            zip_bytes, manifest = create_export_zip()
+        assert manifest["contents"]["workspace_files"] >= 4
+        assert manifest["contents"]["plan_memory_files"] == 1
+        assert manifest["contents"]["skill_count"] == 1
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            names = zf.namelist()
+        assert any("preferences.md" in n for n in names)
+        assert not any(n.endswith("md-notebook/pat") for n in names)
+
     def test_export_includes_skills(self, patched_config_dir):
         zip_bytes, manifest = create_export_zip()
         assert manifest["contents"]["skill_count"] >= 1
@@ -170,7 +191,6 @@ class TestExport:
         zf.close()
 
     def test_export_excludes_pid_files(self, patched_config_dir):
-        # Add a .pid file
         (patched_config_dir / "gateway.pid").write_text("99999")
         zip_bytes, _ = create_export_zip()
         zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
@@ -179,7 +199,6 @@ class TestExport:
         zf.close()
 
     def test_export_skips_symlinks(self, patched_config_dir):
-        # Create a symlink in workspace
         link = patched_config_dir / "workspace" / "memory" / "evil_link.md"
         try:
             link.symlink_to("/etc/passwd")
@@ -1004,7 +1023,6 @@ class TestValidate:
         assert "Invalid zip" in error
 
     def test_validate_missing_manifest(self, tmp_path):
-        # Create a zip without MANIFEST.json
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("some-dir/config.json", '{"agent":{}}')

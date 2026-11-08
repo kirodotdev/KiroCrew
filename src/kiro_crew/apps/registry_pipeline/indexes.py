@@ -17,12 +17,15 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.apps.registry_pipeline import _FACADE, _facade
 from kiro_crew.apps.registry_pipeline.caches import (
+    _clear_external_registry_failure,
     _credential_free_external_registry_entries,
     _external_registry_cache_identity,
     _read_external_registry_cache,
+    _read_external_registry_failure,
     _remove_legacy_credential_registry_cache,
     _remove_legacy_name_keyed_registry_cache,
     _write_external_registry_cache,
+    _write_external_registry_failure,
 )
 from kiro_crew.apps.registry_pipeline.checkout import (
     _CLONE_TIMEOUT,
@@ -56,7 +59,11 @@ from kiro_crew.apps.registry_pipeline.store_art import (
     _SAFE_BRANCH_RE,
     _prewarm_owner_tier_store_assets,
 )
-from kiro_crew.apps.registry_pipeline.subprocess_env import minimal_env
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _git_network_env,
+    _proxy_env_has_credentials,
+    minimal_env,
+)
 from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
@@ -214,6 +221,55 @@ def _registry_sign_in_refused(repo: str, branch: str) -> bool:
     return (_strip_git_target_userinfo(repo), branch) in _SIGN_IN_REFUSED
 
 
+def _load_index_entries_sync(
+    clone_path: Path, repo: str, branch: str
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+    """Read the clone's index and scan its ``apps/`` tree — both blocking.
+
+    Return ``(index_entries, fallback_entries)``: the object entries of a
+    well-formed ``app-registry.json`` (``None`` when the file is absent,
+    unreadable or not a JSON list), and the ``apps/*/app.json`` fallback rows
+    (empty when the clone has none). The index probe governs which of the two
+    answers the caller reads — an EMPTY index list is a valid index result,
+    never a trigger to scan the fallback.
+
+    Blocking: every probe and read here is a filesystem call, so the caller
+    runs this in one ``asyncio.to_thread`` hop rather than probing on the event
+    loop. Read and decode errors propagate to the fetch's own handler.
+    """
+    index_path = clone_path / "app-registry.json"
+    if index_path.is_file():
+        try:
+            data = json.loads(index_path.read_text("utf-8"))
+            if isinstance(data, list):
+                # Keep only well-formed object entries — a malformed index
+                # item (e.g. a bare string) must never reach normalization.
+                return [item for item in data if isinstance(item, dict)], []
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            pass
+
+    entries: list[dict[str, Any]] = []
+    apps_dir = clone_path / "apps"
+    if apps_dir.is_dir():
+        for app_dir in sorted(apps_dir.iterdir()):
+            if not app_dir.is_dir():
+                continue
+            if not (app_dir / "app.json").is_file():
+                continue
+            app_name = app_dir.name
+            if not app_name or app_name in (".", ".."):
+                continue
+            entries.append(
+                {
+                    "name": app_name,
+                    "repo": repo,
+                    "branch": branch,
+                    "subdirectory": f"apps/{app_name}",
+                }
+            )
+    return None, entries
+
+
 async def _fetch_external_registry_index(
     repo: str,
     branch: str,
@@ -262,6 +318,9 @@ async def _fetch_external_registry_index(
     credential_target = repo
     git_url = _strip_git_target_userinfo(credential_target)
     credentialed_transport = credential_target != git_url
+    # A proxy URL holding a password is a credential too: it takes the split path,
+    # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
+    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
 
     # SEL audit: log external subprocess invocation for traceability (best-effort).
     def _sel_outcome(outcome: str) -> None:
@@ -285,7 +344,7 @@ async def _fetch_external_registry_index(
     try:
         tmp_root = await asyncio.to_thread(tempfile.mkdtemp, prefix="kirocrew-registry-")
         clone_path = Path(tmp_root)
-        if credentialed_transport:
+        if isolate_transport:
             # See `_git_fetch_branch`: a combined credentialed clone would let
             # checkout-time filters inherit the one-shot credential mapping.
             clone_path /= "branch"
@@ -344,7 +403,7 @@ async def _fetch_external_registry_index(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=minimal_env(),
+                env=_git_network_env(minimal_env(), git_url),
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
@@ -358,42 +417,17 @@ async def _fetch_external_registry_index(
                     _SIGN_IN_REFUSED.add(sign_in_key)
                 return None
 
-        # Prefer an explicit app-registry.json index.
-        index_path = clone_path / "app-registry.json"
-        if index_path.is_file():
-            try:
-                data = json.loads(await asyncio.to_thread(index_path.read_text, "utf-8"))
-                if isinstance(data, list):
-                    # Keep only well-formed object entries — a malformed index
-                    # item (e.g. a bare string) must never reach normalization.
-                    _sel_outcome("success")
-                    return _credential_free_external_registry_entries(
-                        [item for item in data if isinstance(item, dict)]
-                    )
-            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-                pass
-
-        # Fallback: scan for apps/*/app.json
-        entries: list[dict[str, Any]] = []
-        apps_dir = clone_path / "apps"
-        if apps_dir.is_dir():
-            for app_dir in sorted(apps_dir.iterdir()):
-                if not app_dir.is_dir():
-                    continue
-                if not (app_dir / "app.json").is_file():
-                    continue
-                app_name = app_dir.name
-                if not app_name or app_name in (".", ".."):
-                    continue
-                entries.append(
-                    {
-                        "name": app_name,
-                        "repo": repo,
-                        "branch": branch,
-                        "subdirectory": f"apps/{app_name}",
-                    }
-                )
-        result = entries if entries else None
+        # Prefer an explicit app-registry.json index, then the apps/*/app.json
+        # fallback. Both walk the clone's disk, so they run in ONE
+        # asyncio.to_thread hop: a slow or network clone root stalls this
+        # fetch's worker thread, not every session's turn on the loop.
+        index_entries, fallback_entries = await asyncio.to_thread(
+            _load_index_entries_sync, clone_path, repo, branch
+        )
+        if index_entries is not None:
+            _sel_outcome("success")
+            return _credential_free_external_registry_entries(index_entries)
+        result = fallback_entries or None
         _sel_outcome("success" if result else "failed")
         return _credential_free_external_registry_entries(result) if result else None
 
@@ -459,6 +493,11 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
     stale cache. Because the cache is only overwritten on success, a transient
     forge/network failure leaves the prior (stale) cache intact ("stale >
     missing"): this is the fetch-then-swap contract the refresh path relies on.
+
+    Every call fetches, and its outcome sets or clears the registry's
+    failed-fetch marker (``_EXTERNAL_REGISTRY_FAILURE_TTL``). Only the listing's
+    ``_load_external_registries`` reads that marker, so a refresh is never held
+    back by it.
     """
     # An unnamed legacy registry used its raw URL as the old cache identity,
     # which exposed HTTP userinfo in the filename. Remove that exact artifact
@@ -470,8 +509,10 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
     _remove_legacy_name_keyed_registry_cache(reg)
     public_registry_repo = _strip_git_target_userinfo(reg.repo)
     name = _public_registry_name(reg)
+    cache_identity = _external_registry_cache_identity(reg)
     entries = await _fetch_external_registry_index(reg.repo, reg.branch)
     if entries is None:
+        await asyncio.to_thread(_write_external_registry_failure, cache_identity)
         return None
     # Defensively drop malformed (non-dict) index items before normalization:
     # a configured repo can return a valid JSON array containing a non-object
@@ -495,9 +536,8 @@ async def _fetch_and_cache_external_registry(reg) -> list[dict[str, Any]] | None
         entry.setdefault("repo", public_registry_repo)
         entry["_registry"] = name
     _apply_configured_branch(entries, reg, warn=True)
-    await asyncio.to_thread(
-        _write_external_registry_cache, _external_registry_cache_identity(reg), entries
-    )
+    await asyncio.to_thread(_write_external_registry_cache, cache_identity, entries)
+    await asyncio.to_thread(_clear_external_registry_failure, cache_identity)
     return entries
 
 
@@ -538,11 +578,15 @@ async def _load_external_registries() -> list[dict[str, Any]]:
             _apply_configured_branch(cached, reg)
             return cached
 
-        # Fetch from repo (writes the cache on success).
-        entries = await _fetch_and_cache_external_registry(reg)
-        if entries is not None:
-            fresh.append((reg, entries))
-            return entries
+        # Fetch from repo (writes the cache on success), unless the last fetch
+        # failed within the failure window: then go straight to the stale copy
+        # instead of paying for a clone that is likely to fail the same way.
+        failed_recently = await asyncio.to_thread(_read_external_registry_failure, cache_name)
+        if not failed_recently:
+            entries = await _fetch_and_cache_external_registry(reg)
+            if entries is not None:
+                fresh.append((reg, entries))
+                return entries
 
         # Fall back to stale cache (stale > missing)
         stale = await asyncio.to_thread(

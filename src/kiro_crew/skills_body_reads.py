@@ -25,6 +25,7 @@ from typing import NamedTuple
 from kiro_crew import hooks as hooks_module
 from kiro_crew import skill_trust
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
+from kiro_crew.metrics.feature_usage import SKILL_LAZY_LOAD_COUNT, skill_label
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.sel import sel
 from kiro_crew.skills_discovery import _installed_package_bytes_match, _within_any
@@ -301,6 +302,12 @@ def _audit_project_skill_enforcement(
     if marker in self._audited_projects:
         return
     try:
+        if allowed:
+            reason = "project skills admitted for a granted directory"
+        elif not skill_trust.project_skill_traversal_supported():
+            reason = "project skills withheld: this platform lacks no-follow directory traversal"
+        else:
+            reason = "project skills withheld: no grant, or the feature is off"
         sel().log_governance_decision(
             session_key="",
             tool_name="skills",
@@ -308,15 +315,7 @@ def _audit_project_skill_enforcement(
             item=key or str(project_dir),
             outcome="allowed" if allowed else "denied",
             rule="project_skills_trust_enforced",
-            reason=(
-                "project skills admitted for a granted directory"
-                if allowed
-                else (
-                    "project skills withheld: this platform lacks no-follow " "directory traversal"
-                    if not skill_trust.project_skill_traversal_supported()
-                    else "project skills withheld: no grant, or the feature is off"
-                )
-            ),
+            reason=reason,
             critical=False,
         )
         self._audited_projects.add(marker)
@@ -453,10 +452,10 @@ def _cached_frontmatter(
     # and clobber a version snapshot. A reader that would rather show a row
     # than fail catches this at ITS call site instead.
     # Routed through the choke point rather than reading the path directly:
-    # this is the site the reviewer found, and a bare read_text here has no
-    # containment, no O_NOFOLLOW, no regular-file check and no size cap --
-    # so an out-of-project `description` reached the injected skills index
-    # verbatim and attacker-set `triggers`/`always` decided what auto-loaded.
+    # a bare read_text here has no containment, no O_NOFOLLOW, no regular-file
+    # check and no size cap -- so an out-of-project `description` would reach
+    # the injected skills index verbatim and attacker-set `triggers`/`always`
+    # would decide what auto-loads.
     raw = self._read_enumerated_skill_bytes(path, within, canonical_root=canonical_root)
     if raw is None:
         if for_write:
@@ -530,9 +529,8 @@ def load_skill(
         )
         if content is None:
             return None
-        self._emit_lazy_load_metric(_t0, hit=True)
+        self._emit_lazy_load_metric(_t0, hit=True, skill=name)
         return content
-    # Check extra paths
     for extra in self._extra_paths:
         skill_file = extra / name / "SKILL.md"
         if skill_file.exists():
@@ -547,7 +545,7 @@ def load_skill(
             )
             if content is None:
                 return None
-            self._emit_lazy_load_metric(_t0, hit=True)
+            self._emit_lazy_load_metric(_t0, hit=True, skill=name)
             return content
     # A trusted project's own skills, last — same order as _iter_uncached.
     project_key = self._trusted_project_key(project_dir)
@@ -601,9 +599,9 @@ def load_skill(
             content = _decode_skill_text(raw, strict=False)
             if _html_skill_refused(self._parse_frontmatter_text(content), skill_file):
                 break
-            self._emit_lazy_load_metric(_t0, hit=True)
+            self._emit_lazy_load_metric(_t0, hit=True, skill=name)
             return content
-    self._emit_lazy_load_metric(_t0, hit=False)
+    self._emit_lazy_load_metric(_t0, hit=False, skill=name)
     return None
 
 
@@ -665,8 +663,13 @@ def _read_global_skill_text(
     return None if _html_skill_refused(self._parse_frontmatter_text(text), path) else text
 
 
-def _emit_lazy_load_metric(t0: float, *, hit: bool) -> None:
-    """Best-effort OTEL emit for on-demand skill body loads."""
+def _emit_lazy_load_metric(t0: float, *, hit: bool, skill: str | None = None) -> None:
+    """Best-effort OTEL emit for on-demand skill body loads.
+
+    The counter also carries ``skill``: the skill's id when Kiro Crew ships it,
+    ``custom`` for any other name (``metrics.feature_usage.skill_label``). The
+    duration histogram keeps ``hit`` alone.
+    """
     try:
         elapsed_ms = (time.monotonic() - t0) * 1000.0
         attrs: dict[str, str | int | bool | float] = {"hit": hit}
@@ -676,7 +679,7 @@ def _emit_lazy_load_metric(t0: float, *, hit: bool) -> None:
             unit="ms",
             attrs=attrs,
         )
-        get_recorder().counter("kirocrew.skill.lazy_load.count", attrs=attrs)
+        get_recorder().counter(SKILL_LAZY_LOAD_COUNT, attrs={**attrs, "skill": skill_label(skill)})
     except Exception:  # never let telemetry break skill loading
         pass
 

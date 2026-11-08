@@ -294,6 +294,16 @@ async def _worker_binding(
     return binding, None
 
 
+def session_is_bound_worker(session_key: str) -> bool:
+    """Whether *session_key* is the bound worker of any work-ledger item here.
+
+    The binding :func:`_worker_binding` resolves for ``work_brief``, under the same
+    ledger-key fold, read strictly: a present but unreadable binding raises so a
+    caller that gates on it fails closed. Blocking: it reads a file.
+    """
+    return work_ledger.read_binding(session_ledger.ledger_key(session_key), strict=True) is not None
+
+
 async def _own_ledger(
     key: str, operation: str, caller: str | None = None
 ) -> tuple[work_ledger.ConductorRecord, None] | tuple[None, web.Response]:

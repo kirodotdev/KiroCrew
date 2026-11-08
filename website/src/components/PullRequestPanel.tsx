@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { withUnifiedPatchHeaders } from './unifiedPatchHeaders'
+import {
+  branchBehindHandoff,
+  mergeConflictHandoff,
+  rebaseRequiredHandoff,
+  type MergeBlockerHandoffSource,
+} from './mergeBlockerHandoff.prompt'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -18,6 +24,7 @@ import {
   RefreshCw,
   SkipForward,
   TriangleAlert,
+  X,
   XCircle,
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -32,17 +39,20 @@ import type {
 import {
   findSourceForUrl,
   MAX_PULL_REQUEST_SOURCES,
+  sourceInstanceHost,
   sourceLinkKey,
   type PullRequestLink,
 } from '../utils/pullRequestLinks'
 import { sourceProviderMeta, sourceTabQualifier } from '../utils/sourceProviderMeta'
 import CopyBranchButton from './CopyBranchButton'
+import SecretNameCopy from './SecretNameCopy'
 import { PierrePatch } from '../pierre'
 import SourceProviderMark from './SourceProviderMark'
 import { timeAgo } from '../utils/timeAgo'
 import MarkdownRenderer from './MarkdownRenderer'
 import CommentThreads from './CommentThreads'
 import { Btn } from './ui'
+import { useRovingTabs } from './Tablist'
 
 
 import { i18nT } from '../i18n/t'
@@ -176,37 +186,33 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
   const state = source.state.toLowerCase()
   if ((state !== 'open' && state !== 'opened') || source.mergedAt || source.draft) return null
   const base = source.baseBranch || 'the base branch'
-  const label = sourceProviderMeta(source.provider).refLabel(source.number)
-  const sourceUrl = safeExternalUrl(source.url)
-  const handoffHeader = (problem: string) => [
-    `${problem} on ${label} (${source.title}):`,
-    '',
-    `- Branch: ${source.headBranch || 'the feature branch'} -> ${base}`,
-    ...(sourceUrl ? [`- Pull request: ${sourceUrl}`] : []),
-    '',
-  ]
+  // The handoff bodies are agent-facing prompts, so they live in the
+  // `*.prompt.ts` module beside this file; only the banner copy is translated.
+  const handoffSource: MergeBlockerHandoffSource = {
+    provider: source.provider,
+    title: source.title,
+    headBranch: source.headBranch,
+    label: sourceProviderMeta(source.provider).refLabel(source.number),
+    base,
+    sourceUrl: safeExternalUrl(source.url) ?? '',
+  }
   if (source.mergeable === 'conflicting') {
     return {
       tone: 'danger',
       title: i18nT('components.pullRequestPanel.merge_conflicts'),
       detail: i18nT('components.pullRequestPanel.merge_conflicts_detail', { base }),
-      handoff: [
-        ...handoffHeader('Merge conflict'),
-        `Resolve the conflicts with ${base}. If the branch is shared with other contributors, prefer merging ${base} into the branch; otherwise rebase onto ${base} and push with \`git push --force-with-lease\` (abort if the lease fails).`,
-      ].join('\n'),
+      handoff: mergeConflictHandoff(handoffSource),
     }
   }
   if (source.mergeStateStatus === 'need_rebase') {
-    // GitLab-specific: the project requires a rebase (e.g. fast-forward-only
-    // merge method) -- a merge commit cannot unblock this MR.
+    // The project requires a rebase (a fast-forward-only merge method on
+    // GitLab, or a fast-forward-only Gerrit project) -- a merge commit cannot
+    // unblock it.
     return {
       tone: 'warn',
       title: i18nT('components.pullRequestPanel.rebase_required'),
       detail: i18nT('components.pullRequestPanel.rebase_required_detail', { base }),
-      handoff: [
-        ...handoffHeader('Rebase required'),
-        `This project requires a rebase (merge commits will not unblock the MR). If the branch is shared with other contributors, coordinate with them before rewriting history; otherwise rebase onto ${base} and push with \`git push --force-with-lease\` (abort if the lease fails).`,
-      ].join('\n'),
+      handoff: rebaseRequiredHandoff(handoffSource),
     }
   }
   if (source.mergeStateStatus === 'behind') {
@@ -214,10 +220,7 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
       tone: 'warn',
       title: i18nT('components.pullRequestPanel.branch_is_behind'),
       detail: i18nT('components.pullRequestPanel.branch_is_behind_detail', { base }),
-      handoff: [
-        ...handoffHeader('Out-of-date branch'),
-        `Update the branch without rewriting history: merge ${base} into the branch (or use the provider's update-branch option) and push normally. Only rebase if the repository requires a linear history, and never force-push a shared branch without checking with its other contributors.`,
-      ].join('\n'),
+      handoff: branchBehindHandoff(handoffSource),
     }
   }
   if (source.mergeStateStatus === 'blocked') {
@@ -244,6 +247,16 @@ export function pullRequestMergeBlocker(source: PullRequestSource): PullRequestM
         tone: 'warn',
         title: i18nT('components.pullRequestPanel.merge_blocked'),
         detail: i18nT('components.pullRequestPanel.waiting_on_checks_detail'),
+      }
+    }
+    // Gerrit has no branch protection: a change that is open, mergeable and not
+    // submittable is waiting on the votes its submit rules require, and the
+    // verb Gerrit uses for landing it is "submit".
+    if (source.provider === 'gerrit') {
+      return {
+        tone: 'warn',
+        title: i18nT('components.pullRequestPanel.submit_blocked'),
+        detail: i18nT('components.pullRequestPanel.submit_requirements_not_met'),
       }
     }
     return {
@@ -594,7 +607,7 @@ function CheckRow({ check, source, onAddToChat }: { check: PullRequestCheck; sou
           target="_blank"
           rel="noopener noreferrer"
           className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2.5 no-underline hover:bg-bg-hover transition-colors"
-          aria-label={`Open ${check.name} check details`}
+          aria-label={i18nT('components.pullRequestPanel.open_check_details', { name: check.name })}
         >
           {details}
         </a>
@@ -702,10 +715,11 @@ export function PullRequestActions({ source }: { source: PullRequestSource }) {
   }
 
   if (!pullRequestIsLive(source)) return null
-  // Ready-for-review and auto-merge are merge-state writes. A provider whose
-  // gateway plugin does not implement them must not get buttons that can only
-  // return "unsupported by this provider".
-  if (!meta.capabilities.mergeState) return null
+  // Ready-for-review and auto-merge are writes. A provider whose gateway plugin
+  // does not implement them must not get buttons that can only return
+  // "unsupported by this provider" -- even one that reports merge state, since
+  // the banner and the buttons are different things (Gerrit has the former only).
+  if (!(meta.capabilities.mergeActions ?? meta.capabilities.mergeState)) return null
   const showReady = source.draft
   const showAutoMerge = !source.draft && !source.autoMerge
   const errorDetails = pullRequestErrorDetails(readyMutation.error || autoMergeMutation.error)
@@ -876,6 +890,7 @@ export default function PullRequestPanel({
   selectedUrl,
   onSelect,
   onReconcile,
+  onDismiss,
   onAddToChat,
 }: {
   sources: PullRequestLink[]
@@ -887,6 +902,9 @@ export default function PullRequestPanel({
   // transcript that lacks the remembered url may simply be a cached one that is
   // still being refetched. Defaults to onSelect for callers that do not care.
   onReconcile?: (url: string) => void
+  // Closes a tab in the source strip. The chat window passes it and remembers
+  // the close per session; a host without it renders tabs with no close control.
+  onDismiss?: (url: string) => void
   // Optional so the panel can render outside chat (e.g. the Code Review Sage
   // page), where there is no composer to hand text to. When absent the
   // chat-handoff affordances are hidden rather than rendered inert.
@@ -973,6 +991,7 @@ export default function PullRequestPanel({
   const source = query.data
   const queryError = pullRequestErrorDetails(query.error)
   const sourceUrl = safeExternalUrl(source?.url || '')
+  const instanceHost = source ? sourceInstanceHost(source) : null
   // One meta lookup for every provider-shaped decision in this component: the
   // Checks tab and its poll, the merge affordances, and the labels.
   const providerChecks = Boolean(
@@ -1078,6 +1097,7 @@ export default function PullRequestPanel({
     ),
   })
   const handleRefresh = () => {
+    if (query.isFetching) return
     forceRefreshRef.current = true
     // Also force the strip-wide status poll now, instead of waiting out its
     // current interval (or its post-error backoff).
@@ -1179,26 +1199,37 @@ export default function PullRequestPanel({
   // back to the first tab is derived rather than an effect, so the very first
   // render is already correct instead of flashing an empty section.
   const activeTab: SourceTab = tabs.some(item => item.id === tab) ? tab : 'changes'
+  // Both rails are one tab stop with arrow keys, like the shared Tablist.
+  const sourceRoving = useRovingTabs(cappedSources.map(item => ({ key: item.url })), selected?.url, onSelect)
+  const sectionRoving = useRovingTabs(tabs.map(item => ({ key: item.id })), activeTab, setTab)
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* The source strip only earns its row when there is a choice to make. A
-          single-source host (the Code Review Sage detail pane, where the left rail
-          already picked the pull request) would otherwise get a tab bar holding
-          exactly one tab that does nothing. */}
-      {cappedSources.length > 1 && (
+      {/* The source strip only earns its row when there is a choice to make, or
+          a tab to close. A single-source host with no close (the Code Review Sage
+          detail pane, where the left rail already picked the pull request) would
+          otherwise get a tab bar holding exactly one tab that does nothing. */}
+      {(cappedSources.length > 1 || onDismiss) && (
       <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_requests')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
-        {cappedSources.map(item => {
+        {cappedSources.map((item, i) => {
           const itemMeta = sourceProviderMeta(item.provider)
           const qualifier = tabQualifier(item)
+          const isSelected = item.url === selected?.url
+          const closeLabel = i18nT('components.pullRequestPanel.close_source_tab', {
+            label: qualifier ? `${qualifier} ${itemMeta.refLabel(item.number)}` : itemMeta.refLabel(item.number),
+          })
           return (
+          // The close control is the tab's sibling, not its child: a button
+          // cannot hold another button. The wrapper carries the tab's fill so
+          // the two read as one tab.
+          <span key={item.url} className={`group shrink-0 flex items-center rounded-md transition-colors ${isSelected ? 'bg-bg-hover text-text' : 'text-muted hover:text-text hover:bg-bg-hover/60'}`}>
           <Btn
-            key={item.url}
             type="button"
             role="tab"
-            aria-selected={item.url === selected?.url}
+            {...sourceRoving(i)}
+            aria-selected={isSelected}
             onClick={() => onSelect(item.url)}
-            className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border-none cursor-pointer text-[12px] transition-colors ${item.url === selected?.url ? 'bg-bg-hover text-text' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover/60'}`}
+            className={`flex items-center gap-1.5 ${onDismiss ? 'pl-2.5 pr-1' : 'px-2.5'} py-1.5 rounded-md border-none cursor-pointer text-[12px] bg-transparent text-inherit hover:bg-transparent`}
             title={item.url}
           >
             <SourceProviderMark provider={item.provider} size={13} />
@@ -1211,6 +1242,36 @@ export default function PullRequestPanel({
             <span>{itemMeta.refLabel(item.number)}</span>
             <SourceTabState status={statusByUrl[item.url]} />
           </Btn>
+          {onDismiss && (<>
+            {/* A divider and a smaller glyph keep the close control apart from
+                the tab's status marks, so it never reads as a "failed" mark.
+                Both show on the selected tab, and on another only on hover or focus. */}
+            <span aria-hidden="true" className={`ml-1 h-3.5 w-px bg-border ${isSelected ? 'opacity-70' : 'opacity-0 group-hover:opacity-70 group-focus-within:opacity-70 [@media(hover:none)]:opacity-70'}`} />
+            <Btn
+              type="button"
+              // Only the selected tab's close is a Tab stop, so the strip stays
+              // two stops however many tabs it holds.
+              tabIndex={isSelected ? 0 : -1}
+              onClick={(e) => {
+                // Closing the selected tab hands the selection, and focus, to a
+                // neighbour first, so a keyboard user keeps their place.
+                const next = cappedSources[i + 1] ?? cappedSources[i - 1]
+                if (isSelected && next) {
+                  onSelect(next.url)
+                  const wrapper = e.currentTarget.parentElement
+                  const neighbour = wrapper?.nextElementSibling ?? wrapper?.previousElementSibling
+                  neighbour?.querySelector<HTMLElement>('[role="tab"]')?.focus()
+                }
+                onDismiss(item.url)
+              }}
+              aria-label={closeLabel}
+              title={closeLabel}
+              className={`ml-1 mr-1 p-1 rounded-sm border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover ${isSelected ? 'opacity-70' : 'opacity-0 group-hover:opacity-70 group-focus-within:opacity-70 [@media(hover:none)]:opacity-70'}`}
+            >
+              <X size={11} aria-hidden="true" />
+            </Btn>
+          </>)}
+          </span>
           )
         })}
       </div>
@@ -1225,8 +1286,14 @@ export default function PullRequestPanel({
           one, so the user knows the data is the last loaded version and how to
           fix the refresh. */}
       {query.error && !source && (
-        <div className="flex-1 flex items-center justify-center px-6">
-          <div className="max-w-md w-full flex flex-col items-center">
+        // A vertical scroller, centred with `m-auto` rather than
+        // `items-center`: a notice carrying a long per-host secret name has no
+        // height cap, and on a short phone pane it can be taller than the panel.
+        // `items-center` would push its top and the Retry button below it out
+        // of reach; `m-auto` centres it while it fits and lets it scroll once it
+        // does not.
+        <div className="flex-1 min-h-0 overflow-y-auto flex px-6 py-4" data-testid="pull-request-panel-load-error-scroller">
+          <div className="m-auto max-w-md w-full flex flex-col items-center">
             {/* askAgent on, as in the Issues panel: the panel is read-only (no
                 draft), and a provider CLI that is missing or logged out is the
                 kind of failure the agent can diagnose. The login command rides
@@ -1245,14 +1312,21 @@ export default function PullRequestPanel({
               />
             ) : (
               <ErrorNotice
-                className="w-full max-h-64 leading-relaxed"
+                // A notice carrying a secret name is two short sentences and the
+                // name block: it is shown whole, because the height cap would
+                // turn the sentence into a scroll area the block squeezes, and
+                // its last line says why the shorter shared name stopped working.
+                className={queryError.secretName ? 'w-full leading-relaxed' : 'w-full max-h-64 leading-relaxed'}
                 messageClassName="font-mono whitespace-pre-wrap break-words"
                 title={i18nT('components.pullRequestPanel.could_not_load_this_pull_request')}
                 message={queryError.message}
                 messagePlacement="below"
                 actionPlacement="below"
-                scrollMessage
+                scrollMessage={!queryError.secretName}
                 askAgent
+                // A provider read over its own REST API names the token's vault
+                // entry; the name rides beside the sentence so it is copied whole.
+                footer={queryError.secretName ? <SecretNameCopy name={queryError.secretName} /> : undefined}
                 testId="pull-request-panel-load-error"
               />
             )}
@@ -1277,14 +1351,24 @@ export default function PullRequestPanel({
             <div className="flex items-center gap-2 text-[11px] text-muted">
               <span className={`px-1.5 py-0.5 rounded font-medium ${stateTone(source)}`}>{stateLabel(source)}</span>
               <span>{sourceProviderMeta(source.provider).displayName}</span>
+              {/* Which INSTANCE: two Gerrit servers (or a GitHub Enterprise and
+                  github.com) render the same provider word, and until now only
+                  the open-in-browser tooltip told them apart. A host is an
+                  identifier, not prose, so it is not translated. Elided when
+                  the provider name already implies the host (github.com). */}
+              {instanceHost && <span className="min-w-0 truncate" title={instanceHost} data-testid="pull-request-panel-instance-host">{instanceHost}</span>}
               {source.headBranch && source.baseBranch && (
                 <span className="min-w-0 flex items-center gap-1 truncate"><CopyBranchButton branch={source.headBranch} /><ArrowRight className="lucide-inline shrink-0" /><span className="truncate">{source.baseBranch}</span></span>
               )}
               <Btn
                 type="button"
                 onClick={handleRefresh}
-                disabled={query.isFetching}
-                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                // Inert-but-focusable while busy, like the Discover store Refresh:
+                // `aria-disabled` plus the guard in handleRefresh, NOT `disabled`,
+                // which leaves the tab order and drops a keyboard user's focus to
+                // the page for the whole refresh.
+                aria-disabled={query.isFetching || undefined}
+                className="ml-auto p-1 rounded border-none bg-transparent text-muted hover:text-text hover:bg-bg-hover cursor-pointer aria-disabled:opacity-60 aria-disabled:cursor-default"
                 aria-label={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
                 title={query.isFetching ? i18nT('components.pullRequestPanel.refreshing_pull_request') : i18nT('components.pullRequestPanel.refresh_pull_request')}
               >
@@ -1333,11 +1417,12 @@ export default function PullRequestPanel({
           )}
 
           <div role="tablist" aria-label={i18nT('components.pullRequestPanel.pull_request_sections')} className="shrink-0 border-b border-border px-2 py-2 flex items-center gap-1 overflow-x-auto">
-            {tabs.map(item => (
+            {tabs.map((item, i) => (
               <Btn
                 key={item.id}
                 type="button"
                 role="tab"
+                {...sectionRoving(i)}
                 id={`pr-tab-${item.id}`}
                 aria-selected={activeTab === item.id}
                 aria-controls="pr-tabpanel"

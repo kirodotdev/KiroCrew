@@ -743,7 +743,8 @@ class TestRedactArtifactHelper(unittest.TestCase):
 
     def test_output_is_always_valid_utf8(self) -> None:
         out = routes._redact_artifact(b"\xff\xfe not utf-8 \x80")
-        out.decode("utf-8")  # must not raise
+        # Each malformed byte degrades to a replacement char; the rest is kept.
+        self.assertEqual(out.decode("utf-8"), "\ufffd\ufffd not utf-8 \ufffd")
 
     def test_clean_text_is_returned_unchanged(self) -> None:
         """No credential means no rewrite — a redaction pass must not be a

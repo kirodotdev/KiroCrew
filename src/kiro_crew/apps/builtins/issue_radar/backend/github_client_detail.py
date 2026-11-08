@@ -174,7 +174,11 @@ def list_issue_timeline(
 _PR_REVIEW_COMMENT_JQ = (
     # The endpoint answers a top-level ARRAY, so the projection is per element —
     # without the `.[] |` gh fails with "expected an object but got: array".
-    '.[] | {kind: "review_comment", actor: (.user.login // null), '
+    '.[] | {kind: "review_comment", id: (.id // null), actor: (.user.login // null), '
+    # The reply handle: GitHub threads replies under the thread's FIRST comment, and
+    # every reply carries that root's id in ``in_reply_to_id``, so the root is the
+    # one id a reply can be posted against.
+    "thread_id: ((.in_reply_to_id // .id // null) | if . == null then null else tostring end), "
     'created_at: .created_at, body: (.body // ""), '
     "author_association: (.author_association // null), "
     "path: (.path // null), line: (.line // .original_line // null), "

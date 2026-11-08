@@ -57,6 +57,11 @@ from source_corpus import (
     unreadable_files,
 )
 
+# Kept in a tree_scan group (300 s, test/conftest.py): the walk ratchet already filters
+# on its narrowest necessary text, ``walk(`` and ``.parent``, which ``ast.walk`` and
+# ``Path(__file__)`` put in most test modules.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_source_corpus")
+
 #: The tree is ~1250 modules. A floor well under that catches the failure that
 #: matters -- a corpus that came back empty or nearly so -- without turning an
 #: ordinary file addition or deletion into a test edit.

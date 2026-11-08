@@ -35,6 +35,7 @@ from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT as DEFA
 from kiro_crew.decisions import consent
 
 CUSTOM = "https://proxy.example/v1/systemone"
+SAGEMAKER = "sagemaker://argus-9b?region=us-west-2"
 
 
 @pytest.fixture(autouse=True)
@@ -76,9 +77,7 @@ def configured(monkeypatch):
     return _set
 
 
-# ---------------------------------------------------------------------------
 # Fences
-# ---------------------------------------------------------------------------
 
 
 class TestTheLogIsSealedToo:
@@ -175,9 +174,7 @@ class TestTheLeafIsAKeystone:
         assert "decisions.enabled" not in _EDITABLE_CONFIG
 
 
-# ---------------------------------------------------------------------------
 # Reads fail soft; only a literal true consents
-# ---------------------------------------------------------------------------
 
 
 class TestRead:
@@ -232,6 +229,42 @@ class TestRead:
         )
         assert consent.permits(DEFAULT_ENDPOINT) is False
 
+    @pytest.mark.parametrize(
+        ("endpoint", "recorded", "expected"),
+        [
+            (SAGEMAKER, None, False),
+            (SAGEMAKER, True, True),
+            (SAGEMAKER, False, False),
+            (DEFAULT_ENDPOINT, None, True),
+            (DEFAULT_ENDPOINT, True, True),
+            (DEFAULT_ENDPOINT, False, False),
+        ],
+        ids=[
+            "sagemaker-unrecorded-off",
+            "sagemaker-yes",
+            "sagemaker-no",
+            "hosted-unrecorded-on",
+            "hosted-yes",
+            "hosted-no",
+        ],
+    )
+    def test_sagemaker_screenshots_need_a_recorded_yes(
+        self, keystone, endpoint, recorded, expected
+    ):
+        """A sagemaker:// consent with no screenshot choice reads as NO.
+
+        That provider was text-only when its owners consented, so an upgrade must not
+        start sending screenshots. A recorded choice is read as written everywhere,
+        and the hosted endpoint keeps its default-on reading.
+        """
+        state = {"enabled": True, "endpoint": endpoint}
+        if recorded is not None:
+            state["browser_images"] = recorded
+        keystone.write_text(json.dumps(state), encoding="utf-8")
+        assert consent.consented_browser_images() is expected
+        # The outline scope is untouched by this exception.
+        assert consent.consented_browser() is True
+
     def test_an_unreadable_file_is_not_consented(self, keystone):
         keystone.write_text('{"enabled": true}', encoding="utf-8")
         if os.name != "posix" or os.geteuid() == 0:
@@ -243,9 +276,7 @@ class TestRead:
             keystone.chmod(0o600)
 
 
-# ---------------------------------------------------------------------------
 # The writer
-# ---------------------------------------------------------------------------
 
 
 class TestWrite:
@@ -260,6 +291,8 @@ class TestWrite:
             "compaction": False,
             "memory_text": False,
             "nudge_evidence": False,
+            # Neither browser scope is written: both are on by default, so an enable
+            # that does not mention them leaves them absent.
         }
         assert consent.permits(CUSTOM) is True
         assert consent.permits(DEFAULT_ENDPOINT) is False
@@ -359,17 +392,12 @@ class TestWrite:
     def test_a_lowering_survives_an_enable_running_beside_it(self, keystone, monkeypatch):
         """Two owner PUTs on two threads, and the LOWER ceiling is the one left.
 
-        The handler hands ``save_enabled`` to a thread, so the switch PUT (which
-        omits the field and therefore keeps) and a PUT lowering the ceiling to 0
-        really do overlap. Resolving the sentinel inside the function narrows the
-        window but cannot order two reads against one write: the keeper reads 2000,
-        the lowerer writes 0, and the keeper writes 2000 back -- an egress limit
-        raised by losing a race.
+        The handler runs ``save_enabled`` on a thread, so a keep-the-ceiling switch PUT
+        and a lower-to-0 PUT overlap: without a lock the keeper reads 2000, the lowerer
+        writes 0, and the keeper writes 2000 back.
 
-        The interleaving is forced rather than raced for: the keeper's write is held
-        open long enough for the lowerer to finish inside it. Under the lock the
-        lowerer cannot start until the keeper is done, so the last write is its 0;
-        without the lock the keeper's delayed 2000 lands last.
+        The interleaving is forced, not raced for: the keeper's write is held open
+        while the lowerer runs, so only the lock makes 0 the last write.
         """
         import threading
         import time
@@ -438,9 +466,7 @@ class TestWrite:
         assert held == [True, True]
 
 
-# ---------------------------------------------------------------------------
 # The dashboard handler
-# ---------------------------------------------------------------------------
 
 
 def _stream(data: bytes):
@@ -529,6 +555,10 @@ class TestHandler:
             "compaction": False,
             "memory_text": False,
             "nudge_evidence": False,
+            # Both browser scopes read TRUE when absent (on by default once consent
+            # stands).
+            "browser": True,
+            "browser_images": True,
             # One row per point this build ships, projected from the seam's own
             # registry so the card lists what the gate will answer for. Nothing is
             # sent on this keystone, so every status is the effective ``off``.
@@ -732,13 +762,9 @@ class TestHandler:
     ):
         """An enable PUT that never mentions the ceiling must not lower it.
 
-        The consent card sends ``enabled`` and ``endpoint`` only, so defaulting the
-        missing field to 0 makes an ordinary switch flip erase a ceiling recorded
-        through this same route -- a security decision lowered by a request that
-        said nothing about it, and silently, since the route answers 200.
-
-        Driven through the handler, because the default that did the erasing lives
-        on the route and a test of ``save_enabled`` leaves it unexercised.
+        The consent card sends ``enabled`` and ``endpoint`` only, so a missing field
+        must keep the recorded ceiling, not default to 0. Driven through the handler,
+        where that default lives.
         """
         from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
 
@@ -785,6 +811,7 @@ class TestHandler:
             compaction=False,
             memory_text=False,
             nudge_evidence=False,
+            **browser_scopes,
         ):
             seen.append(history_budget_chars)
             return real(
@@ -795,6 +822,7 @@ class TestHandler:
                 compaction=compaction,
                 memory_text=memory_text,
                 nudge_evidence=nudge_evidence,
+                **browser_scopes,
             )
 
         monkeypatch.setattr(consent, "save_enabled", _spy)
@@ -952,9 +980,7 @@ class TestHandler:
         assert routes is not None
 
 
-# ---------------------------------------------------------------------------
 # The fleet's ceiling above the owner's switch: ``capabilities.decisions``
-# ---------------------------------------------------------------------------
 
 
 #: A ceiling that pins the seam off.
@@ -1298,14 +1324,11 @@ class TestCapabilityCeiling:
     ):
         """A budget-only PUT carries no ``enabled`` and no scope, and still grants.
 
-        The number bounds how much prior conversation the seam may carry, so recording a
-        bigger one under the pin books an egress allowance for the moment the pin lifts
-        -- and the pin is exactly when it is cheapest to book, because nothing sends
-        while it holds. The write must be refused and the recorded ceiling untouched.
+        A bigger ceiling recorded under the pin is an egress allowance for when the pin
+        lifts, so the write is refused and the recorded ceiling untouched.
 
-        The scope rides along at its REVOKING value, because the route refuses a body
-        naming neither the switch nor a scope. So whatever this asserts can only have
-        come from the ceiling.
+        The scope rides along at its REVOKING value (the route refuses a body naming
+        neither switch nor scope), so the refusal can only come from the ceiling.
         """
         from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
 
@@ -1545,6 +1568,7 @@ class TestPointProjection:
             consent.STATE_KEY_COMPACTION,
             consent.STATE_KEY_MEMORY_TEXT,
             consent.STATE_KEY_NUDGE_EVIDENCE,
+            consent.STATE_KEY_BROWSER,
         }
 
     @pytest.mark.asyncio
@@ -1678,9 +1702,22 @@ class TestPointProjection:
         async def _get():
             return await api_decisions_consent_get(_request())
 
-        # Consent given, no scope: every SCOPED point is held back and no other is.
+        # Consent given, no scope ABSENT-AS-NO: the browser outline scope is the one
+        # on by default, so absent it reads active and only an explicit false holds
+        # it back.
         keystone.write_text(
             json.dumps({"enabled": True, "endpoint": DEFAULT_ENDPOINT}), encoding="utf-8"
+        )
+        got = {r["id"]: r["status"] for r in json.loads((await _get()).text)["points"]}
+        assert got["browser.step"] == "active"
+
+        # Consent given, every scope refused: every SCOPED point is held back and no
+        # other is.
+        keystone.write_text(
+            json.dumps(
+                {"enabled": True, "endpoint": DEFAULT_ENDPOINT, consent.STATE_KEY_BROWSER: False}
+            ),
+            encoding="utf-8",
         )
         rows = json.loads((await _get()).text)["points"]
         got = {r["id"]: r["status"] for r in rows}

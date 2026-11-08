@@ -6,7 +6,7 @@ import re
 import time
 
 import pytest
-from source_providers_helpers import _clear_issue_cache  # noqa: F401
+from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
 
@@ -992,7 +992,11 @@ class TestAdfToMarkdown:
         sources = [renderer, components / "markdown" / "remarkBase.ts"]
         imported = set()
         for path in sources:
-            imported |= set(re.findall(r"from '((?:remark|rehype)-[a-z0-9-]+)'", path.read_text()))
+            imported |= set(
+                re.findall(
+                    r"from '((?:remark|rehype)-[a-z0-9-]+)'", path.read_text(encoding="utf-8")
+                )
+            )
         assert imported == {
             "remark-parse",
             "remark-gfm",

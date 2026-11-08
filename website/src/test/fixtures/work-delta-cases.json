@@ -1,0 +1,800 @@
+{
+  "cases": [
+    {
+      "after": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 2
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 2
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "no change",
+      "ops": {
+        "header": {
+          "conductor": {
+            "generation": "g1",
+            "goal": "ship",
+            "schema": 1
+          },
+          "forgotten": {
+            "created": 2
+          },
+          "omitted": 0,
+          "order": [
+            "it_a",
+            "it_b"
+          ]
+        },
+        "items": {},
+        "remove": []
+      }
+    },
+    {
+      "after": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 2
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 1
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "append an item",
+      "ops": {
+        "header": {
+          "conductor": {
+            "generation": "g1",
+            "goal": "ship",
+            "schema": 1
+          },
+          "forgotten": {
+            "created": 2
+          },
+          "omitted": 0,
+          "order": [
+            "it_a",
+            "it_b"
+          ]
+        },
+        "items": {
+          "it_b": {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          }
+        },
+        "remove": []
+      }
+    },
+    {
+      "after": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 2
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [
+              {
+                "id": "e1",
+                "kind": "report"
+              }
+            ],
+            "item_id": "it_b",
+            "state": "open",
+            "status": "done"
+          }
+        ],
+        "omitted": 0
+      },
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 2
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "one item reports",
+      "ops": {
+        "header": {
+          "conductor": {
+            "generation": "g1",
+            "goal": "ship",
+            "schema": 1
+          },
+          "forgotten": {
+            "created": 2
+          },
+          "omitted": 0,
+          "order": [
+            "it_a",
+            "it_b"
+          ]
+        },
+        "items": {
+          "it_b": {
+            "events": [
+              {
+                "id": "e1",
+                "kind": "report"
+              }
+            ],
+            "item_id": "it_b",
+            "state": "open",
+            "status": "done"
+          }
+        },
+        "remove": []
+      }
+    },
+    {
+      "after": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 1
+        },
+        "items": [
+          {
+            "events": [
+              {
+                "id": "e1"
+              },
+              {
+                "id": "e2"
+              },
+              {
+                "id": "e3"
+              }
+            ],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 1
+        },
+        "items": [
+          {
+            "events": [
+              {
+                "id": "e1"
+              },
+              {
+                "id": "e3"
+              }
+            ],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "event inserted in time order",
+      "ops": {
+        "header": {
+          "conductor": {
+            "generation": "g1",
+            "goal": "ship",
+            "schema": 1
+          },
+          "forgotten": {
+            "created": 1
+          },
+          "omitted": 0,
+          "order": [
+            "it_a"
+          ]
+        },
+        "items": {
+          "it_a": {
+            "events": [
+              {
+                "id": "e1"
+              },
+              {
+                "id": "e2"
+              },
+              {
+                "id": "e3"
+              }
+            ],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          }
+        },
+        "remove": []
+      }
+    },
+    {
+      "after": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 1
+        },
+        "items": [
+          {
+            "events": [
+              {
+                "id": "p2"
+              }
+            ],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 1
+        },
+        "items": [
+          {
+            "events": [
+              {
+                "id": "p1"
+              },
+              {
+                "id": "p2"
+              }
+            ],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "progress collapse drops a neighbour event",
+      "ops": {
+        "header": {
+          "conductor": {
+            "generation": "g1",
+            "goal": "ship",
+            "schema": 1
+          },
+          "forgotten": {
+            "created": 1
+          },
+          "omitted": 0,
+          "order": [
+            "it_a"
+          ]
+        },
+        "items": {
+          "it_a": {
+            "events": [
+              {
+                "id": "p2"
+              }
+            ],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          }
+        },
+        "remove": []
+      }
+    },
+    {
+      "after": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 3
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_c",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 1
+      },
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 3
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "accepted",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_c",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "close evicts the oldest closed item",
+      "ops": {
+        "header": {
+          "conductor": {
+            "generation": "g1",
+            "goal": "ship",
+            "schema": 1
+          },
+          "forgotten": {
+            "created": 3
+          },
+          "omitted": 1,
+          "order": [
+            "it_b",
+            "it_c"
+          ]
+        },
+        "items": {},
+        "remove": [
+          "it_a"
+        ]
+      }
+    },
+    {
+      "after": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 2
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 2
+      },
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 2
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "header only",
+      "ops": {
+        "header": {
+          "conductor": {
+            "generation": "g1",
+            "goal": "ship",
+            "schema": 1
+          },
+          "forgotten": {
+            "created": 2
+          },
+          "omitted": 2,
+          "order": [
+            "it_a",
+            "it_b"
+          ]
+        },
+        "items": {},
+        "remove": []
+      }
+    },
+    {
+      "after": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 2
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_c",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 2
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "remove and add together",
+      "ops": {
+        "header": {
+          "conductor": {
+            "generation": "g1",
+            "goal": "ship",
+            "schema": 1
+          },
+          "forgotten": {
+            "created": 2
+          },
+          "omitted": 0,
+          "order": [
+            "it_b",
+            "it_c"
+          ]
+        },
+        "items": {
+          "it_c": {
+            "events": [],
+            "item_id": "it_c",
+            "state": "open",
+            "status": ""
+          }
+        },
+        "remove": [
+          "it_a"
+        ]
+      }
+    },
+    {
+      "after": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 0
+        },
+        "items": [],
+        "omitted": 0
+      },
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 0
+        },
+        "items": [],
+        "omitted": 0
+      },
+      "name": "empty to empty",
+      "ops": {
+        "header": {
+          "conductor": {
+            "generation": "g1",
+            "goal": "ship",
+            "schema": 1
+          },
+          "forgotten": {
+            "created": 0
+          },
+          "omitted": 0,
+          "order": []
+        },
+        "items": {},
+        "remove": []
+      }
+    },
+    {
+      "after": null,
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 1
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "hole: order names an unknown id",
+      "ops": {
+        "header": {
+          "conductor": {},
+          "forgotten": {},
+          "omitted": 0,
+          "order": [
+            "it_a",
+            "it_x"
+          ]
+        },
+        "items": {},
+        "remove": []
+      }
+    },
+    {
+      "after": null,
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 2
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          },
+          {
+            "events": [],
+            "item_id": "it_b",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "hole: a removed id still in order",
+      "ops": {
+        "header": {
+          "conductor": {},
+          "forgotten": {},
+          "omitted": 0,
+          "order": [
+            "it_a",
+            "it_b"
+          ]
+        },
+        "items": {},
+        "remove": [
+          "it_b"
+        ]
+      }
+    },
+    {
+      "after": null,
+      "before": {
+        "conductor": {
+          "generation": "g1",
+          "goal": "ship",
+          "schema": 1
+        },
+        "forgotten": {
+          "created": 1
+        },
+        "items": [
+          {
+            "events": [],
+            "item_id": "it_a",
+            "state": "open",
+            "status": ""
+          }
+        ],
+        "omitted": 0
+      },
+      "name": "malformed ops",
+      "ops": {
+        "header": {
+          "order": [
+            "it_a"
+          ]
+        },
+        "items": [],
+        "remove": []
+      }
+    }
+  ]
+}

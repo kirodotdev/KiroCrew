@@ -9,7 +9,8 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query'
+import { refocusWindow } from './focusBarrier'
 
 const H = vi.hoisted(() => ({
   config: {} as Record<string, unknown>,
@@ -110,6 +111,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  focusManager.setFocused(undefined)
   vi.unstubAllGlobals()
   delete (window as { externalTerminalAPI?: unknown }).externalTerminalAPI
 })
@@ -385,5 +387,37 @@ describe('with an app picked', () => {
     mount()
     await waitFor(() => expect(screen.getByTestId('tree')).toBeInTheDocument(), EXTERNAL_ROW_WAIT)
     expect(screen.queryByTestId('files-home-external-terminal-check-error')).toBeNull()
+  })
+})
+
+describe('while the Files tab is kept mounted but hidden', () => {
+  it('reads nothing, not on mount nor on a window focus, until it is shown', async () => {
+    installBridge()
+    pick('kitty')
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const ui = (active: boolean) => (
+      <QueryClientProvider client={qc}>
+        <FilesHomePanel projectDir={DIR} onFileOpen={vi.fn()} onOpenTerminal={vi.fn()} active={active} />
+      </QueryClientProvider>
+    )
+    const view = render(ui(false))
+    await refocusWindow(qc)
+    expect(H.api.projectTree).not.toHaveBeenCalled()
+    expect(H.api.projectGitStatus).not.toHaveBeenCalled()
+    expect(bridge!.detect).not.toHaveBeenCalled()
+    expect(H.api.kirocrewConfig).not.toHaveBeenCalled()
+
+    view.rerender(ui(true))
+    await waitFor(() => expect(H.api.projectTree).toHaveBeenCalledWith(DIR), EXTERNAL_ROW_WAIT)
+    await waitFor(() => expect(H.api.projectGitStatus).toHaveBeenCalledWith(DIR), EXTERNAL_ROW_WAIT)
+    await waitFor(() => expect(H.api.kirocrewConfig).toHaveBeenCalled(), EXTERNAL_ROW_WAIT)
+    expect(bridge!.detect).toHaveBeenCalled()
+
+    // Hidden again once everything has loaded: a focus refetches none of it.
+    view.rerender(ui(false))
+    const reads = () => [H.api.projectTree.mock.calls.length, H.api.projectGitStatus.mock.calls.length, bridge!.detect.mock.calls.length, H.api.kirocrewConfig.mock.calls.length]
+    const before = reads()
+    await refocusWindow(qc)
+    expect(reads()).toEqual(before)
   })
 })

@@ -45,6 +45,37 @@ function Get-RealArch {
     } catch { return "x86_64" }
 }
 
+# Pinned AWS CLI / SSM plugin versions and their sha256: the same KEY=VALUE
+# file cloud-install.sh sources (packaging/pins/aws-tools.env).
+function Read-ToolPins {
+    $pins = @{}
+    $path = Join-Path $PSScriptRoot "packaging\pins\aws-tools.env"
+    foreach ($line in Get-Content -LiteralPath $path) {
+        if ($line -match '^\s*([A-Z0-9_]+)=(\S+)\s*$') { $pins[$Matches[1]] = $Matches[2] }
+    }
+    return $pins
+}
+
+# Download $Uri to $OutFile and keep it only if its sha256 is $Sha256.
+# Returns $false (file removed) on a failed download or a mismatch, so the
+# caller installs nothing.
+function Get-VerifiedFile($Uri, $OutFile, $Sha256) {
+    try {
+        Invoke-WebRequest -Uri $Uri -OutFile $OutFile -UseBasicParsing
+    } catch {
+        Write-Warn "Download failed: $Uri"
+        Remove-Item $OutFile -ErrorAction SilentlyContinue
+        return $false
+    }
+    $got = (Get-FileHash -LiteralPath $OutFile -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($got -ne $Sha256.ToLowerInvariant()) {
+        Write-Warn "Checksum mismatch for $Uri - not installing"
+        Remove-Item $OutFile -ErrorAction SilentlyContinue
+        return $false
+    }
+    return $true
+}
+
 function Ensure-WingetOrChoco {
     if (Have "winget") { return "winget" }
     if (Have "choco")  { return "choco" }
@@ -57,6 +88,7 @@ Write-Host "  Runs KiroCrew on your own AWS EC2; this PC is the client." -Foregr
 Write-Host "  For a native local install instead: .\make.ps1 build" -ForegroundColor DarkGray
 $arch = Get-RealArch
 Write-Info "Detected architecture: $arch"
+$toolPins = Read-ToolPins
 
 $pm = Ensure-WingetOrChoco
 
@@ -105,10 +137,14 @@ if (Have "aws") {
 } else {
     Write-Info "Installing the AWS CLI v2 (MSI)..."
     $msi = Join-Path $env:TEMP "AWSCLIV2.msi"
-    Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -OutFile $msi
-    Start-Process msiexec.exe -Wait -ArgumentList "/i `"$msi`" /qn"
-    Remove-Item $msi -ErrorAction SilentlyContinue
-    if (Have "aws") { Write-Ok "aws CLI installed" } else { Write-Warn "aws CLI installed; restart the shell so it lands on PATH" }
+    $awsUrl = "https://awscli.amazonaws.com/AWSCLIV2-{0}.msi" -f $toolPins["AWSCLI_VERSION"]
+    if (Get-VerifiedFile $awsUrl $msi $toolPins["AWSCLI_SHA256_WINDOWS_MSI"]) {
+        Start-Process msiexec.exe -Wait -ArgumentList "/i `"$msi`" /qn"
+        Remove-Item $msi -ErrorAction SilentlyContinue
+        if (Have "aws") { Write-Ok "aws CLI installed" } else { Write-Warn "aws CLI installed; restart the shell so it lands on PATH" }
+    } else {
+        Write-Warn "aws CLI not installed - see https://aws.amazon.com/cli/"
+    }
 }
 
 # --- 3. SSM Session Manager plugin ----------------------------------------
@@ -118,10 +154,14 @@ if (Have "session-manager-plugin") {
 } else {
     Write-Info "Installing the SSM Session Manager plugin..."
     $ssmMsi = Join-Path $env:TEMP "SessionManagerPluginSetup.exe"
-    Invoke-WebRequest -Uri "https://session-manager-downloads.s3.amazonaws.com/plugin/latest/windows/SessionManagerPluginSetup.exe" -OutFile $ssmMsi
-    Start-Process $ssmMsi -Wait -ArgumentList "/quiet"
-    Remove-Item $ssmMsi -ErrorAction SilentlyContinue
-    Write-Ok "session-manager-plugin installed (restart the shell if not yet on PATH)"
+    $ssmUrl = "https://session-manager-downloads.s3.amazonaws.com/plugin/{0}/windows/SessionManagerPluginSetup.exe" -f $toolPins["SSM_PLUGIN_VERSION"]
+    if (Get-VerifiedFile $ssmUrl $ssmMsi $toolPins["SSM_SHA256_WINDOWS_EXE"]) {
+        Start-Process $ssmMsi -Wait -ArgumentList "/quiet"
+        Remove-Item $ssmMsi -ErrorAction SilentlyContinue
+        Write-Ok "session-manager-plugin installed (restart the shell if not yet on PATH)"
+    } else {
+        Write-Warn "SSM plugin not installed (needed to connect) - see the AWS Session Manager docs"
+    }
 }
 
 # --- 4. KiroCrew client + launch ------------------------------------------

@@ -204,7 +204,7 @@ async function scene(tag, theme, unread, { frames = false, width = 1500 } = {}) 
     const list = page.getByTestId('crewmate-switcher-list')
     await list.waitFor({ state: 'visible', timeout: 10000 })
     await page.waitForTimeout(400)
-    check(`[${tag}/${theme}] "+N" opens the list with every unread dot`, (await list.getByTestId('crewmate-switcher-unread-dot').count()) >= unread.length - 1)
+    check(`[${tag}/${theme}] "+N" opens the list with every unread dot`, (await list.getByTestId('crewmate-switcher-row-unread-dot').count()) >= unread.length - 1)
     await page.screenshot({ path: join(OUT, `${tag}-${theme}-more-open.png`), clip: { x: 0, y: 0, width: 1100, height: 560 } })
   }
   await context.close()

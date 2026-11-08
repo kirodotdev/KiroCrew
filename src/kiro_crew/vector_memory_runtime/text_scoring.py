@@ -206,9 +206,36 @@ def _row_stem_tokens_uncached(text: str) -> frozenset[str]:
     return frozenset(_stem_words(set(re.findall(r"\w+", text))))
 
 
+class _RowTokens(frozenset):
+    """A memoized row's word + stem tokens, plus its number of distinct words.
+
+    Lesson ranking divides by that count for every row on every query; carrying
+    it here means it is derived from the same ``re.findall`` once per text instead
+    of once per row per query. Everything else reads it as the frozenset it is.
+    """
+
+    __slots__ = ("distinct_words",)
+    distinct_words: int
+
+
+def _row_stem_tokens_counted(text: str) -> _RowTokens:
+    """:func:`_row_stem_tokens_uncached` of *text*, carrying its distinct-word count."""
+    words = set(re.findall(r"\w+", text))
+    tokens = _RowTokens(_stem_words(words))
+    tokens.distinct_words = len(words)
+    return tokens
+
+
 #: Memoized on the text itself, so a row whose value changes hashes to a different
 #: entry and no write path owns an invalidation step.
-_row_stem_tokens = functools.lru_cache(maxsize=_ROW_STEM_CACHE_SIZE)(_row_stem_tokens_uncached)
+_row_stem_tokens = functools.lru_cache(maxsize=_ROW_STEM_CACHE_SIZE)(_row_stem_tokens_counted)
+
+
+def _row_distinct_words(tokens: frozenset[str], text: str) -> int:
+    """Distinct ``\\w+`` words of *text*, read from *tokens* when the memo built them."""
+    if type(tokens) is _RowTokens:
+        return tokens.distinct_words
+    return len(set(re.findall(r"\w+", text)))
 
 
 def _row_stem_tokens_for_scan(entries_touched: int) -> Callable[[str], frozenset[str]]:

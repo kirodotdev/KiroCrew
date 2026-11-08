@@ -141,6 +141,15 @@ describe('the badge', () => {
     expect(title).not.toContain('still ran')
   })
 
+  it('says the flag allowed and blocked nothing in visible text, not only in a tooltip', () => {
+    // A title is unreachable on touch and by keyboard (#12298 item 3).
+    render(<ToolRiskBadge record={record} />)
+    const note = screen.getByTestId('tool-risk-badge-note')
+    expect(note.textContent).toBe('flag only, did not allow or block')
+    expect(note).not.toHaveAttribute('title')
+    expect(screen.getByTestId('tool-risk-badge').textContent).toContain('did not allow or block')
+  })
+
   it('keeps the danger colour for a blocked call, not for an annotation on one that ran', () => {
     const { container } = render(<ToolRiskBadge record={record} />)
     expect(container.querySelector('.text-danger')).toBeNull()
@@ -181,9 +190,10 @@ describe('the badge', () => {
     expect(screen.getByTestId('tool-risk-badge-wrong-jev')).toHaveAttribute('title', 'Jev read the risk wrong')
   })
 
-  it('names what the thumbs rate, visibly and not only to a screen reader', () => {
+  it('says in visible text that a vote is feedback only, without repeating Jev', () => {
     render(<ToolRiskBadge record={record} />)
-    expect(screen.getByTestId('tool-risk-badge-rate-label-jev').textContent).toBe('Jev')
+    expect(screen.getByTestId('tool-risk-badge-rate-label-jev').textContent).toBe('Feedback only')
+    expect(screen.getByTestId('tool-risk-badge').textContent!.split('Jev')).toHaveLength(2)
   })
 
   it('surfaces a refused verdict beside the thumbs rather than silently reverting', async () => {

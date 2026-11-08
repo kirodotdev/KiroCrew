@@ -121,7 +121,7 @@ def refresh_after_rebuild(
             # Recorded as a pass-level failure FIRST: with no pass ever run,
             # an open gate over an empty failure set would spawn forks on
             # never-re-filtered grants — the one fail-open among siblings
-            # that all record "*" (Opus round-47).
+            # that all record "*".
             global _fork_refresh_failed
             _fork_refresh_failed = frozenset({"*"})
             _fork_refresh_settled.set()
@@ -166,15 +166,13 @@ _fork_refresh_failed: frozenset[str] = frozenset()
 # into its conductor hold so a tightened ceiling is retried rather than marked projected.
 _shared_template_held: bool = False
 
-# Set when the last pass's hold rests ONLY on what it could not read: files or the
-# directory listing, each recorded with the (inode, link count, mtime) it had then, and,
-# when its config load could not read a config file whole, the loader's fingerprint of
-# both config files; plus the governance answer generation the pass ran under. None when
-# nothing is held or the hold has another cause (a write, a capability reconcile or the
-# pass itself raised), which a retry may clear with nothing on disk changing. Assigned
-# whole, cleared at the start of every pass. Read by shared_template_hold_unchanged.
-_HeldPath = tuple[Path, tuple[int, int, int] | None]
-_shared_template_hold_record: tuple[int, tuple[_HeldPath, ...], tuple | None] | None = None
+# Set when the last pass's hold rests ONLY on a config file its load could not read
+# whole: the governance answer generation the pass ran under and the loader's
+# fingerprint of both config files. None when nothing is held or the hold has another
+# cause (a capability reconcile or the pass itself raised), which a retry may clear with
+# nothing on disk changing. Assigned whole, cleared at the start of every pass. Read by
+# shared_template_hold_unchanged.
+_shared_template_hold_record: tuple[int, tuple] | None = None
 
 # Bounded so the spawn path's never-hangs contract survives a wedged refresh
 # thread; a module constant so tests can shrink it. A timeout is treated as a
@@ -234,18 +232,23 @@ def hold_spawn_gate():
                 _fork_refresh_settled.set()
 
 
-def _apply_governance_passes(config: dict, *, source: str) -> None:
+def _apply_governance_passes(config: dict, *, source: str, audit: bool = True) -> None:
     """Re-filter the two grant lists kiro-cli honours before the PreToolUse gate, in place.
 
     ``allowedTools`` goes through the ceiling and every governed server loses its
-    ``autoApprove``. The shared-template pass runs these two alone: a shared template
-    is the user's own file, so its ``mcp.json`` merge and KAS block stay as written. A
-    fork gets the same two inside the governed tail (``auto_approve.govern_spec``).
+    ``autoApprove``. A fork gets the same two inside the governed tail
+    (``auto_approve.govern_spec``); the kiro-cli start check runs them on a copy of a
+    shared template to ask whether they would remove anything
+    (:func:`require_shared_template_within_ceiling`), and never writes the result.
     """
-    auto_approve._apply_allowed_tools_ceiling(config, source=source)
+    auto_approve._apply_allowed_tools_ceiling(config, source=source, audit=audit)
     servers_map = config.get("mcpServers")
     if isinstance(servers_map, dict):
-        config["mcpServers"] = auto_approve._strip_ungoverned_auto_approve(servers_map)
+        config["mcpServers"] = (
+            auto_approve._strip_ungoverned_auto_approve(servers_map)
+            if audit
+            else auto_approve._strip_ungoverned_auto_approve(servers_map, audit=False)
+        )
 
 
 def _owned_spec_has_its_own_writer(name: str, owned_names: "set[str]") -> bool:
@@ -324,11 +327,10 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
     passes (ceiling + auto-approve strip) run for every corroborated fork
     regardless of origin — no other writer sanitizes these files.
 
-    After the forks, the same two governance passes run over every other spec a crew
-    in ``config.json`` is bound to (:func:`_govern_bound_shared_specs`): a template
-    created on the Agent templates tab, edited through the agent detail page, or
-    turned into a shared template by publish was filtered only when it was written,
-    so without this pass it would keep the grants a tightened ceiling now denies.
+    After the forks, every other spec a crew in ``config.json`` is bound to gets its
+    capability reconcile (:func:`_govern_bound_shared_specs`). Its file is never
+    written: Kiro Crew does not own it, so a kiro-cli start on one the ceiling would
+    narrow is refused instead (:func:`require_shared_template_within_ceiling`).
     """
     forks = agent_state.all_fork_info()
     global _fork_refresh_failed, _shared_template_held, _shared_template_hold_record
@@ -487,30 +489,257 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
                 "fork refresh failed for %r; its sessions stay blocked", fork_name, exc_info=True
             )
     _fork_refresh_failed = frozenset(failures)
-    held_paths: frozenset[Path] = frozenset()
     try:
         from kiro_crew.platform.governance_profiles import governance_answer_generation
 
         # Read before the pass derives a grant, like the rebuild's own answer.
         generation = governance_answer_generation()
-        held_paths, held_otherwise = _govern_bound_shared_specs(cfg_agents, forks, owned_names)
+        held_otherwise = _govern_bound_shared_specs(cfg_agents, forks, owned_names)
         # The load fell back to defaults for an unreadable config file, so a crew bound
         # to a template may be missing from cfg_agents entirely.
         config_incomplete = _bindings_may_be_incomplete(cfg)
-        if (held_paths or config_incomplete) and not held_otherwise:
+        if config_incomplete and not held_otherwise:
             from kiro_crew.config.loader import _config_fingerprint
 
-            _shared_template_hold_record = (
-                generation,
-                tuple((path, _path_ident(path)) for path in sorted(held_paths)),
-                _config_fingerprint() if config_incomplete else None,
-            )
+            _shared_template_hold_record = (generation, _config_fingerprint())
     except Exception:
         held_otherwise = True
         config_incomplete = False
         _shared_template_hold_record = None
         agent_mod.logger.warning("shared template governance pass failed", exc_info=True)
-    _shared_template_held = held_otherwise or config_incomplete or bool(held_paths)
+    _shared_template_held = held_otherwise or config_incomplete
+
+
+class SharedTemplateOverCeiling(Exception):
+    """A crew-bound spec Kiro Crew does not own carries grants the ceiling denies."""
+
+
+class AgentSpecLaunchUnresolved(SharedTemplateOverCeiling):
+    """kiro-cli would be handed a name whose file it would choose among several.
+
+    A subclass so every start that refuses an over-ceiling spec refuses this too;
+    its cause is the :class:`~kiro_crew.agent_discovery.AmbiguousAgentSpecError`
+    (or :class:`~kiro_crew.agent_discovery.AgentSpecPinError`) the resolver raised,
+    which the dashboard reads to offer the chooser.
+    """
+
+
+def _project_spec_runs(agent: str, work_dir: str | Path | None) -> bool:
+    """Whether kiro-cli would run the checkout's own spec for *agent* instead.
+
+    kiro-cli resolves the name against ``<work_dir>/.kiro/agents/`` first, so a
+    dispatchable project spec (JSON and parsed, the form that surely dispatches)
+    shadows every user-level claimant. Asked only when the user-level files would
+    refuse the start, so an uncontested start never scans the checkout.
+    """
+    if work_dir is None:
+        return False
+    return (
+        agent_mod._project_shadow_of(agent, work_dir, markdown_specs=False, dispatchable_only=True)
+        is not None
+    )
+
+
+def require_launch_resolves_one_file(
+    agent: str, launch_name: str | None, work_dir: str | Path | None = None
+) -> None:
+    """Refuse handing kiro-cli the authored *agent* name when its file is contested.
+
+    kiro-cli resolves a name it is handed itself, so for a name two or more
+    user-level specs declare it must be handed a Kiro Crew skill view built from the
+    file the declared-name resolver chose (``agent.spec_pins`` applied, see
+    ``acp.skill_projection``). Any other launch name is a single Crew-owned file and
+    passes. Raises :class:`AgentSpecLaunchUnresolved` when the launch name is the
+    authored one (or unknown) and the claimants differ with no pin, the pin is
+    broken, or a pin chose a file no view could be built from (projection off, the
+    alias lock busy). Identical claimants with no pin pass: whichever file kiro-cli
+    picks, the agent is the same.
+    """
+    if launch_name and launch_name != agent:
+        return
+    from kiro_crew.agent_discovery import AmbiguousAgentSpecError, declared_spec_claim
+
+    try:
+        claim = declared_spec_claim(
+            agent_mod.kiro_agents_dir_path(), agent, operation="kiro_cli_launch_pin", source="acp"
+        )
+    except AmbiguousAgentSpecError as exc:
+        if _project_spec_runs(agent, work_dir):
+            return
+        raise AgentSpecLaunchUnresolved(f"{exc}\nThe session was not started.") from exc
+    except OSError:
+        return
+    if claim is None or len(claim.claimants) < 2 or not (claim.pinned or claim.divergent):
+        return
+    if _project_spec_runs(agent, work_dir):
+        return
+    raise AgentSpecLaunchUnresolved(
+        f"agent {agent!r}: agent.spec_pins chooses {claim.path.name!r} among "
+        f"{len(claim.claimants)} specs that declare the name, but kiro-cli could not be "
+        "handed a Kiro Crew copy of that file (the skill view is off or could not be "
+        "prepared), and given the name it would choose a file itself. The session was "
+        "not started. Try again in a moment; if it keeps failing, restart the gateway."
+    )
+
+
+def require_shared_template_within_ceiling(
+    agent: str | None,
+    backend: str,
+    *,
+    launch_name: str | None = None,
+    work_dir: str | Path | None = None,
+) -> None:
+    """Refuse a *backend* start on a crew-bound spec Kiro Crew does not own that the
+    ceiling would narrow.
+
+    kiro-cli honours a spec file's ``allowedTools`` and server ``autoApprove`` before
+    Kiro Crew's gate, and Kiro Crew never writes a spec it does not own (owner
+    decision, docs/decisions). So a session on such a file is started only when the
+    two governance passes would remove nothing from any file that claims *agent*:
+    otherwise it would auto-approve what the ceiling denies. Only a host in
+    ``ACP_BACKENDS_SPEC_FILE_GRANTS`` reads the file's grants, so only its starts
+    are checked: every other host gets Crew's projection, which filters or drops them. Bounded like the rebuild pass: only a name
+    ``config.json`` binds a crew to, never Kiro Crew's own specs or a fork (their
+    writers govern them). A file that cannot be read, or one with a second hard link,
+    is refused too: kiro-cli may read what this check could not. Raises
+    :class:`SharedTemplateOverCeiling` naming the file and the remedy; reads only.
+
+    *launch_name* is the name kiro-cli is handed for *agent*. When it is a skill
+    view (a Crew-owned copy the native projection wrote, with the ceiling applied,
+    ``agent_materialization.shared_template_view``), kiro-cli reads that file and no
+    claimant of *agent*, so the check judges the view independently of the claimants:
+    a stale view that still carries a denied grant is refused even when the authored
+    source is now within the ceiling. A missing view is permitted only when every
+    governed spelling has its own writer or saved capability materialization, its
+    claimants are within the ceiling, and therefore no view file exists to carry a
+    grant. Any other name, the authored one included, is refused on its claimants alone.
+    """
+    from kiro_crew.acp_backends import ACP_BACKENDS_SPEC_FILE_GRANTS
+
+    if not agent or backend not in ACP_BACKENDS_SPEC_FILE_GRANTS:
+        return
+    # A host that reads the spec file resolves the name it is handed itself: refused
+    # here, before the ceiling check, when that name would let it choose the file.
+    require_launch_resolves_one_file(agent, launch_name, work_dir)
+    from kiro_crew.config.loader import KiroCrewConfig  # circular import
+
+    try:
+        from kiro_crew.config.loader import dispatch_kiro_agent
+
+        cfg = KiroCrewConfig.load()
+        cfg_agents = cfg.agents
+        # A binding can record the file stem (``KiroPkg-captain``) while kiro-cli is
+        # dispatched the name that file declares (``captain``), so a binding counts
+        # when either spelling is *agent*.
+        names = {
+            stored
+            for stored in (
+                getattr(binding, "kiro_agent", None)
+                for binding in (cfg_agents.values() if isinstance(cfg_agents, dict) else ())
+            )
+            if isinstance(stored, str)
+            and stored
+            and (stored == agent or dispatch_kiro_agent(stored) == agent)
+        }
+        # A load that could not read a config file whole may be missing the very
+        # binding this start runs, so its absence proves nothing: check *agent*'s
+        # claimants as if it were bound. So is an agent a crewmate ran on before the
+        # startup migration moved it: a conversation from before the move keeps the
+        # template its own record names.
+        from kiro_crew.mate_config_migration import LedgerUnreadable, moved_from_agents
+
+        try:
+            # Recorded as the binding spelled it, so a stem matches under the name
+            # its file declares too, the name the old conversation is dispatched.
+            moved = {
+                m for m in moved_from_agents() if m == agent or dispatch_kiro_agent(m) == agent
+            }
+            moved_from = bool(moved)
+            names |= moved
+        except LedgerUnreadable:
+            # Not provably never moved, so its claimants are checked; this refuses
+            # only a spec the ceiling would narrow, not every start.
+            moved_from = True
+        if not names and not _bindings_may_be_incomplete(cfg) and not moved_from:
+            return
+        owned_names = {Path(f).stem for f in OWNED_KIRO_AGENT_FILES}
+        governed_names = names | {agent}
+        forks = agent_state.all_fork_info()
+        over = _claimants_over_ceiling(governed_names, forks, owned_names)
+        if _is_skill_view_name(launch_name):
+            assert launch_name is not None
+            agents_dir = agent_mod.kiro_agents_dir_path()
+            managed = all(
+                _files_with_their_own_writer(name, forks, owned_names, agents_dir) is not None
+                or agent_state.get_capabilities(name) is not None
+                for name in governed_names
+            )
+            # A managed spec may have a synthetic alias without a file during client
+            # construction. Existing views still need checking: a warm runtime can
+            # retain an older alias after its writer narrows the source.
+            over = _view_over_ceiling(agent, launch_name, allow_absent=managed and not over)
+    except Exception as exc:
+        # Fail closed: an unread binding or lineage may be the one this start runs.
+        raise SharedTemplateOverCeiling(
+            f"agent {agent!r}: its spec could not be checked against the governance "
+            f"ceiling ({exc}); the session was not started"
+        ) from exc
+    if over and _is_skill_view_name(launch_name):
+        raise SharedTemplateOverCeiling(
+            f"agent {agent!r}: its kiro-cli skill view {launch_name} still grants tools "
+            "the governance ceiling denies, so the session was not started. Try again; "
+            "if it keeps failing, restart the gateway so the view is rebuilt."
+        )
+    if over:
+        files = ", ".join(str(path) for path in sorted(over)) or "its spec"
+        raise SharedTemplateOverCeiling(
+            f"agent {agent!r}: {files} grants tools the governance ceiling denies, and "
+            "Kiro Crew does not rewrite a spec it does not own. Remove those entries "
+            "from its allowedTools or autoApprove, or start the session on KAS, whose "
+            "projection filters them."
+        )
+
+
+def _is_skill_view_name(name: object) -> bool:
+    """Whether *name* is a skill view's name (``acp.skill_projection``), not an agent's."""
+    from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+
+    return isinstance(name, str) and name.startswith(NATIVE_SKILL_ALIAS_PREFIX)
+
+
+def _view_over_ceiling(
+    agent: str, view_name: str, *, allow_absent: bool = False
+) -> "frozenset[Path]":
+    """The skill view *view_name* when the ceiling narrows it or it cannot be read.
+
+    The view is the one file kiro-cli reads for *agent* when handed *view_name*, and it
+    sits in the agents directory, so it gets the same fenced read and the same passes
+    as any claimant (:func:`_read_for_pass`, :func:`_apply_governance_passes`). A view
+    that does not parse or cannot be read is refused. An absent view is refused unless
+    *allow_absent* says every spelling is managed and its claimants are within the
+    ceiling; no file then exists from which kiro-cli could consume a stale grant.
+    """
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    path = agents_dir / f"{view_name}.json"
+    if allow_absent:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return frozenset()
+        except OSError:
+            return frozenset({path})
+    raw, _unknown = _read_for_pass(path, agents_dir)
+    if raw is None:
+        return frozenset({path})
+    try:
+        doc = user_json.loads_user_json(raw.decode("utf-8", errors="replace"))
+    except ValueError:
+        return frozenset({path})
+    if not isinstance(doc, dict):
+        return frozenset({path})
+    after = copy.deepcopy(doc)
+    _apply_governance_passes(after, source=f"shared-template-check:{agent}", audit=False)
+    return frozenset({path}) if _spec_grants(doc) - _spec_grants(after) else frozenset()
 
 
 def _bindings_may_be_incomplete(cfg: object) -> bool:
@@ -527,42 +756,39 @@ def _bindings_may_be_incomplete(cfg: object) -> bool:
 
 
 def _scan_agent_specs(agents_dir: Path) -> "tuple[list[tuple[Path, str]], list[Path]]":
-    """Read every spec file in *agents_dir* once: the readable ones, and what to retry.
+    """Read every spec file in *agents_dir* once: the readable ones, and what it could not read.
 
-    Returns each readable file with its text, and every path whose read a retry may clear.
-    Reads go through the same fence and capped, descriptor-pinned reader the resolver
-    uses: a link, a target outside the directory or a sensitive one, and an oversized
-    file are refused for good and never opened.
+    Returns each readable file with its text, and every path whose read failed in a way
+    that leaves its grants unknown. Reads go through the same fence and capped,
+    descriptor-pinned reader the resolver uses: a link, a target outside the directory
+    or a sensitive one, and an oversized file are refused for good and never opened.
 
-    Any ``OSError`` on the directory or on a file, a denied read included, is returned
-    for a retry, so the caller holds until the read succeeds instead of reading the miss
-    as absence: an unreadable file may be the one that declares a bound name, and a file
-    kiro-cli cannot load while its permissions deny the read loads whatever grants it
-    carries once they are restored. The probe (:func:`shared_template_hold_unchanged`)
-    keeps such a hold from rebuilding on every poll. The listing
-    raises its own errors (:func:`iter_agent_spec_files_strict`) rather than yielding an
-    empty directory. A file the reader refuses for a second hard link is returned for a
-    retry too (:func:`_refusal_holds`). Each read is classified by :func:`_read_for_pass`,
-    which the locked re-read and the hold probe share.
+    Any ``OSError`` on the directory or on a file, a denied read included, is returned,
+    so the start check refuses rather than reading the miss as absence: an unreadable
+    file may be the one that declares the agent, and a file kiro-cli cannot load while
+    its permissions deny the read loads whatever grants it carries once they are
+    restored. The listing raises its own errors (:func:`iter_agent_spec_files_strict`)
+    rather than yielding an empty directory. A regular file the reader refuses, a second
+    hard link above all, is returned too (:func:`_refusal_holds`).
     """
-    files, holds = _list_for_pass(agents_dir)
-    if holds:
+    files, unread = _list_for_pass(agents_dir)
+    if unread:
         return [], [agents_dir]
     readable: list[tuple[Path, str]] = []
-    retry: list[Path] = []
+    failed: list[Path] = []
     for path in files:
-        raw, holds = _read_for_pass(path, agents_dir)
+        raw, unknown = _read_for_pass(path, agents_dir)
         if raw is not None:
             readable.append((path, raw.decode("utf-8", errors="replace")))
-        elif holds:
-            retry.append(path)
-    return readable, retry
+        elif unknown:
+            failed.append(path)
+    return readable, failed
 
 
 def _list_for_pass(agents_dir: Path) -> "tuple[list[Path], bool]":
-    """The spec files in *agents_dir*, and whether a failed listing holds the pass.
+    """The spec files in *agents_dir*, and whether the listing failed.
 
-    A missing directory has no specs. Any other ``OSError`` holds.
+    A missing directory has no specs. Any other ``OSError`` is a failed listing.
     """
     from kiro_crew.agent_spec_format import iter_agent_spec_files_strict
 
@@ -575,17 +801,14 @@ def _list_for_pass(agents_dir: Path) -> "tuple[list[Path], bool]":
         return [], True
 
 
-def _read_for_pass(
-    path: Path, agents_dir: Path, *, warn: bool = True
-) -> "tuple[bytes | None, bool]":
+def _read_for_pass(path: Path, agents_dir: Path) -> "tuple[bytes | None, bool]":
     """One fenced, capped read of the spec at *path*: ``(bytes, False)`` when it reads,
-    ``(None, True)`` when the pass must hold on it, ``(None, False)`` when it is skipped.
+    ``(None, True)`` when its grants are unknown, ``(None, False)`` when it is no spec.
 
-    Skipped: a refused shape (a link, a path outside the directory, a sensitive target),
+    No spec: a refused shape (a link, a path outside the directory, a sensitive target),
     a missing, oversized or directory entry, and a refusal of something that is not a
-    regular file when checked. Held: a refused regular file (:func:`_refusal_holds`) and
-    any other ``OSError``, a denied read included. *warn* False is the hold probe's quiet
-    mode, so a probe on every poll adds no log lines.
+    regular file when checked. Unknown: a refused regular file (:func:`_refusal_holds`)
+    and any other ``OSError``, a denied read included.
     """
     from kiro_crew.agent_discovery import _read_spec_bytes, _SpecReadRefused
     from kiro_crew.hooks import FileTooLargeError
@@ -599,54 +822,31 @@ def _read_for_pass(
         # reaches the reader's non-regular refusal; neither is a spec, so neither holds.
         return None, False
     except _SpecReadRefused:
-        return None, _refusal_holds(path, warn=warn)
+        return None, _refusal_holds(path)
     except OSError:
         return None, True
 
 
-def _path_ident(path: Path) -> "tuple[int, int, int] | None":
-    """``(st_ino, st_nlink, st_mtime_ns)`` of *path* itself, ``None`` when lstat fails."""
-    try:
-        info = path.lstat()
-    except OSError:
-        return None
-    return info.st_ino, info.st_nlink, info.st_mtime_ns
-
-
-def _still_held(path: Path, agents_dir: Path) -> bool:
-    """Whether a pass's read of the held *path* would hold again now. Quiet."""
-    if path == agents_dir:
-        return _list_for_pass(agents_dir)[1]
-    raw, holds = _read_for_pass(path, agents_dir, warn=False)
-    return raw is None and holds
-
-
 def shared_template_hold_unchanged(generation: int) -> bool:
-    """Whether running the pass again now could only end held on the same files.
+    """Whether running the pass again now could only end held on the same config read.
 
-    True only when the last pass's hold rests on what it could not read and nothing else
-    (:data:`_shared_template_hold_record`): spec files, the listing, or a config file its
-    load could not read whole. *generation* must be the governance answer that pass ran
-    under and no pass may be running. Every held path must still have the inode, link
-    count and mtime it had and still read as held, and a held config must be unchanged
-    and still unreadable (:func:`_config_still_incomplete`). The rebuild that
-    would run it rewrites ``kirocrew.json`` and the owned specs, which kiro-cli watches,
-    so the ceiling hook and the maintenance wake skip it on this answer and leave the
-    memo where it is: still not projected. A change to the answer or to any held path, a
-    read that would now succeed (a sharing violation that cleared, an extra link that
-    went), or any other cause of the hold makes this False, and that caller rebuilds.
-    MAY BLOCK: it reads each held file once, through the same fence as the pass.
+    True only when the last pass's hold rests on a config file its load could not read
+    whole and nothing else (:data:`_shared_template_hold_record`). *generation* must be
+    the governance answer that pass ran under, no pass may be running, and both config
+    files must be unchanged and a load still unable to read one whole
+    (:func:`_config_still_incomplete`). The rebuild that would run it rewrites
+    ``kirocrew.json`` and the owned specs, which kiro-cli watches, so the ceiling hook
+    and the maintenance wake skip it on this answer and leave the memo where it is:
+    still not projected. A change to the answer or to either config file, or any other
+    cause of the hold, makes this False, and that caller rebuilds.
     """
     record = _shared_template_hold_record
     if record is None or not _shared_template_held or not _fork_refresh_settled.is_set():
         return False
-    held_generation, held, config_fingerprint = record
+    held_generation, config_fingerprint = record
     if held_generation != generation:
         return False
-    if config_fingerprint is not None and not _config_still_incomplete(config_fingerprint):
-        return False
-    agents_dir = agent_mod.kiro_agents_dir_path()
-    return all(_path_ident(path) == ident and _still_held(path, agents_dir) for path, ident in held)
+    return _config_still_incomplete(config_fingerprint)
 
 
 def _config_still_incomplete(fingerprint: tuple) -> bool:
@@ -666,22 +866,18 @@ def _config_still_incomplete(fingerprint: tuple) -> bool:
         return False
 
 
-def _refusal_holds(path: Path, *, warn: bool = True) -> bool:
-    """Whether a spec the fenced reader refused at *path* must hold the pass.
+def _refusal_holds(path: Path) -> bool:
+    """Whether a spec the fenced reader refused at *path* still carries unknown grants.
 
-    It must whenever *path* is still a regular file. The usual cause is a second hard
+    It does whenever *path* is still a regular file. The usual cause is a second hard
     link: the reader refuses a multiply-linked inode for good, because the other name
     may be any file on the volume, but kiro-cli reads the same bytes without that
-    fence. So the grants in it are live and cannot be filtered, and a pass that went on
-    would advance the memo past them; removing the extra link would not bring the
-    filter back. A regular file refused for another reason (its link count or kernel
-    path changed between the open and this check) is one a retry may read, so it holds
-    as well. The hold lasts until the read succeeds, and a WARNING names the file on
-    each pass that runs (*warn* False silences it for the hold probe); the ceiling hook
-    runs no pass while nothing held has changed (:func:`shared_template_hold_unchanged`).
-    A path that is not a regular file at this check (a link, a directory, a pipe) is not
-    a spec this pass could read, and one that is gone is absent. A metadata read that
-    fails holds, like a failed read.
+    fence, so the grants in it are live and this check cannot read them. A regular file
+    refused for another reason (its link count or kernel path changed between the open
+    and this check) is one this check could not read either. A WARNING names the file
+    and the remedy. A path that is not a regular file at this check (a link, a
+    directory, a pipe) is no spec, and one that is gone is absent. A metadata read that
+    fails counts as unknown, like a failed read.
     """
     try:
         info = path.lstat()
@@ -691,19 +887,20 @@ def _refusal_holds(path: Path, *, warn: bool = True) -> bool:
         return True
     if not stat.S_ISREG(info.st_mode):
         return False
-    if not warn:
-        return True
     if info.st_nlink > 1:
         agent_mod.logger.warning(
             "shared template governance: %s has %d hard links, so it cannot be read "
-            "safely while kiro-cli still loads it; held until it is a single-link file "
-            "(copy it to a new file and remove the other links)",
+            "safely while kiro-cli still loads it; a kiro-cli start on it is refused "
+            "until it is a single-link file (copy it to a new file and remove the "
+            "other links)",
             path,
             info.st_nlink,
         )
     else:
         agent_mod.logger.warning(
-            "shared template governance: the read of %s was refused; held for a retry", path
+            "shared template governance: the read of %s was refused; a kiro-cli start "
+            "on it is refused until it reads",
+            path,
         )
     return True
 
@@ -729,6 +926,21 @@ def _claims(path: Path, text: str, name: str) -> bool:
     except ValueError:
         return False
     return isinstance(doc, dict) and (path.stem == name or doc.get("name") == name)
+
+
+def name_has_another_claimant(name: str, path: Path, agents_dir: Path) -> bool:
+    """Whether a spec in *agents_dir* other than *path* claims *name*, or may.
+
+    Every claimant counts (:func:`_claims`), and so does the ``<stem>.md`` twin a
+    JSON *path* hides, which surfaces once *path* is gone. A file that cannot be read
+    may be such a claimant, so it answers True. Reads only.
+    """
+    from kiro_crew.agent_spec_format import shadowed_markdown_specs
+
+    readable, unread = _scan_agent_specs(agents_dir)
+    if unread or any(other != path and _claims(other, text, name) for other, text in readable):
+        return True
+    return path.with_suffix(".md") in shadowed_markdown_specs(agents_dir)
 
 
 def _files_with_their_own_writer(
@@ -757,39 +969,20 @@ def _files_with_their_own_writer(
 
 def _govern_bound_shared_specs(
     cfg_agents: object, forks: "dict[str, dict]", owned_names: "set[str]"
-) -> "tuple[frozenset[Path], bool]":
-    """Re-filter ``allowedTools``/``autoApprove`` on every crew-bound spec that is not a fork.
+) -> bool:
+    """Reconcile the saved capabilities of every crew-bound spec that is not a fork.
 
-    kiro-cli reads both lists from the spec file and honours them before Kiro Crew's
-    PreToolUse gate, so a grant written under an older ceiling stays live until the
-    file is rewritten. Forks and Kiro Crew's own specs have writers that re-filter
-    them on every rebuild, so this pass skips the one file each of those writers
-    rewrites (:func:`_files_with_their_own_writer`) and filters every other file that
-    claims the same name. Everything else a crew is bound to is
-    a shared template, and this pass gives it the same two governance passes the
-    fork refresh runs, and nothing more: no plumbing, no bookkeeping, no prompt.
+    A spec a crew is bound to that is neither Kiro Crew's own nor a fork is a file Kiro
+    Crew does not own (a shared template), and nothing here reads or writes it (owner
+    decision, docs/decisions): it is also what kiro-cli loads for that agent outside
+    Kiro Crew. A kiro-cli start on one the ceiling would narrow is refused instead
+    (:func:`require_shared_template_within_ceiling`). What this pass still does is
+    the capability reconcile of a bound name with saved capabilities, which writes the
+    materialization Kiro Crew owns.
 
-    The set is bounded the way the fork refresh bounds its own: a spec qualifies
-    only when ``config.json`` binds a crew to it, so an unbound file in the agents
-    directory is never written by this pass. The file is rewritten ONLY when a pass
-    actually removed something, which leaves an unaffected hand-written spec
-    byte-for-byte as its author saved it.
-
-    Returns ``(held_paths, held_otherwise)``. *held_paths* are the files (or the agents
-    directory itself) whose read left a bound template possibly unfiltered for a reason a
-    retry can clear: any read ``OSError``, a denied read included, or a regular file the
-    fenced reader refuses, such as one with a second hard link (see
-    :func:`_scan_agent_specs`). Any one of them holds, bound or not, because an unread
-    file may be the one that declares a bound name. *held_otherwise* is a hold no file
-    marks: a write or a capability reconcile that raised. The rebuild folds either into
-    its conductor hold, so the ceiling memo does not advance; the caller records the paths
-    so the ceiling hook can tell when a retry could read them
-    (:func:`shared_template_hold_unchanged`). A capability reconcile
-    that refuses (``CapabilityError``) is deterministic and is warned about, not held.
-    Every spec that claims the bound name is filtered (:func:`_claims`). A template a
-    retry cannot fix (a markdown spec this writer cannot re-serialize, bytes that do
-    not parse, which kiro-cli cannot load either) is logged at WARNING and not held.
-    Non-forks are never held at the spawn gate (``require_fork_governance``) either way.
+    Returns whether a reconcile raised: a hold no file marks, which the rebuild folds
+    into its conductor hold so the ceiling memo does not advance. A reconcile that
+    refuses (``CapabilityError``) is deterministic and is warned about, not held.
     """
     agents = cfg_agents if isinstance(cfg_agents, dict) else {}
     bound: dict[str, str] = {}
@@ -797,95 +990,120 @@ def _govern_bound_shared_specs(
         name = getattr(binding, "kiro_agent", None)
         if isinstance(name, str) and name and isinstance(crew, str):
             bound.setdefault(name, crew)
-    if not bound:
-        return frozenset(), False
-    held_paths: set[Path] = set()
-    held_otherwise = False
+    held = False
     agents_dir = agent_mod.kiro_agents_dir_path()
-    # Read lazily and once: one unreadable file is one read and one warning, however
-    # many crews are bound.
-    scanned: "list[tuple[Path, str]] | None" = None
     for name in sorted(bound):
         try:
-            exempt = _files_with_their_own_writer(name, forks, owned_names, agents_dir)
-            if exempt is None and agent_state.get_capabilities(name) is not None:
-                from kiro_crew.agent_capabilities import (
-                    CapabilityError,
-                    reconcile_member_capabilities,
-                )
-
-                try:
-                    reconcile_member_capabilities(bound[name])
-                except CapabilityError as exc:
-                    # A refusal such as a hand-edited materialization: deterministic,
-                    # so a retry would refuse again.
-                    agent_mod.logger.warning(
-                        "shared template governance: %r was refused by its capability "
-                        "reconcile (%s); its grants were not re-filtered against the "
-                        "current ceiling",
-                        name,
-                        exc,
-                    )
+            if _files_with_their_own_writer(name, forks, owned_names, agents_dir) is not None:
                 continue
-            if scanned is None:
-                scanned, retry = _scan_agent_specs(agents_dir)
-                if retry:
-                    held_paths.update(retry)
-                    agent_mod.logger.warning(
-                        "shared template governance: %s could not be read; held for a retry",
-                        ", ".join(str(path) for path in retry),
-                    )
-            for spec_path, text in scanned:
-                if (exempt is not None and spec_path in exempt) or not _claims(
-                    spec_path, text, name
-                ):
-                    continue
-                if is_markdown_spec(spec_path):
-                    agent_mod.logger.warning(
-                        "shared template governance: %r has a markdown spec %s, which this "
-                        "pass cannot rewrite; its grants were not re-filtered against the "
-                        "current ceiling",
-                        name,
-                        spec_path,
-                    )
-                    continue
-                if _govern_json_spec(name, spec_path, agents_dir):
-                    held_paths.add(spec_path)
+            if agent_state.get_capabilities(name) is None:
+                continue
+            from kiro_crew.agent_capabilities import (
+                CapabilityError,
+                reconcile_member_capabilities,
+            )
+
+            try:
+                reconcile_member_capabilities(bound[name])
+            except CapabilityError as exc:
+                # A refusal such as a hand-edited materialization: deterministic,
+                # so a retry would refuse again.
+                agent_mod.logger.warning(
+                    "shared template governance: %r was refused by its capability "
+                    "reconcile (%s); its grants were not re-filtered against the "
+                    "current ceiling",
+                    name,
+                    exc,
+                )
         except Exception:
-            held_otherwise = True
+            held = True
             agent_mod.logger.warning(
                 "shared template governance failed for %r", name, exc_info=True
             )
-    return frozenset(held_paths), held_otherwise
+    return held
 
 
-def _govern_json_spec(name: str, spec_path: Path, agents_dir: Path) -> bool:
-    """Run the governance passes over one JSON spec; True when its re-read holds.
+def _claimants_over_ceiling(
+    names: "set[str]", forks: "dict[str, dict]", owned_names: "set[str]"
+) -> "frozenset[Path]":
+    """Every spec claiming one of *names* that the ceiling would narrow or that cannot be read.
 
-    The read-modify-write sits under the shared spec lock so a concurrent dashboard
-    edit is never reverted, the read is the scan's own (:func:`_read_for_pass`: fenced,
-    capped, a refused regular file or any read failure held), and the file is written
-    only when a pass removed something. A write that
-    raises propagates: it is a hold no file change marks.
+    Reads only. A spec claims a name when its stem is the name or it declares it
+    (:func:`_claims`), and every claimant counts, since which one kiro-cli loads is
+    undefined. The one file a writer of Kiro Crew's own re-filters is skipped
+    (:func:`_files_with_their_own_writer`), and so is a name with saved capabilities,
+    whose materialization Kiro Crew owns. A markdown claimant is skipped: kiro-cli does
+    not load the markdown form (``ACP_BACKENDS_MARKDOWN_AGENT_SPECS``). A file the
+    fenced reader refuses or cannot read, and an agents directory that cannot be listed,
+    are returned too (:func:`_scan_agent_specs`): kiro-cli may read what this could not.
     """
-    with agent_mod.agents_spec_lock(agents_dir):
-        raw, holds = _read_for_pass(spec_path, agents_dir)
-        if raw is None:
-            return holds
-        try:
-            config = user_json.loads_user_json(raw.decode("utf-8", errors="replace"))
-        except ValueError:
-            config = None
-        if not isinstance(config, dict):
-            agent_mod.logger.warning(
-                "shared template governance: %s for %r could not be read as a spec; its "
-                "grants were not re-filtered against the current ceiling",
-                spec_path,
-                name,
-            )
-            return False
-        before = copy.deepcopy(config)
-        _apply_governance_passes(config, source=f"shared-template-refresh:{name}")
-        if config != before:
-            agent_mod._atomic_json_write(spec_path, config)
-    return False
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    over: set[Path] = set()
+    scanned: "list[tuple[Path, str]] | None" = None
+    for name in sorted(names):
+        exempt = _files_with_their_own_writer(name, forks, owned_names, agents_dir)
+        if exempt is None and agent_state.get_capabilities(name) is not None:
+            continue
+        if scanned is None:
+            scanned, unread = _scan_agent_specs(agents_dir)
+            # kiro-cli never loads the markdown form, so an unread markdown file
+            # cannot be the spec it runs; an unlisted directory still counts.
+            over.update(p for p in unread if p == agents_dir or not is_markdown_spec(p))
+        for spec_path, text in scanned:
+            if (exempt is not None and spec_path in exempt) or not _claims(spec_path, text, name):
+                continue
+            if is_markdown_spec(spec_path):
+                continue
+            if _spec_exceeds_ceiling(name, spec_path, agents_dir):
+                over.add(spec_path)
+    return frozenset(over)
+
+
+def _spec_exceeds_ceiling(name: str, spec_path: Path, agents_dir: Path) -> bool:
+    """Would the governance passes narrow the JSON spec at *spec_path*? Reads only.
+
+    True when they would remove something, and when the scan's own read
+    (:func:`_read_for_pass`: fenced, capped) refuses or fails, since kiro-cli may
+    read what this check could not. Bytes that do not parse as a spec are no spec
+    kiro-cli can load, so they carry no grant: False.
+    """
+    raw, holds = _read_for_pass(spec_path, agents_dir)
+    if raw is None:
+        return holds
+    try:
+        config = user_json.loads_user_json(raw.decode("utf-8", errors="replace"))
+    except ValueError:
+        return False
+    if not isinstance(config, dict):
+        return False
+    before = _spec_grants(config)
+    # A check only: nothing is withheld or written, so it leaves no SEL record.
+    after = copy.deepcopy(config)
+    _apply_governance_passes(after, source=f"shared-template-check:{name}", audit=False)
+    # Grants, not documents: a pass that drops an empty list removes no grant.
+    return bool(before - _spec_grants(after))
+
+
+def _spec_grants(config: dict) -> "set[tuple[str, str]]":
+    """Every grant in *config* kiro-cli honours before the gate, as comparable pairs.
+
+    ``allowedTools`` entries, and each server's ``autoApprove`` entries. A value that
+    is not a list is one grant of its own, so a pass that drops it still counts. An
+    absent key and an empty list are the same: no grant.
+    """
+    grants: set[tuple[str, str]] = set()
+    allowed = config.get("allowedTools")
+    if isinstance(allowed, list):
+        grants.update(("allowedTools", repr(v)) for v in allowed)
+    elif allowed is not None:
+        grants.add(("allowedTools", repr(allowed)))
+    servers = config.get("mcpServers")
+    for server, spec in (servers.items() if isinstance(servers, dict) else ()):
+        if not isinstance(spec, dict) or "autoApprove" not in spec:
+            continue
+        asked = spec["autoApprove"]
+        if isinstance(asked, list):
+            grants.update((f"@{server}", repr(v)) for v in asked)
+        elif asked is not None:
+            grants.add((f"@{server}", repr(asked)))
+    return grants

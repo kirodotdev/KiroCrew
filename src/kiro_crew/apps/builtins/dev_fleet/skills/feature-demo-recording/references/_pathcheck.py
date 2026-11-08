@@ -366,7 +366,7 @@ def safe_open_output(path, workdir=None, mode="w", replace=False):
                 os.close(dfd)
             except OSError:
                 pass
-    handle = os.fdopen(fd, "wb" if "b" in mode else "w")
+    handle = os.fdopen(fd, "wb") if "b" in mode else os.fdopen(fd, "w", encoding="utf-8")
     if publish_from is None:
         return handle
     return _AtomicPublish(handle, target, publish_from, dfd)

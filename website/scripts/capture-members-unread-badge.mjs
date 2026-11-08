@@ -46,10 +46,6 @@ await stubDashboardApi(page, {
   // Exactly what the websocket unread-marker persists.
   localStorageEntries: {
     'mc-unread-slots': JSON.stringify([MEMBER_SLOT]),
-    // The Crew Members surface is preview-gated (`utils/previewFlags.ts`), and
-    // the badge this harness is about rides its RAIL row — so without the
-    // opt-in there is no row to carry it and the wait below times out.
-    'mc-preview-crew': '1',
   },
   extra: async (path, route) => {
     if (path === '/api/members') {

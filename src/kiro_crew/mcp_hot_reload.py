@@ -7,10 +7,25 @@ boundary. When every running session does that, the dashboard's MCP writers do
 NOT need the all-sessions reset they otherwise perform after a config change —
 the reset exists only to make kiro-cli re-read a file it already watches.
 
+KAS applies the same change by a second mechanism: Crew re-sends its projected
+agent over the wire at the session's next turn boundary
+(:data:`ACP_BACKENDS_MCP_WIRE_REINJECT`, performed by
+:mod:`kiro_crew.acp.session_provider_mcp_reinject`). A live KAS session is
+therefore also left alone -- provided the writer MARKS it, because nothing in
+that engine watches a file: :func:`live_sessions_apply_mcp_live` is the gate
+over both mechanisms, and the dashboard marks every re-injecting provider in
+the same breath as it skips the reset.
+
+Strands applies it by a third: its CLI reads MCP servers once, from the
+``--mcp-config`` file written at launch, so Crew relaunches the process with a
+fresh file at the session's next turn boundary and ``session/load``-s the same
+id (:data:`ACP_BACKENDS_MCP_RELAUNCH_RELOAD`, performed by
+:mod:`kiro_crew.acp.relaunch_reload`). The writer marks those providers too.
+
 Everything here is the gate for skipping that reset, so it fails CLOSED: a
-session on a backend outside :data:`ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD`, one
-whose handshake reported no version, or one below the floor all answer False
-and the reset keeps running. A false positive costs the user a server that
+session on a backend outside both sets, one whose handshake reported no
+version, or one below the hot-reload floor all answer False and the reset keeps
+running. A false positive costs the user a server that
 never mounts until they restart by hand, with nothing red to say why; a false
 negative costs one restart they were already paying.
 
@@ -35,7 +50,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable
-from typing import Protocol
+from typing import Any, Protocol
 
 from kiro_crew.acp_backends import ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD
 
@@ -134,3 +149,69 @@ def live_sessions_hot_reload(providers: Iterable[DeclaresMcpHotReload]) -> bool:
         if not provider_hot_reloads(provider):
             return False
     return True
+
+
+def provider_reinjects_mcp(provider: Any) -> bool:
+    """Whether ONE live provider re-sends its MCP projection at its next turn.
+
+    Reads ``LLMProvider.mcp_config_wire_reinject`` (default False, harness-parity
+    H14); the ACP implementation answers from :data:`ACP_BACKENDS_MCP_WIRE_REINJECT`
+    membership on a session that exists. Only a literal ``True`` counts, as for
+    :func:`provider_hot_reloads`, and a provider predating the declaration (no
+    attribute at all) answers False.
+    """
+    return getattr(provider, "mcp_config_wire_reinject", False) is True
+
+
+def provider_relaunches_for_mcp(provider: Any) -> bool:
+    """Whether ONE live provider relaunches and reloads its session at its next turn.
+
+    Reads ``LLMProvider.mcp_config_relaunch_reload`` (default False, harness-parity
+    H14); the ACP implementation answers from :data:`ACP_BACKENDS_MCP_RELAUNCH_RELOAD`
+    membership. Only a literal ``True`` counts, and a provider with no such
+    attribute answers False.
+    """
+    return getattr(provider, "mcp_config_relaunch_reload", False) is True
+
+
+def live_sessions_apply_mcp_live(providers: Iterable[Any]) -> bool:
+    """Whether EVERY live provider applies an MCP config change without a reset.
+
+    Each may do so by any of three mechanisms: its process reconciles the file
+    itself (:func:`provider_hot_reloads`), Crew re-sends its projection at the
+    next turn boundary (:func:`provider_reinjects_mcp`), or Crew relaunches its
+    process and reloads the session at the next turn boundary
+    (:func:`provider_relaunches_for_mcp`). The all-or-nothing shape and the
+    empty-means-True answer are :func:`live_sessions_hot_reload`'s, for the same
+    reasons. Deciding is all this does: a caller that skips the reset on a True
+    answer MUST then call :func:`mark_reinjecting_providers`, or the marked kinds
+    keep their old set with nothing red to say why.
+    """
+    for provider in providers:
+        if not (
+            provider_hot_reloads(provider)
+            or provider_reinjects_mcp(provider)
+            or provider_relaunches_for_mcp(provider)
+        ):
+            return False
+    return True
+
+
+def mark_reinjecting_providers(providers: Iterable[Any]) -> int:
+    """Tell every provider that applies a change at its next turn that one is due.
+
+    Covers the re-injecting and the relaunching providers. Returns how many were
+    marked. Any other provider is left alone: a hot-reloading one is already
+    watching the file, and the gate that led here refused anything else. The mark
+    is a flag the provider applies at its own next turn boundary, so this is
+    synchronous and never touches the wire.
+    """
+    marked = 0
+    for provider in providers:
+        if not (provider_reinjects_mcp(provider) or provider_relaunches_for_mcp(provider)):
+            continue
+        mark = getattr(provider, "mark_mcp_config_changed", None)
+        if callable(mark):
+            mark()
+            marked += 1
+    return marked

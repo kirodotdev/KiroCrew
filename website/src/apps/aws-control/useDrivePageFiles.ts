@@ -21,6 +21,7 @@ import { useAppQuery, useAppQueryKey } from '../../app-sdk/appQuery'
 // Imported by path, not from the app-sdk barrel: that barrel is the surface published to
 // third-party apps, and this store is builtin-only.
 import { useAppViewState, isViewString, type ViewStateDecl } from '../../app-sdk/viewState'
+import { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { i18nT } from '../../i18n/t'
 import { awsControlApi, AwsControlError } from './api'
@@ -187,55 +188,68 @@ export function useDrivePageFiles(account: string) {
     }
     wasCreatingFolder.current = creatingFolder
   }, [creatingFolder])
+  /** The folder-name field, and a request to focus it after the next commit.
+   *  The Move picker's New folder action cannot rely on the field's
+   *  `autoFocus`: when the field is already open (it keeps a typed name across
+   *  a blur), it does not remount, and focus would fall to `<body>` as the
+   *  picker unmounts. A counter, so a second request also runs the effect. */
+  const folderNameRef = useRef<HTMLInputElement>(null)
+  const [folderNameFocusRequest, setFolderNameFocusRequest] = useState(0)
+  useEffect(() => {
+    if (folderNameFocusRequest) folderNameRef.current?.focus({ preventScroll: true })
+  }, [folderNameFocusRequest])
   /** The file a "Move to folder…" picker is open for, or null. */
   const [moveTarget, setMoveTarget] = useState<string | null>(null)
   /** Who opened the row menu that is closing, and whether one of its items
-   *  opened a dialog. Two Radix behaviours meet here. Item select is
-   *  dispatched with `flushSync`, so a dialog set from `onSelect` mounts in a
-   *  commit where the menu is STILL trapping focus — the dialog focuses itself
-   *  and the trap yanks focus straight back into a menu that then unmounts,
-   *  stranding it on `body`. So the open is deferred one macrotask, past the
-   *  menu's own close commit. Then Radix restores focus to the trigger one
-   *  macrotask after the content unmounts — by which time the dialog owns
-   *  focus — so when an item opened a dialog that restore is suppressed, and
-   *  the dialog hands focus back to the opener itself on close. */
-  const menuOpenerRef = useRef<HTMLElement | null>(null)
-  const menuOpenedDialogRef = useRef(false)
-  /** Recorded from the trigger's OWN pointer/keyboard event, not from
-   *  `document.activeElement` at open time: Safari does not focus a button on
-   *  pointer click, so the active element there would still be whatever had
-   *  focus before, and the dialog would hand focus back to the wrong place. */
-  const rememberMenuOpener = (e: React.SyntheticEvent<HTMLElement>) => {
-    menuOpenerRef.current = e.currentTarget
-  }
-  const skipRestoreIfDialog = (e: Event) => {
-    if (!menuOpenedDialogRef.current) return
-    e.preventDefault()
-    menuOpenedDialogRef.current = false
-  }
+   *  opened a dialog: the Share and Move dialogs open one macrotask after the
+   *  menu closes and hand focus back to the opener themselves. The ordering
+   *  this relies on is documented on `useMenuOpensDialog`. */
+  const menuLayer = useMenuOpensDialog()
+  const rememberMenuOpener = menuLayer.rememberOpener
+  const skipRestoreIfDialog = menuLayer.onCloseAutoFocus
   const openShare = (key: string) => {
-    menuOpenedDialogRef.current = true
-    setTimeout(() => setShare({ key }), 0)
+    menuLayer.openLayer(() => setShare({ key }))
   }
   const openMove = (key: string) => {
-    menuOpenedDialogRef.current = true
     moveDialogOpenRef.current = true
     // A refusal from an earlier drag belongs to that drag, not to the picker
     // that is about to open.
     setMoveError(null)
-    setTimeout(() => setMoveTarget(key), 0)
+    menuLayer.openLayer(() => setMoveTarget(key))
   }
-  const returnFocusToOpener = () => menuOpenerRef.current?.focus({ preventScroll: true })
+  const returnFocusToOpener = menuLayer.returnFocus
+  /** The rename field took focus from its menu, so closing it would leave
+   *  focus on `body`. Hand it back to the menu's opener once the field has
+   *  unmounted, unless the reader has already moved focus somewhere else. */
+  const returnFocusIfDropped = () => {
+    requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (!active || active === document.body) returnFocusToOpener()
+    })
+  }
   /** Whether the Move picker is on screen, readable from a mutation callback
    *  that may fire after the reader has already dismissed it. */
   const moveDialogOpenRef = useRef(false)
-  /** The one way the Move picker closes — Escape, X, backdrop, or a landed
-   *  move. Never refused: a move still in flight keeps running without it. */
+  /** How the Move picker closes — Escape, X, backdrop, or a landed move.
+   *  Never refused: a move still in flight keeps running without it. */
   const closeMoveDialog = () => {
     moveDialogOpenRef.current = false
     setMoveTarget(null)
     setMoveError(null)
     returnFocusToOpener()
+  }
+  /** The picker's empty state ("no other folder here") offers New folder. It
+   *  closes the picker and opens the toolbar's own folder-name field rather
+   *  than growing a second create form inside the picker: the field is the one
+   *  write path for folders. Focus goes to that field (whether it was just
+   *  opened or already open), not back to the row menu's opener. No move can
+   *  be in flight here — an empty picker has no destination to start one. */
+  const moveToNewFolder = () => {
+    moveDialogOpenRef.current = false
+    setMoveTarget(null)
+    setMoveError(null)
+    setCreatingFolder(true)
+    setFolderNameFocusRequest((n) => n + 1)
   }
   /** The ONE way out of the folder disclosure (Escape, Cancel, blur-on-empty),
    *  carrying the whole close invariant: (1) it refuses while a create is in
@@ -505,6 +519,7 @@ export function useDrivePageFiles(account: string) {
       if (renamingRef.current === fromKey) {
         setRenaming(null)
         setRenameError('')
+        returnFocusIfDropped()
       }
       qc.invalidateQueries({ queryKey: appKey(['drive-list', account]) })
       // A rename from a search hit must re-run the search so the new name
@@ -540,10 +555,15 @@ export function useDrivePageFiles(account: string) {
     },
   })
 
+  // Opened from a row menu's Rename item: the inline field mounts after the
+  // menu's close, so the closing menu neither traps its autofocus nor hands
+  // focus back to the ⋯ trigger (`useMenuOpensDialog`).
   const openRename = (key: string) => {
-    setRenaming(key)
-    setRenameValue(key.split('/').pop() ?? key)
-    setRenameError('')
+    menuLayer.openLayer(() => {
+      setRenaming(key)
+      setRenameValue(key.split('/').pop() ?? key)
+      setRenameError('')
+    })
   }
 
   const closeRename = () => {
@@ -554,6 +574,7 @@ export function useDrivePageFiles(account: string) {
     if (renameMut.isPending && renameMut.variables?.fromKey === renaming) return
     setRenaming(null)
     setRenameError('')
+    returnFocusIfDropped()
     // Another row's rename may still be flying; resetting the observer would
     // drop its pending state while the request runs on.
     if (!renameMut.isPending) renameMut.reset()
@@ -566,8 +587,14 @@ export function useDrivePageFiles(account: string) {
      agent. So the editors close with the view they belonged to -- WITHOUT the
      in-flight guard: a rename or delete still on the wire finishes regardless,
      and because its editor is gone its outcome is routed by the mutation
-     callbacks to the page-level notice, where a late failure is still seen. */
+     callbacks to the page-level notice, where a late failure is still seen.
+     The callbacks route on the mirror refs, which their own effects only
+     update after the closing render commits; a failure landing before that
+     would read the old row and go to a strip that is already gone. So the
+     refs are cleared here, in the same pass that closes the editors. */
   useEffect(() => {
+    renamingRef.current = null
+    confirmDeleteRef.current = null
     setRenaming(null)
     setRenameError('')
     setConfirmDelete(null)
@@ -730,8 +757,8 @@ export function useDrivePageFiles(account: string) {
     renaming, renameValue, setRenameValue, renameError, query, setQuery, debouncedQuery,
     setHighlightKey, highlighted, highlightProps, confirmDelete, setConfirmDelete, confirmFolder,
     setConfirmFolder, newFolder, setNewFolder, creatingFolder, setCreatingFolder, folderError,
-    folderToggleRef, moveTarget, rememberMenuOpener, skipRestoreIfDialog, openShare, openMove,
-    returnFocusToOpener, moveDialogOpenRef, closeMoveDialog, closeFolderDisclosure, handOff,
+    folderToggleRef, folderNameRef, moveTarget, rememberMenuOpener, skipRestoreIfDialog, openShare, openMove,
+    returnFocusToOpener, moveDialogOpenRef, closeMoveDialog, moveToNewFolder, closeFolderDisclosure, handOff,
     deletedHere, fileRef, attachScroller, edges, listQ, folders, files, uploadMut, deleteMut,
     openConfirmDelete, deleteFailedFor, folderCreateMut, folderDeleteMut, onCreateFolder, onPick,
     dropTarget, moveError, setMoveError, pageError, moveMut, moveBusy, movingKey, renameMut,

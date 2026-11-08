@@ -890,9 +890,11 @@ function RecentRepoPicker({
   // for recovery but the submit list is empty ("Connect 0"), so a "N selected"
   // header would contradict the button. Hide the count until the read succeeds.
   const countLabel = picked.size > 0 && !retryError
-    ? `${picked.size} selected`
+    ? i18nT('apps.issueRadar.connectPanel.repos_selected', { count: picked.size })
     : showList
-      ? (truncated ? i18nT('apps.issueRadar.connectPanel.most_recent_activity') : `${repos.length} found`)
+      ? (truncated
+        ? i18nT('apps.issueRadar.connectPanel.most_recent_activity')
+        : i18nT('apps.issueRadar.connectPanel.repos_found', { count: repos.length }))
       : ''
 
   return (

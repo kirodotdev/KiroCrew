@@ -11,17 +11,22 @@ on an instance reaches every caller.
 
 Instance fields written: ``_allocation``.
 
-Instance fields read: none.
+Instance fields read: ``identity_check_before_acquire``, ``parent_turns``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+import asyncio
+import logging
+import weakref
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import shutdown_event
+from kiro_crew.messaging.link import canonical_key
 from kiro_crew.session_allocation import SessionAllocationService, _collect_parent_runtime_kwargs
 from kiro_crew.session_allocation import parent_work_scratch_dir as _parent_work_scratch_dir
 from kiro_crew.session_parts.policy import BACKGROUND_AGENT, BACKGROUND_KEY
@@ -31,6 +36,22 @@ if TYPE_CHECKING:
     from kiro_crew.session import LLMProvider, SessionManager
     from kiro_crew.session_allocation import InboundCallbackReservation
     from kiro_crew.session_parts.record import _Session
+
+logger = logging.getLogger("kiro_crew.session")
+
+#: The task whose ``get_or_create`` or ``open_task_session`` is in progress. An
+#: acquire that the same task makes inside it -- a won-race retry, or the fallback
+#: from a task session to a dedicated one -- is part of that acquire, which already
+#: ran ``identity_check_before_acquire``, so it does not run the check again. A task
+#: started meanwhile copies this value but is a different task, so its own acquires
+#: still check: keying on the task, not on a flag, is what stops a long-lived task
+#: spawned inside one acquire from skipping the check for the rest of its life.
+#: The task is held weakly: a task started inside an acquire, such as a provider's
+#: stderr reader, keeps its copy of this value for its whole life, and a strong
+#: reference there would keep the finished acquiring task and its result alive too.
+_ACQUIRING_TASK: "ContextVar[weakref.ref[asyncio.Task[Any]] | None]" = ContextVar(
+    "kiro_crew_session_acquiring_task", default=None
+)
 
 
 def process_shutdown_requested(sessions: SessionManager | None) -> bool:
@@ -101,7 +122,12 @@ def session_generation(self: SessionManager, key: str) -> int:
 
 
 def _advance_session_generation(self: SessionManager, key: str) -> int:
-    """Advance ownership generation after registry publication/removal."""
+    """Advance ownership generation after registry publication/removal.
+
+    Every reset, recycle and removal passes here, so this is also where the
+    key's idle-compaction stretch ends: the session it was armed on is gone.
+    """
+    self.cancel_idle_compaction(key)
     return self._allocation_boundary().advance_ownership_generation(key)
 
 
@@ -134,8 +160,78 @@ def _spawn_in_flight(self: SessionManager, key: str) -> str | None:
 
 
 async def try_acquire(self: SessionManager, key: str) -> bool:
-    """Try to acquire an exact-key idle session."""
-    return await self._allocation_boundary().try_acquire(key)
+    """Try to acquire an exact-key idle session.
+
+    The Kiro account check runs first (:meth:`_acquire_after_identity_check`):
+    a channel ``/compact`` or model switch takes this lease and then prompts or
+    reconfigures the session, so a session left on a previous account must be
+    retired before it can be taken. The check runs before the lease rather than
+    after it, because a sweep only flags a session someone holds.
+    """
+    self.cancel_idle_compaction(key)
+    async with self._acquire_after_identity_check(identity_checked=False):
+        return await self._allocation_boundary().try_acquire(key)
+
+
+def is_retiring(self: SessionManager, key: str) -> bool:
+    """Return whether ``try_acquire`` refuses the exact-key session for a Kiro account change.
+
+    Such a session stays registered until the next real turn's claim retires it,
+    so ``has_session`` still answers True for it; a refused caller asks this
+    first, so it does not tell the user a reply is still running.
+    """
+    return self._allocation_boundary().is_retiring(key)
+
+
+async def run_identity_check(self: SessionManager) -> None:
+    """Run the Kiro account check alone, for a caller that keeps a session's lease.
+
+    A warm workflow worker holds its session from its first task to its last, so it
+    never acquires again, and a sweep only flags a session someone holds. The worker
+    calls this before each reused task, then asks :meth:`is_retiring`. The rules are
+    the ones before an acquire (:meth:`_acquire_after_identity_check`): skipped inside
+    an acquire the current task is making and during the final drain, and a check that
+    fails is logged.
+    """
+    async with self._acquire_after_identity_check(identity_checked=False):
+        pass
+
+
+@asynccontextmanager
+async def _acquire_after_identity_check(
+    self: SessionManager, *, identity_checked: bool
+) -> AsyncIterator[None]:
+    """Run ``identity_check_before_acquire`` once per acquire, then the acquire.
+
+    First, so the check's sweep can retire a session that started under a
+    previous Kiro account before the acquire could hand that session out, and
+    before the acquire holds a cold-start permit: the sweep collects every
+    permit, so a check run after taking one would wait on itself. Skipped when
+    the caller ran the check itself just now (``identity_checked``, a dashboard
+    chat turn, whose check has its own rule), when the current task is already
+    inside an acquire (``_ACQUIRING_TASK``), and during the final drain
+    (``final_drain_started``: a shutdown or re-exec, when no session outlives
+    the process). During an update pause the check still runs, because
+    ``try_acquire`` stays open then and must not take a session the check would
+    retire. A check that fails is logged and the acquire goes ahead, as it would
+    have before the check existed.
+    """
+    task = asyncio.current_task()
+    acquiring = _ACQUIRING_TASK.get()
+    if task is not None and acquiring is not None and acquiring() is task:
+        yield
+        return
+    token = _ACQUIRING_TASK.set(weakref.ref(task) if task is not None else None)
+    try:
+        check = self.identity_check_before_acquire
+        if check is not None and not identity_checked and not self.final_drain_started:
+            try:
+                await check()
+            except Exception:
+                logger.warning("The Kiro account check before an acquire failed", exc_info=True)
+        yield
+    finally:
+        _ACQUIRING_TASK.reset(token)
 
 
 def capability_runtime_view(
@@ -245,40 +341,49 @@ async def get_or_create(
     wait_if_busy: bool = True,
     _won_race_retries: int = 0,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    identity_checked: bool = False,
     **extra_factory_kwargs: Any,
 ) -> tuple[LLMProvider, bool, bool]:
     """Claim or allocate a session and return its held lease.
 
     ``start_priority`` orders a cold start in the start queues; a caller passes
     FOREGROUND only where a person waits on it (rule: ``kiro_crew.start_priority``).
+
+    ``identity_checked`` says the caller ran the Kiro account check itself just
+    before this call; every other acquire runs it here first
+    (:meth:`_acquire_after_identity_check`).
+
+    A claim is activity, so it ends the key's idle-compaction stretch first.
     """
-    if key == BACKGROUND_KEY:
-        # ``_bg`` is one persistent session shared by every background job,
-        # so it is always the background agent, whichever caller reaches it
-        # first: a caller naming its own agent (the task runner's lesson
-        # extraction) gets the shared session, never a session created as
-        # that agent. A live ``_bg`` already ignores the requested agent.
-        agent = BACKGROUND_AGENT
-        if key not in self._sessions:
-            # Created on first use on a shared-runtime backend, and after a
-            # failed boot start on any other: through the same path the boot
-            # uses, so it keeps its start stamping.
-            await self._ensure_background(start_priority=start_priority)
-    return await self._allocation_boundary().get_or_create(
-        key,
-        agent=agent,
-        channel_id=channel_id,
-        approval_policy=approval_policy,
-        model=model,
-        cwd=cwd,
-        extra_env=extra_env,
-        speculative=speculative,
-        speculative_resume=speculative_resume,
-        wait_if_busy=wait_if_busy,
-        _won_race_retries=_won_race_retries,
-        start_priority=start_priority,
-        **extra_factory_kwargs,
-    )
+    self.cancel_idle_compaction(key)
+    async with self._acquire_after_identity_check(identity_checked=identity_checked):
+        if key == BACKGROUND_KEY:
+            # ``_bg`` is one persistent session shared by every background job,
+            # so it is always the background agent, whichever caller reaches it
+            # first: a caller naming its own agent (the task runner's lesson
+            # extraction) gets the shared session, never a session created as
+            # that agent. A live ``_bg`` already ignores the requested agent.
+            agent = BACKGROUND_AGENT
+            if key not in self._sessions:
+                # Created on first use on a shared-runtime backend, and after a
+                # failed boot start on any other: through the same path the boot
+                # uses, so it keeps its start stamping.
+                await self._ensure_background(start_priority=start_priority)
+        return await self._allocation_boundary().get_or_create(
+            key,
+            agent=agent,
+            channel_id=channel_id,
+            approval_policy=approval_policy,
+            model=model,
+            cwd=cwd,
+            extra_env=extra_env,
+            speculative=speculative,
+            speculative_resume=speculative_resume,
+            wait_if_busy=wait_if_busy,
+            _won_race_retries=_won_race_retries,
+            start_priority=start_priority,
+            **extra_factory_kwargs,
+        )
 
 
 @contextmanager
@@ -342,6 +447,39 @@ def allocation_requested_model(self: SessionManager, key: str) -> str:
     """
     session = self._sessions.get(self._fold_key(key))
     return session.requested_model if session is not None else ""
+
+
+def fresh_start_unclaimed(self: SessionManager, key: str) -> bool:
+    """Whether *key*'s live session started fresh and no real turn has claimed it yet.
+
+    The state an eager prewarm leaves: registered, first turn still armed ``FRESH``.
+    The next real claim takes that observation and builds a session-start context.
+    A read only; it consumes nothing. A resumed prewarm and a used session answer no.
+    """
+    from kiro_crew.session_parts.record import FirstTurnState
+
+    session = self._sessions.get(self._fold_key(key))
+    return session is not None and session.first_turn is FirstTurnState.FRESH
+
+
+def rearm_first_turn(self: SessionManager, key: str, provider: Any, *, resumed: bool) -> None:
+    """Hand back the first-turn observation a claim took, when no prompt reached *provider*.
+
+    A turn that claimed a new session and then gave up before its prompt went out
+    (the memory pool never admitted its build) leaves the session's first turn
+    still to come, so the next claim must read it as new, as ``_respawn_as`` re-arms
+    a reset successor. Only while *provider* is still the live session's and no
+    other claim has armed or taken an observation since.
+    """
+    from kiro_crew.session_parts.record import FirstTurnState
+
+    session = self._sessions.get(self._fold_key(key))
+    if (
+        session is not None
+        and session.provider is provider
+        and session.first_turn is FirstTurnState.NOTHING_ARMED
+    ):
+        session.first_turn = FirstTurnState.RESUMED if resumed else FirstTurnState.FRESH
 
 
 def record_effort_override(self: SessionManager, key: str, level: str) -> None:
@@ -525,9 +663,120 @@ def conversation_provider(self: SessionManager, key: str) -> str:
     return self._allocation_boundary().conversation_provider(key)
 
 
-def release(self: SessionManager, key: str, *, cleanup: bool = False) -> None:
-    """Release the key-based session lease."""
-    self._allocation_boundary().release(key, cleanup=cleanup)
+def release(
+    self: SessionManager, key: str, *, cleanup: bool = False, wake_queue: bool = False
+) -> None:
+    """Release the key-based session lease.
+
+    First the attempt this release ends is settled in the parent-turn ledger
+    (``kiro_crew.parent_turns``): its inline marks are confirmed if its engine
+    noted that the turn landed, revoked otherwise. That runs before the
+    allocation release, ahead of its orphaned-release early return, because a
+    turn whose session a reaper or a reset already popped ends exactly there.
+
+    ``wake_queue`` wakes the queued entries' channel drains once the lease is free;
+    see ``SessionAllocationService.release``.
+    """
+    settle_turn(self, key)
+    self._allocation_boundary().release(key, cleanup=cleanup, wake_queue=wake_queue)
+
+
+def settle_turn(self: SessionManager, key: str) -> None:
+    """End the calling task's open attempt on ``key`` without releasing the permit.
+
+    Settles that attempt in the parent-turn ledger as :func:`release` does first:
+    its inline marks are confirmed if its engine noted that the turn landed,
+    revoked otherwise. For an engine that runs a second turn inside one claim (an
+    injection's in-claim retry): the first turn's marks are settled by its own
+    end, and the second turn opens a new attempt with a new epoch, so a mark the
+    first turn's tool stamped and sent late is never held under the second.
+    """
+    ledger = getattr(self, "parent_turns", None)
+    if ledger is not None:
+        ledger.end_attempt(canonical_key(key), _holding_task(self, key))
+
+
+def _holding_task(sessions: SessionManager, key: str) -> Any:
+    """The task whose holding of ``key``'s permit a note or release names.
+
+    The calling task: engines claim, note and release a session in one task. Off
+    the loop, where no task runs, the live session's ``turn_owner`` stands in.
+    """
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    if task is not None:
+        return task
+    return sessions.turn_holder(key)
+
+
+def turn_holder(self: SessionManager, key: str) -> Any:
+    """The task holding ``key``'s turn permit right now, or None when no turn holds it.
+
+    The live session's ``turn_owner``, which the claim sets when it takes the
+    permit and the release clears.
+    """
+    session = self._sessions.get(self._fold_key(key))
+    if session is None or not session.semaphore.locked():
+        return None
+    return getattr(session, "turn_owner", None)
+
+
+def turn_token(
+    self: SessionManager, key: str, *, open_attempt: bool = True
+) -> tuple[str, Any, int] | None:
+    """The attempt holding ``key``'s turn permit right now, or None when no turn holds it.
+
+    The token a done read stamps and a mark-collected holds its marks under, so
+    that this attempt's end settles them (``kiro_crew.parent_turns``). The done
+    read opens the attempt when none is open; the mark passes
+    ``open_attempt=False`` and only names one already open, since an attempt that
+    opened nothing read no child done.
+    """
+    owner = self.turn_holder(key)
+    ledger = getattr(self, "parent_turns", None)
+    if owner is None or ledger is None:
+        return None
+    canonical = canonical_key(key)
+    if open_attempt:
+        return ledger.open_attempt(canonical, owner)
+    return ledger.open_token(canonical, owner)
+
+
+def turn_prompt_in_flight(self: SessionManager, key: str) -> bool:
+    """True while a turn holds ``key``'s permit AND its prompt is in flight on the provider.
+
+    The window from a claim to the prompt's write (a completion's injection
+    still building its message, a retry before it dispatches) is held but has no
+    prompt in flight, so no tool call can belong to it. Read through the
+    provider's own ``has_active_turn`` (an ACP session's handle: its turn began
+    and has neither ended nor been cancelled). A provider that cannot report it
+    answers False, the base default, so the holder is not named: a completion
+    is then delivered, a duplicate at worst.
+    """
+    session = self._sessions.get(self._fold_key(key))
+    if session is None or not session.semaphore.locked():
+        return False
+    has_active_turn = getattr(getattr(session, "provider", None), "has_active_turn", None)
+    if not callable(has_active_turn):
+        return False
+    try:
+        return has_active_turn() is True
+    except Exception:
+        return False
+
+
+def note_turn_landed(self: SessionManager, key: str) -> None:
+    """The engine holding ``key``'s permit decided that its turn landed.
+
+    Called where each engine already decides it (its stop reason succeeded), so
+    the end of this attempt confirms the inline marks it received. An attempt
+    that ends with no note revokes them.
+    """
+    ledger = getattr(self, "parent_turns", None)
+    if ledger is not None:
+        ledger.note_landed(ledger.open_attempt(canonical_key(key), _holding_task(self, key)))
 
 
 async def _safe_cleanup(self: SessionManager, provider: LLMProvider, session_id: str) -> None:
@@ -615,6 +864,11 @@ async def is_provider_alive(self: SessionManager, key: str) -> bool | None:
 def get_approval_policy(self: SessionManager, key: str) -> str:
     """Return a folded session approval policy."""
     return self._allocation_boundary().get_approval_policy(key)
+
+
+def approval_revocation(self: SessionManager, key: str) -> int:
+    """Return the stamp of a session key's outstanding approval revocation, else 0."""
+    return self._allocation_boundary().approval_revocation(key)
 
 
 def get_agent(self: SessionManager, key: str) -> str:

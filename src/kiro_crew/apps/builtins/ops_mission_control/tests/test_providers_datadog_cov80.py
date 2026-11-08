@@ -6,7 +6,8 @@ What is left uncovered is everything that decides whether a call happens at all:
 the unconfigured short-circuits on ``poll`` / ``execute`` / ``gather``, the
 monitor-filter params, the three ``_poll_sync`` skip guards, and the whole
 evidence source. Those are the guards that keep an unconfigured provider from
-issuing credential-less requests, so they are worth pinning.
+issuing credential-less requests, so they are worth pinning. The same gate must also run
+off the event loop, since it reads ``config.json`` and the secret store.
 
 Everything is patched at the module attribute (``datadog.request_json``,
 ``datadog.get_secret``, …) — no network, no secrets store, no config file.
@@ -14,6 +15,7 @@ Everything is patched at the module attribute (``datadog.request_json``,
 
 from __future__ import annotations
 
+import threading
 import unittest
 from typing import Any
 from unittest import mock
@@ -230,6 +232,92 @@ class TestEvidenceSource(unittest.IsolatedAsyncioTestCase):
         ):
             out = datadog.DatadogEvidenceSource()._gather_sync(_signal("9"), EvidenceBudget())
         self.assertEqual(out, [])
+
+
+class TestConfiguredGateRunsOffTheLoop(unittest.IsolatedAsyncioTestCase):
+    """``poll``, ``execute`` and ``gather`` must not check readiness on the event loop.
+
+    ``configured()`` reads ``config.json`` (``provider_enabled``) and the secret store
+    (``has_secrets``), and ``poll`` runs on every heartbeat, so a check inline in the
+    coroutine blocks the gateway loop each time. These record the thread each read runs
+    on and require it is not the loop's.
+    """
+
+    def setUp(self) -> None:
+        self.read_threads: list[int] = []
+        self.enabled = True
+        self.requests: list[tuple[str, str]] = []
+
+        def _recording_enabled(provider_id: str) -> bool:
+            self.read_threads.append(threading.get_ident())
+            return self.enabled
+
+        def _recording_has_secrets(provider_id: str, required: tuple[str, ...]) -> bool:
+            self.read_threads.append(threading.get_ident())
+            return True
+
+        def _fake_request(url: str, method: str = "GET", **_kw: Any) -> Any:
+            self.requests.append((method, url))
+            return [{"downtime": "none"}] if "/monitor/" in url and method == "GET" else []
+
+        for patcher in (
+            mock.patch.object(datadog, "provider_enabled", _recording_enabled),
+            mock.patch.object(datadog, "has_secrets", _recording_has_secrets),
+            mock.patch.object(datadog, "get_secret", return_value="k"),
+            mock.patch.object(datadog, "config_list", return_value=[]),
+            mock.patch.object(datadog, "request_json", _fake_request),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _assert_off_loop(self) -> None:
+        self.assertTrue(self.read_threads, "the adapter checked no readiness at all")
+        self.assertNotIn(threading.get_ident(), self.read_threads)
+
+    async def test_poll_checks_readiness_off_the_loop(self):
+        self.assertEqual(await datadog.DatadogAdapter().poll(), [])
+        self._assert_off_loop()
+        self.assertEqual(len(self.requests), 1)
+
+    async def test_unconfigured_poll_checks_off_the_loop_and_sends_nothing(self):
+        self.enabled = False
+        self.assertEqual(await datadog.DatadogAdapter().poll(), [])
+        self._assert_off_loop()
+        self.assertEqual(self.requests, [])
+
+    async def test_execute_checks_readiness_off_the_loop(self):
+        result = await datadog.DatadogAdapter().execute(_signal(), ACTION_COMMENT, {"note": "x"})
+        self.assertTrue(result.ok, result.error)
+        self._assert_off_loop()
+        self.assertEqual(len(self.requests), 1)
+
+    async def test_unconfigured_execute_checks_off_the_loop_and_sends_nothing(self):
+        self.enabled = False
+        result = await datadog.DatadogAdapter().execute(_signal(), ACTION_COMMENT, {})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.error, "datadog is not configured")
+        self._assert_off_loop()
+        self.assertEqual(self.requests, [])
+
+    async def test_gather_checks_readiness_off_the_loop(self):
+        out = await datadog.DatadogEvidenceSource().gather(_signal("55"), EvidenceBudget())
+        self.assertEqual(len(out), 1)
+        self._assert_off_loop()
+
+    async def test_unconfigured_gather_checks_off_the_loop_and_sends_nothing(self):
+        self.enabled = False
+        out = await datadog.DatadogEvidenceSource().gather(_signal("55"), EvidenceBudget())
+        self.assertEqual(out, [])
+        self._assert_off_loop()
+        self.assertEqual(self.requests, [])
+
+    async def test_gather_for_another_source_reads_no_readiness(self):
+        out = await datadog.DatadogEvidenceSource().gather(
+            _signal(source="cloudwatch"), EvidenceBudget()
+        )
+        self.assertEqual(out, [])
+        self.assertEqual(self.read_threads, [])
+        self.assertEqual(self.requests, [])
 
 
 if __name__ == "__main__":  # pragma: no cover

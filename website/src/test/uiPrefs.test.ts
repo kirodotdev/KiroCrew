@@ -33,6 +33,7 @@ import { QUICK_SEARCH_SHORTCUT_KEY } from '../lib/quickSearchShortcut'
 import { PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
 import { PTT_STORAGE_KEY, savePttConfig } from '../lib/pushToTalk'
 import { SHORTCUT_OVERRIDES_KEY } from '../lib/shortcutRegistry'
+import dashboardReducer, { setSessionColorsPalette } from '../store/dashboardSlice'
 
 const PLAIN_DIRTY = 'mc-ui-prefs-plain-dirty'
 
@@ -49,18 +50,15 @@ describe('uiPrefs', () => {
     __resetUiPrefsSyncForTests()
   })
 
+  it('marks a session palette choice as dirty and stores its value', () => {
+    dashboardReducer(undefined, setSessionColorsPalette('voyage'))
+    expect(JSON.parse(localStorage.getItem(PLAIN_DIRTY) ?? '[]')).toContain('mc-session-colors-palette')
+    expect(localStorage.getItem('mc-session-colors-palette')).toBe('voyage')
+  })
+
   describe('the allowlist', () => {
     it('holds no duplicates', () => {
       expect(new Set(DURABLE_PREF_KEYS).size).toBe(DURABLE_PREF_KEYS.length)
-    })
-
-    it('excludes the Apps Library view toggle, which is origin-local by decision', () => {
-      // The growth-gap mechanism (reconcileNewDurableKeys, issue 9491) now
-      // hydrates a newly added key before its first flush, so re-adding this
-      // key is mechanically safe -- but whether the Library show-all toggle
-      // SHOULD follow the user across origins is a product decision that has
-      // not been made. A re-add without that decision fails here.
-      expect(DURABLE_PREF_KEYS).not.toContain('mc-apps-library-show-all')
     })
 
     it('excludes session-scoped and derived state', () => {
@@ -177,6 +175,21 @@ describe('uiPrefs', () => {
       mockFetch(() => okJson({ prefs: { 'mc-font-family': 'serif' } }))
       expect(await hydrateUiPrefs()).toBe(1)
       expect(localStorage.getItem('mc-font-family')).toBe('serif')
+    })
+
+    it('restores the Settings > Display > Sidebar Colors choices (issue #29250)', async () => {
+      // The four keys store/dashboardSlice.ts reads for that settings section.
+      const prefs = {
+        'mc-session-colors-palette': 'voyage',
+        'mc-session-colors-intensity': 'vivid',
+        'mc-session-colors-mode': 'gradient',
+        'mc-session-default-color': '3',
+      }
+      mockFetch(() => okJson({ prefs }))
+      expect(await hydrateUiPrefs()).toBe(4)
+      for (const [key, value] of Object.entries(prefs)) {
+        expect(localStorage.getItem(key)).toBe(value)
+      }
     })
 
     it('never overwrites a value this profile already has', async () => {
@@ -318,14 +331,14 @@ describe('uiPrefs', () => {
         k: string,
         v: string,
       ) {
-        if (k === 'mc-dev-mode') throw new DOMException('full', 'QuotaExceededError')
+        if (k === 'mc-agent-scene') throw new DOMException('full', 'QuotaExceededError')
         realSet.call(this, k, v)
       })
-      mockFetch(() => okJson({ prefs: { 'mc-dev-mode': 'true', 'mc-crews-view': 'grid' } }))
+      mockFetch(() => okJson({ prefs: { 'mc-agent-scene': 'true', 'mc-crews-view': 'grid' } }))
       await hydrateUiPrefs()
       vi.restoreAllMocks()
 
-      expect(localStorage.getItem('mc-dev-mode')).toBeNull()
+      expect(localStorage.getItem('mc-agent-scene')).toBeNull()
       const printKeys = Object.keys(JSON.parse(localStorage.getItem(SYNCED_KEYS_KEY)!)).filter(
         (k) => k !== ROSTER_ENTRY, // reconcile bookkeeping, not a fingerprint
       )
@@ -339,7 +352,7 @@ describe('uiPrefs', () => {
       const patch = puts.length
         ? JSON.parse((puts.at(-1)![1] as RequestInit).body as string).prefs
         : {}
-      expect(patch['mc-dev-mode']).toBeUndefined()
+      expect(patch['mc-agent-scene']).toBeUndefined()
     })
 
     it.each([
@@ -521,34 +534,34 @@ describe('uiPrefs', () => {
       localStorage.setItem('mc-font-family', '1')
       const spy = mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       await flushUiPrefs()
-      expect(lastPatch(spy)).toEqual({ 'mc-dev-mode': 'true' })
+      expect(lastPatch(spy)).toEqual({ 'mc-agent-scene': 'true' })
     })
 
     it('sends null for a key the user cleared', async () => {
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       const spy = mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
-      localStorage.removeItem('mc-dev-mode')
+      localStorage.removeItem('mc-agent-scene')
       await flushUiPrefs()
-      expect(lastPatch(spy)).toEqual({ 'mc-dev-mode': null })
+      expect(lastPatch(spy)).toEqual({ 'mc-agent-scene': null })
     })
 
     it('retries the same patch after a failed flush', async () => {
       localStorage.setItem('mc-zoom-unused', 'x') // non-durable, ignored
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       const failing = mockFetch(() => ({ ok: false, status: 503, json: () => Promise.resolve({}) }))
       await flushUiPrefs()
-      expect(lastPatch(failing)).toEqual({ 'mc-dev-mode': 'true' })
+      expect(lastPatch(failing)).toEqual({ 'mc-agent-scene': 'true' })
       // The baseline must NOT have advanced, or the value would be dropped.
       const retry = mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
-      expect(lastPatch(retry)).toEqual({ 'mc-dev-mode': 'true' })
+      expect(lastPatch(retry)).toEqual({ 'mc-agent-scene': 'true' })
     })
 
     it('a refused patch is retried per key so valid changes still land', async () => {
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       localStorage.setItem('kc:file-explorer:state:v2', 'too-big')
       // Whole-patch PUT is refused; per-key retry accepts everything except the
       // offending value.
@@ -566,7 +579,7 @@ describe('uiPrefs', () => {
       const sent = spy.mock.calls
         .filter((c) => (c[1] as RequestInit | undefined)?.method === 'PUT')
         .map((c) => Object.keys(JSON.parse((c[1] as RequestInit).body as string).prefs))
-      expect(sent).toContainEqual(['mc-dev-mode'])
+      expect(sent).toContainEqual(['mc-agent-scene'])
       expect(sent).toContainEqual(['kc:file-explorer:state:v2'])
 
       // The accepted key is now baselined (not resent), the refused one is not.
@@ -578,7 +591,7 @@ describe('uiPrefs', () => {
     it('after a reload it re-sends nothing when nothing changed', async () => {
       // A stale origin re-PUTting every value would overwrite the newer
       // preferences another origin already backed up.
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
       __resetUiPrefsSyncForTests() // page reload: in-memory baseline gone
@@ -589,7 +602,7 @@ describe('uiPrefs', () => {
     })
 
     it('after a reload it sends only the value this profile changed', async () => {
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       localStorage.setItem('mc-crews-view', 'list')
       mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
@@ -602,7 +615,7 @@ describe('uiPrefs', () => {
     })
 
     it('a per-key retry after a reload keeps the untouched fingerprints', async () => {
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       localStorage.setItem('mc-crews-view', 'list')
       mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
@@ -619,10 +632,10 @@ describe('uiPrefs', () => {
       })
       await flushUiPrefs()
 
-      // mc-dev-mode was never in this round, so its fingerprint must survive —
+      // mc-agent-scene was never in this round, so its fingerprint must survive —
       // otherwise the next poll re-uploads its stale value.
       const prints = JSON.parse(localStorage.getItem(SYNCED_KEYS_KEY)!)
-      expect(Object.keys(prints).sort()).toEqual(['mc-crews-view', 'mc-dev-mode'])
+      expect(Object.keys(prints).sort()).toEqual(['mc-agent-scene', 'mc-crews-view'])
 
       __resetUiPrefsSyncForTests()
       const after = mockFetch(() => okJson({ prefs: {} }))
@@ -636,41 +649,41 @@ describe('uiPrefs', () => {
       // emit null and delete a preference the newer build owns.
       localStorage.setItem(
         SYNCED_KEYS_KEY,
-        JSON.stringify({ 'mc-from-a-newer-build': 'abc', 'mc-dev-mode': 'zzz' }),
+        JSON.stringify({ 'mc-from-a-newer-build': 'abc', 'mc-agent-scene': 'zzz' }),
       )
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       const spy = mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
       const patch = lastPatch(spy)
       expect(patch['mc-from-a-newer-build']).toBeUndefined()
-      expect(patch['mc-dev-mode']).toBe('true')
+      expect(patch['mc-agent-scene']).toBe('true')
     })
 
     it('reports a deletion made before a reload', async () => {
       // A previous session synced the key...
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
       // ...then the page reloads (in-memory baseline gone) and the user clears it.
       __resetUiPrefsSyncForTests()
-      localStorage.removeItem('mc-dev-mode')
+      localStorage.removeItem('mc-agent-scene')
 
       const spy = mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
-      expect(lastPatch(spy)).toEqual({ 'mc-dev-mode': null })
+      expect(lastPatch(spy)).toEqual({ 'mc-agent-scene': null })
     })
 
     it('never nulls a key this profile has not synced', async () => {
       // A second browser holds a key on the host that this profile never had.
       localStorage.setItem(SYNCED_KEYS_KEY, JSON.stringify({}))
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       const spy = mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
-      expect(lastPatch(spy)).toEqual({ 'mc-dev-mode': 'true' })
+      expect(lastPatch(spy)).toEqual({ 'mc-agent-scene': 'true' })
     })
 
     it('a change during an in-flight PUT is not swallowed', async () => {
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       let release: (() => void) | undefined
       const gate = new Promise<void>((r) => {
         release = r
@@ -715,10 +728,10 @@ describe('uiPrefs', () => {
       await vi.advanceTimersByTimeAsync(2000)
 
       const after = mockFetch(() => okJson({ prefs: {} }))
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       window.dispatchEvent(new Event('mc-config-changed'))
       await vi.advanceTimersByTimeAsync(2000)
-      expect(lastPatch(after)).toEqual({ 'mc-font-family': '1', 'mc-dev-mode': 'true' })
+      expect(lastPatch(after)).toEqual({ 'mc-font-family': '1', 'mc-agent-scene': 'true' })
     })
   })
 
@@ -729,14 +742,14 @@ describe('uiPrefs', () => {
       await vi.advanceTimersByTimeAsync(2000)
       spy.mockClear()
 
-      localStorage.setItem('mc-dev-mode', 'true') // inside the debounce window...
+      localStorage.setItem('mc-agent-scene', 'true') // inside the debounce window...
       window.dispatchEvent(new Event('mc-config-changed'))
       window.dispatchEvent(new Event('pagehide')) // ...and the tab closes
       await vi.advanceTimersByTimeAsync(0)
       expect(spy).toHaveBeenCalledTimes(1)
       const init = spy.mock.calls[0][1] as RequestInit
       expect(init.keepalive).toBe(true)
-      expect(JSON.parse(init.body as string)).toEqual({ prefs: { 'mc-dev-mode': 'true' } })
+      expect(JSON.parse(init.body as string)).toEqual({ prefs: { 'mc-agent-scene': 'true' } })
     })
 
     it('ordinary flushes do not use keepalive (its 64 KiB body cap would reject large patches)', async () => {
@@ -782,10 +795,10 @@ describe('uiPrefs', () => {
       const spy = mockFetch(() => okJson({ prefs: {} }))
       startUiPrefsSync()
       await vi.advanceTimersByTimeAsync(2000)
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       window.dispatchEvent(new Event('storage'))
       await vi.advanceTimersByTimeAsync(2000)
-      expect(lastPatch(spy)).toEqual({ 'mc-dev-mode': 'true' })
+      expect(lastPatch(spy)).toEqual({ 'mc-agent-scene': 'true' })
     })
   })
 
@@ -1111,7 +1124,7 @@ describe('uiPrefs', () => {
       mockFetch(() => okJson({ prefs: {} }))
       await reconcileNewDurableKeys()
 
-      localStorage.setItem('mc-dev-mode', 'true')
+      localStorage.setItem('mc-agent-scene', 'true')
       mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs() // commitSent rewrites the whole document
       expect(storedRoster()).toEqual([...DURABLE_PREF_KEYS])

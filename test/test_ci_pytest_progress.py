@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -127,6 +128,7 @@ class TestCIProgress(unittest.TestCase):
                 next(r["selected"] for r in records if r["event"] == "collection_end"), 2
             )
             self.assertGreaterEqual(records[1]["elapsed"], 0)
+            self.assertIs(records[-1]["channel_closed"], False)
         summaries = [
             line[line.index("CI_PROGRESS ") + 12 :]
             for line in result.stdout.splitlines()
@@ -223,6 +225,42 @@ class TestCIProgress(unittest.TestCase):
                 for rows in logs.values()
             )
         )
+
+    def test_worker_whose_channel_closed_records_it_at_session_end(self):
+        # Closing a worker's receive side mid-run is the transport event behind
+        # xdist's clean-finish INTERNALERROR: the worker ends with exit status 0
+        # while still assigned work, and its session_end says its channel closed.
+        # The "cut" group reaches the worker as ONE runtests command, so when
+        # test_close runs test_held[1] is in, or about to enter, its queue.
+        # Swapping in a queue that starts with the shutdown mark right after the
+        # close leaves test_held[1] assigned but never run, whatever the
+        # controller sends later. Without it, a
+        # controller that sent nothing after the close finds no assigned work
+        # and raises "no active workers" instead.
+        (self.root / "test_cut.py").write_text(
+            "import pytest\n"
+            "@pytest.mark.xdist_group('cut')\n"
+            "def test_close(request):\n"
+            "    worker = next(p for p in request.config.pluginmanager.get_plugins()\n"
+            "                  if type(p).__name__ == 'WorkerInteractor')\n"
+            "    worker.channel.gateway._channelfactory._local_close(\n"
+            "        worker.channel.id, sendonly=True)\n"
+            "    held = worker._make_queue()\n"
+            "    held.put(worker.SHUTDOWN_MARK)\n"
+            "    worker.torun = held\n"
+            "@pytest.mark.xdist_group('cut')\n"
+            "@pytest.mark.parametrize('n', range(2))\n"
+            "def test_held(n): pass\n"
+            "@pytest.mark.parametrize('n', range(6))\n"
+            "def test_rest(n): pass\n",
+            encoding="utf-8",
+        )
+        result = self.run_pytest("-n1")
+        self.assertEqual(result.returncode, 3, result.stdout + result.stderr)
+        self.assertIn("assert not crashitem", result.stdout + result.stderr)
+        (rows,) = self.records().values()
+        self.assertEqual((rows[-1]["event"], rows[-1]["exitstatus"]), ("session_end", 0))
+        self.assertIs(rows[-1]["channel_closed"], True)
 
     def test_nested_runs_share_directory_without_overwriting(self):
         child = self.root / "nested"
@@ -329,7 +367,13 @@ class TestCIProgress(unittest.TestCase):
 
         workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
         job = workflow["jobs"]["backend-test"]
-        self.assertEqual(job["timeout-minutes"], 60)
+        # 60 on CodeBuild, 70 on a non-fleet runner that shards four-wide and
+        # needs the longer per-shard budget.
+        self.assertEqual(
+            job["timeout-minutes"],
+            "${{ startsWith(needs.changes.outputs.linux_runner_large, "
+            "'codebuild-') && 60 || 70 }}",
+        )
         self.assertEqual(job["env"]["SHARD_COUNT"], 8)
         step = next(s for s in job["steps"] if s.get("name", "").startswith("Run tests"))
         command = step["run"]
@@ -337,11 +381,18 @@ class TestCIProgress(unittest.TestCase):
         self.assertNotIn("PYTEST_ADDOPTS", command)
         self.assertEqual(step["env"]["PYTHONPATH"], "${{ github.workspace }}")
         self.assertIn("-p scripts.ci_pytest_progress", command)
-        self.assertIn('--ci-progress-dir "$RUNNER_TEMP/pytest-progress"', command)
+        self.assertIn('--ci-progress-dir="$RUNNER_TEMP/pytest-progress"', command)
         self.assertIn("--max-worker-restart=0", command)
         self.assertEqual(command.count('"${PROGRESS[@]}"'), 4)
         self.assertEqual(command.count("--timeout=120"), 4)
-        self.assertEqual(command.count("-p scripts.ci_file_shards"), 2)
+        # A hang SIGALRM cannot end still dumps every thread's stack, after
+        # pytest-timeout had its chance; PROGRESS reaches all four invocations.
+        dump_after = re.search(r"PROGRESS=\([^)]*-o faulthandler_timeout=(\d+)", command)
+        self.assertIsNotNone(dump_after, "the Linux shards carry no faulthandler_timeout")
+        self.assertGreater(int(dump_after.group(1)), 120)
+        self.assertEqual(command.count('-n "$WORKERS"'), 4)
+        self.assertNotIn("-n auto", command)
+        self.assertEqual(command.count("-p scripts.ci_file_shards"), 3)
         self.assertIn("--cov=kiro_crew --cov=sage_lib", command)
         self.assertIn("--cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging", command)
         self.assertIn("--cov=src/kiro_crew/apps/builtins/code_review_sage/tests", command)

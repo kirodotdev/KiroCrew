@@ -677,8 +677,8 @@ class TestSlotModelSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_rebind_during_raising_reset_rolls_back_to_409(self):
-        # The teardown-raise path must NOT bypass the rebind guard (GPT
-        # review finding): a slot rebound while the raising
+        # The teardown-raise path must NOT bypass the rebind guard: a slot
+        # rebound while the raising
         # reset awaited answers the same rollback + 409 as any other rebind —
         # never a 200 that advertises the committed model over a newly bound
         # session that never saw the switch.
@@ -915,7 +915,7 @@ class TestSlotWorkspaceSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_active_turn_is_refused_before_the_commit(self):
-        # GPT review finding: the reset path calls
+        # The reset path calls
         # _unblock_pending_waits BEFORE SessionManager.reset's atomic busy
         # decline, so a turn parked on a pending approval had that approval
         # rejected and only then got a 409. The model handler's early refusal
@@ -944,7 +944,7 @@ class TestSlotWorkspaceSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_cold_starting_turn_is_refused_via_slot_running(self):
-        # Opus review finding: slot.running is set at dispatch, before
+        # slot.running is set at dispatch, before
         # the multi-second provider.start() registers a session, so a
         # cold-starting turn is invisible to get_provider. Without this check
         # the switch reported success while that turn ran on the OLD project.
@@ -966,7 +966,7 @@ class TestSlotWorkspaceSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_busy_rollback_remarks_the_slot_dirty(self):
-        # GPT review finding: the unlocked periodic flush may have
+        # The unlocked periodic flush may have
         # written the PROVISIONAL bindings to disk during the reset await, so
         # a 409 rollback must re-mark the slot dirty or the rejected switch
         # survives a restart. Simulate the flush having cleared the flag
@@ -996,7 +996,7 @@ class TestSlotWorkspaceSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_rollback_spares_a_concurrent_project_write(self):
-        # Opus review finding: slot.project has lock-free writers (the
+        # slot.project has lock-free writers (the
         # in-turn set_project directive) that can land during the reset await.
         # The rollback is identity-scoped -- it unwinds only THIS request's
         # commit token -- so a concurrent write of a different project stands
@@ -1245,8 +1245,8 @@ class TestSlotWorkspaceSwitchAtomicity:
 
     @pytest.mark.asyncio
     async def test_rebind_during_raising_reset_rolls_back_to_409(self):
-        # The teardown-raise path must NOT bypass the rebind guard (GPT
-        # review finding): a slot rebound while the raising
+        # The teardown-raise path must NOT bypass the rebind guard: a slot
+        # rebound while the raising
         # reset awaited answers the same rollback + 409 as any other rebind.
         slot = _ChatSlot("test")
         slot.workspace = "old-ws"

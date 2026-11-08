@@ -1,9 +1,13 @@
 """Tests for Live Slack thread sync (bidirectional mirroring)."""
+
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
@@ -34,33 +38,32 @@ def _make_state(tmp_path, **kwargs):
 
 
 class TestChatSlotSlackFields:
-    def test_default_slack_linked_is_false(self):
-        slot = _ChatSlot("s1")
-        assert slot._slack_linked is False
+    @pytest.mark.parametrize(
+        ("attr", "expected"),
+        [
+            pytest.param("_slack_linked", False, id="test_default_slack_linked_is_false"),
+            pytest.param("_slack_channel", "", id="test_default_slack_channel_empty"),
+            pytest.param("_slack_thread_ts", "", id="test_default_slack_thread_ts_empty"),
+        ],
+    )
+    def test_default_slack_field(self, attr, expected):
+        value = getattr(_ChatSlot("s1"), attr)
+        assert value == expected
+        assert type(value) is type(expected)
 
-    def test_default_slack_channel_empty(self):
-        slot = _ChatSlot("s1")
-        assert slot._slack_channel == ""
-
-    def test_default_slack_thread_ts_empty(self):
-        slot = _ChatSlot("s1")
-        assert slot._slack_thread_ts == ""
-
-    def test_to_dict_includes_slack_linked(self):
-        slot = _ChatSlot("s1")
-        d = slot.to_dict()
-        assert "slack_linked" in d
-        assert d["slack_linked"] is False
-
-    def test_to_dict_includes_slack_channel(self):
-        slot = _ChatSlot("s1")
-        d = slot.to_dict()
-        assert d["slack_channel"] == ""
-
-    def test_to_dict_includes_slack_thread_ts(self):
-        slot = _ChatSlot("s1")
-        d = slot.to_dict()
-        assert d["slack_thread_ts"] == ""
+    @pytest.mark.parametrize(
+        ("key", "expected"),
+        [
+            pytest.param("slack_linked", False, id="test_to_dict_includes_slack_linked"),
+            pytest.param("slack_channel", "", id="test_to_dict_includes_slack_channel"),
+            pytest.param("slack_thread_ts", "", id="test_to_dict_includes_slack_thread_ts"),
+        ],
+    )
+    def test_to_dict_includes_slack_field(self, key, expected):
+        d = _ChatSlot("s1").to_dict()
+        assert key in d
+        assert d[key] == expected
+        assert type(d[key]) is type(expected)
 
     def test_to_dict_reflects_linked_state(self):
         slot = _ChatSlot("s1")
@@ -95,10 +98,16 @@ class TestDashboardStateLinkSlack:
         assert call_args[1] == "1234.5678"
         assert call_args[2] == "C123"
 
-    def test_link_slack_missing_slot_noop(self, tmp_path):
+    def test_link_slack_missing_slot_noop(self, tmp_path, caplog):
         state = _make_state(tmp_path)
-        # Should not raise
+        caplog.set_level(logging.WARNING, logger="kiro_crew.dashboard.state")
         state.link_slack("nonexistent", "1234.5678", "C123")
+        warnings = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.dashboard.state"]
+        assert any("no live slot 'nonexistent'" in m for m in warnings)
+        state.sessions.set_slack_link.assert_not_called()
+        state.sessions.batched_save.assert_not_called()
+        assert "nonexistent" not in state._slots
+        assert "1234.5678" not in state._slack_to_slot
 
     def test_link_multiple_slots(self, tmp_path):
         state = _make_state(tmp_path)

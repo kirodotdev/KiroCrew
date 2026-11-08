@@ -27,8 +27,9 @@ from __future__ import annotations
 from typing import Any, Collection, Mapping
 
 from kiro_crew.acp.session_mcp import session_mcp_projection
+from kiro_crew.acp.session_mcp_env_refs import keep_env_references
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_GOOSE
-from kiro_crew.providers.mirrors.base import AgentConfigMirror, Concern
+from kiro_crew.providers.mirrors.base import TOOLS_SETTINGS_GATE_CHANNEL, AgentConfigMirror, Concern
 from kiro_crew.providers.mirrors.base import Disposition as _D
 from kiro_crew.providers.mirrors.base import Ruling, SessionProjection
 from kiro_crew.providers.mirrors.opencode import place_single_binary_array
@@ -66,6 +67,11 @@ def goose_projection(
         agent,
         stub_server_names=stub_server_names,
         work_dir=work_dir,  # type: ignore[arg-type]
+    )
+    # goose writes each server's envs into its own sessions.db, so a resolved
+    # reference must not ride its array (session_mcp_env_refs).
+    projection = projection._replace(
+        servers=keep_env_references(projection.servers, projection.agent_spec)
     )
     narrowed = frozenset(server for server, _tool in projection.disabled_tools)
     out = place_single_binary_array(
@@ -178,6 +184,19 @@ class GooseMirror(AgentConfigMirror):
                 "(acp/harness_tool_names.py), so execute_bash meets goose's shell. "
                 "This covers the chat, subagent and task-runner turn loops; a "
                 "channel-agent turn runs no script hooks on any backend",
+            ),
+            Concern.TOOLS_SETTINGS: Ruling(
+                _D.NO_CHANNEL,
+                "kiro-cli's per-tool settings (shell denyByDefault and allowedCommands, the "
+                "write allowlist, deniedPaths, web_fetch.blocked) have no field on the ACP "
+                "session/new element set, and Crew feeds this session's permission requests no "
+                "spec allowlist, so the field is applied nowhere. Its subagent.availableAgents "
+                "is the exception: Crew's spawn gate reads it from the parent's spec on every "
+                "backend (subagent_parts/agent_policy.py), so no notice names it. Crew fires "
+                "this backend's spec hooks, and that session-start notice already names what of "
+                "toolsSettings goes unapplied "
+                "(acp.kas_agents.spec_keys_without_carrier)",
+                channel=TOOLS_SETTINGS_GATE_CHANNEL,
             ),
         }
 

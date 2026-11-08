@@ -10,8 +10,8 @@
  * legacy ?tab=slack style deep links remap to ?tab=channels&channel=slack.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, cleanup } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { act, render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // Stub the heavy panels — we are testing the tab roster, not panel internals.
@@ -23,6 +23,7 @@ vi.mock('../pages/settings/BrowserPanel', () => ({ BrowserPanel: () => <div data
 // set, so an unmocked ComputerUsePanel calling api.getComputerUseConfig() would
 // throw during render.
 vi.mock('../pages/settings/ComputerUsePanel', () => ({ ComputerUsePanel: () => <div data-testid="computer-use-panel" /> }))
+vi.mock('../pages/settings/SessionEnvironmentsCard', () => ({ SessionEnvironmentsCard: () => <div data-testid="session-environments-panel" /> }))
 vi.mock('../pages/settings/WebhooksPanel', () => ({ WebhooksPanel: () => <div data-testid="webhooks-panel" /> }))
 vi.mock('../pages/settings/InstancesPanel', () => ({ InstancesPanel: () => <div data-testid="instances-panel" /> }))
 vi.mock('../pages/settings/SecurityPanel', () => ({ SecurityPanel: () => <div data-testid="security-panel" /> }))
@@ -75,13 +76,19 @@ if (!window.matchMedia) {
 }
 
 import SettingsPage from '../pages/SettingsPage'
-import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS, setPreviewFlag } from '../utils/previewFlags'
 
 // The Webhooks tab is preview-gated and the gate reads real localStorage, so a
 // flag left set by one test would decide another test's roster.
 beforeEach(() => {
   localStorage.removeItem(PREVIEW_WEBHOOKS)
+  localStorage.removeItem(PREVIEW_SESSION_ENVIRONMENTS)
 })
+
+function LocationProbe() {
+  const loc = useLocation()
+  return <div data-testid="loc">{loc.pathname + loc.search}</div>
+}
 
 function renderAt(route: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -89,12 +96,52 @@ function renderAt(route: string) {
     <QueryClientProvider client={qc}>
       <MemoryRouter initialEntries={[route]}>
         <SettingsPage />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>
   )
 }
 
 describe('SettingsPage tabs', () => {
+  it('hides Session Environments and its deep link until enabled', () => {
+    renderAt('/settings/session-environments')
+    expect(screen.queryByRole('button', { name: 'Session Environments' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('session-environments-panel')).not.toBeInTheDocument()
+  })
+
+  it('reacts to opt-in without reload and opens the dedicated settings panel', async () => {
+    renderAt('/settings/developer')
+    act(() => setPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS, true))
+    fireEvent.click(screen.getByRole('button', { name: 'Session Environments' }))
+    // The card is a lazy chunk, fetched once its tab opens: the wait names that boundary.
+    expect(await screen.findByTestId('session-environments-panel', {}, { timeout: 5000 })).toBeInTheDocument()
+    expect(screen.queryByTestId('developer-panel')).not.toBeInTheDocument()
+    act(() => setPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS, false))
+    expect(screen.queryByRole('button', { name: 'Session Environments' })).not.toBeInTheDocument()
+    expect(screen.queryByTestId('session-environments-panel')).not.toBeInTheDocument()
+  })
+
+  it('opens a bookmarked Session Environments tab when enabled', async () => {
+    localStorage.setItem(PREVIEW_SESSION_ENVIRONMENTS, '1')
+    renderAt('/settings/session-environments')
+    // A real async chain: the React.lazy import of the card resolves, then Suspense
+    // renders it. findBy*'s 1000ms default can lose that under coverage load.
+    expect(await screen.findByTestId('session-environments-panel', {}, { timeout: 5000 })).toBeInTheDocument()
+  })
+
+  it('updates Session Environments visibility when another browser tab toggles it', () => {
+    renderAt('/settings/developer')
+    act(() => {
+      localStorage.setItem(PREVIEW_SESSION_ENVIRONMENTS, '1')
+      window.dispatchEvent(new StorageEvent('storage', { key: PREVIEW_SESSION_ENVIRONMENTS, newValue: '1' }))
+    })
+    expect(screen.getByRole('button', { name: 'Session Environments' })).toBeInTheDocument()
+    act(() => {
+      localStorage.removeItem(PREVIEW_SESSION_ENVIRONMENTS)
+      window.dispatchEvent(new StorageEvent('storage', { key: PREVIEW_SESSION_ENVIRONMENTS, newValue: null }))
+    })
+    expect(screen.queryByRole('button', { name: 'Session Environments' })).not.toBeInTheDocument()
+  })
   it('lists the Browser tab (restored after the aaf7cfe revert)', () => {
     renderAt('/settings')
     expect(screen.getByText('Browser')).toBeInTheDocument()
@@ -105,12 +152,13 @@ describe('SettingsPage tabs', () => {
     expect(screen.queryByText('Provider')).not.toBeInTheDocument()
   })
 
-  it('renders the BrowserPanel when the browser tab is active', () => {
+  it('renders the BrowserPanel when the browser tab is active', async () => {
     renderAt('/settings?tab=browser')
-    expect(screen.getByTestId('browser-panel')).toBeInTheDocument()
+    // Lazy chunk: the panel arrives after its import resolves.
+    expect(await screen.findByTestId('browser-panel', {}, { timeout: 5000 })).toBeInTheDocument()
   })
 
-  it('contains the Releases pane, and only that one, instead of scrolling the page', () => {
+  it('contains the Releases pane, and only that one, instead of scrolling the page', async () => {
     // The archive puts a version rail beside the notes, so a page scroll took
     // the "Releases" heading and the rail away with it. Every other tab is a
     // form that should keep growing.
@@ -119,7 +167,8 @@ describe('SettingsPage tabs', () => {
 
     cleanup()
     renderAt('/settings?tab=browser')
-    expect(screen.getByTestId('browser-panel').parentElement!.className).toContain('pb-8')
+    // Lazy chunk: wait for the import rather than relying on an earlier test warming it.
+    expect((await screen.findByTestId('browser-panel', {}, { timeout: 5000 })).parentElement!.className).toContain('pb-8')
   })
 
   it('hides the Webhooks tab while its preview flag is off', () => {
@@ -184,6 +233,12 @@ describe('SettingsPage tabs', () => {
   it('remaps legacy ?tab=slack to the channels tab with slack selected', async () => {
     renderAt('/settings?tab=slack')
     expect(await screen.findByTestId('slack-panel')).toBeInTheDocument()
+  })
+
+  it('leaves the Overview memory drill-in when the rail picks Overview', () => {
+    renderAt('/settings?view=memory&store=team&focus=lessons')
+    fireEvent.click(screen.getByRole('button', { name: 'Overview' }))
+    expect(screen.getByTestId('loc').textContent).toBe('/settings')
   })
 
   it('remaps legacy ?tab=wecom to the channels tab with wecom selected', async () => {

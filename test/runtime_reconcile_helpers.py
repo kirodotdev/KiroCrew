@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,10 @@ def _reconciler(
     forgotten: list[int] | None = None,
     notified: list[int] | None = None,
     audited: list[tuple[int, str, str]] | None = None,
+    instances: dict[int, str] | None = None,
+    spawn_instance_of: Callable[[int], str | None] | None = None,
+    table: dict[int, tuple[int, int]] | None = None,
+    process_table: Callable[[], dict[int, tuple[int, int]]] | None = None,
 ) -> rr.RuntimeReconciler:
     """A reconciler over a fake kernel: no real processes, no real signals.
 
@@ -62,6 +67,11 @@ def _reconciler(
     box, where those numbers are kernel threads, and false on a CI container,
     where the identity reads as unreadable and the kill arm fail-closes. Tests
     about identity build their own reconciler and pass their own seam.
+
+    The spawn-instance and process-table seams are faked for the same reason:
+    *instances* maps a pid to its ``KIROCREW_SPAWN_INSTANCE`` (absent reads as
+    unreadable) and *table* is ``{pid: (ppid, rss)}``; *spawn_instance_of* and
+    *process_table* replace either seam outright.
     """
     live = kernel if alive is None else alive
     return rr.RuntimeReconciler(
@@ -91,6 +101,8 @@ def _reconciler(
         audit=lambda pid, outcome, why: (audited if audited is not None else []).append(
             (pid, outcome, why)
         ),
+        spawn_instance_of=spawn_instance_of or (lambda pid: (instances or {}).get(pid)),
+        process_table=process_table or (lambda: dict(table or {})),
     )
 
 
@@ -227,7 +239,9 @@ def _cleanup(
         cleanup_orphaned_session_roots=lambda: 0,
         cleanup_stale_sandbox_profiles=lambda: 0,
         prune_session_pid_mappings=lambda: 0,
+        prune_session_token_mappings=lambda: 0,
         prune_member_pid_bindings=lambda: 0,
+        sweep_session_staging_temps=lambda: 0,
         rotate_shell_audit_log=lambda: False,
         prune_pycache=lambda: (0, 0),
         collect_active_pids=collect_active,

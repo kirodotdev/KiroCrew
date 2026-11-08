@@ -324,6 +324,45 @@ class TestConvergenceStaysExempt:
         assert closed == ["issue close 4250 --repo o/r --reason not planned"], out
 
 
+# A pipe into a reader that may stop before its input ends. `head` exits after
+# the lines it wants and `grep -q` / `grep -m` after the first match; the writer's
+# next write then dies of SIGPIPE.
+_EARLY_EXIT_READER = re.compile(r"(?<!\|)\|\s*(?:head\b|grep\s+-[A-Za-z]*[qm])")
+
+
+class TestNoPipeCanCloseEarly:
+    """No step that runs under pipefail pipes into a reader that can quit early.
+
+    Under ``set -euo pipefail`` such a pipeline fails with 141 whenever the reader
+    exits before the writer's last write, and ``set -e`` then ends the step with
+    that code. The split-record run above died this way on a loaded CI runner:
+    bash's ``printf`` writes one line at a time, so ``printf | head -n 1`` over
+    two issue numbers loses the race when ``head`` is scheduled between the two
+    writes. A run cannot catch that on demand, because the race needs the writer
+    descheduled between them, so the shape itself is pinned here. A pipeline
+    that ends in ``|| true`` accepts a non-zero status on purpose and is allowed.
+    """
+
+    def test_no_unguarded_pipe_into_an_early_exit_reader(self) -> None:
+        workflow = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
+        offenders = []
+        for job_name, job in workflow["jobs"].items():
+            for step in job.get("steps", []):
+                script = step.get("run")
+                if not script or "pipefail" not in script:
+                    continue
+                # One logical line per command: a pipeline continued with a
+                # trailing backslash is one command, and its `|| true` may sit
+                # on the last physical line.
+                for line in script.replace("\\\n", " ").splitlines():
+                    if line.lstrip().startswith("#"):
+                        continue
+                    if _EARLY_EXIT_READER.search(line) and "|| true" not in line:
+                        offenders.append(f"{job_name} / {step.get('name')}: {line.strip()}")
+
+        assert offenders == [], offenders
+
+
 @_needs_posix_shell
 class TestIssueBodyRendering:
     """The durable artifact is the most-read output, so its Markdown must render."""
@@ -446,20 +485,31 @@ class TestGateParityWithCi:
             "integrated tree and its drift surfaces on an unrelated PR."
         )
 
+    #: The backend ratchet set the audit mirrors outright. It is two jobs, not
+    #: one: ``backend-ratchets`` holds the baselined gates that run off
+    #: ``lint-gate``'s path, and ``backend-lint`` holds black. Naming only
+    #: ``backend-lint`` would leave this pin measuring two scripts while the set
+    #: it claims to mirror sat next door -- a subset assertion that passes by
+    #: asking less, which is the failure the class docstring above warns about.
+    _MIRRORED_CI_JOBS = ("backend-lint", "backend-ratchets")
+
     def test_the_audit_mirrors_the_whole_backend_lint_ratchet_set(self) -> None:
         # The set this lane claims outright, kept separate from the accounting
         # above: an omission recorded in either set must never quietly cover a
-        # backend-lint ratchet, which is the set the workflow says it mirrors.
+        # backend ratchet, which is the set the workflow says it mirrors.
         ci = yaml.safe_load((_REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text("utf-8"))
         audit = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
 
-        expected = self._gate_scripts(ci["jobs"]["backend-lint"])
+        expected: set[str] = set()
+        for name in self._MIRRORED_CI_JOBS:
+            assert name in ci["jobs"], f"_MIRRORED_CI_JOBS names a job that is gone: {name}"
+            expected |= self._gate_scripts(ci["jobs"][name])
         actual = self._gate_scripts(audit["jobs"]["ratchet-gates"])
 
         assert expected <= actual, (
-            "ci.yml backend-lint runs ratchet gate(s) the Main Ratchet Audit does not: "
-            f"{sorted(expected - actual)}. This is the set the audit mirrors outright, so "
-            "it must be measured, not excused."
+            "ci.yml's backend lint/ratchet jobs run ratchet gate(s) the Main Ratchet Audit "
+            f"does not: {sorted(expected - actual)}. This is the set the audit mirrors "
+            "outright, so it must be measured, not excused."
         )
 
 
@@ -481,7 +531,7 @@ class TestFrontendCeilingParityWithCi:
 
     Scoped to ci.yml's ``bundle-size`` job against this lane's ``bundle-ceiling``
     job, which is the pair the workflow says it mirrors outright -- the same shape
-    as the ``backend-lint`` -> ``ratchet-gates`` pin. The wider frontend gate
+    as the ``backend-lint`` + ``backend-ratchets`` -> ``ratchet-gates`` pin. The wider frontend gate
     surface (the ``npm run lint:*`` lanes) is deliberately NOT claimed here: those
     run through package.json script aliases rather than a direct ``node
     scripts/...`` invocation, so pinning them needs a different scan and a

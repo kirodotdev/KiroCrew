@@ -38,8 +38,10 @@ Why this module is stdlib-only
 is imported very early -- which is precisely why it reads
 :mod:`kiro_crew.identity_stores`, a stdlib-only leaf, rather than anything
 heavier. This table has to sit on the same footing or the floor cannot read it
-without closing an import cycle. So the only non-stdlib import here is
-:mod:`kiro_crew.agent_sdk.backends`, itself stdlib-only, for the backend ids.
+without closing an import cycle. So the only non-stdlib imports here are
+:mod:`kiro_crew.agent_sdk.backends`, itself stdlib-only, for the backend ids, and
+:mod:`kiro_crew.kiro_cli_bundle`, also stdlib-only, for the kiro-cli sign-in
+command the remedy text names.
 ``test/test_agent_sdk_host_auth.py`` pins that: it walks this module's own
 module-scope imports against an allowlist AND spawns a cold interpreter to
 assert importing it pulls in no third-party module and none of
@@ -59,19 +61,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Dict, FrozenSet, Protocol, Tuple, runtime_checkable
+from typing import Dict, FrozenSet, Mapping, Optional, Protocol, Tuple, runtime_checkable
 
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     ACP_BACKENDS_KNOWN,
 )
+from kiro_crew.kiro_cli_bundle import KIRO_CLI_LOGIN_COMMAND, spawn_login_command
 
 # ── Where a harness's entitlement comes from ──
 # Named sources rather than a free string: the doctor row, the panel and the
@@ -195,7 +200,8 @@ class AgentAuthDeclaration:
     #: need.
     adapter_own_leaves: Tuple[str, ...]
 
-    #: What an operator DOES to sign this harness in. Rendered VERBATIM.
+    #: What an operator DOES to sign this harness in. Rendered VERBATIM, through
+    #: :func:`sign_in_remedy`, which names the kiro-cli command runnable here.
     #:
     #: States the ACTION and never the STATE, because most of the places it
     #: appears have taken no measurement: the backend panel shows it as a standing
@@ -219,7 +225,8 @@ class AgentAuthDeclaration:
     #: handed to a renderer that does no interpolation.
     sign_in_remedy: str
 
-    #: The message for a harness the host has EVIDENCE is signed out.
+    #: The message for a harness the host has EVIDENCE is signed out. Read through
+    #: :func:`signed_out_message`, for the same command rewrite.
     #:
     #: Used only on that evidence -- the auth-required raise sites, which reach it
     #: because the harness's own stderr said so, and the doctor row for the host
@@ -386,24 +393,29 @@ UNKNOWN_AGENT_AUTH = AgentAuthDeclaration(
 
 
 #: kiro-cli's action, and its signed-out statement, kept separate for the reason on
-#: the two fields. The statement is the string the auth-required path has always
-#: raised, unchanged: that path reaches it on the harness's own stderr evidence.
-_KIRO_REMEDY = "Run kiro-cli login in your terminal, then start a new chat."
+#: the two fields. The statement is the string the auth-required path raises: that
+#: path reaches it on the harness's own stderr evidence. Both end at sending again:
+#: signing in again keeps the chat, so its next message succeeds.
+#:
+#: Each names :data:`KIRO_CLI_LOGIN_COMMAND`, the form that works for a kiro-cli
+#: on the user's ``PATH``. :func:`sign_in_remedy` and :func:`signed_out_message`
+#: swap it for the absolute-path form when the spawn runs a copy the user's shell
+#: does not find, such as the desktop app's bundled one.
+_KIRO_REMEDY = f"Run {KIRO_CLI_LOGIN_COMMAND} in your terminal, then send your message again."
 _KIRO_SIGNED_OUT = (
-    "kiro-cli is not logged in. Run `kiro-cli login` in your terminal, then start a new chat."
+    f"kiro-cli is not logged in. Run `{KIRO_CLI_LOGIN_COMMAND}` in your terminal, then "
+    "send your message again."
 )
-# KAS can run under either auth owner -- Crew's own vault (the dashboard's Kiro
-# sign-in card) or kiro-cli's store -- and the formatter cannot see which one a
-# process had, so its messages name both remedies. Plain prose (no backticks, no
-# "--") in the remedy: the panel renders it as text.
-_KAS_REMEDY = (
-    "Sign in from Settings → Agent Harness → Kiro sign-in, or run kiro-cli login "
-    "in your terminal if kiro-cli owns the sign-in, then start a new chat."
-)
+# Choosing KAS means Kiro Crew's own sign-in: the Kiro sign-in card is the remedy
+# on every KAS route. A spawn takes Crew's sign-in through kiro-cli's relay or on
+# Crew's own engine, whichever runs here (``acp/kas_route.py``), so the remedy never
+# sends the user to kiro-cli. :func:`sign_in_remedy` and :func:`signed_out_message`
+# name the route of the running engine in front of it once a spawn has chosen one.
+# Plain prose (no backticks, no "--") in the remedy: the panel renders it as text.
+_KAS_REMEDY = "Sign in from Settings → Agent Harness → Kiro sign-in, then send your message again."
 _KAS_SIGNED_OUT = (
-    "Not signed in to Kiro. Sign in again from Settings → Agent Harness → Kiro sign-in, "
-    "or run `kiro-cli login` in your terminal if kiro-cli owns the sign-in, then start a "
-    "new chat."
+    "Not signed in to Kiro. Sign in from Settings → Agent Harness → Kiro sign-in, "
+    "then send your message again."
 )
 
 
@@ -441,8 +453,9 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # account's credentials. In the Crew-owned spawn a recycle on kiro-cli
         # logout is harmless -- the replacement re-probes the vault and comes back
         # Crew-owned -- so the answer stays conservative rather than becoming
-        # spawn-dependent. Its messages name BOTH sign-ins because the formatter
-        # cannot tell which owner a given process had.
+        # spawn-dependent. Its messages name the Kiro sign-in alone: where kiro-cli
+        # cannot run a session, the spawn moves onto Crew's own engine
+        # (``acp/kas_route.py``), so Crew's sign-in is the remedy on every route.
         credential_leaves=(),
         home_override_env_vars=(),
         adapter_own_leaves=(),
@@ -450,6 +463,42 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         signed_out_message=_KAS_SIGNED_OUT,
         host_logout_retires_children=True,
         entitlement_source=ENTITLEMENT_HOST_IDENTITY_STORE,
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_STRANDS,
+        # The Strands CLI stores no credential of its own: its config keeps provider
+        # settings and strips every key name (``normalizeStoredProviderEnvironment``
+        # deletes the ``PROVIDER_CREDENTIAL_KEYS``). A key reaches it from the process
+        # environment, which Crew fills from its own vault (``agent.strands_env``). The
+        # sandbox masks ``~/.aws``, so Bedrock needs a mapped Bedrock API key too.
+        credential_leaves=(),
+        home_override_env_vars=(),
+        # Nothing spared: the routing is ``VERIFIED_GATE_EXTENSION`` (enforced), so the
+        # mask denies the child the whole floor. The vault keys never enter a launch
+        # environment: they reach the gate module through a one-time owner-only file
+        # (``acp/harness/strands_keys.py``), which it loads into its own runtime
+        # environment, removes, and withholds from every shell and code child the
+        # agent runs; the worker then goes non-dumpable -- proved per spawn by its
+        # load marker (agent-host-contract.md, "No provider key is in any launch
+        # environment").
+        adapter_own_leaves=(),
+        sign_in_remedy=(
+            "The Strands harness reaches its model with the provider settings Kiro Crew "
+            "holds for it. Save a key under Settings → Secrets and map it in "
+            "agent.strands_env under the name the provider reads (ANTHROPIC_API_KEY, "
+            "OPENAI_API_KEY, GEMINI_API_KEY, ...). For Bedrock, map "
+            "AWS_BEARER_TOKEN_BEDROCK and AWS_REGION: the harness runs sandboxed "
+            "without ~/.aws or the host's AWS environment."
+        ),
+        signed_out_message=(
+            "The Strands harness has no model credential. Save a key under Settings > "
+            "Secrets and map it in `agent.strands_env` (for example "
+            "`ANTHROPIC_API_KEY: secret://my-anthropic-key`; for Bedrock, "
+            "`AWS_BEARER_TOKEN_BEDROCK` and `AWS_REGION`), then start a new chat."
+        ),
+        # Its credential is not the host's: a kiro-cli logout cannot bear on it.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_HOST_VAULT,
     ),
     AgentAuthDeclaration(
         backend=ACP_BACKEND_CODEX,
@@ -739,6 +788,51 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # "deepseek-official"; store DEEPSEEK_API_KEY ...``.
         signed_out_signature="no API key for provider route",
     ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_COPILOT,
+        # Copilot CLI resolves its GitHub credential in this order (its own
+        # authentication reference): ``COPILOT_GITHUB_TOKEN``, ``GH_TOKEN``,
+        # ``GITHUB_TOKEN``, the OS keychain under the service ``copilot-cli``, a
+        # PLAINTEXT ``config.json`` in its home when no keychain is reachable (which
+        # is the case inside Crew's sandbox, with no session bus), and last the
+        # GitHub CLI's own token. The plaintext file is the one leaf this harness
+        # itself STORES that a path can name, so it is the one on the floor; the
+        # keychain is fenced by the OS, and the GitHub CLI's store is that tool's.
+        credential_leaves=(".copilot/config.json",),
+        # ``COPILOT_HOME`` relocates the whole home (``copilot help environment``:
+        # "defaults to $HOME/.copilot"), so it stands in for the leaf's parent and
+        # the relocated file keeps only its final segment.
+        home_override_env_vars=("COPILOT_HOME",),
+        override_relative_leaves=("config.json",),
+        # The one leaf the mask must spare: this harness is enforced
+        # (``Routing.SESSION_CONFIG``), so the mask denies its child the whole
+        # credential floor, and the same file carries its settings and, without a
+        # keychain, its own token. The read gate still refuses the leaf to the
+        # AGENT's file tools, so the two controls cover different readers.
+        adapter_own_leaves=(".copilot/config.json",),
+        # Action only, and no state: a provider of the operator's own
+        # (``COPILOT_PROVIDER_BASE_URL``) needs no GitHub sign-in at all.
+        sign_in_remedy=(
+            "GitHub Copilot CLI signs in on its own — run copilot login in a "
+            "terminal, or sign the GitHub CLI in with gh auth login, which Copilot "
+            "CLI falls back to. A model provider of your own "
+            "(COPILOT_PROVIDER_BASE_URL) needs no GitHub sign-in."
+        ),
+        signed_out_message=(
+            "GitHub Copilot CLI is not signed in. Run `copilot login` in your "
+            "terminal (or `gh auth login`, which Copilot CLI falls back to), then "
+            "start a new chat."
+        ),
+        # Excluded deliberately: it signs in with a GitHub credential of its own, so a
+        # ``kiro-cli logout`` says nothing about whether a running session can still
+        # reach its model.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+        # Copilot CLI 1.0.100, driven live with an empty home (no stored token and no
+        # GitHub CLI to fall back to), answers ``session/new`` with -32000
+        # ``Authentication required`` and creates no session.
+        signed_out_signature="Authentication required",
+    ),
 )
 
 
@@ -843,14 +937,142 @@ def backends_retired_by_host_logout() -> FrozenSet[str]:
     )
 
 
-def signed_out_message(backend: str) -> str:
+def _with_spawn_login_command(
+    declaration: AgentAuthDeclaration,
+    text: str,
+    environ: Optional[Mapping[str, str]],
+    platform_name: Optional[str],
+) -> str:
+    """*text* with the kiro-cli sign-in command this host's spawn actually needs.
+
+    Only a harness on the host identity store signs in through kiro-cli, so only
+    its text names :data:`KIRO_CLI_LOGIN_COMMAND`. When the spawn runs the desktop
+    app's bundled copy, which the user's shell would not find as ``kiro-cli``,
+    the bare command fails with command-not-found, so the absolute-path form the
+    setup gate serves replaces it. An operator's ``KIROCREW_KIRO_BIN`` keeps the
+    bare command (:func:`spawn_login_command` says why). Reads the environment
+    only, never the filesystem, so a message raised on the event loop stays cheap.
+    """
+    if declaration.entitlement_source != ENTITLEMENT_HOST_IDENTITY_STORE:
+        return text
+    command = spawn_login_command(environ, platform_name)
+    if command == KIRO_CLI_LOGIN_COMMAND:
+        return text
+    return text.replace(KIRO_CLI_LOGIN_COMMAND, command)
+
+
+def _with_kas_route(backend: str, text: str, *, quoted: bool) -> str:
+    """*text*, led by the route the running KAS engine took, for a KAS message.
+
+    The route is the one the last KAS spawn in this process recorded
+    (``acp.kas_route.last_spawn_route``), so the message names the engine that
+    answered, and nothing is said before any spawn chose one. A plain read of a
+    module slot: no file or network IO, so a message raised on the event loop
+    stays cheap.
+    """
+    route = None
+    if backend == ACP_BACKEND_KAS:
+        # Read from ``sys.modules``, never imported here: importing it would load
+        # the whole ACP package into callers that only want a string, and a
+        # process that never loaded it has spawned no KAS engine to name.
+        import sys
+
+        kas_route = sys.modules.get("kiro_crew.acp.kas_route")
+        route = kas_route.last_spawn_route() if kas_route is not None else None
+        if route is not None and route.reason == "kiro_cli_launcher":  # REASON_KIRO_CLI_LAUNCHER
+            # A relay pinned to kiro-cli's launcher: only kiro-cli's own sign-in
+            # starts it, so that is the remedy. *quoted* is the message form; the
+            # panel renders the remedy as plain text.
+            command = f"`{KIRO_CLI_LOGIN_COMMAND}`" if quoted else KIRO_CLI_LOGIN_COMMAND
+            if route.crew_auth:
+                # Crew's vault answers the engine too: either sign-in can be the
+                # one that failed, so both remedies are named.
+                return f"{route.describe()}. Run {command} in your terminal, or: {text}"
+            return (
+                f"{route.describe()}. Run {command} in your terminal, then send your message again."
+            )
+    return text if route is None else f"{route.describe()}. {text}"
+
+
+def sign_in_remedy(
+    backend: str,
+    environ: Optional[Mapping[str, str]] = None,
+    platform_name: Optional[str] = None,
+) -> str:
+    """What an operator does to sign *backend* in, for the binary this host runs.
+
+    :attr:`AgentAuthDeclaration.sign_in_remedy` with the kiro-cli command made
+    runnable here (:func:`_with_spawn_login_command`). *environ* and
+    *platform_name* default to this process's own.
+    """
+    declaration = declaration_for(backend)
+    return _with_spawn_login_command(
+        declaration,
+        _with_kas_route(backend, declaration.sign_in_remedy, quoted=False),
+        environ,
+        platform_name,
+    )
+
+
+def bedrock_auth_remedy(backend: str) -> str:
+    """The Bedrock auth-failure text for a harness whose remedy is not the host's AWS
+    sign-in, or ``""`` for the shared one.
+
+    Strands runs under the enforced sandbox, whose mask hides ``~/.aws``, so the
+    host's AWS profiles never reach it: the remedy is the vault mapping, named.
+    """
+    if backend == ACP_BACKEND_STRANDS:
+        return (
+            "Bedrock authentication failed. Strands runs sandboxed and cannot read ~/.aws "
+            "profiles: store a Bedrock API key in the vault and map it with "
+            'agent.strands_env ({"AWS_BEARER_TOKEN_BEDROCK": "secret://<name>", '
+            '"AWS_REGION": "secret://<name>"}), then start a new chat.'
+        )
+    return ""
+
+
+def signed_out_message(
+    backend: str,
+    environ: Optional[Mapping[str, str]] = None,
+    platform_name: Optional[str] = None,
+) -> str:
     """The message for *backend* when the host has evidence it is signed out.
 
     Only for a caller holding that evidence -- the harness's own stderr, or the
     host identity store this core can read. Everywhere else,
-    :func:`sign_in_remedy` is the honest string.
+    :func:`sign_in_remedy` is the honest string. The kiro-cli command it names is
+    the one runnable here, as in :func:`sign_in_remedy`.
     """
-    return declaration_for(backend).signed_out_message
+    declaration = declaration_for(backend)
+    return _with_spawn_login_command(
+        declaration,
+        _with_kas_route(backend, declaration.signed_out_message, quoted=True),
+        environ,
+        platform_name,
+    )
+
+
+def kas_signed_out_route(text: str) -> Optional[str]:
+    """The route a KAS signed-out sentence names, for a translated copy of it.
+
+    ``""`` for the bare sentence (no spawn has chosen a route), the route's name
+    (``"relay"`` or ``"bundle"``) for the sentence led by the route the last spawn
+    took, and ``None`` for anything else: the launcher form that names
+    ``kiro-cli login``, any other wording, or a route that changed since the
+    sentence was written. ``None`` keeps the English, so a translation never says
+    something the sentence did not.
+    """
+    if text == _KAS_SIGNED_OUT:
+        return ""
+    if text != signed_out_message(ACP_BACKEND_KAS):
+        return None
+    import sys
+
+    kas_route = sys.modules.get("kiro_crew.acp.kas_route")
+    route = kas_route.last_spawn_route() if kas_route is not None else None
+    if route is None or route.reason == "kiro_cli_launcher":
+        return None
+    return route.name
 
 
 def reports_signed_out(backend: str, text: str) -> bool:
@@ -946,6 +1168,7 @@ __all__ = [
     "missing_declarations",
     "override_anchored_leaves",
     "reports_signed_out",
+    "sign_in_remedy",
     "signed_out_message",
     "signs_in_separately",
 ]

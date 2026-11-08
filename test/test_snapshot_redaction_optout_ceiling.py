@@ -36,18 +36,9 @@ class TestTheSwitchIsBeyondTheAgentsReach:
     def test_the_os_layer_fences_it_for_every_verb(self, home: Path) -> None:
         """The layer that binds a SUBPROCESS, which no text matcher can.
 
-        Running `is_sensitive_bash_command` over four shell forms
-        (`cat`, `echo >`, `tee`, `rm`) tests a layer which cannot hold for a
-        spawned command: a shell reaches a file through an `open()` that never routes
-        through the tool gate, so a path fenced only there is readable in any sandbox
-        mode whatever the matcher recognises, and the set of spellings is unbounded --
-        `sandbox.py` says so in as many words.
-
-        `backup` carries the HIDDEN disposition, the strongest of the three: the whole
-        directory is bind-masked in EVERY sandbox mode, so the switch is unreachable for
-        read, write and delete alike. That is broader than the four verbs enumerated
-        above and needs no platform skip, since it asserts the disposition rather than
-        one platform's parsing of a data-home path.
+        A spawned shell's `open()` never routes through the tool gate, so shell-command
+        matching cannot fence the path. `backup` carries the HIDDEN disposition: the whole
+        directory is bind-masked in EVERY sandbox mode, for read, write and delete alike.
         """
         from kiro_crew import sandbox
 
@@ -141,7 +132,35 @@ class TestTheDefaultNeedsNoFile:
         def deny(*a, **k):
             raise OSError(13, "Permission denied")
 
-        monkeypatch.setattr(Path, "read_text", deny)
+        monkeypatch.setattr(Path, "read_bytes", deny)
+        with pytest.raises(redact.RedactionSwitchUnreadable):
+            redact.outbound_redaction_enabled()
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (b"\xef\xbb\xbf" + b'{"redact_uploads": true}\n', True),
+            (b"\xef\xbb\xbf" + b'{"redact_uploads": false}\n', False),
+            (b"\xff\xfe" + '{"redact_uploads": true}\r\n'.encode("utf-16-le"), True),
+        ],
+        ids=["utf8-bom-true", "utf8-bom-false", "utf16le-bom-crlf-true"],
+    )
+    def test_a_windows_saved_switch_reads_as_its_value(
+        self, home: Path, raw: bytes, expected: bool
+    ) -> None:
+        """Notepad "UTF-8 with BOM" and the PowerShell 5.1 ``>`` redirect write these bytes.
+
+        The content is the documented switch, so it is a decision, not an unreadable file.
+        """
+        switch = redact.redaction_switch_path()
+        switch.parent.mkdir(parents=True, exist_ok=True)
+        switch.write_bytes(raw)
+        assert redact.outbound_redaction_enabled() is expected
+
+    def test_bytes_in_no_json_encoding_still_raise(self, home: Path) -> None:
+        switch = redact.redaction_switch_path()
+        switch.parent.mkdir(parents=True, exist_ok=True)
+        switch.write_bytes(b'{"redact_uploads": "\xff\xfe\xfa"}')
         with pytest.raises(redact.RedactionSwitchUnreadable):
             redact.outbound_redaction_enabled()
 

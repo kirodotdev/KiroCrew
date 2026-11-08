@@ -260,6 +260,24 @@ LEARN_REMOVE_SCHEMA = ToolSchema(
         # keeps the route's own default rather than asserting one here.
         FieldSpec("scope", str, allowed=ALLOWED_LESSON_SCOPES),
         FieldSpec("workspace", str, max_len=MAX_SHORT_STRING, pattern=WORKSPACE_NAME_RE),
+        # Collapse duplicates: of the matches, keep the oldest row of each
+        # (rule, scope) group and remove the rest.
+        FieldSpec("keep_one", bool),
+    ],
+)
+
+# ``PATCH /api/lessons`` and ``learn_update``: change one lesson's tier in place.
+LEARN_UPDATE_SCHEMA = ToolSchema(
+    tool_name="learn_update",
+    fields=[
+        # The lesson's whole text as learn_list shows it, NOT-clause included. Bounded
+        # by the stored value rather than learn_add's rule cap: older lessons are
+        # longer than a new rule may be, and a re-tier has to reach them too.
+        FieldSpec("rule", str, required=True, max_len=MAX_MEDIUM_STRING),
+        FieldSpec("repo_scope", str, max_len=MAX_SHORT_STRING, pattern=SCOPE_FRAGMENT_RE),
+        # The tier the caller read, checked before anything is written.
+        FieldSpec("current", str, required=True, allowed=ALLOWED_LESSON_APPLIES),
+        FieldSpec("applies", str, required=True, allowed=ALLOWED_LESSON_APPLIES),
     ],
 )
 
@@ -380,9 +398,9 @@ MONITOR_WATCH_SCHEMA = ToolSchema(
     tool_name="monitor_watch",
     custom_validator=_validate_monitor_runtime,
     fields=[
-        FieldSpec("kind", str, required=True, allowed=publicly_armable_kinds()),
+        FieldSpec("kind", str, required=True, allowed=publicly_armable_kinds),
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
-        FieldSpec("objective", str, required=True, allowed=publicly_armable_objectives()),
+        FieldSpec("objective", str, required=True, allowed=publicly_armable_objectives),
         FieldSpec(
             "interval_secs",
             int,
@@ -550,7 +568,7 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
         FieldSpec("max_cycles", int, min_val=1, max_val=1000),
         FieldSpec("max_runtime_secs", (int, float), min_val=1, max_val=MAX_RUNTIME_CEILING_SECS),
         FieldSpec("target", str, max_len=MAX_SHORT_STRING),
-        FieldSpec("objective", str, allowed=publicly_armable_objectives()),
+        FieldSpec("objective", str, allowed=publicly_armable_objectives),
         # Floor 0, not 1: zero is the unlimited sentinel for this one budget.
         FieldSpec("max_agent_turns", int, min_val=0, max_val=MAX_MONITOR_AGENT_TURNS),
         FieldSpec("max_tokens", int, min_val=1, max_val=MAX_MONITOR_TOKENS),

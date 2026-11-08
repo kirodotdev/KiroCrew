@@ -11,13 +11,19 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.config.fields import _coerce_bool
+from kiro_crew.dashboard.body_numbers import body_int
 from kiro_crew.dashboard.chat_folders_icons import (
     _CHAT_FOLDER_ICON_EPOCHS,
+    _CHAT_FOLDER_ICON_PREVIEWS,
     _CHAT_FOLDER_PENDING_ICON_TASKS,
     _bump_icon_epoch,
     _is_single_emoji,
     _is_valid_folder_color,
+    _prune_icon_tasks_from_other_loops,
     _spawn_chat_folder_icon_task,
+    generate_emoji_for_name,
+    icon_preview_avoid,
 )
 from kiro_crew.dashboard.chat_folders_paths import (
     _folder_project_overlap_denied,
@@ -27,9 +33,11 @@ from kiro_crew.dashboard.chat_folders_paths import (
 )
 from kiro_crew.dashboard.chat_folders_records import (
     CREATED_BY_SESSION,
+    LAYOUT_ONLY_FIELDS,
     MAX_CHAT_FOLDERS,
     FolderCapError,
     FolderCreateError,
+    FolderMateHomeLockedError,
     FolderNameExistsError,
     FolderOwnershipError,
     _audit_origin,
@@ -41,7 +49,9 @@ from kiro_crew.dashboard.chat_folders_records import (
     _validate_folder_tags,
     agent_creator_key,
     caller_home_slot,
+    clean_folder_default_prompt,
     create_folder_record,
+    refuse_channel_reachable_agent,
 )
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_tags import tags_write_lock
@@ -53,20 +63,35 @@ from kiro_crew.dashboard.folder_ownership import (
     _subtree_holds_foreign_folder,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.mate_folders import (
+    MateFolderError,
+    home_create_target,
+    in_mate_home,
+    is_mate_home,
+    is_mate_principal,
+    mate_home_id,
+    refuses_write_into,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.token_auth import MEMBER_CHAT_PRINCIPAL_KEY
 from kiro_crew.dashboard.token_auth import effective_request_app as _effective_request_app
 from kiro_crew.dashboard.token_auth import folder_principal
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.instances.crew_ref import clean_crew_ref
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_folders")
 
 
-#: PATCH fields that change how the sidebar draws a folder rather than what the
-#: folder is. A person changing only these has not claimed the folder:
-#: collapsing it to look past it, or a drag that renumbers its siblings.
-_LAYOUT_ONLY_FIELDS = frozenset({"collapsed", "order"})
+def _mate_home_locked() -> web.Response:
+    """The refusal for a write a mate's home folder does not take."""
+    return web.json_response(
+        {
+            "error": "this folder belongs to a Bot and is managed for you",
+            "code": "mate_home_locked",
+        },
+        status=403,
+    )
 
 
 async def api_chat_folders(request: web.Request) -> web.Response:
@@ -113,6 +138,8 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     """POST /api/chat/folders — create a project folder."""
     state: DashboardState = request.app["state"]
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
+    if (refusal := refuse_channel_reachable_agent(request, "chat.folder_create")) is not None:
         return refusal
     # Rate-limit INTERNAL callers only. This endpoint is mixed-path: the browser's
     # own "new folder" control posts here too, and a person organizing their chats
@@ -203,13 +230,31 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     if refused is not None:
         return refused
     parent_id = str(body.get("parent_id") or "")
+    project_dir = str(body.get("project_dir") or "")
+    if refuses_write_into(state._folders, parent_id, request_app):
+        return _mate_home_locked()
+    if is_mate_principal(request_app):
+        # A mate's folders live inside its own home folder: a create at
+        # the top level or under a folder outside that home is filed under it,
+        # keeping the project a person's folder it named inherits.
+        try:
+            parent_id, project_dir = await home_create_target(
+                state, request_app, parent_id, project_dir
+            )
+        except MateFolderError:
+            return web.json_response(
+                {"error": f"folder cap reached ({MAX_CHAT_FOLDERS})", "code": "folder_cap_reached"},
+                status=409,
+            )
     try:
         folder = await create_folder_record(
             state,
             name=str(body.get("name") or ""),
             parent_id=parent_id,
-            project_dir=str(body.get("project_dir") or ""),
+            project_dir=project_dir,
             default_agent=str(body.get("default_agent") or "").strip(),
+            default_destination_crew=clean_crew_ref(body.get("default_destination_crew")),
+            default_prompt=body.get("default_prompt"),
             color=str(body.get("color") or ""),
             icon=icon_val,
             request_app=request_app,
@@ -234,6 +279,8 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
             error="a folder with this name already exists under that parent",
         )
         return web.json_response({"error": str(exc), "code": exc.code}, status=409)
+    except FolderMateHomeLockedError:
+        return _mate_home_locked()
     except FolderOwnershipError as exc:
         sel().log_api_access(
             caller=request_app,
@@ -245,7 +292,7 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": str(exc), "code": exc.code}, status=403)
     except FolderCapError as exc:
-        return web.json_response({"error": str(exc), "code": exc.code}, status=429)
+        return web.json_response({"error": str(exc), "code": exc.code}, status=409)
     except FolderCreateError as exc:
         # Inline literals rather than one hoisted payload dict: the error-code
         # contract scan reads the body at the `json_response` site, and a local
@@ -297,6 +344,19 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             {"error": "request body must be a JSON object", "code": "invalid_json"},
             status=400,
         )
+    # A mate's home folder is managed by the gateway: it can be collapsed and
+    # reordered, never renamed, moved or reconfigured. Nothing outside the
+    # mate may move a folder into it either.
+    layout_only = set(body) <= LAYOUT_ONLY_FIELDS
+    if (
+        (is_mate_home(folder) and not layout_only)
+        or (refuses_write_into(state._folders, fid, request_app) and not layout_only)
+        or (
+            "parent_id" in body
+            and refuses_write_into(state._folders, str(body["parent_id"] or ""), request_app)
+        )
+    ):
+        return _mate_home_locked()
     # Validate ALL submitted fields into a pending-changes dict BEFORE mutating
     # ``folder`` — otherwise an early field (e.g. name) is persisted while a later
     # field (e.g. an invalid/cyclic parent_id) returns 400, leaving the rejected
@@ -311,23 +371,68 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         if not new_name:
             return web.json_response({"error": "name required"}, status=400)
         changes["name"] = new_name
+    # A spelled "false"/"0"/"no"/"off" means False; any other value keeps the
+    # truthiness it has always been saved with.
     if "collapsed" in body:
-        changes["collapsed"] = bool(body["collapsed"])
+        changes["collapsed"] = _coerce_bool(body["collapsed"], bool(body["collapsed"]))
     if "hidden" in body:
-        changes["hidden"] = bool(body["hidden"])
+        changes["hidden"] = _coerce_bool(body["hidden"], bool(body["hidden"]))
+    if "pinned" in body:
+        # A pinned folder's sessions stay listed while the sidebar's status
+        # chips, tag chips or folder checkboxes narrow the list (text search
+        # still applies). Stored here, with the session pin, so it follows
+        # the person across browsers. Not a layout field: pinning a folder is
+        # the person saying they want it, so it claims the folder like
+        # ``hidden`` does.
+        #
+        # The person's, only. The pin overrides the person's own active
+        # filters, so an app or crew member pinning its folder would force its
+        # sessions onto the person's screen past every chip until they unpin.
+        # Folder ownership grants no say over the person's view; refused and
+        # audited like ``steering_dirs``.
+        if request_app:
+            sel().log_api_access(
+                caller=request_app,
+                operation="chat.folder_pinned",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"folder={fid}",
+                error="pinned may be set only by the person",
+            )
+            return web.json_response(
+                {
+                    "error": "pinned may be set only from the person's own session",
+                    "code": "pinned_forbidden",
+                },
+                status=403,
+            )
+        if not isinstance(body["pinned"], bool):
+            # Strict, like ``regenerate_icon``: the string "false" is truthy,
+            # so coercion would pin on a request that asked to unpin.
+            return web.json_response(
+                {"error": "pinned must be a boolean", "code": "pinned_invalid"}, status=400
+            )
+        changes["pinned"] = body["pinned"]
     if "order" in body:
         # A non-numeric, null, or non-finite order is caller error, not a server
         # fault: int() would raise and surface as a 500 (no middleware maps
-        # handler exceptions). OverflowError covers JSON infinities such as
-        # 1e309, which int() rejects with neither TypeError nor ValueError.
-        # Skip the field instead, matching api_chat_tag_update.
+        # handler exceptions). body_int turns a JSON infinity such as 1e309
+        # into a ValueError. Skip the field instead, matching
+        # api_chat_tag_update.
         try:
-            changes["order"] = int(body["order"])
-        except (TypeError, ValueError, OverflowError):
+            changes["order"] = body_int(body["order"])
+        except (TypeError, ValueError):
             pass
     if "default_agent" in body:
         val = body["default_agent"]
         changes["default_agent"] = str(val).strip() if val is not None else ""
+    if "default_destination_crew" in body:
+        changes["default_destination_crew"] = clean_crew_ref(body["default_destination_crew"])
+    if "default_prompt" in body:
+        try:
+            changes["default_prompt"] = clean_folder_default_prompt(body["default_prompt"])
+        except FolderCreateError as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     reparenting = "parent_id" in body
     new_parent = ""
     if reparenting:
@@ -353,6 +458,21 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                     {"error": "cannot move a folder into its own descendant"},
                     status=400,
                 )
+        if is_mate_principal(request_app) and (
+            fid == mate_home_id(state._folders, request_app)
+            or not in_mate_home(state._folders, fid, request_app)
+            or not in_mate_home(state._folders, new_parent, request_app)
+        ):
+            # A mate's folders stay inside its own home folder, and the home
+            # itself stays at the top level. A folder outside the home is not
+            # moved in: the person's chats filed there would be locked in too.
+            return web.json_response(
+                {
+                    "error": "a Bot's folders stay inside its own folder",
+                    "code": "mate_folder_scope",
+                },
+                status=403,
+            )
         changes["parent_id"] = new_parent
     if "project_dir" in body:
         pd, err = _validate_project_dir(str(body["project_dir"] or "").strip())
@@ -484,38 +604,16 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # is counted here by name. A person moving a folder INTO another also
     # claims that destination, the same as nesting a new folder under it.
     by_person = origin_source == "dashboard"
-    claims_for_person = by_person and (regenerate_icon or bool(set(changes) - _LAYOUT_ONLY_FIELDS))
+    claims_for_person = by_person and (regenerate_icon or bool(set(changes) - LAYOUT_ONLY_FIELDS))
     claims_parent_for_person = by_person and reparenting and bool(new_parent)
-    # An agent rename or restyle from a session a channel can drive is refused
-    # here, not only in the MCP tool: a conversation resumed from a channel into
-    # a dashboard session keeps that session's ``dashboard:`` key, so no check on
-    # the key can tell the channel's turns from the person's. Reachability is
-    # state this endpoint holds (``_caller_reaches_a_channel``). Moves and
-    # reorders go through chat_folder_move, whose channel rule is its own.
-    caller_key = request.headers.get("X-Session-Key", "").strip()
-    if (
-        origin_source != "dashboard"
-        and ({"name", "icon", "color"} & changes.keys() or regenerate_icon)
-        and _caller_reaches_a_channel(request, caller_key)
-    ):
-        sel().log_api_access(
-            caller=request_app or origin_caller,
-            operation="chat.folder_update",
-            outcome="denied",
-            source="channel_containment",
-            resources=fid,
-            error="agent rename from a session a channel can drive",
-        )
-        return web.json_response(
-            {
-                "error": (
-                    "this session can receive turns from a channel conversation, so "
-                    "an agent cannot rename or restyle folders from it"
-                ),
-                "code": "channel_reachable_caller",
-            },
-            status=403,
-        )
+    # An agent rename, restyle or move from a session a channel can drive is
+    # refused here, not only in the MCP tool: a conversation resumed from a
+    # channel into a dashboard session keeps that session's ``dashboard:`` key,
+    # so no check on the key can tell the channel's turns from the person's.
+    if {"name", "icon", "color", "parent_id", "order"} & changes.keys() or regenerate_icon:
+        refusal = refuse_channel_reachable_agent(request, "chat.folder_update", fid)
+        if refusal is not None:
+            return refusal
 
     def _apply(folders: list[dict[str, Any]]) -> tuple[bool, str]:
         target = next((f for f in folders if f["id"] == fid), None)
@@ -552,16 +650,20 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # renders exactly as a reparent does. Checked for a move to the top
             # level too -- "" is still a move.
             return False, "foreign_descendant"
-        if refuse_duplicate_name and "name" in changes:
+        current_parent = str(target.get("parent_id") or "")
+        final_parent = new_parent if reparenting else current_parent
+        if refuse_duplicate_name and ("name" in changes or final_parent != current_parent):
             # Same rule and same place as create_folder_record's: an agent never
             # makes a same-name sibling, because the two then share one path and
-            # neither can be addressed by it. Decided here, under the lock, over
-            # the whole tree -- a crew member's own GET is filtered, so a check
-            # against what the caller can read would miss a folder it cannot
-            # see. The folder's own row is excluded, so re-casing its own name
-            # is allowed. The browser keeps a person's freedom to name two alike.
-            final_parent = new_parent if reparenting else str(target.get("parent_id") or "")
-            folded = str(changes["name"]).strip().casefold()
+            # neither can be addressed by it. A rename and a move both make one
+            # (chat_folder_move sends a parent_id-only PATCH), so both are
+            # checked; a write that keeps both the name and the parent is not.
+            # Decided here, under the lock, over the whole tree -- a crew
+            # member's own GET is filtered, so a check against what the caller
+            # can read would miss a folder it cannot see. The folder's own row
+            # is excluded, so re-casing its own name is allowed. The browser
+            # keeps a person's freedom to name two alike.
+            folded = str(changes.get("name", target.get("name")) or "").strip().casefold()
             if any(
                 str(f.get("id")) != fid
                 and str(f.get("parent_id") or "") == final_parent
@@ -583,6 +685,8 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # default glyph" stays the single on-disk representation
             # (mirrors color above).
             target.pop("icon", None)
+        if not target.get("default_prompt"):
+            target.pop("default_prompt", None)
         if not target.get("steering_dirs"):
             # Empty list clears the key entirely, so "absent means none" stays
             # the single on-disk representation (mirrors color/tags). PATCH with
@@ -592,6 +696,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             # Empty list clears the key entirely, so "absent means no tags"
             # stays the single on-disk representation (mirrors color above).
             target.pop("tags", None)
+        if not target.get("pinned"):
+            # Unpinning clears the key entirely, so "absent means not pinned"
+            # stays the single on-disk representation: every folder written
+            # before this field existed already reads that way.
+            target.pop("pinned", None)
         committed_name.append(str(target.get("name") or ""))
         return True, ""
 
@@ -657,7 +766,7 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             outcome="denied",
             source="duplicate_name",
             resources=fid,
-            error="agent rename would duplicate a sibling folder name",
+            error="agent rename or move would duplicate a sibling folder name",
         )
         return web.json_response(
             {
@@ -716,6 +825,120 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         resources=fid,
     )
     return web.json_response(folder)
+
+
+#: Model calls one preview may make: a pick that repeats an ``avoid`` emoji is
+#: retried once, so a person clicking again never gets the same icon back.
+_ICON_PREVIEW_ATTEMPTS = 2
+
+
+async def api_chat_folder_icon_preview(request: web.Request) -> web.Response:
+    """POST /api/chat/folders/{id}/icon-preview -- pick an emoji, save nothing.
+
+    The folder modal's Auto-generate button calls this so the person sees the
+    icon before Save; Save then sends it as an ordinary ``icon``. The body is
+    optional: ``name`` (the draft name, else the stored one) and ``avoid`` (emoji
+    already shown, so a second click picks another). It answers 200
+    ``{"icon": "<emoji>"}``, or 502 ``icon_generate_failed`` when no single emoji
+    came back. One preview per folder at a time, and none while a background
+    generation for it is pending. ``PATCH regenerate_icon`` is unchanged.
+    """
+    state: DashboardState = request.app["state"]
+    if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
+    fid = request.match_info["id"]
+    folder = next((f for f in state._folders if f["id"] == fid), None)
+    if not folder:
+        return web.json_response({"error": "not found", "code": "folder_not_found"}, status=404)
+    request_app = folder_principal(state, request)
+    if is_mate_home(folder) or refuses_write_into(state._folders, fid, request_app):
+        return _mate_home_locked()
+    origin_source, origin_caller = _audit_origin(request)
+    if request_app and _folder_owner_app(folder) != request_app:
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.folder_icon_preview",
+            outcome="denied",
+            source="app_isolation",
+            resources=fid,
+            error="app cannot preview an icon for a folder it does not own",
+        )
+        return web.json_response(
+            {"error": "this app does not own that folder", "code": "folder_not_owned"},
+            status=403,
+        )
+    body: Any = {}
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "invalid_json"},
+            status=400,
+        )
+    raw_avoid = body.get("avoid", [])
+    if not isinstance(raw_avoid, list):
+        return web.json_response(
+            {"error": "avoid must be a list of emoji", "code": "avoid_invalid"}, status=400
+        )
+    avoid = tuple(str(a).strip() for a in raw_avoid if isinstance(a, str))
+    name = str(body.get("name") or "").strip()[:100] or str(folder.get("name") or "")
+    caller_key = request.headers.get("X-Session-Key", "").strip()
+    if origin_source != "dashboard" and _caller_reaches_a_channel(request, caller_key):
+        # The same containment as an agent's regenerate_icon PATCH: a session a
+        # channel can drive does not spend model calls on folder icons.
+        sel().log_api_access(
+            caller=request_app or origin_caller,
+            operation="chat.folder_icon_preview",
+            outcome="denied",
+            source="channel_containment",
+            resources=fid,
+            error="agent icon preview from a session a channel can drive",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "this session can receive turns from a channel conversation, so "
+                    "an agent cannot restyle folders from it"
+                ),
+                "code": "channel_reachable_caller",
+            },
+            status=403,
+        )
+    _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
+    pending = _CHAT_FOLDER_PENDING_ICON_TASKS.get(fid)
+    if fid in _CHAT_FOLDER_ICON_PREVIEWS or (pending is not None and not pending.done()):
+        return web.json_response(
+            {"error": "an icon is already being generated for this folder", "code": "icon_busy"},
+            status=409,
+        )
+    # An icon already shown is not a new pick: one bounded retry, then 502.
+    # Compared without the emoji variation selector, which models drop or add.
+    shown = {a.replace("\ufe0f", "") for a in icon_preview_avoid(avoid)}
+    _CHAT_FOLDER_ICON_PREVIEWS.add(fid)
+    try:
+        icon = ""
+        for _ in range(_ICON_PREVIEW_ATTEMPTS):
+            icon = await generate_emoji_for_name(state, name, avoid=avoid)
+            if not icon or icon.replace("\ufe0f", "") not in shown:
+                break
+            icon = ""
+    finally:
+        _CHAT_FOLDER_ICON_PREVIEWS.discard(fid)
+    sel().log_api_access(
+        caller=request_app or origin_caller,
+        operation="chat.folder_icon_preview",
+        outcome="allowed" if icon else "failed",
+        source=origin_source,
+        resources=fid,
+    )
+    if not icon:
+        return web.json_response(
+            {"error": "no icon could be generated", "code": "icon_generate_failed"}, status=502
+        )
+    return web.json_response({"icon": icon})
 
 
 #: The most rows one reorder request may carry. A reorder writes one row per
@@ -784,6 +1007,8 @@ async def api_chat_folder_reorder(request: web.Request) -> web.Response:
     """
     state: DashboardState = request.app["state"]
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
+        return refusal
+    if (refusal := refuse_channel_reachable_agent(request, "chat.folder_reorder")) is not None:
         return refusal
     request_app = folder_principal(state, request)
     body, body_err = await read_bounded_json(request, max_bytes=_MAX_REORDER_BODY_BYTES)
@@ -978,6 +1203,9 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     target = next((f for f in state._folders if f["id"] == fid), None)
     if target is None:
         return web.json_response({"error": "not found"}, status=404)
+    principal = folder_principal(state, request)
+    if is_mate_home(target) or refuses_write_into(state._folders, fid, principal):
+        return _mate_home_locked()
     request_app = _effective_request_app(state, request)
     # Answered before a single slot is unfiled, so the common refusal costs no
     # rollback. Sound pre-lock because ``owner_app`` is stamped at create and no
@@ -1106,6 +1334,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         if refused:
             return web.json_response({"error": refused, "code": "folder_not_empty"}, status=409)
         _CHAT_FOLDER_ICON_EPOCHS.pop(fid, None)
+        _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
         pending_icon = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
         if pending_icon is not None and not pending_icon.done():
             pending_icon.cancel()
@@ -1227,6 +1456,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     # is safe after a confirmed delete: a write already started finishes under
     # the shield, and its write-back re-finds the folder by id, which no
     # longer exists, so nothing lands.
+    _prune_icon_tasks_from_other_loops(asyncio.get_running_loop())
     pending = _CHAT_FOLDER_PENDING_ICON_TASKS.pop(fid, None)
     if pending is not None and not pending.done():
         pending.cancel()

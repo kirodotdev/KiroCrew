@@ -195,23 +195,15 @@ _UP_STATES = frozenset({"active", "reloading"})
 class _UnitState:
     """What one systemd scope says about ``kirocrew.service``.
 
-    ``load`` is systemd's ``LoadState`` (``loaded``, ``not-found``, ``masked``,
-    ...) or ``None`` when the scope could not be queried at all, in which case
-    ``error`` carries the reason. ``unit_id`` is the canonical ``Id`` the manager
-    resolved the name to — another unit's name when ours is an alias — and
-    ``fragment`` the unit file it loaded for THAT unit — the path
-    :func:`_owned_unit` decides ownership from. ``result`` is
-    the unit's ``Result`` — ``success``, or why its last run ended (``exit-code``,
-    ``signal``, ``start-limit-hit``, …) — which is what tells a crash loop's
-    ``activating (auto-restart)`` apart from a unit that is merely slow to start.
+    ``load`` is systemd's ``LoadState``, or ``None`` when the scope could not be
+    queried (``error`` says why). ``unit_id`` is the canonical ``Id`` (another
+    unit's name when ours is an alias); ``fragment`` is that unit's file, which
+    :func:`_owned_unit` decides ownership from. ``result`` is the ``Result`` of the
+    last run, which tells a crash loop's ``activating (auto-restart)`` from a slow start.
 
-    Two questions are asked of this state and they are deliberately not the
-    same predicate: :attr:`running` — is there a process a ``stop`` or
-    ``restart`` must reach, which includes a unit the manager is still trying
-    to run — and :attr:`up` — is the gateway actually running right now, which
-    excludes it. A ``203/EXEC`` crash loop is the state the two disagree on:
-    ``kirocrew stop`` must reach it, ``kirocrew service status`` must not exit
-    0 for it.
+    :attr:`running` (a process ``stop``/``restart`` must reach, including a unit
+    the manager is still retrying) and :attr:`up` (the gateway runs now) differ
+    on purpose: a ``203/EXEC`` crash loop is ``running`` but not ``up``.
     """
 
     scope: str

@@ -20,6 +20,7 @@ import os
 import shutil
 import signal
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from kiro_crew.env import (
     mcp_search_path,
     resolved_command_casing,
     sanitize_spec_env,
+    saved_command_casing,
     spec_path_key,
 )
 from kiro_crew.executors import mcp_probe_executor
@@ -49,6 +51,7 @@ from kiro_crew.mcp_discovery_probe_state import (
 )
 from kiro_crew.mcp_discovery_remote import _probe_remote
 from kiro_crew.mcp_discovery_server_info import McpServerInfo
+from kiro_crew.mcp_gateway.read_limits import resolve_read_buffer_limit
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
     SandboxUnavailableError,
@@ -73,6 +76,9 @@ logger = logging.getLogger("kiro_crew.mcp_discovery")
 # emits its response immediately; a chatty launcher (e.g. ``aim`` mid-self-
 # update) may prepend a banner line or two.
 _MAX_BANNER_LINES = 50
+
+#: A probe's error for an ``env`` that is not a map of names to values.
+_ENV_NOT_A_MAP_ERROR = 'env must be an object of variable names to values, like {"API_KEY": "..."}'
 
 
 async def _read_stdio_jsonrpc_response(
@@ -197,6 +203,41 @@ def _drop_temp_refusals(server: McpServerInfo) -> None:
         cached.temp_refusals = []
 
 
+def secret_reference_refusal(secret_keys: list[str] | tuple[str, ...]) -> str:
+    """The not-probed reason for a server whose env holds ``secret://`` values.
+
+    Names only the env KEYS, never a value. The MCP tab shows an ``outdated``
+    row's error as this reason, with the routing guide beside it.
+    """
+    return (
+        f"not probed: env {', '.join(secret_keys)} holds a secret:// reference, "
+        "which is resolved only when the MCP gateway starts the server"
+    )
+
+
+def _served_by_gateway(name: str) -> bool:
+    """True when the running MCP gateway starts server *name* for a session.
+
+    The same answer the agent-spec rebuild acts on
+    (``kiro_crew.agent.gateway_routed_names``, matched with
+    ``routed_for_secret_reference``): saved routing AND a stub in the overlay the
+    running gateway built. Saved routing alone is only intent until the next
+    gateway start, so a row reads routed exactly when a session would launch the
+    server through the gateway. Blocking (config and overlay reads); any failure
+    answers False, which keeps the refusal row and its routing guidance.
+    """
+    try:
+        # Deferred: ``kiro_crew.agent`` is heavy, and this probe module must not
+        # pull it in at import time.
+        from kiro_crew import agent
+        from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference
+
+        return routed_for_secret_reference(name, agent.gateway_routed_names())
+    except Exception:  # noqa: BLE001 -- "cannot tell" keeps the refusal row
+        logger.debug("Could not read MCP gateway routing for %s", name, exc_info=True)
+        return False
+
+
 def _redact_temp_refusal_text(text: str) -> str:
     """The redactor the declared-temp WARNING applies to a path or failure."""
     return _sanitize_probe_error(ValueError(text))
@@ -278,6 +319,20 @@ async def probe_server(
         logger.warning("MCP probe failed [%s]: no command configured", server.name)
         return server
 
+    # ``env`` is a map of variable names to values. A hand-edited entry can hold
+    # a list or a string there instead, and the spawn below reads it by key, so
+    # without this the error would be Python's own indexing message, which
+    # names nothing the person wrote. Said once, here, in the config's own
+    # terms. Not swapped for an empty map: a server started without its declared
+    # variables would fail in a way that points somewhere else entirely.
+    # An EMPTY one (``[]``, ``""``, as some JSON writers spell an empty map)
+    # declares no variables and probes today, so only a non-empty one is refused.
+    if server.env and not isinstance(server.env, Mapping):
+        server.status = "error"
+        server.error = _ENV_NOT_A_MAP_ERROR
+        logger.warning("MCP probe failed [%s]: env is not an object", server.name)
+        return server
+
     # A direct probe runs outside the MCP gateway, the one place a ``secret://``
     # env value is resolved, so it would start the server with the literal
     # reference as its credential. Refused before any spawn, and not cached, so
@@ -289,11 +344,19 @@ async def probe_server(
     secret_keys = secret_reference_keys(server.env)
     if secret_keys:
         _drop_temp_refusals(server)
+        # A server the running gateway serves is started there, where the
+        # reference IS resolved, so "route it through the gateway" is not its
+        # next step. It reports ``routed``: no probe ran, so it states where
+        # the server runs and claims nothing about its health, and like
+        # ``outdated`` it carries no verdict (not cached, not counted toward the
+        # quarantine). Off the loop: the routing answer reads config and the
+        # overlay from disk.
+        if await asyncio.to_thread(_served_by_gateway, server.name):
+            server.status = "routed"
+            server.error = ""
+            return server
         server.status = "outdated"
-        server.error = (
-            f"not probed: env {', '.join(secret_keys)} holds a secret:// reference, "
-            "which is resolved only when the MCP gateway starts the server"
-        )
+        server.error = secret_reference_refusal(secret_keys)
         return server
 
     if not _on_private_loop:
@@ -326,15 +389,27 @@ async def probe_server(
         # Case-insensitive PATH key: a Windows-authored spec says "Path", and
         # the emitted config normalizes under that same spelling — reading only
         # "PATH" here would probe with a different path than the session gets.
-        _path_key = spec_path_key(server.env)
-        _declared_path = server.env.get(_path_key, "") if _path_key else ""
+        #
+        # Home/login names in env values (PATH and temp keys included) and the
+        # command are expanded the way the emitted agent spec expands them (see
+        # expand_spec_args), so a ``${HOME}/...`` value is not probed literally,
+        # failed and quarantined. Every reader below takes this one expanded
+        # map; ``server.env`` keeps the declaration as written.
+        _spec_env = server.env or {}
+        _env_keys = list(_spec_env)
+        _declared_env = dict(
+            zip(_env_keys, expand_spec_args([_spec_env[k] for k in _env_keys], server=server.name))
+        )
+        _command = expand_spec_args([server.command], server=server.name)[0]
+        _path_key = spec_path_key(_declared_env)
+        _declared_path = _declared_env.get(_path_key, "") if _path_key else ""
         env["PATH"] = mcp_search_path(_declared_path if isinstance(_declared_path, str) else "")
         # The declared env is untrusted config text applied to the environment
         # the SANDBOX LAUNCHER starts under, so loader/interpreter injection
         # keys must not pass through — they would execute before confinement
         # exists. See env.sanitize_spec_env; _note_denied_env explains a
         # resulting failure to the dashboard reader.
-        env.update(sanitize_spec_env((k, v) for k, v in server.env.items() if k != _path_key))
+        env.update(sanitize_spec_env((k, v) for k, v in _declared_env.items() if k != _path_key))
 
         # Resolve command to absolute path using the merged env PATH
         effective_path = env.get("PATH") or ""
@@ -344,22 +419,23 @@ async def probe_server(
         # consulted, inverting the not-installed/installed-elsewhere distinction
         # the search-path report exists to draw -- so the report gets "" while
         # the lookup below still uses the real PATH.
-        reported_path = "" if os.path.dirname(server.command) else effective_path
+        reported_path = "" if os.path.dirname(_command) else effective_path
         # Same rule the agent-config resolver and gatewayd's rewriter apply, so
         # the probe spawns the spelling the session will use: an absolute
         # command that exists and is executable is the operator's own spelling
-        # and runs verbatim; a PATH-resolved one gets the casing repair, since
-        # a PATHEXT-synthesized ``.EXE`` reaching an ``argv[0]``-dispatching
-        # shim would fail (or pass) the probe for a reason the session does
-        # not share.
+        # and runs verbatim, except a saved PATHEXT ``.EXE`` extension, which
+        # ``saved_command_casing`` heals; a PATH-resolved one gets the casing
+        # repair, since a PATHEXT-synthesized ``.EXE`` reaching an
+        # ``argv[0]``-dispatching shim would fail (or pass) the probe for a
+        # reason the session does not share.
         if (
-            os.path.isabs(server.command)
-            and os.path.isfile(server.command)
-            and os.access(server.command, os.X_OK)
+            os.path.isabs(_command)
+            and await asyncio.to_thread(os.path.isfile, _command)
+            and os.access(_command, os.X_OK)
         ):
-            resolved = server.command
+            resolved = saved_command_casing(_command)
         else:
-            resolved = resolved_command_casing(shutil.which(server.command, path=effective_path))
+            resolved = resolved_command_casing(shutil.which(_command, path=effective_path))
         if not resolved:
             server.status = "error"
             server.error = _unresolved_error(server.command, reported_path)
@@ -398,7 +474,7 @@ async def probe_server(
         # when containment cannot be set up.
         #
         # Allocated BEFORE the sandbox wrap: the managed root lives at
-        # ``<data home>/run/mcp-tmp``, inside the runtime parent the sandbox
+        # ``<data home>/run/t``, inside the runtime parent the sandbox
         # seals read-only, so the wrap must know the directory to carve its
         # write access out of that seal. Allocating after the wrap hands the
         # child a ``TMPDIR`` it cannot write -- a Bun-packaged server then
@@ -441,7 +517,7 @@ async def probe_server(
         if _declared_temp_upper:
             accepted, _sealed_temp, failure = await asyncio.to_thread(
                 classify_declared_temp_env,
-                server.env or {},
+                _declared_env,
                 classifier=classify_declared_temp_path,
             )
             _declared_temp_upper = set(accepted)
@@ -576,7 +652,9 @@ async def probe_server(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
-                limit=1024 * 1024,  # 1 MB — some MCP servers return large responses
+                # The gateway's per-line ceiling, so a server it can serve
+                # does not probe as an error on a large ``tools/list``.
+                limit=resolve_read_buffer_limit(),
                 # POSIX: setsid so the probe owns a dedicated process group and
                 # teardown can killpg launcher grandchildren (a leader-only kill
                 # leaked ``npx @playwright/mcp`` -> node trees). Windows: silently
@@ -977,8 +1055,8 @@ async def probe_server(
                 # sweep (owner dead AND 1h+ whole-tree idle) from THIS
                 # process: it reclaims prior probes' dead dirs while never
                 # touching the fresh one (its tree is seconds old). Running
-                # it here, not only in the mcp-tmp daemon, matters because a
-                # topology with no stub servers never starts that daemon --
+                # it here, not only in the backend-tmp daemon, matters because
+                # a topology with no stub servers never starts that daemon --
                 # probes must not depend on it for reclamation. Concurrent
                 # with a daemon sweep it is benign: both sides lstat-recheck
                 # and rmtree(ignore_errors=True).

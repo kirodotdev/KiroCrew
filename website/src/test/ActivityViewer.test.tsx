@@ -151,6 +151,9 @@ describe('ActivityViewer', () => {
     expect(screen.queryByText('No files changed yet')).toBeNull()
     expect(screen.queryByText('/proj/foo.ts')).toBeNull()
     expect(screen.getByText(/No pull requests in this session yet/)).toBeInTheDocument()
+    // The empty state names what the tab lists and where edited files live,
+    // so "Changes" is not read as a list of edited files.
+    expect(screen.getByText('This tab lists the pull requests and merge requests this session links to. Edited files are in the Files tab.')).toBeInTheDocument()
   })
 
   it('Resources hides links present in the Changes tab (sources) and keeps the rest', () => {

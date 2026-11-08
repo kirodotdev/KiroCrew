@@ -9,14 +9,18 @@ write surface (store, MCP tools) validates it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from kiro_crew import cron as cron_facade
 from kiro_crew.cron import _AUTO_PAUSE_THRESHOLD, CronJob, CronSchedule, CronService
+from kiro_crew.cron_service.execution import close_run
 from kiro_crew.cron_service.model import (
     _AUTO_PAUSE_MAX,
     _NEVER_PAUSE_BACKOFF_BASE_SECS,
@@ -161,6 +165,74 @@ class TestNeverPauseBackoff:
         now = job.last_run_ts + 30
         nxt = compute_next_run_ts(job, now)
         assert nxt is not None and nxt >= job.failure_backoff_until()
+
+    def _quarter_hourly_failing(self) -> CronJob:
+        # Last run 08:40 UTC; 7 failures put the backoff end on the 09:00 slot.
+        job = self._failing(7, last=datetime(2026, 10, 26, 8, 40, tzinfo=timezone.utc).timestamp())
+        job.schedule = CronSchedule(kind="cron", cron_expr="*/15 * * * *")
+        job.timezone = "UTC"
+        return job
+
+    def test_cron_display_keeps_a_slot_that_falls_exactly_on_the_backoff_end(self) -> None:
+        job = self._quarter_hourly_failing()
+        until = job.failure_backoff_until()
+        assert until == datetime(2026, 10, 26, 9, 0, tzinfo=timezone.utc).timestamp()
+        assert is_due(job, until)
+        assert compute_next_run_ts(job, job.last_run_ts + 60) == until
+
+    def test_cron_display_keeps_the_minute_a_fractional_backoff_end_falls_in(self) -> None:
+        # A cron run's last_run_ts is its completion time, so the end is rarely whole.
+        job = self._quarter_hourly_failing()
+        job.last_run_ts += 0.5  # backoff now ends half a second into the 09:00 slot
+        until = job.failure_backoff_until()
+        nxt = compute_next_run_ts(job, job.last_run_ts + 60)
+        assert nxt == until and is_due(job, nxt)
+
+    def test_a_late_backoff_end_in_a_matching_minute_is_woken_on_and_shown(self) -> None:
+        # Ends 45 s into the 09:00 slot: past both the boundary wake and the 30 s poll.
+        job = self._quarter_hourly_failing()
+        job.last_run_ts += 45
+        until = job.failure_backoff_until()
+        assert until == datetime(2026, 10, 26, 9, 0, 45, tzinfo=timezone.utc).timestamp()
+        assert not is_due(job, until - 15) and is_due(job, until)
+        assert compute_next_run_ts(job, job.last_run_ts + 60) == until
+        assert next_wake_secs([job], set(), until - 15) == pytest.approx(15)
+        # Read inside that minute, before the end: the end is still the next run.
+        assert compute_next_run_ts(job, until - 15) == until
+
+    def test_a_backoff_end_between_slots_adds_no_wake(self) -> None:
+        job = self._quarter_hourly_failing()
+        job.last_run_ts += 5 * 60  # ends 09:05; the 08:45 boundary wake stays first
+        now = datetime(2026, 10, 26, 8, 46, tzinfo=timezone.utc).timestamp()
+        assert next_wake_secs([job], set(), now) == pytest.approx(14 * 60)
+
+    def test_cron_display_moves_a_backoff_end_between_slots_to_the_next_slot(self) -> None:
+        job = self._quarter_hourly_failing()
+        job.last_run_ts += 5 * 60  # backoff now ends at 09:05, between slots
+        nxt = compute_next_run_ts(job, job.last_run_ts + 60)
+        assert nxt == datetime(2026, 10, 26, 9, 15, tzinfo=timezone.utc).timestamp()
+
+    def test_cron_display_on_a_skipped_backoff_end_date_moves_to_the_next_allowed_date(
+        self,
+    ) -> None:
+        job = self._quarter_hourly_failing()
+        job.skip_dates = ["2026-10-26"]
+        nxt = compute_next_run_ts(job, job.last_run_ts + 60)
+        assert nxt == datetime(2026, 10, 27, 0, 0, tzinfo=timezone.utc).timestamp()
+        assert is_due(job, nxt)
+
+    def test_cron_display_with_an_out_of_range_backoff_end_has_no_next_run(self) -> None:
+        # A millisecond last_run_ts puts the backoff end past the year datetime can hold.
+        job = self._quarter_hourly_failing()
+        now = job.last_run_ts + 60
+        job.last_run_ts *= 1000
+        assert compute_next_run_ts(job, now) is None
+
+    def test_cron_display_without_backoff_stays_strictly_future(self) -> None:
+        job = self._quarter_hourly_failing()
+        job.consecutive_failures = 0
+        on_slot = datetime(2026, 10, 26, 8, 45, tzinfo=timezone.utc).timestamp()
+        assert compute_next_run_ts(job, on_slot) == on_slot + 15 * 60
 
 
 class TestNeverPauseAudit:
@@ -369,6 +441,138 @@ class TestStore:
         records = {r["id"]: r for r in (data["jobs"] if isinstance(data, dict) else data)}
         assert "auto_pause_after_failures" not in records[plain.id]
         assert records[custom.id]["auto_pause_after_failures"] == 0
+
+
+class TestLimitSavedWhileARunIsInFlight:
+    """The failure a run records is checked against the limit the store holds when it lands."""
+
+    @pytest.fixture()
+    def pause_rows(self, monkeypatch) -> list[str]:
+        rows: list[str] = []
+
+        class _Sel:
+            def log_tool_invocation(self, **kw: object) -> None:
+                if kw.get("tool_kind") == "cron_auto_pause":
+                    rows.append(str(kw["outcome"]))
+
+        monkeypatch.setattr(cron_facade.sel, "sel", lambda: _Sel())
+        return rows
+
+    @staticmethod
+    def _land_third_failure(
+        tmp_path: Path, *, run_limit: int, saved_limit: int, saved_by_another_process: bool
+    ) -> CronJob:
+        """Run a job to its 3rd failure while the limit moves; return the job as stored."""
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(
+            name="flaky", message="m", every_secs=60, auto_pause_after_failures=run_limit
+        )
+        # The run's start, as _run_job_isolated and _execute_with_timeout leave it.
+        job.consecutive_failures, job.auto_paused_at_start, job.failure_recorded = 2, False, False
+        if saved_by_another_process:
+            # This process reads the new limit only when the result merge reloads.
+            other = CronService(base_dir=tmp_path)
+            other._load()
+            other.update_job(job.id, auto_pause_after_failures=saved_limit)
+            job.last_status = "error"
+            job.record_failure()
+        else:
+            # Saved here while the failure alert goes out, after the run counted it.
+            job.last_status = "error"
+            job.record_failure()
+            svc.update_job(job.id, auto_pause_after_failures=saved_limit)
+        terminal, _, _ = close_run(job, started_at=1_000.0, generation=1, being_cancelled=False)
+        svc._hold_run_record(job, terminal)
+        svc._merge_job_result(terminal)
+        stored = CronService(base_dir=tmp_path)
+        stored._load()
+        landed = stored.get_job(job.id)
+        assert landed is not None and landed.consecutive_failures == 3
+        return landed
+
+    @pytest.mark.parametrize("saved_by_another_process", [True, False])
+    def test_a_limit_lowered_mid_run_pauses_at_its_end(
+        self, tmp_path: Path, pause_rows: list[str], saved_by_another_process: bool
+    ) -> None:
+        landed = self._land_third_failure(
+            tmp_path,
+            run_limit=10,
+            saved_limit=3,
+            saved_by_another_process=saved_by_another_process,
+        )
+        assert landed.auto_paused is True and landed.enabled is False
+        assert pause_rows == ["auto_paused"]
+
+    @pytest.mark.parametrize("saved_limit", [10, 0])
+    @pytest.mark.parametrize("saved_by_another_process", [True, False])
+    def test_a_limit_raised_mid_run_keeps_the_job_running(
+        self,
+        tmp_path: Path,
+        pause_rows: list[str],
+        saved_limit: int,
+        saved_by_another_process: bool,
+    ) -> None:
+        landed = self._land_third_failure(
+            tmp_path,
+            run_limit=3,
+            saved_limit=saved_limit,
+            saved_by_another_process=saved_by_another_process,
+        )
+        assert landed.auto_paused is False and landed.enabled is True
+        # The run paused its own copy at the old limit; the landing lifts it, once.
+        assert pause_rows == ["auto_paused", "auto_pause_cleared"]
+
+    def test_a_limit_raised_with_a_new_interval_keeps_the_job_running(
+        self, tmp_path: Path, pause_rows: list[str]
+    ) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="flaky", message="m", every_secs=60, auto_pause_after_failures=3)
+        job.consecutive_failures, job.auto_paused_at_start, job.failure_recorded = 2, False, False
+        job.last_status = "error"
+        job.record_failure()
+        # A save while the failure alert goes out stores the run's paused copy.
+        svc._save()
+        other = CronService(base_dir=tmp_path)
+        other._load()
+        other.update_job(job.id, every_secs=120, auto_pause_after_failures=10)
+        terminal, _, _ = close_run(job, started_at=1_000.0, generation=1, being_cancelled=False)
+        svc._hold_run_record(job, terminal)
+        svc._merge_job_result(terminal)
+        # The copy this process's timer scans, which the merge does not reload.
+        landed = svc.get_job(job.id)
+        assert landed is not None and landed.consecutive_failures == 3
+        assert landed.auto_paused is False and landed.enabled is True
+
+    @pytest.mark.asyncio
+    async def test_a_run_stopped_in_its_jitter_wait_does_not_reuse_the_last_failure(
+        self, tmp_path: Path, pause_rows: list[str]
+    ) -> None:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="flaky", message="m", every_secs=3600, auto_pause_after_failures=10)
+        # The previous run's third failure, still marked on the cached job.
+        job.consecutive_failures, job.auto_paused_at_start, job.failure_recorded = 2, False, False
+        job.last_status = "error"
+        job.record_failure()
+        svc._save()
+        svc.update_job(job.id, auto_pause_after_failures=3)
+        claim = svc._claim_run(job.id, "scheduled")
+
+        async def _stopped_in_jitter(_seconds: float) -> None:
+            raise asyncio.CancelledError
+
+        with (
+            patch.object(svc, "_compute_jitter", return_value=42.0),
+            patch.object(cron_facade, "_sleep_out_jitter", _stopped_in_jitter),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await svc._run_job_isolated(job, claim)
+        landed = svc.get_job(job.id)
+        assert landed is not None and landed.consecutive_failures == 3
+        assert landed.auto_paused is False and landed.enabled is True
+        assert pause_rows == []
 
 
 class TestMcpTools:

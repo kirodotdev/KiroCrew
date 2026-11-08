@@ -54,6 +54,7 @@ from _pathcheck import (  # noqa: E402
     safe_open_output,
     safe_output_path,
 )
+from _toolpath import user_bin_dirs, which_any  # noqa: E402
 
 from kiro_crew.deploy.engine import resolve_aws_bin  # noqa: E402
 from kiro_crew.security import (  # noqa: E402
@@ -150,8 +151,10 @@ def _home() -> pathlib.Path:
 
 
 def tool(name: str) -> str:
-    found = shutil.which(name) or str(_home() / ".local/bin" / name)
-    if pathlib.Path(found).exists():
+    # The doctor's own lookup, so a tool deps.py reports green is found here too
+    # (on Windows that includes ffprobe.exe in ~/.local/bin).
+    found = which_any(name, user_bin_dirs(_home()))
+    if found and pathlib.Path(found).exists():
         return found
     # The doctor accepts an imageio-provided ffmpeg, so this must too --
     # otherwise deps.py reports green and narration dies on the next line.
@@ -182,6 +185,8 @@ def measure(path: pathlib.Path) -> float:
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     )
     return round(float(out.stdout.strip()), 3)
@@ -297,7 +302,11 @@ def synthesize(
         ]
         with _staged_output(out) as stage:
             argv[argv.index("--output_file") + 1] = stage
-            proc = subprocess.run(argv, input=text, capture_output=True, text=True)
+            # piper reads UTF-8 on stdin; the locale code page would mangle or
+            # refuse (UnicodeEncodeError on Windows) non-ASCII narration.
+            proc = subprocess.run(
+                argv, input=text, capture_output=True, text=True, encoding="utf-8", errors="replace"
+            )
             if proc.returncode != 0 or not pathlib.Path(stage).exists():
                 raise SystemExit(f"piper failed: {(proc.stderr or proc.stdout)[-400:]}")
         return out
@@ -326,7 +335,9 @@ def synthesize(
             argv += ["--region", aws_region]
         with _staged_output(out) as stage:
             argv.append(stage)
-            proc = subprocess.run(argv, capture_output=True, text=True)
+            proc = subprocess.run(
+                argv, capture_output=True, text=True, encoding="utf-8", errors="replace"
+            )
             if proc.returncode != 0 or not pathlib.Path(stage).exists():
                 raise SystemExit(f"polly failed: {(proc.stderr or proc.stdout)[-400:]}")
         return out

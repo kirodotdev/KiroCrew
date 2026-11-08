@@ -1,14 +1,7 @@
 """Tests for DashboardState WebSocket subscriber methods (activity viewer).
 
-This file pins the status snapshot during memory recovery, the sub-agent subscriber
-registry and its broadcasts, the folder tree and generation the slots frame carries,
-owner-scoped delivery, the slot model and its effective-agent report, stop state, the
-sub-agent probe and compaction callback wiring, folder breadcrumbs, which audience each
-source-link status frame reaches, and that only an owner's connection refreshes it at
-connect. Its periodic and turn-boundary refreshes live in
-``test_dashboard_state_ws_status_refresh.py``, ``api_ws`` unregistering its socket on
-every exit in ``test_dashboard_state_ws_unregister.py``, and the shared fixtures in
-``dashboard_state_ws_helpers.py``.
+Status refreshes live in ``test_dashboard_state_ws_status_refresh.py``, socket unregister in
+``test_dashboard_state_ws_unregister.py``, shared fixtures in ``dashboard_state_ws_helpers.py``.
 """
 
 from __future__ import annotations
@@ -123,14 +116,10 @@ class TestSubagentSubscribers:
 
 
 class TestSlotsBroadcastCarriesFolders:
-    """The slots broadcast frame piggybacks the folder tree so the sidebar can
-    group sessions on first paint without waiting for GET /api/chat/folders.
+    """The slots broadcast frame carries the folder tree for first paint.
 
-    A dashboard-user client receives the ``default_msg`` verbatim (the scope
-    chokepoint only rebuilds the frame for app tokens), so ``folders`` on the
-    broadcast note reaches it in the sent JSON. The frame must carry the cheap
-    in-memory tree WITHOUT ``history_count`` (that field costs a synchronous
-    session scan the broadcast hot path must never run)."""
+    The tree has no ``history_count``: that field costs a synchronous session scan
+    the broadcast hot path must never run."""
 
     class _DashboardWS:
         """Minimal fake WS that reads as a dashboard user and captures sends.
@@ -293,6 +282,61 @@ class TestSlotsBroadcastCarriesFolders:
         assert state.folders_generation() == before
         assert state._folders == [{"id": "f1", "name": "Existing", "order": 0}]
 
+    def test_frame_carries_the_tags_generation(self, state: DashboardState) -> None:
+        # the tag vocabulary and board columns change signal rides the
+        # same frame, so an agent's tag write reaches an open tab.
+        state.serialize_slots = MagicMock(return_value=[])  # type: ignore[method-assign]
+        state._tags_generation = 4
+        ws = self._DashboardWS()
+        state.register_ws(ws)  # type: ignore[arg-type]
+
+        state._do_slots_broadcast()
+
+        frame = json.loads(ws.send_str.call_args[0][0])
+        assert frame["tagsGeneration"] == 4
+
+    def test_every_tag_and_column_save_advances_the_tags_generation(
+        self, state: DashboardState
+    ) -> None:
+        # Bumped in the store writers, not at each handler, so a new tag or
+        # column writer cannot forget it.
+        state._tags = [{"id": "t1", "name": "Bug", "color": "#f00", "order": 0}]
+        state._tag_boards = []
+        before = state.tags_generation()
+
+        state.save_tags()
+        state.save_tags_snapshot([dict(t) for t in state._tags])
+        state.save_tag_boards()
+        state.save_tag_boards_snapshot([])
+
+        assert state.tags_generation() == before + 4
+
+    def test_a_handler_bump_advances_the_tags_generation(self, state: DashboardState) -> None:
+        # An adoption or a grant minted after the vocabulary save commits
+        # outside the store writers, so its handler bumps before it pushes.
+        before = state.tags_generation()
+
+        state.bump_tags_generation()
+
+        assert state.tags_generation() == before + 1
+
+    def test_slot_activity_alone_does_not_advance_the_tags_generation(
+        self, state: DashboardState
+    ) -> None:
+        state.serialize_slots = MagicMock(return_value=[{"key": "chat-1"}])  # type: ignore[method-assign]
+        ws = self._DashboardWS()
+        state.register_ws(ws)  # type: ignore[arg-type]
+
+        state._do_slots_broadcast()
+        state.serialize_slots = MagicMock(return_value=[{"key": "chat-2"}])  # type: ignore[method-assign]
+        state._do_slots_broadcast()
+
+        generations = [
+            json.loads(call[0][0])["tagsGeneration"] for call in ws.send_str.call_args_list
+        ]
+        assert len(generations) == 2
+        assert generations[0] == generations[1]
+
 
 class TestOwnerScopedBroadcast:
     """Owner-only typed broadcast + its delivery count."""
@@ -309,7 +353,8 @@ class TestOwnerScopedBroadcast:
         owner, other = self._ws(), self._ws()
         state.register_ws(owner, owner=True)
         state.register_ws(other)
-        await state.deliver_ws_owners("followup_card", {"slot": "chat-1"})
+        delivered = await state.deliver_ws_owners("followup_card", {"slot": "chat-1"})
+        assert delivered == 1
         assert owner.send_str.await_count or owner.send_str.call_count
         assert not (other.send_str.await_count or other.send_str.call_count)
 
@@ -375,17 +420,9 @@ class TestSlotModel:
 class TestSlotEffectiveAgent:
     """`to_dict()["effective_agent"]` — the non-destructive divergence report.
 
-    The contract is asymmetric on purpose. ``agent`` is the user's INTENT and is
-    stored verbatim; ``effective_agent`` is a claim that something else answers,
-    and is emitted ONLY when that is known to be true. Every "we cannot tell yet"
-    case therefore has to come back empty: a false "your agent was substituted"
-    marker sends the user chasing a substitution that never happened, which is
-    strictly worse than a boot window with no marker at all.
-
-    The other pinned property is that resolution touches NO filesystem. It runs
-    inside every slots frame on the event loop, so a scan here would be a
-    recurring gateway stall — the tests below make the scanning entry points
-    explode and still expect an answer.
+    ``effective_agent`` is emitted only when another agent is known to answer; every
+    "cannot tell yet" case stays empty, since a false substitution marker misleads.
+    Resolution touches no filesystem: it runs in every slots frame on the event loop.
     """
 
     @staticmethod
@@ -924,6 +961,40 @@ class TestCompactCallbackWiring:
         assert "92%" in added["content"]
 
     @pytest.mark.asyncio
+    async def test_an_idle_failure_claims_no_excerpt(self, state: DashboardState) -> None:
+        """An idle compaction that failed or reported nothing kept the session as it was."""
+        from kiro_crew.dashboard.state_parts.session_events import (
+            _AUTO_COMPACT_FAILED_NOTICE,
+            _AUTO_COMPACT_IDLE_FAILED_NOTICE,
+            _AUTO_RECYCLE_NOTICE,
+            _RESTART_MEMORY_TAIL,
+        )
+        from kiro_crew.session_compaction import (
+            COMPACT_OUTCOME_COMPACTED_IDLE,
+            COMPACT_OUTCOME_RECYCLED,
+        )
+
+        slot = state.get_or_create_slot("chat-1")
+        cb = self._captured_callback(state)
+
+        await cb(
+            "dashboard:chat-1",
+            60.0,
+            success=False,
+            outcome=COMPACT_OUTCOME_COMPACTED_IDLE,
+        )
+        failed = slot.messages[-1]["content"]
+        assert failed == _AUTO_COMPACT_IDLE_FAILED_NOTICE.format(pct=60)
+        assert failed != _AUTO_COMPACT_FAILED_NOTICE.format(pct=60)
+        assert _RESTART_MEMORY_TAIL not in failed
+        assert "excerpt" not in failed
+        assert "nothing was changed" in failed
+
+        # The threshold path's recycle keeps its own notice and the excerpt tail.
+        await cb("dashboard:chat-1", 85.0, success=True, outcome=COMPACT_OUTCOME_RECYCLED)
+        assert slot.messages[-1]["content"] == _AUTO_RECYCLE_NOTICE.format(pct=85)
+
+    @pytest.mark.asyncio
     async def test_callback_broadcasts_context_usage_reset(self, state: DashboardState) -> None:
         ws = MagicMock(closed=False)
         ws.send_str = AsyncMock()
@@ -939,6 +1010,46 @@ class TestCompactCallbackWiring:
         # reset lets the frontend drop its stored token counts too — they
         # describe the pre-compaction transcript.
         assert context[0]["data"] == {"slot": "chat-1", "pct": 0.0, "reset": True}
+
+    @pytest.mark.asyncio
+    async def test_an_idle_failure_keeps_the_context_reading(self, state: DashboardState) -> None:
+        """A kept session's usage did not drop, so only real compactions reset the meter."""
+        from kiro_crew.session_compaction import (
+            COMPACT_OUTCOME_COMPACTED,
+            COMPACT_OUTCOME_COMPACTED_IDLE,
+        )
+
+        ws = MagicMock(closed=False)
+        ws.send_str = AsyncMock()
+        state.register_ws(ws)
+        state.get_or_create_slot("chat-1")
+        state.broadcast_context_usage("chat-1", {"slot": "chat-1", "pct": 61.0})
+        stored = dict(state._context_snapshots["chat-1"])
+        ws.send_str.reset_mock()
+        cb = self._captured_callback(state)
+
+        def resets() -> list[dict]:
+            payloads = [json.loads(c.args[0]) for c in ws.send_str.call_args_list]
+            return [
+                p["data"]
+                for p in payloads
+                if p.get("type") == "context_usage" and p["data"].get("reset")
+            ]
+
+        await cb(
+            "dashboard:chat-1",
+            61.0,
+            success=False,
+            outcome=COMPACT_OUTCOME_COMPACTED_IDLE,
+        )
+        assert resets() == []
+        assert state._context_snapshots["chat-1"] == stored
+
+        await cb("dashboard:chat-1", 61.0, success=True, outcome=COMPACT_OUTCOME_COMPACTED_IDLE)
+        assert resets() == [{"slot": "chat-1", "pct": 0.0, "reset": True}]
+
+        await cb("dashboard:chat-1", 92.0, success=True, outcome=COMPACT_OUTCOME_COMPACTED)
+        assert len(resets()) == 2
 
     @pytest.mark.asyncio
     async def test_callback_broadcast_runs_even_if_append_fails(
@@ -1110,13 +1221,8 @@ class TestOwnerSourceStatusTransport:
     ) -> None:
         """The three audience frames come from ONE ``to_dict`` per slot.
 
-        Serializing the list once per audience re-ran the projection body
-        (markdown strip, credential redaction, options parse) three times per
-        slot on the event loop -- ~600 ms per broadcast on a real sidebar, which the adaptive
-        concurrency controller read as ``loop_lag`` pressure and cut the subagent
-        cap to its floor on an idle host. Pin the single pass, and pin that the
-        derived views are byte-for-byte what a full per-audience pass yields, so
-        the optimization can never ship a view that a full pass would not.
+        A pass per audience costs ~600 ms on the event loop for a real sidebar, read as
+        ``loop_lag`` pressure. The derived views must equal a full per-audience pass.
         """
         from kiro_crew.dashboard.state import _ChatSlot
 
@@ -1211,12 +1317,8 @@ class TestOwnerSourceStatusTransport:
     ) -> None:
         """The `slots` exclusion must not silence an owner socket generally.
 
-        The generic fan-out skips owner sockets for `slots` alone, because that is
-        the one message type they receive twice. Every other type has no
-        owner-specific frame to fall back on, so a skip that keyed on the socket
-        rather than on the message type would drop it entirely — an owner window
-        that stops seeing refreshes, with nothing raised anywhere. This is the
-        control for that: it fails if the exclusion is ever widened.
+        Owner sockets get `slots` twice, so only that type is skipped. Other types have
+        no owner-specific frame, so a skip keyed on the socket would drop them silently.
         """
         sent: list[tuple[object, dict]] = []
         monkeypatch.setattr(
@@ -1317,6 +1419,7 @@ class TestOwnerSourceStatusTransport:
         # frame field must be JSON-serializable — a bare MagicMock return
         # value does not slip through a fake send_json unserialized.
         state.folders_generation.return_value = 7
+        state.tags_generation.return_value = 7
 
         class Request(dict):
             def __init__(self) -> None:

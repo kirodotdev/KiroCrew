@@ -1,23 +1,10 @@
 """AWS Control backups as durable Job SDK runs.
 
-The route claims a server-owned run and returns its id, and the browser follows
-it on the shared ``_jobs`` surface. Because the run is server-owned, "a backup of
-mine is running" survives a reload or a navigation instead of living only in the
-React component that started it and dying with it while the work keeps going.
-
-The cases here are the ones that shape the design rather than merely cover it:
-
-* the route claims and returns, and does NOT perform the backup itself;
-* the runner is a plain ``def``, because ``JobSDK._execute`` discards its return
-  value and an ``async def`` would therefore record ``done`` for a backup that
-  never ran;
-* the runner reads its account back out of its own record's ``dedupe_key``,
-  which is the only channel P1 offers -- so the two keys the GENERIC start route
-  can produce that this app's pre-flight would have rejected (absent, and not an
-  account id) must fail with a clean recorded error and touch no AWS;
-* a run left non-terminal by a process that is gone comes back RESOLVED, never
-  ``running`` (``JobSDK.reconcile``);
-* the app's own terminal ledger -- what a backup PRODUCED -- still works.
+The route claims a server-owned run and returns its id, so a running backup
+survives a reload. Pinned here: the route does not run the backup itself; the
+runner is a plain ``def`` (``JobSDK._execute`` discards an ``async def``'s result);
+an absent or non-account ``dedupe_key`` fails cleanly with no AWS call; an orphaned
+run comes back resolved, never ``running``.
 """
 
 from __future__ import annotations
@@ -35,6 +22,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps import job_sdk
 from kiro_crew.apps.builtins.aws_control import hooks
@@ -89,15 +77,9 @@ class TestNoAwsCallBeforeTheGate:
 class TestEveryUploadRefusalIsAudited:
     """One SEL record per refusal path in ``_authorize_upload``.
 
-    Moving the upload off the request path moved the authorization decision off
-    the audited path with it: the route's audit has already recorded
-    ``successful`` when the request returns a run id, and the Job SDK only
-    records that the run ``failed``. An auditor scanning SEL events for denials
-    saw nothing at all.
-
-    Covered per path rather than once, because partial coverage is worse than
-    none -- an audited consent refusal beside a silent identity mismatch makes
-    the mismatch look like a non-event.
+    The route's audit records ``successful`` once it returns a run id, and the Job
+    SDK records only ``failed``, so the denial must be filed here. Covered per path:
+    one silent path next to audited ones looks like a non-event.
     """
 
     @staticmethod
@@ -173,16 +155,8 @@ class TestEveryUploadRefusalIsAudited:
     ) -> None:
         """Attribution has to DISTINGUISH, so both paths are asserted.
 
-        Covering the nightly path is what made a hardcoded interactive caller a
-        lie: an unattended run refused at 03:00 was recorded against the dashboard
-        owner, a person who was not there. That is the same defect as everywhere
-        else in this change -- a record asserting something nobody observed --
-        committed at the audit layer instead of the record layer.
-
-        A neutral string for both paths would fix the lie by discarding the truth
-        on the interactive path, where the owner really did trigger the work. So
-        each entry point states its own, and a test that checked only one value
-        would not be testing attribution at all.
+        A refused 03:00 nightly must not name the dashboard owner, and a neutral
+        string would lose the owner on the interactive path.
         """
         chosen = backup.CALLER_OWNER if caller == "interactive" else backup.CALLER_SCHEDULED
         with ExitStack() as stack:
@@ -202,10 +176,8 @@ class TestEveryUploadRefusalIsAudited:
     def test_the_two_entry_points_pass_different_callers(self) -> None:
         """The constants only matter if the call sites actually differ.
 
-        One registered runner now serves both callers: the owner click carries no
-        caller param (the owner default), and the nightly loop names
-        ``CALLER_SCHEDULED`` in the start's params. If both ever resolved to the
-        same constant, the field would be decoration.
+        One runner serves both: the owner click passes no caller param, and the
+        nightly loop names ``CALLER_SCHEDULED``.
         """
         assert backup.CALLER_OWNER != backup.CALLER_SCHEDULED
         # The runner names BOTH: it defaults to the owner and switches to the
@@ -244,10 +216,8 @@ class TestEveryUploadRefusalIsAudited:
     def test_no_refusal_path_bypasses_the_audited_helper(self) -> None:
         """Ratchet: the audit sits on the single refusal return.
 
-        The cases above prove today's paths are covered. This keeps a path added
-        LATER from being silent, which is the failure mode that made the original
-        defect invisible: a new bare ``raise`` here would emit no SEL record and
-        no existing test would notice.
+        Keeps a refusal path added later from being silent: a new bare ``raise``
+        would emit no SEL record.
         """
         source = inspect.getsource(backup._authorize_upload)
         bare = [
@@ -264,9 +234,7 @@ class TestEveryUploadRefusalIsAudited:
         assert "raise RuntimeError(reason)" in inspect.getsource(backup._refuse_upload)
 
 
-# ---------------------------------------------------------------------------
 # Harness
-# ---------------------------------------------------------------------------
 
 
 def _registered() -> dict[tuple[str, str], object]:
@@ -282,14 +250,8 @@ def _registered() -> dict[tuple[str, str], object]:
 class TestAccountScopedJobState:
     """`_account_jobs` answers for ONE account, which is the point of it.
 
-    The generic ``_jobs/active`` surface is app-scoped and withholds
-    ``dedupe_key``, so a browser reading it cannot tell whose run it is seeing.
-    With two connected accounts that made account A's backup disable account B's
-    button -- a false busy that blocks a legitimate action, in a PR whose whole
-    thesis is that a running backup is a fact rather than a UI guess.
-
-    The Sage audit predicted this when it established ``dedupe_key`` as write-only
-    across the HTTP surface. These are that prediction arriving as a bug.
+    The generic ``_jobs/active`` surface withholds ``dedupe_key``, so read alone it
+    lets account A's backup disable account B's button.
     """
 
     OTHER = "999988887777"
@@ -371,11 +333,8 @@ class TestAccountScopedJobState:
     def test_a_success_after_a_failure_clears_the_failure(self) -> None:
         """The row must not contradict itself after a retry.
 
-        Reporting the first non-``done`` run would skip past a NEWER success, so a
-        fail-then-retry rendered "last run failed" directly above the fresh
-        success the app's own ledger had just recorded -- and it persisted until
-        the failure aged out of the window, which for a nightly user is weeks.
-        Only the newest terminal run may speak, and only when it did not succeed.
+        Only the newest terminal run may speak, and only when it did not succeed;
+        the first non-``done`` run could sit behind a newer success for weeks.
         """
         sdk = self._sdk(
             [],
@@ -460,11 +419,8 @@ def _enabled_owner_env():
         ),
         mock.patch.object(routes_mod.aws_consent, "refuse_and_log", AsyncMock(return_value=True)),
         mock.patch.object(routes_mod.storage_mod, "find_drive", return_value=BUCKET),
-        # The platform-availability pre-check (kind_unavailable_reason) is its own
-        # guard with its own dedicated tests in test_aws_control_windows.py; the
-        # tests using this helper are about job-dispatch mechanics for a kind
-        # that IS available, so this guard must read as satisfied everywhere,
-        # including on the Windows CI shard where the real value is False.
+        # Platform availability is tested in test_aws_control_windows.py; pinned
+        # True here so dispatch tests also run on the Windows shard.
         mock.patch.object(backup, "_CAN_PIN_TRAVERSAL", True),
     )
 
@@ -493,19 +449,9 @@ def _post_run(kind: str, *, sdk: object | None = None, start=None):
 def _await_terminal(sdk: job_sdk.JobSDK, run_id: str, timeout: float = 5.0) -> job_sdk.JobRun:
     """Block until the worker has written its terminal record AND released its slot.
 
-    The terminal record is written before the live-table entry and its dedupe key
-    are dropped (``job_sdk`` writes the terminal status, then under its lock pops
-    ``_live`` and the ``(kind, dedupe_key)`` claim). A caller that returned on the
-    terminal record alone could fire a second ``start`` for the same
-    ``(kind, dedupe_key)`` inside that window, where the still-held claim makes the
-    SDK ADOPT the finished run instead of starting a fresh one -- so a test driving
-    two sequential runs of one account would see the second silently fold into the
-    first. Waiting for the run id to leave ``_live`` closes that window: the pop of
-    ``_live`` and the pop of the dedupe key happen in the same locked block, so once
-    the run is gone from the live set the key is free and the next ``start`` begins
-    a new run. ``_live`` is read directly because it is the authoritative in-process
-    signal for the claim; ``list_active`` reads the durable store, which the terminal
-    write has already cleared, so it cannot witness this window.
+    The terminal record lands before the ``(kind, dedupe_key)`` claim is dropped, so
+    a second ``start`` in that window would ADOPT the finished run. ``_live`` and the
+    claim are popped together; ``list_active`` reads the store and cannot see this.
     """
     settled: job_sdk.JobRun | None = None
 
@@ -545,8 +491,10 @@ def _isolated_backup_state(tmp_path, monkeypatch):
     # behaviour lives in test_aws_control_backup_retention.py.
     monkeypatch.setattr(backup.storage, "list_object_versions", lambda *a, **k: [])
     backup.clear_stop()
+    hooks._task = None
     yield
     backup.clear_stop()
+    hooks._task = None
 
 
 def _resolvable():
@@ -558,18 +506,13 @@ def _resolvable():
 def _authorized():
     """Let the runner's pre-discovery gate pass.
 
-    The runner authorizes BEFORE it discovers the drive, so any test that expects
-    it to reach AWS has to satisfy the gate. Stubbed rather than arranged from
-    consent state because these cases are about WHAT the runner targets, not about
-    the gate's own decisions -- those are pinned in TestEveryUploadRefusalIsAudited
-    and TestNoAwsCallBeforeTheGate, which drive the real function.
+    The runner authorizes BEFORE drive discovery. The gate's own decisions are
+    pinned in TestEveryUploadRefusalIsAudited and TestNoAwsCallBeforeTheGate.
     """
     return mock.patch.object(backup, "_authorize_upload", return_value=None)
 
 
-# ---------------------------------------------------------------------------
 # DoD 1 — the route claims a run and returns its id
-# ---------------------------------------------------------------------------
 
 
 class TestRouteStartsAJob:
@@ -601,7 +544,10 @@ class TestRouteStartsAJob:
         # upload -- the second adopts the first. The SDK indexes on
         # (kind, dedupe_key), so snapshot and sessions stay independent.
         start = AsyncMock(return_value="c" * 32)
-        _post_run(backup.KIND_SESSIONS, start=start)
+        resp = _post_run(backup.KIND_SESSIONS, start=start)
+        assert resp.status == 200
+        assert _payload(resp)["runId"] == "c" * 32
+        assert _payload(resp)["kind"] == backup.KIND_SESSIONS
         start.assert_awaited_once_with(backup.KIND_SESSIONS, dedupe_key=ACCOUNT)
 
     def test_run_rejects_an_unknown_kind_before_claiming(self):
@@ -641,9 +587,7 @@ class TestRouteStartsAJob:
         assert _payload(resp)["code"] == "backup_start_failed"
 
 
-# ---------------------------------------------------------------------------
 # The runner: shape, resolution, and the generic-surface keys
-# ---------------------------------------------------------------------------
 
 
 class TestRunnerShape:
@@ -708,7 +652,9 @@ class TestRunnerResolvesItsTarget:
             mock.patch.object(backup, "run_snapshot_backup") as work,
         ):
             run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
-            _await_terminal(sdk, run_id)
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.DONE
+        assert run.error == ""
         find.assert_called_once_with(PROFILE, REGION, account=ACCOUNT)
         assert work.call_args.args[3] == "moved-bucket"
 
@@ -755,7 +701,14 @@ class TestRunnerResolvesItsTarget:
         assert secret not in run.error
         work.assert_not_called()
 
-    def test_an_unreachable_account_fails_without_falling_back(self, sdk):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_an_unreachable_account_fails_without_falling_back"),
+            *named_cases("test_the_owner_path_does_not_fall_back_on_an_expired_cache"),
+        ],
+    )
+    def test_an_unreachable_account_does_not_fall_back(self, sdk):
         # No healthy profile for this account. There must be no silent fallback
         # to another account's credentials -- the run fails and says to reconnect.
         with (
@@ -832,9 +785,7 @@ class TestRunnerAuthorization:
         put_file.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
 # DoD 3 — a record left by a dead process comes back resolved
-# ---------------------------------------------------------------------------
 
 
 class TestReconcile:
@@ -920,9 +871,7 @@ async def _never() -> None:
     await asyncio.Event().wait()
 
 
-# ---------------------------------------------------------------------------
 # Startup registration, and the manifest grant that makes it reachable
-# ---------------------------------------------------------------------------
 
 
 class TestStartupRegistration:
@@ -993,9 +942,7 @@ class TestStartupRegistration:
         assert manifest["permissions"]["jobs"] is True
 
 
-# ---------------------------------------------------------------------------
 # DoD 4 — the terminal ledger, which is the app's own record of WHAT was produced
-# ---------------------------------------------------------------------------
 
 
 class TestLedgerSurvives:
@@ -1082,7 +1029,8 @@ class TestRunnerReadsTheCallerFromParams:
             mock.patch.object(backup, "run_snapshot_backup") as work,
         ):
             run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
-            _await_terminal(sdk, run_id)
+            run = _await_terminal(sdk, run_id)
+        assert run.status == job_sdk.DONE
         assert work.call_args.kwargs["caller"] == backup.CALLER_OWNER
 
 
@@ -1118,22 +1066,6 @@ class TestScheduledPathFallsBackToTheVerifiedProfile:
         assert gate.call_args.args[1:] == (PROFILE, REGION)
         find.assert_called_once_with(PROFILE, REGION, account=ACCOUNT)
         assert work.call_args.args[1:3] == (PROFILE, REGION)
-
-    def test_the_owner_path_does_not_fall_back_on_an_expired_cache(self, sdk):
-        # The fallback is scheduled-only: an owner run carries no profile/region
-        # param and its route pre-flight has just warmed the snapshot, so an
-        # expired cache for it is the honest "reconnect" failure, not a fallback.
-        with (
-            mock.patch.object(accounts_mod, "resolve_account_profile_cached", return_value=None),
-            mock.patch.object(backup.storage, "find_drive") as find,
-            mock.patch.object(backup, "run_snapshot_backup") as work,
-        ):
-            run_id = sdk.start(backup.KIND_SNAPSHOT, dedupe_key=ACCOUNT)
-            run = _await_terminal(sdk, run_id)
-        assert run.status == job_sdk.FAILED
-        assert "no working connection" in run.error
-        find.assert_not_called()
-        work.assert_not_called()
 
     def test_a_scheduled_run_prefers_the_live_cache_when_it_is_warm(self, sdk):
         # When the cache IS warm the fallback must not shadow it: the per-run
@@ -1424,7 +1356,11 @@ class TestSharedDriveNoticeCostsOneListCall:
     pays at most this one call."""
 
     def test_the_notice_costs_exactly_one_paid_list_call(self):
-        with mock.patch.object(backup, "_install_folders", return_value=set()) as folders:
-            backup.other_install_ids("p", "us-west-2", "bkt", account="111122223333")
+        mine = backup.install_identity()["id"]
+        seen = {mine, "b" * 32, "a" * 32}
+        with mock.patch.object(backup, "_install_folders", return_value=seen) as folders:
+            others = backup.other_install_ids("p", "us-west-2", "bkt", account="111122223333")
+        # The one listing's folders, minus this install's own, in sorted order.
+        assert others == ["a" * 32, "b" * 32]
         assert folders.call_count == 1
         assert folders.call_args.args[3] == backup.KIND_SNAPSHOT

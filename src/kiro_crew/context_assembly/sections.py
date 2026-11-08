@@ -1,7 +1,8 @@
 """Stable conduct sections: text derived from config and the trusted runtime.
 
 These renderers produce the deterministic blocks every session carries whatever its
-memory holds -- the critical-rules contract, the runtime identity, the user profile,
+memory holds -- the critical-rules contract, the runtime identity, the served-model
+line a harness that names no model needs, the user profile,
 the reply-style preferences, the workspace identity, the runtime refresh a follow-up
 turn needs, the widget pointer an agent prompt's ``{{WIDGET_BLOCK}}`` resolves to,
 the section its ``{{COMPUTER_USE_BLOCK}}`` resolves to and what its marked Browser
@@ -114,7 +115,7 @@ def _runtime_display_name(session_key: str, runtime_source: str | None = None) -
 
 # Slug → prompt-ready description maps for the [USER PROFILE] block. Slugs are
 # the values enforced by the dashboard.user_role / dashboard.user_technical_level
-# enums in handlers/core.py _EDITABLE_CONFIG; keep the three places in sync.
+# enums in handlers/core_config_schema.py _EDITABLE_CONFIG; keep the three places in sync.
 # "" role and "" level contribute nothing — the block only names what the user
 # actually told us. "other" has no entry here on purpose: it routes to the
 # free-text dashboard.user_role_other instead (see _role_description).
@@ -133,7 +134,7 @@ _TECHNICAL_LEVEL_DESCRIPTIONS: dict[str, str] = {
 }
 
 #: Longest free-text role rendered into the prompt. Mirrors the ``max_len`` on
-#: ``dashboard.user_role_other`` in handlers/core.py, re-applied here because the
+#: ``dashboard.user_role_other`` in handlers/core_config_schema.py, re-applied here because the
 #: writer's validation is not the only way a value reaches this field — a
 #: hand-edited config.json bypasses the PATCH allowlist entirely.
 _ROLE_OTHER_MAX_LEN = 60
@@ -321,6 +322,34 @@ def _reply_style_rules(level: str) -> str:
     return ""
 
 
+def _reply_language_rule(code: object) -> str:
+    """Return the rule text for one ``dashboard.preferred_language`` code.
+
+    ``""`` for auto and for any code the setting does not list, so a
+    hand-edited config never puts free text into this trusted block: the
+    language name comes from the fixed table, never from the config value.
+    The rule names itself as outranking the style levels' "user's language"
+    line, which is written for the auto case.
+    """
+    from kiro_crew.config.sections import PREFERRED_LANGUAGES
+
+    name = PREFERRED_LANGUAGES.get(code) if isinstance(code, str) else None
+    if not name:
+        return ""
+    return (
+        "## Reply language\n\n"
+        f"The user reads replies best in {name}, so reply in {name}. A "
+        "reader who mixes languages wants one steady reply language, not "
+        "one that follows each message, tool output or file. Use another "
+        "language only when the user asks for it in this conversation. This "
+        'outranks any "user\'s language" rule above and the reply sentence '
+        "in [UI LANGUAGE]. Code, commands, paths, identifiers, error strings "
+        "and quoted text keep their original form. Text written for other readers -- commit "
+        "messages, pull request text, code comments, public posts -- keeps "
+        "the project's own language."
+    )
+
+
 def _response_preferences_apply(session_key: str, runtime_source: str | None = None) -> bool:
     """Whether the reply-style block belongs in this session's context.
 
@@ -337,7 +366,8 @@ def _response_preferences_apply(session_key: str, runtime_source: str | None = N
 
 
 def _build_response_preferences_section(cfg: "KiroCrewConfig") -> str:
-    """Build the [RESPONSE PREFERENCES] block from ``dashboard.verbosity``.
+    """Build the [RESPONSE PREFERENCES] block from ``dashboard.verbosity`` and
+    ``dashboard.preferred_language``.
 
     The setting describes how the PERSON wants replies to read, so it is
     chrome for every person-facing agent — built-in, custom, and cron — rather
@@ -356,10 +386,14 @@ def _build_response_preferences_section(cfg: "KiroCrewConfig") -> str:
     that carries its own style guidance; a bare ``##`` heading in the middle of
     the context would have no stated rank against it.
 
-    Returns ``""`` when the level is ``default`` or unrecognised.
+    Returns ``""`` when the level is ``default`` or unrecognised and no
+    preferred language is set.
     """
-    level = getattr(getattr(cfg, "dashboard", None), "verbosity", "default")
+    dashboard = getattr(cfg, "dashboard", None)
+    level = getattr(dashboard, "verbosity", "default")
     rules = _reply_style_rules(level if isinstance(level, str) else "default")
+    language = _reply_language_rule(getattr(dashboard, "preferred_language", ""))
+    rules = "\n\n".join(part for part in (rules, language) if part)
     if not rules:
         return ""
     return (
@@ -388,6 +422,67 @@ def runtime_identity_block(agent_label: str, runtime: str) -> str:
         f"Only suggest switching interfaces if the user asks "
         f"or the task requires it.\n\n"
     )
+
+
+#: Longest served-model id the ``[ACTIVE MODEL]`` line carries. Real ids are far
+#: shorter; the cap bounds what one harness-reported value adds to every turn.
+_ACTIVE_MODEL_ID_MAX = 200
+
+
+def active_model_block(model_id: str) -> str:
+    """The ``[ACTIVE MODEL]`` block: the model the session reports serving.
+
+    ``""`` when there is no id. A harness whose own system prompt names no model
+    (goose) leaves a model asked "what model are you?" to answer from training
+    priors; this line is the grounded fact it answers from instead.
+
+    The id is the harness's own report, so it is held to one line before it lands
+    beside trusted markers: control, format and separator characters become
+    spaces, whitespace runs collapse, forgeable boundary markers are scrubbed, and
+    the result is cut to :data:`_ACTIVE_MODEL_ID_MAX`.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+
+    folded = "".join(" " if unicodedata.category(ch)[0] in "CZ" else ch for ch in model_id or "")
+    safe = ctx._neutralize_structural_markers(" ".join(folded.split()))
+    safe = safe[:_ACTIVE_MODEL_ID_MAX].strip()
+    if not safe:
+        return ""
+    return (
+        f"[ACTIVE MODEL] {safe}\n"
+        "This is the model serving this session, as the harness reports it. When "
+        "asked which model you are, answer with this id, and do not name a model, "
+        "provider, size or runtime this line does not state.\n\n"
+    )
+
+
+def restate_active_model(message: str, stated_id: str, served_id: str) -> str:
+    """*message* with its ``[ACTIVE MODEL]`` block for *stated_id* naming *served_id*.
+
+    A retry loop that switches the model and then re-sends a prompt it already built
+    calls this, so the replayed prompt names the model that will answer it. Only the
+    exact block :func:`active_model_block` rendered for *stated_id* is rewritten, every
+    other byte is kept. An empty *served_id* drops the block, since no model can be
+    named. A message without that block comes back unchanged, as the same object.
+
+    A :class:`~kiro_crew.prompt_segments.SegmentedPrompt` keeps its provenance: only its
+    injected segments are rewritten, never the user's own text.
+    """
+    from kiro_crew.prompt_segments import SOURCE_INJECTED, PromptSegment, SegmentedPrompt
+
+    stale = active_model_block(stated_id)
+    if not stale or stale not in message:
+        return message
+    fresh = active_model_block(served_id)
+    if not isinstance(message, SegmentedPrompt):
+        return message.replace(stale, fresh)
+    segments = [
+        PromptSegment(source, text.replace(stale, fresh) if source == SOURCE_INJECTED else text)
+        for source, text in message.segments
+    ]
+    if all(new.text == old.text for new, old in zip(segments, message.segments)):
+        return message
+    return SegmentedPrompt(segments)
 
 
 def workspace_identity_block(ws_name: str, ws_path: object) -> str:
@@ -445,14 +540,17 @@ def runtime_refresh_blocks(session_key: str, runtime_source: str) -> list[str]:
 def widget_block(density: str) -> str:
     """What an agent prompt's ``{{WIDGET_BLOCK}}`` resolves to on a dashboard surface.
 
-    ``density == "more"`` is the full pointer; every other value is the short one
-    that prefers plain markdown.
+    ``density == "more"`` is the full pointer, which says when to draw a widget
+    unasked; every other value is the short one that prefers plain markdown.
     """
     if density == "more":
         return (
             "## Inline Widgets\n\n"
             "You can render rich HTML inline using "
-            '`<mcwidget title="Title">HTML</mcwidget>` tags. Load the `widgets` '
+            '`<mcwidget title="Title">HTML</mcwidget>` tags. When an answer reads '
+            "better drawn (a status across several items, a comparison, a flow, "
+            "a before/after), draw it as one widget without being asked; plain "
+            "labels and numbers stay a markdown table. Load the `widgets` "
             "skill for theme variables, format rules, interactive widgets, and "
             "best practices when emitting one. The frame is themed: its body "
             "already carries the active theme's background and text color, so "
@@ -492,60 +590,6 @@ def widget_block(density: str) -> str:
     )
 
 
-# What an agent prompt's ``{{COMPUTER_USE_BLOCK}}`` resolves to while the session's
-# agent spec mounts ``kirocrew-computer``: the section ``config/prompt.md`` carried
-# inline before the slot existed, plus one sentence for a session that stays open
-# across a disable: disabling resets every session, a reset session resumes its own
-# transcript with this text still in it, and its new backend mounts no
-# ``computer_*`` tool (the mirror of the pointer's last sentence below). It still
-# counts against that file's byte budget, ``PROMPT_BYTE_CEILINGS`` in
-# ``test/test_prompt_compact_contract.py``, which measures the prompt with this
-# text in the slot.
-_COMPUTER_USE_SECTION = (
-    "## Computer Use (native desktop apps)\n"
-    "\n"
-    "`computer_*` MCP tools read and drive the user's **real desktop applications**\n"
-    "through the accessibility layer — for work that lives outside a web page. It is\n"
-    "**opt-in and off by default** (the user enables it in Settings → Computer Use).\n"
-    "macOS and Windows both support the full tool set. They differ in ONE way you must\n"
-    "relay to the user: on Windows there is no per-process input, so a keystroke takes\n"
-    "their keyboard focus and a coordinate click moves their real cursor — the result\n"
-    "text says so, and you should pass that on rather than silently succeeding. Do not\n"
-    "assume the platform from your own knowledge — CALL the tool and act on what it\n"
-    'returns: a "disabled" or "not supported" refusal is final (relay it and stop),\n'
-    "while a refusal that names an alternative (an `element_index` instead of\n"
-    'coordinates, `click_method: "global"` to accept the cursor move) is telling you\n'
-    "the next call to make. If no `computer_*` tool is in your tool list, Computer Use\n"
-    "was turned off after this session started: tell the user, point them to\n"
-    "Settings → Computer Use, and do not call one.\n"
-    "\n"
-    "**Tree first, always.** Call `computer_get_state(app=...)` before any action — it\n"
-    "returns the window as a numbered element outline, and prefer addressing an element\n"
-    "by its `element_index`: that is the only form the target can be checked against (a\n"
-    "password field is refused by its index, not by its pixels). `computer_click` and\n"
-    "`computer_drag` also accept `x`/`y` screen coordinates for the canvases, sliders and\n"
-    "custom-drawn UI that expose no usable element. By default a coordinate gesture is\n"
-    "delivered to the target app alone and **the user's real pointer does not move**;\n"
-    '`click_method: "global"` is the one path that moves it — you must ask for it BY NAME\n'
-    "(`auto` never picks it), so name it only when a click has to be physically real, and\n"
-    "tell the user before you do: their cursor will jump out from under their hand.\n"
-    'When the app has no window yet, `computer_launch_app(app="Paint")` opens it and\n'
-    "returns the new window's tree, so no separate `computer_get_state` call is\n"
-    "needed — give the OS's own app NAME, never a path or a command line, and never\n"
-    "call it twice for one app (a cold start can take ten seconds). It is refused when\n"
-    "the app already has a window; snapshot that instead of opening a second copy.\n"
-    "`computer_list_apps()` lists what currently has an on-screen window when you do\n"
-    "not know how the user names an app.\n"
-    "Each action returns a refreshed tree, so you do not need to re-snapshot just to\n"
-    "re-read indices. Call `computer_end_turn()` when you are done\n"
-    "with the app. When a screenshot is attached you get a **file path**, not an image —\n"
-    "open it with the file-read tool only when the outline genuinely cannot answer the\n"
-    "question (it costs ~8K tokens). Password fields render as `<secure>` and their\n"
-    "window is never captured. Kiro Crew's own dashboard is refused, for reading as well\n"
-    "as typing, because driving it would let you change your own security settings.\n"
-    "Read the `computer-use` skill before your first call."
-)
-
 # The same slot while the spec withholds the server (the feature is off, or the OS
 # has no driver), so the session has no ``computer_*`` tool. It keeps a user who
 # asks to drive a desktop app pointed at the setting. Its last sentence covers a
@@ -568,10 +612,12 @@ def computer_use_block(mounted: bool) -> str:
     """What an agent prompt's ``{{COMPUTER_USE_BLOCK}}`` resolves to.
 
     ``mounted`` is the session's reading of the spec gate that decides whether
-    ``kirocrew-computer`` is in its agent spec: the full section when it is, the
-    short pointer when it is not.
+    ``kirocrew-computer`` is in its agent spec. A mounted server carries its own
+    usage text as MCP ``instructions`` (``kiro_crew.mcp_instructions.COMPUTER``),
+    which the harness puts in its system prompt, so the slot is empty. Only the
+    absent server needs the prompt: the short pointer to the setting.
     """
-    return _COMPUTER_USE_SECTION if mounted else _COMPUTER_USE_UNAVAILABLE
+    return "" if mounted else _COMPUTER_USE_UNAVAILABLE
 
 
 # The shipped prompt marks its Browser section in place, each marker on a line of its
@@ -587,19 +633,19 @@ _BROWSER_SPAN = re.compile(
     re.DOTALL,
 )
 
-# What the marked section becomes while browsing is not set up on this host: no
-# vetted ``playwright-cli`` resolves, and the ``browser`` tool refuses every op. Its
+# What the marked section becomes while browsing is not set up on this host: the
+# Browser Harness is not installed, and the ``browser`` tool refuses every op. Its
 # last sentence covers a session that stays open across the install, which the tool
 # notices on its next call while this session's prompt keeps this text.
 _BROWSER_UNAVAILABLE = (
     "## Browser\n"
     "\n"
-    "Not available in this session: browsing is not set up on this host (no\n"
-    "`playwright-cli`), so the `browser` tool refuses every op. Read pages with\n"
+    "Not available in this session: browsing is not set up on this host (the browser\n"
+    "engine is not installed), so the `browser` tool refuses every op. Read pages with\n"
     "`web_fetch` / `web_search`, and tell a user who needs a real browser that they can\n"
     "install it from Settings → Browser (one click). The `web-preview` marker still\n"
-    "shows a local dev server in the dashboard and needs no `playwright-cli`: read the\n"
-    "`web-preview` skill first. If a `browser` call works anyway,\n"
+    "shows a local dev server in the dashboard's Preview tab and needs no browser\n"
+    "engine: read the `web-preview` skill first. If a `browser` call works anyway,\n"
     "browsing was set up after this session started: read the `web-browse` skill before\n"
     "you drive a page."
 )
@@ -621,3 +667,46 @@ def browser_section(prompt: str, available: bool) -> str:
         return section if available else _BROWSER_UNAVAILABLE
 
     return _BROWSER_SPAN.sub(_resolve, prompt)
+
+
+# The marked sub-agent span: the ``spawn_*`` capability lines and the Subagent
+# Orchestration rules, whose default is "do the task yourself, spawn only when".
+# A crewmate's conductor has none of those tools (``MATE_CONDUCTOR_EXCLUDED_TOOLS``)
+# and its own instructions say the opposite: dispatch longer work to a worker
+# session. Left in, the two defaults disagree on every conductor turn.
+SUBAGENTS_BEGIN = "{{SUBAGENTS_BEGIN}}"
+SUBAGENTS_END = "{{SUBAGENTS_END}}"
+_SUBAGENTS_SPAN = re.compile(
+    r"\{\{SUBAGENTS_BEGIN\}\}\r?\n?(?P<section>.*?)\r?\n?\{\{SUBAGENTS_END\}\}"
+    r"|\{\{SUBAGENTS_(?:BEGIN|END)\}\}",
+    re.DOTALL,
+)
+
+# What the conductor gets in the span's place. It names the tools it lacks so a
+# leftover mention elsewhere does not read as an invitation, and points at the
+# crewmate blocks that carry its real delegation rule.
+_CONDUCTOR_DELEGATION = (
+    "\n### Delegation\n"
+    "\n"
+    "You have no `spawn_run`, `task_run` or `workflow_run`: they are not in your tool\n"
+    "list, and a spawn from this session is refused. Your hand-off is a worker session,\n"
+    "as [HOW YOU WORK] and [CREW MEMBER OPERATING MODE] describe: a quick read or a\n"
+    "small edit you may do here, and longer work goes to a worker.\n"
+)
+
+
+def subagent_section(prompt: str, *, conductor: bool) -> str:
+    """*prompt* with its marked sub-agent span resolved for one agent.
+
+    Every agent but a crewmate's conductor keeps the span word for word and loses
+    only the markers. The conductor gets :data:`_CONDUCTOR_DELEGATION` instead. An
+    unpaired marker is dropped and the text around it kept, as for the Browser span.
+    """
+
+    def _resolve(match: re.Match[str]) -> str:
+        section = match.group("section")
+        if section is None:
+            return ""
+        return _CONDUCTOR_DELEGATION if conductor else section
+
+    return _SUBAGENTS_SPAN.sub(_resolve, prompt)

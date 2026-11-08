@@ -18,6 +18,7 @@ launcher prerequisites); #1 needs only the ``aws`` CLI.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 import platform
@@ -52,6 +53,13 @@ _MAX_FORWARD_STDOUT = 8192
 #: Read chunk for the stdout drain — small enough that a close notice written
 #: just before exit is observed promptly.
 _FORWARD_STDOUT_READ_CHUNK = 4096
+#: How long kill_port_forward waits for the forward's process group to empty
+#: after the SIGTERM it sends to members that outlived the wrapper, and after
+#: the SIGKILL that follows when they do not exit.
+_GROUP_TERM_GRACE_SECS = 2.0
+_GROUP_KILL_WAIT_SECS = 5.0
+#: Poll cadence of that wait.
+_GROUP_EMPTY_POLL_SECS = 0.05
 
 # Indirection so tests can patch out the poll sleep.
 _sleep = time.sleep
@@ -62,6 +70,19 @@ _SESSION_MANAGER_PLUGIN_DOC_URL = (
     "https://docs.aws.amazon.com/systems-manager/latest/userguide/"
     "session-manager-working-with-install-plugin.html"
 )
+#: The plugin release this module installs and each package's sha256, keyed by
+#: its download directory. A copy of ``SSM_PLUGIN_VERSION`` / ``SSM_SHA256_*`` in
+#: ``packaging/pins/aws-tools.env``, which the wheel does not ship;
+#: ``test/test_installer_tool_pins.py`` keeps the two equal.
+_SSM_PLUGIN_VERSION = "1.2.896.0"
+_SSM_PLUGIN_SHA256 = {
+    "mac": "d9d960f04acb5ba419e0a12f769f9af4f3263e098b9b63e2de659189c138341a",
+    "mac_arm64": "b95139a76cb473654d92185c200ac65205244b20f96aeb240b53837ba4973084",
+    "linux_64bit": "89a4a07fcb92169bdd2f07c2531acd11b84857338172e7638964aaa08fd5f0e3",
+    "linux_arm64": "edb766755393202e1193f8d2578c356a5ce409182e618b302da4e9c253d05895",
+    "ubuntu_64bit": "53f51fcc67314a4bf85888a38a3967cd41f8d0f28a60a9469a63acf935ba713e",
+    "ubuntu_arm64": "914eeca87b18b55356c58be197080f73742b3ca60d3823f0a45670dc9056aa9c",
+}
 
 # Valid Unix username shape for the `sudo -u <run_as>` target. Anchored with
 # ``\Z``, not ``$``: ``$`` also matches just before a trailing newline, so the
@@ -191,6 +212,7 @@ def build_port_forward_argv(
     local_port: int,
     profile: str = "",
     region: str = "",
+    document: str = "",
 ) -> list[str]:
     """Build the ``aws ssm start-session`` port-forward argv (testable).
 
@@ -205,6 +227,10 @@ def build_port_forward_argv(
     never a host the caller names, so the tunnel cannot be pointed at a third
     machine the target happens to be able to reach.
 
+    *document* names a custom Session document whose ``portNumber`` is fixed (a
+    Shared Crew owner scoping IAM to one port); it then takes ``localPortNumber``
+    alone. Empty is the AWS-managed document above.
+
     The CLI head is resolved absolutely through the deploy engine's shared
     resolver so a GUI-launched gateway's minimal PATH still finds it.
     """
@@ -215,9 +241,13 @@ def build_port_forward_argv(
         "--target",
         target,
         "--document-name",
-        _PORT_FORWARD_DOC,
+        document or _PORT_FORWARD_DOC,
         "--parameters",
-        f"portNumber={remote_port},localPortNumber={local_port}",
+        (
+            f"localPortNumber={local_port}"
+            if document
+            else f"portNumber={remote_port},localPortNumber={local_port}"
+        ),
     ]
     if region:
         argv += ["--region", region]
@@ -422,6 +452,65 @@ def session_manager_plugin_install_hint() -> str:
     )
 
 
+#: The next step for a refused ``aws`` CLI or plugin with no fix command, by
+#: refusal code. A root gateway and the strict policy are not cleared by an
+#: ownership change, and another account's file must not be made trusted: the
+#: step for it is a copy from AWS, in folders only root or this account own.
+REFUSAL_NEXT_STEP = {
+    "other_owner": (
+        "Install a copy with AWS's own installer, then rerun. That copy runs only if "
+        "it and every folder above it belong to root or to the account the gateway "
+        "runs as. If a folder such as /usr/local/bin belongs to the other account, an "
+        "administrator must make root its owner first (see the Remote Crew on EC2 guide)."
+    ),
+    "root_gateway": "Start the gateway from a regular account instead of root, then rerun.",
+    "strict_policy": (
+        "Install it where only root can change the file and its folders, at a path "
+        "with no symbolic links, then rerun."
+    ),
+    "": "Fix the file's ownership or permissions so the check passes, then rerun.",
+}
+
+
+def session_manager_plugin_unavailable_message() -> str:
+    """Why the plugin cannot be used: the refusal when one was found, else the install hint.
+
+    A plugin that is installed but refused by the provenance check is not "not
+    installed", and the install hint would hide the reason. The message then
+    names the file, the check's reason and, when one is known, the command that
+    clears it. Changes nothing about what is accepted.
+    """
+    refusal = session_manager_plugin_refusal()
+    if refusal is None:
+        return session_manager_plugin_install_hint()
+    message = (
+        f"session-manager-plugin is installed at {refusal.path} but was refused: "
+        f"{refusal.reason}."
+    )
+    if refusal.remedy_command:
+        # Making the tree root-owned turns whatever binary is in it into an
+        # accepted credential receiver, so the user confirms it is AWS's first.
+        return (
+            f"{message} Reinstalling does not change its ownership. "
+            "If you did not install it from AWS yourself, or are not sure, "
+            "reinstall it from AWS first. Then make its install directory root-owned "
+            f"and rerun: {refusal.remedy_command}"
+        )
+    return f"{message} {REFUSAL_NEXT_STEP.get(refusal.code, REFUSAL_NEXT_STEP[''])}"
+
+
+def reinstall_cannot_clear_refusal() -> bool:
+    """True when the refused plugin sits in AWS's own install tree with a known fix.
+
+    That is the one refusal reinstalling cannot clear: the installer rewrites the
+    same file and leaves its ownership as it was. A refused copy elsewhere (a
+    second account's Homebrew) can still be shadowed by a fresh AWS install, so
+    the install offer stays for it.
+    """
+    refusal = session_manager_plugin_refusal()
+    return refusal is not None and bool(refusal.remedy_command)
+
+
 def session_manager_plugin_install_command() -> str:
     """A copy-pasteable install command for THIS host, or "" if none fits.
 
@@ -431,14 +520,16 @@ def session_manager_plugin_install_command() -> str:
     remedy is resolved here and handed to callers rather than hardcoded in the UI,
     where a single macOS/Homebrew line would be wrong for every Linux host.
 
-    Packages come from AWS's public distribution bucket, the same source
-    :func:`install_session_manager_plugin` uses. Returns "" when the platform has
-    no one-liner (callers should fall back to the doc URL); in practice the cloud
-    surfaces are POSIX-only, so Darwin and Linux are the reachable cases.
+    Outside Homebrew (which checks its own cask's sha256), packages come from
+    AWS's public distribution bucket at the pinned release, the same artifacts
+    :func:`install_session_manager_plugin` uses, and each line checks the
+    package's sha256 before its ``sudo`` step. Returns "" when the
+    platform has no one-liner (callers should fall back to the doc URL); in
+    practice the cloud surfaces are POSIX-only, so Darwin and Linux are the
+    reachable cases.
     """
     system = platform.system()
     arch = _normalized_arch()
-    base = "https://s3.amazonaws.com/session-manager-downloads/plugin/latest"
 
     if system == "Darwin":
         # Homebrew's cask is the public homebrew/cask one and installs AWS's own
@@ -447,35 +538,29 @@ def session_manager_plugin_install_command() -> str:
         # which needs no package manager at all.
         if shutil.which("brew"):
             return "brew install --cask session-manager-plugin"
-        url = f"{base}/{'mac_arm64' if arch == 'arm64' else 'mac'}/session-manager-plugin.pkg"
-        # Download into a private mktemp dir (0700, owner-only) rather than a
-        # predictable /tmp path. On a shared host a local user could preplant or
-        # swap `/tmp/session-manager-plugin.pkg` and have the trailing
-        # `sudo installer` run attacker scripts as root; mktemp -d removes both the
-        # predictable name and the sticky-/tmp race. Clean it up afterward.
-        return (
-            'd="$(mktemp -d)"; '
-            f'curl -fsSL -o "$d/session-manager-plugin.pkg" "{url}" '
-            '&& sudo installer -pkg "$d/session-manager-plugin.pkg" -target /; '
-            'rm -rf "$d"'
+        return _verified_install_one_liner(
+            "mac_arm64" if arch == "arm64" else "mac",
+            "session-manager-plugin.pkg",
+            "shasum -a 256 -c",
+            'sudo installer -pkg "$p" -target /',
         )
 
     if system == "Linux":
         if shutil.which("dpkg"):
-            deb = f"{base}/{'ubuntu_arm64' if arch == 'arm64' else 'ubuntu_64bit'}/session-manager-plugin.deb"
-            # Private mktemp dir, not a predictable /tmp path — same root-substitution
-            # concern as the macOS pkg above (`sudo dpkg -i` on an attacker-swappable
-            # file in sticky /tmp). Clean it up afterward.
-            return (
-                'd="$(mktemp -d)"; '
-                f'curl -fsSL -o "$d/session-manager-plugin.deb" "{deb}" '
-                '&& sudo dpkg -i "$d/session-manager-plugin.deb"; '
-                'rm -rf "$d"'
+            return _verified_install_one_liner(
+                "ubuntu_arm64" if arch == "arm64" else "ubuntu_64bit",
+                "session-manager-plugin.deb",
+                "sha256sum -c",
+                'sudo dpkg -i "$p"',
             )
         installer = shutil.which("dnf") or shutil.which("yum")
         if installer:
-            rpm = f"{base}/{'linux_arm64' if arch == 'arm64' else 'linux_64bit'}/session-manager-plugin.rpm"
-            return f'sudo {Path(installer).name} install -y "{rpm}"'
+            return _verified_install_one_liner(
+                "linux_arm64" if arch == "arm64" else "linux_64bit",
+                "session-manager-plugin.rpm",
+                "sha256sum -c",
+                f'sudo {Path(installer).name} install -y "$p"',
+            )
 
     return ""
 
@@ -484,6 +569,10 @@ def install_session_manager_plugin() -> PluginInstallResult:
     """Install the local AWS Session Manager plugin for SSM port-forwarding."""
     if session_manager_plugin_installed():
         return PluginInstallResult(ok=True, message="session-manager-plugin already installed")
+    if reinstall_cannot_clear_refusal():
+        # Refused inside AWS's own install tree: the installer rewrites that same
+        # file without fixing its ownership.
+        return PluginInstallResult(ok=False, message=session_manager_plugin_unavailable_message())
 
     import tempfile
 
@@ -492,13 +581,16 @@ def install_session_manager_plugin() -> PluginInstallResult:
         plan = _session_manager_plugin_install_plan(tmpdir)
         if plan is None:
             return PluginInstallResult(ok=False, message=session_manager_plugin_install_hint())
-        url, package_path, commands = plan
+        url, sha256, package_path, commands = plan
         try:
-            _download_file(url, package_path)
+            _download_file(url, package_path, sha256)
         except Exception as exc:
             return PluginInstallResult(
                 ok=False,
-                message=f"Could not download session-manager-plugin package: {exc}",
+                message=(
+                    f"Could not download session-manager-plugin package: {exc}. "
+                    f"See {_SESSION_MANAGER_PLUGIN_DOC_URL}"
+                ),
             )
 
         for argv in commands:
@@ -508,6 +600,9 @@ def install_session_manager_plugin() -> PluginInstallResult:
 
     if session_manager_plugin_installed():
         return PluginInstallResult(ok=True, message="session-manager-plugin installed")
+    if session_manager_plugin_refusal() is not None:
+        # The install ran, but what the resolver finds is still refused.
+        return PluginInstallResult(ok=False, message=session_manager_plugin_unavailable_message())
     return PluginInstallResult(
         ok=False,
         message=(
@@ -520,7 +615,7 @@ def install_session_manager_plugin() -> PluginInstallResult:
 def require_session_manager_plugin() -> None:
     """Fail fast before starting an SSM port-forward without the local plugin."""
     if not session_manager_plugin_installed():
-        raise aws.AWSError(session_manager_plugin_install_hint(), action="ssm:StartSession")
+        raise aws.AWSError(session_manager_plugin_unavailable_message(), action="ssm:StartSession")
 
 
 def open_port_forward(
@@ -582,9 +677,30 @@ def open_port_forward(
         start_new_session=True,
         env=aws_spawn_env(argv[0]),
     )
+    # Read while the wrapper is un-reaped, so the id names its group and no one
+    # else's: kill_port_forward needs it after the wrapper exits, when
+    # ``os.getpgid`` of the reaped pid names nothing.
+    with contextlib.suppress(AttributeError):  # a Popen stand-in without a __dict__
+        proc.ssm_pgid = _spawned_group(proc)  # type: ignore[attr-defined]
     if capture_stdout:
         _start_stdout_drain(proc)
     return proc
+
+
+def _spawned_group(proc: subprocess.Popen) -> Optional[int]:
+    """The process group a just-spawned forward leads, or ``None``.
+
+    Kept only when the wrapper leads its own group (``pgid == pid``, which
+    ``start_new_session=True`` makes it), so the id names a group this forward
+    owns. POSIX only: Windows has no process groups and reaps the tree through
+    ``taskkill /T`` instead.
+    """
+    pid = getattr(proc, "pid", None)
+    if not platform_compat.IS_POSIX or type(pid) is not int or pid <= 1:
+        return None
+    # No poll() here: nothing has waited on the child yet, so even a wrapper
+    # that already exited is an un-reaped zombie whose pid still names it.
+    return pid if platform_compat.pgroup_of(pid) == pid else None
 
 
 def _start_stdout_drain(proc: subprocess.Popen) -> None:
@@ -647,11 +763,33 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
     function exists to prevent. Windows therefore gets its own tree kill via
     ``taskkill /T``, which walks the child chain the way a process group does on
     POSIX.
+
+    The wrapper's exit is not the forward's end: ``session-manager-plugin`` can
+    outlive it -- exiting on its own first, or dying on SIGTERM while the plugin
+    does not -- still in the group and still holding the port. ``os.getpgid`` of
+    the reaped wrapper names nothing, so on POSIX the group recorded at spawn
+    (``ssm_pgid``, see :func:`open_port_forward`) is what gets signalled, and
+    any member it still has after the wrapper is gone is sent SIGTERM, then
+    SIGKILL, each followed by a bounded wait for the group to empty. Only that
+    one group is signalled, so another forward's plugin is never touched.
     """
-    if proc is None or proc.poll() is not None:
+    if proc is None:
         return
+    pgid = _recorded_group(proc)
+    if proc.poll() is not None:
+        _reap_group_survivors(pgid, term_sent=False)
+        return
+    group_term_sent = False
 
     def _signal_group(sig: int) -> bool:
+        nonlocal group_term_sent
+        if pgid is not None:
+            try:
+                platform_compat.kill_process_group(pgid, sig)
+            except (OSError, ValueError):
+                return False
+            group_term_sent = group_term_sent or sig == platform_compat.SIGTERM
+            return True
         try:
             os.killpg(os.getpgid(proc.pid), sig)
             return True
@@ -723,6 +861,59 @@ def kill_port_forward(proc: Optional[subprocess.Popen]) -> None:
                 proc.kill()
         except Exception:
             pass
+        # Reap the killed wrapper: an un-reaped zombie stays a member of its
+        # group, so the survivor check below would read the group as populated.
+        with contextlib.suppress(Exception):
+            proc.wait(timeout=5)
+    _reap_group_survivors(pgid, term_sent=group_term_sent)
+
+
+def _recorded_group(proc: subprocess.Popen) -> Optional[int]:
+    """The group :func:`open_port_forward` recorded on *proc*, if it is usable.
+
+    A Popen-like object that did not come from :func:`open_port_forward` has no
+    record and gets ``None``, which leaves it the pid-resolved group signal.
+    """
+    pgid = getattr(proc, "ssm_pgid", None)
+    return pgid if type(pgid) is int and pgid > 1 else None
+
+
+def _wait_group_empty(pgid: int, timeout: float) -> bool:
+    """Poll until process group *pgid* has no member, for at most *timeout* s."""
+    deadline = time.monotonic() + timeout
+    while platform_compat.pgroup_exists(pgid):
+        if time.monotonic() >= deadline:
+            return False
+        _sleep(_GROUP_EMPTY_POLL_SECS)
+    return True
+
+
+def _reap_group_survivors(pgid: Optional[int], *, term_sent: bool) -> None:
+    """Signal what is left of the forward's recorded group once the wrapper is gone.
+
+    Reached after the wrapper has exited. A member still in the group is the
+    plugin (or its own child) holding the forwarded port, so the group gets
+    SIGTERM unless this teardown already sent it one, then SIGKILL, each followed
+    by a bounded wait for the group to empty. The id was read at spawn while the
+    wrapper was un-reaped, and a group id is not reused while any member lives,
+    so a non-empty group with this id is still this forward's.
+    """
+    if pgid is None or not platform_compat.pgroup_exists(pgid):
+        return
+    signals = [(platform_compat.SIGKILL, _GROUP_KILL_WAIT_SECS)]
+    if not term_sent:
+        signals.insert(0, (platform_compat.SIGTERM, _GROUP_TERM_GRACE_SECS))
+    for sig, wait_secs in signals:
+        try:
+            platform_compat.kill_process_group(pgid, sig)
+        except (OSError, ValueError):  # the group emptied, or a member is unsignalable
+            return
+        if _wait_group_empty(pgid, wait_secs):
+            return
+    logger.warning(
+        "session-manager-plugin group %d survived SIGKILL; its forwarded port may still be held",
+        pgid,
+    )
 
 
 def port_is_free(port: int, host: str = "127.0.0.1") -> bool:
@@ -909,16 +1100,16 @@ def _wrap_remote_command(command: str, run_as: str) -> str:
 
 def _session_manager_plugin_install_plan(
     tmpdir: Path,
-) -> tuple[str, Path, list[list[str]]] | None:
-    """Return (download_url, package_path, install_commands) for this platform."""
+) -> tuple[str, str, Path, list[list[str]]] | None:
+    """Return (download_url, sha256, package_path, install_commands) for this platform."""
     system = platform.system()
     arch = _normalized_arch()
     if system == "Darwin":
-        url_arch = "mac_arm64" if arch == "arm64" else "mac"
         package_path = tmpdir / "session-manager-plugin.pkg"
+        url, sha256 = _plugin_artifact("mac_arm64" if arch == "arm64" else "mac", package_path.name)
         return (
-            f"https://s3.amazonaws.com/session-manager-downloads/plugin/latest/{url_arch}/"
-            "session-manager-plugin.pkg",
+            url,
+            sha256,
             package_path,
             [
                 ["sudo", "installer", "-pkg", str(package_path), "-target", "/"],
@@ -937,31 +1128,51 @@ def _session_manager_plugin_install_plan(
         return None
 
     if shutil.which("dpkg"):
-        url_arch = "ubuntu_arm64" if arch == "arm64" else "ubuntu_64bit"
         package_path = tmpdir / "session-manager-plugin.deb"
-        return (
-            f"https://s3.amazonaws.com/session-manager-downloads/plugin/latest/{url_arch}/"
-            "session-manager-plugin.deb",
-            package_path,
-            [["sudo", "dpkg", "-i", str(package_path)]],
+        url, sha256 = _plugin_artifact(
+            "ubuntu_arm64" if arch == "arm64" else "ubuntu_64bit", package_path.name
         )
+        return url, sha256, package_path, [["sudo", "dpkg", "-i", str(package_path)]]
 
     if shutil.which("rpm"):
-        url_arch = "linux_arm64" if arch == "arm64" else "linux_64bit"
         package_path = tmpdir / "session-manager-plugin.rpm"
+        url, sha256 = _plugin_artifact(
+            "linux_arm64" if arch == "arm64" else "linux_64bit", package_path.name
+        )
         installer = shutil.which("dnf") or shutil.which("yum")
         if installer:
             commands = [["sudo", installer, "install", "-y", str(package_path)]]
         else:
             commands = [["sudo", "rpm", "-Uvh", str(package_path)]]
-        return (
-            f"https://s3.amazonaws.com/session-manager-downloads/plugin/latest/{url_arch}/"
-            "session-manager-plugin.rpm",
-            package_path,
-            commands,
-        )
+        return url, sha256, package_path, commands
 
     return None
+
+
+def _plugin_artifact(url_arch: str, filename: str) -> tuple[str, str]:
+    """The pinned release's download URL for one plugin package, and its sha256."""
+    url = (
+        f"https://s3.amazonaws.com/session-manager-downloads/plugin/{_SSM_PLUGIN_VERSION}/"
+        f"{url_arch}/{filename}"
+    )
+    return url, _SSM_PLUGIN_SHA256[url_arch]
+
+
+def _verified_install_one_liner(url_arch: str, filename: str, check: str, install: str) -> str:
+    """A shell line that downloads one pinned package, checks its sha256, then runs *install*.
+
+    The package goes to a private ``mktemp -d`` dir (0700, owner-only), never a
+    predictable /tmp path: on a shared host a local user could preplant or swap
+    that file and have the root install step run their package. *install* names
+    the file ``"$p"`` and runs only when *check* (``sha256sum -c`` or
+    ``shasum -a 256 -c``) accepts it. The dir is removed either way.
+    """
+    url, sha256 = _plugin_artifact(url_arch, filename)
+    return (
+        f'd="$(mktemp -d)"; p="$d/{filename}"; '
+        f'curl -fsSL -o "$p" "{url}" && echo "{sha256}  $p" | {check} && {install}; '
+        'rm -rf "$d"'
+    )
 
 
 def _normalized_arch() -> str:
@@ -969,8 +1180,8 @@ def _normalized_arch() -> str:
     return "arm64" if machine in ("arm64", "aarch64") else "x86_64"
 
 
-def _download_file(url: str, dest: Path) -> None:
-    """Download a package file using stdlib HTTPS."""
+def _download_file(url: str, dest: Path, sha256: str) -> None:
+    """Download a package file using stdlib HTTPS; raise unless it matches *sha256*."""
     import urllib.request
 
     # URLs come only from the fixed per-platform install plan (hardcoded
@@ -980,6 +1191,11 @@ def _download_file(url: str, dest: Path) -> None:
         raise ValueError(f"refusing non-HTTPS download URL: {url}")
     with urllib.request.urlopen(url, timeout=120) as response, dest.open("wb") as fh:  # nosemgrep
         shutil.copyfileobj(response, fh)
+    got = hashlib.sha256(dest.read_bytes()).hexdigest()
+    if got != sha256:
+        raise ValueError(
+            f"checksum mismatch for {url} (sha256 {got}, pinned {sha256}); refusing to install it"
+        )
 
 
 def _run_install_command(argv: list[str]) -> tuple[int, str, str]:

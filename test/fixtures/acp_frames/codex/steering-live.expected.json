@@ -25,10 +25,11 @@
         "fork": {},
         "list": {},
         "resume": {},
-        "subagents": {}
+        "subagents": {},
+        "systemPrompt": {}
       }
     },
-    "agent_version": "2.2.2",
+    "agent_version": "2.3.0",
     "frame": "response",
     "id": 1,
     "protocol_version": 1
@@ -145,17 +146,6 @@
     "action": "update",
     "events": [],
     "frame": "session/update",
-    "session_update": "usage_update",
-    "usage": [
-      105,
-      258400
-    ],
-    "usage_cost": null
-  },
-  {
-    "action": "update",
-    "events": [],
-    "frame": "session/update",
     "session_update": "session_info_update"
   },
   {
@@ -168,8 +158,8 @@
     "frame": "response",
     "id": 3,
     "prompt_tokens": [
-      200,
-      10,
+      100,
+      5,
       0,
       0
     ],

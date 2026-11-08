@@ -33,7 +33,7 @@ logger = logging.getLogger(f"{__package__}.agent_runner")
 #: on the HOST as the gateway user, in the tree the sandboxed agent just wrote to. `git status`
 #: consults `core.fsmonitor` and can SPAWN it, so an agent that set `core.fsmonitor` to a program
 #: (or planted a hook via `core.hooksPath`) would get host-side, out-of-sandbox execution on the
-#: next status. `-c` overrides on OUR argv beat the repo config. Raised by the GPT review.
+#: next status. `-c` overrides on OUR argv beat the repo config.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 #: How the error of a turn the backend ended unfinished begins (see ``_run_async``). Bug and

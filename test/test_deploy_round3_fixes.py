@@ -117,7 +117,6 @@ async def test_pending_dismiss_200_normal(monkeypatch, tmp_path):
         lambda state, request: False,
     )
 
-    # Add a pending entry
     monkeypatch.setattr(pending, "_store_path", lambda: tmp_path / "pending.json")
     entry = pending.add_pending({"site_id": "test-site"})
     entry_id = entry["id"]
@@ -134,7 +133,6 @@ async def test_pending_dismiss_200_normal(monkeypatch, tmp_path):
     assert resp.status == 200
     body = json.loads(resp.body)
     assert body == {"ok": True}
-    # Verify audit was called
     assert any(c[0] == "pending_dismiss" and c[2] == "ok" for c in audit_calls)
 
 

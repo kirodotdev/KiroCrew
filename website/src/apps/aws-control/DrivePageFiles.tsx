@@ -24,7 +24,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
   const {
     mode, setMode, path, setPath, share, setShare, uploadError, downloadError, preview, setPreview,
     query, setQuery, newFolder, setNewFolder, creatingFolder, setCreatingFolder, folderError,
-    folderToggleRef, moveTarget, returnFocusToOpener, moveDialogOpenRef, closeMoveDialog,
+    folderToggleRef, folderNameRef, moveTarget, returnFocusToOpener, moveDialogOpenRef, closeMoveDialog, moveToNewFolder,
     closeFolderDisclosure, handOff, deletedHere, fileRef, listQ, folders, files, uploadMut,
     folderCreateMut, onCreateFolder, onPick, dropTarget, moveError, setMoveError, pageError,
     moveMut, moveBusy, searching, dropProps, inertDropProps, download, crumbs,
@@ -89,6 +89,7 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
         {searching ? null : creatingFolder ? (
           <>
             <Input
+              ref={folderNameRef}
               value={newFolder}
               onChange={(e) => setNewFolder(e.target.value)}
               onKeyDown={(e) => {
@@ -335,6 +336,10 @@ export function DriveSectionView({ account, bucket }: { account: string; bucket:
             )
           }}
           onClose={closeMoveDialog}
+          // Search hides the toolbar's folder field, so the empty state's
+          // New folder action would open nothing; it is offered only when the
+          // field it hands over to can appear.
+          onNewFolder={searching ? undefined : moveToNewFolder}
         />
       )}
       {preview && (

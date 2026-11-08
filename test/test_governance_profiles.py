@@ -1277,7 +1277,7 @@ def test_extends_missing_parent_still_denies_its_surface(profiles_dir):
     # resolves to deny-all (fail-closed), not None (which would fall through to
     # the policy ceiling alone, bypassing operator narrowing). Mirrors
     # test_invalid_profile_with_valid_bind_still_denies_its_surface for the
-    # Pass-2 (extends) path. (security-review blocking finding.)
+    # Pass-2 (extends) path.
     _write(
         profiles_dir,
         "cron",
@@ -1802,7 +1802,6 @@ def test_fallback_profile_names_bind_preserved_unreadable(profiles_dir, monkeypa
     # First load succeeds.
     assert gp.fallback_profile_names() == frozenset()
 
-    # Make unreadable and bump mtime.
     _make_read_text_raise(monkeypatch, path, OSError("permission denied"))
     st = path.stat()
     os.utime(path, (st.st_atime, st.st_mtime + 5))

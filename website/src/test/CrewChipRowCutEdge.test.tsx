@@ -96,7 +96,6 @@ describe('pinned chips adapt to their own track', () => {
     // The active chip is rendered by `Switcher`, outside the row, and must NOT be
     // shrinkable: it is the one label that says where you are.
     const active = /className="tb-crew-active-chip"[\s\S]{0,200}?\/>/.exec(t)
-      || /active\s*\n\s*onSelect=\{\(\) => onSelect\(active\.id\)\}[\s\S]{0,200}?\/>/.exec(t)
     expect(active, 'expected the active-chip render site').not.toBeNull()
     expect(active![0], 'the active chip must not be shrinkable').not.toMatch(/shrinkable/)
   })

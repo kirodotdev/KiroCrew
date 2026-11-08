@@ -498,6 +498,7 @@ class Backend:
     # The ``resources/subscribe`` lease broker of a shared ``Backend``: ``kiro_crew.mcp_gateway.backend_leases``.
     evict_stub_subscriptions = _backend_leases.evict_stub_subscriptions
     _handle_resource_subscription = _backend_leases._handle_resource_subscription
+    _hold_identity_release = _backend_leases._hold_identity_release
     _on_resource_subscription_response = _backend_leases._on_resource_subscription_response
     resource_subscription_uris = _backend_leases.resource_subscription_uris
     replay_resource_subscriptions = _backend_leases.replay_resource_subscriptions
@@ -856,11 +857,11 @@ __all__ = sorted(
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.mcp_gateway.backend_handshake import (  # noqa: F401
         _GATEWAY_INIT_ID,
+        _INITIALIZE_TIMEOUT_COLD_START_FLOOR_SECS,
         _LOST_SESSION_ERROR_CODE,
         _LOST_SESSION_ERROR_MESSAGE,
         _REHANDSHAKE_RETRY_METHODS,
         _REHANDSHAKE_STUB_SENTINEL,
-        _WINDOWS_INITIALIZE_TIMEOUT_FLOOR_SECS,
         _inject_inflight_capability,
         _is_lost_session_error,
         _parse_initialize_response,
@@ -919,6 +920,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         INTERNAL_STUB_PREFIXES,
         TOOL_SURFACE_STUB_PREFIX,
         BackendGone,
+        _carry_tool_call_id,
         _collapse_nonprintable,
         _inject_caller_meta,
         _inject_tenant_meta,

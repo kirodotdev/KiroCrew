@@ -77,14 +77,14 @@ def test_a_row_without_an_asks_entry_still_gets_its_reply_button() -> None:
     assert "Array.isArray(e.options) ? e.options : []" in lookup_body
 
 
-#: The host's own allowlist (website/src/hooks/useFrameOpenLink.ts PR_URL_RE).
+#: The PR shape the page builds from an item's repo and number.
 PR_URL = r"/^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[0-9]+\/?$/"
 
 
 def test_a_pr_chip_asks_the_host_to_open_it_and_never_opens_it_itself() -> None:
-    """The frame has no allow-popups: a PR opens only through the host's bridge."""
+    """The frame has no allow-popups: a link opens only through the host's bridge."""
     script = _script()
-    body = _function("openPr")
+    body = _function("openLink")
     assert "parent.postMessage({ type: 'kirocrew-dashboard:open', url: url }, '*')" in body
     assert PR_URL in script
     for banned in ("window.open", "href", "<a ", "target"):
@@ -101,15 +101,42 @@ def test_a_pr_link_is_built_from_the_items_own_repo_and_checked_before_drawing()
     assert "} else if (pr) chips.appendChild(chip(" in draw
 
 
+def test_an_items_artifact_values_that_can_open_become_host_links() -> None:
+    """A worker reports evidence as ``artifacts`` (name -> value). A value the host can
+    open (an artifact, a session, an issue, another web page) is drawn as a button
+    that asks the host; a path on disk or a branch name is not drawn at all."""
+    m = re.search(r"var LINKABLE = /(.+)/;", _script())
+    assert m, "no LINKABLE rule"
+    linkable = re.compile(m.group(1))
+    body = _function("linksOf")
+    assert "LINKABLE.test(v)" in body and "out.length < 6" in body
+    draw = _function("drawItems")
+    assert "linksOf(it)" in draw and "openLink(u)" in draw
+    for value in (
+        "/artifacts/weekly-report",
+        "/chat?sid=chat-1-2",
+        "/settings/chat",
+        "/schedule",
+        "https://github.com/a/b/issues/3",
+        "https://example.com/x",
+        "http://example.com",
+    ):
+        assert linkable.match(value), value
+    for value in ("/home/me/wt", "crew/x/branch", "/chatter", "javascript:x"):
+        assert not linkable.match(value), value
+
+
 def test_live_keys_off_the_workers_status_not_a_masked_field() -> None:
     """``member_dashboard._page_safe`` drops ``worker_session_key`` before any field
     reaches a page, so a ``live`` test on it would never be true."""
     from kiro_crew.dashboard.handlers.member_dashboard import _MASKED_VALUE_KEYS
 
-    body = _function("live")
+    body = _function("view")
     for masked in _MASKED_VALUE_KEYS:
         assert masked not in _script(), masked
+    assert "it.worker === 'running'" in body
     assert "it.status === 'progress'" in body
+    assert "view(it) === 'working'" in _function("live")
 
 
 def test_no_animation_runs_forever_except_the_live_markers() -> None:
@@ -139,7 +166,14 @@ def test_every_needs_you_button_says_it_drafts_rather_than_sends() -> None:
 def test_items_that_need_the_reader_get_their_own_segment() -> None:
     """The bar's "open" must not swallow a task that waits on the reader."""
     assert "['needs_you', 'needs you', 'var(--warn, #ffd230)']" in _script()
-    assert "needsYou(list[i]) ? 'needs_you'" in _function("drawStates")
+    assert "var s = view(list[i]);" in _function("drawStates")
+
+
+def test_only_needs_you_is_warm_a_stall_is_muted() -> None:
+    """Stuck and quiet are the conductor's to pick up, so neither takes a warm colour."""
+    script = _script()
+    assert "['stuck', 'stuck', 'var(--muted-strong, #778)']" in script
+    assert "['quiet', 'quiet', 'var(--muted-strong, #778)']" in script
 
 
 def test_a_worker_status_reads_in_the_readers_language() -> None:

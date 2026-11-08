@@ -6,8 +6,17 @@ name: CodeQL
 # a draft PR is not scanned until it is marked ready for review.
 #
 # SAME SCAN AS DEFAULT SETUP. The languages, query suite (`default`), threat
-# model (`remote`), build mode (`none`), weekly schedule and hosted runner match
-# what default setup ran (`gh api repos/<repo>/code-scanning/default-setup`).
+# model (`remote`) and build mode (`none`) match what default setup ran
+# (`gh api repos/<repo>/code-scanning/default-setup`), as does the weekly
+# schedule. The RUNNER does not match: default setup ran on a standard hosted
+# runner, and the `Analyze` job below routes to the AWS CodeBuild fleet at
+# `instance-size:large` on an eligible push or pull request and takes the
+# `kirocrew-linux-4-core` larger-runner label on every other event (see "Larger
+# runners for the review lanes and CodeQL" in docs/ci/ci-and-reviews.md). Both
+# destinations hold the scan: the fleet at `large` is 8 vCPU and 15 GB, the
+# larger-runner label 4 vCPU and 16 GB, against a public-repo `ubuntu-latest`'s
+# 4 vCPU and 16 GB. The fleet's DEFAULT compute would not -- it is 7 GB, and
+# this scan's TypeScript extractor alone sizes itself above that.
 # The workflow name `CodeQL` and the job name `Analyze (<language>)` match its
 # check names. Each upload names `category: /language:<language>`, the category
 # default setup used, so alerts keep their history instead of opening twice
@@ -61,7 +70,19 @@ jobs:
       (github.event_name != 'pull_request' ||
        (!github.event.pull_request.draft &&
         github.event.pull_request.head.repo.full_name == github.repository))
-    runs-on: ubuntu-latest
+    # The CodeBuild fleet, at `instance-size:large` rather than the default
+    # compute, on an admitted actor's push or `opened`/`synchronize`
+    # same-repository pull request. The size is not a preference: the
+    # `javascript-typescript` extractor sizes its TypeScript process above a
+    # default MEDIUM container's whole 7 GB, so only `large`'s 15 GB holds this
+    # scan. Every other event -- `reopened`,
+    # `ready_for_review`, the weekly schedule and a manual dispatch -- carries
+    # no fleet-eligible actor or action and takes the `kirocrew-linux-4-core`
+    # label, the larger-runner definition this job targeted by group before. A
+    # fork running this workflow on its own `main` cannot reach an organization
+    # runner group, so it takes the hosted image. The AWS webhook remains the
+    # security boundary; this expression controls availability.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1} instance-size:large', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 60
     permissions:
       actions: read
@@ -77,11 +98,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: ${{ matrix.language }}
           build-mode: none
 
-      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           category: /language:${{ matrix.language }}

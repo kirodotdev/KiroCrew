@@ -94,6 +94,10 @@ const THEME_PROMPT_GROUPS: { title: string; vars: [string, string][] }[] = [
       ['--json-bool', 'JSON booleans and null'],
       ['--term-magenta', 'terminal ANSI magenta'],
       ['--term-cyan', 'terminal ANSI cyan'],
+      ['--term-bg', 'terminal background (falls back to --bg)'],
+      ['--term-fg', 'terminal text (falls back to --text)'],
+      ['--term-cursor', 'terminal cursor (falls back to --accent)'],
+      ['--term-selection', 'terminal selection background (falls back to --accent-subtle)'],
     ],
   },
   {

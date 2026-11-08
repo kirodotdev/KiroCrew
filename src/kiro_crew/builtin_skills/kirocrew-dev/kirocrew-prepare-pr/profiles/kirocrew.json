@@ -61,6 +61,7 @@
     "npm --prefix website run lint:restyle-ratchet -- --test",
     "npm --prefix website run lint:restyle-ratchet",
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website run i18n:render",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && if git diff --quiet \"$BASE\" -- website/src website/scripts/bench-render.mjs website/scripts/lib website/scripts/vite.profiling.config.mjs website/vite.config.ts website/perf-budgets.json website/package-lock.json .github/workflows/ci.yml; then echo 'bench:render skipped: no input of the CI render_bench filter changed'; else npm --prefix website run bench:render -- --fail-on dispatches,selectorCalls; fi",
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" SCOPED_TESTS_BASE_REF=\"$BASE\" python3 scripts/run_scoped_tests.py --surface frontend",
     "npm --prefix website run jscpd",
     "npm --prefix website run test:electron",

@@ -30,9 +30,10 @@ from kiro_crew.dashboard.origin import (
     resolve_dashboard_host,
 )
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, generate_token
-from kiro_crew.dashboard.urls import tunnel_origin_if_opted_in
+from kiro_crew.dashboard.token_auth_tokens import owner_mint_extra
+from kiro_crew.dashboard.urls import slack_tunnel_opt_in, tunnel_origin_if_opted_in
 from kiro_crew.sel import sel
-from kiro_crew.slack.handler import is_allowed_user, is_tracked_channel
+from kiro_crew.slack.handler import is_allowed_user, is_owner, is_tracked_channel
 from kiro_crew.tunnel import get_tunnel_url, publish_disabled
 
 if TYPE_CHECKING:
@@ -216,11 +217,21 @@ async def send_dashboard_link(
     local_only = is_local_only(configured_host, True)
     host = resolve_dashboard_host(local_only, configured_host)
 
-    token = generate_token(user_id, session_ttl)
+    # The owner's own link carries the owner-mint claim, so the session can be
+    # told to sign in again once the owner id changes. Ownership is the owner id
+    # the gateway loaded into the Slack handler, not the process environment,
+    # which a container entrypoint scrubs. Allowlisted users' links stay
+    # unmarked and keep the generic denial.
+    minted_for_owner = is_owner(user_id)
+    token = generate_token(
+        user_id, session_ttl, extra=owner_mint_extra() if minted_for_owner else None
+    )
 
     # Tunnel URL is only used when explicitly opted in via slack.use_tunnel_url
-    # (default false until tunnel mechanism is scaled for general use).
-    tunnel_url = tunnel_origin_if_opted_in(cfg.slack.use_tunnel_url)
+    # (default false until tunnel mechanism is scaled for general use). An
+    # enterprise build reads the opt-in as off, so neither door below opens.
+    use_tunnel = slack_tunnel_opt_in(cfg.slack.use_tunnel_url)
+    tunnel_url = tunnel_origin_if_opted_in(use_tunnel)
     # Set when the link is knowingly loopback-only and cannot ever become
     # reachable, so the DM can say that rather than leaving it to the log.
     no_tunnel_notice = False
@@ -239,7 +250,7 @@ async def send_dashboard_link(
     # does not keep. Falling through leaves ``tunnel_url`` empty, so the link is
     # composed from the local origin below — the same outcome as an edition whose
     # seam is a no-op, and the behavior every standalone install already gets.
-    if cfg.slack.use_tunnel_url and local_only and not tunnel_url and publish_disabled():
+    if use_tunnel and local_only and not tunnel_url and publish_disabled():
         # Audited, not just logged: this is the same security control as the boot
         # refusal in ``tunnel.setup`` (which records ``tunnel.start_denied``), and a
         # control whose denials are only half auditable cannot be reviewed after the
@@ -262,7 +273,7 @@ async def send_dashboard_link(
         # requester taps a link that times out every time and the only explanation
         # is in the log they cannot see.
         no_tunnel_notice = True
-    elif cfg.slack.use_tunnel_url and local_only and not tunnel_url:
+    elif use_tunnel and local_only and not tunnel_url:
         from kiro_crew.platform import current_context
         from kiro_crew.platform.context import async_safe_context_call
 
@@ -369,6 +380,8 @@ def _update_config_list(
 
     Each entry is a dict with at least *id_field*.  Idempotent — adding
     a duplicate or removing a missing entry is a no-op (no write at all).
+    Raises ``ValueError`` and writes nothing when ``slack`` is not an object
+    or the list is not a list.
     Goes through :func:`update_config_locked` so the read-modify-write holds
     the sidecar advisory lock: a concurrent config writer (dashboard PATCH,
     CLI, the boot-time meta refresh) cannot land inside this write's window
@@ -376,19 +389,38 @@ def _update_config_list(
     the read happens fresh inside the lock hold.
     """
     changed = ""
+    bad_shape = ""
+
+    def _matches(entry: dict) -> bool:
+        # allowed_users also keeps a ``user_id`` key standing in for an unusable
+        # ``slack_id``, which the loader (``config/sections_slack.py``) reads as
+        # that user, so a remove must find it too.
+        own = entry.get(id_field)
+        if id_field == "slack_id" and not (isinstance(own, str) and own):
+            return entry.get("user_id") == target_id
+        return own == target_id
 
     def _apply(data: dict) -> dict | None:
-        nonlocal changed
+        nonlocal changed, bad_shape
+        # A wrong-shaped entry is kept as written and nothing is saved:
+        # `None` tells update_config_locked there is no change to persist,
+        # and the caller gets a ValueError naming the entry.
         slack_cfg = data.setdefault("slack", {})
-        entries: list[dict] = slack_cfg.setdefault(section_key, [])
+        if not isinstance(slack_cfg, dict):
+            bad_shape = "'slack' is not an object"
+            return None
+        entries = slack_cfg.setdefault(section_key, [])
+        if not isinstance(entries, list):
+            bad_shape = f"'slack.{section_key}' is not a list"
+            return None
         if remove:
-            filtered = [e for e in entries if e.get(id_field) != target_id]
+            filtered = [e for e in entries if not _matches(e)]
             if len(filtered) == len(entries):
                 return None  # wasn't there — no-op, no write
             slack_cfg[section_key] = filtered
             changed = "Removed"
             return data
-        if any(e.get(id_field) == target_id for e in entries):
+        if any(_matches(e) for e in entries):
             return None  # already present — no-op, no write
         entry: dict[str, str] = {id_field: target_id}
         if name:
@@ -398,6 +430,8 @@ def _update_config_list(
         return data
 
     update_config_locked(config_path(), mutate=_apply)
+    if bad_shape:
+        raise ValueError(f"Config entry {bad_shape}; fix config.json first")
     if changed == "Removed":
         logger.info("Removed %s=%s from config slack.%s", id_field, target_id, section_key)
     elif changed == "Added":

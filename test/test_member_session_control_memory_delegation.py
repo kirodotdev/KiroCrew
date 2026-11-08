@@ -1,22 +1,12 @@
 """A member's private store, and the template it shadows, under ``create_session``.
 
-A crew member's private V2 store is reachable only on authority the caller holds. Naming a
-member's agent is a caller-supplied string, so the two admissions are a same-store worker
-whose protected execution record names that store, and the owner's own dashboard session; a
-cron slot, a member DM slot naming a peer, anything either created, a forged execution
-record and a provider template switch that carries a store over are refused
-``memory_delegation_denied``. ``TestPrivateStoreCallerIsolation`` pins both directions,
-including the vouch a restarted child earns again at its next gate-verified admission and
-the durable vouch's sandbox mask. ``TestShadowedTemplateDispatch`` pins
-``agent_kind="template"``: a caller dispatches the template a same-named crew member
-shadows onto its own store, through ``create_session``, the HTTP route and the real
-resolver, while the bare name stays refused and the operator's cause line names the
-shared-store condition.
+A member's agent name is caller-supplied, so a private V2 store admits only a same-store
+worker (protected execution record) or the owner's dashboard session; everything else is
+refused ``memory_delegation_denied``. ``agent_kind="template"`` dispatches the template a
+same-named member shadows, onto the caller's own store.
 
-The member DM key, the ``_fresh_create_budget`` fixture and the member-tab builder come from
-``member_session_control_helpers.py``; the gate bypass, the ownership boundary, the dispatch
-ceiling and the created child's execution identity are pinned in
-``test_member_session_control.py``.
+Shared helpers live in ``member_session_control_helpers.py``; the gate bypass, ownership
+boundary and dispatch ceiling are pinned in ``test_member_session_control.py``.
 """
 
 from __future__ import annotations
@@ -40,17 +30,9 @@ from kiro_crew.dashboard.state import SlotOrigin
 class TestPrivateStoreCallerIsolation:
     """A member's private store is reachable only on authority the caller holds.
 
-    Naming a member's agent is a caller-supplied string, so it cannot be the
-    authority for binding a child onto that member's private V2 store. Two
-    admissions, and nothing else: the store is the caller's OWN (read from its
-    protected execution record -- the same-store worker), or the caller is the
-    owner's own dashboard session. Every population the ownership fence already
-    treats as untrusted -- a cron slot, a member DM slot naming a PEER, and
-    anything either created -- is refused.
-
-    Both directions are pinned. The refusals are the fix; the admissions are the
-    shipped capability the fix must not remove, and a fix that refused them would
-    need an RFC.
+    Two admissions: the caller's OWN store (protected execution record) or the owner's
+    dashboard session. A cron slot, a member DM slot naming a PEER, and anything either
+    created are refused. Both directions are pinned.
     """
 
     def _prepare(self, tmp_path, monkeypatch):
@@ -219,16 +201,9 @@ class TestPrivateStoreCallerIsolation:
     def test_a_forged_execution_record_does_not_grant_the_own_store_admission(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
-        # The own-store admission's AUTHORITY, which is the weight this whole
-        # narrowing rests on. A caller's execution record is metadata on its own
-        # transcript, so a fenced worker can name a peer's store there and
-        # `read_session_execution` will hand that claim back when this process
-        # holds no word of its own. Nothing vouches for it, so it is refused.
-        #
-        # Paired with the test below, which differs ONLY in who wrote the
-        # identity: there `bind_session_execution` commits it, so this process
-        # vouches and the same create is admitted. That pair is what isolates the
-        # vouched term from the record term.
+        # A caller's execution record is writable transcript metadata, so an unvouched
+        # claim to a peer's store is refused. The next test differs ONLY in that
+        # `bind_session_execution` wrote the identity, so this process vouches for it.
         from kiro_crew.execution_context import resolve_member_execution
 
         state, cfg = self._prepare(tmp_path, monkeypatch)
@@ -354,19 +329,195 @@ class TestPrivateStoreCallerIsolation:
         result = asyncio.run(sc.create_session(state, caller_session_key=key, agent="radar"))
         assert state.get_slot(result["target"]) is not None
 
+    def _fork_onto(self, state, parent, child_name):
+        """Bind *child_name* the way a fork does, from *parent*'s recorded identity."""
+        from kiro_crew.dashboard import chat_fork
+        from kiro_crew.dashboard.chat_utils import effective_session_key
+
+        source = (
+            effective_session_key(parent),
+            parent.agent,
+            parent.memory_store,
+            "persistent",
+            "",
+        )
+        inherited = chat_fork._fork_execution_context(*source)
+        child = state.get_or_create_slot(child_name)
+        key = effective_session_key(child)
+        assert key == slot_history_key(child)
+        chat_fork._bind_fork_execution(source, key, inherited)
+        child.agent = parent.agent
+        child.memory_store = inherited.store.legacy_name
+        return child, key
+
+    def test_a_fork_of_a_member_tab_dispatches_its_own_store_worker(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # A fork copies its identity from the source's record, so it may carry
+        # only the vouch the gateway already holds for that source. A fork that
+        # published unvouched could never dispatch: its `chat-` key names no
+        # member, it has no durable copy for a restart to re-vouch from, and a
+        # conversation with messages cannot be re-pinned from the agent picker.
+        # The carried vouch must survive a second generation too.
+        from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
+        from kiro_crew.execution_context import read_vouched_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        parent = state.get_or_create_slot("chat-40-1789000000")
+        store = _pin_private_agent_assignment(
+            slot_history_key(parent), "radar", cfg, conversation_log=state.conversation_log
+        )
+        parent.agent = "radar"
+        parent.memory_store = store
+
+        child, child_key = self._fork_onto(state, parent, "chat-41-1789000001")
+        vouched = read_vouched_session_execution(child_key)
+        assert vouched is not None and vouched.store.store_id == store
+        result = asyncio.run(sc.create_session(state, caller_session_key=child_key, agent="radar"))
+        assert state.get_slot(result["target"]) is not None
+
+        _grandchild, grandchild_key = self._fork_onto(state, child, "chat-42-1789000002")
+        result = asyncio.run(
+            sc.create_session(state, caller_session_key=grandchild_key, agent="radar")
+        )
+        assert state.get_slot(result["target"]) is not None
+
+    def test_a_fork_after_a_restart_carries_the_sources_durable_vouch(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # A restart empties the in-memory vouches before the source's next
+        # admission re-establishes its own. The durable copy written when the
+        # gateway vouched the source is the gateway's word in that window, so a
+        # fork made then still carries it.
+        from kiro_crew import execution_context
+        from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        parent = state.get_or_create_slot("chat-43-1789000000")
+        parent.memory_store = _pin_private_agent_assignment(
+            slot_history_key(parent), "radar", cfg, conversation_log=state.conversation_log
+        )
+        parent.agent = "radar"
+        execution_context._VOUCHED_EXECUTIONS.clear()
+
+        _child, child_key = self._fork_onto(state, parent, "chat-44-1789000001")
+        result = asyncio.run(sc.create_session(state, caller_session_key=child_key, agent="radar"))
+        assert state.get_slot(result["target"]) is not None
+
+    @pytest.mark.parametrize("source", ["never-vouched", "record-moved-to-peer"])
+    def test_a_fork_carries_no_vouch_the_gateway_did_not_give_its_source(
+        self, tmp_path, monkeypatch, _fresh_create_budget, source
+    ):
+        # The deny direction of the pair above. A source the gateway never
+        # vouched has nothing to carry, and a source that rewrote its own record
+        # to a peer's store copies that store into the fork while the gateway's
+        # word still names its own, so neither fork may open a worker.
+        from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
+        from kiro_crew.execution_context import (
+            bind_session_execution,
+            read_session_execution,
+            read_vouched_session_execution,
+            resolve_member_execution,
+        )
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        parent = state.get_or_create_slot("chat-45-1789000000")
+        parent_key = slot_history_key(parent)
+        if source == "never-vouched":
+            member = "radar"
+            bind_session_execution(parent_key, resolve_member_execution(cfg, member))
+        else:
+            _pin_private_agent_assignment(
+                parent_key, "radar", cfg, conversation_log=state.conversation_log
+            )
+            member = "peer"
+            bind_session_execution(
+                parent_key,
+                resolve_member_execution(cfg, member),
+                replace_existing=True,
+                expected=read_session_execution(parent_key),
+            )
+        parent.agent = member
+        parent.memory_store = resolve_member_execution(cfg, member).store.legacy_name
+
+        _child, child_key = self._fork_onto(state, parent, "chat-46-1789000001")
+        assert read_vouched_session_execution(child_key) is None
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(sc.create_session(state, caller_session_key=child_key, agent=member))
+        assert error.value.code == "memory_delegation_denied"
+
+    def _seed_member_tab(self, state, cfg, name, member, monkeypatch):
+        """A member tab the owner pinned, with a settled transcript an agent can fork."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard import chat_fork
+        from kiro_crew.dashboard.chat_persistence import (
+            _pin_private_agent_assignment,
+            _save_slot_to_history,
+        )
+
+        monkeypatch.setattr(chat_fork, "sel", lambda: MagicMock())
+        monkeypatch.setattr(sc, "sel", lambda: MagicMock())
+        slot = state.get_or_create_slot(name)
+        slot.memory_store = _pin_private_agent_assignment(
+            slot_history_key(slot), member, cfg, conversation_log=state.conversation_log
+        )
+        slot.agent = member
+        for i in range(2):
+            slot.append("user", f"question {i}", "msg msg-u")
+            slot.append("assistant", f"answer {i}", "msg msg-a")
+        slot.drain()
+        _save_slot_to_history(state, slot, closed=False)
+        slot._resumed_count = len(slot.messages)
+        slot._disk_window_len = len(slot.messages)
+        slot._dirty = False
+        return slot
+
+    def test_an_agent_fork_of_its_own_member_tab_dispatches_its_own_store_worker(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # `session_fork` reaches the same binder as the owner's Fork button, so a
+        # member forking its own vouched conversation hands the child that vouch.
+        from kiro_crew.execution_context import read_vouched_session_execution
+
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        parent = self._seed_member_tab(state, cfg, "chat-47-1789000000", "radar", monkeypatch)
+
+        forked = asyncio.run(sc.fork_session(state, caller_session_key=slot_history_key(parent)))
+        child_key = slot_history_key(state.get_slot(forked["target"]))
+        vouched = read_vouched_session_execution(child_key)
+        assert vouched is not None and vouched.store.store_id == parent.memory_store
+        result = asyncio.run(sc.create_session(state, caller_session_key=child_key, agent="radar"))
+        assert state.get_slot(result["target"]) is not None
+
+    def test_a_fenced_peer_member_cannot_fork_another_members_tab(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        # The deny direction. A fenced peer naming another member's conversation as
+        # the source is refused at `authorize_target`, before any child exists, so
+        # it never gets a session carrying that member's vouch.
+        state, cfg = self._prepare(tmp_path, monkeypatch)
+        source = self._seed_member_tab(state, cfg, "chat-48-1789000000", "radar", monkeypatch)
+        peer = self._seed_member_tab(state, cfg, "chat-49-1789000000", "peer", monkeypatch)
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.fork_session(
+                    state,
+                    caller_session_key=slot_history_key(peer),
+                    source=slot_history_key(source),
+                    caller_fenced=True,
+                )
+            )
+        assert error.value.code == "target_not_found"
+        assert state.creator_slot_count(peer.key) == 0
+
     def test_a_restart_self_heals_own_store_dispatch_at_the_next_gate_admission(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
-        # A restart empties the vouched map in process memory while the durable
-        # record survives, so a rehydrated member session's own-store dispatch
-        # would otherwise stay refused until its OWNER re-selected the agent. The
-        # trust source that closes that gap: a vouch registered at the session's
-        # next GATE-VERIFIED admission, keyed on the verified session key, not on
-        # anything the record asserts. The member DM caller's key IS
-        # `member-<slug>`, the key the HTTP gate authenticated, and its slug is the
-        # member id -- a value the session cannot rewrite about itself. So this
-        # create re-establishes the vouch and is admitted, with NO owner
-        # re-selection.
+        # A restart empties the vouched map. The next GATE-VERIFIED admission re-vouches,
+        # keyed on the verified `member-<slug>` key, which the session cannot rewrite.
+        # So this create is admitted with NO owner re-selection.
         from kiro_crew import execution_context
         from kiro_crew.execution_context import read_vouched_session_execution
 
@@ -389,27 +540,12 @@ class TestPrivateStoreCallerIsolation:
     def test_a_rehydrated_forger_cannot_revouch_a_peers_store(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
-        # The self-heal's trust source, SHOWN not asserted.
-        # A session that rewrites its own durable record to name a PEER's store
-        # must not be re-vouched by the gate-verified path, even after a restart
-        # emptied the map. Three forgery shapes, all refused:
-        #
-        #  (a) an ordinary `chat-` caller whose writable record names the peer
-        #      store. Its verified key is not a member DM key, so the re-vouch
-        #      never fires -- the record alone is no authority.
-        #  (b) a member DM caller (`member-radar`) whose record is forged to a
-        #      PEER member's store. The verified key's slug is `radar`; the record
-        #      claims `peer`; they disagree, so the re-vouch refuses. The vouch is
-        #      keyed on the key the gate verified, never on the member the record
-        #      asserts.
-        #  (c) a member DM caller (`member-radar`) whose record keeps BOTH
-        #      member-id fields as its own slug `radar` but points `store.store_id`
-        #      at the PEER's store -- the shape `ExecutionContext.__post_init__`
-        #      (which checks only `store.member_id == member_id`) and
-        #      `MemoryStoreRef` (which shape-checks the store NAME) both admit. The
-        #      re-vouch resolves `radar`'s own store from CONFIG and refuses,
-        #      because the record's `store_id` is not the one config says `radar`
-        #      owns.
+        # A record rewritten to name a PEER's store is never re-vouched. Three forgeries:
+        #  (a) a `chat-` caller: not a member DM key, so no re-vouch fires.
+        #  (b) `member-radar` with a record naming member `peer`: the slugs disagree.
+        #  (c) `member-radar` with its own member ids but the PEER's `store.store_id`,
+        #      which `ExecutionContext.__post_init__` and `MemoryStoreRef` both admit;
+        #      the re-vouch checks `radar`'s store from CONFIG and refuses.
         from kiro_crew import execution_context
         from kiro_crew.execution_context import (
             read_vouched_session_execution,
@@ -476,11 +612,10 @@ class TestPrivateStoreCallerIsolation:
     def test_a_fresh_bind_restores_the_own_store_admission_after_a_restart(
         self, tmp_path, monkeypatch, _fresh_create_budget
     ):
-        # A member re-selecting the agent binds through the durable path, which
-        # vouches again, and the same dispatch is admitted. Kept alongside the
-        # gate-verified self-heal above: both restore the capability after a
-        # restart, one automatically at the next admission and one on an explicit
-        # owner re-select, and neither removes it outright.
+        # A vouching bind, the one a new member chat gets when it is created,
+        # restores the same dispatch. Kept alongside the gate-verified self-heal
+        # above: both restore the capability after a restart, and neither removes
+        # it outright.
         from kiro_crew import execution_context
         from kiro_crew.execution_context import bind_session_execution
 
@@ -743,25 +878,10 @@ class TestPrivateStoreCallerIsolation:
 class TestShadowedTemplateDispatch:
     """``agent_kind`` lets a caller dispatch the TEMPLATE a same-named crew member shadows.
 
-    The shape is the stock conductor on a legacy install: an older agent sync
-    enrolled ``kirocrew-worker`` as a crew member with its own private store,
-    while the conductor's own DM thread stayed on the shared store. The conductor's
-    charter dispatches ``kirocrew-worker`` for every leaf item; a bare name selects
-    the MEMBER, and a shared-store member thread may not bind that member's store,
-    so the create is refused ``memory_delegation_denied`` -- for a worker that
-    needs no memory of its own. ``agent_kind="template"`` is the way to say
-    "the template, on my own memory", exactly as the chat create route's explicit
-    template pick never pins member memory. These pin:
-
-    * the bare name is still refused (the fence is untouched);
-    * the server-side cause names the shared-store condition, not a lost vouch;
-    * the template kind creates the child on the caller's own store with the
-      template persona, and records the namespace on the slot and at birth;
-    * a stated kind is validated (the closed set is ``template`` alone -- a bare
-      name already selects the member, so no ``member`` kind exists -- requires
-      ``agent``, never falls back to whoever answers by default);
-    * the REAL resolver, not the stand-in the other tests swap in, resolves a
-      member-shadowed name as the template under the stated kind.
+    Shape: ``kirocrew-worker`` is enrolled as a member with a private store while the
+    conductor's thread is on the shared store, so the bare name is refused
+    ``memory_delegation_denied``. ``agent_kind="template"`` means "the template, on my
+    own memory". The only valid kind is ``template``, and it requires ``agent``.
     """
 
     _WORKER_TEMPLATE = "worker-template"
@@ -781,7 +901,7 @@ class TestShadowedTemplateDispatch:
         from kiro_crew.history import ConversationLog
 
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
-        # `worker` is the crew member the old sync enrolled with a private store.
+        # `worker` is a crew member enrolled with a private store.
         write_member_home(tmp_path, "worker")
         forget_declared_stores(monkeypatch)
         state = _make_state(tmp_path)
@@ -1103,15 +1223,8 @@ class TestShadowedTemplateDispatch:
     ):
         """The REAL ``resolve_agent_bindings``, against the shape the class describes.
 
-        Every other test here swaps the resolver for a stand-in, so none of them
-        shows that the real one answers ``selection_kind="template"`` for a name
-        a crew member shadows. This one does: the config ``_prepare`` writes
-        carries ``worker`` as a crew member bound to its own private V2 store
-        (``member-worker``), and the installed-template catalog -- the one
-        external boundary, seeded the way the loader's own tests seed it --
-        declares a template of the same name. The bare name must still select
-        the member and be refused; the stated kind must create the child on the
-        caller's shared store, never the private one.
+        ``worker`` is a member on ``member-worker`` and also an installed template. The
+        bare name is refused; the stated kind lands on the caller's shared store.
         """
         from kiro_crew.config import loader
         from kiro_crew.execution_context import MemoryStoreRef, read_session_execution

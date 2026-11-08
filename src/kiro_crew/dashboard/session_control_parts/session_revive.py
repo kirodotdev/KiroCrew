@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.dashboard import session_managers
 from kiro_crew.dashboard.chat_folders import _slot_meta_txn_lock, _unhide_folder, note_folder_filed
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import _history_key_for, slot_history_key
@@ -24,7 +25,10 @@ from kiro_crew.dashboard.session_control_parts.delivery_containment import (
     _has_channel_mirror,
     _probe_channel_mirror_for_key,
 )
-from kiro_crew.dashboard.session_control_parts.session_status import _bounded_status_title
+from kiro_crew.dashboard.session_control_parts.session_status import (
+    _bounded_status_title,
+    _creation_parent,
+)
 from kiro_crew.dashboard.session_control_parts.session_tree import _slot_tree_parent
 from kiro_crew.dashboard.session_control_parts.target_authorization import (
     _check_caller_slot_fields,
@@ -267,6 +271,24 @@ def _revived_slot_refusal(slot: "_ChatSlot", caller_slot: "_ChatSlot") -> tuple[
     return None
 
 
+#: The creator a revived slot carries when its transcript names one that the creation
+#: records do not confirm. Non-empty, so the slot stays FENCED (an agent made it), and it
+#: contains ``:``, so no slot key and no caller key can ever equal it.
+UNVERIFIED_CREATOR = "unverified:creator"
+
+#: Rebinds started on a cancelled revive, held so the loop does not drop them.
+_PENDING_REBINDS: "set[asyncio.Task[None]]" = set()
+
+
+def _rebind_in_background(slot: Any, meta: "Mapping[str, Any]") -> None:
+    """Finish the manager rebind of a revive whose request was cancelled after commit."""
+    task = asyncio.get_running_loop().create_task(
+        session_managers.rebind_resumed(slot, str(meta.get("tab_id") or ""))
+    )
+    _PENDING_REBINDS.add(task)
+    task.add_done_callback(_PENDING_REBINDS.discard)
+
+
 def _archived_target_refusal(
     slot_key: str,
     meta: "Mapping[str, Any]",
@@ -309,10 +331,17 @@ def _archived_target_refusal(
     if str(meta.get("workspace") or "default") != caller_workspace:
         return "target session belongs to a different workspace", "workspace_mismatch"
     if ownership_fenced:
+        if session_managers.recorded_manager(slot_key, str(meta.get("tab_id") or "")) == (
+            caller_key
+        ):
+            # The session was handed to the caller. The managers record is gateway-
+            # written under the fenced crew-log root, so it needs no corroboration,
+            # and it is the record the send fence reads for the live session.
+            return None
         if str(meta.get("created_by") or "") != caller_key:
             return "target session was created by another session", "not_creator"
-        # The metadata line is a file an agent's file tools can edit
-        # (``chat_persistence`` says so where it restores ``created_by``), so for a
+        # The metadata line is a file a sandboxed shell can write
+        # (``metadata_codec._read_created_by`` says so where it restores it), so for a
         # FENCED caller the claim above is only a claim: a caller that rewrote
         # ``created_by`` in an archived transcript would otherwise revive a session
         # it never made and then hold it. The ownership is therefore corroborated
@@ -324,8 +353,7 @@ def _archived_target_refusal(
         # unverifiable ownership is refused, not assumed. A caller that is NOT
         # fenced (the person's own tab) is not gated on ownership at all, so the
         # human recovery this tool exists for is unaffected.
-        tree_known, lineage_parent, _ = _slot_tree_parent(slot_key)
-        if not tree_known or lineage_parent != caller_key:
+        if _creation_parent(slot_key) != caller_key:
             return (
                 "archived session ownership could not be verified from gateway records "
                 "(a fenced caller needs the crew log's session-tree lineage, which is "
@@ -483,6 +511,22 @@ async def revive_session(
 
         if not await state.read_folders(_exists):
             raise deny("folder not found", "folder_not_found", status=400)
+        # A mate's home takes sessions only from that mate, as in `create_session`,
+        # and a session archived in one leaves it only by that mate.
+        from kiro_crew.dashboard.mate_folders import (
+            MateHomeLockedError,
+            refuse_foreign_home_filing,
+        )
+
+        try:
+            await refuse_foreign_home_filing(
+                state,
+                slot_history_key(caller_slot),
+                folder_id,
+                _bounded_folder_id(meta.get("folder_id")),
+            )
+        except MateHomeLockedError:
+            raise deny("this folder belongs to a Bot", "mate_home_locked", status=403) from None
 
     # A revive materialises the same resource a create does -- a live slot with
     # a hydrated transcript -- so it spends the same budgets: the per-caller
@@ -492,12 +536,12 @@ async def revive_session(
             "too many sessions opened recently; retry shortly", "create_rate_limited", status=429
         )
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
-        raise deny(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", status=429)
+        raise deny(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", status=409)
     if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
         raise deny(
             f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
             "creator_slot_cap_reached",
-            status=429,
+            status=409,
         )
 
     def _plain(reason: str, code: str, status: int = 403) -> SessionControlError:
@@ -550,9 +594,13 @@ async def revive_session(
             # matches no caller. Attribution ONLY -- ``_lineage_minted`` stays
             # False, and the reviver is never written here: reviving is not
             # creating.
-            tree_known, lineage_parent, _ = _slot_tree_parent(slot_key)
-            if tree_known and lineage_parent == claimed_creator:
+            # From the CREATION records, never the sidebar parent a handoff moves. A
+            # claim they do not confirm keeps the slot fenced under a creator no
+            # caller matches, rather than blank, which would read as a person's tab.
+            if _creation_parent(slot_key) == claimed_creator:
                 built._created_by = claimed_creator
+            else:
+                built._created_by = UNVERIFIED_CREATOR
         # Charge the reviver for this slot under the per-caller cap (see
         # ``creator_slot_count``) without touching its ownership. Set before the
         # ceilings are read so the count includes this slot once published.
@@ -564,12 +612,12 @@ async def revive_session(
         # walks the table only, so the built slot is not in it and the compare
         # is inclusive.
         if state.live_slot_count() > MAX_LIVE_SLOTS:
-            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 429)
+            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
         if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
             return ResumeRefusal(
                 f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
                 "creator_slot_cap_reached",
-                429,
+                409,
             )
         return None
 
@@ -587,13 +635,25 @@ async def revive_session(
         if refusal is not None:
             return ResumeRefusal(refusal[0], refusal[1], 403)
         if state.live_slot_count() > MAX_LIVE_SLOTS:
-            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 429)
+            return ResumeRefusal(f"slot cap reached ({MAX_LIVE_SLOTS})", "slot_cap_reached", 409)
         if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
             return ResumeRefusal(
                 f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
                 "creator_slot_cap_reached",
-                429,
+                409,
             )
+        from kiro_crew.dashboard.approval_inheritance import (
+            inherit_posture,
+            is_profile_worker,
+        )
+
+        if built._created_by == caller_key and not is_profile_worker(built):
+            # Its verified creator brought it back: it takes the creator's posture
+            # as it is now, as session_create hands it at birth, and follows the
+            # creator's later mode changes (``approval_inheritance``). A crewmate's
+            # own worker is left to its Profile, which its first turn seeds
+            # (``crewmate_approval.seed_for_turn``), as create leaves it.
+            inherit_posture(built, live_caller)
         return None
 
     outcome = await resume_slot_from_history(
@@ -603,6 +663,7 @@ async def revive_session(
         caller_label=f"session:{caller_key}",
         containment=_containment,
         final_check=_final_check,
+        rebind_manager=False,
     )
     if outcome.refusal is not None:
         raise deny(outcome.refusal.error, outcome.refusal.code, status=outcome.refusal.status)
@@ -713,10 +774,13 @@ async def revive_session(
                         raise
         except BaseException:
             _audit_allowed(False)
+            _rebind_in_background(slot, meta)
             raise
         state.push_slots_update()
 
     _audit_allowed(filed)
+    # After the audit: the revive is committed, and its allowed row is owed first.
+    await asyncio.shield(session_managers.rebind_resumed(slot, str(meta.get("tab_id") or "")))
     return {
         "ok": True,
         "target": slot.key,
@@ -1010,11 +1074,18 @@ async def revive_own_archived_worker(
             return target
     except Exception:  # noqa: BLE001 - an unresolvable target keeps its own answer
         return target
+
+    def _caller_is_conductor() -> bool:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        execution = read_session_execution(caller_session_key)
+        return is_conductor_execution(execution, KiroCrewConfig.load())
+
     try:
-        execution = await asyncio.to_thread(read_session_execution, caller_session_key)
+        is_conductor = await asyncio.to_thread(_caller_is_conductor)
     except Exception:  # noqa: BLE001 - an unreadable caller record revives nothing
         return target
-    if not is_conductor_execution(execution):
+    if not is_conductor:
         return target
     try:
         revived = await revive_session(

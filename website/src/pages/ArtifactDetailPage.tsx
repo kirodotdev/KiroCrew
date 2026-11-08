@@ -223,7 +223,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     )
   }, [artifact, commentCount])
   const companionRead = useArtifactDetailPageCompanion({
-    durableComments, setPanel, sidebarUserToggledRef, buildCompanionContext, popout, stateRead, documentRead,
+    durableComments, panel, setPanel, sidebarUserToggledRef, buildCompanionContext, popout, stateRead, documentRead,
   })
   const {
     sendNav, slotsLoaded, boundSlot, sessionOpBusyRef, injectedVersionRef, injectContextMut,
@@ -514,6 +514,19 @@ function UpstreamSyncBanner({ artifact, busy = false, onPulled, onBeforeMutate }
 
   // No registered provider → no sync surface (public edition renders nothing).
   if (providers.length === 0) return null
+
+  // The provider could not read the remote copy and said why
+  // (PublishProvider.source_problem). The local copy stays open; drift is
+  // unknown, so this replaces the pull / publish prompts.
+  const sourceNotice = typeof status?.source_notice === 'string' ? status.source_notice : ''
+  if (sourceNotice) {
+    return (
+      <div className="mb-3 flex items-center gap-2 text-[13px]">
+        {/* No hand-off: editor buffer editedContent may be dirty */}
+        <ErrorNotice variant="inline" message={sourceNotice} />
+      </div>
+    )
+  }
 
   // Provider label from the registry's self-described display_name — never a
   // hardcoded vendor string.

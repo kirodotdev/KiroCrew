@@ -16,9 +16,7 @@ from hypothesis import strategies as st
 import kiro_crew.apps.app_storage as app_storage_mod
 from kiro_crew.apps.app_storage import AppStorage
 
-# ---------------------------------------------------------------------------
 # Strategies
-# ---------------------------------------------------------------------------
 
 
 def _valid_key() -> st.SearchStrategy[str]:
@@ -39,9 +37,7 @@ def _json_value() -> st.SearchStrategy[dict]:
     )
 
 
-# ---------------------------------------------------------------------------
 # Property 18: AppStorage key isolation
-# ---------------------------------------------------------------------------
 
 
 class TestAppStorageKeyIsolation:
@@ -126,9 +122,7 @@ class TestAppStorageKeyIsolation:
         assert result == "hello world"
 
 
-# ---------------------------------------------------------------------------
 # Property 19: AppStorage key validation rejects traversal
-# ---------------------------------------------------------------------------
 
 
 class TestAppStorageKeyValidation:
@@ -177,17 +171,15 @@ class TestAppStorageKeyValidation:
     @settings(max_examples=100, suppress_health_check=[HealthCheck.function_scoped_fixture])
     @given(key=_valid_key())
     def test_valid_keys_do_not_raise(self, key: str, tmp_path: Path) -> None:
-        """Valid keys (no traversal chars) do not raise."""
+        """Valid keys (no traversal chars) round-trip and delete cleanly."""
         storage = AppStorage("test-app", tmp_path)
-        # Should not raise
         storage.set(key, {"ok": True})
-        storage.get(key)
-        storage.delete(key)
+        assert storage.get(key) == {"ok": True}
+        assert storage.delete(key) is True
+        assert storage.get(key) is None
 
 
-# ---------------------------------------------------------------------------
 # Keys that are not usable Windows filenames
-# ---------------------------------------------------------------------------
 
 #: One representative per sub-class of key that Win32 cannot store verbatim.
 #: The device names are reachable from the ``[a-z][a-z0-9_-]{1,30}`` charset the

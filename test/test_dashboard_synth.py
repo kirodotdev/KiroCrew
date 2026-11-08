@@ -109,7 +109,6 @@ def _read(**overrides: Any) -> dict[str, Any]:
         fields,
         agentic=["headline", "tone"],
         seq=914827,
-        stale=False,
         missing=["nothing"],
         written_at={"headline": "2026-10-15T09:00:00Z", "tone": "2026-10-15T09:00:01Z"},
         last_user_at="2026-10-15T08:59:59Z",
@@ -149,7 +148,7 @@ def _scalars(value: Any) -> Iterator[Any]:
 def _content(read: dict[str, Any]) -> Iterator[Any]:
     """The values of a read that are the record's: not the names, flags and tags."""
     for key, value in read.items():
-        if key not in ("agentic", "missing", "stale", "locale", "subject"):
+        if key not in ("agentic", "missing", "locale", "subject"):
             yield from _scalars(value)
 
 
@@ -698,7 +697,7 @@ def test_the_fields_a_read_carries_and_the_keys_the_page_names_are_kept():
     assert list(fake["fields"]) == list(FIELDS)
     assert list(fake["fields"]["items"][0]) == list(FIELDS["items"][0])
     assert fake["agentic"] == ["headline", "tone"] and fake["missing"] == ["nothing"]
-    assert fake["locale"] == "en" and fake["subject"] == "crewmate" and fake["stale"] is False
+    assert fake["locale"] == "en" and fake["subject"] == "crewmate" and "stale" not in fake
     assert list(fake["written_at"]) == ["headline", "tone"]
 
 

@@ -108,7 +108,7 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
 
 const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
 
-export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape }: {
+export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape }: {
   rawPasteRef: React.MutableRefObject<boolean>
   handleUndoKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
   endUndoBurst: () => void
@@ -119,6 +119,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   optimizePrompt: () => void
   sendOnEnter: SendMode
   onChange: (v: string) => void
+  onPasteBlocksChange?: (blocks: PasteBlock[]) => void
   valueFromUserRef: React.MutableRefObject<boolean>
   optimizingRef: React.MutableRefObject<boolean>
   fireComposer: (alternate?: unknown) => void
@@ -129,7 +130,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   promptHistory: ReturnType<typeof usePromptHistory>
   valueRef: React.MutableRefObject<string>
   inputRef: React.RefObject<HTMLTextAreaElement>
-  pasteBlocksRef: React.RefObject<readonly PasteBlock[]>
+  pasteBlocksRef: React.RefObject<PasteBlock[]>
   /** A bare Escape with the prompt box focused: stop the running turn on this
    *  slot (soft cancel; a second Escape after the arm window force-kills, via
    *  the same onStop protocol the Stop button runs). Returns true when it
@@ -167,10 +168,10 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // composer's on every path, including a textarea whose native undo stack a
     // programmatic reset already wiped.
     if (handleUndoKey(e)) return
-    // Tab / Shift+Tab on a list line indents or outdents that line
-    // (composerListIndent). Everything else keeps Tab's focus move, as does a
-    // Tab straight after Escape, and an open suggestion menu owns Tab even
-    // when it has no rows.
+    // Tab / Shift+Tab on a list line indents or outdents that line, and over a
+    // selection of several lines every list line in it (composerListIndent).
+    // Everything else keeps Tab's focus move, as does a Tab straight after
+    // Escape, and an open suggestion menu owns Tab even when it has no rows.
     if (e.key === 'Tab' && !escaped && !e.metaKey && !e.ctrlKey && !e.altKey &&
       !optimizingRef.current && !anyPickerOpenRef.current) {
       const ta = e.currentTarget
@@ -185,7 +186,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
         endUndoBurst()
         // The same path as the Enter list break (listContinuation.ts): the
         // `input` event it fires runs onChange and the caret-follow as for typing.
-        writeTextareaEdit(ta, edit.value, edit.caret)
+        writeTextareaEdit(ta, edit.value, edit.caret, edit.end, ta.selectionDirection)
         return
       }
     }
@@ -230,8 +231,11 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // Cmd+Shift+Enter (or Ctrl+Shift+Enter) → optimize prompt.
     // Gated on `promptOptimizer` like the Optimize button and plus-menu row:
     // a host that opted out (e.g. the side panel) has no optimize affordance,
-    // so the combo falls through to ordinary Enter/Shift+Enter handling there
-    // instead of rewriting a draft the surface meant to treat literally.
+    // so the chord must NOT optimize there — but it must not SEND there either.
+    // The `ctrl-enter` send binding below excludes Shift (`!e.shiftKey`), so the
+    // chord is a no-op (treated literally) on an opted-out host instead of being
+    // read as a plain Ctrl/Cmd+Enter send — which would submit the draft the
+    // surface meant the user to keep editing.
     // preventDefault always fires when the combo is detected so the browser's
     // default Enter behavior (newline insert) doesn't leak through when the
     // gateway is offline. The action itself is gated on `connected` to match
@@ -256,7 +260,7 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
       return
     }
     const sendKey = sendOnEnter === 'ctrl-enter'
-      ? (e.key === 'Enter' && (e.metaKey || e.ctrlKey))
+      ? (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.shiftKey)
       : (e.key === 'Enter' && !e.shiftKey)
     if (sendKey && !e.defaultPrevented) {
       // The key is ours as soon as it matches the send binding, so claim it before
@@ -306,8 +310,8 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
       ime.isComposing(e) ||
       e.metaKey || e.ctrlKey || e.altKey || e.shiftKey
     ) return
-    promptHistory.recall(e, { sentMessages, current: valueRef.current, onChange, inputRef })
-  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape])
+    promptHistory.recall(e, { sentMessages, current: valueRef.current, blocks: pasteBlocksRef.current ?? [], onChange, onBlocksChange: onPasteBlocksChange, inputRef })
+  }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, onPasteBlocksChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef, stopTurnOnEscape])
 }
 
 /** The `beforeinput` inputTypes the mention value-change seam handles: a

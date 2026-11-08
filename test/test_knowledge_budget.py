@@ -17,7 +17,7 @@ import pytest
 
 from kiro_crew.config.loader import KnowledgeConfig
 
-# --- Config defaults ---
+# Config defaults
 
 
 class TestKnowledgeConfigBudgetDefaults:
@@ -46,14 +46,17 @@ class TestKnowledgeConfigBudgetDefaults:
         assert c.embed_rate_limit == 0
 
 
-# --- EmbedRateLimiter ---
+# EmbedRateLimiter
 
 class TestEmbedRateLimiter:
     def test_zero_rate_is_noop(self):
         from kiro_crew.knowledge.ingestion import EmbedRateLimiter
         limiter = EmbedRateLimiter(rate_limit=0)
-        # Should not block
+        refill_before = limiter._last_refill
         asyncio.run(limiter.acquire())
+        # Returned before the bucket was touched: no refill, no token spent.
+        assert limiter._last_refill == refill_before
+        assert limiter._tokens == 0.0
 
     def test_high_rate_does_not_block(self):
         from kiro_crew.knowledge.ingestion import EmbedRateLimiter
@@ -84,7 +87,6 @@ class TestEmbedRateLimiter:
         import kiro_crew.knowledge.ingestion as ing_mod
         from kiro_crew.knowledge.ingestion import get_embed_rate_limiter
 
-        # Reset the singleton
         ing_mod._embed_rate_limiter = None
         with patch("kiro_crew.config.loader.KiroCrewConfig.load") as mock_load:
             mock_load.return_value.knowledge.embed_rate_limit = 200
@@ -93,7 +95,7 @@ class TestEmbedRateLimiter:
         ing_mod._embed_rate_limiter = None
 
 
-# --- Sweep chunk budget ---
+# Sweep chunk budget
 
 class TestSweepChunkBudget:
     def test_sweep_budget_read_from_config(self):
@@ -109,14 +111,11 @@ class TestSweepChunkBudget:
             assert KnowledgeWatcher._sweep_chunk_budget() == 0
 
 
-# --- Single-file (local_file) sweep budget ---
+# Single-file (local_file) sweep budget
 #
-# The folder loop checks the global sweep budget before every source and charges
-# scan_source's chunks_ingested back after each scan. The single-file local_file
-# loop shares that counter: without the gate, a library with many changed
-# local_file sources re-ingests everything in one unpaced burst — and a source
-# registered with no mtime/content_hash bookkeeping reads as changed to every
-# sweep, so the burst repeats until each such source is read.
+# The single-file local_file loop shares the folder loop's sweep budget counter.
+# Ungated, many changed local_file sources re-ingest in one unpaced burst, and a
+# source with no mtime/content_hash bookkeeping reads as changed every sweep.
 
 
 def _single_file_watcher(store, budget: int, chunks_per_file: int = 1, commit: bool = True):
@@ -434,12 +433,9 @@ class TestSingleFileSweepBudget:
     async def test_failing_source_does_not_starve_later_sources(self, store, tmp_path):
         """A persistently failing row rotates like any served row.
 
-        A partial-ingest failure charges its spent extraction calls but never
-        advances ``last_synced`` (only the committed branch writes it), so an
-        ordering keyed on last_synced alone re-serves the failing row first
-        every sweep while its charge exhausts the budget — later changed
-        sources never run. The attempt stamp is what breaks that: the failed
-        row's retry waits its turn behind the rows still queued.
+        A failed ingest is charged but never advances ``last_synced``, so ordering
+        on last_synced alone would re-serve it first every sweep and starve later
+        sources. The attempt stamp sends its retry behind the rows still queued.
         """
         _add_local_files(store, tmp_path, 3)
         watcher, ingested = _single_file_watcher(
@@ -457,11 +453,9 @@ class TestSingleFileSweepBudget:
         """A rolled-back ingest still charges its spent extraction calls, and
         keeps no bookkeeping so the next sweep can retry it.
 
-        The pipeline invokes ``on_committed`` only on the fully-committed
-        branch; extraction already spent one LLM call per chunk by then. If the
-        watcher charged only committed chunks, repeated post-extraction
-        failures would spend without bound; if it persisted mtime/content_hash
-        anyway, the changed file would never be re-read.
+        ``on_committed`` fires only after extraction has spent its LLM calls:
+        charging only committed chunks would let failures spend without bound,
+        and persisting mtime/content_hash would stop the file being re-read.
         """
         sids = _add_local_files(store, tmp_path, 3)
         watcher, ingested = _single_file_watcher(
@@ -478,7 +472,7 @@ class TestSingleFileSweepBudget:
             assert "content_hash" not in _props_of(store, sid)
 
 
-# --- Pool size from config ---
+# Pool size from config
 
 class TestPoolSizeConfig:
     def test_default_pool_size(self):
@@ -501,7 +495,7 @@ class TestPoolSizeConfig:
         assert _get_pool_size(config) == DEFAULT_POOL_SIZE
 
 
-# --- Extraction model resolution ---
+# Extraction model resolution
 
 class TestExtractionModelResolution:
     def test_empty_extraction_model_uses_agent_model(self):
@@ -531,7 +525,7 @@ class TestExtractionModelResolution:
                     assert written["model"] == "claude-haiku-4.5"
 
 
-# --- Explicit-import cross-file chunk budget ---
+# Explicit-import cross-file chunk budget
 #
 # The watcher path has per-sweep and global chunk budgets; the explicit import
 # routes (single-file add, agent add, direct text ingest, remote sync) are bounded
@@ -852,6 +846,11 @@ class TestBackgroundDeferralStaysRetryable:
             def __init__(self):
                 self.db = _DB()
 
+            def merge_source_properties(self, source_id, *, sync_status=None, **_delta):
+                # The deferral's status write, recorded like the UPDATE it issues.
+                self.db.execute(
+                    "UPDATE sources SET sync_status = ? WHERE id = ?", (sync_status, source_id))
+
         return _Store()
 
     _TERMINAL_STATES = ("pending", "error", "synced")
@@ -887,6 +886,116 @@ class TestBackgroundDeferralStaysRetryable:
         asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), "src-1"))
 
         assert self._states(store) == ["pending"], store.db.statements
+
+    def test_a_deferred_row_says_why_until_a_reasonless_pending_write(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers import knowledge as kh
+        from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+        from kiro_crew.knowledge.store import KnowledgeStore
+
+        doc = tmp_path / "doc.md"
+        doc.write_text("body", encoding="utf-8")
+        store = KnowledgeStore(str(tmp_path / "k.db"))
+        try:
+            sid = store.add_source(name="doc", source_type="local_file", uri=str(doc))
+            pipeline = SimpleNamespace(ingest_file=AsyncMock(
+                side_effect=ImportChunkBudgetError(budget=50, window_secs=60.0, spent=60)))
+
+            def _row():
+                row = store.db.execute(
+                    "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+                return row["sync_status"], json.loads(row["properties"] or "{}")
+
+            asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), sid))
+            status, props = _row()
+            assert (status, props.get("pending_reason")) == ("pending", "import_budget")
+
+            async def _busy(*_a, **_k):
+                raise kh._PathProbeBusy()
+
+            monkeypatch.setattr(kh, "_run_path_probe", _busy)
+            asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), sid))
+            status, props = _row()
+            assert status == "pending" and "pending_reason" not in props, props
+        finally:
+            store.close()
+
+    def test_web_page_deferral_says_why(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers import knowledge as kh
+        from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+        from kiro_crew.knowledge.store import KnowledgeStore
+        from kiro_crew.knowledge.url_fetch import FetchedPage
+
+        monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+        monkeypatch.setattr(kh, "_doc_ingest_hosts", lambda: ["example.com"])
+        monkeypatch.setattr(kh, "fetch_page", AsyncMock(
+            return_value=FetchedPage("https://example.com/a", "body", ".md")))
+        store = KnowledgeStore(str(tmp_path / "k.db"))
+        try:
+            sid = store.add_source(name="a", source_type="url", uri="https://example.com/a")
+            pipeline = SimpleNamespace(ingest_file=AsyncMock(
+                side_effect=ImportChunkBudgetError(budget=50, window_secs=60.0, spent=60)))
+
+            asyncio.run(kh._background_url_sync(sid, "https://example.com/a", "a", store, pipeline))
+
+            row = store.db.execute(
+                "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+            reason = json.loads(row["properties"] or "{}").get("pending_reason")
+            assert (row["sync_status"], reason) == ("pending", "import_budget")
+        finally:
+            store.close()
+
+    def test_research_findings_deferral_says_why(self, tmp_path):
+        from types import SimpleNamespace
+
+        from kiro_crew.apps.builtins.auto_research.campaign import publication
+        from kiro_crew.knowledge.ingestion import ImportChunkBudgetError
+        from kiro_crew.knowledge.store import KnowledgeStore
+
+        findings = str(tmp_path / "findings.md")
+        store = KnowledgeStore(str(tmp_path / "k.db"))
+        try:
+            sid = publication._add_source_marked_syncing(store, "Research: q", findings)
+            pipeline = SimpleNamespace(ingest_file=AsyncMock(
+                side_effect=ImportChunkBudgetError(budget=50, window_secs=60.0, spent=60)))
+
+            asyncio.run(publication._ingest_findings(pipeline, store, findings, sid, "c1"))
+
+            row = store.db.execute(
+                "SELECT sync_status, properties FROM sources WHERE id = ?", (sid,)).fetchone()
+            reason = json.loads(row["properties"] or "{}").get("pending_reason")
+            assert (row["sync_status"], reason) == ("pending", "import_budget")
+        finally:
+            store.close()
+
+    def test_a_bundle_import_does_not_carry_the_reason(self, tmp_path):
+        from kiro_crew.knowledge.store import KnowledgeStore
+
+        exporter = KnowledgeStore(str(tmp_path / "exporter.db"))
+        importer = KnowledgeStore(str(tmp_path / "importer.db"))
+        try:
+            uri = "https://example.com/a"
+            sid = exporter.add_source(name="a", source_type="url", uri=uri)
+            # Deferred once, then synced: the synced stamp leaves the key behind.
+            exporter.merge_source_properties(
+                sid, set_keys={"pending_reason": "import_budget", "kept": 1},
+                sync_status="pending")
+            exporter.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (sid,))
+            exporter.db.commit()
+
+            importer.import_bundle(exporter.export_all())
+
+            row = importer.db.execute(
+                "SELECT sync_status, properties FROM sources WHERE uri = ?", (uri,)).fetchone()
+            props = json.loads(row["properties"] or "{}")
+            assert row["sync_status"] == "pending"
+            assert "pending_reason" not in props and props.get("kept") == 1, props
+        finally:
+            exporter.close()
+            importer.close()
 
     def test_local_file_ingest_still_errors_on_a_real_failure(self, tmp_path):
         from types import SimpleNamespace
@@ -1004,4 +1113,10 @@ class TestUploadRefusesBeforeAccepting:
 
     def test_release_import_budget_tolerates_none(self):
         p = self._pipeline()
-        p.release_import_budget(None)            # nothing reserved; must not raise
+        p._import_budget.set_budget(50)
+        live = p._import_budget.reserve()
+        events_before = list(p._import_budget._events)
+        p.release_import_budget(None)
+        # A None release leaves another import's live reservation in place.
+        assert p._import_budget._events == events_before
+        assert live in p._import_budget._open

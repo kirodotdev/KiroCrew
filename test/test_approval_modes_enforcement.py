@@ -18,9 +18,8 @@ module-level flag with no filesystem access, no TTL and no third "not resolved y
 state. A deny arriving that way destroys live grants at the moment it is installed
 rather than when something next asks.
 
-The scope governs ``yolo`` only. ``trust`` / ``trust_reads`` are non-deniable (a
-policy naming them is refused at parse time), because their consumption predicates
-are not gated -- so there is deliberately nothing here asserting Trust enforcement.
+The ``trust`` / ``trust_reads`` half of the scope has its own pushed verdict and is
+pinned in ``test_approval_modes_trust_policy.py``.
 
 Every refusal must also be SEL-audited: a governance denial that leaves no trace is
 indistinguishable from the request never having been made, which is exactly the
@@ -101,10 +100,8 @@ def _deny(*modes: str) -> None:
 def _install_unrelated_ceiling() -> None:
     """Install a DIFFERENT ceiling that still permits ``yolo``.
 
-    Names a real scope rather than another mode: ``approval_modes`` may only deny
-    ``yolo`` (the other three are non-deniable and a policy naming one is refused at
-    parse time), so an install that changes something without touching this verdict
-    has to change a different scope.
+    Names a real scope rather than another mode, so an install that changes something
+    without touching any approval-mode verdict has to change a different scope.
     """
     from kiro_crew.config.loader import KiroCrewConfig
 
@@ -301,13 +298,20 @@ class TestTheVerdictIsResolvedAtCeilingInstall:
 
         monkeypatch.setattr(so, "approval_mode_permitted", _boom)
 
-        _install_no_policy()
+        _deny("yolo", "trust")  # a ceiling rule that narrows the trust modes
 
         assert so.yolo_policy_permits() is False
-        assert so.cached_disabled_approval_modes() == ["yolo"], (
+        # The trust modes are read from the installed ceiling's rule alone (no
+        # governance read), so they follow that rule: `trust` denied, `trust_reads` not.
+        assert so.cached_disabled_approval_modes() == ["trust", "yolo"], (
             "reporting nothing-denied on a resolve error would unhide a mode the "
             "gate is refusing"
         )
+
+        # With no ceiling rule, the trust modes keep main's answer; YOLO keeps its own
+        # fail-closed verdict.
+        _install_no_policy()
+        assert so.cached_disabled_approval_modes() == ["yolo"]
 
     def test_a_resolve_failure_is_visible_at_warning_level(self, monkeypatch, caplog):
         """Fail-closed silently is a misattribution, not just a missing log line.
@@ -647,7 +651,8 @@ class TestTheVerdictFailsClosedWhileANewCeilingIsBeingResolved:
         seen: list[bool] = []
 
         def _sampling(mode: str) -> bool:
-            seen.append(override.is_active())
+            if mode == "yolo":
+                seen.append(override.is_active())
             return real(mode)
 
         monkeypatch.setattr(so, "approval_mode_permitted", _sampling)
@@ -732,7 +737,8 @@ class TestTheVerdictFailsClosedWhileANewCeilingIsBeingResolved:
         during: list[bool] = []
 
         def _sampling(mode: str) -> bool:
-            during.append(override.has_grant())
+            if mode == "yolo":
+                during.append(override.has_grant())
             return real(mode)
 
         monkeypatch.setattr(so, "approval_mode_permitted", _sampling)
@@ -796,7 +802,8 @@ class TestInheritedTrustIsSuspendedWhileANewCeilingResolves:
         def _sampling(mode):
             # Exactly what ``admission.parent_trusted`` reads, sampled from INSIDE the
             # post-publication resolve: the new ceiling is live here.
-            seen.append(policies["dashboard:s1"])
+            if mode == "yolo":
+                seen.append(policies["dashboard:s1"])
             return real(mode)
 
         monkeypatch.setattr(so, "approval_mode_permitted", _sampling)
@@ -840,7 +847,7 @@ class TestInheritedTrustIsSuspendedWhileANewCeilingResolves:
         monkeypatch.setattr(
             so,
             "approval_mode_permitted",
-            lambda m: (during.append(policies["dashboard:s1"]), real(m))[1],
+            lambda m: (m == "yolo" and during.append(policies["dashboard:s1"]), real(m))[1],
         )
         _install_unrelated_ceiling()
 

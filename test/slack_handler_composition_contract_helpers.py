@@ -240,6 +240,13 @@ class _Sessions:
         self._log.add("sessions.try_acquire", key=key)
         return self._known
 
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
+
     def release(self, key):
         self._log.add("sessions.release", key=key)
 
@@ -410,10 +417,11 @@ def world_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path):
         log.add("voice.tts_available", **kwargs)
         return True
 
-    async def _inline(func, /, *args, **kwargs):
+    async def _inline(func, /, *args, _admission_timeout=None, **kwargs):
         # A thread hop finishes whenever the worker gets the CPU, so a reaction task
         # scheduled before it would land on either side of it in the transcript. Run
-        # the work in place: the order then depends on the code alone.
+        # the work in place: the order then depends on the code alone, and the call
+        # always gets a worker, so the pool's admission bound has nothing to bound.
         return func(*args, **kwargs)
 
     async def _inline_gate(func, /, *args, on_queue_timeout, **kwargs):
@@ -439,9 +447,6 @@ def world_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path):
         # Companion-plugin agents are discovered under the real home directory, so a
         # host that has some would add them to every agent listing.
         "_iter_cc_agent_names": lambda cc_plugins_dir=None: iter(()),
-        "_PHASE_DEBOUNCE_SECS": 3600.0,
-        "_STALL_SOFT_SECS": 3600.0,
-        "_STALL_HARD_SECS": 7200.0,
         "_owner_id": "UOWNER",
         "_cached_default_agent": None,
         "_dashboard_state": None,

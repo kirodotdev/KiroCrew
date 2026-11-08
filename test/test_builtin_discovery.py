@@ -79,7 +79,6 @@ class TestBuiltinDiscovery:
         work_dir = tmp_path / uuid.uuid4().hex
         work_dir.mkdir()
 
-        # Create valid app directories
         for name in valid_names:
             _write_manifest(work_dir / name, _valid_manifest(name))
 

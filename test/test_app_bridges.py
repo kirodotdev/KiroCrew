@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,15 +25,14 @@ from kiro_crew.apps.bridges import (
     _safe_link_name,
     deregister_app,
     load_app_cron_defs,
+    reconcile_app_skills,
     refresh_app_agents,
     register_app,
 )
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
 from kiro_crew.apps.manifest import AppManifest
 
-# ---------------------------------------------------------------------------
 # Namespace helpers
-# ---------------------------------------------------------------------------
 
 
 class TestNamespace:
@@ -47,9 +48,7 @@ class TestNamespace:
         assert "\\" not in _safe_link_name("my-app/..\\..\\crew\\config")
 
 
-# ---------------------------------------------------------------------------
 # Agent registration
-# ---------------------------------------------------------------------------
 
 
 class TestAgentRegistration:
@@ -120,12 +119,8 @@ class TestAgentRegistration:
     ):
         """An ``@server`` grant no config declares must be LOUD at registration.
 
-        kiro-cli drops the reference silently at mount time — the agent works
-        minus the tool with no error anywhere — so this warning is the only
-        signal a user-installed app whose server failed to register ever gets
-        (CI's shipped-spec gate cannot see that runtime event). Warning only:
-        the agent must still register, a dangling ref is degradation, not a
-        broken agent.
+        kiro-cli drops the reference silently at mount time, so this warning is the only
+        signal. Warning only: a dangling ref is degradation, and the agent still registers.
         """
         from kiro_crew.apps import bridges as bridges_mod
 
@@ -157,12 +152,9 @@ class TestAgentRegistration:
     ):
         """The four real resolution sources must not trip the diagnostic.
 
-        A spec-own server, a host-managed server (materialized by
-        ``_materialize_managed_refs``), the app's own namespaced server
-        (registered by ``_register_mcp_servers`` and injected back by
-        ``_own_mcp_servers``), and a global-``mcp.json`` server are each
-        resolvable at mount time; warning on any of them would train
-        operators to ignore the log line that matters.
+        Spec-own, host-managed (``_materialize_managed_refs``), the app's own namespaced
+        server (``_own_mcp_servers``) and a global-``mcp.json`` server all resolve at mount
+        time; warning on them would train operators to ignore the line that matters.
         """
         from kiro_crew.apps import bridges as bridges_mod
 
@@ -234,14 +226,10 @@ class TestAgentRegistration:
         assert "@ambient-srv" in caplog.text
 
     def test_a_failed_rewrite_leaves_the_prior_config_intact(self, tmp_path, app_env, monkeypatch):
-        """A rebuild must never destroy the working config before its replacement
-        is durable.
+        """A rebuild must never destroy the working config before its replacement is durable.
 
-        Unlinking any existing file before writing is the hazard: on a
-        startup reconciliation that hit a disk-full write, the unlink had already
-        removed the config and the write failed — so the agent DISAPPEARED. A
-        regular file is now left in place for atomic_write's rename to swap, so a
-        failed write leaves the last-good config untouched.
+        Unlinking first and then failing a disk-full write makes the agent DISAPPEAR, so the
+        file is left for atomic_write's rename to swap.
         """
         from kiro_crew.apps import bridges as bridges_mod
 
@@ -290,7 +278,7 @@ class TestAgentRegistration:
         assert not link.exists(), "a spec that was never understood must not be materialized"
 
     def test_a_legacy_symlink_is_still_replaced(self, tmp_path, app_env):
-        """A symlink from an older KiroCrew is dropped and replaced with a real file."""
+        """A symlink from an older Kiro Crew is dropped and replaced with a real file."""
         src = _make_app_source(tmp_path)
         install_app(src)
         manifest = AppManifest.from_json_file(
@@ -366,13 +354,9 @@ class TestAgentRegistration:
     ):
         """The opt-in honours the OWNER's list, and an app's own is not the owner's.
 
-        ``mcp.honour_auto_approve`` records a decision about a list the owner typed
-        about their own tools. A manifest's ``autoApprove`` is chosen by the app,
-        reaches this file as ``<app>:<server>``, and would exempt a third party's
-        own tools from the approval gate with no card -- so it is stripped whatever
-        the key says. This reverses the earlier expectation here, which kept it once
-        the key was on; making that key default ON is what turned a setting almost
-        nobody had into a grant on every default-config host.
+        A manifest's ``autoApprove`` is chosen by the app and would exempt a third party's
+        tools from the approval gate, so it is stripped whatever ``mcp.honour_auto_approve``
+        says; that key defaults ON.
         """
         from kiro_crew.apps import bridges as bridges_mod
         from kiro_crew.config import live
@@ -434,9 +418,7 @@ class TestAgentRegistration:
         assert not (tmp_path / "escape").exists()
 
 
-# ---------------------------------------------------------------------------
 # Skill registration
-# ---------------------------------------------------------------------------
 
 
 class TestSkillRegistration:
@@ -483,13 +465,9 @@ class TestSkillRegistration:
     def test_no_skills_creates_no_directory(self, tmp_path, app_env):
         """An app with no manifest skills must not leave an empty skills dir.
 
-        When a PACKAGED builtin skill shares the app's name, that empty directory
-        MASKS it: `_ensure_builtin_skills` copies the skill at gateway start, app
-        registration runs afterwards, and the unconditional mkdir then leaves a
-        directory with no `SKILL.md` — so every SOP the app's cron prompts reference
-        silently does not exist on disk. Hit for real by ops-mission-control, whose
-        skill ships under `builtin_skills/` precisely because a builtin app's own
-        directory is never copied into the data home.
+        An empty dir MASKS a PACKAGED builtin skill of the same name: app registration runs
+        after `_ensure_builtin_skills`, and the dir has no `SKILL.md`, so the SOPs the app's
+        cron prompts reference silently do not exist (ops-mission-control ships this way).
         """
         src = _make_app_source(tmp_path, skills=[])
         install_app(src)
@@ -521,14 +499,11 @@ class TestSkillRegistration:
         assert (packaged / "sops" / "dispatch.md").is_file()
 
     def test_deregister_preserves_a_same_named_packaged_skill(self, tmp_path, app_env):
-        """Deregister is the path that actually destroyed the shipped skill.
+        """Deregister must not delete a same-named packaged skill.
 
-        `sync_app_skills` calls `_deregister_skills` for any app whose manifest
-        declares no skills, to clean up stale symlinks from a prior version. It used
-        to `rmtree` the whole `skills/<app_name>/` dir — but for a builtin whose
-        packaged skill shares that name, that dir holds real files, not links. This
-        deleted the skill and every SOP under it, so the app's cron prompts pointed
-        at files that were gone. Silent, because a missing skill file errors nowhere.
+        `sync_app_skills` calls `_deregister_skills` for an app declaring no skills; for a
+        builtin whose packaged skill shares the name, `skills/<app_name>/` holds real files,
+        not links, and an `rmtree` silently deletes every SOP under it.
         """
         packaged = app_env["home"] / "skills" / "test-app"
         packaged.mkdir(parents=True)
@@ -561,9 +536,88 @@ class TestSkillRegistration:
         assert (app_dir_path / "real.md").is_file(), "the real file survives"
 
 
-# ---------------------------------------------------------------------------
+# Owning app of each app-skill link, for tools that run without a gateway
+
+
+def _install_skill_app(tmp_path, name, skills):
+    src = _make_app_source(tmp_path, name=name, skills=[f"skills/{s}" for s in skills])
+    for skill in skills:
+        (src / "skills" / skill).mkdir(parents=True, exist_ok=True)
+        (src / "skills" / skill / "SKILL.md").write_text(f"# {skill}\n")
+    install_app(src)
+
+
+def _register(app_env, name):
+    app_root = app_env["home"] / "apps" / name
+    _register_skills(name, AppManifest.from_json_file(app_root / APP_MANIFEST_FILENAME), app_root)
+
+
+def _skill_links(app_env):
+    data = json.loads((app_env["home"] / "skills" / ".app-skill-links.json").read_text())
+    assert data["format"] == 1
+    return {rel: entry["app"] for rel, entry in data["links"].items()}
+
+
+class TestAppSkillLinks:
+    def test_a_flat_link_names_the_app_that_registered_it_last(self, tmp_path, app_env):
+        _install_skill_app(tmp_path, "app-one", ["shared"])
+        _register(app_env, "app-one")
+        assert _skill_links(app_env) == {"app-one/shared": "app-one", "shared": "app-one"}
+
+        _install_skill_app(tmp_path, "app-two", ["shared"])
+        _register(app_env, "app-two")
+        assert _skill_links(app_env) == {
+            "app-one/shared": "app-one",
+            "app-two/shared": "app-two",
+            "shared": "app-two",
+        }
+
+    def test_a_removed_skill_and_a_deregistered_app_drop_their_entries(self, tmp_path, app_env):
+        _install_skill_app(tmp_path, "test-app", ["kept", "dropped"])
+        _register(app_env, "test-app")
+        manifest_path = app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        manifest = json.loads(manifest_path.read_text())
+        manifest["skills"] = ["skills/kept"]
+        manifest_path.write_text(json.dumps(manifest))
+
+        reconcile_app_skills("test-app")
+        assert _skill_links(app_env) == {"test-app/kept": "test-app", "kept": "test-app"}
+
+        _deregister_skills("test-app")
+        assert _skill_links(app_env) == {}
+
+    def test_reconcile_rebuilds_a_corrupt_file_with_only_app_links(self, tmp_path, app_env):
+        # The user's own skills: a real directory with the app skill's name (so no flat
+        # link is made), and a folder of links named like no app.
+        skills_root = app_env["home"] / "skills"
+        (skills_root / "my-skill").mkdir(parents=True)
+        drafts = tmp_path / "drafts" / "notes"
+        drafts.mkdir(parents=True)
+        (skills_root / "personal").mkdir()
+        platform_compat.symlink_or_junction(str(drafts), str(skills_root / "personal" / "notes"))
+        _install_skill_app(tmp_path, "test-app", ["my-skill"])
+        _register(app_env, "test-app")
+        (skills_root / ".app-skill-links.json").write_text("{ not json")
+
+        reconcile_app_skills("test-app")
+
+        assert _skill_links(app_env) == {"test-app/my-skill": "test-app"}
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="directory junctions are Windows-only")
+    def test_junction_links_are_recorded(self, tmp_path, app_env, monkeypatch):
+        _install_skill_app(tmp_path, "test-app", ["my-skill"])
+
+        def _refused(*_args, **_kwargs):
+            # A non-admin Windows account holds no symlink privilege, so links are junctions.
+            raise OSError(1314, "A required privilege is not held by the client")
+
+        monkeypatch.setattr(os, "symlink", _refused)
+        _register(app_env, "test-app")
+
+        assert _skill_links(app_env) == {"test-app/my-skill": "test-app", "my-skill": "test-app"}
+
+
 # Top-level register / deregister
-# ---------------------------------------------------------------------------
 
 
 class TestTopLevel:
@@ -614,6 +668,52 @@ class TestTopLevel:
         # The agent-spec lock file spec writers share is not a spec.
         assert not list(app_env["kiro_agents"].glob("*.json"))
 
+    def test_a_gate_closed_managed_ref_is_neither_copied_nor_reported(
+        self, tmp_path, app_env, monkeypatch, caplog
+    ):
+        # Computer use off: the app agent's spec must not carry kirocrew-computer
+        # (its backend would stall KAS readiness), and the ref it leaves dangling on
+        # purpose is not a "will never mount" finding on every registration.
+        import kiro_crew.agent as agent_mod
+
+        computer = agent_mod._MANAGED_MCP_SERVERS["kirocrew-computer"]
+        monkeypatch.setitem(computer, "spec_gate", lambda: False)
+        src = _make_app_source(tmp_path)
+        (src / "agents" / "my-agent.json").write_text(
+            json.dumps({"name": "my-agent", "tools": ["@kirocrew-computer", "@kirocrew-core"]})
+        )
+        install_app(src)
+
+        with caplog.at_level("WARNING", logger="kiro_crew.apps.bridges"):
+            assert refresh_app_agents("test-app")
+
+        (spec_path,) = app_env["kiro_agents"].glob("*.json")
+        servers = json.loads(spec_path.read_text(encoding="utf-8"))["mcpServers"]
+        assert "kirocrew-computer" not in servers
+        assert "kirocrew-core" in servers
+        assert "never mount" not in caplog.text
+
+    @pytest.mark.parametrize(
+        ("before", "after", "materialized"),
+        [(True, True, True), (True, False, False), (None, None, False), (True, None, True)],
+        ids=["enabled", "disabled-during-rewrite", "unreadable-before", "unreadable-after"],
+    )
+    def test_refresh_app_agents_if_enabled_rechecks_enablement_around_the_rewrite(
+        self, tmp_path, app_env, monkeypatch, before, after, materialized
+    ):
+        # A CLI disable (another process) can land while a computer-use enable flip
+        # rewrites app agents; the rewrite must not leave that app's agents
+        # dispatchable; an unreadable state writes nothing before and deletes nothing after.
+        import kiro_crew.apps.bridges_register as register_mod
+
+        install_app(_make_app_source(tmp_path))
+        states = iter([before, after])
+        monkeypatch.setattr(register_mod, "app_enabled_state", lambda _name: next(states))
+
+        register_mod.refresh_app_agents_if_enabled("test-app")
+
+        assert bool(list(app_env["kiro_agents"].glob("*.json"))) is materialized
+
     def test_install_while_execution_denied_registers_nothing(self, tmp_path, app_env, monkeypatch):
         import kiro_crew.apps.execution as execution_mod
 
@@ -647,11 +747,8 @@ class TestTopLevel:
     def test_register_app_resources_app_skips_all(self, tmp_path, app_env, monkeypatch):
         """Apps with resources='app' manage their own registration.
 
-        register_app must skip all bridge work (agents, skills, crons, MCP)
-        to avoid creating duplicates that confuse kiro-cli.  This is the
-        exact scenario that caused Mochi's subagent MCP tools to disappear:
-        bridge wrote a namespaced <app>--<agent>.json with empty mcpServers
-        alongside the app's real agent file, and kiro-cli loaded the empty one.
+        register_app must skip all bridge work: a namespaced <app>--<agent>.json with empty
+        mcpServers beside the app's real agent file makes kiro-cli load the empty one.
         """
         import kiro_crew.apps.bridges as bmod
 
@@ -673,18 +770,14 @@ class TestTopLevel:
 
         result = register_app("test-app")
 
-        # Nothing registered — all skipped
         assert result.agents == []
         assert result.skills == []
         assert result.crons == []
         assert result.mcp_servers == []
         assert result.errors == []
 
-        # No agent symlinks created
         assert not any(f.name.startswith("test-app--") for f in app_env["kiro_agents"].iterdir())
-        # No skill symlinks created
         assert not (app_env["home"] / "skills" / "test-app").exists()
-        # No MCP entries written
         assert not mcp_path.exists()
 
     def test_deregister_app(self, tmp_path, app_env):
@@ -693,7 +786,6 @@ class TestTopLevel:
         register_app("test-app")
         result = deregister_app("test-app")
         assert result.errors == []
-        # Verify agents removed
         assert not any(f.name.startswith("test-app--") for f in app_env["kiro_agents"].iterdir())
 
     def test_register_deregister_cycle(self, tmp_path, app_env):
@@ -705,16 +797,13 @@ class TestTopLevel:
         assert len(r1.agents) == 1
 
         deregister_app("test-app")
-        # Verify clean
         assert not any(f.name.startswith("test-app--") for f in app_env["kiro_agents"].iterdir())
 
         r2 = register_app("test-app")
         assert len(r2.agents) == 1
 
 
-# ---------------------------------------------------------------------------
 # RegistrationResult
-# ---------------------------------------------------------------------------
 
 
 class TestRegistrationResult:
@@ -725,20 +814,14 @@ class TestRegistrationResult:
         assert d["errors"] == []
 
 
-# ---------------------------------------------------------------------------
 # Stdio interpreter resolution (one policy shared with the backend launcher)
-# ---------------------------------------------------------------------------
 
 
 def _fake_venv_python(app_root: Path) -> Path:
     """Create a runnable venv interpreter at the platform's expected location.
 
-    Non-empty and executable on purpose: the resolver rejects zero-byte files
-    (the Microsoft-Store-stub / interrupted-copy shape) and files without the
-    execute bit. The resolver's usability PROBE (which would execute the
-    interpreter under the OS sandbox) is stubbed for this module by the
-    ``_stub_venv_probe`` autouse fixture - these tests pin the command-rewrite
-    plumbing, and the probe itself is pinned by
+    Non-empty and executable: the resolver rejects zero-byte files and files without the
+    execute bit. The usability PROBE is stubbed by ``_stub_venv_probe`` and pinned in
     ``test_apps_backend_coverage_dispatch.TestInterpreterResolution``.
     """
     if platform_compat.IS_WINDOWS:
@@ -1137,7 +1220,7 @@ class TestStdioInterpreterResolution:
     def test_an_unresolvable_path_command_logs_a_warning_and_still_registers(
         self, tmp_path, app_env, monkeypatch, caplog
     ):
-        # The missing diagnostic the issue names: kiro-cli reports nothing when a
+        # kiro-cli reports nothing when a
         # spawn fails, so registration is the one place a bad command can be
         # surfaced. Warn — but never raise, and still write the entry. Only a
         # path-carrying command is probed (one stat): a bare name is not, because
@@ -1348,12 +1431,9 @@ class TestBackendSharesTheInterpreterPolicy:
 class TestAppEventBusIsActuallyWired:
     """An app's EventBus only exists when a real broadcast_fn is supplied.
 
-    ``build_app_context`` returns ``events=None`` when broadcast_fn is None, and
-    ``EventBus.publish`` is then never reached — so every app event becomes a
-    SILENT no-op. The gateway once passed
-    ``state.broadcast if hasattr(state, "broadcast") else None`` while the method
-    is actually named ``broadcast_ws``, which disabled app events entirely with no
-    error anywhere. These pin both halves.
+    With broadcast_fn None, ``build_app_context`` returns ``events=None`` and every app
+    event is a SILENT no-op; the method is named ``broadcast_ws``, so passing a
+    ``state.broadcast`` lookup disables events with no error. These pin both halves.
     """
 
     def test_dashboard_state_exposes_the_broadcast_method_the_gateway_passes(self):

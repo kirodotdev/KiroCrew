@@ -2,7 +2,7 @@
 
 The value ``kirocrew`` reads from the local secret file is the gateway's
 ``X-Local-Secret`` and also its ``X-Internal-Secret``. These tests pin that the
-spawn, artifact and file-delivery approval senders hand their request to the
+spawn and artifact senders hand their request to the
 shared connection-bound proof (``cli_server_peer._owner_verified_secret_urlopen``)
 instead of a plain loopback opener, that a refusal from that proof is reported
 and sends nothing, and that the app-lifecycle client checks the connected socket
@@ -21,7 +21,6 @@ from unittest.mock import patch
 import pytest
 
 import kiro_crew.cli_commands as cc
-import kiro_crew.cli_server as cli_server
 from kiro_crew import app_lifecycle_client
 from kiro_crew.cli_server_peer import _GatewayPeerRefused
 from kiro_crew.config.loader import KiroCrewConfig
@@ -131,34 +130,6 @@ class TestArtifactSendsThroughThePeerProof:
         with pytest.raises(SystemExit):
             self._run(sender)
         assert "gateway ownership not verified" in capsys.readouterr().err
-
-
-class TestFileDeliveryApproveSendsThroughThePeerProof:
-    def _run(self, sender: _ProvenSender) -> None:
-        pending = SimpleNamespace(nonce="n-1", destination_class="slack", expires_in=60)
-        with (
-            patch("kiro_crew.file_delivery_consent.read_pending_grant", return_value=pending),
-            patch("kiro_crew.cli_server.resolve_client_port", return_value=_PORT),
-            patch("kiro_crew.cli_server.read_local_secret", return_value="s"),
-            patch("kiro_crew.cli_server._owner_verified_secret_urlopen", sender),
-        ):
-            cli_server._file_delivery_approve()
-
-    def test_the_approval_goes_through_the_proof(self, capsys: Any) -> None:
-        sender = _ProvenSender([{"grant": {"destination_class": "slack"}}])
-        self._run(sender)
-        [(req, port, operation)] = sender.sent
-        assert (port, operation) == (_PORT, "file_delivery_approve")
-        assert req.get_header("X-internal-secret") == "s"
-        assert json.loads(req.data) == {"nonce": "n-1"}
-        assert "Confirmed delivery to slack" in capsys.readouterr().out
-
-    def test_a_refused_peer_is_reported_and_exits_1(self, capsys: Any) -> None:
-        sender = _ProvenSender([_GatewayPeerRefused("peer not proven")])
-        with pytest.raises(SystemExit) as exc:
-            self._run(sender)
-        assert exc.value.code == 1
-        assert "Gateway ownership not verified: peer not proven" in capsys.readouterr().out
 
 
 class TestAppLifecycleChecksTheSocketPeer:

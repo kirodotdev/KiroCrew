@@ -8,6 +8,7 @@ import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegis
 import { localizedSettingLabel } from '../../components/commandPalette/settingsSearchCore'
 import { settingsSubtitle, settingsTabLabel } from '../../components/commandPalette/settingsTabLabel'
 import CommandBarOverlay from './CommandBarOverlay'
+import { crewModePreviewOn } from '../../test/crewModePreview'
 
 /**
  * Row-level behaviour of the launcher: what a row DOES when activated, and what the
@@ -124,6 +125,13 @@ function mountControllable(onClose = vi.fn()) {
 const rowByText = (text: string) =>
   screen.getByText(text).closest('[role="option"]') as HTMLElement
 
+/** Press a row and wait for its work to settle: the bar closes once the row's promise
+ *  resolves, and the guard it holds is released in that same handler. */
+const pressAndSettle = async (row: HTMLElement, onClose: () => void) => {
+  fireEvent.mouseDown(row)
+  await waitFor(() => expect(onClose).toHaveBeenCalled())
+}
+
 /** The overlay's whole source: the facade and every owner beside it, the file
  *  family `CommandBarOverlay.owners.test.tsx` pins. */
 const overlaySource = () =>
@@ -162,7 +170,7 @@ describe('CommandBarOverlay rows', () => {
     const onClose = mount()
     fireEvent.mouseDown(rowByText('New Session'))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
-    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: undefined })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { crewModeDefault: true } })
   })
 
   it('keeps the bar open and says so when New Session fails', async () => {
@@ -197,7 +205,7 @@ describe('CommandBarOverlay rows', () => {
     expect(screen.getAllByRole('option')[0].textContent).toContain('New Session')
     fireEvent.keyDown(input, { key: 'Enter' })
     await waitFor(() => expect(onClose).toHaveBeenCalled())
-    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: undefined })
+    expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { crewModeDefault: true } })
   })
 
   /** A create the store opened: the reducer records it under its requestId. */
@@ -359,7 +367,7 @@ describe('CommandBarOverlay rows', () => {
     for (let i = 0; i < target; i++) fireEvent.keyDown(input, { key: 'ArrowDown' })
     expect(input.getAttribute('aria-activedescendant')).toBe(`command-bar-row-${target}`)
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: undefined }))
+    await waitFor(() => expect(dispatch).toHaveBeenCalledWith({ type: 'createSlot', arg: { crewModeDefault: true } }))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
   })
 
@@ -402,6 +410,8 @@ describe('CommandBarOverlay rows', () => {
     expect(screen.queryByLabelText('Working…')).toBeNull()
     fireEvent.mouseDown(rowByText('New Session'))
     expect(dispatch).toHaveBeenCalledTimes(2)
+    // The retry fails as well: its guard is released in the rejection handler.
+    await waitFor(() => expect(screen.queryByLabelText('Working…')).toBeNull())
   })
 
   it('offers Toggle Theme as a command, closing the palette-parity dead end', async () => {
@@ -470,7 +480,7 @@ describe('CommandBarOverlay rows', () => {
     // constructed inert and activated by entering the scope, and the assertion is on
     // the call site because the leak was the construction, not the search.
     const src = overlaySource()
-    expect(src).toContain("useSessionsProvider({ active: scope === 'sessions' })")
+    expect(src).toMatch(/useSessionsProvider\(\{ active: scope === 'sessions'(, openSessionsKey)? \}\)/)
     expect(src).not.toMatch(/useSessionsProvider\(\{\s*\}\)/)
   })
 
@@ -993,7 +1003,7 @@ describe('CommandBarOverlay rows', () => {
     expect(src).toMatch(/const listingArmed = scope === 'sessions' && !searchArmed/)
   })
 
-  it('leads the root with the sessions that owe the user something', () => {
+  it('leads the root with the sessions that owe the user something', async () => {
     // The launcher's own object: a session holding an approval is the most
     // time-sensitive thing this product has, and it had no presence here at all --
     // it lived one screen in, behind a row the user had to know to enter.
@@ -1001,7 +1011,7 @@ describe('CommandBarOverlay rows', () => {
       { key: 'slot-a', title: 'Deploy the pricing service', pending_approval: true, messages: 4 },
       { key: 'slot-b', title: 'Draft the launch email', needs_input: true, messages: 2 },
     ]
-    mount()
+    const onClose = mount()
     const rows = screen.getAllByRole('option')
     // FIRST, ahead of the commands: ordering is the claim, so it is asserted by
     // position rather than by mere presence.
@@ -1015,8 +1025,8 @@ describe('CommandBarOverlay rows', () => {
     // The row unwraps the dispatch (the composer is focused once the switch lands),
     // so the mock answers with the thunk's shape.
     resolvingDispatch()
-    fireEvent.mouseDown(rows[0])
-    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-a', announceOnMissing: true })
+    await pressAndSettle(rows[0], onClose)
+    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'slot-a', announceOnMissing: true, gesture: true })
   })
 
   it('never drops a blocked session: past the cap a final row counts the rest and reveals them', () => {
@@ -1062,7 +1072,7 @@ describe('CommandBarOverlay rows', () => {
     expect(rowByText('Refactor the parser')).toBeTruthy()
   })
 
-  it('offers the sessions the reader was last in, newest first, above the commands', () => {
+  it('offers the sessions the reader was last in, newest first, above the commands', async () => {
     // The most common reason this surface is opened: get me back to what I was doing.
     // It used to mean entering the sessions view and typing a name from memory, so the
     // answer the store already held cost two steps and a recall.
@@ -1071,7 +1081,7 @@ describe('CommandBarOverlay rows', () => {
       { key: 'slot-new', title: 'This morning thread', messages: 5, last_activity_ts: 3_000 },
       { key: 'slot-mid', title: 'Yesterday thread', messages: 2, last_activity_ts: 2_000 },
     ]
-    mount()
+    const onClose = mount()
     const rows = screen.getAllByRole('option')
     expect(screen.getByText('Recent sessions')).toBeTruthy()
     // Order is the claim — recency, not the alphabet and not the frecency store.
@@ -1084,11 +1094,12 @@ describe('CommandBarOverlay rows', () => {
     expect(rows[0].textContent).not.toContain('Command')
     // Activating one switches to it, the same way every other surface opens a session.
     resolvingDispatch()
-    fireEvent.mouseDown(rows[0])
+    await pressAndSettle(rows[0], onClose)
     expect(dispatch).toHaveBeenCalledWith({
       type: 'switchSlot',
       key: 'slot-new',
       announceOnMissing: true,
+      gesture: true,
     })
   })
 
@@ -1138,12 +1149,12 @@ describe('CommandBarOverlay rows', () => {
     expect(screen.getAllByText(/New Session/)).toHaveLength(1)
   })
 
-  it('labels an untitled attention row "Untitled session", not its key (#20909)', () => {
+  it('labels an untitled attention row "Untitled session", not its key (#20909)', async () => {
     storeState.dashboard.slots = [
       { key: 'chat-4-1785440411', title: '', pending_approval: true, messages: 4 },
       { key: 'slot-b', title: 'Draft the launch email', needs_input: true, messages: 2 },
     ]
-    mount()
+    const onClose = mount()
     const rows = screen.getAllByRole('option')
     const untitled = rows.find(r => r.textContent?.includes('Approve'))!
     expect(untitled.textContent).toContain('Untitled session')
@@ -1151,38 +1162,53 @@ describe('CommandBarOverlay rows', () => {
     expect(rows.find(r => r.textContent?.includes('Answer'))!.textContent).toContain('Draft the launch email')
     // Activation still targets the session's own key.
     resolvingDispatch()
-    fireEvent.mouseDown(untitled)
-    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-4-1785440411', announceOnMissing: true })
+    await pressAndSettle(untitled, onClose)
+    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-4-1785440411', announceOnMissing: true, gesture: true })
   })
 
-  it('labels an untitled recent row "Untitled session", not its key (#20910)', () => {
+  it('labels an untitled recent row "Untitled session", not its key (#20910)', async () => {
     storeState.dashboard.slots = [
       { key: 'chat-5-1785440411', title: '', messages: 3, last_activity_ts: 3_000 },
       { key: 'slot-named', title: 'Named thread', messages: 2, last_activity_ts: 1_000 },
     ]
-    mount()
+    const onClose = mount()
     const rows = screen.getAllByRole('option')
     // Recency order is unchanged: the untitled, newer session still leads.
     expect(rows[0].textContent).toContain('Untitled session')
     expect(rows[0].textContent).not.toContain('chat-5-1785440411')
     expect(rows[1].textContent).toContain('Named thread')
     resolvingDispatch()
-    fireEvent.mouseDown(rows[0])
-    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-5-1785440411', announceOnMissing: true })
+    await pressAndSettle(rows[0], onClose)
+    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-5-1785440411', announceOnMissing: true, gesture: true })
   })
 
-  it('still finds an untitled session row by its key once the key is no longer shown', () => {
+  it('still finds an untitled session row by its key once the key is no longer shown', async () => {
     storeState.dashboard.slots = [
       { key: 'chat-5-1785440411', title: '', messages: 3, last_activity_ts: 3_000 },
       { key: 'chat-6-1785440411', title: '', pending_approval: true, messages: 2 },
     ]
-    mount()
+    const onClose = mount()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'chat-5-1785440411' } })
     const hit = screen.getAllByRole('option').find(r => r.textContent?.includes('Untitled session'))
     expect(hit).toBeTruthy()
     resolvingDispatch()
-    fireEvent.mouseDown(hit!)
-    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-5-1785440411', announceOnMissing: true })
+    await pressAndSettle(hit!, onClose)
+    expect(dispatch).toHaveBeenCalledWith({ type: 'switchSlot', key: 'chat-5-1785440411', announceOnMissing: true, gesture: true })
+  })
+
+  it('names an open slot the backend titles "New Session…" as "Untitled session", found by its key (#29748)', () => {
+    // The backend sends an open untitled slot's title as its NEW_SESSION_TITLE
+    // placeholder, not an empty string. It reads the same label as everywhere else.
+    storeState.dashboard.slots = [
+      { key: 'chat-7-1785440411', title: 'New Session…', messages: 3, last_activity_ts: 3_000 },
+      { key: 'chat-8-1785440411', title: 'New Session…', pending_approval: true, messages: 2 },
+    ]
+    mount()
+    const rows = screen.getAllByRole('option')
+    expect(rows.filter(r => r.textContent?.includes('Untitled session'))).toHaveLength(2)
+    expect(rows.some(r => r.textContent?.includes('New Session…'))).toBe(false)
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'chat-7-1785440411' } })
+    expect(screen.getAllByRole('option').some(r => r.textContent?.includes('Untitled session'))).toBe(true)
   })
 
   it('always gives the typed text a way to reach an agent', async () => {
@@ -1500,3 +1526,66 @@ describe('CommandBarOverlay root ordering under a query', () => {
     expect(renderedHeaders()).toContain('Commands')
   })
 })
+
+describe('Crew Mode workers stay out of the Command Bar (edge review R1 X3)', () => {
+  it('lists neither a waiting nor a recent worker, only the root and plain chats', () => {
+    // A worker is its conductor's to show: the person's lists, this one included,
+    // leave it out even while it waits on a question or was visited last.
+    storeState.dashboard = {
+      slots: [
+        { key: 'root', title: 'Ship the review', crew_mode_root: true, messages: 3 },
+        { key: 'w-ask', title: 'Approval: list empty workspace', crew_root: 'root', needs_input: true, messages: 2 },
+        { key: 'w-done', title: 'Done: answer cat', crew_root: 'root', messages: 4, last_activity_ts: 9_000 },
+        { key: 'plain', title: 'Fleet notes', pending_approval: true, messages: 2 },
+      ],
+      unreadSlots: ['w-done'],
+    }
+    mount()
+    const text = screen.getAllByRole('option').map(r => r.textContent ?? '').join('\n')
+    expect(text).toContain('Fleet notes')
+    expect(text).toContain('Ship the review')
+    expect(text).not.toContain('Approval: list empty workspace')
+    expect(text).not.toContain('Done: answer cat')
+  })
+
+  it("lifts a root into Needs You with the Approve pill when one of its hidden workers waits on a tool approval", () => {
+    // The worker is not a row, so what it owes the person rides on its root: the
+    // same count the fleet page uses (`crewWaitingApprovals`). Red without the
+    // root-row lift: an idle root has no pill of its own.
+    storeState.dashboard = {
+      slots: [
+        { key: 'root', title: 'Ship the review', crew_mode_root: true, messages: 3 },
+        { key: 'w-tool', title: 'Worker on a tool', crew_root: 'root', pending_approval: true, messages: 2 },
+        { key: 'w-tool-2', title: 'Second worker', crew_root: 'root', pending_approval: true, messages: 2 },
+        { key: 'quiet-root', title: 'Quiet crew', crew_mode_root: true, messages: 1 },
+        { key: 'w-idle', title: 'Idle worker', crew_root: 'quiet-root', messages: 1 },
+      ],
+      unreadSlots: [],
+    }
+    mount()
+    const options = screen.getAllByRole('option')
+    const lifted = options.find(o => o.getAttribute('data-row-id') === 'attention:root' || o.id === 'attention:root' || (o.textContent ?? '').includes('Ship the review'))
+    expect(lifted?.textContent).toContain('Approve')
+    expect(lifted?.textContent).toContain('Crew members waiting for a tool decision: 2')
+    const quiet = options.find(o => (o.textContent ?? '').includes('Quiet crew'))
+    expect(quiet?.textContent ?? '').not.toContain('Approve')
+    expect(options.map(o => o.textContent ?? '').join('\n')).not.toContain('Worker on a tool')
+  })
+
+  it('keeps a closed root\'s worker in Needs You with its own Approve pill', () => {
+    // The root was closed, so no row carries the count and no Crew panel lists the
+    // worker: the worker is a row again, and its approval still reaches the person.
+    storeState.dashboard = {
+      slots: [
+        { key: 'w-orphan', title: 'Worker of a closed crew', crew_root: 'closed-root', pending_approval: true, messages: 2 },
+      ],
+      unreadSlots: [],
+    }
+    mount()
+    const row = screen.getAllByRole('option').find(o => (o.textContent ?? '').includes('Worker of a closed crew'))
+    expect(row?.textContent).toContain('Approve')
+  })
+})
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

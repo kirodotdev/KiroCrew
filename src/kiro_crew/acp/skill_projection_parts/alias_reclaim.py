@@ -3,9 +3,8 @@
 The bounded prune walk with its reclaim, work and time budgets, run per spawn, at
 projection end (the eager prune and the lease finalizer) and at boot; the
 ownership-proved per-candidate reclaim; the orphan sidecar and alias-lock sweeps; the
-gateway-boot drain that first migrates legacy side files out of the agents directory
-and then prunes in batches; and the read-only, bounded censuses ``kirocrew doctor``
-reports, counted by the prune's own rules.
+gateway-boot drain that prunes in batches; and the read-only, bounded censuses
+``kirocrew doctor`` reports, counted by the prune's own rules.
 
 :mod:`kiro_crew.acp.skill_projection` stays the import path and the patch surface; see
 :mod:`kiro_crew.acp.skill_projection_parts`.
@@ -13,8 +12,8 @@ reports, counted by the prune's own rules.
 
 from __future__ import annotations
 
+import atexit
 import functools
-import gc
 import hashlib
 import json
 import logging
@@ -37,21 +36,14 @@ from kiro_crew.acp.skill_projection_parts.side_files import (
     _PROJECTION_LEASE_MAX_BYTES,
     _PROJECTION_LEASE_RECORD_SUFFIX,
     _PROJECTION_LEASE_SCAN_LIMIT,
-    _PROJECTION_LEASE_SCAN_MAX_SECONDS,
     _PROJECTION_LOCK_TIMEOUT_SECS,
-    _ensure_projection_metadata_directory,
-    _hold_legacy_publication_lock,
-    _legacy_lease_dir,
-    _legacy_lock_path,
-    _legacy_metadata_dir,
-    _metadata_dirs,
     _path_exists,
     _per_spawn_prune_due,
     _projection_alias_lock,
     _projection_lease_dir,
+    _projection_metadata_dir,
     _prune_budget_within,
     _read_lease_record,
-    _scan_legacy_lease_dir,
     _scan_projection_leases,
     _unlink_alias_if_unchanged,
     _unlink_projection_lease_if_unchanged,
@@ -72,15 +64,11 @@ from kiro_crew.acp.skill_projection_parts.view_ownership import (
     _view_home_tag,
 )
 from kiro_crew.acp.skill_projection_parts.view_sources import (
-    _VIEW_LEDGER_NAME,
     _admissible_source_agent,
-    _import_legacy_ledger,
-    _read_json_regular_file,
-    _read_view_ledger,
     _ViewLedgerWrites,
 )
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX, volatile_env_keys
-from kiro_crew.atomic_write import atomic_write, on_event_loop
+from kiro_crew.atomic_write import on_event_loop
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 
@@ -158,9 +146,10 @@ def _eager_prune(directory: Path, crew_home_id: str, *, force: bool = False) -> 
     ``kirocrew-skill-view-prune`` thread -- or when one ends inside the spacing
     window a recent spawn opened: a zero-wait end would fail the lock the first
     end holds and leave its own view on disk until the next spawn or boot drain,
-    the very "gateway stop" case this reclaim exists for. Queueing serialises the
-    ends behind one another, and because each end releases its lease before it
-    prunes, the walk that runs after the wait already sees this end's lease gone.
+    the very "gateway stop" case this reclaim exists for. Ends reach here through
+    :func:`_coalesced_end_prune`, so at most one end per target queues here at a
+    time, and because each end releases its lease before it asks, the walk that
+    runs after the wait already sees this end's lease gone.
     Every other gate still holds: the cross-process lock ceiling, the lease scan
     and the time budget. Never raises (the queue timeout is an ``OSError``).
     """
@@ -185,29 +174,72 @@ def _eager_prune_in(
         _PINNED_SIDE_DIR.path = None
 
 
-# The thread running a cyclic collection right now, or None. A finalizer the
-# collector runs executes on whichever thread happened to allocate, at that
-# point in its code -- possibly inside a non-reentrant lock such as a stdlib
-# executor's ``submit`` lock. The end of a projection takes locks and calls into
-# the subprocess pool, whose bounded request goes through such an executor, so
-# run there it can wait on a lock its own thread already holds, forever. A
-# collection never nests and runs on one thread, so one slot is enough.
-_COLLECTING_THREAD: int | None = None
-
-
-def _note_collection(phase: str, _info: dict[str, int]) -> None:
-    """``gc.callbacks`` hook: record which thread is collecting. Takes no lock."""
-    global _COLLECTING_THREAD
-    _COLLECTING_THREAD = threading.get_ident() if phase == "start" else None
-
-
-gc.callbacks.append(_note_collection)
-
-# Ends of projections the cyclic collector freed, run in order by the reaper
-# thread. ``SimpleQueue.put`` is reentrant: safe from inside a collection.
+# Ends of projections a finalizer freed, run in order by the reaper thread.
+# ``SimpleQueue.put`` is reentrant: safe from inside a cyclic collection, whose
+# finalizer runs on whichever thread happened to allocate -- possibly inside a
+# non-reentrant lock such as a stdlib executor's ``submit`` lock that the end's
+# own path re-enters, so the end is queued here rather than run on that thread.
 _COLLECTED_ENDS: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
 _REAPER_LOCK = threading.Lock()
 _REAPER: threading.Thread | None = None
+
+
+# Set by :func:`_release_queued_leases_at_exit` once the interpreter has begun
+# running its ``atexit`` handlers. From then on the daemon reaper is still alive
+# but may never get to a queued end before finalization stops it, so a
+# finalizer-driven end releases its lease inline instead of queueing it.
+_EXITING = threading.Event()
+
+# How long the exit handler waits for an end the reaper already took off the
+# queue to finish. That end released its lease as its first step; the wait
+# only covers the instant between the reaper taking it and that release.
+_EXIT_REAPER_WAIT_SECS = 2.0
+
+
+def _reaper_alive() -> bool:
+    """True when the reaper thread is running and can still drain a queued end.
+
+    A finalizer that lands during interpreter shutdown (the ``atexit`` weakref
+    sweep) may find the daemon reaper already gone; a queued end would then never
+    run. ``_end_projection`` consults this to fall back to an inline lease
+    release in that case, so the lock file is not left behind.
+    """
+    reaper = _REAPER
+    return reaper is not None and reaper.is_alive()
+
+
+def _release_queued_leases_at_exit() -> None:
+    """``atexit`` hook: no lease may wait on the reaper once the interpreter exits.
+
+    A daemon thread is still alive while ``atexit`` handlers run, so
+    :func:`_reaper_alive` cannot see the exit coming, yet the reaper may be
+    stopped by finalization before it drains the queue. Whichever order this
+    handler and ``weakref.finalize``'s own ``atexit`` sweep run in, every lease
+    is released before the process ends: setting :data:`_EXITING` makes any
+    finalizer firing after this point release its lease inline, and each end
+    already queued has its lease released here, on the exiting thread. Only the
+    lease is released; the prune is left to the next process's boot drain, as
+    on the other shutdown paths. An end the reaper took off the queue before
+    this ran is given :data:`_EXIT_REAPER_WAIT_SECS` to finish.
+    """
+    _EXITING.set()
+    while True:
+        try:
+            end = _COLLECTED_ENDS.get_nowait()
+        except queue.Empty:
+            break
+        if isinstance(end, functools.partial) and end.func is _end_projection_off_loop:
+            try:
+                end.args[0].close()
+            except Exception:
+                logger.debug("skill projection: lease release at exit failed", exc_info=True)
+    if _reaper_alive():
+        reached = threading.Event()
+        _COLLECTED_ENDS.put(reached.set)
+        reached.wait(_EXIT_REAPER_WAIT_SECS)
+
+
+atexit.register(_release_queued_leases_at_exit)
 
 
 def _ensure_projection_reaper() -> None:
@@ -244,16 +276,50 @@ def _reap_collected_projections() -> None:
 
 
 def _end_projection(
-    lease_stack: ExitStack, directory: Path, crew_home_id: str, side_dir: Path
+    lease_stack: ExitStack,
+    directory: Path,
+    crew_home_id: str,
+    side_dir: Path,
+    *,
+    from_release: bool = False,
 ) -> None:
     """The lease finalizer: release the lease, then prune eagerly.
 
-    Called by :meth:`NativeSkillProjection.release` (the client's shutdown path
-    calls that on the event-loop thread) or, for a projection that was merely
-    dropped, when its last reference goes or the cyclic collector frees it.
-    Inside a collection nothing runs here: the end is queued for the reaper
-    thread (:data:`_COLLECTING_THREAD` says why). Otherwise, off the loop the
-    whole sequence runs inline. On the loop ALL of it goes to a daemon
+    Reached two ways, told apart by ``from_release`` rather than any process
+    state: :meth:`NativeSkillProjection.release` detaches the finalizer and calls
+    this DIRECTLY with ``from_release=True`` (a known-safe call site), while the
+    ``weakref.finalize`` machinery calls it with the default ``from_release=False``
+    when the projection is merely dropped -- its last reference gone, or the
+    cyclic collector freeing it.
+
+    A finalizer fires on whichever thread last dropped the reference, at that
+    point in its code -- possibly deep inside a non-reentrant stdlib lock (a
+    ``ThreadPoolExecutor.submit`` holding ``_global_shutdown_lock`` while it
+    constructs the ``Future`` whose allocation freed this projection). The end
+    takes locks and calls the path-resolution subprocess pool, whose bounded
+    request re-enters that same executor, so run inline there it waits on a lock
+    its own thread already holds -- forever, until the test timeout kills the
+    xdist worker. So a finalizer-driven end (``from_release`` false) off the loop
+    is NEVER run inline: it is queued for the daemon reaper thread, which owns a
+    context holding none of those locks. One rule covers every finalizer path --
+    the refcount-zero drop and the cyclic collector alike -- so no gc-callback
+    bookkeeping of which thread is collecting is needed.
+
+    The one exception is interpreter shutdown: the ``atexit`` weakref sweep can
+    fire a finalizer for a projection never explicitly released (the shared
+    runtime holds some for its whole life). The daemon reaper may already be
+    gone, or still alive yet stopped by finalization before it reaches a queued
+    end. So when the reaper is not alive, or :data:`_EXITING` says the
+    ``atexit`` handlers have begun, the lease is released INLINE instead (the
+    prune, which re-enters the executor, is dropped and the next process's boot
+    drain covers it), and :func:`_release_queued_leases_at_exit` releases the
+    lease of every end still queued. The lease release is what must not be
+    lost: a retained lock file blocks the next process's view of this home. It
+    is not run inline in every finalizer, because it is not lock-free either: a
+    refused unlink reports through ``_UNLINK_WARNING_LOCK`` and the logging
+    handlers, the same kind of non-reentrant lock a dropping thread can hold.
+
+    On the loop ALL of it -- release and finalizer alike -- goes to a daemon
     thread: the prune waits on a file lock (up to the publication lock's
     ceiling), and the lease release itself unlocks and closes the holder, then
     stats, opens and unlinks two files -- blocking calls whose cost on a slow or
@@ -262,13 +328,6 @@ def _end_projection(
     inline, the two unlinks the finalizer always did, and drops the prune: the
     next spawn's prune covers it.
     """
-    if _COLLECTING_THREAD == threading.get_ident():
-        _COLLECTED_ENDS.put(
-            functools.partial(
-                _end_projection_off_loop, lease_stack, side_dir, directory, crew_home_id
-            )
-        )
-        return
     if on_event_loop():
         try:
             threading.Thread(
@@ -281,6 +340,26 @@ def _end_projection(
         except RuntimeError:
             logger.debug("skill projection: lease release thread not started", exc_info=True)
         lease_stack.close()
+        return
+    if not from_release:
+        # A finalizer fired off the loop (a refcount-zero drop OR the cyclic
+        # collector freeing it, not reached through ``release``): the thread it
+        # runs on may be deep inside a non-reentrant lock the prune re-enters, so
+        # the end must not run inline here. Hand it to the reaper, which holds
+        # none of those locks (``SimpleQueue.put`` is reentrant and safe from
+        # inside a collection). The one exception is interpreter shutdown, where
+        # the reaper is gone or may never reach a queued end before finalization
+        # stops it: the lease is released INLINE instead so the lock file is not
+        # left behind, and the prune -- which re-enters the executor -- is
+        # dropped for the next process's boot drain to cover.
+        if _reaper_alive() and not _EXITING.is_set():
+            _COLLECTED_ENDS.put(
+                functools.partial(
+                    _end_projection_off_loop, lease_stack, side_dir, directory, crew_home_id
+                )
+            )
+        else:
+            lease_stack.close()
         return
     _end_projection_off_loop(lease_stack, side_dir, directory, crew_home_id)
 
@@ -297,7 +376,83 @@ def _end_projection_off_loop(
     try:
         lease_stack.close()
     finally:
+        _coalesced_end_prune(side_dir, directory, crew_home_id)
+
+
+# Ends whose prune is already covered by one running for the same target. An end
+# releases its lease BEFORE it asks for a prune, so any prune pass that STARTS
+# after that request sees the lease gone and covers it. Without coalescing, a
+# subagent fan-out queues one forced prune per ended projection on the same
+# in-process lock the session starts wait on, each spending its full walk budget,
+# and the starts behind them run out their in-process wait and are refused.
+_END_PRUNE_GUARD = threading.Lock()
+_END_PRUNE_RUNNING: set[tuple[str, str, str]] = set()
+_END_PRUNE_REQUESTED: set[tuple[str, str, str]] = set()
+
+
+def _coalesced_end_prune(side_dir: Path, directory: Path, crew_home_id: str) -> None:
+    """Run the forced end prune, or hand it to the one already running for this target.
+
+    At most one end prune per (side directory, agents directory, home) runs or
+    waits on the alias lock at a time. An end that arrives while one runs records
+    a request and returns. The end that ran the first pass runs it on its own
+    thread, as before; if requests arrived meanwhile, the follow-up passes go to
+    one daemon thread, which repeats while requests keep arriving, so the caller
+    is not held for the length of a wave. Every end is still followed by a prune
+    that started after its lease was released. Never raises.
+    """
+    key = (side_dir.as_posix(), directory.absolute().as_posix(), crew_home_id)
+    with _END_PRUNE_GUARD:
+        if key in _END_PRUNE_RUNNING:
+            _END_PRUNE_REQUESTED.add(key)
+            return
+        _END_PRUNE_RUNNING.add(key)
+    try:
         _eager_prune_in(side_dir, directory, crew_home_id, force=True)
+        if not _end_prune_more_requested(key):
+            return
+        try:
+            threading.Thread(
+                target=_run_requested_end_prunes,
+                args=(key, side_dir, directory, crew_home_id),
+                name="kirocrew-skill-view-prune",
+                daemon=True,
+            ).start()
+            return
+        except RuntimeError:
+            logger.debug("skill projection: follow-up prune thread not started", exc_info=True)
+        _run_requested_end_prunes(key, side_dir, directory, crew_home_id)
+    except BaseException:
+        with _END_PRUNE_GUARD:
+            _END_PRUNE_RUNNING.discard(key)
+            _END_PRUNE_REQUESTED.discard(key)
+        raise
+
+
+def _end_prune_more_requested(key: tuple[str, str, str]) -> bool:
+    """Consume a pending request for *key*, or end its run when there is none."""
+    with _END_PRUNE_GUARD:
+        if key in _END_PRUNE_REQUESTED:
+            _END_PRUNE_REQUESTED.discard(key)
+            return True
+        _END_PRUNE_RUNNING.discard(key)
+        return False
+
+
+def _run_requested_end_prunes(
+    key: tuple[str, str, str], side_dir: Path, directory: Path, crew_home_id: str
+) -> None:
+    """The follow-up passes of one coalesced run, after its first request was consumed."""
+    try:
+        while True:
+            _eager_prune_in(side_dir, directory, crew_home_id, force=True)
+            if not _end_prune_more_requested(key):
+                return
+    except BaseException:
+        with _END_PRUNE_GUARD:
+            _END_PRUNE_RUNNING.discard(key)
+            _END_PRUNE_REQUESTED.discard(key)
+        raise
 
 
 def _sweep_orphan_sidecars(
@@ -318,17 +473,13 @@ def _sweep_orphan_sidecars(
     retire. Runs under the publication lock, so no publisher can be mid-pair.
     Bounded by the same entry-walk limit as the alias walk, a random start
     offset, :data:`_SIDECAR_SWEEP_MAX_PER_RUN` and *deadline*. Returns how many
-    it removed, over this home's records directory and then the legacy one in
-    *directory* (:func:`_metadata_dirs`), each under the same bounds.
+    it removed.
     """
-    removed = 0
-    for metadata_dir in _metadata_dirs(directory):
-        if time.monotonic() >= deadline:
-            break
-        removed += _sweep_orphan_sidecars_in(
-            directory, metadata_dir, crew_home_id, skip=skip, deadline=deadline
-        )
-    return removed
+    if time.monotonic() >= deadline:
+        return 0
+    return _sweep_orphan_sidecars_in(
+        directory, _projection_metadata_dir(), crew_home_id, skip=skip, deadline=deadline
+    )
 
 
 def _sweep_orphan_sidecars_in(
@@ -576,37 +727,14 @@ def _prune_stale_managed_aliases(
     external rewriter left beside gone aliases (:func:`_sweep_orphan_alias_locks`);
     the boot drain sweeps on its own instead, so it can count them. Returns how
     many aliases it removed.
-
-    An older build sharing *directory* publishes under a lock of its own, in
-    *directory*; this prune holds that lock too, from the lease scan through the
-    last reclaim (:func:`_hold_legacy_publication_lock`), so no lease an older
-    build takes can slip in behind the scan. A lock it cannot take is
-    uncertainty, and the run removes nothing.
     """
-    with ExitStack() as exclusion:
-        if not _hold_legacy_publication_lock(directory, exclusion):
-            logger.debug(
-                "skill projection: an older build holds the publication lock in %s; "
-                "pruning nothing this run",
-                directory,
-            )
-            return 0
-        return _prune_excluding_older_publishers(
-            directory, crew_home_id, keep=keep, sweep_sidecars=sweep_sidecars
-        )
-
-
-def _prune_excluding_older_publishers(
-    directory: Path, crew_home_id: str, *, keep: set[str], sweep_sidecars: bool
-) -> int:
-    """:func:`_prune_stale_managed_aliases` with the older build's lock already held."""
     # ONE bounded lease scan per prune, under the held publication lock, rather
     # than one full scan per candidate (which multiplied the candidate cap by the
     # lease-scan cap). It also reclaims crash/finalizer lease residue as a side
     # effect. Any uncertainty is fail-closed: authorize no deletion this run and
     # let a later spawn re-scan, because a candidate whose covering lease the scan
     # could not read must be treated as live.
-    live_aliases, lease_uncertain = _scan_projection_leases(directory, legacy_locked=True)
+    live_aliases, lease_uncertain = _scan_projection_leases(directory)
     if lease_uncertain:
         return 0
     active = _active_aliases()
@@ -663,169 +791,6 @@ def _prune_excluding_older_publishers(
     return reclaimed
 
 
-def _move_sidecar(source: Path, identity: tuple[int, int], target: Path) -> bool:
-    """Move one ownership sidecar out of the legacy directory; ``True`` when *source* is gone.
-
-    A rename when the two directories share a filesystem; otherwise a copy of
-    the bytes already read and validated, then the identity-checked unlink the
-    prune uses. An existing *target* (this home already republished the view
-    under the new layout) is kept and the legacy copy only unlinked.
-    """
-    if _path_exists(target):
-        return _unlink_projection_lease_if_unchanged(source, identity, what="ownership sidecar")
-    try:
-        os.replace(source, target)
-        return True
-    except OSError:
-        pass
-    try:
-        fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        try:
-            opened = os.fstat(fd)
-            raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
-        finally:
-            os.close(fd)
-    except OSError:
-        return False
-    if (opened.st_dev, opened.st_ino) != identity or len(raw) > _PROJECTION_LEASE_MAX_BYTES:
-        return False
-    try:
-        atomic_write(target, raw.decode("utf-8"), restrict_to_owner=True)
-    except (OSError, UnicodeDecodeError):
-        return False
-    return _unlink_projection_lease_if_unchanged(source, identity, what="ownership sidecar")
-
-
-def _migrate_legacy_side_files(directory: Path, crew_home_id: str) -> None:
-    """Carry this home's side files out of the agents directory, once, at boot.
-
-    Builds before the side-file layout wrote the ownership sidecars, the view
-    ledger, the lease records and the publication lock INTO *directory*, where
-    the Kiro IDE lists them as agents. This moves what is provably this home's
-    and leaves everything else:
-
-    * a sidecar in the legacy records directory whose record names THIS data
-      home moves to :func:`_projection_metadata_dir` (bounded per boot; the
-      rest moves next boot, and every reader consults both directories meanwhile);
-      another home's sidecar stays, it is that home's to move;
-    * the legacy view ledger's entries are merged into this home's ledger (they
-      are alias-to-agent names, harmless to copy); the legacy file itself is
-      shared by every home that published here and names no home, so it stays
-      while it holds any entry or cannot be read -- another home's stored view
-      names resolve through it until that home's own migration copies them --
-      and only an empty, readable one goes, and the directory only after it;
-    * lease records are never moved -- a live one is lock-held by its process and
-      a stale one is reclaimed by the lease scan -- the directory is removed only
-      once it is empty;
-    * the legacy lock file goes last, only when both legacy directories are gone
-      (no older build is publishing here) and nobody holds it.
-
-    Idempotent: every step checks what is on disk. Nothing is deleted whose name
-    and content do not prove the projection wrote it. Runs under this home's
-    publication lock, so no publisher of this home is mid-pair.
-    """
-    legacy_metadata = _legacy_metadata_dir(directory)
-    info = pinned_fs.lstat_by_name(legacy_metadata)
-    if (
-        info is not None
-        and not platform_compat.is_link_or_junction(legacy_metadata)
-        and stat.S_ISDIR(info.st_mode)
-    ):
-        stems: list[str] = []
-        walked = 0
-        others = 0
-        with os.scandir(legacy_metadata) as entries:
-            for entry in entries:
-                if walked >= _PROJECTION_PRUNE_WORK_LIMIT:
-                    others += 1  # unexamined: the directory is not empty either way
-                    break
-                walked += 1
-                if entry.name == _VIEW_LEDGER_NAME:
-                    continue
-                stem = entry.name[: -len(".json")] if entry.name.endswith(".json") else ""
-                if _LEGACY_ALIAS_NAME_RE.fullmatch(stem):
-                    stems.append(stem)
-                else:
-                    others += 1
-        moved = 0
-        if stems:
-            target_dir = _ensure_projection_metadata_directory()
-            for stem in stems:
-                record, source, identity = _sidecar_record_in(legacy_metadata, stem)
-                if (
-                    record is None
-                    or identity is None
-                    or not _same_crew_home(record.get(_MANAGED_CREW_HOME), crew_home_id)
-                ):
-                    others += 1
-                    continue
-                if _move_sidecar(source, identity, target_dir / f"{stem}.json"):
-                    moved += 1
-                else:
-                    others += 1
-        ledger_path = legacy_metadata / _VIEW_LEDGER_NAME
-        ledger_info = pinned_fs.lstat_by_name(ledger_path)
-        if ledger_info is not None:
-            legacy_ledger = _read_view_ledger(legacy_metadata)
-            if legacy_ledger:
-                try:
-                    _import_legacy_ledger(_ensure_projection_metadata_directory(), legacy_ledger)
-                except OSError:
-                    logger.debug("skill projection: legacy view ledger not merged", exc_info=True)
-            # The legacy ledger is SHARED: every home that ever published into
-            # this agents directory wrote its view names there, and an entry
-            # carries no home. Another home's stored view names resolve through
-            # it until THAT home's own migration copies them, so this home may
-            # not remove it while it holds any entry, or while it cannot be
-            # read; only an empty, readable ledger goes. The directory, and the
-            # lock after it, stay with it.
-            raw_ledger = _read_json_regular_file(ledger_path)
-            if (
-                not isinstance(raw_ledger, dict)
-                or raw_ledger
-                or not stat.S_ISREG(ledger_info.st_mode)
-            ):
-                others += 1
-            elif not others:
-                _unlink_projection_lease_if_unchanged(
-                    ledger_path, (ledger_info.st_dev, ledger_info.st_ino), what="view ledger"
-                )
-        if moved:
-            logger.info(
-                "skill projection: moved %d ownership sidecar(s) out of %s", moved, legacy_metadata
-            )
-        if not others:
-            try:
-                os.rmdir(legacy_metadata)
-            except OSError:
-                pass  # something arrived meanwhile; next boot looks again
-    legacy_leases = _legacy_lease_dir(directory)
-    lease_info = pinned_fs.lstat_by_name(legacy_leases)
-    if (
-        lease_info is not None
-        and not platform_compat.is_link_or_junction(legacy_leases)
-        and stat.S_ISDIR(lease_info.st_mode)
-    ):
-        # Reclaims crash residue the way every prune does; a live lease stays.
-        _scan_legacy_lease_dir(directory, time.monotonic() + _PROJECTION_LEASE_SCAN_MAX_SECONDS)
-        try:
-            os.rmdir(legacy_leases)
-        except OSError:
-            pass  # not empty: an older build still holds a lease here
-    if pinned_fs.lstat_by_name(legacy_metadata) is None and (
-        pinned_fs.lstat_by_name(legacy_leases) is None
-    ):
-        lock_path = _legacy_lock_path(directory)
-        lock_info = pinned_fs.lstat_by_name(lock_path)
-        if (
-            lock_info is not None
-            and not platform_compat.is_link_or_junction(lock_path)
-            and stat.S_ISREG(lock_info.st_mode)
-            and lock_info.st_size == 0
-        ):
-            _unlink_unheld_lock_file(lock_path, (lock_info.st_dev, lock_info.st_ino))
-
-
 def drain_stale_aliases() -> int:
     """Best-effort boot drain of unused aliases this data home owns; never raises.
 
@@ -847,24 +812,12 @@ def drain_stale_aliases() -> int:
     total = 0
     sidecars = 0
     idle_batches = 0
-    migrated = False
     for batch in range(_DRAIN_MAX_BATCHES):
         if batch:
             time.sleep(_DRAIN_BATCH_PAUSE_SECS)
         swept = 0
         try:
             with _projection_alias_lock(directory):
-                if not migrated:
-                    # Once per boot, under the first lock this drain takes: the
-                    # side files an older build left in the agents directory
-                    # come over to this home before anything is pruned by them.
-                    migrated = True
-                    try:
-                        _migrate_legacy_side_files(directory, crew_home_id)
-                    except OSError:
-                        logger.debug(
-                            "skill projection: legacy side-file migration skipped", exc_info=True
-                        )
                 reclaimed = _prune_stale_managed_aliases(
                     directory, crew_home_id, keep=set(), sweep_sidecars=False
                 )
@@ -1125,70 +1078,60 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
         return counts
 
     named: set[str] = set()
-    # Both lease directories the reclaim scans (this home's own and the legacy
-    # one in the agents directory), each charged against the reclaim scan's
-    # per-directory ceiling.
-    for lease_dir in (_projection_lease_dir(), _legacy_lease_dir(directory)):
-        lease_entries = 0
-        try:
-            with os.scandir(lease_dir) as entries:
-                for entry in entries:
-                    # Charge EVERY entry against the reclaim scan's own ceiling
-                    # before any suffix filter, exactly as _scan_projection_leases
-                    # does: a directory that caps that scan (records plus their
-                    # ``.hold`` sidecars and any padding) makes every prune defer,
-                    # so the census must report truncated there, not promise a drain.
-                    if lease_entries >= _PROJECTION_LEASE_SCAN_LIMIT:
-                        counts["truncated"] = 1
-                        break
-                    lease_entries += 1
-                    if not (
-                        entry.name.endswith(_PROJECTION_LEASE_RECORD_SUFFIX)
-                        and entry.is_file(follow_symlinks=False)
-                    ):
-                        continue
-                    listed = _read_lease_record(Path(entry.path))
-                    if listed is None:
-                        counts["unreadable_leases"] += 1
-                        continue
-                    # Only stems this census retained: bounded by the alias ceiling.
-                    named.update(stems.intersection(listed))
-        except FileNotFoundError:
-            pass
-        except OSError:
-            counts["unreadable_leases"] += 1
+    # The lease directory the reclaim scans, charged against that scan's ceiling.
+    lease_entries = 0
+    try:
+        with os.scandir(_projection_lease_dir()) as entries:
+            for entry in entries:
+                # Charge EVERY entry against the reclaim scan's own ceiling
+                # before any suffix filter, exactly as _scan_projection_leases
+                # does: a directory that caps that scan (records plus their
+                # ``.hold`` sidecars and any padding) makes every prune defer,
+                # so the census must report truncated there, not promise a drain.
+                if lease_entries >= _PROJECTION_LEASE_SCAN_LIMIT:
+                    counts["truncated"] = 1
+                    break
+                lease_entries += 1
+                if not (
+                    entry.name.endswith(_PROJECTION_LEASE_RECORD_SUFFIX)
+                    and entry.is_file(follow_symlinks=False)
+                ):
+                    continue
+                listed = _read_lease_record(Path(entry.path))
+                if listed is None:
+                    counts["unreadable_leases"] += 1
+                    continue
+                # Only stems this census retained: bounded by the alias ceiling.
+                named.update(stems.intersection(listed))
+    except FileNotFoundError:
+        pass
+    except OSError:
+        counts["unreadable_leases"] += 1
     counts["leased"] = len(named)
 
     # Plain bounded reads, like the lease records: the hardened reader audits
-    # every call, and a backlog is tens of thousands of sidecars. The first
-    # records directory that has an entry for the stem answers for it.
-    metadata_dirs = _metadata_dirs(directory)
+    # every call, and a backlog is tens of thousands of sidecars.
+    metadata_dir = _projection_metadata_dir()
     this_home_tag = _home_tag(crew_home_id)
     for stem in stems:
         metadata: Any = None
-        recorded = False
-        for metadata_dir in metadata_dirs:
-            try:
-                fd = os.open(
-                    metadata_dir / f"{stem}.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                )
-            except FileNotFoundError:
-                continue
-            except OSError:
-                recorded = True
-                break
-            recorded = True
+        recorded = True
+        try:
+            fd = os.open(metadata_dir / f"{stem}.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            recorded = False
+        except OSError:
+            pass
+        else:
             try:
                 try:
                     raw = os.read(fd, _PROJECTION_LEASE_MAX_BYTES + 1)
                 finally:
                     os.close(fd)
-                if len(raw) > _PROJECTION_LEASE_MAX_BYTES:
-                    break
-                metadata = json.loads(raw)
+                if len(raw) <= _PROJECTION_LEASE_MAX_BYTES:
+                    metadata = json.loads(raw)
             except (OSError, ValueError, TypeError, RecursionError):
                 pass
-            break
         if (
             isinstance(metadata, dict)
             and _managed_marker(metadata)
@@ -1197,10 +1140,10 @@ def census_projected_aliases(directory: Path) -> dict[str, int]:
         ):
             counts["foreign_leased" if stem in named else "foreign_home"] += 1
         elif not recorded:
-            # No record in either directory: a home that keeps its sidecars under
-            # its own data home leaves none here for another home's view, and the
-            # prune keeps such a view by the home tag in its description. Count it
-            # the way the prune treats it.
+            # No record: a home that keeps its sidecars under its own data home
+            # leaves none here for another home's view, and the prune keeps such
+            # a view by the home tag in its description. Count it the way the
+            # prune treats it.
             tag = _view_home_tag(_read_alias_spec_bounded(directory / f"{stem}.json"))
             if tag is not None and tag != this_home_tag:
                 counts["foreign_leased" if stem in named else "foreign_home"] += 1
@@ -1279,13 +1222,10 @@ def census_projection_residue(
             and name[: -len(_ALIAS_LOCK_SUFFIX)] not in aliases
         ):
             counts["alias_locks"] += 1
-    # Both records directories the prune reads: this home's own and the legacy
-    # one in the agents directory, under one retention bound.
-    for metadata_dir in _metadata_dirs(directory):
-        if counts["truncated"]:
-            break
+    # The records directory the prune reads, under the same retention bound.
+    if not counts["truncated"]:
         try:
-            with os.scandir(metadata_dir) as entries:
+            with os.scandir(_projection_metadata_dir()) as entries:
                 for entry in entries:
                     if counts["sidecars"] >= _CENSUS_MAX_ALIASES:
                         counts["truncated"] = 1

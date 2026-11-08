@@ -45,9 +45,7 @@ def _members_app(state) -> web.Application:
 def _fake_config():
     return SimpleNamespace(
         agents={
-            # Mate as first_crewmate creates it: built in, with its member id. A
-            # built-in binding without one is a legacy binding, not a crewmate,
-            # and the roster leaves it out (``mate_worker.is_legacy_binding``).
+            # Mate as first_crewmate creates it: built in, with its member id.
             "mate": KiroCrewAgentConfig(
                 kiro_agent="kirocrew-mate-conductor", source="builtin", member_id="mate"
             ),

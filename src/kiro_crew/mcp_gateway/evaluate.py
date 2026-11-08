@@ -212,44 +212,25 @@ async def evaluate_new_servers(
     without a second lookup.
 
     *budget* caps how many servers are measured in this pass. ``None`` lifts the
-    cap, which is for an operator who explicitly asked to measure everything and
-    is watching progress — never for a request that renders a page, where an
-    uncapped pass would spawn two processes per configured server while somebody
-    waits. *on_progress* is called with ``(measured, attempted, total)`` after
-    each measurement so that caller can report where it is; it runs on the event
-    loop, so it must not block.
+    cap, only for an operator watching progress, never for a page render (each
+    measurement spawns two processes). *on_progress* gets ``(measured,
+    attempted, total)`` after each measurement; it runs on the event loop, so it
+    must not block.
 
-    ``measured`` and ``attempted`` are separate because they answer different
-    questions and routinely disagree. A server whose pre-flight could not run --
-    a missing credential, an unreachable tunnel, a host where the probe cannot
-    spawn at all -- was attempted and produced no verdict, so it is still
-    unmeasured afterwards. Reporting one number for both is what let a pass that
-    measured nothing close with "Measured 30 servers" beside a table still
-    showing thirty unmeasured rows. ``attempted`` is what a progress bar has to
-    advance on, or it would sit at zero for the whole pass; ``measured`` is what
-    a claim about the outcome has to be built from.
+    ``attempted`` counts a server whose pre-flight could not run (missing
+    credential, unreachable tunnel); ``measured`` counts only verdicts. A
+    progress bar advances on ``attempted``; a claim about the outcome must use
+    ``measured``.
 
-    Nothing is deleted here. One server owns one row, so a row is replaced by its
-    own server's next measurement and by nothing else — there is no inventory to
-    compare against and no size to bound. That matters because the only caller's
-    list comes from ``probe_all``, which carries consent-disabled rows only as
-    unprobed placeholders that :func:`_measurable` drops at the door: any rule
-    that deleted "servers not measured this pass" would discard the valid
-    measurement of every disabled server.
+    Nothing is deleted: a row is replaced only by its own server's next
+    measurement. A "not measured this pass" rule would discard the rows of
+    consent-disabled servers, which :func:`_measurable` drops at the door.
 
-    Every filesystem touch here is offloaded: this runs inside a request handler
-    on the gateway's event loop, and a slow disk would otherwise stall every chat
-    sharing that loop, not just this probe.
+    Filesystem work is offloaded, since this runs on the gateway's event loop.
 
-    One pass runs at a time, and a BUDGETED pass does not queue behind an uncapped
-    one. An uncapped operator pass runs for minutes; the budgeted caller is a
-    request somebody is waiting on, and waiting for the lock would hold its
-    already-computed response for the whole pass. A budgeted call therefore takes
-    the lock only if it is free and otherwise returns what is already stored.
-    Nothing is lost by yielding: the caller's own cap means it was only ever going
-    to measure a couple of servers, "not measured yet" is a state it already
-    renders, and the uncapped pass holding the lock is measuring the same servers
-    anyway.
+    One pass runs at a time. A BUDGETED call never queues behind an uncapped
+    pass (which can run for minutes): it takes the lock only if free and
+    otherwise returns the stored rows.
     """
     if budget is not None and _PASS_LOCK.locked():
         logger.debug("shareability: a pass is already running; serving stored rows")

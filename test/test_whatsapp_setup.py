@@ -133,10 +133,12 @@ class _FakeState:
         *,
         connected: bool = False,
         connect_error: str = "",
+        connect_failed: bool = False,
     ) -> None:
         self.channel_transports = {"whatsapp": _FakeTransport(client)} if client else {}
         self.whatsapp_connected = connected
         self.whatsapp_connect_error = connect_error
+        self.whatsapp_connect_failed = connect_failed
 
 
 @pytest.fixture
@@ -262,6 +264,22 @@ def test_config_get_truncates_a_long_connect_error(cfg_file: Path) -> None:
     status, body = _call(_serve(state), "GET", "/api/whatsapp/config")
     assert status == 200
     assert len(body["connect_error"]) == 120
+
+
+@pytest.mark.parametrize("failed", [True, False])
+def test_config_get_reports_the_connect_failed_flag(cfg_file: Path, failed: bool) -> None:
+    """The panel decides error vs hint from this flag, never from the text."""
+    state = _FakeState(connect_error="error: dial tcp timeout", connect_failed=failed)
+    status, body = _call(_serve(state), "GET", "/api/whatsapp/config")
+    assert status == 200
+    assert body["connect_failed"] is failed
+    assert body["connect_error"] == "error: dial tcp timeout"
+
+
+def test_config_get_reports_no_failure_without_a_gateway_state(cfg_file: Path) -> None:
+    status, body = _call(_serve(None), "GET", "/api/whatsapp/config")
+    assert status == 200
+    assert body["connect_failed"] is False
 
 
 def _fake_neonize(monkeypatch, *, present: bool, channel: bool = True) -> None:

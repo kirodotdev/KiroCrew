@@ -80,13 +80,8 @@ def _transcript(state, key: str, title: str, app_name: str = "") -> None:
 async def _seed(state, *transcripts: tuple) -> None:
     """Seed transcripts off the event loop.
 
-    ``_transcript`` ends in ``ConversationLog.update_metadata``, a synchronous
-    tmp-file-plus-rename whose Windows sharing-violation retry
-    (``atomic_write.replace_with_retry``) is a single attempt on the loop
-    thread. Seeding from an ``async def`` test on the loop therefore loses to
-    any handle a scanner holds on ``sessions/<key>.jsonl`` for a few
-    milliseconds (``[WinError 5]``). Running the writes on a worker thread,
-    which has no loop of its own, keeps the retry.
+    ``atomic_write.replace_with_retry`` makes one attempt on the loop thread, so a
+    Windows scanner handle fails it (``[WinError 5]``); a worker thread keeps the retry.
     """
 
     def _write() -> None:

@@ -211,7 +211,7 @@ _path_resolve_clock: Callable[[], float] = time.monotonic  # tests advance this
 # have, never in the pool.  The pool is sized and queued for the event loop's bounded
 # calls; a caller with no deadline would hold a child up to the pool's ceiling and
 # queue ahead of the loop, which is the starvation the inline entry point exists to
-# prevent (found in review).
+# prevent.
 _child_budget = threading.local()
 
 
@@ -777,7 +777,7 @@ def _run_resolution_bounded(
         # the probe is expected to wedge, and a wedged child is killed and replaced
         # only while the pool's list of killed-but-unexited children has room, so
         # spending the last child here would leave every OTHER prefix refused
-        # uncharged for as long as that mount stays wedged (found in review).  Extend
+        # uncharged for as long as that mount stays wedged.  Extend
         # the prefix's own cooldown instead and refuse; the mount is probed again when
         # a second child is back.  Nothing was observed, so no stall is recorded.
         logger.debug(

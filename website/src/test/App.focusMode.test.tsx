@@ -115,6 +115,8 @@ describe('focus mode — shell layout', () => {
   beforeEach(() => {
     __resetFocusMode()
     localStorage.clear()
+    // These tests read the expanded rail; the rail starts collapsed.
+    localStorage.setItem('mc-nav', '0')
     setWindowWidth(1400)
   })
 

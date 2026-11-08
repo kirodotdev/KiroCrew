@@ -71,17 +71,19 @@ async def _register(state: DashboardState, approval_id: str, slot_key: str) -> a
 
 def test_projection_reads_coordinator_record_for_this_slot() -> None:
     slot = _ChatSlot("parent")
-    slot._coordinator_approvals = lambda key: [_record("spawn:a1", key)]
+    slot._coordinator_approvals = lambda key: [{**_record("spawn:a1", key), "instance": "a1b2"}]
 
     payload = slot.to_dict()
 
     assert payload["pending_approval"] is True
+    # ``request_instance`` pins a Crew Mode card decision to this record.
     assert payload["pending_approval_info"] == {
         "origin": "coordinator",
         "tool": "spawn_run(t)",
         "tool_input": "task text",
         "tool_kind": "spawn",
         "request_id": "spawn:a1",
+        "request_instance": "a1b2",
     }
     # A parked slot is not "waiting for input": the user has a decision, not a turn.
     assert payload["waiting_for_input"] is False
@@ -388,15 +390,11 @@ async def test_expired_spawn_approval_clears_the_lane_and_pushes(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_expired_older_request_leaves_its_same_id_replacement_live(tmp_path, monkeypatch):
-    """A caller's id can recur while an earlier wait on it is open. The earlier
-    wait's exit removes only its own record and future: the replacement keeps
-    both, stays in the lane, and its buttons still resolve it. Nothing is
-    broadcast for the earlier wait, whose card the replacement's frame already
-    took over, but its undecided end is still audited. Negative control: a wait
-    that is not replaced retires and clears the lane on expiry as before.
+    """A recurring caller id leaves the replacement wait's record and lane alone.
 
-    The earlier wait ends by cancellation, a named point, not by racing a short
-    real timeout against the replacement's."""
+    The earlier wait's exit removes only its own record and future, broadcasts nothing,
+    and still audits its undecided end. Negative control: an unreplaced wait clears the
+    lane on expiry. The earlier wait ends by cancellation, not a raced short timeout."""
     state = _make_state(tmp_path)
     parent = state.get_or_create_slot("parent")
     monkeypatch.setattr(state, "_APPROVAL_TIMEOUT", 3600)

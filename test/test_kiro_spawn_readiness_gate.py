@@ -23,8 +23,11 @@ can use the ACP attempt as its authority.
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import json
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,7 +35,7 @@ from chat_test_helpers import _make_ready_kiro_prerequisite
 
 from kiro_crew.dashboard import kiro_readiness
 from kiro_crew.dashboard.handlers import agents, sessions
-from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+from kiro_crew.kiro_prerequisite import KiroPrerequisiteService, PrerequisiteStatus
 
 _RESOLVE_TARGET = "kiro_crew.acp.client._resolve_kiro_bin_for_spawn"
 _FAKE_KIRO_BIN = "/usr/bin/kiro-cli"
@@ -52,8 +55,21 @@ def _reset_refusal_warning():
     kiro_readiness._clear_refusal_warning()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_catalog_cache(_floor_monkeypatch: pytest.MonkeyPatch):
+    """Start every test with no cached catalog.
+
+    A cached catalog is served without the gate, so a list left warm by an
+    earlier test would turn a signed-out 503 here into a 200 on test ORDER.
+    """
+    _floor_monkeypatch.setattr(agents, "_catalog_cache", agents._CatalogCache())
+
+
 class _SignedOutKiroPrerequisiteService(KiroPrerequisiteService):
     """Not-ready latch: the guard's ``isinstance`` check must still accept it."""
+
+    # Built without ``__init__``, so the refusal's latch read needs a status here.
+    _status = PrerequisiteStatus(platform="Linux")
 
     async def session_ready(self) -> bool:
         return False
@@ -401,8 +417,11 @@ async def test_a_later_outage_warns_again_after_recovery() -> None:
             await agents.api_models(signed_out)  # outage 1 -> WARNING
             await agents.api_models(signed_out)  # same outage -> DEBUG
             assert warn.call_count == 1
+            assert kiro_readiness._refusal_warned_at is not None
 
             await kiro_readiness.reject_if_kiro_unverified(ready)  # recovered
+            # The observed recovery forgot the reported outage.
+            assert kiro_readiness._refusal_warned_at is None
             await agents.api_models(signed_out)  # outage 2 -> WARNING again
 
     assert warn.call_count == 2
@@ -439,6 +458,8 @@ async def test_an_unobserved_recovery_does_not_silence_the_next_outage(
             # Floor elapsed, and NO authorized call ever happened in between.
             fake_now[0] += 2
             await agents.api_models(request)
+            # The refusal past the floor was reported anew, at its own time.
+            assert kiro_readiness._refusal_warned_at == fake_now[0]
 
     assert warn.call_count == 2
 
@@ -454,3 +475,237 @@ async def test_a_ready_gateway_logs_no_refusal() -> None:
             await agents.api_models(request)
 
     warn.assert_not_called()
+
+
+# ── readiness max-age: polled reads vs destructive reruns ─────────────────
+#
+# ``/api/sessions/usage`` is polled every 30 s and reads a max-age longer than
+# that, so a healthy latch authorizes many polls without an inline ``whoami``
+# probe. Everything else (destructive reruns, ``/v1/chat/completions``, the
+# degraded-only ``/api/models`` poll) keeps the tight 30 s max-age.
+
+
+class _Clock:
+    """A monotonic clock a test advances by hand."""
+
+    def __init__(self) -> None:
+        self._now = 1000.0
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+
+def _probed_ready_service(clock: _Clock) -> KiroPrerequisiteService:
+    """A ready service whose latch was stamped at the clock's current time."""
+
+    service = KiroPrerequisiteService(assume_ready=False, clock=clock, home=None)
+    service._status = PrerequisiteStatus(
+        platform="linux",
+        installed=True,
+        authenticated=True,
+        ready=True,
+        initial_setup_complete=True,
+    )
+    service._has_probed = True
+    service._last_probe_at = clock()
+    return service
+
+
+@pytest.fixture
+def _empty_catalog_cache(_floor_monkeypatch: pytest.MonkeyPatch):
+    # ``api_models`` serves a warm module-level catalog before it reaches the
+    # unresolved-binary 503; a fresh cache keeps the outcome independent of order.
+    _floor_monkeypatch.setattr(agents, "_catalog_cache", agents._CatalogCache())
+
+
+@pytest.mark.asyncio
+async def test_api_models_keeps_the_tight_bound_and_reprobes_a_stale_latch(
+    _empty_catalog_cache: None,
+) -> None:
+    """``/api/models`` has no spawn cooldown, so a latch a minute old must re-probe
+    before it can authorize the browser-opening spawn."""
+    clock = _Clock()
+    service = _probed_ready_service(clock)
+    # Older than the 30 s bound /api/models reads.
+    clock.advance(60.0)
+
+    with patch.object(service, "_probe", AsyncMock()) as probe:
+        with patch(
+            "kiro_crew.acp.client._resolve_kiro_bin_for_spawn",
+            AsyncMock(return_value=""),
+        ):
+            resp = await agents.api_models(_request(service))
+
+    probe.assert_awaited_once()
+    # The stubbed probe left the latch ready=True, so the gate authorizes and
+    # falls through to the degraded branch (binary unresolved).
+    assert resp.status == 503
+    assert json.loads(cast(bytes, resp.body)) == {
+        "error": "kiro binary not resolved",
+        "code": "model_list_unavailable",
+    }
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_usage_does_not_reprobe_within_the_poll_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A latch a minute old still authorizes ``/api/sessions/usage`` with no probe."""
+    clock = _Clock()
+    service = _probed_ready_service(clock)
+    clock.advance(60.0)
+    monkeypatch.setattr(sessions, "_usage_cache_ts", 0.0)
+
+    with patch.object(service, "_probe", AsyncMock()) as probe:
+        with patch.object(sessions, "_fetch_usage_bg", AsyncMock()):
+            resp = await sessions.api_sessions_usage(_request(service))
+
+    probe.assert_not_awaited()
+    assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_destructive_rerun_gate_still_reprobes_a_stale_latch() -> None:
+    """The 30 s max-age survives for the paths that rewrite persisted history."""
+    clock = _Clock()
+    service = _probed_ready_service(clock)
+    clock.advance(60.0)
+
+    with patch.object(service, "_probe", AsyncMock()) as probe:
+        blocked = await kiro_readiness.reject_if_kiro_unverified(_request(service))
+
+    probe.assert_awaited_once()
+    # The stubbed probe left the latch ready=True, so the gate authorizes.
+    assert blocked is None
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_probe_is_refused_as_a_timeout_not_a_sign_in_wall() -> None:
+    """A CLI that only answered too slowly may be installed and signed in."""
+    clock = _Clock()
+    service = _probed_ready_service(clock)
+    service._status = PrerequisiteStatus(platform="linux", installed=True, probe_timed_out=True)
+
+    with patch.object(service, "_probe", AsyncMock()) as probe:
+        blocked = await kiro_readiness.reject_if_kiro_unverified(_request(service))
+
+    # The refusal reads the latched verdict; it starts no probe of its own.
+    probe.assert_not_awaited()
+    assert blocked is not None
+    assert blocked.status == 503
+    body = json.loads(cast(bytes, blocked.body))
+    # Not the sign-in code, which the dashboard answers with "run kiro-cli login".
+    assert body["code"] == "kiro_probe_timed_out"
+    assert "timed out" in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_poll_gate_max_age_is_longer_than_the_poll_interval() -> None:
+    """The constant ``/api/sessions/usage`` reads must exceed its 30 s poll cadence."""
+    assert kiro_readiness._POLL_GATE_MAX_AGE_SECS > 30.0
+
+
+_CACHED_ROWS = [{"model_name": "claude-sonnet-4.5", "description": "cached"}]
+
+
+def _warm_catalog(*, age_secs: float) -> None:
+    """Seed the module catalog cache with a list fetched *age_secs* ago."""
+
+    agents._catalog_cache.models = list(_CACHED_ROWS)
+    agents._catalog_cache.fetched_at = agents.time.monotonic() - age_secs
+
+
+@pytest.mark.asyncio
+async def test_api_models_serves_a_fresh_cache_without_the_sign_in_probe() -> None:
+    """A cached list spawns nothing, so it must not pay the 5-spawn re-probe.
+
+    The latch is a minute old, past the 30 s bound: before the fix the gate ran
+    ``_probe`` inline on this call even though the catalog was cached.
+    """
+    clock = _Clock()
+    service = _probed_ready_service(clock)
+    clock.advance(60.0)
+    _warm_catalog(age_secs=0.0)
+
+    with patch.object(service, "_probe", AsyncMock()) as probe:
+        with patch.object(agents, "_entitled_kiro_models", AsyncMock(side_effect=lambda _r, m: m)):
+            with patch.object(agents, "_fetch_kiro_catalog", AsyncMock()) as fetch:
+                resp = await agents.api_models(_request(service))
+
+    probe.assert_not_awaited()
+    fetch.assert_not_called()
+    assert resp.status == 200
+    assert json.loads(cast(bytes, resp.body)) == _CACHED_ROWS
+
+
+@pytest.mark.asyncio
+async def test_api_models_sign_out_found_by_the_refresh_reaches_the_banner() -> None:
+    """An external sign-out with a cached list: refresh is gated, then the 503 returns.
+
+    1. The latch still says ready, so the cached list is served and the stale
+       refresh runs the gate; its probe finds the sign-out and nothing spawns.
+    2. The probe narrowed the latch, so the next call gates inline and answers
+       the ``kiro_prerequisite_required`` 503 the sign-in banner keys on.
+    3. After sign-in, the inline gate's re-probe passes and the list is back.
+    """
+    clock = _Clock()
+    service = _probed_ready_service(clock)
+    ready = service._status
+    clock.advance(60.0)
+    _warm_catalog(age_secs=agents._LIST_MODELS_CATALOG_TTL_SECS + 1.0)
+    request = _request(service)
+
+    def probe_as(status: PrerequisiteStatus) -> AsyncMock:
+        def _probe(*, force: bool = False) -> PrerequisiteStatus:
+            del force
+            service._status = status
+            service._last_probe_at = clock()
+            return status
+
+        return AsyncMock(side_effect=_probe)
+
+    signed_out = dataclasses.replace(ready, authenticated=False, ready=False)
+    with patch.object(agents, "_entitled_kiro_models", AsyncMock(side_effect=lambda _r, m: m)):
+        with patch.object(agents, "_fetch_kiro_catalog", AsyncMock()) as fetch:
+            with patch.object(service, "_probe", probe_as(signed_out)):
+                first = await agents.api_models(request)
+                task = agents._catalog_cache.task
+                assert task is not None
+                await asyncio.gather(task, return_exceptions=True)
+                second = await agents.api_models(request)
+            clock.advance(31.0)
+            with patch.object(service, "_probe", probe_as(ready)):
+                third = await agents.api_models(request)
+
+    fetch.assert_not_called()
+    assert first.status == 200
+    assert json.loads(cast(bytes, first.body)) == _CACHED_ROWS
+    # Nothing spawned, so no backoff entry holds back the next refresh.
+    assert agents._catalog_cache.recent_failure() is None
+    assert second.status == 503
+    assert json.loads(cast(bytes, second.body))["code"] == "kiro_prerequisite_required"
+    assert third.status == 200
+    assert json.loads(cast(bytes, third.body)) == _CACHED_ROWS
+
+
+@pytest.mark.asyncio
+async def test_api_models_stale_cache_refresh_spawns_when_signed_in() -> None:
+    """A verified gateway's stale-cache refresh still reaches the spawn."""
+    _warm_catalog(age_secs=agents._LIST_MODELS_CATALOG_TTL_SECS + 1.0)
+    request = _request(_make_ready_kiro_prerequisite())
+    fresh = [{"model_name": "claude-opus-4.5", "description": "fresh"}]
+
+    with patch.object(agents, "_entitled_kiro_models", AsyncMock(side_effect=lambda _r, m: m)):
+        with patch.object(agents, "_fetch_kiro_catalog", AsyncMock(return_value=fresh)) as fetch:
+            resp = await agents.api_models(request)
+            task = agents._catalog_cache.task
+            assert task is not None
+            await task
+
+    fetch.assert_awaited_once()
+    # The reply was the cached list; the refresh landed behind it.
+    assert json.loads(cast(bytes, resp.body)) == _CACHED_ROWS
+    assert agents._catalog_cache.models == fresh

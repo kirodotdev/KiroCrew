@@ -1,4 +1,5 @@
 import type { NavigateFunction, NavigationType, Location } from 'react-router-dom'
+import { openingHidesSessionList } from '../../../lib/crewMode'
 import { useState, useRef, useCallback, useEffect, useMemo, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import { useMotionValue, useTransform } from 'framer-motion'
 import { useStore } from 'react-redux'
@@ -13,6 +14,7 @@ import { api } from '../../../api/client'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import { openPanelView } from '../../../hooks/usePanelTabs'
 import type { ClosedSessionActions, SidebarFolderActions } from '../../../components/markdown/contexts'
+import { useAppSelector } from '../../../store'
 import { PREVIEW_EXPAND_EVENT } from '../../../components/WebPreviewPanel'
 import { useHoverIntent } from '../../../hooks/useHoverIntent'
 import { shouldMountSidePanel, isSidePanelHidden } from '../sidePanelMount'
@@ -51,9 +53,11 @@ interface SessionsDrawerOptions {
   hasLiveAppTab: boolean
   jiraSourceHostsRef: MutableRefObject<string[]>
   bitbucketServerSourceHostsRef: MutableRefObject<string[]>
+  gerritSourceHostsRef: MutableRefObject<string[]>
   search: ReturnType<typeof useChatPageResourcesController>['search']
   selectSource: (kind: SourceLinkKind, url: string, forSlot?: string) => void
   setRevealedSources: Dispatch<SetStateAction<RevealedSources>>
+  setSourceDismissed: ReturnType<typeof useChatPageResourcesController>['setSourceDismissed']
   sourceHostsRef: MutableRefObject<string[]>
   tabsCtl: ReturnType<typeof useChatPageResourcesController>['tabsCtl']
   drawerPopRef: MutableRefObject<boolean>
@@ -72,9 +76,25 @@ interface SessionsDrawerOptions {
  *
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
+/** The window width from which a worker view keeps the sessions list open: the
+ *  left nav, the list, a 560px chat and the side panel all fit. */
+export const CREW_WORKER_ROOMY_PX = 1600
+
+/** On leaving a Crew Mode worker: the sidebar pin to give back, or `null` to
+ *  leave the pin alone. `prior` is the pin saved when the worker hid the list
+ *  (`null` when it hid nothing); `pinnedNow` is the pin as it stands. The hide
+ *  set the pin to `false`, so a pin that is no longer `false` means the person
+ *  opened the list themselves (Show sessions, the toggle, a reveal) while the
+ *  worker was on screen -- an explicit choice, which outranks the restore, as it
+ *  already outranks the preview-expand hide. */
+export function workerHideRestore(prior: boolean | null, pinnedNow: boolean): boolean | null {
+  if (prior === null) return null
+  return pinnedNow === false ? prior : null
+}
+
 export function useSessionsDrawer({
   embedded, embedMode, dispatch, navigate, navigationType, location, isMobile, filteredSlots, slotsLoaded, activeSlot, splitMode, crewWindow, activityOpen, showActionError, githubSourceHostsRef, hasBrowserTab,
-  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, search, selectSource, setRevealedSources, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
+  hasLiveAppTab, jiraSourceHostsRef, bitbucketServerSourceHostsRef, gerritSourceHostsRef, search, selectSource, setRevealedSources, setSourceDismissed, sourceHostsRef, tabsCtl, drawerPopRef, chatFolders, setSidebarPinned, sidebarPinned, sidebarPinnedRef, sidebarAutoHidden,
   toggleAct,
 }: SessionsDrawerOptions) {
   /**
@@ -347,12 +367,15 @@ export function useSessionsDrawer({
   // null and the slot-state reset that follows leaves it undefined.
   const reduxStore = useStore<RootState>()
   const prevActiveSlotRef = useRef(activeSlot ?? null)
-  const userMovesRef = useRef(reduxStore.getState().chat.activeSlotMoves ?? 0)
+  // A create, fork or resume the user clicked opens in `activeSlotRequestMoves`,
+  // and that is their pick too.
+  const userPicks = (s: RootState) => (s.chat.activeSlotMoves ?? 0) + (s.chat.activeSlotRequestMoves ?? 0)
+  const userMovesRef = useRef(userPicks(reduxStore.getState()))
   useEffect(() => {
     const left = prevActiveSlotRef.current
     const now = activeSlot ?? null
     const state = reduxStore.getState()
-    const userMoves = state.chat.activeSlotMoves ?? 0
+    const userMoves = userPicks(state)
     const userMoved = userMoves !== userMovesRef.current
     prevActiveSlotRef.current = now
     userMovesRef.current = userMoves
@@ -388,7 +411,11 @@ export function useSessionsDrawer({
   // `useShellSlot` seeds synchronously (no first-render flash into the inline
   // fallback) and watches the DOM across a mobile -> desktop crossing; the
   // phone top-bar slots (pageEnvironment.ts) resolve through the same hook.
-  const activitySlot = useShellSlot('activity-bar-slot', !isMobile && !embedMode)
+  // Bumped by the side panel's health check (sidePanelHealth) when the column
+  // it holds has left the document, so the lookup latches the current one.
+  const [activitySlotRev, setActivitySlotRev] = useState(0)
+  const refreshActivitySlot = useCallback(() => setActivitySlotRev(n => n + 1), [])
+  const activitySlot = useShellSlot('activity-bar-slot', !isMobile && !embedMode, activitySlotRev)
   /** The inline panel's mount predicate, shared by the overlay phase effect
    *  and ChatTitleOverlay's render so the two cannot disagree. */
   const hasTaskDashboard = tabsCtl.tabs.some(tab => tab.kind === 'command-center')
@@ -564,6 +591,7 @@ export function useSessionsDrawer({
       jiraSourceHostsRef.current,
       githubSourceHostsRef.current,
       bitbucketServerSourceHostsRef.current,
+      gerritSourceHostsRef.current,
     )
     if (!link) return false
     const view = link.kind === 'issue' ? 'issues' : 'changes'
@@ -576,6 +604,8 @@ export function useSessionsDrawer({
       ...previous,
       [slot]: { ...previous[slot], [link.kind]: link },
     }))
+    // Asking for a pull request the user closed from the Changes strip opens it again.
+    if (link.kind === 'change') setSourceDismissed(slot, link.url, false)
     selectSource(link.kind, link.url, slot)
     // Addressed by slot, not through tabsCtl: that binding is still the chat
     // being left, so the tab would open on the wrong strip.
@@ -593,7 +623,7 @@ export function useSessionsDrawer({
     if (isMobile) closeSidebar()
     return true
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only `search.close()` is read off `search`, and that member is a useCallback([]) in useMessageSearch; the object around it is rebuilt every render, so depending on it would recreate this reveal handler continuously
-  }, [dispatch, isMobile, selectSource, closeSidebar])
+  }, [dispatch, isMobile, selectSource, setSourceDismissed, closeSidebar])
   // Web Preview expand mode — broadcast by the Web Preview tab's
   // expand toggle. When on, hide the session list and maximize the side panel
   // (passed to SidePanel), so the preview gets max room and chat shrinks to its
@@ -637,6 +667,36 @@ export function useSessionsDrawer({
     // so its identity never changes. Naming it rather than relying on that keeps the
     // listener from silently capturing a stale copy if closeSidebar ever gains a dep.
   }, [closeSidebar, setSidebarPinned, sidebarAutoHidden, sidebarPinnedRef])
+  // A Crew Mode worker reads like a normal session: when one opens on a screen too
+  // narrow for the sessions list, the side panel's Workers list and a readable
+  // chat (`CREW_WORKER_ROOMY_PX`), the sessions list steps aside, the way
+  // preview-expand hides it, and comes back when the person leaves the worker.
+  // Its OWN restore ref: the preview's `sidebarAutoHidden` is consumed when the
+  // preview collapses, and sharing it let a preview exit while a worker was open
+  // reopen the list the worker had hidden (and lose the pin to restore on leaving).
+  const workerAutoHidden = useRef<boolean | null>(null)
+  // Only a worker the person's list leaves out hides the list (`openingHidesSessionList`,
+  // inert while the list rule is): a worker picked from the list never closes it.
+  const viewingWorker = useAppSelector(state => openingHidesSessionList(activeSlot ? state.dashboard.slots.find(row => row.key === activeSlot) : undefined, state.dashboard.slots))
+  useEffect(() => {
+    if (viewingWorker) {
+      // Entering a worker hides the list only on a desktop page with the preview
+      // down; with the preview expanded the list is already its hide to restore.
+      if (isMobile || embedded || previewExpanded) return
+      if ((window.innerWidth || 0) >= CREW_WORKER_ROOMY_PX) return
+      if (workerAutoHidden.current === null) workerAutoHidden.current = sidebarPinnedRef.current
+      setSidebarPinned(false)
+      return
+    }
+    // Leaving a worker gives the pin back, preview expanded or not, so the saved
+    // pin is never left stale for the next worker visit -- unless the person
+    // chose otherwise while the worker was open (`workerHideRestore`).
+    const prior = workerAutoHidden.current
+    workerAutoHidden.current = null
+    const restore = workerHideRestore(prior, sidebarPinnedRef.current)
+    if (restore !== null) setSidebarPinned(restore)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs on entering or leaving a worker; the refs and setter are stable
+  }, [viewingWorker])
   // The no-sessions force-open yields to expand mode: with an empty list no
   // sessions toggle is rendered, so suppressing it makes nothing inert, and the
   // preview would otherwise stay covered by a list that cannot be dismissed.
@@ -699,7 +759,7 @@ export function useSessionsDrawer({
   useEffect(() => { if (!sidebarOpen) setExpandFrom(null) }, [sidebarOpen])
   return {
     mobileSessions, drawerMounted, drawerX, drawerPanelRef, drawerScrimRef, sideOverlayX, sideOverlayPanelRef, sideOverlayPhase, drawerScrim, openSidebar, closedSessionActions, sidebarFolderActions,
-    closeSidebar, chatContainerRef, containerH, activitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
+    closeSidebar, chatContainerRef, containerH, activitySlot, refreshActivitySlot, hasTaskDashboard, sidePanelWantsMount, inlineSidePanelShowing, drawerDragging, revealSourceLink, previewExpanded, sidebarOpen,
     sidebarOnScreen, flyoutTriggerRef, flyoutSurfaceRef, flyoutEligible, flyout, expandFrom, expandSidebar,
   }
 }

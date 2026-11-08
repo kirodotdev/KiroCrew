@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -23,8 +22,9 @@ from kiro_crew.apps.builtins.auto_research.handlers import (
     get_campaign,
     update_campaign_status,
 )
+from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.fixtures import one_pool_thread  # noqa: F401 (fixture)
-from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout
+from kiro_crew.testing.wait import async_wait_until, await_until, default_timeout, finished
 
 # --- Watchdog unresponsive grace ---
 
@@ -41,6 +41,121 @@ class TestUnresponsiveDeadline:
         assert _unresponsive_deadline(60) == _FIRST_CYCLE_GRACE_SECS
         # Large idle scales above the floor.
         assert _unresponsive_deadline(400) == 800
+
+
+def _drive_watchdog_polls(monkeypatch, h, polls: int = 2, on_poll=None) -> None:
+    """Let ``h._watchdog_loop`` run *polls* passes, then cancel it at the next poll.
+
+    The loop paces itself with ``asyncio.sleep(POLL_INTERVAL)``; this replaces that
+    sleep for the test, so no real time passes. ``on_poll(n)`` runs before pass *n*.
+    """
+    calls = 0
+
+    async def _poll(_seconds):
+        nonlocal calls
+        calls += 1
+        if calls > polls:
+            raise asyncio.CancelledError
+        if on_poll is not None:
+            on_poll(calls)
+
+    # flake-ok: the one place these watchdog tests replace the loop's pacing sleep, under monkeypatch, so no real time passes
+    monkeypatch.setattr(h.asyncio, "sleep", _poll)
+
+
+class TestWatchdogFailureStandDown:
+    """AutoNudge stands a loop down after repeated failed cycles or session
+    starts. Re-arming it resets both streaks, so the watchdog must settle the
+    campaign instead of reviving the loop like an app-disable pause."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason_name", ["CONSECUTIVE_FAILURE_REASON", "SESSION_START_FAILURE_REASON"]
+    )
+    async def test_stand_down_settles_campaign_instead_of_reviving(
+        self, _isolate: Path, tmp_path: Path, monkeypatch, reason_name: str
+    ):
+        from kiro_crew import autonudge
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import AutoNudgeService
+
+        reason = getattr(autonudge, reason_name)
+        svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+        await svc.start()
+        try:
+            campaign = create_campaign(
+                {
+                    "question": "Research a sufficiently detailed question here",
+                    "sources": ["web"],
+                }
+            )
+            cid = campaign["id"]
+            update_campaign_status(cid, CampaignStatus.RUNNING)
+            slot_key = f"research-{cid}"
+            loop = await svc.add(slot_key=slot_key, message="run", idle_secs=60)
+            loop.consecutive_failed_cycles = 5
+            loop.consecutive_start_failures = 3
+            await svc.update(loop.id, active=False, stopped_reason=reason)
+
+            monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+            monkeypatch.setattr(h, "is_app_enabled", lambda _name: True)
+            _drive_watchdog_polls(monkeypatch, h)
+            slot = SimpleNamespace(_trust=True, running=False)
+            await h._watchdog_loop({"state": SimpleNamespace(_slots={slot_key: slot})})
+
+            settled = get_campaign(cid)
+            assert settled["status"] == CampaignStatus.FAILED
+            assert "stood down" in (settled["error_message"] or "")
+            # Revival would have reset the streak and armed another doomed
+            # cycle; the spent loop is removed instead.
+            assert svc.get_by_slot(slot_key) is None
+            assert loop.active is False
+            assert loop.consecutive_failed_cycles == 5
+        finally:
+            svc.stop()
+
+    def test_stand_down_with_done_marker_is_still_a_failure(self, _isolate: Path):
+        from kiro_crew.apps.builtins.auto_research.handlers import _stalled_campaign_verdict
+        from kiro_crew.autonudge import CONSECUTIVE_FAILURE_REASON
+
+        cid = "a1b2c3d4"
+        findings = _isolate / "research" / cid / "findings"
+        findings.mkdir(parents=True)
+        finding = findings / "cycle_002.json"
+        finding.write_text(json.dumps({"summary": "partial", "verification": None}))
+        (_isolate / "research" / cid / "worker_done.json").write_text('{"reason": "old"}')
+
+        status, message = _stalled_campaign_verdict(
+            cid, [finding], stopped_reason=CONSECUTIVE_FAILURE_REASON
+        )
+
+        assert status == CampaignStatus.FAILED
+        assert "stood down" in (message or "")
+
+    @pytest.mark.asyncio
+    async def test_launch_clears_a_stand_down_record(self, monkeypatch, tmp_path):
+        """A resumed run must not inherit the previous run's stand-down, which
+        the watchdog would otherwise settle as this run's failure."""
+        from kiro_crew.apps.builtins.auto_research import handlers as h
+        from kiro_crew.autonudge import SESSION_START_FAILURE_REASON, AutoNudgeService
+
+        svc = AutoNudgeService(base_dir=tmp_path / "autonudge")
+        await svc.start()
+        try:
+            stood_down = await svc.add(slot_key="research-a1b2c3d4", message="run", idle_secs=60)
+            await svc.update(
+                stood_down.id, active=False, stopped_reason=SESSION_START_FAILURE_REASON
+            )
+            other = await svc.add(slot_key="research-0badc0de", message="other", idle_secs=60)
+            monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
+            monkeypatch.setattr(h, "_clear_worker_done_marker", lambda _cid: None)
+
+            await h._launch_loop(SimpleNamespace(app={}), "a1b2c3d4")
+
+            assert svc.get_by_slot("research-a1b2c3d4") is None
+            assert svc.list_all() == [other]
+        finally:
+            svc.stop()
 
 
 class TestWatchdogStopTombstone:
@@ -117,20 +232,27 @@ class TestWatchdogStopTombstone:
         task = asyncio.create_task(
             h._settle_campaign_from_watchdog(cid, [], {}, {}, observed_started_at=1.0)
         )
+        pending_at_removal: list[bool] = []
+        real_remove = svc.remove
+
+        async def _remove(loop_id: str) -> None:
+            # The removal starts after the release, which follows the cancel, so the
+            # cancel has been delivered to the settlement task by the time it runs.
+            pending_at_removal.append(not task.done())
+            await real_remove(loop_id)
+
+        monkeypatch.setattr(svc, "remove", _remove)
         await async_wait_until(
             status_write_started.is_set,
             describe=lambda: "the terminal status write never started",
         )
 
         task.cancel()
-        # flake-ok: one-turn yield barrier before a negative assert, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
-        assert not task.done()
         release_status_write.set()
         with pytest.raises(asyncio.CancelledError):
-            # flake-ok: unbounded await of a task this test just released, pre-existing shape, moved verbatim; tracked for a de-flake pass
-            await task
+            await await_until(task, what="the cancelled settlement finishing")
 
+        assert pending_at_removal == [True]
         assert svc.get_by_slot(f"research-{cid}") is None
         assert loop.id not in svc._timers
         svc.stop()
@@ -191,8 +313,7 @@ class TestWatchdogStopTombstone:
         )
         assert replacement.id != old_loop.id
         release_status_write.set()
-        # flake-ok: unbounded await of a task this test just released, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await settlement
+        await await_until(settlement, what="the terminal settlement")
 
         assert svc.get_by_slot(slot_key) is replacement
         svc.stop()
@@ -555,21 +676,11 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
         monkeypatch.setattr(h, "is_app_enabled", lambda _name: True)
 
-        sleep_calls = 0
-
-        async def _run_two_polls(_seconds):
-            nonlocal sleep_calls
-            sleep_calls += 1
-            if sleep_calls > 2:
-                raise asyncio.CancelledError
-
-        # flake-ok: patches the shared asyncio.sleep under monkeypatch, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(h.asyncio, "sleep", _run_two_polls)
+        _drive_watchdog_polls(monkeypatch, h)
         slot = SimpleNamespace(_trust=True, running=False)
         state = SimpleNamespace(_slots={f"research-{cid}": slot})
 
-        # flake-ok: unbounded await of the watchdog loop the patched sleep ends, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await h._watchdog_loop({"state": state})
+        await finished(h._watchdog_loop({"state": state}), "the watchdog loop")
 
         assert get_campaign(cid)["status"] == CampaignStatus.RUNNING
         svc.update.assert_not_awaited()
@@ -590,11 +701,14 @@ class TestWatchdogStopTombstone:
         )
         cid = campaign["id"]
         update_campaign_status(cid, CampaignStatus.RUNNING)
+        # The watchdog reads the clock installed on its module; the run started one
+        # second past the trust TTL on that clock.
+        clock = ManualClock()
+        clock.install(monkeypatch, h.watchdog)
         db = h._get_db()
         db.execute(
             "UPDATE campaigns SET started_at=? WHERE id=?",
-            # flake-ok: wall-clock backdate one second past the trust TTL, pre-existing shape, moved verbatim; tracked for a de-flake pass
-            (time.time() - h._TRUST_TTL_SECS - 1, cid),
+            (clock.time() - h._TRUST_TTL_SECS - 1, cid),
         )
         db.commit()
         db.close()
@@ -617,7 +731,6 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(h, "_autonudge_instance", lambda: svc)
         monkeypatch.setattr(h, "is_app_enabled", lambda _name: True)
 
-        sleep_calls = 0
         slot = SimpleNamespace(_trust=True, running=True)
         events: list[dict] = []
         advance_threads: list[int] = []
@@ -631,23 +744,18 @@ class TestWatchdogStopTombstone:
                 pytest.fail("final-cycle bookkeeping ran on the event loop")
             assert campaign_id == cid
 
-        async def _finish_worker_then_stop(_seconds):
-            nonlocal sleep_calls
-            sleep_calls += 1
-            if sleep_calls == 2:
+        def _finish_worker(poll: int) -> None:
+            if poll == 2:
                 findings.joinpath("cycle_002.json").write_text(
                     json.dumps({"summary": "last worker-turn synthesis", "verification": None})
                 )
                 slot.running = False
-            elif sleep_calls > 2:
-                raise asyncio.CancelledError
 
         async def _remove_after_turn(_loop_id):
             assert slot.running is False
 
         svc.remove.side_effect = _remove_after_turn
-        # flake-ok: patches the shared asyncio.sleep under monkeypatch, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(h.asyncio, "sleep", _finish_worker_then_stop)
+        _drive_watchdog_polls(monkeypatch, h, on_poll=_finish_worker)
         monkeypatch.setattr(h, "_emit_sse", events.append)
         monkeypatch.setattr(h, "_advance_exploration", _advance_exploration_off_loop)
         original_list_cycle_files = h._list_cycle_files
@@ -665,8 +773,7 @@ class TestWatchdogStopTombstone:
         monkeypatch.setattr(h, "_list_cycle_files", _list_cycle_files_off_loop)
         state = SimpleNamespace(_slots={f"research-{cid}": slot})
 
-        # flake-ok: unbounded await of the watchdog loop the patched sleep ends, pre-existing shape, moved verbatim; tracked for a de-flake pass
-        await h._watchdog_loop({"state": state})
+        await finished(h._watchdog_loop({"state": state}), "the watchdog loop")
 
         settled = get_campaign(cid)
         assert settled["status"] == CampaignStatus.STOPPED

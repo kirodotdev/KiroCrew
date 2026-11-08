@@ -37,6 +37,8 @@ from kiro_crew.acp.kas_permissions import (
     merge_user_permissions,
 )
 from kiro_crew.agent import _seed_kas_permissions
+from kiro_crew.agent_materialization import auto_approve
+from kiro_crew.agent_sdk.kas_bundle import KAS_PIN_VERSION
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION, spec_permissions_supported
 
 #: A release that accepts the field, and one that refuses it. Expressed against
@@ -142,7 +144,7 @@ class TestTheShellAndFilesystemFamiliesAreRefused:
         """Distinct from an unmappable entry: this one the spec explicitly asked for."""
         with caplog.at_level("INFO", logger="kiro_crew.acp.kas_permissions"):
             allowed_tools_to_permissions(["execute_bash"], agent_id="kirocrew")
-        assert "not auto-approving execute_bash" in caplog.text
+        assert "projecting no KAS allow rule for execute_bash" in caplog.text
 
     def test_no_withheld_tool_is_also_in_the_capability_table(self):
         """A tool in both places would translate anyway; the two must not overlap."""
@@ -527,6 +529,224 @@ class TestTheInstalledCliDecidesWhetherTheFieldIsWrittenAtAll:
         assert spec_permissions_supported(version) is supported
 
 
+class TestTheBundledEngineDecidesOnTheBundleRoute:
+    """With ``agent.kas_bundle`` on, the engine bundle reads the specs, so ITS version
+    is the gate -- and an installed kiro-cli must still pass its own, because it
+    reads the same files for every backend the switch does not change.
+
+    A kiro-cli-free host is the point of the route; gating on kiro-cli there
+    withheld the block on every such host, and Crew's auto-approve list never
+    reached KAS's policy engine. The engine's floor is the pinned release, the one
+    the block was measured against, so an older engine selected through
+    ``KIROCREW_KAS_VERSION`` is unmeasured and withholds. No engine installed is
+    an unknown version: withheld, as a kiro-cli that cannot be probed is.
+    """
+
+    @staticmethod
+    def _config(**over) -> dict:
+        base: dict = {"name": "kirocrew", "tools": ["fs_read"], "allowedTools": ["web_fetch"]}
+        base.update(over)
+        return base
+
+    @pytest.fixture
+    def bundle_route(self, monkeypatch):
+        """Pin the switch as the writer reads it."""
+
+        def _pin(on: bool) -> None:
+            monkeypatch.setattr("kiro_crew.agent_sdk.backend_install._kas_bundle_route", lambda: on)
+
+        return _pin
+
+    @pytest.fixture(autouse=True)
+    def kiro_cli_present(self, _floor_monkeypatch):
+        """Pin whether any kiro-cli is installed. Defaults to none, the route's
+        point; a test that installs one says so. On the private patch stack, so
+        a test's own ``monkeypatch.undo()`` cannot drop this isolation."""
+
+        def _pin(present: bool) -> None:
+            _floor_monkeypatch.setattr(
+                "kiro_crew.kiro_cli.resolve_kiro_cli",
+                lambda: "/opt/kiro/bin/kiro-cli" if present else None,
+            )
+
+        _pin(False)
+        return _pin
+
+    @pytest.fixture
+    def installed_engine(self, monkeypatch, tmp_path):
+        """Pin what the writer believes the installed engine bundle is: ``None`` for
+        nothing installed, else a record at *version*. Patched through the agent-sdk
+        facade, which forwards the write to the owning ACP module."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        def _pin(version):
+            installed = (
+                None
+                if version is None
+                else kas_bundle.InstalledKasBundle(
+                    version=version,
+                    node_version="22.20.0",
+                    root=tmp_path,
+                    node_bin=tmp_path / "node",
+                    acp_server=tmp_path / "acp-server.js",
+                )
+            )
+            monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: installed)
+
+        return _pin
+
+    def test_the_pinned_engine_and_no_kiro_cli_at_all_gets_the_block(
+        self, bundle_route, installed_engine, installed_cli
+    ):
+        bundle_route(True)
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(None)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert config["permissions"] == {"rules": [{"capability": "web_fetch", "effect": "allow"}]}
+
+    def test_an_engine_above_the_floor_gets_the_block(
+        self, bundle_route, installed_engine, installed_cli
+    ):
+        bundle_route(True)
+        installed_engine("0.70.1")
+        installed_cli(None)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" in config
+
+    def test_no_engine_installed_withholds_even_with_an_accepting_kiro_cli(
+        self, bundle_route, installed_engine, installed_cli, kiro_cli_present
+    ):
+        """The engine reads the specs on this route, so kiro-cli alone cannot let
+        the block through."""
+        kiro_cli_present(True)
+        bundle_route(True)
+        installed_engine(None)
+        installed_cli(_ACCEPTS)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" not in config
+
+    def test_an_engine_below_the_floor_withholds(
+        self, bundle_route, installed_engine, installed_cli
+    ):
+        bundle_route(True)
+        installed_engine("0.66.32")
+        installed_cli(_ACCEPTS)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" not in config
+
+    def test_a_kiro_cli_free_host_is_never_version_probed(
+        self, bundle_route, installed_engine, monkeypatch
+    ):
+        """A kiro-cli-free host must not pay a failed version spawn per spec write."""
+        bundle_route(True)
+        installed_engine(KAS_PIN_VERSION)
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.installed_kiro_cli_version",
+            lambda: pytest.fail("kiro-cli probed on the bundle route"),
+        )
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" in config
+
+    def test_the_generated_writer_removes_an_inherited_block_when_withheld(
+        self, bundle_route, installed_engine, installed_cli
+    ):
+        """The derive path owns removal too: a block a template carried is dropped
+        on a reader that may refuse it, as on the relay route."""
+        bundle_route(True)
+        installed_engine(None)
+        installed_cli(_ACCEPTS)
+        config = self._config(permissions={"rules": [{"capability": "shell", "effect": "allow"}]})
+        auto_approve._write_derived_permissions(config, config["allowedTools"], "kirocrew.json")
+        assert "permissions" not in config
+
+    @pytest.mark.parametrize(
+        "version,written",
+        [((2, 10, 0), False), (_REFUSES, False), (None, False), (_ACCEPTS, True)],
+        ids=["reported-2.10.0", "refusing", "unknown", "accepting"],
+    )
+    def test_an_installed_kiro_cli_must_also_accept_with_the_switch_on(
+        self, bundle_route, installed_engine, installed_cli, kiro_cli_present, version, written
+    ):
+        """The switch changes only the kas backend: a native Kiro session, a member
+        on kiro, or the operator running kiro-cli reads the same specs. An old or
+        unprobeable kiro-cli refuses the whole file, so it withholds the block even
+        though the engine accepts it."""
+        kiro_cli_present(True)
+        bundle_route(True)
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(version)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert ("permissions" in config) is written
+
+    def test_a_kiro_cli_lookup_that_raises_counts_as_installed(
+        self, bundle_route, installed_engine, installed_cli, monkeypatch
+    ):
+        def _boom():
+            raise OSError("home unreadable")
+
+        monkeypatch.setattr("kiro_crew.kiro_cli.resolve_kiro_cli", _boom)
+        bundle_route(True)
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(_REFUSES)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert "permissions" not in config
+
+    @pytest.mark.parametrize(
+        "version,written",
+        [(_REFUSES, False), (None, False), (_ACCEPTS, True)],
+        ids=["refusing", "unknown", "accepting"],
+    )
+    def test_with_the_switch_off_kiro_cli_still_decides(
+        self, bundle_route, installed_engine, installed_cli, version, written
+    ):
+        """The relay route is unchanged: an installed engine is not consulted there."""
+        bundle_route(False)
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(version)
+        config = self._config()
+        _seed_kas_permissions(config)
+        assert ("permissions" in config) is written
+
+    @pytest.mark.parametrize("on,written", [(True, True), (False, False)])
+    def test_the_switch_is_read_from_agent_kas_bundle(
+        self, monkeypatch, installed_engine, installed_cli, on, written
+    ):
+        """The writer reads the switch through the install probe's own reader, so
+        the two cannot disagree about which route is selected."""
+        from kiro_crew.config import KiroCrewConfig
+
+        class _Cfg:
+            agent = type("A", (), {"kas_bundle": on})()
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _Cfg()))
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(None)
+        assert auto_approve._spec_permissions_accepted() is written
+
+    def test_an_unreadable_config_selects_the_relay_route(
+        self, monkeypatch, installed_engine, installed_cli
+    ):
+        """Fail toward the gate that has always run, not toward a route nothing chose."""
+        from kiro_crew.config import KiroCrewConfig
+
+        def _boom(cls):
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_boom))
+        installed_engine(KAS_PIN_VERSION)
+        installed_cli(None)
+        assert auto_approve._spec_permissions_accepted() is False
+        installed_cli(_ACCEPTS)
+        assert auto_approve._spec_permissions_accepted() is True
+
+
 class TestTheVersionProbeItself:
     """Every test above pins the probe's answer. These pin the probe.
 
@@ -544,7 +764,7 @@ class TestTheVersionProbeItself:
         from kiro_crew import kiro_cli
 
         binary = tmp_path / "kiro-cli"
-        binary.write_text("")
+        binary.write_text("", encoding="utf-8")
         monkeypatch.setattr(kiro_cli, "pin_kiro_cli", lambda: (str(binary), False))
         monkeypatch.setattr(kiro_cli, "_version_cache", {})
         calls: list[dict] = []
@@ -773,7 +993,6 @@ class TestRule1TheBlockIsParsedAgainstKasShapeAndRefusedWhole:
         "block",
         [
             {"rules": [{"capability": "web_search", "effect": "deny"}] * 201},
-            {"rules": [{"capability": "shell", "match": ["x"] * 65, "effect": "deny"}]},
             {"rules": [{"capability": "shell", "exclude": ["x"] * 65, "effect": "deny"}]},
             {"rules": [{"capability": "shell", "match": ["x" * 1025], "effect": "deny"}]},
         ],
@@ -788,6 +1007,14 @@ class TestRule1TheBlockIsParsedAgainstKasShapeAndRefusedWhole:
     def test_a_block_at_the_bounds_still_travels(self):
         block = {"rules": [{"capability": "shell", "match": ["x"] * 64, "effect": "deny"}] * 200}
         assert len(_user_rules(_merge(block, derived=_DERIVED))) == 200
+
+    def test_a_long_match_counts_against_the_rule_bound_as_the_rules_it_becomes(self):
+        """199 short rules plus one 129-pattern rule send 201 rules, one too many."""
+        short = [{"capability": "web_search", "effect": "deny"}] * 199
+        fits = {"rules": short + [{"capability": "shell", "match": ["x"] * 64, "effect": "deny"}]}
+        over = {"rules": short + [{"capability": "shell", "match": ["x"] * 65, "effect": "deny"}]}
+        assert len(_user_rules(_merge(fits, derived=_DERIVED))) == 200
+        assert _merge(over, derived=_DERIVED) == _DERIVED
 
     def test_the_refusal_is_reported_at_warning_with_its_reason(self, caplog):
         """WARNING, not debug: it is the author's own file being declined, and the
@@ -805,6 +1032,73 @@ class TestRule1TheBlockIsParsedAgainstKasShapeAndRefusedWhole:
             assert _user_rules(_merge(block, derived=_DERIVED)) == [
                 {"capability": capability, "effect": "deny"}
             ]
+
+
+class TestALongMatchIsSplitNotRefused:
+    """A ``match`` over the per-rule bound travels as several rules with the same meaning.
+
+    KAS compiles every ``match`` pattern into a statement of its own, with the
+    rule's ``exclude`` on each, and decides on the most restrictive match whatever
+    the order -- so parts that keep the capability, effect and ``exclude`` cover
+    exactly what the one rule covered.
+    """
+
+    @staticmethod
+    def _hosts(count):
+        return [f"https://h{i}.example/*" for i in range(count)]
+
+    @pytest.mark.parametrize("effect", ["deny", "ask", "allow"])
+    def test_253_patterns_become_four_rules_with_the_same_effect(self, effect):
+        rule = {"capability": "web_fetch", "match": self._hosts(253), "effect": effect}
+        sent = _user_rules(_merge({"rules": [rule]}, derived=_DERIVED))
+        assert [len(r["match"]) for r in sent] == [64, 64, 64, 61]
+        assert [m for r in sent for m in r["match"]] == rule["match"]
+        assert all(r["capability"] == "web_fetch" and r["effect"] == effect for r in sent)
+        assert all(set(r) == {"capability", "match", "effect"} for r in sent)
+
+    def test_exactly_64_patterns_stay_one_rule(self):
+        rule = {"capability": "web_fetch", "match": self._hosts(64), "effect": "deny"}
+        assert _user_rules(_merge({"rules": [rule]}, derived=_DERIVED)) == [rule]
+
+    def test_every_part_keeps_the_whole_exclude_and_its_place_in_the_block(self):
+        before = {"capability": "web_search", "effect": "deny"}
+        wide = {
+            "capability": "web_fetch",
+            "match": self._hosts(65),
+            "exclude": ["https://h0.example/private/*"],
+            "effect": "allow",
+        }
+        after = {"capability": "mcp", "match": ["srv/*"], "effect": "deny"}
+        sent = _user_rules(_merge({"rules": [before, wide, after]}, derived=_DERIVED))
+        assert sent[0] == before and sent[-1] == after
+        assert [r["exclude"] for r in sent[1:-1]] == [wide["exclude"]] * 2
+        assert [len(r["match"]) for r in sent[1:-1]] == [64, 1]
+
+    def test_an_allow_is_judged_by_the_ceiling_whole_before_it_is_split(self):
+        """One withheld server keeps every part home: the author's grant is never
+        narrowed down to its permitted part and sent as a rule nobody wrote."""
+        servers = [f"s{i}/*" for i in range(130)]
+        rule = {"capability": "mcp", "match": servers, "effect": "allow"}
+        withholds_one = lambda ref: ref != "@s129"  # noqa: E731
+        assert _merge({"rules": [rule]}, withholds_one, derived=_DERIVED) == _DERIVED
+        assert len(_user_rules(_merge({"rules": [rule]}, derived=_DERIVED))) == 3
+
+    def test_an_allow_with_a_long_exclude_is_left_out_alone(self, caplog):
+        """An exclude list cannot be split, and leaving one allow out only narrows."""
+        deny = {"capability": "web_search", "effect": "deny"}
+        allow = {"capability": "web_fetch", "exclude": self._hosts(65), "effect": "allow"}
+        with caplog.at_level("WARNING", logger="kiro_crew.acp.kas_permissions"):
+            merged = _merge({"rules": [allow, deny]}, derived=_DERIVED, agent_id="uno")
+        assert _user_rules(merged) == [deny]
+        assert "rule 0" in caplog.text and "refusing its whole" not in caplog.text
+
+    @pytest.mark.parametrize("effect", ["deny", "ask"])
+    def test_a_narrowing_rule_with_a_long_exclude_still_refuses_the_block(self, effect):
+        """Dropping a ``deny`` or ``ask`` alone would let the allows beside it cover
+        what it guarded, so the block stays refused whole."""
+        allow = {"capability": "web_search", "effect": "allow"}
+        rule = {"capability": "web_fetch", "exclude": self._hosts(65), "effect": effect}
+        assert _merge({"rules": [allow, rule]}, derived=_DERIVED) == _DERIVED
 
 
 class TestRule2NarrowingTravelsUnconditionally:

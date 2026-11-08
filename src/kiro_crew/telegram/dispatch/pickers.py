@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -38,30 +39,19 @@ _MODEL_PICKER_MAX = 50
 
 
 #: Buttons a picker shows. Telegram renders a one-per-row keyboard fine at this
-#: size, and the list is the account's own model set, not a catalogue.
-#: Shared by both pickers, like the TTL and the retention cap above: the lists
-#: are this account's own models and this machine's own agent specs, not
-#: catalogues, so one bound fits both.
+#: size, and both lists (this account's models, this machine's agent specs) are
+#: short, not catalogues, so one bound fits both pickers.
 _PICKER_LIMIT = 24
 
 
-#: An agent kept out of the channel ``/agent`` picker BY DEFAULT: the picker
-#: offers the agents a person driving from Telegram actually chooses between,
-#: not Kiro Crew's own machinery. Two disjoint signals, both authoritative on
-#: their own field rather than on the display name:
+#: Agents hidden from the channel ``/agent`` picker BY DEFAULT, by field, never
+#: by display name:
 #:
-#: * ``kirocrew_owned`` — the Kiro Crew-generated internal agents (the chat
-#:   agent, the background/heartbeat/conductor/worker/knowledge specs). This is
-#:   the ``name in OWNED_KIRO_AGENT_FILES`` flag ``list_agents`` already sets, so
-#:   a user's OWN hand-authored ``kirocrew-custom.json`` — which merely shares
-#:   the ``kirocrew`` name prefix and is not owned — is NOT hidden. The prefix
-#:   would over-match it; the ownership flag is exactly the set to hide.
-#: * an app-installed agent, whose spec is materialised under the
-#:   ``<app>--<agent>.json`` link filename (see ``apps.bridges``/``apps.execution``).
-#:   These belong to an installed app, not to the person picking an agent, so
-#:   they are hidden alongside the internals. The double-dash is a filename
-#:   convention Kiro Crew writes, not a name a user types, so matching the
-#:   FILENAME (not the possibly-bare declared name) is what identifies them.
+#: * ``kirocrew_owned`` — Kiro Crew's generated internal agents. The flag, not
+#:   the ``kirocrew`` prefix, so a user's own ``kirocrew-custom.json`` still shows.
+#: * app-installed agents, linked as ``<app>--<agent>.json`` (see
+#:   ``apps.bridges``/``apps.execution``): the double dash is a filename Kiro Crew
+#:   writes, so the FILENAME identifies them, not the declared name.
 _APP_AGENT_LINK_SEP = "--"
 
 
@@ -253,16 +243,13 @@ async def _apply_model(
 ) -> str:
     """Record *model_id* for *route* and push it to the live session.
 
-    *model_id* comes verbatim from the session's advertised list, so it is
-    already the id this backend accepts — no canonical translation, which
-    would differ per backend and could mangle an id that was correct.
+    *model_id* comes verbatim from the session's advertised list, so no
+    per-backend canonical translation can mangle it.
 
-    The preference is stored unconditionally so it reaches the NEXT session
-    even when there is nothing live to switch (the common case right after
-    ``/new``). When a session does exist, the switch is attempted in place —
-    ``session/set_model`` carries the conversation across — and the semaphore
-    is taken atomically so the switch cannot interleave JSON-RPC with a turn
-    on the same stdio channel.
+    The preference is stored so the NEXT session gets it even with nothing live
+    (common right after ``/new``). A live session switches in place via
+    ``session/set_model``, under the semaphore so the JSON-RPC cannot interleave
+    with a turn on the same stdio channel.
 
     Returns the user-facing outcome line.
     """
@@ -296,6 +283,20 @@ async def _apply_model(
     if not live:
         return deferred
     if not await self.sessions.try_acquire(target_key):
+        # The acquire's Kiro account check retires a session that holds another
+        # account, and then nothing is live: the next message starts a fresh one,
+        # which takes the stored route preference. A session the check only
+        # flagged (an idle parent it spared for its running sub-agents) stays
+        # registered but is refused the same way, and the next message's claim
+        # retires it. A resumed session stores none and restarts on its own
+        # model, so for it the pick changes nothing.
+        if not self.sessions.has_session(target_key) or self.sessions.is_retiring(target_key):
+            if store_route_preference:
+                return deferred
+            return (
+                f"⚠️ Couldn't switch this conversation to {label} — the resumed "
+                f"session was not changed."
+            )
         return (
             f"✅ Model set to {label}, but a reply is still running — this "
             f"conversation keeps its current model; the switch applies to "
@@ -348,7 +349,75 @@ def _installed_agent_names() -> list[str]:
     )
 
 
-def _agent_choices(self: TelegramDispatcher, names: list[str]) -> tuple[tuple[str, str], ...]:
+#: Longest crew label a button shows. Telegram sets no documented cap on button
+#: text, but a long label is cut by the client mid-word; a display name is
+#: free text a user typed, so it is bounded here instead.
+_AGENT_LABEL_MAX = 48
+
+
+def _agent_labels() -> dict[str, str]:
+    """Readable button labels for crew-private agent specs, keyed by spec name.
+
+    A crew's private copy of a template is published as ``crew-<random hex>``
+    (``agent_capabilities``), a name that tells the user nothing. When the
+    crew named by the copy's ``private_to`` is still BOUND to it in
+    ``config.json`` (the same corroboration ``fork_refresh`` requires), the
+    label is that crew's display name, else its name. Any other spec keeps its
+    own name: a shared template can serve many crews, and an orphaned copy no
+    longer belongs to the crew it records. Labels only; the button still
+    resolves to the exact spec name.
+    """
+    from kiro_crew.telegram import transport_dispatch as facade
+
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig  # circular import
+
+        crews = KiroCrewConfig.load().agents
+    except Exception:
+        logger.warning("telegram /agent: config unreadable, showing agent ids", exc_info=True)
+        return {}
+    bound = {crew.kiro_agent for crew in crews.values()}
+    labels: dict[str, str] = {}
+    for info in facade.list_agents():
+        crew = crews.get(info.private_to) if info.private_to else None
+        if crew is not None and crew.kiro_agent == info.name:
+            label = (crew.display_name or "").strip() or info.private_to
+        elif _is_crewless_copy(info.name, info.private_to, bound):
+            label = f"No crew ({_short_id(info.name)})"
+        else:
+            continue
+        if len(label) > _AGENT_LABEL_MAX:
+            label = label[: _AGENT_LABEL_MAX - 1] + "…"
+        labels[info.name] = label
+    return labels
+
+
+#: The name ``agent_capabilities`` gives a crew's private copy of a template.
+_PRIVATE_COPY_NAME = re.compile(r"crew-[0-9a-f]{24}")
+
+
+def _is_crewless_copy(name: str, private_to: str, bound: set[str]) -> bool:
+    """Whether *name* is a crew's private copy that no crew is bound to.
+
+    A copy records its crew in ``private_to``; one whose sidecar entry is gone
+    is still recognisable by the ``crew-<24 hex>`` name it was published
+    under. Either way it counts only when no crew's ``kiro_agent`` names it.
+    That is all this checks: a chat pick or a cron may still name the copy,
+    so the label says "no crew", never "unused".
+    """
+    if name in bound:
+        return False
+    return bool(private_to) or _PRIVATE_COPY_NAME.fullmatch(name) is not None
+
+
+def _short_id(name: str) -> str:
+    """``crew-3cc49292…`` -> ``crew-3cc4…``: enough of the id to tell copies apart."""
+    return name if len(name) <= 9 else name[:9] + "…"
+
+
+def _agent_choices(
+    self: TelegramDispatcher, names: list[str], labels: dict[str, str] | None = None
+) -> tuple[tuple[str, str], ...]:
     """``(agent_id, label)`` rows to offer, "" first for the configured default.
 
     Sourced from the installed agent specs, so the list is what this machine
@@ -364,7 +433,8 @@ def _agent_choices(self: TelegramDispatcher, names: list[str]) -> tuple[tuple[st
     """
     configured = self._configured_agent()
     rows: list[tuple[str, str]] = [("", f"Default ({configured})")]
-    rows.extend((name, name) for name in names[:_PICKER_LIMIT])
+    known = labels or {}
+    rows.extend((name, known.get(name) or name) for name in names[:_PICKER_LIMIT])
     return tuple(rows)
 
 
@@ -384,7 +454,13 @@ async def _handle_agent(
     except Exception:
         logger.warning("telegram /agent: agent discovery failed", exc_info=True)
         names = []
-    choices = self._agent_choices(names)
+    try:
+        labels = await asyncio.to_thread(self._agent_labels) if names else {}
+    except Exception:
+        # A label lookup failure costs readability only, never the picker.
+        logger.warning("telegram /agent: agent label lookup failed", exc_info=True)
+        labels = {}
+    choices = self._agent_choices(names, labels)
     if len(choices) <= 1:
         await self._reply(chat_id, "No agent list available on this machine.", thread=thread)
         return
@@ -417,27 +493,24 @@ async def _handle_agent(
     )
 
 
-async def _apply_agent(self: TelegramDispatcher, route: tuple[str, str], agent_id: str) -> str:
+async def _apply_agent(
+    self: TelegramDispatcher, route: tuple[str, str], agent_id: str, label: str = ""
+) -> str:
     """Switch *route* to *agent_id* and report what it changed.
 
-    The switch itself is :func:`switch_channel_agent`, the step every channel's
-    ``/agent`` shares: it refuses while a reply is streaming (everything about
-    a running turn — ``_active_renderers`` for the steer chip, the queue
-    receipt, ``/stop``'s provider lookup — is keyed on the session key, so
-    moving the key would leave that turn with no route back), sets the pick,
-    and reseeds the route's generation from the new agent's own saved
-    conversations, so a later ``/new`` never lands on one of them. Only the
-    picker's wording lives here.
+    The switch is the shared :func:`switch_channel_agent`: it refuses while a
+    reply streams (the running turn's renderer, receipt and ``/stop`` are keyed on
+    the session key), sets the pick, and reseeds the generation so a later
+    ``/new`` never lands on a saved conversation. Only the wording lives here.
 
-    The agent is part of the session key, so a pick necessarily LEAVES the
-    running conversation — there is no in-place swap to claim, and the message
-    says so rather than implying the running conversation changed spec. What it
-    lands on is the new agent's latest saved conversation when it has one (the
-    reseed), else a fresh one, so the reply promises neither. The previous
-    conversation is not destroyed: switching back reaches the same key again.
+    The agent is part of the session key, so a pick LEAVES the running
+    conversation (switching back returns to it); it lands on the new agent's
+    latest saved conversation or a fresh one, so the reply promises neither.
     """
     configured = self._configured_agent()
-    label = agent_id or f"Default ({configured})"
+    # *label* is the pressed button's text, so the reply names what the user
+    # chose rather than a ``crew-<hex>`` spec id.
+    label = label or agent_id or f"Default ({configured})"
     # Compared as the agent each side RUNS, like the text channels: pressing the
     # row already marked "•" (or the Default row with no pick) is not a switch,
     # and must not reseed — the in-memory generation can be ahead of disk after

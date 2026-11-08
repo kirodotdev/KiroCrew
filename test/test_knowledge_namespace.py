@@ -63,7 +63,6 @@ async def test_add_source_folds_namespace_into_properties(tmp_path):
             resp = await add_source(req)
 
     assert resp.status == 201
-    # Verify namespace was injected into properties
     call_kwargs = store_mock.add_source.call_args
     props = call_kwargs.kwargs.get("properties") or call_kwargs[1].get("properties")
     assert props["namespace"] == "my-ns"
@@ -107,7 +106,6 @@ async def test_add_source_namespace_from_properties_directly(tmp_path):
 
 @pytest.mark.asyncio
 async def test_add_source_rejects_non_string_namespace():
-    """Non-string namespace returns 400."""
     body = {
         "name": "test",
         "source_type": "local_folder",

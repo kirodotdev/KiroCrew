@@ -2,11 +2,12 @@
 
 ``maybe_start_teams`` is the single guarded entry point. When the channel is
 enabled + credentialed it builds the :class:`TeamsDispatcher` +
-:class:`TeamsTransport` + the low-level :class:`TeamsClient`, wires the client's
-``on_activity`` as the late-bound handler for the pre-registered
-``POST /api/messaging/teams`` route (aiohttp freezes routes at startup, so the
-route lives in ``dashboard/server.py`` and dispatches through
-``state.teams_on_activity``), and primes the outbound app-credential token.
+:class:`TeamsTransport` + the low-level :class:`TeamsClient` and primes the
+outbound app-credential token. The client's ``on_activity`` becomes the
+late-bound handler for the pre-registered ``POST /api/messaging/teams`` route
+(aiohttp freezes routes at startup, so the route lives in ``dashboard/server.py``
+and dispatches through ``state.teams_on_activity``) only once the host accepts
+this client as the live handle -- see ``channel_lifecycle._publish_teams_webhook``.
 Failures are logged and swallowed so a Teams problem never takes down the
 gateway.
 
@@ -21,14 +22,29 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import extras
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.queue_drain import unregister_drain
 from kiro_crew.teams.client import HAS_JWT, TeamsClient
 from kiro_crew.teams.transport import TeamsTransport
-from kiro_crew.teams.transport_dispatch import TeamsDispatcher
+from kiro_crew.teams.transport_dispatch import _CHANNEL, TeamsDispatcher
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
+
+
+def _client_close_hook(dispatcher: TeamsDispatcher) -> "Callable[[], None]":
+    """What the client runs when it closes: retire this dispatcher's queue drain.
+
+    A drain waiting on a held lease (``messaging.queue_drain.drain_when_free``) looks
+    the drain up when the lease frees, so a stale one would answer queued messages on
+    a channel the operator disabled. Compare-and-drop, so a restart whose replacement
+    already registered keeps its drain.
+    """
+    drain_hook = dispatcher._drain_queue
+    return lambda: unregister_drain(_CHANNEL, drain_hook)
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
@@ -49,7 +65,8 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
 
     Returns the running client (so the gateway can ``close()`` it on shutdown)
     or None. The transport + dispatcher stay alive via the client's handler
-    references and ``state.teams_on_activity``.
+    references and, once the host accepts this client as the live handle,
+    ``state.teams_on_activity`` (see ``channel_lifecycle._publish_teams_webhook``).
     """
     if not getattr(orch, "_teams_enabled", False):
         return None
@@ -117,11 +134,19 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
         # gates, so this records nothing an ordinary message would not have.
         client.on_route = transport.note_route
         dispatcher.client = client
+        client.on_close = _client_close_hook(dispatcher)
 
         if orch.dashboard_state is not None:
             state = orch.dashboard_state
-            # Late-bind the webhook handler now that the client exists.
-            state.teams_on_activity = client.on_activity
+            # The webhook handler (``state.teams_on_activity``) is NOT bound here.
+            # This factory runs before the connect completes, and on a
+            # credential-triggered restart a newer close can supersede this start
+            # mid-connect; a handler bound now would let a webhook captured in that
+            # window be accepted by a client the host is about to discard. The host
+            # binds it only once this client is the accepted handle
+            # (``channel_lifecycle._publish_teams_webhook``); until then the route
+            # answers 503.
+            #
             # BEFORE registering: registration is what makes this transport
             # reachable from the proactive send ladder, whose recipient check is
             # synchronous and refuses an unread route store. Loading first means no

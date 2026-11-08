@@ -1,4 +1,4 @@
-"""Subprocess-spawn audit — security-review finding 92e24570.
+"""Subprocess-spawn audit.
 
 Every subprocess spawn in ``src/kiro_crew`` must be either
 
@@ -178,6 +178,8 @@ _SPAWN_NAMES = {
     "popen_limited",
     # kiro_prerequisite's one-shot wrapper; its call sites must stay visible.
     "spawn_supervised_oneshot",
+    # platform_compat's timeout-kills-the-tree run; its call sites must stay visible.
+    "run_killing_tree_on_timeout",
 }
 
 # Tokens whose presence anywhere in the enclosing function marks the spawn as
@@ -271,7 +273,11 @@ BENIGN_SPAWNS: frozenset[str] = BENIGN_PACKAGE_SPAWNS | BENIGN_APP_SPAWNS
 # on a backend-less host (the carve-out), so "first-party" must be a
 # reviewed property, not a copy-pasteable kwarg: a new site must be added here
 # WITH a justification proving the full argv is derived inside this package
-# with zero agent/repo/user-config influence. Keyed by
+# with zero agent/repo/user-config influence, OR that it runs the kiro-cli
+# Kiro Crew already launches for every ACP session -- resolved only by
+# ``kiro_cli.find_kiro_cli_candidates`` -- with a fixed argv. That binary is
+# already trusted and run on every ACP launch, so the carve-out adds no new
+# trust (owner decision, enterprise sign-in check). Keyed by
 # ``<relpath>::<enclosing function>``, same discipline as ``BENIGN_SPAWNS``.
 FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
     {
@@ -305,6 +311,25 @@ FIRST_PARTY_SPAWNS: frozenset[str] = frozenset(
         # because the scan is deliberately value-blind, so a future caller
         # passing True here would still have to be reviewed as its own entry.
         "voice_reply.py::_run_tts_subprocess",
+        # The enterprise sign-in check (owner decision, enterprise smoke test
+        # P9; owner-approved widening of this rule). ``_probe`` claims the flag
+        # with a literal ``True`` only inside ``edition.is_enterprise()``, only
+        # after the sandboxed ``--version`` was refused, and only for two fixed
+        # argvs: ``--version`` (via ``_audited_probe``) and ``whoami`` (via
+        # ``_audited_identity_probe``, real-home branch of ``_run_auth_command``
+        # only; the isolated-home branch raises on the flag). The binary is the
+        # candidate ``kiro_cli.find_kiro_cli_candidates`` resolved -- the same
+        # kiro-cli ACP launches on every session, so already trusted and run --
+        # made absolute with ``abspath``. No agent, repo or user text reaches the
+        # args. ``_run_process`` and ``_prepare_sandboxed_spawn`` only forward
+        # the flag to ``sandboxed_spawn_argv``; their other callers pass the
+        # default False.
+        "kiro_prerequisite_probe.py::_probe",
+        "kiro_prerequisite_probe.py::_audited_probe",
+        "kiro_prerequisite_probe.py::_audited_identity_probe",
+        "kiro_prerequisite_probe.py::_run_auth_command",
+        "kiro_prerequisite_process.py::_run_process",
+        "kiro_prerequisite_process.py::_prepare_sandboxed_spawn",
     }
 )
 
@@ -367,8 +392,9 @@ def test_every_first_party_spawn_is_allowlisted():
     The flag buys an unconfined spawn on a backend-less host, so passing it
     from an unreviewed site is a sandbox bypass. Add the ``file::function`` key
     to ``FIRST_PARTY_SPAWNS`` ONLY after confirming the full argv is derived
-    inside this package with zero agent/repo/user-config influence, and record
-    that reasoning in the allowlist comment.
+    inside this package with zero agent/repo/user-config influence, or that it
+    runs the ACP kiro-cli (resolved only by ``find_kiro_cli_candidates``) with a
+    fixed argv, and record that reasoning in the allowlist comment.
     """
     unexpected = _collect_first_party_flag_sites() - FIRST_PARTY_SPAWNS
     assert not unexpected, (
@@ -377,7 +403,8 @@ def test_every_first_party_spawn_is_allowlisted():
         + "\n  ".join(sorted(unexpected))
         + "\n\nThis flag permits an UNCONFINED spawn on a host with no sandbox "
         "backend (issue #1563 carve-out). Confirm the full argv is derived "
-        "inside this package with zero agent/repo/user-config influence, then "
+        "inside this package with zero agent/repo/user-config influence (or is "
+        "the ACP kiro-cli from find_kiro_cli_candidates with a fixed argv), then "
         "add the file::function key to FIRST_PARTY_SPAWNS with a justification."
     )
 
@@ -975,6 +1002,13 @@ def _is_spawn_call(node: ast.AST) -> bool:
     )
 
 
+def _starts_spawn(node: ast.AST) -> bool:
+    """A spawn call, bare or started through ``update_provider._start_installer``."""
+    if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_start_installer":
+        node = node.args[0]
+    return _is_spawn_call(node)
+
+
 def _handler_catches(handler: ast.ExceptHandler, name: str) -> bool:
     """Whether *handler* names *name* (bare or attribute-qualified) explicitly.
 
@@ -1027,10 +1061,13 @@ def test_gateway_spawns_all_own_session():
         spawns += 1
         if not any(kw.arg == "start_new_session" for kw in node.keywords):
             missing.append(f"{_GATEWAY_REL}:{node.lineno}")
-    assert spawns >= 10, (
+    assert spawns >= 9, (
         f"only {spawns} spawn sites found in {_GATEWAY_REL} — the audit's "
         "spawn matcher no longer matches the file's spawn idiom; fix the "
-        "matcher rather than deleting the ratchet"
+        "matcher rather than deleting the ratchet. (The floor dropped from 10 "
+        "to 9 when the unattended apply's inline fetch moved to the shared "
+        "update_fetch.fetch_and_pin_upstream helper, which carries the same "
+        "start_new_session discipline and is covered by the spawn allowlist.)"
     )
     assert not missing, (
         "Spawn(s) in slack/gateway.py without start_new_session — a timeout "
@@ -1062,7 +1099,7 @@ def test_gateway_proc_waits_all_kill_on_timeout_and_cancel():
             for stmt in ast.walk(func)
             if isinstance(stmt, ast.Assign)
             and isinstance(stmt.value, ast.Await)
-            and _is_spawn_call(stmt.value.value)
+            and _starts_spawn(stmt.value.value)
             for t in stmt.targets
             if isinstance(t, ast.Name)
         }

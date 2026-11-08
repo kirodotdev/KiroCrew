@@ -38,6 +38,7 @@ from pathlib import Path
 from kiro_crew import platform_compat, sandbox
 from kiro_crew.config.loader import config_dir
 from kiro_crew.json_line import parse_json_object_line
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +57,14 @@ _NATIVE_AUDIO_SUFFIXES = frozenset(
 )
 
 #: Fixed toolchain locations, probed with a stat so the loop-safe resolver never
-#: spawns. Covers Command Line Tools and a full Xcode install.
-#: Fixed toolchain locations, probed with a stat so the loop-safe resolver never
-#: spawns. These are CONCRETE compilers.
+#: spawns. Covers Command Line Tools and a full Xcode install, and both are
+#: CONCRETE compilers.
 #:
 #: `/usr/bin/swiftc` is deliberately NOT here. It shares an inode with
 #: `/usr/bin/clang` (78 hard links) because it is the `xcrun` shim, not a
 #: compiler: it reads `DEVELOPER_DIR` and delegates. Trusting it would verify the
 #: shim while executing `$DEVELOPER_DIR/usr/bin/swiftc` unchecked — the same
-#: escalation as the PATH lookup this replaced, just through an env var, and it is
+#: escalation as a PATH lookup, just through an env var, and it is
 #: the path that would be taken in practice. The reason a CLT binary fails on its
 #: own ("unable to load standard library for target ...") is a missing SDK, which
 #: `-sdk` supplies; see `_sdk_path`.
@@ -114,7 +114,7 @@ def _sdk_path() -> str | None:
         out = subprocess.run(
             ["/usr/bin/xcrun", "--show-sdk-path"],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=10,
             env=_build_env(),
         )
@@ -273,7 +273,7 @@ def _swiftc() -> str | None:
         out = subprocess.run(
             ["/usr/bin/xcrun", "--find", "swiftc"],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=10,
             env=_build_env(),
         )
@@ -293,9 +293,10 @@ def _swiftc() -> str | None:
 def availability() -> Availability:
     """Report whether the provider can run on this host, and why not if it cannot.
 
-    **Cheap and loop-safe by contract**: platform/version reads plus a PATH lookup
-    and two stats. It deliberately does NOT confirm the helper is already compiled
-    — that would mean building, and this is called from the event loop. The build
+    **Cheap and loop-safe by contract**: platform/version reads plus the
+    stat-only probe of the fixed toolchain locations. It deliberately does NOT
+    confirm the helper is already compiled — that would mean building, and this
+    is called from the event loop. The build
     happens inside :func:`transcribe` / :meth:`StreamingSession.start`, both of
     which offload it.
     """
@@ -517,7 +518,7 @@ def _build_helper(name: str, source: str, *, build: bool = True) -> str | None:
             # the SDK implicitly and nothing may redirect the toolchain.
             [swiftc, "-O", "-parse-as-library", "-sdk", sdk, str(src), "-o", tmp_out],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
             timeout=180,
             env=_build_env(),
         )
@@ -577,9 +578,9 @@ class DurationUnverifiedError(TranscriptionRefusedError):
     A ``None`` probe is not proof the input is under the ceiling: a TRANSIENT
     cause — a load spike that times the probe out but clears before the
     remux — would let the ``-t``-bounded conversion succeed on the truncated
-    prefix of an over-cap recording (GPT review r27). Only a persistent cause
+    prefix of an over-cap recording. Only a persistent cause
     is covered by the aligned-budget argument, so ``None`` must refuse loudly
-    and retryably, exactly as the meetings import gate does (r14).
+    and retryably, exactly as the meetings import gate does.
     """
 
 
@@ -597,8 +598,8 @@ async def _to_native_audio(
     when the probe cannot answer at all — both BEFORE the conversion, because
     the remux below is ``-t``-bounded (a temp-disk guard) and converting only
     the first hour of a longer-or-unknown recording would return a silently
-    truncated transcript, the exact data loss the meetings import gate refuses
-    (GPT reviews r26/r27). The no-ffmpeg degrade path is exempt: with no
+    truncated transcript, the exact data loss the meetings import gate refuses.
+    The no-ffmpeg degrade path is exempt: with no
     decoder there is no remux and therefore no truncation to guard against.
     """
     from kiro_crew.transcribe import (
@@ -616,15 +617,15 @@ async def _to_native_audio(
 
     # The native fast path hands *audio_path* to the Swift helper BY VALUE, and
     # a descriptor path (``/dev/fd/N``) names a descriptor of THIS process —
-    # useless to the helper, whose own fd table does not hold N (GPT review
-    # r23: a native-suffix import would fail with a 502). The remux below is
+    # useless to the helper, whose own fd table does not hold N (a native-suffix
+    # import would fail with a 502). The remux below is
     # the materializing path: its FFmpeg child inherits the descriptor via the
     # spawn seam and writes a NAMED temp file the helper can open.
     if _dev_fd_number(audio_path) is None and _input_suffix(audio_path) in _NATIVE_AUDIO_SUFFIXES:
         return audio_path, False
 
     try:
-        # Same demuxer pin as every other FFmpeg input (transcribe r20/r21):
+        # Same demuxer pin as the other transcription FFmpeg inputs (`_forced_demuxer_args`):
         # resolved BEFORE the decoder handle so a refusal cannot leak it. The
         # loud-failure convention below applies: the helper then reports the
         # undecodable input rather than this remux sniffing its content.
@@ -649,7 +650,7 @@ async def _to_native_audio(
     # return above hands the original file over and the framework fails
     # loudly), while WITH a decoder the ``-t``-bounded conversion below must
     # never run on an input whose duration is over — or UNKNOWN. ``None``
-    # refuses too (GPT review r27): a transient probe cause (a load spike that
+    # refuses too: a transient probe cause (a load spike that
     # clears before the remux) is not covered by the aligned-budget argument,
     # and proceeding would transcribe a silently truncated prefix.
     try:
@@ -702,7 +703,7 @@ async def _to_native_audio(
                 "1",
                 # Bounds the temp file as well as the conversion itself: a large
                 # low-bitrate input could otherwise expand into a multi-gigabyte
-                # WAV and exhaust the temp volume (GPT review r23). This is the
+                # WAV and exhaust the temp volume. This is the
                 # ceiling ``batch_duration_cap_secs`` reports for the Apple lane,
                 # so the meetings import refuses over-cap recordings loudly
                 # BEFORE this truncation could ever bite.
@@ -802,7 +803,7 @@ async def transcribe(
         native_path, is_temp = await _to_native_audio(audio_path, probe_timeout_secs=timeout_secs)
     except TranscriptionRefusedError as exc:
         # Loud, user-actionable refusal — never a transcript that silently
-        # omits everything past the ceiling (GPT review r26/r27): over-cap
+        # omits everything past the ceiling: over-cap
         # AND duration-unverified inputs both stop here, before conversion.
         return None, {"error": str(exc)}
     # When `is_temp` is true this invocation owns the transcode temp from here
@@ -836,6 +837,15 @@ async def transcribe(
                 except (OSError, ProcessLookupError):
                     pass
                 return None, {"error": f"timed out after {timeout_secs}s"}
+            except asyncio.CancelledError:
+                # The caller gave up (an uploader that disconnected): stop the
+                # helper before its launcher and audio are removed below.
+                try:
+                    proc.kill()
+                    await proc.communicate()
+                except (OSError, ProcessLookupError):
+                    pass
+                raise
         except OSError as exc:
             return None, {"error": f"could not run speech helper: {exc}"}
         finally:

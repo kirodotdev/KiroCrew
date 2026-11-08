@@ -91,6 +91,7 @@ from typing import TYPE_CHECKING
 from kiro_crew import _facade_mirror
 from kiro_crew.constants import CREW_LOG_ENV
 from kiro_crew.crew_log.emit_children import (  # noqa: F401
+    _child_sid_field,
     dismiss_child,
     on_subagent_completed,
     on_subagent_dismissed,
@@ -118,11 +119,15 @@ from kiro_crew.crew_log.emit_runtime import (  # noqa: F401
     _MAX_REPAIR_WALKED,
     _MAX_SESSION_ID_CHARS,
     _ORIGIN_REAP_SCAN,
+    _RELAY_FEED,
     _REPAIR_WALK_HOPS,
     _SHUTDOWN_DRAIN_SECONDS,
+    _SHUTDOWN_RELAY_ROUNDS,
     _bound_open,
     _child_gone_probe,
     _closing,
+    _commit_appends,
+    _drain_writer_and_relay,
     _ensure_shutdown_hook,
     _hand_over,
     _handle,
@@ -132,6 +137,7 @@ from kiro_crew.crew_log.emit_runtime import (  # noqa: F401
     _notify_growth,
     _queue_tail_repair,
     _reap_child_origin,
+    _relay_feed,
     _remember,
     _repair_superseded,
     _report,
@@ -147,8 +153,10 @@ from kiro_crew.crew_log.emit_runtime import (  # noqa: F401
     _writer_owes,
     _writer_pool,
     add_growth_listener,
+    asking_turn,
     buffered_writes,
     child_origin,
+    child_origin_attempt,
     dispatch_origin,
     drain_for_shutdown,
     dropped_writes,
@@ -207,6 +215,8 @@ from kiro_crew.crew_log.emit_surfaces import (  # noqa: F401
     on_card_finished,
     on_card_proposed,
     on_dashboard_agentic,
+    on_dashboard_custom,
+    on_dashboard_custom_failed,
     on_dashboard_instance_changed,
     on_dashboard_refused,
     on_goal_recorded,
@@ -393,4 +403,7 @@ if TYPE_CHECKING:  # names it serves from outside the emitter family, from their
     from kiro_crew.security import (  # noqa: F401
         redact_credentials,
         redact_exfiltration_urls,
+    )
+    from kiro_crew.validation import (  # noqa: F401
+        bounded_session_id,
     )

@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from source_providers_helpers import _clear_issue_cache  # noqa: F401
+from named_cases_helpers import named_cases
+from source_providers_helpers import _clear_shared_fetch_state  # noqa: F401
 from source_providers_helpers import _mock_source_sel_fixture  # noqa: F401
 from source_providers_helpers import _no_visibility_refresh_side_task  # noqa: F401
 from source_providers_helpers import _ISSUE_URL, _app
@@ -43,6 +44,34 @@ def test_parse_gitlab_issue_url_with_nested_group() -> None:
     assert ref.url == "https://gitlab.com/acme/platform/service/-/issues/42"
 
 
+def test_parse_gitlab_work_item_url_is_an_issue() -> None:
+    ref = source.parse_source_url("https://gitlab.com/acme/platform/service/-/work_items/42")
+    assert ref.provider == "gitlab"
+    assert ref.project == "acme/platform/service"
+    assert ref.number == 42
+    assert ref.kind == "issue"
+    assert ref.url == "https://gitlab.com/acme/platform/service/-/work_items/42"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gitlab.com/groups/acme/-/work_items/5",
+        "https://gitlab.com/Groups/acme/sub/-/work_items/5",
+    ],
+)
+def test_parse_gitlab_group_work_item_is_not_an_issue(url: str) -> None:
+    """A group work item is an epic: the project issues API cannot fetch it."""
+    with pytest.raises(ValueError):
+        source.parse_source_url(url)
+
+
+def test_parse_gitlab_project_named_like_groups_still_parses_work_item() -> None:
+    ref = source.parse_source_url("https://gitlab.com/acme/groups/-/work_items/7")
+    assert ref.project == "acme/groups"
+    assert ref.kind == "issue"
+
+
 def test_parse_gitlab_merge_request_still_reports_change_kind() -> None:
     ref = source.parse_source_url("https://gitlab.com/acme/platform/-/merge_requests/9")
     assert ref.kind == "change"
@@ -57,18 +86,54 @@ def test_parse_gitlab_issue_rejects_a_traversal_project_path() -> None:
 @pytest.mark.parametrize(
     "url",
     [
-        # GitLab issues live under the /-/ scope; the bare form is not a
-        # GitLab issue URL and must stay rejected.
-        "https://gitlab.com/group/project/issues/1",
-        "http://github.com/org/repo/issues/1",
-        "https://evil.example/github.com/org/repo/issues/1",
-        "https://github.com.evil.example/org/repo/issues/1",
-        "https://user@github.com/org/repo/issues/1",
-        "https://github.com/org/repo/issues/abc",
-        "https://gitlab.com/group/project/-/issues/",
+        *named_cases(
+            "test_parse_source_url_rejects_untrusted_issue_shapes",
+            "url",
+            [
+                # GitLab issues live under the /-/ scope; the bare form is not a
+                # GitLab issue URL and must stay rejected.
+                "https://gitlab.com/group/project/issues/1",
+                "http://github.com/org/repo/issues/1",
+                "https://evil.example/github.com/org/repo/issues/1",
+                "https://github.com.evil.example/org/repo/issues/1",
+                "https://user@github.com/org/repo/issues/1",
+                "https://github.com/org/repo/issues/abc",
+                "https://gitlab.com/group/project/-/issues/",
+            ],
+        ),
+        *named_cases(
+            "test_parse_source_url_rejects_untrusted_jira_shapes",
+            "url",
+            [
+                # The bare suffix is not a tenant; only real subdomains are Cloud Jira.
+                "https://atlassian.net/browse/PROJ-1",
+                "https://acme.atlassian.net.evil.example/browse/PROJ-1",
+                "http://acme.atlassian.net/browse/PROJ-1",
+                "https://user@acme.atlassian.net/browse/PROJ-1",
+                # Keys must be PROJECT-NUMBER: a bare number, a digit-led project part,
+                # an overlong project part, and a missing number all fail.
+                "https://acme.atlassian.net/browse/123",
+                "https://acme.atlassian.net/browse/1PROJ-1",
+                "https://acme.atlassian.net/browse/ABCDEFGHIJK-1",
+                "https://acme.atlassian.net/browse/PROJ-",
+                "https://acme.atlassian.net/browse/",
+                "https://acme.atlassian.net/PROJ-1",
+            ],
+        ),
+        *named_cases(
+            "test_parse_source_url_rejects_untrusted_shapes",
+            "url",
+            [
+                "http://github.com/org/repo/pull/1",
+                "https://evil.example/github.com/org/repo/pull/1",
+                "https://github.com.evil.example/org/repo/pull/1",
+                "https://user@github.com/org/repo/pull/1",
+                "https://gitlab.com/group/project/issues/1",
+            ],
+        ),
     ],
 )
-def test_parse_source_url_rejects_untrusted_issue_shapes(url: str) -> None:
+def test_parse_source_url_rejects_an_untrusted_shape(url: str) -> None:
     with pytest.raises(ValueError):
         source.parse_source_url(url)
 
@@ -172,29 +237,6 @@ class TestSourceRefLabel:
             kind="change",
         )
         assert source.source_ref_label(ref) == "#4821"
-
-
-@pytest.mark.parametrize(
-    "url",
-    [
-        # The bare suffix is not a tenant; only real subdomains are Cloud Jira.
-        "https://atlassian.net/browse/PROJ-1",
-        "https://acme.atlassian.net.evil.example/browse/PROJ-1",
-        "http://acme.atlassian.net/browse/PROJ-1",
-        "https://user@acme.atlassian.net/browse/PROJ-1",
-        # Keys must be PROJECT-NUMBER: a bare number, a digit-led project part,
-        # an overlong project part, and a missing number all fail.
-        "https://acme.atlassian.net/browse/123",
-        "https://acme.atlassian.net/browse/1PROJ-1",
-        "https://acme.atlassian.net/browse/ABCDEFGHIJK-1",
-        "https://acme.atlassian.net/browse/PROJ-",
-        "https://acme.atlassian.net/browse/",
-        "https://acme.atlassian.net/PROJ-1",
-    ],
-)
-def test_parse_source_url_rejects_untrusted_jira_shapes(url: str) -> None:
-    with pytest.raises(ValueError):
-        source.parse_source_url(url)
 
 
 def test_jira_ref_never_passes_the_change_gate() -> None:

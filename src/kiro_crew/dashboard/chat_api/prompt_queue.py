@@ -1,4 +1,5 @@
-"""The queued-prompt routes: cancel, edit and reorder."""
+"""The waiting-prompt routes: cancel, edit and reorder a queued message, and take
+back a steer the running turn has not read yet."""
 
 from __future__ import annotations
 
@@ -79,6 +80,11 @@ async def api_chat_slot_queue_cancel(request: web.Request) -> web.Response:
     )
     _redacted = queued_text_for_display(content, user_origin=_user_origin)
     state.broadcast_ws("queue_cancel", {"slot": name, "queue_id": queue_id, "content": _redacted})
+    # A cancelled entry whose editor was open took its hold with it, so the
+    # entries it held may run now.
+    from kiro_crew.dashboard.queue_edit_hold import release_and_drain
+
+    release_and_drain(state, slot, _entry)
     state.push_slots_update()
     sel().log_tool_invocation(
         session_key=f"dashboard:{name}",
@@ -126,10 +132,14 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
     if not slot.queue_edit_by_id(
         queue_id,
         content,
         directive_user_origin=not bool(request.get("app", "")),
+        # The replacement words are the editor's: see ``api_chat``.
+        directive_owner_origin=is_owner_dashboard_request(request),
     ):
         return web.json_response({"error": "queue item not found"}, status=404)
     # The stored text is what the edit normalized to (attachment markers are
@@ -155,6 +165,11 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
     if _edit_attachments:
         frame["meta"] = _edit_attachments
     state.broadcast_ws("queue_edit", frame)
+    # The edit is stored, so the hold its open editor placed can go: a turn
+    # that ended while the person typed starts now, with these words.
+    from kiro_crew.dashboard.queue_edit_hold import release_and_drain
+
+    release_and_drain(state, slot, entry)
     state.push_slots_update()
     sel().log_tool_invocation(
         session_key=f"dashboard:{name}",
@@ -228,3 +243,65 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
         metadata={"slot": name, "order_len": len(order)},
     )
     return web.json_response({"ok": True})
+
+
+async def api_chat_slot_steer_retract(request: web.Request) -> web.Response:
+    """POST /api/chat/slots/{slot}/steers/{mid}/retract — take back a pending steer.
+
+    Body ``{"action": "unsend" | "edit" | "queue"}``. Answers 202 once the take-back
+    is armed. Whether the turn read the steer first is decided afterwards and lands
+    on the steer's own row (``steer_retract``), which is what the dashboard reads.
+    409 when the steer is not pending, another steer or take-back is in
+    flight, or the harness cannot drop a steer. Refused to an app: a take-back
+    is offered only on the session's own human's steer.
+    """
+    state: DashboardState = request.app["state"]
+    name = request.match_info["slot"]
+    mid = request.match_info["mid"]
+    slot = state._slots.get(name)
+    if not slot:
+        return slot_not_found()
+    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_steer_retract")
+    if denied is not None:
+        return denied
+    request_app = request.get("app", "")
+    if request_app:
+        reason = "only the person who sent a steer can take it back"
+        sel().log_api_access(
+            caller=request_app,
+            operation="slot_steer_retract",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={name}",
+            error=reason,
+        )
+        return web.json_response({"error": reason, "code": "steer_retract_forbidden"}, status=403)
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
+    from kiro_crew.dashboard import steer_retract
+
+    action = body.get("action")
+    if not isinstance(action, str) or action not in steer_retract.RETRACT_ACTIONS:
+        return web.json_response(
+            {
+                "error": "action must be one of: edit, queue, unsend",
+                "code": "steer_retract_bad_action",
+            },
+            status=400,
+        )
+    outcome = await steer_retract.begin(state, slot, mid, action)
+    refusal = steer_retract.REFUSALS.get(outcome)
+    if refusal is not None:
+        return web.json_response({"error": refusal[0], "code": refusal[1]}, status=409)
+    sel().log_tool_invocation(
+        session_key=f"dashboard:{name}",
+        agent="kirocrew",
+        source="dashboard",
+        tool_name="steer_retract",
+        tool_kind="permission",
+        outcome="allowed",
+        metadata={"slot": name, "action": action},
+    )
+    return web.json_response({"ok": True, "pending": True}, status=202)

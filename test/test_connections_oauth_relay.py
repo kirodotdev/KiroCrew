@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import struct
 from socket import SO_LINGER, SOL_SOCKET
 from unittest.mock import MagicMock
@@ -12,6 +13,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from named_cases_helpers import named_cases
 
 from kiro_crew.dashboard.handlers import connections
 
@@ -19,18 +21,36 @@ from kiro_crew.dashboard.handlers import connections
 @pytest.mark.parametrize(
     "value",
     [
-        "https://127.0.0.1:43123/?code=x",
-        "http://10.0.0.5:43123/?code=x",
-        "http://127.0.0.1:80/?code=x",
-        "http://127.0.0.1/?code=x",
-        "http://127.0.0.1:43123/",
-        "http://user@127.0.0.1:43123/?code=x",
-        "http://127.0.0.1:43123/?code=x&unexpected=value",
-        "http://127.0.0.1:43123/?code=x#fragment",
-        "http://127.0.0.1:43123/?code=x%0d%0aHost:evil",
+        *named_cases(
+            "test_return_address_validation_rejects_non_loopback_or_incomplete_urls",
+            "value",
+            [
+                "https://127.0.0.1:43123/?code=x",
+                "http://10.0.0.5:43123/?code=x",
+                "http://127.0.0.1:80/?code=x",
+                "http://127.0.0.1/?code=x",
+                "http://127.0.0.1:43123/",
+                "http://user@127.0.0.1:43123/?code=x",
+                "http://127.0.0.1:43123/?code=x#fragment",
+                "http://127.0.0.1:43123/?code=x%0d%0aHost:evil",
+            ],
+        ),
+        *named_cases(
+            "test_scheme_default_does_not_widen_containment",
+            "value",
+            [
+                # The http:// default must not admit anything the strict form refuses.
+                "10.0.0.5:43123/?code=x",
+                "evil.example:43123/?code=x",
+                "127.0.0.1:80/?code=x",
+                "127.0.0.1/?code=x",
+                # An explicit non-http scheme stays rejected — no rewrite to http.
+                "ftp://127.0.0.1:43123/?code=x",
+            ],
+        ),
     ],
 )
-def test_return_address_validation_rejects_non_loopback_or_incomplete_urls(value):
+def test_return_address_validation_keeps_loopback_containment(value):
     assert connections._validated_loopback_return_address(value) is None
 
 
@@ -43,6 +63,26 @@ def test_return_address_validation_accepts_runtime_callback_shape(host):
     assert callback.request_target == "/callback?code=one-time&state=opaque"
 
 
+@pytest.mark.parametrize(
+    ("query", "forwarded"),
+    [
+        (
+            "state=opaque&code=one-time&client_id=coda-app&unexpected=value",
+            "state=opaque&code=one-time",
+        ),
+        ("%63ode=one-time&client_id=coda-app", "%63ode=one-time"),
+    ],
+)
+def test_return_address_validation_drops_keys_outside_the_callback_set(query, forwarded):
+    """Coda's callback adds ``client_id``: the paste is accepted, and only the
+    OAuth callback keys, matched as decoded, reach the listener."""
+    callback = connections._validated_loopback_return_address(
+        f"http://127.0.0.1:43123/oauth/callback?{query}"
+    )
+    assert callback is not None
+    assert callback.request_target == f"/oauth/callback?{forwarded}"
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
 def test_return_address_validation_defaults_missing_scheme_to_http(host):
     """iOS Safari copies address-bar URLs without the scheme; the
@@ -52,22 +92,6 @@ def test_return_address_validation_defaults_missing_scheme_to_http(host):
     assert callback is not None
     assert callback.port == 43123
     assert callback.request_target == "/callback?code=one-time&state=opaque"
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        # The http:// default must not admit anything the strict form refuses.
-        "10.0.0.5:43123/?code=x",
-        "evil.example:43123/?code=x",
-        "127.0.0.1:80/?code=x",
-        "127.0.0.1/?code=x",
-        # An explicit non-http scheme stays rejected — no rewrite to http.
-        "ftp://127.0.0.1:43123/?code=x",
-    ],
-)
-def test_scheme_default_does_not_widen_containment(value):
-    assert connections._validated_loopback_return_address(value) is None
 
 
 @pytest.mark.asyncio
@@ -479,3 +503,70 @@ async def test_a_live_listener_that_rejects_the_code_stays_a_delivery_failure(mo
     assert status == 502
     assert body["code"] == "oauth_callback_rejected"
     assert audit.log_api_access.call_args.kwargs["outcome"] == "failed"
+
+
+def _relay_log_lines(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if r.name == connections.logger.name and "MCP OAuth relay" in r.getMessage()
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("listener_status", "level", "fragment"),
+    [
+        (
+            200,
+            logging.INFO,
+            "code delivered to the local callback status=200; "
+            "the listener finishes the token exchange",
+        ),
+        (400, logging.WARNING, "local callback rejected the return address status=400"),
+    ],
+)
+async def test_every_relay_outcome_leaves_a_gateway_log_line(
+    monkeypatch, caplog, listener_status, level, fragment
+):
+    """The audit log alone cannot tell an operator which side of the paste-back
+    failed, so each outcome must also reach the gateway log, without the code."""
+
+    async def callback(_request: web.Request) -> web.Response:
+        return web.Response(status=listener_status)
+
+    callback_app = web.Application()
+    callback_app.router.add_get("/", callback)
+    callback_server = TestServer(callback_app, host="127.0.0.1")
+    await callback_server.start_server()
+    monkeypatch.setattr(connections, "sel", lambda: MagicMock())
+    caplog.set_level(logging.INFO, logger=connections.logger.name)
+
+    try:
+        await _post_relay(int(callback_server.port or 0))
+    finally:
+        await callback_server.close()
+
+    lines = _relay_log_lines(caplog)
+    assert len(lines) == 1
+    assert lines[0].levelno == level
+    message = lines[0].getMessage()
+    assert message.startswith("MCP OAuth relay for notion: ")
+    assert fragment in message
+    assert "one-time" not in message
+
+
+@pytest.mark.asyncio
+async def test_a_spent_listener_leaves_a_gateway_log_line(monkeypatch, caplog):
+    async def refuse_connection(_host: str, _port: int):
+        raise ConnectionRefusedError("test callback listener is absent")
+
+    monkeypatch.setattr(connections, "sel", lambda: MagicMock())
+    monkeypatch.setattr(connections, "_open_loopback_connection", refuse_connection)
+    caplog.set_level(logging.INFO, logger=connections.logger.name)
+
+    await _post_relay(43123)
+
+    lines = _relay_log_lines(caplog)
+    assert [r.levelno for r in lines] == [logging.WARNING]
+    assert "no local callback listener" in lines[0].getMessage()

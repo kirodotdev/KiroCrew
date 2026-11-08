@@ -668,6 +668,55 @@ async def test_a_refused_program_name_downgrades_to_the_next_stage(names):
     assert settled.by == "person"
 
 
+@pytest.fixture
+def fresh_decline_notices():
+    """The once-per-session ledger is process-global; start and end each test empty."""
+    name_grant._DECLINE_NOTICES.clear()
+    yield
+    name_grant._DECLINE_NOTICES.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_platform_scope_decline_is_narrated_once_per_session_but_audited_every_time(
+    names, fresh_decline_notices
+):
+    # A platform-scope refusal's text is one constant per session, so the
+    # narration (the surface's log line) is written once per session, as the
+    # dashboard and LLM surfaces already do. The audit row is per call.
+    names.verdicts["Run: ls -la"] = name_grant.Refusal(
+        code=name_grant.WINDOWS_UNMODELLED, detail="ls lookup is not modelled here"
+    )
+    log: list = []
+    policy = _policy(
+        log,
+        gate=Judges(log, Hit("hook_auto_approve", Evidence.NAME, vouch=True)),
+        grants=(GATE_GRANT,),
+    )
+    for session_key in ("k", "k", "other"):
+        await settle(Ask(_event(), RecordingWire(log), session_key), policy)
+    narrated = [e for e in log if e[:2] == ("narrate", "declined")]
+    audited = [e for e in log if e[:2] == ("audit", "declined")]
+    assert narrated == [("narrate", "declined", name_grant.WINDOWS_UNMODELLED)] * 2
+    assert len(audited) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_command_scope_decline_is_still_narrated_every_time(names, fresh_decline_notices):
+    # Command-scope refusals differ per invocation, so each one is narrated.
+    names.verdicts["Run: ls -la"] = _SHADOWED
+    log: list = []
+    policy = _policy(
+        log,
+        gate=Judges(log, Hit("hook_auto_approve", Evidence.NAME, vouch=True)),
+        grants=(GATE_GRANT,),
+    )
+    for _ in range(2):
+        await settle(Ask(_event(), RecordingWire(log), "k"), policy)
+    assert [e for e in log if e[:2] == ("narrate", "declined")] == [
+        ("narrate", "declined", "shadowed")
+    ] * 2
+
+
 @pytest.mark.asyncio
 async def test_only_a_name_grant_is_vouched_for(names):
     names.verdicts["Run: ls -la"] = _SHADOWED
@@ -1011,7 +1060,7 @@ def test_hook_gate_reports_identity_evidence_only_for_a_verified_identity_grant(
 
 
 @pytest.mark.asyncio
-async def test_spec_hooks_consult_the_gate_only_on_a_gated_turn():
+async def test_spec_hooks_consult_the_gate_on_gated_and_ungated_turns():
     calls: list = []
 
     async def pre_tool(store, hooks, cwd, title, tool_input, **kw):
@@ -1019,7 +1068,7 @@ async def test_spec_hooks_consult_the_gate_only_on_a_gated_turn():
         return "guard.sh: hook denied"
 
     event = _event(tool_input='{"command": "ls"}', mcp_server_name="srv", harness_tool_id="bash")
-    ask = Ask(event, None, "k")
+    ask = Ask(event, AcpWire(SimpleNamespace(session_id="sess_abc")), "k")
     floor = SpecHooks(
         TurnSpecHooks(["h"], "/w", False, True),
         store=lambda: "store",
@@ -1041,13 +1090,15 @@ async def test_spec_hooks_consult_the_gate_only_on_a_gated_turn():
                 "tool_identity": "execute_bash",
                 "mcp_server": "srv",
                 "harness_tool_id": "bash",
+                "acp_session_id": "sess_abc",
                 "parent_session_key": "p",
                 "agent_role": "role",
             },
         )
     ]
     ungated = SpecHooks(TurnSpecHooks([], None, False, False), store=lambda: 1, pre_tool=pre_tool)
-    assert await ungated.refuse(ask) is None and len(calls) == 1
+    assert (await ungated.refuse(ask)).reason == "guard.sh: hook denied"
+    assert calls[1][:3] == (1, [], None)
 
 
 @pytest.mark.asyncio
@@ -1475,6 +1526,7 @@ def _subagent_ladder(
         info,
         spec=spec or TurnSpecHooks([], None, False, False),
         parent_policy=parent_policy,
+        ask_key=info.parent_session_key,
         consult=consult or (lambda event: ToolHookResult(action=hook, identity_grant=True)),
         sel=sel or _Sel(log),
         log=logging.getLogger("kiro_crew.subagent"),
@@ -1757,6 +1809,8 @@ async def test_each_ladder_gives_its_spec_hooks_the_callers_identity(monkeypatch
                 "tool_identity": "execute_bash",
                 "mcp_server": "srv",
                 "harness_tool_id": "h1",
+                # The wire has no client, so no session id.
+                "acp_session_id": None,
                 **identity,
             },
         )

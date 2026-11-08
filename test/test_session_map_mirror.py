@@ -1,10 +1,7 @@
 """Tests for SessionMap channel-neutral outbound mirror binding.
 
-Covers the C1 generalization of the Slack-only dashboard->channel mirror into a
-channel-agnostic ``ChannelLink`` binding: non-Slack targets are stored under
-``mirror``; Slack routes back through the dedicated slack-link fields (keeping
-its reverse index intact); legacy Slack sessions surface as a synthesized
-Slack ``ChannelLink`` without needing migration.
+Non-Slack targets are stored under ``mirror``; Slack uses the slack-link fields (keeping
+its reverse index); legacy Slack sessions read as a synthesized ``ChannelLink``.
 """
 
 from __future__ import annotations
@@ -58,13 +55,8 @@ def _manager_over(session_map):
 def plant_binding(session_map, key, link, *, accepts_inbound=False):
     """Write a binding straight into the map, bypassing the writer's exclusivity.
 
-    ``set_mirror_link`` refuses to put a second session on an inbound-committed
-    conversation, so co-located rows cannot be *created* through it. They can
-    still EXIST: a ``session_map.json`` written before conversations became
-    exclusive, or hand-edited, can hold two owners. Readers and sweeps have to
-    cope with that state — the resolver's fail-closed branch and the in-channel
-    conflict detection both depend on seeing every owner — so the tests below
-    plant the rows directly.
+    ``set_mirror_link`` refuses a second owner, but an old or hand-edited
+    ``session_map.json`` can still hold two, and readers and sweeps must cope with that.
     """
     entry = session_map._ensure_entry(key)
     entry["mirror"] = link.to_dict()
@@ -196,11 +188,8 @@ class TestBindingNonce:
 class TestRecordedPrincipal:
     """The peer a mirror was admitted for rides inside the ``mirror`` row.
 
-    It is what the per-send recipient check falls back to for a dashboard-born
-    session (whose key names nobody) mirrored to a DM whose conversation id cannot
-    be tested against a user roster. It is NOT part of the binding's identity, so
-    nothing that matches a binding by location -- the nonce, the occupancy check,
-    the location sweep -- reads it.
+    The per-send recipient check falls back to it for a dashboard-born session mirrored to
+    a DM. It is NOT part of the binding's identity, so location matches never read it.
     """
 
     _KEY = "dashboard:chat-1-1700000000"
@@ -710,6 +699,7 @@ class TestReleaseConversationLocation:
                 session_map, key=self.KEY, location=self.LINK, channel="discord"
             )
         assert write.call_count == 1
+        assert session_map.find_mirror_sessions(self.LINK) == []
 
     def test_an_outer_batch_still_collapses_to_one_write(self, session_map):
         # Telegram wraps this call together with its opt-out write. Nesting is
@@ -723,6 +713,8 @@ class TestReleaseConversationLocation:
                     session_map, key=self.KEY, location=self.LINK, channel="discord"
                 )
         assert write.call_count == 1
+        assert session_map.find_mirror_sessions(self.LINK) == []
+        assert session_map.get_flag(self.KEY, "mirror_opt_out") is True
 
 
 class TestPrunePreservesMirror:
@@ -857,12 +849,8 @@ class TestLegacyDashboardSpelling:
     def test_clear_removes_the_superseded_legacy_row_too(self, session_map):
         """An unlink must not hand the read back to the binding it superseded.
 
-        A channel session that rebound from the dashboard holds TWO rows: the
-        canonical binding every read prefers, and the pre-unification row it
-        superseded. Clearing the winner alone moves ``_mirror_key`` back to the
-        legacy row, so the session that was just unlinked reads as mirrored
-        again -- to its OLD target -- and nothing the user did is undone by
-        the click that reported success. One clear takes both rows.
+        A rebound channel session holds the canonical row and a superseded legacy row.
+        Clearing only the winner moves ``_mirror_key`` back to the OLD target.
         """
         session_map.set_mirror_link(
             self.LEGACY, ChannelLink(channel_type="telegram", channel_id="old")
@@ -886,11 +874,8 @@ class TestLegacyDashboardSpelling:
 class TestConversationOwnership:
     """One conversation, at most one session — enforced on the writer.
 
-    Not a policy preference. The inbound resolver refuses to choose between two
-    candidates, and "no owner" and "two owners" are the same ``None`` to it, so a
-    duplicate binding does not misroute a reply — it unroutes it, and the reply
-    silently starts a fresh session. Marking a binding inbound-capable without
-    this rule would move the fork rather than fix it.
+    The inbound resolver answers ``None`` for two owners, so a duplicate binding sends the
+    reply to a fresh session.
     """
 
     LINK = ChannelLink(channel_type="discord", channel_id="dm-1")
@@ -921,11 +906,8 @@ class TestConversationOwnership:
     def test_two_outbound_mirrors_are_left_alone(self, session_map):
         """Exclusivity is owed to inbound routing, so it is scoped to it.
 
-        Two outbound-only mirrors are merely noisy — both write out, nobody reads
-        back — so they stay allowed. Refusing them would reach every transport that
-        cannot resume at all (Telegram, Teams, Webex, WeCom, Weixin), whose
-        in-channel link handlers do not translate this refusal because they can
-        never provoke it.
+        Two outbound-only mirrors are only noisy. Refusing them would break transports that
+        cannot resume (Telegram, Teams, Webex, WeCom, Weixin), whose handlers never expect it.
         """
         session_map.set_mirror_link("dashboard:chat-1", self.LINK)
         # Must not raise.
@@ -1185,12 +1167,8 @@ class TestAutomaticMirrorOptOut:
     def test_an_unlisted_flag_does_not_make_an_entry_immortal(self, session_map):
         """Immortality is opt-in, because prune is the only collection path.
 
-        A flag that is neither a durable setting (``_DURABLE_FLAGS``) nor a
-        privacy mode (``_PRIVACY_STRICTNESS``) describes ONE session. Keeping its
-        entry would leak a row per such session — and the map is rewritten whole
-        on every mutation, so the leak costs every later write, not just disk.
-        The privacy modes are the listed exception, for a reason recorded at
-        ``_PRIVACY_STRICTNESS`` and pinned in ``test_session_map_conv_state.py``.
+        Only ``_DURABLE_FLAGS`` and ``_PRIVACY_STRICTNESS`` keep an entry; any other flag
+        would leak a row per session into a map rewritten whole on every mutation.
         """
         for flag in ("pinned", "muted"):
             key = f"slack:kirocrew:{flag}"
@@ -1384,13 +1362,8 @@ class TestInboundUnbindIsLoud:
 class TestPruneRemovesThroughTheChokePoint:
     """Prune's deletions are audited like every other entry removal.
 
-    ``_survives_prune`` keeps every bound entry out of prune's delete branch, so
-    today prune cannot reach a binding at all — which is precisely why this needs
-    pinning rather than leaving to inspection. Deleting straight out of ``_data``
-    would leave the audit and the announcement not skipped by policy but simply
-    unreachable: any loosening of that predicate would reopen a silent
-    binding-removal path and nothing in the trail would
-    have named prune as the remover.
+    ``_survives_prune`` keeps bound entries out of prune today; this pins that, if it is
+    loosened, prune removes through the choke point and the trail names it.
     """
 
     def test_a_pruned_binding_is_audited_and_announced(
@@ -1432,11 +1405,8 @@ class TestPruneRemovesThroughTheChokePoint:
     async def test_startup_collection_defers_the_write_off_loop(self, session_map):
         """Prune on a running loop pays no inline whole-map write.
 
-        ``_save`` defers the disk write to a worker thread precisely so the
-        loop never blocks on serialization, and
-        prune's sole caller is ``start_pool`` on the startup loop. Routing
-        removals through the choke point must keep that property: per-key
-        audits, zero loop-thread writes, one coalesced flush afterwards.
+        Prune runs from ``start_pool`` on the loop: per-key audits, zero loop-thread
+        writes, one coalesced flush afterwards.
         """
         import kiro_crew.session_map as mod
 

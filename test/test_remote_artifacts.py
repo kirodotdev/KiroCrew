@@ -1212,6 +1212,41 @@ class TestRemoteCommentGovernanceGate:
         assert gate_open == ["fakeprov"]
 
 
+class TestRemotePostCommentAnchorInts:
+    """A remote anchor's offsets and version reach the provider only as ints."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ints",
+        [
+            {"start_offset": "0", "end_offset": 4, "version_number": 1},
+            {"start_offset": 0, "end_offset": 4.5, "version_number": 1},
+            {"start_offset": 5, "end_offset": 4, "version_number": 1},
+            {"start_offset": 0, "end_offset": 4, "version_number": True},
+            {"start_offset": 0, "end_offset": 4, "version_number": -3},
+        ],
+    )
+    async def test_bad_anchor_int_400_before_egress(
+        self, patch_restricted, comment_provider, gate_open, ints
+    ):
+        anchor = {"quote": "body", **ints}
+        req = _request(body={"text": "hi", "anchor": anchor}, match=_MATCH)
+        resp = await api_remote_artifact_post_comment(req)
+        assert resp.status == 400
+        assert _json_body(resp)["error"].startswith("anchor.")
+        assert comment_provider.writes == []
+
+    @pytest.mark.asyncio
+    async def test_valid_anchor_ints_reach_provider(
+        self, patch_restricted, comment_provider, gate_open
+    ):
+        anchor = {"quote": "body", "start_offset": 0, "end_offset": 4, "version_number": 1}
+        req = _request(body={"text": "hi", "anchor": anchor}, match=_MATCH)
+        resp = await api_remote_artifact_post_comment(req)
+        assert resp.status == 201
+        assert comment_provider.writes == ["post"]
+
+
 class TestRemoteDenialAudit:
     """Every permission decision on the remote-artifact endpoints emits an SEL
     event (backend-security-controls): both the restricted-session guard and the

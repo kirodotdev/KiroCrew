@@ -204,3 +204,65 @@ async def test_a_non_integer_offset_is_still_refused_not_clamped(v1) -> None:
     ):
         resp = await mem_mod.api_memory_events(_request({"offset": "1.5"}))
     assert resp.status == 400
+
+
+@pytest.fixture
+def v1_three(tmp_path: Path):
+    """A v1 store with three semantic rows, three episodic rows, and an event for each."""
+    store = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    store.init()
+    for i in range(3):
+        assert store.set_semantic(f"user.k{i}", f"v{i}", 1.0, "user_explicit") is None
+        assert store.write_episodic(f"an ordinary memory number {i}") is True
+    try:
+        yield store
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", ["-1", "0"])
+@pytest.mark.parametrize(
+    ("handler", "key", "rows"),
+    [
+        (mem_mod.api_memory_semantic, "entries", 3),
+        (mem_mod.api_memory_events, "events", 6),
+        (mem_mod.api_memory_episodic_list, "entries", 3),
+    ],
+)
+async def test_memory_list_routes_floor_the_limit_at_one(
+    v1_three, handler, key, rows, limit
+) -> None:
+    """SQLite reads ``LIMIT -1`` as no limit, so a negative ``limit`` skipped the page cap.
+
+    The limit is folded into ``[1, cap]`` before the store binds it, the same
+    floor ``api_memory_retired`` applies.
+    """
+    with patch.object(
+        mem_mod,
+        "_vector_tier_for_request",
+        new=AsyncMock(return_value=(v1_three, "default", None)),
+    ):
+        everything = await handler(_request({"limit": "10"}))
+        resp = await handler(_request({"limit": limit}))
+    assert len(_body(everything)[key]) == rows
+    assert resp.status == 200, limit
+    assert len(_body(resp)[key]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", ["-1", "0"])
+async def test_episodic_search_floors_the_limit_at_one(v1_three, limit) -> None:
+    """A negative limit sliced from the end of the ranked hits instead of capping them."""
+    with patch.object(
+        mem_mod,
+        "_vector_tier_for_request",
+        new=AsyncMock(return_value=(v1_three, "default", None)),
+    ):
+        everything = await mem_mod.api_memory_episodic_search(
+            _request({"q": "memory", "limit": "10"})
+        )
+        resp = await mem_mod.api_memory_episodic_search(_request({"q": "memory", "limit": limit}))
+    assert len(_body(everything)["results"]) == 3
+    assert resp.status == 200, limit
+    assert len(_body(resp)["results"]) == 1

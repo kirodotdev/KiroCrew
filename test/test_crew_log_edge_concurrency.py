@@ -68,9 +68,7 @@ def _body(sid: str = SESSION) -> list[dict]:
     return _entries(sid)[1:]
 
 
-# ---------------------------------------------------------------------------
 # 1. Many producers, one session
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_unsynced_appends")
@@ -262,9 +260,7 @@ def test_call_index_contiguous_under_concurrent_producers():
     )
 
 
-# ---------------------------------------------------------------------------
 # 2. Many sessions at once
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_unsynced_appends")
@@ -369,9 +365,7 @@ def test_many_sessions_each_file_well_formed():
         assert "turn/completed" in types_seen, f"{sid}: missing turn/completed"
 
 
-# ---------------------------------------------------------------------------
 # 3. Interleaved sessions -- no entry lost while another's write is in flight
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_unsynced_appends")
@@ -462,9 +456,7 @@ def test_burst_across_sessions_all_entries_land():
     assert total_tool_entries == n_sessions * entries_per
 
 
-# ---------------------------------------------------------------------------
 # 4. flush(timeout=...) under concurrent producers
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_unsynced_appends")
@@ -485,7 +477,7 @@ def test_flush_returns_only_when_buffer_empty():
 
     t = threading.Thread(target=_produce)
     t.start()
-    produced.wait()  # Wait until all entries are submitted
+    produced.wait()
     t.join()
 
     # Now flush -- it must wait until the writer has drained everything
@@ -553,24 +545,23 @@ def test_flush_under_ongoing_production():
 def test_flush_timeout_zero_does_not_hang():
     """flush(timeout=0) must return immediately, True if empty, False otherwise.
     It must never block."""
+    # `_open` drained the writer, so nothing is owed and the answer is known.
     _open()
-    # With nothing pending, should return True instantly
-    assert emit.flush(timeout=0.0) or True  # may be True or False, must not hang
+    assert emit.flush(timeout=0.0) is True
 
-    # Submit some entries
     emit.on_turn_started(SESSION, turn=1)
     for i in range(5):
         emit.on_tool_called(SESSION, turn=1, name="t", call_id=f"z-{i}", server="s")
 
-    # flush(0) returns immediately -- we just check it returns at all
-    emit.flush(timeout=0.0)
-    # Now drain properly
+    # With work owed, either answer is legal; returning at all is the point.
+    assert isinstance(emit.flush(timeout=0.0), bool)
     assert_drained()
+    assert [e["data"]["call_id"] for e in _body() if e["type"] == "tool/called"] == [
+        f"z-{i}" for i in range(5)
+    ]
 
 
-# ---------------------------------------------------------------------------
 # Mixed: different on_* entry points concurrently on one session
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.usefixtures("_unsynced_appends")
@@ -641,7 +632,6 @@ def test_mixed_entry_points_concurrent():
     seqs = [e["seq"] for e in body]
     assert seqs == list(range(1, len(body) + 1)), "non-contiguous seqs after mixed producers"
 
-    # Verify tool calls and completions pair up correctly
     called_ids = {e["data"]["call_id"] for e in body if e["type"] == "tool/called"}
     completed_ids = {e["data"]["call_id"] for e in body if e["type"] == "tool/completed"}
     assert called_ids == completed_ids, (
@@ -650,9 +640,7 @@ def test_mixed_entry_points_concurrent():
     )
 
 
-# ---------------------------------------------------------------------------
 # The drain barrier itself: a writer that stops is reported, never waited on
-# ---------------------------------------------------------------------------
 
 
 def _park_appends(monkeypatch) -> threading.Event:
@@ -707,9 +695,7 @@ async def test_the_barrier_gives_up_at_its_ceiling(monkeypatch):
         release.set()
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _find_gaps(seqs: list[int]) -> list[int]:

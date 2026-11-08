@@ -39,6 +39,8 @@ declare global {
 
   interface ElectronGlobalHotkeyInfo {
     accelerator: string
+    /** Optional: absent on an older shell. */
+    requested?: string
     default: string
   }
 
@@ -47,6 +49,9 @@ declare global {
     onBootReady: (cb: () => void) => () => void
     bootComplete: () => void
     setThemeAccent: (hex: string) => void
+    /** Hand the shell the active theme pack's boot-splash art, or null when it
+     *  ships none. Optional: absent on a shell older than the feature. */
+    setThemeSplash?: (image: { type: string; bytes: Uint8Array } | null) => void
     setThemeMode: (pref: string) => void
     setTitleBarOverlayTheme: (mode: string) => void
     setFocusModeChrome: (visible: boolean) => void
@@ -65,6 +70,10 @@ declare global {
     /** A macOS swipe the shell relays as one route-history step (-1 Back,
      *  1 Forward). Optional: absent in a browser and on an older shell. */
     onHistoryStep?: (cb: (delta: unknown) => void) => () => void
+    /** The trackpad's real finger-down (`begin`) and finger-up (`end`), from
+     *  Chromium's gesture-scroll events (macOS only). Optional: absent in a
+     *  browser and on an older shell. See lib/scrollTouch. */
+    onScrollTouch?: (cb: (phase: unknown) => void) => () => void
     /** `menuBarOverlap` is false when macOS placed the fullscreen window below
      *  the menu bar (a notched display), so no band needs keeping clear. */
     onFullScreenChanged: (cb: (isFullScreen: boolean, menuBarOverlap: boolean) => void) => () => void
@@ -75,11 +84,40 @@ declare global {
     getGlobalHotkey: () => Promise<ElectronGlobalHotkeyInfo>
     /** Evict the HTTP cache of one loopback pane origin; resolves to whether a purge ran. */
     clearPaneHttpCache?: (origin: string) => Promise<boolean>
+    /** Copy the image drawn at a main-frame point (CSS pixels). Optional: absent on an older shell. */
+    copyImageAt?: (x: number, y: number) => Promise<boolean>
   }
 
   interface LocalGatewayAPI {
     get: () => Promise<boolean>
     set: (enabled: boolean) => Promise<boolean>
+  }
+
+  type CloseAction = 'background' | 'quit'
+
+  interface CloseActionAPI {
+    get: () => Promise<CloseAction>
+    set: (action: CloseAction) => Promise<CloseAction>
+  }
+
+  /** Whether the tray icon shows, and whether it may be hidden right now
+   *  (on Windows and Linux, only while the close button quits). */
+  interface TrayIconState {
+    show: boolean
+    canHide: boolean
+  }
+
+  interface TrayIconAPI {
+    get: () => Promise<TrayIconState>
+    set: (show: boolean) => Promise<TrayIconState>
+  }
+
+  /** First-run setup's "connect to a crew on another machine" exit. `start`
+   *  opens the desktop app's remote-crew form; on "switching" the window is
+   *  about to leave this page for the crew's dashboard. */
+  interface RemoteCrewSetupAPI {
+    available: () => Promise<boolean>
+    start: () => Promise<'switching' | 'cancelled' | 'unavailable'>
   }
 
   interface CrashReportsAPI {
@@ -193,10 +231,6 @@ declare global {
     setInactive: (panelId: string, inactive: boolean) => Promise<NativeBrowserState | null>
     close: (panelId: string) => Promise<NativeBrowserState | null>
     getState: (panelId: string) => Promise<NativeBrowserState | null>
-    setAgentAct: (panelId: string, enabled: boolean) => Promise<{ ok: boolean } | null>
-    setControlOwner: (panelId: string, owner: string) => Promise<unknown>
-    getControl: (panelId: string) => Promise<unknown>
-    control: (panelId: string, operation: string, args: unknown) => Promise<unknown>
     /** Element annotation on the native page. Optional: absent on a desktop
      *  shell older than the feature, which is what hides the button. */
     annotate?: (
@@ -210,8 +244,6 @@ declare global {
       | { ok: true; url?: string; title?: string }
       | null
     >
-    trackSession: (panelId: string, tracked: boolean) => Promise<unknown>
-    onAgentOpened: (cb: (event: NativeBrowserEvent) => void) => () => void
     onDidNavigate: (cb: (event: NativeBrowserEvent) => void) => () => void
     onTitleUpdated: (cb: (event: NativeBrowserEvent) => void) => () => void
   }
@@ -235,6 +267,10 @@ declare global {
     laneVersion?: string
     runningAheadOfLane?: boolean | null
     replayed?: boolean
+    /** The main process's confirmed governance verdict — true only when the
+     *  local bundled gateway's policy provider was accepted via the three-gate
+     *  assertLocalDashboard check. False for remote (SSH-tunneled) gateways. */
+    policyGoverned?: boolean
   }
 
   interface UpdateInfo {
@@ -242,6 +278,10 @@ declare global {
     channel?: string
     stampedChannel?: string | null
     channelSwitchable?: boolean
+    // The organization's policy sets the channel (an enterprise build).
+    channelLockedByPolicy?: boolean
+    // The channel the policy requires, "" when none.
+    requiredChannel?: string
     channelPreference?: string
     autoDownload?: boolean
     platform?: string
@@ -252,6 +292,10 @@ declare global {
     updateCommand?: string
     laneVersion?: string
     runningAheadOfLane?: boolean | null
+    /** The main process's confirmed policy governance verdict — true only when
+     *  the local bundled gateway's policy provider was accepted via the
+     *  three-gate assertLocalDashboard check. */
+    policyGoverned?: boolean
   }
 
   interface UpdateResult {
@@ -268,12 +312,19 @@ declare global {
     getInfo?: () => Promise<(UpdateInfo & { lastState?: UpdateState | null }) | undefined>
     setChannel?: (channel: string) => Promise<UpdateResult>
     setAutoDownload?: (enabled: boolean) => Promise<UpdateResult>
+    /** Notify the main process that a security policy provider now governs (or
+     *  no longer governs) this install's updates. Fire-and-forget; no return.
+     *  Absent on shells that predate the feature. */
+    notifyPolicyGoverned?: (governed: boolean) => void
   }
 
   interface Window {
     kirocrew?: KiroCrewBridge
     electronAPI?: ElectronAPI
     localGatewayAPI?: LocalGatewayAPI
+    closeActionAPI?: CloseActionAPI
+    trayIconAPI?: TrayIconAPI
+    remoteCrewSetupAPI?: RemoteCrewSetupAPI
     crashReportsAPI?: CrashReportsAPI
     wslAPI?: WslAPI
     folderPickAPI?: FolderPickAPI

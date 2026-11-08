@@ -65,20 +65,30 @@ class TestFolderChunkBudgetResolution:
                    return_value=_cfg(0)):
             assert folder_chunk_budget({}) is None
 
-    @pytest.mark.parametrize("bad", ["300", None, True, False, [], {}, -5, 1.5, 300.0])
-    def test_junk_property_falls_back_to_the_default(self, bad: object):
-        # properties is user-editable JSON; a bad value must not remove the guard.
-        # True/False are checked explicitly: bool is an int subclass, so True would
-        # otherwise read as a budget of 1.
-        with patch("kiro_crew.config.loader.KiroCrewConfig.load",
-                   return_value=_cfg(300)):
-            assert folder_chunk_budget({"chunk_budget": bad}) == 300
-
-    @pytest.mark.parametrize("bad", [1e309, -1e309, float("inf"), float("-inf"),
-                                     float("nan")])
-    def test_non_finite_property_falls_back_instead_of_raising(self, bad: float):
-        # 1e309 parses to inf, which survives a >= 0 test and then raises in int().
-        # Reached from the add-source request body, so a raise here is an HTTP 500.
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            # properties is user-editable JSON; a bad value must not remove the
+            # guard. True/False are checked explicitly: bool is an int subclass,
+            # so True would otherwise read as a budget of 1.
+            *(
+                pytest.param(bad, id=f"test_junk_property_falls_back_to_the_default-bad{i}")
+                for i, bad in enumerate(["300", None, True, False, [], {}, -5, 1.5, 300.0])
+            ),
+            # 1e309 parses to inf, which survives a >= 0 test and then raises in
+            # int(). Reached from the add-source request body, so a raise here is
+            # an HTTP 500.
+            *(
+                pytest.param(
+                    bad, id=f"test_non_finite_property_falls_back_instead_of_raising-bad{i}"
+                )
+                for i, bad in enumerate(
+                    [1e309, -1e309, float("inf"), float("-inf"), float("nan")]
+                )
+            ),
+        ],
+    )
+    def test_unusable_property_falls_back_to_the_default(self, bad: object):
         with patch("kiro_crew.config.loader.KiroCrewConfig.load",
                    return_value=_cfg(300)):
             assert folder_chunk_budget({"chunk_budget": bad}) == 300

@@ -23,7 +23,25 @@ from messaging_privacy_mode_helpers import session_map_fixture  # noqa: F401
 from messaging_privacy_mode_helpers import _TG_KEY, _land_on_disk, _Recorder, _Sessions
 
 from kiro_crew.messaging import privacy_mode
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.wait import (
+    async_wait_until,
+    await_until,
+    default_timeout,
+    finished,
+    until_parked,
+)
+
+
+async def _until_a_caller_joins(mode: str = privacy_mode.MODE_INCOGNITO) -> None:
+    """Wait until a caller is parked on the settled event of the group in flight for *mode*.
+
+    The positive signal an absence assertion needs before it reads whether the second
+    caller is still waiting: the caller joined the group and waits on it, so finding it
+    undone afterwards means the product made it wait, not that it had not started yet.
+    """
+    group = privacy_mode._pending.get((mode, _TG_KEY))
+    assert group is not None, f"no {mode} group is in flight for a caller to join"
+    await until_parked(group.settled, describe=lambda: f"holders={group.holders}")
 
 
 class TestReservations:
@@ -250,6 +268,9 @@ class TestReservations:
         assert [e["outcome"] for e in audits] == ["allowed", "retained"]
         assert audits[-1]["resources"] == f"release_failed:persist_failed:{_TG_KEY}"
         assert privacy_mode._pending == {}
+        # The put-back re-owed the map a debounced write, which can still be on
+        # its worker thread here; a restart must not read the file mid-replace.
+        await _land_on_disk(sm)
         privacy_mode.reset()
         privacy_mode.hydrate(_Sessions(session_map()), _TG_KEY)
         assert privacy_mode.is_incognito(_TG_KEY), "a restart did not hydrate the retained mode"
@@ -400,8 +421,8 @@ class TestReservations:
         real_stamp = privacy_mode._persist_transcript_mode
 
         async def _slow_stamp(session_key: str, mode: str) -> None:
-            # flake-ok: pre-existing unbounded gate wait in the stamp stub, released by the test's gate.set(), moved verbatim; tracked for a de-flake pass
-            await gate.wait()  # the first application is mid-await here
+            # the first application is mid-await here
+            await await_until(gate, what="the test releasing the header stamp")
             await real_stamp(session_key, mode)
 
         monkeypatch.setattr(privacy_mode, "_persist_transcript_mode", _slow_stamp)
@@ -426,12 +447,12 @@ class TestReservations:
             return res
 
         second = asyncio.create_task(_reserve_then_steer_lands())
-        # flake-ok: pre-existing one-yield barrier before reading whether the second caller still waits, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _until_a_caller_joins()  # the second caller has reached the group and waits on it
         second_waited = not second.done()  # asserted last: the ERASE is the finding
         gate.set()
-        # flake-ok: pre-existing gather with no timeout of the two reservations the gate.set() above releases, moved verbatim; tracked for a de-flake pass
-        first_res, _second_res = await asyncio.gather(first, second)
+        first_res, _second_res = await finished(
+            asyncio.gather(first, second), "the two reservations"
+        )
         await privacy_mode.release(
             first_res, sessions=sessions, source="telegram"
         )  # the first's steer did not land
@@ -446,14 +467,17 @@ class TestReservations:
 
     @pytest.mark.asyncio
     async def test_a_joiner_attempts_its_own_application_when_the_firsts_failed(
-        self, audits, session_map, monkeypatch
+        self, audits, session_map, monkeypatch, request
     ):
         """The first holder's application is refused (the map cannot write the row);
         the joiner does not ride a failed application -- it attempts its own, which
         the same map refuses too, and no pending state is left behind."""
+        from kiro_crew.history import ConversationLog
+
         sm = session_map()
         sessions = _Sessions(sm)
-        gate = asyncio.Event()
+        in_read, gate = threading.Event(), threading.Event()
+        request.addfinalizer(gate.set)  # a failed test must not leave the reader thread parked
 
         real_set_flag = sm.set_flag
 
@@ -461,33 +485,32 @@ class TestReservations:
             raise OSError("disk full")
 
         monkeypatch.setattr(sm, "set_flag", _slow_failing_set_flag)
-        real_read = privacy_mode.asyncio.to_thread
+        real_read = ConversationLog.get_metadata
 
-        async def _gated_to_thread(fn, *a, **kw):
-            # flake-ok: pre-existing unbounded gate wait in the to_thread stub, released by the test's gate.set(), moved verbatim; tracked for a de-flake pass
-            await gate.wait()  # hold the first holder in its pre-application header read
-            return await real_read(fn, *a, **kw)
+        def _gated_read(self, key):
+            # hold the first holder in its pre-application header read, in its worker thread
+            in_read.set()
+            assert gate.wait(timeout=default_timeout()), "the test never released the header read"
+            return real_read(self, key)
 
-        # flake-ok: pre-existing stdlib asyncio.to_thread rebound worker-wide through privacy_mode's asyncio alias, scoped to this test by monkeypatch, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(privacy_mode.asyncio, "to_thread", _gated_to_thread)
+        monkeypatch.setattr(ConversationLog, "get_metadata", _gated_read)
         first = asyncio.create_task(
             privacy_mode.reserve(
                 privacy_mode.MODE_INCOGNITO, _TG_KEY, source="telegram", sessions=sessions
             )
         )
-        # flake-ok: pre-existing one-yield barrier so the first holder reaches its gated read, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await async_wait_until(in_read.is_set)  # the first holder reached its gated read
         second = asyncio.create_task(
             privacy_mode.reserve(
                 privacy_mode.MODE_INCOGNITO, _TG_KEY, source="telegram", sessions=sessions
             )
         )
-        # flake-ok: pre-existing one-yield barrier before reading whether the joining reservation still waits, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _until_a_caller_joins()  # the joining reservation reached the group and waits
         assert not second.done()
         gate.set()
-        # flake-ok: pre-existing gather with no timeout of the two reservations the gate.set() above releases, moved verbatim; tracked for a de-flake pass
-        results = await asyncio.gather(first, second, return_exceptions=True)
+        results = await finished(
+            asyncio.gather(first, second, return_exceptions=True), "the two reservations"
+        )
         assert all(isinstance(r, privacy_mode.PrivacyModeRefused) for r in results), results
         assert privacy_mode._pending == {} and not privacy_mode.is_incognito(_TG_KEY)
         monkeypatch.setattr(sm, "set_flag", real_set_flag)
@@ -601,9 +624,8 @@ class TestReservations:
             if patch.get("memory_mode") != target:
                 return real(self, session_key, patch, predicate, **kw)
             in_write.set()
-            # flake-ok: pre-existing 10 s bound on the stub's gate wait, whose expiry is silent, moved verbatim; tracked for a de-flake pass
-            gate.wait(timeout=10)
             try:
+                assert gate.wait(timeout=default_timeout()), "the test never released the restore"
                 if then_raise is not None:
                     raise then_raise
                 return real(self, session_key, patch, predicate, **kw)
@@ -645,7 +667,7 @@ class TestReservations:
 
     @pytest.mark.asyncio
     async def test_two_declined_steers_released_together_leave_no_private_header(
-        self, audits, session_map, monkeypatch
+        self, audits, session_map, monkeypatch, request
     ):
         """The same two declined steers, their releases INTERLEAVED: the temporary
         release is mid-restore (its header write, targeting the incognito claim
@@ -660,6 +682,7 @@ class TestReservations:
 
         log, sm, sessions, temp, inco = await self._reserve_both_modes(session_map)
         gated, in_write, gate, _done = self._gate_the_restore_to("incognito")
+        request.addfinalizer(gate.set)  # a failed test must not leave the restore thread parked
         monkeypatch.setattr(ConversationLog, "update_metadata_if", gated)
         releasing_temp = asyncio.create_task(
             privacy_mode.release(temp, sessions=sessions, source="telegram")
@@ -668,13 +691,14 @@ class TestReservations:
         releasing_inco = asyncio.create_task(
             privacy_mode.release(inco, sessions=sessions, source="telegram")
         )
-        # flake-ok: pre-existing 50 ms barrier before reading whether the second release still waits, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms barrier while the first restore is gated, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.05)
+        # Wait until the second release is parked on the session's durable-write lock, which
+        # the first holds, so reading whether it finished can only find it held back.
+        held = privacy_mode._key_locks.get(_TG_KEY)
+        assert held is not None, "the first release holds no durable-write lock"
+        await until_parked(held.lock)
         inco_done_early = releasing_inco.done()  # asserted last: the header is the finding
         gate.set()
-        # flake-ok: pre-existing gather with no timeout of the two releases the gate.set() above releases, moved verbatim; tracked for a de-flake pass
-        results = await asyncio.gather(releasing_temp, releasing_inco)
+        results = await finished(asyncio.gather(releasing_temp, releasing_inco), "the two releases")
         await _land_on_disk(sm)
         self._assert_nothing_private_remains(log, sm, audits, after="two releases interleaved")
         assert results == [True, True]
@@ -683,7 +707,7 @@ class TestReservations:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("outcome", ["restored", "raised"])
     async def test_a_cancellation_during_the_header_restore_completes_the_release(
-        self, audits, session_map, monkeypatch, outcome
+        self, audits, session_map, monkeypatch, outcome, request
     ):
         """The release task is cancelled (a gateway shutdown) while its header
         restore is in its worker thread: the thread cannot be stopped and the
@@ -709,6 +733,7 @@ class TestReservations:
         gated, in_write, gate, done = self._gate_the_restore_to(
             "persistent", then_raise=OSError("read-only") if outcome == "raised" else None
         )
+        request.addfinalizer(gate.set)  # a failed test must not leave the restore thread parked
         monkeypatch.setattr(ConversationLog, "update_metadata_if", gated)
         releasing = asyncio.create_task(
             privacy_mode.release(res, sessions=sessions, source="telegram")
@@ -721,8 +746,7 @@ class TestReservations:
         releasing.cancel()
         gate.set()
         with pytest.raises(asyncio.CancelledError):
-            # flake-ok: pre-existing await with no timeout of the cancelled release task, moved verbatim; tracked for a de-flake pass
-            await releasing
+            await await_until(releasing, what="the cancelled release")
         await async_wait_until(done.is_set, off_loop=True)
         await _land_on_disk(sm)
         header = log.get_metadata(_TG_KEY).get("memory_mode")
@@ -770,8 +794,7 @@ class TestReservations:
 
         async def _slow_flush() -> None:
             in_clear.set()
-            # flake-ok: pre-existing unbounded gate wait in the flush stub, released by the test's gate.set(), moved verbatim; tracked for a de-flake pass
-            await gate.wait()
+            await await_until(gate, what="the test releasing the clear")
             await real_aflush()
 
         monkeypatch.setattr(sm, "aflush", _slow_flush)
@@ -790,15 +813,11 @@ class TestReservations:
                 notify=rec.notify,
             )
         )
-        # flake-ok: pre-existing 10 ms barrier before reading whether the arriving modifier still waits, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 10 ms barrier while the release is gated, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0.01)
+        await _until_a_caller_joins()  # the arriving modifier reached the releasing group and waits
         request_waited = not arriving.done()  # asserted last: the lost mode is the finding
         gate.set()
-        # flake-ok: pre-existing await with no timeout of the release the gate.set() above lets finish, moved verbatim; tracked for a de-flake pass
-        released = await releasing
-        # flake-ok: pre-existing await with no timeout of the arriving modifier's task, moved verbatim; tracked for a de-flake pass
-        applied = await arriving
+        released = await await_until(releasing, what="the release")
+        applied = await await_until(arriving, what="the arriving modifier")
         await _land_on_disk(sm)
         marked = privacy_mode.is_incognito(_TG_KEY)
         row = sm.get_flag(_TG_KEY, "incognito")
@@ -826,8 +845,7 @@ class TestAnInFlightCommitIsHeldNotPublished:
         real = sm.aflush
 
         async def _aflush() -> None:
-            # flake-ok: pre-existing unbounded gate wait in the flush stub, released by the test's gate.set(), moved verbatim; tracked for a de-flake pass
-            await gate.wait()
+            await await_until(gate, what="the test releasing the flush")
             if fail:
                 raise OSError("disk full")
             await real()
@@ -866,8 +884,7 @@ class TestAnInFlightCommitIsHeldNotPublished:
         assert rec.notices == [] and audits == []
         gate.set()
         with pytest.raises(privacy_mode.PrivacyModeRefused):
-            # flake-ok: pre-existing await with no timeout of the modifier the gate.set() above lets finish, moved verbatim; tracked for a de-flake pass
-            await task
+            await await_until(task, what="the modifier")
         # The hold is gone with the write.
         assert not privacy_mode.is_restricted(_TG_KEY)
         assert sm.get_flag(_TG_KEY, "incognito") is False
@@ -895,8 +912,7 @@ class TestAnInFlightCommitIsHeldNotPublished:
         await async_wait_until(lambda: privacy_mode._landing(privacy_mode.MODE_INCOGNITO, _TG_KEY))
         assert _TG_KEY not in privacy_mode._incognito and audits == [] and rec.notices == []
         gate.set()
-        # flake-ok: pre-existing await with no timeout of the modifier the gate.set() above lets finish, moved verbatim; tracked for a de-flake pass
-        assert await task is True
+        assert await await_until(task, what="the modifier") is True
         assert _TG_KEY in privacy_mode._incognito
         assert session_map().get_flag(_TG_KEY, "incognito") is True
         assert [e["outcome"] for e in audits] == ["allowed"]
@@ -935,12 +951,12 @@ class TestAnInFlightCommitIsHeldNotPublished:
                 notify=rec.notify,
             )
         )
-        # flake-ok: pre-existing one-yield barrier before reading whether the second modifier still waits, moved verbatim; tracked for a de-flake pass
-        await asyncio.sleep(0)
+        await _until_a_caller_joins()  # the second modifier reached the group and waits on it
         assert not second.done(), "the second modifier must wait for the write in flight"
         gate.set()
-        # flake-ok: pre-existing gather with no timeout of the two modifiers the gate.set() above releases, moved verbatim; tracked for a de-flake pass
-        res, applied_by_second = await asyncio.gather(first, second)
+        res, applied_by_second = await finished(
+            asyncio.gather(first, second), "the reservation and the second modifier"
+        )
         assert applied_by_second is False
         assert [e["outcome"] for e in audits] == ["allowed"]
         assert rec.notices == [privacy_mode.NOTICE_INCOGNITO]

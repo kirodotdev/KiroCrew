@@ -222,15 +222,40 @@ YML
   echo "$app"
 }
 
-# 1. UPDATE artifact (1.0.1): build -> sign -> ditto-zip into OUT/update
+# OTA_PAD_BYTES (default 0) pads the UPDATE bundle with that many random bytes
+# so the update ZIP can be pushed past a transport size limit. The macOS
+# updater has crashed before on any update ZIP over 1 GiB: Squirrel buffers
+# the whole download in one NSData, CFData's capacity doubling then asks for
+# 2 GiB, and PartitionAlloc refuses that as a fatal OOM. A normal test bundle
+# is far below that line, so without padding this harness cannot catch the
+# crash coming back.
+#
+# The padding MUST be incompressible (/dev/urandom): the limit is on the size
+# of the ZIP received, so compressible filler would shrink in the ZIP and miss
+# it. It goes in Contents/Resources BEFORE signing, so the seal covers it and
+# the swapped bundle is the padded one.
+OTA_PAD_BYTES="${OTA_PAD_BYTES:-0}"
+case "$OTA_PAD_BYTES" in
+  ''|*[!0-9]*) echo "ERROR: OTA_PAD_BYTES must be a whole number of bytes, got '$OTA_PAD_BYTES'"; exit 1 ;;
+esac
+
+# 1. UPDATE artifact (1.0.1): build -> (pad) -> sign -> ditto-zip into OUT/update
 UPD_APP="$(build_dir "$UPDATE_VER")"
 [ -n "$UPD_APP" ] || { echo "ERROR: no .app produced for update build"; exit 1; }
+if [ "$OTA_PAD_BYTES" -gt 0 ]; then
+  PAD_FILE="$UPD_APP/Contents/Resources/ota-padding.bin"
+  echo ">>> padding the update bundle with $OTA_PAD_BYTES incompressible bytes"
+  head -c "$OTA_PAD_BYTES" /dev/urandom > "$PAD_FILE"
+  got_pad="$(stat -f %z "$PAD_FILE")"
+  [ "$got_pad" = "$OTA_PAD_BYTES" ] \
+    || { echo "ERROR: padding file is $got_pad bytes, expected $OTA_PAD_BYTES"; exit 1; }
+fi
 setup_signing_identity
 sign_app "$UPD_APP"
 UPD_ZIP="$OUT/update/Kiro-$UPDATE_VER-mac.zip"
 echo ">>> packaging update zip (ditto)"
 ditto -c -k --sequesterRsrc --keepParent "$UPD_APP" "$UPD_ZIP"
-echo "    update zip: $UPD_ZIP"
+echo "    update zip: $UPD_ZIP ($(stat -f %z "$UPD_ZIP") bytes)"
 
 # 2. INSTALLED app (1.0.0): build -> sign -> copy into OUT/installed
 # 2. INSTALLED app (1.0.0): build -> ditto into OUT/installed -> sign IN PLACE.

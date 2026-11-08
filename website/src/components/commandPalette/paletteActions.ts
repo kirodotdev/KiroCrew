@@ -5,8 +5,8 @@ import { useMutation } from '@tanstack/react-query'
 
 import { useAppDispatch, useAppSelector, useAppStore } from '../../store'
 import { setPendingInput } from '../../store/chatSlice'
-import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
-import { useMayLeaveForNavigation, useIsCurrentUrl } from '../NavigationLeaveGuard'
+import { createChatForView, reportCreateFailure, showCreatedChat } from '../../lib/createdChatView'
+import { useMayLeaveForNavigation, useIsCurrentUrl, useAskingNavigate } from '../NavigationLeaveGuard'
 
 /**
  * Shared §2 Enter-matrix engine for the Search Everywhere command palette.
@@ -91,7 +91,8 @@ export interface PaletteActions {
    */
   enterInsertOrNewSession: (token: string) => void
   /** Navigate to an in-app route (open / preview surfaces). */
-  navigate: (route: string) => void
+  /** False when a leave guard kept the page on screen. */
+  navigate: (route: string) => boolean
 }
 
 export function usePaletteActions(): PaletteActions {
@@ -105,16 +106,15 @@ export function usePaletteActions(): PaletteActions {
   // below rather than calling `navigate` themselves.
   const mayLeave = useMayLeaveForNavigation()
   const isCurrentUrl = useIsCurrentUrl()
+  // The create can take seconds, so its navigate asks when it runs.
+  const askingNavigate = useAskingNavigate()
   const hasActiveChat = useAppSelector((s) => s.chat.activeSlot !== null)
 
   const { mutate: doCreateSlot } = useMutation({
-    mutationFn: () => createChatForView(dispatch, store.getState, { defaultFolder: true }),
-    onError: (err: unknown) => {
-      // The palette has already closed by the time this settles, so there is no
-      // surface left to render the failure on and no other record of it.
-      // eslint-disable-next-line no-console -- sole diagnostic for a failed session create; without it the row silently does nothing
-      console.error('[palette] failed to create session:', err)
-    },
+    mutationFn: () => createChatForView(dispatch, store.getState, { defaultFolder: true, crewModeDefault: true }),
+    // The palette has already closed by the time this settles, so the failure
+    // goes to the shell notice.
+    onError: (err: unknown) => reportCreateFailure(dispatch, err),
   })
 
   const insertToken = useCallback((token: string) => {
@@ -126,10 +126,11 @@ export function usePaletteActions(): PaletteActions {
       // `pendingInput` belongs to whichever composer is mounted. If the user
       // moved to another session or page during the create, it would land in
       // that session's composer, so the token is staged only when the new
-      // session is the one on screen.
-      onSuccess: (view) => { if (showCreatedChat(view, navigate)) dispatch(setPendingInput(token)) },
+      // session is the one on screen, and not when the page the user stayed
+      // on refused to be left.
+      onSuccess: (view) => { if (showCreatedChat(view, askingNavigate)) dispatch(setPendingInput(token)) },
     })
-  }, [doCreateSlot, dispatch, navigate])
+  }, [doCreateSlot, dispatch, askingNavigate])
 
   return useMemo<PaletteActions>(() => ({
     hasActiveChat,
@@ -140,11 +141,12 @@ export function usePaletteActions(): PaletteActions {
     navigate: (route: string) => {
       // A jump to where we already are unmounts nothing, so it must not ask.
       const asked = !isCurrentUrl(route)
-      if (asked && !mayLeave()) return
+      if (asked && !mayLeave()) return false
       // `leaveGranted` (the guide's `enter` and the rail's `NavItem` write the
       // same mark): the guards were asked in this step, so a page that stays
       // mounted through the jump and acts on it must not ask again.
       navigate(route, asked ? { state: { leaveGranted: true } } : undefined)
+      return true
     },
   }), [hasActiveChat, insertToken, newSessionWithToken, navigate, mayLeave, isCurrentUrl])
 }

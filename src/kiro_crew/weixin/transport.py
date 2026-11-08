@@ -17,8 +17,8 @@ SCAFFOLD NOTES / TODO:
     BEFORE any download (``messaging/attachments.py`` classifies and refuses it
     ahead of the fetch), so it costs no CDN round trip; outbound media is still
     unimplemented (``getuploadurl`` + encrypted CDN PUT).
-  * Outbound chunking uses a naive splitter; swap for ``renderer`` once the
-    Markdown block splitter lands.
+  * Outbound chunking goes through ``renderer.render_chunks``, the Markdown-
+    and fence-aware splitter.
   * Group delivery is intentionally unsupported for now (iLink bot identities
     rarely receive group events); DM-only, matching Hermes' practical default.
 """
@@ -29,6 +29,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -42,10 +43,13 @@ from kiro_crew.messaging.transport import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.weixin.client import (
+    BACKOFF_DELAY_SECONDS,
     INBOUND_MEDIA_ITEM_TYPES,
     ITEM_TEXT,
+    MAX_CONSECUTIVE_FAILURES,
     MESSAGE_DEDUP_TTL_SECONDS,
     RATE_LIMIT_ERRCODE,
+    RETRY_DELAY_SECONDS,
     SESSION_EXPIRED_ERRCODE,
     ContextTokenStore,
     WeixinClient,
@@ -61,6 +65,21 @@ DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 #: outside this set is REFUSED rather than adopted, so a typo in ``config.json``
 #: cannot land a policy the authorize ladder would fall through on.
 WEIXIN_DM_POLICIES = frozenset(("open", "allowlist", "disabled"))
+
+#: Cap on :attr:`WeixinTransport._known_users`, the LRU of recently-seen DM peers
+#: learned from inbound traffic. Under ``dm_policy="open"`` the key space is every
+#: user who ever messaged the bot, so the map is bounded to the most recent peers
+#: to stop it growing for the life of the gateway process. A named constant so the
+#: value is explicit; the sibling ``wecom/transport.py`` peer set (``_warm_chats``)
+#: is bounded the same way by ``WECOM_WARM_CHATS_MAX``.
+KNOWN_USERS_CAP = 512
+
+#: Longest ``from_user_id`` kept in :attr:`WeixinTransport._known_users`. A longer
+#: id is still served, just not remembered as a recent peer -- the point is only
+#: to keep the per-entry key size bounded so the 512-entry cap is a bound on bytes
+#: retained, not merely on entry count. It is a retention ceiling, NOT a claim
+#: about the real iLink id length, so it never drops or truncates a message.
+MAX_RETAINED_USER_ID_LEN = 256
 
 # iLink renders Markdown natively; DM-only; no threads. ``files_inbound=True``
 # because inbound image/voice/file items are downloaded from the WeChat CDN and
@@ -111,7 +130,22 @@ class WeixinTransport(MessagingTransport):
         self._account_id = account_id
         self._ctx = ctx_store
         self._allowed: frozenset[str] = frozenset(str(u) for u in allowed_user_ids)
-        self._known_users: set[str] = set()
+        # LRU of recently-seen DM peers, learned from inbound traffic and bounded
+        # to KNOWN_USERS_CAP so it cannot grow for the gateway's life under
+        # dm_policy="open". It only advertises recent peers as proactive-send
+        # targets (configured_targets / resolve_configured_target): an evicted peer
+        # drops out of those until it writes again, so a proactive send addressed
+        # to it is unavailable in that window. It never affects authorization --
+        # may_send_to consults _allowed ALONE -- and the peer returns to the set
+        # the moment it writes again.
+        self._known_users: OrderedDict[str, None] = OrderedDict()
+        # Count of peers the cap has evicted from _known_users. Consumed by
+        # configured_targets() (which discloses the overflow once per snapshot)
+        # and by resolve_configured_target() (whose refusal names the truncation
+        # instead of reusing the "never configured" reason), so a truncated tail
+        # does not read as a population that never named those peers. Required by
+        # the a-bound-bounds-every-field-it-retains review rule.
+        self._known_users_evicted = 0
         self._dm_policy = dm_policy
         self._dispatch = dispatch
         self.capabilities = WEIXIN_CAPABILITIES
@@ -190,7 +224,9 @@ class WeixinTransport(MessagingTransport):
     ) -> str:
         ctx_token = self._ctx.get(self._account_id, conversation_id)
         last = ""
-        for i, part in enumerate(_chunk(content, WEIXIN_CAPABILITIES.max_message_chars)):
+        # OFF the loop, like the renderer's own send: the split grades credential seams.
+        parts = await asyncio.to_thread(_chunk, content, WEIXIN_CAPABILITIES.max_message_chars)
+        for i, part in enumerate(parts):
             if i:
                 await asyncio.sleep(0.3)  # avoid iLink rate-limit drops
             client_id = uuid.uuid4().hex
@@ -211,16 +247,51 @@ class WeixinTransport(MessagingTransport):
         return []
 
     def configured_targets(self) -> list[ConfiguredChannelTarget]:
-        identities = self._allowed | self._known_users
-        return [
+        identities = self._allowed | set(self._known_users)
+        targets = [
             ConfiguredChannelTarget(f"user:{user_id}", f"Weixin DM · {user_id}")
             for user_id in sorted(identities)
         ]
+        if self._known_users_evicted:
+            # Say the overflow out loud ONCE per snapshot: past KNOWN_USERS_CAP the
+            # least-recent learned peers have been evicted, so this list is a
+            # truncated tail, not the full set of peers ever seen. Without this a
+            # reader cannot tell a capped roster from one that simply never named
+            # those peers. The sentinel is unavailable, so it is never a send
+            # target. The label states the roster is truncated, not a distinct-peer
+            # count -- peers rotating past the cap raise the eviction tally without
+            # the live set changing size.
+            targets.append(
+                ConfiguredChannelTarget(
+                    "weixin:known-users-overflow",
+                    f"Weixin · recent-peer list truncated at the {KNOWN_USERS_CAP}-peer cap",
+                    available=False,
+                    unavailable_reason="known_users_truncated",
+                )
+            )
+        return targets
 
     async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
         kind, separator, value = target_id.partition(":")
-        identities = self._allowed | self._known_users
+        identities = self._allowed | set(self._known_users)
         if kind != "user" or not separator or value not in identities:
+            if self._known_users_evicted and kind == "user" and separator and value:
+                # The roster is a truncated tail, so a refusal here may be an
+                # evicted recent peer rather than one never configured. Name THAT
+                # (a property of the set), without claiming this specific id was
+                # evicted -- an unknown id and an evicted one are indistinguishable
+                # once the id is gone, and remembering evicted ids to tell them
+                # apart would reintroduce the unbounded growth the cap removes.
+                # caller is a FIXED transport identity, never the target id: SEL
+                # redacts resources/operation/error but NOT caller_identity, so a
+                # credential-shaped id in caller would persist verbatim.
+                sel().log_api_access(
+                    caller="weixin",
+                    operation="weixin_transport.resolve_configured_target",
+                    outcome="unresolved_target_roster_truncated",
+                    source="weixin",
+                    resources=f"known_users_truncated=true cap={KNOWN_USERS_CAP}",
+                )
             return None
         return await self.resolve_conversation(value), None
 
@@ -335,7 +406,11 @@ class WeixinTransport(MessagingTransport):
                     # unrecognized code would spin instead of backing off the way
                     # the two known codes do.
                     failures += 1
-                    delay = 2 if failures < 3 else 30
+                    delay = (
+                        RETRY_DELAY_SECONDS
+                        if failures < MAX_CONSECUTIVE_FAILURES
+                        else BACKOFF_DELAY_SECONDS
+                    )
                     logger.warning(
                         "weixin: poll returned error code %r (%d) — retrying in %ds",
                         errcode,
@@ -351,6 +426,20 @@ class WeixinTransport(MessagingTransport):
                         self._client._handler_tasks.add(task)
                     try:
                         await self.receive(msg)
+                    except asyncio.CancelledError:
+                        # Shutdown: let it propagate so teardown is not mistaken
+                        # for loop death (see the outer handler).
+                        raise
+                    except Exception:
+                        # Guard EACH message on its own. ``_sync_buf`` already
+                        # advanced to this batch's cursor ABOVE, and the next
+                        # poll confirms it to the server -- so a raising
+                        # ``receive`` that escaped to the outer ``except`` would
+                        # drop every LATER message in this batch with no
+                        # redelivery. One bad message must cost only itself.
+                        logger.warning(
+                            "weixin: dropping one message that failed to process", exc_info=True
+                        )
                     finally:
                         if task is not None:
                             self._client._handler_tasks.discard(task)
@@ -362,7 +451,11 @@ class WeixinTransport(MessagingTransport):
                 raise
             except Exception as exc:
                 failures += 1
-                delay = 2 if failures < 3 else 30
+                delay = (
+                    RETRY_DELAY_SECONDS
+                    if failures < MAX_CONSECUTIVE_FAILURES
+                    else BACKOFF_DELAY_SECONDS
+                )
                 logger.warning(
                     "weixin: poll error (%d): %s — retrying in %ds", failures, exc, delay
                 )
@@ -452,7 +545,19 @@ class WeixinTransport(MessagingTransport):
         # grow that file at will.
         if not self.authorize(msg):
             return
-        self._known_users.add(from_user)
+        # Remember the peer as recently-seen, newest-last, and evict the oldest
+        # over the cap -- bounded so an open-policy transport cannot accumulate
+        # one entry per distinct sender for the gateway's life. A pathologically
+        # long id is NOT retained (it would make the per-entry byte size
+        # unbounded), but the message is still served: retention is only the
+        # recent-peer hint for proactive sends, so skipping it costs this peer
+        # nothing beyond being re-learned when it writes a normal-length id.
+        if len(from_user) <= MAX_RETAINED_USER_ID_LEN:
+            self._known_users[from_user] = None
+            self._known_users.move_to_end(from_user)
+            while len(self._known_users) > KNOWN_USERS_CAP:
+                self._known_users.popitem(last=False)
+                self._known_users_evicted += 1
 
         # Persist the peer's latest context_token for reply continuity. The store
         # rewrites + atomically replaces a JSON file, so it runs OFF the loop —

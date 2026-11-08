@@ -42,6 +42,7 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path
 
@@ -198,6 +199,17 @@ def normalize_project_name(raw: str) -> str:
     return re.sub(r"\s+", "-", (raw or "").strip()).lower()
 
 
+def is_unportable_project_name(name: str) -> bool:
+    """Whether Windows would store the slug *name* under another name, or as a device.
+
+    Windows strips a trailing dot (``draft.`` becomes ``draft``) and resolves a
+    device stem (``nul``, ``con.paper``) in every directory. Create and clone refuse
+    such a name on every platform, so it cannot break when the data home moves to
+    Windows; opening an existing one is unchanged.
+    """
+    return name.endswith(".") or name.split(".", 1)[0] in WINDOWS_DEVICE_STEMS
+
+
 #: ``os.path.isjunction`` exists only on Python 3.12+. Preferred when present; the
 #: fallback below covers 3.10/3.11, which this project still supports.
 _ISJUNCTION = getattr(os.path, "isjunction", None)
@@ -282,7 +294,7 @@ def safe_project_dir(name: str, root: Path | None = None) -> Path:
     #
     # Junctions included: they are the link type a Windows user can create WITHOUT
     # elevation, and `is_symlink()` does not report them — so a symlink-only check
-    # left the whole guard bypassable on exactly the platform this PR adds.
+    # leaves the whole guard bypassable on Windows.
     if is_reparse_link(candidate):
         raise PathRejected("project path is a symlink")
     try:
@@ -350,7 +362,12 @@ def safe_child(project: Path, relative: str) -> Path:
         project_resolved = project.resolve()
     except OSError as exc:
         raise PathRejected("path could not be resolved") from exc
-    if project_resolved not in resolved.parents:
+    # Compared with Windows' ``\\?\`` prefix folded off both sides: one resolve
+    # can keep it while the other does not, and the lone prefix would read as an
+    # escape. Lexical only, so no redirect is blessed.
+    plain_resolved = platform_compat.strip_extended_length_prefix(resolved)
+    plain_project = platform_compat.strip_extended_length_prefix(project_resolved)
+    if plain_project not in plain_resolved.parents:
         raise PathRejected("path escapes the project")
     # Checked on the REQUESTED segments **and** the RESOLVED ones. Neither alone is
     # sufficient, because a symlink can move `.git` in either direction:
@@ -373,7 +390,7 @@ def safe_child(project: Path, relative: str) -> Path:
     if any(p.lower() == ".git" for p in parts):
         raise PathRejected("invalid path")
     try:
-        rel_parts = resolved.relative_to(project_resolved).parts
+        rel_parts = plain_resolved.relative_to(plain_project).parts
     except ValueError:  # pragma: no cover - containment above already guarantees this
         raise PathRejected("path escapes the project") from None
     if any(p.lower() == ".git" for p in rel_parts):
@@ -1031,7 +1048,12 @@ def delete_file(project: Path, relative: str) -> None:
     # `os.path.realpath`, not `Path.resolve(strict=True)`: the main document may not
     # exist yet (a fresh project, or a config naming a file the clone omitted), and a
     # missing main must not make deletion of everything else raise.
-    if os.path.realpath(target) == os.path.realpath(main):
+    # Compared with Windows' ``\\?\`` prefix folded off both sides, as in
+    # ``safe_child``: one realpath can keep it while the other does not, and the
+    # main document would then read as a different file. The unlink below still
+    # acts on ``target`` as resolved.
+    fold = platform_compat.strip_extended_length_prefix
+    if fold(os.path.realpath(target)) == fold(os.path.realpath(main)):
         raise ValueError("cannot delete the main document")
     if not target.is_file():
         raise FileNotFoundError(relative)

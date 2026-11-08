@@ -161,21 +161,26 @@ if (-not $productName -or -not $productFilename) {
 $expectedDisplayName = "$productName $($package.version)"
 
 # Exercise the install-root ownership boundary with an existing directory. Keep
-# the install itself on the local temp volume: a synced workspace (OneDrive on a
-# developer machine) can recreate or hold files while NSIS removes them, which
+# the install on the local profile volume, not a synced workspace: OneDrive on a
+# developer machine can recreate or hold files while NSIS removes them, which
 # tests the sync client rather than the installer. Evidence still lives under
 # the workspace for artifact upload. The /D argument must remain last for NSIS.
 #
-# The root is kept as SHORT as the per-user default (`%LOCALAPPDATA%\Programs\
-# <product>`), because the uninstaller is bound by MAX_PATH: NSIS deletes with the
+# The root is no deeper than the per-user default (`%LOCALAPPDATA%\Programs\
+# <product>`), because the uninstaller is bound by MAX_PATH: NSIS deletes with
 # plain Win32 calls, which refuse a path of 260 characters or more, and the
-# bundle's deepest files sit ~190 characters below the install root. Measured on
-# the runner with a 73-character root: exactly the three bytecode files whose
-# full paths came to 260, 261 and 262 characters survived a silent uninstall,
-# while the 259-character neighbour was removed. A deeper root than a user's
-# default would therefore fail this script on a limit the product does not
-# promise to beat, and hide nothing about the default install it certifies.
-$requestedInstallRoot = Join-Path ([IO.Path]::GetFullPath($env:TEMP)) "kci-$PID"
+# bundle's deepest bytecode files sit ~190 characters below the install root,
+# which on the runner's default root is a few characters under that limit. A
+# deeper root leaves them behind on a limit the product does not promise to
+# beat. `k-<pid>` matches the 8 characters of `Programs` up to a six-digit PID;
+# the guard turns a longer one into a named failure.
+$localAppData = [IO.Path]::GetFullPath($env:LOCALAPPDATA)
+$requestedInstallRoot = Join-Path $localAppData "k-$PID"
+$testInstallRoot = Join-Path $requestedInstallRoot $productFilename
+$defaultInstallRoot = Join-Path $localAppData "Programs\$productFilename"
+if ($testInstallRoot.Length -gt $defaultInstallRoot.Length) {
+  throw "Installer test path is deeper than the per-user default: $testInstallRoot"
+}
 # A TREE, not one file. The boundary being tested is "the uninstaller removes the
 # subdirectory it created and nothing else in the parent", and a single witness
 # cannot distinguish that from a recursive delete that happens to spare one name.
@@ -637,7 +642,22 @@ do {
   [DateTime]::UtcNow -lt $uninstallDeadline
 )
 if ($remainingRegistrations.Count -ne 0) {
-  throw "Silent uninstall left a $productName registration behind: $(($remainingRegistrations | ForEach-Object { $_.PSPath }) -join '; ')"
+  # NAME each surviving registration, the way the residue branch below names
+  # its files. Find-InstallerRegistrations returns { Entry, InstallRoot }
+  # wrappers, so the key path lives on .Entry (the wrapper has no PSPath of its
+  # own). The hive, DisplayName, InstallLocation and UninstallString tell a slow
+  # uninstaller apart from a registration another step left in the other hive.
+  foreach ($remaining in $remainingRegistrations) {
+    $entry = $remaining.Entry
+    $fields = foreach ($name in @("DisplayName", "InstallLocation", "UninstallString")) {
+      $property = $entry.PSObject.Properties[$name]
+      "${name}=$(if ($property) { $property.Value } else { '<unset>' })"
+    }
+    Write-Host "  left registration: $($entry.PSPath) [$($fields -join '; ')]"
+  }
+  $keys = ($remainingRegistrations | ForEach-Object { $_.Entry.PSPath }) -join '; '
+  throw ("Silent uninstall left $($remainingRegistrations.Count) $productName " +
+    "registration(s) behind: $keys")
 }
 if (Test-Path -LiteralPath $installLocation) {
   # NAME the residue. "The directory is still there" is not actionable: the

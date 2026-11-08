@@ -14,6 +14,7 @@ import json
 from unittest import mock
 from unittest.mock import AsyncMock
 
+import pytest
 from aws_control_routes_helpers import (
     ACCOUNT,
     _consent_ok,
@@ -148,6 +149,34 @@ class TestCostsEndpoint:
                     _request("GET", f"/costs/{ACCOUNT}", match_info={"account": ACCOUNT})
                 )
             )
+        assert resp.status == 409
+        assert _payload(resp)["code"] == "aws_consent_required"
+
+    def test_an_undecodable_cache_file_reads_as_no_cache(self, tmp_path):
+        # A cache file holding non-UTF-8 bytes (a hand edit saved in a legacy
+        # code page) must read as "no cache", like a garbled one, so the
+        # route answers exactly as it does with no cache instead of raising.
+        cache = tmp_path / f"{ACCOUNT}.json"
+        cache.write_bytes(b'{"account": "caf\xe9"}')
+        handlers = _registered()
+        p1, p2, p3 = _enabled_owner_env()
+        with (
+            p1,
+            p2,
+            p3,
+            mock.patch.object(routes_mod.costs_mod, "_cache_path", return_value=cache),
+            mock.patch.object(
+                routes_mod.aws_consent, "refuse_and_log", AsyncMock(return_value=False)
+            ),
+        ):
+            try:
+                resp = asyncio.run(
+                    handlers[("GET", "/costs/{account}")](  # type: ignore[operator]
+                        _request("GET", f"/costs/{ACCOUNT}", match_info={"account": ACCOUNT})
+                    )
+                )
+            except UnicodeDecodeError as exc:
+                pytest.fail(f"an undecodable cost cache escaped the route: {exc!r}")
         assert resp.status == 409
         assert _payload(resp)["code"] == "aws_consent_required"
 

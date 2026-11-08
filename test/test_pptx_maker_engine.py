@@ -35,8 +35,11 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from fake_child_helpers import read_child_records, reap_recorded_children, write_recording_child
 
+from kiro_crew import sandbox
 from kiro_crew.apps.builtins.pptx_maker.backend import engine, engine_source, paths
+from kiro_crew.testing.wait import default_timeout
 
 
 class TestEngineResult:
@@ -69,9 +72,29 @@ class TestSpawnSandboxing:
     """The child is third-party code cloned at provision time and driven with
     model-authored content, so the environment it gets is security-relevant."""
 
-    def test_routes_through_the_credential_scrubbing_chokepoint(self, tmp_path: Path):
+    def test_routes_through_the_credential_scrubbing_chokepoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """Not a bare `subprocess.run`: without the scrubbed env the engine
         inherits AWS_SECRET*/SSH_AUTH_SOCK/GIT_ASKPASS and every bot token."""
+        # One sandbox path on every host: CI runners have no backend.
+        monkeypatch.setattr(sandbox, "detect_backend", lambda **_: "none")
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+        # A real child first: what it actually received through the real chokepoint.
+        secret_key = "DISCORD_BOT_" + "TOKEN"
+        monkeypatch.setenv(secret_key, "fake-" + "bot-value")
+        monkeypatch.setenv("PYTHONPATH", str(tmp_path / "gateway-site"))
+        child = write_recording_child(tmp_path / "child", env_values=("PYTHONPATH",))
+        try:
+            real = engine._spawn(child.argv, cwd=str(tmp_path), timeout=default_timeout())
+        finally:
+            reap_recorded_children(child)
+        assert real.returncode == 0, real.stderr
+        records = read_child_records(child)
+        assert len(records) == 1
+        assert secret_key not in records[0]["env_keys"]
+        assert records[0]["env"]["PYTHONPATH"] is None
+
         scrubbed = {"PATH": "/usr/bin"}
         with (
             mock.patch.object(
@@ -407,22 +430,28 @@ class TestIconScripts:
         assert "missing" in result.stderr
         assert not spawn.called
 
-    def test_runs_the_script_in_its_own_directory(self, tmp_path: Path):
+    def test_runs_the_script_in_its_own_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """The engine's icon scripts resolve their output relative to their own
         location, so the cwd is load-bearing."""
-        python = tmp_path / "python"
-        python.write_text("#!/bin/sh", encoding="utf-8")
-        script = tmp_path / "scripts" / "download_aws_icons.py"
-        script.parent.mkdir(parents=True)
-        script.write_text("print()", encoding="utf-8")
-        with (
-            mock.patch.object(engine.paths, "engine_python", return_value=python),
-            mock.patch.object(engine, "icon_script_path", return_value=script),
-            mock.patch.object(engine, "_spawn", return_value=engine.EngineResult(0, "")) as spawn,
-        ):
-            engine.run_icon_script("aws", "download_aws_icons.py")
-        assert spawn.call_args.args[0] == [str(python), str(script)]
-        assert spawn.call_args.kwargs["cwd"] == str(script.parent)
+        # One sandbox path on every host: CI runners have no backend.
+        monkeypatch.setattr(sandbox, "detect_backend", lambda **_: "none")
+        monkeypatch.setattr(sandbox, "_allow_unsandboxed_exec", lambda: True)
+        child = write_recording_child(tmp_path / "skill" / "scripts", name="download_aws_icons")
+        try:
+            with (
+                mock.patch.object(engine.paths, "engine_python", return_value=Path(sys.executable)),
+                mock.patch.object(engine, "icon_script_path", return_value=child.script),
+            ):
+                result = engine.run_icon_script("aws", "download_aws_icons.py")
+        finally:
+            reap_recorded_children(child)
+        assert result.returncode == 0, result.stderr
+        records = read_child_records(child)
+        assert len(records) == 1
+        assert records[0]["argv"] == [str(child.script)]
+        assert Path(records[0]["cwd"]).resolve() == child.script.parent.resolve()
 
     def test_every_declared_icon_source_names_a_script(self):
         """A source with no script would report a permanent provisioning error

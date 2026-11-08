@@ -34,9 +34,7 @@ from kiro_crew.config.schema import (
     config_entry_to_dict,
 )
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 ALL_CONFIG_CLASSES: list[type] = [
     KiroCrewConfig,
@@ -57,12 +55,8 @@ def _all_fields_recursive(
 ) -> list[tuple[str, dataclasses.Field, object]]:  # type: ignore[type-arg]
     """Yield (dot_path, field, resolved_type) through the dataclass hierarchy.
 
-    Private fields (leading underscore) are internal bookkeeping, not
-    user-facing config — e.g. ``KiroCrewConfig._extra_sections``, which
-    round-trips unknown/edition-contributed top-level sections. They are
-    excluded from the JSON schema (``schema.build_json_schema`` skips them), so
-    they carry no label/help metadata and never appear in SCHEMA_REGISTRY; skip
-    them here for the same reason the builder does.
+    Private fields (such as ``KiroCrewConfig._extra_sections``) are skipped, as
+    ``schema.build_json_schema`` skips them.
     """
     result: list[tuple[str, dataclasses.Field, object]] = []  # type: ignore[type-arg]
     hints = typing.get_type_hints(cls)
@@ -114,9 +108,7 @@ _EXPECTED_TYPE_MAP: dict[type, str] = {
 _SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9_]*$|^\*$")
 
 
-# ---------------------------------------------------------------------------
 # Property Tests
-# ---------------------------------------------------------------------------
 
 
 class TestConfigSchemaProperties:
@@ -279,7 +271,6 @@ class TestConfigSchemaProperties:
                 entry.type in valid_types
             ), f"Entry '{entry.path}' has invalid type '{entry.type}'"
 
-            # Verify kind is set
             assert entry.kind == "core", f"Entry '{entry.path}' has unexpected kind '{entry.kind}'"
 
     # Feature: config-schema, Property 4: Python-to-schema type mapping is correct
@@ -445,9 +436,7 @@ class TestConfigSchemaProperties:
                 )
 
 
-# ---------------------------------------------------------------------------
 # Phase 2: Agent-Workspace Bindings Schema Registry Tests
-# ---------------------------------------------------------------------------
 
 
 class TestDeclaredDictProperties:
@@ -583,7 +572,6 @@ class TestAgentWorkspaceBindingsSchema:
         """
         top_props = JSON_SCHEMA.get("properties", {})
 
-        # agents
         agents_schema = top_props.get("agents", {})
         assert (
             "additionalProperties" in agents_schema
@@ -594,7 +582,6 @@ class TestAgentWorkspaceBindingsSchema:
         assert "workspace" in agents_ap.get("properties", {})
         assert "memory_store" in agents_ap.get("properties", {})
 
-        # workspaces
         ws_schema = top_props.get("workspaces", {})
         assert (
             "additionalProperties" in ws_schema
@@ -603,7 +590,6 @@ class TestAgentWorkspaceBindingsSchema:
         assert ws_ap.get("type") == "object"
         assert "dir" in ws_ap.get("properties", {})
 
-        # memory_stores
         ms_schema = top_props.get("memory_stores", {})
         assert (
             "additionalProperties" in ms_schema
@@ -615,13 +601,9 @@ class TestAgentWorkspaceBindingsSchema:
 
 
 class TestFieldTypeResolution:
-    """Pin the get_type_hints-based field-type resolution (replaced eval()).
+    """Pin field-type resolution via ``typing.get_type_hints(cls)``.
 
-    Schema generation resolves dataclass field annotations via
-    ``typing.get_type_hints(cls)`` against each class's own module namespace,
-    not by ``eval()``-ing annotation strings against the loader module globals.
-    These tests guard against a silent regression where a field type fails to
-    resolve and falls back to the catch-all ``str``/``"string"`` JSON type.
+    A type that fails to resolve falls back silently to the catch-all ``"string"``.
     """
 
     # Fields whose declared type is NOT a plain ``str`` — they must resolve to
@@ -672,12 +654,9 @@ class TestOptionalFieldMapping:
     """An ``X | None`` / ``Optional[X]`` dataclass field maps to a nullable
     base type, not ``"string"``.
 
-    Locks in the field-level ``_optional_inner`` unwrap: without it the union
-    type itself reaches ``_python_type_to_json`` and falls through to the
-    catch-all ``"string"`` with ``nullable=False``, making "unset means
-    inherit the downstream default" unexpressible for numeric config fields.
-    This module uses ``from __future__ import annotations``, so the dataclass
-    below also exercises the string-annotation resolution path end to end.
+    Without the ``_optional_inner`` unwrap a numeric field becomes non-nullable
+    ``"string"``. This module's ``from __future__ import annotations`` also covers
+    string annotations.
     """
 
     def test_optional_int_field_maps_to_nullable_integer(self) -> None:

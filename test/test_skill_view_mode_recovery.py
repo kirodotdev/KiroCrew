@@ -12,13 +12,19 @@ from __future__ import annotations
 
 import gc
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import native_skill_projection_helpers
 import pytest
 
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError, _format_runtime_rpc_error
+
+_end_projections_before_tmp_path_goes = (
+    native_skill_projection_helpers._end_projections_before_tmp_path_goes
+)
 
 VIEW = "kirocrew-skill-view-" + "a" * 24
 OTHER_VIEW = "kirocrew-skill-view-" + "b" * 24
@@ -63,6 +69,11 @@ def native_tree(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", home / "settings" / "mcp.json")
     (agents / "custom.json").write_text('{"name":"custom","description":"v1"}', encoding="utf-8")
+    # Freeze the projection clock so the drain budget never expires; the production
+    # budget is left at its real value and only the deadline comparison is held.
+    # The facade mirror propagates the setattr to every owner module including
+    # alias_reclaim, so one call covers both projection.time and alias_reclaim.time.
+    native_skill_projection_helpers._hold_the_prune_clock(monkeypatch)
     return agents, project
 
 
@@ -104,6 +115,12 @@ def _pre_ledger_backlog(agents, project, count, spec=None):
     views = [prepared.agent("custom") for prepared in held]
     del held
     gc.collect()
+    # A dropped projection's lease ends on the reaper thread, later. Wait for the
+    # ends just queued (the reaper runs them in order) so no view is still leased
+    # when a drain starts and takes it in an extra batch.
+    reached = threading.Event()
+    projection._COLLECTED_ENDS.put(reached.set)
+    assert reached.wait(30), "the reaper did not end the dropped projections"
     metadata = projection._projection_metadata_dir()
     (metadata / projection._VIEW_LEDGER_NAME).unlink()
     projection._VIEW_SOURCES.clear()
@@ -126,6 +143,10 @@ def test_the_boot_drain_records_a_backlog_in_one_ledger_write(native_tree, monke
 
     monkeypatch.setattr(projection, "_record_view_ledger_entries", counted)
     monkeypatch.setattr(projection, "_DRAIN_BATCH_PAUSE_SECS", 0)
+    # The write count is the subject, not the time budget: a loaded runner that
+    # spends the per-batch budget splits the work into an extra batch and write.
+    monkeypatch.setattr(projection, "_PRUNE_MAX_SECONDS_PER_RUN", 3600.0)
+    assert not list(projection._projection_lease_dir().iterdir()), "a view is still leased"
 
     assert projection.drain_stale_aliases() == 3
     assert not any((metadata / f"{view}.json").exists() for view in views)

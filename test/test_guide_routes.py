@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from aiohttp import web
+from crew_log_drain import assert_drained
 from guide_route_helpers import CREWMATE, FakeState, agent, run_guide_app
 
 from kiro_crew import guide_catalog, mcp_guide
@@ -290,6 +291,38 @@ def _started(state: FakeState) -> dict[str, Any]:
     return guide_store_for(state).start(
         slot_key="chat-1", session_key="dashboard:chat-1", actions=CREWMATE
     )
+
+
+def test_a_reloaded_tab_takes_over_and_cancels_after_the_old_lease_lapsed():
+    """The routes sweep before they act, so the old tab's lease lapses inside the
+    very request that takes the guide over. The takeover still lands (no 409),
+    and Cancel from a tab holding an older revision ends it, twice over."""
+    state = FakeState()
+    g = _started(state)
+    store = guide_store_for(state)
+    now = [1_000_000.0]
+    store._clock = lambda: now[0]
+
+    async def go(c):
+        def body(tab: str, revision: int, **extra: Any) -> dict[str, Any]:
+            return {"guide_id": g["guide_id"], "tab_id": tab, "revision": revision, **extra}
+
+        owned = await (
+            await c.post("/api/guide/claim", json=body("t1", g["revision"]), headers=OWNER)
+        ).json()
+        (read,) = (await (await c.get("/api/guide/pending", headers=OWNER)).json())["guides"]
+        now[0] = owned["lease_expires_at"] + 1
+        taken = await c.post(
+            "/api/guide/claim", json=body("t2", read["revision"], take_over=True), headers=OWNER
+        )
+        taken_body = await taken.json()
+        first = await c.post("/api/guide/cancel", json=body("t1", 1), headers=OWNER)
+        second = await c.post("/api/guide/cancel", json=body("t1", 1), headers=OWNER)
+        return taken.status, taken_body, first.status, second.status, await second.json()
+
+    taken_status, taken, first, second, ended = _run(go, state)
+    assert (taken_status, taken["owner_tab"]) == (200, "t2")
+    assert (first, second, ended["status"]) == (200, 200, "cancelled")
 
 
 @pytest.mark.parametrize("auth", ["", "app", "internal"])
@@ -905,9 +938,9 @@ def test_shim_module_holds_no_per_caller_state():
 
 
 def test_shim_schema_rejects_an_injected_guide_id():
-    from kiro_crew.validation import MCP_GUIDE_SCHEMAS, validate_tool_args
+    from kiro_crew.validation import MCP_GUIDE_SCHEMAS, ValidationError, validate_tool_args
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         validate_tool_args({"guide_id": "../x"}, MCP_GUIDE_SCHEMAS["guide_cancel"])
 
 
@@ -1000,7 +1033,7 @@ def guide_log(tmp_path, monkeypatch):
     CrewLog.create(KIND_SESSION, GUIDE_SID, owner="owner", agent="kirocrew", slot="chat-1")
 
     def entries(prefix: str) -> list:
-        assert crew_log_emit.flush()
+        assert_drained()
         handle = CrewLog.open(KIND_SESSION, GUIDE_SID)
         try:
             return [e for e in handle.iter_from(1) if e.type.startswith(prefix)]
@@ -1169,6 +1202,22 @@ def test_a_re_claim_after_a_lapsed_lease_is_not_a_second_start(guide_log):
 
     _run(go, state)
     assert [e.type for e in guide_log("guide/started")] == ["guide/started"]
+
+
+def test_each_patch_bumps_the_rows_revision_so_a_replay_outranks_the_completion(guide_log):
+    """A replay takes the row from ``completed`` back to ``offered``; only the revision orders them."""
+    from kiro_crew.dashboard import chat_cards
+
+    state = FakeState()
+    slot = _live_slot(state)
+    guide = {"guide_id": "g1", "slot_key": "chat-1", "actions": [{"id": "crewmate.create"}]}
+    chat_cards.record_guide_offered(state, guide)
+    seen = []
+    for status in ("completed", "offered"):
+        chat_cards.record_guide_status(state, {**guide, "status": status})
+        (row,) = _rows(slot)
+        seen.append((row["meta"]["card"]["status"], row["meta"]["card"].get("rev")))
+    assert seen == [("completed", 1), ("offered", 2)]
 
 
 def test_a_conversation_that_refuses_the_row_never_breaks_the_guide(guide_log):

@@ -1,29 +1,17 @@
 """The member-memory bindings leaf sits on the READ gate's floor, not the write tier.
 
-A binding record under ``<crew data home>/member-memory-bindings/`` carries the RAW
-session key it binds -- ``{"version": 1, "session_key": <raw>, "memory_store": ...}``
-under ``sessions/<digest>/`` and ``pids/`` -- so an agent file tool that can open one
-gets a usable credential rather than a digest. ``sandbox._CREW_CHILD_WITHHELD_LEAVES``
-already classifies the leaf as one no child may read, and
-``agent_sdk.tool_gate.adapter_hidden_credential_dirs`` enforces that classification by
-projecting ``security.sensitive_home_dirs()``. Putting the leaf on the WRITE tier alone
-satisfies neither reader: ``_WRITE_PROTECTED_HOME_PATHS`` is documented as "readable but
-not writable", and the mask cannot deny a leaf the floor does not name.
+A binding record under ``member-memory-bindings/`` holds the raw session key, a usable
+credential. ``agent_sdk.tool_gate.adapter_hidden_credential_dirs`` masks only what
+``security.sensitive_home_dirs()`` names, and ``_WRITE_PROTECTED_HOME_PATHS`` means
+"readable but not writable", so the write tier alone does not fence it.
 
-Every assertion here is paired with a control, because the whole claim is that ONE leaf
-moved:
+Each assertion has a control:
 
-* ``crons.json`` -- a floor leaf of the same declared class (its withheld-leaf comment
-  says "a cron entry carries the session key its run executes under"). It must be
-  refused and masked, or the gate is not being reached and a pass here means nothing.
-* ``config.json`` -- an unrelated leaf that is write-protected and deliberately
-  READABLE (the dashboard file viewer, ``cat`` and knowledge indexing all read it). It
-  must stay readable through ``sensitive_path_refusal`` and stay absent from the
-  credential mask. This is the control that makes the diff provably one leaf rather
-  than a promotion of the whole write tier.
-* the gateway's own reader -- ``subagent_persistence.read_run_execution`` opens the
-  retained sidecar with ``Path.read_text`` and never consults this gate, so cold
-  continuation of a retained V1 run must still resolve its app owner.
+* ``crons.json``: a floor leaf of the same class; refused and masked, so the gate is reached.
+* ``config.json``: write-protected and deliberately readable; stays readable through
+  ``sensitive_path_refusal`` and out of the mask, so only one leaf changed tier.
+* ``subagent_persistence.read_run_execution`` reads with ``Path.read_text``, bypassing
+  the gate, so a retained V1 run still resolves its app owner.
 """
 
 from __future__ import annotations
@@ -274,19 +262,11 @@ def test_the_gateways_own_reader_still_resolves_a_retained_run(
 def test_the_owning_spec_states_the_leafs_read_disposition() -> None:
     """The document the router sends a reader to must not call the leaf readable.
 
-    ``AGENTS.md`` routes anyone touching sensitive paths to
-    ``docs/system-specs/modules/security.md`` FIRST, and that passage described both
-    roots as sharing "the file-tool write-only gate" with results that "remain
-    readable". That is the write-tier disposition, and it is the opposite of the
-    leaf's: an agent file tool may not open a binding record at all. A reader
-    designing against the spec would treat a raw session key as agent-readable.
+    ``AGENTS.md`` sends readers to ``docs/system-specs/modules/security.md``; calling the
+    leaf "readable" there would invite treating a raw session key as agent-readable.
 
-    Prose is asserted because prose is what drifted, and the two guards are what
-    keep the assertion honest rather than decorative. The PREMISE reads tier
-    membership from the CODE, so moving the leaf back fails here on the premise
-    instead of leaving a sentence that is true again by accident. The CONTROL pins
-    the sibling whose disposition did not change, so the passage cannot satisfy this
-    by being emptied.
+    The premise reads tier membership from the code, and the control pins the sibling,
+    so an emptied passage cannot pass.
     """
     from kiro_crew.security import sensitive_home_dirs, write_protected_home_paths
 

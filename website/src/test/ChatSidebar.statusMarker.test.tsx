@@ -53,7 +53,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -357,8 +364,13 @@ describe('chat sidebar — status marker leads the secondary line', () => {
       { goalLoops: { k1: { active: true, cycle_count: 7, max_cycles: 24 } } },
     )
     const line = lineOf(container)!
-    expect(line.textContent).toContain('Loop 7/24')
+    // Icon only: the count moved to the glyph's tooltip and accessible name.
+    expect(line.textContent).not.toContain('Loop 7/24')
     expect(line.querySelector('.lucide-goal')).toBeTruthy()
+    const icon = line.querySelector('[data-testid="goal-loop-icon"]')
+    expect(icon!.getAttribute('role')).toBe('img')
+    expect(icon!.getAttribute('aria-label')).toBe('Goal loop · cycle 7 of 24')
+    expect(icon!.getAttribute('title')).toBe('Goal loop · cycle 7 of 24')
     expect(line.querySelector('.rounded-full')).toBeNull()
   })
 

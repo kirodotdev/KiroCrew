@@ -1277,3 +1277,26 @@ async def test_a_pre_audit_refusal_names_the_app_once(
     denials = spy.denials()
     assert len(denials) == 1, spy.calls
     assert denials[0]["caller"] == expected
+
+
+@pytest.mark.asyncio
+async def test_direct_local_health_reports_sustained_loop_lag() -> None:
+    """A local probe can tell a slow gateway from a dead one; a remote one cannot."""
+    from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
+
+    watchdog = LoopStallWatchdog(exit_after=None)
+    watchdog.lagging = True
+    watchdog.sustained_lag_episodes = 2
+    app = {
+        "allowed_origins": {"http://localhost:5476"},
+        "state": SimpleNamespace(_loop_watchdog=watchdog),
+    }
+
+    req = _probe_req(headers={"Host": "127.0.0.1:5476"})
+    req.app = app
+    body = json.loads((await core_mod.api_health(req)).body)
+    assert body["loop"] == {"lagging": True, "sustained_lag_episodes": 2}
+
+    remote = _probe_req("203.0.113.9")
+    remote.app = app
+    assert json.loads((await core_mod.api_health(remote)).body) == {"ok": True}

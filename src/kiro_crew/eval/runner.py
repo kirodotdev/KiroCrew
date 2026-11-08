@@ -161,6 +161,22 @@ def score_by_dimension(results: list[ScenarioResult]) -> dict[str, dict[str, Any
     }
 
 
+# ── Tool permission ──
+
+
+def _check_fs_tool_target(raw: str) -> tuple[str, bool]:
+    """Canonicalise a filesystem tool's target path and say whether it is sensitive.
+
+    Both steps touch the filesystem (``resolve()`` walks symlinks, and so does the
+    sensitive-path check), so ``EvalRunner._run_turn`` runs this with
+    ``asyncio.to_thread``: the runner drives several scenario sessions on one loop.
+    """
+    from kiro_crew.security import is_sensitive_path
+
+    resolved = str(Path(raw).expanduser().resolve())
+    return resolved, is_sensitive_path(resolved)
+
+
 # ── Profile seeding ──
 
 
@@ -507,8 +523,6 @@ class EvalRunner:
                     source="eval_runner",
                 )
             elif event.kind == EVENT_PERMISSION_REQUEST:
-                from kiro_crew.security import is_sensitive_path
-
                 reason = await asyncio.to_thread(
                     refusal_for,
                     event,
@@ -559,9 +573,10 @@ class EvalRunner:
                 elif safety == "prefix_fs":
                     # Filesystem operation — deny-by-default path check
                     target = self._extract_path_from_input(event.tool_input or "")
+                    sensitive = False
                     if target:
-                        target = str(Path(target).expanduser().resolve())
-                    if target and not is_sensitive_path(target):
+                        target, sensitive = await asyncio.to_thread(_check_fs_tool_target, target)
+                    if target and not sensitive:
                         # Audit BEFORE the wire call (approve_tool can raise);
                         # the definitive row follows.
                         sel().log_tool_invocation(

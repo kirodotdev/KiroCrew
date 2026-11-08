@@ -40,6 +40,10 @@ _STALE_RATIONALE = re.compile(r"""(?ix)
     | [`'"]{0,2} icacls [`'"]{0,2} \s+ via \b
     """)
 
+#: Every :data:`_STALE_RATIONALE` match holds this word, under the same case folding,
+#: so a file it does not find is skipped before its lines are matched one by one.
+_MENTION = re.compile("icacls", re.IGNORECASE)
+
 #: Files whose icacls mentions are deliberate, with the reason each stays.
 _KEEP = {
     # Spawns ``icacls <path>`` on Windows to VERIFY the applied DACL, and
@@ -73,6 +77,8 @@ def _scan() -> list[str]:
             if rel in _KEEP:
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
+            if not _MENTION.search(text):
+                continue
             for lineno, line in enumerate(text.splitlines(), start=1):
                 if _STALE_RATIONALE.search(line):
                     hits.append(f"{rel}:{lineno}: {line.strip()}")

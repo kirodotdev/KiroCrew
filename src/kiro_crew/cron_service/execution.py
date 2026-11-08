@@ -171,6 +171,24 @@ def run_parks_one_shot(job: CronJob) -> bool:
     return not job.run_never_started or job.refusal_cannot_clear
 
 
+def auto_pause_failed_one_shot(job: CronJob, last_status: str | None) -> None:
+    """Auto-pause ``job`` when this run is a failed ``delete_after_run`` one-shot.
+
+    The one copy of the rule. A one-shot whose run failed (``last_status`` is
+    ``error``: an error, a timeout, a cancel or a reap) is kept and auto-paused
+    instead of consumed. The pause is execution-owned, so ``apply_run_record``
+    persists it under the generation fence. A fire-time denial and a run whose
+    payload never started are not failed runs and keep their own handling. A job
+    already auto-paused is left alone, so the transition is audited once.
+    """
+    if not job.delete_after_run or last_status != "error" or job.auto_paused:
+        return
+    if job.fire_time_denied or job.run_never_started:
+        return
+    job.enabled, job.auto_paused = False, True
+    job._audit_pause_change("auto_paused")
+
+
 def interruption_note(*, dispatched: bool) -> str:
     """The history row's error text for a run the cron service stopped.
 
@@ -330,3 +348,26 @@ def apply_run_record(target: CronJob, run: CronJob) -> None:
     # last completed run's values and the copy changes nothing.
     target.last_retry_count = run.last_retry_count
     target.last_retry_run_ts = run.last_retry_run_ts
+
+
+def pause_at_current_limit(target: CronJob, run: CronJob) -> None:
+    """Decide the auto-pause a failed recurring run causes against ``target``'s limit.
+
+    The run counted its failure on its own copy of the job, against the limit
+    that copy held. ``target`` is the store's copy, after ``apply_run_record``,
+    and carries the limit as stored, so a limit saved while the run was in
+    flight decides here, in both directions. A one-shot keeps its own pause, and
+    a run that started auto-paused keeps the pause it started in. The decision
+    is written onto the record ``run``, so each later apply of the record starts
+    from it and audits only a decision that changed.
+    """
+    if not run.failure_recorded or run.auto_paused_at_start or run.schedule.kind == "at":
+        return
+    limit = target.auto_pause_limit()
+    paused = limit is not None and target.consecutive_failures >= limit
+    if target.auto_paused != paused:
+        target.auto_paused = paused
+        target.enabled = not (paused or target.user_paused)
+    if run.auto_paused != paused:
+        run.auto_paused = paused
+        target._audit_pause_change("auto_paused" if paused else "auto_pause_cleared")

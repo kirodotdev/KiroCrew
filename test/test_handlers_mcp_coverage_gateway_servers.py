@@ -20,6 +20,7 @@ import pytest
 from handlers_mcp_coverage_helpers import agents_dir_fixture  # noqa: F401
 from handlers_mcp_coverage_helpers import sandbox_fixture  # noqa: F401
 from handlers_mcp_coverage_helpers import _effective_stubs, _payload, _request
+from named_cases_helpers import named_cases
 
 from kiro_crew.dashboard.handlers import mcp as mcp_mod
 from kiro_crew.mcp_discovery import McpServerInfo
@@ -459,6 +460,146 @@ class TestGatewayServers:
         assert rows["declares-env"]["pooling_blocked_by_env"] is False
 
     @pytest.mark.asyncio
+    async def test_env_block_when_shared_is_reported_while_sharing_is_off(
+        self, agents_dir: Path, routed_allowlist
+    ) -> None:
+        """The confirm for turning sharing ON needs the answer before the switch.
+
+        ``pooling_blocked_by_env`` reads false while sharing is off, so the row
+        also says whether the server would stay unshared once sharing is on.
+        """
+        (agents_dir / "a.json").write_text(
+            json.dumps(
+                {
+                    "name": "alpha",
+                    "mcpServers": {
+                        "declares-env": {"command": "run", "env": {"HOME_DIR": "/x"}},
+                        "no-env": {"command": "run"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        for enabled in (False, True):
+            routed_allowlist([], enabled=enabled)
+            rows = {
+                r["name"]: r
+                for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+            }
+            assert rows["declares-env"]["pooling_blocked_by_env_when_shared"] is True
+            assert rows["no-env"]["pooling_blocked_by_env_when_shared"] is False
+            assert rows["declares-env"]["pooling_blocked_by_env"] is enabled
+
+        routed_allowlist([], enabled=False, forward_declared_env=True)
+        rows = {
+            r["name"]: r
+            for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+        assert rows["declares-env"]["pooling_blocked_by_env_when_shared"] is False
+
+    @pytest.mark.asyncio
+    async def test_one_poolable_declaration_keeps_the_row_shareable_when_shared(
+        self, agents_dir: Path, routed_allowlist
+    ) -> None:
+        """A name declared once with env and once without still shares the env-less one."""
+        (agents_dir / "a.json").write_text(
+            json.dumps(
+                {
+                    "name": "alpha",
+                    "mcpServers": {"mixed": {"command": "run", "env": {"HOME_DIR": "/x"}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (agents_dir / "b.json").write_text(
+            json.dumps({"name": "beta", "mcpServers": {"mixed": {"command": "run"}}}),
+            encoding="utf-8",
+        )
+
+        routed_allowlist([], enabled=False)
+        rows = {
+            r["name"]: r
+            for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+        assert rows["mixed"]["pooling_blocked_by_env_when_shared"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_vault_reference_gets_a_private_backend_not_direct_env(
+        self, agents_dir: Path, routed_allowlist
+    ) -> None:
+        """The row follows the rewriter's vault-secret exception.
+
+        With forwarding off every declared key is withheld from a shared backend,
+        so a plain entry is left unwrapped (``direct (env)``). An entry whose env
+        names a vault secret is not: ``_needs_private_backend`` wraps it onto a
+        connection-private backend the gateway starts. Reporting that one as
+        blocked showed a routable server as direct-only.
+
+        A name declared both ways is still blocked, because the plain
+        declaration is the one the rewriter leaves unwrapped.
+        """
+        (agents_dir / "a.json").write_text(
+            json.dumps(
+                {
+                    "name": "alpha",
+                    "mcpServers": {
+                        "vault-env": {
+                            "command": "run",
+                            "env": {"API_TOKEN": "secret://example", "API_URL": "https://x"},
+                        },
+                        "plain-env": {"command": "run", "env": {"API_URL": "https://x"}},
+                        "mixed": {"command": "run", "env": {"API_TOKEN": "secret://example"}},
+                        "vault-and-bare": {
+                            "command": "run",
+                            "env": {"API_TOKEN": "secret://example"},
+                        },
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (agents_dir / "b.json").write_text(
+            json.dumps(
+                {
+                    "name": "beta",
+                    "mcpServers": {
+                        "mixed": {"command": "run", "env": {"API_URL": "https://x"}},
+                        "vault-and-bare": {"command": "run"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        routed_allowlist(["vault-env", "plain-env", "mixed", "vault-and-bare"], enabled=True)
+        rows = {
+            r["name"]: r
+            for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+        assert rows["vault-env"]["pooling_blocked_by_env"] is False
+        assert rows["vault-env"]["private_backend"] is True
+        assert rows["plain-env"]["pooling_blocked_by_env"] is True
+        assert rows["plain-env"]["private_backend"] is False
+        assert rows["mixed"]["pooling_blocked_by_env"] is True
+        assert rows["mixed"]["private_backend"] is False
+        # One declaration pools (no env), so the row is shared, not private.
+        assert rows["vault-and-bare"]["pooling_blocked_by_env"] is False
+        assert rows["vault-and-bare"]["private_backend"] is False
+
+        # The secret value never reaches the payload.
+        assert "secret://example" not in json.dumps(rows)
+
+        # Sharing off: the rewriter withholds nothing, so neither branch applies.
+        routed_allowlist(["vault-env"], enabled=False)
+        rows = {
+            r["name"]: r
+            for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+        assert rows["vault-env"]["pooling_blocked_by_env"] is False
+        assert rows["vault-env"]["private_backend"] is False
+
+    @pytest.mark.asyncio
     async def test_missing_agents_dir_yields_no_rows(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, routed_allowlist
     ) -> None:
@@ -538,6 +679,28 @@ class TestGatewayServers:
         }
         assert rows["never-mcp"]["denylisted"] is True
         assert rows["never-mcp"]["stub"] is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("vendor", ["creds-agent", "local-creds-agent-mcp"])
+    async def test_a_credential_vendor_can_never_be_stubbed(
+        self, agents_dir: Path, routed_allowlist, vendor: str
+    ) -> None:
+        # Live set, not patched: each chat's copy of a credential vendor runs
+        # inside that chat's sandbox, a shared one outside every sandbox. Even an
+        # operator who lists it gets no stub, so no single toggle or bulk action
+        # can share it.
+        routed_allowlist([vendor])
+        (agents_dir / "a.json").write_text(
+            json.dumps({"name": "alpha", "mcpServers": {vendor: {"command": "run"}}}),
+            encoding="utf-8",
+        )
+        rows = {
+            r["name"]: r
+            for r in _payload(await mcp_mod.api_mcp_gateway_servers(_request()))["servers"]
+        }
+        assert rows[vendor]["denylisted"] is True
+        assert rows[vendor]["can_stub"] is False
+        assert rows[vendor]["stub"] is False
 
     @pytest.mark.asyncio
     async def test_two_agents_disagreeing_on_the_command_withhold_the_measurement(
@@ -645,13 +808,34 @@ class TestGatewaySetStub:
     @pytest.mark.parametrize(
         "body,expected",
         [
-            ({"stub": True}, "name is required"),
-            ({"name": "../evil", "stub": True}, "invalid server name"),
-            ({"name": "ok-mcp", "stub": "yes"}, "stub must be a boolean"),
-            ({"name": "ok-mcp"}, "stub must be a boolean"),
+            *named_cases(
+                "test_validation_matrix_is_400",
+                "body,expected",
+                [
+                    ({"stub": True}, "name is required"),
+                    ({"name": "../evil", "stub": True}, "invalid server name"),
+                    ({"name": "ok-mcp", "stub": "yes"}, "stub must be a boolean"),
+                    ({"name": "ok-mcp"}, "stub must be a boolean"),
+                ],
+            ),
+            *named_cases(
+                "test_validation_matrix_is_400",
+                "body,expected",
+                [
+                    ({"names": "a-mcp", "stub": True}, "names must be a list of strings"),
+                    (
+                        {"names": ["a-mcp", 7], "stub": True},
+                        "names must be a list of strings",
+                    ),
+                    ({"names": [], "stub": True}, "names is required"),
+                    ({"names": ["  "], "stub": True}, "names is required"),
+                    ({"names": ["../evil"], "stub": True}, "invalid server name"),
+                    ({"names": ["a-mcp"]}, "stub must be a boolean"),
+                ],
+            ),
         ],
     )
-    async def test_validation_matrix_is_400(
+    async def test_an_invalid_body_is_400(
         self, monkeypatch: pytest.MonkeyPatch, body: dict, expected: str
     ) -> None:
         monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
@@ -951,29 +1135,6 @@ class TestGatewaySetStubBatch:
     """``{"names": [...]}`` writes the allowlist once for the whole set."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "body,expected",
-        [
-            ({"names": "a-mcp", "stub": True}, "names must be a list of strings"),
-            (
-                {"names": ["a-mcp", 7], "stub": True},
-                "names must be a list of strings",
-            ),
-            ({"names": [], "stub": True}, "names is required"),
-            ({"names": ["  "], "stub": True}, "names is required"),
-            ({"names": ["../evil"], "stub": True}, "invalid server name"),
-            ({"names": ["a-mcp"]}, "stub must be a boolean"),
-        ],
-    )
-    async def test_validation_matrix_is_400(
-        self, monkeypatch: pytest.MonkeyPatch, body: dict, expected: str
-    ) -> None:
-        monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
-        resp = await mcp_mod.api_mcp_gateway_set_stub(_request(body, state=SimpleNamespace()))
-        assert resp.status == 400
-        assert expected in _payload(resp)["error"]
-
-    @pytest.mark.asyncio
     async def test_oversized_batch_is_400(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(mcp_mod, "sel", lambda: MagicMock())
         names = [f"srv{i}-mcp" for i in range(mcp_mod._MAX_STUB_BATCH + 1)]
@@ -1187,6 +1348,53 @@ class TestStubEligibility:
         )
         assert eligible == ["a-mcp"]
 
+    def test_a_vault_reference_is_not_skipped_for_its_env(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The rewriter gives such a server a private backend, so stubbing it does work.
+
+        A private backend has no co-tenants, so with sharing on it is judged on
+        ``recommend_stub``, the verdict an ordinary unshared server earns.
+        """
+        self._spec(
+            agents_dir,
+            {"a-mcp": {"command": "run", "env": {"API_TOKEN": "secret://example"}}},
+        )
+        self._verdict(monkeypatch, stub=True, share=False)
+
+        eligible, skipped = mcp_mod._stub_eligibility(
+            ["a-mcp"], sharing_on=True, forward_declared_env=False
+        )
+        assert eligible == ["a-mcp"]
+        assert skipped == []
+
+    def test_a_shared_declaration_keeps_the_share_bar(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One declaration that pools makes the server co-tenanted, so it still needs share."""
+        (agents_dir / "a.json").write_text(
+            json.dumps(
+                {
+                    "name": "alpha",
+                    "mcpServers": {
+                        "a-mcp": {"command": "run", "env": {"API_TOKEN": "secret://example"}}
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (agents_dir / "b.json").write_text(
+            json.dumps({"name": "beta", "mcpServers": {"a-mcp": {"command": "run"}}}),
+            encoding="utf-8",
+        )
+        self._verdict(monkeypatch, stub=True, share=False)
+
+        eligible, skipped = mcp_mod._stub_eligibility(
+            ["a-mcp"], sharing_on=True, forward_declared_env=False
+        )
+        assert eligible == []
+        assert skipped == [{"name": "a-mcp", "reason": "evidence_insufficient"}]
+
     def test_a_server_with_no_stdio_pipe_is_never_eligible(
         self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1201,11 +1409,10 @@ class TestStubEligibility:
     def test_a_denylisted_server_is_never_eligible(
         self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``UNPOOLABLE_SERVERS`` is empty today, so the branch is patched in.
+        """The branch is exercised with a patched-in name.
 
-        Testing it against the live set would pass by vacuum: an empty denylist
-        makes the assertion unfalsifiable, and the day a name is added is exactly
-        when this needs to already work.
+        That keeps it independent of which credential vendors the live set lists;
+        the live set has its own tests in this file.
         """
         import kiro_crew.mcp_gateway.rewriter as rewriter_mod
 
@@ -1217,6 +1424,21 @@ class TestStubEligibility:
         )
         assert eligible == []
         assert skipped == [{"name": "walled-mcp", "reason": "cannot_stub"}]
+
+    @pytest.mark.parametrize("vendor", ["creds-agent", "local-creds-agent-mcp"])
+    def test_a_credential_vendor_is_never_eligible_even_when_the_evidence_says_share(
+        self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, vendor: str
+    ) -> None:
+        # Live set: a bulk action must not share a credential vendor whatever
+        # the assessment concluded, because the shared copy runs outside the
+        # chat sandbox that keeps each chat's copy away from the credential files.
+        self._spec(agents_dir, {vendor: {"command": "run"}})
+        self._verdict(monkeypatch, stub=True, share=True)
+        eligible, skipped = mcp_mod._stub_eligibility(
+            [vendor], sharing_on=True, forward_declared_env=False
+        )
+        assert eligible == []
+        assert skipped == [{"name": vendor, "reason": "cannot_stub"}]
 
     def test_a_measurement_of_a_replaced_command_does_not_count(
         self, agents_dir: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1418,7 +1640,7 @@ class TestShareabilityRefusesAProbeFromBeforeAnEdit:
         routed_allowlist([])
         monkeypatch.setattr(mcp_mod, "_collect_server_rows", lambda: {"a-mcp": dict(self._ROW)})
         monkeypatch.setattr(mcp_mod, "_load_shareability_state", lambda: ({}, {}))
-        monkeypatch.setattr(mcp_mod, "_probe_currency", lambda: {"a-mcp": False})
+        monkeypatch.setattr(mcp_mod, "_probe_view", lambda: ({"a-mcp": False}, frozenset()))
         seen: dict[str, Any] = {}
         real = mcp_mod._assess_server
 
@@ -1493,3 +1715,84 @@ class TestShareabilityRefusesAProbeFromBeforeAnEdit:
             assert mcp_mod._probe_currency() == {"edited": False, "same": True}
         finally:
             disc._probe_cache.clear()
+
+
+# ── what the Measure button counts ──────────────────────────────────────
+
+
+class TestMeasureDue:
+    """``measure_due`` marks exactly the rows a measure pass can still change.
+
+    Counting every unmeasured row keeps the button offering, after every pass,
+    servers the pass never probes.
+    """
+
+    @staticmethod
+    def _row(launches: int = 1) -> dict[str, Any]:
+        return {
+            "agents": {"alpha"},
+            "transport": "stdio",
+            "entry_poolable": False,
+            "env_names": set(),
+            "launch_ids": {f"l{i}" for i in range(launches)},
+        }
+
+    @pytest.mark.asyncio
+    async def test_counts_only_the_rows_a_pass_can_fill(
+        self, monkeypatch: pytest.MonkeyPatch, routed_allowlist
+    ) -> None:
+        import kiro_crew.mcp_discovery as disc
+
+        routed_allowlist([])
+        rows = {
+            # Never probed. Only "unprobed" is a server the pass probes: the
+            # others are declared by another agent only, switched off, left out
+            # after repeated failures, or refused for a secret:// env value.
+            "unprobed": self._row(),
+            "other-agent": self._row(),
+            "off": self._row(),
+            "held": self._row(),
+            "vault": self._row(),
+            # Probed: a pre-flight can still raise it, unless one is stored or
+            # the row merges two launches. A divergent pre-flight is re-run.
+            "preflight-due": self._row(),
+            "no-declaration": self._row(),
+            "preflight-stored": self._row(),
+            "two-launches": self._row(launches=2),
+            "diverged": self._row(),
+        }
+        probed = ("preflight-due", "no-declaration", "preflight-stored", "two-launches", "diverged")
+        listed = [McpServerInfo(name=n, command="bin") for n in ("unprobed", "held", *probed)] + [
+            McpServerInfo(name="off", command="bin", disabled=True),
+            McpServerInfo(name="vault", command="bin", env={"TOKEN": "secret://token"}),
+        ]
+        monkeypatch.setattr(disc, "list_servers", lambda *a, **k: list(listed))
+        monkeypatch.setattr(disc, "_spawn_excluded", lambda: {"held"})
+        monkeypatch.setattr(mcp_mod, "_collect_server_rows", lambda: rows)
+        monkeypatch.setattr(
+            mcp_mod,
+            "_load_shareability_state",
+            lambda: ({}, {"preflight-stored": (True, False), "diverged": (True, True)}),
+        )
+        _seed_probe(monkeypatch, *probed)
+        declaring = mcp_mod.probe_metadata
+        plain = SimpleNamespace(**{**vars(declaring("diverged")), "capabilities": {}})
+        monkeypatch.setattr(
+            mcp_mod, "probe_metadata", lambda n: plain if n == "no-declaration" else declaring(n)
+        )
+
+        resp = await mcp_mod.api_mcp_gateway_servers(_request())
+
+        due = {r["name"]: r.get("measure_due") for r in _payload(resp)["servers"]}
+        assert due == {
+            "unprobed": True,
+            "other-agent": False,
+            "off": False,
+            "held": False,
+            "vault": False,
+            "preflight-due": True,
+            "no-declaration": True,
+            "preflight-stored": False,
+            "two-launches": False,
+            "diverged": True,
+        }

@@ -204,9 +204,9 @@ def _doctor_credentials(issues: list[str]) -> None:
     """Report the AWS / credential posture the agent will actually see.
 
     Exists because "my agent cannot reach AWS" had no self-service answer: the
-    agent is allowed to run AWS CLI calls but not to read credential files, so a
-    refused read looks identical to having no credentials at all, and nothing on
-    either side of that told the operator which one they had.
+    credential-file rule lets the agent run AWS CLI calls but not read the files,
+    so a refused read looks identical to having no credentials at all, and nothing
+    on either side of that told the operator which one they had.
 
     Advisory only, like the pod-session-bus and memory-pressure probes: ``issues``
     is doctor's exit-code channel, and an unconfigured AWS profile is not a Kiro
@@ -225,9 +225,9 @@ def _doctor_credentials(issues: list[str]) -> None:
     has_config = (aws_dir / "config").is_file()
     has_creds = (aws_dir / "credentials").is_file()
     if not has_config and not has_creds:
-        print("  aws:         ⏹ no ~/.aws config — agents can still run AWS CLI calls")
+        print("  aws:         ⏹ no ~/.aws config")
         render._print_wrapped(
-            "once you configure one: the SDK resolves credentials itself, so the agent "
+            "Once you configure one, the SDK resolves credentials itself, so the agent "
             "never needs to read the files. If you use AWS, run `aws configure sso` or "
             "`aws configure` in your own terminal."
         )
@@ -317,7 +317,9 @@ def _doctor_credentials(issues: list[str]) -> None:
     if vendor:
         print("  vending MCP: ✅ available")
         render._print_wrapped(vendor)
-    print("  note:        ℹ️  agents cannot READ credential files; AWS CLI calls are allowed")
+    print(
+        "  note:        ℹ️  agents cannot READ credential files; that rule does not block AWS CLI calls"
+    )
     if has_config or has_creds:
         # Only true once something IS configured. On a host with nothing set up the
         # missing setup is the real answer, and steering the operator away from it
@@ -336,3 +338,35 @@ def _doctor_credentials(issues: list[str]) -> None:
             "With nothing configured, an agent reporting no AWS access is reporting "
             "the truth — configure a profile first, then re-run this check."
         )
+    _doctor_kerberos_ccache()
+
+
+def _doctor_kerberos_ccache() -> None:
+    """Say when agent children are left on a Kerberos cache the sandbox hides.
+
+    The Linux sandbox starts each agent child in its own user namespace, where a
+    ``KEYRING:`` ticket cache is a different, empty keyring. Without a usable
+    ``/tmp/krb5cc_<uid>`` file, every Kerberos-gated MCP server an agent starts
+    reports no ticket while ``klist`` in the user's terminal shows one, and
+    nothing else says why. Advisory, like the rest of this section: a host that
+    does not use Kerberos has the same default cache. Silent off Linux and when
+    the cache is not a ``KEYRING:`` one.
+    """
+    crew_env = cli_doctor.env
+    try:
+        keyring = crew_env.krb5_keyring_ccache(cli_doctor.os.environ)
+        file_cache = None if keyring is None else crew_env.usable_file_ccache()
+    except Exception as exc:  # noqa: BLE001 — an advisory row must not end the report
+        print(f"  kerberos:    ⚠️  could not check the ticket cache ({type(exc).__name__})")
+        return
+    if keyring is None:
+        return
+    if file_cache is not None:
+        print(f"  kerberos:    ✅ agents use the file cache {render._safe_display(file_cache)}")
+        render._print_wrapped("`klist -c FILE:<that path>` shows whether its ticket is current.")
+        return
+    print(f"  kerberos:    ⚠️  ticket cache {render._safe_display(keyring)} is not visible")
+    render._print_wrapped(
+        "to sandboxed agents, so MCP servers they start that need a Kerberos ticket "
+        f"report none. If you use Kerberos, {crew_env.KRB5_KEYRING_REMEDY}."
+    )

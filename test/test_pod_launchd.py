@@ -124,8 +124,8 @@ def test_label_honours_a_hermetic_unit_prefix(cfg, monkeypatch):
     hermetic = PodConfig.load()
     assert launchd.pod_label(hermetic, "smoke") == "dev.kirocrew.pod.kirocrew-pod-test.smoke"
     # The default plane carries its prefix segment too: without it, the default
-    # prefix was a strict prefix of every custom plane's labels and a hermetic
-    # plane's pods surfaced in the default plane's listing (review finding).
+    # prefix is a strict prefix of every custom plane's labels and a hermetic
+    # plane's pods surface in the default plane's listing.
     assert launchd.pod_label(cfg, "smoke") == "dev.kirocrew.pod.kirocrew-pod.smoke"
     assert not launchd.pod_label(cfg, "").startswith(launchd.pod_label(hermetic, ""))
     assert not launchd.pod_label(hermetic, "").startswith(launchd.pod_label(cfg, ""))
@@ -399,7 +399,7 @@ def test_stop_does_not_treat_a_generic_print_failure_as_unloaded(cfg, monkeypatc
 
 
 def test_stop_preserves_everything_when_the_unload_cannot_be_confirmed(cfg, monkeypatch):
-    """Blocking review finding: a failed/hung unload must NOT tear anything down.
+    """A failed/hung unload must NOT tear anything down.
 
     If the label is still loaded when the wait expires, the gateway may be
     alive — deleting its plist (or letting the caller delete its HOME) while
@@ -550,9 +550,14 @@ def test_pod_mutex_is_reentrant_within_a_thread(cfg):
     """The CLI holds the mutex across a transaction while start_pod/stop_pod
     re-acquire it inside; flock is per open-file-description, so without
     reentrancy that inner acquisition would deadlock against our own lock."""
+    key = f"{cfg.unit_prefix}@smoke"
     with rt.pod_name_mutex(cfg, "smoke"):
         with rt.pod_name_mutex(cfg, "smoke"):  # must not block
-            pass
+            assert rt._MUTEX_STATE.held[key] == 2
+        # The inner exit must leave the outer hold counted, or a third entry would
+        # take the OS lock again and deadlock.
+        assert rt._MUTEX_STATE.held[key] == 1
+    assert rt._MUTEX_STATE.held[key] == 0
 
 
 def test_down_fails_on_macos_when_stop_cannot_confirm_even_if_not_active(cfg, monkeypatch):
@@ -695,8 +700,8 @@ def test_up_failure_cleanup_stops_the_pod_inside_the_mutex(cfg, monkeypatch, tmp
 
 
 def test_ls_translates_orphan_probe_failures_to_the_documented_error(cfg, monkeypatch):
-    """A LaunchdError escaping pod ls printed a traceback instead of the
-    documented one-line `pod: <msg>` refusal (review finding)."""
+    """A LaunchdError in pod ls must print the documented one-line
+    `pod: <msg>` refusal, not a traceback."""
     import argparse
 
     from kiro_crew.pod import cli as pod_cli

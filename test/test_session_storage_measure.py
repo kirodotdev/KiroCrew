@@ -125,11 +125,8 @@ class TestPairing:
     ) -> None:
         """A symlink planted at the transcript's name is not the session's file.
 
-        _unit_paths feeds the move/restore/delete paths, so following a link here
-        would relocate the link (or read through it) instead of the real file. A
-        link at the transcript name is excluded exactly as a regular file is
-        included; the regular transcript below proves the exclusion is the link's
-        doing, not an empty result.
+        _unit_paths feeds move/restore/delete, so following a link would act on the
+        wrong file. The regular transcript below proves the exclusion is the link's doing.
         """
         crew_home, _ = stores
         sessions = crew_home / "sessions"
@@ -257,6 +254,26 @@ class TestCrewLogsAreTheSessions:
         assert freed >= batch.bytes
         assert not (crew_log_trash_root() / batch.batch_id).exists()
         assert not _crew_log_exists("acp-before-reset")
+
+    @pytest.mark.parametrize("coarse", [False, True], ids=["platform-delete", "coarse-delete"])
+    def test_the_empty_job_total_is_what_the_delete_frees(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, coarse: bool
+    ) -> None:
+        """The job's denominator counts the crew logs and the manifest the delete frees."""
+        if coarse:
+            monkeypatch.setattr(session_storage, "_FD_SAFE_DELETE", False)
+        crew_home, _ = stores
+        _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        _crew_log("acp-before-reset", "chat-1")
+        session_storage.move_to_trash(
+            ["dashboard_chat-1"], reason="manual", index=_index(), now=_NOW
+        )
+
+        ids, total, identities = session_storage.staged_targets()
+        freed = session_storage.empty_trash(ids, expect=identities)
+
+        assert len(ids) == 1
+        assert freed == total
 
     def test_a_crew_log_a_writer_holds_leaves_the_whole_session_in_place(
         self, stores: tuple[Path, Path]
@@ -1031,15 +1048,11 @@ class TestScanCache:
     def test_a_repointed_stem_with_unchanged_length_is_a_miss(
         self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """One stem repointed to a different sid, same mapping length, must
-        re-enumerate.
+        """One stem repointed to a different sid, same mapping length, must re-enumerate.
 
-        This is the behavioural pin for the failure an ``id()``/``len()``
-        memoisation of the pairing would permit: a length-preserving repoint
-        served from a pass built under the old pairing. The deterministic
-        key-level half lives in
-        :meth:`test_scan_key_distinguishes_same_length_mappings` — this test
-        alone cannot force CPython to recycle the first dict's ``id()``.
+        The deterministic key-level half is
+        :meth:`test_scan_key_distinguishes_same_length_mappings`, since this test cannot
+        force CPython to recycle the first dict's ``id()``.
         """
         crew_home, kiro_home = stores
         stem1 = transcript_stem("dashboard:chat-1")
@@ -1070,11 +1083,8 @@ class TestScanCache:
     ) -> None:
         """The stored key must be a snapshot, not an alias of the caller's dict.
 
-        ``dict(sid_for_stem)`` is the only thing making it one — passing the
-        mapping straight through still satisfies the type annotation. Aliased,
-        a caller's in-place repoint would mutate the stored key in lockstep,
-        so the stale pass would compare EQUAL to the new pairing and be served
-        as a hit — the exact failure the key exists to prevent.
+        Only ``dict(sid_for_stem)`` makes it one; an alias would follow the caller's
+        in-place repoint and serve the stale pass as a hit.
         """
         crew_home, kiro_home = stores
         stem1 = transcript_stem("dashboard:chat-1")
@@ -1125,11 +1135,8 @@ class TestScanCache:
     def test_scan_key_pairing_equality_matches_the_sorted_tuple_form(self) -> None:
         """``dict(a) == dict(b)`` iff ``tuple(sorted(a.items())) == tuple(sorted(b.items()))``.
 
-        This pins the equivalence the key relies on: the dict snapshot answers the
-        equality question identically to the sorted-tuple form it replaced, across
-        empty, single-entry, reordered, repointed and disjoint mappings. Compares
-        the pairing element directly so the assertion is about the pairing alone —
-        a store-path difference cannot mask a pairing disagreement.
+        Compares the pairing element directly, so a store-path difference cannot mask a
+        pairing disagreement.
         """
         mappings: list[dict[str, str]] = [
             {},

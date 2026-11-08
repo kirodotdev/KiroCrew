@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Literal, TypedDict
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.platform_compat import chmod_safe, file_lock
 
 logger = logging.getLogger(__name__)
@@ -137,7 +138,9 @@ def queue_mutation(queue_path: str | Path) -> Iterator[None]:
     the poller's per-tick poll where added latency is felt.
     """
     lock_path = Path(queue_path).with_name(Path(queue_path).name + ".lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    fd = open_create_or_existing(lock_path, os.O_RDWR, 0o600)
     try:
         with file_lock(fd, exclusive=True):
             yield
@@ -157,7 +160,7 @@ def read_queue(queue_path: str | Path) -> MochiQueue | None:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
-    except OSError as err:
+    except (OSError, UnicodeDecodeError) as err:
         logger.warning("[read_queue] Failed to read %s: %s", path, err)
         return None
 
@@ -193,9 +196,15 @@ def write_queue_atomic(queue_path: str | Path, data: MochiQueue) -> None:
     """
     path = Path(queue_path)
     tmp_path = path.with_name(f"{path.name}.tmp.{os.getpid()}")
-    tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    chmod_safe(tmp_path, 0o600)
-    os.replace(tmp_path, path)
+    try:
+        tmp_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        chmod_safe(tmp_path, 0o600)
+        replace_with_retry(tmp_path, path)
+    except BaseException:
+        # The pid in the name means each process leaves its own leftover, so a
+        # failed publish removes its temp rather than letting them pile up.
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 # ── Pure functions ─────────────────────────────────────────────────────────

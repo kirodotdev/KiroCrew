@@ -160,10 +160,10 @@ def create_and_open_dir_pinned(
                     # merge into, and it is gone. Re-creating it would hand back an
                     # EMPTY directory, and a merge (`must_create=False`) would then
                     # stage the archive into it and report success while the files it
-                    # was merging with are unrecoverably gone. Review caught this as
-                    # the retry's one unsafe case. So it is reported instead -- the
-                    # same outcome the caller got before the retry existed, with the
-                    # path the errno omits and a sentence saying what was lost.
+                    # was merging with are unrecoverably gone. This is the retry's one
+                    # unsafe case. So it is reported instead -- the same outcome as
+                    # with no retry, with the path the errno omits and a sentence
+                    # saying what was lost.
                     raise FileNotFoundError(
                         errno.ENOENT,
                         f"the {what} already existed when this call met it and was "
@@ -192,9 +192,9 @@ def create_and_open_dir_pinned(
                 continue
             except OSError as exc:
                 # A link (or a plain file) at the destination's own name. O_NOFOLLOW already
-                # refuses it -- the gap review found was that it escaped as a raw OSError, so
-                # a restore ended in a traceback instead of the refusal every other path on
-                # this surface produces. Translated here so callers have one type to contain.
+                # refuses it -- but as a raw OSError, so a restore would end in a traceback
+                # instead of the refusal every other path on this surface produces.
+                # Translated here so callers have one type to contain.
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise refusal(
                         f"refusing to use the {what}: {as_given.name!r} is a symbolic link "

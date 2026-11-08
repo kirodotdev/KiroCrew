@@ -10,6 +10,7 @@ publish chokepoints are in ``test_governance_chokepoints_scope_gates.py``.
 
 from __future__ import annotations
 
+import ntpath
 import os
 
 import pytest
@@ -441,6 +442,221 @@ class TestFilesystemEgressAtGate:
             raw_params={"operations": [{"mode": "Line", "path": self._fs_tree("ws", "doc.md")}]},
         )
         assert allowed.action != TOOL_DENY
+
+    def test_a_reading_label_title_is_judged_on_the_argument_path(self):
+        # A directory listing is titled "Reading listing workspace": a label the
+        # matcher would anchor at this process's working directory, outside the
+        # allow-set. The argument path decides; with none, the title does.
+        ws = self._fs_tree("ws")
+        _install(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "allow", "allow": [ws, self._fs_tree("ws", "**")]}},
+            }
+        )
+        from kiro_crew.hooks import TOOL_DENY, HookManager
+
+        hooks = HookManager()
+        title = "Reading listing workspace"
+        listing = hooks.on_tool_call(
+            title,
+            session_key="cli_chat",
+            tool_kind="read",
+            raw_params={"operations": [{"mode": "Directory", "path": ws}]},
+        )
+        assert listing.action != TOOL_DENY
+        titled_only = hooks.on_tool_call(title, session_key="cli_chat")
+        assert titled_only.action == TOOL_DENY
+        assert "'listing workspace' not in allow-set" in titled_only.reason
+
+    def test_a_builtin_naming_no_read_path_keeps_the_reading_title(self):
+        # A built-in judged in its own scopes gets a marker, not a path, when its
+        # arguments name no read target, so the title's pair still meets a deny.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'k')}",
+            tool_kind="read",
+            extra_titles=("fs_read",),
+            own_scopes=("tools", "filesystem.read"),
+        )
+        assert not decision.permitted
+
+    def test_a_relative_argument_path_keeps_the_reading_title(self):
+        # A relative argument is anchored at this process's working directory,
+        # not where the session reads it, so it cannot stand in for a title that
+        # names the denied file.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'note.txt')}",
+            tool_kind="read",
+            raw_params={"operations": [{"mode": "Line", "path": "note.txt"}]},
+        )
+        assert not decision.permitted
+
+    @pytest.mark.parametrize("spelling", ["~/note.txt", "$PWD/note.txt", "/srv/$PWD/note.txt"])
+    def test_an_expansion_dependent_argument_keeps_the_reading_title(self, spelling):
+        # The matcher expands ``~`` and ``$VAR``; the reading tool may open the
+        # literal spelling, so the two need not name one file.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'note.txt')}",
+            tool_kind="read",
+            raw_params={"operations": [{"mode": "Line", "path": spelling}]},
+        )
+        assert not decision.permitted
+
+    def test_a_title_naming_a_file_the_arguments_miss_still_refuses(self):
+        # A batch read's Image entry carries ``image_paths``, which the argument
+        # scan does not list; a title naming that denied file keeps its pair.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'k.png')}",
+            tool_kind="read",
+            raw_params={
+                "operations": [
+                    {"mode": "Line", "path": self._fs_tree("ws", "a.ts")},
+                    {"mode": "Image", "image_paths": [self._fs_tree("secrets", "k.png")]},
+                ]
+            },
+        )
+        assert not decision.permitted
+
+    @pytest.mark.parametrize("batched", [True, False])
+    def test_an_image_entry_with_a_decoy_path_keeps_the_reading_title(self, batched):
+        # The scan lists the decoy ``path`` and never ``image_paths``, so the
+        # entry still has an unjudged target and the title's pair stays.
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        entry = {
+            "mode": "Image",
+            "path": self._fs_tree("ws", "x.png"),
+            "image_paths": [self._fs_tree("secrets", "k.png")],
+        }
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'k.png')}",
+            tool_kind="read",
+            raw_params={"operations": [entry]} if batched else entry,
+        )
+        assert not decision.permitted
+
+    def test_a_label_title_with_an_unlisted_image_target_is_still_confined(self):
+        # Allow-mode confinement: the label title keeps its pair because the
+        # Image entry's target is not in the scan, so the call stays refused.
+        ws = self._fs_tree("ws")
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "allow", "allow": [ws, self._fs_tree("ws", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            "Reading listing workspace",
+            tool_kind="read",
+            raw_params={
+                "operations": [
+                    {"mode": "Line", "path": self._fs_tree("ws", "a.ts")},
+                    {"mode": "Image", "image_paths": [self._fs_tree("secrets", "k.png")]},
+                ]
+            },
+        )
+        assert not decision.permitted
+
+    @pytest.mark.skipif(os.name != "nt", reason="%VAR% expansion is Windows path semantics")
+    def test_a_windows_percent_variable_argument_keeps_the_reading_title(self):
+        from kiro_crew.platform.governance import gate_decision, parse_policy
+
+        ceiling = parse_policy(
+            {
+                "version": 1,
+                "boot": {"fail_closed": True},
+                "filesystem": {"read": {"mode": "deny", "deny": [self._fs_tree("secrets", "**")]}},
+            }
+        )
+        decision = gate_decision(
+            ceiling,
+            None,
+            f"Reading {self._fs_tree('secrets', 'note.txt')}",
+            tool_kind="read",
+            raw_params={"operations": [{"mode": "Line", "path": "%USERPROFILE%\\note.txt"}]},
+        )
+        assert not decision.permitted
+
+    def test_a_windows_path_without_a_drive_is_not_anchored(self, monkeypatch):
+        # Python 3.12's ntpath calls "\secrets\note.txt" absolute, but it sits on
+        # the current drive, which the gateway and the session need not share.
+        # The read gate asks the shared anchor check with the drive required.
+        import ntpath
+
+        from kiro_crew.platform import governance, tool_paths
+        from kiro_crew.platform.governance_parts import evaluator
+
+        seen = []
+
+        def _windows_anchor(path, *, require_drive=False):
+            seen.append(require_drive)
+            return tool_paths._is_anchored(path, require_drive=require_drive, pathmod=ntpath)
+
+        monkeypatch.setattr(governance, "_is_anchored", _windows_anchor)
+        assert not evaluator._anchored_read_target("\\secrets\\note.txt")
+        assert not evaluator._anchored_read_target("/secrets/note.txt")
+        assert evaluator._anchored_read_target("C:\\secrets\\note.txt")
+        assert evaluator._anchored_read_target("\\\\server\\share\\note.txt")
+        assert seen and all(seen)
 
     # ── truncated-scan policy on the permit-by-default plane (open-question-2) ──
     #
@@ -921,6 +1137,223 @@ class TestMatchPathNormalization:
         item = "/srv/app/teamA/shared/data.txt"
         pat = "/srv/app/**/../shared/**"
         assert _match_path(item, pat) == fnmatch.fnmatchcase(item, pat)
+
+
+_NT_HOME = r"C:\Users\u"
+
+
+def _nt_expand(path: str) -> str:
+    return ntpath.expanduser(ntpath.expandvars(path))
+
+
+def _nt_norm_item(path: str) -> str:
+    """``_norm_item`` as a Windows gateway running from ``C:\\work`` computes it."""
+    return ntpath.normpath(ntpath.join("C:\\work", _nt_expand(path)))
+
+
+class TestMatchPathOnWindows:
+    """A local path is matched the way Windows opens it: either separator, any case.
+
+    Runs on every OS by reading paths as a Windows gateway does (``ntpath`` for the
+    item, ``_WINDOWS_PATHS`` on), so the POSIX matrix guards the Windows contract.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _windows_reading(self, _floor_monkeypatch):
+        from kiro_crew.platform import governance
+
+        _floor_monkeypatch.setenv("USERPROFILE", _NT_HOME)
+        _floor_monkeypatch.setenv("HOME", _NT_HOME)
+        _floor_monkeypatch.setattr(governance, "_WINDOWS_PATHS", True)
+        _floor_monkeypatch.setattr(governance, "_norm_item", _nt_norm_item)
+        _floor_monkeypatch.setattr(governance, "_expand", _nt_expand)
+
+    @pytest.mark.parametrize(
+        "item",
+        [
+            "~/.ssh/id_rsa",
+            r"C:\Users\u\.ssh\id_rsa",
+            "C:/Users/u/.ssh/id_rsa",
+            r"c:\users\U\.SSH\id_rsa",
+            r"C:\Users\u\work\..\.ssh\id_rsa",
+        ],
+    )
+    def test_a_home_deny_matches_every_spelling_of_its_paths(self, item):
+        from kiro_crew.platform.governance import _match_denied_path
+
+        # ``~`` expands to ``C:\Users\u/.ssh/**``: both separators in one pattern.
+        assert _match_denied_path(item, "~/.ssh/**")
+        assert _match_denied_path(item, "$HOME/.ssh/**")
+        assert _match_denied_path(item, r"C:\Users\U\.ssh\**")
+
+    @pytest.mark.parametrize(
+        "item, pattern",
+        [
+            pytest.param(item, pattern, id=f"{name}-{item}-{pattern}")
+            for name, cases in {
+                "an_allow_meets_either_separator": [
+                    (r"C:\work\private\doc.txt", r"C:\work\private\**"),
+                    ("C:/work/private/doc.txt", r"C:\work\private\**"),
+                    (r"C:\work\private\doc.txt", "C:/work/private/**"),
+                ],
+                "a_bracket_range_keeps_every_path_it_covers": [
+                    # ``[A-z]`` spans ``[ \ ] ^ _ `` between ``Z`` and ``a``: lower-casing
+                    # it to ``[a-z]`` would drop them, and the deny with them.
+                    (r"C:\data\_secret.txt", r"C:\data\[A-z]*"),
+                    (r"C:\data\^key", r"C:\data\[A-z]*"),
+                    (r"C:\data\_secret.txt", "C:/data/[A-z]*"),
+                    # A negated class keeps every path its as-written comparison denies.
+                    (r"C:\data\abc", r"C:\data\[!A-Z]*"),
+                    (r"C:\data\1", r"C:\data\[!A-Z]*"),
+                    # A range covering ``\`` still meets the ``\`` the item is written with.
+                    (r"C:\data\x", r"C:\data[A-z]x"),
+                ],
+            }.items()
+            for item, pattern in cases
+        ],
+    )
+    def test_an_allow_meets_the_path_it_covers(self, item, pattern):
+        from kiro_crew.platform.governance import _match_path
+
+        assert _match_path(item, pattern)
+
+    @pytest.mark.parametrize(
+        "item, pattern",
+        [
+            # In a case-sensitive directory ``Private`` is not ``private``.
+            (r"C:\work\Private\doc.txt", r"C:\work\private\**"),
+            (r"C:\work\Private\doc.txt", "C:/work/private/**"),
+            (r"c:\WORK\private\doc.txt", "C:/work/private/**"),
+            (r"C:\data\A.txt", r"C:\data\[a-c]*"),
+        ],
+    )
+    def test_an_allow_meets_only_the_case_it_names(self, item, pattern):
+        from kiro_crew.platform.governance import _match_denied_path, _match_path
+
+        assert not _match_path(item, pattern)
+        assert _match_denied_path(item, pattern)
+
+    def test_a_policy_allow_admits_no_directory_in_another_case(self):
+        from governance_policy_helpers import _policy_body
+
+        from kiro_crew.platform.governance import parse_policy, resolve
+
+        allow = {"read": {"mode": "allow", "allow": [r"C:\work\private\**"]}}
+        ceiling = parse_policy(_policy_body(filesystem=allow))
+        assert resolve(ceiling, None, "filesystem.read", r"C:\work\private\doc.txt").permitted
+        assert resolve(ceiling, None, "filesystem.read", "C:/work/private/doc.txt").permitted
+        assert not resolve(ceiling, None, "filesystem.read", r"C:\work\Private\doc.txt").permitted
+
+        deny = {"read": {"mode": "deny", "deny": [r"C:\work\private\**"]}}
+        ceiling = parse_policy(_policy_body(filesystem=deny))
+        assert not resolve(ceiling, None, "filesystem.read", r"C:\work\private\doc.txt").permitted
+        assert not resolve(ceiling, None, "filesystem.read", r"C:\work\Private\doc.txt").permitted
+        assert resolve(ceiling, None, "filesystem.read", r"C:\work\public\doc.txt").permitted
+
+    @pytest.mark.parametrize(
+        "item",
+        [r"C:\Users\u\.sshx\id_rsa", r"C:\Users\other\.ssh\id_rsa", r"D:\Users\u\.ssh\id_rsa"],
+    )
+    def test_a_home_deny_matches_no_other_path(self, item):
+        from kiro_crew.platform.governance import _match_path
+
+        assert not _match_path(item, "~/.ssh/**")
+
+    def test_a_drive_or_share_is_part_of_the_path(self):
+        from kiro_crew.platform.governance import _match_path
+
+        # A drive letter names a volume, so an allow meets it in either case.
+        assert _match_path("c:/data/x.txt", r"C:\data\**")
+        assert _match_path(r"C:\data\x.txt", "c:/data/**")
+        assert not _match_path(r"c:\Data\x.txt", "C:/data/**")
+        assert not _match_path(r"D:\data\x.txt", "C:/data/**")
+        assert not _match_path(r"d:\data\x.txt", "C:/data/**")
+        assert _match_path(r"\\srv\share\x.txt", "//srv/share/**")
+        assert not _match_path(r"C:\srv\share\x.txt", "//srv/share/**")
+
+    def test_a_traversal_still_cannot_satisfy_an_allow_prefix(self):
+        from kiro_crew.platform.governance import _match_path
+
+        assert not _match_path(r"C:\ws\..\secret.txt", "C:/ws/**")
+        assert _match_path(r"C:\ws\.\src\app.py", "C:/ws/**")
+
+    def test_a_policy_deny_written_with_slashes_is_enforced(self):
+        from governance_policy_helpers import _policy_body
+
+        from kiro_crew.platform.governance import parse_policy, resolve
+
+        ceiling = parse_policy(
+            _policy_body(filesystem={"read": {"mode": "deny", "deny": ["~/.ssh/**"]}})
+        )
+        assert not resolve(ceiling, None, "filesystem.read", r"C:\Users\u\.ssh\id_rsa").permitted
+        assert resolve(ceiling, None, "filesystem.read", r"C:\Users\u\notes.txt").permitted
+
+    @pytest.mark.parametrize(
+        "item, pattern",
+        [
+            # ``[\-z]`` spans 0x5C..0x7A; written as ``[/-z]`` it would take in digits.
+            (r"C:\work\0private\key.txt", r"C:\work\[\-z]*\**"),
+            (r"C:\work\0private\key.txt", r"C:/work/[\-z]*/**"),
+            # A class excluding ``\`` does not meet the ``\`` the item is written with.
+            (r"C:\a\b", r"C:\a[!\]b"),
+            (r"C:\a\b", "C:/a[!\\\\]b"),
+        ],
+    )
+    def test_a_bracket_expression_gains_no_member(self, item, pattern):
+        from kiro_crew.platform.governance import _match_path
+
+        assert not _match_path(item, pattern)
+
+    def test_a_bracket_range_matches_in_any_case_without_new_members(self):
+        from kiro_crew.platform.governance import _match_denied_path
+
+        assert _match_denied_path(r"C:\data\A.txt", r"C:\data\[a-c]*")
+        assert _match_denied_path(r"c:\DATA\b.txt", "C:/data/[A-C]*")
+        assert not _match_denied_path(r"C:\data\d.txt", r"C:\data\[a-c]*")
+        assert not _match_denied_path(r"C:\data\_.txt", r"C:\data\[a-z]*")
+
+    @pytest.mark.parametrize(
+        "item, pattern",
+        [
+            # Unicode simple case folding pairs these; NTFS keeps them apart.
+            ("C:\\work\\\u0130nvoices\\private.txt", "C:/work/Invoices/**"),  # İ / I
+            ("C:\\work\\\u0131nvoices\\private.txt", "C:/work/invoices/**"),  # ı / i
+            ("C:\\work\\\u212aeys\\k", "C:/work/keys/**"),  # Kelvin sign / k
+            ("C:\\work\\\u017fecret\\k", "C:/work/secret/**"),  # long s / s
+            ("C:\\work\\Invoices\\x", "C:/work/[\u0130]nvoices/**"),  # in a class too
+        ],
+    )
+    def test_only_ascii_letters_match_in_another_case(self, item, pattern):
+        from kiro_crew.platform.governance import _match_denied_path, _match_path
+
+        assert not _match_denied_path(item, pattern)
+        assert not _match_path(item, pattern)
+
+    def test_a_non_ascii_letter_matches_as_written(self):
+        from kiro_crew.platform.governance import _match_denied_path
+
+        assert _match_denied_path("C:\\Donn\u00e9es\\x", "C:/donn\u00e9es/**")
+        assert _match_denied_path("C:\\work\\\u0130nvoices\\x", "C:/WORK/\u0130nvoices/**")
+
+    def test_a_range_deny_is_enforced_through_the_policy(self):
+        from governance_policy_helpers import _policy_body
+
+        from kiro_crew.platform.governance import parse_policy, resolve
+
+        ceiling = parse_policy(
+            _policy_body(filesystem={"read": {"mode": "deny", "deny": [r"C:\data\[A-z]*"]}})
+        )
+        assert not resolve(ceiling, None, "filesystem.read", r"C:\data\_secret.txt").permitted
+        assert not resolve(ceiling, None, "filesystem.read", r"c:\DATA\Secret.txt").permitted
+        assert resolve(ceiling, None, "filesystem.read", r"C:\data\1.txt").permitted
+
+    def test_posix_compares_paths_as_written(self, monkeypatch):
+        from kiro_crew.platform import governance
+
+        monkeypatch.setattr(governance, "_WINDOWS_PATHS", False)
+        assert not governance._match_path("/home/u/A.txt", "/home/u/a.txt")
+        assert not governance._match_local_path(r"/home/u\a", "/home/u/a")
+        assert governance._match_local_path("/home/u/_x", "/home/u/[A-z]*")
 
 
 # ── chokepoints fail CLOSED on governance error ──

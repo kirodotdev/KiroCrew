@@ -13,6 +13,8 @@ imports only the ones listed before it, never the facade:
   that composes two controls of one archetype;
 * ``catalog`` -- which scopes exist: ``SCOPE_CATALOG`` with its archetype ids,
   ``register_scope`` and the scope aliases;
+* ``baseline`` -- the enterprise built-in baseline: the minimal set an unnamed scope
+  answers in an enterprise build (data only);
 * ``carriers`` -- what a parsed policy and profile hold: ``GovernanceCeiling`` and
   ``Profile`` with their boot, update, distribution and agentcore blocks, and profile
   inheritance;
@@ -21,8 +23,8 @@ imports only the ones listed before it, never the facade:
   refuses an unproven one;
 * ``tiers`` -- the tier ladder: where each local policy is read, the per-process tier
   state, and the fold into the installed ceiling;
-* ``evaluator`` -- answering a query: ``resolve``, ``resolve_ordinal``, ``gate_decision``
-  and the command force-pins.
+* ``evaluator`` -- answering a query: ``resolve``, ``resolve_ordinal``, ``gate_decision``,
+  the command force-pins, and the policy level's control with the baseline filled in.
 
 The facade keeps the auto-approve surface it decides itself -- ``may_skip_gate`` with
 the builtin-tool scope maps, the auto-approve strip, the confirm-tools gate,

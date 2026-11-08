@@ -44,11 +44,12 @@ export interface Result {
    * `colorVar` is a CSS custom property name (e.g. "--warn"). */
   statusDot?: { colorVar: string; pulse?: boolean }
   /** Inline status line. `statusStyle` picks the treatment:
-   *  - 'pill' → a filled pill (bg = statusColorVar, light text) + muted detail
+   *  - 'pill' → a filled pill (bg = statusColorVar, text = its `-fg` pair) + muted detail
    *    (e.g. "Needs input" / "Approve").
    *  - 'dot' → a colored dot + colored label + muted detail (e.g. "Thinking…"),
    *    matching the chat sidebar.
-   * `statusColorVar` is a CSS var name (e.g. "--warn", "--accent", "--info"). */
+   * `statusColorVar` is a CSS var name (e.g. "--warn", "--accent", "--info"); a
+   * 'pill' needs a fill tier with a `-fg` pair (accent, warn, danger, ok, info). */
   statusStyle?: 'pill' | 'dot'
   statusColorVar?: string
   statusPulse?: boolean
@@ -129,6 +130,11 @@ export interface ResourceProvider {
    * without plural forms, so 1 would also render "1 characters".
    */
   minQueryChars?: number
+  /**
+   * What the results depend on besides the query, such as the active chat. The
+   * palette keys its result cache on it, so a change re-runs the search.
+   */
+  scope?: string
 }
 
 

@@ -71,6 +71,17 @@ export function renderMcpOAuthMessage(m: ChatMessage, hideCardOwned = false, han
   )
 }
 
+/** The card's label for a server id. A Power's server is `power-<power>-<server>`,
+ *  so a one-server Power reads `power-figma-figma`: show that as "Figma", in normal
+ *  text. Other ids stay whole, in code font: power and server may both hold
+ *  hyphens, so no split is reliable. Display only; the relay gets the raw id. */
+export function mcpServerLabel(serverName: string): { text: string; isId: boolean } {
+  const match = /^power-(.+)-\1$/.exec(serverName)
+  if (!match) return { text: serverName, isId: true }
+  const name = match[1]
+  return { text: name.charAt(0).toUpperCase() + name.slice(1), isId: false }
+}
+
 export default function McpOAuthBanner({
   serverName,
   oauthUrl,
@@ -91,7 +102,9 @@ export default function McpOAuthBanner({
   /** Offer the "Ask the agent" hand-off on the failed state. */
   askAgent?: boolean
 }) {
-  const label = serverName || i18nT('pages.chat.mcpOAuthBanner.mcp_server')
+  const shown = serverName ? mcpServerLabel(serverName) : { text: i18nT('pages.chat.mcpOAuthBanner.mcp_server'), isId: true }
+  const label = shown.text
+  const labelClass = shown.isId ? 'font-mono font-semibold' : 'font-semibold'
   // Probe-confirmed grant when `meta.completed` never arrived (gateway hiccup):
   // the exchange succeeded, so render the same authenticated state that the
   // meta update would have produced instead of stranding on the relay spinner.
@@ -104,11 +117,17 @@ export default function McpOAuthBanner({
     // A host holding state the hand-off's navigation would drop (ChatEmbed,
     // ChatPane) turns it off through `askAgent`. The server name is the bold
     // lead; the sentence stays the journal key.
+    //
+    // No hand-off: with `askAgent` off the notice would end on the error and
+    // leave nothing to do, so it names where to sign in again instead. Plain
+    // text, not a link: a link navigates away from the same unsaved draft or
+    // staged quote the hand-off was turned off to protect.
     return (
       <ErrorNotice
         title={label}
         message={`${i18nT('pages.chat.mcpOAuthBanner.authentication_failed')}${error ? `: ${error}` : '.'}`}
         askAgent={askAgent}
+        footer={askAgent ? undefined : i18nT('pages.chat.mcpOAuthBanner.failed_next_step')}
       />
     )
   }
@@ -118,7 +137,7 @@ export default function McpOAuthBanner({
       <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-ok/40 bg-ok/10 text-sm leading-5">
         <CheckCircle className="shrink-0 text-ok lucide-inline" />
         <span className="flex-1 text-text">
-          <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.authenticated')}
+          <span className={labelClass}>{label}</span> {i18nT('pages.chat.mcpOAuthBanner.authenticated')}
         </span>
       </div>
     )
@@ -133,7 +152,7 @@ export default function McpOAuthBanner({
       <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-border bg-muted/10 text-sm leading-5">
         <History className="shrink-0 text-text/50 lucide-inline" />
         <span className="flex-1 text-text">
-          <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.superseded')}
+          <span className={labelClass}>{label}</span> {i18nT('pages.chat.mcpOAuthBanner.superseded')}
         </span>
       </div>
     )
@@ -151,7 +170,7 @@ export default function McpOAuthBanner({
       <div className="flex items-center gap-2 px-4 py-3 rounded-lg ring-1 ring-inset forced-colors:border ring-border bg-muted/10 text-sm leading-5">
         <History className="shrink-0 text-text/50 lucide-inline" />
         <span className="flex-1 text-text">
-          <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.expired')}
+          <span className={labelClass}>{label}</span> {i18nT('pages.chat.mcpOAuthBanner.expired')}
         </span>
       </div>
     )
@@ -166,7 +185,7 @@ export default function McpOAuthBanner({
       <div className="flex items-center gap-2">
         <Lock className="shrink-0 text-warn lucide-inline" />
         <span className="flex-1 text-text min-w-0 break-words">
-          <span className="font-mono font-semibold">{label}</span> {i18nT('pages.chat.mcpOAuthBanner.requires_authentication')}
+          <span className={labelClass}>{label}</span> {i18nT('pages.chat.mcpOAuthBanner.requires_authentication')}
         </span>
       </div>
       <a

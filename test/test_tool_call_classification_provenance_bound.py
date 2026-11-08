@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from stray_line_helpers import cyclic_gc_quiesced  # noqa: F401 - fixture
 
 from kiro_crew.acp._dispatch import build_permission_event, parse_session_update
 from kiro_crew.acp.types import JsonRpcMessage
@@ -171,6 +172,9 @@ class TestTheProvenanceCachesShareOneBound:
         assert all("tc-2" not in c for c in self._dicts(caches))
         assert caches["cache_overflow"] == self._over("")
 
+    # The 5,000-deep payload walks the encoder to its recursion limit, so the cyclic
+    # collector is held off for the test (testing-conventions.md, RecursionError).
+    @pytest.mark.usefixtures("cyclic_gc_quiesced")
     def test_a_payload_the_encoder_could_not_render_is_refused_not_retained_unmeasured(
         self,
     ) -> None:

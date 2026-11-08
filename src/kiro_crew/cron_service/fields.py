@@ -20,27 +20,118 @@ from typing import Any
 
 from kiro_crew import cron_script
 from kiro_crew.cron_service.execution import _SUBPROC_CLEANUP_ALLOWANCE_SECS
+from kiro_crew.cron_service.identity import agent_sequence_dispatches
 from kiro_crew.cron_service.model import (
+    _ALERT_AFTER_DEFAULT,
     _AUTO_PAUSE_THRESHOLD,
     CronJob,
     CronSchedule,
+    validate_alert_after_failures,
     validate_auto_pause_after_failures,
 )
 from kiro_crew.cron_service.schedule import (
+    LOCAL_TIMEZONE,
+    is_local_timezone,
     is_valid_skip_date,
     is_valid_timezone,
+    runs_more_than_once_a_day,
     validate_cron_expr,
 )
 from kiro_crew.cron_service.store import _is_representable_number
+from kiro_crew.cron_service.zone_default_migration import release_legacy_zone
 from kiro_crew.validation import CHANNEL_MAX_LEN, MAX_CRON_MESSAGE, MAX_SHORT_STRING
 
 _MIN_INTERVAL_SECS = 60
+
+_PROJECT_PATH_AGENT_ONLY = (
+    "project_path applies only to agent (message) jobs: a --script or "
+    "--command job runs no agent session, so it has no project rules to load."
+)
+
+
+def resolve_project_path(raw: str) -> str:
+    """Validate a job's ``project_path`` and return its resolved form.
+
+    ``""`` stays ``""`` (no project directory: today's cwd). Anything else goes
+    through the chat folder's own project-directory validator
+    (``_validate_project_dir``: absolute or ``~``, ``realpath``, no
+    ``canonical_path_refusal``, an existing directory), so the two fences cannot
+    drift. A UNC-shaped path, raw or resolved, is refused before and after it,
+    so a share is never probed. Raises ``ValueError`` naming the rule. Called on
+    every write AND at every fire, so a directory that was removed, or that a
+    symlink now points somewhere sensitive, fails the run loudly instead of
+    running it with no project rules.
+    """
+    from kiro_crew.dashboard.chat_folders_paths import _validate_project_dir
+    from kiro_crew.hooks import is_unc_shape
+
+    if not raw:
+        return ""
+    if not isinstance(raw, str):
+        raise ValueError("project_path must be a string")
+    if is_unc_shape(raw):
+        raise ValueError("project_path must be a local directory, not a network share")
+    resolved, err = _validate_project_dir(raw)
+    if err:
+        raise ValueError(f"project_path: {err}")
+    if is_unc_shape(resolved):
+        raise ValueError("project_path must be a local directory, not a network share")
+    return resolved
+
+
+def cron_session_cwd(job: CronJob, resolved_cwd: str | None) -> str | None:
+    """The cwd a fire of *job* runs its agent session in.
+
+    A job with no ``project_path`` keeps *resolved_cwd* (the bound agent's
+    workspace, or ``None`` for the per-session scratch directory), so every
+    job written before the field existed fires exactly as it did. A job with
+    one runs there: the project directory outranks the agent's workspace,
+    because it is the more specific, per-job choice. The path is re-checked
+    here; a directory that cannot be used raises ``RuntimeError`` so
+    the run fails visibly rather than running without the project's rules.
+    Blocking (``realpath``/``isdir``): call it off the event loop.
+    """
+    # The store coerces a non-string to "" on load (``_guard_str``); the same
+    # reading here keeps a job object from any other source on today's cwd.
+    project_path = getattr(job, "project_path", "")
+    if not isinstance(project_path, str) or not project_path:
+        return resolved_cwd
+    try:
+        return resolve_project_path(project_path)
+    except ValueError as exc:
+        refusal = RuntimeError(
+            f"Cron '{job.name}': project_path {job.project_path!r} can no longer be "
+            f"used ({exc}), so the run did not start. Fix the directory, or clear it "
+            f"with `kirocrew cron update {job.id} --project-path ''`."
+        )
+        # Not weather: the transient-retry ladder must count it a failure.
+        refusal.transient = False  # type: ignore[attr-defined]
+        raise refusal from exc
+
 
 # Shown verbatim under the Schedule form's Save button, so it names the rule
 # and the next step rather than only the refusal.
 _CHAT_FOLDER_NEEDS_PERSISTENT = (
     "Filing runs into a chat folder needs a persistent session: a stateless job "
     "has no job-wide tab to file. Clear the chat folder, or keep the session."
+)
+
+_NEW_CHAT_PER_RUN_NEEDS_STATELESS = (
+    "A new chat per run needs a fresh session per run: set persistent_session "
+    "to false, or turn new_chat_per_run off."
+)
+
+# Each run keeps a tab, and every tab counts against the dashboard's live-tab
+# ceiling, so the switch is held to jobs that run at most once a day.
+_NEW_CHAT_PER_RUN_TOO_OFTEN = (
+    "A new chat per run is for jobs that run at most once a day: every run "
+    "keeps a chat tab. Use a schedule with at least 24 hours between runs, "
+    "or turn new_chat_per_run off."
+)
+
+_NEW_CHAT_PER_RUN_AGENT_ONLY = (
+    "A new chat per run applies to a single-agent (message) job: a script, "
+    "command or multi-agent job never opens a chat tab."
 )
 
 # Table-driven string-field caps for the persistence chokepoint. Every
@@ -60,6 +151,8 @@ _CRON_STRING_FIELD_CAPS: tuple[tuple[str, int], ...] = (
     ("source_template_prompt", MAX_CRON_MESSAGE),
     ("folder_id", MAX_SHORT_STRING),
     ("chat_folder_id", MAX_SHORT_STRING),
+    # CLI-only today (no CRON_ADD_SCHEMA entry), so the general ID cap applies.
+    ("project_path", MAX_SHORT_STRING),
     ("session_key", MAX_SHORT_STRING),
     ("model", MAX_SHORT_STRING),
     ("command", 5000),
@@ -135,6 +228,19 @@ def _check_timeout_range(timeout: int) -> None:
         raise ValueError(f"timeout must be within 0..86400, got {timeout}")
 
 
+def whole_seconds(field_name: str, value: Any) -> int:
+    """``int(value)``, or ``ValueError`` naming *field_name* when it cannot be read.
+
+    OverflowError too: ``int(float("inf"))`` raises it, and it is not a
+    ``ValueError``, so an infinite timeout would otherwise escape the documented
+    refusal as a different exception type.
+    """
+    try:
+        return int(value)
+    except (ValueError, TypeError, OverflowError) as e:
+        raise ValueError(f"Invalid {field_name}: {value!r}") from e
+
+
 def validate_create_timeouts(
     timeout: int, timeout_secs: int, *, command: str = "", script: str = ""
 ) -> None:
@@ -150,9 +256,9 @@ def validate_create_timeouts(
     Raises ``ValueError``.
     """
     if timeout:
-        _check_timeout_range(int(timeout))
+        _check_timeout_range(whole_seconds("timeout", timeout))
     if timeout_secs:
-        _check_timeout_secs_range(int(timeout_secs))
+        _check_timeout_secs_range(whole_seconds("timeout_secs", timeout_secs))
     if timeout_secs and (command or script):
         if timeout:
             _eff_sub = int(timeout)
@@ -169,6 +275,11 @@ def validate_create_timeouts(
                 "the subprocess keeps running while the next wake launches "
                 "a duplicate."
             )
+
+
+def _stored_timezone(timezone: str) -> str:
+    """The spelling a validated *timezone* is stored in: ``local`` in one case, else as given."""
+    return LOCAL_TIMEZONE if timezone and is_local_timezone(timezone) else timezone
 
 
 def build_job(
@@ -191,8 +302,10 @@ def build_job(
     skip_dates: list[str] | None = None,
     strict_schedule: bool = False,
     hide_in_chat: bool = False,
+    new_chat_per_run: bool = False,
     folder_id: str = "",
     chat_folder_id: str = "",
+    project_path: str = "",
     command: str = "",
     script: str = "",
     agent_sequence: list[str] | None = None,
@@ -204,6 +317,7 @@ def build_job(
     timeout_secs: int = 0,
     app_manifest_digest: str = "",
     auto_pause_after_failures: int | None = None,
+    alert_after_failures: int | None = None,
 ) -> CronJob:
     """Validate inputs and construct the :class:`CronJob` (no I/O, no lock).
 
@@ -218,20 +332,20 @@ def build_job(
 
     ``auto_pause_after_failures`` is how many consecutive failed runs pause the
     job; ``None`` means the ``_AUTO_PAUSE_THRESHOLD`` default and ``0`` means the
-    job never auto-pauses.
+    job never auto-pauses. ``alert_after_failures`` is how many consecutive
+    failed runs it takes before the failure message is delivered; ``None`` means
+    the ``_ALERT_AFTER_DEFAULT`` of 1.
 
-    The optional presentation/routing fields (``agent_id``, ``model``,
-    ``silent``, ``timezone``, ``strict_schedule``, ``hide_in_chat``) are set
-    here so the job is persisted **fully-formed** in the single locked
-    transaction. This closes a create-then-mutate-then-unlocked-``_save``
-    window (two concurrent creates could otherwise interleave at the
-    ``await`` and the unlocked save could clobber the other request's job).
+    Every optional field is set here so the job is persisted fully-formed
+    in one locked transaction; a later unlocked ``_save`` could clobber a
+    concurrent create's job.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
     valid_approval_modes = ("", "auto")
     if approval_mode not in valid_approval_modes:
         raise ValueError(f"Invalid approval_mode: {approval_mode!r}")
+    refuse_policy_denied_auto(approval_mode)
     # Writer mirror of _job_from_record's representable-number type-shape
     # check: the reader may skip a record with a non-representable
     # schedule numeric (NaN/Infinity/bignum) precisely BECAUSE no write
@@ -259,6 +373,7 @@ def build_job(
             "created_by": created_by,
             "folder_id": folder_id,
             "chat_folder_id": chat_folder_id,
+            "project_path": project_path,
             "session_key": session_key,
             "model": model,
             "command": command,
@@ -270,14 +385,27 @@ def build_job(
     )
     if chat_folder_id and not persistent_session:
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+    if new_chat_per_run and persistent_session:
+        raise ValueError(_NEW_CHAT_PER_RUN_NEEDS_STATELESS)
+    if new_chat_per_run and (command or script or agent_sequence_dispatches(agent_sequence or [])):
+        raise ValueError(_NEW_CHAT_PER_RUN_AGENT_ONLY)
+    if project_path and (command or script):
+        raise ValueError(_PROJECT_PATH_AGENT_ONLY)
+    project_path = resolve_project_path(project_path)
     validate_create_timeouts(timeout, timeout_secs, command=command, script=script)
     _auto_pause = (
         _AUTO_PAUSE_THRESHOLD
         if auto_pause_after_failures is None
         else validate_auto_pause_after_failures(auto_pause_after_failures)
     )
+    _alert_after = (
+        _ALERT_AFTER_DEFAULT
+        if alert_after_failures is None
+        else validate_alert_after_failures(alert_after_failures)
+    )
     if timezone and not is_valid_timezone(timezone):
         raise ValueError(f"Invalid timezone: {timezone!r}")
+    timezone = _stored_timezone(timezone)
     skip_dates = skip_dates or []
     for _d in skip_dates:
         if not is_valid_skip_date(_d):
@@ -292,6 +420,8 @@ def build_job(
         schedule = CronSchedule(kind="at", at_ts=at_ts)
     else:
         raise ValueError("Must provide every_secs, at_ts, or cron_expr")
+    if new_chat_per_run and runs_more_than_once_a_day(schedule):
+        raise ValueError(_NEW_CHAT_PER_RUN_TOO_OFTEN)
 
     return CronJob(
         id=uuid.uuid4().hex[:8],
@@ -314,8 +444,10 @@ def build_job(
         skip_dates=skip_dates,
         strict_schedule=strict_schedule,
         hide_in_chat=hide_in_chat,
+        new_chat_per_run=bool(new_chat_per_run),
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,
+        project_path=project_path,
         command=command,
         script=script,
         agent_sequence=list(agent_sequence) if agent_sequence else [],
@@ -327,6 +459,7 @@ def build_job(
         timeout_secs=int(timeout_secs) if timeout_secs else seams._JOB_TIMEOUT_SECS,
         app_manifest_digest=app_manifest_digest or "",
         auto_pause_after_failures=_auto_pause,
+        alert_after_failures=_alert_after,
     )
 
 
@@ -345,6 +478,10 @@ def apply_job_update(
         valid_approval_modes = ("", "auto")
         if kwargs["approval_mode"] not in valid_approval_modes:
             raise ValueError(f"Invalid approval_mode: {kwargs['approval_mode']!r}")
+        if job.approval_mode != "auto":
+            # Refuse only a NEW ``auto``: an edit that resends the stored value must
+            # still save; the fire path already runs it as asking.
+            refuse_policy_denied_auto(kwargs["approval_mode"])
     # Validate before any mutations
     # Table-driven type+length gate for every updatable string
     # field. Falsy values are intentional no-ops (the assignment
@@ -365,6 +502,16 @@ def apply_job_update(
         kwargs.get("persistent_session", job.persistent_session)
     ):
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
+    # A per-run tab needs a per-run session. Refused only when this request
+    # names the switch on; re-persisting a per-run job turns it off below.
+    if bool(kwargs.get("new_chat_per_run")) and bool(
+        kwargs.get("persistent_session", job.persistent_session)
+    ):
+        raise ValueError(_NEW_CHAT_PER_RUN_NEEDS_STATELESS)
+    if bool(kwargs.get("new_chat_per_run")) and (
+        job.command or job.script or agent_sequence_dispatches(job.agent_sequence)
+    ):
+        raise ValueError(_NEW_CHAT_PER_RUN_AGENT_ONLY)
     if (
         "cron_expr" in kwargs
         and kwargs["cron_expr"]
@@ -390,6 +537,25 @@ def apply_job_update(
             raise ValueError(f"Invalid interval: {kwargs['every_secs']}")
         if val < _MIN_INTERVAL_SECS:
             raise ValueError(f"Interval must be >= {_MIN_INTERVAL_SECS}s, got {val}")
+    # The once-a-day floor, judged on the schedule and switch this update
+    # leaves; only a request that names either one is checked.
+    _schedule = job.schedule
+    if kwargs.get("cron_expr"):
+        _schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+    elif kwargs.get("every_secs"):
+        _schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+    _per_run = (
+        bool(kwargs["new_chat_per_run"])
+        if "new_chat_per_run" in kwargs
+        else job.new_chat_per_run
+        and not bool(kwargs.get("persistent_session", job.persistent_session))
+    )
+    if (
+        _per_run
+        and ("new_chat_per_run" in kwargs or _schedule is not job.schedule)
+        and runs_more_than_once_a_day(_schedule)
+    ):
+        raise ValueError(_NEW_CHAT_PER_RUN_TOO_OFTEN)
     # Calendar-validity of timezone / skip_dates, validated at the
     # persistence owner so EVERY caller (MCP cron_add/cron_update,
     # dashboard, CLI) is covered by one check rather than each
@@ -411,23 +577,20 @@ def apply_job_update(
     # save to persist. Assignments happen below with the rest.
     _tsecs: int | None = None
     if "timeout_secs" in kwargs and kwargs["timeout_secs"] is not None:
-        try:
-            _tsecs = int(kwargs["timeout_secs"])
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid timeout_secs: {kwargs['timeout_secs']!r}") from e
+        _tsecs = whole_seconds("timeout_secs", kwargs["timeout_secs"])
         _check_timeout_secs_range(_tsecs)
     _auto_pause: int | None = None
     if "auto_pause_after_failures" in kwargs and kwargs["auto_pause_after_failures"] is not None:
         _auto_pause = validate_auto_pause_after_failures(kwargs["auto_pause_after_failures"])
+    _alert_after: int | None = None
+    if "alert_after_failures" in kwargs and kwargs["alert_after_failures"] is not None:
+        _alert_after = validate_alert_after_failures(kwargs["alert_after_failures"])
     # Script/command subprocess timeout. MCP cron_update passes this
     # field, so a branch has to consume it here — otherwise the
     # update is accepted and silently dropped.
     _tsub: int | None = None
     if "timeout" in kwargs and kwargs["timeout"] is not None:
-        try:
-            _tsub = int(kwargs["timeout"])
-        except (ValueError, TypeError) as e:
-            raise ValueError(f"Invalid timeout: {kwargs['timeout']!r}") from e
+        _tsub = whole_seconds("timeout", kwargs["timeout"])
         _check_timeout_range(_tsub)
     # Vault secret grant: validated with the other pre-mutation
     # checks so a rejected grant cannot strand earlier field
@@ -496,6 +659,13 @@ def apply_job_update(
                 f"need >= {_eff_sub + _SUBPROC_CLEANUP_ALLOWANCE_SECS}, "
                 f"got {_eff_secs}"
             )
+    # Resolved before the first assignment so a refused directory leaves the
+    # job untouched. ``""`` clears it (back to today's cwd).
+    _project_path: str | None = None
+    if "project_path" in kwargs:
+        _project_path = resolve_project_path(kwargs["project_path"] or "")
+        if _project_path and (job.command or job.script):
+            raise ValueError(_PROJECT_PATH_AGENT_ONLY)
     # Resolved here, before the first assignment, because a member schedule
     # re-resolves its member's template and that can refuse: the job must be
     # left untouched when it does.
@@ -515,18 +685,11 @@ def apply_job_update(
     if "channel" in kwargs:
         job.channel = kwargs["channel"] or None
     if "thread_ts" in kwargs:
-        # Paired with ``channel``: together they decide WHERE a run's
-        # output lands, and ``add_job`` has always accepted both. With
-        # no branch here the field was validated (see the caps table)
-        # and then dropped, so the caller was told "Updated" while the
-        # cron kept replying in the old thread. Falsy clears, mirroring
-        # ``channel`` and how mcp_cron normalizes blank to None.
-        #
-        # A granted script job re-threaded this way fails its NEXT run
-        # closed: thread_ts is bound into the grant's delivery
-        # fingerprint (cron_script.delivery_fingerprint), so the pin
-        # stops verifying until the operator re-approves. That is the
-        # intended fail-closed path, not a regression.
+        # With ``channel``, decides where a run's output lands. Falsy clears,
+        # as for ``channel`` and mcp_cron's blank-to-None. A granted script
+        # job re-threaded here fails its next run closed on purpose:
+        # thread_ts is in the grant's delivery fingerprint
+        # (cron_script.delivery_fingerprint) until the operator re-approves.
         job.thread_ts = kwargs["thread_ts"] or None
     if "approval_mode" in kwargs:
         job.approval_mode = kwargs["approval_mode"] or ""
@@ -535,7 +698,9 @@ def apply_job_update(
     if "skip_dates" in kwargs:
         job.skip_dates = kwargs["skip_dates"] or []
     if "timezone" in kwargs:
-        job.timezone = kwargs["timezone"] or ""
+        job.timezone = _stored_timezone(kwargs["timezone"] or "")
+        # Chosen with today's meaning of an empty zone, so no upgrade holds it on UTC.
+        release_legacy_zone(job)
     if "strict_schedule" in kwargs:
         job.strict_schedule = bool(kwargs["strict_schedule"])
     if "persistent_session" in kwargs:
@@ -544,6 +709,11 @@ def apply_job_update(
         job.minimal_context = bool(kwargs["minimal_context"])
     if "hide_in_chat" in kwargs:
         job.hide_in_chat = bool(kwargs["hide_in_chat"])
+    if "new_chat_per_run" in kwargs:
+        job.new_chat_per_run = bool(kwargs["new_chat_per_run"])
+    elif job.persistent_session:
+        # One shared session again: every run lands in the job's one tab.
+        job.new_chat_per_run = False
     if "folder_id" in kwargs:
         job.folder_id = kwargs["folder_id"] or ""
     if "chat_folder_id" in kwargs:
@@ -568,6 +738,8 @@ def apply_job_update(
         job.chat_folder_id = ""
     if "model" in kwargs:
         job.model = str(kwargs["model"] or "").strip()
+    if _project_path is not None:
+        job.project_path = _project_path
     if "app_manifest_digest" in kwargs:
         # The app bridge's own record of the manifest entry it applied. No
         # operator surface (dashboard, MCP, CLI) forwards this key, so the
@@ -601,9 +773,76 @@ def apply_job_update(
         # A new limit governs the NEXT failure; it does not lift a pause the
         # job is already in -- resuming stays the user's explicit action.
         job.auto_pause_after_failures = _auto_pause
+    if _alert_after is not None:
+        job.alert_after_failures = _alert_after
 
-    # Schedule changes (already validated above)
+    # Schedule changes (already validated above). A recurring schedule is not
+    # deleted after its first run, so a one-shot made recurring clears
+    # ``delete_after_run``.
     if "cron_expr" in kwargs and kwargs["cron_expr"]:
         job.schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+        job.delete_after_run = False
     elif "every_secs" in kwargs and kwargs["every_secs"]:
         job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
+        job.delete_after_run = False
+
+
+def refuse_policy_denied_auto(approval_mode: str) -> None:
+    """Refuse a job's ``auto`` when the ``permission_mode`` policy denies ``trust``.
+
+    ``auto`` approves every tool of the job's own session without asking, which is a
+    session Trust. The fire path re-checks (:func:`effective_job_approval_mode`), so a
+    job saved before the policy landed asks instead of auto-approving.
+
+    The refusal is a governance decision, not input validation, so it is audited
+    here, once, for every writer (CLI, apps SDK, dashboard, import). The audit is
+    best-effort: the refusal outranks it, as in ``mcp_cron._log_cron_denial``.
+    """
+    if approval_mode == "auto" and not cron_job_auto_permitted():
+        msg = "approval_mode 'auto' is disabled by your organization's policy"
+        try:
+            from kiro_crew import cron as seams  # the facade holds the patched names
+
+            seams.sel.sel().log_api_access(
+                caller="cron",
+                operation="cron.approval_mode",
+                outcome="denied",
+                source="cron",
+                resources="approval_mode=auto",
+                error=msg,
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).debug("approval_mode denial audit failed", exc_info=True)
+        raise ValueError(msg)
+
+
+def cron_job_auto_permitted() -> bool:
+    """Whether a job's ``approval_mode="auto"`` may auto-approve now. From memory."""
+    from kiro_crew.approval_mode_policy import session_mode_permitted
+
+    return session_mode_permitted("trust")
+
+
+def effective_job_approval_mode(approval_mode: str) -> str:
+    """The mode a job fires with: its own, minus an ``auto`` the policy now denies."""
+    if approval_mode == "auto" and not cron_job_auto_permitted():
+        return ""
+    return approval_mode
+
+
+def auto_job_approver(fallback: Any) -> Any:
+    """The approver an ``auto`` job's turn runs with: approve while ``auto`` holds.
+
+    The turn's ``AUTO_APPROVE`` policy is fixed when it starts, so a deny that lands
+    mid-turn is honoured here, per request: the call goes to *fallback* (the cron's
+    interactive approval) instead.
+    """
+
+    async def _approve(event: Any) -> bool:
+        if cron_job_auto_permitted():
+            return True
+        return bool(await fallback(event))
+
+    return _approve

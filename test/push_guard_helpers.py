@@ -47,14 +47,13 @@ def _load_push_guard():
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse fixture of test_push_guard.py and the modules split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _no_inherited_git_c(monkeypatch):
+def _no_inherited_git_c(_floor_monkeypatch):
     """The guard honours its caller's ``git -c`` (GIT_CONFIG_PARAMETERS) by design.
 
     A test is not that caller: an ancestor's ``-c core.hooksPath`` would run
     host hooks inside the run.  A test that needs the channel sets it itself.
     """
-    monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
+    _floor_monkeypatch.delenv("GIT_CONFIG_PARAMETERS", raising=False)
 
 
 # Well under the per-test ``--timeout``, so a hung git fails the test by name
@@ -356,7 +355,7 @@ def _install_hooks(clone_dir: str, tmp_path: Path, **bodies: str) -> Path:
     hooks.mkdir(exist_ok=True)
     for name, body in bodies.items():
         hook = hooks / name.replace("_", "-")
-        hook.write_text("#!/bin/sh\n" + body)
+        hook.write_text("#!/bin/sh\n" + body, newline="\n")  # LF: sh reads CR as part of a word
         hook.chmod(0o755)
     _git(clone_dir, "config", "core.hooksPath", str(hooks))
     return hooks

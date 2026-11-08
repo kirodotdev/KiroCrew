@@ -284,15 +284,19 @@ describe("loading.html carries its own close control", () => {
     );
   });
 
-  // The status line under the close button stays as the base splash draws it:
-  // bare text on the backdrop, no surface of its own. The accent surface
-  // belongs to the exit block alone, and only #closeWin is the bordered pill,
-  // so nothing else at the bottom-centre reads as a second control.
-  it("the status line declares no surface; only the exit block and the button do", () => {
+  // The status line under the close button gets the same accent surface as the
+  // exit block, for the same reason: a ghost drifting under white ink erases
+  // the words. It must still not read as a second control, so only #closeWin is
+  // the bordered pill: the status line draws no border and is not pill-shaped.
+  it("the status line paints an accent surface but never looks like the button", () => {
     const status = LOADING_HTML.match(/#status\s*\{([^}]*)\}/);
     assert.ok(status, "#status must have a style rule");
-    assert.doesNotMatch(status[1], /background/, "#status paints no background of its own");
-    assert.doesNotMatch(status[1], /border-radius/, "#status has no corners to round");
+    assert.match(
+      status[1],
+      /background:\s*color-mix\(in srgb, var\(--accent\)/,
+      "#status must declare a background derived from the accent token",
+    );
+    assert.doesNotMatch(status[1], /border-radius:\s*999px/, "#status is not a pill");
     assert.doesNotMatch(status[1], /(^|[^-])border:/, "#status must not draw a border");
 
     const button = LOADING_HTML.match(/#closeWin\s*\{([^}]*)\}/);
@@ -379,9 +383,9 @@ describe("loading.html reveals the exit on reconnect, and on a cold boot only af
   // showLoadingThenConnect serves both the cold boot and every reconnect
   // hand-off; the marker must follow its `reconnect` option, not be constant.
   it("showLoadingThenConnect carries the marker only when reconnecting", () => {
-    const body = fnBody("showLoadingThenConnect");
+    assert.match(fnBody("showLoadingThenConnect"), /paintLoadingScreen\(window, \{ reconnect \}\)/);
     assert.match(
-      body,
+      fnBody("paintLoadingScreen"),
       /loadFile\(path\.join\(dirname, "loading\.html"\), \{\s*query: splashQuery\(window, \{ reconnect, accent: currentThemeAccent\(\) \}\),\s*\}\)/,
     );
   });
@@ -407,13 +411,15 @@ describe("the supervisor marks the main window's splash as primary", () => {
     .map((file) => fs.readFileSync(path.join(__dirname, "..", file), "utf8"))
     .join("\n");
 
-  // splashQuery evaluated as written, with mainWindow() and the two query
-  // constants supplied, so the assertions are about its behaviour.
-  function splashQueryFn(mainWin) {
+  // splashQuery evaluated as written, with mainWindow(), the stored theme
+  // splash art and the two query constants supplied, so the assertions are
+  // about its behaviour.
+  function splashQueryFn(mainWin, splashArt = "") {
     const m = SUPERVISOR_JS.match(/function splashQuery\(window[\s\S]*?\n  \}/);
     assert.ok(m, "gateway-supervisor.js must define splashQuery");
     const context = {
       mainWindow: () => mainWin,
+      currentThemeSplash: () => splashArt,
       SPLASH_RECONNECT_QUERY: Object.freeze({ reconnect: "1" }),
       SPLASH_PRIMARY_QUERY: Object.freeze({ primary: "1" }),
     };
@@ -445,6 +451,19 @@ describe("the supervisor marks the main window's splash as primary", () => {
   it("stamps nothing as primary when there is no main window", () => {
     const splashQuery = splashQueryFn(null);
     assert.deepEqual(splashQuery({ id: "w" }, { reconnect: true }), { reconnect: "1" });
+  });
+
+  // Every painter goes through splashQuery, so a reconnect paint shows the
+  // theme pack's art as surely as the cold boot does.
+  it("carries the stored theme splash art on every paint, and nothing without it", () => {
+    const main = { id: "main" };
+    const art = "file:///userData/theme-splash.png";
+    assert.deepEqual(
+      splashQueryFn(main, art)({ id: "conn" }, { reconnect: true }),
+      { splash: art, reconnect: "1" },
+    );
+    assert.deepEqual(splashQueryFn(main, art)(main, {}), { splash: art, primary: "1" });
+    assert.deepEqual(splashQueryFn(main)(main, {}), { primary: "1" });
   });
 });
 

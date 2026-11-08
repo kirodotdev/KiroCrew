@@ -51,11 +51,8 @@ NOW = 1_800_000_000.0
 def _crew() -> str:
     """The crew this fixture's spec binds to, DERIVED the way the engine derives it.
 
-    Through ``spec_binding`` over the spec's own secret ARNs, not written out, for
-    the same reason ``_spec`` derives its confirmed recipient through the shipped
-    renderer: a hardcoded name would let the fixture agree with itself while the
-    engine matched on something else, and every attribution test would then pass
-    without attributing anything.
+    Through ``spec_binding``, not written out: a hardcoded name would let every
+    attribution test pass while the engine matched on something else.
     """
     return spec_binding(_spec_taskdef("us-west-2")).crew
 
@@ -77,12 +74,9 @@ def _bounded(
 ) -> TaskSighting:
     """One sighting of a task this launcher started, *age* seconds ago.
 
-    ``started_by`` is DERIVED from the tag by default, because the sweep checks
-    that a task's stamp agrees with the task's own tag. That check is NOT a
-    launcher or host discriminator -- the stamp is a fixed prefix plus that same
-    tag, so a genuine task of any crew satisfies it -- which is why the default
-    tags also carry the crew tag the sweep actually attributes by. ``age=None`` is
-    the read that reports no start time at all.
+    ``started_by`` is DERIVED from the tag because the sweep checks they agree; any
+    crew's task passes that, so the default tags also carry the crew tag the sweep
+    attributes by. ``age=None`` reports no start time at all.
     """
     return TaskSighting(
         task_arn=arn,
@@ -173,13 +167,8 @@ def test_a_task_whose_stamp_disagrees_with_its_own_tag_is_left_alone() -> None:
     """A managed task whose ``startedBy`` is not the stamp its own launch tag
     derives is refused.
 
-    This is what the stamp check buys, and it is worth stating narrowly because it
-    is easy to read as more: the stamp is a fixed prefix plus the task's own tag,
-    so it carries no host or crew component and a genuine task of ANY crew passes
-    it. What fails here is a DISAGREEMENT between the two labels -- a task marked
-    and tagged by this product but stamped with something else, which no launch of
-    this product produces. Attribution to a crew is a separate rule, pinned by the
-    colleague tests below.
+    The stamp has no host or crew component, so a genuine task of ANY crew passes; only
+    a DISAGREEMENT fails. Crew attribution is pinned by the colleague tests below.
     """
     plan = _sweep(
         [_bounded(age=DEFAULT_TASK_TTL_SECONDS + 1, started_by="kirocrew-cloud-kc-someoneelse")]
@@ -191,11 +180,8 @@ def test_a_task_whose_stamp_disagrees_with_its_own_tag_is_left_alone() -> None:
 def test_a_colleagues_expired_task_on_a_shared_cluster_is_left_alone() -> None:
     """The case a cluster-wide sweep exists to get right.
 
-    A colleague's crew in the same cluster is the same product with the same tag
-    KEYS and a stamp that agrees with its own tag, because that is what every
-    genuine launch produces. So every check except the crew tag passes on it, and
-    it is past the TTL. Stopping it would irreversibly end a running crew this
-    launcher does not own, which is the guess teardown refuses to make.
+    A colleague's crew in the same cluster, past the TTL, passes every check except the
+    crew tag. Stopping it would irreversibly end a crew this launcher does not own.
     """
     plan = _sweep([_bounded(age=DEFAULT_TASK_TTL_SECONDS + 1, crew=_other_crew())])
     assert plan.stop == ()
@@ -228,12 +214,8 @@ def test_only_this_crews_expired_task_is_stopped_when_both_are_present() -> None
 def test_a_managed_task_with_no_crew_tag_is_not_stopped_but_is_counted_and_named() -> None:
     """A task that cannot be attributed is never stopped, and never silent either.
 
-    It may be this crew's from a launcher too old to have written the tag, or a
-    colleague's from the same, and nothing in the read decides which. So it takes
-    the safe direction on stopping and the conservative one on spend: left
-    running, counted against the cap, and named in the warning. Counting it can
-    refuse a launch, and this module prefers that -- a refusal costs a launch, a
-    wrong stop costs a running crew.
+    It is left running, counted against the cap, and named in the warning: a refusal
+    costs a launch, a wrong stop costs a running crew.
     """
     plan = _sweep(
         [
@@ -422,17 +404,9 @@ def test_a_cli_rendered_timestamp_is_read_as_an_age(monkeypatch) -> None:
 def test_the_describe_batch_is_capped_when_the_cli_merges_every_page(monkeypatch) -> None:
     """A cluster-wide read must split its DescribeTasks calls, not send the lot.
 
-    This is the shape the REAL CLI produces and the earlier fixture could not
-    express. The CLI auto-paginates ``ListTasks`` and merges every page into one
-    response with no ``nextToken`` -- the same behaviour ``ec2.list_instances``
-    relies on for ``get-resources``, with no token loop at all -- so the token
-    loop runs ONCE and holds the whole cluster. Sizing the describe batch by "one
-    page" therefore sizes it by nothing, and above the API's ceiling every
-    ``DescribeTasks`` fails, which propagates through ``reap`` and fails every
-    launch on exactly the busy cluster this sweep is for.
-
-    Driven through ``reap`` rather than ``_sightings`` so the assertion covers the
-    path a launch actually takes.
+    The REAL CLI auto-paginates ``ListTasks`` into one response with no ``nextToken``,
+    so "one page" holds the whole cluster; above the API's ceiling every
+    ``DescribeTasks`` fails and so does every launch. Driven through ``reap``.
     """
     count = fargate_engine.DESCRIBE_TASKS_MAX * 2 + 7
     double = _EcsDouble()
@@ -532,11 +506,8 @@ def test_an_engine_given_no_bounds_is_still_bounded() -> None:
 def test_the_launch_carries_the_same_lifetime_the_sweep_enforces(monkeypatch) -> None:
     """The bound reaches the task, not only the sweep that runs at launch time.
 
-    This is the half the sweep cannot cover: a cluster whose last launch has
-    already happened is never swept again, so a bound that exists only here stops
-    nothing. Asserted against the request this engine actually sends, and against
-    the engine's OWN number, so a launch that quietly sent a different lifetime
-    than the one it enforces would fail.
+    A cluster with no further launch is never swept again. Asserted against the sent
+    request and the engine's OWN number.
     """
     double = _EcsDouble()
     _patch_aws(monkeypatch, double)
@@ -551,14 +522,8 @@ def test_the_launch_carries_the_same_lifetime_the_sweep_enforces(monkeypatch) ->
 def test_the_launch_carries_the_lanes_internal_only_claim(monkeypatch) -> None:
     """The claim must reach the request this engine sends, and only when the lane made it.
 
-    This is the last link in the chain: operator file, spec, request, container. Every
-    other link is asserted elsewhere, and none of them proves the engine puts the value
-    in the document -- a spec holding the claim with the forwarding deleted would pass
-    all of them and launch a task that refuses to start.
-
-    Both directions in one test, because the interesting failure is a value hardcoded
-    rather than read: that hands the loosened posture to a lane whose operator never
-    claimed the boundary, and a one-direction test cannot see it.
+    The last link of operator file, spec, request, container. Both directions, because a
+    hardcoded value would hand the loosened posture to a lane that never claimed it.
     """
     for claimed, expected in ((True, "1"), (False, "0")):
         double = _EcsDouble()
@@ -645,11 +610,8 @@ def test_mutation_the_stamp_must_still_agree_with_the_tag(monkeypatch) -> None:
 def test_mutation_the_crew_tag_decides_what_the_sweep_may_stop(monkeypatch) -> None:
     """Dropping the crew equality must turn this red, through the real stop channel.
 
-    The read is cluster-wide and unfiltered by ``startedBy``, so it returns a
-    colleague's crew whole: managed, launch-tagged, and stamped in agreement with
-    its own tag. Every other check passes on it. If the crew tag stops deciding,
-    ``ecs:StopTask`` is called on a colleague's running crew, and there is no
-    undoing that.
+    The read is cluster-wide, so a colleague's crew passes every other check; without the
+    crew tag, ``ecs:StopTask`` irreversibly stops it.
     """
     double = _EcsDouble()
     double.tasks_for_teardown = [_aged_task(crew=_other_crew())]
@@ -701,11 +663,7 @@ def test_the_cap_does_not_count_a_colleagues_tasks(monkeypatch) -> None:
 def test_no_idle_bound_is_claimed_anywhere(monkeypatch) -> None:
     """The bound set is a TTL and a cap, and it says so.
 
-    An idle-stop needs a last-activity signal, and no read available to a stopper
-    reports one: DescribeTasks carries lifecycle timestamps and no use, and
-    reaching into a task is deferred by RFC section 6. This pins the ABSENCE so a
-    later reader does not take a bound that is not here for one that is: if an
-    idle field appears on TaskBounds, it must arrive with a signal and with this
-    test rewritten.
+    No idle-stop: DescribeTasks reports no last activity, and reaching into a task is
+    deferred by RFC section 6. An idle field on TaskBounds must arrive with a signal.
     """
     assert {f.name for f in dataclasses.fields(TaskBounds)} == {"ttl_seconds", "max_running"}

@@ -57,6 +57,7 @@ def test_launcher_delegates_to_venv_without_rewriting_pythonpath(tmp_path: Path)
         [str(launcher), "mcp-core", "--probe"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=tmp_path,
         env=env,
         timeout=10,
@@ -80,6 +81,7 @@ def test_launcher_without_venv_explains_source_install(tmp_path: Path) -> None:
         [str(launcher), "doctor"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         cwd=tmp_path,
         timeout=10,
     )

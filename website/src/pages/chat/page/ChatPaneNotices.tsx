@@ -7,6 +7,7 @@ import VoicePlaybackNotice from '../../../components/VoicePlaybackNotice'
 import { Btn } from '../../../components/ui'
 import { fmtDate } from '../../../i18n/format'
 import { i18nT } from '../../../i18n/t'
+import { useLanguageGeneration } from '../../../i18n/useLanguageGeneration'
 import { selectionCapabilitiesFailed } from '../../../lib/effort'
 import type { useProvider } from '../../../providers'
 import type { AppDispatch, RootState } from '../../../store'
@@ -74,6 +75,46 @@ function unresumableNoticeMessage(r: { key: string; title: string; surface: stri
   return i18nT('pages.chatPage.this_session_cannot_be_opened_in_chat', { title, surface })
 }
 
+/**
+ * Every translated or locale-formatted string the pane renders, built in one
+ * call that takes the language generation as an argument.
+ *
+ * This component is compiled by the React Compiler, which memoizes each value
+ * on the reactive inputs it reads. `i18nT()` and `fmtDate()` read the active
+ * catalog and locale without being inputs, so a string the compiler cached
+ * would keep the previous language after a switch even though the component
+ * re-renders. Passing the generation makes the language an input of this call,
+ * so a switch rebuilds every string here.
+ */
+function paneCopy(_languageGeneration: number, facts: {
+  sidMatches: ChatPaneNoticesProps['sidMatches']
+  effortUnavailable: boolean
+  configFailed: boolean
+  switchSlotGone: ChatPaneNoticesProps['switchSlotGone']
+  unresumableResume: ChatPaneNoticesProps['unresumableResume']
+  undeletableHistory: ChatPaneNoticesProps['undeletableHistory']
+}) {
+  const { sidMatches, switchSlotGone, unresumableResume, undeletableHistory } = facts
+  return {
+    dismiss: i18nT('app.dismiss'),
+    sidAlsoNames: sidMatches
+      ? i18nT('pages.chatPage.short_name_also_names', {
+        name: sidMatches.name,
+        title: sidMatches.opened.title,
+        date: fmtDate(sidMatches.opened.mintedAt * 1000),
+      })
+      : '',
+    sidStarted: sidMatches
+      ? sidMatches.others.map(match => i18nT('pages.chatPage.short_name_started', { date: fmtDate(match.mintedAt * 1000) }))
+      : [],
+    effortUnavailable: facts.effortUnavailable ? i18nT('pages.chatPage.effort_options_unavailable') : '',
+    configFailed: facts.configFailed ? i18nT('pages.settings.chatPanel.failed_to_load_config') : '',
+    switchSlotGone: switchSlotGone ? switchSlotNoticeCopy(switchSlotGone.kind, switchSlotGone.name) : '',
+    unresumable: unresumableResume ? unresumableNoticeMessage(unresumableResume) : '',
+    undeletable: undeletableHistory ? historyDeleteRefusalMessage(undeletableHistory) : '',
+  }
+}
+
 interface ChatPaneNoticesProps {
   uploadHint: string
   setUploadHint: (hint: string) => void
@@ -134,6 +175,15 @@ export default function ChatPaneNotices({
   undeletableHistory,
   dispatch,
 }: ChatPaneNoticesProps) {
+  const languageGeneration = useLanguageGeneration()
+  const copy = paneCopy(languageGeneration, {
+    sidMatches,
+    effortUnavailable: !!(activeSlot && provider.capabilities.reasoningEffort && selectionCapabilitiesFailed(selectionCapabilitiesQ)),
+    configFailed: !!(activeSlot && chipDefault.failed),
+    switchSlotGone,
+    unresumableResume,
+    undeletableHistory,
+  })
   return (
     <>
       {/* Pane-level notices above the composer. Every ErrorNotice here has the
@@ -144,7 +194,7 @@ export default function ChatPaneNotices({
       {uploadHint && (
         <div role="status" className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
           <span className="text-sm text-text flex-1">{uploadHint}</span>
-          <Btn onClick={() => setUploadHint('')} aria-label={i18nT('app.dismiss')} className="shrink-0 px-1.5 py-0.5 text-muted hover:text-text"><X className="w-3.5 h-3.5" /></Btn>
+          <Btn onClick={() => setUploadHint('')} aria-label={copy.dismiss} className="shrink-0 px-1.5 py-0.5 text-muted hover:text-text"><X className="w-3.5 h-3.5" /></Btn>
         </div>
       )}
       <ErrorNotice
@@ -164,37 +214,31 @@ export default function ChatPaneNotices({
       {sidMatches && (
         <div role="status" data-testid="sid-matches" className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-start gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
           <div className="text-sm text-text flex-1 min-w-0">
-            <p>{i18nT('pages.chatPage.short_name_also_names', {
-              name: sidMatches.name,
-              title: sidMatches.opened.title,
-              date: fmtDate(sidMatches.opened.mintedAt * 1000),
-            })}</p>
+            <p>{copy.sidAlsoNames}</p>
             {/* Bounded: one name can match many sessions, and the pane does not scroll. */}
             <ul className="mt-1 space-y-0.5 max-h-40 overflow-y-auto">
-              {sidMatches.others.map(match => (
+              {sidMatches.others.map((match, i) => (
                 <li key={match.key} className="min-w-0">
                   <Btn type="button" onClick={() => openShortNameMatch(match)} className="border-none p-0 text-left text-accent hover:underline hover:bg-transparent">
                     {match.title}
                   </Btn>
-                  <span className="text-muted"> · <code>{match.key}</code> · {i18nT('pages.chatPage.short_name_started', { date: fmtDate(match.mintedAt * 1000) })}</span>
+                  <span className="text-muted"> · <code>{match.key}</code> · {copy.sidStarted[i]}</span>
                 </li>
               ))}
             </ul>
           </div>
-          <Btn onClick={() => setSidMatches(null)} aria-label={i18nT('app.dismiss')} className="shrink-0 px-1.5 py-0.5 text-muted hover:text-text"><X className="w-3.5 h-3.5" /></Btn>
+          <Btn onClick={() => setSidMatches(null)} aria-label={copy.dismiss} className="shrink-0 px-1.5 py-0.5 text-muted hover:text-text"><X className="w-3.5 h-3.5" /></Btn>
         </div>
       )}
       {/* No hand-off: navigating away would discard the unsent composer draft. */}
       <ErrorNotice
-        message={activeSlot && provider.capabilities.reasoningEffort && selectionCapabilitiesFailed(selectionCapabilitiesQ)
-          ? i18nT('pages.chatPage.effort_options_unavailable') : ''}
+        message={copy.effortUnavailable}
         className="mx-4 mt-2 mb-0 animate-rise"
         testId="effort-capabilities-error"
       />
       {/* No hand-off: navigating away would discard the unsent composer draft. */}
       <ErrorNotice
-        message={activeSlot && chipDefault.failed
-          ? i18nT('pages.settings.chatPanel.failed_to_load_config') : ''}
+        message={copy.configFailed}
         className="mx-4 mt-2 mb-0 animate-rise"
         testId="model-default-error"
       />
@@ -211,7 +255,7 @@ export default function ChatPaneNotices({
           locus, through the required ErrorNotice surface. The store carries
           the NAME; the sentence resolves here so a locale switch re-renders it. */}
       <ErrorNotice
-        message={switchSlotGone ? switchSlotNoticeCopy(switchSlotGone.kind, switchSlotGone.name) : ''}
+        message={copy.switchSlotGone}
         report={switchSlotGone?.report}
         onDismiss={() => dispatch(clearSwitchSlotGone())}
         askAgent
@@ -229,7 +273,7 @@ export default function ChatPaneNotices({
       {pinStatus && (
         <div role="status" className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
           <span className="text-sm text-text flex-1">{pinStatus}</span>
-          <button onClick={dismissPinStatus} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="w-4 h-4" /></button>
+          <button onClick={dismissPinStatus} aria-label={copy.dismiss} className="text-muted hover:text-text leading-none p-0.5"><X className="w-4 h-4" /></button>
         </div>
       )}
       {/* Every resume entry point converges here (#5925): the sidebar row,
@@ -256,7 +300,7 @@ export default function ChatPaneNotices({
               page's draft persistence), and an in-chat hand-off opens a FRESH
               slot without navigating away -- so the draft survives. */}
           <ErrorNotice
-            message={unresumableNoticeMessage(unresumableResume)}
+            message={copy.unresumable}
             onDismiss={() => dispatch(clearUnresumableResume())}
             variant="block"
             askAgent
@@ -270,7 +314,7 @@ export default function ChatPaneNotices({
           chunk-load failure renders its default error card rather than silently
           vanishing -- hiding a notice whose whole job is to report silent data
           loss would repeat the very defect this change exists to end. */}
-      <ErrorBoundary>
+      <ErrorBoundary languageGeneration={languageGeneration}>
         <Suspense fallback={null}>
           <UnrestoredTabsNotice />
         </Suspense>
@@ -283,7 +327,7 @@ export default function ChatPaneNotices({
               The sentence is chosen from the gateway's `code`, so the remedy
               matches the cause (release the cron jobs / retry / repair). */}
           <ErrorNotice
-            message={historyDeleteRefusalMessage(undeletableHistory)}
+            message={copy.undeletable}
             report={undeletableHistory.report}
             onDismiss={() => dispatch(clearUndeletableHistory())}
             variant="block"

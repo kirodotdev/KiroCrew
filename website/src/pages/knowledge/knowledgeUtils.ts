@@ -1,4 +1,5 @@
-import type { Source } from './types'
+import type { IngestionJob, Source } from './types'
+import { i18nT } from '../../i18n/t'
 
 export interface ParsedSourceProps {
   summary?: { topic?: string; themes?: string[] }
@@ -7,6 +8,10 @@ export interface ParsedSourceProps {
   lastScan?: string
   recursive?: boolean
   wordCount?: number
+  ignorePatterns?: string[]
+  /** Why a 'pending' row waits; the gateway writes `import_budget` when the
+   *  explicit-import budget deferred its ingest. */
+  pendingReason?: string
 }
 
 export function parseSourceProps(s: Source): ParsedSourceProps {
@@ -23,6 +28,8 @@ export function parseSourceProps(s: Source): ParsedSourceProps {
     lastScan: props.last_scan as string | undefined,
     recursive: props.recursive as boolean | undefined,
     wordCount: props.word_count as number | undefined,
+    ignorePatterns: Array.isArray(props.ignore_patterns) ? props.ignore_patterns.filter((p): p is string => typeof p === 'string') : undefined,
+    pendingReason: typeof props.pending_reason === 'string' ? props.pending_reason : undefined,
   }
 }
 
@@ -40,10 +47,25 @@ const SYNC_STATUS_LABEL_KEYS: Record<string, string> = {
   paused: 'pages.knowledge.sourcesList.status.paused',
 }
 
+/** The status a source row shows and polls on. A folder scan stamps 'synced'
+ *  when its first file lands, so a row that still reports `scanning` reads as
+ *  'syncing' until the scan ends. Paused, error and pending rows keep their own. */
+export function displaySyncStatus(s: Pick<Source, 'sync_status' | 'scanning'>): string {
+  if (s.scanning && (s.sync_status === 'synced' || s.sync_status === 'active')) return 'syncing'
+  return s.sync_status
+}
+
 /** Readable label for a source's sync_status; an unknown value shows as-is. */
 export function syncStatusLabel(syncStatus: string, t: (key: string) => string): string {
   const key = SYNC_STATUS_LABEL_KEYS[syncStatus]
   return key ? t(key) : syncStatus
+}
+
+/** The visible label for a row still uploading or finished. A failed row is
+ *  an error and renders through `ErrorNotice` instead, so it has no label here. */
+export function ingestionStatusLabel(status: Exclude<IngestionJob['status'], 'error'>): string {
+  if (status === 'done') return i18nT('pages.knowledge.sourcesList.ingest_status_done')
+  return i18nT('pages.knowledge.sourcesList.ingest_status_uploading')
 }
 
 export function formatSourceSubtitle(source: Source, filesTotal?: number, lastScan?: string): string {

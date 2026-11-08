@@ -1,9 +1,12 @@
-import { describe, it, expect, vi } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
 import {
   createActionsProvider,
   type ActionsProviderDeps,
 } from './actionsProvider'
 import type { Result } from '../types'
+// `/all` registers the 11 authored catalogs; `../i18n` alone is English-only.
+import { i18next } from '../../../i18n/all'
+import { i18nT } from '../../../i18n/t'
 
 /**
  * Unit tests for the pure {@link createActionsProvider} factory.
@@ -139,5 +142,61 @@ describe('createActionsProvider — filtering', () => {
   it('returns nothing when no action title matches', async () => {
     const { d } = deps()
     expect(await run(createActionsProvider(d), 'zzzqqq')).toEqual([])
+  })
+})
+
+const KEYS = 'components.commandPalette.providers.actionsProvider'
+
+describe('createActionsProvider — rows follow the active language', () => {
+  afterEach(async () => { await i18next.changeLanguage('en') })
+
+  const rowOf = (results: Result[], key: string) => {
+    const row = results.find((r) => r.id === `actions:${key}`)
+    return { title: row?.title, subtitle: row?.subtitle }
+  }
+
+  /** The catalog's title and subtitle for a row, read in the language active now. */
+  const catalogText = (titleKey: string, subtitleKey: string) => ({
+    title: i18nT(`${KEYS}.${titleKey}`),
+    subtitle: i18nT(`${KEYS}.${subtitleKey}`),
+  })
+
+  it.each([
+    ['new-session', 'new_session', 'start_a_fresh_chat'],
+    ['toggle-theme', 'toggle_theme', 'cycle_light_dark_system'],
+    ['open-shortcuts', 'open_shortcuts', 'keyboard_shortcuts_help'],
+  ])('resolves the %s row when searching, not when the provider is built', async (row, titleKey, subtitleKey) => {
+    const { d } = deps()
+    // Built under English, like the provider `useActionsProvider` memoizes; the
+    // language changes afterwards, as it does from Settings → Display.
+    const p = createActionsProvider(d)
+    const english = catalogText(titleKey, subtitleKey)
+    await i18next.changeLanguage('pt')
+    const portuguese = catalogText(titleKey, subtitleKey)
+    // Without these, a provider that froze English would still match the catalog.
+    expect(portuguese.title).not.toBe(english.title)
+    expect(portuguese.subtitle).not.toBe(english.subtitle)
+    expect(rowOf(await run(p, ''), row)).toEqual(portuguese)
+  })
+
+  it.each([
+    [false, 'pin_current_session', 'pin_this_chat_to_the_top'],
+    [true, 'unpin_current_session', 'remove_pin_from_this_chat'],
+  ])('resolves the pin row when searching, pinned: %s', async (pinned, titleKey, subtitleKey) => {
+    const { d } = deps()
+    const p = createActionsProvider({ ...d, pinCurrentSession: { pinned, toggle: vi.fn() } })
+    const english = catalogText(titleKey, subtitleKey)
+    await i18next.changeLanguage('pt')
+    const portuguese = catalogText(titleKey, subtitleKey)
+    expect(portuguese.title).not.toBe(english.title)
+    expect(portuguese.subtitle).not.toBe(english.subtitle)
+    expect(rowOf(await run(p, ''), 'pin-session')).toEqual(portuguese)
+  })
+
+  it('matches the query against the translated title', async () => {
+    const { d } = deps()
+    await i18next.changeLanguage('pt')
+    const results = await run(createActionsProvider(d), i18nT(`${KEYS}.toggle_theme`))
+    expect(results.map((r) => r.id)).toEqual(['actions:toggle-theme'])
   })
 })

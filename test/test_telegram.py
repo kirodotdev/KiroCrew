@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import channel_options_checks
+import pytest
 from telegram_helpers import FakeCtx  # noqa: F401
 from telegram_helpers import FakeProvider  # noqa: F401
 from telegram_helpers import _cfg  # noqa: F401
@@ -26,7 +28,6 @@ from telegram_helpers import _press  # noqa: F401
 from telegram_helpers import _prime_live  # noqa: F401
 from telegram_helpers import FakeClient
 
-from conftest import assert_rejected_without_backtracking
 from kiro_crew.dashboard.token_auth import parse_duration
 from kiro_crew.messaging.commands import parse_dashboard_ttl
 from kiro_crew.messaging.renderer import session_provenance_tag
@@ -785,7 +786,7 @@ class TestInlineKeyboard:
         assert [len(row) for row in kb["inline_keyboard"]] == [1, 1]
 
 
-class TestExtractOptions:
+class TestExtractOptions(channel_options_checks.UnterminatedOptionsTagIsNotRedos):
     def test_trailing_options_extracted(self) -> None:
         body, opts = _extract_options("Answer here\n\n[OPTIONS: Yes | No | Maybe]")
         assert body == "Answer here"
@@ -800,24 +801,6 @@ class TestExtractOptions:
         body, opts = _extract_options("text so far [OPTIONS: Ye")
         assert "[OPTIONS" not in body
         assert opts == []
-
-    def test_unterminated_options_tag_is_not_redos(self) -> None:
-        # Regression (py/polynomial-redos): a plain greedy ``.*`` body could
-        # consume a "[" that ALSO starts the outer "[OPTIONS:" literal, so over
-        # text with many "[OPTIONS:" prefixes search() re-explored the body from
-        # each position — polynomial. The tempered body
-        # (?:[^[]|\[(?!OPTIONS:))* forbids only a re-occurring "[OPTIONS:", so
-        # the body is unambiguous (linear). A whitespace-padded unterminated tag
-        # and many repeated "[OPTIONS:" prefixes (the real pump) must both be
-        # rejected in CPU time linear in the pump -- see
-        # conftest.assert_rejected_without_backtracking for why this is not a
-        # 1.0 s wall-clock bound.
-        def reject(text: str) -> None:
-            body, opts = _extract_options(text)
-            assert opts == []
-
-        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" + ("\t" * n) + "x")
-        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" * n + "x")
 
 
 # ── transport.py: deny-by-default auth + capabilities + inbound ─────────────
@@ -850,6 +833,34 @@ class TestTransportAuth:
         assert TELEGRAM_CAPABILITIES.edit is True
         assert TELEGRAM_CAPABILITIES.max_message_chars == TELEGRAM_CHUNK_LIMIT
         assert TELEGRAM_CAPABILITIES.max_buttons == 25
+
+    @pytest.mark.parametrize(
+        ("target", "expected"),
+        [
+            ("user:111", ("111", None)),
+            ("topic:111:9", ("111", "9")),
+            ("topic:111:009", ("111", "9")),
+            ("topic:111:2147483647", ("111", "2147483647")),
+            ("topic:222:9", None),
+            ("topic:-100123:9", None),
+            ("topic:111:0", None),
+            ("topic:111:-9", None),
+            ("topic:111:9a", None),
+            ("topic:111:\u0669", None),
+            ("topic:111:", None),
+            ("topic:111:2147483648", None),
+            ("topic:111:" + "9" * 5000, None),
+            ("user:111:topic:9", None),
+        ],
+    )
+    def test_a_private_chat_topic_is_a_configured_target(
+        self, target: str, expected: tuple[str, str | None] | None
+    ) -> None:
+        """A topic target resolves only inside an allow-listed user's private chat,
+        to a positive 32-bit topic id; a group chat id, an unlisted user and a
+        malformed or oversized id are refused."""
+        t = TelegramTransport(FakeClient(), allowed_user_ids=[111, -100123])  # type: ignore[arg-type]
+        assert asyncio.run(t.resolve_configured_target(target)) == expected
 
 
 class TestTransportReceive:

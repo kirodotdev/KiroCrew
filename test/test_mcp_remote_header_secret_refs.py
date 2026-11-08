@@ -192,6 +192,8 @@ class TestTheCallSites:
         client._mcp_ref_spec = {"mcpServers": {"remote": dict(_REMOTE)}}
         client._begin_session_report([])
         client._guard_unresolved_mcp_refs([])  # must not raise
+        # The failed guard records nothing rather than a half-built finding.
+        assert client.mcp_session_report().header_secret_refs == ()
 
     def test_the_runtime_guard_calls_it_too(self):
         # The guard's body lives in the owner module AcpRuntime binds it from.

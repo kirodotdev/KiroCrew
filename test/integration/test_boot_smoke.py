@@ -164,6 +164,27 @@ async def test_a_boot_leaves_the_process_as_it_found_it(gateway_boot) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_boot_does_not_inherit_the_previous_homes_unreadable_spec(gateway_boot) -> None:
+    """The unreadable-spec episode describes ONE home's ``kirocrew.json``.
+    Left over from a home whose spec could not be read, it would hold the next
+    home's rebuild on the previous file's verdict, so the harness resets it
+    before every boot, as a fresh process starts with it clear."""
+    from kiro_crew import agent as agent_mod
+
+    agent_mod._main_spec_unreadable = True
+    agent_mod._main_spec_episode_revision = 5
+    agent_mod._main_spec_skip_generation = -1
+    agent_mod._main_spec_warned.add("retry")
+    async with gateway_boot() as gw:
+        await gw.get_json("/api/health", auth=False)
+        assert agent_mod._main_spec_unreadable is False
+        assert agent_mod._main_spec_episode_revision == 0
+        assert agent_mod._main_spec_skip_generation != -1
+        assert not agent_mod._main_spec_warned
+    assert _process_is_clean()
+
+
+@pytest.mark.asyncio
 async def test_a_second_home_gets_its_own_signing_key(tmp_path: Path, monkeypatch) -> None:
     """Two boots on two homes in one process: the token minted for the first
     must not validate against the second, which is only true when the cached
@@ -436,6 +457,12 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.config.loader_snapshots", "_MATERIALIZED_REFRESH_ISSUED"): "counter",
     ("kiro_crew.context", "_store_cache_generation"): "counter",
     ("kiro_crew.dashboard.handlers.updates_check", "_last_update_check"): "clock",
+    # When the shared-crew admission service last read its config: a monotonic
+    # stamp the harness zeroes and each boot sets again when it builds its service.
+    ("kiro_crew.shared_crew.admission_gate", "_last_config_at"): "clock",
+    # The SSM listener's last answer: every boot replaces it with a new value from its
+    # own config (off, or the port it bound), so no earlier boot's answer carries over.
+    ("kiro_crew.shared_crew.ssm", "_listener"): "rebuilt by each boot",
     # When telemetry consent was last re-read, and whether a re-read is in
     # flight: a boot that outlasts the recheck window starts one. The consent
     # itself (``_built_consent``) does not change here.
@@ -445,6 +472,8 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # the two counters around it, not home state.
     ("kiro_crew.agent", "_rebuild_answer_generation"): "counter",
     ("kiro_crew.platform.context", "_GOVERNANCE_GENERATION"): "counter",
+    # The trust verdict's install counter: monotonic, no home state.
+    ("kiro_crew.approval_mode_policy", "_ceiling_gen"): "counter",
     ("kiro_crew.platform.governance_profiles", "_PROFILE_GENERATION"): "counter",
     # Host facts re-probed on their own TTL or backoff: the user login session
     # behind cgroup scopes and the machine's own host names. A boot that
@@ -465,9 +494,18 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.apps.hooks_integration", "_route_registry"): "replaced per boot",
     ("kiro_crew.dashboard.cautious_boot", "_decision"): "replaced per boot",
     ("kiro_crew.dashboard.crash_dump_store", "_active_dump_file"): "replaced per boot",
+    ("kiro_crew.dashboard.members_roster_goals", "_state_ref"): "replaced per boot",
     ("kiro_crew.diag.recorder", "_recorder"): "replaced per boot",
     ("kiro_crew.hooks", "_BUILTIN_APP_AGENTS"): "replaced per boot",
     ("kiro_crew.hooks", "_global_script_hook_store"): "replaced per boot",
+    # Shared crew: the boot's host hooks and what its tailnet setup resolved to.
+    # The harness resets each to a fresh default, a new object every boot.
+    ("kiro_crew.shared_crew.access", "_direct_tailnet"): "replaced per boot",
+    ("kiro_crew.shared_crew.access", "_forwarded_attribution"): "replaced per boot",
+    ("kiro_crew.shared_crew.admission_gate", "_HOOKS"): "replaced per boot",
+    # The lock that serializes building the admission service; the harness drops
+    # the service and gives each boot a fresh lock for the one it builds.
+    ("kiro_crew.shared_crew.admission_gate", "_SERVICE_LOCK"): "replaced per boot",
     ("kiro_crew.skill_usage", "_global_skill_read_observer"): "replaced per boot",
     ("kiro_crew.slack.interactions", "_orch"): "replaced per boot",
     ("kiro_crew.slack.interactions_approvals", "_orch"): "replaced per boot",
@@ -501,6 +539,13 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # session writes the workspace ``.kiro/cli.json`` overlay from a task that
     # races shutdown, so either boot may be the one that fills it.
     ("kiro_crew.atomic_write", "_default_mode"): "lazy umask cache",
+    # Each calling thread's path-resolver wait allowance. The harness clears it
+    # before every boot, but a boot records an entry only when one resolve's wait
+    # clears ``_PATH_RESOLVE_WAIT_FLOOR_SECS``, so whether the second boot leaves
+    # one depends on how loaded the host is, not on the home. Listed under both
+    # the owning module and the ``security.paths`` facade that re-exports it.
+    ("kiro_crew.security.paths", "_path_resolve_thread_waits"): "wait timing",
+    ("kiro_crew.security.paths_resolver", "_path_resolve_thread_waits"): "wait timing",
     # The dotted names of the facades imported so far in this process. A
     # facade imported lazily by a boot's background work (the update check
     # imports ``platform.wheel_engine``) is added by whichever boot first
@@ -513,6 +558,7 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.executors", "_cron_pool"): "lazy thread pool",
     ("kiro_crew.executors", "_discovery_pool"): "lazy thread pool",
     ("kiro_crew.executors", "_embed_pool"): "lazy thread pool",
+    ("kiro_crew.executors", "_memory_background_pool"): "lazy thread pool",
     ("kiro_crew.executors", "_recall_pool"): "lazy thread pool",
     ("kiro_crew.executors", "_image_pool"): "lazy thread pool",
     ("kiro_crew.executors", "_stt_pool"): "lazy thread pool",
@@ -523,6 +569,9 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     ("kiro_crew.executors", "_path_probe_pool"): "lazy thread pool",
     ("kiro_crew.executors", "_path_transfer_pool"): "lazy thread pool",
     ("kiro_crew.executors", "_crew_log_pool"): "lazy thread pool",
+    # Log-once dedup of the loop-thread lock warning: it holds source
+    # locations already warned about, not home state.
+    ("kiro_crew.vector_memory_lifecycle", "_loop_lock_sites"): "log-once warning dedup",
     # Task handles of loops the harness reaps at teardown (docstring, item 4);
     # only the dead handle remains.
     ("kiro_crew.apps.builtins.auto_research.handlers", "_watchdog_task"): "reaped task handle",

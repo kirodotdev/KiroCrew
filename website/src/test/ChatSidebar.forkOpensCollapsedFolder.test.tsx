@@ -11,7 +11,9 @@
  * copy of the row is not filed yet; that a fork made while the mobile drawer is
  * closed still opens the path when the drawer first mounts the sidebar before
  * the folder query answers, or after that query first fails and a retry
- * succeeds; and that a refused fork, or a child at the top
+ * succeeds; that a folder made after the last folder fetch opens once a
+ * refetch lists it, and the request is dropped only when a refetch made after
+ * it still lacks the folder; and that a refused fork, or a child at the top
  * level, leaves the folders alone.
  *
  * The real `forkSlot` thunk, `useForkSession` and `useSessionActions` run
@@ -22,6 +24,7 @@ import { useState } from 'react'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { requestSlotFolderOpen } from '../store/chatSlice'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
@@ -83,6 +86,7 @@ function Drawer({ startOpen }: { startOpen: boolean }) {
   return (
     <>
       <button type="button" onClick={() => setOpen(true)}>open drawer</button>
+      <button type="button" onClick={() => setOpen(false)}>close drawer</button>
       {open && <StoreBackedSidebar />}
     </>
   )
@@ -289,6 +293,80 @@ describe('ChatSidebar – an opened fork shows its row', () => {
     // The folder was deleted before the list loaded.
     await act(async () => { resolveFolders([folder('fOther', true)]) })
     await waitFor(() => expect(store.getState().chat.revealRequest).toBeNull())
+    expect(expandedIds()).toEqual([])
+  })
+
+  it('opens a folder made after the last folder fetch once a refetch lists it', async () => {
+    // An import from a new sender makes `from <sender>` under a collapsed
+    // Imported, and the settled list learns of it only from a later fetch.
+    mocks.forkChatSlot.mockResolvedValue(forked('fNew'))
+    const { store, qc } = renderPage([folder('fP', true)], 'fP')
+    await waitFor(() => expect(qc.getQueryState(['chat-folders'])?.fetchStatus).toBe('idle'))
+    const fetches = mocks.chatFolders.mock.calls.length
+    mocks.chatFolders.mockResolvedValue([folder('fP', true), folder('fNew', false, 'fP')])
+    messageFork()
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(CHILD))
+    await waitFor(() => expect(expandedIds()).toEqual(['fP']))
+    // The refetch the reveal asked for; the expand's own settle adds another.
+    expect(mocks.chatFolders.mock.calls.length).toBeGreaterThan(fetches)
+    expect(store.getState().chat.revealRequest).toBeNull()
+  })
+
+  it('keeps the request through an optimistic folder write while its folder read is pending', async () => {
+    // A folder toggle mid-read cancels the folder query and writes the cache
+    // optimistically. That write is not a server answer, so it must not drop
+    // the request; only the read the reveal made can.
+    mocks.forkChatSlot.mockResolvedValue(forked('fNew'))
+    const { store, qc } = renderPage([folder('fP', true)], 'fP')
+    await waitFor(() => expect(qc.getQueryState(['chat-folders'])?.fetchStatus).toBe('idle'))
+    const fetches = mocks.chatFolders.mock.calls.length
+    let answer: (v: ChatFolder[]) => void = () => {}
+    mocks.chatFolders.mockReturnValueOnce(new Promise<ChatFolder[]>(res => { answer = res }))
+    messageFork()
+    await waitFor(() => expect(mocks.chatFolders.mock.calls.length).toBe(fetches + 1))
+    await act(async () => {
+      await qc.cancelQueries({ queryKey: ['chat-folders'] })
+      qc.setQueryData<ChatFolder[]>(['chat-folders'], [folder('fP', true)])
+    })
+    expect(store.getState().chat.revealRequest).not.toBeNull()
+    expect(expandedIds()).toEqual([])
+    const listed = [folder('fP', true), folder('fNew', false, 'fP')]
+    mocks.chatFolders.mockResolvedValue(listed)
+    await act(async () => { answer(listed) })
+    await waitFor(() => expect(expandedIds()).toEqual(['fP']))
+    expect(store.getState().chat.revealRequest).toBeNull()
+  })
+
+  it('a folder read that answers after the sidebar unmounts leaves a newer request alone', async () => {
+    // The drawer closes while the reveal's read for a deleted folder is still
+    // out, and a newer folder-open request lands before that read answers.
+    mocks.forkChatSlot.mockResolvedValue(forked('fGone'))
+    const { store, qc } = renderPage([folder('fP', true)], 'fP')
+    await waitFor(() => expect(qc.getQueryState(['chat-folders'])?.fetchStatus).toBe('idle'))
+    const fetches = mocks.chatFolders.mock.calls.length
+    let answer: (v: ChatFolder[]) => void = () => {}
+    mocks.chatFolders.mockReturnValueOnce(new Promise<ChatFolder[]>(res => { answer = res }))
+    messageFork()
+    await waitFor(() => expect(mocks.chatFolders.mock.calls.length).toBe(fetches + 1))
+    fireEvent.click(screen.getByRole('button', { name: 'close drawer' }))
+    act(() => { store.dispatch(requestSlotFolderOpen({ key: CHILD, folder_id: 'fP' })) })
+    const newer = store.getState().chat.revealRequest
+    expect(newer).not.toBeNull()
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    expect(store.getState().chat.revealRequest).toBe(newer)
+    await act(async () => { answer([folder('fP', true)]) })
+    expect(store.getState().chat.revealRequest).toBe(newer)
+  })
+
+  it('drops the request once a refetch made after it still lacks the folder', async () => {
+    mocks.forkChatSlot.mockResolvedValue(forked('fGone'))
+    const { store, qc } = renderPage([folder('fP', true)], 'fP')
+    await waitFor(() => expect(qc.getQueryState(['chat-folders'])?.fetchStatus).toBe('idle'))
+    const fetches = mocks.chatFolders.mock.calls.length
+    messageFork()
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(CHILD))
+    await waitFor(() => expect(store.getState().chat.revealRequest).toBeNull())
+    expect(mocks.chatFolders.mock.calls.length).toBe(fetches + 1)
     expect(expandedIds()).toEqual([])
   })
 

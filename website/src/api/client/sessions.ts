@@ -5,11 +5,21 @@
  */
 
 import type { ClientTransport } from './transport'
+import { CONFIRM_IRREVERSIBLE_HEADER } from '../sharedCrewInvites'
 import type { CrewBoardAction, CrewBoardActionResult, WorkBoardResponse } from '../crewBoard'
 
 export const SEARCH_MIN_CHARS = 2  // backend session search threshold (must match kiro_crew.history.SEARCH_MIN_CHARS)
 
-export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCrewBoard }: ClientTransport) {
+/** One file in the consolidated session archive, as `/api/session/archive` lists it. */
+export interface ArchiveEntry {
+  name: string
+  key: string
+  stamp: string
+  size: number
+  mtime: number
+}
+
+export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, sendResponseAuthRecovery, jCrewBoard }: ClientTransport) {
   const runtimes = {
     restartSessions: () =>
       post('/api/sessions/restart').then(j) as Promise<{
@@ -45,7 +55,7 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
          * nests under the session that owns the run and the citation still names the
          * creator that is gone.
          */
-        parent: { slot: string; key: string | null; ancestor?: boolean } | null
+        parent: { slot: string; key: string | null; ancestor?: boolean; title?: string } | null
       }[]
       tasks: {
         id: string; task: string; agent: string; parent: string
@@ -53,6 +63,8 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
         session_key?: string
         rss_mb: number; peak_rss_mb: number; cpu_cores: number
         procs: number | null; mcp: number | null
+        /** Credits the live run has burned so far; null while none. Absent from an older gateway. */
+        credits?: number | null
         started_at: number; shared: boolean; pid: number | null; sampled: boolean
       }[]
       totals: {
@@ -67,6 +79,28 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
          */
         lineage_over_cap: boolean
         lineage_cap: number
+        /**
+         * Everything the product runs on this host, by part, so the page's total
+         * is comparable with the OS's own figure for the app. `rss_mb` above
+         * stays the sessions' own total. Null when the breakdown could not be
+         * taken; absent from an older gateway.
+         */
+        breakdown?: {
+          total_mb: number
+          host_pct: number | null
+          /** True when some part could not be measured, so the total leaves it out. */
+          partial: boolean
+          categories: {
+            /** `sessions`, `warm_pool`, `other_agents`, `mcp_gateway`, `gateway`, `gateway_helpers`, `desktop`. */
+            id: string
+            /** null when this part cannot be measured on this host. */
+            mb: number | null
+            /** null when processes cannot be counted on this host. */
+            procs: number | null
+            /** The largest executables in this part, by base name. */
+            top: { name: string; procs: number; mb: number }[]
+          }[]
+        } | null
       }
       history: { t: number; mb: number }[]
     }>,
@@ -87,6 +121,21 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
     // name can match several.
     sessionsNamed: (name: string) => fetch('/api/sessions?limit=200&name=' + encodeURIComponent(name))
       .then(j) as Promise<{ sessions: Array<{ key: string; title?: string }> }>,
+    // The consolidated session archive (redacted before it is served). The list
+    // is JSON; `j` parses it and runs auth recovery like every other read here.
+    sessionArchiveList: () =>
+      fetch('/api/session/archive').then(j) as Promise<{ archives: ArchiveEntry[] }>,
+    // One archive file, returned as JSONL TEXT — so this reads the raw `Response`
+    // itself (`j` is JSON-only and would throw on it) and runs the same auth
+    // recovery a `j` call gets via `sendResponseAuthRecovery`, exactly as the
+    // chat-core send does for its own raw receipt. `jfetch` (the `fetch` alias
+    // here) journals a transport rejection with this route + method, so a network
+    // drop carries its endpoint into the Ask-agent hand-off (#18723). A non-2xx
+    // is handed back raw for the caller to read, matching the page's own `!r.ok`
+    // handling; the abort signal rides through for the superseded-open case.
+    sessionArchiveRead: (name: string, signal?: AbortSignal) =>
+      fetch('/api/session/archive/' + encodeURIComponent(name), signal ? { signal } : undefined)
+        .then(sendResponseAuthRecovery),
   }
 
   const historyDetail = {
@@ -97,7 +146,9 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
     sessionMeta: (key: string) => fetch('/api/sessions/' + encodeURIComponent(key) + '/meta')
       .then(r => (r.status === 404 ? null : j(r))) as Promise<{ key: string; title?: string } | null>,
     deleteSession: (key: string) => del('/api/sessions/' + encodeURIComponent(key)).then(j),
-    clearSessions: (userOnly = false) => del('/api/sessions' + (userOnly ? '?user_only=1' : '')).then(j),
+    // Deleting every session cannot be undone; the caller's own dialog confirmed it.
+    clearSessions: (userOnly = false) =>
+      del('/api/sessions' + (userOnly ? '?user_only=1' : ''), undefined, undefined, CONFIRM_IRREVERSIBLE_HEADER).then(j),
   }
 
   const crewBoard = {
@@ -118,10 +169,11 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, jCre
      * returned: the server resolves it from the store, which is what lets this call
      * stop a session the masked read deliberately does not name. A non-orphaned
      * item answers 409, so a click made from a stale poll is refused rather than
-     * quietly doing nothing.
+     * quietly doing nothing. A `dismiss` names the report it sets aside
+     * (`reportId`), so a newer ask filed since the last poll is refused, not hidden.
      */
-    crewBoardAction: (conductor: string, itemId: string, action: CrewBoardAction) =>
-      post('/api/crew-board/action', { conductor, item_id: itemId, action })
+    crewBoardAction: (conductor: string, itemId: string, action: CrewBoardAction, reportId?: string) =>
+      post('/api/crew-board/action', { conductor, item_id: itemId, action, ...(reportId ? { report_id: reportId } : {}) })
         .then(j) as Promise<CrewBoardActionResult>,
   }
 

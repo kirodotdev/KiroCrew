@@ -13,7 +13,8 @@ so ``self.<name>(...)`` calls and instance and class patches reach it as they re
 method defined in the class body. They read ``_cancel_epoch``, ``_edges``,
 ``_forgotten_while_seeding``, ``_lock``, ``_records``, ``_root``, ``_scans``,
 ``_seed_gate``, ``_seed_retry_at``, ``_seed_retry_timer``, ``_seeded``, ``_spawn_scans``
-and ``_spawned``, write ``_cancel_epoch``, ``_dirty``, ``_edges``, ``_incomplete``,
+and ``_spawned``, write ``_cancel_epoch``, ``_dirty``, ``_edges``, ``_fault_sids``,
+``_incomplete``,
 ``_nodes``, ``_over_cap``, ``_records``, ``_root``, ``_scans``, ``_seed_retry_at``,
 ``_seed_retry_timer``, ``_seeded``, ``_seeding``, ``_spawn_scans``, ``_spawned``,
 ``_suspect_sids`` and ``_unattributed_gap``, and update ``_forgotten_while_seeding`` and
@@ -115,6 +116,7 @@ def ensure_seeded(self: SessionTreeProjection, live_sids: "tuple[str, ...]" = ()
                 self._spawn_scans = {}
                 self._nodes = None
                 self._incomplete = False
+                self._fault_sids = set()
                 self._over_cap = False
                 self._suspect_sids = set()
                 self._unattributed_gap = False
@@ -334,6 +336,7 @@ def _seed_inner(self: SessionTreeProjection, live_sids: "tuple[str, ...]") -> No
             # Flags first, then the merge: eviction can only escalate them, so
             # assigning the scan's values afterwards would undo that escalation.
             self._incomplete = reading.incomplete
+            self._fault_sids = set()
             self._over_cap = scanner.over_cap
             self._suspect_sids = set(reading.suspect_sids)
             self._unattributed_gap = reading.unattributed_fault
@@ -364,6 +367,7 @@ def _seed_inner(self: SessionTreeProjection, live_sids: "tuple[str, ...]") -> No
     incomplete = incomplete or spawn_incomplete
     with self._lock:
         self._incomplete = incomplete
+        self._fault_sids = set()
         self._over_cap = over_cap
         self._suspect_sids = set(faults.sids)
         self._unattributed_gap = faults.unattributed

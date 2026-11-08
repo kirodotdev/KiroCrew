@@ -9,10 +9,10 @@
  * main-thread by nature. Starving those of their per-frame trigger is cheap
  * insurance on both paths.
  *
- * While a session streams, nearly all main-thread churn is the per-rAF flush
- * pipelines in `useWebSocket` (chunk / subagent-chunk / slot-activity), each of
- * which dispatches into the store and re-renders ChatPage once per frame. Those
- * pipelines already BUFFER between flushes, so deferring the flush costs
+ * While a session streams, nearly all main-thread churn is the per-rAF stream
+ * flush in `useWebSocket` (chunk / subagent-chunk / slot-activity buffers), which
+ * dispatches into the store and re-renders ChatPage once per frame. Those
+ * buffers already hold text between flushes, so deferring the flush costs
  * nothing but latency: this module is the shared clock that tells them to sit
  * out the slide. Nothing is ever dropped — a deferred flush delivers the whole
  * buffer when the hold lapses.

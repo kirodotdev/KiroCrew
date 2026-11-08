@@ -204,11 +204,25 @@ class TestEndpoint:
         assert data["agent"] is None
 
     @pytest.mark.asyncio
-    async def test_get_without_a_live_session_reports_the_slots_crew(self) -> None:
-        """A slot nobody has started yet shows what its first session compacts at."""
+    @pytest.mark.parametrize(
+        ("agent", "pct"),
+        [
+            pytest.param(
+                "orchestrator", 45.0, id="test_get_without_a_live_session_reports_the_slots_crew"
+            ),
+            pytest.param(
+                "worker", 80.0, id="test_get_without_a_live_session_follows_a_picked_crew"
+            ),
+        ],
+    )
+    async def test_get_without_a_live_session_reports_the_slots_crew_value(
+        self, agent: str, pct: float
+    ) -> None:
+        """A slot nobody has started yet shows what its first session compacts at:
+        the value of the crew it picked."""
         cfg = _crew_cfg(orchestrator=45.0, worker=80.0)
         slot = _ChatSlot("test")
-        slot.agent = "orchestrator"
+        slot.agent = agent
         state = MagicMock(spec=DashboardState)
         state._slots = {slot.key: slot}
         state.sessions = _manager()
@@ -217,8 +231,8 @@ class TestEndpoint:
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.get("/api/chat/slots/test/autocompact")
                 data = await resp.json()
-        assert data["agent_pct"] == 45.0
-        assert data["agent"] == "orchestrator"
+        assert data["agent_pct"] == pct
+        assert data["agent"] == agent
 
     @pytest.mark.asyncio
     async def test_get_without_a_live_session_is_a_template_session_not_the_default_crew(
@@ -240,23 +254,6 @@ class TestEndpoint:
                 data = await resp.json()
         assert data["agent_pct"] is None
         assert data["agent"] is None
-
-    @pytest.mark.asyncio
-    async def test_get_without_a_live_session_follows_a_picked_crew(self) -> None:
-        """A slot that picked a crewmate starts under it, so it shows that crew's value."""
-        cfg = _crew_cfg(orchestrator=45.0, worker=80.0)
-        slot = _ChatSlot("test")
-        slot.agent = "worker"
-        state = MagicMock(spec=DashboardState)
-        state._slots = {slot.key: slot}
-        state.sessions = _manager()
-        state.conversation_log = MagicMock()
-        with unittest.mock.patch.object(KiroCrewConfig, "load", return_value=cfg):
-            async with TestClient(TestServer(_make_app(state))) as client:
-                resp = await client.get("/api/chat/slots/test/autocompact")
-                data = await resp.json()
-        assert data["agent_pct"] == 80.0
-        assert data["agent"] == "worker"
 
     @pytest.mark.asyncio
     async def test_a_credential_shaped_crew_name_is_redacted_in_the_label(self) -> None:
@@ -332,12 +329,23 @@ class TestCliChat:
         cfg = _crew_cfg(orchestrator=40.0)
         assert cfg.session.autocompact_pct > 50.0
         provider = await _repl_once(monkeypatch, cfg, "orchestrator")
+        provider.compact.assert_awaited_once_with()
+        provider.shutdown.assert_awaited_once_with()
         provider.start.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_the_repl_follows_the_global_for_a_crew_that_declares_none(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        import kiro_crew.cli_chat as cli_chat
+
         cfg = _crew_cfg(builder=0.0)
+        assert cli_chat._repl_compact_at(cfg, "builder") == cfg.session.autocompact_pct
         provider = await _repl_once(monkeypatch, cfg, "builder")
+        # The turn ran, and 50% sits below the global, so nothing restarted.
+        cli_chat._send_and_print.assert_awaited_once_with(
+            provider, "hello", interactive=True, gate=None
+        )
+        provider.compact.assert_not_awaited()
+        provider.shutdown.assert_not_awaited()
         provider.start.assert_not_awaited()

@@ -594,7 +594,9 @@ def test_a_revocation_between_the_payload_build_and_activation_is_caught(tmp_pat
     revoked = json.loads(json.dumps(_DEFAULT_SPEC_ON_DISK))
     revoked["mcpServers"].pop("builder-mcp")
 
-    async def _payload(agent_name, *, member_dispatch=False, crew_panel=False, session_key=""):
+    async def _payload(
+        agent_name, *, member_dispatch=False, crew_panel=False, session_key="", **_kw
+    ):
         # The projection's gate, then the payload built from what it verified -- spec A.
         snapshot = agent.require_fresh_derived_spec(agent_name, str(tmp_path / "wd"))
         # The revocation lands AFTER the definition is registered and BEFORE activation.
@@ -736,6 +738,8 @@ class _FakeHandle:
         self.kwargs = kwargs
         self.drained = False
         self.native_context_documents = {}
+        # Set by ``AcpSessionHandle.__init__``; ``_finish_create_session`` extends it.
+        self.kas_launch_snapshots: list[str] = []
 
     def store_session_config(self, resp):
         return None
@@ -802,7 +806,9 @@ def _runtime_for_create_session(monkeypatch, tmp_path, sent, terminated):
         sent.append(method)
         return resp
 
-    async def _kas_custom_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+    async def _kas_custom_agents(
+        agent, *, member_dispatch=False, crew_panel=False, session_key="", **_kw
+    ):
         # The kiro backend builds no wire surface, so it carries no payload and no payload
         # snapshot -- which is what makes the set_mode line itself the consumed load.
         from kiro_crew.acp.harness import SessionExtras
@@ -820,6 +826,8 @@ def _runtime_for_create_session(monkeypatch, tmp_path, sent, terminated):
 
     async def _terminate(session_id):
         terminated.append(session_id)
+        # As the real one does in its ``finally``: drop the id from the unclaimed set.
+        rt._unclaimed_new_sessions.discard(session_id)
 
     rt._send_and_await = _send_and_await  # type: ignore[method-assign]
     rt._kas_custom_agents = _kas_custom_agents  # type: ignore[method-assign]

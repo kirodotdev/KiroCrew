@@ -82,11 +82,31 @@ CI_PENDING_KEY = "ciPending"
 # chip status is ``ci`` and ``state`` only, so the full-payload write-through
 # must not project the marker for one either, or the two would disagree on
 # every chip refresh and refetch the full payload.
-CI_PENDING_PROVIDERS = frozenset({"github", contract.BITBUCKET_SERVER_PROVIDER})
+CI_PENDING_PROVIDERS = frozenset(
+    {"github", contract.BITBUCKET_SERVER_PROVIDER, contract.GERRIT_PROVIDER}
+)
 
 # The CI fields a degraded read carries forward together: a kept ``ci`` with
 # a dropped ``ciPending`` would silently claim the run had finished.
 CI_STATUS_FIELDS = ("ci", CI_PENDING_KEY)
+
+
+def _record_merge_state(result: dict[str, str], mergeable: str, merge_state: str) -> None:
+    """Add the merge fields to a chip-status entry, each only once it is real.
+
+    An unanswered field is left out entirely rather than written as ``unknown``:
+    the chip cache is a short-TTL hint the client compares against its loaded
+    pull-request payload, and "still computing" must not read as a disagreement
+    with a real answer the payload already has. The two fields are recorded
+    independently because GitLab settles `need_rebase` and its branch-protection
+    gates in the detail field while ``mergeable`` stays ``unknown`` — dropping the
+    detail because its sibling is unknown would leave exactly those banners
+    invisible to the poll.
+    """
+    if _merge_state_real(mergeable):
+        result["mergeable"] = mergeable
+    if _merge_state_real(merge_state):
+        result["mergeStateStatus"] = merge_state
 
 
 def _record_ci(result: dict[str, str], checks: list[dict[str, Any]]) -> None:

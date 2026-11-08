@@ -35,6 +35,7 @@ export default function AccordionSection({
     >
       <button
         onClick={onToggle}
+        aria-expanded={expanded}
         className="w-full flex items-center gap-1.5 px-3 py-2.5 text-[12px] font-semibold text-muted uppercase tracking-[.05em] hover:text-text cursor-pointer bg-transparent flex-shrink-0"
       >
         <Icon size={13} className="flex-shrink-0" />

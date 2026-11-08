@@ -1,0 +1,359 @@
+[
+  {
+    "agent_capabilities": {
+      "auth": {},
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "promptCapabilities": {
+        "audio": false,
+        "embeddedContext": false,
+        "image": true
+      },
+      "sessionCapabilities": {}
+    },
+    "agent_version": "2.33.1",
+    "frame": "response",
+    "id": 101,
+    "protocol_version": 1
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "sleep 10 && echo second-done"
+        },
+        "title": "sleep 10 && echo second-done",
+        "tool_call_id": "toolu_bdrk_01Cr7of9kbGdLnrTToyMWhxr",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"command\": \"sleep 10 && echo second-done\"\n}",
+        "tool_kind": "execute",
+        "tool_name": "shell",
+        "wire_title": "Running: sleep 10 && echo second-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "sleep 10 && echo second-done"
+        },
+        "request_id": "synthetic-id-1",
+        "shell_classified": true,
+        "title": "Running: sleep 10 && echo second-done",
+        "tool_call_id": "toolu_bdrk_01Cr7of9kbGdLnrTToyMWhxr",
+        "tool_input": "{\n  \"command\": \"sleep 10 && echo second-done\"\n}",
+        "tool_name": "shell"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "frame": "response",
+    "id": 104
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionUserMessageQueued"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01Cr7of9kbGdLnrTToyMWhxr",
+        "tool_output": "second-done\n",
+        "tool_output_bytes": 12,
+        "tool_output_digest": "539c506203d89bd5a48b0128027aa295bdf733c3df536b0dcfa16729ef564066"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01Cr7of9kbGdLnrTToyMWhxr",
+        "tool_final": true,
+        "tool_output": "second-done\n",
+        "tool_output_bytes": 12,
+        "tool_output_digest": "539c506203d89bd5a48b0128027aa295bdf733c3df536b0dcfa16729ef564066",
+        "tool_status": "completed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 10 && echo second-done"
+        },
+        "title": "sleep 10 && echo second-done",
+        "tool_call_id": "toolu_bdrk_01Cr7of9kbGdLnrTToyMWhxr",
+        "tool_input": "{\n  \"command\": \"sleep 10 && echo second-done\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "Running: sleep 10 && echo second-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionSteeringInjected"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "sleep 10 && echo third-done"
+        },
+        "title": "sleep 10 && echo third-done",
+        "tool_call_id": "toolu_bdrk_01CSJt1vr83SWYodF1kT2dD2",
+        "tool_identity_trusted": true,
+        "tool_input": "{\n  \"command\": \"sleep 10 && echo third-done\"\n}",
+        "tool_kind": "execute",
+        "tool_name": "shell",
+        "wire_title": "Running: sleep 10 && echo third-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_once",
+            "label": "Yes"
+          },
+          {
+            "id": "allow_always",
+            "label": "Always"
+          },
+          {
+            "id": "reject_once",
+            "label": "No"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "sleep 10 && echo third-done"
+        },
+        "request_id": "synthetic-id-2",
+        "shell_classified": true,
+        "title": "Running: sleep 10 && echo third-done",
+        "tool_call_id": "toolu_bdrk_01CSJt1vr83SWYodF1kT2dD2",
+        "tool_input": "{\n  \"command\": \"sleep 10 && echo third-done\"\n}",
+        "tool_name": "shell"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow_once",
+      "reject": "reject_once"
+    }
+  },
+  {
+    "frame": "response",
+    "id": 105
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionUserMessageQueued"
+  },
+  {
+    "frame": "response",
+    "id": 106
+  },
+  {
+    "action": "steer",
+    "frame": "_kiro.dev/session/update",
+    "session_update": "AgentExecutionUserMessageCleared"
+  },
+  {
+    "frame": "response",
+    "id": 107
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01CSJt1vr83SWYodF1kT2dD2",
+        "tool_output": "third-done\n",
+        "tool_output_bytes": 11,
+        "tool_output_digest": "80effa81c29e989229f68ee22f4eb766761877676c63f8799c25bbf8718d746d"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_bdrk_01CSJt1vr83SWYodF1kT2dD2",
+        "tool_final": true,
+        "tool_output": "third-done\n",
+        "tool_output_bytes": 11,
+        "tool_output_digest": "80effa81c29e989229f68ee22f4eb766761877676c63f8799c25bbf8718d746d",
+        "tool_status": "completed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "sleep 10 && echo third-done"
+        },
+        "title": "sleep 10 && echo third-done",
+        "tool_call_id": "toolu_bdrk_01CSJt1vr83SWYodF1kT2dD2",
+        "tool_input": "{\n  \"command\": \"sleep 10 && echo third-done\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "Running: sleep 10 && echo third-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Both commands ran one"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Both commands ran one",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " after the"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " after the",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " other and printed `second-done"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " other and printed `second-done",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "` and `third-done`,"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "` and `third-done`,",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " kiwi"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " kiwi",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "\n\n[STEERING steer-"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\n\n[STEERING steer-",
+      "thinking": false
+    }
+  },
+  {
+    "frame": "response",
+    "id": 103,
+    "stop_reason": "end_turn"
+  }
+]

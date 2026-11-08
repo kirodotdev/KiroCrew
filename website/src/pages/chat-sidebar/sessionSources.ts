@@ -7,8 +7,9 @@ import { useRemoteCrewChat } from '../../hooks/usePreviewFlag'
 import { api } from '../../api/client'
 import { crewGroupsFor, useInstanceSessions } from '../../hooks/useInstanceSessions'
 import { i18nT } from '../../i18n/t'
+import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { useSelectInstance } from '../../hooks/useSelectInstance'
-import { useDebouncedSessionSearch } from './search'
+import { useDebouncedSessionSearchState } from './search'
 import type { Slot } from './types'
 import { sessionRowIdentity } from './rowIdentity'
 
@@ -33,9 +34,14 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // so gating the render would gate the rows but not the wire. The SAME switch as
   // "New chat on crew": a chat started on a crew must have a group to return to.
   const instanceSessionsEnabled = useRemoteCrewChat()
-  const historySearchResults = useDebouncedSessionSearch(
-    historyFilter, s => s, slotTitleDigest, hasWarmInstances,
+  const { result: historySearch, failed: historySearchFailed } = useDebouncedSessionSearchState(
+    historyFilter, (rows, scan) => ({ rows, scan }), slotTitleDigest, hasWarmInstances,
   )
+  // Both are fields of one state value, so each keeps its identity until the
+  // next response lands: no memo needed for downstream dependency arrays.
+  const historySearchResults = historySearch?.rows ?? null
+  // Set only when THIS machine's scan window left older sessions out of the search.
+  const historySearchScan = historySearch?.scan ?? null
   // Shared ['instances'] cache + shared select-and-maybe-reconnect semantics for
   // activating a remote row. THE ONLY `['instances']` observer in this component:
   // the merged-sessions hook takes this list as a parameter rather than opening a
@@ -94,6 +100,8 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // different feature's decision to make.
   const remoteSessionsError = useMemo((): { title?: string, message: string } | null => {
     if (!instanceSessionsEnabled) return null
+    // The gateway's own "feature off" 403 is routine, not a failed read.
+    if (isInstancesDisabledError(instancesQuery.error)) return null
     const say =(sentence: string, detail?: string) => (detail
       ? { title: sentence, message: detail }
       : { message: sentence })
@@ -143,6 +151,11 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
       // of that listing can be older than the binding.
       const local = localSlots as Slot[]
       const seen = new Set(local.map(sessionRowIdentity))
+      // A peer's crew members STAY rows here. The local rule (`crewModeView`)
+      // leaves a crew member out because its root's Crew panel lists it; a peer's
+      // root opens in the crew window, which has no such panel, and the panel reads
+      // this gateway's slots and routes, so for a peer's crew member this list is
+      // the only way in. The rows keep their `crew_root` stamp for the marks.
       const peers = (instanceSessions.rows as unknown as Slot[])
         .filter(row => !seen.has(sessionRowIdentity(row)))
       return peers.length === 0 ? local : [...local, ...peers]
@@ -169,7 +182,7 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // adopt (see `adoptPeerSession` in ChatSidebar).
   const { selectInstance } = useSelectInstance(instancesList)
   return {
-    historySearchResults, instancesList, instanceSessions, remoteSessionsError, allRows, allLiveSlots,
-    selectInstance, crewGroups,
+    historySearchResults, historySearchFailed, historySearchScan, instancesList, instanceSessions, remoteSessionsError,
+    allRows, allLiveSlots, selectInstance, crewGroups,
   }
 }

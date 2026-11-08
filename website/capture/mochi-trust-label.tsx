@@ -1,27 +1,28 @@
 /**
- * Evidence for Mochi's approval-card exact-trust label (#4462).
+ * Evidence for Mochi's approval-card exact-trust label (#4462, #12371).
  *
- * THE PROBLEM: Mochi carries a duplicate of the dashboard's
- * `truncateCommandLabel`, and its 30-char budget rendered two different
- * commands — `gh api …/contents/config.json` vs the same call for
- * `secrets.json` — as the SAME label, so the one line the user reads before
- * granting an exact-string trust could not tell them apart. The dashboard copy
- * is fixed by PR #4393; this is the Mochi sibling.
+ * THE PROBLEM (original): Mochi carried a duplicate of the dashboard's
+ * `truncateCommandLabel` with a 30-char budget that rendered two different
+ * commands as the SAME label. Fixed in PR #4393 (Mochi sibling).
+ *
+ * THE PROBLEM (#12371): Both surfaces wrapped the command in the catalog's own
+ * locale quote pair, so a command ending in a straight quote doubled the closing
+ * mark. Fixed by removing the delimiters from the catalog and rendering the
+ * command in a monospace code chip (the chip is the visual boundary).
  *
  * The scene mounts the REAL ChatPanel Bubble, which parses a real
  * `__approval__` payload and calls the REAL `truncateCommandLabel`, against
- * Mochi's fallback palette (the documented no-stylesheet escape hatch in
- * shared/themes.ts). Nothing re-implements the card or its strings. The line
- * above the card is harness chrome, labelled as such, so each frame shows
- * which command produced the label.
+ * Mochi's real theme (applyTheme() from shared/themes.ts). Nothing
+ * re-implements the card or its strings. The line above the card is harness
+ * chrome, labelled as such, so each frame shows which command produced the label.
  *
- *   ?cmd=api_config|api_secrets|spaced
+ *   ?cmd=api_config|api_secrets|spaced|quoted
  */
 import { createRoot } from 'react-dom/client'
 
 import { initI18n } from '../src/i18n'
 import { Bubble } from '../src/apps/mochi/src/renderer/ChatPanel'
-import { applyFallbackTheme } from '../src/apps/mochi/src/shared/themes'
+import { applyTheme } from '../src/apps/mochi/src/shared/themes'
 import '../src/index.css'
 
 /** Commands shaped like the ones in the customer report (#4436): a shared long
@@ -36,6 +37,10 @@ const COMMANDS = {
   // granting the two-space one. Only a real browser shows it: the DOM text is
   // exact either way.
   spaced: 'grep -r "two  spaces" /path/to/dir',
+  // A command ending in a straight double-quote (#12371). Before the catalog
+  // delimiter change the label read Trust "…*.tsx"" — the catalog's closing
+  // mark immediately after the command's own. The code chip is the new boundary.
+  quoted: 'grep -r "two  spaces" /path/to/dir --include="*.tsx"',
 } as const
 
 const params = new URLSearchParams(location.search)
@@ -43,7 +48,7 @@ const key = (params.get('cmd') ?? 'api_config') as keyof typeof COMMANDS
 const cmd = COMMANDS[key] ?? COMMANDS.api_config
 
 document.documentElement.setAttribute('data-theme', 'kiro-dark')
-applyFallbackTheme()
+applyTheme()
 initI18n('en')
 
 /** A permission frame as ChatPanel stores it: `__approval__` + the payload the

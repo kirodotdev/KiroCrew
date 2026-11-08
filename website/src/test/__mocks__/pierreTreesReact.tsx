@@ -29,6 +29,7 @@ type Handle = {
   select: () => void
   deselect: () => void
   expand?: () => void
+  collapse?: () => void
   isExpanded?: () => boolean
 }
 
@@ -51,6 +52,7 @@ export function createFakeModel(options: Record<string, unknown>) {
     select: [] as string[],
     deselect: [] as string[],
     expand: [] as string[],
+    collapse: [] as string[],
     compositionRenders: 0,
     unsubscribes: 0,
   }
@@ -71,8 +73,15 @@ export function createFakeModel(options: Record<string, unknown>) {
         selected.delete(path)
       },
     }
-    // Only directory handles carry `expand`/`isExpanded`; the wrapper feature-detects them.
-    return isDir ? { ...base, expand: () => calls.expand.push(path), isExpanded: () => expanded.has(path) } : base
+    // Only directory handles carry `expand`/`collapse`/`isExpanded`; the wrapper feature-detects them.
+    return isDir
+      ? {
+          ...base,
+          expand: () => { calls.expand.push(path); expanded.add(path) },
+          collapse: () => { calls.collapse.push(path); expanded.delete(path) },
+          isExpanded: () => expanded.has(path),
+        }
+      : base
   }
 
   return {

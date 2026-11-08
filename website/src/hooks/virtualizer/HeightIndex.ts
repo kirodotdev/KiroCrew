@@ -308,6 +308,11 @@ export class HeightIndex {
     return this.tree.totalHeight()
   }
 
+  /** How many rows the tree was last synced to. O(1). */
+  syncedCount(): number {
+    return this.tree.rowCount()
+  }
+
   /** Row index whose vertical span contains `scrollTop`. O(log N). */
   indexAt(scrollTop: number): number {
     return this.tree.indexAt(scrollTop)

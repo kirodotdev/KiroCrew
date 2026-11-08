@@ -29,12 +29,15 @@ Handles are normalized before comparison so an allowlist entry written as
 from __future__ import annotations
 
 import asyncio
+import collections
+import hashlib
 import json
 import logging
 import re
 import time
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -48,6 +51,10 @@ from kiro_crew.imessage.bridge_path import (
 from kiro_crew.imessage.rpc import JsonRpcPeer, RpcError, RpcTransportError
 
 logger = logging.getLogger(__name__)
+
+#: Lost-peer close tasks, held until done: a bare ``create_task`` result is
+#: only weakly referenced by the loop and can be collected mid-close.
+_PEER_CLOSE_TASKS: set[asyncio.Task[None]] = set()
 
 #: Protocol version this client speaks. The bridge rejects anything else.
 PROTOCOL_VERSION = 1
@@ -65,7 +72,8 @@ DEDUPE_WINDOW = 1024
 #: at the smallest value comfortably above a delivery round trip -- the bridge's
 #: own watch debounce is 500ms, and the echo is a local database row appearing
 #: after a local send -- rather than at anything to do with a conversation's
-#: length.
+#: length. It also bounds how far a late copy's ``created_at`` may sit from the
+#: send's wall-clock time (see ``is_own_echo``).
 ECHO_TTL_S = 30.0
 
 #: Bound on remembered outbound messages. A long answer is delivered as several
@@ -97,9 +105,10 @@ _PHONE_NOISE = re.compile(r"[\s()\-.]")
 def normalize_handle(handle: str) -> str:
     """Canonicalize a handle for allowlist comparison.
 
-    An email handle folds to lowercase; a phone handle loses formatting so the
-    same number written three ways compares equal. Anything else is lowercased
-    and stripped, which is still stable.
+    Surrounding whitespace is stripped first. A handle containing ``@`` (an
+    email) then folds to lowercase; any other handle is read as a phone number
+    and loses its whitespace, parentheses, dashes and dots, so the same number
+    written three ways compares equal. Nothing else is lowercased.
     """
     value = (handle or "").strip()
     if not value:
@@ -116,10 +125,14 @@ def _echo_key(handle: str, text: str) -> str:
     makes a round trip through Messages and back out of the database, and a
     composed/decomposed mismatch on a single accented character would silently
     stop an echo being recognised as one. Handle and body are joined on a
-    newline, which ``normalize_handle`` can never produce, so no pair of
-    distinct inputs can collide on one key.
+    newline. ``normalize_handle`` removes every newline from a handle without
+    ``@`` and the leading and trailing ones from an email handle, so two pairs
+    that normalize differently can share a key only when one of them carries an
+    email handle with a newline inside it. The pair is kept as its SHA-256 hex
+    digest, so a retained key has the same size however long the body is.
     """
-    return f"{normalize_handle(handle)}\n{unicodedata.normalize('NFC', text).strip()}"
+    pair = f"{normalize_handle(handle)}\n{unicodedata.normalize('NFC', text).strip()}"
+    return hashlib.sha256(pair.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def _proves_nothing_was_sent(exc: BaseException) -> bool:
@@ -166,6 +179,9 @@ class _OwnSend:
     """
 
     body_key: str
+    #: Wall clock when the record was made, compared with the ``created_at`` the
+    #: same Mac's Messages database gives the sent row and every copy of it.
+    sent_at: float
     #: ``None`` while the send is in flight: an unresolved record never expires,
     #: because the echo can arrive before the call returns. Set once, to
     #: ``monotonic() + ECHO_TTL_S``, when the send succeeds or fails ambiguously.
@@ -187,6 +203,8 @@ class IMessageInbound:
     chat_id: int = 0
     is_group: bool = False
     is_from_me: bool = False
+    #: The bridge's ISO 8601 message date: the original send's date on a late copy.
+    created_at: str = ""
     #: Set by the transport's ``receive`` on a message a person sent, so its turn
     #: starts FOREGROUND (kiro_crew.start_priority); False on anything built elsewhere.
     person_origin: bool = False
@@ -214,8 +232,11 @@ def parse_inbound(message: dict[str, Any]) -> IMessageInbound | None:
     """Map a bridge Message object onto :class:`IMessageInbound`.
 
     The bridge OMITS inapplicable string fields rather than sending null, so
-    every read is a ``get`` with a typed fallback; a field carrying the wrong
-    type is treated as absent rather than crashing the reader.
+    every read is a ``get`` with a typed fallback: a string or integer field
+    carrying the wrong type reads as ``""`` or ``0`` rather than crashing the
+    reader. The two flags are truth-tested with ``bool()`` instead, so any
+    truthy value, the string ``"false"`` included, reads as ``True``, which the
+    transport's own-message and DM-only gates drop rather than answer.
     """
     if not isinstance(message, dict):
         return None
@@ -229,6 +250,7 @@ def parse_inbound(message: dict[str, Any]) -> IMessageInbound | None:
         chat_id=_int(message.get("chat_id")),
         is_group=bool(message.get("is_group")),
         is_from_me=bool(message.get("is_from_me")),
+        created_at=_str(message.get("created_at")),
     )
 
 
@@ -257,6 +279,11 @@ class IMessageClient:
         #: Ledger of what THIS client sent, oldest first. One record per sent
         #: message, carrying both of the keys it can be recognised by.
         self._own_sends: list[_OwnSend] = []
+        #: ``(body_key, sent_at)`` of every send that may have gone out, newest
+        #: last. Never consumed: a self-chat delivers several late copies of one send.
+        self._sent_history: collections.deque[tuple[str, float]] = collections.deque(
+            maxlen=ECHO_WINDOW
+        )
         #: Handles already reported as looping, so the warning is written once
         #: per handle instead of once per suppressed message.
         self._echo_reported: set[str] = set()
@@ -335,14 +362,15 @@ class IMessageClient:
         old = self._peer
         self._peer = None
         self._subscription = None
-        self.ready.clear()
-        self.last_error = reason[:120]
         logger.warning("imessage: %s; will try to reconnect", reason)
         self._set_state(False, reason[:120])
         if old is not None:
             # Sync callback, async teardown: schedule it rather than block the
-            # reader's own exit path.
-            asyncio.create_task(self._close_peer(old))
+            # reader's own exit path. The loop holds a task only weakly, so the
+            # set keeps it alive until the close finishes.
+            task = asyncio.create_task(self._close_peer(old))
+            _PEER_CLOSE_TASKS.add(task)
+            task.add_done_callback(_PEER_CLOSE_TASKS.discard)
         self._schedule_resubscribe()
 
     async def _close_peer(self, peer: JsonRpcPeer) -> None:
@@ -397,12 +425,6 @@ class IMessageClient:
         # exercises the SMS-fallback path by accident.
         if self._service != "imessage":
             params["service"] = self._service
-        # Recorded BEFORE the call, not after: the watch can emit the row for
-        # this message while `send` is still awaiting its own result (the bridge
-        # verifies the inserted row before answering, and its watch debounce is
-        # only 500ms), and an echo that arrives before it is remembered is an
-        # echo that gets answered. A send that then fails leaves one stale entry
-        # behind, which costs no more than the TTL already does.
         # Recorded BEFORE the call, and with NO expiry: the watch can emit the row
         # for this message while `send` is still awaiting its own result (the
         # bridge verifies the inserted row before answering, and its watch
@@ -426,8 +448,10 @@ class IMessageClient:
                 # written to its stdin. The message may still arrive and echo, so
                 # the guard stays and its clock starts here.
                 record.expires_at = time.monotonic() + ECHO_TTL_S
+                self._sent_history.append((record.body_key, record.sent_at))
             raise
         record.expires_at = time.monotonic() + ECHO_TTL_S
+        self._sent_history.append((record.body_key, record.sent_at))
         guid = _str(result.get("guid"))
         # `id`/`guid` are best-effort in the bridge's contract, so this is an
         # additional key on the same record rather than the mechanism. It is the
@@ -454,7 +478,7 @@ class IMessageClient:
         ambiguous failure both set an expiry, and a definitive rejection removes
         the record outright.
         """
-        record = _OwnSend(body_key=body_key)
+        record = _OwnSend(body_key=body_key, sent_at=time.time())
         self._own_sends.append(record)
         # A long answer is delivered as several sends, so the bound is entries,
         # not turns; the oldest RESOLVED ones go first.
@@ -493,10 +517,18 @@ class IMessageClient:
 
         So the guard is a record of what this client itself sent, which is the
         one signal it fully owns. The matching record is CONSUMED WHOLE, so the
-        ledger suppresses each sent message exactly once and a genuine later
-        repeat of the same words is delivered normally. Rows the bridge already
+        ledger suppresses each sent message exactly once and never matches a
+        genuine later repeat of the same words. Rows the bridge already
         attributes to us (``is_from_me``) are dropped by the transport before
         they reach here, so they never consume the entry the real echo needs.
+
+        A self-chat on an account with other devices also delivers copies of a
+        send hours or days later, each with a new guid but the sent row's date.
+        So when no record matches, a row carrying the body of one of the last
+        ``ECHO_WINDOW`` sends and dated within ``ECHO_TTL_S`` of that send is
+        still an echo, however late it arrives. A user's own repeat of those
+        words carries its own date, so only one sent inside that window is read
+        as the echo.
         """
         now = time.monotonic()
         # Expired records are dropped rather than skipped: an expired entry can
@@ -533,7 +565,17 @@ class IMessageClient:
                     redact_handle(inbound.handle),
                 )
             return True
-        return False
+        created = _epoch_seconds(inbound.created_at)
+        if created is None or not any(
+            key == body_key and abs(created - sent_at) <= ECHO_TTL_S
+            for key, sent_at in self._sent_history
+        ):
+            return False
+        logger.debug(
+            "imessage: suppressed an echo of this channel's own message from %s",
+            redact_handle(inbound.handle),
+        )
+        return True
 
     async def send_typing(self, selector: dict[str, Any]) -> None:
         """Show a typing indicator, if the bridge offers one.
@@ -627,23 +669,23 @@ class IMessageClient:
     async def _handle_message(self, message: dict[str, Any]) -> None:
         """Account for a row, then hand it to the handler. Delivery is at-most-once.
 
-        The cursor advances HERE, before dispatch -- deliberately, and matching
-        every other channel in this repo:
+        The cursor advances HERE, before dispatch -- deliberately. The other
+        inbound paths, for comparison:
 
         * Telegram advances its ``getUpdates`` offset at fetch time, before
-          dispatch, and does not persist it at all.
+          dispatch, and its next poll confirms that offset to Telegram whether
+          or not the handler has finished; the low-water mark it persists bounds
+          duplicate replay, not loss.
         * Discord's sequence number is for websocket resume, not delivery.
         * Webex and Teams keep no inbound cursor whatsoever.
-        * ``issue_radar``, the one persisted watermark in the tree, advances
-          BEFORE notifying and says so: at-most-once, chosen so a delivery
-          hiccup cannot re-announce.
+        * ``issue_radar``'s watermark advances BEFORE notifying and says so:
+          at-most-once, chosen so a delivery hiccup cannot re-announce.
 
         Advancing only after the handler returned -- at-least-once -- is the one
         shape nothing here implements, and it does not come for free: it forces
         global serialization (so a failed row is not passed by a later one), a
         buffer to serialize behind, and a rule for retiring the old consumer on
-        reconnect. That machinery was built here once and every piece of it was a
-        defect. The cost of this direction is the honest one: a message arriving
+        reconnect. The cost of this direction is the honest one: a message arriving
         while the gateway is dying is lost, and the user re-sends.
 
         Ordering is likewise not this layer's job. Two messages from the same
@@ -768,6 +810,14 @@ def redact_handle(handle: str) -> str:
 
 def _str(value: Any) -> str:
     return value if isinstance(value, str) else ""
+
+
+def _epoch_seconds(value: str) -> float | None:
+    """A bridge ``created_at`` as epoch seconds; ``None`` when empty or unparseable."""
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
 
 
 def _int(value: Any) -> int:

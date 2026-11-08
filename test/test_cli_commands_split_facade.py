@@ -58,6 +58,7 @@ OWNERS = tuple(
         "security",
         "eval",
         "learn",
+        "secrets",
     )
 )
 

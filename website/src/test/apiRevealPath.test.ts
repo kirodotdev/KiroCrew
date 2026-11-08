@@ -114,7 +114,7 @@ describe('revealOrOpen failure wording', () => {
       }),
     )
 
-    const result = await revealOrOpen('/etc/shadow', 'reveal', { onError })
+    await revealOrOpen('/etc/shadow', 'reveal', { onError })
 
     expect(alertSpy).not.toHaveBeenCalled()
     expect(onError).toHaveBeenCalledTimes(1)
@@ -124,7 +124,6 @@ describe('revealOrOpen failure wording', () => {
     expect(onError).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_blocked'))
     // The raw server prose never reaches the UI.
     expect(onError).not.toHaveBeenCalledWith(expect.stringContaining('access denied'))
-    expect(result).toEqual({ copied: false, copyFailed: false })
   })
 
   it('reports the generic failure string on a non-403 malfunction', async () => {
@@ -156,12 +155,12 @@ describe('revealOrOpen failure wording', () => {
     expect(onError).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed'))
   })
 
-  // The copy-degrade is a SUCCESS, not a failure: the surface that routed here
-  // already promised a copy (a chip tooltip, the remote-session Reveal row), so
-  // the path lands on the clipboard SILENTLY — no blocking dialog on every
-  // routine copy, matching the app's silent Ctrl+click copy. A failed reveal is
-  // the only thing that interrupts (covered above).
-  it('copies silently — no dialog — when the backend degrades to a clipboard copy', async () => {
+  // The copy-degrade is the host saying it could NOT open the path: no
+  // launcher, or one that did not start. Every caller named an open or a
+  // reveal, so a copy in its place is written AND said, never passed off as the
+  // action ("Show in file manager" that silently copied is the bug this pins).
+  // Still no blocking dialog: the caller renders the message in place.
+  it('writes the copy and says so when the backend degrades to a clipboard copy', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ ok: true, copy: '/remote/path/file.txt' }), {
         status: 200,
@@ -169,20 +168,20 @@ describe('revealOrOpen failure wording', () => {
       }),
     )
 
-    const result = await revealOrOpen('/remote/path/file.txt', 'reveal', { onError })
+    await revealOrOpen('/remote/path/file.txt', 'reveal', { onError })
 
     expect(copyToClipboard).toHaveBeenCalledWith('/remote/path/file.txt')
     expect(copyToClipboard).toHaveBeenCalledTimes(1)
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_copied_instead'))
     expect(alertSpy).not.toHaveBeenCalled()
-    expect(result).toEqual({ copied: true, copyFailed: false })
   })
 
   // `copyToClipboard` reports a failed write by RETURNING false — only a genuine
-  // exception from its fallback rejects (utils/clipboard.ts). Reporting
-  // `copied: true` regardless meant a caller acknowledged "Path copied" while the
-  // clipboard still held whatever was there before, so the user pasted stale data
-  // believing it was the path.
-  it('reports the copy as failed when the clipboard write returns false', async () => {
+  // exception from its fallback rejects (utils/clipboard.ts). Saying "copied
+  // instead" regardless would have the user paste whatever the clipboard held
+  // before, believing it was the path, so the plain failure is reported.
+  it('reports the plain failure when the degrade copy returns false', async () => {
     ;(copyToClipboard as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false)
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ ok: true, copy: '/remote/path/file.txt' }), {
@@ -191,15 +190,16 @@ describe('revealOrOpen failure wording', () => {
       }),
     )
 
-    const result = await revealOrOpen('/remote/path/file.txt', 'reveal', { onError })
+    await revealOrOpen('/remote/path/file.txt', 'reveal', { onError })
 
     expect(copyToClipboard).toHaveBeenCalledWith('/remote/path/file.txt')
-    expect(result).toEqual({ copied: false, copyFailed: true })
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(onError).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed'))
   })
 
-  // The ordinary case is distinct from a failed degrade: the backend drove a real
-  // file manager, so there was nothing to acknowledge and nothing went wrong.
-  it('separates "nothing to copy" from "the copy failed"', async () => {
+  // The ordinary case: the backend drove a real file manager, so there was
+  // nothing to copy, nothing to say, and nothing went wrong.
+  it('says nothing when the host opened the path', async () => {
     fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
@@ -207,9 +207,9 @@ describe('revealOrOpen failure wording', () => {
       }),
     )
 
-    const result = await revealOrOpen('/home/user/file.txt', 'reveal', { onError })
+    await revealOrOpen('/home/user/file.txt', 'reveal', { onError })
 
     expect(copyToClipboard).not.toHaveBeenCalled()
-    expect(result).toEqual({ copied: false, copyFailed: false })
+    expect(onError).not.toHaveBeenCalled()
   })
 })

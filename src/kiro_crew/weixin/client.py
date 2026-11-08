@@ -26,6 +26,8 @@ from urllib.parse import quote
 
 import aiohttp
 
+from kiro_crew.atomic_write import replace_with_retry
+
 logger = logging.getLogger(__name__)
 
 # --- Endpoints & protocol constants -------------------------------------------
@@ -121,8 +123,12 @@ def _headers(token: Optional[str], body: str) -> Dict[str, str]:
 def _atomic_json_write(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    try:
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        replace_with_retry(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # NOTE: OUTBOUND media (image/voice/file/video) is NOT supported yet -- replies
@@ -165,6 +171,9 @@ class ContextTokenStore:
             data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             logger.warning("weixin: failed to restore reply context for %s: %s", _safe_id(account_id), exc)
+            return
+        if not isinstance(data, dict):
+            logger.warning("weixin: failed to restore reply context for %s: not a JSON object", _safe_id(account_id))
             return
         for user_id, tok in data.items():
             if isinstance(tok, str) and tok:

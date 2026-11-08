@@ -147,6 +147,7 @@ def _git(*args: str, cwd) -> None:
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         env=_fixture_git_env(),
     )
 
@@ -1179,9 +1180,18 @@ class TestAllowedRootBoundary:
     def test_empty_root_list_denies_everything(self):
         assert _match_allowed_root(self._p("repo"), []) is None
 
-    def test_first_matching_root_wins(self):
+    def test_only_the_containing_root_matches(self):
         a, b = self._p("a"), self._p("b")
         assert _match_allowed_root(self._p("b", "sub"), [a, b]) == b
+
+    @pytest.mark.parametrize("parent_first", [True, False])
+    def test_nested_root_wins_over_its_parent_in_either_order(self, parent_first):
+        # One session scoped to a parent directory, another to a repository
+        # nested inside it: the nested root is the one git must run in.
+        parent, nested = self._p("work"), self._p("work", "app")
+        roots = [parent, nested] if parent_first else [nested, parent]
+        assert _match_allowed_root(nested, roots) == nested
+        assert _match_allowed_root(self._p("work", "app", "src"), roots) == nested
 
 
 class TestRepoAllowList:

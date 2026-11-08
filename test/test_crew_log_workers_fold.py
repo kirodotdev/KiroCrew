@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from crew_log_drain import assert_drained
 
 from kiro_crew.crew_log import CrewLog
 from kiro_crew.crew_log import projection as crew_log
@@ -595,7 +596,7 @@ def test_the_lifecycle_emitters_wake_the_eager_folder(_floor_monkeypatch):
         emit.on_turn_started("s-w1", 1, actor="crew", depth=1)
         emit.on_message_received("s-w1", 1, role="user", source="crew", text="go")
         emit.on_message_sent("s-w1", 1, text="x" * 200_000)
-        assert emit.flush() is True
+        assert_drained()
         for unit, entry_type in (
             ("s-mate", "session/spawned"),
             ("s-w1", "session/adopted"),

@@ -34,6 +34,7 @@ import re
 import sys
 from pathlib import Path
 
+import composition_contract_checks
 import pytest
 from source_corpus import repo_files_named, repo_root
 from test_link_screen_hold_pin import SCREENS
@@ -133,7 +134,7 @@ _LOADER_MEMBERS = {
         _scoped_entries _served_key_by_realpath _snapshot_admitted_roots
         _trusted_project_key _usage_fields _user_first _validate_and_redact_candidate
         _versions_root _vet_unconfined_path
-        approve_pending_skill_checked
+        approve_pending_as_read approve_pending_skill_checked
         approve_pending_update_checked archive_auto_skill catalog_project_skills
         catalog_status close confined_triggered create_auto_skill create_skill credit_skill_reads
         delete_skill dismiss_all_pending dismiss_pending_skill dismiss_pending_slugs
@@ -187,7 +188,7 @@ _LOADER_SIGNATURES = {
     "_confined_frontmatter_and_size": "(self, path: 'Path', within: 'str') -> 'tuple[dict[str, str], int]'",
     "_create_skill_pinned": "(self, name: 'str', content: 'str', skill_dir: 'Path', parent_fd: 'int') -> 'bool'",
     "_cron_referenced_skills": "() -> 'set[str]'",
-    "_emit_lazy_load_metric": "(t0: 'float', *, hit: 'bool') -> 'None'",
+    "_emit_lazy_load_metric": "(t0: 'float', *, hit: 'bool', skill: 'str | None' = None) -> 'None'",
     "_exact_read_while_building": "(self, key: 'str', only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int', refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_get_disabled_app_names": "(self) -> 'frozenset[str]'",
     "_invalidate_iter_cache": "(self) -> 'None'",
@@ -215,7 +216,7 @@ _LOADER_SIGNATURES = {
     "_read_exact_key": "(self, key: 'str', *, only: 'list[str] | None', project_dir: 'str | Path | None', max_bytes: 'int') -> '_ExactRead'",
     "_read_global_skill_text": "(self, path: 'Path', max_bytes: 'int | None', *, canonical_root: 'str | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "_readable_frontmatter": "(self, path: 'Path', *, within: 'str | None', mtime: 'float | None' = None, canonical_root: 'str | None' = None) -> 'dict[str, str] | None'",
-    "_read_pending_meta": "(self, slug: 'str') -> 'dict'",
+    "_read_pending_meta": "(self, slug: 'str', pdir: 'Path | None' = None) -> 'dict'",
     "_recency_boost": "(self, path_str: 'str', fingerprint: 'str' = '') -> 'float'",
     "_record_use": "(self, key: 'str') -> 'None'",
     "_redact_deep": "(self, obj: 'object') -> 'object'",
@@ -242,8 +243,9 @@ _LOADER_SIGNATURES = {
     "_vet_unconfined_path": "(self, path: 'Path') -> 'bool'",
     "_versions_root": "(self, target_slug: 'str') -> 'Path'",
     "_write_skill_md": "(skill_file: 'Path', content: 'str', *, dir_fd: 'int | None') -> 'bool'",
-    "approve_pending_skill_checked": "(self, slug: 'str') -> 'str'",
-    "approve_pending_update_checked": "(self, slug: 'str') -> 'str'",
+    "approve_pending_as_read": "(self, slug: 'str', content_sha256: 'str') -> 'str'",
+    "approve_pending_skill_checked": "(self, slug: 'str', *, src: 'Path | None' = None) -> 'str'",
+    "approve_pending_update_checked": "(self, slug: 'str', *, src: 'Path | None' = None) -> 'str'",
     "archive_auto_skill": "(self, name: 'str') -> 'bool'",
     "catalog_project_skills": "(self, project_dir: 'str | Path') -> 'list[dict]'",
     "catalog_status": "(self, project_dir: 'str | Path | None' = None) -> 'str'",
@@ -254,7 +256,7 @@ _LOADER_SIGNATURES = {
     "credit_skill_reads": "(self, keys: 'list[str]') -> 'None'",
     "delete_skill": "(self, name: 'str') -> 'bool'",
     "dismiss_all_pending": "(self) -> 'int'",
-    "dismiss_pending_skill": "(self, slug: 'str') -> 'bool'",
+    "dismiss_pending_skill": "(self, slug: 'str', content_sha256: 'str | None' = None) -> 'bool'",
     "dismiss_pending_slugs": "(self, slugs: 'list[str]') -> 'int'",
     "find_similar": "(self, description: 'str', threshold: 'float' = 0.85, *, exclude: 'str' = '') -> 'str | None'",
     "get_always_skills": "(self, project_dir: 'str | Path | None' = None) -> 'list[str]'",
@@ -270,7 +272,7 @@ _LOADER_SIGNATURES = {
     "list_skills": "(self, project_dir: 'str | Path | None' = None, *, _entries: 'list[_ScopedSkillEntry] | None' = None) -> 'list[dict]'",
     "load_skill": "(self, name: 'str', project_dir: 'str | Path | None' = None, *, max_bytes: 'int | None' = None, refusal_reasons: 'list[str] | None' = None) -> 'str | None'",
     "pending_candidate_is_staged": "(self, slug: 'str') -> 'bool'",
-    "preview_pending_update": "(self, slug: 'str') -> 'dict | None'",
+    "preview_pending_update": "(self, slug: 'str', *, candidate: 'tuple[str, dict] | None' = None) -> 'dict | None'",
     "prune_pending": "(self, ttl_days: 'int', *, now: 'float | None' = None) -> 'int'",
     "read_auto_skill_body": "(self, name: 'str') -> 'str | None'",
     "read_scoped_skill": "(self, key: 'str', *, only: 'list[str] | None' = None, project_dir: 'str | Path | None' = None, max_bytes: 'int' = 99000) -> 'str | None'",
@@ -287,9 +289,9 @@ _LOADER_SIGNATURES = {
     "set_inject_on_trigger": "(self, name: 'str', inject: 'bool') -> 'bool'",
     "set_pinned": "(self, name: 'str', pinned: 'bool') -> 'bool'",
     "split_triggered": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'tuple[list[str], list[str]]'",
-    "stage_skill_candidate": "(self, slug: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance', scripts: 'list[dict] | None' = None, source: 'str' = 'consolidation', kind: 'str' = 'new', target: 'str | None' = None, base_version: 'int | None' = None, refusal: 'ClaimRefusal | None' = None) -> 'str | None'",
+    "stage_skill_candidate": "(self, slug: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance', scripts: 'list[dict] | None' = None, source: 'str' = 'consolidation', kind: 'str' = 'new', target: 'str | None' = None, base_version: 'int | None' = None, refusal: 'ClaimRefusal | None' = None, missing_scripts: 'list[str] | None' = None, rejected_scripts: 'dict[str, list[str]] | None' = None) -> 'str | None'",
     "strip_frontmatter": "(content: 'str') -> 'str'",
-    "sync_builtins": "(self) -> 'None'",
+    "sync_builtins": "(self) -> 'list[tuple[str, Path]]'",
     "trigger_hint": "(self, names: 'list[str]', project_dir: 'str | Path | None' = None) -> 'str'",
     "update_auto_skill": "(self, name: 'str', *, description: 'str', triggers: 'str', procedure_md: 'str', provenance: 'AutoSkillProvenance') -> 'bool'",
     "update_skill": "(self, name: 'str', content: 'str') -> 'bool'",
@@ -303,7 +305,7 @@ AUTO_SKILL_NAMESPACE AUTO_SKILL_SOURCE_VALUE AUTO_SLUG_CLAIM_LOCK_NAME
 AUTO_SLUG_CLAIM_LOCK_TIMEOUT_SECS AutoSkillProvenance CRON_SOURCE_DIVERGED
 CRON_SOURCE_IN_SYNC CRON_SOURCE_UNVERIFIABLE ClaimRefusal CronScriptSource
 InstalledSkillCurrency MAX_SKILL_VERSIONS PINNED_SKILL_BODIES_CAP PROJECT_SKILL_BODY_CAP
-PendingApprovalRefused RETIRED_CONDUCTOR_SKILL_SHA256 SKILLS_DIR_NAME
+PendingApprovalRefused PendingDismissRefused RETIRED_CONDUCTOR_SKILL_SHA256 SKILLS_DIR_NAME
 SKILL_INSTALL_BEHIND SKILL_INSTALL_EDITED SKILL_INSTALL_IN_SYNC
 SKILL_INSTALL_UNVERIFIABLE SkillContextCapacityError SkillsLoader VERSIONS_DIRNAME
 _AUTO_NAME_PATTERN _BUILTIN_SKILLS_DIR _CATALOG_READ_BATCH _CATALOG_READ_WORKERS
@@ -434,9 +436,10 @@ def _sibling_name_imports(source: str) -> list[str]:
     return hits
 
 
-class TestSurface:
-    def test_the_runtime_package_holds_exactly_the_composed_modules(self) -> None:
-        assert set(_runtime_sources()) == RUNTIME_MODULES
+class TestSurface(
+    composition_contract_checks.TheRuntimePackageHoldsExactlyTheComposedModules,
+    composition_contract_checks.ThePackageShipsWithTheWheel,
+):
 
     def test_every_loader_member_keeps_its_name_and_kind(self) -> None:
         current: dict[str, list[str]] = {}
@@ -500,24 +503,16 @@ class TestSurface:
         public += [name for name in _IMPORTED_KIRO_CREW_NAMES if not name.startswith("_")]
         assert [name for name in public if not hasattr(probe, name)] == []
 
-    def test_the_package_ships_with_the_wheel(self) -> None:
-        """``packages = find:`` (not ``find_namespace:``) only ships a directory that
-        carries an ``__init__.py``; an editable install would import it anyway."""
-        import configparser
-
-        config = configparser.ConfigParser()
-        config.read(FACADE_PATH.parents[2] / "setup.cfg", encoding="utf-8")
-        assert config.get("options", "packages").strip() == "find:"
-        assert config.get("options.packages.find", "where").strip() == "src"
-        assert (RUNTIME_DIR / "__init__.py").is_file()
-
 
 #: Every spelling a test uses to reach the facade module: ``import kiro_crew.skills``
 #: (aliased or not) and ``from kiro_crew import ..., skills, ...``.
 _MENTIONS_THE_FACADE = re.compile(r"kiro_crew\.skills\b|from kiro_crew import [^\n]*\bskills\b")
 
 
-class TestPlacement:
+class TestPlacement(
+    composition_contract_checks.NoRuntimeModuleReadsASeamAsABareGlobal,
+    composition_contract_checks.NoRuntimeModuleDefinesAnAsyncFunction,
+):
     """The rules that keep a facade patch effective once the code has moved."""
 
     def test_the_facade_imports_every_runtime_module_when_it_loads(self) -> None:
@@ -688,14 +683,6 @@ class TestPlacement:
                     hits.append(f"{node.lineno}: {node.id}")
         return sorted(hits, key=lambda hit: (int(hit.split(":")[0]), hit))
 
-    def test_no_runtime_module_reads_a_seam_as_a_bare_global(self) -> None:
-        offenders = {
-            stem: hits
-            for stem, source in _runtime_sources().items()
-            if (hits := self._bare_seam_loads(source))
-        }
-        assert offenders == {}
-
     def test_the_seam_scan_catches_a_planted_bare_read(self) -> None:
         planted = (
             "def f(loader, path: 'validate_file_path') -> 'sel':\n"
@@ -812,12 +799,6 @@ class TestPlacement:
             module = _runtime_module(stem)
             if "logger" in vars(module):
                 assert module.logger is logging.getLogger(FACADE_LOGGER)
-
-    def test_no_runtime_module_defines_an_async_function(self) -> None:
-        for stem, source in _runtime_sources().items():
-            assert not [
-                n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.AsyncFunctionDef)
-            ], stem
 
     def test_no_runtime_module_anchors_a_path_on_its_own_file(self) -> None:
         """``Path(__file__).parent`` in the facade is the ``kiro_crew`` package; in a

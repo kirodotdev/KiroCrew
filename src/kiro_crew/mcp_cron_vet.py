@@ -18,7 +18,9 @@ import logging
 import os
 import re
 import stat
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from kiro_crew.cron import CronJob, lookup_cron_folder_id
 from kiro_crew.cron_script import resolve_script_path
@@ -53,15 +55,16 @@ from kiro_crew.mcp_cron_shell_scan import (
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context, redact_log_via_context
 from kiro_crew.platform import redact_via_context as redact
+from kiro_crew.platform_compat import strip_extended_length_prefix
 from kiro_crew.security import (
     _fold_line_continuations,
     audit_bash_exfiltration,
+    canonical_path_refusal,
     enabled_rule_ids,
     is_sensitive_bash_command,
-    is_sensitive_path,
+    is_sensitive_canonical_path,
     is_unverifiable_path_refusal,
     scan_exfiltration_urls,
-    sensitive_path_refusal,
 )
 from kiro_crew.sel import sel
 
@@ -190,6 +193,27 @@ def _vet_command_governance(command: str) -> str | None:
     return None
 
 
+def _command_cron_platform_refusal() -> str | None:
+    """Refuse a NEW command cron on a platform that can never run one.
+
+    ``cron_script._resolve_command_shell`` returns ``None`` on native Windows by
+    design, so every command cron there fails at each wake. The create doors call
+    this after ``_vet_shell_command`` and return the fire step's own text, so the
+    job is refused before it is stored. It stays out of ``_vet_shell_command``
+    because import and the fire-time re-vet call that too, and an imported job is
+    kept and refused at fire as before.
+    """
+
+    # Imported here: a module-scope import would surface both names on the
+    # mcp_cron facade, whose served-name inventory is pinned.
+    from kiro_crew import platform_compat
+    from kiro_crew.cron_script import _no_command_shell_message
+
+    if not platform_compat.IS_WINDOWS:
+        return None
+    return "Error: " + _no_command_shell_message().removeprefix("❌ ")
+
+
 def _vet_shell_command(command: str, *, governance_checked: bool = False) -> str | None:
     """Apply the bash-tool security guards to a model-supplied cron shell command.
 
@@ -223,7 +247,7 @@ def _vet_shell_command(command: str, *, governance_checked: bool = False) -> str
     # purpose: every step below is at least O(n) in space -- the fold on the next line
     # builds a new string, and `_quote_states` builds two lists at a measured 16.0
     # bytes/char -- so by the time any of them could raise, the memory is already
-    # committed. The import path (`portability.py:_sanitize_imported_crons`) hands this
+    # committed. The import path (`portability_vetting.py:_sanitize_imported_crons`) hands this
     # function the raw dict value with no field-length cap, bounded only by the 2 GiB
     # uncompressed-archive ceiling, and an OOM kill there is a SIGKILL its
     # `except Exception` cannot convert into a dropped job. See
@@ -496,10 +520,8 @@ def _vet_script_contents(text: str) -> str | None:
     ``resolve_script_path`` validates only the *path*, so without this the body
     is never inspected. An ungranted script runs under ``mode="cc"`` and a
     secret-granted one under ``strict``. ``cc`` hides the credential stores on
-    Linux; on macOS it deliberately leaves ``~/.aws`` readable (it is the
-    Claude Code provider's tier, and that provider authenticates to Bedrock
-    through ``credential_process`` under ``~/.aws``), and Windows has no OS
-    sandbox backend at all. So a body that names ``~/.aws/credentials`` or
+    Linux and macOS (only ``~/.aws/config`` stays readable), but Windows has no
+    OS sandbox backend at all and the sandbox can be turned off. So a body that names ``~/.aws/credentials`` or
     ``os.environ["AWS_SECRET_ACCESS_KEY"]`` and POSTs it out is worth refusing
     at storage time rather than relying on one runtime control alone.
     Credential exfiltration -- which a human rubber-stamping the ``cron_add``
@@ -528,7 +550,7 @@ def _vet_script_contents(text: str) -> str | None:
     obvious register-a-malicious-script case and nothing more. Destructive-op risk is covered by the required ``cron_add``
     approval prompt.
 
-    ``_vet_script_file`` keeps its own ``sensitive_path_refusal`` on the resolved path.
+    ``_vet_script_file`` keeps its own ``canonical_path_refusal`` on the resolved path.
     """
     if len(text) > _MAX_SCRIPT_SCAN_BYTES:
         return (
@@ -552,7 +574,7 @@ def _vet_script_file(file_path: str) -> str | None:
 
     ``file_path`` is expected to come from ``resolve_script_path`` (under
     ``~/.kiro/crew/crons/``), but this function does NOT trust that — it
-    independently resolves the real path and rejects it via ``sensitive_path_refusal``
+    independently resolves the real path and rejects it via ``canonical_path_refusal``
     before opening, so a symlink under the crons dir pointing at a credential
     file (e.g. ``crons/evil.py -> ~/.aws/credentials``) cannot be read here. Read
     uses a nonblocking descriptor that must still name the same regular file
@@ -568,7 +590,7 @@ def _vet_script_file(file_path: str) -> str | None:
         resolved = Path(file_path).resolve()
     except (OSError, ValueError) as e:
         return f"Error: cannot resolve cron script path for security review: {e}"
-    if reason := sensitive_path_refusal(str(resolved)):
+    if reason := canonical_path_refusal(str(resolved)):
         if is_unverifiable_path_refusal(reason):
             return f"Error: {reason}"
         return "Error: cron script path blocked by security policy (resolves to a sensitive credential path)"
@@ -593,10 +615,14 @@ def _vet_script_file(file_path: str) -> str | None:
                     "Error: cron script changed during security review; retry with a regular file"
                 )
             opened_path = fd_real_path(descriptor)
+            # ``resolve()`` can keep Windows' ``\\?\`` prefix while the
+            # descriptor's path comes back plain; fold it off both sides so the
+            # same file is not read as a redirect. Lexical only.
             if (
                 opened_path is None
-                or Path(opened_path) != resolved
-                or is_sensitive_path(opened_path)
+                or strip_extended_length_prefix(Path(opened_path))
+                != strip_extended_length_prefix(resolved)
+                or is_sensitive_canonical_path(opened_path)
             ):
                 return "Error: cannot verify cron script path for security review; retry with a regular file"
             with os.fdopen(descriptor, encoding="utf-8", errors="replace", closefd=False) as f:
@@ -740,12 +766,11 @@ def vet_job_at_fire_time(job: CronJob) -> str | None:
         # existed still runs after it -- measured, `_vet_command_governance`
         # (the only fire-time check a command had) ALLOWS
         # `set -B; cat ~/.a{w,w}s/creds` while `_vet_shell_command` refuses it,
-        # so the storage-time half of this change simply did not reach the
-        # installed base. Deny semantics here are the right ones for that: the
-        # run fails, the job is KEPT, and the refusal is audited rather than
-        # silent -- which also makes the newly-refused shapes (a quoted regex
-        # interval, say) surface as a legible audited failure instead of a job
-        # that quietly stops matching policy.
+        # so a storage-time refusal alone does not reach the installed base.
+        # Deny semantics here are the right ones for that: the run fails, the job is KEPT,
+        # and the refusal is audited rather than silent -- which also makes the
+        # newly-refused shapes (a quoted regex interval, say) surface as a legible audited
+        # failure instead of a job that quietly stops matching policy.
         reason = _vet_shell_command(job.command, governance_checked=True)
         if reason:
             _audit_fire_time_decision(job.id, "cron_command_body", "denied", reason)
@@ -791,6 +816,23 @@ _CRON_FOLDER_ID_RE = re.compile(r"[0-9a-f]{8}")
 def _resolve_cron_folder(ref: str, *, session_key: str | None) -> tuple[str, str | None]:
     """Resolve a cron-folder reference (id or name) to a folder id, creating it.
 
+    The MCP ``cron_add`` / ``cron_update`` binding of
+    :func:`_resolve_cron_folder_via`: a missing name is created through
+    ``POST /api/cron-folders`` on this tool's own gateway client, under the
+    caller's session key. The resolve-and-create contract itself lives in that
+    one function, which the CLI calls with its own transport.
+    """
+    return _resolve_cron_folder_via(
+        ref,
+        lambda name: _post("/api/cron-folders", {"name": name}, session_key=session_key),
+    )
+
+
+def _resolve_cron_folder_via(
+    ref: str, create: Callable[[str], dict[str, Any]]
+) -> tuple[str, str | None]:
+    """Resolve a cron-folder reference (id or name), creating a missing name via *create*.
+
     Returns ``(folder_id, error)``; ``""`` with no error means ungrouped (empty
     reference). The matching itself is ``cron.lookup_cron_folder_id`` — one
     implementation of "empty / exact id / case-insensitive name / refuse an
@@ -802,11 +844,15 @@ def _resolve_cron_folder(ref: str, *, session_key: str | None) -> tuple[str, str
       created: folder ids are minted server-side, so a folder literally named
       after a hex id is never what the caller meant (same contract as the chat
       sidebar-folder resolver).
-    * A missing NAME is created through ``POST /api/cron-folders`` — the
-      dashboard's own endpoint — so the create happens under the same lock and
-      lands in the same in-memory list as a Schedule-page create; appending to
-      ``cron_folders.json`` directly from this process would be clobbered by
-      the dashboard's next wholesale save of its own list.
+    * A missing NAME is created by *create*, which must POST ``{"name": ...}``
+      to the dashboard's own ``/api/cron-folders`` endpoint and return its JSON
+      answer (``{"id": ...}`` or ``{"error": ...}``) — so the create happens
+      under the same lock and lands in the same in-memory list as a
+      Schedule-page create; appending to ``cron_folders.json`` directly from
+      this process would be clobbered by the dashboard's next wholesale save
+      of its own list. The MCP tool passes its gateway client
+      (:func:`_resolve_cron_folder`); ``kirocrew cron`` passes the CLI's
+      peer-verified one. Neither ever writes the file.
 
     Any non-missing error is passed through untouched: an ambiguous name must
     stay a refusal here too, never a second folder with the same name.
@@ -822,7 +868,9 @@ def _resolve_cron_folder(ref: str, *, session_key: str | None) -> tuple[str, str
             f"cron folder not found: {redact(ref)} — folder ids are minted "
             "server-side; pass a folder name to create one"
         )
-    made = _post("/api/cron-folders", {"name": ref}, session_key=session_key)
+    made = create(ref)
+    if not isinstance(made, dict):
+        return "", f"could not create cron folder {redact(ref)}: no id returned"
     if made.get("error"):
         return "", f"could not create cron folder {redact(ref)}: {made['error']}"
     fid = str(made.get("id") or "")

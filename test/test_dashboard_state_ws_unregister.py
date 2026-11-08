@@ -30,36 +30,36 @@ from kiro_crew.testing.wait import async_wait_until, await_until
 class TestWebSocketUnregisteredOnEveryExit:
     """``api_ws`` unregisters the socket it registered, however the handler ends.
 
-    The connect-time frames are sent after the socket is registered and under an
-    ``except Exception`` that lets the handler carry on. A ``BaseException`` there --
-    the ``CancelledError`` a server with handler cancellation delivers when the
-    client goes away, or a ``GeneratorExit`` -- must still end in the ``finally``
-    that unregisters; a socket that skips it stays in ``_ws_clients`` and
-    ``_owner_ws_clients`` for the life of the gateway.
+    A ``BaseException`` (``CancelledError``, ``GeneratorExit``) escapes the connect-time
+    ``except Exception``, and must still reach the unregistering ``finally``.
     """
 
     @pytest.mark.parametrize("ending", [asyncio.CancelledError, GeneratorExit])
     @pytest.mark.asyncio
     async def test_a_connect_frame_ended_by_a_base_exception_unregisters(
-        self, monkeypatch, ending
+        self, echo_state, monkeypatch, ending  # noqa: F811
     ) -> None:
         from kiro_crew.dashboard import ws as dashboard_ws
         from kiro_crew.dashboard.handlers import source_providers
 
-        state = MagicMock()
-        state.owner_id = "U_OWNER"
-        state.serialize_slots.return_value = []
-        state._yolo = False
-        state._folders = []
-        state.folders_generation.return_value = 0
+        state = echo_state
+        registered: list[object] = []
+        real_register = state.register_ws
+
+        def _register(ws, *, owner: bool = False) -> None:
+            real_register(ws, owner=owner)
+            registered.append([w is ws for w in state._ws_clients])
+
+        monkeypatch.setattr(state, "register_ws", _register)
 
         class Request(dict):
             def __init__(self) -> None:
-                super().__init__({"user": "U_OWNER", "app": "", "is_dashboard_user": True})
+                super().__init__({"user": state.owner_id, "app": "", "is_dashboard_user": True})
                 self.app = {"state": state}
 
         class FakeWebSocket(dict):
             closed = False
+            __hash__ = object.__hash__
 
             async def prepare(self, request) -> None:
                 return None
@@ -85,8 +85,9 @@ class TestWebSocketUnregisteredOnEveryExit:
         with contextlib.suppress(asyncio.CancelledError, GeneratorExit):
             await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))
 
-        state.register_ws.assert_called_once()
-        state.unregister_ws.assert_called_once_with(fake_ws)
+        # The socket really was in the registry before the frame ended the handler.
+        assert registered == [[True]]
+        assert (len(state._ws_clients), len(state._owner_ws_clients)) == (0, 0)
 
     @pytest.mark.parametrize("disconnect", ["abort", "clean_close"])
     @pytest.mark.asyncio

@@ -7,7 +7,6 @@ import functools
 import logging
 import os
 import subprocess
-import tempfile
 import urllib.parse
 from typing import TYPE_CHECKING
 
@@ -37,13 +36,17 @@ if TYPE_CHECKING:
         _resolve_project_relative,
         _run_path_probe,
         _sel,
+        git_command_env,
         is_sensitive_path,
+        platform_compat,
         read_bounded_json,
         redact,
         redact_owner_view_via_context,
+        repo_exec_driver_reason,
         require_owner_dashboard_request,
         sniff_raster_mime,
     )
+    from kiro_crew.git_no_index_diff import no_index_diff, patch_hunks
 
 
 def _read_safe_end(text: str, cap: int) -> int:
@@ -484,11 +487,20 @@ async def api_file_diff(request: web.Request) -> web.Response:
         "-c",
         "core.fsmonitor=",
     ]
-    _env = {**os.environ, "GIT_ATTR_NOSYSTEM": "1"}
+    # These calls run in the dashboard process, unsandboxed, in a repo an agent
+    # can write. The `-c` flags above leave hooks open: `status`/`diff` refresh
+    # the index and fire `post-index-change` from `.git/hooks` (measured on git
+    # 2.47). `git_command_env` pins hooks and every other fixed-name exec key;
+    # a repo-named filter driver is refused below, before the first diff.
+    # Filled in by `_run_redacted`, which runs in a worker thread: building the
+    # env can shell out to git (safe-directory read), so it stays off the loop.
+    _env: dict[str, str] = {}
 
     def _run() -> dict:
+        # Each git call's timeout ends git's whole tree: on Windows `git` is often
+        # a launcher whose child would otherwise hold the pipes past it.
         try:
-            subprocess.run(
+            platform_compat.run_killing_tree_on_timeout(
                 [*_git, "rev-parse", "--git-dir"],
                 cwd=dirpath,
                 capture_output=True,
@@ -513,7 +525,7 @@ async def api_file_diff(request: web.Request) -> web.Response:
             return {"diff": "", "original": "", "status": "not_git"}
         try:
             # Get HEAD content
-            root = subprocess.run(
+            root = platform_compat.run_killing_tree_on_timeout(
                 [*_git, "rev-parse", "--show-toplevel"],
                 cwd=dirpath,
                 capture_output=True,
@@ -524,7 +536,16 @@ async def api_file_diff(request: web.Request) -> web.Response:
                 env=_env,
             ).stdout.strip()
             rel = os.path.relpath(raw_path, root)
-            head = subprocess.run(
+            # `diff HEAD` and `status` run a repo-named `filter.<name>.clean` on
+            # the file, and `diff.textconv=` does not reach `diff.<name>.command`
+            # or a config-defined hook. None has a key to pin, so such a repo
+            # gets no diff rather than a program run on the host.
+            # `dirpath`, the cwd every call below runs in, so the probe discovers
+            # the same repository they do (`root` is a stripped display value).
+            # Probed with the same bare `git` the calls below run.
+            if repo_exec_driver_reason(dirpath, git="git"):
+                return {"diff": "", "original": "", "status": "error"}
+            head = platform_compat.run_killing_tree_on_timeout(
                 # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-tainted-env-args.dangerous-subprocess-use-tainted-env-args -- fixed git argv; the path is repo-relative and passed as one argument
                 [*_git, "show", "--no-textconv", f"HEAD:{rel}"],
                 cwd=dirpath,
@@ -536,8 +557,7 @@ async def api_file_diff(request: web.Request) -> web.Response:
                 env=_env,
             )
             original = head.stdout if head.returncode == 0 else ""
-            # Get diff
-            r = subprocess.run(
+            r = platform_compat.run_killing_tree_on_timeout(
                 [*_git, "diff", "--no-textconv", "--no-ext-diff", "HEAD", "--", raw_path],
                 cwd=dirpath,
                 capture_output=True,
@@ -550,7 +570,7 @@ async def api_file_diff(request: web.Request) -> web.Response:
             diff = r.stdout.strip() if r.returncode == 0 else ""
             if not diff:
                 # Check for untracked file
-                r2 = subprocess.run(
+                r2 = platform_compat.run_killing_tree_on_timeout(
                     [*_git, "status", "--porcelain", "--", raw_path],
                     cwd=dirpath,
                     capture_output=True,
@@ -561,7 +581,7 @@ async def api_file_diff(request: web.Request) -> web.Response:
                     env=_env,
                 )
                 if r2.returncode == 0 and r2.stdout.strip().startswith("??"):
-                    r3 = subprocess.run(
+                    r3 = platform_compat.run_killing_tree_on_timeout(
                         [
                             *_git,
                             "diff",
@@ -607,43 +627,19 @@ async def api_file_diff(request: web.Request) -> web.Response:
 
         A patch shows lines out of their surrounding text, which is what the
         redactor reads, so the pass runs on whole bodies and only masked text is
-        diffed. The temp files hold masked text only, in a private dir outside
-        any repo.
+        diffed, by the shared ``no_index_diff``.
         """
-        with tempfile.TemporaryDirectory(prefix="kc-file-diff-") as tmp:
-            a = os.path.join(tmp, "a")
-            b = os.path.join(tmp, "b")
-            with open(a, "w", encoding="utf-8", newline="") as fh:
-                fh.write(old)
-            with open(b, "w", encoding="utf-8", newline="") as fh:
-                fh.write(new)
-            r = subprocess.run(
-                [*_git, "diff", "--no-index", "--no-textconv", "--no-ext-diff", "--", a, b],
-                cwd=tmp,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=10,
-                env=_env,
-            )
-        # --no-index answers 1 for "differs"; anything else is a failure, and a
-        # failure must not fall back to the raw patch.
-        if r.returncode not in (0, 1):
-            raise subprocess.CalledProcessError(r.returncode, "git diff --no-index")
-        # "\n" only: splitlines() also cuts on form feed, U+2028 and other
-        # characters that sit inside a patch line.
-        lines = r.stdout.rstrip("\n").split("\n")
-        first = next((i for i, ln in enumerate(lines) if ln.startswith("@@")), None)
+        patch = no_index_diff(old, new, git=_git, env=_env)
+        hunks = patch_hunks(patch)
         name = redact_fn(rel).replace("\n", " ")
         header = [f"diff --git a/{name} b/{name}"]
-        if first is None:
+        if hunks is None:
             # No hunks: no change, or git judged the text binary.
-            if not r.stdout.strip():
+            if not patch.strip():
                 return ""
             return "\n".join([*header, f"Binary files a/{name} and b/{name} differ"])
         header += ["--- /dev/null" if new_file else f"--- a/{name}", f"+++ b/{name}"]
-        return "\n".join([*header, *lines[first:]])
+        return "\n".join([*header, *hunks])
 
     # Same verdict as ``api_file_read`` for the same caller: the panel compares
     # the buffer that read served against this ``original``, so the two MUST be
@@ -652,6 +648,7 @@ async def api_file_diff(request: web.Request) -> web.Response:
     bypass = await _owner_view_bypasses_credential_pass(request)
 
     def _run_redacted() -> dict:
+        _env.update(git_command_env(), GIT_ATTR_NOSYSTEM="1")
         # Both text fields carry file content, so they pass through the same
         # redactor ``api_file_read`` applies to the panel's buffer. The panel's
         # diff view compares that redacted buffer against this ``original``, so

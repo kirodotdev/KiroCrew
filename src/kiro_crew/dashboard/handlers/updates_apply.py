@@ -15,21 +15,29 @@ import asyncio
 import contextlib
 import logging
 import os
+import subprocess
 import sys
 from collections.abc import Callable, Coroutine
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
 from kiro_crew import dep_sync, platform_compat, shutdown_event, update_ownership
+from kiro_crew.dashboard import restart_resume
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.gateway_restart import resolve_restart_launcher
 from kiro_crew.git_divergence import UNREADABLE_TIMEOUT, DivergenceUnreadable, count_divergence
+from kiro_crew.platform import release_apply
 from kiro_crew.platform.update_capability import MANAGED_BY_GIT, derive_capability
-from kiro_crew.platform.update_governance import resolve_remote_url, update_blocked_reason
+from kiro_crew.platform.update_governance import (
+    git_command_env,
+    repo_exec_config_reason,
+    resolve_remote_url,
+    update_blocked_reason,
+)
 from kiro_crew.platform_compat import (
     exit_after_failed_restart_exec,
     reexec_launcher,
@@ -41,6 +49,9 @@ from kiro_crew.security import (  # noqa: F401 - pinned by test_updates_handlers
     redact_credentials,
     redact_exfiltration_urls,
 )
+
+if TYPE_CHECKING:
+    from kiro_crew.frontend import FrontendBuildResult
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.updates")
 
@@ -87,7 +98,7 @@ async def _run_tracked_policy_apply(
         raise
 
 
-async def _build_frontend(proj: str, state: DashboardState) -> None:
+async def _build_frontend(proj: str, state: DashboardState) -> FrontendBuildResult:
     """Build the in-tree ``website/`` frontend and stage it into ``static/dist``.
 
     Delegates to the shared :func:`kiro_crew.frontend.build_frontend_async`
@@ -101,7 +112,8 @@ async def _build_frontend(proj: str, state: DashboardState) -> None:
     Graceful no-op when there is no ``website/`` directory or ``npm`` is not
     installed (a packaged checkout may ship prebuilt assets). Build warnings
     are surfaced via ``state.push_update_progress`` after credential/URL
-    redaction.
+    redaction. Returns the helper's result, so the caller can refuse the
+    restart when the build failed.
     """
     from kiro_crew import frontend
 
@@ -113,7 +125,7 @@ async def _build_frontend(proj: str, state: DashboardState) -> None:
         state.push_update_progress("building", msg)
 
     state.push_update_progress("building", "Building frontend (npm)…")
-    await frontend.build_frontend_async(proj, push_progress=_push)
+    return await frontend.build_frontend_async(proj, push_progress=_push)
 
 
 async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
@@ -122,17 +134,19 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
     Returns ``True`` on success. On failure, pushes an error to ``state`` and
     returns ``False`` — caller should ``return``.
 
-    Delegates the choice of HOW to :func:`kiro_crew.dep_sync.sync_or_reinstall`:
-    an editable reinstall where it can run, and a dependency-only sync where it
-    cannot. This endpoint is one of the paths that cannot always run it — the
+    Installs the release through :func:`kiro_crew.platform.release_apply.apply_release`:
+    the code, then the KAS engine the new revision pins, so a restart happens only
+    when both landed. The choice of HOW the code goes in is
+    :func:`kiro_crew.dep_sync.sync_or_reinstall`'s: an editable reinstall where it
+    can run, and a dependency-only sync where it cannot. This endpoint is one of the paths that cannot always run it — the
     gateway it updates is normally started through the very console script pip
     would have to rewrite, which Windows locks, and a reinstall that dies there
     has already deleted the editable ``.pth`` and left the venv unable to import
     the package at all.
 
-    ``dep_sync`` is imported at MODULE level (see its docstring): this runs after
-    the pull, so an import deferred to here would parse the file the incoming
-    revision shipped.
+    ``dep_sync`` and ``release_apply`` are imported at MODULE level (see
+    dep_sync's docstring): this runs after the pull, so an import deferred to here
+    would parse the file the incoming revision shipped.
     """
     state.push_update_progress("building", "Installing package (pip)…")
     loop = asyncio.get_running_loop()
@@ -158,20 +172,23 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
 
     # Supervised: cancelling this coroutine (a gateway shutdown does) also cancels
     # the install, so one still queued, or cancelled before its last check ahead
-    # of pip, never starts pip. A pip already running is left to finish (see
-    # dep_sync.sync_or_reinstall_supervised for the exact window).
-    rc = await dep_sync.sync_or_reinstall_supervised(
+    # of pip, never starts pip, and an engine install in flight is killed. A pip
+    # already running is left to finish (see
+    # release_apply.apply_release_supervised for the exact window).
+    rc = await release_apply.apply_release_supervised(
         subprocess_executor(),
-        Path(proj),
-        Path(sys.executable),
-        _emit,
-        # 600s rather than 120s on `pip install -e .`: the bound covers a
-        # dependency install that may be resolving and downloading a set this
-        # venv has never seen — and building a wheel for one of them — where
-        # 120s is a routine, not an exceptional, overrun.
-        # It is a real bound either way: dep_sync kills the pip child on
-        # expiry rather than letting the step hang on a wedged index.
-        timeout=600,
+        release_apply.GitRelease(
+            Path(proj),
+            Path(sys.executable),
+            _emit,
+            # 600s rather than 120s on `pip install -e .`: the bound covers a
+            # dependency install that may be resolving and downloading a set this
+            # venv has never seen — and building a wheel for one of them — where
+            # 120s is a routine, not an exceptional, overrun.
+            # It is a real bound either way: dep_sync kills the pip child on
+            # expiry rather than letting the step hang on a wedged index.
+            timeout=600,
+        ),
     )
     return rc == 0
 
@@ -285,6 +302,10 @@ async def _restart_gateway(
         # into an applied update is over. Not at entry: a restart that coalesces
         # or finds a broken launcher above leaves the deferral it found in place.
         update_ownership.restart_committed()
+        # A planned restart: the turns close_all() cuts resume on the next boot.
+        # Imported at module load, before an apply can remove this tree; that
+        # also preloads it for the gateway's update restart.
+        await restart_resume.record_running_slots(state)
         try:
             await state.sessions.close_all()
         except Exception:
@@ -335,12 +356,18 @@ async def _restart_gateway(
         # image itself, and the sessions closed above do not come back. Exit on
         # that rather than fall through to ``return True``, which reports a
         # restart that did not happen from a process that cannot serve.
+        # The exec skips the orderly exit that marks the crash dump clean, so it
+        # is marked here, with nothing left between the mark and the exec.
+        from kiro_crew.dashboard import crash_dump_store
+
+        await crash_dump_store.mark_clean_exit()
         try:
             if launcher is not None:
                 reexec_launcher(launcher, sys.argv[1:])
             else:
                 reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
         except OSError:
+            await crash_dump_store.unmark_clean_exit()
             await exit_after_failed_restart_exec(launcher or exe)
         return True
     finally:
@@ -368,6 +395,66 @@ async def _snapshot_memory_or_refuse(state: DashboardState) -> web.Response | No
     message = snapshot_refusal(failure)
     state.push_update_progress("failed", message)
     return web.json_response({"error": message, "code": "memory_snapshot_failed"}, status=500)
+
+
+def _user_excludes_file(proj: str, env: dict[str, str]) -> str:
+    """The operator's global/system ``core.excludesFile`` path, or ``""`` if none or unreadable.
+
+    Read from git's effective view with ``--includes``, so a value set through a
+    global ``include``/``includeIf`` counts, and kept only from the operator's own
+    scopes: a repository-local value names a path the agent chose.
+    """
+    try:
+        done = subprocess.run(
+            [
+                "git",
+                "config",
+                "--includes",
+                "--show-scope",
+                "--path",
+                "-z",
+                "--get-all",
+                "core.excludesFile",
+            ],
+            cwd=proj,
+            env=env,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if done.returncode != 0:
+        return ""
+    # `-z --show-scope` prints `<scope>\0<value>\0` per entry; git uses the last.
+    fields = done.stdout.decode("utf-8", "surrogateescape").split("\0")
+    user_values = [
+        value for scope, value in zip(fields[0::2], fields[1::2]) if scope in ("global", "system")
+    ]
+    return user_values[-1] if user_values else ""
+
+
+async def _repo_exec_config_refusal(proj: str) -> web.Response | None:
+    """409 when *proj*'s own git config names a program git would run, else ``None``.
+
+    Offloaded: the probe shells out to git.
+    """
+    exec_config = await asyncio.get_running_loop().run_in_executor(
+        # The bare `git` this handler spawns, and the human-run transport rule
+        # that pairs with `git_command_env(human_transport=True)` below.
+        None,
+        lambda: repo_exec_config_reason(proj, git="git", human_transport=True),
+    )
+    if not exec_config:
+        return None
+    logger.warning("Update refused: %s, which git would run during the update", exec_config)
+    return web.json_response(
+        {
+            "error": f"Update refused: {exec_config}, which git would run during the "
+            "update. Remove it from the checkout's git config, then retry.",
+            "code": "repo_exec_config",
+        },
+        status=409,
+    )
 
 
 async def api_update_apply(request: web.Request) -> web.Response:
@@ -446,12 +533,41 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # no "updating" spinner behind. A dashboard token proves the caller is the
     # operator, not that the fleet permits this host to pull from this remote.
     # Offloaded: the seam shells out to git.
+    # One env for the pin check and the fetch below, so the URL judged is the
+    # URL fetched. It reads the operator's global git config (their credential
+    # helper and ssh command), as this fetch did before, plus the repo-level
+    # exec pins; the repository's own transport values are refused below.
+    # Offloaded like `git_env` below: resolving the pinned programs can walk PATH.
+    fetch_env = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), lambda: git_command_env(human_transport=True)
+    )
     blocked = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: update_blocked_reason(resolve_remote_url(proj))
+        None, lambda: update_blocked_reason(resolve_remote_url(proj, fetch_env=fetch_env))
     )
     if blocked:
         logger.warning("Update refused: %s", blocked)
         return web.json_response({"error": blocked, "governance": True}, status=403)
+
+    # Every git call below runs in a checkout an agent can write, and `status`,
+    # `fetch` and `merge` EXEC programs the repository names in its own config
+    # (`core.fsmonitor`, hooks, `filter.<name>.smudge`). The fixed-name keys are
+    # pinned by `git_command_env`; a repo-NAMED driver has no key to pin, so the
+    # update is refused instead -- the same two halves the unattended gateway
+    # apply uses. Checked before any state is pushed, like the source pin.
+    refused = await _repo_exec_config_refusal(proj)
+    if refused is not None:
+        return refused
+    # Every other git call reads no agent-writable global config. Offloaded:
+    # building the isolated env can shell out to git (safe-directory read).
+    git_env = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), git_command_env
+    )
+    # The isolated env drops a GLOBAL `core.excludesFile`, so files the operator
+    # ignores there would read as untracked changes. An ignore list runs nothing,
+    # so their own one is passed back to the dirty-tree check.
+    excludes = await asyncio.get_running_loop().run_in_executor(
+        subprocess_executor(), lambda: _user_excludes_file(proj, fetch_env)
+    )
 
     # Signal updating state via SSE
     state.push_refresh("updating")
@@ -459,9 +575,11 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # Check for dirty working tree before updating
     dirty = await asyncio.create_subprocess_exec(
         "git",
+        *(["-c", f"core.excludesFile={excludes}"] if excludes else []),
         "status",
         "--porcelain",
         cwd=proj,
+        env=git_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,
@@ -505,25 +623,40 @@ async def api_update_apply(request: web.Request) -> web.Response:
         "git",
         "fetch",
         "--quiet",
+        # The flag beats every remote's configured upload-pack; an env pin does
+        # not (git takes the first value it reads, the repository's), and this
+        # fetch follows the TRACKED remote, which need not be `origin`. The bare
+        # name is what an ssh server accepts, and a local transport resolves it
+        # from git's own exec-path.
+        "--upload-pack=git-upload-pack",
         cwd=proj,
+        env=fetch_env,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,
         creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
     )
     try:
-        await asyncio.wait_for(fetch.communicate(), timeout=30)
+        # Matches the fast-forward's own 60s bound below: the fetch is the
+        # heavier network leg, so a reachable-but-slow remote (a large pack over
+        # a thin link) must get at least as long as the local merge that follows
+        # it. A tighter bound kills a fetch that would have completed.
+        await asyncio.wait_for(fetch.communicate(), timeout=60)
     except asyncio.CancelledError:
         await platform_compat.kill_and_reap(fetch)
         raise
     except asyncio.TimeoutError:
+        # Reachable but slow past the bound: a transient condition the caller
+        # can retry, so it answers like the adjacent non-zero-rc refusal (409)
+        # rather than a 5xx. The failure stays surfaced with its reason; the
+        # fetch is never skipped.
         await platform_compat.kill_and_reap(fetch)
         return web.json_response(
             {
-                "error": "Timed out refreshing the remote before updating",
+                "error": "Timed out refreshing the remote before updating; retry",
                 "code": "git_fetch_failed",
             },
-            status=500,
+            status=409,
         )
     if fetch.returncode != 0:
         logger.warning("Update refused: pre-apply git fetch failed (rc=%s)", fetch.returncode)
@@ -534,7 +667,8 @@ async def api_update_apply(request: web.Request) -> web.Response:
             },
             status=409,
         )
-    counts = await count_divergence(proj, "@{u}")
+    # Counted under the same env as the merge, so both judge the same repository.
+    counts = await count_divergence(proj, "@{u}", env=git_env)
     if isinstance(counts, DivergenceUnreadable):
         if counts.reason == UNREADABLE_TIMEOUT:
             return web.json_response(
@@ -577,6 +711,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
         "--verify",
         "@{u}^{commit}",
         cwd=proj,
+        env=git_env,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         start_new_session=platform_compat.IS_POSIX,
@@ -614,7 +749,9 @@ async def api_update_apply(request: web.Request) -> web.Response:
     try:
         floor_breach = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(),
-            lambda: dep_sync.incoming_python_floor_breach(Path(proj), target, Path(sys.executable)),
+            lambda: dep_sync.incoming_python_floor_breach(
+                Path(proj), target, Path(sys.executable), env=git_env
+            ),
         )
     except dep_sync.IncomingFloorUnreadable as exc:
         # The pinned revision is real, but its floor could not be read. That is
@@ -635,6 +772,14 @@ async def api_update_apply(request: web.Request) -> web.Response:
             {"error": f"Update refused: {floor_breach}", "code": "python_floor"},
             status=409,
         )
+
+    # Re-read the repo-named driver config right before the merge: the fetch
+    # above can take its full timeout, and a driver planted in that window would
+    # otherwise reach the merge's checkout (a `filter.<name>.smudge` ran on a
+    # fast-forward, measured on git 2.47). Same re-check the gateway apply does.
+    refused = await _repo_exec_config_refusal(proj)
+    if refused is not None:
+        return refused
 
     # Last check before the fast-forward rewrites the install: every refusal
     # above leaves the tree alone, so none of them spends a copy.
@@ -664,6 +809,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 "--ff-only",
                 target,
                 cwd=proj,
+                env=git_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=platform_compat.IS_POSIX,
@@ -701,7 +847,10 @@ async def api_update_apply(request: web.Request) -> web.Response:
             # served static/dist (graceful no-op if no website/ or npm).
             # Done before pip install so the served bundle is refreshed even
             # if the package reinstall later hiccups.
-            await _build_frontend(proj, state)
+            build = await _build_frontend(proj, state)
+            # A failed build does NOT skip the reinstall: the tree has already
+            # moved, so its dependencies must still land or any later restart
+            # dies at import. Only the restart is refused, after the install.
 
             # Reinstall the package so any new Python deps / entry points land.
             if not await _venv_pip_install(proj, state):
@@ -716,6 +865,19 @@ async def api_update_apply(request: web.Request) -> web.Response:
             # attempt recorded does not describe the install.
             tree_moved = False
             update_ownership.clear_restart_refusal()
+            if build.outcome == "failed":
+                # The install is importable, but static/dist still holds the
+                # previous bundle and a restart would pair it with the new
+                # backend. Stay up, and keep the watchdog's import probe from
+                # clearing the refusal.
+                from kiro_crew.security import redact
+
+                update_ownership.refuse_restart(
+                    "the frontend build after the dashboard update did not complete",
+                    import_probe_clears=False,
+                )
+                state.push_update_progress("error", redact(build.failure_message()))
+                return
 
             # Restart: save history + clean up sessions then exec the same process.
             logger.info("Update complete — saving history and cleaning up before restart")
@@ -735,7 +897,9 @@ async def api_update_apply(request: web.Request) -> web.Response:
         finally:
             owned.close()
 
-    task = asyncio.create_task(_apply())
+    # Named so the restart gate (``_restart_gate_when_idle``) counts it as work
+    # a restart would cut off.
+    task = asyncio.create_task(_apply(), name="dashboard-update")
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
     return web.json_response({"ok": True, "status": "updating"})
@@ -763,6 +927,10 @@ async def api_update_simulate(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         body = {}
+    from kiro_crew.dashboard.handlers._shared import body_not_object_error
+
+    if (not_object := body_not_object_error(body)) is not None:
+        return not_object
 
     # Simulate a pre-flight rejection (e.g. dirty working tree)
     if body.get("reject"):

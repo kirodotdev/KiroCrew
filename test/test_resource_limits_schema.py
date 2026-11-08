@@ -36,6 +36,8 @@ _ALL_KEYS = (
     "max_cpu_percent",
     "max_total_memory_mb",
     "max_total_processes",
+    "scope_memory_high_pct",
+    "slice_reclaim_trigger_pct",
     "xdist_auto_cap",
 )
 
@@ -378,7 +380,7 @@ class TestSliceConsumer:
         ):
             mem, tasks = self._limits(raw)
             assert mem == sb._default_max_total_memory_mb()
-            assert tasks == sb._CGROUP_DEFAULT_MAX_TOTAL_TASKS
+            assert tasks == sb._default_max_total_tasks()
 
 
 class TestRlimitConsumer:

@@ -35,7 +35,7 @@ from that boundary. The credential-boundary detail lives in
 
 One thing that looks like an exception is not one. A provider whose MCP server
 refuses dynamic client registration (`auth.mode: "preregistered"` in the
-registry — GitHub and Asana today) needs an OAuth **app** an operator registered
+registry — GitHub, Asana and the six Google Workspace entries today) needs an OAuth **app** an operator registered
 in the vendor console, and a confidential app comes with a `client_secret`. That
 secret is the operator's *application* credential, not any user's grant: the
 grant still lives with kiro-cli and nothing here reads it. Kiro Crew keeps the
@@ -154,6 +154,13 @@ card-initiated mint (`idle|minting|waiting|granted|failed|expired`, with
 `oauth_url` only while `waiting`), and the frontend keeps polling it at its own
 cadence. Approval-URL ownership stays with the mint engine.
 
+The POST, like `POST /api/connections/test`, refuses a registry provider the
+gallery hides (`registry.is_visible`, the predicate behind `get_visible_providers`)
+with the same 400 `unknown_provider` as an unknown slug, so a stale tab or a
+hand-built request cannot start a sign-in or a Test session for it. Cancel and
+Disconnect still reach every registry provider, so a grant stored before its
+provider was hidden stays revocable.
+
 A cold mint whose URL is rejected by `oauth_url_contains_credential` disposes
 that dedicated process, protected PID, and ephemeral spec, then creates one
 fresh dedicated attempt with a new provider OAuth state. The retry keeps the
@@ -165,6 +172,26 @@ can be named; the naming rules are in [security](security.md). Warm URLs pass th
 before they become adoptable. A rejected warm claim is released, so a later
 Connect follows the cold path and reaches this single retry owner rather than
 carrying a second policy in the warm engine or dashboard handler.
+
+A refused sign-in ends the attempt. kiro-cli answers the loopback callback before
+it exchanges the code, so a code the provider rejects never lands a grant: kiro-cli
+reports it only as a `server_init_failure` frame for that server and closes the
+listener. The cold watcher reads its held process's frames on every grant poll, and
+the warm reaper reads each adopted row's session (`fail_refused_sign_ins`), so the
+row turns `failed` / `mint_sign_in_rejected` within one poll instead of waiting out
+the TTL, and the card says the provider did not accept the sign-in. A grant on disk
+still wins over the frame, because a server can fail its own start after a good
+exchange. So a refused row means no grant was observed or proven, and the card fences
+any grant files still on disk the way it fences `mint_grant_unproven`: a reconnect
+whose check disproved the stored grant does not read Connected beside the refusal.
+A return address relayed from the card holds that tab's wait when the
+card's approval URL came from a `waiting` mint and it had none (after a reload the
+waiting card comes from the status feed alone), so the attempt's verdict replaces
+the "Return address delivered" line. A chat banner's sign-in gets no such wait,
+even beside a waiting mint: the banner is patched in place with its own verdict,
+and a wait would fence it off. A failed attempt re-reads the status feed at once,
+as a granted one does, so its stale `awaiting_consent` does not hold the card on
+waiting until the next poll.
 
 The status endpoint is **additive** and never mints: it observes the mint table
 to distinguish `awaiting_consent` from `not_connected`, and that is the whole of
@@ -309,6 +336,21 @@ a standing cost with no click behind it. Validation runs exactly once, at the
 moment a Connect or Reconnect click asks the mint to decide whether a URL is
 needed — the one place the cost is bounded by a real user action and the one
 place the answer changes what the click actually does.
+
+**A failed check keeps a `needs_auth` card off Connected for the page visit.**
+When the check fails and the fresh mint then gets no challenge, the mint ends
+`failed` with `reason=mint_grant_unproven`. The poll still reports
+`grantPresent` from the artifact stat, and beside the tokenless probe's
+`needs_auth` that would fold to Connected. So the Connections page remembers
+the slug for the visit and treats that grant as unconfirmed: the card shows
+`not-verified` with its Connect button and the `grant_unproven_help` fact (the
+saved sign-in no longer works) in place of the indeterminate hedge, under the
+`mint_failure_grant_unproven` reason line. The attempt's chat-banner fence stays
+too: a banner from before the attempt cannot say Connected or Waiting, unless it
+completes only after the failure (a new consent in chat). A later mint for that
+card that reports `granted` clears it. A
+reload or a remount forgets it, and the card is back on the artifact verdict:
+the known limit above.
 
 ### Boot path
 
@@ -1011,6 +1053,15 @@ mounts or gates on it.
 | Neon | developer-tools | 2 | yes / yes | installs `?readonly=true` | gated | manual launch-gate check |
 | Prisma | developer-tools | 2 | yes / yes | none (only `workspace:admin`) | gated | manual launch-gate check |
 | Todoist | project-management | 2 | yes / yes | none — the server lists only `data:read_write`; the entry adds `data:delete` and leaves out `project:delete` | gated | manual launch-gate check, including two sessions held past the one-hour token expiry (refresh tokens rotate on every use) |
+| Gmail | calendar-email | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `gmail.readonly` only | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/gmail.md)) |
+| Google Drive | file-storage | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `drive.readonly` only | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-drive.md)) |
+| Google Calendar | calendar-email | 2 | **no** / yes — pre-registered client (`auth.mode`) | request the three documented read-only scopes | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-calendar.md)) |
+| Google Sheets | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `spreadsheets.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-sheets.md)) |
+| Google Docs | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `documents.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-docs.md)) |
+| Google Slides | collaboration-docs | 2 | **no** / yes — pre-registered client (`auth.mode`) | request `presentations.readonly` + `drive.readonly` | shown as "needs configuration" until an operator enters a client; Connect after | Google Workspace Developer Preview enrollment of the Cloud project; manual launch-gate check with an operator-registered client ([runbook](../../guides/oauth-app-registration/google-slides.md)) |
+| TickTick | project-management | 2 | yes / yes | none — `tasks:read` and `tasks:write` are the whole `scopes_supported` list and there is no read-only endpoint; the entry's `gotcha_copy` names the delete tools | gated | manual launch-gate check, including a `tools/list` against the 58-tool roster the card copy describes |
+| Railway | developer-tools | 2 | yes / yes | none — `workspace:member` is the only scope the resource metadata publishes; the consent screen picks the workspaces, and the entry's `gotcha_copy` names the deploy and delete tools | gated | manual launch-gate check, including a `tools/list` against the hosted tool roster Railway documents and a session held past the access-token expiry (Railway documents refresh tokens only for `offline_access`, which the entry does not request) |
+| Quo | calendar-email | 2 | yes / yes | request `read:account`, `read:conversations` and `read:calls` only | gated | manual launch-gate check, including which tools a read-only grant can still call and whether Quo lists the grant anywhere a user can revoke it (its docs name the client's Disconnect and an RFC 7009 revocation endpoint) |
 
 Tier is provider *categorization* (see the tiers note above), never mint
 latency: tier 3 means the vendor gates clients by allowlist or waitlist, so
@@ -1091,11 +1142,29 @@ until the triangle is hovered.
 
 The triangle's copy comes from two places. A provider-side prerequisite is the
 registry's `prerequisite_copy` (English fallback) rendered through the
-slug-keyed `prerequisite_<slug>` catalog entries, kept in lockstep by a test;
+slug-keyed `prerequisite_<slug>` catalog entries (a slug's hyphens spelled as
+underscores, `google-drive` → `prerequisite_google_drive`), kept in lockstep by a test;
 a state-level caveat, like the setup explanation, is an ordinary catalog key
 (`needs_configuration_help`). Both ride under the one `before_you_connect`
 heading with the `prerequisites_for_provider` accessible name — a new state
-reuses them rather than adding a second tooltip component or heading.
+reuses them rather than adding a second tooltip component or heading. The one
+exception is the connected card's shared-grant tip beside **Disconnect**: it
+uses the `before_you_disconnect` heading and the `shared_signin_for_provider`
+name, because the card is already connected (#26890). Its copy is unchanged:
+who shares the grant, and that Disconnect keeps the shared token (revoke at the
+provider to force a new sign-in).
+
+A card whose provider has a grant but no entry the card manages (the slug at
+the registry endpoint) stays **Not connected**, for example when the endpoint is
+configured only in a user's own agent spec, which `/api/mcp` does not list: the
+card has no entry for Disconnect or Test to act on (#30393). The status feed
+still reports `grantPresent: true`, so the tip beside **Connect** says the user is
+already signed in but Kiro Crew is not set up to use it yet, and that Connect sets
+it up, using the saved sign-in when it can, so it may still ask to sign in again
+(`stored_sign_in_no_server`). The hedge is deliberate: the kiro-cli mint
+validates and reuses an existing grant for the same endpoint URL, but a
+Crew-held provider's Connect (`crew_oauth.start_mint_row`) always starts a new
+sign-in.
 
 ## Pre-registered OAuth clients
 
@@ -1122,7 +1191,17 @@ registered that exact URI in a vendor console Kiro Crew cannot reach, so changin
 it silently breaks each of their apps until they re-register. Retire a port by
 adding a provider, never by renumbering one;
 `test_connections_registry_auth.py` pins the shipped values so a change fails
-loudly.
+loudly. Shipped ports: GitHub 48101, Asana 48102, Google Drive 48103, Gmail
+48104, Google Calendar 48105, Google Sheets 48109, Google Docs 48110, Google
+Slides 48111; 48106–48108 are reserved by the Slack, HubSpot and Box runbooks.
+
+**Google Workspace.** The six Google entries (Gmail, Drive, Calendar, Sheets,
+Docs, Slides) are ordinary pre-registered entries, one card and one stored
+client each. Google lets one OAuth client carry many redirect URIs, so one
+user-owned Google client can serve all six: the user registers every card's
+redirect URI on it and pastes the same Client ID and secret into each card
+(the runbook index lists the URIs). Nothing in `oauth_clients.py` links the
+six; a shared Google client card is a separate, not-yet-decided change.
 
 **Where the client lives.** `connections/oauth_clients.py` resolves it with a
 fixed precedence — environment
@@ -1145,6 +1224,63 @@ client on a hand-authored stranger); `warm_runtime.spec_plan._registry_server_en
 for the premint path and answers `None` for an unconfigured provider so nothing
 warms against a vendor that will only say "unknown client". The mint spec copies
 the emitted entry verbatim, so the cold path inherits it.
+
+**Google consent links ask for offline access.** Google issues a refresh token
+only when the consent link carries `access_type=offline` (and re-issues one on a
+repeat consent only with `prompt=consent`). Neither engine sends either: KAS
+(`@kiro/agent`) and kiro-cli v2 build the authorize URL from fixed fields and
+have no config key for extra parameters, so a Google grant would expire after
+about an hour. Crew reads every consent URL before any surface shows it, so
+`acp/oauth_offline.py:with_google_offline_access` sets both parameters as the
+URL is read off the wire (the kiro-cli init drain and mid-turn frame, and the
+session handle's `_accept_oauth_request`, which is also where a KAS
+`_kiro/openExternalUrl` link lands). The Connections card mint, the warm table
+and the chat banner all read those URLs, so each gets the same link. Only a URL
+whose scheme is `https`, netloc exactly `accounts.google.com` and path exactly
+`/o/oauth2/v2/auth` changes; any existing `access_type` / `prompt` is replaced,
+and every other query segment (PKCE, `state`, `redirect_uri`, `scope`) keeps its
+bytes and order, so the engine's code-for-token swap is unchanged. Every other
+server's link is untouched. `security/exfil_oauth.py` already allows both names.
+`prompt=consent` is deliberate: Google then shows its consent screen on every
+re-authorization, even when a refresh token already exists. That is the accepted
+cost, because without it a repeat consent returns no new refresh token; do not
+drop the parameter to save the extra screen.
+
+**Which backend can use it.** The client reaches a chat's sign-in only through
+the remote MCP entry's `oauth` block, and only kiro-cli reads that block
+(`ACP_BACKENDS_REMOTE_MCP_OAUTH`, asked as
+`SessionCapabilities.honors_remote_mcp_oauth`). KAS takes its agents over a
+schema with no slot for it (#27711). The Connections mint itself runs on
+kiro-cli, so Connect stays on every backend and the grant it writes is real for
+kiro-cli chats; whether a KAS chat can use that grant is #24693 / #24677's
+question. So while the resolved `agent.acp_backend`
+lacks the capability (Bot threads are not read: that field resolves to KAS on every install),
+`/api/connections/status` marks every pre-registered row `backendLacksOauth`,
+connected or not. The card states it without adding a tip or heading key
+(connection-card-caveat-tip): inside the tip beside Connect; on a connected row
+with a shared grant, inside the shared-grant tip beside Disconnect; on a
+connected row without one, as an "In chats" line in the status list beside
+"Connected since", since there it is a fact about the current state. The copy
+uses no backend name, no issue number and no remedy, in user terms: the tip
+says Connect still finishes and the sign-in is saved for chats that support it,
+while some chats cannot use this kind of sign-in yet; the row line says it is saved
+for chats that support it and some chats cannot use it yet. A Kiro CLI pick can itself load as KAS (the
+v3 relay), so naming a switch would point at a route that does not help.
+An unreadable config makes no
+claim.
+
+While `agent.acp_backend` is KAS (`chat_backend_is_kas`), every other connected row
+carries `signInInChat`: the card's grant is real for Kiro CLI chats, and a KAS chat
+signs in on its own once the user's message names the server (`acp-client.md`). The
+card shows it in the same "In chats" line, or inside the shared-grant tip: "Chats
+sign in separately: type <slug> in a chat once." Like the `backendLacksOauth`
+copy it names no harness: the line shows only while chats run on KAS, so the
+reader need not know which harness they have. Kiro CLI chats and an unreadable config get no line.
+
+A row whose sign-in Crew holds (`dashboard.feature_previews.crew_oauth` on KAS) carries
+`crewHeld` instead, and the card offers no Test: Test enumerates through Kiro
+CLI's grant, which a Crew-held sign-in does not create, and the endpoint refuses
+it with 409 `crew_oauth_test_unsupported`.
 
 **What the user sees.** `get_visible_providers` shows a pre-registered entry
 regardless of `launch_gate_passed` (vendor approval still hides), because until

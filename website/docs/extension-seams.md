@@ -9,12 +9,14 @@ The backend has the sibling mechanism, Composed Platform Providers: see
 [`docs/system-specs/modules/platform-context.md`](../../docs/system-specs/modules/platform-context.md).
 The two are independent. Nothing here reads `CONTRACT_VERSION`.
 
-## The fifteen registry seams
+## The eighteen registry seams
 
 Each entry is one registrar the edition may call, paired with the reader the core
-already calls. `src/extensions.ts` names exactly these fifteen in its header.
+already calls. `src/extensions.ts` names exactly these eighteen in its header.
 `src/test/extensionSeams.test.tsx` exercises each one except the source-provider
-seam, which has its own suite in `src/test/sourceProviderSeam.test.ts`.
+seam (`src/test/sourceProviderSeam.test.ts`), the Feature Preview row seam
+(`src/pages/settings/FeaturePreviewsEditionRows.test.tsx`) and the document-tab
+seam (`src/pages/chat/DocumentPanelTabs.test.tsx`), which have their own suites.
 
 File/tree/folder menu rows are **not** a composition-root seam: an installed app
 declares them in its manifest under `contributes.fileMenuItems[]` and core
@@ -22,13 +24,15 @@ POSTs the file context to the app's endpoint — see the App Kit publishing guid
 
 | Seam | Module | Registrar to reader |
 |------|--------|---------------------|
-| Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` to `getBuiltinApp(route)` (returns `{ component, appId }`) |
+| Builtin page routes | `apps/builtinRegistry.ts` | `registerBuiltinComponents()` to `getBuiltinApp(route)` (returns `{ component, appId, opensPathParam? }`) |
+| "Open in <app>" for a file | `apps/pathOpener.ts` | an entry's `opensPathParam` to `pathOpenerTarget(apps)` |
 | Nav icons | `apps/builtinIcons.tsx` | `registerBuiltinIcons()` to `getBuiltinIcon()` |
 | Theme branding | `themeBranding.tsx` | `registerThemeBranding()` to `getThemeBranding()` |
 | Theme picker options | `hooks/useTheme.tsx` | `registerTheme()` to `getRegisteredThemes()` |
 | Top-bar widgets | `apps/topBarWidgets.tsx` | `registerTopBarWidgets()` to `getTopBarWidgets()` |
 | Readout-capsule segments | `apps/capsuleSegments.tsx` | `registerCapsuleSegment()` to `getCapsuleSegments()` |
 | Overview status cards | `pages/overviewStatCards.tsx` | `registerOverviewStatCards()` to `getOverviewStatCards()` |
+| Feature Preview rows | `pages/settings/featurePreviewRows.ts` | `registerFeaturePreviewRows()` to `getFeaturePreviewRows()` (duplicate id refused through `reportSeamCollision`) |
 | Overview lower panel (single owner) | `pages/overviewPanel.tsx` | `registerOverviewPanel()` to `getOverviewPanel()` |
 | Overview built-in suppression (subtractive) | `pages/overviewBuiltins.ts` | `suppressOverviewBuiltin()` to `isOverviewBuiltinSuppressed()` |
 | Panel-navigation chords | `hooks/useKeyboardShortcuts.ts` | `registerPanelShortcut()`, read by the shortcut handler and `DEFAULT_SHORTCUTS` |
@@ -36,7 +40,9 @@ POSTs the file context to the app's endpoint — see the App Kit publishing guid
 | Source providers (Changes panel + sidebar chips) | `utils/pullRequestLinks.ts` | `registerSourceProvider()` to `sourceProviderDescriptor()` |
 | Phone-connection method renderers | `components/mobileConnectRenderers.tsx` | `registerMobileConnectRenderer()` to `getMobileConnectRenderers()` / `canRenderMobileConnectKind()` |
 | Remote-instance provisioner forms | `components/remoteProvisionerRenderers.tsx` | `registerRemoteProvisionerRenderer()` to `getRemoteProvisionerRenderer()` / `canRenderRemoteProvisionerKind()` |
+| Remote-crew row actions (keyed by the row's `provisioner_id`; refuses `aws_ec2`, a chained row, an empty contribution and a duplicate) | `components/remoteCrewRowActions.tsx` | `registerCrewRowActions()` to `getCrewRowActions(inst)` |
 | Bare-token autolink rules | `utils/autolinkRules.ts` | `registerAutolinkRules()` to `getAutolinkRules()` |
+| Tabs beside an opened file or artifact (side panel) | `pages/chat/documentPanelTabRegistry.ts` | `registerDocumentPanelTabs()` to `getDocumentPanelTabs()`, rendered by `DocumentPanelTabs` |
 
 Plus two **exported-setter** seams for a value the core consumes itself (the
 product name and the feedback tracker), one **exported-transport** seam for
@@ -46,9 +52,9 @@ methods" and "Highlighting languages" below.
 
 Other `register*()` functions in `src/` (built-in surfaces, command-palette
 providers, tool pills, terminal sockets) are core-internal wiring, not edition
-seams. Only the fifteen above are called from the composition root.
+seams. Only the eighteen above are called from the composition root.
 
-Fourteen of the fifteen are **additive** — the edition contributes a surface. The
+Seventeen of the eighteen are **additive** — the edition contributes a surface. The
 remaining one is **subtractive**: `suppressOverviewBuiltin()` removes a built-in
 Overview surface for a distribution whose environment makes it permanently
 inapplicable, which no additive seam can express. It is named `suppress*` rather
@@ -125,21 +131,25 @@ keeping the shipped dashboard. Covered by `test/test_frontend_edition_build.py`.
 ## Pre-boot shell branding: `branding.json` and the `public/` overlay
 
 Everything the registry seams brand is rendered by React — which means none of it
-exists before React mounts. Three surfaces are shown earlier: the `<title>` during
+exists before React mounts. Four surfaces are shown earlier: the `<title>` during
 boot (and whenever a PWA-install dialog or bookmark samples it), the
-`<meta name="theme-color">`, and the PWA identity (`manifest.json` plus
-`icon-192.png` / `icon-512.png`). `registerThemeBranding()` cannot reach any of
-them. The edition plugin patches them instead — the HTML fields on every build
-and dev transform, the `public/` overlay at build emit — from two optional
-inputs in the edition dir:
+`<meta name="theme-color">`, the boot-failure panel's "worth reporting at" issue
+tracker links (shown when the bundle never arrived), and the PWA identity
+(`manifest.json` plus `icon-192.png` / `icon-512.png`). `registerThemeBranding()`
+cannot reach any of them. The edition plugin patches them instead — the HTML
+fields on every build and dev transform, the `public/` overlay at build emit —
+from two optional inputs in the edition dir:
 
-- **`branding.json`** — `{"title": "Acme Crew", "themeColor": "#0055aa"}`. Both
-  keys optional; values are HTML-escaped into the root `index.html` only (app
-  panel pages are untouched). An unknown key, a non-string value, or malformed
-  JSON **fails the build** — a typoed key silently shipping the stock title is
-  the exact silent-degrade class this seam bans. So does a missing target tag:
-  if the core shell drops `<title>` or the theme-color meta, the edition build
-  breaks loudly rather than quietly reverting to stock.
+- **`branding.json`** — `{"title": "Acme Crew", "themeColor": "#0055aa",
+  "issuesUrl": "https://tracker.example.com/issues"}`. Every key optional;
+  values are HTML-escaped into the root `index.html` only (app panel pages are
+  untouched). `issuesUrl` must be an absolute `http(s)` URL and replaces both the
+  target and the visible text of every boot-failure tracker link. An unknown
+  key, a non-string value, or malformed JSON **fails the build** — a typoed key
+  silently shipping the stock title is the exact silent-degrade class this seam
+  bans. So does a missing target tag: if the core shell drops `<title>`, the
+  theme-color meta or the boot-failure tracker link, the edition build breaks
+  loudly rather than quietly reverting to stock.
 - **`public/`** — files here overlay the stock copies in the built `dist`,
   edition-wins, emitted through the bundler (`generateBundle`/`emitFile`, which
   takes precedence over the `publicDir` copy). Only an allowlist is accepted —
@@ -499,6 +509,28 @@ adds a self-contained `StatCard` (owning its own query and state, like the core
 `TunnelStatus`) to the Settings Overview grid, after the core cards, in ascending
 `order`. Each receives a `delay` prop for the grid's stagger animation.
 
+**Feature Preview rows.** `registerFeaturePreviewRows([{ id, component }])` adds a
+self-contained row to Settings > Developer > Feature Previews, after the core cards
+and before the Decisions card, in registration order. The component renders its
+own `SettingsCard` and switch and owns its own read and write, through the
+edition's own route (`contribute_routes`) and API module (`apiTransport`). Each
+row is wrapped in its own `ErrorBoundary` with the standard crash card, so a
+throwing row shows that card in its place and the other rows stay. A duplicate
+`id` is a collision (`reportSeamCollision`) and is ignored.
+
+**Document tabs.** `registerDocumentPanelTabs([{ id, label, requiresApp?, component }])`
+adds a tab beside a file or artifact opened in the chat side panel. App panel
+tabs (`contributes.panelTabs`) are free-standing and do not know which document
+is open; this seam's component receives it as `target` (`{ kind: 'file', path }`
+or `{ kind: 'artifact', slug, artifactKind }`), plus `active` and `slot`. The
+strip's first tab is the document itself, named by its file name or slug, and the
+document stays mounted while another tab shows. `label` is a function, read at
+render, so it follows the language picked after registration. `requiresApp`
+shows the tab only while that installed app is enabled, the same opt-in rule app
+contributions follow. Each tab body sits in its own `ErrorBoundary`. A
+working-tree diff gets no strip, and with no visible tab the document renders
+exactly as in the stock build.
+
 **Overview lower panel.** `registerOverviewPanel({ id, component })` claims the
 region below the Usage/Memory summary grid, which the stock build leaves empty.
 Unlike every other registry here this slot holds **at most one** entry: the first
@@ -730,7 +762,9 @@ Out of scope: the **Report a Problem** flow's issue link is built by the
 gateway (`diagnostics.github_issue_url`), so the backend `feedback` Composed
 Platform Provider retargets it
 ([platform-context](../../docs/system-specs/modules/platform-context.md)), not
-this seam. An edition sets both.
+this seam. The boot-failure panel's tracker links are static pre-boot HTML, so
+`branding.json`'s `issuesUrl` retargets them ("Pre-boot shell branding" above).
+An edition sets all three.
 
 ## API methods: exported transport, not a registry
 
@@ -771,13 +805,18 @@ without an ordering hazard against `extensions.ts`.
 The core's own methods sit on the same helpers. They are defined by domain in
 `api/client/*.ts`, one module per product area (chat, memory, security, …), each
 a `create*Endpoints` factory that `client.ts` hands the transport it owns
-(`ClientTransport`, `api/client/transport.ts`): the five helpers, the three
-parsers, the shared `X-Session-Key` header, the session-expiry hooks a
+(`ClientTransport`, `api/client/transport.ts`): the five helpers, the parsers,
+the shared `X-Session-Key` header, the session-expiry hooks a
 method that reads its own response calls, and `withJournaledDeadline` (a
-deadline that also records a timed-out read in the error journal). The third parser
-(`jInstancesDisabled`) is core-only and deliberately absent from `ApiTransport`
-above: it opts one specific benign denial on one core route out of the error
-journal, which is not an edition's decision to make. None of them imports a
+deadline that also records a timed-out read in the error journal). The
+route-specific parsers (`jInstancesDisabled`, `jCrewBoard`, `jSlotEnvironment`,
+`jSharedCrewPreview`, `jMembers`, `jApps` and `jConfigPending`)
+are core-only and deliberately absent from `ApiTransport` above: each opts one
+specific benign denial on one core route out of the error journal (a disabled
+instances control plane's 403, a conductor with no ledger's 404 `no_ledger`, and
+the slot-environment, Shared Crew preview, members roster and config-pending reads' 403 `owner_only`
+for a caller that is not the dashboard owner, and the app list's 403
+`relay_apps_teammate` for a teammate reaching the Crew through the relay), which is not an edition's decision to make. None of them imports a
 runtime value
 from `client.ts` (the telemetry module takes the Kiro usage types defined there
 as types only), so the transport and its recovery keep one definition.

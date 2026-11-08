@@ -16,7 +16,7 @@ Instance fields read: ``_parked_total``, ``_runtime``, ``_session_id``,
 ``_tool_call_harness_tool_name``, ``_tool_call_identity_unreadable``,
 ``_tool_call_input_redacted``, ``_tool_call_inputs``, ``_tool_call_is_shell``,
 ``_tool_call_kind``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
-``_tool_call_tool_name``, ``_tool_tracker``, ``last_prompt_stats``.
+``_tool_call_tool_name``, ``_tool_tracker``, ``last_prompt_stats``, ``_batch_window``.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp import batch_guard
 from kiro_crew.acp._dispatch import (
     MAX_ACTIVE_TOOL_CALLS,
     liveness_key,
@@ -34,6 +35,7 @@ from kiro_crew.acp._dispatch import (
     release_tool_call_provenance,
     scoped_tool_cache_key,
 )
+from kiro_crew.acp.codex_subagent_wire import SUBAGENT_LIFECYCLE_UPDATES
 from kiro_crew.acp.liveness import (
     INTERACTIVE_NONE,
     ToolCallState,
@@ -42,6 +44,7 @@ from kiro_crew.acp.liveness import (
     steady_now,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
@@ -50,6 +53,7 @@ from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     EVENT_TODO_UPDATE,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     STATUS_EXTENSION_KEY,
     TERMINAL_TOOL_STATUSES,
@@ -264,6 +268,16 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
     # session's own transcript events — a child's text chunks and tool
     # cards must not render as parent output.
     frame_sid = str(params.get("sessionId") or "")
+    if (
+        self._runtime.acp_backend == ACP_BACKEND_CODEX
+        and isinstance(update.get("sessionUpdate"), str)
+        and update.get("sessionUpdate") in SUBAGENT_LIFECYCLE_UPDATES
+    ):
+        # A native child announced or settled on this session or, nested, on
+        # one of its children. It feeds the card roster, never the transcript,
+        # whichever session the frame names. Positive codex gate (H5): codex is
+        # the only harness that declares clientCapabilities.subagents.
+        return self._handle_announced_subagent(update, frame_sid)
     if frame_sid and frame_sid != self._session_id:
         # Native-subtask residency seam (RFC §14.8): a child-routed frame is
         # the only per-child identity the harness exposes. Counted here so
@@ -318,13 +332,9 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 # Same closure as the tool arm: observed child output means
                 # the wave did work, so the zero-activity verdict is gone.
                 self._prompt_or_tool_seen = True
-                out.append(
-                    AcpEvent(
-                        kind=EVENT_SUBAGENT_ACTIVITY,
-                        sub_session_id=frame_sid,
-                        text=ev.text,
-                    )
-                )
+                # The native-children owner streams an announced child's
+                # text through that child's own redactor.
+                out.extend(self._child_text_activity(frame_sid, ev.text))
             # Thinking chunks, tool results, and refinements update the
             # caches above but emit nothing: the crew monitor only shows
             # coarse activity, and the caches are the security payload.
@@ -376,6 +386,18 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         kas_events = self._handle_kas_update(session_update, update)
         if kas_events is not None:
             return kas_events
+
+    # codex-acp without native subagent sessions (an ACP SDK 1.x adapter drops
+    # the ``subagents`` declaration) reports a child only as "Start/Complete
+    # subagent" tool rows. Read them as the child's card lifecycle instead of
+    # rendering them as tool calls. Positive codex gate (H5).
+    if self._runtime.acp_backend == ACP_BACKEND_CODEX and session_update in (
+        "tool_call",
+        "tool_call_update",
+    ):
+        legacy_events = self._handle_legacy_codex_subagent(update)
+        if legacy_events is not None:
+            return legacy_events
 
     # KAS sub-agent progress: tool_call/tool_call_update frames carrying
     # _meta.kiro.agentSubtaskId or _meta.kiro.pipeline are sub-agent
@@ -474,6 +496,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 continue
         filtered_events.append(ev)
         if ev.kind == EVENT_TEXT_CHUNK:
+            batch_guard.note_text(getattr(self, "_batch_window", None), ev.text)
             self.last_prompt_stats.text_chunks += 1
             self._stale_eligible = self._no_tool_in_flight()
             self._prompt_or_tool_seen = True
@@ -518,6 +541,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
             # flag. A new dispatch retires the oracle so its tracked child
             # and counter samples never bleed across tools — including from a
             # walk still running against the previous tool's command.
+            _server, _tool_name = ToolCallState.identity_of(ev)
             inflight_tool = ToolCallState(
                 title=ev.title,
                 command=ev.tool_input,
@@ -526,10 +550,11 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 dispatch_steady_ts=steady_now(),
                 dispatch_parked_secs=self._parked_total,
                 is_shell=ev.is_shell,
-                tool_name=ev.tool_name,
-                # Only a provenance-verified identity names the server, so
-                # an unverified frame cannot select the wait contract.
-                mcp_server_name=(ev.mcp_server_name if ev.mcp_identity_trusted else ""),
+                # Only a provenance-verified identity, or KAS's half-identity
+                # for a kirocrew-core call, names the server, so an unverified
+                # frame cannot select the wait contract.
+                mcp_server_name=_server,
+                tool_name=_tool_name,
                 interactive_risk=(interactive.risk if interactive else INTERACTIVE_NONE),
             )
             # The shared hand-off rule stores the call by id and makes it the
@@ -543,7 +568,26 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 liveness_key(ev.tool_call_id or ""), inflight_tool, interactive
             )
             self._retire_liveness_state()
+            batch_guard.note_dispatched(getattr(self, "_batch_window", None), ev)
+        elif ev.kind == EVENT_TOOL_CALL_UPDATE and ev.is_shell:
+            # A refinement may be the first frame to carry the shell command
+            # (an empty first ``rawInput``), so the batch window classifies the
+            # call again; its open or settled state is left as it was.
+            batch_guard.note_refined(getattr(self, "_batch_window", None), ev)
         elif ev.kind == EVENT_TOOL_RESULT:
+            # The raw frame, not the display-cut ``tool_output``: the guard
+            # learns what the model saw, up to its own scan bound.
+            _guard_output = (
+                batch_guard.update_text(update)
+                if update.get("toolCallId") == ev.tool_call_id
+                else ev.tool_output
+            )
+            if ev.tool_status not in TERMINAL_TOOL_STATUSES:
+                # A result streamed before an outputless terminal update is
+                # learned now; only the terminal update ends the call.
+                batch_guard.note_printed(
+                    getattr(self, "_batch_window", None), ev.tool_call_id or "", _guard_output
+                )
             if not ev.tool_final and ev.tool_call_id:
                 # Streamed partial output: the command has acted, so any
                 # later non-interactive retry of it is not a safe replay.
@@ -566,6 +610,9 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 # wait reset.
                 judged_changed = self._tool_tracker.result(
                     liveness_key(ev.tool_call_id or ""), terminal=True
+                )
+                batch_guard.note_settled(
+                    getattr(self, "_batch_window", None), ev.tool_call_id or "", _guard_output
                 )
                 self._tool_dispatched = not self._no_tool_in_flight()
                 self._stale_eligible = self._no_tool_in_flight()

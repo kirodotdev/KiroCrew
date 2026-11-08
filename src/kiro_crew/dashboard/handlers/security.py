@@ -1,7 +1,7 @@
 """Denied-commands REST API — Settings > Security opt-out surface.
 
 The 6 CRUD endpoints let a user disable/enable individual built-in denied
-commands, disable them all at once, and add/remove their own patterns. Opt-out
+commands, disable them all at once, and add/edit/remove their own patterns. Opt-out
 state lives in the KEYSTONE file ``<config_dir>/denied_commands.json`` (on
 ``security._SENSITIVE_HOME_DIRS`` — the agent cannot read OR write it), NOT in
 the agent-readable ``config.json``. The file root IS the opt-out object:
@@ -15,8 +15,8 @@ the agent-readable ``config.json``. The file root IS the opt-out object:
 
 ``note`` is optional operator prose surfaced in the refusal when the rule fires,
 so the caller reads remediation instead of a raw regex. It is metadata only: it
-never participates in matching. Create-only, mirroring ``pattern`` — neither has
-an edit endpoint; you delete the rule and re-add it.
+never participates in matching. The PATCH edits ``pattern`` and ``note`` through
+the add's own checks, so an edit cannot store what an add refuses.
 
 Mutations run under the shared config lock, write atomically (owner-only
 before the payload is published), and emit a SEL audit entry (``ok`` on
@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
+from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.config.loader import (
     denied_commands_path,
 )
@@ -74,14 +75,30 @@ def _read_denied_data() -> dict:
     For the READ/snapshot path only — a corrupt file degrades to empty state so
     GET still renders. Mutations MUST use :func:`_read_denied_strict`. The file
     root IS the opt-out object (``{disable_all, disabled_ids, user_added}``).
+
+    The read retries the Windows sharing violation a concurrent
+    ``_write_denied_state`` replace causes (:func:`read_bytes_with_retry`), so a
+    reader that lands in that window gets the file, not ``{}``. The rule
+    toggle/delete pre-checks read through here off the event loop; folding that
+    transient into ``{}`` would answer 404 "unknown user rule" for a rule that
+    exists.
     """
-    path = denied_commands_path()
-    if not path.exists():
-        return {}
+    from kiro_crew.config import loosening_provenance
+    from kiro_crew.user_json import loads_user_json
+
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        # Shows what the gate enforces: where the sandbox seals this keystone, a
+        # tampered, deleted or unreadable file reads as the gateway-endorsed copy.
+        content = loosening_provenance.reconciled_bytes(
+            loosening_provenance.LEAF_DENIED_COMMANDS,
+            denied_commands_path(),
+            read_bytes_with_retry,
+        )
+        if content is None:
+            return {}
+        loaded = loads_user_json(content.decode("utf-8"))
         return loaded if isinstance(loaded, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("denied_commands.json unreadable/corrupt; treating as empty", exc_info=True)
         return {}
 
@@ -89,14 +106,27 @@ def _read_denied_data() -> dict:
 def _read_denied_strict() -> dict:
     """Read denied_commands.json for a MUTATION: raise on corrupt, ``{}`` if absent."""
     path = denied_commands_path()
-    if not path.exists():
-        return {}
     try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+        # Same sharing-violation retry as the tolerant reader: a transient
+        # Windows read contention is not a corrupt file. Mutate what the gate
+        # enforces, not a tampered file: where the namespace sandbox seals this
+        # keystone, a direct in-sandbox rewrite or delete reads as the
+        # gateway-endorsed copy, so this save cannot re-endorse it. See
+        # loosening_provenance.reconciled_bytes.
+        from kiro_crew.config import loosening_provenance
+
+        content = loosening_provenance.reconciled_bytes(
+            loosening_provenance.LEAF_DENIED_COMMANDS, path, read_bytes_with_retry
+        )
+        if content is None:
+            return {}
+        raw = content.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         raise ConfigCorruptError(str(exc)) from exc
+    from kiro_crew.user_json import loads_user_json
+
     try:
-        loaded = json.loads(raw)
+        loaded = loads_user_json(raw)
     except json.JSONDecodeError as exc:
         raise ConfigCorruptError(f"denied_commands.json is not valid JSON: {exc}") from exc
     if not isinstance(loaded, dict):
@@ -302,13 +332,15 @@ async def _snapshot_response() -> web.Response:
     return web.json_response(await build_denied_commands_snapshot_async())
 
 
-async def _write_denied_state(mutate) -> dict:
+async def _write_denied_state(mutate, *, resolving_pending: bool = False) -> dict:
     """Read-modify-write the keystone ``denied_commands.json`` atomically.
 
     ``mutate(denied: dict) -> None`` edits the opt-out object (the file root) in
     place. Runs under the shared config lock. Returns the updated object so the
-    caller can hot-reload the live HookManager.     The file is locked down to the
-    owner only on every write: 0600 on POSIX and an owner-only DACL on Windows.
+    caller can hot-reload the live HookManager. *resolving_pending* is True only for the
+    owner's Apply or Discard of a pending change; any other save of a pending file
+    raises ``PendingEditBlocksSave`` before anything is written. The file is locked
+    down to the owner only on every write: 0600 on POSIX and an owner-only DACL on Windows.
     The lockdown is applied to the temp file before any content reaches it, so
     the keystone never exists in a world-readable file.
 
@@ -316,21 +348,30 @@ async def _write_denied_state(mutate) -> dict:
     replace) runs in a thread executor so it never stalls the gateway event
     loop; the async config lock still serializes concurrent mutations.
     """
-    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.atomic_write import atomic_write, text_bytes
 
     path: Path = denied_commands_path()
 
     def _read_modify_write() -> dict:
+        from kiro_crew.config import loosening_provenance
+
         denied = _read_denied_strict()
         mutate(denied)
-        # atomic_write(..., restrict_to_owner=True) refuses a linked parent
-        # before it mkdir's, then locks the temp. A mkdir here would walk
-        # through a planted link and create dirs under its target first.
-        atomic_write(
-            path,
-            json.dumps(denied, indent=2) + "\n",
-            restrict_to_owner=True,
-        )
+        payload = text_bytes(json.dumps(denied, indent=2) + "\n")
+        # Endorse these exact bytes BEFORE the rename publishes them, so
+        # load_denied_commands_state keeps this opt-out and drops one written directly
+        # inside a sandbox (the per-file read-only bind stops covering this file after
+        # the rename), and nothing landed on the name around the rename is endorsed.
+        # The same bytes are published, so the copy equals the file on every platform.
+        with loosening_provenance.endorsing(
+            loosening_provenance.LEAF_DENIED_COMMANDS,
+            payload,
+            resolving_pending=resolving_pending,
+        ):
+            # atomic_write(..., restrict_to_owner=True) refuses a linked parent
+            # before it mkdir's, then locks the temp. A mkdir here would walk
+            # through a planted link and create dirs under its target first.
+            atomic_write(path, payload, restrict_to_owner=True)
         return denied
 
     async with _get_config_lock():
@@ -378,8 +419,13 @@ async def _apply_mutation(request: web.Request, op: str, mutate) -> web.Response
     populated-but-unparseable opt-out file. On success the live HookManager is
     hot-reloaded so the change enforces without a restart.
     """
+    from kiro_crew.config.loader import PendingEditBlocksSave
+
     try:
         denied_state = await _write_denied_state(mutate)
+    except PendingEditBlocksSave as exc:
+        _audit(request, operation=op, outcome="denied", resources="file_pending_review")
+        return web.json_response({"error": str(exc), "code": exc.code}, status=409)
     except ConfigCorruptError as exc:
         _audit(request, operation=op, outcome="denied", resources="config_corrupt")
         logger.error("refusing denied-commands mutation: %s", exc)
@@ -525,41 +571,35 @@ async def api_denied_commands_disable_all(request: web.Request) -> web.Response:
 # ── user add ──
 
 
-async def api_denied_command_user_add(request: web.Request) -> web.Response:
-    """POST /api/security/denied-commands/user — {pattern: str, note?: str}."""
-    op = "security.denied_commands.user_add"
+def _reject_user_pattern(
+    request: web.Request, op: str, pattern: object, subject: str = ""
+) -> web.Response | None:
+    """The 400 for a custom deny pattern the gate must never store, else ``None``.
 
-    # Body-scope import, like the sibling gates in this package
-    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
-    # reaches back into sibling handler modules, so importing the helper at
-    # module scope from here would close a cycle.
-    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+    Shared by the add and the edit, so an edit cannot store a pattern an add
+    refuses. ``subject`` prefixes the audit resource (the edit's ``<id>=``).
+    """
+    problem = _user_pattern_problem(pattern)
+    if problem is None:
+        return None
+    resource, error = problem
+    _audit(request, operation=op, outcome="denied", resources=f"{subject}{resource}")
+    return web.json_response({"error": error}, status=400)
 
-    denied = await require_owner_dashboard_request(request, op)
-    if denied is not None:
-        return denied
-    try:
-        body = await request.json()
-    except Exception:
-        _audit(request, operation=op, outcome="denied", resources="invalid_json")
-        return web.json_response({"error": "invalid JSON"}, status=400)
 
-    if not isinstance(body, dict):
-        body = {}
-    pattern = body.get("pattern")
+def _user_pattern_problem(pattern: object) -> tuple[str, str] | None:
+    """``(audit resource, reason)`` for a custom deny pattern the gate must never
+    store, else ``None``. The one rule behind the add, the edit and the Settings
+    review of a hand-edited ``denied_commands.json`` (:func:`denied_edit_problem`).
+    """
     if not isinstance(pattern, str) or not pattern.strip():
-        _audit(request, operation=op, outcome="denied", resources="empty")
-        return web.json_response({"error": "pattern must be a non-empty string"}, status=400)
+        return "empty", "pattern must be a non-empty string"
     if len(pattern) > _MAX_PATTERN_LEN:
-        _audit(request, operation=op, outcome="denied", resources="oversize")
-        return web.json_response(
-            {"error": f"pattern must be at most {_MAX_PATTERN_LEN} characters"}, status=400
-        )
+        return "oversize", f"pattern must be at most {_MAX_PATTERN_LEN} characters"
     try:
         re.compile(pattern)
     except re.error as exc:
-        _audit(request, operation=op, outcome="denied", resources="bad_regex")
-        return web.json_response({"error": f"invalid regex: {exc}"}, status=400)
+        return "bad_regex", f"invalid regex: {exc}"
 
     # Reject catastrophic-backtracking (ReDoS) patterns before they can enter the
     # effective set: the gate runs user regexes synchronously on the event loop,
@@ -601,31 +641,43 @@ async def api_denied_command_user_add(request: web.Request) -> web.Response:
                     " the trigger. It is exempt only inside a complete built-in"
                     " pattern, so remove or rewrite that fragment"
                 )
-        _audit(request, operation=op, outcome="denied", resources="redos_unsafe")
-        return web.json_response({"error": error}, status=400)
+        return "redos_unsafe", error
+    return None
 
-    # Optional operator note. Absent is the norm (and the pre-existing shape), so
-    # a missing key is NOT an error — but a present-and-wrong-typed one is, to
-    # match how ``pattern`` is handled rather than silently dropping input the
-    # caller believes it supplied.
-    note_raw = body.get("note", "")
+
+def _clean_user_note(
+    request: web.Request, op: str, note_raw: object, subject: str = ""
+) -> tuple[str, web.Response | None]:
+    """A custom deny's note collapsed to one line, or ``("", <the 400>)``.
+
+    Shared by the add and the edit, like :func:`_reject_user_pattern`.
+    """
+    note, problem = _user_note_check(note_raw)
+    if problem is None:
+        return note, None
+    resource, error, code = problem
+    _audit(request, operation=op, outcome="denied", resources=f"{subject}{resource}")
+    return "", web.json_response({"error": error, "code": code}, status=400)
+
+
+def _user_note_check(note_raw: object) -> tuple[str, tuple[str, str, str] | None]:
+    """A custom deny's note collapsed to one line, or ``("", (resource, reason, code))``.
+
+    The one rule behind :func:`_clean_user_note` and :func:`denied_edit_problem`.
+    """
+    # A wrong-typed note is a 400, matching how ``pattern`` is handled rather
+    # than silently dropping input the caller believes it supplied.
     if not isinstance(note_raw, str):
-        _audit(request, operation=op, outcome="denied", resources="note_bad_type")
-        return web.json_response(
-            {"error": "note must be a string", "code": "note_not_a_string"}, status=400
-        )
+        return "", ("note_bad_type", "note must be a string", "note_not_a_string")
     # Newlines would forge extra lines in the refusal, where the first line is a
     # parsed contract (RecoveryCard's per-line POLICY_RE). Collapse rather than
     # reject: the intent is unambiguous and a 400 over whitespace is hostile.
     note = " ".join(note_raw.split())
     if len(note) > _MAX_NOTE_LEN:
-        _audit(request, operation=op, outcome="denied", resources="note_oversize")
-        return web.json_response(
-            {
-                "error": f"note must be at most {_MAX_NOTE_LEN} characters",
-                "code": "note_too_long",
-            },
-            status=400,
+        return "", (
+            "note_oversize",
+            f"note must be at most {_MAX_NOTE_LEN} characters",
+            "note_too_long",
         )
     # The note is emitted on its own line of the refusal, and RecoveryCard parses
     # refusals with a GLOBAL per-line regex — so a note carrying the refusal
@@ -636,14 +688,108 @@ async def api_denied_command_user_add(request: web.Request) -> web.Response:
     # so "…policy:forged" parses as a refusal line without matching the emitted
     # prefix.
     if DENY_REASON_MATCH_PREFIX in note:
-        _audit(request, operation=op, outcome="denied", resources="note_forges_reason")
-        return web.json_response(
-            {
-                "error": f"note must not contain {DENY_REASON_MATCH_PREFIX!r}",
-                "code": "note_forges_reason",
-            },
-            status=400,
+        return "", (
+            "note_forges_reason",
+            f"note must not contain {DENY_REASON_MATCH_PREFIX!r}",
+            "note_forges_reason",
         )
+    return note, None
+
+
+def denied_edit_problem(endorsed: dict, edited: dict) -> str | None:
+    """Why a hand edit of ``denied_commands.json`` cannot be applied, else ``None``.
+
+    Applies the save routes' own rules to what the edit CHANGES against *endorsed*
+    (the version in force), the way each route judges only the field it sets:
+    ``disable_all`` must be a boolean (the disable-all PATCH); a newly disabled
+    built-in may not be floor-enforced or governance-pinned (the builtin toggle's
+    409s); every new or changed custom rule needs a non-empty string ``id`` unique in
+    the file, a pattern the add accepts, a string note the add accepts and a boolean
+    ``enabled``. Notes are collapsed to one line in *edited* as the add stores them.
+    Synchronous: the pin check walks the governance profile store.
+    """
+    from kiro_crew.security import (
+        floor_enforced_builtin_command_ids,
+        pinned_builtin_command_ids_for_snapshot,
+    )
+    from kiro_crew.user_json import strict_json_equal
+
+    # Type-strict: ``1`` is not the ``true`` in force, so it is a change to judge.
+    if "disable_all" in edited and not strict_json_equal(
+        edited.get("disable_all"), endorsed.get("disable_all")
+    ):
+        if not isinstance(edited["disable_all"], bool):
+            return "disable_all must be a boolean"
+    disabled = edited.get("disabled_ids", [])
+    if not isinstance(disabled, list) or not all(isinstance(i, str) for i in disabled):
+        return "disabled_ids must be a list of rule ids"
+    before = endorsed.get("disabled_ids")
+    newly = set(disabled) - {
+        i for i in (before if isinstance(before, list) else []) if isinstance(i, str)
+    }
+    if newly & floor_enforced_builtin_command_ids():
+        return "a rule enforced by an always-on security floor cannot be disabled"
+    if newly & pinned_builtin_command_ids_for_snapshot():
+        return "a rule enforced by governance policy cannot be disabled"
+    rules = edited.get("user_added", [])
+    if not isinstance(rules, list):
+        return "user_added must be a list of rules"
+    prior = endorsed.get("user_added")
+    unchanged = [r for r in prior if isinstance(r, dict)] if isinstance(prior, list) else []
+    ids: set[str] = set()
+    for rule in rules:
+        if not isinstance(rule, dict):
+            return "each custom rule must be an object"
+        rid = rule.get("id")
+        if not isinstance(rid, str) or not rid:
+            return "each custom rule needs a non-empty string id"
+        if rid in ids:
+            return f"custom rule id {rid!r} is used twice"
+        ids.add(rid)
+        if any(strict_json_equal(rule, kept) for kept in unchanged):
+            continue
+        problem = _user_pattern_problem(rule.get("pattern"))
+        if problem is not None:
+            return f"custom rule {rid!r}: {problem[1]}"
+        note, note_problem = _user_note_check(rule.get("note", ""))
+        if note_problem is not None:
+            return f"custom rule {rid!r}: {note_problem[1]}"
+        if not isinstance(rule.get("enabled", True), bool):
+            return f"custom rule {rid!r}: enabled must be a boolean"
+        if "note" in rule:
+            rule["note"] = note
+    return None
+
+
+async def api_denied_command_user_add(request: web.Request) -> web.Response:
+    """POST /api/security/denied-commands/user — {pattern: str, note?: str}."""
+    op = "security.denied_commands.user_add"
+
+    # Body-scope import, like the sibling gates in this package
+    # (``connections.py``, ``mcp_apps.py``, ``files.py``): ``source_providers``
+    # reaches back into sibling handler modules, so importing the helper at
+    # module scope from here would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+    denied = await require_owner_dashboard_request(request, op)
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except Exception:
+        _audit(request, operation=op, outcome="denied", resources="invalid_json")
+        return web.json_response({"error": "invalid JSON"}, status=400)
+
+    if not isinstance(body, dict):
+        body = {}
+    pattern = body.get("pattern")
+    rejected = _reject_user_pattern(request, op, pattern)
+    if rejected is not None:
+        return rejected
+    # An absent note is the norm (and the pre-existing shape), so it reads as empty.
+    note, rejected = _clean_user_note(request, op, body.get("note", ""))
+    if rejected is not None:
+        return rejected
 
     rule_id = "user-" + uuid.uuid4().hex[:12]
 
@@ -664,7 +810,11 @@ async def api_denied_command_user_add(request: web.Request) -> web.Response:
 
 
 async def api_denied_command_user_toggle(request: web.Request) -> web.Response:
-    """PATCH /api/security/denied-commands/user/{id} — {enabled: bool}."""
+    """PATCH /api/security/denied-commands/user/{id} — {enabled?, pattern?, note?}.
+
+    Sets only the fields the body carries; a body with none of them is refused
+    as a missing ``enabled``. ``pattern`` and ``note`` pass the add's own checks.
+    """
     op = "security.denied_commands.user_toggle"
 
     # Body-scope import, like the sibling gates in this package
@@ -686,10 +836,23 @@ async def api_denied_command_user_toggle(request: web.Request) -> web.Response:
     # A valid-but-non-object body (e.g. `[]`) must yield a clean 400, not a 500.
     if not isinstance(body, dict):
         body = {}
-    enabled = body.get("enabled")
-    if not isinstance(enabled, bool):
-        _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=bad_type")
-        return web.json_response({"error": "enabled must be a boolean"}, status=400)
+    changes: dict[str, object] = {}
+    if "pattern" in body:
+        rejected = _reject_user_pattern(request, op, body["pattern"], f"{rule_id}=")
+        if rejected is not None:
+            return rejected
+        changes["pattern"] = body["pattern"]
+    if "note" in body:
+        note, rejected = _clean_user_note(request, op, body["note"], f"{rule_id}=")
+        if rejected is not None:
+            return rejected
+        changes["note"] = note
+    if "enabled" in body or not changes:
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=bad_type")
+            return web.json_response({"error": "enabled must be a boolean"}, status=400)
+        changes["enabled"] = enabled
 
     if rule_id not in await _user_rule_ids_async():
         _audit(request, operation=op, outcome="denied", resources=f"{rule_id}=unknown")
@@ -701,12 +864,13 @@ async def api_denied_command_user_toggle(request: web.Request) -> web.Response:
             return
         for entry in entries:
             if isinstance(entry, dict) and entry.get("id") == rule_id:
-                entry["enabled"] = enabled
+                entry.update(changes)
 
     err = await _apply_mutation(request, op, _mutate)
     if err is not None:
         return err
-    _audit(request, operation=op, outcome="ok", resources=f"{rule_id}={enabled}")
+    resources = f"{rule_id}={json.dumps(changes, sort_keys=True)}"
+    _audit(request, operation=op, outcome="ok", resources=resources)
     return await _snapshot_response()
 
 
@@ -835,6 +999,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         config_local_path,
         config_path,
         read_config_text,
+        read_endorsed_config_text,
         update_config_locked,
     )
     from kiro_crew.executors import (  # noqa: F401
@@ -857,6 +1022,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         ScopedRuleset,
         _AndRuleset,
         _compose_controls,
+        policy_level_control,
     )
     from kiro_crew.platform.governance_profiles import (  # noqa: F401
         HOST_SESSION_KEY,

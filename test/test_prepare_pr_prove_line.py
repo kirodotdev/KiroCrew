@@ -236,7 +236,7 @@ def _proven_record(tmp_path: Path) -> tuple[str, str, str]:
 
 
 def test_a_proven_record_cannot_be_answered_with_a_not_provable_line(tmp_path: Path) -> None:
-    """The reviewer's case: prove.py proved it, the author writes an excuse instead."""
+    """prove.py proved it, but the author writes a not-provable excuse instead."""
     path, tree, _ = _proven_record(tmp_path)
     for reason in ("test-only change", "docs or config only", "other: " + "x" * 25):
         line = f"Proof: not provable -- {reason}"
@@ -378,7 +378,7 @@ def test_prove_git_env_drops_location_and_pins_hooks_off(_floor_monkeypatch) -> 
     assert "GIT_CONFIG_PARAMETERS" not in env  # a parent's `git -c key=value` is not inherited
     # the pins are argv options, the one source nothing inherited can outrank
     assert prove._git_argv(["status"]) == [
-        "git",
+        prove._tool_argv.which("git"),
         "-c",
         "core.hooksPath=" + os.devnull,
         "-c",
@@ -399,7 +399,7 @@ def test_prove_git_env_keeps_the_callers_other_config(_floor_monkeypatch) -> Non
 def test_every_git_subprocess_in_prove_goes_through_the_pinned_argv() -> None:
     """Class sweep: no `["git", ...]` literal or bare `subprocess` git call bypasses the pins."""
     source = PROVE.read_text(encoding="utf-8")
-    assert '["git"' not in source.replace('return ["git", *GIT_PINS, *args]', "")
+    assert '["git"' not in source.replace('resolve(["git", *GIT_PINS, *args])', "")
     assert source.count("_git_argv(") >= 3  # _git plus the two `git apply` calls
     assert "GIT_CONFIG_PARAMETERS" in source
 
@@ -461,7 +461,7 @@ def test_a_post_checkout_hook_does_not_run_in_the_proof_worktree(tmp_path: Path)
 
 
 def test_a_global_hooks_path_does_not_run_either(tmp_path: Path) -> None:
-    """The reviewer's case: the developer's own config names a hooks directory."""
+    """The developer's own git config names a global hooks directory."""
     repo = _repo(tmp_path)
     hooks = tmp_path / "global-hooks"
     hooks.mkdir()

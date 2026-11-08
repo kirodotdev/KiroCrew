@@ -23,6 +23,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import DefaultDestinationCrewPicker from '../../components/DefaultDestinationCrewPicker'
 import {
   Server,
   Rocket,
@@ -57,6 +58,7 @@ import { Card, Btn } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import ErrorNotice from '../../components/ErrorNotice'
 import ErrorBoundary from '../../components/ErrorBoundary'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import {
   announceChainedCrew,
   clearChainRefusal,
@@ -69,11 +71,12 @@ import {
   getRemoteProvisionerRenderer,
 } from '../../components/remoteProvisionerRenderers'
 import type { ErrorReport } from '../../utils/errorReport'
-import { parseErrorCode } from '../../utils/errorReport'
+import { parseErrorCode, parseErrorField, reportForError } from '../../utils/errorReport'
 import { reportInstanceFailure } from '../../utils/instanceFailureReport'
 import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { readPersistedString, usePersistedString } from '../../hooks/usePersistedString'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
+import { readCompanySignIn, rememberCompanySignIn, sameCompanyPortal } from '../../utils/companySignIn'
 import { AUTO_CONNECT_KEY } from '../../hooks/useAutoConnectInstances'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -88,14 +91,17 @@ import {
 } from './InstanceFormFields'
 import {
   isInProgress, CLOUD_PROFILE_KEY, CLOUD_REGION_KEY, CLOUD_SIZE_KEY, CLOUD_PROVISIONER_KEY,
-  DEFAULT_REGION, isTerminal, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
+  DEFAULT_REGION, launchGuardKey, isTerminal, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
   PRICING_CALCULATOR_URL, type SigninNotice,
 } from './remoteCrewPanelModel'
 import {
   SizeCard, ProvisionerCard, SettingUpRow, PrereqRow, LaunchProgressCard,
 } from './RemoteCrewPanelLaunch'
-import { CREW_SWITCH_HINT_ID, CrewRow } from './RemoteCrewPanelCrewRow'
+import { CREW_SWITCH_HINT_ID, CREW_NEEDS_RESTART_BANNER_ID, CrewRow } from './RemoteCrewPanelCrewRow'
 export { TurnUrlField } from './RemoteCrewPanelCrewRow'
+
+/** The shape of an AWS Region name, e.g. us-east-1 or us-gov-west-1. The gateway validates it again. */
+const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/
 
 export function RemoteCrewPanel() {
   const queryClient = useQueryClient()
@@ -153,8 +159,12 @@ export function RemoteCrewPanel() {
   const [launchDraft] = useState(heldLaunchDraft)
   const identityDraft = launchDraft?.identity ?? null
   const [identityMode, setIdentityMode] = useState<'builder_id' | 'identity_center'>(identityDraft?.mode ?? 'builder_id')
-  const [identityStartUrl, setIdentityStartUrl] = useState(identityDraft?.start_url ?? '')
-  const [identityRegion, setIdentityRegion] = useState(identityDraft?.region ?? '')
+  // With no held draft, the fields start from the last company sign-in submitted
+  // on this browser (here or in the Kiro sign-in form), so a reload or gateway
+  // restart does not empty them. This fills the fields only; it does not pick the
+  // Identity Center option or count as the reader's choice.
+  const [identityStartUrl, setIdentityStartUrl] = useState(() => identityDraft?.start_url ?? readCompanySignIn().startUrl)
+  const [identityRegion, setIdentityRegion] = useState(() => identityDraft?.region ?? readCompanySignIn().region)
   const [subnetId, setSubnetId] = useState(launchDraft?.subnet_id ?? '')
   const identityTouched = useRef(identityDraft !== null)
   // Render-visible twin of the ref: an explicit choice must re-render the
@@ -173,6 +183,12 @@ export function RemoteCrewPanel() {
   // The draft the last built-in launch was sent with, so its success drops that
   // draft and not one typed while the request was in flight.
   const sentLaunchDraft = useRef<CrewLaunchDraft | null>(null)
+  // The exact body of the last built-in launch that the gateway accepted. While
+  // the form still holds that same body, Launch stays off: a second click would
+  // start a second, identical crew. Changing any field, or choosing "Launch
+  // another crew", turns it back on.
+  const sentLaunchKey = useRef<string | null>(null)
+  const [launchedKey, setLaunchedKey] = useState<string | null>(null)
   const identityQuery = useQuery({
     queryKey: ['cloud-identity'],
     queryFn: api.cloudIdentity,
@@ -186,6 +202,10 @@ export function RemoteCrewPanel() {
     if (suggested?.start_url) {
       setIdentityMode('identity_center')
       setIdentityStartUrl(suggested.start_url)
+      // A remembered region belongs to the remembered portal. When this
+      // computer names a different portal, that region would be a guess, so
+      // the field goes back to empty and Launch waits for the right one.
+      if (!sameCompanyPortal(suggested.start_url, readCompanySignIn().startUrl)) setIdentityRegion('')
     }
   }, [identityQuery.data])
   // Mirrors normalize_start_url on the backend, which is the authority: the
@@ -200,7 +220,11 @@ export function RemoteCrewPanel() {
     const bare = v.replace(/^https:\/\//i, '')
     return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(\/[^?#]*)?$/i.test(bare)
   })()
-  const identityRegionOk = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/.test(identityRegion.trim())
+  const identityRegionOk = AWS_REGION_RE.test(identityRegion.trim())
+  // The EC2 region is checked the same way before Launch: an empty field would
+  // otherwise go out as '' and the gateway would quietly pick its own default,
+  // while the field's example text made it look like us-east-1 had been chosen.
+  const regionOk = AWS_REGION_RE.test(region.trim())
   // Until the launching computer's identity has been READ (or the user has
   // made a choice themselves), the Builder ID default is a placeholder, not a
   // decision: a returning operator with satisfied prerequisites could click
@@ -233,6 +257,8 @@ export function RemoteCrewPanel() {
     : {}
   /** A failed copy, pinned to the checklist row whose button was pressed. */
   const [copyErr, setCopyErr] = useState<{ target: 'command' | 'policy'; message: string } | null>(null)
+  // The gateway's note that a second launcher policy is needed; status, not an error.
+  const [policyNotice, setPolicyNotice] = useState('')
   const [activeLaunchId, setActiveLaunchId] = useState<string | null>(null)
   const [confirmDeleteTag, setConfirmDeleteTag] = useState<string | null>(null)
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null)
@@ -762,9 +788,10 @@ export function RemoteCrewPanel() {
       // The built-in form's draft has been used. Only the built-in Launch sets
       // the ref, so a registered provisioner's launch leaves the draft alone.
       if (sentLaunchDraft.current) dispatch(dropLaunchedCrewDraft(sentLaunchDraft.current))
+      if (sentLaunchKey.current) setLaunchedKey(sentLaunchKey.current)
     },
     onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
-    onSettled: () => { sentLaunchDraft.current = null },
+    onSettled: () => { sentLaunchDraft.current = null; sentLaunchKey.current = null },
   })
   const enableMutation = useMutation({
     mutationFn: () => api.patchConfig('instances.enabled', true),
@@ -821,20 +848,41 @@ export function RemoteCrewPanel() {
   }, [])
   const copyPolicy = useCallback(async () => {
     setCopyErr(null)
+    setPolicyNotice('')
     try {
-      const { policy } = await api.cloudIamPolicy()
+      const {
+        policy,
+        host_policies_notice: hostPoliciesNotice,
+        host_policies_error: hostPoliciesError,
+      } = await api.cloudIamPolicy()
       if (!(await copyToClipboard(policy))) {
         setCopyErr({ target: 'policy', message: i18nT('pages.settings.remoteCrewPanel.copy_policy_failed') })
         return
       }
       setCopied('policy')
       setTimeout(() => setCopied(null), 1500)
+      // An edition that attaches host policies needs a second launcher policy the
+      // main one has no room for. The gateway's line saying how to get it is
+      // status text beside the button; a second policy it could not build is an
+      // error.
+      if (hostPoliciesError) setCopyErr({ target: 'policy', message: hostPoliciesError })
+      setPolicyNotice(hostPoliciesNotice ?? '')
     } catch (e) {
       setCopyErr({ target: 'policy', message: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })
     }
   }, [errMsg])
 
   const preflight: CloudPreflight | undefined = preflightQuery.data
+  // The gateway could not run the `aws` CLI at all: this host has no sandbox
+  // for it. Keyed on the code, so the sentence is the reader's language, and the
+  // no-result line below must not blame credentials nobody read.
+  const preflightNoSandbox = preflightQuery.error instanceof ApiError
+    && parseErrorCode(preflightQuery.error.body) === 'sandbox_unavailable'
+  // Only `no_backend` means this host has no sandbox: `transient` clears on a
+  // retry, and `foreign_sandbox` is an outer sandbox around a host that has one.
+  const preflightSandboxKind = preflightNoSandbox && preflightQuery.error instanceof ApiError
+    ? parseErrorField(preflightQuery.error.body, 'kind')
+    : undefined
   // Found but refused is not "not installed": the install command would put the
   // same refused file back, so the plugin row says why it was refused instead.
   const pluginRefusal = preflight ? pluginRefusalCopy(preflight) : null
@@ -854,6 +902,32 @@ export function RemoteCrewPanel() {
   // status query has resolved.
   const activeJob = launchStatusQuery.data ?? inProgress[0] ?? null
 
+  // What the built-in Launch sends. It names the lane that is on screen: the
+  // built-in form draws EVERY `aws_ec2`-kind row, and an edition may register a
+  // second one behind a different engine; omitting the id would let the server
+  // default to the built-in and provision on the wrong lane. Only an UNKNOWN
+  // list (loading or failed) sends the pre-seam body.
+  const builtinLaunchBody = {
+    ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}),
+    profile,
+    region: region.trim(),
+    size_key: sizeKey,
+    ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}),
+    ...loginTargetBody,
+  }
+  const builtinLaunchKey = launchGuardKey(builtinLaunchBody)
+  const alreadyLaunched = launchedKey === builtinLaunchKey
+  // The gateway refuses a launch while any crew setup is still running
+  // (`launch_already_running`), so neither launch button is offered until it ends.
+  const setupRunning = !!activeJob && !isTerminal(activeJob)
+  const launchReady = blockingOk && regionOk && identityOk && !launchMutation.isPending && !setupRunning
+  const launchBuiltin = () => {
+    sentLaunchDraft.current = currentLaunchDraft
+    sentLaunchKey.current = builtinLaunchKey
+    if (identityMode === 'identity_center') rememberCompanySignIn(identityStartUrl, identityRegion)
+    launchMutation.mutate(builtinLaunchBody)
+  }
+
   // A launch that reaches `done` has just added a crew, but nothing else invalidates
   // the instances cache and switching tabs does not remount this component — so "Your
   // crews" would keep showing the pre-launch list until an unrelated refetch happened.
@@ -865,6 +939,7 @@ export function RemoteCrewPanel() {
     reconciledLaunch.current = activeJob.id
     reloadInstances()
   }, [activeJob, reloadInstances])
+
 
   // Once a teardown finishes the gateway drops the instance, so its row (and its
   // "Deleting…" state) vanishes on the next poll. Prune the tag then, which also
@@ -917,10 +992,11 @@ export function RemoteCrewPanel() {
   }
 
   const Tabs = (
-    <div className="flex gap-1 border-b border-border mb-5">
+    <RadioChipGroup className="flex gap-1 border-b border-border mb-5" ariaLabel={i18nT('pages.settings.remoteCrewPanel.view_label')}>
       <button
         type="button"
         onClick={() => setTab('crews')}
+        {...radioChip(tab === 'crews')}
         aria-label={i18nT('pages.settings.remoteCrewPanel.your_crews')}
         className={`px-3.5 py-2 text-[13px] font-semibold -mb-px border-b-2 transition-colors flex items-center gap-2 ${tab === 'crews' ? 'text-text-strong border-accent' : 'text-muted border-transparent hover:text-text'}`}
       >
@@ -930,13 +1006,14 @@ export function RemoteCrewPanel() {
       <button
         type="button"
         onClick={() => setTab('setup')}
+        {...radioChip(tab === 'setup')}
         aria-label={i18nT('pages.settings.remoteCrewPanel.set_up_a_new_one')}
         className={`px-3.5 py-2 text-[13px] font-semibold -mb-px border-b-2 transition-colors flex items-center gap-2 ${tab === 'setup' ? 'text-text-strong border-accent' : 'text-muted border-transparent hover:text-text'}`}
       >
         <Rocket size={14} /> {i18nT('pages.settings.remoteCrewPanel.set_up_a_new_one')}
         {inProgress.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-accent" aria-hidden />}
       </button>
-    </div>
+    </RadioChipGroup>
   )
 
   const Notices = (
@@ -1032,7 +1109,7 @@ export function RemoteCrewPanel() {
               {i18nT('pages.settings.remoteCrewPanel.crew_switch_hint')}
             </p>
             {needsRestart && (
-              <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
+              <div id={CREW_NEEDS_RESTART_BANNER_ID} role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn-text border border-warn/30">
                 <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
                 <RestartToActivateText />
               </div>
@@ -1066,6 +1143,7 @@ export function RemoteCrewPanel() {
                   <SettingUpRow key={job.id} job={job} cancelling={cancelMutation.isPending && cancelMutation.variables === job.id} onCancel={id => cancelMutation.mutate(id)} />
                 ))}
                 <CrewVersionsReadError anyConnected={instances.some(i => !i.disabled && i.status.state === 'connected')} />
+                <DefaultDestinationCrewPicker instances={instances} value={instancesQuery.data?.default_destination ?? ''} />
                 {instances.map(inst => (
                   <CrewRow
                     key={inst.id}
@@ -1082,6 +1160,7 @@ export function RemoteCrewPanel() {
                     fetchingSignin={signinMutation.isPending && signinMutation.variables === signinJobIdFor(inst)}
                     signinNotice={signinNotice && signinNotice.jobId === signinJobIdFor(inst) ? signinNotice : null}
                     busy={busy}
+                    connectBlocked={needsRestart}
                     deleting={inst.ssm_target ? deletingTags.has(cloudTagByInstanceId.get(inst.ssm_target) ?? '') : false}
                     confirmDelete={confirmDeleteTag !== null && confirmDeleteTag === (inst.ssm_target ? cloudTagByInstanceId.get(inst.ssm_target) : null)}
                     confirmRemove={confirmRemoveId === inst.id}
@@ -1257,19 +1336,31 @@ export function RemoteCrewPanel() {
                 <input
                   id="cloud-region"
                   aria-label={i18nT('pages.settings.remoteCrewPanel.region')}
-                  className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring"
+                  className="bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-hidden focus-ring aria-invalid:border-danger"
                   value={region}
                   onChange={e => setRegion(e.target.value)}
                   onBlur={runCheck}
-                  placeholder="us-east-1"
+                  placeholder={i18nT('pages.settings.remoteCrewPanel.region_placeholder')}
+                  required
+                  aria-invalid={!regionOk}
+                  aria-describedby={regionOk ? undefined : 'cloud-region-error'}
                 />
+                {!regionOk && (
+                  <span id="cloud-region-error" className="text-[12px] text-danger">
+                    {i18nT('pages.settings.remoteCrewPanel.region_required')}
+                  </span>
+                )}
               </label>
             </div>
             <p className="mb-3 text-[12px] text-muted">
-              {i18nT('pages.settings.remoteCrewPanel.checking_against', {
-                profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
-                region: checkedRegion,
-              })}
+              {checkedRegion
+                ? i18nT('pages.settings.remoteCrewPanel.checking_against', {
+                  profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
+                  region: checkedRegion,
+                })
+                : i18nT('pages.settings.remoteCrewPanel.checking_against_no_region', {
+                  profile: checkedProfile || i18nT('pages.settings.remoteCrewPanel.no_profile_set'),
+                })}
             </p>
             {/* Rendered independently of `preflight`: a failed RE-check keeps the
                 previous result in cache, and the rows below would otherwise paint
@@ -1281,7 +1372,14 @@ export function RemoteCrewPanel() {
             {preflightQuery.isError && (
               <ErrorNotice
                 className="mb-2"
-                message={errMsg(preflightQuery.error, i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
+                message={preflightNoSandbox
+                  ? preflightSandboxKind === 'transient'
+                    ? i18nT('pages.settings.remoteCrewPanel.aws_check_sandbox_busy')
+                    : preflightSandboxKind === 'foreign_sandbox'
+                      ? i18nT('pages.settings.remoteCrewPanel.aws_check_outer_sandbox')
+                      : i18nT('pages.settings.remoteCrewPanel.aws_check_no_sandbox')
+                  : errMsg(preflightQuery.error, i18nT('pages.settings.remoteCrewPanel.credentials_bad'))}
+                report={preflightNoSandbox ? reportForError(preflightQuery.error) : undefined}
                 askAgent
               />
             )}
@@ -1318,7 +1416,7 @@ export function RemoteCrewPanel() {
                   rechecking={preflightQuery.isFetching}
                 />
                 <PrereqRow ok={preflight.ec2_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ec2')} detail={preflight.ec2_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
-                <PrereqRow ok={preflight.cloudformation_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
+                <PrereqRow ok={preflight.cloudformation_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation')} detail={preflight.cloudformation_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} extraAction={preflight.cloudformation_reachable ? undefined : <><Btn onClick={copyPolicy}>{copied === 'policy' ? <Check className="lucide-inline" /> : <Copy className="lucide-inline" />} {copied === 'policy' ? i18nT('pages.settings.remoteCrewPanel.copied') : i18nT('pages.settings.remoteCrewPanel.copy_policy_json')}</Btn>{policyNotice ? <span role="status" className="text-[12px] text-muted">{policyNotice}</span> : null}</>} error={copyErr?.target === 'policy' ? copyErr.message : undefined} />
                 <PrereqRow ok={preflight.ssm_reachable} title={i18nT('pages.settings.remoteCrewPanel.prereq_ssm')} detail={preflight.ssm_reachable ? i18nT('pages.settings.remoteCrewPanel.service_ok') : i18nT('pages.settings.remoteCrewPanel.service_missing')} />
                 <PrereqRow
                   ok={preflight.session_manager_plugin}
@@ -1346,8 +1444,11 @@ export function RemoteCrewPanel() {
             ) : (
               <div className="text-[13px] text-muted py-1">
                 {/* The failure itself renders above, independent of this branch;
-                    this is the no-result state with its Re-check. */}
-                {i18nT('pages.settings.remoteCrewPanel.credentials_bad')}
+                    this is the no-result state with its Re-check. A check that
+                    failed to run read no credentials, so it must not blame them. */}
+                {preflightQuery.isError
+                  ? i18nT('pages.settings.remoteCrewPanel.check_not_run')
+                  : i18nT('pages.settings.remoteCrewPanel.credentials_bad')}
                 <div className="mt-2"><Btn onClick={runCheck} disabled={preflightQuery.isFetching}><RefreshCw className={`lucide-inline${preflightQuery.isFetching ? ' animate-spin' : ''}`} /> {preflightQuery.isFetching ? i18nT('pages.settings.remoteCrewPanel.checking') : i18nT('pages.settings.remoteCrewPanel.re_check')}</Btn></div>
               </div>
             )}
@@ -1372,9 +1473,10 @@ export function RemoteCrewPanel() {
               <button
                 type="button"
                 onClick={() => setShowMoreSizes(v => !v)}
+                aria-expanded={showMoreSizes}
                 className="mt-2.5 w-full flex items-center gap-2 text-[12px] text-muted px-3 py-2 rounded-md border border-dashed border-border-strong hover:text-text"
               >
-                <ChevronDown size={14} className={`transition-transform ${showMoreSizes ? 'rotate-180' : ''}`} /> {i18nT('pages.settings.remoteCrewPanel.more_sizes')}
+                <ChevronDown size={14} aria-hidden="true" className={`transition-transform ${showMoreSizes ? 'rotate-180' : ''}`} /> {i18nT('pages.settings.remoteCrewPanel.more_sizes')}
               </button>
               {showMoreSizes && (
                 <>
@@ -1502,11 +1604,18 @@ export function RemoteCrewPanel() {
                         value={identityRegion}
                         aria-label={i18nT('pages.settings.remoteCrewPanel.identity_region')}
                         onChange={e => { identityTouched.current = true; setIdentityChosen(true); setIdentityRegion(e.target.value) }}
-                        placeholder="us-east-1"
+                        placeholder={i18nT('pages.settings.remoteCrewPanel.region_placeholder')}
                         spellCheck={false}
-                        aria-invalid={identityRegion !== '' && !identityRegionOk}
-                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
+                        required
+                        aria-invalid={!identityRegionOk}
+                        aria-describedby={identityRegionOk ? undefined : 'identity-region-error'}
+                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent aria-invalid:border-danger"
                       />
+                      {!identityRegionOk && (
+                        <span id="identity-region-error" className="block mt-1 text-danger">
+                          {i18nT('pages.settings.remoteCrewPanel.region_required')}
+                        </span>
+                      )}
                       <span className="block mt-1">{i18nT('pages.settings.remoteCrewPanel.identity_region_hint')}</span>
                     </label>
                   </div>
@@ -1525,22 +1634,29 @@ export function RemoteCrewPanel() {
             </div>
 
             <div className="mt-4 flex items-center gap-3 flex-wrap">
-              {/* Name the lane that is on screen. The built-in form draws EVERY
-                  `aws_ec2`-kind row, and an edition may register a second one
-                  behind a different engine; omitting the id would let the server
-                  default to the built-in and provision on the wrong lane. Only
-                  an UNKNOWN list (loading or failed) sends the pre-seam body. */}
-              <Btn primary onClick={() => { sentLaunchDraft.current = currentLaunchDraft; launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...(subnetId.trim() ? { subnet_id: subnetId.trim() } : {}), ...loginTargetBody }) }} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
+              <Btn primary onClick={launchBuiltin} disabled={!launchReady || alreadyLaunched}>
                 <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
               </Btn>
+              {/* After a launch, Launch stays off for the same settings; this is
+                  the explicit way to start a second crew with them. It sends the
+                  launch itself, as its label says. */}
+              {alreadyLaunched && !launchMutation.isPending && !setupRunning && (
+                <Btn onClick={launchBuiltin} disabled={!launchReady}>{i18nT('pages.settings.remoteCrewPanel.launch_another')}</Btn>
+              )}
               <span className="text-[12px] text-muted">
-                {identityResolving
+                {setupRunning && !launchMutation.isPending
+                  ? i18nT('pages.settings.remoteCrewPanel.launch_wait_for_setup')
+                  : alreadyLaunched && !launchMutation.isPending
+                  ? i18nT('pages.settings.remoteCrewPanel.launched_same_settings')
+                  : identityResolving
                   ? identityUnknown
                     ? i18nT('pages.settings.remoteCrewPanel.identity_choose')
                     : i18nT('pages.settings.remoteCrewPanel.identity_resolving')
                   : !identityOk
                     ? i18nT('pages.settings.remoteCrewPanel.identity_incomplete')
-                    : blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
+                    : !regionOk
+                      ? i18nT('pages.settings.remoteCrewPanel.region_required')
+                      : blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
               </span>
             </div>
           </Card>

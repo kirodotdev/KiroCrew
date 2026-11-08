@@ -35,10 +35,7 @@ from kiro_crew.testing.wait import await_until
 def test_startup_memory_guard_uses_native_host_reader(monkeypatch, platform, free, ok):
     for name in ("LINUX", "WINDOWS", "MACOS"):
         monkeypatch.setattr(subagent_mod.platform_compat, "IS_" + name, name == platform)
-    reader = (
-        "_windows_available_memory_gb" if platform == "WINDOWS" else "_macos_available_memory_gb"
-    )
-    monkeypatch.setattr(subagent_mod, reader, lambda: free)
+    monkeypatch.setattr(subagent_mod, "_host_available_gb", lambda: free)
     assert subagent_mod.check_memory_available(min_gb=4.5) == (ok, free)
 
 

@@ -67,6 +67,7 @@ import { MEMBERS_ROSTER_QUERY_KEY, memberThreadQueryKey, type MemberThreadOutcom
 import { skipToken, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector } from '../../store'
 import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
+import { avatarFrameIn } from '../../components/CrewAvatar'
 import { PROFILE_FACE_PX } from './CrewProfilePanel'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useGuideOpenedSurface } from '../../guide/useGuideOpenedSurface'
@@ -85,9 +86,10 @@ import { FACE_FLIGHT_EASE, FACE_FLIGHT_SECS, MembersPageProfileCard, useMembersP
 import { MembersPageRosterColumn, useMembersPageRosterView } from './MembersPageRoster'
 import { MembersPageSidePanel, useMembersPageSidePanel } from './MembersPageSidePanel'
 import { MembersPageThreadColumn, useMembersPageThread, useMembersPageThreadView } from './MembersPageThread'
+import { wantsMateSessions } from '../../lib/crewMode'
 import { MEMBER_PARAM, ROSTER_DRAWER_UNCOVERED_PX, type GoneNotice, type PostCreateFailure, type ProfileCardOpen } from './membersPageModel'
 import { useMembersPageCrewEditor } from './useMembersPageCrewEditor'
-import { useMembersPageDrawers, useMembersPageDrawerSwipes } from './useMembersPageDrawers'
+import { useMembersPageDrawers, useMembersPageDrawerSwipes, useMembersPageTrackpadSwipe } from './useMembersPageDrawers'
 import { useMembersPageLayout } from './useMembersPageLayout'
 import { useMembersPageNavigation } from './useMembersPageNavigation'
 import { useMembersPageRoster, useMembersPageRosterSignals } from './useMembersPageRoster'
@@ -130,16 +132,18 @@ function CrewFaceFlight({ flight, onDone }: { flight: FaceFlight; onDone: () => 
     // the real faces at either end draw both at their fixed CSS size — the
     // corner visibly snapped on landing — so the two are counter-scaled to
     // hold their on-screen size for the whole flight.
-    const img = el.querySelector('img')
-    const rest = img ? getComputedStyle(img) : null
+    // The frame, not merely the first image: a working icon draws its border
+    // on the motion root, and the image inside it has none.
+    const frame = avatarFrameIn(el)
+    const rest = frame ? getComputedStyle(frame) : null
     const restRadius = rest ? parseFloat(rest.borderRadius) || 0 : 0
     const restBorder = rest ? parseFloat(rest.borderWidth) || 0 : 0
     const place = (left: number, top: number, side: number) => {
       const k = side / PROFILE_FACE_PX
       el.style.transform = `translate(${left}px, ${top}px) scale(${k})`
-      if (img) {
-        img.style.borderRadius = `${restRadius / k}px`
-        img.style.borderWidth = `${restBorder / k}px`
+      if (frame) {
+        frame.style.borderRadius = `${restRadius / k}px`
+        frame.style.borderWidth = `${restBorder / k}px`
       }
     }
     const { from } = flight
@@ -471,9 +475,20 @@ export default function MembersPage() {
     [activeName, threadOutcome],
   )
   const layout = useMembersPageLayout({ rosterRead, teamsRead, activeName })
-  const { isMobile, winW, rosterShown } = layout
+  const { isMobile, winW, rosterShown, panelVisible, showOpener } = layout
   const profileCard = useMembersPageProfile({ layout, activeName, profile, setProfile })
   const { schedGuardRef, schedAtStakeRef, openMemberRef } = profileCard
+  // A mate session's breadcrumb asks for the named crewmate's Profile on
+  // Sessions. Declared after the card's own reset-on-switch effect, so it opens
+  // once that member is active; the state is then cleared so a reload does not
+  // reopen it.
+  const openMateSessions = wantsMateSessions(location.state)
+  const { openProfile } = profileCard
+  useEffect(() => {
+    if (!openMateSessions || !urlMember || activeName !== urlMember) return
+    openProfile('sessions')
+    navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null })
+  }, [openMateSessions, urlMember, activeName, openProfile, navigate, location.pathname, location.search])
   const drawers = useMembersPageDrawers({
     teamsRead, layout, navigate, location, activeName, createOpen, navigationType, active,
   })
@@ -520,6 +535,11 @@ export default function MembersPage() {
   // The profile card (opened from the header pill) holds the Permissions row a
   // "crewmate tools" guide points at (`members.permissions`).
   useGuideRevealScope('members.profile', !!profile)
+  // The side panel (drawn only with a crewmate open), whose first tab is the
+  // Dashboard (`members.dashboard-tab`), and whether its header opener
+  // (`members.details`) is drawn.
+  useGuideRevealScope('members.panel', !!active && panelVisible)
+  useGuidePredicate('crewmate_panel_not_docked', showOpener)
   const rosterView = useMembersPageRosterView({
     rosterRead, teamsRead, t, queryClient, activeName, slotKeyOf, liveSlots, active,
   })
@@ -532,12 +552,15 @@ export default function MembersPage() {
     layout, profileCard, drawers, rosterView, thread, navigate, location, queryClient, activeName, searchParams,
     setSearchParams, profile, setProfile, liveSlots, slotsLoaded, active, activeMemberName,
   })
-  const { schedAtStake, schedulesMountedRef, runInTerminalScope } = sidePanel
+  const { runInTerminalScope } = sidePanel
+  // Desktop: a two-finger trackpad swipe moves the same side panel the phone
+  // drag above does -- left reveals the Dashboard tab, right hides the panel.
+  useMembersPageTrackpadSwipe({ layout, profileCard, sidePanel, drawers, active, createOpen, membersRootRef })
   const schedules = useMembersPageSchedules({
-    crewEditing, layout, rosterView, sidePanel, t, profile, activeSlug, activeMemberName,
+    crewEditing, layout, rosterView, t, profile, activeSlug, activeMemberName,
   })
   const {
-    schedDraftDirty, schedSaving, confirmSched, schedConfirmDialog, releaseSchedRetention, mayLeaveSchedules,
+    schedAtStake, schedulesMountedRef, schedDraftDirty, schedSaving, confirmSched, schedConfirmDialog, releaseSchedRetention, mayLeaveSchedules,
   } = schedules
   // ONE guard for exits that unmount Profile. The ref is what lets callbacks declared
   // in the owners (the header's panel reveal in MembersPageProfile.tsx, a roster
@@ -555,6 +578,22 @@ export default function MembersPage() {
     goalsDraft.current = { dirty, busy }
     setGoalsAtStake(dirty || busy)
   }, [])
+  // The Export view's lessons text: typed, unsaved, and held only in that view, so
+  // every exit that unmounts Profile asks about it the way it asks about Goals.
+  const exportDraft = useRef(false)
+  const [exportAtStake, setExportAtStake] = useState(false)
+  const onExportDraftChange = useCallback((dirty: boolean) => {
+    exportDraft.current = dirty
+    setExportAtStake(dirty)
+  }, [])
+  const mayLeaveExport = useCallback(async () => {
+    if (!exportDraft.current) return true
+    return confirmSched({
+      title: t('pages.membersPage.export_discard_lessons'),
+      body: t('pages.membersPage.export_discard_lessons_body'),
+      confirmLabel: t('pages.membersPage.export_discard_lessons_confirm'),
+    })
+  }, [confirmSched, t])
   const mayLeaveGoals = useCallback(async () => {
     if (goalsDraft.current.busy) return false
     if (!goalsDraft.current.dirty) return true
@@ -575,10 +614,10 @@ export default function MembersPage() {
     if (crewModalAtStakeRef.current && !window.confirm(t('pages.membersPage.edit_leave_draft'))) return false
     if (!schedulesMounted) return true
     if (schedSaving.current || goalsDraft.current.busy) return false
-    return await mayLeaveGoals() && await mayLeaveSchedules()
-  }, [schedulesMounted, mayLeaveGoals, mayLeaveSchedules, t, crewModalAtStakeRef, crewModalBusyRef, schedSaving])
+    return await mayLeaveGoals() && await mayLeaveExport() && await mayLeaveSchedules()
+  }, [schedulesMounted, mayLeaveGoals, mayLeaveExport, mayLeaveSchedules, t, crewModalAtStakeRef, crewModalBusyRef, schedSaving])
   schedAtStakeRef.current = useCallback(
-    () => schedulesMounted && (schedSaving.current || schedDraftDirty.current || goalsDraft.current.dirty || goalsDraft.current.busy),
+    () => schedulesMounted && (schedSaving.current || schedDraftDirty.current || goalsDraft.current.dirty || goalsDraft.current.busy || exportDraft.current),
     [schedulesMounted, schedDraftDirty, schedSaving],
   )
   // Leaving the ROUTE is the last exit, and the registry that owns it is synchronous, so
@@ -596,6 +635,7 @@ export default function MembersPage() {
     if (!schedulesMounted) return true
     if (schedSaving.current || goalsDraft.current.busy) return false
     if (goalsDraft.current.dirty && !window.confirm(t('components.markdownPanel.discard_unsaved_changes'))) return false
+    if (exportDraft.current && !window.confirm(`${t('pages.membersPage.export_discard_lessons')}\n${t('pages.membersPage.export_discard_lessons_body')}`)) return false
     if (!schedDraftDirty.current) return true
     const ok = window.confirm(t('pages.membersPage.schedules_leave_draft'))
     if (ok) releaseSchedRetention()
@@ -606,7 +646,7 @@ export default function MembersPage() {
   // discarded the draft silently while every wired in-app exit asked. The New crewmate
   // dialog on this same page already publishes, which is what made the gap uneven rather
   // than merely absent.
-  const anyDraftAtStake = schedAtStake || goalsAtStake || crewModalAtStake || crewModalBusy
+  const anyDraftAtStake = schedAtStake || goalsAtStake || exportAtStake || crewModalAtStake || crewModalBusy
   usePublishNavigationStake(anyDraftAtStake)
   // A reload or a tab close is not a route change, so the guard above never sees it; the
   // browser's own prompt is the only thing that can. Registered while a Schedules draft,
@@ -617,7 +657,11 @@ export default function MembersPage() {
     window.addEventListener('beforeunload', onUnload)
     return () => window.removeEventListener('beforeunload', onUnload)
   }, [anyDraftAtStake])
-  const threadView = useMembersPageThreadView({ layout, rosterView, thread, t, createOpen, active })
+  const threadView = useMembersPageThreadView({
+    layout, rosterView, thread, t, createOpen, active,
+    profileFloating: !!profile && profile.placement !== 'column',
+    rosterDrawerMounted,
+  })
   const rosterSignals = useMembersPageRosterSignals({ rosterRead, rosterView, slotKeyOf })
   const profileFlight = useMembersPageProfileFlight({ profileCard, rosterView, rosterSignals, thread, activeName, profile, active })
   const { faceFlight, endFaceFlight } = profileFlight
@@ -836,6 +880,18 @@ export default function MembersPage() {
       />
       </div>
 
+      {/* Desktop trackpad drag of a docked panel: the panel rides as a sheet, and
+          this spacer holds the chat's right edge at the sheet's left edge, so the
+          chat follows the drag and the swap to the docked column is not a step. */}
+      {drawers.deskSlide && layout.beside && (
+        <motion.div
+          aria-hidden="true"
+          data-testid="member-side-panel-spacer"
+          className="h-full shrink-0"
+          style={{ width: drawers.deskSpacerW }}
+        />
+      )}
+
       {/* Side panel — the chat page's tabbed SidePanel, docked to this page.
           Read-only observation lives in its permanent first tab (Crew
           summary); writes live in the crew manager. The + menu is the chat
@@ -856,6 +912,7 @@ export default function MembersPage() {
           leave={leave} setEditingCrew={setEditingCrew} profile={profile} threadColumnRef={threadColumnRef}
           slotsLoaded={slotsLoaded} active={active} activeSlug={activeSlug}
           activeMemberName={activeMemberName} onGoalsDraftChange={onGoalsDraftChange}
+          onExportDraftChange={onExportDraftChange}
         />
         <MembersPageSidePanel
           layout={layout} profileCard={profileCard} drawers={drawers} rosterView={rosterView} thread={thread}

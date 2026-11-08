@@ -1064,6 +1064,25 @@ def any_configured_profile_governs(ref: str) -> bool:
     )
 
 
+def any_configured_profile_has_say(ref: str) -> bool:
+    """:func:`any_configured_profile_governs` without ``may_skip_gate``'s floor clause.
+
+    For a grant made INSIDE the gate (``governance.may_grant_builtin_at_gate``),
+    whose call has already met the floor: asking ``may_skip_gate`` would answer
+    True for every floor-gated built-in before it reads the profile, so any
+    configured profile, whatever it governs, would withhold every such grant.
+    Same fail-closed rule for an unresolved store.
+    """
+    from kiro_crew.platform.governance import _ceiling_has_no_say
+
+    if not _STORE.resolved():
+        return True
+    return any(
+        not _ceiling_has_no_say(ref, profile)  # type: ignore[arg-type]
+        for profile in _STORE.all_profiles()
+    )
+
+
 def reset_store() -> None:
     """Test helper — drop the cached profiles so the next access reloads."""
     global _PROFILE_GENERATION, _STORE
@@ -1250,6 +1269,7 @@ def vet_and_audit(
     *,
     session_key: str,
     tool_name: str,
+    agent: str = "",
     app: str = "",
     fail_closed: bool = False,
     log_warning: bool = True,
@@ -1276,6 +1296,7 @@ def vet_and_audit(
         scope,
         item,
         session_key=session_key,
+        agent=agent,
         app=app,
         log_warning=log_warning,
         fail_closed=fail_closed,
@@ -1290,6 +1311,8 @@ def vet_and_audit(
 
         sel().log_governance_decision(
             session_key=session_key,
+            # The agent whose profile decided, so the row names who asked.
+            agent=agent or "kirocrew",
             tool_name=tool_name,
             scope=scope,
             item=item,
@@ -1342,6 +1365,25 @@ def governance_floor_ordinal(
             log_warning=log_warning,
         )
         return None
+
+
+def resolve_task_bound_profile(agent: str) -> Optional[Profile]:
+    """The profile a ``task`` bind names for *agent*, or ``None``.
+
+    Only that one bind: no app or surface fallback. A caller that already
+    resolved the session's active profile with :func:`resolve_active_scope` uses
+    this to narrow it by a second agent's own profile without re-applying the
+    surface default, which would override a task profile that won the first
+    resolution. An unloaded store denies, as in :func:`resolve_active_scope`.
+    """
+    if not agent:
+        return None
+    if not _STORE.resolved():
+        logger.warning("profile store not yet loaded; denying task bind %r this call", agent)
+        return deny_all_profile(f"_deny_all_unloaded:task:{agent}")
+    snap = _STORE.snapshot()
+    name = snap.by_bind.get(("task", agent))
+    return snap.by_name.get(name) if name else None
 
 
 def resolve_active_scope(

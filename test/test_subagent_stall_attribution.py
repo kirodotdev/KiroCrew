@@ -102,9 +102,15 @@ def test_a_new_dispatch_retires_the_oracle_rather_than_clearing_it():
     so clearing in place would let its late write become the new baseline."""
     info = _info()
     old = _oracle(VERDICT_WORKING)
+    replacement = MagicMock()
+    old.fresh.return_value = replacement
     info._stall_oracle = old
+    gen = info._stall_gen
     SubagentManager._note_tool_dispatch(info, _event())
-    old.fresh.assert_called_once()
+    old.fresh.assert_called_once_with()
+    old.reset.assert_not_called()
+    assert info._stall_oracle is replacement
+    assert info._stall_gen == gen + 1
 
 
 # ── _stall_verdict attribution gates ─────────────────────────────────
@@ -495,16 +501,11 @@ async def test_dead_does_not_skip_two_sweep_when_a_sibling_shares_the_runtime():
 
 @pytest.mark.asyncio
 async def test_dead_does_not_skip_two_sweep_for_a_lone_agent_in_a_shared_runtime():
-    """A LONE session-sharing subagent must also lose the fast path.
+    """A lone session-sharing subagent must also lose the fast path.
 
-    The confusable co-tenant is not only a sibling. ``_create_shared_session``
-    puts the subagent on the PARENT's AcpRuntime — one process hosts everything —
-    so ``info._pid`` is the parent's process and the parent's own tool children
-    are descendants of it. ``_live_shared_count`` iterates the subagent registry
-    and cannot see the parent, so gating on a sibling count > 1 left this agent
-    on the fast path while it could still cmdline-match the parent's child and
-    flag the instant that child exited. A shared runtime always contains the
-    parent, so every session-sharing agent takes the two-sweep path.
+    ``_create_shared_session`` puts it on the parent's AcpRuntime, so ``info._pid`` is the
+    parent's process and its tool children are descendants. ``_live_shared_count`` cannot
+    see the parent, so every session-sharing agent takes the two-sweep path.
     """
     mgr = _make_manager(stall_idle_secs=10)
     now = 1_000.0
@@ -774,6 +775,156 @@ async def test_a_real_acp_wait_event_selects_the_contract():
     SubagentManager._note_tool_dispatch(info, ev)
     verdict, evidence = await mgr._stall_verdict(info)
     assert verdict == VERDICT_WORKING, evidence
+
+
+def _kas_tool_call(title: str, raw_input: dict, server: str | None = "kirocrew-core") -> dict:
+    """A KAS ``tool_call`` update: the server is named, the tool half is not."""
+    kiro: dict = {"toolOrigin": "default"}
+    if server is not None:
+        kiro["serverName"] = server
+    return {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "kas-call-1",
+        "title": title,
+        "kind": "other",
+        "status": "pending",
+        "rawInput": raw_input,
+        "_meta": {"kiro": kiro},
+    }
+
+
+def _kas_event(update: dict):
+    from kiro_crew.acp._dispatch import parse_session_update
+
+    (ev,) = parse_session_update(update)
+    return ev
+
+
+_KAS_WAIT_ARGS = {"seconds": 270, "reason": "waiting for CI"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "update",
+    [
+        pytest.param(
+            _kas_tool_call(
+                "@kirocrew-core/wait",
+                {"tool_id": "kirocrew-core::wait", "arguments": _KAS_WAIT_ARGS},
+            ),
+            id="tool-search-envelope",
+        ),
+        pytest.param(_kas_tool_call("@kirocrew-core/wait", dict(_KAS_WAIT_ARGS)), id="wire-title"),
+    ],
+)
+async def test_a_kas_wait_frame_selects_the_contract(update):
+    """KAS names the server on a ``tool_call`` frame but no tool, and a Trust-mode
+    call gets no permission request to supply it. The tool half KAS itself writes
+    (the envelope's ``tool_id`` or its ``@server/tool`` wire title) names the call,
+    so a subagent 220s into a 270s ``wait`` is not badged stalled."""
+    ev = _kas_event(update)
+    assert ev.mcp_identity_trusted is False  # the gap: no tool half on the frame
+    mgr = _make_manager(stall_idle_secs=120)
+    now = 1_000.0
+    info = _info(turns=1, _pid=4242, last_activity=now - 220)
+    SubagentManager._note_tool_dispatch(info, ev)
+    _age_dispatch(info, 220)
+    verdict, evidence = await mgr._stall_verdict(info)
+    assert verdict == VERDICT_WORKING, evidence
+    with patch("kiro_crew.subagent.record_slow_command"):
+        await mgr._maybe_flag_stall("a1b2c3d4", info, now)
+        await mgr._maybe_flag_stall("a1b2c3d4", info, now + 60)
+    assert info.stalled is False
+    mgr._fire_event.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "update",
+    [
+        pytest.param(
+            _kas_tool_call(
+                "@kirocrew-core/wait",
+                {"tool_id": "kirocrew-core::wait", "arguments": _KAS_WAIT_ARGS},
+                server="third-party",
+            ),
+            id="other-server-names-core-wait",
+        ),
+        pytest.param(
+            _kas_tool_call("@kirocrew-core/wait", dict(_KAS_WAIT_ARGS), server=None),
+            id="title-without-server-half",
+        ),
+        pytest.param(
+            _kas_tool_call(
+                "wait",
+                {"tool_id": "kirocrew-core::wait", "arguments": _KAS_WAIT_ARGS},
+                server=None,
+            ),
+            id="envelope-without-server-half",
+        ),
+        pytest.param(
+            _kas_tool_call(
+                "@kirocrew-core/wait",
+                {"tool_id": "kirocrew-core::monitor_start", "arguments": _KAS_WAIT_ARGS},
+            ),
+            id="envelope-names-another-core-tool",
+        ),
+        pytest.param(
+            _kas_tool_call(
+                "@kirocrew-core/wait",
+                {"tool_id": "other::wait", "arguments": _KAS_WAIT_ARGS},
+            ),
+            id="envelope-names-another-server",
+        ),
+        pytest.param(
+            _kas_tool_call(
+                "@kirocrew-core/wait",
+                {"tool_id": "kirocrew-core::wait", "arguments": _KAS_WAIT_ARGS, "x": 1},
+            ),
+            id="envelope-with-extra-keys",
+        ),
+        pytest.param(
+            _kas_tool_call("@kirocrew-core/wait extra", dict(_KAS_WAIT_ARGS)),
+            id="title-with-trailing-text",
+        ),
+    ],
+)
+async def test_a_kas_frame_selects_the_contract_only_for_core_wait(update):
+    """The KAS reading is held to the core server and the exact spellings KAS
+    writes: anything else stays declined as before."""
+    ev = _kas_event(update)
+    mgr = _make_manager()
+    info = _info(_pid=4242)
+    SubagentManager._note_tool_dispatch(info, ev)
+    verdict, evidence = await mgr._stall_verdict(info)
+    assert verdict == VERDICT_UNKNOWN
+    assert "not attributable" in evidence
+
+
+def test_the_main_agent_snapshot_reads_the_kas_identity_too():
+    """The main agent builds its snapshot through the same rule, so its oracle's
+    wait verdict and keepalive check see the KAS core identity as well."""
+    from kiro_crew.acp.liveness import ToolCallState
+
+    ev = _kas_event(
+        _kas_tool_call(
+            "@kirocrew-core/wait",
+            {"tool_id": "kirocrew-core::wait", "arguments": _KAS_WAIT_ARGS},
+        )
+    )
+    assert ToolCallState.identity_of(ev) == ("kirocrew-core", "wait")
+    builtin = _kas_event(
+        {
+            "sessionUpdate": "tool_call",
+            "toolCallId": "kas-call-2",
+            "title": "Read File",
+            "kind": "read",
+            "status": "pending",
+            "rawInput": {"path": "/work/a"},
+            "_meta": {"kiro": {"toolOrigin": "default"}},
+        }
+    )
+    assert ToolCallState.identity_of(builtin) == ("", "")
 
 
 def test_the_contract_ceiling_matches_the_wait_tool_schema():

@@ -2,10 +2,8 @@
 escaped before printing.
 
 `_copy_tree_no_overwrite` writes each file straight to its final name with
-`O_CREAT|O_EXCL|O_NOFOLLOW` -- it does not stage a `.partial` file and publish it with
-`os.link` (that staging design is exploitable; see `pinned_fs.copy_file_pinned`'s
-docstring). The properties below are asserted against that primitive's observable
-behaviour.
+`O_CREAT|O_EXCL|O_NOFOLLOW`; a `.partial` plus `os.link` publish is exploitable (see
+`pinned_fs.copy_file_pinned`).
 """
 
 from __future__ import annotations
@@ -28,10 +26,8 @@ class TestAFailedMergeCopyLeavesNoTruncatedTarget:
     ) -> None:
         """If a per-file copy raises, the merge must not report success over the gap.
 
-        The exclusive-create write has no publish step to interrupt, so the failure the
-        old `.partial` design guarded against is gone; what still matters is that a copy
-        error propagates rather than being swallowed, so nothing downstream treats the
-        absent file as merged. Once the transient condition clears, a retry completes.
+        A copy error must propagate so nothing treats the absent file as merged; once the
+        transient condition clears, a retry completes.
         """
         src = tmp_path / "src"
         src.mkdir()
@@ -74,11 +70,8 @@ class TestAFailedMergeCopyLeavesNoTruncatedTarget:
     def test_the_write_is_exclusive_create_not_an_unconditional_rename(self) -> None:
         """Atomicity must not be bought with an overwriting publish.
 
-        An `os.replace` (or an `os.link` publish of a `.partial`) is atomic AND
-        unconditional, so it would trade a truncated file for a destroyed one in a mode
-        whose whole contract is that it adds only what is missing. The primitive instead
-        opens the destination `O_CREAT|O_EXCL`, which refuses when the target exists, so
-        this pins the exclusive create and the absence of an unconditional publish.
+        An `os.replace` or `os.link` publish is atomic AND unconditional, so it would
+        destroy a target in a mode that only adds what is missing. `O_CREAT|O_EXCL` refuses.
         """
         code = "\n".join(
             line

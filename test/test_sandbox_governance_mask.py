@@ -83,6 +83,16 @@ def _crew_sensitive_paths() -> list[str]:
     ]
 
 
+def _sealed(path: str, readonly: set[str]) -> bool:
+    """*path* is sealed read-only: named itself, or inside a read-only DIRECTORY bind.
+
+    The endorsed copies of the read+write leaves sit inside ``config-provenance``,
+    which every sandbox binds read-only as a directory, so no entry of their own is
+    needed for the shell to be unable to write them.
+    """
+    return path in readonly or any(path.startswith(entry + os.sep) for entry in readonly)
+
+
 def _expected_exceptions() -> set[str]:
     home = _home()
     return {
@@ -179,24 +189,25 @@ class TestKeystonesAreSealedInEveryMode:
         "computer_use.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
+        # The owner's Shared Crew switch: a writable record would let an agent open
+        # the Crew to other people on its next start.
+        "shared_crew_preview.json",
         # Recorded consent to send conversation state to the external decision
         # provider. Same class: the seal is what makes "the owner consents to
         # the egress, never the agent" true.
         "decisions_consent.json",
-        # Recorded consent to deliver a scanner-flagged file. Sealing it
-        # is the load-bearing half of the whole design: the deny-list tiers can
-        # be evaded by runtime path construction, so only a kernel write denial
-        # makes "the owner consents, never the agent" true rather than merely
-        # intended.
-        "file_delivery_consent.json",
-        # Gateway-executed browser launcher. Agent shells must read and run it,
-        # but a write would choose the binary the unsandboxed gateway executes.
-        "playwright-cli",
+        # The Browser Harness prefix the unsandboxed gateway executes: a write
+        # would choose the interpreter and the Chromium the gateway runs.
+        "browser-harness",
         # The app dev-mode authorization record: sealing it is what
         # makes the operator-attestation flag unforgeable from an agent shell
         # — a sandboxed process cannot mint a grant however the toggle was
         # spelled.
         "apps/.dev-grants.json",
+        # The host-exec grant directory: a marker here authorizes running a "pod"
+        # OUTSIDE the sandbox, so a writable (or renamable-around) grant would let an
+        # agent authorize its own break-out. Only the gateway writes it.
+        "host-exec-grants",
         # The cloud launcher's config. Its `fargate.image` names the container a launch
         # runs and the task's execution role delivers the model credential into that
         # container, so a write here selects WHO RECEIVES the credential -- which is as
@@ -387,6 +398,9 @@ class TestSecretsAreMaskedInEveryMode:
         # Same model as ledger, two parties: the worker agent carries the full file
         # toolset, so an unmasked work-ledger lets it reach any conductor's records.
         "work-ledger",
+        # Each crewmate's rules, goals and DM binding: written by the gateway on a
+        # person's action and read by nothing in a sandbox.
+        "member-records",
         "backup",
         "browser-cookies.txt",
         "playwright-storage-state.json",
@@ -468,7 +482,7 @@ class TestTheReconciliationIsComplete:
         unaccounted = [
             path
             for path in _crew_sensitive_paths()
-            if path not in hidden and path not in readonly and path not in exceptions
+            if path not in hidden and not _sealed(path, readonly) and path not in exceptions
         ]
         assert not unaccounted, (
             "crew-home paths the tool gate fences but the OS sandbox does not, and that "
@@ -486,7 +500,9 @@ class TestTheReconciliationIsComplete:
         """
         hidden, readonly, _files = _launcher_sets(mode)
         unrestricted = {
-            path for path in _crew_sensitive_paths() if path not in hidden and path not in readonly
+            path
+            for path in _crew_sensitive_paths()
+            if path not in hidden and not _sealed(path, readonly)
         }
         declared = _expected_exceptions()
 
@@ -563,16 +579,21 @@ class TestTheReconciliationIsComplete:
             sandbox._CREW_CHILD_WITHHELD_LEAVES
         )
 
-    def test_the_gateway_launcher_is_a_top_level_readonly_leaf(self) -> None:
+    def test_the_browser_engine_is_a_top_level_readonly_leaf(self) -> None:
         """A nested leaf can be bypassed by renaming its writable parent.
 
         The Linux bind mount follows the moved parent, leaving the original path
         free for an agent-planted replacement. A top-level leaf has no extra
-        agent-writable ancestor inside the data home.
+        agent-writable ancestor inside the data home. The retired browser CLI's
+        ``playwright-cli`` leaf is gone with the CLI: nothing the gateway executes
+        lives there any more, and the doctor only reports a leftover directory.
         """
-        assert "playwright-cli" in sandbox._CREW_READONLY_LEAVES
-        assert "playwright-cli" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
-        assert "tools/playwright-cli" not in sandbox._CREW_READONLY_LEAVES
+        assert "browser-harness" in sandbox._CREW_READONLY_LEAVES
+        assert "browser-harness" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+        assert "tools/browser-harness" not in sandbox._CREW_READONLY_LEAVES
+        assert "playwright-cli" not in sandbox._CREW_READONLY_LEAVES
+        assert "playwright-cli" not in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+        assert "playwright-cli" not in sandbox._CREW_CHILD_READABLE_LEAVES
 
     @pytest.mark.parametrize("mode", _MODES)
     def test_every_mode_carries_the_derived_set(self, mode: str) -> None:
@@ -1023,8 +1044,8 @@ class TestForeignMaskShadowGuard:
     def test_every_crew_home_carveout_producer_asks_the_guard(self) -> None:
         """The guard's worth is the SET of producers that call it.
 
-        Four crew-home carve-out producers exist, and each asks the guard before
-        handing a spelling to a spawn. A fifth that forgets is the defect this
+        Five crew-home carve-out producers exist, and each asks the guard before
+        handing a spelling to a spawn. A sixth that forgets is the defect this
         test catches. Structural, like the two sibling tests in this class, so
         deleting a call reds here instead of silently unmasking a tree.
 
@@ -1040,6 +1061,7 @@ class TestForeignMaskShadowGuard:
 
         for name, obj in (
             ("app_backend_visible_targets", sandbox.app_backend_visible_targets),
+            ("app_declared_mask_targets", sandbox.app_declared_mask_targets),
             ("policy-cache spawn", backend_mod._start_app_backend_body),
             ("aws-control preview staging", storage_mod.get_object_head_bytes),
             ("pod Azure provider CLI spawn", provider_cli_mod.run_provider_cli),

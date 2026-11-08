@@ -42,6 +42,9 @@ Under an unconditional closer, every case in
 
 from __future__ import annotations
 
+import pytest
+from named_cases_helpers import named_cases
+
 from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import (
     MARKER_CLOSERS,
@@ -252,7 +255,14 @@ class TestAcceptedCosts:
         assert body == "Working on it."
         assert choices == []
 
-    def test_a_nested_head_is_not_swallowed_into_a_label(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_a_nested_head_is_not_swallowed_into_a_label"),
+            *named_cases("test_a_nested_head_is_still_refused"),
+        ],
+    )
+    def test_a_nested_head_is_refused(self):
         # The one place this rule could have been LOOSER than the body it replaced:
         # without ``(?!OPTIONS:)`` on the pair form's opener, the pair alternative
         # opens on a nested head and pairs it with that head's own closer, so the
@@ -260,22 +270,6 @@ class TestAcceptedCosts:
         # echoed back as the user's reply when tapped. The old body matched nothing
         # here, and neither does this one.
         assert OPTIONS_RE_LINE.search("Note [OPTIONS: see [OPTIONS: x] below | Skip]") is None
-
-    def test_the_separator_tail_form_is_declined_rather_than_truncated(self):
-        # Not reachable by the matched-or-continues rule: ``], `` DOES continue the
-        # label list, by the very rule that makes ``[OPTIONS: Alpha ], Bravo]``
-        # legal, so no guard applied at the INTERNAL closer can tell the two apart.
-        # The terminator gate reaches it from the other end -- the ``[`` of
-        # ``CHANGELOG[1]`` is the opener whose partner would end the marker, so the
-        # bare form is refused and the line stays whole.
-        #
-        # Declining is the affordable outcome: truncating deleted ``, details in
-        # CHANGELOG[1]`` from the message and handed it back as the pill label
-        # ``Wait], details in CHANGELOG[1``.
-        text = "Done. [OPTIONS: Merge | Wait], details in CHANGELOG[1]"
-        assert OPTIONS_RE_LINE.search(text) is None
-        assert OPTIONS_RE_LINE.sub("", text) == text
-        assert split_options_trailer(text) == (text, [])
 
 
 class TestLookalikeBracketPairsParse:
@@ -356,9 +350,6 @@ class TestLookalikeBracketPairsParse:
             text = f"[OPTIONS: {opener}重要{closer}修复 | B 详见{opener}0{closer}"
             assert OPTIONS_RE_LINE.search(text) is None, text
             assert OPTIONS_RE_LINE.sub("", text) == text
-
-    def test_a_nested_head_is_still_refused(self):
-        assert OPTIONS_RE_LINE.search("Note [OPTIONS: see [OPTIONS: x] below | Skip]") is None
 
 
 class TestTheWideningIsNotOverlyNarrow:

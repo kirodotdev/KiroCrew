@@ -87,8 +87,13 @@ def _load_embedder(tmp_path: pathlib.Path, monkeypatch):
     monkeypatch.setattr("kiro_crew.embeddings._load_llama_class", lambda: fake_cls)
     model = _write_model_file(tmp_path / "model.gguf")
     emb = LlamaCppEmbedder(model_path=model)
-    assert emb.wait_ready(timeout=5), "fake model failed to load"
-    assert fake_cls.instances, "Llama constructor was never called"
+    try:
+        assert emb.wait_ready(timeout=5), "fake model failed to load"
+        assert fake_cls.instances, "Llama constructor was never called"
+    finally:
+        # Only the constructor's kwargs are read, so the loaded model (and the idle
+        # evictor a published model starts) ends here rather than with the worker.
+        emb.close()
     return fake_cls.instances[0].kwargs
 
 
@@ -125,7 +130,7 @@ def test_embedder_keeps_the_full_logical_batch(tmp_path: pathlib.Path, monkeypat
     assert kwargs["n_ubatch"] < kwargs["n_batch"]
 
 
-def test_shipped_decoder_micro_batch_is_256(tmp_path: pathlib.Path, monkeypatch) -> None:
+def test_shipped_decoder_micro_batch_is_128(tmp_path: pathlib.Path, monkeypatch) -> None:
     """The shipped model decodes in 256-token micro-batches, with the full window kept.
 
     A literal on purpose: the value is a measured choice, not a derived one. On the
@@ -138,7 +143,7 @@ def test_shipped_decoder_micro_batch_is_256(tmp_path: pathlib.Path, monkeypatch)
     (``test_embed_bounded_decode.py::TestRealModel``).
     """
     kwargs = _load_embedder(tmp_path, monkeypatch)
-    assert (kwargs["n_ctx"], kwargs["n_batch"], kwargs["n_ubatch"]) == (2048, 2048, 256)
+    assert (kwargs["n_ctx"], kwargs["n_batch"], kwargs["n_ubatch"]) == (2048, 2048, 128)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

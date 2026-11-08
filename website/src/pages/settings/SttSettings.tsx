@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
 import { Download, Sparkles } from 'lucide-react'
@@ -19,12 +19,14 @@ import {
   downloadRatio,
   FALLBACK_PROVIDERS,
   FALLBACK_STREAMING_PROVIDERS,
+  FALLBACK_LANGUAGE_IDENTIFICATION_PROVIDERS,
   CODE_PROVIDER_UNAVAILABLE,
   INSTALLED_BUT_REFUSED_CODES,
   languageOptionLabel,
   localeLanguage,
   nextTranscribeLanguages,
   PROVIDER_LOCAL,
+  PROVIDER_CODEX,
   PROVIDER_TRANSCRIBE,
   providerLabel,
   unavailableMessage,
@@ -76,6 +78,7 @@ interface SttConfig {
   threads_env?: string | null
   endpointing?: boolean
   submit_on_release?: boolean
+  slide_to_send?: boolean
   dictation_panel?: boolean
   transcribe_region?: string
   transcribe_profile?: string
@@ -97,6 +100,8 @@ interface SttConfig {
   /** Served provider entries (see lib/speechProviders). An older gateway sends bare names. */
   providers?: unknown[]
   streaming_providers?: string[]
+  /** Providers that identify languages among `transcribe_languages`. An older gateway omits it. */
+  language_identification_providers?: string[]
   language_codes?: string[]
   prereqs: string[]
   transcribe_unsupported?: boolean
@@ -313,7 +318,7 @@ interface SttVocabularies {
 /** The only vocabulary state Amazon Transcribe opens a stream with. */
 const VOCABULARY_READY = 'READY'
 
-/** The listing's refusal code with an IAM fix of its own, from `transcribe.py`. */
+/** The listing's refusal code with an IAM fix of its own, from `transcribe_aws.py`. */
 const VOCABULARIES_ACCESS_DENIED = 'stt_vocabularies_access_denied'
 
 /**
@@ -755,7 +760,7 @@ function PushToTalkConfig() {
       {cfg.enabled && cfg.mode === 'hybrid' && (
         <SettingsStepper
           label={i18nT('pages.settings.sttSettings.ptt_hold_threshold')}
-          description={i18nT('pages.settings.sttSettings.ptt_hold_threshold_desc')}
+          hint={i18nT('pages.settings.sttSettings.ptt_hold_threshold_desc')}
           value={i18nT('pages.settings.sttSettings.ptt_hold_seconds', { secs: toSeconds(cfg.holdMs) })}
           onIncrement={() => patch({ holdMs: clampHoldMs(cfg.holdMs + HOLD_MS_STEP) })}
           onDecrement={() => patch({ holdMs: clampHoldMs(cfg.holdMs - HOLD_MS_STEP) })}
@@ -874,28 +879,33 @@ export default function SttSettings({ cardIndex }: {
         : false,
   })
 
-  const initRef = useRef(false)
-  useEffect(() => {
-    if (sttQ.data && !initRef.current) {
-      initRef.current = true
-      setLocalProfile(sttQ.data.transcribe_profile || '')
-      setLocalRegion(sttQ.data.transcribe_region || '')
-      setLocalCustomPath(sttQ.data.custom_model_path || '')
-      setLocalCustomSha(sttQ.data.custom_model_sha256 || '')
-      // Already-configured weights keep their rows open, so what is in force is
-      // visible without hunting for the option that reveals it.
-      if (sttQ.data.custom_model_path || sttQ.data.model === CUSTOM_MODEL) setCustomOpen(true)
-      // Intent survives a reload in exactly two shapes the served config can prove:
-      // custom is in force, or HALF a pair is stored. A half pair is a custom model
-      // someone started and did not finish, which is the state whose selection
-      // silently degraded. A COMPLETE pair with a catalog model in force is NOT
-      // intent — that is a deliberate switch back, and telling that user "both are
-      // needed" would be false.
-      const halfPair =
-        Boolean(sttQ.data.custom_model_path) !== Boolean(sttQ.data.custom_model_sha256)
-      if (sttQ.data.model === CUSTOM_MODEL || halfPair) setCustomIntended(true)
-    }
-  }, [sttQ.data])
+  // The served config seeds the editable rows ONCE, in the render that first has
+  // it. Setting state during render is React's shape for state derived from a
+  // value that just arrived: the in-progress output is discarded and the
+  // component re-renders before anything commits, so the commit that shows the
+  // model select is the same one that shows what the config implies — rows open,
+  // a half pair explained. Seeding from an effect instead commits one frame
+  // where the select is on screen but these still read as empty and unintended.
+  const [seeded, setSeeded] = useState(false)
+  if (sttQ.data && !seeded) {
+    setSeeded(true)
+    setLocalProfile(sttQ.data.transcribe_profile || '')
+    setLocalRegion(sttQ.data.transcribe_region || '')
+    setLocalCustomPath(sttQ.data.custom_model_path || '')
+    setLocalCustomSha(sttQ.data.custom_model_sha256 || '')
+    // Already-configured weights keep their rows open, so what is in force is
+    // visible without hunting for the option that reveals it.
+    if (sttQ.data.custom_model_path || sttQ.data.model === CUSTOM_MODEL) setCustomOpen(true)
+    // Intent survives a reload in exactly two shapes the served config can prove:
+    // custom is in force, or HALF a pair is stored. A half pair is a custom model
+    // someone started and did not finish, which is the state whose selection
+    // silently degraded. A COMPLETE pair with a catalog model in force is NOT
+    // intent — that is a deliberate switch back, and telling that user "both are
+    // needed" would be false.
+    const halfPair =
+      Boolean(sttQ.data.custom_model_path) !== Boolean(sttQ.data.custom_model_sha256)
+    if (sttQ.data.model === CUSTOM_MODEL || halfPair) setCustomIntended(true)
+  }
 
   // The consent gate's own cache entry (same key, same fetch), read here because
   // the vocabulary list exists only once Amazon Transcribe is confirmed: until
@@ -1028,8 +1038,14 @@ export default function SttSettings({ cardIndex }: {
   const canStream = streamingProviders.includes(provider)
   const defaultLanguage = provider === PROVIDER_LOCAL ? 'auto' : 'en-US'
   const languageOptions = stt.language_codes?.length ? stt.language_codes : [defaultLanguage]
+  // Gated on the served capability like streaming, so an edition provider that
+  // identifies languages gets the picker without core naming it.
+  const identifyingProviders = stt.language_identification_providers?.length
+    ? stt.language_identification_providers
+    : FALLBACK_LANGUAGE_IDENTIFICATION_PROVIDERS
+  const identifiesLanguages = identifyingProviders.includes(provider)
   const transcribeLanguages = stt.transcribe_languages ?? []
-  const mixedLanguagesOn = isTranscribe && transcribeLanguages.length >= stt.transcribe_languages_min
+  const mixedLanguagesOn = identifiesLanguages && transcribeLanguages.length >= stt.transcribe_languages_min
   // The languages each Transcribe path runs in. A live stream identifies between
   // the candidates once mixed languages are on; a voice message, and dictation
   // with streaming off, always run in the one language above.
@@ -1488,7 +1504,7 @@ export default function SttSettings({ cardIndex }: {
           </>
         )}
 
-        <SettingsSelect configKey="stt.language_code" label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || defaultLanguage} options={languageOptions} optionLabels={languageOptions.map(code => code === 'auto' ? i18nT('pages.settings.sttSettings.language_auto') : languageOptionLabel(code))} onChange={v => set({ language_code: v })} disabled={saving} />
+        {provider !== PROVIDER_CODEX && <SettingsSelect configKey="stt.language_code" label={i18nT('pages.settings.sttSettings.language')} hint={i18nT('pages.settings.sttSettings.bcp_47_language_code_for_speech_recognition')} value={stt.language_code || defaultLanguage} options={languageOptions} optionLabels={languageOptions.map(code => code === 'auto' ? i18nT('pages.settings.sttSettings.language_auto') : languageOptionLabel(code))} onChange={v => set({ language_code: v })} disabled={saving} />}
         {/* Still editable: voice messages and dictation with streaming off keep
             using it, so the line says where it applies rather than greying it out. */}
         {mixedLanguagesOn && (
@@ -1499,7 +1515,7 @@ export default function SttSettings({ cardIndex }: {
 
         {/* Beside the language it overrides, because the two answer one question:
             which language dictation is heard in. */}
-        {isTranscribe && (
+        {identifiesLanguages && (
           <TranscribeLanguagesPicker
             value={transcribeLanguages}
             candidates={languageOptions.filter(code => code !== 'auto')}
@@ -1512,11 +1528,12 @@ export default function SttSettings({ cardIndex }: {
 
         {/* Kept on the surface, not in Advanced, because it is the one setting here
             that changes where the words GO: the transcript (never the audio) leaves
-            this machine. The description stays inline for the same reason -- consent
-            a user has to hover to read is not consent. */}
+            this machine. The short description says exactly that, on the row, for the
+            same reason -- consent a user has to hover to read is not consent. The tip
+            only adds what the tidy-up does to the text. */}
         <SettingsToggle
           label={i18nT('pages.settings.sttSettings.polish')}
-          description={i18nT('pages.settings.sttSettings.polish_desc')}
+          description={i18nT('pages.settings.sttSettings.polish_desc_summary')} hint={i18nT('pages.settings.sttSettings.polish_desc')}
           checked={!!stt.polish}
           onChange={v => set({ polish: v })}
           disabled={saving}
@@ -1571,6 +1588,12 @@ export default function SttSettings({ cardIndex }: {
               apart from Auto-submit above, which judges the speech itself. */}
           <SettingsToggle label={i18nT('pages.settings.sttSettings.submit_on_release')} hint={i18nT('pages.settings.sttSettings.submit_on_release_desc')} checked={!!stt.submit_on_release} onChange={v => set({ submit_on_release: v })} disabled={saving} configKey="stt.submit_on_release" />
 
+          {/* The phone hold bar's up-right send. Opt-in: with it off, sliding up
+              any way cancels, which is the gesture people already know. It only
+              applies while letting go keeps a draft, so it is greyed out while
+              the toggle above already makes letting go send. */}
+          <SettingsToggle label={i18nT('pages.settings.sttSettings.slide_to_send')} hint={i18nT('pages.settings.sttSettings.slide_to_send_desc')} checked={!!stt.slide_to_send} onChange={v => set({ slide_to_send: v })} disabled={saving || !!stt.submit_on_release} configKey="stt.slide_to_send" />
+
           <SettingsToggle label={i18nT('pages.settings.sttSettings.dictation_panel')} hint={i18nT('pages.settings.sttSettings.show_an_animated_panel_while_recording_instead_of')} checked={stt.dictation_panel !== false} onChange={v => set({ dictation_panel: v })} disabled={saving} />
 
           {/* The thread picker is the local provider's alone: the others run their
@@ -1618,7 +1641,7 @@ export default function SttSettings({ cardIndex }: {
               onConsentChange={() => qc.invalidateQueries({ queryKey: ['sttVocabularies'] })}
             />
             <SettingsInput label={i18nT('pages.settings.sttSettings.aws_profile_transcribe')} description={i18nT('pages.settings.sttSettings.aws_credentials_profile_for_transcribe_blank_def')} value={localProfile} onChange={setLocalProfile} onBlur={() => set({ transcribe_profile: localProfile.trim() })} placeholder={i18nT('pages.settings.sttSettings.default')} disabled={saving} />
-            <SettingsInput label={i18nT('pages.settings.sttSettings.aws_region_transcribe')} description={i18nT('pages.settings.sttSettings.aws_region_for_transcribe')} value={localRegion} onChange={setLocalRegion} onBlur={() => set({ transcribe_region: localRegion.trim() })} placeholder={i18nT('pages.settings.sttSettings.us_east_1')} disabled={saving} />
+            <SettingsInput label={i18nT('pages.settings.sttSettings.aws_region_transcribe')} value={localRegion} onChange={setLocalRegion} onBlur={() => set({ transcribe_region: localRegion.trim() })} placeholder={i18nT('pages.settings.sttSettings.us_east_1')} disabled={saving} />
             {/* Below the profile and region because it is read FROM them. Shown once
                 AWS may be asked for the list, or while a vocabulary is stored, so a
                 stored one can always be seen and cleared. */}

@@ -62,6 +62,36 @@ class TestQueueReadIsSizeBounded:
         fp.write_text('{"id": "x", "pad": "' + "a" * (server.MAX_BODY_BYTES + 64) + '"}')
         assert server._read_request(fp) is None
 
+    def test_the_size_is_checked_before_the_file_is_read(self, isolated_queue, monkeypatch):
+        """The stat must come first: reading an oversized file IS the exhaustion.
+
+        Behavioural, at the owner: an over-ceiling record must be refused without
+        ``read_text`` ever being called on it, and a normal one must still be read,
+        so the recorder is shown to see the reader's call at all.
+        """
+        from kiro_crew.apps.builtins.design_tweak.backend import request_state
+
+        reads: list[str] = []
+        real_read_text = Path.read_text
+
+        def recording_read_text(self: Path, *args: Any, **kwargs: Any) -> str:
+            reads.append(os.fspath(self))
+            return real_read_text(self, *args, **kwargs)
+
+        big = server._request_file(server.QUEUE_DIR, "1700000000000-big001")
+        big.write_text('{"id": "x", "pad": "' + "a" * (server.MAX_RECORD_BYTES + 64) + '"}')
+        ok_rid = "1700000000000-ok0001"
+        ok = server._request_file(server.QUEUE_DIR, ok_rid)
+        server._write_request(ok, {"id": ok_rid, "comments": []})
+
+        monkeypatch.setattr(Path, "read_text", recording_read_text)
+        assert request_state.read_request(server.runtime, big) is None
+        assert reads == [], "the oversized record was read before its size was checked"
+
+        got = request_state.read_request(server.runtime, ok)
+        assert got is not None and got["id"] == ok_rid
+        assert len(reads) == 1, "the recorder did not see the reader's own read"
+
     def test_a_normal_record_still_reads(self, isolated_queue):
         rid = "1700000000000-ok0000"
         fp = server._request_file(server.QUEUE_DIR, rid)

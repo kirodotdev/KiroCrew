@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Locate, Link2, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
+import { Pencil, Circle, Pin, Locate, Link2, Hash, Check, MessagesSquare, Tag as TagIcon, X, Unlink, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -12,19 +12,26 @@ import CrewBoardMenuItem from './CrewBoardMenuItem'
 import SessionColorSwatches from './SessionColorSwatches'
 import SourceLinksSubmenu from './SourceLinksSubmenu'
 import { SessionTurnLimitSubmenu } from './SessionTurnLimitMenu'
+import OfflineMenuReason from './OfflineMenuReason'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
 import { muteFlagErrorKey } from '../store/dashboardSlice'
 import { useAppSelector } from '../store'
 import { selectSlotSubagentsActive } from '../store/chatSlice'
+import { useConnected } from '../hooks/useConnected'
+import { offlineMenuRow } from '../utils/offline'
 import { useTagPopover } from '../hooks/useTagPopover'
+import { useNewFolderMove } from '../hooks/useNewFolderMove'
 import { api } from '../api/client'
 import { useSessionActions } from '../hooks/useSessionActions'
+import { useCopyAck } from './FilePathMenu'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 
 import { uiLocation } from '../uiLocations/uiLocation'
 import { i18nT } from '../i18n/t'
+import { slotRowByKey } from '../store/slotIndex'
+import { isMateManaged } from '../utils/mateFolders'
 export interface SessionActionsMenuProps {
   /** Chooses the Radix primitive family; must match the enclosing menu. */
   variant: 'dropdown' | 'context'
@@ -61,6 +68,19 @@ export interface SessionActionsMenuProps {
    * hosts the fork button.
    */
   onDuplicate?: () => void
+  /**
+   * Stage a reference to THIS session in the active chat's composer — the
+   * discoverable form of the drag-a-session-into-the-composer gesture, matching
+   * exactly what that drop stages (a link, resolved by the agent on demand).
+   *
+   * Passed only by the sidebar row's menu, where "this session" is a DIFFERENT
+   * session than the open one. The header menu omits it: it acts on the active
+   * session itself, which `sessionRefBlockReason` refuses as a self-reference.
+   * Omitted (or undefined) means the row cannot stage one right now — no
+   * composer to land in, or an incognito/temporary/self target — and the item
+   * is not rendered, the same self-hiding other conditional rows use.
+   */
+  onReferenceInChat?: () => void
   /** A second, muted line under Close that says what the press reaches. It wraps,
    *  so on a phone, where this menu is the only close, nothing is cut off. */
   closeHint?: string
@@ -78,6 +98,10 @@ export interface SessionActionsMenuProps {
   /** Extra items rendered in the top "informational" group (header-only today:
    *  the MCP-servers submenu). Generic so the shared menu stays surface-agnostic. */
   infoSlots?: React.ReactNode[]
+  /** One extra item rendered in the navigation group, directly after the pop-out rows
+   *  (header-only today: Split down). It changes the window layout the way pop-out
+   *  does, so it sits beside it, and no row above it moves. */
+  layoutSlot?: React.ReactNode
   /** Called after a colour pick; lets a caller that controls its own menu close it (the header does). */
   onColorPicked?: () => void
   /**
@@ -134,12 +158,12 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
+ *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Pop out · Split down (header only) · Reference in chat (sidebar rows only) · Copy link · Copy Kiro Crew session ID · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, closeHint, closeLabel, closeNeutral = false, infoSlots, onColorPicked, sidebarOnScreen = false, omitPopout = false,
+  variant, slotKey, mode, onReveal, onRename, onAutoTitle, onOpenInNewTab, onDuplicate, onReferenceInChat, closeHint, closeLabel, closeNeutral = false, infoSlots, layoutSlot, onColorPicked, sidebarOnScreen = false, omitPopout = false,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
@@ -155,13 +179,15 @@ export default function SessionActionsMenu({
   const selfPopout = isSelfPopout(slotKey)
   const poppedOut = !selfPopout && isPoppedOut(slotKey)
   const { open: openTagPopover } = useTagPopover()
+  const newFolderMove = useNewFolderMove()
 
   // Store-derived per-slot state: the canonical live source, matching exactly
   // what the action handlers read at call time (so a label never drifts from
   // its behaviour). `unread` comes from dashboard.unreadSlots — the same source
   // toggleRead reads — and pin/folder/colour from the slot itself.
   const isUnread = useAppSelector(s => s.dashboard.unreadSlots.includes(slotKey))
-  const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
+  const connected = useConnected()
+  const slot = useAppSelector(s => slotRowByKey(s.dashboard.slots, slotKey))
   const isPinned = !!slot?.pinned
   const isMutesOpened = !!slot?.mutes_opened
   const isMuted = !!slot?.muted
@@ -174,6 +200,26 @@ export default function SessionActionsMenu({
   // and this is the only place that disagreement is said.
   const mutesOpenedError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('mutes_opened', slotKey)])
   const mutesOpenedErrorId = React.useId()
+  // "Copy Kiro Crew session ID" acknowledges a successful copy in place through
+  // the shared copy-ack hook (the same one the file-path menu's Copy path uses):
+  // the item reads "Copied" with a check, then returns to its label. A stale
+  // resolution from an earlier press is dropped by the hook's attempt guard.
+  const { copyStatus: idCopyStatus, copyPath: copySessionId } = useCopyAck(slotKey)
+  // A refused copy (both clipboard layers) is said through ErrorNotice plus its
+  // menu hand-off, not only by the transient label. It stays on screen through
+  // retries and past the hook's acknowledgment window, and clears only once a
+  // copy succeeds: a retry that fails again re-sets the same `failed` status,
+  // so clearing before each press would hide the second failure.
+  const [copyIdFailed, setCopyIdFailed] = React.useState(false)
+  const copyIdErrorId = React.useId()
+  React.useEffect(() => {
+    if (idCopyStatus === 'failed') setCopyIdFailed(true)
+    else if (idCopyStatus === 'copied') setCopyIdFailed(false)
+  }, [idCopyStatus])
+  const onCopySessionId = () => { void copySessionId() }
+  const copyIdLabel = idCopyStatus === 'copied'
+    ? i18nT('components.sessionActionsMenu.copy_session_id_copied')
+    : i18nT('components.sessionActionsMenu.copy_session_id')
   const isRunning = !!slot?.running
   // The move-to submenu lists chat folders in the order the sidebar draws them.
   // A failed read (no body to draw from) is said once per screen, by the
@@ -198,6 +244,8 @@ export default function SessionActionsMenu({
   // (Radix), so this keyed query effectively runs only while a menu is open and
   // dedupes against the sidebar's own ['chat-folders'] cache — no extra fetch.
   const { data: folders = [] } = useQuery<ChatFolder[]>({ queryKey: ['chat-folders'], queryFn: () => api.chatFolders() })
+  const inMateFolder = isMateManaged(folders.find(f => f.id === currentFolderId), folders)
+  const movableFolders = folders.filter(f => !isMateManaged(f, folders))
 
   const groups = collapseGroups<React.ReactNode>([
     // Informational (header only) — generic slots injected by the caller.
@@ -205,24 +253,24 @@ export default function SessionActionsMenu({
     // Modifiers to the tab itself
     [
       onRename && (
-        <Item key="rename" onSelect={onRename} {...uiLocation('sessions.row-menu.rename')}>
+        <Item key="rename" {...offlineMenuRow(connected, i18nT('utils.offline.rename_sessions'), i18nT('components.sessionActionsMenu.rename'), onRename)} {...uiLocation('sessions.row-menu.rename')}>
           <Pencil size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.rename')}
         </Item>
       ),
       onAutoTitle && (
-        <Item key="auto-title" onSelect={onAutoTitle}>
+        <Item key="auto-title" {...offlineMenuRow(connected, i18nT('utils.offline.rename_sessions'), i18nT('pages.chatPage.auto_title'), onAutoTitle)}>
           <Sparkles size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatPage.auto_title')}
         </Item>
       ),
       <Item key="read" onSelect={() => toggleRead(slotKey)}>
         <Circle size={13} className="shrink-0 text-muted" /> {isUnread ? i18nT('components.sessionActionsMenu.mark_as_read') : i18nT('components.sessionActionsMenu.mark_as_unread')}
       </Item>,
-      <Item key="pin" onSelect={() => togglePin(slotKey)} {...uiLocation('sessions.row-menu.pin')}>
+      <Item key="pin" {...offlineMenuRow(connected, i18nT('utils.offline.change_pin'), isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin'), () => togglePin(slotKey))} {...uiLocation('sessions.row-menu.pin')}>
         <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
       </Item>,
       // Per-row mute, keyed to THIS row's slotKey (not the active tab), so a
       // background session can be silenced while the user works elsewhere.
-      <Item key="mute" onSelect={() => toggleMuted(slotKey)}>
+      <Item key="mute" {...offlineMenuRow(connected, i18nT('utils.offline.change_mute'), isMuted ? i18nT('components.sessionActionsMenu.unmute') : i18nT('components.sessionActionsMenu.mute'), () => toggleMuted(slotKey))}>
         {/* A speaker, not the bell: the bell belongs to "Mute sessions this one
          *  opens" just below, and the two must not read as one control. */}
         {isMuted
@@ -255,7 +303,7 @@ export default function SessionActionsMenu({
           <Separator />
         </React.Fragment>
       ),
-      <Item key="mute-opened" onSelect={() => toggleMutesOpened(slotKey)}>
+      <Item key="mute-opened" {...offlineMenuRow(connected, i18nT('utils.offline.change_mute'), isMutesOpened ? i18nT('components.sessionActionsMenu.unmute_sessions_it_opens') : i18nT('components.sessionActionsMenu.mute_sessions_it_opens'), () => toggleMutesOpened(slotKey))}>
         <BellOff size={13} className="shrink-0 text-muted" /> {isMutesOpened ? i18nT('components.sessionActionsMenu.unmute_sessions_it_opens') : i18nT('components.sessionActionsMenu.mute_sessions_it_opens')}
       </Item>,
       // The mute toggle has no server re-read; a failed PATCH leaves the row on
@@ -284,15 +332,19 @@ export default function SessionActionsMenu({
           <Separator />
         </React.Fragment>
       ),
-      folders.length > 0 && (
+      // A chat inside a mate's folder stays there, and no chat moves into one.
+      movableFolders.length > 0 && !inMateFolder && (
         <FolderMoveSubmenu
           key="move"
           variant={variant}
-          folders={folders}
+          folders={movableFolders}
           currentFolderId={currentFolderId}
-          onPick={(folderId) => move(slotKey, folderId)}
+          onPick={(folderId) => { if (!connected) return; move(slotKey, folderId) }}
+          offlineVerb={i18nT('utils.offline.move_sessions')}
           label={i18nT('components.sessionActionsMenu.move_to_folder')}
           sortMode={folderSortMode}
+          onNewFolder={newFolderMove ? () => newFolderMove.open(slotKey) : undefined}
+          newFolderLabel={i18nT('components.sessionActionsMenu.new_folder')}
         />
       ),
       // Under the row whose list it describes, and only with folders to list,
@@ -303,7 +355,7 @@ export default function SessionActionsMenu({
       // reaches (a button nested in an item is skipped), described by that id;
       // the plain line under the notice says what the list is showing and that
       // the read retries on its own.
-      folders.length > 0 && folderOrderUnsaid && (
+      movableFolders.length > 0 && !inMateFolder && folderOrderUnsaid && (
         <React.Fragment key="folder-order-error">
           {/* Bounded width: the notice is the menu's widest child when the
               server string is long, and an unbounded inline-flex would stretch
@@ -362,7 +414,7 @@ export default function SessionActionsMenu({
         </Item>
       ),
       onDuplicate && (
-        <Item key="duplicate" onSelect={onDuplicate}>
+        <Item key="duplicate" {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.duplicate'), onDuplicate)}>
           <GitFork size={13} className="shrink-0 text-muted" /> {i18nT('pages.chatSidebar.duplicate')}
         </Item>
       ),
@@ -393,14 +445,71 @@ export default function SessionActionsMenu({
           <Undo2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.bring_back_to_main')}
         </Item>
       ),
+      layoutSlot,
+      // Stage a reference to this session in the open chat's composer — the
+      // menu form of dragging the row into the composer. Self-hiding: the
+      // caller passes the handler only when a reference can be staged right now
+      // (a composer exists, and this is not an incognito/temporary/self target).
+      onReferenceInChat && (
+        <Item key="reference-in-chat" onSelect={onReferenceInChat}>
+          <MessagesSquare size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reference_in_chat')}
+        </Item>
+      ),
       <Item key="copy" onSelect={() => copyLink(slotKey)}>
         <Link2 size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.copy_link')}
       </Item>,
+      // The bare session ID (the `sid` hidden inside Copy link's URL), for
+      // pasting into a prompt or an issue. Its own `#` glyph, not another Copy
+      // glyph: the copy glyph already means Duplicate on this row and Copy text
+      // in the message footer, so a third overload would read as either. The
+      // label names the product: this is not the id `kiro-cli --resume-id` takes.
+      <Item
+        key="copy-id"
+        // Keep the menu open on select so the acknowledgment is not taken off
+        // screen the instant it is earned, and a failure notice renders in
+        // place with its hand-off reachable; the label is announced politely.
+        onSelect={(e?: Event) => { e?.preventDefault?.(); onCopySessionId() }}
+      >
+        {idCopyStatus === 'copied'
+          ? <Check size={13} className="shrink-0 text-ok" aria-hidden="true" />
+          : <Hash size={13} className="shrink-0 text-muted" />}
+        {' '}
+        <span aria-live="polite" data-testid="session-menu-copy-id-label">{copyIdLabel}</span>
+      </Item>,
+      // Both clipboard layers refused, so the key never reached the clipboard:
+      // say so through ErrorNotice (the rule's in-menu form: a passive notice
+      // plus a hand-off item the roving focus reaches).
+      copyIdFailed && (
+        <React.Fragment key="copy-id-error">
+          <div className="max-w-[300px] px-2 py-1.5">
+            <ErrorNotice
+              id={copyIdErrorId}
+              variant="inline"
+              className="flex-wrap"
+              title={i18nT('components.sessionActionsMenu.copy_session_id_failed')}
+              message={i18nT('components.sessionActionsMenu.copy_session_id_failed_detail')}
+              messagePlacement="below"
+              testId="session-menu-copy-id-error"
+            />
+          </div>
+          <ErrorNoticeMenuItem
+            Item={Item}
+            message={i18nT('components.sessionActionsMenu.copy_session_id_failed_detail')}
+            describedBy={copyIdErrorId}
+          />
+          <Separator />
+        </React.Fragment>
+      ),
       // Copy this session to another Kiro Crew instance. Sits in nav/access
       // rather than the tab-modifier group above because it changes nothing
       // about this tab — the peer gets its own copy under its own key.
       // Self-hiding when no instances are configured.
-      <SendToInstanceSubmenu key="send-instance" slotKey={slotKey} variant={variant} />,
+      <SendToInstanceSubmenu
+        key="send-instance"
+        slotKey={slotKey}
+        variant={variant}
+        folderDefault={folders.find(f => f.id === currentFolderId)?.default_destination_crew}
+      />,
       // The same act with the live hop removed: a tunnel needs both machines up
       // and reachable at once, a file does not. Adjacent to the submenu above
       // so the two read as one choice about where the copy goes.
@@ -454,7 +563,7 @@ export default function SessionActionsMenu({
         key="reload"
         disabled={reloadBlocked}
         title={i18nT('components.sessionActionsMenu.reload_session_tooltip')}
-        onSelect={() => reload(slotKey)}
+        {...offlineMenuRow(connected, i18nT('utils.offline.reload_sessions'), i18nT('components.sessionActionsMenu.reload_session'), () => reload(slotKey))}
       >
         <RotateCw size={13} className="shrink-0 text-muted" /> {i18nT('components.sessionActionsMenu.reload_session')}
         {reloadBlocked && (
@@ -475,23 +584,31 @@ export default function SessionActionsMenu({
     [
       (() => {
         const CloseGlyph = closeNeutral ? Unlink : X
+        const closeText = closeLabel ?? i18nT('components.sessionActionsMenu.close_session')
         return (
-          <Item key="close" className={closeNeutral ? undefined : 'text-danger focus:text-danger'} onSelect={() => close(slotKey)}>
+          <Item
+            key="close"
+            {...offlineMenuRow(connected, i18nT('utils.offline.close_sessions'), closeText, () => close(slotKey))}
+            className={connected && !closeNeutral ? 'text-danger focus:text-danger' : undefined}
+          >
             {closeHint ? (
               <>
                 <CloseGlyph size={13} className="self-start mt-0.5 shrink-0" />
                 <span className="flex min-w-0 flex-col">
-                  <span>{closeLabel ?? i18nT('components.sessionActionsMenu.close_session')}</span>
+                  <span>{closeText}</span>
                   <span className="max-w-[15rem] whitespace-normal text-[11px] leading-snug text-muted" data-testid="close-item-hint">{closeHint}</span>
                 </span>
               </>
             ) : (
-              <><CloseGlyph size={13} /> {closeLabel ?? i18nT('components.sessionActionsMenu.close_session')}</>
+              <><CloseGlyph size={13} /> {closeText}</>
             )}
           </Item>
         )
       })(),
     ],
+    // LAST on purpose: a gateway drop while the menu is open mounts this row, and
+    // anywhere above the items it would shift them under a mid-aim pointer.
+    !connected ? [<OfflineMenuReason key="offline-reason" />] : [],
   ])
 
   return (

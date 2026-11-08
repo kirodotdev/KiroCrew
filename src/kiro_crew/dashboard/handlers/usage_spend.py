@@ -102,7 +102,7 @@ def slot_spend(days: int = SPEND_WINDOW_DAYS) -> dict[str, dict[str, float]]:
                 for line in bounded_records(fh, path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -155,7 +155,7 @@ def daily_credits(days: int = _SESSIONS_HISTORY_DAYS) -> dict[str, float]:
                 for line in bounded_records(fh, path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -213,11 +213,12 @@ def slot_turn_usage(
     """Per-turn usage rows for ONE session, oldest first.
 
     The per-turn drill-down under :func:`slot_spend`'s aggregate: each row is
-    one turn's shard record — model, token counts, credits, duration, and the
-    context meter — for the slot named. Built for the app-facing usage API: an
-    app that runs agent sessions (via app-owned slots) can account for what its
-    own turns cost without reaching into the shard files, whose location and
-    row shape are this module's private contract.
+    one turn's shard record — model, token counts, credits, duration, the
+    context meter, and ``delivered`` where the row records it — for the slot
+    named. Built for the app-facing usage API: an app that runs agent
+    sessions (via app-owned slots) can account for what its own turns cost
+    without reaching into the shard files, whose location and row shape are
+    this module's private contract.
 
     Same walk and the same reasons as :func:`context_trace`: per-session
     per-turn detail stays OUT of the OTEL pipeline because slot keys are
@@ -248,7 +249,7 @@ def slot_turn_usage(
                 for line in bounded_records(fh, shard_path, label="usage"):
                     try:
                         obj = json.loads(line)
-                    except ValueError:
+                    except (ValueError, RecursionError):  # past the nesting limit
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -269,6 +270,8 @@ def slot_turn_usage(
                         value = _usage_number(obj.get(field))
                         if value is not None:
                             row[field] = value
+                    if isinstance(obj.get("delivered"), bool):
+                        row["delivered"] = obj["delivered"]
                     turns.append(row)
         except (OSError, UnicodeDecodeError):
             continue

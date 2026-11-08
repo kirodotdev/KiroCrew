@@ -16,7 +16,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, cleanup } from '@testing-library/react'
+import { render, cleanup, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useRefreshScheduler, type UseRefreshSchedulerOptions } from '../hooks/useRefreshScheduler'
 import { __resetRefreshOnceForTests } from '../api/refreshOnce'
@@ -25,6 +25,12 @@ const ProbeComponent = ({ opts }: { opts?: UseRefreshSchedulerOptions }): null =
   useRefreshScheduler(opts)
   return null
 }
+
+// Timer advances run inside act so the state the scheduler sets lands in a tracked update.
+const advance = (ms: number): Promise<void> =>
+  act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
 
 // Fresh QueryClient per render so cache state is isolated between tests.
 // Defaults disable retry and window-focus refetch so test behaviour is
@@ -92,7 +98,7 @@ describe('useRefreshScheduler', () => {
     renderProbe()
 
     // Flush the initial /api/auth/me microtask chain
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
     expect(fetchMock).toHaveBeenCalledWith('/api/auth/me', expect.any(Object))
 
     // Set up the upcoming /refresh and the re-scheduled /me (after invalidate)
@@ -100,7 +106,7 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(okJson({ user_id: 'alice', session_exp: nowSec + TWENTY_H + 1, refresh_exp: 0 }))
 
     // Advance to T-1h (i.e. ~19h from now)
-    await vi.advanceTimersByTimeAsync(19 * ONE_HOUR_MS + 1000)
+    await advance(19 * ONE_HOUR_MS + 1000)
     expect(refreshCalls(fetchMock).length).toBeGreaterThanOrEqual(1)
   })
 
@@ -109,19 +115,19 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(okJson({ user_id: 'alice', session_exp: nowSec + TWENTY_H, refresh_exp: 0 }))
 
     renderProbe()
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     fetchMock.mockResolvedValueOnce(status(500))
-    await vi.advanceTimersByTimeAsync(19 * ONE_HOUR_MS + 1000)
+    await advance(19 * ONE_HOUR_MS + 1000)
     expect(refreshCalls(fetchMock).length).toBe(1)
 
     // 30s into 60s backoff: no second call yet
-    await vi.advanceTimersByTimeAsync(30 * 1000)
+    await advance(30 * 1000)
     expect(refreshCalls(fetchMock).length).toBe(1)
 
     // Past the 60s backoff window: second /refresh fires
     fetchMock.mockResolvedValueOnce(status(500))
-    await vi.advanceTimersByTimeAsync(35 * 1000)
+    await advance(35 * 1000)
     expect(refreshCalls(fetchMock).length).toBeGreaterThanOrEqual(2)
   })
 
@@ -131,15 +137,15 @@ describe('useRefreshScheduler', () => {
 
     const onChainRevoked = vi.fn()
     renderProbe({ onChainRevoked })
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     fetchMock.mockResolvedValueOnce(status(401, { error: 'refresh_chain_revoked' }))
-    await vi.advanceTimersByTimeAsync(19 * ONE_HOUR_MS + 1000)
+    await advance(19 * ONE_HOUR_MS + 1000)
 
     expect(onChainRevoked).toHaveBeenCalledTimes(1)
 
     const callsAfter = fetchMock.mock.calls.length
-    await vi.advanceTimersByTimeAsync(120 * ONE_HOUR_MS)
+    await advance(120 * ONE_HOUR_MS)
     expect(fetchMock.mock.calls.length).toBe(callsAfter)
   })
 
@@ -148,12 +154,12 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(okJson({ user_id: 'alice', session_exp: nowSec + TWENTY_H, refresh_exp: 0 }))
 
     const { unmount } = renderProbe()
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     unmount()
 
     const callsBefore = fetchMock.mock.calls.length
-    await vi.advanceTimersByTimeAsync(25 * ONE_HOUR_MS)
+    await advance(25 * ONE_HOUR_MS)
     expect(fetchMock.mock.calls.length).toBe(callsBefore)
   })
 
@@ -162,10 +168,10 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(okJson({ user_id: 'alice', session_exp: nowSec + TWENTY_H, refresh_exp: 0 }))
 
     renderProbe()
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
-    await vi.advanceTimersByTimeAsync(19 * ONE_HOUR_MS + 1000)
+    await advance(19 * ONE_HOUR_MS + 1000)
 
     expect(refreshCalls(fetchMock).length).toBe(0)
 
@@ -174,7 +180,7 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(status(200, { refreshed_at: nowSec + 1, session_exp: nowSec + TWENTY_H + 1, refresh_exp: 0 }))
     fetchMock.mockResolvedValueOnce(okJson({ user_id: 'alice', session_exp: nowSec + TWENTY_H + 1, refresh_exp: 0 }))
     document.dispatchEvent(new Event('visibilitychange'))
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     expect(refreshCalls(fetchMock).length).toBeGreaterThanOrEqual(1)
   })
@@ -183,10 +189,10 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(status(404))
 
     renderProbe()
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     const callsAfter = fetchMock.mock.calls.length
-    await vi.advanceTimersByTimeAsync(120 * ONE_HOUR_MS)
+    await advance(120 * ONE_HOUR_MS)
     expect(fetchMock.mock.calls.length).toBe(callsAfter)
   })
 
@@ -206,7 +212,7 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(okJson({ user_id: 'alice', session_exp: nowSec + TWENTY_H, refresh_exp: nowSec + 30 * 86400 }))
 
     renderProbe()
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     // Verify the sequence: /me 401 -> /refresh 200 -> /me 200
     const calls = fetchMock.mock.calls
@@ -218,7 +224,7 @@ describe('useRefreshScheduler', () => {
 
     // No backoff timer should be scheduled — the next event is the
     // normal 19h-from-now refresh, not a 60s retry.
-    await vi.advanceTimersByTimeAsync(2 * 60 * 1000)  // skip 2 min
+    await advance(2 * 60 * 1000)  // skip 2 min
     expect(refreshCalls(fetchMock).length).toBe(1)  // only the proactive one
   })
 
@@ -230,7 +236,7 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(status(401, { error: 'session_expired' }))  // 2nd /me still 401
 
     renderProbe()
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     const calls = fetchMock.mock.calls
     // Should be exactly 3 calls: /me, /refresh, /me — no further /refresh attempt.
@@ -245,7 +251,7 @@ describe('useRefreshScheduler', () => {
     // already invalidated auth-me, but with retry=false the second /me
     // returning null doesn't trigger a third refresh — backoff path takes
     // over via the scheduler effect.
-    await vi.advanceTimersByTimeAsync(30 * 1000)  // 30s
+    await advance(30 * 1000)  // 30s
     expect(calls.length).toBe(3)
   })
 
@@ -258,7 +264,7 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(okJson({ user_id: 'alice', session_exp: nowSec + TWENTY_H, refresh_exp: 0 }))
 
     renderProbe()
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     // 2nd call: /api/auth/refresh -> 200
     fetchMock.mockResolvedValueOnce(status(200, { refreshed_at: nowSec + 1, session_exp: nowSec + TWENTY_H + 100, refresh_exp: 0 }))
@@ -266,7 +272,7 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(okJson({ user_id: 'alice', session_exp: nowSec + TWENTY_H + 100, refresh_exp: 0 }))
 
     // Fire the proactive refresh via timer
-    await vi.advanceTimersByTimeAsync(19 * ONE_HOUR_MS + 1000)
+    await advance(19 * ONE_HOUR_MS + 1000)
 
     // Verify /api/auth/me was re-fetched after the refresh (cache invalidation worked)
     const meCalls = fetchMock.mock.calls.filter((c) => c[0] === '/api/auth/me')
@@ -283,7 +289,7 @@ describe('useRefreshScheduler', () => {
     const { Wrapper, qc } = makeWrapper()
     qc.setQueryData(['kiro-prerequisite'], { ready: false })
     render(<ProbeComponent />, { wrapper: Wrapper })
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     fetchMock.mockResolvedValueOnce(status(200, {
       refreshed_at: nowSec + 1,
@@ -295,7 +301,7 @@ describe('useRefreshScheduler', () => {
       session_exp: nowSec + TWENTY_H + 100,
       refresh_exp: 0,
     }))
-    await vi.advanceTimersByTimeAsync(19 * ONE_HOUR_MS + 1000)
+    await advance(19 * ONE_HOUR_MS + 1000)
 
     expect(qc.getQueryState(['kiro-prerequisite'])?.isInvalidated).toBe(true)
   })
@@ -320,7 +326,7 @@ describe('useRefreshScheduler', () => {
     fetchMock.mockResolvedValueOnce(okJson({ user_id: 'alice', session_exp: nowSec + TWENTY_H, refresh_exp: nowSec + 30 * 86400 }))
 
     renderProbe()
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     // Verify the sequence: /me 403 -> /refresh 200 -> /me 200
     const calls = fetchMock.mock.calls
@@ -331,7 +337,7 @@ describe('useRefreshScheduler', () => {
     expect(calls[2][0]).toBe('/api/auth/me')
 
     // No backoff timer — only the one proactive refresh.
-    await vi.advanceTimersByTimeAsync(2 * 60 * 1000)
+    await advance(2 * 60 * 1000)
     expect(refreshCalls(fetchMock).length).toBe(1)
   })
 
@@ -347,7 +353,7 @@ describe('useRefreshScheduler', () => {
     )
 
     renderProbe()
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
     expect(refreshCalls(fetchMock).length).toBe(0)
   })

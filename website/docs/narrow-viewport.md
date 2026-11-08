@@ -98,8 +98,7 @@ text label, keeps `HOVER_NONE_ACTION_BTN_CLS` / `HOVER_NONE_ACTIONS_ROW_CLS` and
 square, and an always-visible icon control takes `mc-touch-hit` (next entry).
 
 **An always-visible icon control gets its 44px from `mc-touch-hit`, not from padding.** The
-`mc-touch-hit` / `mc-touch-hit-y` / `mc-touch-hit-end` classes (`src/styles/scrollbars-and-touch-hit.css`, the block after
-the `.scrollbar-overlay` coarse rule) add an invisible `::after` that extends only the hit
+`mc-touch-hit` / `mc-touch-hit-y` / `mc-touch-hit-end` classes (`src/styles/scrollbars-and-touch-hit.css`) add an invisible `::after` that extends only the hit
 area to 44px on each axis where the control is smaller, so drawn size and layout do not
 change; use them on header, top-bar and row kebabs, toggles and split-button segments (`-y`
 for a segment with neighbours on both sides, `-end` for the last segment, which grows away
@@ -109,6 +108,10 @@ The predicate is `pointer: coarse` rather than `hover: none` because the hit are
 pointer precision, and hover capability is a separate question. The `::after` cannot reach
 past the nearest `overflow: hidden` ancestor, since a clipped part of a box is not
 hit-testable, so a host inside such a wrapper must lift the clip under the same query.
+
+**An in-flow drag handle beside tappable content needs a pressed style.** That snapping also
+takes a touch landing ON a handle that has only `hover:` styles (they do not apply on touch);
+give its bar a `group-active/<name>:` style, as `ResizeHandle` does.
 
 **`overflow: hidden` on ANY ancestor kills `position: sticky` — use `overflow: clip`.**
 Same family: a `transform` on an ancestor re-anchors `position: fixed` children, and
@@ -122,6 +125,50 @@ does not reflow as the bar animates, and `dvh` only for surfaces that must track
 visible area (a chat container, a modal). Safe area is **padding, not size**:
 `padding-bottom: env(safe-area-inset-bottom)`, which resolves to 0 without
 `viewport-fit=cover`.
+
+**Inset all four edges, not only top and bottom.** Side insets are real: the notch sits
+on one side in iOS landscape, and a foldable's outer display can move the system
+controls to the side. A `fixed inset-0` container that lays out a dialog or a sheet
+uses `p-safe` (it had no padding) or `p-safe-or-<n>` (it had `p-<n>`: the same gutter,
+widened only where an inset is wider). A dim backdrop with nothing laid out inside it
+bleeds to every edge and needs neither. A fixed surface whose width is the viewport minus
+a gutter (`w-[calc(100%-4rem)]`) subtracts twice the wider side inset as well,
+`w-[calc(100%-max(4rem,var(--safe-area-x)+var(--safe-area-x)))]`, because a centred box
+keeps the same gutter on both sides. Write the doubling as a sum, not `2*`. Every one of these is 0 where the platform reports no inset, so
+nothing moves on a desktop. `src/test/safeArea.guard.test.ts` enforces both rules and
+lists the surfaces that inset their content themselves.
+
+**A fold resizes the viewport live.** A book-style foldable reports widths from about
+380px (the outer display, and each of two side-by-side windows on the inner one) to
+about 950px (the inner display in landscape), so folding or unfolding with the dashboard
+open crosses the `md` breakpoint in both directions. The shell switches its grid in
+place and the route element underneath is never unmounted, which is what keeps the open
+chat and its draft. Do not key a shell or a page on `useIsMobile()`, and do not branch a
+route element's component type on it. `src/test/App.foldResize.test.tsx` walks those
+widths.
+
+**`useIsMobile()` is the one form signal.** During an animated form switch the hook
+reports the form being drawn, which can trail the live media query by a frame or two. A
+component that decides phone versus desktop layout reads the hook, not its own
+`matchMedia('(max-width: 767px)')` or a raw width; `md:` classes stay for spacing and
+grids, which may flip a frame early without harm. `md:` and the wider breakpoint variants
+are keyed on the form too (`tailwind-theme.css`): they apply only while `<html>` is not
+marked `data-layout-form="phone"`, which `useIsMobile.ts` writes, so a phone drawn past
+768px keeps its `md:hidden` controls. Hand-written CSS that must follow the form keys on a
+form-only marker (`.topbar-phone`, `.mobile-sessions-overlay`), not a 767px media block.
+
+**A touch-first device takes the form its browser asks for.** Where the primary pointer
+is coarse and cannot hover (`(pointer: coarse)` and `(hover: none)`), `useIsMobile()`
+ignores the width and reads the browser's own mode (`lib/touchLayoutForm.ts`):
+`navigator.userAgentData.mobile` where the browser has User-Agent Client Hints, else the
+`Mobile` token in the UA string. A browser in mobile mode gets the phone form at any
+width (an unfolded foldable in landscape is about 951px wide). A browser in desktop mode
+(iPad Safari, a phone's "Request desktop site") falls back to the width rule, so it gets
+the desktop form from 768px and keeps the phone form below it: the desktop top bar's
+collapse ladder (`.tb-measured`) only has rungs from 768px, so an iPad Split View or
+Slide Over window must not get the desktop form. Every other device, touch laptops
+included, keeps the 768px breakpoint. A home-screen web app has no
+desktop-site toggle, so it keeps the browser's default mode.
 
 **The shell is an application, not a zoomable document — page zoom is off on touch.**
 Pinching magnifies a `position: fixed` / `h-dvh` layout whose scrollers are all
@@ -216,29 +263,30 @@ claim is restated (`docs/guides/remote-and-mobile.md`; `website/index.html` only
 points back here) — an unqualified version points a low-vision user at a control
 that is not there.
 
-**Any touch input below 16px zooms the viewport on focus, and WebKit does not zoom
-back out.** The scale is `clampTo(16 / fontSize, minimumScale, maximumScale)` from the
-FIELD's computed size, so a `text-sm` field can leave the user zoomed in — and with
-page zoom off there is no pinch-out to undo it. **There is deliberately no app-wide
-floor for this, and adding one needs evidence from a real device first**, because CSS
-cannot express a floor at all: it can only SET a
-size, so the two available shapes are wrong in opposite directions. A rule broad
-enough to reach every field SHRINKS the ones that are deliberately larger — measured,
-not hypothetical: `input:not([type=…]):not([type=…])` is (0,2,1) and beat the artifact
-rename field's `text-2xl`, snapping a 24px title to 16px on a phone. A narrower
-selector list misses fields instead, because a size can arrive as a named utility, an
-arbitrary value (`text-[13px]`), an `!important` modifier or an inline style, and no
-list contains the next one. A guard test rescues neither shape: ~120 of this app's
-fields are routed through the `<Input>` primitive or the `useAutoGrowTextarea`
-hook rather than a native tag, so a source sweep for `<input>` cannot see them and
-reports green.
+**Focus zoom is off, so no field needs a 16px floor.** WebKit zooms the viewport when
+a field below 16px takes focus, by `clampTo(16 / fontSize, minimumScale, maximumScale)`
+from the FIELD's computed size. The authored `maximum-scale=1` clamps that scale to 1:
+on an iPhone a 14px field (the Settings search) takes focus without zooming. Fields
+therefore keep their authored size on touch, and the composer uses the message font
+setting on every device. One size for the composer's typed text and its placeholder
+is also what keeps an empty composer one line tall: its auto-size measures the
+placeholder at the field's font size, so a field held at 16px over a 14px hint
+measured the hint a line too tall on a 375px phone (#28843).
 
-Two things make withholding the floor the safer side of that trade. The focus zoom is
-**pre-existing** — it is not introduced by suppressing pinch, which removes only the
-recovery gesture — and whether it can fire at all once `maximum-scale=1` is authored
-depends on the same engine path that decides whether WebKit honours the viewport keys,
-which is not answerable from source. Settle it on a device; if it does fire, the fix
-belongs in the field components, where a real `max(16px, authored)` is expressible.
+**There is deliberately no app-wide 16px field rule either**, because CSS cannot
+express a floor at all: it can only SET a size, so the two available shapes are wrong
+in opposite directions. A rule broad enough to reach every field SHRINKS the ones that
+are deliberately larger — measured, not hypothetical: `input:not([type=…]):not([type=…])`
+is (0,2,1) and beat the artifact rename field's `text-2xl`, snapping a 24px title to
+16px on a phone. A narrower selector list misses fields instead, because a size can
+arrive as a named utility, an arbitrary value (`text-[13px]`), an `!important`
+modifier or an inline style, and no list contains the next one. A guard test rescues
+neither shape: ~120 of this app's fields are routed through the `<Input>` primitive or
+the `useAutoGrowTextarea` hook rather than a native tag, so a source sweep for
+`<input>` cannot see them and reports green. If focus zoom ever comes back (the
+viewport key dropped, or an engine that stops honouring it), the fix belongs in the
+field components, where a real `max(16px, authored)` is expressible, and the
+composer's placeholder has to move with its field.
 
 **The `meta-viewport` axe rule is left ENABLED, deliberately.** `@axe-core/react` scans
 every render, so `user-scalable=no` reports a critical WCAG 1.4.4 finding on every scan.
@@ -280,7 +328,7 @@ gesture:
 | cell | who renders it | what is in it |
 |---|---|---|
 | leading (`auto`) | `shell/topbar/shellHeader.tsx` | the crew switcher (when a remote crew exists) and downstream widgets (while they exist); usually empty. Not the update pill: beside a remote crew's chip + dropdown it was a third action, so on this page a pending update is the first item of the overflow menu (`UpdatePill variant="menu-item"`, same lifecycle label) |
-| centre (`minmax(0,1fr)`) | `pages/chat/page/SessionsSidebarChrome.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the session title with the menu chevron flush after it (`ChatHeaderMenu` `triggerLabel`); Rename and Regenerate title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's `InboundLinkChip` would be a third control, so a two-way link's actions are read from the session menu's Linked surfaces section |
+| centre (`minmax(0,1fr)`) | `pages/chat/page/SessionsSidebarChrome.tsx` through `pages/chat/page/MobileTopBar.tsx`, by `createPortal` into `#mobile-topbar-slot` | sessions toggle, then ONE control that is the menu chevron with the session title after it, the same order as the desktop header (`ChatHeaderMenu` `triggerLabel`); Rename and Regenerate title are items of that menu (`SessionActionsMenu` `onRename` / `onAutoTitle`), and it leads with "New chat in {folder}" (`ChatHeaderMenu` `newSessionHere`), which opens a sibling session in the on-screen session's folder with that folder's agent and project, and Rename swaps in the shared title editor. That menu leaves out its pop-out / focus-popped-out rows here (`omitPopout`): the trailing ⋯ menu is the phone's window menu and carries them, and the same row in two adjacent menus read as two different actions. Nothing else: the inline row's `InboundLinkChip` would be a third control, so a two-way link's actions are read from the session menu's Linked surfaces section |
 | trailing (`auto`, `.tb-trail`) | `shell/topbar/shellHeader.tsx`, plus the same `MobileTopBar`'s portal into `#mobile-topbar-trail-slot` | exactly two: the bell, then the page's overflow menu (update when pending, pop out or focus the popped-out window, activity panel, split view). The update row reads `<status> — Open update settings`: a menu row is read as an action, and the row only navigates to Settings › About, so it names that outcome instead of implying a download or restart. The update row is a lazy chunk inside its own `ErrorBoundary`, so a chunk that fails to load costs the row, not the page (a rejection would otherwise reach the route boundary); the fallback is an inline `ErrorNotice` plus its `ErrorNoticeMenuItem` hand-off (`errors-use-error-notice`), never `null`, because this menu is the update's only phone home and a silent gap would hide the failure |
 
 That is the `topbar-single` header variant (`src/styles/shell-chrome.css`), applied only while
@@ -324,8 +372,9 @@ account modal (balance, sign-in state, `KiroAccountModal`), so the same two draw
 carry a **Kiro Account** entry -- a row in the nav drawer's bottom group and a tile
 in the chat drawer's rail, both between Capabilities and Settings (in the rail
 only while the secondary tiles are pinned; otherwise it folds into the Apps scroller,
-see below), both opening the modal. On the Kiro backend it is always there (the modal's Refresh fills an empty
-reading); on any other harness only for a reading the desktop segment would show --
+see below), both opening the modal. On a Kiro harness (kiro-cli or KAS) it is
+always there (the modal's Refresh fills an empty reading); on any other harness
+only for a reading the desktop segment would show --
 `kiroAccountEntry = kiroCreditSurface || (reading !== null && !pillHidden)`, the
 segment's own derivation minus the warming `null`, where the desktop's spinner would
 become a nav row blinking in and out. Same test file pins both states.
@@ -358,7 +407,7 @@ container already claims its own swipe via `data-owns-swipe`.
 
 The rail carries everything the nav drawer does except Connect-your-phone, which is
 moot on the phone itself: the Main rows and Library on top, the apps, then
-Developer (in developer mode), Terminal (which toggles the docked panel and closes
+Terminal (which toggles the docked panel and closes
 the drawer so the panel is not left behind it), Capabilities and Kiro Account, with
 Settings and Search pinned at the foot. `shell/nav/adaptiveMobileRail.tsx` places
 that secondary group: it stays pinned above Settings while the Apps list keeps
@@ -367,18 +416,18 @@ the apps, behind a separator. The decision reads `stableRailHeight` — the tall
 height seen at the current window width — so the on-screen keyboard or a browser
 toolbar shrinking the rail at the same width never moves the tiles.
 
-**The Mates page hosts the same drawer.** On a phone `/members` lands on a
-mate exactly as a wide window does, and its roster is a left drawer over the
+**The Bots page hosts the same drawer.** On a phone `/members` lands on a
+Bot exactly as a wide window does, and its roster is a left drawer over the
 open chat: the same rail (App provides `MobileNavRailContext` on this route too)
 beside the roster aside, which is portaled into the drawer while a chat or team
 is open. A rightward drag or the header's back control reveals it, a leftward
 drag reveals the side panel (a full-width overlay that slides on `sidePanelX`),
 and each gesture is off while the other's panel is open. The drawer mints the
 same duplicate history entry, and a roster pick spends it FIRST, then opens the
-mate on the entry below (`consumeRosterDrawerEntry`), so Back never reopens
-the mate just left. With nothing open the roster is the page, the page
+Bot on the entry below (`consumeRosterDrawerEntry`), so Back never reopens
+the Bot just left. With nothing open the roster is the page, the page
 binds nothing and claims no side, and the shell's nav-drawer swipe works there.
-With a mate or team open, or about to open, the page also shares the chat page's single top bar: `mobileSingle` covers it, so the shell drops its logo row and the page portals its thread header (drawer toggle, identity pill, panel toggle) into `#mobile-topbar-slot`, beside the bell. The page says which bar it needs through `MobileRosterBarContext`: `open` once a mate or team is on screen; `pending` while one is still being read (the landing, or a `?team=` link before the teams read answers); `roster` for the bare roster with no one to open (an empty roster, a failed read, a `?team=` link whose team does not resolve), which has no drawer and needs the bar's logo to reach the navigation, and on unmount. Every phone `/members` visit starts on the single bar and keeps it while the page is `pending`, because the page opens its mate from an effect and a bar keyed on the URL alone flashed the logo row for the frames before `?member=` landed. The bar does not change under a slow read: until the page reports `open` the shell's nav-drawer swipe stays on, so the navigation is one swipe away while the read is out. The page looks up the bar slot only once it reports `open`. In the bar the identity pill drops its vertical padding so it stays as tall as the 32px controls beside it. The rail's Home control navigates with `replace` without closing the drawer
+With a Bot or team open, or about to open, the page also shares the chat page's single top bar: `mobileSingle` covers it, so the shell drops its logo row and the page portals its thread header (drawer toggle, identity pill, panel toggle) into `#mobile-topbar-slot`, beside the bell. The page says which bar it needs through `MobileRosterBarContext`: `open` once a Bot or team is on screen; `pending` while one is still being read (the landing, or a `?team=` link before the teams read answers); `roster` for the bare roster with no one to open (an empty roster, a failed read, a `?team=` link whose team does not resolve), which has no drawer and needs the bar's logo to reach the navigation, and on unmount. Every phone `/members` visit starts on the single bar and keeps it while the page is `pending`, because the page opens its Bot from an effect and a bar keyed on the URL alone flashed the logo row for the frames before `?member=` landed. The bar does not change under a slow read: until the page reports `open` the shell's nav-drawer swipe stays on and the shell puts a nav-drawer toggle (the logo row's `Menu` glyph) in the slot, so the navigation is one swipe or one tap away and the bar is never empty. The page looks up the bar slot only once it reports `open`. In the bar the drawer toggle and the panel toggle are bare icons, as on the Sessions bar, and the identity pill drops its vertical padding so it stays as tall as the 32px controls beside it; over the pane they stay Glass chips. With no overflow menu to carry it, the update pill sits in the trailing cell before the bell, with its text shown in a pill capped at 88px that truncates, and asks the page before it leaves for Settings › About. The rail's Home control navigates with `replace` without closing the drawer
 when its host is not the chat page, since that close would pop the entry after
 the replace.
 
@@ -511,6 +560,15 @@ CHANGES, which is the authority for a panel opened by tap rather than by gesture
 halves are load-bearing: without the first, re-opening is declined; without the second, a
 hamburger-opened drawer cannot be dragged shut.
 
+**A settle a takeover ended never reports its arrival, even one whose time was up.** On
+the main-thread path, framer's `stop()` COMPLETES an animation whose duration has already
+passed, and `animate()` delivers that `onComplete` a microtask later, after the new
+gesture has committed. A busy main thread is exactly when that happens, and the stale
+arrival slid the side panel back open over a closing drag (#29908). Both main-thread
+settles, `animateDrawer`'s and the trackpad's `settleTrackpadDrag`, therefore note
+framer's `onStop` (it runs inside `stop()`, before that late `onComplete`) and drop an
+arrival that comes after it.
+
 **A MODAL LAYER owns every touch inside it, read from its `role`.** A dialog is not
 necessarily portaled out of the shell: the changelog and update-error overlays are plain
 `fixed inset-0` JSX inside it (the shell element is the `shellRef` root `App.tsx`
@@ -563,6 +621,119 @@ A committed close therefore parks the phase at `'closing'`, not `'closed'`: the 
 still on screen and its mount predicate keys on `!== 'closed'`, so writing `'closed'`
 here would cut the slide short. That also matches what a tap-driven close already did,
 which is why the chrome derived from the phase does not change timing.
+
+### The desktop counterpart: a trackpad swipe on the Bots page
+
+Off the phone the Bots page plays a two-finger trackpad swipe as the same side-panel
+DRAG (`useMembersPageTrackpadSwipe` over `hooks/useTrackpadSwipe`): to the left the
+panel follows the fingers in and settles open on its Dashboard tab, to the right it
+follows them out. A trackpad sends `wheel` events, not touches, so the reader cuts the
+stream into runs and reports the fingers' summed `deltaX`; the page drives `sidePanelX`
+from it directly (no touch events are synthesized) and on lift-off applies the phone's
+release rule from `useDrawerSwipe`'s exported constants (`COMMIT_DRAG_SHARE` 20%,
+`COMMIT_VELOCITY` 0.4 px/ms, the speed read over the fingers' last 60ms) and the phone's
+`animateDrawer` settle. An opening swipe while a Profile schedule draft is at stake does
+not drag: it goes to `togglePanel`, whose guard asks before anything is committed. While
+the drag runs the panel is a sheet on the right edge driven by `sidePanelX`, and a spacer in the
+page row as wide as the sheet's visible part (`deskSpacerW`) moves the chat's right edge
+with it, so the chat narrows and widens with the fingers. On desktop the settle runs on
+the main thread (same curve and timing) so the spacer can read every frame; the phone
+keeps its compositor settle. Once it settles, the resting state is published through
+`togglePanel` / the strip's focus (only for a run that revealed the panel) / the strip's
+close, and the placement takes it back with no width transition, since the spacer
+already stands at the column's width. A run's owner is fixed by its first event: a vertical
+start, a pinch (`ctrlKey`), a run over content that can still scroll that way, and a
+direction with nothing to do are all left alone; a new run during a settle grabs the
+panel where it is presenting it and follows from there, as a phone's drag can; anything else is cancelled event by event, with
+`overscroll-behavior-x: contain` on the document root while it runs, so macOS's
+back/forward swipe does not start under it. The drag is released only on a real
+lift-off: a 100ms gap (read from the events' own timestamps, so a slow frame is not a
+lift), or the momentum tail's signature, three steps in a row each smaller than the last
+by a near-constant ratio, or a creeping tail: three steps in a row of 4px or less after
+a step of 16px or more. The floor is absolute: a slow drag's own steps are a few px and
+uneven, and a rule against the run's own peak read a slow drag as its tail. At the release the
+distance rule reads the projected landing, not only the position: the fingers' last speed
+(before the tail, which never moved the panel) carried `TRACKPAD_PROJECTION_MS` (120ms)
+further, so a light flick that would coast past the 20% share commits at once and one that
+would not falls back, both on the fast trackpad settle. A finger that slows down or pauses
+for 60ms wobbles instead and
+keeps following 1:1, so a slow partial drag holds where it is and, on lift-off, falls
+back. Steps that may be the tail are held back and dropped once it is recognised, so the
+panel stops where the fingers left it; the rest of the run never drags again. A
+horizontal scroller is found through the event's composed path, so one inside a shadow
+root keeps its own scroll.
+Under reduced motion there is no live drag: a clear swipe switches once at the run's
+end. The Dashboard frame on this page relays its unowned horizontal runs (`relayWheel`,
+the wheel sibling of `relayTouches`, opt-in per host so the chat page's preview and the
+Command Center keep their back swipe); the frame relays only while armed, which the host
+does in answer to the frame's hello while its swipe listens and undoes when it stops (a
+phone-width window, a creation surface), so a run nobody acts on is never cancelled; a
+relayed run may only start the close, and only from a frame in the tab on screen (an artifact tab relays the same way). A static Dashboard page (sandbox without
+`allow-scripts`) runs no relay, so a swipe that starts over one is the frame's.
+
+In the macOS desktop app the release can be exact. The shell reads Chromium's
+`gestureScrollBegin` / `gestureScrollEnd` off the dashboard's WebContents `input-event`
+(`electron/scroll-touch.js`) and sends each change as `begin` or `end` through the preload's
+`onScrollTouch`; `lib/scrollTouch` subscribes. Once a phase has been heard, `end` releases the
+drag (`onDragEnd('lift', at)`, with `at` the lift-off, so the 60ms speed is the fingers' own),
+and a pause with the fingers still down no longer ends it, up to `FINGER_HOLD_MAX_MS`
+(1s, so a lost `end` cannot hold the panel). The gap and the momentum signature stay armed
+as the fallback, and a page that never hears a phase (a browser, Windows, Linux) behaves
+exactly as above. A remote crew's pane is a cross-origin iframe of InstancesViewport with no
+preload: its own document reads the wheels over it, and it asks its host for the phases
+(`mc-scroll-touch-watch`). The host accepts the request only from that pane's own iframe at
+its tunnel origin, holds one bridge subscription while any pane listens, and forwards each
+phase only to the pane on screen, addressed to its exact origin; the pane accepts a phase
+only from `window.parent` at the origin it asked, for its own watch id.
+
+### The same swipe on the chat page's side panel
+
+The chat page plays the same drag on its right side panel off the phone
+(`useChatPanelTrackpadSwipe` in `pages/chat/page/chatTrackpadSwipe.ts`), over
+the same reader and the same drag and release (`hooks/trackpadPanelDrag`, which
+the Bots page uses too). The panel lives in the shell's `actbar` column, an
+`auto` grid track, so the drag does not need a spacer in a page row: while it
+runs, the column becomes a window onto the panel as wide as its visible part
+(`deskSpacerW`), with the panel pinned at its left edge and clipped, so the
+panel's edge and the chat's right edge both follow the fingers. A close starts
+from the column's own docked width, measured before the swap, and the panel is
+the same element throughout (its terminals and frames live on). The settle runs
+on the main thread so the column reads every frame. The swipe is bound on the
+shell grid, which holds both the chat and the column, so a run keeps going when
+the panel arrives under the pointer. It is off for a bottom-docked panel, while
+the find pane holds the dock, and in embed frames. The exact lift-off from the desktop app reaches it
+through the same reader. An artifact frame in the panel (`ArtifactBodyIframe`
+with `relayWheel`, set only for the side panel) relays the runs its own content
+cannot scroll, on both pages: a frame with sideways scroll room left keeps its
+scroll, and one with none hands a rightward run to the page, which drags the
+panel shut. The host takes a relayed run only from a frame inside the open
+panel, in the tab on screen (`shownWithin`), and only for the close. A frame
+that runs no script (a static artifact, a URL artifact, an MCP app, the web
+preview) cannot relay, so a swipe that starts over one is the frame's.
+
+On both pages a trackpad drag commits by rule C (`hooks/trackpadPanelDrag`):
+SPEED commits mid-drag (past `COMMIT_VELOCITY` over the last 60ms, held over at
+least two steps and without its largest step, so one spiky event cannot), and
+the rest of that run is ignored; DISTANCE waits for the release, so a slow drag
+past 20% stays under the fingers and can come back. The settle is the
+trackpad's own (`settleTrackpadDrag`), not the phone's: 80-150ms, never under
+4 px/ms on average, a front-loaded ease-out that opens no slower than the
+fingers and covers most of the way in the first frames. A committed or ended
+run is held against its momentum, but only while its events still look like
+momentum: a turn back, or two steps in a row each 1.3x the last, starts a new
+run at once, so there is no cooldown after a commit. A run that starts inside a
+modal layer is the layer's. While a panel slides it carries
+`data-native-overlay`, so a native Browser view hides until it docks, and a
+sideways wheel the swipe cancelled does not count as the transcript reader's
+input (`attachUserScrollIntent`), so the chat stays pinned to its last message.
+The transcript keeps its place through the slide itself (`useSlideAnchor` in
+`TranscriptScrollShell`): at the bottom it stays pinned there, otherwise the line
+the reader is on keeps its offset. The correction runs in a ResizeObserver
+(after layout, before paint) and synchronously when the slide ends, in the same
+commit that lands the panel and publishes the held width, so no frame paints the
+rewrapped transcript unpinned. The pinned prompt at the top (`usePinnedPrompt`) holds
+its card until that place has settled (`slideSettling`): read mid-reflow, its prompt
+measured taller for one frame, failed the tall-prompt gate and the card blinked out.
 
 ## A panel that gains a gesture must be bound LIVE to its offset
 

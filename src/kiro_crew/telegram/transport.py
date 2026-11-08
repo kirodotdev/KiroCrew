@@ -15,12 +15,13 @@ authorize nobody (fail closed), never everybody.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew.messaging.outbound_files import OutboundFile
+from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 from kiro_crew.messaging.tables import TABLE_POLICY_NATIVE
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -31,9 +32,11 @@ from kiro_crew.messaging.transport import (
 from kiro_crew.sel import sel
 from kiro_crew.telegram.client import (
     TELEGRAM_CHUNK_LIMIT,
+    TELEGRAM_MAX_TEXT,
     TelegramClient,
     TelegramInbound,
 )
+from kiro_crew.telegram.renderer import _split_markdown_bounded, md_to_telegram_html_safe
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +74,11 @@ class TelegramInboundMessage(InboundMessage):
     # "this message was synthesized and never had entities".
     mentions: tuple[str, ...] = ()
     has_entities: bool = False
+    # The replied-to message's quoted content as plain text (or ""), held SEPARATE
+    # from ``text`` so it never reaches the mention-activation gate. The turn path
+    # folds it into the agent-facing text — screened, audited and fenced — after
+    # activation and command parsing (client.frame_reply_context).
+    reply_context: str = ""
     # True when this message was SYNTHESIZED from a press on the bot's own inline
     # keyboard rather than typed. Tapping a widget the bot posted is addressing the
     # bot by construction, so the activation gate serves it unconditionally.
@@ -85,6 +93,9 @@ class TelegramInboundMessage(InboundMessage):
 # A dispatch callback consumes a normalized, already-authorized message and
 # drives a turn. The gateway supplies the real implementation.
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
+
+# Telegram message ids, and so topic ids, are signed 32-bit integers.
+_MAX_TOPIC_ID = 2**31 - 1
 
 # Telegram's capabilities: edit-based streaming, a 4096-char cap (we chunk at
 # 4000 for headroom), inline buttons, emoji reactions (setMessageReaction, used
@@ -343,6 +354,51 @@ class TelegramTransport(MessagingTransport):
         )
         return str(mid or "")
 
+    async def send_markdown(
+        self, conversation_id: str, content: str, thread_id: str | None = None
+    ) -> str:
+        # Rendered to Telegram HTML. A render that outgrows one message (the cap
+        # would cut its tail) or that Telegram refuses goes out as the plain send
+        # instead, never as raw tags, the same fallback the renderer's seal takes.
+        # Only a refusal (400) falls back: after a timeout or a 5xx the HTML copy
+        # may already be in the chat, so the send reports unconfirmed instead of
+        # posting a second, plain copy.
+        html_text = await asyncio.to_thread(md_to_telegram_html_safe, content)
+        if len(html_text) > TELEGRAM_MAX_TEXT:
+            # The caller splits by SOURCE length, and escaping and tags grow a part
+            # past the cap. Split it again by rendered length, as the reply renderer
+            # does, so each piece still goes out rendered rather than as raw markup.
+            # A piece the splitter cannot make smaller goes out plain, as before.
+            # Graded with the composed redactor, like the outer split: a companion's
+            # credential pattern must not be severed across two pieces either.
+            from kiro_crew.platform.context import redact_via_context
+
+            pieces = await asyncio.to_thread(
+                _split_markdown_bounded, content, TELEGRAM_MAX_TEXT, redact_via_context
+            )
+            if len(pieces) > 1:
+                last = ""
+                for piece in pieces:
+                    last = await self.send_markdown(conversation_id, piece, thread_id)
+                    if not last:
+                        return ""
+                return last
+        if len(html_text) <= TELEGRAM_MAX_TEXT:
+            err: dict[str, Any] = {}
+            mid = await self._client.send_message(
+                int(conversation_id),
+                html_text,
+                parse_mode="HTML",
+                retry_plain=False,
+                message_thread_id=int(thread_id) if thread_id else None,
+                err_out=err,
+            )
+            if mid:
+                return str(mid)
+            if err.get("error_code") != 400:
+                return ""
+        return await self.send_message(conversation_id, content, thread_id=thread_id)
+
     async def send_document(
         self,
         conversation_id: str,
@@ -366,6 +422,26 @@ class TelegramTransport(MessagingTransport):
         )
         return str(mid or "")
 
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> "ExtractLimits | None":
+        """The renderer's own budgets: it uploads into any conversation it answers."""
+        from kiro_crew.telegram.renderer_uploads import _UPLOAD_LIMITS
+
+        return _UPLOAD_LIMITS
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image through the renderer's own upload call."""
+        sent = await self._client.send_media_group(
+            int(conversation_id),
+            [file],
+            message_thread_id=int(thread_id) if thread_id else None,
+            disable_notification=True,
+        )
+        return bool(sent)
+
     async def resolve_conversation(self, user_id: str) -> str:
         # In a Telegram private chat the chat_id equals the user_id.
         return user_id
@@ -385,9 +461,22 @@ class TelegramTransport(MessagingTransport):
 
     async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
         kind, separator, value = target_id.partition(":")
-        if kind != "user" or not separator or value not in self._allowed:
-            return None
-        return await self.resolve_conversation(value), None
+        if kind == "user" and separator and value in self._allowed:
+            return await self.resolve_conversation(value), None
+        if kind == "topic":
+            # ``topic:<user id>:<topic id>``: a topic inside an allow-listed user's
+            # private chat. Its own kind, not a ``user:`` suffix, because the text
+            # after ``user:`` is read as the recipient's identity.
+            user_id, _, topic_id = value.partition(":")
+            if (
+                self.direct_peer_of(user_id)
+                and topic_id.isascii()
+                and topic_id.isdecimal()
+                and len(topic_id) <= len(str(_MAX_TOPIC_ID))
+                and 0 < int(topic_id) <= _MAX_TOPIC_ID
+            ):
+                return await self.resolve_conversation(user_id), str(int(topic_id))
+        return None
 
     # -- Outbound authorization --------------------------------------------
     def may_send_to(
@@ -551,6 +640,7 @@ class TelegramTransport(MessagingTransport):
             attachments=list(inbound.attachments),
             mentions=inbound.mentions,
             has_entities=inbound.has_entities,
+            reply_context=inbound.reply_context,
         )
         if not self.authorize(msg):
             return

@@ -182,10 +182,12 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
         # The same allowed-host scope as _prepare_messages, so the live
         # frame and the history agree on an allowed link: its placeholder
         # becomes the address again, then the display pass runs.
-        from kiro_crew.security.exfil import scoped_exempt_hosts
-        from kiro_crew.security.redaction_allow import allowed_hosts_for
+        from kiro_crew.security.exfil import allowed_host_audit_epoch, scoped_exempt_hosts
+        from kiro_crew.security.redaction_allow import allowed_hosts_for, normalize_workspace
 
-        with scoped_exempt_hosts(allowed_hosts_for(workspace)):
+        epoch = allowed_host_audit_epoch()
+        hosts = allowed_hosts_for(workspace)
+        with scoped_exempt_hosts(hosts, normalize_workspace(workspace), epoch):
             if isinstance(content, str) and isinstance(msg.get("meta"), dict):
                 shown = with_allowed_links_restored({"content": content, "meta": msg["meta"]})
                 content = shown["content"]
@@ -215,14 +217,10 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
     # Deliberately NOT redacted here, unlike the `cls` branch above (which is
     # sanitised by parse_cls_meta). Two reasons, both load-bearing:
     #
-    # 1. This is the LIVE oauth banner's egress path. _emit_mcp_oauth_request
-    #    appends the banner with a real `oauth_url`, already gated by
-    #    security.oauth_url_contains_credential — the shared security gate, which
-    #    exempts standard high-entropy OAuth values only at exact code-owned
-    #    authorization endpoints while scanning everything else fail-closed.
-    #    Running _redact_meta_for_role here would blank a genuine
-    #    Google/GitHub consent URL and break the user's ability to authorize
-    #    an MCP server.
+    # 1. Generic redaction would blank a real consent URL, which is high
+    #    entropy by design. An `mcp_oauth` row is the one exception, and it is
+    #    gated below by _redact_meta_for_role, whose URL gate is the same one the
+    #    emit site applies, so a live banner keeps its link.
     # 2. chat_utils imports from this module, so importing the redactors the
     #    other way would be a cycle.
     #
@@ -231,18 +229,28 @@ def chat_message_note(slot_key: str, msg: dict, *, workspace: str | None) -> dic
     # in per-role. Both restore loops pass broadcast=False, and the ONE
     # exception is refresh_channel_window, which replays a channel
     # transcript's tail and passes broadcast_user=True so a message typed in
-    # Slack renders at all (nothing rendered it optimistically here). That
-    # exception cannot carry unredacted meta: ConversationLog.append writes
-    # only role/content/ts/source_thread/source_user for such a row -- no
-    # meta dict -- so the arm below never fires for it, and the row's
-    # content is human-typed, which is deliberately raw at every other
-    # boundary too. The invariant is pinned by
+    # Slack renders at all (nothing rendered it optimistically here).
+    # ConversationLog.append writes only role/content/ts/source_thread/
+    # source_user for such a row -- no meta dict -- and the row's content is
+    # human-typed, which is deliberately raw at every other boundary too. A
+    # line written by anything other than that writer can carry meta, which
+    # is why the `mcp_oauth` arm below gates the link it would draw. The invariant is pinned by
     # test_rehydrate_does_not_broadcast_replayed_messages and
     # test_restore_recent_sessions_does_not_broadcast_either. Do not relax
     # it further without re-checking that meta is still absent.
     direct_meta = restored_meta if restored_meta is not None else msg.get("meta")
     if direct_meta and isinstance(direct_meta, dict):
         payload["meta"] = {**(payload.get("meta") or {}), **direct_meta}
+    if role == "mcp_oauth" and isinstance(payload.get("meta"), dict):
+        # An `mcp_oauth` row's meta carries the Authorize link the client draws.
+        # A replayed transcript line (refresh_channel_window broadcasts the
+        # rows it re-appends) can be agent-written, cls and meta alike, so the
+        # link leaves here only under the same provenance and shape gates as
+        # the HTTP history path. A banner the emit site just appended is
+        # recorded before its append and passes unchanged.
+        from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
+
+        payload["meta"] = _redact_meta_for_role(role, payload["meta"])
     return payload
 
 
@@ -301,7 +309,7 @@ def is_stop_event_row(m: dict) -> bool:
 #: turn; here the question is whether a dispatch happened that got no reply,
 #: and a recovery or replay dispatch that died is exactly such a turn.
 _TURN_INJECT_KINDS: frozenset[str] = frozenset(
-    {"cron", "mcp_app", "recovery", "user_replay", "synthesis", "automation_notice"}
+    {"cron", "mcp_app", "recovery", "user_replay", "synthesis", "automation_notice", "workflow"}
 )
 
 
@@ -317,6 +325,31 @@ TURN_OPENING_INJECT_KINDS: frozenset[str] = _TURN_INJECT_KINDS - _TURN_CONTINUIN
 def _is_turn_inject(meta: object) -> bool:
     """Whether an ``inject`` row's meta says it dispatched a turn."""
     return isinstance(meta, dict) and meta.get("injectKind") in _TURN_INJECT_KINDS
+
+
+#: ``chat_utils.MODEL_UNAVAILABLE_KIND``, spelled here because ``chat_utils``
+#: imports this module (``test_model_unavailable_settles_turn.py`` pins the two
+#: equal, and ``MODEL_UNAVAILABLE_KIND`` in ``website/src/lib/modelUnavailable.ts``
+#: is the frontend twin).
+_MODEL_UNAVAILABLE_KIND = "model_unavailable"
+
+
+def is_model_unavailable_row(m: dict) -> bool:
+    """True when *m* is the terminal card a spent ladder leaves on a refused model.
+
+    The row a capacity or rollout refusal ends on once the retry ladder and the
+    ``agent.fallback_model`` chain are spent. It SETTLES the turn rather than
+    interrupting it: the backend has already refused the same turn on the same
+    model several times, so Resume would only repeat it, and the fix is the
+    model picker the card offers. Read from ``meta.kind`` (every row appended
+    with ``meta=``) or a top-level ``kind`` (a rebuilt row), never from prose.
+    """
+    if m.get("role") != "error":
+        return False
+    if m.get("kind") == _MODEL_UNAVAILABLE_KIND:
+        return True
+    meta = m.get("meta")
+    return isinstance(meta, dict) and meta.get("kind") == _MODEL_UNAVAILABLE_KIND
 
 
 def is_turn_interrupted(messages: list[dict]) -> bool:
@@ -344,6 +377,10 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     deliberately BOTH halves -- the tag alone cannot decide, because an
     automatic compaction can write the same tagged row inside an ordinary turn
     whose real reply never arrived, and that tail is a genuine interruption.
+    A third shape settles the turn the same way: the terminal card a spent ladder
+    leaves when the backend refused the selected model for capacity or a rollout
+    (:func:`is_model_unavailable_row`). Resume would send the same turn to the
+    same refused model, so the card offers the model picker instead.
 
     Selects the wording injected for the model (``_MANUAL_RESUME_MSG`` vs
     ``_MANUAL_CONTINUE_MSG``), gates whether the composer offers the Resume
@@ -370,6 +407,9 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
     # act and must not close it -- a gateway that died in that later work
     # would otherwise hide behind it.
     saw_later_tool = False
+    # A drained sub-agent completion (role ``subagent``) opens a turn of its own,
+    # so a refused-model card older than it settles only its own turn.
+    saw_later_opener = False
     for m in reversed(messages):
         role = m.get("role")
         meta = m.get("meta") or {}
@@ -410,6 +450,8 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
             continue
         if role == "inject" and m.get("content") and _is_turn_inject(meta):
             return True
+        if role == "subagent":
+            saw_later_opener = True
         # A monitor loop's cycle row always dispatches a turn; unanswered, it
         # is the same shape as an unanswered user row.
         if role == "nudge" and m.get("content"):
@@ -431,6 +473,12 @@ def is_turn_interrupted(messages: list[dict]) -> bool:
                 return saw_trailing_error
             return True
         if role == "error":
+            # The card a refused model's spent ladder ends on settles the turn,
+            # like a Stop: Resume would send it to the same refused model again.
+            # Only reached as the newest turn's terminator, because a later
+            # user, inject or assistant row returns above first.
+            if is_model_unavailable_row(m) and not saw_later_opener:
+                return False
             saw_trailing_error = True
     # The walk ran off the start of the window without meeting a conversational
     # row: a long turn can push its own opener and reply into the frozen prefix,
@@ -485,7 +533,7 @@ def _mark_permission_resolved(
 #: count the durable rows it folds into the frozen prefix — and re-exported by
 #: ``chat_persistence`` as ``_TRANSIENT_ROLES`` for its readers, so there is one
 #: definition rather than two that can drift.
-_TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission"})
+_TRANSIENT_ROLES = frozenset({"chunk", "done", "streaming", "queued", "permission", "elicitation"})
 
 
 def durable_row_count(rows: Iterable[dict]) -> int:

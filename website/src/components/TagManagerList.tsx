@@ -6,12 +6,14 @@ import type { AgentTagPolicy, ChatTag } from '../types'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { api } from '../api/client'
 import ErrorNotice from './ErrorNotice'
+import { useConfirm } from './ConfirmDialog'
 import SegmentedControl from './SegmentedControl'
 import { Btn } from './ui'
 import { FOLDER_COLOR_PALETTE } from './folderColorCatalog'
 
 import { i18nT } from '../i18n/t'
 import { crudErrorMessage, policyErrorMessage } from './tagMutationError'
+import { RadioChipGroup, radioChip } from './RadioChipGroup'
 
 /**
  * One failed mutation's notice. `crud` notices (create, rename, recolor, status,
@@ -97,6 +99,7 @@ export interface TagManagerListProps {
  * tag-delete-<id>) match the board's selectors.
  */
 export default function TagManagerList({ mode, selectedIds = [], onToggleTag, createTestId = 'tag-create' }: TagManagerListProps) {
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
   const queryClient = useQueryClient()
   const ime = useImeGuard()
   const descriptionIdPrefix = useId()
@@ -230,6 +233,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
     },
   })
   const deleteTagMutation = useMutation({
+    mutationKey: ['chat-tag-delete'],
     mutationFn: (id: string) => api.deleteChatTag(id),
     onMutate: id => beginMutation(`delete:${id}`),
     onSuccess: () => {
@@ -253,6 +257,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
 
   return (
     <>
+      {confirmDialog}
       {storeDegraded && (
         <ErrorNotice
           id={policyUnavailableId}
@@ -388,9 +393,22 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                 aria-describedby={tagStoreDegraded ? policyUnavailableId : undefined}
                 disabled={deleteDisabled}
                 aria-label={i18nT('components.tagManagerList.delete_tag_2', { name: t.name })}
-                onClick={() => {
-                  if (deleteDisabled) return
-                  if (confirm(`Delete tag "${t.name}"?`)) deleteTagMutation.mutate(t.id)
+                onClick={async () => {
+                  if (deleteDisabled || confirmOpen) return
+                  const { id, name } = t
+                  if (await confirm({
+                    title: i18nT('components.tagManagerList.delete_tag_button'),
+                    body: i18nT('components.tagManagerList.delete_tag_confirm', { name }),
+                    confirmLabel: i18nT('components.tagManagerList.delete_tag_button'),
+                    layer: mode === 'column-filter' ? 'top' : 'dialog',
+                  }) !== true) return
+                  // Another list or a store refetch can change this row during the question.
+                  const current = queryClient.getQueryData<ChatTag[]>(['chat-tags'])?.find(tag => tag.id === id)
+                  const inFlight = queryClient.getMutationCache()
+                    .findAll({ mutationKey: ['chat-tag-delete'], status: 'pending' })
+                    .some(mutation => mutation.state.variables === id)
+                  if (!current || current.agent_store_degraded || inFlight) return
+                  deleteTagMutation.mutate(id)
                 }}>
                 <X size={11} />
               </button>
@@ -469,15 +487,14 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
               *  Picking a colour PATCHes the tag and returns focus to the swatch
               *  (the palette unmounts, so focus would otherwise fall to <body>). */}
             {mode === 'manage' && openColorId === t.id && (
-              // The group's only listener is keyboard-only Escape-to-dismiss,
-              // delegated here so it fires whichever swatch holds focus. The
-              // group activates nothing itself — every affordance inside it is a
-              // real <button> — so there is no mouse action a keyboard misses.
-              // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- container-level Escape dismissal, which IS the keyboard path rather than a substitute for one
-              <div
-                role="group"
+              // A radio group (one colour out of the palette): the group's own
+              // listener adds Escape-to-dismiss, delegated here so it fires
+              // whichever swatch holds focus. Picking a swatch saves it and
+              // closes the palette, so (as in every RadioChipGroup by default)
+              // the arrows only move focus and Space/Enter picks.
+              <RadioChipGroup
                 data-testid={`tag-palette-${t.id}`}
-                aria-label={i18nT('components.tagManagerList.change_color', { name: t.name })}
+                ariaLabel={i18nT('components.tagManagerList.change_color', { name: t.name })}
                 className="flex items-center gap-1 flex-wrap pl-7 pr-1.5 pb-1"
                 onKeyDown={e => {
                   if (e.key !== 'Escape') return
@@ -495,7 +512,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                       data-testid={`tag-color-${t.id}-${value.slice(1)}`}
                       title={i18nT('components.tagManagerList.set_color_to_name', { name: colorName })}
                       aria-label={i18nT('components.tagManagerList.set_color_to_name', { name: colorName })}
-                      aria-pressed={t.color === value}
+                      {...radioChip(t.color === value)}
                       className={`w-4 h-4 rounded-full cursor-pointer border hover:brightness-125 swatch-cue focus-ring-accent ${t.color === value ? 'ring-1 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
                       style={{ background: `color-mix(in srgb, ${value} 30%, var(--bg-elevated))`, borderColor: value }}
                       onClick={() => {
@@ -506,7 +523,7 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                     />
                   )
                 })}
-              </div>
+              </RadioChipGroup>
             )}
             {renderMutationErrors(t.id)}
             </Fragment>
@@ -520,11 +537,12 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
           type="text"
           data-testid={createTestId}
           placeholder={i18nT('components.tagManagerList.new_tag')}
+          aria-label={i18nT('components.tagManagerList.new_tag_label')}
           value={newTagName}
           aria-disabled={storeDegraded}
           aria-describedby={storeDegraded ? policyUnavailableId : undefined}
           disabled={storeDegraded}
-          className="flex-1 min-w-0 bg-transparent border-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted/60 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex-1 min-w-0 bg-transparent border-none text-[12px] text-text py-0 px-0.5 placeholder:text-muted disabled:cursor-not-allowed disabled:opacity-50"
           {...ime.bindComposition()}
           onChange={e => {
             newTagDraftRevision.current += 1

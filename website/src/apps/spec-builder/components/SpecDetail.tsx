@@ -24,7 +24,10 @@ import {
 import { ACCENT, SEL_BG, SEL_BORDER, PULSE_MOTION, Btn } from './shared'
 import SegmentedControl, { type Segment } from '../../../components/SegmentedControl'
 import { useIsMobile } from '../../../hooks/useIsMobile'
+import { usePointerDrag } from '../../../hooks/usePointerDrag'
+import ResizeHandle from '../../../components/ResizeHandle'
 import ChatColumn from './ChatColumn'
+import type { ChatEmbedSendMeta } from '../../../app-sdk/ChatEmbed'
 import DocView, { type Selection as DocSelection } from './DocView'
 import { DOC_CSS } from '../inlineStyles'
 import {
@@ -39,6 +42,13 @@ import ErrorNotice from '../../../components/ErrorNotice'
 
 import { i18nT } from '../../../i18n/t'
 import { guideCaution } from '../../../guide/trustRoot'
+
+/** Undo the body-wide cursor and selection lock the divider drag takes. */
+function releaseDividerLock() {
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+}
+
 export interface ReviewComment {
   id: string
   file: string
@@ -175,40 +185,30 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
     try { const v = Number(localStorage.getItem(LS.docPct)); return v >= 25 && v <= 75 ? v : 44 } catch { return 44 }
   })
   const setDocPct = (v: number) => { setDocPctRaw(v); try { localStorage.setItem(LS.docPct, String(v)) } catch { /* ignore */ } }
-  // Held so an unmount mid-drag can drop the window listeners and restore the
-  // cursor; without this the next pointer move would keep resizing a gone pane.
-  const stopDividerDrag = useRef<(() => void) | null>(null)
-  const onDividerDown = (e: React.MouseEvent) => {
-    e.preventDefault()
-    stopDividerDrag.current?.()
-    const onMove = (ev: MouseEvent) => {
+  const clampDocPct = (v: number) => Math.min(75, Math.max(25, v))
+  // The divider's pointer drag (mouse, touch and pen, with pointer capture).
+  // Text selection is locked for the drag -- without it, moving the pointer
+  // over the document selects prose (and can raise the selection-to-comment
+  // pill); Issue Radar's splitter does the same. Released on end, and on an
+  // unmount mid-drag (`releaseDividerLock`).
+  const dividerDrag = usePointerDrag({
+    threshold: 0,
+    onStart: () => {
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+    },
+    onMove: ({ x }) => {
       if (!bodyRef.current) return
       const r = bodyRef.current.getBoundingClientRect()
-      setDocPct(Math.min(75, Math.max(25, ((r.right - ev.clientX) / r.width) * 100)))
-    }
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      stopDividerDrag.current = null
-    }
-    stopDividerDrag.current = onUp
-    document.body.style.cursor = 'col-resize'
-    // Lock text selection for the duration of the drag — without this, moving
-    // the pointer over the document selects prose (and can raise the
-    // selection-to-comment pill). Issue Radar's splitter does the same.
-    document.body.style.userSelect = 'none'
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }
-  useEffect(() => () => { stopDividerDrag.current?.() }, [])
-  // Keyboard resize — the divider must be operable without a pointer.
-  const onDividerKey = (e: React.KeyboardEvent) => {
-    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
-    e.preventDefault()
-    setDocPct(Math.min(75, Math.max(25, docPct + (e.key === 'ArrowLeft' ? 4 : -4))))
-  }
+      setDocPct(clampDocPct(((r.right - x) / r.width) * 100))
+    },
+    onEnd: releaseDividerLock,
+  })
+  useEffect(() => releaseDividerLock, [])
+  // Keyboard resize -- the divider must be operable without a pointer.
+  // ResizeHandle nudges in px (16, or 64 with Shift); a 16px step is 4% of the
+  // split here, and moving the divider left widens the docs column.
+  const nudgeDivider = (dx: number) => setDocPct(clampDocPct(docPct - dx / 4))
 
   // Esc closes the fullscreen review overlay. Suppressed while the delete
   // confirm is up so the stacked dialog gets the key first (Modal already
@@ -276,7 +276,8 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
   // detail, so updated_at changed without the specs list knowing and the rail's
   // ordering went stale until its own 15s poll.
   const messageMutation = useMutation({
-    mutationFn: (msg: string) => specApi.message(name, msg, specId()),
+    mutationFn: ({ msg, pastes }: { msg: string; pastes?: ChatEmbedSendMeta['pastes'] }) =>
+      specApi.message(name, msg, specId(), pastes),
     onMutate: () => { lastSendAt.current = Date.now() },
     onError: (e) => setErr((e as Error).message),
     onSettled: invalidate,
@@ -395,7 +396,7 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
       // the record fails the agent must not move on, otherwise the spec advances
       // with no evidence anyone approved it.
       await approveMutation.mutateAsync({ phase, hash })
-      await messageMutation.mutateAsync(a.msg)
+      await messageMutation.mutateAsync({ msg: a.msg })
       setApproved(phase)
       // Switch to the document being written: DocView holds its shape with a
       // drafting skeleton, so there is something to watch instead of the file
@@ -431,7 +432,7 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
       })
     }
     try {
-      await messageMutation.mutateAsync(msg)
+      await messageMutation.mutateAsync({ msg })
       setComments([])
     } catch { /* surfaced by the mutation's onError */ } finally { setSendingAll(false) }
   }
@@ -492,19 +493,20 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
           <Btn
             label={<><Pause className="lucide-inline" /> {stopMutation.isPending ? i18nT('apps.specBuilder.components.specDetail.pausing') : i18nT('apps.specBuilder.components.specDetail.pause')}</>}
             danger
-            disabled={stopMutation.isPending}
+            busy={stopMutation.isPending}
             onClick={stop}
           />
         )
         : hasTasks && (
-          // Disabled while the handoff is in flight. Two clicks queued TWO
+          // Inert while the handoff is in flight. Two clicks queued TWO
           // handoffs, and Pause halts the running turn while leaving the queued
           // one intact -- so execution resumed by itself and kept editing files
-          // after the user had stopped it.
+          // after the user had stopped it. `busy`, not `disabled`, so the
+          // pressed button keeps keyboard focus.
           <Btn
             label={<><Play className="lucide-inline" /> {executeMutation.isPending ? i18nT('apps.specBuilder.components.specDetail.starting') : i18nT('apps.specBuilder.components.specDetail.start_building')}</>}
             primary
-            disabled={executeMutation.isPending}
+            busy={executeMutation.isPending}
             title={i18nT('apps.specBuilder.components.specDetail.an_agent_will_work_through_the_task_list')}
             onClick={execute}
           />
@@ -788,33 +790,25 @@ export default function SpecDetail({ name, setErr, onDeleted, onDuplicated }: Sp
               <ChatColumn
                 name={name}
                 slotKey={detail.slot_key}
-                onSend={messageMutation.mutateAsync}
+                onSend={(msg, meta) => messageMutation.mutateAsync({ msg, pastes: meta?.pastes })}
               />
             )
             : <ChatColumnSkeleton />}
         </div>
       </section>
-      {/* Resizable splitter. eslint's non-interactive heuristics don't model
-          the W3C APG "window splitter" pattern, which is precisely
-          role="separator" + tabIndex + aria-valuenow/min/max and IS
-          interactive once focusable — arrow keys resize it. Suppressed
-          rather than reshaped, because a <button> here would announce the
-          wrong role and lose the value semantics. */}
-      {/* eslint-disable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
-        <div
-          onMouseDown={onDividerDown}
-          onKeyDown={onDividerKey}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label={i18nT('apps.specBuilder.components.specDetail.resize_document_panel')}
-          aria-valuenow={Math.round(docPct)}
-          aria-valuemin={25}
-          aria-valuemax={75}
-          tabIndex={0}
+      {/* Resizable splitter: the shared window-splitter grip, so this edge
+          matches every other column edge. Hidden on a phone, where the document
+          opens in the review overlay instead. */}
+        <ResizeHandle
+          handleProps={dividerDrag}
+          label={i18nT('apps.specBuilder.components.specDetail.resize_document_panel')}
           title={i18nT('apps.specBuilder.components.specDetail.drag_or_use_to_resize')}
-          className={`w-1.5 shrink-0 cursor-col-resize hover:bg-accent/30 transition-colors focus-ring ${isMobile ? 'hidden' : ''}`}
+          onNudge={nudgeDivider}
+          value={Math.round(docPct)}
+          min={25}
+          max={75}
+          className={isMobile ? 'hidden' : undefined}
         />
-        {/* eslint-enable jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
         {/* ── Docs column ──
             A flush panel with a left border, not a floating card: the card
             treatment made two peer columns look like different kinds of surface

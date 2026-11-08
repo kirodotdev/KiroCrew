@@ -112,6 +112,20 @@ def _clone_root() -> Path:
     return _home() / "vaults"
 
 
+def _is_app_clone(local_path: str) -> bool:
+    """Whether *local_path* lies inside :func:`_clone_root`, by path containment.
+
+    Both sides are resolved, so a symlinked home and a ``..`` segment compare
+    as the real folders, and the test is per path component: a string prefix
+    would also take ``<clone_root>-old/notes`` for a clone. A path that cannot
+    be resolved counts as not cloned. Blocking filesystem IO -- call off the loop.
+    """
+    try:
+        return Path(local_path).resolve().is_relative_to(_clone_root().resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 # Auto-sync interval bounds, in minutes. These mirror DEFAULT_AUTO_SYNC_MINS /
 # MIN_AUTO_SYNC_MINS / MAX_AUTO_SYNC_MINS in
 # website/src/apps/md-notebook/constants.ts: the picker's range and the
@@ -134,7 +148,7 @@ def _read_vaults_sync() -> list[dict[str, Any]]:
         with open(_vaults_json(), encoding="utf-8") as fh:
             data = json.load(fh)
         return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return []
 
 
@@ -213,7 +227,8 @@ def _write_vaults_sync(vaults: list[dict[str, Any]]) -> None:
 
 def _read_pat_sync() -> Optional[str]:
     try:
-        pat = open(_pat_file(), encoding="utf-8").read().strip() or None
+        with open(_pat_file(), encoding="utf-8") as fh:
+            pat = fh.read().strip() or None
     except OSError:
         return None
     if pat is not None:
@@ -308,7 +323,7 @@ def _read_settings_sync() -> dict[str, Any]:
             raw = json.load(fh)
     except FileNotFoundError:
         return out
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("md-notebook: unreadable settings, using defaults")
         return out
     if not isinstance(raw, dict):

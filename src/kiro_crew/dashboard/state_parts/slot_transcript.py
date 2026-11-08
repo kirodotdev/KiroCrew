@@ -45,6 +45,7 @@ from kiro_crew.dashboard.state_parts.transcript_rows import (
 )
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.history import latest_transcript_ts, mint_row_mid, monotonic_transcript_ts
+from kiro_crew.shared_crew.attribution import with_request_author
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
@@ -300,6 +301,15 @@ def append(
     meta: dict | None = None,
     mint_mid: bool = True,
 ) -> dict[str, Any]:
+    # A durable row ends the segment a permission request held open, so the
+    # reply's text lands above it. Cleared first: the cut appends a row too.
+    owed_cut = getattr(self, "_owed_segment_cut", None)
+    if owed_cut is not None and role not in _WIRE_ONLY_ROLES:
+        self._owed_segment_cut = None
+        try:
+            owed_cut()
+        except Exception:
+            logger.warning("owed segment cut failed for slot %s", self.key, exc_info=True)
     # A live row the person typed makes any in-flight return summary stale.
     # The local import avoids a state -> warm_task_brief -> state cycle, and
     # replay appends (broadcast=False) deliberately do not cancel current work.
@@ -377,6 +387,10 @@ def append(
             datetime.now(timezone.utc),
         ),
     }
+    if role == "user" and broadcast:
+        # Shared Crew: a live user row written by a request handler names
+        # that request's server-derived author unless it already names one.
+        meta = with_request_author(meta)
     if meta:
         msg["meta"] = meta
     # Stamp a per-row delivery identity. A client sees the SAME row through
@@ -423,9 +437,25 @@ def append(
             "mid": mint_row_mid(),
         }
     self.messages.append(msg)
-    self.invalidate_source_links()
     self.total_messages += 1
-    self._dirty = True
+    # A wire-only row (``chunk``/``done``/``streaming``) is never persisted
+    # (``_build_message_entry`` returns ``None`` for it) and carries no
+    # source link, so neither marking the slot dirty nor invalidating the
+    # source-link cache buys anything for it -- and both are expensive during
+    # a stream. ``chunk`` is appended once per streamed token, so dirtying the
+    # slot makes the 5-second flush re-serialize and fsync the WHOLE transcript
+    # every cycle a reply is streaming, putting the same durable bytes back on
+    # disk (a 6-8 MB transcript is tens of ms of JSON on a GIL-holding worker),
+    # and invalidating per token makes the next slots broadcast rescan the
+    # whole window for PR/issue links. The durable row ``_flush_segment`` writes
+    # when the segment closes still marks the slot dirty, so the reply is
+    # persisted exactly once. ``chat_fork`` and ``_save_slot_to_history``'s
+    # resumed-slot guard read ``_dirty`` as "unpersisted DURABLE state exists",
+    # which a wire-only row is not -- a fork taken mid-stream drops nothing,
+    # because the dropped rows were never going to reach disk.
+    if role not in _WIRE_ONLY_ROLES:
+        self.invalidate_source_links()
+        self._dirty = True
     self._pending.append(msg)
     self.event.set()
     if broadcast and self._on_card_event and role in {"user", "assistant", "error", "done"}:
@@ -468,8 +498,11 @@ def append(
             self._on_row(self.key, msg)  # type: ignore[operator]
         except Exception:
             logger.debug("slot row hook failed", exc_info=True)
-    # Trim old messages to bound memory usage
-    if len(self.messages) > _MAX_SLOT_MESSAGES:
+    # Trim old messages to bound memory usage. Held while a Regenerate swap is
+    # in flight: a trim would credit a row the swap is retiring to the frozen
+    # prefix after the swap removed it from disk. The first append after the
+    # swap trims the whole excess.
+    if len(self.messages) > _MAX_SLOT_MESSAGES and not self._swap_in_flight:
         excess = len(self.messages) - _MAX_SLOT_MESSAGES
         # A trimmed leading window message may only join the frozen prefix
         # once it is actually on disk. Credit _disk_older_count only

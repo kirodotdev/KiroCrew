@@ -6,6 +6,7 @@
  * through the transcript's own tool rows; only the API boundary is stubbed.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { setBusySendDefault } from '../components/BusySendButton'
 import { render, screen, act, fireEvent } from '@testing-library/react'
 import React from 'react'
 import path from 'node:path'
@@ -79,6 +80,9 @@ const BUSY = slot(true)
 const IDLE = slot(false)
 
 beforeEach(() => {
+  // These tests are about the busy send that queues; the steer side is
+  // ChatEmbed.busySend.test.tsx. The shipped default is Steer.
+  setBusySendDefault('queue')
   vi.clearAllMocks()
   vi.useFakeTimers()
   resetEmbedRecoveryForTests()
@@ -155,6 +159,26 @@ describe('ChatEmbed hide', () => {
     expect(screen.getByTestId('tool-pill-details')).toBeInTheDocument()
     await act(async () => { view.rerender(tree(['toolDetails'])) })
     expect(screen.queryByTestId('tool-pill-details')).toBeNull()
+  })
+
+  it('keeps a tool panel closed when the host stops hiding toolDetails', async () => {
+    const view = await mount()
+    fireEvent.click(screen.getByRole('button', { name: 'read_file' }))
+    expect(screen.getByTestId('tool-pill-details')).toBeInTheDocument()
+    await act(async () => { view.rerender(tree(['toolDetails'])) })
+    await act(async () => { view.rerender(tree()) })
+    const toggle = screen.getByRole('button', { name: 'read_file' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByTestId('tool-pill-details')).toBeNull()
+  })
+
+  it('hides the sub-agent delivery line with the queue strip', async () => {
+    const delivery = { id: 'd1', content: '[Subagent completion event] worker finished' }
+    mockGet.mockResolvedValue({ ...BUSY, queue: [delivery] })
+    const view = await mount()
+    expect(screen.getByTestId('subagent-delivery-progress')).toBeInTheDocument()
+    await act(async () => { view.rerender(tree(['queue'])) })
+    expect(screen.queryByTestId('subagent-delivery-progress')).toBeNull()
   })
 })
 

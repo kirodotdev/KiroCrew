@@ -190,7 +190,7 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
   return changed ? result : merged
 }
 
-/** Carry a settled `card` or `steer` row forward over a stale snapshot copy
+/** Carry a settled or newer `card` or `steer` row forward over a stale snapshot copy
  *  that would REGRESS it to an earlier lifecycle state (#20833).
  *
  *  Besides `stop_event` (#20818) and `mcp_oauth` (#20904), two more durable
@@ -202,7 +202,7 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
  *     captured while it was still live reverts a finished card to "running".
  *   - a steer row (`role: "user"`, `meta.steer`): `steer_queue`'s
  *     `_mark_steer_row_state` -> `slot.update_message` advances
- *     `meta.steerState` `written` -> `consumed`/`requeued`. A snapshot captured
+ *     `meta.steerState` `written` -> `consumed`/`requeued`/`retracted`. A snapshot captured
  *     while it was still `written` revives the "pending steer" badge on a steer
  *     the turn already took.
  *
@@ -213,15 +213,22 @@ export function preserveSettledMcpOauth(existing: ChatMessage[], merged: ChatMes
  *  stale page copy, since the merge seats `[...olderHead(live), ...page]`.
  *
  *  Like `preserveSettledMcpOauth` (and unlike the stop rule), this runs BEFORE
- *  `deduplicateByMid`: it carries the settled prior row's `content`/`cls`/`meta`
+ *  `deduplicateByMid`: it carries the settled or newer prior row's `content`/`cls`/`meta`
  *  onto any still-earlier merged copy of the same `(role, mid, ts)`, so the
  *  surviving dedup row keeps the terminal state the user already saw. Keyed by
  *  `(role, mid, ts)` — the full row identity `deduplicateByMid` uses, so only
  *  true copies of one row overwrite each other (not two distinct rows that
- *  happen to reuse a `mid`). A row with no settled prior
+ *  happen to reuse a `mid`). A row with no settled or newer prior
  *  copy, and every other role, pass through untouched; returns `merged`
  *  unchanged (same reference) when nothing is carried, so a caller can skip the
  *  write.
+ *
+ *  A card row's REVISION decides first: `chat_cards._patch_row` bumps
+ *  `meta.card.rev` on every in-place patch, so when two copies' revisions
+ *  differ the higher one is kept whichever way the status moved, a guide
+ *  replayed `completed` -> `offered` included (#22795). Copies with EQUAL
+ *  revisions (a steer, a row never patched, or one patched before the field
+ *  existed) fall to the status rule below.
  *
  *  FAIL-SAFE on which statuses anchor a carry-forward: a card status is only a
  *  carry-forward anchor if it is terminal AND cannot legally move back to a
@@ -259,7 +266,7 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
   // A steer row advances `written` -> `consumed`/`requeued` and never back
   // (`steer_queue.py`: the only two transitions; a requeued steer runs later as
   // its own NEW row, not a rewrite of this one), so both are safe anchors.
-  const STEER_SETTLED = new Set(['consumed', 'requeued'])
+  const STEER_SETTLED = new Set(['consumed', 'requeued', 'retracted'])
 
   // The `(role, mid, ts)` upsert key for a covered row, or undefined if the row
   // is not one this pass guards. Steer rows ride the `user` role, so they are
@@ -313,24 +320,34 @@ export function preserveSettledUpsertRows(existing: ChatMessage[], merged: ChatM
     return steerState === 'written'
   }
 
-  const settledPrior = new Map<string, ChatMessage>()
+  // A card copy's revision; 0 before the row's first patch.
+  const cardRev = (m: ChatMessage): number => {
+    const rev = (m.meta as { card?: { rev?: unknown } } | undefined)?.card?.rev
+    return typeof rev === 'number' ? rev : 0
+  }
+  const priorWins = (prior: ChatMessage, m: ChatMessage): boolean => {
+    const newer = cardRev(prior) - cardRev(m)
+    return newer ? newer > 0 : isSettled(prior) && isEarlier(m)
+  }
+
+  const priorByKey = new Map<string, ChatMessage>()
   for (const m of existing) {
     const key = upsertKey(m)
-    if (key && isSettled(m)) settledPrior.set(key, m)
+    if (key) priorByKey.set(key, m)
   }
-  if (!settledPrior.size) return merged
+  if (!priorByKey.size) return merged
 
   let changed = false
   const result: ChatMessage[] = []
   for (const m of merged) {
     const key = upsertKey(m)
-    if (key !== undefined && isEarlier(m) && settledPrior.has(key)) {
-      // Carry the settled prior row's rendered state forward in place. Identity
+    const prior = key === undefined ? undefined : priorByKey.get(key)
+    if (prior && priorWins(prior, m)) {
+      // Carry the newer prior row's rendered state forward in place. Identity
       // (`role`, `mid`, `ts`) already matches, so replacing content/cls/meta
       // wholesale keeps the row the same row for `deduplicateByMid`. The prior
       // meta is authoritative: a partial merge could leave a hybrid row still
       // advertising the earlier state.
-      const prior = settledPrior.get(key)!
       result.push({ ...m, content: prior.content, cls: prior.cls, meta: { ...(prior.meta || {}) } })
       changed = true
       continue
@@ -801,8 +818,9 @@ export function olderHeadAbovePage(
   return { cutIdx, olderHead: cutIdx > 0 ? prior.slice(0, cutIdx) : [] }
 }
 
-/** Roles the server never writes to history. `permission` is in the backend's own
- *  `_TRANSIENT_ROLES`; `queued`/`streaming`/`thinking` exist only in this client.
+/** Roles the server never writes to history. `permission` and `elicitation` are in
+ *  the backend's own `_TRANSIENT_ROLES`; `queued`/`streaming`/`thinking` exist only
+ *  in this client.
  *  `error`/`mcp_oauth` are deliberately absent -- those ARE persisted.
  *
  *  One set, because two consumers ask the same question for opposite reasons and a
@@ -810,7 +828,7 @@ export function olderHeadAbovePage(
  *  a paging OFFSET, and `hasUnidentifiedDurableRow` looks for a durable row the
  *  bound cannot see. A role missing from one copy would silently mis-shift a cursor
  *  in the first and silently drop scrollback in the second. */
-const CLIENT_ONLY_ROLES: ReadonlySet<string> = new Set(['queued', 'streaming', 'thinking', 'permission'])
+const CLIENT_ONLY_ROLES: ReadonlySet<string> = new Set(['queued', 'streaming', 'thinking', 'permission', 'elicitation'])
 
 /** Does this row survive in the server's transcript?
  *

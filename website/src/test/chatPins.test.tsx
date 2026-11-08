@@ -36,6 +36,7 @@ vi.mock('../i18n/t', () => ({
   i18nT: (key: string, vars?: Record<string, unknown>) => {
     const base = key.split('.').pop() || key
     if (vars && 'count' in vars) return `${vars.count} ${base}`
+    if (vars && 'label' in vars) return `${base}|${vars.author}|${vars.label}`
     return base
   },
 }))
@@ -966,6 +967,86 @@ describe('PinnedMessagesPanel', () => {
     await waitFor(() => expect(titleOf(copyBtn)).toBe('copied'))
     // The link button's title is still idle — copying text did not flip the link.
     expect(titleOf(linkBtn)).toBe('copy_link')
+  })
+
+  it('each pin entry is named after its author and message, not one shared name', () => {
+    render(<PinnedMessagesPanel {...defaultProps} />)
+    const names = screen.getAllByTestId('pin-entry').map(el => el.getAttribute('aria-label'))
+    expect(new Set(names).size).toBe(2)
+    expect(names[0]).toBe(`jump_to_named_message|assistant|${mockPin.preview}`)
+    expect(names[1]).toBe(`jump_to_named_message|you|${mockUserPin.preview}`)
+  })
+
+  it('a long preview is cut at a word into a short label', () => {
+    const preview = `${'word '.repeat(30)}  tail`
+    render(<PinnedMessagesPanel {...defaultProps} pins={[{ ...mockPin, preview }]} />)
+    const name = screen.getByTestId('pin-entry').getAttribute('aria-label') ?? ''
+    const label = name.split('|')[2]
+    expect(label.endsWith('word…')).toBe(true)
+    expect(label.length).toBeLessThanOrEqual(61)
+    expect(label).not.toMatch(/\s{2}/)
+  })
+
+  it('a pin with no preview text keeps the plain jump name', () => {
+    render(<PinnedMessagesPanel {...defaultProps} pins={[{ ...mockPin, preview: '  ' }]} />)
+    expect(screen.getByTestId('pin-entry')).toHaveAttribute('aria-label', 'jump_to_message')
+  })
+
+  it('announces a copy success through a polite live region', async () => {
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockPin]} />)
+    const status = screen.getByTestId('pins-copy-status')
+    expect(status).toHaveAttribute('aria-live', 'polite')
+    expect(status).toHaveTextContent('')
+    fireEvent.click(screen.getByLabelText('copy_preview'))
+    await waitFor(() => expect(status).toHaveTextContent('copied'))
+  })
+
+  it('a second identical success still changes the live region text', async () => {
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockPin]} />)
+    const status = screen.getByTestId('pins-copy-status')
+    fireEvent.click(screen.getByLabelText('copy_preview'))
+    await waitFor(() => expect(status).toHaveTextContent('copied'))
+    const first = status.textContent
+    fireEvent.click(screen.getByLabelText('copy_link'))
+    await waitFor(() => expect(status.textContent).not.toBe(first))
+    expect(status.textContent?.replace(/\u200B/g, '')).toBe('copied')
+  })
+
+  it('a refused copy-link write shows an alert with its recovery', async () => {
+    vi.mocked(copySessionLink).mockResolvedValueOnce(false)
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockPin]} />)
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(screen.getByLabelText('copy_link'))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('copy_link_failed'))
+    expect(screen.getByTestId('pins-copy-status')).toHaveTextContent('')
+  })
+
+  it('a refused text copy shows its own recovery, and a later success clears it', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockPin]} />)
+    fireEvent.click(screen.getByLabelText('copy_preview'))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('copy_text_failed'))
+    fireEvent.click(screen.getByLabelText('copy_preview'))
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    expect(screen.getByTestId('pins-copy-status')).toHaveTextContent('copied')
+  })
+
+  it('a repeated refusal mounts a fresh alert so it is spoken again', async () => {
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false).mockResolvedValueOnce(false)
+    render(<PinnedMessagesPanel {...defaultProps} pins={[mockPin]} />)
+    fireEvent.click(screen.getByLabelText('copy_preview'))
+    const first = await screen.findByRole('alert')
+    fireEvent.click(screen.getByLabelText('copy_preview'))
+    await waitFor(() => expect(screen.getByRole('alert')).not.toBe(first))
+    expect(first.isConnected).toBe(false)
+    expect(screen.getByRole('alert')).toHaveTextContent('copy_text_failed')
+  })
+
+  it('an emoji at the cut is kept whole in the label', () => {
+    const preview = `${'x'.repeat(59)}😀${'y'.repeat(20)}`
+    render(<PinnedMessagesPanel {...defaultProps} pins={[{ ...mockPin, preview }]} />)
+    const label = (screen.getByTestId('pin-entry').getAttribute('aria-label') ?? '').split('|')[2]
+    expect(label).toBe(`${'x'.repeat(59)}😀…`)
   })
 
   it('does not confirm when the copy silently fails (resolves false)', async () => {

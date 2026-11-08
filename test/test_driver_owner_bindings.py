@@ -43,6 +43,11 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_driver_owner_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_class_only_scan_can_fail",
+    "leaf_test_scope_derives_this_file_as_a_corpus_gate",
+)
+
 _PACKAGE = "kiro_crew.apps.builtins.auto_improvement.spine"
 
 #: Member -> (kind, signature digest, owning module). Frozen at the split: the kind and the
@@ -214,13 +219,6 @@ def _class_only_constructs(fn: ast.FunctionDef) -> list[str]:
         if isinstance(spelled, str) and spelled.startswith("__") and not spelled.endswith("__"):
             found.append(spelled)
     return found
-
-
-def test_the_class_only_scan_can_fail() -> None:
-    tree = ast.parse("def f(self):\n    super().g()\n    return __class__, self.__hidden\n")
-    fn = tree.body[0]
-    assert isinstance(fn, ast.FunctionDef)
-    assert sorted(_class_only_constructs(fn)) == ["__class__", "__hidden", "super()"]
 
 
 @pytest.mark.parametrize("owner", facade._OWNERS)
@@ -482,19 +480,6 @@ def test_every_name_patched_through_the_facade_reaches_the_owners_reading_it() -
     # retries fake, and the coverage fixture's subprocess and pinning doubles.
     assert {"_git", "subprocess", "require_pinned", "time", "_run_dry"} <= patched
     assert _reach_gaps(patched, _index()) == []
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the test trees as data, so a test-only diff must still run it."""
-    import importlib
-
-    root = source_corpus.repo_root()
-    monkeypatch.syspath_prepend(str(root / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    this_file = Path(__file__).resolve().relative_to(root).as_posix()
-    assert this_file in leaf_test_scope.corpus_gates(root)
 
 
 def test_the_reach_scan_can_fail() -> None:

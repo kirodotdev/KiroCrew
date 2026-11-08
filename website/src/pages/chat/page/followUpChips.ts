@@ -5,10 +5,16 @@ import type { ComposerDraftStore } from '../../../chat-core/composer/draftStore'
 import type { pendingQuestionFor } from '../../../store/chatSlice'
 import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../../../lib/followUpToggle'
 import type { ChatMessage } from '../../../types'
+import { isReasoningRole } from '../groupDisplayItems'
+
+/** A row that shows a running turn moved past the chips' offer: tool work or reasoning (#15926). */
+export const isTurnActivityRow = (m: ChatMessage): boolean => m.role === 'tool' || isReasoningRole(m)
 
 interface FollowUpChipsOptions {
   messages: ChatMessage[]
   isStreaming: boolean
+  /** The slot's turn is running: chips hide once a tool or thinking row follows them. */
+  turnRunning: boolean
   /** A pending question card suppresses the chips: only the card can answer it. */
   pendingQuestion: ReturnType<typeof pendingQuestionFor>
   activeSlot: string | null
@@ -27,6 +33,7 @@ interface FollowUpChipsOptions {
 export function useFollowUpChips({
   messages,
   isStreaming,
+  turnRunning,
   pendingQuestion,
   activeSlot,
   inputRef,
@@ -39,8 +46,8 @@ export function useFollowUpChips({
   // A pending question card suppresses them: both would offer the same choices in
   // the same band, and only the card can answer the blocked tool call.
   const { followUpOptions, followUpSourceKey, followUpMulti } = useMemo(
-    () => deriveFollowUpOptions(messages, isStreaming, !!pendingQuestion),
-    [messages, isStreaming, pendingQuestion],
+    () => deriveFollowUpOptions(messages, isStreaming, !!pendingQuestion, turnRunning ? isTurnActivityRow : undefined),
+    [messages, isStreaming, pendingQuestion, turnRunning],
   )
   // Visual-only highlight state; text in the input is the source of truth for
   // what gets sent. Cleared whenever the options list changes (new assistant

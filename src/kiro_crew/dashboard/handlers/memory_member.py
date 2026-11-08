@@ -12,6 +12,7 @@ from aiohttp import web
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.memory_recall import bound_recall_payload, recall_json, recall_terms
+from kiro_crew.metrics.feature_usage import recall_payload_hit, record_memory_recalled
 from kiro_crew.session_surface import dashboard_surfaced_keys
 
 from ._shared import (
@@ -82,8 +83,13 @@ async def _private_tier(request: web.Request, name: str) -> tuple[Any, web.Respo
     return tier, None
 
 
+def _owner_dashboard_open(state: Any) -> bool:
+    """Whether an owner dashboard socket is open right now."""
+    return any(not ws.closed for ws in list(state._owner_ws_clients))
+
+
 def _memory_recall_keep(
-    session_key: str, query: str, pending: list, store: str | None = None
+    state: Any, session_key: str, query: str, pending: list, store: str | None = None
 ) -> "Callable | None":
     """The ``memory.recall`` keep hook for this recall, or ``None`` to return every hit.
 
@@ -113,9 +119,12 @@ def _memory_recall_keep(
     ever be shown". It is wrong here: a retained or archived slot keeps its key and has no
     open tab, so the prefix would send recalled memory for a conversation nobody is
     looking at and stamp a receipt on a reply nobody reads. The published set is emptied
-    of a slot the moment it leaves ``state._slots``, which is exactly the liveness this
-    needs -- and an empty set before the dashboard publishes fails CLOSED, which is the
-    safe direction for an egress gate.
+    of a slot the moment it leaves ``state._slots`` -- and an empty set before the
+    dashboard publishes fails CLOSED, which is the safe direction for an egress gate.
+
+    Membership alone is not a viewer, though: boot restores and publishes slots before any
+    browser connects, and they stay published after the last one closes. So the test also
+    needs an open owner dashboard socket (:func:`_owner_dashboard_open`).
 
     THIS coroutine's loop is captured for the point, because the point runs on the
     executor thread ``run_in_embed_pool`` puts ``recall`` on and submits its one
@@ -125,14 +134,18 @@ def _memory_recall_keep(
     """
     if not session_key or not query.strip():
         return None
+
+    def watched() -> bool:
+        return session_key in dashboard_surfaced_keys() and _owner_dashboard_open(state)
+
     # Checked twice, for two different jobs. HERE it is a cheap refusal that keeps a
     # request the seam will not serve from paying for the gate's import graph at all.
     # The check that GATES the egress is the predicate handed to the hook below, which
     # the point re-reads on the worker thread just before it would send anything: this
-    # coroutine runs before the search, and a tab closed during the search takes the
-    # slot out of the published set while a decision built on this answer is still in
+    # coroutine runs before the search, and a tab or the last owner dashboard closed
+    # during the search ends the watch while a decision built on this answer is still in
     # flight. An egress gate has to be read at the moment of egress.
-    if session_key not in dashboard_surfaced_keys():
+    if not watched():
         return None
     # Function-local by design, not by habit: `decisions/__init__.py` asks callers to
     # import the package inside the function that uses it, so a request the seam refuses
@@ -149,7 +162,7 @@ def _memory_recall_keep(
         session_key=session_key,
         loop=loop,
         owner_turn=True,
-        still_watched=lambda: session_key in dashboard_surfaced_keys(),
+        still_watched=watched,
         pending=pending,
         store=store,
     )
@@ -237,7 +250,8 @@ async def api_memory_recall(request: web.Request) -> web.Response:
                 query,
                 cap=3000,
                 project_dir=str(project) if project else None,
-                keep=_memory_recall_keep(session, query, decision_pending, name),
+                keep=_memory_recall_keep(state, session, query, decision_pending, name),
+                conversation_id=session,
             )
             if tier is not None
             else {}
@@ -336,6 +350,8 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         # receipt for a recall nobody received and each time the guard sat beside the
         # call instead of in it. There is nothing left to get right at this line.
         await asyncio.to_thread(commit_receipt, session, decision_pending, payload=payload)
+    # After the answer is final; never changes it (record_* swallows its own errors).
+    record_memory_recalled("tool", hit=recall_payload_hit(payload))
     return web.json_response(
         payload,
         dumps=lambda body: recall_json(body, ensure_ascii=False, context_cap=_RECALL_CONTEXT_CAP),

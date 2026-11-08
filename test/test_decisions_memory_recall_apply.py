@@ -1,15 +1,8 @@
 """``memory.recall`` applied live: the kept set is what reaches the prompt.
 
-The point's own suite drives the decision. This one drives the WIRING -- a real
-``VectorMemoryStore`` with real rows, a real ``MemoryStore.get_context`` and a real
-``ContextBuilder``, so the claim is about the block that actually gets injected
-rather than about a list a helper returned.
-
-Two directions, and both matter. With the switch on, the memories Jev kept are the
-ones in the block and the dropped one is gone. With the switch off -- the shipped
-default -- the block is byte-identical to the one the same tree produced before
-this point existed, which is the property that makes the seam safe to place on the
-prompt-assembly path.
+Drives the WIRING: a real ``VectorMemoryStore``, ``MemoryStore.get_context`` and
+``ContextBuilder``. Switch on: the block holds what Jev kept. Switch off (the default):
+the block is byte-identical to one built with no hook.
 """
 
 from __future__ import annotations
@@ -65,13 +58,8 @@ _RECALL_DEFAULT = object()
 def _recalled(store, *, cap: int = 100_000, keep=_RECALL_DEFAULT) -> str:
     """The episode text one recall returns, as one string.
 
-    The suites below were written against the prompt-assembly block and assert on the
-    TEXT that reached the model. The recall path returns evidence rows instead, so this
-    renders them the same way for the same assertions -- one place, so a change of shape
-    does not have to be chased through every test.
-
-    A sentinel default rather than ``None``: ``keep=None`` is a meaningful value on this
-    seam (no hook), distinct from "the caller did not mention a hook".
+    Renders the evidence rows as text so the assertions read like the prompt block. The
+    sentinel default exists because ``keep=None`` means "no hook" on this seam.
     """
     kwargs = {} if keep is _RECALL_DEFAULT else {"keep": keep}
     result = store.recall(QUERY, cap=cap, **kwargs)
@@ -159,11 +147,8 @@ class TestTheKeptSetIsWhatIsReturned:
 class TestTheBudgetIsAppliedBeforeTheHook:
     """A hook may only narrow the response, so it must not see rows the budget excluded.
 
-    The ordering IS the property. `fit` is the recall's char budget: it decides which
-    ranked episodes this recall would return. With the hook shown the pre-budget list,
-    dropping a high-ranked memory frees room a lower-ranked one then fits into -- so a
-    memory the response would never have carried comes back because Jev removed a
-    different one. That is the hook ADDING a memory, the one thing it must not do.
+    The ordering IS the property: shown the pre-budget list, a drop would free room for a
+    lower-ranked row, so the hook would ADD a memory.
     """
 
     def _cap_for_two(self, store):

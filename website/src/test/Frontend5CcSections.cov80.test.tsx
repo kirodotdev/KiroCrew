@@ -98,7 +98,8 @@ describe('crew-companion/SettingsSection', () => {
     const pills = Array.from(container.querySelectorAll('.cc-pill')) as HTMLButtonElement[]
     expect(pills.map((p) => p.textContent)).toEqual(BREAK_PRESETS.map(String))
     // The stored value is the pressed one.
-    expect(pills[0].getAttribute('aria-pressed')).toBe('true')
+    expect(pills[0].getAttribute('aria-checked')).toBe('true')
+    expect(pills[0].getAttribute('role')).toBe('radio')
     fireEvent.click(pills[2])
     expect(setCustomMins).toHaveBeenCalledWith(null)
     expect(onCfg).toHaveBeenCalledWith({ breakReminderMins: BREAK_PRESETS[2] })
@@ -273,10 +274,15 @@ describe('crew-companion/RemindersSection', () => {
     )
     const removes = container.querySelectorAll('.cc-icon-btn.is-remove')
     expect(removes.length).toBe(2)
-    // Only the recurring row folds Skip (with Edit) into a More menu.
+    // Every row folds its edits into a More menu; only the recurring row's menu offers Skip.
+    // Rows are chronological, so the one-time row's menu comes first.
     const more = screen.getAllByRole('button', { name: 'More actions' })
-    expect(more.length).toBe(1)
+    expect(more.length).toBe(2)
     fireEvent.keyDown(more[0], { key: 'Enter' })
+    await screen.findByRole('menuitem', { name: 'Edit' })
+    expect(screen.queryByRole('menuitem', { name: 'Skip just the next one' })).toBeNull()
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' })
+    fireEvent.keyDown(more[1], { key: 'Enter' })
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Skip just the next one' }))
     // Rows are chronological, so the sooner one-time reminder is listed first.
     fireEvent.click(removes[0])

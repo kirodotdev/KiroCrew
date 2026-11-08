@@ -11,12 +11,57 @@ import type { FrameData } from './frames'
 import type { StreamBuffers } from './streamBuffers'
 import { clearIdleRowRefreshes, recordIdleRowRefresh } from './idleRowRefresh'
 import { CHAT_FOLDERS_WRITE_KEY } from '../../api/chatFoldersWrite'
+import { autoBatched } from '../../lib/streamBatch'
+import { noteAppSlotRows } from '../../utils/appSlotPush'
+import { createSlotStorageSweep } from '../../utils/slotStorageSweep'
 
 export interface SlotListSync {
   /** A new connection: forget the last-seen generations and raw frame. */
   resetForConnection(): void
   onSlots(msg: FrameData, data: ChatSlot[], raw: string): void
   onSlotPatch(frame: SlotPatchFrame): void
+  /** A `slots_diff` frame; `requestResync` asks the gateway for a full list. */
+  onSlotsDiff(frame: SlotsDiffFrame, raw: string, requestResync: () => void): void
+}
+
+/** One changed row of a `slots_diff` frame: the whole row as the full list would carry it. */
+export interface SlotsDiffRow {
+  key: string
+  row: ChatSlot
+}
+
+/** Payload of the `slots_diff` frame: what changed in the slot list since list
+ *  `base`, the one this tab last received. Rebuilt from that list, it is the list
+ *  a full `slots` frame numbered `seq` would have carried. */
+export interface SlotsDiffFrame {
+  base?: number
+  seq?: number
+  rows?: SlotsDiffRow[]
+  removed?: string[]
+  envelope?: Record<string, unknown>
+}
+
+/** The last slot list the gateway sent this tab, as sent, and its sequence. */
+export interface ServerSlotList {
+  seq: number
+  rows: ChatSlot[]
+  envelope: FrameData
+}
+
+/** Rebuild the list `frame` describes from `held`, or `null` when it does not apply. */
+export function applySlotsDiff(held: ServerSlotList, frame: SlotsDiffFrame): ChatSlot[] | null {
+  if (typeof frame.seq !== 'number' || frame.base !== held.seq) return null
+  const removed = new Set(frame.removed ?? [])
+  const changed = new Map((frame.rows ?? []).map(row => [row.key, row.row]))
+  const rows: ChatSlot[] = []
+  for (const row of held.rows) {
+    if (removed.has(row.key)) continue
+    const next = changed.get(row.key)
+    changed.delete(row.key)
+    rows.push(next ?? row)
+  }
+  // A delta for a row the held list does not have means the two disagree.
+  return changed.size ? null : rows
 }
 
 /** Tell AppHost apps (`useAppEvents('slots')`) the session list changed.
@@ -33,34 +78,59 @@ export function useSlotListSync(
 ): SlotListSync {
   const lastGitlabHostsGenRef = useRef<number | null>(null)
   const lastFoldersGenRef = useRef<number | null>(null)
+  const lastTagsGenRef = useRef<number | null>(null)
   const lastGovernanceGenRef = useRef<number | null>(null)
   const lastSlotsRawRef = useRef<string | null>(null)
   const lastSlotsArrayRef = useRef<ChatSlot[] | null>(null)
+  const serverListRef = useRef<ServerSlotList | null>(null)
+  // True from a `slots_resync` request until the numbered list answering it
+  // arrives; the deltas in between cannot apply and must not ask again.
+  const resyncPendingRef = useRef(false)
 
-  return useMemo<SlotListSync>(() => ({
-    resetForConnection() {
+  return useMemo<SlotListSync>(() => {
+    const sweepSlotStorage = createSlotStorageSweep()
+    const resetForConnection = (): void => {
       // Forget the last-seen allowlist generation: it is process-local to the
       // gateway, so after a restart an equal number can mean a different
       // allowlist. Clearing it makes the next generation frame refetch.
       lastGitlabHostsGenRef.current = null
       // Same process-local reasoning for the folder-tree generation.
       lastFoldersGenRef.current = null
+      // …and for the tag-vocabulary / board-column generation.
+      lastTagsGenRef.current = null
       // …and for the governance-ceiling generation.
       lastGovernanceGenRef.current = null
       // Forget the last raw slots frame too, so a reconnect whose first frame
       // repeats the last one before it cannot swallow that first frame.
       lastSlotsRawRef.current = null
+      // The diff base belongs to the old socket.
+      serverListRef.current = null
+      resyncPendingRef.current = false
       // A `_done` the old socket never delivered will not arrive on this one.
       clearIdleRowRefreshes()
-    },
-    onSlots(msg, data, raw) {
+    }
+    const onSlots = (msg: FrameData, data: ChatSlot[], raw: string): void => {
+      // A numbered list is the base the next `slots_diff` is built on. Reducers
+      // never mutate a frame's rows, so the base holds them as sent.
+      if (typeof msg.slotsSeq === 'number' && Array.isArray(data)) {
+        serverListRef.current = { seq: msg.slotsSeq, rows: data, envelope: msg }
+        resyncPendingRef.current = false
+      } else {
+        serverListRef.current = null
+      }
       // The queued-depth reconcile rides this frame only, never `fetchSlots`: a
       // pushed frame is ordered with the `subagent_queued` frames on this one
       // socket, while a GET answer can land after a newer frame and undo it.
       // It runs ahead of the repeat check below: a push identical to the last
       // one still corrects a count a `subagent_queued` frame moved in between,
       // which is the very case the reconcile exists for.
-      if (Array.isArray(data)) dispatch(reconcileSubagentQueuedFromSlots(data))
+      //
+      // Every side dispatch of this frame is `autoBatched`: its reducer runs
+      // now, but subscribers hear of it with the `sseSlots` notification below,
+      // which is untagged and so flushes the held ones. A frame that stops at
+      // the repeat check notifies once, on the next animation frame, instead of
+      // once per dispatch; each notification re-runs every mounted selector.
+      if (Array.isArray(data)) dispatch(autoBatched(reconcileSubagentQueuedFromSlots(data)))
       // The gateway labels the lists it pushes while a restart is still
       // restoring sessions; `reconcileSlots` must not drain unread entries
       // against one of those. Set before the list is applied so the frame's
@@ -68,13 +138,13 @@ export function useSlotListSync(
       // flips the label differs in `raw`, but the hold must also be re-read
       // from a frame this socket repeats. Absent on an older gateway, which
       // means complete and keeps the base behaviour.
-      dispatch(sseSlotListHolds({
+      dispatch(autoBatched(sseSlotListHolds({
         heldKeys: Array.isArray(msg.slotsHeldKeys)
           ? msg.slotsHeldKeys.filter((key: unknown): key is string => typeof key === 'string')
           : [],
         holdChannels: msg.slotsHoldChannels === true,
-      }))
-      dispatch(sseSlotsPartial(msg.slotsPartial === true))
+      })))
+      dispatch(autoBatched(sseSlotsPartial(msg.slotsPartial === true)))
       // An identical repeat carries identical values for every arm below, but
       // only while no other writer (fetchSlots) has since replaced the list.
       // Current history replies carry turn identity and cannot restore busy
@@ -107,10 +177,33 @@ export function useSlotListSync(
         buffers.flushChunks()
       }
       // Query keys this frame has made stale; flushed once at the end.
-      const staleKeys = new Set<'chat-folders' | 'dashboardConfig'>()
+      const staleKeys = new Set<'chat-folders' | 'dashboardConfig' | 'chat-tags' | 'tag-columns'>()
       const beforeSettle = store.getState().chat
+      // Ahead of `sseSlots` so its notification covers them too. Neither
+      // reducer reads the slot list, nor does `sseSlots` read either flag.
+      if (msg.yolo !== undefined) dispatch(autoBatched(sseYolo(msg.yolo)))
+      if (msg.channelTrusted !== undefined) dispatch(autoBatched(setChannelTrusted(msg.channelTrusted)))
+      const snapshotSeenBefore = beforeSettle.slotsSnapshotSeen === true
       dispatch(sseSlots(data))
       lastSlotsArrayRef.current = store.getState().dashboard.slots
+      // localStorage is a side effect, so the orphan sweep runs here, after the
+      // reducers have applied this frame's hold fields and rows.
+      if (Array.isArray(data)) {
+        const { chat: applied, dashboard: list } = store.getState()
+        try {
+          sweepSlotStorage({
+            rows: data,
+            keptKeys: list.slots.map(slot => slot.key),
+            activeSlot: applied.activeSlot,
+            hold: {
+              partial: applied.slotListPartial,
+              heldKeys: applied.slotListHeldKeys ?? [],
+              holdChannels: applied.slotListHoldChannels,
+            },
+            snapshotSeenBefore,
+          })
+        } catch { /* best-effort: storage may be unavailable */ }
+      }
       // The frame may predate a create or fork this tab just made; if the
       // reducer kept that session, one list read settles it.
       dispatch(readUnlistedMembers())
@@ -128,12 +221,6 @@ export function useSlotListSync(
           && afterSettle.slotState === 'idle' && !afterSettle.slotRunning) {
         recordIdleRowRefresh(activeKey, wireTurnIdentity(data.find(s => s.key === activeKey) ?? {}))
         dispatch(refreshSlot(activeKey))
-      }
-      if (msg.yolo !== undefined) {
-        dispatch(sseYolo(msg.yolo))
-      }
-      if (msg.channelTrusted !== undefined) {
-        dispatch(setChannelTrusted(msg.channelTrusted))
       }
       // Seed the ['chat-folders'] query cache from the folder tree carried
       // on this frame so the sidebar groups sessions correctly on the FIRST
@@ -203,6 +290,19 @@ export function useSlotListSync(
           staleKeys.add('chat-folders')
         }
       }
+      // The tag vocabulary and the board columns have the same problem as the
+      // folder tree: `['chat-tags']` / `['tag-columns']` never go stale on their
+      // own, so a write an agent made through the dashboard MCP tools stayed
+      // invisible until a reload. One generation covers both stores;
+      // same first-frame-of-a-connection rule as the folder generation above.
+      if (typeof msg.tagsGeneration === 'number') {
+        const prevTagsGen = lastTagsGenRef.current
+        lastTagsGenRef.current = msg.tagsGeneration
+        if (prevTagsGen === null || prevTagsGen !== msg.tagsGeneration) {
+          staleKeys.add('chat-tags')
+          staleKeys.add('tag-columns')
+        }
+      }
       // Refresh the cached GitLab-hosts allowlist when it may have changed.
       // The generation is PROCESS-local, so a gateway restart can hand out a
       // number equal to the one this client last saw even though the
@@ -244,9 +344,33 @@ export function useSlotListSync(
         staleKeys.delete('chat-folders')
       }
       for (const key of staleKeys) queryClient.invalidateQueries({ queryKey: [key] })
+      // App embeds re-read a watched slot whose row moved (utils/appSlotPush.ts).
+      noteAppSlotRows(data)
       notifyAppsSlotsChanged()
-    },
-    onSlotPatch(frame) {
+    }
+    const onSlotsDiff = (frame: SlotsDiffFrame, raw: string, requestResync: () => void): void => {
+      // A resync is outstanding: every delta before its numbered list is moot.
+      if (resyncPendingRef.current) return
+      const held = serverListRef.current
+      const rows = held ? applySlotsDiff(held, frame) : null
+      if (!held || !rows) {
+        // Not built on the list this tab holds: drop it and ask, once, for the whole list.
+        serverListRef.current = null
+        resyncPendingRef.current = true
+        requestResync()
+        return
+      }
+      const envelope = frame.envelope ?? {}
+      const unchanged = !frame.rows?.length && !frame.removed?.length && !Object.keys(envelope).length
+      // The list goes through the full-frame handler, as the full frame would.
+      // An empty delta is that frame's repeat, so it carries the repeat's raw text.
+      onSlots(
+        { ...held.envelope, ...envelope, data: rows, slotsSeq: frame.seq },
+        rows,
+        unchanged ? (lastSlotsRawRef.current ?? raw) : raw,
+      )
+    }
+    const onSlotPatch = (frame: SlotPatchFrame): void => {
       const dashboard = store.getState().dashboard
       const removed = new Set(frame.removed ?? [])
       for (const slot of removed) queryClient.resetQueries({ queryKey: ['dashboard-card', slot] })
@@ -258,8 +382,18 @@ export function useSlotListSync(
       // A stale list can remove a newly created row; its later patch cannot
       // restore that row, so the authoritative list repairs the omission.
       if (hasUnknownRow) dispatch(fetchSlots())
+      // A sub-agent patch row carries `subagents_queued` and is ordered with the
+      // `subagent_queued` frames on this socket, so it heals a missed depth frame
+      // exactly as a full `slots` push does (see onSlots). A metadata patch (pin,
+      // rename, folder, lineage) carries no depth and dispatches nothing.
+      const patchRows = frame.slots ?? []
+      if (patchRows.some(row => row && 'subagents_queued' in row)) {
+        dispatch(reconcileSubagentQueuedFromSlots(patchRows))
+      }
       dispatch(sseSlotPatch(frame))
+      noteAppSlotRows(frame.slots)
       notifyAppsSlotsChanged()
-    },
-  }), [buffers, dispatch, queryClient])
+    }
+    return { resetForConnection, onSlots, onSlotPatch, onSlotsDiff }
+  }, [buffers, dispatch, queryClient])
 }

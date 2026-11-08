@@ -2,15 +2,18 @@ import { useState } from 'react'
 import { Tag, Copy, ChevronDown, ChevronRight, FileText } from 'lucide-react'
 import { Btn, Badge } from '../../components/ui'
 import Clickable from '../../components/Clickable'
-import { typeBadgeVariant, formatDate, useCopy } from './helpers'
+import { typeBadgeVariant, formatDate, useCopy, itemTypeLabel } from './helpers'
 import type { KnowledgeItem } from './types'
 import { i18nT } from '../../i18n/t'
+import { pathBasename } from '../../utils/pathBasename'
 
-export function ItemCard({ item, onClick, selected, onSelect }: {
+export function ItemCard({ item, onClick, selected, onSelect, showAddedDate = false }: {
   item: KnowledgeItem
   onClick: () => void
   selected: boolean
   onSelect: (checked: boolean) => void
+  /** Show the day the item was added instead of its last update, for a list ordered by that day. */
+  showAddedDate?: boolean
 }) {
   const { copied, copy } = useCopy()
   return (
@@ -23,10 +26,10 @@ export function ItemCard({ item, onClick, selected, onSelect }: {
             <div className="text-sm font-medium text-text-strong truncate">{item.title || i18nT('pages.knowledge.itemCard.untitled')}</div>
             {item.summary && <div className="text-[13px] text-muted mt-1 line-clamp-2">{item.summary}</div>}
           </div>
-          <Badge variant={typeBadgeVariant(item.item_type)}>{item.item_type.replace(/_/g, ' ')}</Badge>
+          <Badge variant={typeBadgeVariant(item.item_type)}>{itemTypeLabel(item.item_type)}</Badge>
         </div>
         <div className="flex items-center gap-3 mt-2 text-[11px] text-muted">
-          <span>{formatDate(item.updated_at)}</span>
+          <span>{formatDate(showAddedDate ? item.created_at : item.updated_at)}</span>
           {item.namespace && item.namespace !== 'default' && <span className="bg-accent/10 text-accent px-1.5 py-0.5 rounded text-[10px]">{item.namespace}</span>}
           {item.tags && <span className="flex items-center gap-0.5"><Tag size={10} />{typeof item.tags === 'string' ? item.tags : ''}</span>}
           {item._score !== undefined && <span className="text-[10px] text-accent/70">{item._match_type}</span>}
@@ -45,14 +48,14 @@ export function FileSubGroup({ filePath, items, onItemClick, selectedItems, onSe
   onSelect: (id: string, checked: boolean) => void
 }) {
   const [open, setOpen] = useState(true)
-  const fileName = filePath === '__ungrouped__' ? i18nT('pages.knowledge.itemCard.other') : filePath.split('/').pop() || filePath
+  const fileName = filePath === '__ungrouped__' ? i18nT('pages.knowledge.itemCard.other') : pathBasename(filePath) || filePath
 
   return (
     <div className="ml-2 border-l-2 border-border pl-2">
-      <button onClick={() => setOpen(!open)}
+      <button onClick={() => setOpen(!open)} aria-expanded={open}
         className="flex items-center gap-1.5 py-1 text-left bg-transparent border-none cursor-pointer w-full">
-        {open ? <ChevronDown size={12} className="text-muted" /> : <ChevronRight size={12} className="text-muted" />}
-        <FileText size={12} className="text-muted" />
+        {open ? <ChevronDown size={12} className="text-muted" aria-hidden="true" /> : <ChevronRight size={12} className="text-muted" aria-hidden="true" />}
+        <FileText size={12} className="text-muted" aria-hidden="true" />
         <span className="text-[12px] text-text truncate">{fileName}</span>
         <span className="text-[10px] text-muted">({items.length})</span>
       </button>

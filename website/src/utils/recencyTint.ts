@@ -40,7 +40,7 @@ export function computeRecentRank(
 ): Map<string, number> {
   const ranked = new Map<string, number>()
   slots
-    .map(s => [s.key, Date.parse(s.last_turn_ts || s.last_ts || '') || 0] as [string, number])
+    .map(s => [s.key, Date.parse(s.last_turn_ts || s.last_ts || '') || 0] as [string, number]) // last-ts: the slotActivityTs ladder
     .filter(([, t]) => t > 0)
     .sort((a, b) => b[1] - a[1])
     .slice(0, count)

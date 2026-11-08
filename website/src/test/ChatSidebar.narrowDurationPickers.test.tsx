@@ -18,7 +18,8 @@
  * green if the branch were made unconditional.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -46,7 +47,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -146,13 +154,13 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     // Inline: no flyout to open, so the row must not advertise one.
     expect(recentRow.getAttribute('aria-haspopup')).toBeNull()
 
-    // The whole picker is reachable in the one open menu.
-    expect(screen.getByText('Within')).toBeInTheDocument()
+    // The whole picker is reachable in the one open menu (it has no caption of
+    // its own; the custom-amount field and the preset chips are the picker).
     expect(screen.getByLabelText('Custom recency amount')).toBeInTheDocument()
     expect(screen.getByLabelText('Custom recency unit')).toBeInTheDocument()
     const presets = ['1 hour', '6 hours', '1 day', '1 week']
     for (const label of presets) {
-      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+      expect(screen.getByRole('radio', { name: label })).toBeInTheDocument()
     }
   })
 
@@ -165,21 +173,21 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     // was not having. Picking now enables it, so the gate's reason is gone — and
     // a gate on one viewport was the per-modality thinking that caused the bug.
     expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
-    expect(screen.getByText('Within')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '1 week' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Custom recency amount')).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: '1 week' })).toBeInTheDocument()
   })
 
   it('commits a preset from the inline chip without dismissing the menu', async () => {
     renderSidebar()
     await openFilterMenu()
 
-    fireEvent.click(screen.getByRole('button', { name: '1 week' }))
+    fireEvent.click(screen.getByRole('radio', { name: '1 week' }))
 
     await waitFor(() => expect(localStorage.getItem(RECENT_WINDOW_LS_KEY)).toBe(String(7 * DAY_MS)))
     // A chip is a plain button, not a menu item, so the menu survives the pick
     // and stays available for the next one.
     expect(filterMenuOpen()).toBe(true)
-    expect(screen.getByRole('button', { name: '1 week' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('radio', { name: '1 week' })).toHaveAttribute('aria-checked', 'true')
   })
 
   it('renders the dormant-collapse thresholds inline, and commits one', async () => {
@@ -193,10 +201,10 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     expect(row.getAttribute('role')).not.toBe('menuitem')
     // "Off" plus the day presets, as chips rather than more menu rows.
     for (const label of ['Off', '1d', '2d', '7d', '14d']) {
-      expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
+      expect(screen.getByRole('radio', { name: label })).toBeInTheDocument()
     }
 
-    fireEvent.click(screen.getByRole('button', { name: '7d' }))
+    fireEvent.click(screen.getByRole('radio', { name: '7d' }))
     await waitFor(() => expect(localStorage.getItem(STALE_COLLAPSE_LS_KEY)).toBe(String(7 * DAY_MS)))
     expect(filterMenuOpen()).toBe(true)
   })
@@ -219,9 +227,8 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     expect(recentRow).toHaveAttribute('aria-haspopup', 'menu')
     expect(screen.getByTestId('stale-collapse-menu')).toHaveAttribute('aria-haspopup', 'menu')
     // The picker lives in the closed submenu, so nothing of it is in the DOM yet.
-    expect(screen.queryByText('Within')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Custom recency amount')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: '1 week' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('radio', { name: '1 week' })).not.toBeInTheDocument()
   })
 
   it('turns the Recent filter on when a window is chosen, on BOTH viewports', async () => {
@@ -242,11 +249,11 @@ describe('sessions filter menu — duration pickers at phone width', () => {
         // submenu-open handler (Enter/Space toggle the filter instead).
         fireEvent.keyDown(row, { key: 'ArrowRight' })
       }
-      await screen.findByText('Within')
+      await screen.findByLabelText('Custom recency amount')
       // Reaching the picker must not have enabled anything by itself.
       expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
 
-      fireEvent.click(screen.getByRole('button', { name: '1 week' }))
+      fireEvent.click(screen.getByRole('radio', { name: '1 week' }))
       await waitFor(() => expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBe('1'))
       view.unmount()
     }
@@ -259,8 +266,8 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     // the most common pick.
     renderSidebar()
     await openFilterMenu()
-    const chip = screen.getByRole('button', { name: '1 hour' })
-    expect(chip).toHaveAttribute('aria-pressed', 'true')
+    const chip = screen.getByRole('radio', { name: '1 hour' })
+    expect(chip).toHaveAttribute('aria-checked', 'true')
     expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
 
     fireEvent.click(chip)
@@ -281,5 +288,47 @@ describe('sessions filter menu — duration pickers at phone width', () => {
     fireEvent.blur(amount)
     await waitFor(() => expect(localStorage.getItem(RECENT_WINDOW_LS_KEY)).toBe(String(60 * 60 * 1000)))
     expect(localStorage.getItem(RECENT_FILTER_LS_KEY)).toBeNull()
+  })
+})
+
+// The Recent-window pills are a radio group too, so they carry the same keyboard
+// contract as the dormant-collapse group (ChatSidebar.staleCollapseRadioState):
+// one Tab stop, arrow keys move focus and selection together. Real key events,
+// so the host Radix menu and the picker wrapper's own keydown handling run too.
+describe('sessions filter menu — Recent-window presets are operable as a radio group (#21486)', () => {
+  const HOUR = 60 * 60 * 1000
+  const recentRadios = () =>
+    Array.from(screen.getByRole('radiogroup', { name: 'Recent' }).querySelectorAll('[role="radio"]')) as HTMLElement[]
+  const checkedName = () =>
+    (recentRadios().find(r => r.getAttribute('aria-checked') === 'true')?.textContent ?? '').trim()
+
+  it('names the group, and arrows move focus AND the committed window, wrapping at the ends', async () => {
+    const user = userEvent.setup()
+    renderSidebar()
+    await openFilterMenu()
+    // Default window is 1 hour: the first preset is checked and the only Tab stop.
+    expect(checkedName()).toBe('1 hour')
+    expect(recentRadios().filter(r => r.tabIndex === 0).map(r => r.textContent?.trim())).toEqual(['1 hour'])
+
+    act(() => recentRadios()[0].focus())
+    await user.keyboard('{ArrowRight}')
+    await waitFor(() => expect(checkedName()).toBe('6 hours'))
+    expect(document.activeElement?.textContent?.trim()).toBe('6 hours')
+    expect(localStorage.getItem(RECENT_WINDOW_LS_KEY)).toBe(String(6 * HOUR))
+
+    await user.keyboard('{ArrowLeft}{ArrowLeft}') // 6 hours -> 1 hour -> wraps to 1 week
+    await waitFor(() => expect(checkedName()).toBe('1 week'))
+    expect(localStorage.getItem(RECENT_WINDOW_LS_KEY)).toBe(String(7 * DAY_MS))
+    // The menu survives keyboard picks, as it does a click.
+    expect(filterMenuOpen()).toBe(true)
+  })
+
+  it('keeps one Tab stop on the first pill when a custom window matches no preset', async () => {
+    localStorage.setItem(RECENT_WINDOW_LS_KEY, String(3 * HOUR))
+    renderSidebar()
+    await openFilterMenu()
+    const radios = recentRadios()
+    expect(radios.filter(r => r.getAttribute('aria-checked') === 'true')).toEqual([])
+    expect(radios.filter(r => r.tabIndex === 0)).toEqual([radios[0]])
   })
 })

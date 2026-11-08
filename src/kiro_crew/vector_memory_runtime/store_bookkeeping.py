@@ -75,8 +75,6 @@ def _ineligible_ids(self: VectorMemoryStore, record_ids: list[str] | None = None
         rows = []
         for start in range(0, len(unique), _MAX_SQL_PARAMS):
             chunk = unique[start : start + _MAX_SQL_PARAMS]
-            if not chunk:
-                continue
             placeholders = ",".join("?" * len(chunk))
             rows.extend(
                 self._fetch_all_locked(
@@ -250,13 +248,15 @@ def get_rejection_stats(self: VectorMemoryStore) -> dict[str, int]:
     writes. The other codes
     stay semantic-scoped: ``conflict_skip`` is also emitted for episodic
     FAISS dedup, so counting episodic there would conflate benign
-    deduplication with policy rejections.
+    deduplication with policy rejections. ``consolidation_value_size`` is
+    written by the consolidation pass, not by ``validate_semantic``.
     """
     rows = self._fetch_all_locked(
         "SELECT event_type, COUNT(*) as count FROM memory_events "
         "WHERE event_type = 'injection_blocked' "
         "OR (memory_type = 'semantic' AND event_type IN "
-        "('allowlist_reject', 'low_confidence', 'conflict_skip', 'value_empty')) "
+        "('allowlist_reject', 'low_confidence', 'conflict_skip', 'value_empty', 'work_state', "
+        "'consolidation_value_size')) "
         "GROUP BY event_type"
     )
     return {r["event_type"]: r["count"] for r in rows}

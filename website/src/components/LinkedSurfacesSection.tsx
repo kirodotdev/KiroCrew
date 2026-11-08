@@ -13,6 +13,7 @@ import { ChannelBrandIcon } from './ChannelBrandIcon'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { ContextMenuItem } from './ui/context-menu'
 import { DropdownMenuItem } from './ui/dropdown-menu'
+import { slotRowByKey } from '../store/slotIndex'
 
 /**
  * One row per channel, and the row's LABEL is the action.
@@ -165,7 +166,7 @@ export default function LinkedSurfacesSection({ slotKey, variant, channel }: {
   const targetsErrorId = useId()
   const rowErrorIdPrefix = useId()
   const dispatch = useAppDispatch()
-  const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
+  const slot = useAppSelector(s => slotRowByKey(s.dashboard.slots, slotKey))
   // No synthesized Slack row. The wire emits a Slack row on exactly the condition
   // it reports `slack_linked`, and the row is what carries `paused` — a row
   // invented here could not know the disconnect, so it rendered a disconnected

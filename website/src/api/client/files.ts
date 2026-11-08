@@ -2,10 +2,12 @@
  * Files and projects on the gateway host: worktree creation, recent
  * projects, directory, drive and file browsing, project git status/log/tree,
  * named workspaces, reveal/open, the file picker, diff, fuzzy search, path
- * completion, composer uploads and screenshots.
+ * completion, composer and Files-panel uploads, screenshots, and PlantUML
+ * diagrams drawn by the host's own `plantuml`.
  */
 
 import { COMPOSER_UPLOAD_PATH, uploadComposerFiles } from '../../utils/composerUpload'
+import { chatSlotParam } from '../../utils/fileReadUrl'
 import type { ClientTransport } from './transport'
 
 /** Response of POST /api/reveal. When the backend cannot drive a file manager
@@ -23,6 +25,64 @@ export interface ProjectAwsProfile {
   boundDir: string | null
   profiles: string[]
   status?: 'ok' | 'expired' | 'unavailable' | null
+}
+
+/** localStorage key of the Files panel's "Show hidden files" toggle (`usePersistedBool`, off by default). */
+export const SHOW_HIDDEN_FILES_KEY = 'mc-files-show-hidden'
+
+/** Whether that toggle is on, read when a listing is requested. The listings' query keys stay as
+ *  they are, so every reader of one key keeps sharing one request; the toggle refetches both
+ *  listings when it flips (`FileBrowserRail`). On, `browseFiles` also lists dot-files and
+ *  `projectTree` also lists the dot-files `.gitignore` names, both still behind the server's
+ *  sensitive-path checks. */
+function showHiddenFiles(): boolean {
+  try {
+    return localStorage.getItem(SHOW_HIDDEN_FILES_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+/** GET /api/project/tree: one folder level of a project directory. */
+export interface ProjectTreePayload {
+  root: string
+  dir?: string
+  paths: string[]
+  directories?: string[]
+  repo: boolean
+  truncated?: boolean
+  truncatedDirectories?: string[]
+  hiddenOnlyDirectories?: string[]
+  unreadableDirectories?: string[]
+  linkedDirectories?: string[]
+  nestedRepoDirectories?: string[]
+}
+
+/** One file a chat session edited: absolute path, latest change time (ISO),
+ *  and whether it is still on disk. */
+export interface SessionFile {
+  path: string
+  ts: string
+  exists: boolean
+}
+
+/** GET /api/project/session-files. `truncated`: more files than the list
+ *  holds, the oldest left out. `withheld`: edits it cannot name here (a
+ *  sensitive or unresolvable path, files a turn's own record left out). */
+export interface SessionFilesPayload {
+  files: SessionFile[]
+  truncated: boolean
+  withheld?: boolean
+}
+
+/** GET /api/project/session-file-diff: the texts of the newest change this chat
+ *  recorded to one file. `available` false: no whole pair is recorded, so the
+ *  caller shows the working-tree diff instead. */
+export interface SessionFileDiffPayload {
+  path: string
+  available: boolean
+  before: string
+  after: string
 }
 
 /** Deadline for the whole-tree walks, `api.fileSearch` and `api.projectTree`. Its own literal,
@@ -77,6 +137,36 @@ export const FILE_SEARCH_TIMEOUT_MS = 15_000
  *  them. */
 export const BROWSE_FILES_TIMEOUT_MS = 10_000
 
+/** Bytes of a request body sent so far, and the body's size. */
+type UploadProgress = (loaded: number, total: number) => void
+
+/** `fetch`, over XMLHttpRequest: the one browser API that reports upload
+ *  progress, from its start at zero bytes on. It settles as `fetch` does, so
+ *  the caller and the journal read it the same way: a Response for any HTTP
+ *  answer, a TypeError when the network fails, an AbortError once
+ *  `init.signal` aborts (at once, whatever the request does next). */
+function sendWithProgress(url: string, init: RequestInit | undefined, onProgress?: UploadProgress): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open(init?.method ?? 'GET', url)
+    if (onProgress) xhr.upload.onloadstart = xhr.upload.onprogress = e => onProgress(e.loaded, e.total)
+    xhr.onload = () => {
+      const headers = new Headers()
+      for (const line of xhr.getAllResponseHeaders().split('\r\n')) {
+        const colon = line.indexOf(':')
+        if (colon > 0) headers.append(line.slice(0, colon), line.slice(colon + 1).trim())
+      }
+      resolve(new Response(xhr.responseText || null, { status: xhr.status, statusText: xhr.statusText, headers }))
+    }
+    xhr.onerror = () => reject(new TypeError('Failed to fetch'))
+    init?.signal?.addEventListener('abort', () => {
+      xhr.abort()
+      reject(new DOMException('The upload was cancelled.', 'AbortError'))
+    }, { once: true })
+    xhr.send(init?.body as XMLHttpRequestBodyInit | null | undefined)
+  })
+}
+
 export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSessionExpired, withJournaledDeadline }: ClientTransport) {
   const projects = {
     // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.
@@ -117,10 +207,18 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     browseDirs: (path?: string) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
     /** Windows only: the mounted drive roots, as the virtual level above every `X:\`. `path` is `""`: this listing is not a directory. */
     browseDrives: () => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, undefined, '/api/browse-dirs', s => fetch('/api/browse-dirs?drives=1', { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string }[] }>,
-    browseFiles: (path?: string, signal?: AbortSignal) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, signal, '/api/browse-files', s => fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) : ''), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
+    /** Make folder `name` inside `parent` (the project picker's New folder). A refusal rejects
+     *  with an `ApiError` whose `code` names it. Unbounded, like the other writes here. */
+    createBrowseDir: (parent: string, name: string) => post('/api/browse-dirs/create', { parent, name }).then(j) as Promise<{ path: string }>,
+    browseFiles: (path?: string, signal?: AbortSignal) => withJournaledDeadline(BROWSE_FILES_TIMEOUT_MS, signal, '/api/browse-files', s =>
+      fetch('/api/browse-files' + (path ? '?path=' + encodeURIComponent(path) + (showHiddenFiles() ? '&hidden=1' : '') : (showHiddenFiles() ? '?hidden=1' : '')), { signal: s }).then(j)) as Promise<{ path: string; parent: string; dirs: { name: string; path: string; mtime: number }[]; files: { name: string; path: string; mtime: number }[] }>,
     projectGit: (path: string) => fetch('/api/project/git?path=' + encodeURIComponent(path)).then(j) as Promise<{ path: string; repo: boolean; repoRoot?: string; isRepoRoot?: boolean; branch?: string; detached?: boolean; head?: string }>,
     projectGitStatus: (path: string) => fetch('/api/project/git/status?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; repoRoot?: string; branch?: string; ahead?: number; behind?: number; truncated?: boolean; files: { path: string; status: string; staged: boolean; additions?: number; deletions?: number }[] }>,
     projectGitLog: (path: string, limit = 20) => fetch('/api/project/git/log?path=' + encodeURIComponent(path) + '&limit=' + limit).then(j) as Promise<{ repo: boolean; commits: { sha: string; message: string; author: string; date: string; isHead: boolean }[] }>,
+    /** Every change the branch committed since it left its base (`origin/HEAD`,
+     *  else `main`, else the older default name), as one masked patch. `base` is null when the
+     *  repository has none; `omitted` counts changed files the patch leaves out. */
+    projectGitBranchDiff: (path: string) => fetch('/api/project/git/branch-diff?path=' + encodeURIComponent(path)).then(j) as Promise<{ repo: boolean; base?: string | null; diff?: string; omitted?: number }>,
     /** The repositories the Git tab lists for one chat: its project (when that
      *  is in a repository) first, then every repository its tool calls worked
      *  in, most recent first. Each `path` is accepted by the status/log routes.
@@ -129,8 +227,24 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     projectGitRepos: (slot: string) => fetch('/api/project/git/repos?slot=' + encodeURIComponent(slot)).then(j) as Promise<{ repos: { path: string; source: 'project' | 'agent' }[]; omitted: number; listed: number; incomplete: boolean }>,
     /** `dir` lists one project-relative folder (one the whole listing named in
      *  `truncatedDirectories`) instead of the whole tree; its paths stay project-relative. */
+    // One level per request (`shallow=1`): the folders inside come back in
+    // `lazyDirectories`, unread. They are folded into `nestedRepoDirectories`,
+    // the set the tree already lists on open with no state row, so opening a
+    // folder fetches just that folder and a large workspace never walks whole.
     projectTree: (path: string, dir?: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/tree', s =>
-      fetch('/api/project/tree?path=' + encodeURIComponent(path) + (dir ? '&dir=' + encodeURIComponent(dir) : ''), { signal: s }).then(j)) as Promise<{ root: string; dir?: string; paths: string[]; directories?: string[]; repo: boolean; truncated?: boolean; truncatedDirectories?: string[]; hiddenOnlyDirectories?: string[]; unreadableDirectories?: string[]; linkedDirectories?: string[] }>,
+      fetch('/api/project/tree?shallow=1&path=' + encodeURIComponent(path) + (dir ? '&dir=' + encodeURIComponent(dir) : '') + (showHiddenFiles() ? '&hidden=1' : ''), { signal: s })
+        .then(j)
+        .then((body: ProjectTreePayload & { lazyDirectories?: string[] }) => {
+          const lazy = body?.lazyDirectories
+          if (!Array.isArray(lazy) || lazy.length === 0) return body
+          return { ...body, nestedRepoDirectories: [...new Set([...(body.nestedRepoDirectories ?? []), ...lazy])].sort() }
+        })) as Promise<ProjectTreePayload>,
+    /** The files this chat session edited, newest first (`GET /api/project/session-files`). */
+    sessionFiles: (slot: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/session-files', s =>
+      fetch('/api/project/session-files?slot=' + encodeURIComponent(slot), { signal: s }).then(j)) as Promise<SessionFilesPayload>,
+    /** The texts of this chat's newest recorded change to one file (`GET /api/project/session-file-diff`). */
+    sessionFileDiff: (slot: string, path: string) => withJournaledDeadline(FILE_SEARCH_TIMEOUT_MS, undefined, '/api/project/session-file-diff', s =>
+      fetch('/api/project/session-file-diff?slot=' + encodeURIComponent(slot) + '&path=' + encodeURIComponent(path), { signal: s }).then(j)) as Promise<SessionFileDiffPayload>,
     workspaces: () => fetch('/api/workspaces').then(j),
     createWorkspace: (body: object) => post('/api/workspaces', body).then(j),
     updateWorkspace: (name: string, body: object) =>
@@ -155,7 +269,8 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
 
   const fileOps = {
     pickFiles: () => post('/api/upload').then(j) as Promise<{ paths: string[] }>,
-    fileDiff: (path: string) => fetch('/api/file-diff?path=' + encodeURIComponent(path)).then(j) as Promise<{ diff: string; original: string; status?: 'clean' | 'modified' | 'untracked' | 'not_git' | 'error' }>,
+    /** `slot` names the chat asking; the gateway refuses one that runs remotely. */
+    fileDiff: (path: string, slot?: string | null) => fetch('/api/file-diff?path=' + encodeURIComponent(path) + chatSlotParam(slot)).then(j) as Promise<{ diff: string; original: string; status?: 'clean' | 'modified' | 'untracked' | 'not_git' | 'error' }>,
     /** Fuzzy file search for @-mention picker. `kind` distinguishes folder hits from files.
      *  `kinds` narrows the result set server-side — 'files' or 'dirs'; omitted returns both.
      *  Filtering server-side rather than dropping unwanted hits here matters because the
@@ -186,14 +301,57 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     /** Upload files via browser File API (cross-platform).
      *  `signal` lets the composer abort an upload still in flight: the
      *  request dies client-side and the server unlinks its partials through
-     *  the disconnect path the upload handler already has. */
-    uploadFiles: async (files: File[], signal?: AbortSignal) =>
+     *  the disconnect path the upload handler already has. `onProgress`
+     *  hears each step of the bytes going out. */
+    uploadFiles: async (files: File[], signal?: AbortSignal, onProgress?: UploadProgress) =>
       uploadComposerFiles(files, async body => {
-        const res = await fetch(COMPOSER_UPLOAD_PATH, { method: 'POST', body, ...(signal ? { signal } : {}) })
+        const res = await fetch(COMPOSER_UPLOAD_PATH, { method: 'POST', body, ...(signal ? { signal } : {}) },
+          (url, init) => sendWithProgress(url, init, onProgress))
         checkSessionExpired(res)
         return res
-      }),
+      }, signal),
+    /**
+     * Upload one OS file into an existing workspace directory (Files panel
+     * drag-and-drop / "Upload files…" row menu).
+     *
+     * Sibling of `uploadFiles` above: that one always lands in the fixed
+     * chat-attachment scratch directory; this one targets whatever directory
+     * the caller resolved (a drop target row, or the tree root). One request
+     * per file — the caller loops for multiple files — so a name collision is
+     * reported per file rather than for a whole batch at once. Returns a
+     * discriminated result rather than throwing, so a `name_collision` (409)
+     * reads as data the caller can report instead of an exception to catch.
+     */
+    uploadToDirectory: async (
+      dir: string, file: File,
+    ): Promise<
+      { ok: true; path: string; name: string } | { ok: false; status: number; code?: string; error: string }
+    > => {
+      const fd = new FormData()
+      fd.append('file', file)
+      const q = new URLSearchParams({ dir })
+      const res = await fetch(`/api/directory-upload?${q}`, { method: 'POST', body: fd })
+      checkSessionExpired(res)
+      let body: { path?: string; name?: string; error?: string; code?: string }
+      try { body = await res.json() } catch { body = {} }
+      if (!res.ok) {
+        return { ok: false, status: res.status, code: body.code, error: body.error || res.statusText }
+      }
+      return { ok: true, path: body.path ?? '', name: body.name ?? file.name }
+    },
     screenshot: () => post('/api/screenshot').then(j) as Promise<{ path: string }>,
+    /** A ```plantuml fence as SVG from the host's PlantUML. The route's designed
+     *  answers keep the code view unjournaled: no renderer (404), not the owner
+     *  (403), a diagram PlantUML cannot draw (422, `failed`). A lapsed session's
+     *  403 goes through `j`, which starts the refresh. */
+    plantUmlSvg: async (source: string): Promise<{ svg: string | null; failed: boolean }> => {
+      const res = await post('/api/plantuml/svg', { source })
+      const lapsed = res.headers.get('X-Auth-Required') === 'true'
+      if (res.status === 404 || res.status === 422 || (res.status === 403 && !lapsed)) {
+        return { svg: null, failed: res.status === 422 }
+      }
+      return { svg: ((await j(res)) as { svg: string }).svg, failed: false }
+    },
   }
 
   return { projects, reveal, fileOps }

@@ -1036,11 +1036,11 @@ def _probe_sandbox_exec() -> bool:
     """
     if sys.platform != "darwin":
         return False
-    # Decide empirically — do NOT hard-code a macOS version cutoff. An earlier
-    # `major >= 26 → return False` gate was wrong: sandbox-exec + the Seatbelt
+    # Decide empirically — do NOT hard-code a macOS version cutoff. A
+    # `major >= 26 → return False` gate is wrong: sandbox-exec + the Seatbelt
     # kernel subsystem still work on macOS 26 (Tahoe) — verified that the real
     # generated profile compiles, runs kiro-cli, AND enforces (a strict profile
-    # denies `cat ~/.aws/config`). The gate disabled a working sandbox and forced
+    # denies `cat ~/.aws/config`). Such a gate disables a working sandbox and forces
     # the agent onto the fail-closed no-isolation path. The probe below already
     # detects a genuinely-broken sandbox-exec on any host/version, so trust it.
     # Note: sandbox-exec / sandbox_init() are marked "deprecated" in headers

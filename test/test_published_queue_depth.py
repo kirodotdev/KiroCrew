@@ -264,6 +264,29 @@ class TestSerializeSlotsSubagentsQueued:
         finally:
             await mgr.cancel_all()
 
+    async def test_the_row_carries_the_wait_label_until_the_wait_ends(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A reload gets only the slots frame, so the row must carry the label the
+        last frame did, or the chip loses why its rows wait."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        mgr = SubagentManager(sessions=mock_sessions(), ctx_builder=mock_ctx())
+        try:
+            label = {"reason": "low_memory", "cause": "cgroup_usage_unreadable", "max_wait_secs": 0}
+            await mgr._fire_event("subagent_queued", _queue_info(), {"queued": 1, **label})
+            state = _make_state(tmp_path, subagents=mgr)
+            state.get_or_create_slot("s1")
+
+            assert state.serialize_slots()[0]["subagents_queued_reason"] == label
+
+            await mgr._fire_event("subagent_queued", _queue_info(), {"queued": 1})
+            assert "subagents_queued_reason" not in state.serialize_slots()[0]
+            await mgr._fire_event("subagent_queued", _queue_info(), {"queued": 1, **label})
+            await mgr._fire_event("subagent_queued", _queue_info(), {"queued": 0})
+            assert "subagents_queued_reason" not in state.serialize_slots()[0]
+        finally:
+            await mgr.cancel_all()
+
     async def test_no_manager_reads_as_zero(self, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path, subagents=None)

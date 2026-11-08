@@ -24,6 +24,7 @@ from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.jsonl_util import RECORD_CAP, UnreadableRecord, strict_records
 
@@ -420,7 +421,7 @@ def compact_cost_log(window: int = _DEFAULT_WINDOW) -> None:
                 f.write(text)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp, path)
+            replace_with_retry(tmp, path)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise

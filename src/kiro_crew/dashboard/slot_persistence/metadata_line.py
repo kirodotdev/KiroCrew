@@ -17,6 +17,7 @@ slot-owned fields belong in ``metadata_codec``.
 from __future__ import annotations
 
 import logging
+import secrets
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -24,7 +25,11 @@ from itertools import chain
 from typing import TYPE_CHECKING
 
 from kiro_crew.dashboard.chat_utils import slot_history_key
-from kiro_crew.dashboard.slot_buffers import serialize_deferred_notes, union_deferred_notes
+from kiro_crew.dashboard.slot_buffers import (
+    persistable_deferred_notes,
+    serialize_deferred_notes,
+    union_deferred_notes,
+)
 from kiro_crew.dashboard.slot_queue_repository import queue_persist_signature
 from kiro_crew.dashboard.state import _MAX_DISMISSED_SOURCE_LINKS
 from kiro_crew.execution_context import (
@@ -45,6 +50,7 @@ from kiro_crew.history import (
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
+    from kiro_crew.dashboard.transcript_binding import TranscriptBinding
     from kiro_crew.history import ConversationLog
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_persistence")
@@ -277,6 +283,108 @@ def retained_memory_mode(slot: _ChatSlot, live_session: str) -> str:
     return stricter_memory_mode(slot_mode, execution.memory_mode)
 
 
+def tighten_line_for_appends(
+    conv_log: ConversationLog, slot: _ChatSlot, history_key: str, *, live_session: str
+) -> str | None:
+    """Make the header an append-safe write lands rows under carry *slot*'s privacy.
+
+    The full save rebuilds the metadata line and so records ``memory_mode``
+    on it; an append-shaped write goes through ``ConversationLog.append``,
+    which mints a header with no mode at all when the file is absent and
+    leaves an existing header exactly as it found it. A restricted slot's rows
+    landing that way -- the hand-over drain of a popped slot whose truncation
+    lost its key, the commit gate's own fallback for the same write -- would
+    sit under a line that reads ``persistent``, and every reader that learns
+    from the transcript (consolidation, lessons, injection) gates on that
+    line. So the line is settled FIRST, under the per-session lock the appends
+    take: created when absent, carrying the slot's retained mode; tightened
+    when present, to the stricter of its own mode and the retained one, with
+    the carried execution record folded to match and the store a restricted
+    line must not name cleared. A merge, never a rebuild -- every other field
+    (a replacement's title, folder, tag, pin) stays as the line holds it,
+    exactly as the rows-only save defers them. A persistent slot over an absent
+    line writes nothing: ``append`` mints the mode-less header a persistent
+    session has always had.
+
+    Returns the mode the line carries afterwards, CONFIRMED by re-reading the
+    header under the lock -- or ``None``, and then the caller must not append:
+    the header could not be read (the merge defers on a transient read failure
+    without running its guard, and a corrupt first line that the merge did not
+    rewrite stays unreadable), or it still reads looser than the slot's
+    retained mode. Fail closed on purpose: a row appended under a header whose
+    privacy contract is unverified is exactly the breach this settles, and
+    every caller has a refusal arm that reports or keeps the rows owed.
+
+    Caller holds ``_locked(history_key)`` (or ``atomic_appends``); the merge
+    and the confirming read re-enter it on this thread.
+    """
+    retained = retained_memory_mode(slot, live_session)
+    fields: dict = {}
+    mode = {"value": retained}
+    guard_ran = {"value": False}
+
+    def _tighten_under_lock(meta: dict) -> bool:
+        guard_ran["value"] = True
+        fields.clear()
+        line_mode = line_memory_mode(meta)
+        mode["value"] = stricter_memory_mode(line_mode, retained)
+        if not meta:
+            if mode["value"] == "persistent":
+                return False
+            fields["memory_mode"] = mode["value"]
+            return True
+        if mode["value"] != line_mode:
+            fields["memory_mode"] = mode["value"]
+            # The merge codec's spelling for "names no store" (see the
+            # ``memory_store`` field in ``metadata_codec``): a merge cannot
+            # drop a key, and every reader treats an empty name as absent.
+            fields["memory_store"] = ""
+        carried = dict(meta)
+        _tighten_carried_execution(carried, mode["value"])
+        if carried.get(EXECUTION_CONTEXT_KEY) != meta.get(EXECUTION_CONTEXT_KEY):
+            fields[EXECUTION_CONTEXT_KEY] = carried[EXECUTION_CONTEXT_KEY]
+        return bool(fields)
+
+    if conv_log.update_metadata_if(history_key, fields, _tighten_under_lock):
+        logger.info(
+            "Slot %s: tightened the %s line to %s ahead of an append-safe write",
+            slot.key,
+            history_key,
+            mode["value"],
+        )
+    elif not guard_ran["value"]:
+        logger.warning(
+            "Slot %s: the %s header could not be read; its privacy contract is "
+            "unverified, so no row is appended under it",
+            slot.key,
+            history_key,
+        )
+        return None
+    # The confirmation, not the merge's answer: what the header carries NOW,
+    # under this lock, is what the appended rows will sit under.
+    meta, readable = conv_log.get_metadata_status(history_key)
+    if not readable:
+        logger.warning(
+            "Slot %s: the %s header is unreadable after the tightening merge; no row "
+            "is appended under it",
+            slot.key,
+            history_key,
+        )
+        return None
+    line_mode = line_memory_mode(meta)
+    if stricter_memory_mode(line_mode, retained) != line_mode:
+        logger.warning(
+            "Slot %s: the %s header still reads %s against a retained %s; no row is "
+            "appended under it",
+            slot.key,
+            history_key,
+            line_mode,
+            retained,
+        )
+        return None
+    return line_mode
+
+
 def line_memory_mode(meta: dict) -> str:
     """The ``memory_mode`` the on-disk line already carries, canonicalised.
 
@@ -324,6 +432,19 @@ def _merge_dismissed_line(slot: _ChatSlot, meta: dict) -> list[str] | None:
     return None
 
 
+def close_identity(closed: bool) -> str:
+    """The ``closed_id`` a save writes beside ``closed_at``: a fresh nonce per close write.
+
+    Unique per write, never reused, so a clear keyed on it
+    (``ConversationLog.clear_closed(only_if_closed_id=...)``) takes off exactly
+    the stamp its writer put there and no other -- in particular not a close
+    of the same key stamped on the same clock tick, which carries an equal
+    ``closed_at`` and could not be told apart by the instant alone. Empty for
+    an open line, where the codec omits the key.
+    """
+    return secrets.token_hex(8) if closed else ""
+
+
 def merge_empty_window(
     conv_log: ConversationLog,
     slot: _ChatSlot,
@@ -340,6 +461,9 @@ def merge_empty_window(
     after_commit_under_lock: Callable[[], None] | None = None,
     queue_deferred_under_lock: Callable[[dict], bool] | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
+    autocompact_override: tuple[float | None] | None = None,
+    after_commit_on_transcript: Callable[[], None] | None = None,
+    routed_binding: TranscriptBinding,
 ) -> str | None:
     """Commit a forced or closing save of a message-less slot as a metadata merge.
 
@@ -353,6 +477,13 @@ def merge_empty_window(
     on disk and does not move the queue witness, so a snapshot older than a
     queue another writer committed cannot overwrite it, and the queue stays
     owed for the next save.
+
+    ``after_commit_under_lock`` acts on *slot*, so it is skipped when the slot was
+    rebound while the merge ran. ``after_commit_on_transcript`` acts on the
+    transcript the merge targets, so it runs under the same lock after every
+    commit, and for a line-less tab, whose slot then holds the only copy.
+    ``routed_binding`` is the binding the save read with its routing
+    (:func:`autocompact_fold`).
 
     Raises ``OSError`` when the record is unreadable, so a close or an
     acknowledged edit is never reported durable on a merge that did not happen.
@@ -409,6 +540,10 @@ def merge_empty_window(
             # live queue itself.
             if slot_history_key(slot) == history_key:
                 slot._queue_persisted_sig = queue_persist_signature(queue_snapshot)
+            if after_commit_on_transcript is not None:
+                # The slot holds the transcript's only copy, so the save that
+                # creates the line must already read it.
+                after_commit_on_transcript()
             return False
         if refusal_under_lock is not None:
             refusal = refusal_under_lock(meta)
@@ -432,6 +567,7 @@ def merge_empty_window(
             # Without the close a closed empty newborn's line stays open-shaped
             # and the next restart resurrects a tab the user dismissed.
             closed_at=merged_closed_at,
+            closed_id=close_identity(closed),
             # The value is the snapshot taken WITH the window, never a fresh
             # read: a re-read here would be a second, unpaired observation of
             # the queue.
@@ -445,17 +581,20 @@ def merge_empty_window(
             # save's paired snapshot alone.
             deferred_notes=union_deferred_notes(
                 meta.get("deferred_notes"),
-                serialize_deferred_notes(slot._deferred_notes[:]),
+                serialize_deferred_notes(persistable_deferred_notes(slot._deferred_notes[:])),
             ),
             # Staged mute value: persist the endpoint's NEW value here while the
             # live ``slot.mutes_opened`` still holds the committed value, so a
             # newborn's empty-window save reaches disk with the new value even
-            # though the live flag has not flipped yet (the round-1 F1 gap, where
-            # this branch ignored the staged value and wrote the stale live flag).
+            # though the live flag has not flipped yet; ignoring the staged value
+            # here would write the stale live flag.
             mutes_opened=mutes_opened_override,
             muted=muted_override,
-            # The turn-time-limit endpoint's staged value, the same way.
+            # The turn-time-limit and threshold endpoints' staged values, the same way.
             turn_timeout_secs=_turn_timeout_fold(slot, turn_timeout_override, meta),
+            autocompact_pct=autocompact_fold(
+                slot, autocompact_override, routed_binding, history_key
+            ),
         )
         merged_fields.update(cp._metadata_codec.encode(slot, merge=True, folds=folds))
         if queue_deferred_under_lock is not None and queue_deferred_under_lock(meta):
@@ -466,6 +605,8 @@ def merge_empty_window(
 
     def _after_commit_under_lock() -> None:
         _record_pending_memory_mode(pending_mode_target, merged_fields["memory_mode"])
+        if after_commit_on_transcript is not None:
+            after_commit_on_transcript()
         # The queued prompts this merge committed are now durable, so the
         # flush's drift check must stop reporting them as owed. Set inside the
         # lock, like the full save's witness: a writer that commits a newer
@@ -564,6 +705,45 @@ def _turn_timeout_fold(
     return (cp._validate_turn_timeout_secs(on_disk.get("turn_timeout_secs")),)
 
 
+def _stamp_delivered_merge_cards(entries: Iterable[dict], window_note_ids: set[str]) -> list[dict]:
+    """Mark held merge cards whose rows commit in the saved window."""
+    return [
+        (
+            {**entry, "delivered": True}
+            if isinstance(entry.get("merged_from"), dict) and entry.get("id") in window_note_ids
+            else entry
+        )
+        for entry in entries
+    ]
+
+
+# Thresholds the threshold endpoint committed to a transcript (by history key) and
+# has not yet published to its live slots; it drops each once published.
+autocompact_commits: dict[str, tuple[float | None]] = {}
+
+
+def autocompact_fold(
+    slot: _ChatSlot,
+    override: tuple[float | None] | None,
+    routed: TranscriptBinding,
+    history_key: str,
+) -> tuple[float | None]:
+    """The ``autocompact_pct`` a save writes to *history_key*, under its lock.
+
+    The endpoint's staged value wins, then one it committed and has not yet
+    published (``autocompact_commits``). Otherwise the threshold is the binding's, and
+    a slot rebound while the save waited for the lock holds another transcript's,
+    so a slot that moved writes *routed*, the binding read with its routing.
+    """
+    if override is not None:
+        return override
+    committed = autocompact_commits.get(history_key)
+    if committed is not None:
+        return committed
+    live = slot._binding  # read before the key, so a rebind between them reads as moved
+    return ((live if slot_history_key(slot) == history_key else routed).autocompact_pct,)
+
+
 def build_full_line(
     slot: _ChatSlot,
     existing_meta: dict,
@@ -579,6 +759,7 @@ def build_full_line(
     mutes_opened_override: bool | None = None,
     muted_override: bool | None = None,
     turn_timeout_override: tuple[int | None] | None = None,
+    autocompact_override: tuple[float | None] | None = None,
 ) -> tuple[dict, str, list[dict], set[str], str | None]:
     """The line a full save writes: ``(line, mode, queue, retired note ids, tab_id)``.
 
@@ -632,10 +813,10 @@ def build_full_line(
         _newest_human_turn_ts(window),
     )
     # Durable copy of the held /note lines. OWNED (in SLOT_OWNED_META_KEYS),
-    # so this rebuild decides the key's whole value — and retirement is
-    # ROW-DERIVED: an entry is retired exactly when the window THIS save
-    # writes contains its delivered row (``meta.noteId``, stamped by the
-    # flush) or its id was recorded as dropped at the rebind seam.
+    # so this rebuild decides the key's whole value. Plain notes retire with
+    # their committed row. Merge cards retire only when their context drain
+    # records the id and this save proves their row (below). Any note dropped
+    # at a rebind seam also retires by its recorded id.
     # Everything else — the on-disk hold and the live hold, both read HERE,
     # under the same history lock the merge writers commit under — is kept,
     # so a /note persist that won the lock during this save's patient acquire
@@ -651,14 +832,29 @@ def build_full_line(
             if isinstance(row_note_id, str) and row_note_id:
                 window_note_ids.add(row_note_id)
     dropped_note_ids = set(slot._dropped_note_ids)
-    surviving_hold = [
-        entry
-        for entry in union_deferred_notes(
-            existing_meta.get("deferred_notes"),
-            serialize_deferred_notes(slot._deferred_notes[:]),
-        )
-        if entry.get("id") not in window_note_ids and entry.get("id") not in dropped_note_ids
-    ]
+    on_disk_hold = existing_meta.get("deferred_notes")
+    surviving_hold: list[dict] = []
+    for entry in _stamp_delivered_merge_cards(
+        union_deferred_notes(
+            on_disk_hold,
+            serialize_deferred_notes(persistable_deferred_notes(slot._deferred_notes[:])),
+        ),
+        window_note_ids,
+    ):
+        entry_id = entry.get("id")
+        if entry_id in dropped_note_ids:
+            continue
+        if (
+            not rows_only
+            and isinstance(entry.get("merged_from"), dict)
+            and entry.get("consumed") is True
+            and (entry_id in window_note_ids or entry.get("delivered") is True)
+        ):
+            continue
+        if isinstance(entry.get("merged_from"), dict):
+            surviving_hold.append(entry)
+        elif entry_id not in window_note_ids:
+            surviving_hold.append(entry)
     # Durable copy of the queued user prompts. OWNED, and the whole
     # value is decided here, so an emptied queue is cleared by absence.
     #
@@ -742,6 +938,7 @@ def build_full_line(
             last_consolidated=existing_meta.get("last_consolidated", 0),
             closed=closed,
             closed_at=closed_at,
+            closed_id=close_identity(closed),
             dismissed_source_links=dismissed,
             deferred_notes=surviving_hold,
             queued_prompts=_durable_queue,
@@ -755,6 +952,7 @@ def build_full_line(
             mutes_opened=mutes_opened_override,
             muted=muted_override,
             turn_timeout_secs=_turn_timeout_fold(slot, turn_timeout_override, existing_meta),
+            autocompact_pct=autocompact_override,
         ),
     )
     # The drop records this write retires are CONSUMED only after the
@@ -806,6 +1004,13 @@ def build_full_line(
         for meta_key in ROWS_ONLY_DEFERRED_META_KEYS:
             meta_line.pop(meta_key, None)
         carry_unowned_metadata(meta_line, existing_meta, ROWS_ONLY_OWNED_META_KEYS)
+        carried_hold = meta_line.get("deferred_notes")
+        if isinstance(carried_hold, list):
+            # This mark commits atomically with the card row, so restore needs no
+            # archive read to know the row was delivered.
+            meta_line["deferred_notes"] = _stamp_delivered_merge_cards(
+                carried_hold, window_note_ids
+            )
         # ``memory_mode`` is deferred with the rest, but it is the line's
         # privacy contract -- every reader that learns from the file gates
         # on it -- and the contract is a RATCHET that any writer may

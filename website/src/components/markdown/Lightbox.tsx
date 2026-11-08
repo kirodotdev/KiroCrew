@@ -2,21 +2,24 @@ import React, { useCallback, useContext, useEffect, useRef, useState } from 'rea
 import { Check, Copy, Download, MoreHorizontal, Minus, Plus, Search, X } from 'lucide-react'
 import Clickable from '../Clickable'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../../hooks/usePinchZoom'
-import { copyImageToClipboard, imageBlobToPng } from '../../utils/clipboard'
+import { copyImageFromUrl, fetchImageBlob, imageBlobToPng } from '../../utils/clipboard'
 import { isEditableTarget } from '../../utils/editableTarget'
-import { downloadBlob } from '../../utils/download'
+import { isAndroidWebView, saveBlob } from '../../utils/download'
 import ErrorNotice from '../ErrorNotice'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../ui/dropdown-menu'
 import { i18nT } from '../../i18n/t'
 import { fmtNumber } from '../../i18n/format'
-import { useLocalCrewHidden } from '../overlayRoot'
+import { OverlayPortal, useLocalCrewHidden } from '../overlayRoot'
+import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
 import { overlayCaptionClearancePx } from '../../lib/electron'
 import { ReactReduxContext } from 'react-redux'
 import { setActiveId } from '../../store/instancesSlice'
 
-type LightboxImage = { src: string; alt: string }
+/** `filename` is the name Download saves under when the URL does not carry it
+ *  (an outbox file whose name has no extension, say); see `lightboxFilename`. */
+type LightboxImage = { src: string; alt: string; filename?: string }
 type LightboxDetail = { images: LightboxImage[]; index: number }
 
 /** `margin-top` that drops the top-anchored toolbar (and the "copied" pill under
@@ -71,6 +74,7 @@ const LIGHTBOX_COPY_FLASH_MS = 2500
  *  as `/api/file-raw?path=<abs>`, so prefer the basename of that path; for
  *  other URLs fall back to the pathname basename, then the alt text. */
 function lightboxFilename(image: LightboxImage): string {
+  if (image.filename) return image.filename
   try {
     const u = new URL(image.src, window.location.href)
     const p = u.searchParams.get('path')
@@ -90,46 +94,82 @@ function lightboxFilename(image: LightboxImage): string {
  *  blob and triggers a browser download. If the fetch is blocked (e.g. a
  *  cross-origin remote image with no CORS), falls back to opening the image in
  *  a new tab so the user can save it manually. */
-async function downloadLightboxImage(image: LightboxImage): Promise<void> {
+async function downloadLightboxImage(image: LightboxImage): Promise<boolean> {
   const name = lightboxFilename(image)
+  let blob: Blob
   try {
-    downloadBlob(await fetchLightboxBlob(image), name)
+    blob = await fetchImageBlob(image.src)
   } catch {
     window.open(image.src, '_blank', 'noopener,noreferrer')
+    return true
+  }
+  // Resolves false only when an Android in-app browser's hand-off failed (see
+  // saveBlob): nothing was saved and a new tab is no recovery there, so the
+  // viewer reports it. Such a browser can hand off only png or svg bytes, so
+  // any other picture is re-encoded as a png first.
+  try {
+    const type = blob.type.split(';')[0].trim().toLowerCase()
+    if (isAndroidWebView() && type !== 'image/png' && type !== 'image/svg+xml') {
+      await saveBlob(await imageBlobToPng(blob), name.replace(/\.[^.]*$/, '') + '.png')
+    } else {
+      await saveBlob(blob, name)
+    }
+    return true
+  } catch {
+    return false
   }
 }
 
-async function fetchLightboxBlob(image: LightboxImage): Promise<Blob> {
-  const res = await fetch(image.src)
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return await res.blob()
+function lightboxImageOf(el: HTMLImageElement): LightboxImage {
+  const filename = el.dataset.lightboxFilename
+  return filename ? { src: el.src, alt: el.alt, filename } : { src: el.src, alt: el.alt }
 }
 
-/** Resolves whether the image reached the clipboard. The bytes are passed
- *  UNAWAITED: WebKit checks user activation when write() is called, so awaiting
- *  the fetch first would spend the click that asked for the copy. */
-function copyLightboxImage(image: LightboxImage): Promise<boolean> {
-  return copyImageToClipboard(fetchLightboxBlob(image).then(imageBlobToPng))
-}
-
-/** Build the lightbox payload for an image click. The set is "all images
- *  inside the nearest [data-image-scope] ancestor"; for markdown messages
- *  that's a MarkdownRenderer instance (one per chat message), and for the
- *  chat-input thumbnail strip it's the strip's outer div. */
+/** Build the lightbox payload for an image click.
+ *
+ *  An image marked `data-lightbox-turn` is message content: a reply's markdown
+ *  image or a `file_send` card's preview. Those two render as SEPARATE
+ *  transcript rows (the card is its own `file` row, outside the reply's
+ *  MarkdownRenderer), so their shared set is every such image inside the
+ *  nearest `[data-image-turn]` ancestor, which is the transcript's wrapper for
+ *  one display item (a whole turn, or one loose row).
+ *
+ *  Otherwise, and wherever no turn wrapper exists (a surface that renders a
+ *  bare MarkdownRenderer), the set is "all images inside the nearest
+ *  [data-image-scope] ancestor": a MarkdownRenderer instance, the chat-input
+ *  thumbnail strip, or a tool call's thumbnail strip. */
 export function dispatchLightbox(target: HTMLImageElement): void {
-  const scope = target.closest('[data-image-scope]') as HTMLElement | null
-  let detail: LightboxDetail = { images: [{ src: target.src, alt: target.alt }], index: 0 }
+  const turn = target.hasAttribute('data-lightbox-turn')
+    ? target.closest('[data-image-turn]') as HTMLElement | null
+    : null
+  const scope = turn ?? target.closest('[data-image-scope]') as HTMLElement | null
+  const selector = turn ? 'img[data-lightbox-image][data-lightbox-turn]' : 'img[data-lightbox-image]'
+  let detail: LightboxDetail = { images: [lightboxImageOf(target)], index: 0 }
   if (scope) {
-    const els = Array.from(scope.querySelectorAll<HTMLImageElement>('img[data-lightbox-image]'))
+    // A turn keeps its folded working steps mounted (inert, `data-collapsed`);
+    // their images are out of view, so they stay out of the set.
+    const els = Array.from(scope.querySelectorAll<HTMLImageElement>(selector))
+      .filter(el => el === target || !turn || !el.closest('[inert],[data-collapsed="true"]'))
     if (els.length > 0) {
       detail = {
-        images: els.map(el => ({ src: el.src, alt: el.alt })),
+        images: els.map(lightboxImageOf),
         index: Math.max(0, els.indexOf(target)),
       }
     }
   }
   window.dispatchEvent(new CustomEvent('lightbox', { detail }))
 }
+
+/** The viewer's keyboard focus while it is open, from the shared dialog trap:
+ *  focus moves in on open (the viewer can open from inside another trap, the
+ *  full-screen artifact panel), Tab stays within its controls, and focus goes
+ *  back on close. Mounted only while open, so open and close are its mount and
+ *  unmount. The viewer keeps its own Escape (`handleEscape: false`). */
+function LightboxFocusTrap({ containerRef }: { containerRef: React.RefObject<HTMLElement | null> }) {
+  useDialogFocusTrap(containerRef, noop, { handleEscape: false })
+  return null
+}
+const noop = () => {}
 
 /** Lightbox overlay -- mount once in the app, listens for 'lightbox' custom
  *  events. Escape closes; ArrowLeft/ArrowRight navigate within the image set
@@ -160,6 +200,14 @@ export function Lightbox() {
   // stale value, and the menu's open/close must not re-run the listener effect.
   const menuOpenRef = useRef(false)
   const [copyState, setCopyState] = useState<'idle' | 'ok' | 'failed'>('idle')
+  // A failed in-app-browser download hand-off, held until dismissed or a
+  // page/close reset; the image it belongs to is the one on screen.
+  const [downloadFailed, setDownloadFailed] = useState(false)
+  // The same press numbering as copy (see copySeqRef): a hand-off that settles
+  // after a later press, a page/close reset or unmount writes nothing, so a
+  // failure is never shown over an image the user did not download.
+  const downloadSeqRef = useRef(0)
+  useEffect(() => () => { downloadSeqRef.current += 1 }, [])
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Each press takes the next number; a settlement whose number is no longer
   // current belongs to a press the user has since superseded — by pressing
@@ -180,11 +228,23 @@ export function Lightbox() {
     copySeqRef.current += 1
     if (copyTimerRef.current != null) clearTimeout(copyTimerRef.current)
   }, [])
+  // One notice at a time: both sit in the same spot, and a later one would
+  // cover the earlier, so starting a copy or a download clears the other's.
+  const downloadImage = useCallback((image: LightboxImage) => {
+    const seq = ++downloadSeqRef.current
+    resetCopyFlash()
+    setDownloadFailed(false)
+    void downloadLightboxImage(image).then(ok => {
+      if (!ok && seq === downloadSeqRef.current) setDownloadFailed(true)
+    })
+  }, [resetCopyFlash])
   const copyCurrentImage = useCallback(() => {
     const cur = stateRef.current
     if (!cur) return
+    downloadSeqRef.current += 1
+    setDownloadFailed(false)
     const seq = ++copySeqRef.current
-    void copyLightboxImage(cur.images[cur.index]).then(ok => {
+    void copyImageFromUrl(cur.images[cur.index].src).then(ok => {
       // Superseded by a later press, a page/close reset, or unmount.
       if (seq !== copySeqRef.current) return
       setCopyState(ok ? 'ok' : 'failed')
@@ -535,6 +595,8 @@ export function Lightbox() {
     // press number advances too, so a copy still in flight for this image
     // settles into nothing rather than announcing over the next one.
     resetCopyFlash()
+    downloadSeqRef.current += 1
+    setDownloadFailed(false)
     // Contacts do not survive the viewer: closing mid-pinch (or an image change
     // driven from the keyboard while fingers are down) must not leave a stale
     // pair behind for the next open to scale against. `resetZoom` clears the
@@ -584,7 +646,7 @@ export function Lightbox() {
       } else if ((e.key === 'd' || e.key === 'D') && !isEditableTarget(e)) {
         e.preventDefault()
         const cur = stateRef.current
-        if (cur) void downloadLightboxImage(cur.images[cur.index])
+        if (cur) downloadImage(cur.images[cur.index])
       } else if ((e.key === 'c' || e.key === 'C') && !isEditableTarget(e) && !e.metaKey && !e.ctrlKey && !e.altKey) {
         // Bare `c` only: this listener runs in capture phase, so taking Cmd/Ctrl+C
         // would break copying selected text while the viewer is open. Inert where
@@ -608,7 +670,7 @@ export function Lightbox() {
     // modal open and Escape closes only the viewer.
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  }, [isOpen, crewHidden, zoomIn, zoomOut, setZoom, copyCurrentImage])
+  }, [isOpen, crewHidden, zoomIn, zoomOut, setZoom, copyCurrentImage, downloadImage])
   if (!state) return null
   const img = state.images[state.index]
   const zoomed = zoom > LIGHTBOX_ZOOM_MIN
@@ -640,9 +702,23 @@ export function Lightbox() {
     : swipeY !== 0
       ? `translateY(${swipeY.toFixed(1)}px) scale(${(1 - swipeProgress * 0.15).toFixed(3)})`
       : undefined
+  // Portalled when it opens, so it lands after whatever z-[9999] layer opened it
+  // (an artifact panel's full screen, #28760) and paints over it at equal
+  // z-index, while a palette or menu opened later still paints over the viewer.
+  // Focus lives in the viewer while it is open, outside whichever Modal opened
+  // it, so that Modal's key isolation no longer sees the keys. Stop them here
+  // instead (bubble phase, as Modal does), or an app shortcut such as Settings
+  // navigates away under the viewer and drops the Modal's unsaved state. The
+  // viewer's own keys run on a capture listener and are not affected; Escape is
+  // left to propagate, as Modal leaves it.
+  const isolateKeys = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Escape') e.stopPropagation()
+  }
   return (
+    <OverlayPortal>
     <Clickable
       ref={overlayRef}
+      onKeyDown={isolateKeys}
       className={`fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center overflow-hidden cursor-pointer touch-none ${swiping ? '' : 'transition-colors duration-200'}`}
       // Inline background wins over the class only while a drag is live, so the
       // default (and every non-touch) render keeps the plain bg-black/80 paint.
@@ -653,6 +729,7 @@ export function Lightbox() {
       onPointerUp={onOverlayPointerUp}
       onPointerCancel={onOverlayPointerCancel}
     >
+      <LightboxFocusTrap containerRef={overlayRef} />
       {/* Inner wrapper centres the image; when enlarged, the image is dragged
           around via a translate transform (see pointer handlers) rather than
           scrollbars — a flex-centred overflow container can't scroll to its
@@ -794,7 +871,15 @@ export function Lightbox() {
                   : <MoreHorizontal className="lucide-inline" aria-hidden="true" />}
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-[180px]">
+            <DropdownMenuContent
+              align="end"
+              className="min-w-[180px]"
+              // Radix closes the menu on Escape with preventDefault only, so the
+              // key still bubbles to a host handler that ignores defaultPrevented
+              // (the artifact panel) and closes the artifact behind the viewer.
+              // Consume it, as the viewer's own Escape does (#20630).
+              onEscapeKeyDown={e => e.stopPropagation()}
+            >
               <DropdownMenuItem
                 data-testid="lightbox-copy-image"
                 aria-label={copyLabel}
@@ -810,7 +895,7 @@ export function Lightbox() {
               <DropdownMenuItem
                 data-testid="lightbox-download-image"
                 aria-label={i18nT('components.markdownRenderer.download_image')}
-                onSelect={() => { void downloadLightboxImage(img) }}
+                onSelect={() => { downloadImage(img) }}
               >
                 <Download size={14} aria-hidden="true" />
                 <span>{i18nT('components.markdownRenderer.download_d')}</span>
@@ -823,7 +908,7 @@ export function Lightbox() {
             aria-label={i18nT('components.markdownRenderer.download_image')}
             title={i18nT('components.markdownRenderer.download_image')}
             className="text-white/90 hover:text-white p-1.5 rounded-full hover:bg-white/15 transition-colors"
-            onClick={(e) => { e.stopPropagation(); void downloadLightboxImage(img) }}
+            onClick={(e) => { e.stopPropagation(); downloadImage(img) }}
           >
             <Download className="lucide-inline" aria-hidden="true" />
           </button>
@@ -856,9 +941,23 @@ export function Lightbox() {
           the viewer may sit over an editable host and the hand-off would
           navigate away from unsaved work (same decision as MarkdownTable /
           MermaidBlock). */}
+      {downloadFailed && (
+        <div
+          className="fixed top-safe-offset-16 left-1/2 -translate-x-1/2 max-w-[min(22rem,calc(100vw-max(2rem,var(--safe-area-x)+var(--safe-area-x))))]"
+          style={captionClearanceStyle()}
+        >
+          <ErrorNotice
+            variant="inline"
+            className="rounded-full bg-black/60 backdrop-blur-md ring-1 ring-white/15 shadow-lg px-3 py-1"
+            message={i18nT('components.markdownPanel.download_failed')}
+            onDismiss={() => setDownloadFailed(false)}
+            testId="lightbox-download-error"
+          />
+        </div>
+      )}
       {copyState === 'failed' && (
         <div
-          className="fixed top-safe-offset-16 left-1/2 -translate-x-1/2 max-w-[min(22rem,calc(100vw-2rem))]"
+          className="fixed top-safe-offset-16 left-1/2 -translate-x-1/2 max-w-[min(22rem,calc(100vw-max(2rem,var(--safe-area-x)+var(--safe-area-x))))]"
           style={captionClearanceStyle()}
         >
           <ErrorNotice
@@ -889,5 +988,6 @@ export function Lightbox() {
         </div>
       )}
     </Clickable>
+    </OverlayPortal>
   )
 }

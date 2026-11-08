@@ -9,6 +9,7 @@ persistence, ``_safe_cleanup``, and the compaction cooldown each lifecycle event
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -20,6 +21,7 @@ from session_helpers import (  # noqa: F401 -- the fixture is requested by name
 )
 
 from kiro_crew.session import SessionManager
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -82,11 +84,8 @@ class TestDrainProviders:
 class TestResetRetainsTheTornDownSession:
     """``reset`` keeps the popped session readable for exactly the life of its teardown.
 
-    The pop happens under the registry lock before the awaits that can hang, so
-    from then on the live map does not name the process the teardown holds. A
-    reader that must still reach it -- the cron reaper, after a run's own finally
-    reset popped the session and hung -- reads ``tearing_down(key)``. The entry is
-    recorded at the pop and released when the reset ends, however it ends.
+    The pop precedes the awaits that can hang, so a reader such as the cron reaper reaches
+    the process through ``tearing_down(key)``, recorded at the pop and released at the end.
     """
 
     @staticmethod
@@ -142,11 +141,8 @@ class TestResetRetainsTheTornDownSession:
     ):
         """The retained handle is the pop-time identity, not a re-read of the session.
 
-        The ACP client's reset clears its recorded pid after a kill it could not
-        confirm and can then hang on the transport -- so a reader that re-read the
-        popped session found no pid and named no process while the process stood.
-        The table captures the handle in the pop's own lock hold and never reads
-        the session again.
+        The client's reset can clear its pid after an unconfirmed kill and then hang, so the
+        handle is captured in the pop's own lock hold and the session is never re-read.
         """
         from kiro_crew.process_identity import process_handle_of
 
@@ -206,11 +202,8 @@ class TestResetRetainsTheTornDownSession:
     ):
         """Every teardown in flight under the key is readable: the first popper's AND a hung successor's.
 
-        A cold start can register a successor under the key while the first
-        teardown awaits, and that successor's own reset can pop it and hang as
-        well. A reader ending the key must reach both processes, so both are
-        retained, in pop order, and each entry leaves exactly when its own
-        teardown ends -- the first's cancellation does not release the second's.
+        A successor registered during the first teardown can hang too. Both are retained in
+        pop order, and each leaves only when its own teardown ends.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         first, _, _ = await mgr.get_or_create("k1")
@@ -329,7 +322,6 @@ class TestResetWithPid:
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
-        # Simulate ACP client with PID
         mock_client = AsyncMock()
         mock_client._pid = 12345
         mock_client._child_pids = {}
@@ -343,7 +335,6 @@ class TestResetWithPid:
 
     @pytest.mark.asyncio
     async def test_reset_with_pid_survives_shutdown_force_kills(self, cfg):
-        """reset() force-kills when PID survives shutdown."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
@@ -363,6 +354,8 @@ class TestResetWithPid:
         ):
             await mgr.reset("k1")
             mock_killpg.assert_called_once()
+            assert mock_killpg.call_args.args[0] == 12345
+        assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
     async def test_reset_with_cc_provider_proc(self, cfg):
@@ -373,20 +366,23 @@ class TestResetWithPid:
         # No _client, but has _proc (CC provider style)
         provider._client = None
         mock_proc = AsyncMock()
-        # flake-ok: patched os.kill makes POSIX read pid 99999 as gone so no kill runs; the Windows probe is unpatched; moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing fabricated pid moved verbatim; patched os.kill keeps the POSIX kill path unreached; tracked for a de-flake pass
-        mock_proc.pid = 99999
+        mock_proc.pid = UNALLOCATABLE_PID
         mock_proc.returncode = None
         provider._proc = mock_proc
 
         with (
             patch("os.kill", side_effect=ProcessLookupError),
+            patch("kiro_crew.platform_compat.pid_exists", return_value=False) as probe,
             patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
             patch("kiro_crew.platform_compat.get_process_start_id", return_value=None),
         ):
             await mgr.reset("k1")
 
         provider.shutdown.assert_awaited_once()
+        assert not mgr.has_session("k1")
+        assert UNALLOCATABLE_PID in [
+            c.args[0] for c in probe.call_args_list
+        ], "the _proc pid is probed"
 
     @pytest.mark.asyncio
     async def test_reset_child_sweep(self, cfg):
@@ -408,7 +404,6 @@ class TestResetWithPid:
         ):
             await mgr.reset("k1")
             mock_sweep.assert_called_once()
-            # Should include both original children and discovered ones
             call_arg = mock_sweep.call_args[0][0]
             assert 111 in call_arg
             assert 222 in call_arg
@@ -418,7 +413,8 @@ class TestResetWithPid:
     async def test_reset_nonexistent_session(self, cfg):
         """reset() on missing key is a no-op."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.reset("nonexistent")  # should not raise
+        assert await mgr.reset("nonexistent") is False
+        assert not mgr.has_session("nonexistent")
 
 
 class TestDestroy:
@@ -728,6 +724,8 @@ class TestDestroy:
             await mgr.destroy("k1")
 
         provider.shutdown.assert_awaited_once()
+        assert map_deleted is True
+        assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
     async def test_destroy_deletes_map_before_end_metric_can_yield(self, cfg):
@@ -754,6 +752,7 @@ class TestDestroy:
             mock_delete.assert_called_once_with("k1", reason="session_destroyed")
             release_metric.set()
             await await_until(destroy, what="the destroy finishing")
+        assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
     async def test_destroy_unlinks_temp_files_from_the_session_queue(self, cfg, tmp_path):
@@ -770,19 +769,23 @@ class TestDestroy:
     @pytest.mark.asyncio
     async def test_destroy_nonexistent_still_deletes_map(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        with patch.object(mgr._session_map, "delete") as mock_delete:
+        mgr._session_map.set("nonexistent", "stale-sid")
+        with patch.object(mgr._session_map, "delete", wraps=mgr._session_map.delete) as mock_delete:
             await mgr.destroy("nonexistent")
         mock_delete.assert_called_once_with("nonexistent", reason="session_destroyed")
+        assert mgr._session_map.get("nonexistent") is None
 
     @pytest.mark.asyncio
     async def test_unconditional_destroy_is_not_refused_by_a_reservation(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mgr._allocation_boundary()._allocation_reservations["k1"] = {object()}
 
-        with patch.object(mgr._session_map, "delete") as mock_delete:
+        mgr._session_map.set("k1", "reserved-sid")
+        with patch.object(mgr._session_map, "delete", wraps=mgr._session_map.delete) as mock_delete:
             await mgr.destroy("k1")
 
         mock_delete.assert_called_once_with("k1", reason="session_destroyed")
+        assert mgr._session_map.get("k1") is None
 
     @pytest.mark.asyncio
     async def test_destroy_shutdown_exception_still_deletes_map(self, cfg):
@@ -800,12 +803,9 @@ class TestDestroy:
 class TestReplaySuppression:
     """``replay=False`` is what makes discarding a conversation actually stick.
 
-    Clearing the sid stops the provider resuming its own conversation — and "the
-    provider has no history" is exactly the condition that makes the next cold
-    start rebuild one from ``conversation_log``. So the two mechanisms work
-    against each other, and the caller who wanted a fresh conversation is handed
-    a reconstruction of the old one. Measured on one app-owned session, that
-    replay was 80,359 characters, 76% of the first turn's injected context.
+    Clearing the sid leaves the provider with no history, which makes the next cold start
+    rebuild the old conversation from ``conversation_log`` (80,359 characters on one
+    app-owned session).
     """
 
     @pytest.mark.asyncio
@@ -890,12 +890,8 @@ class TestDiscardConversation:
     async def test_skip_if_busy_refuses_while_a_turn_holds_the_semaphore(self, cfg):
         """The guard reads the SEMAPHORE, which is why it has to live here.
 
-        ``get_or_create`` leaves the semaphore held until ``release``, and the
-        provider reports ``has_active_turn() is False`` throughout — a turn that
-        holds the semaphore without a prompt in flight yet. So a CALLER probing
-        the provider and then calling this would see "idle", tear the session
-        down, and take the provider away from a turn that had already been
-        admitted. Refusing here, under the lock that pops the session, is what
+        An admitted turn holds the semaphore before any prompt is in flight, while the
+        provider reports ``has_active_turn() is False``. Only a check under the pop's lock
         closes that window.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
@@ -919,6 +915,51 @@ class TestDiscardConversation:
         assert await mgr.discard_conversation("k1", replay=False, skip_if_busy=True) is False
 
         assert mgr.consume_replay_suppression("k1") is False
+
+    @pytest.mark.asyncio
+    async def test_refuse_if_closes_a_window_skip_if_busy_cannot_see(self, cfg):
+        """A caller's busy can live off-session, so it is asked in the same lock hold as the pop."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        assert provider.has_active_turn() is False
+        discarded = await mgr.discard_conversation(
+            "k1", replay=False, skip_if_busy=True, refuse_if=lambda: True
+        )
+        assert discarded is False
+        provider.shutdown.assert_not_awaited()
+        assert mgr.has_session("k1"), "the refusal must leave the session intact"
+        assert mgr.consume_replay_suppression("k1") is False, "nor move the replay flag"
+
+    @pytest.mark.asyncio
+    async def test_refuse_if_answering_no_leaves_the_teardown_alone(self, cfg):
+        """Positive control: a hook wired to refuse always would strand every teardown."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        provider, _, _ = await mgr.get_or_create("k1")
+        mgr.release("k1")
+        discarded = await mgr.discard_conversation(
+            "k1", replay=False, skip_if_busy=True, refuse_if=lambda: False
+        )
+        assert discarded is True
+        provider.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_refuse_if_is_asked_before_the_pop(self, cfg):
+        """Asked after the pop, a refusal could not undo it: the session must still be registered."""
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.release("k1")
+        still_registered: list[bool] = []
+
+        def ask() -> bool:
+            still_registered.append(mgr.has_session("k1"))
+            return True
+
+        assert (
+            await mgr.discard_conversation("k1", replay=False, skip_if_busy=True, refuse_if=ask)
+            is False
+        )
+        assert still_registered == [True]
 
     @pytest.mark.asyncio
     async def test_skip_if_busy_proceeds_once_the_turn_releases(self, cfg):
@@ -950,17 +991,11 @@ class TestDiscardConversation:
     async def test_a_successor_mapped_during_shutdown_keeps_its_sid(self, cfg):
         """The sid clear must not outlive the pop.
 
-        Ordered deterministically rather than by timing: the successor is mapped
-        from inside ``provider.shutdown``, which is precisely the await the
-        teardown suspends on. That is the whole window the bug needs — pop, then
-        a concurrent channel turn creates and maps a new session under the same
-        key, then a clear deferred past the shutdown wipes the NEW session's
-        pointer. Clearing in the same tick as the pop closes it.
+        The successor is mapped from inside ``provider.shutdown``, the await the teardown
+        suspends on; a clear deferred past it would wipe the new session's pointer.
 
-        Observed on the RAW entry, not through ``SessionMap.get``: that getter
-        additionally requires ``<sid>.json`` to exist on disk, so for a synthetic
-        sid it answers None whether or not the clear ran — which would make this
-        assertion pass with the bug present.
+        Read from the raw entry: ``SessionMap.get`` also requires ``<sid>.json`` on disk and
+        answers None for a synthetic sid either way.
         """
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, _, _ = await mgr.get_or_create("k1")
@@ -1135,16 +1170,13 @@ class TestCloseAllPersistence:
         mock_provider.client.backend = ""  # kiro-cli backend
 
         mgr._sessions["dashboard:slot0"] = _Session(provider=mock_provider)
-        with patch.object(mgr._session_map, "set") as mock_set:
-            await mgr.close_all()
-        # provider= is now persisted so the next-startup detect_provider_switch
-        # doesn't see a missing label and falsely fire an acp/cc switch.
-        mock_set.assert_called_once_with(
-            "dashboard:slot0",
-            "sid-persist-test",
-            provider="acp",
-            cwd="/tmp/test",
-        )
+        await mgr.close_all()
+        # provider= is persisted so the next-startup detect_provider_switch
+        # does not see a missing label and falsely fire an acp/cc switch.
+        stored = mgr._session_map
+        assert stored.mapped_sid("dashboard:slot0") == "sid-persist-test"
+        assert stored.get_provider("dashboard:slot0") == "acp"
+        assert stored.get_cwd("dashboard:slot0") == "/tmp/test"
 
 
 class TestRemove:
@@ -1173,44 +1205,38 @@ class TestRemove:
 
         assert not img.exists()
 
-    @pytest.mark.asyncio
-    async def test_remove_missing_key_is_noop(self, cfg):
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.remove("nonexistent")  # should not raise
-
 
 class TestSafeCleanup:
     """Tests for _safe_cleanup best-effort session file removal."""
 
     @pytest.mark.asyncio
-    async def test_cleanup_calls_provider(self, cfg):
+    async def test_cleanup_calls_provider(self, cfg, caplog):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mock_p = AsyncMock()
         mock_p.cleanup_session = AsyncMock()
-        await mgr._safe_cleanup(mock_p, "sid-123")
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.session"):
+            await mgr._safe_cleanup(mock_p, "sid-123")
         mock_p.cleanup_session.assert_awaited_once_with("sid-123")
+        assert "Cleaned up session files for sid-123" in caplog.messages
 
     @pytest.mark.asyncio
-    async def test_cleanup_swallows_exception(self, cfg):
+    async def test_cleanup_swallows_exception(self, cfg, caplog):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         mock_p = AsyncMock()
         mock_p.cleanup_session = AsyncMock(side_effect=OSError("disk full"))
-        await mgr._safe_cleanup(mock_p, "sid-456")  # should not raise
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await mgr._safe_cleanup(mock_p, "sid-456")
+        assert "Failed to clean up session files for sid-456" in caplog.messages
 
 
 class TestCloseSession:
     @pytest.mark.asyncio
-    async def test_close_removes_session(self, cfg):
-        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        p, _, _ = await mgr.get_or_create("thread1")
-        mgr.release("thread1")
-        await mgr.destroy("thread1")
-        assert not mgr.has_session("thread1")
-
-    @pytest.mark.asyncio
     async def test_close_nonexistent_is_noop(self, cfg):
+        """An unmapped, unheld key: nothing to delete, and nothing is created."""
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.destroy("nonexistent")  # should not raise
+        await mgr.destroy("nonexistent")
+        assert mgr._session_map.get("nonexistent") is None
+        assert not mgr.has_session("nonexistent")
 
     @pytest.mark.asyncio
     async def test_close_calls_shutdown(self, cfg):
@@ -1219,6 +1245,7 @@ class TestCloseSession:
         mgr.release("thread1")
         await mgr.destroy("thread1")
         p.shutdown.assert_awaited_once()
+        assert not mgr.has_session("thread1")
 
 
 class TestCloseAll:

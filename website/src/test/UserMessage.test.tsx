@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
 import UserMessage from '../pages/chat/UserMessage'
 
@@ -212,7 +212,7 @@ describe('UserMessage', () => {
 
   it('copies content to clipboard on copy click', async () => {
     render(<UserMessage content="copy me" renderContent={renderContent} />)
-    fireEvent.click(screen.getByTitle('Copy'))
+    await act(async () => { fireEvent.click(screen.getByTitle('Copy')) })
     expect(copyToClipboard).toHaveBeenCalledWith('copy me')
   })
 
@@ -231,9 +231,9 @@ describe('UserMessage', () => {
     expect(screen.queryByTitle('Copy link to message')).not.toBeInTheDocument()
   })
 
-  it('calls copySessionLink with correct args on link button click', () => {
+  it('calls copySessionLink with correct args on link button click', async () => {
     render(<UserMessage content="hi" renderContent={renderContent} messageTs="2025-05-13T14:00:00.000Z" slotKey="chat-1" slotTitle="My Chat" mode="orchestrator" />)
-    fireEvent.click(screen.getByTitle('Copy link to message'))
+    await act(async () => { fireEvent.click(screen.getByTitle('Copy link to message')) })
     expect(copySessionLink).toHaveBeenCalledWith('chat-1', 'My Chat', '2025-05-13T14:00:00.000Z', 'orchestrator')
   })
 
@@ -635,5 +635,88 @@ describe('unconfirmed send treatment', () => {
     expect(line.className).not.toContain('text-accent')
     expect(line.className).not.toContain('font-semibold')
     expect(line.querySelector('button')).toBeNull()
+  })
+})
+
+// A requeued steer's text runs as its own row: the queue_pop reducer stamps the
+// client-only `meta.landedFromSteer` on that rebuilt row, and the bubble flashes
+// once so the reader can see where the steer went. Reading the bubble's
+// `data-landed-from-steer` mark because it is drawn only while the flash plays.
+describe('landed-from-steer highlight', () => {
+  const LANDED = '[data-landed-from-steer]'
+  const landed = { landedFromSteer: true }
+
+  it('flashes the bubble when the row carries the mark', () => {
+    const { container } = render(<UserMessage content="go north" meta={landed} messageTs="landed-plays" renderContent={renderContent} />)
+    const bubble = container.querySelector(LANDED) as HTMLElement
+    expect(bubble).not.toBeNull()
+    expect(bubble.classList.contains('msg-content')).toBe(true)
+    expect(bubble.className).toContain('animate-steer-landed')
+  })
+
+  it('draws no highlight on a row without the mark, including the requeued steer row itself', () => {
+    for (const [meta, ts] of [
+      [undefined, 'landed-none-plain'],
+      [{ steer: true, steerState: 'requeued' }, 'landed-none-requeued'],
+      [{ landedFromSteer: '' }, 'landed-none-empty'],
+      [{ landedFromSteer: 1 }, 'landed-none-number'],
+    ] as const) {
+      const { container, unmount } = render(<UserMessage content="go north" meta={meta as Record<string, unknown> | undefined} messageTs={ts} renderContent={renderContent} />)
+      expect(container.querySelector(LANDED)).toBeNull()
+      expect(container.innerHTML).not.toContain('animate-steer-landed')
+      unmount()
+    }
+  })
+
+  it('does not replay when a virtualized row remounts', () => {
+    const first = render(<UserMessage content="go north" meta={landed} messageTs="landed-remount" renderContent={renderContent} />)
+    expect(first.container.querySelector(LANDED)).not.toBeNull()
+    first.unmount()
+    const second = render(<UserMessage content="go north" meta={landed} messageTs="landed-remount" renderContent={renderContent} />)
+    expect(second.container.querySelector(LANDED)).toBeNull()
+  })
+
+  it('drops the class when the animation ends, so a later re-render does not run it again', () => {
+    const { container, rerender } = render(<UserMessage content="go north" meta={landed} messageTs="landed-ends" renderContent={renderContent} />)
+    fireEvent.animationEnd(container.querySelector(LANDED) as HTMLElement)
+    expect(container.querySelector(LANDED)).toBeNull()
+    rerender(<UserMessage content="go north" meta={{ ...landed }} messageTs="landed-ends" renderContent={renderContent} />)
+    expect(container.querySelector(LANDED)).toBeNull()
+  })
+
+  it('drops the class after the flash length when the animation is cancelled, so a hidden pane does not replay it', () => {
+    // `display: none` cancels the animation and fires no `animationend`.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
+    const { container, rerender } = render(<UserMessage content="go north" meta={landed} messageTs="landed-cancelled" renderContent={renderContent} />)
+    expect(container.querySelector(LANDED)).not.toBeNull()
+    act(() => { vi.advanceTimersByTime(1200) })
+    expect(container.querySelector(LANDED)).toBeNull()
+    rerender(<UserMessage content="go north" meta={{ ...landed }} messageTs="landed-cancelled" renderContent={renderContent} />)
+    expect(container.querySelector(LANDED)).toBeNull()
+  })
+
+  it('flashes each of two rows requeued in the same tick: the key is the card, not the shared ts', () => {
+    const shared = '2026-11-05T14:52:30.000Z'
+    const first = render(<UserMessage content="go north" meta={{ landedFromSteer: 'q-a', clientTs: shared }} messageTs={shared} renderContent={renderContent} />)
+    expect(first.container.querySelector(LANDED)).not.toBeNull()
+    const second = render(<UserMessage content="go south" meta={{ landedFromSteer: 'q-b', clientTs: shared }} messageTs={shared} renderContent={renderContent} />)
+    expect(second.container.querySelector(LANDED)).not.toBeNull()
+  })
+
+  it('draws nothing under prefers-reduced-motion: reduce', () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query === '(prefers-reduced-motion: reduce)', media: query, onchange: null,
+      addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false,
+    }))
+    onTestFinished(() => { vi.unstubAllGlobals() })
+    const { container } = render(<UserMessage content="go north" meta={landed} messageTs="landed-reduced" renderContent={renderContent} />)
+    expect(container.querySelector(LANDED)).toBeNull()
+    expect(container.innerHTML).not.toContain('animate-steer-landed')
+  })
+
+  it('draws nothing on a surface that hides the steer mechanics', () => {
+    const { container } = render(<UserMessage content="go north" meta={landed} messageTs="landed-hidden" hideSteerBadge renderContent={renderContent} />)
+    expect(container.querySelector(LANDED)).toBeNull()
   })
 })

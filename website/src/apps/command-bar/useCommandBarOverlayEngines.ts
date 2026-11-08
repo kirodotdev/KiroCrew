@@ -9,6 +9,7 @@ import { createArtifactsProvider } from '../../components/commandPalette/provide
 import type { ArtifactsResponse } from '../../components/commandPalette/providers/artifactsProvider'
 import { createFoldersProvider, FOLDERS_STALE_MS } from './foldersProvider'
 import { createMatesProvider, mateRoute } from './matesProvider'
+import { busySlotKeys } from '../../lib/crewMode'
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import { useFolderSortRead, type FolderSortConfigBody } from '../../hooks/useFolderSortMode'
 import { useRecentsProvider } from '../../components/commandPalette/providers/recentsProvider'
@@ -26,13 +27,16 @@ import { MATES_STALE_MS, type Scope } from './commandBarOverlayModel'
 export function useCommandBarOverlayEngines({
   scope,
   liveSlots,
+  subagentQueued,
   dispatch,
   navigate,
 }: {
   scope: Scope
   liveSlots: RootState['dashboard']['slots']
+  /** Accepted-but-unstarted sub-agents per slot key (`chat.subagentQueued`). */
+  subagentQueued?: Record<string, number>
   dispatch: AppDispatch
-  navigate: (route: string) => void
+  navigate: (route: string) => boolean | void
 }) {
   // Constructing the sessions engine is just memoized closures — it issues no
   // request until `search()` is called, and only the sessions VIEW calls it. That
@@ -40,7 +44,10 @@ export function useCommandBarOverlayEngines({
   // Constructed here but INERT until the sessions view is entered: the hook's own
   // ['instances'] query would otherwise fire on a warm install the moment the root
   // opened, which is exactly the request this surface promises not to make.
-  const sessions = useSessionsProvider({ active: scope === 'sessions' })
+  // The sessions open right now, as a stable string. The server marks which hits
+  // they own (#21290); a change here re-runs the search so the rows re-rank.
+  const openSessionsKey = useMemo(() => liveSlots.map(slot => slot.key).sort().join('\u0000'), [liveSlots])
+  const sessions = useSessionsProvider({ active: scope === 'sessions', openSessionsKey })
   // The sessions view's LISTING engine. Constructed here and inert: the hook reads
   // live slots out of the store and reads a localStorage preference, but issues no
   // request until `search()` is called, and the only call site is gated on the
@@ -183,7 +190,12 @@ export function useCommandBarOverlayEngines({
    * Derived from the same live slot frames the root's attention group reads
    * (`useCommandBarOverlayRootRows`), so the running indicator costs this surface no
    * request and cannot disagree with what the Crewmates page shows — that page reads
-   * `running || subagents_running` off these same frames.
+   * `running || subagents_running` off these same frames, plus the queued depth.
+   *
+   * A child waiting behind the concurrency, memory or posture cap has not started, so
+   * `subagents_running` is false for it, yet the gateway still refuses a new turn on
+   * that session. A mate whose turn ended with only queued children is busy for the
+   * reader's question, so the queued depth counts too.
    *
    * Keyed on `agent` rather than on the slot key, and that is sound because a member
    * slot is BORN with its crew pinned: the thread route sets `slot.agent` to the
@@ -195,14 +207,15 @@ export function useCommandBarOverlayEngines({
    * question the reader is asking: whether interrupting would land on a busy agent.
    */
   const runningMates = useMemo(() => {
+    // A session the mate dispatched counts toward its mate thread (`busySlotKeys`).
+    const busy = busySlotKeys(liveSlots, subagentQueued)
     const byName = new Set<string>()
     for (const slot of liveSlots) {
-      if (slot.mode !== 'member') continue
-      if (!(slot.running || slot.subagents_running)) continue
+      if (slot.mode !== 'member' || !busy.has(slot.key)) continue
       if (slot.agent) byName.add(slot.agent)
     }
     return byName
-  }, [liveSlots])
+  }, [liveSlots, subagentQueued])
 
   /**
    * The crewmates view's engine — this app's own roster corpus
@@ -249,6 +262,7 @@ export function useCommandBarOverlayEngines({
 
   return {
     sessions,
+    openSessionsKey,
     recentSessions,
     apps,
     chatFoldersRef,

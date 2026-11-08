@@ -9,6 +9,7 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_answer_tasks``, ``_audit_tasks``, ``_kas_host_auth_logged``,
+``_kas_host_auth_failure_logged``,
 ``_mcp_reattempts``, ``_mcp_sign_in``.
 
 Instance fields read: ``_agent``, ``_answer_cap_wait_secs``, ``_dead``,
@@ -171,6 +172,9 @@ async def _spawn_answer_task(
     At capacity the shared admission wait either observes progress or
     marks the runtime dead so the requester cannot remain unanswered.
     """
+    # Asked before the capacity wait, so the host answers from its state at
+    # the moment the frame arrived.
+    answer = self._harness.unroutable_permission(self, msg, session_id, reason=reason)
     if not await self._wait_for_answer_capacity(
         msg,
         request_kind="permission",
@@ -178,7 +182,7 @@ async def _spawn_answer_task(
         audit_reason="answer_task_cap_runtime_dead",
     ):
         return
-    _t = asyncio.ensure_future(self._answer_unroutable_permission(msg, session_id, reason=reason))
+    _t = asyncio.ensure_future(answer())
     self._answer_tasks.add(_t)
     _t.add_done_callback(self._answer_tasks.discard)
 
@@ -382,8 +386,18 @@ async def _answer_host_request(self: AcpRuntime, request_id: int | str, method: 
     try:
         result = await self._harness.answer_request(method)
     except HostAuthCallbackError as exc:
-        # str(exc) is token-free by construction (see kas_host_auth).
-        logger.warning("KAS auth callback failed: %s", exc)
+        # str(exc) is token-free by construction (see kas_host_auth). WARNING
+        # once per reason: the engine re-asks about twice a second while signed
+        # out, and every repeat of the same reason goes to DEBUG.
+        reason = str(exc)
+        if self._kas_host_auth_failure_logged != reason:
+            self._kas_host_auth_failure_logged = reason
+            logger.warning(
+                "KAS auth callback failed: %s (repeats of this reason are logged at DEBUG)",
+                exc,
+            )
+        else:
+            logger.debug("KAS auth callback failed again: %s", exc)
         try:
             await self.send_error(request_id, KAS_AUTH_CALLBACK_ERROR_CODE, str(exc))
         except AcpRuntimeDead:
@@ -394,6 +408,8 @@ async def _answer_host_request(self: AcpRuntime, request_id: int | str, method: 
     except AcpRuntimeDead:
         # Process gone before the answer could be written; nothing to do.
         return
+    # A served callback ends the failure run, so the next failure warns again.
+    self._kas_host_auth_failure_logged = None
     if not self._kas_host_auth_logged:
         self._kas_host_auth_logged = True
         logger.info(

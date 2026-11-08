@@ -44,6 +44,7 @@ Paths below are relative to `src/kiro_crew/`.
 | Base agent config | `config/defaults.json` | `tools`, `allowedTools`, `resources`, `hooks`, model. Packaged as package data, so editing it needs no code change. |
 | Managed MCP server specs | `agent.py` | `_MANAGED_MCP_SERVERS`: which servers are auto-registered and refreshed while preserving user customizations. |
 | AgentCore policy-field validators | `platform/agentcore_schema.py` | `AGENTCORE_GATEWAY_URL_MAX`, `WORKLOAD_NAME_MIN` / `WORKLOAD_NAME_MAX`, `normalize_agentcore_gateway_url`, `normalize_agentcore_workload_name`. AWS-free so governance can parse a policy without the optional extra. |
+| Kiro relay protocol v1 | `relay_client/protocol.py` | Every frame size, timeout, close code and error code of the relay's host leg (`PING_INTERVAL_SECONDS`, `SILENCE_REPLACE_SECONDS`, `BACKOFF_STEPS_SECONDS`, `MAX_TEXT_FRAME_BYTES`, `CLOSE_*`, `ERR_*`). `test/test_relay_client_protocol.py` pins them to the copied contract fixtures. The relay's own names have no built-in default: they come from the lease answer, or from the `RelaySettings` an edition builds with its own host token source (`relay_client/provider.py`). |
 | Built-in skills | `builtin_skills/<name>/SKILL.md` | Frontmatter (`always`, `triggers`, `dir`) is the skill's own contract. This is the only tree copied into a user's `~/.kiro/crew/skills/`, so a skill any shipped feature, tool or doc references MUST live here. The top-level `skills/` tree is repo-checkout-only and reaches no installed user. |
 
 Other style rules:
@@ -127,7 +128,7 @@ recorded in `.github/black-baseline.txt` and exempted; every other file must be
 clean, and a file that *becomes* clean must be pruned from the list, so it only
 ever shrinks. Prune with `python3 scripts/check_black_formatting.py
 --update-baseline`; it refuses unless the installed black equals the
-`pyproject.toml` pin (`black==26.3.1`). The read-only check does not need the pin. Format what you touched with
+`pyproject.toml` pin (`black==26.10.1`). The read-only check does not need the pin. Format what you touched with
 `black --target-version py310 <paths>`, never the whole tree.
 
 **On macOS, run `mypy --platform linux src/kiro_crew`.** CI type-checks on Linux, and
@@ -189,10 +190,11 @@ that were each green can together push a file over the cap.
 | A listed file now within the cap, deleted, or exempt | Fails if the change touches it, until its row is deleted in the same commit as the split. Otherwise a main-drift warning. |
 | A baseline edit that adds a path, raises a count, or lowers a row below its file's size | Fails: the baseline only shrinks, and a row it writes is never below the file's measured size nor above the row at the base. A deletion-only or lowering edit is judged by the rows it changed, so someone else's stale row beside it stays a main-drift warning. |
 | A listed file that grew past its row | Reported, not failed. It must not grow; split it. |
+| A file the change touches past the working target of [Splitting a file](#splitting-a-file), within the cap | Reported, not failed. A whole-tree run names none. |
 | A malformed or unsorted baseline | Fails. |
 
-Backend Lint and Frontend Lint run the script on the full history and enforce
-the scoped verdict, and the main ratchet audit judges the whole tree, so main
+CI's `backend-ratchets` and `frontend-ratchets` jobs run the script on the full
+history and enforce the scoped verdict, and the main ratchet audit judges the whole tree, so main
 drift turns red there. The test runs on the backend shards' shallow checkout,
 which cannot tell which files a change touched, so there it reports violations
 without failing.
@@ -254,7 +256,12 @@ body is the same for every facade (the known-seam scan, the corpus-gate derivati
 layering, manifest and logger scans) is written once in `test/test_facade_shared_checks.py`
 and parametrized per module: a facade test file names the ones it needs in a module-level
 `SHARED_FACADE_CHECKS` tuple instead of copying their bodies, and keeps only the checks
-particular to its facade.
+particular to its facade. The same holds for a composed class's contract file
+(`test_*composition*.py`) and a parts package's file (`test_*_parts*.py`): the
+owner-layering, bound-member, class-body and package-shape checks they share are opt-ins too.
+The family-import scan the facade tests share (`test_only_the_family_imports_an_owner`)
+reads imports through `test/owner_import_scan.py`: a facade test passes it a predicate on
+an owner's dotted name instead of copying the scan.
 
 **A large class keeps one class body**, in the facade or in one home module that sets
 `__module__` to the facade when a pickle, repr or test reads it. Members move to owners as
@@ -263,8 +270,9 @@ functions taking `self`, and the body binds each as a one-line attribute
 with no new mixin or base class (`src/kiro_crew/acp/session_handle_class.py`). A member
 that uses zero-argument `super()`, `__class__` or a name-mangled attribute stays in the
 body. Keep `__module__` and `__qualname__` wherever anything reads them: moved exception
-classes keep the facade's name because error text renders it, and a family-scoped helper
-(`_own_methods` there) renames each bound function `<Class>.<name>`. An owner logs under
+classes keep the facade's name because error text renders it, and the shared helper
+`kiro_crew._facade_bindings.own_methods(cls, owners)` renames each function the class binds
+from a module in its explicit owner set `<Class>.<name>`. An owner logs under
 the original module's logger, `logging.getLogger("kiro_crew.<original>")`: the log format
 prints the logger name, and `caplog` tests filter on it.
 

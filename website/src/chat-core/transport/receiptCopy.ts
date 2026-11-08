@@ -48,8 +48,7 @@ export function deliveryUnconfirmedCopy(restored: boolean): string {
  * dropped before a response arrived). The comments stay pending for a retry,
  * and the copy gives the rule for it: send them again if they are not in the
  * conversation within a minute, because sending again sooner repeats any
- * comments that did arrive. The minute is the same bound the chat page gives
- * for an unconfirmed message (`delivery_unconfirmed_pending`).
+ * comments that did arrive.
  *
  * `panelClosed` is true when the failure closed the overlay (a narrow window),
  * so the copy also says to reopen the side panel; a wide window still shows the

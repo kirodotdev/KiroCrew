@@ -37,6 +37,10 @@ const xt = vi.hoisted(() => {
     static instances: FakeTerminal[] = []
     options: FakeOptions
     element: HTMLElement | undefined = undefined
+    /** xterm's helper textarea; its inline left/top stay unset until a render. */
+    textarea: HTMLTextAreaElement | undefined = undefined
+    /** The helper textarea's inline left/top at each focus() call. */
+    focusedAt: { left: string; top: string }[] = []
     /** Ordered log of every fontFamily write — proves the re-measure toggle. */
     fontFamilyWrites: string[] = []
     openCalls = 0
@@ -67,10 +71,20 @@ const xt = vi.hoisted(() => {
       const el = document.createElement('div')
       el.className = 'xterm'
       Object.defineProperty(el, 'offsetParent', { get: () => this.offsetParent, configurable: true })
+      const ta = document.createElement('textarea')
+      ta.className = 'xterm-helper-textarea'
+      el.appendChild(ta)
       container.appendChild(el)
       this.element = el
+      this.textarea = ta
     }
-    focus() { this.focusCalls += 1 }
+    pastes: string[] = []
+    paste(data: string) { this.pastes.push(data) }
+    focus() {
+      this.focusCalls += 1
+      this.textarea?.focus()
+      if (this.textarea) this.focusedAt.push({ left: this.textarea.style.left, top: this.textarea.style.top })
+    }
     dispose() { this.disposed = true }
     hasSelection() { return this.selection.length > 0 }
     getSelection() { return this.selection }
@@ -98,12 +112,21 @@ const xt = vi.hoisted(() => {
       FakeWebLinksAddon.instances.push(this)
     }
   }
-  return { FakeTerminal, FakeFitAddon, FakeWebLinksAddon }
+  class FakeSearchAddon {
+    static instances: FakeSearchAddon[] = []
+    findNext = vi.fn()
+    findPrevious = vi.fn()
+    clearDecorations = vi.fn()
+    onDidChangeResults = vi.fn(() => ({ dispose: vi.fn() }))
+    constructor() { FakeSearchAddon.instances.push(this) }
+  }
+  return { FakeTerminal, FakeFitAddon, FakeWebLinksAddon, FakeSearchAddon }
 })
 
 vi.mock('@xterm/xterm', () => ({ Terminal: xt.FakeTerminal }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: xt.FakeFitAddon }))
 vi.mock('@xterm/addon-web-links', () => ({ WebLinksAddon: xt.FakeWebLinksAddon }))
+vi.mock('@xterm/addon-search', () => ({ SearchAddon: xt.FakeSearchAddon }))
 
 const registry = vi.hoisted(() => ({
   ensureTerminalConnection: vi.fn(),
@@ -113,33 +136,39 @@ const registry = vi.hoisted(() => ({
   manualRetry: { value: false },
   displaced: { value: false },
   invalidCwd: { value: false },
+  wrongMachine: { value: false },
   useTerminalConnStatus: vi.fn<() => 'connected' | 'reconnecting' | 'disconnected' | undefined>(),
   useTerminalManualRetry: vi.fn<() => boolean>(),
   useTerminalDisplaced: vi.fn<() => boolean>(),
   useTerminalInvalidCwd: vi.fn<() => boolean>(),
+  useTerminalWrongMachine: vi.fn<() => boolean>(),
   retryTerminalConnection: vi.fn<(id: string, manual?: boolean, cwd?: string) => void>(),
 }))
 registry.useTerminalConnStatus.mockImplementation(() => registry.connStatus.value)
 registry.useTerminalManualRetry.mockImplementation(() => registry.manualRetry.value)
 registry.useTerminalDisplaced.mockImplementation(() => registry.displaced.value)
 registry.useTerminalInvalidCwd.mockImplementation(() => registry.invalidCwd.value)
+registry.useTerminalWrongMachine.mockImplementation(() => registry.wrongMachine.value)
 vi.mock('../utils/terminalRegistry', () => registry)
 
 // Both children own their own xterm hooks and are covered by their own suites;
 // stub them so this file exercises CliPanel alone.
-vi.mock('../components/TerminalCompletion', () => ({ default: () => <div data-testid="completion" /> }))
+vi.mock('../components/TerminalCompletion', () => ({
+  default: ({ active }: { active: boolean }) => <div data-testid="completion" data-active={active} />,
+}))
 vi.mock('../components/TerminalKeyBar', () => ({ default: () => <div data-testid="key-bar" /> }))
 
 const touch = vi.hoisted(() => ({ value: false }))
 vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => touch.value }))
 
 import CliPanel, {
+  prewarmTerminal,
   __resetTerminalThemeSyncForTests,
   disposeTerminalSession,
   isThemeSignal,
   useDeleteTerminalSession,
 } from '../components/CliPanel'
-import { setTerminalFontSize, setTerminalCursorStyle, __resetTerminalFontStore } from '../hooks/useTerminalFont'
+import { setTerminalFontSize, setTerminalCursorStyle, setTerminalCopyOnSelect, __resetTerminalFontStore } from '../hooks/useTerminalFont'
 import { setTerminalCloseFailed, useTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { ansiPaletteFromVars } from '../utils/terminalPalette'
 
@@ -243,7 +272,7 @@ let seq = 0
 function nextId() { seq += 1; return `pty-${seq}` }
 
 const live = new Set<string>()
-function mount(props: Partial<{ sessionId: string; cwd: string; visible: boolean; onSendToChat: (t: string) => void }> = {}) {
+function mount(props: Partial<{ sessionId: string; cwd: string; visible: boolean; onSendToChat: (t: string) => void; deferOpen: boolean }> = {}) {
   const sessionId = props.sessionId ?? nextId()
   live.add(sessionId)
   const view = renderWithProviders(
@@ -252,6 +281,7 @@ function mount(props: Partial<{ sessionId: string; cwd: string; visible: boolean
       cwd={props.cwd}
       visible={props.visible ?? true}
       onSendToChat={props.onSendToChat}
+      deferOpen={props.deferOpen}
     />,
   )
   const term = xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1]
@@ -284,8 +314,10 @@ beforeEach(() => {
   registry.manualRetry.value = false
   registry.displaced.value = false
   registry.invalidCwd.value = false
+  registry.wrongMachine.value = false
   xt.FakeTerminal.instances = []
   xt.FakeFitAddon.instances = []
+  xt.FakeSearchAddon.instances = []
   touch.value = false
   stubLayout()
   setClipboard({ writeText: vi.fn(() => Promise.resolve()) })
@@ -314,15 +346,20 @@ describe('CliPanel mount', () => {
     expect(term.openCalls).toBe(1)
     expect(container.querySelector('.xterm')).not.toBeNull()
     expect(fit.fit).toHaveBeenCalled()
-    expect(registry.ensureTerminalConnection).toHaveBeenCalledWith(sessionId, term, fit, '/srv/app')
-    // A visible pane takes focus and is re-measured (monospace toggle + restore).
+    // The fifth and sixth arguments are the remote-workspace slot and the chat
+    // a local shell belongs to; this bare panel has neither.
+    expect(registry.ensureTerminalConnection).toHaveBeenCalledWith(sessionId, term, fit, '/srv/app', undefined, undefined)
+    // A visible pane takes focus. open() has just measured the cell, so no
+    // re-measure toggle follows it (that would render every row twice more).
     expect(term.focusCalls).toBe(1)
-    expect(term.fontFamilyWrites.slice(-2)).toEqual(['monospace', term.options.fontFamily])
+    expect(term.fontFamilyWrites).toEqual([])
   })
 
-  it('loads the fit and web-links addons and seeds the theme from CSS custom properties', () => {
+  it('loads the fit, web-links, and search addons and seeds the theme from CSS custom properties', () => {
     const { term } = mount()
-    expect(term.addons).toHaveLength(2)
+    // fit + web-links + search (#10176 scrollback find).
+    expect(term.addons).toHaveLength(3)
+    expect(xt.FakeSearchAddon.instances.length).toBeGreaterThan(0)
     // No custom properties are set in the test document, so every slot falls
     // back to its hard-coded default rather than an empty string. The 16 ANSI
     // entries are asserted here only as wiring — that the palette reaches
@@ -372,6 +409,166 @@ describe('CliPanel mount', () => {
     } finally {
       document.documentElement.style.removeProperty('--bg')
       document.documentElement.style.removeProperty('--text')
+    }
+  })
+
+  it('focuses a freshly opened terminal with its input inside the pane, not parked off-screen', () => {
+    // Before xterm's first render its helper textarea sits at the stylesheet's
+    // left:-9999em, 0x0. iPhone Safari reveals the focused field when the
+    // keyboard opens, so focusing it there left the new terminal under the
+    // keyboard on the first open.
+    const { term } = mount()
+    expect(term.focusedAt).toEqual([{ left: '0px', top: '0px' }])
+  })
+
+  it('leaves a rendered terminal input where xterm put it', () => {
+    const sessionId = nextId()
+    const first = mount({ sessionId })
+    first.term.textarea!.style.left = '18px'
+    first.term.textarea!.style.top = '36px'
+    cleanup()
+    const second = mount({ sessionId })
+    expect(second.term.focusedAt.at(-1)).toEqual({ left: '18px', top: '36px' })
+  })
+
+  it('holds a first-open terminal behind a focused stand-in, then opens xterm and hands focus and typed text over', () => {
+    const sessionId = nextId()
+    const view = mount({ sessionId, deferOpen: true })
+    const { term } = view
+    // The keyboard comes up on the stand-in; xterm is not built yet.
+    const proxy = screen.getByTestId('terminal-focus-proxy') as HTMLTextAreaElement
+    expect(document.activeElement).toBe(proxy)
+    expect(term.openCalls).toBe(0)
+    expect(term.focusCalls).toBe(0)
+    // A paste with a newline must not run a command: it is handed over as a paste.
+    fireEvent.change(proxy, { target: { value: 'ls\nrm' } })
+
+    view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
+    expect(term.openCalls).toBe(1)
+    expect(term.focusCalls).toBe(1)
+    expect(document.activeElement).toBe(term.textarea)
+    expect(term.pastes).toEqual(['ls\nrm'])
+    expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
+  })
+
+  it('does not take the focus back when the user moved to another field during the hold', () => {
+    const sessionId = nextId()
+    const composer = document.createElement('textarea')
+    document.body.append(composer)
+    try {
+      const view = mount({ sessionId, deferOpen: true })
+      act(() => composer.focus())
+      view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
+      expect(view.term.openCalls).toBe(1)
+      expect(view.term.focusCalls).toBe(0)
+      expect(document.activeElement).toBe(composer)
+    } finally { composer.remove() }
+  })
+
+  it('focuses a tab that was held while hidden when the user switches to it', () => {
+    const sessionId = nextId()
+    const chip = document.createElement('button')
+    document.body.append(chip)
+    try {
+      const view = mount({ sessionId, deferOpen: true, visible: false })
+      view.rerender(<CliPanel sessionId={sessionId} visible={false} deferOpen={false} />)
+      expect(view.term.openCalls).toBe(1)
+      act(() => chip.focus()) // the tab chip the user taps
+      view.rerender(<CliPanel sessionId={sessionId} visible deferOpen={false} />)
+      expect(view.term.focusCalls).toBe(1)
+    } finally { chip.remove() }
+  })
+
+  it('attaches a terminal built ahead of time, focusing it in the opening tap with no stand-in', () => {
+    const sessionId = nextId()
+    live.add(sessionId)
+    prewarmTerminal(sessionId, 390, 300)
+    const term = xt.FakeTerminal.instances[xt.FakeTerminal.instances.length - 1]
+    expect(term.openCalls).toBe(1)
+    const host = term.element!.parentElement!
+    expect(host.style.left).toBe('-10000px')
+    const view = mount({ sessionId, deferOpen: true })
+    expect(view.term).toBe(term)
+    expect(term.openCalls).toBe(1) // re-attached, not opened again
+    expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
+    expect(term.focusCalls).toBe(1)
+    expect(host.isConnected).toBe(false)
+  })
+
+  it('focuses an already-opened terminal straight away even while its host holds new ones', () => {
+    const sessionId = nextId()
+    mount({ sessionId })
+    cleanup()
+    const again = mount({ sessionId, deferOpen: true })
+    expect(screen.queryByTestId('terminal-focus-proxy')).toBeNull()
+    expect(again.term.focusCalls).toBeGreaterThan(0)
+    expect(document.activeElement).toBe(again.term.textarea)
+  })
+
+  it('prefers the dedicated --term-* surface variables over the general ones', () => {
+    // A theme pack that sets --term-* colours the terminal surface independently
+    // of the agent chat background (--bg) and text (--text).
+    document.documentElement.style.setProperty('--bg', '#101010')
+    document.documentElement.style.setProperty('--text', '#f0f0f0')
+    document.documentElement.style.setProperty('--accent', '#111111')
+    document.documentElement.style.setProperty('--accent-subtle', '#222222')
+    document.documentElement.style.setProperty('--term-bg', '#001122')
+    document.documentElement.style.setProperty('--term-fg', '#aabbcc')
+    document.documentElement.style.setProperty('--term-cursor', '#ddeeff')
+    document.documentElement.style.setProperty('--term-selection', '#334455')
+    try {
+      const { term } = mount()
+      expect(term.options.theme?.background).toBe('#001122')
+      expect(term.options.theme?.foreground).toBe('#aabbcc')
+      expect(term.options.theme?.cursor).toBe('#ddeeff')
+      expect(term.options.theme?.selectionBackground).toBe('#334455')
+    } finally {
+      for (const v of ['--bg', '--text', '--accent', '--accent-subtle',
+        '--term-bg', '--term-fg', '--term-cursor', '--term-selection']) {
+        document.documentElement.style.removeProperty(v)
+      }
+    }
+  })
+
+  it('falls back to --bg/--text/--accent/--accent-subtle when no --term-* is set', () => {
+    // A pack written before the --term-* variables existed, or one that omits
+    // them, keeps today's terminal colours.
+    document.documentElement.style.setProperty('--bg', '#101010')
+    document.documentElement.style.setProperty('--text', '#f0f0f0')
+    document.documentElement.style.setProperty('--accent', '#111111')
+    document.documentElement.style.setProperty('--accent-subtle', '#222222')
+    try {
+      const { term } = mount()
+      expect(term.options.theme?.background).toBe('#101010')
+      expect(term.options.theme?.foreground).toBe('#f0f0f0')
+      expect(term.options.theme?.cursor).toBe('#111111')
+      expect(term.options.theme?.selectionBackground).toBe('#222222')
+    } finally {
+      for (const v of ['--bg', '--text', '--accent', '--accent-subtle']) {
+        document.documentElement.style.removeProperty(v)
+      }
+    }
+  })
+
+  it('orders the ANSI extremes by the terminal polarity, not the app polarity', () => {
+    // A dark app with a light terminal is the case --term-bg/--term-fg exist
+    // for. The ANSI black/white ends and the bright ramp must follow the
+    // TERMINAL's own colours; keying them off the app's --bg/--text would put
+    // ANSI white near #eee on a light terminal and render it invisible.
+    document.documentElement.style.setProperty('--bg', '#111111')
+    document.documentElement.style.setProperty('--text', '#eeeeee')
+    document.documentElement.style.setProperty('--term-bg', '#fafafa')
+    document.documentElement.style.setProperty('--term-fg', '#222222')
+    try {
+      const { term } = mount()
+      const theme = term.options.theme as Record<string, string>
+      // white is the light end: the terminal's own light background, not --text.
+      expect(theme.white).toBe('#fafafa')
+      expect(theme.black).toBe('#222222')
+    } finally {
+      for (const v of ['--bg', '--text', '--term-bg', '--term-fg']) {
+        document.documentElement.style.removeProperty(v)
+      }
     }
   })
 
@@ -463,6 +660,18 @@ describe('CliPanel disconnected banner', () => {
     const { sessionId } = mount()
     fireEvent.click(screen.getByRole('button', { name: RECONNECT_LABEL }))
     expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
+  })
+
+  it('says why a refused shell was not opened instead of a bare disconnect', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.wrongMachine.value = true
+    mount({ cwd: '/w' })
+    const banner = screen.getByTestId('cli-panel-disconnected')
+    expect(banner).toHaveTextContent(i18nT('components.cliPanel.wrong_machine_message'))
+    expect(screen.queryByText(DISCONNECTED_LABEL)).toBeNull()
+    // Every redial meets the same refusal, so no Reconnect; the hand-off stays.
+    expect(screen.queryByRole('button', { name: RECONNECT_LABEL })).toBeNull()
+    expect(within(banner).getByRole('button', { name: /Ask the agent/ })).toBeInTheDocument()
   })
 
   it('shows the localized invalid-cwd error immediately and allows explicit recovery', () => {
@@ -582,6 +791,18 @@ describe('CliPanel disconnected banner', () => {
     expect(screen.getByRole('button', { name: RECONNECT_LABEL })).toBeEnabled()
   })
 
+  it('disables completion while displaced and keeps it active for a connected pane', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.displaced.value = true
+    const { rerender, sessionId } = mount()
+    expect(screen.getByTestId('completion')).toHaveAttribute('data-active', 'false')
+
+    registry.connStatus.value = 'connected'
+    registry.displaced.value = false
+    rerender(<CliPanel sessionId={sessionId} visible />)
+    expect(screen.getByTestId('completion')).toHaveAttribute('data-active', 'true')
+  })
+
   it('names the other window, not a network failure, when the server displaced this socket', () => {
     // The registry parked the session after the server's `code: 'displaced'`
     // error frame: the banner must say so (neutral icon) rather than render
@@ -601,6 +822,32 @@ describe('CliPanel disconnected banner', () => {
     expect(takeBack).toBeEnabled()
     fireEvent.click(takeBack)
     expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
+  })
+
+  it('tells a keyboard user that Enter takes the displaced terminal back', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.displaced.value = true
+    mount()
+    expect(screen.getByRole('status')).toHaveTextContent(i18nT('components.cliPanel.displaced_enter_hint'))
+    expect(screen.getByRole('button', { name: i18nT('components.cliPanel.use_here') }))
+      .toHaveAttribute('aria-keyshortcuts', 'Enter')
+  })
+
+  it('drops the Enter hint on a touch device and for an ordinary disconnect', () => {
+    registry.connStatus.value = 'disconnected'
+    registry.displaced.value = true
+    touch.value = true
+    const { unmount } = mount()
+    expect(screen.queryByTestId('cli-panel-displaced-enter-hint')).toBeNull()
+    expect(screen.getByRole('button', { name: i18nT('components.cliPanel.use_here') }))
+      .not.toHaveAttribute('aria-keyshortcuts')
+    unmount()
+
+    touch.value = false
+    registry.displaced.value = false
+    mount()
+    expect(screen.queryByTestId('cli-panel-displaced-enter-hint')).toBeNull()
+    expect(screen.getByRole('button', { name: RECONNECT_LABEL })).not.toHaveAttribute('aria-keyshortcuts')
   })
 })
 
@@ -833,8 +1080,79 @@ describe('CliPanel copy action', () => {
     const copyBtn = screen.getByRole('button', { name: COPY_LABEL })
     copyBtn.focus()
     await act(async () => { fireEvent.click(copyBtn) })
-    expect(document.querySelector('textarea')).toBeNull()
+    expect(document.querySelector('textarea:not(.xterm-helper-textarea)')).toBeNull()
     expect(document.activeElement).toBe(copyBtn)
+  })
+})
+
+/* ── copy on select ───────────────────────────────────────────────────────── */
+
+describe('CliPanel copy on select', () => {
+  /** A drag on the terminal screen: press with `button`, release on the wrapper. */
+  function dragOnScreen(term: InstanceType<typeof xt.FakeTerminal>, container: HTMLElement, button = 0) {
+    act(() => { fireEvent.mouseDown(term.element!, { button }) })
+    endDrag(container, { x: 200, y: 100 })
+  }
+
+  it('copies the selection when the drag ends and keeps the toolbar up', async () => {
+    setTerminalCopyOnSelect(true)
+    const writeText = vi.fn(() => Promise.resolve())
+    setClipboard({ writeText })
+    const { term, container } = mount()
+    term.selection = 'ip-10-0-3-17.internal'
+    await act(async () => { dragOnScreen(term, container) })
+    expect(writeText).toHaveBeenCalledWith('ip-10-0-3-17.internal')
+    expect(screen.getByRole('button', { name: COPIED_LABEL })).toBeInTheDocument()
+    expect(term.clearCalls).toBe(0)
+  })
+
+  it('does nothing until Copy is pressed when the preference is off', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    setClipboard({ writeText })
+    const { term, container } = mount()
+    term.selection = 'ip-10-0-3-17.internal'
+    await act(async () => { dragOnScreen(term, container) })
+    expect(writeText).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: COPY_LABEL })).toBeInTheDocument()
+  })
+
+  it('leaves the clipboard alone unless the release ends a left press on the screen', async () => {
+    setTerminalCopyOnSelect(true)
+    const writeText = vi.fn(() => Promise.resolve())
+    setClipboard({ writeText })
+    const { term, container } = mount()
+    term.selection = 'ip-10-0-3-17.internal'
+    // A right-click on the old selection.
+    await act(async () => { dragOnScreen(term, container, 2) })
+    // A press on the pane outside the screen (the find bar, a banner).
+    const wrap = container.firstElementChild!.firstElementChild as HTMLElement
+    await act(async () => {
+      fireEvent.mouseDown(wrap, { button: 0 })
+      endDrag(container, { x: 200, y: 100 })
+    })
+    // A screen press released elsewhere, then a press outside released here.
+    await act(async () => {
+      fireEvent.mouseDown(term.element!, { button: 0 })
+      fireEvent.mouseDown(document.body, { button: 0 })
+      endDrag(container, { x: 200, y: 100 })
+    })
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('says Copy failed when the clipboard refuses the write', async () => {
+    setTerminalCopyOnSelect(true)
+    setClipboard(undefined)
+    const origExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand')
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: vi.fn(() => false) })
+    try {
+      const { term, container } = mount()
+      term.selection = 'ip-10-0-3-17.internal'
+      await act(async () => { dragOnScreen(term, container) })
+      expect(screen.getByRole('button', { name: COPY_FAILED_LABEL })).toBeInTheDocument()
+    } finally {
+      if (origExecCommand) Object.defineProperty(document, 'execCommand', origExecCommand)
+      else delete (document as unknown as Record<string, unknown>).execCommand
+    }
   })
 })
 
@@ -1062,9 +1380,15 @@ describe('CliPanel web-font refit', () => {
 
   it('refits once the pending web fonts settle and after explicitly loading the terminal font', async () => {
     const load = vi.fn(() => Promise.resolve([]))
-    setFonts({ ready: Promise.resolve(), load })
+    // The terminal font is still loading when xterm opens, and has loaded by
+    // the time `ready` settles: that change is what earns a re-measure.
+    let loaded = false
+    let settle!: () => void
+    const ready = new Promise<void>(r => { settle = r })
+    setFonts({ ready, load, check: () => loaded })
     const { term, fit } = mount()
-    await act(async () => { await Promise.resolve() })
+    loaded = true
+    await act(async () => { settle(); await Promise.resolve() })
     // The pre-loaded family must match the terminal's configured stack — the
     // previous implementation hardcoded 'JetBrains Mono', which silently
     // missed any custom Terminal Font Family (Nerd Fonts, OpenDyslexicMono,

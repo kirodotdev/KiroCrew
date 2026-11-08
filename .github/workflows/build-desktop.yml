@@ -308,7 +308,7 @@ jobs:
         shell: bash
         # No bundled kiro-cli (BUNDLE_KIRO_CLI defaults to 0 in the script): the
         # app detects the user's own install. packaging/kiro-cli-version is read
-        # only by a BUNDLE_KIRO_CLI=1 build.
+        # by a BUNDLE_KIRO_CLI=1 build here, and by every Docker image build.
         run: bash packaging/build-desktop.sh
         env:
           # Unsigned here by design: the signing service signs the .app downstream in
@@ -464,9 +464,12 @@ jobs:
   #
   # Mount, copy the .app out, run the installed launcher, then start the REAL
   # app from its executable and wait for the gateway its supervisor boots to
-  # answer /api/health. Unsigned build by design: signing is a later stage, and
-  # the launch exercises the binary, not Gatekeeper. See
-  # scripts/smoke-macos-install.sh.
+  # answer /api/health. That launch is the only place the Electron shell's
+  # bundled-KAS-engine hand-off (gateway-env.js) runs against a shipped bundle,
+  # so the gateway child's environment is read back to prove it, and the
+  # installed `kirocrew kas status` must report the engine as built into the
+  # app. Unsigned build by design: signing is a later stage, and the launch
+  # exercises the binary, not Gatekeeper. See scripts/smoke-macos-install.sh.
   smoke-install-macos:
     name: Smoke-install macOS DMG (launch)
     needs: build-desktop
@@ -478,12 +481,12 @@ jobs:
           persist-credentials: false
 
       - name: Download macOS universal build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned-build-darwin-universal
           path: dist
 
-      - name: Install the DMG and launch the app
+      - name: Install the DMG, launch the app, prove the bundled KAS engine
         run: ./scripts/smoke-macos-install.sh dist
 
       - name: Upload smoke evidence
@@ -513,7 +516,15 @@ jobs:
   smoke-linux-packages:
     name: Smoke-install Linux packages (deb + rpm)
     needs: build-desktop
-    runs-on: ubuntu-latest
+    # The `kirocrew-runners` group in THIS repository, rather than the standard
+    # pool whose concurrency is shared enterprise-wide. The install checks run
+    # in distro containers, so the runner's own image is not what they measure;
+    # `build-desktop` above keeps its pinned ubuntu-22.04 legs, which ARE a
+    # glibc-floor decision. Named by its runner LABEL, not by `group:`: the
+    # group belongs to the kirodotdev organization, so a fork running its own
+    # copy cannot reach it and would wait forever for a runner. The `||` leg
+    # keeps a fork on the hosted image.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -521,7 +532,7 @@ jobs:
           persist-credentials: false
 
       - name: Download Linux x64 build
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: build-linux-x64
           path: dist

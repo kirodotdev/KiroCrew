@@ -43,9 +43,7 @@ def _err(data: str, message: str = "Internal error") -> dict:
 
 
 # The exact reported shape, request id included.
-_MONTHLY_LIMIT = _err(
-    f"{_ENVELOPE}The monthly usage limit has been reached (request_id: {_REQ})"
-)
+_MONTHLY_LIMIT = _err(f"{_ENVELOPE}The monthly usage limit has been reached (request_id: {_REQ})")
 
 
 class TestUsageLimitIsTerminalAndTruthful:
@@ -61,18 +59,20 @@ class TestUsageLimitIsTerminalAndTruthful:
         # request_id survives for support correlation, and exactly once.
         assert out.count(_REQ) == 1
 
-    def test_says_retrying_will_not_help(self):
-        out = _format_acp_error(_MONTHLY_LIMIT)
-        assert "Retrying will not help" in out
+    @pytest.mark.parametrize(
+        "expected",
+        [
+            pytest.param("Retrying will not help", id="says_retrying_will_not_help"),
+            # Provider text has no trailing period; guidance must not run into it.
+            pytest.param("reached. Retrying", id="provider_sentence_is_punctuated_before_guidance"),
+        ],
+    )
+    def test_guidance_wording(self, expected):
+        assert expected in _format_acp_error(_MONTHLY_LIMIT)
 
     def test_is_not_retried(self):
         """The retry ladder must not spend attempts on a spent allowance."""
         assert _is_transient_raw_error(_MONTHLY_LIMIT) is False
-
-    def test_provider_sentence_is_punctuated_before_guidance(self):
-        """Provider text has no trailing period; guidance must not run into it."""
-        out = _format_acp_error(_MONTHLY_LIMIT)
-        assert "reached. Retrying" in out
 
     @pytest.mark.parametrize(
         "data",
@@ -285,6 +285,4 @@ class TestThrottleWordingByBackend:
         # genuine Bedrock throttle on kiro-cli still reads as a retryable
         # throttle, named Bedrock, generic rate-limit wording included.
         assert _is_transient_raw_error(self._GENERIC_RATE) is True
-        assert _format_acp_error(self._GENERIC_RATE, backend="").startswith(
-            "Bedrock is throttling"
-        )
+        assert _format_acp_error(self._GENERIC_RATE, backend="").startswith("Bedrock is throttling")

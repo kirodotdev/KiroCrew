@@ -52,7 +52,7 @@ A goal loop is the one feature a person leaves running unattended. Its controls 
 
 | State | Title | Status line under the title | Controls |
 |---|---|---|---|
-| No goal | `Set a goal` | none | Play alone: creates and starts the loop from the form, no fire |
+| No goal | `Set a goal` | none | Play alone: creates and starts the loop from the form, no fire; a `Run first cycle now` checkbox at the left of the row, unchecked by default, makes Play also fire the first cycle through the `Nudge now` route ([#23803](https://github.com/kirodotdev/KiroCrew/issues/23803)) |
 | Running | `Goal active (cycle N/M)` | the countdown (`Next cycle in …` / `Next cycle due, fires after the current turn` / `Next cycle not yet scheduled`), boxed in the ok tone | Pause · Lightning (`Nudge now`, or `Save edits and nudge now` when the form is dirty) |
 | Paused | `Paused` | `Paused · <why>`, boxed in the warn tone | Pause (disabled) · Play (`Resume loop and nudge now`, or `Save edits, resume loop and nudge now`), and `Clear stopped goal` as a text link at the left of the same row |
 | Done | `Done` | `Done · <how it finished>`, boxed in the info tone, with a check-mark glyph before the text when the goal was reached or the pull request merged | Pause and Play, both disabled, with the Paused-state glyphs; `Clear finished goal` as a text link at the left of the same row |

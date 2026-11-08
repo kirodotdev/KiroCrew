@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.config import KiroCrewConfig
+from kiro_crew.platform_compat_proctable import DarwinKinfoProc
 from kiro_crew.session import SessionManager
 from kiro_crew.subagent import SubagentManager
 
@@ -95,11 +96,12 @@ class TestResetProcessTreeKill:
             # os.kill(pid, 0) succeeds → process survived shutdown
             mock_kill.return_value = None
             mock_killpg.return_value = None
-            await mgr.reset("t1")
+            assert await mgr.reset("t1") is True
 
         provider.shutdown.assert_awaited_once()
         mock_killpg.assert_called_once_with(12345, signal.SIGKILL)
         mock_sweep.assert_called_once()
+        assert "t1" not in mgr._sessions
 
     @pytest.mark.asyncio
     async def test_reset_fallback_kill_when_killpg_fails(self, cfg):
@@ -162,10 +164,11 @@ class TestResetProcessTreeKill:
         await mgr.get_or_create("t1")
 
         with patch("kiro_crew.session.os.kill") as mock_kill:
-            await mgr.reset("t1")
+            assert await mgr.reset("t1") is True
 
         mock_kill.assert_not_called()
         provider.shutdown.assert_awaited_once()
+        assert "t1" not in mgr._sessions
 
     @pytest.mark.asyncio
     async def test_reset_skips_kill_for_zero_pid(self, cfg):
@@ -175,10 +178,11 @@ class TestResetProcessTreeKill:
         await mgr.get_or_create("t1")
 
         with patch("kiro_crew.session.os.kill") as mock_kill:
-            await mgr.reset("t1")
+            assert await mgr.reset("t1") is True
 
         mock_kill.assert_not_called()
         provider.shutdown.assert_awaited_once()
+        assert "t1" not in mgr._sessions
 
 
 # ── subagent._sigkill_session() tests ──
@@ -285,6 +289,12 @@ class TestSigkillSessionProcessTree:
             patch("kiro_crew.acp.client._kill_escaped_children"),
             patch("kiro_crew.platform_compat.pid_exists", return_value=True),
             patch("kiro_crew.platform_compat.get_process_start_id", return_value=_START_ID),
+            # The group is alive: on macOS the EPERM is settled by the kernel's group
+            # listing, so list a running member rather than read the host's real table.
+            patch(
+                "kiro_crew.platform_compat.darwin_pgroup_members",
+                return_value=[DarwinKinfoProc(pid=54321, zombie=False, start_id=_START_ID)],
+            ),
         ):
             result = await mgr._sigkill_session(
                 "subagent:test1", _subagent_handle(mgr, "subagent:test1")

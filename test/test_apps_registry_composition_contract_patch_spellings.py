@@ -1,14 +1,9 @@
 """The App Registry's composition: no test patches a forwarded name with ``create=True``.
 
-``mock.patch`` undoes a name ``kiro_crew.apps.registry`` forwards to its owner by
-deleting it, and under ``create=True`` that delete is the whole undo: the name is
-gone from every registry module for the rest of the run. The guard here reads every
-test module of the repository off its AST alone and finds each patch of a forwarded
-name whose ``create`` is not literally ``False``, through any import alias, call or
-decorator spelling; the reader is shown each form it must catch beside a spelling
-of it it must leave alone. The rest of the facade's contract is in
-``test_apps_registry_composition_contract.py``, which holds the one allowlisted
-premise case.
+Under ``create=True``, ``mock.patch`` undoes a forwarded name by deleting it, so the
+name is gone from every registry module for the rest of the run. The guard reads
+every test module's AST. The rest of the contract is in
+``test_apps_registry_composition_contract.py``.
 """
 
 from __future__ import annotations
@@ -36,9 +31,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MULTI_HOLDER = "_strip_git_target_userinfo"
 
 
-# ---------------------------------------------------------------------------
 # The patch spellings the suite may use on the facade
-# ---------------------------------------------------------------------------
 
 #: The patch callables by the dotted path they resolve to: which one, and the index of
 #: ``create`` among its positional parameters.
@@ -383,14 +376,9 @@ def _create_true_patches_of_forwarded_names(
     """Every ``mock.patch`` of a forwarded name in *source* whose ``create`` is not
     literally ``False``.
 
-    Any spelling the reader can resolve counts: ``patch``, ``patch.object`` and
-    ``patch.multiple`` reached through any import alias, called or used as a
-    decorator, with a positional or keyword target and attribute, a keyword
-    ``create`` -- or a positional one to a callable spelled ``patch``, ``object`` or
-    ``multiple`` -- and a string target built from the facade's name. A patch of the
-    facade whose attribute it cannot resolve is a ``<dynamic>`` hit, never a pass. A
-    name the facade binds itself is safe -- ``mock.patch`` sees it as local and
-    writes the original back.
+    Any alias, call or decorator spelling of ``patch``, ``patch.object`` and
+    ``patch.multiple`` counts. An attribute it cannot resolve is a ``<dynamic>`` hit,
+    never a pass. A name the facade binds itself is safe: ``mock.patch`` restores it.
     """
     tree = ast.parse(source)
     calls = [

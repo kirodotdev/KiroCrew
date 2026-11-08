@@ -114,12 +114,10 @@ class TestLoadSteeringResources:
     def test_loads_md_files_from_resources(self, tmp_path):
         from kiro_crew.context import _load_steering_resources
 
-        # Create steering file
         steering_dir = tmp_path / ".kiro" / "steering"
         steering_dir.mkdir(parents=True)
         (steering_dir / "rules.md").write_text("# My Rules\nAlways be nice.")
 
-        # Create agent config with resources
         agents_dir = tmp_path / ".kiro" / "agents"
         agents_dir.mkdir(parents=True)
         import json
@@ -224,3 +222,45 @@ def test_critical_rules_forbid_assuming_a_persons_gender():
     rule = "Do not assume anyone's gender."
     assert rule in _CRITICAL_RULES
     assert rule in _CRITICAL_RULES_CHANNEL
+
+
+def test_critical_rules_require_a_live_read_before_any_status_claim():
+    """Every agent is told to read external state live, with any provider's tool."""
+    from kiro_crew.context import _CRITICAL_RULES_VARIANTS
+    from kiro_crew.context_assembly.output_contract import _LIVE_STATE_RULE
+
+    assert "read it live in this turn with whatever tool that system offers" in _LIVE_STATE_RULE
+    assert "Never report status from memory" in _LIVE_STATE_RULE
+    for rules in _CRITICAL_RULES_VARIANTS:
+        assert _LIVE_STATE_RULE in rules
+
+
+@pytest.mark.parametrize(
+    ("agent", "session_key"),
+    [
+        ("kirocrew", "dashboard:a"),
+        ("kirocrew-conductor", "dashboard:b"),
+        ("kirocrew-pipeline-conductor", "dashboard:c"),
+        ("kirocrew-worker", "dashboard:d"),
+        ("kirocrew-mate-conductor", "dashboard:e"),
+        ("kirocrew-mate-worker", "dashboard:f"),
+        ("kirocrew-worker", "cron:g"),
+        ("kirocrew", "subagent:h"),
+    ],
+)
+def test_shared_base_rules_tell_every_crew_agent_to_ask_only_when_needed(
+    tmp_path, monkeypatch, agent, session_key
+):
+    """Conductor, worker, Bot and Ultra Mode all start from the critical-rules block."""
+    from kiro_crew import context as ctx_mod
+
+    rule = "Ask a person only when human involvement is truly required."
+    for variant in ctx_mod._CRITICAL_RULES_VARIANTS:
+        assert rule in variant
+    monkeypatch.setattr(ctx_mod, "_INCLUDE_CREW_CONTEXT_CACHE", {})
+    builder = ContextBuilder(
+        memory=MemoryStore(workspace=tmp_path / "ws"),
+        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+    )
+    ctx = builder.build_session_context(agent=agent, session_key=session_key)
+    assert rule in ctx

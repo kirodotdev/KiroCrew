@@ -58,6 +58,22 @@ export function resolveFolderProjectDir(
 }
 
 /**
+ * The folder's resolved project_dir when it differs from the session's own
+ * `project`, else undefined. No folder, or a chain that sets no directory, is
+ * never a mismatch. Both sides are realpath-normalized by the gateway, so a
+ * plain comparison is exact.
+ */
+export function folderProjectMismatch(
+  folders: ChatFolder[],
+  folderId: string | undefined,
+  project: string | undefined
+): string | undefined {
+  if (!folderId) return undefined
+  const dir = resolveFolderProjectDir(folders, folderId)
+  return dir && dir !== (project || '') ? dir : undefined
+}
+
+/**
  * Resolve the extra steering directories for a folder.
  *
  * Unlike `resolveFolderProjectDir` (nearest-wins), steering dirs ACCUMULATE up
@@ -115,9 +131,11 @@ export function resolveFolderSteeringDirs(
 
 /**
  * True when a folder-inherited create failed because the folder's project
- * directory no longer exists: the slot-project endpoint answers HTTP 400
- * "Not a directory". It is the one create failure the user can fix, so both
- * the drawer's folder `+` and the phone's new-chat button name the stale path.
+ * directory no longer exists. Two endpoints say so with HTTP 400: the create
+ * itself (`folder_project_invalid`, message `invalid folder project: ...`)
+ * and the later slot-project call ("Not a directory"). It is the one create
+ * failure the user can fix, so the folder `+`, the phone's new-chat button and
+ * the new-chat shortcut name the stale path.
  *
  * createSlot rethrows the ApiError, but createAsyncThunk serializes thrown
  * errors down to {name, message, stack}, so the instance and its `status` are
@@ -125,7 +143,9 @@ export function resolveFolderSteeringDirs(
  * present and fall back to the serialized shape.
  */
 export function isStaleProjectDirError(err: unknown): boolean {
-  if (err instanceof ApiError) return err.status === 400 && err.message === 'Not a directory'
+  const isStale = (m: unknown) => m === 'Not a directory'
+    || (typeof m === 'string' && m.startsWith('invalid folder project:'))
+  if (err instanceof ApiError) return err.status === 400 && isStale(err.message)
   const e = err as { name?: unknown; message?: unknown } | null
-  return e?.name === 'ApiError' && e.message === 'Not a directory'
+  return e?.name === 'ApiError' && isStale(e.message)
 }

@@ -4,7 +4,8 @@
 store, resolves the exact-rule pass (``lessons.resolve_exact_rule``), runs the scope-local
 dedup scan behind its authority pre-pass, and queues every supersede until ``set_semantic``
 has committed the submission; then it drains the queue and publishes the lesson's vector
-under ``_vector_commit``. The lesson value codec and the lesson readers live in
+under ``_vector_commit``. ``update_lesson_applies`` changes one stored lesson's tier in
+place. The lesson value codec and the lesson readers live in
 ``vector_memory_runtime.lessons``.
 
 The functions are bound on ``VectorMemoryStore`` as the class attributes of the same name
@@ -18,16 +19,23 @@ import dataclasses
 import json
 import logging
 import struct
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from kiro_crew import memory_schema
 from kiro_crew.embeddings import PRIORITY_BULK
 from kiro_crew.lesson_validation import (
+    LESSON_APPLIES_ON_TOPIC,
+    LESSON_APPLIES_VALUES,
     contains_volatile_lesson_fact,
     normalize_lesson_applies,
     utf8_encodable,
 )
-from kiro_crew.project_scope import canonical_scope, scope_is_admissible
+from kiro_crew.project_scope import (
+    canonical_scope,
+    scope_is_admissible,
+    scope_selector_is_inadmissible,
+)
 from kiro_crew.validation import normalize_lesson_category
 from kiro_crew.vector_memory_runtime import lessons as _lessons
 from kiro_crew.vector_memory_runtime.write_outcomes import LessonWriteOutcome, LessonWriteResult
@@ -37,6 +45,28 @@ if TYPE_CHECKING:
 
 # The store's own logger: callers and tests filter on it by name.
 logger = logging.getLogger("kiro_crew.vector_memory")
+
+
+def _lesson_writer(raw: object) -> dict[str, str] | None:
+    """The ``written_by`` value a lesson row stores, or ``None`` when no person is known."""
+    from kiro_crew.shared_crew.memory_changes import stamp_of
+
+    return stamp_of(raw)
+
+
+def _outranks_write(existing: dict, source: str, confidence: float) -> bool:
+    """Whether stored row *existing* outranks a ``source`` write at *confidence*.
+
+    A ``user_explicit`` row outranks every other source, and a strictly higher stored
+    confidence outranks a lower one. Nothing outranks a ``user_explicit`` write.
+    """
+    if source == "user_explicit":
+        return False
+    try:
+        existing_confidence = float(existing.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        existing_confidence = 0.0
+    return existing.get("source") == "user_explicit" or existing_confidence > confidence
 
 
 def write_lesson(
@@ -53,6 +83,7 @@ def write_lesson(
     rule_emb_resolved: bool = False,
     defer_backfills: bool = False,
     facets: "memory_schema.MemoryFacets | None" = None,
+    written_by: Mapping[str, str] | None = None,
 ) -> LessonWriteResult:
     """Write a lesson as a semantic entry with key lesson.<hash>.
 
@@ -72,6 +103,9 @@ def write_lesson(
       unless a stored near-duplicate outranks this write (``user_explicit``
       over a lower-authority source, or strictly higher stored confidence),
       which reports ``deduped`` / ``semantic_similarity``.
+
+    No rule deletes a stored row that outranks this write: the two lexical rules
+    store the submission beside it instead.
 
     **A call that stores nothing deletes nothing.** Every supersede the scan
     decides on is QUEUED, and the queue drains only once ``set_semantic`` has
@@ -214,7 +248,7 @@ def write_lesson(
     else:
         lesson_embed_generation = self._space_generation
     if rule_emb is None and not rule_emb_resolved:
-        rule_emb = self._try_embed(rule) if self.embed_fn else None
+        rule_emb = self.embed_lesson(rule)
     backfills_done = 0
     # (blob, key, space generation, exact value embedded). The generation is
     # recorded per entry, not once for the call: these lazy backfills embed
@@ -251,6 +285,11 @@ def write_lesson(
     # are the same answer here, which is why there is no stored sentinel.
     if applies:
         lesson_value["applies"] = applies
+    # Who wrote it (``shared_crew.memory_changes.writer_stamp``), added only
+    # when a person is known, so a write with no writer keeps the old shape.
+    writer = _lesson_writer(written_by)
+    if writer is not None:
+        lesson_value["written_by"] = writer
     value: object = lesson_value
     confidence = 1.0 if source == "user_explicit" else 0.9
     preflight = self.validate_semantic(key, value, confidence, source)
@@ -311,6 +350,9 @@ def write_lesson(
             _flush_backfills()
             return exact.result
         key, value, effective_applies = exact.key, exact.value, exact.applies
+        # An enrichment is a write by this writer: the row names who changed it last.
+        if writer is not None and isinstance(value, dict):
+            value = {**value, "written_by": writer}
 
     # Built once for the whole scan (query-side vector + norm are the same
     # for every row) rather than per candidate — see _stored_similarity_scorer.
@@ -353,7 +395,6 @@ def write_lesson(
     # skipped for it entirely. The pass is non-mutating for its own reason,
     # independent of the scan's deferral below: an authority decline must not
     # spend the call's embed budget rewriting rows it is about to refuse.
-    # Scan-wide authority ordering is a tracked follow-up decision.
     if (
         self.algorithm_version != "v2"
         and similarity is not None
@@ -366,11 +407,10 @@ def write_lesson(
                 continue
             # PURE semantic matches only. A row the mutating scan's
             # substring or topic-overlap branch would claim FIRST (per-row
-            # branch order) keeps main's outcome for it -- those branches
-            # are source-blind by main's design, and the pre-pass must not
-            # decline a write that main would have resolved lexically
-            # before the semantic test ever ran. The predicates mirror the
-            # scan's own, on the same normalized text.
+            # branch order) is left to that branch: it declines a submission
+            # the row covers, as before, and otherwise stores the submission
+            # beside an outranking row. The predicates mirror the scan's own,
+            # on the same normalized text.
             pre_lower = pre_text.lower()
             if rule_lower in pre_lower or pre_lower in rule_lower:
                 continue
@@ -429,11 +469,7 @@ def write_lesson(
                 # equal and lets the newer write win): near-duplicates are
                 # DIFFERENT rows with no same-key freshness to prefer, and
                 # equal confidence falls through to newest-wins below.
-                try:
-                    existing_confidence = float(existing.get("confidence") or 0.0)
-                except (TypeError, ValueError):
-                    existing_confidence = 0.0
-                if existing.get("source") == "user_explicit" or existing_confidence > confidence:
+                if _outranks_write(existing, source, confidence):
                     logger.info(
                         "Lesson semantic dedup: higher-authority %r kept over %s",
                         existing["key"],
@@ -472,6 +508,11 @@ def write_lesson(
         may_retire_existing, covering_row_arrives_less_often = _lessons.tier_permissions(
             existing, applies
         )
+        # No branch below retires a row that outranks this write: a consolidation
+        # rewording that overlaps the user's own lesson is stored beside it.
+        may_retire_existing = may_retire_existing and not _outranks_write(
+            existing, source, confidence
+        )
 
         # Substring dedup
         if rule_lower in existing_lower and not covering_row_arrives_less_often:
@@ -487,29 +528,9 @@ def write_lesson(
                 winner_repo_scope=_lessons._lesson_scope(json.loads(existing["value_json"])),
             )
         if existing_lower in rule_lower:
-            # This branch was the only one of the four here that deleted a row
-            # WITHOUT saying so at any level: its three siblings each log, and
-            # this one went straight to delete_semantic. So the deletion left no
-            # trace a user or an operator could find -- not in the result, not in
-            # the log, and not in the store, since the row is tombstoned and
-            # every read path filters it. Log like the siblings do.
-            #
-            # IDENTITIES, never content, and that is the point of this whole scan's
-            # logging rather than a limitation of this line. A lesson holds whatever
-            # the user once told the agent -- credentials, paths, names -- so a log
-            # line carrying its text turns a silent-deletion bug into a disclosure
-            # bug, on a sink that persists to disk and may reach a notification
-            # channel. Both keys ARE the store's own row ids (``lesson.<digest>``),
-            # so an operator can join this line to the tombstoned row, to the
-            # delete_semantic audit record, and to the matching ``superseded`` entry
-            # in the result -- which is the read path where the text belongs, and
-            # where it is redacted at every surface.
-            #
-            # The id is logged rather than a fresh digest deliberately: a
-            # newly-computed hash would correlate with nothing. Nothing here HASHES
-            # anything, so this adds no weak-hashing exposure -- ``_lesson_key``
-            # already derived these ids, and CodeQL flags that derivation at its own
-            # site, not at a line that merely logs the result.
+            # Like the topic and semantic branches below, this one deletes nothing:
+            # at most it queues the supersede, and the drain after ``set_semantic``
+            # logs each queued row it retires or skips.
             if may_retire_existing:
                 deferred_supersedes.append(
                     (existing["key"], existing_report, existing["value_json"], "contains")
@@ -591,8 +612,7 @@ def write_lesson(
                 sim = similarity({"embedding": row_blob})
                 if sim > 0.85:
                     # Newest wins, matching the substring and topic-overlap
-                    # branches above -- both supersede the stored row
-                    # unconditionally. A length tie-break on
+                    # branches above. A length tie-break on
                     # ``len(rule) > len(existing_text)`` would DROP the
                     # submission when it loses, making character count
                     # decide which of two near-identical rules is current.
@@ -603,9 +623,8 @@ def write_lesson(
                     # effect, the one outcome that actively misleads the
                     # agent rather than merely losing information.
                     #
-                    # No authority check HERE, by construction: the
-                    # non-mutating pre-pass above already returned DEDUPED
-                    # if any purely-semantic row outranks the write. Like
+                    # The non-mutating pre-pass above already returned
+                    # DEDUPED if any purely-semantic row outranks the write. Like
                     # both lexical branches, this one only QUEUES its
                     # supersede -- a later row can still decline the write
                     # via ``substring_covered``, and a declined write
@@ -661,8 +680,16 @@ def write_lesson(
     # row sharing that key fails it, and no separate same-key check is needed.
     #
     # A supersede is LOGGED here because this is where one happens; the scan only
-    # nominates rows. IDENTITIES only, never row text -- a lesson can hold
-    # whatever the user tells the agent, and this sink persists to disk.
+    # nominates rows. The scan's log lines and this drain's carry keys and labels
+    # (category, source, reason, a count), never row text: a lesson can hold
+    # whatever the user tells the agent (credentials, paths, names), and a log
+    # record can outlive the turn, on disk and in the dashboard's log stream.
+    # Both keys are row keys, so an operator can join a supersede line to the
+    # retired row's tombstone and audit event, and by its "so far" count to the
+    # matching ``superseded`` entry in the result. Logging the keys rather than a
+    # fresh digest is deliberate: a newly computed hash would correlate with
+    # nothing. No log line here hashes anything; a weak-hash finding belongs at
+    # ``_lesson_slug``'s digest, not at a line that logs a key.
     #
     # The attribution is passed INTO delete_semantic (winning key + reason), so
     # the tombstone's record status and audit event record it durably in the
@@ -734,3 +761,86 @@ def embed_lesson(self: VectorMemoryStore, rule: str) -> list[float] | None:
     should wrap this in ``asyncio.to_thread()``.
     """
     return self._try_embed(rule) if self.embed_fn else None
+
+
+def update_lesson_applies(
+    self: VectorMemoryStore,
+    rule: str,
+    repo_scope: str | None = None,
+    *,
+    current: str,
+    applies: str,
+) -> str:
+    """Change only the tier of the one stored lesson whose text is *rule*.
+
+    ``write_lesson`` keeps the tier write-once, and a delete plus a re-add re-runs
+    the new-lesson dedup and stamps the new caller's source. This rewrites the
+    row in place under its own key, so its source, confidence, ``created_at`` and
+    rule vector stay. *rule* and *repo_scope* select the row as the exact
+    ``delete_lesson`` does. *current* is the tier the caller read, ``always``
+    standing for an untiered row too, because both are served as a standing rule.
+
+    Returns ``updated``, ``unchanged``, ``not_found``, ``ambiguous`` (more than one
+    row matches), ``conflict`` (the row's tier is not *current*, or the row
+    changed before the write) or ``refused`` (the store refuses the new value).
+    """
+    from kiro_crew import vector_memory as vm  # circular import: the facade imports this module
+
+    if current not in LESSON_APPLIES_VALUES or applies not in LESSON_APPLIES_VALUES:
+        raise ValueError(f"lesson tier must be one of {LESSON_APPLIES_VALUES}")
+    if repo_scope is not None and scope_selector_is_inadmissible(repo_scope):
+        raise ValueError(f"repo_scope does not name a usable scope: {repo_scope!r}")
+    wanted = rule.strip().lower()
+    matches = []
+    for row in self.get_lessons():
+        decoded = _lessons._decoded_lesson_value(row)
+        text = _lessons._lesson_display_text(decoded)
+        if not text or text.lower() != wanted:
+            continue
+        if repo_scope is not None and (
+            _lessons._lesson_scope_unusable(decoded)
+            or canonical_scope(_lessons._lesson_scope(decoded)) != canonical_scope(repo_scope)
+        ):
+            continue
+        matches.append((row, decoded))
+    if not matches:
+        return "not_found"
+    if len(matches) > 1:
+        return "ambiguous"
+    row, decoded = matches[0]
+    stored = _lessons._lesson_applies(decoded)
+    if (stored == LESSON_APPLIES_ON_TOPIC) != (current == LESSON_APPLIES_ON_TOPIC):
+        return "conflict"
+    if stored == applies:
+        return "unchanged"
+    if isinstance(decoded, dict):
+        value: dict[str, object] = {**decoded, "applies": applies}
+    else:
+        # A legacy string row cannot carry a tier, so it is rewritten as the mapping
+        # shape, as an enrichment of it is; its category reads as knowledge either way.
+        fields = _lessons._lesson_fields_for_row(decoded, row["key"])
+        assert fields is not None  # the row matched, so it is a non-blank string
+        value = {
+            "rule": fields[0],
+            "category": "knowledge",
+            "negative": fields[1],
+            "applies": applies,
+        }
+    key, old_json = row["key"], row["value_json"]
+    if self.validate_semantic(key, value, 1.0, "user_explicit") is not None:
+        return "refused"
+    new_json = json.dumps(value, ensure_ascii=False)
+    crew = self._lineage == memory_schema.LINEAGE_CREW
+    with self._db_lock, self.db:
+        # The body read above is the compare: a row that changed since is not written.
+        cursor = self.db.execute(
+            f"UPDATE {self._sem_rel} SET value_json=?, updated_at=?{', text=?' if crew else ''} "
+            f"WHERE key=? AND value_json=? AND is_deleted=0{self._sem_guard}",
+            (new_json, vm._now_iso(), *((new_json,) if crew else ()), key, old_json),
+        )
+        if not cursor.rowcount:
+            return "conflict"
+        self._record_mutation("directive", key, row, "user_explicit")
+        self._invalidate_semantic_scoring(key)
+    self._log_event("update", "semantic", key, old_json, new_json, "user_explicit")
+    return "updated"

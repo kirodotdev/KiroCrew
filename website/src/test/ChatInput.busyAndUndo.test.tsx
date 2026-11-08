@@ -161,7 +161,7 @@ describe('ChatInput', () => {
       const onStop = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} isRunning onStop={onStop} stopState="soft_pending" />)
       const btn = screen.getByTestId('stop-button-pulsing')
-      expect(btn).toHaveAttribute('aria-label', 'Force kill session (discards in-progress work and queued messages)')
+      expect(btn).toHaveAttribute('aria-label', 'Force stop (your messages stay; in-progress work and queued messages are discarded)')
       fireEvent.click(btn)
       expect(onStop).toHaveBeenCalled()
     })
@@ -178,7 +178,7 @@ describe('ChatInput', () => {
     it('shows disabled killing spinner when stopState is killing (after isRunning false)', () => {
       const onStop = vi.fn()
       renderWithProviders(<ChatInput {...defaultProps} isRunning={false} onStop={onStop} stopState="killing" />)
-      const btn = screen.getByRole('button', { name: 'Killing session' })
+      const btn = screen.getByRole('button', { name: 'Force stopping session' })
       expect(btn).toBeDisabled()
       fireEvent.click(btn)
       expect(onStop).not.toHaveBeenCalled()
@@ -192,6 +192,74 @@ describe('ChatInput', () => {
       fireEvent.click(btn)
       expect(onSend).toHaveBeenCalled()
       expect(onStop).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('Optimize prompt while a turn runs (issue #23572)', () => {
+    // Optimize rewrites the draft and never sends, so a running turn must not
+    // take it away: a steer or queued prompt is written mid-turn. The busy send
+    // cluster is at its button cap, so mid-turn it is a row in the "+" menu.
+    const busy = { ...defaultProps, value: 'tighten this', isRunning: true, onStop: vi.fn(), onUploadFiles: vi.fn() }
+    const openPlusMenu = () => fireEvent.click(screen.getByTitle('Add files & options'))
+    const optimizeRow = () => screen.queryByTestId('composer-menu-optimize')
+
+    it('offers Optimize in the + menu while a draft would queue, and adds no button to the send cluster', () => {
+      renderWithProviders(<ChatInput {...busy} />)
+      expect(screen.getByRole('button', { name: 'Queue message' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Optimize prompt' })).not.toBeInTheDocument()
+      openPlusMenu()
+      expect(optimizeRow()).toHaveTextContent('Optimize prompt')
+      expect(optimizeRow()).not.toBeDisabled()
+    })
+
+    it('offers it beside the steer/queue split button too', () => {
+      renderWithProviders(<ChatInput {...busy} canSteer onSteer={vi.fn()} />)
+      expect(screen.getByTestId('busy-send-button')).toBeInTheDocument()
+      openPlusMenu()
+      expect(optimizeRow()).not.toBeDisabled()
+    })
+
+    it('disables the row on an empty composer, as the idle button is', () => {
+      renderWithProviders(<ChatInput {...busy} value="" />)
+      expect(screen.getByTestId('stop-button-armed')).toBeInTheDocument()
+      openPlusMenu()
+      expect(optimizeRow()).toBeDisabled()
+    })
+
+    it('has no row when idle (the cluster button is back) or when the host opted out', () => {
+      const { unmount } = renderWithProviders(<ChatInput {...busy} isRunning={false} />)
+      expect(screen.getByRole('button', { name: 'Optimize prompt' })).toBeInTheDocument()
+      openPlusMenu()
+      expect(optimizeRow()).not.toBeInTheDocument()
+      unmount()
+      renderWithProviders(<ChatInput {...busy} promptOptimizer={false} />)
+      openPlusMenu()
+      expect(optimizeRow()).not.toBeInTheDocument()
+    })
+
+    it('offers it in the touch overflow, where + opens the file picker directly', () => {
+      touchEnv.touch = true
+      renderWithProviders(<ChatInput {...busy} collapsible />)
+      fireEvent.keyDown(screen.getByTestId('composer-more-trigger'), { key: 'Enter' })
+      expect(screen.getByTestId('composer-more-optimize')).toHaveTextContent('Optimize prompt')
+    })
+
+    it('starts the optimize from the row, and holds the queue button while it rewrites the draft', async () => {
+      const fetchSpy = vi.spyOn(global, 'fetch').mockImplementation(() => new Promise<Response>(() => {}))
+      try {
+        const onSend = vi.fn()
+        renderWithProviders(<ChatInput {...busy} onSend={onSend} />)
+        openPlusMenu()
+        fireEvent.click(optimizeRow()!)
+        await waitFor(() => expect(fetchSpy.mock.calls.some(c => String(c[0]).includes('optimize'))).toBe(true))
+        expect(optimizeRow()).not.toBeInTheDocument() // the menu closed
+        const queue = screen.getByRole('button', { name: 'Queue message' })
+        await waitFor(() => expect(queue).toBeDisabled())
+        fireEvent.click(queue)
+        expect(onSend).not.toHaveBeenCalled()
+      } finally {
+        fetchSpy.mockRestore()
+      }
     })
   })
 

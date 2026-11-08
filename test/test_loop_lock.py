@@ -319,3 +319,22 @@ def test_guard_accepts_the_remedy(tmp_path) -> None:
         encoding="utf-8",
     )
     assert guard.scan_file(str(ok)) == []
+
+
+def test_guard_reddens_on_the_submodule_attribute_form(tmp_path) -> None:
+    """The attribute spelling of a submodule re-export —
+    ``asyncio.locks.Lock()`` / ``asyncio.queues.Queue()`` — is the same
+    module-global loop-bound primitive as the from-import form and must flag."""
+    guard = _load_guard()
+    for src, primitive in (
+        ("import asyncio\n_L = asyncio.locks.Lock()\n", "Lock"),
+        ("import asyncio\n_Q = asyncio.queues.Queue()\n", "Queue"),
+        ("import asyncio as aio\n_L = aio.locks.Lock()\n", "Lock"),
+        ("import asyncio.locks\n_L = asyncio.locks.Lock()\n", "Lock"),
+        ("import asyncio.queues as aq\n_Q = aq.Queue()\n", "Queue"),
+    ):
+        planted = tmp_path / f"planted_{primitive}_{len(src)}.py"
+        planted.write_text(src, encoding="utf-8")
+        violations = guard.scan_file(str(planted))
+        assert len(violations) == 1, f"{src!r} -> {violations}"
+        assert f"asyncio.{primitive}()" in violations[0][1]

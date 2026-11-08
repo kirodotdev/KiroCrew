@@ -25,9 +25,10 @@
  * AgentBackendTabTestUtils.tsx.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, within, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
+import { i18next } from '../i18n/all'
 import { ApiError } from '../api/apiError'
 
 const {
@@ -122,14 +123,14 @@ describe('AgentBackendTab list', () => {
     expect(row('Kiro Agent')).toBeInTheDocument()
   })
 
-  it('puts KAS first, Kiro CLI second, and sorts adapters after', async () => {
+  it('puts KAS first, Kiro CLI second, Strands third, and sorts adapters after', async () => {
     acpBackendsMock.mockResolvedValue({
-      backends: [probeRow('kiro'), probeRow('claude'), probeRow('kas'), probeRow('zephyr')],
+      backends: [probeRow('kiro'), probeRow('claude'), probeRow('strands'), probeRow('kas'), probeRow('zephyr')],
     })
-    schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'kas', 'zephyr']))
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'strands', 'kas', 'zephyr']))
     wrap()
-    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(4))
-    expect(rows()).toEqual(['Kiro Agent', 'Kiro CLI', 'Claude Code', 'zephyr'])
+    await waitFor(() => expect(screen.getAllByRole('radio')).toHaveLength(5))
+    expect(rows()).toEqual(['Kiro Agent', 'Kiro CLI', 'Strands', 'Claude Code', 'zephyr'])
   })
 
   it('marks the configured backend as the current one', async () => {
@@ -436,6 +437,36 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     expect(rowLabel('Kiro CLI').textContent).not.toContain('In use')
   })
 
+  it('calls a harness on an unverified release "Wrong version", with the fix on the row', async () => {
+    // UX BLOCK on #22403: the probe once looked only for the binary, so a Copilot
+    // CLI on any release but the verified one read "Installed" here and then
+    // refused every chat. The gateway now reports that release as missing the
+    // verified one; this row must say so in its own word and carry the command.
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'copilot']))
+    const command = 'npm i -g @github/copilot@1.0.100'
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('kiro', card()),
+        probeRow('copilot', {
+          installed: 'missing',
+          missing_components: ['copilot 1.0.100'],
+          install_command: command,
+          found_version: '1.0.103',
+          ...card(),
+        }),
+      ],
+    })
+    wrap()
+    const name = acpBackendName({ id: 'copilot', policy_id: 'copilot' })
+    await waitFor(() => expect(rowLabel(name).textContent).toContain('Wrong version'))
+    expect(rowLabel(name).textContent).not.toContain('Not installed')
+    expect(rowLabel(name).textContent).not.toContain('Installed')
+    highlight(name)
+    await waitFor(() => expect(detail().textContent).toContain(`This host has ${name} 1.0.103`))
+    expect(detail().textContent).toContain(command)
+    expect(useButton(name)).toBeDisabled()
+  })
+
   it('says "In use" visibly on the row, not only to a screen reader', async () => {
     // The configured harness has no Use button, so the row is the one place a
     // sighted reader learns which agent is running. The word is on the row itself,
@@ -454,7 +485,7 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
 
   it('makes a dead Use button look dead, in the onboarding button style', async () => {
     // The detail's one mutating control is the same accent button first-run setup
-    // uses, and its dead state is that button's: disabled, faded, no pointer. A dead
+    // uses, and its dead state is that button's: disabled, muted, no pointer. A dead
     // click is answered by silence, so the button must not read as pressable.
     acpBackendsMock.mockResolvedValue({
       backends: [
@@ -467,7 +498,7 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     highlight('Claude Code')
     await waitFor(() => expect(useButton('Claude Code')).toBeDisabled())
     const dead = useButton('Claude Code').className
-    expect(dead).toContain('disabled:opacity-30')
+    expect(dead).toContain('disabled:bg-bg-hover')
     expect(dead).toContain('disabled:cursor-not-allowed')
     expect(dead).toContain('bg-accent')
 
@@ -515,9 +546,9 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
-    highlight('deepseek')
-    const count = panel().getByText(/deepseek supports \d+ of \d+ features/)
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
+    highlight('DeepSeek Harness')
+    const count = panel().getByText(/DeepSeek Harness supports \d+ of \d+ features/)
     expect(count.parentElement?.className).toContain('opacity-60')
 
     // An offered harness's list is not muted.
@@ -570,13 +601,13 @@ describe('AgentBackendTab checking a row is not selecting an agent', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro', 'claude', 'codex', 'pi']))
     wrap()
-    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
 
     expect(rowLabel('Kiro CLI').textContent).toContain('Installed')
     expect(rowLabel('Claude Code').textContent).toContain('Not installed')
-    expect(rowLabel('codex').textContent).toContain('Check failed')
-    expect(rowLabel('pi').textContent).toContain('Installed, not active yet')
-    expect(rowLabel('deepseek').textContent).toContain('Not offered')
+    expect(rowLabel('OpenAI Codex').textContent).toContain('Check failed')
+    expect(rowLabel('Pi').textContent).toContain('Installed, not active yet')
+    expect(rowLabel('DeepSeek Harness').textContent).toContain('Not offered')
 
     // The accessible name stays the harness name alone.
     expect(row('Claude Code')).toHaveAccessibleName('Claude Code')
@@ -694,10 +725,10 @@ describe('AgentBackendTab switching', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    await waitFor(() => expect(row('codex')).toBeInTheDocument())
-    highlight('codex')
+    await waitFor(() => expect(row('OpenAI Codex')).toBeInTheDocument())
+    highlight('OpenAI Codex')
     expect(panel().getByText('This build does not offer this agent.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Use codex' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Use OpenAI Codex' })).toBeNull()
     expect(panel().queryByText(/New sessions switch from/)).toBeNull()
   })
 
@@ -970,6 +1001,28 @@ describe('AgentBackendTab status strip', () => {
     // blind reader called it before this sentence existed.
     expect(panel().getByText(/You can still switch to it/)).toBeInTheDocument()
     expect(useButton('Claude Code')).toBeEnabled()
+  })
+
+  it('runs the Japanese could-not-check note on as one sentence', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      acpBackendsMock.mockResolvedValue({
+        backends: [probeRow('kiro', card()), probeRow('claude', { installed: 'unknown', ...card() })],
+      })
+      wrap()
+      await waitFor(() => expect(row('Claude Code')).toBeInTheDocument())
+      highlight('Claude Code')
+      const sentence =
+        'このマシンにインストールされているか確認できませんでした。それでも切り替えられます。未インストールなら、セッション開始時に知らせます。'
+      await waitFor(() => expect(panel().getAllByText(sentence).length).toBeGreaterThan(0))
+      // A failed probe is an error, so the detail renders it through ErrorNotice.
+      const alert = panel().getAllByText(sentence).map(el => el.closest('[role="alert"]')).find(Boolean)
+      expect(alert).toBeTruthy()
+      // No hand-off here: the same detail can hold unsaved Strands setup drafts.
+      expect(within(alert as HTMLElement).queryAllByRole('button')).toHaveLength(0)
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
   })
 
   it('falls back to schema-only gating when the probe endpoint refuses (403)', async () => {
@@ -1264,7 +1317,7 @@ describe('AgentBackendTab check again', () => {
     await waitFor(() => expect(acpBackendRecheckMock).toHaveBeenCalledWith('claude'))
 
     // The reader moves on BEFORE the rejection arrives.
-    highlight('codex')
+    highlight('OpenAI Codex')
     await waitFor(() => expect(panel().getByText(/codex-acp/)).toBeInTheDocument())
     reject(new Error('500'))
 
@@ -1295,8 +1348,8 @@ describe('AgentBackendTab check again', () => {
     })
     schemaMock.mockReturnValue(schemaWith(['kiro']))
     wrap()
-    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
-    highlight('deepseek')
+    await waitFor(() => expect(row('DeepSeek Harness')).toBeInTheDocument())
+    highlight('DeepSeek Harness')
     expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull()
   })
 

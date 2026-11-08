@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import DENY_CAUSE_POLICY, DENY_CAUSE_SURFACE_POLICY
+from kiro_crew.context_assembly.budget import window_for_provider_client
 from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool
 from kiro_crew.hooks import TOOL_DENY, hook_gate_kwargs
 from kiro_crew.llm_helpers import _extract_json_of_type, _steer_host_deny
@@ -43,8 +44,12 @@ _DECOMPOSITION_DENY_REASON = (
 # ── Name Resolution ──
 
 
-def auto_name(spec_content: str, spec_path: str = "") -> str:
-    """Derive a human-readable name from spec content."""
+def auto_name(spec_content: str, spec_path: str = "", first_step: str = "") -> str:
+    """Derive a human-readable name from spec content.
+
+    *first_step* stands in for the first-line fallback: a YAML workflow's first
+    line is a key such as ``agents:``, never a name.
+    """
     lines = [line.strip() for line in spec_content.splitlines()]
     for line in lines:
         if line.startswith("# Task:"):
@@ -54,8 +59,9 @@ def auto_name(spec_content: str, spec_path: str = "") -> str:
             return line[2:].strip()[:60]
     if spec_path:
         return Path(spec_path).stem.replace("_", " ").title()[:60]
-    # Fallback: first non-empty line, trimmed to word boundary
-    for line in lines:
+    # Fallback: first non-empty line (of first_step, if any), trimmed to word boundary
+    fallback = [step_line.strip() for step_line in first_step.splitlines()] or lines
+    for line in fallback:
         if line and not line.startswith(("#", "---", "```")):
             if len(line) <= 60:
                 return line
@@ -319,11 +325,16 @@ async def decompose(
                 prompt,
                 is_new,
                 session_key,
+                # Headless: no user reads the decomposition turn live.
+                interactive=False,
                 agent=agent or None,
                 project=work_dir or None,
                 memory_store=memory_store,
+                model_window=window_for_provider_client(client),
                 context_provider=client,
                 resumed=_resumed,
+                # Triggers read the spec, not the decomposition instructions.
+                skill_trigger_text=spec,
             )
         else:
             full_prompt = prompt

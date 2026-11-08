@@ -29,6 +29,7 @@ from kiro_crew.lesson_validation import (
 )
 from kiro_crew.validation import (
     LEARN_ADD_SCHEMA,
+    LEARN_UPDATE_SCHEMA,
     LESSON_LIST_LIMIT,
     LESSON_LIST_LIMIT_MAX,
     LESSON_LIST_OFFSET_MAX,
@@ -55,6 +56,7 @@ def schemas() -> list[dict[str, Any]]:
         (f.max_len for f in LEARN_ADD_SCHEMA.fields if f.name == "repo_scope"),
         MAX_SHORT_STRING,
     )
+    _update_rule_max = next(f.max_len for f in LEARN_UPDATE_SCHEMA.fields if f.name == "rule")
     return [
         {
             "name": "memory_recall",
@@ -65,7 +67,9 @@ def schemas() -> list[dict[str, Any]]:
                 "every message. Ask a specific question when earlier decisions or "
                 "events are needed; skip it if the current conversation suffices. "
                 "Returns bounded context and sources. The caller cannot choose another "
-                "store; private members cannot access Global V1 or sibling memories."
+                "store; private members cannot access Global V1 or sibling memories. "
+                "It returns distilled facts, not transcript text: for a past "
+                "conversation's exact words, follow up with search_chat_history."
             ),
             "inputSchema": {
                 "type": "object",
@@ -94,7 +98,12 @@ def schemas() -> list[dict[str, Any]]:
                 "The check covers only a fixed set of model-ID families; other "
                 "backend IDs are not lesson-refused. A model version mentioned by "
                 "itself is allowed. Free-form wording remains a best-effort check, "
-                "so do not disguise either refused class. Give the rule (what to "
+                "so do not disguise either refused class. Save only what changes "
+                "future unrelated sessions: not ticket facts, package details, "
+                "steering duplicates or changelog notes. There is no `scope` "
+                "parameter: pass repo_scope to restrict a lesson to one codebase. "
+                "A refused, deduped or unchanged result means nothing was written: "
+                "never tell the user the lesson was saved. Give the rule (what to "
                 "do); negative (what not to do) is optional."
             ),
             "inputSchema": {
@@ -225,8 +234,48 @@ def schemas() -> list[dict[str, Any]]:
                             "scope='workspace'."
                         ),
                     },
+                    "keep_one": {
+                        "type": "boolean",
+                        "description": (
+                            "Optional, default false. Remove only the extra "
+                            "copies: of the matching lessons, those with the "
+                            "same stored rule, NOT clause, tier and scope are collapsed to the "
+                            "oldest one. Different lessons are never removed "
+                            "in this mode, so use it to clean up duplicates."
+                        ),
+                    },
                 },
                 "required": ["query"],
+            },
+        },
+        {
+            "name": "learn_update",
+            "description": (
+                "Change one saved lesson's tier in place, keeping its text and history. "
+                "Pass its text as learn_list shows it and the tier you read there as "
+                "current (an unmarked lesson is 'always'); nothing changes if it differs."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "rule": {
+                        "type": "string",
+                        "maxLength": _update_rule_max,
+                        "description": "The lesson's text as learn_list shows it.",
+                    },
+                    "repo_scope": {
+                        "type": "string",
+                        "maxLength": _scope_max,
+                        "description": (
+                            "Optional. The '(scope: X)' learn_list shows, when two "
+                            "lessons share this text; an empty string names the "
+                            "unscoped one."
+                        ),
+                    },
+                    "current": {"type": "string", "enum": ["always", "on_topic"]},
+                    "applies": {"type": "string", "enum": ["always", "on_topic"]},
+                },
+                "required": ["rule", "current", "applies"],
             },
         },
     ]
@@ -276,9 +325,8 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
         return f"Error: {_gov_mem}"
     # A stale client still holding the old advertised schema can send
     # scope="workspace". Silently forcing that to "global" would take a correction
-    # meant for one workspace and inject it into EVERY session -- the exact harm
-    # this change exists to end, and worse than the old behaviour, where the tier
-    # was inert and reached no prompt at all. So a legacy scope asking for anything
+    # meant for one workspace and inject it into EVERY session -- worse than a
+    # tier that is inert and reaches no prompt at all. So a legacy scope asking for anything
     # narrower than global is REFUSED, with the replacement named. Refusing loses
     # nothing that ever worked, and it tells the caller instead of widening silently.
     _legacy_scope = args.get("scope")
@@ -544,6 +592,8 @@ def learn_list(name: str, args: dict[str, Any]) -> str:
     err_val = d.get("error")
     if err_val:
         return f"Error: {err_val}"
+    if d.get("lessons_withheld") == "memory_reads_disabled":
+        return "Memory reads are disabled for this session."
     lessons = d.get("lessons", [])
     lines = _window_header(d, len(lessons))
     if not lessons:
@@ -627,8 +677,8 @@ def _applies_suffix(row: dict[str, Any]) -> str:
     This exists because the overflow notices point the reader HERE. A rule the
     model misfiled as a finding stops arriving on unrelated sessions, and without
     this marker the listing the notice recommends is the one place that cannot
-    show why -- leaving re-tiering (remove plus re-add with the right tier)
-    impossible to even diagnose.
+    show why -- leaving re-tiering (``learn_update``) impossible to even
+    diagnose.
     """
     if row.get("applies") == "on_topic":
         return " (applies: on_topic)"
@@ -723,6 +773,10 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
     for key, value in (("scope", tier_scope), ("workspace", workspace)):
         if isinstance(value, str) and value:
             payload[key] = value
+    # Forwarded only when set, so a call without it sends today's body.
+    keep_one = args.get("keep_one") is True
+    if keep_one:
+        payload["keep_one"] = True
     d = mcp_core._delete("/api/lessons", payload)
     err_val = d.get("error")
     if err_val:
@@ -753,8 +807,58 @@ def learn_remove(name: str, args: dict[str, Any]) -> str:
     # removal would tell a remove-then-re-add consolidation its old lesson is
     # gone while it is still injected. A reply without the key reads as removed.
     if d.get("ok") is False:
+        if keep_one:
+            return f"No lessons were removed: no extra copies match: {query}"
         return f"No lessons were removed: nothing matches: {query}"
+    if keep_one:
+        return f"Removed extra copies of lessons matching: {query} (one of each kept)"
     return f"Removed lessons matching: {query}"
+
+
+# What ``learn_update`` answers for each ``PATCH /api/lessons`` outcome.
+_UPDATE_REPLIES = {
+    "updated": "Lesson now applies {applies}: {rule}",
+    "unchanged": "Lesson already applies {applies}; nothing changed.",
+    "not_found": "No lesson was changed: no saved lesson has exactly this text.",
+    "ambiguous": (
+        "No lesson was changed: more than one lesson has this text. Pass its "
+        "repo_scope (an empty string for the unscoped one); if they share a scope, "
+        "remove the extra copy with learn_remove first."
+    ),
+    "conflict": (
+        "No lesson was changed: it no longer applies {current}. Read it again with learn_list."
+    ),
+    "refused": "No lesson was changed: the memory store refused the new value.",
+    "unsupported": (
+        "No lesson was changed: this memory store cannot change a tier in place; "
+        "use learn_remove and learn_add."
+    ),
+}
+
+
+def learn_update(name: str, args: dict[str, Any]) -> str:
+    # Governed like learn_add: the tier decides which sessions are given the lesson.
+    _gov_mem = mcp_core._vet_memory_writes_governance(
+        mcp_core._resolve_session_key(), "learn_update"
+    )
+    if _gov_mem:
+        return f"Error: {_gov_mem}"
+    payload = {
+        k: args[k]
+        for k in ("rule", "repo_scope", "current", "applies")
+        if isinstance(args.get(k), str)
+    }
+    d = mcp_core._patch("/api/lessons", payload)
+    err_val = d.get("error")
+    if err_val:
+        if d.get("code") == "missing_session_key":
+            return (
+                "No lesson was changed: learn_update requires an established session"
+                + mcp_core.strict_identity_diagnosis()
+            )
+        return f"No lesson was changed: {err_val}"
+    reply = _UPDATE_REPLIES.get(str(d.get("outcome")), "No lesson was changed.")
+    return reply.format(**payload)
 
 
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
@@ -762,4 +866,5 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "learn_add": learn_add,
     "learn_list": learn_list,
     "learn_remove": learn_remove,
+    "learn_update": learn_update,
 }

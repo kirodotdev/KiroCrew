@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,6 +30,7 @@ from kiro_crew.taskrunner import (
     TaskRun,
     TaskRunner,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 
 class _SteppedClock:
@@ -60,6 +61,42 @@ class _SteppedClock:
         return getattr(_time, name)
 
 
+async def _run_watchdog(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: TaskRunner,
+    run: TaskRun,
+    *,
+    ticks: int,
+    alive: bool = True,
+    on_check: Callable[[int], None] | None = None,
+) -> None:
+    """Run ``runner._watchdog_loop(run)`` through exactly *ticks* ticks, then let it return.
+
+    A tick is one pass of the loop: it waits ``_HEARTBEAT_INTERVAL``, asks the session
+    manager whether the step's process is alive, then measures the stall. The wait is the
+    product's own delay, zeroed through the facade, so no real time passes and no stdlib
+    sleep is patched. The session manager answers *alive* to every check, and the
+    *ticks*-th check moves the run out of ``running``, which is the loop's own exit: that
+    tick still finishes and no later one starts. ``on_check(n)`` runs inside the *n*-th
+    check, after the step key was read.
+    """
+    monkeypatch.setattr(taskrunner_module, "_HEARTBEAT_INTERVAL", 0)
+    checks = 0
+
+    async def _is_provider_alive(_step_key: str) -> bool:
+        nonlocal checks
+        checks += 1
+        if on_check is not None:
+            on_check(checks)
+        if checks >= ticks:
+            run.status = "completed"
+        return alive
+
+    runner._sessions.is_provider_alive = _is_provider_alive  # type: ignore[method-assign]
+    await finished(runner._watchdog_loop(run), "the watchdog loop")
+    assert checks == ticks, f"the watchdog made {checks} liveness check(s), not {ticks}"
+
+
 # ── 12.1e: Task Watchdog ──
 
 
@@ -84,7 +121,7 @@ class TestWatchdog:
         )
 
     @pytest.mark.asyncio
-    async def test_watchdog_stall_notification(self) -> None:
+    async def test_watchdog_stall_notification(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Watchdog sends notification when no progress in _STALL_TIMEOUT."""
         import time
 
@@ -102,13 +139,7 @@ class TestWatchdog:
         run.last_task_time = time.time() - _STALL_TIMEOUT - 60
 
         # Run watchdog for one tick then stop
-        # flake-ok: pre-existing patch of the stdlib asyncio.sleep through kiro_crew.taskrunner for one watchdog tick, restored on exit, moved verbatim; tracked for a de-flake pass
-        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            mock_sleep.side_effect = [None, asyncio.CancelledError()]
-            try:
-                await runner._watchdog_loop(run)
-            except asyncio.CancelledError:
-                pass
+        await _run_watchdog(monkeypatch, runner, run, ticks=1)
 
         assert any("stalled" in t.lower() for t, _ in notifications)
 
@@ -163,19 +194,24 @@ class TestWatchdog:
             f"{passed:.0f} s after the last progress, with a {step:+.0f} s wall-clock step, "
             f"the watchdog reset the step's session {sessions.reset.await_count} time(s)"
         )
+        assert (run.task_id in runner._stall_cancelled_ids) is cancelled
 
     @pytest.mark.asyncio
-    async def test_watchdog_exits_when_not_running(self) -> None:
+    async def test_watchdog_exits_when_not_running(self, tmp_path: Path) -> None:
         """Watchdog exits when run status changes from running."""
         sessions = _make_mock_sessions()
-        runner = TaskRunner(sessions=sessions, auto_test=False)
+        runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
         run = TaskRun(spec_path="/t.md", spec_content="s", status="completed")
 
-        # Should exit immediately
-        await runner._watchdog_loop(run)
+        # Exits before its first heartbeat sleep, so the bound is never reached.
+        assert await asyncio.wait_for(runner._watchdog_loop(run), _GENEROUS_DEADLINE) is None
+        assert run.status == "completed"
+        assert runner._stall_cancelled_ids == set()
 
     @pytest.mark.asyncio
-    async def test_watchdog_no_stall_when_recent_progress(self) -> None:
+    async def test_watchdog_no_stall_when_recent_progress(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Watchdog does NOT notify when last_task_time is recent."""
         import time
 
@@ -190,41 +226,40 @@ class TestWatchdog:
         run.started_at = time.time()
         run.last_task_time = time.time()  # just now
 
-        # flake-ok: pre-existing patch of the stdlib asyncio.sleep through kiro_crew.taskrunner for one watchdog tick, restored on exit, moved verbatim; tracked for a de-flake pass
-        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            mock_sleep.side_effect = [None, asyncio.CancelledError()]
-            try:
-                await runner._watchdog_loop(run)
-            except asyncio.CancelledError:
-                pass
+        await _run_watchdog(monkeypatch, runner, run, ticks=1)
 
         assert not any("stalled" in t.lower() for t, _ in notifications)
 
     @pytest.mark.asyncio
-    async def test_watchdog_resets_correct_session_key(self) -> None:
+    async def test_watchdog_resets_correct_session_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Watchdog must reset the session key matching the current task index."""
         import time
 
         sessions = _make_mock_sessions()
-        runner = TaskRunner(sessions=sessions, auto_test=False, on_notify=AsyncMock())
+        notifications: list[tuple[str, str]] = []
+
+        async def _on_notify(title: str, body: str, task_id: str = "") -> None:
+            notifications.append((title, body))
+
+        runner = TaskRunner(sessions=sessions, auto_test=False, on_notify=_on_notify)
         run = TaskRun(spec_path="/t.md", spec_content="s", status="running")
         run.task_id = "plan_123"
         run.current_task = 3
         run.started_at = time.time()
         run.last_task_time = time.time() - _STALL_CANCEL_TIMEOUT - 60
 
-        # flake-ok: pre-existing patch of the stdlib asyncio.sleep through kiro_crew.taskrunner for one watchdog tick, restored on exit, moved verbatim; tracked for a de-flake pass
-        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            mock_sleep.side_effect = [None, asyncio.CancelledError()]
-            try:
-                await runner._watchdog_loop(run)
-            except asyncio.CancelledError:
-                pass
+        await _run_watchdog(monkeypatch, runner, run, ticks=1)
 
+        assert runner._stall_cancelled_ids == {"plan_123"}
+        assert [t for t, _ in notifications] == ["[t] \U0001f527 Watchdog: cancelling stalled task"]
         sessions.reset.assert_called_with("taskrunner:plan_123:task3")
 
     @pytest.mark.asyncio
-    async def test_watchdog_uses_run_fields_not_runner(self) -> None:
+    async def test_watchdog_uses_run_fields_not_runner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Watchdog reads last_task_time and current_task from run, not runner."""
         import time
 
@@ -242,13 +277,7 @@ class TestWatchdog:
         # Set decoy on runner (the old bug) — watchdog must ignore this
         runner._last_task_time = 0.0  # type: ignore[attr-defined]
 
-        # flake-ok: pre-existing patch of the stdlib asyncio.sleep through kiro_crew.taskrunner for one watchdog tick, restored on exit, moved verbatim; tracked for a de-flake pass
-        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            mock_sleep.side_effect = [None, asyncio.CancelledError()]
-            try:
-                await runner._watchdog_loop(run)
-            except asyncio.CancelledError:
-                pass
+        await _run_watchdog(monkeypatch, runner, run, ticks=1)
 
         # If watchdog read runner._last_task_time (0.0), it would stall-notify.
         # It should read run.last_task_time (recent) and NOT notify.
@@ -379,7 +408,7 @@ class TestGlobalTimeoutClock:
 
 class TestActiveStallRecovery:
     @pytest.mark.asyncio
-    async def test_watchdog_cancels_stalled_step(self) -> None:
+    async def test_watchdog_cancels_stalled_step(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Watchdog resets session after _STALL_CANCEL_TIMEOUT."""
         import time
 
@@ -396,26 +425,20 @@ class TestActiveStallRecovery:
         run.started_at = time.time()
         run.last_task_time = time.time() - _STALL_CANCEL_TIMEOUT - 60
 
-        # flake-ok: pre-existing patch of the stdlib asyncio.sleep through kiro_crew.taskrunner for one watchdog tick, restored on exit, moved verbatim; tracked for a de-flake pass
-        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            mock_sleep.side_effect = [None, asyncio.CancelledError()]
-            try:
-                await runner._watchdog_loop(run)
-            except asyncio.CancelledError:
-                pass
+        await _run_watchdog(monkeypatch, runner, run, ticks=1)
 
         assert run.task_id in runner._stall_cancelled_ids
         sessions.reset.assert_called()
         assert any("cancelling" in t.lower() for t, _ in notifications)
 
     @pytest.mark.asyncio
-    async def test_watchdog_heartbeat_detects_dead_process(self) -> None:
+    async def test_watchdog_heartbeat_detects_dead_process(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Watchdog resets session when ACP process is dead (heartbeat check)."""
         import time
 
         sessions = _make_mock_sessions()
-        # is_provider_alive returns False → process is dead
-        sessions.is_provider_alive = AsyncMock(return_value=False)
 
         notifications: list[tuple[str, str]] = []
 
@@ -429,61 +452,42 @@ class TestActiveStallRecovery:
         run.started_at = time.time()
         run.last_task_time = time.time()  # recent — no stall
 
-        # Run watchdog for 3 ticks (need 2 consecutive dead checks to trigger reset)
-        tick = 0
-
-        async def _tick_sleep(_interval: float) -> None:
-            nonlocal tick
-            tick += 1
-            if tick >= 3:
-                raise asyncio.CancelledError()
-
-        # flake-ok: pre-existing patch of the stdlib asyncio.sleep through kiro_crew.taskrunner for one watchdog tick, restored on exit, moved verbatim; tracked for a de-flake pass
-        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            mock_sleep.side_effect = _tick_sleep
-            try:
-                await runner._watchdog_loop(run)
-            except asyncio.CancelledError:
-                pass
+        # Run watchdog for 2 ticks (need 2 consecutive dead checks to trigger reset);
+        # is_provider_alive returns False → process is dead
+        await _run_watchdog(monkeypatch, runner, run, ticks=2, alive=False)
 
         sessions.reset.assert_called_with("taskrunner:plan_42:task2")
         assert any("process died" in t.lower() for t, _ in notifications)
 
     @pytest.mark.asyncio
-    async def test_watchdog_heartbeat_resets_count_on_task_change(self) -> None:
+    async def test_watchdog_heartbeat_resets_count_on_task_change(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """dead_process_count resets when current_task changes between ticks."""
         import time
 
         sessions = _make_mock_sessions()
-        # Always report dead
-        sessions.is_provider_alive = AsyncMock(return_value=False)
+        notifications: list[tuple[str, str]] = []
 
-        runner = TaskRunner(sessions=sessions, auto_test=False, on_notify=AsyncMock())
+        async def _on_notify(title: str, body: str, task_id: str = "") -> None:
+            notifications.append((title, body))
+
+        runner = TaskRunner(sessions=sessions, auto_test=False, on_notify=_on_notify)
         run = TaskRun(spec_path="/t.md", spec_content="s", status="running")
         run.task_id = "plan_99"
         run.current_task = 1
         run.started_at = time.time()
         run.last_task_time = time.time()
 
-        tick = 0
+        def _change_task(check: int) -> None:
+            if check == 1:
+                run.current_task = 2  # task1's check is in flight; the next tick checks task2
 
-        async def _tick_sleep(_interval: float) -> None:
-            nonlocal tick
-            tick += 1
-            if tick == 2:
-                run.current_task = 2  # change after task1's check completes
-            if tick >= 3:
-                raise asyncio.CancelledError()  # stop after task2's first check
+        # Always report dead; stop after task2's first check
+        await _run_watchdog(monkeypatch, runner, run, ticks=2, alive=False, on_check=_change_task)
 
-        # flake-ok: pre-existing patch of the stdlib asyncio.sleep through kiro_crew.taskrunner for one watchdog tick, restored on exit, moved verbatim; tracked for a de-flake pass
-        with patch("kiro_crew.taskrunner.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            mock_sleep.side_effect = _tick_sleep
-            try:
-                await runner._watchdog_loop(run)
-            except asyncio.CancelledError:
-                pass
-
-        # Should NOT have triggered reset — each task only got 1 dead check (< threshold of 2)
+        # Each task got one dead check, under the threshold of 2: no notice, no reset.
+        assert notifications == []
         sessions.reset.assert_not_called()
 
 
@@ -717,20 +721,43 @@ class TestSemaphoreParallelScheduling:
     def _peak_tracker(self):
         state = {"active": 0, "peak": 0}
         lock = asyncio.Lock()
+        release = asyncio.Event()
 
         async def _fake_exec(run, task, history_key="", session_key="") -> bool:
             async with lock:
                 state["active"] += 1
                 state["peak"] = max(state["peak"], state["active"])
-            # flake-ok: pre-existing 20 ms hold so the stub steps overlap, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)  # hold slot so concurrency overlaps
+            # hold slot so concurrency overlaps, until the test has seen the slots fill
+            await await_until(release, what="the test releasing the held steps")
             async with lock:
                 state["active"] -= 1
             task.status = StepStatus.PASSED
             task.result = "ok"
             return True
 
-        return state, _fake_exec
+        return state, release, _fake_exec
+
+    @staticmethod
+    async def _run_when_full(
+        runner: TaskRunner, run: TaskRun, state: dict[str, int], release: asyncio.Event, slots: int
+    ) -> None:
+        """Run the group, and let its held steps go once *slots* of them run at once.
+
+        The group dispatches every ready step at once, so a scheduler that opened more
+        slots than it should has started the extra steps by the time the test reads the
+        count, and the peak shows them. One that opened fewer never gets there, and the
+        wait fails naming the count it reached.
+        """
+        group = asyncio.ensure_future(runner._execute_tasks(run, history_key=""))
+        try:
+            await async_wait_until(
+                lambda: state["active"] >= slots,
+                timeout=_GENEROUS_DEADLINE,
+                describe=lambda: f"{state['active']} of the {slots} expected steps running",
+            )
+        finally:
+            release.set()
+        await finished(group, "the parallel group")
 
     @pytest.mark.asyncio
     async def test_semaphore_caps_concurrency_at_knob(
@@ -750,11 +777,11 @@ class TestSemaphoreParallelScheduling:
         runner = TaskRunner(
             sessions=sessions, auto_test=False, work_dir=tmp_path, max_parallel_steps=3
         )
-        state, fake_exec = self._peak_tracker()
+        state, release, fake_exec = self._peak_tracker()
         runner._execute_single_task = fake_exec  # type: ignore[assignment]
 
         run = self._make_run(tmp_path, n=8, task_id="cap_test")
-        await runner._execute_tasks(run, history_key="")
+        await self._run_when_full(runner, run, state, release, slots=3)
 
         assert state["peak"] == 3, f"expected peak concurrency 3, got {state['peak']}"
         assert all(t.status == StepStatus.PASSED for t in run.tasks)
@@ -800,11 +827,11 @@ class TestSemaphoreParallelScheduling:
         runner = TaskRunner(
             sessions=sessions, auto_test=False, work_dir=tmp_path, max_parallel_steps=6
         )
-        state, fake_exec = self._peak_tracker()
+        state, release, fake_exec = self._peak_tracker()
         runner._execute_single_task = fake_exec  # type: ignore[assignment]
 
         run = self._make_run(tmp_path, n=8, task_id="lift_test")
-        await runner._execute_tasks(run, history_key="")
+        await self._run_when_full(runner, run, state, release, slots=6)
 
         assert state["peak"] == 6, f"expected peak concurrency 6, got {state['peak']}"
         assert all(t.status == StepStatus.PASSED for t in run.tasks)
@@ -823,6 +850,8 @@ class TestSemaphoreParallelScheduling:
 
         # Events to sequence and observe ordering
         events: list[str] = []
+        task2_started = asyncio.Event()
+        task2_may_finish = asyncio.Event()
         task2_done = asyncio.Event()
         task3_started = asyncio.Event()
         task1_may_finish = asyncio.Event()
@@ -832,24 +861,15 @@ class TestSemaphoreParallelScheduling:
             events.append(f"start:{idx}")
             if idx == 1:
                 # Slow task: waits until told to finish
-                # flake-ok: pre-existing unbounded Event.wait the test releases on its own path, moved verbatim; tracked for a de-flake pass
-                await task1_may_finish.wait()
+                await await_until(task1_may_finish, what="the test letting task 1 finish")
             elif idx == 2:
-                # Fast task: signals done quickly
-                # flake-ok: pre-existing 10 ms stub step, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 10 ms stub step, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.01)
+                # Fast task: holds its slot until the test lets it go, then signals done
+                task2_started.set()
+                await await_until(task2_may_finish, what="the test letting task 2 finish")
                 task2_done.set()
             elif idx == 3:
                 # Must start while task 1 is still running (refills task 2's slot)
                 task3_started.set()
-                # flake-ok: pre-existing 10 ms stub step, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 10 ms stub step, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.01)
-            else:
-                # flake-ok: pre-existing 10 ms stub step, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 10 ms stub step, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.01)
             events.append(f"end:{idx}")
             task.status = StepStatus.PASSED
             task.result = "ok"
@@ -860,23 +880,32 @@ class TestSemaphoreParallelScheduling:
 
         async def _orchestrate():
             # Wait for task 2 to finish, then verify task 3 starts before task 1 ends
-            # flake-ok: pre-existing unbounded Event.wait on a stub step the run starts itself, moved verbatim; tracked for a de-flake pass
-            await task2_done.wait()
-            # flake-ok: pre-existing 50 ms wait for the refilled slot, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 50 ms wait for the refilled slot, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.05)  # give task 3 time to acquire semaphore
-            assert task3_started.is_set(), (
-                "BATCH STALL: task 3 did not start after task 2 freed its slot; "
-                "this means the scheduler is still using fixed batches"
-            )
-            # Now let task 1 finish
-            task1_may_finish.set()
+            try:
+                # Tasks 1 and 2 hold both slots when task 2 is let go. These waits end
+                # before the gather's own bound, so a stall names the step it stalled at.
+                await await_until(task2_started, what="task 2 starting", timeout=_GENEROUS_DEADLINE)
+                task2_may_finish.set()
+                await await_until(task2_done, what="task 2 finishing", timeout=_GENEROUS_DEADLINE)
+                await await_until(
+                    task3_started,
+                    what="task 3 starting in the slot task 2 freed (BATCH STALL otherwise)",
+                    timeout=_GENEROUS_DEADLINE,
+                )
+                assert task3_started.is_set(), (
+                    "BATCH STALL: task 3 did not start after task 2 freed its slot; "
+                    "this means the scheduler is still using fixed batches"
+                )
+            finally:
+                # Now let task 1 finish
+                task1_may_finish.set()
 
         # Run both concurrently
-        # flake-ok: pre-existing unbounded gather of the run and its orchestrator, moved verbatim; tracked for a de-flake pass
-        await asyncio.gather(
-            runner._execute_tasks(run, history_key=""),
-            _orchestrate(),
+        await finished(
+            asyncio.gather(
+                runner._execute_tasks(run, history_key=""),
+                _orchestrate(),
+            ),
+            "the run and its orchestrator",
         )
 
         assert all(t.status == StepStatus.PASSED for t in run.tasks)

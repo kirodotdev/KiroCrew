@@ -1285,10 +1285,9 @@ class SessionRow:
             "startedAt": self.started_at,
             "lastAt": self.last_at,
             # The usage endpoint's contract is one row per turn, so the row count IS
-            # the turn count, and it ships under ONE name. An earlier version sent
-            # `rows` alongside an identical `turns`, which is the same mistake as the
-            # `rawTurns` key removed before it: two keys for one number invite a
-            # consumer to believe they measure different things.
+            # the turn count, and it ships under ONE name. No `rows` or `rawTurns`
+            # beside it: two keys for one number invite a consumer to believe they
+            # measure different things.
             "turns": self.rows,
             "input": self.input,
             "output": self.output,

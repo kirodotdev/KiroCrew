@@ -51,8 +51,8 @@ import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
  *  than the capacity card's 5 s. */
 export const THROTTLE_REFETCH_MS = 15_000
 
-/** The Tasks & capacity card: System > Services on the Developer page. */
-export const CAPACITY_CARD_PATH = '/developer?tab=system&plane=services'
+/** The Tasks & capacity card: Settings > Developer > System > Services. */
+export const CAPACITY_CARD_PATH = '/settings/developer/system?plane=services'
 
 /** How long a failed read waits before its one retry. Only a read that fails
  *  twice is reported: a single miss (a gateway restarting) would otherwise

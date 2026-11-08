@@ -41,6 +41,7 @@ from typing import Any
 from kiro_crew.apps.builtins.mochi import queue_file as qf
 from kiro_crew.apps.builtins.mochi import watchlist_file as wf
 from kiro_crew.apps.builtins.mochi.pinned_files_service import (
+    MAX_PINS,
     PinsCorruptError,
     pins_mutation,
     read_pins_for_update,
@@ -60,6 +61,8 @@ SERVER_VERSION = "1.0.0"
 _QUEUE_FILE = qf.QUEUE_FILE
 _WATCHLIST_FILE = "mochi-watchlist.json"
 _PINNED_FILE = "pinned-files.json"
+# A pin label is display text; MAX_PINS bounds the list only if each label is bounded too.
+_MAX_PIN_LABEL_CHARS = 256
 _ACTIVITY_FILE = "mochi-activity.json"
 _ACTIVITY_PREV_FILE = "mochi-activity-yesterday.json"
 _STATS_FILE = "stats.json"
@@ -387,7 +390,10 @@ def _list_tools() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "label": {"type": "string"},
+                    "label": {
+                        "type": "string",
+                        "description": f"Shown name; cut to {_MAX_PIN_LABEL_CHARS} characters.",
+                    },
                 },
                 "required": ["path"],
             },
@@ -490,6 +496,10 @@ def _tool_perform_pet_action(args: dict[str, Any]) -> str:
             cached = json.loads((_data_dir() / "mochi-displays.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass
+        # A file that parses but is not an object (a hand edit) is as unusable
+        # as malformed JSON: answer "no data yet" rather than fail the query.
+        if not isinstance(cached, dict):
+            cached = {}
         displays = cached.get("displays", [])
         active_id = cached.get("activeId")
         current = next(
@@ -625,12 +635,25 @@ def _tool_pin_file(args: dict[str, Any]) -> str:
             return "Error: pin_file failed: the pin list is corrupt and must be repaired"
         if any(_pin_path(p) == path for p in pins):
             return _ok({"ok": True, "alreadyPinned": True})
-        entry = {"path": path, "pinnedAt": _now_ms()}
-        if args.get("label"):
-            entry["label"] = args["label"]
+        # Same cap and default label as PinnedFilesService.add_pin, so a pin made
+        # here looks the same and the list stays as bounded as one made there.
+        if len(pins) >= MAX_PINS:
+            return f"Error: pin_file failed: the pin list is full ({MAX_PINS} pins)"
+        # The label is cut rather than refused: a long label still pins, and each
+        # of the MAX_PINS entries holds a bounded label.
+        label = args.get("label") or os.path.basename(path)
+        truncated = len(label) > _MAX_PIN_LABEL_CHARS
+        entry = {
+            "path": path,
+            "label": label[:_MAX_PIN_LABEL_CHARS],
+            "pinnedAt": _now_ms(),
+        }
         pins.append(entry)
         _write_json(pins_path, {"version": 1, "pins": pins})
-    return _ok({"ok": True, "pins": len(pins)})
+    result: dict[str, Any] = {"ok": True, "pins": len(pins)}
+    if truncated:
+        result["labelTruncated"] = True
+    return _ok(result)
 
 
 def _tool_unpin_file(args: dict[str, Any]) -> str:
@@ -645,7 +668,9 @@ def _tool_unpin_file(args: dict[str, Any]) -> str:
         except PinsCorruptError:
             return "Error: unpin_file failed: the pin list is corrupt and must be repaired"
         after = [p for p in before if _pin_path(p) != path]
-        _write_json(pins_path, {"version": 1, "pins": after})
+        # Nothing matched: leave the store alone, as PinnedFilesService.remove_pin does.
+        if len(after) != len(before):
+            _write_json(pins_path, {"version": 1, "pins": after})
     return _ok({"ok": True, "removed": len(before) - len(after)})
 
 

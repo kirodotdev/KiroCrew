@@ -18,6 +18,7 @@ installer from here; its algorithms live in :mod:`kiro_crew.snapshot_merge`.
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shutil
@@ -28,6 +29,8 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, cast
 
 from kiro_crew import pinned_fs, platform_compat
+from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.config import loosening_provenance
 from kiro_crew.member_memory_backup import StoresInUse
 from kiro_crew.memory_stores import (
     MEMBER_BACKUPS_DIR_NAME,
@@ -85,7 +88,7 @@ def _save_locked_document_to(backup: Path, rel: str) -> Callable[[Path], None]:
                 str(partial),
                 on_skip=pinned_fs.fatal_skip_reporter(f"backup of {rel!r}"),
             )
-            os.replace(partial, final)
+            replace_with_retry(partial, final)
         finally:
             try:
                 partial.unlink()
@@ -262,24 +265,16 @@ class SourceComponentUnsound(Exception):
 def _trees_absent_from_bundle(snap: Path, names: list[str], mc: Path) -> list[str]:
     """Return the declared trees of *names* that *snap* lacks while *mc* HAS them.
 
-    Split from the per-component check because the two answer different questions, and
-    conflating them is what let live data go. Per COMPONENT, presence is "any declared path
-    is there", which is right: a home that never wrote ``memory_index.db`` produces a memory
-    bundle with only ``memory.db``, and demanding every file would refuse a sound bundle.
-    Per TREE under ``--mode replace`` that leniency is destructive, because
-    :func:`_replace_tree_root` clears the destination BEFORE it knows whether the archive
-    has a replacement -- so one present file makes the whole component look carried while
-    an absent tree is cleared from live state and the restore reports success.
+    Per COMPONENT, presence is "any declared path is there" (a memory bundle may lack
+    ``memory_index.db``). Per TREE under ``--mode replace`` that leniency is destructive:
+    :func:`_do_replace_mutations` clears the destination BEFORE it knows whether the archive
+    has a replacement, so one present file makes the component look carried while an
+    absent tree is cleared and the restore reports success.
 
-    Both halves of the condition are load-bearing, and requiring only the first was wrong:
-    a home that never used a tree produces a bundle without it, so "the archive lacks this
-    tree" alone refuses sound bundles. What makes it a LOSS is live state to lose. Naming
-    the live side keeps the refusal to exactly the case where clearing destroys something.
-
-    Deliberately not applied to a complete bundle: there, a tree the archive lacks is a
-    tree the source genuinely did not have, so clearing it is the point of replace. Only a
-    bundle that ASSERTS it is partial while carrying no component map cannot tell those two
-    apart, and that is the one case this speaks for.
+    Both halves are needed: a home that never used a tree produces a bundle without it, so
+    the loss is only real when the live side HAS the tree. Not applied to a complete
+    bundle, where a missing tree is one the source did not have; only a partial bundle with
+    no component map cannot tell the two apart.
     """
     absent = []
     for name in names:
@@ -299,21 +294,12 @@ def _trees_absent_from_bundle(snap: Path, names: list[str], mc: Path) -> list[st
 def _components_absent_from_bundle(snap: Path, names: list[str]) -> list[str]:
     """Return the *names* whose declared paths are all missing from *snap*.
 
-    The manifest is normally what answers "does this bundle carry X", and a
-    bundle that declares a component map is checked against it. This is the
-    fallback for the one shape that has no map to check: a root marked partial
-    whose manifest predates (or omits) the component list.
+    Fallback for a root marked partial whose manifest has no component map. Naming a
+    component is not evidence the bundle holds it, and replace mode moves live files aside
+    and clears trees before it knows whether the archive has replacements.
 
-    Naming a component is not evidence the bundle holds it. Replace mode moves
-    each live core file aside before it knows whether the archive has a
-    replacement, and clears a component tree whether or not the archive carries
-    one -- so an operator who names a component the bundle never held loses that
-    component and is told the restore succeeded.
-
-    Presence is "any declared path is there", not "all of them". A component
-    legitimately ships without every file: a home that never wrote
-    ``memory_index.db`` produces a memory bundle with only ``memory.db``, and
-    requiring both would refuse a sound bundle.
+    Presence is "any declared path is there", not "all of them": a memory bundle from a
+    home that never wrote ``memory_index.db`` carries only ``memory.db`` and is sound.
     """
     absent = []
     for name in names:
@@ -337,26 +323,15 @@ def _backup_and_copy(
 ) -> None:
     """Move the live core files aside, then restore the archive's, destination pinned.
 
-    *installed*, when given, is the rollback ledger, and this function is the ONLY place
-    that may add a core file to it: a name goes in immediately before that file's own first
-    mutation and never before, because the recovery leg reads membership as "this run
-    reached this path". Adding every file the component DECLARES up front is a different
-    set -- a bundle may legitimately carry only some of them, and the loops below SKIP the
-    rest. Recovery would then see a file with no saved copy that is nonetheless
-    "installed", conclude the restore created it, and delete the operator's untouched
-    file. Recording per file is what makes membership mean what the recovery leg already
-    documents it to mean.
+    *installed*, when given, is the rollback ledger. Only this function adds to it, one
+    name immediately before that file's first mutation, because recovery reads membership
+    as "this run reached this path". Adding every DECLARED file up front would mark files
+    the bundle skips, and recovery would delete the operator's untouched copies.
 
-    Composing ``mc / f`` and handing it to ``shutil.copy2`` would reach the destination
-    by name every time. Two consequences, both real: a component of the data home
-    swapped for a link redirects the write out of the data home entirely, and a symlink
-    left at the core file's own name is written THROUGH rather than refused -- the
-    name-based ``islink`` check above skips the backup move and then the copy follows
-    the link it just declined to move.
-
-    Instead the data home is pinned once and each file is created relative to that
-    descriptor with ``O_EXCL``. A name that is still occupied after the backup move
-    is refused instead of written through, which is the symlink case above.
+    The data home is pinned once and each file is created relative to that descriptor with
+    ``O_EXCL``, not by name through ``shutil.copy2``: a by-name write follows a data-home
+    component swapped for a link, or a symlink left at the core file's name. A name still
+    occupied after the backup move is refused instead of written through.
     """
     if not _facade()._staging_is_pinned(
         allow_unpinned=allow_unpinned, what=f"restore of {component!r}"
@@ -364,10 +339,9 @@ def _backup_and_copy(
         for f in CORE_FILES.get(component, ()):
             # Validated before the live file is touched, and a symlink at the live name is
             # MOVED aside rather than skipped -- the same two properties the pinned branch
-            # got earlier in this change. Review found this branch still carrying the old
-            # behaviour: it skipped both the backup AND the replacement, so the archive's
-            # file was never applied and the command reported success anyway. Moving a
-            # symlink moves the link, never its target.
+            # has. Skipping would skip both the backup AND the replacement, so the archive's
+            # file would never be applied and the command would report success anyway.
+            # Moving a symlink moves the link, never its target.
             if not (snap / f).is_file() or pinned_fs.is_reparse_point(snap / f):
                 if (snap / f).exists():
                     print(f"⚠️  Skipping symlinked file from snapshot: {snap / f}")
@@ -383,21 +357,11 @@ def _backup_and_copy(
                 shutil.move(str(live), str(backup / f))
             elif live.is_file():
                 shutil.move(str(live), str(backup / f))
-            # Not `copy2`: it opens the destination by name for writing and follows a
-            # symlink planted there in the window after the live file was moved aside,
-            # overwriting whatever it points at. copy_file_pinned uses
-            # O_CREAT|O_EXCL|O_NOFOLLOW even without a directory descriptor, so a link at
-            # the destination name is refused rather than written through.
-            # `fatal_skip_reporter`, NOT `_report_skip`: the live file has ALREADY been
-            # moved into the backup by this point, so a skip here is not an omission from
-            # an archive -- it is the live file gone AND the archive's version never
-            # applied, reported as success. That is the whole reason for a fatal
-            # reporter: a skip is correct while PRODUCING an archive and is data loss on
-            # any path that has already moved or deleted the original.
-            # A collision here means something recreated the name after the live file was
-            # moved aside. It is a real condition, not a skip, but it must not surface as a
-            # traceback: the same escape exists on the pinned tree walk. The live bytes
-            # are recoverable from the backup, which is what the message has to say.
+            # Not `copy2`, which opens the destination by name and follows a symlink
+            # planted after the move; copy_file_pinned uses O_CREAT|O_EXCL|O_NOFOLLOW.
+            # Skips are fatal: the live file is already in the backup, so a skip would
+            # lose it AND never apply the archive's version. A collision means something
+            # recreated the name; refuse with a message pointing at the backup.
             try:
                 pinned_fs.copy_file_pinned(
                     str(snap / f),
@@ -411,6 +375,7 @@ def _backup_and_copy(
                     f"version is in {backup}. Re-run with the gateway stopped."
                 ) from exc
             _lock_down_restored(mc / f, component)
+            _endorse_restored(mc / f, functools.partial(Path.read_bytes, snap / f))
         return
 
     src_fd = pinned_fs.open_dir_pinned(snap, what=f"snapshot payload for {component!r}")
@@ -423,18 +388,10 @@ def _backup_and_copy(
             try:
                 for f in CORE_FILES.get(component, ()):
                     live = mc / f
-                    # Checked BEFORE the live file is touched. The archive is untrusted
-                    # input, so a member that is not a regular file -- a FIFO, a device
-                    # node, a directory at a core filename -- is a real possibility, and
-                    # the old order moved the live file aside first and only then found
-                    # the source unusable: the original ended up in the backup and
-                    # nothing was restored, reported as success. Raised in review; the
-                    # same validate-before-mutate ordering the platform gate follows.
-                    # Asked through src_fd, not by composing a path. The by-name form
-                    # re-resolves the snapshot root, so a root swapped after pinning
-                    # leaves this guard inspecting the replacement while the copy below
-                    # acts on the descriptor -- the same class as the
-                    # destination-ownership check.
+                    # Checked BEFORE the live file is touched: the archive is untrusted, and
+                    # finding a FIFO or directory only after the move would leave nothing
+                    # restored, reported as success. Asked through src_fd so a snapshot
+                    # root swapped after pinning cannot redirect the check.
                     if not pinned_fs.is_regular_at(src_fd, f):
                         continue
                     # Same point as the fallback branch: past the skip, so this file is
@@ -443,20 +400,10 @@ def _backup_and_copy(
                     # it as never touched and leaves it alone.
                     if installed is not None:
                         installed.add(f)
-                    # A symlink at a core file's name is MOVED aside like any other
-                    # occupant, not skipped. The old code skipped the move and then let
-                    # the copy write through the very link it had just declined to
-                    # move; skipping the whole entry instead would be no better,
-                    # because the archive's version of that file would then silently
-                    # never be restored. Moving a symlink moves the LINK, never its
-                    # target, so nothing outside the data home is touched.
-                    #
-                    # The move goes through both pinned descriptors rather than
-                    # shutil.move on two composed paths: review pointed out that a
-                    # by-name move re-resolves both ends, so an ancestor swapped
-                    # between the check and the move would relocate something else.
-                    # os.rename with src_dir_fd/dst_dir_fd cannot be redirected, and it
-                    # is atomic within the data home, which a copy-then-delete is not.
+                    # A symlink at a core file's name is MOVED aside (the link, never its
+                    # target), not skipped: skipping would let the copy write through it,
+                    # or leave the archive's file unrestored. os.rename through both pinned
+                    # descriptors cannot be redirected by a swapped ancestor, and is atomic.
                     live_st = pinned_fs.stat_at(dst_fd, f)
                     if live_st is not None and _stat.S_ISLNK(live_st.st_mode):
                         print(f"⚠️  Moving symlinked core file aside during backup: {live}")
@@ -470,26 +417,17 @@ def _backup_and_copy(
                             name=f,
                             dst_dir_fd=dst_fd,
                             dst_name=f,
-                            # Owner-only applied through the destination DESCRIPTOR, in
-                            # the same call that wrote the bytes. Two things wrong with
-                            # the previous _lock_down_restored(mc / f) here, both raised
-                            # in review: it reopened the freshly written file BY NAME, so
-                            # a link swapped in at that instant had restrict_to_owner
-                            # change the permissions of whatever it pointed at; and the
-                            # mode cannot be inherited from the archive, which is
-                            # untrusted input -- a hand-built tarball can record 0o777 on
-                            # telemetry_salt. The reviewer's suggested fix was to drop
-                            # the lockdown because "the copy already applies mode", which
-                            # would have done exactly that: applied the ARCHIVE's mode.
+                            # Owner-only applied through the destination DESCRIPTOR in the
+                            # same call: a by-name lockdown could chmod a swapped-in link's
+                            # target, and the archive's own mode is untrusted (a tarball
+                            # can record 0o777 on telemetry_salt).
                             force_mode=(
                                 0o600
                                 if component == "security" or f in _OWNER_ONLY_SETTINGS_FILES
                                 else None
                             ),
-                            # The live file was moved aside two lines up, so a skip here
-                            # finishes with the original gone AND the archive's version
-                            # never written. Review's third instance of that rule; it is
-                            # now the reporter's job rather than a per-site check.
+                            # The live file is already moved aside, so a skip here would
+                            # lose it AND never write the archive's version.
                             on_skip=pinned_fs.fatal_skip_reporter(f"restore of {f!r}"),
                         )
                     except FileExistsError as exc:
@@ -506,12 +444,33 @@ def _backup_and_copy(
                         # needs restrict_to_owner for its DACL, which is why that call
                         # survives there and not here.
                         pass
+                    if copied:
+                        _endorse_restored(live, functools.partial(_read_at, src_fd, f))
             finally:
                 os.close(backup_fd)
         finally:
             os.close(dst_fd)
     finally:
         os.close(src_fd)
+
+
+def _endorse_restored(live: Path, read: Callable[[], bytes]) -> None:
+    """Endorse the archive bytes just installed at *live* when it is a sealed keystone file.
+
+    A restore is the owner's own write, so the restored ``config.json`` /
+    ``config.local.json`` takes effect instead of being held as pending behind the
+    endorsed copy of the file it replaced (``config.loosening_provenance``). *read* reads
+    the SOURCE, never the installed destination. Anything else is left alone, unread.
+    """
+    if loosening_provenance.leaf_for(live) is not None:
+        loosening_provenance.endorse_installed(live, read())
+
+
+def _read_at(dir_fd: int, name: str) -> bytes:
+    """The bytes of regular file *name* under the pinned *dir_fd*, never following a link."""
+    fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+    with os.fdopen(fd, "rb") as handle:
+        return handle.read()
 
 
 #: Settings documents whose own writers create them owner-only. The config overlay can
@@ -609,42 +568,26 @@ def _refuse_corrupt_source_databases(
 ) -> None:
     """Refuse a bundle whose incoming components are unsound, BEFORE any live state moves.
 
-    Validation has to precede mutation, and for this path that is not a stylistic
-    preference. Putting the incoming file where the live one was and only then checking it
-    can report that the home is now sitting on a corrupt database, which is the outcome the
-    check exists to prevent. A bundle arriving over the network from object storage is
-    untrusted input no matter whose bucket held it, so it is validated at the point where
-    refusing is still free.
+    A bundle is untrusted input, so it is validated while refusing still costs nothing;
+    checking after the install would leave the home on a corrupt database.
 
-    **The condition is "does this restore read or install the file", not "is this replace
-    mode".** Replace installs everything it carries, so *mc_for_merge* is ``None`` and
-    every declared entry is checked. Merge is per-file, because merge is not one behaviour:
-    it installs some files, parses others in place, and leaves the rest alone — see
-    `_merge_reads` for the three cases and why a single destination-existence test was the
-    wrong proxy for all of them.
+    The condition is "does this restore read or install the file", not "is this replace
+    mode". Replace installs everything (*mc_for_merge* is ``None``); merge is per-file, see
+    `_merge_reads`. Every incoming database for the SELECTED components is checked.
 
-    Every incoming database for the SELECTED components is checked, not just the largest
-    or the first.
-
-    Unreadable counts as unsound. Tolerating a file named `.db` that SQLite cannot open
-    is right when *creating* a snapshot (the operator's home is the source of truth and
-    the file is copied verbatim), and wrong when consuming one: there the file is about
-    to BECOME the operator's memory.
+    Unreadable counts as unsound: tolerable when *creating* a snapshot, wrong when the
+    file is about to BECOME the operator's memory.
     """
 
     def _merge_reads(rel: str) -> bool:
         """Whether MERGE reads or installs *rel*, so validation has to cover it.
 
-        A single "is the destination missing" test was a proxy, and it was wrong in two
-        places, both of which merge genuinely consumes:
+        "Is the destination missing" is not enough in two places:
 
-        * `crons.json` is PARSED when a local one exists (`_merge_crons` json-loads both
-          sides) and copied when it does not. Either way merge reads it, so a malformed
-          file is never harmless — skipping it because the destination exists is what let
-          an unparseable file reach an unguarded `json.loads`.
+        * `crons.json` is PARSED when a local one exists (`_merge_crons` loads both sides)
+          and copied when it does not, so merge always reads it.
         * `memory_index.db` is copied alongside `memory.db` exactly when the live
-          `memory.db` is ABSENT, whatever the index's own destination looks like. Keying on
-          the index's own path let a corrupt index overwrite a healthy one.
+          `memory.db` is ABSENT, whatever the index's own destination looks like.
 
         Named stores are installed only where the whole store is absent. Other tree
         files are installed only where their own destination is missing.
@@ -686,17 +629,9 @@ def _refuse_corrupt_source_databases(
             if name.endswith((".db", ".sqlite3")):
                 _refuse_unless_sound(src, name, strict=True)
             elif name in COMPONENT_JSON_OBJECTS:
-                # "Will this file reach a consumer?" -- not "is this a replace?". Merge
-                # installs after all when the destination is ABSENT: the per-component
-                # branch merges only `if dst.is_file()`, and its sibling `else` copies the
-                # bundle's file in verbatim with no validation. An absent destination is the
-                # FRESH MACHINE case, which is the scenario a backup exists for, so the one
-                # path that skipped this check was the likeliest one to need it.
-                #
-                # Reproduced: a well-formed JSON ARRAY in the bundle, no live `crons.json`,
-                # merge -> copied verbatim, rc=0, reported success -- and the cron loader's
-                # `isinstance(data, dict) else []` branch then reports zero jobs. Every
-                # schedule silently gone, nothing raised, nothing retried.
+                # "Will this file reach a consumer?", not "is this a replace?". Merge copies
+                # the bundle's file verbatim when the destination is ABSENT (the fresh
+                # machine case), and a JSON array there makes the cron loader read zero jobs.
                 will_install = mc_for_merge is None or not (mc_for_merge / name).is_file()
                 _refuse_unless_json_object(src, name, installed=will_install)
                 if will_install and name in _FLAT_DOCUMENT_VALIDATORS:
@@ -724,17 +659,9 @@ def _refuse_corrupt_source_databases(
         if mc_for_merge is None or not (mc_for_merge / rel).is_file():
             _refuse_unless_valid_tree_document(src, rel, validator)
 
-    # Component TREES carry databases too, and a tree is copied wholesale: the knowledge
-    # store lives at `workspace/knowledge/knowledge.db`, inside a tree the memory
-    # component declares. Checking only the top-level declared files leaves exactly the
-    # same hole one directory down.
-    #
-    # Strictness is per PATH, not per location. A database this product owns is strict
-    # wherever it lives: `workspace/knowledge/knowledge.db` is as much ours as
-    # `memory.db`, so an unopenable one is a broken bundle, not an operator's stray file.
-    # Leniency exists only for the INCIDENTAL contents of a tree, where a `.db` that is
-    # not SQLite is ordinary — a Windows `Thumbs.db` is on this product's own ignore list
-    # — and refusing those would block restores over files that were never databases.
+    # Component TREES carry databases too (`workspace/knowledge/knowledge.db`). Strictness
+    # is per PATH: a database this product owns is strict wherever it lives, while an
+    # incidental `.db` in a tree (a Windows `Thumbs.db`) may legitimately not be SQLite.
     for component, trees in COMPONENT_TREES.items():
         if not _want(components, component):
             continue
@@ -762,38 +689,16 @@ def _refuse_corrupt_source_databases(
 def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> None:
     """Raise unless *src* parses as a JSON object.
 
-    A database is not the only thing a restore can install broken. The consumers of these
-    files treat an unreadable one as an EMPTY one — `crons.json`'s loader falls back to
-    "no jobs" on both a parse error and a well-formed array — so installing a corrupt file
-    silently discards the operator's content while the restore reports success. Silent
-    emptiness is the worst failure available here: nothing raises, so nothing is retried.
+    The consumers of these files read an unreadable one as EMPTY (`crons.json`'s loader
+    falls back to "no jobs" on a parse error or an array), so installing a corrupt file
+    silently discards content while the restore reports success.
 
-    *installed* is what separates the two hazards, because only one of them is silent.
-    Replace INSTALLS this file, so an unparseable one reaches the consumer and reads as
-    empty — refusing is the only way the operator hears about it. Merge USUALLY does not
-    install it: when a live copy exists, the per-component merger reads the bundle's copy,
-    reports a file it cannot parse, and returns without writing live state, so the content
-    is neither lost nor lost quietly. Refusing there would turn one unreadable component
-    into a failed restore of every other one, which is the opposite of what an off-host
-    backup is for.
+    *installed* is decided by the caller from "will this reach a consumer". When it is
+    False (merge with a live copy), the merger reports an unparseable file and writes
+    nothing, so refusing would only fail every other component of the restore.
 
-    "Usually" is load-bearing, not "never". Merge's per-component branch merges only
-    `if dst.is_file()`; its sibling `else` copies the bundle's file in VERBATIM. So an
-    absent destination -- the fresh-machine case, which is the scenario a backup exists
-    for -- does install, and is the one path that could skip this check. The caller
-    therefore decides *installed* from "will this reach a consumer", not from "is this a
-    replace". Reproduced before the fix: a well-formed JSON array, no live `crons.json`,
-    merge copied it verbatim and reported success, and the cron loader then read zero jobs.
-
-    Only structure is checked, not schema. Parsing proves the file survived transport and
-    is the shape its consumer branches on; asserting field-level schema here would
-    duplicate each consumer's own validation and refuse bundles those consumers accept.
-
-    The shape checks below are gated on *installed* too, matching the parse branch,
-    because the merger itself now guards the merge path: `_merge_crons` runs
-    `_usable_cron_shape` over BOTH sides and returns without writing when either is
-    misshapen, and that guard is a superset of this one -- it also rejects a non-string
-    job name and a lone surrogate inside one.
+    Only structure is checked, not schema: field-level checks would duplicate each
+    consumer's validation and refuse bundles those consumers accept.
     """
     try:
         parsed = json.loads(src.read_text(encoding="utf-8"))
@@ -805,19 +710,10 @@ def _refuse_unless_json_object(src: Path, label: str, *, installed: bool) -> Non
             "   Refusing to restore it over live state: its reader treats an unreadable "
             "file as an empty one, so this would discard content silently."
         ) from e
-    # Everything past here is an INSTALL-path check, in ONE place rather than a gate per
-    # branch, so a check added later cannot forget to carry the condition.
-    #
-    # The merge path is guarded by the merger: `_merge_crons` runs `_usable_cron_shape`
-    # over BOTH sides and returns without writing when either is misshapen, and that guard
-    # is a superset of these -- it also rejects a non-string job name and a lone surrogate
-    # inside one. It catches more than a file it cannot PARSE, so `{"jobs": ["x"]}` does
-    # not flow past it, and refusing on the merge path would only turn one misshapen
-    # component into a failed restore of every other one.
-    #
-    # The install path has no such guard -- it copies the file in and the consumer reads an
-    # unusable one as empty -- so here this refusal is the only thing between a misshapen
-    # bundle and silently discarded jobs.
+    # Everything past here is an INSTALL-path check, gated once so a later check cannot
+    # forget the condition. The merge path is guarded by `_merge_crons`, whose
+    # `_usable_cron_shape` check on BOTH sides is a superset of these; the install path has
+    # no other guard.
     if not installed:
         return
     if not isinstance(parsed, dict):
@@ -933,17 +829,36 @@ def _allocate_rollback_dir(mc: Path) -> Path:
     )
 
 
+def _discard_partial_rollback(*dirs: Path | None) -> None:
+    """Remove rollback directories a refused phase one only partly filled.
+
+    Only ever called before any live mutation, so the directories hold copies and
+    nothing else. One that cannot be removed is named, so it is not left unexplained.
+    """
+    for d in dirs:
+        if d is None:
+            continue
+        try:
+            shutil.rmtree(str(d))
+            print(f"  Removed partial rollback copy: {d}/ (nothing was changed)")
+        except FileNotFoundError:
+            pass
+        except OSError:
+            print(
+                f"  ⚠️  Partial rollback copy left at: {d}/ (nothing was changed; "
+                "it is safe to delete)"
+            )
+
+
 def _do_replace(
     snap: Path, mc: Path, components: list[str] | None, *, allow_unpinned: bool = False
 ) -> None:
     """Replace the selected components, with a complete rollback set taken first.
 
-    Two phases, and the boundary between them is the whole design. Phase one copies every
-    tree this run will mutate into a fresh rollback directory and mutates nothing; phase
-    two performs every mutation. A refusal in phase one therefore aborts with the data home
-    untouched, and a failure in phase two can be reverted from a rollback set that is known
-    to be complete -- the ordering an earlier revision got wrong by running the core-file
-    swap loop first, which aborted with the new databases live and the old trees live.
+    Two phases. Phase one copies every tree this run will mutate into a fresh rollback
+    directory and mutates nothing; phase two performs every mutation. A refusal in phase
+    one leaves the data home untouched, and a failure in phase two reverts from a rollback
+    set known to be complete. The core-file swap must not run before phase one finishes.
     """
     facade = _facade()
     # Before anything is created or copied: a destination tree root that does not resolve
@@ -983,16 +898,10 @@ def _do_replace(
                 continue
             d = mc / tree
             if safe_tree_root(d, what="destination root", home=mc) is None:
-                # REFUSED, not skipped. `_refuse_unsafe_destination_roots` already cleared
-                # this exact set moments ago, so a root that fails here failed AFTER that
-                # check -- something moved under us mid-run. A `continue` here would drop
-                # the tree from `mem_roots` entirely: neither saved nor restored, with the
-                # run still printing "Replace complete." Letting the preflight pass and
-                # swapping `workspace` for an external link immediately after drops both
-                # memory trees silently and exits 0, so an operator restoring after losing
-                # a machine believes memory came back when only the databases did. That is
-                # exactly the lie the hoisted preflight exists to end. Safe to raise here:
-                # this runs before phase one, so no live state has been mutated yet.
+                # REFUSED, not skipped: the preflight cleared this set moments ago, so the
+                # root moved mid-run. A `continue` would drop the tree from `mem_roots`,
+                # neither saved nor restored, while the run reports "Replace complete."
+                # Safe to raise: this runs before phase one, so nothing has been mutated.
                 unsafe_now.append(f"memory:{tree}")
             else:
                 mem_roots.append((tree, d))
@@ -1031,6 +940,7 @@ def _do_replace(
             raise NamedStoresInUse(exc.names) from exc
         raise
     store_backup: Path | None = None
+    phase_one_done = False
     try:
         # ── Phase one: the rollback set. No live state is mutated in this block. ──
         #
@@ -1065,12 +975,8 @@ def _do_replace(
                     )
                     print(f"  Previous state saved to: {store_backup}/")
                     continue
-                # `tree` is NESTED (`workspace/memory`), so the rollback destination's parent
-                # does not exist in a freshly-allocated backup dir. The pinned primitive pins
-                # an existing parent chain and does not create one -- callers create their own
-                # tree roots -- so without this the copy fails with FileNotFoundError on the
-                # intermediate component. The single-level trees below are unaffected because
-                # their parent IS the backup dir.
+                # `tree` is NESTED (`workspace/memory`) and the pinned primitive does not
+                # create a missing parent chain.
                 (backup / tree).parent.mkdir(parents=True, exist_ok=True)
                 _backup_tree_or_refuse(d, backup / tree, allow_unpinned=allow_unpinned)
         for comp in _WHOLE_TREE_COMPONENTS:
@@ -1084,13 +990,11 @@ def _do_replace(
                     # write committed before the install. Only the document is ever saved;
                     # the directory and its lock file are never touched.
                     continue
-                # Saved only when phase two will REPLACE it, which is exactly when the
-                # archive carries the tree -- `_do_replace_mutations` leaves a wanted
-                # component whose bundle half is absent standing untouched. Saving it anyway
-                # let a rollback put that copy back over a tree this restore never opened,
-                # deleting an artifact the dashboard wrote while it ran.
+                # Saved only when phase two will REPLACE it (the archive carries the tree);
+                # otherwise a rollback could overwrite a dashboard write to an unopened tree.
                 if d.is_dir() and (snap / dirname).is_dir():
                     _backup_tree_or_refuse(d, backup / dirname, allow_unpinned=allow_unpinned)
+        phase_one_done = True
 
         # Every relative path phase two can write. Recovery needs it because a target that did
         # not exist before the restore has nothing saved for it, so putting saved entries back
@@ -1110,26 +1014,23 @@ def _do_replace(
         # target the phase never reached.
         installed: set[str] = set()
         try:
-            facade._do_replace_mutations(
-                snap, mc, backup, components, mem_roots, installed, allow_unpinned=allow_unpinned
-            )
+            # A failed replace puts the previous files back, so the endorsed copies of
+            # the keystone files it restored go back with them.
+            with loosening_provenance.endorsements_restored_on_error():
+                facade._do_replace_mutations(
+                    snap,
+                    mc,
+                    backup,
+                    components,
+                    mem_roots,
+                    installed,
+                    allow_unpinned=allow_unpinned,
+                )
         except BaseException as e:
-            # `BaseException`, not `Exception`, and deliberately wider than a few named
-            # classes. `PinnedPathRefusal` belongs here because it fires MID-mutation and
-            # leaving it out leaves live state half replaced; `KeyboardInterrupt` has exactly
-            # that property and is not an `Exception` at all, so a narrower handler misses it
-            # entirely. A Ctrl-C after the memory component is replaced otherwise leaves
-            # `memory.db` holding the archive's copy and `crons.json` still the live one, with
-            # no rollback attempted. A restore is the one operation where an interrupt must not
-            # be taken at face value -- the operator's own state is mid-swap.
-            #
-            # The exception is always re-raised, so an interrupt still terminates the command and
-            # `SystemExit` still exits; what changes is that the previous state is put back first.
-            # A second interrupt DURING the rollback cannot be defended against here, and the
-            # rollback directory is what answers for it.
-            #
-            # Phase one is deliberately outside this try: a refusal there happens before any
-            # mutation, so there is nothing to roll back and the clean refusal is the answer.
+            # `BaseException`, not `Exception`: `PinnedPathRefusal` and `KeyboardInterrupt`
+            # both fire MID-mutation, and a Ctrl-C would otherwise leave live state half
+            # replaced with no rollback. Always re-raised; the previous state is put back
+            # first. Phase one is outside this try: it mutates nothing.
             failed = facade._restore_everything_from_rollback(
                 backup,
                 mc,
@@ -1145,6 +1046,13 @@ def _do_replace(
                 # of the previous state now exists only in the rollback directory.
                 raise RollbackIncomplete(e, failed, backup, store_backup=store_backup) from e
             raise
+    except BaseException:
+        # A refusal in phase one leaves live state untouched, so the half-written
+        # rollback copies hold nothing the operator needs. Remove them rather than
+        # leave one `pre-restore-<ts>/` per refused attempt in the data home.
+        if not phase_one_done:
+            _discard_partial_rollback(backup, store_backup)
+        raise
     finally:
         barrier.close()
 
@@ -1158,23 +1066,13 @@ def _do_replace(
 def _component_payload_absent(snap: Path, component: str) -> bool:
     """Does *snap* carry nothing this component could actually restore?
 
-    Declared-but-hollow is the shape this answers: the manifest says a component rode, and the
-    bundle holds none of its data. Replace then clears the live state for it -- memory trees
-    are cleared unconditionally, and a derived index is now removed too -- with nothing to put
-    back, which is a partial erasure rather than a restore.
+    Declared-but-hollow: the manifest says a component rode and the bundle holds none of its
+    data, so replace would clear live state with nothing to put back.
 
-    A DERIVED index is not payload. A bundle carrying only `memory_index.db` has no memory to
-    restore, and counting it would let precisely the reproduced case through.
-
-    Files AND trees both count, so a component whose data is a directory is not called hollow
-    just because it keeps no flat file. A tree counts only when it holds at least one FILE:
-    the staging walk copies a directory whose every entry it excluded as an empty directory
-    -- ``memory_stores/`` on a home whose only content there is the sandbox's precreated
-    runtime state is the ordinary case -- and an empty directory is nothing to restore, so
-    counting it would let a bundle with no memory at all pass this check on the strength of
-    a directory entry. Derived from `COMPONENTS` / `CORE_FILES`, never a hand-written list: a
-    component gaining a file later must not silently start passing this check on the
-    strength of a stale enumeration.
+    A DERIVED index is not payload. A tree counts only when it holds at least one FILE: the
+    staging walk can leave an empty directory (``memory_stores/`` holding only sandbox
+    runtime state), which is nothing to restore. Derived from `COMPONENTS`, never a
+    hand-written list.
     """
     spec = COMPONENTS.get(component)
     if spec is None:
@@ -1198,22 +1096,11 @@ def _drop_derived_indexes_absent_from_bundle(
 ) -> None:
     """Remove a live derived index the archive does not carry, saving it first.
 
-    Replace means the destination ends up matching the archive. The memory-TREE loop already
-    says so and clears unconditionally for it; a derived index is a FILE and never got the
-    same treatment, so `_backup_and_copy` skipped it (`(snap / f).is_file()` is false) and
-    left the live one in place. The result is the restored payload indexed by the PREVIOUS
-    one: searches answer from memory that was just replaced.
-
-    That gap is reachable precisely because the redaction pass DROPS `memory_index.db` from an
-    off-host bundle -- so a redacted bundle is the ordinary way to arrive here, not an exotic
-    one. The comment justifying that drop pointed at restore "telling the operator to rebuild
-    it", which is true only when the live index is absent too: the warning tests the file
-    after the restore, and a surviving stale index means no warning is printed at all.
-
-    Removing it is what makes the absence real, so the existing warning fires and the index is
-    rebuilt from the restored payload. Scoped to derived indexes ON PURPOSE -- a missing
-    payload database is a different question with a different answer (refuse, not delete), and
-    it is answered elsewhere.
+    Replace means the destination ends up matching the archive. `_backup_and_copy` skips a
+    file the archive lacks, so a stale live index would keep indexing the PREVIOUS memory.
+    The redaction pass drops `memory_index.db` from off-host bundles, so this is the
+    ordinary case. Removing it lets the rebuild warning fire. Scoped to derived indexes: a
+    missing payload database is refused elsewhere, not deleted.
     """
     for rel in sorted(_DERIVED_INDEXES):
         if (snap / rel).is_file():
@@ -1296,22 +1183,15 @@ def _do_replace_mutations(
             continue
         for dirname in COMPONENTS[comp].trees:
             d = mc / dirname
-            # Required by `test_each_trees_loop_is_guarded`: a `.trees` loop either calls
-            # the chokepoint or sits in a function that already refused every unsafe root,
-            # and this one does neither -- the pre-flight runs in the CALLER, a whole backup
-            # phase earlier. The literal-tuple branches this loop replaced were invisible to
-            # that invariant; a loop over the declared trees is not.
+            # Required by `test_each_trees_loop_is_guarded`: the pre-flight runs in the
+            # CALLER, a whole backup phase earlier, so this loop calls the chokepoint itself.
             if safe_tree_root(d, what="destination root", home=mc) is None:
                 raise UnsafeComponentRoot(f"{comp}:{dirname} no longer resolves inside {mc}")
             sd = snap / dirname
             if dirname in _LOCKED_DOCUMENT_TREES:
-                # Replace means the destination matches the archive, so a bundle WITHOUT
-                # the document -- a tree that lacks it OR no tree at all, the ordinary
-                # shape of an export from a home that never made a team -- removes the
-                # live one. Not gated on `sd.is_dir()` like the trees below: that guard
-                # let the destination's own teams survive a reported full replace.
-                # Either way only the document moves, under its owner's lock, and the
-                # directory is never swapped.
+                # A bundle WITHOUT the document (or without the tree) removes the live one,
+                # so this is not gated on `sd.is_dir()`. Only the document moves, under its
+                # owner's lock; the directory is never swapped.
                 rel = _LOCKED_DOCUMENT_TREES[dirname]
                 save = _save_locked_document_to(backup, rel)
                 # The rollback copy is taken by the installer inside its lock hold, so
@@ -1328,12 +1208,8 @@ def _do_replace_mutations(
                 installed.add(dirname)
                 if d.is_dir():
                     shutil.rmtree(str(d))
-                # rmtree just removed the live tree, so a skipped source entry here means
-                # that file exists in neither place.
-                #
-                # `must_create` is what makes the removal mean something. Without it the
-                # walk accepted a root recreated between the rmtree and the copy, so files
-                # the archive does not contain survived a REPLACE that reported success.
+                # Skips are fatal: the live tree is gone. `must_create` refuses a root
+                # recreated between the rmtree and the copy.
                 facade._copytree_safe(
                     sd,
                     d,
@@ -1349,47 +1225,26 @@ def _do_replace_mutations(
     # original), memory_stores/ whenever the archive is one that carries it.
     for tree, d in mem_roots:
         sd = snap / tree
-        # CLEARED UNCONDITIONALLY, then filled only if the archive carries the tree.
-        # Clearing only when the archive had it meant a bundle without, say,
-        # `workspace/knowledge` left the destination's own knowledge tree in place, so a
-        # "replace" produced restored memory mixed with stale notes and still reported
-        # success. Replace means the destination ends up matching the archive; a tree the
-        # archive does not have is a tree the destination must not keep. The rollback copy
-        # was taken in phase one, before any database was swapped, so the removed state is
-        # still recoverable.
-        #
-        # `_trees_absent_from_bundle` does NOT cover this: it only refuses bundles carrying
-        # no component map, which is the escape hatch for pre-seam archives. A v3 bundle
-        # declares `memory` and legitimately may not carry every tree of it, and this is
-        # the branch that has to answer for that.
+        # CLEARED UNCONDITIONALLY, then filled only if the archive carries the tree:
+        # replace means the destination matches the archive. Phase one's rollback copy
+        # keeps the removed state recoverable.
         keep_root = tree == MEMORY_STORES_DIR_NAME and d.is_dir()
         if d.is_dir() or platform_compat.is_link_or_junction(d):
             installed.add(tree)
             if platform_compat.is_link_or_junction(d):
-                # `unlink_link_or_junction`, not `Path.unlink`. Detecting with
-                # `is_link_or_junction` and removing with plain unlink is the mispairing that
-                # helper's own docstring warns against: a Windows junction is a DIRECTORY
-                # reparse point, so `unlink` raises on it and the tree is never cleared --
-                # the replace then fails mid-flight on a platform where this is the ordinary
-                # shape of a linked tree.
+                # Not `Path.unlink`, which raises on a Windows junction.
                 platform_compat.unlink_link_or_junction(d)
             elif keep_root:
-                # memory_stores/ is cleared ENTRY BY ENTRY and its host-local half kept in
-                # place: the lifetime locks `_do_replace` holds live under
-                # `.member-backups/`, and removing that directory would let a store opened
-                # mid-replace create a fresh, unheld lock beside the one being held. The
-                # archive never carries those entries (`_never_ships`), so the copy below
-                # meets no collision, and the local backups and execution logs stay where
-                # the default store's own `<home>/backups/` already stays.
+                # memory_stores/ is cleared ENTRY BY ENTRY, keeping its host-local half: the
+                # lifetime locks `_do_replace` holds live under `.member-backups/`. The
+                # archive never carries those entries (`_never_ships`), so no collision.
                 _clear_store_directories(d)
             else:
                 shutil.rmtree(str(d))
         if sd.is_dir():
             installed.add(tree)
-            # Nested destination, same reason as the rollback save: the pinned primitive
-            # requires the parent chain to exist and creates only the final directory. A
-            # home that has no `workspace/` at all is the ordinary case for a restore onto
-            # a fresh machine, which is exactly what this component is for.
+            # The pinned primitive needs the parent chain to exist (a fresh machine has no
+            # `workspace/`).
             d.parent.mkdir(parents=True, exist_ok=True)
             facade._copytree_safe(
                 sd,
@@ -1439,11 +1294,9 @@ def _restore_everything_from_rollback(
       would overwrite a dashboard write that landed after phase one. Core files are saved
       by moving them aside at their own mutation point, but the same ledger rule applies.
 
-    Locked documents (a team roster and the like) are OUT OF SCOPE for the "this run
-    never reached it" rule: they keep main's rollback behavior and are handled first,
-    before the ledger guard. Their commit is not a single rename, so no save/marker
-    ordering closes every interrupt window between the save and the commit; the ledger
-    guard governs only the single-rename targets where that window does not exist.
+    Locked documents (a team roster and the like) are handled first, outside the ledger
+    rule: their commit is not a single rename, so no save/marker ordering closes every
+    interrupt window.
 
     Best-effort per target, and it says so per target: a recovery that aborts on its
     first problem strands the rest, and by this point the operator's own data is what is
@@ -1460,16 +1313,9 @@ def _restore_everything_from_rollback(
     failed: list[str] = []
     locked_documents = {rel: tree for tree, rel in _LOCKED_DOCUMENT_TREES.items()}
     for rel in sorted(set(targets)):
-        # A locked document is OUT OF SCOPE for the ownership guard below: it keeps
-        # exactly main's rollback behavior, byte for byte, and is handled here, before
-        # the guard. Its commit is not a single rename, so no save/marker ordering closes
-        # every interrupt window between the save and the commit; the guard applies only
-        # to the single-rename targets where that window does not exist. Saved -> the copy
-        # goes back VERBATIM (recovery puts the operator's state back, it does not
-        # validate it -- the saved copy may be a document the reader already refused, and
-        # refusing it here would strand every later target); not saved but installed by
-        # this run -> remove what the run created; otherwise leave it alone. Nothing on
-        # this branch raises anything but ``OSError``, which the loop names per target.
+        # A locked document is outside the ownership guard below (see the docstring).
+        # Saved -> the copy goes back VERBATIM, unvalidated, so a document the reader
+        # refused cannot strand later targets; not saved but installed -> remove it.
         if rel in locked_documents:
             saved = backup / rel
             try:
@@ -1480,33 +1326,18 @@ def _restore_everything_from_rollback(
             except (OSError, pinned_fs.PinnedPathRefusal) as e:
                 failed.append(f"{rel} ({e})")
             continue
-        # Phase one saves every whole tree before any mutation. A saved copy therefore
-        # proves only that the tree existed at the phase-one snapshot, not that this run
-        # later touched its live target. A dashboard write can land there while an earlier
-        # component is being replaced; if that earlier replacement fails, restoring this
-        # older saved copy would delete the concurrent write from a tree the restore never
-        # opened. The mutation ledger is the ownership proof for both saved and unsaved
-        # non-locked targets, so later targets are left exactly as they stand.
+        # A saved copy proves only that the tree existed at phase one, not that this run
+        # touched it; restoring it could delete a concurrent dashboard write. The
+        # mutation ledger is the ownership proof.
         if rel not in installed:
             continue
         saved = store_backup if rel == MEMORY_STORES_DIR_NAME and store_backup else backup / rel
         target = mc / rel
         try:
             if platform_compat.is_link_or_junction(saved):
-                # FIRST, because both tests below DEREFERENCE. A core file that was a
-                # relative symlink stops resolving the moment it is moved into the rollback
-                # directory, so `is_dir()` and `is_file()` are both false and the saved link
-                # matched no branch at all: the replacement at the live name was deleted as
-                # an undone creation, the link stayed in the rollback directory, and the
-                # recovery reported success. Reproduced -- the live name ended up not
-                # existing at all.
-                #
-                # The directory branch below says the rollback directory is "links-free by
-                # construction". That is true of TREES, which `_backup_tree_or_refuse` saves
-                # with a fatal skip reporter. Core FILES are saved by `_backup_and_copy`,
-                # which deliberately MOVES a symlinked core file aside and prints that it
-                # did -- so a link here is a state this code creates on purpose, and the
-                # claim was being applied to an input it was never about.
+                # FIRST, because both tests below DEREFERENCE: a relative symlink moved into
+                # the rollback directory stops resolving, so it would match no branch.
+                # `_backup_and_copy` moves symlinked core FILES aside on purpose.
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if platform_compat.is_link_or_junction(target):
                     platform_compat.unlink_link_or_junction(target)
@@ -1514,22 +1345,13 @@ def _restore_everything_from_rollback(
                     shutil.rmtree(str(target))
                 elif target.exists():
                     target.unlink()
-                # MOVED back rather than copied, unlike the two branches below. The save
-                # moved the link itself, so the rollback holds the only copy; and a move is
-                # the one operation that also reinstates a Windows junction, whose target
-                # cannot be read portably. Moving a link moves the LINK, never its target.
+                # MOVED back, not copied: the rollback holds the only copy, and a move also
+                # reinstates a Windows junction, whose target cannot be read portably.
                 shutil.move(str(saved), str(target))
             elif saved.is_dir():
-                # Clearing the live root before refilling it. A root that passed
-                # containment can still BE a link -- one pointing elsewhere inside the
-                # data home resolves within it -- and rmtree raises on a link, which at
-                # this point would strand the recovery. Remove a link as a link and
-                # reserve rmtree for real directories.
-                #
-                # Through `unlink_link_or_junction`, because a Windows junction is a
-                # directory reparse point that `Path.unlink` cannot remove: recovery would
-                # raise here and leave the operator's prior state stranded, which is the
-                # one outcome this whole function exists to prevent.
+                # A contained root can still BE a link, and rmtree raises on one, so links
+                # go through `unlink_link_or_junction` (which also handles a Windows
+                # junction) and rmtree is kept for real directories.
                 keep_root = (
                     rel == MEMORY_STORES_DIR_NAME
                     and target.is_dir()
@@ -1544,26 +1366,14 @@ def _restore_everything_from_rollback(
                 elif target.is_dir():
                     shutil.rmtree(str(target))
                 target.parent.mkdir(parents=True, exist_ok=True)
-                # The plain staging copy is lossless HERE, which it would not be for the
-                # save. `_backup_tree_or_refuse` reports a skipped entry as fatal, so a
-                # TREE containing a link never reaches the rollback directory at all
-                # -- whatever `backup` holds for a tree is links-free by construction, and
-                # there is nothing for a link-preserving copy to preserve on the way back.
-                #
-                # Scoped to trees deliberately. Read as a claim about the whole rollback
-                # directory it is false: core FILES are saved by a different function that
-                # MOVES a symlink aside on purpose, and reading it that broadly leaves the
-                # saved-link case with no branch to match.
+                # The plain copy is lossless for TREES: `_backup_tree_or_refuse` refuses a
+                # link, so a saved tree is links-free. (Saved core files can be links; the
+                # branch above handles them.)
                 facade._copytree_safe(
                     saved,
                     target,
-                    # The operator's opt-in has to reach HERE, not just the forward path.
-                    # Without it this copy takes the default and refuses on a platform with
-                    # no directory descriptors -- so an operator who passed
-                    # `--allow-unpinned-staging` gets a replace that is allowed to MUTATE
-                    # live state and a rollback that then refuses to put it back. The
-                    # safety net becomes the one thing that will not run, at the only
-                    # moment it matters.
+                    # The `--allow-unpinned-staging` opt-in must reach the rollback too, or
+                    # it refuses to put back what the forward path was allowed to change.
                     allow_unpinned=allow_unpinned,
                     must_create=not keep_root,
                     on_skip=pinned_fs.fatal_skip_reporter(f"rollback of {rel!r}"),
@@ -1595,23 +1405,10 @@ def _restore_everything_from_rollback(
             elif rel in installed and (
                 target.exists() or platform_compat.is_link_or_junction(target)
             ):
-                # Nothing saved, so the only justification for deleting is that this run
-                # created it. `rel in installed` is NOT that evidence: the name is recorded
-                # BEFORE the save is known to have happened (deliberately -- a crash
-                # mid-write must still leave it known to have been reached), and the save
-                # only actually happens on two branches, a symlink or a regular file. A core
-                # file's path occupied by a DIRECTORY matches neither, so nothing is saved
-                # and the name is recorded anyway.
-                #
-                # Reproduced: with a directory at `crons.json` holding operator data,
-                # recovery deleted the directory and its contents, reported an empty failure
-                # list, and printed "Previous state restored." Data loss announced as a
-                # successful recovery.
-                #
-                # So the type is the evidence. A core file entry is one this run would have
-                # created as a regular FILE; a directory standing there is something else's,
-                # and deleting it is unrecoverable while leaving it is not. Recorded as a
-                # failure so the operator is told rather than silently obeyed.
+                # Nothing saved, so delete only what this run created. `rel in installed` is
+                # recorded before the save, and a DIRECTORY at a core file's path is never
+                # saved, so the type is the evidence: this run would have created a FILE.
+                # A directory there is left and reported as a failure, not deleted.
                 if target.is_dir() and not platform_compat.is_link_or_junction(target):
                     if rel in CORE_FILES_FLAT:
                         failed.append(
@@ -1629,11 +1426,8 @@ def _restore_everything_from_rollback(
                     # the helper: `Path.unlink` cannot remove a Windows junction, and the
                     # helper falls through to `unlink` for an ordinary file anyway.
                     platform_compat.unlink_link_or_junction(target)
-        # `PinnedPathRefusal` alongside OSError, and NOT an OSError itself: recovery now
-        # restores through the pinned primitives with a fatal reporter, so one target it
-        # cannot put back raises a refusal. Recorded per target like any other failure --
-        # aborting the loop here would strand every remaining target, which is the opposite
-        # of recovery, and by this point the data at stake is the operator's own.
+        # `PinnedPathRefusal` is not an OSError. Recorded per target: aborting the loop
+        # would strand every remaining target.
         except (OSError, pinned_fs.PinnedPathRefusal) as e:
             failed.append(f"{rel} ({e})")
     if failed:

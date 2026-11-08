@@ -11,7 +11,8 @@
  *    form appeared to change the event.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { i18next } from '../i18n/all'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
@@ -77,8 +78,8 @@ describe('hooks page — lifecycle event picker', () => {
 
     // Radix Select: open, then click — a `change` on the trigger does nothing.
     fireEvent.click(trigger)
-    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(11))
-    // The five the gateway fires, then the six a Kiro Agent session owns. The
+    await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(12))
+    // The six the gateway fires, then the six a Kiro Agent session owns. The
     // order is asserted whole because the picker's order is the one the hook
     // table sorts rows by.
     //
@@ -89,9 +90,14 @@ describe('hooks page — lifecycle event picker', () => {
       .map(o => (o.textContent ?? '').replace(/not fired yet|never fires/, '').trim())
     expect(names).toEqual([
       'AgentSpawn', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop',
+      'SessionLaneChanged',
       'PreTaskExecution', 'PostTaskExecution', 'FileCreated', 'FileEdited', 'FileDeleted',
       'UserTriggered',
     ])
+    // Asserted by name as well as by position: this one was withheld while
+    // nothing fired it, and the dashboard's tag writers fire it now, so its
+    // presence is the thing a reader of this test is most likely to doubt.
+    expect(screen.getByRole('option', { name: 'SessionLaneChanged' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('option', { name: 'PreToolUse' }))
     await waitFor(() => expect(screen.getByLabelText('Event')).toHaveTextContent('PreToolUse'))
@@ -283,6 +289,26 @@ describe('hooks page — lifecycle event picker', () => {
     expect(await screen.findByLabelText(`Disable hook — ${note}`)).toBeTruthy()
   })
 
+  it('words the ON switch name as one sentence, with no English dash in Japanese', async () => {
+    await act(async () => { await i18next.changeLanguage('ja') })
+    try {
+      hooksPayload = {
+        hooks: [{
+          id: 'h1', name: 'run by hand', event: 'UserTriggered', matcher: '',
+          command: 'audit-now', matcher_mode: 'glob', skills: [],
+          timeout: 30, enabled: true, last_run: 0, last_status: '', last_error: '',
+          run_count: 0,
+        }],
+      }
+      renderPage()
+      expect(await screen.findByLabelText(
+        'フックを無効化：オンですが、このトリガーは自動では実行されません。',
+      )).toBeTruthy()
+    } finally {
+      await act(async () => { await i18next.changeLanguage('en') })
+    }
+  })
+
   it('says nothing extra on a live trigger\'s switch', async () => {
     hooksPayload = {
       hooks: [{
@@ -471,6 +497,28 @@ describe('hooks page — lifecycle event picker', () => {
     ).toBeTruthy()
   })
 
+  it('leaves that warning off an armed hook on one of the six', async () => {
+    // The control: the store really does keep this one's state across an edit, so
+    // the note must stay absent or the line it shows would be false.
+    hooksPayload = {
+      hooks: [{
+        id: 'h1', name: 'format saved files', event: 'FileEdited', matcher: '',
+        command: 'formatter --changed', matcher_mode: 'glob', skills: [],
+        timeout: 30, enabled: true, last_run: 0, last_status: '', last_error: '', run_count: 0,
+      }],
+    }
+    renderPage()
+    const actions = await screen.findByRole('button', { name: 'More actions' })
+    fireEvent.pointerDown(actions, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Edit' }))
+    await waitFor(() => expect(screen.getByLabelText('Event')).toHaveTextContent('FileEdited'))
+
+    fireEvent.click(screen.getByLabelText('Event'))
+    fireEvent.click(await screen.findByRole('option', { name: 'FileCreated' }))
+    await waitFor(() => expect(screen.getByLabelText('Event')).toHaveTextContent('FileCreated'))
+    expect(screen.queryByText(/will be saved turned off/)).toBeNull()
+  })
+
   it('tells the reader Test is the only run path for a dormant row', async () => {
     // Test reads as a rehearsal, and for these rows it is the real and only run.
     hooksPayload = {
@@ -552,4 +600,5 @@ describe('hooks page — lifecycle event picker', () => {
     await waitFor(() => expect(updateHook).toHaveBeenCalledTimes(1))
     expect(updateHook.mock.calls[0][1]).toMatchObject({ event: 'agentSpawn' })
   })
+
 })

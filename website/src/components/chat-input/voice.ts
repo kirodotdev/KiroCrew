@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { useDictationPanelUsable } from '../VoiceDictationPanel'
 import { useTouchPushToTalk } from '../../hooks/useTouchPushToTalk'
+import { bindingAriaKeyshortcuts, bindingLabel, type PttBinding } from '../../lib/pushToTalk'
 import { useAppSelector } from '../../store'
 import { safeSetItem } from '../../utils/safeStorage'
 import { isTouchDevice } from '../../utils/isTouchDevice'
@@ -9,6 +10,7 @@ import { i18nT } from '../../i18n/t'
 import type { ComposerVoiceInputProps } from '../../chat-core/composer/Composer'
 import type { ComposerControl } from '../composerControl'
 import { anotherEscapeOwnerIsOpen } from './escapeOwners'
+import { slotRowByKey } from '../../store/slotIndex'
 
 /* Dictation as the composer sees it. The Composer root's Voice atom
    (`chat-core/composer/useComposerVoice.ts`) owns capture, the one-mic mutex
@@ -203,7 +205,7 @@ export function useDictationControls({ composerControl, value, autoFocusKey, any
 /** Hold-to-talk: on a touch device the mic switches the composer between the
  *  keyboard and a press-and-hold target, and every label on those controls
  *  says what the next press actually does. */
-export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease = false, voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation }: {
+export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceCaptureActive, voiceRecording, voiceTranscribeActive, voiceTranscribing, voiceDownload, voiceSubmitOnRelease = false, voiceSlideToSend = false, voiceSendSteers = false, voicePttBinding = null, voiceBusyElsewhere, voiceBusyElsewhereSession, composerHasDraft, disabled, optimizing, placeholder, showDictation }: {
   onVoiceStart: VoiceInput['onVoiceStart']
   onVoiceStop: VoiceInput['onVoiceStop']
   onVoiceCancel: VoiceInput['onVoiceCancel']
@@ -215,6 +217,16 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   /** `stt.submit_on_release`: a deliberate finish sends, so the labels say so
    *  and the hold bar offers its sideways keep-as-draft zone. */
   voiceSubmitOnRelease?: boolean
+  /** `stt.slide_to_send`: the hold bar offers its up-right send zone. Opt-in,
+   *  because with it off sliding up any way cancels, as it always has. */
+  voiceSlideToSend?: boolean
+  /** A send from this composer right now would steer the running turn (the
+   *  default Send's busy decision), so the hold bar's send zone says "steer".
+   *  False under Auto (Jev): Jev may queue it instead, so it says "send". */
+  voiceSendSteers?: boolean
+  /** The push-to-talk key the mic names, or null where pressing it would not
+   *  record into this composer (see `pttBinding` in `useComposerVoice`). */
+  voicePttBinding?: PttBinding | null
   voiceBusyElsewhere: boolean
   voiceBusyElsewhereSession: VoiceInput['voiceBusyElsewhereSession']
   /** The composer holds text or files a send would carry (session refs excluded). */
@@ -278,7 +290,7 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   // An untitled chat (its stored title can be the raw slot key) is named
   // "Untitled session", so the label and the jump action never show the key.
   const micOwnerTitle = useAppSelector(s => {
-    const owner = voiceBusyElsewhereSession ? s.dashboard.slots.find(x => x.key === voiceBusyElsewhereSession) : undefined
+    const owner = voiceBusyElsewhereSession ? slotRowByKey(s.dashboard.slots, voiceBusyElsewhereSession) : undefined
     return owner ? sessionDisplayTitle(owner) : null
   })
   const micHeldElsewhereLabel = micOwnerTitle
@@ -288,6 +300,9 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
    *  gesture hook can only bind its listeners when that arrival is observable.
    *  Declared above `touchPtt` because the hook binds to it. */
   const [holdTarget, setHoldTarget] = useState<HTMLButtonElement | null>(null)
+  /** The up-right send zone: opted into, and only where letting go keeps a
+   *  draft. With `stt.submit_on_release` on, letting go already sends. */
+  const sendZone = voiceSlideToSend && !voiceSubmitOnRelease
   const touchVoice = useMemo(
     () => ({
       recording: captureInFlight,
@@ -310,6 +325,7 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
     target: holdTarget,
     disabled: disabled || micBlocked || optimizing,
     draftZone: voiceSubmitOnRelease,
+    sendZone,
   })
   /*
    * A draft suspends hold mode, EXCEPT while the touch gesture's own capture is
@@ -402,6 +418,10 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   // job the click actually performs. Reading `voiceHoldMode` first was what let the
   // two diverge — and a transcription elsewhere must not relabel a control whose
   // only job here is handing the keyboard back.
+  // Named at render, so a language switch renames it like every other label.
+  const pttKey = voicePttBinding
+    ? { name: bindingLabel(voicePttBinding), ariaKeyshortcuts: bindingAriaKeyshortcuts(voicePttBinding) }
+    : null
   const micLabel = micIsModeSwitch
     ? voiceHoldMode
       ? i18nT('components.chatInput.switch_to_keyboard')
@@ -419,7 +439,14 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
         ? voiceSubmitOnRelease
           ? i18nT('components.chatInput.stop_and_send')
           : i18nT('components.chatInput.stop_recording')
-        : i18nT('components.chatInput.voice_input')
+        // Idle, it names the push-to-talk key too: the key does the same job,
+        // and nothing else in the composer says so.
+        : pttKey
+          ? i18nT('components.chatInput.voice_input_with_key', { name: pttKey.name })
+          : i18nT('components.chatInput.voice_input')
+  // The key starts and stops the same recording, so it is announced whenever
+  // the mic records. As a mode switch the mic records nothing, so it is not.
+  const micKeyShortcuts = !micIsModeSwitch && pttKey ? pttKey.ariaKeyshortcuts : undefined
   /**
    * What the hold bar says, which must describe what the NEXT press or release
    * ACTUALLY does. Two of these were wrong for the same reason — the WeChat
@@ -434,6 +461,11 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
    *   `Release to transcribe`, which is what release does. Only with
    *   `stt.submit_on_release` on does release send, and only then does the bar
    *   say `Release to send`; sliding sideways then reads `Release to keep as draft`.
+   *   With it off and `stt.slide_to_send` on, sliding up and right reads
+   *   `Release to send`. When the send
+   *   would steer a running turn, the cue strip above already says
+   *   `Release to steer`, so the bar instead says what a steer does: `The agent
+   *   reads this before its next step`.
    * - While transcribing, the bar is disabled and used to still read "Hold to
    *   talk", so the dead control explained nothing.
    */
@@ -448,6 +480,10 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
         ? i18nT('components.chatInput.release_to_cancel')
         : touchPtt.bar === 'armed-draft'
           ? i18nT('components.chatInput.release_to_keep_draft')
+          : touchPtt.bar === 'armed-send'
+            ? voiceSendSteers
+              ? i18nT('components.chatInput.steer_reads_it_before_next_step')
+              : i18nT('components.chatInput.release_to_send')
           : touchPtt.bar === 'holding'
             ? voiceSubmitOnRelease
               ? i18nT('components.chatInput.release_to_send')
@@ -481,7 +517,7 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
 
   return {
     transcribeInFlight, transcribingIsHonest, micHeldElsewhere, micBlocked, micOwnerTitle, micHeldElsewhereLabel,
-    setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, holdBarLabel,
-    voiceModePlaceholder,
+    setHoldTarget, touchPtt, voiceHoldMode, micIsModeSwitch, voiceSettling, textareaParked, toggleVoiceMode, micLabel, micKeyShortcuts, holdBarLabel,
+    voiceModePlaceholder, sendZone,
   }
 }

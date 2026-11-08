@@ -1,14 +1,10 @@
 """The app backend's composition: no test patches a forwarded name with ``create=True``.
 
-``mock.patch`` undoes a name ``kiro_crew.apps.backend`` forwards to its owner by
-deleting it, and under ``create=True`` that delete is the whole undo: the name is
-gone from every backend module for the rest of the run. The guard here reads every
-test module of the repository off its AST alone and finds each patch of a forwarded
-name whose ``create`` is not literally ``False``, through any import alias, call or
-decorator spelling; the reader is shown each form it must catch beside a spelling
-of it it must leave alone. The rest of the facade's contract is in
-``test_app_backend_composition_contract.py``, which holds the one allowlisted
-premise case.
+``mock.patch`` undoes a name ``kiro_crew.apps.backend`` forwards by deleting it, so
+under ``create=True`` the name is gone from every backend module for the rest of the
+run. The guard reads every test module's AST and flags any patch of a forwarded name
+whose ``create`` is not literally ``False``, in any spelling. The rest of the contract
+is in ``test_app_backend_composition_contract.py``.
 """
 
 from __future__ import annotations
@@ -30,15 +26,18 @@ from kiro_crew.apps import backend
 # production re-export scan parses part of the package, once per worker otherwise.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_app_backend_composition_patch_spellings")
 
+#: The forwarded-name patch scan below takes 42 s of CPU alone on a fast host.
+#: Eight times that is over the ``tree_scan`` group default (``TREE_SCAN_TIMEOUT_SECS``
+#: in ``conftest.py``), so it carries its own budget.
+PATCH_SCAN_TIMEOUT_SECS = 420
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: An exported name several owners import: defined in ``probe``.
 _MULTI_HOLDER = "_health_probe"
 
 
-# ---------------------------------------------------------------------------
 # The patch spellings the suite may use on the facade
-# ---------------------------------------------------------------------------
 
 #: The patch callables by the dotted path they resolve to: which one, and the index of
 #: ``create`` among its positional parameters.
@@ -380,17 +379,12 @@ def _create_true_patches_of_forwarded_names(
     *,
     is_package: bool = False,
 ) -> list[_Hit]:
-    """Every ``mock.patch`` of a forwarded name in *source* whose ``create`` is not
-    literally ``False``.
+    """Every ``mock.patch`` of a forwarded name whose ``create`` is not literally ``False``.
 
-    Any spelling the reader can resolve counts: ``patch``, ``patch.object`` and
-    ``patch.multiple`` reached through any import alias, called or used as a
-    decorator, with a positional or keyword target and attribute, a keyword
-    ``create`` -- or a positional one to a callable spelled ``patch``, ``object`` or
-    ``multiple`` -- and a string target built from the facade's name. A patch of the
-    facade whose attribute it cannot resolve is a ``<dynamic>`` hit, never a pass. A
-    name the facade binds itself is safe -- ``mock.patch`` sees it as local and
-    writes the original back.
+    Covers ``patch``/``patch.object``/``patch.multiple`` via any alias, called or as a
+    decorator, positional or keyword ``create``, and string targets built from the
+    facade's name. An unresolvable attribute is a ``<dynamic>`` hit, never a pass; a name
+    the facade binds itself is safe.
     """
     tree = ast.parse(source)
     calls = [
@@ -873,6 +867,7 @@ class TestPatchSpellings:
         )
         assert [hit.name for hit in hits] == [_case(name) for name in expected]
 
+    @pytest.mark.timeout(PATCH_SCAN_TIMEOUT_SECS)
     def test_no_test_patches_a_forwarded_name_with_create_true(self) -> None:
         # ``mock.patch`` undoes a name the facade forwards by deleting it, and under
         # ``create=True`` the delete is the whole undo: the name is gone from every

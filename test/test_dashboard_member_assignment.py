@@ -71,11 +71,8 @@ async def test_dashboard_pin_refuses_privateness_changed_during_wait(
 ):
     """The private/non-private dispatch is decided from current config, not entry.
 
-    Deciding it from the request-entry snapshot is the same stale-snapshot
-    defect in the other direction: a member granted a private store during the
-    wait would be pinned non-private, writing its content to the shared store,
-    and one whose store was retired would be pinned private on authority the
-    caller never validated.
+    A stale snapshot would write a newly private member's content to the shared store,
+    or pin a retired store private.
     """
     writer, _ = member_stores
     private = KiroCrewConfig.load()

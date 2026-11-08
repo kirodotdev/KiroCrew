@@ -8,6 +8,7 @@
 
 import { i18next } from '../../i18n'
 import { i18nT } from '../../i18n/t'
+import { localMidnight } from './reminders'
 import type { CompanionStats, MemoryRow } from './types'
 import { Bell, Clock, Moon, Sun, Wind } from 'lucide-react'
 
@@ -16,8 +17,10 @@ import { Bell, Clock, Moon, Sun, Wind } from 'lucide-react'
 export function calcCompanionDays(firstLaunch: string): number {
   const start = new Date(firstLaunch)
   if (isNaN(start.getTime())) return 0
-  const diffMs = Date.now() - start.getTime()
-  return Math.max(0, Math.floor(diffMs / 86_400_000)) + 1
+  // Calendar days crossed, not elapsed 24h periods: the morning after a late
+  // first launch is day 2. Rounding absorbs the 23h/25h days around DST.
+  const days = Math.round((localMidnight(new Date()) - localMidnight(start)) / 86_400_000)
+  return Math.max(0, days) + 1
 }
 
 /** Whether a stat value carries anything worth showing. */

@@ -933,6 +933,9 @@ def test_a_reload_that_keeps_the_confirm_list_leaves_no_audit_row(monkeypatch) -
     manager = HookManager(HooksConfig.from_dict(hooks))
     sel_obj = _reload(manager, dict(hooks), monkeypatch)
     sel_obj.log_api_access.assert_not_called()
+    # The kept confirm pattern still asks, and the rest of the server still auto-approves.
+    assert _mcp_call(manager, "atlassian", "createJiraIssue") == TOOL_ALLOW
+    assert _mcp_call(manager, "atlassian", "getJiraIssue") == TOOL_AUTO_APPROVE
 
 
 # ── the read-only classifier does not settle a confirm-listed MCP call ───────

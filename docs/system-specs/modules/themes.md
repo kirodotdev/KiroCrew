@@ -23,13 +23,19 @@ opaque generic-validation errors — so an older Kiro Crew degrades honestly whe
 handed a newer pack. Semantics changes within a major stay backward-tolerant;
 breaking manifest changes bump the major.
 
+A pack's JSON files (`theme.json`, `variables.json`, a saved custom theme record,
+and an appearance pack's `manifest.json`) are read with
+`user_json.loads_user_json`, which accepts one leading UTF-8 byte-order mark: an
+editor that writes one (Windows Notepad does) must not turn a valid hand-edited
+file into "not valid JSON" or drop the pack from the list.
+
 `theme.json` also declares a `level` (0/1/2) that gates which asset categories
 a pack may ship. Validation is tier-scaled to payload trust.
 
 | Tier | `level` | Surface unlocked |
 |---|---|---|
-| **L0 Color** | 0 | the 56 theme CSS variables (dark + light) only |
-| **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
+| **L0 Color** | 0 | the 60 theme CSS variables (dark + light) only |
+| **L1 Branded** | 1 | + `branding/` (logo, favicon, wordmark, welcome, splash), `styles/fonts/`, scoped `overrides.css`, `loader/*.png\|webp\|gif\|svg` |
 | **L2 Experience** | 2 | + `overlays/` + `topbar/` sandboxed HTML, `audio/`, `persona.md` |
 
 Level-1 and Level-2 manifests may also declare `loaderIcons`: 4–8 distinct
@@ -41,11 +47,27 @@ asset path crosses the manifest boundary. Missing declarations preserve the
 Kiro ghost poses, and trusted compiled themes retain the broader
 `registerThemeBranding()` component seam.
 
+Level-1 and Level-2 manifests may also declare `codeTheme`,
+`{"dark": "<scheme>", "light": "<scheme>"}`: the Shiki scheme every code and diff
+view uses in that mode (a Level-0 pack's is ignored). The backend passes each
+string value to the asset descriptor and checks nothing else, so nothing is
+refused at install. The
+frontend (`pierreThemesFor`, `website/src/pierre/config.ts`) uses a name only when
+the build bundles that scheme (`@pierre/theming`'s collection); a mode left out,
+or a name it does not bundle, keeps the stock `pierre-dark` / `pierre-light`
+scheme for that mode. The one highlighter pool every view shares starts on the
+active pack's pair and is re-themed when the pack changes, which re-renders the
+open views.
+
 Installed packs may also supply the loader **art**, not just select symbols:
 `loader/*.png` `.webp` `.gif` `.svg` (1–8 images, Level 1) are the pack's own
 loader art: one image renders on its own, 2–8 are cycled by the stock carousel.
 Animated WebP/APNG/GIF and animated SVG self-animate inside the `<img>`, so a
-pack can ship a single fully-authored loop. Each is served through the ordinary
+pack can ship a single fully-authored loop. Under `prefers-reduced-motion:
+reduce` each loader image is instead painted once, at its first frame, onto a
+`<canvas>` (`PackLoaderImage`, `website/src/pages/chat/PackLoaderImage.tsx`):
+nothing on the page can pause an image's own animation, and theme overlays
+already stand down under reduced motion. Each is served through the ordinary
 asset route with a strict Content-Type + `nosniff` under `_THEME_ASSET_CSP`
 (`default-src 'none'; sandbox`) and referenced only as an `<img>` — SVG is safe
 the same way `logo.svg` is (an `<img>`-loaded SVG runs in the browser's secure
@@ -56,10 +78,32 @@ it needs no HTML-serving route of its own. The frontend
 
 The empty chat's welcome screen (`WelcomeView`) has one brand-mark slot, and a
 Level-1 pack fills it with `branding/welcome.svg|png|webp|gif` (256 KB, served
-and rendered like the loader art, so an animated image plays in place).
+and rendered like the loader art through `PackLoaderImage`, so an animated image
+plays in place and holds its first frame under `prefers-reduced-motion: reduce`).
 Precedence: compiled `registerThemeBranding()` `logo` → pack welcome image →
 pack `logo` → the stock ghost. So a pack that ships only a logo shows it there
 too, matching the left rail.
+
+The desktop app's boot splash (`website/electron/loading.html`, the "waiting for
+gateway" screen) paints before any gateway can serve a pack, so a Level-1 pack's
+`branding/splash.svg|png` (512 KB) reaches it through the shell. Each time the
+active theme's branding is applied, `reportThemeSplash`
+(`website/src/hooks/themeSplash.ts`) fetches the image and hands its bytes to the
+main process, or hands it `null` when the theme ships none; a custom selection
+whose detail has not loaded, or an image download that fails (an expired session
+mid-refresh, a network blip), hands over nothing, so a slow or failed load keeps
+the stored art, as it keeps the render cache.
+`website/electron/theme-splash.js` keeps the last one as `theme-splash.png|svg`
+in the shell's own userData directory and refuses any other type, an empty body
+or one over 512 KB, which clears the stored art. `splashQuery` passes the file as
+`?splash=` on every splash paint, cold boot and reconnect alike. The art takes the
+place of the ghosts and of the closing wordmark, over the theme accent the splash
+already follows; with no art, or art that fails to load, the stock ghosts play.
+Under `prefers-reduced-motion: reduce` the art's `<img>` stays hidden and only
+decodes it, and one frame is painted onto a canvas that never repaints, as the
+dashboard's `PackLoaderImage` does, so an animated SVG holds still.
+Like the accent, it is the last value any dashboard window reported, so it shows
+from the launch after the theme is picked.
 
 Constants (`dashboard/theme_validate.py`): `_THEME_MAX_LEVEL=2`,
 `_THEME_MAX_FONTS=6`, `_THEME_MAX_OVERLAYS=5`, `_THEME_PERSONA_MAX_CHARS=2000`,
@@ -109,13 +153,33 @@ cannot reach the hardcoded shadow value.
 
 ## Install Pipeline
 
-1. **Source** — a local directory (read in place, then copied into staging) or an https `github.com` repo
+1. **Source** — a local directory (read in place, then copied into staging), an
+   uploaded `.zip`, or an https `github.com` repo
    shallow-cloned server-side (`_clone_github`, `--depth 1`, 30s timeout, host
    allowlist). The clone spawns through the sandbox chokepoint, which fails
    **closed** where no OS sandbox backend exists: that refusal answers `503`
    with `code: "theme_install_sandbox_unavailable"`, never an unsandboxed
    retry — the URL is user-influenced and `git clone` executes remote content.
    A **local** source spawns nothing, so it stays available on such a host.
+   A **`.zip`** upload (`POST /api/themes/install-zip`, the archive as the body)
+   is how a browser that is not on the gateway host installs a pack: a folder
+   path names the gateway's filesystem, which a phone cannot reach.
+   `dashboard/theme_zip.py` unpacks it into a private temporary directory and
+   refuses what only an archive can express — a name that leaves the directory
+   (absolute, `:` in any component, `..`, backslash, or a target that does not
+   resolve under the directory), a symlink or other non-regular entry, a file
+   and a folder sharing one name, a path over six parts (even metadata),
+   an unreadable member, a member compressed
+   with anything but stored or deflate (`zipfile` decompresses a whole BZIP2 or
+   LZMA buffer at once, before any byte count sees it), more entries than the
+   largest tier allows (vetted by `zip_vet.vet_zip_inventory_bytes` before
+   `zipfile` parses the directory), or more unpacked bytes than it allows
+   (counted on the bytes written, not only the headers). Refusals answer `400`
+   with `code: "theme_zip_invalid"`; an empty body is `400` `theme_zip_empty`,
+   an oversized one `413` `theme_zip_too_large`. macOS metadata
+   (`__MACOSX/`, `._*`, `.DS_Store`) is skipped, and a pack wrapped in one
+   top-level folder is found inside it. The unpacked directory then goes through
+   the same local-source steps below; the governance gate is the same one.
 2. **Stage** — the source is copied into a private staging snapshot
    (`.install-staging-<token>`) via a per-file, symlink-rejecting,
    byte-bounded loop (`_copy_installed_theme`). The source dir remains
@@ -144,6 +208,7 @@ Registered by `dashboard/routes/themes.py` (`register`), except `GET /api/theme/
 | Method | Route | Purpose |
 |---|---|---|
 | `POST` | `/api/themes/install` | Install from local dir or GitHub (overwrite on re-install) |
+| `POST` | `/api/themes/install-zip` | Install from an uploaded `.zip` body (overwrite on re-install) |
 | `DELETE` | `/api/themes/{slug}` | Remove an installed theme |
 | `GET` | `/api/themes` | List custom + installed themes (the frontend adds built-ins) |
 | `GET` | `/api/themes/{slug}` | Theme detail + resolved `level` |
@@ -240,17 +305,47 @@ dashboard load into header-only round trips.
   hash-match the value the request supplies). The consent flow itself is a
   **client-side UX affordance**, not server-enforced authorization — see below.
 
-  **Consent gate (what it actually guarantees — and what it does not).** For an
-  INSTALLED pack, the consent modal shows the persona text **verbatim** and the
-  user's grant is keyed to `sha256(persona_text)`, stored in the browser's
-  localStorage. On every first-turn chat the frontend threads that hash as
+  **Parts and the consent dialog.** An installed Level-2 pack has up to three
+  parts, each on or off on its own: **Sounds** (audio and the mute button),
+  **Overlays** (overlays and the topbar strip) and **Persona**. The palette,
+  branding and `overrides.css` always apply while the pack is selected. A pack
+  that ships sounds or a persona shows a dialog on first activation with one
+  checkbox per part it ships, all checked, and the persona text verbatim under
+  the Persona checkbox. **Save** applies the checked parts; **Keep colors only**
+  (also Escape) turns every part off on this first answer. A pack that ships only overlays shows them
+  without asking. The answer is one record per slug in the browser's
+  localStorage, `mc-theme-experience-<slug>` = `{sounds, overlays, persona}`
+  (`website/src/utils/themeConsent.ts`); while it exists the dialog does not
+  return. A part the record does not list is off, so a part a re-install adds
+  stays off until the user turns it on. The record is stored before the
+  grant, so no grant is ever left without a record. When localStorage refuses
+  the record (full or disabled), the answer is kept for that tab only with the
+  persona off and no grant; when it refuses the grant, the persona is saved as
+  off, since chat sends only a stored grant.
+
+  A registered theme whose branding declares `overlays` (see *One theme, one
+  picker row* below) has one part, **Overlays**, on the same record keyed by
+  its slug, so light and dark share it, as does an installed pack of that slug,
+  which is never in the picker beside it. Like an overlays-only pack it shows
+  them without asking, and the Experience section lists Overlays alone for it;
+  turned off, the shell unmounts those overlays (`App.tsx`). Its top-bar
+  elements and its own CSS are not part of it.
+
+  **Consent gate (what it actually guarantees — and what it does not).** The
+  persona grant is a separate key, `mc-theme-consent-<slug>`, holding
+  `sha256(persona_text)` of the text the user saw and checked. It is written only
+  while the Persona part is on and revoked whenever it is off; Sounds and
+  Overlays never read or write it, so a pack without a persona never holds one.
+  On every first-turn chat the frontend threads the stored grant as
   `theme_consent_sha`; `_maybe_inject_persona` (`chat_utils_slots.py`)
   injects the pack's persona **only when `theme_consent_sha` equals sha256 of
   the persona text it reads from disk at that moment** (constant-time compare).
   A missing hash, or a stale one after a reinstall rewrote `persona.md`, **fails
-  closed** — the new, never-consented text is not injected and the user is
-  re-prompted. This is **surprise-prevention**: *what you saw and consented to
-  is exactly what can be injected*. It is **not** server-enforced consent: the
+  closed**: the new, never-consented text is not injected. The layer revokes the
+  stale grant before the user answers and asks again about the persona only;
+  Sounds and Overlays keep their answer. This is **surprise-prevention**: *what is
+  injected is exactly the persona text the user saw and checked*. It is **not**
+  server-enforced consent: the
   server never records a grant, `GET /api/themes/{slug}` returns
   `personaInfo.sha256` (and the text) to any authenticated caller, so an
   authenticated API client can synthesize a valid `theme_consent_sha` without a
@@ -260,6 +355,29 @@ dashboard load into header-only round trips.
   NOT build on a server-side-consent invariant — it does not exist. The legacy
   boolean `theme_consent` request field is still parsed for backward-compatible
   bodies/logging but **grants no injection on its own**.
+
+  **"Keep colors only" and changing the answer later.** On a first answer, Keep
+  colors only stores every part off and revokes any grant, so nothing reaches `theme_consent_sha`,
+  and no sounds, overlays, topbar or mute button run. No change to the pack clears
+  it. The parts of the active pack are changed in Settings > Display > Theme >
+  Experience (`ThemeExperienceSettings.tsx`), which lists only the parts the pack
+  ships. Sounds and Overlays apply when toggled. Turning Persona on stores the
+  persona as wanted without a grant, which opens the consent dialog asking about
+  the persona only, with its text; the grant is written when Save is pressed
+  there. That dialog's decline button reads **Keep persona off**; it (or Escape)
+  turns only the persona off and leaves Sounds and Overlays as they were.
+  Turning Persona off revokes the grant at once. When Save in the dialog cannot
+  store the choice, the dialog closes and the choice applies for that tab. When
+  it cannot store the persona grant, the dialog stays open on the persona alone
+  and shows an error without the agent hand-off, since the persona pick is not
+  saved yet. When
+  a toggle in the Experience section cannot be stored, the choice still applies
+  for that tab and an error with the agent hand-off shows under the section
+  until the next toggle is stored. The layer and the section re-read on the
+  `mc-theme-experience-changed` event and the `storage` event. Picking a theme in
+  the picker or restoring it at boot changes no record, so a pack with a record
+  never asks again and one without a record asks. A grant from an older build
+  that matches the pack migrates once to an all-on record.
 
   **All personas come from installed packs** and are content-bound
   consent-gated by the mechanism above — there is **no built-in / unconditional
@@ -287,7 +405,7 @@ dashboard load into header-only round trips.
 | Loader | `website/src/hooks/useTheme.tsx` | Applies CSS vars; `applyThemeOverrides` → `scopeOverridesCss` + `rewriteOverridesUrls` (`themeCss.ts`); `injectThemeFonts`; pre-apply self-repair; `themeSwitching` state |
 | Render cache | `website/src/hooks/themeRenderCache.ts` | Persists the active pack's detail under `localStorage["mc-theme-data"]` and reads it back synchronously at `ThemeProvider` mount so the first paint is themed |
 | Experience layer | `website/src/components/ThemeExperienceLayer.tsx` | Mounts sandboxed overlay/topbar iframes + audio; enforces the postMessage allowlist |
-| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-local/GitHub + remove + "Applying…" status indicator; the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
+| Settings UI | `website/src/pages/settings/DisplayPanel.tsx` | Single Theme dropdown + install-from-GitHub/local folder/uploaded `.zip` + remove + "Applying…" status indicator; the Experience section listing the active Level-2 pack's parts (Sounds, Overlays, Persona), or a registered theme's Overlays alone, as toggles (`ThemeExperienceSettings.tsx`); the catalog-failure and unstyled-theme notices with Retry (see *Catalog failure* below) |
 | Utility bridge | `website/src/tailwind-theme.css` | Tailwind v4 `@theme` mapping each utility (`bg-accent`, `text-muted/40`, `rounded-md`, `shadow-sm`, `font-mono`) onto the runtime CSS variable of the same stem, plus the `dark:` variant keyed on `[data-theme="dark"]`. A pack changes what a utility renders by writing the variable; it never touches this file. |
 
 ### Boot sequence: themed first paint
@@ -301,7 +419,7 @@ late. The boot path therefore has two parts.
    detail), written when that pack is applied. `ThemeProvider` reads it
    synchronously at mount and seeds variables, fonts and branding before the
    first paint. The cache holds only the Level-1 projection (colors, fonts,
-   branding, overrides flag and loader art); Level-2 experience content
+   branding, overrides flag, loader art and code scheme); Level-2 experience content
    (overlays, topbar, audio and persona) is applied only from the current server
    detail because consent is bound to its content hash. The server stays the
    source of truth: `customThemesLoaded` is never set from the cache, so

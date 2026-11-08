@@ -1,11 +1,8 @@
 """A crew's auto-approve grant: minted, renewed, revoked and audited.
 
-The wake's liveness guard is total, stopping a crew reaches the trust and loop state its
-record cannot express, the watcher's gates and an app disable revoke the grant in the
-request, renewal slides rather than re-activates, the backend never stamps a human's slot
-trust, a slot with no scope key takes the shared approval path unchanged, the SEL reason
-names which grant approved a tool, and each test's SEL root is private. The shared fakes and
-autouse fixtures live in ``issue_radar_crew_runtime_helpers.py``.
+Covers the wake's liveness guard, revocation on stop and app disable, renewal, the
+backend never granting slot trust, the SEL reason, and a private SEL root per test. Shared
+fakes and autouse fixtures live in ``issue_radar_crew_runtime_helpers.py``.
 """
 
 import ast
@@ -42,29 +39,35 @@ from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import watch as watch_mod
 from kiro_crew.dashboard import chat_runner
+from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.safety_override import reset_singleton, safety_override
 from kiro_crew.testing.wait import async_wait_until
+
+
+class _PolicyStore:
+    """The session store's approval-policy half, which is all a revocation writes."""
+
+    def __init__(self) -> None:
+        self.policies: dict[str, str] = {}
+
+    def get_approval_policy(self, key: str) -> str:
+        return self.policies.get(key, "")
+
+    def set_approval_policy(self, key: str, policy: str) -> None:
+        self.policies[key] = policy
 
 
 class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
     """The two shape rules that make the wake's liveness checks total.
 
-    1. Every exit from the wake passes the same check, which is why it sits in a
-       ``finally``: the grant is minted from a pre-``await`` record, so a path that
-       returns without re-checking leaves a grant the stop path already revoked
-       standing. A guard per ``return`` cannot cover the exception path, and each
-       instance found in review was a ``return`` nobody had listed yet.
-    2. Not one of those reads runs on the event loop. The record carries uncapped
-       operator free text, so a synchronous read of it is an unbounded blocking call
-       on the gateway's only thread — the ``no-blocking-call-on-event-loop`` hazard.
-       Correctness does not need it: :func:`crew_runtime.wake_crew` documents why the
-       read's own thread hop cannot hide a stop, since every stop path writes the
-       record before it revokes.
+    1. Every exit passes the check in a ``finally``: the grant is minted from a
+       pre-``await`` record, and a per-``return`` guard misses the exception path.
+    2. None of those reads runs on the event loop: the record holds uncapped operator
+       text (``no-blocking-call-on-event-loop``). Every stop writes the record before it
+       revokes, so the thread hop cannot hide a stop.
 
-    Pinned on the code's SHAPE because that is what regresses: an added ``return``,
-    or a read quietly taken on the loop to make a check "tighter", cannot be observed
-    behaviourally on an event loop nothing else is driving. Same source-inspection
-    idiom as :class:`TestCrewStoreScoping`.
+    Pinned on SHAPE, as in :class:`TestCrewStoreScoping`: neither regression is
+    observable on an event loop nothing else drives.
     """
 
     @staticmethod
@@ -106,12 +109,14 @@ class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
         self.assertIn("_reconcile_trust", dumped, "the exit guard does not reconcile the grant")
         self.assertIn("revoke_crew_execution", dumped, "the exit guard does not revoke")
 
-    def test_only_sync_trust_ever_writes_the_trust_scope(self):
+    def test_only_sync_trust_ever_holds_the_grant(self):
         """The scope attribute is the grant's carrier, so a second writer is a second
-        policy. Pinned across the module: ``revoke_crew_execution`` clears it on the
-        stop path, and nothing else may assign it."""
+        policy. The app writes it nowhere: the worker auto-approve seam does. And the
+        seam's ``hold`` is reached only from ``sync_trust``, through ``_hold_grant``;
+        the stop paths only release."""
         tree = ast.parse("\n".join(map(inspect.getsource, _runtime_modules())))
         writers = set()
+        holders = set()
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -122,7 +127,14 @@ class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
                 for target in targets:
                     if isinstance(target, ast.Attribute) and target.attr == "_trust_scope":
                         writers.add(node.name)
-        self.assertEqual(writers, {"sync_trust", "revoke_crew_execution", "revoke_crew_grants"})
+                if isinstance(inner, ast.Call):
+                    func = inner.func
+                    if isinstance(func, ast.Name) and func.id == "_hold_grant":
+                        holders.add(node.name)
+                    if isinstance(func, ast.Attribute) and func.attr == "hold":
+                        holders.add(node.name)
+        self.assertEqual(writers, set())
+        self.assertEqual(holders, {"sync_trust", "_hold_grant"})
 
     def test_every_async_grant_goes_through_the_generation_check(self):
         """A bare ``to_thread(sync_trust, ...)`` on an async path is the resurrection
@@ -245,16 +257,9 @@ class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
 class TestRevocation(unittest.IsolatedAsyncioTestCase):
     """Stopping a crew has to reach state the crew RECORD cannot express.
 
-    ``enabled``, ``paused_reason`` and ``retired_at`` are all on disk; the two
-    things that actually give a crew a turn are not. Its autonudge loop is a live
-    timer owned by another service, and its auto-approve grant is an in-memory
-    ``SafetyOverride`` scope that makes its tool calls auto-approve. Anything that
-    writes only the record leaves both armed until the watchdog notices — and that
-    runs on the app's poll interval, which is long enough for an idle timer to fire
-    one more unattended turn on a crew a human just stopped.
-
-    One helper serves the routes and the watchdog, so these tests pin the helper and
-    the watchdog's use of it; the routes' own timing is pinned in the route tests.
+    The autonudge loop and the in-memory ``SafetyOverride`` grant are not on disk, so a
+    record-only stop leaves both armed until the watchdog's next poll, long enough for
+    one more unattended turn. The routes' own timing is pinned in the route tests.
     """
 
     def setUp(self):
@@ -299,6 +304,37 @@ class TestRevocation(unittest.IsolatedAsyncioTestCase):
             await cr.revoke_crew_execution(state, crew, "retired")
         self.assertFalse(slot._trust)
         self.assertFalse(_effectively_trusted(slot))
+
+    async def test_stopping_a_crew_clears_the_policy_its_children_read(self):
+        """Turn admission caches ``_trust`` as the session's ``approval_policy``, and
+        the spawn gate and each child's tool approval read that cached value, not the
+        flag. A stop that clears only the flag leaves later spawns in the running turn
+        auto-approved."""
+        crew, state, slot, svc = await self._armed()
+        slot._trust = True
+        state.sessions = _PolicyStore()
+        state.sessions.set_approval_policy(effective_session_key(slot), "auto")
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.revoke_crew_execution(state, crew, "paused")
+        self.assertEqual(state.sessions.get_approval_policy(effective_session_key(slot)), "")
+
+    async def test_stopping_a_crew_clears_every_slot_on_its_session(self):
+        """The policy is per session and the flag per slot. A sibling slot on the
+        same session keeping its flag would write ``"auto"`` back at its next turn
+        admission; one on another session is left alone."""
+        crew, state, slot, svc = await self._armed()
+        slot._trust = True
+        alias = _FakeSlot("alias-of-crew")
+        alias.linked_session_key = effective_session_key(slot)
+        alias._trust = True
+        other = _FakeSlot("unrelated")
+        other._trust = True
+        state._slots = {s.key: s for s in (slot, alias, other)}
+        state.sessions = _PolicyStore()
+        with mock.patch.object(cr, "_autonudge_instance", lambda: svc):
+            await cr.revoke_crew_execution(state, crew, "paused")
+        self.assertFalse(alias._trust)
+        self.assertTrue(other._trust)
 
     async def test_revoking_twice_is_a_no_op_rather_than_an_error(self):
         """Retiring an already-paused crew, or a route racing the watchdog."""
@@ -363,15 +399,21 @@ class TestWatchGating(unittest.IsolatedAsyncioTestCase):
                 )
             )
             poll = use(mock.patch.object(watch, "_poll_repo", new=mock.AsyncMock()))
-            sweep = use(
-                mock.patch.object(
-                    watch.crew_runtime, "sweep_repo", new=mock.AsyncMock(return_value={})
-                )
-            )
+            use(mock.patch.object(watch.crew_runtime, "sweep_repo", new=self._recording_sweep()))
             await watch._poll_once(_app(_FakeState()))
         # Muting the bell must not stop a crew reconciling its own pull requests.
         poll.assert_not_awaited()
-        sweep.assert_awaited_once()
+        self.assertEqual(self.swept, [(OWNER, REPO, "github", "github.com")])
+
+    def _recording_sweep(self):
+        """A hand-written sweep that records the repo key ``_poll_once`` built."""
+        self.swept: list[tuple[str, str, str, str]] = []
+
+        async def _sweep(_app, key):
+            self.swept.append((key.owner, key.repo, key.provider, key.host))
+            return {}
+
+        return _sweep
 
     async def test_a_failing_new_issue_poll_still_runs_the_sweep(self):
         watch = self._watch()
@@ -392,31 +434,38 @@ class TestWatchGating(unittest.IsolatedAsyncioTestCase):
                     watch, "_poll_repo", new=mock.AsyncMock(side_effect=RuntimeError("gh down"))
                 )
             )
-            sweep = use(
-                mock.patch.object(
-                    watch.crew_runtime, "sweep_repo", new=mock.AsyncMock(return_value={})
-                )
-            )
+            use(mock.patch.object(watch.crew_runtime, "sweep_repo", new=self._recording_sweep()))
+            logs = use(self.assertLogs(watch.logger, "WARNING"))
             await watch._poll_once(_app(_FakeState()))
-        sweep.assert_awaited_once()
+        self.assertEqual(self.swept, [(OWNER, REPO, "github", "github.com")])
+        self.assertIn(
+            f"issue-radar watch failed for {OWNER}/{REPO}",
+            [r.getMessage() for r in logs.records],
+        )
 
     async def test_disabling_the_app_suspends_the_crews(self):
         watch = self._watch()
+        reset_singleton()
+        self.addCleanup(reset_singleton)
+        crew = {"id": "c_abc", "unattended": True, "enabled": True}
+        state = _FakeState()
+        slot = _FakeSlot("crew-c_abc")
+        slot._app = "issue-radar"
+        cr.sync_trust(slot, crew)
+        state._slots = {"crew-c_abc": slot}
         with contextlib.ExitStack() as stack:
             use = stack.enter_context
             use(mock.patch.object(watch, "is_app_enabled", return_value=False))
-            suspend = use(
-                mock.patch.object(
-                    watch.crew_runtime, "suspend_crews", new=mock.AsyncMock(return_value=0)
-                )
-            )
             repos = use(mock.patch.object(watch.store, "list_connected_repos"))
-            await watch._poll_once(_app(_FakeState()))
-            await watch._poll_once(_app(_FakeState()))
+            await watch._poll_once(_app(state))
+            self.assertFalse(_effectively_trusted(slot))
+            # Re-granted behind the poll's back: a second suspension would clear it.
+            cr.sync_trust(slot, crew)
+            await watch._poll_once(_app(state))
         # A disabled app stays silent — no config walk — and suspends only ONCE,
         # because nothing re-establishes trust while the app is off.
         repos.assert_not_called()
-        suspend.assert_awaited_once()
+        self.assertTrue(_effectively_trusted(slot))
 
     async def test_suspension_clears_trust_on_resident_crew_slots(self):
         reset_singleton()
@@ -441,14 +490,8 @@ class TestWatchGating(unittest.IsolatedAsyncioTestCase):
 class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
     """Disabling the app must stop the crews IN THE REQUEST, not on the next sweep.
 
-    The window this pins: the sweep runs every ``POLL_INTERVAL_SEC``, so a
-    suspension that only happened there left up to a full minute in which an
-    already-armed nudge fired a whole auto-approved turn for an app the operator had
-    just switched off. "Stop" has to mean stopped, the way pause and retire already
-    revoke inline before they answer.
-
-    Nothing here sleeps or polls: every assertion is made on the state left behind
-    the moment the disable hook's coroutine returns.
+    The sweep runs every ``POLL_INTERVAL_SEC``, time enough for an armed nudge to fire an
+    auto-approved turn. Assertions read the state left when the hook's coroutine returns.
     """
 
     def setUp(self):
@@ -478,11 +521,8 @@ class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
     def _register(self) -> Any:
         """Install the hook against a stand-in for core's registry, and return it.
 
-        ``create=True``: the registry is core's to add (see the report accompanying
-        this change), and the app must keep working — on the sweep alone — against a
-        build that has none. Patching it in is what lets this test assert the app
-        registers the right callable under its own name, so the seam is live the
-        moment core calls it.
+        ``create=True``: core may lack the registry, and the app must then work on the
+        sweep alone; patching it in lets the test check the registered callable.
         """
         from kiro_crew.apps import teardown
 
@@ -516,14 +556,21 @@ class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.nudge.updates, [("nl_dis", {"active": False})])
         poll.assert_not_awaited()
 
+    async def test_disabling_the_app_clears_the_policy_children_read(self):
+        """The same cached ``"auto"`` as a stop: the disable has to clear it too."""
+        self.slot._trust = True
+        self.state.sessions = _PolicyStore()
+        self.state.sessions.set_approval_policy(effective_session_key(self.slot), "auto")
+        with mock.patch.object(cr, "_autonudge_instance", return_value=self.nudge):
+            await cr.on_app_disabled(self.state)
+        key = effective_session_key(self.slot)
+        self.assertEqual(self.state.sessions.get_approval_policy(key), "")
+
     async def test_the_grant_is_gone_before_the_first_await(self):
         """GRANTS BEFORE LOOPS is the ordering that closes the window.
 
-        Deactivating a loop awaits, so it hands the event loop back. Doing it first
-        would leave the grants live across that suspension point, and an armed timer
-        firing in the gap would take its auto-approved turn from the very call that
-        was stopping it. Asserted from inside the await itself, because that is the
-        only moment at which a reversed order is observable.
+        Deactivating a loop awaits, so a live grant there lets an armed timer take an
+        auto-approved turn. Checked inside the await, the only place the order shows.
         """
         observed: list[bool] = []
 
@@ -590,14 +637,9 @@ class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
     async def test_a_look_alike_chat_tab_keeps_its_own_loop(self):
         """Disabling this app must not touch a loop it does not own.
 
-        The slot-key prefix is not a namespace this app owns: a person can name an
-        ordinary chat tab ``crew-notes`` and arm their own monitoring loop on it.
-        Matching on the prefix alone deactivated that loop and PERSISTED it
-        inactive, so someone else's monitoring silently stopped because an
-        unrelated app was switched off — and nothing in the tab explains why.
-
-        The crew's own loop must still be deactivated in the same pass, or this
-        test would also pass on a build that had simply stopped suspending crews.
+        A person can name a chat tab ``crew-notes``, so a prefix match would persist
+        their loop inactive. The crew's own loop must still stop in the same pass, or a
+        build that suspends nothing would pass.
         """
         mine = _FakeLoop("nl_mine", self.slot.key)
         # Valid prefix, suffix that the store's id grammar rejects — which is
@@ -633,11 +675,8 @@ class TestDisablingTheAppRevokesInline(unittest.IsolatedAsyncioTestCase):
 class TestGrantRenewal(unittest.TestCase):
     """Renewal is a SLIDE, not a re-activation, and that is a security property.
 
-    The watchdog calls ``sync_trust`` every 60s. Re-activating on each of those
-    would write a critical SEL entry per cycle — 1,440 a day per crew, burying the
-    activation an auditor came for — and would reset ``activated_at``, so
-    ``SafetyOverride``'s 24h ceiling could never be reached: the grant would be
-    perpetual with an audit trail that merely looked busy.
+    ``sync_trust`` runs every 60s; re-activating would write 1,440 critical SEL entries a
+    day per crew and reset ``activated_at``, so the 24h ceiling would never be reached.
     """
 
     def setUp(self):
@@ -687,15 +726,9 @@ class TestGrantRenewal(unittest.TestCase):
 class TestNoBackendTrustGrant(unittest.TestCase):
     """The load-bearing invariant, mirroring ``spec_builder``'s own source check.
 
-    ``slot._trust`` is the grant a HUMAN makes. It never expires and nothing audits
-    its activation, because the click is the record. A backend that stamps it
-    manufactures an unbounded auto-approval out of nothing, which is why
-    ``spec_builder`` was made to stop — and asserting on module SOURCE is what stops
-    it coming back, since a behavioural test only covers the paths it happens to
-    drive.
-
-    Revoking is not granting: ``= False`` writes are fine and are what
-    ``revoke_crew_execution`` and ``suspend_crews`` are for.
+    ``slot._trust`` is a HUMAN's grant: it never expires and is not audited. A backend
+    stamping it creates unbounded auto-approval; a source check covers every path.
+    Revoking is fine: ``revoke_slot_trust`` calls and ``= False`` writes.
     """
 
     def test_crew_runtime_never_grants_slot_trust(self):
@@ -713,9 +746,10 @@ class TestNoBackendTrustGrant(unittest.TestCase):
             "setattr(slot, '_trust'",
         ):
             assert revived not in src, f"{revived} is a backend trust grant"
-        # Every write to the flag in this module must be a revocation.
+        # Revocation goes through the shared helper, which clears the cached session
+        # policy along with the flag; any direct write left must still be a revocation.
+        self.assertIn("revoke_slot_trust(", src, "expected the revocation calls to still exist")
         writes = re.findall(r"\._trust\s*=\s*([^\n]+)", src)
-        self.assertTrue(writes, "expected the revocation writes to still exist")
         for value in writes:
             self.assertEqual(value.strip(), "False", f"non-revoking write to _trust: {value!r}")
 
@@ -764,7 +798,7 @@ class TestSharedApprovalPathIsUnchangedWithoutAScope(unittest.TestCase):
         """A human's grant needs no scope and must not depend on one being live."""
         slot = _FakeSlot("chat-1")
         slot._trust = True
-        slot._trust_scope = "crew:c_x:autoapprove"  # not active
+        slot._trust_scope = "app:issue-radar:grant:crew-c_x:autoapprove"  # not active
         self.assertTrue(_effectively_trusted(slot))
 
 
@@ -774,12 +808,12 @@ class TestAutoApproveProvenance(unittest.TestCase):
 
     def test_yolo_outranks_everything(self):
         slot = _FakeSlot("chat-1")
-        slot._trust_scope = "crew:c_x:autoapprove"
+        slot._trust_scope = "app:issue-radar:grant:crew-c_x:autoapprove"
         self.assertEqual(chat_runner._auto_approve_reason(slot, True), "yolo")
 
     def test_a_scoped_grant_is_named_as_such(self):
         slot = _FakeSlot("crew-c_x")
-        slot._trust_scope = "crew:c_x:autoapprove"
+        slot._trust_scope = "app:issue-radar:grant:crew-c_x:autoapprove"
         self.assertEqual(chat_runner._auto_approve_reason(slot, False), "trust_scope")
 
     def test_session_trust_is_still_reported_as_trust(self):
@@ -800,18 +834,9 @@ _CLAIMED_SEL_ROOTS: set[str] = set()
 class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
     """The per-test SEL root, pinned differentially.
 
-    Every trust assertion in this file requires a fail-closed critical SEL
-    audit to WIN the chain lock, and on the event-loop thread that acquire is a
-    single non-blocking attempt (``sel_chain_lock.py``) with a fail-closed refusal behind
-    it (``safety_override_grant.py``) — both correct product behaviour, pinned by
-    their own tests, and deliberately not touched here. What THESE tests pin is
-    the test-isolation property that makes depending on that lock safe: the
-    root the audit writes through belongs to this test alone, so no sibling
-    test's writer can ever hold this test's lock.
-
-    Written to FAIL on the shared-root arrangement this module had before
-    (one session-scoped SEL directory per worker), not merely to pass on the
-    private one — see each test's body for which leg is the differential.
+    Each trust check needs the fail-closed SEL audit to win the chain lock in one
+    non-blocking try (``sel_chain_lock.py``), so the SEL root must belong to this test
+    alone. Each test fails on a root shared per worker, not only passes on a private one.
     """
 
     def setUp(self):
@@ -832,15 +857,9 @@ class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
     async def test_a_holder_of_the_shared_default_root_cannot_refuse_trust(self):
         """A concurrent writer on the SHARED root does not reach this module.
 
-        The holder below stands in for the writer the flake needed: it takes
-        the chain lock of the DEFAULT SEL root — the directory ``sel()`` would
-        resolve WITHOUT this module's per-test isolation, and the one a sibling
-        test's writer would actually hold — through its own file description,
-        which is how a foreign holder looks to ``flock``. On the shared-root
-        arrangement the fail-closed trust audit loses its single-shot acquire
-        against exactly this and the grant is refused (the original failure
-        verbatim); with a private per-test root the holder is a stranger to the
-        audit, and trust must be granted.
+        The holder takes the DEFAULT root's chain lock through its own file description,
+        as a sibling test's writer would. On a shared root the audit loses its one try
+        and trust is refused; with a private root trust must be granted.
         """
         # setUp already skipped when the isolation seam is absent, so this is
         # the displaced session directory, never the operator's data home.

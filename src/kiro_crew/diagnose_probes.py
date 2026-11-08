@@ -23,12 +23,16 @@ import concurrent.futures
 import json
 import logging
 import socket
-import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+# The memory store's own driver, not the stdlib module: where pysqlite3 is installed
+# it carries its own copy of SQLite, and a second copy's close of memory.db drops
+# the locks the gateway's connection holds on it (sqlite.org/howtocorrupt.html 2.2.1).
+from kiro_crew._sqlite_compat import sqlite3
 
 logger = logging.getLogger(__name__)
 
@@ -559,7 +563,7 @@ def probe_kiro_cli_auth(ctx: ProbeContext) -> dict[str, Any]:
             evidence,
             _steps(
                 f"On the gateway host run: {status.login_command}",
-                "Start a new chat after signing in.",
+                "Send your message again after signing in.",
             ),
         )
     if not status.installed:

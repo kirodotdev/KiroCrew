@@ -13,6 +13,7 @@ import json
 import random
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -373,3 +374,225 @@ class TestVectorMatrixCache:
             assert retrieval._matrix_cache == {}
         finally:
             s.close()
+
+
+class TestAliasFallbackIndex:
+    """The alias fallback reads through ``idx_entities_with_aliases``, in table order."""
+
+    @staticmethod
+    def _two_sharing_an_alias(store) -> tuple[str, str]:
+        # The index orders by the aliases text, so the later row sorts first
+        # there: only a read that restores table order returns ``first``.
+        first = store.add_entity("Kubernetes", "tool", aliases=["zeta", "k8s"])
+        second = store.add_entity("K8s Operator", "tool", aliases=["alpha", "k8s"])
+        return first, second
+
+    def test_the_fallback_reads_the_partial_index(self, store):
+        plan = " ".join(
+            r[-1]
+            for r in store.db.execute(
+                "EXPLAIN QUERY PLAN SELECT rowid, aliases FROM entities "
+                "WHERE aliases IS NOT NULL AND aliases NOT IN ('', '[]')"
+            )
+        )
+        assert "idx_entities_with_aliases" in plan
+
+    def test_the_first_row_in_table_order_wins(self, store):
+        first, _ = self._two_sharing_an_alias(store)
+        assert store.find_entity("K8S")["id"] == first
+
+    def test_a_rowid_reused_between_the_reads_never_answers(self, store, monkeypatch):
+        """The matched row is deleted and its rowid reused before the second read.
+
+        ``entities`` has no AUTOINCREMENT, so SQLite hands the freed top rowid to
+        the next insert; an alias must not resolve to that unrelated entity.
+        """
+        store.add_entity("Postgres", "tool", aliases=["pg"])
+        doomed = store.add_entity("Kubernetes", "tool", aliases=["k8s"])
+        real = store.db
+        raced = {"done": False}
+
+        class _RaceAfterCandidates:
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def execute(self, sql, *args):
+                cur = real.execute(sql, *args)
+                if "aliases NOT IN" in sql and not raced["done"]:
+                    raced["done"] = True
+                    rows = cur.fetchall()
+                    rowid = real.execute(
+                        "SELECT rowid FROM entities WHERE id = ?", (doomed,)
+                    ).fetchone()[0]
+                    real.execute("DELETE FROM entities WHERE id = ?", (doomed,))
+                    real.execute(
+                        "INSERT INTO entities (rowid, id, name, entity_type, aliases, "
+                        "created_at, updated_at) VALUES (?, 'redis', 'Redis', 'tool', "
+                        "'[\"cache\"]', '', '')",
+                        (rowid,),
+                    )
+                    return SimpleNamespace(fetchall=lambda: rows)
+                return cur
+
+        monkeypatch.setattr(type(store), "db", property(lambda _self: _RaceAfterCandidates()))
+        assert store.find_entity("k8s") is None
+        assert raced["done"]
+
+    def test_the_answer_is_the_same_without_the_index(self, store):
+        first, _ = self._two_sharing_an_alias(store)
+        with_index = store.find_entity("k8s")
+        store.db.execute("DROP INDEX idx_entities_with_aliases")
+        store.db.commit()
+        assert store.find_entity("k8s") == with_index
+        assert with_index["id"] == first
+
+    def test_it_is_built_post_bind_for_a_populated_library(self, tmp_path):
+        path = str(tmp_path / "kb.db")
+        s = KnowledgeStore(path)
+        s.add_entity("widget", "concept", aliases=["gadget"])
+        s.db.execute("DROP INDEX idx_entities_with_aliases")
+        s.db.commit()
+        s.close()
+        reopened = KnowledgeStore(path)
+        try:
+            assert "idx_entities_with_aliases" not in _index_names(reopened)
+            assert reopened.has_pending_one_time_work()
+            reopened.ensure_search_indexes()
+            assert "idx_entities_with_aliases" in _index_names(reopened)
+            assert reopened.find_entity("GADGET")["name"] == "widget"
+        finally:
+            reopened.close()
+
+
+_CANDIDATES = "SELECT id, embedding FROM items WHERE embedding IS NOT NULL AND status = 'active'"
+
+
+def _row_path_build(store, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(retrieval, "_read_packed", lambda *a, **k: None)
+        return retrieval._build_matrix(store, _CANDIDATES, [], _DIM)
+
+
+class TestOneStatementRead:
+    """The matrix build reads every packed vector in one statement, not row by row."""
+
+    def test_it_builds_what_the_row_path_builds(self, store, monkeypatch):
+        rng = random.Random(31)
+        for i in range(25):
+            store.add_item(f"doc {i}", "c" * 500, "doc", embedding=floats_to_bytes(_vec(rng)))
+        store.add_item("no vector", "c", "doc")
+        with monkeypatch.context() as m:
+            m.setattr(retrieval, "_read_snapshot", _refuse_row_read)
+            gen, (ids, mat, norms, retained) = retrieval._build_matrix(store, _CANDIDATES, [], _DIM)
+        ref_gen, (ref_ids, ref_mat, ref_norms, ref_retained) = _row_path_build(store, monkeypatch)
+        assert (gen, ids, retained) == (ref_gen, ref_ids, ref_retained)
+        assert mat.tobytes() == ref_mat.tobytes() and norms.tobytes() == ref_norms.tobytes()
+
+    def test_an_empty_library_builds_nothing(self, store, monkeypatch):
+        with monkeypatch.context() as m:
+            m.setattr(retrieval, "_read_snapshot", _refuse_row_read)
+            assert retrieval._build_matrix(store, _CANDIDATES, [], _DIM)[1] is None
+
+    @pytest.mark.parametrize(
+        "odd_blob",
+        [
+            pytest.param(json.dumps([0.5] * _DIM).encode(), id="legacy-json"),
+            pytest.param(floats_to_bytes([0.5] * (_DIM + 1)), id="another-width"),
+            pytest.param(b"[1]".ljust(_DIM * 4), id="packed-width-json-list"),
+            pytest.param("x" * (_DIM * 4), id="text-of-packed-width"),
+        ],
+    )
+    def test_anything_but_packed_vectors_goes_to_the_row_path(self, store, monkeypatch, odd_blob):
+        rng = random.Random(32)
+        for i in range(5):
+            store.add_item(f"doc {i}", "c", "doc", embedding=floats_to_bytes(_vec(rng)))
+        store.add_item("odd", "c", "doc", embedding=odd_blob)
+        assert retrieval._read_packed(store, _CANDIDATES, [], _DIM * 4) is None
+        q = _vec(rng)
+        assert _retriever(store, q)._vector_search("q", limit=20) == _reference(
+            store, q, monkeypatch
+        )
+
+    def test_a_utf16_library_goes_to_the_row_path(self, tmp_path, monkeypatch):
+        path = str(tmp_path / "utf16.db")
+        raw = sqlite3.connect(path)
+        raw.execute("PRAGMA encoding = 'UTF-16le'")
+        raw.execute("CREATE TABLE seed (x)")
+        raw.commit()
+        raw.close()
+        s = KnowledgeStore(path)
+        try:
+            rng = random.Random(33)
+            for i in range(5):
+                s.add_item(f"doc {i}", "c", "doc", embedding=floats_to_bytes(_vec(rng)))
+            assert s.db.execute("PRAGMA encoding").fetchone()[0] == "UTF-16le"
+            assert retrieval._read_packed(s, _CANDIDATES, [], _DIM * 4) is None
+            q = _vec(rng)
+            assert _retriever(s, q)._vector_search("q", limit=20) == _reference(s, q, monkeypatch)
+        finally:
+            s.close()
+
+    def test_a_result_past_the_length_limit_goes_to_the_row_path(self, store, monkeypatch):
+        """SQLITE_TOOBIG reaches Python as DataError; the search must still answer.
+
+        The bundled pysqlite3 has no ``setlimit``, so the aggregate statement is
+        made to raise what SQLite raises past its length limit.
+        """
+        rng = random.Random(35)
+        for i in range(25):
+            store.add_item(f"doc {i}", "c", "doc", embedding=floats_to_bytes(_vec(rng)))
+        q = _vec(rng)
+        expected = _reference(store, q, monkeypatch)
+        retrieval.clear_vector_matrix_cache()
+        real = store.db
+
+        class _TooBigCursor:
+            def __init__(self, cur):
+                object.__setattr__(self, "_cur", cur)
+
+            def __getattr__(self, name):
+                return getattr(self._cur, name)
+
+            def __setattr__(self, name, value):
+                setattr(self._cur, name, value)
+
+            def execute(self, sql, *args):
+                if "group_concat" in sql:
+                    raise retrieval.sqlite3.DataError("string or blob too big")
+                return self._cur.execute(sql, *args)
+
+        class _TooBig:
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def cursor(self, *args):
+                return _TooBigCursor(real.cursor(*args))
+
+        monkeypatch.setattr(type(store), "db", property(lambda _self: _TooBig()))
+        assert retrieval._read_packed(store, _CANDIDATES, [], _DIM * 4) is None
+        assert _retriever(store, q)._vector_search("q", limit=20) == expected
+
+    def test_scoped_candidates_read_in_one_statement_too(self, store, monkeypatch):
+        rng = random.Random(34)
+        a = store.add_source("a", "file", "file:///a")
+        for i in range(6):
+            store.add_item(
+                f"doc {i}",
+                "c",
+                "doc",
+                source_id=a if i % 2 else None,
+                embedding=floats_to_bytes(_vec(rng)),
+            )
+        q = _vec(rng)
+        r = _retriever(store, q)
+        with monkeypatch.context() as m:
+            m.setattr(retrieval, "_read_snapshot", _refuse_row_read)
+            scoped = r._vector_search("q", limit=20, source_id=a)
+        retrieval.clear_vector_matrix_cache()
+        with monkeypatch.context() as m:
+            m.setattr(retrieval, "_cached_matrix", lambda *a, **k: None)
+            assert scoped == r._vector_search("q", limit=20, source_id=a)
+
+
+def _refuse_row_read(*_a, **_k):
+    raise AssertionError("the build read the candidates row by row")

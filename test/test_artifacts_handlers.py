@@ -238,6 +238,44 @@ class TestList:
         assert _json_body(resp)["artifacts"] == []
 
     @pytest.mark.asyncio
+    async def test_content_search_follows_an_external_edit_of_a_linked_file(
+        self, isolated_store, patch_restricted, tmp_path: Path
+    ) -> None:
+        # A live pointer reads its file on every get, so an edit made outside
+        # the store changes the content without moving version or updated_at.
+        src = tmp_path / "notes.md"
+        src.write_text("# notes\nalphaword here\n", encoding="utf-8")
+        art = isolated_store.create(
+            name="Linked notes", content=src.read_text(), source_path=str(src)
+        )
+        assert not art.source_copy_only
+
+        async def _found(word: str) -> list[str]:
+            resp = await api_artifacts_list(_request(query={"q": word, "content": "1"}))
+            return [a["slug"] for a in _json_body(resp)["artifacts"]]
+
+        assert await _found("alphaword") == [art.slug]
+        src.write_text("# notes\nbetaword here plus more\n", encoding="utf-8")
+        assert "betaword" in (isolated_store.get(art.slug).content or "")
+        assert (await _found("betaword"), await _found("alphaword")) == ([art.slug], [])
+
+    @pytest.mark.asyncio
+    async def test_prefix_snippet_follows_an_external_edit_of_a_linked_file(
+        self, isolated_store, patch_restricted, tmp_path: Path
+    ) -> None:
+        src = tmp_path / "notes.md"
+        src.write_text("alphaword here", encoding="utf-8")
+        isolated_store.create(name="Linked notes", content=src.read_text(), source_path=str(src))
+
+        async def _snippet() -> str:
+            resp = await api_artifacts_list(_request(query={"snippet": "1"}))
+            return _json_body(resp)["artifacts"][0]["snippet"]
+
+        assert await _snippet() == "alphaword here"
+        src.write_text("betaword here plus more", encoding="utf-8")
+        assert await _snippet() == "betaword here plus more"
+
+    @pytest.mark.asyncio
     async def test_filter_by_tag(self, isolated_store, patch_restricted) -> None:
         isolated_store.create(name="a", content="x")
         isolated_store.create(name="b", content="x", tags=["op"])
@@ -450,6 +488,17 @@ class TestCreate:
         resp = await api_artifacts_create(_request(body=body))
         assert resp.status == 400
         assert "name" in _json_body(resp)["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", [["dashboard"], {"a": 1}], ids=["list", "dict"])
+    async def test_a_list_or_object_source_returns_400(
+        self, isolated_store, patch_restricted, source
+    ) -> None:
+        body = {"name": "x", "content": "a", "slug": "kept-out", "source": source}
+        resp = await api_artifacts_create(_request(body=body))
+        assert resp.status == 400
+        assert _json_body(resp)["error"].startswith("source must be str")
+        assert not (isolated_store.root / "kept-out").exists()
 
     @pytest.mark.asyncio
     async def test_duplicate_slug_returns_409(self, isolated_store, patch_restricted) -> None:

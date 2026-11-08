@@ -9,14 +9,12 @@ those tests share this module so the patch reaches the reader.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import pathlib
 import shlex
 import shutil
 import sys
-import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -34,7 +32,76 @@ from terminal_handler_helpers import (  # noqa: F401 -- the autouse fixture regi
 )
 
 from kiro_crew.dashboard.handlers import terminal
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, default_timeout, finished
+
+#: What ends a read of the terminal socket. A closed ``ClientWebSocketResponse`` answers
+#: ``receive()`` at once without yielding to the loop, so a read that did not stop on every
+#: one of these would starve the very loop its lost-run bound runs on.
+_SOCKET_ENDED = (
+    web.WSMsgType.CLOSE,
+    web.WSMsgType.CLOSING,
+    web.WSMsgType.CLOSED,
+    web.WSMsgType.ERROR,
+)
+
+
+async def _read_bounded(read, what: str, seen: bytearray):
+    """Run a read of the terminal socket to its end and return what it returns.
+
+    The read ends on the frame it waits for, so how long a slow host takes does
+    not decide the outcome. ``finished`` only names a run that lost the frame, and
+    the PTY output read so far is the state a reader of that failure needs, so it
+    is quoted with it.
+    """
+    try:
+        return await finished(read, what)
+    except AssertionError as lost:
+        raise AssertionError(f"{lost}; PTY tail: {bytes(seen)[-400:]!r}") from lost
+
+
+async def _await_ready_frame(ws, output: bytearray | None = None) -> bool:
+    """Read the socket until the shell's ``ready`` control frame arrives.
+
+    PTY output read on the way is appended to ``output``. Returns False when the
+    socket ended first.
+    """
+    seen = output if output is not None else bytearray()
+
+    async def read() -> bool:
+        while True:
+            msg = await ws.receive()
+            if msg.type == web.WSMsgType.BINARY:
+                seen.extend(msg.data)
+            elif msg.type == web.WSMsgType.TEXT:
+                if json.loads(msg.data).get("type") == "ready":
+                    return True
+            elif msg.type in _SOCKET_ENDED:
+                return False
+
+    return await _read_bounded(read(), "the shell's ready frame", seen)
+
+
+async def _drain_to_pong(ws) -> None:
+    """Ping the server and read until its pong comes back.
+
+    The write loop handles frames in order, so a pong proves every frame sent
+    before the ping has already been processed. The shell's own startup output
+    shares this stream, and how many frames it takes is a property of the host's
+    shell and profile chain, not of the handler (a macOS runner's login shell
+    emits more startup frames than a fixed frame budget allows), so the read
+    ends on the pong itself.
+    """
+
+    async def read() -> None:
+        while True:
+            msg = await ws.receive()
+            assert msg.type not in _SOCKET_ENDED, f"socket closed before pong: {msg.type}"
+            if msg.type == web.WSMsgType.TEXT and json.loads(msg.data).get("type") == "pong":
+                return
+
+    await ws.send_str(json.dumps({"type": "ping"}))
+    await finished(read(), "the pong for the ping just sent")
+
 
 # ── Integration tests using aiohttp TestClient ──
 
@@ -325,21 +392,7 @@ class TestTerminalWsIntegration:
         try:
             async with TestClient(TestServer(app)) as client:
                 async with client.ws_connect("/api/ws/terminal/profile-isolation") as ws:
-                    loop = asyncio.get_event_loop()
-                    # flake-ok: pre-existing real loop-clock deadline that bounds the 15 s wait for the isolated shell's ready frame, moved verbatim; tracked for a de-flake pass
-                    deadline = loop.time() + 15
-                    # flake-ok: pre-existing real loop-clock read that ends the ready-frame loop once the 15 s window lapses, moved verbatim; tracked for a de-flake pass
-                    while loop.time() < deadline:
-                        # flake-ok: pre-existing real loop-clock read that sizes each receive to the rest of the 15 s ready window, moved verbatim; tracked for a de-flake pass
-                        msg = await ws.receive(timeout=deadline - loop.time())
-                        if msg.type == web.WSMsgType.BINARY:
-                            output.extend(msg.data)
-                        elif msg.type == web.WSMsgType.TEXT:
-                            if json.loads(msg.data).get("type") == "ready":
-                                ready_seen = True
-                                break
-                        elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
-                            break
+                    ready_seen = await _await_ready_frame(ws, output)
                     await ws.close()
         finally:
             spawned = registry.get("profile-isolation")
@@ -390,7 +443,6 @@ class TestTerminalWsIntegration:
             assert sess.ws is None
             assert sess.last_ws_disconnect is not None
 
-            # Cleanup: kill the PTY
             await terminal._kill_session(sess)
 
     @pytest.mark.asyncio
@@ -438,10 +490,9 @@ class TestTerminalWsIntegration:
                         }
                     )
                 )
-                # Give a moment for the message to be processed
-                # flake-ok: pre-existing 100 ms pause for the resize frame to reach the handler, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing sleep moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(0.1)
+                # The write loop handles frames in order, so the pong that answers
+                # this ping proves the resize frame before it has been handled.
+                await _drain_to_pong(ws)
                 sess = registry["resize-sess"]
                 assert sess.cols == 200
                 assert sess.rows == 50
@@ -472,7 +523,9 @@ class TestTerminalWsIntegration:
             await terminal._kill_session(registry["io-sess"])
 
     @pytest.mark.asyncio
-    async def test_stream_and_replay_forward_output_verbatim(self, monkeypatch, tmp_path):
+    async def test_stream_and_replay_forward_output_verbatim(
+        self, monkeypatch, tmp_path, manual_clock
+    ):
         """End-to-end through the real PTY read loop: a credential the user's own
         shell printed reaches the browser unchanged, and so does the scrollback
         replayed on reconnect. Neither path scans or rewrites bytes — the scan
@@ -483,8 +536,10 @@ class TestTerminalWsIntegration:
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
         monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
-        # flake-ok: pre-existing 0.0 enabled-cache stamp that the handler compares with the real monotonic clock, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(terminal, "_enabled_cache", [True, 0.0])
+        # The handler ages this cache on its own ``time`` binding. Stamped on a
+        # clock the test owns, it stays fresh however long the stream takes.
+        manual_clock.install(monkeypatch, terminal)
+        monkeypatch.setattr(terminal, "_enabled_cache", [True, manual_clock.monotonic()])
         monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
         registry: dict = {}
         app = _make_app(registry=registry)
@@ -528,7 +583,9 @@ class TestTerminalWsIntegration:
             await terminal._kill_session(registry["verbatim"])
 
     @pytest.mark.asyncio
-    async def test_multibyte_output_survives_read_boundaries(self, monkeypatch, tmp_path):
+    async def test_multibyte_output_survives_read_boundaries(
+        self, monkeypatch, tmp_path, manual_clock
+    ):
         """A PTY read ends wherever the kernel had bytes, so a multi-byte character
         is routinely split across two reads. Nothing decodes server-side, so both
         halves are forwarded and the client's own decoder joins them.
@@ -550,8 +607,10 @@ class TestTerminalWsIntegration:
         cfg_file = tmp_path / "config.json"
         cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
         monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
-        # flake-ok: pre-existing 0.0 enabled-cache stamp that the handler compares with the real monotonic clock, moved verbatim; tracked for a de-flake pass
-        monkeypatch.setattr(terminal, "_enabled_cache", [True, 0.0])
+        # The handler ages this cache on its own ``time`` binding. Stamped on a
+        # clock the test owns, it stays fresh however long the stream takes.
+        manual_clock.install(monkeypatch, terminal)
+        monkeypatch.setattr(terminal, "_enabled_cache", [True, manual_clock.monotonic()])
         monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
         registry: dict = {}
         app = _make_app(registry=registry)
@@ -578,7 +637,9 @@ class TestTerminalWsIntegration:
         assert seen.count(token.encode()) >= count
 
     @pytest.mark.asyncio
-    async def test_submitted_line_invalidates_the_cwd_memo(self, monkeypatch, tmp_path):
+    async def test_submitted_line_invalidates_the_cwd_memo(
+        self, monkeypatch, tmp_path, manual_clock
+    ):
         """A submitted line may be a `cd`, so it drops the completion route's cwd
         memo and re-arms the title poller; a keystroke that submits nothing
         leaves the memo intact (otherwise every character typed would force a
@@ -587,36 +648,14 @@ class TestTerminalWsIntegration:
         cfg_file.write_text(json.dumps({"dashboard": {"terminal": {"enabled": True}}}))
         monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
         monkeypatch.setattr(terminal, "_sel", lambda: MagicMock())
+        # The memo ages on the handler's own ``time`` binding. Seeded on a clock the
+        # test owns, it stays fresh however long the shell takes to start.
+        manual_clock.install(monkeypatch, terminal)
 
         registry: dict = {}
         app = _make_app(registry=registry)
 
         from aiohttp.test_utils import TestClient, TestServer
-
-        async def _drain_to_pong(ws):
-            # The write loop handles frames in order, so a pong proves the
-            # preceding binary frame has already been processed. Bounded by a
-            # DEADLINE, not a frame count: the shell's own startup output is
-            # what shares this stream, and how many frames it takes is a
-            # property of the host's shell and profile chain, not of the
-            # handler. A macOS runner's login shell emits enough startup frames
-            # to spend a 40-frame budget before the pong is reached, which makes
-            # a count-bounded drain either report a missing pong or sit in
-            # 3-second receives until the file's own timeout fires.
-            loop = asyncio.get_event_loop()
-            # flake-ok: pre-existing real loop-clock deadline that bounds each pong drain to 20 s, moved verbatim; tracked for a de-flake pass
-            deadline = loop.time() + 20
-            await ws.send_str(json.dumps({"type": "ping"}))
-            while True:
-                # flake-ok: pre-existing real loop-clock read of the time left in the 20 s pong window, moved verbatim; tracked for a de-flake pass
-                remaining = deadline - loop.time()
-                # flake-ok: pre-existing elapsed ceiling that fails the drain once 20 s of real loop time pass without a pong, moved verbatim; tracked for a de-flake pass
-                assert remaining > 0, "no pong received within 20s"
-                msg = await ws.receive(timeout=remaining)
-                if msg.type == web.WSMsgType.TEXT and json.loads(msg.data).get("type") == "pong":
-                    return
-                if msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
-                    raise AssertionError(f"socket closed before pong: {msg.type}")
 
         async with TestClient(TestServer(app)) as client:
             async with client.ws_connect("/api/ws/terminal/cwd-memo-sess") as ws:
@@ -626,8 +665,7 @@ class TestTerminalWsIntegration:
                 await _drain_to_pong(ws)
                 sess = registry["cwd-memo-sess"]
 
-                # flake-ok: pre-existing real monotonic stamp that makes the seeded cwd memo read as fresh, moved verbatim; tracked for a de-flake pass
-                sess.cwd_probe = (time.monotonic(), "/tmp/old")
+                sess.cwd_probe = (manual_clock.monotonic(), "/tmp/old")
                 await ws.send_bytes(b"c")
                 await _drain_to_pong(ws)
                 assert sess.cwd_probe is not None
@@ -638,38 +676,25 @@ class TestTerminalWsIntegration:
 
                 # The submitted line is the one input that can change the cwd,
                 # so it re-arms the title poller directly rather than relying on
-                # the shell's echo to do it. The session's own reader has to
-                # stop setting the flag for that assertion to mean anything,
-                # BUT the PTY still has to be drained: a shell blocked writing
-                # into a controller buffer nobody reads cannot exit, so leaving
-                # the fd undrained makes teardown wait on a child that is wedged
-                # until the fd closes. Swap the reader for a drain-only task
-                # that consumes output and touches no session state, and keep it
-                # in `reader_task` so teardown stops it the way it stops the
-                # real one.
+                # the shell's echo to do it. The session's own reader marks the
+                # session dirty whenever the shell writes, and it does so under
+                # ``output_lock``, so holding that lock keeps the shell's echo
+                # from setting the flag while the write path alone is observed.
+                # The few bytes the shell echoes meanwhile cannot fill the
+                # controller buffer, and the reader drains again as soon as the
+                # lock is released.
                 assert sess.reader_task is not None
-                sess.reader_task.cancel()
+                assert not sess.reader_task.done()
+                await finished(
+                    sess.output_lock.acquire(), "the PTY reader's output lock being free"
+                )
                 try:
-                    # flake-ok: pre-existing unbounded await of the cancelled reader task before the drain-only task replaces it, moved verbatim; tracked for a de-flake pass
-                    await sess.reader_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-
-                async def _drain_only(fd=sess.master_fd):  # wokeignore:rule=master
-                    loop = asyncio.get_running_loop()
-                    while True:
-                        try:
-                            # flake-ok: pre-existing unbounded executor read that parks the drain-only task until the PTY descriptor closes at teardown, moved verbatim; tracked for a de-flake pass
-                            if not await loop.run_in_executor(None, os.read, fd, 4096):
-                                return
-                        except OSError:
-                            return
-
-                sess.reader_task = asyncio.ensure_future(_drain_only())
-                sess.frames_dirty = False
-                await ws.send_bytes(b"cd /tmp\r")
-                await _drain_to_pong(ws)
-                assert sess.frames_dirty is True
+                    sess.frames_dirty = False
+                    await ws.send_bytes(b"cd /tmp\r")
+                    await _drain_to_pong(ws)
+                    assert sess.frames_dirty is True
+                finally:
+                    sess.output_lock.release()
 
                 await ws.close()
 
@@ -761,7 +786,9 @@ class TestTerminalWsIntegration:
             await terminal._kill_session(registry["recon-sess"])
 
     @pytest.mark.asyncio
-    async def test_ws_takeover_displaced_socket_keeps_new_ws(self, monkeypatch, tmp_path):
+    async def test_ws_takeover_displaced_socket_keeps_new_ws(
+        self, monkeypatch, tmp_path, manual_clock
+    ):
         """A displaced socket's cleanup must not clobber the takeover socket.
 
         A second window (e.g. the terminal panel popping out) reconnects to a
@@ -776,6 +803,9 @@ class TestTerminalWsIntegration:
         monkeypatch.setattr(terminal, "config_path", lambda: cfg_file)
         audit = MagicMock()
         monkeypatch.setattr(terminal, "_sel", lambda: audit)
+        # The cwd memo ages on the handler's own ``time`` binding; a clock the test
+        # owns keeps the seeded memo fresh, so only the displaced input could clear it.
+        manual_clock.install(monkeypatch, terminal)
 
         async def leave_displaced_socket_open(*_args, **_kwargs):
             # A bounded close may time out. Keep the predecessor readable so
@@ -811,8 +841,7 @@ class TestTerminalWsIntegration:
 
             # Multiple queued stale input frames terminate the displaced
             # handler after one coarse audit; no terminal content is recorded.
-            # flake-ok: pre-existing real monotonic stamp on the owner's cwd memo that the displaced input must leave untouched, moved verbatim; tracked for a de-flake pass
-            cwd_probe = (time.monotonic(), "/tmp/takeover-owner")
+            cwd_probe = (manual_clock.monotonic(), "/tmp/takeover-owner")
             sess.cwd_probe = cwd_probe
             owned_size = (sess.cols, sess.rows)
             await ws1.send_bytes(b"echo displaced-must-not-run\r")
@@ -1091,20 +1120,7 @@ class TestTerminalWsIntegration:
         # login profile chain returns. Wait for that control frame
         # before writing the first probe, exactly as Run in terminal
         # does; prompt text and timing are deliberately irrelevant.
-        loop = asyncio.get_event_loop()
-        # flake-ok: pre-existing real loop-clock deadline that bounds the 15 s wait for the post-profile ready frame, moved verbatim; tracked for a de-flake pass
-        ready_deadline = loop.time() + 15
-        ready_seen = False
-        # flake-ok: pre-existing real loop-clock read that ends the ready-frame loop once the 15 s window lapses, moved verbatim; tracked for a de-flake pass
-        while loop.time() < ready_deadline:
-            # flake-ok: pre-existing real loop-clock read that sizes each receive to the rest of the 15 s ready window, moved verbatim; tracked for a de-flake pass
-            msg = await ws.receive(timeout=ready_deadline - loop.time())
-            if msg.type == web.WSMsgType.TEXT:
-                if json.loads(msg.data).get("type") == "ready":
-                    ready_seen = True
-                    break
-            elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
-                break
+        ready_seen = await _await_ready_frame(ws)
         assert ready_seen, "shell never emitted the post-profile ready frame"
 
         # Drive the PTY off INPUT ECHO, not an unsolicited prompt. A
@@ -1174,7 +1190,7 @@ class TestTerminalWsIntegration:
         # reader thread can go unscheduled past a fixed budget, so a single
         # marker drain can time out even when delivery would eventually
         # succeed. Handle it by re-poking with Ctrl+C and re-probing the
-        # marker over a generous overall budget, rather than the old "\x03
+        # marker until the shell runs it, rather than the old "\x03
         # once, wait for a prompt redraw, probe once" — a login shell on a
         # minimal host may render no prompt at all (see the readiness-gate
         # note above), which made the prompt drain a pure time sink and
@@ -1192,39 +1208,39 @@ class TestTerminalWsIntegration:
         # (the previous version) let the test pass even when SIGINT was
         # never delivered — a false pass that would hide a real
         # terminal-signal regression.
-        # flake-ok: pre-existing real loop-clock deadline for the 25 s Ctrl+C retry budget, moved verbatim; tracked for a de-flake pass
-        overall_deadline = loop.time() + 25
         found = False
-        while True:
-            # flake-ok: pre-existing real loop-clock read of the 25 s Ctrl+C budget left, which clamps each marker drain, moved verbatim; tracked for a de-flake pass
-            remaining = overall_deadline - loop.time()
-            if remaining <= 0:
-                break
+
+        async def poke_and_probe() -> bool:
+            nonlocal found
             # Ctrl+C (ETX): kills the foreground `sleep` if it is
             # running, or harmlessly aborts an empty prompt line if a
-            # previous iteration already recovered the shell.
+            # previous round already recovered the shell.
             await ws.send_bytes(b"\x03")
             await ws.send_bytes(b"echo SIG''INT_OK\n")
-            # Clamp each drain to the remaining budget so the overall
-            # wait cannot overshoot ``overall_deadline`` by a full drain.
+            # A round gives the marker up to 5 s before the next Ctrl+C goes out.
             tail = await _drain_ws_until(
                 ws,
                 lambda b: b"SIGINT_OK" in _unwrapped(b),
-                budget_secs=min(5.0, remaining),
+                budget_secs=5.0,
             )
-            if b"SIGINT_OK" in _unwrapped(tail):
-                found = True
-                break
+            found = b"SIGINT_OK" in _unwrapped(tail)
             # Signal may instead have torn down the whole session — that
             # is also a valid "SIGINT was delivered" outcome.
-            if sess.proc.returncode is not None:
-                break
+            return found or sess.proc.returncode is not None
+
+        # Rounds repeat until one succeeds. Only the lost-run bound ends a run
+        # that never does, and its failure quotes the PTY and process state.
+        # That bound has to end inside `sleep 120`: a dropped SIGINT must not be
+        # rescued by the sleep running out on its own.
+        assert default_timeout() < 120, f"the {default_timeout()}s bound outlasts `sleep 120`"
+        await async_wait_until(poke_and_probe, describe=lambda: _sigint_failure_evidence(sess))
 
         # Success: the shell executed a command after Ctrl+C (SIGINT
         # killed sleep, shell continued) OR the process exited (signal
         # was delivered, just tore the whole session down). A dropped
-        # SIGINT leaves `sleep 120` running for the whole 25s budget, so
-        # neither branch can become true — the test correctly fails.
+        # SIGINT leaves `sleep 120` running for the whole wait (the lost-run
+        # bound is shorter than the sleep), so neither branch can become true
+        # and the test correctly fails.
         assert found or sess.proc.returncode is not None, _sigint_failure_evidence(sess)
         if found:
             # The shell only runs the marker once its foreground job is gone,
@@ -1275,26 +1291,19 @@ class TestTerminalWsIntegration:
 
         from aiohttp.test_utils import TestClient, TestServer
 
-        async def _drain_until(ws, token: bytes, *, budget_secs: float) -> bytes:
-            loop = asyncio.get_event_loop()
-            # flake-ok: pre-existing real loop-clock deadline that bounds the profile-marker drain to its budget, moved verbatim; tracked for a de-flake pass
-            deadline = loop.time() + budget_secs
+        async def _drain_until(ws, token: bytes) -> bytes:
             buf = bytearray()
-            while True:
-                # flake-ok: pre-existing real loop-clock read of the drain budget left, which returns the buffer once it runs out, moved verbatim; tracked for a de-flake pass
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    return bytes(buf)
-                try:
-                    msg = await ws.receive(timeout=remaining)
-                except asyncio.TimeoutError:
-                    return bytes(buf)
-                if msg.type == web.WSMsgType.BINARY:
-                    buf.extend(msg.data)
-                    if token in bytes(buf):
-                        return bytes(buf)
-                elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
-                    return bytes(buf)
+
+            async def read() -> None:
+                while token not in buf:
+                    msg = await ws.receive()
+                    if msg.type == web.WSMsgType.BINARY:
+                        buf.extend(msg.data)
+                    elif msg.type in _SOCKET_ENDED:
+                        return
+
+            await _read_bounded(read(), "the barrier echo after the profile probe", buf)
+            return bytes(buf)
 
         out = b""
         # A real Bash is spawned below, so every exit from here on — assertion,
@@ -1303,24 +1312,15 @@ class TestTerminalWsIntegration:
         try:
             async with TestClient(TestServer(app)) as client:
                 async with client.ws_connect("/api/ws/terminal/login-sess") as ws:
-                    loop = asyncio.get_event_loop()
-                    # flake-ok: pre-existing real loop-clock deadline that bounds the 15 s wait for the post-profile ready frame, moved verbatim; tracked for a de-flake pass
-                    ready_deadline = loop.time() + 15
-                    ready_seen = False
-                    # flake-ok: pre-existing real loop-clock read that ends the ready-frame loop once the 15 s window lapses, moved verbatim; tracked for a de-flake pass
-                    while loop.time() < ready_deadline:
-                        # flake-ok: pre-existing real loop-clock read that sizes each receive to the rest of the 15 s ready window, moved verbatim; tracked for a de-flake pass
-                        msg = await ws.receive(timeout=ready_deadline - loop.time())
-                        if msg.type == web.WSMsgType.TEXT:
-                            if json.loads(msg.data).get("type") == "ready":
-                                ready_seen = True
-                                break
-                        elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
-                            break
+                    ready_seen = await _await_ready_frame(ws)
                     assert ready_seen, "shell never emitted the post-profile ready frame"
 
-                    await ws.send_bytes(b"echo KC=$KC_5885_PROFILE.\n")
-                    out = await _drain_until(ws, b"KC=PROFILE_OK.", budget_secs=15)
+                    # The second echo is an EXECUTION-only barrier: it runs after the
+                    # probe whatever the variable holds, so a profile that did not run
+                    # ends the drain and fails the assertion below instead of leaving
+                    # the drain waiting for a value that never comes.
+                    await ws.send_bytes(b"echo KC=$KC_5885_PROFILE.; echo PROBE''_DONE\n")
+                    out = await _drain_until(ws, b"PROBE_DONE")
                     await ws.close()
         finally:
             spawned = registry.get("login-sess")
@@ -1375,27 +1375,30 @@ class TestTerminalWsIntegration:
         try:
             async with TestClient(TestServer(app)) as client:
                 async with client.ws_connect("/api/ws/terminal/pcarray-sess") as ws:
-                    loop = asyncio.get_event_loop()
-                    # flake-ok: pre-existing real loop-clock deadline that bounds the 20 s wait for the PROMPT_COMMAND probe output, moved verbatim; tracked for a de-flake pass
-                    deadline = loop.time() + 20
-                    # flake-ok: pre-existing real loop-clock read that ends the probe loop once the 20 s window lapses, moved verbatim; tracked for a de-flake pass
-                    while loop.time() < deadline:
-                        # flake-ok: pre-existing real loop-clock read that sizes each receive to the rest of the 20 s probe window, moved verbatim; tracked for a de-flake pass
-                        msg = await ws.receive(timeout=deadline - loop.time())
-                        if msg.type == web.WSMsgType.BINARY:
-                            out.extend(msg.data)
-                            if b"PC1=" in bytes(out):
-                                break
-                        elif msg.type == web.WSMsgType.TEXT:
-                            if json.loads(msg.data).get("type") == "ready":
-                                # First prompt reached, so the hook has fired and
-                                # made its keep-or-withdraw decision by now.
-                                # EXECUTION-only marker: the typed bytes carry
-                                # PC''1= so the line-discipline echo of our own
-                                # keystrokes cannot satisfy the match below.
-                                await ws.send_bytes(b"echo PC''1=${PROMPT_COMMAND[1]:-GONE}.\n")
-                        elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
-                            break
+
+                    async def read_until_the_probe_answers() -> None:
+                        while True:
+                            msg = await ws.receive()
+                            if msg.type == web.WSMsgType.BINARY:
+                                out.extend(msg.data)
+                                if b"PC1=" in bytes(out):
+                                    return
+                            elif msg.type == web.WSMsgType.TEXT:
+                                if json.loads(msg.data).get("type") == "ready":
+                                    # First prompt reached, so the hook has fired and
+                                    # made its keep-or-withdraw decision by now.
+                                    # EXECUTION-only marker: the typed bytes carry
+                                    # PC''1= so the line-discipline echo of our own
+                                    # keystrokes cannot satisfy the match below.
+                                    await ws.send_bytes(b"echo PC''1=${PROMPT_COMMAND[1]:-GONE}.\n")
+                            elif msg.type in _SOCKET_ENDED:
+                                return
+
+                    await _read_bounded(
+                        read_until_the_probe_answers(),
+                        "the answer to the PROMPT_COMMAND[1] probe",
+                        out,
+                    )
                     await ws.close()
         finally:
             spawned = registry.get("pcarray-sess")
@@ -1482,37 +1485,37 @@ class TestTerminalWsIntegration:
         try:
             async with TestClient(TestServer(app)) as client:
                 async with client.ws_connect("/api/ws/terminal/pcassign-sess") as ws:
-                    loop = asyncio.get_event_loop()
-                    # flake-ok: pre-existing real loop-clock deadline for the 20 s window in which the clobbered hook must send no ready frame, moved verbatim; tracked for a de-flake pass
-                    deadline = loop.time() + 20
-                    # flake-ok: pre-existing real loop-clock read that ends the observation loop once the 20 s window lapses, moved verbatim; tracked for a de-flake pass
-                    while loop.time() < deadline:
-                        try:
-                            # flake-ok: pre-existing real loop-clock read that sizes each receive to the rest of the 20 s window, moved verbatim; tracked for a de-flake pass
-                            msg = await ws.receive(timeout=deadline - loop.time())
-                        except asyncio.TimeoutError:
-                            # No `ready` is the EXPECTED outcome here, so the
-                            # window closing must surface as the assertions below
-                            # rather than as a TimeoutError from the harness.
-                            break
-                        if msg.type == web.WSMsgType.BINARY:
-                            out.extend(msg.data)
-                            blob = bytes(out)
-                            if not typed and b"KC_PROFILE_RAN" in blob:
-                                # Profile chain done, so the shell is at its first
-                                # prompt. EXECUTION-only marker: the typed bytes
-                                # carry LIVE''OK so the line-discipline echo of
-                                # our own keystrokes cannot satisfy the match.
-                                typed = True
-                                await ws.send_bytes(b"echo LIVE''OK=1.\n")
-                            elif typed and b"LIVEOK=1." in blob:
-                                break
-                        elif msg.type == web.WSMsgType.TEXT:
-                            frame = json.loads(msg.data)
-                            if frame.get("type") == "ready":
-                                ready_frames.append(frame)
-                        elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
-                            break
+
+                    async def observe_until_the_shell_is_live() -> None:
+                        nonlocal typed
+                        while True:
+                            msg = await ws.receive()
+                            if msg.type == web.WSMsgType.BINARY:
+                                out.extend(msg.data)
+                                blob = bytes(out)
+                                if not typed and b"KC_PROFILE_RAN" in blob:
+                                    # Profile chain done, so the shell is at its first
+                                    # prompt. EXECUTION-only marker: the typed bytes
+                                    # carry LIVE''OK so the line-discipline echo of
+                                    # our own keystrokes cannot satisfy the match.
+                                    typed = True
+                                    await ws.send_bytes(b"echo LIVE''OK=1.\n")
+                                elif typed and b"LIVEOK=1." in blob:
+                                    return
+                            elif msg.type == web.WSMsgType.TEXT:
+                                frame = json.loads(msg.data)
+                                if frame.get("type") == "ready":
+                                    ready_frames.append(frame)
+                            elif msg.type in _SOCKET_ENDED:
+                                return
+
+                    # No `ready` frame is the EXPECTED outcome here, so it cannot end
+                    # this wait: the shell going live (profile ran, typed command
+                    # executed) does. A run that never gets there fails by name at the
+                    # lost-run bound and quotes the PTY tail.
+                    await _read_bounded(
+                        observe_until_the_shell_is_live(), "the clobbered session going live", out
+                    )
                     await ws.close()
         finally:
             spawned = registry.get("pcassign-sess")
@@ -1588,23 +1591,26 @@ class TestTerminalWsIntegration:
         try:
             async with TestClient(TestServer(app)) as client:
                 async with client.ws_connect("/api/ws/terminal/pcprev-sess") as ws:
-                    loop = asyncio.get_event_loop()
-                    # flake-ok: pre-existing real loop-clock deadline that bounds the 20 s wait for the restored PROMPT_COMMAND probe, moved verbatim; tracked for a de-flake pass
-                    deadline = loop.time() + 20
-                    # flake-ok: pre-existing real loop-clock read that ends the probe loop once the 20 s window lapses, moved verbatim; tracked for a de-flake pass
-                    while loop.time() < deadline:
-                        # flake-ok: pre-existing real loop-clock read that sizes each receive to the rest of the 20 s probe window, moved verbatim; tracked for a de-flake pass
-                        msg = await ws.receive(timeout=deadline - loop.time())
-                        if msg.type == web.WSMsgType.BINARY:
-                            out.extend(msg.data)
-                            if b"PCNOW=" in _unwrapped(bytes(out)):
-                                break
-                        elif msg.type == web.WSMsgType.TEXT:
-                            if json.loads(msg.data).get("type") == "ready":
-                                # EXECUTION-only marker, as above.
-                                await ws.send_bytes(b"echo PC''NOW=[${PROMPT_COMMAND-unset}]\n")
-                        elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
-                            break
+
+                    async def read_until_the_probe_answers() -> None:
+                        while True:
+                            msg = await ws.receive()
+                            if msg.type == web.WSMsgType.BINARY:
+                                out.extend(msg.data)
+                                if b"PCNOW=" in _unwrapped(bytes(out)):
+                                    return
+                            elif msg.type == web.WSMsgType.TEXT:
+                                if json.loads(msg.data).get("type") == "ready":
+                                    # EXECUTION-only marker, as above.
+                                    await ws.send_bytes(b"echo PC''NOW=[${PROMPT_COMMAND-unset}]\n")
+                            elif msg.type in _SOCKET_ENDED:
+                                return
+
+                    await _read_bounded(
+                        read_until_the_probe_answers(),
+                        "the answer to the restored PROMPT_COMMAND probe",
+                        out,
+                    )
                     await ws.close()
         finally:
             spawned = registry.get("pcprev-sess")

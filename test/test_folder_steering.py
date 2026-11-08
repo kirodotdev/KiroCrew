@@ -89,6 +89,18 @@ def test_non_always_inclusion_is_skipped(tmp_path, inclusion):
     assert [Path(path).name for path, _ in docs] == ["open.md"]
 
 
+def test_a_byte_order_mark_does_not_hide_the_inclusion(tmp_path):
+    """A document saved as "UTF-8 with BOM" keeps its declared ``inclusion``."""
+    root = tmp_path / "standards"
+    root.mkdir()
+    bom = b"\xef\xbb\xbf"
+    (root / "gated.md").write_bytes(bom + b"---\ninclusion: manual\n---\nGATED\n")
+    (root / "open.md").write_bytes(bom + b"---\ninclusion: always\n---\nOPEN\n")
+    docs = collect_folder_steering([str(root)], project=None, home=_fake_home(tmp_path))
+    assert [Path(path).name for path, _ in docs] == ["open.md"]
+    assert not docs[0][1].startswith("\ufeff")
+
+
 def test_truncated_read_with_an_unclosed_frontmatter_block_is_skipped(tmp_path):
     """Truncation must not turn ``manual`` into ``always``.
 
@@ -229,6 +241,30 @@ def test_realpath_dedup_across_two_roots(tmp_path):
     make_dir_link(linked, root)
     docs = collect_folder_steering(
         [str(root), str(linked), str(root) + os.sep + "."],
+        project=None,
+        home=_fake_home(tmp_path),
+    )
+    assert [path for path, _ in docs] == [str(doc.resolve())]
+
+
+def _case_insensitive(directory: Path) -> bool:
+    probe = directory / "CaseProbe"
+    probe.mkdir()
+    try:
+        return (directory / "caseprobe").exists()
+    finally:
+        probe.rmdir()
+
+
+def test_one_root_spelled_in_two_letter_cases_emits_each_document_once(tmp_path):
+    if not _case_insensitive(tmp_path):
+        pytest.skip("needs a case-insensitive filesystem")
+    root = tmp_path / "Standards"
+    doc = _write(root / "style.md", "always")
+    other_spelling = tmp_path / "standards"
+    assert os.path.samefile(root, other_spelling)
+    docs = collect_folder_steering(
+        [str(root), str(other_spelling)],
         project=None,
         home=_fake_home(tmp_path),
     )

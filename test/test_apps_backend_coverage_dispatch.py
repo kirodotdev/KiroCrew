@@ -1,12 +1,8 @@
 """Unit coverage for :mod:`kiro_crew.apps.backend`: what the spawn body launches.
 
-Node / npm binary resolution and the entry-point heuristics, the shared interpreter
-resolution in ``apps/interpreter.py`` (which venv or deps-dir interpreter and console
-script a backend runs under, and the probe that judges it usable), the Node and ASGI
-dispatch branches, and the environment and ``Popen`` tail of a spawn.
-
-One topic of the ``test_apps_backend_coverage*.py`` family; the doubles and fixtures
-the family shares come from ``apps_backend_coverage_helpers.py``.
+Covers Node / npm resolution, interpreter resolution in ``apps/interpreter.py``, the
+Node and ASGI dispatch and the spawn's ``Popen`` tail. Shared doubles and fixtures
+come from ``apps_backend_coverage_helpers.py``.
 """
 
 from __future__ import annotations
@@ -32,9 +28,7 @@ from apps_backend_coverage_helpers import (
 import kiro_crew.apps.backend as bmod
 from kiro_crew.testing.wait import wait_until
 
-# ---------------------------------------------------------------------------
 # Node / npm binary resolution
-# ---------------------------------------------------------------------------
 
 
 class TestNvmResolution:
@@ -155,9 +149,7 @@ class TestNvmResolution:
         assert bmod._find_npm_binary() == "/usr/bin/npm"
 
 
-# ---------------------------------------------------------------------------
 # Entry-point heuristics
-# ---------------------------------------------------------------------------
 
 
 class TestEntryHeuristics:
@@ -192,9 +184,7 @@ class TestEntryHeuristics:
         assert bmod._shebang_argv(entry) == ["/usr/bin/env", "bash"]
 
 
-# ---------------------------------------------------------------------------
 # Shared interpreter resolution (apps/interpreter.py)
-# ---------------------------------------------------------------------------
 
 
 def _write_runnable(path: Any) -> None:
@@ -206,13 +196,9 @@ def _write_runnable(path: Any) -> None:
 def _create_real_venv(root: Any) -> None:
     """Build a REAL ``.venv`` under ``root`` the way ``python -m venv`` does.
 
-    The CLI symlinks the interpreter on POSIX and copies it only on Windows;
-    the ``venv.create`` API defaults to copying everywhere. A copied binary
-    breaks on a relocatable base interpreter (python-build-standalone, which
-    ``uv`` installs): its ``@rpath/libpython`` is resolved relative to the
-    binary's own location, so the copy aborts at load and
-    ``_venv_is_usable``'s probe reads it as "not a venv". Mirror the CLI so
-    the fixture is the venv production expects on every host.
+    The CLI symlinks on POSIX; ``venv.create`` copies. A copied python-build-standalone
+    binary (as ``uv`` installs) resolves ``@rpath/libpython`` beside itself and aborts,
+    so ``_venv_is_usable`` would read it as "not a venv".
     """
     import venv as _venv
 
@@ -490,9 +476,7 @@ class TestInterpreterResolution:
         assert venv_provided_command(tmp_path, "my-tool") == str(deps_script)
 
 
-# ---------------------------------------------------------------------------
 # Spawn body: dispatch branches
-# ---------------------------------------------------------------------------
 
 
 class TestNodeDispatch:
@@ -552,6 +536,65 @@ class TestNodeDispatch:
             with pytest.raises(_StopSpawn):
                 bmod._start_app_backend_body("nodeapp3", _manifest("server.js"))
         assert any("Failed to install npm deps" in r.message for r in caplog.records)
+
+    @staticmethod
+    def _record_npm_cwds(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+        monkeypatch.setattr(bmod, "_find_node_binary", lambda: "/usr/bin/node")
+        monkeypatch.setattr(bmod, "_find_npm_binary", lambda: "/usr/bin/npm")
+        cwds: list[str] = []
+
+        def _run(_argv: Any, **kwargs: Any) -> Any:
+            cwds.append(kwargs["cwd"])
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(bmod, "run_limited", _run)
+        _capture_popen(monkeypatch)
+        return cwds
+
+    def test_npm_installs_the_root_and_the_entry_points_own_package_directory(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A backend/package.json beside backend/dist/server.js is installed in
+        backend/, after the root's, because Node resolves the entry's imports from
+        the node_modules of both."""
+
+        (spawn_root / "backend" / "dist").mkdir(parents=True)
+        (spawn_root / "backend" / "dist" / "server.js").write_text("// noop\n")
+        (spawn_root / "package.json").write_text(json.dumps({"name": "ui"}))
+        (spawn_root / "backend" / "package.json").write_text(json.dumps({"name": "x"}))
+        cwds = self._record_npm_cwds(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("nodesub", _manifest("backend/dist/server.js"))
+        real_root = spawn_root.resolve()
+        assert cwds == [str(real_root), str(real_root / "backend")]
+
+    def test_npm_never_runs_above_the_app_root(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An entry point spelled through ``..`` back into the root spawns, but the
+        package.json in the directory above the root is never installed."""
+
+        (spawn_root / "server.js").write_text("// noop\n")
+        (spawn_root.parent / "package.json").write_text(json.dumps({"name": "outside"}))
+        cwds = self._record_npm_cwds(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("nodeup", _manifest(f"../{spawn_root.name}/server.js"))
+        assert cwds == []
+
+    def test_a_nonzero_npm_exit_is_logged_and_the_spawn_goes_ahead(
+        self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        (spawn_root / "server.js").write_text("// noop\n")
+        (spawn_root / "package.json").write_text(json.dumps({"name": "x"}))
+        monkeypatch.setattr(bmod, "_find_node_binary", lambda: "/usr/bin/node")
+        monkeypatch.setattr(bmod, "_find_npm_binary", lambda: "/usr/bin/npm")
+        _record_runs(monkeypatch, result=SimpleNamespace(returncode=1, stdout=""))
+        seen = _capture_popen(monkeypatch)
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(_StopSpawn):
+                bmod._start_app_backend_body("nodeapp5", _manifest("server.js"))
+        assert seen["argv"][0] == "/usr/bin/node"
+        assert any("npm exited 1" in r.getMessage() for r in caplog.records)
 
     def test_an_explicit_node_type_wins_over_the_filename_heuristic(
         self, spawn_root: Any, monkeypatch: pytest.MonkeyPatch
@@ -698,9 +741,7 @@ class TestAsgiDispatch:
         assert str(app_deps_dir(spawn_root)) not in child_pp, child_pp
 
 
-# ---------------------------------------------------------------------------
 # Spawn body: environment construction and the Popen tail
-# ---------------------------------------------------------------------------
 
 
 class TestSpawnEnvironment:

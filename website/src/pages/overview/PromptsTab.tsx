@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { ScrollText, Pencil, Trash2, MessageSquare } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { bestFilterMatch } from '../../utils/filterSelection'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { setPendingInput, switchSlot } from '../../store/chatSlice'
 import { api, ApiError } from '../../api/client'
@@ -15,9 +16,12 @@ import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { isUntitledSession, sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { useListDetailView } from '../../hooks/useListDetailView'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { useProvider } from '../../providers'
 
 import { i18nT } from '../../i18n/t'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 interface Prompt {
   name: string
   fullName: string
@@ -90,10 +94,11 @@ export default function PromptsTab() {
   const [filter, setFilter] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  const { data: prompts = [], isLoading: loading, error } = useQuery<Prompt[]>({
+  const promptsQuery = useQuery<Prompt[]>({
     queryKey: ['prompts'],
     queryFn: api.prompts,
   })
+  const { data: prompts = [], isLoading: loading, isFetching, error, refetch } = promptsQuery
 
   const EMPTY_FORM: PromptFormData = { name: '', description: '', scope: 'global', body: '' }
   const [creating, setCreating] = useState(false)
@@ -196,6 +201,8 @@ export default function PromptsTab() {
 
   const promptKey = (p: Prompt) => `${p.source}:${p.package}/${p.name}`
   const pendingRef = useRef('')
+  // True once the user opened a row; the auto-pick below leaves that row alone.
+  const userPickedRef = useRef(false)
   // Which prompt a save was started for, and which is selected right now. Refs
   // rather than state because a mutation callback closes over the render that
   // fired it and would otherwise compare against a stale selection.
@@ -241,6 +248,13 @@ export default function PromptsTab() {
     for (const p of filteredPackage) (g[p.package || 'unknown'] ||= []).push(p)
     return Object.entries(g).sort(([a], [b]) => a.localeCompare(b))
   }, [filteredPackage])
+
+  // A long list is cut at the pane's height, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more rows sit below (see MORE_BELOW_MASK). A filter changes the rows, not
+  // the scroller's own box, so no observer on the scroller sees it.
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  useEffect(() => { remeasureList() }, [allFiltered, remeasureList])
 
   // Selection is derived from the UNFILTERED list so that typing in the filter
   // does not blank a detail pane whose prompt is merely hidden by the query.
@@ -403,6 +417,7 @@ export default function PromptsTab() {
     // hash beneath the old text, and the next Save would present a base it was
     // not written against, silently overwriting the very edit that conflicted.
     if (key === selectedKey) {
+      userPickedRef.current = true
       openDetail()
       if (!detailEditing && (readOnlyReason === 'failed' || conflictRef.current)) void load(p)
       return
@@ -417,6 +432,7 @@ export default function PromptsTab() {
     setEditForm(EMPTY_FORM)
     setMutationError('')
     setPickerOpen(false)
+    userPickedRef.current = true
     setSelectedKey(key)
     openDetail()
     void load(p)
@@ -425,15 +441,20 @@ export default function PromptsTab() {
   // Keep a desktop detail pane populated: with both panes always on screen, an
   // empty right-hand side on first paint reads as a broken tab. Skipped while
   // editing so a re-render cannot yank the pane out from under a draft.
+  // A prompt the user opened stays open while the filter still shows it; one
+  // this effect opened by itself moves to the best match for what was typed.
   useEffect(() => {
     if (detailEditing) return
     if (allFiltered.length === 0) { if (selectedKey !== null) setSelectedKey(null); return }
-    if (!selectedKey || !allFiltered.some(p => promptKey(p) === selectedKey)) {
-      const first = allFiltered[0]
-      setSelectedKey(promptKey(first))
-      void load(first)
+    const visible = !!selectedKey && allFiltered.some(p => promptKey(p) === selectedKey)
+    if (visible && (userPickedRef.current || !filter.trim())) return
+    const best = bestFilterMatch(allFiltered, filter, p => [p.name, p.fullName])
+    if (best && promptKey(best) !== selectedKey) {
+      userPickedRef.current = false
+      setSelectedKey(promptKey(best))
+      void load(best)
     }
-  }, [allFiltered, selectedKey, detailEditing, load])
+  }, [allFiltered, selectedKey, detailEditing, load, filter])
 
   const renderRow = (p: Prompt) => {
     const pk = promptKey(p)
@@ -479,7 +500,7 @@ export default function PromptsTab() {
   }
   const useInChatBtn = selected ? (
     <div className="relative">
-      <Btn onClick={() => setPickerOpen(!pickerOpen)}><MessageSquare className="lucide-inline" /> {i18nT('pages.overview.promptsTab.use_in_chat')}</Btn>
+      <Btn aria-expanded={pickerOpen} onClick={() => setPickerOpen(!pickerOpen)}><MessageSquare className="lucide-inline" /> {i18nT('pages.overview.promptsTab.use_in_chat')}</Btn>
       {pickerOpen && <SlotPicker prompt={selected} onClose={() => setPickerOpen(false)} />}
     </div>
   ) : null
@@ -498,7 +519,7 @@ export default function PromptsTab() {
 
   return (<>
     <Card>
-      <CardTitle><ScrollText className="lucide-inline" /> {i18nT('pages.overview.promptsTab.prompts')} <InfoTip text={i18nT('pages.overview.promptsTab.saved_prompts_from', { registry: provider.labels.pluginRegistryName.toLowerCase() })} /> <span className="ml-auto"><Btn primary onClick={() => { setMutationError(''); setCreateForm(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.promptsTab.create_new_prompt')}</Btn></span></CardTitle>
+      <CardTitle><ScrollText className="lucide-inline" /> {i18nT('pages.overview.promptsTab.prompts')} <InfoTip text={i18nT('pages.overview.promptsTab.saved_prompts_from', { registry: provider.labels.pluginRegistryName })} /> <span className="ml-auto"><Btn primary onClick={() => { setMutationError(''); setCreateForm(EMPTY_FORM); setCreating(true) }}>{i18nT('pages.overview.promptsTab.create_new_prompt')}</Btn></span></CardTitle>
       <p className="text-muted text-[13px] mb-3 leading-relaxed">
         {i18nT('pages.overview.promptsTab.invoke_in_chat')} <code className="text-[12px]">{i18nT('pages.overview.promptsTab.agent_sop_name')}</code> {i18nT('pages.overview.promptsTab.or')} <code className="text-[12px]">{i18nT('pages.overview.promptsTab.prompts_get_name')}</code>{i18nT('pages.overview.promptsTab.prompts_are_loaded_on_demand_they_don_t_consume')}
       </p>
@@ -508,7 +529,26 @@ export default function PromptsTab() {
         </div>
       )}
       {loading && <p className="text-muted italic text-sm px-3 py-4">{i18nT('pages.overview.promptsTab.loading_prompts')}</p>}
-      {error && <p className="text-danger text-sm px-3 py-4">{error.message || i18nT('pages.overview.promptsTab.failed_to_load_prompts')}</p>}
+      {/* The list read failing left a bare text-danger line with no way back:
+          no retry, no hand-off, and no structured context for one. ErrorNotice
+          recovers the journal report from the message and carries the agent
+          hand-off (askAgent is safe here -- the list read holds no draft), and
+          the retry refetches the same query. */}
+      {/* queryReadFailed, not `error`: a retry with no cached prompts clears
+          `error` while it reads, which would unmount the Retry the user just
+          pressed. The busy Retry is aria-disabled, not disabled, so it keeps
+          keyboard focus. */}
+      {queryReadFailed(promptsQuery) && (
+        <div className="px-3 py-4 flex flex-col items-start gap-2">
+          {error && <ErrorNotice
+            message={error.message || i18nT('pages.overview.promptsTab.failed_to_load_prompts')}
+            askAgent
+          />}
+          <Btn className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={isFetching || undefined} onClick={() => { if (!isFetching) void refetch() }}>
+            {i18nT('pages.overview.promptsTab.retry_read')}
+          </Btn>
+        </div>
+      )}
 
       {/* The empty state now names the affordance on this page rather than the
           filesystem path this feature replaces. */}
@@ -523,20 +563,24 @@ export default function PromptsTab() {
         /* List-detail: prompt list on the left, the selected prompt's content
          *  (or its editor) on the right — the shape SkillsTab uses. */
         <div className={PANE_SHELL_CLASS}>
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.promptsTab.prompts')}>
-            {filteredUser.length > 0 && (
-              <div className="text-[11px] text-muted font-semibold tracking-wider px-2 py-1.5 mb-1">
-                {i18nT('pages.overview.promptsTab.user_prompts_count', { count: filteredUser.length })}
-              </div>
-            )}
-            {filteredUser.map(renderRow)}
-            {grouped.map(([pkg, items]) => (
-              <div key={pkg} className="mt-2">
-                <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1">{pkg.toUpperCase()}</div>
-                {items.map(renderRow)}
-              </div>
-            ))}
-            {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.promptsTab.no_prompts_match_query', { query: filter })}</div>}
+          {/* The rows scroll in an inner box: a mask clips everything outside
+              the masked element, so on the pane it would also fade the border. */}
+          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 flex flex-col border border-border rounded-md`}>
+            <div ref={attachList} className={`flex-1 min-h-0 overflow-y-auto p-2 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`} role="listbox" aria-label={i18nT('pages.overview.promptsTab.prompts')}>
+              {filteredUser.length > 0 && (
+                <div className="text-[11px] text-muted font-semibold tracking-wider px-2 py-1.5 mb-1">
+                  {i18nT('pages.overview.promptsTab.user_prompts_count', { count: filteredUser.length })}
+                </div>
+              )}
+              {filteredUser.map(renderRow)}
+              {grouped.map(([pkg, items]) => (
+                <div key={pkg} className="mt-2">
+                  <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1">{pkg.toUpperCase()}</div>
+                  {items.map(renderRow)}
+                </div>
+              ))}
+              {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.promptsTab.no_prompts_match_query', { query: filter })}</div>}
+            </div>
           </div>}
 
           {showDetail && <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md bg-card overflow-hidden">

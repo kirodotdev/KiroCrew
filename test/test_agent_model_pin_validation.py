@@ -26,31 +26,40 @@ def _owner_caller(monkeypatch):
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
         lambda request: True,
     )
-    pass  # Member routing does not depend on OS isolation.
 
 
 class TestAcpIdCorrection:
-    def test_corrects_a_bedrock_flavoured_spelling(self):
-        """The registry lists each model's prefix-stripped Bedrock id as an alias.
-
-        ``claude-opus-4-8`` therefore resolves to a canonical key while being
-        nothing kiro-cli serves, and the registry already knows the id that is.
-        """
-        assert acp_id_correction("claude-opus-4-8") == "claude-opus-4.5"
-
-    def test_corrects_a_registered_full_bedrock_id(self):
-        """The id the alias was stripped FROM must correct too.
-
-        ``_build_indices`` puts aliases into every provider's index but each
-        provider's own id only into its own, so an ``acp``-only lookup silently
-        passed these through — the likelier spelling for someone copying from
-        Bedrock, and the one that actually reaches the child and kills it.
-        """
-        assert acp_id_correction("global.anthropic.claude-opus-4-8") == "claude-opus-4.5"
-
-    def test_corrects_the_1m_bedrock_variant_to_its_own_kiro_id(self):
-        """The 1M entry is a DISTINCT model, so it must not collapse onto the other."""
-        assert acp_id_correction("global.anthropic.claude-opus-4-8[1m]") == "claude-opus-4.8"
+    @pytest.mark.parametrize(
+        ("pin", "want"),
+        [
+            # The registry lists each model's prefix-stripped Bedrock id as an
+            # alias, so ``claude-opus-4-8`` resolves to a canonical key while being
+            # nothing kiro-cli serves, and the registry already knows the id that is.
+            pytest.param(
+                "claude-opus-4-8",
+                "claude-opus-4.5",
+                id="test_corrects_a_bedrock_flavoured_spelling",
+            ),
+            # The id the alias was stripped FROM must correct too. ``_build_indices``
+            # puts aliases into every provider's index but each provider's own id
+            # only into its own, so an ``acp``-only lookup silently passed these
+            # through -- the likelier spelling for someone copying from Bedrock,
+            # and the one that actually reaches the child and kills it.
+            pytest.param(
+                "global.anthropic.claude-opus-4-8",
+                "claude-opus-4.5",
+                id="test_corrects_a_registered_full_bedrock_id",
+            ),
+            # The 1M entry is a DISTINCT model, so it must not collapse onto the other.
+            pytest.param(
+                "global.anthropic.claude-opus-4-8[1m]",
+                "claude-opus-4.8",
+                id="test_corrects_the_1m_bedrock_variant_to_its_own_kiro_id",
+            ),
+        ],
+    )
+    def test_corrects_a_bedrock_id_to_its_kiro_id(self, pin: str, want: str):
+        assert acp_id_correction(pin) == want
 
     def test_every_registered_claude_code_id_is_correctable(self):
         """Class-level guard: every unserved id is either corrected or known to lack a kiro id.
@@ -136,6 +145,34 @@ class TestDoctorFlagsSpecPins:
         assert any(
             name == "proj-reviewer" for name, _pin, _fix in problems
         ), f"project-scoped pin was not audited: {problems}"
+
+    def test_the_declared_name_labels_the_problem_in_either_scope(self, tmp_path):
+        """A row names the agent its spec declares, not the file that holds it.
+
+        A spec's filename and its ``name`` are not required to agree; a
+        ``name`` that is a non-empty string labels the row in the global and
+        the project scope alike.
+        """
+        from kiro_crew import cli_doctor
+
+        global_dir = tmp_path / "agents"
+        global_dir.mkdir()
+        (global_dir / "global-file.json").write_text(
+            json.dumps({"name": "global-reviewer", "model": "claude-opus-4-8"}),
+            encoding="utf-8",
+        )
+        project = tmp_path / "proj"
+        project_dir = project / ".kiro" / "agents"
+        project_dir.mkdir(parents=True)
+        (project_dir / "project-file.json").write_text(
+            json.dumps({"name": "proj-reviewer", "model": "claude-opus-4-8"}),
+            encoding="utf-8",
+        )
+
+        problems = cli_doctor._agent_spec_model_problems(agents_dir=global_dir, project_dir=project)
+
+        assert problems is not None, "the check must have run"
+        assert sorted(name for name, _pin, _fix in problems) == ["global-reviewer", "proj-reviewer"]
 
     def test_unreadable_specs_report_unchecked_not_clean(self, tmp_path):
         """A diagnostic must not print green for a check it never performed."""
@@ -301,7 +338,12 @@ class TestNoRedundantConfigLoad:
 
         assert _model_rejected_reason(key, ACP_BACKEND_CLAUDE) is None
         reason = _model_rejected_reason(key, ACP_BACKEND_CODEX)
-        assert reason is not None and ACP_BACKEND_CODEX in reason
+        # The harness by its readable name, the one the dashboard shows.
+        assert reason is not None and "the OpenAI Codex harness does not accept" in reason
+        assert _model_rejected_reason(key, "") == (
+            f"{key!r} is a display-only model identifier the Kiro CLI harness "
+            "does not accept; select a listed model or 'auto'."
+        )
 
     def test_live_entitlements_preserve_the_registry_correction(self, monkeypatch):
         """A live advertised set must not replace the actionable spelling hint."""
@@ -460,11 +502,8 @@ class TestSavePathRefusesAnUnusablePin:
     ) -> None:
         """The member's DM slot runs on `member_acp_backend`, not the default.
 
-        When the two harnesses do not share a model-registry namespace, the
-        default backend's catalog cannot establish the pin's entitlement, so
-        validation consults any active provider — which, for this member, is
-        the member backend's own catalog: it admits what it advertises and
-        rejects what it does not.
+        With no shared model namespace, validation uses the member backend's catalog:
+        it admits what it advertises and rejects the rest.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 
@@ -498,12 +537,8 @@ class TestSavePathRefusesAnUnusablePin:
     ) -> None:
         """A wrong-namespace live harness must not reject the member's pin.
 
-        default=codex, member=kas do not share a namespace, so the scope is
-        the member backend (kas). The only live provider is codex, whose
-        catalog does not advertise the pin. Scoping to kas means codex cannot
-        supply evidence, so entitlement is UNKNOWN (fail-open) rather than a
-        false rejection by the wrong backend's advertised ids — the defect the
-        unscoped fallback left open.
+        The scope is kas and the only live provider is codex, so entitlement is UNKNOWN
+        (fail-open) rather than a false rejection by codex's catalog.
         """
         from kiro_crew.config.loader import KiroCrewConfig
 

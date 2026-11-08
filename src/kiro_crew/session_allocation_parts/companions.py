@@ -69,6 +69,11 @@ def _collect_parent_runtime_kwargs(
     tool_search = provider.tool_search_settings
     if tool_search is not None:
         kwargs["tool_search"] = tool_search
+    # The Bot pin the parent's own selection used, so a KAS companion takes the
+    # route the parent's choice allows.
+    harness_pin = provider.harness_pin
+    if harness_pin:
+        kwargs["harness_pin"] = harness_pin
     # The parent's session tree keeps ONE work directory across every process
     # it spans: a companion runtime is handed the parent's ``$KIROCREW_SCRATCH``
     # as a second private window into the masked scratch root, so a brief the
@@ -500,6 +505,15 @@ def runtime_pids(self: SessionAllocationService) -> list[dict[str, object]]:
     return rows
 
 
+def subagent_runtime_row_key(parent_key: str) -> str:
+    """The ``runtime_pids`` row key of the shared runtime hosting *parent_key*'s sub-agents.
+
+    One spelling, read back by the per-caller memory view
+    (``dashboard/handlers/session_memory_scope.py``) to find its own companion row.
+    """
+    return f"Subagent runtime ({parent_key})"
+
+
 def _append_companion_runtime_rows(
     self: SessionAllocationService, rows: list[dict[str, object]]
 ) -> None:
@@ -537,4 +551,4 @@ def _append_companion_runtime_rows(
         self._deps.constants.background_agent,
     )
     for parent_key, runtime in list(self._subagent_runtimes.items()):
-        add(f"Subagent runtime ({parent_key})", runtime, "")
+        add(subagent_runtime_row_key(parent_key), runtime, "")

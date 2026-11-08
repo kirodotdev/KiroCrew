@@ -1,26 +1,12 @@
 """A proxied server-sent-event stream must outlive the ordinary request timeout.
 
-``handle_app_api_proxy`` bounds an ordinary request at ``_PROXY_TIMEOUT``. Handed
-to aiohttp as ``ClientTimeout(total=...)`` that clock also covers reading the
-response body, and a stream's body does not end, so it cuts the stream mid-body --
-which reaches the browser as a truncated chunked response
-(``ERR_INVALID_CHUNKED_ENCODING``) rather than as an error. Only the two
-subprocess-backend apps are proxied, so no in-process app can show this.
+``ClientTimeout(total=_PROXY_TIMEOUT)`` also covers the body, which a stream never ends,
+so the browser sees ``ERR_INVALID_CHUNKED_ENCODING``. These drive the REAL handler
+against a REAL backend with shortened bounds:
 
-The loopback tests below drive the REAL handler against a REAL backend server,
-with ``_PROXY_TIMEOUT`` (and, where a test needs it, ``_PROXY_IDLE_TIMEOUT``)
-shortened so the assertions do not take half a minute:
-
-* the stream survives well past the total bound, and every event arrives;
-* a slow NON-stream response is still cut at that bound, so lifting the bound for
-  streams does not abolish it;
-* a stream whose backend goes silent is cut at the idle bound. Once the total is
-  lifted, ``sock_read`` is the only thing that ends a stalled stream, so this is
-  the guard that keeps a hung backend from holding the gateway, its upstream
-  socket and a pool slot for as long as the browser tab stays open;
-* a cut that lands after the head has been relayed reaches the client as a
-  closed, unterminated body -- never as a second ``HTTP/1.1 5xx`` head written
-  into the body of the 200 already sent, and never on a connection left open.
+* the stream outlives the total bound; a slow NON-stream response is still cut;
+* a silent stream is cut at the idle bound (``sock_read``, the only stall guard left);
+* a cut after the head closes an unterminated body, never a second 5xx head.
 """
 
 from __future__ import annotations
@@ -218,14 +204,8 @@ async def test_a_slow_non_stream_response_is_still_cut(monkeypatch) -> None:
 async def test_a_silent_event_stream_is_cut_at_the_idle_bound(monkeypatch) -> None:
     """The guard that replaces the total bound for streams.
 
-    With the total lifted, ``sock_read=_PROXY_IDLE_TIMEOUT`` is all that ends a
-    stream whose backend has gone quiet. Set it to ``None`` and this test is the
-    one that goes red: the backend then keeps the connection for the whole
-    ``_STALL`` and reports it was never dropped.
-
-    Observed on the BACKEND side on purpose. By the time the cut fires, the
-    gateway has already sent the client a 200, so what the client sees is the
-    relay's mid-body failure shape and not this guard.
+    Observed on the BACKEND side: the client already has a 200, so it sees only the
+    relay's mid-body failure shape, not this guard.
     """
     monkeypatch.setattr(routes, "_PROXY_IDLE_TIMEOUT", _IDLE_BOUND)
     backend_app = await _backend()
@@ -298,11 +278,8 @@ async def test_a_mid_body_cut_closes_the_body_instead_of_writing_a_second_head(
 ) -> None:
     """Either bound firing after the head is out ends the transfer honestly.
 
-    Before the fix both cases put ``HTTP/1.1 502`` (idle cut) or ``504`` (total
-    cut) INTO the chunked body of the 200 already sent, then held the connection
-    open on keep-alive. The two things asserted here are the two the browser
-    sees: exactly one head on the wire, and the connection closed -- with no
-    terminating chunk, so the body reads as cut rather than as complete.
+    Exactly one head on the wire, and the connection closed with no terminating chunk,
+    so the body reads as cut rather than complete.
     """
     monkeypatch.setattr(routes, "_PROXY_IDLE_TIMEOUT", _IDLE_BOUND)
     backend = TestServer(await _backend())

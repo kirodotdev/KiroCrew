@@ -26,7 +26,7 @@ under `scenarios/` says how the lane checks it.
 
 | | Total | smoke | nightly | native-only | needs-secret | excluded |
 |---|---|---|---|---|---|---|
-| **All features** | 271 | 42 | 167 | 12 | 27 | 23 |
+| **All features** | 272 | 42 | 167 | 13 | 27 | 23 |
 | Chat sessions (`chat`) | 26 | 3 | 19 | 0 | 2 | 2 |
 | Side panel tabs (`side-panel`) | 4 | 1 | 3 | 0 | 0 | 0 |
 | Terminal panel (`terminal`) | 3 | 0 | 3 | 0 | 0 | 0 |
@@ -36,7 +36,7 @@ under `scenarios/` says how the lane checks it.
 | Search everywhere & command palette (`search`) | 1 | 1 | 0 | 0 | 0 | 0 |
 | Crew Members (`members`) | 4 | 0 | 4 | 0 | 0 | 0 |
 | Customize (crews, templates, skills, prompts, steering, hooks, workflows) (`capabilities`) | 14 | 2 | 12 | 0 | 0 | 0 |
-| Connections (MCP servers & services) (`connections`) | 2 | 1 | 0 | 0 | 1 | 0 |
+| Connections (MCP servers & services) (`connections`) | 3 | 1 | 1 | 0 | 1 | 0 |
 | Memory, lessons & usage (`memory`) | 6 | 1 | 4 | 0 | 1 | 0 |
 | Knowledge library (`knowledge`) | 7 | 1 | 5 | 0 | 0 | 1 |
 | Artifacts (`artifacts`) | 10 | 1 | 5 | 0 | 3 | 1 |
@@ -58,12 +58,12 @@ under `scenarios/` says how the lane checks it.
 | Popouts & embeds (`popout`) | 6 | 0 | 4 | 2 | 0 | 0 |
 | Authentication & sign-in (`auth`) | 3 | 2 | 0 | 0 | 0 | 1 |
 | Onboarding (`onboarding`) | 4 | 0 | 4 | 0 | 0 | 0 |
-| Settings (`settings`) | 48 | 12 | 29 | 3 | 0 | 4 |
+| Settings (`settings`) | 49 | 12 | 29 | 4 | 0 | 4 |
 | Themes (`themes`) | 3 | 0 | 2 | 0 | 1 | 0 |
 | Security & governance (`security`) | 10 | 1 | 9 | 0 | 0 | 0 |
-| Developer tools (`developer`) | 12 | 0 | 12 | 0 | 0 | 0 |
+| Developer tools (`developer`) | 11 | 0 | 11 | 0 | 0 | 0 |
 
-Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
+Priorities: P0 10 · P1 37 · P2 162 · P3 63. Deduped from 387 raw records.
 
 ## Chat sessions (`chat`)
 
@@ -75,7 +75,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
 | P1 | `chat-turn-stats-footer` | As a user, I want each finished reply to show how long it took, so that I can gauge responsiveness. | `/chat` | minimal | smoke | 3 |
 | P2 | `chat-collapse-message-input` | As a reader, I want to put the composer away and restore it from a labelled bar showing my draft's first line, so that a long reply gets the whole pane. | `/chat` | sessions-a-few | nightly | 4 |
 | P2 | `chat-deep-link-slug` | As a returning user, I want a bookmarked /chat/<key> URL to open that session, so that I can resume work directly. | `/chat` | sessions-a-few | nightly | 3 |
-| P2 | `chat-incognito-badge-and-history-exclusion` | As a privacy-conscious user, I want incognito/temporary sessions labelled and kept out of history and memory surfaces, so that private chats leave no trace. | `/chat` | incognito-mix | nightly | 5 |
+| P2 | `chat-incognito-badge-and-history-exclusion` | As a privacy-conscious user, I want incognito/temporary sessions labelled and kept out of memory, while History still lists them, so that a private chat teaches the product nothing and I can still reopen it. | `/chat` | incognito-mix | nightly | 5 |
 | P2 | `chat-knowledge-picker-attach` | As a user, I want to pick knowledge items to include in a turn, so that the agent answers from my documents. | `/chat` | memory-populated | nightly | 4 |
 | P2 | `chat-long-history-pagination` | As a user with long sessions, I want earlier messages to load on demand, so that big transcripts stay responsive. | `/chat` | sessions-long-history | nightly | 4 |
 | P2 | `chat-mcp-tools-panel` | As a user, I want to see which MCP tools the session can call, so that I understand the agent's capabilities. | `/chat` | connections-two | nightly | 3 |
@@ -164,7 +164,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
 | P0 | `members-crew-members` | As a crew operator, I want a durable DM thread per member with a docked side panel led by the crew's Dashboard tab, an auto-patrol badge on each roster row, and a filterable roster, so that I can supervise each crew in one place. | `/members` | rich | nightly | 6 |
 | P1 | `crewmate-reply-thread` | As a user talking to a mate, I want to ask about one thing it said in a reply thread on that message, so that the follow-up stays beside the message it is about instead of pushing the mate's findings up the main chat. | `/settings` | rich | nightly | 8 |
 | P1 | `members-private-memory-keeps-thread` | As a crew operator, I want a member's direct-message thread to survive leaving and returning to the member, so that our earlier conversation and the member's ability to answer are not lost. | `/settings` | rich | nightly | 8 |
-| P2 | `sidebar-crew-members-create-menu-entry` | As a user, I want the Mates menu entry to open the page or the setting that enables it, so that I can find the feature either way. | `/chat` | minimal | nightly | 3 |
+| P2 | `sidebar-crew-members-create-menu-entry` | As a user, I want the Mates rail row on a fresh install, so that I can open the page without turning anything on. | `/chat` | minimal | nightly | 3 |
 
 ## Customize (crews, templates, skills, prompts, steering, hooks, workflows) (`capabilities`)
 
@@ -190,6 +190,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
 | P1 | `capabilities-connections` | As an operator, I want to install, enable and scope MCP servers, so that agents get exactly the tools they need. | `/capabilities` | connections-two | smoke | 3 |
+| P2 | `connections-mcp-management` | As a user, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages. | `/capabilities` | connections-two | nightly | 3 |
 
 ## Memory, lessons & usage (`memory`)
 
@@ -241,7 +242,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
 |---|---|---|---|---|---|---|
 | P0 | `apps-discover` | As a user, I want to browse the App Store storefront, open an app's detail page and enable it, so that the app appears in my sidebar and I can extend the dashboard. | `/apps` | apps-installed | smoke | 4 |
 | P1 | `app-command-bar-launch` | As a keyboard user, I want to press Cmd/Ctrl+K, type a command, and jump to an app or setting, so that I navigate without leaving the keyboard. | `/chat` | rich | smoke | 3 |
-| P1 | `apps-library` | As a user, I want installed apps as launchpad tiles with rail pinning and a 'Show N disabled' toggle, so that I can launch and organise apps. | `/apps/library` | apps-installed | smoke | 3 |
+| P1 | `apps-library` | As a user, I want installed apps as launchpad tiles with rail pinning and disabled apps in their own section below, so that I can launch and organise apps. | `/apps/library` | apps-installed | smoke | 3 |
 | P2 | `app-auto-research-campaign` | As a researcher, I want to enter a broad question, expand it into sub-questions, and start a campaign, so that agents investigate while I am away and stream findings back. | `/auto-research` | apps-installed | nightly | 6 |
 | P2 | `app-design-critique-screenshot` | As a designer, I want to drop in a screenshot and receive heuristic-backed findings, so that I get a critique before asking a colleague. | `/design-critique` | apps-installed | nightly | 5 |
 | P2 | `app-design-tweak-annotate` | As a frontend developer, I want to preview my local web app, right-click elements in Edit mode, and send a batch of visual comments, so that the agent makes source-mapped edits. | `/design-tweak` | rich | nightly | 7 |
@@ -367,7 +368,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
 | P1 | `settings-about` | As a user, I want version, build info and a diagnostics bundle, so that I can report a problem accurately. | `/settings/about` | minimal | smoke | 2 |
 | P1 | `settings-chat` | As a user, I want chat behaviour preferences including plain vs highlighted diffs, so that the transcript reads the way I like. | `/settings/chat` | minimal | smoke | 2 |
 | P1 | `settings-chat-toggle-show-timestamps` | As a dashboard user, I want to toggle Show Timestamps in Settings > Chat, so that each message displays its time. | `/settings/chat` | sessions-a-few | smoke | 4 |
-| P1 | `settings-developer-panel-dev-mode-toggle` | As a developer, I want to enable Developer Mode in Settings > Developer, so that the Developer page with logs and metrics appears in the sidebar. | `/settings/developer` | minimal | smoke | 3 |
+| P1 | `settings-developer-panel-pages` | As a developer, I want the feature previews and the internals pages (logs, metrics, memory graph) side by side in Settings > Developer, so that I can reach them without unlocking anything. | `/settings/developer` | minimal | smoke | 3 |
 | P1 | `settings-display` | As a user, I want theme, density, language and terminal font/shell options, so that the dashboard fits my eyes and habits. | `/settings/display` | minimal | smoke | 2 |
 | P1 | `settings-display-theme-switch` | As a user, I want to pick a color theme and font, so that the dashboard matches my preference. | `/settings/display` | minimal | smoke | 3 |
 | P1 | `settings-notifications-panel` | As a dashboard user, I want to open Settings > Notifications, so that I can configure sounds and background-chat alerts. | `/settings/notifications` | minimal | smoke | 2 |
@@ -380,7 +381,7 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
 | P2 | `settings-about-report-a-problem` | As a user, I want to click Report a Problem in Settings > About, so that I can file an issue with diagnostics attached. | `/settings/about` | minimal | nightly | 3 |
 | P2 | `settings-about-update-channel-and-notifications` | As a user, I want to choose stable or insider Update channel and set Update the gateway automatically, which installs updates and restarts where this install can and only notifies where it cannot, so that I control how I receive updates. | `/settings/about` | minimal | nightly | 4 |
 | P2 | `settings-browser-attach-token` | As a dashboard user, I want to paste an extension token in Settings > Browser, so that attaching to my own Chrome skips the per-attach prompt. | `/settings/browser` | minimal | nightly | 3 |
-| P2 | `settings-browser-panel` | As a dashboard user, I want to open Settings > Browser and see whether playwright-cli is installed and toggle the built-in browser, so that the agent can browse. | `/settings/browser` | minimal | nightly | 3 |
+| P2 | `settings-browser-panel` | As a dashboard user, I want to open Settings > Browser and see whether the browser engine is installed and which browser is connected, and set the live view and local preview options, so that the agent can browse. | `/settings/browser` | minimal | nightly | 3 |
 | P2 | `settings-chat-content-width-buttongroup` | As a dashboard user, I want to switch Content Width in Settings > Chat, so that the chat column uses more or less of the screen. | `/settings/chat` | sessions-a-few | nightly | 3 |
 | P2 | `settings-chat-select-default-model` | As a dashboard user, I want to pick a Default Model in Settings > Chat, so that new sessions start with that model. | `/settings/chat` | minimal | nightly | 4 |
 | P2 | `settings-chat-select-response-verbosity` | As a dashboard user, I want to set Response Verbosity in Settings > Chat, so that agent replies are as terse as I prefer. | `/settings/chat` | minimal | nightly | 3 |
@@ -432,16 +433,15 @@ Priorities: P0 10 · P1 37 · P2 162 · P3 62. Deduped from 387 raw records.
 | Priority | Id | User story | Start URL | Seed | Runnable | Steps |
 |---|---|---|---|---|---|---|
 | P2 | `developer-agent-backend` | As a developer, I want to see which agent harness backend is live, what each harness can and cannot do, and whether Kiro prerequisites are met, so that I know what turns run on before I choose a harness. | `/settings/agent` | minimal | nightly | 3 |
-| P2 | `developer-archive` | As a developer, I want a consolidated session archive browser, so that I can inspect compacted history. | `/developer` | sessions-long-history | nightly | 3 |
-| P2 | `developer-config` | As a developer, I want raw Kiro Crew and agent config editors, so that I can fix a setting no panel exposes. | `/developer` | minimal | nightly | 3 |
-| P2 | `developer-debug-tools` | As a developer, I want diagnostic overlays such as the chat scroll inspector, so that I can debug layout issues. | `/developer` | sessions-a-few | nightly | 3 |
-| P2 | `developer-logs` | As a developer, I want a live gateway log stream with level control, so that I can debug in real time. | `/developer` | minimal | nightly | 3 |
-| P2 | `developer-mcp-pool` | As a developer, I want to see each MCP server's state, opt servers in to stubbing and read the sharing assessment, so that I can manage MCP connections and diagnose tool outages. | `/developer` | connections-two | nightly | 3 |
-| P2 | `developer-memory-graph` | As a developer, I want an entity/relation visualiser over the memory store plus every memory layer and saved lesson, so that I can debug and audit what the agent remembers. | `/developer` | memory-populated | nightly | 3 |
-| P2 | `developer-page-tabs` | As a developer, I want logs, system, telemetry, storage, MCP pool, memory graph, config, debug tools, and archive in one place, so that I can diagnose the gateway. | `/developer` | rich | nightly | 5 |
-| P2 | `developer-storage` | As a developer, I want a raw localStorage inspector, so that I can debug client preferences. | `/developer` | minimal | nightly | 2 |
-| P2 | `developer-system` | As a developer, I want host runtime, services, sessions and performance views, so that I can spot resource problems and reclaim session storage. | `/developer` | sessions-long-history | nightly | 3 |
-| P2 | `developer-telemetry` | As a developer, I want startup timings and context traces, so that I can find slow paths. | `/developer` | minimal | nightly | 2 |
+| P2 | `developer-archive` | As a developer, I want a consolidated session archive browser, so that I can inspect compacted history. | `/settings/developer` | sessions-long-history | nightly | 3 |
+| P2 | `developer-config` | As a developer, I want raw Kiro Crew and agent config editors, so that I can fix a setting no panel exposes. | `/settings/developer` | minimal | nightly | 3 |
+| P2 | `developer-debug-tools` | As a developer, I want diagnostic overlays such as the chat scroll inspector, so that I can debug layout issues. | `/settings/developer` | sessions-a-few | nightly | 3 |
+| P2 | `developer-logs` | As a developer, I want a live gateway log stream with level control, so that I can debug in real time. | `/settings/developer` | minimal | nightly | 3 |
+| P2 | `developer-memory-graph` | As a developer, I want an entity/relation visualiser over the memory store plus every memory layer and saved lesson, so that I can debug and audit what the agent remembers. | `/settings/developer` | memory-populated | nightly | 3 |
+| P2 | `developer-page-tabs` | As a developer, I want logs, system, telemetry, storage, memory graph, config, debug tools, and archive in one place, so that I can diagnose the gateway. | `/settings/developer` | rich | nightly | 5 |
+| P2 | `developer-storage` | As a developer, I want a raw localStorage inspector, so that I can debug client preferences. | `/settings/developer` | minimal | nightly | 2 |
+| P2 | `developer-system` | As a developer, I want host runtime, services, sessions and performance views, so that I can spot resource problems and reclaim session storage. | `/settings/developer` | sessions-long-history | nightly | 3 |
+| P2 | `developer-telemetry` | As a developer, I want startup timings and context traces, so that I can find slow paths. | `/settings/developer` | minimal | nightly | 2 |
 | P2 | `standalone-logs` | As an operator, I want a full-page log viewer at a stable URL, so that I can watch the gateway logs from one bookmark. | `/logs` | minimal | nightly | 2 |
 
 ## Not generated
@@ -450,7 +450,7 @@ Features the lane cannot drive on its target. Listed so the gap is a decision, n
 
 | Tier | Id | Feature | Title | Why |
 |---|---|---|---|---|
-| native-only | `chat-browser-panel` | browser-panel | Browser panel | The panel is owned by the Electron native Chromium view and Annotate is IPC-only. Web-only degradation is limited to asserting the tab and its 'use playwright-cli' guidance / empty state render, which browser-panel-open… |
+| native-only | `chat-browser-panel` | browser-panel | Live browser card in the chat | The frames come from a real browser the gateway drives; on the fake-ACP, no-network target the card never leaves its empty state, so only the Settings > Browser surface is web-renderable here. |
 | native-only | `app-crew-companion-reminders` | apps | Crew Companion: set break interval and add a reminder | Requires the Electron desktop app and its companion process; the target has no Electron. Degradable to web-only only for the offline landing state and cached Memories. |
 | native-only | `app-mochi-dashboard` | apps | Mochi: enable the desktop pet and view activity, watchlist, and plan | Pet window, click-through transparency, and panel windows need Electron, which the target lacks; the dashboard data page alone is degradable to web-only. |
 | native-only | `settings-channels-imessage-configure` | channels | Configure iMessage channel (enable, allowed handles, service, DB path) | Requires the macOS Messages database; form rendering is degradable to web-only but the channel cannot start on Linux. |
@@ -461,6 +461,7 @@ Features the lane cannot drive on its target. Listed so the gap is a decision, n
 | native-only | `popout-terminal-window` | popout | Pop the terminal out and re-dock it | Requires a second window and a PTY; Electron-first, so native-only. Degradable: load /popout/terminal directly and assert the frame. Moved the feature-map popout-terminal record from the chat bucket (docked terminal is … |
 | native-only | `settings-chat-toggle-prevent-sleep` | settings | Toggle Prevent sleep while running | Toggle persistence is web-testable (degradable), but the actual sleep-inhibit effect needs Electron. |
 | native-only | `settings-developer-run-local-gateway-toggle` | settings | Toggle Run a local gateway | Desktop-app-only section; not degradable to web because it is hidden without Electron. |
+| native-only | `settings-display-keep-running-when-closed-toggle` | settings | Toggle Keep running in the background after closing the window | Desktop-app-only section; not degradable to web because it is hidden without Electron, and the behaviour is the native window close. |
 | native-only | `settings-notifications-background-chat-finished` | settings | Toggle Notify when a background chat finishes | Toggle persistence is web-testable (degradable), but OS notification delivery needs Electron and window focus state. |
 | needs-secret | `chat-mcp-oauth-banner-sign-in` | chat | Complete MCP OAuth from the chat banner | Requires a real OAuth provider account. |
 | needs-secret | `standalone-source-provider-review` | chat | Source-provider review | Fetching PR state requires a real source-provider token. |
@@ -509,7 +510,7 @@ Features the lane cannot drive on its target. Listed so the gap is a decision, n
 | excluded | `standalone-cloud-launch` | remote-instances | Cloud launch | Kept excluded rather than needs-secret: beyond real AWS credentials it provisions billable infrastructure and exposes Stop/Delete-by-tag lifecycle, so it must not run even with secrets. Only the lane selector and IAM po… |
 | excluded | `kas-auth-chat-error-row-sign-in-link` | auth | An auth-required turn renders a 'Sign in to Kiro' error row deep-linking to the card | Excluded: the fake ACP backend cannot emit the AcpAuthRequired vocabulary (only [[ERROR]]), so the row and its deep link are unreachable on the target. Closing that harness gap (an auth-required sentinel) is the prerequ… |
 | excluded | `settings-about-check-for-updates` | settings | Check for updates and install | Network-dependent and restarts the application; not pixel-testable. |
-| excluded | `settings-browser-install-cli` | settings | Install playwright-cli and a browser engine from Settings | Network download and host mutation; not pixel-testable deterministically. |
+| excluded | `settings-browser-install-engine` | settings | Install the browser engine from Settings | Network download and host mutation; not pixel-testable deterministically. |
 | excluded | `settings-ui-prefs-backup` | settings | UI preference host backup | Cross-cutting mechanism with no UI of its own; verified through the settings rows it backs, not pixels. |
 | excluded | `settings-voice-stt-model-download` | settings | Download a local STT model | Requires large external download and disk writes; not suitable for pixel tests. |
 

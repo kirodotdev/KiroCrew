@@ -357,10 +357,98 @@ test("the one desktop gateway spawn uses the hardened environment builder", () =
   assert.equal(gatewaySpawns.length, 1, "expected one owned gateway spawn boundary");
   assert.match(
     supervisor,
-    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\},\s*\{ bundled, platform: processObj\.platform \}\),/,
+    /env:\s*buildGatewayEnvironment\(\{[\s\S]*?gatewayBytecodeEnvironment\([\s\S]*?\},\s*\{ bundled, platform: processObj\.platform, discoverProxyEnv: discoverGatewayProxyEnv \}\),/,
     "the owned gateway spawn must pass every initial launch and liveness respawn " +
       "through buildGatewayEnvironment",
   );
+});
+
+test("the owned gateway spawn discovers the system proxy for GUI launches", () => {
+  // A GUI-launched macOS app inherits launchd's environment, not the shell's
+  // (issue #19821): the gateway — and every kiro-cli child — could run with
+  // no HTTP_PROXY/HTTPS_PROXY on a proxy-only network, failing every turn as
+  // a "transient 5xx" while the same machine's terminal kiro-cli worked. The
+  // spawn must therefore wire the system-store discovery into the builder;
+  // short-lived CLI helpers (`stop`, `gateway-pid`) stay undiscovered.
+  const supervisor = fs.readFileSync(
+    path.join(__dirname, "..", "gateway-supervisor.js"),
+    "utf8",
+  );
+  assert.match(supervisor, /require\("\.\/system-proxy-env"\)/);
+  assert.match(
+    supervisor,
+    /const discoverGatewayProxyEnv = \(\) =>\s*\n\s*readSystemProxyEnvironment\(\{ execFileSync, platform: processObj\.platform \}\);/,
+    "discovery must be built per spawn from the factory's execFileSync",
+  );
+});
+
+test("discovery is the gap-filler: it runs only when no proxy variable is inherited", () => {
+  // The system store must never override an operator's explicit environment,
+  // however it reached the app (launchd domain, GUI launcher, shell export on
+  // a dev checkout). The check is case-insensitive: on Windows the spellings
+  // are the same variable, and a lowercase export is just as explicit.
+  const DISCOVERED = {
+    HTTP_PROXY: "http://proxy.corp.example:7890",
+    HTTPS_PROXY: "http://proxy.corp.example:7890",
+    NO_PROXY: "localhost,127.0.0.1,::1",
+  };
+
+  // Nothing inherited: the gap gets filled.
+  const filled = buildGatewayEnvironment(
+    { PATH: "/usr/bin", PYTHONUTF8: "0" },
+    { discoverProxyEnv: () => ({ ...DISCOVERED }) },
+  );
+  assert.equal(filled.HTTP_PROXY, DISCOVERED.HTTP_PROXY);
+  assert.equal(filled.HTTPS_PROXY, DISCOVERED.HTTPS_PROXY);
+  assert.equal(filled.NO_PROXY, DISCOVERED.NO_PROXY);
+  assert.equal(filled.PATH, "/usr/bin");
+  assert.equal(filled.PYTHONUTF8, "1", "the UTF-8 contract is untouched");
+  assert.equal(
+    filled.no_proxy,
+    undefined,
+    "no lowercase twin, so an uppercase agent.env proxy fully replaces it",
+  );
+
+  // An uppercase inherited variable wins and discovery never runs.
+  let called = 0;
+  const counting = () => {
+    called += 1;
+    return { ...DISCOVERED };
+  };
+  const upper = buildGatewayEnvironment(
+    { HTTPS_PROXY: "http://operator.example:3128" },
+    { discoverProxyEnv: counting },
+  );
+  assert.equal(upper.HTTPS_PROXY, "http://operator.example:3128");
+  assert.equal(called, 0);
+
+  // A lowercase inherited variable is just as explicit.
+  buildGatewayEnvironment({ http_proxy: "http://operator.example:3128" }, { discoverProxyEnv: counting });
+  assert.equal(called, 0);
+
+  // A lone NO_PROXY is an operator statement too.
+  buildGatewayEnvironment({ NO_PROXY: "internal.example" }, { discoverProxyEnv: counting });
+  assert.equal(called, 0);
+
+  // Discovery finding nothing changes nothing.
+  const before = buildGatewayEnvironment({ PATH: "/usr/bin" });
+  const after = buildGatewayEnvironment({ PATH: "/usr/bin" }, { discoverProxyEnv: () => null });
+  assert.deepStrictEqual(after, before);
+
+  // The inherited environment is never mutated.
+  const inherited = { PATH: "/usr/bin" };
+  buildGatewayEnvironment(inherited, { discoverProxyEnv: () => ({ ...DISCOVERED }) });
+  assert.deepStrictEqual(inherited, { PATH: "/usr/bin" });
+});
+
+test("the proxy key contract covers the standard four, checked case-insensitively", () => {
+  for (const key of ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"]) {
+    const env = buildGatewayEnvironment(
+      { [key.toLowerCase()]: "x" },
+      { discoverProxyEnv: () => assert.fail("a mixed-case inherited key is still explicit") },
+    );
+    assert.equal(env[key.toLowerCase()], "x");
+  }
 });
 
 for (const platform of ["win32", "darwin", "linux"]) {

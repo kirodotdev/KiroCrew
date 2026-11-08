@@ -25,6 +25,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import platform_compat
 from kiro_crew.acp.client import prompt_timeout_for_ceiling
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
@@ -32,10 +33,12 @@ from kiro_crew.acp.liveness import (
     EVIDENCE_PLATFORM_LIMITED,
     EVIDENCE_REMOTE_FLAT,
     EVIDENCE_SHELL_CHILD_ABSENT,
+    EVIDENCE_WINDOWS_TREE_MOVED,
     INTERACTIVE_NARROWING_RISKS,
     VERDICT_STUCK_INPUT,
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
+    LivenessOracle,
     _consume_future_exception,
     consult_offloaded,
 )
@@ -494,16 +497,19 @@ async def _consult_oracle_offloaded(self: AcpSessionHandle, *, model_wait: bool)
 def _working_tool_bound_reached(self: AcpSessionHandle, evidence: str, tool_idle: float) -> bool:
     """Whether a tool-branch WORKING reading has run out of forbearance.
 
-    Only the opaque-MCP reading is bounded. It says some process in the
-    runtime's tree moved, which a warm sibling MCP server does too, so a
-    call whose result frame was lost would otherwise hold the turn to its
-    deadline. The bound is ``watchdog.tool_stall_hard_cap_secs``, the same
-    ceiling an UNKNOWN reading gets, measured on the session's own frame
-    clock. A matched shell child, the declared-duration ``wait`` verdict
-    and a kirocrew-core tool that pings the session keepalive
+    Only the readings that cannot be tied to the tool are bounded: the
+    opaque-MCP one, which says some process in the runtime's tree moved
+    (a warm sibling MCP server does too), and the Windows shell-tool one,
+    which says some process started since the dispatch moved (another
+    session's may). Either would otherwise hold a call whose result frame
+    was lost to the turn's deadline. The bound is
+    ``watchdog.tool_stall_hard_cap_secs``, the same ceiling an UNKNOWN
+    reading gets, measured on the session's own frame clock. A matched
+    shell child, the declared-duration ``wait`` verdict and a kirocrew-core
+    tool that pings the session keepalive
     (:meth:`ToolCallState.is_trusted_keepalive_tool`) keep deferring.
     """
-    if not evidence.startswith(EVIDENCE_MCP_SUBTREE_ACTIVE):
+    if not evidence.startswith((EVIDENCE_MCP_SUBTREE_ACTIVE, EVIDENCE_WINDOWS_TREE_MOVED)):
         return False
     tool = self._inflight_tool
     if tool is not None and tool.is_trusted_keepalive_tool():
@@ -564,7 +570,7 @@ def _emit_watchdog_metric(
     ordinary silence window, remote_flat to the opt-in remote-call budget),
     "extended" (model-wait established_flat extends the 600s stale window to the
     model-silent probe window for a non-streamed server-side think), or
-    "working_cap" (an opaque-MCP WORKING reading ran past the hard cap).
+    "working_cap" (a WORKING reading ran past the hard cap).
     ``agent_override`` is the per-agent-override BOOLEAN from the settings
     snapshot — deliberately NOT the agent name (per-agent joins happen via
     the always-on token row store, not OTel attrs). Failures never reach
@@ -601,6 +607,14 @@ def _emit_watchdog_metric(
         logger.debug("watchdog metric emit failed", exc_info=True)
 
 
+def _terminate_stalled_shell_tree(oracle: LivenessOracle, runtime_pid: int) -> int:
+    """Terminate the oracle-matched shell subtree, never the shared runtime."""
+    targets = oracle.stalled_shell_tree(runtime_pid)
+    if not targets:
+        return 0
+    return platform_compat.terminate_pids_pinned(targets, protected_pids=(runtime_pid,))
+
+
 async def _end_stalled_tool(
     self: AcpSessionHandle,
     verdict: str,
@@ -609,20 +623,16 @@ async def _end_stalled_tool(
     *,
     status: StructuredStatus | None = None,
 ) -> AsyncIterator[AcpEvent]:
-    """Cancel THIS session and end the turn with the tool-stall stop reason.
+    """Cancel this session, clean its matched shell tree, and end the turn.
 
-    Session-scoped recovery on a SHARED runtime: never kill the process
-    (co-tenant sessions would die) — session/cancel drops only this
-    session's in-flight prompt. Bounded (5s) so an unresponsive runtime
-    can't turn stall recovery into a second stall. The terminal event
-    carries the tool title / redacted command / evidence so chat_runner's
-    dedicated recovery can build a targeted continue-nudge (with log-file
-    hint and, for STUCK_INPUT, the re-run-non-interactively advice)
-    instead of blindly re-running the original user message. ``status`` is
-    the ``waiting_input`` classification when the stall was one (RFC
-    §14.6); it rides the terminal as ``AcpEvent.status`` so a consumer
-    reads ``wait_reason`` / ``safe_retry`` from a typed field instead of
-    parsing the evidence text.
+    The ACP runtime can host co-tenant sessions, so it is never killed.
+    ``session/cancel`` remains session-scoped; after it returns, a shell tool's
+    identity-bound child tree is terminated off-loop with a bounded grace. An
+    MCP stall has no process attribution and therefore sends no signal. The
+    terminal event carries the cleanup count with the tool title / redacted
+    command / evidence so recovery can say whether the old command is still
+    running. ``status`` is the typed ``waiting_input`` classification when the
+    stall was one (RFC §14.6).
     """
     tool = self._inflight_tool
     logger.warning(
@@ -641,13 +651,46 @@ async def _end_stalled_tool(
             self._session_id,
             exc_info=True,
         )
+
+    terminated = 0
+    runtime_pid = getattr(self._runtime, "pid", None)
+    if tool is not None and tool.is_shell and type(runtime_pid) is int and runtime_pid > 1:
+        try:
+            loop = asyncio.get_running_loop()
+            terminated = await asyncio.wait_for(
+                loop.run_in_executor(
+                    subprocess_executor(),
+                    _terminate_stalled_shell_tree,
+                    self._oracle,
+                    runtime_pid,
+                ),
+                timeout=8.0,
+            )
+        except Exception:
+            logger.debug(
+                "stalled shell tree cleanup failed for session %s",
+                self._session_id,
+                exc_info=True,
+            )
+    if terminated:
+        logger.warning(
+            "Tool stall on session %s: terminated %d matched shell process(es); "
+            "shared runtime pid %d kept alive",
+            self._session_id,
+            terminated,
+            runtime_pid,
+        )
+
     self._turn_done.set()
     yield AcpEvent(
         kind=EVENT_COMPLETE,
         stop_reason=STOP_REASON_TOOL_STALL,
         title=(tool.title if tool else ""),
         tool_input=(tool.command if tool else ""),
-        text=f"verdict={verdict}; idle_secs={int(idle)}; {evidence}",
+        text=(
+            f"verdict={verdict}; idle_secs={int(idle)}; "
+            f"processes_terminated={terminated}; {evidence}"
+        ),
         usage=self.last_prompt_stats.to_turn_usage(),
         status=status,
     )

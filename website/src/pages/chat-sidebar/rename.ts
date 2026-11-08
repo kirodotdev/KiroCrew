@@ -1,13 +1,15 @@
 /** Inline rename for session rows and folder headers, and the Radix menu focus
  *  plumbing that keeps a rename opened from a menu from being cancelled by the menu's
  *  own focus restore. */
-import { useState, useRef, useCallback, useEffect, type MutableRefObject } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { measureAutoGrowTextarea, useAutoGrowTextarea } from '../../hooks/useAutoGrowTextarea'
+import { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
 import { sseSlotTitle } from '../../store/dashboardSlice'
 import { api } from '../../api/client'
 import { generateSlotTitle } from '../../hooks/slotTitleGeneration'
 import { errMessage } from '../../utils/thunkError'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
+import { useConnected } from '../../hooks/useConnected'
 import { i18nT } from '../../i18n/t'
 import type { AppDispatch, RootState } from '../../store'
 import type { Store } from '@reduxjs/toolkit'
@@ -36,7 +38,30 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   // Set when the server refuses a rename; rendered through the sidebar-root
   // ErrorNotice cluster so the revert (below) never happens silently.
   const [renameError, setRenameError] = useState('')
+  const [renameAnnouncement, setRenameAnnouncement] = useState('')
+  // An offline refusal is NOT a failure: no PATCH was sent, so it is announced
+  // on a neutral row beside the preserved draft rather than the danger surface
+  // above. Keyed by slot AND placement scope, the pair `renamingHere` compares:
+  // in board view a multi-tag chat renders one row per matching column, so a
+  // slot-only key is true in every copy at once and the notice would appear
+  // under each of them, every copy sharing one `data-testid`.
+  const [renameOffline, setRenameOffline] = useState<{ key: string; scope: string } | null>(null)
+  // Read here, not taken as a prop: `utils/offline.ts` keeps the behavioural
+  // bails at their own sinks, and an optional prop would let a caller mount
+  // this hook ungated.
+  const connected = useConnected()
+  // The refusal stops being true once the gateway is back, so retire it on the
+  // disconnected -> connected transition only.
+  const wasConnected = useRef(connected)
+  useEffect(() => {
+    if (connected && !wasConnected.current) setRenameOffline(null)
+    wasConnected.current = connected
+  }, [connected])
   const cancelRenameRef = useRef(false)
+  // Set by the textarea's onEnter so onRenameCommit (fired via the blur that
+  // follows) can distinguish an Enter commit from a pointer-blur commit and
+  // restore focus to the session row accordingly.
+  const slotRenameEnterRef = useRef(false)
   // Per-slot rename recovery state, keyed by slot. `gen` is a monotonic attempt
   // counter: a refused rename's delayed recovery may apply ONLY while its own
   // generation is still the latest (`rec.gen === myGen`). This defeats the
@@ -57,11 +82,33 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   // scrolls. Only one row renames at a time (renamingSlot), so the single
   // shared ref always points at the one mounted textarea.
   useAutoGrowTextarea(renameInputRef, renameValue, RENAME_MAX_H)
-  // Set by any menu's Rename item (session rows + folder headers) so the closing
-  // menu's onCloseAutoFocus knows to skip Radix's trigger-focus-restore for this
-  // one close (see the menu Content handlers in ChatSidebar). One-shot: read and cleared
-  // on the next close.
-  const suppressMenuRestoreRef = useRef(false)
+  // Armed by any menu's Rename item (session rows + folder headers) so the
+  // closing menu's onCloseAutoFocus skips Radix's trigger-focus-restore for this
+  // one close. One-shot: consumed on the next close (see useMenuOpensDialog).
+  const menuLayer = useMenuOpensDialog()
+  const { armSkipRestore: suppressMenuRestore, disarm: disarmMenuRestore } = menuLayer
+  const consumeMenuRestoreSkip = menuLayer.onCloseAutoFocus
+  // Enter commits by BLURRING the textarea, so a refused commit leaves the
+  // editor on screen with focus on `document.body`: Escape would no longer
+  // reach it and the next Tab would restart from the top of the page. Restored
+  // from an EFFECT, not from the commit handler: the row remounts its textarea
+  // on that re-render, so inside the handler the ref still points at the
+  // detached node and focusing it does nothing.
+  //
+  // Keyed on a COUNTER, not on `renameOfflineSlot`: a second refused Enter on
+  // the same row leaves that value unchanged, so a value-keyed effect would not
+  // re-run. Only an ENTER refusal arms it: a click on non-focusable content
+  // also leaves focus on body, so body alone cannot tell Enter from a pointer
+  // blur, and pulling focus back after a click is what WCAG 3.2.2 forbids.
+  const [refocusTick, setRefocusTick] = useState(0)
+  useEffect(() => {
+    if (!refocusTick) return
+    const raf = requestAnimationFrame(() => {
+      if (document.activeElement !== document.body) return
+      renameInputRef.current?.focus({ preventScroll: true })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [refocusTick])
   // ── Rename plumbing handed to the memoized rows ──────────────────────────
   // Stable identities (state setters + refs only), so arming a rename or
   // typing into it never invalidates other rows' props. The commit takes the
@@ -69,20 +116,62 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   // `renameValue` — a closure over it would mint a new handler per keystroke
   // and re-render every row on each key.
   const onRenameStart = useCallback((key: string, scope: string, title: string, fromMenu: boolean) => {
-    if (fromMenu) suppressMenuRestoreRef.current = true
+    // Opening an editor whose commit cannot reach the gateway is the draft-loss
+    // path this gate exists to close: the name gets typed, then discarded. Say
+    // so instead, on the same neutral row the commit re-check uses.
+    if (!connected) {
+      setRenameOffline({ key, scope })
+      return
+    }
+    if (fromMenu) suppressMenuRestore()
     setRenamingSlot(key)
     setRenameScope(scope)
     setRenameValue(title)
-  }, [])
+  }, [suppressMenuRestore, connected])
   const onRenameChange = useCallback((value: string) => {
     setRenameValue(value.replace(/[\r\n]+/g, ' '))
   }, [])
   const onRenameCancel = useCallback(() => {
     cancelRenameRef.current = true
+    // Capture the row while the textarea is still mounted. For sessions inside
+    // a board folder, renameScope is `${folderLaneScope}:${folder.id}` but the
+    // row carries only folderLaneScope in data-session-scope, so a scope-keyed
+    // DOM query finds nothing. closest('[data-session-row]') resolves correctly
+    // across all views without relying on scope equality.
+    const targetRow = renameInputRef.current?.closest('[data-session-row]') as HTMLElement | null
     setRenamingSlot(null)
+    requestAnimationFrame(() => {
+      targetRow?.focus({ preventScroll: true })
+    })
   }, [])
   const onRenameCommit = useCallback((key: string, value: string) => {
-    if (!cancelRenameRef.current && value.trim()) {
+    const viaEnter = slotRenameEnterRef.current
+    slotRenameEnterRef.current = false
+    // Capture the row while the textarea is still mounted, before the
+    // setRenamingSlot(null) re-render below unmounts it. For board-folder rows
+    // the renameScope is `${folderLaneScope}:${folder.id}`, which does not
+    // match data-session-scope (folderLaneScope only), so closest is the only
+    // reliable path to the target row.
+    const targetRow = renameInputRef.current?.closest('[data-session-row]') as HTMLElement | null
+    // Re-checked here, not only where the editor opens: the gateway can drop
+    // while a row editor is open. Return BEFORE `setRenamingSlot(null)` so the
+    // editor and the typed name survive, instead of firing a PATCH whose
+    // recovery read would discard the draft. Mirrors the folder
+    // `renameCommit`.
+    //
+    // A name equal to the slot's own title is NOT held: there is no draft to
+    // lose, so keeping the editor open would leave a click-away unable to
+    // close it until the gateway returned. It skips the request but still
+    // falls through to the common close and Enter row-focus restore below.
+    // The header control reaches the same outcome by returning on
+    // `refused === title` before its own gate.
+    const unchanged = value.trim() === (store.getState().dashboard.slots.find(s => s.key === key)?.title ?? '')
+    if (!cancelRenameRef.current && value.trim() && !connected && !unchanged) {
+      setRenameOffline({ key, scope: renameScope ?? 'list' })
+      if (viaEnter) setRefocusTick(t => t + 1)
+      return
+    }
+    if (!cancelRenameRef.current && value.trim() && connected) {
       const refused = value.trim()
       // Take a generation for THIS attempt before any async work. A later
       // rename on the same slot bumps `rec.gen`, so a delayed recovery of an
@@ -99,6 +188,7 @@ export function useSessionRename({ dispatch, store, queryClient }: {
         rec.inflight.delete(refused)
         if (rec.inflight.size === 0 && rec.gen === myGen) renameRecoveryRef.current.delete(key)
       }
+      setRenameAnnouncement('')
       dispatch(sseSlotTitle({ key, title: refused }))
       // Recovery on a refused rename must go through Redux: slot titles live in
       // the dashboard slice (written by `sseSlots` / `fetchSlots.fulfilled`),
@@ -122,7 +212,7 @@ export function useSessionRename({ dispatch, store, queryClient }: {
       const mayRecover = () =>
         rec.gen === myGen &&
         store.getState().dashboard.slots.find(s => s.key === key)?.title === refused
-      api.renameSlot(key, refused).then(() => settle(), async e => {
+      api.renameSlot(key, refused).then(() => { settle(); setRenameAnnouncement(i18nT('pages.chatPage.session_renamed_to', { title: refused })) }, async e => {
         setRenameError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))
         try {
           const server = (await queryClient.fetchQuery({
@@ -143,7 +233,14 @@ export function useSessionRename({ dispatch, store, queryClient }: {
     }
     cancelRenameRef.current = false
     setRenamingSlot(null)
-  }, [dispatch, queryClient, store])
+    // Restore focus via the captured row (set above, before the unmount).
+    // Pointer blur does NOT restore focus (WCAG 3.2.2).
+    if (viaEnter) {
+      requestAnimationFrame(() => {
+        targetRow?.focus({ preventScroll: true })
+      })
+    }
+  }, [dispatch, queryClient, store, connected, renameScope])
   // Input modality tracker for menu-close focus handling: true while the most
   // recent interaction was a keyboard press. Capture-phase listeners so Radix's
   // own handlers can't reorder around us.
@@ -190,12 +287,12 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   }, [renamingSlot, renameScope])
   // Shared onCloseAutoFocus for every rename-hosting menu (session row context +
   // ⋯ dropdowns, and both folder-header ⋯ dropdowns). When Rename was the chosen
-  // item it armed suppressMenuRestoreRef, so we preventDefault to stop Radix from
+  // item it armed suppressMenuRestore, so we preventDefault to stop Radix from
   // yanking focus back to the trigger — that restore would otherwise blur the
   // just-mounted rename input and cancel the edit. Every other item keeps the
   // default focus-restore intact.
   const onMenuCloseAutoFocus = useCallback((e: Event) => {
-    if (suppressMenuRestoreRef.current) { suppressMenuRestoreRef.current = false; e.preventDefault(); return }
+    if (consumeMenuRestoreSkip(e)) return
     // Pointer dismissals (outside click / mouse item pick) skip Radix's
     // focus-restore-to-trigger: the trigger lives inside a focus-within-revealed
     // hover group (folder headers AND session rows), so restoring focus pins
@@ -203,10 +300,13 @@ export function useSessionRename({ dispatch, store, queryClient }: {
     // closes (Esc / Enter on an item) keep the restore — focus returning to
     // the trigger is exactly right for keyboard users (a11y).
     if (!lastInputKeyboardRef.current) e.preventDefault()
-  }, [])
+  }, [consumeMenuRestoreSkip])
   return {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
-    suppressMenuRestoreRef, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit,
+    renameAnnouncement, slotRenameEnterRef,
+    renameOfflineSlot: renameOffline?.key ?? null,
+    renameOfflineScope: renameOffline?.scope ?? null,
+    suppressMenuRestore, disarmMenuRestore, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit,
     onMenuCloseAutoFocus,
   }
 }
@@ -233,12 +333,15 @@ export function useSessionAutoTitle({ dispatch, store }: { dispatch: AppDispatch
 }
 
 /** Folder rename state, scoped to the render instance being edited. */
-export function useFolderRename({ renamingSlot, suppressMenuRestoreRef }: {
+export function useFolderRename({ renamingSlot, disarmMenuRestore }: {
   renamingSlot: string | null
-  suppressMenuRestoreRef: MutableRefObject<boolean>
+  disarmMenuRestore: () => void
 }) {
   // Folder rename ref. See the focus effect below for why the rAF re-grab is needed.
   const folderEditInputRef = useRef<HTMLInputElement | null>(null)
+  // Set true in onEscape so the onBlur handler (always fired when the input
+  // unmounts) knows not to commit — Escape means cancel, not save.
+  const folderCancelEscapeRef = useRef(false)
   // Folder editing state
   const [editingId, setEditingId] = useState<string | null>(null)
   // Board view renders a folder once per column, so `editingId === folder.id`
@@ -269,15 +372,15 @@ export function useFolderRename({ renamingSlot, suppressMenuRestoreRef }: {
     })
     return () => cancelAnimationFrame(raf)
   }, [editingId, editScope])
-  // Belt-and-suspenders disarm of the one-shot suppress ref. It's normally
+  // Belt-and-suspenders disarm of the one-shot restore-skip flag. It's normally
   // consumed by the very next onCloseAutoFocus, but if a menu is ever dismissed
-  // without firing that (an outside-dismiss race), the ref would stay armed and
+  // without firing that (an outside-dismiss race), the flag would stay armed and
   // wrongly preventDefault the NEXT menu close. Whenever the sidebar is idle (no
   // edit open), force-disarm: no legitimate pending suppression can exist then.
   // Safe against the normal flow — during a live edit an id is non-null, so this
   // hasn't run yet; by the time all ids clear the real close already consumed it.
   useEffect(() => {
-    if (!renamingSlot && !editingId) suppressMenuRestoreRef.current = false
-  }, [renamingSlot, editingId, suppressMenuRestoreRef])
-  return { folderEditInputRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName }
+    if (!renamingSlot && !editingId) disarmMenuRestore()
+  }, [renamingSlot, editingId, disarmMenuRestore])
+  return { folderEditInputRef, folderCancelEscapeRef, editingId, setEditingId, editScope, setEditScope, editName, setEditName }
 }

@@ -57,27 +57,31 @@ describe('useVirtualChat: height-sync spacer repricing keeps the top visible row
     const { el, state } = makeScroller({ scrollTop: 1000, scrollHeight: 5000, clientHeight: 400 })
     const ref: RefObject<HTMLDivElement | null> = { current: el }
     const items = mkItems(30)
+    // The total each render commits, read during that render (the hook's
+    // `result` only advances after the commit's effects).
+    let total = 0
     const view = renderHook(
-      (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
+      (props: UseVirtualChatOptions<Item>) => {
+        const v = useVirtualChat<Item>(props)
+        total = v.totalHeight
+        return v
+      },
       { initialProps: { items, sessionId: 'anchor-sync', getKey, externalScrollerRef: ref, followOutput: false } },
     )
 
     // Mount a visible row whose screen position SHIFTS between the sync's
-    // anchor capture (first rect read → top 100) and the compensation
-    // effect's re-read after the commit (subsequent reads → top 130),
-    // simulating the spacer above it re-pricing by +30px. jsdom has no real
-    // layout, so the shift is expressed through the self-mutating mock.
+    // anchor capture (top 100) and the compensation effect's re-read after
+    // the commit (top 130), simulating the spacer above it re-pricing by
+    // +30px. jsdom has no real layout, so the shift is expressed through the
+    // mock: the row reads 100 until the render that commits the reprice (its
+    // total changes), and 130 from then on. Keyed on that commit, not
+    // on a count of rect reads, so a read anywhere else (the window
+    // recompute's) does not move it.
     const node = document.createElement('div')
     Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
-    // Read #1 is the seed measurement itself (fractional heights read the
-    // rect), #2 is captureTopAnchorFrom inside the sync's anchor capture, #3
-    // the candidate-collection pass (the capture stores a LIST of visible
-    // fallback anchors, one more rect read per row), #4+ the compensation
-    // effect.
-    let reads = 0
+    const pricedTotal = total
     node.getBoundingClientRect = () => {
-      reads += 1
-      const top = reads <= 3 ? 100 : 130
+      const top = total === pricedTotal ? 100 : 130
       return { top, bottom: top + 250, left: 0, right: 390, width: 390, height: 250, x: 0, y: top, toJSON: () => ({}) } as DOMRect
     }
     act(() => { view.result.current.measureRef(5)(node) })
@@ -158,17 +162,24 @@ describe('useVirtualChat: height-sync spacer repricing keeps the top visible row
     const { el, state } = makeScroller({ scrollTop: 1000, scrollHeight: 5000, clientHeight: 400 })
     const ref: RefObject<HTMLDivElement | null> = { current: el }
     const items = mkItems(30)
+    // The total each render commits, read during that render (the hook's
+    // `result` only advances after the commit's effects).
+    let total = 0
     const view = renderHook(
-      (props: UseVirtualChatOptions<Item>) => useVirtualChat<Item>(props),
+      (props: UseVirtualChatOptions<Item>) => {
+        const v = useVirtualChat<Item>(props)
+        total = v.totalHeight
+        return v
+      },
       { initialProps: { items, sessionId: 'anchor-late', getKey, externalScrollerRef: ref, followOutput: false } },
     )
 
+    // The same row as the first case: 100 until the reprice commits, 130 after.
     const node = document.createElement('div')
     Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
-    let reads = 0
+    const pricedTotal = total
     node.getBoundingClientRect = () => {
-      reads += 1
-      const top = reads <= 3 ? 100 : 130
+      const top = total === pricedTotal ? 100 : 130
       return { top, bottom: top + 250, left: 0, right: 390, width: 390, height: 250, x: 0, y: top, toJSON: () => ({}) } as DOMRect
     }
     act(() => { view.result.current.measureRef(5)(node) })
@@ -177,6 +188,121 @@ describe('useVirtualChat: height-sync spacer repricing keeps the top visible row
     // Flush the debounced sync LATE — far beyond any wall-clock age gate.
     act(() => { vi.advanceTimersByTime(5000) })
     expect(state.scrollTop - before).toBe(30)
+  })
+
+  it('holds a reader 20px up when a reprice SHRINKS the content past them and the engine clamps (iPhone idle snap)', () => {
+    // WebKit has no scroll anchoring. When the measure farm reprices rows ABOVE
+    // a released reader and the total SHRINKS by more than their distance from
+    // the bottom, the layout the commit forces clamps scrollTop to the new
+    // maximum with no application write. The consumer then saw a moved
+    // scrollTop, read it as the reader's own scroll, and dropped the
+    // correction -- leaving them flush at the bottom. Reported on iPhone as a
+    // fully loaded chat snapping to the end a few seconds after a small scroll
+    // up. The row's rect still carries the whole move, so the correction is
+    // exact from the clamped position.
+    // 30 unmeasured rows at a 300px estimate: a 9000px document, the reader
+    // 20px up from its bottom. The document height IS the virtualizer's total,
+    // so the commit that reprices it is the commit that shrinks it.
+    let total = 9000
+    const state = { scrollTop: 9000 - 400 - 20, clientHeight: 400 }
+    const el = document.createElement('div')
+    // The engine clamp, as a browser applies it on every layout read.
+    const ceiling = () => total - state.clientHeight
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get: () => Math.min(state.scrollTop, ceiling()),
+      set: (v: number) => { state.scrollTop = Math.min(v, ceiling()) },
+    })
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => total })
+    Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => state.clientHeight })
+    ;(el as unknown as { scrollTo: (o: { top: number }) => void }).scrollTo = (o) => { el.scrollTop = o.top }
+    el.getBoundingClientRect = () => ({ top: 0, bottom: 400, left: 0, right: 390, width: 390, height: 400, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const view = renderHook(
+      (props: UseVirtualChatOptions<Item>) => {
+        const v = useVirtualChat<Item>(props)
+        total = v.totalHeight
+        return v
+      },
+      { initialProps: { items: mkItems(30), sessionId: 'anchor-clamp', getKey, externalScrollerRef: ref, followOutput: false, estimatedHeight: 300 } },
+    )
+    expect(total).toBe(9000)
+
+    // The first real measurement (250px) re-prices every unmeasured row at the
+    // measured mean: 30 x 250 = 7500, so the document loses 1500px under a
+    // reader who was 20px from its end, and the engine clamps them to the new
+    // maximum. The witness row -- everything that shrank lies above it -- is
+    // 1500px higher in the document and seen through a viewport 1480px
+    // higher, so it reads 20px higher than it was captured (100 until the
+    // render that commits the shrunk total, 80 from then on, as in the first
+    // test).
+    const node = document.createElement('div')
+    Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
+    node.getBoundingClientRect = () => {
+      const top = total === 9000 ? 100 : 80
+      return { top, bottom: top + 250, left: 0, right: 390, width: 390, height: 250, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+    }
+    act(() => { view.result.current.measureRef(5)(node) })
+    act(() => { vi.advanceTimersByTime(120) })
+
+    expect(total).toBe(7500)
+    // Still 20px from the bottom of the shrunk transcript, not flush with it.
+    expect(total - el.scrollTop - state.clientHeight).toBe(20)
+  })
+
+  it('leaves a reader who scrolled to the bottom after the capture at the bottom when the same reprice clamps', () => {
+    // Same shrink as the clamp test, but the reader flings to the very bottom
+    // between the sync's capture and the commit that consumes it. They end on
+    // the new ceiling exactly as a clamp would leave them, so the ceiling alone
+    // cannot tell the two apart; the scrollTop the consuming render saw can.
+    let total = 9000
+    const state = { scrollTop: 9000 - 400 - 20, clientHeight: 400 }
+    const el = document.createElement('div')
+    const ceiling = () => total - state.clientHeight
+    let flingAfterCapture = false
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get: () => {
+        const top = Math.min(state.scrollTop, ceiling())
+        // The capture's own scrollTop read, then the reader's fling.
+        if (flingAfterCapture) { flingAfterCapture = false; state.scrollTop = 9000 - 400 }
+        return top
+      },
+      set: (v: number) => { state.scrollTop = Math.min(v, ceiling()) },
+    })
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => total })
+    Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => state.clientHeight })
+    ;(el as unknown as { scrollTo: (o: { top: number }) => void }).scrollTo = (o) => { el.scrollTop = o.top }
+    el.getBoundingClientRect = () => ({ top: 0, bottom: 400, left: 0, right: 390, width: 390, height: 400, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const view = renderHook(
+      (props: UseVirtualChatOptions<Item>) => {
+        const v = useVirtualChat<Item>(props)
+        total = v.totalHeight
+        return v
+      },
+      { initialProps: { items: mkItems(30), sessionId: 'anchor-clamp-fling', getKey, externalScrollerRef: ref, followOutput: false, estimatedHeight: 300 } },
+    )
+    expect(total).toBe(9000)
+    // Entry placement lands on the bottom; the reader is 20px above it at the
+    // capture, so the fling is a real move.
+    state.scrollTop = 9000 - 400 - 20
+
+    const node = document.createElement('div')
+    Object.defineProperty(node, 'offsetHeight', { configurable: true, get: () => 250 })
+    let reads = 0
+    node.getBoundingClientRect = () => {
+      reads += 1
+      if (reads === 3) flingAfterCapture = true
+      const top = reads <= 3 ? 100 : 80
+      return { top, bottom: top + 250, left: 0, right: 390, width: 390, height: 250, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+    }
+    act(() => { view.result.current.measureRef(5)(node) })
+    act(() => { vi.advanceTimersByTime(120) })
+
+    expect(total).toBe(7500)
+    // Where they flung to: the bottom, not 20px above it.
+    expect(total - el.scrollTop - state.clientHeight).toBe(0)
   })
 
   it('does not touch scrollTop when the anchor row does not move across the commit', () => {

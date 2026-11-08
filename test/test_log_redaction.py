@@ -105,6 +105,22 @@ class TestSecretRedactionFilter:
         result = filt.redact(f"token: {jwe}")
         assert "eyJhbGciOiJkaXIifQ" not in result
 
+    def test_hostname_holding_eyj_is_not_a_jwt(self) -> None:
+        """A host label holding ``eyJ`` stays intact; a real JWS, even glued to one, does not."""
+        filt = SecretRedactionFilter([])
+        jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.sig"
+        url = "https://honeyJar.atlassian.net/wiki/spaces/ABC"
+        assert filt.redact(f"GET {url}") == f"GET {url}"
+        assert filt.redact(f"GET https://honeyJar.{jws}/x") == "GET https://honeyJar.[REDACTED]/x"
+
+    def test_token_url_parameter_value_redacted(self) -> None:
+        """A ``?token=`` / ``&token=`` value is masked and the parameter name kept."""
+        filt = SecretRedactionFilter([])
+        result = filt.redact(
+            "fetching https://h/x?token=abcdef123 then /y?a=1&token=zzzopaque987&b=2"
+        )
+        assert result == "fetching https://h/x?token=[REDACTED] then /y?a=1&token=[REDACTED]&b=2"
+
 
 def _make_record(msg: str, exc_info: object = None) -> logging.LogRecord:
     """Create a record through the LIVE factory — how ``logging`` itself does it."""

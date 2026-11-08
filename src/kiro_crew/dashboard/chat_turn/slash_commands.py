@@ -11,8 +11,10 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
 from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
+from kiro_crew.agent_sdk.tool_gate import label_for
 from kiro_crew.agent_switch_command import agent_switch_target, switch_announcement
 from kiro_crew.autonudge import FINISHED_LOOP_REASONS, reason_in
 from kiro_crew.autonudge_authz import normalize_banner
@@ -22,6 +24,11 @@ from kiro_crew.dashboard.chat_utils import (
     is_harness_slash_command,
     parse_workflow_command,
 )
+from kiro_crew.dashboard.kas_local_commands import (
+    KAS_KIRO_CLI_ONLY_COMMANDS,
+    answer_kas_inspect_command,
+)
+from kiro_crew.dashboard.kas_local_commands import answers_locally as kas_answers_locally
 from kiro_crew.dashboard.session_directive_apply import _reset_conversation
 from kiro_crew.dashboard.state import (
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -29,21 +36,21 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_SYNTHESIS_PREFIX,
 )
 from kiro_crew.messaging.commands import compact_unsupported_backend, compact_unsupported_reply
+from kiro_crew.quick_prompts import user_quick_prompt
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         _BLOCKED_SLASH_COMMANDS,
-        ACP_BACKEND_KAS,
         ACP_BACKEND_KIRO,
         ACP_BACKENDS_COMPACT,
         ACP_BACKENDS_LOCAL_CLEAR,
+        ACP_BACKENDS_LOCAL_HARNESS_COMMANDS,
         MAX_PROMPT_BYTES,
         DashboardState,
         KiroCrewConfig,
         RepeatLoopTracker,
         _ChatSlot,
-        _expand_prompt_mention_off_loop,
         _list_aim_prompts,
         _run_chat,
         capabilities_of,
@@ -54,16 +61,24 @@ if TYPE_CHECKING:
         select_provider_backend,
     )
     from kiro_crew.dashboard.chat_turn.eager_spawn import schedule_eager_spawn
+    from kiro_crew.dashboard.chat_turn.prompt_assembly import _expand_prompt_mention_off_loop
     from kiro_crew.dashboard.chat_turn.queue_cycle import _send_chat_done
     from kiro_crew.dashboard.chat_turn.recovery import (
         _COMPACT_FAIL_REASON_MAX_CHARS,
+        COMPACT_FRESH_SESSION_NOTICE,
         COMPACT_REPLAY_PENDING_NOTICE,
     )
+    from kiro_crew.dashboard.chat_turn.regenerate_swap import note_regenerate_reply
     from kiro_crew.dashboard.chat_turn.segment_flush import (
         _append_command_reply,
         _cleared_segment_text,
     )
     from kiro_crew.dashboard.chat_turn.session_reset import _consume_pending_reset
+    from kiro_crew.dashboard.chat_turn.turn_admission import (
+        _channels_judging_turn,
+        _refuse_channel_turn,
+        _source_channel_mismatch,
+    )
     from kiro_crew.dashboard.chat_turn.turn_context import _restore_skills_context_after_compaction
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_reply_seams import _drop_wire_tail
@@ -80,17 +95,67 @@ async def _slash_command_backend(state: DashboardState, session_key: str) -> str
     provider = state.sessions.get_provider(session_key)
     if provider is not None and await state.sessions.is_provider_alive(session_key) is True:
         return capabilities_of(provider).backend
-    agent_cfg = KiroCrewConfig.load().agent
-    backend = select_provider_backend(
-        session_key,
-        getattr(agent_cfg, "member_acp_backend", ""),
-        getattr(agent_cfg, "acp_backend", ""),
-    )
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_backend_pin
+
+    cfg = KiroCrewConfig.load()
+    agent_cfg = cfg.agent
+    try:
+        backend = select_provider_backend(
+            session_key,
+            getattr(agent_cfg, "member_acp_backend", ""),
+            getattr(agent_cfg, "acp_backend", ""),
+            crew_backend=crewmate_backend_pin(cfg, session_key),
+        )
+    except CrewmateHarnessUnavailable:
+        # Only a pre-check: the turn goes on to the session start, which refuses
+        # the unstartable pin inside the turn's error handling, with its reason.
+        return ACP_BACKEND_KIRO
     return backend if isinstance(backend, str) else ACP_BACKEND_KIRO
 
 
+async def _forwards_harness_command(
+    state: DashboardState, session_key: str, first_word: str, *, cc_provider: bool
+) -> bool:
+    """Whether *first_word* reaches the harness on *session_key* as a command.
+
+    :func:`is_harness_slash_command`, with its harness-owned rule granted by the
+    backend the command would reach (``runs_own_slash_commands``) as well as by the
+    dormant ``claude_code`` label. Only a word that rule alone would forward pays for
+    the backend lookup; a kiro-cli command name or plain text never does. A word
+    naming the user's own quick prompt is a macro, like ``/plain``, so it is kept
+    for ``build_message`` to expand rather than forwarded.
+    """
+    if is_harness_slash_command(first_word, cc_provider=False):
+        return True
+    if not is_harness_slash_command(first_word, cc_provider=True):
+        return False
+    if not cc_provider:
+        backend = await _slash_command_backend(state, session_key)
+        if not capabilities_for(backend).runs_own_slash_commands:
+            return False
+    return await asyncio.to_thread(user_quick_prompt, first_word) is None
+
+
 async def _answer_slash_without_channel(
-    state: DashboardState, slot: _ChatSlot, session_key: str, command: str
+    state: DashboardState, slot: _ChatSlot, session_key: str, command: str, message: str = ""
+) -> str:
+    """Answer a harness command the backend cannot run, on a KAS session.
+
+    The KAS spelling of :func:`_answer_slash_for_harness`, kept for the callers that
+    answer only ``/clear`` or are KAS by construction.
+    """
+    return await _answer_slash_for_harness(
+        state, slot, session_key, command, ACP_BACKEND_KAS, message
+    )
+
+
+async def _answer_slash_for_harness(
+    state: DashboardState,
+    slot: _ChatSlot,
+    session_key: str,
+    command: str,
+    backend: str,
+    message: str = "",
 ) -> str:
     """Answer a harness command the backend cannot run, as a local command.
 
@@ -98,14 +163,27 @@ async def _answer_slash_without_channel(
     through the same consumer, so the next turn starts with no memory of this
     conversation. The transcript stays, as it does for that tool. A session that
     refuses the discard (busy, sub-agents attached) keeps it queued for a later
-    turn boundary.
+    turn boundary. Any other command gets a notice naming *backend*'s harness as a
+    person reads it.
 
-    Returns the outcome it records: ``discarded``, ``queued`` or
-    ``unsupported_backend``.
+    On KAS, ``/agent``, ``/code``, ``/context``, ``/help``, ``/hooks``, ``/knowledge``,
+    ``/mcp``, ``/model``, ``/tools`` and ``/usage`` are answered by
+    ``kas_local_commands`` (from the dashboard's own state, or KAS's own verb for
+    ``/code``, ``/knowledge`` and ``/context add|remove|clear``); *message* is the
+    whole command line, for their arguments and for those ``answers_locally``
+    leaves to the notice.
+    Another harness gets the notice for them.
+
+    Returns the outcome it records: ``discarded``, ``queued``, ``shown``,
+    ``switched``, ``error``, ``no_session`` or ``unsupported_backend``.
     """
-    if command.lower() == "/clear":
+    if backend == ACP_BACKEND_KAS and kas_answers_locally(message or command):
+        text, outcome = await answer_kas_inspect_command(
+            state, slot, session_key, message or command
+        )
+    elif command.lower() == "/clear":
         await _reset_conversation(slot, session_key, {})
-        torn_down = await _consume_pending_reset(state, slot, allow_discard=True)
+        torn_down = await _consume_pending_reset(state, slot, allow_discard=True, own_turn=True)
         # The consumer's True also covers a queued project reset; only a spent
         # discard flag means THIS conversation was dropped.
         cleared = torn_down and not slot._pending_discard_conversation_key
@@ -128,7 +206,8 @@ async def _answer_slash_without_channel(
             )
     else:
         outcome = "unsupported_backend"
-        text = f"⚠ `{command}` doesn't work with KAS. It was not sent to the agent."
+        harness = "KAS" if backend == ACP_BACKEND_KAS else label_for(backend)
+        text = f"⚠ `{command}` doesn't work with {harness}. It was not sent to the agent."
     sel().log_tool_invocation(
         session_key=session_key,
         agent=slot.agent or "kirocrew",
@@ -365,10 +444,15 @@ def _refuse_blocked_slash(turn) -> None:
         outcome="blocked",
         metadata={"slot": slot.key},
     )
-    slot.append(
-        "assistant",
-        f"⚠️ `{first_word}` is not available in the dashboard.",
-        "msg msg-a",
+    # Recorded like every command answer: a Regenerate of this command
+    # replaces its previous reply with this row (``regenerate_swap``).
+    note_regenerate_reply(
+        slot,
+        slot.append(
+            "assistant",
+            f"⚠️ `{first_word}` is not available in the dashboard.",
+            "msg msg-a",
+        ),
     )
     state.push_slots_update()
 
@@ -389,6 +473,18 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     slot = turn.slot
     state = turn.state
     turn_exit = turn.turn_exit
+    # A Slack channel's words run only on that channel's agent, and a local
+    # command acts before admission judges the turn: judge it here first.
+    # `/agent <the channel's agent>` stays reachable, the switch onto it.
+    if not _commands_off and message.lstrip().startswith("/"):
+        _source_channels = _channels_judging_turn(turn, slot)
+        if _source_channels:
+            _required = await _source_channel_mismatch(_source_channels, slot, session_key)
+            if _required is not None and (
+                _required == "<unknown>" or agent_switch_target(message.strip()) != _required
+            ):
+                _refuse_channel_turn(slot, "chat_runner.slash_gate")
+                return _Flow.END
     # Same call, same result, again and again: told once per call (repeat_loop).
     _repeat_loop = RepeatLoopTracker()
     turn._repeat_loop = _repeat_loop
@@ -434,8 +530,16 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     # Named rather than inlined so the quick-prompt exception is one testable rule
     # instead of a condition only reachable by driving the whole of _run_chat: a macro
     # must NOT be forwarded to the harness as a command.
-    is_slash = is_harness_slash_command(first_word, cc_provider=_is_cc_provider)
+    is_slash = await _forwards_harness_command(
+        state, session_key, first_word, cc_provider=_is_cc_provider
+    )
     turn.is_slash = is_slash
+    # Linked surfaces still hear a command only the backend's own rule forwards
+    # (``runs_own_slash_commands``: Claude Code's ``/review``, a skill): it answers
+    # like a prompt. A kiro-cli command name, or a word the ``claude_code`` label
+    # forwards, keeps its echo and reply off the linked Slack thread and channels.
+    _slash_withholds_mirror = is_harness_slash_command(first_word, cc_provider=_is_cc_provider)
+    turn._slash_withholds_mirror = _slash_withholds_mirror
     _this_turn_is_clear = is_slash and first_word.lower() == "/clear"
     turn._this_turn_is_clear = _this_turn_is_clear
 
@@ -514,6 +618,7 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
                     _directive_user_origin=_directive_user_origin,
                     _directive_self_wake=_directive_self_wake,
                     _directive_channel_origin=_directive_channel_origin,
+                    _directive_source_channels=getattr(turn, "_directive_source_channels", ()),
                     _turn_actor=_turn_actor,
                 )
             elif status == "blocked":
@@ -568,10 +673,14 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         except Exception:
             prompts = []
         if not prompts:
-            slot.append(
-                "assistant",
-                "No prompts found. Create prompts in `~/.kiro/prompts/` (or `~/.kiro/crew/prompts/`).",
-                "msg msg-a",
+            note_regenerate_reply(
+                slot,
+                slot.append(
+                    "assistant",
+                    "No prompts found. Create prompts in `~/.kiro/prompts/` "
+                    "(or `~/.kiro/crew/prompts/`).",
+                    "msg msg-a",
+                ),
             )
             sel().log_tool_invocation(
                 session_key="",
@@ -651,12 +760,23 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
         else:
             # A dead registry row is not the harness dispatch would reach:
             # get_or_create evicts it and uses this same member-aware selector.
-            _agent_cfg = KiroCrewConfig.load().agent
-            _cfg_backend = select_provider_backend(
-                session_key,
-                getattr(_agent_cfg, "member_acp_backend", ""),
-                getattr(_agent_cfg, "acp_backend", ""),
+            from kiro_crew.crewmate_harness import (
+                CrewmateHarnessUnavailable,
+                crewmate_backend_pin,
             )
+
+            _cfg = KiroCrewConfig.load()
+            _agent_cfg = _cfg.agent
+            try:
+                _cfg_backend = select_provider_backend(
+                    session_key,
+                    getattr(_agent_cfg, "member_acp_backend", ""),
+                    getattr(_agent_cfg, "acp_backend", ""),
+                    crew_backend=crewmate_backend_pin(_cfg, session_key),
+                )
+            except CrewmateHarnessUnavailable:
+                # As in _slash_command_backend: the session start reports it.
+                _cfg_backend = None
             _compact_unsupported = (
                 _cfg_backend
                 if isinstance(_cfg_backend, str) and _cfg_backend not in ACP_BACKENDS_COMPACT
@@ -680,39 +800,60 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
             # outside ``ACP_BACKENDS_COMPACT``, which is true of one of them --
             # and this is the dashboard, where the claim is most visible. The
             # markdown register matches what that helper already emits.
-            slot.append(
-                "assistant",
-                compact_unsupported_reply(_compact_unsupported),
-                "msg msg-a",
+            note_regenerate_reply(
+                slot,
+                slot.append(
+                    "assistant",
+                    compact_unsupported_reply(_compact_unsupported),
+                    "msg msg-a",
+                ),
             )
             state.push_slots_update()
             return _Flow.END
 
     # ── Harness commands on KAS, which has no command channel ──
+    # (``ACP_BACKENDS_LOCAL_HARNESS_COMMANDS``; GET /api/slash-commands reads the
+    # same set to leave these commands out of the / menu.)
     # The session handle runs a command natively only on kiro-cli; KAS gets it
     # as session/prompt text, and KAS has no built-in /clear there, so the
     # model reads "/clear" as a request and the conversation stays. KAS also
     # refuses _kiro.dev/commands/execute itself, so that verb is no way out.
     # Answer here instead, before any session work: /clear takes the same discard
-    # reset_conversation queues, and every other command gets a notice rather
-    # than reaching the model. /compact passes through: on KAS the session handle
+    # reset_conversation queues, /agent, /context, /help, /hooks, /mcp, /model, /tools
+    # and /usage are read from the dashboard's own state, /context add|remove|clear,
+    # /code and /knowledge go to KAS's own verbs (kas_local_commands), and every
+    # other command gets a notice rather than
+    # reaching the model. /compact passes through: on KAS the session handle
     # sends it as the engine's own compaction verb, not as prompt text. A /todos
     # that got past its own gate is on a harness that runs it natively.
     # The other harnesses in ACP_BACKENDS_LOCAL_CLEAR have no /clear of their own
-    # either, so /clear alone is answered here for them too; their other commands
-    # keep the prompt path, where those harnesses serve the ones they know.
+    # either, or (claude) run one Crew cannot observe, so /clear alone is answered
+    # here for them too; their other commands keep the prompt path, where those
+    # harnesses serve the ones they know.
+    # A kiro-cli command that is not a Crew harness command (/knowledge, /effort,
+    # /plan, /rewind) is answered here on KAS alone; anywhere else it stays text.
+    # The user's own quick prompt of that name is a macro and keeps the text path.
+    _kas_only_word = (
+        not is_slash
+        and first_word.lower() in KAS_KIRO_CLI_ONLY_COMMANDS
+        and await asyncio.to_thread(user_quick_prompt, first_word) is None
+    )
     if (
-        is_slash
+        (is_slash or _kas_only_word)
         and not _is_cc_provider
         and first_word != "/compact"
         and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
     ):
         _command_backend = await _slash_command_backend(state, session_key)
-        if _command_backend == ACP_BACKEND_KAS or (
-            _this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR
-        ):
+        if (
+            _command_backend == ACP_BACKEND_KAS
+            if _kas_only_word
+            else _command_backend in ACP_BACKENDS_LOCAL_HARNESS_COMMANDS
+        ) or (_this_turn_is_clear and _command_backend in ACP_BACKENDS_LOCAL_CLEAR):
             turn_exit.local_command = first_word
-            await _answer_slash_without_channel(state, slot, session_key, first_word)
+            await _answer_slash_for_harness(
+                state, slot, session_key, first_word, _command_backend, message
+            )
             return _Flow.END
 
     _is_monitor_wake = message.startswith(MONITOR_WAKE_PREFIX)
@@ -725,6 +866,13 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     turn._dispatch_lock_held = False
     _mirror_stream_ts: str = ""
     turn._mirror_stream_ts = _mirror_stream_ts
+    # The task stream opens lazily on the first mirrored tool call; one attempt
+    # per turn, so a stream Slack refuses is not re-requested on every tool.
+    turn._mirror_stream_tried = False
+    # ts of the mirror's "Thinking…" placeholder; "" once it has been deleted.
+    turn._mirror_thinking_ts = ""
+    # Whether this turn posted its prompt echo; a recovery requeue reads it.
+    turn._mirror_echo_posted = False
     _mirror_chan: str | None = ""
     turn._mirror_chan = _mirror_chan
     _mirror_active_task = ""
@@ -733,6 +881,11 @@ async def _turn_slash_gate(turn: _ChatTurn) -> _Flow | None:
     turn._mirror_active_task_title = _mirror_active_task_title
     _mirror_thread: str | None = ""
     turn._mirror_thread = _mirror_thread
+    # Where mirrored posts go: `_mirror_thread`, or None (top-level) for a Slack
+    # code channel's own session. `_mirror_thread` keeps its ownership meaning.
+    _mirror_post_ts: str | None = ""
+    turn._mirror_post_ts = _mirror_post_ts
+    turn._code_channel_turn = False
     _mirror_task_counter = 0
     turn._mirror_task_counter = _mirror_task_counter
     _memory_preparation_admitted = False
@@ -761,6 +914,7 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
     client = turn.client
     first_word = turn.first_word
     saw_compaction = turn.saw_compaction
+    session_key = turn.session_key
     slot = turn.slot
     state = turn.state
     # /compact acknowledged but compaction deferred — send a lightweight
@@ -810,6 +964,20 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
             # whole compaction timeout. Nothing was compacted, so skills
             # context is not re-armed and the lease stays for the next prompt.
             _append_compaction_notice(state, slot, COMPACT_REPLAY_PENDING_NOTICE)
+        elif (
+            not capabilities_of(client).compacts_inline
+            and state.sessions.first_turn_history_owed_pending(session_key) is True
+        ):
+            # A FRESH provider session (a brand-new chat) that no ordinary
+            # prompt has reached yet: the first-turn history debt is armed at
+            # admission and only a kept non-slash turn settles it, so the
+            # native session holds no conversation. kiro-cli ends this turn
+            # with "Conversation too short to compact." and sends no
+            # compaction status, the same shape as the replay case
+            # above. Answer now rather than wait out the compaction timeout;
+            # nothing was compacted, so the debt and skills context stay as
+            # they are for the next prompt.
+            _append_compaction_notice(state, slot, COMPACT_FRESH_SESSION_NOTICE)
         elif capabilities_of(client).compacts_inline:
             _restore_skills_context_after_compaction(turn)
             msg = "✅ Conversation compacted."

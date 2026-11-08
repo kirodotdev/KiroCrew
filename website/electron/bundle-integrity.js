@@ -255,14 +255,15 @@ function launchBlockingBundleParts(fs, path, bin) {
  * @param {string[]|null} missing  from launchBlockingBundleParts. null (launcher
  *   not resolvable yet) is still installing with an unknown count; only an
  *   empty ARRAY is complete.
- * @param {{pruned?: boolean}} [options]  `pruned` when the refusal followed a
+ * @param {{pruned?: boolean, stalled?: boolean}} [options]  `pruned` when the refusal followed a
  *   stale-bundle incident: the backend tree was removed, so the dialog keeps the
  *   pruned copy until the probe finds a complete tree, and only then paints the
- *   completion frame.
+ *   completion frame. `stalled` when the probe result has not changed for the
+ *   dialog's stall window: it gets the same copy and the same latch.
  * @returns {{complete: boolean, title: string, message: string}}
  */
-function nextInstallingDialogState(missing, { pruned = false } = {}) {
-  if (pruned && !(Array.isArray(missing) && missing.length === 0)) {
+function nextInstallingDialogState(missing, { pruned = false, stalled = false } = {}) {
+  if ((pruned || stalled) && !(Array.isArray(missing) && missing.length === 0)) {
     return { complete: false, title: PRUNED_DIALOG_TITLE, message: PRUNED_BACKEND_MESSAGE };
   }
   if (!Array.isArray(missing)) {

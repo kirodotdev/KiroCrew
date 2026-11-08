@@ -24,16 +24,13 @@ pytestmark = pytest.mark.skipif(not hasattr(os, "getuid"), reason="POSIX guest p
 
 @pytest.fixture(autouse=True)
 def _drain_asyncio_transports():
-    """Collect asyncio transport cycles before the next test can be blamed for them.
+    """Collect asyncio transport cycles after each test in this module.
 
-    Tests in this module run asyncio subprocesses via asyncio.run().  When the
-    loop closes, any BaseSubprocessTransport whose subprocess has not yet been
-    awaited forms a reference cycle with its protocol.  CPython's cyclic
-    collector defers that cycle until the next GC pass, which may land inside a
-    completely unrelated test — attributing an "Event loop is closed" unraisable
-    to the innocent victim.  Collecting here, after each test in this module
-    finishes, pays the GC cost at the right place and keeps the unraisable (if
-    any) attached to the test that leaked the transport.
+    Tests here spawn asyncio subprocesses via asyncio.run(); a
+    BaseSubprocessTransport whose subprocess is not awaited before the loop
+    closes forms a reference cycle with its protocol.  Collecting after each
+    test keeps such a cycle from surfacing inside the next test, in this file
+    or in a later module on the same worker.
     """
     import gc
 
@@ -191,6 +188,43 @@ def test_main_pipe_proves_the_token_and_moves_bytes(tmp_path, monkeypatch):
     assert os.path.exists(token)
     with pytest.raises(SystemExit):
         client_mod.main(["--pipe", "127.0.0.1:x", "--token-file", token])
+
+
+def _main_with_fake_pipe(monkeypatch, pipe_arg, *, refuse=False):
+    """Run ``main`` up to the dial; return the (host, port) it would dial."""
+    dialed = []
+
+    def read_token(_path):
+        if refuse:
+            pytest.fail(f"read the token instead of refusing {pipe_arg!r}")
+        return b"tok"
+
+    async def fake_pipe(host, port, *_rest):
+        dialed.append((host, port))
+        return client_mod.EXIT_FINISHED
+
+    monkeypatch.setattr(client_mod, "_read_token", read_token)
+    monkeypatch.setattr(client_mod, "pipe", fake_pipe)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(fileno=lambda: 0))
+    assert client_mod.main(["--pipe", pipe_arg, "--token-file", "t"]) == client_mod.EXIT_FINISHED
+    return dialed
+
+
+@pytest.mark.parametrize(
+    "port_text", ["²", "0", "65536", "-1", pytest.param("9" * 5000, id="5000-digits")]
+)
+def test_main_refuses_a_bad_pipe_port_with_a_cli_error(monkeypatch, port_text):
+    # Refused before the token is read, as a CLI message, never a traceback.
+    with pytest.raises(SystemExit) as exc:
+        _main_with_fake_pipe(monkeypatch, f"h:{port_text}", refuse=True)
+    assert isinstance(exc.value.code, str) and exc.value.code.startswith("--pipe")
+
+
+@pytest.mark.parametrize(
+    "pipe_arg,want", [("h:8080", ("h", 8080)), ("h:65535", ("h", 65535)), ("::1:1", ("::1", 1))]
+)
+def test_main_dials_a_pipe_port_in_range(monkeypatch, pipe_arg, want):
+    assert _main_with_fake_pipe(monkeypatch, pipe_arg) == [want]
 
 
 def test_pipe_refusals(tmp_path):

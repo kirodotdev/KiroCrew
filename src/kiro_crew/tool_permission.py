@@ -70,7 +70,7 @@ from types import MappingProxyType
 from typing import Any, ClassVar, Literal, Protocol
 
 from kiro_crew import name_grant
-from kiro_crew.constants import DENY_CAUSE_POLICY
+from kiro_crew.constants import DENY_CAUSE_BATCH_READ_WRITE, DENY_CAUSE_POLICY
 from kiro_crew.executors import run_in_tool_gate_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY, identity_grant_covers_child
 from kiro_crew.llm_helpers import _steer_host_deny
@@ -299,7 +299,10 @@ class Narrator:
     refused program name is audited, and :meth:`allowed` after the wire answered
     an approval (*sent* is False when the transport floor turned it into a
     rejection) and before it is audited. A narrator may move run state (a
-    counter the run's replay gates read, a watchdog stamp), not only log.
+    counter the run's replay gates read, a watchdog stamp), not only log,
+    except in :meth:`declined`: that one is the human-facing decline line, so a
+    repeated platform-scope refusal skips it after the first call of a session
+    while the audit row is still written for every call.
     """
 
     def refusing(self, ask: Ask, refusal: Refusal) -> None:
@@ -481,7 +484,12 @@ async def _admitted(ask: Ask, policy: Policy, hit: Hit, low: bool) -> bool:
     refused = await name_grant.refusal_for_event(ask.event)
     if refused is None:
         return True
-    policy.narrator.declined(ask, refused)
+    # The narration is the human-facing log line, so a platform-scope refusal
+    # (one constant text per session) is narrated once per session, as every
+    # other surface does. The audit row below is a security decision and is
+    # written for every call.
+    if name_grant.should_log_decline(ask.session_key, refused):
+        policy.narrator.declined(ask, refused)
     policy.audit.declined(ask, refused, hit.reason)
     return False
 
@@ -525,6 +533,15 @@ async def _allow(
     except ApprovalWithdrawn:
         return await bail(ask, policy, "stopped")
     policy.narrator.allowed(ask, sent)
+    if not sent:
+        # The transport's batch write guard (``acp.batch_guard``) answers a refusal
+        # with ``False`` as the floor does, and has already written its own audit
+        # row; it is settled as a host refusal with its cause, which the run's
+        # recovery path reads, and no floor_refused approval row is written.
+        take = getattr(ask.wire, "batch_refusal", None)
+        reason = take(ask) if take is not None else None
+        if reason:
+            return Settled("refused", rung, "host", DENY_CAUSE_BATCH_READ_WRITE, reason)
     settled = Settled(outcome if sent else "floor_refused", rung, by)
     policy.audit.approved(ask, settled)
     return settled
@@ -553,6 +570,16 @@ class AcpWire:
             withdrawal["withdraw_if"] = stopping
         sent = await self.client.approve_tool(ask.request_id, **withdrawal)
         return sent is not False
+
+    def batch_refusal(self, ask: Ask) -> str | None:
+        """The batch write guard's reason for the approval it just refused, if any.
+
+        Asked of the client itself (``take_batch_refusal``), so a provider that
+        wraps the transport hands the question to the transport holding the
+        reason; a client without the method has nothing to say."""
+        from kiro_crew import agent_sdk
+
+        return agent_sdk.take_batch_guard_refusal(self.client, ask.request_id)
 
     async def refuse(self, ask: Ask, notice: Notice | None) -> None:
         if notice is not None:
@@ -594,12 +621,14 @@ class HookGate:
 
 
 class SpecHooks:
-    """The agent spec's PreToolUse hooks as a floor, on a turn they gate.
+    """The PreToolUse hooks as a floor: the Hooks page's on every turn, with the
+    agent spec's own on a turn whose backend never runs them (``spec.gated``).
 
     A delivered deny, or a gate with no verdict (hooks that cannot be read),
     refuses under the policy cause with the gate's own reason. *pre_tool* is
     ``hooks.permission_pre_tool_block``; *store* is read per request; *identity*
-    is the caller attribution the surface gives the hook payload.
+    is the caller attribution the surface gives the hook payload. The spec hooks
+    also get the ACP session id of the request's wire client, when it has one.
     """
 
     def __init__(
@@ -616,13 +645,12 @@ class SpecHooks:
         self._identity = identity
 
     async def refuse(self, ask: Ask) -> Refusal | None:
-        if not self._spec.gated:
-            return None
         reason: str | None
         if self._spec.unreadable:
             reason = SPEC_HOOKS_UNREADABLE
         else:
             event = ask.event
+            sid = getattr(getattr(ask.wire, "client", None), "session_id", "")
             reason = await self._pre_tool(
                 self._store(),
                 self._spec.hooks,
@@ -632,6 +660,7 @@ class SpecHooks:
                 tool_identity=event.tool_name,
                 mcp_server=event.mcp_server_name,
                 harness_tool_id=event.harness_tool_id,
+                acp_session_id=sid if self._spec.hooks and isinstance(sid, str) and sid else None,
                 **self._identity,
             )
         if reason is None:
@@ -640,13 +669,34 @@ class SpecHooks:
 
 
 class ParentPolicyAuto:
-    """``parent_policy=auto``: an unconditional grant, read once at run start."""
+    """``parent_policy=auto``: a grant read at run start, re-checked per request.
 
-    def __init__(self, parent_policy: str) -> None:
+    It is withheld from any request *revoked* (asked per request) answers true for.
+    A ``permission_mode`` deny of ``trust`` that lands while the run is going ends
+    it, unless a session-wide YOLO grant is live (``stored_auto_permitted``).
+    *trust_gated* is False when the operator's ``auto_approve_subagent_tools``
+    setting is on: that grant is not a Trust and the mode policy does not reach it.
+    """
+
+    def __init__(
+        self,
+        parent_policy: str,
+        revoked: Callable[[], bool] | None = None,
+        *,
+        trust_gated: bool = True,
+    ) -> None:
         self._on = parent_policy == "auto"
+        self._revoked = revoked
+        self._trust_gated = trust_gated
 
     async def offer(self, ask: Ask) -> Hit | None:
-        return Hit("parent_policy_auto", Evidence.NONE) if self._on else None
+        if not self._on or (self._revoked is not None and self._revoked()):
+            return None
+        if not self._trust_gated:
+            return Hit("parent_policy_auto", Evidence.NONE)
+        from kiro_crew.approval_mode_policy import stored_auto_permitted
+
+        return Hit("parent_policy_auto", Evidence.NONE) if stored_auto_permitted() else None
 
 
 class ContextOverflow:

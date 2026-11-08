@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes.util
+import functools
 import importlib
 import logging
 import subprocess
@@ -194,6 +195,7 @@ class _PendingWindowsTreeCleanup:
         "manual_required",
         "raw_root_pin",
         "retire_app_tracking",
+        "job",
     )
 
     def __init__(
@@ -211,6 +213,9 @@ class _PendingWindowsTreeCleanup:
         # its transport. Keeps the original pin on duplicate/identity failure.
         self.raw_root_pin: int | None = None
         self.retire_app_tracking = False
+        # The root's Job object, kept by ``apply_job_limits``. Every descendant
+        # is in it, so ending it reaches members the parent-PID walk cannot.
+        self.job: int | None = None
 
 
 _PENDING_WINDOWS_TREE_CLEANUPS: dict[tuple[int, int], _PendingWindowsTreeCleanup] = {}
@@ -260,6 +265,42 @@ def release_windows_tree_reservation(state: _PendingWindowsTreeCleanup) -> None:
             return
         _WINDOWS_TREE_ADMISSIONS.discard(state)
         state.retired = True
+
+
+def adopt_windows_tree_job(pid: int, job: int) -> bool:
+    """Keep *job* with the live admitted tree whose root *pid* is pinned by handle.
+
+    The pin keeps the pid from being reused, so the number names this root.
+    Returns ``False`` when no such tree exists; the caller then closes *job*.
+    """
+    with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+        for state in _WINDOWS_TREE_ADMISSIONS:
+            if state.root_pid == pid and pid in state.handles and not state.retired:
+                if state.job is not None:
+                    return False
+                state.job = job
+                return True
+    return False
+
+
+setattr(  # noqa: B010 -- binds a name below this layer without adding one here
+    importlib.import_module("kiro_crew.platform_compat_winproc"),
+    "_adopt_job",
+    adopt_windows_tree_job,
+)
+
+
+def _terminate_windows_tree_job(job: int) -> None:
+    """End every process left in a drained tree's job; raise ``OSError`` if refused.
+
+    A member whose parent exited first is out of the parent-PID walk's reach
+    but still in the job. The caller keeps the handle until the tree retires.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    if not kernel32.TerminateJobObject(wintypes.HANDLE(job), 1):
+        raise OSError(_windows_last_error(), "TerminateJobObject failed")
 
 
 def _manual_windows_tree(state: _PendingWindowsTreeCleanup) -> None:
@@ -472,6 +513,10 @@ def _advance_owned_windows_tree(
         except _WindowsTreeOverflow:
             _manual_windows_tree(state)
             raise
+        if result and state.job is not None:
+            # Before retirement, so a refused terminate keeps the job and every
+            # pin for the sweep's next pass instead of dropping the survivors.
+            _terminate_windows_tree_job(state.job)
         if result:
             try:
                 # circular import: session_pid imports kiro_crew.platform_compat, and
@@ -494,7 +539,11 @@ def _advance_owned_windows_tree(
                     exc_info=True,
                 )
                 return False, False
-            state.retired = True
+            with _PENDING_WINDOWS_TREE_CLEANUPS_LOCK:
+                state.retired = True
+                job, state.job = state.job, None
+            if job is not None:
+                close_process_handle(job)
             completed_here = True
             handles_to_close = tuple(state.handles.values())
             # The state remains locked and charged until all pins close.
@@ -704,16 +753,22 @@ async def _create_windows_subprocess_owned(
     The interpreter's functions, globals, event loop and Popen stay untouched.
     Capture happens at CreateProcess return, BEFORE _close_pipe_fds, Handle
     publication, thread-handle close, proactor registration or pipe connection.
+    The Popen (and so CreateProcess) is built on a worker thread, and the stock
+    transport ``_start`` binds it to the calling loop: see
+    ``platform_compat_offloop_spawn``.
     """
+    # Imported here, not at module scope: ``platform_compat`` forwards every
+    # module-level name of this owner, and the helper is not part of that surface.
+    from kiro_crew.platform_compat_offloop_spawn import make_subprocess_transport_off_loop
+
     # Private Windows APIs have no Linux typeshed declarations. Runtime identity
     # checks below refuse a different transport implementation before creation.
     windows_events: Any = importlib.import_module("asyncio.windows_events")
     windows_utils: Any = importlib.import_module("asyncio.windows_utils")
     loop = asyncio.get_running_loop()
-    make_transport = getattr(getattr(loop, "_make_subprocess_transport"), "__func__", None)
     subprocess_exec = getattr(loop.subprocess_exec, "__func__", None)
     if (
-        make_transport is not windows_events.ProactorEventLoop._make_subprocess_transport
+        not isinstance(loop, windows_events.ProactorEventLoop)
         or subprocess_exec is not asyncio.BaseEventLoop.subprocess_exec
     ):
         raise RuntimeError(
@@ -723,11 +778,10 @@ async def _create_windows_subprocess_owned(
         )
     execute_child = getattr(subprocess.Popen, "_execute_child")
     start_transport = windows_events._WindowsSubprocessTransport._start
-    if (
-        not {"_winapi", "CreateProcess", "Handle"}.issubset(execute_child.__code__.co_names)
-        or not {"windows_utils", "Popen"}.issubset(start_transport.__code__.co_names)
-        or "_WindowsSubprocessTransport" not in make_transport.__code__.co_names
-    ):
+    if not {"_winapi", "CreateProcess", "Handle"}.issubset(execute_child.__code__.co_names) or not {
+        "windows_utils",
+        "Popen",
+    }.issubset(start_transport.__code__.co_names):
         # Same reasoning as the quarantine refusal: an operator meeting this sees a
         # failed session start and no context, and the remedy is not guessable from
         # the shape names. The interpreter is the whole cause, so it is the remedy.
@@ -795,20 +849,18 @@ async def _create_windows_subprocess_owned(
             getattr(subprocess.Popen, "_execute_child"), _winapi=CreationAPI(), Handle=shared_handle
         )
 
-    class OwnedTransport(windows_events._WindowsSubprocessTransport):
-        _start = clone(
-            windows_events._WindowsSubprocessTransport._start,
-            windows_utils=types.SimpleNamespace(Popen=OwnedPopen),
-        )
-
     class SpawnLoop:
         def __getattr__(self, name: str) -> Any:
             return getattr(loop, name)
 
+        # CreateProcess (and so the capture above) runs on a worker thread; the
+        # returned Popen is bound to THIS loop by the stock transport ``_start``.
         _make_subprocess_transport = staticmethod(
-            types.MethodType(
-                clone(make_transport, _WindowsSubprocessTransport=OwnedTransport),
+            functools.partial(
+                make_subprocess_transport_off_loop,
                 loop,
+                popen_factory=OwnedPopen,
+                transport_cls=windows_events._WindowsSubprocessTransport,
             )
         )
 

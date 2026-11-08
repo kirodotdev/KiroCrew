@@ -14,24 +14,30 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from real_dashboard_state import _settle_real_dashboard_states  # noqa: F401
+from real_dashboard_state import notes, real_dashboard_state
 
 
-def _make_orch(default_deliver, monkeypatch):
+def _make_orch(default_deliver, monkeypatch, state=None):
     """Build a GatewayOrchestrator (bypassing __init__) wired with a Slack mock
-    and a fake config whose heartbeat.default_deliver is *default_deliver*."""
+    and a fake config whose heartbeat.default_deliver is *default_deliver*.
+
+    *state* is the dashboard the result lands on; without one it is a stand-in.
+    """
     from kiro_crew.slack import gateway
 
     orch = gateway.GatewayOrchestrator.__new__(gateway.GatewayOrchestrator)
 
-    state = MagicMock()
-    slot = MagicMock()
-    slot.key = "chat-1"
-    # A real slot is unbound unless its conversation lives on another session;
-    # a bare MagicMock would hand back a truthy Mock as the session key.
-    slot.linked_session_key = ""
-    state.get_or_create_slot.return_value = slot
-    state.notify = MagicMock()
-    state.push_slots_update = MagicMock()
+    if state is None:
+        state = MagicMock()
+        slot = MagicMock()
+        slot.key = "chat-1"
+        # A real slot is unbound unless its conversation lives on another session;
+        # a bare MagicMock would hand back a truthy Mock as the session key.
+        slot.linked_session_key = ""
+        state.get_or_create_slot.return_value = slot
+        state.notify = MagicMock()
+        state.push_slots_update = MagicMock()
     orch.dashboard_state = state
 
     slack = MagicMock()
@@ -49,28 +55,42 @@ def _make_orch(default_deliver, monkeypatch):
 class TestDefaultDeliverConfig:
     @pytest.mark.asyncio()
     async def test_empty_deliver_dashboard_default_is_dashboard_only(self, monkeypatch):
+        from kiro_crew.dashboard.state import _ChatSlot
+
         orch, state = _make_orch("dashboard", monkeypatch)
+        slot = _ChatSlot(key="chat-1")
+        state.get_or_create_slot.return_value = slot
         await orch._deliver_result("💓 Heartbeat", "task", "body", "")
-        state.get_or_create_slot.assert_called_once()
-        state.notify.assert_called_once()
-        orch.slack.open_dm.assert_not_called()  # no Slack DM
+        assert [(m["role"], m["content"], m["cls"]) for m in slot.messages] == [
+            ("assistant", "💓 Heartbeat\n\nbody", "msg msg-a")
+        ]
+        assert slot.title == "💓 task"
+        state.notify.assert_called_once_with(
+            "heartbeat", "💓 Heartbeat", "task\n\nbody", meta={"slot": "chat-1"}
+        )
+        orch.slack.open_dm.assert_not_called()
+        orch.slack.post_message.assert_not_called()
 
     @pytest.mark.asyncio()
-    async def test_empty_deliver_slack_default_is_slack_plus_dashboard(self, monkeypatch):
-        orch, state = _make_orch("slack", monkeypatch)
+    async def test_empty_deliver_slack_default_is_slack_plus_dashboard(self, monkeypatch, tmp_path):
+        orch, state = _make_orch("slack", monkeypatch, real_dashboard_state(tmp_path))
         await orch._deliver_result("💓 Heartbeat", "task", "body", "")
-        orch.slack.open_dm.assert_awaited_once()
+        orch.slack.open_dm.assert_awaited_once_with("U1")
         orch.slack.post_message.assert_awaited_once()
-        state.notify.assert_called_once()
-        state.get_or_create_slot.assert_not_called()
+        assert orch.slack.post_message.await_args.args[0] == "D123"
+        assert notes(state) == [("heartbeat", "💓 Heartbeat", "task\n\nbody")]
+        assert list(state._slots) == []
 
     @pytest.mark.asyncio()
-    async def test_explicit_slack_tag_overrides_dashboard_default(self, monkeypatch):
-        orch, _ = _make_orch("dashboard", monkeypatch)
+    async def test_explicit_slack_tag_overrides_dashboard_default(self, monkeypatch, tmp_path):
+        orch, state = _make_orch("dashboard", monkeypatch, real_dashboard_state(tmp_path))
         await orch._deliver_result("💓 Heartbeat", "task", "body", "slack")
-        # explicit slack branch posts the DM and never creates a dashboard slot
-        orch.slack.open_dm.assert_awaited_once()
-        orch.dashboard_state.get_or_create_slot.assert_not_called()
+        orch.slack.open_dm.assert_awaited_once_with("U1")
+        orch.slack.post_message.assert_awaited_once()
+        assert orch.slack.post_message.await_args.args[0] == "D123"
+        # An explicit "slack" tag is the DM alone: no slot and no dashboard bell.
+        assert list(state._slots) == []
+        assert notes(state) == []
 
 
 class TestDashboardNewSlotTitle:
@@ -131,6 +151,9 @@ class TestDashboardNewSlotTitle:
         slot = state.get_or_create_slot.return_value
         state.conversation_log.set_title.side_effect = OSError("disk full")
         await orch._deliver_result("💓 Heartbeat", "task", "body", "dashboard")
-        slot.append.assert_called_once()
-        state.push_slots_update.assert_called_once()
-        state.notify.assert_called_once()
+        assert slot.title == "💓 task"
+        slot.append.assert_called_once_with("assistant", "💓 Heartbeat\n\nbody", "msg msg-a")
+        state.push_slots_update.assert_called_once_with()
+        state.notify.assert_called_once_with(
+            "heartbeat", "💓 Heartbeat", "task\n\nbody", meta={"slot": "chat-1"}
+        )

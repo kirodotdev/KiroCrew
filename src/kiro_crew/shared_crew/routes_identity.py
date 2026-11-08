@@ -1,0 +1,240 @@
+"""``GET /api/shared-crew/sessions``, ``/people`` and ``/mode``.
+
+All three answer only the owner's dashboard session or a tailnet person the
+access set admitted (``request["is_dashboard_user"] is True``). An app token or
+an internal caller is refused with 403: these routes are new, and admitting a
+caller the existing session list confines (an app sees only its own sessions
+there) would widen what that caller can read. A non-owner dashboard session (a
+channel allowlist link) is refused too, as the existing session list refuses it.
+
+Neither route reads an identity from the request. The viewer is the actor the
+auth middleware published.
+
+Each route walks the whole session catalog and parses every row's attribution,
+so that walk runs in a worker thread: on a large catalog it would stall the
+event loop.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any
+
+from aiohttp import web
+
+from kiro_crew.shared_crew import owner as owner_label
+from kiro_crew.shared_crew.attribution import creator_of_public
+from kiro_crew.shared_crew.codec import ContractError
+from kiro_crew.shared_crew.contracts import Principal, SessionPage, SessionQuery
+from kiro_crew.shared_crew.identity import viewer_principal
+from kiro_crew.shared_crew.people import people_view
+from kiro_crew.shared_crew.people import registry as people_registry
+from kiro_crew.shared_crew.session_query import query_sessions
+
+logger = logging.getLogger(__name__)
+
+SESSIONS_PATH = "/api/shared-crew/sessions"
+PEOPLE_PATH = "/api/shared-crew/people"
+MODE_PATH = "/api/shared-crew/mode"
+
+
+def _error(status: int, code: str, message: str) -> web.Response:
+    return web.json_response({"error": message, "code": code}, status=status)
+
+
+def _tailnet_person(request: web.Request) -> bool:
+    """A person a sharing path admitted by its own check, with no token.
+
+    Two paths do that: the tailnet direct listener (after checking the access
+    set) and the SSM listener (a live invite). A token-holder whose request
+    merely resolves to a tailnet peer (attribution only) is not one, and goes
+    through the owner gate with its token subject. Being admitted opens the
+    reads and a person's own display name; invite management stays owner-only.
+    """
+    from kiro_crew.shared_crew.contracts import (
+        ACTOR_REQUEST_KEY,
+        SSM_GUEST_REQUEST_KEY,
+        PrincipalKind,
+    )
+    from kiro_crew.shared_crew.identity import PROVIDER_SSM, PROVIDER_TAILSCALE
+
+    principal = getattr(request.get(ACTOR_REQUEST_KEY), "principal", None)
+    if principal is None or principal.kind is not PrincipalKind.HUMAN:
+        return False
+    if request.get("auth_tailnet_direct") is True:
+        return principal.provider == PROVIDER_TAILSCALE
+    return request.get(SSM_GUEST_REQUEST_KEY) is not None and principal.provider == PROVIDER_SSM
+
+
+async def _refusal(request: web.Request) -> web.Response | None:
+    if request.get("is_dashboard_user") is not True or request.get("app"):
+        # The owner gate below audits its own refusal; this one is audited here,
+        # since the request audit does not record a GET.
+        from kiro_crew.shared_crew.routes_invites import audit_read_refusal
+
+        refused = _error(403, "forbidden", "dashboard user required")
+        audit_read_refusal(request, refused, by="shared_crew_identity")
+        return refused
+    if _tailnet_person(request):
+        return None
+    from kiro_crew.dashboard.handlers._shared import require_owner_for_dashboard_caller
+
+    return await require_owner_for_dashboard_caller(request, "shared_crew_read")
+
+
+async def _catalog_rows(request: web.Request) -> list[dict[str, Any]]:
+    state = request.app.get("state")
+    log = getattr(state, "conversation_log", None) if state is not None else None
+    if log is None:
+        return []
+    return await asyncio.to_thread(log.list_sessions)
+
+
+def _machine_only(key: str) -> bool:
+    from kiro_crew.dashboard.handlers.sessions import _is_machine_only_session
+
+    return _is_machine_only_session(key)
+
+
+def _conversations(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r for r in rows if not _machine_only(str(r.get("key") or ""))]
+
+
+async def api_shared_crew_sessions(request: web.Request) -> web.Response:
+    """The creator-filtered, paged session list (``SessionPage`` plus ``viewer``)."""
+    refused = await _refusal(request)
+    if refused is not None:
+        return refused
+    try:
+        query = SessionQuery.from_query(request.query)
+    except ContractError as exc:
+        return _error(400, exc.code, str(exc))
+    viewer = viewer_principal(request)
+    rows = await _catalog_rows(request)
+    try:
+        page: SessionPage = await asyncio.to_thread(
+            query_sessions,
+            rows,
+            query,
+            viewer,
+            exclude=_machine_only,
+            viewer_ids=owner_label.viewer_ids(viewer, _owner_id(request)),
+            local_owner_ids=owner_label.local_owner_principal_ids(_owner_id(request)),
+        )
+    except ContractError as exc:
+        return _error(400, exc.code, str(exc))
+    body = page.to_dict()
+    body["viewer"] = viewer.to_public_dict()
+    body["creator"] = query.creator
+    return web.json_response(body)
+
+
+async def api_shared_crew_people(request: web.Request) -> web.Response:
+    """Observed collaborators, labelled by source, and the directory state."""
+    refused = await _refusal(request)
+    if refused is not None:
+        return refused
+    from kiro_crew.shared_crew.owner import is_owner_principal
+    from kiro_crew.shared_crew.routes_invites import decorate_people
+    from kiro_crew.shared_crew.tailscale_sharees import read_sharees
+
+    viewer = viewer_principal(request)
+    owner_id = _owner_id(request)
+    catalog = await _catalog_rows(request)
+    # Only the owner's view lists sharees, so only it reads the daemon.
+    sharees = await read_sharees() if is_owner_principal(viewer, owner_id) else ()
+
+    def build() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        rows = _conversations(catalog)
+        body = people_view(viewer, rows, owner_id=owner_id, sharees=sharees)
+        return rows, decorate_people(body)
+
+    rows, body = await asyncio.to_thread(build)
+    _attach_live(request, body, rows)
+    return web.json_response(body)
+
+
+def _attach_live(request: web.Request, body: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Mark who is connected now, and where, from the in-memory presence.
+
+    ``live`` is ``{activity, session_key, session_title}`` for a person with an
+    open tab, and absent otherwise. A title is given only for a session in this
+    catalog, which the reader may already list.
+    """
+    from kiro_crew.shared_crew.presence import _ACTIVITY_RANK, presence_for
+
+    state = request.app.get("state")
+    if state is None:
+        return
+    from kiro_crew.history_files import transcript_stem as canon
+
+    live = presence_for(state).live_by_principal()
+    titles = {canon(str(r.get("key") or "")): str(r.get("title") or "") for r in rows}
+    local_ids = owner_label.local_owner_principal_ids(_owner_id(request))
+    for row in body.get("people") or []:
+        pid = str((row.get("principal") or {}).get("id") or "")
+        ids = local_ids if row.get("is_owner") and pid in local_ids else {pid}
+        hit = max(
+            (live[i] for i in ids if i in live),
+            key=lambda candidate: _ACTIVITY_RANK[candidate[0]],
+            default=None,
+        )
+        if hit is None:
+            continue
+        activity, session_key = hit
+        # A dashboard tab reports its slot key; the catalog keys that session
+        # as ``dashboard:<slot>``, both compared as transcript file stems.
+        catalog_key = next(
+            (k for k in (canon(session_key), canon(f"dashboard:{session_key}")) if k in titles), ""
+        )
+        row["live"] = {
+            "activity": activity.value,
+            "session_key": session_key if catalog_key else "",
+            "session_title": titles.get(catalog_key, ""),
+        }
+
+
+def _observed_principals() -> list[Principal]:
+    """People this process saw, each with the provenance the server derived."""
+    return [obs.principal for obs in people_registry().snapshot()]
+
+
+def _session_creators(rows: list[dict[str, Any]]) -> list[Principal]:
+    """Session creators read back from public attribution, which has no provenance."""
+    return [creator_of_public(row.get("attribution")) for row in rows]
+
+
+def _owner_id(request: web.Request) -> str:
+    state = request.app.get("state")
+    return str(getattr(state, "owner_id", "") or "") if state is not None else ""
+
+
+async def api_shared_crew_mode(request: web.Request) -> web.Response:
+    """The Crew's People/setup mode (``crew_mode.mode_view``)."""
+    refused = await _refusal(request)
+    if refused is not None:
+        return refused
+    from kiro_crew.gateway_identity import gateway_id
+    from kiro_crew.shared_crew.access import setup_paths_dict
+    from kiro_crew.shared_crew.crew_mode import mode_view
+
+    catalog = await _catalog_rows(request)
+    creators = await asyncio.to_thread(lambda: _session_creators(_conversations(catalog)))
+    crew_id = await asyncio.to_thread(gateway_id)
+    body = mode_view(
+        viewer_principal(request),
+        _observed_principals(),
+        setup_paths=setup_paths_dict(),
+        crew_id=crew_id,
+        creators=creators,
+        owner_id=_owner_id(request),
+    )
+    return web.json_response(body)
+
+
+def register(app: web.Application) -> None:
+    """Register the identity routes on *app*."""
+    app.router.add_get(SESSIONS_PATH, api_shared_crew_sessions)
+    app.router.add_get(PEOPLE_PATH, api_shared_crew_people)
+    app.router.add_get(MODE_PATH, api_shared_crew_mode)

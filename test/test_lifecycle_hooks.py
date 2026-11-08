@@ -9,12 +9,13 @@ import asyncio
 import re
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+import kiro_crew.apps.lifecycle as lifecycle_mod
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manifest import app_name_error
 from kiro_crew.testing.wait import async_wait_until, await_until
@@ -22,6 +23,14 @@ from kiro_crew.testing.wait import async_wait_until, await_until
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clear_detached_hook_tasks() -> Iterator[None]:
+    # The registry is module-global and outlives each test's loop.
+    lifecycle_mod._DETACHED_HOOK_TASKS.clear()
+    yield
+    lifecycle_mod._DETACHED_HOOK_TASKS.clear()
 
 
 async def _thread_event_set(event: threading.Event, what: str) -> bool:
@@ -226,7 +235,6 @@ class TestShellBeforePython:
         ):
             from kiro_crew.apps.routes import handle_enable_app
 
-            # Build a minimal fake request
             request = MagicMock()
             request.match_info = {"name": "test-app"}
             request.app = {"state": MagicMock(owner_id="")}
@@ -1238,7 +1246,7 @@ class TestGatewayShutdownBackendSweep:
 
     @pytest.mark.asyncio
     async def test_the_sweep_shares_one_deadline_instead_of_stacking_waits(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
         """A wedged backend's stop cannot hold the sweep past its shared
         budget: the sweep returns (logging a warning) so the rest of gateway
@@ -1270,6 +1278,13 @@ class TestGatewayShutdownBackendSweep:
         finally:
             # Unblock the executor thread so it does not outlive the test.
             release.set()
+        overruns = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "kiro_crew.apps.hooks_integration"
+            and "did not finish within" in r.getMessage()
+        ]
+        assert len(overruns) == 1 and overruns[0].endswith(": wedged")
 
     @pytest.mark.asyncio
     async def test_sweep_runs_even_when_hook_dispatch_fails_or_is_cancelled(

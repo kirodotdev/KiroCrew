@@ -3,9 +3,10 @@
 ``agent._computer_use_spec_gate`` keeps the server out of the emitted spec whenever
 the feature is off or the OS has no driver, so such a session has no ``computer_*``
 tool. The default agent prompt's Computer Use slot resolves against that same gate:
-the full section when it is open, a short pointer to the setting when it is closed.
-The reading is taken once per session, the way the delegation-cap figure is, so a
-compaction restores the contract the session started with.
+empty when it is open, because the mounted server carries its own usage text as MCP
+``instructions`` (``kiro_crew.mcp_instructions.COMPUTER``), and a short pointer to the
+setting when it is closed. The reading is taken once per session, the way the
+delegation-cap figure is, so a compaction restores the contract the session started with.
 """
 
 from __future__ import annotations
@@ -19,19 +20,24 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.context import ContextBuilder
 from kiro_crew.context_assembly import sections
 from kiro_crew.context_assembly.markers import _MULTIBYTE_TABLE
+from kiro_crew.mcp_instructions import COMPUTER
 from kiro_crew.memory import MemoryStore
 from kiro_crew.session import SessionManager
 from kiro_crew.skills import SkillsLoader
 
 _HEADING = "## Computer Use (native desktop apps)"
-# Phrases only the full section carries: how to call the tools.
+# Phrases only the usage text carries: how to call the tools.
 _SECTION_ONLY = ("computer_get_state", 'click_method: "global"', "computer_launch_app")
 _POINTER = sections.computer_use_block(False)
-_SECTION = sections.computer_use_block(True)
 # `build_message` folds its final text through this table (em dash to `--` and so
 # on), so a whole message carries the folded spelling of each block.
 _POINTER_FOLDED = _POINTER.translate(_MULTIBYTE_TABLE)
-_SECTION_FOLDED = _SECTION.translate(_MULTIBYTE_TABLE)
+
+
+def _has_usage_text(text: str) -> bool:
+    return any(phrase in text for phrase in _SECTION_ONLY)
+
+
 _SHIPPED_PROMPT = Path(sections.__file__).resolve().parents[1] / "config" / "prompt.md"
 
 
@@ -103,20 +109,20 @@ class TestTheSlot:
         assert "tools are in your tool list anyway" in flat
         assert "read the `computer-use` skill before your first call" in flat
 
-    def test_open_gate_resolves_to_the_section_verbatim(self) -> None:
+    def test_open_gate_leaves_the_slot_empty(self) -> None:
         out = ContextBuilder._resolve_prompt_templates(
             "a\n{{COMPUTER_USE_BLOCK}}\nb", "cli:local", computer_use=True
         )
-        assert out == f"a\n{_SECTION}\nb"
-        assert _SECTION.startswith(_HEADING + "\n\n")
-        assert _SECTION.endswith("Read the `computer-use` skill before your first call.")
-        # A session open across a disable resumes with this text and no tools.
-        flat = " ".join(_SECTION.split())
-        assert (
-            "If no `computer_*` tool is in your tool list, Computer Use was turned off "
-            "after this session started" in flat
-        )
-        assert "point them to Settings → Computer Use, and do not call one" in flat
+        assert out == "a\n\nb"
+
+    def test_the_usage_text_is_the_servers_instructions(self) -> None:
+        """How to call the tools is the server's own ``instructions``, not the slot's."""
+        for phrase in _SECTION_ONLY:
+            assert phrase in COMPUTER
+        assert COMPUTER.endswith("Read the `computer-use` skill before your first call.")
+        # The server's text says nothing about the server being missing: when it is,
+        # its instructions are gone with it and the prompt's pointer speaks instead.
+        assert "Settings → Computer Use" not in COMPUTER
 
     @pytest.mark.parametrize("open_", [True, False])
     def test_without_a_session_reading_the_live_gate_decides(
@@ -124,7 +130,7 @@ class TestTheSlot:
     ) -> None:
         gate.open = open_
         out = ContextBuilder._resolve_prompt_templates("{{COMPUTER_USE_BLOCK}}", "cli:local")
-        assert out == (_SECTION if open_ else _POINTER)
+        assert out == ("" if open_ else _POINTER)
         assert gate.calls == 1
 
     def test_an_unreadable_gate_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -182,26 +188,15 @@ class TestTheShippedContract:
         assert not re.search(r"\{\{[A-Z_]+\}\}", prompt)
 
     @pytest.mark.parametrize("is_cc", [False, True])
-    def test_open_gate_carries_the_section_verbatim(
+    def test_open_gate_carries_neither_the_pointer_nor_the_usage_text(
         self, gate: _Gate, builder: ContextBuilder, is_cc: bool
     ) -> None:
         gate.open = True
         prompt = self._resolve(builder, is_cc=is_cc)
-        assert _SECTION in prompt
         assert _POINTER not in prompt
+        assert _HEADING not in prompt
+        assert not _has_usage_text(prompt)
         assert not re.search(r"\{\{[A-Z_]+\}\}", prompt)
-
-    def test_the_open_render_is_the_shipped_text_with_the_section_in_place(
-        self, gate: _Gate, builder: ContextBuilder, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Gated on, the slot reproduces the file as it read before the move:
-        the section sits between the Browser section and the widget slot."""
-        gate.open = True
-        # The Browser section is there only while browsing is set up on the host.
-        monkeypatch.setattr("kiro_crew.browser_cli.install.available", lambda: True)
-        prompt = self._resolve(builder)
-        browser_tail = "`browser-auth` carries logged-in sessions.\n\n"
-        assert browser_tail + _SECTION + "\n\n" in prompt + "\n\n"
 
     def test_residual_the_slot_follows_the_host_gate_not_an_agents_tools_list(
         self,
@@ -212,10 +207,10 @@ class TestTheShippedContract:
     ) -> None:
         """PINNED RESIDUAL, not a contract to keep. The slot reads the same
         host-wide predicate the spec writers do, so a fork of the managed contract
-        whose own ``tools`` list leaves out ``@kirocrew-computer`` still gets the
-        full section while the gate is open. Narrowing it per agent means reading
-        the named agent's own spec (its ``mcpServers`` and ``tools``), which this
-        change does not do."""
+        whose own ``tools`` list leaves out ``@kirocrew-computer`` gets no pointer
+        while the gate is open, though it has no ``computer_*`` tool. Narrowing it
+        per agent means reading the named agent's own spec (its ``mcpServers`` and
+        ``tools``), which this change does not do."""
         import json
 
         from kiro_crew.agent import _NATIVE_PROMPT_STUB
@@ -239,7 +234,7 @@ class TestTheShippedContract:
             private_owner=False,
             session_start=True,
         )
-        assert _SECTION in prompt
+        assert _POINTER not in prompt
 
 
 class TestOneReadingPerSession:
@@ -254,7 +249,6 @@ class TestOneReadingPerSession:
         gate.open = not open_at_start
         restored = _restore(builder, "dashboard:cu-a")
         assert restored == fresh
-        assert (_SECTION_FOLDED in fresh) is open_at_start
         assert (_POINTER_FOLDED in fresh) is not open_at_start
 
     def test_a_new_session_start_takes_a_new_reading(
@@ -264,8 +258,8 @@ class TestOneReadingPerSession:
         first = _start(builder, "dashboard:cu-b")
         gate.open = True
         second = _start(builder, "dashboard:cu-b")
-        assert _POINTER_FOLDED in first and _SECTION_FOLDED not in first
-        assert _SECTION_FOLDED in second and _POINTER_FOLDED not in second
+        assert _POINTER_FOLDED in first
+        assert _POINTER_FOLDED not in second
 
     def test_a_sibling_session_start_leaves_this_contract_alone(
         self, gate: _Gate, builder: ContextBuilder
@@ -290,7 +284,6 @@ class TestOneReadingPerSession:
             "back again", is_new_session=True, resumed=True, session_key="dashboard:cu-r"
         )
         restored = _restore(builder, "dashboard:cu-r")
-        assert (_SECTION_FOLDED in restored) is (not open_at_start)
         assert (_POINTER_FOLDED in restored) is open_at_start
 
     def test_a_resume_without_a_switch_keeps_the_contract(
@@ -378,22 +371,20 @@ class TestASessionOpenAcrossTheSwitch:
         assert "[AGENT SYSTEM PROMPT]" not in message
         assert gate.calls == 1
 
-    def test_a_session_open_across_a_disable_keeps_a_section_that_covers_it(
+    def test_a_session_open_across_a_disable_holds_no_stale_usage_text(
         self, gate: _Gate, builder: ContextBuilder
     ) -> None:
         """The mirror case: started with the tools, then Computer Use is switched
-        off. The resume re-sends no contract, so the transcript still holds the
-        full section while the new backend mounts no ``computer_*`` tool. The
-        section itself has to say what to do then; the next compaction restores
-        the pointer, from the resume's fresh reading."""
+        off. The usage text was never in the transcript: it came with the server's
+        ``instructions``, which leave with the server when the new backend mounts
+        none. The next compaction restores the pointer, from the resume's reading."""
         gate.open = True
         fresh = _start(builder, "dashboard:cu-off")
-        assert _SECTION_FOLDED in fresh
-        assert "If no `computer_*` tool is in your tool list" in " ".join(fresh.split())
+        assert not _has_usage_text(fresh)
         gate.open = False
         message, _ = builder.build_message(
             "back again", is_new_session=True, resumed=True, session_key="dashboard:cu-off"
         )
         assert "[AGENT SYSTEM PROMPT]" not in message
         restored = _restore(builder, "dashboard:cu-off")
-        assert _POINTER_FOLDED in restored and _SECTION_FOLDED not in restored
+        assert _POINTER_FOLDED in restored and not _has_usage_text(restored)

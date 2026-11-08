@@ -15,7 +15,6 @@ from urllib.parse import quote
 from kiro_crew.config.sections import FOLDER_SORT_DEFAULT
 from kiro_crew.dashboard.folder_ownership import _folder_owner_app, _subtree_holds_foreign_folder
 from kiro_crew.mcp_dashboard_caller_scope import (
-    _own_chat_slot,
     _refuse_tree_shaping_if_unverifiable,
     _visible_chat_slots,
 )
@@ -388,6 +387,13 @@ def _run_chat_folder_move(args: dict[str, Any], ctx: ToolContext) -> str:
         try:
             d = ctx.client.patch(f"/api/chat/folders/{fld_id}", move_body, session_key=caller_key)
         except DashboardError as refused:
+            if refused.code == "folder_name_exists":
+                return (
+                    "Error: the destination already holds a folder with this name. "
+                    "Two folders with one name under the same parent cannot be told "
+                    "apart by path, so the move is refused. Rename one of them "
+                    "first (chat_folder_update), then move it."
+                )
             # The endpoint owns the cycle guard (a folder cannot move into its
             # own descendant) — surface its verdict rather than re-deriving it.
             return f"Error: {refused.error}"
@@ -422,6 +428,9 @@ def _run_chat_folder_move(args: dict[str, Any], ctx: ToolContext) -> str:
                 session_key=caller_key,
             )
         except DashboardError as refused:
+            if refused.code == "channel_reachable_caller" and not move_body:
+                # Nothing was written, and a re-run is refused the same way.
+                return redact(f"Error: {refused.error}")
             # The reparent (if any) landed and is not in doubt; the ordering
             # did not -- and, being atomic, left the stored order untouched
             # rather than partway. Say which half held so the caller can
@@ -521,7 +530,7 @@ def _run_chat_folder_update(args: dict[str, Any], ctx: ToolContext) -> str:
         if refused.code == "folder_not_owned":
             return (
                 "Error: this caller does not own that folder. An app agent or "
-                "crew member may update only a folder it created; ask the "
+                "Bot may update only a folder it created; ask the "
                 "person to rename or restyle theirs."
             )
         if refused.code == "channel_reachable_caller":
@@ -632,65 +641,3 @@ def _run_chat_folder_delete(args: dict[str, Any], ctx: ToolContext) -> str:
             )
         return redact(f"Error: {refused.error}")
     return redact(f"Deleted empty folder `{fld_path}` (id={fld_id}).")
-
-
-def _run_chat_folder_file_self(args: dict[str, Any], ctx: ToolContext) -> str:
-    # The destination may not exist yet (mkdir -p, like session_create's
-    # ``folder``), and creating folders is tree shaping — so the same gate,
-    # not a second authorization path. Its verified key is what every write
-    # below carries, per the gate's own contract.
-    caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable(ctx, "filing this session")
-    if gate:
-        return gate
-    rows, rows_err = _get_rows(ctx.client, "/api/chat/slots")
-    if rows_err:
-        return redact(f"Error: {rows_err}")
-    own_slot, own_err = _own_chat_slot(caller_key, rows)
-    if own_err:
-        return own_err
-    own_key = str(own_slot.get("key") or "")
-    # The row's ``created`` is the slot's birth stamp, minted once per slot
-    # object. It rides along on the PATCH as a generation token so the
-    # endpoint refuses (409 ``session_gone``) if this tab closed and its key
-    # was recreated for another conversation between this read and the
-    # write — the recreated slot shares the ``dashboard:<key>`` transcript
-    # key, so the history pin alone would let that write through.
-    own_created = str(own_slot.get("created") or "")
-    chat_folders, folders_err = _get_rows(ctx.client, "/api/chat/folders")
-    if folders_err:
-        return redact(f"Error: {folders_err}")
-    folder_ref = str(args.get("folder") or "")
-    made_note = ""
-    fld_id = ""
-    if folder_ref and folder_ref != "root":
-        fld_id, created_segments, fld_err = _ensure_chat_folder_path(
-            folder_ref, chat_folders, client=ctx.client, session_key=caller_key
-        )
-        if created_segments:
-            made_note = f" (created folder path: {'/'.join(created_segments)})"
-        if fld_err:
-            # Segments the walk already created persist and are reported —
-            # the same partial-report posture chat_folder_create and
-            # session_create take, since folder deletion is deliberately not
-            # a capability this server has.
-            return redact(f"Error: {fld_err}{made_note}")
-    # The target is the CALLER's own slot, resolved above from the verified
-    # key — never from an argument — which is what makes this verb safe to
-    # grant where chat_folder_move_session is withheld: it can write no
-    # placement but its own. ``expected_created`` pins the write to the
-    # slot generation resolved above; the endpoint checks it under its lock.
-    patch_body: dict[str, str] = {"folder_id": fld_id}
-    if own_created:
-        patch_body["expected_created"] = own_created
-    try:
-        ctx.client.patch(
-            f"/api/chat/slots/{quote(own_key, safe='')}/folder",
-            patch_body,
-            session_key=caller_key,
-        )
-    except DashboardError as refused:
-        return redact(f"Error: {refused.error}{made_note}")
-    if not fld_id:
-        return redact(f"Unfiled this session (`{own_key}`) to the top level.{made_note}")
-    folder_label = _chat_folder_paths(chat_folders).get(fld_id, fld_id)
-    return redact(f"Filed this session (`{own_key}`) in `{folder_label}` (id={fld_id}).{made_note}")

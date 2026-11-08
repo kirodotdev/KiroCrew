@@ -134,7 +134,7 @@ async def _run_app_build(
     """
     build_cmds: list[list[str]] = []
 
-    if (build_dir / "package.json").is_file():
+    if await asyncio.to_thread((build_dir / "package.json").is_file):
         # Resolve to a full path, mirroring the pip branch below: on Windows npm
         # is ``npm.CMD``, which shutil.which finds but CreateProcess cannot spawn
         # by the bare name "npm".
@@ -199,9 +199,9 @@ async def _run_app_build(
         # Nothing here that would build (or a requirements.txt entry nothing
         # reads): no build step, reported below like any source-as-is checkout.
     elif (
-        (build_dir / "pyproject.toml").is_file()
-        or (build_dir / "setup.py").is_file()
-        or (build_dir / "requirements.txt").is_file()
+        await asyncio.to_thread((build_dir / "pyproject.toml").is_file)
+        or await asyncio.to_thread((build_dir / "setup.py").is_file)
+        or await asyncio.to_thread((build_dir / "requirements.txt").is_file)
     ):
         # `sys.executable -m pip`, NOT `shutil.which("pip")`.
         #
@@ -290,8 +290,9 @@ async def _run_app_build(
             )
         else:
             pip_cmd = platform_compat.isolated_python_argv("-m", "pip")
-            if (build_dir / "requirements.txt").is_file() and not (
-                (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
+            if await asyncio.to_thread((build_dir / "requirements.txt").is_file) and not (
+                await asyncio.to_thread((build_dir / "pyproject.toml").is_file)
+                or await asyncio.to_thread((build_dir / "setup.py").is_file)
             ):
                 build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
             else:
@@ -330,6 +331,13 @@ async def _run_app_build(
                 "name": app_name,
                 "error": f"build timed out after {_BUILD_TIMEOUT}s ({' '.join(cmd)})",
             }
+        except asyncio.CancelledError:
+            # The build runs in its own session, so once this coroutine stops
+            # awaiting it nothing else will stop it: no timeout is left.
+            # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+            if proc.returncode is None:
+                await platform_compat.kill_and_reap(proc)
+            raise
 
         if proc.returncode != 0:
             return {
@@ -573,35 +581,48 @@ if _typing.TYPE_CHECKING:
         _BLOB_CACHE_GC_MAX_ENTRIES,
         _CACHE_EXPIRY_BACKDATE_SLACK,
         _EXTERNAL_REGISTRY_CACHE_TTL,
+        _EXTERNAL_REGISTRY_FAILURE_CLOCK_SLACK,
+        _EXTERNAL_REGISTRY_FAILURE_TTL,
         _FACADE,
         _MANIFEST_CACHE_GC_GRACE,
         _MANIFEST_CACHE_TTL,
+        _MANIFEST_NEGATIVE_CACHE_TTL,
         _MANIFEST_SOURCE_SUBDIR,
         PinnedPathRefusal,
         _blob_cache_dir,
+        _clear_external_registry_failure,
         _credential_free_external_registry_entries,
         _credential_free_external_registry_value,
         _expire_cache_file,
         _external_registry_cache_identity,
         _external_registry_cache_path,
         _external_registry_cache_path_for_identity,
+        _external_registry_failure_path,
         _facade,
         _gc_blob_cache_dir,
         _gc_blob_cache_sweep_fd,
         _gc_blob_cache_sweep_lstat,
         _gc_manifest_cache_dir,
+        _installed_manifest_cache_path,
         _legacy_external_registry_cache_path,
         _log_blob_gc_depth_ceiling,
         _manifest_cache_dir,
         _manifest_cache_path,
+        _manifest_negative_cache_path,
         _manifest_source_coordinates,
         _read_external_registry_cache,
+        _read_external_registry_failure,
+        _read_installed_manifest_cache,
         _read_manifest_cache,
+        _read_manifest_negative_cache,
         _remove_legacy_credential_registry_cache,
         _remove_legacy_name_keyed_registry_cache,
         _safe_cache_stem,
         _write_external_registry_cache,
+        _write_external_registry_failure,
+        _write_installed_manifest_cache,
         _write_manifest_cache,
+        _write_manifest_negative_cache,
         atomic_write,
         config_dir,
         open_pinned_descendant_dir,
@@ -610,7 +631,10 @@ if _typing.TYPE_CHECKING:
         time,
     )
     from kiro_crew.apps.registry_pipeline.catalog import (  # noqa: F401
+        _VERSION_RELEASE_RE,
+        _VERSION_STRING_RE,
         FIRST_PARTY_AUTHORS,
+        NATIVE_WINDOWS_SHELL_REFUSAL,
         SOURCE_REGISTRY_PREFIX,
         _append_external_registry_apps,
         _apply_trust_fields,
@@ -625,6 +649,9 @@ if _typing.TYPE_CHECKING:
         _identity,
         _is_catalog_row,
         _is_external_row,
+        _is_prerelease,
+        _manifest_shell_platform_refusal,
+        _parse_version,
         _pinned_registry_entry,
         _platform,
         _registry_app_candidates,
@@ -664,25 +691,33 @@ if _typing.TYPE_CHECKING:
         _clone_origin_matches,
         _clone_origin_url,
         _communicate_with_timeout,
+        _ensure_directory,
         _git_clone_or_pull,
         _git_fetch_branch,
         _git_fetch_commit,
         _git_fetch_ref,
+        _names_a_missing_ref,
         _read_clone_branch,
         _read_git_metadata_bounded,
         _resolved_clone_commit,
         _rmtree_force_settled,
+        _with_network_hint,
     )
     from kiro_crew.apps.registry_pipeline.git_targets import (  # noqa: F401
         _GIT_AUTH_FAILURE_MARKERS,
         _GIT_EXEC_NEUTRALIZER_PAIRS,
         _GIT_FAILURE_CLASS_LABELS,
+        _GIT_NETWORK_FAILURE_HINT,
+        _GIT_NETWORK_FAILURE_MARKERS,
         _GIT_NO_FSMONITOR_PAIR,
         _GIT_NO_HOOKS_PAIR,
         _PUBLIC_GIT_HOSTS,
+        _SSH_METHOD_CHARS,
+        _SSH_REFUSAL_PREFIX,
         IPv6Address,
         _clone_sandbox_mode,
         _entry_git_url,
+        _git_network_failure_hint,
         _git_output_is_auth_shaped,
         _git_target_has_ambiguous_scp_prefix,
         _git_target_has_ambiguous_ssh_userinfo,
@@ -690,6 +725,7 @@ if _typing.TYPE_CHECKING:
         _git_target_is_unsupported,
         _git_transport_env,
         _git_url_host,
+        _is_ssh_auth_refusal,
         _is_ssh_git_url,
         _loggable_git_transport_output,
         _looks_like_git_url,
@@ -699,6 +735,7 @@ if _typing.TYPE_CHECKING:
         _redact_url_userinfo,
         _redacted_git_failure_class,
         _same_git_target,
+        _ssh_method_list_closes,
         _strip_git_target_userinfo,
         _valid_git_port,
         re,
@@ -709,18 +746,27 @@ if _typing.TYPE_CHECKING:
         _fetch_and_cache_external_registry,
         _fetch_external_registry_index,
         _load_external_registries,
+        _load_index_entries_sync,
         _owner_tier_confirmed,
         _registry_sign_in_refused,
     )
     from kiro_crew.apps.registry_pipeline.install import (  # noqa: F401
+        _SCRIPT_LOG_TAIL_CHARS,
         _SCRIPT_TIMEOUT,
+        NATIVE_WINDOWS_HOOK_REFUSAL,
         RESERVED_APP_NAME_CODE,
+        Awaitable,
+        Callable,
         StreamingLogLines,
+        _adoption_pending,
+        _install_script_platform_refusal,
         _official_entry,
+        _redact_log_via_context,
         _remote_controlled_url,
         _retained_startup_refusal,
         _trust_grant_would_stay_local,
         app_name_error,
+        git_unavailable_refusal,
         install_app,
         install_from_registry,
         install_receipt,
@@ -737,6 +783,7 @@ if _typing.TYPE_CHECKING:
         Literal,
         _clone_build_app,
         _clone_build_app_locked,
+        _downgrade_refusal,
         _refuse_identity_mismatch,
         _report_retained_stale_checkouts,
         app_admission_denied,
@@ -773,6 +820,7 @@ if _typing.TYPE_CHECKING:
         _merge_manifest,
         _resolve_manifest,
         official_catalog,
+        sanitize_links,
     )
     from kiro_crew.apps.registry_pipeline.recovery import (  # noqa: F401
         _STALE_CHECKOUT_PATTERN,
@@ -857,6 +905,7 @@ if _typing.TYPE_CHECKING:
         _clone_failure_reason,
         _contained_join,
         _copy_declared_art,
+        _declared_art_present,
         _declared_store_art,
         _detach_prewarm_cleanup,
         _dropped_list_art_paths,
@@ -873,6 +922,7 @@ if _typing.TYPE_CHECKING:
         _retrieve_batch_cancellation,
         _servable_art_path,
         _slim_prewarm_row,
+        _stale_row_art_present,
         _store_art_cache_path,
         _store_asset_path,
         _store_assets_warm,
@@ -888,10 +938,15 @@ if _typing.TYPE_CHECKING:
         _DETECT_PROBE_ENV_KEYS,
         _GIT_CLONE_LOCALE,
         _GIT_CREDENTIAL_ENV_KEYS,
+        _GIT_NETWORK_ENV_KEYS,
+        _GIT_PROXY_ENV_KEYS,
         _SAFE_ENV_KEYS,
         _detect_probe_env,
+        _git_network_env,
         _is_probe_env_key,
         _is_safe_env_key,
+        _proxy_env_has_credentials,
+        _uses_http_proxy,
         anonymous_git_env,
         os,
         scrub_env,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.validation import (
     ARTIFACT_SAVE_SCHEMA,
@@ -993,6 +994,40 @@ class TestValidateMcpToolArguments:
         self._raises({"xs": [1, 2, 3]}, schema, "exceeds maxItems")
         self._raises({"xs": ["s"]}, schema, "expected integer")
 
+    def test_integral_float_accepted_as_integer_and_passed_on_as_int(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer", "minimum": 1},
+                "xs": {"type": "array", "items": {"type": "integer"}},
+                "m": {"type": "object", "additionalProperties": {"type": "integer"}},
+                "either": {"type": ["integer", "string"]},
+                "num": {"type": ["integer", "number"]},
+            },
+        }
+        args = {"n": 3.0, "xs": [1.0, 2], "m": {"k": 4.0}, "either": 5.0, "num": 6.0}
+        self._v(args, schema)
+        assert args == {"n": 3, "xs": [1, 2], "m": {"k": 4}, "either": 5, "num": 6.0}
+        assert type(args["n"]) is int
+        assert type(args["xs"][0]) is int
+        assert type(args["m"]["k"]) is int
+        assert type(args["either"]) is int
+        # A slot that admits `number` keeps the float.
+        assert type(args["num"]) is float
+
+    @pytest.mark.parametrize("value", [3.5, float("inf"), float("nan")])
+    def test_non_integral_float_still_rejected_as_integer(self, value):
+        schema = {"type": "object", "properties": {"n": {"type": "integer"}}}
+        self._raises({"n": value}, schema, "expected integer")
+
+    def test_unique_items_compares_integral_float_as_int(self):
+        schema = {
+            "type": "object",
+            "properties": {"xs": {"type": "array", "items": {"type": "integer"},
+                                  "uniqueItems": True}},
+        }
+        self._raises({"xs": [3, 3.0]}, schema, "items not unique")
+
     def test_unknown_schema_type_rejects(self):
         schema = {"type": "object",
                   "properties": {"a": {"type": "no-such-type"}}}
@@ -1184,64 +1219,59 @@ class TestFilePathShape:
     @pytest.mark.parametrize(
         "path",
         [
-            "/home/user/project/notes.md",
-            "~/project/notes.md",
-            "/tmp/a file with spaces.md",
+            *named_cases(
+                "test_accepts_posix_absolute",
+                "path",
+                [
+                    "/home/user/project/notes.md",
+                    "~/project/notes.md",
+                    "/tmp/a file with spaces.md",
+                ],
+            ),
+            *named_cases(
+                "test_accepts_urlreserved_and_punctuation",
+                "path",
+                [
+                    # Parentheses: the "Name (alias).md" convention a whole notes folder
+                    # can be built on, so one refused character 400s every file in it.
+                    "/home/user/notes/One on one/Ada Lovelace (ada).md",
+                    "/home/user/Desktop/AI Projects/(AI) Fluency Workshop/agenda.md",
+                    # Spaces and parentheses together, plus the URL-reserved characters
+                    # the client percent-encodes and the server therefore sees literally.
+                    "/home/user/notes/Q1 2026 (draft) #2.md",
+                    "/home/user/notes/is it done?.md",
+                    "/home/user/notes/a & b, c'd.md",
+                    "/home/user/notes/50% done [final]+1.md",
+                    r"C:\Users\me\One on one\Ada Lovelace (ada) #2.md",
+                    # Non-BMP: an emoji in a name is legal and carries no hazard.
+                    "/home/user/notes/ship \U0001f680.md",
+                ],
+            ),
+            *named_cases(
+                "test_accepts_shell_metacharacters",
+                "path",
+                [
+                    "/tmp/$evil",
+                    "/tmp/a;rm -rf b",
+                    "/tmp/a|b",
+                    "/tmp/a`b`",
+                    "/tmp/a*b?",
+                ],
+            ),
+            *named_cases(
+                "test_accepts_windows_absolute",
+                "path",
+                [
+                    r"C:\Users\me\workspace\notes.md",
+                    "C:/Users/me/workspace/notes.md",
+                    r"c:\lower\drive\letter.md",
+                    r"\\host\share\notes.md",
+                    r"C:\Users\me\a file with spaces.md",
+                ],
+            ),
         ],
     )
-    def test_accepts_posix_absolute(self, path):
-        assert self._accepts(path)
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            # Parentheses: the "Name (alias).md" convention a whole notes folder
-            # can be built on, so one refused character 400s every file in it.
-            "/home/user/notes/One on one/Ada Lovelace (ada).md",
-            "/home/user/Desktop/AI Projects/(AI) Fluency Workshop/agenda.md",
-            # Spaces and parentheses together, plus the URL-reserved characters
-            # the client percent-encodes and the server therefore sees literally.
-            "/home/user/notes/Q1 2026 (draft) #2.md",
-            "/home/user/notes/is it done?.md",
-            "/home/user/notes/a & b, c'd.md",
-            "/home/user/notes/50% done [final]+1.md",
-            r"C:\Users\me\One on one\Ada Lovelace (ada) #2.md",
-            # Non-BMP: an emoji in a name is legal and carries no hazard.
-            "/home/user/notes/ship \U0001f680.md",
-        ],
-    )
-    def test_accepts_urlreserved_and_punctuation(self, path):
-        assert self._accepts(path)
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            "/tmp/$evil",
-            "/tmp/a;rm -rf b",
-            "/tmp/a|b",
-            "/tmp/a`b`",
-            "/tmp/a*b?",
-        ],
-    )
-    def test_accepts_shell_metacharacters(self, path):
-        # A shell metacharacter is an ordinary filename character here: every
-        # subprocess in the file handlers is exec-form argv with no shell, and
-        # the security boundary is hooks.validate_file_path's realpath +
-        # is_sensitive_path below this gate. Refusing them bought nothing and
-        # cost legal files, so the refusal is not reinstated.
-        assert self._accepts(path)
-
-    @pytest.mark.parametrize(
-        "path",
-        [
-            r"C:\Users\me\workspace\notes.md",
-            "C:/Users/me/workspace/notes.md",
-            r"c:\lower\drive\letter.md",
-            r"\\host\share\notes.md",
-            r"C:\Users\me\a file with spaces.md",
-        ],
-    )
-    def test_accepts_windows_absolute(self, path):
+    def test_accepts_a_file_path_shape(self, path):
         assert self._accepts(path)
 
     @pytest.mark.parametrize(

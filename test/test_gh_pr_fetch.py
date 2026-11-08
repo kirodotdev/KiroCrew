@@ -609,6 +609,36 @@ class TestTheCheckBoardIsReadWhole:
         assert observation.bucket("failing") == ("Tests",)
         assert observation.checks_read == 4, "the fold is reported, so the tally is not a guess"
 
+    def test_the_check_runs_read_asks_for_history_not_just_the_latest_attempt(
+        self, monkeypatch
+    ) -> None:
+        """The recency fold is only correct if the API returns BOTH attempts.
+
+        ``commits/{ref}/check-runs`` defaults to ``filter=latest`` -- one row per
+        name. ``_collapse`` is built on seeing the stale attempt AND the fresh one so
+        recency can pick the current verdict in either direction; under the default
+        the stale row is dropped server-side before the fold runs, and a re-run that
+        flipped a lane's verdict is read as whatever row the server happened to keep.
+        A fake cannot reproduce that server-side drop, so the guarantee is pinned at
+        the request itself: every check-runs read this fetcher makes must carry
+        ``filter=all``. Drop the parameter and this fails while the fold tests, which
+        hand the fake both rows regardless of the query, keep passing -- which is
+        exactly why the collapse defect was invisible for six sites.
+        """
+        rows = [_check(f"Lane {n}") for n in range(150)]  # forces a second page too
+        forge = _Forge().install(monkeypatch).paginate(rows)
+        gh_pr.fetch(_msg())
+        check_calls = [argv[-1] for argv in forge.argv if "check-runs" in argv[-1]]
+        assert check_calls, "the board must actually be read"
+        assert all(
+            "filter=all" in target for target in check_calls
+        ), f"a check-runs read without filter=all cannot see a superseded attempt: {check_calls}"
+        # The pagination pair must still compose onto the query it already carries,
+        # not clobber it: a '?' is present, so per_page/page join with '&'.
+        assert any(
+            "per_page=" in target and "page=2" in target for target in check_calls
+        ), "the second page is still requested, and its params join the existing query"
+
     def test_undated_duplicates_keep_the_conservative_row(self, monkeypatch) -> None:
         """When recency cannot arbitrate, the choice is declared rather than hidden.
 
@@ -627,6 +657,46 @@ class TestTheCheckBoardIsReadWhole:
         rows = [row for row in observation.checks if row.bare == "Lint"]
         assert len(rows) == 1
         assert rows[0].bucket == "pending"
+        assert observation.status == gh_pr.STATUS_PARTIAL
+        assert any(
+            "conservative" in note and "Lint" in note for note in observation.incomplete
+        ), observation.incomplete
+        assert observation.checks_complete, "every row was read; only the order is short"
+
+    def test_one_undated_row_is_enough_to_declare_the_choice(self, monkeypatch) -> None:
+        """A dated row and an undated one cannot be ordered either."""
+        _Forge().install(monkeypatch).paginate(
+            [
+                _check("Lint", "SUCCESS", started_at="2026-10-01T10:00:00Z"),
+                _check("Lint", conclusion=None, status="QUEUED"),
+            ]
+        )
+        observation = gh_pr.fetch(_msg())
+        rows = [row for row in observation.checks if row.bare == "Lint"]
+        assert [row.bucket for row in rows] == ["pending"]
+        assert observation.status == gh_pr.STATUS_PARTIAL
+        assert any("Lint" in note for note in observation.incomplete), observation.incomplete
+
+    def test_undated_duplicates_that_agree_add_no_note(self, monkeypatch) -> None:
+        """Nothing was chosen, so the reading stays whole."""
+        _Forge().install(monkeypatch).paginate(
+            [_check("Lint", "SUCCESS"), _check("Lint", "SUCCESS")]
+        )
+        observation = gh_pr.fetch(_msg())
+        assert observation.status == gh_pr.STATUS_OK
+        assert observation.incomplete == ()
+
+    def test_dated_duplicates_add_no_note(self, monkeypatch) -> None:
+        """Recency decided, so there is no choice to declare."""
+        _Forge().install(monkeypatch).paginate(
+            [
+                _check("Lint", "FAILURE", started_at="2026-10-01T10:00:00Z"),
+                _check("Lint", "SUCCESS", started_at="2026-10-01T11:00:00Z"),
+            ]
+        )
+        observation = gh_pr.fetch(_msg())
+        assert [row.bucket for row in observation.checks if row.bare == "Lint"] == ["passing"]
+        assert observation.status == gh_pr.STATUS_OK
 
     def test_the_same_check_name_from_two_workflows_stays_two_rows(self, monkeypatch) -> None:
         """Collapsing them lets one workflow's green swallow the other's red.

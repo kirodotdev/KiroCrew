@@ -1,31 +1,21 @@
 """The ACP backend install probe: what the dashboard is told about this machine.
 
-The probe exists because ``selectable`` is a build/policy fact and cannot say
-whether the harness would actually start. Four properties carry that, and each
-is a way the surface has a specific way of lying to an operator:
+``selectable`` is a build/policy fact and cannot say whether the harness would start.
 
-1. The probe answers through the SPAWN's resolvers. Every case here monkeypatches
-   ``kiro_crew.acp.client``'s own resolvers, so a probe that grew a private PATH
-   search would stop responding to these tests -- which is the point: a second
-   search agrees with the spawn only by coincidence.
-2. ``kas`` tracks ``kiro`` exactly, because KAS is served by kiro-cli's ACP relay
-   and has no binary of its own. A drifting kas verdict would report a harness
-   absent (or present) on the strength of a binary nobody looks for.
-3. A resolver that RAISES yields ``unknown``, never ``missing``. Collapsing the
-   two tells someone to run a global npm install for something they may already
-   have.
-4. Claude names WHICH component is absent. The adapter and the Claude CLI have
-   different remedies, so a bare "missing" leaves the operator reinstalling the
-   half they already have.
+1. The probe answers through the spawn's resolvers (``kiro_crew.acp.client``), which
+   every case monkeypatches; a private PATH search would agree only by coincidence.
+2. ``kas`` tracks ``kiro`` exactly: KAS is served by kiro-cli's ACP relay.
+3. A resolver that raises yields ``unknown``, never ``missing``.
+4. Claude names which component is absent, since the adapter and CLI fix differently.
 
-Plus the cache (the dashboard polls this and the Claude probe spawns mise) and
-the endpoint's owner gate.
+Plus the cache (the Claude probe spawns mise) and the endpoint's owner gate.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 from unittest.mock import MagicMock
 
@@ -114,6 +104,12 @@ def _stub_resolvers(
     answers.update(self_served or {})
     monkeypatch.setattr(client, "_resolve_self_served_bin", lambda backend: answers[backend])
     monkeypatch.setattr(client, "_self_served_bin_caches", {})
+    # The Strands probe also reads its Python environment and its release, each a
+    # host fact, so both answer "ready" here like the binaries above.
+    from kiro_crew.agent_sdk.drivers import acp as acp_driver
+
+    monkeypatch.setattr(acp_driver, "strands_python_env_missing", lambda: ("", ""))
+    monkeypatch.setattr(acp_driver, "strands_wrong_version", lambda: "")
 
 
 # ── The opencode driver seams ──
@@ -264,6 +260,100 @@ class TestSelfServedVerdicts:
         assert state.install_command == driver.self_served_install_command(backend)
 
 
+def _npm_copilot(root, version: str, *, name: str = "@github/copilot") -> str:
+    """Lay down an npm global install of Copilot CLI under *root*; return its bin link."""
+    package = root / "lib" / "node_modules" / "@github" / "copilot"
+    package.mkdir(parents=True)
+    (package / "package.json").write_text(json.dumps({"name": name, "version": version}))
+    (package / "npm-loader.js").write_text("// loader\n")
+    bin_dir = root / "bin"
+    bin_dir.mkdir()
+    link = bin_dir / "copilot"
+    link.symlink_to(package / "npm-loader.js")
+    return str(link)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="npm bin links are symlinks on POSIX")
+class TestCopilotWrongVersion:
+    """UX: a Copilot CLI on any release but the verified one refuses every chat at
+    the handshake, so the row must not call it Installed.
+
+    Read from the install's own manifest, so each case lays down a real npm layout
+    and lets the spawn's resolver find it.
+    """
+
+    def _probe(self, monkeypatch, binary: str):
+        from kiro_crew.acp import client
+        from kiro_crew.acp_backends import ACP_BACKEND_COPILOT
+
+        _stub_resolvers(monkeypatch, self_served={ACP_BACKEND_COPILOT: (binary, "/usr/bin")})
+        monkeypatch.setattr(client, "_self_served_bin_caches", {})
+        return probe.probe_backend(ACP_BACKEND_COPILOT)
+
+    def test_another_release_is_missing_the_verified_one(self, monkeypatch, tmp_path):
+        from kiro_crew.agent_sdk.backends import COPILOT_VERIFIED_VERSION
+
+        state = self._probe(monkeypatch, _npm_copilot(tmp_path, "1.0.103"))
+        assert state.installed == probe.MISSING
+        assert state.found_version == "1.0.103"
+        assert state.missing_components == (f"copilot {COPILOT_VERIFIED_VERSION}",)
+        assert state.install_command == f"npm i -g @github/copilot@{COPILOT_VERIFIED_VERSION}"
+
+    def test_the_verified_release_is_installed(self, monkeypatch, tmp_path):
+        from kiro_crew.agent_sdk.backends import COPILOT_VERIFIED_VERSION
+
+        state = self._probe(monkeypatch, _npm_copilot(tmp_path, COPILOT_VERIFIED_VERSION))
+        assert state.installed == probe.INSTALLED
+        assert state.found_version == ""
+
+    def test_an_unreadable_release_is_not_a_wrong_one(self, monkeypatch, tmp_path):
+        """A standalone build carries no manifest: the handshake still decides."""
+        standalone = tmp_path / "copilot"
+        standalone.write_text("#!/bin/sh\n")
+        assert self._probe(monkeypatch, str(standalone)).installed == probe.INSTALLED
+
+    def test_another_packages_manifest_is_not_read(self, monkeypatch, tmp_path):
+        state = self._probe(monkeypatch, _npm_copilot(tmp_path, "9.9.9", name="not-copilot"))
+        assert state.installed == probe.INSTALLED
+
+    def test_a_windows_shim_reads_the_prefix_package(self, tmp_path):
+        from kiro_crew.acp.harness.copilot import copilot_installed_version
+
+        package = tmp_path / "node_modules" / "@github" / "copilot"
+        package.mkdir(parents=True)
+        (package / "package.json").write_text(
+            json.dumps({"name": "@github/copilot", "version": "1.0.102"})
+        )
+        (tmp_path / "copilot.cmd").write_text("@echo off\n")
+        assert copilot_installed_version(str(tmp_path / "copilot.cmd")) == "1.0.102"
+
+    @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_SELF_SERVED_ACP - {"copilot"}))
+    def test_no_other_harness_reads_a_version(self, backend, monkeypatch):
+        from kiro_crew.agent_sdk.drivers import acp as driver
+
+        monkeypatch.setattr(
+            "kiro_crew.acp.client._resolve_self_served_bin", MagicMock(side_effect=AssertionError)
+        )
+        assert driver.self_served_wrong_version(backend) == ""
+
+    def test_the_status_row_carries_the_release_on_a_missing_verdict_only(self):
+        from kiro_crew.dashboard.handlers.acp_backend_status import _row
+
+        wrong = probe.BackendInstallState(
+            "copilot",
+            "copilot",
+            probe.MISSING,
+            ("copilot 1.0.100",),
+            "npm i",
+            found_version="1.0.103",
+        )
+        clamped = probe.BackendInstallState(
+            "copilot", "copilot", probe.INSTALLED, found_version="1.0.103"
+        )
+        assert _row(wrong, frozenset())["found_version"] == "1.0.103"
+        assert _row(clamped, frozenset())["found_version"] == ""
+
+
 class TestPiVerdicts:
     """Two components, one installer: the probe names whichever half is absent."""
 
@@ -319,12 +409,8 @@ class TestPiVerdicts:
 class TestCodexDriverSeams:
     """The three functions ``_probe_codex`` reads its verdict from.
 
-    Tested at the driver rather than only through the probe because the
-    cached-negative logic is the part with a real hazard: an operator installs the
-    adapter a MISSING row told them to install, and every spawn in the running
-    gateway still reuses the cached ``None`` until a restart. Reporting
-    ``restart_required`` instead of a bare ``installed`` is what keeps the panel
-    from promising something the next session breaks.
+    After an install, spawns still reuse the cached ``None`` until a restart, so the
+    driver must report ``restart_required`` rather than ``installed``.
     """
 
     def test_resolves_reports_a_runnable_argv(self, monkeypatch):
@@ -549,11 +635,36 @@ class TestKasBundleRouteAnswersFromTheInstalledEngine:
         assert kas.policy_id == "kas"
 
     @pytest.mark.parametrize("kiro_bin", ["/usr/local/bin/kiro-cli", None])
-    def test_no_engine_is_missing_the_bundle_not_kiro_cli(self, monkeypatch, kiro_bin):
+    def test_no_engine_yet_is_installed_because_the_gateway_installs_it(
+        self, monkeypatch, kiro_bin
+    ):
+        """The first spawn lays the pinned engine down, so the setup gate lets KAS
+        through instead of sending the user to kiro-cli."""
         from kiro_crew.agent_sdk import kas_bundle
 
         _stub_resolvers(monkeypatch, kiro=kiro_bin)
         monkeypatch.setattr(kas_bundle, "installed_bundle", lambda *a, **k: None)
+        monkeypatch.setattr(probe, "_engine_installable_here", lambda: True)
+        kas = probe.probe_backend(ACP_BACKEND_KAS)
+        assert kas.installed == probe.INSTALLED
+        assert kas.missing_components == ()
+
+    def test_a_platform_the_pin_publishes_nothing_for_is_not_installable(self, monkeypatch):
+        from kiro_crew.acp import kas_bundle as acp_kas_bundle
+
+        monkeypatch.setattr(acp_kas_bundle, "host_platform_key", lambda *a: "win32-arm64")
+        monkeypatch.setattr(acp_kas_bundle, "host_node_key", lambda *a: "win32-arm64")
+        monkeypatch.setattr(acp_kas_bundle, "_require_loadable_glibc", lambda *a: None)
+        assert probe._engine_installable_here() is False
+
+    @pytest.mark.parametrize("kiro_bin", ["/usr/local/bin/kiro-cli", None])
+    def test_no_engine_is_missing_the_bundle_not_kiro_cli(self, monkeypatch, kiro_bin):
+        """A host that cannot run the engine at all names the bundle, not kiro-cli."""
+        from kiro_crew.agent_sdk import kas_bundle
+
+        _stub_resolvers(monkeypatch, kiro=kiro_bin)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda *a, **k: None)
+        monkeypatch.setattr(probe, "_engine_installable_here", lambda: False)
         kas = probe.probe_backend(ACP_BACKEND_KAS)
         assert kas.installed == probe.MISSING
         assert kas.missing_components == (probe.COMPONENT_KAS_BUNDLE,)
@@ -706,13 +817,9 @@ class TestProbeCache:
 class TestSpawnCacheDivergence:
     """The probe must not promise a harness the RUNNING gateway cannot spawn.
 
-    ``AcpClient`` resolves the claude adapter once per process and keeps that
-    answer for the process's whole life. So a fresh resolve here can disagree with
-    what a spawn will actually do, and one direction is a trap an operator walks
-    into by following this panel's own advice: a failed session caches ``None``,
-    they install the adapter the UI told them to install, and a probe that bypassed
-    the cache would light the option up while every spawn still dies on the cached
-    ``None``.
+    ``AcpClient`` caches the claude adapter resolve per process, so after a failed
+    session caches ``None`` and the user installs it, a fresh resolve would light the
+    option while every spawn still fails.
     """
 
     def _cache(self, monkeypatch, value):
@@ -819,21 +926,12 @@ def _request(
 ):
     """A request shaped like a real dashboard call, for the owner predicate.
 
-    ``_is_dashboard_owner`` requires the ``app`` claim present-and-EMPTY and the
-    caller to equal ``state.owner_id``, so a bare ``MagicMock`` (whose ``get``
-    returns truthy stubs) is refused rather than admitted -- the stub has to
-    answer those two keys precisely or the test lands on the gate instead of its
-    subject.
+    ``_is_dashboard_owner`` needs the ``app`` claim present and empty and the caller equal
+    to ``state.owner_id``; a bare ``MagicMock`` is refused. Claims answer through ``get``,
+    ``in`` and ``[]`` alike, as a real ``web.Request`` does.
 
-    A real ``web.Request`` is a mapping, so it answers a claim through ``get``,
-    ``in`` and ``[]`` alike; this stub answers all three from one dict for the
-    same reason. Stubbing only one spelling would make the gate's behaviour a
-    function of how it happens to be WRITTEN, so the next reader who swaps an
-    equivalent form fails a test that has nothing to say about their change.
-
-    ``json_body`` is what ``await request.json()`` answers. Left unset, it raises
-    the way aiohttp does for a body that is absent or not JSON -- so a case has to
-    OPT IN to being well-formed, and the GET's own cases keep the shape they had.
+    ``json_body`` is what ``await request.json()`` answers; unset, it raises as aiohttp
+    does for an absent or non-JSON body.
     """
     req = MagicMock()
     req.path = "/api/acp-backends"
@@ -918,12 +1016,14 @@ class TestEndpointPayloadShape:
         assert [r["policy_id"] for r in rows] == [
             "claude",
             "codex",
+            "copilot",
             "deepseek",
             "goose",
             "kas",
             "kiro",
             "opencode",
             "pi",
+            "strands",
         ]
         for row in rows:
             assert set(row) == {
@@ -934,6 +1034,8 @@ class TestEndpointPayloadShape:
                 "installed",
                 "missing_components",
                 "install_command",
+                # Non-empty only on a wrong-release MISSING verdict (Copilot's pin).
+                "found_version",
                 "restart_required",
                 "auth",
                 # The capability card, spread into the row rather than nested:
@@ -985,6 +1087,7 @@ class TestEndpointPayloadShape:
             "installed": "installed",
             "missing_components": [],
             "install_command": "",
+            "found_version": "",
             "restart_required": False,
             # Compared against the declaration rather than a literal copy of the
             # remedy: the string is rendered verbatim by the panel, so a literal
@@ -1102,11 +1205,8 @@ class TestForgetProbe:
     def test_forgetting_kiro_also_forgets_the_copy_its_verdict_was_copied_into(self, monkeypatch):
         """The coupling runs BOTH ways, because kas's entry is a copy of kiro's.
 
-        ``_probe_kas`` answers by calling ``probe_backend`` for kiro, so a re-check on
-        the kiro row that dropped only kiro leaves kas holding the pre-install copy --
-        the kiro row reads ready and the kas row still says missing, with a dead
-        switch, for the rest of the TTL. That is a re-check reporting one answer for a
-        machine it just measured and a different one for the same binary.
+        ``_probe_kas`` calls ``probe_backend`` for kiro, so evicting only kiro would leave
+        kas saying missing for the rest of the TTL.
         """
         _stub_resolvers(monkeypatch)
         probe.probe_backend(ACP_BACKEND_KAS)
@@ -1118,19 +1218,20 @@ class TestForgetProbe:
         assert probe._cached(ACP_BACKEND_KIRO) is None
         assert probe._cached(ACP_BACKEND_KAS) is None
 
-    def test_forgetting_an_unprobed_backend_is_silent(self):
+    def test_forgetting_an_unprobed_backend_is_silent(self, monkeypatch):
+        _stub_resolvers(monkeypatch)
+        cached = probe.probe_backend(ACP_BACKEND_KIRO)
+
         probe.forget_probe("never-probed")
+
+        assert probe._cached(ACP_BACKEND_KIRO) == cached
 
 
 class TestEvictionOutranksAProbeAlreadyRunning:
     """A probe that started before an eviction must not land its answer after it.
 
-    The lock is released while a probe resolves, and the dashboard polls this module
-    while the re-check button evicts -- so the poll's probe and the operator's
-    eviction genuinely overlap. Without a generation the poll's pre-install verdict
-    is written on top of the fresh one and every later reader is told the harness is
-    still missing until the TTL runs out, which is the state the button exists to
-    leave behind.
+    The lock is released while a probe resolves, so a dashboard poll can overlap the
+    re-check eviction. The generation stops its stale verdict from landing for a TTL.
     """
 
     @staticmethod
@@ -1321,9 +1422,16 @@ class TestForgetCachedResolution:
         from kiro_crew.acp import client
         from kiro_crew.agent_sdk.drivers import acp as driver
 
-        monkeypatch.setattr(client, "_self_served_bin_caches", {})
+        caches = {other: _ABSENT for other in ACP_BACKENDS_SELF_SERVED_ACP}
+        monkeypatch.setattr(client, "_self_served_bin_caches", caches)
+        kept = (None, "/usr/bin")
+        monkeypatch.setattr(client, "_claude_acp_argv_cache", kept, raising=False)
+        monkeypatch.setattr(client, "_codex_acp_argv_cache", kept, raising=False)
         driver.forget_cached_resolution(ACP_BACKEND_KIRO)
         driver.forget_cached_resolution(ACP_BACKEND_KAS)
+        assert caches == {other: _ABSENT for other in ACP_BACKENDS_SELF_SERVED_ACP}
+        assert client._claude_acp_argv_cache is kept
+        assert client._codex_acp_argv_cache is kept
 
     def test_the_GET_still_never_clears_anything(self, monkeypatch):
         """The seams' own rule, unchanged by the POST existing.
@@ -1410,11 +1518,8 @@ class TestRecheckClearsWhatTheGetCouldOnlyReport:
     def test_restart_required_survives_when_a_spawn_recaches_after_the_clear(self, monkeypatch):
         """Unblocked, never suppressed.
 
-        The flag is read from the spawn path AFTER the clear, so a cache that is
-        negative again by then keeps saying so. This is also the residual race the
-        seam's docstring discloses: a resolver that began before the install
-        publishes its stale answer when it resumes. The honest consequence is that
-        the panel keeps telling the operator to restart, not that it goes green.
+        The flag is read after the clear, so a cache negative again by then (a resolver
+        that began before the install) keeps the panel asking for a restart.
         """
         from kiro_crew.acp import client
 
@@ -1665,15 +1770,9 @@ class TestRecheckEndpoint:
     def test_the_probe_is_offloaded_and_the_CLEAR_IS_NOT(self, monkeypatch):
         """The split that keeps the clear safe, asserted rather than commented.
 
-        The probe resolves binaries and may shell out, so it must leave the loop. The
-        clear must NOT: every reader on the spawn path has no ``await`` between its
-        check and its read, so those pairs are atomic against other loop tasks and
-        not against a worker thread. A clear from a thread can land inside one and
-        either raise ``KeyError`` in a session spawn or make an installed adapter
-        report "not found".
-
-        Asserted structurally, because the hazard is which THREAD the call runs on
-        and a timing assertion cannot say that.
+        The probe may shell out, so it leaves the loop. The clear must stay on the loop:
+        spawn-path readers are atomic only against loop tasks, and a clear from a thread
+        can raise ``KeyError`` mid-spawn. Asserted structurally, since timing cannot.
         """
         from kiro_crew.dashboard.handlers import acp_backend_status as handler
 
@@ -1801,12 +1900,8 @@ def test_the_probe_is_offloaded_off_the_event_loop(monkeypatch):
 def test_the_boot_path_does_not_import_acp_at_module_scope():
     """``kiro_crew/acp/__init__`` pulls in the client AND the runtime.
 
-    The handler is imported by the route table on the boot path and reaches the
-    probe, which reaches the driver, so a module-scope ``kiro_crew.acp`` import
-    anywhere along that chain would drag both into gateway start. The driver is
-    ALLOWED to import ACP -- that is what it is for -- but not at module scope.
-    Read from source rather than by import-graph inspection, because the
-    forbidden thing is the ``import`` STATEMENT's position.
+    The route table imports the handler on the boot path, so the driver may import ACP
+    only inside functions. Read from source because the rule is the statement's position.
     """
     import ast
     from pathlib import Path

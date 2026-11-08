@@ -31,6 +31,7 @@ from kiro_crew.apps.manager_records import (
     _now_iso,
     _pending_session_approval_after_manifest_change,
     _read_installed,
+    _session_control_widening,
     _write_approved_grants,
     _write_installed,
     app_data_dir,
@@ -43,10 +44,12 @@ from kiro_crew.apps.manager_tree import _check_path_safety
 from kiro_crew.apps.manifest import (
     RESERVED_APP_NAME_CODE,
     AppManifest,
+    Permissions,
     app_name_error,
     cron_permission_error,
     is_reserved_app_name,
 )
+from kiro_crew.apps.point_grants import grant_source
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.sel import sel
 
@@ -71,8 +74,13 @@ def register_external_app(
     lifecycle: str = "app",
     source_repository: str = "",
     start_disabled: bool = False,
+    version_checked: bool = False,
 ) -> AppResult:
     """Register a self-managed app with Kiro Crew's app system.
+
+    ``version_checked=True`` says the caller already asked the governance
+    ``app_versions`` list off the loop (``admission.app_version_refusal``), so
+    admission skips that blocking read here.
 
     Self-managed apps (``resources="app"``) handle their own agent/skill/MCP
     registration.  Kiro Crew only tracks metadata so the dashboard can display them.
@@ -138,9 +146,25 @@ def register_external_app(
     # activate with no admission control. Pass the self-reported manifest (when
     # provided) so a correctly-signed app is admitted under require_signature.
     admission_manifest = None
+    # The manifest arrives from the request body. An empty value is no manifest,
+    # as before; a non-empty one that is not a JSON object cannot be parsed.
+    if manifest_data and not isinstance(manifest_data, dict):
+        return AppResult(ok=False, name=name, error="manifest must be a JSON object")
     if manifest_data:
         admission_manifest = AppManifest.from_dict(manifest_data)
-    denied = app_admission_denied(name, manifest=admission_manifest, action="register_external")
+        # Self-registration parses without validating, and parsing records a
+        # lifecycle timeout `int()` cannot read instead of raising. Refuse it here,
+        # before any write, the way install validation does.
+        setup_errors = admission_manifest.setup.validate()
+        if setup_errors:
+            return AppResult(ok=False, name=name, error="; ".join(setup_errors))
+    denied = app_admission_denied(
+        name,
+        manifest=admission_manifest,
+        action="register_external",
+        check_version=not version_checked,
+        version=version,
+    )
     if denied:
         sel().log_api_access(
             caller="app_register_external",
@@ -241,21 +265,24 @@ def register_external_app(
     # session-approval grant without any user moment -- the same gap
     # ``update_app`` closes with ``widened_session_approval``. Compare against the
     # manifest that was consented to (the persisted one; none for a first
-    # registration) and, if the grant is new, register the app DISABLED so the
-    # user sees it on the detail page and enables it deliberately.
-    requested_session_approval = bool(
-        isinstance(manifest_data, dict)
-        and isinstance(manifest_data.get("permissions"), dict)
-        and manifest_data["permissions"].get("sessionApproval") is True
+    # registration) and, if the grant or its member-thread scope is new,
+    # register the app DISABLED so the user sees it on the detail page and
+    # enables it deliberately.
+    requested_permissions = Permissions.from_dict(
+        manifest_data["permissions"]
+        if isinstance(manifest_data, dict) and isinstance(manifest_data.get("permissions"), dict)
+        else {}
     )
+    requested_session_approval = requested_permissions.sessionApproval
     prior_manifest = get_app_manifest(name) if existing else None
-    widened_session_approval = requested_session_approval and not (
-        prior_manifest and prior_manifest.permissions.sessionApproval
+    session_control_widening = _session_control_widening(
+        prior_manifest.permissions if prior_manifest else None, requested_permissions
     )
+    widened_session_approval = session_control_widening is not None
     # Same holding back as ``update_app`` for added api/events entries. A first
     # registration approves what it declares: there is no earlier approval to
     # widen, as with an install.
-    new_permissions = manifest_data.get("permissions") if isinstance(manifest_data, dict) else None
+    new_permissions = grant_source(manifest_data) if isinstance(manifest_data, dict) else None
     prior_grants = _effective_approved_grants(name, existing) if existing else None
     prior_grants_present = _approved_grants_path(name).is_file() if existing else False
     approved_grants: dict[str, list[str]] | None
@@ -263,13 +290,13 @@ def register_external_app(
         if existing:
             approved_grants = _effective_approved_grants(name, existing)
         elif (on_disk := get_app_manifest(name)) is not None:
-            approved_grants = _declared_grant_entries(on_disk.permissions)
+            approved_grants = _declared_grant_entries(grant_source(on_disk))
         else:
             approved_grants = None
     elif existing:
         approved_grants = _approved_grants_after_manifest_change(
             existing_approved=prior_grants,
-            old_permissions=prior_manifest.permissions if prior_manifest else None,
+            old_permissions=grant_source(prior_manifest),
             new_permissions=new_permissions,
         )
     else:
@@ -410,21 +437,21 @@ def register_external_app(
         resources,
         lifecycle,
     )
-    if widened_session_approval:
+    if session_control_widening is not None:
         sel().log_api_access(
             caller="app_register",
             operation="session_approval_widened",
             outcome="disabled",
             resources=f"name={name!r}",
-            error="registration added permissions.sessionApproval; re-enable to consent",
+            error=f"registration added {session_control_widening.keys}; re-enable to consent",
         )
         return AppResult(
             ok=True,
             name=name,
             message=(
                 f"{action} {name} v{version}; disabled because this manifest newly "
-                "requests session approval control -- review it on the app page and "
-                "enable it"
+                f"requests {session_control_widening.words} -- review it on the app page "
+                "and enable it"
             ),
             secret=secret if is_new_secret else "",
             notice="session_approval_reconsent",

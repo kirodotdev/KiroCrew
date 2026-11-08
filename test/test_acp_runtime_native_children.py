@@ -40,17 +40,11 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED
 
-# ── the recognition cap's residual: what a TRUNCATED roster says out loud ─────
+# ── what a TRUNCATED roster says out loud ─────
 #
-# `_snapshot_subagent_sessions` recognises at most NATIVE_CHILD_ROSTER_CAP ids —
-# the same bound `AcpSessionHandle` counts them under — and reports what it
-# refused two ways: one warning naming the count, and a distinct auto-reject
-# reason on a permission request it cannot attribute. Both are SNAPSHOT-scoped:
-# the frame carries the backend's full list, so the previous frame's truncation
-# must not colour this frame's refusals. `test_native_subagent_boundary.py` pins
-# the cap and the two reasons end to end; what follows pins the two properties
-# an operator reads them THROUGH — one line per truncated roster rather than per
-# truncated id, and an attribution that expires with the snapshot that earned it.
+# Past NATIVE_CHILD_ROSTER_CAP ids, `_snapshot_subagent_sessions` warns with the count
+# and auto-rejects with a distinct reason, both scoped to the snapshot. The cap itself
+# is pinned in `test_native_subagent_boundary.py`.
 
 
 def _unroutable_permission_frame(child_sid: str, request_id: int) -> dict:
@@ -86,28 +80,9 @@ async def _await_count(seq: list, n: int, what: str, timeout: float = 5.0) -> No
 async def test_roster_overflow_warns_once_per_episode_not_once_per_frame(caplog):
     """A truncation episode gets ONE warning, however many frames re-announce it.
 
-    Two volume properties, one per axis of the same product:
-
-    Per FRAME. The roster arrives as `subagent/list_update`, which kiro-cli
-    re-broadcasts on every child status change — so above the cap every
-    rebroadcast re-earns the warning at a frame rate this client does not
-    choose. Measured on this handler with the throttle removed: 10 over-cap
-    snapshots → 10 identical WARNING records (~245 message bytes each), and the
-    tail count holds at 40, so the log VOLUME is what grows, not the number. It
-    is the assertion below that fails in that state. The frames
-    below only move a child's `status`, which is the real steady state and the
-    case a "same count, don't log" throttle would appear to handle by accident:
-    it suppresses while the tail happens to hold still and floods again the
-    moment one child completes.
-
-    Per ID. A single frame's tail must not become one line per truncated id
-    either — the count is the whole diagnostic, "40 announced children are
-    unrecognisable here", and a per-id line states it only if the reader counts
-    the lines.
-
-    And a roster INSIDE the cap must say nothing at all: the warning has to
-    mean "children went unrecognised", never "a roster arrived", or an
-    operator cannot use its presence as the signal.
+    kiro-cli re-broadcasts `subagent/list_update` on every child status change. The
+    frames only move `status`, so a "same count, don't log" throttle would fail. One
+    line per roster, not per id, and nothing inside the cap.
     """
     import logging
 
@@ -163,12 +138,8 @@ async def test_roster_overflow_warns_once_per_episode_not_once_per_frame(caplog)
 async def test_repeated_roster_truncation_folds_into_one_throttled_summary(caplog):
     """The repeats become a throttled DEBUG summary carrying the count and peak.
 
-    Same mechanism as `_note_dropped_frame` above, deliberately: one interval
-    constant, a monotonic window, a count flushed on the next event past it, and
-    no timer task on the demux loop. What the summary carries is the count of
-    repeated snapshots and the LARGEST tail they named — the peak, because
-    sizing the cap reads the worst case, and which tail happens to be current at
-    an arbitrary flush instant is noise.
+    Same mechanism as `_note_dropped_frame`, with no timer task. It carries the peak
+    tail, since sizing the cap reads the worst case.
     """
     import logging
 
@@ -211,14 +182,8 @@ async def test_repeated_roster_truncation_folds_into_one_throttled_summary(caplo
 async def test_a_truncation_after_the_roster_recovers_is_loud_again(caplog):
     """The reset boundary is the EPISODE, and both ways out of one re-arm it.
 
-    Without this the throttle would swallow a genuinely new truncation for the
-    rest of the runtime's life, which is worse than the volume it fixes: the
-    warning's whole job is that a truncated tail is otherwise invisible. The
-    boundary is the overflow count returning to 0, which is exactly the two
-    events that already retire the snapshot ATTRIBUTION (a roster inside the
-    cap, and the owning session unregistering) — one lifetime for both halves of
-    the same signal, so the loud line and the auto-reject reason can never
-    disagree about whether the cap is under pressure.
+    The boundary is the overflow count returning to 0 (a roster inside the cap, or the
+    owner unregistering), the same events that retire the attribution.
     """
     import logging
 
@@ -256,18 +221,8 @@ async def test_a_truncation_after_the_roster_recovers_is_loud_again(caplog):
 async def test_unroutable_permission_reason_follows_the_last_roster_snapshot():
     """The cap-truncation attribution expires with the snapshot that earned it.
 
-    A `list_update` carries the backend's FULL child list, so the count of ids
-    it truncated describes that frame and nothing later. Left sticky, one
-    truncated roster would re-label every unknown-session denial for the rest of
-    the runtime's life as a cap truncation — and the SEL reason is precisely the
-    signal an operator uses to decide whether to raise the cap, so a stuck one
-    both invents cap pressure that is not there and buries the next real
-    truncation in it. Unregistering the owner is not the only way back: the very
-    next clean roster is already the whole truth.
-
-    Both halves are asserted where the operator reads them — the SEL row's
-    `error` field and the `child_permission_denied` metric — not on the private
-    counter alone.
+    A `list_update` carries the full child list, so the next clean roster clears it.
+    Asserted on the SEL row's `error` and the `child_permission_denied` metric.
     """
     import kiro_crew.sel as sel_mod
 
@@ -353,14 +308,8 @@ async def test_unroutable_permission_reason_follows_the_last_roster_snapshot():
 async def test_a_kas_frame_naming_the_parent_itself_gets_no_native_child_row():
     """A parent is never its own sub-agent — in the count OR in the display row.
 
-    `_note_native_child` answers "is this id tracked as a child of mine", and
-    the KAS display roster keys its row on that answer, which is what keeps
-    every native-child store inside one cap. The parent's own id is refused by
-    the count, so it must be refused by the row too: a row the counted set does
-    not hold can never be recognised as a duplicate, and here it would also
-    render the session as a sub-agent of itself. The frame is still a parent
-    sub-agent frame, so it keeps emitting its list event rather than falling
-    through to be re-rendered as an ordinary tool call.
+    The KAS row keys on `_note_native_child`, which refuses the parent's id. The frame
+    still emits its list event instead of rendering as a tool call.
     """
     rt, _, _ = _make_runtime()
     rt._acp_backend = ACP_BACKEND_KAS
@@ -609,16 +558,9 @@ async def test_child_tool_call_chunk_stays_fail_closed_but_visible():
 async def test_own_session_kiro_session_update_is_not_child_activity():
     """A `_kiro.dev/session/update` frame naming THIS session is not a child frame.
 
-    kiro-cli carries the parent turn's OWN tool-call chunk on the extension
-    method, under the parent's own sessionId and the parent's own toolCallId --
-    recorded live in ``test/fixtures/acp_frames/kiro/session.jsonl`` -- so the
-    sessionId is the only thing that separates it from a child's update. Two
-    consequences, both checked here: it must not reach the child-frame parser, so
-    the origin-scoped identity caches stay empty, and it must yield no
-    sub-agent activity, because ``messaging.driver`` puts every activity event's
-    toolCallId into the set that refuses session directives as
-    ``native_subagent_isolation``. Yielding one for the parent's own tool call
-    makes the parent's directives refuse themselves.
+    kiro-cli sends the parent's own tool-call chunk this way (recorded in
+    ``test/fixtures/acp_frames/kiro/session.jsonl``). Activity for it would make the
+    parent's directives refuse as ``native_subagent_isolation``.
     """
     handle, queue = _make_handle_for_child_frames()
     queue.put_nowait(_child_kiro_update_frame(session_id="parent-sid"))

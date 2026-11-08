@@ -76,17 +76,30 @@ def test_all_actual_routes_require_repository_event_and_admitted_actor(
     for step_id in ("runner", "windows-runner"):
         step = next(s for s in jobs["changes"]["steps"] if s.get("id") == step_id)
         assert _expression(step["env"]["ELIGIBLE"], context) == expected
+    # Fleet admission is what this test pins; the destination a REJECTED run
+    # takes is two-valued and depends only on where the run executes. In this
+    # repository it is the larger-runner group's own label, which keeps the run
+    # off the enterprise-shared standard pool. Anywhere else -- a fork running
+    # this workflow on its own `main` -- no organization runner group is
+    # reachable, so the hosted image is the only destination that can serve it.
     for name in ("changes", "await-fast-gate"):
         assert _expression(jobs[name]["runs-on"], context) == (
-            "codebuild-kirocrew-gha-linux-100-2" if expected else "ubuntu-latest"
+            "codebuild-kirocrew-gha-linux-100-2"
+            if expected
+            else ("kirocrew-linux-4-core" if repository == _REPO else "ubuntu-latest")
         )
 
 
 @pytest.mark.parametrize("eligible", [False, True])
 @pytest.mark.parametrize("attempt", [1, 2])
+# `in_repo` is the repository the run EXECUTES in, which decides whether the
+# organization's larger-runner group is reachable at all. False is a fork
+# running its own CI: it must land on the hosted image, because a group label it
+# cannot reach would leave every consumer queued until GitHub cancelled it.
+@pytest.mark.parametrize("in_repo", [True, False])
 @pytest.mark.parametrize("step_id,platform", [("runner", "linux"), ("windows-runner", "windows")])
 def test_real_resolver_shell_emits_large_and_hosted_fallback(
-    jobs, tmp_path, eligible, attempt, step_id, platform
+    jobs, tmp_path, eligible, in_repo, attempt, step_id, platform
 ):
     step = next(s for s in jobs["changes"]["steps"] if s.get("id") == step_id)
     # The helper rejects Windows' WSL launcher. Assert rather than skip: routing
@@ -104,7 +117,11 @@ def test_real_resolver_shell_emits_large_and_hosted_fallback(
         [shell, "-e", "-c", step["run"]],
         cwd=tmp_path,
         env=dict(
-            os.environ, ELIGIBLE=str(eligible).lower(), LABEL=label, GITHUB_OUTPUT=output.as_posix()
+            os.environ,
+            ELIGIBLE=str(eligible).lower(),
+            IN_REPO=str(in_repo).lower(),
+            LABEL=label,
+            GITHUB_OUTPUT=output.as_posix(),
         ),
         capture_output=True,
         text=True,
@@ -113,7 +130,15 @@ def test_real_resolver_shell_emits_large_and_hosted_fallback(
     )
     assert result.returncode == 0, result.stderr
     actual = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
-    fallback = "ubuntu-latest" if platform == "linux" else "windows-latest"
+    # Each platform lands on its own group's runner label, but only when the
+    # run executes in this repository and can therefore reach that group. A
+    # fork running its own CI gets the hosted image, because a label no runner
+    # there carries would queue every consumer until GitHub cancelled it.
+    group_label, hosted = {
+        "linux": ("kirocrew-linux-4-core", "ubuntu-latest"),
+        "windows": ("kirocrew-windows-4-core", "windows-latest"),
+    }[platform]
+    fallback = group_label if in_repo else hosted
     expected = {
         f"{platform}_runner": (
             (label + (" instance-size:large" if platform == "windows" else ""))
@@ -129,9 +154,19 @@ def test_real_resolver_shell_emits_large_and_hosted_fallback(
 
 
 @pytest.mark.parametrize(
-    "resolved", ["", "windows-latest", "codebuild-windows instance-size:large"]
+    "resolved,expected",
+    [
+        ("", "windows-latest"),
+        ("windows-latest", "windows-latest"),
+        ("kirocrew-windows-4-core", "kirocrew-windows-4-core"),
+        # Admitted: the label is this job's own attempt's, never the resolver's.
+        (
+            "codebuild-kirocrew-gha-windows-100-1 instance-size:large",
+            "codebuild-kirocrew-gha-windows-100-2 instance-size:large",
+        ),
+    ],
 )
-def test_all_windows_consumers_keep_output_fallback_and_matrix_names(jobs, resolved):
+def test_all_windows_consumers_keep_output_fallback_and_matrix_names(jobs, resolved, expected):
     consumers = {
         name
         for name, job in jobs.items()
@@ -151,14 +186,16 @@ def test_all_windows_consumers_keep_output_fallback_and_matrix_names(jobs, resol
                 "matrix.os": "windows-latest",
                 "needs.changes.outputs.windows_runner": resolved,
                 "needs.changes.outputs.linux_runner_large": "linux-large",
+                "github.run_id": "100",
+                "github.run_attempt": "2",
             }
-            assert _expression(jobs[name]["runs-on"], context) == (resolved or "windows-latest")
+            assert _expression(jobs[name]["runs-on"], context) == expected
 
 
 def test_shard_selection_and_checks_stay_intact(jobs):
     job = jobs["backend-test-windows"]
     assert job["strategy"] == {
-        "max-parallel": 4,
+        "max-parallel": "${{ startsWith(needs.changes.outputs.windows_runner, 'codebuild-') && 8 || 4 }}",
         "fail-fast": False,
         "matrix": {"group": list(range(1, 9))},
     }
@@ -179,7 +216,7 @@ def test_shard_selection_and_checks_stay_intact(jobs):
     assert command == (
         "-p scripts.ci_pytest_progress -p scripts.ci_file_shards "
         '--ci-progress-dir "$RUNNER_TEMP/pytest-progress" '
-        '-q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required" '
+        '-q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" '
         '--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}'
     )
     assert step["shell"] == "bash"
@@ -187,7 +224,12 @@ def test_shard_selection_and_checks_stay_intact(jobs):
     assert upload["if"] == "${{ always() }}"
     assert upload["with"]["name"] == "windows-pytest-progress-${{ matrix.group }}"
     assert upload["with"]["path"] == "${{ runner.temp }}/pytest-progress/*.jsonl"
-    assert jobs["pod-boot-windows"]["runs-on"] == "windows-latest"
+    # The canary stays off the fleet, whose container cannot create a scheduled
+    # task, and takes the Windows larger-runner group instead: an uncontainerized
+    # VM, so the probe it exists for behaves as it does on the shared pool. The
+    # group is pinned by name because a bare `group:` dispatches to any member,
+    # and a Linux or macOS member would silently take a Windows job.
+    assert jobs["pod-boot-windows"]["runs-on"] == {"group": "kirocrew-runners-windows"}
 
 
 @pytest.mark.parametrize(
@@ -273,6 +315,8 @@ def test_boot_matrix_maps_only_runner_and_retains_os_fallback(jobs, os_name, ava
         "matrix.os": os_name,
         "needs.changes.outputs.linux_runner_large": "linux-large" if available else "",
         "needs.changes.outputs.windows_runner": "windows-large" if available else "",
+        "github.run_id": "100",
+        "github.run_attempt": "2",
     }
     expected = (
         {

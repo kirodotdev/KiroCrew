@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import {
-  PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, readPreviewFlag,
+  PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_MATE_SESSIONS, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, readPreviewFlag,
 } from '../utils/previewFlags'
 import type { PreviewFlagChange } from '../utils/previewFlags'
 
@@ -14,7 +14,7 @@ import type { PreviewFlagChange } from '../utils/previewFlags'
  * and a user who just enabled a surface would conclude the toggle is broken.
  *
  * Updates on the same-tab `mc-preview-flag-changed` event and on cross-tab
- * `storage` events, mirroring `useDevMode`.
+ * `storage` events.
  */
 export function usePreviewFlag(flag: string): boolean {
   const [on, setOn] = useState(() => readPreviewFlag(flag))
@@ -44,6 +44,30 @@ export function useRemoteCrewChat(): boolean {
   const current = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
   const legacy = usePreviewFlag(PREVIEW_INSTANCE_SESSIONS)
   return current || legacy
+}
+
+/**
+ * The Crew Mode preview, reactively: the same key `crewModeEnabled()` reads
+ * (`lib/crewMode.ts`). For a component or memo that must redraw when the switch
+ * flips; the decision itself stays in the `lib/crewMode` helpers.
+ */
+export function useCrewMode(): boolean {
+  return usePreviewFlag(PREVIEW_CREW_MODE)
+}
+
+/** The mate sessions preview, reactively: the key `mateSessionsHidden()` reads
+ *  (`lib/crewMode.ts`), for a memo over a person's list. */
+export function useMateSessionsHidden(): boolean {
+  return usePreviewFlag(PREVIEW_MATE_SESSIONS)
+}
+
+/**
+ * The Explore preview, reactively: every Explore surface (the top-bar pill and
+ * its phone twins, the sheet, the milestone notice, the Try today card and the
+ * Display switch) mounts only while this is on.
+ */
+export function useExplorePreview(): boolean {
+  return usePreviewFlag(PREVIEW_EXPLORE)
 }
 
 /**

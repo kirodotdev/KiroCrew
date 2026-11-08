@@ -18,17 +18,23 @@ from kiro_crew.dashboard.chat_fork import (
     fork_slot,
     resolve_fork_source,
 )
+from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.create_rate_limit import SESSION_CREATE, allow_create
+from kiro_crew.dashboard.session_control_parts import session_create
 from kiro_crew.dashboard.session_control_parts.caller_access import (
     UNATTENDED_SLOT_PREFIXES,
     SessionControlError,
     _audit,
     _audit_denials,
     _cron_caller,
-    _member_bypass,
+    _dispatch_bypass,
     caller_slot_key,
     prewarm_enabled_check,
     session_control_enabled,
+)
+from kiro_crew.dashboard.session_control_parts.crew_filing import (
+    _crew_filing_answer,
+    _in_turned_on_crew_tree,
 )
 from kiro_crew.dashboard.session_control_parts.session_create import _record_spawn
 from kiro_crew.dashboard.session_control_parts.session_titles import _clean_new_session_title
@@ -42,12 +48,13 @@ from kiro_crew.dashboard.state import (
     MAX_SLOTS_PER_CREATOR,
     SlotOrigin,
     _safe_folder_tree,
+    append_and_surface,
     load_window_off_loop,
 )
 from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from kiro_crew.dashboard.state import DashboardState
+    from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 # The module's original logger name, which log filters and caplog assertions key on.
 logger = logging.getLogger("kiro_crew.dashboard.session_control")
@@ -96,9 +103,11 @@ async def fork_session(
     (``chat_fork.fork_slot``), so what the child inherits -- agent, model,
     memory store and mode, project, folder, tags, the ``forked_from`` link --
     is exactly what a person's fork inherits, and for the same memory-boundary
-    reasons no override of agent, model or mode is taken here. The one exception
-    is the sidebar pin: a person's fork of a pinned session is pinned, this
-    child never is, because pinned marks a session as human-owned.
+    reasons no override of agent, model or mode is taken here. The exceptions
+    are the folder (a Crew Mode caller's child is unfiled, and so is a child
+    whose parent sits in a mate's home the caller does not own) and the sidebar pin:
+    a person's fork of a pinned session is pinned, this child never is,
+    because pinned marks a session as human-owned.
 
     *source* defaults to the CALLER'S OWN session, which is the case this verb
     exists for: an agent splitting its own long investigation into several
@@ -110,8 +119,8 @@ async def fork_session(
     because a fork manufactures a session the caller then owns.
 
     What the child gets on top of the human fork: ``title`` (final; else the
-    fork's own ``Fork of <parent>``, which the fork's background title pass may
-    rename), ``folder_id`` (else the parent's folder, as the human
+    fork's own ``Fork of <parent>``, which the first message a person sends the
+    child may rename), ``folder_id`` (else the parent's folder, as the human
     fork inherits it), creator attribution (``created_by`` = the caller, so the
     other verbs reach it afterwards and the per-creator ceiling counts it) and the
     caller's session posture (``_trust`` / ``_trust_reads`` -- the same two
@@ -135,7 +144,7 @@ async def fork_session(
     # Same gate order as `create_session`, for the same reasons: the member
     # bypass is resolved on the caller, then the config switch, then the
     # unattended prefix.
-    if not session_control_enabled() and not _member_bypass(state, caller_key):
+    if not session_control_enabled() and not _dispatch_bypass(state, caller_key):
         raise SessionControlError(
             "session control is disabled in config (agent.session_control)",
             code="session_control_disabled",
@@ -152,6 +161,13 @@ async def fork_session(
     # eligible creator before anything else is read -- see the note on
     # `_refuse_ineligible_creator` for why this set mirrors `authorize_target`'s.
     _refuse_ineligible_creator(state, caller_slot)
+    # A fork opens a session too, so a paused crew may not fork one either. The
+    # stored pause is read (off the loop) first, so a fork right after a restart
+    # still sees it.
+    from kiro_crew import crew_pause
+
+    await crew_pause.ensure_loaded()
+    session_create._refuse_if_crew_paused(caller_key, caller_slot)
 
     if at_message_index is not None and (
         isinstance(at_message_index, bool) or at_message_index < 0
@@ -203,6 +219,18 @@ async def fork_session(
 
         if not await state.read_folders(_exists):
             raise SessionControlError("folder not found", code="folder_not_found")
+        # A mate's home takes sessions only from that mate, as in `create_session`.
+        from kiro_crew.dashboard.mate_folders import (
+            MateHomeLockedError,
+            refuse_foreign_home_filing,
+        )
+
+        try:
+            await refuse_foreign_home_filing(state, slot_history_key(caller_slot), folder_id)
+        except MateHomeLockedError:
+            raise SessionControlError(
+                "this folder belongs to a Bot", status=403, code="mate_home_locked"
+            ) from None
 
     # Re-gate adjacent to the allocation, as `create_session` does: every input
     # above was read before this coroutine suspended (the folder confirmation),
@@ -234,13 +262,13 @@ async def fork_session(
         raise SessionControlError(
             f"slot cap reached ({MAX_LIVE_SLOTS})",
             code="slot_cap_reached",
-            status=429,
+            status=409,
         )
     if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
         raise SessionControlError(
             f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
             code="creator_slot_cap_reached",
-            status=429,
+            status=409,
         )
 
     audit_caller = f"session:{caller_key}"
@@ -293,6 +321,9 @@ async def fork_session(
                 "caller session is not open", code="caller_not_open", status=404
             )
         _refuse_ineligible_creator(state, live)
+        # A Pause all that landed during the transcript read: the child would open
+        # outside the paused crew's snapshot and run while the crew is paused.
+        session_create._refuse_if_crew_paused(caller_key, live)
         if state.get_slot(source_slot.key) is not source_slot:
             raise SessionControlError(
                 "the source session closed while the fork was being prepared",
@@ -323,30 +354,57 @@ async def fork_session(
         # same synchronous gate-then-act window `create_session` holds.
         if state.live_slot_count() >= MAX_LIVE_SLOTS:
             raise SessionControlError(
-                f"slot cap reached ({MAX_LIVE_SLOTS})", code="slot_cap_reached", status=429
+                f"slot cap reached ({MAX_LIVE_SLOTS})", code="slot_cap_reached", status=409
             )
         if state.creator_slot_count(caller_key) >= MAX_SLOTS_PER_CREATOR:
             raise SessionControlError(
                 f"per-caller slot cap reached ({MAX_SLOTS_PER_CREATOR})",
                 code="creator_slot_cap_reached",
-                status=429,
+                status=409,
             )
 
+    in_crew_tree = False
+    # The caller's folder principal: an inherited folder in a mate's home stays
+    # on the child only when the caller is that mate (its conductor or worker).
+    # Read only for a source in a mate's home; anywhere else it decides nothing,
+    # and a source moved into a home meanwhile leaves the child unfiled.
+    from kiro_crew.dashboard.mate_folders import home_owner_of, session_folder_principal
+
+    fork_folder_principal = (
+        await session_folder_principal(slot_history_key(caller_slot))
+        if home_owner_of(_safe_folder_tree(state._folders), str(source_slot.folder_id or ""))
+        else ""
+    )
+
     def _stamp(child: Any) -> None:
+        nonlocal in_crew_tree
+
         child._created_by = caller_key
         child._created_by_sid = _creator_sid if len(_creator_sid) <= MAX_ACP_SESSION_ID_LEN else ""
         child._lineage_minted = True
-        posture["trust"] = bool(getattr(live_caller, "_trust", False))
+        from kiro_crew.dashboard.approval_posture import trust_carries
+
+        # A card-scoped trust ("Trust this crew member") covers the caller and the
+        # subagents it spawns, not a fork, so a fork does not inherit it
+        # (``trust_carries``).
+        posture["trust"] = trust_carries(live_caller)
         posture["trust_reads"] = bool(getattr(live_caller, "_trust_reads", False))
         child._trust = posture["trust"]
         child._trust_reads = posture["trust_reads"]
+        # Follows the caller's later mode changes too (``approval_inheritance``).
+        child._posture_inherited = True
         if clean_title:
             child.title = clean_title
             child._titled = True
             # The caller chose this name, so it is final: the fork's own
             # background title pass and the refresh both leave it alone.
             child._title_origin = "user"
-        if folder_id:
+        # The caller's tree decides filing, not the transcript source's. Clear
+        # even an inherited folder before the fork's first save and broadcast.
+        in_crew_tree = _in_turned_on_crew_tree(state, caller_key)
+        if in_crew_tree:
+            child.folder_id = ""
+        elif folder_id:
             child.folder_id = folder_id
 
     result = await fork_slot(
@@ -364,6 +422,7 @@ async def fork_session(
         origin=child_origin,
         count_user_session=False,
         jev_route_allowed=False,
+        folder_principal=fork_folder_principal,
         audit_caller=audit_caller,
         audit_operation="session_control.fork",
         stamp=_stamp,
@@ -404,6 +463,7 @@ async def fork_session(
         "source": source_slot.key,
         "messages": result.messages,
         "folder_id": child.folder_id or None,
+        **_crew_filing_answer(folder_named=bool(folder_id), in_crew_tree=in_crew_tree),
     }
 
 
@@ -666,6 +726,48 @@ async def _recorded_sid_of(state: "DashboardState", slot_key: str) -> str:
     return ""
 
 
+async def _note_in_transcript(state: "DashboardState", slot: "_ChatSlot", text: str) -> None:
+    """One display-only row in *slot*'s transcript saying how it moved. Best-effort.
+
+    A ``notice`` row is never part of a prompt, so *text* states what happened for a
+    person reading the transcript rather than telling the agent anything. Skipped when
+    the slot closed, or another session took its key, before the row could land.
+
+    While *slot* runs a turn the row waits for that turn to end: a row under the turn's
+    open tool or chunk rows would stop the turn's backward scans (the "mark tools done"
+    walk and ``_flush_segment``'s cleanup) before they reach those rows.
+    """
+    try:
+        await load_window_off_loop(slot)
+        if state.get_slot(slot.key) is not slot:
+            return
+        turn = slot.task
+        if turn is not None and not turn.done():
+            turn.add_done_callback(lambda _turn: _note_later(state, slot, text))
+            return
+        append_and_surface(state, slot, "notice", text, "msg msg-info")
+    except Exception as exc:  # the row must never undo a committed move
+        logger.warning("session_control: transcript note for %s not written: %s", slot.key, exc)
+
+
+def _note_later(state: "DashboardState", slot: "_ChatSlot", text: str) -> None:
+    task = asyncio.ensure_future(_note_in_transcript(state, slot, text))
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
+def _note_once_landed(
+    state: "DashboardState", slot: "_ChatSlot", landed: "asyncio.Future[bool]", text: str
+) -> None:
+    """Write the row after all when an append the verb stopped waiting for lands later."""
+
+    def _start(future: "asyncio.Future[bool]") -> None:
+        if not future.cancelled() and future.result():
+            _note_later(state, slot, text)
+
+    landed.add_done_callback(_start)
+
+
 async def adopt_target(
     state: "DashboardState",
     *,
@@ -675,14 +777,16 @@ async def adopt_target(
 ) -> "dict[str, Any]":
     """Take *target* over, so it hangs under the CALLING session in the tree.
 
-    The takeover verb. The adopter is the caller, resolved from the connection rather
-    than named in the arguments: a tool that let a caller nominate the parent would let
-    one session rearrange another's tree, and nothing in the record would show which of
-    them asked.
+    The adopter is the caller, resolved from the connection rather than named in the
+    arguments: a tool that let a caller nominate the parent would let one session
+    rearrange another's tree, and nothing in the record would show which of them asked.
 
-    Adopting a session that ALREADY has a live parent is allowed, because that is the
-    case the verb exists for -- one conductor taking over the workers another one
-    opened -- and the parent it replaces is recorded on the entry.
+    Adopting a session that ALREADY has a live parent is allowed, and the parent it
+    replaces is recorded on the entry. A fenced caller still reaches only the sessions
+    it manages (``_outside_reach``), so it cannot take over the workers another
+    conductor opened until that conductor, or its manager, hands them over with
+    ``session_handoff``; an unfenced agent in a person's own tab is not held to that
+    (the owner's Conductor with ``agent.session_control`` off is fenced).
 
     Refused when the target is an ANCESTOR of the caller. The tree would then hold a
     cycle, and a cycle is not a shape the fold can present: it marks every slot on it
@@ -859,9 +963,18 @@ async def adopt_target(
                 previous_parent_sid=previous_parent_sid,
                 on_settled=settled,
             )
+            note = f"This session was adopted: it hangs under {caller_key} now"
+            if previous_parent not in ("", caller_key):
+                note += f", in place of {previous_parent}"
+            note += "."
             # Inside the lock, so the next verb through it reads a tree that already carries
             # this decision -- the append's completion is also what advances the projection.
-            await _tree_append_landed(landed, operation="adoption", target=slot.key)
+            try:
+                await _tree_append_landed(landed, operation="adoption", target=slot.key)
+            except SessionControlError as exc:
+                if exc.code == "tree_write_pending":
+                    _note_once_landed(state, slot, landed, note)
+                raise
     _audit(
         caller_session_key=caller_session_key,
         operation="adopt",
@@ -869,6 +982,7 @@ async def adopt_target(
         outcome="allowed",
         detail={"previous_parent": previous_parent or "none"},
     )
+    await _note_in_transcript(state, slot, note)
     # Slot keys only, and deliberately no title. A title is conversation content -- it
     # is generated from the session's own messages -- so returning one to an LLM caller
     # is an output boundary that would owe a redaction pass, and nothing here needs it:
@@ -1021,8 +1135,18 @@ async def release_target(
                 previous_parent_sid=previous_parent_sid,
                 on_settled=settled,
             )
+            note = f"This session was released: it no longer hangs under {previous_parent}."
+            if releasing_self:
+                # Mid-turn on this very call, and its own tool row already says so; a row
+                # under that open tool row would stop the turn's backward scans.
+                note = ""
             # Inside the lock, for the reason the adoption awaits inside it.
-            await _tree_append_landed(landed, operation="release", target=slot.key)
+            try:
+                await _tree_append_landed(landed, operation="release", target=slot.key)
+            except SessionControlError as exc:
+                if note and exc.code == "tree_write_pending":
+                    _note_once_landed(state, slot, landed, note)
+                raise
     _audit(
         caller_session_key=caller_session_key,
         operation="release",
@@ -1030,6 +1154,8 @@ async def release_target(
         outcome="allowed",
         detail={"previous_parent": previous_parent, "self": releasing_self},
     )
+    if note:
+        await _note_in_transcript(state, slot, note)
     # No title, for the reason the adoption returns none.
     return {
         "target": slot.key,
@@ -1122,6 +1248,15 @@ def _note_pending_edge(child: str, parent: str, future: "asyncio.Future[bool]") 
             del _tree_pending_edges[child]
 
     future.add_done_callback(_drop)
+
+
+# Hand ``_note_pending_edge`` to ``session_create._record_spawn`` so a spawn can make its
+# queued reparent edge visible to this module's loop guard. The registrar lives here (the
+# edge store and the guard are this module's), and this module already imports from
+# ``session_create`` (a lower owner layer), so the injection runs the allowed direction --
+# ``session_create`` never imports upward into this one. Set once at import, before any
+# spawn can run.
+session_create._register_spawn_pending_edge = _note_pending_edge
 
 
 def _reaches_through_pending(target: str, start: str, nodes: "dict[str, Any]") -> bool:

@@ -1,13 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import WebAppArtifactCard from '../components/WebAppArtifactCard'
 import { api } from '../api/client'
 import { framablePreviewUrl } from '../lib/safeUrl'
 import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
 import type { Artifact } from '../types'
+import { confirmAction } from './confirmAction'
+import { i18next } from '../i18n'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -81,17 +83,20 @@ function renderWithClient(ui: ReactElement) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
-  return render(
-    <MemoryRouter>
-      <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
-    </MemoryRouter>,
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <MemoryRouter><QueryClientProvider client={qc}>{children}</QueryClientProvider></MemoryRouter>
   )
+  return { ...render(ui, { wrapper }), queryClient: qc }
 }
 
 describe('WebAppArtifactCard', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // Countdown assertions and TTL fixtures must read the same fixed clock.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-05T12:00:00Z'))
   })
+  afterEach(() => { vi.useRealTimers() })
 
   it('renders public URL, architecture rows, and cost tiles for a stateful app', () => {
     renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} />)
@@ -130,13 +135,21 @@ describe('WebAppArtifactCard', () => {
 
   it('calls teardown API on confirm and reflects expired state', async () => {
     const onTornDown = vi.fn()
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     ;(api.artifactTeardown as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
 
     renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} onTornDown={onTornDown} />)
 
     const btn = screen.getByRole('button', { name: /Cancel \/ Tear down/i })
     fireEvent.click(btn)
+    const dialog = await screen.findByRole('dialog', { name: 'Tear down deployment' })
+    const resources = within(dialog).getAllByRole('listitem')
+    expect(resources.map(resource => resource.textContent)).toEqual([
+      'frontend: s3://kirocrew-deploy-base/kanban/',
+      'backend: kirocrew-deploy-app-kanban-demo',
+      'state: kirocrew-deploy-app-kanban-demo-table',
+    ])
+    expect(dialog).toHaveTextContent('This action is not reversible. Continue?')
+    await confirmAction('Tear down deployment')
 
     await waitFor(() => {
       expect(api.artifactTeardown).toHaveBeenCalledWith('kanban-demo')
@@ -150,6 +163,174 @@ describe('WebAppArtifactCard', () => {
     await waitFor(() => {
       expect(screen.getByText('Expired')).toBeInTheDocument()
     })
+  })
+
+  it('does not tear down when the question is declined', async () => {
+    renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Cancel \/ Tear down/i }))
+    const dialog = await screen.findByRole('dialog')
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })) })
+    expect(api.artifactTeardown).not.toHaveBeenCalled()
+  })
+
+  it.each(['no metadata', 'not deployed', 'expired'] as const)(
+    'keeps the teardown question mounted when the card becomes %s',
+    async branch => {
+      const artifact = makeArtifact()
+      const { rerender } = renderWithClient(<WebAppArtifactCard artifact={artifact} />)
+      fireEvent.click(screen.getByRole('button', { name: /Cancel \/ Tear down/i }))
+      const dialog = await screen.findByRole('dialog')
+      const changed = makeArtifact()
+      if (branch === 'no metadata') changed.webapp_metadata = null
+      else if (branch === 'not deployed') {
+        changed.webapp_metadata!.deploy_target.public_url = ''
+        changed.webapp_metadata!.lifecycle.status = 'draft'
+      } else changed.webapp_metadata!.lifecycle.status = 'expired'
+      rerender(<WebAppArtifactCard artifact={changed} />)
+      expect(dialog).toBeInTheDocument()
+      if (branch === 'expired') {
+        expect(screen.getByRole('button', { name: /Cancel \/ Tear down/i })).toBeDisabled()
+        await confirmAction('Tear down deployment')
+      } else {
+        await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })) })
+      }
+      expect(api.artifactTeardown).not.toHaveBeenCalled()
+    },
+  )
+
+  it('does not tear down after the countdown expires during the question', async () => {
+    const artifact = makeArtifact()
+    const { rerender } = renderWithClient(<WebAppArtifactCard artifact={artifact} />)
+    fireEvent.click(screen.getByRole('button', { name: /Cancel \/ Tear down/i }))
+    const dialog = await screen.findByRole('dialog')
+    const changed = makeArtifact()
+    changed.webapp_metadata!.lifecycle.expires_at = new Date(Date.now() - 1).toISOString()
+    rerender(<WebAppArtifactCard artifact={changed} />)
+    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel \/ Tear down/i })).toBeDisabled())
+    expect(changed.webapp_metadata!.lifecycle.status).toBe('live')
+    expect(dialog).toBeInTheDocument()
+    await confirmAction('Tear down deployment')
+    expect(api.artifactTeardown).not.toHaveBeenCalled()
+  })
+
+  it('cancels the teardown question when the card switches to another artifact', async () => {
+    const { rerender } = renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Cancel \/ Tear down/i }))
+    await screen.findByRole('dialog')
+    rerender(<WebAppArtifactCard artifact={makeArtifact({ slug: 'replacement' })} />)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(api.artifactTeardown).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /Cancel \/ Tear down/i })).toBeEnabled()
+  })
+
+  it('invalidates a completed teardown without expiring or notifying a replacement card', async () => {
+    let release!: (value: { ok: boolean }) => void
+    vi.mocked(api.artifactTeardown).mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+    const originalCallback = vi.fn()
+    const replacementCallback = vi.fn()
+    const original = makeArtifact()
+    const { rerender, queryClient } = renderWithClient(
+      <WebAppArtifactCard artifact={original} onTornDown={originalCallback} />,
+    )
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(screen.getByRole('button', { name: /Cancel \/ Tear down/i }))
+    await confirmAction('Tear down deployment')
+    await waitFor(() => expect(api.artifactTeardown).toHaveBeenCalledWith('kanban-demo'))
+    const replacement = makeArtifact({ slug: 'replacement' })
+    rerender(<WebAppArtifactCard artifact={replacement} onTornDown={replacementCallback} />)
+    const replacementButton = screen.getByRole('button', { name: /Cancel \/ Tear down/i })
+    expect(replacementButton).toHaveTextContent('Cancel / Tear down')
+    expect(replacementButton).toBeDisabled()
+    await act(async () => { release({ ok: true }) })
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['artifact', 'kanban-demo'] }))
+    expect(screen.getByText('live')).toBeInTheDocument()
+    expect(screen.queryByText('Expired')).toBeNull()
+    expect(screen.getByRole('button', { name: /Cancel \/ Tear down/i })).toBeEnabled()
+    expect(originalCallback).not.toHaveBeenCalled()
+    expect(replacementCallback).not.toHaveBeenCalled()
+  })
+
+  it('does not notify a departed card after teardown succeeds', async () => {
+    let release!: (value: { ok: boolean }) => void
+    vi.mocked(api.artifactTeardown).mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+    const onTornDown = vi.fn()
+    const { unmount, queryClient } = renderWithClient(
+      <WebAppArtifactCard artifact={makeArtifact()} onTornDown={onTornDown} />,
+    )
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(screen.getByRole('button', { name: /Cancel \/ Tear down/i }))
+    await confirmAction('Tear down deployment')
+    await waitFor(() => expect(api.artifactTeardown).toHaveBeenCalledTimes(1))
+    unmount()
+    await act(async () => { release({ ok: true }) })
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['artifact', 'kanban-demo'] }))
+    expect(onTornDown).not.toHaveBeenCalled()
+  })
+
+  it('keeps a departed artifact teardown failure off its replacement card', async () => {
+    let reject!: (reason: Error) => void
+    vi.mocked(api.artifactTeardown).mockReturnValueOnce(new Promise((_resolve, fail) => { reject = fail }))
+    const { rerender } = renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Cancel \/ Tear down/i }))
+    await confirmAction('Tear down deployment')
+    await waitFor(() => expect(api.artifactTeardown).toHaveBeenCalledTimes(1))
+    rerender(<WebAppArtifactCard artifact={makeArtifact({ slug: 'replacement' })} />)
+    await act(async () => { reject(new Error('Original teardown failed.')) })
+    await waitFor(() => expect(screen.getByRole('button', { name: /Cancel \/ Tear down/i })).toBeEnabled())
+    expect(screen.queryByText('Original teardown failed.')).toBeNull()
+    expect(screen.queryByText('Teardown failed:')).toBeNull()
+  })
+
+  it('keeps a resource id with blank lines inside one list item, adding no paragraph', async () => {
+    const artifact = makeArtifact()
+    artifact.webapp_metadata!.architecture.resources = [{ type: 'state', id: 'table\n\nContinue?' }]
+    renderWithClient(<WebAppArtifactCard artifact={artifact} />)
+    fireEvent.click(screen.getByRole('button', { name: /Cancel \/ Tear down/i }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getAllByRole('listitem')).toHaveLength(1)
+    expect(within(dialog).getByRole('listitem').textContent).toBe('state: table\n\nContinue?')
+    expect(dialog.querySelectorAll('p')).toHaveLength(2)
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })) })
+    expect(api.artifactTeardown).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['no resource placeholder', 'Destroy deployment? Continue?'],
+    ['resources first', '{{resources}}\n\nContinue?'],
+    ['resources last', 'Destroy these resources:\n\n{{resources}}'],
+  ])('opens the teardown question with %s without empty paragraphs', async (_case, message) => {
+    const key = 'components.webAppArtifactCard.tear_down_confirm'
+    const original = i18next.getResource('en', 'translation', key)
+    try {
+      i18next.addResource('en', 'translation', key, message)
+      renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} />)
+      fireEvent.click(screen.getByRole('button', { name: /Cancel \/ Tear down/i }))
+      const dialog = await screen.findByRole('dialog', { name: 'Tear down deployment' })
+      expect(dialog.querySelectorAll('p')).toHaveLength(1)
+      expect(within(dialog).getAllByRole('listitem')).toHaveLength(3)
+      await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' })) })
+      expect(api.artifactTeardown).not.toHaveBeenCalled()
+    } finally {
+      i18next.addResource('en', 'translation', key, original)
+    }
+  })
+
+  it('ignores repeated teardown presses while the question or mutation is pending', async () => {
+    let release!: (value: { ok: boolean }) => void
+    vi.mocked(api.artifactTeardown).mockReturnValueOnce(new Promise(resolve => { release = resolve }))
+    renderWithClient(<WebAppArtifactCard artifact={makeArtifact()} />)
+    const button = screen.getByRole('button', { name: /Cancel \/ Tear down/i })
+    fireEvent.click(button)
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(button)
+    expect(screen.getAllByRole('dialog')).toEqual([dialog])
+    await confirmAction('Tear down deployment')
+    await waitFor(() => expect(api.artifactTeardown).toHaveBeenCalledTimes(1))
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(api.artifactTeardown).toHaveBeenCalledTimes(1)
+    await act(async () => { release({ ok: true }) })
+    await screen.findByText('Expired')
   })
 
   // An expired/torn-down card must offer a way back to deployment and must not

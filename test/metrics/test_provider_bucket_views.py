@@ -89,12 +89,13 @@ def _emitted_histogram_units() -> dict[str, set[str]]:
     what lets the two bucket maps be checked against what they actually claim
     rather than against a spelling convention.
     """
+    from source_corpus import parsed_candidates, src_root
+
+    # Only a call spelling ``histogram`` as its Name or Attribute is read, so only
+    # the files whose text holds that word are parsed: a few dozen, not the tree.
+    assert src_root() == _SRC, (src_root(), _SRC)
     found: dict[str, set[str]] = {}
-    for path in _SRC.rglob("*.py"):
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, SyntaxError):
-            continue
+    for _path, _text, tree in parsed_candidates(require_any=("histogram",)):
         consts: dict[str, str] = {}
         for node in tree.body:
             if not isinstance(node, ast.Assign) or len(node.targets) != 1:
@@ -151,18 +152,10 @@ def _sampler_histogram_names() -> frozenset[str]:
         if isinstance(target, ast.Name) and isinstance(node.value, ast.Constant):
             if isinstance(node.value.value, str):
                 consts[target.id] = node.value.value
+    from source_corpus import parsed_candidates
+
     found: set[str] = set()
-    for path in _SRC.rglob("*.py"):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        if "emit_histogram(" not in text:
-            continue
-        try:
-            tree = ast.parse(text)
-        except SyntaxError:
-            continue
+    for _path, _text, tree in parsed_candidates(require_any=("emit_histogram",)):
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not node.args:
                 continue

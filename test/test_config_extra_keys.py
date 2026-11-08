@@ -321,6 +321,77 @@ def test_the_retired_knowledge_chunk_budget_is_purged_not_mistaken_for_a_typo(cf
     assert "knowledge.folder_ingest_chunk_budget" in diagnosed
 
 
+def _seed_retired_knowledge_keys(cfgp) -> None:
+    _write(
+        cfgp,
+        {
+            "knowledge": {
+                "auto_discover_folder": False,
+                "auto_discover_dirname": "knowledge-docs",
+                "auto_ingest_chunk_budget": 150,
+                "auto_register_project_docs": True,
+                "max_sources": 50,
+                # A RENAMED spelling is still read, so a raw write keeps it.
+                "auto_ingest_doc_links": True,
+            }
+        },
+    )
+
+
+def _assert_retired_knowledge_keys_dropped(cfgp) -> dict:
+    written = json.loads(cfgp.read_text(encoding="utf-8"))["knowledge"]
+    for dead in _RETIRED_KNOWLEDGE_KEYS:
+        assert dead not in written, dead
+    assert written["auto_ingest_doc_links"] is True
+    return written
+
+
+@pytest.mark.asyncio
+async def test_a_settings_patch_drops_the_retired_knowledge_keys(cfg_home):
+    """The Settings PATCH edits the raw document instead of going through
+    save(), so it must drop the retired knowledge keys itself."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from dashboard_owner_helpers import as_owner
+
+    from kiro_crew.dashboard.handlers import api_kirocrew_config_patch
+
+    _seed_retired_knowledge_keys(cfg_home)
+    app = web.Application()
+    app.router.add_patch("/api/config/kirocrew", api_kirocrew_config_patch)
+    async with TestClient(TestServer(as_owner(app))) as c:
+        resp = await c.patch(
+            "/api/config/kirocrew",
+            json={"path": "knowledge.auto_ingest_artifacts", "value": False},
+        )
+        assert resp.status == 200, await resp.text()
+    assert _assert_retired_knowledge_keys_dropped(cfg_home)["auto_ingest_artifacts"] is False
+
+
+def test_cli_config_set_drops_the_retired_knowledge_keys(cfg_home):
+    """`kirocrew config set` edits the raw document too, and drops them the same way."""
+    import argparse
+    from unittest.mock import patch
+
+    from kiro_crew.cli_config import _config_cmd
+
+    _seed_retired_knowledge_keys(cfg_home)
+    args = argparse.Namespace(
+        config_action="set",
+        key="knowledge.auto_ingest_artifacts",
+        value="false",
+        file=None,
+        local=False,
+    )
+    with (
+        patch("kiro_crew.cli_config.config_path", return_value=cfg_home),
+        patch("kiro_crew.cli_config.config_local_path", return_value=L.config_local_path()),
+        patch("kiro_crew.cli_config.sel"),
+    ):
+        _config_cmd(args)
+    assert _assert_retired_knowledge_keys_dropped(cfg_home)["auto_ingest_artifacts"] is False
+
+
 def test_the_retired_conductor_skill_flag_is_purged(cfg_home):
     """agent.conductor_skill (the dashboard's old "Orchestrator Mode" toggle)
     generated an always-on delegation skill; crew routing now goes through the
@@ -336,6 +407,49 @@ def test_the_retired_conductor_skill_flag_is_purged(cfg_home):
     written = cfg.to_dict()["agent"]
     assert "conductor_skill" not in written
     assert written["subagent_max_turns"] == 42
+
+
+def test_the_retired_browser_keys_are_dropped_with_one_warning(cfg_home, caplog):
+    """``dashboard.use_builtin_browser`` and ``dashboard.browser_view_port`` went with
+    the agent browser they configured. An existing config that still carries them
+    loads, is told ONCE that they are gone, and writes them out on the next save."""
+    _write(
+        cfg_home,
+        {
+            "dashboard": {
+                "use_builtin_browser": False,
+                "browser_view_port": 7912,
+                "browser_local_origins": ["localhost:5173"],
+            }
+        },
+    )
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+        cfg = KiroCrewConfig.load()
+
+    assert "dashboard" not in cfg._extra_keys
+    assert not hasattr(cfg.dashboard, "use_builtin_browser")
+    assert not hasattr(cfg.dashboard, "browser_view_port")
+    notices = [
+        r.getMessage()
+        for r in caplog.records
+        if "no longer exist and are ignored" in r.getMessage()
+    ]
+    assert len(notices) == 1
+    assert "dashboard.use_builtin_browser" in notices[0]
+    assert "dashboard.browser_view_port" in notices[0]
+
+    cfg.save()
+    written = json.loads(cfg_home.read_text(encoding="utf-8"))["dashboard"]
+    assert "use_builtin_browser" not in written and "browser_view_port" not in written
+    # The live setting sharing the section is untouched.
+    assert written["browser_local_origins"] == ["localhost:5173"]
+
+
+def test_a_config_without_the_retired_browser_keys_gets_no_notice(cfg_home, caplog):
+    _write(cfg_home, {"dashboard": {"browser_local_origins": []}})
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.config.loader"):
+        KiroCrewConfig.load()
+    assert not [r for r in caplog.records if "no longer exist and are ignored" in r.getMessage()]
 
 
 def test_an_unknown_nested_key_is_not_shipped_to_the_browser(cfg_home):
@@ -470,11 +584,8 @@ def test_cache_data_and_sidecar_are_served_together_or_not_at_all():
 def test_a_real_load_records_the_digest_of_the_bytes_it_parsed(cfg_home):
     """The object must be able to say which content it came from, cold or cached.
 
-    Everything downstream that asks "is my copy still current" compares this against
-    a fresh read of the files. If the load records nothing, that comparison silently
-    has nothing to compare and a stale copy passes for a current one; if the cached
-    path records something different from the cold path, the answer depends on
-    whether the cache happened to be warm.
+    Staleness checks compare this digest with a fresh read. A missing digest lets a
+    stale copy pass, and a cold/cached mismatch makes the answer depend on the cache.
     """
     _write(cfg_home, {"agent": {"provider": "acp"}})
     L._CONFIG_CACHE.clear()
@@ -537,11 +648,8 @@ def test_a_load_that_rewrote_the_file_names_the_bytes_it_parsed(cfg_home):
 def test_a_load_with_no_config_files_at_all_still_names_that_state(cfg_home):
     """ "Neither file exists" is a valid state with bytes to name, so it is named.
 
-    Withholding a digest here would be read downstream as "provenance unknown", and a
-    caller that declines on unknown provenance would then decline FOREVER on a home
-    that simply has no config yet -- leaving whatever a durable projection already
-    holds standing in for the defaults that are actually in force. Deleting config.json
-    is an ordinary operator action, not a failure.
+    No digest would read as "provenance unknown", and a caller declining on that would
+    decline forever on a home with no config yet. Deleting config.json is ordinary.
     """
     L._CONFIG_CACHE.clear()
     assert not cfg_home.exists()
@@ -578,15 +686,9 @@ def test_a_document_that_read_whole_but_would_not_parse_still_names_its_bytes(cf
 def test_a_non_utf8_config_degrades_to_defaults_instead_of_raising(cfg_home):
     """A hand-edited file saved in the wrong encoding must not stop the gateway.
 
-    ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``, so the load's
-    except clauses did not name it and it escaped ``load()`` — every caller on the
-    hot path, not just the one that touched the file. The spec's rule is that a
-    malformed section degrades to defaults so a hand-edited file cannot prevent the
-    gateway from starting, and an encoding mistake is a malformed file like any other.
-
-    The read never completed, so unlike a parse failure there are no bytes to name and
-    the load reports no provenance — which is what stops anything correcting a durable
-    projection from these defaults.
+    ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``, so it needs its
+    own handling. The read never completed, so the load reports no provenance, which
+    stops anything correcting a durable projection from these defaults.
     """
     L._CONFIG_CACHE.clear()
     # A UTF-8 decoder cannot read this byte, so read_text raises before json sees it.
@@ -637,14 +739,9 @@ def test_a_load_that_could_not_read_the_files_records_no_provenance(cfg_home, mo
 def test_a_cache_entry_reports_the_bytes_it_was_parsed_from_not_its_fingerprint():
     """A fingerprint cannot identify content, so the entry must carry its own digest.
 
-    The fingerprint is stat metadata. A replacement landing the same byte count can
-    present an identical one -- device, inode, both timestamps, size and mode all
-    matching -- and the cache then serves the EARLIER document under the new file's
-    signature. A caller pairing that document with a digest it reads itself would
-    certify bytes the document never came from, and write values derived from the old
-    content as if they were current. So the digest travels with the entry, from the
-    same lock hold as its data, and a replacement under a colliding fingerprint shows
-    up as a digest that differs.
+    The fingerprint is stat metadata, and a same-size replacement can match it exactly.
+    The digest is taken in the same lock hold as the data, so a colliding replacement
+    shows up as a different digest.
     """
     from kiro_crew.config.validation import ConfigCache
 

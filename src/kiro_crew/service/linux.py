@@ -107,6 +107,12 @@ def user_unit_installed() -> bool:
     return state.installed and state.ours
 
 
+def system_unit_is_ours() -> bool:
+    """Our system unit is loaded and its canonical ``Id`` is ours (fail-closed)."""
+    state = _unit_state(user=False)
+    return state.load == "loaded" and state.ours
+
+
 def user_unit_active() -> bool:
     """Whether the per-user unit is running right now — active, or crash-looping
     through ``activating (auto-restart)``, which is the unit whose journal holds
@@ -158,6 +164,11 @@ def _running_scopes() -> list[bool]:
     same guard :func:`uninstall` applies before it touches a file.
     """
     return [user for user in (False, True) if _unit_state(user=user).acts_on]
+
+
+def running_scope_count() -> int:
+    """How many systemd scopes run OUR unit: the scopes :func:`restart` would restart."""
+    return len(_running_scopes())
 
 
 def is_active() -> bool:

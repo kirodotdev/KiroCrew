@@ -191,7 +191,11 @@ a cost, where data goes, a status such as "disabled by instance config". `hint`
 renders an `InfoTip` beside the label; it is for what the control IS, which a
 reader wants once and never again. A row that always shows two lines of prose
 spends attention whether or not it is being read, so the default for an
-explanatory sentence is `hint`, one catalog string per tip. An error is neither: it renders through
+explanatory sentence is `hint`, one catalog string per tip. A long choice-making
+paragraph becomes one short `description` sentence with the full paragraph as the
+`hint`. `SecretField` and `TagListEditor` take the same `hint`, and a
+`SettingsSection` takes one for its introduction, drawn beside the heading instead
+of as a paragraph above the first card. An error is neither: it renders through
 `ErrorNotice` (`AUTOSDE.yaml`, `errors-use-error-notice`), never behind a tip.
 
 `InfoTip` is accessible by construction — keyboard focusable, named by a short
@@ -248,7 +252,7 @@ set against the backend converter), `import '../utils/hljs'`
 ### The file panel, the chat pane and the browser panel
 
 `components/MarkdownPanel.tsx` (a side-panel file tab), `components/ChatPane.tsx`
-(one chat session in split view or a mate's chat) and
+(one chat session in split view or a Bot's chat) and
 `components/WebPreviewPanel.tsx` (the Browser tab) are facades over sibling owners
 in `components/`. Each facade keeps its module id, its default export and every
 named export: hosts import it, and the specs that mount a host mock it by that id,
@@ -260,11 +264,14 @@ so the panel's effects keep one order.
 |---|---|
 | `MarkdownPanel.tsx` | `Props`, the panel and its two layouts (side panel, full screen), the edit, save, close and navigate guards, comment drafts and their anchor highlight, the line reveal |
 | `MarkdownPanelHeader.tsx` | the header's controls: the breadcrumb, the artifact and knowledge toggles, the ⋯ menu |
+| `markdownPanelPrint.ts` | the ⋯ menu's Print or save as PDF: the live preview marked for the print stylesheet in `sidebar-and-side-panel.css`; Pierre's code wraps on paper through `PIERRE_PRINT_WRAP_CSS` (`pierre/config.ts`) |
 | `useMarkdownPanelFileState.ts` | the file's knowledge-library and artifact-library state |
 | `MarkdownPanelBody.tsx` | the body's blocks: comment hint, missing-file banner, empty-diff notice, diff view, comment overlay, find bar |
 | `markdownPanelSourcePos.ts` | where a selection sits in the source (`resolveSourcePos`, `findCoords`) |
 | `useMarkdownPanelFind.ts` | the CSS Custom Highlight registry and preview find (Cmd+F) |
 | `useMarkdownPanelDisk.ts` | the disk truth (the panel's reads, the catch-up latch, the watch, the missing-file retry, the last-copy rescue) and the working-tree diff against HEAD |
+| `useImageBoxComments.tsx` | image box comments: the box draft and its typed text (`useImageBoxDraft`), and the host the rendered images read plus the box composer (`useImageBoxHost`) |
+| `useCommentHint.ts` | who sees the comment hint, with which wording, and its New badge |
 | `ChatPane.tsx` | the pane's layout and dock, its store reads, the follow-up chips, the queue-card actions, and the transcript mount (`transcript={{ … }}`) |
 | `ChatPaneProps.ts` | the props interface and `PaneLeading` |
 | `useChatPaneDraft.ts` | the pane-local composer draft, parked and restored per slot |
@@ -319,8 +326,8 @@ navigation rail apart from a filter pill, and the System page stacks both.
 ### The About, Chat and MCP settings panels
 
 `pages/settings/AboutPanel.tsx` (Settings ▸ About), `pages/settings/ChatPanel.tsx`
-(Settings ▸ Chat) and `pages/settings/McpManagement.tsx` (the Developer page's MCP
-pool) are facades over sibling owners in `pages/settings/`. Each facade keeps its
+(Settings ▸ Chat) and `pages/settings/McpManagement.tsx` (Settings ▸ Developer ▸
+MCP Management) are facades over sibling owners in `pages/settings/`. Each facade keeps its
 module id and every export, so hosts and the specs that mock a panel keep naming the
 facade. Nothing outside a panel's own files imports one of its owners, and no owner
 imports its facade; the only edges between owners are `AboutPanelGatewayUpdate.tsx` to
@@ -340,9 +347,9 @@ fixed order.
 | `useChatPanelDashboard.ts` | the `dashboardConfig` read and writes, Feature Tips and the feature-video readout |
 | `useChatPanelTypedFields.ts` | the draft-backed number and path fields (Advanced, Sessions) |
 | `useChatPanelModels.ts` | the Model page: fallback models, defaults, selectable models, the agent-pin notice, per-role rows |
-| `McpManagement.tsx` | the page: the view tabs, the sharing and pre-resolve cards, the servers table, both dialogs |
+| `McpManagement.tsx` | the page: the view tabs, the sharing and pre-resolve cards, the servers table, the Share all list |
 | `mcpManagementModel.ts` | wire types, error-key tables, the row-state derivation and the sharing-evidence verdict |
-| `McpManagementLaunchReview.tsx` | the launch lines, the review a STUB switch opens, the refused-row panel |
+| `McpManagementLaunchReview.tsx` | a row's share button, its Details (the agents that declare it), and its hint |
 | `McpManagementAssessment.tsx` | the Sharing assessment view and its Measure control |
 
 New work for a responsibility in the table goes to its owner, and work that belongs
@@ -367,7 +374,7 @@ component moved whole, so each one registers its hooks in its BASE order.
 |---|---|
 | `SecurityPanel.tsx` | the rail: `SECURITY_SECTIONS`, `SECTION_LABEL_KEY` (read by `gen-ui-index.mjs`), `SECTION_GROUP_KEY`, the rail summaries, the panel, and the Documentation section |
 | `SecurityPanelPosture.tsx` | Live security posture, and the status row and chip the tailnet card reuses |
-| `SecurityPanelApprovals.tsx` | the ad-hoc auto-approve duration card and the flagged-file delivery consent card |
+| `SecurityPanelApprovals.tsx` | the ad-hoc auto-approve duration card |
 | `SecurityPanelDeniedCommands.tsx` | Denied commands: the built-in rules by category, the custom deny patterns, the pinned and floor tooltip keys |
 | `SecurityPanelTailnet.tsx` | the tailnet origin card and `TAILNET_STATE_KEY`, which the rail summary reads |
 | `SecurityPanelTrust.tsx` | third-party app trust grants, per-registry Git-identity trust grants, and their failure messages |
@@ -582,12 +589,41 @@ Add a new protocol to `ALLOWED_PROTOCOLS` in that file, and only there. Each
 addition widens what a model-authored or user-pasted link can launch on the host,
 so treat it as a security change, not a formatting one.
 
+In a desktop-app pane (`isDesktopAppPane`), `MdAnchor` opens an editor link
+with `window.open` on a plain click, because the frame's CSP `frame-src`
+refuses an in-place navigation to a custom scheme. Other pages keep in-place
+navigation. In the desktop app that call reaches the window-open handler in
+`website/electron/external-scheme.js`, which asks the user before opening it.
+`DiffBlock` sends that handler a `vscode://file` link to the file it probed when
+a Cmd+click (Ctrl+click off macOS) lands on its Open control or on a new-side
+line number, in a desktop-app window whose gateway the shell confirms is on this
+machine (`canPickFolderNatively`); a plain click is unchanged. A line number takes
+it only where every hunk header carries numbers, and never on a tool call's edit
+card, which counts the replaced text from 1.
+
 How a refused destination RENDERS is part of the contract (issue #9925): the
 transform's rejection sentinel is `''`, and `MdAnchor`'s `!href` guard renders
 the label as inert text with **no anchor** — never `<a href="">`, whose empty
 href resolves to the current page — matching `md-notebook/Preview.tsx`'s
 `href ? <a …> : <span>` trade. A test that pins an anchor existing for a
 destination the transform rejects is pinning a defect.
+
+The inert label is not silent in the chat renderers (`MdAnchor` and Mochi's
+`ChatPanelMarkdown`): it wears a muted dotted underline built from existing
+tokens, and the generic reason `components.markdownRenderer.refused_link_destination`
+as its hover `title` and as visually-hidden text, so touch, keyboard and
+screen-reader users get it too. In `MdAnchor` that text is a `::after`
+pseudo-element fed from `data-refused-reason`, never a text node, so the
+label's DOM text stays what the source renders (inline commenting's
+`resolveSourcePos` aligns text nodes against the source span) and a copied
+message carries no reason; Mochi, which has no stylesheet for it, uses an
+unselectable visually-hidden span. The reason never names the destination. The
+cue covers every input that reaches the guard: the `''` sentinel, an href the
+sanitizer deleted (`javascript:`, `data:`), and a raw `<a>` with no href, which
+arrives in the same absent shape. A named in-page anchor (`name` or `id`) and
+an anchor with no content are targets, not links, and keep the plain span
+(`components/markdown/refusedLinkCue.ts`). `md-notebook/Preview.tsx` is not a chat
+renderer and keeps the plain span.
 
 One deliberate, key-scoped exception exists: a Windows absolute path
 (`WINDOWS_ABS_PATH_RE` — a drive-letter path) is passed through **for image
@@ -600,6 +636,25 @@ the shape (single letter + separator) cannot express `javascript:`/`data:`
 payloads. Widening that regex or its key scope is a security change — the same
 constant also decides which paths are treated as local file reads, so the two
 decisions must stay on the one exported copy in `urlTransform.ts`.
+
+A root-relative image (`/images/a.png`) inside a previewed file (a
+`BasePathCtx` is set) is tried as an absolute path first, then against each
+directory above the file, nearest first, up to eight levels
+(`siteRootImageCandidates`). The leading `/` there usually names the root of the
+repository or site the markdown belongs to — GitHub, Zenn and Docusaurus all
+write images that way (issue #23623) — and nothing in the file says where that
+root is. A same-named image in a nearer directory therefore wins over one at
+the real root. Every candidate still goes through `/api/file-raw`, so the fallback
+reads nothing the absolute path could not already ask for. When every candidate
+fails, the broken-image fallback names and probes the path as written, as it
+does for any other image, so its "no longer exists" wording speaks for that path
+alone. That fallback states the failure through an inline `ErrorNotice` beside
+a chip that copies the on-disk path. The notice offers no agent hand-off: the
+renderer also previews unsaved drafts (the meeting note's Preview), and the
+navigation would unmount one. Every surface that
+provides `BasePathCtx` gets this (the file preview, the file explorer, the
+meeting notes sidebar); outside them (chat, artifacts) a leading-slash path
+stays absolute only.
 
 To SHOW a gateway path's file name, use `pathBasename` (and
 `stripTrailingSeparators` for a directory) from `utils/pathBasename.ts`, never
@@ -618,7 +673,7 @@ exposes it as `BASE_PATH` (`''` in the stock root build, so every helper is the
 identity).
 
 The transport shims (`installBasePathShims`) and DOM shims
-(`installBasePathDomShims`) rebase `fetch`, `WebSocket`, `EventSource` and
+(`installBasePathDomShims`) rebase `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource` and
 URL-valued attributes automatically, so most call sites need no change. But a
 dynamic `import()`, a `window.location` navigation, an `AudioWorklet.addModule`
 load and a direct `window.location.pathname` read reach neither hook: wrap a
@@ -698,6 +753,7 @@ family imports an owner. A module beside them in `src/types/` that is not named
 | `index.chat.ts` | the chat slot row (`ChatSlot`) with its turn identity and the `chat_done` payload, its todo list, MCP report and channel links; sidebar folders, tags and board lanes; transcript messages and the slot detail read; subagent and tool activity; content blocks; notifications and their channels; approvals; history session rows |
 | `index.sources.ts` | pull requests, issues, the source provider id, an app repository's contributors |
 | `index.artifacts.ts` | artifacts and their publication, publishing providers, forks, remote listings, session docs, folders, events, comments, web-app metadata |
+| `index.sharedCrew.ts` | Shared Crew attribution: the browser-facing principal and its display snapshot, a session's creator, availability and trigger |
 
 Redux Toolkit (`src/store/index.ts`) holds the cross-page shell state in **four**
 slices:
@@ -750,12 +806,10 @@ is finalized within the same scope, so an untouched row resolves back to its bas
 object and keeps its identity.
 
 This is a convention for new and touched code, not a description of the current
-store. Two dashboard collections still assign wholesale and are known gaps rather
-than counterexamples: `sseSubagentStatus` rebuilds its `agents` array every frame,
-and `sseStatus` replaces `state.status` as a whole object that several panels
-subscribe to entirely. Converting them is worthwhile but is its own change —
-`state.status` in particular needs its consumers narrowed first, or the merge buys
-nothing.
+store. One dashboard collection still assigns wholesale and is a known gap rather
+than a counterexample: `sseStatus` replaces `state.status` as a whole object that
+several panels subscribe to entirely. Converting it is worthwhile but is its own
+change: its consumers need narrowing first, or the merge buys nothing.
 
 Two habits belong to the same concern:
 
@@ -836,8 +890,9 @@ files own it:
   the same rule through `hooks/useTouchReplay.ts`: spread its `pointerProps` on
   the anchor and return early while `fromTouch()` is true, as `useNavTip`,
   `useHoverIntent`, `RefLink` and `MarkdownToc` do), and
-  emits the iOS safe-area utilities (`p-safe`, `top-safe-offset-*`, …) as
-  `@utility` blocks. Adding a utility for a new token means adding one
+  emits the iOS safe-area utilities (`p-safe`, `p-safe-or-*`, `top-safe-offset-*`, …) as
+  `@utility` blocks; `--safe-area-x` in `src/styles/design-tokens.css` is the wider
+  side inset, for a width taken from the viewport. Adding a utility for a new token means adding one
   `--color-<token>: var(--<token>)` line here; `scripts/check-phantom-classes.mjs`
   compiles against this file to catch a utility whose token was never declared.
 - `src/index.css` — the entry, read top to bottom in cascade order. First the
@@ -850,7 +905,8 @@ files own it:
   `var(--border)`, placeholder colour `var(--muted)`, `cursor: pointer` on
   enabled buttons). Then the imports of `font-faces.css`, `design-tokens.css` and
   `theme-palettes.css`; then the `@layer base` element defaults (box model, the
-  global `:focus-visible` ring, the reduced-motion cut, the global scrollbar)
+  global `:focus-visible` ring, the reduced-motion cut, the scroll-only
+  scrollbar)
   and, unlayered, the ambient backdrop and the app-icon tints; then the imports
   of the other eight partials. Tailwind inlines each `@import` where it stands,
   so the import order IS the cascade order: never reorder the imports, and put a
@@ -868,8 +924,8 @@ files own it:
     card's indeterminate progress bar, `.animate-shimmer`, the custom-font
     ligature toggle, the Kiro-theme overrides of nav, session-row and shell
     chrome, and the workspace-tree token mapping.
-  - `scrollbars-and-touch-hit.css` owns the auto-hiding scrollbar classes and the
-    44px touch hit areas. Strays: the send-button sweep (`.btn-sweep`), the card
+  - `scrollbars-and-touch-hit.css` owns the horizontal edge-fade mask for code
+    and diff blocks and the 44px touch hit areas. Strays: the send-button sweep (`.btn-sweep`), the card
     hover glow (`.card-glow`) and the stat top-line accent (`.stat-accent`).
   - `shell-chrome.css` owns the top bar and its collapse ladder, the frameless
     Electron window chrome and focus mode. Stray: `.scrollbar-none`.
@@ -877,9 +933,9 @@ files own it:
     the focus rings and the swatch hover cue. Strays: table striping, the
     follow-up chip width cap, the skill-load heading sizes and the highlight.js
     colours.
-  - `sidebar-and-side-panel.css` owns session and folder rows, the list dock and
-    the side-panel tab strip. Strays: the inline lucide icon size and the
-    panel-icon pane morph.
+  - `sidebar-and-side-panel.css` owns session and folder rows, the list dock,
+    the side-panel tab strip and the file preview's print layout. Strays: the
+    inline lucide icon size and the panel-icon pane morph.
   - `highlights-and-page-zoom.css` owns search, find and comment highlights and
     the coarse-pointer rules that stop page zoom. Strays: the artifact toolbar
     button heights and the mobile sessions-drawer width.
@@ -912,6 +968,32 @@ semantic roles `--aim`, `--clarify`, and the `--diff-*` family. Never a hardcode
 `text-danger` / `text-info`, and a running state is `text-accent`. See
 [theming-contract](theming-contract.md) for the variable set, the stable class
 hooks, and the checkers.
+
+No scrollbar is visible at rest, anywhere in the dashboard
+([decision](../../docs/decisions/2026-10-23-scrollbars-are-never-always-visible.md)).
+A scroll box either hides its scrollbar entirely (`scrollbar-none`: the sidebar
+lanes, the nav rail, the tab strips) or shows a thin thumb only while it is being
+scrolled, in a column it reserves anyway so the reveal moves no content. The
+second form is the default and needs no class: the base layer in `index.css`
+keeps the 6px WebKit column with a transparent thumb and paints it under
+`[data-scrolling]`, which `lib/scrollReveal.ts` sets on the scrolling element
+and clears after a short linger (Firefox takes the same two states through
+`scrollbar-width: thin` and `scrollbar-color`, fenced behind the `-moz-appearance`
+probe because Blink drops the pseudo-elements once those are set). Never add a
+`::-webkit-scrollbar-thumb` colour or a `scrollbar-color` whose selector lacks
+`[data-scrolling]`, never `scrollbar-width: auto`, and never a hover-revealed
+thumb: the pointer rests over the chat transcript most of the time, so hover is
+"at rest" there. The global rule and the document scroll listener both stop at a
+shadow boundary; Pierre's code, diff and tree surfaces are reached through
+`unsafeCSS` keyed on the same attribute (`PIERRE_SCROLL_REVEAL_CSS`, folded into
+both option factories in `src/pierre/config.ts`, and the tree's
+`PIERRE_TREE_STATE_ROW_CSS`), and `scrollReveal` attaches to those hosts' shadow
+roots itself (`SHADOW_SCROLL_HOSTS`). When a box's edge does not make it obvious
+that it scrolls, the cue is an edge-fade mask (`.edge-fade-x`, `useScrollEdges`)
+or a "more below" affordance (`MORE_BELOW_MASK`, `JumpToBottomButton`), never a
+resting thumb. `src/test/scrollbarRevealOnly.test.ts` scans `src/` for every
+shape that paints one at rest and measures the revealed thumb's contrast per
+theme; the `no-scrollbar-at-rest` rule in `AUTOSDE.yaml` blocks it in review.
 
 Three of those rules are enforced by `@shadcn/lint` inside the blocking
 `eslint src/ --max-warnings 0` gate (configured in `eslint.config.js`, the
@@ -991,7 +1073,11 @@ path with unchanged ranges folded. The content limit is measured in JavaScript U
 code units rather than encoded bytes so the guard stays allocation-free while an
 editor changes. Editable live diffs use the same
 predicate and degrade to the ordinary editable file surface rather than becoming
-read-only. Do not duplicate or weaken the limits at call sites.
+read-only; the editor reports that drop through `onLiveDiffDegraded`, and a
+Files panel tab in diff mode then shows a clean buffer's read-only diff view in
+its place. There, and only on the visible tab, the pair starts its worker diff
+without the click (`autoLineByLine`); chat file cards and the Turn Diff tab stay
+click-to-start. Do not duplicate or weaken the limits at call sites.
 
 ## Typography scale
 
@@ -1015,7 +1101,12 @@ To add one:
 2. Export it as the module default.
 3. Add one entry to `BUILTIN_COMPONENT_REGISTRY` (a `BuiltinAppEntry`):
    `'/my-app': { component: lazy(() => import('./my-app/MyAppPage')), appId: '<app.json name>' }`.
-   `appId` must equal the `name` in the app's `app.json` manifest.
+   `appId` must equal the `name` in the app's `app.json` manifest. A page that
+   opens an absolute path handed to it in its URL also sets `opensPathParam` to
+   the query parameter it reads (`<route>?<param>=<path>`). The file viewer's ⋯
+   menu then offers "Open in <app>" for it through `src/apps/pathOpener.ts`,
+   which names no app: it takes the first such entry whose app is enabled and
+   routed natively.
 4. Declare `ui.pages` in the app's `app.json` manifest, and its `ui.icon` name.
 5. If the icon is not already in `src/apps/builtinIcons.tsx`, add it to
    `BUILTIN_ICON_REGISTRY` (Lucide element, `size={16}`).
@@ -1026,6 +1117,13 @@ against `location.pathname` only, so a multi-segment, query, or hash route would
 register and then never resolve. The same constraint and the reasoning behind it
 are in [extension-seams](extension-seams.md), which covers registering routes and
 icons from a downstream edition instead of editing the seed maps.
+
+A builtin page still renders while its app is off, and the app's proxied API
+(`/apps/<name>/api/*`) then refuses every call with `code: "app_not_enabled"`.
+Throw `toApiError` from the page's fetch helpers so the code survives, test it
+with `isAppNotEnabledError` (`src/api/apiError.ts`), and show the disabled-app
+copy (`components.appHost.this_app_is_disabled`) with a way to Apps instead of
+the call's error. File Explorer and Workflows do this.
 
 ## Crew capability drafts
 

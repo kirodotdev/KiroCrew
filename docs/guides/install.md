@@ -48,8 +48,13 @@ bundled, so end users of those artifacts need neither Node nor a compiler.
 
 Kiro Crew drives the default agent through **`kiro-cli`** over the
 [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol)
-(ACP). Other ACP backends can be selected with `agent.acp_backend`, but a fresh
-configuration uses Kiro and the gateway spawns `kiro-cli acp --agent <name>`.
+(ACP). Other ACP backends can be selected with `agent.acp_backend`. A fresh
+configuration uses the KAS harness: it runs through `kiro-cli`'s own ACP relay
+(`kiro-cli acp --agent-engine v3`) when `kiro-cli` is installed and can sign in,
+and through Kiro Crew's own bundled KAS engine otherwise. The `route:` line in
+the KAS backend section of `kirocrew doctor` names the one this host uses. Setting `agent.acp_backend` to `kiro` keeps
+`kiro-cli`: it still uses the relay when `kiro-cli` offers v3, and
+`kiro-cli acp --agent <name>` when it does not.
 
 Install `kiro-cli` per its own docs, put it on your `PATH`, and log in:
 
@@ -57,13 +62,16 @@ Install `kiro-cli` per its own docs, put it on your `PATH`, and log in:
 kiro-cli login
 ```
 
-If `kiro-cli` is not on `PATH`, spawning a session fails with
-`kiro-cli not found in PATH`. On the first dashboard launch the **Set up Kiro**
-page detects the missing prerequisite, shows copyable installer commands for the
-host's platform and the login commands to run yourself, and offers a **Use other
-coding agents** picker so another configured harness can finish setup instead.
-Kiro Crew does not run the install or the login itself. `kirocrew doctor`
-reports both the binary and the login state.
+With `agent.acp_backend` set to `kiro`, a missing `kiro-cli` makes spawning a
+session fail with `kiro-cli not found (<searched directories>)`, followed by the
+install link and the `KIROCREW_KIRO_BIN` override for a binary outside those
+directories; the default backend runs the bundled engine instead. On the first
+dashboard launch the **Set up Kiro** page detects the missing prerequisite,
+shows copyable installer commands for the host's platform and the login commands
+to run yourself, and offers a **Use other coding agents** picker so another
+configured harness can finish setup instead. Kiro Crew does not run the install
+or the login itself. `kirocrew doctor` reports both the binary and the login
+state.
 
 ### Embeddings: nothing to install
 
@@ -94,8 +102,8 @@ tool. All stores share one model and inference worker. The interactive
 process may run on -- which a CPU-set restriction (`--cpuset-cpus`, `taskset`)
 narrows below the host's core count -- and never below one thread, so the event
 loop keeps a core wherever
-there is one to spare; `memory.embedding_bulk_threads` remains 1. The value 4 means that default policy, so pinning threads
-where the process may use 4 or fewer CPUs takes a different number; any other explicit setting is
+there is one to spare; where the process may use 12 or more CPUs the default is 6; `memory.embedding_bulk_threads` remains 1. The value 4 means that default policy, so 4 cannot be pinned
+where the process may use 4 or fewer, or 12 or more CPUs (there a 4 runs 6; set 3 or 5 to stay low); any other explicit setting is
 honored up to that same count. Bulk threads may be 0 to inherit the normal
 setting. Background jobs share the configured bulk
 duty cycle, while waiting interactive queries take priority. A full inference
@@ -105,13 +113,14 @@ members do not create unbounded native work.
 Private V2 execution requires `agent.sandbox=auto` and working Linux/WSL namespaces
 or macOS outer Seatbelt. Native Windows, unconfined execution, unsupported MCP
 backends and Kiro internal delegation refuse private member turns with a reason.
-The owner can still manage memory in the dashboard. Existing members, including
-the default assistant selection, keep their declared V1 memory after upgrading.
-To opt in, open Crew Manager, select the member, open **Workspace · Memory**, and
-choose **Create private memory**. The new V2 store starts empty; previous V1
-stores remain available for an explicit copy of selected starting knowledge.
-Check the execution requirements above before choosing V2. New members receive
-V2 automatically, and an existing V2 member never falls back to V1 on failure.
+The owner can still manage memory in the dashboard. A member's memory store is
+chosen when the member is created and cannot be rebound afterwards. Existing
+members, including the default assistant selection, keep their declared V1
+memory after upgrading. To give a Bot private V2 memory, create a new crew
+member: new members receive V2 automatically, starting empty, and V1 stores
+remain available for an explicit copy of selected starting knowledge. Check the
+execution requirements above first. A V2 member never falls back to V1 on
+failure.
 
 ## Install paths
 
@@ -146,6 +155,7 @@ that path binding. Prefer a package where you can.
 | A desktop app on Fedora / RHEL / CentOS Stream / Amazon Linux 2023 | **`.rpm`** (d) |
 | A desktop app with no root and no package manager | **AppImage** (d) |
 | A container host | **Docker** ([guide](docker.md)) |
+| To work on Kiro Crew itself (follows a branch; `main` is Nightly) | **From source** (b) |
 
 ### a. One-line install (fastest)
 
@@ -154,6 +164,16 @@ npm, no local build:
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
+```
+
+Once the wheel is in, the installer runs the new `kirocrew kas install` to
+download the [built-in KAS engine](#first-run) this release pins (about 55-70 MB
+for your platform). If that download fails, for example on a host with no
+access to the CDN, the install still succeeds and the installer prints the
+command to retry. Pass `--no-kas` (or set `KIROCREW_INSTALL_KAS=0`) to skip it:
+
+```bash
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --no-kas
 ```
 
 `stable` is the default channel. Track a faster one, or pin an exact version:
@@ -208,7 +228,14 @@ gateway's automatic update) build each new version as its own tree beside it,
 `crew-venv-current` link to it. After each update the engine keeps the current
 tree, the previous one (a recovery target), and any tree a running `kirocrew`
 process still uses; older ones are removed. A direct installer run still
-rebuilds the fixed `crew-venv` in place. On a host that restricts unprivileged user
+rebuilds the fixed `crew-venv` in place (and a pipx install reinstalls into its
+own venv), so a gateway that is running during the re-run keeps the old version
+loaded while it reads the new files. The installer never restarts it: when it
+finds one running (an active `kirocrew` systemd unit, the
+`dev.kirocrew.gateway` launchd agent, or a `kirocrew gateway` process holding
+the data home's `gateway.lock`), it ends with a warning that names the restart
+command for that setup, such as `systemctl --user restart kirocrew`. Run it
+straight away. On a host that restricts unprivileged user
 namespaces and uses the `kirocrew-userns` AppArmor profile, run
 `kirocrew service install` again after every update so the profile follows the
 new launcher; the gateway's automatic update waits for you instead of applying
@@ -276,6 +303,34 @@ make build                                   # npm build + editable backend inst
 PYTHONPATH=src python -m kiro_crew gateway   # -> http://localhost:5476
 ```
 
+**This is the contributor layout, not an end-user install.** `make build` and
+`install.sh` both build the clone they run in, so the install follows the
+clone's checked-out branch rather than a release lane. On `main` that is the
+Nightly lane: the version reads `0.X.0.devYYYYMMDD`, ahead of the Stable
+release the desktop app and the [one-line install](#a-one-line-install-fastest)
+follow. `install.sh` says which lane it is building, at its start and at its
+end.
+
+Updating follows the same branch. `kirocrew update` (and the dashboard
+**Update** button) fetches `origin/<branch>` and hard-resets the clone to it
+when the clone is only behind. A clone that is both ahead and behind — local
+commits `origin/<branch>` lacks, plus new ones from it — is refused, because the
+reset would discard the local commits; `kirocrew update --force` discards them
+deliberately. A clone that is only ahead is reported up to date. A detached
+checkout, such as a release tag, is on no branch: `kirocrew update` moves it to
+the first of `main`, `mainline` and `master` that `origin` has, and refuses <!-- wokeignore:rule=master -->
+when `origin` has none of them. After the reset the update rebuilds the
+dashboard (`npm ci` + `npm run build` in `website/`) and writes that output to
+`logs/frontend-build.log` in the data home. If the build fails, the update still
+installs the new revision's dependencies, then stops before restarting, names
+that file, and the gateway keeps running its current version: a restart would
+pair the new backend with the previous dashboard bundle. The checkout already
+holds the new revision, so a second update reports it up to date: fix the cause
+the log names, then run the frontend and stage steps below before restarting. A clone with no `website/` or no `npm` skips the build and keeps its
+shipped bundle, as before. To follow a release lane on a laptop or server,
+use the one-line install: it updates from the channel's signed release feed and
+has no git history to diverge.
+
 On Windows the same targets run through `make.ps1`, because `make` is not part
 of a Windows install and the Makefile's recipes are POSIX-shaped
 (`.venv/bin/pip`, `rm -rf`, `bash ensure-*.sh`):
@@ -320,7 +375,10 @@ Both targets bootstrap their toolchain first (`ensure-node.sh`,
 `ensure-python.sh`) and fall back to whatever is on `PATH` if that fails. The
 backend target refuses to build a venv from an interpreter older than 3.12,
 matching `pyproject.toml`'s `requires-python`, rather than letting dependency
-resolution backtrack or the package fail at import.
+resolution backtrack or the package fail at import. `ensure-python.sh` also
+skips any interpreter whose throwaway `--without-pip` venv cannot run python,
+such as a shared-libpython build behind a launcher wrapper (Toolbox's kirocrew
+Python), and moves on to the next candidate or mise.
 
 `make.ps1` resolves the same toolchain but installs none of it: the bootstrap
 scripts' install paths are `curl … | sh`, so on Windows it searches (`py`
@@ -378,19 +436,28 @@ are published, and they serve different needs:
 
 ```bash
 # 1. Track a channel. A PEP 503 simple index per channel, so pip resolves the
-#    newest version itself. --pre is required: every published version carries a
-#    prerelease suffix on nightly and insider.
+#    newest version itself. Stable versions carry no prerelease suffix, so the
+#    stable line needs no --pre. Every insider and nightly version does carry
+#    one, so those channels need it — and --pre then applies to every package
+#    pip resolves, third-party dependencies included:
+#      pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/insider/simple/
 #    NOTE: --extra-index-url ADDS the channel index beside default PyPI, so pip
 #    pools `kirocrew` candidates across both and a higher-versioned public-PyPI
 #    package of the name would win. Prefer form 2 (or verify the installed
 #    artifact) where that exposure matters.
-pip install --pre kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
+pip install kirocrew --extra-index-url https://updates.crew.kiro.dev/feed/stable/simple/
 
 # 2. Pin one exact wheel by hash. Every version directory publishes a SHA256SUMS
 #    file beside the wheel; take your wheel's hash from there. pip verifies it and
 #    consults no index for Kiro Crew itself — so there is no name to squat.
 pip install "https://download.crew.kiro.dev/cli/stable/<version>/kirocrew-<version>-py3-none-any.whl#sha256=<sha256>"
 ```
+
+Create the venv and run either form under `umask 022`. Under umask `002`,
+`python -m venv` and pip leave the venv group-writable, and `kirocrew service
+install` then refuses to attach the
+[AppArmor profile](#linux-the-agent-sandbox-and-unprivileged-user-namespaces);
+`chmod -R g-w <venv>` repairs an existing install.
 
 Swap `stable` for `insider` or `nightly` in either URL. The two names split by
 class as a convention — `updates.crew.kiro.dev` for mutable pointers and indexes,
@@ -435,6 +502,7 @@ prints the exact command, already pointed at the right interpreter.
 | `teams` | `PyJWT[crypto]` | Microsoft Teams channel (validates the inbound Bot Framework RS256 JWT) |
 | `whatsapp` | `neonize` | QR-linked WhatsApp channel |
 | `feishu` | `lark-oapi` | Feishu/Lark long-connection channel |
+| `bedrock` | `boto3` | Amazon Bedrock Knowledge Base source (`bedrock_kb`) |
 | `dev` | pytest, black, isort, flake8, mypy, ... | Contributor tooling; what `make build` installs |
 
 `make desktop` and `make backend-bin` need no extra: both run
@@ -469,8 +537,9 @@ and the three Linux formats come from one backend tree packaged three times.
 The published, signed apps ([prebuilt downloads](../../README.md#app-downloads))
 update themselves, and the gateway bundled inside them, through the
 app's own updater. By default a new release downloads in the background and
-installs the next time you quit the app (closing the window only hides it to
-the tray; quit from the tray or the menu bar). To be asked first, turn off
+installs the next time you quit the app (by default closing the window only hides
+it to the tray; quit from the tray or the menu bar, or turn off **Keep running in the background
+after closing the window** in Settings → Display → View → Desktop app so the close button quits). To be asked first, turn off
 **Install app updates automatically** on the About page (an **Update the gateway
 automatically** switch beside it sets only an attached gateway's `auto_update`); the app then offers each release and
 downloads it when you click Download, in the update popup or on the About page.
@@ -510,6 +579,20 @@ it, but it also needs FUSE present (`sudo dnf install fuse` on Amazon Linux
 and it runs from a randomized temporary mount, so it carries the manual
 sandbox-profile step and the move-breaks-it caveat documented in the
 [sandbox section](#linux-the-agent-sandbox-and-unprivileged-user-namespaces).
+
+On first launch, the AppImage installs its freedesktop launcher and hicolor
+icons under your XDG data directory. Later launches repair Kiro Crew-managed
+files after an update or AppImage move. Repair requires a filesystem that
+supports Linux write leases. If your XDG data directory is on NFS, FUSE, or
+another filesystem that rejects leases, Kiro Crew leaves managed files
+untouched and defers repair. Keep the AppImage at its prior path or use a desktop
+package on that host.
+
+A launcher or icon that existed before this feature, or whose contents or
+metadata you changed, remains user-owned and is not replaced. Deleting a managed
+launcher causes the next AppImage launch to restore it. To keep launching the
+AppImage without desktop integration, set
+`KIROCREW_DISABLE_DESKTOP_INTEGRATION=1` in its launch environment.
 
 All three Linux formats are built from the same glibc floor as the build runner.
 Verified requirement at the time of writing is **glibc 2.34**, which covers
@@ -551,7 +634,9 @@ Linux, `.\make.ps1 <target>` on Windows.
 | `make clean` | Remove build artifacts, dists, and caches |
 
 Override the Python interpreter with `make PY=python3.12 build`, or
-`.\make.ps1 build -Py C:\path\to\python.exe`.
+`.\make.ps1 build -Py C:\path\to\python.exe`. Either one takes precedence over
+the `<data-home>/python-bin` marker `ensure-python.sh` records; a `PY` exported
+in the environment does not, so the marker still wins over it.
 
 `make wheel`, `make backend-bin` and `make desktop` take `EDITION=oss` or `EDITION=enterprise`, stamped into the built package's `kiro_crew/edition.py`. Only `EDITION=` on the `make` command line counts; an exported shell `EDITION` is ignored, even under `make -e`. Without it, the value comes from the `KIROCREW_BUILD_EDITION` environment variable, and then defaults to `oss`. Both set to different values, or any other value (wildcards such as `%` included), fails the build before it starts. On Windows, set `KIROCREW_BUILD_EDITION` before `.\make.ps1`. See [platform-context](../system-specs/modules/platform-context.md#build-time-edition-constant).
 
@@ -583,9 +668,11 @@ same account store.
 
 The built-in KAS engine is an alternative that needs no Kiro CLI. It is in
 shadow testing: the switch is off by default on every platform and nothing turns
-it on for you. From a source install, `bash install.sh --kas` downloads the
-engine version this release pins; after any other install, `kirocrew kas
-install` does the same. The desktop app ships that engine inside the app
+it on for you. The one-line install (`cli.sh`) and `bash install.sh` download
+the engine version this release pins by default, by running `kirocrew kas
+install` once Kiro Crew is installed; `--no-kas` skips that, and a failed
+download only warns. After any other install, or to retry, run `kirocrew kas
+install` yourself. The desktop app ships that engine inside the app
 (`BUNDLE_KAS=1` at build time), so there is nothing to download. To try the
 route, turn on **Run KAS on Kiro Crew's own engine** under Settings → Developer →
 Feature Previews (or `kirocrew config set agent.kas_bundle true`) and restart; you
@@ -609,37 +696,8 @@ The wizard installs the agent config, then walks through the workspace
 directory, timezone, dashboard URL, and (on macOS) the desktop app. Messaging
 channels are opt-in: pass `--slack` for guided Slack credentials and slash
 commands, or `--whatsapp` to check the optional dependency and pairing state
-before enabling WhatsApp. It also does NOT install a browser: browsing is
-available through the desktop app's built-in Browser panel, while the separate
-Playwright CLI fallback is installed from **Settings → Browser** or manually
-(see [Browser](#browser)).
-
-**Want the Playwright CLI at your own shell?** That is a separate tool from the
-Browser Mode above, and it has its own installer, which bootstraps Node when your
-machine has none and reports enterprise-registry failures (mirror login, proxy,
-blocked browser CDN) as specific remedies rather than a raw npm dump:
-
-```bash
-curl -fsSLO https://raw.githubusercontent.com/kirodotdev/KiroCrew/main/playwright-cli.sh
-less playwright-cli.sh          # read it before you run it
-sh playwright-cli.sh --version 0.1.18
-```
-
-The download-and-read form is listed first on purpose: piping a script into a
-shell is prohibited on many corporate machines, and `raw.githubusercontent.com`
-itself is blocked or rate-limited on some — which is the same audience whose
-network this script exists to cope with. If yours allows it, `curl -fsSL … | sh`
-works as a one-liner; if it does not, take the file from a checkout or a release
-and run it locally. Either way the script reaches only three hosts: the npm
-registry (or the mirror you point it at), the Node mirror when it has to
-bootstrap a toolchain, and the Playwright CDN for the browser binaries — that
-last one only unless you pass `--skip-browsers`, and `--download-host` points it
-at an internal mirror instead.
-
-Windows uses `playwright-cli.ps1` with the same flags in PowerShell spelling.
-`--help` lists all of them; `--dry-run` prints the plan without changing anything.
-Design notes and the exit-code table:
-[browser module spec](../system-specs/modules/browser.md).
+before enabling WhatsApp. It also does NOT install a browser: the agent's
+browser engine is installed from **Settings → Browser** (see [Browser](#browser)).
 
 **Messaging channels are optional.** The default wizard configures none, and the
 web dashboard is fully functional without any messaging credentials. Connect a
@@ -673,40 +731,31 @@ so all user customizations survive.
 
 ## Browser
 
-The desktop app includes the Browser panel and its native embedded Chromium
-path. An agent uses the bounded `browser` MCP operation set (`navigate`,
-`snapshot`, `click`, `type`, and related actions) against that visible panel; no
-Playwright CLI installation is required for this path.
+Kiro Crew's `browser` tool drives one browser through
+[Browser Harness](https://github.com/browser-use/browser-harness), run locally by
+the gateway with its telemetry and cloud path switched off. **Settings → Browser**
+shows one card for it, whose single button follows the state:
 
-When no native panel serves the session, or `dashboard.use_builtin_browser` is
-off, Kiro Crew directs the agent to the `playwright-cli` fallback. Install the
-managed copy from **Settings → Browser**. For a system-wide manual install, use
-Node.js 20 or newer:
+1. **The engine.** The pinned driver lives in Kiro Crew's own data home
+   (`<data-home>/browser-harness`). No `npm`, no Node.js, no `sudo`. While it
+   installs the card says so; if it is not installed the card offers Install,
+   and a failed install offers Retry with the reason.
+2. **Your own Chrome** (macOS, Linux desktop, Windows): open
+   `chrome://inspect/#remote-debugging` once and turn remote debugging on; the
+   first time the agent connects, Chrome asks **Allow remote debugging?** and
+   you click Allow (the card turns yellow until you do). Your logins are used
+   where they exist; the agent never types a password. On Windows without Chrome
+   the agent uses Edge the same way. Or set **Which browser** to Kiro's Chromium,
+   and under **More** turn on **Run with no window** for a server or a remote
+   gateway with no display.
+3. **Try it.** Ask the agent to open a page. The page appears in the chat as a
+   live card; click it to take over (a CAPTCHA, a 2FA prompt, a login), press
+   Esc to hand it back.
 
-```bash
-npm install -g @playwright/cli@latest
-playwright-cli install-browser chromium
-playwright-cli install --skills agents --global
-```
-
-The explicit `chromium` argument avoids installing every browser engine.
-`--with-deps` is useful only on Debian/Ubuntu because Playwright implements its
-OS-package step through `apt`; on Fedora, RHEL, CentOS, or Amazon Linux install
-the required libraries with the host package manager. The Settings installer
-adapts to the host and reports any root-only command separately. See the
-[browser module spec](../system-specs/modules/browser.md#install-flow).
-
-The Browser panel shows the live page and lets you take over with real mouse and
-keyboard for CAPTCHA or 2FA. The CLI fallback can also attach to your own running
-Chrome with `playwright-cli attach --extension`; treat that browser as borrowed
-because it carries your live tabs and logins.
-
-The native MCP path has its own bounded, governance-checked surface and drives
-only public HTTP(S) navigation automatically; local and private targets are
-refused to the approval-gated CLI path. CLI commands follow the ordinary shell
-approval ladder: under normal mode the first command prompts, after which you
-may approve once or trust a command pattern for the session. Installing the CLI
-makes the capability available; it does not silently widen approval.
+The side panel keeps a **Preview** tab for your own local dev server; the agent
+does not drive it. A browser CLI directory left under the data home by an
+earlier version is no longer used; `kirocrew doctor` names it and you can delete
+it. Details: [browser module spec](../system-specs/modules/browser.md).
 
 ## Configuration
 
@@ -728,7 +777,8 @@ makes the capability available; it does not silently widen approval.
 
 `KIROCREW_PORT` is an environment variable validated at CLI entry, not a config
 key. `--port` on the CLI overrides it (`--port auto` binds an OS-assigned
-ephemeral port). The `dashboard.url` config key only advertises a remote URL.
+ephemeral port). Without either, the port in the `dashboard.url` config key is
+used, and 5476 when that URL names none.
 For the installed service the port is baked into the unit at install time — see
 [Running as a service](#running-as-a-service) for how to set and later change
 it.
@@ -1160,8 +1210,9 @@ Always start with `kirocrew doctor`.
 
 The `kiro-cli` backend did not answer in time. Five common causes:
 
-1. **`kiro-cli` is not installed.** The gateway raises
-   `kiro-cli not found in PATH`. Install it, or use the dashboard's
+1. **`kiro-cli` is not installed.** With `agent.acp_backend` set to `kiro`,
+   the gateway raises `kiro-cli not found (<searched directories>)`. Install
+   it, point `KIROCREW_KIRO_BIN` at the binary, or use the dashboard's
    **Set up Kiro** page.
 2. **Not logged in.** Run `kiro-cli login`. An expired session normally
    surfaces as the distinct, non-retryable "kiro-cli is not logged in" error
@@ -1307,6 +1358,60 @@ Delete the AppImage file wherever you placed it:
 rm -f ~/Applications/KiroCrew-x86_64.AppImage   # or wherever you saved it
 ```
 
+The launcher the AppImage installed carries a `TryExec` key, so desktop menus
+hide it once the AppImage is gone. To remove the launcher and icons as well,
+run the script below. It reads the integration's manifest and deletes only the
+files Kiro Crew created: a launcher or icon is removed only while its content
+still matches what Kiro Crew wrote, so a file you replaced or edited is kept.
+It then removes the manifest directory. For the nightly build, set
+`APP=kirocrew-desktop-nightly`.
+
+```bash
+APP=kirocrew-desktop
+STATE="${XDG_CONFIG_HOME:-$HOME/.config}/$APP/linux-desktop-integration"
+python3 - "$STATE/state.json" <<'EOF'
+import hashlib, json, os, sys
+for path, rec in json.load(open(sys.argv[1]))["artifacts"].items():
+    try:
+        digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        if digest in rec.get("owned", []):
+            os.unlink(path)
+            print("removed", path)
+        else:
+            print("kept (not Kiro Crew's)", path)
+    except FileNotFoundError:
+        pass
+    pending = rec.get("pending") or {}
+    sides = [(rec.get("anchorPath"), rec.get("owned", []), None),
+             (pending.get("tempPath"), [pending.get("hash")], pending.get("ino"))]
+    for group in (rec.get("recovery"), pending.get("previous")):
+        group = group or {}
+        sides += [(p, [group.get("hash")], group.get("ino"))
+                  for p in group.get("paths", [])]
+    for side, hashes, ino in sides:
+        if not side or not side.startswith(
+                (path + ".tmp-", path + ".kirocrew-displaced-")):
+            continue
+        try:
+            same_inode = ino is None or os.lstat(side).st_ino == ino
+            digest = hashlib.sha256(open(side, "rb").read()).hexdigest()
+            if same_inode and digest in hashes:
+                os.unlink(side)
+            else:
+                print("kept (changed since Kiro Crew wrote it)", side)
+        except FileNotFoundError:
+            pass
+EOF
+rm -rf "$STATE"
+```
+
+The side files the script removes are the `.tmp-` and `.kirocrew-displaced-`
+copies the repair logic keeps next to a managed file. Each one is removed only
+while its content, and its inode where the manifest records one, still match
+what Kiro Crew wrote. Setting
+`KIROCREW_DISABLE_DESKTOP_INTEGRATION=1` stops future repairs without removing
+anything.
+
 ### Windows (NSIS installer)
 
 Use **Settings → Apps → Installed apps**, find "Kiro Crew", and click
@@ -1324,14 +1429,36 @@ docker rmi ghcr.io/kirodotdev/kirocrew:stable # remove the image (match the tag 
 flush; `docker rm -f` sends SIGKILL immediately, which can drop up to one
 5-second flush interval of recent session state.
 
+### Folders beside the data home
+
+Besides `~/.kiro/crew`, a host install can leave these folders under `~/.kiro`.
+The commands above remove none of them:
+
+| Folder | What it is | After uninstalling |
+| --- | --- | --- |
+| `~/.kiro/crew-python` | The Python runtime `cli.sh` downloads when the host has no suitable Python (moved by `KIROCREW_PYTHON_DIR`; it sits beside a custom `KIROCREW_HOME` as `<home>-python`). | Kiro Crew's. Safe to delete once the venv or pipx install that used it is gone. |
+| `~/.kiro/crew-auth-staging` | The staged copy of your Kiro sign-in that agent sessions read. The gateway rebuilds it at start. | Kiro Crew's. Safe to delete; it holds sign-in material, so deleting it is the tidy choice. |
+| `~/.kiro/mates` | Your crewmates' agent files (under `$KIRO_HOME` when you set it). | Kiro Crew's user data. Keep it if you plan to reinstall; remove it with the data home (see [Removing user data](#removing-user-data)). |
+| `~/.kiro/agents`, `~/.kiro/settings` | Agent and MCP settings shared with Kiro CLI and other Kiro tools. | Not Kiro Crew's alone. Leave them unless you are removing every Kiro tool. |
+
+To remove the two folders that are safe to delete after any uninstall:
+
+```bash
+rm -rf ~/.kiro/crew-python ~/.kiro/crew-auth-staging
+```
+
+If you set `KIROCREW_PYTHON_DIR` or `KIROCREW_HOME`, remove the matching
+`-python` folder at that location instead.
+
 ## Removing user data
 
 Uninstalling via any method above leaves your data home intact. To also remove
 all user data:
 
 ```bash
-# Back up first — this is irreversible. `kirocrew snapshot` only captures
-# memory/config/skills/workspace, not `.env`, credentials, or installed apps,
+# Back up first — this is irreversible. `kirocrew snapshot` captures memory,
+# crons, config, notifications, security, workspace, skills, crew-teams,
+# artifacts and uploads, but not `.env`, credentials, or installed apps,
 # so a full copy of the data home is the only complete backup. Chained with
 # `&&` so a failed copy (e.g. disk full) blocks the delete rather than racing
 # ahead of it. Point the copy at a location you control OUTSIDE the data home:
@@ -1346,6 +1473,15 @@ once the reinstall is confirmed good.
 
 This deletes configuration, credentials (`.env`), session history, memory
 databases, installed apps, and the embedding model cache.
+
+Your crewmates' agent files live outside the data home, in `~/.kiro/mates`
+(under `$KIRO_HOME` when you set it). To remove them too, back the folder up
+first (see [Folders beside the data home](#folders-beside-the-data-home)):
+
+```bash
+cp -a "${KIRO_HOME:-$HOME/.kiro}/mates" ~/kirocrew-backup-mates \
+  && rm -rf "${KIRO_HOME:-$HOME/.kiro}/mates"
+```
 
 > **Docker:** the commands above target a host data home. A Docker install keeps
 > everything in the `kirocrew-home` named volume instead, so remove that rather
@@ -1366,12 +1502,21 @@ or when you want a completely fresh start.
 kirocrew stop                        # stop a foreground gateway (service uninstall won't)
 kirocrew service uninstall 2>/dev/null
 
-# 2. Uninstall the binary (use the matching command from above)
-pipx uninstall kirocrew          # or: pip uninstall kirocrew, rm the AppImage, etc.
+# 2. Uninstall the binary: run the block for your install method from
+#    "Uninstalling" above. A one-line install on a host without pipx (the usual
+#    fresh machine) is the "managed venv" block; with pipx it is
+#    `pipx uninstall kirocrew`; otherwise `pip uninstall kirocrew`, delete the
+#    AppImage, and so on.
 
 # 3. Back up and remove the data home (chained so a failed copy blocks the delete)
 cp -a "${KIROCREW_HOME:-$HOME/.kiro/crew}" ~/kirocrew-backup \
   && rm -rf "${KIROCREW_HOME:-$HOME/.kiro/crew}"
+
+# 3b. Remove the folders Kiro Crew keeps beside the data home (see "Folders
+#     beside the data home"); crewmate files are backed up first, chained the same way
+rm -rf ~/.kiro/crew-python ~/.kiro/crew-auth-staging
+cp -a "${KIRO_HOME:-$HOME/.kiro}/mates" ~/kirocrew-backup-mates \
+  && rm -rf "${KIRO_HOME:-$HOME/.kiro}/mates"
 
 # 4. Reinstall
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
@@ -1393,6 +1538,9 @@ For reference, the data home structure and what each uninstall path touches:
   scope it touched — (plus the AppArmor profile it installed) or the launchd plist.
 - Python and npm package removal has no `preuninstall` or `postuninstall`
   cleanup hook.
+- No uninstall path removes `~/.kiro/crew-python` (the runtime `cli.sh` may
+  download), `~/.kiro/crew-auth-staging` or `~/.kiro/mates`; see
+  [Folders beside the data home](#folders-beside-the-data-home).
 - The macOS DMG/zip and the Linux AppImage have no cleanup hook, so removing the
   application bundle or image leaves the data home intact.
 - A Linux `.deb` / `.rpm` removal DOES run the package's own post-remove step,

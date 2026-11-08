@@ -17,7 +17,10 @@ from typing import Any
 from kiro_crew.apps import teardown
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.apps.teardown import register_slot_close_hook, register_slot_close_undo_hook
-from kiro_crew.safety_override import safety_override
+from kiro_crew.autonudge_service.model import (
+    CONSECUTIVE_FAILURE_REASON,
+    SESSION_START_FAILURE_REASON,
+)
 
 from . import crew_model, crew_store, provider, store
 from .crew_runtime_prompt import compose_turn_prompt_async
@@ -30,11 +33,12 @@ from .crew_runtime_session import (
     _rehydrate,
     _slot_key,
     _turn_model_items,
-    autoapprove_scope,
     dispatch_crew_turn,
     ensure_crew_session,
     is_live,
     launch_crew,
+    release_grant,
+    release_slot_grant,
     sync_trust,
 )
 
@@ -94,25 +98,21 @@ async def revoke_crew_execution(state: Any, crew: dict[str, Any], reason: str = 
     """
     _note_revocation(str(crew.get("id") or ""))
     slot_key = _slot_key(crew)
-    scope = autoapprove_scope(str(crew.get("id") or ""))
-    revoked = False
     slot = state.get_slot(slot_key) if hasattr(state, "get_slot") else None
-    # ``scope_remaining_secs`` and not ``is_scope_active``: the latter EXPIRES a
-    # lapsed grant and emits a ``scope_expired`` SEL event, so probing with it here
-    # would forge an expiry record for a grant this call is about to revoke anyway.
-    if safety_override().scope_remaining_secs(scope) > 0:
-        revoked = True
-    safety_override().deactivate_scope(scope)
+    # The seam probes the grant without expiring it, so no ``scope_expired`` SEL
+    # event is forged for a grant this call is about to revoke anyway.
+    revoked = release_grant(str(crew.get("id") or ""), slot)
     if slot is not None:
-        if getattr(slot, "_trust_scope", ""):
-            slot._trust_scope = ""
+        if release_slot_grant(slot):
             revoked = True
         # Also clear an interactive grant a human may have clicked onto this slot.
         # "Stop this crew" has to mean stopped, and unlike :func:`sync_trust` — which
         # runs unprompted every cycle and so must leave a human's choice alone — this
         # runs only because a human or the watchdog decided the crew must not run.
         if getattr(slot, "_trust", False):
-            slot._trust = False
+            from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
+
+            revoke_slot_trust(state, slot)
             revoked = True
     svc = _autonudge_instance() if _autonudge_instance is not None else None
     if svc is not None:
@@ -609,6 +609,39 @@ def install_app_disable_hook(state: Any) -> bool:
     return True
 
 
+async def refresh_crew_loop_message(
+    state: Any,
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    root: Path | None = None,
+    key: provider.RepoKey | None = None,
+) -> bool:
+    """Recompose the armed loop's cached prompt from ``crew``. Best-effort.
+
+    An idle-timer fire sends the loop's stored message, composed at launch or at
+    the last wake. A record edit that changes what a turn is told (the operator's
+    ``extra_prompt``) reaches neither, so the crew update route calls this and the
+    next timer turn carries the edit. Returns whether a loop was updated.
+    """
+    svc = _autonudge_instance() if _autonudge_instance is not None else None
+    slot = state.get_slot(_slot_key(crew)) if hasattr(state, "get_slot") else None
+    if svc is None or slot is None:
+        return False
+    try:
+        loop = svc.get_by_slot(_slot_key(crew))
+        if loop is None:
+            return False
+        prompt = await compose_turn_prompt_async(slot, owner, repo, crew, root, key)
+        await svc.update(loop.id, message=prompt)
+        return True
+    except Exception:  # pragma: no cover - refresh is best-effort
+        logger.warning(
+            "issue-radar crew %s: loop message refresh failed", crew.get("id"), exc_info=True
+        )
+        return False
+
+
 async def watchdog_cycle(
     state: Any,
     owner: str,
@@ -631,7 +664,9 @@ async def watchdog_cycle(
       on a trusted session.
     * **The loop.** A crew whose autonudge loop is missing or deactivated has no
       clock at all; the sweep still wakes it on a signal, but it would never pick up
-      new work again. Re-arming here makes "enabled" mean enabled.
+      new work again. Re-arming here makes "enabled" mean enabled. The exception
+      is a loop that stood down because its own turns kept failing: that one
+      pauses the crew instead (:func:`_pause_stood_down_crew`).
     * **Revocation.** A crew that was disabled, retired or paused while its slot was
       resident keeps its trust until something takes it away. The BACKSTOP, not the
       first line: pause and retire revoke inline before they answer, and this cycle
@@ -670,6 +705,11 @@ async def watchdog_cycle(
         current = await _current_crew(owner, repo, crew, root)
         if current is None or not is_live(current):
             await revoke_crew_execution(state, crew, "not live")
+            if current is not None and svc is not None:
+                # Paused by hand before a pass saw the stand-down: retire the spent
+                # loop now, so the person's Resume relaunches a fresh one rather
+                # than meeting the stand-down and being paused again.
+                await _retire_stood_down_loop(svc, slot_key)
             continue
         crew = current
         if slot is not None:
@@ -690,7 +730,11 @@ async def watchdog_cycle(
                     # creates the session and establishes trust the same way launch
                     # does, without re-arming a loop that already exists.
                     slot = await ensure_crew_session(state, owner, repo, crew)
-                if not loop.active:
+                if _stood_down(loop):
+                    # Not revived: see :func:`_pause_stood_down_crew`. The re-read
+                    # below finds the crew paused and revokes its grant.
+                    await _pause_stood_down_crew(svc, loop, owner, repo, crew, root)
+                elif not loop.active:
                     await svc.update(loop.id, active=True)
         # The model the next idle-timer turn runs on: the loop fires on its own
         # clock, and this pass is what keeps the slot's model in step with the
@@ -735,6 +779,102 @@ async def watchdog_cycle(
                 )
 
 
+#: The loop stops autonudge records when its own cycles keep failing: five in a row
+#: that never got a model session, or five that got one and died (a spent usage
+#: limit, a backend error after retries). Both mean the next cycle would spend a
+#: turn to fail the same way, and both are cleared by a person, not by the loop.
+#: Every other inactive state -- a pause, a restart's deactivation -- is one the
+#: watchdog switches back on.
+_STAND_DOWN_REASONS = frozenset({CONSECUTIVE_FAILURE_REASON, SESSION_START_FAILURE_REASON})
+
+
+def _stood_down(loop: Any) -> bool:
+    return not loop.active and getattr(loop, "stopped_reason", "") in _STAND_DOWN_REASONS
+
+
+#: The pause reason a stood-down crew carries. The crew page shows it beside Resume,
+#: so it says what happened and what Resume does.
+STOOD_DOWN_PAUSE_REASON = (
+    "Stopped automatically: its last turns kept failing (for example, the account's "
+    "usage limit was reached). Resume once the cause has cleared."
+)
+
+
+async def _pause_stood_down_crew(
+    svc: Any,
+    loop: Any,
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    root: Path | None,
+) -> None:
+    """Turn the loop's stand-down into the crew's own pause, and retire the loop.
+
+    Reviving the loop here would undo the stand-down: ``update(active=True)``
+    zeroes the failure streak, so the loop fails five more cycles, stands down
+    again, and the next pass revives it -- a crew whose turns all fail (a spent
+    usage limit) keeps spending them for as long as the gateway runs.
+
+    Leaving the loop stood down is not enough either. The record still reads live,
+    so the page shows a running crew with no clock and nothing to resume, and the
+    same check would find the same loop on every later pass, including the one
+    after a person resumes the crew. So the crew is PAUSED with a reason -- the
+    record is what the page, the sweep's wakes and this watchdog all read -- and the
+    spent loop is removed, so a Resume relaunches the crew with a fresh streak
+    through the ``loop is None`` branch above.
+
+    Paused BEFORE the loop is removed, and the removal only if the pause landed:
+    a removed loop on a crew still reading live is relaunched by the next pass,
+    which is the revival this exists to stop. The removal is conditional on the
+    row still being stood down, so a person who resumed the loop by hand in
+    between keeps it.
+    """
+    crew_id = str(crew.get("id") or "")
+    try:
+        await asyncio.to_thread(
+            crew_store.set_crew_paused,
+            owner,
+            repo,
+            crew_id,
+            True,
+            STOOD_DOWN_PAUSE_REASON,
+            root,
+        )
+    except Exception:
+        logger.warning(
+            "issue-radar crew %s: could not pause after its loop stood down (%s); "
+            "leaving the loop stopped",
+            crew_id,
+            getattr(loop, "stopped_reason", ""),
+            exc_info=True,
+        )
+        return
+    logger.warning(
+        "issue-radar crew %s: paused, its loop stood down (%s)",
+        crew_id,
+        getattr(loop, "stopped_reason", ""),
+    )
+    await _retire_stood_down_loop(svc, loop.slot_key)
+
+
+async def _retire_stood_down_loop(svc: Any, slot_key: str) -> None:
+    """Remove the slot's loop if it is stood down. Its crew is already paused.
+
+    Conditional under the service's lock, so a loop a person resumed by hand in the
+    meantime is kept. Best-effort: the pause is what holds the crew, and a removal
+    that fails is retried by the next pass that finds the crew paused.
+    """
+    loop = svc.get_by_slot(slot_key)
+    if loop is None or not _stood_down(loop):
+        return
+    try:
+        await svc.remove(loop.id, precondition=_stood_down)
+    except Exception:  # pragma: no cover - the pause already holds the crew
+        logger.warning(
+            "issue-radar: could not remove the stood-down loop on %s", slot_key, exc_info=True
+        )
+
+
 def revoke_crew_grants(state: Any) -> int:
     """Take every resident crew session's auto-approve grant away. Returns how many.
 
@@ -761,15 +901,14 @@ def revoke_crew_grants(state: Any) -> int:
         # record may be gone.
         _note_revocation(str(key)[len(_CREW_SLOT_PREFIX) :])
         touched = False
-        # The scope key is read off the SLOT rather than rebuilt from the record:
-        # this walk exists precisely to catch a crew session whose record is gone.
-        scope = str(getattr(slot, "_trust_scope", "") or "")
-        if scope:
-            safety_override().deactivate_scope(scope)
-            slot._trust_scope = ""
+        # The grant is read off the SLOT rather than rebuilt from the record: this
+        # walk exists precisely to catch a crew session whose record is gone.
+        if release_slot_grant(slot):
             touched = True
         if getattr(slot, "_trust", False):
-            slot._trust = False
+            from kiro_crew.dashboard.chat_utils_slots import revoke_slot_trust
+
+            revoke_slot_trust(state, slot)
             touched = True
         if touched:
             cleared += 1

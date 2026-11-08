@@ -163,13 +163,13 @@ class TestTheAccessibilityPressLadder:
 
 
 class TestKeyboardRefusesOnAFailedFocus:
-    """The reviewer finding: a failed focus must not fall through to blind input.
+    """A failed focus must not fall through to blind input.
 
     ``policy.check_input_target`` validated the element the model ADDRESSED — that is
     where ``ElementRec.secure`` is read from. If ``AXFocused`` does not take,
     ``post_text``/``post_key`` deliver to the app's EXISTING focus, which the policy
     layer never inspected and which can be the password field it just refused.
-    "Best effort" there silently defeated the secure-field floor.
+    "Best effort" there would silently defeat the secure-field floor.
     """
 
     @staticmethod

@@ -14,13 +14,13 @@ Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``
 ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
-``_cancelled``, ``_ingress_seq``, ``_kas_compact_turn``, ``_keepalive_parked``,
-``_keepalive_ts``, ``_parked_total``, ``_queue``, ``_runtime``, ``_session_id``,
-``_skill_reads``, ``_stale_eligible``, ``_steers_proven``, ``_tool_call_diff_path``,
-``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
-``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
-``_tool_call_tool_name``, ``_turn_done``, ``_watchdog``, ``child_fidelity_aware``,
-``last_prompt_stats``.
+``_cancelled``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
+``_keepalive_parked``, ``_keepalive_ts``, ``_parked_total``, ``_queue``, ``_runtime``,
+``_session_id``, ``_skill_reads``, ``_stale_eligible``, ``_steers_proven``,
+``_tool_call_diff_path``, ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``,
+``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
+``_tool_call_raw_params``, ``_tool_call_tool_name``, ``_turn_done``, ``_watchdog``,
+``child_fidelity_aware``, ``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ from kiro_crew.acp.client import (
     compaction_failure_is_transient,
     format_command_result,
 )
+from kiro_crew.acp.engine_fallback import normalize_kiro_v2
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
     EVIDENCE_PLATFORM_LIMITED,
@@ -59,7 +60,9 @@ from kiro_crew.acp.liveness import (
     VERDICT_WORKING,
 )
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
+from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KIRO,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -69,6 +72,7 @@ from kiro_crew.acp.types import (
     EVENT_MCP_SERVER_INITIALIZED,
     EVENT_STEER_CLEARED,
     EVENT_STEER_CONSUMED,
+    EVENT_STEER_DROPPED,
     EVENT_STEER_QUEUED,
     EVENT_STRUCTURED_STATUS,
     EVENT_SUBAGENT_ACTIVITY,
@@ -78,6 +82,7 @@ from kiro_crew.acp.types import (
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
     JSONRPC_METHOD_NOT_FOUND,
+    STOP_REASON_CANCEL_UNACKED,
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
@@ -92,6 +97,17 @@ if TYPE_CHECKING:
 
 #: The session handle's logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.session_handle")
+
+#: Longest a single wait on an empty queue lasts before the verdict-driven
+#: watchdogs below get a look. Named so a test can tick the arm quickly under
+#: a turn budget it never reaches, instead of racing the arm against the turn's
+#: own deadline.
+QUEUE_POLL_SECS = 5.0
+
+#: Longest a cancelled kiro turn waits for the metering frame behind its answer.
+#: The frame follows within milliseconds; the bound keeps a missing one from
+#: delaying the Stop acknowledgement.
+_CANCELLED_TURN_METERING_GRACE_SECS = 0.25
 
 
 async def _dispatch_events(
@@ -233,7 +249,7 @@ async def _dispatch_events(
                 )
                 yield AcpEvent(
                     kind=EVENT_COMPLETE,
-                    stop_reason="error: cancel unacked",
+                    stop_reason=STOP_REASON_CANCEL_UNACKED,
                     usage=self.last_prompt_stats.to_turn_usage(),
                 )
                 return
@@ -267,7 +283,9 @@ async def _dispatch_events(
             )
 
             try:
-                msg = await asyncio.wait_for(self._queue.get(), timeout=min(remaining, 5.0))
+                msg = await asyncio.wait_for(
+                    self._queue.get(), timeout=min(remaining, QUEUE_POLL_SECS)
+                )
             except asyncio.TimeoutError:
                 # ── Verdict-driven watchdogs ──
                 # Wellness (the liveness oracle) is the detector; timeouts
@@ -565,9 +583,19 @@ async def _dispatch_events(
                     if self._runtime._last_activity > _stale_runtime_before:
                         continue
                     if verdict == VERDICT_WORKING:
-                        self._log_working_deferral(_stale_idle, evidence, timeout)
-                        continue
-                    _flat_wait = evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
+                        if _stale_idle <= wd.tool_stall_hard_cap_secs:
+                            self._log_working_deferral(_stale_idle, evidence, timeout)
+                            continue
+                        # A model-wait WORKING is movement under the runtime,
+                        # which a busy MCP server also makes: past the hard
+                        # cap it gets the probe below.
+                    # established_flat (a backend socket held, nothing
+                    # flowing) and platform_limited (macOS: a flat tree with
+                    # no socket evidence to tell a think from a wedge) both
+                    # get the model-silent window.
+                    _flat_wait = evidence.startswith(
+                        (EVIDENCE_ESTABLISHED_FLAT, EVIDENCE_PLATFORM_LIMITED)
+                    )
                     if verdict != VERDICT_DEAD:
                         # UNKNOWN: probe only past the window. An established-
                         # but-flat backend connection is probably a non-streamed
@@ -577,7 +605,8 @@ async def _dispatch_events(
                         window = wd.model_silent_probe_secs if _flat_wait else wd.stale_window_secs
                         if _stale_idle <= min(window, wd.tool_stall_hard_cap_secs):
                             continue
-                    # DEAD, or UNKNOWN past its window: probe via session/cancel.
+                    # DEAD, WORKING past the hard cap, or UNKNOWN past its
+                    # window: probe via session/cancel.
                     # The probe is NON-LETHAL either way — a live turn's cancel
                     # ack is reclassified to STOP_REASON_STALE_RECOVER in the
                     # turn-complete branch (auto-recovery, never "cancelled by
@@ -590,13 +619,20 @@ async def _dispatch_events(
                     # case is an EXTENSION for model-wait (silence of a
                     # non-streamed think), not a narrowing as on the tool
                     # branch — emitting "extended" lets dashboards distinguish
-                    # the two cases correctly.
+                    # the two cases correctly. "working_cap" is a WORKING
+                    # reading past the hard cap, as on the tool branch.
+                    if verdict == VERDICT_WORKING:
+                        _probe_window = "working_cap"
+                    elif _flat_wait:
+                        _probe_window = "extended"
+                    else:
+                        _probe_window = "standard"
                     self._emit_watchdog_metric(
                         "probe",
                         verdict,
                         evidence,
                         _stale_idle,
-                        window="extended" if _flat_wait else "standard",
+                        window=_probe_window,
                     )
                     logger.warning(
                         "Stale turn on session %s (idle %.0fs, verdict=%s: %s) — "
@@ -725,6 +761,16 @@ async def _dispatch_events(
                 self._tool_dispatched = False
                 for _injected in self._release_proven_steers(reason, _refusal):
                     yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=_injected)
+                if (
+                    reason == STOP_REASON_CANCELLED
+                    and self._runtime.acp_backend == ACP_BACKEND_KIRO
+                ):
+                    # kiro-cli answers a cancelled prompt first and sends the frame that
+                    # bills the turn right after it; that frame also repeats the context
+                    # percentage the drain stops on (live-probe confirmed, 3.1.0).
+                    await self._drain_post_compaction_metadata(
+                        grace=_CANCELLED_TURN_METERING_GRACE_SECS
+                    )
                 self._turn_done.set()
                 yield AcpEvent(
                     kind=EVENT_COMPLETE,
@@ -851,6 +897,18 @@ async def _dispatch_events(
                 # "waiting for a human" from "the consumer stopped pulling".
                 self._awaiting_permission = True
                 yield _perm_event
+            elif action == "elicitation":
+                # An MCP server's human-in-the-loop ask. The handle answers it
+                # itself (decline) unless this consumer can put it to a person;
+                # the returned event is the ask that consumer must answer. No
+                # trust tier applies: it is the server's requirement, not ours.
+                _elicit_event = await self._handle_elicitation_request(msg)
+                if _elicit_event is None:
+                    continue
+                # Same park marking as a permission: the consumer waits on a
+                # human here too, and an observer must not read that as a stall.
+                self._awaiting_permission = True
+                yield _elicit_event
             elif action == "server_request_unknown":
                 await self._runtime.send_error(msg.id, JSONRPC_METHOD_NOT_FOUND, "Method not found")
             elif action == "update":
@@ -921,12 +979,22 @@ async def _dispatch_events(
                     yield AcpEvent(kind=EVENT_STEER_CONSUMED, text=_text, runtime_global=_ownerless)
                 elif _disc == "steering_cleared":
                     yield AcpEvent(kind=EVENT_STEER_CLEARED, runtime_global=_ownerless)
+                elif _disc == "AgentExecutionUserMessageCleared":
+                    # The steers a ``_session/steer/clear`` dropped unread. Only
+                    # the fact is carried: kiro-cli's message ids name nothing
+                    # Crew keeps, so the caller decides which steers it held.
+                    yield AcpEvent(kind=EVENT_STEER_DROPPED, runtime_global=_ownerless)
             elif action == "metadata":
                 self._track_metadata(msg)
             elif action == "compaction":
                 params = msg.params or {}
                 status = params.get("status", {})
                 status_type = status.get("type", "") if isinstance(status, dict) else str(status)
+                if consume_stale_compaction_status(self, msg):
+                    # A terminal can have no session id after runtime fan-out.
+                    # While this handle owes one, the frame pays that debt and
+                    # is not exposed as this turn's compaction result.
+                    continue
                 # A compaction notification carrying no sessionId is fanned
                 # out to EVERY co-tenant queue (AcpRuntime marks the copies
                 # fanout_no_owner once more than one session is registered),
@@ -1023,6 +1091,16 @@ async def _dispatch_events(
                         subagents=subs,
                         runtime_global=msg.fanout_no_owner,
                     )
+            elif action == "model_fallback":
+                # The V2 engine's fallback notice for THIS session. A notice
+                # naming another session is not ours to apply: V2 sub-agents
+                # never fall back, so it can only be a co-tenant's.
+                params = msg.params or {}
+                ssid = str(params.get("sessionId") or "")
+                upd = params.get("update")
+                if (not ssid or ssid == self._session_id) and isinstance(upd, dict):
+                    for _fb_event in self._engine_fallback.events(self, normalize_kiro_v2(upd)):
+                        yield _fb_event
             elif action == "subagent_activity":
                 params = msg.params or {}
                 ssid = str(params.get("sessionId") or "")

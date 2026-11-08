@@ -1,16 +1,21 @@
-import { memo, useState, useMemo, useCallback, useEffect, useId, useRef } from 'react'
+import { memo, useState, useMemo, useCallback, useEffect, useId, useRef, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Film, Music, Sparkles } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Film, Moon, Music, Sparkles, Sun } from 'lucide-react'
 import DOMPurify from 'dompurify'
 
 import { i18nT } from '../i18n/t'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
 import ErrorNotice from './ErrorNotice'
+import FileDownloadLink from './FileDownloadLink'
 import { useCanOpenFile, useCopyAck } from './FilePathMenu'
-import { fileDownloadUrl, fileStreamUrl, fileOfficePreviewUrl, fileOfficeSlidesUrl, fileOfficeSlideUrl } from '../utils/fileReadUrl'
+import { fileStreamUrl, fileOfficePreviewUrl, fileOfficeSlidesUrl, fileOfficeSlideUrl } from '../utils/fileReadUrl'
 import { sendErrorToChat } from '../utils/errorReport'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import { useIsDark } from '../hooks/useIsDark'
+import { usePinchZoom, wheelZoomFactor } from '../hooks/usePinchZoom'
+import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { pathBasename } from '../utils/pathBasename'
+import { AUDIO_EXTS, VIDEO_EXTS } from '../utils/mediaExts'
 import { guideUntrusted, stripGuideMarkers } from '../guide/untrustedContent'
 import {
   MD_EM_CLS,
@@ -22,16 +27,13 @@ import {
   MD_TABLE_HEAD_CELL_CLS,
   MD_UL_CLS,
 } from './markdown/typography'
+import { RadioChipGroup, radioChip } from './RadioChipGroup'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.avif', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
-// Media served through /api/file-stream (Range-capable). Split decides the
-// element: <video> renders a picture surface, <audio> a compact control bar.
-// .ogg goes to audio -- the extension is overwhelmingly audio in practice and
-// the .ogv variant exists for video. .opus is an audio-only Ogg mapping, so it
-// follows the same compact-player route.
-const VIDEO_EXTS = new Set(['.mp4', '.m4v', '.webm', '.mov', '.mkv', '.ogv'])
-const AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.oga', '.opus'])
+// Media served through /api/file-stream (Range-capable): VIDEO_EXTS and
+// AUDIO_EXTS (utils/mediaExts) decide the element. <video> renders a picture
+// surface, <audio> a compact control bar.
 const JSON_EXTS = new Set(['.json'])
 const JSONL_EXTS = new Set(['.jsonl'])
 const HTML_EXTS = new Set(['.html', '.htm'])
@@ -59,6 +61,24 @@ const OFFICE_EXTS = new Set([
 export type FileType = 'image' | 'svg' | 'csv' | 'json' | 'jsonl' | 'html' | 'pdf' | 'excalidraw' | 'video' | 'audio' | 'sheet' | 'office' | 'code' | 'markdown'
 
 /**
+ * File types whose viewer reads the FILE, not the buffer -- each of these
+ * fetches from `filePath` (`/api/file-raw`, `/api/file-stream`,
+ * `/api/file-sheet`, `/api/file-office-preview`) and never looks at `content`.
+ *
+ * That distinction is what decides who gets the binary card. The content-backed
+ * rich types -- `svg`, `csv`, `json`, `jsonl`, `html`, `excalidraw` -- render
+ * FROM the content string, so a file whose bytes could not be decoded leaves
+ * those viewers with '': an empty table, an empty tree, a blank frame.
+ * A `.json` file that is actually a database, or a `.csv` with a NUL in it,
+ * belongs on the card exactly as a `.zip` does.
+ *
+ * Named by mechanism rather than by "is rich", because the reason a viewer may
+ * skip the card is that it can still show the real bytes -- not that it happens
+ * to be a viewer.
+ */
+export const BYTE_BACKED_FILE_TYPES = new Set(['image', 'pdf', 'sheet', 'office', 'video', 'audio'])
+
+/**
  * Map a filesystem path to a FileType. Note: SVG files (path-backed) are
  * detected as `image` because ImageViewer fetches them by URL. The `svg`
  * FileType value is reserved for content-string SVG rendering used by
@@ -83,36 +103,181 @@ export function detectFileType(filePath: string): FileType {
 
 function extOf(fp: string) { const i = fp.lastIndexOf('.'); return i >= 0 ? fp.slice(i).toLowerCase() : '' }
 
-/* ── Image viewer ── */
-export const ImageViewer = memo(function ImageViewer({ filePath }: { filePath: string }) {
-  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+/* ── Light/dark backdrop for the image and SVG viewers (#25815) ──
+ * A diagram drawn in dark lines is hard to read on a dark theme, and a light
+ * one on a light theme. One button flips only this pane's backdrop to the
+ * opposite of the theme; the dashboard theme is never touched. The choice is
+ * kept in sessionStorage, so it holds for every image opened in this tab and
+ * starts fresh in a new one. The colours are fixed on purpose: the point is a
+ * plain white or near-black sheet behind the picture, whatever the theme. */
+export const VIEWER_BACKDROP_KEY = 'mc-viewer-backdrop-flipped'
+
+function readBackdropFlipped(): boolean {
+  try { return sessionStorage.getItem(VIEWER_BACKDROP_KEY) === '1' } catch { return false }
+}
+
+function ViewerBackdrop({ children, render }: {
+  children?: ReactNode
+  /** For a body that owns its own element (the sanitized SVG): gets the backdrop class. */
+  render?: (backdropCls: string) => ReactNode
+}) {
+  const isDark = useIsDark()
+  const [flipped, setFlipped] = useState(readBackdropFlipped)
+  const toggle = useCallback(() => {
+    const next = !flipped
+    setFlipped(next)
+    try { sessionStorage.setItem(VIEWER_BACKDROP_KEY, next ? '1' : '0') } catch { /* storage off: the flip still holds for this view */ }
+  }, [flipped])
+  const backdropCls = !flipped ? 'bg-bg-elevated' : isDark ? 'bg-white' : 'bg-[#1e1e1e]'
+  // The button names the backdrop it gives: on a dark theme it offers light, on a light theme dark.
+  const label = isDark ? i18nT('components.fileRenderers.light_background') : i18nT('components.fileRenderers.dark_background')
+  const Icon = isDark ? Sun : Moon
+  const body = `flex items-center justify-center h-full overflow-auto p-4 rounded-md border border-border ${backdropCls}`
   return (
-    <div className="flex items-center justify-center h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border">
-      <img
-        src={'/api/file-raw?path=' + encodeURIComponent(filePath)}
-        alt={pathBasename(filePath)}
-        className="max-w-full max-h-full object-contain"
-        draggable={false}
-      />
+    <div className="relative h-full">
+      {render ? render(body) : <div className={body} data-testid="viewer-backdrop">{children}</div>}
+      <button
+        type="button"
+        onClick={toggle}
+        aria-pressed={flipped}
+        aria-label={label}
+        title={label}
+        className={`absolute top-2 right-2 inline-flex items-center justify-center w-7 h-7 rounded-md border border-border bg-bg/80 hover:bg-bg-hover focus-ring-accent ${flipped ? 'text-accent' : 'text-muted hover:text-text'}`}
+      >
+        <Icon size={14} aria-hidden="true" />
+      </button>
     </div>
   )
+}
+
+/* ── Image viewer ──
+ * Alt/Opt+wheel zooms about the cursor and a drag pans a zoomed image. The view
+ * is kept per file for this tab, in memory only, and dropped when the file's
+ * pixel size changes: the old zoom and pan no longer map onto the new image. A
+ * view at fit is the default, so only zoomed views are kept. */
+const IMAGE_ZOOM_MAX = 8
+const imageViews = new Map<string, { w: number; h: number; zoom: number; pan: { x: number; y: number } }>()
+
+export const ImageViewer = memo(function ImageViewer({ filePath }: { filePath: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // Keyed so another file starts from its own view, never the previous file's.
+  return <ZoomableImage key={filePath} filePath={filePath} />
 })
+
+function ZoomableImage({ filePath }: { filePath: string }) {
+  const boxRef = useRef<HTMLDivElement>(null)
+  const imgRef = useRef<HTMLImageElement>(null)
+  const sizeRef = useRef<{ w: number; h: number } | null>(null)
+  const dragRef = useRef<{ x: number; y: number; pan: { x: number; y: number } } | null>(null)
+  const [dragging, setDragging] = useState(false)
+  // `enabled: false`: this viewer claims Alt+wheel below, not the hook's ctrl+wheel
+  // and trackpad pinch, which stay the browser's page zoom here.
+  const { zoom, setZoom, pan, setPan, clampPan, zoomAbout, reset } = usePinchZoom({
+    targetRef: imgRef, containRef: boxRef, enabled: false, min: 1, max: IMAGE_ZOOM_MAX,
+  })
+  const zoomed = zoom > 1
+
+  // Not a React prop: React binds `wheel` passively, so preventDefault there
+  // would not stop the pane from scrolling.
+  useEffect(() => {
+    const box = boxRef.current
+    if (!box) return
+    const onWheel = (e: WheelEvent) => {
+      if (!e.altKey) return
+      e.preventDefault()
+      zoomAbout(wheelZoomFactor(e), e.clientX, e.clientY)
+    }
+    box.addEventListener('wheel', onWheel, { passive: false })
+    return () => box.removeEventListener('wheel', onWheel)
+  }, [zoomAbout])
+
+  useEffect(() => {
+    const size = sizeRef.current
+    if (!size) return
+    if (zoom > 1) imageViews.set(filePath, { ...size, zoom, pan })
+    else imageViews.delete(filePath)
+  }, [filePath, zoom, pan])
+
+  const onLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
+    const size = { w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight }
+    sizeRef.current = size
+    const saved = imageViews.get(filePath)
+    if (!saved) return
+    if (saved.w !== size.w || saved.h !== size.h) { imageViews.delete(filePath); return }
+    setZoom(saved.zoom)
+    // Clamped to this pane, which may be smaller than the one the view was saved
+    // in. A tab restored while hidden has no layout to clamp against, so it keeps
+    // the offset until the box observer below sees it laid out.
+    setPan(e.currentTarget.offsetWidth > 0 ? clampPan(saved.pan.x, saved.pan.y, saved.zoom) : saved.pan)
+  }
+
+  // Re-clamp when the pane is laid out or resized: an offset that fit a larger
+  // pane could otherwise leave the whole image outside the clipped box.
+  useEffect(() => {
+    const box = boxRef.current
+    if (!box || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if ((imgRef.current?.offsetWidth ?? 0) > 0) setPan(p => clampPan(p.x, p.y))
+    })
+    ro.observe(box)
+    return () => ro.disconnect()
+  }, [clampPan, setPan])
+  const endDrag = () => { dragRef.current = null; setDragging(false) }
+
+  return (
+    <ViewerBackdrop>
+      <div ref={boxRef} className="flex items-center justify-center w-full h-full overflow-hidden">
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- `onLoad` is a resource event that reads the image's pixel size; double-click is the pointer shortcut back to fit for a zoom that only the wheel starts, so the image stays a picture, not a control. */}
+        <img
+          ref={imgRef}
+          src={'/api/file-raw?path=' + encodeURIComponent(filePath)}
+          alt={pathBasename(filePath)}
+          className={`max-w-full max-h-full object-contain ${zoomed ? (dragging ? 'cursor-grabbing' : 'cursor-grab') : ''}`}
+          style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}
+          draggable={false}
+          onLoad={onLoad}
+          title={i18nT('components.fileRenderers.image_zoom_hint', { key: IS_MAC ? 'Option' : 'Alt' })}
+          onDoubleClick={reset}
+          onPointerDown={e => {
+            if (!zoomed || e.button !== 0) return
+            e.preventDefault()
+            e.currentTarget.setPointerCapture(e.pointerId)
+            dragRef.current = { x: e.clientX, y: e.clientY, pan }
+            setDragging(true)
+          }}
+          onPointerMove={e => {
+            const d = dragRef.current
+            if (d) setPan(clampPan(d.pan.x + e.clientX - d.x, d.pan.y + e.clientY - d.y))
+          }}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+        />
+      </div>
+    </ViewerBackdrop>
+  )
+}
 
 /* ── Inline SVG viewer (content-string-based) ─────────────────────────────
  * Used for artifact `kind: svg` where the SVG XML lives in the artifact
  * content, not on disk. DOMPurify with the SVG profile strips dangerous
- * elements (script, foreignObject) while preserving normal SVG markup. */
+ * elements (script, foreignObject) while preserving normal SVG markup. It
+ * also drops <style>: CSS in an inline SVG styles the whole page, not the SVG. */
 export const SvgViewer = memo(function SvgViewer({ content }: { content: string }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const safe = useMemo(
-    () => stripGuideMarkers(DOMPurify.sanitize(content, { USE_PROFILES: { svg: true, svgFilters: true } })),
+    () => stripGuideMarkers(DOMPurify.sanitize(content, { USE_PROFILES: { svg: true, svgFilters: true }, FORBID_TAGS: ['style'] })),
     [content],
   )
   return (
-    <div
-      className="flex items-center justify-center h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border"
-      {...guideUntrusted}
-      dangerouslySetInnerHTML={{ __html: safe }}
+    <ViewerBackdrop
+      render={cls => (
+        <div
+          className={cls}
+          data-testid="viewer-backdrop"
+          {...guideUntrusted}
+          dangerouslySetInnerHTML={{ __html: safe }}
+        />
+      )}
     />
   )
 })
@@ -170,7 +335,7 @@ export const CsvViewer = memo(function CsvViewer({ content, filePath }: { conten
           ))}
         </tbody>
       </table>
-      {body.length > 500 && <div className="text-center text-muted text-[11px] py-2">{i18nT('components.fileRenderers.showing_500_of')} {body.length} {i18nT('components.fileRenderers.rows')}</div>}
+      {body.length > 500 && <div className="text-center text-muted text-[11px] py-2">{i18nT('components.fileRenderers.showing_first_rows', { shown: 500, count: body.length })}</div>}
     </div>
   )
 })
@@ -256,8 +421,10 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
 
   return (
     <span>
-      <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none font-mono text-sm" onClick={() => setOpen(!open)}>
-        {open ? '▼' : '▶'} {bracket[0]}{!open && <span className="text-muted"> {entries.length} {i18nT('components.fileRenderers.items')} {bracket[1]}</span>}
+      <button className="text-muted hover:text-text cursor-pointer bg-transparent border-none font-mono text-sm" aria-expanded={open} onClick={() => setOpen(!open)}>
+        {open
+          ? <ChevronDown size={12} className="lucide-inline" aria-hidden="true" />
+          : <ChevronRight size={12} className="lucide-inline" aria-hidden="true" />} {bracket[0]}{!open && <span className="text-muted"> {i18nT('components.fileRenderers.items_count', { count: entries.length })} {bracket[1]}</span>}
       </button>
       {open && (
         <div style={{ paddingLeft: 16 }}>
@@ -268,7 +435,7 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
               <JsonNode value={v} depth={depth + 1} />
             </div>
           ))}
-          {entries.length > 200 && <div className="text-muted">… {entries.length - 200} {i18nT('components.fileRenderers.more')}</div>}
+          {entries.length > 200 && <div className="text-muted">… {i18nT('components.fileRenderers.more_count', { count: entries.length - 200 })}</div>}
         </div>
       )}
       {open && <span className="text-muted">{bracket[1]}</span>}
@@ -295,7 +462,7 @@ export const JsonlViewer = memo(function JsonlViewer({ content }: { content: str
 
   return (
     <div ref={containerRef} onScroll={onScroll} className="h-full overflow-auto p-3 bg-bg-elevated border border-border rounded-md space-y-2">
-      <div className="text-muted text-[11px]">{lines.length} {i18nT('components.fileRenderers.lines')}</div>
+      <div className="text-muted text-[11px]">{i18nT('components.fileRenderers.lines_count', { count: lines.length })}</div>
       {lines.slice(0, visible).map((line, i) => (
         <div key={i} className="border-b border-border/50 pb-2">
           <JsonViewer content={line} />
@@ -405,50 +572,60 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
   // `BIN` fallback: the binary card is reached by a byte sniff, not by an
   // extension list, so `coredump` and `a.out` land here with nothing to show.
   const ext = extOf(filePath).replace('.', '').toUpperCase() || 'BIN'
-  const url = fileDownloadUrl(filePath)
   const sizeCls = showBigDownload ? 'px-3 py-1.5 text-sm' : 'px-2 py-1 text-xs'
   const iconSize = showBigDownload ? 16 : 14
   // The ONE gate for an Open-with-default-app surface, shared with the file
   // panel's ⋯ entry and MarkdownPanel's overflow: the browser must sit on the
-  // gateway host, or `/api/reveal` has no desktop to open on and the click looks
-  // broken. When it is false the card falls back to Download-as-primary, which
-  // is what a remote session actually needs — the bytes.
+  // gateway host and that host must be able to open the file, or `/api/reveal`
+  // has no desktop to open on and the click looks broken. When it is false the card
+  // falls back to Download-as-primary, which is what a remote session actually
+  // needs — the bytes.
   const canOpen = useCanOpenFile('file')
-  // A headless direct-local host has no desktop, so the backend degrades the
-  // `open` to a clipboard copy. Shared with the file-path menu (see useCopyAck)
-  // so the primary button acknowledges that degrade with the same inline swap
-  // instead of reading as a dead click.
-  const { copyStatus, revealOrOpenWithAck, revealError, clearRevealError } = useCopyAck(filePath)
-  const openLabel = copyStatus === 'copied'
-    ? i18nT('components.filePathMenu.path_copied')
-    : copyStatus === 'failed'
-      ? i18nT('components.filePathMenu.copy_failed')
-      : i18nT('components.markdownPanel.open_with_default_app')
+  // What the open reports — a failure, or a launcher that did not start and left
+  // only a copy of the path — is held by the same owner the file-path menu uses
+  // (see useCopyAck) and shown in the notice above the buttons, never as a
+  // relabelled Open button.
+  const { revealOrOpenWithAck, revealError, clearRevealError } = useCopyAck(filePath)
+  // A failed Download is reported here and shown beside the Open error, in a
+  // row of its own, so the Open / Download row keeps exactly two controls.
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const downloadNotice = (
+    <ErrorNotice
+      variant="inline"
+      className="text-left whitespace-normal"
+      message={downloadError}
+      askAgent
+      onDismiss={() => setDownloadError(null)}
+      testId="office-card-download-error"
+    />
+  )
+  const openLabel = i18nT('components.markdownPanel.open_with_default_app')
   const actions = (
     <>
       {canOpen && (
         <button
           type="button"
           onClick={() => { void revealOrOpenWithAck('open') }}
-          className={`inline-flex items-center gap-2 rounded border-none cursor-pointer bg-accent text-white hover:opacity-90 ${sizeCls}`}
+          className={`inline-flex items-center gap-2 rounded border-none cursor-pointer bg-accent text-accent-fg hover:opacity-90 ${sizeCls}`}
         >
           <ExternalLink size={iconSize} aria-hidden="true" />
           {openLabel}
         </button>
       )}
-      <a
-        href={url}
+      <FileDownloadLink
+        filePath={filePath}
         download={filename}
         className={`inline-flex items-center gap-2 rounded no-underline ${sizeCls} ${canOpen
           ? 'border border-border bg-bg-hover text-text hover:bg-bg-elevated'
-          : 'bg-accent text-white hover:opacity-90'}`}
-        aria-label={i18nT('components.fileRenderers.download_file', { filename })}
+          : 'bg-accent text-accent-fg hover:opacity-90'}`}
+        ariaLabel={i18nT('components.fileRenderers.download_file', { filename })}
+        onError={setDownloadError}
       >
         <Download size={iconSize} aria-hidden="true" />
         {showBigDownload
           ? i18nT('components.fileRenderers.download')
           : i18nT('components.fileRenderers.office_download_original')}
-      </a>
+      </FileDownloadLink>
     </>
   )
   if (compact) {
@@ -465,6 +642,7 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
           onDismiss={clearRevealError}
           testId="office-card-open-error"
         />
+        {downloadNotice}
         <div className="flex items-center gap-2 flex-wrap justify-end">{actions}</div>
       </div>
     )
@@ -474,7 +652,7 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
       <div className="relative">
         <FileText size={showBigDownload ? 64 : 40} className="text-muted" strokeWidth={1.25} />
         <span
-          className={`absolute bottom-1 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded font-semibold bg-accent text-white text-[10px]`}
+          className={`absolute bottom-1 left-1/2 -translate-x-1/2 px-1.5 py-0.5 rounded font-semibold bg-accent text-accent-fg text-[10px]`}
           aria-hidden="true"
         >{ext}</span>
       </div>
@@ -489,6 +667,7 @@ function OfficeCard({ filePath, showBigDownload, hideHint, compact }: {
         onDismiss={clearRevealError}
         testId="office-card-open-error"
       />
+      {downloadNotice}
       {showBigDownload && !hideHint && (
         <div className="text-xs text-muted">
           {/* The hint is the card's only instruction, so it must name the action
@@ -1136,15 +1315,15 @@ export const MediaPlayer = memo(function MediaPlayer({ filePath, kind }: { fileP
           <div className="text-xs text-muted">
             {i18nT('components.fileRenderers.media_preview_failed')}
           </div>
-          <a
-            href={fileDownloadUrl(filePath)}
+          <FileDownloadLink
+            filePath={filePath}
             download={filename}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm bg-accent text-white hover:opacity-90 no-underline"
-            aria-label={i18nT('components.fileRenderers.download_file', { filename })}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded text-sm bg-accent text-accent-fg hover:opacity-90 no-underline"
+            ariaLabel={i18nT('components.fileRenderers.download_file', { filename })}
           >
             <Download size={16} aria-hidden="true" />
             {i18nT('components.fileRenderers.download')}
-          </a>
+          </FileDownloadLink>
         </div>
       </div>
     )
@@ -1256,26 +1435,27 @@ export const SheetViewer = memo(function SheetViewer({ filePath }: { filePath: s
   return (
     <div className="h-full flex flex-col border border-border rounded-md bg-bg-elevated overflow-hidden">
       {payload.sheets.length > 1 && (
-        <div className="flex gap-1 px-2 pt-2 pb-0 bg-chrome border-b border-border overflow-x-auto shrink-0">
+        <RadioChipGroup className="flex gap-1 px-2 pt-2 pb-0 bg-chrome border-b border-border overflow-x-auto shrink-0" ariaLabel={i18nT('components.fileRenderers.sheet_tabs_label')}>
           {payload.sheets.map((s, i) => (
             <button
               key={i}
-              aria-pressed={i === active}
+              type="button"
+              {...radioChip(i === active)}
               onClick={() => setActive(i)}
               className={`px-3 py-1.5 rounded-t text-[12px] whitespace-nowrap cursor-pointer border border-b-0 ${
                 i === active ? 'bg-bg-elevated text-text border-border font-semibold' : 'bg-transparent text-muted border-transparent hover:text-text'
               }`}
             >{s.name}</button>
           ))}
-        </div>
+        </RadioChipGroup>
       )}
       {sheet && hasFormulas && (
         <div className="text-center text-muted text-[12px] py-1.5 border-b border-border bg-chrome shrink-0">
           {i18nT('components.fileRenderers.sheet_formulas_note')}
           {' · '}
-          <a href={fileDownloadUrl(filePath)} download className="text-accent no-underline hover:underline">
+          <FileDownloadLink filePath={filePath} className="text-accent no-underline hover:underline">
             {i18nT('components.fileRenderers.download')}
-          </a>
+          </FileDownloadLink>
         </div>
       )}
       <div className="flex-1 overflow-auto">
@@ -1324,9 +1504,9 @@ export const SheetViewer = memo(function SheetViewer({ filePath }: { filePath: s
           {(sheet.truncated_rows || sheet.truncated_cols || payload.truncated_sheets) && (
             <>
               {' · '}
-              <a href={fileDownloadUrl(filePath)} download className="text-accent no-underline hover:underline">
+              <FileDownloadLink filePath={filePath} className="text-accent no-underline hover:underline">
                 {i18nT('components.fileRenderers.download')}
-              </a>
+              </FileDownloadLink>
             </>
           )}
         </div>

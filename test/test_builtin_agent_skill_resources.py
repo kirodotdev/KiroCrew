@@ -69,15 +69,15 @@ AGENTS: dict[str, tuple[object, tuple[str, ...]]] = {
     ),
     "kirocrew-pipeline-conductor": (
         conductor_agents._install_pipeline_conductor_agent,
-        ("pipeline-conductor", "dashboard"),
+        ("pipeline-conductor", "dashboard", "widgets", "living-ui", "artifacts"),
     ),
     "kirocrew-security-conductor": (
         conductor_agents._install_security_conductor_agent,
-        ("security-conductor",),
+        ("security-conductor", "widgets", "living-ui", "artifacts"),
     ),
     "kirocrew-team-lead": (
         service_agents._install_team_lead_agent,
-        ("team-lead", "goal-conductor", "dashboard"),
+        ("team-lead", "goal-conductor", "dashboard", "widgets", "living-ui", "artifacts"),
     ),
     "kirocrew-dashboard-manager": (
         service_agents._install_dashboard_manager_agent,

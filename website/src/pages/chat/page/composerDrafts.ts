@@ -52,7 +52,14 @@ export function useComposerDraftStores() {
   const sessionRefDrafts = useRef<Record<string, SessionRef[]>>(null!)
   if (sessionRefDrafts.current === null) sessionRefDrafts.current = loadSessionRefDrafts()
   const saveDraftsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const saveDrafts = useCallback(() => { persistDrafts(drafts.current); persistFileDrafts(fileDrafts.current); persistPasteDrafts(pasteDrafts.current); persistSessionRefDrafts(sessionRefDrafts.current); persistFileTokenDrafts(pickedFileTokens.current) }, [])
+  const saveDrafts = useCallback(() => {
+    const textStored = persistDrafts(drafts.current)
+    const filesStored = persistFileDrafts(fileDrafts.current)
+    persistPasteDrafts(pasteDrafts.current)
+    persistSessionRefDrafts(sessionRefDrafts.current)
+    persistFileTokenDrafts(pickedFileTokens.current)
+    return textStored && filesStored
+  }, [])
   const saveDraftsDebounced = useCallback(() => {
     if (saveDraftsTimer.current) clearTimeout(saveDraftsTimer.current)
     saveDraftsTimer.current = setTimeout(() => { saveDraftsTimer.current = null; saveDrafts() }, DRAFT_SAVE_DEBOUNCE_MS)

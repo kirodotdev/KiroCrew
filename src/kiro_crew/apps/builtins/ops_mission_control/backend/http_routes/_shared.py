@@ -107,7 +107,7 @@ def _store_read_refusal(exc: Exception, *, code: str) -> web.Response:
         # Refused for the same reason as corruption -- writing would strip a newer instance's
         # field -- but the file is FINE and this reader is behind, so the remedy is an upgrade
         # rather than a repair. Reporting it as corruption sends the operator to fix something
-        # that is not broken. Found in review (Design Review). Ordered before the
+        # that is not broken. Ordered before the
         # `CorruptDocumentError` arm below, which it subclasses.
         return web.json_response(
             {

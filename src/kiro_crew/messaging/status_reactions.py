@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Coroutine, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -181,28 +181,6 @@ class ReactionSink(Protocol):
     async def add(self, emoji: str) -> None: ...
 
     async def remove(self, emoji: str) -> None: ...
-
-
-class CallableReactionSink:
-    """A :class:`ReactionSink` over two coroutine functions of one emoji.
-
-    Lets a channel bind its own client, channel, and message into closures at
-    the call site rather than writing a sink class per channel.
-    """
-
-    def __init__(
-        self,
-        add: Callable[[str], Awaitable[Any]],
-        remove: Callable[[str], Awaitable[Any]],
-    ) -> None:
-        self._add = add
-        self._remove = remove
-
-    async def add(self, emoji: str) -> None:
-        await self._add(emoji)
-
-    async def remove(self, emoji: str) -> None:
-        await self._remove(emoji)
 
 
 # ── Ladder configuration ────────────────────────────────────────────────

@@ -22,8 +22,10 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import {
   KIROCREW_CONFIG_FIXTURE,
+  KIRO_BACKEND_CONFIG_FIXTURE,
   AGENT_CONFIG_FIXTURE,
 } from '../../scripts/lib/stub-dashboard-api.mjs'
+import { ACP_BACKEND_KIRO, configuredAcpBackend, isKiroBackend } from '../api/acpBackend'
 
 vi.mock('../api/client')
 
@@ -55,13 +57,13 @@ describe('stub-dashboard-api config fixture', () => {
     renderWithProviders(<KiroCrewCfgTab />)
     // Reaching the first table means the three Object.entries() calls that
     // threw under the catch-all's `{}` all survived.
-    expect(await screen.findByRole('heading', { name: /Mates/ })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: /Bots/ })).toBeInTheDocument()
     expect(screen.getAllByRole('table').length).toBeGreaterThanOrEqual(3)
   })
 
   it('populates every table the tab renders, not just the headers', async () => {
     renderWithProviders(<KiroCrewCfgTab />)
-    await screen.findByRole('heading', { name: /Mates/ })
+    await screen.findByRole('heading', { name: /Bots/ })
     // An empty-but-present object would still render three tables with zero
     // rows -- a screenshot of empty tables is barely better evidence than a
     // blank page, so the fixture has to carry actual entries.
@@ -78,7 +80,7 @@ describe('stub-dashboard-api config fixture', () => {
     // pins the field name so the drift cannot silently return.
     expect(Object.values(KIROCREW_CONFIG_FIXTURE.workspaces)[0]).toHaveProperty('dir')
     renderWithProviders(<KiroCrewCfgTab />)
-    await screen.findByRole('heading', { name: /Mates/ })
+    await screen.findByRole('heading', { name: /Bots/ })
     expect(screen.getByText('~/.kiro/crew/workspace')).toBeInTheDocument()
   })
 
@@ -106,12 +108,23 @@ describe('stub-dashboard-api config fixture', () => {
     expect(KIROCREW_CONFIG_FIXTURE.workspaces).toHaveProperty(KIROCREW_CONFIG_FIXTURE.default_workspace)
     expect(KIROCREW_CONFIG_FIXTURE.memory_stores).toHaveProperty(KIROCREW_CONFIG_FIXTURE.default_memory_store)
     renderWithProviders(<KiroCrewCfgTab />)
-    await screen.findByRole('heading', { name: /Mates/ })
+    await screen.findByRole('heading', { name: /Bots/ })
     expect(screen.getAllByText('default').length).toBeGreaterThan(0)
   })
 
   it('serves an agent-config fixture the MCP view can read', () => {
     expect(AGENT_CONFIG_FIXTURE.name).toBeTypeOf('string')
     expect(AGENT_CONFIG_FIXTURE.mcpServers).toBeTypeOf('object')
+  })
+
+  // The credit-pill and Kiro Account harnesses photograph the Kiro backend's
+  // surface. The base fixture leaves `agent.acp_backend` unset, which resolves
+  // to the default harness; once that stopped being kiro, a failed or empty
+  // usage read hid the pill and closed the modal, and those frames timed out.
+  it('offers a config that resolves to the Kiro backend for the credit harnesses', () => {
+    expect(configuredAcpBackend(KIRO_BACKEND_CONFIG_FIXTURE)).toBe(ACP_BACKEND_KIRO)
+    expect(isKiroBackend(KIRO_BACKEND_CONFIG_FIXTURE)).toBe(true)
+    // Everything else is the base fixture, so the pages it renders still render.
+    expect({ ...KIRO_BACKEND_CONFIG_FIXTURE, agent: KIROCREW_CONFIG_FIXTURE.agent }).toEqual(KIROCREW_CONFIG_FIXTURE)
   })
 })

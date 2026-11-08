@@ -155,7 +155,7 @@ def reconcile(incident_id: str, slot: dict[str, Any] | None) -> Incident | None:
         # exactly what returning ``None`` here already means -- and the next reconcile
         # pass retries from a clean read. Logged one level up from the race cases
         # (`warning`, not `debug`) because an unreadable index is a real fault worth
-        # seeing, where losing a race is ordinary. Found in review (GPT 5.6).
+        # seeing, where losing a race is ordinary.
         logger.warning(
             "ops-mission-control: reconcile skipped %s, dispatch index I/O failed",
             incident_id,

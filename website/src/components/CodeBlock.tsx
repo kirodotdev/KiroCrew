@@ -1,17 +1,21 @@
-import { memo, useCallback, useContext, useEffect, useMemo, useState, useRef } from 'react'
-import { Copy, Check, MessageSquare, MessageSquarePlus } from 'lucide-react'
+import { memo, useCallback, useContext, useEffect, useMemo, useState, useRef, type CSSProperties } from 'react'
+import { Copy, Check, MessageSquare, MessageSquarePlus, WrapText } from 'lucide-react'
 import type { LineAnnotation, SelectedLineRange } from '@pierre/diffs'
 import { copyCode } from '../utils/clipboard'
 import { PierreCode } from '../pierre'
-import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
+import { HOVER_NONE_ACTIONS_ROW_CLS, HOVER_NONE_ACTION_BTN_CLS } from '../utils/touchActions'
 import { useStagedMount, VIEWPORT_PRELOAD_MARGIN_PX } from './pierreStaging'
 import { useNearViewport } from '../hooks/useNearViewport'
 import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
+import { useScrollEdges } from '../hooks/useScrollEdges'
 import { CodeCommentContext, holdCodeBlock, holdCodeChip, type CodeLineAnnotationMeta } from './codeComments'
+import { ProseFencesContext } from './codeBlockProse'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { APPROVAL_COMMAND_TAG } from '../lib/approvalNotificationBody'
+import { holdVisibleCodeText } from '../utils/visibleText'
+import { codeShadowRoots, watchText } from '../utils/pierreShadow'
 
 /** A block taller than this repeats its action row at the bottom, so copying
  *  or editing never costs a scroll back to the top. Fixed rather than
@@ -40,17 +44,75 @@ const isProseLang = (lang?: string) => !!lang && PROSE_LANGS.has(lang.toLowerCas
  *  ToolDetails.tsx; the `file` object below is memoized for the same reason). */
 const PROSE_CODE_OPTIONS = { overflow: 'wrap' } as const
 
-/** The copy button, plus any caller-supplied actions (e.g. the pencil edit
- *  button), as one reusable row -- shared between the header and the footer
- *  duplicate so the two stay visually identical without a copy-pasted JSX
- *  block. */
+/** A wrapped block never scrolls sideways, but Pierre still reserves its
+ *  scrollbar height (6 px) under the last line, an empty strip. Pierre's sheet
+ *  is in a shadow root, and this custom property is the one input that crosses
+ *  the boundary: it sets that reserved height. */
+const WRAPPED_SURFACE_STYLE = { '--diffs-scrollbar-gutter-override': '0px' } as CSSProperties
+
+/** The element that scrolls the code sideways: Pierre's `[data-code]` box once
+ *  the highlighter has drawn, else the plain `<pre>` standing in for it (this
+ *  block's own, or Pierre's fallback). */
+function codeScroller(root: HTMLElement): HTMLElement | null {
+  const drawn = codeShadowRoots(root)[0]?.querySelector<HTMLElement>('[data-code]')
+  return drawn ?? root.querySelector<HTMLElement>('pre.pierre-plain')
+}
+
+/** Whether code continues past the block's right edge, for the `edge-fade-x`
+ *  cue: the dashboard paints no scrollbar at rest, so a clipped line would
+ *  read as ending there. The scroller is not an element this component
+ *  renders: it is the stand-in `<pre>` until the highlight lands, then a box
+ *  in Pierre's shadow root, which Pierre fills after its host mounts. So it is
+ *  looked up again each time `watchText` reports a change, and re-attached
+ *  when it is a new element. `wrapped` and `code` remeasure on changes that
+ *  move the scroll width without resizing the box or adding nodes. */
+function useCodeFadeRight(rootRef: React.RefObject<HTMLElement | null>, wrapped: boolean, code: string): boolean {
+  const [attach, edges, remeasure] = useScrollEdges<HTMLElement>()
+  useEffect(() => {
+    const root = rootRef.current
+    if (!root) return
+    let scroller: HTMLElement | null = null
+    const sync = () => {
+      const next = codeScroller(root)
+      if (next === scroller) remeasure()
+      else { scroller = next; attach(next) }
+    }
+    sync()
+    const stop = watchText(root, sync)
+    return () => { stop(); attach(null) }
+  }, [rootRef, attach, remeasure])
+  useEffect(() => { remeasure() }, [wrapped, code, remeasure])
+  return edges.right
+}
+
+/** The copy button plus any caller-supplied actions (e.g. the pencil edit button),
+ *  as one reusable row -- shared between the header and the footer duplicate so
+ *  the two stay visually identical without a copy-pasted JSX block.
+ *  Under `max-two-buttons-per-row` (AUTOSDE), the row carries AT MOST 2 buttons:
+ *  at most 1 caller action (e.g. Edit) + 1 Copy button. The Wrap toggle sits in
+ *  the header left group alongside the language label, keeping this action row
+ *  strictly under the 2-action cap without hiding the toggle on completed blocks. */
 function CodeBlockActions(
-  { headerActions, copied, onCopy }: { headerActions?: React.ReactNode; copied: boolean; onCopy: () => void },
+  {
+    headerActions,
+    copied,
+    onCopy,
+  }: {
+    headerActions?: React.ReactNode
+    copied: boolean
+    onCopy: () => void
+  },
 ) {
   return (
     <div className={`flex items-center gap-1 opacity-0 group-hover/code:opacity-100 group-focus-within/code:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
       {headerActions}
-      <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={onCopy} title={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')} aria-label={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')}>
+      <button
+        type="button"
+        className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
+        onClick={onCopy}
+        title={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')}
+        aria-label={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')}
+      >
         {copied ? <Check size={13} /> : <Copy size={13} />}
       </button>
     </div>
@@ -232,7 +294,13 @@ export const CodeBlock = memo(function CodeBlock(
   }
   const [contentRef, contentHeight] = useMeasuredHeight<HTMLDivElement>()
   const isTall = contentHeight > TALL_CODE_BLOCK_PX
-  const prose = isProseLang(lang)
+  // A host can add its own prose tags (`ChatEmbed`'s `proseFences`): an app
+  // that defines a fence for a record or a reply, not for source code.
+  const hostProse = useContext(ProseFencesContext)
+  const prose = isProseLang(lang) || (!!lang && hostProse.has(lang.toLowerCase()))
+  const [wrapOverride, setWrapOverride] = useState<boolean | null>(null)
+  const isWrapped = wrapOverride !== null ? wrapOverride : prose
+  const toggleWrap = () => setWrapOverride(!isWrapped)
   // Stable file identity per (code, lang): Pierre diffs options/files by
   // reference first, so a fresh object every render would force re-renders.
   const file = useMemo(() => ({ name: `snippet.${lang || 'txt'}`, contents: code }), [code, lang])
@@ -252,6 +320,8 @@ export const CodeBlock = memo(function CodeBlock(
   const nearRef = useRef<HTMLDivElement>(null)
   const near = useNearViewport(nearRef, `${VIEWPORT_PRELOAD_MARGIN_PX}px 0px`)
   const highlighted = useStagedMount(!complete, `cb\u0000${lang ?? ''}\u0000${code.length}\u0000${code.slice(0, 40)}`, !near)
+  // Right edge only: a left fade would fade the line-number gutter.
+  const fadeRight = useCodeFadeRight(nearRef, isWrapped, code)
 
   // ── Line-anchored commenting (artifact pages only) ───────────────────────
   // Selection capture and highlight painting for prose live in light DOM and
@@ -296,10 +366,10 @@ export const CodeBlock = memo(function CodeBlock(
   // on top. Without commenting the stable module constant is passed as-is.
   const codeOptions = useMemo(
     () => commenting
-      ? { ...(prose ? PROSE_CODE_OPTIONS : {}), enableLineSelection: true, onLineSelectionChange: select, onLineSelected: select, enableGutterUtility: true }
-      : prose ? PROSE_CODE_OPTIONS : undefined,
+      ? { ...(isWrapped ? PROSE_CODE_OPTIONS : {}), enableLineSelection: true, onLineSelectionChange: select, onLineSelected: select, enableGutterUtility: true }
+      : isWrapped ? PROSE_CODE_OPTIONS : undefined,
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only the boolean presence matters
-    [commenting != null, prose],
+    [commenting != null, isWrapped],
   )
   const renderGutter = commenting
     ? (getHoveredLine: () => { lineNumber: number } | undefined) => (
@@ -316,6 +386,13 @@ export const CodeBlock = memo(function CodeBlock(
       return <ThreadChip meta={m} active={commenting.ctx.activeId === m.id} onActivate={commenting.ctx.onActivate} />
     }
     : undefined
+  // A reader of the block's visible text (utils/visibleText) gets exactly this
+  // code: the highlighter draws it in a shadow root, with line numbers and buttons
+  // around it, none of which is the code.
+  useEffect(() => {
+    const el = nearRef.current
+    return el ? holdVisibleCodeText(el, code) : undefined
+  }, [code])
   // Each routed thread's fallback anchor is this block, so a sidebar click on
   // a thread whose chip is not mounted yet still scrolls here.
   useEffect(() => {
@@ -326,10 +403,30 @@ export const CodeBlock = memo(function CodeBlock(
   }, [annotations])
 
   return (
+    // 'code-block' is a stable theming hook — see website/docs/theming-contract.md
     <div ref={nearRef} className="code-block group/code rounded-xl border border-border bg-bg-elevated overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1">
-        <span className="text-muted text-[13px] font-mono">{lang || 'code'}</span>
-        <CodeBlockActions headerActions={headerActions} copied={copied} onCopy={copy} />
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-muted text-[13px] font-mono">{lang || i18nT('components.codeBlock.code_label')}</span>
+          <button
+            type="button"
+            data-testid="code-block-wrap-toggle"
+            className={`p-1 rounded cursor-pointer transition-colors opacity-0 group-hover/code:opacity-100 group-focus-within/code:opacity-100 ${HOVER_NONE_ACTION_BTN_CLS} ${
+              isWrapped ? 'text-text bg-bg-hover' : 'text-muted hover:text-text hover:bg-bg-hover'
+            }`}
+            onClick={toggleWrap}
+            title={isWrapped ? i18nT('components.codeBlock.unwrap') : i18nT('components.codeBlock.wrap')}
+            aria-label={i18nT('components.codeBlock.wrap')}
+            aria-pressed={isWrapped}
+          >
+            <WrapText size={13} />
+          </button>
+        </div>
+        <CodeBlockActions
+          headerActions={headerActions}
+          copied={copied}
+          onCopy={copy}
+        />
       </div>
       {/* tabIndex=0 + role/label: a horizontally-scrollable region must be keyboard
           focusable so keyboard-only users can scroll it (axe scrollable-region-focusable).
@@ -338,7 +435,10 @@ export const CodeBlock = memo(function CodeBlock(
           conditioning tabIndex on the tag would move keyboard behavior with content
           type, and a focusable non-scrolling region is harmless. */}
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
-      <div ref={contentRef} className="pierre-surface scroll-fade" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'}>
+      <div ref={contentRef} className="pierre-surface" style={isWrapped ? WRAPPED_SURFACE_STYLE : undefined} tabIndex={0} role="region" aria-label={lang ? i18nT('components.codeBlock.code_region', { lang }) : i18nT('components.codeBlock.code_label')}>
+        {/* The fade sits on this inner box, not on the focusable region: a
+            mask hides everything outside its box, the focus ring included. */}
+        <div data-fade-right={fadeRight ? 'true' : undefined} className="edge-fade-x">
         {complete && highlighted ? (
           <PierreCode
             file={file}
@@ -363,8 +463,9 @@ export const CodeBlock = memo(function CodeBlock(
              Prose tags wrap here too (mirrors PlainFilePairFallback's wraps
              branch), so the stand-in and the highlighted surface agree on line
              count and the swap stays a restyle in the prose case as well. */
-          <pre className={`pierre-plain ${prose ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'} px-3 py-2 m-0`}><code className="text-[13px] font-mono leading-5">{code}</code></pre>
+          <pre className={`pierre-plain ${isWrapped ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'} px-3 py-2 m-0`}><code className="text-[13px] font-mono leading-5">{code}</code></pre>
         )}
+        </div>
         {!complete && <div className="px-3 pb-2 text-muted text-[12px] italic animate-pulse">{i18nT('components.codeBlock.generating')}</div>}
       </div>
       {isTall && (

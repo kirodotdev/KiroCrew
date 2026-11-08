@@ -40,6 +40,7 @@ from kiro_crew.mcp_gateway.backend_leases import (
 from kiro_crew.mcp_gateway.backend_wire import (
     TOOL_SURFACE_STUB_PREFIX,
     BackendGone,
+    _carry_tool_call_id,
     _inject_caller_meta,
     _inject_tenant_meta,
     _PendingRequest,
@@ -197,7 +198,8 @@ async def detach_stub(self: Backend, stub_uuid: str) -> int:
     # released AS the caller recorded at grant time — unless another
     # still-routed stub shares that same caller for the URI (two stubs
     # claimed to one session hold ONE per-caller grant upstream;
-    # releasing on the first detach would kill the survivor's updates).
+    # releasing on the first detach would kill the survivor's updates),
+    # or ``_hold_identity_release`` otherwise holds it.
     # Without a release the server keeps firing updates nobody will
     # receive, each landing in the deny-by-default drop and unfairly
     # recording a hazard against the server for a gap that is ours.
@@ -213,21 +215,19 @@ async def detach_stub(self: Backend, stub_uuid: str) -> int:
         departed_keys = [key for key in self._grant_callers if key[1] == stub_uuid]
         for uri, _stub in departed_keys:
             grant_caller = self._grant_callers.pop((uri, stub_uuid))
-            shared = any(
-                other != stub_uuid and self._grant_callers.get((uri, other)) == grant_caller
-                for other in self._resource_subscriptions.get(uri, set())
-            )
-            if not shared:
+            if not self._hold_identity_release(uri, grant_caller):
                 identity_releases.append((uri, grant_caller))
         for uri in emptied:
             del self._resource_subscriptions[uri]
             if not any(u == uri for u, _c in identity_releases):
-                # Routed grant with no recorded caller (identity server,
-                # grant predates tracking or replay went unrecorded): a
-                # bare release would be adjudicated as the wrong
-                # principal, so the lease is knowingly RETAINED — mark
-                # it orphaned so its updates are dropped without
-                # charging a hazard to a blameless server.
+                # A release held for a same-caller subscribe in flight,
+                # or a routed grant with no recorded caller (identity
+                # server, grant predates tracking or replay went
+                # unrecorded; a bare release would be adjudicated as the
+                # wrong principal, so the lease is knowingly RETAINED):
+                # the lease stays live upstream, so mark it orphaned so
+                # its updates are dropped without charging a hazard to a
+                # blameless server.
                 while len(self._orphaned_leases) >= _ORPHANED_LEASES_MAX:
                     self._orphaned_leases.pop()
                 self._orphaned_leases.add(uri)
@@ -406,6 +406,19 @@ async def forward_from_stub(
                     None,
                 )
                 if cancel_fid is not None:
+                    cancelled = self._pending_requests[cancel_fid]
+                    if cancelled.resource_uri and cancelled.method in (
+                        _RESOURCES_SUBSCRIBE_METHOD,
+                        _RESOURCES_UNSUBSCRIBE_METHOD,
+                    ):
+                        # A subscribe/unsubscribe settles the shared lease
+                        # tables, so its cancel is not forwarded: a server
+                        # that honoured it would never answer, and the
+                        # entry would age a healthy backend into its
+                        # ceiling. The server's verdict settles the lease
+                        # under this stub, exactly as when a server answers
+                        # a request it was asked to cancel.
+                        return
                     msg = dict(msg)
                     new_params = dict(_cparams)
                     new_params["requestId"] = cancel_fid
@@ -415,24 +428,18 @@ async def forward_from_stub(
                     # detector skips a marked entry instead of aging the
                     # shared backend into its ceiling, while notification
                     # attribution and the last-stub recycle still see it.
-                    # A subscribe/unsubscribe is not marked: its verdict
-                    # still settles the shared lease tables.
-                    cancelled = self._pending_requests[cancel_fid]
-                    if not (
-                        cancelled.resource_uri
-                        and cancelled.method
-                        in (
-                            _RESOURCES_SUBSCRIBE_METHOD,
-                            _RESOURCES_UNSUBSCRIBE_METHOD,
-                        )
-                    ):
-                        cancelled.cancelled = True
+                    cancelled.cancelled = True
         # Trust boundary: unconditionally strip any stub-supplied caller
         # identity on EVERY forwarded request regardless of method, then
         # inject the authoritative caller block when known.
         msg = _strip_caller_meta(msg)
         if self.supports_caller_identity and caller is not None:
-            msg = _inject_caller_meta(msg, caller)
+            # Carry the harness ACP toolCallId (kiro-cli sends it as the
+            # ``tools/call`` progressToken) through the gateway-authored caller
+            # block, so an identity-aware backend reads the SAME id the approval
+            # gate keyed its mediated-secret grant by. A call with no progress
+            # token leaves it empty, and that claim is refused fail-closed.
+            msg = _inject_caller_meta(msg, _carry_tool_call_id(caller, msg))
         if self.supports_caller_identity and tenant_nonce:
             msg = _inject_tenant_meta(msg, tenant_nonce)
         if retry_fid is not None:

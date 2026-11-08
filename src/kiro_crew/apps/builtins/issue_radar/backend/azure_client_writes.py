@@ -7,8 +7,11 @@ the issue and pull-request comments. Callers reach every name here through
 
 from __future__ import annotations
 
+import re
+
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
+from . import comment_batch
 from .azure_client_cli import (
     _API_GIT,
     _API_WIT,
@@ -474,3 +477,80 @@ def add_pr_comment(
         "url": None,
         "created_at": first.get("publishedDate") or data.get("publishedDate"),
     }
+
+
+_THREAD_ID_RE = re.compile(r"^[0-9]{1,20}$")
+
+
+def reply_to_comment_thread(
+    owner: str,
+    repo: str,
+    number: int,
+    target: str,
+    thread_id: str,
+    body: str,
+    *,
+    host: str = "",
+    timeout: float = AZ_TIMEOUT_SEC,
+) -> dict:
+    """Reply inside a PULL REQUEST thread.
+
+    The reply is parented on the thread's first comment (id 1 within the thread),
+    which is how Azure DevOps's own web UI places a thread reply. Work item comments
+    are a flat list, so an issue ``target`` is refused rather than turned into a
+    top-level comment the caller did not ask for.
+    """
+    if target != comment_batch.TARGET_PULL:
+        raise ProviderCliError("Azure DevOps only threads replies on pull requests")
+    org, project = _split_owner(owner)
+    name = _check_repo(repo)
+    thread = comment_batch.require_thread_id(thread_id, _THREAD_ID_RE, "Azure DevOps")
+    text = _comment_text(body)
+    data = _obj(
+        _az_invoke(
+            org=org,
+            area="git",
+            resource="pullRequestThreadComments",
+            host=host,
+            timeout=timeout,
+            route={
+                "project": project,
+                "repositoryId": name,
+                "pullRequestId": int(number),
+                "threadId": int(thread),
+            },
+            method="POST",
+            body={"parentCommentId": 1, "content": text, "commentType": "text"},
+            api_version=_API_GIT,
+        )
+    )
+    return {"id": data.get("id"), "url": None, "created_at": data.get("publishedDate")}
+
+
+def post_comment_batch(
+    owner: str,
+    repo: str,
+    number: int,
+    target: str,
+    items: list[dict],
+    *,
+    host: str = "",
+    timeout: float = AZ_TIMEOUT_SEC,
+) -> dict:
+    """Post a batch of timeline comments and replies, in order.
+
+    Azure DevOps has no pending review to fill, so the items post one after
+    another (see :func:`comment_batch.post_sequentially`).
+    """
+
+    def post_one(item: dict) -> dict:
+        thread = item.get("thread_id")
+        if thread:
+            return reply_to_comment_thread(
+                owner, repo, number, target, thread, item["body"], host=host, timeout=timeout
+            )
+        if target == comment_batch.TARGET_PULL:
+            return add_pr_comment(owner, repo, number, item["body"], host=host, timeout=timeout)
+        return add_issue_comment(owner, repo, number, item["body"], host=host, timeout=timeout)
+
+    return comment_batch.post_sequentially(items, post_one)

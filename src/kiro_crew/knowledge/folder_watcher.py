@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -20,7 +21,7 @@ from kiro_crew.sel import sel
 
 from .chunker import CHUNK_TOKEN_SIZE, MAX_CHUNKS_PER_FILE
 from .dedup import dedup_document
-from .ingestion import run_to_completion
+from .ingestion import FileTooLargeError, run_to_completion
 from .kiroignore import KIROIGNORE_FILENAME
 from .kiroignore import load as load_kiroignore
 from .readers import FileReader
@@ -166,9 +167,30 @@ def _within(candidate: str, base: str) -> bool:
         return False
 
 
+def _resolve_at_ingest(file_path: str, root: str, confined: bool) -> tuple[str, str]:
+    """Resolve *file_path* and, when *confined*, the source *root*.
+
+    Both resolutions stat the disk, which a knowledge folder on a slow or network
+    mount can hold for seconds, so ``_ingest_file`` runs this in a worker thread.
+    The second value is ``""`` when unconfined, when *root* is unset, or when it
+    cannot be resolved; a failure resolving *file_path* propagates to the caller.
+    """
+    resolved = str(Path(file_path).resolve())
+    if not confined:
+        return resolved, ""
+    try:
+        root_real = str(Path(root).resolve()) if root else ""
+    except OSError:
+        root_real = ""
+    return resolved, root_real
+
+
 #: Statuses whose bytes hash a retired stale includer keeps: 'failed'/'skipped'
 #: name the version that failed, and 'scanning' keys its retry budget.
 _KEEPS_BYTES_HASH = frozenset({"failed", "skipped", "scanning"})
+
+#: Statuses no later sweep has to move: the terminal set ``spend.py`` counts as finished.
+_SETTLED_STATUSES = frozenset({"done", "deduped", "failed", "skipped"})
 
 
 def _prop_int(value: object) -> int:
@@ -341,6 +363,17 @@ class FolderWatcher:
         self.pipeline = pipeline
         self._locks: dict[str, asyncio.Lock] = {}
 
+    def scanning_source_ids(self) -> set[str]:
+        """Snapshot the source ids whose scans are running now.
+
+        The per-file ingests inside a scan stamp the row's ``sync_status``
+        'synced' after the first file, so the column reads finished while the
+        rest of the folder is still queued. The scan lock is held for the
+        whole walk-and-ingest, which makes it the signal that the row's counts
+        are still moving.
+        """
+        return {source_id for source_id, lock in self._locks.items() if lock.locked()}
+
     async def scan_source(
         self,
         source: dict,
@@ -415,7 +448,9 @@ class FolderWatcher:
         props = json.loads(source.get("properties") or "{}") if isinstance(
             source.get("properties"), str) else (source.get("properties") or {})
 
-        if not Path(uri).is_dir():
+        # A knowledge folder can sit on a slow or network mount, so even this
+        # existence check runs in a worker thread.
+        if not await asyncio.to_thread(Path(uri).is_dir):
             logger.warning("Folder source %s path missing: %s", source_id, uri)
             return {"error": f"Directory not found: {uri}"}
 
@@ -423,9 +458,20 @@ class FolderWatcher:
         source_type = source.get("source_type", "local_folder")
         filters = walk_filters(props, source_type)
 
-        # 1. Discover files
+        # 1. Load existing state, then discover files. Every ``folder_file_state``
+        # read and write in this sweep is offloaded: ``store.db`` holds a per-thread
+        # autocommit connection whose busy_timeout is 10s, and a query that waits on
+        # the writer lock (a concurrent import_bundle, a dedup collapse) blocks the
+        # whole event loop for that wait -- past the loop-stall watchdog on a slow
+        # disk. The store's on-loop guard names this exact frame. The state comes
+        # first because the walk reports which TRACKED files only the ignore
+        # patterns exclude (step 4 keeps those).
+        existing = await asyncio.to_thread(self._load_state, source_id)
         screened: set[str] = set()
-        discovered = await asyncio.to_thread(self._walk, uri, screened_out=screened, **filters)
+        pattern_ignored: set[str] = set()
+        discovered = await asyncio.to_thread(
+            self._walk, uri, screened_out=screened, tracked=set(existing),
+            pattern_ignored=pattern_ignored, **filters)
 
         # Capture all discovered paths before cap (for accurate deletion detection)
         all_discovered_paths = {fp for fp, _ in discovered}
@@ -454,13 +500,7 @@ class FolderWatcher:
             discovered = discovered[:max_files]
             logger.warning("Source %s: capped at %d files (%d skipped)", source_id, max_files, capped)
 
-        # 3. Load existing state. Every ``folder_file_state`` read and write in
-        # this sweep is offloaded: ``store.db`` holds a per-thread autocommit
-        # connection whose busy_timeout is 10s, and a query that waits on the
-        # writer lock (a concurrent import_bundle, a dedup collapse) blocks the
-        # whole event loop for that wait -- past the loop-stall watchdog on a
-        # slow disk. The store's on-loop guard names this exact frame.
-        existing = await asyncio.to_thread(self._load_state, source_id)
+        # 3. Load the include records, off the loop like the state above.
         records = await asyncio.to_thread(self._load_include_records, source_id)
         now = datetime.now().isoformat()
 
@@ -468,8 +508,14 @@ class FolderWatcher:
         ingested_paths: list[str] = []  # files (re)ingested this scan, for targeted dedup
         chunks_ingested = 0  # against chunk_budget
 
-        # 4. Detect deleted files (use full set, not capped set, to avoid false deletions)
-        removed = [fp for fp in existing if fp not in all_discovered_paths]
+        # 4. Detect deleted files (use full set, not capped set, to avoid false deletions).
+        # A file that only the source's ignore patterns now exclude, and whose row still
+        # holds indexed items, is kept as it is with no further updates: editing the
+        # patterns never removes indexed content. Deleting the file, or any other rule
+        # excluding it, still does.
+        removed = [fp for fp in existing if fp not in all_discovered_paths
+                   and not (fp in pattern_ignored
+                            and json.loads(existing[fp].get("item_ids") or "[]"))]
         # An includer's indexed text holds every target its record names. One that
         # left this walk (deleted, newly excluded, or now rejected by a walk rule;
         # the walk set is pre-cap, so a capped part still counts while it exists)
@@ -510,6 +556,18 @@ class FolderWatcher:
         for file_path in removed:
             await self._handle_deleted(source_id, file_path, existing[file_path])
             stats["deleted"] += 1
+        # A kept pattern-ignored row never reaches step 5, so one left 'pending' (a
+        # Retry) or 'scanning' (an interrupted re-ingest) would never settle. It is
+        # written 'done', as it holds items, with an empty bytes hash: those items
+        # may predate the file's current content, so a later sweep that walks the
+        # file again re-reads it instead of trusting the row.
+        for fp in sorted(pattern_ignored.difference(removed)):
+            kept = existing.get(fp)
+            if kept is None or kept.get("status") in _SETTLED_STATUSES:
+                continue
+            await self._persist_state(
+                source_id, fp, "", kept.get("mtime") or 0, kept.get("item_ids") or "[]",
+                now, "done", commit=False)
 
         # 5. Process discovered files
         namespace = props.get("namespace", "default")
@@ -672,7 +730,11 @@ class FolderWatcher:
                 # here would leave that commit unrecorded.
                 stats["skipped"] += 1
             else:
-                await self._persist_state(source_id, file_path, content_hash, mtime, json.dumps(item_ids), now, "done", commit=False, included=included)
+                # Only lands when the commit callback's own write did not: see
+                # _settle_done. Drained like _persist_state.
+                await run_to_completion(functools.partial(
+                    self._settle_done, source_id, file_path, content_hash, mtime,
+                    list(item_ids), now, included))
                 ingested_paths.append(file_path)
                 if chunk_budget:
                     chunks_ingested += len(item_ids)
@@ -720,11 +782,17 @@ class FolderWatcher:
               include_extensions: set[str] | None = None,
               min_size: int = 0,
               confine_to_root: bool = False,
-              screened_out: set[str] | None = None) -> list[tuple[str, float]]:
+              screened_out: set[str] | None = None,
+              tracked: Collection[str] = (),
+              pattern_ignored: set[str] | None = None) -> list[tuple[str, float]]:
         """Walk directory, return [(file_path, mtime)] for supported files.
 
         ``screened_out``, when given, receives the resolved path each returned
         file was screened under (``is_sensitive_path``, ``confine_to_root``).
+
+        ``pattern_ignored``, when given, receives each file in ``tracked`` that
+        ``ignore_patterns`` alone excluded. A pattern drops any other file before
+        it is resolved or stat'ed, so an ignored tree costs only its listing.
 
         ``include_extensions`` NARROWS what is taken; it can never widen it. A
         value of ``None`` means "no extension allowlist" -- every reader-supported
@@ -780,6 +848,7 @@ class FolderWatcher:
                 if any(fnmatch(fname.lower(), pat) for pat in DEFAULT_IGNORE_GLOBS):
                     continue
                 rel_path = os.path.join(rel_dir, fname) if rel_dir != "." else fname
+                full_path = os.path.join(dirpath, fname)
                 # Patterns are written with "/" separators, so the path has to be
                 # normalized before matching or every pattern containing a
                 # separator silently never matches on Windows.
@@ -793,7 +862,9 @@ class FolderWatcher:
                 # swallow `security.md`. The pattern is authoritative on every
                 # host. The "/" normalization above is what carries separator
                 # patterns, since `fnmatchcase` folds neither operand.
-                if any(fnmatchcase(rel_path.replace(os.sep, "/"), pat) for pat in ignore_patterns):
+                pattern_hit = any(
+                    fnmatchcase(rel_path.replace(os.sep, "/"), pat) for pat in ignore_patterns)
+                if pattern_hit and full_path not in tracked:
                     continue
                 if kiroignore is not None and kiroignore.is_ignored(
                         _rel_posix(rel_dir, fname), is_dir=False):
@@ -804,7 +875,6 @@ class FolderWatcher:
                     continue
                 if include_extensions is not None and ext not in include_extensions:
                     continue
-                full_path = os.path.join(dirpath, fname)
                 resolved = str(Path(full_path).resolve())
                 if is_sensitive_path(resolved):
                     continue
@@ -816,6 +886,11 @@ class FolderWatcher:
                 except OSError:
                     continue
                 if min_size and st.st_size < min_size:
+                    continue
+                # Last, so a file reported here is one every other rule would take.
+                if pattern_hit:
+                    if pattern_ignored is not None:
+                        pattern_ignored.add(full_path)
                     continue
                 results.append((full_path, st.st_mtime))
                 if screened_out is not None:
@@ -930,6 +1005,67 @@ class FolderWatcher:
         self._write_state_row(
             source_id, file_path, content_hash, mtime, json.dumps(adopted), now,
             "done" if adopted else "deduped", known_text_hash=text_hash)
+
+    def _mark_committed(self, source_id: str, file_path: str, item_ids: list[str],
+                        included: set[str] | None) -> None:
+        """Turn the 'scanning' marker into the 'done' row naming *item_ids*.
+
+        A targeted UPDATE: the marker already carries the file's content hash and
+        mtime. No transaction control, so the caller decides how it commits.
+        """
+        text_hash: str | None = None
+        if item_ids:
+            row = self.store.db.execute(
+                "SELECT content_hash FROM items WHERE id = ?",
+                (item_ids[0],)).fetchone()
+            if row:
+                text_hash = row["content_hash"]
+        # The targets first: a group whose record is missing could keep a removed
+        # target's text unnoticed, while a record ahead of its row only costs a
+        # re-read.
+        if included is not None:
+            self._write_include_record(source_id, file_path, included)
+        self.store.db.execute(
+            "UPDATE folder_file_state SET item_ids = ?, text_hash = ?, "
+            "status = 'done', error_message = NULL, attempts = 0, "
+            "last_seen = ? WHERE source_id = ? AND file_path = ?",
+            (json.dumps(item_ids), text_hash,
+             datetime.now().isoformat(), source_id, file_path))
+
+    def _settle_done(self, source_id: str, file_path: str, content_hash: str,
+                     mtime: float, item_ids: list[str], now: str,
+                     included: set[str] | None) -> bool:
+        """The caller's terminal 'done' write, only over this attempt's own marker.
+
+        The commit callback normally wrote the row already. From that moment the
+        row is a 'done' row the dedup sweep enumerates, and a collapse can delete
+        the group and mark the row 'deduped' before this runs. Writing the
+        captured ids over that verdict would name deleted items, so the write
+        lands only while the row is still the 'scanning' marker, which no other
+        writer settles. Any other status means the row is already settled: by
+        the callback, by the sweep, or by a cascade adopting an item into it.
+
+        Runs inside the scan, under the per-source ``self._locks[source_id]``,
+        so no other scan of this source can rewrite the marker meanwhile.
+        ``BEGIN IMMEDIATE`` holds the writer lock across the read and the write.
+        Returns ``True`` when written.
+        """
+        self.store.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.store.db.execute(
+                "SELECT status FROM folder_file_state "
+                "WHERE source_id = ? AND file_path = ?",
+                (source_id, file_path)).fetchone()
+            pending = row is not None and row["status"] == "scanning"
+            if pending:
+                self._update_state(source_id, file_path, content_hash, mtime,
+                                   json.dumps(item_ids), now, "done",
+                                   commit=False, included=included)
+            self.store.db.execute("COMMIT")
+        except BaseException:
+            self.store.db.execute("ROLLBACK")
+            raise
+        return pending
 
     def _write_state_row(self, source_id: str, file_path: str, content_hash: str, mtime: float, item_ids: str, now: str, status: str = "done", error_message: str | None = None, *, attempts: int = 0, known_text_hash: str | None = None):
         # Record the EXTRACTED-TEXT hash alongside the file-bytes one. Ownership
@@ -1154,12 +1290,12 @@ class FolderWatcher:
         # must still not be sensitive, and -- when the source is confined -- must still
         # land inside the registered root. Checking only sensitivity would let a
         # retargeted link pull in any non-sensitive file on the host.
-        resolved = str(Path(file_path).resolve())
-        if props.get("confine_to_root"):
-            try:
-                root_real = str(Path(root).resolve()) if root else ""
-            except OSError:
-                root_real = ""
+        # The resolutions stat the disk, so they run in a worker thread; the
+        # pipeline's read still starts only after this re-check has passed.
+        confined = bool(props.get("confine_to_root"))
+        resolved, root_real = await asyncio.to_thread(
+            _resolve_at_ingest, file_path, root, confined)
+        if confined:
             if not root_real or not _within(resolved, root_real):
                 logger.warning(
                     "TOCTOU: path escaped the source root at ingest time: %s -> %s",
@@ -1233,10 +1369,10 @@ class FolderWatcher:
             # content hash and mtime, which this frame does not have. Every call
             # site writes that marker first, so the row is always there to hit.
             # `status='done'` also clears the retry budget, matching every other
-            # terminal write. The caller's own 'done' write (same values) still
-            # lands afterwards on the uncancelled path, which keeps this order-
-            # independent. `store.db` is per-thread and, on this worker,
-            # autocommit -- no separate commit hop, no transaction to interleave.
+            # terminal write. Once this write lands the caller writes nothing
+            # over it (see `_settle_done`): the row is then visible to the dedup
+            # sweep, and its verdict must stand. `store.db` is per-thread and,
+            # on this worker, autocommit -- no separate commit hop.
             nonlocal committed
             committed = list(item_ids)
             # Fail-safe, never fail-closed: the write below is a durability
@@ -1251,27 +1387,27 @@ class FolderWatcher:
             # own 'done' write persists the group on the uncancelled path; the
             # exposure shrinks back to the cancellation window, never past the
             # pre-write behavior. Writer-lock contention past busy_timeout
-            # (e.g. a large concurrent import_bundle) is the realistic raiser.
+            # (e.g. a large concurrent import_bundle) is the realistic raiser,
+            # so a failed first write is retried once under ``BEGIN
+            # IMMEDIATE``, which waits for the writer lock instead of failing
+            # on it.
             try:
-                text_hash: str | None = None
-                if committed:
-                    row = self.store.db.execute(
-                        "SELECT content_hash FROM items WHERE id = ?",
-                        (committed[0],)).fetchone()
-                    if row:
-                        text_hash = row["content_hash"]
-                # The targets first: a group whose record is missing could keep
-                # a removed target's text unnoticed, while a record ahead of its
-                # row only costs a re-read.
-                if included is not None:
-                    self._write_include_record(source_id, file_path, included)
-                self.store.db.execute(
-                    "UPDATE folder_file_state SET item_ids = ?, text_hash = ?, "
-                    "status = 'done', error_message = NULL, attempts = 0, "
-                    "last_seen = ? WHERE source_id = ? AND file_path = ?",
-                    (json.dumps(committed), text_hash,
-                     datetime.now().isoformat(), source_id, file_path))
+                self._mark_committed(source_id, file_path, committed, included)
                 self.store.db.commit()
+                return
+            except Exception:
+                logger.warning(
+                    "could not persist committed group for %s inside the "
+                    "commit callback; retrying under the writer lock",
+                    file_path, exc_info=True)
+            try:
+                self.store.db.execute("BEGIN IMMEDIATE")
+                try:
+                    self._mark_committed(source_id, file_path, committed, included)
+                    self.store.db.execute("COMMIT")
+                except BaseException:
+                    self.store.db.execute("ROLLBACK")
+                    raise
             except Exception:
                 logger.warning(
                     "could not persist committed group for %s inside the "
@@ -1323,7 +1459,10 @@ class FolderWatcher:
 
             return committed, "done"
         except Exception as e:
-            logger.exception("Failed to ingest %s", file_path)
+            # The pipeline already logged an oversized file as a WARNING. The row
+            # reads 'failed', not 'skipped', so the Knowledge page shows why, with Retry.
+            if not isinstance(e, FileTooLargeError):
+                logger.exception("Failed to ingest %s", file_path)
             now = datetime.now().isoformat()
             await self._persist_state(source_id, file_path, "", 0, json.dumps(old_item_ids), now, "failed", str(e)[:500])
             return None, "failed"

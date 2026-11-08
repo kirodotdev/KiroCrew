@@ -33,7 +33,7 @@ name: Fork PR Description
 # script.
 #
 # Fork-only check-run: same-repo PRs get the same rules from the same script
-# through PR Hygiene in code-review.yml, which also blocks PR Readiness for
+# through PR Hygiene in pr-hygiene.yml, which also blocks PR Readiness for
 # forks once their runs are approved. No check-run is created for them here.
 #
 # LIMIT, stated plainly: this verifies that the required parts are present,
@@ -77,7 +77,13 @@ jobs:
     # fork, which compares unequal and is therefore treated as a fork -- the
     # fail-toward-evaluating direction.
     if: github.event.pull_request.head.repo.full_name != github.repository
-    runs-on: ubuntu-latest
+    # Fork work cannot reach the CodeBuild fleet -- the `workflow_job` webhook
+    # payload carries no fork indicator, so the AWS side cannot admit it -- and
+    # the group is the only other capacity source. It is where the fork review
+    # lanes already run: a GitHub-hosted Ubuntu VM with no fleet credentials,
+    # and the checkout below still takes the base branch, never the fork.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 5
     steps:
       # The base branch's copy of the script, never the fork's: on
@@ -144,19 +150,24 @@ jobs:
 
           # `id` and `external_id` are emitted as a pair and matched in the
           # shell, so no shell value is ever interpolated into the jq program.
-          if ! lookup="$(gh api --paginate "repos/$REPO/commits/$HEAD/check-runs" \
+          # `filter=all`: the default can omit an older completed row of this
+          # name, and on a shared head the newer one can be the other PR's.
+          if ! lookup="$(gh api --paginate "repos/$REPO/commits/$HEAD/check-runs?filter=all" \
             --jq '.check_runs[] | select(.name == "Fork PR Description")
                   | "\(.external_id)\t\(.id)"')"; then
             echo "::error::could not list check-runs for $HEAD; refusing to POST (would duplicate the row)"
             exit 1
           fi
 
+          # Every row is listed, so a duplicate an earlier run left is too: the
+          # newest (highest id) is the one to update.
           existing=""
           tab="$(printf '\t')"
           while IFS="$tab" read -r row_eid row_id; do
             [ "$row_eid" = "$external_id" ] || continue
-            existing="$row_id"
-            break
+            if [ -z "$existing" ] || [ "$row_id" -gt "$existing" ]; then
+              existing="$row_id"
+            fi
           done <<< "$lookup"
 
           if [ -n "$existing" ]; then

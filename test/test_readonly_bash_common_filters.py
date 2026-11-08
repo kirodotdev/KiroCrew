@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.security.readonly_bash import is_read_only_bash, unsafe_bash_reason
 
@@ -34,26 +35,57 @@ def test_common_filter_is_read_only(cmd: str) -> None:
 @pytest.mark.parametrize(
     "cmd",
     [
-        # rg stays off: `--pre` runs a program on every file it searches.
-        "rg --pre ./payload pattern",
-        "rg pattern",
-        "cat f | rg --pre ./payload x",
-        # cut is a pipe target only.
-        "cut -d: -f1 /etc/passwd",
-        # A real-file redirect still trips the shell check.
-        "tr a-z A-Z > out.txt",
-        "cat f | tr -d x > out",
-        # xxd stays off the allowlist: `-r` writes a file.
-        "xxd data.bin",
-        "cat f | xxd",
-        # jq stays off the allowlist: it evaluates a program.
-        "jq -n env",
-        "jq . package.json",
-        "cat package.json | jq .",
-        # printf stays off the allowlist: `-v` assigns a shell variable.
-        "printf -v PATH /tmp/x && ls",
-        "printf '%s' x",
+        *named_cases(
+            "test_write_or_exec_form_still_prompts",
+            "cmd",
+            [
+                # rg stays off: `--pre` runs a program on every file it searches.
+                "rg --pre ./payload pattern",
+                "rg pattern",
+                "cat f | rg --pre ./payload x",
+                # cut is a pipe target only.
+                "cut -d: -f1 /etc/passwd",
+                # A real-file redirect still trips the shell check.
+                "tr a-z A-Z > out.txt",
+                "cat f | tr -d x > out",
+                # xxd stays off the allowlist: `-r` writes a file.
+                "xxd data.bin",
+                "cat f | xxd",
+                # jq stays off the allowlist: it evaluates a program.
+                "jq -n env",
+                "jq . package.json",
+                "cat package.json | jq .",
+                # printf stays off the allowlist: `-v` assigns a shell variable.
+                "printf -v PATH /tmp/x && ls",
+                "printf '%s' x",
+            ],
+        ),
+        *named_cases(
+            "test_assigning_expansion_prompts",
+            "cmd",
+            [
+                "echo $[PATH=0]; ls",
+                "cat $[PATH=0]; ls",
+                "head ${X:=1} f; ls",
+                'echo "$[PATH=0]" && ls',
+                "cat ${PATH=0}; ls",
+                "cat ${a[PATH=0]}; ls",
+                "ls | head ${X:=1}",
+                "cat ${a[${b}PATH=0]}; ls",
+                "echo ${X:-${a[${b}PATH=0]}}; ls",
+                'echo "${a[0${v:-0}+(PATH=0)]}"; ls',
+                "echo ${a[${b:-${c}}PATH=0]}; ls",
+                'echo "${a[0${v:+\\}}+(PATH=0)]}"; ls',
+                'echo "${a[0${v:+"}"}+(PATH=0)]}"; ls',
+                "echo ${a[0|| echo +(PATH=0)]}; ls",
+                "echo ${a[0| cat +(PATH=0)]}; ls",
+                "echo ${a[0||\necho +(PATH=0)]}; ls",
+                # Any `=` after a `${` prompts, even one that only follows an expansion.
+                "ls ${D} --color=auto",
+                "cat ${F}; git log --format=%h",
+            ],
+        ),
     ],
 )
-def test_write_or_exec_form_still_prompts(cmd: str) -> None:
+def test_the_command_still_prompts(cmd: str) -> None:
     assert not is_read_only_bash(cmd)

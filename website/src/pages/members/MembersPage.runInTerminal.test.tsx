@@ -24,6 +24,8 @@ vi.mock('../../api/client', () => ({
     monitorForSlot: vi.fn(() => Promise.resolve({ enabled: true, monitor: null })),
     // reuse_current off: the run path, not the copy path.
     kirocrewConfig: vi.fn(() => Promise.resolve({})),
+    // The member's chat runs on this machine, so Run in terminal may open a local tab.
+    chatSlotEnvironment: vi.fn(() => Promise.resolve({ profile: null, profiles: [] })),
   },
 }))
 
@@ -52,7 +54,6 @@ vi.mock('../../utils/terminalRegistry', () => ({
   getTerminalShell: () => undefined,
   getTerminalFenceShells: () => ({}),
 }))
-vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 
 /* The thread pane renders a REAL Run-in-terminal button, so the request carries
  * whatever scope the page provides around its chat. */

@@ -2,13 +2,13 @@
 
 ## Overview
 
-The Knowledge Library is Kiro Crew's personal knowledge graph: a local, SQLite-backed corpus that ingests documents (folders, uploads, artifacts, fetched URLs), chunks and entity-extracts them via a bounded LLM worker pool, and serves hybrid retrieval (FTS5 keyword + graph traversal + optional vector) to the LLM through the `local_knowledge_search` MCP tool. All ingestion and search stay on-host; the only external calls are the extraction/URL-fetch worker's ACP LLM turns. Embedding runs in-process against a vendored runtime — the shared `EmbeddingBackend` singleton — so there is no inference endpoint of any kind.
+The Knowledge Library is Kiro Crew's personal knowledge graph: a local, SQLite-backed corpus that ingests documents (folders, uploads, artifacts, fetched URLs), chunks and entity-extracts them via a bounded LLM worker pool, and serves hybrid retrieval (FTS5 keyword + graph traversal + optional vector) to the LLM through the `local_knowledge_search` MCP tool. All ingestion and search stay on-host; the only external calls are the extraction worker's ACP LLM turns and the gateway's own fetch of a web-page source from a listed host (`url_fetch.py`). Embedding runs in-process against a vendored runtime — the shared `EmbeddingBackend` singleton — so there is no inference endpoint of any kind.
 
 ```
 files / uploads / artifacts / URLs
    → FileReader (read + extract text)
    → HeadingAwareChunker (chunk)
-   → EntityExtractor / agent_fetch (LLMPool workers)
+   → EntityExtractor (LLMPool workers); a web-page source is fetched first by url_fetch
    → KnowledgeStore (SQLite: items + items_fts + graph)
    → HybridRetriever (FTS5 + graph + vector, RRF fusion)
    → local_knowledge_search (MCP) / dashboard Knowledge tab
@@ -16,11 +16,10 @@ files / uploads / artifacts / URLs
 
 ### LLM worker-pool policy
 
-Knowledge ingestion and URL-content acquisition use separate long-lived worker
-pools. The extraction pool uses `knowledge.extraction_pool_size` and requests
-reasoning effort `knowledge.extraction_effort`; the URL-fetch pool has one
-worker and sends no explicit effort, so it retains the provider default. The
-extraction effort resolves through the chain in `llm_pool._get_workload_effort`:
+Knowledge ingestion uses one long-lived worker pool, for extraction. It uses
+`knowledge.extraction_pool_size` and requests reasoning effort
+`knowledge.extraction_effort`. No worker fetches URLs: a web-page source is
+fetched by the gateway itself (`url_fetch.py`, below). The extraction effort resolves through the chain in `llm_pool._get_workload_effort`:
 `knowledge.extraction_effort` → fallback (`DEFAULT_EXTRACTION_EFFORT` = `high`
 as the last resort). The chain has no role-policy leg: extraction effort is a
 Knowledge policy, independent of `agent.role_efforts.background` (which
@@ -46,7 +45,7 @@ sessions rather than relying on a worker being reused by only one workload by
 convention. There is no `knowledge_llm_pool` compatibility alias and no
 `use_config_pool_size` flag: a pool binds an explicit
 `config_pool_size_key` (extraction only), so `knowledge.extraction_pool_size`
-cannot resize the fetch or auto_research pools.
+cannot resize the auto_research pools.
 
 ## Role & boundary
 
@@ -106,7 +105,9 @@ The code computes and floors a retrieval **score**, but no Tier-1/Tier-2 metric 
 
 - The default golden set is **v2** (68 docs / 46 queries). v1 (17 / 12) is still packaged so archived v1 reports stay reproducible, but it could not discriminate: every class scored 1.000 recall under both a keyword-only and a semantic retriever, because each gold document was the only one in the corpus using its topic's vocabulary, so matching one term was enough to win. v2 adds competing distractors — same-topic documents that differ on the decisive attribute (a different service, environment, cache, or time window) — and the legs then separate. Keyword-only is deterministic (FTS5 + graph, no model) and reproducible: nDCG@3 0.834 / MRR@3 0.804 / MAP@3 0.781. The semantic leg measured with `qwen3-embedding:0.6b` gives nDCG@3 0.926 / MRR@3 0.900 / MAP@3 0.898 — re-measure rather than trust that triple after a model or quantization change, since it moves with both. MAP is the widest of the three separations between the legs (0.117, against 0.092 nDCG and 0.096 MRR): it is the only one of them that reads how late the *second* gold document lands, so it sees the multi-gold classes that MRR — which stops at the first hit — scores identically. Its denominator is `min(|gold|, k)` rather than the textbook `|gold|`, matching the truncation `ndcg_at_k` already applies, so the cut-off must travel with the number and it is not directly comparable to a published MAP over full gold.
 
-Gold labels are blind-audited, not author-asserted. Three annotators on separate model families relabelled all 46 queries from an anonymized packet — document ids masked to `D01`-`D68` (eight real ids name their own answer), query classes withheld, gold sets *and their sizes* withheld, corpus order shuffled — and agreed with the file on 43, 42 and 40 of 46, with 39 unanimous. Two labels the audit overturned are corrected: `q-multi-5` drops `d-mfa-baseline` (the remaining `d-vpn-access` states the VPN and MFA requirement together, so it is self-sufficient) and moves to `clean_fact`, since a single-document lookup sitting in `multi_hop` was inflating that class; `q-reinforcement-1` drops both audit documents, because corroboration is not requirement and the baseline answers the question outright. Both corrections raise `recall_all`/`recall_micro`, and `multi_hop` becomes a harder class once the single-document lookup leaves it, which widens the keyword-versus-semantic separation rather than narrowing it. Agreement is evidence the surviving questions are unambiguous, **not** proof the labels are correct: every annotator was a language model, so a shared blind spot reads as consensus. The five queries where the annotators disagreed with each other are rewritten so one reading is right, with gold sets unchanged: `q-contradiction-4` asks which ADR overrides the wiki, which the general `d-doc-precedence` rule cannot answer because it names no ADR; `d-mfa-audit-q4` reports only its own quarter, so `q-reinforcement-2` needs both audits, and `q-reinforcement-4` names both quarters; the two abstention queries ask for an approver the corpus never names, rather than a per-service budget `d-cost-budget` addresses or a staging scope `d-retention-2025` never excludes. External anchoring of the relevance judgments remains open. The coarse separations are the stable evidence: `multi_hop` recall_all@3 0.250 keyword versus 1.000 semantic, and at k=1 neither leg is saturated (recall_any@1 0.650 versus 0.800), which is what makes that cut-off informative. `abstention_rate` is measured over 6 queries; it reads 0.000 because bare `HybridRetriever.search` has no score floor, so the store never abstains. **A v1 report and a v2 report measure different corpora and must not be differenced** — and nothing mechanical stops it: `bench kb-retrieval` prints its report and writes no file (it has no `--out-dir`), while `bench compare` only diffs saved memory-retrieval reports and never sees a KB run. The one guard is the corpus identity in the printed header, and the corpus *name* alone is not enough of one: the two audit corrections change v2's gold labels under the unchanged name `kb_golden_v2`, so a print scored against the original labels (keyword nDCG@3 0.825, `multi_hop` recall_all@3 0.400) and one scored against the corrected labels (0.834, 0.250) differ by a labelling change, not by retriever movement. The golden set therefore carries a `label_revision` integer (`2` for v2: `1` for the two label corrections, `2` for the five rewrites, which leave the keyword triple unchanged and move the semantic one; absent on v1, whose labels are the author's originals) that the header prints beside the name — `KB retrieval eval: kb_golden_v2 (label revision 2)`, or `(unrevised labels)` when the field is absent — and a print made from the original v2 labels reads the bare name. Two prints are comparable only when both name **and** revision match; read both before comparing two of these numbers, and bump `label_revision` with every edit under an existing name that can move a score — a gold label, a question or a document.
+Gold labels are blind-audited, not author-asserted. Three annotators on separate model families relabelled all 46 queries from an anonymized packet — document ids masked to `D01`-`D68` (eight real ids name their own answer), query classes withheld, gold sets *and their sizes* withheld, corpus order shuffled — and agreed with the file on 43, 42 and 40 of 46, with 39 unanimous. Two labels the audit overturned are corrected: `q-multi-5` drops `d-mfa-baseline` (the remaining `d-vpn-access` states the VPN and MFA requirement together, so it is self-sufficient) and moves to `clean_fact`, since a single-document lookup sitting in `multi_hop` was inflating that class; `q-reinforcement-1` drops both audit documents, because corroboration is not requirement and the baseline answers the question outright. Both corrections raise `recall_all`/`recall_micro`, and `multi_hop` becomes a harder class once the single-document lookup leaves it, which widens the keyword-versus-semantic separation rather than narrowing it. Agreement is evidence the surviving questions are unambiguous, **not** proof the labels are correct: every annotator was a language model, so a shared blind spot reads as consensus. The five queries where the annotators disagreed with each other are rewritten so one reading is right, with gold sets unchanged: `q-contradiction-4` asks which ADR overrides the wiki, which the general `d-doc-precedence` rule cannot answer because it names no ADR; `d-mfa-audit-q4` reports only its own quarter, so `q-reinforcement-2` needs both audits, and `q-reinforcement-4` names both quarters; the two abstention queries ask for an approver the corpus never names, rather than a per-service budget `d-cost-budget` addresses or a staging scope `d-retention-2025` never excludes. Judgments made outside the project come from the `--external` set below. The coarse separations are the stable evidence: `multi_hop` recall_all@3 0.250 keyword versus 1.000 semantic, and at k=1 neither leg is saturated (recall_any@1 0.650 versus 0.800), which is what makes that cut-off informative. `abstention_rate` is measured over 6 queries; it reads 0.000 because bare `HybridRetriever.search` has no score floor, so the store never abstains. **A v1 report and a v2 report measure different corpora and must not be differenced** — and nothing mechanical stops it: `bench kb-retrieval` prints its report and writes no file (it has no `--out-dir`), while `bench compare` only diffs saved memory-retrieval reports and never sees a KB run. The one guard is the corpus identity in the printed header, and the corpus *name* alone is not enough of one: the two audit corrections change v2's gold labels under the unchanged name `kb_golden_v2`, so a print scored against the original labels (keyword nDCG@3 0.825, `multi_hop` recall_all@3 0.400) and one scored against the corrected labels (0.834, 0.250) differ by a labelling change, not by retriever movement. The golden set therefore carries a `label_revision` integer (`2` for v2: `1` for the two label corrections, `2` for the five rewrites, which leave the keyword triple unchanged and move the semantic one; absent on v1, whose labels are the author's originals) that the header prints beside the name — `KB retrieval eval: kb_golden_v2 (label revision 2)`, or `(unrevised labels)` when the field is absent — and a print made from the original v2 labels reads the bare name. Two prints are comparable only when both name **and** revision match; read both before comparing two of these numbers, and bump `label_revision` with every edit under an existing name that can move a score — a gold label, a question or a document.
+
+`kirocrew bench kb-retrieval --external` scores a second, externally anchored set after the authored one, never instead of it: `kb_external_nfcorpus_v1`, 40 queries and 224 papers sampled from BEIR's NFCorpus test split, whose relevance judgments come from NutritionFacts.org's links to the papers it cites, so neither our retriever nor our annotators shaped them. Only ids are committed (`eval/bench/data/kb_external_nfcorpus_v1.json`: benchmark, pinned revisions, seed, query and doc ids); the text (~2.3 MB, CC BY-SA 4.0 per BEIR's dataset card) is fetched on first use into the bench cache at pinned revisions and checked against pinned SHA-256s, like LoCoMo. Sampling (`eval/bench/kb_external.py`) keeps only queries with 2-5 relevant papers, so `recall_all` and MAP have something to measure, and pads each with up to three papers the benchmark judged relevant to a neighbouring query, which makes the rivals topically adjacent without letting any retriever pick them. Both of NFCorpus's relevance grades count as gold, so its nDCG is binary, not the benchmark's graded figure. Every query is scored as `clean_fact`: NFCorpus models none of the supersession classes or abstention, which is why the authored set and its per-class breakdown stay, and its report prints no `abstention_rate` (a set with no abstention queries has none to print). Keyword-only it reads nDCG@3 0.425 / MRR@3 0.600 / MAP@3 0.372 against v2's 0.834 / 0.804 / 0.781. That is a harder, out-of-domain set (medical abstracts), not a like-for-like comparison, and no CI gate reads either number.
 
 The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a floor-aware variant of the Tier-1 ruler if the agent-visible surface is ever to be scored directly — the precondition for tuning recency, adding a reranker, or content-typed TTL against evidence rather than intuition.
 
@@ -119,7 +120,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/watcher.py` | `KnowledgeWatcher` — polls registered sources for changes; sig-gated self-heal re-embed (single-flight, off-loop DB access) |
 | `knowledge/llm_pool.py` | `LLMPool` / `Worker` / `AcpWorker` — bounded pool of long-lived, sweep-shielded ACP workers |
 | `knowledge/extractor.py` | `EntityExtractor` — LLM entity/relation extraction over the pool |
-| `knowledge/agent_fetch.py` | `fetch_url_content()` — agent-assisted URL fetch over the pool (tools opt-in via `KIROCREW_KNOWLEDGE_FETCH_TOOLS`) |
+| `knowledge/url_fetch.py` | `fetch_page()` — the gateway's own fetch of one web page: `url_fetch_refusal()` (https, listed host) plus `link_unfurl.vet_unfurl_url` (public addresses, pinned connection) on the first URL and every redirect hop |
 | `knowledge/chunker.py` | `HeadingAwareChunker` — text/markdown/code/slide chunking |
 | `knowledge/embedder.py` | `InProcessEmbedder` — embedding in-process via the shared `EmbeddingBackend` (vendored llama-cpp runtime, no server and no HTTP hop); owns `embed_signature` (per-item vector-space identity) |
 | `knowledge/store.py` | `KnowledgeStore` — the import path of the store: the per-thread connection, construction and damaged-file recovery, the ingestion gate, and the class that binds its methods from the `store_parts` owners below |
@@ -137,22 +138,24 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration; the import path of the owners below |
 | `knowledge/ingestion_budget.py` | `ImportChunkBudget` / `ImportChunkBudgetError` — the explicit-import cross-file chunk ceiling and its refusal |
 | `knowledge/ingestion_rebuild.py` | `rebuild_embeddings` — the signature-gated corpus re-embed; `start_rebuild_job` (its single-flight job row), `count_stale_items` (the watcher's trigger count) |
+| `knowledge/ingestion_jobs.py` | `reclaim_interrupted_ingest_jobs` — the startup sweep that moves source-ingest job rows a stopped gateway left `processing` to `abandoned` |
 | `knowledge/dedup.py` | Cross-source deduplication |
-| `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
+| `knowledge/connectors/` | `BaseConnector`, `local_folder` + `bedrock_kb` source connectors |
 | `mcp_tools/knowledge.py` | `local_knowledge_search` MCP tool handler |
 | `mcp_core.py` | Cached `(KnowledgeStore, embedder)` accessor the tool reads |
 | `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API: the facade every route below is imported and patched through; it keeps no code of its own |
 | `dashboard/handlers/knowledge_access.py` | the owner gate on mutating routes (`_require_knowledge_owner`), the SEL audit, the app's store, pipeline and task registry |
-| `dashboard/handlers/knowledge_library.py` | namespaces, items, entities and the graph, the source-scoped list and `/source-counts`, statistics |
+| `dashboard/handlers/knowledge_library.py` | namespaces, items (an item `PATCH` reads a null `title` or `item_type`, both NOT NULL columns, as no change), entities and the graph, the source-scoped list and `/source-counts`, statistics |
 | `dashboard/handlers/knowledge_sync.py` | a source's sync status, the sync claim, `POST /api/knowledge/sources/{id}/sync` and the tasks it hands off |
-| `dashboard/handlers/knowledge_sources.py` | listing, adding, renaming, deleting, pausing, confirming and resuming sources; the folder picker; a folder source's file rows; `GET /api/knowledge/config` |
-| `dashboard/handlers/knowledge_ingest.py` | text an agent fetched for a source (`POST /api/knowledge/sources/{id}/ingest-text`), uploaded files and archives, `GET /api/knowledge/jobs/{id}` |
+| `dashboard/handlers/knowledge_sources.py` | listing, adding, renaming, deleting, pausing, confirming and resuming sources; editing a folder source's `ignore_patterns` (`PATCH /api/knowledge/sources/{id}`, a list of strings, trimmed, blanks dropped; applied by the next sweep); the folder picker; a folder source's file rows; `GET /api/knowledge/config` |
+| `dashboard/handlers/knowledge_ingest.py` | text an agent fetched for a source (`POST /api/knowledge/sources/{id}/ingest-text`; a non-string `name` falls back to the source's name and a list or object `namespace` to `default`, so neither fails the ingest), uploaded files and archives, `GET /api/knowledge/jobs/{id}` |
 | `dashboard/handlers/knowledge_bundles.py` | `.knowledge` export and import |
 | `dashboard/handlers/knowledge_embeddings.py` | embedding status, the batch embed that fills missing vectors, the background rebuild job |
 | `dashboard/handlers/knowledge_agent_context.py` | the chat context-injection search (`GET /api/knowledge/search-for-context`) and the agent's `POST /api/knowledge/agent-document` |
 | `dashboard/handlers/knowledge_lifecycle.py` | `setup_knowledge_routes`, the source watcher, artifact auto-ingest, live config reloads, the pools' shutdown |
 | `agent_materialization/service_agents.py:_install_knowledge_agent` | Installs the `kirocrew-knowledge` kiro-cli agent used by the pool |
 | `agent_materialization/service_agents.py:repair_knowledge_agent_spec` | Rewrites that spec from the same template before each pool worker spawn when the file on disk is not it |
+| `agent_materialization/service_agents.py:knowledge_view_without_registered_injection` | Builds the spec's native skill view from the template when the file's only change is an injection an edition-registered filter (`agent_spec_injections.py`) removes exactly, so a Kiro worker launches with zero tools and the file is not rewritten |
 
 `KnowledgeStore`'s behaviour lives in the `knowledge/store_parts/` owners in the table above,
 one responsibility each. A member's body is a module-level function there whose first
@@ -204,14 +207,17 @@ path. New budget work goes to `ingestion_budget.py`, new re-embed or job-row wor
 | `FileReader.SUPPORTED` | see below | `readers.py` | Extensions the watcher/reader will ingest |
 | `DEFAULT_POOL_SIZE` | `3` | `llm_pool.py` | Worker count in a pool |
 | `DEFAULT_TIMEOUT` | `60.0` | `llm_pool.py` | Per-message worker timeout (extraction) |
-| `FETCH_TIMEOUT` | `120.0` | `llm_pool.py`, `agent_fetch.py` | URL-fetch worker timeout |
+| `FETCH_TIMEOUT` | `120.0` | `llm_pool.py` | worker timeout |
+| `FETCH_TIMEOUT_SECONDS` / `MAX_PAGE_BYTES` | `30.0` / 5 MiB | `url_fetch.py` | one web-page fetch, all hops included; the hop limit is `link_unfurl.MAX_REDIRECTS` |
 | `AGENT_NAME` | `"kirocrew-knowledge"` | `llm_pool.py` | kiro-cli agent the ACP worker drives |
 | `_VALID_SANDBOX_MODES` | `{auto, standard, strict, cc, off}` | `llm_pool.py` | Accepted `agent.sandbox` values |
 | `HARD_SKIP_DIRS` | `{.git, node_modules, __pycache__, .venv, venv, dist, build, out, target, cdk.out}` | `folder_watcher.py` | Directories never walked |
 | `_LARGE_REBUILD_WARN_THRESHOLD` | `1000` | `watcher.py` | Stale-item count at which the self-heal rebuild logs a prominent WARNING (usually an embedder-sig change invalidating the whole corpus) |
 | `DEFAULT_MAX_FILES` | `5000` | `folder_watcher.py` | Per-source file cap (newest-first) |
-| `CHUNK_TOKEN_SIZE` | `800` | `chunker.py` | Target chunk size (words) |
-| `CHUNK_OVERLAP` | `200` | `chunker.py` | Chunk overlap |
+| `CHUNK_TOKEN_SIZE` | `800` | `chunker.py` | Target chunk size in estimated tokens (`_word_count`): a space-separated word is 1.3; in a script written without spaces (`_UNSPACED`: CJK, kana, Thai, Lao, Myanmar, Khmer, full-width forms) each character is 1, and other characters in that run about 4 per token. A run with no unspaced script is one word however long. An unspaced run too large for one chunk is cut into slices of the source |
+| `CHUNK_OVERLAP` | `200` | `chunker.py` | Chunk overlap, in the same estimated tokens; an unspaced tail is cut to this budget rather than copied whole |
+| `MAX_CHUNKS_PER_FILE` | `50` | `chunker.py` | Most chunks one document becomes. A document that splits into more merges neighbouring chunks (`_merge_plan`, `_fit_cap`) instead of dropping its tail |
+| `MAX_MERGE_WIDTH` | `4` | `chunker.py` | Most pieces one stored chunk merges, so a stored chunk stays a few times `CHUNK_TOKEN_SIZE`. A document past `MAX_CHUNKS_PER_FILE` x `MAX_MERGE_WIDTH` pieces keeps the first ones and logs a warning naming how many were indexed |
 | `VECTOR_RRF_WEIGHT` | `2.0` | `retrieval.py` | Weight of the vector leg in RRF fusion |
 | `DEFAULT_MODEL` | `"qwen3-embedding:0.6b"` | `embedder.py` | Embedding model the in-process runtime loads, and the fallback id when the active backend cannot be reached to name itself; the live identity is `get_shared_embedder().model_id` |
 | `TIMEOUT` | `10` | `embedder.py` | Retained for config compatibility (`knowledge.embed_timeout_secs`, positive-only; 0/unset/negative → this default). The in-process runtime has no per-request call for it to bound |
@@ -240,7 +246,7 @@ It includes markdown/plain-text (`.md`/`.txt`/`.org`, AsciiDoc `.adoc`/`.asciido
 
 **Dispatch (`_DISPATCH`, `readers.py`)** routes only `.pdf`/`.pptx`/`.docx`/`.html`/`.htm`/`.adoc`/`.asciidoc` to specialized readers. Anything else — including `.org`, `.txt`, `.md`, and every source-code extension — falls through to the generic `_read_text` path and into the generic chunker downstream. So `.org` is treated as plain text; there is no Org-mode-specific parser. Text decoding (shared by `_read_text` and `_read_html` via `_decode_text_bytes`) is a single-open buffer decode: BOM-sniffed UTF-16 LE/BE first, otherwise UTF-8 with a latin-1 fallback. The UTF-16 branch is extension-agnostic — any text format arriving as BOM'd UTF-16 decodes correctly, not only the PowerShell files (Windows tooling writes UTF-16LE) that motivated it.
 
-**`.pptx` is intentionally out of `SUPPORTED`** even though `_read_pptx` exists: python-pptx is not declared in `setup.cfg`, so the format is kept off the allowlist (the comment at `readers.py` documents this). Reachable only if `.pptx` were re-added to `SUPPORTED`.
+**`.pptx` is intentionally out of `SUPPORTED`** even though `_read_pptx` exists: python-pptx is not declared in `setup.cfg`, so the format is kept off the allowlist (the comment at `readers.py` documents this). The folder scan skips it, and the upload route (`POST /api/knowledge/ingest`) refuses an extension that has a `_DISPATCH` reader but is outside `SUPPORTED` (today only `.pptx`) with 400 `unsupported_file_type` before it streams the file. A drop or pick closes the Knowledge page's Add Source panel, and a failed upload row opens it again (`SourcesList.tsx`), so that refusal's `error` text is in view. An upload with any other unlisted extension still reads as text through `_read_text`.
 
 **Binary/optional-dep readers** degrade gracefully — a missing optional import returns an `{'format': 'error'}` meta with an install hint rather than raising:
 - `_read_pdf` — pdfplumber, run in a memory-bounded child (`kiro_crew.pdf_extract`,
@@ -269,10 +275,11 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
 - Skips files that are never documents by case-insensitive basename match against `DEFAULT_IGNORE_GLOBS`. Two classes:
   - OS junk / editor and Office lock files (macOS AppleDouble `._*`, `.ds_store`, Office `~$*`, LibreOffice `.~lock.*`, `thumbs.db`, `desktop.ini`, `*.tmp`, editor swap/backup, partial downloads). A discovered-but-unreadable file carrying a supported extension fails ingestion, is never auto-retried, and would leave a source permanently stalled below 100%.
   - Dependency lock files (`package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `bun.lock`, `poetry.lock`, `uv.lock`, `pipfile.lock`, `cargo.lock`, `gemfile.lock`, `composer.lock`, `packages.lock.json`, `gradle.lockfile`, `flake.lock`). These ingest successfully, which is the problem: they are large machine-generated resolution output, each chunk costs one extraction call, and regenerating one bills it again on the next sweep.
-- Applies the source's `ignore_patterns` (fnmatch against the relative path).
+- Applies the source's `ignore_patterns` (`fnmatchcase` against the `/`-separated relative path). A matched file the sweep tracks is judged LAST, after every rule below, and reported through `_walk(..., pattern_ignored=...)` when the patterns alone exclude it.
 - **`.kiroignore` (`kiroignore.py`)**: when the SOURCE ROOT holds a `.kiroignore`, its rules are compiled once per sweep and applied on top of everything above. Matching **directories are pruned in place** during `os.walk`, so a generated tree (`cdk.out`, coverage output) is never descended rather than filtered file by file. The rule file itself is never indexed — its extensionless name is in `FileReader.SUPPORTED`, so it would otherwise be ingested as a document.
   - Syntax is a documented SUBSET of gitignore: `#` comments, blank lines, trailing `/` (directories only), leading `/` (root-anchored), any other embedded `/` (also anchored; a separator-free pattern matches that basename at any depth), `*` / `?` / `**`, and `!` negation where the last matching rule wins. NOT supported: `[a-z]` character classes (brackets match literally), backslash escapes other than a leading `\#` / `\!`, nested `.kiroignore` files in subdirectories, and re-including a path underneath an excluded directory (as in git).
   - **Defensive by contract**: the file is user-authored and re-read every sweep, so an unreadable, oversized (> `MAX_FILE_BYTES` = 64 KiB) or undecodable one degrades to "no extra exclusions" and never raises mid-scan; a single unusable pattern is dropped and the rest of the file still applies. Rules are capped at `MAX_RULES` = 1000.
+  - **Encoding**: a file starting with a UTF-16 LE/BE BOM (Windows PowerShell 5.1's `Out-File` and `>` default) is decoded as UTF-16; anything else as UTF-8 with an optional BOM stripped, `errors="replace"` in both cases. Decoded text containing NUL (BOM-less UTF-16, binary) logs one WARNING per sweep naming the file and asking for UTF-8, since no rule can contain NUL and its rules match nothing.
   - **`.gitignore` is deliberately NOT read as a fallback.** A scan treats a file that stops being discovered as DELETED and archives its items (`_handle_deleted`), so honouring `.gitignore` implicitly would, on the next sweep, drop already-indexed documents out of every existing folder source whose root happens to be a repository. Creating a `.kiroignore` is an explicit act, so the same removal is the user's intent.
 - **Extension filter**: keeps a file only if its lower-cased suffix is in `FileReader.SUPPORTED` **or** equals `.canvas` (Obsidian canvas files).
 - **Sensitive-path guard**: resolves each candidate (`Path.resolve()`) and skips it if `is_sensitive_path()` matches.
@@ -287,14 +294,15 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
   concurrent attended ingest cannot be downgraded by a watcher sweep.
 - Discovered files above `props["max_files"]` (default `DEFAULT_MAX_FILES` = 5000) are capped **newest-first** (sort by mtime desc); the surplus count is reported as `capped`.
 - **AsciiDoc include set.** `_do_scan` builds one `frozenset` of the resolved paths `_walk` itself screened (`is_sensitive_path`, `confine_to_root`) for every file it selected (the full, pre-cap walk; collected through `_walk(..., screened_out=...)`), each passed through `os.path.normcase` once, never a second resolution of the discovered names, so a name re-pointed after the walk cannot admit a file the walk rejected. It passes the include set for every file it ingests, and a fresh `included` set for each file, since the reader is picked by the resolved suffix and a `.md` link to an `.adoc` file inlines too: `_ingest_file(..., include_paths=..., included=...)` → `IngestionPipeline.ingest_file(...)` → `FileReader.read`, where only the AsciiDoc reader uses them. Every other `ingest_file` caller leaves both `None`. See *AsciiDoc includes* above.
-- **AsciiDoc include record.** `folder_include_targets(source_id, file_path, targets)` holds, per includer, the JSON list of targets its indexed text inlined; no row means it inlined nothing, which is true of every row written before the table existed (main read `.adoc` as plain text). It is a side table so the many `INSERT OR REPLACE` writers of `folder_file_state` need not carry it and an older build cannot null it; an older build ignores it, and a record it leaves stale can only cause an extra re-read. The record is replaced, or deleted when empty, only on a successful read: in the commit callback before its `done` update and again before the caller's `done` write, and inside the gate's transaction by `_record_deduped_state`. `failed`, `scanning`, `skipped` and touched-but-unchanged writes leave it, so it keeps naming what the indexed text still holds. `_handle_deleted` and `delete_source_cascade` delete it with the row. Each sweep (step 4) loads the source's records off the loop and marks an includer **stale** when it has a state row, is still in the walk, and its record does not parse or names a target outside this sweep's walk set. Staleness is recomputed from the record and the walk every sweep, so it survives a pause, a chunk-budget stop, a cancellation or a crash. The stale text leaves in that same step, whatever later stops the sweep (chunk budget, pause, a failed re-read): in one `BEGIN IMMEDIATE` (`_retire_stale_include_text`), a stale row with items has them archived (as `_handle_deleted` does), every stale row gets `item_ids = '[]'` and `text_hash = NULL`, and a `done`/`deduped`/`pending` one also gets `content_hash = ''` (a `scanning` row is re-read anyway and keeps the hash that keys its retry budget), which fails both unchanged checks (the mtime shortcut needs a non-empty stored hash), so an includer with an empty bytes hash is processed first even when its target came back before it was reached. A stale row with no items, whatever its status, first releases its claim on its previous `text_hash`, once per distinct hash, because its expanded text changes without its bytes changing, which `release_stale_claim` cannot see. The release preserves a shared claim when another document in the source has the same text hash; the shared-claim count ignores folder rows the same sweep removes and the other stale rows, each of which is re-read and re-claims through the dedup gate if it is still a duplicate. The record stays, so a sweep stopped before the re-read finds the row stale again, except on a `failed`/`skipped` row, which the scan does not re-read: its record goes and the user's retry reads it again. Every other stale row is processed first in step 5, ahead of and past the `max_files` cap, with both unchanged shortcuts bypassed. So is an includer (a row with a record) left `scanning`, since its newest group may not match its record yet, and one an earlier sweep retired but did not reach (empty `content_hash`); neither is retired in step 4 unless its record also names a target outside the walk.
-- Deletion detection uses the **full** discovered set (pre-cap) so capping never triggers false deletions; a vanished file's items are archived via `_handle_deleted` → `store.delete_items_batch`.
+- **AsciiDoc include record.** `folder_include_targets(source_id, file_path, targets)` holds, per includer, the JSON list of targets its indexed text inlined; no row means it inlined nothing, which is true of every row written before the table existed (main read `.adoc` as plain text). It is a side table so the many `INSERT OR REPLACE` writers of `folder_file_state` need not carry it and an older build cannot null it; an older build ignores it, and a record it leaves stale can only cause an extra re-read. The record is replaced, or deleted when empty, only on a successful read: in the commit callback before its `done` update, before the caller's `done` write when that write lands, and inside the gate's transaction by `_record_deduped_state`. `failed`, `scanning`, `skipped` and touched-but-unchanged writes leave it, so it keeps naming what the indexed text still holds. `_handle_deleted` and `delete_source_cascade` delete it with the row. Each sweep (step 4) loads the source's records off the loop and marks an includer **stale** when it has a state row, is still in the walk, and its record does not parse or names a target outside this sweep's walk set. Staleness is recomputed from the record and the walk every sweep, so it survives a pause, a chunk-budget stop, a cancellation or a crash. The stale text leaves in that same step, whatever later stops the sweep (chunk budget, pause, a failed re-read): in one `BEGIN IMMEDIATE` (`_retire_stale_include_text`), a stale row with items has them archived (as `_handle_deleted` does), every stale row gets `item_ids = '[]'` and `text_hash = NULL`, and a `done`/`deduped`/`pending` one also gets `content_hash = ''` (a `scanning` row is re-read anyway and keeps the hash that keys its retry budget), which fails both unchanged checks (the mtime shortcut needs a non-empty stored hash), so an includer with an empty bytes hash is processed first even when its target came back before it was reached. A stale row with no items, whatever its status, first releases its claim on its previous `text_hash`, once per distinct hash, because its expanded text changes without its bytes changing, which `release_stale_claim` cannot see. The release preserves a shared claim when another document in the source has the same text hash; the shared-claim count ignores folder rows the same sweep removes and the other stale rows, each of which is re-read and re-claims through the dedup gate if it is still a duplicate. The record stays, so a sweep stopped before the re-read finds the row stale again, except on a `failed`/`skipped` row, which the scan does not re-read: its record goes and the user's retry reads it again. Every other stale row is processed first in step 5, ahead of and past the `max_files` cap, with both unchanged shortcuts bypassed. So is an includer (a row with a record) left `scanning`, since its newest group may not match its record yet, and one an earlier sweep retired but did not reach (empty `content_hash`); neither is retired in step 4 unless its record also names a target outside the walk.
+- Deletion detection uses the **full** discovered set (pre-cap) so capping never triggers false deletions; a vanished file's items are archived via `_handle_deleted` → `store.delete_items_batch`. **Editing `ignore_patterns` never removes indexed content:** a row whose file the patterns alone exclude and that still holds items (whatever its status: a `failed` re-read keeps the previous version's items) is kept as it is and gets no further updates (no re-read, no `last_seen` bump). A kept AsciiDoc includer keeps the included text it was indexed with, as any frozen copy does. Deleting the file, or any other rule excluding it (`.kiroignore`, a sensitive path, `confine_to_root`, the extension or size filters), still archives it, and removing the pattern again picks the file back up without re-ingesting unchanged content. A row holding no items is dropped as before. Only a tracked file pays for the later rules: `_walk(..., tracked=...)` drops any other pattern-matched file before it is resolved or stat'ed.
 - Change detection is mtime-then-content-hash: unchanged mtime with a non-empty stored bytes hash → `last_seen` bump only; changed mtime but identical SHA-256 → state refresh, no re-ingest. A stale includer skips both.
 - Claim release for a stale includer and on deletion uses the text hash, falling back to the bytes hash for legacy rows with a null or empty text hash. Ownership lookups use `COALESCE(NULLIF(text_hash, ''), content_hash)` so a surviving legacy plaintext copy still preserves a shared claim. This fallback cannot reconstruct a missing transformed-text hash.
 - Batched `last_seen` flush/commit and stale-claim release run off the asyncio
   event loop; each flush and its commit stay within one worker hop so they share
   the thread-local SQLite connection.
 - Per-file state lives in the `folder_file_state` table with `status` ∈ `{done, scanning, skipped, failed, deduped}`. `scanning` is written **before** ingest so a crash mid-file is recoverable; `skipped`/`failed`/`deduped` files are not auto-retried (user must retry).
+- **The committed group is recorded inside the commit hop, and never over a verdict.** `_ingest_file`'s `on_committed` callback turns the `scanning` marker into the `done` row in the pipeline's finalize hop; a write that fails (writer-lock contention) is retried once there under `BEGIN IMMEDIATE`, and a second failure is swallowed so it cannot poison the committed ingest. The scan's own terminal write (`_settle_done`) then lands only while the row is still `scanning`, read and written under one `BEGIN IMMEDIATE` in a `run_to_completion` hop. Once the callback's write lands the row is a `done` row the dedup sweep enumerates, so a collapse may already have deleted the group and marked the row `deduped`; writing the captured ids over that would name deleted items, and the sweep's verdict stands instead.
 - **TOCTOU defense**: `_ingest_file` re-resolves symlinks and re-checks `is_sensitive_path` at ingest time; a block writes `status='failed'` and emits an SEL `knowledge.source.file.ingest_denied` (`outcome="denied"`, `reason=sensitive_path_toctou`) audit event.
 - After a successful scan, each newly ingested/changed file gets a **targeted** cross-source dedup (`dedup_document(..., apply=True)`) — O(k·n) over the k changed files rather than a full O(n²) corpus sweep — so a folder copy collapses any matching one-shot upload.
 - Fuzzy filename matching compares valid ISO dates with their year intact: a numeric date whose span falls wholly inside a valid ISO span is not also parsed as a yearless date, while a numeric date that only partly overlaps an over-matched ISO span keeps its own explicit year. Reports dated a year apart therefore remain distinct even when their embeddings are nearly identical, including date-range filenames such as `04-01-2024_04-30-2024`. Malformed ISO-shaped tokens remain available to the generic numeric-date guard, and genuinely separate numeric dates in the filename still participate in the closest-date comparison.
@@ -338,7 +346,7 @@ ingest.
 **The Auto-added row has nothing to sync.** Kiro Crew fetches nothing for it: its
 documents arrive only when the agent submits text. Its uri `agent://` is a control uri,
 not a URL, so `POST /api/knowledge/sources/{id}/sync` never hands it to the agent
-URL-fetch fallback, whose failure would leave the row in a sticky `error`. The request
+web-page fetch, whose failure would leave the row in a sticky `error`. The request
 answers 409 `source_not_syncable` and the row's status is unchanged. `GET
 /api/knowledge/sources` carries the same rule as a per-row `syncable` flag (false only
 for this row), and the Sources list offers Sync from that flag, so the button and the
@@ -472,6 +480,24 @@ persist bookkeeping, so a rolled-back partial ingest stays retryable — bounded
 the attempted-charge above — instead of being parked behind a recorded hash while
 the superseded document stays searchable.
 
+**On battery.** `power.on_battery` (`normal` | `reduced` | `paused`, default `normal`)
+gates `KnowledgeWatcher._scan`, the background sweep that runs the folder loop, the
+single-file loop, the stale re-embed tail and the scheduled dedup. `_battery_budget`
+decides once per sweep and the decision is latched, so unplugging midway never
+aborts work in flight. `normal`, or any power source other than `POWER_BATTERY`
+(`POWER_UNKNOWN` included, see [platform-compat](../common/platform-compat.md)),
+leaves `sweep_chunk_budget` unchanged, and the power source is read only when the
+mode throttles. On battery, `reduced` spends a quarter of the budget
+(`BATTERY_REDUCED_DIVISOR`), never below `BATTERY_REDUCED_FLOOR_CHUNKS` and never
+above the configured budget; an unbounded budget (0) is bounded by a quarter of the
+default. `paused` returns before the sweep reads anything, and sources resume on
+the first sweep back on mains. An explicit add never runs through `_scan`: uploads,
+the agent's write path and artifacts call `ingest_file` directly, and confirming or
+resuming a folder source calls `FolderWatcher.scan_source` directly, so the policy
+never blocks them. That folder scan is still paced by `folder_ingest_chunk_budget`,
+though: the rest of a folder larger than one batch arrives through `_scan`, so under
+`paused` it waits for mains like any other sweep work.
+
 **Explicit-import chunk ceiling.** Every budget above governs a WATCHER sweep. The
 explicit one-shot import routes reach `IngestionPipeline` directly and no sweep
 counter ever sees them, so they carry their own cross-file ceiling:
@@ -517,6 +543,17 @@ required, not decorative: a disabled budget admits with a token of `None`, so
 leaving the flag `True` would re-enter the budget on a second config read.
 `release_import_budget` reclaims a token the caller never handed over.
 
+*Deferral after acceptance says why.* A background ingest whose content is still
+on disk or re-fetchable (the dashboard single-file add and its Sync, a web-page
+Sync, auto-research add-to-knowledge) lands a refusal in `pending`, never `error`,
+and writes `PENDING_REASON_PROP` (`pending_reason`) = `import_budget` into the
+row's properties in the same take (`merge_source_properties`). The Sources list
+shows that reason only while the row reads `pending`, and the sync tasks' other
+`pending` write (the path-probe deferral) removes it. The key outlives a later
+`synced` or `error` stamp, so `import_bundle` drops it from every row it inserts
+(the row lands at its own initial status there). A later wait is never
+explained with an earlier deferral's reason.
+
 **Cost visibility.** `POST /api/knowledge/sources` walks a folder before ingesting
 anything and returns `file_count`, `capped_file_count`, `estimated_chunks`,
 `estimated_llm_calls` and `chunk_budget_per_sweep` alongside the
@@ -526,11 +563,54 @@ ingested. The chunk figure is derived from the chunker's target size and file by
 (`_estimated_chunks`), never measured: it exists to show order of magnitude before the
 user confirms, and no code path treats it as a bound.
 
+**Web-page sources and the fetch allowlist.** A source with no connector (the
+dashboard's Web Page type is `url`) is fetched by the gateway itself,
+`url_fetch.fetch_page`, and handed to `ingest_file` like an upload: decoded (HTML by
+`link_unfurl.decode_html`: the header's charset, then a `<meta charset>`, then UTF-8; text and
+Markdown by the header's charset, else UTF-8, never sniffed from their prose), scrubbed with `security.redact` (outside
+text, and `ingest_file` scrubs only an agent-added document itself), and staged as
+UTF-8 under the suffix of its content type (`.html`, `.txt`, `.md`; anything else is
+refused). No
+agent is involved and no worker gains a tool. `knowledge.doc_ingest_hosts` gates it,
+read fresh on every use, and two checks run on the first URL and on every redirect
+hop:
+
+- `url_fetch.url_fetch_refusal`, the user's rule: `https://` only, port 443 or none,
+  no userinfo, no backslash, whitespace or control character, an ASCII host, and that
+  host equal to a listed entry (case and a trailing dot aside, no subdomain match).
+- `link_unfurl.vet_unfurl_url`, the network rule: one resolution, and every address
+  must be public (loopback, private, link-local, CGNAT and the metadata endpoint are
+  refused, tunnel encodings unwrapped). The request then goes through
+  `link_unfurl.pinned_connector`, so the socket can reach only the addresses that
+  check approved: a second DNS answer cannot move it (DNS rebinding), and a redirect
+  hop is resolved and checked again.
+
+A redirect is followed only to the same host (`url_redirect_off_host` otherwise), at
+most `MAX_REDIRECTS` times. The whole fetch is bounded by `FETCH_TIMEOUT_SECONDS`, and
+the body by `MAX_PAGE_BYTES` while it is read (never by trusting `Content-Length`);
+a page over the cap is refused, not truncated. The request asks for `identity` and
+does not decompress, so the cap bounds the bytes held; a compressed answer is refused. The rule runs at three points:
+`add_source` refuses the row (403 `url_host_not_allowed`, otherwise 400 with the
+rule's code), `POST /sources/{id}/sync` refuses before any status write, and the
+background task reads the list again before it fetches, so a host removed after the
+request was accepted is not fetched. Every refusal writes `source.add_denied` or
+`source.sync_denied` to the security event log with the rule's code. The list is
+empty by default, so a default config fetches nothing. A load that could not read
+`config.json`, `config.local.json` or the knowledge section whole fails closed:
+`_doc_ingest_hosts` raises `DocIngestHostsUnavailable`, add and sync answer 503
+`doc_ingest_hosts_unavailable`, and the background task ends in `error`, because the
+loader's defaults are not the user's list. `GET /api/knowledge/config` returns the
+list as `url_allowed_hosts` (`null` when it cannot be read); the add form re-reads
+it each time it opens, reports a failed or `null` read as an error, never as an
+empty list, and offers the `kirocrew config set` command row
+while the list is empty or the typed link's site is not on it (prefilled with the listed
+sites plus that one, the Add button held until it is listed).
+
 ## 3. LLMPool workers (`llm_pool.py`)
 
-Entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch_url_content`) acquire workers from **workload-isolated** `LLMPool` instances — provider-agnostic, bounded pools of **long-lived** ACP workers (the extraction pool sized by `knowledge.extraction_pool_size`, default `DEFAULT_POOL_SIZE` = 3; the fetch pool has one worker). A `Worker` ABC has two concrete paths:
+Entity extraction (`EntityExtractor`) acquires workers from **workload-isolated** `LLMPool` instances — provider-agnostic, bounded pools of **long-lived** ACP workers (the extraction pool sized by `knowledge.extraction_pool_size`, default `DEFAULT_POOL_SIZE` = 3). A `Worker` ABC has two concrete paths:
 
-- **Default (kiro-cli)** — `AcpWorker` drives the `kirocrew-knowledge` agent over ACP (`AGENT_NAME`). That agent is installed by `agent_materialization/service_agents.py:_install_knowledge_agent`. Its model resolves `knowledge.extraction_model` → `agent.model` → `"auto"` (`kiro_crew.agent.knowledge_agent_model`; the installer writes it into the spec, which kiro-cli reads, and `AcpWorker._spawn_client` hands the same pin as `model=` to every other harness, which reads no spec of Crew's), and it declares no MCP servers and no tools (`mcpServers: {}`, `tools: []`, `includeMcpJson: false`). That spec is meant as a total ban. The agents directory is shared, and a tool that rewrites every spec in it (a launcher adding its own MCP server to `tools`, `allowedTools` and a `permissions` block) would otherwise leave the pool refusing every batch until the next rebuild re-derives the spec. So `AcpWorker._spawn_client` first calls `service_agents.repair_knowledge_agent_spec` off the event loop, on every backend, before each spawn. It compares the file, parsed and type-strict, against the governed template, and rewrites it through the same governed tail when the two differ or the file cannot be read as a spec, logging a WARNING that names the differing top-level keys and never their values. A write this data home may not make (`SharedAgentHomeRefused`) or one that fails leaves the file as it is, and the confirmation below still decides. The harness is `agent.acp_backend`, read per worker by `_get_acp_backend()` through `resolve_selected_backend` (H3) and then narrowed to a backend that answers two `SessionCapabilities` questions True: `honors_zero_tool_ban` (kiro-cli/KAS natively; opencode/goose/deepseek/pi via `AcpClient._deny_zero_tools`, which refuses every permission request — MCP or the harness's own native Bash/Read/Write — on an `AcpClient` session of an enforced-routing backend whose `SessionMcpProjection.zero_tools` is set from the same spec parse as the MCP array, by the backend's mirror or, for pi, which has none, beside its member mounts; claude's routing is declared but not enforced by this core, so an inherited `~/.claude` pre-approval can skip the permission request and the refusal never runs; codex is served by `AcpRuntime`, which carries no such refusal at all) and `acp_client_spawnable` (kiro, claude, opencode, goose, pi, deepseek — not kas/codex, which need `AcpRuntime` and have no arm in `AcpClient._spawn`). Today that intersection is `{kiro, opencode, goose, deepseek, pi}`. The resolved backend is passed to `AcpClient` as `acp_backend=`; an unselectable, malformed, or not-yet-qualifying value degrades to Kiro, and `_get_acp_backend` logs a warning naming the configured backend and which capability failed, once per backend per process. Once the session is ready, `AcpWorker.start()` confirms the ban instead of assuming it. A backend not routed through `Routing.AGENT_SPEC` must have the session's consumed projection (its mirror's, or pi's mirror-less parse) confirm `zero_tools` (`AcpClient.spec_zero_tools`), and if it does not — a missing, malformed, or shadowed spec — the worker restarts on Kiro before any prompt is sent. A worker that ends on a `Routing.AGENT_SPEC` backend (Kiro, originally or after that restart) has no mirror to confirm through, and kiro resolves `--agent` against `<cwd>/.kiro/agents` before the global directory while the pool's cwd is `config_dir()/workspace`, so a project-level `kirocrew-knowledge.json` carrying tools would shadow the installed spec. It therefore confirms the ban with `AcpClient.effective_spec_declares_zero_tools`. With a prepared projection the `NativeSkillProjection` hands the harness a view through `--agent` before the spawn, under the alias it published to the user-level agents directory, and the confirmation requires `"tools": []` in both: the captured view, and the published alias file, read after start because that file is what kiro-cli loads (a checkout cannot claim an alias name, `acp/managed_agent_shadow.py`). The authored spec is not read on this branch, so an edit to it after the view was prepared cannot change the answer. With no prepared projection (the `KIROCREW_NATIVE_SKILL_PROJECTION=0` rollback, or an alias that could not be taken) kiro-cli loads the named spec itself, so `AcpWorker._spawn_client` reads the authored spec (`AcpClient.authored_spec_declares_zero_tools`, project checkout first) before each Kiro client's spawn and the confirmation reads it again after start; both reads must declare `"tools": []`. On either branch the read after start narrows a change to the file kiro-cli loads but cannot close one made and restored inside the spawn window. The confirmation runs off the event loop because both branches read a file. `AcpWorker.start()` raises `RuntimeError` without sending a prompt when the ban is not confirmed; no safer backend remains after Kiro. Effort follows the backend's capability rather than its identity (`effort_via_config_option`, `effort_via_slash_command`); a backend answering neither logs that the provider default applies and sends nothing. An effort option offering `off` alone (goose on a model with no extended thinking) sends nothing either, and neither does an opencode model with no variants, which advertises no `effort` option at all. `AcpWorker.send_message` shuts its client down on any failed send and re-raises, so the next `acquire` respawns it: a timed-out turn is still running in the child, and a reused client would answer "Prompt already in progress".
+- **Default (kiro-cli)** — `AcpWorker` drives the `kirocrew-knowledge` agent over ACP (`AGENT_NAME`). That agent is installed by `agent_materialization/service_agents.py:_install_knowledge_agent`. Its model resolves `knowledge.extraction_model` → `agent.model` → `"auto"` (`kiro_crew.agent.knowledge_agent_model`; the installer writes it into the spec, which kiro-cli reads, and `AcpWorker._spawn_client` hands the same pin as `model=` to every other harness, which reads no spec of Crew's), and it declares no MCP servers and no tools (`mcpServers: {}`, `tools: []`, `includeMcpJson: false`). That spec is meant as a total ban. The agents directory is shared, and a tool that rewrites every spec in it (a launcher adding its own MCP server to `tools`, `allowedTools` and a `permissions` block) would otherwise leave the pool refusing every batch until the next rebuild re-derives the spec. So `AcpWorker._spawn_client` first calls `service_agents.repair_knowledge_agent_spec` off the event loop, on every backend, before each spawn. It compares the file, parsed and type-strict, against the governed template, and rewrites it through the same governed tail when the two differ or the file cannot be read as a spec, logging a WARNING that names the differing top-level keys and never their values. A write this data home may not make (`SharedAgentHomeRefused`) or one that fails leaves the file as it is, and the confirmation below still decides. One change can be left in the file for a Kiro worker. A tool that rewrites every spec on each of its launches would otherwise take turns on the file with this repair forever, so a downstream edition may register a filter for that tool's exact injection (`agent_spec_injections.register_spec_injection_filter`). The public core registers none. When a registered filter turns the file back into exactly the governed template, the repair leaves the file alone, logs that once per filter per process, and the native skill projection builds the agent's view from the template itself, never from the filter's output, so the view and its published alias still declare `"tools": []`. A lookalike entry, or any other change beside the injection, is repaired as before. Every other backend parses the file itself, so it is still repaired there, and a Kiro worker that got no view (projection off, or no alias) repairs the file and starts once more on it. The harness is `agent.acp_backend`, read per worker by `_get_acp_backend()` through `resolve_selected_backend` (H3) and then narrowed to a backend that answers two `SessionCapabilities` questions True: `honors_zero_tool_ban` (kiro-cli/KAS natively; claude because a zero-tool session there is started with no tool mounted at all, so no inherited `~/.claude` allow rule has one to pre-approve; opencode/goose/deepseek/pi via `AcpClient._deny_zero_tools`, which refuses every permission request — MCP or the harness's own native Bash/Read/Write — on an `AcpClient` session of an enforced-routing backend whose `SessionMcpProjection.zero_tools` is set from the same spec parse as the MCP array, by the backend's mirror or, for pi, which has none, beside its member mounts; codex is served by `AcpRuntime`, which carries no such refusal at all) and `acp_client_spawnable` (kiro, claude, opencode, goose, pi, deepseek — not kas/codex, which need `AcpRuntime` and have no arm in `AcpClient._spawn`). Today that intersection is `{kiro, claude, opencode, goose, deepseek, pi, strands}`. The resolved backend is passed to `AcpClient` as `acp_backend=`; an unselectable, malformed, or not-yet-qualifying value degrades to Kiro, and `_get_acp_backend` logs a warning naming the configured backend and which capability failed, once per backend per process. Once the session is ready, `AcpWorker.start()` confirms the ban instead of assuming it. A backend not routed through `Routing.AGENT_SPEC` must have the session's consumed projection (its mirror's, or pi's mirror-less parse) confirm `zero_tools` (`AcpClient.spec_zero_tools`), and if it does not — a missing, malformed, or shadowed spec — the worker restarts on Kiro before any prompt is sent. A worker that ends on a `Routing.AGENT_SPEC` backend (Kiro, originally or after that restart) has no mirror to confirm through, and kiro resolves `--agent` against `<cwd>/.kiro/agents` before the global directory while the pool's cwd is `config_dir()/workspace`, so a project-level `kirocrew-knowledge.json` carrying tools would shadow the installed spec. It therefore confirms the ban with `AcpClient.effective_spec_declares_zero_tools`. With a prepared projection the `NativeSkillProjection` hands the harness a view through `--agent` before the spawn, under the alias it published to the user-level agents directory, and the confirmation requires `"tools": []` in both: the captured view, and the published alias file, read after start because that file is what kiro-cli loads (a checkout cannot claim an alias name, `acp/managed_agent_shadow.py`). The authored spec is not read on this branch, so an edit to it after the view was prepared cannot change the answer. With no prepared projection (the `agent.native_skill_projection: false` / `KIROCREW_NATIVE_SKILL_PROJECTION=0` rollback, or an alias that could not be taken) kiro-cli loads the named spec itself, so `AcpWorker._spawn_client` reads the authored spec (`AcpClient.authored_spec_declares_zero_tools`, project checkout first) before each Kiro client's spawn and the confirmation reads it again after start; both reads must declare `"tools": []`. On either branch the read after start narrows a change to the file kiro-cli loads but cannot close one made and restored inside the spawn window. The confirmation runs off the event loop because both branches read a file. `AcpWorker.start()` raises `RuntimeError` without sending a prompt when the ban is not confirmed; no safer backend remains after Kiro. Effort follows the backend's capability rather than its identity (`effort_via_config_option`, `effort_via_slash_command`); a backend answering neither logs that the provider default applies and sends nothing. An effort option offering `off` alone (goose on a model with no extended thinking) sends nothing either, and neither does an opencode model with no variants, which advertises no `effort` option at all. `AcpWorker.send_message` shuts its client down on any failed send and re-raises, so the next `acquire` respawns it: a timed-out turn is still running in the child, and a reused client would answer "Prompt already in progress".
 - **`agent.provider="claude_code"` (legacy seam)** — `CCWorker` drives a long-lived `claude` CLI subprocess over stream-json I/O (haiku model, `bypassPermissions`); URL-fetch tools are opt-in via `KIROCREW_KNOWLEDGE_FETCH_TOOLS`. Its stdout stream is opened with a 10 MiB line limit (`STDOUT_LINE_LIMIT`, the ACP transports' ceiling, pinned equal by a test) rather than asyncio's 64 KiB, and stderr goes to `DEVNULL`, so the limit sizes the one pipe that is read and an unread stderr can neither hold memory nor stall the CLI; the reader drops a line over the limit, or one that is not a JSON object, and keeps reading. `_collect_response` skips values of the wrong type, takes the CLI's non-empty string `result` (the final answer) as the reply and joins the assistant text only when the result carries none, so the narration of an earlier tool-use turn never reaches the caller, and fails the message on `is_error: true`. The worker outlives a message only when that message's result event was consumed; anything else (a timeout, a dead reader, a cancelled caller, including one cancelled while the prompt write is still draining, which the same timeout bounds) retires the process so a later prompt cannot read this one's leftovers. A respawn that fails retires the old process as well, since its reader is already gone, and `is_alive()` reports a worker whose reader ended as dead. Kiro Crew's provider enum is `["acp"]`, so this branch is dormant in practice.
 
 ### Sweep shielding + audit source
@@ -550,6 +630,10 @@ Entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch
 
 **Untrusted-chunk delimiters (CWE-94).** `EntityExtractor` wraps each untrusted chunk in **per-request nonce-suffixed** delimiters (`<<<BEGIN_UNTRUSTED_CHUNK_{nonce}>>>` / `<<<END_UNTRUSTED_CHUNK_{nonce}>>>`, `nonce = uuid4().hex`), so content that embeds a legacy static delimiter cannot forge the boundary and inject instructions. Both `extract` (single) and `extract_batch` (the ingestion path) apply this, and the batch path mints a **distinct nonce per chunk**.
 
+**Extraction failures are logged, never the text.** An extraction batch whose pool call fails, or whose chunks get an empty or unparseable reply, stores those chunks with no entities and no summary and logs one WARNING naming the source id (set by `IngestionPipeline` through `extractor.extraction_source`), the exception type or the empty/unparseable counts. A failed or unusable source summary (`generate_source_summary`) logs a WARNING the same way. No warning carries document text, the model's reply, an exception message or a document name.
+
+**Interrupted ingest jobs.** An ingest writes its `ingestion_jobs` row as `processing` before any work. A gateway that stops mid-ingest leaves that row behind, so `setup_knowledge_routes` registers `_reclaim_interrupted_ingest_jobs` as the first knowledge startup hook. The hook only schedules a tracked background task (`_run_ingest_job_reclaim`), so startup does not wait on a scan that grows with job history; the task moves every row with a `source_id` still `processing` and created before this process's boot timestamp to `abandoned`. Rebuild rows (`source_id IS NULL`) keep `start_rebuild_job`'s staleness sweep. Nothing is re-ingested; an interrupted folder file is picked up by the next scan through its scan marker. Two gateways sharing one data home is not a supported layout; if it happens, a restart of one marks the other's live ingests `abandoned`, which only mislabels rows that hold no lock.
+
 ## 4. FTS5 + graph + vector retrieval (`retrieval.py`, `store.py`)
 
 `HybridRetriever.search(query, limit)` runs three legs and fuses them with Reciprocal Rank Fusion.
@@ -567,9 +651,10 @@ Entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch
   - **The migration is one-way, and downgrading needs the index rebuilt.** A build from before this change knows nothing about `user_version`, so it writes and deletes raw terms against an already-segmented index — which by the rule above either leaves stale terms behind or raises `database disk image is malformed`, and the old code has no rebuild path to recover. Rolling back past this change therefore requires dropping and recreating `items_fts` (or deleting `knowledge.db`, which is a derived cache of ingested sources). Forward upgrades need nothing: the post-bind maintenance task migrates, or else the first search.
   - **The rebuild is triggered after bind, never by the constructor.** `KnowledgeStore.__init__` runs on the gateway's boot path (`start_dashboard` builds the lazy `state.knowledge_store` on a worker thread just before `setup_knowledge_routes` reads it, before the socket binds), while its FTS readers run on other worker threads (`run_in_embed_pool` / `asyncio.to_thread`) — the store's own threading contract, and why it hands each thread its own connection. A data-scaled reindex in `__init__` would therefore stall the gateway at boot for the length of a full reindex: measured at 4,000 CJK items it is ~137 ms of work, and it grows linearly with the corpus. The first trigger is the post-bind knowledge maintenance task (`_kick_knowledge_orphan_reclaim`), which calls `ensure_fts_index_current` on a worker thread inside the store's maintenance window, together with the deferred search indexes, so ingestion waits at the gate instead of on SQLite's writer lock. Each FTS reader still calls it first, as the fallback when that task could not take the writer lock; it is lock-guarded so concurrent callers wait rather than each starting a rebuild, and steady state is a single boolean check (~1 us).
   - **Known limitation:** `add_item` persists tags with `json.dumps` at its default `ensure_ascii=True`, so a CJK tag is stored with its characters backslash-escaped and reaches the index as terms like `u6a21`/`u578b`. A CJK tag is unsearchable for that reason, which no query-side change can reach.
-- **Graph leg (`_graph_search`)** — resolves query words and adjacent word-pairs to entities, expands via graph neighbors (depth 2), and ranks items by mention count. A spaceless CJK run is one whitespace word but several entity names, so an entity named for a word *inside* the run is unreachable by the split alone; `_cjk_subruns` adds the run's own contiguous CJK substrings as extra candidates, longest first (so the most specific entity name is tried before a shorter prefix of it) and bounded by `_CJK_SUBRUN_MAX_LEN` / `_CJK_SUBRUN_MAX_CANDIDATES`, since each candidate costs a `find_entity` query. A query with no CJK gets the plain whitespace-split candidate list.
+- **Graph leg (`_graph_search`)** — resolves query words and adjacent word-pairs to entities, expands via graph neighbors (depth 2), and ranks items by mention count. `get_neighbors` walks `entity_relations` through its `source_id` / `target_id` indexes, one statement per hop and chunk of `_NEIGHBOR_CHUNK` ids, so a search never loads the in-memory `SimpleDiGraph`: only the dashboard's graph views (`get_entity_graph`, `get_full_graph`) materialise it. A spaceless CJK run is one whitespace word but several entity names, so an entity named for a word *inside* the run is unreachable by the split alone; `_cjk_subruns` adds the run's own contiguous CJK substrings as extra candidates, longest first (so the most specific entity name is tried before a shorter prefix of it) and bounded by `_CJK_SUBRUN_MAX_LEN` / `_CJK_SUBRUN_MAX_CANDIDATES`, since each candidate costs a `find_entity` query. A query with no CJK gets the plain whitespace-split candidate list. `find_entity` tries the exact name, then `LOWER(name)` (`idx_entities_name_lower`), then the alias fallback, which every missed candidate reaches: it reads `(rowid, aliases)` through the partial index `idx_entities_with_aliases`, whose predicate is the fallback's own, so it visits only the entities that carry aliases instead of every entity, and sorts them by `rowid` so the first match (and the first malformed row to raise) is the one a table scan would meet first. The matched row is re-read by `rowid` AND the aliases just matched: `entities` has no AUTOINCREMENT, so a row deleted between the two reads can hand its rowid to an unrelated entity, which this read skips. Both indexes are in `_SEARCH_INDEXES`, built post-bind for a populated library; without them the answer is the same, only slower.
 - **Vector leg (`_vector_search`)** — brute-force cosine over `items` with `embedding IS NOT NULL AND status='active' AND embedding_sig = ?`; returns `None` when no embedder is wired. Rows are scored `_SCORE_BATCH_ROWS` (1024) at a time by `_score_rows_numpy` when numpy is importable, else by the Python reference path `_score_rows_python`. Items whose stored embedding dimension differs from the query vector are **skipped** (not scored 0.0), with a single per-search WARNING so a stale index surfaces as "re-index needed". `_cosine_similarity` is a one-off helper outside the search loop; it returns 0.0 for differing-length or zero vectors.
-  - **Matrix cache (`_cached_matrix`)** — with numpy, the leg scores against a cached float32 matrix plus float64 row norms built from its candidate query, keyed by `(db path, sql, params, query width)`. An entry is valid while `_db_fingerprint` matches: db and `-wal` mtime and size plus the WAL header salts, so a write after a WAL reset invalidates it even when the size repeats. At most `_MATRIX_CACHE_MAX_ENTRIES` (2) entries, and everything they retain (matrix, norms, ids) shares one `_MATRIX_CACHE_MAX_BYTES` (512 MiB) budget; the oldest entry is evicted first. A result past the budget, or one the cache will not hold (mixed widths, legacy JSON vectors float32 cannot hold exactly), is remembered as an empty entry for that fingerprint and scored by the reference path, so it is read once per search. Builds are serialised per database, so concurrent misses on one library wait for one read and a build never blocks another library. The cache lives for the process; it is not dropped on idle.
+  - **Matrix cache (`_cached_matrix`)** — with numpy, the leg scores against a cached float32 matrix plus float64 row norms built from its candidate query, keyed by `(db path, sql, params, query width)`. An entry is valid while the store's `vector_generation()` value matches, read in the same snapshot as the rows. Triggers on `items` and `source_locations` (insert, delete, and an update of a vector-relevant column) set `vector_generation.gen` to a fresh `random()`, so a write to any other table keeps the entry, a write from any connection or process drops it, and a replaced library file does not repeat a value. A store with no generation table (a read-only open of a file no migrating open has touched) returns `None` and is not cached. At most `_MATRIX_CACHE_MAX_ENTRIES` (2) entries, and everything they retain (matrix, norms, ids) shares one `_MATRIX_CACHE_MAX_BYTES` (512 MiB) budget; the oldest entry is evicted first. A result past the budget, or one the cache will not hold (mixed widths, legacy JSON vectors float32 cannot hold exactly), is remembered as an empty entry for that generation and scored by the reference path, so it is read once per search. Builds are serialised per database, so concurrent misses on one library wait for one read and a build never blocks another library. The cache lives for the process; it is not dropped on idle.
+  - **One-statement build (`_read_packed`)** — a build reads its candidates in ONE statement: `count(*)`, `json_group_array(id)` and `CAST(group_concat(embedding, '') AS BLOB)` over the candidate query, so SQLite joins the vectors and lists the ids in the same row order, and Python takes one row. Fetching row by row re-took the GIL once per row (~22k times on a 22k-item library), and under agent-turn load each reacquire waited behind busy threads: the first search after start spent seconds there against ~0.15 s idle. The same pass counts the rows that are not a BLOB of the query's width, and any such row, a packed blob that parses as a JSON list, a database not in UTF-8 (`group_concat` reads a BLOB as text in the database encoding) a SQLite without the JSON functions, or a joined result past SQLite's length limit (`SQLITE_TOOBIG`, raised as `DataError`) sends the build to the row path (`_read_snapshot` + `_join_packed`), which admits exactly the same rows. Nothing is built ahead of a search, so a library that is never searched holds no matrix.
   - The `embedding_sig` predicate is the **read-side refusal** that makes an embedding-model change safe, and it is what the dimension guard cannot do: an old-space vector of the SAME WIDTH passes every length check, so without the predicate it is cosine-scored against a new-space query and returned with a confident score. A NULL signature — an item never stamped — reads as unproven and drops out of the leg until the sig-gated rebuild re-stamps it.
   - The pair `(query embedder, embed_sig)` is resolved by **one** function, `retrieval.vector_leg(embedder)`, and handed to the constructor together, so a call site cannot wire an embedder without the identity its vectors must carry. All three production call sites (`/api/knowledge/items?q=`, `/api/knowledge/search-for-context`, the `local_knowledge_search` MCP tool) go through it, and each is pinned by a test.
   - **`HybridRetriever(embedder=…)` REQUIRES `embed_sig` and raises `ValueError` without it.** The predicate fails OPEN: an absent signature scores every stored vector, including a foreign-space one of the same width, and no downstream assertion goes red for it — so the safe state has to be what a caller gets by default, and the mistake has to be loud at construction, where the caller still holds the embedder the signature is read from. Since `vector_leg` never returns an embedder without a signature, no production path can reach the raise. The unfiltered leg is spelled `retrieval.ANY_EMBEDDING_SPACE` — a named, greppable opt-out for a caller holding a bare `callable(str) -> list[float]` with no declarable identity (ad-hoc probes, the tests of the dimension guard itself), valued with characters no hex digest contains so it cannot collide with a real signature.
@@ -594,6 +679,416 @@ for both ingestion and queries. It explicitly uses `ANY_EMBEDDING_SPACE` because
 those synthetic rows have no persisted model signature and never share a store
 with user data. Production retrieval still requires the active signature.
 
+### Remote sources: `bedrock_kb` (`knowledge/connectors/bedrock_kb.py`)
+
+A `bedrock_kb` source points at one or more **Amazon Bedrock Knowledge Bases**
+in the user's own AWS account and holds **no local items**: the KB keeps its
+own index and embeddings, so Kiro Crew queries it live at search time instead
+of ingesting it (issue #7947). Consequences, in the order the code enforces
+them:
+
+- **Config, no secrets.** `properties` carry `kb_ids` (comma-separated; a
+  full KB ARN is accepted and normalized to its trailing ID so one knowledge
+  base has one spelling in the dedupe, the result ids and the audit rows),
+  `region`, optional `profile`. `kb_ids` is the one caller-supplied field a
+  source retains and re-parses on every search, so it is bounded where it is
+  parsed (`_parse_kb_ids`): at most `_MAX_KB_IDS` entries (also the
+  per-search fan-out cap), each raw entry at most `_MAX_KB_ID_ENTRY_CHARS`,
+  each normalized id exactly the `[0-9A-Za-z]{10}` shape the Retrieve API
+  accepts. `validate_config` parses strictly and refuses the first violation
+  by name before any probe, and the insert only runs after validation, so
+  nothing out of bounds is probed or stored; the search-time parse of a
+  stored row drops what fails and truncates. The insert stores the
+  connector's `retained_properties(config)`: exactly those three keys, each
+  in the VALIDATED form the gates judged rather than the caller's raw
+  spelling -- `kb_ids` as the canonical comma-joined bare ids the strict
+  parse produced, `region` and `profile` as the stripped strings the
+  grant-equality check matched. Every gate strips or parses before it
+  judges, so a whitespace-padded value (or an ARN spelling) passes them
+  all; retaining the raw copy would store what nothing validated, bounded
+  only by the request-body cap. So the row's size follows the gates' own
+  bounds, its spelling is the one every later compare and result id uses,
+  and an extra field in the body, flat or nested, never reaches storage.
+  The row's `uri` -- the UNIQUE dedup key -- is likewise the server's
+  `canonical_source_uri(retained)` (`bedrock-kb://<region>/<sorted kb ids,
+  +-joined>`), never the caller's: a caller who chose the handle could mint
+  a row per request for one knowledge base, each carrying a `name` up to
+  the body cap, whereas the derived handle is one per distinct SET of
+  knowledge bases: the same ids in any order dedupe to one row (`409
+  source_exists`), so a search pays one Retrieve per KB rather than one per
+  spelling, while a set that shares a first id with an existing row (`A` vs
+  `A,B`) is a different source, not a false `409`. The form therefore posts
+  no `uri` for this type, and its default `name` (when the owner leaves the
+  field blank) is `Bedrock KB <bare first id>`, the trailing segment of a
+  pasted ARN: an ARN also carries the account id, and `name` is a column
+  every authenticated caller reads off the sources list. `add_source`
+  resolves the stored name once, after the uri is final, as `name or uri`.
+  For `bedrock_kb` only, it cuts that name rather than refusing it, to the
+  connector's `_MAX_RESULT_SOURCE_NAME_CHARS` (200). A name written by the
+  gateway therefore reads back unchanged through `_BOUNDED_ROW_SELECT`. If an
+  in-sandbox database writer later enlarges it, the SELECT returns NULL rather
+  than a clipped prefix, and result and conflict displays use
+  `Bedrock KB <validated kb id>` instead. Every other
+  source type stores the name as sent, explicit or uri-derived, because the
+  Markdown panel, the Knowledge tab and md-notebook can send longer names.
+  Credentials
+  resolve through
+  the standard AWS chain for the named profile at call time; nothing
+  credential-shaped is stored. boto3 ships in the optional `[bedrock]` extra
+  (same pin as `[voice-aws]`) and is imported lazily, and never on the event
+  loop: the module imports boto3 at its top, so the consent POST names it
+  only inside the worker that records the grant and only for `bedrock-kb`
+  (a Polly or Transcribe confirmation never loads it); without it the source
+  reports the missing extra on add instead of breaking core imports.
+- **Consent precedes every request.** Bedrock KB retrieval is registered as a
+  gated paid service in `kiro_crew.aws_consent` (`SERVICE_BEDROCK_KB`): the
+  add-time probe and every retrieval first pass the account-bound
+  authorization check (grant keyed on service+profile+region, live account
+  re-checked), refusing fail-closed — a repointed profile cannot receive so
+  much as an access check, and a revoked grant silently removes the source
+  from search results (logged by the consent layer) instead of billing an
+  unconfirmed account. One search runs the consent probe and the client's
+  STS verify once per (profile, region) and shares the client across every
+  source on that target (`search_remote_sources`), so several sources fit
+  the 5-second budget; each Retrieve still rechecks the grant and its own
+  source's attestation. **The sandboxed MCP server never evaluates consent
+  in-process**: the sandbox seals `aws_service_consent.json` with an
+  inode-pinning self-bind, so a host-side withdrawal (atomic rename) is
+  invisible to a sandboxed reader — its remote leg therefore calls the
+  gateway's internal `POST /api/knowledge/remote-search` (loopback +
+  `X-Internal-Secret`), and authorization, credential freeze-verify, and
+  per-retrieve rechecks all run in the gateway process against the live
+  keystone store. The per-retrieve recheck (`_refusal_reason`) runs
+  immediately before every paid request and reads one local snapshot of the
+  keystone store, deriving both facts from that same complete file version:
+  the grant is still the one the frozen credentials were verified against,
+  AND the row the search runs for is still attested under it. The
+  enumeration checks the registration once when it starts, but a
+  delete landing during a search revokes the attestation and leaves the
+  grant in place, so a recheck that read only the grant would let the rest
+  of that search keep billing for a source the owner had just removed. A
+  retrieve the recheck refuses writes its own SEL `aws_consent.denied` event
+  naming the KB and which check refused (grant withdrawn or replaced, or
+  source registration withdrawn), so the audit log records every paid
+  request that did not happen, not only the ones the front gate turned
+  away; the freeze-verify refusal in `_get_client` (no grant, credentials
+  resolving to an account other than the confirmed one, or a grant confirmed
+  for a different profile/region) writes the same `denied` event naming the
+  target and which check refused, before any client is built. The grant is recorded from the **add-source form's own
+  consent card**: `bedrock-kb` is the one service whose target is taken from
+  the request (the source exists only in the form until saved), which is safe
+  because the shown account is probed fresh from that exact target, the POST
+  409s on any echo mismatch, and `is_granted` demands exact (profile, region)
+  equality at call time — a grant for a target nothing uses is inert. The
+  form's submit stays disabled until that grant exists (it subscribes to the
+  same consent query the card polls), so the server-side refusal is never a
+  first-time user's first signal — the card above the button is the visible
+  reason and the order. **The request body's shape is checked once, first**
+  (`_add_source_shape_error`): every text field `add_source` reads (`name`,
+  `source_type`, `uri`, `namespace`) must be a string or absent/`null`, and
+  `properties` an object, else 400 `<field> must be a string` / `properties
+  must be an object` before any field is used. Per-field checks at each
+  first use would leave one gap per field: a connector's `validate_config`
+  may ignore `url`, so a JSON object in `uri` would pass validation and
+  reach `str.startswith` as a 500. **Registering the source is an owner action**, the
+  same rule the consent endpoints apply (`is_owner_dashboard_request`, via
+  `_shared.require_owner_dashboard_request`): `add_source` refuses a
+  `bedrock_kb` body from a non-owner dashboard caller (an allow-listed
+  messaging user reaches the route with `app == ""`) or an app token with
+  403 `owner_only` BEFORE validation, because validation probes the KB with
+  the owner's credentials and the insert registers a KB the gateway then
+  queries on the owner's account against the owner's grant. Local sources
+  keep `add_source`'s existing, ungated behaviour. The bundle routes are not
+  a way around the rule: `/api/knowledge/import` is open to every
+  authenticated caller and carries no consent, validation or target check,
+  so `KnowledgeStore.import_bundle` refuses a `bedrock_kb` row, and a row of
+  any type whose `uri` starts with `bedrock-kb://` (it would squat the
+  handle the owner's add dedupes on), counted as
+  `sources_refused` in the result and the `knowledge.import` SEL line; and
+  `export_all` leaves `bedrock_kb` rows out -- a live account binding with no items is
+  not knowledge (`_ACCOUNT_BOUND_SOURCE_TYPE`). "No items" is enforced at
+  the writer, not assumed: `KnowledgeStore.add_item` and
+  `add_source_location_in_txn` raise `LiveSourceHoldsNoItems` for a
+  `source_id` naming an account-bound row (one primary-key read inside the
+  write transaction), and the agent's `POST
+  /api/knowledge/sources/{id}/ingest-text` refuses such a target with 409
+  `live_source_holds_no_items` before the body is read, so the caller sees a
+  coded refusal rather than the store's as a 500 after extraction. Without
+  the writer-side rule the export filter would be the defect: an item
+  written under a `bedrock_kb` row (its id is readable by any authenticated
+  caller, and the ingest-text route takes any existing id) would travel
+  while its source row does not, and a clean store's import would trip
+  `items.source_id`'s foreign key and roll the whole bundle back. The
+  export holds the same line for what the writer rule cannot reach:
+  `knowledge.db` is agent-writable in-sandbox, so a row planted under a
+  `bedrock_kb` source by a direct write bypasses `add_item`, and
+  `export_all` leaves such items out together with the locations,
+  mentions and relations riding on them (the set `import_bundle` refuses,
+  ids compared as text), so an export never names a row it dropped. The
+  deletion paths hold the same line: when a source is deleted
+  (`delete_source_cascade`) or drops its copy of a document
+  (`delete_items_batch_in_txn`), a surviving item's new owner comes from
+  `_reassignment_candidates`, the holders of the item that are not
+  account-bound, so a planted `source_locations` row never makes a
+  `bedrock_kb` row the owner of a local document (the document would
+  survive live and vanish from every bundle); an item whose only other
+  holders are account-bound goes with its owner, as if no other holder
+  existed, and the planted row goes with it. The
+  refusal extends to
+  what depends on such a row: a bundle item whose `source_id` names a
+  refused row OR an already-registered account-bound source (its id is
+  readable by any authenticated caller off the sources list) is refused and
+  counted as `items_refused`, and the locations, mentions and relations
+  riding on that item are dropped with it -- so no local content ever lands
+  under a live-only source, and a crafted bundle cannot fail the whole
+  import on that item's FK. Only a refused row or item that carries an id
+  joins its refused set, and a dependent is matched only when its own id is
+  not null: `str(None)` is the text "None", which a bundle can also spell as
+  a source or item id, so a local source called "None" keeps its items and
+  an evidence-free relation is not dropped because a refused item was
+  called "None". **The row itself is not the registration; the attestation
+  is.** `knowledge.db` is agent-writable in-sandbox (the MCP server ingests
+  into it in-process, and the sandbox seals neither `workspace/knowledge` nor
+  the file), so a `bedrock_kb` row on its own proves nothing about who put
+  it there: an agent could clone one, or point a clone at any KB the granted
+  profile reaches, and the enumeration would pay to query it. So the
+  owner-gated, consent-checked insert also records the row in
+  `aws_service_consent.json` (`aws_consent.record_source_attestation`, under
+  the `bedrock-kb.sources` key beside the grants, written under the same
+  lock; the file is in `sandbox._CREW_READONLY_LEAVES`, so only the gateway
+  writes it), pinned to the row's id, uri and retained `kb_ids`/`region`/
+  `profile`, AND to the account the grant confirms at that moment: a
+  profile name is not an account (the reason `authorize` re-verifies it on
+  every call), and re-pointing the profile then confirming again keeps the
+  same profile and region, so without the account the old registration
+  would authorize paid retrieval of the same KB id in the new account.
+  `attested_sources` therefore returns only entries recorded under the
+  CURRENT grant's account; a grant confirmed for another account leaves
+  every earlier registration unattested until the owner removes the source
+  and adds it again. A plain re-add is not that recovery: it dedupes on the
+  row's `uri` (`409 source_exists`, the code and id every type answers
+  with) and only a row the add CREATES is attested, so for this type the
+  409's text names the remove-then-add path (`_source_exists_response`)
+  instead of the generic "source already exists" the form would otherwise
+  show. The two writes of an add (row, attestation) and of a delete are not
+  one transaction, so each fails in the safe direction: an attestation
+  write that fails undoes the insert (`bedrock_kb_attestation_failed`, no
+  row), and a delete revokes the attestation FIRST (a failed revoke deletes
+  nothing: `bedrock_kb_attestation_revoke_failed`), so a failure between the
+  two leaves at worst a dark row a retry removes, never an attestation
+  without a row that a later row minted under the same id and values would
+  inherit. `revoke_source_attestation` reads the store strictly for the
+  same reason `revoke_for_profile` does: an unreadable store must raise
+  (the route answers the coded 500 and deletes nothing) rather than read as
+  "nothing attested", which would delete the row and leave the attestation
+  on disk for a re-minted row to inherit; only a missing store is the
+  ordinary nothing-attested case. Deleting a `bedrock_kb` row is owner-only
+  like adding one
+  (`knowledge.delete_source.bedrock_kb`); a local source's delete is not
+  gated. Whether a row IS a Bedrock row is decided from the sealed
+  attestation under its id (`has_source_attestation`, read strictly, any
+  account, before the row's type is trusted) OR from its `source_type`,
+  never from the type alone: that column lives in the agent-writable
+  `knowledge.db`, so a registered row an agent re-labelled as a local one
+  would otherwise skip both the owner gate and the revoke and leave its
+  attestation for a row re-minted under the same id and values to inherit.
+  An unreadable store refuses the delete (the same coded 500) before
+  anything is mutated. Every field the row retains carries its own bound at the retention
+  site: `kb_ids` through `_parse_kb_ids`, and `region`/`profile` through
+  `aws_consent.target_is_well_formed` (the shapes a grant can be confirmed
+  under: profile at most 128 characters, region at most 64), checked by
+  `validate_config` before any probe and again by `retained_properties`
+  (`bedrock_kb_config_invalid`), so no value a grant could never name
+  reaches the row or the attestation. `search_remote_sources` reads
+  the attestations once per enumeration and searches only rows that still
+  match one; a row that does not (a clone, or an attested row whose stored
+  KB set was widened afterwards) is skipped before any consent or credential
+  work, with an `aws_consent.denied` SEL line naming the row id (not its KBs
+  or the account). Registration and enumeration share
+  `MAX_BEDROCK_KB_SOURCES` (64). Under `target_change_lock`, add first
+  rechecks the canonical URI, so an existing registration still answers
+  `source_exists` when the population is full. A new registration then
+  strictly counts `recorded_source_attestations` across every account and,
+  at the limit, returns `bedrock_kb_source_limit` (409) before either the
+  database row or the sealed attestation is written; the response tells the
+  owner to remove a source first. Before it refuses, a full population
+  revokes each attestation whose row is gone (one SEL
+  `knowledge.source.attestation_reclaim` line each): the delete route answers
+  404 for a missing row, so a row removed outside the dashboard routes would
+  otherwise hold its slot for good. An unreadable consent store refuses the
+  check with `bedrock_kb_conflict_check_failed` (503) and adds nothing.
+  `search_remote_sources` pins at most the same number of current-account
+  attestations and applies that constant as its SQL limit. Pinned ids sort
+  first and cannot be dropped by the limit because their count is no larger
+  than it. Only an over-cap attestation written outside the gated insert can
+  fall outside an unscoped window; that legacy or external state logs one
+  warning per call with the number of omitted ids. The SQL bound is still
+  needed because the table is agent-writable and each unattested row the
+  loop reaches costs one synchronous SEL write. Planted rows can crowd the
+  registered sources out of neither the window nor the budget, and the
+  search budget is checked before any per-row work, so a spent budget buys
+  the planter no audit write either. A row count bounds memory only when
+  every field a read keeps is bounded too, so both reads of `bedrock_kb`
+  rows (this enumeration and the target lookup below) start from one SELECT.
+  It admits an id or uri only when it equals its bounded projection, so a
+  NUL-suffixed or oversized stored identity cannot become an attested identity
+  after `substr`: id is bounded to 64 characters and uri to 256. Properties are
+  cut to 1024. A name at most 200 characters is returned whole; any larger or
+  NUL-suffixed name is returned as NULL for the safe KB-id fallback above.
+  Each ceiling is above the largest value a gateway insert writes, so a
+  registered row reads back unchanged. The
+  consent store holds ONE grant per service, so v1 supports one Bedrock
+  account at a time (keying grants per (service, profile, region) is the
+  follow-up #14337, which removes both guards below) — ENFORCED at add: a
+  second source whose (profile, region) differs from a registered
+  bedrock_kb source is refused with
+  `bedrock_kb_target_conflict` (409), because letting it in would let its
+  re-confirmation silently disable the first source's retrievals — and
+  ENFORCED at confirm: the consent POST refuses (409, same code) a
+  bedrock-kb target that differs from a registered source's, since
+  recording it would overwrite the single per-service grant in place: the
+  registered source would go silently dark while the new target still
+  could not be added past the add-time guard. What that follow-up inherits
+  needs no migration: an attestation under `bedrock-kb.sources` is keyed by
+  the row's id and records the row's `uri`, its retained `kb_ids`, `region`
+  and `profile`, and the `account` the grant confirmed when the row was
+  registered; it holds no grant id and nothing that names the
+  one-grant-per-service layout. Keyed grants read existing entries as they
+  are: the grant covering an entry is the one keyed (`bedrock-kb`,
+  `entry.profile`, `entry.region`), and the account pin compares against
+  that grant's account the way `bedrock_authorization_snapshot` compares
+  against the single grant's today; an entry whose keyed grant is absent or
+  names another account stays unattested until the owner removes the source
+  and adds it again, the recovery that exists today. With one grant per
+  target the one-target code has no case left, so the follow-up deletes
+  `registered_target_mismatch` and both `bedrock_kb_target_conflict`
+  refusals (add and confirm). The `bedrock_kb_grant_changed` recheck in the
+  locked insert stays and reads the keyed grant for the source's target;
+  `_reclaim_rowless_attestations` and the remove-then-add text in
+  `_source_exists_response` serve the registration limit and the account pin,
+  which keyed grants do not change. A registered source for both
+  guards is a row a gateway attestation pins, under any account
+  (`aws_consent.recorded_source_attestations`): a row written straight into
+  `knowledge.db` is never searched, so it holds no target, and the lookup
+  fetches only the attested ids (at most `MAX_BEDROCK_KB_SOURCES`), so
+  planted rows are never read at all. Same-target re-confirmation
+  stays allowed (the mid-probe re-confirmation path depends on it). Both
+  refusals name the source that holds the other target, and that name is a
+  `sources` row an in-sandbox agent can write directly, past the handler's
+  name bound; the compare renders it through the platform shim
+  `kiro_crew.platform.redact_via_context` (a composed companion policy's
+  extra shapes on top of the OSS baseline, which runs the URL pass before
+  the credential pass) before either payload is built, so a planted
+  credential or exfiltration URL reaches the operator as the redaction tag
+  and the `(profile, region)` stays readable. Both
+  gates run their compare-and-write as ONE critical section under the
+  connector's `target_change_lock` (the slow probes/validation stay
+  outside), so a concurrent add and confirm cannot interleave between check
+  and write; the locked insert also re-checks the LIVE grant for the
+  source's exact target (`bedrock_kb_grant_changed`, 409) so a source can
+  never be registered against a grant that moved during validation, and
+  requires the grant's ACCOUNT to be the one validation verified (same
+  code). `BedrockKBConnector.validate_registration` returns that account:
+  STS resolved the frozen credentials to it, the grant read after that call
+  named it, and every probe rechecked that the store still held exactly
+  that grant. An account read before validation began is not enough, since
+  the grant can move to another account and back while the probes run, and
+  that read would then match the final grant for a KB proven only in the
+  other account. Same target is not the same account either: a
+  profile can be re-pointed and re-confirmed for the same (profile, region)
+  while validation was probing the KB in the account before, and the
+  attestation pins the account the grant confirms at insert, so without
+  the account check the row would authorize paid retrieval of a KB never
+  validated there. A same-target, same-account re-confirmation (a fresh
+  `grant_id`) still passes. `record_source_attestation` takes that
+  `expected_account` and refuses to pin any other, so the attestation cannot
+  name an account the KB was not probed in whatever ran between validation
+  and the write; and the compare FAILS CLOSED — a sources-table lookup error
+  refuses with `bedrock_kb_conflict_check_failed` (503) rather than reading
+  as "no conflict"; that code covers the lookup alone, so a grant write
+  that fails propagates as the unhandled error it is, for every service,
+  the way the other consent writes do. The remote-leg
+  budget (`REMOTE_SEARCH_TIMEOUT_SECS`) explicitly absorbs the uncached
+  per-search STS consent probe, and is enforced INSIDE the worker as a
+  monotonic deadline checked before each enumerated row's attestation check
+  and before each per-source and per-KB request —
+  the pool future's `result(timeout)` alone only abandons the waiter,
+  leaving the worker issuing paid Retrieve calls it can no longer deliver.
+  A budget skip is fail-open silence, never a validate-visible KB failure.
+- **Probe on add.** `validate_config` issues a 1-result `Retrieve` per KB, so
+  a bad id, region, or profile is refused at add time. Authorization-class
+  errors fail validation; service-side errors (throttling, 5xx) prove the KB
+  exists and pass.
+- **Retrieve with the managed fallback.** Retrieval tries
+  `vectorSearchConfiguration` first and retries with
+  `managedSearchConfiguration` only when the ValidationException names it —
+  MANAGED-type KBs reject the vector key (`implicitFilterConfiguration` is
+  never sent on the managed path). Both keys are members of the Retrieve
+  request's `retrievalConfiguration`
+  ([KnowledgeBaseRetrievalConfiguration](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_agent-runtime_KnowledgeBaseRetrievalConfiguration.html));
+  the rejection the fallback matches is `MANAGED_ERR` in
+  `test/test_bedrock_kb_connector.py`, recorded from a live Retrieve against a
+  MANAGED-type KB: "vectorSearchConfiguration is not supported for managed
+  knowledge bases. Use managedSearchConfiguration instead." The fallback is its own paid request and
+  gets the same two checks the per-KB loop applies before each request: the
+  grant is re-asserted, and a rejection slow enough to spend the search
+  budget leaves the fallback unissued (empty result, not an error). Multi-KB
+  sources fan out one Retrieve per
+  KB and merge by relevance score; one unreachable KB is logged and skipped
+  rather than sinking the others. The query text is the one part of a
+  knowledge search that leaves the host, and it is caller-supplied free
+  text, so it goes out through the same platform shim,
+  `kiro_crew.platform.redact_via_context`, never `security.redact`
+  directly: on a host whose profile composes a companion credential
+  policy the companion's shapes apply too, and the baseline runs the URL
+  pass before the credential pass; a credential inside a URL's query
+  string blanked ahead
+  of the URL pass leaves a placeholder the URL matcher does not recognise,
+  and the URL's host and remaining query would reach the Retrieve API.
+  Local search legs keep the raw text; only this egress redacts.
+- **Citations from document metadata.** Each result's URL comes from the
+  `source_uri` metadata attribute (the convention KB-building crawlers write),
+  falling back to the reserved `x-amz-bedrock-kb-source-uri` key and then the
+  raw storage location — so hits cite the original document, not an S3 object.
+  Retrieved content, metadata titles, citation URLs and complete source names
+  pass through `kiro_crew.platform.redact_via_context` before any connector
+  length bound. The summary is derived from the already-redacted content. This
+  order prevents a bound from leaving a credential fragment too short for the
+  downstream MCP and dashboard redactors to recognize; a source name SQL could
+  not return whole uses the validated KB-id fallback described above.
+- **Query path: async callers only, bounded, fail-open.** The remote leg runs
+  in `local_knowledge_search` (MCP) and `search_for_context` (dashboard) via
+  `search_remote_sources_bounded` — a shared worker pool plus
+  `REMOTE_SEARCH_TIMEOUT_SECS` wall-clock budget over per-request boto
+  connect/read timeouts. Any failure or timeout returns `[]` and local results
+  stand alone. It never runs inside `HybridRetriever.search` (sync, and the
+  scoped-search exhaustion loop would multiply remote round trips). An
+  install with no `bedrock_kb` rows pays one indexed `SELECT ... LIMIT 1` and
+  no thread. On the MCP tool, a `source_id` scope keeps the leg (the
+  enumeration applies `sources.id = ?`) and a `namespace` scope skips it
+  entirely: namespaces live on `items.namespace` and a `bedrock_kb` source
+  holds no items, so no remote hit can fall inside one.
+- **Merge by rank, not score.** Local RRF scores (~0.01–0.06) and Bedrock
+  relevance scores (0–1) are not comparable, so `merge_by_rank` interleaves
+  the two legs positionally (local first) instead of sorting on raw score.
+- **Sync is a no-op.** `detect_changes` is always `False`, so `SyncScheduler`
+  never ingests the source; the dashboard shows it as connected rather than
+  synced.
+- **Last search per source.** In place of sync state, the gateway keeps how
+  the last search of each registered row went, in memory (`_last_searches`,
+  read through `last_searches()`; every search runs in the gateway, and a
+  restart starts it empty): `ok` (every KB answered), `refused` (the consent
+  check at the start of the search turned it away before any request, which
+  includes an account it could not confirm, as with expired credentials) or
+  `error` (the client setup, or a Retrieve for at least one KB, failed; a
+  refusal mid-search is one), with the time. Sources sharing a target share
+  its consent and client answer; a spent budget, including one that cut the
+  consent probe short, records nothing; each enumeration drops the ids it
+  does not attest.
+  `GET /api/knowledge/sources` adds it as `last_search` to a `searchable`
+  row only. The Sources list shows `ok` as the row's badge, `refused` and
+  `error` as an `ErrorNotice` under the row, and the day beside either.
+
 ### On-loop connection guard (`on_loop_db.py`)
 
 `KnowledgeStore.db` is the single accessor every query in the store funnels through, so it carries the runtime half of the off-loop discipline. `OnLoopDBGuard.check()` runs at the top of the property, before the cached-connection fast path — a second query on an already-open connection must not escape it:
@@ -602,11 +1097,13 @@ with user data. Production retrieval still requires the active signature.
 - **On the loop, strict** — raises `OnLoopStoreError`, so an un-offloaded call-site fails a test instead of shipping.
 - **On the loop, otherwise** — a throttled WARNING with `stack_info` (once per 60s per guard) and the call proceeds. Production deliberately does not raise: that would convert a slow query into a failed request.
 
-**Construction is the one vetted on-loop take.** `setup_knowledge_routes()` reads the gateway's lazy `knowledge_store` property at route registration, before the socket binds. `start_dashboard` builds that store on a worker thread (`asyncio.to_thread`) immediately before, because construction prepares and opens SQLite files (owner-only preparation, schema init, migrations) and that file I/O must not run on the loop; so on the gateway `__init__` is on the boot path but off the loop, and `test_dashboard_server_startup_coverage.py::TestStartDashboardWiring::test_the_knowledge_store_is_built_off_the_loop` pins it. Other callers (a CLI command, a test, a handler harness) may still construct on a loop thread, so the take stays sanctioned there. The constructor wraps exactly those calls in `OnLoopDBGuard.allow_on_loop()`, a `ContextVar`-scoped opt-out (mirroring `history.allow_on_loop_persist`) that ends with the `with` block: the six non-constructor `_load_graph()` call sites and every query path stay fully guarded, and `test_knowledge_store_onloop_db.py::TestConstructionOnLoopIsSanctioned` pins both directions. Sanctioned is not the same as free, so both data-scaled pieces of construction have left the boot path. **The orphan sweep** is `KnowledgeStore.reclaim_orphans()`, not part of `_migrate()` (plus a graph refresh when one is already loaded): it is a writer-locked full scan over `sources`, `items` and the state tables, and on a large store it would stall boot long enough for the runtime's timeouts to kill the gateway. `start_dashboard` kicks it via `_kick_knowledge_orphan_reclaim` — a tracked `_background_tasks` entry running `asyncio.to_thread`, the same shape as `_kick_connections_warm_scavenge` — strictly after `_start_site` returns, so the listener is already accepting and the store stays readable (WAL readers do not wait on the writer) while it runs. Only a store construction already built is swept; the API-only entrypoint never registers the knowledge routes and gets none. The one-time `source_locations` de-duplication in `_migrate()` is likewise gated on `idx_source_locations_item_source` not existing yet — once the unique index is in place duplicates are impossible and the `GROUP BY` scan would run on every open for nothing. **The graph load does not run at construction either**: `_load_graph()` full-scans `entities`/`entity_relations` and is deferred to the first graph reader via `ensure_graph_loaded`, the same shape as the FTS rebuild — measured at 2.39 s of 5.06 s total construction at 250k entities / 750k relations, and 5.12 s of 11.32 s at 500k / 1.5M, so roughly 45% of construction leaves the boot path and scales linearly with entity count.
+**Construction is the one vetted on-loop take.** `setup_knowledge_routes()` reads the gateway's lazy `knowledge_store` property at route registration, before the socket binds. `start_dashboard` builds that store on a worker thread (`asyncio.to_thread`) immediately before, because construction prepares and opens SQLite files (owner-only preparation, schema init, migrations) and that file I/O must not run on the loop; so on the gateway `__init__` is on the boot path but off the loop, and `test_dashboard_server_startup_coverage.py::TestStartDashboardWiring::test_the_knowledge_store_is_built_off_the_loop` pins it. Other callers (a CLI command, a test, a handler harness) may still construct on a loop thread, so the take stays sanctioned there. The constructor wraps exactly those calls in `OnLoopDBGuard.allow_on_loop()`, a `ContextVar`-scoped opt-out (mirroring `history.allow_on_loop_persist`) that ends with the `with` block: the non-constructor `_load_graph()` call sites and every query path stay fully guarded, and `test_knowledge_store_onloop_db.py::TestConstructionOnLoopIsSanctioned` pins both directions. Sanctioned is not the same as free, so both data-scaled pieces of construction have left the boot path. **The orphan sweep** is `KnowledgeStore.reclaim_orphans()`, not part of `_migrate()` (it ends by marking the graph stale, see below): it is a writer-locked full scan over `sources`, `items` and the state tables, and on a large store it would stall boot long enough for the runtime's timeouts to kill the gateway. `start_dashboard` kicks it via `_kick_knowledge_orphan_reclaim` — a tracked `_background_tasks` entry running `asyncio.to_thread`, the same shape as `_kick_connections_warm_scavenge` — strictly after `_start_site` returns, so the listener is already accepting and the store stays readable (WAL readers do not wait on the writer) while it runs. Only a store construction already built is swept; the API-only entrypoint never registers the knowledge routes and gets none. The one-time `source_locations` de-duplication in `_migrate()` is likewise gated on `idx_source_locations_item_source` not existing yet — once the unique index is in place duplicates are impossible and the `GROUP BY` scan would run on every open for nothing. **The graph load does not run at construction either**: `_load_graph()` full-scans `entities`/`entity_relations` and is deferred to the first graph reader via `ensure_graph_loaded`, the same shape as the FTS rebuild — measured at 2.39 s of 5.06 s total construction at 250k entities / 750k relations, and 5.12 s of 11.32 s at 500k / 1.5M, so roughly 45% of construction leaves the boot path and scales linearly with entity count.
 
 **A damaged library file does not stop the gateway.** The gateway opens the store through `KnowledgeStore.open_recovering`, not the constructor. When SQLite reports the file itself as damaged (`file is not a database`, `database disk image is malformed`; the rule is `sqlite_quarantine.is_damaged_database_error`, shared with the task store), the file and its `-journal` / `-wal` / `-shm` sidecars are renamed to `knowledge.db.corrupt-<utc>.<us>Z-<pid>` by `sqlite_quarantine.quarantine_sqlite_file` (never overwriting, never deleting), one warning names the copy, and an empty library opens. The log line keeps the path and the SQLite error; a plain-words notice goes on `KnowledgeStore.warnings`, and the gateway posts it to the dashboard notification feed with a link to the Knowledge Library, so an empty library is never silent. The library opts into `data_sidecars_must_move`: a `-wal` or `-journal` that will not move (another opener holds it on Windows) raises `SidecarNotMovable` with every file put back, because a new library beside it would overwrite pages that exist nowhere else, so the gateway fails start instead. The task store keeps the default, where a stuck sidecar is reported and the file is still recreated. Sources must be added again, and a document the agent added inline (`knowledge_add_document`) has no source to rebuild from, so it lives only in the kept copy. A locked, busy, read-only or full database is not damage and still raises. The CLI and MCP tool openers keep the plain constructor and report a damaged file instead of moving it. `test/test_knowledge_store_damaged_file.py` pins all of this.
 
-**The deferral is only safe because the loop-thread readers offload it.** `get_entity_graph` and `get_full_graph` are `async def` and read `store.graph` on the event loop, so each calls `await asyncio.to_thread(store.ensure_graph_loaded)` before its first `.graph` touch. Without that the deferred scan would run *on the loop* after the bind — where the loop-stall watchdog is armed (`LoopStallWatchdog` is constructed and started after `_start_site`), unlike the pre-bind window, where nothing is armed and nothing is served. `allow_on_loop()` is not available for this: its contract restricts it to constructor-shaped setup paths. The `graph` property still materialises lazily as a backstop, so a reader nobody found is served a correct graph — and flagged by the on-loop guard if it is on the loop — rather than a silently empty one, which is indistinguishable from "this entity has no neighbours". `ensure_graph_loaded` is lock-guarded like `ensure_fts_index_current` so concurrent first-touch readers wait rather than each scanning. The lock is **re-entrant, and `_load_graph` acquires it too, so EVERY rebuild serializes** — not only the first. Guarding the first-touch call site alone was not enough: the six mutation-refresh sites hold no lock of their own, so a first graph GET racing a source DELETE put two threads through the rebuild at once and the loser's rows survived into a graph whose `_graph_loaded` was then set True — a flag asserting "loaded" over stale data, which is worse than an unloaded graph because the flag stops it ever being rescanned. Serializing the whole rebuild also settles *which* snapshot wins, since the `SELECT`s run after acquisition, so the rebuild that acquires last reads the freshest committed state. There is no ordering to invert against SQLite's writer lock: `_load_graph` is read-only and all six refresh sites call it after their own `COMMIT`, unlike the FTS rebuild, which takes its lock and then `BEGIN IMMEDIATE`.
+**The deferral is only safe because the loop-thread readers offload it.** `get_entity_graph` and `get_full_graph` are `async def` and read `store.graph` on the event loop, so each calls `await asyncio.to_thread(store.ensure_graph_loaded)` before its first `.graph` touch. Without that the deferred scan would run *on the loop* after the bind — where the loop-stall watchdog is armed (`LoopStallWatchdog` is constructed and started after `_start_site`), unlike the pre-bind window, where nothing is armed and nothing is served. `allow_on_loop()` is not available for this: its contract restricts it to constructor-shaped setup paths. The `graph` property still materialises lazily as a backstop, so a reader nobody found is served a correct graph — and flagged by the on-loop guard if it is on the loop — rather than a silently empty one, which is indistinguishable from "this entity has no neighbours". `ensure_graph_loaded` is lock-guarded like `ensure_fts_index_current` so concurrent first-touch readers wait rather than each scanning. The lock is **re-entrant, and `_load_graph` acquires it too, so EVERY rebuild serializes** — not only the first. Guarding the first-touch call site alone was not enough: the mutation sites hold no lock of their own, so a first graph GET racing a source DELETE put two threads through the rebuild at once and the loser's rows survived into a graph whose `_graph_loaded` was then set True — a flag asserting "loaded" over stale data, which is worse than an unloaded graph because the flag stops it ever being rescanned. Serializing the whole rebuild also settles *which* snapshot wins, since the `SELECT`s run after acquisition, so the rebuild that acquires last reads the freshest committed state. There is no ordering to invert against SQLite's writer lock: `_load_graph` is read-only and every remaining caller runs it after its own `COMMIT`, unlike the FTS rebuild, which takes its lock and then `BEGIN IMMEDIATE`.
+
+**A delete marks the graph stale instead of rebuilding it.** `delete_item`, `delete_items_batch`, `delete_source_cascade`, `reclaim_orphans` and `reload_graph` call `mark_graph_stale()` after their `COMMIT`: under `_graph_lock` it publishes an empty `SimpleDiGraph` and clears `_graph_loaded`, so the next reader rebuilds through `ensure_graph_loaded`. A rebuild at every delete held the whole graph (~110 MiB at 59k entities, measured with tracemalloc on a real library) from the boot-time orphan sweep and every artifact sync, whether or not anyone opened the graph. Taking the lock means a rebuild in progress finishes before the flag drops, and a reader already holding the old object keeps it. Because a delete can now unload the graph at any moment, a reader must use the graph `ensure_graph_loaded` returns rather than read `store.graph` again later: `get_full_graph` takes that return value from its worker thread, and `get_entity_graph` runs `get_entity_subgraph` on a worker, so neither reads the property on the event loop. `mark_graph_stale` clears the flag before it publishes the empty graph, and the lock-free fast path returns the graph it read only if the flag is up and that graph is still the published one, so no reader is handed the empty placeholder. `bundle_transfer` import and `add_entity_relation` still rebuild, because they add rows a reader expects to see at once. `test_knowledge_graph_stale.py` pins it.
 
 **The rebuild publishes a fresh object by reference swap, and multi-step readers pin one reference.** `_load_graph` builds a new `SimpleDiGraph` from the tables and assigns it to `self._graph` in one step, rather than clearing the live object and re-adding row by row. Serialization alone fixed *which* rebuild wins, but an in-place clear-then-repopulate still left the object a reader was holding momentarily empty: a reader iterating `store.graph`, or one that re-read `store.graph` across its own steps (degree ranking, then per-node attribute reads, then edges), could observe the window between the clear and the last insert and return an empty or truncated graph. Building fresh and swapping means the old object is never mutated — a reader holding it sees a complete, consistent old graph until it drops the reference, and the next read sees the complete new one. **The reader contract is therefore: capture `store.graph` once and read through that local for the whole multi-step read** — `get_full_graph`, `get_neighbors` and `get_entity_subgraph` do this, so a swap mid-read cannot mix old and new nodes. Readers hold a plain object reference, not `_graph_lock`, so a rebuild never blocks a reader or vice versa. The two incremental writers (`add_entity`, `add_entity_relation`) commit their row and then apply a single `add_node`/`add_edge` under `_graph_lock`, so a committed add always lands on the currently published graph and is never orphaned onto an object a concurrent swap is about to discard.
 
@@ -674,6 +1171,26 @@ Scopes the page to a single source. Composes with the existing `type`, `status`,
   see §4); adopting it in this branch is the remaining follow-up. Unscoped
   searches keep the cheap `limit * 3` window.
 
+### `GET /api/knowledge/items?sort=&added_from=&added_to=`
+
+Orders and bounds the list by the day an item was added (`created_at`).
+
+- `sort=newest|oldest` orders by `created_at`, rowid breaking ties so a page edge
+  is stable. Absent, the list keeps its default order: by source in the list
+  branch, by relevance in the search branch, where a date order re-sorts the
+  matched window stably (items added at the same moment keep their rank). That
+  window's size never depends on the page asked for, so every page slices one
+  order; it is the search's own result set, not the exhausted ranking, which with
+  a vector leg would be the whole embedded library.
+- `added_from` / `added_to` are inclusive `YYYY-MM-DD` days compared with the first
+  ten characters of `created_at` (the gateway's local `datetime.now().isoformat()`):
+  a SQL predicate in the list branch, a post-ranking filter in the search branch,
+  where they widen the window like `type`/`status`/`namespace`.
+- Any other `sort` value, or a day not spelled `YYYY-MM-DD`, is a 400.
+- `/source-counts` does not take them: while a date order or range is set, the
+  dashboard lists items flat across sources (one top-level pager) and each card
+  shows its added day instead of its last update.
+
 ### `GET /api/knowledge/source-counts`
 
 Returns the item count per source **under the active filters**:
@@ -730,7 +1247,9 @@ Two properties make the numbers auditable:
   bucket is never one of them.
 
 `kirocrew knowledge stats` prints the totals line plus a `SOURCE / DOCS / ITEMS`
-table; `--json` emits `{sources, documents, items, per_source:[{id, name,
+table, its name column padded by `messaging.tables.display_width` so a CJK or
+accented source name keeps the count columns aligned; `--json` emits
+`{sources, documents, items, per_source:[{id, name,
 documents, items}]}` with `id: null` for the bucket. A missing DB is reported
 (SEL `not_configured`), as JSON under `--json` so a script parses one shape
 either way; every call emits an SEL event under tool name `knowledge_stats`.
@@ -765,7 +1284,7 @@ Research Lab (the `auto-research` builtin app) reaches this module twice: a camp
 |------|----------------|
 | `handlers.py` | HTTP/SSE route adapters, route registration, the watchdog task, the historic-name forwarding |
 | `campaign/untrusted.py` | The only binding of the canonical credential/exfil-URL redactor (`_HAS_SECURITY`, fail-closed masking) and the nonce fence around untrusted text in LLM prompts |
-| `campaign/storage.py` | Data-home paths (`research_dir`, `db_path`, resolved per call), the campaigns schema and migrations, `_get_db` behind `_ON_LOOP_DB_GUARD`, the campaign-directory file interface, cycle-file discovery, scrubbed row and finding reads |
+| `campaign/storage.py` | Data-home paths (`research_dir`, `db_path`, resolved per call), the one-time copy of the campaigns DB into `data/` (`migrate_legacy_db`), the campaigns schema and migrations, `_get_db` behind `_ON_LOOP_DB_GUARD`, the campaign-directory file interface, cycle-file discovery, scrubbed row and finding reads |
 | `campaign/lifecycle.py` | Validation, create/transition/delete, which transitions are legal, the per-campaign transition lock, the `started_at` run-generation fence of `_guarded_transition`, settle-before-cancel for worker-thread writes, SSE fan-out, the SEL audit trail |
 | `campaign/publication.py` | `brief.md` (published after the row it renders commits, in commit order), the report and its artifact export, the Knowledge Library export |
 | `campaign/exploration.py` | Emergent sub-questions, the reserve zone of trailing cycles, FINALIZE MODE |
@@ -774,8 +1293,13 @@ Research Lab (the `auto-research` builtin app) reaches this module twice: a camp
 | `campaign/watchdog.py` | The watchdog loop body: disabled-app suspension, the 24h trust expiry, question pauses, the stall verdict, terminal settlement |
 | `campaign/grill.py` | The question-tree planner behind the grill endpoint |
 | `session_keys.py`, `subquestion_queue.py`, `workflow_template.py` | Worker-slot identity, the emergent-question queue, the Dynamic Workflow template |
+| `seams.py` | The app's provider for the core's `stopped_loop_tombstone` seam (see "Repository boundary" below) |
+
+**Repository boundary.** Research Lab is to leave this repository whole, so no module under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports `kiro_crew.apps.builtins.auto_research`. The one core decision that depends on the app is the autonudge stop of a legacy loop: on a canonical `research-<campaign id>` worker slot carrying the persisted `auto-research` provenance it deactivates the loop with `AUTONUDGE_STOP_REASON` (the tombstone the watchdog reads as a deliberate finish) instead of removing it. `session_directive_apply_monitor._keeps_stopped_loop` asks the `stopped_loop_tombstone` seam in `kiro_crew/apps/seams.py` with the slot key and the slot's persisted `_app`. The app's `seams.py` holds that seam and answers with `session_keys.is_owned_research_slot`, so a slot keeps a tombstone exactly when it did under the old import, with the app enabled or not. With no provider, or a provider that raises, nothing is kept and the stop removes the row. `test_app_seams_stopped_loop_tombstone.py` pins that equivalence. `test_core_auto_research_decoupling.py` is the gate, on the shared `test/core_app_independence.py` scanner: the only core strings left naming the app are the `security_posture.py` rows classifying its backend modules, a pinned list that may only shrink. Its dashboard half is `website/src/apps/auto-research/researchLabBoundary.test.ts`: outside `src/apps/auto-research/`, only `apps/builtinRegistry.ts` imports the UI, and the page's tests live beside it. What still names the app in core, deliberately for this wave: the `kirocrew-research` service agent (`agent_materialization/service_agents._install_research_agent`, whose rewrite folds into the ceiling-hold of `agent_parts/spec_rebuild.py`), the dashboard API owner `website/src/api/client/autoResearch.ts`, the app-store row in `appManifest.ts`, the `apps.autoResearch.*` catalog keys, the packaged `docs/research-lab.md` and its tip, and the `research-<id>` slot fixtures core tests use.
 
 **The add-to-knowledge row in §2b is `publication._ingest_findings`.** It calls `ingest_file` with the default `count_toward_import_budget`, so the export counts against the explicit-import ceiling, and an `ImportChunkBudgetError` parks the source `pending` rather than `error`. What is ingested is the scrubbed copy `findings_for_knowledge.md`, never the raw `FINDINGS.md`, and its resolved path is the dedup key the status probe reads.
+
+**The campaigns DB lives in the app's `data/` directory,** `<data home>/apps/auto-research/data/campaigns.db` (`storage.data_db_path`), the part of an app's directory that an update, an adoption onto the app's own repository (app-kit-platform.md § Former built-in adoption) and a default uninstall keep; anything beside `app.json` is deleted with the old tree. A database kept beside `app.json` (`storage.legacy_db_path`) is copied in by `storage.migrate_legacy_db`: on every gateway start, from the route registration's startup hook on the maintenance pool, enabled or not and before any connection opens, or by the first `_get_db` of a process that ran no start. The adoption swap runs at a later start before any route registers, so the copy cannot wait for the app to be enabled. The copy goes through SQLite's online backup (rows still in the old `-wal` come along), is written owner-only under a private staging name, must pass `PRAGMA quick_check`, and is published with a hard link, so it never replaces a database already in `data/`, one that appears during the copy included; a link at the old name (an operator's redirection) and anything that is not a regular file are not copied. Once the copy is published the old file and its sidecars are removed, so a campaign deleted afterwards is not kept readable in a stale second copy; a removal that fails only logs, and the leftover is never read again. Until a copy is published, `db_path` answers the old file whenever one stands there, so no row is hidden; a caller that arrives while another thread copies waits for that attempt to finish rather than opening the old file; a copy that finds the old file locked by someone else gives up after `storage._COPY_LOCK_WAIT_SECS` rather than holding up the start that awaits it; a failed copy publishes nothing, keeps the old file in use, and is not retried in the same process (a connection opened since could still write there) but at the next start. Nothing at the adoption swap refuses an old file beside `app.json`, so the test also fails while `adoption-pins.json` carries an `auto-research` row: that row lands with a swap-side refusal or carry for the file, for users who never started a release carrying the copy. A default uninstall keeps the campaigns, with the rest of `data/`. `test_auto_research_db_location.py` pins all of this.
 
 **The campaigns-DB row in §4 is `storage._ON_LOOP_DB_GUARD`,** consulted at the top of `storage._get_db`. `test_auto_research_onloop_db.py::TestStaticRatchet` recomputes the DB-touching closure and scans every coroutine across all of the app's modules, bare or component-qualified calls alike, so a coroutine in any component that reaches the campaigns DB without `asyncio.to_thread` or `run_in_executor` fails there.
 

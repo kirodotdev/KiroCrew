@@ -21,10 +21,16 @@ from denied_commands_security_helpers import (
     Q,
     _denied_by,
 )
+from named_cases_helpers import named_cases
 
 # Each test starts with the macOS libc and libproc handle caches unbuilt and puts them
 # back after, as every test of the test_denied_commands_security family does (see conftest.py).
 pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
+
+
+def _named(origin, *cases):
+    """Lead each case with the test name it came from, so the old name stays in its id."""
+    return [(origin, *c) if isinstance(c, tuple) else (origin, c) for c in cases]
 
 
 class TestSelfProtectionCommandBoundaries:
@@ -80,70 +86,120 @@ class TestSelfProtectionKillTargetScoping:
     # --- by-name kills: still blocked ---
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd"),
         [
-            f"{_PK} -f {_NAME}",
-            f"{_KA} {_NAME}",
-            f"sudo {_KA} -9 {_NAME}",
-            f"{_PK} -9 -f '{_NAME} gateway'",
-            f"{_PK} {_HYPH}",
-            f"{_PK} -f /usr/local/bin/{_NAME}",
-            f"{_KA} -9 {_NAME} > /dev/null",
-            f"{_K} -9 $(pgrep {_NAME})",
-            f"{_K} $(pgrep -f '{_NAME} gateway')",
-            f"{_K} $(pidof {_NAME})",
-            f"{_K} $(cat /var/run/{_NAME}.pid)",
-            f"{_K} `pgrep {_NAME}`",
+            *_named(
+                "test_name_targeted_kill_still_blocked",
+                f"{_PK} -f {_NAME}",
+                f"{_KA} {_NAME}",
+                f"sudo {_KA} -9 {_NAME}",
+                f"{_PK} -9 -f '{_NAME} gateway'",
+                f"{_PK} {_HYPH}",
+                f"{_PK} -f /usr/local/bin/{_NAME}",
+                f"{_KA} -9 {_NAME} > /dev/null",
+                f"{_K} -9 $(pgrep {_NAME})",
+                f"{_K} $(pgrep -f '{_NAME} gateway')",
+                f"{_K} $(pidof {_NAME})",
+                f"{_K} $(cat /var/run/{_NAME}.pid)",
+                f"{_K} `pgrep {_NAME}`",
+            ),
+            # `pkill -f` / `pgrep -f` take an ERE, so a `|` inside a QUOTED argument
+            # is part of the target, not a shell pipe.  Treating it as a segment
+            # boundary would let a by-name gateway kill through.
+            *_named(
+                "test_quoted_regex_alternation_is_still_a_kill",
+                f"{_PK} -f 'x|{_NAME}'",
+                f"{_K} $(pgrep -f 'x|{_NAME}')",
+            ),
+            # `[;]*` matches the empty string, so these are working by-name kills.
+            # Any matcher that reads the QUOTED `;` `&` `#` `>` as shell syntax stops
+            # scanning before the name and lets the kill through — the reason
+            # enforcement tokenizes the command (resolving quotes) before matching
+            # rather than splitting its raw text.
+            *_named(
+                "test_quoted_metacharacter_in_target_is_still_a_kill",
+                f"{_PK} -f '[;]*{_NAME}'",
+                f'{_PK} -f "[;]*{_NAME}"',
+                f"{_PK} -f '[&]{_NAME}'",
+                f"{_PK} -f '#{_NAME}'",
+                f"{_PK} -f '>{_NAME}'",
+                f"{_KA} '{_NAME};'",
+            ),
+            # Same class as the mint's nested-payload case: the outer tokenization
+            # leaves `pkill -f <name>` as one opaque token, so the payload's own argv
+            # has to be checked.
+            *_named(
+                "test_nested_shell_payload_is_still_a_kill",
+                f'bash -c "{_PK} -f {_NAME}"',
+                f'sh -c "{_KA} {_NAME}"',
+                f'bash -c "{_K} $(pgrep -f {_NAME})"',
+                f"bash -c \"{_PK} -f '[;]*{_NAME}'\"",
+            ),
+            # The kill program itself may come from an expansion.  Comparing a raw
+            # `os.path.basename` sees `$(which` / `pkill)` and matches neither, so the
+            # program name is normalized (wrappers stripped) before comparison — the
+            # same normalization the CLI-name check already used.
+            *_named(
+                "test_substitution_produced_kill_program_is_still_a_kill",
+                f"$(which {_PK}) -f {_NAME}",
+                f"$(which {_PK}) -f '[;]*{_NAME}'",
+                f"`which {_KA}` {_NAME}",
+                f'"$(command -v {_PK})" -f {_NAME}',
+            ),
+            # Same interleaving as the mint's case, on the kill side: a redirect glued
+            # to a substitution-produced program name leaves the closing paren mid-word,
+            # so the program name is only recovered by peeling the layers to a fixed
+            # point rather than once in a fixed order.
+            *_named(
+                "test_substitution_produced_kill_program_with_attached_redirect",
+                f"$(which {_PK})>/tmp/out -f {_NAME}",
+                f"`which {_KA}`>/tmp/out {_NAME}",
+                f'"$(command -v {_PK})">/tmp/out -f {_NAME}',
+            ),
+            # The verb is matched on TOKENS, not on raw text: a pattern anchored on
+            # preceding separators sees the `/` of an absolute path and misses it.
+            *_named(
+                "test_path_qualified_kill_is_still_a_kill",
+                f"/usr/bin/{_K} $(pgrep -f '[;]*{_NAME}')",
+                f"/bin/{_K} $(pgrep -f {_NAME})",
+                f"$(which {_K}) $(pidof {_NAME})",
+                f"/usr/bin/{_K} -9 $(pgrep {_NAME})",
+            ),
+            # An EMPTY substitution expands to nothing, so `p$()kill` runs `pkill` -- the
+            # same glue-evasion as `ca""t` -> `cat`, but spelled with a substitution and
+            # placed MID-WORD where a prefix-only strip never sees it.
+            *_named(
+                "test_empty_substitution_glue_is_still_a_kill",
+                f"p$(){_K} -f {_NAME}",
+                f"p``{_K} -f {_NAME}",
+                f"{_K}$()all {_NAME}",
+                f"$(){_PK} -f {_NAME}",
+            ),
+            # The glue-evasion can sit in the TARGET as well as the program name.
+            *_named(
+                "test_empty_substitution_inside_the_target_is_still_a_kill",
+                f"{_PK} -f kiro$()crew",
+                f"{_PK} -f kiro``crew",
+                f"{_KA} kiro$()crew",
+            ),
+            # QUOTED-LITERAL construct text: bash passes these patterns with
+            # the $()/backticks as literal ERE characters, so they cannot
+            # select a normally-named process -- but the module has never
+            # tracked quote provenance into a pattern operand: the pkill leg
+            # and the token window already deny every plain-list and pkill
+            # twin of these on the same collapsed view (measured), so the
+            # dequoted view's composed leg matching them only removes
+            # window-sensitivity from the existing fail-closed posture.
+            *_named(
+                "test_a_quoted_literal_construct_pattern_stays_denied",
+                "kill $(case x in x) :;; esac; pgrep -f 'kiro$()crew')",
+                "kill $(case x in x) :;; esac; pgrep -f 'kiro``crew')",
+                "kill $(case x in x) :;; esac; pgrep -f kiro'$()'crew)",
+                "kill $(case x in x) :;; esac; pgrep -f kiro\\$\\(\\)crew)",
+            ),
         ],
     )
-    def test_name_targeted_kill_still_blocked(self, cmd):
-        assert _denied_by(cmd) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            f"{_PK} -f 'x|{_NAME}'",
-            f"{_K} $(pgrep -f 'x|{_NAME}')",
-        ],
-    )
-    def test_quoted_regex_alternation_is_still_a_kill(self, cmd):
-        # `pkill -f` / `pgrep -f` take an ERE, so a `|` inside a QUOTED argument
-        # is part of the target, not a shell pipe.  Treating it as a segment
-        # boundary would let a by-name gateway kill through.
-        assert _denied_by(cmd) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            f"{_PK} -f '[;]*{_NAME}'",
-            f'{_PK} -f "[;]*{_NAME}"',
-            f"{_PK} -f '[&]{_NAME}'",
-            f"{_PK} -f '#{_NAME}'",
-            f"{_PK} -f '>{_NAME}'",
-            f"{_KA} '{_NAME};'",
-        ],
-    )
-    def test_quoted_metacharacter_in_target_is_still_a_kill(self, cmd):
-        # `[;]*` matches the empty string, so these are working by-name kills.
-        # Any matcher that reads the QUOTED `;` `&` `#` `>` as shell syntax stops
-        # scanning before the name and lets the kill through — the reason
-        # enforcement tokenizes the command (resolving quotes) before matching
-        # rather than splitting its raw text.
-        assert _denied_by(cmd) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            f'bash -c "{_PK} -f {_NAME}"',
-            f'sh -c "{_KA} {_NAME}"',
-            f'bash -c "{_K} $(pgrep -f {_NAME})"',
-            f"bash -c \"{_PK} -f '[;]*{_NAME}'\"",
-        ],
-    )
-    def test_nested_shell_payload_is_still_a_kill(self, cmd):
-        # Same class as the mint's nested-payload case: the outer tokenization
-        # leaves `pkill -f <name>` as one opaque token, so the payload's own argv
-        # has to be checked.
+    def test_kill_spellings_that_name_the_cli_are_kills(self, origin, cmd):
         assert _denied_by(cmd) == _RULE_KILL
 
     def test_nested_shell_payload_bare_kill_allowed(self):
@@ -152,61 +208,37 @@ class TestSelfProtectionKillTargetScoping:
         assert _denied_by(f'bash -c "{_K} 8123"') is None
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd"),
         [
-            f"$(which {_PK}) -f {_NAME}",
-            f"$(which {_PK}) -f '[;]*{_NAME}'",
-            f"`which {_KA}` {_NAME}",
-            f'"$(command -v {_PK})" -f {_NAME}',
+            # Widening the verb match must not widen the TARGET match: the name still
+            # has to appear inside the substitution that resolves the PID.
+            *_named(
+                "test_path_qualified_kill_incidental_mention_allowed",
+                f"/usr/bin/{_K} 8123",
+                f"/usr/bin/{_K} $(cat /tmp/pids)",
+                f"/usr/bin/{_K} $(cat /tmp/pids) && cp /tmp/bk/{_NAME}.json ~/",
+            ),
+            # The target scan stops at the end of the kill's OWN argv, so an unrelated
+            # later command that merely names the product is not swept in.  Each argument
+            # is checked for the target BEFORE the boundary test, because the target may
+            # itself be a quoted pattern containing a separator character.
+            *_named(
+                "test_kill_of_something_else_then_a_mention_allowed",
+                f"{_PK} -f other; echo {_NAME}",
+                f"{_PK} -f other && ls /workplace/alice/{_NAME}-wt-x",
+            ),
+            *_named(
+                "test_incidental_mention_allowed",
+                f"{_K} 12345",
+                f"{_K} 12345 && cp /tmp/bk/{_NAME}.json ~/.kiro/agents/",
+                f"{_K} $PID; diff /tmp/bk/{_NAME}.json ~/.kiro/agents/{_NAME}.json",
+                f"{_K} $PID  # stop the stray {_NAME} preview instance",
+                f"{_K} 12345 | tee /tmp/{_NAME}-gw.log",
+                f"{_K} $(cat /tmp/pids) && cp /tmp/bk/{_NAME}.json ~/",
+            ),
         ],
     )
-    def test_substitution_produced_kill_program_is_still_a_kill(self, cmd):
-        # The kill program itself may come from an expansion.  Comparing a raw
-        # `os.path.basename` sees `$(which` / `pkill)` and matches neither, so the
-        # program name is normalized (wrappers stripped) before comparison — the
-        # same normalization the CLI-name check already used.
-        assert _denied_by(cmd) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            f"$(which {_PK})>/tmp/out -f {_NAME}",
-            f"`which {_KA}`>/tmp/out {_NAME}",
-            f'"$(command -v {_PK})">/tmp/out -f {_NAME}',
-        ],
-    )
-    def test_substitution_produced_kill_program_with_attached_redirect(self, cmd):
-        # Same interleaving as the mint's case, on the kill side: a redirect glued
-        # to a substitution-produced program name leaves the closing paren mid-word,
-        # so the program name is only recovered by peeling the layers to a fixed
-        # point rather than once in a fixed order.
-        assert _denied_by(cmd) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            f"/usr/bin/{_K} $(pgrep -f '[;]*{_NAME}')",
-            f"/bin/{_K} $(pgrep -f {_NAME})",
-            f"$(which {_K}) $(pidof {_NAME})",
-            f"/usr/bin/{_K} -9 $(pgrep {_NAME})",
-        ],
-    )
-    def test_path_qualified_kill_is_still_a_kill(self, cmd):
-        # The verb is matched on TOKENS, not on raw text: a pattern anchored on
-        # preceding separators sees the `/` of an absolute path and misses it.
-        assert _denied_by(cmd) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            f"/usr/bin/{_K} 8123",
-            f"/usr/bin/{_K} $(cat /tmp/pids)",
-            f"/usr/bin/{_K} $(cat /tmp/pids) && cp /tmp/bk/{_NAME}.json ~/",
-        ],
-    )
-    def test_path_qualified_kill_incidental_mention_allowed(self, cmd):
-        # Widening the verb match must not widen the TARGET match: the name still
-        # has to appear inside the substitution that resolves the PID.
+    def test_kill_that_only_mentions_the_cli_allowed(self, origin, cmd):
         assert _denied_by(cmd) is None
 
     def test_glued_control_operator_kill_still_blocked(self):
@@ -222,147 +254,343 @@ class TestSelfProtectionKillTargetScoping:
             inner = "bash -c " + repr(inner)
         assert _denied_by(inner) == _RULE_KILL
 
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            f"p$(){_K} -f {_NAME}",
-            f"p``{_K} -f {_NAME}",
-            f"{_K}$()all {_NAME}",
-            f"$(){_PK} -f {_NAME}",
-        ],
-    )
-    def test_empty_substitution_glue_is_still_a_kill(self, cmd):
-        # An EMPTY substitution expands to nothing, so `p$()kill` runs `pkill` -- the
-        # same glue-evasion as `ca""t` -> `cat`, but spelled with a substitution and
-        # placed MID-WORD where a prefix-only strip never sees it.
-        assert _denied_by(cmd) == _RULE_KILL
-
     def test_empty_substitution_glue_is_still_a_mint(self):
         assert _denied_by(f"kiro$()crew {_TOK}") == _RULE_MINT
 
     @pytest.mark.parametrize(
-        "cmd,rule",
+        ("origin", "cmd", "rule"),
         [
-            (f"X={_NAME}; $X {_TOK}", _RULE_MINT),
-            (f"X={_NAME}; ${{X}} {_TOK}", _RULE_MINT),
-            (f"X={_NAME}; $X>/tmp/x {_TOK}", _RULE_MINT),
-            (f"P={_PK}; $P -f {_NAME}", _RULE_KILL),
+            # The name is assigned to a variable and invoked through the expansion, so
+            # neither half alone looks dangerous.  Assignment and use are in the SAME
+            # command text, so the literal is substituted back before comparison.  Only
+            # literal right-hand sides are tracked -- the ambient environment is not
+            # modelled, and does not need to be: the attacker supplies both halves.
+            *_named(
+                "test_variable_expanded_invocation_still_blocked",
+                (f"X={_NAME}; $X {_TOK}", _RULE_MINT),
+                (f"X={_NAME}; ${{X}} {_TOK}", _RULE_MINT),
+                (f"X={_NAME}; $X>/tmp/x {_TOK}", _RULE_MINT),
+                (f"P={_PK}; $P -f {_NAME}", _RULE_KILL),
+            ),
+            # `$'...'` and `$"..."` are quoting forms, so the `$` left behind once the
+            # quotes come off is not part of the program name.
+            *_named(
+                "test_ansi_c_quoted_program_still_blocked",
+                (f"$'{_NAME}' {_TOK}", _RULE_MINT),
+                (f'$"{_NAME}" {_TOK}', _RULE_MINT),
+                (f"$'{_PK}' -f {_NAME}", _RULE_KILL),
+            ),
         ],
     )
-    def test_variable_expanded_invocation_still_blocked(self, cmd, rule):
-        # The name is assigned to a variable and invoked through the expansion, so
-        # neither half alone looks dangerous.  Assignment and use are in the SAME
-        # command text, so the literal is substituted back before comparison.  Only
-        # literal right-hand sides are tracked -- the ambient environment is not
-        # modelled, and does not need to be: the attacker supplies both halves.
+    def test_expanded_program_name_is_judged_by_its_rule(self, origin, cmd, rule):
         assert _denied_by(cmd) == rule
 
     @pytest.mark.parametrize(
-        "cmd,rule",
+        ("origin", "cmd", "rule"),
         [
-            ("X=$(printf {n}); $X {v}", _RULE_MINT),
-            ("X=`printf {n}`; $X {v}", _RULE_MINT),
-            ("X=$(which {n}); $X {v}", _RULE_MINT),
-            ("P=$(printf PKILL); $P -f {n}", _RULE_KILL),
+            *named_cases(
+                "test_resolved_program_text_is_judged_by_its_rule",
+                ("origin", "cmd", "rule"),
+                [
+                    # The value is PRODUCED by a substitution, so there is no literal to carry
+                    # forward.  It is resolved conservatively instead: if the substitution names a
+                    # protected program anywhere, the variable is treated as holding that name.
+                    # Over-approximating is the safe direction -- the value only matters when the
+                    # variable is later used AS a program, where a wrong guess is a refusal.
+                    *_named(
+                        "test_computed_assignment_value_still_blocked",
+                        ("X=$(printf {n}); $X {v}", _RULE_MINT),
+                        ("X=`printf {n}`; $X {v}", _RULE_MINT),
+                        ("X=$(which {n}); $X {v}", _RULE_MINT),
+                        ("P=$(printf PKILL); $P -f {n}", _RULE_KILL),
+                    ),
+                    # `${!V}` is INDIRECT -- it expands to the value of the variable NAMED by `V`, so
+                    # resolving it takes two hops through the same assignment table.
+                    *_named(
+                        "test_indirect_expansion_resolved",
+                        ("N=PKILL; V=N; ${{!V}} -f {n}", _RULE_KILL),
+                        ("A={n}; B=A; ${{!B}} {v}", _RULE_MINT),
+                        ("x=p; x=${{x}}kill; y=x; ${{!y}} -f {n}", _RULE_KILL),
+                    ),
+                    # `${K:0}` / `${K^^}` / `${K/x/y}` transform the variable's OWN value, so none of
+                    # them is a plain `${K}`.  Resolved to the value itself: the transformation is not
+                    # modelled, and over-approximating is the safe direction, because the result only
+                    # matters where it is used as a program or a verb.
+                    *_named(
+                        "test_parameter_transformation_on_a_tracked_variable",
+                        ("K={n}; ${{K:0}} {v}", _RULE_MINT),
+                        ("K={n}; ${{K:0:9}} {v}", _RULE_MINT),
+                        ("K={n}; ${{K^^}} {v}", _RULE_MINT),
+                        ("K={n}; ${{K/x/y}} {v}", _RULE_MINT),
+                        ("K={n}; ${{K#z}} {v}", _RULE_MINT),
+                        ("K=PKILL; ${{K:0}} -f {n}", _RULE_KILL),
+                        ("V2={v}; {n} ${{V2:0}}", _RULE_MINT),
+                    ),
+                    # `bash<<<'<payload>'` glues program, operator and payload into ONE token, so the
+                    # program never appears as a token of its own; the operator is split off instead.
+                    *_named(
+                        "test_glued_herestring",
+                        ("bash<<<'{n} {v}'", _RULE_MINT),
+                        ("sh<<<'{n} {v}'", _RULE_MINT),
+                        ("bash<<<'PKILL -f {n}'", _RULE_KILL),
+                    ),
+                    # `a=(<name> <verb>); "${a[@]}"` runs the elements AS a command line.  The
+                    # expansion is a single token, so there are no adjacent operands for the argv
+                    # checks -- the joined elements go to the payload walk, which re-tokenizes them.
+                    *_named(
+                        "test_bash_array_expanded_as_a_command",
+                        ('a=({n} {v}); "${{a[@]}}"', _RULE_MINT),
+                        ("a=({n} {v}); ${{a[*]}}", _RULE_MINT),
+                        ('arr=({n} {v}); "${{arr[@]}}"', _RULE_MINT),
+                        ('a=({n} {v}); echo hi; "${{a[@]}}"', _RULE_MINT),
+                        ('a=(PKILL -f {n}); "${{a[@]}}"', _RULE_KILL),
+                        ('a=(killall {n}); "${{a[@]}}"', _RULE_KILL),
+                    ),
+                    # `$SHELL -c '<payload>'` runs the payload exactly as a named shell does; the
+                    # recognizer already used for the `| $SHELL` evaluator sink applies here too.
+                    *_named(
+                        "test_shell_reached_through_a_variable_is_a_nested_shell",
+                        ("$SHELL -c '{n} {v}'", _RULE_MINT),
+                        ("${{SHELL}} -c '{n} {v}'", _RULE_MINT),
+                        ("$SHELL -c 'PKILL -f {n}'", _RULE_KILL),
+                    ),
+                ],
+            ),
+            *named_cases(
+                "test_resolved_payload_is_judged_by_its_rule",
+                ("origin", "cmd", "rule"),
+                [
+                    # `X=<name>;$X <verb>` glues the assignment and the command that uses it into ONE
+                    # token, so neither was seen.  Tokens are split on top-level control operators
+                    # before assignments are resolved.
+                    *_named(
+                        "test_glued_assignment_separator_still_resolved",
+                        ("X={n};$X {v}", _RULE_MINT),
+                        ("X=PKILL;$X -f {n}", _RULE_KILL),
+                    ),
+                    # `x(){ <name> "$@";}; x <verb>` never puts the program and the verb in one argv:
+                    # the body holds the program, the call site holds the verb.  A function whose body
+                    # invokes a protected program is therefore treated as an alias for it, so the
+                    # ordinary argv checks see the real command at the call site.
+                    *_named(
+                        "test_function_forwarding_arguments_blocked",
+                        ('x(){{ {n} "$@";}}; x {v}', _RULE_MINT),
+                        ('x(){{ {n} "$1";}}; x {v}', _RULE_MINT),
+                        ('function x(){{ {n} "$@";}}; x {v}', _RULE_MINT),
+                        ('x(){{ PKILL -f "$1";}}; x {n}', _RULE_KILL),
+                        ("k(){{ PKILL -f {n};}}; k", _RULE_KILL),
+                    ),
+                    # `alias x=<name>` then `x <verb>` is the same evasion as a function wrapper --
+                    # the definition holds the program, the call site holds the verb -- so aliases
+                    # resolve alongside function definitions.
+                    *_named(
+                        "test_alias_definition_resolved",
+                        ("bash -c 'alias x={n}; x {v}'", _RULE_MINT),
+                        ("bash -c 'alias k=PKILL; k -f {n}'", _RULE_KILL),
+                    ),
+                    # `$(printf <name>) <verb>` puts the data consumer INSIDE a substitution that
+                    # occupies program position, so its OUTPUT is what runs.  The "arguments are just
+                    # data" exemption must not apply there.
+                    *_named(
+                        "test_substitution_in_program_position_is_not_inert_data",
+                        ("$(printf {n}) {v}", _RULE_MINT),
+                        ("`printf {n}` {v}", _RULE_MINT),
+                        ("$(echo {n}) {v}", _RULE_MINT),
+                        ("$(printf PKILL) -f {n}", _RULE_KILL),
+                    ),
+                    # bash runs the inner command of a PROCESS substitution (`<( )`, `>( )`) exactly as
+                    # it does for a command substitution, so every substitution body is walked as a
+                    # payload and the ordinary argv checks see the inner invocation.
+                    *_named(
+                        "test_process_substitution_body_is_a_command",
+                        ("cat <({n} {v})", _RULE_MINT),
+                        ("diff <({n} {v}) /tmp/x", _RULE_MINT),
+                        ("tee >({n} {v})", _RULE_MINT),
+                        ("cat <(PKILL -f {n})", _RULE_KILL),
+                    ),
+                    # A multiword alias replacement is a whole COMMAND LINE, not just a program name,
+                    # so it is handed to the payload walk rather than treated as an alias target.
+                    *_named(
+                        "test_multiword_alias_replacement_blocked",
+                        ("bash -c \"alias x='{n} {v}'; x\"", _RULE_MINT),
+                        ("bash -c \"alias k='PKILL -f {n}'; k\"", _RULE_KILL),
+                    ),
+                ],
+            ),
         ],
     )
-    def test_computed_assignment_value_still_blocked(self, cmd, rule):
-        # The value is PRODUCED by a substitution, so there is no literal to carry
-        # forward.  It is resolved conservatively instead: if the substitution names a
-        # protected program anywhere, the variable is treated as holding that name.
-        # Over-approximating is the safe direction -- the value only matters when the
-        # variable is later used AS a program, where a wrong guess is a refusal.
+    def test_resolved_text_is_judged_by_its_rule(self, origin, cmd, rule):
         text = cmd.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
         assert _denied_by(text) == rule
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd"),
         [
-            "X=$(date); echo $X {v}",
-            "X=$(cat /workplace/alice/{n}-wt-x/f); echo $X {v}",
+            *_named(
+                "test_computed_assignment_without_a_protected_name_allowed",
+                "X=$(date); echo $X {v}",
+                "X=$(cat /workplace/alice/{n}-wt-x/f); echo $X {v}",
+            ),
+            # Expandability is the test, not the mere presence of a glob: `kiro[x]few` cannot
+            # expand to the CLI, `ls` is not an invocation of it, and `echo` treats it as data.
+            *_named(
+                "test_glob_that_cannot_name_the_cli_allowed",
+                "kiro[x]few {v}",
+                "ls ./bin/kiro*rew",
+                "echo kiro[c]rew {v}",
+            ),
+            *_named(
+                "test_ordinary_text_processing_still_allowed",
+                "awk '{{print $1}}' /workplace/alice/{n}-wt-x/log",
+                "awk '/{v}/ {{print}}' /workplace/alice/{n}-wt-x/log",
+                "sed -n '1,5p' /workplace/alice/{n}-wt-x/README.md",
+            ),
         ],
     )
-    def test_computed_assignment_without_a_protected_name_allowed(self, cmd):
+    def test_text_that_cannot_name_the_cli_allowed(self, origin, cmd):
         assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is None
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd"),
         [
-            f"echo foo;{_NAME}>/tmp/x {_TOK}",
-            f"echo foo;{_NAME} {_TOK}",
-            f"echo foo;{_PK}>/tmp/x -f {_NAME}",
-            f"echo foo&&{_PK} -f {_NAME}",
+            # A guard on the data-consumer exemption itself: `shlex` attributes
+            # `foo;<name>` to the PRECEDING `echo`, while the part after the operator is a
+            # new command that really runs.  Inheriting the exemption there would turn
+            # the exemption into a bypass.
+            *_named(
+                "test_data_consumer_exemption_does_not_cross_a_glued_operator",
+                f"echo foo;{_NAME}>/tmp/x {_TOK}",
+                f"echo foo;{_NAME} {_TOK}",
+                f"echo foo;{_PK}>/tmp/x -f {_NAME}",
+                f"echo foo&&{_PK} -f {_NAME}",
+            ),
+            # A second guard on the same exemption: `echo … | sh` produces the
+            # dangerous command as TEXT and then hands it to something that runs it, so
+            # "arguments are just data" does not hold -- the data IS the command.  The
+            # printed text is therefore re-tokenized as a payload too.
+            *_named(
+                "test_data_consumer_exemption_refused_when_piped_to_a_shell",
+                f"echo {_NAME} {_TOK} | sh",
+                f"echo {_NAME} {_TOK} | bash",
+                f"echo '{_PK} -f {_NAME}' | sh",
+                f"echo {_NAME} {_TOK} | xargs sh -c",
+            ),
         ],
     )
-    def test_data_consumer_exemption_does_not_cross_a_glued_operator(self, cmd):
-        # Regression guard on the data-consumer exemption itself: `shlex` attributes
-        # `foo;<name>` to the PRECEDING `echo`, while the part after the operator is a
-        # new command that really runs.  Inheriting the exemption there would have
-        # turned the round-8 precision fix into a bypass.
+    def test_data_consumer_exemption_does_not_cover_a_real_run(self, origin, cmd):
         assert _denied_by(cmd) is not None
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd"),
         [
-            f"echo {_NAME} {_TOK} | sh",
-            f"echo {_NAME} {_TOK} | bash",
-            f"echo '{_PK} -f {_NAME}' | sh",
-            f"echo {_NAME} {_TOK} | xargs sh -c",
+            *named_cases(
+                "test_text_fed_to_a_shell_still_blocked",
+                ("origin", "cmd"),
+                [
+                    # Piping into `$SHELL` runs the piped text exactly as piping into `bash` does,
+                    # and the expansion hides the program name from any basename comparison.  The
+                    # variables that conventionally hold a shell are recognised as evaluators.
+                    *_named(
+                        "test_variable_expanded_shell_sink_still_blocked",
+                        "echo 'PKILL -f {n}' | $SHELL",
+                        "echo 'PKILL -f {n}' | ${{SHELL}}",
+                        "echo {n} {v} | $SHELL",
+                        'echo {n} {v} | "$SHELL"',
+                    ),
+                    # A herestring feeds the script on STDIN rather than as an argument, so its text
+                    # is a command just as a `-c` argument is.  Both the spaced and glued spellings
+                    # are covered.  (A heredoc was already caught -- its newline puts the name in
+                    # command position for the raw-text half.)
+                    *_named(
+                        "test_herestring_payload_still_blocked",
+                        "bash <<< '{n} {v}'",
+                        'bash <<< "{n} {v}"',
+                        "sh <<< '{n} {v}'",
+                        "bash <<< '{n} >/tmp/x {v}'",
+                        "bash <<< 'PKILL -f {n}'",
+                    ),
+                ],
+            ),
+            *named_cases(
+                "test_interpreter_payload_spellings_still_blocked",
+                ("origin", "cmd"),
+                [
+                    # A `;` INSIDE `$( ... )` belongs to that substitution, not to the argv being
+                    # scanned -- `<name> $(true; echo <verb>)` is one command.  The scan tracks
+                    # substitution depth so only a top-level separator ends it.
+                    *_named(
+                        "test_separator_nested_in_a_substitution_does_not_end_the_argv",
+                        "{n} $(true; echo {v})",
+                        "{n} $(echo {v})",
+                        "PKILL -f $(true; echo {n})",
+                    ),
+                    # `env -S` splits its argument into a command and execs it, so the payload is a
+                    # command line like a `-c` argument.  The flag arrives lowercased (`is_denied`
+                    # lowercases its input), which is why the comparison is case-insensitive.
+                    *_named(
+                        "test_env_split_string_payload_blocked",
+                        "env -S '{n} {v}'",
+                        "env -S'{n} {v}'",
+                        "env --split-string '{n} {v}'",
+                        "env --split-string='{n} {v}'",
+                        "env -S 'PKILL -f {n}'",
+                    ),
+                    # `xargs` does not read a script -- it APPENDS the piped words to its own
+                    # command, so `echo <verb> | xargs <name>` runs `<name> <verb>` even though
+                    # neither half contains a space.  The effective command line is reconstructed so
+                    # the ordinary argv checks can see it.
+                    *_named(
+                        "test_xargs_appended_arguments_blocked",
+                        "echo {v} | xargs {n}",
+                        "echo {v} | xargs -n1 {n}",
+                        "echo {n} | xargs PKILL -f",
+                    ),
+                    # `f"..."`, `rb"..."` and friends put a prefix between the sink's paren and the
+                    # opening quote, which the opener did not admit.
+                    *_named(
+                        "test_string_prefix_before_the_payload_blocked",
+                        "python -c 'os.system(f\"{n} {v}\")'",
+                        "python -c 'os.system(f\"PKILL -f {n}\")'",
+                        "python -c 'os.system(rb\"{n} {v}\")'",
+                    ),
+                    # An interpreter argv can name the program by ABSOLUTE or relative path.  The
+                    # quoted program-name patterns admit a path prefix, written as one flat
+                    # character class rather than a repeated group -- a group carrying its own
+                    # quantifier is rejected by `_redos_prone`, and a rejected pattern is DISABLED.
+                    *_named(
+                        "test_path_qualified_program_in_interpreter_argv_blocked",
+                        "python -c \"subprocess.run(['/usr/bin/{n}','{v}'])\"",
+                        "python -c \"subprocess.run(['./bin/{n}','{v}'])\"",
+                        "python -c \"subprocess.run(['/usr/bin/PKILL','-f','{n}'])\"",
+                        'node -e \'execFileSync("/opt/{n}",["{v}"])\'',
+                        "python -c 'os.system(\"/usr/bin/{n} {v}\")'",
+                    ),
+                    # `printf` expands `\n` before the shell sees it, so the payload is decoded the
+                    # same way before re-tokenizing.  Without that, the escape glues onto the verb
+                    # and the comparison misses.
+                    *_named(
+                        "test_printf_escaped_payload_blocked",
+                        "printf '{n} {v}\\n' | bash",
+                        "printf '{n} {v}\\n' | sh",
+                        "printf 'PKILL -f {n}\\n' | bash",
+                        "echo -e '{n} {v}\\n' | bash",
+                    ),
+                    # `*['<verb>']` unpacks into the argv, so `*` joins the argv separator class.  It
+                    # stays OUT of the command-position gap on purpose -- that exclusion is what keeps
+                    # a regex literal (`.*<name>.*<verb>`) from matching, and here every element is
+                    # quoted so the literal still cannot.
+                    *_named(
+                        "test_star_unpacked_argv_blocked",
+                        "python -c \"subprocess.run(['{n}', *['{v}']])\"",
+                        "python -c \"subprocess.run(['PKILL', *['-f','{n}']])\"",
+                    ),
+                ],
+            ),
         ],
     )
-    def test_data_consumer_exemption_refused_when_piped_to_a_shell(self, cmd):
-        # Second regression guard on the same exemption: `echo … | sh` produces the
-        # dangerous command as TEXT and then hands it to something that runs it, so
-        # "arguments are just data" does not hold -- the data IS the command.  The
-        # printed text is therefore re-tokenized as a payload too.
-        assert _denied_by(cmd) is not None
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            "echo 'PKILL -f {n}' | $SHELL",
-            "echo 'PKILL -f {n}' | ${{SHELL}}",
-            "echo {n} {v} | $SHELL",
-            'echo {n} {v} | "$SHELL"',
-        ],
-    )
-    def test_variable_expanded_shell_sink_still_blocked(self, cmd):
-        # Piping into `$SHELL` runs the piped text exactly as piping into `bash` does,
-        # and the expansion hides the program name from any basename comparison.  The
-        # variables that conventionally hold a shell are recognised as evaluators.
+    def test_text_fed_to_an_executor_is_still_blocked(self, origin, cmd):
         text = cmd.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
         assert _denied_by(text) is not None
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            "bash <<< '{n} {v}'",
-            'bash <<< "{n} {v}"',
-            "sh <<< '{n} {v}'",
-            "bash <<< '{n} >/tmp/x {v}'",
-            "bash <<< 'PKILL -f {n}'",
-        ],
-    )
-    def test_herestring_payload_still_blocked(self, cmd):
-        # A herestring feeds the script on STDIN rather than as an argument, so its text
-        # is a command just as a `-c` argument is.  Both the spaced and glued spellings
-        # are covered.  (A heredoc was already caught -- its newline puts the name in
-        # command position for the raw-text half.)
-        text = cmd.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
-        assert _denied_by(text) is not None
-
-    @pytest.mark.parametrize(
-        "cmd,rule",
-        [
-            (f"$'{_NAME}' {_TOK}", _RULE_MINT),
-            (f'$"{_NAME}" {_TOK}', _RULE_MINT),
-            (f"$'{_PK}' -f {_NAME}", _RULE_KILL),
-        ],
-    )
-    def test_ansi_c_quoted_program_still_blocked(self, cmd, rule):
-        # `$'...'` and `$"..."` are quoting forms, so the `$` left behind once the
-        # quotes come off is not part of the program name.
-        assert _denied_by(cmd) == rule
 
     @pytest.mark.parametrize(
         "cmd",
@@ -381,59 +609,67 @@ class TestSelfProtectionKillTargetScoping:
         assert _denied_by(cmd) == _RULE_MINT
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd", "rule"),
         [
-            f"{_PK} -f kiro$()crew",
-            f"{_PK} -f kiro``crew",
-            f"{_KA} kiro$()crew",
+            # The shell expands a glob in the program name BEFORE exec, so a literal
+            # comparison never sees the real program.  The glob is translated to a regex
+            # (`[...]`/`?` -> one char, `*` -> any run) and tested for whether it COULD name
+            # the target.
+            *_named(
+                "test_globbed_program_name_still_blocked",
+                ("./bin/kiro[c]rew {v}", _RULE_MINT),
+                ("kiro?rew {v}", _RULE_MINT),
+                ("kiro*rew {v}", _RULE_MINT),
+                ("/usr/local/bin/kiro[c]rew {v}", _RULE_MINT),
+                ("p[k]ill -f {n}", _RULE_KILL),
+            ),
+            # A value can be built FROM an already-tracked variable.  Expanding before
+            # classifying is what makes the result a literal at all: left unexpanded it looks
+            # computed, the earlier binding stays, and the reassignment is silently ignored.
+            *_named(
+                "test_name_assembled_across_assignments",
+                ("x=p; x=${{x}}kill; $x -f {n}", _RULE_KILL),
+                ("x=pk; y=${{x}}ill; $y -f {n}", _RULE_KILL),
+                ("a=kiro; b=$a; c=${{b}}crew; $c {v}", _RULE_MINT),
+                ("n=kiro; n=${{n}}crew; $n {v}", _RULE_MINT),
+            ),
         ],
     )
-    def test_empty_substitution_inside_the_target_is_still_a_kill(self, cmd):
-        # The glue-evasion can sit in the TARGET as well as the program name.
-        assert _denied_by(cmd) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd,rule",
-        [
-            ("./bin/kiro[c]rew {v}", _RULE_MINT),
-            ("kiro?rew {v}", _RULE_MINT),
-            ("kiro*rew {v}", _RULE_MINT),
-            ("/usr/local/bin/kiro[c]rew {v}", _RULE_MINT),
-            ("p[k]ill -f {n}", _RULE_KILL),
-        ],
-    )
-    def test_globbed_program_name_still_blocked(self, cmd, rule):
-        # The shell expands a glob in the program name BEFORE exec, so a literal
-        # comparison never sees the real program.  The glob is translated to a regex
-        # (`[...]`/`?` -> one char, `*` -> any run) and tested for whether it COULD name
-        # the target.
+    def test_program_name_built_by_expansion_is_judged_by_its_rule(self, origin, cmd, rule):
         assert _denied_by(cmd.format(n=_NAME, v=_TOK)) == rule
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd"),
         [
-            "kiro[x]few {v}",
-            "ls ./bin/kiro*rew",
-            "echo kiro[c]rew {v}",
+            # A brace group expands to the real name before exec, so it is treated like any
+            # other glob: translated to a regex and tested for whether it COULD name the
+            # target.  `kiro{{x,y}}few` cannot, and stays allowed.
+            *_named(
+                "test_brace_expansion_in_program_name_blocked",
+                "kiro{{c..c}}rew {v}",
+                "kiro{{c,c}}rew {v}",
+                "p{{k,k}}ill -f {n}",
+            ),
+            # `awk` has `system()` and pipe-to-command; GNU `sed` has the `e` flag.  The
+            # exemption is withdrawn PER COMMAND when the script carries such a construct,
+            # rather than dropping the tool from the list -- which would refuse ordinary use.
+            *_named(
+                "test_script_that_executes_is_not_a_data_consumer",
+                "awk 'BEGIN {{ system(ARGV[1] \" \" ARGV[2]) }}' {n} {v}",
+                "awk 'BEGIN {{ print | \"{n} {v}\" }}'",
+                "sed 's/x/{n} {v}/e' /tmp/f",
+            ),
+            # The command-position path class spans a drive letter and backslashes, and
+            # the argv literal admits an executable suffix (`.exe`) before the closing quote.
+            # It stops at `-`, so a product-named worktree path is still not a match.
+            *_named(
+                "test_windows_drive_qualified_path_blocked",
+                "C:\\Users\\runner\\Scripts\\{n}.exe {v}",
+                "C:/Users/runner/Scripts/{n}.exe {v}",
+            ),
         ],
     )
-    def test_glob_that_cannot_name_the_cli_allowed(self, cmd):
-        # Expandability is the test, not the mere presence of a glob: `kiro[x]few` cannot
-        # expand to the CLI, `ls` is not an invocation of it, and `echo` treats it as data.
-        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is None
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            "kiro{{c..c}}rew {v}",
-            "kiro{{c,c}}rew {v}",
-            "p{{k,k}}ill -f {n}",
-        ],
-    )
-    def test_brace_expansion_in_program_name_blocked(self, cmd):
-        # A brace group expands to the real name before exec, so it is treated like any
-        # other glob: translated to a regex and tested for whether it COULD name the
-        # target.  `kiro{{x,y}}few` cannot, and stays allowed.
+    def test_expanded_or_executing_spelling_blocked(self, origin, cmd):
         assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is not None
 
     def test_brace_expansion_that_cannot_name_the_cli_allowed(self):
@@ -501,66 +737,35 @@ class TestSelfProtectionKillTargetScoping:
         # rather than stripped from the end.
         assert _denied_by(cmd.format(n=_NAME, v=_TOK)) == _RULE_MINT
 
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            "kill $(echo x >/dev/null; pgrep {n})",
-            "kill $(echo x; pgrep -f {n})",
-            "kill $(true && pgrep {n})",
-        ],
-    )
-    def test_separator_inside_a_substitution_does_not_end_the_argv(self, cmd):
-        # `kill $(echo x; pgrep <name>)` is ONE argument -- the `;` belongs to the
-        # substitution.  The scan tracks substitution depth and ends the argv only at
-        # depth zero, so the half that names the target is still seen.
-        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
-
     def test_substitution_belonging_to_another_command_still_allowed(self):
         # The depth tracking must not re-associate a LATER command's substitution with
         # this kill: `kill 123` and the `echo` are separate commands.
         assert _denied_by(f"kill 123; echo $(cat /tmp/{_NAME})") is None
 
     @pytest.mark.parametrize(
-        "cmd,rule",
+        ("origin", "payload", "rule"),
         [
-            ("x=p; x=${{x}}kill; $x -f {n}", _RULE_KILL),
-            ("x=pk; y=${{x}}ill; $y -f {n}", _RULE_KILL),
-            ("a=kiro; b=$a; c=${{b}}crew; $c {v}", _RULE_MINT),
-            ("n=kiro; n=${{n}}crew; $n {v}", _RULE_MINT),
+            # `import subprocess as sp` makes `sp.run` the same call, and
+            # `from subprocess import run` makes the bare name reachable, so the module
+            # qualifier on a sink is any identifier or absent.
+            *_named(
+                "test_sink_module_alias_is_the_same_sink",
+                ("import subprocess as sp; sp.run('{n} {v}', shell=True)", _RULE_MINT),
+                ("from subprocess import run; run('{n} {v}', shell=True)", _RULE_MINT),
+                ("import subprocess as sp; sp.Popen('PKILL -f {n}', shell=True)", _RULE_KILL),
+            ),
+            # `subprocess.getoutput` RUNS the command and returns its output.  The catalog
+            # carried the Python 2 `commands.getoutput` spelling but not the modern one.
+            *_named(
+                "test_subprocess_output_sinks",
+                ("subprocess.getoutput('{n} {v}')", _RULE_MINT),
+                ("subprocess.getstatusoutput('{n} {v}')", _RULE_MINT),
+                ("from subprocess import getoutput; getoutput('{n} {v}')", _RULE_MINT),
+                ("sp.getoutput('PKILL -f {n}')", _RULE_KILL),
+            ),
         ],
     )
-    def test_name_assembled_across_assignments(self, cmd, rule):
-        # A value can be built FROM an already-tracked variable.  Expanding before
-        # classifying is what makes the result a literal at all: left unexpanded it looks
-        # computed, the earlier binding stays, and the reassignment is silently ignored.
-        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) == rule
-
-    @pytest.mark.parametrize(
-        "cmd,rule",
-        [
-            ("N=PKILL; V=N; ${{!V}} -f {n}", _RULE_KILL),
-            ("A={n}; B=A; ${{!B}} {v}", _RULE_MINT),
-            ("x=p; x=${{x}}kill; y=x; ${{!y}} -f {n}", _RULE_KILL),
-        ],
-    )
-    def test_indirect_expansion_resolved(self, cmd, rule):
-        # `${!V}` is INDIRECT -- it expands to the value of the variable NAMED by `V`, so
-        # resolving it takes two hops through the same assignment table.
-        text = cmd.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
-        assert _denied_by(text) == rule
-
-    @pytest.mark.parametrize(
-        "payload,rule",
-        [
-            ("import subprocess as sp; sp.run('{n} {v}', shell=True)", _RULE_MINT),
-            ("from subprocess import run; run('{n} {v}', shell=True)", _RULE_MINT),
-            ("import subprocess as sp; sp.Popen('PKILL -f {n}', shell=True)", _RULE_KILL),
-        ],
-    )
-    def test_sink_module_alias_is_the_same_sink(self, payload, rule):
-        # `import subprocess as sp` makes `sp.run` the same call, and
-        # `from subprocess import run` makes the bare name reachable, so the module
-        # qualifier on a sink is any identifier or absent.
+    def test_python_sink_spellings_are_sinks(self, origin, payload, rule):
         body = payload.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
         text = "python -c " + Q + body + Q
         expected = rule + ("-interpreter" if rule == _RULE_KILL else "-argv")
@@ -593,96 +798,32 @@ class TestSelfProtectionKillTargetScoping:
         assert _denied_by(f"T=$(printf {_TOK}); {_NAME} $T") == _RULE_MINT
 
     @pytest.mark.parametrize(
-        "cmd,rule",
+        ("origin", "payload", "rule"),
         [
-            ("K={n}; ${{K:0}} {v}", _RULE_MINT),
-            ("K={n}; ${{K:0:9}} {v}", _RULE_MINT),
-            ("K={n}; ${{K^^}} {v}", _RULE_MINT),
-            ("K={n}; ${{K/x/y}} {v}", _RULE_MINT),
-            ("K={n}; ${{K#z}} {v}", _RULE_MINT),
-            ("K=PKILL; ${{K:0}} -f {n}", _RULE_KILL),
-            ("V2={v}; {n} ${{V2:0}}", _RULE_MINT),
+            # An interpreter binds the halves to its OWN variables and then uses the names.
+            # Inlining those bindings is the interpreter-side twin of the shell assignment
+            # resolution.
+            *_named(
+                "test_interpreter_variable_bindings_are_inlined",
+                ('n="{n}"; v="{v}"; subprocess.run([n,v])', _RULE_MINT),
+                ('c="PKILL"; t="{n}"; subprocess.run([c,"-f",t])', _RULE_KILL),
+            ),
+            # Printf-style formatting is the same evasion as adjacent literal concatenation,
+            # one operator along: by the time the sink runs it, it is one string.  The tuple
+            # spelling is covered by consuming the arguments in order.
+            *_named(
+                "test_percent_format_join_inside_a_sink",
+                ('os.system("{n} %s" % "{v}")', _RULE_MINT),
+                ('os.system("%s %s" % ("{n}", "{v}"))', _RULE_MINT),
+                ('os.system("PKILL -f %s" % "{n}")', _RULE_KILL),
+            ),
         ],
     )
-    def test_parameter_transformation_on_a_tracked_variable(self, cmd, rule):
-        # `${K:0}` / `${K^^}` / `${K/x/y}` transform the variable's OWN value, so none of
-        # them is a plain `${K}`.  Resolved to the value itself: the transformation is not
-        # modelled, and over-approximating is the safe direction, because the result only
-        # matters where it is used as a program or a verb.
-        text = cmd.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
-        assert _denied_by(text) == rule
-
-    @pytest.mark.parametrize(
-        "payload,rule",
-        [
-            ("subprocess.getoutput('{n} {v}')", _RULE_MINT),
-            ("subprocess.getstatusoutput('{n} {v}')", _RULE_MINT),
-            ("from subprocess import getoutput; getoutput('{n} {v}')", _RULE_MINT),
-            ("sp.getoutput('PKILL -f {n}')", _RULE_KILL),
-        ],
-    )
-    def test_subprocess_output_sinks(self, payload, rule):
-        # `subprocess.getoutput` RUNS the command and returns its output.  The catalog
-        # carried the Python 2 `commands.getoutput` spelling but not the modern one.
-        body = payload.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
-        text = "python -c " + Q + body + Q
-        expected = rule + ("-interpreter" if rule == _RULE_KILL else "-argv")
-        assert _denied_by(text) == expected
-
-    @pytest.mark.parametrize(
-        "payload,rule",
-        [
-            ('n="{n}"; v="{v}"; subprocess.run([n,v])', _RULE_MINT),
-            ('c="PKILL"; t="{n}"; subprocess.run([c,"-f",t])', _RULE_KILL),
-        ],
-    )
-    def test_interpreter_variable_bindings_are_inlined(self, payload, rule):
-        # An interpreter binds the halves to its OWN variables and then uses the names.
-        # Inlining those bindings is the interpreter-side twin of the shell assignment
-        # resolution.
+    def test_interpreter_assembled_payload_is_inlined(self, origin, payload, rule):
         body = payload.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
         text = "python -c " + chr(39) + body + chr(39)
         expected = rule + ("-interpreter" if rule == _RULE_KILL else "-argv")
         assert _denied_by(text) == expected
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            "awk 'BEGIN {{ system(ARGV[1] \" \" ARGV[2]) }}' {n} {v}",
-            "awk 'BEGIN {{ print | \"{n} {v}\" }}'",
-            "sed 's/x/{n} {v}/e' /tmp/f",
-        ],
-    )
-    def test_script_that_executes_is_not_a_data_consumer(self, cmd):
-        # `awk` has `system()` and pipe-to-command; GNU `sed` has the `e` flag.  The
-        # exemption is withdrawn PER COMMAND when the script carries such a construct,
-        # rather than dropping the tool from the list -- which would refuse ordinary use.
-        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is not None
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            "awk '{{print $1}}' /workplace/alice/{n}-wt-x/log",
-            "awk '/{v}/ {{print}}' /workplace/alice/{n}-wt-x/log",
-            "sed -n '1,5p' /workplace/alice/{n}-wt-x/README.md",
-        ],
-    )
-    def test_ordinary_text_processing_still_allowed(self, cmd):
-        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is None
-
-    @pytest.mark.parametrize(
-        "cmd,rule",
-        [
-            ("bash<<<'{n} {v}'", _RULE_MINT),
-            ("sh<<<'{n} {v}'", _RULE_MINT),
-            ("bash<<<'PKILL -f {n}'", _RULE_KILL),
-        ],
-    )
-    def test_glued_herestring(self, cmd, rule):
-        # `bash<<<'<payload>'` glues program, operator and payload into ONE token, so the
-        # program never appears as a token of its own; the operator is split off instead.
-        text = cmd.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
-        assert _denied_by(text) == rule
 
     @pytest.mark.parametrize(
         "cmd,rule",
@@ -705,24 +846,6 @@ class TestSelfProtectionKillTargetScoping:
         spelled = _NAME[:4] + "[" + _NAME[4] + "]" + _NAME[5:]
         assert _denied_by(f"{spelled} {_TOK}") is not None
 
-    @pytest.mark.parametrize(
-        "cmd,rule",
-        [
-            ('a=({n} {v}); "${{a[@]}}"', _RULE_MINT),
-            ("a=({n} {v}); ${{a[*]}}", _RULE_MINT),
-            ('arr=({n} {v}); "${{arr[@]}}"', _RULE_MINT),
-            ('a=({n} {v}); echo hi; "${{a[@]}}"', _RULE_MINT),
-            ('a=(PKILL -f {n}); "${{a[@]}}"', _RULE_KILL),
-            ('a=(killall {n}); "${{a[@]}}"', _RULE_KILL),
-        ],
-    )
-    def test_bash_array_expanded_as_a_command(self, cmd, rule):
-        # `a=(<name> <verb>); "${a[@]}"` runs the elements AS a command line.  The
-        # expansion is a single token, so there are no adjacent operands for the argv
-        # checks -- the joined elements go to the payload walk, which re-tokenizes them.
-        text = cmd.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
-        assert _denied_by(text) == rule
-
     def test_array_expanded_as_an_argument_is_data(self):
         # As an ARGUMENT the elements are just words: `echo ${a[@]}` prints them.  Only an
         # expansion in COMMAND position runs them.
@@ -732,23 +855,6 @@ class TestSelfProtectionKillTargetScoping:
         # bash reads `$a[@]` as `$a` followed by a literal `[@]` -- the first element
         # only, so the pair never runs and blocking it would be a false positive.
         assert _denied_by(f"a=({_NAME} {_TOK}); $a[@]") is None
-
-    @pytest.mark.parametrize(
-        "payload,rule",
-        [
-            ('os.system("{n} %s" % "{v}")', _RULE_MINT),
-            ('os.system("%s %s" % ("{n}", "{v}"))', _RULE_MINT),
-            ('os.system("PKILL -f %s" % "{n}")', _RULE_KILL),
-        ],
-    )
-    def test_percent_format_join_inside_a_sink(self, payload, rule):
-        # Printf-style formatting is the same evasion as adjacent literal concatenation,
-        # one operator along: by the time the sink runs it, it is one string.  The tuple
-        # spelling is covered by consuming the arguments in order.
-        body = payload.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
-        text = "python -c " + chr(39) + body + chr(39)
-        expected = rule + ("-interpreter" if rule == _RULE_KILL else "-argv")
-        assert _denied_by(text) == expected
 
     def test_percent_format_without_a_sink_allowed(self):
         # `print` does not execute, so collapsing the format must not make it a mint.
@@ -766,20 +872,6 @@ class TestSelfProtectionKillTargetScoping:
     def test_an_ordinary_glob_is_not_the_idiom(self):
         # Collapsing the class must not turn a normal glob into a match.
         assert _denied_by("ls [a]*.py") is None
-
-    @pytest.mark.parametrize(
-        "cmd,rule",
-        [
-            ("$SHELL -c '{n} {v}'", _RULE_MINT),
-            ("${{SHELL}} -c '{n} {v}'", _RULE_MINT),
-            ("$SHELL -c 'PKILL -f {n}'", _RULE_KILL),
-        ],
-    )
-    def test_shell_reached_through_a_variable_is_a_nested_shell(self, cmd, rule):
-        # `$SHELL -c '<payload>'` runs the payload exactly as a named shell does; the
-        # recognizer already used for the `| $SHELL` evaluator sink applies here too.
-        text = cmd.format(n=_NAME, v=_TOK).replace("PKILL", _PK)
-        assert _denied_by(text) == rule
 
     def test_two_quoted_halves_in_separate_statements_allowed(self):
         """Why the separator class was NOT widened to admit ``;``.
@@ -880,38 +972,11 @@ class TestSelfProtectionKillTargetScoping:
             _denied_by(f'git commit -m "wrap create_subprocess_shell for {_NAME} {_TOK}"') is None
         )
 
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            "C:\\Users\\runner\\Scripts\\{n}.exe {v}",
-            "C:/Users/runner/Scripts/{n}.exe {v}",
-        ],
-    )
-    def test_windows_drive_qualified_path_blocked(self, cmd):
-        # The command-position path class now spans a drive letter and backslashes, and
-        # the argv literal admits an executable suffix (`.exe`) before the closing quote.
-        # It stops at `-`, so a product-named worktree path is still not a match.
-        assert _denied_by(cmd.format(n=_NAME, v=_TOK)) is not None
-
     def test_redirect_char_inside_a_quoted_target_is_still_a_kill(self, cmd=None):
         # `pkill -f` takes an ERE, so a `>` inside a quoted target belongs to the
         # PATTERN.  Normalizing it away as a redirect would discard the name, so the
         # target is searched raw as well as normalized.
         assert _denied_by(f"{_PK} -f '>{_NAME}'") == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            f"{_PK} -f other; echo {_NAME}",
-            f"{_PK} -f other && ls /workplace/alice/{_NAME}-wt-x",
-        ],
-    )
-    def test_kill_of_something_else_then_a_mention_allowed(self, cmd):
-        # The target scan stops at the end of the kill's OWN argv, so an unrelated
-        # later command that merely names the product is not swept in.  Each argument
-        # is checked for the target BEFORE the boundary test, because the target may
-        # itself be a quoted pattern containing a separator character.
-        assert _denied_by(cmd) is None
 
     def test_nested_command_substitution_is_still_a_kill(self):
         # The PID-resolving substitution may contain one of its own, closing an
@@ -919,21 +984,7 @@ class TestSelfProtectionKillTargetScoping:
         cmd = f"{_K} $(pgrep -f \"$(printf '')" + _NAME + ' gateway")'
         assert _denied_by(cmd) == _RULE_KILL
 
-    # --- incidental mentions: now allowed ---
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            f"{_K} 12345",
-            f"{_K} 12345 && cp /tmp/bk/{_NAME}.json ~/.kiro/agents/",
-            f"{_K} $PID; diff /tmp/bk/{_NAME}.json ~/.kiro/agents/{_NAME}.json",
-            f"{_K} $PID  # stop the stray {_NAME} preview instance",
-            f"{_K} 12345 | tee /tmp/{_NAME}-gw.log",
-            f"{_K} $(cat /tmp/pids) && cp /tmp/bk/{_NAME}.json ~/",
-        ],
-    )
-    def test_incidental_mention_allowed(self, cmd):
-        assert _denied_by(cmd) is None
+    # --- incidental mentions: allowed ---
 
     def test_separator_confines_each_arm_to_one_segment(self):
         # A by-name kill in a LATER segment is still caught — segment scoping
@@ -945,99 +996,105 @@ class TestSelfKillArgvWindowIsQuoteAware:
     """The bare-``kill`` argv window survives a QUOTED close-paren decoy.
 
     ``_substitution_depth_delta`` counts parens on tokens the tokenizer already
-    stripped the quotes from, so ``kill $(printf ')' ; pgrep -f <name>)`` scored
-    the quoted paren as a real closer, ended the window at the ``;``, and
-    dropped the ``pgrep`` clause that names the target -- while bash, whose
-    substitution scan is quote-aware, runs that ``pgrep`` (measured).  The fix
-    re-derives the window's substitution bodies from the RAW text through the
-    same quote-aware span scan the extractor uses, as a UNION with the token
-    walk, so no already-detected spelling is dropped.
+    stripped the quotes from, so on its own it scores the quoted paren in
+    ``kill $(printf ')' ; pgrep -f <name>)`` as a real closer, ends the window at
+    the ``;``, and drops the ``pgrep`` clause that names the target -- while
+    bash, whose substitution scan is quote-aware, runs that ``pgrep`` (measured).
+    The window's substitution bodies are therefore also derived from the RAW text
+    through the same quote-aware span scan the extractor uses, as a UNION with the
+    token walk, so no spelling either walk detects is dropped.
     """
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd"),
         [
-            # the decoy class from the issue: a quoted ')' inside the body
-            "kill $(printf ')' ; pgrep -f {n})",
-            # same decoy through the backtick spelling of the substitution
-            "kill `printf ')' ; pgrep -f {n}`",
-            # the kill matched at any argv position, as the token walk does
-            "sudo kill $(printf ')' ; pgrep -f {n})",
-            # the decoy inside a nested shell payload is the same command
-            "sh -c 'kill $(printf \")\" ; pgrep -f {n})'",
-            # a quoted separator is DATA: bash hands kill the substitution too
-            "kill 123 ';' $(pgrep -f {n})",
-            # ``&>`` is a redirect of the SAME command, not a separator: bash
-            # runs ``kill <substitution output>`` (pre-push review, measured)
-            "kill &>/dev/null $(printf ')' ; pgrep -f {n})",
-            # ``>|`` (noclobber override) is the last separator-charactered
-            # member of the redirect grammar -- same rule, measured
-            "kill >|/dev/null $(printf ')' ; pgrep -f {n})",
-            # an escaped backtick is DATA inside a backtick body, so it must
-            # not be taken as the closer (pre-push review, measured)
-            "kill `printf '\\`' ; pgrep -f {n}`",
-            # a proven substitution INSIDE double quotes must not swallow the
-            # rest of the line: the ``;`` after it is a real separator and the
-            # kill segment after it is still scanned (pre-push review, measured)
-            "echo \"$(date)\" ; kill $(printf ')' ; pgrep -f {n})",
-            # the decoy fully inside double quotes: bash parses the body in a
-            # fresh quote context, so the interior ')' stays data
-            "kill \"$(printf ')' ; pgrep -f {n})\"",
-            # quote-SPLICED kill: bash passes the word ``kill``, so the spliced
-            # spelling with the decoy must not slip both union halves
-            # (server-side GPT review, measured)
-            "k''ill $(printf ')' ; pgrep -f {n})",
-            "k'i'll $(printf ')' ; pgrep -f {n})",
-            "\"ki\"ll $(printf ')' ; pgrep -f {n})",
-            # an EMPTY substitution expands to nothing, so ``kill$()`` is the
-            # word ``kill`` -- the glue exclusion must not eat the anchor
-            # (measured)
-            "kill$() $(printf ')' ; pgrep -f {n})",
-            "kill$( ) $(pgrep -f {n})",
-            # a NON-empty body can still expand to nothing at runtime
-            # (``$(:)``, ``$(true)``), which no static scan decides -- a FIRST
-            # word whose pre-glue prefix is ``kill`` keeps its anchor
-            # (measured)
-            "kill$(:) $(pgrep -f {n})",
-            "kill$(:) $(printf ')' ; pgrep -f {n})",
-            "kill$(true) `pgrep -f {n}`",
-            # a variable an EARLIER command assigned the verb to reaches the
-            # raw walk spelled ``$k`` while the token walk sees it resolved --
-            # so the decoyed alias slipped both union halves (measured)
-            "k=kill; $k $(printf ')' ; pgrep -f {n})",
-            "k=kill; ${{k}} $(printf ')' ; pgrep -f {n})",
-            "x=/usr/bin/kill; $x $(printf ')' ; pgrep -f {n})",
-            # a command-position substitution whose OUTPUT is the verb: the
-            # undecoyed spelling is already token-detected, so only the
-            # decoyed combination needed the raw anchor (measured)
-            "`printf kill` $(printf ')' ; pgrep -f {n})",
-            "$(echo kill) $(printf ')' ; pgrep -f {n})",
+            *_named(
+                "test_quoted_paren_decoy_is_still_a_self_kill",
+                # the decoy class: a quoted ')' inside the body
+                "kill $(printf ')' ; pgrep -f {n})",
+                # same decoy through the backtick spelling of the substitution
+                "kill `printf ')' ; pgrep -f {n}`",
+                # the kill matched at any argv position, as the token walk does
+                "sudo kill $(printf ')' ; pgrep -f {n})",
+                # the decoy inside a nested shell payload is the same command
+                "sh -c 'kill $(printf \")\" ; pgrep -f {n})'",
+                # a quoted separator is DATA: bash hands kill the substitution too
+                "kill 123 ';' $(pgrep -f {n})",
+                # ``&>`` is a redirect of the SAME command, not a separator: bash
+                # runs ``kill <substitution output>`` (measured)
+                "kill &>/dev/null $(printf ')' ; pgrep -f {n})",
+                # ``>|`` (noclobber override) is the last separator-charactered
+                # member of the redirect grammar -- same rule, measured
+                "kill >|/dev/null $(printf ')' ; pgrep -f {n})",
+                # an escaped backtick is DATA inside a backtick body, so it must
+                # not be taken as the closer (measured)
+                "kill `printf '\\`' ; pgrep -f {n}`",
+                # a proven substitution INSIDE double quotes must not swallow the
+                # rest of the line: the ``;`` after it is a real separator and the
+                # kill segment after it is still scanned (measured)
+                "echo \"$(date)\" ; kill $(printf ')' ; pgrep -f {n})",
+                # the decoy fully inside double quotes: bash parses the body in a
+                # fresh quote context, so the interior ')' stays data
+                "kill \"$(printf ')' ; pgrep -f {n})\"",
+                # quote-SPLICED kill: bash passes the word ``kill``, so the spliced
+                # spelling with the decoy must not slip both union halves
+                # (measured)
+                "k''ill $(printf ')' ; pgrep -f {n})",
+                "k'i'll $(printf ')' ; pgrep -f {n})",
+                "\"ki\"ll $(printf ')' ; pgrep -f {n})",
+                # an EMPTY substitution expands to nothing, so ``kill$()`` is the
+                # word ``kill`` -- the glue exclusion must not eat the anchor
+                # (measured)
+                "kill$() $(printf ')' ; pgrep -f {n})",
+                "kill$( ) $(pgrep -f {n})",
+                # a NON-empty body can still expand to nothing at runtime
+                # (``$(:)``, ``$(true)``), which no static scan decides -- a FIRST
+                # word whose pre-glue prefix is ``kill`` keeps its anchor
+                # (measured)
+                "kill$(:) $(pgrep -f {n})",
+                "kill$(:) $(printf ')' ; pgrep -f {n})",
+                "kill$(true) `pgrep -f {n}`",
+                # a variable an EARLIER command assigned the verb to reaches the
+                # raw walk spelled ``$k`` while the token walk sees it resolved --
+                # so the decoyed alias slipped both union halves (measured)
+                "k=kill; $k $(printf ')' ; pgrep -f {n})",
+                "k=kill; ${{k}} $(printf ')' ; pgrep -f {n})",
+                "x=/usr/bin/kill; $x $(printf ')' ; pgrep -f {n})",
+                # a command-position substitution whose OUTPUT is the verb: the
+                # undecoyed spelling is already token-detected, so only the
+                # decoyed combination needed the raw anchor (measured)
+                "`printf kill` $(printf ')' ; pgrep -f {n})",
+                "$(echo kill) $(printf ')' ; pgrep -f {n})",
+            ),
+            *_named(
+                "test_control_spellings_remain_detected",
+                # the undecorated control
+                "kill $(pgrep -f {n})",
+                # an unbalanced span is UNPROVEN: fail closed, scan the remainder
+                "kill $(pgrep -f {n}",
+                # decoyed AND unbalanced: only the raw pass sees this one, so it is
+                # what discriminates its fail-closed remainder from an empty body
+                "kill $(printf ')' ; pgrep -f {n}",
+            ),
+            # `kill $(echo x; pgrep <name>)` is ONE argument -- the `;` belongs to the
+            # substitution.  The scan tracks substitution depth and ends the argv only at
+            # depth zero, so the half that names the target is still seen.
+            *_named(
+                "test_separator_inside_a_substitution_does_not_end_the_argv",
+                "kill $(echo x >/dev/null; pgrep {n})",
+                "kill $(echo x; pgrep -f {n})",
+                "kill $(true && pgrep {n})",
+            ),
         ],
     )
-    def test_quoted_paren_decoy_is_still_a_self_kill(self, cmd):
+    def test_quote_aware_window_still_sees_the_kill(self, origin, cmd):
         assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
 
     @pytest.mark.parametrize(
         "cmd",
         [
-            # the undecorated control the issue names
-            "kill $(pgrep -f {n})",
-            # an unbalanced span is UNPROVEN: fail closed, scan the remainder
-            "kill $(pgrep -f {n}",
-            # decoyed AND unbalanced: only the raw pass sees this one, so it is
-            # what discriminates its fail-closed remainder from an empty body
-            "kill $(printf ')' ; pgrep -f {n}",
-        ],
-    )
-    def test_control_spellings_remain_detected(self, cmd):
-        assert _denied_by(cmd.format(n=_NAME)) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            # the issue's documented intentional non-detections: the name is an
-            # operand of a DIFFERENT command, so the fix must not widen the
-            # window into denying them
+            # intentional non-detections: the name is an operand of a DIFFERENT
+            # command, so the raw-text window must not widen into denying them
             "kill 8123 && cp /tmp/{n}.json ~/",
             "kill 123; echo $(cat /tmp/{n})",
             # a comment is prose, not a command: bash never runs the pgrep
@@ -1046,17 +1103,17 @@ class TestSelfKillArgvWindowIsQuoteAware:
             "echo 'kill $(pgrep -f {n})'",
             # a substitution BEFORE the kill word is an environment word's
             # value, not the kill's operand -- the exact false positive the
-            # token walk's own scoping replaced (pre-push review)
+            # token walk's own scoping replaced
             "LOG=$(ls /tmp/{n}.log) kill 4242",
             "nice -n $(cat /opt/{n}/etc/nice) kill -TERM 4242",
             # ``kill...`` glued to a substitution is an ARGUMENT of echo, not
-            # a program: bash runs only the echo (pre-push review)
+            # a program: bash runs only the echo
             "echo kill$(printf {n})",
             # same glue, with a LATER substitution naming the product: the
             # glued word must not anchor the forward window either
             "echo kill$(printf x) $(pgrep -f {n})",
             # a proven double-quoted substitution must not absorb the rest of
-            # the line into the kill's window (pre-push review)
+            # the line into the kill's window
             'kill "$(printf 123)"; echo {n}',
             'kill "$(printf 123)" && cp /tmp/{n}.json ~/',
         ],
@@ -1070,8 +1127,8 @@ class TestSelfKillArgvWindowIsQuoteAware:
             # a REAL pipe or or-list still separates -- only the redirect
             # spellings (``2>&1``, ``&>``, ``>|``) ride inside a word.
             # Predicate-level: the raw regex TIER matches these across the
-            # pipe on main too (its ``[^;&#>]`` class admits ``|``), so the
-            # public-gate verdict is owned by that tier, not this walk.
+            # pipe (its ``[^;&#>]`` class admits ``|``), so the public-gate
+            # verdict is owned by that tier, not this walk.
             "kill 123 | grep $(cat /tmp/{n})",
             "kill 123 || echo $(cat /tmp/{n})",
         ],
@@ -1091,16 +1148,15 @@ class TestSelfKillRawWindowSearchesDequotedView:
     counter that scores a ``case`` PATTERN's ``)`` (the token ``x)``) as a
     substitution closer, so a lookup placed after ``case ... esac`` in the body's
     command list falls outside its window.  The RAW window is immune to that --
-    it extracts the body whole through the quote-aware span scan -- but it
-    searched each body only as raw text and through ``_resolve_param_defaults``,
-    neither of which removes quotes, so an adjacent-quote concatenation of the
-    product name (``'kiro''crew'``) never read as the name there.  Either miss
-    alone is survivable (the unquoted ``esac``-tail spelling is denied by the
-    raw window; the quote-spliced name in a plain list is denied by the token
-    window); the combination returned ``None`` while bash ran the lookup
-    (measured).
+    it extracts the body whole through the quote-aware span scan -- but raw text
+    and ``_resolve_param_defaults`` remove no quotes, so an adjacent-quote
+    concatenation of the product name (``'kiro''crew'``) does not read as the
+    name there.  Either miss alone is survivable (the unquoted ``esac``-tail
+    spelling is denied by the raw window; the quote-spliced name in a plain list
+    is denied by the token window); the combination would return ``None`` while
+    bash runs the lookup (measured).
 
-    The fix searches each raw body's words -- the ``_self_tokens`` view, which
+    So each raw body's words are also searched -- the ``_self_tokens`` view, which
     folds a backslash-newline split whole and swallows an untokenizable body
     instead of raising out of the gate -- each word BARE and through
     ``_resolved_word_view`` (parameter defaults resolved, empty substitutions
@@ -1117,11 +1173,11 @@ class TestSelfKillRawWindowSearchesDequotedView:
     deliberately NOT ``_normalize_operand``: a de-quoted pgrep pattern is an
     ERE whose own characters (``'zz|kiro'crew``, ``'>kiro'crew``) an operand
     view truncates at, discarding exactly the protected alternative.
-    Monotone in the deny direction: no search present on main is narrowed or
-    replaced.
+    Monotone in the deny direction: the de-quoted view only adds searches; it
+    narrows or replaces none.
     """
 
-    # Two adjacent quoted fragments -- the spelling the issue measured.
+    # Two adjacent quoted fragments -- the measured spelling.
     _SPLICED = "'" + _NAME[:4] + "''" + _NAME[4:] + "'"
     # The ANSI-C spelling of the same concatenation.
     _ANSI = "$'" + _NAME[:4] + "'$'" + _NAME[4:] + "'"
@@ -1129,7 +1185,7 @@ class TestSelfKillRawWindowSearchesDequotedView:
     @pytest.mark.parametrize(
         "cmd",
         [
-            # the issue's spelling: lookup AFTER ``case ... esac``, spliced name
+            # lookup AFTER ``case ... esac``, spliced name
             "kill $(case x in x) :;; esac; pgrep -f {q})",
             # the same tail behind the other list operators
             "kill $(case x in x) :;; esac && pgrep -f {q})",
@@ -1187,61 +1243,39 @@ class TestSelfKillRawWindowSearchesDequotedView:
         assert _denied_by(cmd.format(q=self._SPLICED, a=self._ANSI)) == _RULE_KILL
 
     @pytest.mark.parametrize(
-        "cmd",
+        ("origin", "cmd"),
         [
-            # the load-bearing control: SAME esac-tail spelling, name unquoted --
-            # denied on main by the raw window's raw-text search, and it must
-            # stay denied (the case-pattern miss alone is survivable)
-            "kill $(case x in x) :;; esac; pgrep -f {n})",
-            # spliced name INSIDE the case clause: token window reaches it
-            "kill $(case x in x) pgrep -f {q};; esac)",
-            # spliced name in a plain list: token window reaches it
-            "kill $(:; pgrep -f {q})",
-            # ``;;`` inside quotes is data, not a clause terminator
-            "kill $(echo ';;'; pgrep -f {q})",
+            *_named(
+                "test_sibling_spellings_stay_denied",
+                # the load-bearing control: SAME esac-tail spelling, name unquoted --
+                # denied by the raw window's raw-text search alone (the
+                # case-pattern miss alone is survivable)
+                "kill $(case x in x) :;; esac; pgrep -f {n})",
+                # spliced name INSIDE the case clause: token window reaches it
+                "kill $(case x in x) pgrep -f {q};; esac)",
+                # spliced name in a plain list: token window reaches it
+                "kill $(:; pgrep -f {q})",
+                # ``;;`` inside quotes is data, not a clause terminator
+                "kill $(echo ';;'; pgrep -f {q})",
+            ),
+            *_named(
+                "test_a_redirected_mention_in_a_kill_owned_body_stays_denied",
+                # A redirected mention INSIDE a kill-owned body is denied even
+                # though only the second printf's output reaches the outer kill.
+                # Deliberate fail-closed over-approximation, NOT a new class: no
+                # search in this module performs output-flow analysis on a body --
+                # the same command with the name unquoted is denied by the raw
+                # search, and the plain-list spelling of this very command is
+                # denied by the token window -- so the de-quoted leg matching here
+                # only removes quote-sensitivity from the existing posture.
+                "kill $(case x in x) :;; esac; printf {q} >/dev/null; printf 4242)",
+                "kill $(printf {q} >/dev/null; printf 4242)",
+                "kill $(case x in x) :;; esac; printf {n} >/dev/null; printf 4242)",
+            ),
         ],
     )
-    def test_sibling_spellings_stay_denied(self, cmd):
+    def test_dequoted_view_keeps_these_denied(self, origin, cmd):
         assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            # A redirected mention INSIDE a kill-owned body is denied even
-            # though only the second printf's output reaches the outer kill.
-            # Deliberate fail-closed over-approximation, NOT a new class: no
-            # search in this module performs output-flow analysis on a body --
-            # the same command with the name unquoted is denied by the raw
-            # search, and the plain-list spelling of this very command is
-            # denied by the token window -- so the de-quoted leg matching here
-            # only removes quote-sensitivity from the existing posture.
-            "kill $(case x in x) :;; esac; printf {q} >/dev/null; printf 4242)",
-            "kill $(printf {q} >/dev/null; printf 4242)",
-            "kill $(case x in x) :;; esac; printf {n} >/dev/null; printf 4242)",
-        ],
-    )
-    def test_a_redirected_mention_in_a_kill_owned_body_stays_denied(self, cmd):
-        assert _denied_by(cmd.format(n=_NAME, q=self._SPLICED)) == _RULE_KILL
-
-    @pytest.mark.parametrize(
-        "cmd",
-        [
-            # QUOTED-LITERAL construct text: bash passes these patterns with
-            # the $()/backticks as literal ERE characters, so they cannot
-            # select a normally-named process -- but the module has never
-            # tracked quote provenance into a pattern operand: the pkill leg
-            # and the token window already deny every plain-list and pkill
-            # twin of these on the same collapsed view (measured), so the
-            # composed leg matching them only removes window-sensitivity from
-            # the existing fail-closed posture.
-            "kill $(case x in x) :;; esac; pgrep -f 'kiro$()crew')",
-            "kill $(case x in x) :;; esac; pgrep -f 'kiro``crew')",
-            "kill $(case x in x) :;; esac; pgrep -f kiro'$()'crew)",
-            "kill $(case x in x) :;; esac; pgrep -f kiro\\$\\(\\)crew)",
-        ],
-    )
-    def test_a_quoted_literal_construct_pattern_stays_denied(self, cmd):
-        assert _denied_by(cmd) == _RULE_KILL
 
     def test_a_nul_poisoned_body_returns_a_verdict_instead_of_raising(self):
         # A literal NUL after a word-initial ``~`` inside the body made the

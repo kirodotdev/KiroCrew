@@ -8,6 +8,7 @@ import actWarningBaseline from './act-warning-baseline.json'
 import { initI18n, i18next } from '../src/i18n'
 import { __resetStagingForTests } from '../src/components/pierreStaging'
 import { clearSideChatDrafts } from '../src/chat-core/composer/sideChatDrafts'
+import { __resetSharedUnreadQueueForTests } from '../src/store/dashboard/unread'
 
 // The Pierre mount queue is MODULE state — in a browser that is per-page, but a
 // vitest worker runs many test files in one process, so without this a file that
@@ -22,6 +23,9 @@ beforeEach(() => { __resetStagingForTests() })
 // draft typed in one test would greet the next test's freshly mounted panel.
 // Same rule: one test is one "page".
 beforeEach(() => { clearSideChatDrafts() })
+// markSlotUnread queues its shared-record write on a timer; drop a previous
+// test's queue so it cannot land in this test's storage.
+beforeEach(() => { __resetSharedUnreadQueueForTests() })
 
 // lottie-web registers a module-scoped `setInterval(checkReady, 100)` purely by
 // being IMPORTED (`readyStateCheckInterval` in the prebuilt player bundles). That

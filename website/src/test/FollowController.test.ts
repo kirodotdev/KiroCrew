@@ -11,6 +11,7 @@ import {
   distanceFromBottom,
   bottomTarget,
   isSelfScroll,
+  heightAnchorClampedToCeiling,
   heightAnchorStillUsable,
   resolveUserScrollStick,
   evaluateAutoPin,
@@ -72,6 +73,21 @@ describe('geometry helpers', () => {
     expect(distanceFromBottom(geom)).toBe(50)
     expect(computeAtBottom(geom, DEFAULT_BOTTOM_THRESHOLD)).toBe(true)
     expect(computeAtBottom({ ...geom, scrollTop: 400 }, DEFAULT_BOTTOM_THRESHOLD)).toBe(false)
+  })
+})
+
+describe('heightAnchorClampedToCeiling', () => {
+  const geom = (scrollTop: number) => ({ scrollTop, scrollHeight: 7500, clientHeight: 400 })
+  it('names the engine clamp: capture past the new maximum, live flush on it', () => {
+    expect(heightAnchorClampedToCeiling(8580, geom(7100))).toBe(true)
+    expect(heightAnchorClampedToCeiling(8580, geom(7101))).toBe(true) // sub-pixel
+  })
+  it('is not a clamp when the reader is anywhere but the ceiling', () => {
+    expect(heightAnchorClampedToCeiling(8580, geom(6000))).toBe(false)
+  })
+  it('is not a clamp when the capture still fits the shrunk document', () => {
+    // A reader who scrolled DOWN to the end from a position that still fits.
+    expect(heightAnchorClampedToCeiling(5000, geom(7100))).toBe(false)
   })
 })
 
@@ -354,6 +370,16 @@ describe('evaluateAutoPin — the race-proof core', () => {
       expect(evaluateAutoPin({ stick: false, geom: up, lastWriteTop: 480 }).pin).toBe(false)
       const r = evaluateAutoPin({ stick: true, geom: up, lastWriteTop: 480, restoreGate: true })
       expect(r).toEqual({ pin: false, stick: false, target: 600 })
+    })
+
+    it('IDLE + resting: a tail regrow larger than half the viewport is still content\'s gap', () => {
+      // A catch-up after a dropped socket replaces the half-streamed reply with
+      // its full text in one commit, so the gap under a still reader can be
+      // most of a viewport (measured 246-459px on an 844px phone). The size of
+      // the gap does not change who opened it: resting on our write, carried.
+      const regrown = { scrollTop: 600, scrollHeight: 1300, clientHeight: 400 } // 300px below the fold
+      const r = evaluateAutoPin({ stick: true, geom: regrown, lastWriteTop: 600, runActive: false })
+      expect(r).toEqual({ pin: true, stick: true, target: 900 })
     })
 
     it('resting within the self-scroll epsilon still counts (sub-pixel jitter)', () => {

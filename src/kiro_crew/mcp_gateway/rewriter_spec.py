@@ -76,14 +76,32 @@ _WINDOWS_CMD_LINE_LIMIT = 8191
 # when they could support it (e.g. dev/diagnostic servers that want the
 # operator to see one process per session).
 #
-# Empty, and nothing is excluded through it today. The intended signalling path
+# It holds only the credential vendors below. The intended signalling path
 # — a backend that does not advertise ``kirocrew.caller-identity`` in its
 # initialize response being refused for pooling — is NOT implemented: gatewayd
 # parses that capability only to decide whether to inject caller identity, and
 # no code path declines to pool a backend for lacking it. So this set is the
 # only mechanism of its kind that exists, and it is the one to reach for while
 # that is true, not a fallback for servers that cannot adopt the extension.
-UNPOOLABLE_SERVERS: frozenset[str] = frozenset()
+#
+# Credential vendors are listed here. Each chat's own copy runs inside that
+# chat's sandbox, which hides the credential directories and the ``~/.aws``
+# profile files (``sandbox_tiers``); a shared backend runs in ``gatewayd`` outside every
+# sandbox (``docs/architecture/mcp.md``). Sharing one would hand every chat a
+# vendor that can read what its own sandbox withholds, so it is never wrapped,
+# by the single-server toggle or by a bulk action.
+UNPOOLABLE_SERVERS: frozenset[str] = frozenset({"creds-agent", "local-creds-agent-mcp"})
+
+
+def is_unpoolable(name: str) -> bool:
+    """Whether *name*, or the alias it is injected under, is never pooled.
+
+    The one denylist test every path that hands a session a stub, or lets
+    ``gatewayd`` spawn a shared backend, asks. The rewriter applies it while it
+    writes an overlay; the readers apply it again so an overlay, sidecar or
+    approval written before a name was listed cannot still pool it.
+    """
+    return name in UNPOOLABLE_SERVERS or mcp_server_alias(name) in UNPOOLABLE_SERVERS
 
 
 def _build_stub_entry(
@@ -428,8 +446,13 @@ def _rewrite_single_spec(
     sidecars_written: _SidecarLedger | None = None,
     notes: _RewritePassNotes | None = None,
     approvals: LaunchApprovals | None = None,
+    scope_muted: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], int]:
     """Return ``(new_spec, wrapped_count)``. Idempotent.
+
+    ``scope_muted`` holds the canonical aliases a config scope mutes
+    (:func:`kiro_crew.mcp_cleanup.mcp_scope_muted_aliases`); such a server is
+    never wrapped, like one whose own entry is muted.
 
     ``approvals`` enforces content approval (see
     :mod:`kiro_crew.mcp_gateway.launch_approval`): a stubbed entry is wrapped
@@ -536,6 +559,15 @@ def _rewrite_single_spec(
             # entry through unchanged (minus the internal ``poolable`` hint) so
             # kiro-cli still sees it disabled. Mirrors the settings-inject guard
             # in _injectable_settings_servers.
+            new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
+            continue
+        if mcp_server_alias(name) in scope_muted:
+            # The user's mute lives in a config scope, not in this spec: MCP
+            # Management never writes into an agent file it does not own. A
+            # wrapped name is subtracted from the KAS projection before that
+            # projection's own scope check runs, so wrapping here started
+            # the server the user switched off. Passed through unchanged, so the
+            # projection reads the scope and withholds it.
             new_servers[name] = {k: v for k, v in entry.items() if k != "poolable"}
             continue
         # The stub is opt-in per server, and ``mcp_gateway.stub_servers`` is the
@@ -828,6 +860,7 @@ def _injectable_settings_servers(
     forward_env: bool = False,
     identity_keys: Collection[str] = (),
     notes: _RewritePassNotes | None = None,
+    scope_muted: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """Return ``{raw_name: raw_entry}`` of stdio servers in the global
     ``settings/mcp.json`` that must be INJECTED into every per-agent overlay
@@ -869,6 +902,10 @@ def _injectable_settings_servers(
             # never be injected as a live stub (which would silently re-enable it
             # in every agent overlay). Fail-closed like the wrap guard above: the
             # two decide the same thing about the same field.
+            continue
+        if mcp_server_alias(name) in scope_muted:
+            # Muted in another scope (the crew store): the same mute, read the
+            # same way the per-agent wrap guard reads it (``scope_muted``).
             continue
         if name in UNPOOLABLE_SERVERS:
             continue

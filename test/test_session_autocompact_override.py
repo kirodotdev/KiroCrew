@@ -1,26 +1,16 @@
 """Per-session auto-compact threshold override.
 
-Three layers, each pinned where its defect would live:
-
-- **SessionManager override map** — the override moves the compaction gate for
-  exactly its own session while every other session keeps the global; values
-  clamp into the documented range (an out-of-range override must degrade to the
-  nearest firing value, never silently disable the backstop) and ``None``
-  restores the global.
-- **HTTP endpoint** (``/api/chat/slots/{slot}/autocompact``) — the validation
-  mirrors the global knob's PATCH handler: out-of-range and NaN are rejected,
-  null clears, and a successful set reaches both the slot (persistence) and the
-  SessionManager (live gate).
-- **Persistence validator** — a tampered/corrupted metadata file cannot seed a
-  non-numeric or NaN override, and finite out-of-range values clamp exactly as
-  the facade would clamp them.
+Covers the SessionManager map (an out-of-range value clamps to the nearest firing
+value, never disabling the backstop), the ``/api/chat/slots/{slot}/autocompact``
+endpoint, and the persistence validator for tampered metadata.
 """
 
 from __future__ import annotations
 
 import asyncio
 import math
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -129,6 +119,20 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     return state
 
 
+def _alias_state(key: str) -> tuple[_ChatSlot, _ChatSlot, DashboardState]:
+    """Two live slots on one transcript, joined the way every join site joins them."""
+    from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+    a = _ChatSlot("tab-a")
+    b = _ChatSlot("tab-b")
+    a.linked_session_key = key
+    b.linked_session_key = key
+    state = _mock_state(a)
+    state._slots[b.key] = b
+    bind_transcript(state, b)
+    return a, b, state
+
+
 class TestAutocompactEndpoint:
     @pytest.mark.asyncio
     async def test_get_reports_override_global_and_range(self) -> None:
@@ -143,6 +147,45 @@ class TestAutocompactEndpoint:
             assert data["min"] == AUTOCOMPACT_PCT_MIN
             assert data["max"] == AUTOCOMPACT_PCT_MAX
             assert AUTOCOMPACT_PCT_MIN < data["global_pct"] <= AUTOCOMPACT_PCT_MAX
+
+    @pytest.mark.asyncio
+    async def test_get_names_a_live_self_compacting_backend(self) -> None:
+        """A live KAS session compacts on its own, so GET names it and the
+        popover can say the slider does not apply."""
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        state.sessions.get_provider.return_value = SimpleNamespace(
+            harness_managed_compaction_backend="kas"
+        )
+        async with TestClient(TestServer(_make_app(state))) as client:
+            data = await (await client.get("/api/chat/slots/test/autocompact")).json()
+        assert data["harness_managed"] == "kas"
+
+    @pytest.mark.asyncio
+    async def test_get_reports_none_for_a_live_crew_compacted_backend(self) -> None:
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        state.sessions.get_provider.return_value = SimpleNamespace(
+            harness_managed_compaction_backend=None
+        )
+        async with TestClient(TestServer(_make_app(state))) as client:
+            data = await (await client.get("/api/chat/slots/test/autocompact")).json()
+        assert data["harness_managed"] is None
+
+    @pytest.mark.asyncio
+    async def test_get_without_a_live_session_asks_the_backend_selector(self) -> None:
+        """No live session: the answer is for the backend the next session
+        starts on, from the same selector a new session uses."""
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        state.sessions.get_provider.return_value = None
+        with patch(
+            "kiro_crew.members.select_provider_backend",
+            return_value="kas",
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                data = await (await client.get("/api/chat/slots/test/autocompact")).json()
+        assert data["harness_managed"] == "kas"
 
     @pytest.mark.asyncio
     async def test_post_sets_slot_and_live_session(self) -> None:
@@ -164,17 +207,17 @@ class TestAutocompactEndpoint:
         # Persisted through the SAME forced-save mechanism every other
         # slot-metadata route uses (tags / folders / pin), with the durable
         # write confirmed (best_effort=False) before the live gate moves, and
-        # the write pinned to the transcript the authorization covered. TWO
-        # awaits: the commit, then the post-mirror confirm save that orders
-        # the durable record after any interleaved stale sibling flush.
-        assert saver.await_count == 2
-        for call in saver.await_args_list:
-            assert call.args == (state, slot)
-            assert call.kwargs == {
-                "force": True,
-                "best_effort": False,
-                "expected_history_key": slot_history_key(slot),
-            }
+        # the write pinned to the transcript the authorization covered. One
+        # save, carrying the value staged: the shared field moves once it lands.
+        saver.assert_awaited_once_with(
+            state,
+            slot,
+            force=True,
+            best_effort=False,
+            expected_history_key=slot_history_key(slot),
+            autocompact_override=(60.0,),
+            after_commit_on_transcript=ANY,
+        )
 
     @pytest.mark.asyncio
     async def test_post_null_clears_back_to_global(self) -> None:
@@ -367,9 +410,8 @@ class TestAutocompactEndpoint:
                 assert resp.status == 500
                 assert (await resp.json())["code"] == "persist_failed"
         assert slot.autocompact_pct is None
-        # The rollback must re-arm the periodic flush: a non-endpoint save may
-        # have durably written the rejected value before the failure, and the
-        # dirty mark is what reconverges disk to the rolled-back field.
+        # The failure re-arms the periodic flush, which reconverges disk to the
+        # unchanged field.
         assert slot._dirty is True
         state.sessions.set_autocompact_pct.assert_not_called()
 
@@ -423,11 +465,8 @@ class TestOverrideLifecycle:
     def test_slot_save_owns_the_key_so_a_clear_erases_it(self) -> None:
         """A cleared override must not resurrect from stale metadata.
 
-        The slot save rebuilds its metadata line and then carries forward every
-        key it does NOT own (``carry_unowned_metadata``). If ``autocompact_pct``
-        is not in ``SLOT_OWNED_META_KEYS``, a clear (slot field None, key
-        omitted from the rebuilt line) is undone by the carry — the old value
-        rides back in and the next restart resurrects the cleared override.
+        ``carry_unowned_metadata`` carries forward keys the slot does not own, so
+        ``autocompact_pct`` must be in ``SLOT_OWNED_META_KEYS`` or a clear is undone.
         """
         from kiro_crew.history import SLOT_OWNED_META_KEYS, carry_unowned_metadata
 
@@ -456,12 +495,8 @@ class TestOverrideLifecycle:
 class TestExpectedHistoryKeyPin:
     """The forced save refuses a write whose routing moved off the pinned key.
 
-    The save worker resolves its target transcript from live routing
-    (``slot.linked_session_key``) at write time, and a rebind on the event
-    loop can land between a caller's authorization and that snapshot. The
-    ``expected_history_key`` pin makes the save return ``False`` with nothing
-    written in that case, so a durable write can never land on a transcript
-    the caller never authorized.
+    The worker reads ``slot.linked_session_key`` at write time, after a possible
+    rebind, so the ``expected_history_key`` pin returns ``False`` and writes nothing.
     """
 
     def test_moved_routing_refuses_the_save(self, tmp_path, monkeypatch):
@@ -584,13 +619,8 @@ class TestHydrationRestoresOverride:
 class TestConcurrentPostSerialization:
     """Concurrent POSTs for one slot must serialize as whole transactions.
 
-    The write span contains awaits, so without per-slot serialization two
-    in-flight requests capture each other's values as rollback snapshots: a
-    request whose save fails after a sibling committed the same value rolls
-    the field back past the sibling's acknowledged write (value equality
-    cannot identify ownership). The forced interleaving below holds the first
-    request's save open until the second request has fully committed, then
-    fails it -- the committed value must survive.
+    The write span awaits, so a failed request could roll back past a sibling's commit.
+    The first save is held open until the second commits, then failed.
     """
 
     @pytest.mark.asyncio
@@ -636,26 +666,23 @@ class TestConcurrentPostSerialization:
 class TestAliasSlotsShareOneTranscript:
     """Slots aliased onto ONE transcript must not undo each other's commit.
 
-    Channel-linked aliases resolve distinct slot names onto one file. The
-    ordinary save writes ``autocompact_pct`` unconditionally from the slot's
-    own field, so a sibling left holding the old value persists it back over
-    an acknowledged commit on its next flush — and a lock keyed by the SLOT
-    would let two alias requests interleave the same transcript's write span.
+    A sibling still holding the old ``autocompact_pct`` would write it back on flush,
+    and a lock keyed by SLOT would let alias requests interleave one transcript.
     """
 
     @pytest.mark.asyncio
-    async def test_commit_is_mirrored_to_alias_slots(self) -> None:
-        a = _ChatSlot("tab-a")
-        b = _ChatSlot("tab-b")
-        a.linked_session_key = "channel:shared:1"
-        b.linked_session_key = "channel:shared:1"
+    async def test_commit_is_the_alias_slots_value(self) -> None:
+        a, b, state = _alias_state("channel:shared:1")
         assert slot_history_key(a) == slot_history_key(b)
-        b.autocompact_pct = 40.0  # the stale sibling value a flush would persist
-        state = _mock_state(a)
-        state._slots[b.key] = b
+        b.autocompact_pct = 40.0  # the group's value before the request
+
+        async def _commit(*args, **kwargs):
+            kwargs["after_commit_on_transcript"]()
+            return True
+
         with patch(
             "kiro_crew.dashboard.chat_handlers.save_slot_off_loop",
-            new=AsyncMock(return_value=True),
+            new=AsyncMock(side_effect=_commit),
         ):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/tab-a/autocompact", json={"pct": 60})
@@ -666,7 +693,7 @@ class TestAliasSlotsShareOneTranscript:
         assert b.autocompact_pct == 60.0
 
     @pytest.mark.asyncio
-    async def test_unrelated_slot_is_not_mirrored(self) -> None:
+    async def test_unrelated_slot_keeps_its_threshold(self) -> None:
         a = _ChatSlot("tab-a")
         other = _ChatSlot("tab-c")
         other.autocompact_pct = 40.0
@@ -680,6 +707,184 @@ class TestAliasSlotsShareOneTranscript:
                 resp = await client.post("/api/chat/slots/tab-a/autocompact", json={"pct": 60})
                 assert resp.status == 200
         assert other.autocompact_pct == 40.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["refused", "committed", "unwritten"])
+    @pytest.mark.parametrize("new_peer_pct", [50.0, None], ids=["live-peer", "no-peer"])
+    @pytest.mark.parametrize("pct", [60.0, None], ids=["set", "clear"])
+    async def test_a_rebind_during_the_save_leaves_each_transcript_its_own_value(
+        self, pct: float | None, new_peer_pct: float | None, outcome: str
+    ) -> None:
+        from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+        a, b, state = _alias_state("channel:shared:5")
+        b.autocompact_pct = 40.0
+        if new_peer_pct is not None:
+            c = _ChatSlot("tab-c")
+            c.linked_session_key = "channel:other:5"
+            c.autocompact_pct = new_peer_pct
+            state._slots[c.key] = c
+
+        async def _rebind_during_save(*args, **kwargs):
+            # The rebind lands after the save's routing read, so a write it
+            # commits still lands on the transcript the slot left, and both save
+            # paths run the transcript's hook. "unwritten" returns without running
+            # it; the route publishes either way once the save returns.
+            a.linked_session_key = "channel:other:5"
+            bind_transcript(state, a)
+            if outcome == "committed":
+                kwargs["after_commit_on_transcript"]()
+            return outcome != "refused"
+
+        with patch(
+            "kiro_crew.dashboard.chat_handlers.save_slot_off_loop",
+            new=AsyncMock(side_effect=_rebind_during_save),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/tab-a/autocompact", json={"pct": pct})
+                assert resp.status == 409
+        # The transcript the slot left keeps what its line holds: the commit, or
+        # the old value when the save was refused.
+        assert b.autocompact_pct == (40.0 if outcome == "refused" else pct)
+        # The rebound slot holds the new transcript's value, or with no peer there,
+        # the value it held before the request: never this request's.
+        assert a.autocompact_pct == (40.0 if new_peer_pct is None else new_peer_pct)
+
+    @pytest.mark.asyncio
+    async def test_the_commit_hook_writes_no_binding(self) -> None:
+        """The hook runs in the save's worker, while rebinds run on the event loop.
+
+        It only records the commit, and the route publishes it on the loop, so a cron
+        bind landing right after the commit leaves it on the transcript it landed on.
+        """
+        from kiro_crew.dashboard.chat_handlers import autocompact_commits
+        from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+        a, b, state = _alias_state("channel:shared:6")
+        b.autocompact_pct = 40.0
+        c = _ChatSlot("tab-c")
+        c.linked_session_key = "channel:other:6"
+        c.autocompact_pct = 50.0
+        state._slots[c.key] = c
+        committed_key = slot_history_key(b)
+        after_hook: list = []
+
+        async def _commit_then_rebind(*args, **kwargs):
+            kwargs["after_commit_on_transcript"]()
+            after_hook.append((b.autocompact_pct, dict(autocompact_commits)))
+            a.linked_session_key = "channel:other:6"
+            bind_transcript(state, a)
+            return True
+
+        with patch(
+            "kiro_crew.dashboard.chat_handlers.save_slot_off_loop",
+            new=AsyncMock(side_effect=_commit_then_rebind),
+        ):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/tab-a/autocompact", json={"pct": 60})
+                assert resp.status == 409
+        assert after_hook == [(40.0, {committed_key: (60.0,)})]
+        assert b.autocompact_pct == 60.0
+        assert a.autocompact_pct == c.autocompact_pct == 50.0
+        assert autocompact_commits == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("case", ["rebound", "line-less"])
+    async def test_a_queued_alias_save_writes_a_merges_commit(
+        self, tmp_path, monkeypatch, case: str
+    ) -> None:
+        """A real merge records the threshold under its own lock.
+
+        An alias save queued on the transcript lock runs as soon as the merge releases
+        it, before the route publishes, so it must write the committed value, not the
+        old one it still holds: for a slot rebound mid-save, and for a transcript with
+        no line yet, which the alias's own save then creates.
+        """
+        from test_cleared_project_not_resurrected import _make_state
+
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+        from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+        key = "dashboard:shared"
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.sessions.agent_autocompact_default.return_value = None
+        log = state.conversation_log
+        if case == "rebound":
+            await asyncio.to_thread(log.update_metadata, key, {"folder_id": "f1"})
+        a = state.get_or_create_slot("a", linked_session_key=key)
+        b = state.get_or_create_slot("b", linked_session_key=key)
+        a.autocompact_pct = 40.0
+        if case == "line-less":
+            b.messages.append({"role": "user", "content": "hi", "ts": 1.0})
+        real_update = log.update_metadata_if
+        merges: list = []
+
+        def _release_to_the_alias(*args, **kwargs):  # type: ignore[no-untyped-def]
+            if merges:
+                return real_update(*args, **kwargs)
+            merges.append(args[0])
+            if case == "rebound":
+                # After the save's routing read: the merge still writes the
+                # transcript the slot left.
+                a.linked_session_key = "dashboard:elsewhere"
+                bind_transcript(state, a)
+            applied = real_update(*args, **kwargs)
+            _save_slot_to_history(state, b, force=True)  # queued on the released lock
+            return applied
+
+        monkeypatch.setattr(log, "update_metadata_if", _release_to_the_alias)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/a/autocompact", json={"pct": 60})
+            assert resp.status == (409 if case == "rebound" else 200)
+        assert merges == [key]
+        assert log._read_metadata(key).get("autocompact_pct") == b.autocompact_pct == 60.0
+
+    @pytest.mark.parametrize("path", ["merge", "full-save"])
+    @pytest.mark.parametrize("rebind", ["moved-away", "joined-in-gap"])
+    def test_a_queued_save_writes_its_own_transcripts_threshold(
+        self, tmp_path, monkeypatch, path: str, rebind: str
+    ) -> None:
+        """A rebind while a save waits for the lock gives the slot another binding.
+
+        A slot that left still writes the threshold of the transcript the save
+        targets, and a slot whose key moved before its join writes the group's.
+        """
+        from test_cleared_project_not_resurrected import _make_state
+
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+        from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+        here, there = "dashboard:here", "dashboard:there"
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        log = state.conversation_log
+        state.get_or_create_slot("peer", linked_session_key=there).autocompact_pct = 60.0
+        slot = state.get_or_create_slot("slot", linked_session_key=here)
+        slot.autocompact_pct = 40.0
+        if rebind == "joined-in-gap":
+            slot.linked_session_key = there  # the key moves now; the join runs in the lock below
+        target = slot_history_key(slot)
+        if path == "merge":
+            log.update_metadata(target, {"folder_id": "f1"})
+        else:
+            slot.append("user", "hello")
+            slot.drain()
+        real_locked = log._locked
+        rebound: list = []
+
+        def _rebind_then_lock(*args, **kwargs):  # type: ignore[no-untyped-def]
+            if not rebound:
+                rebound.append(args[0])
+                slot.linked_session_key = there
+                bind_transcript(state, slot)
+            return real_locked(*args, **kwargs)
+
+        monkeypatch.setattr(log, "_locked", _rebind_then_lock)
+        assert _save_slot_to_history(state, slot, force=True) is True
+        assert rebound == [target]
+        expected = 40.0 if rebind == "moved-away" else 60.0
+        assert log._read_metadata(target).get("autocompact_pct") == expected
 
     def test_alias_slots_resolve_to_one_lock(self) -> None:
         from kiro_crew.dashboard.chat_handlers import _autocompact_txn_lock
@@ -696,12 +901,8 @@ class TestAliasSlotsShareOneTranscript:
 class TestLegacyMetadataDeleteWon:
     """The delete-won guard must cover LEGACY transcripts (no ``created_at``).
 
-    Legacy metadata records no ``created_at``, which leaves the slot's
-    observed identity EMPTY — the guard read that as "fresh slot, no evidence"
-    and a save racing a permanent delete recreated the deleted transcript. The
-    observation is now tracked as its own bit, so the missing-file witness
-    fires for legacy sessions too; the identity comparison still requires a
-    recorded ``created_at`` on both sides.
+    An empty identity must not read as "fresh slot", so observation is its own bit and
+    the missing-file witness fires; identity comparison still needs both ``created_at``.
     """
 
     def _state(self, tmp_path, monkeypatch):
@@ -766,12 +967,8 @@ class TestLegacyMetadataDeleteWon:
 class TestObservedBitRecordedAtEveryHydrationSite:
     """Every ``_disk_meta_created_at`` recording site must set the observed bit.
 
-    The delete-won guard's evidence gate reads ``_disk_meta_observed``; a
-    hydration site that records the identity string without the bit leaves
-    legacy transcripts (no ``created_at``) unprotected at exactly that entry
-    point — the class of miss that recurred at the resume and channel-surface
-    sites after the persistence loaders were fixed. This census pins ALL
-    current and future sites structurally.
+    The delete-won guard reads ``_disk_meta_observed``, so a site that skips the bit
+    leaves legacy transcripts unprotected. This census pins every site structurally.
     """
 
     def test_every_identity_recording_site_sets_the_observed_bit(self) -> None:
@@ -799,13 +996,8 @@ class TestObservedBitRecordedAtEveryHydrationSite:
 class TestMidPersistRebindDoesNotSeedForeignSession:
     """A rebind the pin cannot see must not seed the foreign session's gate.
 
-    The expected_history_key pin refuses a save whose routing moved BEFORE its
-    internal read. A rebind landing AFTER that read leaves the durable write
-    correctly on the authorized transcript while the slot now resolves to a
-    different session — and reauthorization can PASS (the caller may own the
-    new session too). Seeding the live map from effective_session_key(slot)
-    would then apply the threshold to a session whose transcript never
-    received it.
+    A rebind AFTER the save's routing read writes the right transcript, but seeding
+    from effective_session_key(slot) would hit another session; reauth can still pass.
     """
 
     @pytest.mark.asyncio
@@ -838,65 +1030,60 @@ class TestMidPersistRebindDoesNotSeedForeignSession:
 
 
 class TestSiblingFlushCannotStaleTheCommit:
-    """The durable record must be re-confirmed AFTER the alias mirror.
+    """An alias reads only a committed threshold, never the one a request is saving.
 
-    The mirror runs on the event loop after the commit save returns, but a
-    sibling's already-queued flush can take the transcript's file lock in the
-    executor first and write its then-stale field over the commit. The fix is
-    ordering: mirror every live field, then run a second confirmed save that
-    the file lock serializes behind any such interleaved write. This test
-    pins that ordering — the commit save must observe the sibling still
-    stale, the confirm save must observe it mirrored.
+    The request stages its value in its own save and publishes it to the shared binding
+    only once the save has run its commit hook, so a value that never lands is never
+    seen: not by an alias's save, nor by a restore seeding the session's live gate.
     """
 
     @pytest.mark.asyncio
-    async def test_confirm_save_runs_after_the_mirror(self) -> None:
-        a = _ChatSlot("tab-a")
-        b = _ChatSlot("tab-b")
-        a.linked_session_key = "channel:shared:3"
-        b.linked_session_key = "channel:shared:3"
-        b.autocompact_pct = 40.0  # the stale value an interleaved flush writes
-        state = _mock_state(a)
-        state._slots[b.key] = b
-        sibling_pct_at_save: list = []
+    @pytest.mark.parametrize("outcome", ["committed", "failed", "failed-after-commit"])
+    async def test_an_alias_holds_the_committed_value_while_the_save_runs(
+        self, outcome: str
+    ) -> None:
+        a, b, state = _alias_state("channel:shared:3")
+        b.autocompact_pct = 40.0
+        held_during_save: list = []
+        lands = outcome != "failed"
 
-        async def _record_sibling(*args, **kwargs):
-            sibling_pct_at_save.append(b.autocompact_pct)
+        async def _save(*args, **kwargs):
+            held_during_save.append((a.autocompact_pct, b.autocompact_pct))
+            assert kwargs["autocompact_override"] == (60.0,)
+            if lands:
+                kwargs["after_commit_on_transcript"]()
+            if outcome != "committed":
+                raise OSError("disk full")
             return True
 
         with patch(
             "kiro_crew.dashboard.chat_handlers.save_slot_off_loop",
-            new=AsyncMock(side_effect=_record_sibling),
+            new=AsyncMock(side_effect=_save),
         ):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/tab-a/autocompact", json={"pct": 60})
-                assert resp.status == 200
-        # Commit save ran BEFORE the mirror (sibling still stale), confirm
-        # save ran AFTER it (sibling mirrored) — so any stale flush the file
-        # lock interleaved between them is durably overwritten by the confirm.
-        assert sibling_pct_at_save == [40.0, 60.0]
+                assert resp.status == (200 if lands else 500)
+        assert held_during_save == [(40.0, 40.0)]
+        assert a.autocompact_pct == b.autocompact_pct == (60.0 if lands else 40.0)
+        if lands:
+            state.sessions.set_autocompact_pct.assert_called_once()
+        else:
+            state.sessions.set_autocompact_pct.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_confirm_refusal_rolls_back_the_mirror(self) -> None:
-        """A refused confirm save must undo the sibling mirror, not leak it."""
-        a = _ChatSlot("tab-a")
-        b = _ChatSlot("tab-b")
-        a.linked_session_key = "channel:shared:4"
-        b.linked_session_key = "channel:shared:4"
+    async def test_a_refused_commit_leaves_the_group_alone(self) -> None:
+        a, b, state = _alias_state("channel:shared:4")
         b.autocompact_pct = 40.0
-        state = _mock_state(a)
-        state._slots[b.key] = b
 
         with patch(
             "kiro_crew.dashboard.chat_handlers.save_slot_off_loop",
-            new=AsyncMock(side_effect=[True, False]),
+            new=AsyncMock(return_value=False),
         ):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post("/api/chat/slots/tab-a/autocompact", json={"pct": 60})
                 assert resp.status == 409
-        assert b.autocompact_pct == 40.0, "refused transaction leaked the mirror to a sibling"
-        assert b._dirty is True, "sibling flush must reconverge the durable record"
-        assert a.autocompact_pct is None
+        assert a.autocompact_pct == 40.0
+        assert b.autocompact_pct == 40.0, "refused transaction leaked the value to a sibling"
         state.sessions.set_autocompact_pct.assert_not_called()
 
 

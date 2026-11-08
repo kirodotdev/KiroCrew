@@ -4,6 +4,7 @@ grace floor, max-N backstop) and archive dir pruning from discovery."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -140,6 +141,23 @@ def test_pin_write_failure_preserves_skill(loader, monkeypatch):
     assert skill_file.read_text(encoding="utf-8") == before  # untouched, not truncated
 
 
+def test_update_skill_routes_windows_dacl_preservation_through_atomic_write(loader, monkeypatch):
+    """A SKILL.md save keeps the file's own Windows DACL, like the other two overwrites."""
+    import kiro_crew.skills as S
+
+    loader.create_skill("hand/kept", "---\nname: hand/kept\n---\nbody")
+    captured: dict[str, object] = {}
+    original = S.atomic_write
+
+    def recording(target, content, **kwargs):
+        captured.update(kwargs)
+        original(target, content, **kwargs)
+
+    monkeypatch.setattr(S, "atomic_write", recording)
+    assert loader.update_skill("hand/kept", "---\nname: hand/kept\n---\nnew") is True
+    assert captured["preserve_windows_dacl"] is True
+
+
 def test_archive_refuses_non_auto(loader):
     loader.create_skill("hand/authored", "---\nname: hand/authored\n---\nbody")
     assert loader.archive_auto_skill("hand/authored") is False
@@ -168,3 +186,53 @@ def test_lifecycle_exempts_named_skill_from_cap(loader):
     live = {s["key"] for s in loader.list_auto_skills()}
     assert "auto/cap-0" in live
     assert res["capped"] >= 1
+
+
+def _edit_skill_bytes(loader: SkillsLoader, name: str, edit) -> Path:
+    skill_file = Path(loader._dir / name / "SKILL.md")
+    # The writer uses the platform line ending (CRLF on Windows); start every
+    # edit from LF so each test controls the bytes it asserts on.
+    skill_file.write_bytes(edit(skill_file.read_bytes().replace(b"\r\n", b"\n")))
+    return skill_file
+
+
+def test_pin_keeps_an_indented_pinned_line_inside_a_block_scalar(loader):
+    """Only the top-level key is the setting; an indented line is the author's prose."""
+    name = _mk(loader, "prose", created_days_ago=1)
+    prose = b"description: |\n  Steps for a skill.\n  pinned: keeps it out of the archive\n"
+    skill_file = _edit_skill_bytes(
+        loader, name, lambda raw: raw.replace(b"---\n", b"---\n" + prose, 1)
+    )
+
+    assert loader.set_pinned(name, True) is True
+
+    raw = skill_file.read_bytes()
+    assert b"  pinned: keeps it out of the archive\n" in raw
+    assert raw.count(b"\npinned: true") == 1
+
+
+def test_pin_keeps_crlf_line_endings(loader):
+    name = _mk(loader, "crlf", created_days_ago=1)
+    skill_file = _edit_skill_bytes(
+        loader, name, lambda raw: raw.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    )
+
+    assert loader.set_pinned(name, True) is True
+
+    raw = skill_file.read_bytes()
+    assert b"pinned: true\r\n" in raw
+    assert raw.count(b"\n") == raw.count(b"\r\n")
+
+
+@pytest.mark.parametrize("nl", [b"\n", b"\r\n"])
+def test_pin_reads_a_file_with_a_byte_order_mark(loader, nl):
+    name = _mk(loader, "bom", created_days_ago=1)
+    skill_file = _edit_skill_bytes(
+        loader, name, lambda raw: b"\xef\xbb\xbf" + raw.replace(b"\n", nl)
+    )
+
+    assert loader.set_pinned(name, True) is True
+
+    raw = skill_file.read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf---" + nl)
+    assert nl + b"pinned: true" + nl in raw

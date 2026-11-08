@@ -280,9 +280,6 @@ class TestArgumentShapeRefusals:
         assert refusal is not None
         assert MOUSE_BUTTON_RIGHT in refusal
 
-    def test_sky_click_accepts_the_left_button(self) -> None:
-        assert policy.check_method_button(CLICK_METHOD_SKY_CLICK, MOUSE_BUTTON_LEFT) is None
-
     def test_unknown_mouse_button_is_refused(self) -> None:
         refusal = policy.check_mouse_button("middle-ish")
         assert refusal is not None

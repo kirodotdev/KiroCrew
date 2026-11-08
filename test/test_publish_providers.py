@@ -9,6 +9,8 @@ configured-check (`_provider_is_configured`), and the live
 from __future__ import annotations
 
 import json
+import os
+from unittest import mock
 
 import pytest
 from aiohttp import web
@@ -145,6 +147,16 @@ def test_provider_is_configured_rejects_path_traversal(tmp_path, monkeypatch):
     assert _provider_is_configured("deploy-web", pp) is False
 
 
+def test_provider_is_configured_undecodable_config_is_unconfigured(tmp_path):
+    # The app writes its own config file, so it can hold any bytes. A file
+    # that is not UTF-8 reads as "not configured", like a malformed one.
+    with mock.patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+        data_dir = apps_dir() / "deploy-web" / "data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "config.json").write_bytes(b'{"profile": "caf\xe9"}')
+        assert _provider_is_configured("deploy-web", _PP) is False
+
+
 # --- live endpoint ----------------------------------------------------------
 
 
@@ -224,6 +236,25 @@ async def test_endpoint_unconfigured_provider_flagged(tmp_path, monkeypatch):
     # render a "set it up" link).
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.get("/api/publish-providers")
+        body = await resp.json()
+    prov = next(p for p in body["providers"] if p["id"] == "deploy-web-aws")
+    assert prov["configured"] is False
+
+
+@pytest.mark.asyncio
+async def test_endpoint_lists_providers_when_an_app_config_is_undecodable(tmp_path, monkeypatch):
+    # One app's non-UTF-8 config must not fail the whole provider list.
+    _setup_env(tmp_path, monkeypatch)
+    src = _make_provider_app_source(tmp_path)
+    install_app(str(src))
+    enable_app("prov-app")
+    data_dir = apps_dir() / "prov-app" / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "config.json").write_bytes(b'{"profile": "caf\xe9"}')
+
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/api/publish-providers")
+        assert resp.status == 200
         body = await resp.json()
     prov = next(p for p in body["providers"] if p["id"] == "deploy-web-aws")
     assert prov["configured"] is False

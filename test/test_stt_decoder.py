@@ -543,6 +543,93 @@ class TestFetch:
         assert store.status["stage"] == decoder.STAGE_READY
 
 
+class TestVerifiedOnDiskOffLoop:
+    """Accepting an installed decoder stats, probes and hashes it off the loop.
+
+    ``_accept_existing``'s size check and ``_verified_on_disk``'s ``is_file``
+    probe and digest are all blocking filesystem calls, so each runs in an
+    ``asyncio.to_thread`` hop. These tests pin that, and pin that a present, a
+    missing and a directory-shaped path keep their existing outcomes.
+    """
+
+    @pytest.fixture
+    def probe_on_loop(self, monkeypatch):
+        """Record, per decoder probe, whether it ran on the main (loop) thread."""
+        seen: list[bool] = []
+        real_is_file = Path.is_file
+        name = _artifact().filename
+
+        def _recording_is_file(self, *args, **kwargs):
+            if self.name == name:
+                seen.append(threading.current_thread() is threading.main_thread())
+            return real_is_file(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "is_file", _recording_is_file)
+        return seen
+
+    @staticmethod
+    def _refuse_hash(monkeypatch) -> None:
+        def _unexpected(path):
+            raise AssertionError(f"hashed a path that is not a regular file: {path}")
+
+        monkeypatch.setattr(decoder, "_sha256_file", _unexpected)
+
+    @pytest.mark.asyncio
+    async def test_a_matching_decoder_is_verified_off_loop(
+        self, monkeypatch, tmp_path, probe_on_loop
+    ):
+        artifact = _artifact()
+        _pin(monkeypatch, tmp_path, artifact)
+        (tmp_path / artifact.filename).write_bytes(_PAYLOAD)
+
+        assert await decoder.DecoderStore()._verified_on_disk(artifact) is True
+        assert probe_on_loop == [False]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_decoder_is_refused_without_hashing(
+        self, monkeypatch, tmp_path, probe_on_loop
+    ):
+        artifact = _artifact()
+        _pin(monkeypatch, tmp_path, artifact)
+        self._refuse_hash(monkeypatch)
+
+        assert await decoder.DecoderStore()._verified_on_disk(artifact) is False
+        assert probe_on_loop == [False]
+
+    @pytest.mark.asyncio
+    async def test_a_directory_at_the_decoder_path_is_refused_without_hashing(
+        self, monkeypatch, tmp_path, probe_on_loop
+    ):
+        artifact = _artifact()
+        _pin(monkeypatch, tmp_path, artifact)
+        (tmp_path / artifact.filename).mkdir()
+        self._refuse_hash(monkeypatch)
+
+        assert await decoder.DecoderStore()._verified_on_disk(artifact) is False
+        assert probe_on_loop == [False]
+
+    @pytest.mark.asyncio
+    async def test_accepting_an_installed_decoder_checks_its_size_off_loop(
+        self, monkeypatch, tmp_path, probe_on_loop
+    ):
+        artifact = _artifact()
+        _pin(monkeypatch, tmp_path, artifact)
+        (tmp_path / artifact.filename).write_bytes(_PAYLOAD)
+        _refuse_network(monkeypatch, "an already-verified decoder was fetched again")
+        size_on_loop: list[bool] = []
+        real_is_present = decoder.is_present
+
+        def _recording_is_present(a):
+            size_on_loop.append(threading.current_thread() is threading.main_thread())
+            return real_is_present(a)
+
+        monkeypatch.setattr(decoder, "is_present", _recording_is_present)
+
+        assert await decoder.DecoderStore().ensure() == tmp_path / artifact.filename
+        assert size_on_loop == [False]
+        assert probe_on_loop == [False]
+
+
 # ── the build-time CLI ───────────────────────────────────────────────────
 
 

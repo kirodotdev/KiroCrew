@@ -62,7 +62,8 @@ vi.mock('../components/CliPanel', async (importOriginal) => {
 })
 import { ThemeProvider } from '../hooks/useTheme'
 import { store as appStore } from '../store'
-import { appendMessage, setVoicePlaying, switchSlot } from '../store/chatSlice'
+import { appendMessage, createSlot, setSlotRunning, setVoicePlaying, switchSlot } from '../store/chatSlice'
+import { createChatForView } from '../lib/createdChatView'
 import { sseDisconnected } from '../store/dashboardSlice'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
@@ -136,8 +137,15 @@ vi.mock('../components/FlyingQuote', async () => {
 
 // The split grid is stubbed to a prop recorder: what matters here is the
 // `openSideChat` capability ChatPage hands its panes (and when it withholds
-// it), not the grid's own layout, which SessionGridView's suite covers.
-interface GridProps { openSideChat?: (slot: string) => boolean | void | Promise<boolean | void> }
+// it) and the seed it opens the grid with, not the grid's own layout, which
+// SessionGridView's suite covers.
+interface GridProps {
+  openSideChat?: (slot: string) => boolean | void | Promise<boolean | void>
+  onCollapse?: (slot: string, anchorTs?: string, anchorMid?: string, gesture?: boolean) => void
+  seedSlot?: string | null
+  seedDir?: 'right' | 'down'
+  onClose?: () => void
+}
 let gridProps: GridProps | null = null
 vi.mock('../components/SessionGridView', async () => {
   const React = await import('react')
@@ -265,7 +273,9 @@ vi.mock('../api/client', () => ({
       if (!(prop in apiMocks)) {
         apiMocks[prop] = vi.fn().mockResolvedValue(
           prop === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 }
-            : prop === 'pendingQuestions' || prop === 'approvals' ? [] : {},
+            : prop === 'pendingQuestions' || prop === 'approvals' ? []
+              // Every chat here runs on this machine: Run in terminal waits for that.
+              : prop === 'chatSlotEnvironment' ? { profile: null, profiles: [] } : {},
         )
       }
       return apiMocks[prop]
@@ -655,7 +665,10 @@ describe('ChatPage row callbacks — quote and ask', () => {
   it('re-binds the activity panel to a split pane\'s slot before opening its Side Chat', async () => {
     const { store } = await renderSplit()
     let verdict: boolean | void | Promise<boolean | void>
-    act(() => { verdict = gridProps!.openSideChat!('chat-2') })
+    await act(async () => {
+      verdict = gridProps!.openSideChat!('chat-2')
+      await verdict
+    })
     // A re-bind is a request the server can reject, so the opener reports its
     // verdict only once the switch settled — the Side tab opens on the
     // re-bound panel and the seam seeds on `true`.
@@ -672,7 +685,10 @@ describe('ChatPage row callbacks — quote and ask', () => {
     // `switchSlot.rejected` falls back to the slot the page was on.
     apiSpy('chatSlotDetail').mockRejectedValueOnce(new ApiError(404, 'no such slot'))
     let verdict: boolean | void | Promise<boolean | void>
-    act(() => { verdict = gridProps!.openSideChat!('chat-2') })
+    await act(async () => {
+      verdict = gridProps!.openSideChat!('chat-2')
+      await verdict
+    })
     await expect(verdict!).resolves.toBe(false)
     await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-1'))
     expect(store.getState().chat.activityTab).not.toBe('side')
@@ -698,6 +714,22 @@ describe('ChatPage row callbacks — quote and ask', () => {
     expect(store.getState().chat.activityTab).not.toBe('side')
   })
 
+  // #23564: a recorded open marks that chat's cron notes read, so only the
+  // pane's own open-full click may record one. The grid collapsing itself after
+  // the other pane closes leaves the survivor on screen but is not an open.
+  it('a split collapsing on its own records no chat open', async () => {
+    const { store } = await renderSplit()
+    await act(async () => { gridProps!.onCollapse!('chat-2') })
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-2'))
+    expect(store.getState().chat.userOpen?.key).not.toBe('chat-2')
+  })
+
+  it('a pane\'s open-full click records the chat open', async () => {
+    const { store } = await renderSplit()
+    await act(async () => { gridProps!.onCollapse!('chat-2', undefined, undefined, true) })
+    await waitFor(() => expect(store.getState().chat.userOpen).toMatchObject({ key: 'chat-2', landed: true }))
+  })
+
   it('withholds Ask from the panes while disconnected instead of switching slots offline', async () => {
     const { store } = await renderSplit()
     const askWhileConnected = gridProps!.openSideChat!
@@ -716,20 +748,85 @@ describe('ChatPage row callbacks — quote and ask', () => {
     expect(store.getState().chat.activeSlot).toBe('chat-1')
     expect(store.getState().chat.activityTab).not.toBe('side')
   })
+
+  // A create from the keyboard shortcut, the command palette or the command bar
+  // goes through `createChatForView`, never the sidebar's `onSelectSlot`. It
+  // activates the new session, so the page must leave Split View the way the
+  // sidebar's New does (#21935), or the new chat shows nowhere.
+  it('a foreground create from outside the sidebar leaves Split View and shows the new chat', async () => {
+    const { store } = await renderSplit()
+    apiSpy('createChatSlot').mockResolvedValue({ ...OTHER_SLOT, key: 'chat-new', title: 'new' })
+    let view: Awaited<ReturnType<typeof createChatForView>> | undefined
+    await act(async () => { view = await createChatForView(store.dispatch, store.getState, { mode: '' }) })
+    expect(view!.opened).toBe(true)
+    expect(store.getState().chat.activeSlot).toBe('chat-new')
+    await waitFor(() => expect(screen.queryByTestId('session-grid')).toBeNull())
+  })
+
+  it('a background create keeps Split View', async () => {
+    const { store } = await renderSplit()
+    apiSpy('createChatSlot').mockResolvedValue({ ...OTHER_SLOT, key: 'chat-new', title: 'new' })
+    await act(async () => { await store.dispatch(createSlot({ mode: '', activate: false })).unwrap() })
+    expect(store.getState().chat.activeSlot).toBe('chat-1')
+    expect(screen.getByTestId('session-grid')).toBeTruthy()
+  })
+
+  it('a create the user switched away from keeps Split View', async () => {
+    const { store } = await renderSplit()
+    let release: (v: unknown) => void = () => {}
+    apiSpy('createChatSlot').mockImplementationOnce(() => new Promise(res => { release = res }))
+    let pending: Promise<unknown> = Promise.resolve()
+    act(() => { pending = store.dispatch(createSlot({ mode: '' })).unwrap() })
+    // The user opens another pane's session while the create is in flight.
+    await act(async () => { await store.dispatch(switchSlot('chat-2')) })
+    await act(async () => { release({ ...OTHER_SLOT, key: 'chat-new', title: 'new' }); await pending })
+    expect(store.getState().chat.activeSlot).toBe('chat-2')
+    expect(screen.getByTestId('session-grid')).toBeTruthy()
+  })
+})
+
+describe('ChatPage split view entry direction', () => {
+  // The session menu reads the folder list while open; the default `{}` stub is not a list.
+  beforeEach(() => { apiSpy('chatFolders').mockResolvedValue([]) })
+  async function openSessionMenu(grid: boolean) {
+    apiSpy('dashboardConfig').mockResolvedValue({ session_grid: grid })
+    await renderTurn({ slots: [SLOT, OTHER_SLOT] })
+    const trigger = await screen.findByRole('button', { name: 'Session options' })
+    fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false })
+    fireEvent.click(trigger)
+  }
+
+  it('seeds the first split below from the session menu, and the next button entry beside', async () => {
+    await openSessionMenu(true)
+    expect(screen.queryByRole('menuitem', { name: 'Split right' })).toBeNull()
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Split down' }))
+    await waitFor(() => expect(gridProps?.seedDir).toBe('down'))
+    expect(gridProps?.seedSlot).toBe('chat-1')
+    act(() => { gridProps!.onClose!() })
+    fireEvent.click(await screen.findByRole('button', { name: 'Enter split view' }))
+    await waitFor(() => expect(gridProps?.seedDir).toBe('right'))
+  })
+
+  it('offers no Split down row while the split feature is off', async () => {
+    await openSessionMenu(false)
+    await screen.findAllByRole('menuitem')
+    expect(screen.queryByRole('menuitem', { name: 'Split down' })).toBeNull()
+  })
 })
 
 describe('ChatPage row callbacks — regenerate and speak', () => {
-  it('truncates back to the last user row and asks the server to regenerate', async () => {
+  it('asks the server to regenerate and keeps the previous reply on screen', async () => {
     apiSpy('regenerateSlot').mockResolvedValue({ ok: true })
     const { store } = await renderTurn()
     expect(assistantProps!.onRegenerate).toBeTypeOf('function')
     await act(async () => { assistantProps!.onRegenerate!() })
     await waitFor(() => expect(apiMocks.regenerateSlot).toHaveBeenCalledWith('chat-1'))
-    expect(store.getState().chat.messages).toHaveLength(1)
-    expect(store.getState().chat.messages[0].role).toBe('user')
+    // The server replaces it only once the new turn produced a reply.
+    expect(store.getState().chat.messages).toHaveLength(2)
+    expect(store.getState().chat.messages[1].role).toBe('assistant')
   })
 
-  it('restores the transcript when the regenerate request fails', async () => {
+  it('keeps the transcript when the regenerate request fails', async () => {
     apiSpy('regenerateSlot').mockRejectedValue(new Error('runner busy'))
     const { store } = await renderTurn()
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -740,6 +837,99 @@ describe('ChatPage row callbacks — regenerate and speak', () => {
       warn.mockRestore()
     }
     expect(store.getState().chat.messages[1].role).toBe('assistant')
+  })
+
+  const PENDING = 'Previous version. Kept if no new reply arrives. Stopping now keeps it.'
+  const STARTED = 'Previous version. New reply started: this one moves to the version arrows. Stopping keeps both.'
+  const renderPair = () => renderChatPage([
+    msg('user', 'what changed?', { ts: '2026-08-12T07:00:00Z', meta: { mid: 'u1' } }),
+    msg('assistant', 'two files changed', { ts: '2026-08-12T07:00:05Z', meta: { mid: 'a1' } }),
+  ])
+  // Renders one question and its reply, presses Regenerate, and waits for the mark.
+  async function startRegenerate() {
+    apiSpy('regenerateSlot').mockResolvedValue({ ok: true })
+    const rendered = renderPair()
+    await waitFor(() => expect(assistantProps).not.toBeNull())
+    await act(async () => { assistantProps!.onRegenerate!() })
+    await screen.findByTestId('regenerate-previous-reply')
+    return rendered
+  }
+
+  it('marks the previous reply while the regenerate is pending', async () => {
+    apiSpy('regenerateSlot').mockResolvedValue({ ok: true })
+    renderPair()
+    await waitFor(() => expect(assistantProps).not.toBeNull())
+    expect(screen.queryByTestId('regenerate-previous-reply')).toBeNull()
+    await act(async () => { assistantProps!.onRegenerate!() })
+    const marked = await screen.findByTestId('regenerate-previous-reply')
+    expect(marked.textContent).toContain(PENDING)
+  })
+
+  it('keeps the pending label while reasoning arrives without an answer', async () => {
+    const { store } = await startRegenerate()
+    act(() => {
+      store.dispatch(setSlotRunning(true))
+      store.dispatch(appendMessage(msg('thinking', 'checking the repository', { ts: '2026-08-12T07:00:30Z' })))
+    })
+    const marked = screen.getByTestId('regenerate-previous-reply')
+    expect(marked.textContent).toContain(PENDING)
+    expect(marked.textContent).not.toContain(STARTED)
+    expect(screen.queryByTestId('regenerate-new-reply')).toBeNull()
+  })
+
+  it('puts the new-version divider on the answer after reasoning', async () => {
+    const { store } = await startRegenerate()
+    act(() => {
+      store.dispatch(setSlotRunning(true))
+      store.dispatch(appendMessage(msg('thinking', 'checking the repository', { ts: '2026-08-12T07:00:30Z' })))
+    })
+    expect(screen.queryByTestId('regenerate-new-reply')).toBeNull()
+    act(() => {
+      store.dispatch(appendMessage(msg('assistant', 'three files changed', { ts: '2026-08-12T07:01:00Z', meta: { mid: 'a2' } })))
+    })
+    const divider = await screen.findByTestId('regenerate-new-reply')
+    expect(divider.textContent).toBe('New version')
+    expect(within(divider.parentElement!).getByTestId('assistant-msg')).toHaveTextContent('three files changed')
+    expect(screen.getByTestId('regenerate-previous-reply').textContent).toContain(STARTED)
+  })
+
+  it('drops the previous-reply mark as soon as a turn that streamed nothing ends', async () => {
+    const { store } = await startRegenerate()
+    act(() => { store.dispatch(setSlotRunning(true)) })
+    expect(screen.getByTestId('regenerate-previous-reply')).toBeTruthy()
+    // The turn ends with no reply: the old one is the answer again, unmarked,
+    // now rather than at the 30s pending-press safety timeout.
+    act(() => { store.dispatch(setSlotRunning(false)) })
+    await waitFor(() => expect(screen.queryByTestId('regenerate-previous-reply')).toBeNull())
+    expect(screen.getByText('two files changed')).toBeTruthy()
+  })
+
+  it('labels the reply streaming in below the previous one as the new version', async () => {
+    const { store } = await startRegenerate()
+    expect(screen.queryByTestId('regenerate-new-reply')).toBeNull()
+    act(() => {
+      store.dispatch(setSlotRunning(true))
+      store.dispatch(appendMessage(msg('assistant', 'three files changed', { ts: '2026-08-12T07:01:00Z', meta: { mid: 'a2' } })))
+    })
+    const label = await screen.findByTestId('regenerate-new-reply')
+    expect(label.textContent).toBe('New version')
+    // Once new text exists, a Stop keeps it: the previous reply's label says where that one goes.
+    expect(screen.getByTestId('regenerate-previous-reply').textContent).toContain(STARTED)
+    expect(screen.getByTestId('regenerate-previous-reply').textContent).not.toContain(PENDING)
+  })
+
+  it('drops the previous-reply mark when the regenerate request fails', async () => {
+    apiSpy('regenerateSlot').mockRejectedValue(new Error('runner busy'))
+    renderPair()
+    await waitFor(() => expect(assistantProps).not.toBeNull())
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await act(async () => { assistantProps!.onRegenerate!() })
+      await waitFor(() => expect(apiMocks.regenerateSlot).toHaveBeenCalled())
+      await waitFor(() => expect(screen.queryByTestId('regenerate-previous-reply')).toBeNull())
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it('synthesizes speech for the row content when nothing is playing', async () => {
@@ -789,12 +979,10 @@ describe('ChatPage window-event listeners', () => {
     await waitFor(() => expect(localStorage.getItem('mc-sidebar-pinned')).not.toBe(first))
   })
 
-  it('leaves the activity panel alone when the agent runs a playwright-cli shell command', async () => {
-    // A shell `playwright-cli` call drives an agent-owned headless Chromium that
-    // the Browser panel has no way to frame: the native view is reached only by
-    // `browser` MCP ops (surfaced by `browser:agent-opened`), and the gateway's
-    // framed `show` server lives in its own session namespace. Opening the
-    // panel here could only land on the "not running" card, so it must not.
+  it('leaves the activity panel alone when the agent runs a browser-ish shell command', async () => {
+    // A shell command that drives a browser lands nowhere the side panel can
+    // frame: the agent's browser is shown in the chat, so a tool-call preview
+    // must not open the panel.
     delete (window as unknown as { browserAPI?: unknown }).browserAPI
     const { store } = await renderTurn()
     expect(store.getState().chat.activityOpen).toBe(false)
@@ -804,39 +992,13 @@ describe('ChatPage window-event listeners', () => {
         detail: {
           slot: 'chat-1',
           is_shell: true,
-          input_preview: 'playwright-cli open https://example.test',
+          input_preview: 'chromium --headless=new https://example.test',
         },
       }))
     })
 
     await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
     expect(store.getState().chat.activityOpen).toBe(false)
-  })
-
-  it('leaves the activity panel alone on a playwright-cli shell command even when the native bridge is present', async () => {
-    // Bridge presence is not evidence the shell browse landed in the native
-    // view — it never does. The desktop path opens the panel from the main
-    // process's `browser:agent-opened` signal, not from the tool-call preview.
-    ;(window as unknown as { browserAPI?: unknown }).browserAPI = {
-      trackSession: vi.fn(async () => ({ ok: true })),
-      onAgentOpened: vi.fn(() => () => {}),
-    }
-    try {
-      const { store } = await renderTurn()
-      act(() => {
-        window.dispatchEvent(new CustomEvent('kirocrew-tool-call', {
-          detail: {
-            slot: 'chat-1',
-            is_shell: true,
-            input_preview: 'playwright-cli snapshot',
-          },
-        }))
-      })
-      await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
-      expect(store.getState().chat.activityOpen).toBe(false)
-    } finally {
-      delete (window as unknown as { browserAPI?: unknown }).browserAPI
-    }
   })
 
   it('ignores a run-in-terminal request that carries no command', async () => {

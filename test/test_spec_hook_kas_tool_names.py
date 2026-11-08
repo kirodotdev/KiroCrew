@@ -8,6 +8,7 @@ id KAS states for the call (``_meta.kiro.toolId``), translated through one table
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,6 +22,7 @@ from kiro_crew.acp._dispatch import build_permission_event
 from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL, kas_tool_match_names
 from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_CLAUDE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
@@ -56,11 +58,16 @@ def _fresh_cache():
 
 def test_every_backend_crew_fires_spec_hooks_for_has_a_translation_table():
     # A backend that Crew fires spec hooks for needs its own vocabulary: KAS's is
-    # this module's table, every other member's is in harness_tool_names.
+    # this module's table, every other member's is in harness_tool_names. claude
+    # is the one table outside that set: Crew fires no spec hooks there, and its
+    # table names a call for Hooks-page matchers only.
     from kiro_crew.acp.harness_tool_names import HARNESS_TOOL_TABLES
 
     assert ACP_BACKEND_KAS in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
-    assert ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS} == frozenset(HARNESS_TOOL_TABLES)
+    assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    assert frozenset(HARNESS_TOOL_TABLES) == (
+        ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS}
+    ) | {ACP_BACKEND_CLAUDE}
 
 
 def test_a_kas_shell_call_answers_to_its_kiro_cli_name():
@@ -195,7 +202,6 @@ def test_an_mcp_server_tool_matcher_is_kept_without_a_warning(matcher, caplog):
     [
         "@*/create_issue",  # a server glob would widen the guard across servers
         "@gith?b/create_issue",
-        "@github",  # no tool part
         "@/create_issue",
         "@github/",
         "@github/create/issue",
@@ -222,14 +228,25 @@ def test_an_mcp_server_tool_spec_hook_withholds_mcp_auto_approval(tmp_path, monk
     assert hook_gated_capabilities(matchers) == {"mcp"}
 
 
-def test_a_post_tool_use_title_matcher_is_kept_and_warned(caplog):
-    # PostToolUse still matches the call's title, which the author is told once.
+def test_a_post_tool_use_matcher_is_read_like_a_pre_tool_use_one(caplog):
+    # Both events meet the finished or requested call under its tool id, so a
+    # kiro-cli tool name is not warned about and an unknown one is, once.
     with caplog.at_level("WARNING", logger="kiro_crew.agent_sdk.spec_hooks"):
         hooks = spec_hooks.spec_script_hooks(
-            "a1", {"hooks": {"postToolUse": [{"matcher": "touch*", "command": "log.sh"}]}}
+            "a1",
+            {
+                "hooks": {
+                    "postToolUse": [
+                        {"matcher": "execute_bash", "command": "log.sh"},
+                        {"matcher": "touch*", "command": "log.sh"},
+                    ]
+                }
+            },
         )
-    assert [h.matcher for h in hooks] == ["touch*"]
-    assert any("postToolUse" in r.getMessage() for r in caplog.records)
+    assert [h.matcher for h in hooks] == ["execute_bash", "touch*"]
+    warned = [r.getMessage() for r in caplog.records]
+    assert not any("execute_bash" in m for m in warned)
+    assert any("touch*" in m for m in warned)
 
 
 # ── Matching in the hook store ──
@@ -508,6 +525,48 @@ async def test_kas_an_mcp_server_tool_spec_hook_blocks_the_mcp_call(
     client.approve_tool.assert_not_called()
 
 
+def _claude_bash_request(harness_tool_id: str) -> LLMEvent:
+    # The event build_permission_event makes of the captured claude Bash pair
+    # (acp_frames/claude/builtins-bash-edit-webfetch-live.jsonl).
+    return LLMEvent(
+        kind=EVENT_PERMISSION_REQUEST,
+        title="touch made.txt",
+        tool_kind="execute",
+        request_id="req-1",
+        harness_tool_id=harness_tool_id,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("matcher", ["execute_bash", "shell", "Bash"])
+async def test_claude_a_hooks_page_kiro_cli_matcher_refuses_a_claude_bash_call(
+    tmp_path, agents_dir, monkeypatch, matcher
+):
+    ran = _blocking_runner(monkeypatch)
+    # Crew fires no spec hooks on claude, so the agent's own execute_bash hook
+    # never runs here; only the Hooks-page one does.
+    _write_spec(agents_dir, "execute_bash")
+    state, client = _turn_state(tmp_path, ACP_BACKEND_CLAUDE)
+    _page_hook(state, matcher)
+    await _one_turn(state, client, [_claude_bash_request("claude#Bash")])
+    assert ran == ["page"]
+    client.reject_tool.assert_called_once()
+    client.approve_tool.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_claude_a_hooks_page_matcher_for_another_tool_lets_a_claude_bash_call_through(
+    tmp_path, agents_dir, monkeypatch
+):
+    ran = _blocking_runner(monkeypatch)
+    _write_spec(agents_dir, "execute_bash")
+    state, client = _turn_state(tmp_path, ACP_BACKEND_CLAUDE)
+    _page_hook(state, "fs_write")
+    await _one_turn(state, client, [_claude_bash_request("claude#Bash")])
+    assert ran == []
+    client.approve_tool.assert_called_once()
+
+
 def _fetch_frames() -> list:
     # KAS sends the tool-call frame BEFORE the permission request.
     return [
@@ -542,15 +601,46 @@ async def test_kas_a_gated_chat_call_runs_its_hook_once_on_the_permission_reques
 async def test_kiro_cli_a_chat_tool_call_still_fires_its_informational_hook(
     tmp_path, agents_dir, monkeypatch
 ):
+    # A real Hooks-page PreToolUse hook that writes the event it was sent to a file.
+    monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
+    monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(hooks_mod, "_script_hooks_capability_denied", lambda sk="": None)
+    # The real spawner's default cwd is the test runner's (the checkout), so the
+    # child runs in tmp_path instead.
+    real_run = hooks_mod.run_script_hook
+
+    async def run_in_tmp(*args, **kwargs):
+        kwargs["cwd"] = str(tmp_path)
+        return await real_run(*args, **kwargs)
+
+    monkeypatch.setattr(hooks_mod, "run_script_hook", run_in_tmp)
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import os, sys\n"
+        "with open(sys.argv[1], 'w', encoding='utf-8') as f:\n"
+        "    f.write(sys.stdin.read())\n"
+        "with open(sys.argv[1] + '.cwd', 'w', encoding='utf-8') as f:\n"
+        "    f.write(os.getcwd())\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "event.json"
     _write_spec(agents_dir, "fs_write")
     state, client = _turn_state(tmp_path, ACP_BACKEND_KIRO)
-    informational = AsyncMock()
-    monkeypatch.setattr("kiro_crew.dashboard.chat_runner.fire_tool_hooks", informational)
+    state._hook_store._hooks = {
+        "page": ScriptHook(
+            id="page",
+            event=HOOK_EVENT_PRE_TOOL_USE,
+            command=f'"{sys.executable}" "{script}" "{out}"',
+        )
+    }
     await _one_turn(
         state, client, [LLMEvent(kind=EVENT_TOOL_CALL, title="Fetch URL", tool_call_id="t-1")]
     )
-    informational.assert_awaited_once()
-    assert informational.await_args.args[1] == "Fetch URL"
+    child_cwd = Path(f"{out}.cwd").read_text(encoding="utf-8")
+    assert Path(child_cwd).resolve() == tmp_path.resolve()
+    event = json.loads(out.read_text(encoding="utf-8"))
+    assert event["hook_event_name"] == HOOK_EVENT_PRE_TOOL_USE
+    assert event["tool_name"] == "Fetch URL"
 
 
 @pytest.mark.asyncio

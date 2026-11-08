@@ -170,6 +170,9 @@ class TestAttachment:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
 
+            def export(self, *args, **kwargs):  # the core wraps it with the policy check
+                return None
+
         mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
         mod.OTLPMetricExporter = _StubExporter  # type: ignore[attr-defined]
         monkeypatch.setitem(
@@ -216,6 +219,9 @@ class TestTemporalityIsACoreDecision:
         class _StubExporter:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
+
+            def export(self, *args, **kwargs):  # the core wraps it with the policy check
+                return None
 
         mod = types.ModuleType("opentelemetry.exporter.otlp.proto.http.metric_exporter")
         mod.OTLPMetricExporter = _StubExporter  # type: ignore[attr-defined]

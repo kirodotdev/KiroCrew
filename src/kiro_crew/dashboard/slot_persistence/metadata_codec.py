@@ -35,7 +35,8 @@ the checks its hand-written reader applied, no more and no fewer: some values ar
 re-validated (the title state, the compaction threshold, the dismissed links, the
 model and effort, the mode, the custom color hex, the tags, the agent kind, the
 artifact, the executor, the held notes, the queue), and the rest are still copied
-as written.
+as written. The checks a value of its own needs before a slot takes it live in
+``metadata_values``.
 New slot-owned metadata fields belong here: a row, its key in ``LINE_ORDER`` and
 ``MERGE_ORDER``, and in ``history.SLOT_OWNED_META_KEYS`` when its absence must
 clear it; ``test/test_slot_metadata_codec.py`` round-trips the row once
@@ -52,33 +53,22 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from kiro_crew import model_registry
-from kiro_crew.config.loader import (
-    AUTOCOMPACT_PCT_MAX,
-    AUTOCOMPACT_PCT_MIN,
-    CHAT_TURN_TIMEOUT_MAX,
-    CHAT_TURN_TIMEOUT_MIN,
-)
-from kiro_crew.dashboard.chat_title import (
-    _TITLE_ORIGINS,
-    _counts_as_user_turn,
-    _rehydrated_refresh_mark,
-)
 from kiro_crew.dashboard.chat_utils import (
-    _normalize_model,
     effective_session_key,
+    slot_history_key,
     slot_transcript_key,
 )
 from kiro_crew.dashboard.slot_buffers import (
-    committed_filtered_note_ids,
-    drop_committed_restored_notes,
+    MAX_FORK_PARENT_KEY_CHARS,
+    bounded_transcript_created_at,
+    restore_deferred_note_hold,
     sanitize_restored_deferred_notes,
 )
 from kiro_crew.dashboard.slot_queue_repository import (
     queue_persist_signature,
     sanitize_restored_queue,
 )
-from kiro_crew.dashboard.state import _MAX_DISMISSED_SOURCE_LINKS
+from kiro_crew.history import transcript_stem
 from kiro_crew.memory_stores import named_store_or_empty
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.validation import ARTIFACT_SLUG_RE, normalize_theme_consent_sha
@@ -96,18 +86,6 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_persistence")
 # style.
 COLOR_HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 
-#: Retired session modes. A slot persisted under one of these comes back as a
-#: PLAIN chat: the transcript is untouched and still renders; there is no
-#: mode-specific dispatch for it, because the mode itself is gone.
-#:
-#: ``crew`` — Crew Mode (one session fanning topics out to sub-sessions),
-#: retired in favour of the Crew Members page. Its durable store under
-#: ``<data home>/crew/`` is neither read nor deleted here; the transcript is
-#: the user's record and the store held only routing state.
-#:
-#: ``orchestrator`` — chat Autopilot mode (a planned, staged run), retired
-#: without a replacement. Its stage result files are neither read nor deleted.
-_RETIRED_MODES: frozenset[str] = frozenset({"crew", "orchestrator"})
 
 RESTORE = "restore"
 RECENT = "recent"
@@ -184,237 +162,6 @@ class Resume:
 Purpose = Restore | Resume
 
 
-# ── Value checks a read applies ───────────────────────────────────────────────
-
-
-def _rehydrate_title_origin(titled: bool, stored: object) -> str:
-    """Resolve a rehydrated slot's title origin from persisted metadata.
-
-    Mirrors how ``_titled`` is derived from the presence of a persisted title,
-    so "a manual rename is final" survives a reload. A recognized stored
-    ``title_origin`` is used verbatim. A titled slot with NO stored origin is a
-    LEGACY session written before the field existed: treat it conservatively as
-    ``"user"`` so the background title refresh never rewrites what might be a
-    manual rename. An untitled slot has no origin.
-    """
-    if not titled:
-        return ""
-    if isinstance(stored, str) and stored in _TITLE_ORIGINS:
-        return stored
-    return "user"
-
-
-def _rehydrate_title_refresh_mark(stored: object) -> int:
-    """Resolve the persisted refresh mark; unknown/invalid values mean 0."""
-    if isinstance(stored, int) and not isinstance(stored, bool) and stored > 0:
-        return stored
-    return 0
-
-
-def _rehydrate_title_low_signal(stored: object) -> bool:
-    """Resolve the persisted low-signal flag; absent/invalid means False.
-
-    A legacy session written before the field existed rehydrates as False —
-    the conservative default, since re-arming the early refresh on old
-    sessions would spend one-liner calls their budget never accounted for.
-    """
-    return stored is True
-
-
-def _rehydrate_slot_title(
-    slot: _ChatSlot,
-    raw_title: str,
-    *,
-    titled: bool,
-    metadata: Mapping[str, object],
-) -> None:
-    """Restore the complete persisted title state through one contract.
-
-    Titles may be model-authored, so display redaction must happen before the
-    value reaches the slot. Keeping provenance and refresh-budget restoration
-    beside that assignment prevents hydration paths from restoring only part
-    of the title state.
-    """
-    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
-
-    safe_title, _ = cp.redact_exfiltration_urls(raw_title)
-    safe_title, _ = cp.redact_credentials(safe_title)
-    slot.title = safe_title
-    slot._titled = titled
-    slot._title_origin = _rehydrate_title_origin(titled, metadata.get("title_origin"))
-    slot._title_refresh_mark = _rehydrate_title_refresh_mark(metadata.get("title_refresh_mark"))
-    slot._title_low_signal = _rehydrate_title_low_signal(metadata.get("title_low_signal"))
-
-
-def _rebase_rehydrated_refresh_mark(slot: _ChatSlot) -> None:
-    """Re-base the restored refresh mark against the user rows the loader kept.
-
-    Runs once per read, AFTER its message window is appended and its local-turn
-    marker is reconciled (:meth:`AppliedMeta.settle` keeps that order): the
-    reconcile can re-append an opening row the periodic flush never wrote, and
-    the mark must match the window the next turn counts over.
-    The window is the latest 500 rows, so the slot's user count restarts below the
-    count the persisted mark was taken at, and the opt-in refresh cadence
-    (``dashboard.title_refresh_every_turns``) would otherwise stay silent until
-    the count climbed past that mark again. Counts user turns over
-    ``slot.messages`` with ``maybe_refresh_title``'s own predicate
-    (``chat_title._counts_as_user_turn``), so the two agree on what a turn is.
-    See ``chat_title._rehydrated_refresh_mark`` for the floor that keeps a spent
-    built-in milestone spent.
-    """
-    if not slot._title_refresh_mark:
-        return
-    user_count = sum(1 for m in slot.messages if _counts_as_user_turn(slot, m))
-    slot._title_refresh_mark = _rehydrated_refresh_mark(slot._title_refresh_mark, user_count)
-
-
-def _validate_autocompact_pct(raw: object) -> float | None:
-    """Return *raw* as a threshold percent within the documented range, else None.
-
-    Restore-path twin of the endpoint validation: a tampered or corrupted
-    metadata file must not seed an override that can never fire (over the max)
-    or that thrashes compaction (under the min). Out-of-range finite values
-    clamp — matching how the loader treats the global knob — while
-    non-numeric/NaN values are discarded.
-    """
-    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-        try:
-            value = float(raw)
-        except OverflowError:
-            # An int too large for a float; a corrupted metadata file must not
-            # abort the restore path.
-            logger.warning("Discarding oversized persisted autocompact_pct")
-            return None
-        if value != value:  # NaN
-            logger.warning("Discarding NaN persisted autocompact_pct")
-            return None
-        return min(max(value, AUTOCOMPACT_PCT_MIN), AUTOCOMPACT_PCT_MAX)
-    if raw is not None:
-        logger.warning("Discarding invalid persisted autocompact_pct: %r", raw)
-    return None
-
-
-def _validate_turn_timeout_secs(raw: object) -> int | None:
-    """Return *raw* as a turn time limit in whole seconds within range, else None.
-
-    Restore-path twin of the endpoint validation, on a line the agent's own
-    tools can write: an integer outside the global setting's range clamps to
-    it, the way the loader treats ``agent.chat_turn_timeout_secs``, and anything
-    that is not an integer (a bool, a float, a string) is discarded so the
-    session follows the global limit.
-    """
-    if isinstance(raw, int) and not isinstance(raw, bool):
-        return min(max(raw, CHAT_TURN_TIMEOUT_MIN), CHAT_TURN_TIMEOUT_MAX)
-    if raw is not None:
-        logger.warning("Discarding invalid persisted turn_timeout_secs: %r", raw)
-    return None
-
-
-def _restore_dismissed_source_links(slot: "_ChatSlot", raw: object) -> None:
-    """Rehydrate the per-slot dismissed source-link identity set from metadata.
-
-    History JSONL is a file an attacker with disk access could tamper, and these
-    keys feed the derivation filter that decides which chips a client sees, so
-    each entry is re-validated against the canonical serialized-identity grammar
-    before it is trusted. A malformed entry is dropped rather than aborting the
-    restore -- a corrupt suppression key can only ever fail to match a real
-    identity, so dropping it is safe and fails toward showing the chip.
-    """
-    if not isinstance(raw, list):
-        # The transcript being loaded records no dismissals, so the slot has
-        # none: clear rather than return, or a set left over from a previous
-        # binding of a reused slot object would survive a rebind and suppress
-        # unrelated links on the new transcript. Hydration is authoritative —
-        # the slot's dismissed set always reflects the transcript it now shows.
-        slot._dismissed_source_links = set()
-        slot._dismissed_hydrated = True
-        slot.invalidate_source_links()
-        return
-    # Function-local to avoid a circular import: source_providers imports from the
-    # dashboard state/handler layer this module also serves. Same lazy-import
-    # convention the handlers use for source_providers.
-    from kiro_crew.dashboard.source_providers.contract import is_valid_source_identity_key
-
-    # Enforce the same named ceiling the add site does, DURING iteration, so a
-    # tampered or oversized on-disk line cannot make us materialize an unbounded
-    # valid-key list before slicing. Stop retaining once the cap is reached, but
-    # keep COUNTING the valid keys past it so the drop is said out loud once per
-    # restore -- the ``a-bound-bounds-every-field-it-retains`` contract requires
-    # a bounded retention to report its overflow, exactly as
-    # ``_capped_dismissed_line`` does on the write side. Keeping the first
-    # _MAX_DISMISSED_SOURCE_LINKS valid keys and dropping the rest only ever
-    # fails toward SHOWING a chip, never toward hiding an unrelated one.
-    bounded: set[str] = set()
-    dropped = 0
-    for key in raw:
-        if not is_valid_source_identity_key(key):
-            continue
-        if len(bounded) < _MAX_DISMISSED_SOURCE_LINKS:
-            bounded.add(key)
-        else:
-            dropped += 1
-    if dropped:
-        logger.warning(
-            "dismissed_source_links restore truncated by %d to the %d cap",
-            dropped,
-            _MAX_DISMISSED_SOURCE_LINKS,
-        )
-    slot._dismissed_source_links = bounded
-    slot._dismissed_hydrated = True
-
-
-def _restored_mode(raw: object) -> str:
-    """The mode a persisted slot comes back with, or "" for plain chat.
-
-    Maps a :data:`_RETIRED_MODES` value to "" rather than refusing the restore:
-    the session and its history are still the user's, the mode that once
-    dispatched them is not. Anything that is not a non-empty string is "" too,
-    which matches what the old ``if meta.get("mode")`` guard admitted.
-    """
-    if not isinstance(raw, str) or not raw:
-        return ""
-    if raw in _RETIRED_MODES:
-        return ""
-    return raw
-
-
-def _restore_model_fields(slot: Any, meta: dict, *, cfg: Any, effort_marker: bool = False) -> bool:
-    """Apply the persisted ``model`` and ``reasoning_effort`` to *slot*.
-
-    Shared by every path that hydrates a slot from a transcript -- the two
-    restart reads (through :func:`apply`), History resume, and channel surfacing
-    (:func:`kiro_crew.dashboard.channel_slots.surface_channel_session`) -- so
-    they cannot drift apart.
-    A path that skips this leaves ``slot.model`` empty, and the next save
-    writes that empty value over the model the user picked.
-
-    *cfg* is the already-loaded restore config, or None. Its provider
-    canonicalizes a pre-migration claude_code provider id to the dropdown
-    key (no-op for other providers); it is read only when a model is set.
-    *effort_marker* is the off-loop ``_has_validated_effort_marker`` read for
-    this effort value. The effort allowlist is process state that stays on
-    ``chat_persistence``, so the check is made there.
-    Returns True when the metadata carried a model. False also covers a
-    ``model`` of ``""``, a slot that follows the default, so a caller that falls
-    back to the agent's model must check that the key is absent.
-    """
-    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
-
-    raw_model = meta.get("model")
-    # Metadata is agent-writable: a non-string model is dropped, not hashed.
-    has_model = isinstance(raw_model, str) and bool(raw_model)
-    if has_model and isinstance(raw_model, str):
-        provider = cfg.agent.provider if cfg else ""
-        slot.model = model_registry.canonicalize_for_provider(_normalize_model(raw_model), provider)
-    # `jev_route` is deliberately not read here: it is an owner pick that can
-    # spend money, and transcript metadata is agent-writable.
-    if meta.get("reasoning_effort"):
-        slot.reasoning_effort = cp._validate_reasoning_effort(
-            meta["reasoning_effort"], persisted_marker=effort_marker
-        )
-    return has_model
-
-
 # ── The table ─────────────────────────────────────────────────────────────────
 
 
@@ -447,6 +194,7 @@ class SaveFolds:
     last_consolidated: object = 0
     closed: bool = False
     closed_at: object = None
+    closed_id: str = ""
     dismissed_source_links: list[str] | None = None
     deferred_notes: list[dict] = field(default_factory=list)
     queued_prompts: list[dict] = field(default_factory=list)
@@ -471,6 +219,8 @@ class SaveFolds:
     # clears the session's limit): ``None`` here means "nothing staged, read the
     # live slot", ``(value,)`` means "write *value*".
     turn_timeout_secs: tuple[int | None] | None = None
+    # Staged ``autocompact_pct`` for the threshold endpoint, the same shape.
+    autocompact_pct: tuple[float | None] | None = None
 
 
 @dataclass
@@ -562,9 +312,11 @@ def _named_store(slot: Any, folds: SaveFolds) -> str:
 
 
 def _read_title(r: _Read) -> None:
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
     slot, meta, purpose = r.slot, r.meta, r.purpose
     if isinstance(purpose, Recent):
-        _rehydrate_slot_title(
+        cp._rehydrate_slot_title(
             slot,
             purpose.listing.get("title", purpose.name),  # type: ignore[arg-type]
             titled=bool(purpose.listing.get("title")),
@@ -573,7 +325,7 @@ def _read_title(r: _Read) -> None:
     elif isinstance(purpose, Restore):
         # Not type-checked: a non-string title fails the redaction, and with it
         # the restore, which rolls back its own slot.
-        _rehydrate_slot_title(
+        cp._rehydrate_slot_title(
             slot,
             meta.get("title") or purpose.name,
             titled=bool(meta.get("title")),
@@ -589,7 +341,7 @@ def _read_title(r: _Read) -> None:
         raw = meta.get("title")
         persisted = raw if isinstance(raw, str) else ""
         if persisted:
-            _rehydrate_slot_title(slot, persisted, titled=True, metadata=meta)
+            cp._rehydrate_slot_title(slot, persisted, titled=True, metadata=meta)
         elif purpose.request_title:
             # Never-titled session with a caller-supplied name: conservative
             # "user" provenance (the background refresh must never rewrite it)
@@ -645,9 +397,11 @@ def _read_model(r: _Read) -> None:
     # agent grant itself routing the owner never selected. The flag lives in
     # memory only: a restart leaves the slot on its persisted model -- the
     # documented refusal -- and the owner re-picks "Auto (Jev)" to route again.
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
     purpose = r.purpose
     if (
-        not _restore_model_fields(
+        not cp._restore_model_fields(
             r.slot, r.meta, cfg=purpose.cfg, effort_marker=purpose.effort_marker
         )
         and "model" not in r.meta
@@ -672,12 +426,26 @@ def _read_model(r: _Read) -> None:
 
 
 def _read_autocompact_pct(r: _Read) -> None:
-    if r.meta.get("autocompact_pct") is not None:
-        r.slot.autocompact_pct = _validate_autocompact_pct(r.meta["autocompact_pct"])
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+    from kiro_crew.dashboard.transcript_binding import seed_autocompact_from_disk
+
+    seed_autocompact_from_disk(
+        r.state, r.slot, cp._validate_autocompact_pct(r.meta.get("autocompact_pct"))
+    )
+
+
+def _staged_autocompact(slot: Any, folds: SaveFolds) -> float | None:
+    """The threshold a save writes: the endpoint's staged value, else the slot's."""
+    if folds.autocompact_pct is not None:
+        return folds.autocompact_pct[0]
+    value: float | None = slot.autocompact_pct
+    return value
 
 
 def _read_turn_timeout_secs(r: _Read) -> None:
-    r.slot.turn_timeout_secs = _validate_turn_timeout_secs(r.meta.get("turn_timeout_secs"))
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    r.slot.turn_timeout_secs = cp._validate_turn_timeout_secs(r.meta.get("turn_timeout_secs"))
 
 
 def _staged_turn_timeout(slot: Any, folds: SaveFolds) -> int | None:
@@ -689,13 +457,17 @@ def _staged_turn_timeout(slot: Any, folds: SaveFolds) -> int | None:
 
 
 def _read_dismissed_source_links(r: _Read) -> None:
-    _restore_dismissed_source_links(r.slot, r.meta.get("dismissed_source_links"))
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    cp._restore_dismissed_source_links(r.slot, r.meta.get("dismissed_source_links"))
 
 
 def _read_mode(r: _Read) -> None:
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
     if r.purpose.member is not None:
         return
-    mode = _restored_mode(r.meta.get("mode"))
+    mode = cp._restored_mode(r.meta.get("mode"))
     if isinstance(r.purpose, Resume):
         # A member mode may not ride a transcript onto an ordinary key; the
         # resume refuses that shape before it builds, so this only defends a
@@ -726,6 +498,14 @@ def _read_agent_kind(r: _Read) -> None:
         r.slot.agent_kind = r.meta["agent_kind"]
 
 
+def _read_crew_mode_agent(r: _Read) -> None:
+    # The conductor the chat runs in Crew Mode: it marks the chat as Crew Mode until
+    # the migration moves it onto ``agent.crew_mode_agent`` (``crew_mode.runs_crew_mode``).
+    value = r.meta.get("crew_mode_agent")
+    if isinstance(value, str) and value:
+        r.slot.crew_mode_agent = value
+
+
 def _read_app_agent_owner(r: _Read) -> None:
     # "<app>/<agent>": the app-owned agent binding a palette command stamped.
     owner = r.meta.get("app_agent_owner")
@@ -737,8 +517,9 @@ def _read_app_agent_owner(r: _Read) -> None:
 
 
 def _read_project(r: _Read) -> None:
-    if r.meta.get("project"):
-        r.slot.project = r.meta["project"]
+    from kiro_crew.dashboard.transcript_binding import seed_project_from_disk
+
+    seed_project_from_disk(r.state, r.slot, r.meta.get("project") or "")
 
 
 def _read_executor(r: _Read) -> None:
@@ -770,13 +551,68 @@ def _read_turn_in_flight(r: _Read) -> None:
         r.applied.turn_prompt = cp._local_turn_prompt(r.meta)
 
 
+#: The creator a cron's chat routes stamp on a slot they open (``cron:<job id>``, from
+#: ``handlers._shared_route_guards.cron_slot_creator``). It names no session.
+_CRON_CREATOR_PREFIX = "cron:"
+
+
 def _read_created_by(r: _Read) -> None:
-    # Creator attribution restored so the member ownership boundary in
-    # session-control authorization survives a restart. ``created_by_sid`` is
-    # never restored, and ``_lineage_minted`` stays False: a value read back
-    # from this file must not become gateway-authored crew-log lineage.
-    if r.meta.get("created_by"):
-        r.slot._created_by = str(r.meta["created_by"])
+    # Creator attribution, so the member ownership boundary in session-control
+    # authorization survives a restart. A sandboxed shell can write this line, so
+    # ``created_by`` is only a claim. A claim naming a session is kept when the crew
+    # log's creation records, which no sandboxed process can write, name the same
+    # creator, and is otherwise ``UNVERIFIED_CREATOR`` (fenced, matching no caller),
+    # the rule a revive applies. A cron's stamp names no session, so the crew log
+    # holds no edge to check it against, and it is kept as written.
+    # ``created_by_sid`` is never restored, and ``_lineage_minted`` stays False.
+    claimed = r.meta.get("created_by")
+    if claimed:
+        # circular import: session control imports the chat persistence facade.
+        from kiro_crew.dashboard.session_control_parts.session_revive import (
+            UNVERIFIED_CREATOR,
+            _creation_parent,
+        )
+
+        claimed = str(claimed)
+        verified = (
+            claimed.startswith(_CRON_CREATOR_PREFIX) or _creation_parent(r.slot.key) == claimed
+        )
+        r.slot._created_by = claimed if verified else UNVERIFIED_CREATOR
+        # A mode a person set on this session lived in memory and did not survive,
+        # so the session follows its creator's next mode change again. A raise
+        # still needs the crew log's creation record (``approval_inheritance``).
+        r.slot._posture_inherited = True
+
+
+def _creator_line(slot: Any) -> str:
+    # ``UNVERIFIED_CREATOR`` is a verdict on the line's claim, not a claim: the line
+    # keeps the claim it was read with, so one start that could not confirm it (the
+    # crew log off, a failed fold) does not erase it, and the next restore judges it
+    # again. With no claim to keep, the verdict is written.
+    creator = str(getattr(slot, "_created_by", "") or "")
+    if creator:
+        # circular import: session control imports the chat persistence facade.
+        from kiro_crew.dashboard.session_control_parts.session_revive import UNVERIFIED_CREATOR
+
+        if creator == UNVERIFIED_CREATOR:
+            return str(getattr(slot, "_saved_created_by", "") or "") or creator
+    return creator
+
+
+def _read_attribution(r: _Read) -> None:
+    # Shared Crew creator attribution. A line with no key reads as legacy and
+    # stays legacy, so a later stamp can never invent a creator for it.
+    # Function-local: the chat_persistence facade's import closure stays unchanged.
+    from kiro_crew.shared_crew import attribution as shared_crew_attribution
+
+    shared_crew_attribution.restore_from_metadata(r.slot, r.meta)
+
+
+def _attribution_value(slot: Any, folds: SaveFolds) -> object:
+    from kiro_crew.shared_crew import attribution as shared_crew_attribution
+
+    value = shared_crew_attribution.metadata_value(slot)
+    return OMIT if value is None else value
 
 
 def _read_folder_id(r: _Read) -> None:
@@ -856,16 +692,18 @@ def _read_tags(r: _Read) -> None:
     raw = r.meta.get("tags")
     if not isinstance(raw, list):
         return
+    # Imported here: an owner of the chat_persistence facade imports at module
+    # scope only what the facade itself imports.
+    from kiro_crew.dashboard.tag_vocabulary_read import known_tag_ids, prune_tag_ids
+
     slot = r.slot
-    slot.tags = [str(t) for t in raw if isinstance(t, str) and t]
     # Prune ids missing from the vocabulary: tag deletion commits the vocab
     # write first (crash-atomic), so a crash mid-delete can leave dangling ids on
-    # the line. FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse or
-    # I/O failure): pruning then would wipe EVERY assignment and the next save
-    # persists the loss. A legitimately-empty vocabulary IS authoritative.
-    if getattr(r.state, "_tags_authoritative", True):
-        known = {t.get("id") for t in r.state._tags}
-        slot.tags = [t for t in slot.tags if t in known]
+    # the line. The one vocabulary reader decides the rule for every prune site:
+    # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse or I/O
+    # failure), since pruning then would wipe EVERY assignment and the next save
+    # persists the loss; a legitimately-empty vocabulary IS authoritative.
+    slot.tags = prune_tag_ids(raw, known_tag_ids(r.state))
     # "tags changed => revision changed" wherever tags are replaced. A resume
     # rotates through the tag module's helper, which also mints a revision for a
     # duck-typed slot without the method; the startup reads call the method only.
@@ -928,9 +766,28 @@ def _read_memory_mode(r: _Read) -> None:
         r.state._restricted_keys.discard(restricted)
 
 
+def _restore_fork_lineage(slot: _ChatSlot, meta: dict) -> None:
+    """Restore a bounded fork parent key and its transcript identity.
+
+    ``forked_from_created_at`` is that transcript's ``created_at``: a merge back
+    checks a chat on the parent's key against it.
+    """
+    forked_from = meta.get("forked_from")
+    if not isinstance(forked_from, str) or not forked_from:
+        if "forked_from" in meta:
+            logger.warning("Discarding invalid persisted forked_from: %r", forked_from)
+        return
+    if len(forked_from) > MAX_FORK_PARENT_KEY_CHARS:
+        logger.warning(
+            "Discarding invalid persisted forked_from of %d characters", len(forked_from)
+        )
+        return
+    slot.forked_from = forked_from
+    slot.forked_from_created_at = bounded_transcript_created_at(meta.get("forked_from_created_at"))
+
+
 def _read_forked_from(r: _Read) -> None:
-    if r.meta.get("forked_from") is not None:
-        r.slot.forked_from = r.meta["forked_from"]
+    _restore_fork_lineage(r.slot, r.meta)
 
 
 def _read_linked_session_key(r: _Read) -> None:
@@ -1048,8 +905,8 @@ FIELDS: tuple[Field, ...] = (
         "autocompact_pct",
         _ALL,
         attr="autocompact_pct",
-        line=_always(lambda s: s.autocompact_pct),
-        merge=_always(lambda s: s.autocompact_pct),
+        line=_staged_autocompact,
+        merge=_staged_autocompact,
         read=_read_autocompact_pct,
     ),
     Field(
@@ -1110,6 +967,14 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s.agent_kind),
         merge=_always(lambda s: s.agent_kind),
         read=_read_agent_kind,
+    ),
+    Field(
+        "crew_mode_agent",
+        _ALL,
+        attr="crew_mode_agent",
+        line=_truthy(lambda s: s.crew_mode_agent),
+        merge=_always(lambda s: s.crew_mode_agent),
+        read=_read_crew_mode_agent,
     ),
     Field(
         "app_agent_owner",
@@ -1201,13 +1066,25 @@ FIELDS: tuple[Field, ...] = (
         "created_by",
         _STARTUP,
         attr="_created_by",
-        line=_truthy(lambda s: getattr(s, "_created_by", "")),
-        merge=_truthy(lambda s: getattr(s, "_created_by", "")),
+        line=_truthy(_creator_line),
+        merge=_truthy(_creator_line),
         read=_read_created_by,
         why=(
             "RESUME does not restore it (#17025); a session-control revive restores "
-            "it after the build when lineage corroborates"
+            "it after the build when lineage corroborates, RESTORE and RECENT keep it "
+            "only when the crew log's creation records do, and an unconfirmed claim "
+            "is written back as read"
         ),
+    ),
+    # Shared Crew session creator. Write-once: the slot holds the first value
+    # stamped or read (``shared_crew.attribution``), and no writer owns the key,
+    # so a save that does not write it carries the stored value unchanged.
+    Field(
+        "attribution",
+        _ALL,
+        line=_attribution_value,
+        merge=_attribution_value,
+        read=_read_attribution,
     ),
     Field(
         "folder_id",
@@ -1251,10 +1128,7 @@ FIELDS: tuple[Field, ...] = (
         attr="_origin",
         line=_truthy(lambda s: s._origin),
         merge=_truthy(lambda s: s._origin),
-        why=(
-            "applied at construction (``slot_args``), as ``str(...)``: a null origin "
-            'reads as the string "None" (#17026)'
-        ),
+        why="applied at construction (``slot_args``); a null origin reads as no origin",
     ),
     # The artifact companion binding: a bound session restored after a gateway
     # restart comes back as the artifact's active bound session.
@@ -1379,12 +1253,12 @@ FIELDS: tuple[Field, ...] = (
     ),
     Field(
         "deferred_notes",
-        _STARTUP,
+        _ALL,
         attr="_deferred_notes",
         line=lambda s, f: f.deferred_notes or OMIT,
         merge=lambda s, f: f.deferred_notes,
         read=_read_deferred_notes,
-        why="RESUME does not replay the held notes (#17025); a later save keeps them on disk",
+        why="settled after the loaded window so committed merge-card context is restored once",
     ),
     Field(
         "queued_prompts",
@@ -1415,6 +1289,14 @@ FIELDS: tuple[Field, ...] = (
         merge=lambda s, f: s.forked_from if s.forked_from is not None else OMIT,
         read=_read_forked_from,
     ),
+    Field(
+        "forked_from_created_at",
+        _ALL,
+        attr="forked_from_created_at",
+        line=_truthy(lambda s: s.forked_from_created_at if s.forked_from is not None else ""),
+        merge=_truthy(lambda s: s.forked_from_created_at if s.forked_from is not None else ""),
+        why="validated and restored with forked_from by its leading row",
+    ),
     # Nothing re-creates a channel slot's binding on restart (no injection
     # re-fires), so without it the slot comes back unbound, as a dashboard-only
     # copy of the thread.
@@ -1425,7 +1307,7 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s.linked_session_key),
         merge=_truthy(lambda s: s.linked_session_key),
         read=_read_linked_session_key,
-        why="RESUME does not restore it (a hooked revive restores it after the build)",
+        why="RESUME binds only a cron transcript's own key (slot_args); a hooked revive the rest",
     ),
     # Durable provenance: a name is not evidence, so this flag is what tells a
     # later boot the tab was adopted from a channel conversation.
@@ -1468,6 +1350,17 @@ FIELDS: tuple[Field, ...] = (
         line=lambda s, f: f.closed_at if f.closed else OMIT,
         merge=lambda s, f: f.closed_at if f.closed else OMIT,
     ),
+    # The identity of the close that wrote this line's ``closed``: a nonce the
+    # save mints beside ``closed_at`` (``metadata_line.close_identity``), which
+    # the owed-dismissal marker also writes for its own stamp. A clear keyed on
+    # it removes exactly the stamp its writer put there: two closes stamped on
+    # the same clock tick carry the same ``closed_at`` and different ids.
+    Field(
+        "closed_id",
+        frozenset(),
+        line=lambda s, f: f.closed_id if f.closed and f.closed_id else OMIT,
+        merge=lambda s, f: f.closed_id if f.closed and f.closed_id else OMIT,
+    ),
     Field(
         "rotation_generation",
         frozenset(),
@@ -1485,6 +1378,7 @@ LINE_ORDER: tuple[str, ...] = (
     "last_consolidated",
     "closed",
     "closed_at",
+    "closed_id",
     "memory_mode",
     "title",
     "title_origin",
@@ -1500,6 +1394,7 @@ LINE_ORDER: tuple[str, ...] = (
     "workspace",
     "memory_store",
     "agent_kind",
+    "crew_mode_agent",
     "app_agent_owner",
     "project",
     "executor",
@@ -1512,6 +1407,7 @@ LINE_ORDER: tuple[str, ...] = (
     "app",
     "origin",
     "created_by",
+    "attribution",
     "artifact",
     "pinned",
     "mutes_opened",
@@ -1526,6 +1422,7 @@ LINE_ORDER: tuple[str, ...] = (
     "deferred_notes",
     "queued_prompts",
     "forked_from",
+    "forked_from_created_at",
     "linked_session_key",
     "channel_origin",
     "tab_id",
@@ -1559,14 +1456,17 @@ MERGE_ORDER: tuple[str, ...] = (
     "workspace",
     "memory_store",
     "agent_kind",
+    "crew_mode_agent",
     "app_agent_owner",
     "project",
     "app",
     "origin",
     "created_by",
+    "attribution",
     "linked_session_key",
     "channel_origin",
     "forked_from",
+    "forked_from_created_at",
     "turn_in_flight_generation",
     "turn_in_flight_prompt",
     "executor",
@@ -1578,6 +1478,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "channel_folder_filed",
     "closed",
     "closed_at",
+    "closed_id",
     "dismissed_source_links",
     "deferred_notes",
 )
@@ -1606,6 +1507,13 @@ def encode(slot: _ChatSlot, *, folds: SaveFolds, merge: bool = False) -> dict:
     return out
 
 
+def own_cron_link(meta: Mapping[str, Any], history_key: str) -> str:
+    """The line's ``cron:`` link when it names *history_key*'s own file, else ``""``."""
+    link = str(meta.get("linked_session_key") or "")
+    same_file = transcript_stem(link) == transcript_stem(history_key)
+    return link if link.startswith("cron:") and same_file else ""
+
+
 def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
     """The ``get_or_create_slot`` keywords *purpose* takes from *meta*.
 
@@ -1624,6 +1532,9 @@ def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
         # Resuming a channel transcript adopts that conversation, so the tab is
         # channel-origin even when the session map cannot name its session.
         args["channel_origin"] = is_channel_session_key(purpose.history_key)
+        # Unbound, a cron transcript's slot would save to a second ``dashboard:`` file.
+        if link := own_cron_link(meta, purpose.history_key):
+            args["linked_session_key"] = link
     else:
         args["app"] = meta.get("app", "")
         if purpose.purpose == RESTORE:
@@ -1631,7 +1542,7 @@ def slot_args(meta: dict[str, Any], purpose: Purpose) -> dict[str, Any]:
             args["channel_origin"] = bool(meta.get("channel_origin")) or bool(
                 meta.get("linked_session_key")
             )
-    args["origin"] = str(meta.get("origin", ""))
+    args["origin"] = str(meta.get("origin") or "")
     return args
 
 
@@ -1645,6 +1556,7 @@ class AppliedMeta:
     line lacked, for the reader to persist after its transcript read.
     """
 
+    state: Any
     slot: Any
     purpose: Any
     meta: dict[str, Any] = field(default_factory=dict)
@@ -1664,11 +1576,17 @@ class AppliedMeta:
         in that order. Returns whether a local-turn marker was present.
         """
         slot = self.slot
-        if self.purpose.purpose in _STARTUP and self.restored_notes and persisted is not None:
-            pending = slot._deferred_notes
-            slot._deferred_notes = drop_committed_restored_notes(persisted, pending)
-            slot._dropped_note_ids.update(
-                committed_filtered_note_ids(pending, slot._deferred_notes)
+        if self.restored_notes and persisted is not None:
+            transcript_key = (
+                self.purpose.history_key
+                if isinstance(self.purpose, (Recent, Resume))
+                else slot_transcript_key(self.purpose.name)
+            )
+            # The LIVE hold, never the line: a sidebar row's loader clears
+            # ``meta`` before its window loads, so by the time this runs the
+            # line's entries exist only in ``slot._deferred_notes``.
+            restore_deferred_note_hold(
+                slot, slot._deferred_notes, persisted, transcript_key, state=self.state
             )
         from kiro_crew.dashboard import chat_persistence as cp  # circular import
 
@@ -1678,7 +1596,7 @@ class AppliedMeta:
         had_marker = cp._reconcile_local_turn_marker(
             slot, self.turn_generation, self.turn_prompt, persisted=persisted
         )
-        _rebase_rehydrated_refresh_mark(slot)
+        cp._rebase_rehydrated_refresh_mark(slot)
         return had_marker
 
 
@@ -1693,11 +1611,32 @@ def apply(
     loop-affine like the slot it writes. Raises whatever a value check raises; the
     reader's own rollback owns the slot it created.
     """
-    applied = AppliedMeta(slot=slot, purpose=purpose, meta=meta)
+    applied = AppliedMeta(state=state, slot=slot, purpose=purpose, meta=meta)
     read = _Read(state=state, slot=slot, meta=meta, purpose=purpose, applied=applied)
     for row in FIELDS:
         if row.read is not None and purpose.purpose in row.purposes:
             row.read(read)
+    # The link row has run, so the history key is final: join a live alias on it.
+    from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+    bind_transcript(state, slot)
+    # The line's creator, for display on every purpose. Not ``_created_by``, whose
+    # purposes stay as the ``created_by`` row declares: the line is agent-editable,
+    # so this copy only places a Crew Mode worker under its root in the person's
+    # lists (``slot._saved_created_by``) and is the claim ``_creator_line`` keeps; it
+    # is never read as ownership.
+    saved_creator = meta.get("created_by")
+    slot._saved_created_by = saved_creator if isinstance(saved_creator, str) else ""
+    # Record the transcript key the identity was observed under, now that the
+    # full field loop has settled ``linked_session_key`` (the fields run in
+    # FIELDS order, so ``created_at`` is read before the link is restored —
+    # resolving the key inside ``_read_created_at`` would see the unset link).
+    # The delete witnesses compare this against the current write target; a
+    # mismatch means the slot's routing has drifted to a different file, so the
+    # observed ``created_at`` must not be read as a delete-recreate.
+    # Read through getattr: a reader may hand a partial slot that never observed a line.
+    if getattr(slot, "_disk_meta_created_at", "") or getattr(slot, "_disk_meta_observed", False):
+        slot._disk_meta_key = slot_history_key(slot)
     # The SessionManager's override map is process-local, so a hydrated slot
     # pushes its persisted value back or the session compacts at the global one.
     if slot.autocompact_pct is not None and state.sessions:

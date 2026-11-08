@@ -103,14 +103,15 @@ class TestAFailedWriteIsNotSuccess:
         def refuse(*a, **kw):
             raise OSError(30, "Read-only file system")
 
-        monkeypatch.setattr("pathlib.Path.write_text", refuse)
-        with pytest.raises(OSError):
-            s.add("second", to_iso(Clock().now))
+        with monkeypatch.context() as mp:
+            mp.setattr("pathlib.Path.write_text", refuse)
+            with pytest.raises(OSError):
+                s.add("second", to_iso(Clock().now))
 
-        # in-memory state is back to the last state that reached disk ...
-        assert s.snapshot()["reminders"] == before
+            # in-memory state is back to the last state that reached disk ...
+            assert s.snapshot()["reminders"] == before
+
         # ... and it agrees with what a restart would read
-        monkeypatch.undo()
         assert len(_store(tmp_path).snapshot()["reminders"]) == 1
 
     def test_no_temp_file_is_left_behind(self, tmp_path, monkeypatch):
@@ -120,16 +121,16 @@ class TestAFailedWriteIsNotSuccess:
         def refuse_after_serialising(obj, **kw):
             return real(obj, **kw)
 
-        monkeypatch.setattr(json, "dumps", refuse_after_serialising)
+        with monkeypatch.context() as mp:
+            mp.setattr(json, "dumps", refuse_after_serialising)
 
-        def refuse(*a, **kw):
-            raise OSError(28, "No space left on device")
+            def refuse(*a, **kw):
+                raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr("pathlib.Path.write_text", refuse)
-        with pytest.raises(OSError):
-            s.add("x", to_iso(Clock().now))
+            mp.setattr("pathlib.Path.write_text", refuse)
+            with pytest.raises(OSError):
+                s.add("x", to_iso(Clock().now))
 
-        monkeypatch.undo()
         assert not list(tmp_path.glob("*.tmp.*")), "a failed write left a temp file"
 
 
@@ -161,15 +162,15 @@ class TestQueueFailsBackWithState:
         def refuse(*a, **k):
             raise OSError(28, "No space left on device")
 
-        monkeypatch.setattr("pathlib.Path.write_text", refuse)
-        # Two failed ticks: each queues the fire, fails the save, and must roll
-        # the queue back — not stack a second copy.
-        for _ in range(2):
-            try:
-                s.tick()
-            except OSError:
-                pass
-        monkeypatch.undo()
+        with monkeypatch.context() as mp:
+            mp.setattr("pathlib.Path.write_text", refuse)
+            # Two failed ticks: each queues the fire, fails the save, and must roll
+            # the queue back — not stack a second copy.
+            for _ in range(2):
+                try:
+                    s.tick()
+                except OSError:
+                    pass
 
         # The disk heals; the next tick queues the reminder exactly once.
         s.tick()

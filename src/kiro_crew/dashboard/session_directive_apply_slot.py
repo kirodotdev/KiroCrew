@@ -33,6 +33,7 @@ logger = logging.getLogger("kiro_crew.dashboard.session_directive_apply")
 
 async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.dashboard.transcript_binding import arm_project_reset
     from kiro_crew.sandbox import voice_runtime_workspace_conflict
     from kiro_crew.security import is_unverifiable_path_refusal, sensitive_path_refusal
 
@@ -42,7 +43,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
     if clear or not project:
         slot.project = ""
         if old_project:
-            slot._pending_reset_history_key = effective_session_key(slot)
+            arm_project_reset(state, slot, effective_session_key(slot))
         _push(state)
         return "Project cleared. The next message cold-starts with no project scope."
     expanded = os.path.expanduser(project)
@@ -84,7 +85,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
         return f"Error: {overlap}"
     slot.project = rp
     if rp != old_project:
-        slot._pending_reset_history_key = effective_session_key(slot)
+        arm_project_reset(state, slot, effective_session_key(slot))
         try:
             from kiro_crew.dashboard.chat_handlers import _save_recent_project
 
@@ -153,6 +154,15 @@ async def _refuse_unvouched_wake_reset(
         return current
 
     current = _live_loop()
+    if getattr(current, "default_patrol", False) is not False:
+        # The gateway's default patrol never vouches for a reset. On a crewmate's
+        # thread its trust entry is a default-patrol grant, which
+        # ``is_recorded_self_arm`` below already refuses; this tag check refuses
+        # it first and by name. Anything but a plain False refuses.
+        raise _DirectiveDenied(
+            refused + "the loop that delivered this wake is the gateway's default "
+            "patrol, not one this session armed itself."
+        )
     vouched = await asyncio.to_thread(
         is_recorded_self_arm, wake_loop_id, str(getattr(current, "slot_key", ""))
     )
@@ -572,8 +582,8 @@ async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:
         # its first button is "Start in new chat" (FollowUpCard.tsx gates on
         # projectDir): a plain new chat with no worktree. This confirmation is
         # the model's only window into that, so it can describe the card the
-        # user actually sees — Research Lab worker slots, for one, are created
-        # unscoped (auto_research/handlers.py).
+        # user actually sees — an app's worker slots, for one, may be created
+        # unscoped.
         return (
             "Follow-up card shown below the composer. Note: this session has no "
             "project directory, so the card offers 'Start in new chat' (a new "

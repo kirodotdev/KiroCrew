@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,19 @@ from kiro_crew.testing.wait import wait_until
 #: Well under the 30 s the stand-in descendants sleep, so a test that waited on
 #: a descendant's natural exit instead of the kill fails.
 _DESCENDANT_KILL_SECS = 5.0
+
+#: The ownership fix ``_plugin_ownership_remedy`` offers for AWS's own tree.
+_PKG_TREE_REMEDY = "sudo chown -R root:wheel /usr/local/sessionmanagerplugin"
+
+
+def _pkg_tree_refusal() -> ssm.PluginRefusal:
+    """A plugin refused inside AWS's install tree, with its known ownership fix."""
+    return ssm.PluginRefusal(
+        path="/usr/local/sessionmanagerplugin/bin/session-manager-plugin",
+        reason="executable is owned by another user (uid 1501)",
+        remedy_command=_PKG_TREE_REMEDY,
+        code="other_owner",
+    )
 
 
 class TestArgvBuilders:
@@ -42,13 +56,8 @@ class TestArgvBuilders:
     def test_ecs_argv_differs_from_ec2_only_in_the_target(self):
         """One argv serves both lanes, so the EC2 command cannot drift.
 
-        The Fargate lane forwards into the task with the SAME
-        ``AWS-StartPortForwardingSession`` document as the EC2 lane -- there is no
-        per-lane document and no per-lane branch. Asserted as an element-wise
-        comparison rather than by spot-checking membership: if a future change
-        adds a Fargate-only flag, or swaps the document for the ToRemoteHost one
-        (which takes a caller-chosen ``host`` and so can be pointed at a third
-        machine), exactly one of these assertions fails.
+        Compared element-wise, so a Fargate-only flag or a swap to the ToRemoteHost
+        document (whose caller-chosen ``host`` can reach a third machine) fails.
         """
         task = "0123456789abcdef0123456789abcdef"
         ecs_target = f"ecs:mycluster_{task}_{task}-1234567890"
@@ -163,11 +172,8 @@ class TestOpenPortForward:
     def test_child_env_can_find_the_session_manager_plugin(self, monkeypatch, tmp_path):
         """The child needs its OWN widened PATH, not just a resolved argv head.
 
-        Resolving ``aws`` absolutely does not help the CLI find
-        ``session-manager-plugin``: it looks that up by name against the child's
-        inherited PATH at start-session time, which under a GUI-launched gateway
-        is the minimal launchd one — so the tunnel died inside a correctly
-        resolved ``aws``.
+        The CLI finds ``session-manager-plugin`` by name on the child's PATH, which
+        under a GUI-launched gateway is the minimal launchd one.
         """
         from kiro_crew.deploy import engine
 
@@ -177,13 +183,9 @@ class TestOpenPortForward:
             captured.update(kwargs, argv=argv)
             return object()
 
-        # tmp_path stand-ins for the inherited minimal PATH and the plugin's real
-        # install dir: a host literal would flake and is unrunnable on Windows.
-        # `aws` sits on the inherited PATH so the head resolves absolutely (a PATH
-        # hit needs no provenance check) and the widening is therefore offered.
-        # Windows resolves executables by PATHEXT, not the exec bit, so the planted
-        # file has to differ there or the head would fall back to the bare name and
-        # the widening would (correctly) be withheld.
+        # `aws` sits on the inherited PATH so the head resolves absolutely (no provenance
+        # check) and the widening is offered. Windows resolves by PATHEXT, not the exec
+        # bit, so the planted file differs there.
         inherited = tmp_path / "sysbin"
         inherited.mkdir()
         if os.name == "nt":
@@ -195,6 +197,15 @@ class TestOpenPortForward:
             fake_aws.write_text("#!/bin/sh\n")
             fake_aws.chmod(0o755)
         install_dir = tmp_path / "install"
+        install_dir.mkdir()
+        # The PATH wiring is under test here, not the directory check, which has
+        # its own tests in test_deploy_web_engine.py and refuses the Windows CI
+        # runner's temp directory.
+        from kiro_crew import github_runner
+
+        monkeypatch.setattr(
+            github_runner, "validate_provider_directory", lambda candidate: candidate
+        )
         monkeypatch.setenv("PATH", str(inherited))
         monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(install_dir),))
         monkeypatch.setattr(ssm, "require_session_manager_plugin", lambda: None)
@@ -211,12 +222,8 @@ class TestOpenPortForward:
     def test_refused_aws_binary_is_not_put_back_on_the_child_path(self, monkeypatch, tmp_path):
         """A provenance-REFUSED aws must not become reachable again via the env.
 
-        The resolver falls back to the bare name exactly when it found a candidate
-        in the install dirs and ``validate_provider_executable`` refused it, and
-        that refusal is enforced ONLY by the bare name failing execvp against a
-        PATH those dirs are absent from. Widening the child's PATH would put the
-        refused binary back in execvp's reach and hand it AWS credentials — a
-        fail-closed rejection silently turned into an execution.
+        The refusal is enforced only by the bare name failing execvp, so widening
+        the child's PATH would run the refused binary with AWS credentials.
         """
         from kiro_crew import github_runner
         from kiro_crew.deploy import engine
@@ -255,12 +262,8 @@ class TestOpenPortForward:
 class TestSessionManagerPluginProbe:
     """The probe must agree with what the spawn actually does.
 
-    Reported against a shipped desktop build: the plugin was installed at
-    /usr/local/bin/session-manager-plugin and worked in a shell, but the
-    launchd-launched gateway inherits /usr/bin:/bin:/usr/sbin:/sbin, so a bare
-    shutil.which() missed it and every SSM tunnel was refused by the
-    prerequisite gate before one was attempted. A symlink into the minimal PATH
-    is not a workaround on macOS — those dirs are all SIP-restricted.
+    A launchd gateway inherits /usr/bin:/bin:/usr/sbin:/sbin, so a bare shutil.which()
+    misses /usr/local/bin/session-manager-plugin; those dirs are SIP-restricted on macOS.
     """
 
     @pytest.mark.skipif(
@@ -347,6 +350,110 @@ class TestSessionManagerPluginProbe:
         assert refusal.reason == "executable parent is owned by another user (uid 1501)"
         # Outside AWS's package prefix no ownership command is known to fix it.
         assert refusal.remedy_command == ""
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
+    def test_a_refused_plugin_is_not_reported_as_not_installed_at_tunnel_start(
+        self, monkeypatch, tmp_path
+    ):
+        """The tunnel gate and the installer name the refusal, not "not
+        installed" -- reinstalling puts the same refused file back."""
+        from kiro_crew import github_runner
+        from kiro_crew.deploy import engine
+
+        install = tmp_path / "pkgbin"
+        install.mkdir()
+        plugin = install / "session-manager-plugin"
+        plugin.write_text("#!/bin/sh\n")
+        plugin.chmod(0o755)
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(install),))
+        monkeypatch.setattr(engine, "_REFUSED_AWS_BIN_DIRS", set())
+        reason = "executable is owned by another user (uid 1501)"
+
+        def _refuse(candidate):
+            raise ValueError(reason)
+
+        monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse)
+
+        with pytest.raises(aws.AWSError) as excinfo:
+            ssm.require_session_manager_plugin()
+        assert "not installed" not in str(excinfo.value)
+        assert str(plugin) in str(excinfo.value)
+        assert reason in str(excinfo.value)
+
+    def test_a_plugin_refused_in_aws_install_tree_is_not_reinstalled(self, monkeypatch):
+        """AWS's installer rewrites the same file and keeps its ownership."""
+        refusal = _pkg_tree_refusal()
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+
+        def _no_install(*_a, **_k):
+            raise AssertionError("a plugin refused in AWS's tree must not be reinstalled")
+
+        monkeypatch.setattr(ssm, "_session_manager_plugin_install_plan", _no_install)
+
+        assert ssm.reinstall_cannot_clear_refusal() is True
+        result = ssm.install_session_manager_plugin()
+        assert result.ok is False
+        assert refusal.path in result.message
+        assert refusal.remedy_command in result.message
+
+    def test_a_refusal_with_no_known_fix_still_installs(self, monkeypatch):
+        """A refused copy outside AWS's tree (a second account's Homebrew) can be
+        shadowed by a fresh AWS install, so the installer still runs."""
+        refusal = ssm.PluginRefusal(
+            path="/opt/homebrew/bin/session-manager-plugin",
+            reason="executable is owned by another user (uid 1501)",
+            remedy_command="",
+        )
+        monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+        planned: list = []
+
+        def _plan(tmpdir):
+            planned.append(tmpdir)
+            return None
+
+        monkeypatch.setattr(ssm, "_session_manager_plugin_install_plan", _plan)
+
+        assert ssm.reinstall_cannot_clear_refusal() is False
+        ssm.install_session_manager_plugin()
+        assert planned
+
+    def test_unavailable_message_carries_a_known_remedy(self, monkeypatch):
+        refusal = _pkg_tree_refusal()
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+
+        message = ssm.session_manager_plugin_unavailable_message()
+        assert "not installed" not in message
+        assert refusal.path in message
+        assert refusal.remedy_command in message
+        assert "reinstall it from AWS first" in message
+
+    def test_unavailable_message_without_a_remedy_takes_the_per_code_next_step(self, monkeypatch):
+        """A file another account owns, outside AWS's tree, gets the table's step
+        (install AWS's copy), never the generic "fix the ownership" sentence."""
+        refusal = ssm.PluginRefusal(
+            path="/opt/homebrew/bin/session-manager-plugin",
+            reason="executable is owned by another user (uid 1501)",
+            remedy_command="",
+            code="other_owner",
+        )
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: refusal)
+
+        message = ssm.session_manager_plugin_unavailable_message()
+        assert message.endswith(ssm.REFUSAL_NEXT_STEP["other_owner"])
+        assert ssm.REFUSAL_NEXT_STEP[""] not in message
+
+    def test_unavailable_message_is_the_install_hint_when_absent(self, monkeypatch):
+        monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: None)
+
+        assert (
+            ssm.session_manager_plugin_unavailable_message()
+            == ssm.session_manager_plugin_install_hint()
+        )
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
     def test_an_accepted_plugin_has_no_refusal(self, monkeypatch, tmp_path):
@@ -748,18 +855,12 @@ class TestKillPortForward:
         )
 
     def test_escalates_to_kill_when_terminate_does_not_reap(self, monkeypatch):
-        """The SIGKILL escalation must actually run — on Windows too.
+        """The SIGKILL escalation must actually run, on Windows too.
 
-        Windows defines no ``signal.SIGKILL``, so naming it as the escalation's
-        call argument raises AttributeError *inside* the handler's own
-        ``try``/``except Exception``, which swallows it and skips ``proc.kill()``
-        entirely. Windows is the platform that reaches this code (via the
-        taskkill fall-through), so the escalation silently became a no-op exactly
-        where it was needed and the plugin kept the forwarded port bound. Signal
-        numbers therefore come from ``platform_compat``, which defines both on
-        every platform. Runs on any platform: taskkill is stubbed to fail so the
-        Windows branch falls through, and the group signal is stubbed to fail so
-        the per-process terminate/kill escalation is what gets exercised.
+        Windows has no ``signal.SIGKILL``; naming it raises inside the handler's own
+        ``except Exception`` and skips ``proc.kill()``, so signals come from
+        ``platform_compat``. taskkill and the group signal are stubbed to fail so the
+        per-process escalation runs.
         """
         import subprocess as sp
 
@@ -819,6 +920,166 @@ class TestKillPortForward:
                 return 0
 
         ssm.kill_port_forward(Dead())
+
+
+#: A stand-in ``session-manager-plugin``: ignores SIGTERM (as a plugin closing a
+#: session to a terminated target does), writes its pid once that is in place,
+#: then lives until the pytest process named in argv[2] is gone, 60 s at most,
+#: so a failed test cannot strand it.
+_STUBBORN_PLUGIN = (
+    "import os,signal,sys,time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "open(sys.argv[1], 'w').write(str(os.getpid()))\n"
+    "owner = int(sys.argv[2]); end = time.monotonic() + 60\n"
+    "while time.monotonic() < end:\n"
+    "    try:\n"
+    "        os.kill(owner, 0)\n"
+    "    except OSError:\n"
+    "        break\n"
+    "    time.sleep(0.2)\n"
+)
+
+
+def _stopped(pid: int) -> bool:
+    """Whether *pid* has stopped running: gone, or a zombie waiting to be reaped.
+
+    The killed plugin is an orphan once its wrapper is reaped, so it is
+    collected by whatever adopts it; a host whose init does not reap leaves it
+    a zombie, which ``pid_exists`` still reports.
+    """
+    return not platform_compat.pid_exists(pid) or platform_compat.pid_is_zombie(pid) is True
+
+
+@pytest.mark.skipif(not platform_compat.IS_POSIX, reason="POSIX process groups")
+class TestKillPortForwardPluginOutlivesWrapper:
+    """The plugin left in the forward's group after the ``aws`` wrapper exits."""
+
+    @pytest.fixture
+    def spawn_forward(self, tmp_path: Path, request):
+        """Spawn a wrapper leading its own group with a stubborn plugin child in it.
+
+        Shaped like :func:`ssm.open_port_forward`'s child. Cleanup is registered before
+        any wait that can fail and SIGKILLs the whole group, which the plugin stays in.
+        """
+        import subprocess
+        import sys
+
+        def _spawn(name: str, *, wrapper_exits: bool):
+            plugin = tmp_path / f"{name}-plugin.py"
+            plugin.write_text(_STUBBORN_PLUGIN, encoding="utf-8")
+            pidfile = tmp_path / f"{name}.pid"
+            tail = "" if wrapper_exits else "time.sleep(60)\n"
+            wrapper = (
+                "import os,subprocess,sys,time\n"
+                f"subprocess.Popen([sys.executable, {str(plugin)!r}, {str(pidfile)!r},"
+                f" {str(os.getpid())!r}])\n"
+                "end = time.monotonic() + 30\n"
+                f"while not os.path.exists({str(pidfile)!r}) and time.monotonic() < end:\n"
+                "    time.sleep(0.05)\n" + tail
+            )
+            proc = subprocess.Popen(
+                [sys.executable, "-c", wrapper], cwd=tmp_path, start_new_session=True
+            )
+
+            def _cleanup() -> None:
+                with contextlib.suppress(OSError, ValueError):
+                    platform_compat.kill_process_group(proc.pid, platform_compat.SIGKILL)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=_DESCENDANT_KILL_SECS)
+
+            request.addfinalizer(_cleanup)
+            proc.ssm_pgid = ssm._spawned_group(proc)
+            wait_until(
+                lambda: pidfile.exists() and pidfile.read_text(encoding="utf-8").strip(),
+                describe=lambda: f"{pidfile} was never written",
+            )
+            return proc, int(pidfile.read_text(encoding="utf-8").strip())
+
+        return _spawn
+
+    def test_spawned_group_is_the_wrapper_pid(self, spawn_forward):
+        proc, _ = spawn_forward("rec", wrapper_exits=False)
+        assert proc.ssm_pgid == proc.pid
+
+    def test_plugin_of_an_already_exited_wrapper_is_killed(self, spawn_forward):
+        proc, plugin_pid = spawn_forward("exited", wrapper_exits=True)
+        other, other_plugin = spawn_forward("other", wrapper_exits=False)
+        proc.wait(timeout=30)  # the wrapper is gone and reaped; the plugin is not
+        assert platform_compat.pid_exists(plugin_pid)
+
+        ssm.kill_port_forward(proc)
+
+        wait_until(
+            lambda: _stopped(plugin_pid),
+            timeout=_DESCENDANT_KILL_SECS,
+            describe=lambda: "plugin that outlived its wrapper must be killed",
+        )
+        # Another forward's group is never signalled.
+        assert other.poll() is None
+        assert platform_compat.pid_exists(other_plugin)
+
+    def test_plugin_that_survives_the_wrappers_sigterm_is_killed(self, spawn_forward):
+        proc, plugin_pid = spawn_forward("term", wrapper_exits=False)
+
+        ssm.kill_port_forward(proc)
+
+        assert proc.poll() is not None
+        wait_until(
+            lambda: _stopped(plugin_pid),
+            timeout=_DESCENDANT_KILL_SECS,
+            describe=lambda: "plugin that ignored SIGTERM must be killed",
+        )
+
+    def test_sigkilled_wrapper_is_reaped_before_the_survivor_check(self, tmp_path, request, caplog):
+        """A wrapper that ignores SIGTERM is SIGKILLed, then reaped, so the group
+        reads as empty: no second wait and no false 'survived SIGKILL' warning."""
+        import logging
+        import subprocess
+        import sys
+
+        script = tmp_path / "stubborn-wrapper.py"
+        script.write_text(_STUBBORN_PLUGIN, encoding="utf-8")
+        pidfile = tmp_path / "wrapper.pid"
+        proc = subprocess.Popen(
+            [sys.executable, str(script), str(pidfile), str(os.getpid())],
+            cwd=tmp_path,
+            start_new_session=True,
+        )
+
+        def _cleanup() -> None:
+            with contextlib.suppress(OSError, ValueError):
+                platform_compat.kill_process_group(proc.pid, platform_compat.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=_DESCENDANT_KILL_SECS)
+
+        request.addfinalizer(_cleanup)
+        proc.ssm_pgid = ssm._spawned_group(proc)
+        wait_until(
+            lambda: pidfile.exists() and pidfile.read_text(encoding="utf-8").strip(),
+            describe=lambda: f"{pidfile} was never written",
+        )
+
+        with caplog.at_level(logging.WARNING, logger=ssm.logger.name):
+            ssm.kill_port_forward(proc)
+
+        assert proc.returncode is not None
+        assert not [r for r in caplog.records if "survived SIGKILL" in r.getMessage()]
+
+    def test_exited_wrapper_with_an_empty_group_signals_nothing(self, monkeypatch):
+        class Exited:
+            pid = 4321
+            ssm_pgid = 4321
+
+            def poll(self):
+                return 0
+
+        monkeypatch.setattr(ssm.platform_compat, "pgroup_exists", lambda pgid: False)
+        monkeypatch.setattr(
+            ssm.platform_compat,
+            "kill_process_group",
+            lambda pgid, sig: pytest.fail("an empty group must not be signalled"),
+        )
+        ssm.kill_port_forward(Exited())
 
 
 class TestPortChecks:
@@ -895,11 +1156,14 @@ class TestSessionManagerPlugin:
             "_session_manager_plugin_install_plan",
             lambda tmpdir: (
                 "https://example.com/session-manager-plugin.deb",
+                "0" * 64,
                 tmpdir / "session-manager-plugin.deb",
                 [["sudo", "dpkg", "-i", str(tmpdir / "session-manager-plugin.deb")]],
             ),
         )
-        monkeypatch.setattr(ssm, "_download_file", lambda url, dest: downloaded.append((url, dest)))
+        monkeypatch.setattr(
+            ssm, "_download_file", lambda url, dest, _sha256: downloaded.append((url, dest))
+        )
         monkeypatch.setattr(
             ssm, "_run_install_command", lambda argv: commands.append(argv) or (0, "", "")
         )
@@ -917,7 +1181,7 @@ class TestSessionManagerPlugin:
         plan = ssm._session_manager_plugin_install_plan(tmp_path)
 
         assert plan is not None
-        url, package_path, commands = plan
+        url, _sha256, package_path, commands = plan
         assert "mac_arm64/session-manager-plugin.pkg" in url
         assert package_path.name == "session-manager-plugin.pkg"
         assert commands[0][:3] == ["sudo", "installer", "-pkg"]
@@ -932,7 +1196,7 @@ class TestSessionManagerPlugin:
         plan = ssm._session_manager_plugin_install_plan(tmp_path)
 
         assert plan is not None
-        url, package_path, commands = plan
+        url, _sha256, package_path, commands = plan
         assert "ubuntu_arm64/session-manager-plugin.deb" in url
         assert package_path.name == "session-manager-plugin.deb"
         assert commands == [["sudo", "dpkg", "-i", str(package_path)]]
@@ -999,17 +1263,10 @@ class TestRunCommand:
     def test_run_as_rejects_trailing_newline(self, monkeypatch):
         """A trailing newline must not reach the remote command string.
 
-        ``run_as`` is interpolated into the single-line string
-        ``_wrap_remote_command`` builds (``… | sudo -u {run_as} -i bash``), where a
-        newline ends that line and begins a second shell statement. The pattern
-        was anchored with ``$``, which also matches just before a trailing
-        newline, so ``"ec2-user\\n"`` passed this check; it is now ``\\Z``.
-
-        No caller threads user input into ``run_as`` today -- every one passes the
-        default or a registry value ``validate_ssm_run_as`` has already bounded --
-        so this was latent rather than exploitable. It is pinned because
-        :func:`run_command`'s docstring promises the surface stays closed if a
-        caller ever does, and under ``$`` that promise did not hold.
+        ``run_as`` goes into ``_wrap_remote_command``'s single line
+        (``… | sudo -u {run_as} -i bash``), where a newline starts a second statement.
+        The pattern is anchored with ``\\Z`` because ``$`` also matches before a final
+        newline.
         """
         assert not ssm._USERNAME_RE.match("ec2-user\n")
         monkeypatch.setattr(aws, "checked_json", lambda *a, **k: pytest.fail("must reject first"))

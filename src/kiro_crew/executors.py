@@ -92,8 +92,10 @@ __all__ = [
     "maintenance_executor",
     "subprocess_executor",
     "cron_executor",
+    "cron_queue_depth",
     "discovery_executor",
     "embed_executor",
+    "memory_background_executor",
     "image_executor",
     "stt_executor",
     "path_resolve_executor",
@@ -111,6 +113,9 @@ __all__ = [
     "run_in_cron_gate_pool",
     "cron_gate_budget",
     "run_in_embed_pool",
+    "run_in_memory_background_pool",
+    "acquire_embed_admission",
+    "EmbedAdmissionTimeout",
     "run_with_recall_deadline",
     "recall_executor",
     "shutdown_maintenance_executor",
@@ -189,6 +194,19 @@ _MAX_STATIC_ASSET_WORKERS = 4
 # run_in_embed_pool admits work before submission, so a burst waits as cancellable
 # coroutines instead of growing ThreadPoolExecutor's unbounded work-item queue.
 _MAX_EMBED_WORKERS = 8
+
+# History consolidation and the embedding backfill are background memory work: a
+# consolidation pass can sit minutes on the memory database, and a backfill walks
+# the whole store. On the shared mc-embed pool five consolidations and a backfill
+# filled seven of its eight workers and left turn context (build_message) queued
+# behind them. They get this small pool of their own, so at worst they wait for
+# each other and mc-embed keeps its workers for interactive work.
+# Consolidation is admitted at most this many at a time.
+_MAX_MEMORY_BACKGROUND_WORKERS = 2
+# The gateway's embedding backfill (hours, paced) and member repair loop hold a
+# thread each through ``run_in_executor`` without admission; these extra threads
+# are theirs, so consolidation keeps its two workers while they run.
+_MEMORY_BACKGROUND_LOOP_THREADS = 2
 
 # Governance checks for EXTERNALLY-triggered surfaces: the per-inbound-message
 # channels gate (every Slack/Discord/Telegram/Webex/WeCom message + approval
@@ -400,15 +418,6 @@ _MAX_PATH_RESOLVE_WORKERS = _path_resolve_worker_count()
 # executor the rest of the gateway shares.
 _MAX_PATH_PROBE_WORKERS = 8
 _MAX_PATH_TRANSFER_WORKERS = 8
-# ONE worker, and the count is the contract rather than a capacity guess. An
-# append-only crew log assigns ``seq`` by reading the file's own tail under its
-# lock, and a turn's entries thread under the ``seq`` its ``turn/started``
-# returned -- so the entries of one unit must reach the file in the order their
-# call sites produced them. A single worker draining a FIFO queue is what
-# guarantees that; two workers would let a tool frame overtake the turn start it
-# threads under, and the lock would serialize those writes without restoring
-# their order. Appends are small and fsync-bound, so one worker is also enough.
-_MAX_CREW_LOG_WORKERS = 1
 # ONE worker, and the count is the contract: ``wheel_apply.run_wheel_apply``
 # admits one managed-venv apply per process (a second answers busy before it is
 # submitted), and that apply holds the layout's exclusive update lock for its
@@ -424,6 +433,7 @@ _cron_pool: ThreadPoolExecutor | None = None
 _discovery_pool: ThreadPoolExecutor | None = None
 _static_asset_pool: ThreadPoolExecutor | None = None
 _embed_pool: ThreadPoolExecutor | None = None
+_memory_background_pool: ThreadPoolExecutor | None = None
 _recall_pool: ThreadPoolExecutor | None = None
 _image_pool: ThreadPoolExecutor | None = None
 _stt_pool: ThreadPoolExecutor | None = None
@@ -561,6 +571,16 @@ def cron_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _cron_pool
+
+
+def cron_queue_depth() -> int:
+    pool = _cron_pool
+    if pool is None:
+        return 0
+    try:
+        return max(0, int(pool._work_queue.qsize()))
+    except (AttributeError, NotImplementedError, TypeError, ValueError):
+        return -1
 
 
 def discovery_executor() -> ThreadPoolExecutor:
@@ -720,9 +740,14 @@ def path_transfer_executor() -> ThreadPoolExecutor:
 def crew_log_executor() -> ThreadPoolExecutor:
     """Return the process-wide append-only crew log writer pool, creating it on first use.
 
-    Threads are named ``mc-crewlog``, and there is exactly ONE of them
-    (:data:`_MAX_CREW_LOG_WORKERS`) because the order entries reach a unit's file
-    is part of the format, not an optimization -- see that constant.
+    Threads are named ``mc-crewlog``, one per writer lane, so the pool is sized from
+    ``WriterLimits.lanes`` of the default limits and the number exists once. An
+    append-only crew log assigns ``seq`` by reading the file's own tail under its
+    lock, and a turn's entries thread under the ``seq`` its ``turn/started``
+    returned, so one unit's entries must reach the file in the order they were
+    produced. The writer keeps that: a lane holds one unit at a time and no other
+    lane touches a held unit. Several workers only let DIFFERENT units be written
+    side by side, so one slow unit's fsync does not hold every other session.
 
     Serves :mod:`kiro_crew.crew_log.emit`, whose storage call takes the
     per-unit lock, reads a bounded tail to assign ``seq`` and ``fsync``s the
@@ -743,8 +768,11 @@ def crew_log_executor() -> ThreadPoolExecutor:
     if _crew_log_pool is None:
         with _lock:
             if _crew_log_pool is None:
+                # Lazy: the writer module stays off the boot path until the pool exists.
+                from kiro_crew.crew_log.writer import DEFAULT_LIMITS
+
                 _crew_log_pool = ThreadPoolExecutor(
-                    max_workers=_MAX_CREW_LOG_WORKERS,
+                    max_workers=DEFAULT_LIMITS.lanes,
                     thread_name_prefix="mc-crewlog",
                 )
                 atexit.register(shutdown_maintenance_executor)
@@ -810,6 +838,24 @@ def embed_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _embed_pool
+
+
+def memory_background_executor() -> ThreadPoolExecutor:
+    """Return the background memory pool (consolidation, backfill), creating it once.
+
+    Threads are named ``mc-membg``. See :data:`_MAX_MEMORY_BACKGROUND_WORKERS` and
+    :data:`_MEMORY_BACKGROUND_LOOP_THREADS`.
+    """
+    global _memory_background_pool
+    if _memory_background_pool is None:
+        with _lock:
+            if _memory_background_pool is None:
+                _memory_background_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_MEMORY_BACKGROUND_WORKERS + _MEMORY_BACKGROUND_LOOP_THREADS,
+                    thread_name_prefix="mc-membg",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _memory_background_pool
 
 
 def governance_executor() -> ThreadPoolExecutor:
@@ -1236,35 +1282,242 @@ async def run_with_recall_deadline(awaitable: Awaitable[_T]) -> _T:
         embedding_work.reset(token)
 
 
-async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+class EmbedAdmissionTimeout(asyncio.TimeoutError):
+    """The memory-admission semaphore did not free a slot within a caller's deadline.
+
+    Raised by :func:`acquire_embed_admission` and a bounded :func:`run_in_embed_pool`
+    when a pre-prompt build a person is waiting on (the dashboard's, a chat channel's)
+    could not enter the embed pool in time, so the caller can surface its message, a
+    retryable reply, instead of waiting unbounded. Subclasses
+    :class:`asyncio.TimeoutError` so a caller that only handles timeouts catches it.
+    """
+
+
+#: How long a chat-channel turn waits to ENTER the pool for its prompt build.
+TURN_BUILD_ADMISSION_TIMEOUT_SECS = 60.0
+#: :class:`EmbedAdmissionTimeout`'s message, which a chat surface shows as is.
+_ADMISSION_BUSY = "Memory is busy, so this message could not be prepared. Try again in a moment."
+
+
+def _loop_admission(
+    loop: asyncio.AbstractEventLoop, admission_key: str, workers: int
+) -> asyncio.Semaphore:
+    """The per-loop admission semaphore stored under *admission_key*, created once.
+
+    One object per (loop, key), sized to *workers* on first use. Both the direct
+    reserve path (:func:`acquire_embed_admission` via :func:`_memory_admission`)
+    and the submit path (:func:`_run_admitted`) go through here, so a given key's
+    semaphore has exactly ONE creator and a pre-reserved slot and an unreserved
+    build always contend on the same object.
+    """
+    admission = getattr(loop, admission_key, None)
+    if admission is None:
+        admission = asyncio.Semaphore(workers)
+        setattr(loop, admission_key, admission)
+    return admission
+
+
+def _memory_admission(loop: asyncio.AbstractEventLoop) -> asyncio.Semaphore:
+    """The per-loop MEMORY-build admission semaphore, created on first use.
+
+    One shared object per event loop, so :func:`run_in_embed_pool` and
+    :func:`acquire_embed_admission` gate on the SAME semaphore for a given loop.
+    It is the ``_kirocrew_memory_admission`` slot :func:`_run_admitted` also
+    gates on for an unreserved memory build, so a pre-reserved slot and an
+    unreserved build contend on one object. Both reach it through
+    :func:`_loop_admission`, the single creator. Recall work gates on its own
+    ``_kirocrew_recall_admission`` slot inside :func:`_run_admitted`; only the
+    memory build is pre-reserved, so this helper serves that one.
+    """
+    return _loop_admission(loop, "_kirocrew_memory_admission", _MAX_EMBED_WORKERS)
+
+
+class _AdmissionSlot:
+    """A reserved memory-admission slot whose release happens EXACTLY once.
+
+    Ownership of the release moves to the build FUTURE once work is submitted
+    (:meth:`hand_off`), because a submitted future cannot be cancelled once its
+    thread starts: the slot must stay taken until the thread actually finishes
+    (or the queued future is cancelled), which only the future's done-callback
+    waits for. The reservation's owner -- the turn's settle step, which calls
+    :meth:`release` on a pre-submit cleanup path -- releases it ONLY when no
+    future took it (:attr:`handed_off` is False): a timeout, or an error before
+    submit. So a cancelled caller whose build thread is still running does NOT
+    free the slot early; the done-callback does, when the thread ends.
+    :meth:`release` is still idempotent as a backstop.
+    """
+
+    def __init__(self, sem: asyncio.Semaphore) -> None:
+        self._sem = sem
+        self._released = False
+        self._handed_off = False
+
+    def hand_off(self) -> None:
+        """A submitted future now owns the release; the owner must not do it."""
+        self._handed_off = True
+
+    @property
+    def handed_off(self) -> bool:
+        return self._handed_off
+
+    def release(self) -> None:
+        """Release the slot once; later calls are no-ops."""
+        if not self._released:
+            self._released = True
+            self._sem.release()
+
+
+async def acquire_embed_admission(timeout: float) -> _AdmissionSlot:
+    """Reserve one memory embed-pool slot within *timeout* seconds, else raise.
+
+    The bound a caller that cannot afford the pool's unbounded wait uses. It
+    acquires the same per-loop semaphore :func:`run_in_embed_pool` waits on and
+    returns an :class:`_AdmissionSlot` the caller passes as
+    ``run_in_embed_pool(..., _admission_held=slot)`` so the build takes no SECOND
+    slot. The slot is released ONCE -- by the build future's done-callback when
+    the build was submitted (its worker thread can outlive a cancelled caller, so
+    the slot must track the thread), otherwise by the caller on a cleanup path
+    where no build was submitted, gated on ``not slot.handed_off`` so it never
+    frees a slot a running build thread still holds. A saturated pool that never
+    frees a slot raises :class:`EmbedAdmissionTimeout` rather than hanging -- and
+    because this returns before the caller consumes any one-shot input, a timeout
+    leaves nothing to restore. ``release`` is synchronous, so a caller can settle
+    the slot from a suspension-free cleanup path.
+    """
+    sem = _memory_admission(asyncio.get_running_loop())
+    try:
+        await asyncio.wait_for(sem.acquire(), timeout=timeout)
+    except asyncio.TimeoutError as exc:
+        raise EmbedAdmissionTimeout(_ADMISSION_BUSY) from exc
+    return _AdmissionSlot(sem)
+
+
+async def run_in_embed_pool(
+    func: Callable[..., _T],
+    /,
+    *args: Any,
+    _admission_held: _AdmissionSlot | None = None,
+    _admission_timeout: float | None = None,
+    **kwargs: Any,
+) -> _T:
     """Offload bounded memory work, waiting without rejecting ordinary prompts.
 
     Submission is bounded to the worker count for this gateway event loop. A
     cancelled caller releases a slot only when its underlying thread actually
     finishes (or the queued future is successfully cancelled).
+
+    Two callers bound their admission wait. One that reserved its slot through
+    :func:`acquire_embed_admission` passes it as *_admission_held*, so this takes
+    no second one; once submitted, the build future's done-callback owns its
+    release (the slot tracks the THREAD), and the owner releases it, gated on
+    ``not slot.handed_off``, only when nothing was submitted. One that reserved
+    nothing passes *_admission_timeout*: a pool still saturated after that many
+    seconds raises :class:`EmbedAdmissionTimeout` and submits nothing.
     """
     from contextvars import copy_context
 
     from kiro_crew.embeddings import embedding_work
 
-    loop = asyncio.get_running_loop()
     recall = embedding_work.get() is not None
-    admission_key = "_kirocrew_recall_admission" if recall else "_kirocrew_memory_admission"
-    admission = getattr(loop, admission_key, None)
-    if admission is None:
-        admission = asyncio.Semaphore(_MAX_EMBED_WORKERS)
-        setattr(loop, admission_key, admission)
-    await admission.acquire()
+
+    # One admission path for both cases. An unreserved call (recall, or a memory
+    # build that did not pre-reserve) acquires the per-loop semaphore keyed on
+    # its kind; a pre-reserved slot skips the acquire. Recall gates on
+    # "_kirocrew_recall_admission", a memory build on "_kirocrew_memory_admission"
+    # -- the same key, and so the same semaphore object, that
+    # acquire_embed_admission reserves on, so a pre-reserved MEMORY slot takes no
+    # second slot. Either way the build future's done-callback frees the slot
+    # when the thread finishes (or the queued future is cancelled), so it tracks
+    # the THREAD, not the awaiting caller.
+    return await _run_admitted(
+        recall_executor if recall else embed_executor,
+        "_kirocrew_recall_admission" if recall else "_kirocrew_memory_admission",
+        _MAX_EMBED_WORKERS,
+        copy_context(),
+        functools.partial(func, *args, **kwargs),
+        held=_admission_held,
+        timeout=_admission_timeout,
+    )
+
+
+async def run_in_memory_background_pool(
+    func: Callable[..., _T], /, *args: Any, **kwargs: Any
+) -> _T:
+    """Offload background memory work (consolidation, backfill) to ``mc-membg``.
+
+    Same admission shape as :func:`run_in_embed_pool`, with a budget of its own,
+    so a backlog of background passes waits among itself and never holds an
+    ``mc-embed`` worker that turn context needs.
+    """
+    from contextvars import copy_context
+
+    return await _run_admitted(
+        memory_background_executor,
+        "_kirocrew_memory_background_admission",
+        _MAX_MEMORY_BACKGROUND_WORKERS,
+        copy_context(),
+        functools.partial(func, *args, **kwargs),
+    )
+
+
+async def _run_admitted(
+    executor_of: Callable[[], ThreadPoolExecutor],
+    admission_key: str,
+    workers: int,
+    context: Any,
+    call: Callable[[], _T],
+    *,
+    held: _AdmissionSlot | None = None,
+    timeout: float | None = None,
+) -> _T:
+    """Submit *call* once this loop's per-pool admission has a free slot.
+
+    The single admission path. An unreserved call (*held* is ``None``) acquires
+    the per-loop semaphore keyed on *admission_key* and the build future's
+    done-callback releases it. When *held* is an :class:`_AdmissionSlot` the
+    caller already reserved a slot on this same per-loop semaphore (through
+    :func:`acquire_embed_admission`), so this acquires NO new one: a pre-reserved
+    slot just skips the acquire. On submit the slot's release is handed off to
+    the build future's done-callback, which frees it when the thread finishes or
+    the queued future is cancelled -- a submitted future cannot be cancelled once
+    its thread starts, so the slot must track the THREAD. The reservation's owner
+    then skips its own release (gated on ``not slot.handed_off``), so a cancelled
+    caller never frees a slot a running build still holds. If submission never
+    happens (an error before submit) an unreserved call releases the slot it took;
+    a *held* slot is NOT handed off and stays with its owner's cleanup path.
+    """
+    loop = asyncio.get_running_loop()
+    if held is None:
+        admission = _loop_admission(loop, admission_key, workers)
+        if timeout is None:
+            await admission.acquire()
+        else:
+            try:
+                await asyncio.wait_for(admission.acquire(), timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                raise EmbedAdmissionTimeout(_ADMISSION_BUSY) from exc
+        # An unreserved call releases the per-loop semaphore it just acquired.
+        release = admission.release
+    else:
+        # A pre-reserved slot already holds the semaphore; its release runs once
+        # through the slot's guard, handed to the build future below.
+        release = held.release
     try:
-        executor = recall_executor() if recall else embed_executor()
-        future = executor.submit(copy_context().run, functools.partial(func, *args, **kwargs))
+        future = executor_of().submit(context.run, call)
     except BaseException:
-        admission.release()
+        # Nothing was submitted. An unreserved call frees the slot it acquired;
+        # a pre-reserved slot stays with its owner's cleanup path to release.
+        if held is None:
+            release()
         raise
+
+    if held is not None:
+        # The future now owns the held slot's release.
+        held.hand_off()
 
     def finished(_future: object) -> None:
         try:
-            loop.call_soon_threadsafe(admission.release)
+            loop.call_soon_threadsafe(release)
         except RuntimeError:
             # The owning loop has closed; no new task can await its admission.
             pass
@@ -1280,6 +1533,7 @@ def shutdown_maintenance_executor() -> None:
     loop and shut down by asyncio when the loop closes.
     """
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool, _recall_pool
+    global _memory_background_pool
     global _static_asset_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _tool_gate_pool, _stt_pool
     global _path_resolve_pool
@@ -1294,6 +1548,7 @@ def shutdown_maintenance_executor() -> None:
         discovery_pool, _discovery_pool = _discovery_pool, None
         static_asset_pool, _static_asset_pool = _static_asset_pool, None
         embed_pool, _embed_pool = _embed_pool, None
+        memory_background_pool, _memory_background_pool = _memory_background_pool, None
         recall_pool, _recall_pool = _recall_pool, None
         governance_pool, _governance_pool = _governance_pool, None
         image_pool, _image_pool = _image_pool, None
@@ -1321,6 +1576,8 @@ def shutdown_maintenance_executor() -> None:
         static_asset_pool.shutdown(wait=False, cancel_futures=True)
     if embed_pool is not None:
         embed_pool.shutdown(wait=False, cancel_futures=True)
+    if memory_background_pool is not None:
+        memory_background_pool.shutdown(wait=False, cancel_futures=True)
     if recall_pool is not None:
         recall_pool.shutdown(wait=False, cancel_futures=True)
     if governance_pool is not None:

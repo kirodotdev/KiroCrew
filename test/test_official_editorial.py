@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps import official_editorial as oe
 
@@ -47,7 +48,14 @@ class TestRefusals:
         doc = _doc([_app()], version=version)
         assert oe.load_sections(fetcher=lambda: doc) == []
 
-    def test_a_failed_fetch_yields_the_default(self):
+    @pytest.mark.parametrize(
+        (),
+        [
+            *named_cases("test_a_failed_fetch_yields_the_default"),
+            *named_cases("test_a_failed_fetch_yields_nothing"),
+        ],
+    )
+    def test_a_failed_fetch_yields_no_section(self):
         assert oe.load_sections(fetcher=lambda: None) == []
 
 

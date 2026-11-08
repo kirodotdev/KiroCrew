@@ -12,14 +12,18 @@ import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate, splitLin
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { kindsRequestCount, kindsRequestPaths, kindsResponse, probedPaths, stubPathKinds } from './pathKindStub'
 import { api } from '../api/client'
+import { setHostElectronReader } from '../lib/hostRelay'
+import { i18nT } from '../i18n/t'
+import { resolveSourcePos } from '../components/markdownPanelSourcePos'
 
-// The chip's reveal hint is now gated on branding.directLocal: a remote session
-// degrades shift+click to a clipboard copy, so revealHintFor only promises
-// Finder/Explorer/file-manager on a direct-local gateway. The platform-aware
-// hint assertions below therefore mount against a local session; the remote
-// (directLocal:false) copy wording is pinned in MarkdownRenderer.contextmenu.test.tsx.
+// The chip's reveal hint is gated on the shared reveal gate (branding.directLocal
+// AND branding.desktopLauncher): where no reveal can land, shift+click copies the
+// path, so revealHintFor only promises Finder/Explorer/file-manager on a
+// direct-local gateway that has a launcher. The platform-aware hint assertions
+// below therefore mount against such a session; the copy wording is pinned in
+// MarkdownRenderer.contextmenu.test.tsx.
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: true }),
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: true, desktopLauncher: true }),
 }))
 
 type LightboxDetail = { images: { src: string; alt: string }[]; index: number }
@@ -187,6 +191,68 @@ describe('MarkdownRenderer XSS sanitization', () => {
       expect(code).toHaveAttribute('role', 'button')
     })
 
+    // A refused destination carries a visible, accessible cue: the muted
+    // dotted underline, a generic hover title, and the same reason appended
+    // to the label's accessible text. The reason never names the destination.
+    it('marks a refused destination with a muted cue and an accessible reason', () => {
+      const { container } = render(<MarkdownRenderer content={'open [my note](obsidian://vault/note)'} />)
+      const cue = container.querySelector('[data-refused-link]')
+      expect(cue).not.toBeNull()
+      expect(cue!.className).toContain('decoration-dotted')
+      expect(cue!.className).toContain('text-muted')
+      const reason = i18nT('components.markdownRenderer.refused_link_destination')
+      expect(cue).toHaveAttribute('title', reason)
+      expect(cue).toHaveAttribute('data-refused-reason', ` (${reason})`)
+      expect(cue!.className).toContain('after:content-[attr(data-refused-reason)]')
+      expect(cue!.className).toContain('after:sr-only')
+      // The reason is generated content, not a text node: the label's text
+      // (what copy and sourcePos alignment read) is the label alone.
+      expect(cue!.textContent).toBe('my note')
+      expect(container.innerHTML).not.toContain('obsidian:')
+    })
+
+    // A raw in-page anchor is a target, not a link: it keeps the plain span
+    // with no cue, and an empty one gains no hidden reason.
+    it('leaves named, id-only and empty anchors as plain prose without the cue', () => {
+      for (const md of ['<a name="install">Install</a>', '<a id="top">Top</a>', 'x <a name="top"></a> y', 'x <a></a> y']) {
+        const { container, unmount } = render(<MarkdownRenderer content={md} />)
+        expect(container.querySelector('a')).toBeNull()
+        expect(container.querySelector('[data-refused-link]')).toBeNull()
+        expect(container.querySelector('[title]')).toBeNull()
+        unmount()
+      }
+    })
+
+    // Inline commenting maps a selection to source by walking text nodes
+    // against the source span; a refused link earlier in the paragraph must
+    // not shift a later selection off its source column.
+    it('keeps sourcePos resolution exact for a selection after a refused link', () => {
+      const content = 'target\n\nSee [note](obsidian://vault/note) target.'
+      const { container } = render(<MarkdownRenderer content={content} sourcePos />)
+      const p = Array.from(container.querySelectorAll('p')).find((el) => el.textContent?.includes('See'))!
+      const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT)
+      let last: Text | null = null
+      let n: Node | null
+      while ((n = walker.nextNode())) last = n as Text
+      const at = last!.data.indexOf('target')
+      const range = document.createRange()
+      range.setStart(last!, at)
+      range.setEnd(last!, at + 'target'.length)
+      expect(resolveSourcePos(range, container, content)).toEqual({ line: 3, column: 35 })
+    })
+
+    // Every input reaching the inert-label branch wears the cue: the ''
+    // sentinel (empty destination), a destination the sanitizer deleted
+    // (javascript:, data:), and a raw-HTML anchor that never had an href,
+    // which arrives in the same absent shape.
+    it('marks javascript:, data:, empty and href-less anchors with the same cue', () => {
+      for (const md of ['[click me](javascript:alert(1))', '[d](data:text/html,x)', '[label]()', '<a>bare</a>']) {
+        const { container, unmount } = render(<MarkdownRenderer content={md} />)
+        expect(container.querySelector('[data-refused-link]')).not.toBeNull()
+        unmount()
+      }
+    })
+
     // Control: the guard must be scoped to the rejection sentinel — a plain
     // https:// destination passes defaultUrlTransform unchanged and must keep
     // rendering a real anchor with its exact href.
@@ -207,6 +273,53 @@ describe('MarkdownRenderer XSS sanitization', () => {
       const a = container.querySelector('a')
       expect(a).not.toBeNull()
       expect(a!.getAttribute('href')).toBe(url)
+    })
+  })
+
+  describe('editor link clicks', () => {
+    const url = 'vscode://vscode-remote/ssh-remote+dev-box/home/me/a.ts:10'
+    let openSpy: ReturnType<typeof vi.spyOn>
+    const asPane = (desktop: boolean) => {
+      vi.stubGlobal('top', {})
+      setHostElectronReader(() => desktop)
+    }
+
+    beforeEach(() => {
+      openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+    })
+    afterEach(() => {
+      openSpy.mockRestore()
+      vi.unstubAllGlobals()
+      setHostElectronReader(null)
+    })
+
+    it('navigates in place on a top-level page', () => {
+      const { container } = render(<MarkdownRenderer content={`[open](${url})`} />)
+      const a = container.querySelector('a')!
+      expect(fireEvent.click(a)).toBe(true)
+      expect(openSpy).not.toHaveBeenCalled()
+      expect(a.getAttribute('target')).toBeNull()
+    })
+
+    it('navigates in place in a pane a browser hub frames', () => {
+      asPane(false)
+      const { container } = render(<MarkdownRenderer content={`[open](${url})`} />)
+      expect(fireEvent.click(container.querySelector('a')!)).toBe(true)
+      expect(openSpy).not.toHaveBeenCalled()
+    })
+
+    it('opens through window.open in a desktop-app pane, where in-place navigation is blocked', () => {
+      asPane(true)
+      const { container } = render(<MarkdownRenderer content={`[open](${url})`} />)
+      expect(fireEvent.click(container.querySelector('a')!)).toBe(false)
+      expect(openSpy).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer')
+    })
+
+    it('leaves a modified click to the browser in a desktop-app pane', () => {
+      asPane(true)
+      const { container } = render(<MarkdownRenderer content={`[open](${url})`} />)
+      fireEvent.click(container.querySelector('a')!, { metaKey: true })
+      expect(openSpy).not.toHaveBeenCalled()
     })
   })
 
@@ -394,10 +507,24 @@ describe('isPathCandidate — path chip pre-filter', () => {
     expect(isPathCandidate('要么这样/要么那样')).toBe(false)
     expect(isPathCandidate('и/или')).toBe(false)
     expect(isPathCandidate('entweder/oder')).toBe(false)
-    // Shape-level pin: fullwidth colon U+FF1A is \p{Po}, outside the widened
-    // class, so this is rejected by PATH_SHAPE_RE itself — not by the
-    // extension gate — pinning that Unicode punctuation stays excluded.
-    expect(isPathCandidate('/文档：说明/文件.md')).toBe(false)
+    // Shape-level pin: an ASCII colon before the last segment is rejected by
+    // PATH_SHAPE_RE itself — not by the extension gate.
+    expect(isPathCandidate('/文档:说明/文件.md')).toBe(false)
+  })
+
+  it('accepts non-ASCII punctuation and symbols inside segments (issue #16890)', () => {
+    // Legal filename characters on both platforms and no shell operator, so
+    // they must not fail the shape before the stat probe can answer.
+    expect(isPathCandidate('/Users/x/mv05_迈克尔·贝英雄环绕/clip.mp4')).toBe(true) // U+00B7
+    expect(isPathCandidate('/文档：说明/文件.md')).toBe(true) // fullwidth colon U+FF1A
+    expect(isPathCandidate('~/demo/a、b，c＋d【e】—f/clip.mp4')).toBe(true)
+    expect(isPathCandidate('C:\\Users\\me\\迈克尔·贝\\《三体》.txt')).toBe(true) // drive-rooted shape
+    expect(isPathCandidate('C:\\a&b\\x.txt')).toBe(false) // ASCII exclusions still hold there
+    // A closing bracket of any script may end a path; other punctuation may not.
+    expect(isPathCandidate('/Users/x/资料（2023）')).toBe(true)
+    expect(isPathCandidate('/Users/x/clip.mp4。')).toBe(false)
+    // No root and no extension is still prose, punctuated or not.
+    expect(isPathCandidate('要么这样·要么/那样')).toBe(false)
   })
 
   it('rejects git refs — the regression that made this gate necessary', () => {
@@ -691,7 +818,9 @@ describe('MarkdownRenderer path chips — stat gate', () => {
     expect(fireEvent.click(anchor!)).toBe(false)
     expect(onFileOpen).not.toHaveBeenCalled()
 
-    resolveProbe?.(kindsResponse(kindsRequestPaths(probeInit), () => 'file'))
+    await act(async () => {
+      resolveProbe?.(kindsResponse(kindsRequestPaths(probeInit), () => 'file'))
+    })
   })
 
   it('does not probe a decoded root-relative UNC path', async () => {
@@ -1344,7 +1473,7 @@ describe('MarkdownRenderer path chips — forgery resistance', () => {
     // The component must not let an inbound data-path* reach the DOM.
     expect(code.dataset.path).toBeUndefined()
     expect(code.dataset.pathKind).toBeUndefined()
-    fireEvent.click(code)
+    await act(async () => { fireEvent.click(code) })
     expect(onFileOpen).not.toHaveBeenCalled()
     expect(reveal).not.toHaveBeenCalled()
   })
@@ -1375,20 +1504,20 @@ describe('Lightbox keyboard navigation', () => {
   }
 
   it('renders nothing initially', () => {
-    const { container } = render(<Lightbox />)
-    expect(container.firstChild).toBeNull()
+    render(<Lightbox />); const container = document.body
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('closes on Escape', async () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     expect(container.querySelector('img')).not.toBeNull()
     act(() => { fireEvent.keyDown(window, { key: 'Escape' }) })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('ArrowRight advances index, ArrowLeft retreats, both clamp at the ends', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([
       { src: 'a.png', alt: 'a' },
       { src: 'b.png', alt: 'b' },
@@ -1413,7 +1542,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('arrow keys are no-ops with a single image', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'only.png', alt: 'only' }]))
     act(() => { fireEvent.keyDown(window, { key: 'ArrowRight' }) })
     act(() => { fireEvent.keyDown(window, { key: 'ArrowLeft' }) })
@@ -1421,14 +1550,14 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('keyboard events are ignored when the viewer is closed', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     fireEvent.keyDown(window, { key: 'Escape' })
     fireEvent.keyDown(window, { key: 'ArrowRight' })
-    expect(container.firstChild).toBeNull()
+    expect(container.querySelector('[data-testid="lightbox-toolbar"]')).toBeNull()
   })
 
   it('accepts the legacy { src, alt } payload as a single-image set', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => {
       window.dispatchEvent(new CustomEvent('lightbox', { detail: { src: 'legacy.png', alt: 'legacy' } }))
     })
@@ -1480,7 +1609,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('enlarges and shrinks the image via +/- keys, clamped, and resets on close', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const style = () => container.querySelector('img')!.getAttribute('style') || ''
     // Fit-to-screen baseline: scale(1), fit box.
@@ -1502,7 +1631,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('ignores +/-/0 when chorded with a browser-zoom modifier', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const style = () => container.querySelector('img')!.getAttribute('style') || ''
     act(() => { fireEvent.keyDown(window, { key: '+', metaKey: true }) })
@@ -1512,7 +1641,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('clicking the image does not change zoom (zoom lives in the toolbar/keyboard)', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const imgEl = () => container.querySelector('img')!
     const style = () => imgEl().getAttribute('style') || ''
@@ -1528,7 +1657,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('resets zoom when navigating to another image', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }, { src: 'b.png', alt: 'b' }], 0))
     act(() => { fireEvent.keyDown(window, { key: '+' }) })
     expect(container.querySelector('img')!.getAttribute('style')).toContain('scale(1.5)')
@@ -1538,7 +1667,7 @@ describe('Lightbox keyboard navigation', () => {
   })
 
   it('drags an enlarged image to pan it, and a pan-drag does not step the zoom', () => {
-    const { container } = render(<Lightbox />)
+    render(<Lightbox />); const container = document.body
     act(() => open([{ src: 'a.png', alt: 'a' }]))
     const imgEl = () => container.querySelector('img')!
     // Give the image a layout box larger than the viewport so the clamp allows travel.

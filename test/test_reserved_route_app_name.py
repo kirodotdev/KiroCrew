@@ -50,7 +50,8 @@ def _make_app_source(tmp_path, name):
                 "description": "A test app for unit tests",
                 "author": "tester",
             }
-        )
+        ),
+        encoding="utf-8",
     )
     return src
 

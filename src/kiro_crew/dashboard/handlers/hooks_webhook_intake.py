@@ -15,7 +15,6 @@ never imports the facade.
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 from aiohttp import web
@@ -159,9 +158,14 @@ def _read_hook_registrations() -> dict[str, dict]:
 
 
 def _read_json_file(path) -> object:
-    """Read JSON from *path*, returning ``None`` when absent or corrupt."""
+    """Read JSON from *path*, returning ``None`` when absent or corrupt.
+
+    One leading UTF-8 byte-order mark is not content (a hand-saved ``hooks.json``).
+    """
+    from kiro_crew.user_json import loads_user_json
+
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return loads_user_json(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError, OSError):
         return None
 
@@ -184,10 +188,11 @@ def _load_hook_context(hook_id: str) -> str:
 def _load_hook_execution(session_key: str) -> ExecutionContext:
     """Capture a registration's identity without consulting current member labels."""
     from kiro_crew.execution_context import capture_session_execution, execution_from_record
+    from kiro_crew.user_json import loads_user_json
 
     path = _hook_store_path()
     if path.exists():
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = loads_user_json(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise ValueError("Hook registration is malformed")
         row = raw.get(session_key.removeprefix(_HOOK_SESSION_PREFIX))
@@ -202,6 +207,14 @@ def _load_hook_execution(session_key: str) -> ExecutionContext:
     return execution
 
 
+def _hook_credential(request: web.Request) -> str:
+    """The webhook token *request* presents (bearer, else ``X-KiroCrew-Token``), or ``""``."""
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[7:]
+    return request.headers.get("x-kirocrew-token", "")
+
+
 def _verify_hook_token(request: web.Request) -> str | None:
     """Return the id of the webhook token authenticating *request*, else None.
 
@@ -209,11 +222,7 @@ def _verify_hook_token(request: web.Request) -> str | None:
     first, then the legacy scalar ``hooks.webhook_token`` from config as a
     synthetic ``legacy`` entry so pre-existing setups keep working.
     """
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        candidate = auth[7:]
-    else:
-        candidate = request.headers.get("x-kirocrew-token", "")
+    candidate = _hook_credential(request)
     if not candidate:
         return None
     return webhooks.token_store().verify(

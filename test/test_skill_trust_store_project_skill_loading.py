@@ -806,8 +806,7 @@ class TestOneEnforcementPointForEnumeratedReads:
     """Guard: both readers go through the choke point, and neither reads directly.
 
     Hardening the body read alone would leave the metadata read of the same cached
-    paths unchecked, which is how a reviewer found the sibling instead of a test.
-    This fails the build if they drift apart again.
+    paths unchecked. This fails the build if they drift apart.
     """
 
     def test_enumerated_readers_route_through_the_choke_point(self):

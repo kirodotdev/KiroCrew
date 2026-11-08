@@ -472,7 +472,7 @@ def claim_ownership(settings: Settings, store: ObjectStore) -> ClaimedOwnership:
     # claimant's token. The release's CAS validator is the ETag the claim's OWN write returns:
     # :meth:`ObjectStore.put` hands back the ETag from its own ``PutObject`` response, the one
     # request known to have committed exactly these bytes. Taking it from there rather than
-    # from a follow-up GET closes F1: a confirmation GET after the claim can fail or time out
+    # from a follow-up GET matters: a confirmation GET after the claim can fail or time out
     # on a degraded link even though the PUT already committed -- and that exception would
     # escape before any ``ClaimedOwnership`` exists to release, leaving a live predecessor
     # fenced for good -- and it can also read a NEWER writer's ETag if one committed in the

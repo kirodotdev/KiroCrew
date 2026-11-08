@@ -71,6 +71,7 @@ const isAssets = (x: unknown) =>
     hasOverrides: optional(isBool),
     loaderIcons: optional(isStrArray),
     loaderImages: optional(isStrArray),
+    codeTheme: optional((c) => isShape(c, { dark: optional(isStr), light: optional(isStr) })),
   })
 
 /**
@@ -95,7 +96,7 @@ export function isValidCachedThemeData(v: unknown, slug: string): v is CustomThe
 
 /**
  * Strip consent-bound Level-2 experience assets from render-cache data.
- * Branding, fonts, overrides metadata, and loader art are safe at first paint;
+ * Branding, fonts, overrides metadata, loader art and the code scheme are safe at first paint;
  * overlays, topbar, audio, and persona data require the current server detail.
  */
 export function renderCacheProjection(theme: CustomThemeData): CustomThemeData {
@@ -109,6 +110,7 @@ export function renderCacheProjection(theme: CustomThemeData): CustomThemeData {
     'hasOverrides',
     'loaderIcons',
     'loaderImages',
+    'codeTheme',
   ] as const
   for (const key of levelOneKeys) {
     if (Object.hasOwn(assets, key)) {

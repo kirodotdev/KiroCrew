@@ -26,7 +26,7 @@ import type { ChatMessage } from '../../types'
  *   ⚠️ Compaction timed out.                 the manual /compact wait
  *   ⚠ Auto-compact failed at N% — …          threshold auto-compact (state.py)
  *   🔄 Auto-compacted at N%.                  threshold auto-compact, success
- *   🔄 Context at N% (limit M%) — will …     threshold crossed mid-turn (chat_runner)
+ *   🔄 Context at N% (limit M%) — will …     threshold crossed mid-turn (chat_turn/recovery.py)
  *   ♻️ This session was recycled …           watchdog recycle notice
  *   ⏳ This turn has produced nothing …       stuck-turn notice
  *   ⏹ Compaction at N% was ended by Stop …  a Stop landed on the /compact turn
@@ -66,7 +66,7 @@ export interface ParsedCompaction {
 // `✅` is U+2705 (no variation selector in practice, tolerate one). The colon
 // is optional: the no-summary form ends in a period instead.
 const COMPLETED_RE = /^\s*\u2705\uFE0F*\s*Conversation compacted\s*[:.]?\s*/u
-// Failure shapes. Two writers, two glyphs: chat_utils / chat_runner lead a
+// Failure shapes. Two writers, two glyphs: chat_utils / chat_turn/slash_commands.py lead a
 // failure with ❌ (U+274C) — "Compaction failed: …", "Compaction has failed
 // Nx …" — and the manual /compact timeout and state.py's threshold path lead
 // with ⚠ (U+26A0, with or without the variation selector) — "Compaction timed
@@ -90,7 +90,7 @@ const STATUS_LEAD_RE = /^\s*(?:\u{1F504}|\u267B|\u23F3|\u23F9)\uFE0F*\s*/u
 // a stop-square glyph, so the two restart notices (this and ♻️'s) are told apart
 // at a glance and the reader is not left guessing which restart was theirs.
 const STOP_LEAD_RE = /^\s*\u23F9\uFE0F*\s*/u
-// The mid-turn row chat_runner writes once per turn when the context crosses the
+// The mid-turn row chat_turn/recovery.py writes once per turn when the context crosses the
 // compaction threshold (COMPACT_AFTER_TURN_NOTICE). Matched whole, so it renders
 // from the catalog in the reader's language instead of the stored English.
 const AFTER_TURN_RE = /^\s*\u{1F504}\uFE0F*\s*Context at (\d+)% \(limit (\d+)%\) \u2014 will compact after this turn\.\s*$/u
@@ -234,7 +234,31 @@ export default CompactionCard
  * kind to the scans' skip list and forgetting the transcript cannot leave it
  * painting as a reply.
  */
+/**
+ * The localized line for a Shared Crew memory-change notice
+ * (`shared_crew.memory_changes`): who changed a Crew preference or lesson, and
+ * to what. Read from the row's `meta.memory_change`; a row whose payload does
+ * not validate falls back to the English text the gateway wrote.
+ */
+export function memoryChangeNoticeText(message: Pick<ChatMessage, 'content' | 'meta'>): string {
+  const raw = message.meta?.memory_change as { actor?: { name?: unknown }; category?: unknown; new?: unknown } | undefined
+  const summary = typeof raw?.new === 'string' ? raw.new : ''
+  if (!raw || !summary) return message.content
+  const name = typeof raw.actor?.name === 'string' && raw.actor.name ? raw.actor.name : i18nT('sharedCrew.memory_change_someone')
+  const key = raw.category === 'preference' ? 'sharedCrew.memory_change_preference' : 'sharedCrew.memory_change_lesson'
+  return i18nT(key, { name, summary })
+}
+
+function MemoryChangeNotice({ message }: { message: ChatMessage }) {
+  // Subscribe so a language switch repaints the localized line.
+  useLanguageGeneration()
+  return <NoticeCard content={memoryChangeNoticeText(message)} tone="info" />
+}
+
 export function SystemNoticeRow({ message, disclosureKey }: { message: ChatMessage; disclosureKey?: string }) {
+  if (noticeKindOf(message) === 'memory_change') {
+    return <MemoryChangeNotice message={message} />
+  }
   if (noticeKindOf(message) === 'compaction') {
     return (
       <CompactionCard

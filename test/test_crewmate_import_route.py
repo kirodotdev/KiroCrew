@@ -23,11 +23,13 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from change_cards_helpers import AGENT, Clock, _card_headers
+from named_cases_helpers import named_cases
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew import crewmate_bundle, crewmate_carried, crewmate_stage
 from kiro_crew.crewmate_bundle import crewmate_import_params, read_crewmate_file
 from kiro_crew.dashboard import change_cards as cards
+from kiro_crew.dashboard.agent_name_segment import agent_route_name
 from kiro_crew.dashboard.change_cards import (
     CARD_TTL_SECONDS,
     MAX_LIVE_CARDS_PER_SLOT,
@@ -136,26 +138,64 @@ def test_a_whole_file_reads_into_one_card_of_every_part():
 @pytest.mark.parametrize(
     ("entries", "code"),
     [
-        # Paths: only two folders, each one level, each name on the §5.2 pattern.
-        ({"../evil.json": "{}"}, "invalid_path"),
-        ({"skills/../x/SKILL.md": "x"}, "invalid_path"),
-        ({"skills/..": "x"}, "invalid_path"),
-        ({"C:/evil.json": "{}"}, "invalid_path"),
-        ({"skills/C:x/SKILL.md": "x"}, "invalid_path"),
-        # zipfile turns os.sep into "/" when it reads a name, so on Windows this is
-        # the plain path skills/x/SKILL.md, refused because no skill "x" is declared.
-        ({"skills\\x\\SKILL.md": "x"}, "skill_mismatch" if os.sep == "\\" else "invalid_path"),
-        ({"/abs.json": "{}"}, "invalid_path"),
-        ({"skills/a/b/SKILL.md": "x"}, "invalid_path"),
-        ({"crons/sub/x.py": "x"}, "invalid_path"),
-        ({"crons/x.sh": "x"}, "invalid_path"),
-        ({"skills/.hidden/SKILL.md": "x"}, "invalid_path"),
-        ({"page.html": "<script></script>"}, "unknown_entry"),
-        ({"memory.db": b"\0"}, "unknown_entry"),
-        ({".env": "KEY=1"}, "unknown_entry"),
+        *named_cases(
+            "test_an_entry_outside_the_two_folders_is_refused",
+            ("entries", "code"),
+            [
+                # Paths: only two folders, each one level, each name on the §5.2 pattern.
+                ({"../evil.json": "{}"}, "invalid_path"),
+                ({"skills/../x/SKILL.md": "x"}, "invalid_path"),
+                ({"skills/..": "x"}, "invalid_path"),
+                ({"C:/evil.json": "{}"}, "invalid_path"),
+                ({"skills/C:x/SKILL.md": "x"}, "invalid_path"),
+                # zipfile turns os.sep into "/" when it reads a name, so on Windows this is
+                # the plain path skills/x/SKILL.md, refused because no skill "x" is declared.
+                (
+                    {"skills\\x\\SKILL.md": "x"},
+                    "skill_mismatch" if os.sep == "\\" else "invalid_path",
+                ),
+                ({"/abs.json": "{}"}, "invalid_path"),
+                ({"skills/a/b/SKILL.md": "x"}, "invalid_path"),
+                ({"crons/sub/x.py": "x"}, "invalid_path"),
+                ({"crons/x.sh": "x"}, "invalid_path"),
+                ({"skills/.hidden/SKILL.md": "x"}, "invalid_path"),
+                ({"page.html": "<script></script>"}, "unknown_entry"),
+                ({"memory.db": b"\0"}, "unknown_entry"),
+                ({".env": "KEY=1"}, "unknown_entry"),
+            ],
+        ),
+        *named_cases(
+            "test_the_size_caps_refuse_before_the_rest_is_read",
+            ("entries", "code"),
+            [
+                (
+                    {"skills/notes/SKILL.md": b"x" * (crewmate_bundle.CARRIED_FILE_MAX_BYTES + 1)},
+                    "too_large",
+                ),
+                (
+                    {f"skills/notes/f{i}.md": b"x" * 250_000 for i in range(5)}
+                    | {"skills/notes/SKILL.md": "x"},
+                    "too_large",
+                ),
+                ({"avatar.png": b"x" * (crewmate_bundle.AVATAR_MAX_BYTES + 1)}, "too_large"),
+                (
+                    {
+                        "rules.json": json.dumps(
+                            {"rules": "x" * (crewmate_bundle.JSON_MAX_BYTES + 1)}
+                        )
+                    },
+                    "too_large",
+                ),
+                (
+                    {f"skills/s{i}/SKILL.md": "x" for i in range(crewmate_bundle.ENTRY_MAX)},
+                    "too_many_entries",
+                ),
+            ],
+            ids=["file-cap", "skill-folder-cap", "avatar-cap", "json-cap", "entry-cap"],
+        ),
     ],
 )
-def test_an_entry_outside_the_two_folders_is_refused(entries, code):
+def test_a_bad_bundle_is_refused(entries, code):
     assert _refused(_zip({**_bundle(), **entries})) == code
 
 
@@ -285,34 +325,6 @@ def test_an_app_skill_reference_is_shown_not_written():
         "/api/members/{{step0.member_id}}/rules",
         "/api/crons",
     ]
-
-
-@pytest.mark.parametrize(
-    ("entries", "code"),
-    [
-        (
-            {"skills/notes/SKILL.md": b"x" * (crewmate_bundle.CARRIED_FILE_MAX_BYTES + 1)},
-            "too_large",
-        ),
-        (
-            {f"skills/notes/f{i}.md": b"x" * 250_000 for i in range(5)}
-            | {"skills/notes/SKILL.md": "x"},
-            "too_large",
-        ),
-        ({"avatar.png": b"x" * (crewmate_bundle.AVATAR_MAX_BYTES + 1)}, "too_large"),
-        (
-            {"rules.json": json.dumps({"rules": "x" * (crewmate_bundle.JSON_MAX_BYTES + 1)})},
-            "too_large",
-        ),
-        (
-            {f"skills/s{i}/SKILL.md": "x" for i in range(crewmate_bundle.ENTRY_MAX)},
-            "too_many_entries",
-        ),
-    ],
-    ids=["file-cap", "skill-folder-cap", "avatar-cap", "json-cap", "entry-cap"],
-)
-def test_the_size_caps_refuse_before_the_rest_is_read(entries, code):
-    assert _refused(_zip({**_bundle(), **entries})) == code
 
 
 def test_a_file_over_8_mib_or_not_a_zip_is_refused():
@@ -496,7 +508,7 @@ def _import_app(world, store: CardStore, writes: _Writes, monkeypatch, tmp_path)
                 job_id = f"job{len(writes.calls)}"
                 return web.json_response({"ok": True, "id": job_id, "revision": f"fp-{job_id}"})
             if key == "delete_crew":
-                writes.crews.pop(request.match_info["name"], None)
+                writes.crews.pop(agent_route_name(request), None)
             if key == "delete_cron":
                 expect = request.get(routes.REQ_CARD_UNDO_CRON_EXPECT)
                 writes.calls[-1] = (method, request.path, {"expect": expect})
@@ -520,6 +532,7 @@ def _import_app(world, store: CardStore, writes: _Writes, monkeypatch, tmp_path)
     app["avatars"] = avatars
     app.router.add_post("/api/agents", route("POST", "create"))
     app.router.add_delete("/api/agents/{name}", route("DELETE", "delete_crew"))
+    app.router.add_delete("/api/agents/b64/{name_b64}", route("DELETE", "delete_crew"))
     app.router.add_put("/api/members/{slug}/goals/long-term", route("PUT", "goal"))
     app.router.add_put("/api/members/{slug}/rules", route("PUT", "rules"))
     app.router.add_post("/api/crons", route("POST", "cron"))
@@ -847,7 +860,7 @@ def test_a_failed_later_step_lands_partial_with_a_working_undo(world, monkeypatc
     assert [(s["method"], s["path"]) for s in undo] == [
         ("DELETE", "/api/members/m1/import-files"),
         ("PUT", "/api/members/m1/rules"),
-        ("DELETE", "/api/agents/Release%20Captain"),
+        ("DELETE", "/api/agents/b64/UmVsZWFzZSBDYXB0YWlu"),
     ]
     assert undone == [200, 200, 200]
     assert store.get(card_id)["status"] == "undone" and writes.crews == {}
@@ -990,7 +1003,7 @@ def test_the_partial_line_names_the_import_part_that_failed(params, part):
     line = catalog.result_summary("crewmate.import", params, "partial", "t", failed_step=1)
     assert (
         line
-        == f"Created mate “Q” without {part} or anything after it. Undo removes the mate and what was saved"
+        == f"Created Bot “Q” without {part} or anything after it. Undo removes the Bot and what was saved"
     )
 
 

@@ -172,6 +172,16 @@ class TestYoloCommand:
         await _slash("!yolo renew", slack, sessions)
         assert "renewed" in _texts(slack)
 
+    @pytest.mark.asyncio
+    async def test_the_cli_grant_is_not_slacks_to_renew(self, slack, sessions, owner):
+        """``gateway --approval yolo``'s grant reads as off in Slack, so renew refuses it."""
+        from kiro_crew import safety_override as so
+
+        assert so.safety_override().activate_declared("cli").active is True
+        await _slash("!yolo renew", slack, sessions)
+        assert "not active" in _texts(slack)
+        assert so.safety_override().is_cli_launch is True
+
 
 # ──────────────────────────────────────────────────────────────────────
 # !stop
@@ -289,14 +299,24 @@ def agents_dir(tmp_path, monkeypatch):
 
 class TestAgentCommand:
     @pytest.mark.asyncio
-    async def test_bare_agent_reports_current(self, slack, sessions, owner, agents_dir):
-        await _slash("!agent", slack, sessions)
-        assert "Current agent" in _texts(slack)
-
-    @pytest.mark.asyncio
-    async def test_too_many_args_shows_usage(self, slack, sessions, owner, agents_dir):
-        await _slash("!agent a b", slack, sessions)
-        assert "Usage:" in _texts(slack)
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            pytest.param(
+                "!agent", "Current agent", id="agent_reply-test_bare_agent_reports_current"
+            ),
+            pytest.param("!agent a b", "Usage:", id="agent_reply-test_too_many_args_shows_usage"),
+            pytest.param(
+                "!ta", "No thread agent set.", id="thread_agent_reply-test_bare_ta_without_override"
+            ),
+            pytest.param(
+                "!ta nope", "Unknown agent", id="thread_agent_reply-test_unknown_thread_agent"
+            ),
+        ],
+    )
+    async def test_agent_command_reply(self, slack, sessions, owner, agents_dir, command, expected):
+        await _slash(command, slack, sessions)
+        assert expected in _texts(slack)
 
     @pytest.mark.asyncio
     async def test_unknown_agent_lists_available(self, slack, sessions, owner, agents_dir):
@@ -333,11 +353,6 @@ class TestAgentCommand:
 
 class TestThreadAgentCommand:
     @pytest.mark.asyncio
-    async def test_bare_ta_without_override(self, slack, sessions, owner, agents_dir):
-        await _slash("!ta", slack, sessions)
-        assert "No thread agent set." in _texts(slack)
-
-    @pytest.mark.asyncio
     async def test_bare_ta_with_override(self, slack, sessions, owner, agents_dir):
         h._thread_agents["t1"] = "demo"
         await _slash("!ta", slack, sessions)
@@ -358,11 +373,6 @@ class TestThreadAgentCommand:
         await _slash("!ta off", slack, sessions, log=log)
         assert "t1" not in h._thread_agents
         assert "Thread agent reset." in _texts(slack)
-
-    @pytest.mark.asyncio
-    async def test_unknown_thread_agent(self, slack, sessions, owner, agents_dir):
-        await _slash("!ta nope", slack, sessions)
-        assert "Unknown agent" in _texts(slack)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -418,35 +428,67 @@ class TestProjectCommand:
 # ──────────────────────────────────────────────────────────────────────
 class TestMiscSlashCommands:
     @pytest.mark.asyncio
-    async def test_dashboard_rejects_bad_duration(self, slack, sessions, owner):
-        await _slash("!dashboard 5furlongs", slack, sessions)
-        assert "Usage:" in _texts(slack)
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            pytest.param(
+                "!dashboard 5furlongs",
+                "Usage:",
+                id="misc_command_reply-test_dashboard_rejects_bad_duration",
+            ),
+            pytest.param(
+                "!link-to-dashboard",
+                "Dashboard not available.",
+                id="misc_command_reply-test_link_to_dashboard_without_dashboard",
+            ),
+            pytest.param(
+                "!title",
+                "Usage: `!title <text>`",
+                id="misc_command_reply-test_title_without_text_shows_usage",
+            ),
+            pytest.param("!channel", "activation", id="channel_reply-test_status"),
+            pytest.param(
+                "!channel sometimes", "Invalid mode", id="channel_reply-test_invalid_mode"
+            ),
+            pytest.param(
+                "!channel agent",
+                "Usage: `!channel agent",
+                id="channel_reply-test_agent_subcommand_needs_argument",
+            ),
+        ],
+    )
+    async def test_command_reply(self, slack, sessions, owner, command, expected):
+        await _slash(command, slack, sessions)
+        assert expected in _texts(slack)
 
     @pytest.mark.asyncio
-    async def test_dashboard_link_sent(self, slack, sessions, owner, monkeypatch):
+    @pytest.mark.parametrize(
+        ("command", "link", "expected"),
+        [
+            pytest.param(
+                "!dashboard 2h", "https://x/y", "Dashboard link sent", id="test_dashboard_link_sent"
+            ),
+            pytest.param(
+                "!dashboard",
+                "",
+                "Failed to send dashboard link.",
+                id="test_dashboard_link_failure",
+            ),
+        ],
+    )
+    async def test_dashboard_link_reply(
+        self, slack, sessions, owner, monkeypatch, command, link, expected
+    ):
         import kiro_crew.slack.allowlist as al
 
-        monkeypatch.setattr(al, "send_dashboard_link", AsyncMock(return_value="https://x/y"))
-        await _slash("!dashboard 2h", slack, sessions)
-        assert "Dashboard link sent" in _texts(slack)
-
-    @pytest.mark.asyncio
-    async def test_dashboard_link_failure(self, slack, sessions, owner, monkeypatch):
-        import kiro_crew.slack.allowlist as al
-
-        monkeypatch.setattr(al, "send_dashboard_link", AsyncMock(return_value=""))
-        await _slash("!dashboard", slack, sessions)
-        assert "Failed to send dashboard link." in _texts(slack)
+        monkeypatch.setattr(al, "send_dashboard_link", AsyncMock(return_value=link))
+        await _slash(command, slack, sessions)
+        assert expected in _texts(slack)
 
     @pytest.mark.asyncio
     async def test_link_to_dashboard_denies_stranger(self, slack, sessions, owner):
         await _slash("!link-to-dashboard", slack, sessions, user="UZZZ")
         assert "Not authorized." in _texts(slack)
-
-    @pytest.mark.asyncio
-    async def test_link_to_dashboard_without_dashboard(self, slack, sessions, owner):
-        await _slash("!link-to-dashboard", slack, sessions)
-        assert "Dashboard not available." in _texts(slack)
 
     @pytest.mark.asyncio
     async def test_link_to_dashboard_outside_thread(self, slack, sessions, owner, monkeypatch):
@@ -492,11 +534,6 @@ class TestMiscSlashCommands:
         log.set_title.assert_called_once_with("t1", "Release notes")
 
     @pytest.mark.asyncio
-    async def test_title_without_text_shows_usage(self, slack, sessions, owner):
-        await _slash("!title", slack, sessions)
-        assert "Usage: `!title <text>`" in _texts(slack)
-
-    @pytest.mark.asyncio
     async def test_title_survives_log_failure(self, slack, sessions, owner):
         log = MagicMock()
         log.set_title.side_effect = OSError("nope")
@@ -514,16 +551,6 @@ class TestChannelCommand:
         assert "Only the bot owner" in _texts(slack)
 
     @pytest.mark.asyncio
-    async def test_status(self, slack, sessions, owner):
-        await _slash("!channel", slack, sessions)
-        assert "activation" in _texts(slack)
-
-    @pytest.mark.asyncio
-    async def test_invalid_mode(self, slack, sessions, owner):
-        await _slash("!channel sometimes", slack, sessions)
-        assert "Invalid mode" in _texts(slack)
-
-    @pytest.mark.asyncio
     async def test_valid_mode_persists(self, slack, sessions, owner):
         from kiro_crew.config.loader import KiroCrewConfig, config_path
 
@@ -532,11 +559,6 @@ class TestChannelCommand:
         saved = json.loads(config_path().read_text(encoding="utf-8"))
         assert saved["slack"]["channels"]["C1"]["activation"] == "observe"
         assert KiroCrewConfig.load().channel_config("C1").activation == "observe"
-
-    @pytest.mark.asyncio
-    async def test_agent_subcommand_needs_argument(self, slack, sessions, owner):
-        await _slash("!channel agent", slack, sessions)
-        assert "Usage: `!channel agent" in _texts(slack)
 
     @pytest.mark.asyncio
     async def test_agent_subcommand_unknown_name(self, slack, sessions, owner, agents_dir):
@@ -674,6 +696,9 @@ class TestKeywordCommands:
             MagicMock(),
             subagent_manager=mgr,
         )
+        # The spawn itself still ran and was announced; only the log write is skipped.
+        mgr.spawn.assert_called_once()
+        assert "Spawned subagent" in _texts(slack)
         saver.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -681,6 +706,7 @@ class TestKeywordCommands:
         saver = AsyncMock()
         monkeypatch.setattr(h, "save_conversation_turn_off_loop", saver)
         runner = MagicMock(running=True)
+        log = MagicMock()
         await h.maybe_handle_keyword_command(
             "task run /tmp/spec.md",
             slack,
@@ -690,10 +716,14 @@ class TestKeywordCommands:
             "msg1",
             "t1",
             "U1",
-            MagicMock(),
+            log,
             task_runner=runner,
         )
         saver.assert_awaited_once()
+        args = saver.await_args.args
+        assert args[:3] == (log, "t1", "task run /tmp/spec.md")
+        assert args[3] in _texts(slack)
+        assert saver.await_args.kwargs["source_user"] == "U1"
 
     @pytest.mark.asyncio
     async def test_cron_keyword_saves_turn(self, slack, sessions, owner, monkeypatch):
@@ -701,6 +731,7 @@ class TestKeywordCommands:
         monkeypatch.setattr(h, "save_conversation_turn_off_loop", saver)
         svc = MagicMock()
         svc.list_jobs.return_value = []
+        log = MagicMock()
         await h.maybe_handle_keyword_command(
             "cron list",
             slack,
@@ -710,10 +741,14 @@ class TestKeywordCommands:
             "msg1",
             "t1",
             "U1",
-            MagicMock(),
+            log,
             cron_service=svc,
         )
         saver.assert_awaited_once()
+        args = saver.await_args.args
+        assert args[:3] == (log, "t1", "cron list")
+        assert args[3] in _texts(slack)
+        assert saver.await_args.kwargs["source_user"] == "U1"
 
     @pytest.mark.asyncio
     async def test_run_keyword(self, slack, sessions, owner):
@@ -750,18 +785,23 @@ class TestKeywordCommands:
 # ──────────────────────────────────────────────────────────────────────
 class TestSpawnHelpers:
     @pytest.mark.asyncio
-    async def test_no_prefix_is_ignored(self):
-        assert await h._handle_spawn_command("please spawn later", MagicMock()) is None
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("please spawn later", id="test_no_prefix_is_ignored"),
+            pytest.param("spawn   ", id="test_empty_task_returns_none"),
+        ],
+    )
+    async def test_non_spawn_text_returns_none(self, text):
+        mgr = MagicMock()
+        assert await h._handle_spawn_command(text, mgr) is None
+        mgr.spawn.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_bg_prefix_accepted(self):
         mgr = MagicMock(max_concurrent=2)
         mgr.spawn.return_value = MagicMock(id="z9")
         assert "z9" in _reply(await h._handle_spawn_command("bg do it", mgr))
-
-    @pytest.mark.asyncio
-    async def test_empty_task_returns_none(self):
-        assert await h._handle_spawn_command("spawn   ", MagicMock()) is None
 
     @pytest.mark.asyncio
     async def test_list_with_no_agents(self):
@@ -794,8 +834,16 @@ def _job(job_id: str = "j1", *, name: str = "nightly") -> CronJob:
 
 class TestCronHelpers:
     @pytest.mark.asyncio
-    async def test_non_cron_text_ignored(self):
-        assert await h._handle_cron_command("hello", MagicMock(), "C1", "t1") is None
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param("hello", id="test_non_cron_text_ignored"),
+            pytest.param("cron remove", id="test_action_without_job_id_returns_none"),
+            pytest.param("cron frobnicate j1", id="test_unknown_action_returns_none"),
+        ],
+    )
+    async def test_unhandled_cron_text_returns_none(self, text):
+        assert await h._handle_cron_command(text, MagicMock(), "C1", "t1") is None
 
     @pytest.mark.asyncio
     async def test_empty_list(self):
@@ -804,14 +852,6 @@ class TestCronHelpers:
         assert await h._handle_cron_command("cron list", svc, "C1", "t1") == (
             "No cron jobs scheduled."
         )
-
-    @pytest.mark.asyncio
-    async def test_action_without_job_id_returns_none(self):
-        assert await h._handle_cron_command("cron remove", MagicMock(), "C1", "t1") is None
-
-    @pytest.mark.asyncio
-    async def test_unknown_action_returns_none(self):
-        assert await h._handle_cron_command("cron frobnicate j1", MagicMock(), "C1", "t1") is None
 
     @pytest.mark.asyncio
     async def test_remove_found_and_missing(self):
@@ -1163,6 +1203,7 @@ class TestThreadOverrideHydration:
         await h._hydrate_thread_overrides("t1", log)
         await h._hydrate_thread_overrides("t1", log)
         log.get_metadata_status.assert_called_once()
+        assert "t1" in h._hydrated_sessions
 
     @pytest.mark.asyncio
     async def test_without_log_only_marks_hydrated(self):
@@ -1198,18 +1239,31 @@ class TestThreadOverrideHydration:
 # ──────────────────────────────────────────────────────────────────────
 class TestCompactCommand:
     @pytest.mark.asyncio
-    async def test_busy_session_asks_to_retry(self, slack, sessions):
+    @pytest.mark.parametrize(
+        ("has_session", "expected"),
+        [
+            pytest.param(
+                True, "Still working on your last message", id="test_busy_session_asks_to_retry"
+            ),
+            pytest.param(False, "No active session to compact.", id="test_no_session_at_all"),
+        ],
+    )
+    async def test_unacquired_session_reply(self, slack, sessions, has_session, expected):
         sessions.try_acquire = AsyncMock(return_value=False)
-        sessions.has_session.return_value = True
+        sessions.has_session.return_value = has_session
         await h._handle_compact_command(slack, sessions, "C1", "t1", "msg1", "t1")
-        assert "Still working on your last message" in _texts(slack)
+        assert expected in _texts(slack)
 
     @pytest.mark.asyncio
-    async def test_no_session_at_all(self, slack, sessions):
+    async def test_flagged_session_says_the_account_changed(self, slack, sessions):
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
         sessions.try_acquire = AsyncMock(return_value=False)
-        sessions.has_session.return_value = False
+        sessions.has_session.return_value = True
+        sessions.is_retiring.return_value = True
         await h._handle_compact_command(slack, sessions, "C1", "t1", "msg1", "t1")
-        assert "No active session to compact." in _texts(slack)
+        assert _texts(slack) == mc.COMPACT_ACCOUNT_CHANGED_TEXT
+        sessions.release.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_acquired_but_no_provider(self, slack, sessions):

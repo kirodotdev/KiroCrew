@@ -141,20 +141,14 @@ describe('bn numerals (style/bn.md §2)', () => {
     const bad = Object.entries(bn)
       .filter(([, v]) => BENGALI_DIGITS.test(v))
       .map(([k]) => k)
-    expect(bad.length, report(bad)).toBeLessThanOrEqual(8)
+    expect(bad, report(bad)).toEqual([])
   })
 
   /**
-   * The ceiling above is inherited debt, and a ceiling alone cannot say WHOSE
-   * violation it is: a branch that adds one rides under it until the count
-   * finally crosses, and then the gate reds on whichever unrelated pull request
-   * happens to run next -- which is how two values added in separate PRs took
-   * this lane, and every other open PR's lane, red at once.
-   *
-   * So the count keeps guarding the inherited catalog while the values THIS
-   * BRANCH wrote are held at zero, exactly as §5's register check already is.
-   * Diff-scoped on purpose: the assertion names the key and the branch that owns
-   * it, and nothing is stored, so two i18n branches have no ledger line to
+   * The catalog-wide check above holds every value at zero. This one names the
+   * values THIS BRANCH wrote, so a new Bengali digit is reported against the key
+   * and the branch that owns it, exactly as §5's register check is. Diff-scoped
+   * on purpose: nothing is stored, so two i18n branches have no ledger line to
    * conflict on.
    */
   it('[changed-values] uses Western digits at zero tolerance', () => {

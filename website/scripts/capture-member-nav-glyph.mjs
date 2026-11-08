@@ -196,9 +196,6 @@ async function main() {
           'mc-color-theme': s.themeAttr,
           'mc-privacy-notice-v1': '1',
           'mc-nav': '0',
-          // The Crew Members surface is preview-gated, so without this the row
-          // it is the subject of is simply absent from the rail.
-          'mc-preview-crew': '1',
         },
       })
 

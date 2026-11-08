@@ -108,19 +108,43 @@ class TestApiTerminalDelete:
         assert "abc123" not in registry
 
     @pytest.mark.asyncio
+    async def test_owner_stops_a_session_while_the_panel_is_disabled(self):
+        sess = _make_session()
+        registry = {"abc123": sess}
+        with (
+            patch.object(terminal, "_is_enabled", return_value=False),
+            patch.object(terminal, "_kill_session", new_callable=AsyncMock) as mock_kill,
+            patch.object(terminal, "_sel"),
+        ):
+            deleted = await terminal.api_terminal_delete(_make_request(registry=registry))
+            created = await terminal.api_terminal_create(_make_request(registry=registry))
+        assert deleted.status == 200
+        mock_kill.assert_awaited_once_with(sess)
+        assert registry == {}
+        assert created.status == 403
+
+    @pytest.mark.asyncio
     async def test_closes_ws_before_kill(self):
+        order: list[str] = []
         ws = AsyncMock()
         ws.closed = False
+        ws.close = AsyncMock(side_effect=lambda *a, **k: order.append("close"))
         sess = _make_session(ws=ws)
         registry = {"abc123": sess}
         req = _make_request(registry=registry)
         with (
-            patch.object(terminal, "_kill_session", new_callable=AsyncMock),
+            patch.object(
+                terminal,
+                "_kill_session",
+                AsyncMock(side_effect=lambda _sess: order.append("kill")),
+            ),
             patch.object(terminal, "_sel") as mock_sel,
         ):
             mock_sel.return_value.log_api_access = MagicMock()
-            await terminal.api_terminal_delete(req)
-        ws.close.assert_awaited_once()
+            resp = await terminal.api_terminal_delete(req)
+        assert resp.status == 200
+        assert order == ["close", "kill"]
+        assert registry == {}
 
 
 # ── api_terminal_list ──
@@ -306,6 +330,36 @@ class TestTerminalReservationOwnership:
         assert (await terminal.api_terminal_delete(o.request)).status == 200
         terminal._kill_session.assert_awaited_once_with(sess)
         assert o.registry == {}
+
+    @pytest.mark.asyncio
+    async def test_a_switch_off_during_setup_ends_the_shell_once_published(
+        self, opening, monkeypatch
+    ):
+        """``dashboard.terminal.enabled`` going false while an open awaits its spawn
+        finds only the reservation, so the open ends the shell it then publishes."""
+        o = opening
+        entered, release = asyncio.Event(), asyncio.Event()
+        proc = o.spawn.return_value
+
+        async def pause(*_args, **_kwargs):
+            entered.set()
+            await await_until(release, what="the test releasing the spawn")
+            return proc
+
+        o.spawn.side_effect = pause
+        task = o.start(terminal.api_terminal_ws(o.request))
+        try:
+            await await_until(entered, what="the spawn being entered")
+            monkeypatch.setattr(terminal, "_get_config", lambda _: {"enabled": False})
+            await terminal.apply_terminal_enabled(o.registry, {"enabled": False})
+            assert o.registry == {"abc123": None}
+        finally:
+            release.set()
+            await await_until(task, what="the opening handler finishing")
+        terminal._kill_session.assert_awaited_once()
+        assert terminal._kill_session.await_args.args[0].proc is proc
+        assert o.registry == {}
+        o.ws.close.assert_awaited_once_with(code=4001)
 
     @pytest.mark.parametrize("successor", ["opening", "published", "absent"])
     @pytest.mark.asyncio

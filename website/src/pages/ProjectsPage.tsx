@@ -21,6 +21,7 @@ import {
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ErrorNotice from '../components/ErrorNotice'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 type Mode = 'compose' | 'spec' | 'yaml'
 
 /** Human text for a caught failure: the `ApiError` / `Error` message, else the value itself. */
@@ -71,6 +72,9 @@ export default function ProjectsPage() {
   const dispatch = useAppDispatch()
   const [data, setData] = useState<TaskRunnerStatus | null>(null)
   const [selectedRun, setSelectedRun] = useState<ProjectRun | null>(null)
+  // The run a header action is for, read by `runAction` after its await.
+  const selectedRunIdRef = useRef<string | null>(null)
+  useEffect(() => { selectedRunIdRef.current = selectedRun?.task_id ?? null }, [selectedRun?.task_id])
   const [mode, setMode] = useState<Mode>(() => (sessionStorage.getItem('tr-mode') as Mode) || 'compose')
   const [userInput, setUserInput] = useState(() => sessionStorage.getItem('tr-input') || '')
   const [specText, setSpecText] = useState(() => sessionStorage.getItem('tr-spec') || '')
@@ -107,6 +111,13 @@ export default function ProjectsPage() {
   const [planError, setPlanError] = useState('')
   const [editingName, setEditingName] = useState(false)
   const [editNameValue, setEditNameValue] = useState('')
+  const [projectRenameAnnouncement, setProjectRenameAnnouncement] = useState('')
+  // Close-reason contract for project rename: Enter and Escape restore focus to
+  // the title trigger; a pointer blur moves nothing (WCAG 3.2.2). Mirrors the
+  // pattern in SessionTitleControl.
+  const nameTriggerRef = useRef<HTMLSpanElement | null>(null)
+  const enterRenameRef = useRef(false)
+  const cancelRenameRef = useRef(false)
   const [refined, setRefined] = useState('')
   const [autoApprove, setAutoApprove] = useState(false)
   // Compose-panel auto-approve intent. Distinct from `autoApprove` above, which
@@ -206,13 +217,31 @@ export default function ProjectsPage() {
    * `{ ok: false }` envelope both land in `actionError`; `onOk` (usually the
    * reload) runs only when the action actually took.
    */
-  const runAction = useCallback(async (request: () => Promise<ActionResult>, onOk?: () => void) => {
+  // One action per run at a time: a fast second click on Execute, Restart or
+  // Schedule would otherwise start a second run or a second cron job, and a
+  // second Discard would report the first one's success as a failure. `key`
+  // names the run the action is for (the selected run by default); `null`
+  // leaves the call unguarded, for a rename that must never be dropped.
+  const busyRunsRef = useRef<Set<string>>(new Set())
+  const [busyRuns, setBusyRuns] = useState<ReadonlySet<string>>(() => new Set())
+  const runAction = useCallback(async (request: () => Promise<ActionResult>, onOk?: () => void, key?: string | null) => {
+    const guard = key === undefined ? selectedRunIdRef.current : key
+    if (guard !== null) {
+      if (busyRunsRef.current.has(guard)) return
+      busyRunsRef.current.add(guard)
+      setBusyRuns(new Set(busyRunsRef.current))
+    }
     setActionError('')
     try {
       const r = await request()
       if (r && r.ok === false) { setActionError(r.error || i18nT('pages.projectsPage.action_failed')); return }
       onOk?.()
-    } catch (e) { setActionError(errText(e)) }
+    } catch (e) { setActionError(errText(e)) } finally {
+      if (guard !== null) {
+        busyRunsRef.current.delete(guard)
+        if (mountedRef.current) setBusyRuns(new Set(busyRunsRef.current))
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -416,10 +445,15 @@ export default function ProjectsPage() {
 
   const runs = data?.runs || []
   const anyPlanning = isPlanning || runs.some(r => r.status === 'planning')
+  // Newest first, like the Workflows tab: the run just started or just finished
+  // is the one the user wants. The wire order is the registry's insertion order,
+  // so sort on `started_at`; the stable sort over the reversed array keeps the
+  // later row first when two stamps are equal (an unstarted plan reads 0).
+  const listedRuns = [...runs].reverse().sort((a, b) => (b.started_at || 0) - (a.started_at || 0))
 
   const projectList = (
     <div className="flex flex-col gap-1.5">
-      {runs.map(r => {
+      {listedRuns.map(r => {
         const name = r.name || r.spec_name || r.task_id
         const icon: ReactNode = r.running ? <RefreshCw className="lucide-inline" /> : r.status === 'completed' ? <CheckCircle className="lucide-inline" /> : r.status === 'failed' ? <XCircle className="lucide-inline" /> : r.status === 'cancelled' ? <Square className="lucide-inline" /> : r.status === 'planned' ? <ClipboardList className="lucide-inline" /> : <Square className="lucide-inline" />
         const pct = r.tasks > 0 ? Math.round((r.completed / r.tasks) * 100) : 0
@@ -466,7 +500,7 @@ export default function ProjectsPage() {
             <div className="w-10 h-1 bg-bg-elevated rounded-full overflow-hidden shrink-0">
               <div className={`h-full rounded-full ${r.status === 'failed' ? 'bg-danger' : 'bg-accent'}`} style={{ width: `${pct}%` }} />
             </div>
-            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none" onClick={e => { e.stopPropagation(); void runAction(() => (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)), load) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
+            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} disabled={busyRuns.has(r.task_id)} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none disabled:opacity-50 disabled:cursor-default" onClick={e => { e.stopPropagation(); void runAction(() => (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)), load, r.task_id) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
           </div>
         )
       })}
@@ -502,11 +536,11 @@ export default function ProjectsPage() {
 
   const composePanel = (
     <div className="px-4 md:px-6 py-4">
-      <div className="flex flex-col sm:flex-row items-stretch gap-1.5 sm:gap-1 mb-4">
-        <button onClick={() => setMode('compose')} disabled={anyPlanning} aria-pressed={mode === 'compose'} className={modeRowClass(mode === 'compose')}><ModeDot on={mode === 'compose'} /><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.compose')}</button>
-        <button onClick={() => setMode('spec')} disabled={anyPlanning} aria-pressed={mode === 'spec'} className={modeRowClass(mode === 'spec')}><ModeDot on={mode === 'spec'} /><FileText className="lucide-inline" /> {i18nT('pages.projectsPage.from_spec')}</button>
-        <button onClick={() => setMode('yaml')} disabled={anyPlanning} aria-pressed={mode === 'yaml'} className={modeRowClass(mode === 'yaml')}><ModeDot on={mode === 'yaml'} /><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.from_yaml')}</button>
-      </div>
+      <RadioChipGroup className="flex flex-col sm:flex-row items-stretch gap-1.5 sm:gap-1 mb-4" ariaLabel={i18nT('pages.projectsPage.plan_mode_label')}>
+        <button type="button" onClick={() => setMode('compose')} disabled={anyPlanning} {...radioChip(mode === 'compose')} className={modeRowClass(mode === 'compose')}><ModeDot on={mode === 'compose'} /><Sparkles className="lucide-inline" /> {i18nT('pages.projectsPage.compose')}</button>
+        <button type="button" onClick={() => setMode('spec')} disabled={anyPlanning} {...radioChip(mode === 'spec')} className={modeRowClass(mode === 'spec')}><ModeDot on={mode === 'spec'} /><FileText className="lucide-inline" /> {i18nT('pages.projectsPage.from_spec')}</button>
+        <button type="button" onClick={() => setMode('yaml')} disabled={anyPlanning} {...radioChip(mode === 'yaml')} className={modeRowClass(mode === 'yaml')}><ModeDot on={mode === 'yaml'} /><Settings className="lucide-inline" /> {i18nT('pages.projectsPage.from_yaml')}</button>
+      </RadioChipGroup>
       {/* Wraps at phone width: two labelled controls on one line push the
           workspace field off the right edge otherwise. */}
       <div className="flex flex-wrap gap-2 items-center mb-3">
@@ -587,6 +621,7 @@ export default function ProjectsPage() {
   // every state (including "no runs yet") so the page never reflows out from
   // under the pointer the moment the first run appears, and the main column owns
   // its own padding rather than inheriting page gutters.
+  const runBusy = !!selectedRun && busyRuns.has(selectedRun.task_id)
   return (
     <div className={`flex h-full bg-bg text-text ${railBar ? 'flex-col' : ''}`}>
       {rail.collapsed ? (
@@ -636,21 +671,61 @@ export default function ProjectsPage() {
             edits (compose) or the run's task-edit drafts (`pendingEdits` in the
             detail pane) — unsaved local state the hand-off would unmount. */}
         <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="projects-action-error" />
+        {/* Project rename announcement — always mounted so it is present before any run is selected. */}
+        <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="project-rename-status">{projectRenameAnnouncement}</span>
         {selectedRun ? (
           <>
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">
               {editingName ? (
-                <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-hidden min-w-[120px] focus-ring" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} {...ime.bindComposition({ onBlur: () => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { void runAction(() => api.renameTaskRun(selectedRun.task_id, v), load) }; setEditingName(false) } })} onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    // Early-return BEFORE the blur: a committing IME Enter must not commit.
-                    if (ime.isComposing(e)) return
-                    ;(e.target as HTMLInputElement).blur()
-                  } else if (e.key === 'Escape') setEditingName(false)
-                }} />
+                <input
+                  aria-label={i18nT('pages.projectsPage.project_name')}
+                  className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-hidden min-w-[120px] focus-ring"
+                  autoFocus maxLength={200} value={editNameValue}
+                  onChange={e => setEditNameValue(e.target.value)}
+                  data-testid="project-rename-input"
+                  {...ime.bindComposition({ onBlur: () => {
+                    const viaEnter = enterRenameRef.current
+                    const cancelled = cancelRenameRef.current
+                    enterRenameRef.current = false
+                    cancelRenameRef.current = false
+                    if (!cancelled) {
+                      const v = editNameValue.trim()
+                      if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) {
+                        setProjectRenameAnnouncement('')
+                        void runAction(
+                          () => api.renameTaskRun(selectedRun.task_id, v),
+                          () => { load(); setProjectRenameAnnouncement(i18nT('pages.projectsPage.project_renamed_to', { name: v })) },
+                          null,
+                        )
+                      }
+                    }
+                    setEditingName(false)
+                    if (viaEnter && !cancelled) {
+                      requestAnimationFrame(() => nameTriggerRef.current?.focus({ preventScroll: true }))
+                    }
+                  } })}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      if (ime.isComposing(e)) return
+                      enterRenameRef.current = true
+                      ;(e.target as HTMLInputElement).blur()
+                    } else if (e.key === 'Escape') {
+                      cancelRenameRef.current = true
+                      // Explicitly blur so onBlur fires while the input is still
+                      // mounted — only onBlur clears cancelRenameRef, and React
+                      // does not reliably fire it on an element it is removing.
+                      ;(e.target as HTMLInputElement).blur()
+                      setEditingName(false)
+                      requestAnimationFrame(() => nameTriggerRef.current?.focus({ preventScroll: true }))
+                    }
+                  }}
+                />
               ) : (
                 <span
+                  ref={nameTriggerRef}
                   role="button"
                   tabIndex={0}
+                  data-testid="project-name-trigger"
                   aria-label={i18nT('pages.projectsPage.rename_project')}
                   className="text-[13px] font-semibold text-text-strong truncate cursor-pointer hover:text-accent transition-all"
                   onClick={() => { setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') }}
@@ -673,8 +748,8 @@ export default function ProjectsPage() {
                   <Checkbox checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
                   {i18nT('pages.projectsPage.auto_approve_tool_calls')}
                 </label>
-                <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={() => runAction(() => api.executePlan(selectedRun.task_id, agent, autoApprove), load)}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.execute')}</button>
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={() => runAction(async () => {
+                <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => runAction(() => api.executePlan(selectedRun.task_id, agent, autoApprove), load)}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.execute')}</button>
+                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => runAction(async () => {
                   const res = await api.planContext(selectedRun.task_id)
                   // A body without the context is a failed hand-off, not a
                   // different kind of success — there is nothing to open chat with.
@@ -682,11 +757,11 @@ export default function ProjectsPage() {
                   dispatch(setPendingInput("Let's optimize this plan:\n\n" + res.context)); navigate('/chat?autoSend=1&newSession=1')
                   return res
                 })}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.deleteTaskRun(selectedRun.task_id), () => { setSelectedRun(null); load() })}><X className="lucide-inline" /> {i18nT('pages.projectsPage.discard')}</button>
+                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => runAction(() => api.deleteTaskRun(selectedRun.task_id), () => { setSelectedRun(null); load() })}><X className="lucide-inline" /> {i18nT('pages.projectsPage.discard')}</button>
               </>}
-              {selectedRun.status === 'planning' && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.cancelPlan(), () => setSelectedRun(null))}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
-              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-warn hover:border-warn transition-all" onClick={() => runAction(() => api.pauseTaskRun(selectedRun.task_id), load)}><Pause className="lucide-inline" /> {i18nT('pages.projectsPage.pause')}</button>}
-              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all" onClick={() => runAction(() => api.cancelTaskRunner(selectedRun.task_id), load)}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
+              {selectedRun.status === 'planning' && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => runAction(() => api.cancelPlan(), () => setSelectedRun(null))}><X className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
+              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-warn hover:border-warn transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => runAction(() => api.pauseTaskRun(selectedRun.task_id), load)}><Pause className="lucide-inline" /> {i18nT('pages.projectsPage.pause')}</button>}
+              {selectedRun.running && <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-danger hover:border-danger transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => runAction(() => api.cancelTaskRunner(selectedRun.task_id), load)}><Square className="lucide-inline" /> {i18nT('pages.projectsPage.cancel')}</button>}
               {!selectedRun.running && selectedRun.status !== 'planned' && selectedRun.status !== 'planning' && <>
                 {selectedRun.status === 'paused' && (
                   <>
@@ -694,11 +769,11 @@ export default function ProjectsPage() {
                       <Checkbox checked={autoApprove} onChange={e => setAutoApprove(e.target.checked)} />
                       {i18nT('pages.projectsPage.auto_approve_tool_calls')}
                     </label>
-                    <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all" onClick={() => runAction(() => api.executePlan(selectedRun.task_id, agent, autoApprove), load)}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.resume')}</button>
+                    <button className="btn-sweep bg-accent text-accent-fg border-none rounded-lg px-4 h-8 text-[13px] font-semibold cursor-pointer hover:bg-accent-hover transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => runAction(() => api.executePlan(selectedRun.task_id, agent, autoApprove), load)}><Play className="lucide-inline" /> {i18nT('pages.projectsPage.resume')}</button>
                   </>
                 )}
                 {(selectedRun.status === 'completed' || selectedRun.status === 'cancelled') && (
-                  <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={() => runAction(async () => {
+                  <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => runAction(async () => {
                     const res = await api.taskRunToChat(selectedRun.task_id)
                     // No slot means the run was NOT moved — the user clicked and
                     // nothing happened, which is a failure, not a quiet no-op.
@@ -707,8 +782,8 @@ export default function ProjectsPage() {
                     return res
                   })}><MessageSquare className="lucide-inline" /> {i18nT('pages.projectsPage.chat')}</button>
                 )}
-                {selectedRun.status !== 'paused' && <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all" onClick={() => runAction(() => api.retryTaskRun(selectedRun.task_id, 1), load)}><RotateCcw className="lucide-inline" /> {i18nT('pages.projectsPage.restart')}</button>}
-                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={() => {
+                {selectedRun.status !== 'paused' && <button className="px-3 h-8 rounded-md border border-accent bg-transparent text-accent text-[13px] font-semibold cursor-pointer hover:bg-accent hover:text-accent-fg transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => runAction(() => api.retryTaskRun(selectedRun.task_id, 1), load)}><RotateCcw className="lucide-inline" /> {i18nT('pages.projectsPage.restart')}</button>}
+                <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all disabled:opacity-50 disabled:cursor-default" disabled={runBusy} onClick={() => {
                   const name = selectedRun.name || selectedRun.spec_name || selectedRun.task_id
                   const spec = selectedRun.spec_content || selectedRun.original_input || ''
                   if (!spec) { alert(i18nT('pages.projectsPage.no_spec_idea_to_schedule')); return }

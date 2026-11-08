@@ -1,6 +1,7 @@
 import { useAppSelector } from '../store'
 import ConcurrencyCutChip, { SessionQueuedMarker } from './ConcurrencyCutChip'
 import InboundLinkChip from './InboundLinkChip'
+import { slotRowByKey } from '../store/slotIndex'
 
 /**
  * The status chips the chat header shows after the session title, in order:
@@ -15,7 +16,7 @@ import InboundLinkChip from './InboundLinkChip'
 export default function ChatHeaderChips({ slotKey }: { slotKey?: string }) {
   // The same test InboundLinkChip renders on: a two-way link on this slot.
   const crowded = useAppSelector(s => !!slotKey
-    && !!s.dashboard.slots.find(x => x.key === slotKey)?.links?.some(link => link.direction === 'both'))
+    && !!slotRowByKey(s.dashboard.slots, slotKey)?.links?.some(link => link.direction === 'both'))
   return (
     <>
       <InboundLinkChip slotKey={slotKey} />

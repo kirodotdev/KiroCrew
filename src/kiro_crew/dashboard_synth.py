@@ -89,9 +89,7 @@ _SHORT_TRIES: Final[int] = 64
 #: The keys of a read that name fields or carry a flag or a tag from a closed set, and so
 #: are structure. Every other key of a read is walked as a value, so a key added later
 #: cannot carry a real value through.
-_STRUCTURE_KEYS: Final[frozenset[str]] = frozenset(
-    {"agentic", "missing", "stale", "locale", "subject"}
-)
+_STRUCTURE_KEYS: Final[frozenset[str]] = frozenset({"agentic", "missing", "locale", "subject"})
 
 #: Where a value sits, which decides how its keys are treated. A fold's own object; a row (an
 #: element of a list in a fold); anything nested inside a row, which the catalog does not

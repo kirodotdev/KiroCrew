@@ -22,17 +22,21 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly import inclusion as _inclusion
+from kiro_crew.context_assembly import markers as _markers
 from kiro_crew.context_assembly import member as _member
 from kiro_crew.context_assembly import sections as _sections
 from kiro_crew.context_assembly import turn as _turn
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from kiro_crew.agent_sdk import ContextPromptProvider
     from kiro_crew.hooks import HookResult
+    from kiro_crew.skills import SkillsLoader
 
 logger = logging.getLogger("kiro_crew.context")
 
@@ -40,6 +44,22 @@ logger = logging.getLogger("kiro_crew.context")
 #: while the session's Computer Use reading is off (no ``kirocrew-computer``
 #: server was mounted), so the trigger path neither matches nor offers it then.
 _COMPUTER_USE_SKILL = "computer-use"
+
+
+def _mapped_trigger_keys(
+    skills: SkillsLoader, project: str | Path | None, mapped: list[str]
+) -> set[str]:
+    """The keys a mapped agent's triggers may inject.
+
+    Triggers match and load the copy that wins each key, so a key whose mapped
+    copy is not that winner (it carries its own ``mapping_root``) must not
+    trigger: it would inject the other copy's body.
+    """
+    return {
+        row["key"]
+        for row in skills.scoped_skills(project_dir=project, only=mapped)
+        if not row.get("mapping_root")
+    }
 
 
 def build_message(
@@ -72,6 +92,7 @@ def build_message(
     folder_path: str | None = None,
     model_window: int | None = None,
     board_tags: list[tuple[str, str]] | None = None,
+    session_dashboard: str | None = None,
     user_text_range: tuple[int, int] | None = None,
     user_span_out: list[int] | None = None,
     needs_reinjection: bool = False,
@@ -82,6 +103,10 @@ def build_message(
     steering_dirs: tuple[str, ...] = (),
     skill_bodies_session: str | None = None,
     skill_trigger_text: str | None = None,
+    template_dir: str | None = None,
+    directive_user_origin: bool = False,
+    conversation_reset: bool = False,
+    tab_notices: list[Callable[[bool], None]] | None = None,
 ) -> tuple[str, HookResult]:
     """Build the full message with context and hook processing.
 
@@ -121,6 +146,23 @@ def build_message(
     or ``""`` for a turn whose text the person did not write, which then
     matches and selects no skill. ``None`` keeps *text*.
 
+    Pass *template_dir* to name the directory whose ``.kiro/agents`` holds the
+    agent's template when the turn has no *project*. It is used only to find
+    the agent spec, never read for project guides and never made the project.
+    ``None`` falls back to the context provider's cwd.
+
+    Pass *directive_user_origin* ``True`` only for a turn a person sent on a
+    dashboard slot. It is the provenance the directive applier reads, and
+    the guidance offers ``suggest_followup`` only when that applier would
+    admit it. The default ``False`` matches the applier's: a cron, a wake,
+    a sub-agent, a peer send or a slot-less channel turn is not offered it.
+
+    Pass *tab_notices*, a list the turn owns, from a channel turn's engine that
+    settles it through ``turn_bracket.rollback_skill_bodies``: the sub-agent notices
+    queued on the dashboard tab showing the conversation go ahead of *text*, as a
+    dashboard turn in that tab sends them, the call that settles them is put in the
+    list, and they leave the queue only once that settle reports the turn landed.
+
     *provider_type* names the harness serving the session. A context
     provider that carries an :class:`EssentialDelivery` names it in place of
     the caller. The essentials builder (and :meth:`build_session_context`,
@@ -138,6 +180,9 @@ def build_message(
     from kiro_crew.agent_sdk import context_provider_of
     from kiro_crew.essential_delivery import EssentialDelivery
 
+    # Before any blocking step: a build its cancelled turn left running on the
+    # worker must not read after the session's next turn has.
+    _notices = "" if tab_notices is None else self._read_tab_notices(session_key, tab_notices)
     execution_context, desk_member, member, memory_store, blocks_reads = _member.resolve_turn_owner(
         execution_context, session_key, member, memory_store, blocks_reads
     )
@@ -145,6 +190,13 @@ def build_message(
     report_user_span = user_text_range is not None
     if user_text_range is None:
         user_text_range = (0, len(text))
+    if _notices:
+        # Ahead of the user's own span, so the turn's scrub covers them as it does
+        # on a dashboard turn, and skill triggers keep reading the caller's text.
+        if skill_trigger_text is None:
+            skill_trigger_text = text
+        text = _notices + text
+        user_text_range = (user_text_range[0] + len(_notices), user_text_range[1] + len(_notices))
     delivery = None
     blocks_reads = blocks_reads or self._session_memory_modes.get(session_key or "") == "temporary"
     native_documents: dict[str, str] = {}
@@ -159,15 +211,33 @@ def build_message(
         if isinstance(candidate_delivery, EssentialDelivery):
             delivery = candidate_delivery
             provider_type = context_provider.context_provider_type
+            # A sub-agent's provider cwd is its per-run scratch directory, not
+            # a checkout, so a run that named no project keeps none. Its agent
+            # template is looked up in the caller's template_dir, else the
+            # provider cwd. Any other session with no project takes the
+            # provider cwd as its project.
             if project is None:
-                project = context_provider.cwd or None
+                provider_cwd = context_provider.cwd or None
+                template_dir = template_dir or provider_cwd
+                if not (session_key or "").startswith("subagent:"):
+                    project = provider_cwd
             if is_new_session or needs_reinjection:
                 provider_native_documents = context_provider.native_context_documents
                 native_launch_sources = tuple(provider_native_documents)
                 if is_new_session and not resumed and not needs_reinjection:
                     native_documents = provider_native_documents
     from kiro_crew.agent_files import is_kirocrew_default_agent
+    from kiro_crew.agent_sdk.served_model_identity import crew_states_served_model
 
+    # The model the live session reports serving, on a harness whose own system
+    # prompt names none (goose). Read from the same provider accessor the
+    # dashboard's model label reads, so the two cannot disagree; ``""`` everywhere
+    # else, and while the session reports no model (``auto`` reads as ``""``).
+    served_model = (
+        str(context_provider.served_model or "")
+        if context_provider is not None and crew_states_served_model(provider_type)
+        else ""
+    )
     is_custom = bool(agent) and not is_kirocrew_default_agent(agent)
     hook_result = self.hooks.on_message(text)
 
@@ -229,6 +299,7 @@ def build_message(
             member=member,
             member_is_id=bool(execution_context and execution_context.member_id),
             project=project,
+            template_dir=template_dir,
             workspace=workspace,
             blocks_reads=blocks_reads,
             context_groups=context_groups,
@@ -265,24 +336,24 @@ def build_message(
             _member_slug = None
         if _member_slug is not None:
             ctx.read_member_rules(_member_slug, member)
+            # A V1 member's WARM turn carries no member section, so the one line
+            # that changes between turns -- a dashboard field that stopped resolving
+            # -- is added here. A V2 member's essentials already rebuild it.
+            if not ctx._desk_withheld(execution_context, desk_member):
+                from kiro_crew import dashboard_agentic
 
-    # Session context on first message only
+                _dashboard_notice = dashboard_agentic.unresolved_notice(_member_slug, member)
+                if _dashboard_notice:
+                    parts.append(_dashboard_notice + "\n\n")
+
     if is_new_session:
-        # Resumed sessions (ACP ``session/load`` restored the full native
-        # transcript) already carry the original session-start injection —
-        # agent prompt, memory, lessons, and skills are all preserved in
-        # the restored history. Re-injecting the full session context on
-        # every idle-expire → resume cycle stacks ~40K duplicate tokens
-        # into the same window and accelerates compaction. Inject only the
-        # minimal header (fresh date/time + identity) plus a resume marker
-        # so the model knows where the full context lives.
+        # A resumed session (ACP ``session/load``) already holds the original
+        # session-start context in its restored transcript; re-injecting it on
+        # every idle-expire -> resume stacks ~40K duplicate tokens. Send only the
+        # minimal header plus a resume marker.
         #
-        # Derived FROM the chokepoint's lifecycle rather than re-encoding
-        # ``resumed and not minimal_context`` here: two independent
-        # spellings of the same predicate can drift apart, and the member
-        # re-injection below keys off the lifecycle — a divergence would
-        # leave a resumed member session running on a stale
-        # [PERMANENT RULES] snapshot with nothing failing.
+        # Read from the chokepoint's lifecycle, not re-spelled here, so the
+        # member re-injection below cannot drift onto a stale [PERMANENT RULES].
         slim_resume = _member_turn.lifecycle is ctx.MemberLifecycle.SLIM_RESUME
         if slim_resume and session_key:
             # A resume runs on a backend spawned from the spec as it is now, and
@@ -297,7 +368,7 @@ def build_message(
             if slim_resume
             else self._resolve_agent_prompt(
                 agent,
-                project=project,
+                project=project or template_dir,
                 mode=mode,
                 session_key=session_key,
                 is_cc=is_cc,
@@ -305,7 +376,9 @@ def build_message(
                 session_start=True,
             )
         )
-        if agent_prompt:
+        # Not when the harness holds this exact text as the agent's own prompt
+        # (recorded from KAS's wire definition); a compaction re-sends the block.
+        if agent_prompt and agent_prompt != native_documents.get(f"template://{agent}#prompt"):
             parts.append(f"[AGENT SYSTEM PROMPT]\n{agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n")
         with ctx._prompt_build_embedding_deadline(bool(text), query=text):
             session_ctx = self.build_session_context(
@@ -324,6 +397,7 @@ def build_message(
                 model_window=model_window,
                 context_groups=context_groups,
                 query_text=text,
+                conversation_reset=conversation_reset,
                 project=project,
                 # The desk argument, not the record's owner: the callee
                 # re-derives the owner from the same record and must see
@@ -333,6 +407,7 @@ def build_message(
                 steering_dirs=steering_dirs,
                 _v2_essentials=_essentials,
                 member_dispatch_mounted=member_dispatch_mounted,
+                served_model=served_model,
             )
         if session_ctx:
             # Scrub forgeable boundary markers from the UNTRUSTED content in
@@ -340,33 +415,25 @@ def build_message(
             # provenance) WITHOUT touching the trusted critical-rules block
             # that build_session_context prepends as parts[0] — that block
             # legitimately carries [CRITICAL RULES]/[END CRITICAL RULES] and
-            # must survive intact. The block is one of two fixed module
-            # constants (runtime-selected, never templated) and is always
-            # the prefix (only tail-truncation ever trims the string), and
+            # must survive intact. The block is one of the fixed module
+            # constants in _CRITICAL_RULES_VARIANTS (runtime-selected,
+            # never templated) and is always the prefix (only tail-truncation ever trims the string), and
             # none of the other trusted framing uses these markers, so
             # scrubbing everything after the block is safe.
             _rules_prefix = next(
-                (
-                    rb
-                    for rb in (ctx._CRITICAL_RULES, ctx._CRITICAL_RULES_CHANNEL)
-                    if session_ctx.startswith(rb)
-                ),
+                (rb for rb in ctx._CRITICAL_RULES_VARIANTS if session_ctx.startswith(rb)),
                 None,
             )
             if _rules_prefix is not None:
-                session_ctx = _rules_prefix + ctx._neutralize_structural_markers(
+                session_ctx = _rules_prefix + _markers._neutralize_context_payload(
                     session_ctx[len(_rules_prefix) :]
                 )
             else:
-                session_ctx = ctx._neutralize_structural_markers(session_ctx)
+                session_ctx = _markers._neutralize_context_payload(session_ctx)
             if slim_resume:
-                # Re-anchor the critical rules (dashboard/Slack UI
-                # contracts: diff blocks, [OPTIONS:] buttons, absolute
-                # paths). They were injected at the original session start
-                # but sit deep in — and may be compacted out of — the
-                # restored transcript; at ~1.5K chars they are cheap
-                # insurance against output-format drift. Same variant
-                # selection and per-agent opt-out gate as session start.
+                # Re-anchor the critical rules (UI output contracts): they sit
+                # deep in, and may be compacted out of, the restored transcript,
+                # and cost ~1.5K chars. Same variant and opt-out as session start.
                 _resume_rules = (
                     ctx._critical_rules_for(session_key, runtime_source)
                     if ctx._agent_includes_crew_context(agent)
@@ -385,7 +452,9 @@ def build_message(
                 _resume_member = ""
                 if _member_turn.deliver_section:
                     _member_section = self._build_member_section(
-                        member, desk_withheld=ctx._desk_withheld(execution_context, desk_member)
+                        member,
+                        include_briefing=not blocks_reads,
+                        desk_withheld=ctx._desk_withheld(execution_context, desk_member),
                     )
                     if _member_section:
                         _resume_member = (
@@ -403,11 +472,22 @@ def build_message(
             elif minimal_context:
                 parts.append(session_ctx)
             else:
+                # An empty group set means the spawning parent withheld memory,
+                # lessons and project, so the block holds only conduct; claiming
+                # "your memory" there makes the child look for content it lacks.
+                _opener = (
+                    "This block holds the rules and runtime facts for this turn. "
+                    "Use it to stay consistent but ONLY respond to the "
+                    if context_groups is not None and not context_groups
+                    else "This is your memory, lessons, and conversation history from prior "
+                    "sessions. Use it to stay consistent but ONLY respond to the "
+                )
                 parts.append(
                     "[SESSION CONTEXT — background reference only, NOT a task to act on.\n"
-                    "This is your memory, lessons, and conversation history from prior "
-                    "sessions. Use it to stay consistent but ONLY respond to the "
-                    "CURRENT USER REQUEST below.]\n" + session_ctx + "[END OF SESSION CONTEXT]\n\n"
+                    + _opener
+                    + "CURRENT USER REQUEST below.]\n"
+                    + session_ctx
+                    + "[END OF SESSION CONTEXT]\n\n"
                 )
         # Folder-inherited steering: the ONE delivery seam for every
         # provider. No is_cc / is_custom gate on purpose -- kiro-cli,
@@ -451,13 +531,17 @@ def build_message(
             if _prefs:
                 parts.append(_prefs)
 
-        # Session replay: inject OUTSIDE the capped session context so it
-        # doesn't get truncated at 165K. This is the full conversation
-        # history from Kiro Crew's conversation_log — provider-agnostic.
+        # Session replay from conversation_log, outside the capped session
+        # context so the 165K cap does not truncate it. A text replay carries
+        # no tool rows and no reasoning; its header says so.
         if compressed_history:
             parts.append(
-                "[CONVERSATION HISTORY — recent session replay, tail-heavy, may be truncated]\n"
-                + ctx._neutralize_structural_markers(compressed_history)
+                "[CONVERSATION HISTORY — recent session replay, tail-heavy, may be truncated. "
+                "It carries this chat's messages as text: not your earlier tool calls or "
+                "their results, and nothing you worked out without writing it in a reply. "
+                "If the request depends on one of those, look it up again or say it is "
+                "missing instead of guessing.]\n"
+                + _markers._neutralize_context_payload(compressed_history)
                 + "\n[END CONVERSATION HISTORY]\n\n"
             )
 
@@ -466,6 +550,14 @@ def build_message(
     # every follow-up from trusted dispatcher metadata.
     if not is_new_session and runtime_source:
         parts.extend(_sections.runtime_refresh_blocks(session_key or "", runtime_source))
+
+    # A live model switch keeps the conversation, so the session-start
+    # [ACTIVE MODEL] fact goes stale; every follow-up names the model serving
+    # THIS turn, as the [RUNTIME] refresh above names the interface.
+    if not is_new_session:
+        _active_model = _sections.active_model_block(served_model)
+        if _active_model:
+            parts.append(_active_model)
 
     # Post-compaction re-injection: the skills index was lost when the
     # session-start context was compacted. Re-inject it so the model can
@@ -482,6 +574,7 @@ def build_message(
                 session_key=session_key,
                 agent=agent,
                 project=project,
+                template_dir=template_dir,
                 mode=mode,
                 is_cc=is_cc,
                 private_owner=bool(_private_owner),
@@ -497,6 +590,13 @@ def build_message(
                 provider_type=provider_type,
                 context_provider=context_provider,
                 native_launch_sources=native_launch_sources,
+                # The user's own text (or a transform hook's output), never a
+                # dispatcher prefix, ranks the lessons -- as on the per-message path.
+                query_text=(
+                    hook_result.text
+                    if hook_result.action == ctx.HOOK_MODIFY
+                    else text[user_text_range[0] : user_text_range[1]]
+                ),
             )
         )
         # The session's durable work state, which a monitor cycle already gets
@@ -524,7 +624,9 @@ def build_message(
         # chokepoint consult above).
         if _member_turn.deliver_section:
             _member_section = self._build_member_section(
-                member, desk_withheld=ctx._desk_withheld(execution_context, desk_member)
+                member,
+                include_briefing=not blocks_reads,
+                desk_withheld=ctx._desk_withheld(execution_context, desk_member),
             )
             if _member_section:
                 parts.append(ctx._neutralize_structural_markers(_member_section))
@@ -541,7 +643,7 @@ def build_message(
         if ch_ctx:
             # Group-channel context is authored by other users — scrub the
             # primary boundary markers so it cannot forge a prompt boundary.
-            parts.append(ctx._neutralize_structural_markers(ch_ctx))
+            parts.append(_markers._neutralize_context_payload(ch_ctx))
 
     # Thread parent text — inject whenever available, even alongside
     # channel history (they serve different purposes: ch_ctx has recent
@@ -561,7 +663,7 @@ def build_message(
     # for injection when it was read; here the block is fenced and its
     # markers neutralized, the same framing as the thread parent above.
     if channel_id and thread_ts and thread_replies_text:
-        safe_replies = ctx._neutralize_structural_markers(
+        safe_replies = _markers._neutralize_context_payload(
             ctx._neutralize_fence_markers(thread_replies_text)
         )
         parts.append(
@@ -581,10 +683,7 @@ def build_message(
             "[END SLACK THREAD REPLIES]\n\n"
         )
 
-    # Trust ACP native history for follow-up messages — do NOT inject
-    # a parallel transcript reminder. Only inject
-    # transcript on new sessions (via build_session_context), never
-    # on follow-ups. Dual sources of truth cause contradictions.
+    # Follow-ups trust ACP native history: a second transcript would contradict it.
     logger.info(
         "🔍 build_message: session_key=%s is_new=%s resumed=%s "
         "has_channel_history=%s injected_parts=%d",
@@ -604,6 +703,7 @@ def build_message(
             project=project,
             context_groups=context_groups,
             board_tags=board_tags,
+            session_dashboard=session_dashboard,
             minimal_context=minimal_context,
             folder_path=folder_path,
             session_key=session_key,
@@ -612,60 +712,34 @@ def build_message(
         )
     )
 
-    # Reset the per-session skill-body record on the turn that OWNS a
-    # window-rebuild flag, whether or not a skill matches this turn. The
-    # flag (a fresh session, or the first turn after a compaction) is
-    # one-shot: the provider window it names does not hold the earlier
-    # bodies. If the reset rode only the skill-match branch below, a flag
-    # consumed on a no-match turn (or a custom/minimal turn that skips
-    # skills entirely) is lost, and a later matching turn demotes a body the
-    # rebuilt window never received. Clearing the record here, under the
-    # same lock, keeps that impossible.
+    # Reset the per-session skill-body record on any turn that owns the one-shot
+    # window-rebuild flag (fresh session or first turn after a compaction), match
+    # or not: otherwise a flag spent on a no-match turn lets a later match demote
+    # a body the rebuilt window never received.
     #
-    # The flag is armed by a fresh session (is_new_session), by Kiro Crew's
-    # own session_compaction, and by every turn loop that consumes it when
-    # the BACKEND reports a completed compaction of its own window during the
-    # turn (kiro-cli's _kiro.dev/compaction completing, the claude/codex
-    # twins): the dashboard runner as the status arrives, the other loops
-    # through rearm_reinjection(compacted=...) as the turn settles.
-    #
-    # SOFT FAILURE (known, bounded): a turn path that never consumes the flag
-    # does not arm it either -- the Slack thread's auto-nudge turn
-    # (gateway._fire_slack_nudge) is one -- so when the backend compacts under
-    # such a turn the record still names bodies the rebuilt backend window does not
-    # hold, and the next match of such a skill demotes it to its POINTER
-    # line, not to silence: the agent still learns the skill applies and can
-    # re-read it, it just does not get the body re-pasted that turn. Long
-    # monitor loops are where backend self-compaction is most likely.
+    # The flag is armed by is_new_session, by session_compaction, and by turn
+    # loops that see the backend compact its own window (rearm_reinjection).
+    # Known gap: a path that never consumes the flag (gateway._fire_slack_nudge)
+    # never arms it, so after a backend compaction there a match demotes to its
+    # pointer line rather than re-pasting the body.
     skill_bodies_session = skill_bodies_session or session_key
     if skill_bodies_session and (is_new_session or needs_reinjection):
         self._dedup_triggered_bodies(skill_bodies_session, agent, reset=True, candidates=[])
 
-    # Triggered skills (on-demand, any message) — skip for custom agents.
-    # A match injects the skill's full body by DEFAULT, unchanged. A skill
-    # unconfined skill that declares itself an offer rather than a mandate
-    # opts out with `inject_on_trigger: false` and contributes a pointer line
-    # instead. Confined project skills always take the body path so every
-    # read stays behind descriptor confinement. Word-overlap matching pulls
-    # in large unrelated skills often enough that body price per match is
-    # the largest single block of assembled context, and ACP replays native
-    # history so a body already sent earlier in the conversation is still
-    # in the window.
+    # Triggered skills (not for custom agents). A match injects the full body; an
+    # unconfined skill with `inject_on_trigger: false` gets a pointer line instead.
+    # Confined project skills always take the body path so every read stays behind
+    # descriptor confinement.
     #
-    # Triggers read the person's own request when the caller says what it is
-    # (`skill_trigger_text`), the turn text otherwise. Empty means the person
-    # wrote nothing this turn -- a runner continuation, the synthesis prompt,
-    # an MCP App's message -- so nothing is matched or selected: Kiro Crew's
-    # own words ("do NOT restart from scratch") must not load a skill.
+    # Triggers read `skill_trigger_text` when given, else the turn text. Empty
+    # means the person wrote nothing this turn, so Kiro Crew's own words
+    # ("do NOT restart from scratch") cannot load a skill.
     trigger_text = text if skill_trigger_text is None else skill_trigger_text
     if not is_custom and not minimal_context and trigger_text:
-        # A skill for a feature this session's backend did not mount describes
-        # tools the turn cannot call. Read from the same per-session reading the
-        # agent prompt's Computer Use block is rendered from, so they agree. A
-        # fresh session (a new backend) takes its own reading here: the prompt
-        # takes one only when it carries the block's token, and an operator's
-        # prompt that does not would leave a reused key on its first reading. A
-        # resume already re-took it above.
+        # A skill for a feature the backend did not mount describes tools the turn
+        # cannot call. Same per-session reading as the prompt's Computer Use block.
+        # A fresh session re-takes it here, since a prompt without the block's
+        # token never would; a resume re-took it above.
         unusable = (
             ()
             if self._session_computer_use_gate(
@@ -674,15 +748,12 @@ def build_message(
             else (_COMPUTER_USE_SKILL,)
         )
 
-        # Jev (skills.select): when the point is on for this session, one
-        # pick REPLACES what trigger matching chose. It is handed to the
-        # loader rather than applied here so the loader's single SEL row
-        # records the set actually injected -- including an empty pick --
-        # and never a superseded lexical match. The pick then travels the
-        # same body/pointer, confinement and audit path as any matched
-        # skill. The wait is bounded and paid on THIS thread: production
-        # reaches `build_message` only through `run_in_embed_pool`, so the
-        # loop captured at construction runs only the `decide` await.
+        # Jev (skills.select): when on, one pick REPLACES the trigger match. It is
+        # handed to the loader so its single SEL row records the set actually
+        # injected (an empty pick too), and it takes the same body/pointer,
+        # confinement and audit path. The bounded wait is paid on THIS thread:
+        # `build_message` runs only under `run_in_embed_pool`, so the captured
+        # loop runs only the `decide` await.
         def select() -> list[str] | None:
             from kiro_crew.decisions.points import (
                 HISTORY_ROLES,
@@ -691,21 +762,11 @@ def build_message(
             from kiro_crew.decisions.points.skills_select import selected_skills
 
             def prior_turns() -> list[dict]:
-                # The cheapest prior-turn source this method can reach: a
-                # bounded tail slice of the session's own transcript, served
-                # from `conversation_log`'s tail read rather than a
-                # whole-file parse, projected to role and content only.
-                # Passed as a CALLABLE so an unsampled or disabled turn pays
-                # nothing for it -- `selected_skills` invokes it only after
-                # its own gate check.
-                #
-                # `exclude_last_n` is the same value every other reader of
-                # this log gets here, and it exists for exactly this reason:
-                # the current turn's user message may already be flushed, and
-                # sending it as prior history as well would duplicate it.
-                #
-                # Roles are restricted at the READ, so tool output is not
-                # merely filtered later -- it is never projected.
+                # A bounded tail read of the session transcript, role and
+                # content only. A callable, so `selected_skills` pays for it
+                # only after its gate check. `exclude_last_n` drops the
+                # current message if already flushed. Roles are restricted at
+                # the read, so tool output is never projected.
                 if not session_key or self.conversation_log is None:
                     return []
                 return self.conversation_log.recent(
@@ -728,59 +789,46 @@ def build_message(
         triggered = self.skills.get_triggered_skills(
             trigger_text, project_dir=project, select=select, unusable=unusable
         )
-        pinned = ctx.pinned_skill_globs(session_key, project_dir=project)
-        mapped = (
-            pinned
-            if pinned is not None
-            else (ctx.agent_skill_globs(agent, project_dir=project) if agent else [])
-        )
+        # The agent's spec is found where its template lives (template_dir for
+        # a sub-agent with no project); its mapping only narrows the triggered
+        # set, which, like scoped_skills, reads from *project* alone.
+        template_root = project or template_dir
+        pinned = ctx.pinned_skill_globs(session_key, project_dir=template_root)
+        if pinned is not None:
+            mapped = pinned
+        elif agent:
+            mapped = ctx.agent_skill_globs(agent, project_dir=template_root)
+        else:
+            mapped = []
         if mapped:
-            allowed = {
-                row["key"] for row in self.skills.scoped_skills(project_dir=project, only=mapped)
-            }
+            allowed = _mapped_trigger_keys(self.skills, project, mapped)
             triggered = [key for key in triggered if key in allowed]
 
         if triggered:
             enforced, pointer_only = self.skills.split_triggered(triggered, project)
-            # Log the split, not just the match: a pointed-at skill the
-            # agent declines to read leaves no other trace, so without this
-            # "the skill stopped being followed" is indistinguishable from
-            # "the skill never matched".
+            # Log the split: a pointer the agent never reads leaves no other trace.
             logger.info(
                 "Triggered skills: %s (bodies=%s pointers=%s)",
                 ", ".join(triggered),
                 ", ".join(enforced) or "-",
                 ", ".join(pointer_only) or "-",
             )
-            # (skill_key, stripped_body, body_sha256) for each enforced
-            # skill whose body loaded — collected first so the per-session
-            # dedup decision runs once, as a single guarded transaction,
-            # rather than per skill inside the emit loop.
+            # (skill_key, stripped_body, body_sha256), collected first so the
+            # dedup decision runs once as a single guarded transaction.
             loadable: list[tuple[str, str, str]] = []
             for name in enforced:
-                # project_dir, not project-blind: get_triggered_skills and
-                # split_triggered above are both project-aware, so a trusted
-                # project's skill can reach here -- and loading it blind
-                # returned None, making a matched skill contribute nothing at
-                # all. The project branch reads through the containment-checked
-                # reader, so this is confined like every other project read.
+                # Pass the project: a matched project skill loads as None
+                # without it. Its read goes through the containment-checked reader.
                 content = self.skills.load_skill(name, project)
                 if content:
                     stripped = self.skills.strip_frontmatter(content)
-                    # Key the session record by the body actually about to
-                    # be injected, so an edited skill (new hash) re-injects
-                    # while an unchanged one demotes to its pointer.
+                    # Keyed by the body's hash, so an edited skill re-injects.
                     digest = hashlib.sha256(stripped.encode("utf-8")).hexdigest()
                     loadable.append((name, stripped, digest))
-            # One guarded transaction: decide which loadable bodies were
-            # already sent in this session (demote those to a pointer) and
-            # record the rest as sent. `is_new_session`/`needs_reinjection`
-            # are the turns whose provider window cannot hold the prior
-            # bodies, so they reset the record and everything re-injects.
-            # Confined project skills are never demotion candidates: they
-            # have no pointer form (trigger_hint omits them), so demoting
-            # one would drop it from the prompt entirely instead of falling
-            # back to a pointer -- they always re-inject their body.
+            # Demote bodies already sent this session to a pointer and record
+            # the rest; a fresh or re-injected window resets the record.
+            # Confined project skills have no pointer form (trigger_hint omits
+            # them), so they are never demoted and always re-inject.
             confined = self.skills.confined_triggered(
                 [name for name, _stripped, _digest in loadable], project
             )
@@ -795,19 +843,14 @@ def build_message(
             demoted: list[str] = []
             for name, stripped, _digest in loadable:
                 if name in demote:
-                    # Already in the window this session. Fall through to
-                    # the pointer line rather than the body, and do NOT
-                    # record use — a demoted match delivered no body.
+                    # Already in the window: pointer line, and no recorded use.
                     demoted.append(name)
                     continue
                 safe_name = ctx._neutralize_structural_markers(name)
                 safe_name = safe_name.replace("\r", " ").replace("\n", " ")
                 safe_stripped = ctx._neutralize_structural_markers(stripped)
                 parts.append(f"[Skill: {safe_name}]\n{safe_stripped}\n[End of skill]\n\n")
-                # Record use only when the body is actually delivered --
-                # a trigger match that never reaches the prompt (false
-                # positive, pointer-only, demoted, or undelivered) must not
-                # earn ranking weight in the lazy-load hotness ledger.
+                # Only a delivered body earns weight in the hotness ledger.
                 self.skills._record_use(name)
             # A demoted body still tells the agent the skill applies: hand
             # it the same pointer line an `inject_on_trigger: false` skill
@@ -815,15 +858,9 @@ def build_message(
             hint = self.skills.trigger_hint(demoted + pointer_only, project)
             if hint:
                 parts.append(ctx._neutralize_structural_markers(hint))
-            # Correct the delivery audit. The matcher's single `skill_trigger`
-            # row records the FRONTMATTER-level split (bodies vs opted-out
-            # pointers) it computes at match time -- but that runs before this
-            # dedup, so a body demoted here is still named as a delivered body
-            # in that row. Emit a delivery-truth row naming what the prompt
-            # ACTUALLY carries, so an auditor reconstructing "was this
-            # procedure in the prompt?" is not told a demoted body was sent.
-            # Only when a demotion diverged from the matcher's claim -- the
-            # common no-demotion turn keeps its one row and pays nothing here.
+            # The matcher's `skill_trigger` row is written before this dedup and
+            # still names a demoted body as delivered. When a demotion happened,
+            # add a row naming what the prompt actually carries.
             if demoted:
                 delivered_bodies = [
                     name for name, _stripped, _digest in loadable if name not in demote
@@ -833,11 +870,8 @@ def build_message(
                 name_len = self._SKILL_DELIVERY_AUDIT_NAME_LEN
 
                 def _capped(names: list[str]) -> tuple[str, int]:
-                    # Bound both the count AND the bytes the audit row keeps:
-                    # join at most ``cap`` names, truncate each kept name to
-                    # ``name_len`` chars so no single name grows the row
-                    # unboundedly, and report how many names were dropped so
-                    # a truncated row is never mistaken for a complete one.
+                    # At most ``cap`` names of ``name_len`` chars each, plus
+                    # the dropped count so a truncated row reads as truncated.
                     kept = [n[:name_len] for n in names[:cap]]
                     return ",".join(kept), max(0, len(names) - cap)
 
@@ -898,31 +932,22 @@ def build_message(
     if action_context:
         parts.append(ctx._neutralize_structural_markers(action_context) + "\n\n")
 
-    # Per-turn interaction guidance must precede the current-request
-    # boundary when a trusted context/header exists. These reminders used
-    # to trail the user's text by roughly 1.8K characters; in long native
-    # conversations that displaced the current request from the prompt's
-    # recency edge and let the model regress to an older question. Keep
-    # every UI contract, but put the actual contextual request last.
-    #
-    # Context-free turns intentionally have no trusted request header and
-    # begin with the raw user text. Preserve that public contract by leaving
-    # their guidance trailing, exactly as before.
+    # Per-turn guidance (~1.8K chars) goes before the current-request boundary,
+    # so the request stays at the prompt's recency edge; trailing it lets the
+    # model drift back to an older question in long conversations. A
+    # context-free turn has no request header and starts with the raw user text,
+    # so its guidance trails.
     _interactive_guidance = _turn.interactive_guidance(
         interactive=interactive,
         session_key=session_key,
         agent=agent,
         minimal_context=minimal_context,
+        producer_is_user_facing=directive_user_origin,
     )
 
-    # Injected blocks are not the only source of prior context. A warm
-    # provider session can carry its conversation natively while this turn
-    # adds no Kiro Crew blocks at all (ordinary Discord/Telegram/Slack turns
-    # are the common case). A cold ``session/load`` resume likewise reports
-    # ``resumed=True`` even when the provider object itself is new. Both are
-    # contextual turns, so generic guidance must precede the request and
-    # leave the user's text at the recency edge. Truly standalone raw calls
-    # have no session key and preserve the legacy user-text-first contract.
+    # A warm session (or a cold ``session/load`` resume) carries prior context
+    # natively even when this turn adds no blocks, so it counts as contextual.
+    # Only a call with no session key keeps the user-text-first order.
     _has_native_history = bool(session_key and (resumed or not is_new_session))
     _guidance_precedes_request = bool(parts) or _has_native_history
 
@@ -963,6 +988,7 @@ def build_message(
     # prompts expanded and forged boundaries scrubbed. Where the user's own text
     # lands is resolved there too, because only that step sees every transform.
     _turn_neutralized, _user_bounds = _turn.user_turn(text, hook_result, user_text_range)
+    _turn_part_index = len(parts)
     if _user_bounds is not None:
         _user_part_index = len(parts)
     parts.append(_turn_neutralized)
@@ -985,6 +1011,23 @@ def build_message(
         measured_span = (start, end)
         if report_user_span and user_span_out is not None:
             user_span_out.extend(measured_span)
+    # Provenance for the prompt builder: only the user's own text may be upgraded
+    # into extra content blocks (kiro_crew.prompt_segments). Without measured
+    # bounds the whole turn part is the user's, as a channel's turn is.
+    _turn_start = len("".join(parts[:_turn_part_index]).translate(ctx._MULTIBYTE_TABLE))
+    _turn_end = _turn_start + len(parts[_turn_part_index].translate(ctx._MULTIBYTE_TABLE))
+    if _user_bounds is not None and _user_part_index is not None:
+        _seg_start, _seg_end = measured_span
+        if _seg_start == _seg_end:
+            # Nothing attributable was typed: an @prompt body or a quick-prompt
+            # expansion stands where the typed text was, and is the request. The
+            # envelope the caller prefixed to the turn stays injected.
+            _seg_end = _turn_end
+    else:
+        _seg_start, _seg_end = _turn_start, _turn_end
+    from kiro_crew import prompt_segments as _prompt_segments
+
+    final = _prompt_segments.around(final, _seg_start, _seg_end)
     try:
         if minimal_context:
             meter_lifecycle = "minimal"

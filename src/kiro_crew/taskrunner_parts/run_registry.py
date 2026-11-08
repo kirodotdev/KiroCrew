@@ -6,9 +6,9 @@ crash interrupted. The ``TASK_PROGRESS.md`` checkpoints and the status view read
 registry. A new persisted run field is written and read back here.
 
 Instance fields written: ``_persist_failed``, ``_persist_seq``, ``_persist_written``,
-``_runs``, ``_snapshot_recovery_incomplete``.
+``_recovery_pending``, ``_runs``, ``_snapshot_recovery_incomplete``.
 
-Instance fields read: ``_agent``, ``_persist_lock``, ``_tasks``, ``_work_dir``.
+Instance fields read: ``_persist_lock``, ``_tasks``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -123,6 +123,7 @@ def _serialize_runs(self: TaskRunner) -> str:
                     "source": run.source,
                     "spec_content": run.spec_content,
                     "auto_approve": run.auto_approve,
+                    "agent": run.agent,
                     "workflow_run_id": run.workflow_run_id,
                     "workflow_id": run.workflow_id,
                     "workflow_slug": run.workflow_slug,
@@ -147,6 +148,7 @@ def _serialize_runs(self: TaskRunner) -> str:
                             # would restore the task to a verbatim replay of a
                             # possibly-executed step.
                             "resume_hint": t.resume_hint or "",
+                            "superseded": t.superseded,
                             "verification": t.verification,
                         }
                         for t in run.tasks
@@ -334,6 +336,7 @@ def _load_runs(self: TaskRunner) -> None:
                     error=t.get("error", ""),
                     result=t.get("result", ""),
                     resume_hint=t.get("resume_hint", ""),
+                    superseded=t.get("superseded", False) is True,
                     verification=str(t.get("verification", "")),
                     attempts=t.get("attempts", 1),
                     depends_on=t.get("depends_on", []),
@@ -376,6 +379,7 @@ def _load_runs(self: TaskRunner) -> None:
                 source=item.get("source", ""),
                 tasks=tasks,
                 auto_approve=item.get("auto_approve", False),
+                agent=item.get("agent", ""),
                 workflow_run_id=item.get("workflow_run_id", ""),
                 workflow_id=item.get("workflow_id", ""),
                 workflow_slug=item.get("workflow_slug", ""),
@@ -425,6 +429,10 @@ def _load_runs(self: TaskRunner) -> None:
                 logger.info(
                     "Recovered crashed cancelling run %s — marked as cancelled", run.task_id
                 )
+            if run.status in ("paused", "planned"):
+                # The adoption sweep may resume it (``taskq_bridge._resume``):
+                # fair admission holds its record until the sweep decides.
+                self._recovery_pending.add(run.task_id)
             self._runs[run.task_id] = run
         except Exception as exc:
             self._snapshot_recovery_incomplete = True
@@ -444,4 +452,6 @@ def _build_resume_context(self: TaskRunner, completed: list[Task]) -> str:
 
 
 def status(self: TaskRunner) -> dict:
-    return build_status(self._runs, self._tasks, self._agent)
+    # Each run row carries its own agent; the top-level one is the latest run's.
+    latest = self.current_run
+    return build_status(self._runs, self._tasks, latest.agent if latest else "")

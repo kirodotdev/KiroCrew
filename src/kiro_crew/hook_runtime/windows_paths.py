@@ -78,13 +78,6 @@ def unc_probe_allowed(raw: str) -> bool:
     The comparison is purely lexical (``normpath``/``normcase``) and BOTH
     resolving roots are memoized per configuration (``_unc_data_home_root``,
     ``_unc_agents_root``), so this check never touches the network itself.
-
-    The data home is memoized for the same reason as the agents dir, and the
-    omission was load-bearing rather than cosmetic: ``data_home()`` resolves
-    ``KIROCREW_HOME`` on every call when that override is set, which is
-    precisely the roaming-profile configuration in which the override names a
-    share. Calling it per gate check put an SMB round-trip inside a predicate
-    documented as lexical.
     """
     try:
         cand = os.path.normcase(os.path.normpath(raw))

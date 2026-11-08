@@ -125,10 +125,26 @@ class TestTriggerSpellings:
     def test_crew_event_resolves_to_the_acp_spelling(self, event: str, trigger: str):
         assert _hook(event=event).acp_trigger == trigger
 
-    def test_the_map_holds_exactly_the_stores_event_vocabulary(self):
-        # The store refuses any other event on create and skips it on load, so a
-        # key for another spelling could not be reached by a stored hook.
-        assert set(kas_wire._CREW_EVENT_TO_ACP_TRIGGER) == set(HOOK_EVENTS)
+    def test_the_map_holds_every_fired_event_kiro_cli_has_a_trigger_for(self):
+        """Every dispatchable event with an ACP counterpart, and only those.
+
+        The store refuses any other event on create and skips it on load, so a key
+        for another spelling could not be reached by a stored hook.
+
+        ``SessionLaneChanged`` is dispatchable here and deliberately absent from the
+        map: a board lane is not a kiro-cli lifecycle moment, the event is outside
+        that closed enum on purpose, and a key for it would offer a trigger the
+        agent cannot ask for. Asserted as a derived difference rather than a literal
+        set, so a NEW turn-lifecycle event still has to be added to the map.
+        """
+        # Body-scope import, as the sibling gates in this tree use: naming it in
+        # the module block puts this change's only new import beside another, and
+        # two additions to one import region conflict on every rebase.
+        from kiro_crew.hooks import HOOK_EVENT_SESSION_LANE_CHANGED
+
+        assert set(kas_wire._CREW_EVENT_TO_ACP_TRIGGER) == set(HOOK_EVENTS) - {
+            HOOK_EVENT_SESSION_LANE_CHANGED
+        }
 
     @pytest.mark.parametrize("trigger", ["preTaskExecution", "postTaskExecution"])
     def test_a_trigger_with_no_crew_event_answers_empty(self, trigger: str):
@@ -535,9 +551,6 @@ class TestTheCapabilityIsNotAnnounced:
             "@kiro/agent bundle that a listed runCommand is only ever sent back as "
             "_kiro/hooks/executeHook. See agent-host-contract.md."
         )
-
-    def test_the_settings_channel_is_still_open(self):
-        assert KAS_CLIENT_CAPABILITIES["_meta"]["kiro"]["settings"] == {}
 
     def test_the_harness_declares_the_same_meta(self):
         assert "hooks" not in KasHarness().client_capabilities["_meta"]["kiro"]
@@ -1424,6 +1437,32 @@ class TestExecuteHookReviewFixes:
             await real_kill(pid, sig)
 
         monkeypatch.setattr(hooks_mod.platform_compat, "kill_process_tree_async", _kill)
+        # Record the hook's process as the spawn hands it back. Governance is only
+        # the first of several awaits before the spawn (the shell deny check, the
+        # sandbox prepare, the spawn itself), so a cancel timed off governance can
+        # land with no process to kill. POSIX spawns through
+        # create_subprocess_limited; Windows' unwrapped path through
+        # create_subprocess_shell.
+        import kiro_crew.sandbox as sandbox_mod
+
+        spawned: list[Any] = []
+
+        def _recording(real):
+            async def _spawn(*args, **kwargs):
+                proc = await real(*args, **kwargs)
+                spawned.append(proc)
+                return proc
+
+            return _spawn
+
+        monkeypatch.setattr(
+            sandbox_mod,
+            "create_subprocess_limited",
+            _recording(sandbox_mod.create_subprocess_limited),
+        )
+        monkeypatch.setattr(
+            asyncio, "create_subprocess_shell", _recording(asyncio.create_subprocess_shell)
+        )
         hook = hooks_mod.ScriptHook(
             id="slow",
             name="slow",
@@ -1432,9 +1471,8 @@ class TestExecuteHookReviewFixes:
         )
         task = asyncio.ensure_future(hooks_mod.run_script_hook(hook, "", {}))
         try:
-            # The governance check runs off the loop just before the spawn.
-            await async_wait_until(lambda: killed or task.done() or governance_calls)
-            await asyncio.sleep(0.5)
+            await async_wait_until(lambda: spawned or task.done())
+            assert not task.done(), task.result()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task

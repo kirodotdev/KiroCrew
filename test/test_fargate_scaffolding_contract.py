@@ -1,29 +1,12 @@
 """The Fargate scaffolding templates must keep agreeing with ``identity.py``.
 
-Every name in ``kirocrew-fargate-crew.yaml`` is DERIVED on the code side, not
-chosen: ``taskdef.py`` builds ``executionRoleArn``, ``taskRoleArn`` and the log
-group from the crew name and then refuses a document whose ARNs disagree. So a
-rename on either side does not produce a mismatch that runs -- it produces a
-launch refusal, at the first launch after the rename, with nothing failing at
-the moment the rename lands. These tests assert the agreement by CALLING the
-derivation functions, so a rename on either side reds here instead.
+``taskdef.py`` derives the role ARNs and log group from the crew name and refuses a
+document that disagrees, so a rename on one side surfaces only as a launch refusal.
+These tests CALL the derivation functions so the rename reds here instead.
 
-Two of them guard a security property rather than a name:
-
-* **The task role gets no secret read.** ``identity.task_role_arn``'s docstring
-  states the reason -- the model credential is already in the container's
-  environment by the time that role exists, so the permission buys the crew
-  nothing it does not have, while a turn that could re-read a secret could read
-  every crew's. Granting it would be a one-line, plausible-looking edit that
-  nothing else would catch.
-* **No action is a prefix wildcard.** ``cloud/aws.py``'s read allowlist documents
-  why it enumerates instead of prefixing: a prefix admits
-  ``secretsmanager get-secret-value`` and ``ssm get-parameter --with-decryption``.
-  So ``secretsmanager:Get*`` on the execution role would grant, through the
-  wildcard, exactly what the task role is denied outright.
-
-Static and offline: these read only the template text, so they cannot flake and
-need no AWS account, no credential and no deploy.
+Two security properties: the task role gets no secret read (see
+``identity.task_role_arn``), and no action is a prefix wildcard (``secretsmanager:Get*``
+would grant what the task role is denied). Static and offline: template text only.
 """
 
 from __future__ import annotations
@@ -141,10 +124,8 @@ def _pattern(document: dict[str, Any], parameter: str) -> str:
     return document["Parameters"][parameter]["AllowedPattern"]
 
 
-# --------------------------------------------------------------------------
 # The templates must be loadable at all. Every other test depends on it, so it
 # is asserted once rather than being the incidental cause of seven failures.
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("path", [BASE, CREW], ids=["base", "crew"])
@@ -154,9 +135,7 @@ def test_template_parses_and_declares_resources(path: Path) -> None:
     assert document["Resources"], f"{path.name} declares no resources"
 
 
-# --------------------------------------------------------------------------
 # Names: derived on the code side, mirrored here.
-# --------------------------------------------------------------------------
 
 
 def test_role_names_are_exactly_what_identity_derives() -> None:
@@ -204,9 +183,7 @@ def test_the_crew_parameter_admits_exactly_the_crew_names_identity_admits() -> N
         ), f"{candidate!r}: template says {mine}, identity._CREW_RE says {theirs}"
 
 
-# --------------------------------------------------------------------------
 # Security properties.
-# --------------------------------------------------------------------------
 
 
 def test_the_task_role_can_read_no_secret() -> None:
@@ -225,17 +202,9 @@ def test_the_task_role_can_read_no_secret() -> None:
 def test_the_task_role_grants_exactly_the_ssm_channel_and_nothing_else() -> None:
     """The task role's whole grant, pinned action by action.
 
-    The invariant is "this role grants nothing beyond what it needs", and it is
-    stated exactly here rather than approximated by a blanket check that the role
-    carries no policies at all. It carries one: the four ssmmessages actions that
-    let the SSM agent open its channel so the crew is reachable from a laptop.
-    Naming them action by action is stricter than a blanket check, not looser,
-    because it also fails on a fifth action nobody argued for.
-
-    Every absent string below is a real way this could widen. ``ssm:`` rather than
-    ``ssmmessages:`` would hand the TASK the caller's session permission, so a
-    prompt-reachable turn could start its own sessions. ``kms:`` is the grant a
-    session-logging design would want and this lane deliberately does not have.
+    Only the four ssmmessages actions the SSM agent needs; a fifth action fails.
+    ``ssm:`` would let a prompt-reachable turn start its own sessions, and ``kms:``
+    is a session-logging grant this lane deliberately does not have.
     """
     properties = _role(_load(CREW), "TaskRole")
     policies = properties["Policies"]
@@ -268,11 +237,7 @@ def test_the_task_role_grants_exactly_the_ssm_channel_and_nothing_else() -> None
 def test_each_role_is_assumable_only_on_behalf_of_this_account(logical_id: str) -> None:
     """Both roles trust ``ecs-tasks`` narrowed by ``aws:SourceAccount``.
 
-    Without the condition the trust policy names a SERVICE, not a caller, so the
-    role is assumable on behalf of any task in any account that ECS will act
-    for -- the confused-deputy shape. The template says this in a comment, and a
-    comment asserting what the adjacent document does not do is this line's
-    recurring defect, so it is asserted here instead.
+    Without it the role is assumable for a task in any account: the confused deputy.
     """
     statements = _role(_load(CREW), logical_id)["AssumeRolePolicyDocument"]["Statement"]
     assert len(statements) == 1, f"expected one trust statement, found {len(statements)}"
@@ -360,19 +325,10 @@ def test_the_execution_roles_secret_read_is_scoped_to_one_crew() -> None:
 
 
 def test_each_roles_ceiling_covers_its_own_grant() -> None:
-    """The invariant F1 was a violation of: a boundary caps, so it must COVER.
+    """A boundary caps, so it must COVER every action its role's policies grant.
 
-    An IAM permissions boundary reduces a role to the intersection of its identity
-    policy and the ceiling. So every action a role's policies grant must appear in
-    the boundary the template attaches to THAT role, or the grant is silently capped
-    away. Getting this wrong does not fail a policy simulator or a template lint --
-    it fails at launch, because ECS performs the execution role's secret read and
-    log-stream open before the container starts.
-
-    Derived from the template and the two documents rather than restated: a grant
-    added to either role without a matching ceiling entry fails here. That is the
-    check that distinguishes "both roles carry a boundary" from "each role carries a
-    boundary that lets it do its job".
+    An uncovered grant is silently capped away and fails only at launch, when ECS does
+    the secret read and log-stream open. Derived from the template, not restated.
     """
     from kiro_crew.cloud import iam
 
@@ -410,11 +366,8 @@ def test_each_roles_ceiling_covers_its_own_grant() -> None:
 def test_neither_ceiling_admits_the_other_roles_work() -> None:
     """Two ceilings rather than their union, which is why they are two.
 
-    A single boundary covering both roles would have to permit
-    ``secretsmanager:GetSecretValue``, and the task role is the one a prompt can
-    reach. Keeping the secret read out of ITS ceiling is what makes "the container
-    never holds the secret-reading role" a property of the ceiling too, not only of
-    the identity policy.
+    A union would permit ``secretsmanager:GetSecretValue`` to the task role, the one a
+    prompt can reach.
     """
     from kiro_crew.cloud import iam
 
@@ -432,12 +385,8 @@ def test_neither_ceiling_admits_the_other_roles_work() -> None:
 def test_the_boundary_parameter_admits_only_the_one_boundary() -> None:
     """The one policy and nothing else, empty included.
 
-    A widened pattern is how a boundary stops being a ceiling: an operator could
-    pass a policy they authored, and the role's effective permissions would be
-    capped by nothing meaningful. Empty is refused for its own reason:
-    ``cloud/source.py ensure_crew_boundary`` creates this policy, so an empty value
-    means a deployment whose two roles carry no ceiling at all, which the parameter
-    rejects rather than accepting as a mode.
+    A widened pattern admits an operator-authored policy as the ceiling. Empty would mean
+    no ceiling at all; ``cloud/source.py ensure_crew_boundary`` creates the policy.
     """
     parameters = _load(CREW)["Parameters"]
     account = "123456789012"
@@ -475,11 +424,8 @@ def test_the_boundary_parameter_admits_only_the_one_boundary() -> None:
 def test_both_roles_carry_the_boundary_unconditionally() -> None:
     """No ``!If`` on either role's ``PermissionsBoundary``.
 
-    The EC2 lane sets its boundary unconditionally, and T3's finding was that this
-    template did not. A condition here would be indistinguishable from the fixed
-    shape in review while re-admitting the ungoverned deployment: the parameter is
-    required, so an ``!If`` on it could only ever take its true branch, and its
-    presence would invite restoring the empty default that made it meaningful.
+    Like the EC2 lane, the boundary is unconditional. The parameter is required, so an
+    ``!If`` could only take its true branch and would invite an empty default back.
     """
     document = _load(CREW)
     assert "HasBoundary" not in document.get("Conditions", {}), (
@@ -500,14 +446,8 @@ def test_both_roles_carry_the_boundary_unconditionally() -> None:
 def test_both_arn_patterns_accept_exactly_the_partitions_identity_accepts() -> None:
     """Both ARN parameters must admit every partition ``CrewBinding`` admits.
 
-    Compared against ``identity._PARTITION_RE`` candidate by candidate rather than
-    by restating its alternation here: a second copy of another module's table
-    drifts silently, and this drift would only surface when somebody in that
-    partition tried to deploy. A pattern admitting ``aws`` alone rejects a valid
-    ``aws-cn`` or ``aws-us-gov`` ARN at CloudFormation parameter validation, so the
-    per-crew stack cannot deploy in those partitions at all -- while the resources
-    inside the template are already partition-correct, because they build every ARN
-    from ``${AWS::Partition}``.
+    Compared against ``identity._PARTITION_RE`` candidate by candidate, not restated. A
+    pattern admitting ``aws`` alone blocks deploys in ``aws-cn`` and ``aws-us-gov``.
     """
     document = _load(CREW)
     boundary = re.compile(_pattern(document, "PermissionsBoundaryArn"))
@@ -551,11 +491,9 @@ def test_the_shared_security_group_has_no_ingress() -> None:
     assert properties["SecurityGroupEgress"], "the task must still be able to pull its image"
 
 
-# --------------------------------------------------------------------------
 # The outputs are the launch spec's configuration home, so their KEYS are the
 # contract a later change reads. A renamed or dropped output is a stack that
 # deploys and a launcher that finds nothing.
-# --------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -606,11 +544,8 @@ def test_every_output_the_launch_spec_reads_is_present(path: Path, expected: set
 def test_the_architecture_parameter_admits_exactly_what_taskdef_admits() -> None:
     """The template's AllowedValues and ``CPU_ARCHITECTURES`` are one set.
 
-    Compared by importing that frozenset rather than by restating its members, so
-    adding an architecture on the code side without offering it here -- or offering
-    one here that ``_refuse_unknown_architecture`` rejects -- reds. The second
-    direction is the one that would otherwise ship: the stack would deploy and the
-    crew would never start.
+    Both directions: an architecture offered here that ``_refuse_unknown_architecture``
+    rejects would deploy a stack whose crew never starts.
     """
     allowed = _load(BASE)["Parameters"]["CpuArchitecture"]["AllowedValues"]
     assert set(allowed) == set(

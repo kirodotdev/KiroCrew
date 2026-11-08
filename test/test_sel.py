@@ -36,6 +36,8 @@ import kiro_crew.sel as sel_mod
 from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew import sel as kiro_crew_sel
+from kiro_crew import sel_append as kiro_crew_sel_append
+from kiro_crew import sel_chain_lock as kiro_crew_sel_chain_lock
 from kiro_crew.sel import SecurityEvent, SecurityEventLog, _infer_source, sel
 from kiro_crew.testing.wait import async_wait_until, wait_until
 
@@ -543,14 +545,15 @@ log.flush()
         legacy.write_bytes(b"k" * 63 + b"\x1a")
         trust = tmp_path / kiro_crew_sel._TRUST_SUBDIR
 
-        real_mkdir = Path.mkdir
+        real_mkdir = os.mkdir
 
-        def uncreatable_trust(self, *args, **kwargs):
-            if self == trust:
+        # os.mkdir: pathlib and the owner-only helper both create through it.
+        def uncreatable_trust(path, *args, **kwargs):
+            if Path(path) == trust:
                 raise PermissionError("read-only config dir")
-            return real_mkdir(self, *args, **kwargs)
+            return real_mkdir(path, *args, **kwargs)
 
-        with patch.object(Path, "mkdir", uncreatable_trust):
+        with patch.object(os, "mkdir", uncreatable_trust):
             log = SecurityEventLog(base_dir=tmp_path, sync=True)
             assert log._hmac_key_file == legacy, "precondition: fallback not taken"
             assert log._chain_lock_target() == (legacy, False, None), (
@@ -610,14 +613,13 @@ log.flush()
         trust = tmp_path / kiro_crew_sel._TRUST_SUBDIR
         assert not legacy.exists(), "precondition: the key migrated out of the log dir"
 
-        real_mkdir = Path.mkdir
+        # The directory exists here, so refuse the acquire's creation step
+        # itself: a real mkdir accepts an existing directory.
+        def uncreatable_trust(path):
+            assert Path(path) == trust
+            raise PermissionError("read-only config dir")
 
-        def uncreatable_trust(self, *args, **kwargs):
-            if self == trust:
-                raise PermissionError("read-only config dir")
-            return real_mkdir(self, *args, **kwargs)
-
-        with patch.object(Path, "mkdir", uncreatable_trust):
+        with patch.object(kiro_crew_sel_chain_lock, "mkdirs_owner_only", uncreatable_trust):
             with pytest.raises(OSError):
                 log._chain_lock_target()
 
@@ -651,14 +653,13 @@ log.flush()
         # The agent plants a long-enough file at the legacy key path.
         legacy.write_bytes(b"p" * 64)
 
-        real_mkdir = Path.mkdir
+        # The directory exists here, so refuse the acquire's creation step
+        # itself: a real mkdir accepts an existing directory.
+        def uncreatable_trust(path):
+            assert Path(path) == trust
+            raise PermissionError("agent-triggered refusal")
 
-        def uncreatable_trust(self, *args, **kwargs):
-            if self == trust:
-                raise PermissionError("agent-triggered refusal")
-            return real_mkdir(self, *args, **kwargs)
-
-        with patch.object(Path, "mkdir", uncreatable_trust):
+        with patch.object(kiro_crew_sel_chain_lock, "mkdirs_owner_only", uncreatable_trust):
             with pytest.raises(OSError):
                 log._chain_lock_target()
 
@@ -687,14 +688,15 @@ log.flush()
         legacy.write_bytes(b"k" * 64)
         trust = tmp_path / kiro_crew_sel._TRUST_SUBDIR
 
-        real_mkdir = Path.mkdir
+        real_mkdir = os.mkdir
 
-        def uncreatable_trust(self, *args, **kwargs):
-            if self == trust:
+        # os.mkdir: pathlib and the owner-only helper both create through it.
+        def uncreatable_trust(path, *args, **kwargs):
+            if Path(path) == trust:
                 raise PermissionError("read-only config dir")
-            return real_mkdir(self, *args, **kwargs)
+            return real_mkdir(path, *args, **kwargs)
 
-        with patch.object(Path, "mkdir", uncreatable_trust):
+        with patch.object(os, "mkdir", uncreatable_trust):
             log = SecurityEventLog(base_dir=tmp_path, sync=True)
         assert log._hmac_key_file == legacy, "precondition: signing at the legacy path"
         # The static screens now pass, so only the pin can refuse.
@@ -1379,6 +1381,39 @@ class TestInferSource:
     def test_infer_source(self, key, expected):
         assert _infer_source(key) == expected
 
+    def test_infer_source_still_files_the_bare_dashboard_key_under_slack(self):
+        # Governance binds a profile through _infer_source, so the audit-label fix
+        # for the dashboard handlers' bare caller leaves it unchanged.
+        assert _infer_source("dashboard") == "slack"
+
+
+class TestDashboardHandlerRowsCarryTheDashboardSource:
+    """The dashboard's own handlers log under the bare caller ``"dashboard"``."""
+
+    def test_a_file_read_row_from_the_dashboard_carries_source_dashboard(self, log, sel_dir):
+        log.log_tool_invocation(
+            session_key="dashboard", tool_name="file_read", outcome="success", resources="/x"
+        )
+        data = json.loads((sel_dir / "security_events.jsonl").read_text(encoding="utf-8"))
+        assert data["source"] == "dashboard"
+        assert data["caller_identity"] == "dashboard"
+
+    def test_an_explicit_source_still_wins(self, log, sel_dir):
+        log.log_tool_invocation(
+            session_key="dashboard", source="cron", tool_name="file_read", outcome="success"
+        )
+        data = json.loads((sel_dir / "security_events.jsonl").read_text(encoding="utf-8"))
+        assert data["source"] == "cron"
+
+    @pytest.mark.parametrize(
+        "key,expected",
+        [("dashboard:slot0", "dashboard"), ("C08HZAWV4TP:thread123", "slack"), ("", "unknown")],
+    )
+    def test_other_keys_keep_their_inferred_source(self, log, sel_dir, key, expected):
+        log.log_tool_invocation(session_key=key, tool_name="file_read", outcome="success")
+        data = json.loads((sel_dir / "security_events.jsonl").read_text(encoding="utf-8"))
+        assert data["source"] == expected
+
 
 class TestSingleton:
     def test_returns_same_instance(self, sel_dir):
@@ -1409,3 +1444,54 @@ class TestReadLastHash:
         SecurityEventLog._instance = None
         log2 = SecurityEventLog(base_dir=sel_dir, sync=True)
         assert log2._last_hash == expected_hash
+
+    def test_an_unreadable_tip_at_construction_is_read_again_not_taken_as_genesis(
+        self, log, sel_dir, monkeypatch
+    ):
+        """A log that is present but cannot be opened has an unknown tip, not "".
+
+        Chaining from "" would put a genesis link mid-file and verify would call the
+        honest log tampered. The first append reads the tip again instead, and a
+        critical one fails closed while it still cannot.
+        """
+        log.log(_make_event(event_id="seed-1"))
+        log.log(_make_event(event_id="seed-2"))
+        SecurityEventLog._instance = None
+        with monkeypatch.context() as mp:
+            _hold_live_log(mp, log._path)
+            log2 = SecurityEventLog(base_dir=sel_dir, sync=True)
+            with pytest.raises(OSError):
+                log2.log(_make_event(event_id="while-held"), critical=True)
+        log2.log(_make_event(event_id="after-release"))
+
+        assert log2.verify_integrity() == (3, 3)
+
+    @pytest.mark.parametrize("sync", [True, False], ids=["pre-append-check", "descriptor-guard"])
+    def test_a_failed_tip_reread_is_retried_by_the_next_append(self, sel_dir, monkeypatch, sync):
+        """A re-read that raises must not leave the next append on the superseded tip.
+
+        Both re-anchor paths are covered: the check before a rotating append
+        (``sync=True``) and the inline critical append's descriptor guard.
+        """
+        ours = SecurityEventLog(base_dir=sel_dir, sync=sync)
+        ours.log(_make_event(event_id="ours-1"), critical=True)
+        SecurityEventLog._instance = None
+        SecurityEventLog(base_dir=sel_dir, sync=True).log(_make_event(event_id="foreign-1"))
+        with monkeypatch.context() as mp:
+            _hold_live_log(mp, ours._path)
+            with pytest.raises(OSError):
+                ours.log(_make_event(event_id="while-held"), critical=True)
+        ours.log(_make_event(event_id="ours-2"), critical=True)
+
+        assert ours.verify_integrity() == (3, 3)
+
+
+def _hold_live_log(mp: pytest.MonkeyPatch, path: Path) -> None:
+    """Fail the SEL's own ``open()`` of *path*, as a handle held without sharing does."""
+
+    def held_open(file, *args, **kwargs):
+        if Path(file) == path:
+            raise PermissionError(13, "held open without sharing", os.fspath(file))
+        return open(file, *args, **kwargs)
+
+    mp.setattr(kiro_crew_sel_append, "open", held_open, raising=False)

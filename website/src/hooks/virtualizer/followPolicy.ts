@@ -48,6 +48,7 @@ import type { ScrollToIndexOptions } from './types'
 import type { ReadingPositionEntry } from './readingPosition'
 import type { ResizeBatch } from './measurement'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
+import { releaseReadingPosition } from '../../utils/panelSlide'
 
 /** How a programmatic write must be accounted for by the follow guard. */
 export type WriteScrollTop = (
@@ -1116,6 +1117,8 @@ export function usePinning<T>(ctx: {
       if (!el) return
       const count = itemsRef.current.length
       if (count === 0) return
+      // Explicit navigation owns the position from here (utils/panelSlide).
+      releaseReadingPosition(el)
       const t = Math.max(0, Math.min(count - 1, Math.floor(index)))
       setWindowRange(computeJumpWindow(t, count, overscan))
       requestAnimationFrame(() => {
@@ -1151,6 +1154,8 @@ export function usePinning<T>(ctx: {
       // `RESTORE.OK idx=5 n=40` followed by a burst of `WRITE bottom`, landing a
       // reader who had left 24,600px from the end at `to-end 0px`.
       if (restoreOwnsPosition()) return
+      // Explicit navigation owns the position from here (utils/panelSlide).
+      releaseReadingPosition(el)
       // Mount the tail so the bottom items have real heights, then force-pin.
       // The tail covers the viewport (bottomPinWindow): a bare overscan-sized
       // tail unmounted the rows on screen and showed the spacer's placeholder

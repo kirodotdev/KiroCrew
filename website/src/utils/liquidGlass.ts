@@ -18,8 +18,38 @@
  * solid default and never the effect. `index.html` reads the same key before
  * React hydrates so the first paint already matches; this module is the single
  * owner of the key name and the attribute value so the two cannot drift.
+ *
+ * The browser copy is the render cache. The choice itself is workspace-backed
+ * like the theme mode (`dashboard.translucent_panels`, read at boot through
+ * `GET /api/theme/boot`, written through `PUT /api/config/theme`), because a
+ * browser-only store is per ORIGIN: a new gateway port, `localhost` against
+ * `127.0.0.1`, a second browser or the desktop app each start from an absent
+ * key, which read as "the glass keeps turning itself off". `useLiquidGlass`
+ * publishes every change; `useTheme`'s boot effect adopts the stored value
+ * (`adoptServerLiquidGlass`).
  */
 export const LIQUID_GLASS_STORAGE_KEY = 'mc-liquid-glass'
+
+/**
+ * Fired on `window` whenever this browser's stored choice changes -- by the
+ * switch (any mounted `useLiquidGlass`) or by the boot adoption of the
+ * workspace value -- so every mounted hook re-reads the store and the Settings
+ * row, the first-run row and the root attribute never disagree.
+ */
+export const LIQUID_GLASS_CHANGED_EVENT = 'mc-liquid-glass-changed'
+
+/**
+ * The choice as the workspace stores it (`dashboard.translucent_panels`;
+ * `TRANSLUCENT_PANELS_VALUES` on the gateway). `''` is "never chosen on this
+ * workspace": a bool could not tell a workspace that chose solid from one that
+ * predates the key, and on the latter the browser's own stored choice must keep
+ * holding, or every upgrade would turn an existing user's glass off.
+ */
+export type TranslucentPanelsStored = '' | 'on' | 'off'
+
+export function toTranslucentPanelsStored(on: boolean): TranslucentPanelsStored {
+  return on ? 'on' : 'off'
+}
 
 export function readLiquidGlass(): boolean {
   try {
@@ -42,6 +72,46 @@ export function persistLiquidGlass(on: boolean): void {
   } catch {
     // Storage may be unavailable (private mode, quota); the attribute still applies for this session.
   }
+}
+
+/**
+ * The new value rides in the event (`detail`) rather than being re-read from
+ * the store by each listener: with site storage blocked, `persistLiquidGlass`
+ * cannot write, and a listener that re-read would answer the solid default
+ * over the value the user just chose, turning the switch straight back off.
+ */
+export function notifyLiquidGlassChanged(on: boolean): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent<boolean>(LIQUID_GLASS_CHANGED_EVENT, { detail: on }))
+}
+
+/** The value a `LIQUID_GLASS_CHANGED_EVENT` carries; the store only when a
+ *  foreign dispatch carried none. */
+export function liquidGlassFromEvent(event: Event): boolean {
+  const detail = (event as CustomEvent<unknown>).detail
+  return typeof detail === 'boolean' ? detail : readLiquidGlass()
+}
+
+/**
+ * Apply the workspace's stored choice to this browser at boot. `'on'` / `'off'`
+ * win over the browser copy (the workspace is the source of truth, the browser
+ * the cache, as for `mc-theme`); `''` or anything else leaves the browser copy
+ * alone, so a workspace that predates the key renders exactly as it did.
+ * Returns true when the browser copy changed (the hooks are then notified).
+ */
+export function adoptServerLiquidGlass(stored: unknown): boolean {
+  if (stored !== 'on' && stored !== 'off') return false
+  // The workspace holds a choice, so the first-run default has nothing left to
+  // offer in this browser: without the marker, a tour left unfinished after
+  // the user turned the glass off would seed it on again and publish that
+  // over the workspace's 'off'. Before the unchanged-value return on purpose.
+  markLiquidGlassSeeded()
+  const on = stored === 'on'
+  if (readLiquidGlass() === on) return false
+  persistLiquidGlass(on)
+  applyLiquidGlass(on)
+  notifyLiquidGlassChanged(on)
+  return true
 }
 
 /**

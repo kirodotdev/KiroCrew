@@ -2,6 +2,9 @@
  *  folder, clears what hides the target, opens its ancestors, then scrolls to and
  *  flashes it with a bounded retry. */
 import { useRef, useState, useEffect, useCallback, type Dispatch, type SetStateAction, type RefObject } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { api } from '../../api/client'
+import { invalidateFoldersWhenIdle } from '../../api/chatFoldersWrite'
 import { useAppSelector, type AppDispatch } from '../../store'
 import { clearSlotReveal } from '../../store/chatSlice'
 import type { ChatFolder } from '../../types'
@@ -85,6 +88,15 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
   // well as on change (#912 D1). The nonce makes repeat reveals of the same
   // row distinct requests, so the effect re-fires even when the key repeats.
   const revealRequest = useAppSelector(s => s.chat.revealRequest)
+  const queryClient = useQueryClient()
+  // A folder-path open whose folder is not listed yet: the request this
+  // sidebar made its own folder read for. Keyed by the request object, which a
+  // new request replaces. See the `openFoldersOnly` branch below.
+  const folderWaitRef = useRef<{ request: object } | null>(null)
+  // The current request, read by that folder read when it answers, so an
+  // answer never clears a newer request.
+  const revealRequestRef = useRef(revealRequest)
+  revealRequestRef.current = revealRequest
   // Serial + pending timer for the in-flight reveal: a newer reveal cancels
   // the older retry loop, and unmount stops the pending timer outright.
   const revealRunRef = useRef<{ seq: number; timer: number | null }>({ seq: 0, timer: null })
@@ -102,6 +114,10 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     const run = revealRunRef.current
     if (run.timer != null) clearTimeout(run.timer)
     revealFlashTimersRef.current.forEach(clearTimeout)
+    // A folder read still in flight answers to nobody once this sidebar is
+    // gone: its callback finds no wait and does nothing, so it cannot clear a
+    // request made after the unmount. The next sidebar makes its own read.
+    folderWaitRef.current = null
   }, [])
   /**
    * Scroll a revealed row into view and flash it, retrying until the row exists.
@@ -225,13 +241,40 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
       // default, which is the case when a closed mobile drawer first mounts the
       // sidebar after the fork. So the request stays pending until the folder is
       // listed, and this effect runs again when `folders` changes. A failed fetch
-      // keeps it pending too, for the retry or the websocket seed. Once a fetch
-      // has succeeded without it, the folder is gone and the request is dropped.
+      // keeps it pending too, for the retry or the websocket seed.
+      //
+      // A settled list can also predate the folder. An import from a new sender
+      // creates its `from <sender>` folder, and a command-bar run can create its
+      // command's folder, and the list only learns of either from a later slots
+      // frame. So a settled list without the folder makes ONE server read of its
+      // own. The read goes to the API, not through the query cache, because a
+      // folder write's optimistic `setQueryData` and its `cancelQueries` also
+      // move the cache, and neither is a server answer. Only that read can drop
+      // the request: if it lacks the folder, the folder is gone. If it lists the
+      // folder, the cache is asked to refetch and the request waits for the
+      // list to carry it. A failed read keeps the request for the next change.
       if (folderId && !folders.some(f => f.id === folderId)) {
         if (!foldersSettled) return
-        dispatch(clearSlotReveal())
-        // eslint-disable-next-line no-console -- the folder named by a create or fork no longer exists, and nothing else records that the path was not opened
-        console.debug('reveal-in-sidebar: no folder for id', folderId)
+        if (folderWaitRef.current?.request === revealRequest) return
+        const request = revealRequest
+        folderWaitRef.current = { request }
+        api.chatFolders().then(
+          (listed: ChatFolder[]) => {
+            if (folderWaitRef.current?.request !== request) return
+            if (listed.some(f => f.id === folderId)) {
+              invalidateFoldersWhenIdle(queryClient)
+              return
+            }
+            folderWaitRef.current = null
+            if (revealRequestRef.current !== request) return
+            dispatch(clearSlotReveal())
+            // eslint-disable-next-line no-console -- the folder named by a create or fork no longer exists, and nothing else records that the path was not opened
+            console.debug('reveal-in-sidebar: no folder for id', folderId)
+          },
+          () => {
+            if (folderWaitRef.current?.request === request) folderWaitRef.current = null
+          },
+        )
         return
       }
       dispatch(clearSlotReveal())
@@ -285,7 +328,7 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // session could scroll to the peer's row instead. `slot` above is resolved
     // from the LOCAL `slots` prop, so its identity is the right target.
     runReveal('session', key, sessionRowIdentity(slot))
-  }, [revealRequest, dispatch, localSlots, folders, foldersSettled, revealBlockingFilters, expandFolderAncestors, expandConductorAncestors, runReveal, isStaleExempt, slotFolders, staleCollapseMs, sortKey, setStaleExpanded])
+  }, [revealRequest, dispatch, queryClient, localSlots, folders, foldersSettled, revealBlockingFilters, expandFolderAncestors, expandConductorAncestors, runReveal, isStaleExempt, slotFolders, staleCollapseMs, sortKey, setStaleExpanded])
   // ── Reveal a FOLDER row ───────────────────────────────────────────────────
   // The folder twin of the session reveal above, driven by the command launcher's
   // Folders group and the palette's Folders tab ("search a folder, land on it").

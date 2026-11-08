@@ -86,12 +86,12 @@ def normalize_branch(branch: str) -> str:
     b = (branch or "").strip()
     # Strip known ref/remote prefixes REPEATEDLY until stable. A single ordered pass is not
     # enough: ``refs/heads/main`` and ``origin/refs/heads/main`` are the same ref as ``main``
-    # and git accepts all three, but each needs a different strip order, and the first
-    # version of this fix still let ``origin/refs/heads/main`` through — measured. Reachable
-    # because ``branch`` is writable through ``PUT /config`` with no shape check on write.
+    # and git accepts all three, but each needs a different strip order, so a single pass
+    # lets ``origin/refs/heads/main`` through — measured. Reachable because ``branch`` is
+    # writable through ``PUT /config`` with no shape check on write.
     #
-    # Found by auditing this denylist for the same evasion class review had just found in
-    # the shell denylist: a normalization that runs once can always be re-nested.
+    # The same evasion class as in the shell denylist: a normalization that runs once can
+    # always be re-nested.
     #
     # Bounded loop, not ``while True``: a crafted value like ``origin/origin/origin/...``
     # must not spin. Six passes is far more nesting than any real ref.

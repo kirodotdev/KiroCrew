@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -26,6 +25,7 @@ if TYPE_CHECKING:
         _LockedSectionWrite,
         _mask_secret,
         _sel,
+        _stored_threshold_pct,
         _threshold_pct_rejection,
         _write_env_or_roll_back,
         channel_restart_required,
@@ -33,7 +33,6 @@ if TYPE_CHECKING:
         ensure_channel_folder,
         is_direct_local_request,
         live,
-        read_config_text,
         run_to_completion,
         stored_folder_name,
     )
@@ -50,7 +49,7 @@ async def _validate_telegram_token(token: str) -> str | None:
     """
     import aiohttp  # noqa: F811
 
-    from kiro_crew.telegram.client import _api_base
+    from kiro_crew.telegram.client import _api_base, _resolve_proxy, _url_is_loopback
 
     timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
     # Built from the SAME TELEGRAM_API_BASE_URL resolver the client uses
@@ -59,11 +58,14 @@ async def _validate_telegram_token(token: str) -> str | None:
     # never target a different host than the live channel; unset falls back to
     # the public host.
     verify_url = _api_base().format(token=token, method="getMe")
+    # The client's forward-proxy rule (``_proxy_for``): the env proxy, except
+    # that a loopback base never leaves the machine.
+    proxy = None if _url_is_loopback(verify_url) else _resolve_proxy()
     async with aiohttp.ClientSession(timeout=timeout) as session:
         # verify_url carries the bot token; refuse a proxy redirect to a
         # plaintext http:// Location rather than follow it off-box, matching the
         # client's own method calls.
-        async with session.get(verify_url, allow_redirects=False) as resp:
+        async with session.get(verify_url, allow_redirects=False, proxy=proxy) as resp:
             data = await resp.json(content_type=None)
             if isinstance(data, dict) and data.get("ok"):
                 return None
@@ -82,7 +84,10 @@ async def api_telegram_config_get(request: web.Request) -> web.Response:
 
     cfg = KiroCrewConfig.load()
     # Off-loop: a secret:// reference is read and decrypted from the vault.
-    creds = await asyncio.to_thread(cfg.load_credentials)
+    # propagate=False: a post-boot dashboard read must not re-seed os.environ,
+    # or a worker-thread setdefault could restore a credential the live watcher
+    # just popped. Boot owns the one propagation.
+    creds = await asyncio.to_thread(cfg.load_credentials, propagate=False)
     token = creds.get(CRED_TELEGRAM_BOT_TOKEN, "") or cfg.telegram.bot_token
     tg = cfg.telegram
     state: DashboardState = request.app["state"]
@@ -216,7 +221,10 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     path = config_path()
 
     def _read_config() -> dict:
-        data = json.loads(read_config_text(path)) if path.exists() else {}
+        # The read half of this read-modify-write starts from what the load reads.
+        from kiro_crew.config.loader import read_config_for_update
+
+        data = read_config_for_update(path)
         if not isinstance(data, dict):
             raise ValueError("config.json is not a JSON object")
         return data
@@ -248,7 +256,10 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             s = str(item).strip()
             if not s:
                 continue
-            if not s.isdigit():
+            # Refuse what int() would raise on: "²".isdigit() is True while
+            # int("²") raises, and so does int() past its digit limit. Telegram
+            # IDs fit an int64, so 20 digits is generous.
+            if not (s.isascii() and s.isdigit()) or len(s) > 20:
                 return _deny(f"invalid Telegram user ID: {s} (numeric IDs only)")
             uid = int(s)
             if uid not in new_ids:
@@ -262,7 +273,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
         return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
         pct = int(body["soft_threshold_pct"])
-        if pct != int(tg_cfg.get("soft_threshold_pct", 80)):
+        if pct != _stored_threshold_pct(tg_cfg, "soft_threshold_pct", 80):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
@@ -331,7 +342,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             # so accept an optional leading minus — the digits-only check used
             # for allowed_user_ids would wrongly reject every group id here.
             digits = s[1:] if s.startswith("-") else s
-            if not digits.isdigit():
+            if not (digits.isascii() and digits.isdigit()) or len(digits) > 20:
                 return _deny(f"invalid Telegram chat ID: {s} (integer IDs only)")
             cid = int(s)
             if cid not in new_chat_ids:

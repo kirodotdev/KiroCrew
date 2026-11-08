@@ -1,23 +1,12 @@
 """Returning the global ``agent.model`` to "auto" clears a managed spec pin.
 
-``_refresh_dynamic_fields`` propagates the global ``agent.model`` from
-config.json INTO the kiro agent spec. A spec pin outranks the global in
-``resolve_effective_model``, so if the propagation never reverses itself the
-"auto" setting is unreachable from the configuration surface: the write succeeds
-and is honoured nowhere, and the stale pin keeps going out on the wire.
+A spec pin outranks the global in ``resolve_effective_model``, so without the reverse
+propagation "auto" would be unreachable. The sidecar's ``model_managed`` flag decides:
+``True`` may be cleared, ``False`` (a user pick) is untouched, and unset (owner unknown)
+is untouched until a published spec carries a concrete global.
 
-Ownership is the sidecar's ``model_managed`` flag, and it is the whole scope
-boundary here:
-
-- ``True``  -> the propagation owns the field, so it may clear it.
-- ``False`` -> an explicit user pick, frozen against default bumps; untouched.
-- unset     -> legacy status (ownership unknown); untouched while the global
-  defers. Migrating those is tracked separately and deliberately NOT done here;
-  only a published spec carrying a concrete global claims one.
-
-The shipped template that ships today happens to pin "auto", which masks the
-defect, so the tests below pin a template that declares no model — the condition
-under which a managed spec kept a stale concrete pin forever.
+The shipped template pins "auto", which hides the bug, so these tests use a template
+that declares no model.
 """
 
 from __future__ import annotations
@@ -79,27 +68,37 @@ class TestManagedPinFollowsTheGlobal:
         # clean install writes, and the resolver reads the two identically.
         assert _refresh(_PINNED)["model"] == DEFAULT_MODEL
 
-    def test_a_concrete_global_still_propagates(self, shipped) -> None:
-        """The forward direction is unchanged: an explicit global reaches the spec."""
-        shipped(None)
+    @pytest.mark.parametrize(
+        ("shipped_default", "global_model", "want"),
+        [
+            # The forward direction is unchanged: an explicit global reaches the spec.
+            pytest.param(
+                None,
+                "claude-haiku-4.5",
+                "claude-haiku-4.5",
+                id="test_a_concrete_global_still_propagates",
+            ),
+            # Clearing must not fight the re-sync branch it sits next to. A managed
+            # spec under a global of "auto" resolves to the SHIPPED default, not to
+            # the sentinel -- otherwise a shipped default bump would stop reaching
+            # existing installs, and the two branches would disagree about what a
+            # managed spec holds.
+            pytest.param(
+                "claude-sonnet-4.6",
+                "auto",
+                "claude-sonnet-4.6",
+                id="test_managed_spec_still_tracks_a_concrete_shipped_default",
+            ),
+        ],
+    )
+    def test_a_managed_spec_takes_a_concrete_model(
+        self, shipped, shipped_default: str | None, global_model: str, want: str
+    ) -> None:
+        shipped(shipped_default)
         agent_state.set_model_managed(_AGENT, True)
-        _set_global("claude-haiku-4.5")
+        _set_global(global_model)
 
-        assert _refresh(_PINNED)["model"] == "claude-haiku-4.5"
-
-    def test_managed_spec_still_tracks_a_concrete_shipped_default(self, shipped) -> None:
-        """Clearing must not fight the re-sync branch it sits next to.
-
-        A managed spec under a global of "auto" resolves to the SHIPPED default,
-        not to the sentinel — otherwise a shipped default bump would stop
-        reaching existing installs, and the two branches would disagree about
-        what a managed spec holds.
-        """
-        shipped("claude-sonnet-4.6")
-        agent_state.set_model_managed(_AGENT, True)
-        _set_global("auto")
-
-        assert _refresh(_PINNED)["model"] == "claude-sonnet-4.6"
+        assert _refresh(_PINNED)["model"] == want
 
     def test_an_absent_global_is_treated_as_auto(self, shipped) -> None:
         """No ``agent.model`` key at all is the same deferral as "auto"."""
@@ -114,11 +113,8 @@ class TestManagedPinFollowsTheGlobal:
 class TestTheGlobalIsReadThroughTheResolversNormalizer:
     """config.json is hand-editable, and the spec it feeds is schema-validated.
 
-    kiro-cli validates ``~/.kiro/agents/*.json`` with ``deny_unknown_fields`` and
-    rejects the whole spec on a bad value, silently falling back to the default
-    agent. Judging "does the global defer?" with ``normalize_agent_model`` — the
-    same chokepoint the resolver uses — keeps a junk value out of the spec and
-    keeps the two surfaces from disagreeing about what "auto" means.
+    kiro-cli rejects a whole spec on a bad value and falls back to the default agent, so
+    the check uses ``normalize_agent_model``, the resolver's own chokepoint.
     """
 
     @pytest.mark.parametrize("spelling", ["auto", "  auto  ", "", "   "])
@@ -173,11 +169,8 @@ class TestOwnershipBoundary:
 class TestPropagationClaimsALegacyPin:
     """A published spec carrying the concrete global makes that pin the propagation's.
 
-    A legacy-status spec (no sidecar entry) keeps an unknown-owner pin, but once
-    a spec holding the concrete global is on disk, whatever it held before is
-    gone. Leaving the entry unset there strands that value: setting the global
-    back to "auto" is a no-op for a legacy spec, so the model the user just
-    turned off keeps running.
+    Left unset, "auto" would be a no-op for it and the model the user turned off would
+    keep running.
     """
 
     def _publish(self, spec_model: str) -> dict:

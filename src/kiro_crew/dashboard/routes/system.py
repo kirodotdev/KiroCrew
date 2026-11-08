@@ -10,16 +10,29 @@ swallow it, so neither the lines within this function nor the order in which
 from __future__ import annotations
 
 import importlib
+import logging
 import os
 
 from aiohttp import web
 
+from kiro_crew.apps.builtin_unavailable import record_unavailable_builtin
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.routes import register_app_routes
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.dashboard import handlers
 from kiro_crew.dashboard.handlers import redaction as redaction_handlers
+from kiro_crew.dashboard.handlers import restart_gate as restart_gate_handlers
 from kiro_crew.dashboard.handlers.tunnel import api_tunnel_status
+from kiro_crew.dashboard.token_auth_paths import AGENT_HOOK_STATUS_PATH
+from kiro_crew.edition_locks import local_enable_locked
+
+_log = logging.getLogger(__name__)
+
+#: The ``BUILTIN_NAMES`` packages whose wheel copy is released on this boot
+#: (``builtin_adoption.released_builtin_packages``). ``start_dashboard`` sets it
+#: off the event loop, after APPLY and before ``register_all``; absent, every
+#: package registers as before.
+RELEASED_BUILTIN_PACKAGES = web.AppKey("released_builtin_packages", frozenset)
 
 
 def register(app: web.Application) -> None:
@@ -42,10 +55,15 @@ def register(app: web.Application) -> None:
     app.router.add_put(
         "/api/notifications/channels/settings", handlers.api_notification_channel_settings
     )
+    # Web Push (dashboard-user): browser subscription lifecycle + VAPID key.
+    app.router.add_get("/api/notifications/push/vapid-public-key", handlers.api_vapid_public_key)
+    app.router.add_post("/api/notifications/push/subscribe", handlers.api_push_subscribe)
+    app.router.add_post("/api/notifications/push/unsubscribe", handlers.api_push_unsubscribe)
     app.router.add_get("/api/update/check", handlers.api_update_check)
     app.router.add_get("/api/changelog", handlers.api_changelog)
     app.router.add_get("/api/releases", handlers.api_releases)
     app.router.add_post("/api/update", handlers.api_update_apply)
+    app.router.add_get("/api/update/auto", handlers.api_update_auto_pin)
     app.router.add_post("/api/update/auto", handlers.api_update_auto)
     app.router.add_post("/api/update/channel", handlers.api_update_channel)
     # A terminal `kirocrew update` on a git checkout pokes this so the running
@@ -71,9 +89,15 @@ def register(app: web.Application) -> None:
     # restart is valid everywhere and is how a wheel install picks up code a
     # terminal-run installer already replaced on disk.
     app.router.add_post("/api/restart", handlers.api_gateway_restart)
-    # Only expose the simulation endpoint in dev/debug environments
+    # The idle check `kirocrew restart --when-idle` asks before restarting.
+    # Host-only: a strict internal path, re-asserted by the handler.
+    app.router.add_post("/api/restart/when-idle", restart_gate_handlers.api_restart_when_idle)
+    # Only expose the simulation endpoint in dev/debug environments. Both are local
+    # developer switches, which an enterprise build ignores (RFC D3).
     _is_dev_env = os.environ.get("KIROCREW_HOME", "").endswith("-dev")
-    if _is_dev_env or env_flag_enabled("KIROCREW_DEV_MODE"):
+    if (_is_dev_env or env_flag_enabled("KIROCREW_DEV_MODE")) and not local_enable_locked(
+        "developer_mode"
+    ):
         app.router.add_post("/api/update/simulate", handlers.api_update_simulate)
     app.router.add_get("/api/sessions", handlers.api_sessions)
     app.router.add_delete("/api/sessions", handlers.api_sessions_clear)
@@ -101,6 +125,8 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/wakatime/export", handlers.api_wakatime_export)
     app.router.add_get("/api/telemetry/beacon", handlers.api_beacon_status)
     app.router.add_get("/api/telemetry/collection", handlers.api_collection_status)
+    # Owner-only, closed one-field body, no disk write (handlers/telemetry_ui_control.py).
+    app.router.add_post("/api/telemetry/ui-control", handlers.api_ui_control_clicked)
     app.router.add_get("/api/tailnet/status", handlers.api_tailnet_status)
     # Mobile access: a LIVE probe (the status route above reports the startup
     # value) plus setup/publish/withdraw mutations and the QR mint. Registered
@@ -141,6 +167,15 @@ def register(app: web.Application) -> None:
     )
     app.router.add_delete(
         "/api/security/denied-commands/user/{id}", handlers.api_denied_command_user_delete
+    )
+    # Owner review of a hand-edited sealed keystone file: owner-gated, CSRF-guarded,
+    # never reachable by an agent or MCP tool (handlers/config_pending.py).
+    app.router.add_get("/api/security/config-pending", handlers.api_config_pending_list)
+    app.router.add_post(
+        "/api/security/config-pending/{leaf}/apply", handlers.api_config_pending_apply
+    )
+    app.router.add_post(
+        "/api/security/config-pending/{leaf}/discard", handlers.api_config_pending_discard
     )
     # Per-app third-party execution grants (Settings > Security opt-IN). The
     # blanket flag is a PUT on a fixed sub-path; grant/revoke are POST/DELETE on
@@ -183,10 +218,15 @@ def register(app: web.Application) -> None:
     # authorization the agent must not be able to grant itself.
     app.router.add_get("/api/decisions/consent", handlers.api_decisions_consent_get)
     app.router.add_put("/api/decisions/consent", handlers.api_decisions_consent_put)
-    # Which System One server the seam asks: hosted Jev or a local preset. Owner-gated
-    # in the handler and the only dashboard writer of `decisions.provider.*`.
+    # Which System One server the seam asks: hosted Jev, a local preset or a SageMaker
+    # endpoint. Owner-gated in the handler and the only dashboard writer of
+    # `decisions.provider.*`.
     app.router.add_get("/api/decisions/provider", handlers.api_decisions_provider_get)
     app.router.add_put("/api/decisions/provider", handlers.api_decisions_provider_put)
+    # One fixed question to a SageMaker endpoint the owner typed; writes nothing.
+    app.router.add_post(
+        "/api/decisions/provider/sagemaker-test", handlers.api_decisions_provider_sagemaker_test
+    )
     app.router.add_get(
         "/api/decisions/local-models/status", handlers.api_decisions_local_model_status
     )
@@ -198,22 +238,11 @@ def register(app: web.Application) -> None:
     # strip's tooltip reads. Browser-called by the chat surface, like the consent
     # pair above.
     app.router.add_post("/api/decisions/feedback", handlers.api_decisions_feedback)
-    # Flagged-file delivery consent. Owner-gated in the handler; deliberately NOT
-    # on the strict-internal list in server.py, because unlike the file_send legs
-    # its only legitimate caller IS the owner's browser.
-    app.router.add_get("/api/file-delivery/consent", handlers.api_file_delivery_consent_get)
-    app.router.add_post("/api/file-delivery/consent", handlers.api_file_delivery_consent_post)
-    app.router.add_get(
-        "/api/file-delivery/consent/arm", handlers.api_file_delivery_consent_arm_status
-    )
-    app.router.add_post(
-        "/api/file-delivery/consent/approve", handlers.api_file_delivery_consent_approve
-    )
-    app.router.add_delete("/api/file-delivery/consent", handlers.api_file_delivery_consent_delete)
-    # Credential-redaction switch. Owner-gated in the handler, like the consent
-    # routes above: its only legitimate caller is the owner's browser.
+    # Credential-redaction switch. Owner-gated in the handler: its only
+    # legitimate caller is the owner's browser.
     app.router.add_get("/api/security/credential-redaction", handlers.api_credential_redaction_get)
     app.router.add_put("/api/security/credential-redaction", handlers.api_credential_redaction_put)
+    app.router.add_post("/api/security/redacted-value", handlers.api_owner_value_reveal)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)
 
@@ -229,19 +258,49 @@ def register(app: web.Application) -> None:
 
     # Webhook hooks (external triggers)
     app.router.add_post("/api/hooks/agent", handlers.api_hooks_agent)
+    app.router.add_get(AGENT_HOOK_STATUS_PATH, handlers.api_hooks_agent_status)
 
     # App Platform
     register_app_routes(app)
 
-    # Built-in app routes — register at startup (handlers check enabled state)
+    # Built-in app routes — register at startup (handlers check enabled state).
+    # A released package (its app adopted from its own repository, or uninstalled
+    # after that) registers nothing: its routes, and its on_startup/on_cleanup
+    # callbacks, would otherwise serve beside the app that owns the name.
+    _released = app.get(RELEASED_BUILTIN_PACKAGES, frozenset())
     for _builtin_name in BUILTIN_NAMES:
+        if _builtin_name in _released:
+            continue
         try:
             _mod = importlib.import_module(f"kiro_crew.apps.builtins.{_builtin_name}")
-            if hasattr(_mod, "register_routes"):
-                _mod.register_routes(app)
+            # A package may serve ``register_routes`` through a lazy module
+            # ``__getattr__`` that imports its routes file on first access, so the
+            # lookup reads files too and belongs inside the same guard.
+            _register = getattr(_mod, "register_routes", None)
         except ModuleNotFoundError as exc:
             if exc.name != f"kiro_crew.apps.builtins.{_builtin_name}":
                 raise
+            continue
+        except OSError as exc:
+            # One optional app whose files cannot be READ -- an endpoint security
+            # agent denying a path, a damaged install -- must not take the gateway,
+            # the dashboard and every session down with it. Its routes stay
+            # unregistered and the reason is logged; every other app still loads.
+            # Only the import and the ``register_routes`` lookup are guarded: an
+            # error while registering routes would leave the app half-registered,
+            # so it still aborts boot.
+            _log.warning(
+                "built-in app %r is unavailable: reading it failed (%s: %s); its routes "
+                "are not registered and the gateway continues without it",
+                _builtin_name,
+                type(exc).__name__,
+                exc,
+            )
+            # The App Store reads this to show the app as unavailable, with why.
+            record_unavailable_builtin(app, _builtin_name, exc)
+            continue
+        if _register is not None:
+            _register(app)
 
     # App token exchange (App Kit §5.1 — must be before auth middleware bypass)
     app.router.add_post("/api/apps/{name}/token", handlers.api_app_token)

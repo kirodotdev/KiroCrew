@@ -51,6 +51,10 @@ from kiro_crew.providers.base import (
 )
 from kiro_crew.testing.wait import async_wait_until, await_until
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 _GENERIC = "User denied tool execution"
 _TAG = "[Kiro Crew host notice]"
 #: Only the POLICY cause appends class-specific remediation; its guidance line

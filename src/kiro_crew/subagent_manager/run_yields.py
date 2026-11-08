@@ -184,6 +184,7 @@ async def _yield_for_stop_recovery_impl(
     )
     evidence = str(getattr(event, "text", "") or "")
     idle_m = re.search(r"idle_secs=(\d+)", evidence)
+    terminated_m = re.search(r"processes_terminated=(\d+)", evidence)
     body = build_tool_stall_recovery_prompt(
         str(getattr(event, "title", "") or ""),
         int(idle_m.group(1)) if idle_m else 0,
@@ -191,6 +192,7 @@ async def _yield_for_stop_recovery_impl(
         # Typed verdict first; the evidence-text marker is the fallback for
         # a provider that forwards no status object.
         stuck_input=typed_input_wait or "stuck_input" in evidence,
+        processes_terminated=int(terminated_m.group(1)) if terminated_m else 0,
     )
     return f"{TOOL_STALL_RECOVERY_PREFIX}\n{body}"
 
@@ -293,17 +295,10 @@ async def _yield_for_dependency_impl(
     info._wait_failed = ""
     info._resume_event = asyncio.Event()
     now = time.time()
-    # The ``running`` mark and the coordinator's wait write are ONE unit on
-    # ONE thread: a provider error can land before the turn's first frame
-    # (the prompt itself was refused), and the session IS live -- the turn
-    # was issued -- so the row must be ``running`` before the wait is
-    # written or the wait is refused and the row parked instead.
-    #
-    # The same fact takes the run out of startup: the provider answered
-    # this session's prompt, so what follows is a wait for the dependency,
-    # bounded by the scope's own deadline and ending in its own error --
-    # never a start that is not starting for the startup watchdog to reap,
-    # and never a place in the in-startup bound while parked.
+    # The ``running`` mark and the wait write run on ONE thread: the error can
+    # land before the turn's first frame, and the row must be ``running`` before
+    # the wait is written or the wait is refused. The provider answered, so the
+    # run also leaves startup: the startup watchdog must not reap it while parked.
     self._manager._leave_startup(info)
     verdict = await self._dependency_verdict(coordinator, info, signal)
     if verdict.outcome != "wait":

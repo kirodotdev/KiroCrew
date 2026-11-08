@@ -145,10 +145,10 @@ def test_matched_live_child_is_working_and_tracked(tmp_path):
 
     # A quiet build that still burns CPU is WORKING whatever it prints.
     clock.advance(4.0)
-    backend.cpu[200] += 5_000
+    backend.cpu[200] += 50_000_000
     verdict, evidence = oracle.check_tool(RUNTIME, tool)
     assert verdict == VERDICT_WORKING
-    assert evidence == "shell child 200 alive (cpu +5000ns (darwin cpu-only))"
+    assert evidence == "shell child 200 alive (cpu +50000000ns (darwin cpu-only))"
 
 
 def test_program_basename_matches_when_only_the_path_is_readable(tmp_path):
@@ -388,11 +388,11 @@ def test_model_wait_subtree_cpu_delta_is_working(tmp_path):
     oracle = _oracle(backend, clock, tmp_path, sample_min=1.0)
 
     assert oracle.check_model_wait(RUNTIME) == (VERDICT_UNKNOWN, EVIDENCE_SAMPLING)
-    backend.cpu[210] += 1_000_000
+    backend.cpu[210] += 20_000_000
     clock.advance(2.0)
     verdict, evidence = oracle.check_model_wait(RUNTIME)
     assert verdict == VERDICT_WORKING
-    assert evidence == "backend activity (cpu +1000000ns (darwin cpu-only))"
+    assert evidence == "backend activity (cpu +20000000ns (darwin cpu-only))"
 
 
 # ── (f) /proc-only evidence is never invented ────────────────────────────────
@@ -427,7 +427,101 @@ def test_flat_model_wait_is_unknown_never_dead_on_darwin(tmp_path):
 
     assert verdict == VERDICT_UNKNOWN
     assert not evidence.startswith(EVIDENCE_ESTABLISHED_FLAT), evidence
-    assert evidence == "backend subtree flat (cpu +0ns (darwin cpu-only))"
+    assert evidence == (
+        f"{EVIDENCE_PLATFORM_LIMITED}: backend subtree flat (cpu +0ns (darwin cpu-only))"
+    )
+
+
+def test_idle_housekeeping_below_the_floor_is_not_backend_activity(tmp_path):
+    """libproc reads CPU at nanosecond resolution, so idle MCP servers move the
+    subtree sum by a few ms on every sample. That is not work: below one 10 ms
+    tick the wait reads flat, as the /proc walk reads the same quiet tree."""
+    clock = _Clock()
+    backend = FakeBackend()
+    backend.add(210, "python -m kiro_crew.mcp_gateway.stub --server github", cpu=5_000_000_000)
+    oracle = _oracle(backend, clock, tmp_path, sample_min=1.0)
+
+    oracle.check_model_wait(RUNTIME)  # baseline
+    for _ in range(3):
+        backend.cpu[210] += 3_000_000
+        clock.advance(2.0)
+        verdict, evidence = oracle.check_model_wait(RUNTIME)
+        assert verdict == VERDICT_UNKNOWN, evidence
+        assert evidence == (
+            f"{EVIDENCE_PLATFORM_LIMITED}: backend subtree flat (cpu +3000000ns (darwin cpu-only))"
+        )
+
+
+@pytest.mark.parametrize(("delta", "moved"), [(9_999_999, False), (10_000_000, True)])
+def test_model_wait_floor_is_one_linux_tick(tmp_path, delta, moved):
+    clock = _Clock()
+    backend = FakeBackend()
+    backend.add(210, "python -m kiro_crew.mcp_gateway.stub --server github", cpu=5_000_000_000)
+    oracle = _oracle(backend, clock, tmp_path, sample_min=1.0)
+
+    oracle.check_model_wait(RUNTIME)  # baseline
+    backend.cpu[210] += delta
+    clock.advance(2.0)
+    verdict, _ = oracle.check_model_wait(RUNTIME)
+    assert verdict == (VERDICT_WORKING if moved else VERDICT_UNKNOWN)
+
+
+def test_a_process_leaving_the_tree_still_counts_as_movement(tmp_path):
+    """A shrinking sum is a child exiting, which is movement whatever its size."""
+    clock = _Clock()
+    backend = FakeBackend()
+    backend.add(210, "python -m kiro_crew.mcp_gateway.stub --server github", cpu=5_000_000_000)
+    backend.add(211, "python -m kiro_crew.mcp_gateway.stub --server slack", cpu=1_000)
+    oracle = _oracle(backend, clock, tmp_path, sample_min=1.0)
+
+    oracle.check_model_wait(RUNTIME)  # baseline
+    backend.remove(211)
+    clock.advance(2.0)
+    assert oracle.check_model_wait(RUNTIME)[0] == VERDICT_WORKING
+
+
+def test_shell_child_with_only_housekeeping_cpu_is_platform_limited(tmp_path):
+    """The same floor on the tool path: a live child whose tree only ticks
+    over is alive-but-flat (bounded), not a build making progress."""
+    clock = _Clock()
+    backend = FakeBackend()
+    backend.add(200, "/bin/bash -c long-build release", cpu=1_000)
+    oracle = _oracle(backend, clock, tmp_path, sample_min=1.0)
+    tool = _shell_tool("long-build release", clock)
+
+    assert oracle.check_tool(RUNTIME, tool)[0] == VERDICT_WORKING
+    clock.advance(2.0)
+    backend.cpu[200] += 2_000_000
+    verdict, evidence = oracle.check_tool(RUNTIME, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert evidence.startswith(EVIDENCE_PLATFORM_LIMITED)
+
+
+def test_portable_model_wait_on_darwin_takes_the_floor_and_the_tag(tmp_path, monkeypatch):
+    """When the tree cannot be enumerated the root-only portable probe answers.
+    On macOS it reads the same nanosecond counter, so the same floor applies,
+    and a real flat delta carries the same tag as the subtree branch."""
+    clock = _Clock()
+    backend = FakeBackend(enumerable=False)
+    oracle = _oracle(backend, clock, tmp_path, sample_min=1.0)
+    root_cpu = {"v": 1_000_000_000}
+    monkeypatch.setattr(
+        liveness.platform_compat, "proc_cpu_nanos_for_pid", lambda pid: root_cpu["v"]
+    )
+    monkeypatch.setattr(liveness.platform_compat, "pid_exists", lambda pid: True)
+
+    assert oracle.check_model_wait(RUNTIME) == (VERDICT_UNKNOWN, EVIDENCE_SAMPLING)
+    root_cpu["v"] += 4_000_000
+    clock.advance(2.0)
+    verdict, evidence = oracle.check_model_wait(RUNTIME)
+    assert verdict == VERDICT_UNKNOWN
+    assert evidence == f"{EVIDENCE_PLATFORM_LIMITED}: backend flat (cpu +4000000ns)"
+
+    root_cpu["v"] += 40_000_000
+    clock.advance(2.0)
+    verdict, evidence = oracle.check_model_wait(RUNTIME)
+    assert verdict == VERDICT_WORKING
+    assert evidence == "backend activity (cpu +40000000ns, pid alive)"
 
 
 def test_live_tracked_child_never_reads_stuck_input_on_darwin(tmp_path):
@@ -468,10 +562,10 @@ def test_platform_limited_child_recovers_to_working_when_cpu_moves(tmp_path):
     clock.advance(2.0)
     assert oracle.check_tool(RUNTIME, tool)[0] == VERDICT_UNKNOWN
     clock.advance(2.0)
-    backend.cpu[200] += 10
+    backend.cpu[200] += 10_000_000
     verdict, evidence = oracle.check_tool(RUNTIME, tool)
     assert verdict == VERDICT_WORKING
-    assert evidence == "shell child 200 alive (cpu +10ns (darwin cpu-only))"
+    assert evidence == "shell child 200 alive (cpu +10000000ns (darwin cpu-only))"
 
 
 def test_platform_limited_reads_an_early_flat_delta_against_the_match_baseline(tmp_path):

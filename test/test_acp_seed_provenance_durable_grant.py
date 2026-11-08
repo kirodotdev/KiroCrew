@@ -14,7 +14,6 @@ import json
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -35,6 +34,7 @@ from kiro_crew import model_registry as mr
 from kiro_crew import sandbox, security
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import seed_provenance as sp
+from kiro_crew.testing.wait import await_until
 
 
 def _attribute_calls(node: ast.AST, name: str) -> list[ast.Attribute]:
@@ -50,14 +50,9 @@ def _attribute_calls(node: ast.AST, name: str) -> list[ast.Attribute]:
 class TestTheRecordIsOnEveryWriteFloor:
     """An entry in the sidecar IS the grant, so the agent must not be able to add one.
 
-    The forgery chain the floors close, end to end: an agent writes
-    ``{"seeds": {"<repo>/.claude/settings.local.json": {size, sha256}}}`` for a
-    settings file the USER hand-wrote, the next gateway start loads it, the digest
-    matches, and Crew's own trusted writer adopts the file -- replacing the user's
-    ``permissions.defaultMode`` with this session's and unlinking the file on reset.
-    The digest check is doing exactly what it was designed to do; what must not be
-    forgeable is the record it checks against. Read stays allowed: the record holds
-    work-dir paths and digests, not a secret.
+    A forged entry for a user's settings file would let Crew adopt it, overwrite its
+    ``permissions.defaultMode`` and unlink it on reset. Read stays allowed: the record
+    holds paths and digests, not a secret.
     """
 
     DIR = "seed-provenance"
@@ -121,12 +116,8 @@ class TestTheRecordIsOnEveryWriteFloor:
 class TestOwnershipTracksTheFilesystem:
     """A claim moves only when the write or the unlink actually happened.
 
-    Ownership is a statement about bytes on disk, so every place it is recorded or
-    dropped has to be ordered against the syscall that made it true. Both
-    directions were wrong: the re-seed truncated the recorded bytes before writing
-    the new ones (a failure mid-write left a file no session could ever claim
-    again), and reset dropped the claim before knowing the unlink succeeded (a
-    failure left Crew's own file behind as an unrecognizable orphan).
+    Each record or drop is ordered after the syscall that made it true; otherwise a
+    failed write or unlink leaves a file no session can claim.
     """
 
     def test_a_failed_reseed_leaves_the_recorded_bytes_and_the_claim(self, tmp_path, monkeypatch):
@@ -188,13 +179,9 @@ class TestOwnershipTracksTheFilesystem:
     def test_a_failed_adoption_hands_the_claim_back_within_the_process(self, tmp_path, monkeypatch):
         """The claim has to be released, not just survive a process restart.
 
-        ``claim`` is the race arbiter, so it is taken BEFORE the write -- it cannot
-        wait for one to succeed without letting two clients both decide the same
-        orphan is theirs. But a winner that then fails to write still holds the live
-        slot, and every later client in this process therefore reads the orphan as a
-        LIVE session's file: unadoptable, so the stale ``bypassPermissions`` in it
-        can be neither rewritten nor removed for the lifetime of the gateway. Note
-        there is no ``_the_owning_process_died()`` below -- that is the point.
+        ``claim`` is taken before the write, so a failed writer must release it or later
+        clients read the orphan as live. No ``_the_owning_process_died()`` below, on
+        purpose.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         _client(tmp_path, permission_mode="bypassPermissions")._write_claude_local_settings()
@@ -245,10 +232,10 @@ class TestOwnershipTracksTheFilesystem:
         opened: list[int] = []
         real_open = os.open
 
-        def _record_flags(path, flags, *rest):
+        def _record_flags(path, flags, *rest, **kwargs):
             if str(path).endswith("settings.local.json"):
                 opened.append(flags)
-            return real_open(path, flags, *rest)
+            return real_open(path, flags, *rest, **kwargs)
 
         client = _client(tmp_path, permission_mode="default")
         with pytest.MonkeyPatch.context() as patch:
@@ -315,12 +302,8 @@ class TestOwnershipTracksTheFilesystem:
     def test_a_successful_unlink_revokes_the_grant_for_good(self, tmp_path, monkeypatch):
         """The mirror of the above: the file is gone, so the grant must be too.
 
-        Dropping it from memory alone left the SIDECAR naming a path Crew had just
-        deleted, and re-verifying the digest does not neutralize that -- a file can
-        hash to the recorded bytes again quite legitimately, most plainly when a user
-        committed the generated seed and later restored it. The next process would
-        then read that user's file as Crew's own: overwritten with this install's
-        permission mode, and unlinked on reset.
+        The sidecar must drop it too: a user who restores a committed seed gets the same
+        digest, and the next process would adopt that file as Crew's.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         client = _client(tmp_path, permission_mode="bypassPermissions")
@@ -348,11 +331,8 @@ class TestOwnershipTracksTheFilesystem:
     def test_the_revoke_lands_before_the_unlink(self, tmp_path, monkeypatch):
         """Ordering, not just presence: the grant dies BEFORE the file it described.
 
-        Both steps can fail independently, so "revoke and unlink" is not enough --
-        unlink-then-revoke leaves a window in which the file is gone while the
-        sidecar still names it, and a crash inside that window is exactly the state
-        :func:`forget` exists to prevent: the next process reloads the entry and
-        adopts whatever appears at the path next.
+        A crash between unlink and revoke would leave the sidecar naming a gone file,
+        so the next process adopts whatever appears there.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         client = _client(tmp_path, permission_mode="bypassPermissions")
@@ -386,11 +366,8 @@ class TestOwnershipTracksTheFilesystem:
     def test_a_failed_revoke_keeps_the_file_and_the_record(self, tmp_path, monkeypatch):
         """A revoke that did not reach the disk must not authorize a deletion.
 
-        The sidecar write can fail on its own (a full disk, a read-only data home).
-        Unlinking anyway leaves the durable grant naming a path whose file is gone,
-        which is the exact state that makes a user's restored copy adoptable. So the
-        file stays, the record stays, and a later session repairs the orphan --
-        strictly better than a deletion whose revocation never landed.
+        Unlinking anyway would make a user's restored copy adoptable. File and record
+        stay, and a later session repairs the orphan.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         client = _client(tmp_path, permission_mode="bypassPermissions")
@@ -442,11 +419,8 @@ class TestOwnershipTracksTheFilesystem:
     def test_the_teardown_never_touches_the_disk_on_the_event_loop(self, tmp_path, monkeypatch):
         """Both disk steps are off the loop, which is what makes the revoke durable.
 
-        ``forget`` publishes the sidecar and takes :data:`_LOCK` across the write, so
-        calling it inline would put a synchronous write -- and a wait on a lock a
-        worker thread holds across one -- on the gateway's single event loop. The
-        unlink is the same kind of call. Asserting on the running loop from inside
-        each one is what pins that: a version that calls either directly fails here.
+        ``forget`` writes under :data:`_LOCK`, so inline it would block the event loop.
+        Each step asserts no running loop from inside.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         client = _client(tmp_path, permission_mode="bypassPermissions")
@@ -484,23 +458,15 @@ class TestOwnershipTracksTheFilesystem:
 class TestTheGrantIsATransaction:
     """Neither half of a provenance mutation may land without the other.
 
-    A grant is only real once it is on disk, so both directions have to commit or
-    roll back together: a seed with no durable record is a permission mode nothing
-    can clean up, and a revoked record with the file still there is a grant that
-    outlives what it described. These pin the two cases where the pairing can
-    come apart -- a sidecar publish that fails, and a teardown that is cancelled.
+    A seed with no durable record cannot be cleaned up. Pinned for a failed sidecar
+    publish and a cancelled teardown.
     """
 
     def test_a_seed_whose_grant_is_not_durable_is_withdrawn(self, tmp_path, monkeypatch):
         """No record, no seed. The write is undone rather than left unowned.
 
-        Ownership IS the record, so a settings file written while the sidecar cannot
-        be published is the one state nothing on the host can repair: this session
-        would still remove it, but a kill before teardown leaves a
-        ``permissions.defaultMode`` the user never approved behind a file no later
-        session is permitted to re-seed or remove. Withdrawing it costs this session
-        the allowlist and the deny rules -- exactly what a cold advertised-model
-        cache already costs -- which is the strictly smaller harm.
+        A kill before teardown would leave an unapproved ``permissions.defaultMode`` no
+        later session may remove. Withdrawing costs only what a cold model cache costs.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         monkeypatch.setattr(sp, "atomic_write", _unwritable_sidecar)
@@ -538,12 +504,8 @@ class TestTheGrantIsATransaction:
     def test_a_cancelled_teardown_still_settles_the_seed(self, tmp_path, monkeypatch):
         """Cancellation cannot land between the revoke and the unlink.
 
-        Teardown runs on paths that are themselves being cancelled -- a turn cancel, a
-        session close, a shutdown. As a sequence of awaited steps this had a
-        suspension point between the ownership check, the revoke and the unlink, and a
-        cancellation on any of them cleared the flags with the file still on disk and
-        its grant already gone: unrecoverable. As one shielded thread the transaction
-        has either not started or run to completion, which is what this asserts.
+        Teardown runs on cancelled paths, so the steps run as one shielded thread: either
+        not started or complete, never file on disk with its grant gone.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         client = _client(tmp_path, permission_mode="bypassPermissions")
@@ -552,26 +514,27 @@ class TestTheGrantIsATransaction:
         assert path.exists()
 
         entered = threading.Event()
+        cancel_landed = threading.Event()
         real_settle = client._settle_claude_settings_seed
 
         def _slow_settle(*args, **kwargs):
             entered.set()
-            # Long enough that the cancel below lands while this is mid-transaction,
-            # which is the window the awaited-sequence version could not survive.
-            # flake-ok: 200 ms stub delay keeps the settle mid-transaction; moved verbatim
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- slow-work stub, the test waits on entered
-            time.sleep(0.2)
+            # Held until the cancel below has landed, so the cancel arrives while this is
+            # mid-transaction, which is the window the awaited-sequence version could not survive.
+            assert cancel_landed.wait(timeout=30), "the teardown was never cancelled"
             return real_settle(*args, **kwargs)
 
         monkeypatch.setattr(client, "_settle_claude_settings_seed", _slow_settle)
 
         async def _cancel_mid_teardown() -> None:
             task = asyncio.ensure_future(client._discard_claude_settings_seed())
-            await asyncio.to_thread(entered.wait, 5)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                # flake-ok: awaits the task just cancelled; the cancellation ends it; moved verbatim
-                await task
+            try:
+                await asyncio.to_thread(entered.wait, 5)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await await_until(task, what="the cancelled teardown task ending")
+            finally:
+                cancel_landed.set()
 
         # ``asyncio.run`` shuts the default executor down on the way out, so by the
         # time it returns the shielded thread has finished -- no polling needed.
@@ -605,8 +568,7 @@ class TestTheGrantIsATransaction:
             assert await asyncio.to_thread(persist_entered.wait, 5)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                # flake-ok: awaits the task just cancelled; the cancellation ends it; moved verbatim
-                await task
+                await await_until(task, what="the cancelled sharer discard task ending")
             sibling._reset_state()
             finish_persist.set()
 
@@ -617,13 +579,8 @@ class TestTheGrantIsATransaction:
     def test_every_discard_call_site_resets_in_a_finally(self):
         """The in-memory reset must survive a cancelled discard, at every call site.
 
-        The mirror image of the test above, and it is a source-shape assertion for the
-        same reason the loop-bound-locks and to_thread gates are: the defect is a
-        MISSING ``finally``, so no runtime path exercises it. Before the discard was
-        async, ``_reset_state`` was a plain synchronous statement that always ran;
-        awaiting something in front of it means a cancellation on that await skips the
-        PID untracking and the pipe closes entirely. Any call site that reaches both
-        must therefore pair them.
+        A source-shape check, since a missing ``finally`` has no runtime path. A cancel
+        on the discard await would skip ``_reset_state``: PID untracking and pipe close.
         """
         tree = ast.Module(
             body=[
@@ -667,11 +624,8 @@ class TestTheGrantIsATransaction:
     def test_claim_pathname_moves_ours_aside_and_leaves_a_stranger(self, tmp_path):
         """The inode-pin primitive: ours is captured, a stranger is left untouched.
 
-        ``_claim_pathname_if_ours`` is what closes the TOCTOU between an ownership
-        check and the delete/overwrite that acts on it -- it moves the pathname's
-        current content aside in one atomic step and hands it back ONLY when the moved
-        inode is still Crew's. A stranger's file is restored exactly as found, never
-        deleted or clobbered.
+        ``_claim_pathname_if_ours`` closes the TOCTOU by moving the file aside atomically
+        and keeping it only if the moved inode is Crew's.
         """
         path = tmp_path / "settings.local.json"
         path.write_text("crew-bytes", encoding="utf-8")
@@ -693,12 +647,8 @@ class TestTheGrantIsATransaction:
     def test_a_replacement_that_races_the_teardown_delete_survives(self, tmp_path, monkeypatch):
         """A user save landing after the ownership check but before the delete is kept.
 
-        The delete is inode-pinned: teardown moves Crew's file to ``<name>.crew-gc`` in
-        one atomic step and deletes THAT, so a replacement written at the pathname
-        afterwards is a different inode this never touches. The race is made
-        deterministic by writing the user's file at the freed pathname the instant
-        Crew's file is moved aside -- the exact window the inode-pin closes. A teardown
-        that unlinked the pathname would delete the user's file here.
+        The delete is inode-pinned. The race is forced by writing the user's file the
+        instant Crew's is moved aside.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         client = _client(tmp_path, permission_mode="bypassPermissions")
@@ -724,12 +674,8 @@ class TestTheGrantIsATransaction:
     def test_a_project_file_at_the_move_aside_name_is_not_clobbered(self, tmp_path, monkeypatch):
         """A file already at the fixed ``.crew-gc`` name must survive the capture.
 
-        The move-aside destination must not be a FIXED sibling (``<name>.crew-gc``),
-        which is itself a pathname a project can own -- and ``os.replace`` onto it
-        clobbers it atomically, relocating the very data loss the inode-pin exists to
-        prevent. The capture now lands on a fresh ``mkstemp`` name that provably did
-        not pre-exist, so a project's own ``<name>.crew-gc`` is left untouched. Against
-        a fixed-name capture this file would be destroyed by the teardown.
+        A project can own that name and ``os.replace`` would clobber it, so the capture
+        lands on a fresh ``mkstemp`` name.
         """
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         client = _client(tmp_path, permission_mode="bypassPermissions")

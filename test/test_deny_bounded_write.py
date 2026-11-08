@@ -274,12 +274,14 @@ class TestHealthyDrainUnchanged:
     @pytest.mark.asyncio
     async def test_send_error_still_delivers(self) -> None:
         client, proc = _client_with_stdin(stalled=False)
+        client._last_activity = 0.0
         await await_until(
             asyncio.ensure_future(client._send_error(3, -32601, "Method not found: x/y")),
             what="_send_error to resolve",
         )
         assert b'"code": -32601' in proc.stdin.write.call_args.args[0]
         proc.stdin.drain.assert_awaited_once()
+        assert client._last_activity > 0.0
 
     @pytest.mark.asyncio
     async def test_broken_pipe_mapping_survives_the_bound(self) -> None:
@@ -322,6 +324,7 @@ class TestHealthyDrainUnchanged:
                 await asyncio.sleep(0)
 
         client, proc = _client_with_stdin(stalled=False)
+        client._last_activity = 0.0
         proc.stdin.drain = AsyncMock(side_effect=_slow_drain)
         try:
             await await_until(
@@ -331,6 +334,7 @@ class TestHealthyDrainUnchanged:
         finally:
             watchdog.cancel()
         proc.stdin.drain.assert_awaited_once()
+        assert client._last_activity > 0.0, "a delivered rejection stamps activity"
 
 
 class TestRuntimeStalledDrainFailsFast:
@@ -782,14 +786,18 @@ class TestCancelIsNeverSwallowedByTheLock:
         stdin.write = MagicMock()
         lock = asyncio.Lock()
         await lock.acquire()  # a prompt frame parked on a reader that stopped
+        written: list[bytes] = []
         outcome = await await_until(
             asyncio.ensure_future(
-                write_notification_best_effort(stdin, lock, b"cancel\n", bound_secs=short_bound)
+                write_notification_best_effort(
+                    stdin, lock, b"cancel\n", bound_secs=short_bound, on_written=written.append
+                )
             ),
             what="write_notification_best_effort to resolve",
         )
         assert outcome == "appended_unlocked"
         stdin.write.assert_called_once_with(b"cancel\n")
+        assert written == [b"cancel\n"], "the frame recorder's hook runs on the unlocked path too"
         assert lock.locked(), "the holder's lock is not stolen"
 
     @pytest.mark.asyncio
@@ -1639,6 +1647,7 @@ class TestEveryBackendIdLogSiteIsSanitized:
         "src/kiro_crew/acp/session_handle_compaction.py": [],
         "src/kiro_crew/acp/session_handle_turn.py": [
             "rejected permission request id=%s stranded in the ",
+            "cancelled elicitation request id=%s stranded in the ",
         ],
         "src/kiro_crew/acp/session_handle_dispatch.py": [
             "Dropping stray response frame id=%s (no waiter)",

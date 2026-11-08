@@ -17,14 +17,29 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.queue_drain import unregister_drain
 from kiro_crew.webex.client import WebexClient
 from kiro_crew.webex.transport import WebexTransport
-from kiro_crew.webex.transport_dispatch import WebexDispatcher
+from kiro_crew.webex.transport_dispatch import _CHANNEL, WebexDispatcher
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
+
+
+def _client_close_hook(dispatcher: WebexDispatcher) -> "Callable[[], None]":
+    """What the client runs when it closes: retire this dispatcher's queue drain.
+
+    A drain waiting on a held lease (``messaging.queue_drain.drain_when_free``) looks
+    the drain up when the lease frees, so a stale one would answer queued messages on
+    a channel the operator disabled. Compare-and-drop, so a restart whose replacement
+    already registered keeps its drain.
+    """
+    drain_hook = dispatcher._drain_queue
+    return lambda: unregister_drain(_CHANNEL, drain_hook)
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
@@ -103,6 +118,7 @@ async def maybe_start_webex(orch: "GatewayOrchestrator") -> "WebexClient | None"
         # set_message_handler avoids the client<->transport construction cycle.
         client.set_message_handler(transport.receive)
         dispatcher.client = client
+        client.on_close = _client_close_hook(dispatcher)
         # Handed to the dispatcher so its config applier can push a reloaded
         # allow-list at the live transport instead of waiting for a restart.
         dispatcher.transport = transport

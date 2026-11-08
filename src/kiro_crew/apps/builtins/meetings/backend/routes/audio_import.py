@@ -271,18 +271,17 @@ def _snapshot_recording(
                 os.close(dir_fd)
         else:
             # No pinned traversal (``dir_fd`` + ``O_NOFOLLOW`` — Windows): REFUSE.
-            # Three successive narrowings of this branch (name sweep r9, fd
-            # witness r18, vet identity r29) each conceded a residual window,
-            # because every variant still performed a by-name ``os.open`` of a
+            # Narrowing this branch (a name sweep, an fd witness, a vet
+            # identity) always concedes a residual window, because every
+            # variant still performs a by-name ``os.open`` of a
             # user-influenced path — and on Windows that open FOLLOWS an
             # ancestor junction planted after any check, reaching a UNC target
             # and firing outbound SMB authentication as a side effect of the
-            # open itself (GPT review r31, adjudicator-upheld). No after-open
-            # check can undo that. ``snapshot_merge_driver.py``'s notification copy records
-            # the repo ruling for this exact shape: on a platform without the
-            # race-free primitive, decline the hand-rolled ctypes walk and
-            # refuse loudly. The route already answers 501 before any
-            # filesystem step (``handle_import_audio``); this branch is the
+            # open itself. No after-open check can undo that.
+            # ``snapshot_merge_driver.py``'s notification copy records the repo ruling for
+            # this exact shape: on a platform without the race-free primitive, decline the
+            # hand-rolled ctypes walk and refuse loudly. The route already answers 501
+            # before any filesystem step (``handle_import_audio``); this branch is the
             # backstop for any future caller that skips that gate.
             logger.error(
                 "meetings: import snapshot refused: this platform has no pinned "
@@ -487,8 +486,8 @@ async def handle_import_audio(request: web.Request) -> web.Response:
         # checks that opens a USER-SUPPLIED path race-free: a same-uid actor can
         # swap an ancestor for a junction between any sweep and the open, and on
         # Windows a junction to a UNC path makes ``os.open`` itself fire outbound
-        # SMB authentication before any descriptor check can reject it (GPT
-        # review r31). ``snapshot_merge_driver.py``'s notification copy records the repo-wide
+        # SMB authentication before any descriptor check can reject it.
+        # ``snapshot_merge_driver.py``'s notification copy records the repo-wide
         # ruling for exactly this shape: decline the hand-rolled ctypes walk and
         # refuse loudly rather than narrow the window. 501, because the request
         # is well-formed and the capability is what this platform lacks.
@@ -607,8 +606,8 @@ async def handle_import_audio(request: web.Request) -> web.Response:
             # segment dir, so an over-cap Apple recording is REFUSED (413), not split
             # (see ``provider_splits_oversized`` and the branch below). AWS refuses an
             # oversized payload loudly and has no silent ceiling, so it is not probed.
-            # A probe that cannot answer (None) is REFUSED, loudly and retryably
-            # (GPT review r14): the aligned budget (``stt_config.timeout_secs``)
+            # A probe that cannot answer (None) is REFUSED, loudly and retryably:
+            # the aligned budget (``stt_config.timeout_secs``)
             # guarantees a PERSISTENT cause also defeats the transcode, but a
             # TRANSIENT one — a load spike that clears between probe and
             # transcode — would let the decoder truncate an over-cap recording
@@ -636,7 +635,7 @@ async def handle_import_audio(request: web.Request) -> web.Response:
                     # loss to prevent and splitting is wrong here: the Apple Swift
                     # helper runs in a strict sandbox that masks the voice-runtime
                     # root the segments are staged under, so a split would 502 every
-                    # time (GPT review). Refuse whole, as before this feature.
+                    # time. Refuse whole.
                     _reject("recording_too_long")
                     raise BadRequest(
                         "recording is too long to import",
@@ -662,7 +661,7 @@ async def handle_import_audio(request: web.Request) -> web.Response:
                     # Audited as ALLOWED, not rejected: this path succeeds (a 200), so
                     # the split is a permission decision the incident trail wants to
                     # see, the same way the owner-check ALLOW above is recorded. It
-                    # must NOT emit a ``rejected`` record (Opus review): a single
+                    # must NOT emit a ``rejected`` record: a single
                     # over-cap import would then write two contradictory SEL records.
                     audit(
                         "meetings.import_audio",

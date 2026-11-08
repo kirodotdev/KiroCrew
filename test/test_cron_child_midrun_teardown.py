@@ -171,9 +171,16 @@ class TestToolCallAudit:
         monkeypatch.setattr(cron_script, "sel", lambda: fake)
         monkeypatch.delenv(CRON_SCRIPT_CHILD_ENV, raising=False)
         _ctx()._audit_tool_call("srv", "tool", "ok")
+        # The write was attempted for this job's call; only its failure is tolerated.
+        assert [(c["session_key"], c["tool_name"]) for c in fake.calls] == [
+            ("cron:job-id", "srv/tool")
+        ]
 
     def test_other_errors_in_a_cron_child_degrade(self, monkeypatch):
         fake = _FailingSel(OSError(errno.EIO, "disk"))
         monkeypatch.setattr(cron_script, "sel", lambda: fake)
         monkeypatch.setenv(CRON_SCRIPT_CHILD_ENV, "1")
         _ctx()._audit_tool_call("srv", "tool", "ok")
+        assert [(c["session_key"], c["tool_name"]) for c in fake.calls] == [
+            ("cron:job-id", "srv/tool")
+        ]

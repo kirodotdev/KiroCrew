@@ -221,6 +221,9 @@ class TestDashboardLink:
             await d.handle_message(_inbound(f"/kirocrew {arg}"))
 
         assert gen.call_args.kwargs["ttl_seconds"] == 3600
+        # The user is told the window they actually got.
+        reply = d.client.sent[-1][1]
+        assert "token=TOK" in reply and "(valid 1h)" in reply
 
     def test_the_ttl_is_clamped_to_the_server_maximum(self) -> None:
         # A user-supplied duration must not be able to widen the login window.
@@ -450,6 +453,14 @@ class TestModelCommand:
         assert "Pick a number" in d.client.sent[-1][1]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("arg", ["²", "١", "1" * 5000])
+    async def test_a_pick_int_cannot_read_is_refused(self, arg: str) -> None:
+        """``"²".isdigit()`` is True but ``int("²")`` raises; reply, never crash."""
+        d = _dispatcher(FakeSessions(ModelProvider()), FakeCtx(), FakeClient())
+        await d.handle_message(_inbound(f"/model {arg}"))
+        assert "Pick a number between 1 and 2" in d.client.sent[-1][1]
+
+    @pytest.mark.asyncio
     async def test_a_pick_switches_the_live_conversation(self) -> None:
         """``session/set_model`` carries the conversation across.
 
@@ -481,6 +492,38 @@ class TestModelCommand:
         await d.handle_message(_inbound("/model 2"))
         assert provider.client.set_calls == []
         assert "a reply is still running" in d.client.sent[-1][1]
+
+    @pytest.mark.asyncio
+    async def test_a_session_the_account_check_retires_defers_to_the_next_message(self) -> None:
+        provider = ModelProvider()
+        sessions = FakeSessions(provider, acquire=False)
+        refuse = sessions.try_acquire
+
+        async def _retire_then_refuse(key) -> bool:
+            # The acquire's Kiro account check retired the session: it held another
+            # account, so nothing is live by the time the lease would be taken.
+            sessions._has_session = False
+            return await refuse(key)
+
+        sessions.try_acquire = _retire_then_refuse
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+        await d.handle_message(_inbound("/model 2"))
+        assert provider.client.set_calls == []
+        assert "it applies to your next message" in d.client.sent[-1][1]
+        assert "still running" not in d.client.sent[-1][1]
+
+    @pytest.mark.asyncio
+    async def test_a_session_the_account_check_flags_defers_to_the_next_message(self) -> None:
+        # Flagged, not retired (an idle parent the check spared for its running
+        # sub-agents): refused, yet still registered, and no reply is running.
+        provider = ModelProvider()
+        sessions = FakeSessions(provider, acquire=False)
+        sessions.retiring = True
+        d = _dispatcher(sessions, FakeCtx(), FakeClient())
+        await d.handle_message(_inbound("/model 2"))
+        assert provider.client.set_calls == []
+        assert "it applies to your next message" in d.client.sent[-1][1]
+        assert "still running" not in d.client.sent[-1][1]
 
     @pytest.mark.asyncio
     async def test_a_backend_without_set_model_defers(self) -> None:

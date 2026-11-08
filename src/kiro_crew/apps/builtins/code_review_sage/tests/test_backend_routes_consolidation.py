@@ -3,12 +3,14 @@
 ``consolidate_apply`` is the one write of worker-authored merge output into
 learned-patterns.md: that content reaches the file redacted, and output with no pattern in it
 is refused. A namespace cannot be deleted while a consolidation holds it, so a late apply
-cannot bring a deleted namespace back.
+cannot bring a deleted namespace back. The stale merge output a crashed run left behind is
+cleared off the event loop.
 """
 
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -259,3 +261,52 @@ class TestConsolidationCannotResurrectADeletedNamespace(unittest.IsolatedAsyncio
                 return {"name": ns}
 
         return await self.mod._handle_namespaces(_DeleteReq())
+
+
+class TestConsolidationClearsTheStaleMergeOffTheLoop(unittest.IsolatedAsyncioTestCase):
+    """The stale-merge clear before dispatch runs in a worker thread.
+
+    `_consolidate_bg` runs on the shared gateway event loop, and every other
+    filesystem step it takes goes through `asyncio.to_thread`. An `unlink` on
+    the loop thread stalls every session for as long as the disk takes to
+    answer.
+    """
+
+    def setUp(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        env = unittest.mock.patch.dict(os.environ, {"KIROCREW_HOME": tmp})
+        env.start()
+        self.addCleanup(env.stop)
+        self.mod = _load_routes_module()
+
+    async def test_the_pre_dispatch_clear_runs_off_the_event_loop(self):
+        mod = self.mod
+        stale = Path(mod.learning._namespace_dir("default", None)) / "learned-patterns.merge.md"
+        stale.parent.mkdir(parents=True, exist_ok=True)
+        stale.write_text("### Stale merge from a crashed run\nold\n", encoding="utf-8")
+
+        loop_thread = threading.get_ident()
+        real_unlink = Path.unlink
+        threads: list[int] = []
+
+        def recording_unlink(path, *args, **kwargs):
+            if Path(path) == stale:
+                threads.append(threading.get_ident())
+            return real_unlink(path, *args, **kwargs)
+
+        # Stop the worker right after the pre-dispatch clear: dispatch is not
+        # what this test is about, and the `finally` clear is already offloaded.
+        with (
+            unittest.mock.patch.object(Path, "unlink", autospec=True, side_effect=recording_unlink),
+            unittest.mock.patch.object(
+                mod.review_pool, "get_pool", side_effect=RuntimeError("stop after the clear")
+            ),
+        ):
+            await mod._consolidate_bg("default")
+
+        self.assertFalse(stale.exists(), "the stale merge must still be cleared")
+        self.assertTrue(threads, "the stale merge path was never unlinked")
+        self.assertNotIn(
+            loop_thread, threads, "the stale merge was unlinked on the event-loop thread"
+        )

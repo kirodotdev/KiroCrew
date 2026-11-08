@@ -19,7 +19,7 @@ import re
 import statistics
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import context_omissions
 from kiro_crew.embeddings import PRIORITY_INTERACTIVE
@@ -27,9 +27,11 @@ from kiro_crew.lesson_validation import (
     LESSON_APPLIES_ON_TOPIC,
     LESSON_APPLIES_UNSTATED,
     LESSON_APPLIES_VALUES,
+    cjk_parts,
     contains_volatile_lesson_fact,
     render_lesson_tier,
     render_withheld_tier,
+    split_cjk_word,
     tighter_lesson_budget,
 )
 from kiro_crew.project_scope import (
@@ -512,8 +514,9 @@ def resolve_exact_rule(
                 enriched["repo_scope"] = stored_scope
             # The tier is WRITE-ONCE for exactly the same reason, and carrying
             # the STORED value forward is what keeps enrichment from silently
-            # demoting a standing rule to a past finding. Re-tiering is a
-            # delete + re-add, like re-scoping and recategorizing.
+            # demoting a standing rule to a past finding. Re-tiering is its own
+            # call (``update_lesson_applies``); re-scoping and recategorizing are a
+            # delete + re-add.
             stored_applies = _lesson_applies(decoded)
             if stored_applies != LESSON_APPLIES_UNSTATED:
                 enriched["applies"] = stored_applies
@@ -622,6 +625,19 @@ def lesson_keywords(text: str) -> set[str]:
         "yes",
     }
     return {w for w in re.split(r"\W+", text) if len(w) > 2 and w not in stop}
+
+
+def _lesson_words(text: str) -> set[str]:
+    """The ``\\w+`` words of *text*, plus the ``cjk_parts`` of those holding CJK text.
+
+    An unspaced CJK sentence is one ``\\w+`` word that no other text shares.
+    """
+    return set(re.findall(r"\w+", text)) | cjk_parts(text)
+
+
+def _lesson_row_tokens(tokens: frozenset[str], parts: set[str]) -> frozenset[str]:
+    """A lesson's memoised row *tokens*, plus its stemmed ``cjk_parts`` *parts*."""
+    return tokens | _text_scoring._stem_words(parts) if parts else tokens
 
 
 def find_contradiction_candidates(
@@ -834,8 +850,15 @@ def delete_lesson(
     repo_scope: str | None = None,
     *,
     exact: bool = False,
+    keep_one: bool = False,
 ) -> bool:
     """Delete lessons whose value contains rule_substring.
+
+    *keep_one* deletes only the EXTRA copies: matched rows are grouped by their
+    whole stored row (see ``_keep_one_identity``),
+    the oldest row of each group (``created_at``, then ``key``) stays, and the
+    rest go. Two different lessons never share a group, so a broad substring
+    cannot remove the last copy of any lesson in this mode.
 
     Substring matching on the rule text is deliberate: a user targets a
     lesson by a fragment of its rule rather than retyping the whole thing.
@@ -859,13 +882,21 @@ def delete_lesson(
     that is present but unusable marks a scoped-but-broken row, which the
     injection gate withholds; a scope-selective delete never claims such a
     row, and the unselective (absent) path is what removes it.
+
+    A blank (empty or whitespace-only) *rule_substring* is refused with
+    :class:`ValueError` on the plain substring path: every rule contains the
+    empty string, so it would delete every lesson. *exact* (names only a
+    blank row) and *keep_one* (never removes a lesson's last copy) stay open.
     """
+    if not exact and not keep_one and not rule_substring.strip():
+        raise ValueError("rule substring is blank: it would match every lesson")
     if repo_scope is not None and scope_selector_is_inadmissible(repo_scope):
         raise ValueError(f"repo_scope does not name a usable scope: {repo_scope!r}")
     deleted = False
     scope_selective = repo_scope is not None
     wanted_scope = canonical_scope(repo_scope) if scope_selective else None
     wanted_text = rule_substring.lower().strip()
+    matched: list[tuple[dict[str, Any], str]] = []
     for e in store.get_lessons():
         val = json.loads(e["value_json"])
         # Match against the rendered lesson text so a mapping-shaped row is
@@ -895,9 +926,70 @@ def delete_lesson(
                 continue
             if canonical_scope(_lesson_scope(val)) != wanted_scope:
                 continue
-        store.delete_semantic(e["key"], "user_explicit")
-        deleted = True
+        if not keep_one:
+            store.delete_semantic(e["key"], "user_explicit")
+            deleted = True
+            continue
+        matched.append((e, _keep_one_identity(val)))
+    if keep_one:
+        # Only rows the prompt can serve take part. A row outside its validity
+        # window, superseded or otherwise withheld is never the survivor (the
+        # lesson would vanish from prompts with an active copy deleted) and is
+        # never removed here either.
+        servable = {r["key"] for r in store._eligible_rows([m[0] for m in matched], "directive")}
+        matched = [m for m in matched if m[0]["key"] in servable]
+        # A row's record metadata (validity window, subject, scope facets) is
+        # part of the lesson as well: two rows that differ in any of it are not
+        # copies, so a copy valid for longer is never traded for one that expires.
+        facets = {
+            r["key"]: json.dumps(r.get("record_metadata") or {}, sort_keys=True)
+            for r in store.with_record_metadata([m[0] for m in matched])
+        }
+        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for e, identity in matched:
+            groups.setdefault((identity, facets[e["key"]]), []).append(e)
+        for rows in groups.values():
+            rows.sort(key=lambda r: (str(r.get("created_at") or ""), str(r["key"])))
+            if len(rows) < 2:
+                continue
+            # The rows are a snapshot. A survivor whose body differs from the
+            # snapshot (a clause attached, a re-tier) may not be a copy of the
+            # others, so the group is left alone; each extra is a
+            # COMPARE-AND-DELETE on the body read here, so a copy enriched
+            # since is kept, not tombstoned.
+            survivor = store.get_semantic(rows[0]["key"])
+            if survivor is None or survivor.get("value_json") != rows[0]["value_json"]:
+                continue
+            for extra in rows[1:]:
+                if store.delete_semantic(
+                    extra["key"], "user_explicit", expect_value_json=extra["value_json"]
+                ):
+                    deleted = True
     return deleted
+
+
+def _keep_one_identity(val: object) -> str:
+    """What makes two stored lesson rows copies of one lesson for ``keep_one``.
+
+    The WHOLE stored value, not a chosen subset of its fields: any stored
+    difference (a NOT-clause, a tier, a scope, a field added later) makes two
+    rows different lessons, so ``keep_one`` never removes one. Only the rule
+    and clause text compare case-insensitively with edge whitespace ignored,
+    and an admissible scope compares canonically, matching how a plain delete
+    and the write path read them. A rule that itself contains the clause
+    separator stays apart from a rule plus a clause, since their stored values
+    differ.
+    """
+    if not isinstance(val, dict):
+        return json.dumps(["text", str(val).lower().strip()])
+    # An absent field and a null one read the same on every path.
+    norm = {k: v for k, v in val.items() if v is not None}
+    for field in ("rule", "negative"):
+        if isinstance(norm.get(field), str):
+            norm[field] = norm[field].lower().strip()
+    if "repo_scope" in norm and not _lesson_scope_unusable(val):
+        norm["repo_scope"] = canonical_scope(_lesson_scope(val))
+    return json.dumps(["value", norm], sort_keys=True, default=repr)
 
 
 def get_lessons_context(
@@ -1215,14 +1307,16 @@ def _lesson_render_fields(key: str, value_json: object) -> tuple[str, str | None
 
 
 #: Request words in ``lesson_keywords``' stop list and words of two letters or
-#: fewer are ignored. Each remaining request word is matched once through its
-#: stem. A follow-up message earns a lesson only when they share at least
+#: fewer are ignored; a word holding CJK text adds its pieces under the same rule
+#: and its two-character pairs. Each remaining request word is matched once
+#: through its stem. A follow-up message earns a lesson only when they share at least
 #: ``_TURN_LESSON_TERMS`` distinct stems that are each rare: found in at most
 #: ``_TURN_LESSON_RARITY`` of the N stored lessons, and never fewer than one, so
 #: a small store still admits a lesson through words no other lesson carries.
 #: Rarity is a count of distinct stems, not a sum of their weights: a sum lets
 #: one word found in a single lesson admit it alone, and lets a store of a few
-#: hundred lessons count an ordinary word as rare.
+#: hundred lessons count an ordinary word as rare. One shared CJK run of three
+#: or more characters is two pairs, so it can admit a lesson alone.
 _TURN_LESSON_TERMS = 2
 _TURN_LESSON_RARITY = 0.01
 
@@ -1241,7 +1335,9 @@ def turn_lessons(
 
     Every eligible, in-scope lesson is a candidate, rules and findings alike,
     except those *shown* reports as already in the session. Request words in
-    ``lesson_keywords``' stop list and words of two letters or fewer are ignored.
+    ``lesson_keywords``' stop list and words of two letters or fewer are ignored;
+    a word holding CJK text adds its pieces under the same rule and every
+    two-character pair (``split_cjk_word``), as the lesson side does.
     Each remaining request word is matched once, through its stem. A lesson is
     admitted only when it shares at least ``_TURN_LESSON_TERMS`` distinct stems
     with the message, each found in at most ``_TURN_LESSON_RARITY`` of the stored
@@ -1258,7 +1354,12 @@ def turn_lessons(
     entries = _renderable_entries(lesson_rows, project_dir)
     if not entries:
         return []
-    query_stems = {_stem_one(word) for word in store._lesson_keywords(query_text.lower())}
+    lowered = query_text.lower()
+    query_words = store._lesson_keywords(lowered)
+    for word in re.split(r"\W+", lowered):
+        pieces, pairs = split_cjk_word(word)
+        query_words |= store._lesson_keywords(" ".join(pieces)) | pairs
+    query_stems = {_stem_one(word) for word in query_words}
     row_tokens = _text_scoring._row_stem_tokens_for_scan(len(entries))
     shared_by_row, sizes, document_frequency = _shared_lesson_stems(
         entries, query_stems, row_tokens
@@ -1396,7 +1497,7 @@ def rank_lessons(
     lexical score before recency; rows still tied after it keep the caller's
     newest-first order.
     """
-    request_words = set(re.findall(r"\w+", query_text.lower()))
+    request_words = _lesson_words(query_text.lower())
     if recall_query is not None:
         query_emb = recall_query.vector
     elif store.embed_fn:
@@ -1490,7 +1591,8 @@ def _lexical_lesson_weights(
     Rarity is ``log((N + 1) / (df + 0.5))`` over *entries*. Document frequency
     is counted only for tokens the request carries, over row token sets
     ``row_tokens`` already memoises, so no row is re-stemmed. A row's length is
-    its number of distinct words, so an inflection does not make it look longer.
+    its number of distinct words, CJK parts included, so an inflection does not
+    make it look longer.
     """
     shared_by_row, sizes, document_frequency = _shared_lesson_stems(
         entries, query_words, row_tokens
@@ -1511,10 +1613,18 @@ def _shared_lesson_stems(
     document_frequency: dict[str, int] = {}
     for _, text in entries:
         normalized_text = text.lower()
-        tokens = row_tokens(normalized_text)
+        parts = cjk_parts(normalized_text)
+        tokens = _lesson_row_tokens(row_tokens(normalized_text), parts)
         shared = tokens & query_words
         shared_by_row.append(shared)
-        sizes.append(len(set(re.findall(r"\w+", normalized_text))))
+        if parts:
+            # shortcut: a row with CJK parts still counts per call, because the
+            # memo's count holds only its ``\w+`` words; memoise the union if
+            # CJK-heavy stores show up in the ranking profile.
+            sizes.append(len(set(re.findall(r"\w+", normalized_text)) | parts))
+        else:
+            # No parts: ``tokens`` is the memo's own entry, which carries the count.
+            sizes.append(_text_scoring._row_distinct_words(tokens, normalized_text))
         for token in shared:
             document_frequency[token] = document_frequency.get(token, 0) + 1
     return shared_by_row, sizes, document_frequency
@@ -1586,8 +1696,11 @@ def any_lesson_overlap(
     """
     if not entries or not query_text.strip():
         return False
-    query_words = _text_scoring._stem_words(set(re.findall(r"\w+", query_text.lower())))
+    query_words = _text_scoring._stem_words(_lesson_words(query_text.lower()))
     if not query_words:
         return False
     row_tokens = _text_scoring._row_stem_tokens_for_scan(len(entries))
-    return any(query_words & row_tokens(text.lower()) for _, text in entries)
+    return any(
+        query_words & _lesson_row_tokens(row_tokens(row_text), cjk_parts(row_text))
+        for row_text in (text.lower() for _, text in entries)
+    )

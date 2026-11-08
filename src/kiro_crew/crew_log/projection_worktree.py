@@ -105,6 +105,11 @@ def _worktree_step(state: dict[str, Any], entry: Entry) -> None:
     if entry.type != WORK_ENTRY_TYPE:
         return
     data = entry.data
+    if data.get("mirror") is True:
+        # A worker's own copy of a report whose board copy is in the board's log. A
+        # sub-board's record relayed up (``relay`` set) is how that board reaches this
+        # tree, so it is read.
+        return
     slot = _as_str(data.get("slot"))
     if not slot:
         # An entry naming no board places nothing in a tree whose nodes ARE boards.

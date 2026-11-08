@@ -22,7 +22,7 @@ from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kiro_crew import context_omissions, pinned_fs
+from kiro_crew import context_omissions, pinned_fs, sandbox_plan
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, workspace_dir_from_entry
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG, DEGRADED_WORKSPACES
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
@@ -95,7 +95,30 @@ FOLDER_STEERING_OMISSION_SOURCE = "folder-steering://omitted"
 #: the ``fileMatch`` spelling the IDE writes is recognised as ``filematch``.
 #: Anything else -- including an absent key -- is treated as ``always``, which
 #: matches how the steering loader reads a document with no frontmatter at all.
-_SKIPPED_INCLUSIONS = frozenset({"manual", "auto", "filematch"})
+SKIPPED_INCLUSIONS = frozenset({"manual", "auto", "filematch"})
+
+
+def every_session_body(body: str, *, truncated: bool = False) -> str | None:
+    """*body* with its front matter stripped, or ``None`` when it is not for every session.
+
+    The one inclusion rule both steering loads apply: this module's folder
+    collection and the Claude Code backend's ``[Steering resources]`` load
+    (``context_assembly.agent_spec._load_steering_resources``). A leading
+    byte-order mark is dropped, since it would hide the column-0 fence and turn
+    a ``manual`` document into an always-loaded one, and line endings are
+    normalised before parsing. A document whose ``inclusion`` is in
+    :data:`SKIPPED_INCLUSIONS` returns ``None``. So does a *truncated* read
+    whose fence opened but whose close fell past the cap: the parser saw no
+    fields at all, including a possible ``inclusion: manual``, and unknown
+    inclusion is not ``always``.
+    """
+    body = body.removeprefix("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    fields, stripped = split_frontmatter(body, STEERING_LOADER)
+    if truncated and not fields and body.lstrip().startswith("---"):
+        return None
+    if fields.get("inclusion", "").strip().casefold() in SKIPPED_INCLUSIONS:
+        return None
+    return stripped
 
 
 @dataclass(frozen=True)
@@ -334,11 +357,10 @@ def crosses_memory_silo(root_resolved: Path, silos: tuple[Path, ...] | None = No
     root_cf = str(root_resolved).casefold()
     for silo in silos:
         silo_cf = str(silo).casefold()
-        if (
-            root_cf == silo_cf
-            or root_cf.startswith(silo_cf + os.sep)
-            or silo_cf.startswith(root_cf + os.sep)
-        ):
+        # ``path_within`` rather than ``x + os.sep``: a drive root (``H:\``, or
+        # ``/``) already ends in a separator, so the doubled one would clear a
+        # root that contains a silo, or that lies inside a drive-root silo.
+        if sandbox_plan.path_within(root_cf, silo_cf) or sandbox_plan.path_within(silo_cf, root_cf):
             return True
     return False
 
@@ -575,6 +597,17 @@ def _walk_markdown_pinned(
             _release(fd)
 
 
+def _file_identity(path: str) -> tuple[int, int] | None:
+    """``(st_dev, st_ino)`` of the canonical *path*, or ``None`` when unknown."""
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    if not st.st_ino:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 def collect_folder_steering(
     steering_dirs: Sequence[str],
     *,
@@ -587,7 +620,8 @@ def collect_folder_steering(
 
     Roots are read in the order given (the resolver hands them over root-first)
     and each document is emitted at most once across all of them, keyed by
-    realpath. A missing root and an unreadable document are debug-logged and
+    realpath and by file identity, so one file reached under two letter cases
+    on a case-insensitive volume counts once. A missing root and an unreadable document are debug-logged and
     skipped so one stale path never breaks a turn.
 
     Two ceilings bound the pass -- ``_MAX_FOLDER_STEERING_DOCUMENTS`` on what is
@@ -656,6 +690,7 @@ def collect_folder_steering(
         return result
     silos = fence.roots
     seen: set[str] = set()
+    seen_files: set[tuple[int, int]] = set()
     for raw in steering_dirs:
         # ``validate_file_path`` is the hardened canonicalizer, not a bare
         # ``resolve()``: it refuses an untrusted UNC shape and screens Windows
@@ -705,6 +740,13 @@ def collect_folder_steering(
                 continue
             if key in seen:
                 continue
+            # ``realpath`` keeps the letter case it was given, so on a
+            # case-insensitive volume one file can arrive under two spellings.
+            # The file's own identity catches that; the reader below refuses
+            # hardlinks, so two distinct documents never share one.
+            identity = _file_identity(key)
+            if identity is not None and identity in seen_files:
+                continue
             if os.path.normcase(key) in delivered_source_keys:
                 continue
             if any(_is_within(resolved, skip_root) for skip_root in skip_roots):
@@ -735,26 +777,22 @@ def collect_folder_steering(
                 logger.debug("folder steering document unreadable: %s", key)
                 continue
             try:
+                # utf-8-sig drops one leading byte-order mark, which would
+                # otherwise hide the column-0 frontmatter fence and turn a
+                # manual document into an always-loaded one.
                 body = data.decode(
-                    "utf-8", errors="ignore" if len(data) >= _MAX_SOURCE_BYTES else "strict"
+                    "utf-8-sig", errors="ignore" if len(data) >= _MAX_SOURCE_BYTES else "strict"
                 )
             except UnicodeDecodeError:
                 logger.debug("folder steering document is not UTF-8: %s", key)
                 continue
-            body = body.replace("\r\n", "\n").replace("\r", "\n")
-            truncated = len(data) >= _MAX_SOURCE_BYTES
-            fields, stripped = split_frontmatter(body, STEERING_LOADER)
-            if truncated and not fields and body.lstrip().startswith("---"):
-                # The frontmatter fence opened but its close fell past the read
-                # cap, so the parser saw no fields at all -- including a possible
-                # ``inclusion: manual``. Unknown inclusion is not ``always``;
-                # skip rather than inject a document the author may have opted
-                # out of the automatic load.
-                logger.debug("folder steering document frontmatter truncated: %s", key)
-                continue
-            if fields.get("inclusion", "").strip().casefold() in _SKIPPED_INCLUSIONS:
+            stripped = every_session_body(body, truncated=len(data) >= _MAX_SOURCE_BYTES)
+            if stripped is None:
+                logger.debug("folder steering document not for every session: %s", key)
                 continue
             seen.add(key)
+            if identity is not None:
+                seen_files.add(identity)
             # Retain the prompt-safe label, not the raw path: the collection is
             # the ONE boundary both consumers (the section renderer and the
             # member envelope) read from, so the fold happens once, here.

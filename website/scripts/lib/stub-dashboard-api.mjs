@@ -60,6 +60,18 @@ export const KIROCREW_CONFIG_FIXTURE = {
 }
 
 /**
+ * The same config with `agent.acp_backend` set to `kiro`, for a harness that
+ * photographs the Kiro credit surface (the top-bar credit pill and the Kiro
+ * Account modal). Unset, the backend resolves to the default harness, which is
+ * not kiro, and there a failed or empty usage read hides the pill and closes
+ * the modal, so those frames never render.
+ */
+export const KIRO_BACKEND_CONFIG_FIXTURE = {
+  ...KIROCREW_CONFIG_FIXTURE,
+  agent: { ...KIROCREW_CONFIG_FIXTURE.agent, acp_backend: 'kiro' },
+}
+
+/**
  * The `GET /api/kas-bundle` body, matching `KasBundleStatus` in
  * `website/src/api/client/onboarding.ts`: the route off and nothing installed.
  *
@@ -135,6 +147,7 @@ const objectish = path =>
  *   preserveStorage?: boolean,
  *   localStorageEntries?: Record<string, string>,
  *   extra?: (path: string, route: import('playwright').Route) => unknown,
+ *   onWebSocket?: (ws: import('playwright').WebSocketRoute) => unknown,
  * }} opts
  */
 export async function stubDashboardApi(page, opts = {}) {
@@ -156,6 +169,9 @@ export async function stubDashboardApi(page, opts = {}) {
     // and a "Message Kiro…" composer, in every harness in this folder.
     botName = 'Kiro Crew',
     extra = null,
+    // Receives the dashboard's mocked websocket, so a harness can push frames
+    // to the page. The socket never reaches a server either way.
+    onWebSocket = () => {},
   } = opts
 
   // Per-install, so a long harness reports each unmapped path once rather than
@@ -163,7 +179,7 @@ export async function stubDashboardApi(page, opts = {}) {
   const announced = new Set()
 
   // Swallow the dashboard's websocket so it does not retry-storm with no gateway.
-  await page.routeWebSocket(/\/api\/ws/, () => {})
+  await page.routeWebSocket(/\/api\/ws/, onWebSocket)
 
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname

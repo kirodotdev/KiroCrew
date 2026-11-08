@@ -416,7 +416,7 @@ class TestDepthCap:
 
         ts = (
             pathlib.Path(__file__).resolve().parents[1] / "website/src/lib/chainAnnounce.ts"
-        ).read_text()
+        ).read_text(encoding="utf-8")
         m = re.search(r"export const CHAINED_NAME_MAX = (\d+)", ts)
         assert m, "the relay's cap is no longer declared where this test reads it"
         assert int(m.group(1)) == INSTANCE_NAME_MAX, (

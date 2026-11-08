@@ -27,10 +27,11 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { motion, useReducedMotion } from 'framer-motion'
 import { AlertTriangle, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Compass, Loader2, X } from 'lucide-react'
-import { GUIDE_LAYER_SELECTOR } from './probeRegistry'
+import { openModalDialog } from './openModalDialog'
 import { Btn, IconButton } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
 import { useGuardedLeave } from '../components/NavigationLeaveGuard'
+import { memberSlugOfSlot } from '../hooks/unreadOnAttention'
 import { membersRosterQuery } from '../api/membersQuery'
 import type { MemberRosterRow } from '../api/client'
 import { GUIDE_ONLY_WITH_ITEMS } from '../uiLocations/guidePlans.gen'
@@ -46,6 +47,7 @@ import { accessibleName, findCandidates, findPick, searchByName, setFindPick, ty
 import { isCautionTarget } from './findTargetPolicy'
 import { GUIDE_KEEP_CLEAR_ATTR } from './trustRoot'
 import { useFindProbe } from './useFindProbe'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 
 const ARROW = 24
 const GAP = 6
@@ -280,17 +282,9 @@ export function keepClearBoxes(viewport: Viewport, root: Document = document): B
   return out
 }
 
-/** A page dialog that is modal right now (never the guide's own layer). */
-export function openModalDialog(root: Document = document): Element | null {
-  // The topmost one: a confirm opened from inside another dialog portals
-  // after it in document order (into the same root), so it comes later and
-  // covers it.
-  const open = Array.from(root.querySelectorAll('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'))
-  for (let i = open.length - 1; i >= 0; i--) {
-    if (!open[i].closest(GUIDE_LAYER_SELECTOR)) return open[i]
-  }
-  return null
-}
+// Lives in its own module so `paneVisibility` can share it; re-exported here for
+// the guide's existing callers.
+export { openModalDialog }
 
 /**
  * Whether an open page modal hides *el*: the target is outside the dialog and
@@ -709,20 +703,20 @@ function FindMissing({ query, findKey, reason }: { query: FindQuery; findKey: st
       <div className="m-0" role="status" data-testid="guide-find-ambiguous">
         <p className="m-0">{t('components.guideLayer.find_ambiguous', { label: query.label })}</p>
         {contexts.length > 0 && (
-          <ol className="m-0 mt-1 flex list-none flex-col gap-1 p-0">
+          <RadioChipGroup ariaLabel={t('components.guideLayer.find_ambiguous', { label: query.label })} className="m-0 mt-1 flex flex-col gap-1 p-0">
             {contexts.map((c, i) => (
-              <li key={i}>
+              <div key={i}>
                 <Btn
                   className="w-full justify-start text-start"
-                  aria-pressed={picked === i + 1}
+                  {...radioChip(picked === i + 1)}
                   data-testid={`guide-find-pick-${i + 1}`}
                   onClick={() => { setFindPick(findKey, i + 1); setPicked(i + 1) }}
                 >
                   {`${i + 1}. ${c || query.label}`}
                 </Btn>
-              </li>
+              </div>
             ))}
-          </ol>
+          </RadioChipGroup>
         )}
       </div>
     )
@@ -741,16 +735,8 @@ function FindMissing({ query, findKey, reason }: { query: FindQuery; findKey: st
 /** Where the finish chip's way back leads: the chat the guide was offered in. */
 export type GuideReturn = { kind: 'chat'; to: string }
 
-/**
- * A crewmate thread's slot key (`member-<slug>`, or `member-<slug>.memory-<store>`
- * once the crewmate has a private memory store) -> that slug; anything else
- * -> null. Mirrors the gateway's `member_slot_key` (members.py): the prefix,
- * the slug pattern, and the store suffix that belongs to the SLOT, not the slug.
- */
-const MEMBER_SLOT_KEY = /^member-([a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?)(?:\.memory-.+)?$/
-export function memberSlugOfSlot(slotKey: string): string | null {
-  return MEMBER_SLOT_KEY.exec(slotKey)?.[1] ?? null
-}
+// Re-exported for the callers and tests that read it from here.
+export { memberSlugOfSlot }
 
 const toMember = (name: string): GuideReturn => ({ kind: 'chat', to: `/members?member=${encodeURIComponent(name)}` })
 

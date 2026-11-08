@@ -21,22 +21,34 @@ import json
 import math
 import os
 import sys as _sys
-import threading
 import time as _time
 from collections.abc import Callable, Container, Iterable, Iterator
-from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew import _facade_mirror
+from kiro_crew import _facade_mirror, history_listing_memo
 from kiro_crew._sqlite_compat import is_cjk_char, script_runs  # noqa: F401 - facade re-exports
+from kiro_crew.config.sections_defaults import DEFAULT_SEARCH_SCAN_WINDOW
 from kiro_crew.history_cache import _GroupRecencyMemo
+from kiro_crew.history_derivation import is_incognito_transcript
 from kiro_crew.history_index import (
     INDEX_FILENAME,
     ChunkDecodeError,
     IndexRow,
     SessionSearchIndex,
     fold_texts,
+)
+from kiro_crew.history_search_listing import (  # noqa: F401 - facade re-exports
+    _CREW_CATALOG_FIELDS,
+    _MALFORMED,
+    _UNREADABLE,
+    ListingRow,
+    _apply_metadata,
+    _project_crew_fields,
+    _unreadable_session_files_lock,
+    _unreadable_session_files_warned,
+    _warn_unreadable_session_file,
+    listing_row,
 )
 from kiro_crew.history_search_memo import (  # noqa: F401 - facade re-exports
     _DIGEST_HEX_CHARS,
@@ -129,14 +141,13 @@ from kiro_crew.jsonl_util import bounded_records
 if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
 
-#: ``_scan_head_title`` outcome for a head that raised while being read; never cached.
-_UNREADABLE = object()
-
 
 SEARCH_MIN_CHARS = 2  # shortest query string that triggers backend search
 _TITLE_BOOST = 10  # field-boost multiplier for title matches in search_sessions
 _PHRASE_BOOST = 4  # extra weight per exact whole-query hit in a multi-word search
-_SEARCH_SCAN_WINDOW = 500  # cap files scanned per search to bound I/O
+#: An override for the scan window, for a test or an embedder. ``None`` reads
+#: ``session.search_scan_window`` at each search; see :func:`configured_search_scan_window`.
+_SEARCH_SCAN_WINDOW: int | None = None
 
 #: Seconds a session's transcript must have gone unmodified before the backfill
 #: pass indexes it. A session that is being written changes on every turn, and
@@ -159,15 +170,123 @@ _RECENCY_HALF_WEIGHT_DAYS = 30.0
 
 
 def _facade_search_scan_window() -> int:
-    """Read the facade's live scan limit without creating an import cycle.
+    """The scan limit in force for this search, read without an import cycle.
 
-    The import happens only when a search runs.  Keeping this as a getter is
-    intentional: tests and callers patch
-    ``kiro_crew.history._SEARCH_SCAN_WINDOW`` after construction.
+    The import happens only when a search runs. A test or an embedder that sets
+    ``kiro_crew.history._SEARCH_SCAN_WINDOW`` after construction overrides the
+    config; left at ``None``, the window is ``session.search_scan_window``.
     """
     from kiro_crew import history as history_facade
 
-    return history_facade._SEARCH_SCAN_WINDOW
+    override = history_facade._SEARCH_SCAN_WINDOW
+    if override is not None:
+        return override
+    return configured_search_scan_window()
+
+
+def configured_search_scan_window() -> int:
+    """``session.search_scan_window`` as of now, or its default when unreadable.
+
+    Read at each search, not at import, so a config change applies to the next
+    search with no restart. The gateway's config watcher holds the current
+    config, which costs an attribute read; a process without one (the MCP server)
+    loads the file. A window is a bound on reads, not an authorization, so a
+    config that cannot be read falls back to the default rather than failing
+    the search.
+    """
+    from kiro_crew.config import live
+
+    cfg = live.snapshot()
+    if cfg is None:
+        try:
+            from kiro_crew.config.loader import KiroCrewConfig
+
+            cfg = KiroCrewConfig.load()
+        except Exception:
+            return DEFAULT_SEARCH_SCAN_WINDOW
+    value = getattr(getattr(cfg, "session", None), "search_scan_window", None)
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return DEFAULT_SEARCH_SCAN_WINDOW
+
+
+class SearchRows(list[dict]):
+    """A session search's rows, and how much of the store the search read.
+
+    *eligible* counts every session the query could have reached, and *searched*
+    is the scan window's size capped at *eligible*: an upper bound on the eligible
+    sessions scored, since private sessions also take window slots.
+    ``searched < eligible`` means the window cut the search short, so a session
+    it left out may also match. Both are ``0`` when the count is not
+    known (a search restricted by *keys* alone judges only the window's sessions;
+    one that is also ``title:``-scoped counts the caller's own title matches).
+    Neither count includes incognito or temporary sessions, nor depends on how
+    many of them the window holds.
+    """
+
+    def __init__(self, rows: Iterable[dict] = (), *, searched: int = 0, eligible: int = 0):
+        super().__init__(rows)
+        self.searched = searched
+        self.eligible = eligible
+
+    def copy_rows(self) -> "SearchRows":
+        """A copy with its own row dicts, keeping the counts."""
+        return SearchRows(
+            (dict(row) for row in self), searched=self.searched, eligible=self.eligible
+        )
+
+
+def search_candidate_cap(query: str = "") -> int:
+    """Upper bound on ranked candidates a caller that filters rows pulls for *query*.
+
+    For a content search, the ceiling of ``session.search_scan_window``, not its
+    current value: the ranking reads the window itself and scores only that many
+    sessions, so asking for the ceiling takes every ranked match it scanned
+    (bounded I/O) and post-filtering can't starve a caller whose hits rank past a
+    small page. Reading the window here as well would be a second config read that
+    a change landing between the two could make smaller than the scan.
+
+    A ``title:`` query with nothing after its term reads titles only and is not
+    held to the window, so for it the window itself is the cap. The ranking reads
+    no window on that path, so this is still the one read for the search.
+    """
+    from kiro_crew.config.sections_limits import SEARCH_SCAN_WINDOW_MAX
+
+    scope = split_title_scope(query)
+    if scope is not None and not scope.rest:
+        return _facade_search_scan_window()
+    return SEARCH_SCAN_WINDOW_MAX
+
+
+def _visible_count(metas: Iterable[dict]) -> int:
+    """How many of *metas* are not incognito or temporary sessions."""
+    return sum(1 for meta in metas if not is_incognito_transcript(meta.get("memory_mode")))
+
+
+def search_coverage(rows: object) -> tuple[int, int] | None:
+    """``(searched, eligible)`` when the scan window cut *rows*' search short, else ``None``."""
+    if isinstance(rows, SearchRows) and 0 <= rows.searched < rows.eligible:
+        return rows.searched, rows.eligible
+    return None
+
+
+def search_coverage_note(rows: object) -> str:
+    """One plain-English line saying the window cut *rows*' search short, or ``""``."""
+    coverage = search_coverage(rows)
+    if coverage is None:
+        return ""
+    searched, eligible = coverage
+    return (
+        f"Searched the {searched:,} most recent of {eligible:,} sessions; "
+        "older sessions were not searched."
+    )
+
+
+def _copy_rows(rows: list[dict]) -> list[dict]:
+    """A private copy of a search result, keeping its coverage counts."""
+    if isinstance(rows, SearchRows):
+        return rows.copy_rows()
+    return [dict(row) for row in rows]
 
 
 def _history_lock_timeout() -> type[BaseException]:
@@ -189,29 +308,6 @@ def _jsonl_stem(name: str) -> str:
     the name, so only a name longer than the six-character suffix loses it.
     """
     return name[:-6] if len(name) > 6 else name
-
-
-#: Session files whose stat failed with something other than ENOENT, already
-#: warned about. One such file marks every listing incomplete, which keeps the
-#: dashboard's unread drain held for the process lifetime, so the warning must
-#: be visible; the listing runs every few seconds, so it is also logged only
-#: once per path per process rather than on every pass.
-_unreadable_session_files_warned: set[str] = set()
-#: Listings run on executor threads, so the check and the add share one lock.
-_unreadable_session_files_lock = threading.Lock()
-
-
-def _warn_unreadable_session_file(path: str, error: OSError) -> None:
-    with _unreadable_session_files_lock:
-        if path in _unreadable_session_files_warned:
-            return
-        _unreadable_session_files_warned.add(path)
-    logger.warning(
-        "Session file %s cannot be stat'd (%s); the session list is reported "
-        "incomplete and unread dots stay held until it is readable or removed",
-        path,
-        error,
-    )
 
 
 class SessionCatalogProjection:
@@ -266,18 +362,28 @@ class SessionCatalogProjection:
         return f"dashboard_{stripped}" if stripped else key
 
     @staticmethod
-    def _scan_head_title(path: "str | Path") -> object:
-        """The first user message's content[:80] within the first 21 lines.
+    def _scan_head_title(path: "str | Path") -> tuple[object, bool | None]:
+        """``(title, has_messages)`` from the first 21 lines of the transcript.
 
-        Returns the title, ``None`` when the head holds none, or ``_UNREADABLE``
-        when reading or interpreting the head raised -- that outcome is not
-        cached, so a transient error is retried on the next listing exactly as
-        the uncached read always was.
+        The title is the first user message's content[:80], ``None`` when the head
+        holds none, ``_UNREADABLE`` when reading the head raised an I/O error, or
+        ``_MALFORMED`` when reading or interpreting it raised anything else (a JSON
+        line that is not an object). Neither outcome is cached; only the I/O error is
+        retried by the next indexed listing, since the other reads the same until the
+        file changes.
+
+        ``has_messages`` is what :meth:`ConversationLog.has_messages` answers, read
+        from the same lines: True once a record is not a metadata line (an
+        unparseable one counts, as there), False when the file ends first, None
+        when 21 lines held only metadata and the answer lies further down.
         """
+        content = False
         try:
             with open(path, encoding="utf-8") as f:
+                ended = True
                 for i, ln in enumerate(f):
                     if i > 20:
+                        ended = False
                         break
                     ln = ln.strip()
                     if not ln:
@@ -285,12 +391,18 @@ class SessionCatalogProjection:
                     try:
                         d = json.loads(ln)
                     except json.JSONDecodeError:
+                        content = True
                         continue
+                    content = content or d.get("_type") != "metadata"
                     if d.get("role") == "user" and d.get("content"):
-                        return d["content"][:80]
+                        return d["content"][:80], True
+        except OSError:
+            return _UNREADABLE, None
         except Exception:
-            return _UNREADABLE
-        return None
+            return _MALFORMED, None
+        if content:
+            return None, True
+        return None, (False if ended else None)
 
     def newest_session_stems(self, max_entries: int) -> tuple[list[tuple[str, float]], bool]:
         """Return up to *max_entries* ``(stem, mtime)`` pairs, newest first.
@@ -324,6 +436,10 @@ class SessionCatalogProjection:
         newest = heapq.nlargest(max_entries, _stats())
         return [(stem, mtime) for mtime, stem in newest], counted > max_entries
 
+    def _listing_row(self, path: str, key: str, entry: "os.DirEntry[str] | None") -> ListingRow:
+        """The one place a catalog row is read: the scan and the listing index share it."""
+        return listing_row(self._log, path, key, entry, self._scan_head_title)
+
     def list_sessions(self, *, keys: Iterable[str] | None = None) -> list[dict]:
         return self._list_sessions_status(keys=keys)[0]
 
@@ -344,11 +460,19 @@ class SessionCatalogProjection:
         """
         sessions: list[dict] = []
         try:
-            self._log._dir.stat()
+            dir_stat = self._log._dir.stat()
         except FileNotFoundError:
             return sessions, True
         except OSError:
             return sessions, False
+        memo_dir = os.fspath(self._log._dir)
+        memo_key = (dir_stat.st_mtime_ns, self._log._dir_write_epoch())
+        if keys is None:
+            memoized = history_listing_memo.lookup(memo_dir, memo_key)
+            if memoized is not None:
+                return memoized, True
+        built_at = history_listing_memo.clock()
+        reusable = True
         complete = True
         # Deduplicate stacked dashboard_ prefixes by canonical key, keeping newer
         by_canon: dict[str, dict] = {}
@@ -377,135 +501,24 @@ class SessionCatalogProjection:
                 p = self._log._path(key)
                 entries.append((os.fspath(p), p.stem, None))
         for path, key, entry in entries:
-            # Snapshot the invalidation generation BEFORE the stat: the
-            # The first-line fill records this stat's cache identity. The
-            # generation independently proves the stat → read → publish window
-            # stayed write-free for this process.
-            gen = self._log._cache_gen(key)
-            try:
-                # Windows DirEntry.stat() reports st_ino as 0, so its cache
-                # identity would never equal the one every other reader takes
-                # from path.stat(); there the entry answers only is_symlink.
-                stat = os.stat(path) if entry is None or os.name == "nt" else entry.stat()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                _warn_unreadable_session_file(path, exc)
+            read = self._listing_row(path, key, entry)
+            if read.status == "unreadable":
                 complete = False
+            # A listing that holds a row whose read raised is not reused.
+            reusable = reusable and read.reusable
+            meta = read.row
+            if meta is None:
                 continue
-            identity = self._log._cache_identity(stat)
-            # Skip symlinks — these are handoff aliases pointing to the real session
-            if os.path.islink(path) if entry is None else entry.is_symlink():
-                continue
-            meta: dict = {
-                "key": key,
-                "messages": max(1, int(stat.st_size / 200)),
-                "modified": stat.st_mtime,
-                "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-            }
-            # Try metadata cache first (populated by _read_metadata calls)
-            cached_meta = self._log._meta_cache.get(key)
-            if (
-                cached_meta
-                and cached_meta[0] == identity
-                and cached_meta[1] == self._log._cache_gen(key)
-            ):
-                d = cached_meta[2]
-                if d.get("created_at"):
-                    meta["created"] = d["created_at"]
-                if d.get("title"):
-                    meta["title"] = d["title"]
-                if d.get("agent"):
-                    meta["agent"] = d["agent"]
-                meta["memory_mode"] = d.get("memory_mode", "persistent")
-                if d.get("folder_id"):
-                    meta["folder_id"] = d["folder_id"]
-            else:
-                # Read only the first line for metadata
-                try:
-                    with open(path, encoding="utf-8") as f:
-                        first_line = f.readline().strip()
-                    if first_line:
-                        d = json.loads(first_line)
-                        if d.get("_type") == "metadata":
-                            if d.get("created_at"):
-                                meta["created"] = d["created_at"]
-                            if d.get("title"):
-                                meta["title"] = d["title"]
-                            if d.get("agent"):
-                                meta["agent"] = d["agent"]
-                            meta["memory_mode"] = d.get("memory_mode", "persistent")
-                            if d.get("folder_id"):
-                                meta["folder_id"] = d["folder_id"]
-                            # Guarded publish — discard the fill if a write
-                            # invalidated this key inside the stat → read
-                            # window (see the generation snapshot above).
-                            self._log._publish_if_current(
-                                self._log._meta_cache,
-                                key,
-                                (identity, gen, d),
-                                key=key,
-                                gen=gen,
-                            )
-                        elif isinstance(d, dict):
-                            # A first line that is an object but not metadata
-                            # reads as no metadata, the same ``{}`` that
-                            # ``_read_metadata`` caches for it, so the next
-                            # listing answers from the cache instead of the file.
-                            self._log._publish_if_current(
-                                self._log._meta_cache,
-                                key,
-                                (identity, gen, {}),
-                                key=key,
-                                gen=gen,
-                            )
-                except Exception:
-                    pass
-            # Ensure memory_mode is always present (old sessions lack it)
-            meta.setdefault("memory_mode", "persistent")
-            # Extract first user message as title fallback
-            if "title" not in meta:
-                msg_cached = self._log._msg_cache.get(key)
-                if (
-                    msg_cached
-                    and msg_cached[0] == identity
-                    and msg_cached[1] == self._log._cache_gen(key)
-                ):
-                    for m in msg_cached[2]:
-                        if m.get("role") == "user" and m.get("content"):
-                            meta["title"] = m["content"][:80]
-                            break
-                else:
-                    scanned = self._log._title_scan_cache.get(key)
-                    if (
-                        scanned is not None
-                        and scanned[0] == (identity, stat.st_size)
-                        and scanned[1] == self._log._cache_gen(key)
-                    ):
-                        if scanned[2] is not None:
-                            meta["title"] = scanned[2]
-                    else:
-                        found = self._scan_head_title(path)
-                        if found is not _UNREADABLE:
-                            if found is not None:
-                                meta["title"] = found
-                            # Guarded like the metadata fill above.
-                            self._log._publish_if_current(
-                                self._log._title_scan_cache,
-                                key,
-                                ((identity, stat.st_size), gen, found),
-                                key=key,
-                                gen=gen,
-                            )
-            if "title" not in meta:
-                meta["title"] = key
             # Deduplicate: keep newer entry per canonical key
             canon = self._log._canonical_key(key)
             existing = by_canon.get(canon)
-            if existing is None or stat.st_mtime >= existing["modified"]:
+            if existing is None or meta["modified"] >= existing["modified"]:
                 by_canon[canon] = meta
         sessions = list(by_canon.values())
         sessions.sort(key=lambda s: s.get("modified", 0), reverse=True)
+        # Only a complete listing that no in-process write raced is reusable.
+        if keys is None and complete and reusable and self._log._dir_write_epoch() == memo_key[1]:
+            history_listing_memo.store(memo_dir, memo_key, built_at, sessions)
         return sessions, complete
 
     def agent_usage(self) -> dict[str, tuple[int, float]]:
@@ -551,13 +564,13 @@ class SessionCatalogProjection:
         if running is not None:
             running.done.wait()
             if running.result is not None:
-                return [dict(row) for row in running.result]
+                return _copy_rows(running.result)
             return self._search_sessions(query, limit)
         try:
             rows = self._search_sessions(query, limit)
             # A private copy, so a caller editing the rows it was handed cannot
             # change what a waiting caller receives.
-            flight.result = [dict(row) for row in rows]
+            flight.result = _copy_rows(rows)
             return rows
         finally:
             with _flights_lock:
@@ -667,8 +680,9 @@ class SessionCatalogProjection:
         two-pass scan needed for corpus stats.)  Sessions missing any
         required needle are dropped.  Ties break by recency (existing
         ``list_sessions`` order - newest first).  Caps results at *limit*.
-        Only the ``_SEARCH_SCAN_WINDOW`` most recent files are scored, so
-        I/O stays bounded even with hundreds of sessions.
+        Only the ``session.search_scan_window`` most recent files are scored, so
+        I/O stays bounded even with thousands of sessions. The rows come back as
+        :class:`SearchRows`, which say when that window left sessions out.
 
         *keys*, when given, restricts scoring to those session keys (as
         ``list_sessions`` spells them) inside that same window. It is applied
@@ -757,7 +771,7 @@ class SessionCatalogProjection:
         """The scoring and snippet half of :meth:`_search_sessions`.
 
         *title_filter*, when given (a ``title:`` query's term), makes the window
-        the newest ``_SEARCH_SCAN_WINDOW`` sessions whose title it accepts, chosen
+        the newest scan-window count of sessions whose title it accepts, chosen
         from every session after the memo prune. Judging a title reads no
         transcript, so an older session that ``title:x`` finds is still searched
         for ``title:x more``, and the cap still bounds the transcripts scored.
@@ -775,6 +789,13 @@ class SessionCatalogProjection:
         scan_window = _facade_search_scan_window()
         window = sessions[:scan_window]
         self._log._prune_search_memos({m["key"] for m in window})
+        # How much of the store the query could reach, for the results' note.
+        # Unknown (0) for *keys* alone: judging ownership past the window is the
+        # very read the window exists to bound. The counts leave out incognito
+        # and temporary sessions: a caller that filters those rows out compares
+        # the total with a listing that leaves them out, so counting them would
+        # tell it how many private sessions this machine holds.
+        eligible = _visible_count(sessions) if keys is None else 0
         if title_filter is not None:
             window = [m for m in sessions if title_filter(m.get("title") or "")]
         if keys is not None:
@@ -782,7 +803,18 @@ class SessionCatalogProjection:
             # shared with every unrestricted search.
             window = [m for m in window if m["key"] in keys]
         if title_filter is not None:
+            # Counts of title matches name a topic, so they leave out incognito and
+            # temporary sessions: a caller that filters those rows out must not
+            # learn from the note how many private sessions carry a title.
+            eligible = _visible_count(window)
             window = window[:scan_window]
+        # The window's size, not its visible sessions: how many private sessions
+        # sit inside it must not show in the note, or the window's size minus
+        # *searched* would count them. Private sessions still take window slots,
+        # so *searched* is an upper bound on the visible sessions scored: the note
+        # can overstate them, and a visible session pushed past the window by
+        # private ones can go unreported. An accurate count would reveal them.
+        searched = min(eligible, scan_window)
         allowed, rowids = self._index_shortlist(window, needles)
         if keys is None and title_filter is None:
             # Only an unrestricted search sees every live session's row; one
@@ -882,7 +914,9 @@ class SessionCatalogProjection:
         # full re-read back on the hot path — dominating the query once the fold
         # itself was memoized.
         picked = [(meta, needs_snippet) for _v, _s, _r, meta, needs_snippet in scored[:limit]]
-        return self._result_rows(picked, keys, query)
+        return SearchRows(
+            self._result_rows(picked, keys, query), searched=searched, eligible=eligible
+        )
 
     def _result_rows(
         self, picked: list[tuple[dict, bool]], keys: Container[str] | None, query: str
@@ -1338,7 +1372,7 @@ class SessionCatalogProjection:
                     continue
                 try:
                     data = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):  # past the nesting limit
                     continue
                 if not isinstance(data, dict) or data.get("_type") == "metadata":
                     continue
@@ -1529,11 +1563,17 @@ class SessionCatalogProjection:
 #                               spellings, the one-string match rule
 #   ``history_search_memo``  -- the shared count and snippet memos, their byte
 #                               ceilings, the single-flight table, memo-gated counts
+#   ``history_search_listing`` -- one catalog row from one transcript, shared by the
+#                               directory scan and the listing index
 #
 # ``test/test_history_search_bindings.py`` pins the binding and the reach.
 # --------------------------------------------------------------------------- #
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
-_OWNERS = ("kiro_crew.history_search_query", "kiro_crew.history_search_memo")
+_OWNERS = (
+    "kiro_crew.history_search_query",
+    "kiro_crew.history_search_memo",
+    "kiro_crew.history_search_listing",
+)
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
 #: Globals an owner rebinds at run time: the facade serves them and never binds them.

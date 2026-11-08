@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { useLocation, useNavigationType } from 'react-router-dom'
 import { ArrowLeft, ArrowRight } from 'lucide-react'
 import { i18nT } from '../i18n/t'
@@ -9,8 +9,11 @@ import { useGuardedHistoryStep } from './NavigationLeaveGuard'
 import {
   getRouteHistoryPosition,
   recordRouteNavigation,
+  routerEntry,
   subscribeRouteHistoryPosition,
 } from '../lib/routeHistoryPosition'
+import { routeHistoryMenuEntries, type RouteHistoryMenuEntry } from '../lib/routeHistoryLabels'
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from './ui/context-menu'
 
 /**
  * Feed the route-history position store — mounted ONCE inside the router (next
@@ -102,28 +105,125 @@ export function NavHistoryArrows() {
   const btn = 'flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none text-muted hover:text-text shrink-0 cursor-pointer disabled:opacity-30 disabled:pointer-events-none'
   return (
     <div className="tb-drop-navhistory flex items-center shrink-0" data-testid="nav-history-arrows">
-      <button
-        type="button"
+      <HistoryArrow
+        direction={-1}
         className={btn}
-        onClick={() => step(-1)}
         disabled={!pos.canGoBack}
-        aria-label={i18nT('app.nav_back')}
+        label={i18nT('app.nav_back')}
         title={backTitle}
-        aria-keyshortcuts={backDef ? ariaKeyshortcutsFor(backDef) : undefined}
+        keyshortcuts={backDef ? ariaKeyshortcutsFor(backDef) : undefined}
+        step={step}
       >
         <ArrowLeft size={15} />
-      </button>
-      <button
-        type="button"
+      </HistoryArrow>
+      <HistoryArrow
+        direction={1}
         className={btn}
-        onClick={() => step(1)}
         disabled={!pos.canGoForward}
-        aria-label={i18nT('app.nav_forward')}
+        label={i18nT('app.nav_forward')}
         title={forwardTitle}
-        aria-keyshortcuts={forwardDef ? ariaKeyshortcutsFor(forwardDef) : undefined}
+        keyshortcuts={forwardDef ? ariaKeyshortcutsFor(forwardDef) : undefined}
+        step={step}
       >
         <ArrowRight size={15} />
-      </button>
+      </HistoryArrow>
     </div>
+  )
+}
+
+/**
+ * One arrow plus its history menu (#17453), built on the shared
+ * `ui/context-menu`: a right-click, the menu key, Shift+F10 or a touch/pen
+ * long press opens a named list of the destinations behind or ahead of it.
+ * Dismissal, focus return and the long-press timer are the shared menu's.
+ *
+ * The list is read when the menu opens, so its steps describe the stack as it
+ * is then. Another navigation while it is open (browser Back, a chord) would
+ * make those steps stale, so the menu is remounted closed instead.
+ */
+function HistoryArrow({ direction, className, disabled, label, title, keyshortcuts, step, children }: {
+  direction: -1 | 1
+  className: string
+  disabled: boolean
+  label: string
+  title: string
+  keyshortcuts: string | undefined
+  step: (delta: number) => void
+  children: ReactNode
+}) {
+  const [entries, setEntries] = useState<RouteHistoryMenuEntry[]>([])
+  const [epoch, setEpoch] = useState(0)
+  const isOpen = useRef(false)
+  const openedAt = useRef<number | null>(null)
+  // The release of the long press that opened the menu is followed by a
+  // click; that click must not also step. Cleared by the next press or key.
+  const skipClick = useRef(false)
+  // A touch or pen press is down on the arrow.
+  const pressing = useRef(false)
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const locationKey = useLocation().key
+  useEffect(() => {
+    if (isOpen.current) {
+      isOpen.current = false
+      setEpoch(e => e + 1)
+    }
+  }, [locationKey])
+  // Nothing named to offer: no empty menu, and no browser menu either.
+  const hasEntries = routeHistoryMenuEntries(direction).length > 0
+  const onOpenChange = (open: boolean) => {
+    isOpen.current = open
+    if (!open) return
+    openedAt.current = routerEntry().idx
+    setEntries(routeHistoryMenuEntries(direction))
+    // Only a long press is followed by a click; a right-click or the menu
+    // key is not, so it must not swallow the next activation.
+    skipClick.current = pressing.current
+  }
+  return (
+    <ContextMenu key={epoch} onOpenChange={onOpenChange}>
+      {/* No aria-haspopup: the arrow's own activation is a step, not "open a
+          menu", and announcing it as a menu button would promise Enter opens one. */}
+      <ContextMenuTrigger asChild disabled={!hasEntries}>
+        <button
+          type="button"
+          ref={buttonRef}
+          className={className}
+          onClick={() => {
+            if (skipClick.current) { skipClick.current = false; return }
+            step(direction)
+          }}
+          onPointerDown={e => { skipClick.current = false; pressing.current = e.pointerType !== 'mouse' }}
+          onPointerUp={() => { pressing.current = false }}
+          onPointerCancel={() => { pressing.current = false }}
+          onKeyDown={() => { skipClick.current = false }}
+          onContextMenu={e => { if (!hasEntries) e.preventDefault() }}
+          disabled={disabled}
+          aria-label={label}
+          title={title}
+          aria-keyshortcuts={keyshortcuts}
+        >
+          {children}
+        </button>
+      </ContextMenuTrigger>
+      <ContextMenuContent
+        aria-label={i18nT(direction === -1 ? 'app.nav_back_history' : 'app.nav_forward_history')}
+        data-testid="nav-history-menu"
+        // Hand focus back to the arrow, so a keyboard user who opened the
+        // list with the menu key is not stranded on <body>.
+        onCloseAutoFocus={e => { e.preventDefault(); buttonRef.current?.focus() }}
+        className="min-w-[200px] max-w-[min(320px,calc(100vw-16px))]"
+      >
+        {entries.map(entry => (
+          <ContextMenuItem
+            key={entry.delta}
+            className="[@media(pointer:coarse)]:min-h-11"
+            // A delta is only true for the entry the menu was read on.
+            onSelect={() => { if (openedAt.current === routerEntry().idx) step(entry.delta) }}
+          >
+            <span className="truncate">{entry.label}</span>
+          </ContextMenuItem>
+        ))}
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

@@ -376,6 +376,17 @@ export function saveSlot(project: string, slot: string): void {
   }
 }
 
+/** Forget a project's co-author chat slot when the gateway no longer has that
+ *  session (never throws), so the paper is offered a new one instead of the
+ *  dead key being tried again on every open. */
+export function forgetSlot(project: string): void {
+  try {
+    localStorage.removeItem(SLOT_KEY_PREFIX + project)
+  } catch {
+    /* storage unavailable — nothing remembered to forget */
+  }
+}
+
 /**
  * Drop remembered slots whose project no longer exists.
  *

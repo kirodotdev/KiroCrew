@@ -32,16 +32,16 @@ from test_update_provider import _UNALLOCATABLE_PID
 
 import kiro_crew.apps.routes as routes_mod
 from conftest import requires_symlinks
+from kiro_crew import platform_compat
 from kiro_crew.apps.manager import enable_app
 from kiro_crew.apps.routes import (
     _get_app_secret,
     _resolve_app_backend_url,
     invalidate_app_secret_cache,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/{name}/open
-# ---------------------------------------------------------------------------
 
 
 class TestOpenApp:
@@ -104,9 +104,12 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        # The POSIX path on every host; the native-Windows refusal is tested apart.
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Linux")
         monkeypatch.delenv("DISPLAY", raising=False)
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.setattr(platform_compat, "_user_manager_desktop_session", lambda: {})
         async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
             resp = await client.post(f"/api/apps/{APP}/open")
             assert resp.status == 200
@@ -116,6 +119,43 @@ class TestOpenApp:
         assert body["command"] == "open-my-app"
 
     @pytest.mark.asyncio
+    async def test_a_desktop_login_launches_under_the_installed_service(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The installed Linux service names no display in its own environment;
+        # the desktop session the user's systemd manager names decides instead,
+        # and only its keys among the launcher's desktop hints reach the child.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, openCommand="open-my-app")
+        enable_app(APP)
+        monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
+        monkeypatch.setattr(platform_mod, "system", lambda: "Linux")
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.setenv("XDG_CURRENT_DESKTOP", "GNOME")
+        session = {"DISPLAY": ":0", "XDG_CURRENT_DESKTOP": "KDE", "KDE_SESSION_VERSION": "6"}
+        monkeypatch.setattr(platform_compat, "_user_manager_desktop_session", lambda: session)
+        monkeypatch.setattr(routes_mod, "wrap_argv", lambda argv, mode="standard": (argv, None))
+        monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
+        envs: list[dict[str, str]] = []
+
+        async def _spawn(*argv: str, **kwargs: Any) -> Any:
+            envs.append(kwargs["env"])
+            return SimpleNamespace(pid=UNALLOCATABLE_PID)
+
+        monkeypatch.setattr(routes_mod, "create_subprocess_limited", _spawn)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/open")
+            assert resp.status == 200
+            body = await resp.json()
+        assert body == {"ok": True, "name": APP, "pid": UNALLOCATABLE_PID}
+        [env] = envs
+        assert env["DISPLAY"] == ":0"
+        assert env["XDG_CURRENT_DESKTOP"] == "KDE"
+        assert "KDE_SESSION_VERSION" not in env
+
+    @pytest.mark.asyncio
     async def test_launch_returns_pid_on_a_desktop_host(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -123,6 +163,7 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Darwin")
         wrapped: dict[str, Any] = {}
 
@@ -132,8 +173,7 @@ class TestOpenApp:
             return argv, None
 
         async def _spawn(*argv: str, **kwargs: Any) -> Any:
-            # nosemgrep: kirocrew.mock-pid-allocatable -- pre-existing spawn stand-in moved verbatim; the open route only logs and returns this pid and nothing signals it
-            return SimpleNamespace(pid=4321)
+            return SimpleNamespace(pid=UNALLOCATABLE_PID)
 
         monkeypatch.setattr(routes_mod, "wrap_argv", _wrap)
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
@@ -142,7 +182,7 @@ class TestOpenApp:
             resp = await client.post(f"/api/apps/{APP}/open")
             assert resp.status == 200
             body = await resp.json()
-        assert body == {"ok": True, "name": APP, "pid": 4321}
+        assert body == {"ok": True, "name": APP, "pid": UNALLOCATABLE_PID}
         # The command is sandboxed and cgroup-capped, never bare.
         assert wrapped["argv"] == ["/bin/sh", "-c", "open-my-app"]
         assert wrapped["mode"] == "standard"
@@ -155,6 +195,7 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Darwin")
         monkeypatch.setattr(routes_mod, "wrap_argv", lambda argv, mode="standard": (argv, None))
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
@@ -187,6 +228,7 @@ class TestOpenApp:
         _install(tmp_path, openCommand="open-my-app")
         enable_app(APP)
         monkeypatch.setattr(routes_mod, "app_execution_denied", lambda n, **k: None)
+        monkeypatch.setattr(routes_mod, "_manifest_shell_platform_refusal", lambda: None)
         monkeypatch.setattr(platform_mod, "system", lambda: "Darwin")
         monkeypatch.setattr(routes_mod, "wrap_argv", lambda argv, mode="standard": (argv, None))
         monkeypatch.setattr(routes_mod, "cgroup_scope_argv", lambda argv: argv)
@@ -205,9 +247,7 @@ class TestOpenApp:
         assert spawned == []
 
 
-# ---------------------------------------------------------------------------
 # GET /apps/{name}/ui/{path} — path and type validation
-# ---------------------------------------------------------------------------
 
 
 class TestAppUiFile:
@@ -260,9 +300,7 @@ class TestAppUiFile:
             assert (await resp.json())["error"] == "invalid path"
 
 
-# ---------------------------------------------------------------------------
 # POST /api/apps/{name}/dev
-# ---------------------------------------------------------------------------
 
 
 class TestAppDevMode:
@@ -309,9 +347,7 @@ class TestAppDevMode:
             assert "error" not in (await resp.json())
 
 
-# ---------------------------------------------------------------------------
 # GET/PUT /api/apps/{name}/config
-# ---------------------------------------------------------------------------
 
 
 class TestAppConfig:
@@ -355,6 +391,20 @@ class TestAppConfig:
             assert "failed to read config" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
+    async def test_get_config_that_is_not_utf8_is_the_same_500(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path)
+        cfg = home / "apps" / APP / "data" / "config.json"
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_bytes(b'\xff\xfe{"a": 1}')
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/apps/{APP}/config")
+            assert resp.status == 500
+            assert "failed to read config" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
     async def test_put_invalid_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _setup_env(tmp_path, monkeypatch)
         _install(tmp_path)
@@ -391,9 +441,7 @@ class TestAppConfig:
             assert await resp.json() == {"theme": "dark"}
 
 
-# ---------------------------------------------------------------------------
 # App-secret cache + backend URL resolution
-# ---------------------------------------------------------------------------
 
 
 class TestAppSecretCache:
@@ -476,9 +524,7 @@ class TestResolveAppBackendUrl:
         assert _resolve_app_backend_url(APP) is None
 
 
-# ---------------------------------------------------------------------------
 # Reverse proxy /apps/{name}/api/{path} — authorization gates
-# ---------------------------------------------------------------------------
 
 
 class _FakeCM:
@@ -510,12 +556,9 @@ class _FakeSession:
 def _fail_proxy_backend_with(app: web.Application, exc: BaseException) -> None:
     """Make the proxy's outbound session raise ``exc``, installed BEFORE start.
 
-    ``register_app_routes`` creates the real ``ClientSession`` in an
-    ``on_startup`` hook; hooks run in registration order, so this one runs
-    right after it, closes the real session (its connector would otherwise
-    outlive the test) and installs the fake while the app is still mutable.
-    An ``app[...]`` write after the test server has started is deprecated by
-    aiohttp.
+    Startup hooks run in registration order, so this one runs right after the hook that
+    creates the real ``ClientSession``, closes it (its connector would outlive the test)
+    and installs the fake while the app is still mutable, as aiohttp requires.
     """
 
     async def _swap(app_: web.Application) -> None:

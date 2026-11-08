@@ -66,9 +66,9 @@
    (website/AUTOSDE.yaml max-two-buttons-per-row) -- and that also keeps the
    three tracks matched to three children, so the actions group cannot land in
    the centre track by auto-placement. */
-@media (max-width:767px){
-  .topbar{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
-}
+/* Keyed on the phone FORM (`topbar-phone`, shellHeader.tsx), not on width: a
+   touch-first phone in mobile mode keeps the phone form past 767px (useIsMobile). */
+.topbar.topbar-phone{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr)}
 /* Phone chat page (`topbar-single`, App.tsx): the header is the ONE bar for
    shell and conversation, so its centre cell is the chat page's title slot and
    has to take every pixel the side cells leave -- the opposite of the
@@ -86,10 +86,8 @@
    `.tb-trail` keeps `.tb-right`'s padding/negative-margin pair for the same
    reason `.tb-right` has it: the bell badge overhangs its button by 4px, and
    the header's own overflow would otherwise square it off. */
-@media (max-width:767px){
-  .topbar.topbar-single{grid-template-columns:auto minmax(0,1fr) auto;gap:0}
-  .topbar.topbar-single .tb-trail{padding:6px 6px 0 0;margin:-6px -6px 0 0}
-}
+.topbar.topbar-phone.topbar-single{grid-template-columns:auto minmax(0,1fr) auto;gap:0}
+.topbar.topbar-phone.topbar-single .tb-trail{padding:6px 6px 0 0;margin:-6px -6px 0 0}
 
 /* Each side group is a size-query container. Inline-size containment also stops
    the group contributing its content width to the track it sits in, which is
@@ -113,8 +111,16 @@
    not equal to it: a flush 4px left the badge body exactly on the clip boundary,
    so sub-pixel rounding and the badge's glow shadow still squared its top and
    right edges. The 2px slack clears the box; keep both values equal, and only as
-   large as needed, since more lets real content escape into the header's padding. */
-.tb-right{justify-content:flex-end;gap:.375rem;padding:6px 6px 0 0;margin:-6px -6px 0 0}
+   large as needed, since more lets real content escape into the header's padding.
+   The same reserve sits below the controls. Without it the clip box ended
+   exactly on the bottom edge of the 28px pills and buttons, which cut their
+   glass shadow flat at that edge and, at any zoom where the edge lands on a
+   fractional device pixel, the bottom row of their border. The reserve keeps
+   the clip off the controls' own edges; it does not hold the shadow's whole
+   blur, which would need more room than the header has. Equal padding and
+   negative margin above and below keep the controls centred where they were,
+   and the header height does not change. */
+.tb-right{justify-content:flex-end;gap:.375rem;padding:6px 6px 6px 0;margin:-6px -6px -6px 0}
 
 /* Both side tracks are `minmax(0,1fr)` at EVERY width, and that is load-bearing
    for the containment above, not just for centring. A side track sized `auto`
@@ -494,9 +500,9 @@ body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
 .focus-peek-rail{width:10px}
 
 /* no-drag only while the chrome is HIDDEN. While it is shown the drag surface is
-   the header (Windows/Linux, below) or the .host-drag-strip gap strips (macOS,
-   App.tsx), and a no-drag strip laid over the band's top 10px could only subtract
-   from it. Hidden, the injected drag bar is collapsed to 0 anyway, so this is a
+   the header (Windows/Linux, below) and the .host-drag-strip gap strips over
+   it (macOS and Windows, App.tsx), and a no-drag strip laid over the band's
+   top 10px could only subtract from it. Hidden, the injected drag bar is collapsed to 0 anyway, so this is a
    backstop rather than load-bearing. */
 body.mc-focus-mode:not(.mc-focus-chrome) .focus-peek-top{-webkit-app-region:no-drag}
 body.mc-focus-mode:not(.mc-focus-rail) .focus-peek-rail{-webkit-app-region:no-drag}
@@ -542,9 +548,11 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    browsers (no native window). */
 .host-drag-strip{position:absolute;top:0;height:42px;-webkit-app-region:drag;pointer-events:none;z-index:2}
 
-/* Scrollbar-free scroll container (used by the side panel tab strip — the
-   strip scrolls horizontally but a visible scrollbar under the chips reads
-   as clutter). Referenced before Tailwind ever defined it; real rules here. */
-.scrollbar-none{scrollbar-width:none;-ms-overflow-style:none}
+/* Scrollbar-free scroll container. The global rule in index.css hides every
+   scrollbar, so on an ordinary box this adds nothing: it is the explicit form
+   for a box a third-party sheet also styles, because it is unlayered and so
+   wins where that sheet re-declares `scrollbar-width`. The sites that carry it
+   for no such reason are redundant, not wrong. */
+.scrollbar-none{scrollbar-width:none}
 .scrollbar-none::-webkit-scrollbar{display:none}
 

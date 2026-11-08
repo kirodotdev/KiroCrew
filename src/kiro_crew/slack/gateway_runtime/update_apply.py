@@ -8,7 +8,7 @@ Orchestrator fields read: ``_REQUIRED_DEPS``, ``_wheel_update_noticed``,
 ``dashboard_state``.
 Orchestrator fields written: ``_pending_update_mandatory``,
 ``_pending_update_mandatory_key``, ``_pending_update_respawn``,
-``_update_apply_deferred``.
+``_pending_update_version``, ``_update_apply_deferred``.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         build_frontend_async,
         commits_ahead,
         dep_sync,
+        fetch_and_pin_upstream,
         git_command_env,
         hidden_worktree_edits,
         is_bundled_kiro_cli,
@@ -44,6 +45,7 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         redact_log_via_context,
+        release_apply,
         repo_exec_config_reason,
         resolve_remote_url,
         restart_command_hint,
@@ -80,7 +82,8 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
     # the kill-the-tree + bounded-reap contract for an asyncio child. (The
     # managed-venv engine's build children are synchronous ``Popen`` children
     # and use ``platform_compat.kill_popen_tree`` instead.)
-    from kiro_crew.platform.update_provider import _kill_and_reap
+    from kiro_crew.platform.update_governance import unattended_apply_allowed
+    from kiro_crew.platform.update_provider import _kill_and_reap, _start_installer
 
     # Loaded before the reinstall below for the same reason as the provider
     # path: `pip install -e .` rewrites the package this process imports
@@ -108,7 +111,12 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # `os.environ`, because an inherited `GIT_DIR` has to be ABSENT and a
         # merge can only add keys. Left in place it would point every call
         # below at unrelated metadata while `cwd` still says `proj`.
-        _git_env = git_command_env()
+        #
+        # Built off the loop: it reads the operator's `safe.directory` values
+        # with a short `git config` child (see `_protected_safe_directories`).
+        _git_env = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), git_command_env
+        )
 
         # `git` itself is resolved OFF `PATH`. A gateway's `PATH` can lead
         # with an agent-writable directory (a worktree venv's `bin`,
@@ -135,7 +143,6 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # does not carry over.
         git_bin: str = _git
 
-        # Detect current branch
         branch_proc = await asyncio.create_subprocess_exec(
             _git,
             "rev-parse",
@@ -222,7 +229,12 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # update path in the product — no auth, no click, `git reset --hard`
         # + pip + execv on boot — so a blocked host must not touch its tree.
         blocked = await asyncio.get_running_loop().run_in_executor(
-            None, lambda: update_blocked_reason(resolve_remote_url(proj, remote="origin"))
+            # `_git_env` is the env the fetch below runs with, so the pin judges
+            # the URL that isolated fetch will connect to.
+            None,
+            lambda: update_blocked_reason(
+                resolve_remote_url(proj, fetch_env=_git_env, remote="origin")
+            ),
         )
         if blocked:
             logger.warning("Auto-update refused: %s", blocked)
@@ -233,68 +245,33 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("pulling", "Fetching latest changes…")
 
-        fetch = await asyncio.create_subprocess_exec(
-            _git,
-            "fetch",
-            "origin",
-            branch,
-            cwd=proj,
-            env=_git_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=platform_compat.IS_POSIX,
-        )
-        try:
-            await asyncio.wait_for(fetch.communicate(), timeout=60)
-        except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
-            await _kill_and_reap(fetch)
-            raise
-
-        if fetch.returncode != 0:
-            if self.dashboard_state:
-                self.dashboard_state.clear_update_progress()
-            return
-
-        # Capture the fetched commit as an OID, immediately after the fetch,
-        # and use that OID for the comparison AND the reset below. A ref name
-        # is re-resolved on every command, so `origin/<branch>` could be moved
-        # by a concurrent fetch between the decision and the reset — deciding
-        # against one commit and resetting to another. An OID cannot move.
+        # The fetch's ref write is the one git operation here a repo-defined
+        # hook can fire on (`reference-transaction` -> `hook.<name>.command`,
+        # which no `-c` pin or fetch flag closes), so it runs through the shared
+        # isolated helper: the fetch happens in a git dir the gateway owns and no
+        # repository hook exists there, while objects land in this checkout.
         #
-        # The ref is spelled in FULL (`refs/remotes/origin/...`) because the
-        # short form is ambiguous in the attacker's favour: rev-parse's
-        # disambiguation order checks `refs/tags/<name>` BEFORE
-        # `refs/remotes/<name>`, so a tag literally named `origin/main`
-        # resolves instead of the remote-tracking branch — and the update's
-        # own `git fetch` auto-follows tags, so publishing that tag upstream
-        # is enough to create it locally. git prints "refname is ambiguous"
-        # to stderr and still writes the TAG's OID to stdout, which is what
-        # this capture reads, so the short form fails silently here.
-        target_proc = await asyncio.create_subprocess_exec(
-            _git,
-            "rev-parse",
-            "--verify",
-            f"refs/remotes/origin/{branch}^{{commit}}",
-            cwd=proj,
-            env=_git_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=platform_compat.IS_POSIX,
+        # `target` is the OID the helper fetched, used for the comparison AND the
+        # reset below. It comes straight from the fetch, so it cannot be moved by
+        # a concurrent fetch between decision and reset, and the old
+        # `refs/remotes/origin/<branch>` tag-vs-ref ambiguity does not arise: no
+        # ref name is resolved to get it. The helper writes no ref in the
+        # checkout, so its remote-tracking ref stays as the last plain fetch left
+        # it.
+        fetched = await fetch_and_pin_upstream(
+            proj, "origin", branch, git=_git, env=_git_env, timeout=60
         )
-        try:
-            target_out, _ = await asyncio.wait_for(target_proc.communicate(), timeout=10)
-        except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
-            await _kill_and_reap(target_proc)
-            raise
-        target = (target_out or b"").strip().decode()
-        if target_proc.returncode != 0 or not target:
-            logger.warning(
-                "Auto-update: skipping — could not resolve origin/%s to a commit",
-                branch,
-            )
+        if not fetched:
+            # Refused source URL, a failed or timed-out fetch, or an unreadable
+            # tip -- the helper logs which. Stop without touching the tree.
+            logger.warning("Auto-update: skipping — could not fetch origin/%s", branch)
             if self.dashboard_state:
                 self.dashboard_state.clear_update_progress()
             return
+        # Bound as a plain ``str`` (not ``str | None``) so the closures and
+        # spawns below that capture it type-check: mypy does not carry the
+        # ``if not fetched`` narrowing into a lambda.
+        target: str = fetched
 
         # Check if there are actually new commits
         diff_proc = await asyncio.create_subprocess_exec(
@@ -626,6 +603,20 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
                     self.dashboard_state.push_refresh("update_available")
                 return True
 
+            # 6. A policy that turned unattended installs off since the effect
+            #    was derived. Read LAST, after every await above, so on the
+            #    post-copy pass nothing awaits between it and the reset. A
+            #    floor's mandatory update does not ask.
+            if not mandatory and not unattended_apply_allowed():
+                logger.info(
+                    "Auto-update not applied: the security policy turned off "
+                    "unattended installs while this update waited"
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.clear_update_progress()
+                    self.dashboard_state.push_refresh("update_available")
+                return True
+
             return False
 
         # Every refusal runs before the copy, so a checkout they keep refusing
@@ -673,16 +664,19 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
 
         # Hard reset to remote. Reached only with a clean tracked tree and no
         # untracked collisions, so it overwrites nothing the developer owns.
-        reset = await asyncio.create_subprocess_exec(
-            _git,
-            "reset",
-            "--hard",
-            target,
-            cwd=proj,
-            env=_git_env,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-            start_new_session=platform_compat.IS_POSIX,
+        reset = await _start_installer(
+            asyncio.create_subprocess_exec(
+                _git,
+                "reset",
+                "--hard",
+                target,
+                cwd=proj,
+                env=_git_env,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+                start_new_session=platform_compat.IS_POSIX,
+            ),
+            stop=_kill_and_reap,
         )
         # Only a reset that started can have moved the tree: a spawn that
         # raised wrote nothing.
@@ -706,7 +700,23 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # path would let `PATH` answer. `None` means do not spawn it,
         # skipped like any absent backend, which this step already treats as
         # non-fatal.
-        kiro_cli_bin = await _pinned_kiro_cli("the optional kiro-cli backend update")
+        # On the KAS bundle route kiro-cli is not part of what runs, so its
+        # self-update is skipped with the reason in the log (the only place an
+        # unattended apply reports). The engine is Crew's own install, which
+        # the release install below lays down for the new release's pin
+        # (release_apply). Local import: this body runs on the gateway facade's
+        # globals, and the config read goes off the loop like every other
+        # blocking read in this apply.
+        from kiro_crew.agent_sdk import kas_bundle
+
+        if await asyncio.to_thread(kas_bundle.kas_bundle_route):
+            logger.info(
+                "Auto-update: kiro-cli update skipped; KAS runs Kiro Crew's own engine "
+                "bundle, not kiro-cli."
+            )
+            kiro_cli_bin = None
+        else:
+            kiro_cli_bin = await _pinned_kiro_cli("the optional kiro-cli backend update")
         # The desktop app's bundled copy is skipped too: it sits inside the
         # signed app bundle, where an in-place self-update would break the
         # codesign seal, and the app update is what replaces it. Checked
@@ -718,14 +728,17 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         if kiro_cli_bin is not None:
             kiro_update: asyncio.subprocess.Process | None = None
             try:
-                kiro_update = await asyncio.create_subprocess_exec(
-                    kiro_cli_bin,
-                    "update",
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                    # Own process group (POSIX; no-op on Windows) so the
-                    # kill in the arms below reaches the whole tree.
-                    start_new_session=platform_compat.IS_POSIX,
+                kiro_update = await _start_installer(
+                    asyncio.create_subprocess_exec(
+                        kiro_cli_bin,
+                        "update",
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        # Own process group (POSIX; no-op on Windows) so the
+                        # kill in the arms below reaches the whole tree.
+                        start_new_session=platform_compat.IS_POSIX,
+                    ),
+                    stop=_kill_and_reap,
                 )
                 await asyncio.wait_for(kiro_update.wait(), timeout=120)
             except (TimeoutError, asyncio.TimeoutError):
@@ -751,12 +764,19 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # serves the latest bundle. Graceful no-op if no website/ or npm.
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("building", "Building frontend…")
-        await build_frontend_async(
+        build = await build_frontend_async(
             proj,
             push_progress=(
                 self.dashboard_state.push_update_progress if self.dashboard_state else None
             ),
         )
+        # A failed build does NOT stop the install below: the tree has already
+        # moved, and nothing retries this update, so its dependencies must still
+        # land or any later restart dies at import. Only the restart is refused
+        # (after the install), since static/dist still holds the previous bundle.
+        build_failed = build.outcome == "failed"
+        if build_failed:
+            logger.error("Auto-update: %s", build.failure_message())
 
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("building", "Rebuilding package…")
@@ -776,15 +796,39 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         #
         # Supervised: a shutdown that cancels this task also cancels the install,
         # so one still queued, or cancelled before its last check ahead of pip,
-        # never starts pip. A pip already running is left to finish (see
-        # dep_sync.sync_or_reinstall_supervised for the exact window).
-        pip_rc = await dep_sync.sync_or_reinstall_supervised(
+        # never starts pip, and an engine install in flight is killed. A pip
+        # already running is left to finish (see
+        # release_apply.apply_release_supervised for the exact window).
+        #
+        # The release, not the package: after the code, the new revision's own
+        # `kirocrew kas install --if-in-use` lays down the engine it pins, and a
+        # failure there stops the update before the restart.
+        pip_rc = await release_apply.apply_release_supervised(
             subprocess_executor(),
-            Path(proj),
-            Path(sys.executable),
-            lambda message, error: pip_messages.append((message, error)),
-            timeout=600,
+            release_apply.GitRelease(
+                Path(proj),
+                Path(sys.executable),
+                lambda message, error: pip_messages.append((message, error)),
+                timeout=600,
+            ),
         )
+        if pip_rc == release_apply.ENGINE_FAILED:
+            # The dependencies installed; only the KAS engine the bundle route
+            # needs did not. Name that step, not pip, and stay up: the new code
+            # would start without its engine.
+            update_ownership.refuse_restart(
+                "the KAS engine install after the git auto-update did not complete; "
+                "run `kirocrew kas install`, then restart"
+            )
+            engine_text = redact_log_via_context("; ".join(m for m, _ in pip_messages))
+            logger.error(
+                "Auto-update: the KAS engine install failed; run `kirocrew kas install`, "
+                "then restart: %s",
+                engine_text[:500],
+            )
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress("error", engine_text[:500])
+            return
         if pip_rc != 0:
             # The tree moved but its dependencies did not, and this step
             # stays up rather than restart (below): a relaunch would die at
@@ -825,20 +869,23 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
             # can, because these resolve from public PyPI with no
             # private-index dependency.
             core_deps = [pip for _mod, pip in self._REQUIRED_DEPS]
-            fallback = await asyncio.create_subprocess_exec(
-                *platform_compat.isolated_python_argv(
-                    "-m",
-                    "pip",
-                    "install",
-                    "--quiet",
-                    *core_deps,
+            fallback = await _start_installer(
+                asyncio.create_subprocess_exec(
+                    *platform_compat.isolated_python_argv(
+                        "-m",
+                        "pip",
+                        "install",
+                        "--quiet",
+                        *core_deps,
+                    ),
+                    cwd=proj,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    # Own process group (POSIX; no-op on Windows) so the kill
+                    # below reaches pip's build-backend grandchildren too.
+                    start_new_session=platform_compat.IS_POSIX,
                 ),
-                cwd=proj,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                # Own process group (POSIX; no-op on Windows) so the kill
-                # below reaches pip's build-backend grandchildren too.
-                start_new_session=platform_compat.IS_POSIX,
+                stop=_kill_and_reap,
             )
             try:
                 _fb_out, fb_err = await asyncio.wait_for(fallback.communicate(), timeout=300)
@@ -891,6 +938,17 @@ async def _auto_apply_update(self: GatewayOrchestrator, *, mandatory: bool = Fal
         # attempt recorded does not describe the install.
         tree_moved = False
         update_ownership.clear_restart_refusal()
+        if build_failed:
+            # The install is importable, but static/dist still holds the previous
+            # bundle and a restart would pair it with the new backend. Stay up,
+            # and keep the stale-asset watchdog's import probe from clearing it.
+            update_ownership.refuse_restart(
+                "the frontend build after the git auto-update did not complete",
+                import_probe_clears=False,
+            )
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress("error", build.failure_message())
+            return
         logger.info("Auto-update: rebuild complete, preparing safe restart")
         # Re-read version from rebuilt package for the operator-facing log;
         # restart ownership itself is centralized below.
@@ -1010,6 +1068,7 @@ async def _auto_apply_wheel_update(
         self._pending_update_respawn = respawn_executable
         self._pending_update_mandatory = mandatory
         self._pending_update_mandatory_key = mandatory_key
+        self._pending_update_version = "" if mandatory else version
         await self._retry_pending_update_restart()
         return
 
@@ -1020,6 +1079,7 @@ async def _auto_apply_wheel_update(
         feed_base=feed_base,
         artifact_base=artifact_base,
         state=state,
+        refuse_if_unattended_off=not mandatory,
     )
     if outcome.status == "promoted":
         if not await asyncio.to_thread(wheel_apply.restart_reaches, version):
@@ -1042,6 +1102,7 @@ async def _auto_apply_wheel_update(
         self._pending_update_respawn = respawn_executable
         self._pending_update_mandatory = mandatory
         self._pending_update_mandatory_key = mandatory_key
+        self._pending_update_version = "" if mandatory else version
         await self._retry_pending_update_restart()
     elif outcome.status in wheel_apply.RETRY_SOON:
         # Another apply holds the lock, memory is still preparing, or the

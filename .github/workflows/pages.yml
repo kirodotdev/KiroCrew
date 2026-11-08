@@ -19,11 +19,22 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  # Every run of this workflow is a production deploy: the triggers are a push
+  # to main and workflow_dispatch, and both reach `deploy`. So a newer run
+  # queues behind the one in flight rather than killing it mid-deploy, which is
+  # what `true` did. No condition, unlike ci.yml and build.yml: there is no
+  # pull_request trigger here, so `github.event_name == 'pull_request'` would
+  # be a constant false and read as a live rule to anyone who added one.
+  cancel-in-progress: false
 
 jobs:
   build:
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    # Admitted pushes and dispatches use the fleet. Anything else in THIS
+    # repository takes the `kirocrew-runners` group rather than the shared
+    # standard pool, whose concurrency is shared enterprise-wide; a fork
+    # publishing its own Pages cannot reach an organization group and stays on
+    # the hosted image. `deploy` below routes the same way.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 15
     defaults:
       run:
@@ -45,7 +56,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
       pages: write

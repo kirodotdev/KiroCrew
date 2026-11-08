@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
@@ -30,7 +29,6 @@ if TYPE_CHECKING:
         ensure_channel_folder,
         is_direct_local_request,
         live,
-        read_config_text,
         run_to_completion,
         stored_folder_name,
     )
@@ -99,11 +97,17 @@ async def _validate_webex_token(token: str) -> str | None:
     """
     import aiohttp
 
+    # The client's own proxy rule, so the check reaches Webex the way the
+    # running channel does. Imported here: the client module is heavy and only
+    # this call needs it.
+    from kiro_crew.webex.client import _resolve_proxy
+
     async with aiohttp.ClientSession() as session:
         async with session.get(
             "https://webexapis.com/v1/people/me",
             headers={"Authorization": f"Bearer {token}"},
             timeout=aiohttp.ClientTimeout(total=_WEBEX_VERIFY_TIMEOUT),
+            proxy=_resolve_proxy(),
         ) as resp:
             if 200 <= resp.status < 300:
                 return None
@@ -122,7 +126,10 @@ async def api_webex_config_get(request: web.Request) -> web.Response:
 
     cfg = KiroCrewConfig.load()
     # Off-loop: a secret:// reference is read and decrypted from the vault.
-    creds = await asyncio.to_thread(cfg.load_credentials)
+    # propagate=False: a post-boot dashboard read must not re-seed os.environ,
+    # or a worker-thread setdefault could restore a credential the live watcher
+    # just popped. Boot owns the one propagation.
+    creds = await asyncio.to_thread(cfg.load_credentials, propagate=False)
     token = creds.get(CRED_WEBEX_BOT_TOKEN, "") or cfg.webex.bot_token
     state: DashboardState = request.app["state"]
     return web.json_response(
@@ -304,8 +311,18 @@ async def _webex_config_save(request: web.Request) -> web.Response:
     applied: list[str] = []
     async with _get_config_lock():
         path = config_path()
+
+        def _read_config() -> object:
+            # The existence check, the read and the parse share one worker-thread hop
+            # (as in feishu_settings.py): a stalled mount must not block the loop on
+            # any of them.
+            # The read half of this read-modify-write starts from what the load reads.
+            from kiro_crew.config.loader import read_config_for_update
+
+            return read_config_for_update(path)
+
         try:
-            data = json.loads(read_config_text(path)) if path.exists() else {}
+            data = await asyncio.to_thread(_read_config)
             if not isinstance(data, dict):
                 raise ValueError("config.json is not a JSON object")
         except Exception:

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { screen, fireEvent, waitFor } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ProjectDetailPage from '../pages/ProjectDetailPage'
 import { api } from '../api/client'
@@ -39,6 +39,30 @@ describe('ProjectDetailPage', () => {
     renderWithProviders(<ProjectDetailPage run={mockRun()} />)
     expect(screen.getByText('Idea')).toBeInTheDocument()
     expect(screen.getByText('Tasks')).toBeInTheDocument()
+  })
+
+  it('announces Idea / Tasks as a named tablist with the open tab selected', () => {
+    renderWithProviders(<ProjectDetailPage run={mockRun()} />)
+    const list = screen.getByRole('tablist', { name: 'Project view' })
+    expect(within(list).getAllByRole('tab').map(t => t.textContent)).toEqual(['Idea', 'Tasks'])
+    expect(within(list).getByRole('tab', { selected: true }).textContent).toBe('Tasks')
+    fireEvent.click(within(list).getByRole('tab', { name: 'Idea' }))
+    expect(within(list).getByRole('tab', { selected: true }).textContent).toBe('Idea')
+    // Roving tabindex: the rail is one Tab stop, and the arrow keys move the
+    // selection, as in every other Tablist.
+    expect(within(list).getByRole('tab', { name: 'Idea' })).toHaveAttribute('tabindex', '0')
+    expect(within(list).getByRole('tab', { name: 'Tasks' })).toHaveAttribute('tabindex', '-1')
+    fireEvent.keyDown(within(list).getByRole('tab', { name: 'Idea' }), { key: 'ArrowRight' })
+    expect(within(list).getByRole('tab', { selected: true }).textContent).toBe('Tasks')
+  })
+
+  it('announces the DAG / Phased layout as a named radio group with the chosen one checked', () => {
+    renderWithProviders(<ProjectDetailPage run={mockRun()} />)
+    const layout = screen.getByRole('radiogroup', { name: 'Task layout' })
+    expect(within(layout).getAllByRole('radio').map(r => r.textContent)).toEqual(['DAG', 'Phased'])
+    expect(within(layout).getByRole('radio', { checked: true }).textContent).toBe('DAG')
+    fireEvent.click(within(layout).getByRole('radio', { name: 'Phased' }))
+    expect(within(layout).getByRole('radio', { checked: true }).textContent).toBe('Phased')
   })
 
   it('defaults to Tasks tab with DAG view', () => {

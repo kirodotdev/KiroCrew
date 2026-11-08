@@ -210,7 +210,7 @@ export default function NoteSidebar({
           // `:focus-visible` outline (2px, offset 2px, painted outside the box) would
           // be clipped on the edges this field sits flush against. The shared inset
           // utility keeps the `--text-strong` hairline that clears 3:1 in every theme.
-          className="flex-1 min-h-0 resize-none bg-transparent border-none p-3 text-[13px] leading-relaxed text-text font-body placeholder:text-muted/60 focus-ring-accent-inset"
+          className="flex-1 min-h-0 resize-none bg-transparent border-none p-3 text-[13px] leading-relaxed text-text font-body placeholder:text-muted focus-ring-accent-inset"
         />
       )}
 

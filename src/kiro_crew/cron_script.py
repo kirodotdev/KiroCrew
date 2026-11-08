@@ -24,6 +24,7 @@ import base64
 import importlib as _importlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -79,6 +80,26 @@ from kiro_crew.sandbox import (
     wrap_argv,
 )
 from kiro_crew.security import redact
+
+
+def _new_envelope_tag() -> str:
+    """A fresh per-run marker for the launcher's status line (see ``_envelope_line``)."""
+    return f"__kirocrew_cron_status_{secrets.token_hex(16)}__:"
+
+
+def _envelope_line(stdout: str, tag: str) -> str:
+    """The JSON of the launcher's status line in ``stdout``; LookupError when there is none.
+
+    The script body writes to the same stdout as the launcher, so a status is
+    read only from a line carrying this run's ``tag``. A body that prints a
+    status-shaped line of its own and then ends the process (``sys.exit``,
+    ``os._exit``) leaves no tagged line, and the run is a failure rather than
+    whatever its last printed line said.
+    """
+    for line in reversed(stdout.splitlines()):
+        if line.startswith(tag):
+            return line[len(tag) :]
+    raise LookupError("no launcher status line")
 
 
 def run_script_sandboxed(
@@ -181,6 +202,11 @@ def run_script_sandboxed(
     # prepended. Both spellings are stripped because CPython
     # realpaths the script dir when computing sys.path[0].
     _kiro_pkg_parent = str(Path(__file__).resolve().parent.parent)
+    # Marks the ONE stdout line the launcher writes with the run's status. The
+    # script body shares that stdout, so an unmarked line it prints -- its own
+    # JSON summary, say ``{"status": "done"}`` -- is never read as the status,
+    # even when the body ends the process before the launcher reports.
+    envelope_tag = _new_envelope_tag()
     if stdin_payload is not None:
         assert pinned_dir is not None
         _launcher_dirs = (pinned_dir, os.path.realpath(pinned_dir))
@@ -240,10 +266,18 @@ def run_script_sandboxed(
         "else:\n"
         f"    with open({file_path_str!r}, 'rb') as f:\n"
         "        _src = f.read()\n"
+        # The stream and writer the status envelope goes out on, bound before
+        # the script body runs so a body that rebinds ``sys.stdout`` cannot
+        # swallow it. The envelope line opens with a newline (a body that left
+        # a partial line cannot fuse with it) and carries ``envelope_tag``.
+        "_kc_out = sys.stdout\n"
+        "def _kc_emit(_env):\n"
+        f"    _kc_out.write('\\n' + {envelope_tag!r} + json.dumps(_env) + '\\n')\n"
+        "    _kc_out.flush()\n"
         f"exec(compile(_src, {file_path_str!r}, 'exec'), mod.__dict__)\n"
         f"fn = getattr(mod, {func_name!r}, None)\n"
         "if fn is None:\n"
-        f"    print(json.dumps({{'status': 'error', 'error': 'Function not found'}}))\n"
+        "    _kc_emit({'status': 'error', 'error': 'Function not found'})\n"
         "    sys.exit(0)\n"
         f"job = types.SimpleNamespace(id={job_id!r}, message={job_message!r})\n"
         "ctx = ScriptContext(job=job)\n"
@@ -264,7 +298,7 @@ def run_script_sandboxed(
         # the body ran passed the preamble probe, and its run persisted nothing.
         "if _envelope['status'] != 'error':\n"
         "    child_persistence_preflight()\n"
-        "print(json.dumps(_envelope))\n"
+        "_kc_emit(_envelope)\n"
     )
 
     # A granted launcher is born inside the private pinned dir, as defense in
@@ -359,15 +393,13 @@ def run_script_sandboxed(
         # ~/.pypirc open to the child, while a fixed command has always run
         # ``cc``. The static body vet cannot be the fence (its own docstring
         # says so and names the sandbox as the runtime control), so the two
-        # cron spawn paths are aligned on ``cc`` here. ``cc`` is the Claude
-        # Code provider's tier, and on macOS it deliberately leaves ``~/.aws``
-        # readable for that provider's Bedrock ``credential_process`` auth
-        # (see ``sandbox._seatbelt_profile``); a cron borrowing the tier
-        # inherits that residual, which is the same exposure the command path
-        # has always had there. A script that needs a host credential takes
-        # the existing route an operator already approves per job: a vault
-        # secret_env grant, which runs ``strict`` and injects the one approved
-        # secret instead of exposing a store.
+        # cron spawn paths are aligned on ``cc`` here. ``cc`` hides ``~/.aws``
+        # on both Linux and macOS and keeps only ``~/.aws/config`` readable,
+        # so ``credential_process`` auth still resolves. A vault secret_env
+        # grant runs ``strict`` and injects each approved secret as an env
+        # string, so it restores no credential FILE these tiers hide (an SSO
+        # cookie jar, say). Nor does ``ctx.call_tool``: the MCP server it
+        # starts runs inside this same sandbox.
         sandbox_mode = "strict" if stdin_payload is not None else "cc"
         # ``seal_hidden_dirs=hidden``: a granted script has no business WRITING into
         # the crons dir or its own parent -- they are hidden so it cannot read a mutable
@@ -461,18 +493,12 @@ def run_script_sandboxed(
         # other run, and clearing it here is exactly how a rerun eats the
         # cancel aimed at a run still in its backoff.
         #
-        # Status is "skipped", NOT "error". This is a second overlap guard behind
-        # the scheduler's own (which logs "previous execution still running,
-        # skipping" and returns silently), covering the tail where a claimed
-        # worker outlives its deadline: the first guard clears while the child
-        # runs on. Beyond that tail it earns its place for a different reason --
-        # it is what keeps the job-keyed cancel flag unambiguous. Every
-        # cancellation surface here takes a job id ALONE, so two concurrent runs
-        # of one job make "cancel this job" undecidable however the scheduler
-        # arrived at them; refusing the overlap is what gives _CANCELLED_PROC_JOBS
-        # a single owner. An overlapping wake is not a job defect, so it must not
-        # count a failure strike toward auto-pause -- inflating strikes for a
-        # transient condition is the harm this change exists to reduce.
+        # Status is "skipped", NOT "error": an overlapping wake is not a job
+        # defect and must not count a strike toward auto-pause. This second
+        # overlap guard covers a worker that outlives its deadline after the
+        # scheduler's guard clears, and gives _CANCELLED_PROC_JOBS one owner:
+        # every cancel takes a job id alone, so two concurrent runs of one job
+        # would make "cancel this job" ambiguous.
         if not _begin_spawn(job_id):
             return {
                 "status": "skipped",
@@ -487,14 +513,9 @@ def run_script_sandboxed(
                 env=clean_env,
                 start_new_session=True,
                 abort_retry=lambda: _spawn_cancelled(job_id),
-                # Locale decoding, declared deliberate. A cron runs an ARBITRARY
-                # command, so its output is in the host's encoding, not
-                # necessarily UTF-8. Forcing encoding="utf-8" with
-                # errors="replace" turned every non-UTF-8 byte into U+FFFD
-                # BEFORE the output was persisted and delivered -- irreversible
-                # corruption of the very thing the user asked to see. Locale
-                # decoding is what their shell does, and it is what this call
-                # did before the encoding gate was satisfied by pinning it.
+                # Locale decoding, on purpose: an arbitrary command writes in
+                # the host's encoding, and forcing UTF-8 with errors="replace"
+                # would turn every other byte into U+FFFD before delivery.
                 text=True,  # subprocess-encoding: locale
             )
         except Exception:
@@ -545,14 +566,8 @@ def run_script_sandboxed(
         # code exits 0 after its envelope, so a non-zero exit means the run
         # failed, and a status-shaped stdout line cannot outvote it.
         if proc.returncode != 0:
-            # Report the TERMINAL stderr context, not the head. A process that
-            # dies hard leaves its diagnosis LAST -- the traceback is the final
-            # thing written -- while whatever a startup path logged first (a
-            # data-home migration warning, a deprecation notice, an import
-            # banner) sits in front of it. Bounding from the head therefore
-            # reports the noise and truncates the cause, and the operator reads
-            # a cron failure whose message describes something that did not kill
-            # the job.
+            # Report the stderr TAIL, not the head: a process that dies hard
+            # writes its traceback last, after any startup warnings.
             #
             # ``rstrip`` first so a trailing newline does not spend part of the
             # budget, and so an all-whitespace stderr still falls through to the
@@ -577,7 +592,7 @@ def run_script_sandboxed(
             return {"status": "error", "error": error_text}
 
         try:
-            parsed = json.loads(stdout.strip().split("\n")[-1])
+            parsed = json.loads(_envelope_line(stdout, envelope_tag))
             # The launcher's status JSON carries str(e) from the script's own
             # exception — the one child-diagnostic path that does NOT flow
             # through the stderr redaction above. Scrub granted values from
@@ -593,7 +608,7 @@ def run_script_sandboxed(
                     if k != "status" and isinstance(v, str):
                         parsed[k] = _scrub_grant_values(v, resolved_secret_env)
             return parsed
-        except (json.JSONDecodeError, IndexError):
+        except (json.JSONDecodeError, LookupError):
             # Redact BEFORE truncating: slicing first could cut a credential at
             # the boundary, leaving its unredacted head in the diagnostic. Same
             # split as the stderr tail above: the grant scrub reads the WHOLE
@@ -797,6 +812,7 @@ def _probe_one_form(shell: str, brace_off: bool) -> bool:
             argv,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=5,
             env=_clean_cron_env(),
         )
@@ -871,16 +887,10 @@ def run_command_sandboxed(
             "remove it from the cron store.",
             "exit_code": -1,
         }
-    # Claimed BEFORE the shell probe, not merely before the spawn. Resolving the
-    # shell (_resolve_command_shell -> _shell_is_posix_strict -> run_limited)
-    # carries run_limited's own interpreter-ENOENT backoff, so on a cold
-    # _POSIX_STRICT_CACHE it can sleep for seconds while this job is registered
-    # NOWHERE. A cancel landing in that window found the job in neither
-    # _SPAWNING_JOBS nor _RUNNING_PROCS, so kill_running_process returned False
-    # and DISCARDED it -- and this function then launched the very command the
-    # user cancelled, side effects and all. Holding the claim across the probe
-    # makes such a cancel RECORDED; the pre-spawn check below turns it into a
-    # launch that never happens.
+    # Claimed BEFORE the shell probe: on a cold _POSIX_STRICT_CACHE the probe
+    # can sit in run_limited's interpreter-ENOENT backoff for seconds, and a
+    # cancel in that window must be recorded (in _SPAWNING_JOBS) so the
+    # pre-spawn check below skips the launch instead of running the command.
     #
     # The secret-grant refusal above stays AHEAD of the claim: it fails closed
     # without doing any work, so it must not take a slot it would only release.
@@ -897,10 +907,8 @@ def run_command_sandboxed(
         }
     # True while the claim is still ours to release. _finish_spawn and
     # _abandon_spawn each end the spawn and clear it; the finally below covers
-    # every OTHER exit, all of which now happen with the claim held. Without that
-    # release an early return -- no POSIX shell, wrap_argv fail-closing, any
-    # raised error -- would leak the claim and _begin_spawn would then refuse
-    # every future wake of this job for the life of the process.
+    # every other exit, or a leaked claim would make _begin_spawn refuse every
+    # later wake of this job for the life of the process.
     spawn_claimed = True
     # mode="cc" (not "standard"): the command string is fully model-supplied via
     # cron_add and executes outside the kiro-cli ACP permission/hook flow, so this
@@ -943,12 +951,10 @@ def run_command_sandboxed(
             # a child under a unit with no TMPDIR stops defaulting to /tmp.
             clean_env.update(tmp_env(cron_scratch))
         if _spawn_cancelled(job_id):
-            # Cancelled while the probe above sat in its interpreter-ENOENT
-            # backoff. Report it WITHOUT spawning: not launching is the entire
-            # point, and a spawn-then-kill would still have run the command for
-            # however long the signal took to land -- long enough to delete a
-            # file or push a commit. No child exists, so the flag is consumed
-            # here rather than left to leak into this job's next run.
+            # Cancelled during the probe's backoff. Report it WITHOUT spawning:
+            # a spawn-then-kill would still run the command until the signal
+            # lands. No child exists, so consume the flag here so it cannot
+            # leak into this job's next run.
             spawn_claimed = False
             _abandon_spawn(job_id)
             return {
@@ -965,14 +971,9 @@ def run_command_sandboxed(
                 env=clean_env,
                 start_new_session=True,
                 abort_retry=lambda: _spawn_cancelled(job_id),
-                # Locale decoding, declared deliberate. A cron runs an ARBITRARY
-                # command, so its output is in the host's encoding, not
-                # necessarily UTF-8. Forcing encoding="utf-8" with
-                # errors="replace" turned every non-UTF-8 byte into U+FFFD
-                # BEFORE the output was persisted and delivered -- irreversible
-                # corruption of the very thing the user asked to see. Locale
-                # decoding is what their shell does, and it is what this call
-                # did before the encoding gate was satisfied by pinning it.
+                # Locale decoding, on purpose: an arbitrary command writes in
+                # the host's encoding, and forcing UTF-8 with errors="replace"
+                # would turn every other byte into U+FFFD before delivery.
                 text=True,  # subprocess-encoding: locale
             )
         except Exception:
@@ -995,10 +996,8 @@ def run_command_sandboxed(
             _kill_proc_group(proc)
             _drain_after_kill(proc, job_id)
             cron_scratch_used = False  # owner never recorded; see the script path
-            # Same shape as the post-communicate cancellation below: a cancelled
-            # command cron reports the CHILD's returncode (the signal that
-            # stopped it), not a synthetic -1. Reporting -1 here diverged from
-            # that contract for the raced-cancel case alone.
+            # As in the post-communicate cancellation below, a cancelled command
+            # cron reports the child's returncode (the signal), not -1.
             return {
                 "status": "cancelled",
                 "output": "Cancelled by user",
@@ -1091,7 +1090,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew import agent_scratch  # noqa: F401
     from kiro_crew.agent_discovery import _read_agent_spec  # noqa: F401
     from kiro_crew.atomic_write import replace_with_retry  # noqa: F401
-    from kiro_crew.config.loader import read_local_secret  # noqa: F401
+    from kiro_crew.config.loader import CONFIG_DIR_NAME, read_local_secret  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_agents_dir  # noqa: F401
     from kiro_crew.cron_script_child_env import (  # noqa: F401
         _CRON_ENV_DENY,
@@ -1110,7 +1109,11 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         ScriptContext,
         Skip,
         SkipError,
+        _redact_deep,
+        _redact_pair,
         _refusal_code,
+        _scanned_tool_args,
+        _wholly_redacted_path,
         logger,
     )
     from kiro_crew.cron_script_grants import (  # noqa: F401
@@ -1143,10 +1146,12 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
         KeptMcpServers,
         McpToolClient,
         McpToolError,
+        _joined_text,
         _resolve_mcp_server,
     )
     from kiro_crew.cron_script_paths import (  # noqa: F401
         _bundle_relative_spec,
+        _data_home_spec,
         _split_script_spec,
         _trusted_script_bundle_roots,
     )
@@ -1175,6 +1180,7 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.json_line import parse_json_object_line  # noqa: F401
     from kiro_crew.loopback_http import loopback_urlopen  # noqa: F401
     from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV  # noqa: F401
+    from kiro_crew.platform_compat import strip_extended_length_prefix  # noqa: F401
     from kiro_crew.port_resolution import resolve_serving_port  # noqa: F401
     from kiro_crew.sandbox import (  # noqa: F401
         _AGENT_DENIED_ENV_KEYS,
@@ -1185,8 +1191,10 @@ if TYPE_CHECKING:  # the names an owner serves, for type checkers and IDEs
     from kiro_crew.security import (  # noqa: F401
         _REDACTED_CREDENTIAL_TAG,
         _STREAM_HOLDBACK_JWT_MAX,
+        CREDENTIAL_REDACTION_TAGS,
+        REDACTED_CREDENTIAL_TAG,
+        canonical_path_refusal,
         is_unverifiable_path_refusal,
-        sensitive_path_refusal,
     )
     from kiro_crew.sel import sel  # noqa: F401
     from kiro_crew.subprocess_utf8 import UTF8_TEXT  # noqa: F401

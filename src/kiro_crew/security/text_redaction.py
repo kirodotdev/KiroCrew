@@ -28,6 +28,7 @@ import re
 import string
 from typing import TYPE_CHECKING
 
+from kiro_crew.jwt_header import is_jwt_header
 from kiro_crew.security import _submodule
 
 from . import pass_compose, redaction, stream_aws_anchor
@@ -60,6 +61,37 @@ def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
 def redact(text: str) -> str:
     """Apply all redaction passes (exfiltration URLs + credentials)."""
     return redact_with_findings(text)[0]
+
+
+#: The letters of one short plain word closing a sentence ("settled.", "they've.").
+#: The text before a tool call usually ends this way, and holding the word made
+#: every such reply show without its last word until the model wrote again, often
+#: minutes later. No credential can start in or run through such a word: a
+#: credential's run either begins with a mixed-case, digit or symbol prefix this
+#: shape excludes (``AKIA``, ``eyJ``, ``SG.``, ``ghp_``, ``?token=``), or is an
+#: unbroken base64-class run, which a ``.`` ends. The length cap keeps the
+#: Discord shape ([MNO] then 22 or more characters, then ``.``) out as well.
+_ASCII_LETTERS = frozenset(string.ascii_letters)
+_ASCII_LOWERCASE = frozenset(string.ascii_lowercase)
+
+
+def ends_plain_sentence(run: str) -> bool:
+    """Whether *run*, the raw run a :class:`StreamRedactor` withholds at a display
+    boundary (a tool call, an approval prompt), is one plain word ending a
+    sentence, which no text after the boundary can turn into part of a
+    credential, so the boundary may release it at once: an ASCII letter, at most
+    18 lowercase letters, optionally ``'`` and 1 to 3 lowercase letters, then one
+    ``.``. Shared by the dashboard cut and the Slack stream so both apply one rule."""
+    stem, apostrophe, suffix = run[:-1].partition("'")
+    return (
+        run.endswith(".")
+        and 0 < len(stem) < 20
+        and stem[0] in _ASCII_LETTERS
+        and _ASCII_LOWERCASE.issuperset(stem[1:])
+        and (not apostrophe or 0 < len(suffix) < 4)
+        and _ASCII_LOWERCASE.issuperset(suffix)
+        and redact(run) == run
+    )
 
 
 # ── Streaming redaction ──
@@ -145,7 +177,7 @@ def _partial_jwt_tail(buf: str) -> re.Match[str] | None:
     m = _PARTIAL_JWT_TAIL_RE.search(buf)
     while m is not None and "." in m.group():
         header = m.group().split(".", 1)[0]
-        if header.find("eyJ", 1) != -1 or redaction._is_json_object_segment(header):
+        if is_jwt_header(header):
             break
         m = _PARTIAL_JWT_TAIL_RE.search(buf, m.start() + 1)
     return m

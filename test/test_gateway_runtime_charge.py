@@ -6,7 +6,8 @@ prompt-busy retries, or an ACP process that died, ends the attempt with a failur
 notice and resets the parent only when the death was the parent's own runtime:
 on a shared runtime that reset would take the co-tenants' sessions with it. A
 backend that lost the parent's session is answered once by a reset and a fresh
-claim, and the retry runs on the client that claim returned. Any other ACP error
+claim, and the retry runs on the client that claim returned; a cron parent's key is
+stateless, so its lost session is given up on instead. Any other ACP error
 is retried twice, cancelling the parent's prompt first, then raised.
 
 These tests drive that loop through the real ``on_done`` and pin each arm.
@@ -145,17 +146,32 @@ async def test_a_lost_parent_session_is_reloaded_once_and_retried_on_the_new_cli
     fresh = MagicMock(name="fresh client")
     lost.clients = [lost.client, fresh]
     lost.stream_results = [AcpError("session gone"), "reply"]
-    info = make_info(parent="cron:j1")
+    key = "slack:C1:1700000000.1"
+    info = make_info(parent=key)
 
     await lost.done(info)
 
     assert lost.streamed_clients == [lost.client, fresh]
     assert [c for c in lost.calls if c[0] in ("acquire", "reset")] == [
-        ("acquire", "cron:j1"),
-        ("reset", "cron:j1"),
-        ("acquire", "cron:j1"),
+        ("acquire", key),
+        ("reset", key),
+        ("acquire", key),
     ]
     assert info._report_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_a_cron_parent_that_lost_its_session_is_not_reloaded(lost: _Done) -> None:
+    """The reload's fresh claim would start a session holding none of the run."""
+    lost.stream_results = [AcpError("session gone"), "reply"]
+    info = make_info(parent="cron:j1")
+
+    await lost.done(info)
+
+    assert lost.streamed_clients == [lost.client]
+    assert [c for c in lost.calls if c[0] in ("acquire", "reset")] == [("acquire", "cron:j1")]
+    assert info._report_undelivered is True
+    assert info._report_delivered is False
 
 
 @pytest.mark.asyncio

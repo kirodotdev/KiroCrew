@@ -6,6 +6,7 @@ commands that call the gateway with it: ``logout``, ``status``, ``spawn`` and ``
 """
 
 import argparse
+import io
 import json
 import os
 import socket
@@ -39,10 +40,8 @@ class TestLogout:
             lambda req, port, timeout, *, operation="": _cs.loopback_urlopen(req, timeout=timeout),
         )
 
-    def test_logout_success(self, tmp_path, monkeypatch):
-        """Successful logout prints success message."""
-        secret_file = tmp_path / ".local_secret"
-        secret_file.write_text("test-secret")
+    def test_logout_success(self, tmp_path, monkeypatch, capsys):
+        """Successful logout POSTs the secret to /api/logout and prints success."""
         monkeypatch.setattr(
             "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
         )
@@ -54,8 +53,13 @@ class TestLogout:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
-        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
-            _logout(5476)  # Should not raise
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp) as opener:
+            _logout(5476)
+        req = opener.call_args.args[0]
+        assert req.get_method() == "POST"
+        assert req.full_url == "http://127.0.0.1:5476/api/logout"
+        assert req.get_header("X-local-secret") == "test-secret"
+        assert capsys.readouterr().out == "✅ All dashboard sessions revoked.\n"
 
     def test_logout_gateway_not_running(self, tmp_path, monkeypatch):
         """Missing secret file means gateway not running."""
@@ -154,6 +158,60 @@ class TestStatus:
         assert "running" in out
         assert "token auth" in out
 
+    def test_status_reads_the_stats_as_the_owner_on_a_token_auth_gateway(self, monkeypatch, capsys):
+        """A refused bare read is retried with a minted owner token through the peer proof."""
+        import kiro_crew.cli_server as cs
+
+        answers = [{"token": "tok"}, {"gateway_rss_mb": 241, "watchdog_rss_max_mb": 4096}]
+        sent = []
+
+        def _proven(req, port, timeout, *, operation):
+            sent.append((req.full_url, req.get_header("X-local-secret"), operation))
+            return io.BytesIO(json.dumps(answers.pop(0)).encode())
+
+        monkeypatch.setattr(cs, "read_local_secret", lambda _port, **_kw: "s3cret")
+        monkeypatch.setattr(cs, "_owner_verified_secret_urlopen", _proven)
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            side_effect=urllib.error.HTTPError(
+                "http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None
+            ),
+        ):
+            cs._status(self._make_args())
+        out = capsys.readouterr().out
+        assert "  Memory:      241 MiB rss, session ceiling 4096 MiB" in out
+        assert "token auth" not in out
+        assert sent == [
+            ("http://127.0.0.1:5476/api/token/local?ttl=1m", "s3cret", "gateway_token"),
+            ("http://127.0.0.1:5476/api/status?token=tok", None, "gateway_status"),
+        ]
+
+    @pytest.mark.parametrize("refusal", ["http-403", "peer-refused"])
+    def test_status_keeps_the_token_auth_line_when_the_owner_sign_in_is_refused(
+        self, monkeypatch, capsys, refusal
+    ):
+        """An agent's shell or an unproven peer gets no stats, and the command still exits 0."""
+        import kiro_crew.cli_server as cs
+        from kiro_crew.cli_server_peer import _GatewayPeerRefused
+
+        def _refuse(req, port, timeout, *, operation):
+            if refusal == "peer-refused":
+                raise _GatewayPeerRefused("not this install's gateway")
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        monkeypatch.setattr(cs, "read_local_secret", lambda _port, **_kw: "s3cret")
+        monkeypatch.setattr(cs, "_owner_verified_secret_urlopen", _refuse)
+        with patch(
+            "kiro_crew.cli_server.loopback_urlopen",
+            side_effect=urllib.error.HTTPError(
+                "http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None
+            ),
+        ):
+            assert cs._status(self._make_args()) is None
+        out = capsys.readouterr().out
+        assert "Kiro Crew gateway is running (token auth enabled)." in out
+        assert "Memory:" not in out
+
     def test_status_other_http_error(self, capsys):
         """Non-auth HTTP errors should report gateway as running with code."""
         from kiro_crew.cli_server import _status
@@ -177,9 +235,29 @@ class TestStatus:
             "kiro_crew.cli_server.loopback_urlopen",
             side_effect=urllib.error.URLError("Connection refused"),
         ):
-            _status(self._make_args())
+            with pytest.raises(SystemExit) as exc:
+                _status(self._make_args())
+        assert exc.value.code == 1
         out = capsys.readouterr().out
-        assert "not running" in out
+        assert out == "Kiro Crew gateway is not running.\n  Start it with: kirocrew gateway\n"
+
+    @pytest.mark.parametrize(
+        "side_effect",
+        [
+            urllib.error.HTTPError("http://127.0.0.1:5476/api/status", 403, "Forbidden", {}, None),
+            urllib.error.HTTPError("http://127.0.0.1:5476/api/status", 500, "Error", {}, None),
+            urllib.error.URLError(TimeoutError("timed out")),
+            TimeoutError("timed out"),
+            RuntimeError("unexpected"),
+        ],
+        ids=["auth", "http-error", "connect-timeout", "read-timeout", "unexpected"],
+    )
+    def test_status_exits_zero_when_a_gateway_answers(self, side_effect):
+        """Every state in which something answers the port returns without exiting."""
+        from kiro_crew.cli_server import _status
+
+        with patch("kiro_crew.cli_server.loopback_urlopen", side_effect=side_effect):
+            assert _status(self._make_args()) is None
 
     def test_status_timeout_reports_busy_not_down(self, capsys):
         """A URLError-wrapped timeout reads as busy through the shared classifier."""
@@ -246,14 +324,9 @@ class TestStatus:
 class TestStatusAgainstAClosedPort:
     """``kirocrew status`` against a port nothing listens on, with a REAL probe.
 
-    ``_status`` dials with a 3 s deadline through ``loopback_urlopen`` and routes
-    its failure through the shared ``loopback_http.deadline_expired`` classifier,
-    which reads a ``URLError`` wrapping a ``TimeoutError`` as busy. A closed
-    loopback port must refuse well inside that 3 s deadline so the command says
-    not running, not busy. On native Windows a closed-port connect SYN-retries
-    (~2 s) before ``WSAECONNREFUSED``; this test runs the real probe on every
-    platform, so the Windows CI shards show whether that refusal lands before the
-    3 s deadline or is misread as busy.
+    A closed port must refuse inside ``_status``'s 3 s deadline, or
+    ``loopback_http.deadline_expired`` reads it as busy. Windows SYN-retries ~2 s before
+    ``WSAECONNREFUSED``, so the real probe runs on every platform.
     """
 
     def _closed_port(self) -> int:
@@ -266,7 +339,9 @@ class TestStatusAgainstAClosedPort:
         from kiro_crew.cli_server import _status
 
         port = self._closed_port()
-        _status(argparse.Namespace(port=port))
+        with pytest.raises(SystemExit) as exc:
+            _status(argparse.Namespace(port=port))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
         assert "Kiro Crew gateway is not running." in out
         assert "busy" not in out
@@ -377,9 +452,8 @@ class TestResolveClientPortRunMarker:
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- pre-existing class autouse fixture moved verbatim; no test of this class calls monkeypatch.undo()
-    def _no_env(self, monkeypatch):
-        monkeypatch.delenv("KIROCREW_PORT", raising=False)
+    def _no_env(self, _floor_monkeypatch):
+        _floor_monkeypatch.delenv("KIROCREW_PORT", raising=False)
 
     def _cfg(self, url):
         mock_cfg = MagicMock()
@@ -680,11 +754,8 @@ class TestCliLoopbackAddress:
 class TestSpawnCliAuth:
     """``kirocrew spawn`` attaches X-Internal-Secret on every gateway call.
 
-    The CLI helpers in ``cli_commands_gateway_api.py`` attach the per-session IPC secret
-    on every ``/api/spawn`` call. Without it the call gets a 403, which
-    reads ``"gateway not running"`` when ``dashboard.url`` is
-    a non-loopback host (token_auth_middleware then requires either
-    a session cookie or the secret header on every request).
+    Without it a non-loopback ``dashboard.url`` makes token_auth_middleware answer 403,
+    which reads as ``"gateway not running"``.
     """
 
     def test_internal_secret_reads_local_secret_file(self, tmp_path, monkeypatch):
@@ -875,6 +946,82 @@ class TestSpawnCliAuth:
         assert esc not in out
         assert "\r" not in out
         assert len(out.strip().splitlines()) == 1
+
+
+class TestGatewayApiClientPort:
+    """``spawn`` and ``artifact`` find the gateway the way ``status`` does.
+
+    With nothing configured and one gateway on a non-default port, the run
+    marker names that port; both commands must call it rather than 5476.
+    """
+
+    def _called_urls(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        argv: list[str],
+        body: bytes,
+        *,
+        config_url: str = "",
+        env_port: str | None = None,
+    ) -> list:
+        """Run *argv* with one gateway on 6776 and return each call as ``"<port> <url>"``."""
+        monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
+        if env_port is None:
+            monkeypatch.delenv("KIROCREW_PORT", raising=False)
+        else:
+            monkeypatch.setenv("KIROCREW_PORT", env_port)
+        mock_cfg = MagicMock()
+        mock_cfg.dashboard.url = config_url
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.KiroCrewConfig.load", MagicMock(return_value=mock_cfg)
+        )
+        monkeypatch.setattr("kiro_crew.cli_server.run_marker.marker_ports", lambda: [6776])
+        monkeypatch.setattr("kiro_crew.cli_server._gateway_owns_port", lambda p: p == 6776)
+        monkeypatch.setattr("kiro_crew.cli_commands.read_local_secret", lambda _p, **_kw: "s")
+        urls: list[str] = []
+        resp = MagicMock()
+        resp.read.return_value = body
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+
+        def fake_send(req: urllib.request.Request, port: int, *_a: object) -> MagicMock:
+            urls.append(f"{port} {req.full_url}")
+            return resp
+
+        monkeypatch.setattr("kiro_crew.cli_commands._gateway_send", fake_send)
+        monkeypatch.setattr(sys, "argv", ["kirocrew", *argv])
+        from kiro_crew import cli
+
+        cli.main()
+        return urls
+
+    def test_spawn_list_calls_the_marker_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        urls = self._called_urls(monkeypatch, ["spawn", "list"], b'{"agents": []}')
+        assert urls == ["6776 http://127.0.0.1:6776/api/spawn?queued=1"]
+
+    def test_spawn_port_flag_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        urls = self._called_urls(
+            monkeypatch, ["spawn", "--port", "7001", "list"], b'{"agents": []}'
+        )
+        assert urls == ["7001 http://127.0.0.1:7001/api/spawn?queued=1"]
+
+    def test_spawn_honours_the_configured_dashboard_port(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        urls = self._called_urls(
+            monkeypatch, ["spawn", "list"], b'{"agents": []}', config_url="http://localhost:7778"
+        )
+        assert urls == ["7778 http://127.0.0.1:7778/api/spawn?queued=1"]
+
+    def test_artifact_list_calls_the_marker_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        urls = self._called_urls(monkeypatch, ["artifact", "list"], b'{"artifacts": []}')
+        assert urls == ["6776 http://127.0.0.1:6776/api/artifacts"]
+
+    def test_artifact_honours_kirocrew_port(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        urls = self._called_urls(
+            monkeypatch, ["artifact", "list"], b'{"artifacts": []}', env_port="6900"
+        )
+        assert urls == ["6900 http://127.0.0.1:6900/api/artifacts"]
 
 
 class TestArtifactCli:

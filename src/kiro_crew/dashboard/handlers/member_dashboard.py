@@ -110,7 +110,7 @@ async def _resolve(request: web.Request) -> tuple[str, str] | web.Response:
     except MemberSlugError:
         return _bad("member_slug_mismatch", "member does not match slug")
     if member not in cfg.agents:
-        return _bad("member_not_found", "no crew member for this slug", status=404)
+        return _bad("member_not_found", "no Bot for this slug", status=404)
     if _member_names_for_slug(cfg, slug) != [member]:
         return _bad(
             "dashboard_slug_ambiguous",
@@ -602,6 +602,7 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
                 locale,
                 slot=slot,
                 last_user_at=_person_last_spoke(state, slug, _member, slot),
+                state=state,
             )
         )
         if rendered is not None:
@@ -653,6 +654,7 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
                 locale,
                 slot=slot,
                 last_user_at=_person_last_spoke(state, slug, _member, slot),
+                state=state,
             )
         )
         if rendered is not None:
@@ -767,6 +769,17 @@ def _page_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_page_safe(item) for item in value]
     return value
+
+
+def page_safe_for(state: Any, slot: str = "") -> Callable[[Any], Any]:
+    """:func:`_page_safe` for one gateway: work items get their worker facts first.
+
+    *slot* is the slot the page's folds are read from, the board's conductor, so each
+    item can say whether that main chat is still open (``orphaned``).
+    """
+    from kiro_crew.dashboard.handlers.work_ledger_board import with_worker_facts
+
+    return lambda value: _page_safe(with_worker_facts(value, state, slot))
 
 
 def package_declared_name_spots(package: Mapping[str, Any]) -> list[str]:
@@ -987,11 +1000,22 @@ def _trusted_page(slug: str, record: Any) -> str | None:
     return entry.html
 
 
-def read_fields(slug: str, member: str, manifest: Any, *, slot: str | None = None) -> Any:
+def read_fields(
+    slug: str,
+    member: str,
+    manifest: Any,
+    *,
+    slot: str | None = None,
+    prime_wait: float | None = None,
+) -> Any:
     """One read of *manifest*'s field values for this crewmate, as the page gets them.
 
     The page's own read, shared with ``dashboard_fields`` so the values an agent is
     shown are the values the reader sees. File IO; raises on a failed read.
+
+    *prime_wait* caps the wait for cold slot folds (``DashboardFeed.wait_for_primes``);
+    ``None`` is its default. The turn block passes ``0``, because a prompt build must
+    not wait on a prime: a cold fold then reads as unseen, which the block skips.
     """
     from kiro_crew import agent_panel
     from kiro_crew.crew_log import projection
@@ -1016,6 +1040,12 @@ def read_fields(slug: str, member: str, manifest: Any, *, slot: str | None = Non
     feed = DashboardFeed(slot, session, panel_record=record)
     try:
         feed.subscribe(manifest)
+        # One-shot: a cold slot fold arrives from its background prime, not as a
+        # baseline, so wait for it before reading instead of reporting it missing.
+        if prime_wait is None:
+            feed.wait_for_primes()
+        else:
+            feed.wait_for_primes(prime_wait)
         agentic: Any = {}
         if any(spec.agentic for spec in manifest.fields.values()):
             agentic = projection.read_slot_projection(slot, "agentic").value
@@ -1062,7 +1092,7 @@ async def api_member_dashboard_lock(request: web.Request) -> web.Response:
     agent = _refuse_agent_caller(
         request,
         "members.dashboard_lock",
-        "only the person can lock or unlock a dashboard, from the crewmate's Profile card",
+        "only the person can lock or unlock a dashboard, from the Bot's Profile card",
     )
     if agent is not None:
         return agent
@@ -1358,16 +1388,17 @@ def _egress_decision(owner_agent: str = "", session_key: str = "") -> _EgressDec
     from kiro_crew.platform.governance import MODE_DENY, ScopedRuleset
 
     try:
-        from kiro_crew.platform.governance import last_composed_ceiling
+        from kiro_crew.platform.governance import last_composed_ceiling, policy_level_control
 
         ceiling = last_composed_ceiling()
-        controls = (ceiling.controls or {}) if ceiling is not None else {}
+        # The policy level as ``resolve`` enforces it: in an enterprise build an
+        # unnamed ``network.egress`` is the built-in baseline (off), not absent.
+        control = policy_level_control(ceiling, "network.egress")
         # NO CEILING, OR NONE GOVERNING EGRESS, IS NOT AN ANSWER -- it only means the
         # outer bound restricts nothing, and the profile below still decides. Returning
         # True here was the hole: the standalone default is every install that
         # configures no policy, and a profile can restrict egress in all of them.
-        if "network.egress" in controls:
-            control = controls["network.egress"]
+        if control is not None:
             if not isinstance(control, ScopedRuleset):
                 return _EgressDecision(False, "policy", "ceiling_egress_control_unreadable")
             # Only one shape leaves the agent unrestricted: deny-mode denying nothing.
@@ -1837,7 +1868,7 @@ async def _serve_package(
         # THE SAME masking and redaction pass the template path applies, handed in
         # rather than re-implemented: this is the one place a package's values are
         # produced, so a value that did not cross it cannot reach a browser.
-        redact=_page_safe,
+        redact=page_safe_for(state, slot),
     )
     read = await _run(page.arm)
     # RE-CHECKED AFTER ARMING, because arming awaits: two GETs for one crewmate (two

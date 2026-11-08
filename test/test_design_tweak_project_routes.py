@@ -779,7 +779,6 @@ class TestThread:
         h._h_thread({"id": [rid], "cid": [""]})
         assert rec.code == 200
         assert rec.payload["ok"] is True
-        # Verify persisted
         fp = isolated_queue / f"{rid}.json"
         saved = json.loads(fp.read_text())
         assert len(saved["thread"]) == 1

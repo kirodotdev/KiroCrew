@@ -20,6 +20,7 @@ from typing import Any
 # stub. Only the exception type is bound directly -- an exception class is
 # compared by identity, never substituted.
 from kiro_crew import agent as agent_mod
+from kiro_crew import kiro_cli as kiro_cli_mod
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew.acp import managed_agent_shadow as managed_shadow_mod
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -62,7 +63,7 @@ class KiroHarness(MembershipHarness):
     # ── Seam 1: spawn ──
 
     async def resolve_spawn(self, ctx: SpawnContext) -> SpawnPlan:
-        """``kiro-cli acp --agent <agent> [--model <model>]``, after three gates.
+        """``kiro-cli acp [--agent-engine v2] --agent <agent> [--model <model>]``, after three gates.
 
         Two of the three gates REFUSE the spawn. Fork governance is not
         best-effort: a fork's on-disk ``allowedTools`` / ``autoApprove`` bypass
@@ -113,6 +114,9 @@ class KiroHarness(MembershipHarness):
             await asyncio.to_thread(agent_mod.require_fork_governance, ctx.agent, ctx.work_dir)
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
+        # The over-ceiling check on a crew-bound spec Crew does not own is not here:
+        # it judges the name kiro-cli is finally handed, a skill view or the authored
+        # name, which the runtime decides after this plan (``runtime_spawn_launch``).
         # kiro-cli resolves ``--agent`` against ``ctx.work_dir`` first, so a checkout
         # that declares a managed agent name would run its own copy in place of the
         # installed one. Off the loop: it scans the checkout's agents directory.
@@ -128,7 +132,11 @@ class KiroHarness(MembershipHarness):
         if overlap:
             raise AcpRuntimeError(overlap)
 
-        argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", ctx.agent]
+        # Pin the engine this harness speaks instead of trusting kiro-cli's
+        # default, which moved to v3 at 3.0.0 while its help still says v2. Off
+        # the loop: one cached `acp --help` spawn per binary identity.
+        engine_args = await asyncio.to_thread(kiro_cli_mod.kiro_acp_engine_args, kiro_bin)
+        argv = [kiro_bin, KIRO_CLI_SUBCMD, *engine_args, "--agent", ctx.agent]
         if ctx.model:
             # Pinning at process start is the ONLY reliable way to run a
             # non-default provider model: a later set_model cannot cross provider
@@ -201,6 +209,10 @@ class KiroHarness(MembershipHarness):
         member_dispatch: bool = False,
         crew_panel: bool = False,
         session_key: str = "",
+        worker_stub_names: frozenset[str] | None = None,
+        engine_features: frozenset[str] = frozenset(),
+        session_cwd: str | Path | None = None,
+        ssh_auth_sock_forwarded: bool = False,
     ) -> SessionExtras:
         """Nothing. kiro-cli already has the agent from its spawn flag.
 

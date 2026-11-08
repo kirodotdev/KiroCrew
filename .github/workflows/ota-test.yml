@@ -33,6 +33,16 @@
 # DevTools Protocol and calls the same preload API the buttons call
 # (window.updateAPI.download / .install). The exercised code path is identical
 # to the user's.
+#
+# WHY TWO PAYLOADS: the macOS updater once crashed on any update ZIP over
+# 1 GiB (Squirrel buffers the whole download in one NSData; CFData's capacity
+# doubling then asks for 2 GiB, which PartitionAlloc refuses as a fatal OOM).
+# The app died mid-install with no error event. A normal test bundle is far
+# below that size, so the `over-1gib` leg pads the update bundle with
+# incompressible bytes until its ZIP is over 1.1 GiB and runs the same swap.
+# It is sized against the real threshold: the receive buffer has to pass
+# 1,073,741,824 B for the doubling to ask for 2 GiB, so a ZIP at 0.95 GiB
+# would pass even with the bug present.
 name: OTA Update Test (macOS)
 
 on:
@@ -51,15 +61,37 @@ concurrency:
 
 jobs:
   ota:
-    name: Build two versions and prove the swap
+    name: Build two versions and prove the swap (${{ matrix.payload }})
     runs-on: macos-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
+    strategy:
+      # The two legs answer different questions; one red must not cancel the
+      # other's answer.
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - payload: baseline
+            pad_bytes: "0"
+            min_zip_bytes: "0"
+            drive_timeout: "300"
+          - payload: over-1gib
+            # 1.1 GiB of random bytes; the app itself adds the rest.
+            pad_bytes: "1181116007"
+            # The ZIP must be over 1.1 GiB (1,181,116,006 B), clear of the
+            # 1 GiB receive-buffer line the crash needed.
+            min_zip_bytes: "1181116007"
+            # Over a gigabyte goes through the loopback feed, the sha512
+            # check and Squirrel's own transfer before "downloaded".
+            drive_timeout: "900"
     env:
       PORT: "8799"
       OUT: "/tmp/kirocrew-ota"
       INSTALLED_VER: "1.0.0"
       UPDATE_VER: "1.0.1"
       CDP_PORT: "9222"
+      OTA_PAD_BYTES: ${{ matrix.pad_bytes }}
+      MIN_ZIP_BYTES: ${{ matrix.min_zip_bytes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -93,8 +125,12 @@ jobs:
         run: npm ci
 
       # Fail loudly if the updater surface regressed before spending 20 minutes
-      # on packaging -- a cheap gate in front of an expensive one.
+      # on packaging -- a cheap gate in front of an expensive one. The suite is
+      # the same for both payloads, so only the baseline leg runs it; the
+      # over-1gib leg exists to test the transport, and a red unit test must
+      # not hide whether a large update still installs.
       - name: Unit suite (fast gate)
+        if: matrix.payload == 'baseline'
         working-directory: website/electron
         run: npm test
 
@@ -116,6 +152,10 @@ jobs:
           echo "installed app reports: $got"
           [ "$got" = "$INSTALLED_VER" ] || { echo "expected $INSTALLED_VER"; exit 1; }
           test -f "$UPDATE_ZIP"
+          zip_bytes=$(stat -f %z "$UPDATE_ZIP")
+          echo "update zip is $zip_bytes bytes (leg needs at least $MIN_ZIP_BYTES)"
+          [ "$zip_bytes" -ge "$MIN_ZIP_BYTES" ] \
+            || { echo "update zip is too small to test the size this leg exists for"; exit 1; }
 
       - name: Start the local update feed
         working-directory: website/electron
@@ -124,7 +164,9 @@ jobs:
           nohup node scripts/local-feed-server.js \
             --port "$PORT" --zip "$UPDATE_ZIP" --version "$UPDATE_VER" \
             > /tmp/ota-feed.log 2>&1 &
-          for i in $(seq 1 20); do
+          # The feed hashes the whole ZIP before it listens; allow for a
+          # padded one.
+          for i in $(seq 1 60); do
             if curl -fsS "http://127.0.0.1:${PORT}/feed/stable/latest-mac.yml" >/dev/null; then
               echo "feed up"; exit 0
             fi
@@ -151,7 +193,9 @@ jobs:
       # discovery -> consent -> download -> install dispatch, over CDP.
       - name: Drive the update (unattended consent)
         working-directory: website/electron
-        run: node scripts/ota-drive.js --cdp "${CDP_PORT}" --expect "$UPDATE_VER" --timeout 300
+        env:
+          DRIVE_TIMEOUT: ${{ matrix.drive_timeout }}
+        run: node scripts/ota-drive.js --cdp "${CDP_PORT}" --expect "$UPDATE_VER" --timeout "$DRIVE_TIMEOUT"
 
       # THE ACTUAL ASSERTION. Everything above proves the updater was driven;
       # only this proves the bundle on disk was replaced. "install dispatched"
@@ -160,7 +204,8 @@ jobs:
       - name: Assert the bundle actually swapped
         run: |
           set -euo pipefail
-          for i in $(seq 1 60); do
+          # Up to 5 minutes: copying a padded bundle into place takes longer.
+          for i in $(seq 1 150); do
             got=$(defaults read "$INSTALLED_APP/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "")
             if [ "$got" = "$UPDATE_VER" ]; then
               echo "SWAP CONFIRMED: bundle now reports $got"
@@ -178,11 +223,41 @@ jobs:
           set -euo pipefail
           codesign --verify --deep --strict "$INSTALLED_APP" && echo "signature intact after swap"
 
+      # The version flip alone could come from some other bundle landing; the
+      # padding file is only in the update this leg built, so its presence at
+      # full size proves the large update is what got installed.
+      - name: Assert the padded bundle is the one installed
+        if: matrix.payload == 'over-1gib'
+        run: |
+          set -euo pipefail
+          pad="$INSTALLED_APP/Contents/Resources/ota-padding.bin"
+          got=$(stat -f %z "$pad" 2>/dev/null || echo 0)
+          [ "$got" = "$OTA_PAD_BYTES" ] \
+            || { echo "installed bundle has ${got} bytes of padding, expected $OTA_PAD_BYTES"; exit 1; }
+          echo "padded bundle installed ($got bytes of padding)"
+
+      # quitAndInstall relaunches the app once the swap is done. A crash in
+      # the updater kills the app before that, so a running process from the
+      # swapped bundle is the evidence the install finished cleanly.
+      - name: Assert the swapped app relaunched
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if pgrep -f "$INSTALLED_BIN" >/dev/null; then
+              echo "RELAUNCH CONFIRMED: $(pgrep -fl "$INSTALLED_BIN" | head -1)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "RELAUNCH FAILED: no process from $INSTALLED_BIN after the swap"
+          echo "--- app log ---"; cat /tmp/ota-app.log || true
+          exit 1
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ota-logs
+          name: ota-logs-${{ matrix.payload }}
           path: |
             /tmp/ota-build.log
             /tmp/ota-app.log

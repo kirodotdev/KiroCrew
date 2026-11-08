@@ -40,6 +40,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cloud import sizes
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError
 from kiro_crew.config.loader import config_dir
+from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
 
 logger = logging.getLogger(__name__)
@@ -394,7 +395,7 @@ class LaunchJobStore:
             # would land as 0644 and any other local account could read the code
             # and redeem the sign-in, so the file is written 0600 and the
             # directory is owner-only.
-            self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            mkdirs_owner_only(self._root)
             if platform_compat.IS_POSIX:
                 # mode= only applies when mkdir creates the directory, so tighten
                 # an existing one too (a store written by an earlier build is
@@ -418,6 +419,22 @@ class LaunchJobStore:
             path = self._path(job_id)
         except ValueError:
             return None
+        return self._read(path)[0]
+
+    def _read(self, path: Path) -> "tuple[Optional[LaunchJob], bool]":
+        """The job in *path*, and whether the file exists but holds no readable job.
+
+        Unreadable covers every way an existing file yields no job: a read that
+        keeps failing, bytes that are not UTF-8, bad JSON (a file cut short) and
+        JSON that is not an object. Each leaves the record's status unknown, so
+        it may be a launch still running. A file that is gone is absent, not
+        unreadable. Temp files from :func:`atomic_write` end in ``.tmp``, so a
+        save in progress never shows here as a cut-short ``.json``.
+
+        One read answers both, so a caller that needs the jobs and the unreadable
+        records sees the same bytes for each file rather than two scans a
+        concurrent save() can land between.
+        """
         # Retry a transient read failure. A concurrent save() replaces this file via
         # os.replace; on Windows a read that collides with the in-progress replace
         # raises a sharing violation (an OSError), and without this list() would then
@@ -427,32 +444,56 @@ class LaunchJobStore:
         raw = None
         for attempt in range(5):
             if not path.exists():
-                return None
+                return None, False
             try:
                 raw = json.loads(path.read_text(encoding="utf-8"))
                 break
             except OSError as e:
                 if attempt == 4:
                     logger.warning("Failed to read launch job %s: %s", path, e)
-                    return None
+                    return None, True
                 time.sleep(0.02 * (attempt + 1))
-            except json.JSONDecodeError as e:
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                # Skip the job, and say so: the record's status is now unknown.
                 logger.warning("Failed to parse launch job %s: %s", path, e)
-                return None
+                return None, True
         if not isinstance(raw, dict):
-            return None
-        return LaunchJob.from_dict(raw)
+            logger.warning("Launch job %s is not a JSON object", path)
+            return None, True
+        return LaunchJob.from_dict(raw), False
 
-    def list(self) -> list:
+    def snapshot(self) -> "tuple[list, List[str]]":
+        """Every readable job, newest first, and the ids of job files that cannot be read.
+
+        Both come from ONE read of each file. A decision that needs both -- launch
+        admission, the lane of a crew -- must take them from here: two separate
+        scans let a worker's save() rewrite a file between them, so a running job
+        could be skipped by one and missed by the other.
+        """
         if not self._root.exists():
-            return []
+            return [], []
         jobs: list = []
+        unreadable: List[str] = []
         for p in self._root.glob("*.json"):
-            job = self.get(p.stem)
+            job, cannot_read = self._read(p)
             if job is not None:
                 jobs.append(job)
+            elif cannot_read:
+                unreadable.append(p.stem)
         jobs.sort(key=lambda j: j.created_at, reverse=True)
-        return jobs
+        return jobs, sorted(unreadable)
+
+    def list(self) -> list:
+        return self.snapshot()[0]
+
+    def unreadable_ids(self) -> List[str]:
+        """Ids of job files that exist but hold no readable job, which :meth:`list` skips.
+
+        Launch admission refuses while one exists: such a record may be a launch
+        still in progress, and :meth:`list` cannot show its status. A caller that
+        also needs the jobs takes both from :meth:`snapshot`.
+        """
+        return self.snapshot()[1]
 
     def adopt(self, job_id: str) -> None:
         """Record that a worker in *this* process is driving ``job_id``.
@@ -504,22 +545,15 @@ class LaunchJobStore:
                     if step.state == STEP_ACTIVE:
                         step.state = STEP_SKIPPED
                 job.status = DONE
-                # The device code is KEPT. The remote login is `nohup`'d on the box
-                # and outlives a gateway restart, so the code it is polling for is
-                # still live -- and a live poller with no local record is one whose
-                # approval signs the crew in with nothing tracking it. With the
-                # record kept, this job lands in the stale-code shape: the card
-                # offers "I approved it -- check now", the re-probe clears the badge
-                # when the approval landed, and "Start over with a new code" replaces the login
-                # (which kills the old poller) when it did not. A confirmed sign-in
-                # has no code to keep; ``run_launch`` clears it before this point.
+                # The device code is KEPT: the remote login is `nohup`'d and outlives a
+                # gateway restart, so its code is still live. The card then offers
+                # "I approved it -- check now" or "Start over with a new code". A
+                # confirmed sign-in has no code; ``run_launch`` clears it earlier.
                 #
-                # Only mark unconfirmed a sign-in that was never confirmed.
-                # ``run_launch`` saves the connect step BEFORE the terminal status,
-                # so a restart landing in that window reaches here with
-                # signin_detected already True -- and overwriting it would badge a
-                # working crew "Needs sign-in" and offer a "new code" that signs it
-                # out of the session it has.
+                # Only mark unconfirmed a sign-in never confirmed: a restart between
+                # ``run_launch`` saving the connect step and the terminal status reaches
+                # here with signin_detected True, and a working crew must not be badged
+                # "Needs sign-in".
                 job.error = (
                     ""
                     if job.signin_detected
@@ -820,22 +854,14 @@ def _rollback_cancelled_stack(
 ) -> None:
     """Delete the stack a cancelled launch had already created.
 
-    Cancellation is only observed *between* steps, so a cancel during
-    provisioning — or during the sign-in wait, which is the likeliest moment for a
-    human to give up — would otherwise leave a running, billing instance that
-    never appears in the crew list: invisible to the very dashboard that offered
-    the Cancel button, and removable only from the CLI or the AWS console.
+    Cancellation is only observed *between* steps, so a cancel during provisioning
+    or the sign-in wait would otherwise leave a billing instance missing from the
+    crew list. A cancel after the registration step is left to the engine's
+    ``teardown``, which knows which resources it stopped.
 
-    A cancel observed just after the registration step is the other way round: the
-    record exists and the resource is about to stop. Removing it belongs to the
-    engine's ``teardown``, which knows which resources it actually stopped, rather
-    than here, where the registry needle would have to be guessed from the tag.
-
-    Ack, then confirm. The cancelled state is persisted BEFORE the delete is awaited
-    so the card stops saying "running" immediately, and the outcome is only written
-    as removed once AWS confirms — an accepted delete request that later reaches
-    DELETE_FAILED must not be reported as "Removed", or the user believes the
-    billing stopped when the instance is still up.
+    Ack, then confirm: the cancelled state is saved BEFORE the delete is awaited,
+    and "removed" is written only once AWS confirms, so a delete that later reaches
+    DELETE_FAILED is never reported as "Removed".
 
     Best-effort and never raises: this runs while unwinding a cancellation.
     """
@@ -1070,22 +1096,13 @@ def run_launch(
                 instance_id=job.instance_id, tag=job.tag, profile=job.profile, region=job.region
             )
         except RegistrationUnavailable as exc:
-            # The engine has said the launch itself is sound and only the registry
-            # row is missing. Recording it on the step and continuing is the whole
-            # point: the compute exists and is billing, so reporting the LAUNCH as
-            # failed would put a red card over a running crew and leave its owner
-            # with nothing to act on, while the real remedy — add it under Remote
-            # crew, or tear it down — needs the launch to be reported as it is.
-            # Every other exception propagates and fails the launch, unchanged.
+            # The launch is sound and only the registry row is missing: record it on
+            # the step and continue, since the compute is billing and failing the
+            # LAUNCH would put a red card over a running crew. Other exceptions fail it.
             #
-            # NOT saved here, unlike the branch below. A failed connect step with a
-            # non-terminal status is the one combination ``reap_orphans`` reads as an
-            # interrupted launch, and it rewrites the status to FAILED -- so a
-            # restart between this point and the terminal save would turn the DONE
-            # this path is heading for into a red card over a running crew, the exact
-            # outcome the paragraph above rejects. Both exits below save, so the
-            # step, its reason and the terminal status land in ONE write and no
-            # window persists one without the others.
+            # NOT saved here: ``reap_orphans`` reads a failed connect step with a
+            # non-terminal status as an interrupted launch and marks it FAILED. Both
+            # exits below save the step and the terminal status in ONE write.
             registration_error = str(exc)
             s.state = STEP_FAILED
             s.detail = registration_error[:400]

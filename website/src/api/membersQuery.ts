@@ -52,16 +52,18 @@ export const membersRosterQuery = {
 }
 
 /** The user just sent `slot` a message: it is the newest message in that DM,
- *  so stamp `last_active_ts` (and `has_dm_message`) on the roster row bound to
- *  the slot. The Crewmates list orders by the last message in each thread like
- *  a messages app, and this lets it move without waiting for the crew log's
- *  push or a refetch; the roster is marked stale so the next read confirms. */
+ *  so stamp `last_active_ts`, `has_dm_message` and `has_user_dm_message` on the
+ *  roster row bound to the slot. The Crewmates list orders by the last message
+ *  in each thread like a messages app, and a row listed only once the person
+ *  has written to it must stay listed after that first send; this moves both
+ *  without waiting for the crew log's push or a refetch, and the roster is
+ *  marked stale so the next read confirms. */
 export function noteUserChat(queryClient: QueryClient, slot: string | undefined, nowTs = Date.now() / 1000): void {
   if (slot) {
     queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
       rows?.map((r) =>
         r.slot_key === slot
-          ? { ...r, has_dm_message: true, last_active_ts: Math.max(nowTs, r.last_active_ts ?? 0) }
+          ? { ...r, has_dm_message: true, has_user_dm_message: true, last_active_ts: Math.max(nowTs, r.last_active_ts ?? 0) }
           : r,
       ),
     )

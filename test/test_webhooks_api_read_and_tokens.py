@@ -104,9 +104,9 @@ class TestWebhooksRead:
         assert ctx["context_chars"] == len(padding + secret)
 
     @pytest.mark.asyncio
-    async def test_contexts_carry_shared_freshness(self, wired):
-        # flake-ok: pre-existing real-clock anchor for the registration offsets the handler ages on its own clock, moved verbatim; tracked for a de-flake pass
-        now = time.time()
+    async def test_contexts_carry_shared_freshness(self, wired, monkeypatch, manual_clock):
+        manual_clock.install(monkeypatch, H)
+        now = manual_clock.time()
         (wired / "hooks.json").write_text(
             json.dumps(
                 {
@@ -130,8 +130,7 @@ class TestWebhooksRead:
         assert fresh["context_chars"] == 2500
         assert len(fresh["context_summary"]) == webhooks.CONTEXT_SUMMARY_TRANSPORT_MAX
         assert fresh["session_key"] == "hook:review:pr-1"
-        # flake-ok: pre-existing 55-120 s real-clock age window around the 60 s registration offset, moved verbatim; tracked for a de-flake pass
-        assert 55 <= fresh["age_seconds"] <= 120
+        assert fresh["age_seconds"] == 60
         assert by_id["old:job"]["freshness"] == "expired"
         # Newest registration first.
         assert data["contexts"][0]["hook_id"] == "review:pr-1"
@@ -436,14 +435,49 @@ class TestNonObjectJsonBodies:
         assert resp.status == 400
 
     @pytest.mark.asyncio
-    async def test_absent_body_still_uses_defaults(self, wired):
-        """default_empty must keep the no-body case working, unlike a bad shape."""
+    async def test_absent_body_still_uses_defaults(self, wired, monkeypatch):
+        """default_empty must keep the no-body case working, unlike a bad shape.
+
+        The probe's loopback client is stubbed, as in ``TestWebhookTest``, so
+        the test never sends a real request to whatever listens on 127.0.0.1.
+        """
+        posted: list[str] = []
+
+        class _Resp:
+            status = 200
+
+            async def text(self):
+                return ""
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class _Session:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            def post(self, url, data=None, headers=None):
+                posted.append(url)
+                return _Resp()
+
+        monkeypatch.setattr("aiohttp.ClientSession", _Session)
         req = _req("POST", "/api/webhooks/test", None)
         req.json = AsyncMock(side_effect=ValueError("no body"))
         with patch.object(H, "_json_object", wraps=H._json_object):
             resp = await H.api_webhook_test(req)
         # Reaches the probe path rather than being rejected as malformed.
         assert resp.status != 400
+        # The probe went to the stub, not the network.
+        assert posted == ["http://127.0.0.1:6776/api/hooks/agent"]
 
 
 class TestJsonContentTypeGate:

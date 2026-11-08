@@ -457,8 +457,9 @@ async def _resolve_permission(
         )
         else None
     )
-    # A Kiro Crew core MCP tool listed in ``platform.tool_paths.
-    # MCP_DOCUMENT_BODY_FIELDS`` (``knowledge_add_document``'s ``content``)
+    # A Kiro Crew MCP tool listed in ``platform.tool_paths.
+    # MCP_DOCUMENT_BODY_FIELDS`` (``knowledge_add_document``'s ``content``, a
+    # spawn brief, a cron prompt, a message for a person, ...)
     # stores that field as document text, so the field skips the command-text
     # rules -- the deny list and the argv floor -- that read a page mentioning a
     # product subcommand as an attempt to run it. The body keeps the size
@@ -475,7 +476,9 @@ async def _resolve_permission(
     # kind still sets ``is_shell`` and is refused the exemption.
     _mcp_body_keys = (
         mcp_document_body_keys(
-            getattr(event, "tool_name", ""), getattr(event, "mcp_server_name", "")
+            getattr(event, "tool_name", ""),
+            getattr(event, "mcp_server_name", ""),
+            event.raw_tool_params,
         )
         if (
             _edit_params is None
@@ -501,7 +504,19 @@ async def _resolve_permission(
         _scoped_truncated = _scoped_strings.truncated
         _input_strings = list(_scoped_strings)
     else:
-        _input_strings = _extract_tool_input_strings(_tool_input) if _tool_input else []
+        # A rendered edit diff over the scan ceiling is judged by the strings
+        # its arguments held, but only for a call the client itself classified
+        # as not a shell command (the shell cache the tool_call frame filled):
+        # for any other call the text may be what runs, and stays one string.
+        _input_strings = (
+            _extract_tool_input_strings(
+                _tool_input,
+                split_oversize_diff=bool(getattr(event, "shell_classified", False))
+                and not event.is_shell,
+            )
+            if _tool_input
+            else []
+        )
 
     def _scan_off_loop() -> tuple[str, str, str, str] | None:
         # One worker hop for the title and the whole tool_input loop. Both are
@@ -595,6 +610,17 @@ async def _resolve_permission(
             "this surface is read-only and the harness composes a plugin Kiro Crew "
             "cannot vouch for, so every tool call is refused",
             cause=DENY_CAUSE_SURFACE_POLICY,
+        )
+        await provider.reject_tool(event.request_id)
+        return False
+
+    if event.side_read_only_refusal:
+        # A Strands Side Chat call that is not the harness's own proven file read.
+        # Refused under any policy, before the gate: its shell classifier would
+        # otherwise approve a read-only command, and a side chat runs no command.
+        _log("rejected", metadata={"reason": "side_read_only_unproven_tool"})
+        await _steer_host_deny(
+            provider, event, event.side_read_only_refusal, cause=DENY_CAUSE_SURFACE_POLICY
         )
         await provider.reject_tool(event.request_id)
         return False

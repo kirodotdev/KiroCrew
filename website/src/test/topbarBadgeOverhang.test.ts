@@ -24,10 +24,10 @@ describe('topbar unread badge overhang', () => {
   it('reserves the overhang inside the clip box without moving the group', async () => {
     const m = (await css()).match(TB_RIGHT_RULE)
     expect(m, 'expected the .tb-right rule').not.toBeNull()
-    expect(m![0]).toMatch(/padding:6px 6px 0 0/)
+    expect(m![0]).toMatch(/padding:6px 6px 6px 0/)
     // Equal and opposite: the padding grows the clip box, the margin gives back
     // the space, so the bell stays put and the header keeps its height.
-    expect(m![0]).toMatch(/margin:-6px -6px 0 0/)
+    expect(m![0]).toMatch(/margin:-6px -6px -6px 0/)
   })
 
   it('does not depend on overflow-clip-margin, which WebKit does not implement', async () => {
@@ -67,8 +67,10 @@ describe('topbar unread badge overhang', () => {
     expect(pad, 'expected the gutter padding').not.toBeNull()
     expect(mar, 'expected the compensating margin').not.toBeNull()
     const [padTop, padRight, padBottom, padLeft] = [+pad![1], +pad![2], +pad![3], +pad![4]]
-    // top and right reserve the overhang; the badge overhangs nowhere else.
-    expect(padBottom).toBe(0)
+    // Top and right reserve the badge overhang. The bottom reserve keeps the
+    // controls' own lower edge and shadow inside the clip box, so it matches the
+    // top one; nothing overhangs on the left, which stays unreserved.
+    expect(padBottom).toBe(padTop)
     expect(padLeft).toBe(0)
     // Equal on the two overhang edges, and at LEAST the badge offset — a flush
     // reserve (== offset) left the badge body on the clip boundary, so sub-pixel
@@ -76,7 +78,7 @@ describe('topbar unread badge overhang', () => {
     expect(padTop).toBe(padRight)
     expect(padTop).toBeGreaterThanOrEqual(OFFSET)
     // The margin gives back exactly what the padding took, so nothing moves.
-    expect([+mar![1], +mar![2], +mar![3], +mar![4]]).toEqual([-padTop, -padRight, 0, 0])
+    expect([+mar![1], +mar![2], +mar![3], +mar![4]]).toEqual([-padTop, -padRight, -padBottom, 0])
 
     // The badge glow (`shadow-[0_0_<blur>px_var(--accent-glow)]`) blooms past the
     // badge box by its blur radius. `.tb-right` has overflow:hidden, so a blur

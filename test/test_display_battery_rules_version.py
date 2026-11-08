@@ -38,9 +38,11 @@ NOT_RULES: dict[str, str] = {
     "kiro_crew.config": "operator OAuth file, banner-only (test_display_redaction_source_guard)",
     "kiro_crew.config.loader": "same; plus the owner-view switch path, which turns storage off",
     "kiro_crew.platform.context": "exempt-host source; its output, the host set, is in every tag",
+    "kiro_crew.platform.governance": "the switch's policy gate; only read_state reaches it, never the battery",
     "kiro_crew.atomic_write": "the owner-view switch writer; never reached from the battery",
     "kiro_crew._facade_mirror": "mirror facade glue: runs at import and on attribute access only",
     "kiro_crew.security.exfil_bash": "the bash egress gate; the battery never calls it",
+    "kiro_crew.security.shell_commands": "the bash gates' command reader; the battery never calls it",
 }
 
 # Inputs that make every display redactor take its matching path.

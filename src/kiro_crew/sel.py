@@ -302,7 +302,16 @@ class SecurityEventLog:
         # instances in this process share it -- see _ChainHold.)
         self._lock = threading.Lock()
         self._hmac_key = self._load_or_create_hmac_key()
-        self._last_hash = self._read_last_hash()
+        # A log that is present but unreadable right now (held open without
+        # sharing, EACCES) leaves the tip unknown, not genesis: construction
+        # still succeeds, and the first append reads the tip again.
+        self._tip_unknown: bool = False
+        try:
+            self._last_hash = self._read_last_hash()
+        except OSError:
+            logger.warning("SEL: failed to read chain tip from %s", self._path, exc_info=True)
+            self._last_hash = ""
+            self._tip_unknown = True
         # Identity of the live log as of our last observation, so a replacement
         # by another process (its rotation) is detected before we chain off a tip
         # that has moved into the closed segment. Seeded here because
@@ -527,7 +536,8 @@ class SecurityEventLog:
                     # rotation lock held across our own chain + append (see
                     # _rotation_window). Rotation is best-effort and never raises: a
                     # rotation that cannot happen must not stop the audit record it
-                    # precedes from being written.
+                    # precedes from being written. A tip read inside the window can
+                    # raise, and then this append fails like any other.
                     with self._rotation_window() if self._may_rotate() else _no_rotation():
                         # Remember the chain tip so we can roll back if the append
                         # fails: we advance _last_hash per event below, but nothing is
@@ -806,7 +816,7 @@ class SecurityEventLog:
                 event_type="tool_invocation",
                 caller_identity=session_key,
                 agent=agent,
-                source=source or _infer_source(session_key),
+                source=source or _tool_invocation_source(session_key),
                 operation=tool_name,
                 tool_kind=tool_kind,
                 outcome=outcome,
@@ -832,6 +842,7 @@ class SecurityEventLog:
         layer: str = "",
         reason: str = "",
         critical: bool = False,
+        redact: "Callable[[str], str] | None" = None,
     ) -> None:
         """Convenience: log a governance (Level 1 ∩ Level 2) decision.
 
@@ -856,15 +867,21 @@ class SecurityEventLog:
         proceed unaudited. Without it the write is enqueued to the background
         writer, which swallows persistence failures — fine for best-effort audits
         (e.g. an ungoverned allow) but NOT for audit-or-deny.
+
+        *redact* replaces ``redact_via_context`` for a process that installs no
+        platform context (the MCP gateway daemon), where that shim raises: the
+        caller passes the redaction of the companion it composed itself, so the
+        broader pass still applies. Omitted everywhere else.
         """
         # Lazy import: sel.py is imported very early (security.py imports it), and
         # platform.context imports security indirectly — keep this off the
         # module-load path to avoid a cycle (documented pattern).
         from kiro_crew.platform.context import redact_via_context
 
-        safe_operation = redact_via_context(tool_name)
-        safe_item = redact_via_context(item) if item else ""
-        safe_reason = redact_via_context(reason) if reason else ""
+        _redact = redact or redact_via_context
+        safe_operation = _redact(tool_name)
+        safe_item = _redact(item) if item else ""
+        safe_reason = _redact(reason) if reason else ""
         self.log(
             SecurityEvent(
                 event_id=uuid.uuid4().hex[:16],
@@ -991,6 +1008,27 @@ class SecurityEventLog:
             ),
             critical=critical,
         )
+
+
+#: The caller identity the dashboard's own HTTP handlers (file reads and writes,
+#: dashboard config, memory, knowledge) write their tool-invocation rows under. It is
+#: not a session key, so :func:`_infer_source` has no branch for it and would file
+#: those rows under its ``slack`` fallback.
+_DASHBOARD_HANDLER_CALLER = "dashboard"
+
+
+def _tool_invocation_source(session_key: str) -> str:
+    """The source a ``tool_invocation`` row carries when its caller names none.
+
+    The dashboard handlers' bare ``"dashboard"`` caller is the dashboard. Every
+    other key goes through :func:`_infer_source` unchanged, and that function is
+    left alone on purpose: governance binds a profile through it, so teaching it
+    the bare key would change which profile a check with that key applies,
+    which an audit-label fix must not do.
+    """
+    if session_key == _DASHBOARD_HANDLER_CALLER:
+        return "dashboard"
+    return _infer_source(session_key)
 
 
 def _infer_source(session_key: str) -> str:

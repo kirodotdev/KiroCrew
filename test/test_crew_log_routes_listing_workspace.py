@@ -1,11 +1,6 @@
 """The agent's crew-log door: the listing walk, caller classes and the workspace boundary.
 
-A listing is filtered to the caller's dispatch tree; its candidate walk keeps no more
-than its bound and orders units by their log's write time, not their directory's; the
-retention listing behind a lost-front refusal runs only off the event loop. The inline
-caller-class refusal refuses every state ``chat_runner._crew_log_class`` publishes, and a
-dispatch grant stops at a workspace boundary on the per-unit door and on every lineage
-row of a listing. Shared fixtures and builders come from ``crew_log_routes_helpers.py``.
+Shared fixtures and builders come from ``crew_log_routes_helpers.py``.
 """
 
 from __future__ import annotations
@@ -176,14 +171,9 @@ class TestTheListingBoundsWhatItRetains:
 class TestTheRetentionListingStaysOffTheLoop:
     """A directory listing must never be reached from a coroutine's own body.
 
-    The listing only chooses between two refusal TEXTS, so blocking the loop for it
-    spends every session's latency on wording. A review lane found exactly that, and a
-    reading of the source is what catches it returning: the repo's sync-IO gate did not
-    fire here, because the blocking call is several frames below the coroutine and the
-    gate matches direct ones.
-
-    The rule is derived rather than listed: every call site is found in the source, so a
-    THIRD one added later is checked without anyone remembering to name it here.
+    The listing only picks a refusal text, so blocking the loop for it is pure cost. The
+    repo's sync-IO gate misses it (the call is several frames down), so call sites are
+    found in the source.
     """
 
     def _calls_to(self, func_name):
@@ -236,18 +226,9 @@ class TestTheRetentionListingStaysOffTheLoop:
 class TestTheCallerTestAgreesWithTheSharedDerivation:
     """The inline caller test must refuse every state the shared derivation publishes.
 
-    ``_caller_class_refusal`` respells the test ``chat_runner._crew_log_class`` makes,
-    and deliberately: the derivation answers with a class, while a refusal has to NAME
-    which member refused and why it matters, and a caller that reads its own reason is
-    the difference between a usable refusal and a bare 403. What that duplication risks
-    is divergence -- a member the derivation learns to report and the refusal never
-    tests would let a publishing caller read another session's log, which fails OPEN.
-
-    So the agreement is pinned rather than the duplication removed. Each case asserts
-    the shape actually moved the DERIVATION before asking the refusal about it, so a
-    fixture that stopped constructing the state it names fails instead of passing
-    vacuously, and the width assertion makes a NEW member fail here until someone
-    decides whether the refusal owes it a test.
+    ``_caller_class_refusal`` respells ``chat_runner._crew_log_class`` so it can name its
+    reason; a member it misses would fail OPEN. Each case first checks the shape moved
+    the derivation, and the width check fails on a new member.
     """
 
     def _request_for(self, slot):
@@ -304,13 +285,9 @@ class TestTheCallerTestAgreesWithTheSharedDerivation:
 class TestRecencyComesFromTheLogNotItsDirectory:
     """A long-lived session is the case that breaks reading the directory's mtime.
 
-    A directory's mtime moves when its entry SET changes -- a file created, renamed
-    or removed -- not when a file inside it is written. A unit directory gets its
-    ``log.jsonl`` once and is appended to for the rest of the session, so its own
-    mtime freezes at creation. Order by it and "newest first" silently means "most
-    recently STARTED first", and a recency window drops the session that has been
-    open and busy for a day while keeping one created a minute ago and idle since.
-    That is backwards for both callers: the listing exists to find active sessions.
+    A directory's mtime changes only when its entry set does, so a unit directory's
+    freezes at creation while its ``log.jsonl`` keeps growing. Ordering by it would rank
+    by start time and drop a busy day-old session from a recency window.
     """
 
     @staticmethod
@@ -368,20 +345,10 @@ class TestRecencyComesFromTheLogNotItsDirectory:
 class TestTheWorkspaceBoundary:
     """A dispatch grant does not cross a workspace, because a lineage outlives a switch.
 
-    The creator edge is written on the CHILD and nothing rewrites it, so a conductor that
-    dispatched a child and then moved to another workspace still names that child in its
-    tree. Switching workspace is ordinary operation, so the recorded lineage alone would
-    hand that conductor a log belonging to the workspace it left -- the boundary a
-    workspace exists to draw.
-
-    So the class records which workspace stated it, and the fence compares. Three states
-    refuse, one fact in three shapes: the workspaces DIFFER, the log's workspace MOVED so
-    its content spans two and neither owns it, or the log records NO workspace, which no
-    live slot can produce.
-
-    The arm is ordered LAST of the target arms on purpose -- it asks about ownership while
-    the arms above ask about publication, and a caller refused for either deserves the
-    more specific reason.
+    The creator edge on the child is never rewritten, so a conductor that switched
+    workspace still names its old children. Refused: workspaces differ, the log's
+    workspace moved, or the log records none. The arm runs last of the target arms, so a
+    publication refusal keeps its more specific reason.
     """
 
     def test_a_conductor_in_the_same_workspace_still_reads_its_child(self, monkeypatch):
@@ -396,13 +363,7 @@ class TestTheWorkspaceBoundary:
         assert json.loads(response.text)["session_id"] == CHILD_UNIT
 
     def test_a_conductor_that_moved_workspace_cannot_read_its_own_child(self, monkeypatch):
-        """MUTATION-SENSITIVE: the comparison itself, on the scenario the lane named.
-
-        Every other arm admits this read. The lineage is recorded and intact, the caller
-        is a persistent non-app session publishing to nobody, and the target's class is
-        clean -- so the workspace comparison is the only thing standing between this
-        caller and a log from the workspace it left.
-        """
+        """MUTATION-SENSITIVE: the workspace comparison is the only arm that refuses here."""
         _flag_on(monkeypatch)
         _dispatch_tree()
         request = _as_conductor(
@@ -446,10 +407,8 @@ class TestTheWorkspaceBoundary:
     def test_a_workspace_that_moves_mid_read_is_caught_by_the_recheck(self, monkeypatch):
         """MUTATION-SENSITIVE: the workspace arm in the STALE re-check, not just the gate.
 
-        At the grant the log named one workspace and the caller matched it, so the gate
-        admitted the read. The log then records a move while the payload is being built,
-        which puts content from a second workspace in this same log. Only a fold taken
-        AFTER the read sees it, which is why the arm runs in both places rather than once.
+        The log records a move while the payload is built; only a fold taken after the
+        read sees it.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -470,13 +429,8 @@ class TestTheWorkspaceBoundary:
     def test_the_gate_refuses_before_a_payload_is_built(self, monkeypatch):
         """MUTATION-SENSITIVE: the arm in the GATE, which the route alone cannot pin.
 
-        Every unit read also passes the stale re-check, and that runs this arm too -- so
-        deleting the gate's call leaves each route test above still green, refused a moment
-        later by the re-check. The difference is not the verdict but WHEN: without the gate
-        arm the payload is read off disk first and refused afterwards, so the log is pulled
-        into memory for a caller who must not see it.
-
-        So the gate is asked directly, where no re-check can answer for it.
+        The re-check would refuse too, but only after the log was read into memory, so
+        the gate is asked directly.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()
@@ -502,15 +456,8 @@ class TestTheListingCarriesTheWorkspaceBoundary:
     """A listing discloses each row's unit, slot, model and activity, so the workspace
     boundary the per-unit door draws has to reach the rows as well.
 
-    Lineage alone does not bound which workspace a row belongs to, and the dispatch edge
-    is written on the child and never rewritten -- so a conductor that dispatched in one
-    workspace and then switched still names those children in its tree. Without a per-row
-    test the listing becomes an enumeration oracle for exactly the units the read path
-    refuses to open.
-
-    The test is asked of LINEAGE rows only, which is what the per-unit door does: a
-    caller's own record is answered before any target test, and an owner's unscoped
-    listing runs none at all.
+    Otherwise the listing would enumerate units the read path refuses to open. Only
+    LINEAGE rows are tested: the caller's own row and the owner's listing skip it.
     """
 
     def test_a_conductor_that_moved_workspace_sees_only_its_own_row(self, monkeypatch):
@@ -542,8 +489,7 @@ class TestTheListingCarriesTheWorkspaceBoundary:
         assert listed == {CONDUCTOR_UNIT, GRANDCHILD_UNIT}
 
     def test_the_owner_still_sees_a_unit_from_another_workspace(self, monkeypatch):
-        """The owner's listing is not narrowed, so it is never asked -- the recorded
-        product decision for that door, which this change must not quietly revise."""
+        """The owner's listing is not narrowed by workspace, by product decision."""
         _flag_on(monkeypatch)
         _dispatch_tree()
         _class_moved(CHILD_UNIT, workspace="beta")
@@ -557,14 +503,8 @@ class TestTheListingCarriesTheWorkspaceBoundary:
         """MUTATION-SENSITIVE: the re-check's workspace arm, and why the gate stores a
         VALUE.
 
-        The rows were admitted against the workspace read at the gate. The caller then
-        switches while the walk runs, so the payload it is about to receive names rows
-        from the workspace it just left. The scope tuple is a unit and a slot and neither
-        moves on a switch, so a tuple comparison alone cannot see this.
-
-        It also pins the storage choice: holding the slot OBJECT would make the re-check
-        re-read the same mutable attribute and compare the new workspace against itself,
-        which is always equal and would never refuse.
+        The scope tuple (unit, slot) does not move on a switch. Holding the slot OBJECT
+        would compare the new workspace against itself and never refuse.
         """
         _flag_on(monkeypatch)
         _dispatch_tree()

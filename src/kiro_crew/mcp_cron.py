@@ -41,7 +41,10 @@ from kiro_crew.cron import (
     get_local_tz,
     is_valid_skip_date,
     is_valid_timezone,
+    job_zone_name,
+    never_fires_warning,
     parse_time_string,
+    resolve_timezone_name,
 )
 from kiro_crew.cron_script import (
     compute_secret_env_pin,
@@ -63,12 +66,14 @@ from kiro_crew.mcp_cron_list_render import (
 )
 from kiro_crew.mcp_cron_tool_list import _list_tools
 from kiro_crew.mcp_cron_vet import (
+    _command_cron_platform_refusal,
     _log_cron_denial,
     _resolve_cron_folder,
     _vet_cron_capability_governance,
     _vet_script_file,
     _vet_shell_command,
 )
+from kiro_crew.mcp_instructions import CRON as _INSTRUCTIONS
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.port_resolution import resolve_serving_port
@@ -81,6 +86,12 @@ from kiro_crew.validation import (
 )
 
 logger = logging.getLogger("kiro_crew.mcp_cron")
+
+
+def _never_fires_note(job: CronJob) -> str:
+    """A ` Warning: ...` suffix for a saved job whose cron matches no date, else ``""``."""
+    warning = never_fires_warning(job.schedule)
+    return f" Warning: {warning}." if warning else ""
 
 
 def _sub_floor_timeout_note(timeout_secs_val: object) -> str:
@@ -387,8 +398,8 @@ def _deny_channel_agent_cron(tool_name: str) -> str | None:
 #:
 #: The consequence is deliberate and worth stating: a cron created with
 #: ``kirocrew cron add`` does not appear in ``cron_list`` from chat. The CLI
-#: remains its management surface. The alternative -- showing it -- was tried in an
-#: earlier revision of this change and is what the paragraph above rules out.
+#: remains its management surface. The alternative -- showing it -- is what the
+#: paragraph above rules out.
 #:
 #: Note the set keeps GROWING for as long as the CLI and the importer create rows
 #: without a session, which is why this is a permanent scope rule rather than a
@@ -653,7 +664,7 @@ def _owner_unusable_caveat(svc: "CronService", session_key: str, job_id: str) ->
         return ""
     caller_job = svc.get_job(caller_job_id)
     # No record means no evidence, so say nothing: a warning we cannot substantiate
-    # is the exact failure this branch was rewritten to remove.
+    # is worse than no warning.
     if caller_job is None or cron_session_key_is_stable(caller_job):
         return ""
     return (
@@ -736,6 +747,40 @@ def _owned_by(jobs: list[CronJob], session_key: str) -> list[CronJob]:
     return [j for j in jobs if j.session_key == session_key]
 
 
+_AUTO_APPROVAL_OWNER_ONLY = (
+    "Error: approval_mode 'auto' can only be turned on by the owner. "
+    "Create or update the job without it, then ask the user to turn on "
+    "auto-approve for this job on the Schedule page."
+)
+
+
+#: ``cron_update`` fields (as ``update_job`` kwargs) that change what a job does or
+#: where it reports. Changing one through a tool turns the owner's auto-approve off.
+_AUTO_RESETTING_FIELDS = frozenset(
+    {"message", "agent_id", "model", "cron_expr", "every_secs", "channel", "thread_ts"}
+)
+
+_AUTO_APPROVAL_RESET_NOTE = (
+    " Auto-approve was turned off because the job changed; ask the user to turn it "
+    "back on for this job on the Schedule page."
+)
+
+
+def _refuse_tool_auto_approval(tool_name: str, args: dict[str, Any]) -> str:
+    """Refuse a tool call that would turn on ``approval_mode="auto"``.
+
+    An auto job approves every tool call of every later fire with nobody
+    watching, so it is the owner's switch: the Schedule page's owner-gated
+    routes set it. A tool caller cannot be told apart from other code running
+    in the same session (both reach this handler the same way), so no tool
+    call may set it. ``""`` (the default, hook-based approval) is unaffected.
+    """
+    if args.get("approval_mode") != "auto":
+        return ""
+    _log_cron_denial(tool_name, _AUTO_APPROVAL_OWNER_ONLY)
+    return _AUTO_APPROVAL_OWNER_ONLY
+
+
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     """Execute a cron tool (post-validation)."""
     svc = CronService(base_dir=config_dir())
@@ -791,12 +836,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if cap_err:
             _log_cron_denial("cron_add", cap_err)
             return cap_err
+        auto_err = _refuse_tool_auto_approval("cron_add", args)
+        if auto_err:
+            return auto_err
         n = args["name"]
         msg = args.get("message", "")
         script = args.get("script", "")
         command = args.get("command", "")
         if command:
-            err = _vet_shell_command(command)
+            err = _vet_shell_command(command) or _command_cron_platform_refusal()
             if err:
                 _log_cron_denial("cron_add", err)
                 return err
@@ -830,11 +878,21 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             if isinstance(parsed, str):
                 return parsed  # error message
             at_ts = parsed
+        # The resolved instant carries the schema's ceiling for a raw ``at``
+        # (year 2100), whatever produced it -- the same bound and wording the
+        # dashboard route and the CLI apply. ``at_time``'s relative form has no
+        # bound of its own: "in 999999999 hours" parses to a time ~116,000
+        # years out that the Schedule page cannot render.
+        if at_ts is not None:
+            at_spec = next(s for s in MCP_CRON_SCHEMAS["cron_add"].fields if s.name == "at")
+            lo, hi = at_spec.min_val, at_spec.max_val
+            if (lo is not None and at_ts < lo) or (hi is not None and at_ts > hi):
+                return f"Error: resolved time is outside the supported range ({lo} to {hi})"
         # Guard against past timestamps from any source (at, delay, at_time)
         if at_ts is not None and at_ts < time.time():
             # Rendered in the zone the job keeps its wall clocks in, so a refused
             # at_time echoes the clock the caller typed rather than the process's.
-            shown_tz = ZoneInfo(tz) if tz else get_local_tz()[1]
+            shown_tz = ZoneInfo(resolve_timezone_name(tz) or "UTC") if tz else get_local_tz()[1]
             local = datetime.fromtimestamp(at_ts, shown_tz)
             return f"Error: resolved time {local.strftime('%I:%M %p %Z')} is in the past"
         channel = (args.get("channel") or "").strip() or None
@@ -920,12 +978,17 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # does `kirocrew cron add`, which reaches the store directly.
             return _unidentified_caller_refusal("cron_add")
         persistent_session = args.get("persistent_session")
+        new_chat_per_run = args.get("new_chat_per_run") is True
+        if not isinstance(persistent_session, bool):
+            # A new chat per run is a fresh session per run.
+            persistent_session = not new_chat_per_run
         minimal_context = args.get("minimal_context")
         hide_in_chat = args.get("hide_in_chat")
         strict_schedule = args.get("strict_schedule")
         timeout_val = args.get("timeout", 0)
         timeout_secs_val = args.get("timeout_secs", 0)
         auto_pause_val = args.get("auto_pause_after_failures")
+        alert_after_val = args.get("alert_after_failures")
         # Resolve the folder BEFORE add_job so an unresolvable reference never
         # leaves an orphaned job behind (same position as the model check
         # above). A folder auto-created here that a subsequent add_job failure
@@ -959,17 +1022,18 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 silent=bool(silent),
                 strict_schedule=strict_schedule if isinstance(strict_schedule, bool) else False,
                 hide_in_chat=hide_in_chat if isinstance(hide_in_chat, bool) else False,
+                new_chat_per_run=new_chat_per_run,
                 folder_id=folder_id,
                 command=command or "",
                 script=script or "",
-                persistent_session=(
-                    persistent_session if isinstance(persistent_session, bool) else True
-                ),
+                persistent_session=persistent_session,
                 session_key=session_key,
                 minimal_context=minimal_context if isinstance(minimal_context, bool) else False,
                 timeout=timeout_val or 0,
                 timeout_secs=timeout_secs_val or 0,
                 auto_pause_after_failures=auto_pause_val,
+                alert_after_failures=alert_after_val,
+                person_owner=getattr(current_caller(), "person_tab", False),
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
@@ -977,7 +1041,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {exc}"
         except ValueError as e:
             return f"Error: {e}"
-        sched_str = format_schedule(job.schedule, tz_name=job.timezone or "")
+        sched_str = format_schedule(job.schedule, tz_name=job_zone_name(job))
         sel().log_api_access(
             caller="mcp",
             operation="cron.create",
@@ -998,7 +1062,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # the caveat to the whole returned object. ``args`` also keeps the answer
         # correct by construction if the argument is ever added to the schema.
         caveats = _owner_unusable_caveat(svc, session_key, job.id) + _ephemeral_authority_caveat(
-            persistent_session if isinstance(persistent_session, bool) else True,
+            persistent_session,
             not (command or script),
             list(args.get("agent_sequence") or []),
         )
@@ -1006,6 +1070,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"Added job: {job.id} ({job.name}) [{sched_str}]. "
             f"Tell the user: scheduled for {sched_str}.{caveats}"
             + _sub_floor_timeout_note(timeout_secs_val)
+            + _never_fires_note(job)
         )
 
     if name == "cron_update":
@@ -1020,6 +1085,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         own_err = _check_cron_job_ownership(svc, jid)
         if own_err:
             return own_err
+        auto_err = _refuse_tool_auto_approval("cron_update", args)
+        if auto_err:
+            return auto_err
         kwargs: dict[str, Any] = {}
         for key in ("name", "message"):
             if key in args and args[key]:
@@ -1066,6 +1134,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             kwargs["folder_id"] = fid
         if "persistent_session" in args:
             kwargs["persistent_session"] = args["persistent_session"]
+        if isinstance(args.get("new_chat_per_run"), bool):
+            kwargs["new_chat_per_run"] = args["new_chat_per_run"]
+            if args["new_chat_per_run"] and "persistent_session" not in args:
+                kwargs["persistent_session"] = False
         if "minimal_context" in args:
             mc = args["minimal_context"]
             if isinstance(mc, bool):
@@ -1098,8 +1170,19 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             kwargs["timeout_secs"] = args["timeout_secs"]
         if "auto_pause_after_failures" in args:
             kwargs["auto_pause_after_failures"] = args["auto_pause_after_failures"]
+        if "alert_after_failures" in args:
+            kwargs["alert_after_failures"] = args["alert_after_failures"]
         if not kwargs:
             return "Error: no fields to update"
+        # The owner's auto-approve covers the job the owner saw. A tool edit that
+        # changes what the job does turns it off in the same write, so the owner
+        # re-enables it on the Schedule page. Written unconditionally (a no-op on a
+        # job that is not auto) so no read-then-write window can keep it on.
+        was_auto = False
+        if _AUTO_RESETTING_FIELDS.intersection(kwargs):
+            prior = svc.get_job(jid)
+            was_auto = prior is not None and prior.approval_mode == "auto"
+            kwargs["approval_mode"] = ""
         kwargs["audit_actor"] = _authz_session_key()
         try:
             updated = svc.update_job(jid, **kwargs)
@@ -1118,7 +1201,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             source="mcp",
             resources=f"job_id={jid}",
         )
-        sched_str = format_schedule(updated.schedule, tz_name=updated.timezone or "")
+        sched_str = format_schedule(updated.schedule, tz_name=job_zone_name(updated))
         # Read from the SAVED row, not from ``args``: an update that leaves
         # persistent_session alone must still warn if the job is already in that
         # state and this call turned it into an agent job, and the flag is writable
@@ -1130,6 +1213,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             updated.agent_sequence,
         )
         note = _sub_floor_timeout_note(args["timeout_secs"]) if "timeout_secs" in args else ""
+        if was_auto:
+            note += _AUTO_APPROVAL_RESET_NOTE
+        note += _never_fires_note(updated)
         return f"Updated job: {updated.id} ({updated.name}) [{sched_str}]{caveat}{note}"
 
     if name == "cron_remove":
@@ -1323,8 +1409,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             resources=f"job_id={jid}:{','.join(sorted(secrets))}",
         )
         # No in-chat approval surface, deliberately: an approval record
-        # reachable from generic chat resolution paths kept widening the
-        # owner-only boundary in review, so approval lives EXCLUSIVELY on the
+        # reachable from generic chat resolution paths keeps widening the
+        # owner-only boundary, so approval lives EXCLUSIVELY on the
         # owner-gated Schedule page. The durable pending record above is the
         # source of truth.
         return (
@@ -1347,7 +1433,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 #: backend advertised this capability -- so without the advertisement the block
 #: never arrives, and this server's resolver reads an empty identity no matter how
 #: correctly it is written. Nothing declines to POOL an unadvertised backend
-#: (``rewriter.UNPOOLABLE_SERVERS`` is empty and documents that the capability is
+#: (``rewriter.UNPOOLABLE_SERVERS`` lists only credential vendors and documents that the capability is
 #: read only to decide injection), so the unadvertised state was not "per-session
 #: spawn" -- it was pooled AND identity-blind.
 #:
@@ -1367,6 +1453,7 @@ def run_mcp_server() -> None:
         _call_tool,
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
         error_prefix_is_error=True,
+        instructions=_INSTRUCTIONS,
     )
 
 
@@ -1415,6 +1502,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _fold_runs,
         _format_next_run,
         _job_kind,
+        _json_folder,
         _normalize_summary,
         _sanitize,
     )
@@ -1464,12 +1552,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _strip_shell_quotes,
     )
     from kiro_crew.mcp_cron_tool_list import (  # noqa: F401
+        _ALERT_AFTER_DESCRIPTION,
         _AUTO_PAUSE_AFTER_DESCRIPTION,
     )
     from kiro_crew.mcp_cron_vet import (  # noqa: F401
         _CRON_FOLDER_ID_RE,
         _audit_fire_time_decision,
         _audit_governance_deny,
+        _resolve_cron_folder_via,
         _vet_app_owner_enabled,
         _vet_command_governance,
         _vet_script_contents,
@@ -1482,9 +1572,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.cron import (  # noqa: F401
         compute_next_run_ts,
+        load_cron_folders,
         lookup_cron_folder_id,
     )
     from kiro_crew.cron_service.model import (  # noqa: F401
+        _ALERT_AFTER_DEFAULT,
         _AUTO_PAUSE_MAX,
         _AUTO_PAUSE_THRESHOLD,
     )
@@ -1501,6 +1593,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         current_context,
         redact_log_via_context,
     )
+    from kiro_crew.platform_compat import (  # noqa: F401
+        strip_extended_length_prefix,
+    )
     from kiro_crew.sandbox import (  # noqa: F401
         _AGENT_DENIED_ENV_KEYS,
     )
@@ -1510,12 +1605,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         _fold_line_continuations,
         _iter_shell_chars,
         audit_bash_exfiltration,
+        canonical_path_refusal,
         enabled_rule_ids,
         is_sensitive_bash_command,
-        is_sensitive_path,
+        is_sensitive_canonical_path,
         is_unverifiable_path_refusal,
         scan_exfiltration_urls,
-        sensitive_path_refusal,
     )
     from kiro_crew.security.readonly_bash import (  # noqa: F401
         _EXTGLOB_RE,

@@ -10,7 +10,6 @@ import reducer, {
   sseSlotsPartial,
   sseSlotPatch,
   markSlotUnread,
-  sseSubagentStatus,
   fetchSlots,
   removeSlotOptimistic,
   armConfirmedCloseHold,
@@ -104,16 +103,14 @@ describe('sseSlotPatch', () => {
     expect(state.durablyRemoved).toEqual({})
   })
 
-  it('removes a closed key and tears down its per-slot state like a full list', () => {
+  it('removes a closed key and tears down its unread state like a full list', () => {
     let state = loaded()
     state = reducer(state, markSlotUnread('b'))
-    state = reducer(state, sseSubagentStatus({ slot: 'b', running: 1 } as never))
     const before = state
     state = reducer(state, sseSlotPatch({ slots: [], removed: ['b'] }))
     expect(state.slots.map(s => s.key)).toEqual(['a', 'c'])
     expect(state.slots[0]).toBe(before.slots[0])
     expect(state.unreadSlots).not.toContain('b')
-    expect(state.subagentRunning.b).toBeUndefined()
   })
 
   it('re-states orphaned parents carried beside a removal', () => {
@@ -142,19 +139,15 @@ describe('sseSlotPatch', () => {
   it('tears down only the removed key while another close is still in flight', () => {
     let state = loaded()
     // A's DELETE is in flight: `pending` arms the hold, the thunk body drops the
-    // row. The server still runs A, so its sub-agent and unread frames keep coming.
+    // row. The server still runs A, so its unread frames keep coming.
     state = reducer(state, { type: 'chat/deleteSlot/pending', meta: { arg: 'a', requestId: 'del-a' } })
     state = reducer(state, removeSlotOptimistic('a'))
-    state = reducer(state, sseSubagentStatus({ slot: 'a', running: 1 } as never))
     state = reducer(state, markSlotUnread({ slot: 'a', ts: '2026-01-01T00:00:00Z' }))
-    state = reducer(state, sseSubagentStatus({ slot: 'b', running: 1 } as never))
     state = reducer(state, markSlotUnread({ slot: 'b', ts: '2026-01-01T00:00:00Z' }))
     state = reducer(state, sseSlotPatch({ slots: [], removed: ['b'] }))
     expect(state.slots.map(s => s.key)).toEqual(['c'])
     // B is gone for good; A's DELETE may still fail and bring the row back.
-    expect(state.subagentRunning.b).toBeUndefined()
     expect(state.unreadSlots).not.toContain('b')
-    expect(state.subagentRunning.a).toBe(1)
     expect(state.unreadSlots).toContain('a')
     expect(state.unreadSince?.a).toBe('2026-01-01T00:00:00Z')
   })

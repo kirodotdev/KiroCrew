@@ -1,12 +1,9 @@
 """The restore's copy branch, taken when no live ``notifications.jsonl`` exists.
 
-The copy validates every record before it creates the destination, installs exactly the
-bytes it validated, refuses links, FIFOs and other non-regular sources, and orders itself
-against a concurrent delivery on the single notification worker. On a platform without
-``O_NOFOLLOW`` the component is skipped with a named reason instead.
-
-The merge branch (a live file exists) is pinned in
-``test_snapshot_notification_merge_branch.py``.
+The copy validates every record before creating the destination, installs exactly the
+validated bytes, refuses non-regular sources, and orders itself against a concurrent
+delivery. Without ``O_NOFOLLOW`` the component is skipped with a named reason. The merge
+branch is pinned in ``test_snapshot_notification_merge_branch.py``.
 """
 
 from __future__ import annotations
@@ -64,29 +61,18 @@ class _NotificationCopyFixtures:
 
 @requires_o_nofollow
 class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
-    """The OTHER branch of the same ``if``, which validated nothing.
+    """With no live file (fresh install), the copy must refuse what the merge refuses.
 
-    ``_merge_notifications`` runs when a live ``notifications.jsonl`` exists. When
-    one does not -- a fresh install, a first restore -- the restore took
-    ``shutil.copy2`` instead, so the same snapshot that ABORTED the restore in one
-    case was installed silently in the other. A byte-exact copy is correct as a
-    copy and that is the defect: it faithfully installs bytes the destination's own
-    reader refuses, and that reader loses the WHOLE file to one of them.
-
-    Every fixture is real bytes on a real file, for the reason the merge class
-    states: a synthesized ``UnicodeDecodeError`` routes the copy down a healthy
-    path and proves nothing. The undecodable record is measured as INSTALLED
-    without the fix -- ``strict_raw_records`` frames and bounds records but does
-    not decode, so framing alone reproduces ``copy2``'s behaviour exactly.
+    A byte-exact copy installs records the destination's reader refuses, and that reader
+    loses the WHOLE file to one of them. Fixtures are real bytes on real files: a
+    synthesized ``UnicodeDecodeError`` takes a healthy path and proves nothing, and
+    ``strict_raw_records`` frames records without decoding them.
     """
 
     def test_an_undecodable_record_is_never_installed(self, tmp_path, capsys):
-        """The whole point, and it must reach the CALLER, not only stdout.
+        """The refusal must reach the CALLER by raising, not only stdout.
 
-        ``apply_import_zip`` appends ``notifications (copied)`` to its summary and
-        the dashboard handler answers ``ok: True``; neither sees a print. So the
-        posture is the merge branch's -- abort by raising -- and the success lines
-        must not be reached.
+        ``apply_import_zip`` and the dashboard handler never see a print.
         """
         snap, home = self._snap(tmp_path, self.GOOD + self.BAD_UTF8)
         with pytest.raises(UndecodableRecord):
@@ -102,11 +88,8 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_a_platform_skip_does_not_print_the_success_tick(self, tmp_path, monkeypatch, capsys):
         """A caught NotificationCopyUnsupported skip must NOT report ✅ notifications.
 
-        With a live file present the merge branch runs, and on a platform without
-        ``O_NOFOLLOW`` it raises ``NotificationCopyUnsupported``; the call site
-        catches it, prints the SKIPPED line, and control must not fall through to
-        the component tick -- a component that imported nothing never reports one,
-        exactly as the crons branch gates its tick on ``crons_ok``.
+        A component that imported nothing never reports a tick, as the crons branch
+        gates its tick on ``crons_ok``.
         """
         snap, home = self._snap(tmp_path, self.GOOD)
         (home / "notifications.jsonl").write_bytes(b'{"ts":"2026-02-01T00:00:00Z","msg":"local"}\n')
@@ -121,12 +104,8 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_the_reader_loads_every_record_the_copy_installs(self, tmp_path, monkeypatch):
         """The consequence, asserted through the reader that actually loses the file.
 
-        This is the test that separates a real fix from a no-op. Framing the
-        records without decoding them installs the bad byte just as ``copy2`` did,
-        and every byte-level assertion above still passes; only loading the
-        installed file through ``_load_notifications`` shows it. Measured on the
-        unfixed branch: 0 rows from a file holding 2 valid records, then the next
-        rewrite persists that empty view.
+        Framing without decoding passes every byte-level check above; only loading
+        through ``_load_notifications`` shows a bad byte costs all rows.
         """
         snap, home = self._snap(tmp_path, self.GOOD + self.MORE + self.BAD_UTF8)
         monkeypatch.setenv("KIROCREW_HOME", str(home))
@@ -142,12 +121,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         assert len(dashboard_state._load_notifications()) == 2
 
     def test_a_clean_source_is_copied_record_for_record(self, tmp_path):
-        """Byte-exactness is the property ``copy2`` had and the fix must keep.
-
-        A ``\\r\\n`` terminator survives and a bare ``\\r`` inside the file ends a
-        record without being rewritten -- the text-mode round trip
-        removed from the merge is not reintroduced here.
-        """
+        """The copy stays byte-exact: ``\\r\\n`` and a bare ``\\r`` are not rewritten."""
         src_bytes = b'{"ts":"1","msg":"a"}\r\n{"ts":"2","msg":"b"}\r{"ts":"3","msg":"c"}\n'
         snap, home = self._snap(tmp_path, src_bytes)
         self._merge(snap, home)
@@ -157,9 +131,7 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         """Otherwise the first notification after the restore glues onto it.
 
         ``_persist_notification`` appends ``json.dumps(note) + "\\n"``, so an
-        unterminated last line plus that append is one line that parses as neither
-        row. The merge branch makes the same repair through ``dst_unterminated``;
-        writing record-wise makes it this branch's job too.
+        unterminated last line plus that append parses as neither row.
         """
         snap, home = self._snap(tmp_path, b'{"ts":"1","msg":"a"}\n{"ts":"2","msg":"b"}')
         self._merge(snap, home)
@@ -183,18 +155,10 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_a_concurrent_notification_is_not_deleted_by_the_rollback(self, tmp_path, monkeypatch):
         """A file this call did not create must survive its refusal.
 
-        Review's finding, and the slip it names is one an exclusive create invites:
-        creating the live file with ``O_EXCL`` proves this call CREATED it, not that
-        it is the only thing that has since written to it. ``apply_import_zip`` runs
-        inside the live gateway, so the dashboard's notification sink can append to
-        a file the copy just created -- and the rollback for a later bad record then
-        deleted that operator's notification along with the prefix.
-
-        Now structural rather than defended: the whole source is validated before the
-        destination is created, so the ordinary refusal has nothing to roll back. The
-        delivery is injected at the validation of the record that aborts, which is
-        the interleaving that broke the earlier revision. Measured on it, the live
-        file and the delivered note are both gone.
+        ``O_EXCL`` proves this call created a file, not that nothing else wrote to it
+        since: the dashboard sink can append inside the live gateway. The whole source is
+        validated before the destination exists, so a refusal has nothing to roll back.
+        The delivery is injected at the validation of the record that aborts.
         """
         snap, home = self._snap(tmp_path, self.GOOD + self.BAD_UTF8)
         live = home / "notifications.jsonl"
@@ -232,14 +196,11 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         assert live.read_bytes() == appeared
 
     def test_the_data_home_gains_nothing_but_the_notifications_file(self, tmp_path):
-        """No intermediate artifact, which is the second review finding's whole point.
+        """No intermediate artifact may appear in the data home.
 
-        A temp file in the data home is published through a NAME, and a same-user
-        process that can list the directory can swap what that name holds between
-        the write and the publish. Writing straight to an ``O_EXCL`` destination
-        needs no such name. Asserted as "the directory holds nothing else" rather
-        than "no file called .tmp", so any future intermediate is caught whatever it
-        is named.
+        A temp file is published through a NAME a same-user process can swap before the
+        publish. Asserted as "the directory holds nothing else", so an intermediate is
+        caught whatever it is named.
         """
         snap, home = self._snap(tmp_path, self.GOOD + self.BAD_UTF8)
         with pytest.raises(UndecodableRecord):
@@ -270,22 +231,11 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_a_source_truncated_after_the_read_cannot_affect_the_install(
         self, tmp_path, monkeypatch
     ):
-        """Replaces a retired test, and the reversal is the point.
+        """Truncating the source after the single read changes nothing in the install.
 
-        The predecessor read the file twice and this scenario was its worst outcome: a
-        source truncated between the passes gave pass 2 a clean EOF, so nothing raised,
-        the success line printed, and the install was silently short -- measured at 5
-        records validated, 2 installed. That test asserted the damage was BOUNDED.
-
-        Reading once makes the scenario unrepresentable rather than bounded, so the
-        same setup now asserts the opposite: truncating the source after it has been
-        read changes nothing, because there is no name left to resolve and no handle
-        left open. This pins the PRECONDITION -- one read -- and reddens on any design
-        that goes back to the file, which "no partial install" would not, since that
-        passes trivially once the window is gone.
-
-        The truncation is injected at the first validation call, which is after the
-        read and before the write.
+        This pins the precondition (one read): a design that reads the file again would
+        install a silently short file. The truncation is injected at the first
+        validation call, after the read and before the write.
         """
         snap, home = self._snap(tmp_path, self.GOOD + self.MORE)
         source = snap / "notifications.jsonl"
@@ -310,15 +260,10 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_a_source_over_the_cap_is_refused_with_its_size_named(self, tmp_path, monkeypatch):
         """Over-cap must REFUSE, loudly, and install nothing.
 
-        A whole-file cap is what single-read needs and streaming did not: the
-        per-record cap bounds one record, not a file made of many, and the source is
-        archive-derived so nothing bounds it from outside. The failure mode to avoid is
-        not a crash -- it is a cap that quietly drops the tail, which would rebuild the
-        silent-partial-install defect this redesign removes, one layer up.
-
-        The cap is patched small rather than writing 32 MiB to disk. The size must
-        appear in the message so an operator can tell an over-cap refusal from a
-        corrupt archive without reading code.
+        A single read needs a whole-file cap: the per-record cap bounds one record, and
+        the archive bounds nothing. A cap that quietly dropped the tail would be a silent
+        partial install. The size is named so an operator can tell this from a corrupt
+        archive.
         """
         monkeypatch.setattr(snapshot_mod, "_NOTIFICATION_SOURCE_CAP", 64)
         oversized = self.GOOD * 4
@@ -335,18 +280,10 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         ).exists(), "an over-cap source was partially installed instead of refused"
 
     def test_the_source_cap_is_the_value_this_design_was_measured_for(self):
-        """A ratchet on the cap, because the cap is the part that can actually break.
+        """A ratchet on the cap: raising it is a memory decision and must edit this test.
 
-        Every other property here is now structural -- there is no window to reopen --
-        so the live risk is somebody raising this number for convenience on a large
-        archive and reintroducing an unbounded hold. This assertion goes red on that
-        day, which is the day it matters.
-
-        32 MiB is ~4x the product-bounded worst case (400 records at the largest
-        record observed on a live install, 8,316,000 bytes) and a quarter of the
-        per-record cap this same file already accepts for ONE record. Peak held is
-        about twice the cap. Raising it is a memory decision, so it should require
-        editing a test that says so.
+        32 MiB is ~4x the product-bounded worst case (400 records at the largest record
+        seen on a live install, 8,316,000 bytes). Peak memory held is about twice the cap.
         """
         assert snapshot_mod._NOTIFICATION_SOURCE_CAP == 32 * 1024 * 1024
         assert snapshot_mod._NOTIFICATION_SOURCE_CAP < snapshot_mod._NOTIFICATION_RECORD_CAP
@@ -355,14 +292,10 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
 
     @requires_symlinks
     def test_a_source_swapped_for_a_symlink_between_the_passes_is_not_followed(self, tmp_path):
-        """The second by-name open was the finding; the descriptor is the fix.
+        """A symlink swapped in after validation is invisible to the held descriptor.
 
-        A running agent replaces the extracted notification file with a symlink to
-        a credential after the first pass has validated it. The earlier revision
-        opened the NAME again for the copy, followed the link, and wrote the secret
-        into an agent-readable ``notifications.jsonl``. Reusing the held descriptor
-        makes the swap invisible, so the assertion is that the archive's own bytes
-        land and the secret does not -- not that the copy is refused.
+        Opening the NAME again would write a credential into an agent-readable
+        ``notifications.jsonl``. The archive's bytes land; the copy is not refused.
         """
         snap, home = self._snap(tmp_path, self.GOOD + self.MORE)
         source = snap / "notifications.jsonl"
@@ -407,16 +340,11 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
 
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
     def test_a_source_that_became_a_fifo_fails_instead_of_hanging(self, tmp_path):
-        """Pins ``O_NONBLOCK``. Not a review finding -- found by auditing the span.
+        """Pins ``O_NONBLOCK``.
 
-        The caller selected this branch on ``is_file()``, which is False for a FIFO,
-        so reaching one means the name changed afterwards. Without ``O_NONBLOCK`` the
-        open blocks forever waiting for a writer and the restore HANGS, which is
-        worse than failing because a hang reports nothing at all. Dropping the flag
-        makes this test TIME OUT rather than fail, and the timeout is the evidence.
-
-        Calls the helper directly, since ``_do_merge`` cannot reach a FIFO through
-        its own ``is_file()`` gate -- the hazard is the name changing after it.
+        Without ``O_NONBLOCK`` the open waits forever for a writer and the restore hangs;
+        dropping the flag makes this test time out. Calls the helper directly because
+        ``_do_merge``'s ``is_file()`` gate cannot reach a FIFO.
         """
         snap, home = self._snap(tmp_path, self.GOOD)
         source = snap / "notifications.jsonl"
@@ -430,13 +358,8 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_a_non_regular_source_is_refused_not_read_as_empty(self, tmp_path):
         """Pins the ``S_ISREG`` judgement on the descriptor, which ``seek`` does not.
 
-        Written after the mutation harness showed the first version of this coverage
-        was passing for the wrong reason: a FIFO is caught by ``seek`` failing on a
-        pipe, so removing the ``S_ISREG`` check reddened nothing. A character device
-        is the case ``seek`` cannot catch -- it is seekable, so without the check the
-        read simply returns EOF, and the restore CREATES AN EMPTY
-        ``notifications.jsonl`` and reports success. That is the outcome being
-        refused: not a crash, a silent claim to have imported a history that is gone.
+        A FIFO is also caught by ``seek``, but a character device is seekable: without the
+        check the read returns EOF and the restore installs an empty file as success.
         """
         dst = tmp_path / "notifications.jsonl"
         with pytest.raises(OSError):
@@ -446,21 +369,10 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_a_notification_delivered_during_the_copy_survives(self, tmp_path, monkeypatch):
         """``O_APPEND``, and it needs a CONCURRENT writer to be observable at all.
 
-        The dashboard's sink appends with ``O_APPEND``, so its write goes to
-        end-of-file; an ordinary write goes to this handle's own offset, which is
-        stale once buffered. The flush then wrote over the delivered row. A test that
-        only copies into an empty destination cannot tell the two apart -- every
-        byte-level assertion passes either way -- so the delivery has to happen
-        mid-copy. Measured on the pre-fix flags: 152 bytes with the row gone, against
-        203 with both writers' records present.
-
-        The seam is the DESTINATION OPEN, not a per-record hook. The single-read
-        redesign calls ``_notification_key`` once per record during validation and not
-        at all during the write, so the old per-record injection point went dead and
-        this test silently stopped delivering anything -- it passed while proving
-        nothing, which is the same failure mode as a mutation that never applies.
-        Injecting when the ``O_CREAT`` open happens puts the delivery exactly where it
-        belongs: after the live file exists, before this function's writes flush.
+        Without it this handle writes at its own stale offset over the delivered row, so
+        the delivery must happen mid-copy. The seam is the ``O_CREAT`` destination open:
+        ``_notification_key`` runs only during validation, so a per-record hook would
+        deliver nothing and pass while proving nothing.
         """
         snap, home = self._snap(tmp_path, self.GOOD + self.MORE)
         live = home / "notifications.jsonl"
@@ -487,19 +399,10 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_both_descriptors_ask_for_binary_mode(self, tmp_path, monkeypatch):
         """``os.open`` is the one API here that can be in TEXT mode.
 
-        This is a CONVENTION fix, not a corruption fix, and the difference is worth
-        recording. A review lane held that the missing flag corrupts records on
-        Windows; ``test_a_clean_source_is_copied_record_for_record`` asserts byte-exact
-        ``\\r\\n`` survival through these very descriptors, carries no skip marker, and
-        passed on the Windows lane -- so the mechanism was tested and did not occur.
-        What remains is that every sibling passes the flag (``crash_dump_store`` uses
-        this exact read-flag triple) and this one did not.
-
-        Asserted on the FLAGS, because what they guard against cannot be reproduced on
-        a POSIX host: ``O_BINARY`` does not exist here, so its value is simulated and
-        the assertion is that both opens carry it. The helper is called directly rather
-        than through ``_do_merge`` so that every recorded ``os.open`` is one of this
-        function's two and the count can be asserted exactly.
+        A convention, matching ``crash_dump_store``: byte-exact ``\\r\\n`` survival on
+        Windows is pinned by ``test_a_clean_source_is_copied_record_for_record``.
+        ``O_BINARY`` is simulated on POSIX, so the FLAGS are asserted. The helper is
+        called directly so both recorded opens are its own.
         """
         monkeypatch.setattr(os, "O_BINARY", 1 << 20, raising=False)
         seen: list[int] = []
@@ -524,26 +427,12 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         ), f"an open in this span did not ask for binary mode: {[hex(f) for f in seen]}"
 
     def test_a_note_delivered_during_the_copy_survives_the_READER(self, tmp_path, monkeypatch):
-        """The one that matters: `O_APPEND` saves the bytes and loses the row anyway.
+        """`O_APPEND` saves the bytes, but the row still needs ordering after the archive.
 
-        `O_APPEND` stops a concurrent notification being OVERWRITTEN, and then orders it
-        BEFORE the archive's rows -- the dashboard's append reaches end-of-file
-        immediately while this copy's writes are still buffered. `_load_notifications`
-        keeps the last `_MAX_PERSISTED_NOTIFICATIONS` rows POSITIONALLY, not the newest
-        by timestamp, so importing a full 200-record history pushes the live row out of
-        the window. Measured before the fix: line 0 of 201, and the reader returned 200
-        rows without it.
-
-        Asserted on the ORDERING, not on who wins a race. The first version of this test
-        submitted the append and then checked the file, which passed with the
-        serialisation removed because the copy's remaining writes happened to finish
-        first -- a flaky test that proves nothing, caught by the mutation run. What makes
-        the guarantee observable is that the single worker CANNOT run the queued append
-        while the copy occupies it: the wait below times out with the fix and returns
-        immediately without it, because a free worker executes a trivial job at once.
-
-        The note is SUBMITTED to the executor rather than written inline, because that is
-        the product's own route and the only one the serialisation can order.
+        An unordered append lands BEFORE the archive's rows, and `_load_notifications`
+        keeps the last `_MAX_PERSISTED_NOTIFICATIONS` rows by POSITION. The single worker
+        cannot run the queued append while the copy holds it, so the wait below times
+        out; the note goes through the executor, the product's own route.
         """
         from kiro_crew.dashboard import state as dashboard_state
 
@@ -570,26 +459,13 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
 
         def opening(path, flags, *args, **kwargs):
             fd = real_open(path, flags, *args, **kwargs)
-            # Scoped to the copy's own destination open, not to "the first O_CREAT
-            # seen anywhere": this hook patches `os.open` PROCESS-WIDE, and on a
-            # loaded CI shard the first creating open can belong to another thread
-            # entirely. A foreign trigger
-            # submits the append while the worker is still FREE, and the assertion
-            # then reads a real ordering guarantee as broken. The destination is the
-            # one open the copy performs while it occupies the worker, so it is the
-            # only trigger that measures the serialisation.
+            # Scoped to the copy's destination open: this hook patches `os.open`
+            # PROCESS-WIDE, and a foreign thread's O_CREAT would submit the append while
+            # the worker is still free.
             if flags & os.O_CREAT and os.fspath(path) == dst and not submitted:
                 submitted.append(pool.submit(append_note))
-                # A FREE worker runs this in microseconds; a worker the copy is running
-                # on cannot run it at all until the copy returns. RECORDED HERE rather
-                # than read back after the merge: the instant the copy returns, the
-                # worker is released and runs the queued append -- which is CORRECT and
-                # sets the event. `is_set()` after `_merge` therefore measured whether
-                # the main thread reached the assertion before that legitimate run, a
-                # footrace it loses on a loaded shard (scoping the trigger left this
-                # observation point). The wait's own
-                # return value is taken while the copy still holds the worker, which is
-                # the only window in which the defect -- and nothing else -- can set it.
+                # Recorded here, while the copy holds the worker. After `_merge` the
+                # released worker runs the append correctly, so a later `is_set()` races it.
                 # flake-ok: negative window moved verbatim: the wait times out while the copy holds the
                 # single worker, so a slow runner only weakens it; tracked for a de-flake pass
                 ran_while_worker_held.append(ran_during_copy.wait(timeout=1.0))
@@ -603,11 +479,8 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
             "the append ran while the copy was still writing, so the two are concurrent "
             "rather than ordered"
         )
-        # Drained BEFORE any teardown, deliberately. `monkeypatch.undo()` here reverts
-        # the patched `KIROCREW_HOME` while the append is still queued, so the worker
-        # resolves a different data home and writes the note somewhere this assertion
-        # never looks -- which reads exactly like the defect and is not it. FIFO, so
-        # waiting on a no-op drains the append ahead of it.
+        # Drained before teardown: reverting `KIROCREW_HOME` with the append still queued
+        # would write the note to another data home. FIFO, so a no-op drains it.
         # flake-ok: unbounded drain of the single notification worker behind a one-row append,
         # moved verbatim; pytest-timeout names a hang; tracked for a de-flake pass
         pool.submit(lambda: None).result()
@@ -621,15 +494,9 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_running_on_the_notification_worker_does_not_deadlock(self, tmp_path, monkeypatch):
         """The serialisation must not wait for a queue only it can drain.
 
-        If the copy is ever reached from ON the single worker, submitting to that worker
-        blocks for a job that cannot start until the submitter returns. The failure mode
-        is a HANG, not an error, so it is worth a test even though nothing reaches it
-        today: a deadlock inside a restore reports nothing at all.
-
-        Against a THROWAWAY pool with the same thread-name prefix, not the product's, so
-        that a regression wedges this test's worker rather than the shared one every
-        other test in the process depends on. The timeout turns the hang into a named
-        failure instead of a stalled suite.
+        Called from ON the single worker, a submit would wait for a job that cannot start.
+        Uses a throwaway pool with the same thread-name prefix so a regression wedges this
+        test's worker, not the shared one; the timeout names the hang.
         """
         import concurrent.futures
 
@@ -656,17 +523,9 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_a_FRESH_gateway_still_orders_the_copy_against_a_delivery(self, tmp_path, monkeypatch):
         """The writer is what makes the pool, so "no pool" never meant "no writer".
 
-        Review's finding, and the branch it names was an absence-reading: the copy asked
-        whether an executor existed and ran inline when none did. On a fresh gateway
-        nothing has persisted a notification yet, so a delivery arriving during the
-        restore CREATES the executor and appends through it, concurrently -- which puts
-        the live row back at line 0 of 201 and outside the reader's positional window.
-        Measured on the pre-fix branch: `append ran DURING the copy: True`, `note
-        position: [0] of 201`, `survives reader: False`.
-
-        Acquiring rather than asking closes it: the delivery gets the SAME executor the
-        copy is occupying and queues behind it. Asserted for the `pool is None` path
-        specifically, because that is the branch whose reasoning was wrong.
+        On a fresh gateway a delivery during the restore CREATES the executor. The copy
+        acquires the executor rather than running inline when none exists, so the delivery
+        queues behind it. Pinned for the `pool is None` path.
         """
         from kiro_crew.dashboard import state as dashboard_state
 
@@ -694,23 +553,13 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
 
         def opening(path, flags, *args, **kwargs):
             fd = real_open(path, flags, *args, **kwargs)
-            # Same scoping as the READER test above, same reason: the
-            # hook patches `os.open` PROCESS-WIDE, and on a loaded shard the first
-            # O_CREAT can come from a foreign thread while the notification worker is
-            # still FREE -- the append then runs immediately and the assertion reads
-            # the ordering guarantee as broken. Only the copy's own destination open
-            # happens while the copy occupies the worker, so it is the only trigger
-            # that measures the serialisation this test is about.
+            # Scoped to the destination open, as in the READER test above.
             if flags & os.O_CREAT and os.fspath(path) == dst and not fired:
                 fired.append(1)
                 # The delivery sink's own route on a fresh gateway: it ACQUIRES the
                 # executor, creating it if the copy did not.
                 dashboard_state._notification_io_executor().submit(append_note)
-                # Measured INSIDE the trigger, for the reason the READER test above
-                # records: after the copy returns, the released worker runs the queued
-                # append legitimately and sets the event, so a post-merge `is_set()`
-                # read is a footrace against correct behaviour rather than a
-                # measurement of the ordering.
+                # Measured inside the trigger, as in the READER test above.
                 # flake-ok: negative window moved verbatim: the wait times out while the copy holds the
                 # single worker, so a slow runner only weakens it; tracked for a de-flake pass
                 ran_while_worker_held.append(ran_during_copy.wait(timeout=1.0))
@@ -733,23 +582,11 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
         ), f"the live notification was dropped by the positional cap ({len(rows)} rows)"
 
     def test_the_ordering_trigger_ignores_a_foreign_O_CREAT_open(self, tmp_path, monkeypatch):
-        """The loaded-shard condition itself, kept as a test.
+        """The trigger fires only on the destination open, not a foreign thread's O_CREAT.
 
-        Both ordering tests in this class patch ``os.open`` PROCESS-WIDE, and both
-        fired on a contended CI shard for PRs that never touch this path: some other
-        thread's ``O_CREAT`` open arrived first, the append was submitted while the
-        notification worker was still FREE, and it ran immediately -- the assertion
-        then read a scheduling accident as a broken ordering guarantee. The fix is
-        the destination-path scope on the trigger, and this test is that condition
-        made deterministic: a churn thread is CONFIRMED to have done a creating open
-        before the merge even starts, so under the old first-O_CREAT-anywhere shape
-        the trigger is GUARANTEED foreign and the test fails every run, not one CI
-        run in a thousand. Under the scoped shape the churn is invisible, however
-        the scheduler interleaves it, and the ordering measurement is captured
-        INSIDE the trigger -- the wait's return value, taken while the copy still
-        holds the worker -- where the append's legitimate post-copy run cannot
-        race it: the trigger fired on the destination, the worker stayed held,
-        the note survived.
+        A churn thread is confirmed to have done a creating open before the merge, so a
+        first-O_CREAT-anywhere trigger would be foreign on every run, not one CI run in a
+        thousand.
         """
         from kiro_crew.dashboard import state as dashboard_state
 
@@ -779,12 +616,8 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
             if flags & os.O_CREAT and os.fspath(path) == dst and not fired:
                 fired.append(os.fspath(path))
                 dashboard_state._notification_io_executor().submit(append_note)
-                # The measurement is the WAIT'S RETURN VALUE, captured here. A free
-                # worker runs the queued append in microseconds and the wait returns
-                # True; the worker this copy occupies cannot run it at all, so the
-                # wait times out False. Re-reading the EVENT after the merge returns
-                # would race the append's legitimate post-copy run instead (the
-                # churner join below hands the worker exactly that window).
+                # The wait's return value is the measurement: a held worker times out
+                # False. Re-reading the event after the merge would race the post-copy run.
                 # flake-ok: negative window moved verbatim: the wait times out while the copy holds the
                 # single worker, so a slow runner only weakens it; tracked for a de-flake pass
                 ran_while_worker_held.append(ran_during_copy.wait(timeout=1.0))
@@ -832,14 +665,10 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_an_import_failure_that_is_not_ImportError_is_not_swallowed(
         self, tmp_path, monkeypatch
     ):
-        """The narrowing itself, which the broad ``except`` made untestable.
+        """An import failure other than ``ImportError`` must PROPAGATE.
 
-        ``except Exception`` turned "I could not check" into "there is nothing to check":
-        an import failing inside a live gateway for any reason other than absence would
-        have run the copy inline and lost the ordering with no signal. Widening the
-        clause back cannot be caught by any test that only exercises ``ImportError``,
-        because a wider except is a superset -- so this drives the case the narrowing
-        exists for and requires it to PROPAGATE.
+        Swallowing it would run the copy inline in a live gateway and lose the ordering
+        silently. Only a non-``ImportError`` case can catch a widened ``except``.
         """
         import builtins
 
@@ -858,14 +687,9 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
             )
 
     def test_an_unimportable_dashboard_falls_back_instead_of_failing(self, tmp_path, monkeypatch):
-        """The other absence-reading, narrowed to ``ImportError``.
+        """An absent dashboard (the CLI restore) runs the copy inline.
 
-        A genuinely absent dashboard module is the CLI restore, which has no writer to
-        order against, so running inline is correct there. What was wrong was catching
-        ``Exception``: an import failing for any other reason inside a live gateway would
-        have degraded the ordering in silence. This asserts the narrow fallback still
-        works; it cannot assert ORDERING, because by construction there is no dashboard
-        to order against on this path.
+        There is no writer to order against on this path, so only the fallback is pinned.
         """
         import sys
 
@@ -879,22 +703,9 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
     def test_concurrent_callers_all_get_the_SAME_executor(self, monkeypatch):
         """The lazy init must not be an unlocked check-then-set.
 
-        Two threads could each observe ``None``, each construct a pool, and each
-        proceed -- one assignment won the global while the loser's worker was already
-        live with its job queued, so the two callers were not serialised against one
-        another at all. That voids the only guarantee this executor provides, and it is
-        the precondition of the ordering this restore path depends on.
-
-        The construction window is WIDENED on purpose. Measured first: with 16 threads
-        released from a barrier and the lock removed, this passed 5 out of 5 rounds --
-        CPython's switch interval lets the first thread finish constructing before any
-        other is scheduled, so the natural window is real but far too small to observe.
-        A test that cannot fail proves nothing, so the constructor is made slow enough
-        that a second caller is guaranteed to be inside the window. What is being tested
-        is the mutual exclusion, not the timing.
-
-        Asserted by object identity, because calling the accessor twice in sequence
-        returns the same object with or without the lock.
+        Two pools would leave their callers unserialised against each other. The
+        constructor is made slow on purpose: without it, the lock removed still passed
+        5 of 5 rounds. Asserted by object identity across threads.
         """
         import concurrent.futures
 
@@ -941,12 +752,10 @@ class TestNotificationCopyWhenNoLiveFileExists(_NotificationCopyFixtures):
 
     @requires_symlinks
     def test_a_dangling_symlink_at_the_live_name_is_refused(self, tmp_path):
-        """``is_file()`` calls a dangling link absent, and ``copy2`` wrote THROUGH it.
+        """``is_file()`` calls a dangling link absent, so the copy branch meets one.
 
-        So the branch was chosen because "no live file exists" while a link sat at
-        the name, and the archive's bytes landed on the link's target -- outside
-        the data home. The publish refuses instead, and the refusal must not delete
-        the file the link points at either.
+        Writing through it would land the archive's bytes outside the data home. The
+        publish refuses and leaves the link in place.
         """
         snap, home = self._snap(tmp_path, self.GOOD)
         outside = tmp_path / "outside.jsonl"
@@ -969,18 +778,9 @@ class TestNotificationCopyRefusalWithoutONofollow(_NotificationCopyFixtures):
     def test_a_platform_without_o_nofollow_refuses_the_copy_ENTIRELY(self, tmp_path, monkeypatch):
         """No ``O_NOFOLLOW`` means no safe copy, so the copy does not happen at all.
 
-        Simulated the way this suite already simulates that platform -- by deleting the
-        constant -- because the behaviour is a property of the flag being absent, not of
-        Windows.
-
-        The source here is a PERFECTLY ORDINARY regular file: no link, no reparse point,
-        nothing wrong with it. That is the point of the test. The predecessor checked
-        ``is_reparse_point`` by name and then opened the same name, which an adversary
-        that chooses the timing walks straight through, and ``fstat``'s ``S_ISREG`` does
-        not close it because a reparse point resolving to a regular ``.env`` passes it.
-        So the refusal cannot be conditional on the source looking wrong at check time --
-        a test that only refuses a symlinked source would pass with the old, racy floor
-        still in place.
+        The source is an ordinary regular file on purpose: a by-name reparse check races
+        the open, and a reparse point to a regular ``.env`` passes ``S_ISREG``. So the
+        refusal cannot depend on the source looking wrong at check time.
         """
         snap, home = self._snap(tmp_path, self.GOOD)
         monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
@@ -1040,14 +840,9 @@ class TestNotificationCopyRefusalWithoutONofollow(_NotificationCopyFixtures):
     ):
         """A platform refusal skips ONE component; it does not fail the restore.
 
-        The distinction is deliberate and it is not the abort posture the undecodable
-        record has. An undecodable record says THIS ARCHIVE is bad, so the restore
-        stops. A missing ``O_NOFOLLOW`` says THIS PLATFORM can never do this safely,
-        which is not a reason to refuse the other components -- and the records are
-        still in the snapshot, so nothing is destroyed by skipping.
-
-        What must NOT happen is the restore reporting a copy it did not make. That is
-        why the skip is asserted on the OUTPUT and the absence of the file together.
+        An undecodable record means the archive is bad, so the restore stops; a missing
+        ``O_NOFOLLOW`` is a platform limit, and the records stay in the snapshot. The
+        restore must not report a copy it did not make.
         """
         snap, home = self._snap(tmp_path, self.GOOD)
         (snap / "config.json").write_text('{"k": "v"}')
@@ -1071,8 +866,7 @@ class TestNotificationCopyRefusalWithoutONofollow(_NotificationCopyFixtures):
 
         The by-name check is not a floor gated on the flag's absence: where the
         flag exists the open decides, and where it does not the copy is refused before
-        reaching here. Counting calls rather than reading the source, so reintroducing
-        the check -- the racy remedy this PR removed -- reddens here.
+        reaching here. A by-name check races the open, so calls are counted.
         """
         snap, home = self._snap(tmp_path, self.GOOD)
         calls: list[object] = []

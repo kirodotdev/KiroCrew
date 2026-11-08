@@ -45,6 +45,7 @@ class TestConfig:
         d = KiroCrewConfig().to_dict()
         assert d["instances"] == {
             "enabled": False,
+            "crew_reads_enabled": False,
             "warm_set_cap": 0,
             "tunnel_base_port": 7778,
             "ssh_compression": True,
@@ -53,11 +54,13 @@ class TestConfig:
             "max_recovery_attempts": 8,
             "recover_backoff_max_secs": 30.0,
             "probe_failure_threshold": 3,
+            "default_destination": "",
         }
         paths = {e.path for e in SCHEMA_REGISTRY}
         for p in (
             "instances",
             "instances.enabled",
+            "instances.crew_reads_enabled",
             "instances.warm_set_cap",
             "instances.tunnel_base_port",
             "instances.ssh_compression",
@@ -66,6 +69,7 @@ class TestConfig:
             "instances.max_recovery_attempts",
             "instances.recover_backoff_max_secs",
             "instances.probe_failure_threshold",
+            "instances.default_destination",
         ):
             assert p in paths
         timeout_entry = next(

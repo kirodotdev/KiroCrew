@@ -1,22 +1,13 @@
 """The ``kirocrew-debug`` MCP server: its tool set, its caps, and its refusals.
 
-Five things are pinned here that no other suite can see:
-
-* **The tool set is exactly five READS.** The server reads host and cross-session
-  state, so a write tool would be the one addition that changes what the set IS.
-  The names are ratcheted: adding one fails this file rather than shipping.
-* **No ``autoApprove``, structurally.** An autoApproved MCP tool is approved inside
-  kiro-cli and emits no permission request, so ``hooks.on_tool_call`` -- the deny
-  floor, the sensitive-path check, the governance ceiling -- is never reached for
-  it. For a server this wide that is not a style preference.
-* **The diag gap is relayed VERBATIM.** Three tools depend on a package that lands
-  in sibling changes. An agent must be able to tell "this build cannot answer yet"
-  from "the answer is nothing", so the 501 body and the relayed message are pinned
-  to the same string here.
-* **The refusal classifier separates a timeout from a match.** This is the most
-  consequential line of the whole feature: a path the resolver could not finish
-  judging reads identically to a real match, and an agent that confuses them stops
-  when it should have retried.
+* **The tool set is exactly five READS**, ratcheted by name: a write tool would change
+  what a server reading cross-session state is.
+* **No ``autoApprove``.** An autoApproved tool emits no permission request, so
+  ``hooks.on_tool_call`` (deny floor, sensitive paths, governance) never runs for it.
+* **The diag gap is relayed VERBATIM**, so an agent can tell "this build cannot answer
+  yet" from "the answer is nothing".
+* **The refusal classifier separates a timeout from a match**; an agent that confuses
+  them stops when it should retry.
 * **Every failure is a typed code**, never a traceback and never prose alone.
 """
 
@@ -26,6 +17,7 @@ import json
 from typing import Any
 from unittest.mock import patch
 
+import mcp_tool_set_checks
 import pytest
 
 from kiro_crew import mcp_debug as server
@@ -49,7 +41,7 @@ def _call(name: str, **args: Any) -> dict[str, Any]:
     return json.loads(server._call_tool(name, args))
 
 
-class TestTheToolSetIsRatcheted:
+class TestTheToolSetIsRatcheted(mcp_tool_set_checks.TheDeclaredSetMatchesWhatIsAdvertised):
     """The whole point of the server: five reads, and no way to add a write."""
 
     def test_exactly_five_tools_by_name(self) -> None:
@@ -60,9 +52,6 @@ class TestTheToolSetIsRatcheted:
             "debug_processes",
             "debug_snapshots",
         ]
-
-    def test_the_declared_set_matches_what_is_advertised(self) -> None:
-        assert server.TOOLS == tuple(t["name"] for t in server._list_tools())
 
     def test_no_tool_name_reads_as_a_write(self) -> None:
         """A name-level ratchet, so a write cannot arrive under a read's clothing."""
@@ -108,14 +97,9 @@ class TestTheToolSetIsRatcheted:
     def test_a_dump_name_cannot_carry_a_path(self) -> None:
         """``read`` names a dump inside the store, so a separator is refused here.
 
-        The route resolves the name inside the crash-dump directory, so traversal
-        would fail there too -- but refusing at the schema means the attempt never
-        reaches a path join at all.
-
-        A schema rejection comes back as the wrapper's plain ``Error: ...`` string
-        rather than this server's JSON envelope, because validation runs BEFORE the
-        dispatcher that builds one. Asserted in that shape deliberately: wrapping it
-        would mean the refusal had reached the handler.
+        Refused at the schema, so the attempt never reaches a path join. Validation runs
+        before the dispatcher, so the refusal is the wrapper's plain ``Error: ...`` string,
+        not this server's JSON envelope.
         """
         for attempt in ("../../etc/passwd", "a/b", "x\\y", "/abs"):
             with patch.object(server, "_get") as get:
@@ -208,15 +192,29 @@ class TestRefusalsAreTyped:
 class TestTheCallerKeyIsForwardedOnEveryLeg:
     def test_the_strictly_resolved_key_is_the_key_sent(self) -> None:
         """The identity that was checked must be the identity that is audited."""
-        with patch.object(server, "_get", return_value={"pid": 1}) as get:
-            _call("debug_gateway")
+
+        def fake_get(path: str, *a: Any, session_key: str = "", **k: Any) -> dict[str, Any]:
+            if session_key != CALLER:
+                return {"error": {"code": "forbidden", "message": session_key}}
+            return {"pid": 1}
+
+        with patch.object(server, "_get", side_effect=fake_get) as get:
+            result = _call("debug_gateway")
         assert get.call_args.kwargs["session_key"] == CALLER
+        assert result["pid"] == 1
 
     def test_refusals_defaults_to_self_rather_than_to_everything(self) -> None:
         """A default asking for the wide view would make every first call a refusal."""
-        with patch.object(server, "_get", return_value={"refusals": []}) as get:
-            _call("debug_refusals")
+
+        def fake_get(path: str, *a: Any, **k: Any) -> dict[str, Any]:
+            if f"session={server.SELF}" not in path:
+                return {"error": {"code": "forbidden", "message": "the wide view is the owner's"}}
+            return {"refusals": []}
+
+        with patch.object(server, "_get", side_effect=fake_get) as get:
+            result = _call("debug_refusals")
         assert f"session={server.SELF}" in get.call_args.args[0]
+        assert result["refusals"] == []
 
 
 class TestTheOutputCap:
@@ -252,12 +250,8 @@ class TestRedaction:
     def test_a_secret_in_a_payload_does_not_reach_the_caller(self) -> None:
         """Every string leaves through the context redactor, whatever the route sent.
 
-        The sentinel is ASSEMBLED at runtime rather than written as one literal. A
-        credential-shaped constant in an added line is what the internal-content and
-        secret scanners are built to catch, and they are right to: they cannot tell a
-        test fixture from the real thing. Joining the halves keeps the runtime value
-        exactly what the redactor must recognise while leaving no scannable literal
-        in the source.
+        The sentinel is assembled at runtime so the secret scanners find no
+        credential-shaped literal in the source.
         """
         secret = "AKIA" + "IOSFODNN7EXAMPLE"
         payload = {"series": [{"env": f"AWS_SECRET_ACCESS_KEY={secret}"}]}
@@ -377,11 +371,8 @@ class TestTheRefusalClassifier:
 class TestTheRouteAuthorizationMatrix:
     """Every arm of the gate, driven through the real handlers.
 
-    The handlers are called directly rather than over a socket: the gate reads
-    headers, query and ``app["state"]``, all of which a mocked request carries
-    faithfully, and a real server would add a port and a thread without adding a
-    branch. What matters is that no arm is asserted about in the abstract -- each
-    test drives the handler and reads the status it actually returns.
+    Handlers are called directly: the gate reads only headers, query and
+    ``app["state"]``, which a mocked request carries. Each test reads the real status.
     """
 
     OWNER = "dashboard:chat-owner"
@@ -718,13 +709,10 @@ class TestTheRouteAuthorizationMatrix:
         assert mod._daemon_block()["running"] is False
 
     def test_the_recorder_absence_is_a_fact_not_an_error(self, monkeypatch) -> None:
-        """``debug_gateway`` is the tool that must work when nothing else does, so a
-        missing diag package is reported rather than raised.
+        """A missing diag package is reported by ``debug_gateway``, not raised.
 
-        Absence is simulated, because the package ships now. A ``None`` entry in
-        ``sys.modules`` makes this probe's own import raise, which is the condition a
-        build without diag presents. The route-level tests cannot stand in for this:
-        they patch ``_diag_module``, and this probe imports the recorder directly.
+        A ``None`` entry in ``sys.modules`` makes this probe's own import raise. The
+        route-level tests patch ``_diag_module``, while this probe imports the recorder.
         """
         from kiro_crew.dashboard.handlers import debug as mod
 
@@ -895,6 +883,29 @@ class TestTheRouteAuthorizationMatrix:
         slot = self._slot(linked_session_key="slack:C1")
         request = self._request("/api/debug/gateway", self._state(slot))
         assert _stale_grant_refusal(request, "gateway", "debug.gateway") is not None
+
+    def test_the_shaping_never_runs_when_the_grant_was_withdrawn(self) -> None:
+        """The re-check precedes the route's own shaping, not just its return: a
+        shaping that ran first would touch a payload outside the caller's current
+        grant, which no assertion on the response alone can see."""
+        from kiro_crew.dashboard.handlers.debug import _offload_then_recheck
+
+        slot = self._slot(linked_session_key="slack:C1")
+        request = self._request("/api/debug/gateway", self._state(slot))
+        shaped: list[object] = []
+
+        def _respond(payload: object) -> Any:
+            shaped.append(payload)
+            return None
+
+        got = self._run(
+            lambda r: _offload_then_recheck(
+                r, "gateway", "debug.gateway", lambda: {"host": "wide"}, _respond
+            ),
+            request,
+        )
+        assert got.status == 403
+        assert shaped == []
 
     def test_a_self_narrowed_read_is_not_refused_by_the_recheck(self) -> None:
         """The re-check must mirror the gate: applying the class test where the gate
@@ -1077,12 +1088,8 @@ class TestTheRouteAuthorizationMatrix:
     def test_a_diag_route_relays_the_gap_when_its_module_is_absent(self) -> None:
         """The contract string the MCP relay matches on, plus its error code.
 
-        Driven through ``_diag_module`` rather than through whichever ``kiro_crew.diag``
-        submodules this checkout happens to ship. The gap relay is a standing contract
-        -- an agent must tell "this build cannot answer yet" from "the answer is
-        nothing" -- so what is pinned is the route's answer when the module is missing,
-        not the fact that it is missing. Asserting the latter dies the moment a diag
-        submodule lands, which is exactly what happened to the assertion this replaces.
+        Driven through ``_diag_module``, so it pins the route's answer when the module is
+        missing, independent of which ``kiro_crew.diag`` submodules this checkout ships.
         """
         from kiro_crew.dashboard.handlers import debug as mod
 
@@ -1269,11 +1276,9 @@ class TestTheRouteAuthorizationShape:
     def test_lineage_never_exempts_a_caller_from_its_class(self) -> None:
         """The class test precedes the lineage arm, and that order is the invariant.
 
-        A dispatch grant does not exempt a caller from its class. Without that
-        ordering a target inside the caller's spawn tree reaches ``granted`` with no
-        class test at all, and a channel-linked caller's read of a spawned child's
-        refusal rows lands in that channel's thread. Same ordering ``crew_log``
-        states, for the same reason: the exclusions are about where an answer lands.
+        Otherwise a target in the caller's spawn tree is ``granted`` untested, and a
+        channel-linked caller's read of a child's refusal rows lands in that channel's
+        thread. ``crew_log`` states the same order.
         """
         import inspect
 
@@ -1311,26 +1316,67 @@ class TestTheRouteAuthorizationShape:
         keys = handlers._refusal_scope_keys(request, "dashboard:chat-owner", "self")
         assert keys == {"dashboard:chat-owner"}
 
-    def test_every_offload_is_followed_by_a_stale_grant_recheck(self) -> None:
-        """Every route that offloads re-asserts authorization before it responds.
+    def test_a_debug_route_can_only_answer_through_the_recheck(self) -> None:
+        """The re-check has one caller, and no debug route suspends anywhere else.
 
-        Authorization is decided before a multi-second offload (git spawn, socket
-        probe), so without a re-check a mirror attaching mid-flight would deliver
-        host-wide state into a session that is publishing by the time it lands.
+        Authorization is decided before a multi-second offload, so a route that
+        answers without re-checking can deliver host-wide state into a session that
+        acquired a mirror mid-read. A scan for the re-check's NAME passes a route that
+        re-checks after shaping its answer, or that suspends by another spelling
+        (``run_in_executor``, an awaited coroutine, ``async with``, ``async for``).
+        So the shape is pinned: only ``_offload_then_recheck`` calls the re-check, and
+        the gate and that helper are the only places a debug route may suspend.
         """
+        import ast
         import inspect
 
         from kiro_crew.dashboard.handlers import debug as handlers
 
-        for name in (
+        tree = ast.parse(inspect.getsource(handlers))
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        ]
+
+        def _calls(node: ast.AST) -> set[str]:
+            names = set()
+            for n in ast.walk(node):
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name):
+                    names.add(n.func.id)
+                elif isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+                    names.add(n.func.attr)
+            return names
+
+        rechecking = sorted(f.name for f in functions if "_stale_grant_refusal" in _calls(f))
+        assert rechecking == ["_offload_then_recheck"], rechecking
+
+        allowed = {"_authorize_debug_read", "_offload_then_recheck"}
+        routes = [f for f in functions if "_authorize_debug_read" in _calls(f)]
+        for route in routes:
+            outside = [
+                type(n).__name__ if not isinstance(n, ast.Await) else ast.unparse(n.value)
+                for n in ast.walk(route)
+                if isinstance(n, (ast.AsyncWith, ast.AsyncFor))
+                or (isinstance(n, ast.comprehension) and n.is_async)
+                or (
+                    isinstance(n, ast.Await)
+                    and not (
+                        isinstance(n.value, ast.Call)
+                        and isinstance(n.value.func, ast.Name)
+                        and n.value.func.id in allowed
+                    )
+                )
+            ]
+            assert not outside, f"{route.name} suspends at {outside}, outside the gate and helper"
+        # A control: an empty route set would satisfy the loop above silently.
+        assert sorted(f.name for f in routes if "_offload_then_recheck" in _calls(f)) == [
             "api_debug_gateway",
-            "api_debug_refusals",
-            "api_debug_threads",
             "api_debug_processes",
+            "api_debug_refusals",
             "api_debug_snapshots",
-        ):
-            src = inspect.getsource(getattr(handlers, name))
-            assert "_stale_grant_refusal" in src, name
+            "api_debug_threads",
+        ]
 
     def test_the_per_session_route_is_exempt_from_the_owner_surface_wrapper(self) -> None:
         """Otherwise a member's own ``debug_refusals`` 403s before its own gate runs."""
@@ -1419,13 +1465,9 @@ class TestTheDiagImportStaysLazy:
     def test_importing_the_route_module_loads_no_diag_submodule(self) -> None:
         """This module is on the gateway's boot path.
 
-        A build without the diag package must still import the dashboard, and a
-        build WITH it must not pay to load a diagnostics package to start.
-
-        The prefix is ``kiro_crew.diag.`` WITH the dot, plus the package itself.
-        ``kiro_crew.diagnostics`` is a different, unrelated module that the
-        dashboard does import, and a bare ``kiro_crew.diag`` prefix matches it --
-        which would fail this test forever for the wrong reason.
+        The prefix is ``kiro_crew.diag.`` with the dot, plus the package itself: a bare
+        prefix would match the unrelated ``kiro_crew.diagnostics``, which the dashboard
+        does import.
         """
         import subprocess
         import sys

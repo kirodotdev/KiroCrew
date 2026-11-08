@@ -32,12 +32,20 @@ class TestAcpClientReadMessage:
         assert msg.result == {"ok": True}
 
     @pytest.mark.asyncio
-    async def test_read_non_json_skipped(self, tmp_path):
+    @pytest.mark.parametrize(
+        "line",
+        [
+            pytest.param(b"not json\n", id="read_non_json_skipped"),
+            pytest.param(b"\n", id="read_empty_line"),
+            pytest.param(b"", id="read_eof"),
+        ],
+    )
+    async def test_read_yields_no_message(self, tmp_path, line):
         client = AcpClient(work_dir=tmp_path)
 
         mock_process = MagicMock()
         mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"not json\n")
+        mock_stdout.readline = AsyncMock(return_value=line)
         mock_process.stdout = mock_stdout
         mock_process.returncode = None
         client._process = mock_process
@@ -92,47 +100,11 @@ class TestAcpClientReadMessage:
         assert result == {"protocolVersion": 1}
 
     @pytest.mark.asyncio
-    async def test_read_empty_line(self, tmp_path):
-        client = AcpClient(work_dir=tmp_path)
-
-        mock_process = MagicMock()
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"\n")
-        mock_process.stdout = mock_stdout
-        mock_process.returncode = None
-        client._process = mock_process
-
-        msg = await client._read_message(timeout=1.0)
-        assert msg is None
-
-    @pytest.mark.asyncio
-    async def test_read_eof(self, tmp_path):
-        client = AcpClient(work_dir=tmp_path)
-
-        mock_process = MagicMock()
-        mock_stdout = AsyncMock()
-        mock_stdout.readline = AsyncMock(return_value=b"")
-        mock_process.stdout = mock_stdout
-        mock_process.returncode = None
-        client._process = mock_process
-
-        msg = await client._read_message(timeout=1.0)
-        assert msg is None
-
-    @pytest.mark.asyncio
     async def test_read_buffer_overrun_drops_frame_and_keeps_reading(self, tmp_path):
         """A line exceeding the stdout buffer costs that ONE frame, not the turn.
 
-        The stream is NOT corrupted afterwards: readline() removes the oversize
-        line through its
-        terminating newline (or clears the buffer when the newline has not
-        arrived yet) and resumes the transport before raising ValueError. So the
-        overrun joins the blank-line and non-JSON paths in returning None, and
-        the caller's next read gets the following frame. Raising AcpProcessDied
-        here killed a healthy live turn over one unreadably large frame.
-
-        Driven through a REAL StreamReader so the recovery claim is asserted
-        against asyncio's actual behaviour rather than a mock's side_effect.
+        readline() discards the oversize line before raising ValueError, so the next read
+        gets the next frame. Uses a real StreamReader, not a mock.
         """
         client = AcpClient(work_dir=tmp_path)
 
@@ -358,17 +330,10 @@ class TestAcpClientTrackUsageUpdate:
         assert client.last_prompt_stats.credits == 1.5
         assert client.last_prompt_stats.context_pct == 40.8
 
-    def test_missing_fields_leave_tokens_zero(self, tmp_path):
-        client = AcpClient(work_dir=tmp_path)
-        client._track_usage_update(self._usage_msg(None, None))
-        stats = client.last_prompt_stats
-        assert stats.context_pct == 0.0
-        assert stats.context_used_tokens == 0
-        assert stats.context_window_tokens == 0
-
     @pytest.mark.parametrize(
         "used,size",
         [
+            pytest.param(None, None, id="missing_fields_leave_tokens_zero"),
             ("50000", "200000"),  # numeric strings: `size > 0` raises TypeError
             (50000, "200000"),
             ([50000], 200000),
@@ -995,14 +960,8 @@ class TestStreamEventsExtension:
         """Across all three entry points: returns in bounded time, logs WARNING
         with the correct site tag, records one SEL audit.
 
-        Pins three properties the other tests don't cover:
-        1. Timing — without the fix the call hangs until the 2h prompt timeout.
-           An explicit <2s bound documents the "no hang" contract.
-        2. Single WARNING per call, tagged with the originating call site.
-           On-call greps ``kiro-cli cancelled tool use`` — a silent regression at
-           any site would mask real filter firings in production.
-        3. SEL audit fires with metadata.site matching the call site, across all
-           three sites (not just _dispatch_events).
+        The <2s bound stands in for a 2h prompt-timeout hang. On-call greps
+        ``kiro-cli cancelled tool use``, and metadata.site must match each site.
         """
         import logging
         import time

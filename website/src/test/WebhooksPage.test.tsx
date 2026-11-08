@@ -11,6 +11,10 @@ import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-li
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import type { WebhooksView } from '../api/client'
+import { i18next } from '../i18n/index'
+import '../i18n/all'
+import { i18nT } from '../i18n/t'
+import { fmtNumber } from '../i18n/format'
 
 const webhooks = vi.fn()
 const agentsInstalled = vi.fn()
@@ -280,6 +284,37 @@ describe('Activity detail', () => {
     await waitFor(() => expect(deleteWebhookContext).toHaveBeenCalledWith('review:pr-123'))
   })
 
+  it('states the stored context size in the active language, singular for one character', async () => {
+    mount({
+      ...POPULATED,
+      contexts: [
+        { ...POPULATED.contexts[0], context_chars: 12345 },
+        { ...POPULATED.contexts[1], context_chars: 1 },
+      ],
+    })
+    await openActivity()
+    fireEvent.click(screen.getByTestId('webhook-row-context-review:pr-123'))
+    // Both the detail row and the summary badge carry the count.
+    expect(screen.getAllByText('12,345 characters')).toHaveLength(2)
+    expect(screen.queryByText(/\bchars\b/)).toBeNull()
+    fireEvent.click(screen.getByTestId('webhook-row-context-deploy:prod-4471'))
+    expect(screen.getAllByText('1 character')).toHaveLength(2)
+  })
+
+  it('translates the stored context size and picks each language plural form', async () => {
+    const size = (count: number) => i18nT('pages.webhooksPage.stored_chars', { count, n: fmtNumber(count) })
+    try {
+      await i18next.changeLanguage('de')
+      expect(size(1)).toBe('1 Zeichen')
+      await i18next.changeLanguage('ru')
+      expect(size(1)).toBe('1 символ')
+      expect(size(3)).toBe('3 символа')
+      expect(size(5)).toBe('5 символов')
+    } finally {
+      await i18next.changeLanguage('en')
+    }
+  })
+
   it('reports exact delivery destinations and links back to the source', async () => {
     mount({
       ...POPULATED,
@@ -399,6 +434,38 @@ describe('credential lifecycle safeguards', () => {
     await openSource('legacy')
     expect(screen.queryByTestId('webhook-revoke-legacy')).toBeNull()
     expect(screen.getByText(/Remove .* to revoke/)).toBeTruthy()
+  })
+})
+
+describe('two-step destructive controls and the keyboard', () => {
+  // Arming turns the same button into the confirm, so a held Enter or Space
+  // (whose repeats click a focused button) would confirm with no second
+  // press. Keep unmounts itself, so it hands focus back to Revoke.
+  it('ignores a repeated key on armed Revoke, and Keep returns focus to Revoke', async () => {
+    mount(POPULATED)
+    await openSource()
+    const revoke = screen.getByTestId('webhook-revoke-wht_review')
+    revoke.focus()
+    fireEvent.click(revoke)
+    expect(fireEvent.keyDown(revoke, { key: 'Enter', repeat: true })).toBe(false)
+    expect(fireEvent.keyDown(revoke, { key: ' ', repeat: true })).toBe(false)
+    expect(fireEvent.keyDown(revoke, { key: 'Enter' })).toBe(true)
+    expect(deleteWebhookToken).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Keep' }))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('webhook-revoke-wht_review')))
+    expect(deleteWebhookToken).not.toHaveBeenCalled()
+  })
+
+  it('ignores a repeated key on the armed context delete', async () => {
+    mount(POPULATED)
+    await openActivity()
+    fireEvent.click(screen.getByTestId('webhook-row-context-review:pr-123'))
+    const del = screen.getByTestId('webhook-delete-context')
+    fireEvent.click(del)
+    expect(fireEvent.keyDown(del, { key: 'Enter', repeat: true })).toBe(false)
+    expect(fireEvent.keyDown(del, { key: ' ', repeat: true })).toBe(false)
+    expect(deleteWebhookContext).not.toHaveBeenCalled()
   })
 })
 

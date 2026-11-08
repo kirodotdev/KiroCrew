@@ -1,29 +1,24 @@
-"""Tests for sub-agent turn resilience (subagent.py).
+"""Tests for sub-agent turn resilience (subagent.py), matching the main agent's ladder.
 
-Covers the three guard-parity fixes that bring sub-agents in line with the
-main agent's turn-resilience ladder:
+1. Transient-backend retry in ``_run_inner`` (``_stream_with_transient_retry``): pre-token
+   re-prompt / post-token CONTINUE, budget-capped, ``subagent_retrying`` UI event.
+2. User stop (``cancel``): neutral terminal state, partial output kept, ``user_stop``
+   tombstone, ``subagent_done`` carries ``stopped: true``.
+3. Unexpected cancel (``_schedule_cancel_recovery``): a non-user, non-shutdown cancel
+   respawns the run exactly once.
+4. ``_try_inject_orphan_notification`` / ``_send_orphan_slack_dm`` delegate to the
+   gateway-wired callbacks.
 
-1. Transient-backend retry inside ``_run_inner`` (``_stream_with_transient_retry``):
-   pre-token re-prompt / post-token CONTINUE, budget-capped, ``subagent_retrying``
-   UI event. Mirrors chat_runner B1/B2 (PR #91).
-2. User-stop semantics (``cancel``): neutral terminal state — partial output
-   preserved, ``user_stop`` tombstone, ``subagent_done`` carries ``stopped: true``.
-3. Unexpected-cancel one-shot auto-continue (``_schedule_cancel_recovery``):
-   a non-user, non-shutdown task cancellation respawns the run exactly once.
-   Mirrors the main path's cancel recovery.
-4. Orphan-notification wiring: ``_try_inject_orphan_notification`` /
-   ``_send_orphan_slack_dm`` delegate to the gateway-wired callbacks instead of
-   being stubs.
-
-The cases under the ``1.`` and ``1b.`` section banners, and the default-budget case, are in
-``test_subagent_turn_resilience_retry.py``; the context-window overflow cases are in
-``test_subagent_turn_resilience_context_overflow.py``; the helpers the three modules share
-are in ``subagent_turn_resilience_helpers.py``.
+Sections ``1.``/``1b.`` and the default-budget case are in
+``test_subagent_turn_resilience_retry.py``; context-window overflow is in
+``test_subagent_turn_resilience_context_overflow.py``; shared helpers are in
+``subagent_turn_resilience_helpers.py``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -41,6 +36,8 @@ from subagent_turn_resilience_helpers import (  # noqa: F401 -- the autouse fixt
     _TransientError,
 )
 
+from kiro_crew import session_surface
+from kiro_crew import subagent_persistence as sp
 from kiro_crew.llm_helpers import TRANSIENT_RETRIES
 from kiro_crew.subagent import (
     _TRANSIENT_CONTINUE_MSG,
@@ -216,7 +213,7 @@ async def test_unexpected_cancel_after_tool_activity_finalizes_without_respawn()
     """Once ANY tool has executed, an unexpected cancel must NOT auto-respawn:
     the respawn would run on a fresh session with no tool ledger, so the model
     cannot verify which side effects already happened — a preamble alone
-    cannot make re-running safe (Arbiter item 1 / Design finding 1). The run
+    cannot make re-running safe. The run
     is finalized with an explicit suppression error instead."""
     from kiro_crew.acp.client import EVENT_TOOL_CALL
 
@@ -298,7 +295,6 @@ async def test_cancel_recovery_text_only_respawn_gets_resume_preamble():
         assert not build_msgs[0].startswith(_CANCEL_RESUME_PREFIX)
         assert build_msgs[1].startswith(_CANCEL_RESUME_PREFIX)
 
-        # Cleanup: terminate the respawned run.
         task2 = mgr._tasks.get(info.id)
         if task2 is not None:
             task2.cancel()
@@ -319,6 +315,126 @@ async def test_shutdown_cancel_does_not_auto_continue():
     assert mgr._shutting_down is True
     assert info._cancel_retry_used is False  # no recovery attempted
     assert info.done is True
+
+
+# ── 3b. A shutdown cancel under a dashboard parent waits for the next start ──
+
+_DASHBOARD_PARENT = "dashboard:chat-7"
+_CHANNEL_PARENT = "slack:C0123ABCD:1700000000.000100"
+
+
+async def _cancelled_by_the_shutdown(
+    parent: str, *, user_stopped: bool = False, folder_seeded: bool = True
+) -> tuple[SubagentInfo, AsyncMock]:
+    """One run under *parent* the shutdown cancels mid-stream; the parent consumer
+    (``on_done``) is a recorder. ``folder_seeded=False`` stands for a run whose
+    folder write failed."""
+    started = asyncio.Event()
+    on_done = AsyncMock()
+    mgr = SubagentManager(
+        sessions=_mock_sessions(_hanging_stream_factory(started)),
+        ctx_builder=_mock_ctx_builder(),
+        on_done=on_done,
+    )
+    mgr._should_use_session_sharing = MagicMock(return_value=False)
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("job at shutdown", parent_session_key=parent)
+        assert info is not None
+        await await_until(started, what="the stream's first yield")
+        # A Stop the user pressed before the shutdown reached the run.
+        info.user_stopped = user_stopped
+        assert info._folder_seeded is True  # the spawn wrote the run's folder
+        info._folder_seeded = folder_seeded
+        await mgr.cancel_all()
+    assert info.done is True
+    return info, on_done
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parent", "open_tabs"),
+    [
+        pytest.param(_DASHBOARD_PARENT, frozenset(), id="dashboard-chat"),
+        pytest.param(_CHANNEL_PARENT, frozenset({_CHANNEL_PARENT}), id="channel-tab"),
+    ],
+)
+async def test_a_shutdown_cancel_under_a_tab_is_announced_by_the_next_start(
+    monkeypatch, parent, open_tabs
+):
+    # The report made during the shutdown could only queue in the tab's memory or
+    # start a turn the shutdown refuses, so the next start's sweep announces it. A
+    # channel conversation's tab is back by then: the gateway holds the sweep's
+    # notices until the channel reconciler's first complete pass.
+    monkeypatch.setattr(session_surface, "_dashboard_surfaced", open_tabs)
+    info, on_done = await _cancelled_by_the_shutdown(parent)
+
+    on_done.assert_not_awaited()
+    assert sp.read_tombstone(info.id) is None
+    assert [state["id"] for state in sp.list_orphans()] == [info.id]
+
+    notify = AsyncMock(return_value=True)
+    next_start = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_notify=notify)
+    next_start._is_pid_alive = MagicMock(return_value=False)
+    with patch("kiro_crew.subagent.sel"):
+        await next_start._reconcile_orphans()
+
+    notify.assert_awaited_once()
+    notified_parent, msg = notify.await_args.args[:2]
+    assert notified_parent == parent
+    assert f"Agent `{info.id}` ⚠️ cut off mid-turn by gateway restart" in msg
+    assert "Partial output saved at:" in msg  # the text it streamed before the cancel
+    assert sp.list_orphans() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("parent", "user_stopped"),
+    [
+        pytest.param(_DASHBOARD_PARENT, True, id="user-stopped"),
+        pytest.param(_CHANNEL_PARENT, False, id="channel-parent"),
+        pytest.param("cron:nightly-digest", False, id="cron-parent"),
+    ],
+)
+async def test_a_shutdown_cancel_with_a_stop_or_no_tab_is_reported_now(
+    monkeypatch, parent, user_stopped
+):
+    # A channel or cron parent's report goes to a thread or the bell, and a user's
+    # Stop is its own ending: both keep the cancelled tombstone and the report.
+    monkeypatch.setattr(session_surface, "_dashboard_surfaced", frozenset())
+    info, on_done = await _cancelled_by_the_shutdown(parent, user_stopped=user_stopped)
+
+    on_done.assert_awaited_once_with(info)
+    assert sp.read_tombstone(info.id)["cause"] == "cancelled"
+    assert sp.list_orphans() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "parent",
+    ["cron:nightly-digest", "subagent:p1", "taskrunner:t1:chat:tok1"],
+    ids=["cron", "subagent", "task-review"],
+)
+async def test_a_shutdown_cancel_under_another_kind_of_tab_is_reported_now(monkeypatch, parent):
+    # Only a dashboard chat or a channel conversation is left to the next start's
+    # sweep: any other kind of parent keeps the report with its tab open.
+    monkeypatch.setattr(session_surface, "_dashboard_surfaced", frozenset({parent}))
+    assert session_surface.has_dashboard_surface(parent)
+
+    info, on_done = await _cancelled_by_the_shutdown(parent)
+
+    on_done.assert_awaited_once_with(info)
+    assert sp.read_tombstone(info.id)["cause"] == "cancelled"
+    assert sp.list_orphans() == []
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_cancel_of_a_run_whose_folder_was_never_written_is_reported_now():
+    # The sweep finds runs by their folder, so a run whose folder write failed is
+    # not left to it, and the shutdown decides that from memory, not from disk.
+    info, on_done = await _cancelled_by_the_shutdown(_DASHBOARD_PARENT, folder_seeded=False)
+
+    on_done.assert_awaited_once_with(info)
+    assert sp.read_tombstone(info.id)["cause"] == "cancelled"
 
 
 # ── 4. Orphan-notification wiring ────────────────────────────────────
@@ -391,18 +507,77 @@ async def test_delivered_orphan_survives_audit_and_tombstone_failures():
 
 
 @pytest.mark.asyncio
-async def test_orphan_dm_delegates_to_callback():
+async def test_orphan_dm_delegates_to_callback(caplog):
     dm = AsyncMock(return_value=True)
     mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_dm=dm)
-    await mgr._send_orphan_slack_dm("orphan msg")
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+        await mgr._send_orphan_slack_dm("orphan msg")
     dm.assert_awaited_once_with("orphan msg")
+    # A delivered notice does not also fall through to the undelivered log line.
+    assert [r.getMessage() for r in caplog.records if r.name == "kiro_crew.subagent"] == []
 
 
 @pytest.mark.asyncio
-async def test_orphan_dm_callback_error_is_swallowed():
+async def test_orphan_dm_callback_error_is_swallowed(caplog):
     dm = AsyncMock(side_effect=RuntimeError("slack down"))
     mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None, on_orphan_dm=dm)
-    await mgr._send_orphan_slack_dm("orphan msg")  # must not raise
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+        await mgr._send_orphan_slack_dm("orphan msg")  # must not raise
+    dm.assert_awaited_once_with("orphan msg")
+    # The failed delivery falls through to the log line, so the notice is not lost.
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.subagent" and r.levelno == logging.WARNING
+    ]
+    assert warnings == ["Orphan notification (no delivery channel wired): orphan msg"]
+
+
+@pytest.mark.asyncio
+async def test_undelivered_orphan_log_keeps_result_path_and_whole_worktree(caplog, tmp_path):
+    """With no channel, the log line is the notice: it must carry every field.
+
+    A task long enough to fill the 100-character preview puts the result path
+    past the 200th character, and the worktree it names is cut at the preview.
+    """
+    worktree = "/home/user/.kiro/crew/scratch/runtime-3c7d0aeb/wt-orphan-notice-0123456789"
+    state = {
+        "id": "2f2cb4b5",
+        "task": f"Fix the open review on the feature branch in the worktree {worktree}",
+        "parent_session": "",
+        "result_complete": True,
+        "cwd": worktree,
+    }
+    run_dir = tmp_path / "subagents" / "2f2cb4b5"
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None)
+    with (
+        patch("kiro_crew.subagent.has_dashboard_surface", return_value=False),
+        patch("kiro_crew.subagent.agent_dir_for_display", return_value=run_dir),
+    ):
+        msg = await mgr._notify_orphan("2f2cb4b5", state, True)
+    assert msg is not None
+    assert f"Worktree: `{worktree}`" in msg.splitlines()
+    assert f"Result saved at: `{run_dir / 'result.txt'}`" in msg.splitlines()
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+        await mgr._send_orphan_slack_dm(msg)
+    warnings = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "kiro_crew.subagent" and r.levelno == logging.WARNING
+    ]
+    assert warnings == [f"Orphan notification (no delivery channel wired): {msg}"]
+
+
+@pytest.mark.asyncio
+async def test_orphan_notice_without_recorded_cwd_has_no_worktree_line():
+    state = {"id": "orphan-2", "task": "recover work", "parent_session": ""}
+    mgr = SubagentManager(sessions=MagicMock(), ctx_builder=None)
+    with patch("kiro_crew.subagent.has_dashboard_surface", return_value=False):
+        msg = await mgr._notify_orphan("orphan-2", state, False)
+    assert msg is not None
+    assert not any(line.startswith("Worktree:") for line in msg.splitlines())
+    assert "No result was captured before the restart." in msg
 
 
 @pytest.mark.asyncio
@@ -1002,11 +1177,9 @@ async def test_control_tag_only_output_still_fails():
 async def test_subagent_tool_frames_carry_the_tool_call_id():
     """Both ``subagent_tool`` fire sites send the call's ``tool_call_id``.
 
-    The Subagents card lists each call once by matching that id: a gated call's
-    ``EVENT_TOOL_CALL`` frame and its permission-request frame share it and the
-    same ``tool_count``, while a backend child's permission request has its own
-    id but an unchanged count. Without the id on the wire the card can only
-    compare counts, and the child's request overwrites the parent's last call.
+    The Subagents card dedupes calls by that id: a backend child's permission request has
+    its own id but an unchanged ``tool_count``, so matching on counts alone would let it
+    overwrite the parent's last call.
     """
     from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, EVENT_TOOL_CALL, LLMEvent
 

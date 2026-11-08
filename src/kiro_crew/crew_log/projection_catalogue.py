@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 from kiro_crew.crew_log.entry_types import (
+    CUSTOM_FOLD_NAME,
     DASHBOARD_FOLD_NAME,
     GOAL_FOLD_NAME,
     MISTAKES_FOLD_NAME,
@@ -111,6 +112,7 @@ SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = (
     WORKSTREAMS_FOLD_NAME,
     GOAL_FOLD_NAME,
     WAITING_FOLD_NAME,
+    CUSTOM_FOLD_NAME,
     WORKERS_FOLD_NAME,
 )
 
@@ -252,72 +254,46 @@ class Projection:
 class _Fold:
     """One projection's three pure pieces.
 
-    ``bind_slot`` is the fourth piece a SLOT-keyed fold has: the reader knows
-    which slot it is folding and says so before the first entry, so the fold
-    never has to infer its board from whichever entry happens to come first.
+    ``bind_slot`` is the fourth piece a SLOT-keyed fold has: the reader names the slot
+    before the first entry, so the fold never infers its board from the first entry.
 
-    ``affects`` and ``copy_state`` are what let a MUTATING ``step`` serve as the
-    projection kernel's pure ``apply`` (:class:`_SessionFold`). ``step`` edits the
-    dict it is handed, and the kernel requires a new object on a real change and the
-    SAME object on none -- so ``apply`` copies first and steps the copy, and skips
-    both when the entry cannot touch this fold.
+    ``affects`` and ``copy_state`` let a MUTATING ``step`` serve as the kernel's pure
+    ``apply`` (:class:`_SessionFold`): the kernel needs a new object on a real change
+    and the SAME object on none, so ``apply`` copies, steps the copy, and skips both
+    when the entry cannot touch this fold.
 
-    ``affects`` is the set of entry types whose ``step`` can change this fold's
-    state, or ``None`` for a fold every entry moves. It may be WIDER than the truth
-    and must never be narrower: a type wrongly included costs a copy and, for a
-    client watching the change feed, one frame for an entry that changed nothing,
-    while a type wrongly left out drops a real change and serves a stale value with
-    nothing raised.
+    ``affects`` is the set of entry types ``step`` can change, or ``None`` for every
+    type. It may be WIDER than the truth, never narrower: an extra type costs a copy and
+    one change-feed frame, a missing one silently serves a stale value.
 
-    ``copy_state`` must copy every container ``step`` can reach, transitively --
-    ``None`` falls back to a deep copy, which is always correct and pays for the
-    whole state. A shallower copy is what makes the per-entry cost bounded, and
-    ``test_a_fold_never_reaches_into_the_state_it_was_handed`` is what keeps it
-    honest: a nested container left shared shows up there as the prior state moving.
+    ``copy_state`` must copy every container ``step`` can reach, transitively; ``None``
+    falls back to a deep copy. ``test_a_fold_never_reaches_into_the_state_it_was_handed``
+    catches a nested container left shared.
 
-    ``state_version`` is the version of what THIS fold stores, and it is the number
-    its savepoint files carry. It is per fold so that retiring one fold's stored
-    meaning costs a cold fold to that fold alone -- see
-    :data:`_FOLD_STATE_VERSION_BASE` for the rule that moves it.
+    ``state_version`` is the version of what THIS fold stores and the number its
+    savepoint files carry; per fold, so retiring one fold's meaning cold-folds only it
+    (see :data:`_FOLD_STATE_VERSION_BASE`).
 
-    ``mode`` decides WHEN the fold runs, and ``"eager"`` IS THE DEFAULT. An eager fold
-    is advanced off the append path, so a reader is served a value that was already
-    current (:mod:`kiro_crew.crew_log.eager`); a lazy one is folded when a reader asks,
-    which is the posture every fold had before and the one a reader pays a walk of the
-    whole log for. The default is eager because that is the posture a dashboard wants
-    and because leaving it implicit is what let the other folds stay lazy by nobody
-    having decided -- so ``"lazy"`` now costs a ``lazy_reason``, and a fold with no
-    reason to be lazy is eager without anyone writing the word.
+    ``mode`` decides WHEN the fold runs; ``"eager"`` IS THE DEFAULT. An eager fold is
+    advanced off the append path, so a reader gets an already-current value
+    (:mod:`kiro_crew.crew_log.eager`); a lazy one walks the log when a reader asks.
+    ``lazy_reason`` is REQUIRED of a lazy fold, so a lazy fold is a stated decision and
+    not an oversight, and refused on an eager one. An eager fold must also spell out
+    ``affects``: the worker skips entries a fold does not name, and ``None`` would not
+    tell "all of them" from "not decided". Both are checked at import.
 
-    ``lazy_reason`` is that one line, REQUIRED of a lazy fold and refused on an eager
-    one. Required because "lazy" is the exception and an exception with no stated ground
-    is indistinguishable from an oversight; refused on an eager fold because a reason
-    sitting on one describes a posture this registry does not hold.
+    ``count_rows`` is how many rows the state RETAINS, which the warm memo's byte budget
+    charges a cell by (:func:`slot_fold_cell_bytes`). It must count every container,
+    INCLUDING a list nested in each item, and stay O(the item cap): ``len`` calls and one
+    pass over the items, never a serialization.
 
-    An eager fold must also declare ``affects``, spelled out even when it is every type:
-    the worker skips the copy and the step for an entry a fold does not name, and a
-    ``None`` there would leave a reader unable to tell "all of them" from "not decided".
-    Both are checked here, at import, because a registry the process cannot honour is
-    not a thing to discover under load.
+    ``count_opaque`` counts values kept WHOLE and unclamped, each charged
+    :data:`MAX_ENTRY_BYTES`, under the same O(item cap) rule. ``work`` has three: an
+    item's ``acceptance``, its ``artifacts`` map, and each parked entry.
 
-    ``count_rows`` is how much this fold's state RETAINS, as a count of rows rather than
-    a count of bytes, and it is what the warm memo's byte budget charges a cell by
-    (:func:`slot_fold_cell_bytes`). It must count every container the state keeps,
-    INCLUDING a list nested inside each item -- that nesting is why no single
-    measured-at-caps figure can bound these states. It must stay O(the item cap): a few
-    ``len`` calls and one pass over the items, never a serialization.
-
-    ``count_opaque`` counts what ``count_rows`` cannot charge by a row cost: a retained
-    value the fold keeps WHOLE and does not clamp, so the only bound on it is the entry
-    that carried it. Each one is charged :data:`MAX_ENTRY_BYTES`. Same O(the item cap)
-    rule, no serialization. ``work`` has three: an item's ``acceptance`` (the one field the
-    store does not cap), its ``artifacts`` map (values unclamped), and each parked entry.
-
-    ``None`` means the fold declares no row count, and a cell of it is charged the
-    one-row floor. That is right for a SESSION-keyed fold, which has no warm SLOT cell at
-    all -- its own memo weighs it by serialized size (:func:`session_fold_state_bytes`);
-    a slot-keyed fold without one is refused at import, because the budget would
-    then be charging it a constant while its state grows.
+    ``None`` for ``count_rows`` charges the one-row floor. That suits a SESSION-keyed
+    fold, whose memo weighs it by serialized size (:func:`session_fold_state_bytes`); a
+    slot-keyed fold without one is refused at import, since its state grows.
     """
 
     name: str

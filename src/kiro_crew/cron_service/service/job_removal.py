@@ -11,7 +11,7 @@ patch of the member on the class or on an instance reaches every caller. A name
 tests patch on :mod:`kiro_crew.cron`, or one that module defines, is read through
 it on each call (``seams``).
 
-Instance fields written: ``_jobs``, ``_pending_removals``.
+Instance fields written: ``_fired_schedules``, ``_jobs``, ``_pending_removals``.
 
 Instance fields read: ``_load_failed``.
 """
@@ -224,8 +224,21 @@ def _drain_pending_removals_locked(self: CronService) -> list[str]:
     # two steps would be erased without ever being deleted from disk, so
     # the completed one-shot would re-fire and re-notify.
     pending, self._pending_removals = self._pending_removals, set()
+    # A one-shot's queued ``delete_after_run`` consume belongs to the schedule that
+    # fired (``_fired_schedules``, written where the consume is queued), as in the
+    # result merge: a row another writer made recurring since keeps it, enabled as
+    # the store says rather than as ``defer_removal`` left it. A Done() removal
+    # queues no schedule: it is the script's own request.
+    for job in self._jobs:
+        fired = self._fired_schedules.get(job.id) if job.id in pending else None
+        if fired is not None and job.schedule != fired:
+            pending.discard(job.id)
+            del self._fired_schedules[job.id]
+            job.enabled = not (job.user_paused or job.auto_paused)
     present = {j.id for j in self._jobs}
     to_remove = pending & present
+    for jid in pending - to_remove:
+        self._fired_schedules.pop(jid, None)
     if not to_remove:
         return []
     # BACKGROUND tick: a failed epoch bump must not crash the scan, but
@@ -283,6 +296,7 @@ def _drain_pending_removals_locked(self: CronService) -> list[str]:
         # no-op tick after the disk refused the write.
         raise
     for jid in to_remove:
+        self._fired_schedules.pop(jid, None)
         logger.info("Removed deferred one-shot cron job %s", jid)
     # SEL audit is the CALLER's job (post-lock): this method runs inside
     # the caller's ``_file_lock`` transaction, and the first ``sel()`` of a
@@ -513,8 +527,18 @@ def remove_jobs_sync(
     return removed, missing
 
 
-def _remove_jobs_by_owner_locked(self: CronService, owner_prefix: str) -> list[str]:
+def _remove_jobs_by_owner_locked(
+    self: CronService,
+    owner_prefix: str,
+    *,
+    keep: Callable[[CronJob], bool] | None = None,
+) -> list[str]:
     """Select AND remove every job owned by ``owner_prefix`` under ONE lock.
+
+    A job for which ``keep(job)`` is true is left in place: same id, same run
+    history, same enabled state. ``keep`` is called inside the lock on the
+    reloaded jobs, so it judges the same snapshot the removal acts on; it must
+    not touch the store.
 
     Sync core of :meth:`remove_jobs_by_owner` — lock/reload/select/mutate/
     save only, no timer work (so it is safe in an executor thread;
@@ -544,7 +568,11 @@ def _remove_jobs_by_owner_locked(self: CronService, owner_prefix: str) -> list[s
     removed: list[str] = []
     with self._file_lock():
         self._sync_for_write()
-        removed = [j.id for j in self._jobs if getattr(j, "created_by", "") == owner_prefix]
+        removed = [
+            j.id
+            for j in self._jobs
+            if getattr(j, "created_by", "") == owner_prefix and not (keep is not None and keep(j))
+        ]
         if removed:
             targets = set(removed)
             self._bump_grant_epochs_for(targets)
@@ -567,9 +595,15 @@ def _remove_jobs_by_owner_locked(self: CronService, owner_prefix: str) -> list[s
     return removed
 
 
-async def remove_jobs_by_owner(self: CronService, owner_prefix: str) -> list[str]:
+async def remove_jobs_by_owner(
+    self: CronService,
+    owner_prefix: str,
+    *,
+    keep: Callable[[CronJob], bool] | None = None,
+) -> list[str]:
     """Remove every job owned by ``owner_prefix`` under ONE lock, off-loop.
 
+    Jobs ``keep`` accepts are kept (see :meth:`_remove_jobs_by_owner_locked`).
     Selects and removes in a SINGLE :meth:`_remove_jobs_by_owner_locked`
     lock/reload/select/save transaction — the owner scan runs against the
     in-lock reloaded on-disk state, so a job another process created for
@@ -579,7 +613,7 @@ async def remove_jobs_by_owner(self: CronService, owner_prefix: str) -> list[str
     worker thread; only ``_arm_timer`` runs back on the loop, and only when
     something was actually removed. Returns the removed ids.
     """
-    removed = await asyncio.to_thread(self._remove_jobs_by_owner_locked, owner_prefix)
+    removed = await asyncio.to_thread(self._remove_jobs_by_owner_locked, owner_prefix, keep=keep)
     if removed:
         self._arm_timer()
     return removed

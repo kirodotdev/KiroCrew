@@ -200,21 +200,16 @@ def find_brew() -> str | None:
 #: distinction between "you turned this off" and "this cannot run here".
 CODE_DISABLED = "stt_disabled"
 
-#: The ``stt.provider`` value that selects no recogniser. Spelled here rather
-#: than imported, for the same reason ``dashboard.stt_stream`` spells
-#: ``PROVIDER_LOCAL``: this module keeps ``kiro_crew.config`` off its import path
-#: (every config read here is inside a function, off the event loop).
+#: The ``stt.provider`` value that selects no recogniser.
 #: ``test_stt_provider_off`` pins it equal to ``config.sections.STT_PROVIDER_OFF``.
 STT_PROVIDER_OFF = "off"
-#: ``config.sections.STT_PROVIDER_LOCAL``, spelled here for the same reason.
-_STT_PROVIDER_LOCAL = "local"
 
 
 def _registered_provider(provider: object) -> Any:
     """The edition-registered STT provider named *provider* (``PlatformContext.speech``).
 
-    ``None`` for every built-in name, so the built-in branches below keep running
-    exactly as before; a registered name is looked up only when it is not one.
+    ``None`` for every built-in name, so a built-in name always runs a built-in
+    branch below; a registered name is looked up only when it is not one.
     """
     from kiro_crew import speech_providers
 
@@ -290,6 +285,10 @@ def availability_detail(stt_config=None) -> stt.Availability:  # type: ignore[no
         return _aws_availability()
     if provider == "apple":
         return _apple_availability()
+    if provider == "codex":
+        from kiro_crew.stt import codex
+
+        return codex.availability()
     registered = _registered_provider(provider)
     if registered is not None:
         # An edition-registered provider: its own check() answers. BLOCKING, like
@@ -437,6 +436,10 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
         result = await _transcribe_aws(audio_path, stt_config)
     elif provider == "apple":
         result = await _transcribe_apple(audio_path, stt_config)
+    elif provider == "codex":
+        from kiro_crew.stt import codex
+
+        result = await codex.transcribe_file(audio_path)
     elif (registered := _registered_provider(provider)) is not None:
         # An edition-registered provider. Same contract as every branch here:
         # text, "" for silence, or None -- never an exception. Called on this
@@ -483,6 +486,10 @@ def batch_duration_cap_secs(stt_config=None) -> int | None:  # type: ignore[no-u
     # Any other name, an unrecognised one included, lands on a built-in decoder
     # and keeps the ceiling.
     provider = stt_config.provider
+    if provider == "codex":
+        from kiro_crew.stt.codex import MAX_AUDIO_SECS
+
+        return MAX_AUDIO_SECS
     if provider == "transcribe" or _registered_provider(provider) is not None:
         return None
     return _MAX_AUDIO_SECS
@@ -511,7 +518,7 @@ def provider_splits_oversized(stt_config) -> bool:  # type: ignore[no-untyped-de
     too; a provider an edition registered handles its own length and does not.
     """
     provider = stt_config.provider
-    if provider in ("transcribe", "apple"):
+    if provider in ("transcribe", "apple", "codex"):
         return False
     return _registered_provider(provider) is None
 
@@ -1156,6 +1163,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         CustomVocabulary,
         CustomVocabularyListing,
         VocabularyListError,
+        _boto3_importable,
+        _DeferredBoto3,
         _load_aws_transcribe_components,
         _make_temp_ogg,
         _ProfileCredentialResolver,

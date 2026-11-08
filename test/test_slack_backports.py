@@ -1,19 +1,11 @@
 """Slack catches up with Discord on three fronts, so parity runs both ways.
 
-Each class pins one of them, and each is a defect Slack shipped rather than a
-refinement:
-
-* ``TestOutboundUploads``: an agent that writes ``![chart](/tmp/chart.png)``
-  must not ship the raw path to Slack as text while ``files_outbound=True``
-  claims the renderer extracted and uploaded it. The flag is what the capability
-  ledger defines as ENFORCED, so these tests exercise the gate from both sides.
-* ``TestFenceSafeSplitting``: the renderer's final no-stream render truncated an
-  over-limit answer through ``_safe_update``, and everything it did split, Slack's
-  own fence-blind ``split_message`` could cut inside a code fence.
-* ``TestVoiceMemoRejections``: a voice memo whose transcription was unavailable
-  or failed was dropped in TOTAL silence: nothing reached the prompt, so a
-  voice-only message never started a turn, and the sender's successful send was
-  indistinguishable from being ignored.
+* ``TestOutboundUploads``: ``![chart](/tmp/chart.png)`` is uploaded, not sent as a
+  raw path, whenever ``files_outbound=True`` claims it (the capability ledger's ENFORCED).
+* ``TestFenceSafeSplitting``: the final no-stream render splits an over-limit answer
+  without cutting inside a code fence.
+* ``TestVoiceMemoRejections``: a memo whose transcription is unavailable or failed
+  still reaches the prompt, so a voice-only message starts a turn.
 """
 
 from __future__ import annotations
@@ -174,9 +166,7 @@ async def _turn(renderer: SlackRenderer, *chunks: str) -> None:
     await renderer.on_done(stop_reason="end_turn")
 
 
-# ---------------------------------------------------------------------------
 # 1 + 2. files_outbound is now the capability the ledger says it is
-# ---------------------------------------------------------------------------
 
 
 class TestOutboundUploads:
@@ -359,8 +349,8 @@ class TestOutboundUploads:
     @pytest.mark.asyncio
     async def test_the_append_only_stream_never_shows_the_path(self, tmp_path) -> None:
         # Slack streams by APPENDING, so markup that lands there stays in the
-        # transcript beside the picture. It is withheld instead, and the withheld
-        # tail is released at the seal.
+        # transcript beside the picture. The reply is appended only once it is
+        # sealed, with the markup already extracted.
         chart = tmp_path / "chart.png"
         chart.write_bytes(PNG)
         slack = _FakeSlack(streaming=True)
@@ -372,7 +362,7 @@ class TestOutboundUploads:
         assert appended, slack.calls
         assert all("![c](" not in t and str(chart) not in t for t in appended), appended
         assert "Here it is:" in "".join(appended)
-        assert "and more after it." in "".join(appended), "the withheld tail was lost"
+        assert "and more after it." in "".join(appended), "the text after the image was lost"
         assert len(slack.uploads) == 1
 
     @pytest.mark.asyncio
@@ -383,6 +373,9 @@ class TestOutboundUploads:
         renderer = _renderer(slack, tmp_path)
 
         await renderer.on_text_chunk(f"chart: ![c]({chart}) done")
+        # No frame is drawn while the turn runs: the reply is held to the end.
+        assert [m for m, _ in slack.calls if m == "update_message"] == [], slack.calls
+        await renderer.on_done()
         frames = [kw["text"] for m, kw in slack.calls if m == "update_message"]
 
         assert frames, slack.calls
@@ -401,9 +394,7 @@ class TestOutboundUploads:
         assert str(chart) in slack.shown(), "fenced markup is content and stays verbatim"
 
 
-# ---------------------------------------------------------------------------
 # 3. the renderer splits with the shared fence-safe splitter
-# ---------------------------------------------------------------------------
 
 
 def _fenced_answer(lines: int = 400) -> str:
@@ -528,9 +519,7 @@ class TestFenceSafeSplitting:
             assert len(text) <= SLACK_MSG_LIMIT, len(text)
 
 
-# ---------------------------------------------------------------------------
 # 4. a voice memo that produced no words is never silent
-# ---------------------------------------------------------------------------
 
 
 def _orch() -> MagicMock:
@@ -784,13 +773,8 @@ class TestVoiceMemoRejections:
 class TestReleasedTailIsRedacted:
     """Cutting image markup rejoins the text around it, so the JOIN is an egress.
 
-    The seal already redacts ``clean_text`` after extraction for exactly this
-    reason -- its own comment says the join "can spell a credential neither half
-    did". The withheld tail is a second egress created by the same cut: it goes
-    out through ``_append_stream``, and on the streaming path it is the text the
-    user ends up reading, because ``chat.stopStream`` does not replace appended
-    text. A scan performed upstream of the cut cannot have seen the joined form,
-    so the tail needs its own.
+    The join can spell a credential neither half did. The withheld tail goes out via
+    ``_append_stream`` and ``chat.stopStream`` does not replace it, so it needs its own scan.
     """
 
     #: Split so NEITHER half is a credential on its own: the leading half is a
@@ -823,39 +807,40 @@ class TestReleasedTailIsRedacted:
         assert len(slack.uploads) == 1, slack.calls
 
     @pytest.mark.asyncio
-    async def test_the_release_path_itself_redacts_not_just_its_caller(self) -> None:
-        """Pinned at the chokepoint, so a later append site inherits the scan."""
+    async def test_the_shown_text_path_itself_redacts_after_the_cut(self, tmp_path) -> None:
+        """Pinned at the chokepoint for text shown outside the sealed reply.
+
+        A step's narration and a dying turn's held reply both go through
+        ``_shown``, which removes image markup FIRST and redacts the joined text
+        after, so a key the cut spells is caught there and every caller inherits it.
+        """
         slack = _FakeSlack(streaming=True)
         renderer = _renderer(slack)
-        renderer._ref_hold = f"{self._HEAD}{self._TAIL} trailing prose"
+        chart = tmp_path / "chart.png"
 
-        released = await renderer._release_refs()
+        shown = await renderer._shown(f"{self._HEAD}![c]({chart}){self._TAIL} trailing prose")
 
-        assert released
-        assert self._HEAD + self._TAIL not in released
-        assert "trailing prose" in released
+        assert shown
+        assert "![c]" not in shown
+        assert self._HEAD + self._TAIL not in shown
+        assert "trailing prose" in shown
 
     @pytest.mark.asyncio
-    async def test_an_exfiltration_url_in_the_tail_is_redacted_too(self) -> None:
+    async def test_an_exfiltration_url_in_shown_text_is_redacted_too(self) -> None:
         """Both outbound redactors, in the seal's order -- URLs then credentials."""
         slack = _FakeSlack(streaming=True)
         renderer = _renderer(slack)
-        renderer._ref_hold = "see https://evil.example.com/?q=AKIAIOSFODNN7EXAMPLE now"
 
-        released = await renderer._release_refs()
+        shown = await renderer._shown("see https://evil.example.com/?q=AKIAIOSFODNN7EXAMPLE now")
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in released
+        assert "AKIAIOSFODNN7EXAMPLE" not in shown
 
 
 class TestEveryRendererEgressMeetsTheDisplayFloor:
     """One floor at every sink in this renderer, not one scan per reviewed line.
 
-    Neither `AKIA**<rest>**` nor `[AKIA](https://x)<rest>` matches a credential
-    pattern as written, and Slack renders the markup away and shows the reader an
-    intact key. A literal-only scan therefore checks one of the TWO forms that
-    leave here, and the gap was found three times on three different lines --
-    a rejection note, a reasoning block, a sealed body -- which is what makes the
-    sink, not the line, the right place for it.
+    Neither `AKIA**<rest>**` nor `[AKIA](https://x)<rest>` matches as written, yet Slack
+    renders an intact key, so every sink scans the displayed form too.
     """
 
     #: Emphasis markers Slack renders away; the literal string is not a credential.

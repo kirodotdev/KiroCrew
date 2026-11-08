@@ -904,11 +904,8 @@ class TestScaffoldPartialFailure:
     ) -> None:
         """A directory substituted after the scan must not bind a folder elsewhere.
 
-        The create path re-resolves each ``project_dir``; a component swapped for
-        a symlink in the scan-to-create window resolves outside the confirmed
-        tree, and persisting that resolution would scope the folder to a
-        directory the user never approved. The swap is staged inside the scan
-        wrapper so it lands in exactly that window.
+        A symlink swapped in between scan and create resolves outside the confirmed tree.
+        The swap is staged inside the scan wrapper to land in exactly that window.
         """
 
         root = _sibling_repos(tmp_path / "work")
@@ -1021,12 +1018,8 @@ def _preexisting_folder(index: int, project_dir: str) -> dict[str, Any]:
 class TestAdditiveScaffold:
     """Property 7: scaffolding only ever adds.
 
-    Whatever the selection and whatever is already in the store, a scaffold call
-    leaves every folder that existed before it byte-identical, and the folders it
-    adds are exactly the selected candidates that had none. This is the property
-    that makes re-scanning a growing project safe: the user's existing setup —
-    names, colors, placements, the conversations filed under them — is not
-    something a re-run may rewrite.
+    Existing folders stay byte-identical and the added ones are exactly the selected
+    candidates that had none, so a re-scan never rewrites the user's setup.
     """
 
     @_P7_SETTINGS

@@ -92,7 +92,7 @@ Container or CI alternative: set the environment variable `KIROCREW_CONNECTIONS_
 
 ## 6. Verify the connection
 
-1. In the dashboard open **Capabilities → Connections**. The Slack card should have changed from "Needs configuration" to **Connect**.
+1. In the dashboard open **Customize → Connections**. The Slack card should have changed from "Needs configuration" to **Connect**.
 2. Click **Connect**. A browser tab opens Slack's consent page at `https://slack.com/oauth/v2_user/authorize` listing the user scopes from section 3. Pick the workspace if asked and click **Allow**.
 3. If the gateway runs on the same machine as the browser, the tab lands on the loopback callback and the card shows **Connected**. If the gateway is remote, copy the landing URL from the address bar and paste it into the dashboard prompt.
 4. Ask the agent something read-only, for example "search Slack for the last message in #general". A `missing_scope` error means a scope from section 3 was not added; add it and reinstall.

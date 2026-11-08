@@ -94,6 +94,46 @@ class TestUnsupportedPlatform:
         reasons = [c["reason"] for c in calls if c.get("rule") == "project_skills_trust_enforced"]
         assert reasons and "lacks no-follow directory traversal" in reasons[0], reasons
 
+    @pytest.mark.parametrize(
+        "allowed, supported, outcome, reason",
+        [
+            (True, None, "allowed", "project skills admitted for a granted directory"),
+            (
+                False,
+                False,
+                "denied",
+                "project skills withheld: this platform lacks no-follow directory traversal",
+            ),
+            (False, True, "denied", "project skills withheld: no grant, or the feature is off"),
+        ],
+        ids=["admitted", "unsupported-platform", "no-grant"],
+    )
+    def test_each_outcome_is_audited_with_its_own_reason(
+        self, tmp_path, monkeypatch, allowed, supported, outcome, reason
+    ):
+        calls: list[dict] = []
+        probes: list[bool | None] = []
+
+        class _Sel:
+            def log_governance_decision(self, **kwargs):
+                calls.append(kwargs)
+
+        def _supported():
+            probes.append(supported)
+            return supported
+
+        loader = self._loader(tmp_path)
+        project = tmp_path / "proj"
+        project.mkdir()
+        monkeypatch.setattr(skills_mod, "sel", lambda: _Sel())
+        monkeypatch.setattr(skill_trust, "project_skill_traversal_supported", _supported)
+
+        loader._audit_project_skill_enforcement(project, str(project), allowed)
+
+        assert [(c["outcome"], c["reason"]) for c in calls] == [(outcome, reason)]
+        # The platform is probed only to explain a refusal.
+        assert probes == ([] if allowed else [supported])
+
     def test_supported_platform_does_not_warn(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(skill_trust, "project_skill_traversal_supported", lambda: True)
         monkeypatch.setattr(skill_trust, "_project_skills_enabled", lambda: True)

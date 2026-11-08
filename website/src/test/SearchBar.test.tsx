@@ -58,9 +58,9 @@ describe('SearchBar', () => {
     expect(screen.getByText('3 of 5 results')).toBeInTheDocument()
   })
 
-  it('shows "1 of 1 results" for single match', () => {
+  it('shows "1 of 1 result" for single match', () => {
     renderBar({ term: 'unique', matches: [{ msgIdx: 0, occ: 0 }], currentIdx: 0 })
-    expect(screen.getByText('1 of 1 results')).toBeInTheDocument()
+    expect(screen.getByText('1 of 1 result')).toBeInTheDocument()
   })
 
   it('hides count when term is empty', () => {
@@ -130,6 +130,13 @@ describe('SearchBar', () => {
     fireEvent.click(screen.getByTitle('Case sensitive'))
     expect(toggleCaseSensitive).toHaveBeenCalled()
   })
+
+  it.each([[false, 'false'], [true, 'true']])(
+    'the case-sensitive button reports caseSensitive=%s as aria-pressed', (caseSensitive, pressed) => {
+      renderBar({ caseSensitive })
+      expect(screen.getByRole('button', { name: 'Case sensitive' })).toHaveAttribute('aria-pressed', pressed)
+    },
+  )
 
   const someMatches: SearchMatch[] = [
     { msgIdx: 0, occ: 0 }, { msgIdx: 2, occ: 0 }, { msgIdx: 5, occ: 0 },

@@ -51,6 +51,8 @@ vi.mock('../api/client', () => ({
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
     listInstances: vi.fn().mockResolvedValue({ instances: [], warm_set_cap: 5 }),
+    // ThemeProvider's catalog query retries every 1s, 2s, 4s... until a read succeeds, and each failed retry notifies it.
+    themes: vi.fn().mockResolvedValue({ themes: [] }),
   },
   isAuthBannerShown: vi.fn(() => false),
   ApiError: class ApiError extends Error {
@@ -111,7 +113,7 @@ describe('top-bar credit segment — failed vs loading', () => {
     })
     renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
 
-    expect(await screen.findByLabelText(i18nT('components.kiroAccountModal.kiro_credit_usage'))).toBeTruthy()
+    expect(await screen.findByLabelText(i18nT('app.kiro_account_credits'))).toBeTruthy()
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
   })
@@ -131,31 +133,18 @@ describe('top-bar credit segment — failed vs loading', () => {
     expect(document.querySelector('.tb-capsule')).toBeNull()
   })
 
-  it('treats an api_key_auth unavailable payload as terminal, not still loading', async () => {
-    // The backend fail-fasts API-key accounts with a reasoned marker (#5728).
-    // That payload must stop the spinner and say WHY — before the fix the
-    // panel spun forever because no terminal state ever arrived.
-    sessionsUsageMock.mockResolvedValue({ usage: { available: false, reason: 'api_key_auth' } })
-    renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
-
-    const pill = await screen.findByLabelText(i18nT('app.kiro_credit_usage_api_key'))
-    expect(pill.textContent).toContain('—')
-    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
-    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
-  })
-
-  it('keeps the pill as a dash on a reasonless unavailable payload, naming where to refresh', async () => {
+  it.each(['kiro', 'kas'])('keeps the pill as a dash on a reasonless unavailable payload on the %s harness, naming where to refresh', async (backend) => {
     // The gateway holds no reading (plan-less account with the scrape parked or
     // failed). The modal this dash opens carries the Refresh that can fix that,
     // so the dash must stay on screen -- a hidden pill would make that path
-    // unreachable. Distinct from the api_key_auth dash: the label differs.
+    // unreachable. Both Kiro harnesses run on the Kiro account.
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: backend } })
     sessionsUsageMock.mockResolvedValue({ usage: { available: false } })
     renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
 
     const pill = await screen.findByLabelText(i18nT('app.kiro_credit_usage_no_reading'))
     expect(pill.textContent).toContain('—')
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_checking_2'))).toBeNull()
-    expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_api_key'))).toBeNull()
     expect(screen.queryByLabelText(i18nT('app.kiro_credit_usage_unavailable'))).toBeNull()
   })
 
@@ -168,7 +157,7 @@ describe('top-bar credit segment — failed vs loading', () => {
     // ruled out and the modal behind it said "Could not read your balance" about
     // a balance this harness does not have. Whether the surface exists is the
     // harness's verdict; the reading only decides what it shows.
-    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
     sessionsUsageMock.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 }))
     renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
 
@@ -185,7 +174,7 @@ describe('top-bar credit segment — failed vs loading', () => {
     // harness. The segment goes away, so the modal over it must go too -- an
     // overlay left behind a pill that no longer exists is the dead-end this
     // hide rule exists to prevent, and its Refresh could never succeed here.
-    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'claude' } })
     sessionsUsageMock.mockResolvedValueOnce({ usage: {} })
     sessionsUsageMock.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 }))
     const { queryClient } = renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
@@ -200,11 +189,13 @@ describe('top-bar credit segment — failed vs loading', () => {
     expect(screen.queryByText(i18nT('components.kiroAccountModal.credit_usage_unavailable'))).toBeNull()
   })
 
-  it('keeps the failed dash on the kiro-cli harness, where the balance is real', async () => {
-    // The counterpart of the two cases above: on kiro-cli a failed read is a
-    // failure to report, not a surface that should not exist -- so the segment
-    // stays and the modal carries the retry. Without this the hide rule could
-    // be widened until it swallowed the state it was written to show.
+  it.each(['kiro', 'kas'])('keeps the failed dash on the %s harness, where the Kiro balance is real', async (backend) => {
+    // The counterpart of the two cases above: on kiro-cli and on its KAS relay
+    // (the default) a failed read is a failure to report, not a surface that
+    // should not exist -- so the segment stays and the modal carries the retry.
+    // Without this the hide rule could be widened until it swallowed the state
+    // it was written to show.
+    kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: backend } })
     sessionsUsageMock.mockRejectedValue(Object.assign(new Error('Service Unavailable'), { status: 503 }))
     renderWithProviders(<App />, { route: '/chat', preloadedState: connectedState })
 
@@ -233,7 +224,7 @@ describe('top-bar credit segment — failed vs loading', () => {
   })
 
   it('keeps the sign-in-type mark for that account when the config read fails', async () => {
-    // The config read decides whether a `none` payload is the Kiro backend.
+    // The config read decides whether a `none` payload is on a Kiro harness.
     // An account_unproven payload only arises with kiro-cli, so a failed
     // config read must not remove its dash (and the modal's notice with it).
     sessionsUsageMock.mockResolvedValue({
@@ -264,6 +255,9 @@ describe('top-bar credit segment — failed vs loading', () => {
     // The modal re-renders with the no-reading notice and the primary Refresh...
     await screen.findByText(i18nT('components.kiroAccountModal.credit_usage_no_reading'))
     expect(screen.getByRole('button', { name: i18nT('components.kiroAccountModal.refresh_balance') })).toBeEnabled()
+    // AppShell retires its entrance class from a 600ms backstop timer armed at mount, then re-renders. Let that
+    // update land before the window opens, or it arrives mid-window outside act. The 5000 is the ceiling for it.
+    await waitFor(() => expect(screen.getByTestId('dashboard-shell')).not.toHaveClass('animate-rise'), { timeout: 5000 })
     // ...and is still there once any close (and its exit animation) would have
     // landed. An auto-close on `none` removes the dialog well inside this window.
     await new Promise(resolve => setTimeout(resolve, 600))

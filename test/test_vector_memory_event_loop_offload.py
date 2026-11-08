@@ -24,16 +24,9 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_test_vector_memory")
 class TestAsyncInitOffloadGuard:
     """AST guard for blocking ``VectorMemoryStore`` lifecycle calls.
 
-    An ``async def`` must never call ``init()`` or ``close()`` inline. The
-    init path is blocking file IO whose Windows DACL writes can block on a
-    network volume round-trip, and close serializes on the same store lock
-    as ordinary database operations, so either can freeze the event
-    loop. Async callers offload via ``asyncio.to_thread`` / ``run_in_executor``
-    (which take the callable UNCALLED, so they never trip this guard).
-
-    A prose-only contract drifts, so this test makes the next drift a CI failure
-    instead of a code-review catch. Same shape as ``TestDbLockGuard``,
-    including the seeded-violation self-test that keeps the guard armed.
+    init does blocking file IO (Windows DACL writes can hit the network) and close takes
+    the store lock. ``asyncio.to_thread`` / ``run_in_executor`` take the callable
+    uncalled, so they pass. Same shape as ``TestDbLockGuard``, with a seeded self-test.
     """
 
     @classmethod
@@ -238,20 +231,12 @@ class TestHandlerOffload1947:
     """Async code must not call lock-serialized store methods inline on the
     event loop.
 
-    Every plain fetch serializes on ``_db_lock``. A worker thread can
-    hold that lock for seconds (backfill's locked FAISS rebuild, reconcile's
-    bulk UPDATEs), so an async function that calls a locked method inline would
-    freeze the whole gateway event loop — chat, heartbeats, every request — for
-    the duration. Async callers must offload
-    via ``asyncio.to_thread`` / ``run_in_executor`` / ``run_in_embed_pool``.
+    A worker can hold ``_db_lock`` for seconds (FAISS rebuild, bulk UPDATEs), freezing
+    the loop. Callers offload via ``asyncio.to_thread`` / ``run_in_executor`` /
+    ``run_in_embed_pool``.
 
-    Both the method set and the caller set are DERIVED, not hand-listed
-    (a hand-maintained list re-introduces
-    enforcement-by-convention one level up): the methods come from the AST of
-    ``vector_memory.py`` and of the ``vector_memory_runtime`` modules it delegates
-    to (public methods that reach a ``with <store>._db_lock:`` directly or
-    transitively through store calls and runtime functions), and the scan covers
-    every module in the ``kiro_crew`` package.
+    The method set is derived from the AST (public methods reaching
+    ``with <store>._db_lock:`` transitively), and the scan covers all of ``kiro_crew``.
     """
 
     #: Lock-reaching methods exempt from this name-only scan. ``init`` is the
@@ -282,7 +267,7 @@ class TestHandlerOffload1947:
         has_any_lesson has_episodic_text has_pending_embeddings has_stored_embeddings
         import_memory invalidate_episode_content list_by_facets load_faiss_index
         log_reject_event memory_stats migrate_from_markdown promote_episodic_patterns
-        propose_semantic_delete read_counters read_editable_history read_history_entries
+        propose_semantic_delete read_editable_history read_history_entries
         rebuild_memory_index recall reconcile_embedding_space recorded_embedding_space
         recorded_rebuild_generation replace_today_history restore_episodic rotate_events
         save_faiss_index search_episodic search_memory search_semantic seed_item_if_absent

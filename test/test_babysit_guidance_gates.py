@@ -52,14 +52,11 @@ def _gating_urls(text: str) -> list[str]:
     return [url for url in _URL.findall(text) if infer("Check %s now." % url) is not None]
 
 
-def test_the_monitor_start_guidance_demonstrates_a_gating_subject() -> None:
+def test_the_prompt_teaches_no_monitor_start_example_of_its_own() -> None:
+    """The skill's worked example, pinned below, is the only one an agent copies."""
     body = PROMPT.read_text(encoding="utf-8")
-    start = body.index("**Using monitor_start:**")
-    block = body[start : start + 1200]
-    assert _gating_urls(block), (
-        "the monitor_start guidance in prompt.md must show the subject as a pull-request "
-        "URL that inference accepts; a bare 'PR #123' leaves the loop ungated"
-    )
+    assert "monitor_start(" not in body
+    assert "`kirocrew-dev/babysit`" in body
 
 
 def test_the_babysit_example_message_names_its_subject_by_url() -> None:

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileCode2, MessageSquare, UserPlus, Copy, Trash2, Lock, Plus, X, MoreHorizontal, ToggleLeft, ToggleRight, Star } from 'lucide-react'
@@ -17,6 +17,8 @@ import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import { useListDetailView } from '../../hooks/useListDetailView'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import { defaultLookFor } from '../../lib/avatarPoses'
 import { errMessage } from '../../utils/thunkError'
@@ -321,6 +323,10 @@ export default function AgentTemplatesTab() {
 
   const [filter, setFilter] = useState('')
   const [selectedName, setSelectedName] = useState<string | null>(null)
+  // The live selection, for the delete's completion: it lands after an await,
+  // by which point the user may have opened another template.
+  const selectedNameRef = useRef(selectedName)
+  useEffect(() => { selectedNameRef.current = selectedName }, [selectedName])
   const [draft, setDraft] = useState<Draft | null>(null)
   const [baseline, setBaseline] = useState<Draft | null>(null)
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
@@ -455,9 +461,14 @@ export default function AgentTemplatesTab() {
       // The deleted template may have been dirty: drop its draft so the
       // auto-select guard lets the list pick a row again, and leave the detail
       // pane -- on a narrow viewport it would otherwise stay open over a
-      // hidden list with nothing selected and no Back control.
-      setDraft(null); setBaseline(null); setSaveError(null)
-      setSelectedName(null); setNotice(null); closeDetail(); invalidate()
+      // hidden list with nothing selected and no Back control. A template
+      // opened while the delete was in flight is the user's now: its draft
+      // and detail pane stay.
+      if (selectedNameRef.current === name) {
+        setDraft(null); setBaseline(null); setSaveError(null)
+        setSelectedName(null); setNotice(null); closeDetail()
+      }
+      invalidate()
       // One line of closure, in the slot the save bar uses; the list picks the
       // next row and this rides over its (clean) detail for a few seconds, so
       // it names what went, not the row now on screen.
@@ -597,6 +608,13 @@ export default function AgentTemplatesTab() {
   }, [rows, matches])
   const allFiltered = useMemo(() => GROUP_ORDER.flatMap(k => grouped[k]), [grouped])
 
+  // A long list is cut at the pane's height, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more rows sit below (see MORE_BELOW_MASK). A filter changes the rows, not
+  // the scroller's own box, so no observer on the scroller sees it.
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  useEffect(() => { remeasureList() }, [allFiltered, remeasureList])
+
   // Keep a desktop detail pane populated; never yank a dirty editor.
   useEffect(() => {
     if (dirty) return
@@ -637,7 +655,7 @@ export default function AgentTemplatesTab() {
           ? <span className="text-[11px] text-muted truncate">{i18nT('pages.overview.agentTemplatesTab.override_line', { crew: r.private_to, template: r.forked_from })}</span>
           : r.description && <span className="text-[11px] text-muted truncate">{r.description}</span>}
         <div className="flex flex-wrap gap-1 mt-0.5">
-          <Badge variant="muted" title={r.model ? i18nT('pages.overview.agentTemplatesTab.model') : `${i18nT('pages.overview.agentTemplatesTab.model')}: ${i18nT('pages.overview.agentTemplatesTab.model_auto')}`}><span className="font-mono">{i18nT('pages.overview.agentTemplatesTab.model_badge', { model: r.model || 'auto' })}</span></Badge>
+          <Badge variant="muted" title={r.model ? i18nT('pages.overview.agentTemplatesTab.model') : i18nT('pages.overview.agentTemplatesTab.model_auto_title')}><span className="font-mono">{i18nT('pages.overview.agentTemplatesTab.model_badge', { model: r.model || 'auto' })}</span></Badge>
           {/* Muted like its siblings: a colored pill worded like the usage line's
               link reads as a second control. */}
           {crews > 0 && <Badge variant="muted">{i18nT('pages.overview.agentTemplatesTab.crewmates_count', { count: crews })}</Badge>}
@@ -837,15 +855,19 @@ export default function AgentTemplatesTab() {
       ) : rows.length > 0 && (
         <div className={PANE_SHELL_CLASS}>
           {showList && (
-            <div className={`${isMobile ? 'w-full' : 'w-[300px]'} shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.agentTemplatesTab.title')}>
-              {GROUP_ORDER.map(k => grouped[k].length > 0 && (
-                <div key={k} role="group" aria-label={groupLabel(k)}>
-                  <PanelSectionHeader label={groupLabel(k)} count={grouped[k].length} className="px-2 pt-2 pb-1" />
-                  {k === 'private' && <p className="px-3 pb-1 text-[11px] text-muted">{i18nT('pages.overview.agentTemplatesTab.group_private_copies_hint')}</p>}
-                  {grouped[k].map(renderRow)}
-                </div>
-              ))}
-              {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.agentTemplatesTab.no_match', { query: filter })}</div>}
+            // The rows scroll in an inner box: a mask clips everything outside
+            // the masked element, so on the pane it would also fade the border.
+            <div className={`${isMobile ? 'w-full' : 'w-[300px]'} shrink-0 flex flex-col border border-border rounded-md`}>
+              <div ref={attachList} className={`flex-1 min-h-0 overflow-y-auto p-2 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`} role="listbox" aria-label={i18nT('pages.overview.agentTemplatesTab.title')}>
+                {GROUP_ORDER.map(k => grouped[k].length > 0 && (
+                  <div key={k} role="group" aria-label={groupLabel(k)}>
+                    <PanelSectionHeader label={groupLabel(k)} count={grouped[k].length} className="px-2 pt-2 pb-1" />
+                    {k === 'private' && <p className="px-3 pb-1 text-[11px] text-muted">{i18nT('pages.overview.agentTemplatesTab.group_private_copies_hint')}</p>}
+                    {grouped[k].map(renderRow)}
+                  </div>
+                ))}
+                {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.agentTemplatesTab.no_match', { query: filter })}</div>}
+              </div>
             </div>
           )}
 

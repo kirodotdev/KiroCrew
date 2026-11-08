@@ -27,16 +27,21 @@ from ai_review_workflows_helpers import (
     _workflow,
 )
 
-_GHA_CONDITION_TOKEN = re.compile(r"\s*(\|\||&&|==|!=|!|\(|\)|'(?:[^']|'')*'|[A-Za-z_][\w.\-]*)")
+_GHA_CONDITION_TOKEN = re.compile(
+    r"\s*(\|\||&&|==|!=|>=|<=|>|<|!|\(|\)|'(?:[^']|'')*'|\d+(?:\.\d+)?|[A-Za-z_][\w.\-]*)"
+)
+_GHA_RELATIONAL = (">", ">=", "<", "<=")
 
 
 def _eval_gha_condition(expression: str, context: dict[str, object]) -> bool:
     """Evaluate a job `if:` against ``context`` the way GitHub reads it.
 
     Covers the subset the readiness job gate uses: `||`, `&&`, `!`, `==`,
-    `!=`, parentheses, single-quoted strings and dotted context paths. A path
-    that is absent reads as null, and string equality ignores case, as on
-    GitHub. Anything outside that subset fails the test rather than guessing.
+    `!=`, `>`, `>=`, `<`, `<=`, parentheses, single-quoted strings, number
+    literals and dotted context paths. A path that is absent reads as null,
+    and string equality ignores case, as on GitHub. A relational comparison
+    coerces both sides to a number the way GitHub does, so a null reads as 0.
+    Anything outside that subset fails the test rather than guessing.
     """
     text = expression.strip()
     tokens: list[str] = []
@@ -59,10 +64,23 @@ def _eval_gha_condition(expression: str, context: dict[str, object]) -> bool:
     def lookup(token: str) -> object:
         if token.startswith("'"):
             return token[1:-1].replace("''", "'")
+        if token[0].isdigit():
+            return float(token) if "." in token else int(token)
         node: object = context
         for part in token.split("."):
             node = node.get(part) if isinstance(node, dict) else None
         return node
+
+    def as_number(value: object) -> float:
+        """GitHub coerces a relational operand to a number; null reads as 0."""
+        if value is None or value is False:
+            return 0.0
+        if value is True:
+            return 1.0
+        if isinstance(value, (int, float)):
+            return float(value)
+        assert isinstance(value, str), f"cannot compare {value!r} as a number"
+        return float(value) if value.strip() else 0.0
 
     def primary() -> object:
         token = take()
@@ -76,6 +94,17 @@ def _eval_gha_condition(expression: str, context: dict[str, object]) -> bool:
 
     def comparison() -> object:
         left = primary()
+        if peek() in _GHA_RELATIONAL:
+            operator = take()
+            right = as_number(primary())
+            number = as_number(left)
+            if operator == ">":
+                return number > right
+            if operator == ">=":
+                return number >= right
+            if operator == "<":
+                return number < right
+            return number <= right
         if peek() not in ("==", "!="):
             return left
         operator = take()
@@ -108,12 +137,130 @@ def _eval_gha_condition(expression: str, context: dict[str, object]) -> bool:
 
 
 def _readiness_gate_context(
-    event_name: str, upstream_event: str = "", upstream_name: str = ""
+    event_name: str,
+    upstream_event: str = "",
+    upstream_name: str = "",
+    run_attempt: int = 1,
 ) -> dict[str, object]:
     event: dict[str, object] = {}
     if event_name == "workflow_run":
-        event["workflow_run"] = {"event": upstream_event, "name": upstream_name}
+        event["workflow_run"] = {
+            "event": upstream_event,
+            "name": upstream_name,
+            "run_attempt": run_attempt,
+        }
     return {"github": {"event_name": event_name, "event": event}}
+
+
+_HOLD_SUFFIX_MARKER = "&& 'hold' || 'noop'"
+_GATE_NON_WORKFLOW_RUN_CLAUSE = "github.event_name != 'workflow_run' ||"
+
+
+def _strip_outer_parens(text: str) -> str:
+    """Drop parentheses that wrap the WHOLE expression, however many layers."""
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        for offset, char in enumerate(text):
+            depth += (char == "(") - (char == ")")
+            if depth == 0:
+                break
+        if offset != len(text) - 1:
+            break
+        text = text[1:-1].strip()
+    return text
+
+
+def _readiness_hold_predicate(group: str) -> str:
+    """The condition the concurrency key's fourth segment resolves `hold` on.
+
+    Read back from the ``&& 'hold' || 'noop'`` marker to the balanced group
+    that feeds it, so the suffix is compared as an expression rather than by
+    hunting for one clause inside it.
+    """
+    text = " ".join(group.split())
+    end = text.find(_HOLD_SUFFIX_MARKER)
+    assert end != -1, f"no hold/noop suffix in {text!r}"
+    assert text.find(_HOLD_SUFFIX_MARKER, end + 1) == -1, "hold suffix appears more than once"
+    head = text[:end].rstrip()
+    assert head.endswith(")"), f"hold suffix does not follow a parenthesised group: {head!r}"
+    depth = 0
+    for offset in range(len(head) - 1, -1, -1):
+        depth += (head[offset] == ")") - (head[offset] == "(")
+        if depth == 0:
+            return _strip_outer_parens(head[offset:])
+    raise AssertionError(f"unbalanced parentheses in {head!r}")
+
+
+def _readiness_workflow_run_gate(gate: str) -> str:
+    """The job gate with its leading non-`workflow_run` clause removed.
+
+    That clause is the ONE part the concurrency key does not copy, and only
+    because the `format()` branch it would guard is unreachable for any other
+    event. What is left must be the key's hold predicate, character for
+    character.
+    """
+    text = " ".join(gate.split())
+    assert text.startswith(_GATE_NON_WORKFLOW_RUN_CLAUSE), (
+        "the job gate must still open with its non-workflow_run clause, " f"got {text[:60]!r}"
+    )
+    return _strip_outer_parens(text[len(_GATE_NON_WORKFLOW_RUN_CLAUSE) :].strip())
+
+
+# (event_name, upstream event, upstream workflow name, run_attempt, admitted).
+# One table, read by the gate test and by the concurrency-parity test, so a new
+# admission case cannot be added to one and forgotten in the other.
+_READINESS_ADMISSION_CASES = [
+    ("pull_request_target", "", "", 1, True),
+    ("workflow_dispatch", "", "", 1, True),
+    # A first attempt publishes nothing: the `pull_request_target` run for the
+    # same head already published `checking`.
+    ("workflow_run", "pull_request", "CI", 1, False),
+    ("workflow_run", "pull_request", "Internal Content Scan Gate", 1, False),
+    # A re-run is the only monitored start no other event covers.
+    ("workflow_run", "pull_request", "CI", 2, True),
+    ("workflow_run", "pull_request", "Internal Content Scan Gate", 3, True),
+    # The two lanes that start on `labeled`/`unlabeled`, which
+    # `pull_request_target` does not subscribe to, are exempt on a first
+    # attempt as well.
+    ("workflow_run", "pull_request", "Issue Gate", 1, True),
+    ("workflow_run", "pull_request", "Security Scope Review", 1, True),
+    # `dynamic` and the Sensitive Change Review approval run are admitted on a
+    # FIRST attempt, so the concurrency suffix has to call them `hold` too.
+    ("workflow_run", "dynamic", "CodeQL", 1, True),
+    ("workflow_run", "pull_request_review", "Sensitive Change Review (approval)", 1, True),
+    ("workflow_run", "workflow_run", "CI", 2, False),
+    # A review run is admitted only from the workflow that runs on one.
+    ("workflow_run", "pull_request_review", "CI", 1, False),
+]
+
+
+def _readiness_lane_specs() -> list[str]:
+    """Every spec pushed onto `workflow_specs`, across all its branches.
+
+    The array is built per branch (stacked, fork), so the union is every lane any
+    pull request can be judged against. Comment lines are dropped first: their
+    parentheses would end a block match early.
+    """
+    script = _step_script(_workflow("pr-readiness.yml"), "Evaluate current revision")
+    specs: list[str] = []
+    collecting = False
+    for line in script.splitlines():
+        text = line.strip()
+        if text.startswith("#"):
+            continue
+        if collecting:
+            if text == ")":
+                collecting = False
+                continue
+            if match := re.fullmatch(r'"([^"]+)"', text):
+                specs.append(match.group(1))
+            continue
+        if text == "workflow_specs+=(":
+            collecting = True
+            continue
+        if match := re.fullmatch(r'workflow_specs\+=\("([^"]+)"\)', text):
+            specs.append(match.group(1))
+    return specs
 
 
 def _allowed_tools(workflow: str) -> str:
@@ -197,14 +344,10 @@ class TestPrReadiness:
         assert "authorization to approve anything" in ledger_step
 
     def test_no_run_block_with_expressions_exceeds_the_actions_length_cap(self) -> None:
-        """GitHub caps any `run:` block containing a template expression at
-        21000 characters and rejects the whole workflow file at parse time
-        (zero jobs, no error surfaced to the PR). Nothing local catches this:
-        PyYAML parses the file fine. The review prompts are the largest run
-        blocks in the repo and sit near the cap, so pin the invariant: a
-        prompt-sized run block must stay expression-free (substitute values
-        via env instead), and any run block that does carry an expression
-        must keep clear headroom under the cap.
+        """A `run:` block with a template expression stays well under 21000 characters.
+
+        Past the cap GitHub rejects the whole file at parse time with no error on the
+        PR, and PyYAML parses it fine. Prompt-sized blocks pass values via env instead.
         """
         for name in (
             "codex-review.yml",
@@ -258,20 +401,18 @@ class TestPrReadiness:
         assert 'failed_passes="$(cat codex-failed-passes 2>/dev/null || true)"' in review_step
 
     def test_each_model_call_starts_on_a_fresh_bedrock_session(self) -> None:
-        """One AssumeRole session lasts an hour, so model calls that share it let
-        a first call consume most of the hour and leave the next to die on
-        `401 ... security token ... expired`, failing the gate closed with no
-        verdict. Every lane whose job timeout exceeds the session
-        lifetime must re-assume before EACH call — the GPT lanes now make three
-        (two CLI passes plus the Opus adjudication of the blocking verdict) —
-        and each call must be wall-bounded under that lifetime where the lane
-        drives the CLI itself.
+        """A lane whose timeout exceeds the one-hour AssumeRole session re-assumes per call.
+
+        A shared session lets a first call use most of the hour and the next die on
+        `401 ... security token ... expired`. The GPT lanes make three calls (two CLI
+        passes plus the Opus adjudication), each wall-bounded under that lifetime.
         """
         lanes = {
             "codex-review.yml": 3,
             "claude-review.yml": 2,
             "fork-gpt-review.yml": 3,
-            "fork-opus-review.yml": 2,
+            # Discovery, validation, and validation's rate-limit retry.
+            "fork-opus-review.yml": 3,
             "security-scope-review.yml": 1,
             "fork-security-scope-review.yml": 1,
         }
@@ -489,6 +630,7 @@ class TestPrReadiness:
             "fast-gate.yml|Fast Gate",
             "build.yml|Build",
             "code-review.yml|Code Review",
+            "pr-hygiene.yml|PR Hygiene",
             # Every PR must declare a triaged issue; a lane readiness does not
             # aggregate is a gate that can go red without turning the PR red.
             "issue-gate.yml|Issue Gate",
@@ -501,6 +643,23 @@ class TestPrReadiness:
         assert 'skipped) passed+=("$label")' in workflow
         assert '(.app.slug // "") == "github-advanced-security"' in workflow
         assert 'neutral|"") pending+=("$label (results pending)")' in workflow
+
+    def test_code_review_rescans_on_retarget_and_pr_hygiene_hears_edits(self) -> None:
+        # A base retarget is an `edited` event and moves the diff, so Code Review
+        # must hear it; it reads no description. PR Hygiene reads it and must
+        # hear the edit and every event Code Review does.
+        def types(name: str) -> set[str]:
+            doc = yaml.safe_load(_workflow(name))
+            trigger = (doc.get("on") or doc[True])["pull_request"] or {}
+            return set(trigger.get("types") or ("opened", "synchronize", "reopened"))
+
+        code_review = _workflow("code-review.yml")
+        assert "edited" in types("code-review.yml")
+        assert "pull_request.title" not in code_review
+        assert "pull_request.body" not in code_review
+        # fix_loop_metrics reads code-review.yml runs as proof PR Hygiene ran.
+        assert types("code-review.yml") <= types("pr-hygiene.yml")
+        assert "edited" in types("pr-hygiene.yml")
 
     def test_readiness_listens_for_the_fast_gate_run_and_carves_it_out_when_stacked(
         self,
@@ -542,21 +701,14 @@ class TestPrReadiness:
         # external_id match, not a check_name filter, names the lane.
         assert "commits/$SHA/check-runs?per_page=100" in workflow
         assert "check-runs?check_name=$enc" not in workflow
-        # The blanket fork skip and the maintainer-review verdict are gone.
+        # No blanket fork skip and no maintainer-review verdict.
         assert '"GPT 6.1 Review (fork PR)"' not in workflow
         assert 'state="maintainer_review"' not in workflow
         assert "AI reviews could not run" not in workflow
-        # The Stage-2 fork reviewers must NOT be in the trigger allowlist.
-        # Asserting their presence there proves nothing about function: presence
-        # does not say the trigger can resolve a pull request, and it cannot. A
-        # `workflow_run`-triggered lane runs from the default branch, so the
-        # payload it hands readiness names the default branch's tip, and the
-        # resolve step's `pulls?head=<repo>:<default branch>` lookup is empty by
-        # construction. Measured 700/700 runs across all seven fork lanes on the
-        # default branch, and 158 no-op readiness runs on one default-branch SHA.
-        # The green fork verdict lands through the lanes that DO run on the PR
-        # head -- Fast Gate above -- plus the 15-minute sweep, which re-fires by
-        # PR number.
+        # The Stage-2 fork reviewers are not in the trigger allowlist: a
+        # `workflow_run`-triggered lane runs from the default branch, so its payload
+        # never resolves to a pull request. Their verdict lands through Fast Gate
+        # and the 15-minute sweep, which re-fires by PR number.
         assert "      - Fork Opus 5.5 Review" not in workflow
         assert "      - Fork GPT 6.1 Review" not in workflow
         assert "      - Fork Internal Content Scan" not in workflow
@@ -591,21 +743,10 @@ class TestPrReadiness:
         assert 'if [ "${#pending[@]}" -gt 0 ]; then' in workflow
 
     def test_no_monitored_lane_is_itself_workflow_run_triggered(self) -> None:
-        # GitHub runs a `workflow_run`-triggered workflow from the default
-        # branch, so the payload its completion hands readiness names the
-        # default branch as head_branch and the default branch's tip as
-        # head_sha, never the pull request's head. The resolve step then asks
-        # which open pull request has `<this repo>:<default branch>` as its head
-        # and gets an empty answer every time, so the run exits SKIP having
-        # published nothing and spent one request from the shared hourly REST
-        # pool. Listing such a lane therefore buys no refresh at all while
-        # dispatching a run per completion, keyed on ONE shared concurrency
-        # group (the default branch's tip) rather than per head update -- which
-        # is how it accumulated across every open pull request at once.
-        #
-        # A lane whose verdict readiness must observe belongs in the check-run
-        # specs (keyed on a workflow that does carry the PR head) or behind the
-        # `pr-readiness-sweep.yml` backstop, which re-fires by PR number.
+        # A `workflow_run`-triggered workflow runs from the default branch, so its
+        # completion payload never names the PR head: readiness exits SKIP, having
+        # spent a REST request from the shared hourly pool for nothing. Such a lane
+        # belongs in the check-run specs or behind `pr-readiness-sweep.yml`.
         readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
         # PyYAML resolves a bare `on:` key to the boolean True.
         monitored = (readiness.get("on") or readiness[True])["workflow_run"]["workflows"]
@@ -640,36 +781,103 @@ class TestPrReadiness:
         assert "github.event.workflow_run.event == 'dynamic'" in gate
         assert "github.event.workflow_run.event == 'workflow_run'" not in gate
 
-    def test_a_review_holds_readiness_through_the_sensitive_change_review_run(self) -> None:
+    def test_the_subscription_list_is_exactly_the_lanes_readiness_evaluates(self) -> None:
+        # For most lanes the subscription exists for the re-run hold: a re-run fires
+        # no `requested`, so without it readiness keeps the pre-re-run `success`
+        # and armed auto-merge can land. The sweep cannot help: a running lane has
+        # no completed checks. So subscriptions and evaluated lanes must be equal.
+        specs = _readiness_lane_specs()
+        # Separates a broken extractor from a wrong allowlist. The equality
+        # below catches both, but only this says which: no count is asserted,
+        # because a legitimate restructure of the lanes changes it.
+        assert specs, "no lane specs were read out of the evaluation step"
+
+        declared: dict[str, str] = {}
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if isinstance(doc, dict) and isinstance(doc.get("name"), str):
+                declared[path.name] = doc["name"]
+
+        required: set[str] = set()
+        for spec in specs:
+            fields = spec.split("|")
+            if fields[0].startswith("checkrun:"):
+                # A fork lane's verdict is read from the head's check-runs, so
+                # the lane itself needs no subscription. The workflow whose
+                # completion triggers it (the fourth field) does: its newest
+                # run and attempt for the head is what "current" means there.
+                assert len(fields) == 4, f"check-run spec is not four fields: {spec!r}"
+                assert fields[3] in declared, f"spec names no such workflow: {spec!r}"
+                required.add(declared[fields[3]])
+            elif fields[0] in declared:
+                # The bridge is the FILE, not the spec's label. The allowlist
+                # matches a workflow by its `name:`, and the two differ:
+                # internal-content-scan-gate.yml is labelled "Internal Content
+                # Scan" here and subscribed under its own name, "Internal
+                # Content Scan Gate". A label-matching test would miss it.
+                required.add(declared[fields[0]])
+            else:
+                # GitHub's managed default-setup CodeQL has no file in this
+                # repository, so its label is the only name to match on. It is
+                # the ONLY spec allowed to name no file: accepting any unknown
+                # source here would let a misspelt filename keep this test
+                # green on the label while readiness resolves no run at all.
+                assert fields[0] == "dynamic/github-code-scanning/codeql", (
+                    f"spec names neither a workflow in {WORKFLOWS} nor the "
+                    f"managed CodeQL setup: {spec!r}"
+                )
+                required.add(fields[1])
+
+        # The one subscription that is deliberately not a lane: readiness never
+        # aggregates its verdict and listens to it for its
+        # `pull_request_review` runs alone, which no other subscribed workflow
+        # produces. Read from the file so a rename fails here rather than
+        # silently dropping the trigger.
+        approval = yaml.safe_load(_workflow("sensitive-change-review-approval.yml"))
+        required.add(approval["name"])
+
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        readiness_on = readiness.get("on") or readiness[True]
+        monitored = set(readiness_on["workflow_run"]["workflows"])
+
+        assert monitored == required, (
+            "evaluated lanes missing from the workflow_run allowlist, so a "
+            f"re-run of each publishes a stale verdict: {sorted(required - monitored)}; "
+            "allowlist entries that evaluate nothing, so each completion "
+            f"spends a dispatch for no verdict: {sorted(monitored - required)}"
+        )
+
+    def test_a_review_holds_readiness_through_the_sensitive_change_review_approval_run(
+        self,
+    ) -> None:
         # A submitted, edited or dismissed review starts a Sensitive Change
-        # Review run and no other run readiness hears, so that run's
+        # Review (approval) run and no other run readiness hears, so that run's
         # `in_progress` hold is what reaches the verdict within seconds of the
         # review. The allowlist matches a workflow by its `name:`, so the name
         # is read from the workflow file itself: a rename there that the
         # allowlist and the job gate do not follow fails here instead of
         # silently dropping the trigger.
-        scr = yaml.safe_load(_workflow("sensitive-change-review.yml"))
-        scr_name = scr["name"]
-        scr_on = scr.get("on") or scr[True]
-        assert {"submitted", "edited", "dismissed"} <= set(scr_on["pull_request_review"]["types"])
+        approval = yaml.safe_load(_workflow("sensitive-change-review-approval.yml"))
+        approval_name = approval["name"]
+        approval_on = approval.get("on") or approval[True]
+        # Reviews only: a comment trigger would dispatch readiness on every
+        # issue comment, each naming the default branch as its head.
+        assert set(approval_on) == {"pull_request_review"}
+        assert {"submitted", "edited", "dismissed"} <= set(
+            approval_on["pull_request_review"]["types"]
+        )
 
         readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
         monitored = (readiness.get("on") or readiness[True])["workflow_run"]["workflows"]
-        assert scr_name in monitored
+        assert approval_name in monitored
 
         gate = readiness["jobs"]["readiness"]["if"]
         assert _eval_gha_condition(
-            gate, _readiness_gate_context("workflow_run", "pull_request_review", scr_name)
-        )
-        # Its `pull_request` runs start on events `pull_request_target` already
-        # re-derives the verdict on, and it is not an aggregated lane, so a
-        # readiness run from one of them would re-check nothing.
-        assert not _eval_gha_condition(
-            gate, _readiness_gate_context("workflow_run", "pull_request", scr_name)
+            gate, _readiness_gate_context("workflow_run", "pull_request_review", approval_name)
         )
 
         # The run reads the review whether or not it wins the race against a
-        # short Sensitive Change Review job: a hold that finds the run completed
+        # short approval job: a hold that finds the run completed
         # leaves `held` unset, and the evaluation, which reads the reviews,
         # is gated on `held` alone rather than on the event.
         steps = {s.get("name"): s for s in readiness["jobs"]["readiness"]["steps"]}
@@ -684,30 +892,108 @@ class TestPrReadiness:
         assert "held=true" not in completed_arm
 
     @pytest.mark.parametrize(
-        ("event_name", "upstream_event", "upstream_name", "admitted"),
-        [
-            ("pull_request_target", "", "", True),
-            ("workflow_dispatch", "", "", True),
-            ("workflow_run", "pull_request", "CI", True),
-            ("workflow_run", "pull_request", "Internal Content Scan Gate", True),
-            ("workflow_run", "dynamic", "CodeQL", True),
-            ("workflow_run", "workflow_run", "CI", False),
-            ("workflow_run", "pull_request", "Sensitive Change Review", False),
-            ("workflow_run", "pull_request_review", "Sensitive Change Review", True),
-            # A review run is admitted only from the workflow that runs on one.
-            ("workflow_run", "pull_request_review", "CI", False),
-        ],
+        ("event_name", "upstream_event", "upstream_name", "run_attempt", "admitted"),
+        _READINESS_ADMISSION_CASES,
     )
     def test_the_job_gate_admits_exactly_the_upstream_runs_it_can_use(
-        self, event_name: str, upstream_event: str, upstream_name: str, admitted: bool
+        self,
+        event_name: str,
+        upstream_event: str,
+        upstream_name: str,
+        run_attempt: int,
+        admitted: bool,
     ) -> None:
         gate = yaml.safe_load(_workflow("pr-readiness.yml"))["jobs"]["readiness"]["if"]
 
         assert (
             _eval_gha_condition(
-                gate, _readiness_gate_context(event_name, upstream_event, upstream_name)
+                gate,
+                _readiness_gate_context(event_name, upstream_event, upstream_name, run_attempt),
             )
             is admitted
+        )
+
+    def test_the_hold_group_is_the_job_gate_written_out_again(self) -> None:
+        # Written twice because workflow-level `concurrency` can read only `github`,
+        # `inputs` and `vars`. Drift either way reopens the stale-green window: a
+        # gated dispatch cancels a real hold, or an admitted run is cancelled. The
+        # whole condition is compared, since the gate admits first-attempt runs too.
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        gate = readiness["jobs"]["readiness"]["if"]
+
+        assert _readiness_hold_predicate(_concurrency_group("pr-readiness.yml")) == (
+            _readiness_workflow_run_gate(gate)
+        )
+
+    @pytest.mark.parametrize(
+        ("event_name", "upstream_event", "upstream_name", "run_attempt", "admitted"),
+        [case for case in _READINESS_ADMISSION_CASES if case[0] == "workflow_run"],
+    )
+    def test_the_hold_group_and_the_job_gate_agree_on_every_admitted_run(
+        self,
+        event_name: str,
+        upstream_event: str,
+        upstream_name: str,
+        run_attempt: int,
+        admitted: bool,
+    ) -> None:
+        # The literal comparison above catches an edit to one expression. This
+        # catches the subtler case: two expressions that differ in text and
+        # disagree on a real run. `hold` must mean "the job will publish", for
+        # every row of the admission table, or a cancelling group holds a run
+        # that cannot replace what it cancels.
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        context = _readiness_gate_context(event_name, upstream_event, upstream_name, run_attempt)
+        suffix = _readiness_hold_predicate(_concurrency_group("pr-readiness.yml"))
+
+        assert _eval_gha_condition(suffix, context) is admitted
+        assert _eval_gha_condition(readiness["jobs"]["readiness"]["if"], context) is admitted
+
+    def test_only_a_dispatch_that_can_hold_reaches_the_cancelling_group(self) -> None:
+        # A gated dispatch must collapse among its own siblings rather than in
+        # the group that holds the verdict, and `cancel-in-progress` must stay
+        # true for both: with `false` a superseded run waits PENDING in the
+        # group instead of going away, which is how runs accumulate in `queued`.
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        group = _concurrency_group("pr-readiness.yml")
+
+        assert readiness["concurrency"]["cancel-in-progress"] is True
+        assert "'pr-readiness-wr-{0}-{1}-{2}-{3}'" in group
+        assert "&& 'hold' || 'noop'" in group
+
+    def test_the_exempt_lanes_are_the_only_ones_pull_request_target_cannot_hear(
+        self,
+    ) -> None:
+        # Why the exemption list is two lanes and not three. A monitored lane
+        # needs an attempt-1 exemption only when its first attempt starts on a
+        # pull-request activity type this workflow's own `pull_request_target`
+        # trigger does not subscribe to. Enumerate that from the workflow files
+        # rather than trusting the two names, so adding `labeled` to a third
+        # lane fails here instead of silently losing its first hold.
+        readiness = yaml.safe_load(_workflow("pr-readiness.yml"))
+        readiness_on = readiness.get("on") or readiness[True]
+        heard = set(readiness_on["pull_request_target"]["types"])
+        monitored = set(readiness_on["workflow_run"]["workflows"])
+        assert monitored, "readiness must monitor at least one lane"
+
+        unheard: set[str] = set()
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(doc, dict) or doc.get("name") not in monitored:
+                continue
+            on = doc.get("on", doc.get(True))
+            pull_request = (on or {}).get("pull_request")
+            if not isinstance(pull_request, dict):
+                continue
+            # No `types:` means GitHub's default set, every member of which the
+            # `pull_request_target` trigger above also subscribes to.
+            types = set(pull_request.get("types") or ())
+            if types - heard:
+                unheard.add(str(doc["name"]))
+
+        assert unheard == {"Issue Gate", "Security Scope Review"}, (
+            "the attempt-1 exemption list in the job gate and the concurrency "
+            f"key must name exactly these lanes: {sorted(unheard)}"
         )
 
 

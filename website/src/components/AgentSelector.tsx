@@ -17,6 +17,10 @@ import { useInsideDialog } from './overlayRoot'
 export interface KiroCrewAgent {
   name: string
   kiro_agent: string
+  /** The binding resolves to the crewmate's own mate file: `kiro_agent` equals
+   *  its key AND `mates/agents/<key>.json` exists. Computed by the server;
+   *  absent on catalog rows and older payloads. */
+  owns_mate_file?: boolean
   workspace: string
   memory_store: string
   /** This agent's own default model. '' means inherit (kiro template pin, then

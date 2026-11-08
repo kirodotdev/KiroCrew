@@ -119,26 +119,29 @@ class TestTheDeterministicSiblingStaysTerminal:
 
 
 class TestTheHintAlternationKeepsItsExistingScope:
-    def test_the_bedrock_spelling_still_classifies(self):
-        """Adding a token must not cost the wording that was already matched."""
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": "Service hiccup, please try again.",
-        }
-        assert _is_transient_raw_error(err) is True
-
-    def test_the_response_stream_envelope_is_still_not_a_hint(self):
-        """kiro-cli wraps EVERY mid-stream failure as "Encountered an error in
-        the response stream: <real cause>". Matching the envelope makes this
-        branch a catch-all that discards the real cause, so it was deliberately
-        removed; a hint token added later must not smuggle it back."""
-        err = {
-            "code": -32603,
-            "message": "Internal error",
-            "data": "Encountered an error in the response stream: Input is too long",
-        }
-        assert _is_transient_raw_error(err) is False
+    @pytest.mark.parametrize(
+        ("data", "expected"),
+        [
+            # Adding a token must not cost the wording that was already matched.
+            pytest.param(
+                "Service hiccup, please try again.",
+                True,
+                id="the_bedrock_spelling_still_classifies",
+            ),
+            # kiro-cli wraps EVERY mid-stream failure as "Encountered an error in
+            # the response stream: <real cause>". Matching the envelope makes this
+            # branch a catch-all that discards the real cause, so a hint token
+            # added later must not smuggle it back.
+            pytest.param(
+                "Encountered an error in the response stream: Input is too long",
+                False,
+                id="the_response_stream_envelope_is_still_not_a_hint",
+            ),
+        ],
+    )
+    def test_existing_scope(self, data, expected):
+        err = {"code": -32603, "message": "Internal error", "data": data}
+        assert _is_transient_raw_error(err) is expected
 
     @pytest.mark.parametrize(
         "wording",

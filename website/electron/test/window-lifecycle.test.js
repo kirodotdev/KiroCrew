@@ -75,22 +75,25 @@ describe("every token-bearing navigation stays on the configured origin", () => 
     .join("\n")
     .replace(/\r\n/g, "\n");
 
-  /** Lines composing a credential onto a base, with the 4 lines before each. */
+  /** A load that signs in with a token (the helper keeps it out of the address). */
+  const isTokenedLoad = (line) => /loadDashboardWithToken\(/.test(line) && !/require\(/.test(line);
+  /** A line that writes a token into a URL. */
+  const composesToken = (line) => /\?token=\$\{/.test(line) || /searchParams\.set\(\s*"token"/.test(line);
+  /** A line that re-derives an origin as a fallback. */
+  const rebasesOrigin = (line) => /\$\{\s*\w*[Oo]rigin\s*\|\|/.test(line) || /loopbackOrigin/.test(line);
+
+  /** The lines of *text* that *isSite* matches, each with its index. */
   function credentialSites(text, isSite) {
-    const lines = text.split("\n");
-    return lines
-      .map((line, index) => ({ line, index, before: lines.slice(Math.max(0, index - 4), index + 1) }))
+    return text.split("\n")
+      .map((line, index) => ({ line, index }))
       .filter(({ line }) => isSite(line));
   }
 
   it("never re-bases a token-bearing navigation onto a different origin", () => {
     // A structural guard rather than a behavioural one, because the failure mode
-    // is a NEW navigation site added later on a path no test drives.
-    const offenders = credentialSites(
-      SOURCE,
-      (line) => /\?token=\$\{/.test(line) || /searchParams\.set\(\s*"token"/.test(line),
-    )
-      .filter(({ line }) => /\$\{\s*\w*[Oo]rigin\s*\|\|/.test(line) || /loopbackOrigin/.test(line))
+    // is a NEW navigation site added later on a path no test drives. The URL a
+    // load signs in to is built lines above the call, so no line may re-derive one.
+    const offenders = credentialSites(SOURCE, rebasesOrigin)
       .map(({ line, index }) => `window-lifecycle.js:${index + 1}: ${line.trim()}`);
 
     assert.deepEqual(
@@ -101,13 +104,18 @@ describe("every token-bearing navigation stays on the configured origin", () => 
   });
 
   it("covers every navigation site rather than passing on an empty scan", () => {
-    // Control for the guard above: an empty offender list must mean the sites
-    // are right, not that the pattern matched nothing.
-    const sites = credentialSites(
-      SOURCE,
-      (line) => /\?token=\$\{/.test(line) || /searchParams\.set\(\s*"token"/.test(line),
-    );
+    // Control for the guard above: the token-bearing loads exist, and each goes
+    // through the one loader that signs the window in.
+    const sites = credentialSites(SOURCE, isTokenedLoad);
     assert.ok(sites.length >= 4, `expected at least 4 token-bearing sites, found ${sites.length}`);
+  });
+
+  it("never puts the token in a dashboard load's address", () => {
+    // Chromium logs a page's address beside every console line (#11189).
+    const inAddress = [["window-lifecycle.js", SOURCE], ["gateway-supervisor.js", SUPERVISOR]]
+      .flatMap(([name, text]) => credentialSites(text, composesToken)
+        .map(({ line, index }) => `${name}:${index + 1}: ${line.trim()}`));
+    assert.deepEqual(inAddress, [], "a dashboard load carries the token in its address");
   });
 
   it("never drops the origin on a fallback that still carries a credential", () => {
@@ -731,22 +739,20 @@ describe("window lifecycle source contracts", () => {
     );
   });
 
-  it("tears command/control owners down before closing dashboard contents", () => {
+  it("tears embedded panels down before closing dashboard contents", () => {
     const setupStart = SOURCE.indexOf("function setupWindowContents");
     const setupEnd = SOURCE.indexOf("function applyDashboardChrome", setupStart);
     assert.notEqual(setupStart, -1);
     assert.notEqual(setupEnd, -1);
     const setup = SOURCE.slice(setupStart, setupEnd);
 
-    const stop = setup.indexOf("void win._mcAgentChannel.stop()");
     const destroyPanels = setup.indexOf("win._mcDestroyBrowserPanel(id)");
     const closeDashboard = setup.indexOf("view.webContents.close()");
-    assert.ok(stop !== -1, "agent command channel cleanup missing");
     assert.ok(destroyPanels !== -1, "browser panel cleanup missing");
     assert.ok(closeDashboard !== -1, "dashboard WebContents cleanup missing");
     assert.ok(
-      stop < destroyPanels && destroyPanels < closeDashboard,
-      "cleanup order must be channel -> panels/control -> dashboard contents",
+      destroyPanels < closeDashboard,
+      "cleanup order must be panels -> dashboard contents",
     );
   });
 
@@ -909,11 +915,6 @@ describe("window lifecycle source contracts", () => {
       "browserSetInactive",
       "browserClose",
       "browserGetState",
-      "browserTrackSession",
-      "browserSetAgentAct",
-      "browserSetControlOwner",
-      "browserGetControl",
-      "browserControl",
     ]) {
       const start = SOURCE.indexOf(`function ${name}(`);
       const asyncStart = SOURCE.indexOf(`async function ${name}(`);
@@ -1007,8 +1008,10 @@ function recordingEmitter(label, log) {
   };
 }
 
-function dashboardWindowHarness({ platform, frameless = false } = {}) {
+function dashboardWindowHarness({ platform, frameless = false, remoteHosts = null, downloadExpectations = null, dialogResponse = 1, dialogChecked = false } = {}) {
   const log = [];
+  const prompts = [];
+  const sessionListeners = new Map();
   const firstLine = (text) => String(text).split("\n").map((line) => line.trim()).find(Boolean);
   const viewEvents = recordingEmitter("view", log);
   const viewContents = {
@@ -1018,7 +1021,11 @@ function dashboardWindowHarness({ platform, frameless = false } = {}) {
       webRequest: {
         onBeforeSendHeaders() { log.push("view.session.onBeforeSendHeaders"); },
       },
-      on(event) { log.push(`view.session.on:${event}`); return this; },
+      on(event, listener) {
+        log.push(`view.session.on:${event}`);
+        sessionListeners.set(event, listener);
+        return this;
+      },
     },
     setWindowOpenHandler(handler) {
       log.push("view.setWindowOpenHandler");
@@ -1084,14 +1091,21 @@ function dashboardWindowHarness({ platform, frameless = false } = {}) {
       BaseWindow: { getAllWindows: () => [win], getFocusedWindow: () => null },
       Menu: { buildFromTemplate: () => ({ popup() {} }) },
       shell: { openExternal(url) { openedExternally.push(url); return Promise.resolve(); } },
+      dialog: {
+        async showMessageBox(parent, options) {
+          prompts.push({ parent, options });
+          return { response: dialogResponse, checkboxChecked: dialogChecked };
+        },
+      },
       nativeTheme: { shouldUseDarkColors: false, themeSource: "system" },
       app: { getPath: () => "/virtual/logs", getVersion: () => "0.8.0", name: "Kiro Crew" },
     },
-    store: { get: (key) => (key === "linuxFrameless" ? frameless : null) },
+    store: { get: (key) => (key === "linuxFrameless" ? frameless : key === "remoteHosts" ? remoteHosts : null) },
     platform,
     env: {},
+    downloadExpectations,
   }));
-  return { lifecycle, win, viewContents, log, panelViews, openedExternally };
+  return { lifecycle, win, viewContents, log, panelViews, openedExternally, prompts, sessionListeners };
 }
 
 async function wireDashboardWindow(t, options) {
@@ -1102,7 +1116,6 @@ async function wireDashboardWindow(t, options) {
   const wiring = harness.log.splice(0);
   harness.viewContents.emit("did-finish-load");
   const onLoad = harness.log.splice(0);
-  await harness.win._mcAgentChannel.stop();
   return { ...harness, wiring, onLoad };
 }
 
@@ -1120,13 +1133,14 @@ describe("dashboard window wiring order", () => {
     assert.deepEqual(events, [
       "view.on:did-finish-load",
       "win.on:swipe",
+      "view.on:input-event",
       "win.on:closed",
       "win.on:resize",
       "win.on:closed",
       "win.on:enter-full-screen",
       "win.on:leave-full-screen",
       "view.on:enter-html-full-screen",
-      "view.on:leave-html-full-screen",
+      "win.on:enter-full-screen",
       "win.on:leave-full-screen",
       "win.on:show",
       "win.on:restore",
@@ -1143,6 +1157,8 @@ describe("dashboard window wiring order", () => {
       "win.on:focus",
       "win.on:focus",
       "view.setWindowOpenHandler",
+      "view.on:will-navigate",
+      "view.on:will-redirect",
       "view.on:did-create-window",
       "view.session.onBeforeSendHeaders",
       "view.session.on:will-download",
@@ -1170,6 +1186,14 @@ describe("dashboard window wiring order", () => {
     assert.ok(!wiring.some((entry) => entry.startsWith("win.setWindowButtonPosition")));
     assert.equal(onLoad[1], "win.setTitle:Kiro Crew", "the default local port is omitted on Windows");
     assert.equal(onLoad[2], "view.insertCSS:#electron-drag-bar {");
+  });
+
+  it("a window whose port names a configured crew withholds the local-only bridges", async (t) => {
+    const { wiring } = await wireDashboardWindow(t, {
+      platform: "darwin",
+      remoteHosts: { 5476: { host: "crew.example.test" } },
+    });
+    assert.equal(wiring[0], "new WebContentsView:[\"--kc-remote-gateway\"]");
   });
 
   it("a frameless Linux window injects caption controls after the drag band", async (t) => {
@@ -1211,6 +1235,87 @@ describe("dashboard window wiring order", () => {
     assert.deepEqual(openedExternally, ["https://example.com/docs", "https://example.com/docs"]);
   });
 
+  for (const [label, dialogResponse, expected] of [["Open", 0, true], ["Cancel", 1, false]]) {
+    it(`asks in a dialog on the window before an editor link, and ${label} decides`, async (t) => {
+      const { win, viewContents, openedExternally, prompts } = await wireDashboardWindow(t, {
+        platform: "darwin",
+        dialogResponse,
+      });
+      const link = "vscode://file/Users/me/a.ts:3";
+      assert.deepEqual(viewContents.windowOpenHandler({ url: link }), { action: "deny" });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(prompts.length, 1);
+      assert.equal(prompts[0].parent, win);
+      assert.equal(prompts[0].options.detail, link);
+      assert.equal(prompts[0].options.cancelId, 1);
+      assert.deepEqual(openedExternally, expected ? [link] : []);
+    });
+  }
+
+  it("skips the dialog for the same machine after Don't ask again is checked", async (t) => {
+    const { viewContents, openedExternally, prompts } = await wireDashboardWindow(t, {
+      platform: "darwin",
+      dialogResponse: 0,
+      dialogChecked: true,
+    });
+    const settle = () => new Promise((resolve) => setImmediate(resolve));
+    viewContents.windowOpenHandler({ url: "vscode://file/Users/me/a.ts" });
+    await settle();
+    viewContents.windowOpenHandler({ url: "vscode://file/Users/me/b.ts" });
+    await settle();
+    assert.equal(prompts.length, 1);
+    assert.match(prompts[0].options.checkboxLabel, /Don't ask again/);
+    assert.deepEqual(openedExternally, ["vscode://file/Users/me/a.ts", "vscode://file/Users/me/b.ts"]);
+  });
+
+  it("refuses a top-level navigation off the app origin, in the dashboard and its pop-outs", async (t) => {
+    const { viewContents, openedExternally } = await wireDashboardWindow(t, { platform: "darwin" });
+    const popout = { webContents: { ...recordingEmitter("child", []), setWindowOpenHandler() {} } };
+    viewContents.emit("did-create-window", popout);
+    const navigate = (contents, url) => {
+      let prevented = false;
+      contents.emit("will-navigate", { preventDefault: () => { prevented = true; } }, url);
+      return prevented;
+    };
+    for (const contents of [viewContents, popout.webContents]) {
+      // A pane on another loopback port promoting itself to the top frame.
+      assert.equal(navigate(contents, "http://localhost:5477/"), true);
+      assert.equal(navigate(contents, "http://127.0.0.1:5476/"), true);
+      assert.equal(navigate(contents, "https://example.com/"), true);
+      assert.equal(navigate(contents, "file:///etc/passwd"), true);
+      assert.equal(navigate(contents, "blob:http://localhost:5476/x"), true);
+      assert.equal(navigate(contents, "not a url"), true);
+      // The dashboard's own routes, and the token prompt's hand-off, still work.
+      assert.equal(navigate(contents, "http://localhost:5476/chat?x=1"), false);
+      assert.equal(navigate(contents, "http://localhost:5476/?token=t"), false);
+    }
+    assert.deepEqual(openedExternally, [], "a refused navigation opens nothing");
+  });
+
+  it("refuses a main-frame redirect off the app origin, in the dashboard and its pop-outs", async (t) => {
+    const { viewContents } = await wireDashboardWindow(t, { platform: "darwin" });
+    const popout = { webContents: { ...recordingEmitter("child", []), setWindowOpenHandler() {} } };
+    viewContents.emit("did-create-window", popout);
+    const redirect = (contents, url, isMainFrame = true) => {
+      let prevented = false;
+      contents.emit("will-redirect", { url, isMainFrame, preventDefault: () => { prevented = true; } });
+      return prevented;
+    };
+    for (const contents of [viewContents, popout.webContents]) {
+      assert.equal(redirect(contents, "https://sso.example/login"), true);
+      assert.equal(redirect(contents, "http://127.0.0.1:5476/"), true);
+      assert.equal(redirect(contents, "http://localhost:54760/"), true);
+      assert.equal(redirect(contents, "http://localhost:5476.evil.test/"), true);
+      // A pane iframe redirecting inside its own origin is not the dashboard's.
+      assert.equal(redirect(contents, "http://kirocrew.localhost:6000/x", false), false);
+      assert.equal(redirect(contents, "http://localhost:5476/chat?token=t"), false);
+      // No isMainFrame on the event: an unknown frame counts as main, so refused.
+      let unknownFrameRefused = false;
+      contents.emit("will-redirect", { url: "https://sso.example/login", preventDefault: () => { unknownFrameRefused = true; } });
+      assert.equal(unknownFrameRefused, true);
+    }
+  });
+
   it("a framed window injects neither the drag band nor caption controls", async (t) => {
     const { onLoad } = await wireDashboardWindow(t, { platform: "linux", frameless: false });
     assert.deepEqual(onLoad, [
@@ -1229,11 +1334,41 @@ describe("dashboard window wiring order", () => {
     assert.ok(win._mcBrowserPanels instanceof Map);
     assert.equal(typeof win._mcBrowserPanel, "function");
     assert.equal(typeof win._mcDestroyBrowserPanel, "function");
-    assert.ok(win._mcReachableSessions instanceof Set);
     assert.equal(typeof win._mcSetCustomName, "function");
     assert.equal(win._mcGetCustomName(), null);
     win._mcSetCustomName("Work");
     assert.equal(win._mcGetCustomName(), "Work");
+  });
+});
+
+describe("dashboard download handler platform", () => {
+  // Two in-flight downloads whose names differ only in case collide on a
+  // case-insensitive volume (darwin, win32) and not on Linux. Running both
+  // platforms means one of them differs from whatever host runs the suite.
+  async function savePathsFor(t, platform) {
+    const harness = await wireDashboardWindow(t, {
+      platform,
+      downloadExpectations: { claim: () => true },
+    });
+    const onWillDownload = harness.sessionListeners.get("will-download");
+    return ["Report.zip", "report.zip"].map((name) => {
+      let savePath = null;
+      onWillDownload({}, {
+        getURLChain: () => ["http://localhost:5476/export"],
+        getFilename: () => name,
+        setSavePath(p) { savePath = p; },
+        once() {},
+      }, harness.viewContents);
+      return path.basename(savePath);
+    });
+  }
+
+  it("folds case on the injected darwin platform", async (t) => {
+    assert.deepEqual(await savePathsFor(t, "darwin"), ["Report.zip", "report (1).zip"]);
+  });
+
+  it("keeps case on the injected linux platform", async (t) => {
+    assert.deepEqual(await savePathsFor(t, "linux"), ["Report.zip", "report.zip"]);
   });
 });
 
@@ -1246,19 +1381,13 @@ describe("browser panel IPC routing", () => {
     assert.equal(lifecycle.browser.setOverlay(viewContents, "p1", true), null);
     assert.equal(lifecycle.browser.setInactive(viewContents, "p1", true), null);
     assert.equal(lifecycle.browser.close(viewContents, "p1"), null);
-    assert.equal(lifecycle.browser.getControl(viewContents, "p1"), null);
-    assert.equal(await lifecycle.browser.control(viewContents, "p1", "snapshot", {}), null);
     assert.deepEqual(
       await lifecycle.browser.annotate(viewContents, "p1", "poll", {}),
       { ok: false, code: "no_view", error: "no native browser panel" },
     );
     assert.equal(win._mcBrowserPanels.size, 0, "no panel was created by any of the above");
-
-    assert.deepEqual(lifecycle.browser.trackSession(stranger, "s1", true), { ok: false });
-    assert.deepEqual(lifecycle.browser.trackSession(viewContents, "  s1  ", true), { ok: true });
-    assert.deepEqual([...win._mcReachableSessions], ["s1"]);
-    assert.deepEqual(lifecycle.browser.trackSession(viewContents, "s1", false), { ok: true });
-    assert.equal(win._mcReachableSessions.size, 0);
+    assert.equal(lifecycle.browser.open(stranger, "p1", "https://example.test"), null);
+    assert.equal(win._mcBrowserPanels.size, 0, "a stranger's open creates nothing");
   });
 });
 
@@ -1669,5 +1798,171 @@ describe("gateway port prompt", () => {
       await settle();
       assert.deepEqual(ports, expected, `answer ${JSON.stringify(answer)}`);
     }
+  });
+});
+
+// Enough of Electron for createTray, recording every Tray it makes.
+function trayElectron(trays = []) {
+  return {
+    app: { name: "Kiro Crew", getVersion: () => "0.8.0", getPath: () => "/virtual/logs" },
+    Tray: class {
+      constructor() { this.destroyed = false; trays.push(this); }
+      setToolTip() {}
+      setContextMenu() {}
+      on() {}
+      destroy() { this.destroyed = true; }
+    },
+    Menu: { buildFromTemplate: (template) => ({ template }) },
+    nativeImage: {
+      createFromPath: () => ({ resize: () => ({ fake: "icon" }), setTemplateImage() {} }),
+    },
+    shell: {},
+  };
+}
+
+// ── Close button: background vs quit (#12204) ───────────────────────────────
+
+describe("main window close action", () => {
+  function closeHandlerBody() {
+    const start = SOURCE.indexOf('mainWindow.on("close", createCloseHandler({');
+    assert.notEqual(start, -1, "main window close handler must be built by createCloseHandler");
+    return SOURCE.slice(start, SOURCE.indexOf("\n    }));\n", start));
+  }
+
+  it("wires the close listener to the store, the tray hide, requestQuit and persist", () => {
+    // The sequence itself is exercised behaviourally in close-action.test.js;
+    // this pins that the main window feeds it the real effects.
+    const body = closeHandlerBody();
+    assert.match(body, /getAction: \(\) => getCloseAction\(store\)/);
+    assert.match(body, /cancelPendingTrayHide\(mainWindow\)/);
+    assert.match(body, /^\s*requestQuit,$/m);
+    assert.match(body, /hideToTray\(mainWindow, \{/);
+    assert.match(body, /persist\(\);/);
+  });
+
+  function facadeHarness(stored = {}) {
+    const data = { ...stored };
+    const writes = [];
+    const store = {
+      get: (key) => data[key],
+      set: (key, value) => { writes.push([key, value]); data[key] = value; },
+    };
+    // Setting the close action re-syncs the tray icon, so Tray must exist.
+    const lifecycle = createWindowLifecycle(validOptions({ store, electron: trayElectron() }));
+    return { lifecycle, data, writes };
+  }
+
+  it("the facade reads and writes the stored choice, canonicalized", () => {
+    const h = facadeHarness();
+    assert.equal(h.lifecycle.closeAction.get(), "background", "an untouched install keeps running");
+    assert.equal(h.lifecycle.closeAction.set("quit"), "quit");
+    assert.equal(h.data.closeAction, "quit");
+    assert.equal(h.lifecycle.closeAction.get(), "quit");
+    assert.equal(h.lifecycle.closeAction.set("nonsense"), "background");
+    assert.equal(h.data.closeAction, "background");
+  });
+
+  it("the facade skips a write that changes nothing", () => {
+    const h = facadeHarness({ closeAction: "quit" });
+    h.lifecycle.closeAction.set("quit");
+    assert.deepEqual(h.writes, []);
+    h.lifecycle.closeAction.set("background");
+    assert.deepEqual(h.writes, [["closeAction", "background"]]);
+  });
+
+  it("the tray menu is unchanged: the setting lives only in Settings", () => {
+    const menus = [];
+    const lifecycle = createWindowLifecycle(validOptions({
+      electron: {
+        app: { name: "Kiro Crew", getVersion: () => "0.8.0", getPath: () => "/virtual/logs" },
+        Tray: class {
+          setToolTip() {}
+          setContextMenu() {}
+          on() {}
+        },
+        Menu: { buildFromTemplate: (template) => { menus.push(template); return { template }; } },
+        nativeImage: {
+          createFromPath: () => ({ resize: () => ({ fake: "icon" }), setTemplateImage() {} }),
+        },
+        shell: {},
+      },
+      store: { path: "/virtual/config.json", get: () => undefined, set() {} },
+      platform: "linux",
+      env: {},
+    }));
+    lifecycle.syncTray();
+    assert.deepEqual(
+      menus[0].map((item) => item.label || item.type),
+      ["Show Kiro Crew", "separator", "New Connection Window…", "separator", "Open Config File", "separator", "Quit"],
+    );
+  });
+});
+
+// ── Show tray icon (#21924) ─────────────────────────────────────────────────
+
+describe("tray icon setting", () => {
+  function trayHarness(stored = {}, platform = "linux") {
+    const data = { ...stored };
+    const trays = [];
+    const lifecycle = createWindowLifecycle(validOptions({
+      electron: trayElectron(trays),
+      store: { path: "/virtual/config.json", get: (key) => data[key], set: (key, value) => { data[key] = value; } },
+      platform,
+      env: {},
+    }));
+    const live = () => trays.filter((tray) => !tray.destroyed).length;
+    return { lifecycle, data, trays, live };
+  }
+
+  it("creates the icon at startup unless the user hid it while the close button quits", () => {
+    const shown = trayHarness();
+    shown.lifecycle.syncTray();
+    assert.equal(shown.live(), 1);
+
+    const hidden = trayHarness({ closeAction: "quit", showTrayIcon: false });
+    hidden.lifecycle.syncTray();
+    assert.equal(hidden.trays.length, 0, "no Tray is created");
+  });
+
+  it("hides and shows the icon live, and brings it back when the close button hides the window again", () => {
+    const h = trayHarness({ closeAction: "quit" });
+    h.lifecycle.syncTray();
+    assert.deepEqual(h.lifecycle.trayIcon.set(false), { show: false, canHide: true });
+    assert.equal(h.live(), 0);
+    assert.equal(h.lifecycle.getTray(), null);
+
+    h.lifecycle.closeAction.set("background");
+    assert.equal(h.live(), 1, "the way back to a hidden window returns with the setting");
+    assert.deepEqual(h.lifecycle.trayIcon.get(), { show: true, canHide: false });
+
+    h.lifecycle.closeAction.set("quit");
+    assert.equal(h.live(), 0, "the stored choice applies again once the close button quits");
+    assert.equal(h.lifecycle.trayIcon.set(true).show, true);
+    assert.equal(h.live(), 1);
+    assert.equal(h.trays.length, 3);
+  });
+
+  it("refuses to hide the icon while the close button hides the window off macOS", () => {
+    const h = trayHarness({ closeAction: "background" });
+    h.lifecycle.syncTray();
+    assert.deepEqual(h.lifecycle.trayIcon.set(false), { show: true, canHide: false });
+    assert.equal(h.live(), 1);
+    assert.equal(h.data.showTrayIcon, undefined, "nothing is written");
+  });
+
+  it("re-syncs the icon before the close button hides the window", () => {
+    // The close action is read from the store at close time, so a hand-edited
+    // switch to hide must bring the icon back before the window disappears.
+    const hide = SOURCE.slice(SOURCE.indexOf("close: hiding to tray"));
+    const sync = hide.indexOf("syncTray();");
+    assert.ok(sync !== -1 && sync < hide.indexOf("hideToTray(mainWindow"),
+      "the close handler's hide path calls syncTray() before hideToTray()");
+  });
+
+  it("hides the icon on macOS whatever the close button does", () => {
+    const h = trayHarness({ closeAction: "background" }, "darwin");
+    h.lifecycle.syncTray();
+    assert.deepEqual(h.lifecycle.trayIcon.set(false), { show: false, canHide: true });
+    assert.equal(h.live(), 0);
   });
 });

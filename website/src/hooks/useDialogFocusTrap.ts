@@ -4,7 +4,7 @@
 // An aria-modal dialog that lets focus wander behind the overlay would let
 // keyboard users activate obscured controls, so every dialog needs the same
 // three pieces. They live here rather than being re-implemented per dialog.
-import { useEffect, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useRef, type RefObject } from 'react'
 import { useDocumentImeLatch } from './useImeGuard'
 import { useLocalCrewHidden } from '../components/overlayRoot'
 
@@ -12,6 +12,23 @@ import { useLocalCrewHidden } from '../components/overlayRoot'
 export const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
   'textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+
+/**
+ * Mount order of every trap whose Tab handling is armed. Only the newest
+ * MOUNTED one moves focus on Tab.
+ *
+ * `enabled` covers a dialog that knows it opened an inner one. This covers the
+ * one that does not: the image viewer opens from a document-level event, over
+ * whichever Modal holds the markdown. Two armed traps would each pull focus
+ * back inside themselves on every Tab, so focus could never leave the newer
+ * dialog's first control. The order is the mount order, not the arm order, so
+ * an outer dialog re-arming on a re-render does not jump back in front.
+ * Escape is not gated here: its owners already consume it in order (see
+ * `handleEscape`).
+ */
+let nextTrapOrder = 0
+const armedTabTraps = new Set<number>()
+const newestArmedTrap = (): number => Math.max(-1, ...armedTabTraps)
 
 /**
  * Wire a dialog element for modal keyboard use.
@@ -79,7 +96,8 @@ export function useDialogFocusTrap(
   // close the same happens to whatever regains focus.
   useEffect(() => {
     const restoreTo = restoreFocus ? (document.activeElement as HTMLElement | null) : null
-    const first = containerRef.current?.querySelector<HTMLElement>(FOCUSABLE)
+    const first = Array.from(containerRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])
+      .find((el) => el.tabIndex >= 0)
     ;(first ?? containerRef.current)?.focus({ preventScroll: true })
     return () => restoreTo?.focus?.({ preventScroll: true })
   }, [containerRef, restoreFocus])
@@ -97,8 +115,18 @@ export function useDialogFocusTrap(
   const imeLatch = useDocumentImeLatch(enabled)
   const crewHidden = useLocalCrewHidden()
 
-  useEffect(() => {
+  // This trap's place in `armedTabTraps`, fixed at mount. Declared before the
+  // key effect so it is set when that effect first arms.
+  const mountOrderRef = useRef(0)
+  useLayoutEffect(() => { mountOrderRef.current = ++nextTrapOrder }, [])
+
+  // A layout effect, so Escape and the Tab trap are armed in the same commit
+  // that mounts the dialog: a passive effect can run a task later, and a key
+  // pressed in that gap was dropped (see Modal's Escape listener).
+  useLayoutEffect(() => {
     if (!enabled || crewHidden) return
+    const order = mountOrderRef.current
+    armedTabTraps.add(order)
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && handleEscape) {
         // An Escape the IME owns must not dismiss the dialog: the user is
@@ -115,8 +143,14 @@ export function useDialogFocusTrap(
       }
       const container = containerRef.current
       if (e.key !== 'Tab' || !container) return
+      // A newer trap owns Tab (see `armedTabTraps`).
+      if (newestArmedTrap() !== order) return
+      // Only real Tab stops count: a roving-tabindex group (RadioChipGroup)
+      // leaves its unchecked options as `tabIndex = -1` buttons, which match
+      // FOCUSABLE but are never reached by Tab, so one of them as `lastEl`
+      // would stop the trap from ever wrapping.
       const items = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE))
-        .filter((el) => el.offsetParent !== null)
+        .filter((el) => el.offsetParent !== null && el.tabIndex >= 0)
       if (!items.length) return
       const firstEl = items[0]
       const lastEl = items[items.length - 1]
@@ -139,6 +173,9 @@ export function useDialogFocusTrap(
       ;(wrapsBackward ? lastEl : firstEl).focus()
     }
     window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      armedTabTraps.delete(order)
+    }
   }, [containerRef, onEscape, enabled, handleEscape, imeLatch, crewHidden])
 }

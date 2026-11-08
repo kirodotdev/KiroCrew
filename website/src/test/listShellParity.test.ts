@@ -41,8 +41,9 @@ function sidebarFiles(): string[][] {
 /** Per page: the files that draw its list shell, and the text the negative pin reads. */
 const PAGES: ReadonlyArray<readonly [label: string, files: readonly string[][], scan: () => string]> = [
   ['ChatSidebar', sidebarFiles(), () => source(sidebarFiles())],
-  // The roster card is drawn by its column, its rows by MembersPageRosterRows.
-  ['MembersPage', [['pages', 'members', 'MembersPageRoster.tsx'], ['pages', 'members', 'MembersPageRosterRows.tsx']], readMembersPage],
+  // The roster card is drawn by its column, its rows by MembersPageRosterRows,
+  // and the row's title and status lines by CrewmateRowBody (shared with the switcher).
+  ['MembersPage', [['pages', 'members', 'MembersPageRoster.tsx'], ['pages', 'members', 'MembersPageRosterRows.tsx'], ['pages', 'members', 'CrewmateRowBody.tsx']], readMembersPage],
 ]
 
 /** One page's source text: every file it is built from, joined. */

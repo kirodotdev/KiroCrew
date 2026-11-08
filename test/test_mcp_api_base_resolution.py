@@ -1,24 +1,18 @@
 """A refused gateway callback re-resolves its base once and replays.
 
-The port a ``--port``-started gateway is bound to is recorded only in its run
-marker, so an MCP tool server that resolved its base before the gateway came up
-(or before it moved) holds a stale base. These tests pin the recovery path:
-every verb helper routes through ``mcp_core._send``, which on a
-refused connection drops the resolution caches, re-resolves, and replays the
-request exactly once — and only when re-resolution actually produced a
-different base. ``mcp_computer._invoke`` applies the same rule to its one
-request path.
-
-``TestSameBaseRefusalRetry`` covers the case that rule deliberately declines --
-a gateway restarting on its OWN port, where there is no moved base to find. That
-case gets a short bounded retry of the same target and, on exhaustion, an
-actionable message.
+An MCP server can hold a stale base when the gateway port lives only in the run
+marker. On a refusal ``mcp_core._send`` (and ``mcp_computer._invoke``) re-resolves
+and replays once, only when the base changed.
+``TestSameBaseRefusalRetry`` covers a gateway restarting on its own port: a short
+bounded retry, then an actionable message.
 """
 
 from __future__ import annotations
 
 import importlib
 import socket
+import threading
+import time
 import urllib.error
 from typing import Any
 
@@ -53,13 +47,8 @@ def _bases(monkeypatch: pytest.MonkeyPatch, mcp: Any, sequence: list[str]) -> No
 def _sock_for(port: int) -> str:
     """The socket path the product derives for *port*, derived the same way.
 
-    Assertions about which gateway a transport reached compare against THIS,
-    never a port substring of the path. The path contains the data home, whose
-    isolation directory is named ``<counter>-kirocrew-home`` from a per-process
-    allocation counter — so a worker that has handed out 5,476 paths puts the
-    literal ``5476`` in every path it builds afterwards. A substring check then
-    reports whichever port the counter happens to equal: the negative form fails
-    a correct socket, and the positive form passes a wrong one.
+    Compare against this, never a port substring: the data home is named
+    ``<counter>-kirocrew-home``, so the counter can equal a port and fool the check.
     """
     from kiro_crew.dashboard.origin import dashboard_socket_path
 
@@ -198,15 +187,8 @@ def test_no_replay_when_rediscovery_returns_the_same_base(mcp: Any, monkeypatch)
 def test_no_replay_when_rediscovery_falls_through_to_default(mcp: Any, monkeypatch) -> None:
     """A no-evidence default fall-through must never receive the replay.
 
-    The marker gateway exited after the first resolution; re-resolution finds
-    nothing and falls through to the default port. A listener there is
-    unverified — it could be any local process — and the request carries the
-    internal secret, so the replay is skipped even though the base differs.
-
-    The SAME evidence rule bounds the same-base retry. Re-resolution proving
-    nothing means the refused port is not proven to be ours either, so the
-    retry window is not spent dialling it: one dial in total, and the caller is
-    told the gateway is unreachable.
+    A listener on the default port is unverified and the request carries the
+    internal secret. The same rule skips the same-base retry: one dial in total.
     """
     attempts: list[str] = []
     _bases(monkeypatch, mcp, ["http://127.0.0.1:9999"])
@@ -297,11 +279,8 @@ def test_http_error_on_replay_surfaces_the_backend_body(mcp: Any, monkeypatch) -
 class TestMcpComputerReplay:
     """``mcp_computer._invoke`` — the same refused-once-replay rule, SHARED.
 
-    This shim consumes ``mcp_core._replay_target`` rather than restating the
-    rule (invalidate, re-resolve, check the source, compare the base) itself, so
-    the cases below script the rule at ITS seam (``_resolve_api_port`` on
-    ``mcp_core``) and assert this shim's error wording stays distinct: sharing
-    the rule must not normalise the two callers' messages.
+    The rule is scripted at its seam (``_resolve_api_port`` on ``mcp_core``), and
+    this shim's error wording must stay distinct from ``_send``'s.
     """
 
     @pytest.fixture
@@ -380,15 +359,10 @@ class TestMcpComputerReplay:
     def test_the_attempt_pairs_its_unix_socket_with_its_base(
         self, computer: Any, mcp: Any, monkeypatch
     ) -> None:
-        """The gap restating the rule hid: this shim dialled TCP only.
+        """This shim dials the unix socket, not TCP only.
 
-        ``loopback_urlopen`` PREFERS the unix socket, and that socket is what
-        lets the gateway kernel-verify (``SO_PEERCRED`` + /proc ancestry) that
-        this process really owns the session key it declares. Passing no socket
-        path meant every computer-use call fell back to TCP and the
-        header-on-faith path — for the one tool family whose whole point is that
-        the gateway evaluates and audits it. Consuming the shared resolution
-        fixes it for free, so it is pinned here.
+        The socket lets the gateway kernel-verify (``SO_PEERCRED`` + /proc ancestry)
+        that this process owns its session key; TCP takes the header on faith.
         """
         seen: list[str] = []
         monkeypatch.setattr(mcp, "_API", "http://127.0.0.1:7788")
@@ -457,17 +431,9 @@ class TestMcpComputerReplay:
 class TestOneResolutionPerAttempt:
     """One request attempt resolves ONE ``(base, socket_path)`` pair.
 
-    On a marker-discovered port -- the zero-config case -- neither the port, the
-    base nor the socket path is cached: a marker resolution is proven for that
-    instant only, so every secret-bearing request must re-run the discovery
-    chain and re-prove ownership. That rule is right, but ``_api_base()`` and
-    ``_api_unix_socket()`` each apply it INDEPENDENTLY, so one attempt runs the
-    chain twice and its two transports are derived from two different
-    resolutions. ``loopback_urlopen`` prefers the socket, so the component that
-    actually carries the request is the one the refusal logic never inspected.
-
-    These tests pin the pair, not the plumbing: what matters is that one attempt
-    resolves once, and that both of its transports name the same gateway.
+    A marker-discovered port is not cached, so each request re-resolves. Resolving
+    ``_api_base()`` and ``_api_unix_socket()`` separately could name two gateways,
+    and the socket that carries the request would be one the refusal logic never saw.
     """
 
     def test_one_attempt_resolves_the_chain_once(self, mcp: Any, monkeypatch) -> None:
@@ -513,17 +479,8 @@ class TestOneResolutionPerAttempt:
     def test_a_seeded_pair_is_handed_back_untouched(self, mcp: Any, monkeypatch) -> None:
         """The resolver must answer exactly what the standalone getters answer.
 
-        ``_api_base`` and ``_api_unix_socket`` return a populated memo whatever
-        the port cache holds, and the cache comment documents that tests may
-        pre-seed any of the three with a concrete value —
-        ``test_dashboard_peer_auth`` seeds the socket and base to point the
-        client at a real ``AF_UNIX`` server.
-
-        A resolver that additionally demanded ``_API_PORT`` would discard that
-        seeded pair and re-resolve, sending the request somewhere else entirely.
-        That is drift between ``_send`` and the getters, which is the exact
-        thing this function exists to remove — so it is asserted here rather
-        than left to a POSIX-only integration test to catch.
+        ``test_dashboard_peer_auth`` seeds the socket and base with no ``_API_PORT``;
+        a resolver that demanded it would discard the pair and send elsewhere.
         """
         monkeypatch.setattr(mcp, "_API_PORT", None)
         monkeypatch.setattr(mcp, "_API", "http://127.0.0.1:1")
@@ -540,15 +497,9 @@ class TestOneResolutionPerAttempt:
     ) -> None:
         """The replay is where the split resolution bites hardest.
 
-        ``_send`` builds ``retry_base`` from the very resolution whose source it
-        just checked — deliberately, so the check and the dial cannot race --
-        but the socket path is then resolved AGAIN, independently. The replay's
-        two transports can therefore name different gateways, and the
-        ``retry_base == base`` guard that decides whether to replay at all is
-        computed on the half that may never be dialled.
-
-        Ownership re-proof is per ATTEMPT, so the replay must resolve a FRESH
-        pair (never reuse the refused one) — exactly one, used for both halves.
+        The ``retry_base == base`` guard must judge the pair actually dialled.
+        Ownership is re-proved per attempt, so the replay resolves one fresh pair
+        for both halves, never the refused one.
         """
         # A distinct port per run: the pair invariant is then visible without
         # the script having to predict HOW MANY times the chain is asked.
@@ -573,19 +524,9 @@ class TestOneResolutionPerAttempt:
 class TestSameBaseRefusalRetry:
     """A gateway restarting on its OWN port gets a short bounded retry.
 
-    ``_replay_target`` deliberately answers ``None`` when re-resolution names the
-    base that was just refused — there is no moved gateway to chase. That left
-    ``_send`` with a bare ``return {"error": str(e)}``, so an MCP write issued
-    during the sub-second window a restarting gateway is rebinding its port came
-    back as the raw ``<urlopen error [Errno 61] Connection refused>``: no retry,
-    and an errno the caller cannot act on.
-
-    The retry is legal precisely because the connect never completed, so nothing
-    was handed to the gateway and the request cannot have been executed. These
-    tests pin that it happens for a refusal, that exhaustion is reported
-    actionably, and that no other failure class is retried — an ``HTTPError`` has
-    a real response, and a post-connect failure leaves acceptance undetermined,
-    which spawn_run's reconcile reads off ``transport_error``.
+    A refused connect handed nothing to the gateway, so retrying is safe. Only a
+    refusal is retried: an ``HTTPError`` has a real response, and a post-connect
+    failure is undetermined (spawn_run's reconcile reads ``transport_error``).
     """
 
     @pytest.fixture
@@ -599,6 +540,24 @@ class TestSameBaseRefusalRetry:
     @staticmethod
     def _refusal() -> urllib.error.URLError:
         return urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+
+    @staticmethod
+    def _recording_time() -> tuple[list[float], Any]:
+        """A stand-in for the module's ``time`` that records the sleeps it serves.
+
+        Swap ``mcp_core``'s own ``time`` binding, not the shared stdlib object, so no
+        other thread's ``time.sleep`` is recorded. Other attributes delegate to ``time``.
+        """
+        slept: list[float] = []
+
+        class _RecordingTime:
+            def sleep(self, seconds: float) -> None:
+                slept.append(seconds)
+
+            def __getattr__(self, name: str) -> Any:
+                return getattr(time, name)
+
+        return slept, _RecordingTime()
 
     @staticmethod
     def _resolution_sequence(
@@ -638,12 +597,8 @@ class TestSameBaseRefusalRetry:
     def test_an_unproven_port_is_never_re_dialled(self, mcp: Any, monkeypatch) -> None:
         """``bound`` is the NORMAL source, and it carries no ownership evidence.
 
-        ``KIROCREW_BOUND_PORT`` is inherited process state naming the gateway that
-        spawned us, exported once its site was listening, and it ranks ABOVE the
-        marker step -- so every gateway-spawned MCP server resolves ``bound``,
-        never ``marker``. That label says the value has not changed, not that the
-        gateway is still on it, so a re-dial has to prove the port is still held
-        by this user's gateway.
+        ``KIROCREW_BOUND_PORT`` is inherited and ranks above the marker, so it says
+        the value is unchanged, not that the gateway still holds the port.
         """
         base = "http://127.0.0.1:7788"
         _retry_resolution(monkeypatch, mcp, 7788, "bound")
@@ -738,12 +693,8 @@ class TestSameBaseRefusalRetry:
     ) -> None:
         """A restarted gateway is a new GENERATION, so the secret is re-read.
 
-        ``read_local_secret`` resolves ``run/gateway-<port>.secret`` before the
-        shared file because the credential identifies one gateway generation, and
-        authenticating for a different generation than the one owning the dialled
-        port earns a 403. The request was built with the pre-restart secret, so a
-        retry that replays it reaches the gateway this fix exists to reach and is
-        rejected — the credential has to be re-read for the re-proven target.
+        ``run/gateway-<port>.secret`` names one generation; replaying the pre-restart
+        secret to the new one earns a 403.
         """
         mcp = unchanged_base
         # Patched at the credential seam itself. The FIRST dial's header was built
@@ -796,12 +747,8 @@ class TestSameBaseRefusalRetry:
     def test_a_port_freed_mid_backoff_is_never_re_dialled(self, mcp: Any, monkeypatch) -> None:
         """The security property: sleeping must not outlive the ownership proof.
 
-        Re-resolution names the refused base while ``_replay_target`` runs, so
-        there is no moved gateway to chase and the retry window opens. During the
-        backoff the gateway exits and the port is taken: the next resolution
-        names a DIFFERENT base. Re-dialling 7788 now would hand the internal
-        secret and the session key to whatever bound it, so the retry stops with
-        the unreachable message instead.
+        The port is taken during the backoff, so re-dialling 7788 would hand the
+        internal secret and session key to whatever bound it.
         """
         attempts: list[str] = []
         _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
@@ -870,8 +817,11 @@ class TestSameBaseRefusalRetry:
         """
         _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
         _retry_resolution(monkeypatch, mcp, 7788, "marker")
-        slept: list[float] = []
-        monkeypatch.setattr(mcp.time, "sleep", slept.append)
+        # Swap the module's own ``time`` binding, not the shared stdlib object,
+        # so the count is exactly the retry loop's own sleeps and no other
+        # thread's ``time.sleep`` is touched.
+        slept, fake_time = self._recording_time()
+        monkeypatch.setattr(mcp, "time", fake_time)
 
         def fake_open(req, timeout=None, unix_socket_path=None):
             raise self._refusal()
@@ -879,6 +829,56 @@ class TestSameBaseRefusalRetry:
         monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
         assert "error" in mcp._post("/api/learn", {"rule": "x"})
         assert 2 <= len(slept) <= 3, f"retry budget drifted: {slept}"
+        assert sum(slept) <= 2.0, f"a refused gateway blocked the caller for {sum(slept)}s"
+
+    def test_the_budget_is_not_inflated_by_another_threads_sleeps(
+        self, mcp: Any, monkeypatch
+    ) -> None:
+        """The budget count is the retry loop's own, not the whole process's.
+
+        Only ``mcp_core``'s ``time`` binding is swapped, so another thread's
+        ``time.sleep`` never reaches the recorder.
+        """
+        _bases(monkeypatch, mcp, ["http://127.0.0.1:7788"])
+        _retry_resolution(monkeypatch, mcp, 7788, "marker")
+
+        slept, fake_time = self._recording_time()
+        monkeypatch.setattr(mcp, "time", fake_time)
+
+        # A stand-in for a thread leaked by an earlier test, calling the real
+        # stdlib ``time.sleep`` a FINITE number of times. If this budget counted
+        # process-wide sleeps, these foreign calls would land in ``slept``.
+        started = threading.Event()
+        done = threading.Event()
+        foreign_calls = 8
+
+        def _foreign_sleeper() -> None:
+            started.set()
+            for _ in range(foreign_calls):
+                # A real stdlib sleep is the point: it stands in for a leaked
+                # sleeper and must be seen NOT to reach the recorder, so there is
+                # no signal to await here.
+                time.sleep(0.001)  # flake-ok: stand-in leaked sleeper, must use the real clock
+            done.set()
+
+        leaked = threading.Thread(target=_foreign_sleeper, daemon=True)
+
+        def fake_open(req, timeout=None, unix_socket_path=None):
+            raise self._refusal()
+
+        monkeypatch.setattr(mcp, "_api_urlopen", fake_open)
+        leaked.start()
+        try:
+            assert started.wait(timeout=5), "foreign thread never started"
+            assert "error" in mcp._post("/api/learn", {"rule": "x"})
+            assert done.wait(timeout=5), "foreign thread did not finish its sleeps"
+        finally:
+            leaked.join(timeout=5)
+            assert not leaked.is_alive(), "foreign thread outlived the test"
+
+        # The foreign thread's real sleeps are absent; only the retry loop's own
+        # backoffs are recorded, so the bounded-budget check holds unchanged.
+        assert 2 <= len(slept) <= 3, f"a foreign thread's sleeps leaked in: {slept}"
         assert sum(slept) <= 2.0, f"a refused gateway blocked the caller for {sum(slept)}s"
 
     def test_a_refused_replay_also_gets_the_window(self, mcp: Any, monkeypatch) -> None:

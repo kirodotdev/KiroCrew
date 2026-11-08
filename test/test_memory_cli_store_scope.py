@@ -1,23 +1,10 @@
 """``memory export`` / ``memory import`` reaching a NAMED store, in both directions.
 
-Both verbs shared one open that was hardwired to the default store's path, so a
-named store's rows were unreachable from either end while ``backups``, ``restore``
-and ``carve`` already took ``--store``. The subject here is the three ways a
-store-scoped verb goes wrong:
-
-* **A dropped scope reads the WRONG store.** ``resolve_store_path`` answers the
-  DEFAULT store's file for a name it does not know, so a verb that skips the
-  ownership guard prints the operator's global memory under the heading they
-  typed -- and ``import`` would WRITE there. Every test that claims a scope works
-  therefore plants a row in the other store and asserts it did not move.
-* **A refusal that looks like an empty answer is worse than an error.** A named
-  store's markdown root is under the fenced ``memory_stores/`` subtree, and
-  ``_guarded_entry`` shapes that refusal exactly like a missing file. So
-  ``--include-markdown`` on a named store is refused rather than reported as an
-  empty tree, and the refusal is asserted to write no payload AND no file.
-* **The default store must not move.** An omitted ``--store`` resolves the same
-  path ``VectorMemoryStore()`` derives for itself, so the no-flag behaviour is
-  pinned alongside the new one rather than assumed.
+* ``resolve_store_path`` answers the DEFAULT store's file for an unknown name, so every
+  scope test plants a row in the other store and asserts it did not move.
+* ``_guarded_entry`` shapes a refused markdown read like an empty file, so
+  ``--include-markdown`` on a named store is refused and writes no payload and no file.
+* An omitted ``--store`` must still resolve the default store's path.
 
 Store fixtures follow ``test_memory_v2_facet_read.py``: declare the silos first,
 resolve second, close every connection at teardown.
@@ -76,12 +63,8 @@ def _declare_silos(*names: str) -> None:
 def stores():
     """Open vector stores, and let a test release them before touching the files.
 
-    Each holds a live SQLite connection. On Windows an open handle blocks both
-    ``unlink`` and ``rmtree``, so a test that DELETES a store's database has to
-    close it first -- on POSIX the delete succeeds with the handle open, so the
-    divergence shows up only on the Windows shards. ``close_all`` is what those
-    tests call; teardown calls it too, so a test that fails mid-way still does
-    not leave a handle blocking temp-dir cleanup.
+    On Windows an open SQLite handle blocks ``unlink`` and ``rmtree``, so a test that
+    deletes a store's database calls ``close_all`` first; teardown calls it too.
     """
     opened: list[VectorMemoryStore] = []
 
@@ -125,6 +108,20 @@ def seeded(stores):
 
 def _ns(**kw: object) -> argparse.Namespace:
     return argparse.Namespace(**kw)
+
+
+def _refused(capsys: pytest.CaptureFixture[str], **kw: object) -> str:
+    """Run one memory verb that must refuse, and return what it wrote to stderr.
+
+    A refusal exits 1 and prints nothing on stdout, so a script chaining the verb
+    with ``&&`` cannot read it as a success.
+    """
+    with pytest.raises(SystemExit) as exc:
+        cc._memory_cmd(_ns(**kw))
+    assert exc.value.code == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    return err
 
 
 def _semantic_keys(name: str) -> list[str]:
@@ -174,23 +171,16 @@ class TestExportReadsTheStoreItWasGiven:
         claims -- and a resolver that answered the default store's file for an
         unknown name would satisfy only the first.
         """
-        cc._memory_cmd(_ns(mem_action="export", output=None, store="nosuchstore"))
-        out = capsys.readouterr().out
-        assert "'nosuchstore' is unavailable" in out
-        assert _GLOBAL_KEY not in out
-        assert '"semantic"' not in out
+        err = _refused(capsys, mem_action="export", output=None, store="nosuchstore")
+        assert "'nosuchstore' is unavailable" in err
+        assert _GLOBAL_KEY not in err
 
 
 class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
     """Admission runs BEFORE resolution, and that ordering is the whole guard.
 
-    Both resolvers compose a path by shape and check nothing exists, while
-    ``VectorMemoryStore.init`` creates what is missing -- ``make_owner_only_dir``
-    makes the parents, then a fresh empty SQLite file. Resolving first therefore
-    turns a deleted store into an empty one, and ``export`` ships
-    ``{"semantic": [], ...}`` which reads as "this store holds nothing" rather
-    than as a loss. There is no recovery path from that, which is why the refusal
-    is asserted alongside the store NOT being recreated.
+    ``VectorMemoryStore.init`` creates a missing store, so resolving first would turn a
+    deleted store into an empty one that exports as "holds nothing" instead of a loss.
     """
 
     def test_export_refuses_a_declared_store_whose_directory_was_deleted(
@@ -206,10 +196,7 @@ class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
         stores.close_all()
         shutil.rmtree(db_path.parent)
 
-        cc._memory_cmd(_ns(mem_action="export", output=None, store=_ACME))
-        out = capsys.readouterr().out
-        assert "is missing" in out
-        assert '"semantic"' not in out
+        assert "is missing" in _refused(capsys, mem_action="export", output=None, store=_ACME)
         # The recreation is the harm, so its absence is asserted directly rather
         # than inferred from the message above.
         assert not db_path.parent.exists()
@@ -227,8 +214,7 @@ class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
         stores.close_all()
         shutil.rmtree(db_path.parent)
 
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_BETA))
-        assert "is missing" in capsys.readouterr().out
+        assert "is missing" in _refused(capsys, mem_action="import", file=str(dump), store=_BETA)
         assert not db_path.parent.exists()
         assert _semantic_keys(DEFAULT_MEMORY_STORE) == [_GLOBAL_KEY]
 
@@ -252,12 +238,9 @@ class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
     ) -> None:
         """The directory surviving its database is what admission cannot see.
 
-        For a V1 named store ``require_memory_store`` routes through
-        ``_require_legacy_store_files``, which ``return``s on a missing ``memory.db``
-        -- absent evidence is not private-ownership evidence. So this state passes
-        admission, and ``init()`` would write a fresh empty database: the read would
-        both misreport a loss as an empty store and destroy the evidence it was a
-        loss. A read must not create.
+        ``_require_legacy_store_files`` returns on a missing ``memory.db``, so this state
+        passes admission and ``init()`` would write an empty database. A read must not
+        create.
         """
         db_path = resolve_store_path(_ACME)
         assert _semantic_keys(_ACME) == [_ACME_KEY]
@@ -268,10 +251,8 @@ class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
             stray.unlink()
         assert db_path.parent.exists() and not db_path.exists()
 
-        cc._memory_cmd(_ns(mem_action="export", output=None, store=_ACME))
-        out = capsys.readouterr().out
-        assert "refusing to create one on a read" in out
-        assert '"semantic"' not in out
+        err = _refused(capsys, mem_action="export", output=None, store=_ACME)
+        assert "refusing to create one on a read" in err
         # The recreation is the harm; its absence is asserted rather than inferred.
         assert not db_path.exists()
 
@@ -302,14 +283,9 @@ class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
 class TestAFailedImportLeavesNoDatabaseBehind:
     """``import`` may create, so its INPUT must be settled before it does.
 
-    The read-refusal guard deliberately excludes ``import`` -- populating a freshly
-    declared store is the whole verb -- but ``store.init()`` creates ``memory.db``
-    the moment it runs. Validating the input afterwards meant a missing or malformed
-    file still left a fresh empty database on a store whose directory had survived
-    while its database had not, and that empty file made a later ``export --store``
-    answer with rows instead of the refusal. A failed import would have silently
-    erased the evidence of a real loss, so every rejected input is asserted here to
-    leave the destination exactly as absent as it was.
+    ``store.init()`` creates ``memory.db`` at once, and an empty file would make a later
+    ``export --store`` answer instead of refusing. Every rejected input must leave the
+    destination absent.
     """
 
     def _deleted_db_store(self) -> Path:
@@ -326,16 +302,24 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db_path = self._deleted_db_store()
-        cc._memory_cmd(_ns(mem_action="import", file=None, store=_ACME))
-        assert "Usage: kirocrew memory import" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=None, store=_ACME))
+        assert exc.value.code == 1
+        assert "Usage: kirocrew memory import" in capsys.readouterr().err
         assert not db_path.exists()
 
     def test_an_absent_file_creates_nothing(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         db_path = self._deleted_db_store()
-        cc._memory_cmd(_ns(mem_action="import", file=str(tmp_path / "absent.json"), store=_ACME))
-        assert "File not found" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(
+                _ns(mem_action="import", file=str(tmp_path / "absent.json"), store=_ACME)
+            )
+        assert exc.value.code == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert "File not found" in out.err
         assert not db_path.exists()
 
     def test_malformed_json_creates_nothing(
@@ -344,8 +328,10 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         db_path = self._deleted_db_store()
         bad = tmp_path / "bad.json"
         bad.write_text("{not json", encoding="utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(bad), store=_ACME))
-        assert "could not be read as JSON" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(bad), store=_ACME))
+        assert exc.value.code == 1
+        assert "could not be read as JSON" in capsys.readouterr().err
         assert not db_path.exists()
 
     def test_a_non_object_payload_creates_nothing(
@@ -356,8 +342,10 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         db_path = self._deleted_db_store()
         listed = tmp_path / "list.json"
         listed.write_text(json.dumps([{"key": "k"}]), encoding="utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(listed), store=_ACME))
-        assert "is not an export object" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(listed), store=_ACME))
+        assert exc.value.code == 1
+        assert "is not an export object" in capsys.readouterr().err
         assert not db_path.exists()
 
     def test_the_refusal_preserves_the_export_side_loss_signal(
@@ -369,12 +357,13 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         failed import had created the database, the export would answer with rows.
         """
         self._deleted_db_store()
-        cc._memory_cmd(_ns(mem_action="import", file=str(tmp_path / "absent.json"), store=_ACME))
+        with pytest.raises(SystemExit):
+            cc._memory_cmd(
+                _ns(mem_action="import", file=str(tmp_path / "absent.json"), store=_ACME)
+            )
         capsys.readouterr()
-        cc._memory_cmd(_ns(mem_action="export", output=None, store=_ACME))
-        out = capsys.readouterr().out
-        assert "refusing to create one on a read" in out
-        assert '"semantic"' not in out
+        err = _refused(capsys, mem_action="export", output=None, store=_ACME)
+        assert "refusing to create one on a read" in err
 
     def test_a_null_collection_creates_nothing(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -389,8 +378,10 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         db_path = self._deleted_db_store()
         nulled = tmp_path / "nulled.json"
         nulled.write_text(json.dumps({"semantic": None}), encoding="utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(nulled), store=_ACME))
-        assert "is not a list" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(nulled), store=_ACME))
+        assert exc.value.code == 1
+        assert "is not a list" in capsys.readouterr().err
         assert not db_path.exists()
 
     @pytest.mark.parametrize("collection", ["semantic", "episodic"])
@@ -400,18 +391,17 @@ class TestAFailedImportLeavesNoDatabaseBehind:
         db_path = self._deleted_db_store()
         payload = tmp_path / f"{collection}.json"
         payload.write_text(json.dumps({collection: {"not": "a list"}}), encoding="utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(payload), store=_ACME))
-        assert f"{collection!r} collection that is not a list" in capsys.readouterr().out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(payload), store=_ACME))
+        assert exc.value.code == 1
+        assert f"{collection!r} collection that is not a list" in capsys.readouterr().err
         assert not db_path.exists()
 
     def test_the_checked_collections_are_the_ones_import_memory_iterates(self) -> None:
         """The correspondence, pinned at its source rather than trusted.
 
-        A collection ``_IMPORTED_COLLECTIONS`` misses is one whose bad type raises
-        AFTER the store was created -- exactly the hole the null case above was. So
-        the list is compared against the keys ``import_memory`` actually reads,
-        which is what makes a future third collection fail here instead of silently
-        going unchecked.
+        A collection missing from ``_IMPORTED_COLLECTIONS`` would raise only after the
+        store was created, so the list is compared with the keys ``import_memory`` reads.
         """
         import inspect
         import re
@@ -425,21 +415,16 @@ class TestAFailedImportLeavesNoDatabaseBehind:
 class TestAnUnresolvablePathIsRefusedRatherThanRedirected:
     """The `db_path is None` branch, which no other test reaches.
 
-    ``owned_store_path`` answers ``None`` when a name resolves to something that is
-    not that store's own file -- a symlink redirecting one store's directory at
-    another's, or a store undeclared between admission and resolution. Without the
-    branch the fall-through would open whatever path was composed, so the guard is
-    pinned by forcing the ``None`` rather than left to a race nobody can schedule.
+    ``owned_store_path`` answers ``None`` for a symlinked or just-undeclared store; the
+    ``None`` is forced here because the real race cannot be scheduled.
     """
 
     def test_export_refuses_when_the_path_is_not_the_stores_own(
         self, seeded, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.setattr(cc, "owned_store_path", lambda store: None)
-        cc._memory_cmd(_ns(mem_action="export", output=None, store=_ACME))
-        out = capsys.readouterr().out
-        assert "did not resolve to its own file" in out
-        assert '"semantic"' not in out
+        err = _refused(capsys, mem_action="export", output=None, store=_ACME)
+        assert "did not resolve to its own file" in err
 
     def test_import_refuses_when_the_path_is_not_the_stores_own(
         self, seeded, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
@@ -448,8 +433,8 @@ class TestAnUnresolvablePathIsRefusedRatherThanRedirected:
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps({"semantic": [{"key": _BETA_KEY, "value": "x"}]}), "utf-8")
         monkeypatch.setattr(cc, "owned_store_path", lambda store: None)
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_BETA))
-        assert "did not resolve to its own file" in capsys.readouterr().out
+        err = _refused(capsys, mem_action="import", file=str(dump), store=_BETA)
+        assert "did not resolve to its own file" in err
         assert _semantic_keys(DEFAULT_MEMORY_STORE) == [_GLOBAL_KEY]
         assert _BETA_KEY not in _semantic_keys(_BETA)
 
@@ -457,13 +442,8 @@ class TestAnUnresolvablePathIsRefusedRatherThanRedirected:
 class TestAFacetBearingDestinationIsRefusedRatherThanFlattened:
     """``import_memory`` cannot carry a V2 row's attribution, so it must not try.
 
-    It rebuilds every row through ``set_semantic`` and ``write_episodic`` and passes
-    no ``facets=``, while a V2 export reads the CANONICAL relation rather than the
-    compatibility view precisely so the facets come out. A V2 destination would
-    therefore receive rows stripped of scope, surface, crew, session_key and
-    derived_from, with nothing to reconstruct them from -- attribution flattened by
-    an operation reporting success. Nothing that existed is lost by refusing: before
-    ``--store``, ``import`` could only target the default store.
+    It rebuilds rows through ``set_semantic`` and ``write_episodic`` with no ``facets=``,
+    so a V2 destination would get rows stripped of scope, surface, crew and session_key.
     """
 
     def test_a_v2_destination_is_refused_and_receives_nothing(
@@ -471,11 +451,8 @@ class TestAFacetBearingDestinationIsRefusedRatherThanFlattened:
     ) -> None:
         """A REAL V2 member store, not a name pattern, is the subject here.
 
-        Built through ``member_memory_helpers.write_member_home``, which lays down
-        the manifest, the ``memory_stores`` record and the owning agent binding that
-        ``require_memory_store`` validates -- so the store both opens as V2 and
-        passes admission, leaving the refusal below as the only thing under test. A
-        version-shaped fake would have skipped, and a skip scores as a pass.
+        ``member_memory_helpers.write_member_home`` makes it open as V2 and pass
+        admission, so the refusal below is the only thing under test.
         """
         from member_memory_helpers import forget_declared_stores, write_member_home
 
@@ -496,10 +473,12 @@ class TestAFacetBearingDestinationIsRefusedRatherThanFlattened:
 
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps({"semantic": [{"key": _BETA_KEY, "value": "x"}]}), "utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=store_name))
-        out = capsys.readouterr().out
-        assert "cannot carry the scope, surface, crew, session and derivation facets" in out
-        assert "Import complete" not in out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=store_name))
+        assert exc.value.code == 1
+        out, err = capsys.readouterr()
+        assert "cannot carry the scope, surface, crew, session and derivation facets" in err
+        assert out == ""
         assert _BETA_KEY not in _semantic_keys(store_name)
         # The axes the refusal protects, read from the schema rather than restated.
         assert memory_schema.FACET_NAMES == (
@@ -556,8 +535,8 @@ class TestImportWritesToTheStoreItWasGiven:
     ) -> None:
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps({"semantic": [{"key": _BETA_KEY, "value": "x"}]}), "utf-8")
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store="nosuchstore"))
-        assert "is unavailable" in capsys.readouterr().out
+        err = _refused(capsys, mem_action="import", file=str(dump), store="nosuchstore")
+        assert "is unavailable" in err
         # The degraded resolution's target, checked explicitly: a refusal that
         # still wrote would have put the row here.
         assert _semantic_keys(DEFAULT_MEMORY_STORE) == [_GLOBAL_KEY]
@@ -569,12 +548,8 @@ class TestTheMarkdownLayerIsRefusedRatherThanReportedEmpty:
     ) -> None:
         """A refusal must not wear the shape of an empty tree.
 
-        A named store's markdown root is under ``memory_stores/``, a keystone leaf
-        in ``security._CREW_SECRET_LEAVES``. ``markdown_snapshot`` reaches a
-        NON-private store through ``hooks.safe_read_file_bytes_nolink``, which
-        refuses that subtree and answers None, and ``_guarded_entry`` renders that
-        as ``content: ""`` -- identical to a file that is genuinely empty. An
-        operator moving a store would read it as "there was nothing to carry".
+        ``memory_stores/`` is in ``security._CREW_SECRET_LEAVES``, so the read is refused,
+        and ``_guarded_entry`` renders that as ``content: ""``, same as an empty file.
         """
         from kiro_crew.memory_stores import memory_store_dir_for
 
@@ -582,10 +557,14 @@ class TestTheMarkdownLayerIsRefusedRatherThanReportedEmpty:
         markdown.mkdir(parents=True, exist_ok=True)
         (markdown / "preferences.md").write_text("- acme prefers tabs\n", encoding="utf-8")
 
-        cc._memory_cmd(_ns(mem_action="export", output=None, store=_ACME, include_markdown=True))
-        out = capsys.readouterr().out
-        assert "cannot be exported here" in out
-        assert '"semantic"' not in out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(
+                _ns(mem_action="export", output=None, store=_ACME, include_markdown=True)
+            )
+        assert exc.value.code == 1
+        out, err = capsys.readouterr()
+        assert "cannot be exported here" in err
+        assert out == ""
         assert "acme prefers tabs" not in out
 
     def test_the_refusal_leaves_no_file_behind(
@@ -593,15 +572,17 @@ class TestTheMarkdownLayerIsRefusedRatherThanReportedEmpty:
     ) -> None:
         """No half-file, because a half-file is what gets mistaken for the copy."""
         out_file = tmp_path / "acme.json"
-        cc._memory_cmd(
-            _ns(
-                mem_action="export",
-                output=str(out_file),
-                store=_ACME,
-                include_markdown=True,
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(
+                _ns(
+                    mem_action="export",
+                    output=str(out_file),
+                    store=_ACME,
+                    include_markdown=True,
+                )
             )
-        )
-        assert "cannot be exported here" in capsys.readouterr().out
+        assert exc.value.code == 1
+        assert "cannot be exported here" in capsys.readouterr().err
         assert not out_file.exists()
 
     def test_include_markdown_still_works_on_the_default_store(
@@ -661,22 +642,24 @@ class TestCarveTakesTheSameAdmission:
     behaviour at the OTHER site, so the extraction cannot be undone at one of them.
     """
 
+    _CARVE_ARGS: dict[str, object] = {
+        "mem_action": "carve",
+        "scope": None,
+        "surface": None,
+        "crew": None,
+        "session_key": None,
+        "derived_from": None,
+        "kind": None,
+        "count_by": "kind",
+        "limit": 50,
+        "offset": 0,
+    }
+
     def _carve(self, store: str | None) -> None:
-        cc._memory_cmd(
-            _ns(
-                mem_action="carve",
-                store=store,
-                scope=None,
-                surface=None,
-                crew=None,
-                session_key=None,
-                derived_from=None,
-                kind=None,
-                count_by="kind",
-                limit=50,
-                offset=0,
-            )
-        )
+        cc._memory_cmd(_ns(store=store, **self._CARVE_ARGS))
+
+    def _carve_refused(self, store: str | None, capsys: pytest.CaptureFixture[str]) -> str:
+        return _refused(capsys, store=store, **self._CARVE_ARGS)
 
     def test_carve_refuses_a_declared_store_whose_directory_was_deleted(
         self, seeded, stores, capsys: pytest.CaptureFixture[str]
@@ -687,8 +670,7 @@ class TestCarveTakesTheSameAdmission:
         stores.close_all()
         shutil.rmtree(db_path.parent)
 
-        self._carve(_ACME)
-        assert "is missing" in capsys.readouterr().out
+        assert "is missing" in self._carve_refused(_ACME, capsys)
         # The recreation is the harm, asserted directly rather than inferred.
         assert not db_path.parent.exists()
 
@@ -700,9 +682,7 @@ class TestCarveTakesTheSameAdmission:
         stores.close_all()
         db_path.unlink()
 
-        self._carve(_ACME)
-        out = capsys.readouterr().out
-        assert "refusing to create one on a read" in out
+        assert "refusing to create one on a read" in self._carve_refused(_ACME, capsys)
         assert not db_path.exists()
 
     def test_carve_refuses_an_undeclared_store_without_reading_the_default(
@@ -712,11 +692,10 @@ class TestCarveTakesTheSameAdmission:
         removed, because ``resolve_declared_store`` above already raises on an
         undeclared name. Kept so a rewrite that drops that call is caught too.
         """
-        self._carve("nosuchstore")
-        out = capsys.readouterr().out
-        assert "'nosuchstore' is not declared" in out
+        err = self._carve_refused("nosuchstore", capsys)
+        assert "'nosuchstore' is not declared" in err
         # A refusal that answered from global memory would be the real defect.
-        assert _GLOBAL_KEY not in out
+        assert _GLOBAL_KEY not in err
 
     def test_carve_still_reads_a_live_declared_store(
         self, seeded, capsys: pytest.CaptureFixture[str]
@@ -734,12 +713,9 @@ class TestCarveTakesTheSameAdmission:
 class TestAnImportThatWritesNothingLeavesNoDatabase:
     """The invariant, which is why these are shape-independent.
 
-    The set of payloads that reach ``import_memory`` and write nothing is open-ended:
-    ``[null]``, ``[{}]`` and ``[{"nokey": 1}]`` are all list-shaped and are all
-    skipped by that method's per-entry ``except Exception``. So the property asserted
-    here is the OUTCOME -- an import that creates a named store's database and then
-    writes nothing must leave the store as it found it, because a later read has to
-    keep reporting the loss.
+    Payloads that write nothing are open-ended (the per-entry ``except Exception`` skips
+    them), so the outcome is asserted: an import that writes nothing leaves the store
+    as it found it.
     """
 
     @pytest.mark.parametrize(
@@ -761,7 +737,11 @@ class TestAnImportThatWritesNothingLeavesNoDatabase:
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps(payload), encoding="utf-8")
 
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        # An import that landed nothing is a failure, so a script chaining it with
+        # `&&` must not read it as success.
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
         assert f"still has no {db_path.name}" in out
         # The whole point: the loss signal survives, so a later read still refuses.
@@ -777,12 +757,11 @@ class TestAnImportThatWritesNothingLeavesNoDatabase:
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps({"semantic": [None]}), encoding="utf-8")
 
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        with pytest.raises(SystemExit):
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
         capsys.readouterr()
-        cc._memory_cmd(_ns(mem_action="export", output=None, store=_ACME))
-        out = capsys.readouterr().out
-        assert "refusing to create one on a read" in out
-        assert '"semantic"' not in out
+        err = _refused(capsys, mem_action="export", output=None, store=_ACME)
+        assert "refusing to create one on a read" in err
 
     def test_an_import_that_lands_one_row_keeps_the_database_it_created(
         self, seeded, stores, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -821,11 +800,8 @@ class TestAnImportThatWritesNothingLeavesNoDatabase:
     ) -> None:
         """`safe_read_file` re-raises OSError, so the refusal has to catch it.
 
-        The refusal is INJECTED rather than provoked with ``chmod(0o000)``: on Windows
-        ``os.chmod`` only toggles the read-only flag, so the read succeeds there and a
-        permission-based version of this test asserts nothing on that platform. What
-        is under test is the ``except (OSError, ValueError)`` branch, and the contract
-        is the same whichever errno reaches it.
+        The error is injected, not made with ``chmod(0o000)``: on Windows ``os.chmod``
+        only toggles the read-only flag, so the read would succeed there.
         """
         db_path = resolve_store_path(_ACME)
         stores.close_all()
@@ -837,21 +813,20 @@ class TestAnImportThatWritesNothingLeavesNoDatabase:
             raise PermissionError(13, "Permission denied")
 
         monkeypatch.setattr(cc, "safe_read_file", refuse)
-        cc._memory_cmd(_ns(mem_action="import", file=str(payload), store=_ACME))
-        out = capsys.readouterr().out
-        assert "could not be read as JSON" in out
-        assert "Permission denied" in out
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(payload), store=_ACME))
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "could not be read as JSON" in err
+        assert "Permission denied" in err
         assert not db_path.exists()
 
 
 class TestCreationIsExclusivelyOwned:
     """The removal and the absence check have to be one hold, not two observations.
 
-    Two imports can otherwise each see a named store's database absent, one write
-    rows, and the other's empty-import cleanup remove the populated file while
-    printing success. The lock is what makes that interleaving impossible, and it is
-    invisible to the other tests here -- they pass with it and without it -- so it
-    needs its own assertion.
+    Otherwise one import writes rows and another's empty-import cleanup removes the
+    populated file. The other tests pass without the lock, so it needs its own check.
     """
 
     def _spy(self, monkeypatch) -> list[str]:
@@ -900,7 +875,8 @@ class TestCreationIsExclusivelyOwned:
         dump.write_text(json.dumps({"semantic": [None]}), encoding="utf-8")
         events = self._spy(monkeypatch)
 
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        with pytest.raises(SystemExit):
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
         capsys.readouterr()
 
         assert "lock-enter" in events, events
@@ -950,7 +926,9 @@ class TestAFailedRemovalIsReportedAsOne:
             return real_unlink(self, *a, **kw)
 
         monkeypatch.setattr(Path, "unlink", refuse_once)
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        assert exc.value.code == 1
         out = capsys.readouterr().out
 
         assert "could NOT be removed" in out
@@ -979,7 +957,8 @@ class TestCleanupTouchesOnlyWhatThisImportCreated:
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps({"semantic": [None]}), encoding="utf-8")
 
-        cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
+        with pytest.raises(SystemExit):
+            cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_ACME))
         out = capsys.readouterr().out
 
         assert f"still has no {db_path.name}" in out
@@ -1126,10 +1105,9 @@ class TestAnInterruptedImportIsReportedNotDeleted:
             ("import", {"file": str(dump)}),
             ("export", {"file": str(tmp_path / "out.json")}),
         ):
-            cc._memory_cmd(_ns(mem_action=verb, store="", **kwargs))
-            out = capsys.readouterr().out
-            assert "invalid memory store name" in out, verb
-            assert "empty" in out, verb
+            err = _refused(capsys, mem_action=verb, store="", **kwargs)
+            assert "invalid memory store name" in err, verb
+            assert "empty" in err, verb
 
         assert _semantic_keys(DEFAULT_MEMORY_STORE) == before
         assert "intruder" not in _semantic_keys(DEFAULT_MEMORY_STORE)
@@ -1145,11 +1123,8 @@ _ALICE_CREW = "finance"
 def member_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stores):
     """A REAL V2 member store holding facet-stamped rows, beside a populated default store.
 
-    Built through ``member_memory_helpers.write_member_home``, like the V2 import
-    refusal above, so the store passes admission and opens as V2. The seed handle is
-    closed before the verb runs: one store per file is an invariant, and the verb
-    opens its own. The default store's row is the bystander that a read answered
-    from the wrong file would show.
+    The seed handle is closed before the verb runs (one store per file). The default
+    store's row is the bystander a read from the wrong file would show.
     """
     from member_memory_helpers import forget_declared_stores, write_member_home
 
@@ -1290,3 +1265,47 @@ class TestARefusalIsOneLineNotATraceback:
         assert err.startswith("Error: ") and "Traceback" not in err
         # Reported, never repaired: the bytes the operator would recover from stay put.
         assert db_path.read_bytes().startswith(b"this is not a sqlite database")
+
+
+class TestAVerbThatDidNothingExitsOne:
+    """``backups --store`` and ``retired --restore`` exit 1 when nothing they were
+    asked for exists, like ``memory forget`` on an absent key. The found case stays
+    exit 0 with its old output, so a script that already works keeps working."""
+
+    def test_backups_for_an_unknown_store_exits_one(
+        self, seeded, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="backups", store="nosuch"))
+        assert exc.value.code == 1
+        assert capsys.readouterr().out == "nosuch: not a declared memory store\n"
+
+    def test_backups_for_a_declared_store_exits_zero(
+        self, seeded, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cc._memory_cmd(_ns(mem_action="backups", store=_ACME))
+        assert capsys.readouterr().out == f"{_ACME}:\n  (no backups yet)\n"
+
+    def test_restoring_a_missing_retired_id_exits_one(
+        self, seeded, stores, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        stores.close_all()
+        with pytest.raises(SystemExit) as exc:
+            cc._memory_cmd(_ns(mem_action="retired", restore_id="no-such-id", limit=20))
+        assert exc.value.code == 1
+        assert capsys.readouterr().out == "Not found, or already active.\n"
+
+    def test_restoring_a_found_retired_id_exits_zero(
+        self, seeded, stores, monkeypatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        stores.close_all()
+        asked: list[str] = []
+
+        def found(self, mem_id: str, source: str = "user_explicit") -> bool:
+            asked.append(mem_id)
+            return True
+
+        monkeypatch.setattr(VectorMemoryStore, "restore_episodic", found)
+        cc._memory_cmd(_ns(mem_action="retired", restore_id="ep-1", limit=20))
+        assert asked == ["ep-1"]
+        assert capsys.readouterr().out == "Restored.\n"

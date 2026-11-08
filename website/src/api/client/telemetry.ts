@@ -67,8 +67,23 @@ export type UsageSeriesPayload = {
   complete_from: string | null
 }
 
+/** The agent-rendered controls a click can be reported for. Mirrors
+ *  `UI_CONTROL_VALUES` in `src/kiro_crew/metrics/feature_usage.py`; the server
+ *  counts any other value as `other`. */
+export type UiControl =
+  | 'option_chip'
+  | 'question_card_answer'
+  | 'question_card_freetext'
+  | 'followup_start_worktree'
+  | 'followup_start_chat'
+  | 'followup_add_session'
+  | 'followup_skip'
+
 export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: ClientTransport) {
   const usageReadouts = {
+    /** Count one click on an agent-rendered control (POST
+     *  /api/telemetry/ui-control, 204). Only the control's kind is sent. */
+    reportUiControlClick: (control: UiControl) => post('/api/telemetry/ui-control', { control }),
     /** The five session folds of a crew log, keyed by name, in ONE request.
      *
      *  The batch route is what makes the answer coherent: it resolves the session
@@ -129,6 +144,11 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
     // telemetry main switch: the usage rows it reads are always written.
     telemetryContextTrace: (slot: string) =>
       fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot)).then(j),
+    /** One kept turn's whole panel, read when the Context panel picks a past turn:
+     *  the trace carries only the chart's numbers per turn. 404 once the turn has
+     *  left the 30 kept turns. */
+    telemetryContextTurn: (slot: string, turn: number) =>
+      fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot) + '&turn=' + encodeURIComponent(String(turn))).then(j),
     /** Per-turn usage rows for one session — the Spend table's drill-down.
      *  Same always-written row store as the context trace; the dashboard reads
      *  every row (the endpoint's app-ownership filter applies to app callers).

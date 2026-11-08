@@ -356,6 +356,18 @@ def _fetch_blocking(
     return _download_into(artifact, store_dir(), on_progress)
 
 
+def _digest_if_file(path: Path) -> str | None:
+    """The sha256 of *path*, or ``None`` when it is not a regular file. Blocks.
+
+    The ``is_file`` probe and the hash are both filesystem calls, so the caller
+    runs them together in ONE ``asyncio.to_thread`` hop rather than probing on
+    the event loop. Read errors propagate to the caller.
+    """
+    if not path.is_file():
+        return None
+    return _sha256_file(path)
+
+
 class DecoderStore:
     """Serialises decoder fetches and exposes their progress.
 
@@ -452,7 +464,7 @@ class DecoderStore:
         atomically rather than this deleting it first, so a host that cannot reach
         the release keeps whatever it had instead of losing it to a failed repair.
         """
-        if not is_present(artifact):
+        if not await asyncio.to_thread(is_present, artifact):
             return None
         if not await self._verified_on_disk(artifact):
             return None
@@ -476,9 +488,11 @@ class DecoderStore:
         passes here still cannot be executed on this check alone.
         """
         path = installed_path(artifact)
-        if path is None or not path.is_file():
+        if path is None:
             return False
-        actual = await asyncio.to_thread(_sha256_file, path)
+        actual = await asyncio.to_thread(_digest_if_file, path)
+        if actual is None:
+            return False
         if actual == artifact.sha256:
             return True
         logger.error(

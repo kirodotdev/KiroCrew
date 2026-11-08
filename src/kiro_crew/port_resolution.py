@@ -175,6 +175,10 @@ def _gateway_owns_port(port: int) -> bool:
     owner = platform_compat.process_owner_uid(recorded)
     if owner is None or owner != os.getuid():
         return False
+    # The argv check stays: no authenticated proof is available at this point.
+    # This check gates sending the local secret, and the only other proofs
+    # are a pid file and a uid. A gateway with an unknown spawn shape falls
+    # back to --port instead.
     return _patchable("_is_kirocrew_process")(recorded)
 
 

@@ -19,11 +19,17 @@ import { retryDelayPolicy, retryPolicy } from '../api/queryClient'
 import { reportSeamCollision } from '../apps/seamCollision'
 import { safeSetItem } from '../utils/safeStorage'
 import {
+  adoptServerLiquidGlass,
+  readLiquidGlass,
+  type TranslucentPanelsStored,
+} from '../utils/liquidGlass'
+import {
   clearCachedThemeData,
   readCachedThemeData,
   renderCacheProjection,
   writeCachedThemeData,
 } from './themeRenderCache'
+import { reportThemeSplash } from './themeSplash'
 // Every stylesheet TEXT this hook injects is built there, so the i18n gate does
 // not read CSS as user-visible copy. The DOM side (which <style> tag, when, and
 // when to revert it) stays here, as does every string this file SHOWS a user —
@@ -74,6 +80,8 @@ export interface ThemeBranding {
   wordmark?: string
   /** Welcome-screen hero mark (`branding/welcome.*`), shown in place of the logo there. */
   welcome?: string
+  /** Desktop boot-splash art (`branding/splash.*`), handed to the shell by `reportThemeSplash`. */
+  splash?: string
 }
 
 /** Closed enum of overlay placements (mirrors backend `_THEME_OVERLAY_POSITIONS`). */
@@ -149,6 +157,8 @@ export interface ThemeAssets {
   /** Pack-supplied raster loader artwork (Level 1): relative asset paths
    *  (`loader/<file>.png`), cycled by the stock carousel as <img>s. */
   loaderImages?: string[]
+  /** Shiki scheme names for the code and diff views, per mode (`pierreThemesFor`). */
+  codeTheme?: { dark?: string; light?: string }
   // L2 assets: overlays, topbar, audio, persona.
   overlays?: ThemeOverlayDecl[]
   topbar?: ThemeTopbar
@@ -329,6 +339,7 @@ interface ResolvedThemeBranding {
   logo: string | null
   favicon: string | null
   welcome: string | null
+  splash: string | null
 }
 
 /** Apply/revert an installed theme's branding and return shell-safe asset URLs. */
@@ -338,7 +349,7 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
   root.style.removeProperty('--theme-logo')
   const b = theme?.assets?.branding
   const slug = theme ? safeSlug(theme.slug) : ''
-  if (!b || !slug) return { logo: null, favicon: null, welcome: null }
+  if (!b || !slug) return { logo: null, favicon: null, welcome: null, splash: null }
 
   const fav = b.favicon ? safeAssetPath(b.favicon) : ''
   const favicon = fav ? `${assetBase(slug)}/${fav}` : null
@@ -357,7 +368,9 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
   }
   const welcomePath = b.welcome ? safeAssetPath(b.welcome) : ''
   const welcome = welcomePath ? `${assetBase(slug)}/${welcomePath}` : null
-  return { logo, favicon, welcome }
+  const splashPath = b.splash ? safeAssetPath(b.splash) : ''
+  const splash = splashPath ? `${assetBase(slug)}/${splashPath}` : null
+  return { logo, favicon, welcome, splash }
 }
 
 /**
@@ -373,13 +386,13 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
  * installed pack or a `registerTheme()` caller supplies.
  *
  * Two kinds of entry live here:
- * - `High Contrast` names a rendering PROPERTY (the accessibility palette)
- *   rather than a palette identity, so it is copy in the same sense as every
- *   other settings label and each locale translates it.
- * - A proper-noun theme added after the strict i18n gate (Nu Disco). The gate
- *   refuses a new literal display string, so the name goes through the catalog
- *   and is pinned verbatim in every locale by its `glossary.json` do-not-translate
- *   entry, which `glossary.test.ts` enforces.
+ * - `High Contrast` and `Color-blind safe` name a rendering PROPERTY (an
+ *   accessibility palette) rather than a palette identity, so they are copy in
+ *   the same sense as every other settings label and each locale translates them.
+ * - A proper-noun theme added after the strict i18n gate (Nu Disco, Amethyst
+ *   OLED). The gate refuses a new literal display string, so the name goes
+ *   through the catalog and is pinned verbatim in every locale by its
+ *   `glossary.json` do-not-translate entry, which `glossary.test.ts` enforces.
  *
  * Keys, not strings: `THEMES` is evaluated at module load, so an `i18nT()` call
  * there would freeze whatever language was active at boot. The lookup happens in
@@ -390,6 +403,8 @@ function applyThemeBranding(theme: CustomThemeData | undefined): ResolvedThemeBr
 export const THEME_LABEL_KEY: Record<string, string> = {
   highcontrast: 'hooks.theme.high_contrast',
   'nu-disco': 'hooks.theme.nu_disco',
+  'amethyst-oled': 'hooks.theme.amethyst_oled',
+  colorblind: 'hooks.theme.color_blind_safe',
 }
 
 export const THEMES: ThemeEntry[] = [
@@ -419,6 +434,12 @@ export const THEMES: ThemeEntry[] = [
   // Catalog-keyed like `highcontrast`: glyph-only fallback, full name in
   // `hooks.theme.nu_disco`.
   { value: 'nu-disco', label: '🪩' },
+  // Catalog-keyed: full name in `hooks.theme.amethyst_oled`.
+  { value: 'amethyst-oled', label: '💜' },
+  // Catalog-keyed like `highcontrast`, and for the same reason: it names an
+  // accessibility property, so each locale translates it. Full name in
+  // `hooks.theme.color_blind_safe`.
+  { value: 'colorblind', label: '👁️' },
 ]
 
 /**
@@ -656,6 +677,19 @@ interface CatalogSnapshot {
   dataMap: Map<string, CustomThemeData>
 }
 
+/** True when installing `next` over `held` changes nothing: the same slugs, each with
+ *  data that serializes alike. The values are plain API JSON, so comparing their
+ *  serialization is exact, and a difference in key order reads as a change. */
+function sameThemeData(held: Map<string, CustomThemeData>, next: Map<string, CustomThemeData>): boolean {
+  if (held.size !== next.size) return false
+  for (const [slug, data] of next) {
+    const heldData = held.get(slug)
+    if (heldData === undefined) return false
+    if (heldData !== data && JSON.stringify(heldData) !== JSON.stringify(data)) return false
+  }
+  return true
+}
+
 /** What a catalog fetch needs from the provider that owns it. */
 interface CatalogFetchHooks {
   /** True once a newer fetch has started or the query cancelled this one: no
@@ -845,6 +879,21 @@ function useThemeState(): ThemeContextValue {
   // themeEditor dispatches CUSTOM_THEMES_CHANGED_EVENT.
   const [themeVersion, setThemeVersion] = useState(0)
   const bumpThemeVersion = useCallback(() => setThemeVersion(v => v + 1), [])
+  // The detail map as last written, pending writes included, so a write is judged
+  // against what is already held rather than against what React has committed.
+  const dataMapRef = useRef(customThemeDataMap)
+  // Every write to the detail map goes through here. Installing data equal to what is
+  // held changes nothing, but it is not free: it hands React a new Map, which
+  // re-renders the provider and re-runs the apply effect, and under test the catalog
+  // lands after the test's act() scope, so each such write is an act() warning.
+  // `skipEqual` drops it, and the caller then skips its version bump too. Returns
+  // whether it wrote.
+  const writeDataMap = useCallback((next: Map<string, CustomThemeData>, skipEqual: boolean): boolean => {
+    if (skipEqual && sameThemeData(dataMapRef.current, next)) return false
+    dataMapRef.current = next
+    setCustomThemeDataMap(next)
+    return true
+  }, [])
   const [onboarded, setOnboarded] = useState(() => !!localStorage.getItem('mc-onboarded'))
   // Active installed theme's branding for shell text, left-rail logo, and favicon.
   const [brandName, setBrandName] = useState<string | null>(null)
@@ -857,6 +906,12 @@ function useThemeState(): ThemeContextValue {
   const [overridesDropReport, setOverridesDropReport] = useState<OverridesDropReport | null>(null)
   // Timestamp of the current switch, for the ~150ms minimum-visible guard.
   const switchStartRef = useRef(0)
+  // The two values above as last written, so the overrides settle writes only a
+  // change. A same-value write is not free: React 18 skips it only while the
+  // fiber and its alternate have no pending work, so the settle's unconditional
+  // `null` / `false` re-rendered the provider just after mount.
+  const switchingRef = useRef(false)
+  const dropReportRef = useRef<OverridesDropReport | null>(null)
   // Current colorTheme, read synchronously in setColorTheme (via a ref so its
   // identity stays stable) to no-op a same-value re-select.
   const colorThemeRef = useRef(colorTheme)
@@ -906,33 +961,35 @@ function useThemeState(): ThemeContextValue {
   const runCatalogFetch = useCallback(async (signal?: AbortSignal): Promise<CatalogSnapshot> => {
     const generation = ++loadGenerationRef.current
     if (generation > 1) appliedActiveRef.current = null
+    // Only the provider's first load may skip a write that installs data the map
+    // already holds (the render-cache seed, an empty catalog): the apply effect's
+    // guard matches it, so the write would only re-render. A reload has just reset
+    // that guard, and its equal write is what re-applies a reinstalled pack, so a
+    // reload always writes.
+    const skipEqual = generation === 1
     const superseded = () => signal?.aborted === true || loadGenerationRef.current !== generation
     const snapshot = await fetchCatalog({
       superseded,
       activeSlug: () => activeCustomSlug(colorThemeRef.current),
       onActiveDetail: (d) => {
-        setCustomThemeDataMap((prev) => new Map(prev).set(d.slug, d))
-        // An injection and its version bump are inseparable: consumers that
-        // snapshot the computed vars (widget/app frames, artifact previews)
-        // re-read on this counter, and the catalog pass may never reach its
-        // own bump if /api/themes fails.
-        bumpThemeVersion()
+        // An injection that changes the held detail and its version bump are
+        // inseparable: consumers that snapshot the computed vars (widget/app
+        // frames, artifact previews) re-read on this counter, and the catalog
+        // pass may never reach its own bump if /api/themes fails.
+        if (writeDataMap(new Map(dataMapRef.current).set(d.slug, d), skipEqual)) bumpThemeVersion()
       },
     })
     if (superseded()) throw supersededError()
     const currentSlug = activeCustomSlug(colorThemeRef.current)
     const listed = new Set(snapshot.themes.map((t) => t.value.slice('custom-'.length)))
-    setCustomThemeDataMap((prev) => {
-      const next = new Map(snapshot.dataMap)
-      if (currentSlug && listed.has(currentSlug) && !next.has(currentSlug)) {
-        const kept = prev.get(currentSlug)
-        if (kept) next.set(currentSlug, kept)
-      }
-      return next
-    })
-    bumpThemeVersion()
+    const next = new Map(snapshot.dataMap)
+    if (currentSlug && listed.has(currentSlug) && !next.has(currentSlug)) {
+      const kept = dataMapRef.current.get(currentSlug)
+      if (kept) next.set(currentSlug, kept)
+    }
+    if (writeDataMap(next, skipEqual)) bumpThemeVersion()
     return snapshot
-  }, [bumpThemeVersion])
+  }, [bumpThemeVersion, writeDataMap])
 
   // The installed-theme catalog is a query, so the app's existing recovery
   // paths own it: the token-paste sign-in invalidates every errored, data-less
@@ -1056,6 +1113,7 @@ function useThemeState(): ThemeContextValue {
     mutationFn: (body: {
       mode?: string
       color?: string
+      translucent_panels?: TranslucentPanelsStored
       onboarded?: boolean
       import_onboarded?: boolean
       privacy_acked?: boolean
@@ -1070,74 +1128,123 @@ function useThemeState(): ThemeContextValue {
     staleTime: Infinity,  // only need it once on mount
     retry: false,         // if server unavailable, fall back to localStorage silently
   })
+  // A read that failed has nothing to apply, so the boot is done the moment it
+  // settles. Set the flag while rendering (React re-runs this component before it
+  // commits) instead of from the effect below, a second commit that changed nothing.
+  if (themeBootFetched && !bootData && !themeBootReady) setThemeBootReady(true)
+
+  // A read that returned data is applied the same way: the state it sets (mode,
+  // colour, the first-run flags) and `themeBootReady` are all updated while
+  // rendering, the first time this data is seen, so the commit that carries the
+  // data already carries its effect. From an effect that was a second commit. The
+  // flags and `themeBootReady` still change together, which the first-run effects
+  // that key on `themeBootReady` rely on. What stays in the effect below reaches
+  // outside React: localStorage, the workspace, the glass switch.
+  //
+  // `bootApplied` records the data that was applied and what rendering decided
+  // about it. By the time the effect runs the state already holds the data's
+  // values, so the effect could not tell that the mode or colour changed, or
+  // which first-run branch applies; it carries out the record instead of
+  // deciding again.
+  const [bootApplied, setBootApplied] = useState<{
+    data: NonNullable<typeof bootData>
+    modeChanged: boolean
+    colorChanged: boolean
+    // 'migrate': a browser that finished first run before the server tracked it
+    // publishes that. 'adopt': the server's flags win. 'keep': an earlier read
+    // already started the migration, so a later read leaves the flags alone.
+    onboarding: 'migrate' | 'adopt' | 'keep'
+  } | null>(null)
+  if (themeBootFetched && bootData && bootData !== bootApplied?.data) {
+    const modeChanged = !!bootData.mode && bootData.mode !== mode
+    const colorChanged = !!bootData.color && bootData.color !== colorTheme
+    const hasOnboardingState =
+      typeof bootData.onboarded === 'boolean'
+      && typeof bootData.import_onboarded === 'boolean'
+    const needsLegacyMigration =
+      hasOnboardingState
+      && legacyOnboardedRef.current
+      && (!bootData.onboarded || !bootData.import_onboarded)
+    // Both refs are written only after a commit (by the effect below and its
+    // mutation's callback), so reading them while rendering sees what an earlier
+    // read left.
+    const onboarding = legacyMigrationStartedRef.current
+      ? 'keep'
+      : needsLegacyMigration ? 'migrate' : 'adopt'
+    if (modeChanged) {
+      setMode(bootData.mode as ModePreference)
+      setResolved(resolveMode(bootData.mode as ModePreference))
+    }
+    if (colorChanged) setColorThemeState(bootData.color)
+    if (onboarding === 'migrate') {
+      setOnboarded(true)
+      setImportOnboarded(true)
+      setPrivacyAcked(true)
+    } else if (onboarding === 'adopt') {
+      if (typeof bootData.onboarded === 'boolean') {
+        setOnboarded(bootData.onboarded)
+        // A completed first run also covers the Privacy chapter (see the effect).
+        if (bootData.onboarded) setPrivacyAcked(true)
+      }
+      if (bootData.privacy_acked === true) setPrivacyAcked(true)
+      if (typeof bootData.import_onboarded === 'boolean') setImportOnboarded(bootData.import_onboarded)
+    }
+    if (!themeBootReady) setThemeBootReady(true)
+    setBootApplied({ data: bootData, modeChanged, colorChanged, onboarding })
+  }
 
   useEffect(() => {
-    if (!themeBootFetched) return
-    if (bootData) {
-      if (bootData.mode && bootData.mode !== mode) {
-        safeSetItem('mc-theme', bootData.mode)
-        setMode(bootData.mode as ModePreference)
-        setResolved(resolveMode(bootData.mode as ModePreference))
-      }
-      if (bootData.color && bootData.color !== colorTheme) {
-        safeSetItem('mc-color-theme', bootData.color)
-        setColorThemeState(bootData.color)
-      }
-      const hasOnboardingState =
-        typeof bootData.onboarded === 'boolean'
-        && typeof bootData.import_onboarded === 'boolean'
-      const needsLegacyMigration =
-        hasOnboardingState
-        && legacyOnboardedRef.current
-        && (!bootData.onboarded || !bootData.import_onboarded)
-      if (needsLegacyMigration && !legacyMigrationStartedRef.current) {
-        legacyMigrationStartedRef.current = true
-        setOnboarded(true)
-        setImportOnboarded(true)
-        setPrivacyAcked(true)
-        safeSetItem('mc-privacy-acked', '1')
-        persistTheme(
-          { onboarded: true, import_onboarded: true, privacy_acked: true },
-          {
-            onSuccess: () => {
-              safeSetItem('mc-import-onboarded', '1')
-              legacyOnboardedRef.current = false
-            },
-          },
-        )
-      } else if (!legacyMigrationStartedRef.current) {
-        if (typeof bootData.onboarded === 'boolean') {
-          setOnboarded(bootData.onboarded)
-          if (bootData.onboarded) {
-            safeSetItem('mc-onboarded', '1')
-            // A completed first run passed through the Privacy chapter (or
-            // predates it) — the server flag is the durable record of both.
-            safeSetItem('mc-privacy-acked', '1')
-            setPrivacyAcked(true)
-          } else {
-            localStorage.removeItem('mc-onboarded')
-          }
-        }
-        // Server value wins so a second machine does not re-show a chapter this
-        // user already passed. Only ever set forward from the server: clearing it
-        // locally would re-open the chapter mid-session on a stale read.
-        if (bootData.privacy_acked === true) {
-          setPrivacyAcked(true)
-          safeSetItem('mc-privacy-acked', '1')
-        }
-        if (typeof bootData.import_onboarded === 'boolean') {
-          setImportOnboarded(bootData.import_onboarded)
-          if (bootData.import_onboarded) {
+    if (!bootApplied) return
+    const { data, modeChanged, colorChanged, onboarding } = bootApplied
+    if (modeChanged) safeSetItem('mc-theme', data.mode)
+    if (colorChanged) safeSetItem('mc-color-theme', data.color)
+    // The Translucent panels switch, workspace-backed the same way. '' is a
+    // workspace that predates the key: the browser copy is then the only
+    // record of the choice, so an ON copy is published once, after which the
+    // workspace value is the one every browser adopts. The absent (off)
+    // copy is not published: it is also what a fresh browser holds.
+    if (data.translucent_panels === '' && readLiquidGlass()) {
+      persistTheme({ translucent_panels: 'on' })
+    } else {
+      adoptServerLiquidGlass(data.translucent_panels)
+    }
+    if (onboarding === 'migrate') {
+      legacyMigrationStartedRef.current = true
+      safeSetItem('mc-privacy-acked', '1')
+      persistTheme(
+        { onboarded: true, import_onboarded: true, privacy_acked: true },
+        {
+          onSuccess: () => {
             safeSetItem('mc-import-onboarded', '1')
-          } else {
-            localStorage.removeItem('mc-import-onboarded')
-          }
+            legacyOnboardedRef.current = false
+          },
+        },
+      )
+    } else if (onboarding === 'adopt') {
+      if (typeof data.onboarded === 'boolean') {
+        if (data.onboarded) {
+          safeSetItem('mc-onboarded', '1')
+          // A completed first run passed through the Privacy chapter (or
+          // predates it) — the server flag is the durable record of both.
+          safeSetItem('mc-privacy-acked', '1')
+        } else {
+          localStorage.removeItem('mc-onboarded')
+        }
+      }
+      // Server value wins so a second machine does not re-show a chapter this
+      // user already passed. Only ever set forward from the server: clearing it
+      // locally would re-open the chapter mid-session on a stale read.
+      if (data.privacy_acked === true) safeSetItem('mc-privacy-acked', '1')
+      if (typeof data.import_onboarded === 'boolean') {
+        if (data.import_onboarded) {
+          safeSetItem('mc-import-onboarded', '1')
+        } else {
+          localStorage.removeItem('mc-import-onboarded')
         }
       }
     }
-    setThemeBootReady(true)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bootData, themeBootFetched])
+  }, [bootApplied])
 
   // Derived, not stored: a flag set inside `loadCustomThemes` and reset on a
   // selection change went stale the moment the picker moved to a LISTED pack
@@ -1270,6 +1377,7 @@ function useThemeState(): ThemeContextValue {
     )
     if (installed) {
       switchStartRef.current = Date.now()
+      switchingRef.current = true
       setThemeSwitching(true)
     }
     setColorThemeState(t)
@@ -1314,6 +1422,8 @@ function useThemeState(): ThemeContextValue {
       setBrandLogo(appliedBranding.logo)
       setBrandFavicon(appliedBranding.favicon)
       setBrandWelcome(appliedBranding.welcome)
+      // A custom selection with no data yet keeps the shell's art, as it keeps the cache.
+      if (active || !colorTheme.startsWith('custom-')) reportThemeSplash(appliedBranding.splash, superseded)
     } catch {
       // A branding-application throw must not skip the overrides settle below,
       // which is what clears the "Applying…" indicator — otherwise it wedges.
@@ -1327,13 +1437,17 @@ function useThemeState(): ThemeContextValue {
         // Publish (or clear) the drop report for the ACTIVE theme only — a
         // resolve from a superseded switch is filtered by the generation check,
         // and applyThemeOverrides itself returns null for a superseded token.
-        if (!superseded()) setOverridesDropReport(report)
+        if (superseded() || (report === null && dropReportRef.current === null)) return
+        dropReportRef.current = report
+        setOverridesDropReport(report)
       })
       .finally(() => {
-        if (superseded()) return
+        if (superseded() || !switchingRef.current) return
         const remaining = Math.max(0, 150 - (Date.now() - switchStartRef.current))
         window.setTimeout(() => {
-          if (!superseded()) setThemeSwitching(false)
+          if (superseded()) return
+          switchingRef.current = false
+          setThemeSwitching(false)
         }, remaining)
       })
   }, [colorTheme, customThemeDataMap])
@@ -1386,7 +1500,7 @@ function useThemeState(): ThemeContextValue {
   /** Add a new custom theme via API, inject CSS, and select it. */
   const addCustomTheme = useCallback(async (data: Omit<CustomThemeData, 'slug'> & { slug?: string }) => {
     const res = await api.createTheme(data)
-    if (!res.ok) throw new Error(res.error || 'Failed to create theme')
+    if (!res.ok) throw new Error(res.error || i18nT('components.themeEditor.failed_to_save_theme'))
     const theme: CustomThemeData = res.theme
     injectCustomThemeCSS(theme)
     if (!(await loadCustomThemes())) {
@@ -1408,12 +1522,12 @@ function useThemeState(): ThemeContextValue {
           dataMap: new Map(old.dataMap).set(theme.slug, theme),
         }
       })
-      setCustomThemeDataMap((prev) => new Map(prev).set(theme.slug, theme))
+      writeDataMap(new Map(dataMapRef.current).set(theme.slug, theme), false)
     }
     setColorTheme(`custom-${theme.slug}`)
     broadcastCustomThemesChanged()
     return theme
-  }, [loadCustomThemes, queryClient, setColorTheme])
+  }, [loadCustomThemes, queryClient, setColorTheme, writeDataMap])
 
   /**
    * Delete a custom theme via API. The render cache holds one pack, the

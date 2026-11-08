@@ -18,7 +18,7 @@
  * assertion here about the panel's own logic.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { waitFor, fireEvent } from '@testing-library/react'
+import { waitFor, fireEvent, act } from '@testing-library/react'
 
 import {
   ADD_PATH,
@@ -206,7 +206,9 @@ async function mountPanel(): Promise<void> {
   host.id = 'root'
   document.body.appendChild(host)
   vi.resetModules()
-  await import('../apps/crew-companion/panel')
+  // The module mounts itself from a promise callback queued while it evaluates, so the
+  // import runs in an async act: the root's first render lands inside it.
+  await act(async () => { await import('../apps/crew-companion/panel') })
   await waitFor(() =>
     expect(document.querySelector('[data-testid="card"]')).not.toBeNull(),
   )
@@ -284,7 +286,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  for (const root of roots.splice(0)) root.unmount()
+  act(() => { for (const root of roots.splice(0)) root.unmount() })
   document.querySelectorAll('#root').forEach((n) => n.remove())
   delete (window as unknown as { crewCompanion?: unknown }).crewCompanion
   vi.clearAllTimers()
@@ -386,7 +388,7 @@ describe('when the panel re-reads', () => {
     await mountPanel()
     await waitFor(() => expect(countOf(REMINDERS_PATH)).toBeGreaterThan(0))
     const before = countOf(REMINDERS_PATH)
-    await vi.advanceTimersByTimeAsync(30_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
     expect(countOf(REMINDERS_PATH)).toBeGreaterThan(before)
   })
 
@@ -404,7 +406,7 @@ describe('when the panel re-reads', () => {
   it('stops polling once the window is torn down', async () => {
     await mountPanel()
     await waitFor(() => expect(countOf(REMINDERS_PATH)).toBeGreaterThan(0))
-    for (const root of roots.splice(0)) root.unmount()
+    act(() => { for (const root of roots.splice(0)) root.unmount() })
     const after = countOf(REMINDERS_PATH)
     await vi.advanceTimersByTimeAsync(60_000)
     expect(countOf(REMINDERS_PATH)).toBe(after)
@@ -420,14 +422,14 @@ describe('the side the panel opened on, and re-opening it', () => {
   it('aims the spring left when the main process says the panel opened there', async () => {
     await mountPanel()
     await waitFor(() => expect(openedCbs.length).toBeGreaterThan(0))
-    for (const cb of openedCbs) cb('left')
+    await act(async () => { for (const cb of openedCbs) cb('left') })
     await waitFor(() => expect(card().dataset.side).toBe('left'))
   })
 
   it('treats any other side as the right, never as an unset origin', async () => {
     await mountPanel()
     await waitFor(() => expect(openedCbs.length).toBeGreaterThan(0))
-    for (const cb of openedCbs) cb('up' as 'left' | 'right')
+    await act(async () => { for (const cb of openedCbs) cb('up' as 'left' | 'right') })
     expect(card().dataset.side).toBe('right')
   })
 
@@ -436,7 +438,7 @@ describe('the side the panel opened on, and re-opening it', () => {
     fireEvent.click(control('settings'))
     await waitFor(() => expect(card().dataset.view).toBe('settings'))
     const before = countOf(REMINDERS_PATH)
-    for (const cb of openedCbs) cb('right')
+    await act(async () => { for (const cb of openedCbs) cb('right') })
     // Relative labels go stale while the window is gone, so the list is re-read.
     await waitFor(() => expect(card().dataset.view).toBe('main'))
     expect(countOf(REMINDERS_PATH)).toBeGreaterThan(before)

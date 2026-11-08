@@ -140,16 +140,24 @@ concurrency:
 jobs:
   sweep:
     name: Nudge stuck PR Readiness statuses
-    runs-on: ubuntu-latest
+    # The `kirocrew-runners` group in THIS repository, rather than the standard
+    # pool whose concurrency is shared enterprise-wide -- the saturation the
+    # concurrency note above is about is exactly what delays this sweep. Named
+    # by its runner LABEL, not by `group:`: the group belongs to the kirodotdev
+    # organization, so a fork running its own copy cannot reach it and would
+    # wait forever for a runner. The `||` leg keeps a fork on the hosted image.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
     # Headroom for the larger dispatch volume: a real backlog can now be drained
     # in a single sweep (see MAX_DISPATCH), so the job may fire many recomputes.
     timeout-minutes: 15
     steps:
       # The scan script, the withheld-verdict republisher, and the
       # disposition gate the republisher shells out to -- plus the modules
-      # pr_status.py loads (green_age.py and its owners pr_status_issue_links.py
-      # and pr_status_verdict.py, which loads _review_contract.py). sparse-
-      # checkout with cone mode off is what makes a single-file path list legal,
+      # pr_status.py loads (green_age.py, _tool_argv.py, and pr_status.py's
+      # owners pr_status_issue_links.py and pr_status_verdict.py, which loads
+      # _review_contract.py and its owners _review_pushes.py, _review_rounds.py
+      # and _review_fences.py). sparse-checkout with cone mode off is what
+      # makes a single-file path list legal,
       # and persist-credentials: false leaves no token in the worktree -- nothing
       # here runs git against the remote.
       - name: Check out the readiness scan + republish scripts
@@ -160,7 +168,11 @@ jobs:
             .github/scripts/republish_withheld_verdict.py
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status.py
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_contract.py
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_fences.py
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_pushes.py
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_review_rounds.py
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/green_age.py
+            src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/_tool_argv.py
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status_issue_links.py
             src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/pr_status_verdict.py
           sparse-checkout-cone-mode: false
@@ -400,7 +412,7 @@ jobs:
             # Newest human review submission or dismissal on the pull request.
             # Readiness blocks on a changes-requested review of the head. A
             # review reaches pr-readiness.yml through the Sensitive Change
-            # Review run it starts. This is the path for a review whose run
+            # Review (approval) run it starts. This is the path for a review whose run
             # never starts (a newer event on the same PR cancelled it while
             # queued) and for a readiness run that is cancelled or cannot
             # read. The success and

@@ -1,4 +1,4 @@
-import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft } from 'lucide-react'
+import { Loader2, Eye, Type, SquareTerminal, Palette, PanelLeft, Monitor, Sun, Moon, FolderOpen } from 'lucide-react'
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { motion, useReducedMotion } from 'framer-motion'
 import { useZoomCtx } from '../../hooks/ZoomProvider'
@@ -15,7 +15,7 @@ import Modal from '../../components/Modal'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity } from '../../store/dashboardSlice'
 import { useSessionPalette } from '../../hooks/useSessionPalette'
-import { PALETTE_NAMES, INTENSITY_NAMES } from '../../utils/sessionColors'
+import { PALETTE_NAMES, INTENSITY_NAMES, paletteSlot } from '../../utils/sessionColors'
 import type { DefaultColorSetting, PaletteName, IntensityName, SessionColorMode } from '../../utils/sessionColors'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../../api/client'
@@ -29,6 +29,7 @@ import {
   setTerminalFontFamily,
   setTerminalFontSize,
   setTerminalCursorStyle,
+  setTerminalCopyOnSelect,
   DEFAULT_TERMINAL_FONT_SIZE,
   TERMINAL_CURSOR_STYLES,
 } from '../../hooks/useTerminalFont'
@@ -37,13 +38,20 @@ import { useFontOptions } from '../../hooks/useFontOptions'
 import { isFontInstalled, monospaceFontStack, proportionalFontStack } from '../../utils/fontDetect'
 
 import { i18nT } from '../../i18n/t'
+import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
+import { ThemeExperienceSettings } from './ThemeExperienceSettings'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { useBranding } from '../../hooks/useBranding'
 import { useLiquidGlass } from '../../hooks/useLiquidGlass'
+import { useExplorePreview } from '../../hooks/usePreviewFlag'
+import { useCloseAction } from '../../hooks/useCloseAction'
+import { useTrayIcon } from '../../hooks/useTrayIcon'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { canPickFolderNatively, hasNativeFolderPicker, pickFolderNatively } from '../../lib/electron'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
  * not ceremony" preference). Colors come from theme CSS vars via Tailwind
@@ -77,6 +85,18 @@ function StatusIndicator({ label }: { label: string }) {
   )
 }
 
+// Intensity values are stored ids; each one renders through its own catalog key.
+const INTENSITY_LABEL_KEYS = {
+  soft: 'pages.settings.displayPanel.intensity_soft',
+  clear: 'pages.settings.displayPanel.intensity_clear',
+  vivid: 'pages.settings.displayPanel.intensity_vivid',
+  bold: 'pages.settings.displayPanel.intensity_bold',
+  intense: 'pages.settings.displayPanel.intensity_intense',
+} as const satisfies Record<IntensityName, string>
+
+/** Why the tray icon switch is locked on, which the switch's description points at. */
+const TRAY_ICON_LOCKED_NOTE_ID = 'tray-icon-locked-note'
+
 export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
   const { language, detected: detectedLanguage, setLanguage, syncFailed: langSyncFailed, catalogFailed: langCatalogFailed } = useLanguage()
@@ -96,6 +116,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     installedThemeLoadFailed,
     customThemesLoadError,
     customThemesLoaded,
+    customThemeDataMap,
   } = useTheme()
   // The load-error notice is shown only for a pack that is actually unstyled.
   // `installedThemeLoadFailed` is derived in the provider from the selection,
@@ -109,6 +130,8 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const { uiMode, setUIMode } = useUIMode()
   const editor = useThemeEditor()
   const { liquidGlass, setLiquidGlass } = useLiquidGlass()
+  const { closeAction, closeActionSupported, closeActionPending, closeActionFailed, setCloseAction } = useCloseAction()
+  const { trayIcon, trayIconSupported, trayIconPending, trayIconFailed, setTrayIcon } = useTrayIcon(closeAction)
   const { botName, directLocal } = useBranding()
   const termFont = useTerminalFont()
   // Probed families become picker rows previewed in their own family, so the
@@ -205,6 +228,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const dispatch = useAppDispatch()
   const { paletteColors: colors, colorMode, paletteName, intensity, boost } = useSessionPalette()
   const defaultColor = useAppSelector(s => s.dashboard.sessionDefaultColor) as DefaultColorSetting
+  const defaultSlot = typeof defaultColor === 'number' ? paletteSlot(defaultColor, colors.length) : null
 
   // Recency-tint count is persisted server-side (dashboard.recent_tint_count) via the shared
   // kirocrewConfig query, so the choice follows the user across browsers/restarts.
@@ -212,6 +236,8 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   type KirocrewCfg = {
     dashboard?: {
       recent_tint_count?: number
+      show_unread_dot?: boolean
+      milestones_enabled?: boolean
       terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
     }
   }
@@ -249,6 +275,50 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // Steps are computed from the SHOWN count so rapid clicks stack on the
   // in-flight value instead of re-incrementing a stale server value.
   const setTintCount = (n: number) => tintMut.mutate(clampTintCount(n))
+
+  // The per-row unread dot on sidebar cards (dashboard.show_unread_dot). On by
+  // default; only a literal `false` hides it, the same rule ChatSidebar reads.
+  const shownUnreadDot = overlay.shown('dashboard.show_unread_dot', mcQ.data?.dashboard?.show_unread_dot !== false)
+  const [unreadDotError, setUnreadDotError] = useState<string | null>(null)
+  const unreadDotMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: boolean) => api.patchConfig('dashboard.show_unread_dot', value),
+    path: () => 'dashboard.show_unread_dot',
+    displayValue: v => v,
+    applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, 'dashboard.show_unread_dot', value),
+    onFailure: () => setUnreadDotError(i18nT('pages.settings.displayPanel.show_unread_dot_save_failed')),
+    onSupersede: () => setUnreadDotError(null),
+  }))
+
+  // Explore (RFC "Milestones for New-User Feature Discovery" 4.9): the main
+  // switch. Default on; only a literal `false` is off. Shown only when the
+  // gateway's config carries the key: an older gateway refuses the write, and
+  // a toggle that can only fail is worse than none. Hidden too while the
+  // Explore Feature Preview is off, since nothing it switches is drawn then.
+  const explorePreview = useExplorePreview()
+  const milestonesSupported = explorePreview && typeof mcQ.data?.dashboard?.milestones_enabled === 'boolean'
+  const shownMilestones = overlay.shown('dashboard.milestones_enabled', mcQ.data?.dashboard?.milestones_enabled !== false)
+  const [milestonesError, setMilestonesError] = useState<string | null>(null)
+  const milestonesMutOpts = (path: 'dashboard.milestones_enabled') => {
+    const opts = overlay.mutationOpts<boolean>({
+      queryKey: ['kirocrewConfig'],
+      mutationFn: (value: boolean) => api.patchConfig(path, value),
+      path: () => path,
+      displayValue: v => v,
+      applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, path, value),
+      onFailure: () => setMilestonesError(i18nT('pages.settings.displayPanel.milestones_save_failed')),
+      onSupersede: () => setMilestonesError(null),
+    })
+    return {
+      ...opts,
+      // The indicator, panel and empty state read the switch through the milestones route.
+      onSettled: (...args: Parameters<typeof opts.onSettled>) => {
+        opts.onSettled(...args)
+        void qc.invalidateQueries({ queryKey: ['milestones'] })
+      },
+    }
+  }
+  const milestonesMut = useMutation(milestonesMutOpts('dashboard.milestones_enabled'))
 
   // Default shell for the built-in terminal — persisted server-side
   // (dashboard.terminal.shell) because the SHELL is spawned by the gateway
@@ -321,6 +391,13 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     onFailure: () => setCompletionError(i18nT('pages.settings.displayPanel.terminal_completion_save_failed')),
     onSupersede: () => setCompletionError(null),
   }))
+  // A Windows gateway answers every completion request with an empty list:
+  // the command tier's PATH filter refuses every directory there and the path
+  // tier has no shell cwd. That reply is the same one the off setting gets, so
+  // the switch would look on while nothing ever pops up. It shows as off and
+  // unavailable instead, with the stored value left untouched. A non-owner
+  // reads the platform as unknown and keeps the plain switch.
+  const completionUnavailable = useGatewayPlatform() === 'windows'
 
   // Run-in-terminal tab reuse (dashboard.terminal.reuse_current). Server-side
   // and off by default — the run-in-terminal handler reads it on each click, so
@@ -376,9 +453,12 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     onSupersede: () => setExternalAppError(null),
   }))
 
-  // ── Install theme (Level 0) from a local folder or a GitHub repo ──
-  const [installType, setInstallType] = useState<'github' | 'local'>('github')
+  // ── Install theme from a GitHub repo, a folder on the gateway host, or a
+  // `.zip` the browser picks (the only source a phone or a remote browser has) ──
+  const [installType, setInstallType] = useState<'github' | 'local' | 'upload'>('github')
   const [installValue, setInstallValue] = useState('')
+  const [installFile, setInstallFile] = useState<File | null>(null)
+  const installFileInputRef = useRef<HTMLInputElement>(null)
   const [installBusy, setInstallBusy] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
   // An install landed but the follow-up catalog refresh failed, so the new pack
@@ -423,10 +503,39 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   // Phase for the install status indicator: fetching (api.installTheme in
   // flight) → applying (auto-selecting the freshly installed theme).
   const [installPhase, setInstallPhase] = useState<'fetching' | 'applying' | null>(null)
+  // Something to install: a chosen zip, or a typed/picked location.
+  const installReady = installType === 'upload' ? !!installFile : !!installValue.trim()
+
+  // Browse… for a local theme folder. Only the desktop shell can open the
+  // OS-native folder chooser (a browser tab cannot read real paths), so the
+  // button shows only once the shell confirms a pick can work on this machine.
+  // The chosen folder just fills the field: it is validated by the same
+  // install call as a typed path, and the user still presses Install.
+  const [nativePickReady, setNativePickReady] = useState(false)
+  const [nativePickBusy, setNativePickBusy] = useState(false)
+  useEffect(() => {
+    if (installType !== 'local' || !hasNativeFolderPicker()) return
+    let live = true
+    canPickFolderNatively().then(ok => { if (live) setNativePickReady(ok) })
+    return () => { live = false }
+  }, [installType])
+  const browseThemeFolder = async () => {
+    if (nativePickBusy || installBusy) return
+    setNativePickBusy(true)
+    setInstallError(null)
+    try {
+      const result = await pickFolderNatively()
+      if (result.status === 'picked') setInstallValue(result.path)
+      else if (result.status === 'failed') setInstallError(i18nT('pages.settings.displayPanel.browse_theme_folder_failed'))
+    } finally {
+      setNativePickBusy(false)
+    }
+  }
 
   const handleInstall = async () => {
     const v = installValue.trim()
-    if (!v || installBusy) return
+    const file = installType === 'upload' ? installFile : null
+    if ((installType === 'upload' ? !file : !v) || installBusy) return
     setInstallBusy(true)
     setInstallError(null)
     // A new attempt owns the notices: the previous attempt's stale-list state
@@ -435,11 +544,13 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     installedUnlistedSlugRef.current = null
     setInstallPhase('fetching')
     try {
-      const source =
-        installType === 'github'
-          ? ({ type: 'github', url: v } as const)
-          : ({ type: 'local', path: v } as const)
-      const res = await api.installTheme(source)
+      const res = file
+        ? await api.installThemeZip(file)
+        : await api.installTheme(
+            installType === 'github'
+              ? ({ type: 'github', url: v } as const)
+              : ({ type: 'local', path: v } as const),
+          )
       if (!res?.ok) {
         setInstallError(res?.error || i18nT('pages.settings.displayPanel.install_failed'))
         return
@@ -463,6 +574,8 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
         installedUnlistedSlugRef.current = res.slug ?? null
       }
       setInstallValue('')
+      setInstallFile(null)
+      if (installFileInputRef.current) installFileInputRef.current.value = ''
     } catch (e) {
       setInstallError(e instanceof Error ? e.message : i18nT('pages.settings.displayPanel.install_failed'))
     } finally {
@@ -508,6 +621,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
 
         case 'view':
           return (
+      <>
       <SettingsSection title={i18nT('pages.settings.displayPanel.view')}>
         <SettingsCard>
           {/* Options are built from SUPPORTED_LANGUAGES, so shipping a new
@@ -553,7 +667,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           )}
           <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.interface')} hint={i18nT('pages.settings.displayPanel.chat_bubbles_or_cli_style_line_by_line_output')} value={uiMode}
             options={[
-              { value: 'chat', label: 'Chat' },
+              { value: 'chat', label: i18nT('pages.settings.displayPanel.interface_chat') },
               { value: 'cli', label: 'CLI' },
             ]}
             onChange={v => setUIMode(v as 'chat' | 'cli')} />
@@ -577,8 +691,72 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             onChange={setLiquidGlass}
           />
           <TranslucentPanelsPreview placeholder={i18nT('components.chatInput.message_placeholder', { bot: botName })} />
+          {milestonesSupported && (
+          <SettingsToggle
+            configKey="dashboard.milestones_enabled"
+            label={i18nT('pages.settings.displayPanel.milestones')}
+            hint={i18nT('pages.settings.displayPanel.milestones_hint')}
+            checked={shownMilestones}
+            onChange={v => milestonesMut.mutate(v)}
+            disabled={milestonesMut.isPending || !mcQ.isSuccess}
+          />
+          )}
+          {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
+              on this panel that navigation would discard. */}
+          <ErrorNotice message={milestonesError} variant="inline" />
         </SettingsCard>
       </SettingsSection>
+      {/* Desktop app only: shown once the main process answers for the main
+          window's dashboard (useCloseAction, useTrayIcon), local or remote
+          gateway. */}
+      {closeActionSupported && (
+        <SettingsSection title={i18nT('pages.settings.displayPanel.desktop_app')}>
+          <SettingsCard>
+            <SettingsToggle
+              settingId="display.keep-running-in-the-background-after-closing-the-window"
+              label={i18nT('pages.settings.displayPanel.keep_running_when_window_closed')}
+              hint={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_desc')}
+              checked={closeAction === 'background'}
+              disabled={closeActionPending}
+              onChange={on => setCloseAction(on ? 'background' : 'quit')}
+            />
+            {/* No hand-off: navigating away would discard `shellDraft` or
+                `installValue` further down this panel. The switch already
+                shows the unchanged value, so toggling again is the retry. */}
+            {closeActionFailed && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
+              />
+            )}
+            {trayIconSupported && (
+              <SettingsToggle
+                settingId="display.show-tray-icon"
+                label={i18nT('pages.settings.displayPanel.show_tray_icon')}
+                hint={i18nT('pages.settings.displayPanel.show_tray_icon_desc')}
+                checked={trayIcon.show}
+                disabled={trayIconPending || !trayIcon.canHide}
+                describedBy={trayIcon.canHide ? undefined : TRAY_ICON_LOCKED_NOTE_ID}
+                onChange={setTrayIcon}
+              />
+            )}
+            {/* Outside the toggle row, so it is not dimmed with the disabled switch. */}
+            {trayIconSupported && !trayIcon.canHide && (
+              <p id={TRAY_ICON_LOCKED_NOTE_ID} className="text-[12px] text-muted">
+                {i18nT('pages.settings.displayPanel.show_tray_icon_locked')}
+              </p>
+            )}
+            {/* No hand-off, for the same drafts as the close row above. */}
+            {trayIconFailed && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
+              />
+            )}
+          </SettingsCard>
+        </SettingsSection>
+      )}
+      </>
           )
 
         case 'zoom':
@@ -727,6 +905,12 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             }))}
             onChange={v => setTerminalCursorStyle(v as (typeof TERMINAL_CURSOR_STYLES)[number])}
           />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.terminal_copy_on_select')}
+            hint={i18nT('pages.settings.displayPanel.terminal_copy_on_select_desc')}
+            checked={termFont.copyOnSelect}
+            onChange={setTerminalCopyOnSelect}
+          />
           {/* Free text with commit-on-blur, mirroring the font field above: the
               gateway host's installed shells cannot be enumerated from the
               browser (reading /etc/shells is host-side and absent on some
@@ -756,9 +940,10 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle
             label={i18nT('pages.settings.displayPanel.terminal_completion')}
             hint={i18nT('pages.settings.displayPanel.terminal_completion_desc')}
-            checked={shownCompletion}
+            description={completionUnavailable ? i18nT('pages.settings.displayPanel.terminal_completion_unavailable_windows') : undefined}
+            checked={!completionUnavailable && shownCompletion}
             onChange={v => completionMut.mutate(v)}
-            disabled={!mcQ.isSuccess}
+            disabled={!mcQ.isSuccess || completionUnavailable}
             configKey="dashboard.terminal.completion.enabled"
           />
           {/* No hand-off: the toggle itself has no draft (it saves on click),
@@ -768,7 +953,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           <ErrorNotice message={completionError} variant="inline" />
           <SettingsToggle
             label={i18nT('pages.settings.displayPanel.terminal_reuse_current')}
-            description={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc')}
+            description={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc_summary')} hint={i18nT('pages.settings.displayPanel.terminal_reuse_current_desc')}
             checked={shownReuseCurrent}
             onChange={v => reuseCurrentMut.mutate(v)}
             disabled={reuseCurrentMut.isPending || !mcQ.isSuccess}
@@ -841,6 +1026,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             </div>
             {themeSwitching && <StatusIndicator label={i18nT('pages.settings.displayPanel.applying')} />}
           </div>
+          <ThemeExperienceSettings colorTheme={colorTheme} customThemeDataMap={customThemeDataMap} />
           {/* The installed-theme catalog failed to load (gateway still booting,
               tunnel error): without this the picker just lacks the installed
               rows and the selected theme renders unstyled with no reason on
@@ -904,9 +1090,9 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           )}
           <SettingsButtonGroup label={i18nT('pages.settings.displayPanel.mode')} hint={i18nT('pages.settings.displayPanel.light_or_dark_appearance_for_the_dashboard')} value={preference}
             options={[
-              { value: 'system', label: 'Auto', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg> },
-              { value: 'light', label: 'Light', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg> },
-              { value: 'dark', label: 'Dark', icon: <svg className="w-3.5 h-3.5 stroke-current fill-none" viewBox="0 0 24 24" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg> },
+              { value: 'system', label: i18nT('pages.settings.displayPanel.theme_mode_auto'), icon: <Monitor className="w-3.5 h-3.5" /> },
+              { value: 'light', label: i18nT('pages.settings.displayPanel.theme_mode_light'), icon: <Sun className="w-3.5 h-3.5" /> },
+              { value: 'dark', label: i18nT('pages.settings.displayPanel.theme_mode_dark'), icon: <Moon className="w-3.5 h-3.5" /> },
             ]}
             onChange={v => setTheme(v as 'system' | 'light' | 'dark')} />
 
@@ -939,10 +1125,14 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                   input beside it is `flex-1`, so an auto-width trigger would
                   resize the input on every change. */}
               <SimpleSelect
-                options={['github', 'local']}
-                optionLabels={[i18nT('pages.settings.displayPanel.github'), i18nT('pages.settings.displayPanel.local_folder')]}
+                options={['github', 'local', 'upload']}
+                optionLabels={[
+                  i18nT('pages.settings.displayPanel.github'),
+                  i18nT('pages.settings.displayPanel.local_folder'),
+                  i18nT('pages.settings.displayPanel.zip_file'),
+                ]}
                 value={installType}
-                onChange={v => setInstallType(v as 'github' | 'local')}
+                onChange={v => setInstallType(v as 'github' | 'local' | 'upload')}
                 aria-label={i18nT('pages.settings.displayPanel.theme_source')}
                 style={{ minWidth: 140 }}
               />
@@ -951,21 +1141,51 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                   trigger beside it, so the row's three controls line up. The
                   raw input this replaces ran `px-2.5 py-1.5 text-[13px] bg-bg`
                   and sat visibly shorter and darker than the picker. */}
-              <Input aria-label={i18nT('pages.settings.displayPanel.theme_source_location')} value={installValue}
-                onChange={e => setInstallValue(e.target.value)}
-                {...ime.bindEnter({ onEnter: () => handleInstall() })}
-                placeholder={installType === 'github' ? 'https://github.com/user/theme' : '/path/to/theme'}
-                className="min-w-0" />
-              <button onClick={handleInstall} disabled={installBusy || !installValue.trim()}
+              {installType === 'upload' ? (
+                <>
+                  {/* The native picker stays hidden: its unstyled "Choose File"
+                      control does not match the row, so a Btn opens it and the
+                      picked file's name stands where the location field was. */}
+                  <input ref={installFileInputRef} type="file" accept=".zip,application/zip" hidden
+                    aria-label={i18nT('pages.settings.displayPanel.choose_zip_file')}
+                    data-testid="theme-zip-input"
+                    onChange={e => setInstallFile(e.target.files?.[0] ?? null)} />
+                  <Btn type="button" onClick={() => installFileInputRef.current?.click()}
+                    className="min-w-0 flex-1 justify-start px-3 py-2 text-sm">
+                    <span className="truncate">
+                      {installFile ? installFile.name : i18nT('pages.settings.displayPanel.choose_zip_file')}
+                    </span>
+                  </Btn>
+                </>
+              ) : (
+                <Input aria-label={i18nT('pages.settings.displayPanel.theme_source_location')} value={installValue}
+                  onChange={e => setInstallValue(e.target.value)}
+                  {...ime.bindEnter({ onEnter: () => handleInstall() })}
+                  placeholder={installType === 'github' ? 'https://github.com/user/theme' : '/path/to/theme'}
+                  className="min-w-0" />
+              )}
+              {installType === 'local' && nativePickReady && (
+                <Btn type="button" onClick={browseThemeFolder} disabled={nativePickBusy || installBusy}
+                  className="shrink-0 whitespace-nowrap px-3 py-2 text-sm">
+                  <FolderOpen size={14} aria-hidden="true" />
+                  {i18nT('pages.settings.displayPanel.browse_theme_folder')}
+                </Btn>
+              )}
+              {/* Install turns primary once there is something to install (a
+                  typed or picked path, or a chosen zip), so the next step after
+                  Browse… reads as the action to take rather than a faint label. */}
+              <Btn onClick={handleInstall}
+                disabled={installBusy || !installReady}
+                primary={installReady}
                 aria-live="polite"
-                className="inline-flex items-center gap-1.5 text-sm px-3 py-2 rounded-md border border-border-strong text-muted hover:text-accent hover:border-accent cursor-pointer transition-all bg-transparent disabled:opacity-50 disabled:cursor-not-allowed">
+                className="shrink-0 px-3 py-2 text-sm">
                 {installBusy && <StatusSpinner />}
                 {installBusy ? (installPhase === 'applying' ? i18nT('pages.settings.displayPanel.applying') : i18nT('pages.settings.displayPanel.fetching')) : i18nT('pages.settings.displayPanel.install')}
-              </button>
+              </Btn>
             </div>
             {/* No hand-off: installValue (the GitHub URL / local path just typed)
-                is still in the field on failure — the user corrects it in place,
-                and navigating to the chat would discard it. */}
+                or the picked .zip is still in place on failure — the user corrects
+                it there, and navigating to the chat would discard it. */}
             <ErrorNotice message={installError} variant="inline" />
           </div>
         </SettingsCard>
@@ -984,13 +1204,15 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           discards the draft unconditionally: on an untouched form both
           accidental exits still work (Escape is the capability the issue asks
           for), and once a name or a colour has been entered only the explicit
-          exits — the header close button and the panel's own Cancel — close it. */}
+          exits — the header close button and the panel's own Cancel — close it.
+          It is also held while the delete confirmation is open above it, so the
+          Escape that cancels that confirmation does not close the editor too. */}
       <Modal
         open={editor.editorOpen}
         onClose={editor.closeEditor}
         title={editor.isEditing ? i18nT('pages.settings.displayPanel.edit_theme') : i18nT('pages.settings.displayPanel.create_theme')}
         maxWidth={672}
-        guardAccidentalDismiss={editor.isDirty}
+        guardAccidentalDismiss={editor.isDirty || editor.confirmingDelete}
       >
         <ThemeEditorPanel editor={editor} />
       </Modal>
@@ -1005,21 +1227,21 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             label={i18nT('pages.settings.displayPanel.palette')}
             hint={i18nT('pages.settings.displayPanel.choose_a_color_palette_for_your_sidebar_sessions')}
             value={paletteName}
-            options={PALETTE_NAMES.map(p => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) }))}
+            options={PALETTE_NAMES.map(p => ({ value: p, label: p === 'categorical' ? i18nT('pages.settings.displayPanel.palette_categorical') : p.charAt(0).toUpperCase() + p.slice(1) }))}
             onChange={v => dispatch(setSessionColorsPalette(v as PaletteName))}
           />
           <SettingsButtonGroup
             label={i18nT('pages.settings.displayPanel.intensity')}
             hint={i18nT('pages.settings.displayPanel.how_visible_the_color_tint_is_on_sidebar_rows')}
             value={intensity}
-            options={INTENSITY_NAMES.map(n => ({ value: n, label: n.charAt(0).toUpperCase() + n.slice(1) }))}
+            options={INTENSITY_NAMES.map(n => ({ value: n, label: i18nT(INTENSITY_LABEL_KEYS[n]) }))}
             onChange={v => dispatch(setSessionColorsIntensity(v as IntensityName))}
           />
           <SettingsButtonGroup
             label={i18nT('pages.settings.displayPanel.display_mode')}
             hint={i18nT('pages.settings.displayPanel.how_the_session_color_is_applied_to_the_row')}
             value={colorMode}
-            options={[{ value: 'tint', label: 'Solid Tint' }, { value: 'gradient', label: 'Gradient' }]}
+            options={[{ value: 'tint', label: i18nT('pages.settings.displayPanel.color_mode_solid_tint') }, { value: 'gradient', label: i18nT('pages.settings.displayPanel.color_mode_gradient') }]}
             onChange={v => dispatch(setSessionColorsMode(v as SessionColorMode))}
           />
           <SettingsStepper
@@ -1035,17 +1257,26 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
               only things inside it. No hand-off: `shellDraft` and `installValue`
               share this panel and the navigation would unmount them. */}
           <ErrorNotice message={tintError} variant="inline" />
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.show_unread_dot')}
+            checked={shownUnreadDot}
+            onChange={v => unreadDotMut.mutate(v)}
+            disabled={unreadDotMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.show_unread_dot"
+          />
+          {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
+              on this panel that navigation would discard. */}
+          <ErrorNotice message={unreadDotError} variant="inline" />
           {/* Color swatches use raw buttons — circular color dots don't fit SettingsButtonGroup's text-button pattern */}
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.displayPanel.default_for_new_sessions')}>
-            <span className="text-[13px] font-semibold text-text">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>
-            <div className="text-[12px] text-muted">{i18nT('pages.settings.displayPanel.none_auto_cycle_or_pick_a_fixed_color')}</div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <button type="button" aria-label={i18nT('pages.settings.displayPanel.no_color')} aria-pressed={defaultColor === null} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultColor === null ? 'border-accent scale-110' : 'border-border'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => dispatch(setSessionDefaultColor(null))} title={i18nT('pages.settings.displayPanel.no_color')} />
+            <span className="text-[13px] font-semibold text-text" id="display-default-session-color-label">{i18nT('pages.settings.displayPanel.default_for_new_sessions')}</span>
+            <RadioChipGroup className="flex flex-wrap items-center gap-1.5" ariaLabelledBy="display-default-session-color-label">
+              <button type="button" aria-label={i18nT('pages.settings.displayPanel.no_color')} {...radioChip(defaultColor === null)} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultColor === null ? 'border-accent scale-110' : 'border-border'}`} style={{ background: 'var(--bg-accent)', backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--danger) 45%, var(--danger) 55%, transparent 55%)' }} onClick={() => dispatch(setSessionDefaultColor(null))} title={i18nT('pages.settings.displayPanel.no_color')} />
               {colors.map((c, i) => (
-                <button type="button" key={i} aria-label={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} aria-pressed={defaultColor === i} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultColor === i ? 'border-accent scale-110' : 'border-border'}`} style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${c} ${boost.activePct[i]}%, var(--bg-accent)) 50%, color-mix(in srgb, ${c} ${boost.idlePct[i]}%, var(--bg-accent)) 50%)` }} onClick={() => dispatch(setSessionDefaultColor(i))} title={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} />
+                <button type="button" key={i} aria-label={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} {...radioChip(defaultSlot === i)} className={`w-7 h-7 rounded-full border-2 cursor-pointer transition-transform hover:brightness-125 swatch-cue ${defaultSlot === i ? 'border-accent scale-110' : 'border-border'}`} style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${c} ${boost.activePct[i]}%, var(--bg-accent)) 50%, color-mix(in srgb, ${c} ${boost.idlePct[i]}%, var(--bg-accent)) 50%)` }} onClick={() => dispatch(setSessionDefaultColor(i))} title={i18nT('pages.settings.displayPanel.color', { n: i + 1 })} />
               ))}
-              <button type="button" className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border transition-all ${defaultColor === 'auto' ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'}`} onClick={() => dispatch(setSessionDefaultColor('auto'))}>{i18nT('pages.settings.displayPanel.auto')}</button>
-            </div>
+              <button type="button" {...radioChip(defaultColor === 'auto')} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[13px] font-medium cursor-pointer border transition-all ${defaultColor === 'auto' ? 'bg-accent-subtle text-accent border-accent' : 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'}`} onClick={() => dispatch(setSessionDefaultColor('auto'))}>{i18nT('pages.settings.displayPanel.auto')}</button>
+            </RadioChipGroup>
           </div>
         </SettingsCard>
       </SettingsSection>

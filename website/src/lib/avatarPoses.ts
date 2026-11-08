@@ -8,13 +8,18 @@
  * here: pick one of the shipped poses, pick a background colour, done. There is
  * no per-trait vocabulary and no reaction layer — the pose IS the whole face.
  *
- * A pose does still show the crew AT WORK: `poseDataUri(pose, bg, true)` wraps
- * the silhouette in the ghost's body-motion groups (`workingStyle` in
- * `kiroGhostAvatar.ts`) at the ghost's full amplitude, so an icon crew bobs and
- * sways beside a ghost crew in the same rhythm. Body motion only MOVES the
- * drawing — nothing about the pose, its eyes or its colour changes — so the
- * still frame and the working frame are the same face, and reduced-motion users
- * get the still frame unchanged.
+ * A pose does still show the crew AT WORK, at the ghost's full body-motion
+ * amplitude and tempo (`BODY_MOTION` in `kiroGhostAvatar.ts`), so an icon crew
+ * bobs and sways beside a ghost crew in the same rhythm. The motion is NOT drawn
+ * inside the SVG: `CrewAvatar` paints the tile itself and moves one still image
+ * of the silhouette (`poseBodyDataUri`) with page CSS (`crewIconMotion.css`),
+ * fed by `iconMotionVars()`. A CSS animation inside an `<img>`'s SVG makes the
+ * browser re-raster the picture every frame, and iOS Safari re-rasters it in
+ * pieces: the head, the tail and one eye came out of step, so the face looked
+ * torn. So both layers are still rasters: the body (`poseBodyDataUri`) and the
+ * eyes (`poseEyesDataUri`) sit inside the same body-motion wrappers, and only
+ * the eye layer adds its own blink and glance on top, as the ghost's eyes do.
+ * Reduced-motion users get the still frame unchanged.
  *
  * The art is a set of hand-drawn SVGs (`assets/avatarPoses/pose-N.svg`), each a
  * white ghost silhouette with two black eye cut-outs over a background rect.
@@ -50,7 +55,15 @@ import pose10 from '../assets/avatarPoses/pose-10.svg?raw'
 import pose11 from '../assets/avatarPoses/pose-11.svg?raw'
 
 import { createAvatar } from '@dicebear/core'
-import { BRAND_PURPLE, TILES, workingStyle, type WorkingIntensity } from './kiroGhostAvatar'
+import {
+  BODY_MOTION,
+  BODY_ORIGINS,
+  BODY_TILE,
+  BRAND_PURPLE,
+  SWAY_TEMPO,
+  TILES,
+  type WorkingIntensity,
+} from './kiroGhostAvatar'
 
 /** The icon background palette offered in the avatar builder (brand purple +
  *  the tile colours) — the set a name-seeded default colour is drawn from, so
@@ -207,18 +220,6 @@ export function resolvePoseBg(bg: string | undefined): string {
 const RECT_FILL_RE = /(<rect\b[^>]*\bfill=")[^"]*(")/
 
 /**
- * The drawing that moves while the crew works: everything after the background
- * rect up to the closing tag. The rect is the tile and stays put, exactly as the
- * ghost's tile does under its own body motion.
- */
-const BODY_RE = /(<rect\b[^>]*\/>)([\s\S]*)(<\/svg>)/
-
-/** The pose art is authored on a 300-unit tile; the ghost's motion keyframes and
- *  transform origins are written for its 1200-unit tile. */
-const POSE_TILE = 300
-const GHOST_TILE = 1200
-
-/**
  * The one amplitude an icon moves at. The ghost scales its body motion down to
  * `subtle` in a dense roster because its eyes animate too and the two together
  * read as busy at 40px; a pose has no moving eyes, so the body is the whole
@@ -228,57 +229,120 @@ const GHOST_TILE = 1200
 const ICON_WORKING: WorkingIntensity = 'full'
 
 /**
- * Wrap a pose's silhouette in the ghost's body-motion groups.
- *
- * The keyframes are REUSED, not re-authored: `workingStyle` is the ghost's own
- * `<style>` block, so the two tiers cannot drift apart in tempo, and no new
- * `@keyframes` exist for the icon. Its pixel offsets and `transform-origin`s
- * are in the ghost's 1200-unit space, so the wrap scales into that space,
- * animates there, and scales the art back out — the pose itself is untouched.
- * The eye idioms the block also defines target classes the pose art does not
- * carry, so they simply do not apply.
- */
-function wrapWorking(body: string): string {
-  const into = POSE_TILE / GHOST_TILE
-  const outOf = GHOST_TILE / POSE_TILE
-  return (
-    workingStyle(ICON_WORKING) +
-    `<g transform="scale(${into})"><g class="kg-fit"><g class="kg-sway"><g class="kg-bob"><g class="kg-sq">` +
-    `<g transform="scale(${outOf})">${body}</g>` +
-    '</g></g></g></g></g>'
-  )
-}
-
-/**
- * Compose a pose + background into the data URI the roster and the builder
- * both render. The silhouette and eyes are left exactly as drawn; only the
- * background rect's fill is swapped for the chosen colour. With `working` true
- * the silhouette is wrapped in the ghost's body motion (see `wrapWorking`);
- * otherwise the output is the still frame it has always been. A boolean, not
- * the ghost's `WorkingIntensity`: an icon has one amplitude (`ICON_WORKING`),
- * so a caller cannot ask for one it does not draw.
+ * Compose a pose + background into the still data URI the roster and the
+ * builder both render. The silhouette and eyes are left exactly as drawn; only
+ * the background rect's fill is swapped for the chosen colour.
  *
  * A pose whose source somehow lacks the expected rect still renders — the body
  * and eyes draw over whatever the file declares — rather than throwing on a
  * roster, which is the same "degrade, never crash" rule the trait readers hold.
- * The same holds for the working wrap: a source the body match cannot place is
- * served still rather than not at all.
  */
-export function poseDataUri(
-  pose: string | undefined,
-  bg: string | undefined,
-  working?: boolean,
-): string {
+export function poseDataUri(pose: string | undefined, bg: string | undefined): string {
   const svg = POSE_SVG[resolvePose(pose)]
-  const colour = resolvePoseBg(bg)
-  const painted = svg.replace(RECT_FILL_RE, `$1${colour}$2`)
-  const composed = working
-    ? painted.replace(
-        BODY_RE,
-        (_m, rect: string, body: string, close: string) => rect + wrapWorking(body) + close,
-      )
-    : painted
-  return `data:image/svg+xml;utf8,${encodeURIComponent(composed)}`
+  const painted = svg.replace(RECT_FILL_RE, `$1${resolvePoseBg(bg)}$2`)
+  return `data:image/svg+xml;utf8,${encodeURIComponent(painted)}`
+}
+
+/** The pose's background rect, matched whole so the moving layer can drop it. */
+const RECT_RE = /<rect\b[^>]*\/>/
+
+/**
+ * An eye of a pose: every shipped pose draws one white silhouette path
+ * (`fill="#fff"`) and then two eye paths with no `fill`, which SVG paints black.
+ */
+const EYE_PATH_RE = /<path\b(?![^>]*\bfill=)[^>]*\/>/g
+
+/**
+ * The pose with its background tile and its eyes removed: the white silhouette
+ * alone on a transparent canvas, the body layer a WORKING icon moves. The path
+ * is byte-identical to the still frame's. The tile is painted by `CrewAvatar`
+ * behind it and stays put, as the ghost's tile does under its own body motion.
+ */
+export function poseBodyDataUri(pose: string | undefined): string {
+  const body = POSE_SVG[resolvePose(pose)].replace(RECT_RE, '').replace(EYE_PATH_RE, '')
+  return `data:image/svg+xml;utf8,${encodeURIComponent(body)}`
+}
+
+/**
+ * The pose's two eyes alone, in the same 300-unit canvas as the body, so the
+ * two layers stack pixel for pixel. A working icon blinks and glances with this
+ * layer the way the ghost's eyes do (`kg-blink`, `kg-look`), while the body
+ * layer carries both through sway, bob and squash.
+ */
+export function poseEyesDataUri(pose: string | undefined): string {
+  const svg = POSE_SVG[resolvePose(pose)]
+  const eyes = svg.match(EYE_PATH_RE) ?? []
+  const open = svg.match(/<svg\b[^>]*>/)?.[0] ?? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">'
+  return `data:image/svg+xml;utf8,${encodeURIComponent(`${open}${eyes.join('')}</svg>`)}`
+}
+
+/**
+ * Center of each pose's two eyes, in its 300-unit canvas: the origin a blink
+ * squashes toward, so the lids close on the eyes and not on the tile's middle.
+ * Measured with `getBBox()` over the two eye paths of each shipped file.
+ */
+const EYE_CENTERS: Record<string, readonly [number, number]> = {
+  'pose-1': [181.9, 115.4],
+  'pose-2': [158.8, 108],
+  'pose-3': [231.8, 125.7],
+  'pose-4': [114.8, 117.4],
+  'pose-5': [172.5, 101.4],
+  'pose-6': [108.1, 95.5],
+  'pose-7': [206.4, 102.5],
+  'pose-8': [157.8, 105.1],
+  'pose-9': [181, 124.7],
+  'pose-10': [102.7, 102.3],
+  'pose-11': [198, 100.6],
+}
+
+/** The pose canvas edge, in its own units. */
+const POSE_TILE = 300
+
+/** The custom properties placing a pose's blink origin, as unitless shares of
+ *  the box that `crewIconMotion.css` multiplies by `1%`. */
+export function poseEyeVars(pose: string | undefined): Record<string, string> {
+  const [x, y] = EYE_CENTERS[resolvePose(pose)]
+  const share = (v: number) => String(+((v / POSE_TILE) * 100).toFixed(4))
+  return { '--crew-icon-eye-x': share(x), '--crew-icon-eye-y': share(y) }
+}
+
+/** A length in the ghost's 1200-unit tile as a share of the avatar box, in
+ *  hundredths. Unitless: the stylesheet multiplies it by `1%`. */
+const pct = (units: number) => String(+((units / BODY_TILE) * 100).toFixed(4))
+
+/**
+ * The CSS custom properties `crewIconMotion.css` reads: the ghost's own
+ * body-motion numbers at `ICON_WORKING`, with every offset and origin turned
+ * from 1200-unit pixels into a unitless share of the avatar box, which the
+ * stylesheet turns into a percentage. A percentage
+ * scales with the box, so the 40px roster row and the large header move the
+ * same way, and the tempo has one source with the ghost tier.
+ */
+export function iconMotionVars(): Record<string, string> {
+  const m = BODY_MOTION[ICON_WORKING]
+  return {
+    '--crew-icon-fit-drop': pct(m.fitDrop),
+    '--crew-icon-fit-scale': String(m.fitScale),
+    '--crew-icon-rise': pct(-m.rise),
+    '--crew-icon-sink': pct(m.sink),
+    '--crew-icon-stretch-x': String(1 + m.stretch),
+    '--crew-icon-stretch-y': String(1 - m.stretch),
+    '--crew-icon-squash-x': String(1 - m.stretch / 2),
+    '--crew-icon-squash-y': String(1 + m.stretch),
+    '--crew-icon-sway-from': `${-m.sway}deg`,
+    '--crew-icon-sway-to': `${m.sway}deg`,
+    '--crew-icon-secs': `${m.secs}s`,
+    '--crew-icon-sway-secs': `${+(m.secs * SWAY_TEMPO).toFixed(4)}s`,
+    '--crew-icon-fit-origin-x': pct(BODY_ORIGINS.fit[0]),
+    '--crew-icon-fit-origin-y': pct(BODY_ORIGINS.fit[1]),
+    '--crew-icon-sway-origin-x': pct(BODY_ORIGINS.sway[0]),
+    '--crew-icon-sway-origin-y': pct(BODY_ORIGINS.sway[1]),
+    '--crew-icon-sq-origin-x': pct(BODY_ORIGINS.sq[0]),
+    '--crew-icon-sq-origin-y': pct(BODY_ORIGINS.sq[1]),
+    // The ghost's `kg-look` glance: 30 units right, then 26 left.
+    '--crew-icon-look-right': pct(30),
+    '--crew-icon-look-left': pct(-26),
+  }
 }
 
 /** The seed a blank name falls back to, so an unnamed draft still previews a

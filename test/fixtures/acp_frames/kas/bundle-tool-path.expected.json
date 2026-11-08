@@ -1,0 +1,178 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "echo hello-from-bundle-route",
+          "description": "Echo a test string",
+          "run_in_background": false
+        },
+        "title": "Echo a test string",
+        "tool_call_id": "run_command_call-1",
+        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Echo a test string\",\n  \"run_in_background\": false\n}",
+        "tool_kind": "execute",
+        "wire_title": "Echo a test string"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "harness_tool_id": "run_command",
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "accept",
+            "label": "Allow"
+          },
+          {
+            "id": "always-accept",
+            "label": "Always allow"
+          },
+          {
+            "id": "reject",
+            "label": "Deny"
+          },
+          {
+            "id": "always-reject",
+            "label": "Always deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "echo hello-from-bundle-route",
+          "description": "Echo a test string",
+          "run_in_background": false
+        },
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "echo hello-from-bundle-route",
+        "tool_call_id": "run_command_call-1",
+        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Echo a test string\",\n  \"run_in_background\": false\n}",
+        "tool_name": "run_command"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "always-accept",
+      "once": "accept",
+      "reject": "reject"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo hello-from-bundle-route",
+          "description": "Echo a test string",
+          "run_in_background": false
+        },
+        "title": "Echo a test string",
+        "tool_call_id": "run_command_call-1",
+        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Echo a test string\",\n  \"run_in_background\": false\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo hello-from-bundle-route",
+          "description": "Echo a test string",
+          "run_in_background": false
+        },
+        "title": "Echo a test string",
+        "tool_call_id": "run_command_call-1",
+        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Echo a test string\",\n  \"run_in_background\": false\n}"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "run_command_call-1",
+        "tool_final": true,
+        "tool_output": "Output:\nhello-from-bundle-route\n\n\nExit Code: 0",
+        "tool_output_bytes": 46,
+        "tool_output_digest": "e779fdac79fdc430cf03b0644ae7144cc7ee42648a6c4a54c347fdcd373f12b2",
+        "tool_status": "completed"
+      },
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command": "echo hello-from-bundle-route",
+          "description": "Echo a test string",
+          "run_in_background": false
+        },
+        "title": "Echo a test string",
+        "tool_call_id": "run_command_call-1",
+        "tool_input": "{\n  \"command\": \"echo hello-from-bundle-route\",\n  \"description\": \"Echo a test string\",\n  \"run_in_background\": false\n}",
+        "wire_title": "Echo a test string"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "D"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "D",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ONE"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ONE",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "session_info_update"
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "stop_reason": "end_turn"
+  }
+]

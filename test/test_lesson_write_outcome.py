@@ -1,26 +1,12 @@
 """What a lesson write reports, and the four surfaces that read it.
 
-A bare ``bool`` return cannot carry this: one ``False`` would mean several
-unrelated things at once -- validation refused the value, a dedup rule claimed the
-write, the submit was a no-op, or a bare re-submit deliberately kept a stored
-NOT-clause. The first group means "your lesson did not land"; the second means
-"your lesson is fine, there was nothing to do". These tests pin the outcome each
-path reports, that the result's TRUTH VALUE answers the plain bool predicate (so
-the callers that only
-branch on success are unaffected -- see ``TestWriteLessonTruthValueIsTheOldBool``), and
-that the three surfaces a human or a model reads -- the CLI, the ``/api/lessons``
-response and the ``learn_add`` tool result -- stop saying "Saved" for a write that
-stored nothing.
+A bare ``bool`` cannot carry this: ``False`` could mean "your lesson did not land"
+(refused, claimed by dedup) or "nothing to do" (a no-op, a kept NOT-clause).
 
-This file pins the volatile-fact boundary every lesson producer shares and the
-durable model-version references it lets through, then the outcome, reason and winner
-each ``write_lesson`` path reports and the result's truth value; its boundary tests
-also reach the ``learn_add`` tool and the ``api_lessons`` list where each meets that
-boundary. What the ``learn add`` CLI, the ``/api/lessons`` routes and the
-``learn_add`` tool report for each write outcome, including the rules a supersede
-removed, and what ``learn_list`` shows for a withheld row, live in
-``test_lesson_write_outcome_surfaces.py``; what the store reports and records on disk
-when a write supersedes a stored lesson lives in
+This file pins the volatile-fact boundary every lesson producer shares, the durable
+model-version references it lets through, and the outcome, reason and winner each
+``write_lesson`` path reports, plus the result's truth value. Surface reports live in
+``test_lesson_write_outcome_surfaces.py``; supersede behaviour lives in
 ``test_lesson_write_outcome_supersede.py``.
 """
 
@@ -35,6 +21,7 @@ from lesson_write_outcome_helpers import (
     _rule_of,
     _store,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew.model_registry import MODEL_ID_LITERAL_PATTERN
 from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
@@ -89,13 +76,48 @@ class TestVolatileLessonWriteBoundary:
     @pytest.mark.parametrize(
         "rule",
         [
-            "the selected model is gpt-5.6-sol",
-            "the session model is gpt-5.6-sol",
+            *named_cases(
+                "test_selected_or_session_identity_is_refused_in_knowledge",
+                "rule",
+                [
+                    "the selected model is gpt-5.6-sol",
+                    "the session model is gpt-5.6-sol",
+                ],
+            ),
+            *named_cases(
+                "test_sentence_boundary_behavioral_pin_cannot_bypass_through_knowledge",
+                "rule",
+                [
+                    "Compatibility varies. Select gpt-5.6-sol for reviews",
+                    "Compatibility varies! Select gpt-5.6-sol for reviews",
+                    "Compatibility varies? Select gpt-5.6-sol for reviews",
+                    "Compatibility varies\nSelect gpt-5.6-sol for reviews",
+                ],
+            ),
+            *named_cases(
+                "test_prefixed_direct_imperative_cannot_bypass_through_knowledge",
+                "rule",
+                [
+                    "Please use gpt-5.6-sol for reviews",
+                    "Kindly select gpt-5.6-sol for reviews",
+                    "Do choose gpt-5.6-sol for reviews",
+                    "Please do prefer gpt-5.6-sol for reviews",
+                ],
+            ),
+            *named_cases(
+                "test_model_identity_controls_are_refused",
+                "rule",
+                [
+                    "This session is running as the current backend",
+                    "This session is running as the model backend",
+                    "This session is running as gpt-5.6-sol",
+                    "This session is running as the backend gpt-5.6-sol",
+                    "The active model is opus-4.8",
+                ],
+            ),
         ],
     )
-    def test_selected_or_session_identity_is_refused_in_knowledge(
-        self, tmp_path, rule: str
-    ) -> None:
+    def test_a_volatile_model_identity_is_refused_in_knowledge(self, tmp_path, rule: str) -> None:
         store = _store(tmp_path)
         try:
             result = store.write_lesson(rule, "knowledge")
@@ -155,48 +177,6 @@ class TestVolatileLessonWriteBoundary:
                 "in cron jobs, always use gpt-5.6-sol",
                 "knowledge",
             )
-
-            assert result.outcome is LessonWriteOutcome.REFUSED
-            assert result.reason == "volatile_session_fact"
-        finally:
-            store.close()
-
-    @pytest.mark.parametrize(
-        "rule",
-        [
-            "Compatibility varies. Select gpt-5.6-sol for reviews",
-            "Compatibility varies! Select gpt-5.6-sol for reviews",
-            "Compatibility varies? Select gpt-5.6-sol for reviews",
-            "Compatibility varies\nSelect gpt-5.6-sol for reviews",
-        ],
-    )
-    def test_sentence_boundary_behavioral_pin_cannot_bypass_through_knowledge(
-        self, tmp_path, rule: str
-    ) -> None:
-        store = _store(tmp_path)
-        try:
-            result = store.write_lesson(rule, "knowledge")
-
-            assert result.outcome is LessonWriteOutcome.REFUSED
-            assert result.reason == "volatile_session_fact"
-        finally:
-            store.close()
-
-    @pytest.mark.parametrize(
-        "rule",
-        [
-            "Please use gpt-5.6-sol for reviews",
-            "Kindly select gpt-5.6-sol for reviews",
-            "Do choose gpt-5.6-sol for reviews",
-            "Please do prefer gpt-5.6-sol for reviews",
-        ],
-    )
-    def test_prefixed_direct_imperative_cannot_bypass_through_knowledge(
-        self, tmp_path, rule: str
-    ) -> None:
-        store = _store(tmp_path)
-        try:
-            result = store.write_lesson(rule, "knowledge")
 
             assert result.outcome is LessonWriteOutcome.REFUSED
             assert result.reason == "volatile_session_fact"
@@ -627,26 +607,6 @@ class TestDurableModelVersionReferences:
     TOOLING_RULES = MODEL_TOOLING_RULES + BACKEND_PROCESS_RULES
 
     @pytest.mark.parametrize(
-        "rule",
-        [
-            "This session is running as the current backend",
-            "This session is running as the model backend",
-            "This session is running as gpt-5.6-sol",
-            "This session is running as the backend gpt-5.6-sol",
-            "The active model is opus-4.8",
-        ],
-    )
-    def test_model_identity_controls_are_refused(self, tmp_path: Path, rule: str) -> None:
-        store = _store(tmp_path)
-        try:
-            result = store.write_lesson(rule, "knowledge")
-
-            assert result.outcome is LessonWriteOutcome.REFUSED
-            assert result.reason == "volatile_session_fact"
-        finally:
-            store.close()
-
-    @pytest.mark.parametrize(
         "rule,category,negative",
         [
             (RULE, "tool", None),
@@ -815,10 +775,10 @@ class TestWriteLessonOutcomes:
             store.close()
 
     def test_identical_resubmit_is_unchanged_not_a_failure(self, tmp_path):
-        """The case that made the CLI write a redundant JSONL record.
+        """Nothing was written, but the lesson IS stored exactly as submitted.
 
-        Nothing was written, but the lesson IS stored exactly as submitted, so a
-        caller told "this did not land" would act on a false premise.
+        A caller told "this did not land" would act on a false premise, such as
+        the CLI writing a redundant JSONL record.
         """
         store = _store(tmp_path)
         try:
@@ -924,14 +884,10 @@ class TestWriteLessonOutcomes:
 
 
 class TestWriteLessonTruthValueIsTheOldBool:
-    """The result's TRUTH VALUE must keep answering exactly "did this write something".
+    """The result's TRUTH VALUE must answer exactly "did this write something".
 
-    This is what let the bool return be replaced outright instead of shipped beside a
-    second method. ~55 assertions and three production callers read the old answer with
-    a bare ``if``/``assert``; returning an ordinary object would have made every one of
-    them unconditionally true, silently, with no type error for mypy to catch. So
-    ``__bool__`` is load-bearing, not a convenience -- these pin it directly, and the
-    bare-truthy assertions across the lesson suites exercise it on every path.
+    Callers and many assertions branch on a bare ``if``/``assert``; without
+    ``__bool__`` every one would be true, with no type error for mypy to catch.
     """
 
     @pytest.mark.parametrize(
@@ -948,7 +904,7 @@ class TestWriteLessonTruthValueIsTheOldBool:
             store.close()
 
     def test_truth_value_is_false_for_a_no_op_resubmit(self, tmp_path):
-        """A bare ``if`` on a re-submit must still read False, as it did before."""
+        """A bare ``if`` on a re-submit must read False."""
         store = _store(tmp_path)
         try:
             assert store.write_lesson("prefer ruff over flake8", "tool")
@@ -969,10 +925,8 @@ class TestWriteLessonTruthValueIsTheOldBool:
     def test_truth_value_is_wrote_for_every_outcome(self, outcome, expect_truthy):
         """Exhaustive, so a new outcome cannot join without a decision here.
 
-        ``UNCHANGED`` is the one a reader might expect to be truthy -- the lesson IS
-        stored. It is deliberately falsy, because the predicate the old bool answered
-        was "did this call write", and every caller branching on the truth value was
-        written against that. ``stored`` is where "is my lesson in there" lives.
+        ``UNCHANGED`` is falsy though the lesson IS stored: the truth value answers
+        "did this call write". ``stored`` answers "is my lesson in there".
         """
         assert bool(LessonWriteResult(outcome)) is expect_truthy
 
@@ -985,10 +939,8 @@ class TestWriteLessonTruthValueIsTheOldBool:
     def test_wire_values_are_pinned_against_the_jsonl_store_vocabulary(self):
         """The route's JSONL branch matches these words as inline literals.
 
-        Both stores describe the same three events, and the route checks the JSONL
-        store's return against the literal words rather than importing this enum
-        (there is one reader, and the import would have no reason to be lazy). This
-        pins the enum's wire values so the two sides cannot drift apart in silence.
+        The route checks the JSONL store's return against literal words rather than
+        this enum, so the enum's wire values are pinned here to keep the two in step.
         """
         assert LessonWriteOutcome.INSERTED.value == "inserted"
         assert LessonWriteOutcome.ENRICHED.value == "enriched"

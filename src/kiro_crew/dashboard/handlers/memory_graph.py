@@ -13,11 +13,33 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from kiro_crew._sqlite_compat import is_cjk_char
 from kiro_crew.dashboard.handlers._shared import _redact_memory_field
 
+#: Most semantic rows one graph request reads, in key order with lessons excluded
+#: (they are drawn from ``get_lessons``), through the key index so the read stops
+#: at the limit. The semantic table grows without bound and every page open reads
+#: under the store lock, so the read is capped; a graph of more nodes than this is
+#: unreadable anyway.
+GRAPH_SEMANTIC_LIMIT = 200
+#: Most lesson rows one graph request reads, newest first.
+GRAPH_LESSON_LIMIT = 200
 
-def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]]:
-    """Synchronous helper — safe to run in a thread."""
+
+def _build_memory_graph(
+    mem: Any, lessons: list, partial: "dict[str, bool] | None" = None
+) -> tuple[list[dict], list[dict]]:
+    """Synchronous helper — safe to run in a thread.
+
+    Every store read is bounded: at most :data:`GRAPH_SEMANTIC_LIMIT` semantic rows
+    (the first by key) and :data:`GRAPH_LESSON_LIMIT` lessons (the newest). Each read
+    asks for one row past its cap, so *partial*, when given, is told per population
+    (``"semantic"``, ``"lessons"``) whether rows were left out, without counting the
+    table.
+    """
+    if partial is None:
+        partial = {}
+    partial.update(semantic=False, lessons=False)
     import hashlib
     import re
 
@@ -72,7 +94,9 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
     vs = mem.vector_store
     if vs:
         try:
-            for entry in vs.get_all_semantic():
+            rows = vs.get_all_semantic(limit=GRAPH_SEMANTIC_LIMIT + 1, exclude_lessons=True)
+            partial["semantic"] = len(rows) > GRAPH_SEMANTIC_LIMIT
+            for entry in rows[:GRAPH_SEMANTIC_LIMIT]:
                 key = entry.get("key", "")
                 # Lesson rows are rendered as prose by the lessons loop below;
                 # adding them here too would show each lesson twice, once as a
@@ -94,7 +118,7 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
     try:
         lessons_data = None
         try:
-            lessons_data = vs.get_lessons() if vs else None
+            lessons_data = vs.get_lessons(limit=GRAPH_LESSON_LIMIT + 1) if vs else None
         except Exception:
             pass
         if lessons_data:
@@ -103,7 +127,8 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
             # only use of it, on one search path.
             from kiro_crew.vector_memory import _lesson_display_text
 
-            for entry in lessons_data:
+            partial["lessons"] = len(lessons_data) > GRAPH_LESSON_LIMIT
+            for entry in lessons_data[:GRAPH_LESSON_LIMIT]:
                 rule = entry.get("value_json", "")
                 if isinstance(rule, str):
                     try:
@@ -115,7 +140,9 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
                 text = _lesson_display_text(rule) or str(rule)
                 _add("lesson", text[:80], "lesson", text)
         else:
-            for le in lessons:
+            # ``load_all`` lists the file oldest first, so the newest are the tail.
+            partial["lessons"] = len(lessons) > GRAPH_LESSON_LIMIT
+            for le in lessons[-GRAPH_LESSON_LIMIT:]:
                 _add("lesson", le.rule[:80], "lesson", le.rule)
     except Exception:
         pass
@@ -123,10 +150,23 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
     # --- History (recent days only) ---
     try:
         hist = mem.read_recent_history(days=14) or ""
+        # ``append_history`` writes a ``# YYYY-MM-DD`` file header and a
+        # ``#### HH:MM <%Z>`` header above each entry. They carry no content of
+        # their own, so drawing them only adds empty nodes. ``%Z`` is an
+        # abbreviation ("UTC", "CST"), a numeric offset ("+08") or, on Windows,
+        # a full name ("China Standard Time").
+        timestamp_re = re.compile(
+            r"^#{1,4}\s+\d{1,2}:\d{2}"
+            r"(?:\s+(?:[A-Z]{2,5}|[+-]\d{2}(?::?\d{2})?|(?:[A-Z][a-z]+\s+)+Time))?$"
+        )
+        date_re = re.compile(r"^#{1,4}\s+\d{4}-\d{2}-\d{2}$")
         for line in hist.splitlines():
             stripped = line.strip()
             m = re.match(r"^#{1,4}\s+(.+)", stripped)
             if m:
+                # Skip timestamp and date headers
+                if timestamp_re.match(stripped) or date_re.match(stripped):
+                    continue
                 raw = str(_redact_memory_field(m.group(1).strip()))
                 _add("hist", raw[:80], "history", raw)
             elif stripped.startswith("[") and "]" in stripped and len(stripped) > 20:
@@ -186,7 +226,14 @@ def _build_memory_graph(mem: Any, lessons: list) -> tuple[list[dict], list[dict]
             for proj_id, short in project_matchers:
                 if n["id"] == proj_id:
                     continue
-                if re.search(r"\b" + re.escape(short) + r"\b", title_lower):
+                if any(map(is_cjk_char, short)):
+                    # CJK prose has no spaces, and Python's Unicode regex counts
+                    # ideographs and kana as ``\w``, so ``\b`` never splits two
+                    # of them ("查询账单服务接口"): match a plain substring.
+                    matched = short in title_lower
+                else:
+                    matched = re.search(r"\b" + re.escape(short) + r"\b", title_lower) is not None
+                if matched:
                     edges.append({"from": n["id"], "to": proj_id})
 
     return nodes, edges

@@ -32,6 +32,8 @@ ds = load_skill_script("prepare_pr_diff_signals_proof_under_test", SCRIPT)
 
 BODY_HEAD = (
     "## What changed\n\nmod.py reads the last char. test_mod.py pins it. .github is weakened.\n\n"
+    # A fix body CI's PR Hygiene accepts, so only the proof check decides the exit.
+    "## Pattern harvest\n\nNot generalizable: test fixture\n\n"
 )
 LINE_RE = re.compile(r"^Proof: PROVEN .+ \(head [0-9a-f]{12}\)$", re.MULTILINE)
 
@@ -167,7 +169,11 @@ def test_enforced_but_not_a_fix_is_exit_zero(tmp_path: Path) -> None:
 
 def test_base_without_the_script_skips_the_check(tmp_path: Path) -> None:
     repo = _make_repo(tmp_path, enforce_from=None, script=False)
-    rc, out = _run(repo, "## What changed\n\nmod.py and test_mod.py.\n\n## Tests\n\nx\n")
+    body = (
+        "## What changed\n\nmod.py and test_mod.py.\n\n## Tests\n\nx\n\n"
+        "## Pattern harvest\n\nNot generalizable: test fixture\n"
+    )
+    rc, out = _run(repo, body)
     assert rc == 0, out
     assert "PROOF LINE" not in out and "Proof line" not in out
 

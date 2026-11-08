@@ -95,6 +95,8 @@ Advertised during initialization:
 | `config_option_update` | Config option changed |
 | `session_info_update` | Session metadata changed |
 | `user_message_chunk` | Echo of user message |
+| `subagent_update` | A subagent's lifecycle, on the session that started it: the child `sessionId`, `title`, `description`, `state` (claude-agent-acp, only to a client that declares `clientCapabilities.subagents`) |
+| `session_message` | The prompt a subagent was handed, on the child's session; `messageId` is the parent's Agent `toolCallId` (claude-agent-acp, same condition) |
 
 ## Kiro extensions (experimental)
 
@@ -228,6 +230,7 @@ Sending the wrong shape yields `-32602 Invalid params` or `-32601 Method not fou
 |----------|----------|
 | macOS | `$TMPDIR/kiro-log/kiro-chat.log` |
 | Linux | `$XDG_RUNTIME_DIR/kiro-log/kiro-chat.log` |
+| Windows | `%TEMP%\kiro-log\logs\kiro-chat.log` |
 
 These defaults name ONE file per machine. A process that starts while that
 file is over 10 MiB unlinks it, and every running process keeps writing into
@@ -239,7 +242,9 @@ land beside it). The directory is reclaimed with the process by the scratch
 sweep, and the gateway rotates any of the three logs that outgrows 64 MiB in
 place every five minutes (the newest 8 MiB is kept as `<name>.1`), so a
 session left at `KIRO_LOG_LEVEL=debug` cannot fill the disk. On Windows the
-cap cannot run, so the pin is not set and kiro-cli keeps its default location.
+cap cannot run, so the pin is not set and kiro-cli keeps its default location,
+which inside a spawned process is `<scratch dir>\kiro-log\logs\`. The
+diagnostics bundle probes both the flat and the `logs` level.
 See `agent_scratch.cap_kiro_cli_logs`.
 
 ```bash

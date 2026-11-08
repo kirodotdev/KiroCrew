@@ -12,6 +12,7 @@ every sibling; shared fixtures live in ``external_registry_helpers.py``.
 from __future__ import annotations
 
 import logging
+import shlex
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -146,6 +147,9 @@ class TestInstallPathCredentialPosture:
         assert env["GIT_TERMINAL_PROMPT"] == "0"
         assert "GIT_CONFIG_GLOBAL" in env
         assert "BatchMode=yes" in env["GIT_SSH_COMMAND"]
+        # No ssh config is read: neither the user's nor the system's.
+        ssh_argv = shlex.split(env["GIT_SSH_COMMAND"])
+        assert ssh_argv[ssh_argv.index("-F") + 1] == "/dev/null"
         # No ambient SSH agent handed through.
         assert "SSH_AUTH_SOCK" not in env
         # Strict OS sandbox (~/.ssh hidden) is forced.
@@ -508,16 +512,20 @@ class TestSameRepoCredentialCarveOut:
         assert kwargs["outcome"] == "granted"
         assert "ssh://git.example.com/team/MyRegistry" in kwargs["resources"]
 
-    def test_credential_grant_audit_is_best_effort(self):
+    def test_credential_grant_audit_is_best_effort(self, caplog):
         """A failing (or absent) SEL backend never breaks the clone path."""
         from kiro_crew.apps import registry as reg
 
         broken = MagicMock()
         broken.log_api_access.side_effect = RuntimeError("sel down")
-        with patch.object(reg, "_sel_fn", return_value=broken):
-            reg._sel_credential_grant("install_from_registry", "ssh://git.example.com/team/X")
-        with patch.object(reg, "_sel_fn", None):
-            reg._sel_credential_grant("install_from_registry", "ssh://git.example.com/team/X")
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.apps.registry"):
+            with patch.object(reg, "_sel_fn", return_value=broken):
+                reg._sel_credential_grant("install_from_registry", "ssh://git.example.com/team/X")
+            with patch.object(reg, "_sel_fn", None):
+                reg._sel_credential_grant("install_from_registry", "ssh://git.example.com/team/X")
+        # The lost audit record is still written down; an absent backend logs nothing.
+        logged = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.apps.registry"]
+        assert logged == ["SEL audit log failed for install_from_registry: sel down"]
 
     def test_is_owner_designated_repo_exact_match(self):
         """Predicate returns True only for byte-identical match to config repo."""
@@ -745,3 +753,22 @@ async def test_branch_fetch_asks_for_the_agent_socket_only_when_told_to(
     # The socket is for the network step only: local init/remote steps never get it.
     local = [c for c in calls if c is not fetch]
     assert all(c.get("forward_ssh_auth_sock", False) is False for c in local)
+
+
+def test_anonymous_clone_reads_no_ssh_config(monkeypatch):
+    """The anonymous clone's ssh reads no config file at all.
+
+    Without an explicit ``-F``, ssh reads the user's and the system's ssh config;
+    inside the sandbox's user namespace the system files read as owned by nobody and
+    ssh exits with "Bad owner or permissions" before it reaches the remote. An
+    ambient ``GIT_SSH_COMMAND`` naming another config must not survive either.
+    """
+    from kiro_crew.apps.registry_pipeline.subprocess_env import anonymous_git_env
+
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -F /srv/operator/ssh_config")
+    ssh_argv = shlex.split(anonymous_git_env()["GIT_SSH_COMMAND"])
+    assert ssh_argv[0] == "ssh"
+    assert ssh_argv.count("-F") == 1
+    assert ssh_argv[ssh_argv.index("-F") + 1] == "/dev/null"
+    assert "BatchMode=yes" in ssh_argv
+    assert "IdentityAgent=none" in ssh_argv

@@ -1,17 +1,27 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, useId } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient, type InfiniteData } from '@tanstack/react-query'
 import { Brain, Hourglass, CheckCircle, RefreshCw, Search, AlertTriangle, Check, CircleOff, CircleHelp, X } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { memoryQueryRetry } from './MemoryStoreCard'
 import { esc } from '../../api/helpers'
-import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
+import { embeddingSetupStepLabel, embeddingSetupWarning, embeddingSetupError, embeddingSetupErrorPointer, embeddingSetupDiagnostic, embeddingRepairMessage, enableEmbeddingsErrorMessage, semanticWriteErrorMessage, EMBED_MODEL_PATH_ID, type EmbeddingSetupFields } from './embeddingStatusText'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import { fmtDateNumeric, fmtDateTimeNumeric } from '../../i18n/format'
+import { fmtDateNumeric, fmtDateTimeNumeric, fmtNumber } from '../../i18n/format'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+
+/** Catalog key for each text-only button of the view switch. The Inspector
+ * button carries an icon and renders its own label. */
+const VIEW_LABEL_KEYS = {
+  semantic: 'pages.overview.vectorMemoryCard.view_semantic',
+  episodic: 'pages.overview.vectorMemoryCard.view_episodic',
+  audit: 'pages.overview.vectorMemoryCard.view_audit',
+} as const
 
 /** Whether an element with `id` is in the document, read when `watch` turns on.
  *
@@ -238,6 +248,21 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
   const [enabling, setEnabling] = useState(false)
   const [view, setView] = useState<'semantic'|'episodic'|'audit'|'inspector'>(diagnosticsOnly ? 'audit' : 'semantic')
   const [editKey, setEditKey] = useState<string|null>(null); const [editVal, setEditVal] = useState('')
+  // Each semantic value renders as a button so the inline editor opens from the
+  // keyboard. Closing the editor unmounts the control that had focus and the
+  // browser drops focus to document.body, so every close hands focus back to
+  // that row's button once it has remounted (the pattern in MeetingTitle). Only
+  // focus the unmount dropped is taken back: a save can resolve after the user
+  // has moved on, and the control they moved to keeps it.
+  const editTriggers = useRef(new Map<string, HTMLButtonElement>())
+  const semValueIdPrefix = useId()
+  const closeEdit = (key: string) => {
+    setEditKey(null)
+    requestAnimationFrame(() => {
+      const at = document.activeElement
+      if (at === null || at === document.body) editTriggers.current.get(key)?.focus({ preventScroll: true })
+    })
+  }
   const [eventFilter, setEventFilter] = useState<string>('all')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const audit = useInfiniteQuery({
@@ -252,6 +277,18 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
   const events = useMemo(() => audit.data?.pages.flatMap(page => page.events) ?? [], [audit.data])
   const [inspectorQuery, setInspectorQuery] = useState(''); const [preview, setPreview] = useState<ContextPreview | null>(null)
   const [writeError, setWriteError] = useState('')
+  const { confirm, confirmDialog } = useConfirm()
+  // A semantic row's Delete asks first, through the shared themed dialog
+  // whose body names the key: the row is gone the moment the request lands,
+  // and the browser has no undo for it.
+  const deleteSemantic = async (key: string) => {
+    if (!(await confirm({
+      title: i18nT('pages.overview.vectorMemoryCard.delete_entry_title'),
+      body: i18nT('pages.overview.vectorMemoryCard.delete_entry_body', { key }),
+      confirmLabel: i18nT('pages.overview.vectorMemoryCard.delete_entry_button'),
+    }))) return
+    try { await api.vectorSemanticDelete(key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) }
+  }
   const [embeddingStartError, setEmbeddingStartError] = useState('')
   const [semFilter, setSemFilter] = useState(initialSemanticFilter ?? '')
 
@@ -396,7 +433,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
       await api.vectorEnableEmbeddings()
       pollEmbeddingStatus()
     } catch (error: unknown) {
-      setEmbeddingStartError(extractError(error))
+      setEmbeddingStartError(enableEmbeddingsErrorMessage(error) || extractError(error))
       setEnabling(false)
     }
   }
@@ -560,9 +597,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             </div>
           </div>
           <div className="flex gap-2 flex-wrap items-center">
-            <div className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit">
+            <RadioChipGroup className="inline-flex items-center gap-1 p-1 rounded-md bg-bg-elevated w-fit" ariaLabel={i18nT('pages.overview.vectorMemoryCard.view_switch_label')}>
             {(['semantic','episodic','audit','inspector'] as const).filter(v => !diagnosticsOnly || v === 'audit' || v === 'inspector').map(v => (
-              <button key={v} onClick={() => {
+              <button key={v} type="button" {...radioChip(view === v)} onClick={() => {
                 setView(v)
                 if (v === 'episodic') {
                   if (view === v) loadEpisodic()
@@ -572,10 +609,10 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                 if (v === 'inspector' && view === v) loadPreview(previewQuery)
               }}
                 className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-[13px] font-medium cursor-pointer border-none transition-colors ${view === v ? 'bg-bg-hover text-accent' : 'bg-transparent text-muted hover:text-text'}`}>{
-                  v === 'inspector' ? <><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.inspector')}</> : v[0].toUpperCase() + v.slice(1)
+                  v === 'inspector' ? <><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.inspector')}</> : i18nT(VIEW_LABEL_KEYS[v])
                 }</button>
             ))}
-            </div>
+            </RadioChipGroup>
           </div>
         </div>
       )}
@@ -594,25 +631,31 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
             row overflows and the button leaves the viewport. */}
         <div className="flex gap-2 items-center flex-wrap mb-3 relative">
           <div className="relative" style={{ flex: 1 }}>
-            <Input placeholder={i18nT('pages.overview.vectorMemoryCard.key_e_g_pref_backend_framework')} value={newKey} onChange={e => { setNewKey(e.target.value); setWriteError('') }}
+            <Input aria-label={i18nT('pages.overview.vectorMemoryCard.column_key')} placeholder={i18nT('pages.overview.vectorMemoryCard.key_e_g_pref_backend_framework')} value={newKey} onChange={e => { setNewKey(e.target.value); setWriteError('') }}
               list="key-suggestions" className="w-full" />
             <datalist id="key-suggestions">{filteredKeys.map(k => <option key={k} value={k}>{k}</option>)}</datalist>
           </div>
-          <Input placeholder={i18nT('pages.overview.vectorMemoryCard.value')} style={{ flex: 2 }} value={newVal} onChange={e => { setNewVal(e.target.value); setWriteError('') }}
-            {...ime.bindEnter({ onEnter: async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } } })} />
-          <SendBtn onClick={async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (e: unknown) { setWriteError(extractError(e)) } }}>{i18nT('pages.overview.vectorMemoryCard.set')}</SendBtn>
+          <Input aria-label={i18nT('pages.overview.vectorMemoryCard.column_value')} placeholder={i18nT('pages.overview.vectorMemoryCard.value')} style={{ flex: 2 }} value={newVal} onChange={e => { setNewVal(e.target.value); setWriteError('') }}
+            {...ime.bindEnter({ onEnter: async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } } })} />
+          <SendBtn onClick={async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (e: unknown) { setWriteError(semanticWriteErrorMessage(e) || extractError(e)) } }}>{i18nT('pages.overview.vectorMemoryCard.set')}</SendBtn>
         </div>
         {/* No hand-off: preserve the rejected value and inline edit for retry. */}
         <ErrorNotice message={writeError} className="mb-2" />
         <div className="flex gap-2 items-center flex-wrap mb-3">
-          <Input placeholder={i18nT('pages.overview.vectorMemoryCard.filter_by_key_or_value')} style={{ flex: 1 }} value={semFilter} onChange={e => { setSemFilter(e.target.value); setEditKey(null) }} />
+          <Input aria-label={i18nT('pages.overview.vectorMemoryCard.filter_entries_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.filter_by_key_or_value')} style={{ flex: 1 }} value={semFilter} onChange={e => { setSemFilter(e.target.value); setEditKey(null) }} />
           {semFilter && <Btn onClick={() => { setSemFilter(''); setEditKey(null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
         </div>
         <div className="max-h-[500px] overflow-y-auto">
         <table className="w-full border-collapse table-striped"><thead><tr>
-          {['Key','Value','Confidence','Source',''].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
+          {[
+            i18nT('pages.overview.vectorMemoryCard.column_key'),
+            i18nT('pages.overview.vectorMemoryCard.column_value'),
+            i18nT('pages.overview.vectorMemoryCard.column_confidence'),
+            i18nT('pages.overview.vectorMemoryCard.column_source'),
+            '',
+          ].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
         </tr></thead><tbody>
-          {filteredSemantic.length === 0 && semanticRead.isSuccess && !semanticRead.isFetching ? <tr><td colSpan={5} className="text-muted italic px-2.5 py-3.5 text-sm">{semFilter ? i18nT('pages.overview.vectorMemoryCard.no_matching_entries') : i18nT('pages.overview.vectorMemoryCard.no_semantic_entries')}</td></tr> : visibleSemantic.map(e => {
+          {filteredSemantic.length === 0 && semanticRead.isSuccess && !semanticRead.isFetching ? <tr><td colSpan={5} className="text-muted italic px-2.5 py-3.5 text-sm">{semFilter ? i18nT('pages.overview.vectorMemoryCard.no_matching_entries') : i18nT('pages.overview.vectorMemoryCard.no_semantic_entries')}</td></tr> : visibleSemantic.map((e, i) => {
             const valStr = semanticValueText(e)
             const isEditing = editKey === e.key
             return (
@@ -625,18 +668,30 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
                     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
                     <div className="flex gap-1 items-center" onClick={ev => ev.stopPropagation()}>
                       <Input value={editVal} onChange={ev => setEditVal(ev.target.value)} className="!py-1 !px-2 !text-sm"
-                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal); setEditKey(null); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }, onEscape: () => setEditKey(null) })}
+                        aria-label={i18nT('pages.overview.vectorMemoryCard.edit_value_label', { key: e.key })}
+                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } }, onEscape: () => closeEdit(e.key) })}
                         autoFocus />
-                      <Btn onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal); setEditKey(null); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }}><Check className="lucide-inline" /></Btn>
-                      <Btn onClick={() => setEditKey(null)}><X className="lucide-inline" /></Btn>
+                      <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.save_edit')} onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal); closeEdit(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(semanticWriteErrorMessage(err) || extractError(err)) } }}><Check className="lucide-inline" /></Btn>
+                      <Btn aria-label={i18nT('pages.overview.vectorMemoryCard.cancel_edit')} onClick={() => closeEdit(e.key)}><X className="lucide-inline" /></Btn>
                     </div>
                   ) : (
-                    <span className="break-words whitespace-pre-wrap group-hover:underline group-hover:decoration-dotted group-hover:underline-offset-2">{esc(valStr)}</span>
+                    // The cell's own onClick opens the editor; a click or an
+                    // Enter/Space on this button bubbles to it. The value text is
+                    // the button's description, so a screen reader hears both.
+                    // Btn keeps the shared pressed feedback; the overrides keep the
+                    // value looking like plain cell text.
+                    <Btn type="button"
+                      ref={el => { if (el) editTriggers.current.set(e.key, el); else editTriggers.current.delete(e.key) }}
+                      aria-label={i18nT('pages.overview.vectorMemoryCard.edit_value_label', { key: e.key })}
+                      aria-describedby={`${semValueIdPrefix}-${i}`}
+                      className="flex w-full justify-start text-left p-0 border-none rounded-none text-sm hover:bg-transparent">
+                      <span id={`${semValueIdPrefix}-${i}`} className="break-words whitespace-pre-wrap group-hover:underline group-hover:decoration-dotted group-hover:underline-offset-2">{esc(valStr)}</span>
+                    </Btn>
                   )}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">{confidenceBadge(e.confidence)}</td>
                 <td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant={e.source === 'user_explicit' ? 'aim' : 'ok'}>{e.source}</Badge></td>
-                <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { try { await api.vectorSemanticDelete(e.key); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }}>{i18nT('pages.overview.vectorMemoryCard.delete')}</Btn></td>
+                <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={() => deleteSemantic(e.key)}>{i18nT('pages.overview.vectorMemoryCard.delete')}</Btn></td>
               </tr>
             )
           })}
@@ -644,7 +699,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </div>
         {filteredSemantic.length > 0 && (
           <p className="text-muted text-[12px] mt-2">
-            {i18nT('pages.overview.vectorMemoryCard.showing')} {visibleSemantic.length} {i18nT('pages.overview.vectorMemoryCard.of')} {filteredSemantic.length}{filteredSemantic.length !== semantic.length ? ` (filtered from ${semantic.length})` : ''}{filteredSemantic.length > visibleSemantic.length ? <> {i18nT('pages.overview.vectorMemoryCard.refine_your_filter_to_narrow_further')}</> : ''}
+            {filteredSemantic.length !== semantic.length
+              ? i18nT('pages.overview.vectorMemoryCard.showing_semantic_filtered', { count: visibleSemantic.length, shown: fmtNumber(visibleSemantic.length), matched: fmtNumber(filteredSemantic.length), total: fmtNumber(semantic.length) })
+              : i18nT('pages.overview.vectorMemoryCard.showing_semantic', { count: visibleSemantic.length, shown: fmtNumber(visibleSemantic.length), total: fmtNumber(filteredSemantic.length) })}{filteredSemantic.length > visibleSemantic.length ? <> {i18nT('pages.overview.vectorMemoryCard.refine_your_filter_to_narrow_further')}</> : ''}
           </p>
         )}
       </Card>
@@ -658,7 +715,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         {episodicRead.isError && <Btn disabled={episodicRead.isFetching} onClick={() => void (episodicRead.isFetchNextPageError ? episodicRead.fetchNextPage() : episodicRead.refetch())}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
         {episodicRead.isFetching && <p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p>}
         <div className="flex gap-2 items-center flex-wrap mb-3">
-          <Input placeholder={i18nT('pages.overview.vectorMemoryCard.search_episodic_memories')} style={{ flex: 1 }} value={epQuery} onChange={e => setEpQuery(e.target.value)}
+          <Input aria-label={i18nT('pages.overview.vectorMemoryCard.episodic_search_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.search_episodic_memories')} style={{ flex: 1 }} value={epQuery} onChange={e => setEpQuery(e.target.value)}
             {...ime.bindEnter({ onEnter: () => loadEpisodic() })} />
           <SendBtn disabled={episodicRead.isFetching} onClick={() => loadEpisodic()}>{i18nT('pages.overview.vectorMemoryCard.search')}</SendBtn>
           {epQuery && <Btn disabled={episodicRead.isFetching} onClick={() => { setEpQuery(''); setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
@@ -669,10 +726,15 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
           return allTags.length > 0 ? (
             <div className="flex gap-1.5 flex-wrap mb-3">
               <span className="text-muted text-[12px] self-center mr-1">{i18nT('pages.overview.vectorMemoryCard.filter_by_tag')}</span>
-              {allTags.map((tag: string) => (
-                <button key={tag} disabled={episodicRead.isFetching} onClick={() => { const t = epTagFilter === tag ? null : tag; setEpTagFilter(t); setEpQuery(''); loadEpisodic('', false, t) }}
-                  className={`px-2 py-0.5 rounded-full text-[12px] border transition-colors cursor-pointer ${epTagFilter === tag ? 'bg-warn/30 text-warn-text border-warn/40' : 'bg-ok-subtle text-ok-text border-ok/20 hover:bg-ok/20'}`}>{tag}</button>
-              ))}
+              {allTags.map((tag: string) => {
+                // A toggle, not one-of-N: pressing the active tag clears the
+                // filter, so each chip is an independent pressed/unpressed button.
+                const tagOn = epTagFilter === tag
+                return (
+                <button key={tag} type="button" aria-pressed={tagOn} disabled={episodicRead.isFetching} onClick={() => { const t = tagOn ? null : tag; setEpTagFilter(t); setEpQuery(''); loadEpisodic('', false, t) }}
+                  className={`px-2 py-0.5 rounded-full text-[12px] border transition-colors cursor-pointer ${tagOn ? 'bg-warn/30 text-warn-text border-warn/40' : 'bg-ok-subtle text-ok-text border-ok/20 hover:bg-ok/20'}`}>{tag}</button>
+                )
+              })}
             </div>
           ) : null
         })()}
@@ -707,7 +769,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </tbody></table>
         </div>
         {episodicRead.hasNextPage && <div className="flex justify-center mt-3"><Btn disabled={episodicRead.isFetching} onClick={() => loadEpisodic(undefined, true)}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
-        {episodic.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing')} {episodic.length} {i18nT('pages.overview.vectorMemoryCard.entries')}</p>}
+        {episodic.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing_entries', { count: episodic.length, n: fmtNumber(episodic.length) })}</p>}
       </Card>
     )}
 
@@ -717,15 +779,21 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         {/* No hand-off: this card and its parent retain unsaved memory values and editing drafts. */}
         <ErrorNotice message={audit.error ? extractError(audit.error) : undefined} />
         {audit.isError && <Btn disabled={audit.isFetching} onClick={() => void (audit.isFetchNextPageError ? audit.fetchNextPage() : audit.refetch())}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
-        <div className="flex gap-1.5 flex-wrap mb-3">
-          <Btn onClick={() => setEventFilter('all')} className={eventFilter === 'all' ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.vectorMemoryCard.all')}</Btn>
+        {/* One-of-N: exactly one event type is shown at a time, so it is a radio group. */}
+        <RadioChipGroup className="flex gap-1.5 flex-wrap mb-3" ariaLabel={i18nT('pages.overview.vectorMemoryCard.event_filter_label')}>
+          <Btn {...radioChip(eventFilter === 'all')} onClick={() => setEventFilter('all')} className={eventFilter === 'all' ? '!border-accent !text-accent' : ''}>{i18nT('pages.overview.vectorMemoryCard.all')}</Btn>
           {eventTypes.map((t: string) => (
-            <Btn key={t} onClick={() => setEventFilter(t)} className={eventFilter === t ? '!border-accent !text-accent' : ''}>{t}</Btn>
+            <Btn key={t} {...radioChip(eventFilter === t)} onClick={() => setEventFilter(t)} className={eventFilter === t ? '!border-accent !text-accent' : ''}>{t}</Btn>
           ))}
-        </div>
+        </RadioChipGroup>
         <div className="max-h-[500px] overflow-y-auto">
         <table className="w-full border-collapse table-striped"><thead><tr>
-          {['Event','Key/Type','Details','When'].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
+          {[
+            i18nT('pages.overview.vectorMemoryCard.column_event'),
+            i18nT('pages.overview.vectorMemoryCard.column_key_type'),
+            i18nT('pages.overview.vectorMemoryCard.column_details'),
+            i18nT('pages.overview.memoryTab.when'),
+          ].map(h => <th key={h} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium sticky top-0 bg-card z-10">{h}</th>)}
         </tr></thead><tbody>
           {filteredEvents.length === 0 && audit.isSuccess ? <tr><td colSpan={4} className="text-muted italic px-2.5 py-3.5 text-sm">{i18nT('pages.overview.vectorMemoryCard.no_events')}</td></tr> : filteredEvents.map((e, i: number) => (
             <tr key={i} className="hover:bg-bg-hover transition-colors">
@@ -740,7 +808,9 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         </tbody></table>
         </div>
         {audit.hasNextPage && <div className="flex justify-center mt-3"><Btn disabled={audit.isFetching} onClick={() => void audit.fetchNextPage()}>{i18nT('pages.overview.vectorMemoryCard.load_more')}</Btn></div>}
-        {events.length > 0 && <p className="text-muted text-[12px] mt-2">{i18nT('pages.overview.vectorMemoryCard.showing')} {filteredEvents.length} {i18nT('pages.overview.vectorMemoryCard.events')}{eventFilter !== 'all' ? ` (${events.length} total)` : ''}</p>}
+        {events.length > 0 && <p className="text-muted text-[12px] mt-2">{eventFilter !== 'all'
+          ? i18nT('pages.overview.vectorMemoryCard.showing_events_filtered', { count: filteredEvents.length, n: fmtNumber(filteredEvents.length), total: fmtNumber(events.length) })
+          : i18nT('pages.overview.vectorMemoryCard.showing_events', { count: filteredEvents.length, n: fmtNumber(filteredEvents.length) })}</p>}
       </Card>
     )}
 
@@ -752,7 +822,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         {previewRead.isError && <Btn disabled={previewRead.isFetching} onClick={() => void previewRead.refetch()}>{i18nT('pages.overview.vectorMemoryCard.retry')}</Btn>}
         {previewRead.isFetching && <p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p>}
         <div className="flex gap-2 items-center flex-wrap mb-3">
-          <Input placeholder={i18nT('pages.overview.vectorMemoryCard.test_query_e_g_what_database_should_i_use')} style={{ flex: 1 }} value={inspectorQuery} onChange={e => setInspectorQuery(e.target.value)}
+          <Input aria-label={i18nT('pages.overview.vectorMemoryCard.inspector_query_label')} placeholder={i18nT('pages.overview.vectorMemoryCard.test_query_e_g_what_database_should_i_use')} style={{ flex: 1 }} value={inspectorQuery} onChange={e => setInspectorQuery(e.target.value)}
             {...ime.bindEnter({ onEnter: () => loadPreview(inspectorQuery) })} />
           <SendBtn disabled={previewRead.isFetching} onClick={() => loadPreview(inspectorQuery)}>{i18nT('pages.overview.vectorMemoryCard.preview')}</SendBtn>
         </div>
@@ -778,5 +848,6 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onS
         {!preview && !previewRead.isFetching && !previewRead.isError && <p className="text-muted text-sm italic">{i18nT('pages.overview.vectorMemoryCard.click_preview_to_see_what_gets_injected_into_pro')}</p>}
       </Card>
     )}
+    {confirmDialog}
   </>)
 }

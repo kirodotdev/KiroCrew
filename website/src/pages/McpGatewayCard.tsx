@@ -5,6 +5,7 @@ import { StatCard, Card } from '../components/ui'
 import ErrorNotice from '../components/ErrorNotice'
 
 import { i18nT } from '../i18n/t'
+import { fmtNumber, fmtPercent, fmtUnit } from '../i18n/format'
 // `stubs` is optional for the same reason `sharers` is on the sessions payload: a
 // dashboard served from a build newer than the gateway it talks to reads the
 // field the gateway does not send yet, and `undefined` in arithmetic renders NaN
@@ -23,8 +24,9 @@ type Status = { enabled: boolean; running: boolean; ping_ok: boolean }
 const SIZE_UNITS = ['KB', 'MB', 'GB', 'TB', 'PB'] as const
 
 /** Format a KB value in the largest sensible unit. KB/MB render as integers;
- *  GB and up keep one decimal (e.g. 6086 MB -> "5.9 GB"). Non-positive -> "—".
- *  Exported for unit testing. */
+ *  GB and up keep one decimal (e.g. 6086 MB -> "5.9 GB", "5,9 GB" in de).
+ *  The units step by 1024, so the number is the locale's but the unit is not
+ *  `fmtBytes`'s 1000-based one. Non-positive -> "—". Exported for unit testing. */
 export const formatKb = (kb: number): string => {
   if (!(kb > 0)) return '—'
   let value = kb
@@ -41,7 +43,10 @@ export const formatKb = (kb: number): string => {
     unit += 1
     decimals = unit >= 2 ? 1 : 0
   }
-  return `${value.toFixed(decimals)} ${SIZE_UNITS[unit]}`
+  // No digit grouping: a KB or MB value stays under 1024, and "1,023 KB" would
+  // read as a decimal in de.
+  const shown = fmtNumber(value, { minimumFractionDigits: decimals, maximumFractionDigits: decimals, useGrouping: false })
+  return `${shown} ${SIZE_UNITS[unit]}`
 }
 
 // A backend's pid can be null (just-spawned / not yet reported). Keying rows on
@@ -91,7 +96,7 @@ export default function McpGatewayCard() {
   const poolKb = backends.reduce((n, b) => n + Math.max(0, b.rss_kb), 0)
   const unpooledKb = backends.reduce((n, b) => n + Math.max(0, b.rss_kb) * Math.max(1, b.stubs ?? 0), 0)
   const savedKb = Math.max(0, unpooledKb - poolKb)
-  const savedPct = unpooledKb > 0 ? Math.round((savedKb / unpooledKb) * 100) : 0
+  const savedRatio = unpooledKb > 0 ? savedKb / unpooledKb : 0
   const withPct = unpooledKb > 0 ? Math.max(4, Math.round((poolKb / unpooledKb) * 100)) : 0
 
   const running = statusQ.data?.running ?? false
@@ -110,7 +115,7 @@ export default function McpGatewayCard() {
         <span className="text-[15px] font-semibold text-text-strong">{i18nT('pages.mcpGatewayCard.shared_mcp_gateway')}</span>
         <span className={`inline-flex items-center gap-1 text-[12px] ${healthy ? 'text-ok' : 'text-danger'}`}>
           <Circle className="lucide-inline w-2 h-2 fill-current" />
-          {healthy ? 'active' : running ? 'unhealthy' : 'stopped'}
+          {i18nT(healthy ? 'pages.mcpGatewayCard.status_active' : running ? 'pages.mcpGatewayCard.status_unhealthy' : 'pages.mcpGatewayCard.status_stopped')}
         </span>
       </div>
 
@@ -126,11 +131,11 @@ export default function McpGatewayCard() {
         <StatCard label={i18nT('pages.mcpGatewayCard.backends')} value={`${backends.length}${metricsQ.data?.max_backends ? ` / ${metricsQ.data.max_backends}` : ''}`} />
         <StatCard label={i18nT('pages.sessionsTab.mcp_stubs')} value={stubs} />
         <StatCard label={i18nT('pages.mcpGatewayCard.pool_ram')} value={formatKb(poolKb)} />
-        <StatCard label={i18nT('pages.mcpGatewayCard.ram_saved')} value={`${formatKb(savedKb)} (${savedPct}%)`} accent />
+        <StatCard label={i18nT('pages.mcpGatewayCard.ram_saved')} value={`${formatKb(savedKb)} (${fmtPercent(savedRatio)})`} accent />
         {warmEnabled && (
           <StatCard
             label={i18nT('pages.mcpGatewayCard.pool_warm_hit_rate')}
-            value={warmTotal > 0 ? `${metricsQ.data?.warm_pool_hit_rate_pct ?? 0}% (${warmHits}/${warmTotal})` : '—'}
+            value={warmTotal > 0 ? `${fmtPercent((metricsQ.data?.warm_pool_hit_rate_pct ?? 0) / 100, { maximumFractionDigits: 1 })} (${fmtNumber(warmHits)}/${fmtNumber(warmTotal)})` : '—'}
           />
         )}
       </div>
@@ -162,7 +167,7 @@ export default function McpGatewayCard() {
                 <td className="py-1 pr-3">{b.server}</td>
                 <td className="py-1 pr-3">{b.pid ?? '—'}</td>
                 <td className="py-1 pr-3">{b.stubs ?? '—'}</td>
-                <td className="py-1 pr-3">{b.idle_s}{i18nT('pages.mcpGatewayCard.s')}</td>
+                <td className="py-1 pr-3">{fmtUnit(b.idle_s, 'second', { maximumFractionDigits: 1 })}</td>
                 <td className="py-1">{formatKb(b.rss_kb)}</td>
               </tr>
             ))}

@@ -9,6 +9,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 // --- Mocks -----------------------------------------------------------------
@@ -81,7 +83,7 @@ vi.mock('../components/SegmentedControl', () => ({
 
 import LibraryPage from '../pages/apps/LibraryPage'
 import AppDetailPage from '../pages/AppDetailPage'
-import {
+import TrustAppModal, {
   isTrustDeniedError,
   isSessionApprovalConsentRequiredError,
   retryFailureDetail,
@@ -90,6 +92,8 @@ import {
   APP_EXECUTION_DENIED,
   SESSION_APPROVAL_CONSENT_REQUIRED,
   credentialFreeRepository,
+  localOnlyTrustRepository,
+  APP_TRUST_LOCAL_ONLY,
   safeHref,
 } from '../components/appstore/TrustAppModal'
 import {
@@ -149,14 +153,16 @@ const THIRD_PARTY = {
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/apps/library']}>
-        <Routes>
-          <Route path="/apps/library" element={<LibraryPage />} />
-          <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/apps/library']}>
+          <Routes>
+            <Route path="/apps/library" element={<LibraryPage />} />
+            <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 
@@ -198,7 +204,7 @@ async function clickEnable() {
   })
   fireEvent.click(trigger)
   const btn = await screen.findByRole('menuitem', { name: /installedAppCard\.enable$/ })
-  fireEvent.click(btn)
+  await act(async () => { fireEvent.click(btn) })
   return btn
 }
 
@@ -254,6 +260,27 @@ describe('isTrustDeniedError', () => {
   })
 })
 
+describe('localOnlyTrustRepository', () => {
+  const REPO = 'https://github.com/acme/notes'
+
+  it('reads the repository off a resolved stream refusal and a rejected /update body', () => {
+    expect(localOnlyTrustRepository({ ok: false, code: APP_TRUST_LOCAL_ONLY, trustRepository: REPO })).toBe(REPO)
+    expect(localOnlyTrustRepository(apiError(400, { code: APP_TRUST_LOCAL_ONLY, trustRepository: REPO }))).toBe(REPO)
+  })
+
+  it('answers empty for another code, a missing repository, or one carrying credentials', () => {
+    // The code decides, never the presence of a repository field.
+    expect(localOnlyTrustRepository({ ok: false, code: APP_EXECUTION_DENIED, trustRepository: REPO })).toBe('')
+    expect(localOnlyTrustRepository({ ok: false, code: APP_TRUST_LOCAL_ONLY })).toBe('')
+    expect(localOnlyTrustRepository({ ok: false, code: APP_TRUST_LOCAL_ONLY, trustRepository: 7 })).toBe('')
+    // A proof that is not already credential-free is never shown or sent back.
+    expect(localOnlyTrustRepository({
+      ok: false, code: APP_TRUST_LOCAL_ONLY, trustRepository: 'https://user:token@github.com/acme/notes',
+    })).toBe('')
+    expect(localOnlyTrustRepository(undefined)).toBe('')
+  })
+})
+
 describe('isSessionApprovalConsentRequiredError', () => {
   it('matches only the consent-required code', () => {
     expect(isSessionApprovalConsentRequiredError(SESSION_APPROVAL_REQUIRED())).toBe(true)
@@ -264,17 +291,7 @@ describe('isSessionApprovalConsentRequiredError', () => {
 
 describe('LibraryPage trust gate', () => {
   // The consent flow is reached by clicking Enable on a DISABLED third-party
-  // tile, which the Library's default "enabled only" view filters out. This
-  // block is about the trust gate, not the default view, so it opts into the
-  // show-all view (persisted `mc-apps-library-show-all` toggle, '1' = show all)
-  // to render the tile it acts on.
-  beforeEach(() => {
-    localStorage.setItem('mc-apps-library-show-all', '1')
-  })
-  afterEach(() => {
-    localStorage.removeItem('mc-apps-library-show-all')
-  })
-
+  // tile, which the Library lists in its Disabled section.
   it('routes consent-required enable to the detail disclosure', async () => {
     enableApp.mockRejectedValue(SESSION_APPROVAL_REQUIRED())
     renderPage()
@@ -303,6 +320,9 @@ describe('LibraryPage trust gate', () => {
     expect(screen.getByText(`${K}.session_approval_heading`)).toBeTruthy()
     expect(screen.getByText(`${K}.session_approval_desc`)).toBeTruthy()
     expect(screen.getByText(`${K}.session_approval_modes`)).toBeTruthy()
+    // Without `memberThreads` the grant stops at the person's own chats, and
+    // the box says nothing about Bots.
+    expect(screen.queryByText(`${K}.session_approval_member_threads`)).toBeNull()
     expect(screen.queryByText('sessionApproval')).toBeNull()
     expect(screen.getByText('components.approvalModePicker.normal_label')).toBeTruthy()
     expect(screen.getByText('components.approvalModePicker.normal_desc')).toBeTruthy()
@@ -324,6 +344,28 @@ describe('LibraryPage trust gate', () => {
     expect(text).toContain(`${K}.on_cancel LaunchDarkly`)
     expect(text).not.toContain(`${K}.install_outcome`)
     expect(text).not.toContain(`${K}.install_on_cancel`)
+  })
+
+  it('names the member threads in the session-approval box when the manifest widens the grant to them', async () => {
+    const [installed] = await listApps()
+    listApps.mockResolvedValue([{
+      ...installed,
+      manifest: {
+        ...installed.manifest,
+        permissions: { sessionApproval: true, memberThreads: true },
+      },
+    }])
+    enableApp.mockRejectedValue(TRUST_DENIED())
+    renderPage()
+    await clickEnable()
+
+    await waitFor(() => expect(modalTitle()).toBeTruthy())
+    // The scope is a line INSIDE the session-approval box, not a fourth
+    // capability row: it widens that grant and grants nothing on its own.
+    expect(screen.getByText(`${K}.session_approval_heading`)).toBeTruthy()
+    expect(screen.getByText(`${K}.session_approval_desc`)).toBeTruthy()
+    expect(screen.getByText(`${K}.session_approval_member_threads`)).toBeTruthy()
+    expect(screen.queryByText('memberThreads')).toBeNull()
   })
 
   it('says on the enable gate that a community registry listing was not vetted (#11159)', async () => {
@@ -777,6 +819,35 @@ describe('registry install trust gate', () => {
     expect(dialog.queryByRole('button', { name: `${K}.confirm` })).toBeNull()
   })
 
+  it('labels the local-source switch confirm with the banner button words, above the capability list', () => {
+    // The banner button says "Trust the repository and update"; the dialog's
+    // confirm on that path says the same, and an ordinary update keeps its own.
+    const target = {
+      name: 'secretary', displayName: 'Secretary', origin: 'local', _registry: 'official',
+      trustRepository: 'https://github.com/acme/secretary',
+      retryInstalls: true, replacesInstalled: true,
+    }
+    const { rerender } = render(
+      <TrustAppModal app={{ ...target, switchesLocalSource: true }} pending={false} failed={false} granted={false} onCancel={() => {}} onConfirm={() => {}} />,
+    )
+    let dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByRole('button', { name: `${K}.confirm_switch_local_source` })).toBeTruthy()
+    expect(dialog.queryByRole('button', { name: `${K}.confirm_update` })).toBeNull()
+    // The switch line precedes the capability list so a phone shows it first.
+    const switchLine = dialog.getByText(`${K}.local_source_switch Secretary`, { exact: false })
+    const list = screen.getByRole('dialog').querySelector('ul')
+    expect(list).not.toBeNull()
+    expect(switchLine.compareDocumentPosition(list as Node) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    rerender(
+      <TrustAppModal app={target} pending={false} failed={false} granted={false} onCancel={() => {}} onConfirm={() => {}} />,
+    )
+    dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByRole('button', { name: `${K}.confirm_update` })).toBeTruthy()
+    expect(dialog.queryByRole('button', { name: `${K}.confirm_switch_local_source` })).toBeNull()
+    expect(dialog.queryByText(`${K}.local_source_switch`, { exact: false })).toBeNull()
+  })
+
   it('names the update while the UPDATE path is working, and keeps its outcome line after a failure', async () => {
     await openUpdateConsent()
     let finishGrant: () => void = () => {}
@@ -1198,7 +1269,7 @@ describe('registry install trust gate', () => {
     // the same shape the permanent refusal uses) rather than running on inline
     // after "check the logs"; the agent hand-off still keeps it, looked up by the
     // raw string.
-    const refusal = 'Python apps that require a build step are not supported in the desktop app'
+    const refusal = 'Python apps that require a build step are not supported in Kiro Crew\'s desktop build'
     installFromRegistryStream
       .mockResolvedValueOnce(INSTALL_DENIED())
       .mockResolvedValue({ ok: false, name: THIRD_PARTY.name, error: refusal })
@@ -1273,8 +1344,8 @@ describe('retryFailureCode', () => {
 
 describe('registry install trust gate — permanent desktop refusal', () => {
   const REFUSAL =
-    'Python apps that require a build step are not supported in the desktop app: ' +
-    'its bundled interpreter is inside the signed application bundle and cannot install packages'
+    'Python apps that require a build step are not supported in Kiro Crew\'s desktop ' +
+    'build: its bundled interpreter is inside the signed application bundle and cannot install packages'
 
   beforeEach(() => {
     listRegistry.mockResolvedValue({

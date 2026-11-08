@@ -536,3 +536,46 @@ def test_the_login_probe_gets_the_scrubbed_env_not_this_process_environment(
     # the time run() returns it has popped both names from this process's own
     # environment, which is the later half of the same interlock.
     backend_mod.require_model_identity(make_settings(tmp_path))
+
+
+# --- run() picks the sign-in program from the config it just wrote -----------
+
+
+def test_the_login_seed_runs_after_the_config_it_decides_on_is_written(
+    wired, tmp_path, monkeypatch
+):
+    """Which program owns the sign-in is a property of the WRITTEN config (a crew
+    bundle may ship one), so the kiro-cli seed must follow `write_backend_config`,
+    and still precede the backend."""
+    order: list[str] = []
+    real_write = backend_mod.write_backend_config
+
+    def recording_write(settings):
+        order.append("write_backend_config")
+        return real_write(settings)
+
+    def recording_seed(**kw):
+        order.append("seed_kiro_cli_login")
+        wired.append("seed_kiro_cli_login")
+
+    monkeypatch.setattr(backend_mod, "write_backend_config", recording_write)
+    monkeypatch.setattr(entry.kiro_login_mod, "seed_kiro_cli_login", recording_seed)
+    entry.run(make_settings(tmp_path), wait_for_shutdown=lambda c: "signal")
+    assert order == ["write_backend_config", "seed_kiro_cli_login"]
+    assert wired.index("seed_kiro_cli_login") < wired.index("start_backend")
+
+
+def test_on_the_bundle_route_the_kiro_cli_store_is_not_seeded(wired, tmp_path, monkeypatch):
+    """A bundle-route task has no kiro-cli: nothing to seed, and the backend still starts."""
+    settings = make_settings(tmp_path)
+    settings.config_dir.mkdir(parents=True, exist_ok=True)
+    (settings.config_dir / "config.json").write_text(
+        json.dumps({"agent": {"kas_bundle": True}}), encoding="utf-8"
+    )
+
+    def never_seed(**kw):
+        raise AssertionError("kiro-cli's store must not be seeded on the bundle route")
+
+    monkeypatch.setattr(entry.kiro_login_mod, "seed_kiro_cli_login", never_seed)
+    entry.run(settings, wait_for_shutdown=lambda c: "signal")
+    assert "start_backend" in wired

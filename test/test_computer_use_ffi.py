@@ -361,7 +361,9 @@ class _FakeCF:
         obj = getattr(out_ref, "_obj", None)
         if obj is None:
             return False
-        obj.value = int(payload)
+        # A double read (a scroll bar's 0.0-1.0 position) keeps its fraction, as
+        # the real CFNumberGetValue does for kCFNumberDoubleType.
+        obj.value = float(payload) if isinstance(obj, ctypes.c_double) else int(payload)
         return True
 
     # ── data ──
@@ -558,6 +560,7 @@ class _FakeCG:
         self.CGEventSetIntegerValueField = _FakeFn(self._set_field)
         self.CGEventSetFlags = _FakeFn(self._set_flags)
         self.CGEventPostToPid = _FakeFn(self._post)
+        self.CGEventSetLocation = _FakeFn(self._set_location)
         self.CGEventPost = _FakeFn(self._post_global)
         self.CGWarpMouseCursorPosition = _FakeFn(self._warp)
         self.warp_result = 0
@@ -646,6 +649,11 @@ class _FakeCG:
 
     def _post(self, pid, event):
         self.calls.append(("CGEventPostToPid", (_num(pid), _addr(event))))
+        return None
+
+    def _set_location(self, event, point):
+        """Unpacked like the mouse point, so two bare doubles fail with AttributeError."""
+        self.calls.append(("CGEventSetLocation", (_addr(event), (point.x, point.y))))
         return None
 
     def _post_global(self, tap, event):
@@ -1611,6 +1619,21 @@ def test_scroll_posts_to_the_pid_and_releases_the_event(fakes: _Fakes):
     assert [pid for (pid, _event) in posts] == [637]
     ((_s, _u, _w, _d, handle),) = fakes.calls_named(fakes.cg, "CGEventCreateScrollWheelEvent")
     assert handle in fakes.heap.released
+
+
+def test_an_aimed_scroll_sets_its_location_before_it_is_posted(fakes: _Fakes):
+    """The app routes a wheel event to the view under its location. Unaimed, the event
+    carried the operator's pointer position, and a background TextEdit dropped it."""
+    macos_ffi.post_scroll(637, -3, 0, at=(512.5, 300.0))
+    ((_s, _u, _w, _d, handle),) = fakes.calls_named(fakes.cg, "CGEventCreateScrollWheelEvent")
+    assert fakes.calls_named(fakes.cg, "CGEventSetLocation") == [(handle, (512.5, 300.0))]
+    order = [name for (name, _args) in fakes.cg.calls]
+    assert order.index("CGEventSetLocation") < order.index("CGEventPostToPid")
+
+
+def test_an_unaimed_scroll_sets_no_location(fakes: _Fakes):
+    macos_ffi.post_scroll(637, -3, 0)
+    assert fakes.calls_named(fakes.cg, "CGEventSetLocation") == []
 
 
 # ── mouse-event synthesis ──

@@ -245,9 +245,11 @@ def test_acquire_creates_lock_file_with_pid(tmp_path):
     try:
         lock_file = tmp_path / LOCK_FILENAME
         assert lock_file.is_file()
-        assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
     finally:
         lock.release()
+    # Read once released: on Windows the held msvcrt lock covers the stamp's
+    # first byte, so no other descriptor can read it. Release never clears it.
+    assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
 
 
 def test_second_acquire_refused_and_names_holder(tmp_path):
@@ -319,11 +321,9 @@ def test_stale_lock_is_reclaimed(tmp_path):
     lock_file = tmp_path / LOCK_FILENAME
     lock_file.write_text("999999\n")  # pid that is not us and (effectively) dead
 
-    lock = GatewayLock(tmp_path).acquire()
-    try:
-        assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
-    finally:
-        lock.release()
+    GatewayLock(tmp_path).acquire().release()
+    # Read once released, as in test_acquire_creates_lock_file_with_pid.
+    assert lock_file.read_text(encoding="utf-8").strip() == str(os.getpid())
 
 
 def test_posix_dead_holder_contention_is_retried(tmp_path, monkeypatch):
@@ -423,15 +423,26 @@ def test_distinct_homes_both_acquire(tmp_path):
 
 def test_release_allows_reacquire(tmp_path):
     GatewayLock(tmp_path).acquire().release()
-    # Lock is free again -> a fresh acquire succeeds.
     lock = GatewayLock(tmp_path).acquire()
-    lock.release()
+    try:
+        with pytest.raises(GatewayLockError):
+            GatewayLock(tmp_path).acquire()
+    finally:
+        lock.release()
 
 
 def test_release_is_idempotent(tmp_path):
     lock = GatewayLock(tmp_path).acquire()
     lock.release()
-    lock.release()  # no raise
+    # The newer lock may reuse the old descriptor numbers, so a second
+    # release that closed them again would drop this lock.
+    newer = GatewayLock(tmp_path).acquire()
+    try:
+        lock.release()
+        with pytest.raises(GatewayLockError):
+            GatewayLock(tmp_path).acquire()
+    finally:
+        newer.release()
 
 
 def test_context_manager_releases(tmp_path):
@@ -466,7 +477,6 @@ def test_windows_stale_pid_reclaimed_on_startup(tmp_path, monkeypatch):
     recreated before acquisition so that msvcrt.locking gets a clean file."""
     from kiro_crew import platform_compat
 
-    # Simulate Windows platform
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
     # Make pid_liveness report the stale PID as dead
     monkeypatch.setattr(platform_compat, "pid_liveness", lambda pid: platform_compat.PID_DEAD)

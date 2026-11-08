@@ -8,6 +8,8 @@ import {
   memberThreadQueryKey,
 } from './membersQuery'
 import { memberProjectionStore } from '../state/memberProjectionStore'
+import { listedByDefault } from '../pages/members/rosterFilter'
+import type { MemberRosterRow } from './client'
 
 /* The websocket hook forgets cached member-thread outcomes on reconnect so a
  * return visit after a gateway restart waits for the thread endpoint again.
@@ -152,6 +154,16 @@ describe('noteUserChat', () => {
     const rows = qc.getQueryData<{ name: string; has_dm_message?: boolean; last_active_ts?: number }[]>(MEMBERS_ROSTER_QUERY_KEY)!
     expect(rows.map((r) => [r.name, r.has_dm_message, r.last_active_ts])).toEqual([['a', true, 1000], ['b', true, 50]])
     expect(qc.getQueryState(MEMBERS_ROSTER_QUERY_KEY)?.isInvalidated).toBe(true)
+  })
+  it('marks the first person-sent message, so a row listed only after one stays listed', () => {
+    const qc = new QueryClient()
+    qc.setQueryData(MEMBERS_ROSTER_QUERY_KEY, [
+      { name: 'default', slug: 'default', slot_key: 'member-default', has_dm_message: false, has_user_dm_message: false },
+    ])
+    noteUserChat(qc, 'member-default', 1000)
+    const row = qc.getQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY)![0]
+    expect(row.has_user_dm_message).toBe(true)
+    expect(listedByDefault(row)).toBe(true)
   })
   it('never moves a row backwards: a late echo keeps the newer stamp', () => {
     const qc = new QueryClient()

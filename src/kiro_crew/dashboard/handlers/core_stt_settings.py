@@ -20,6 +20,7 @@ import shutil
 from aiohttp import web
 
 from kiro_crew import platform_compat, stt
+from kiro_crew.config.fields import _coerce_bool
 from kiro_crew.config.loader import _VALID_STT_PROVIDERS, KiroCrewConfig, config_path
 from kiro_crew.config.sections import (
     STT_LANGUAGE_AUTO,
@@ -128,6 +129,19 @@ async def _stt_provider_rows(
         )
     }
     return [row for n in names if (row := built.get(n) or extra.get(n)) is not None]
+
+
+# Built-in providers that identify the language of each segment among the
+# ``stt.transcribe_languages`` candidates. Only Amazon Transcribe does.
+_LANGUAGE_IDENTIFYING_PROVIDERS = ("transcribe",)
+
+
+def _language_identifying_providers() -> tuple[str, ...]:
+    """Who the mixed-language picker applies to: the built-ins, then each edition
+    provider that declared ``identifies_languages``."""
+    from kiro_crew import speech_providers
+
+    return speech_providers.language_identifying_stt_names(_LANGUAGE_IDENTIFYING_PROVIDERS)
 
 
 # Common BCP-47 language codes surfaced in the Chat Settings STT picker, and the
@@ -245,7 +259,10 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt_section = {}
                 fresh["stt"] = stt_section
             if "enabled" in body:
-                stt_section["enabled"] = bool(body["enabled"])
+                # A spelled "false"/"0"/"no"/"off" means False; any other
+                # value keeps the truthiness it has always been saved with.
+                raw_enabled = body["enabled"]
+                stt_section["enabled"] = _coerce_bool(raw_enabled, bool(raw_enabled))
             # Guard the type before either membership lookup.  The model catalog
             # is a dict, so a JSON object or array would otherwise raise
             # ``TypeError: unhashable type`` and turn this partial update into a
@@ -317,6 +334,8 @@ async def api_stt_config(request: web.Request) -> web.Response:
                 stt_section["endpointing"] = body["endpointing"]
             if "submit_on_release" in body and isinstance(body["submit_on_release"], bool):
                 stt_section["submit_on_release"] = body["submit_on_release"]
+            if "slide_to_send" in body and isinstance(body["slide_to_send"], bool):
+                stt_section["slide_to_send"] = body["slide_to_send"]
             # `polish` is the one CONSENT setting on this surface -- it sends the
             # finished transcript to a model -- so its round trip is load-bearing in a
             # way an ordinary toggle's is not. Omitting it here is what made the
@@ -458,6 +477,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "streaming": cfg.stt.streaming,
             "endpointing": cfg.stt.endpointing,
             "submit_on_release": cfg.stt.submit_on_release,
+            "slide_to_send": cfg.stt.slide_to_send,
             "dictation_panel": cfg.stt.dictation_panel,
             "polish": cfg.stt.polish,
             "transcribe_region": cfg.stt.transcribe_region,
@@ -501,8 +521,11 @@ async def api_stt_config(request: web.Request) -> web.Response:
             # Which of those providers can stream partial results. Served from the
             # backend's own `streaming_providers()` so the Settings UI gates the
             # streaming controls on a CAPABILITY rather than on a hardcoded provider
-            # name — the latter silently hid the toggle when `apple` was added.
+            # name, which would silently hide the toggle for a newly added provider.
             "streaming_providers": list(streaming_providers()),
+            # Which providers identify languages among `transcribe_languages`, so
+            # the mixed-language picker is gated on that capability as well.
+            "language_identification_providers": list(_language_identifying_providers()),
             "language_codes": _stt_language_codes(cfg.stt),
             "prereqs": prereqs,
             # True when no install channel can make Transcribe's import
@@ -525,24 +548,16 @@ async def api_stt_config(request: web.Request) -> web.Response:
 
 
 def _transcribe_extra_importable() -> bool:
-    """True when AWS Transcribe's half of the ``voice`` extra imported here.
+    """True when AWS Transcribe's half of the ``voice`` extra imports here. BLOCKING.
 
-    Reads ``kiro_crew.transcribe``'s own import outcome (its module-level
-    try/except sets ``boto3 = None`` on failure) rather than probing specs: a
-    partial installation whose dist-info exists but whose import fails must
-    surface the repair command, not suppress it. Runs off the event loop —
-    ``transcribe`` is already imported at module load, so this is an attribute
-    read, but callers batch it with the other filesystem probes anyway.
+    Asks ``transcribe_aws``'s own availability answer, which imports boto3 and
+    the streaming client rather than probing specs: a partial installation whose
+    dist-info exists but whose import fails must surface the repair command, not
+    suppress it. Runs off the event loop; the first call imports boto3.
     """
     from kiro_crew import transcribe
 
-    if transcribe.boto3 is None:
-        return False
-    try:
-        import amazon_transcribe  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    return transcribe._aws_availability().ok
 
 
 def _ffmpeg_install_commands() -> list[str]:
@@ -612,6 +627,15 @@ def _stt_prereq_commands(provider: str = "local") -> list[str]:
     elif provider == "transcribe":
         needs_extra = not _transcribe_extra_importable()
         extra = "voice-aws"
+    elif provider == "codex":
+        from kiro_crew.stt import codex
+
+        # Not `availability().code`: that reports a missing `codex` binary
+        # first, which would hide the extra until the binary is installed.
+        # A host whose sandbox refuses Codex gets no install command at all:
+        # no package makes Codex runnable there.
+        needs_extra = not codex.sandbox_refuses() and not codex.extra_importable()
+        extra = "voice-codex"
     else:
         needs_extra = False
     # Suppressed where no pip channel into this interpreter exists — frozen build,

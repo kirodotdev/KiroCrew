@@ -8,8 +8,10 @@ import type { SubagentQueuedReason } from '../../pages/chat/subagentQueuedReason
 import type { McpAppRenderPayload } from '../../lib/mcpAppSrcdoc'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { ErrorReport } from '../../utils/errorReport'
+import type { AgentSwitchNotice } from '../../utils/agentSwitchFeedback'
 import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
 import type { ParkedThinking } from './thinking'
+import type { PasteBlock } from '../../utils/pasteTokens'
 
 /** Per-slot activity-panel open/closed state, persisted to localStorage so the
  *  panel's open/closed choice survives a full page reload — keeping it
@@ -61,6 +63,11 @@ const seedSlotActivity = (): ChatState['slotActivity'] =>
 
 export type SlotState = 'idle' | 'streaming' | 'tool_running' | 'stopping' | 'compacting'
 export type EndedTurn = { gen: string; turn: number }
+/** One prompt this tab submitted: the bubble text, the send's own id and the
+ *  paste blocks its tokens name. */
+export type SendAttempt = { text: string; sendId: string; pastes?: PasteBlock[] }
+/** Retention bound for `ChatState.sendAttempts`, per slot. */
+export const SEND_ATTEMPTS_PER_SLOT_MAX = 50
 
 /** Live progress entry for a dynamic-workflow run. Folded from workflow_run_event
  *  WS messages so the chat can show status while a run executes. */
@@ -143,13 +150,20 @@ export interface SideState {
    *  answer is already stale by the time the callback runs. Bounded, because
    *  only the recent past can still be raced. */
   removedQueueIds?: string[]
+  /** The latest text of queued entries another tab edited while this tab's restore
+   *  read was in flight, for entries this tab had no card for. The read can have
+   *  been answered before the edit, so its copy of the entry is the old text; the
+   *  restore puts this text on it instead, unless the read's copy carries a
+   *  `rev` at least as new as the one the edit's frame carried. Bounded like
+   *  `removedQueueIds`. */
+  editedBeforeRestore?: { id: string; content: string; rev?: number }[]
   openedAtTurnCount: number
   createdAt: string
   /** The banner counts the parent turns newer than `createdAt` instead of
    *  comparing with `openedAtTurnCount`, because the count this tab held when the
-   *  conversation began is no baseline: the conversation was restored, or its
-   *  first row landed in an empty state made earlier, while this tab could be
-   *  showing another slot or still loading this one. Counted at render: the
+   *  conversation began is no baseline: the conversation was restored, its
+   *  first row landed in an empty state made earlier, or it began while this tab
+   *  was showing another slot or still loading this one. Counted at render: the
    *  parent transcript can load later. */
   countsTurnsSinceCreated?: boolean
   /** The answer of this run streamed before this tab joined it, so its deltas
@@ -183,7 +197,7 @@ export interface FollowupItem {
  *  server-supplied status carries its `label`. Purpose and label are separate
  *  fields so a reader cannot paint one for the other; `toolStatusLabel`
  *  resolves any of them into the string a row shows. */
-export type SlotStatusDetail = ((ToolPhaseDetail & { toolCallId?: string }) | PhaseDetail) & { ts: number }
+export type SlotStatusDetail = (ToolPhaseDetail & { toolCallId?: string }) | PhaseDetail
 
 export interface QuestionNotice {
   message: string
@@ -203,6 +217,36 @@ export interface ChatState {
    *  `automatic` auto-select). Kept apart from `activeSlotMoves`, which then
    *  counts only moves the user asked for. */
   activeSlotAutoMoves?: number
+  /** Moves made by a create, fork or resume opening its session when it
+   *  answered. Also kept apart from `activeSlotMoves`: such a move is a
+   *  request the user made earlier, so it does not undo a later click. */
+  activeSlotRequestMoves?: number
+  /** Counts the creates, forks and resumes started in this window, so each
+   *  request's origin (`captureForkOrigin`) records how many started before
+   *  it. */
+  requestSeq?: number
+  /** Bumped when a resume or fork starts. Creates started with the same
+   *  value are one burst of New clicks with no other request between them,
+   *  and the first of them to open keeps the view. */
+  requestBurst?: number
+  /** The `requestSeq` origin of the newest request that has opened its
+   *  session. A request whose origin is older does not take the view back
+   *  from it (`forkMayOpen`): the click made later wins. */
+  activatedRequestSeq?: number
+  /** The resume that opened its session last, and the session that was
+   *  active when it did, so the swap in `handleResumeSession` retires only
+   *  the tab that resume replaced. `leaveSplit` marks a resume whose caller
+   *  asked the chat page to leave Split View once it takes the view. */
+  lastResumeActivation?: { requestId: string; replaced: string | null; leaveSplit?: boolean } | null
+  /** The last session the user OPENED by a gesture, set when that open starts
+   *  (`switchSlot.pending` for a switch marked `gesture`, which only
+   *  user-initiated opens set; see `SwitchSlotArg`). `landed` turns true when
+   *  its transcript load lands (`switchSlot.fulfilled`); a failed or
+   *  superseded load never sets it. `seq` counts the opens, so opening the
+   *  same session again is a new value. A restore or an automatic move never
+   *  sets it. Read by `useAckCronNotesInView`: opening a cron run's chat is
+   *  what marks its bell note read (#23564). */
+  userOpen?: { key: string; seq: number; landed: boolean }
   /** Forks started in this window that will open their child when they
    *  succeed and `forkMayOpen` allows it. Creates are tracked by
    *  `foregroundCreateId`. While either is pending, the chat page does not
@@ -277,9 +321,10 @@ export interface ChatState {
    *  NAME, not the sentence, so the copy re-resolves on locale switch; ''
    *  when the slot list no longer knew the title. The optional report keeps
    *  the API endpoint, status, and backend code available to Ask the agent
-   *  while the displayed sentence stays localized. Cleared by the next
+   *  while the displayed sentence stays localized. `closed` is a Back/Forward
+   *  onto a session this tab saw closed (#14762). Cleared by the next
    *  `switchSlot.pending` or the notice's dismiss. */
-  switchSlotGone: { name: string; kind: 'gone' | 'failed'; report?: ErrorReport } | null
+  switchSlotGone: { name: string; kind: 'gone' | 'failed' | 'closed'; report?: ErrorReport } | null
   loadingOlder: boolean
   /** Last older-history fetch was rejected; surfaced on the top-of-transcript bar. */
   slotOlderError: boolean
@@ -351,6 +396,16 @@ export interface ChatState {
    *  sequence ref, which could only order ITS OWN clicks -- a palette resume
    *  racing a sidebar resume was unordered before. */
   lastResumeRequestId: string | null
+  /** Every resume still on its way, by requestId: the history key it asked
+   *  for and when it started. A second resume of a key with an entry younger
+   *  than PENDING_OPEN_LEASE_MS is dropped (a double click on a slow resume),
+   *  whichever resumes ran in between; an older entry is treated as hung and
+   *  no longer blocks the row. The chat page counts a non-empty map like a
+   *  pending create or fork. Ordering stays with `lastResumeRequestId`.
+   *  `origin` is where the user stood at the last click that asked for this
+   *  resume, re-taken when a repeat is dropped; the fulfilled reducer asks
+   *  `forkMayOpen` against it. */
+  pendingResumes?: Record<string, { key: string; startedAt: number; origin: { activeSlot: string | null; moves: number; autoMoves: number; requestMoves: number; seq: number; burst: number } }>
   /** A history delete the gateway REFUSED (409 with a `code`), sibling of
    *  `unresumableResume` above and rendered at the same site. The row is still
    *  in `history` -- nothing was deleted -- so without this the click looked
@@ -360,6 +415,13 @@ export interface ChatState {
    *  for ErrorNotice's agent hand-off. Cleared on dismiss or on the next attempt. */
   undeletableHistory: HistoryDeleteRefusal | null
   pendingInput: string | null
+  /** True when `pendingInput` was staged to be SENT (`stagePendingSend`), not
+   *  just seeded. An in-window caller stages the text and then navigates to
+   *  `/chat?autoSend=1`, but the router commits that navigation in a transition,
+   *  so a mounted ChatPage sees the text a render before the query and would
+   *  seed it instead. The flag carries the send with the text. Only app code can
+   *  set it, so a URL alone still only seeds. */
+  pendingInputSend: boolean
   /** Text staged from the Side Chat into the main composer, keyed by the slot
    *  it belongs to. Kept apart from `pendingInput` because it APPENDS to the
    *  live composer rather than replacing it, and keyed by `slot` because a Side
@@ -373,7 +435,7 @@ export interface ChatState {
   /** Transient feedback for agent-rebind failures shared by the picker and
    *  global cycle shortcuts, and for a new chat that could not get its own
    *  session folder. The App shell owns rendering and expiry. */
-  agentSwitchNotice: { message: string } | null
+  agentSwitchNotice: AgentSwitchNotice | null
   // True while a createSlot POST is in flight. Lets every New Chat entry
   // point show a pending state so the UI never looks dead on click.
   creatingSlot: boolean
@@ -386,7 +448,7 @@ export interface ChatState {
    *  cleared when the next foreground create starts. ChatPage carries text
    *  typed during a create only on this activation, and only when the
    *  requestId matches its snapshot (see ChatPage's create-carry note). */
-  lastCreatedActivation: { slot: string; requestId: string } | null
+  lastCreatedActivation: { slot: string; requestId: string; seq?: number; burst?: number } | null
   slotContextPct: Record<string, number>
   // Real token counts behind the context ring (from the adapter usage_update),
   // keyed by slot. Used for the ring tooltip so "44%" shows its absolute
@@ -397,7 +459,7 @@ export interface ChatState {
    *  knows the window but not a measured used-count, and both consumers render
    *  an absent `used` as an approximation (a `~` prefix, derived from pct)
    *  rather than asserting a precise figure. */
-  slotContextTokens: Record<string, { used?: number; window: number }>
+  slotContextTokens: Record<string, { used?: number; window?: number }>
   voicePlaying: boolean
   /** A speech request for the active slot is waiting for its first audio. */
   voicePreparing: boolean
@@ -414,6 +476,10 @@ export interface ChatState {
    *  gateway, or nothing labelled), and the chips then keep their default
    *  "queued behind the concurrency limit" text. Cleared with the count. */
   subagentQueuedReason: Record<string, SubagentQueuedReason>
+  /** Ids of the cards held when a subagent replay began that the replay has
+   *  not named yet. `subagentReplayDone` drops what is left. Null outside a
+   *  replay. No surface reads it. */
+  subagentReplayUnconfirmed?: Record<string, true> | null
   /** The authoritative automation record for each bare slot key.
    *
    * Structured monitors remain here after reaching a terminal outcome so the
@@ -517,6 +583,15 @@ export interface ChatState {
    *  on purpose, so a read still in flight when the user closed the panel cannot
    *  bring the closed conversation back. */
   slotSideRestored: Record<string, boolean>
+  /** Slots whose restore read (`GET .../side`) is in flight. Only then does a
+   *  queue edit for an entry this tab has no card for get kept
+   *  (`SideState.editedBeforeRestore`). */
+  slotSideReading?: Record<string, boolean>
+  /** Slots whose side conversation another tab closed (`chat.side_closed` naming
+   *  another tab) while this tab showed it or held one of its questions, so the
+   *  panel says why it emptied. `sideClose` and a new conversation clear it, so
+   *  this tab's own Refresh context shows nothing new. */
+  slotSideClosedElsewhere?: Record<string, boolean>
   slotMessages: Record<string, ChatMessage[]>
   /** Fresh `has_more` for a BACKGROUND pane, written by every bounded warm.
    *  The pane's own query is staleTime:Infinity, so its has_more freezes at
@@ -565,6 +640,12 @@ export interface ChatState {
   /** Reasoning blocks whose anchoring row is above the loaded window, per slot.
    *  Client-only, so this is their only copy until the anchor pages back in. */
   thinkingOrphans: Record<string, Array<ParkedThinking<ChatMessage>>>
+  /** Prompts whose optimistic bubble this tab minted, per slot, oldest first
+   *  (capped at `SEND_ATTEMPTS_PER_SLOT_MAX`). Client-only. ↑/↓ recall reads
+   *  it so a prompt whose row later vanished from the transcript (a refresh
+   *  that dropped the optimistic row, a send that never landed) can still be
+   *  recalled; an attempt whose `sendId` is on a row is skipped there. */
+  sendAttempts?: Record<string, SendAttempt[]>
   /** Path B: per-slot live stream state so a non-active pane shows its own
    *  streaming/tool/idle indicator (mirrors slotActivity for tool events).
    *  `tick` is the entry's receipt order: `state` is written only through
@@ -684,6 +765,11 @@ export const initialState: ChatState = {
   activeSlot: null,
   activeSlotMoves: 0,
   activeSlotAutoMoves: 0,
+  activeSlotRequestMoves: 0,
+  requestSeq: 0,
+  requestBurst: 0,
+  activatedRequestSeq: 0,
+  lastResumeActivation: null,
   messages: [],
   slotRunning: false,
   slotStopping: false,
@@ -710,8 +796,10 @@ export const initialState: ChatState = {
   historyOffset: 0,
   unresumableResume: null,
   lastResumeRequestId: null,
+  pendingResumes: {},
   undeletableHistory: null,
   pendingInput: null,
+  pendingInputSend: false,
   mainComposerAppend: null,
   agentSwitchNotice: null,
   creatingSlot: false,
@@ -726,6 +814,7 @@ export const initialState: ChatState = {
   subagents: {},
   subagentQueued: {},
   subagentQueuedReason: {},
+  subagentReplayUnconfirmed: null,
   automations: {},
   selectedSubagentId: null,
   toolLog: [],

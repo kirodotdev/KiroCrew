@@ -171,6 +171,16 @@ class AcpRuntimeProtocol(Protocol):
         ...
 
     @property
+    def sandbox_wrapped_by_crew(self) -> bool:
+        """Whether Kiro Crew's own sandbox wrapped the harness this runtime spawned.
+
+        Only the Linux namespace sandbox leaves its launcher at ``pid``, with the
+        harness as that launcher's sole child. macOS Seatbelt execs the harness in
+        place, so ``pid`` is the harness there even when this is True.
+        """
+        ...
+
+    @property
     def spawn_monotonic(self) -> float | None:
         """Monotonic time the process was spawned, or ``None`` before spawn.
 
@@ -226,6 +236,7 @@ class AcpRuntimeProtocol(Protocol):
         params: dict[str, Any],
         *,
         on_reserved: Callable[[int], None] | None = None,
+        before_write: Callable[[], None] | None = None,
     ) -> int: ...
 
     async def probe_advertised_models(
@@ -264,13 +275,29 @@ class AcpRuntimeProtocol(Protocol):
 
     def mark_turn_active(self, session_id: str, active: bool) -> None: ...
 
+    def session_tenancy(self, session_id: str) -> int | None:
+        """Count only when *session_id* is registered, no start is pending, no
+        native backend subagent is announced and no teardown went unanswered."""
+        ...
+
     def begin_mcp_sign_in(self, session_id: str, server_name: str) -> bool: ...
 
     def mcp_sign_in_holds(self, session_id: str, server_name: str) -> bool: ...
 
+    def session_activity_at(self, session_id: str) -> float | None: ...
+
     def unregister_session(self, session_id: str) -> None: ...
 
-    async def terminate_session(self, session_id: str) -> None: ...
+    @property
+    def is_cloud_sandbox(self) -> bool: ...
+
+    async def terminate_session(
+        self, session_id: str, *, delete_cloud_session: bool = False
+    ) -> None: ...
+
+    def can_release(self) -> bool: ...
+
+    async def release_session(self, session_id: str) -> bool: ...
 
     def is_alive(self) -> bool: ...
 

@@ -22,6 +22,32 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX  # noqa: F401
+from kiro_crew.apps import credential_masks
+from kiro_crew.apps.desktop_manifest import DesktopConfig
+from kiro_crew.apps.manifest_agent_tools import (  # noqa: F401
+    _BLOCK_KEYS,
+    _ITEM_KEYS,
+    _OBJECT_KEYS,
+    _SCALAR_KEYS,
+    _TOOL_KEYS,
+    DEFAULT_RESULT_CHARS,
+    MAX_AGENT_TOOLS_PER_APP,
+    MAX_ARRAY_ITEMS,
+    MAX_RESULT_CHARS,
+    MAX_STRING_ARGUMENT_CHARS,
+    MAX_TOOL_DESCRIPTION_CHARS,
+    MAX_TOOL_PROPERTIES,
+    MAX_TOOL_TITLE_CHARS,
+    ROUTE_RE,
+    TOOL_NAME_RE,
+    AgentToolDecl,
+    AgentToolsConfig,
+    _is_int,
+    _parse_tool,
+    _property_errors,
+    _schema_errors,
+    tool_namespace,
+)
 from kiro_crew.apps.manifest_containment import (  # noqa: F401
     _AGENT_TEMPLATE_PLACEHOLDER_RE,
     PATH_SCREEN_REFUSAL,
@@ -40,6 +66,9 @@ from kiro_crew.apps.manifest_containment import (  # noqa: F401
 from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _COMMAND_AGENT_RE,
     _COMMAND_SLUG_RE,
+    _COMPOSER_ACTION_ICON_RE,
+    _COMPOSER_ACTION_KEYS,
+    _COMPOSER_ACTION_POPOVER,
     _FILE_MENU_KINDS,
     _HOST_RE,
     _MAX_ARGUMENT_HOSTS,
@@ -47,26 +76,63 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _MAX_FILE_MENU_ITEMS_PER_APP,
     _MAX_KEYWORD,
     _MAX_KEYWORDS,
+    _MAX_LINK_OPEN_HOSTS,
+    _MAX_LINK_PREVIEW_HOSTS,
+    _MAX_MESSAGE_ACTION_TITLE,
     _MAX_PANEL_TABS_PER_APP,
     _MAX_PROMPT_TEMPLATE,
+    _MAX_SELECTION_TITLE,
     _MAX_TITLE,
+    _MESSAGE_ACTION_KEYS,
+    _MESSAGE_ACTION_POPOVER_HEIGHT,
+    _MESSAGE_ACTION_POPOVER_WIDTH,
     _PANEL_TAB_ID_RE,
+    _POPOVER_KEYS,
+    _SELECTION_ICON_RE,
+    _SELECTION_POPOVER_HEIGHT,
+    _SELECTION_POPOVER_WIDTH,
     _SESSION_CONTROL_ID_RE,
     _SESSION_CONTROL_STATUS_PATH_RE,
+    _TEXT_PATTERN_FLAGS_RE,
+    _TEXT_PATTERN_KEYS,
     ARGUMENT_TOKEN,
     FILE_MENU_SURFACES,
+    MAX_COMPOSER_ACTION_STRING,
+    MAX_COMPOSER_ACTION_TITLE,
+    MAX_COMPOSER_ACTIONS_PER_APP,
+    MAX_LINK_OPEN_PER_APP,
+    MAX_LINK_PREVIEW_TEXT_PATTERN_LEN,
+    MAX_LINK_PREVIEW_TEXT_PATTERNS,
+    MAX_LINK_PREVIEWS_PER_APP,
+    MAX_MESSAGE_ACTION_CHARS,
+    MAX_MESSAGE_ACTIONS_PER_APP,
+    MAX_SELECTION_ACTIONS_PER_APP,
+    MAX_SELECTION_TEXT,
     MAX_SESSION_CONTROLS_PER_APP,
+    MESSAGE_ACTION_FORMATS,
+    MESSAGE_ACTION_ROLES,
+    SELECTION_EFFECTS,
+    SELECTION_SOURCES,
     CommandArgument,
     CommandContribution,
+    ComposerActionConfig,
     Contributes,
     FileMenuItemConfig,
     FileMenuWhen,
+    LinkOpenConfig,
+    LinkPreviewConfig,
+    MessageActionConfig,
     PanelTabConfig,
+    SelectionActionConfig,
     SessionControlContribution,
+    _int_field,
     _mirrored_len,
+    _name_list,
     _normalize_status_path,
+    _strict_int,
 )
 from kiro_crew.apps.manifest_names import (  # noqa: F401
+    APP_NAME_MAX_LENGTH,
     KEBAB_RE,
     RESERVED_APP_NAME_CODE,
     RESERVED_APP_NAMES,
@@ -79,7 +145,17 @@ from kiro_crew.apps.manifest_names import (  # noqa: F401
 )
 from kiro_crew.apps.manifest_sections import (  # noqa: F401
     _CHANNEL_PRIORITIES,
+    _L10N_QUOTED_CHARS,
+    _L10N_QUOTED_KEYS,
     _OVERLAY_SLUG_RE,
+    L10N_LOCALE_RE,
+    L10N_TEXT_CAPS,
+    LIFECYCLE_SCRIPT_TIMEOUT_DEFAULT,
+    LIFECYCLE_SCRIPT_TIMEOUT_MAX,
+    MAX_L10N_HIGHLIGHT_CHARS,
+    MAX_L10N_HIGHLIGHTS,
+    MAX_L10N_LOCALES,
+    MAX_L10N_WARNINGS,
     MAX_NOTIFICATION_CHANNELS,
     BackendConfig,
     CapabilityDependencies,
@@ -87,6 +163,8 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     CronEntry,
     Dependencies,
     HooksConfig,
+    L10nConfig,
+    L10nEntry,
     NotificationChannel,
     NotificationsConfig,
     Permissions,
@@ -98,7 +176,14 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
     UIPage,
     UISidebar,
     _granted_list,
+    _l10n_quoted,
+    _sidebar_order,
+    clamp_lifecycle_timeout,
+    lifecycle_timeout_error,
+    lifecycle_timeout_seconds,
+    logger,
 )
+from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
 
@@ -180,6 +265,7 @@ CORE_APP_ROUTE_SEGMENTS = frozenset(
         "dev",
         "disable",
         "enable",
+        "frames",
         "manifest",
         "migrate-cleanup",
         "open",
@@ -336,6 +422,10 @@ _KNOWN_FIELDS = frozenset(
         "publishProvider",
         "notifications",
         "contributes",
+        "l10n",
+        "desktop",
+        "agentTools",
+        "credentialMasks",
     }
 )
 
@@ -410,6 +500,17 @@ class AppManifest:
     # makes ``validate()`` see it on every parse.
     contributes: Contributes = field(default_factory=Contributes)
 
+    # --- Listing copy per locale (content, never trust; see L10nConfig) ---
+    l10n: L10nConfig = field(default_factory=L10nConfig)
+
+    # --- Windows and global shortcuts the desktop shell hosts (desktop_manifest) ---
+    desktop: DesktopConfig = field(default_factory=DesktopConfig)
+    # --- MCP tools the app serves from its own process (see manifest_agent_tools) ---
+    agentTools: AgentToolsConfig = field(default_factory=AgentToolsConfig)  # noqa: N815
+    # --- Files under the app's own data dir the sandbox hides (apps.credential_masks) ---
+    credentialMasks: list[str] = field(default_factory=list)  # noqa: N815
+    credential_masks_errors: list[str] = field(default_factory=list, repr=False)
+
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
     jobFamilies: list[str] = field(default_factory=list)  # noqa: N815
@@ -470,6 +571,7 @@ class AppManifest:
 
         if self.config_keys_error:
             errors.append(self.config_keys_error)
+        errors.extend(self.credential_masks_errors)
 
         # Path containment check on all app-root-relative resource paths.
         # Canonical (screened canonicalisation + is_relative_to) when app_root is known; lexical
@@ -501,6 +603,41 @@ class AppManifest:
             refusal = path_refusal(tab.entry)
             if refusal:
                 report_path(refusal, f"contributes.panelTabs entry {refusal}: {tab.entry!r}")
+        # A desktop window's entry is mounted by the same ESM host as a panel tab.
+        errors.extend(self.desktop.validate())
+        for window in self.desktop.windows:
+            refusal = path_refusal(window.entry)
+            if refusal:
+                report_path(refusal, f"desktop.windows entry {refusal}: {window.entry!r}")
+        # A link-preview entry is imported by the same ESM host, so same check.
+        for preview in self.contributes.linkPreviews:
+            refusal = path_refusal(preview.entry)
+            if refusal:
+                report_path(refusal, f"contributes.linkPreviews entry {refusal}: {preview.entry!r}")
+        # A message-action entry is imported by the same frame bootstrap.
+        for action in self.contributes.messageActions:
+            refusal = path_refusal(action.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.messageActions entry {refusal}: {action.entry!r}"
+                )
+        for link_open in self.contributes.linkOpen:
+            refusal = path_refusal(link_open.entry)
+            if refusal:
+                report_path(refusal, f"contributes.linkOpen entry {refusal}: {link_open.entry!r}")
+        # A composer-action entry is imported by the same frame bootstrap.
+        for composer in self.contributes.composerActions:
+            refusal = path_refusal(composer.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.composerActions entry {refusal}: {composer.entry!r}"
+                )
+        for selection in self.contributes.selectionActions:
+            refusal = path_refusal(selection.entry)
+            if refusal:
+                report_path(
+                    refusal, f"contributes.selectionActions entry {refusal}: {selection.entry!r}"
+                )
 
         # UI page validation
         for page in self.ui.pages:
@@ -562,9 +699,7 @@ class AppManifest:
                     refusal,
                     f"session control contribution entryPoint {refusal}: {ctl.entryPoint!r}",
                 )
-            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
-                ctl.statusPath
-            ):
+            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(ctl.statusPath):
                 # Refused rather than ignored: a status route the dashboard
                 # declines to call would leave the chip permanently stateless
                 # with nothing saying why.
@@ -642,6 +777,9 @@ class AppManifest:
         # Backend hooks validation
         errors.extend(self.backend.hooks.validate())
 
+        # onEnable / onDisable timeouts that are not a number at all
+        errors.extend(self.setup.validate())
+
         # Platform names the install and enable gates compare against
         errors.extend(self.platform.validate())
 
@@ -652,6 +790,9 @@ class AppManifest:
         # prompt/argument agreement, matcher kind, entry paths, and the file-menu
         # surfaces / when-filter grammar.
         errors.extend(self.contributes.validate())
+
+        # Agent tools: shape, the core-enforced schema subset, and the app's namespace.
+        errors.extend(self.agentTools.validate(self.name))
 
         # A contributed command's `agent` is contained to the agents THIS app ships.
         # The prompt is app-authored, so letting it name any host agent would let an
@@ -712,6 +853,11 @@ class AppManifest:
         }
         if self.config_keys:
             body["config_keys"] = sorted(self.config_keys)
+        if self.credentialMasks:
+            # Dropping an entry unmasks one of the app's credential files, so tampering
+            # must invalidate the signature. Only when non-empty, so a manifest signed
+            # before this key existed keeps producing the identical payload.
+            body["credentialMasks"] = sorted(self.credentialMasks)
         if self.notifications.channels:
             # Channel declarations gate what an app may push and at which
             # default priority -- tampering must invalidate the signature.
@@ -734,6 +880,16 @@ class AppManifest:
             or self.contributes.sessionControls
             or self.contributes.panelTabs
             or self.contributes.fileMenuItems
+            # A link-preview `entry` is an ESM module the dashboard imports and runs
+            # in its own origin, like a panel tab's: same reason to sign it.
+            or self.contributes.linkPreviews
+            # A message action's roles and format decide which text the app is handed.
+            or self.contributes.messageActions
+            # A link-open `entry` is the same kind of module, and `hosts` decides which
+            # clicked links the app is handed.
+            or self.contributes.linkOpen
+            or self.contributes.composerActions
+            or self.contributes.selectionActions
         ):
             # A contributed command's `prompt` is sent to an agent with tools as if
             # the reader typed it, and `autoSend` fires it without a further
@@ -869,6 +1025,24 @@ class AppManifest:
             # Included only when non-empty so manifests signed before platform was
             # covered keep producing the identical payload.
             body["platform"] = platform_d
+        desktop_d = self.desktop.to_dict()
+        if desktop_d:
+            # Each window's `entry` is an ESM module run in the dashboard's origin, and
+            # each shortcut claims a system-wide chord, so both are publisher intent.
+            # Included only when non-empty so earlier manifests keep their payload.
+            body["desktop"] = desktop_d
+        publish_provider_d = self.publishProvider.to_dict()
+        if publish_provider_d:
+            # `endpoint` is where the artifact page POSTs the reader's artifact, like the
+            # signed `contributes.fileMenuItems[].endpoint`. Non-empty only, so manifests
+            # that never declared it keep producing the identical payload.
+            body["publishProvider"] = publish_provider_d
+        agent_tools_d = self.agentTools.to_dict()
+        if agent_tools_d:
+            # A tool's description is text every agent reads as an instruction, and
+            # `route` decides which of the app's routes its calls reach. Non-empty only,
+            # so manifests that never declared tools keep producing the identical payload.
+            body["agentTools"] = agent_tools_d
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------
@@ -903,6 +1077,8 @@ class AppManifest:
             d["mcpServers"] = self.mcpServers
         if self.config_keys:
             d["config_keys"] = self.config_keys
+        if self.credentialMasks:
+            d["credentialMasks"] = list(self.credentialMasks)
         if self.crons:
             d["crons"] = [c.to_dict() for c in self.crons]
         ui_d = self.ui.to_dict()
@@ -932,6 +1108,15 @@ class AppManifest:
         contrib_d = self.contributes.to_dict()
         if contrib_d:
             d["contributes"] = contrib_d
+        l10n_d = self.l10n.to_dict()
+        if l10n_d:
+            d["l10n"] = l10n_d
+        desktop_d = self.desktop.to_dict()
+        if desktop_d:
+            d["desktop"] = desktop_d
+        agent_tools_d = self.agentTools.to_dict()
+        if agent_tools_d:
+            d["agentTools"] = agent_tools_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -952,6 +1137,12 @@ class AppManifest:
     def from_dict(cls, data: dict[str, Any]) -> AppManifest:
         """Parse from dict, preserving unknown fields in ``extra``."""
         extra = {k: v for k, v in data.items() if k not in _KNOWN_FIELDS}
+        if "links" in extra:
+            # Store-page links stay in ``extra`` (display copy, outside the signed
+            # body), but only the entries ``sanitize_links`` keeps get that far.
+            links = sanitize_links(extra.pop("links"), app_name=str(data.get("name", "")))
+            if links:
+                extra["links"] = links
 
         config_keys_raw = data.get("config_keys", [])
         if not isinstance(config_keys_raw, list):
@@ -972,7 +1163,12 @@ class AppManifest:
             config_keys = list(config_keys_raw)
             config_keys_error = ""
 
+        # A present non-list value for a list field reads as absent: `get` returns a
+        # stored `null` instead of the default, and iterating it would raise (or split
+        # a string into characters). The same guard covers every top-level list below.
         crons_raw = data.get("crons", [])
+        if not isinstance(crons_raw, list):
+            crons_raw = []
         crons = [CronEntry.from_dict(c) for c in crons_raw if isinstance(c, dict)]
 
         ui_raw = data.get("ui", {})
@@ -1017,6 +1213,20 @@ class AppManifest:
             else NotificationsConfig()
         )
 
+        # ``mcpServers`` accepts exactly what ``dict(...)`` accepts -- an object, and
+        # the empty ``[]`` / ``""`` forms that yield ``{}`` -- and turns a genuine
+        # non-object (a scalar or bool, where ``dict`` raises TypeError; a non-empty
+        # list or string, where it raises ValueError) into ONE clear ``ValueError``.
+        # The raise is deliberate: a reader that skips ``validate`` then fails
+        # closed, because ``get_app_manifest`` returns ``None`` on a parse error, so
+        # the ownership PUT and the boot prune treat the manifest as UNREADABLE and
+        # keep the app's live bridges rather than reading an empty map as "declares
+        # none". The install path surfaces this ``ValueError`` as a clean refusal.
+        try:
+            mcp_servers = dict(data.get("mcpServers", {}))  # noqa: N806
+        except (TypeError, ValueError) as exc:
+            raise ValueError("mcpServers must be an object") from exc
+
         contrib_raw = data.get("contributes", {})
         contributes = (
             Contributes.from_dict(contrib_raw)
@@ -1038,14 +1248,20 @@ class AppManifest:
             minKiroCrewVersion=str(data.get("minKiroCrewVersion", "")),  # noqa: N815
             signer=str(data.get("signer", "")),
             signature=str(data.get("signature", "")),
-            agents=[str(a) for a in data.get("agents", []) if a],
+            agents=[
+                str(a)
+                for a in (data["agents"] if isinstance(data.get("agents"), list) else [])
+                if a
+            ],
             skills=[
                 str(s.get("path", s.get("name", "")) if isinstance(s, dict) else s)
-                for s in data.get("skills", [])
+                for s in (data["skills"] if isinstance(data.get("skills"), list) else [])
                 if s
             ],
-            sops=[str(s) for s in data.get("sops", []) if s],
-            mcpServers=dict(data.get("mcpServers", {})),  # noqa: N815
+            sops=[
+                str(s) for s in (data["sops"] if isinstance(data.get("sops"), list) else []) if s
+            ],
+            mcpServers=mcp_servers,  # noqa: N815
             config_keys=config_keys,
             config_keys_error=config_keys_error,
             crons=crons,
@@ -1058,8 +1274,23 @@ class AppManifest:
             publishProvider=publish_provider,
             notifications=notifications,
             contributes=contributes,
-            tags=[str(t) for t in data.get("tags", []) if t],
-            jobFamilies=[str(j) for j in data.get("jobFamilies", []) if j],  # noqa: N815
+            l10n=L10nConfig.from_value(data.get("l10n")),
+            desktop=DesktopConfig.from_value(data.get("desktop")),
+            agentTools=AgentToolsConfig.from_value(data.get("agentTools")),  # noqa: N815
+            credentialMasks=list(  # noqa: N815
+                credential_masks.valid_entries(data.get(credential_masks.MANIFEST_KEY))
+            ),
+            credential_masks_errors=credential_masks.declaration_errors(
+                data.get(credential_masks.MANIFEST_KEY)
+            ),
+            tags=[
+                str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
+            ],
+            jobFamilies=[  # noqa: N815
+                str(j)
+                for j in (data["jobFamilies"] if isinstance(data.get("jobFamilies"), list) else [])
+                if j
+            ],
             extra=extra,
         )
 
@@ -1166,9 +1397,7 @@ def has_stdio_mcp_server(manifest: AppManifest) -> bool:
     from the app's provisioned deps tree, which is why its presence is what
     makes ``bridges_mcp.py`` provision at registration.
     """
-    return any(
-        isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
-    )
+    return any(isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values())
 
 
 def file_entry_point_refusal(entry_point: str, app_root: Path) -> str:

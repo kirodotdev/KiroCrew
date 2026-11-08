@@ -144,7 +144,13 @@ def _log_lock(path):
     lock_path = str(path) + ".lock"
     Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
     _reject_symlink(lock_path)
-    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    # Create exclusively, then reopen without O_CREAT: a nonexclusive O_CREAT
+    # can return ENOENT on Darwin when two `ask` commands create the lock at once.
+    # This script runs standalone, so it spells out platform_compat's helper.
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        fd = os.open(lock_path, os.O_RDWR, 0o600)
     try:
         _flock(fd, True)
         try:

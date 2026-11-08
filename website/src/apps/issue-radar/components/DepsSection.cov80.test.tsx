@@ -52,7 +52,7 @@ function renderFor(number: number) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <DepsSection number={number} />
+      <DepsSection number={number} kind="issue" />
     </QueryClientProvider>,
   )
 }
@@ -95,5 +95,27 @@ describe('DepsSection', () => {
     const { container } = renderFor(10)
     await waitFor(() => expect(depsFn).toHaveBeenCalled())
     await waitFor(() => expect(container.firstChild).toBeNull())
+  })
+
+  it('shows the unlock badge when every retained blocker is closed or merged', async () => {
+    depsFn.mockResolvedValue(payload())
+    const { container } = renderFor(10)
+    await waitFor(() => expect(screen.getByText(/Blocked by/i)).toBeInTheDocument())
+    expect(container.querySelector('svg.lucide-lock-open')).not.toBeNull()
+    expect(container.querySelector('svg.lucide-lock')).toBeNull()
+  })
+
+  it('keeps the lock when the item is flagged blockers_unknown, even with every retained blocker closed', async () => {
+    // The fetcher sets `blockers_unknown` when a blocker was dropped (past a
+    // cap, a failed /links call, an open cross-project blocker). The retained
+    // rows then under-count the blockers, so Unlock here would contradict the
+    // Graph tab, which withholds "ready" for the same node (GPT review).
+    const p = payload()
+    p.nodes['10'] = { ...p.nodes['10'], blockers_unknown: true }
+    depsFn.mockResolvedValue(p)
+    const { container } = renderFor(10)
+    await waitFor(() => expect(screen.getByText(/Blocked by/i)).toBeInTheDocument())
+    expect(container.querySelector('svg.lucide-lock')).not.toBeNull()
+    expect(container.querySelector('svg.lucide-lock-open')).toBeNull()
   })
 })

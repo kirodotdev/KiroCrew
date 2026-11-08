@@ -52,6 +52,13 @@ from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
 
 pytestmark = pytest.mark.xdist_group(name="tree_scan_taskq_bridge_bindings")
 
+SHARED_BINDINGS_CHECKS = (
+    "the_member_set_is_the_frozen_inventory",
+    "the_class_only_scan_sees_each_shape",
+    "the_test_tree_walk_reaches_every_collected_tree",
+    "leaf_test_scope_derives_this_file_as_a_corpus_gate",
+)
+
 _FACADE = "kiro_crew.subagent_manager.admission.taskq_bridge"
 _PACKAGE = "kiro_crew.subagent_manager.admission"
 _ADMISSION_LOGGER = "kiro_crew.subagent_manager.admission"
@@ -92,15 +99,23 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "_release_untaken_claim": ("staticmethod", "88b2c6801a15", "taskq_bridge"),
     "_report_memory_waits_expired": ("function", "b85318a14121", "taskq_bridge_expiry"),
     "_report_retired_stage_rows": ("function", "4518b202e81c", "taskq_bridge_window"),
+    "_retain_pending": ("function", "c587b47109d4", "taskq_bridge"),
     "_retained_claim_ids_for": ("function", "e98ffea20ad3", "taskq_bridge_reads"),
     "_retained_starting_ids": ("staticmethod", "d48075c1d70b", "taskq_bridge_reads"),
     "_retire_legacy_stage_rows": ("staticmethod", "0126d480eb6b", "taskq_bridge_window"),
+    "_retry_held_settle": ("coroutine", "1c177389abb1", "taskq_bridge"),
+    "_settle_refused_row": ("coroutine", "cb1806a77517", "taskq_bridge"),
+    "_settle_unlanded_cancel": ("coroutine", "057ad9d39f70", "taskq_bridge"),
+    "_start_held_settle": ("function", "bff2f37789ab", "taskq_bridge"),
     "_sweep_inputs": ("function", "257f34fe1377", "taskq_bridge_expiry"),
+    "_tombstone_queued_stop": ("staticmethod", "ed1000b558e1", "taskq_bridge"),
+    "_tombstone_refused_row": ("staticmethod", "a8eacbe4a8ca", "taskq_bridge"),
     "_window_entry": ("staticmethod", "44d01f3428d8", "taskq_bridge_window"),
-    "await_pending_defer": ("coroutine", "a7044e95935d", "taskq_bridge_accept"),
+    "await_pending_defer": ("coroutine", "6af86137b328", "taskq_bridge"),
     "finish_parked_defer": ("coroutine", "8a9d36d2a473", "taskq_bridge_accept"),
     "lane_refill_scheduler": ("function", "020878443ab5", "taskq_bridge_window"),
     "park_defer": ("function", "d89931cb3585", "taskq_bridge_accept"),
+    "register_refused": ("function", "8fbbbfa6dd24", "taskq_bridge"),
     "taskq_accept": ("function", "31185aeae9eb", "taskq_bridge_accept"),
     "taskq_accept_record": ("function", "8046567e12c6", "taskq_bridge_accept"),
     "taskq_admit_wait_secs": ("function", "59162e39f6f1", "taskq_bridge"),
@@ -114,6 +129,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "taskq_cancel_queued": ("function", "9f25d5da13b6", "taskq_bridge_cancel"),
     "taskq_cancel_queued_async": ("coroutine", "9f25d5da13b6", "taskq_bridge_cancel"),
     "taskq_cancel_queued_each": ("function", "dffc118b1018", "taskq_bridge_cancel"),
+    "taskq_cancel_unstarted": ("function", "9f25d5da13b6", "taskq_bridge_cancel"),
     "taskq_chip_excluded_ids": ("function", "6806e867af4e", "taskq_bridge_reads"),
     "taskq_chip_overflow_async": ("coroutine", "d92f11a663b3", "taskq_bridge_reads"),
     "taskq_clear_owed_report_if_delivered": ("function", "2726da679e64", "taskq_bridge_expiry"),
@@ -124,7 +140,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "taskq_excluded_ids": ("function", "cdd1976eccb3", "taskq_bridge"),
     "taskq_expire_memory_waits": ("function", "fa6cfecd5574", "taskq_bridge_expiry"),
     "taskq_expire_memory_waits_async": ("coroutine", "fa6cfecd5574", "taskq_bridge_expiry"),
-    "taskq_fail": ("function", "505028c6a263", "taskq_bridge"),
+    "taskq_fail": ("function", "8a9e9a6e44d2", "taskq_bridge"),
     "taskq_mark": ("function", "1eda5def8934", "taskq_bridge"),
     "taskq_memory_wait_bound_secs": ("function", "59162e39f6f1", "taskq_bridge_expiry"),
     "taskq_open": ("function", "1db23407d81c", "taskq_bridge"),
@@ -145,6 +161,7 @@ _MEMBERS: dict[str, tuple[str, str | None, str]] = {
     "taskq_row_is_claimed_unstarted_async": ("coroutine", "6140c73448b2", "taskq_bridge_cancel"),
     "taskq_schedule_owed_replay": ("function", "b60c5fea256e", "taskq_bridge_expiry"),
     "taskq_settle": ("function", "75cad662f3a5", "taskq_bridge"),
+    "taskq_settle_unlanded_cancel": ("function", "a7044e95935d", "taskq_bridge"),
     "taskq_should_window": ("function", "6140c73448b2", "taskq_bridge_window"),
     "taskq_should_window_async": ("coroutine", "6140c73448b2", "taskq_bridge_window"),
     "taskq_store": ("function", "ae33a6d89b58", "taskq_bridge"),
@@ -256,10 +273,6 @@ def test_the_kind_reader_tells_a_coroutine_from_a_function() -> None:
     assert _kind(staticmethod(stand_in)) == "staticmethod"
 
 
-def test_the_member_set_is_the_frozen_inventory() -> None:
-    assert sorted(_members()) == sorted(_MEMBERS)
-
-
 @pytest.mark.parametrize("name", sorted(_MEMBERS))
 def test_each_member_keeps_its_kind_signature_and_owner(name: str) -> None:
     kind, digest, owner = _MEMBERS[name]
@@ -335,21 +348,6 @@ def _class_only_constructs(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> list[s
         ):
             found.append(f"{fn.name}: {node.attr}")
     return found
-
-
-@pytest.mark.parametrize(
-    ("source", "flagged"),
-    [
-        ("def f(self):\n    return super().g()\n", True),
-        ("def f(self):\n    return __class__\n", True),
-        ("def f(self):\n    return self.__secret\n", True),
-        ("def f(self):\n    return super(type(self), self).g()\n", False),
-        ("def f(self):\n    return self.__dict__, self._private\n", False),
-    ],
-)
-def test_the_class_only_scan_sees_each_shape(source: str, flagged: bool) -> None:
-    (fn,) = _self_functions(ast.parse(source))
-    assert bool(_class_only_constructs(fn)) is flagged
 
 
 @pytest.mark.parametrize("stem", _OWNERS)
@@ -857,14 +855,6 @@ def _reach_gaps(patched: set[str], reads: dict[str, set[str]]) -> list[str]:
     return sorted(f"{owner}.{name}" for owner, names in reads.items() for name in patched & names)
 
 
-def test_the_test_tree_walk_reaches_every_collected_tree() -> None:
-    files = _test_tree_files()
-    assert Path(__file__).resolve() in files
-    assert _REPO_ROOT / "conftest.py" in files
-    assert any("/apps/builtins/" in path.as_posix() for path in files)
-    assert len(files) > 1000
-
-
 def test_the_patch_scan_reads_the_files_that_name_the_facade() -> None:
     _patched, naming = _corpus_patches()
     # This file, the queued-visibility, queue-depth and max-wait suites at least.
@@ -896,13 +886,3 @@ def test_the_reach_scan_can_fail(tmp_path: Path) -> None:
         f"{_PACKAGE}.taskq_bridge_cancel._STATE_READ_ATTEMPTS",
         f"{_PACKAGE}.taskq_bridge_reads.QUEUED_LISTING_CAP",
     ]
-
-
-def test_leaf_test_scope_derives_this_file_as_a_corpus_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """It reads the whole test tree, so a leaf-only diff must still run it."""
-    monkeypatch.syspath_prepend(str(_REPO_ROOT / "scripts"))
-    leaf_test_scope = importlib.import_module("leaf_test_scope")
-    rel = Path(__file__).resolve().relative_to(_REPO_ROOT).as_posix()
-    assert rel in leaf_test_scope.corpus_gates(_REPO_ROOT)

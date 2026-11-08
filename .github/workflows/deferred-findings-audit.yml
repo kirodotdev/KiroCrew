@@ -24,9 +24,29 @@ permissions:
 jobs:
   audit:
     name: Surface overdue deferred findings
-    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
-    timeout-minutes: 10
+    # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays off the CodeBuild fleet.
+    # Use the larger-runner label upstream; forks cannot reach the org group.
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    # 10 min for the audit, plus the 20 min the gh wrapper may spend in total
+    # waiting out a spent API rate limit.
+    timeout-minutes: 30
     steps:
+      # A weekly run that fails on a spent rate limit surfaces nothing for a
+      # week, so every `gh` call goes through the rate-limit-aware wrapper
+      # (.github/actions/gh-rate-limit). Only the action is checked out.
+      - name: Check out the gh wrapper action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/gh-rate-limit
+
+      - name: Install rate-limit-aware gh
+        uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "1200"
+
       - name: List, evaluate, and bump overdue deferrals
         env:
           GH_TOKEN: ${{ github.token }}

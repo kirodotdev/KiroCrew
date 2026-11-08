@@ -15,7 +15,9 @@ from types import SimpleNamespace
 import pytest
 from agent_capabilities_helpers import _accepting_kiro_cli  # noqa: F401
 
-from kiro_crew import agent, member_mate_tools
+from kiro_crew import agent
+from kiro_crew import context as ctx
+from kiro_crew import crewmate_dynamic_capabilities, member_mate_tools
 from kiro_crew.context_assembly import member as member_ctx
 from kiro_crew.dashboard import goal_setup, mate_welcome
 
@@ -76,6 +78,36 @@ def test_the_identity_sentence_names_the_tools_only_when_they_are_there() -> Non
     assert "Goals tab" in member_ctx._NO_MATE_TOOLS_IDENTITY
 
 
+@pytest.mark.parametrize(
+    ("has_tools", "dynamic", "expected"),
+    [
+        (True, True, "_MATE_TOOLS_IDENTITY"),
+        (True, False, "_MATE_TOOLS_IDENTITY_MANUAL"),
+        (False, True, "_NO_MATE_TOOLS_IDENTITY"),
+        (False, False, "_NO_MATE_TOOLS_IDENTITY"),
+    ],
+)
+def test_the_desk_hears_the_identity_sentence_its_tools_and_preview_pick(
+    monkeypatch, tmp_path, has_tools, dynamic, expected
+) -> None:
+    """Without the tools, the page sentence, whatever the crewmate's preview says."""
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    cfg = ctx.KiroCrewConfig()
+    cfg.agents["Ada"] = SimpleNamespace(
+        description="", triggers="", kiro_agent="", workspace="", member_id=""
+    )
+    monkeypatch.setattr(ctx.KiroCrewConfig, "load", staticmethod(lambda *a, **k: cfg))
+    monkeypatch.setattr(member_mate_tools, "binding_has_mate_tools", lambda *a, **k: has_tools)
+    # Scoped to the one call: an autouse fixture holds ``_override``, and an unscoped
+    # patch is undone after that fixture's restore, re-installing the fixture's value
+    # for every later test on the worker.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(crewmate_dynamic_capabilities, "_override", dynamic)
+        text = member_ctx.build_member_section("Ada")
+    names = ("_MATE_TOOLS_IDENTITY", "_MATE_TOOLS_IDENTITY_MANUAL", "_NO_MATE_TOOLS_IDENTITY")
+    assert [name for name in names if getattr(member_ctx, name) in text] == [expected]
+
+
 def test_the_first_welcomes_follow_the_tools() -> None:
     entry = SimpleNamespace(display_name="Scout", description="")
     with_tools = mate_welcome.goal_kickoff(entry, "scout")
@@ -91,7 +123,7 @@ def test_the_first_welcomes_follow_the_tools() -> None:
             entry, has_other_crewmates=others, has_mate_tools=False
         )
         assert "update_self" in mate
-        assert "update_self" not in plain and "mate page" in plain
+        assert "update_self" not in plain and "Bot page" in plain
 
 
 GOAL = {"id": "g1", "text": "Keep the release notes current"}
@@ -126,12 +158,18 @@ def test_the_shipped_defaults_auto_approve_every_mate_grant() -> None:
     assert shipped == set(agent._MATE_AUTO_GRANTS)
 
 
-def test_a_missing_capability_goes_straight_to_its_card():
+def test_a_found_capability_goes_straight_to_its_card():
     """The card is the question to the user, so nothing asks first in chat."""
+    from kiro_crew import mcp_mate
+
+    assert "request_capabilities right away" in member_ctx._MATE_TOOLS_IDENTITY
     identity = member_ctx._MATE_TOOLS_IDENTITY
-    # A worker's MISSING CAPABILITY line leads to the card.
-    assert "MISSING CAPABILITY" in identity and "request_capabilities" in identity
-    assert "card is your question to the user" in identity
+    assert "before you tell the user something is not available" in identity
+    # The hand-off result and a worker's MISSING CAPABILITY line both lead to the catalog.
+    assert "session_create" in identity and "MISSING CAPABILITY" in identity
+    assert "card is your question to the user" in member_ctx._MATE_TOOLS_IDENTITY
+    find = next(t for t in mcp_mate._tool_definitions() if t["name"] == "find_capabilities")
+    assert "straight away" in find["description"]
 
 
 def test_an_unreadable_or_missing_template_keeps_the_default_wording(monkeypatch) -> None:

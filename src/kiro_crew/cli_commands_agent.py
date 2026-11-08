@@ -4,7 +4,8 @@
 ``--memory-store`` (``_memory_store_or_exit``) against a config snapshot. ``create`` and
 ``update`` persist through ``memory_stores.persist_member_config``; ``delete`` writes
 through ``cli_commands_workspace._locked_config_write`` and re-checks its precondition
-inside the lock. ``_agent_reset_model`` serves ``agent reset-model``.
+inside the lock, then runs the dashboard delete's teardown
+(``_remove_deleted_agent_leftovers``). ``_agent_reset_model`` serves ``agent reset-model``.
 
 An owner of the mirror facade ``kiro_crew.cli_commands``: callers and tests reach every
 name here as ``kiro_crew.cli_commands.<name>``, and a patch through the facade reaches
@@ -41,6 +42,18 @@ from kiro_crew.memory_stores import (
 )
 from kiro_crew.terminal_safe import safe_terminal_line
 from kiro_crew.validation import _MODEL_NAME_RE, MAX_SHORT_STRING, TEMPLATE_NAME_RE
+
+
+def _kiro_agent_or_exit(name: str) -> None:
+    """Refuse a ``--kiro-agent`` value its pattern does not admit, naming the shape."""
+    if TEMPLATE_NAME_RE.fullmatch(name):
+        return
+    # Read here, not at module level: the facade mirrors every module-level import
+    # of its owners, and its import inventory is frozen.
+    from kiro_crew.validation import TEMPLATE_NAME_HINT
+
+    print(f"Error: invalid kiro agent name ({TEMPLATE_NAME_HINT})", file=sys.stderr)
+    sys.exit(1)
 
 
 def _memory_store_or_exit(raw: str) -> str:
@@ -80,7 +93,7 @@ def _agent_list_label(label: str) -> str:
     return safe_terminal_line(label)
 
 
-def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
+def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig, crew: str = "") -> str:
     """The ``--model`` value to store on an agent, or exit with the reason.
 
     ``""`` and ``auto`` both mean "no pin", stored as ``""`` the way the crew
@@ -94,17 +107,46 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
     (``_no_kiro_id_reason``, which the crew editor runs only with no live
     catalog). Entitlement itself needs a live session's advertised list, which
     this offline command does not have, so an unknown id is accepted, as the
-    crew editor accepts it with no live session.
+    crew editor accepts it with no live session. *crew* names the agent being
+    updated, so a crewmate that pins its own harness is judged against it.
     """
     model = normalize_agent_model(raw)
     if not model:
         return ""
-    if len(model) > MAX_SHORT_STRING or not _MODEL_NAME_RE.match(model):
-        print("Error: invalid model format", file=sys.stderr)
+    if len(model) > MAX_SHORT_STRING:
+        # A plain id's segment is unbounded in the pattern, so a well-formed id can
+        # be refused by the length cap alone; name the cap, not the shape it has.
+        print(
+            f"Error: invalid model format (expected at most {MAX_SHORT_STRING} characters)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if not _MODEL_NAME_RE.match(model):
+        # Read here, not at module level: the facade mirrors every module-level
+        # import of its owners, and its import inventory is frozen.
+        from kiro_crew.validation import MODEL_NAME_HINT
+
+        print(f"Error: invalid model format ({MODEL_NAME_HINT})", file=sys.stderr)
         sys.exit(1)
     if is_claude_code(cfg.agent.provider):
         return model
-    correction = model_registry.acp_id_correction(model)
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable
+    from kiro_crew.dashboard.handlers.agents import _pin_entitlement_backend
+
+    try:
+        backend = _pin_entitlement_backend(cfg, crew)
+    except CrewmateHarnessUnavailable as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    from kiro_crew.crewmate_harness import crewmate_pin_for, kiro_spelling_applies
+
+    # A crewmate pinned to a harness with its own model ids takes those ids as
+    # written; every other agent keeps the kiro-cli spelling check.
+    correction = (
+        model_registry.acp_id_correction(model)
+        if kiro_spelling_applies(backend, crewmate_pin_for(cfg, crew) is not None)
+        else None
+    )
     if correction:
         print(
             f"Error: {model!r} is not a model kiro-cli serves; the registry maps that "
@@ -115,10 +157,8 @@ def _agent_model_or_exit(raw: str, cfg: KiroCrewConfig) -> str:
     # Imported here, as the crew editor's own validator imports it, so the
     # dashboard modules load only when a --model value is actually judged.
     from kiro_crew.dashboard.chat_handlers import _model_rejected_reason
-    from kiro_crew.dashboard.handlers.agents import _pin_entitlement_backend
     from kiro_crew.dashboard.handlers.core import _no_kiro_id_reason
 
-    backend = _pin_entitlement_backend(cfg)
     reason = _model_rejected_reason(model, backend) or _no_kiro_id_reason(model, backend)
     if reason:
         print(f"Error: {reason}", file=sys.stderr)
@@ -151,22 +191,26 @@ def _handle_agent(args: argparse.Namespace) -> None:
             memory_store = agent.memory_store
             if not isinstance(memory_store, str):
                 memory_store = f"(invalid: {type(memory_store).__name__})"
+            # Every cell prints the same way, on one line, so a stored value
+            # holding a newline or control character cannot break the table.
             print(
-                f"{name + marker:<20} {agent.kiro_agent:<20} "
-                f"{agent.workspace:<15} {memory_store:<15} "
+                f"{safe_terminal_line(name) + marker:<20} "
+                f"{safe_terminal_line(str(agent.kiro_agent)):<20} "
+                f"{safe_terminal_line(str(agent.workspace)):<15} "
+                f"{safe_terminal_line(memory_store):<15} "
                 f"{_agent_list_model(agent.model):<20} "
-                f"{getattr(agent, 'source', 'kirocrew'):<12} "
+                f"{safe_terminal_line(str(getattr(agent, 'source', 'kirocrew'))):<12} "
                 f"{_agent_list_label(agent.display_name)}".rstrip()
             )
 
     elif action == "create":
         if external_text_requires_redaction(args.name):
-            print("Error: invalid Crew Member name (credential-shaped text)", file=sys.stderr)
+            print("Error: invalid Bot name (credential-shaped text)", file=sys.stderr)
             sys.exit(1)
         try:
             validate_member_name(args.name)
         except MemberNameError as exc:
-            print(f"Error: invalid Crew Member name ({exc})", file=sys.stderr)
+            print(f"Error: invalid Bot name ({exc})", file=sys.stderr)
             sys.exit(1)
         # Same keying as POST /api/agents.
         keyed = key_new_crew(
@@ -176,8 +220,12 @@ def _handle_agent(args: argparse.Namespace) -> None:
             print(f"Error: agent '{keyed.taken}' already exists", file=sys.stderr)
             sys.exit(1)
         args.name, display_name = keyed.key, keyed.display_name
-        if not TEMPLATE_NAME_RE.fullmatch(args.kiro_agent):
-            print("Error: invalid kiro agent name", file=sys.stderr)
+        _kiro_agent_or_exit(args.kiro_agent)
+        from kiro_crew.mate_config import start_template_refusal
+
+        template_refusal = start_template_refusal(args.kiro_agent, args.name)
+        if template_refusal:
+            print(f"Error: {template_refusal}", file=sys.stderr)
             sys.exit(1)
         memory_store = _memory_store_or_exit(args.memory_store)
         if memory_store not in ("", DEFAULT_MEMORY_STORE):
@@ -197,6 +245,11 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        # Local import, like the other owner-module imports here: a module-level
+        # binding would be re-served by the cli_commands facade mirror and trip
+        # its composition contract (every served name must be owner-DEFINED).
+        from kiro_crew.crew_avatar_seed import default_icon_avatar
+
         # A crew that carried this name before may still be listed on a team
         # (every removal path drops it best-effort). persist_member_config
         # purges that INSIDE the registry's locked mutation, right before the
@@ -208,6 +261,11 @@ def _handle_agent(args: argparse.Namespace) -> None:
             memory_store=memory_store,
             display_name=display_name,
             model=model,
+            # `kirocrew agent create` supplies no avatar, so default to the same
+            # name-seeded ICON the UI posts rather than the trait ghost a missing
+            # override renders as. Seeded from the shown name
+            # (`display_name or key`), identical to the API create path.
+            avatar=default_icon_avatar(display_name or args.name),
         )
         previous_store = cfg.agents[args.name].memory_store
         previous_member_id = cfg.agents[args.name].member_id
@@ -275,15 +333,48 @@ def _handle_agent(args: argparse.Namespace) -> None:
             print("Error: a member's memory cannot be rebound or shared", file=sys.stderr)
             sys.exit(1)
         if args.kiro_agent is not None:
-            if not TEMPLATE_NAME_RE.fullmatch(args.kiro_agent):
-                print("Error: invalid kiro agent name", file=sys.stderr)
-                sys.exit(1)
+            _kiro_agent_or_exit(args.kiro_agent)
             agent.kiro_agent = args.kiro_agent
-        if args.workspace is not None:
-            agent.workspace = args.workspace
+        # Blank keeps the current binding, as the dashboard PUT does: a stored
+        # "" resolves to the shared default workspace, so saving it would move
+        # this member's files onto the shared tree.
+        new_workspace = args.workspace
+        if new_workspace is not None and not new_workspace.strip():
+            print("Note: blank --workspace ignored; the workspace is unchanged", file=sys.stderr)
+            new_workspace = None
+        if (
+            args.kiro_agent is None
+            and new_workspace is None
+            and getattr(args, "model", None) is None
+            and getattr(args, "display_name", None) is None
+        ):
+            # Nothing to write: saying "Updated" here would report a change
+            # that never happened. Exit 0 stays, so a script calling it keeps working.
+            print(
+                f"Warning: nothing to update for agent '{args.name}'; pass --kiro-agent, "
+                "--workspace, --display-name or --model",
+                file=sys.stderr,
+            )
+            return
+        if new_workspace is not None:
+            from kiro_crew.member_workspace import DEFAULT_WORKSPACE
+
+            # Saved as before, but an unconfigured name falls back to another
+            # workspace's directory, so the caller is told.
+            if (
+                new_workspace != agent.workspace
+                and new_workspace not in cfg.workspaces
+                and new_workspace not in (DEFAULT_WORKSPACE, cfg.default_workspace)
+            ):
+                print(
+                    f"Warning: workspace '{safe_terminal_line(new_workspace)}' is not "
+                    "configured; the crew shares a fallback workspace directory",
+                    file=sys.stderr,
+                )
+            agent.workspace = new_workspace
         new_model = getattr(args, "model", None)
         if new_model is not None:
-            agent.model = _agent_model_or_exit(new_model, cfg)
+            agent.model = _agent_model_or_exit(new_model, cfg, args.name)
         new_label = getattr(args, "display_name", None)
         if new_label is not None:
             try:
@@ -297,6 +388,8 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 for field in ("kiro_agent", "workspace", "display_name", "model")
                 if getattr(args, field, None) is not None
             }
+            if new_workspace is None:
+                changed_fields.discard("workspace")
             if agent.memory_store != prior_memory_store:
                 changed_fields.add("memory_store")
             persist_member_config(
@@ -329,7 +422,10 @@ def _handle_agent(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
 
+        bound_template = ""
+
         def _mutate_agent_delete(doc: dict) -> dict:
+            nonlocal bound_template
             agents = coerce_dict_section(doc, "agents")
             if args.name not in agents:
                 raise _CliConflict(f"agent '{args.name}' not found")
@@ -341,6 +437,11 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 isinstance(agent_section, dict) and agent_section.get("default_agent") == args.name
             ):
                 raise _CliConflict(f"cannot delete default agent '{args.name}'")
+            # The PERSISTED binding, read in the same lock as the delete: the
+            # private-copy cleanup needs it to prove the copy was this crew's.
+            entry = agents[args.name]
+            bound = entry.get("kiro_agent") if isinstance(entry, dict) else ""
+            bound_template = bound if isinstance(bound, str) else ""
             del agents[args.name]
             return doc
 
@@ -356,15 +457,75 @@ def _handle_agent(args: argparse.Namespace) -> None:
         def _drop_from_team() -> None:
             crew_teams.drop_member(args.name)
 
+        # The teardown runs under the same namespace hold as the delete: a
+        # same-name create in another process needs that hold too, so it cannot
+        # land a new avatar or private copy that the teardown would then remove.
         with memory_store_namespace_lock():
             _locked_config_write(_mutate_agent_delete, after_write=_drop_from_team)
-        print(f"Deleted agent: {args.name}")
+            print(f"Deleted agent: {args.name}")
+            cleaned = _remove_deleted_agent_leftovers(args.name, cfg, bound_template)
+        if not cleaned:
+            sys.exit(1)
 
     elif action == "reset-model":
         _agent_reset_model(args)
 
+    elif action == "pin":
+        from kiro_crew.cli_agent_pin import agent_pin
+
+        agent_pin(args)
+
     else:
-        print("Usage: kirocrew agent {list|create|update|delete|reset-model}")
+        # No sub-action or an unknown one: a usage error. Print to stderr and
+        # exit 2, the argparse convention, so a script does not read 0 after a
+        # typo.
+        print(
+            "Usage: kirocrew agent {list|create|update|delete|pin|reset-model}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
+#: How a failed teardown step names what it could not remove.
+_LEFTOVER_FAILED = {
+    "avatar": "the avatar",
+    "goal check-in": "the goal check-ins",
+    "worktree": "the worktrees",
+    "private template copy": "the private template copy",
+}
+
+
+def _remove_deleted_agent_leftovers(name: str, cfg: KiroCrewConfig, bound_template: str) -> bool:
+    """Run the dashboard delete's teardown for a crew the CLI just deleted.
+
+    The same ``_remove_member_leftovers`` the ``DELETE /api/agents/{name}`` route
+    runs, so both deletes take the avatar, goal check-ins, worktrees and private
+    template copy. Prints one line per thing removed or kept and one stderr line
+    per step that failed; every step runs either way. Returns False when any
+    step failed, so the caller exits non-zero over a delete that has committed.
+    """
+    import asyncio
+
+    from kiro_crew.config import config_dir
+    from kiro_crew.cron import CronService
+    from kiro_crew.dashboard.handlers.agents import _remove_member_leftovers
+
+    report: list[tuple[str, str, str]] = []
+    crons = None
+    try:
+        crons = CronService(base_dir=config_dir())
+    except Exception:  # noqa: BLE001 - the other steps still run
+        report.append(("failed", "goal check-in", ""))
+    report += asyncio.run(_remove_member_leftovers(name, cfg, bound_template, crons, "cli"))
+    ok = True
+    for outcome, kind, detail in report:
+        shown = f": {safe_terminal_line(detail)}" if detail else ""
+        if outcome == "failed":
+            print(f"Error: could not remove {_LEFTOVER_FAILED[kind]} of '{name}'", file=sys.stderr)
+            ok = False
+        else:
+            print(f"{outcome.capitalize()} {kind}{shown}")
+    return ok
 
 
 def _agent_reset_model(args: argparse.Namespace) -> None:

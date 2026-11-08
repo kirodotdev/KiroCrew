@@ -117,7 +117,13 @@ describe('KiroSignInCard', () => {
 
   it('signed in: shows a token-free summary with sign-out, and sign-out calls the API with the slot', async () => {
     kasLoginStatus.mockResolvedValue(SIGNED_IN)
-    renderWithProviders(<KiroSignInCard />)
+    localStorage.setItem(
+      'kc.acp.models.v1',
+      JSON.stringify({ ts: 0, models: [{ name: 'auto', description: '' }] }),
+    )
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'account-a-model' }])
+    const reset = vi.spyOn(queryClient, 'resetQueries')
     const summary = await screen.findByTestId('kiro-sign-in-summary')
     expect(summary).toHaveAttribute('data-lapsed', 'false')
     expect(screen.getByTestId('kiro-sign-in-state')).toHaveTextContent('Signed in with Google')
@@ -131,6 +137,10 @@ describe('KiroSignInCard', () => {
     kasLoginStatus.mockResolvedValue(SIGNED_OUT)
     fireEvent.click(screen.getByTestId('kiro-sign-in-logout'))
     await waitFor(() => expect(kasLoginLogout).toHaveBeenCalledWith('social'))
+    // The model list was the signed-out account's: both frontend caches drop with it.
+    await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
+    expect(queryClient.getQueryData(['available-models', 'acp'])).toBeUndefined()
+    expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
     // The status re-read now says signed out, which unmounts the summary; the
     // "applies to processes started from now on" note lives on the card, so
     // it is still there beside the chooser the user now sees.
@@ -225,6 +235,47 @@ describe('KiroSignInCard', () => {
     expect(warning).toHaveTextContent('previous sign-in could not be removed')
     expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
     vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('an authorized sign-in drops the model list the previous account was served', async () => {
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'authorized' })
+    localStorage.setItem(
+      'kc.acp.models.v1',
+      JSON.stringify({ ts: 0, models: [{ name: 'auto', description: '' }] }),
+    )
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'account-a-model' }])
+    const reset = vi.spyOn(queryClient, 'resetQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
+    expect(queryClient.getQueryData(['available-models', 'acp'])).toBeUndefined()
+    expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+    vi.mocked(api.kasLoginPoll).mockResolvedValue({ status: 'pending' })
+  })
+
+  it('a cancel that finds the sign-in already landed drops the previous account\'s model list too', async () => {
+    // The poll never answers 'authorized' here: the user backs out while the
+    // credential is being stored, and only the cancel's fresh status read sees
+    // it. The model caches must still drop, the same as on the poll path.
+    kasLoginStatus.mockResolvedValue(SIGNED_OUT)
+    localStorage.setItem(
+      'kc.acp.models.v1',
+      JSON.stringify({ ts: 0, models: [{ name: 'auto', description: '' }] }),
+    )
+    const { queryClient } = renderWithProviders(<KiroSignInCard />)
+    queryClient.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'account-a-model' }])
+    const reset = vi.spyOn(queryClient, 'resetQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with GitHub' }))
+    const cancel = await screen.findByRole('button', { name: 'Use a different sign-in' })
+    expect(reset).not.toHaveBeenCalledWith({ queryKey: ['available-models'] })
+    kasLoginStatus.mockResolvedValue(SIGNED_IN)
+    fireEvent.click(cancel)
+    await waitFor(() => expect(api.kasLoginCancel).toHaveBeenCalled())
+    await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
+    expect(queryClient.getQueryData(['available-models', 'acp'])).toBeUndefined()
+    expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+    expect(await screen.findByTestId('kiro-sign-in-summary')).toBeInTheDocument()
   })
 
   it('the embedded chrome hands failures to the agent where the gate cannot', async () => {

@@ -136,6 +136,11 @@ class FakeClient(MultipartFake):
         self.response_destinations: list[str] = []
         self.reactions: list[tuple[str, str]] = []
         self.thread_channels: set[str] = set()
+        #: thread id -> ``ThreadOrigin`` as Discord would report it; absent reads
+        #: as a failed lookup.
+        self.thread_origins: dict[str, Any] = {}
+        self.origin_lookups: list[str] = []
+        self.bot_user_id = "bot"
         self.created_threads: list[tuple[str, str, str]] = []
         self.attachment_bodies: dict[str, bytes] = {}
         self.attachment_downloads: list[str] = []
@@ -157,6 +162,10 @@ class FakeClient(MultipartFake):
 
     async def is_thread_channel(self, channel_id: str) -> bool:
         return channel_id in self.thread_channels
+
+    async def thread_origin(self, channel_id: str) -> Any:
+        self.origin_lookups.append(channel_id)
+        return self.thread_origins.get(channel_id)
 
     async def send_typing(self, channel_id: str) -> None:
         return None
@@ -527,10 +536,17 @@ class FakeSessions:
         return self._has
 
     async def try_acquire(self, key: str) -> bool:
-        if self._busy or not self._has:
+        if self._busy or not self._has or self.retiring:
             return False
         self.acquired.append(key)
         return True
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     async def destroy(self, key: str) -> None:
         self.destroyed.append(key)

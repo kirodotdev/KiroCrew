@@ -21,7 +21,7 @@ Security notes that must not be relaxed:
   :func:`kiro_crew.sandbox.create_subprocess_limited`, so a runaway macro expansion
   gets a kernel-enforced ceiling instead of the host's whole memory.
 * Every invocation is bounded by a wall-clock timeout and the process tree is
-  killed on expiry.
+  killed on expiry, or when the run is cancelled.
 """
 
 from __future__ import annotations
@@ -57,12 +57,26 @@ logger = logging.getLogger("kirocrew.app.papyrus")
 #: Compilers we know how to drive, in preference order.
 COMPILER_NAMES = ("pdflatex", "tectonic")
 
+
+def _userspace_compiler_globs(is_windows: bool) -> tuple[str, ...]:
+    """Userspace install globs, with the Windows ``.exe`` suffix applied.
+
+    The glob matches an on-disk file name, so like :data:`_BIBTEX_BASENAME` it
+    must carry the ``.exe`` suffix on Windows — ``glob.glob`` does not apply
+    ``PATHEXT``, so a bare ``pdflatex``/``tectonic`` pattern never matches a
+    Windows TeX install's ``pdflatex.exe``/``tectonic.exe``. Taking the platform
+    as a parameter keeps the Windows branch testable on a POSIX host.
+    """
+    suffix = ".exe" if is_windows else ""
+    return (
+        f"~/texlive/*/bin/*/pdflatex{suffix}",
+        f"~/.local/bin/tectonic{suffix}",
+    )
+
+
 #: Userspace install locations probed when neither compiler is on ``PATH``. A
 #: TeX Live install script (the usual no-sudo route) lands under ``~/texlive``.
-USERSPACE_COMPILER_GLOBS = (
-    "~/texlive/*/bin/*/pdflatex",
-    "~/.local/bin/tectonic",
-)
+USERSPACE_COMPILER_GLOBS = _userspace_compiler_globs(platform_compat.IS_WINDOWS)
 
 #: Wall-clock ceiling for one compiler pass. A large thesis legitimately takes
 #: tens of seconds; beyond this the run is a wedge, not slow work.
@@ -344,7 +358,8 @@ async def _run(
 
     Returns ``(returncode, combined_output)``. On timeout the whole process tree
     is killed and ``(-1, "")`` is returned — the caller reports a timeout rather
-    than an empty success.
+    than an empty success. On cancel the tree is killed too, then the cancel
+    propagates.
 
     ``mode="strict"``, NOT the ``"standard"`` default. Standard mode deliberately
     leaves ``~/.aws`` and ``~/.ssh`` readable so git-over-SSH and the AWS CLI keep
@@ -442,6 +457,13 @@ async def _run(
                 logger.warning("papyrus: %s did not exit after SIGKILL", operation)
         _audit(operation, argv[0], "failure", error=f"timeout after {timeout}s")
         return -1, ""
+    except asyncio.CancelledError:
+        # The child runs in its own session, so once this coroutine stops
+        # awaiting it nothing else will stop it: no timeout is left.
+        # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+        if proc is not None and proc.returncode is None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     except OSError as exc:
         _audit(operation, argv[0], "failure", error=str(exc))
         raise

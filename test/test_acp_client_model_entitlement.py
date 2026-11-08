@@ -15,12 +15,8 @@ from kiro_crew.acp.types import AcpPromptStats
 class TestSetModelRebasesContextStats:
     """A mid-session set_model must re-anchor the context-meter stats.
 
-    Without the re-anchor set_model leaves
-    last_prompt_stats untouched, so the old model's window (and its
-    authoritative context_tokens_from_usage flag) survived the switch. When
-    the new model streams only contextUsagePercentage metadata (kiro 2.10+),
-    the stale True gated _backfill_context_window forever — pct updated but
-    the token text stayed scaled to the OLD model's window.
+    A stale context_tokens_from_usage True would gate _backfill_context_window when the
+    new model sends only contextUsagePercentage (kiro 2.10+), keeping the old window.
     """
 
     def _client(self, tmp_path):
@@ -173,25 +169,32 @@ class TestModelEntitlementPreflight:
         client._probe_advertised_models = _no_probe_evidence
         return client
 
-    def test_unadvertised_model_is_unusable(self):
-        client = self._client(["claude-sonnet-4.6"], "claude-opus-4.8")
-        assert client._model_is_unusable("claude-opus-4.8") is True
-
-    def test_advertised_model_is_usable(self):
-        client = self._client(["claude-sonnet-4.6", "claude-opus-4.8"], "claude-opus-4.8")
-        assert client._model_is_unusable("claude-opus-4.8") is False
-
-    def test_unknown_entitlement_allows_the_send(self):
-        """Empty advertised set means "unknowable", never "nothing is allowed".
-
-        A backend that omits ``models`` must not have every model withheld.
-        """
-        client = self._client([], "claude-opus-4.8")
-        assert client._model_is_unusable("claude-opus-4.8") is False
-
-    def test_match_is_case_and_space_insensitive(self):
-        client = self._client(["Claude-Opus-4.8"], "claude-opus-4.8")
-        assert client._model_is_unusable("  claude-opus-4.8 ") is False
+    @pytest.mark.parametrize(
+        ("advertised", "asked", "unusable"),
+        [
+            pytest.param(
+                ["claude-sonnet-4.6"], "claude-opus-4.8", True, id="unadvertised_model_is_unusable"
+            ),
+            pytest.param(
+                ["claude-sonnet-4.6", "claude-opus-4.8"],
+                "claude-opus-4.8",
+                False,
+                id="advertised_model_is_usable",
+            ),
+            # Empty advertised set means "unknowable", never "nothing is allowed":
+            # a backend that omits ``models`` must not have every model withheld.
+            pytest.param([], "claude-opus-4.8", False, id="unknown_entitlement_allows_the_send"),
+            pytest.param(
+                ["Claude-Opus-4.8"],
+                "  claude-opus-4.8 ",
+                False,
+                id="match_is_case_and_space_insensitive",
+            ),
+        ],
+    )
+    def test_model_is_unusable(self, advertised, asked, unusable):
+        client = self._client(advertised, "claude-opus-4.8")
+        assert client._model_is_unusable(asked) is unusable
 
     @pytest.mark.asyncio
     async def test_startup_withholds_unusable_model(self):
@@ -501,31 +504,20 @@ def _record(sink):
 class TestColdCacheModelFallback:
     """The cold-cache push twin of TestModelEntitlementPreflight.
 
-    ``resolve_wire_model_id`` folds onto the advertised spelling only when the
-    advertised cache is warm. On the first-ever session that cache is empty,
-    so a prefixed ``[1m]`` id reached the wire verbatim and the adapter
-    rejected it — resetting the session and dropping the user onto the default
-    with no explanation (the ``Invalid value for config option model:
-    global.anthropic.claude-sonnet-4-6[1m]`` report). The push helper derives
-    fallback spellings from the id itself and lets the adapter judge each.
+    With a cold cache ``resolve_wire_model_id`` cannot fold a ``[1m]`` id, so the push
+    helper derives fallback spellings from the id and lets the adapter judge each.
     """
 
     @pytest.fixture(autouse=True)
-    # nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in this module calls monkeypatch.undo()
-    def _cold_advertised_cache(self, monkeypatch):
+    def _cold_advertised_cache(self, _floor_monkeypatch):
         """Pin the cache these tests are ABOUT to the state their name claims.
 
-        ``_apply_startup_model`` folds the id onto the advertised spelling through
-        ``model_registry.resolve_wire_model_id`` before it pushes anything, and
-        the advertised set is a module global another test on the same xdist
-        worker may have warmed (``claude-sonnet-4-6`` advertised). Warm, the fold
-        collapses ``global.anthropic.claude-sonnet-4-6[1m]`` to the served
-        spelling and the adapter sees ONE push instead of the three fallbacks --
-        a 1-in-5 failure in full runs. Cold is the premise, so pin it.
+        The advertised set is a module global another xdist test may warm; warm, the
+        fold sends one push instead of three fallbacks.
         """
         from kiro_crew import model_registry
 
-        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+        _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
 
     @staticmethod
     def _claude_client(model):

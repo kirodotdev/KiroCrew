@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Download, Eye, Image as ImageIcon, ImageOff, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
@@ -19,8 +19,11 @@ import {
 import { ContentRenderer, langFor, wrapCode } from './ContentRenderer'
 import type { FileType } from './FileRenderers'
 import type { Artifact, ArtifactComment } from '../types'
+import type { PierreEditorHandle } from '../pierre'
+import MarkdownOutlineRail from './MarkdownToc'
 
 import { i18nT } from '../i18n/t'
+import { dispatchLightbox } from './markdown/Lightbox'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 // Shared renderer for the full-page route and the chat side-panel Artifacts
 // tab (markdown/text/json/svg natively via ContentRenderer; widget/html via
@@ -115,15 +118,17 @@ export function isEditableKind(kind: Artifact['kind']): boolean {
  * the detail page / side panel can attach selection-to-comment handlers
  * above it. */
 export const ArtifactBodyNative = memo(function ArtifactBodyNative({
-  kind, content, editing, onChange, previewRef,
+  kind, content, editing, onChange, previewRef, editorRef,
   comments, activeCommentId, scrollNonce, onActivateComment, unreadRootIds,
-  heightStyle, flush, scrollMemoryKey,
+  heightStyle, flush, scrollMemoryKey, headingRail = false,
 }: {
   kind: Artifact['kind']
   content: string
   editing: boolean
   onChange: (v: string) => void
   previewRef: React.RefObject<HTMLDivElement | null>
+  /** The editor's focus handle, live while `editing`. */
+  editorRef?: React.Ref<PierreEditorHandle>
   comments?: ArtifactComment[]
   activeCommentId?: string | null
   scrollNonce?: number
@@ -149,6 +154,13 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
    *  (different lifecycles, and a second instance sharing the key would
    *  fight the first over recording). */
   scrollMemoryKey?: string
+  /** Show the heading rail beside a read-only markdown body, the same rail a
+   *  markdown FILE gets (#26608). Opt-in per caller: the full-page viewer
+   *  passes it. It wraps the scroller in a positioned box for the rail, so a
+   *  caller keeps it fixed for an instance's life, which keeps the scroller
+   *  (and its scroll position) mounted across edit toggles. The rail itself
+   *  shows only for two or more headings. */
+  headingRail?: boolean
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const fileType = fileTypeForKind(kind)
@@ -166,14 +178,16 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   // markdown (rendered DOM) AND the code path (text/json/svg). Widgets/HTML use
   // the iframe bridge instead.
   const showOverlay = !editing && !!onActivateComment && (comments?.length ?? 0) > 0
-  return (
+  const showRail = headingRail && isMarkdown && !editing
+  const scroller = (
     <div
       ref={scrollerRef}
       onScroll={scrollMemory.onScroll}
       className={`relative overflow-auto ${flush ? '' : 'rounded-xl border border-border bg-card'}`}
       style={heightStyle ?? { minHeight: 480, height: 'calc(100vh - 240px)' }}
     >
-      <div className={flush ? 'h-full' : 'p-5 h-full'}>
+      {/* pr-8 keeps the text clear of the rail's ticks. */}
+      <div className={`${flush ? 'h-full' : 'p-5 h-full'} ${showRail ? 'pr-8' : ''}`}>
         <ContentRenderer
           isRichType={isRichType}
           fileType={fileType}
@@ -184,6 +198,7 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
           wordWrap={true}
           onChange={onChange}
           previewRef={previewRef}
+          editorRef={editorRef}
           displayContent={displayContent}
           isMarkdown={isMarkdown}
           flush={flush}
@@ -203,13 +218,22 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
       )}
     </div>
   )
+  if (!headingRail) return scroller
+  // The rail floats over the scroller's right edge, so it sits in a box that
+  // shares the scroller's size rather than inside the scrolled content.
+  return (
+    <div className="relative">
+      {scroller}
+      {showRail && <MarkdownOutlineRail containerRef={scrollerRef} />}
+    </div>
+  )
 })
 
 /** Renders widget / html artifacts in a sandboxed iframe with theme-var
  * injection. */
 export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   artifact, slug, previewStyle, comments, onSelect, onOpenThread, scrollToCommentId, activeId, unreadRootIds,
-  heightStyle,
+  heightStyle, relayWheel = false,
 }: {
   artifact: Artifact
   slug: string
@@ -224,6 +248,11 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   unreadRootIds?: Set<string>
   /** Override the iframe height (side-panel fit). */
   heightStyle?: React.CSSProperties
+  /** Report the frame's horizontal wheel runs its own content does not scroll
+   *  to a host page's trackpad swipe (`relayWheel` in lib/widgetSrcdoc). The
+   *  frame relays only once that host arms it, so a page with no swipe is
+   *  unchanged. Set by the side panel, whose swipe can close it over the frame. */
+  relayWheel?: boolean
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const { theme, colorTheme, themeVersion } = useTheme()
@@ -299,9 +328,10 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
         includeHeightReporter: true, linkBridge: frame.linkBridge,
         offlineScripts: frame.offlineScripts, rewriteBareLinks: frame.rewriteBareLinks,
         pageScripts: frame.pageScripts,
+        relayWheel,
       })
       : null,
-    [artifact.content, themeVars, theme, frame.linkBridge, frame.offlineScripts, frame.rewriteBareLinks, frame.pageScripts],
+    [artifact.content, themeVars, theme, frame.linkBridge, frame.offlineScripts, frame.rewriteBareLinks, frame.pageScripts, relayWheel],
   )
   // One shared hook rather than this effect in four components: the previous
   // document survives both an in-flight and a failed re-mint, and `failed`
@@ -477,6 +507,9 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
               onIframeLoad?.()
             }}
             sandbox={frame.sandbox}
+            // The mark a listening host arms by (hooks/useTrackpadSwipe): only
+            // a frame whose document carries the relay is ever told anything.
+            data-wheel-relay={relayWheel ? '' : undefined}
             // NO clipboard-write delegation here, deliberately. These frames host
             // agent-generated HTML whose scripts run on load, so a delegated
             // permission would let one overwrite the user's clipboard with no Copy
@@ -545,7 +578,11 @@ export const ArtifactBodyImage = memo(function ArtifactBodyImage({
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const url = artifactAssetUrl(slug)
-  const alt = artifact.image?.alt || artifact.name
+  // Blank or whitespace-only text is no description: it would leave the image,
+  // and the button that wraps it, with no accessible name.
+  const alt = artifact.image?.alt?.trim() || artifact.name?.trim() || ''
+  const viewFullSize = i18nT('components.artifactBody.view_full_size')
+  const viewHintId = useId()
   const downloadName =
     artifact.image?.original_filename || `${slug}.${artifact.image?.ext || 'png'}`
   // The asset endpoint can legitimately fail (missing sidecar, unreadable file,
@@ -570,17 +607,40 @@ export const ArtifactBodyImage = memo(function ArtifactBodyImage({
             />
           </div>
         ) : (
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle handler (degrade to the "could not be loaded" notice), not a user interaction; there is nothing here for a keyboard to reach
-          <img
-            src={url}
-            alt={alt}
-            width={artifact.image?.width}
-            height={artifact.image?.height}
-            loading="lazy"
-            className="max-w-full max-h-full object-contain"
-            draggable={false}
-            onError={() => setFailed(true)}
-          />
+          /* A button around the image opens it in the app-wide image viewer
+             (zoom and pan), the same one a chat image opens: fit-to-view is
+             the only size this body can show, and a large screenshot's small
+             text is unreadable at it (#28760). A button, not a click on the
+             <img>, so a keyboard reaches it too. The button takes its name
+             from the image's `alt`, so a screen reader still hears what the
+             image is, and "View full size" is its description through a
+             visually hidden line (`title` alone is not read reliably). With
+             no text to name the image at all, "View full size" is the name. */
+          <>
+          <span id={viewHintId} hidden>{viewFullSize}</span>
+          <button
+            type="button"
+            className="w-full h-full flex items-center justify-center p-0 border-none bg-transparent cursor-zoom-in rounded focus-visible:outline-2 focus-visible:outline-accent"
+            title={viewFullSize}
+            {...(alt ? { 'aria-describedby': viewHintId } : { 'aria-label': viewFullSize })}
+            data-testid="artifact-body-image-open"
+            onClick={(e) => { const img = e.currentTarget.querySelector('img'); if (img) dispatchLightbox(img) }}
+          >
+            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- onError is an image-load lifecycle handler (degrade to the "could not be loaded" notice), not a user interaction */}
+            <img
+              src={url}
+              alt={alt}
+              width={artifact.image?.width}
+              height={artifact.image?.height}
+              loading="lazy"
+              className="max-w-full max-h-full object-contain"
+              draggable={false}
+              // The viewer's Download names the file from this, as the body's own Download does.
+              data-lightbox-filename={downloadName}
+              onError={() => setFailed(true)}
+            />
+          </button>
+          </>
         )}
       </div>
       <div className="flex items-center justify-between gap-2 border-t border-border px-4 py-2 text-sm text-muted">

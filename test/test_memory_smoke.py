@@ -10,6 +10,7 @@ Verifies that memory (semantic, episodic, lessons) is truly useful:
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -65,6 +66,25 @@ class TestSemanticContextJsonFormat:
         store.set_semantic("pref.color", "red", 1.0, "user_explicit")
         ctx = store.get_semantic_context()
         assert "pref.color: red" in ctx
+
+    def test_non_ascii_renders_as_written(self, tmp_path: Path, opened) -> None:
+        # The cap counts the text the model reads, not "\uac00" escapes.
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        value = {"v": "\uac00" * 100}
+        store.set_semantic("project.korean", value, 1.0, "user_explicit")
+        raw = json.dumps(value, ensure_ascii=False)
+        # Fits the raw line with room to spare, but not the 609-character escaped one.
+        ctx = store.get_semantic_context(cap=len(f"project.korean: {raw}") + 20)
+        assert raw in ctx
+        assert "\\uac00" not in ctx
+
+    def test_ascii_complex_value_renders_unchanged(self, tmp_path: Path, opened) -> None:
+        store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db"))
+        store.init()
+        value = {"alias": "team@example.com", "n": [1, 2]}
+        store.set_semantic("project.team.info", value, 1.0, "user_explicit")
+        assert json.dumps(value) in store.get_semantic_context()
 
 
 # ── Episodic text-hash dedup ──
@@ -179,6 +199,7 @@ class TestMemoryInjectionAllAgents:
             session_key="dashboard:plain",
             agent="my-custom-agent",
             interactive=True,
+            directive_user_origin=True,
         )
         assert "ask_question" in msg
         assert "suggest_followup" in msg
@@ -591,6 +612,12 @@ class TestLessonEmbeddingStorage:
         s2 = VectorMemoryStore(db_path=db)
         s2.init()  # should not raise
         s2.close()
+        conn = sqlite3.connect(db)
+        try:
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(semantic_memory)")]
+        finally:
+            conn.close()
+        assert columns.count("embedding") == 1
 
     def test_write_lesson_stores_embedding(self, tmp_path: Path, opened) -> None:
         """New lesson gets embedding blob persisted in DB."""
@@ -632,7 +659,6 @@ class TestLessonEmbeddingStorage:
         s = opened(VectorMemoryStore(db_path=db))
         s.init()
 
-        # Write first lesson with embedding
         s.embed_fn = lambda text: [1.0, 0.0, 0.0]
         s.write_lesson("always use type hints in Python", "preference")
 

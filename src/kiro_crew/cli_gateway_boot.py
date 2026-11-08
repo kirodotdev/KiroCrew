@@ -4,7 +4,8 @@
 keyword arguments (the ``--test-mode`` bundle, the ``--port`` check and the
 ``--approval yolo`` rail); ``_install_child_watcher`` replaces the thread-per-child asyncio
 watcher; ``_diagnostic_port`` and ``_diagnostic_bind_address`` name the port and address a
-refused gateway lock reports.
+refused gateway lock reports; ``_refuse_unpersistable_data_home`` stops a start whose data home
+cannot hold files.
 
 Split out of ``kiro_crew.cli``, which stays the import path and the patch target: every name
 here is reached as ``kiro_crew.cli.<name>``, and a patch through that facade reaches this
@@ -21,8 +22,9 @@ import os
 import sys
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.config import KiroCrewConfig
-from kiro_crew.config.paths import _default_home, _legacy_home
+from kiro_crew.config.paths import _default_home, _legacy_home, config_dir, peek_data_home
 
 # The facade's logger, by name: records from here carry ``kiro_crew.cli``.
 logger = logging.getLogger("kiro_crew.cli")
@@ -301,3 +303,18 @@ def _diagnostic_bind_address() -> str | None:
         return bind_address_for(local_only=True)
     except Exception:
         return None
+
+
+def _refuse_unpersistable_data_home() -> None:
+    """Exit 1 with one line when the data home cannot hold files.
+
+    ``config_dir()``, not the probe's own mkdir, creates a missing home, so it is
+    owner-only from the start.
+    """
+    try:
+        error = platform_compat.probe_file_persistence(config_dir())
+    except OSError as exc:
+        error = f"cannot create files in {peek_data_home()}: {exc}"
+    if error is not None:
+        print(f"❌ Cannot persist state: {error}", file=sys.stderr)
+        raise SystemExit(1)

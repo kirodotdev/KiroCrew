@@ -71,6 +71,10 @@ class Task:
     # give-ups, restarts and a replan, because a step whose work may have run
     # must never be replayed verbatim, and keeping the hint costs one inspection.
     resume_hint: str = ""
+    # Set when a revised plan replaced this step (the step that failed, and the
+    # original steps that never started). A resume never sets it back to pending,
+    # so it does not run beside the revised plan.
+    superseded: bool = False
     requires_approval: bool = False
     force_approval: bool = False  # blocks even in YOLO mode
     depends_on: list[int] = field(default_factory=list)
@@ -147,6 +151,9 @@ class Project:
     memory: WorkingMemory = field(default_factory=WorkingMemory)
     task_id: str = ""
     name: str = ""  # human-readable name (optional, display label)
+    # The agent every session of this run opens with ("" = the default agent).
+    # Kept per run and persisted: one runner serves every run of the gateway.
+    agent: str = ""
     work_dir: str = ""
     last_task_time: float = 0.0
     branch_name: str = ""

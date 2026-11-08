@@ -1,24 +1,10 @@
 """Unit tests for ``handle_message_transport`` agent resolution (Stage 3).
 
-Locks the messaging-transport fix that makes ``spawn_run`` available: the
-transport session must be created under a kiro agent that carries the
-``kirocrew-core`` MCP server (which provides ``spawn_run``), not under
-kiro-cli's bare built-in default.
-
-Directly asserting "the ``spawn_run`` tool is loaded" would require spawning a
-real kiro-cli process, so we lock the deterministic invariant that guarantees
-it instead: the agent name passed to ``get_or_create`` is non-empty and
-resolves to the canonical ``"kirocrew"`` agent when no thread override /
-``default_agent`` is configured, and a thread override still wins.
-
-What a turn leaves behind once it ends (the agent recorded in the session
-metadata, the auto-title, the error reply held back for a trusted bot and the
-partial-reply rescue) is covered in
-``test_slack_transport_dispatch_turn_outcomes.py``, and the one-session-per-DM
-key and its wiring in ``test_slack_transport_dispatch_flat_dm.py``. The
-message timestamp and the capturing session and context-builder stand-ins these
-files share live in ``slack_transport_dispatch_helpers.py``, which also binds the
-golden-transcript fakes from ``test_slack_golden_transcript``.
+The transport session needs an agent carrying the ``kirocrew-core`` MCP server (for
+``spawn_run``). Checking the loaded tool would need a real kiro-cli, so this pins the
+agent name passed to ``get_or_create``: ``"kirocrew"`` by default, a thread override
+wins. Turn outcomes and the flat-DM key are in the ``_turn_outcomes`` and ``_flat_dm``
+siblings.
 """
 
 from __future__ import annotations
@@ -268,7 +254,7 @@ class TestTransportAdmissionSpool:
         assert routes[0].text == text
         assert routes[0].attachments_dropped == dropped
 
-    def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch):
+    def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch, caplog):
         from kiro_crew.session_allocation import SessionClosingError
 
         async def reject_turn(*_args, **_kwargs):
@@ -278,10 +264,13 @@ class TestTransportAdmissionSpool:
         monkeypatch.setattr(_CapturingSessions, "get_or_create", reject_turn)
         monkeypatch.setattr(transport_dispatch, "spool_refused_turn", spool)
         monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: True)
+        caplog.set_level("INFO", logger=transport_dispatch.logger.name)
 
         _run_transport(monkeypatch)
 
         spool.assert_not_awaited()
+        msgs = [r.getMessage() for r in caplog.records if r.name == transport_dispatch.logger.name]
+        assert any("gateway is shutting down" in m for m in msgs), msgs
 
 
 class TestTransportBookkeepingIsolation:
@@ -1207,11 +1196,8 @@ class TestTransportCompactionReinjection:
 class TestTransportTemporaryBlocksMemoryReads:
     """``!temporary`` must block memory READS on the DEFAULT transport path.
 
-    ``messaging.use_transport`` defaults True, so this is the live path, and the
-    shared ``NOTICE_TEMPORARY`` promises the thread "won't read or save memory".
-    The write half is covered by the ``_is_slack_restricted`` gates; the read half
-    is one kwarg, and omitting it leaves memories and lessons in the prompt of a
-    thread the user was told reads nothing.
+    ``NOTICE_TEMPORARY`` promises the thread "won't read or save memory". Writes are
+    gated by ``_is_slack_restricted``; the read half is one kwarg.
     """
 
     _KEY = canonical_key(_MSG_TS)
@@ -1465,12 +1451,8 @@ class TestTeardownReleasesSessionOnCancel:
     """A ``!stop`` cancelling the turn task while ``renderer.close()`` awaits
     must still release the session semaphore.
 
-    ``close()`` now awaits (it clears the thread status on a cancelled turn),
-    so a cancellation can land inside it and raise ``CancelledError`` -- which
-    is not an ``Exception`` and escapes the dispatcher's ``except Exception``
-    teardown guard. The session release must sit in a ``finally`` so the
-    permit is always returned; otherwise the semaphore stays locked and every
-    later message in that conversation wedges until the gateway restarts.
+    ``CancelledError`` is not an ``Exception``, so only a ``finally`` returns the permit;
+    otherwise every later message in that conversation wedges until restart.
     """
 
     def _run(self, monkeypatch, *, close_raises):

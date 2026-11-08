@@ -47,7 +47,6 @@ CREW_LOG_DIR = Path(projection.__file__).resolve().parent
 #: so a scanner that stops matching goes red instead of passing over nothing.
 _KNOWN_SEAMS = frozenset(
     {
-        "CONTEXT_TURNS_LIMIT",
         "RADAR_ITEM_LIMIT",
         "RADAR_SKIP_LIMIT",
         "open_session_log",

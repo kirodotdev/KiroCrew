@@ -298,6 +298,7 @@ async def api_hook_test(request: web.Request) -> web.Response:
     # circular import: kiro_crew.hooks pulls dashboard state at module load, so
     # this handler defers the import to call time (matches _get_hook_store above).
     from kiro_crew.hooks import (  # noqa: F811
+        HOOK_EVENT_SESSION_LANE_CHANGED,
         HOOK_EVENT_STOP,
         HOOK_EVENT_USER_PROMPT_SUBMIT,
         run_script_hook,
@@ -339,6 +340,15 @@ async def api_hook_test(request: web.Request) -> web.Response:
             "cwd": os.getcwd(),
             "assistant_text": context,
         }
+    elif hook.event == HOOK_EVENT_SESSION_LANE_CHANGED:
+        # Test has no transition, so the ids here are placeholders.
+        hook_event = {
+            "hook_event_name": hook.event,
+            "cwd": os.getcwd(),
+            "slot": "chat-1",
+            "added": ["done"],
+            "removed": ["review"],
+        }
     result = await run_script_hook(hook, context, hook_event)
     _sel().log_tool_invocation(
         session_key="dashboard:hook_test",
@@ -367,6 +377,33 @@ async def api_hook_test(request: web.Request) -> web.Response:
             },
         }
     )
+
+
+async def api_kiro_hooks_rescan(request: web.Request) -> web.Response:
+    """POST /api/kiro-hooks/rescan — rewrite the agent specs from the hooks folder and config.
+
+    Owner-only: an agent can write a script into the hooks folder, so it must not
+    also be able to make that script run.
+    """
+    # Body-scope import, like the gates above: ``_shared`` reaches back into
+    # sibling handler modules, so a module-scope import would close a cycle.
+    from kiro_crew.dashboard.handlers._shared import (
+        rebuild_agent_spec,
+        require_owner_dashboard_request,
+    )
+
+    denied = await require_owner_dashboard_request(request, "hooks.rescan")
+    if denied is not None:
+        return denied
+    rewritten = await asyncio.to_thread(rebuild_agent_spec, "a hooks rescan")
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="hooks.rescan",
+        outcome="success" if rewritten else "error",
+        source="dashboard",
+        resources=f"agent_spec_rewritten={rewritten}",
+    )
+    return web.json_response({"ok": True, "agent_spec_rewritten": rewritten})
 
 
 #: The ``unsent`` row fields the author wrote, which may hold a credential.
@@ -404,11 +441,17 @@ async def api_kiro_hooks(request: web.Request) -> web.Response:
     hooks = raw.get("hooks") if raw is not None else None
     if not isinstance(hooks, dict):
         hooks = {}
-    # Load bundled defaults to tag source
+    # Load bundled defaults to tag source. Explicit UTF-8: the shipped file
+    # carries non-ASCII text, and the locale code page (cp932/cp936/cp949 on CJK
+    # Windows) cannot decode it. ``ValueError`` covers that UnicodeDecodeError
+    # and JSONDecodeError, so an unreadable file degrades to no bundled tags.
+    # Off-loop, with the path lookup (it probes a project-dir override).
     try:
-        raw = json.loads(_shipped_defaults().read_text())
+        raw = json.loads(
+            await asyncio.to_thread(lambda: _shipped_defaults().read_text(encoding="utf-8"))
+        )
         bundled = raw.get("hooks", {}) if isinstance(raw, dict) else {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         bundled = {}
     bundled_keys: set[tuple[str, str, str]] = set()
     for event, entries in bundled.items():

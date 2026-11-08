@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
-import { sseSlots } from '../store/dashboardSlice'
+import { sseConnected, sseSlots } from '../store/dashboardSlice'
 import {
   consumeChatHandoff,
   installSoftNavigate,
@@ -61,6 +61,9 @@ vi.mock('../hooks/useTagPopover', () => ({
 
 function mount(seed?: (store: ReturnType<typeof createTestStore>) => void) {
   const store = createTestStore()
+  // createTestStore models a DISCONNECTED dashboard; export is gateway-backed,
+  // so without this the row is refused and never reports an outcome.
+  store.dispatch(sseConnected())
   store.dispatch(sseSlots([{
     key: 'context-slot',
     messages: 1,
@@ -126,17 +129,17 @@ describe('SessionActionsMenu context-menu error hand-off', () => {
     // activation behaviour, so it pins the JSON one by its own label -- each row
     // names what its file is for, so neither needs a suffix to be identifiable.
     const exportRow = await screen.findByRole('menuitem', { name: /export for import/i })
-    exportRow.focus()
+    act(() => { exportRow.focus() })
     await user.keyboard('{Enter}')
     await screen.findByRole('alert')
     expect(mocks.exportSession).toHaveBeenCalledTimes(1)
 
-    exportRow.focus()
+    act(() => { exportRow.focus() })
     await user.keyboard('{Enter}')
     await waitFor(() => expect(mocks.exportSession).toHaveBeenCalledTimes(2))
     await screen.findByRole('alert')
 
-    exportRow.focus()
+    act(() => { exportRow.focus() })
     await user.keyboard('{ArrowDown}')
     const handoff = screen.getByRole('menuitem', { name: /^ask the agent$/i })
     expect(handoff).toHaveFocus()
@@ -144,6 +147,6 @@ describe('SessionActionsMenu context-menu error hand-off', () => {
 
     expect(consumeChatHandoff()).toContain('context export refused')
     expect(mocks.exportSession).toHaveBeenCalledTimes(2)
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
   })
 })

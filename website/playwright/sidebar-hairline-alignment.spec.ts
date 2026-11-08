@@ -53,6 +53,8 @@ type Measurement = { probe: Probe | null; missing: string[] }
 async function primeBrowser(page: Page) {
   await page.addInitScript(() => {
     localStorage.setItem('mc-onboarded', '1')
+    // The rail starts collapsed; this spec measures the expanded rail.
+    localStorage.setItem('mc-nav', '0')
   })
   // Wide enough that the nav rail stays expanded (its community row is hidden
   // under max-h-0 while collapsed) and tall enough that both cards sit on the

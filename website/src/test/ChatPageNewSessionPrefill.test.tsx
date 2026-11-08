@@ -28,7 +28,7 @@ import { flushSync } from 'react-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer, { createSlot, switchSlot, endLocalTurn, setQuestionCard, setQuestionDraft, setFolderSuggestion, pendingQuestionFor, resolveQuestionCard } from '../store/chatSlice'
-import dashboardReducer, { updateSlot } from '../store/dashboardSlice'
+import dashboardReducer, { sseConnected, sseDisconnected, sseSlots, updateSlot } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { DRAFTS_KEY, saveDrafts, setDraft, __resetForTests as resetDrafts } from '../utils/chatDrafts'
@@ -36,6 +36,7 @@ import { loadFileDrafts, saveFileDrafts } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts, __resetForTests as resetPasteDrafts } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts, __resetSessionRefDraftsForTests as resetSessionRefs } from '../utils/chatSessionRefDrafts'
 import { formatToken } from '../utils/pasteTokens'
+import { i18nT } from '../i18n/t'
 import type { useKnowledgeFetch } from '../pages/chat/useKnowledgeFetch'
 
 let knowledgeInTest: ReturnType<typeof useKnowledgeFetch>
@@ -275,7 +276,9 @@ describe('ChatPage — /chat?new=1&prefill= seeds a fresh session', { timeout: 2
 
 
 describe('App SDK chat launch intent', () => {
-  function launch(options: { message: string; slotKey?: string; autoSend?: boolean; agent?: string }) {
+  function launch(options: {
+    message: string; slotKey?: string; autoSend?: boolean; agent?: string; memoryMode?: string; sessionFolder?: boolean
+  }) {
     ;(window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch = { ...options, ts: Date.now() }
   }
 
@@ -346,6 +349,20 @@ describe('App SDK chat launch intent', () => {
     await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
     expect(sendChat.mock.calls[0]).toContain('chat-old')
     expect(createChatSlot).not.toHaveBeenCalled()
+  })
+
+  it('keeps the full resend guidance when a launched send times out, since a launch raises no strip', async () => {
+    sendChat.mockImplementation(async () => { throw new DOMException('aborted', 'AbortError') })
+    launch({ message: PROMPT, slotKey: 'chat-old' })
+    const store = await renderAt('/chat?sid=chat-old')
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    const notice = await waitFor(() => {
+      const row = store.getState().chat.messages.find(m => m.role === 'notice' && m.meta?.deliveryNoticeFor)
+      expect(row).toBeDefined()
+      return row!
+    })
+    expect(notice.content).toBe('\u26A0\uFE0F ' + i18nT('pages.chatPage.delivery_unconfirmed_resend_manually'))
+    expect(screen.queryByTestId('delivery-exit-dismiss')).toBeNull()
   })
 
   it('shows a restored-answer notice on the session page after its question is gone', async () => {
@@ -582,6 +599,42 @@ describe('App SDK chat launch intent', () => {
     expect(sendChat).not.toHaveBeenCalled()
   })
 
+  // `api.createChatSlot`'s positional arguments the launch shapes.
+  const CREATE_AGENT = 1, CREATE_MEMORY_MODE = 4, CREATE_SKIP_SESSION_FOLDER = 9
+
+  it('creates a new draft session with the launch memory mode and no session folder', async () => {
+    launch({ message: PROMPT, agent: 'example-agent', memoryMode: 'persistent', sessionFolder: false })
+    const store = await renderAt('/chat?new=1')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    await waitFor(() => expect(composer().value).toBe(PROMPT))
+    expect(createChatSlot).toHaveBeenCalledTimes(1)
+    const call = createChatSlot.mock.calls[0]
+    expect(call[CREATE_AGENT]).toBe('example-agent')
+    expect(call[CREATE_MEMORY_MODE]).toBe('persistent')
+    expect(call[CREATE_SKIP_SESSION_FOLDER]).toBe(true)
+    // A session-shaping launch is a draft: the message waits for the user.
+    expect(sendChat).not.toHaveBeenCalled()
+    expect((window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch).toBeUndefined()
+  })
+
+  it('ignores an unknown memory mode and keeps the default', async () => {
+    launch({ message: PROMPT, autoSend: false, memoryMode: 'forever' })
+    const store = await renderAt('/chat?new=1')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe(NEW_SLOT))
+    expect(createChatSlot).toHaveBeenCalledTimes(1)
+    expect(createChatSlot.mock.calls[0][CREATE_MEMORY_MODE]).not.toBe('forever')
+    expect(createChatSlot.mock.calls[0][CREATE_SKIP_SESSION_FOLDER]).toBe(false)
+  })
+
+  it('does not apply session-shaping options to a targeted launch', async () => {
+    launch({ message: PROMPT, slotKey: 'chat-other', memoryMode: 'incognito', sessionFolder: false })
+    const store = await renderAt('/chat?sid=chat-other', 'Target notes', 'chat-old')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('chat-other'))
+    // Still the targeted auto-send path: the existing session keeps its mode.
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    expect(createChatSlot).not.toHaveBeenCalled()
+  })
+
   it.each([true, false])('activates another slot on a hot launch (autoSend=%s)', async (autoSend) => {
     const store = await renderAt('/chat?sid=chat-old')
     await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
@@ -695,6 +748,102 @@ describe('App SDK chat launch intent', () => {
     expect(sendChat).not.toHaveBeenCalled()
     expect(createChatSlot).not.toHaveBeenCalled()
     expect((window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch).toBeUndefined()
+  })
+
+  describe('into a session the list does not show yet', () => {
+    const FRESH = 'chat-fresh'
+    const listed = [
+      { key: 'chat-other', messages: 2, running: false, mode: '', pending_approval: false, waiting_for_input: false },
+      { key: 'chat-old', messages: 3, running: false, mode: '', pending_approval: false, waiting_for_input: false },
+    ]
+    const withFresh = [...listed, { key: FRESH, messages: 0, running: false, mode: '', pending_approval: false, waiting_for_input: false }]
+
+    it('waits for the create broadcast instead of losing the target to its first 404', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      chatSlotDetail.mockClear()
+      // The fresh slot's detail is not served until the gateway has listed it.
+      chatSlotDetail.mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
+      launch({ message: PROMPT, slotKey: FRESH, autoSend: false })
+      await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+      expect(chatSlotDetail).not.toHaveBeenCalled()
+      expect(store.getState().chat.activeSlot).toBe('chat-old')
+      expect(new URLSearchParams(locationInTest.search).get('sid')).toBe(FRESH)
+      chatSlotDetail.mockReset()
+      chatSlotDetail.mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 })
+      await act(async () => { store.dispatch(sseSlots(withFresh as never)) })
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe(FRESH))
+      expect(chatSlotDetail.mock.calls.map(call => call[0])).toEqual([FRESH])
+      await waitFor(() => expect(composer().value).toBe(PROMPT))
+      expect(new URLSearchParams(locationInTest.search).get('sid')).toBe(FRESH)
+      expect(screen.queryByTestId('sid-error')).toBeNull()
+      expect(sendChat).not.toHaveBeenCalled()
+    })
+
+    it('switches anyway once the wait runs out, and reports a target that never appears', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      chatSlotDetail.mockClear()
+      chatSlotDetail.mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      try {
+        launch({ message: PROMPT, slotKey: FRESH, autoSend: false })
+        await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+        expect(chatSlotDetail).not.toHaveBeenCalled()
+        await act(async () => { vi.advanceTimersByTime(5_000) })
+      } finally {
+        vi.useRealTimers()
+      }
+      await waitFor(() => expect(screen.getByTestId('sid-error').textContent).toContain('Could not open the target session.'))
+      // The target is tried once; the unwind then reloads the outgoing chat.
+      expect(chatSlotDetail.mock.calls.map(call => call[0])).toEqual([FRESH, 'chat-old'])
+      expect(store.getState().chat.activeSlot).toBe('chat-old')
+      expect(sendChat).not.toHaveBeenCalled()
+    })
+
+    it('gives way to a session the user picks while it waits', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      launch({ message: PROMPT, slotKey: FRESH })
+      await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+      await act(async () => { await store.dispatch(switchSlot('chat-other')) })
+      await waitFor(() => expect(new URLSearchParams(locationInTest.search).get('sid')).toBe('chat-other'))
+      chatSlotDetail.mockClear()
+      await act(async () => { store.dispatch(sseSlots(withFresh as never)) })
+      expect(store.getState().chat.activeSlot).toBe('chat-other')
+      expect(chatSlotDetail).not.toHaveBeenCalled()
+      expect(sendChat).not.toHaveBeenCalled()
+      expect((window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch).toBeUndefined()
+      // The app's message is not dropped silently: the user gets it back to copy.
+      await waitFor(() => expect(screen.getByTestId('action-error').textContent).toContain('Send cancelled because you switched sessions.'))
+      expect(screen.getByTestId('action-error').textContent).toContain(PROMPT)
+    })
+
+    it('resumes a wait that a disconnect outlasts, and leaves URL sync working', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      chatSlotDetail.mockClear()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      try {
+        launch({ message: PROMPT, slotKey: FRESH, autoSend: false })
+        await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+        await act(async () => { store.dispatch(sseDisconnected()) })
+        // Past the 10s a staged launch stays claimable, before the socket is back.
+        await act(async () => { vi.advanceTimersByTime(11_000) })
+        expect(chatSlotDetail).not.toHaveBeenCalled()
+        // The socket comes back with a slots frame that lists the target.
+        await act(async () => {
+          store.dispatch(sseConnected())
+          store.dispatch(sseSlots(withFresh as never))
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe(FRESH))
+      await waitFor(() => expect(composer().value).toBe(PROMPT))
+      await act(async () => { await store.dispatch(switchSlot('chat-other')) })
+      await waitFor(() => expect(new URLSearchParams(locationInTest.search).get('sid')).toBe('chat-other'))
+    })
   })
 
   it('does not send an intent whose target was not activated', async () => {

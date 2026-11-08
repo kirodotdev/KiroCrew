@@ -426,7 +426,7 @@ def _dispatch(
     #     the operator's target policy, so a hand-edited file cannot be observed in
     #     two different states within a single dispatch.
     state = enable_state.load_state()
-    if not enable_state.is_enabled(state):
+    if not enable_state.is_enabled(state, audit_tool="computer_use_dispatch"):
         return _static_refusal(
             REFUSAL_DISABLED, session_key=session_key, agent=agent, tool_name=tool_name
         )

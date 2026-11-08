@@ -9,7 +9,7 @@ import math
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
@@ -45,6 +45,17 @@ if TYPE_CHECKING:
         slot_owner_snapshot,
         subagent_event_slot,
     )
+
+
+def _failover_fields(info: object) -> dict[str, object]:
+    """``failover_from`` and ``backend`` for a run ``agent.acp_failover`` moved, else ``{}``."""
+    from kiro_crew.acp_backends import backend_to_stored
+
+    moved_from = getattr(info, "failover_from", None)
+    ran_on = getattr(info, "backend", None)
+    if not isinstance(moved_from, str) or not isinstance(ran_on, str):
+        return {}
+    return {"failover_from": moved_from, "backend": backend_to_stored(ran_on)}
 
 
 def _redact(text: str) -> str:
@@ -154,7 +165,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
                 agent_dir = _agent_dir(agent_id)
                 result_path = agent_dir / "result.txt"
                 result = ""
-                if result_path.exists() and not is_sensitive_path(str(result_path)):
+                if await asyncio.to_thread(result_path.exists) and not is_sensitive_path(
+                    str(result_path)
+                ):
                     try:
                         result = await asyncio.to_thread(
                             result_path.read_text, encoding="utf-8", errors="replace"
@@ -194,8 +207,15 @@ async def api_spawn_status(request: web.Request) -> web.Response:
             logger.debug("Persistence fallback failed for %s", agent_id, exc_info=True)
         return web.json_response({"error": "not found"}, status=404)
     data = {"id": info.id, "task": _redact(info.task), "done": info.done}  # type: dict[str, object]
+    # Read in the same step as ``done``, before this handler awaits anything.
+    seen_under = _parent_turn_holding(request, state, info) if info.done else None
     data["started"] = info.started
+    # Present only when ``agent.acp_failover`` moved the run, so the default
+    # payload is unchanged: the backend asked for, and the one that ran.
+    data.update(_failover_fields(info))
     if info.done:
+        data["outcome"] = info.outcome
+        data["stopped"] = info.user_stopped
         data["elapsed"] = info.elapsed
         data["credits"] = info.credits
         # ``spawn_sub_agents`` flags a completed run that made no tool call,
@@ -205,6 +225,11 @@ async def api_spawn_status(request: web.Request) -> web.Response:
             no_calls = getattr(info, "made_no_tool_calls", None)
             if isinstance(no_calls, bool):
                 data["made_no_tool_calls"] = no_calls
+            # A completed run whose last tool call was written as text and
+            # never ran (``SubagentInfo.leaked_tool_call``).
+            leaked = getattr(info, "leaked_tool_call", None)
+            if isinstance(leaked, bool):
+                data["leaked_tool_call"] = leaked
         # Read full result from disk (info.result is truncated to 3000 chars)
         result = info.result
         if info.result_path and not is_sensitive_path(info.result_path):
@@ -238,7 +263,56 @@ async def api_spawn_status(request: web.Request) -> web.Response:
         # separate `spawn list` or a log grep.
         if _awaiting_spawn_approval(info):
             data["awaiting_approval"] = True
+    if (
+        seen_under is not None
+        and seen_under == getattr(info, "_spawned_under", None)
+        and getattr(info, "_seen_done_under", None) is None
+    ):
+        # Stamped only under the attempt that spawned the run, and only when that
+        # attempt answered from the read to here: a read under any other attempt,
+        # or one that ended while this read awaited, sends its reply to no turn
+        # that will carry it, so it holds nothing and the completion is delivered.
+        if _parent_turn_holding(request, state, info) == seen_under:
+            info._seen_done_under = seen_under
     return web.json_response(data)
+
+
+def _parent_turn_holding(request: web.Request, state: DashboardState, info: Any) -> Any:
+    """The attempt holding the parent's turn permit, when the parent's own tool asks.
+
+    ``None`` unless an internal caller presents the run's own parent session
+    (``X-Session-Key``) and a turn holds that session's permit now. A
+    ``spawn_sub_agents`` call reads its children through this route under the
+    turn whose reply will carry them, so a done read under the attempt that
+    spawned the child (``SubagentInfo._spawned_under``) names it
+    (``SubagentInfo._seen_done_under``), the one a mark is held under.
+    """
+    return _session_turn_holding(request, state, getattr(info, "parent_session_key", None))
+
+
+def _session_turn_holding(
+    request: web.Request, state: DashboardState, parent_session: str | None
+) -> Any:
+    """The attempt holding ``parent_session``'s turn permit, when that session asks.
+
+    ``None`` unless an internal caller presents ``parent_session`` itself
+    (``X-Session-Key``), a turn holds its permit now, and that turn's prompt is in
+    flight (``SessionManager.turn_prompt_in_flight``): a holder that has claimed
+    but not yet sent its prompt issued no tool call, so a call that reaches here
+    then belongs to a turn that ended. ``POST /api/spawn`` records it on the child
+    it creates (``SubagentInfo._spawned_under``) and ``GET /api/spawn/{id}``
+    compares a done read against it.
+    """
+    if request.get("internal_auth") is not True:
+        return None
+    caller = request.headers.get("X-Session-Key", "")
+    if not caller or caller != parent_session:
+        return None
+    in_flight = getattr(state.sessions, "turn_prompt_in_flight", None)
+    token_of = getattr(state.sessions, "turn_token", None)
+    if not callable(in_flight) or not callable(token_of) or in_flight(caller) is not True:
+        return None
+    return token_of(caller)
 
 
 def _awaiting_spawn_approval(info: object) -> bool:
@@ -321,6 +395,9 @@ async def api_spawn_list(request: web.Request) -> web.Response:
             "agent": info.agent or info.crew,
             "started": info.started,
         }
+        # Present only when ``agent.acp_failover`` moved the run, so the default
+        # payload is unchanged: the backend asked for, and the one that ran.
+        entry.update(_failover_fields(info))
         if info.done:
             entry["result"] = _redact(info.result)
             entry["error"] = _redact(info.error) if info.error else ""

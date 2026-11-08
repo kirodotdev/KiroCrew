@@ -33,6 +33,7 @@ import type { SortKey, SortState, LibraryDrag, FolderActions } from '../componen
 import { useColumnCount } from '../hooks/useColumnCount'
 
 import { i18nT } from '../i18n/t'
+import { LiveSitesNotice } from '../components/library/LiveSiteLink'
 import { uiLocation } from '../uiLocations/uiLocation'
 import { useGuideSelection } from '../guide/guidePredicates'
 
@@ -256,6 +257,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [newFolderColor, setNewFolderColor] = useState('')
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
+  const [folderRenameAnnouncement, setFolderRenameAnnouncement] = useState('')
 
   // The emoji icon is derived by a background LLM task server-side after
   // create/rename — refetch shortly after so it pops in without a reload.
@@ -319,7 +321,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     onRenameSubmit: (f, name) => {
       setRenamingFolderId(null)
       if (name && name !== f.name) {
-        updateFolderMut.mutate({ id: f.id, body: { name } })
+        setFolderRenameAnnouncement('')
+        updateFolderMut.mutate({ id: f.id, body: { name }, onCommitted: () => setFolderRenameAnnouncement(i18nT('pages.artifactsPage.folder_renamed_to', { name })) })
         scheduleIconRefetch()
       }
     },
@@ -890,6 +893,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             <Btn onClick={() => q.refetch()} className="shrink-0">{i18nT('pages.artifactsPage.retry')}</Btn>
           </div>
         ))}
+        {/* The public-web links on the entries come from one site listing. */}
+        <LiveSitesNotice askAgent={handoffSafe} />
 
         {savedNotice && (
           <div className="mb-4 bg-ok-subtle border border-ok/20 rounded-lg p-3 flex items-center gap-3 animate-rise" role="status">
@@ -909,12 +914,13 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
                 {i18nT('pages.artifactsPage.promote_slug_taken_body', { slug: collisionNotice.slug, taken: collisionNotice.collidedWith })}
               </div>
               {/* Both slugs are addresses the cards never render, so each needs
-                * its own way in. Slugs run long, so stack before overflowing. */}
+                * its own way in. Slugs run long, so stack before overflowing.
+                * The opaque fill keeps each button's edge visible on the warn tint. */}
               <div className="flex flex-col sm:flex-row sm:items-center gap-2 mt-2 min-w-0">
-                <Btn className="min-w-0 break-all text-left" onClick={() => handleOpen(collisionNotice.slug)}>
+                <Btn className="min-w-0 break-all text-left border-border-strong bg-bg-elevated" onClick={() => handleOpen(collisionNotice.slug)}>
                   {i18nT('pages.artifactsPage.promote_slug_taken_open', { slug: collisionNotice.slug })}
                 </Btn>
-                <Btn className="min-w-0 break-all text-left" onClick={() => handleOpen(collisionNotice.collidedWith)}>
+                <Btn className="min-w-0 break-all text-left border-border-strong bg-bg-elevated" onClick={() => handleOpen(collisionNotice.collidedWith)}>
                   {i18nT('pages.artifactsPage.promote_slug_taken_open_older', { taken: collisionNotice.collidedWith })}
                 </Btn>
               </div>
@@ -1127,6 +1133,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             {view === 'grid' && !filtersActive && scopeFolderId && (
               <FolderBreadcrumbBar folders={folders} currentFolderId={scopeFolderId} onNavigate={openFolder} />
             )}
+            {/* Folder rename announcement — always mounted so the live region is present for any view. */}
+            <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="folder-rename-status">{folderRenameAnnouncement}</span>
             {view === 'grid' && (subfolders.length > 0 || (creatingFolder && !filtersActive)) && (
               <FolderCardGrid>
                 {creatingFolder && !filtersActive && (

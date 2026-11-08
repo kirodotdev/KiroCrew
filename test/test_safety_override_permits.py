@@ -2,13 +2,14 @@
 
 ``safety_override_permits`` asks the enterprise ceiling through imports deferred to the
 call, so the module itself never depends on governance at import time. These tests pin
-the answers it gives when those imports fail: a duration member and a deniable approval
-mode are permitted (with no governance layer there is no ceiling to deny them), and the
-non-deniable set falls back to the interactive floor alone, the direction that makes the
-mode check consult policy for more modes, never fewer.
+the answers it gives when those imports fail: a duration member is permitted, a deniable
+approval mode is refused (matching the ``fail_closed=True`` evaluation) while a
+non-deniable one is still permitted, and the non-deniable set falls back to the
+interactive floor alone, the direction that makes the mode check consult policy for
+more modes, never fewer.
 
 Each case also proves the answer came from the fallback, not from a governance layer
-that happened to permit: the fallback's own debug record names the missing layer, and a
+that happened to answer: the fallback's own log record names the missing layer, and a
 governed answer writes none.
 """
 
@@ -48,15 +49,29 @@ def test_a_duration_member_is_permitted_without_the_governance_layer(
     ]
 
 
-def test_a_deniable_mode_is_permitted_without_the_governance_layer(
+def test_a_deniable_mode_is_refused_without_the_governance_layer(
     without_governance_profiles: None, caplog: pytest.LogCaptureFixture
 ) -> None:
     with caplog.at_level(logging.DEBUG, logger=LOGGER):
         assert "yolo" not in safety_override._non_deniable_approval_modes()
-        assert safety_override.approval_mode_permitted("yolo") is True
-    assert _fallback_records(caplog, "governance layer unavailable") == [
-        "governance layer unavailable; permitting mode yolo"
+        assert safety_override.approval_mode_permitted("yolo") is False
+    records = [
+        r
+        for r in caplog.records
+        if r.name == LOGGER and "governance layer unavailable" in r.getMessage()
     ]
+    assert [(r.levelno, r.getMessage()) for r in records] == [
+        (logging.WARNING, "governance layer unavailable; refusing mode yolo")
+    ]
+
+
+def test_a_non_deniable_mode_is_permitted_without_the_governance_layer(
+    without_governance_profiles: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger=LOGGER):
+        for mode in safety_override._non_deniable_approval_modes():
+            assert safety_override.approval_mode_permitted(mode) is True
+    assert _fallback_records(caplog, "governance layer unavailable") == []
 
 
 def test_the_non_deniable_modes_fall_back_to_the_interactive_floor_without_the_catalog(

@@ -45,7 +45,10 @@ class TestEmptyResponseRetryLadder:
             patch.object(_ChatSlot, "queue_insert", spy),
             patch("kiro_crew.dashboard.chat_runner.save_slot_off_loop") as mock_save,
             patch("kiro_crew.dashboard.chat_runner._maybe_consolidate") as mock_consolidate,
-            patch("kiro_crew.dashboard.chat_runner._flush_file_changes") as mock_flush,
+            patch(
+                "kiro_crew.dashboard.chat_runner._flush_file_changes_off_loop",
+                new=AsyncMock(return_value=None),
+            ) as mock_flush,
             patch(
                 "kiro_crew.dashboard.chat_runner._start_next_queued_turn",
                 new=AsyncMock(return_value=False),
@@ -97,14 +100,15 @@ class TestEmptyResponseRetryLadder:
             }
         mock_consolidate.assert_not_called()
         state.sessions.record_success.assert_not_called()
-        # _flush_file_changes is intentionally NOT skipped: the try-body call (inside
-        # the `if not _retrying_empty` guard) is skipped, but the finally block calls
-        # it once unconditionally ("ensure file changes always surface, even on
-        # cancel/error"). Scope the assertion to this slot because finalization of a
-        # task created by another test can run while this module-level function is
-        # patched and must not change the behavior observed for this turn.
+        # The file-change flush is intentionally NOT skipped: the try-body await
+        # (inside the `if not _retrying_empty` guard) is skipped, but the finally
+        # block awaits it once unconditionally ("ensure file changes always
+        # surface, even on cancel/error"). Scope the assertion to this slot because
+        # finalization of a task created by another test can run while this
+        # module-level function is patched and must not change the behavior
+        # observed for this turn.
         own_flushes = [
-            mock_call for mock_call in mock_flush.call_args_list if mock_call.args[:1] == (slot,)
+            mock_call for mock_call in mock_flush.await_args_list if mock_call.args[:1] == (slot,)
         ]
         assert len(own_flushes) == 1
 
@@ -255,18 +259,11 @@ class TestEmptyResponseRetryLadder:
 
     @pytest.mark.asyncio
     async def test_productive_episode_giveup_keeps_no_rerun_wording(self, tmp_path: Path) -> None:
-        """A give-up whose EPISODE was productive must keep the productive
-        wording, even though the final continuation turn itself produced
-        nothing.
+        """A give-up in a productive EPISODE keeps the productive wording.
 
-        The activity snapshot is rebuilt per turn, so the continuation that
-        streams nothing arrives at give-up with `productive=False`. The counter
-        cannot rescue it either: the productive jump (`= 2`) and the plain
-        non-productive ladder (`+= 1` twice) both land on 2. Without
-        episode-scoped state the card takes the counter>0 wording, whose "Just
-        send your message again to continue." is the same redo invitation the
-        continue rung removes one rung up — and the first turn of THIS episode
-        already ran a tool whose side effects landed.
+        The per-turn snapshot reads `productive=False`, and the counter is 2 on both
+        ladders, so only episode state stops a "send your message again" invitation
+        after a tool already ran.
         """
         from kiro_crew.acp.types import STOP_REASON_END_TURN
         from kiro_crew.providers.base import (
@@ -326,15 +323,10 @@ class TestEmptyResponseRetryLadder:
 
     @pytest.mark.asyncio
     async def test_discarded_episode_cannot_speak_for_a_later_turn(self, tmp_path: Path) -> None:
-        """An episode whose continuation was thrown away must not lend its
-        productive wording to the user's next, unrelated turn.
+        """A discarded continuation's episode does not lend its wording to the next turn.
 
-        Several controls discard a queued entry -- the hard-kill Stop, a plan
-        Cancel, a rewind commit -- and none of them resets the recovery counter,
-        so the spent counter routes the next empty turn straight to give-up. The
-        flag is therefore read only on the ladder's OWN continuation: a discarded
-        continuation takes that turn with it, so no per-site bookkeeping is
-        needed and a control added later cannot reopen this.
+        Stop, plan Cancel and rewind discard the entry without resetting the counter, so
+        the flag is read only on the ladder's OWN continuation.
         """
         state, slot, client, _run_chat = self._make_state_and_slot(tmp_path)
         # What a productive CONTINUE rung leaves behind when its continuation
@@ -359,14 +351,9 @@ class TestEmptyResponseRetryLadder:
 
     @pytest.mark.asyncio
     async def test_user_typed_continuation_text_ends_the_episode(self, tmp_path: Path) -> None:
-        """The continuation bodies are fixed runner-authored strings, so a user
-        can type or paste one. Such a turn is still user speech: it ends the
-        episode rather than continuing it.
+        """A user who types a continuation body ends the episode rather than continuing it.
 
-        User speech carries no structural payload marker, which is what separates
-        it from the runner's own recovery dispatches. Keying the episode on the
-        bodies instead would hand a user-authored turn the productive wording for
-        work it never ran.
+        User speech has no payload marker; that marker, not the body text, keys the episode.
         """
         from kiro_crew.dashboard.chat_utils import _ACTIVITY_NO_REPLY_CONTINUE_MSG
 
@@ -392,16 +379,10 @@ class TestEmptyResponseRetryLadder:
     async def test_a_runner_queued_continuation_keeps_the_productive_wording(
         self, tmp_path: Path
     ) -> None:
-        """A runner-authored continuation from ANY family, running inside an
-        active productive episode, keeps the no-rerun wording.
+        """Any runner-authored continuation inside a productive episode keeps the wording.
 
-        The runner can put another recovery ahead of the ladder's own: a Stop
-        hook answering `decision: block` prepends at index 0 in the same teardown
-        that just queued the ladder's continuation there, so it dispatches first.
-        It is the same episode -- the tools of its productive first turn have
-        already landed -- so if it also returns nothing, its give-up must not
-        invite a resend. Keying the episode on the two continuation bodies would
-        fail exactly here, which is why it is keyed on user origin instead.
+        A Stop hook's `decision: block` dispatches ahead of the ladder's continuation in
+        the same episode, which is why the episode is keyed on user origin, not bodies.
         """
         from kiro_crew.dashboard.chat_utils import _PROMISE_ONLY_CONTINUE_MSG
 
@@ -434,16 +415,10 @@ class TestEmptyResponseRetryLadder:
     async def test_discarded_episode_cannot_ride_a_later_turns_own_continuation(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """With a continue budget above one, a later turn earns a continuation of
-        its own -- and that turn must not inherit a discarded episode's wording.
+        """A later turn's own continuation does not inherit a discarded episode's wording.
 
-        This is the case a guard at the give-up rung cannot catch. A productive
-        turn leaves the counter at 2 and the flag set; its continuation is
-        discarded, so nothing lands and neither resets. With a budget of 2 the
-        next unrelated empty turn still passes rung 2 (`2 < 1 + 2`) and queues its
-        OWN continuation, which genuinely IS one of the ladder's bodies carrying
-        the payload marker. The evidence therefore has to be dropped when the
-        episode ends, not merely disbelieved when it is read.
+        With a budget of 2 the next empty turn passes rung 2 (`2 < 1 + 2`) and queues a
+        real ladder continuation, so the evidence must be dropped when the episode ends.
         """
         from kiro_crew.dashboard import chat_runner as cr
 
@@ -475,17 +450,10 @@ class TestEmptyResponseRetryLadder:
     async def test_productive_episode_survives_a_second_continuation(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """A productive episode keeps its wording across EVERY continuation it is
-        budgeted for, not just the first.
+        """A productive episode keeps its wording across EVERY budgeted continuation.
 
-        With a budget of 2 the episode runs two continuations, and both carry
-        `_ACTIVITY_NO_REPLY_CONTINUE_MSG` under the "from what already ran"
-        notice. The second follows a continuation that streamed nothing, so the
-        per-turn activity snapshot alone reads it as a plain empty turn: a
-        "returned nothing" notice and `_EMPTY_AUTO_CONTINUE_MSG` there would tell
-        the model its episode produced no output and invite a redo of tools that
-        already ran. Both continuations are this ladder's own, so the episode's
-        evidence also reaches give-up, which must not invite a resend.
+        Both carry `_ACTIVITY_NO_REPLY_CONTINUE_MSG`; the second follows an empty one, and
+        `_EMPTY_AUTO_CONTINUE_MSG` there would invite a redo of tools that already ran.
         """
         from kiro_crew.acp.types import STOP_REASON_END_TURN
         from kiro_crew.dashboard import chat_runner as cr

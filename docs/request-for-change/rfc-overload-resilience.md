@@ -836,6 +836,9 @@ Question text is kept as asked; the decision below it is final for this PR.
   through `resource_status.probe`, so the figures below are measured through
   the probe the floor compares against; `platform_compat._macos_available_mib`
   is a tighter sum behind `host_available_mib`, which the floor does not read.
+  (Since #21574 the floor does read it on macOS; the recorder figures below
+  were taken through the looser sum, so on the same host the floor now sees
+  less memory than they show. The posture still reads the looser sum.)
   Through that probe a 16 GB Apple silicon host in ordinary desktop use read a
   median of 4.84 GB over one day of recorder samples (n = 3010; p25 4.48, p75
   5.26, min 2.55, max 8.28; 26 % of samples below 4.5 GB and 59 % below 5.0 GB)

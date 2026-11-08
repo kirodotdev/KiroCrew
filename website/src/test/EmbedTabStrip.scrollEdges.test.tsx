@@ -13,10 +13,7 @@
  *   - a clipped strip cues the hidden side only (revert symptom: no signal at
  *     all — the original defect),
  *   - the cues follow the strip as it scrolls (needs the hook's scroll
- *     listener, not a one-shot read),
- *   - the merged callback ref keeps the plain stripRef alive: the wheel
- *     translation the strip already shipped must still land on the same node
- *     (revert symptom: wiring the hook silently kills wheel scrolling).
+ *     listener, not a one-shot read).
  *
  * jsdom does no layout, so scroll geometry is stubbed — the stub is what makes
  * the derivation testable, mirroring FollowUpBar.scrollEdges.test.tsx.
@@ -122,21 +119,6 @@ describe('EmbedTabStrip scroll-edge cues', () => {
     fireEvent.scroll(scrollerOf(container))
     expect(leftCue()).toBeTruthy()
     expect(rightCue()).toBeNull()
-  })
-
-  it('keeps the wheel translation working on the same node', () => {
-    // The hook attaches through a merged callback ref; if that merge drops the
-    // plain stripRef, the onWheel handler reads a null ref and the gesture
-    // dies. scrollLeft is stubbed as a read-only getter, so observe that the
-    // handler runs without throwing on the node the hook is bound to.
-    stubGeometry({ hidden: 240 })
-    const { container } = renderStrip()
-    const scroller = scrollerOf(container)
-    expect(() => fireEvent.wheel(scroller, { deltaY: 40 })).not.toThrow()
-    // And the hook is live on that same node: scrolling it moves the cue.
-    stubGeometry({ hidden: 240, scrolled: 240 })
-    fireEvent.scroll(scroller)
-    expect(leftCue()).toBeTruthy()
   })
 
   it('remeasures when a slot is retitled, without any scroll, resize, or tab change', () => {

@@ -89,27 +89,14 @@ class TestMappingTable:
     def test_quiet_is_exactly_the_two_rules_that_produce_it(self) -> None:
         """Which answers are silent, as an if-and-only-if over the WHOLE answer space.
 
-        This replaces an earlier sweep that asserted one direction only -- no outcome
-        outside :data:`QUIET_OUTCOMES` may be silent -- and it is deliberately STRONGER
-        than what it replaces, in three ways. It sweeps both ``needs_owner`` answers and
-        both probabilities independently rather than the outcome's alone; it asserts
-        equality rather than non-membership, so an answer that SHOULD be silent and
-        wakes fails here too; and it carries no allowlist, exception or skip, so a
-        future rule that quietly widens what may be suppressed cannot slip through as
-        one more admitted case.
-
-        The predicate below is the mapping's quiet condition written out. Two rules
-        produce silence and nothing else may:
+        It asserts equality, so an answer that should be silent and wakes fails too, and
+        it carries no allowlist, so a rule that widens suppression cannot slip through.
+        Two rules produce silence and nothing else may:
 
         * a :data:`QUIET_OUTCOMES` outcome at or above :data:`OUTCOME_MIN_P`;
         * an :data:`ACTION_OUTCOMES` outcome under :data:`ACTION_OVERRIDE_MIN_P` whose
           ``needs_owner`` answered ``quiet``, cleared :data:`NEEDS_OWNER_MIN_P`, AND was
-          the more confident of the two -- the owner's own criterion outranking a
-          question that carries no criterion.
-
-        So ``finished`` and ``broken`` are silent at no confidence and under no
-        ``needs_owner`` answer, an unsure outcome always wakes, an unsure quiet never
-        suppresses an action outcome, and neither does a quiet the outcome outranks.
+          the more confident of the two.
         """
 
         def expect_quiet(owner: str, owner_p: float, value: str, outcome_p: float) -> bool:
@@ -154,13 +141,10 @@ class TestMappingTable:
         assert seen_quiet > 0
 
     def test_a_confident_owner_quiet_survives_a_barely_confident_action_outcome(self) -> None:
-        """The defect this bar exists for, at the numbers it was measured at.
+        """A confident owner ``quiet`` beats a ``needs_action`` barely over the floor.
 
-        Eleven wakes in one logged window came only from the ``ACTION_OUTCOMES``
-        clause, every one of them over a ``needs_owner`` that answered ``quiet``, and
-        eight of those had ``outcome`` under 0.52 -- barely over the shared floor of
-        0.40. A red pull request under repair answers ``needs_action`` every tick, so
-        the veto fired for the whole repair.
+        A red pull request under repair answers ``needs_action`` every tick, mostly
+        under 0.52, so without the bar the veto fired for the whole repair.
         """
         verdict = point.map_answers(
             answers(
@@ -188,12 +172,7 @@ class TestMappingTable:
         assert verdict.outcome is Outcome.WAKE
 
     def test_an_unsure_outcome_still_wakes_under_a_confident_owner_quiet(self) -> None:
-        """Rule 2 is untouched: below the shared floor the call goes to the session.
-
-        The new bar narrows one backstop. It must not reach underneath
-        :data:`OUTCOME_MIN_P`, where an unsure judge has always handed the tick to the
-        main session rather than guessing quiet.
-        """
+        """Below :data:`OUTCOME_MIN_P` the tick goes to the session, whatever the owner says."""
         verdict = point.map_answers(
             answers(
                 owner=point.NEEDS_OWNER_QUIET,
@@ -208,9 +187,8 @@ class TestMappingTable:
     def test_a_below_bar_owner_wake_is_not_a_quiet_answer(self) -> None:
         """Only ``needs_owner``'s VALUE being ``quiet`` may withhold the backstop.
 
-        A ``wake`` answer that missed :data:`NEEDS_OWNER_MIN_P` fires no rule of its
-        own, but nobody asserted the owner can be left alone either, so the
-        unconditional action backstop still applies to it.
+        A ``wake`` that missed :data:`NEEDS_OWNER_MIN_P` fires no rule, but it does not
+        say the owner can be left alone either.
         """
         verdict = point.map_answers(
             answers(
@@ -229,11 +207,8 @@ class TestMappingTable:
     def test_the_override_bar_covers_the_measured_range_at_literal_numbers(self) -> None:
         """The bar's VALUE, pinned at literal probabilities rather than through itself.
 
-        Every other assertion here spells the threshold as ``ACTION_OVERRIDE_MIN_P``, so
-        all of them stay green if the constant is lowered -- and a drop to 0.5 would let
-        back exactly the 0.50-0.59 band the logged verdicts were found in. These
-        numbers are literal so that a change to the constant has to be made here too,
-        in the open.
+        Every other test spells it ``ACTION_OVERRIDE_MIN_P`` and stays green if it drops;
+        0.5 would let back the 0.50-0.59 band the logged verdicts sat in.
         """
         assert point.ACTION_OVERRIDE_MIN_P == 0.6
         confident_quiet = {"owner": point.NEEDS_OWNER_QUIET, "owner_p": 0.94}
@@ -255,11 +230,8 @@ class TestMappingTable:
     def test_the_quiet_answer_must_be_the_more_confident_of_the_two(self) -> None:
         """The veto is a RANKING, not just two independent floors.
 
-        :data:`NEEDS_OWNER_MIN_P` cannot carry this rule on its own: with two options
-        the chosen answer is the argmax, so it clears 0.5 by construction. Without the
-        comparison a ``quiet`` at 0.51 would silence a ``needs_action`` at 0.59 -- the
-        exact inversion this exception exists to prevent, since its justification is
-        that a barely-confident answer must not beat a confident one.
+        With two options the chosen answer clears 0.5 by construction, so without the
+        comparison a ``quiet`` at 0.51 would silence a ``needs_action`` at 0.59.
         """
         loses = point.map_answers(
             answers(
@@ -282,12 +254,7 @@ class TestMappingTable:
         assert "0.62" in wins.body and "0.55" in wins.body
 
     def test_an_equal_confidence_tie_wakes(self) -> None:
-        """Strictly more confident, so a tie does not buy silence.
-
-        The comparison is the owner's answer OUTRANKING what it overrides; equal
-        readings rank neither, and the direction this whole point fails in is toward
-        spending the turn.
-        """
+        """Strictly more confident, so a tie does not buy silence; ties fail toward a turn."""
         verdict = point.map_answers(
             answers(
                 owner=point.NEEDS_OWNER_QUIET,
@@ -301,11 +268,8 @@ class TestMappingTable:
     def test_an_unsure_owner_quiet_cannot_suppress_an_action_outcome(self) -> None:
         """The quiet answer must clear its OWN bar before it withholds a wake.
 
-        ``NEEDS_OWNER_MIN_P`` is enforced literally rather than assumed from a
-        two-option argmax, precisely because a provider may return a non-argmax choice.
-        Such a ``quiet`` answer asserts nothing anyone was sure of, so it must not buy
-        silence about a ``needs_human`` tick -- the owner would otherwise hear nothing
-        until the quiet-streak floor.
+        A provider may return a non-argmax choice, so ``NEEDS_OWNER_MIN_P`` is enforced
+        literally rather than assumed from a two-option argmax.
         """
         verdict = point.map_answers(
             answers(
@@ -318,22 +282,14 @@ class TestMappingTable:
         assert verdict.outcome is Outcome.WAKE
 
     def test_terminal_bar_is_above_the_confidence_floor(self) -> None:
-        """Ordering still matters, for the wording rather than for the outcome.
-
-        Below :data:`OUTCOME_MIN_P` every answer takes the unsure branch, so a
-        terminal bar underneath that floor would make the confident wording
-        unreachable for part of its own range.
-        """
+        """A terminal bar under :data:`OUTCOME_MIN_P` makes the confident wording unreachable."""
         assert point.TERMINAL_MIN_P > point.OUTCOME_MIN_P
 
     def test_the_judge_can_never_end_a_loop(self) -> None:
         """No answer, at any confidence, may produce TERMINAL.
 
-        The judge reads prose. If prose could end a watch, one hostile or mistaken
-        comment in a watched transcript would buy permanent silence, so ending a loop
-        stays with the typed probe layer. Swept across the whole answer space rather
-        than asserted on the two obvious outcomes, because the guarantee is about
-        every reachable answer and not about the cases someone remembered.
+        If prose could end a watch, one hostile comment would buy permanent silence, so
+        ending a loop stays with the typed probe layer.
         """
         for outcome in point.OUTCOME_OPTIONS:
             for owner in point.NEEDS_OWNER_OPTIONS:
@@ -381,11 +337,8 @@ class TestQuestions:
     def test_the_untrusted_content_caution_rides_on_every_request(self) -> None:
         """It cannot live in the default brief's ``quiet_when``, so it lives here.
 
-        A loop carrying only the owner's ``wake_when`` has a criterion, so the shipped
-        default is never merged into it -- and the evidence it sends the judge still
-        includes comment and review bodies a third party wrote. The caution is ours and
-        unconditional, and it is stated for BOTH directions: prose can argue a watch
-        into a wake nobody needs as easily as into a silence.
+        A loop with only ``wake_when`` never gets the default merged in, yet its evidence
+        still holds third-party prose, which can argue for a wake as easily as a silence.
         """
         for wake, quiet in (
             ("", ""),
@@ -416,17 +369,8 @@ class TestStateBounds:
     def test_one_stuck_notice_does_not_pin_every_loop_forever(self) -> None:
         """A notice nobody ever takes must not make the whole gateway fire forever.
 
-        The forgotten state is spent when the pending notices drain, on the reasoning
-        that the unknown ones belong to the same rotation as the known ones. A loop
-        removed while it still owns a notice breaks that: nothing ever takes its notice,
-        the store never empties, and every OTHER loop's take keeps reporting a loss --
-        so every gated pull-request watch fires every interval, permanently. Removal
-        forgets a loop's own notice, but a loop that merely stops publishing -- paused,
-        or retargeted away from a pull request -- keeps its notice and nothing ever
-        takes it, so the stuck notice is reachable rather than theoretical.
-
-        A rotation's worth of takes is the bound: past it, the unknown notices cannot
-        still belong to the rotation the reasoning appeals to.
+        A paused or retargeted loop keeps its notice and nothing takes it, so the store
+        never drains. A rotation's worth of takes bounds the forgotten state instead.
         """
         judge._PR_BODIES.clear()
         judge._PR_BODIES_DROPPED.clear()
@@ -459,10 +403,8 @@ class TestStateBounds:
     def test_a_publish_with_no_bodies_also_spends_the_loss_notice(self) -> None:
         """Being heard from at all spends the notice, prose or no prose.
 
-        A loop whose stash was evicted keeps its marker until it publishes again. If the
-        empty-bodies path skipped the clearing, every later tick whose remarks carry no
-        prose would claim a loss that did not happen -- a fabricated "not whole" reading,
-        which the default brief turns into a delivered turn on evidence of nothing.
+        Otherwise every later tick with no prose would claim a loss that did not happen,
+        and the default brief turns that into a delivered turn.
         """
         judge._PR_BODIES.clear()
         judge._PR_BODIES_DROPPED.clear()
@@ -486,10 +428,8 @@ class TestStateBounds:
     def test_a_dropped_stash_withholds_the_payload_from_the_judge(self) -> None:
         """The caller's wholeness guard already ran, against the reading as FETCHED.
 
-        A payload that only becomes short at the merge would sail past that gate, and a
-        QUIET drawn from it suppresses a wake that was owed. The decision lives in this
-        module rather than at the call site because the call site is a closure inside
-        the gateway's wiring that no test can reach.
+        A payload that turns short at the merge would pass that gate. The decision lives
+        here because the call site is a gateway closure no test can reach.
         """
         observation = {"observation_status": "ok", "remarks": [{"id": "review:R1"}]}
 
@@ -506,11 +446,8 @@ class TestStateBounds:
     def test_a_notice_the_store_could_not_keep_still_reports_a_loss(self) -> None:
         """The notice store is bounded too, and its overflow discards a loss record.
 
-        A forgotten record would let its loop read missing prose as a whole reading,
-        which is the one thing the record exists to prevent. The owner is unknown once
-        the record is gone, so every take reports a loss until the pending notices
-        drain: the identity is lost, the fact is not, and firing is the only direction
-        that cannot withhold a wake from whoever it was.
+        With the owner unknown, every take reports a loss until the pending notices drain:
+        firing is the only direction that cannot withhold a wake from whoever it was.
         """
         judge._PR_BODIES.clear()
         judge._PR_BODIES_DROPPED.clear()
@@ -550,14 +487,8 @@ class TestStateBounds:
     def test_the_body_stash_evicts_by_publish_recency_not_by_first_sight(self) -> None:
         """A dict keeps a key's original position, so assigning would pick one victim forever.
 
-        The loop this process saw first would sit at the front of the queue for the
-        life of the gateway and lose its stash to every eviction, however recently it
-        published -- while the genuinely abandoned stashes the cap exists to reclaim
-        sat behind it untouched.
-
-        The republish has to happen while the key is STILL PRESENT. Re-adding a key
-        that was already evicted lands it at the back either way, so a sequence that
-        evicts first cannot tell the two behaviours apart.
+        The republish has to happen while the key is STILL PRESENT: re-adding an evicted
+        key lands it at the back either way, so that sequence cannot tell the two apart.
         """
         judge._PR_BODIES.clear()
         judge._PR_BODIES_DROPPED.clear()
@@ -586,10 +517,8 @@ class TestStateBounds:
     def test_a_dropped_stash_is_counted_and_makes_the_next_tick_read_unwhole(self) -> None:
         """Prose the judge never saw must not reach it as a remark with nothing in it.
 
-        A silent eviction is indistinguishable from a review that carried no body, so
-        the loop that lost its stash would be screened quiet on evidence it never got.
-        The loss is expressed as a reading that is not whole, which already forces a
-        fire, and it is counted so the overflow is a number rather than an inference.
+        A silent eviction looks like a review with no body. The loss is a reading that is
+        not whole, which forces a fire, and it is counted.
         """
         judge._PR_BODIES.clear()
         judge._PR_BODIES_DROPPED.clear()
@@ -661,12 +590,8 @@ class TestStateBounds:
     def test_forgetting_a_loop_drops_its_stash_and_notice_and_nothing_else(self) -> None:
         """The remover knows the owner, so it clears exactly that owner's two entries.
 
-        A removed loop never takes again, so its stash would sit in the queue until the
-        cap evicted it and its notice would count as pending until the store rotated
-        past it -- the dropped total overstating real losses along the way. Neither
-        the forgotten state nor its take counter may move: both exist for a notice
-        whose owner is unknown, and a forget that names the loop is the one case that
-        has no use for them.
+        The forgotten state and its take counter must not move: both exist for a notice
+        whose owner is unknown, and a forget names its owner.
         """
         total = self._two_loops_with_judge_state("loop-a", "loop-b")
 
@@ -949,13 +874,10 @@ class TestStateBounds:
         assert refusals.get("scrubbed_fresh") == 1, "and it counts as a fresh loss"
 
     def test_a_repeated_scrub_refusal_is_not_counted_as_fresh(self) -> None:
-        """The defect this closes: the same refused body must not fire for hours.
+        """The same refused body must not fire for hours.
 
-        A remark stays inside the horizon for the full remark window, and the scrub
-        refuses its body on every tick it is read. The pinned board and state rows keep
-        the delta non-empty, so the refusal branch is reached every tick. Counting a
-        repeated refusal as fresh made one commenter's long URL spend the caller's whole
-        budget re-reporting a loss the loop had already fired for.
+        The scrub refuses it on every tick the remark stays in the horizon, and pinned
+        rows keep the delta non-empty, so the refusal branch is reached every tick.
         """
         refusals: dict[str, int] = {}
         point.screen_evidence([_refused_row(first_seen=False)], refusals)
@@ -995,13 +917,10 @@ class TestStateBounds:
         )
 
     def test_a_pinned_summary_outlives_a_comment_body(self) -> None:
-        """The order the char budget gives items up in, and why it is not age.
+        """The char budget sheds prose before the pinned summaries, whatever their age.
 
-        A check tally is observed on the tick that sends it, so by age it is always the
-        newest item present; a comment body is as old as the comment. Shedding by age
-        alone would keep the tally and drop the reviewer's words. The two summaries are
-        also what the built-in criteria are asked against -- a failing check, a reading
-        that is not whole -- so they are pinned and the prose is what goes.
+        The built-in criteria are asked against the summaries (a failing check, a
+        reading that is not whole), so they are pinned.
         """
         items = [
             {
@@ -1125,11 +1044,8 @@ class TestStateBounds:
 class TestEmptyDelta:
     """An empty delta is QUIET only when every target was READ and had nothing new.
 
-    The three causes of an empty delta are not one fact. A target that could not be
-    read leaves the tick blind, and evidence the scrub shed leaves it unable to send
-    what it found; answering either as calm would suppress a turn nobody established
-    was unwanted. Each branch is told apart by its body, not only by its outcome, so
-    a test cannot pass by reaching the right verdict for the wrong reason.
+    An unread target or scrub-shed evidence is not calm. Each branch is told apart by
+    its body, so a test cannot reach the right verdict for the wrong reason.
     """
 
     def test_every_target_read_and_nothing_new_is_quiet(self) -> None:
@@ -1140,11 +1056,8 @@ class TestEmptyDelta:
     def test_targets_past_the_cap_count_as_dropped(self) -> None:
         """A bound that silently shrinks the reading must not make it look complete.
 
-        The cap limits how many authorizations and reads one tick performs, which is
-        its job. What it must not do is leave ``dropped`` at zero, because a confident
-        quiet about the targets that FIT would then suppress a turn the omitted one
-        might have needed -- the same fault as an unreadable target, arriving through a
-        bound instead of a failure.
+        With ``dropped`` at zero, a quiet about the targets that fit would suppress a turn
+        the omitted one might have needed.
         """
         over = [f"chat-{n}-{n}" for n in range(judge.MAX_TARGETS + 2)]
 
@@ -1156,6 +1069,28 @@ class TestEmptyDelta:
         )
         assert dropped >= 2, "both targets past the cap are counted"
 
+    def test_a_message_naming_more_sessions_than_the_cap_is_not_quiet(self) -> None:
+        """The cap's drop count must survive the real path: parse, collect, judge.
+
+        With no ``targets`` list the sessions come from the loop's message. If parsing
+        cuts that list at the cap, the collector never sees the overflow, reports zero
+        dropped, and a calm reading of the first sessions suppresses the turn the last
+        one asked for.
+        """
+        sessions = [f"chat-w{n}-1" for n in range(judge.MAX_TARGETS + 1)]
+        message = "Patrol these workers and wake me on BLOCKED: " + " ".join(sessions)
+        targets = judge.parse_targets({}, message)
+
+        async def read_session(target: str, since: int) -> tuple[list[dict], int, int | None]:
+            return [], since, since
+
+        _, dropped = asyncio.run(
+            judge.collect_evidence(targets, cursors={}, read_session=read_session, read_pr=None)
+        )
+        assert dropped == 1, f"targets={targets!r} dropped={dropped}: the last session was lost"
+        verdict = asyncio.run(point.judge_tick(message, evidence=[], dropped=dropped))
+        assert verdict.outcome is Outcome.FALLBACK
+
     def test_a_dropped_target_is_fallback_not_quiet(self) -> None:
         verdict = asyncio.run(point.judge_tick("watch", evidence=[], dropped=1))
         assert verdict.outcome is Outcome.FALLBACK
@@ -1164,10 +1099,8 @@ class TestEmptyDelta:
     def test_a_dropped_target_fires_even_when_another_target_yielded_rows(self) -> None:
         """One unread target is enough, whatever the readable ones produced.
 
-        The blind-tick check has to sit ABOVE the empty-delta branch: a tick with one
-        refused target and one talkative one has a NONEMPTY delta, so a branch reached
-        only on an empty one never sees the drop, and a confident quiet about the
-        target that WAS read would suppress the turn the unread one might have needed.
+        The blind-tick check has to sit ABOVE the empty-delta branch: a talkative target
+        makes the delta non-empty, so that branch never sees the drop.
         """
         rows = [
             {
@@ -1201,15 +1134,10 @@ class TestEmptyDelta:
         assert "could not send every evidence item" in verdict.body
 
     def test_a_repeated_scrub_refusal_does_not_fire_the_tick(self) -> None:
-        """The defect this closes, pinned at the verdict rather than at the counter.
+        """A repeated refusal does not fire, pinned at the verdict rather than the counter.
 
-        The refused body is prose the judge was already asked about on an earlier tick.
-        The pinned state row keeps the delta non-empty every tick, so gating this branch
-        on the TOTAL refusal count fires every cadence interval for as long as the remark
-        stays in the horizon -- one commenter's long URL draining the caller's whole
-        budget re-reporting a loss it already fired for.
-
-        Dropping the freshness gate makes this test fail, which is the point of it.
+        The pinned state row keeps the delta non-empty, so gating on the TOTAL refusal
+        count would fire every interval while the remark stays in the horizon.
         """
         rows = [
             _refused_row(first_seen=False),

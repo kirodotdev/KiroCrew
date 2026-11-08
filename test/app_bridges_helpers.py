@@ -30,10 +30,8 @@ def _make_app_source(tmp_path, name="test-app", **extras):
         **extras,
     }
     (src / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest, indent=2))
-    # Create agent file
     (src / "agents").mkdir()
     (src / "agents" / "my-agent.json").write_text(json.dumps({"name": "my-agent", "model": "auto"}))
-    # Create skill directory
     (src / "skills" / "my-skill").mkdir(parents=True)
     (src / "skills" / "my-skill" / "SKILL.md").write_text("# My Skill\nDoes things.")
     return src
@@ -67,19 +65,15 @@ def app_env_fixture(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- no test in the test_app_bridges*.py modules calls monkeypatch.undo()
-def _stub_venv_probe(monkeypatch):
+def _stub_venv_probe(_floor_monkeypatch):
     """Replace the interpreter usability probe with its runnability check.
 
-    The real probe executes the candidate interpreter under the OS sandbox;
-    on hosts without a sandbox backend (Windows CI) it correctly reports "no
-    positive evidence" and the venv is never preferred - which would flip
-    every rewrite-plumbing expectation in this module per-platform. The
-    plumbing is what these tests pin; the probe has its own dedicated tests.
+    The real probe runs under the OS sandbox, so on hosts without one (Windows CI) the
+    venv is never preferred and these plumbing tests would flip per platform.
     """
     from kiro_crew.apps import interpreter as _interp
 
-    monkeypatch.setattr(
+    _floor_monkeypatch.setattr(
         _interp,
         "_venv_is_usable",
         lambda root: _interp._runnable(_interp.venv_python_path(root)),

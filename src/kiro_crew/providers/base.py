@@ -18,6 +18,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
+    EVENT_ELICITATION_REQUEST,
     EVENT_PERMISSION_REQUEST,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_SUBAGENT_LIST,
@@ -126,6 +127,14 @@ class LLMProvider(ABC):
     #: nothing is written and ``permission_floor.ApprovalWithdrawn`` is raised.
     #: Read from the provider's TYPE, so a loose mock cannot opt in by accident.
     approval_withdrawable: bool = False
+
+    @property
+    def turn_survives_disconnect(self) -> bool:
+        """Only a remote agent may keep its turn when the gateway detaches."""
+        return False
+
+    startup_notice: tuple[str, str] | None = None
+    """One-shot (wire token, channel fallback text), surfaced at the next chat claim."""
 
     @cached_property
     def essential_delivery(self) -> EssentialDelivery:
@@ -256,6 +265,17 @@ class LLMProvider(ABC):
     def is_claude_backend(self) -> bool:
         """True when this provider drives claude-agent-acp."""
         return False
+
+    @property
+    def session_activity_at(self) -> float | None:
+        """Monotonic time the backend last sent anything for this session.
+
+        The session's own clock moves only when a turn is dispatched, but a
+        backend and the children it spawned keep working between turns. The
+        idle sweep reads the later of the two. None when the transport does
+        not observe frames between turns.
+        """
+        return None
 
     @property
     def child_fidelity_aware(self) -> bool:
@@ -426,6 +446,21 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def mate_worker_prompt_in_context(self) -> bool:
+        """Whether a crewmate worker here reads its prompt only from the context block."""
+        return False
+
+    @property
+    def mate_worker_tool_limits_supported(self) -> bool:
+        """Whether a crewmate worker's single-tool limits are honoured here."""
+        return False
+
+    @property
+    def mate_worker_mcp_tool_limits_supported(self) -> bool:
+        """Whether the MCP half of a crewmate worker's single-tool limits is honoured here."""
+        return False
+
+    @property
     def loaded_capability_template(self) -> str:
         """Confirmed saved template; projection gaps are reported separately."""
         return ""
@@ -464,6 +499,16 @@ class LLMProvider(ABC):
         """
         return None
 
+    def set_delete_delay(self, seconds: float) -> None:
+        """Keep the session's record for ``seconds`` after it ends, then delete it.
+
+        Set by a workflow worker from ``session.kas_delete_delay_secs``. Only a
+        session on a host that can free a session and keep its record acts on it
+        (``AcpSessionHandle.destroy``). Default no-op for a provider whose
+        sessions end as they always did.
+        """
+        return None
+
     def disown_work_dir(self) -> None:
         """Declare that this provider does not own its work directory for reclaim.
 
@@ -485,6 +530,17 @@ class LLMProvider(ABC):
         never as a wildcard.
         """
         return ""
+
+    @property
+    def prompts_written(self) -> int | None:
+        """Prompts this provider's turns have written to the backend, or ``None``.
+
+        A caller whose turn timed out compares it against a reading taken before
+        the turn to learn whether the prompt went out. Default ``None``: this
+        provider keeps no count, so the caller cannot tell and must assume the
+        prompt never left.
+        """
+        return None
 
     @property
     def model_pin_refused(self) -> str:
@@ -587,6 +643,15 @@ class LLMProvider(ABC):
         """
         return None
 
+    @property
+    def reports_turn_usage(self) -> bool:
+        """True when a turn's billing always reaches :meth:`billing_stats`.
+
+        Only then does a turn that reports none prove it billed nothing. The safe
+        default is False: a provider that never meters shows zero for a billed turn too.
+        """
+        return False
+
     # ── Turn-control and capability surface (harness-parity H14) ──
     # The session, shutdown-drain, steer, and dashboard layers read these off a
     # provider. Declaring them here with a safe default means a provider that
@@ -595,6 +660,16 @@ class LLMProvider(ABC):
     # AttributeError-ing. Concrete providers override; the caller-side
     # ``getattr``/``hasattr`` guards remain where they additionally defend
     # against test doubles (AsyncMock) that are not LLMProvider instances.
+
+    @property
+    def switches_by_relaunch(self) -> bool:
+        """Whether a model or effort change relaunches this session's process.
+
+        True only where a switch either lands on the same chat or raises with the
+        prior values back in force, so a caller answers the raise as a refusal
+        rather than resetting onto the refused value. Default: ``False``.
+        """
+        return False
 
     def has_active_turn(self) -> bool:
         """True if a prompt is in flight and not yet cancelled. Default False."""
@@ -643,6 +718,22 @@ class LLMProvider(ABC):
         Narrower than :attr:`supports_steer`: a harness can take a user's mid-turn
         message and still discard one sent while a refused tool call is being
         answered. Default False, granted by opt-in like the steer itself.
+        """
+        return False
+
+    @property
+    def supports_steer_retract(self) -> bool:
+        """True when a steer the turn has not read yet can be taken back with
+        :meth:`clear_pending_steers`. Default False, granted by opt-in."""
+        return False
+
+    async def clear_pending_steers(self) -> bool | None:
+        """Ask the backend to drop every steer its turn has not read yet.
+
+        True when the backend answered the request, False when it refused it or
+        has none, None when no answer came in time. An answer is not evidence that
+        anything was dropped; the backend reports that separately, as
+        ``EVENT_STEER_DROPPED`` on the turn. Default False: nothing is sent.
         """
         return False
 
@@ -720,6 +811,14 @@ class LLMProvider(ABC):
         return None
 
     @property
+    def harness_pin(self) -> str:
+        """The Bot pin this provider's runtimes carry for KAS's route rule 2, ``""`` for none.
+
+        Read by a companion runtime built on this provider's behalf (H14).
+        """
+        return ""
+
+    @property
     def work_scratch_dir(self) -> "Path | None":
         """The ``$KIROCREW_SCRATCH`` directory the RUNTIME serving this session
         exposes, or ``None`` when it has none.
@@ -791,6 +890,23 @@ class LLMProvider(ABC):
         return None
 
     @property
+    def harness_compact_verb_advertised(self) -> bool:
+        """Whether the engine advertised the compaction verb Crew sends for ``/compact``.
+
+        Answered only for a backend that compacts on its own (a member of
+        ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``, KAS): there the session
+        handle sends the engine's own compaction verb in place of the
+        ``/compact`` prompt, and an engine that did not list that verb at
+        ``initialize`` fails the turn at once. ``False`` everywhere else, and
+        the default, so a provider that has not answered is never handed an
+        explicit-threshold ``/compact`` it cannot serve. Declared here rather
+        than probed off the instance (harness-parity H14); the ACP
+        implementations answer from the KAS session handle's record of the
+        engine's ``initialize``. Consumers must act only on a literal ``True``,
+        so a mocked provider's attribute never reads as advertised."""
+        return False
+
+    @property
     def compaction_unmanaged_backend(self) -> str | None:
         """Backend id when NOTHING compacts this session, ``None`` otherwise.
 
@@ -842,6 +958,46 @@ class LLMProvider(ABC):
         attribute never reads as a skip."""
         return False
 
+    @property
+    def mcp_config_wire_reinject(self) -> bool:
+        """True when this provider's LIVE session takes a changed MCP server set by
+        Crew re-sending its projected agent over the wire at the session's next
+        turn boundary, with the conversation kept -- the other way a dashboard MCP
+        write is applied without the all-sessions reset.
+
+        Default False, for the reason ``mcp_config_hot_reload`` defaults False:
+        a harness that has not demonstrated the re-injection must not inherit
+        the skip (harness-parity H6/H14). The ACP implementation answers from
+        ``ACP_BACKENDS_MCP_WIRE_REINJECT`` membership on a session that exists;
+        a provider whose session is still starting answers False and is reset
+        like one that cannot apply the change. Consumers act only on a literal
+        ``True``. A True answer is a promise the writer collects by calling
+        :meth:`mark_mcp_config_changed`."""
+        return False
+
+    @property
+    def mcp_config_relaunch_reload(self) -> bool:
+        """True when this provider's session takes a changed MCP server set by Crew
+        relaunching its process with the new launch-time config and loading the
+        same session there, at the session's next turn boundary, with the
+        conversation kept -- the third way a dashboard MCP write is applied
+        without the all-sessions reset.
+
+        Default False, for the reason ``mcp_config_hot_reload`` defaults False
+        (harness-parity H6/H14). The ACP implementation answers from
+        ``ACP_BACKENDS_MCP_RELAUNCH_RELOAD`` membership. Consumers act only on a
+        literal ``True``, and a True answer is collected by calling
+        :meth:`mark_mcp_config_changed`."""
+        return False
+
+    def mark_mcp_config_changed(self) -> None:
+        """Note that the MCP config this session was projected from has changed.
+
+        A re-injecting provider applies the new set at its next turn boundary;
+        every other provider ignores the mark, because the reset the writer
+        would otherwise perform already covered it. Synchronous and never on
+        the wire, so a writer can mark every live provider under its own lock."""
+
     def available_models(self) -> list[dict[str, str]]:
         """Backend-advertised models (``[{modelId, name, ...}]``) for the model
         picker. Default empty for a provider that advertises none."""
@@ -874,6 +1030,15 @@ class LLMProvider(ABC):
         differently, which is indistinguishable from a session that reported
         nothing — and that silence is the false all-clear the report exists to
         remove. A provider without one returns None explicitly.
+        """
+        return None
+
+    def note_user_message(self, text: str) -> None:
+        """Hand the user's own message, as typed, to the MCP sign-in trigger.
+
+        A KAS session offers a server's sign-in only when the user names it
+        (see ``AcpSessionHandle.want_mcp_sign_in_named``). A provider with no
+        such trigger ignores it. Never raises.
         """
         return None
 

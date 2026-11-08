@@ -1,19 +1,8 @@
 """Tests for session storage measurement and the trash/restore cycle.
 
-Both stores are addressed through their real resolvers by pointing
-``KIROCREW_HOME`` and ``KIRO_HOME`` at temp directories, rather than patching the
-module's bound names, so the tests exercise the same path resolution the product
-uses and a change to where either store lives fails here.
-
-The invariant these tests exist to protect: a session's halves are always
-reclaimed and restored TOGETHER. Half a session is worse than either extreme — it
-either lists without resuming, or resumes without history.
-
-This file keeps the trash location, the single manifest read per payload, the
-manifest readers and the session lock held across the index purge. The other topics
-live in ``test_session_storage_measure.py``, ``_reclaim``, ``_restore``, ``_cotenants``,
-``_log_safety``, ``_empty_trash`` and ``_empty_trash_removal``, and the fixtures and
-builders they share in ``session_storage_helpers.py``.
+``KIROCREW_HOME`` and ``KIRO_HOME`` point at temp directories, so the real path
+resolvers run. A session's halves are always reclaimed and restored together: half a
+session either lists without resuming, or resumes without history.
 """
 
 from __future__ import annotations
@@ -50,13 +39,8 @@ class TestTrashLocation:
 class TestSingleTrashPass:
     """Each payload build reads each trash manifest exactly once.
 
-    ``list_trash`` is uncached and reads every batch manifest per call, so a
-    payload builder that calls it once for the totals (inside ``measure``) and
-    again for the wire array pays double I/O — and could ship totals that
-    contradict the array beside them if a stage/empty lands between the calls.
-    Both builders thread one list through ``measure(batches=...)`` instead,
-    mirroring the ``units=`` parameter and the counting test in
-    ``test_session_storage_measure.py``.
+    ``list_trash`` is uncached; a second call could also ship totals that contradict
+    the array if a stage lands between, so one list goes through ``measure(batches=...)``.
     """
 
     @staticmethod
@@ -541,11 +525,8 @@ class TestManifestReaders:
 class TestReclaimHoldsTheSessionLockAcrossTheIndexPurge:
     """The search index's copy of a session's text must not come back after the move.
 
-    The index keeps that copy; the background indexer rebuilds a row from any
-    transcript still in place. A purge that merely PRECEDED the move therefore left a
-    window -- the indexer's write lands after it, and the text is in the index once
-    the files are gone. Both sides take ``ConversationLog._locked``, so the invariant
-    is that the purge runs while the reclaim holds that lock.
+    The indexer rebuilds rows from any transcript still in place, so the purge must run
+    while the reclaim holds ``ConversationLog._locked``, which the indexer also takes.
     """
 
     def test_the_purge_runs_while_the_unit_lock_is_held(
@@ -610,3 +591,80 @@ class TestReclaimHoldsTheSessionLockAcrossTheIndexPurge:
             )
 
         assert (crew_home / "sessions" / "dashboard_chat-1.jsonl").is_file()
+
+
+class TestFileLocksDoNotPileUp:
+    """``ConversationLog._file_locks`` must not grow one RLock per session forever.
+
+    A ``WeakValueDictionary`` evicts unheld locks; that is sound only while every
+    acquirer keeps a strong reference for its whole critical section.
+    """
+
+    def test_locks_return_to_baseline_after_append_and_delete(self, tmp_path: Path) -> None:
+        import gc
+
+        from kiro_crew.history import ConversationLog
+
+        n = 1000
+        base = tmp_path / "sessions"
+        base.mkdir()
+        log = ConversationLog(base)
+        try:
+            baseline = len(ConversationLog._file_locks)
+
+            keys = [f"chat-leaktest-{i:05d}" for i in range(n)]
+            for k in keys:
+                # Real production mutation path: append takes _locked(key),
+                # which calls _file_lock(key) and inserts into _file_locks.
+                log.append(k, "user", "hello")
+            for k in keys:
+                log.delete_session(k)
+
+            # The deferred off-loop flock release holds no reference to the
+            # RLock, and no critical section is live now, so every weak entry
+            # is collectable. Force a collection to make eviction deterministic
+            # across interpreters rather than leaning on CPython refcounting.
+            gc.collect()
+
+            leaked = len(ConversationLog._file_locks) - baseline
+            assert leaked == 0, (
+                f"_file_locks leaked {leaked} RLock entries after appending to "
+                f"and deleting {n} distinct sessions (expected 0 growth)"
+            )
+        finally:
+            # delete_session lazily opens a per-thread SQLite search-index
+            # connection under the sessions dir; close it so no open handle
+            # blocks the fixture's directory cleanup on Windows.
+            log._catalog_projection.search_index.close()
+
+    def test_same_lock_object_while_a_writer_holds_it(self, tmp_path: Path) -> None:
+        import threading
+
+        from kiro_crew.history import ConversationLog
+
+        base = tmp_path / "sessions"
+        base.mkdir()
+        log = ConversationLog(base)
+        key = "chat-concurrency-control"
+
+        # Hold the path's lock (as every real writer does, via ``with``),
+        # then from another thread ask for the lock for the SAME path. The
+        # weak entry must not have evicted while we hold a strong reference,
+        # so the second caller gets the identical object — the guarantee two
+        # concurrent writers to one transcript depend on.
+        other: list[threading.RLock] = []
+
+        def fetch() -> None:
+            other.append(log._file_lock(key))
+
+        held_lock = log._file_lock(key)
+        with held_lock:  # strong ref kept for the whole critical section
+            t = threading.Thread(target=fetch)
+            t.start()
+            t.join(timeout=10)
+
+        assert other, "second _file_lock call did not return"
+        assert other[0] is held_lock, (
+            "a concurrent caller got a DIFFERENT lock object for the same "
+            "path while a writer held it — two writers could then race"
+        )

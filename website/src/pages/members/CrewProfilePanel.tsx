@@ -1,6 +1,6 @@
-import { createContext, useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode, type Ref } from 'react'
+import { createContext, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type HTMLAttributes, type ReactNode, type Ref } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { AlarmClock, Brain, ChevronLeft, ChevronRight, FolderOpen, Goal, IdCard, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
+import { AlarmClock, Brain, ChevronLeft, ChevronRight, Download, FolderOpen, Goal, IdCard, NotebookPen, Pencil, RotateCcw, Route, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
@@ -8,8 +8,9 @@ import CrewMonitoredAvatar from '../../components/crew/CrewMonitoredAvatar'
 import Tablist, { type TablistTab } from '../../components/Tablist'
 import type { AutomationRecord } from '../../monitoring/automation'
 import type { CronJob } from '../../types'
-import CrewMonitorDetails, { type MonitorReadState } from './CrewMonitorDetails'
 import CrewScheduleList from './CrewScheduleList'
+// Loaded on first open, so the export view stays out of the profile card's chunk.
+const CrewExportView = lazy(() => import('./CrewExportView'))
 import { cn } from '../../lib/utils'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -27,8 +28,8 @@ export const PROFILE_FACE_PX = 84
 
 /** A page the card pushes OVER its tabs (iOS push: one back control pointing at
  *  the card), for the things a tab opens in place: the full description, the
- *  crewmate's notes, and the schedule create form. */
-type Pushed = 'about' | 'notes' | 'new-schedule' | 'tab-page'
+ *  crewmate's notes, the Export confirm view, and the schedule create form. */
+type Pushed = 'about' | 'notes' | 'export' | 'new-schedule' | 'tab-page'
 
 /** A tab's own pages pushed over the card (the Goals tab's milestone, goal and
  *  check-in pages; the Profile tab's Settings page and the picker pages over
@@ -60,10 +61,10 @@ export interface CrewProfilePanelProps {
   member: MemberRosterRow
   running: boolean
   slotKey?: string | null
-  /** The one normalized monitor record for this crewmate's own slot. */
+  /** The one normalized monitor record for this crewmate's own slot: the head
+   *  face's active mark. What it watches is the Schedules tab's business
+   *  (`selfBody`), not a readout here. */
   automation: AutomationRecord | null
-  /** Whether both monitor registries were read, are pending, or failed. */
-  monitorReadState: MonitorReadState
   /** The crewmate's description from its crew config; '' while unread or unset. */
   description: string
   /** The crew registry read failed; retained cached description data may still be shown. */
@@ -87,6 +88,11 @@ export interface CrewProfilePanelProps {
   /** Hold the head face's place but paint nothing: the page's flight copy is
    *  the one face on screen until it lands here. */
   faceHidden?: boolean
+  /** What wakes this crewmate WITHOUT a schedule, on the Schedules tab above the
+   *  list under its own "On its own" header (CrewOnItsOwn: the patrol over the
+   *  tasks it handed out). Absent when nothing does, and then the list stands
+   *  alone with no headers: most crewmates. */
+  selfBody?: ReactNode
   /** The schedules that wake this crewmate, as the page already reads them. */
   schedules: CronJob[]
   schedulesLoading: boolean
@@ -104,8 +110,9 @@ export interface CrewProfilePanelProps {
    *  "No schedules yet" instead of "Nothing wakes this mate on its own yet",
    *  which the row above it would contradict. */
   heartbeatOn?: boolean
-  /** A Heartbeat write is in flight: the tab rail refuses to leave Schedules
-   *  until it settles (the host's leave guard refuses close and navigation). */
+  /** A write from one of the "On its own" rows (Heartbeat or patrol) is in
+   *  flight: the tab rail refuses to leave Schedules until it settles (the
+   *  host's leave guard refuses close and navigation the same way). */
   heartbeatBusy?: boolean
   sessionsBody: ReactNode
   notesBody: ReactNode
@@ -120,6 +127,9 @@ export interface CrewProfilePanelProps {
   onClose: () => void
   /** Runs a pushed-page back action through the host's draft guard. */
   onRequestBack: (proceed: () => void) => void
+  /** The Export view's lessons text is typed: the host's exit guards then ask
+   *  before any exit (back, close, backdrop, pill, switch, route) drops it. */
+  onExportDraftChange?: (dirty: boolean) => void
   onEdit: () => void
   onOpenFiles: () => void
   /** Fresh start: stop any turn and start a clean conversation on the same
@@ -253,7 +263,7 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
   useEffect(() => {
     const deeper = depth > prevDepth.current
     prevDepth.current = depth
-    if (pushed === 'about' || pushed === 'notes' || (pushed === 'tab-page' && deeper)) {
+    if (pushed === 'about' || pushed === 'notes' || pushed === 'export' || (pushed === 'tab-page' && deeper)) {
       backRef.current?.focus({ preventScroll: true })
     } else if (!pushed || pushed === 'tab-page') {
       const opener = openerRef.current
@@ -326,7 +336,9 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
     ? t('pages.membersPage.profile_about')
     : pushed === 'notes'
       ? t('pages.membersPage.notes_tab')
-      : t('pages.membersPage.schedule_new')
+      : pushed === 'export'
+        ? t('pages.membersPage.export_title')
+        : t('pages.membersPage.schedule_new')
 
   const slide = reduce
     ? { initial: { opacity: 1 }, animate: { opacity: 1 }, exit: { opacity: 1 } }
@@ -455,18 +467,24 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               value={tab}
               onChange={next => {
                 if (tab === 'goals' && next !== tab) p.onRequestBack(() => { popPage(); setTab(next) })
-                // A Heartbeat write still in flight would be unmounted by the
-                // switch and its failure lost: refuse the exit until it settles,
-                // as the leave guard refuses a busy Goals write.
+                // A Heartbeat or patrol write still in flight would be unmounted
+                // by the switch and its failure lost: refuse the exit until it
+                // settles, as the leave guard refuses a busy Goals write.
                 else if (tab === 'schedule' && p.heartbeatBusy) return
                 else setTab(next)
               }}
               ariaLabel={t('pages.membersPage.profile_card')}
               layoutId="crew-profile-tab-indicator"
               labels="active"
-              // The Profile tab is a find_ui location: a guide to the Settings
-              // row (which lives on it) selects this tab first.
-              segments={[{ key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') }]}
+              // find_ui locations: Schedules and Goals are where a mate shows
+              // the user what wakes it and what it is after; the Profile tab
+              // is also the step a guide to the Settings row (which lives on
+              // it) selects first.
+              segments={[
+                { key: 'schedule', label: t('pages.membersPage.schedules_tab'), ...uiLocation('members.schedule-tab') },
+                { key: 'goals', label: t('pages.membersPage.profile_goals_tab'), ...uiLocation('members.goals-tab') },
+                { key: 'profile', label: t('pages.membersPage.profile_tab'), ...uiLocation('members.profile-tab') },
+              ]}
             />
           </div>
 
@@ -511,8 +529,6 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                   ) : null}
                 </section>
 
-                <CrewMonitorDetails automation={p.automation} readState={p.monitorReadState} nowTs={p.nowTs} />
-
                 <div className="grid grid-cols-2 gap-2.5">
                   <Tile icon={<Brain size={18} />} tone="accent" label={t('pages.membersPage.profile_memory')} value={p.memoryLabel} onClick={p.onOpenMemory} testId="crew-profile-memory" />
                   <Tile icon={<FolderOpen size={18} />} tone="info" label={t('pages.membersPage.profile_workspace')} value={ws || t('pages.membersPage.profile_workspace_none')} title={p.member.workspace} onClick={p.onOpenFiles} testId="crew-profile-workspace" />
@@ -522,14 +538,29 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                     contributes (its pages push over the card through the context). */}
                 <div className="rounded-2xl border border-border bg-bg overflow-hidden">
                   <Row icon={<NotebookPen size={16} />} tone="warn" label={t('pages.membersPage.notes_tab')} sub={t('pages.membersPage.profile_notes_sub')} onClick={() => push('notes')} testId="crew-profile-notes" />
+                  <Row icon={<Download size={16} />} tone="info" label={t('pages.membersPage.export_row')} sub={t('pages.membersPage.export_row_sub')} onClick={() => push('export')} testId="crew-profile-export" />
                   <ProfilePagePushContext.Provider value={pagePush}>{p.settingsBody}</ProfilePagePushContext.Provider>
                 </div>
               </div>
             )}
             {tab === 'schedule' && (
               <div className="flex flex-col gap-3">
-                {p.heartbeatBody}
-                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn} />
+                {/* "On its own" is what wakes the mate without a schedule a
+                    person wrote: its Heartbeat first (`heartbeatBody`, the
+                    first row by the 2026-10-22 decision), then its patrol over
+                    the tasks it handed out (`selfBody`, only while one runs or
+                    is retained). Two headers only when there is something
+                    under the first: a lone "Your schedules" over the list
+                    would name a split the reader cannot see. */}
+                {(p.selfBody || p.heartbeatBody) && (
+                  <>
+                    <h3 className="text-[11px] font-semibold tracking-wide uppercase text-muted px-0.5" data-testid="crew-schedule-heading-self">{t('pages.membersPage.on_its_own')}</h3>
+                    {p.heartbeatBody}
+                    {p.selfBody}
+                    <h3 className="text-[11px] font-semibold tracking-wide uppercase text-muted px-0.5 mt-1" data-testid="crew-schedule-heading-yours">{t('pages.membersPage.your_schedules')}</h3>
+                  </>
+                )}
+                <CrewScheduleList jobs={p.schedules} loading={p.schedulesLoading} error={p.schedulesError} nowTs={p.nowTs} onOpenAll={p.onOpenSchedule} onOpenJob={p.onOpenScheduleJob} onCreate={() => push('new-schedule')} selfWaking={p.heartbeatOn || !!p.selfBody} />
               </div>
             )}
             {tab === 'sessions' && p.sessionsBody}
@@ -551,13 +582,17 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
               {pushed === 'about' ? (
                 <div className="px-4 py-4">
                   <div className="rounded-2xl border border-border bg-bg px-4 py-4 text-[14px] leading-relaxed text-text whitespace-pre-wrap" data-testid="crew-profile-about-full">{p.description}</div>
-                  <button type="button" onClick={p.onEdit} className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-accent text-white text-[13px] font-semibold cursor-pointer">
+                  <button type="button" onClick={p.onEdit} className="mt-3 inline-flex items-center gap-1.5 h-9 px-4 rounded-full bg-accent text-accent-fg text-[13px] font-semibold cursor-pointer">
                     <Pencil size={14} aria-hidden="true" />
                     {t('pages.membersPage.edit_member')}
                   </button>
                 </div>
               ) : pushed === 'notes' ? (
                 p.notesBody
+              ) : pushed === 'export' ? (
+                <Suspense fallback={<div className="px-4 py-4 text-[13px] text-muted" data-testid="crew-export-loading">{t('pages.membersPage.export_loading')}</div>}>
+                  <CrewExportView slug={p.member.slug} member={p.member.name} onDirtyChange={p.onExportDraftChange} />
+                </Suspense>
               ) : (
                 p.newScheduleBody
               )}

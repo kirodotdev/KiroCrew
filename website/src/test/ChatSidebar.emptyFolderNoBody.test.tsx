@@ -46,7 +46,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -285,6 +292,18 @@ describe('sidebar: a folder with nothing in it has no body', () => {
     expect(shell.getAttribute('aria-roledescription')).toBe('Drag to reorder')
     // Still not a disclosure: no expanded state and no collapse label.
     expect(shell.hasAttribute('aria-expanded')).toBe(false)
+  })
+
+  it('gives a draggable empty list row the drag cursor, not a click pointer', () => {
+    // The drag-handle `role="button"` above matches index.css's base
+    // `[role="button"]:not(:disabled) { cursor: pointer }`, so a shell that names
+    // no cursor of its own shows the click pointer over the whole row (#30320).
+    // It takes the row's drag cursor instead.
+    const { container } = renderSidebar()
+    const shell = container.querySelector(`[data-testid="folder-collapse-${EMPTY_FOLDER}"]`)?.parentElement as HTMLElement
+    expect(shell.getAttribute('role')).toBe('button')
+    expect(shell.className).toContain('cursor-[inherit]')
+    expect(shell.closest('[data-folder-row]')!.className.split(' ')).toContain('cursor-grab')
   })
 
   it('draws an inert row open even when it carries a stored collapsed flag', () => {

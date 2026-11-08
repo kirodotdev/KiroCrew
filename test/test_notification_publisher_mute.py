@@ -18,10 +18,13 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.sections import AppSettingsConfig
 from kiro_crew.dashboard import state as dashboard_state
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers.messaging import api_notification_agent_push
 from kiro_crew.dashboard.messaging_api import proactive_send
+from kiro_crew.dashboard.notification_coordinator import unread_count
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.notifications.bus import (
     NotificationPayload,
@@ -49,9 +52,11 @@ def _open(
     created_by: str = "",
     muted: bool = False,
     mutes_opened: bool = False,
+    app: str = "",
 ) -> str:
     """Register a live slot and return the session key a caller presents for it."""
     slot = _ChatSlot(key)
+    slot._app = app
     slot._created_by = created_by
     slot.muted = muted
     slot.mutes_opened = mutes_opened
@@ -127,6 +132,21 @@ class TestSessionIsMuted:
         worker = _open(state, "chat-3-300", created_by="chat-1-100")
         assert not self._muted(state, worker)
 
+    def test_a_session_an_app_opened_is_muted_when_the_user_mutes_that_app(
+        self, monkeypatch, tmp_path
+    ):
+        state = _make_state(monkeypatch, tmp_path)
+        cfg = KiroCrewConfig(apps={"code-reviewer": AppSettingsConfig(mute_sessions=True)})
+        monkeypatch.setattr("kiro_crew.config.live.snapshot", lambda: cfg)
+        review = _open(state, "chat-1-100", app="code-reviewer")
+        spawned = _open(state, "chat-4-400", created_by="chat-1-100")
+        research = _open(state, "chat-2-200", app="research")
+        mine = _open(state, "chat-3-300")
+        assert self._muted(state, review)
+        assert self._muted(state, spawned)
+        assert not self._muted(state, research)
+        assert not self._muted(state, mine)
+
     def test_an_unknown_session_is_not_muted(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
         _open(state, "chat-1-100", muted=True)
@@ -142,7 +162,7 @@ class TestSinkAppliesThePublishersMute:
         assert note["silenced"] is True
         assert note["priority"] == "passive"
         assert state._notification_log[-1]["silenced"] is True
-        assert state._unread_count == 0
+        assert unread_count(state._notification_log) == 0
 
     def test_a_note_from_an_unmuted_session_is_untouched(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
@@ -150,7 +170,7 @@ class TestSinkAppliesThePublishersMute:
         note = _publish(state, worker)
         assert note["priority"] == "default"
         assert "silenced" not in note
-        assert state._unread_count == 1
+        assert unread_count(state._notification_log) == 1
 
     def test_a_note_with_no_publishing_session_is_untouched(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
@@ -165,7 +185,7 @@ class TestSinkAppliesThePublishersMute:
         note = _publish(state, worker, channel="system.approval", kind="approval")
         assert note["priority"] == "critical"
         assert "silenced" not in note
-        assert state._unread_count == 1
+        assert unread_count(state._notification_log) == 1
 
     def test_a_protected_channel_stays_audible_whatever_its_priority(self, monkeypatch, tmp_path):
         state = _make_state(monkeypatch, tmp_path)
@@ -180,7 +200,7 @@ class TestSinkAppliesThePublishersMute:
         note = _publish(state, worker, priority="critical")
         assert note["priority"] == "critical"
         assert "silenced" not in note
-        assert state._unread_count == 1
+        assert unread_count(state._notification_log) == 1
 
     def test_a_channel_priority_override_neither_undoes_nor_exempts_the_mute(
         self, monkeypatch, tmp_path
@@ -417,7 +437,7 @@ class TestSendMessageBellFallback:
         await _send_message_fallback(state, worker)
         assert state._notification_log[-1]["priority"] == "passive"
         assert state._notification_log[-1]["silenced"] is True
-        assert state._unread_count == 0
+        assert unread_count(state._notification_log) == 0
 
     @pytest.mark.asyncio
     async def test_a_muted_workers_question_with_choices_still_rings(self, monkeypatch, tmp_path):
@@ -426,7 +446,7 @@ class TestSendMessageBellFallback:
         await _send_message_fallback(state, worker, options=["Ship it", "Hold"])
         assert state._notification_log[-1]["priority"] == "default"
         assert "silenced" not in state._notification_log[-1]
-        assert state._unread_count == 1
+        assert unread_count(state._notification_log) == 1
 
     @pytest.mark.asyncio
     async def test_an_unmuted_workers_fallback_note_rings_as_before(self, monkeypatch, tmp_path):
@@ -434,7 +454,7 @@ class TestSendMessageBellFallback:
         worker = _open(state, "chat-2-200")
         await _send_message_fallback(state, worker)
         assert state._notification_log[-1]["priority"] == "default"
-        assert state._unread_count == 1
+        assert unread_count(state._notification_log) == 1
 
     @pytest.mark.asyncio
     async def test_a_caller_with_no_attested_session_rings_as_before(self, monkeypatch, tmp_path):
@@ -442,4 +462,4 @@ class TestSendMessageBellFallback:
         _open(state, "chat-2-200", muted=True)
         await _send_message_fallback(state, "")
         assert state._notification_log[-1]["priority"] == "default"
-        assert state._unread_count == 1
+        assert unread_count(state._notification_log) == 1

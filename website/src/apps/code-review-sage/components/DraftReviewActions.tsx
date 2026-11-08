@@ -13,6 +13,7 @@ import { api } from '../../../api/client'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { i18nT } from '../../../i18n/t'
 import { pullRequestErrorDetails } from '../../../utils/pullRequestErrors'
+import { focusOnMount } from '../../../utils/focusOnMount'
 
 const PUBLISH_EVENTS = ['COMMENT', 'REQUEST_CHANGES', 'APPROVE'] as const
 type PublishEvent = (typeof PUBLISH_EVENTS)[number]
@@ -211,8 +212,9 @@ export default function DraftReviewActions(
                   // Swapping the arming button out for this one drops keyboard focus to
                   // <body>, so Tab would restart from the top of the page on the app's
                   // one irreversible action. Take focus on mount, and let Escape back
-                  // out the way every other dismissible surface does.
-                  ref={el => el?.focus()}
+                  // out the way every other dismissible surface does. A stable ref, so a
+                  // re-render (a refetch) does not pull focus back off Cancel.
+                  ref={focusOnMount}
                   onKeyDown={e => { if (e.key === 'Escape') setConfirming(null) }}
                   onClick={() => { const ev = confirming; setConfirming(null); publishMut.mutate(ev) }}
                   disabled={publishMut.isPending}

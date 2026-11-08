@@ -156,6 +156,26 @@ describe('useInstanceSessions', () => {
     expect(byKey.get('lead')).not.toHaveProperty('parent')
   })
 
+  it('keeps a peer Crew Mode root as one, and only the literal true', async () => {
+    instanceChatSlotsMock.mockResolvedValue([
+      { key: 'crew', title: 'Crew chat', crew_mode_root: true },
+      { key: 'member', title: 'A crew member', crew_root: 'crew' },
+      { key: 'plain', title: 'Plain' },
+      { key: 'loose', title: 'Loose', crew_mode_root: 'yes', crew_root: 7 },
+    ])
+    const { result } = renderInstanceSessions(true, [CONNECTED])
+    await waitFor(() => expect(result.current.rows).toHaveLength(4))
+    const byKey = new Map(result.current.rows.map(r => [r.key, r]))
+    expect(byKey.get('crew')?.crew_mode_root).toBe(true)
+    // A crew member's root key crosses as a string only, so the person's lists can
+    // leave a peer's crew members out the way they leave local ones out.
+    expect(byKey.get('member')?.crew_root).toBe('crew')
+    expect(byKey.get('plain')).not.toHaveProperty('crew_mode_root')
+    expect(byKey.get('plain')).not.toHaveProperty('crew_root')
+    expect(byKey.get('loose')).not.toHaveProperty('crew_mode_root')
+    expect(byKey.get('loose')).not.toHaveProperty('crew_root')
+  })
+
   it('drops a citation with no string half instead of letting the lane dereference it', async () => {
     instanceChatSlotsMock.mockResolvedValue([
       { key: 'a', parent: 'lead' },

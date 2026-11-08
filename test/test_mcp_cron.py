@@ -251,7 +251,6 @@ class TestCronAddPersistenceOwner:
                 "agent": "kirocrew",
                 "model": "sonnet",
                 "silent": True,
-                "approval_mode": "auto",
                 "minimal_context": True,
                 "timeout": 45,
             },
@@ -267,7 +266,6 @@ class TestCronAddPersistenceOwner:
         assert job.agent_id == "kirocrew"
         assert job.model != ""
         assert job.silent is True
-        assert job.approval_mode == "auto"
         assert job.minimal_context is True
         assert job.timeout == 45
         assert job.session_key == "dashboard:slot9"

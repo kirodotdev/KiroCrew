@@ -17,13 +17,11 @@ from __future__ import annotations
 import errno
 import os
 import stat
-import time
 from pathlib import Path
 from typing import Callable
 
 import pytest
 
-from kiro_crew import file_delivery_consent
 from kiro_crew import session_ledger as sl
 from kiro_crew.platform import app_update_request, update_layout, update_stepup
 
@@ -56,11 +54,6 @@ def _interrupt_the_rename_of(monkeypatch: pytest.MonkeyPatch, target: Path) -> N
     monkeypatch.setattr(os, "replace", guarded)
 
 
-def _arm_grant(_tmp: Path) -> Path:
-    file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
-    return file_delivery_consent.pending_grant_path()
-
-
 def _arm_update(_tmp: Path) -> Path:
     update_stepup.arm("9.9.9", "stable")
     return update_stepup.pending_path()
@@ -90,11 +83,6 @@ def _rewrite_ledger_lines(tmp_path: Path) -> Path:
 
 #: site -> (owning module, writer, the keywords it must hand atomic_write)
 _SITES: dict[str, tuple[object, Callable[[Path], Path], dict]] = {
-    "file_delivery_consent.arm_grant": (
-        file_delivery_consent,
-        _arm_grant,
-        {"restrict_to_owner": True},
-    ),
     "update_stepup.arm": (update_stepup, _arm_update, {"restrict_to_owner": True}),
     "app_update_request._write": (app_update_request, _arm_app_update, {"mode": 0o600}),
     "update_layout.set_release_channel": (update_layout, _set_channel, {}),
@@ -130,57 +118,6 @@ def test_an_interrupted_rewrite_leaves_no_temp_and_the_old_file(
 
     assert path.read_bytes() == before
     assert sorted(p.name for p in path.parent.iterdir()) == listing
-
-
-def _pending(**overrides) -> file_delivery_consent.PendingGrant:
-    fields = dict(
-        request_id="r-1",
-        nonce="n" * 64,
-        destination_class=file_delivery_consent.CLASS_OWNER_DASHBOARD,
-        created_at=time.time(),
-        safety_epoch="epoch-1",
-    )
-    fields.update(overrides)
-    return file_delivery_consent.PendingGrant(**fields)
-
-
-def test_a_restored_grant_is_written_owner_only_like_the_armed_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = _recorder(monkeypatch, file_delivery_consent)
-
-    assert file_delivery_consent.restore_pending_grant(_pending()) is True
-
-    assert calls == [{"restrict_to_owner": True}]
-    restored = file_delivery_consent.read_pending_grant()
-    assert restored is not None
-    assert (restored.request_id, restored.safety_epoch) == ("r-1", "epoch-1")
-
-
-def test_a_restore_never_overwrites_a_newer_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    newer = file_delivery_consent.arm_grant(file_delivery_consent.CLASS_OWNER_DASHBOARD)
-    calls = _recorder(monkeypatch, file_delivery_consent)
-
-    assert file_delivery_consent.restore_pending_grant(_pending()) is False
-
-    assert calls == []
-    assert file_delivery_consent.read_pending_grant().request_id == newer.request_id
-
-
-def test_an_interrupted_restore_leaves_nothing_behind(monkeypatch: pytest.MonkeyPatch) -> None:
-    path = file_delivery_consent.pending_grant_path()
-    _interrupt_the_rename_of(monkeypatch, path)
-
-    with pytest.raises(KeyboardInterrupt):
-        file_delivery_consent.restore_pending_grant(_pending())
-
-    assert not os.path.lexists(path)
-    assert list(path.parent.iterdir()) == []
-
-
-# --------------------------------------------------------------------------- #
-# The ledger's control files: one directory sync per transaction that needs it
-# --------------------------------------------------------------------------- #
 
 
 def _record_syncs(monkeypatch: pytest.MonkeyPatch, events: list[str]) -> None:

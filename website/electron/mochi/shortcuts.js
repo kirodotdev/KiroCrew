@@ -31,6 +31,7 @@
  */
 
 const { globalShortcut } = require("electron");
+const { shellShortcutReservations } = require("../shell-shortcut-reservations");
 
 /**
  * Default accelerators, ported from the original's shortcut defaults
@@ -124,6 +125,7 @@ function setShortcutLogger(fn) {
  * thrown, so a single taken key never blocks the others or the enable path.
  */
 function registerMochiShortcuts(handlers, accelerators) {
+  reserveMochiShortcuts(accelerators);
   // Re-register cleanly: drop any prior Mochi bindings first so a stale handler
   // (e.g. bound to a window that has since been recreated) is never left live.
   unregisterMochiShortcuts();
@@ -164,6 +166,18 @@ function registerMochiShortcuts(handlers, accelerators) {
   }
   registered = true;
   return results;
+}
+
+/**
+ * Keep the configured accelerators from apps' declared shortcuts, bound or not:
+ * Mochi releases them while disabled and binds them again on enable, and a
+ * chord an app took in between would make that register() fail.
+ */
+function reserveMochiShortcuts(accelerators) {
+  shellShortcutReservations.reserve(
+    "mochi",
+    MOCHI_SHORTCUT_ACTIONS.map(([action]) => pickAccelerator(accelerators, action)),
+  );
 }
 
 /** The configured accelerator for an action, or its default. */
@@ -236,6 +250,7 @@ function areMochiShortcutsRegistered() {
 module.exports = {
   MOCHI_SHORTCUT_ACTIONS,
   registerMochiShortcuts,
+  reserveMochiShortcuts,
   unregisterMochiShortcuts,
   areMochiShortcutsRegistered,
   currentMochiShortcuts,

@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, Dict, List
 
+from kiro_crew import extension_governance as _gov
 from kiro_crew.mcp_utils import registry_accepts_query
 
 if TYPE_CHECKING:
@@ -47,6 +48,31 @@ CAPABILITY_INSTALL_TIMEOUT = 600
 #: accumulate pending gateway tasks on every poll — the exact wedge class the
 #: seam bound exists to prevent — even though reads mutate nothing.
 CAPABILITY_READ_TIMEOUT = 30
+
+
+async def _off_loop(fn: Any, *args: str) -> "str | None":
+    """Run a governance check on the governance executor, off the event loop.
+
+    A check reads the profile store, which stats the profiles directory.
+    """
+    from kiro_crew.executors import governance_executor
+
+    return await asyncio.get_running_loop().run_in_executor(governance_executor(), fn, *args)
+
+
+def _refused(reason: str) -> "CapabilityResult":
+    """The result an op returns when governance refuses it (``extension_governance``).
+
+    Checked here, at the seam every reader of ``current_context().capability_manager``
+    goes through, so no call site can reach the companion's installer around it. In
+    an enterprise build the ``capabilities.extension_install`` baseline is off, so
+    the extension signature and version rules that only apply to an install are off
+    with it (RFC enterprise edition, Red "Signed extensions only" and "Extension
+    versions").
+    """
+    from kiro_crew.platform.interfaces import CapabilityResult
+
+    return CapabilityResult(ok=False, message=f"Blocked by governance policy: {reason}")
 
 
 class BoundedCapabilityManager:
@@ -105,31 +131,49 @@ class BoundedCapabilityManager:
         return await asyncio.wait_for(call, timeout=CAPABILITY_READ_TIMEOUT)
 
     async def install_mcp(self, server_id: str) -> "CapabilityResult":
+        denied = await _off_loop(_gov.extension_install_denied, "mcp", server_id)
+        if denied:
+            return _refused(denied)
         return await asyncio.wait_for(
             self._inner.install_mcp(server_id), timeout=CAPABILITY_INSTALL_TIMEOUT
         )
 
     async def uninstall_mcp(self, server_id: str) -> "CapabilityResult":
+        denied = await _off_loop(_gov.extensions_off, "uninstall_mcp")
+        if denied:
+            return _refused(denied)
         return await asyncio.wait_for(
             self._inner.uninstall_mcp(server_id), timeout=CAPABILITY_UNINSTALL_TIMEOUT
         )
 
     async def install_skill(self, package: str) -> "CapabilityResult":
+        denied = await _off_loop(_gov.extension_install_denied, "skill", package)
+        if denied:
+            return _refused(denied)
         return await asyncio.wait_for(
             self._inner.install_skill(package), timeout=CAPABILITY_INSTALL_TIMEOUT
         )
 
     async def uninstall_skill(self, package: str) -> "CapabilityResult":
+        denied = await _off_loop(_gov.extensions_off, "uninstall_skill")
+        if denied:
+            return _refused(denied)
         return await asyncio.wait_for(
             self._inner.uninstall_skill(package), timeout=CAPABILITY_UNINSTALL_TIMEOUT
         )
 
     async def install_agent(self, package: str) -> "CapabilityResult":
+        denied = await _off_loop(_gov.extension_install_denied, "agent", package)
+        if denied:
+            return _refused(denied)
         return await asyncio.wait_for(
             self._inner.install_agent(package), timeout=CAPABILITY_INSTALL_TIMEOUT
         )
 
     async def uninstall_agent(self, package: str) -> "CapabilityResult":
+        denied = await _off_loop(_gov.extensions_off, "uninstall_agent")
+        if denied:
+            return _refused(denied)
         return await asyncio.wait_for(
             self._inner.uninstall_agent(package), timeout=CAPABILITY_UNINSTALL_TIMEOUT
         )
@@ -146,6 +190,16 @@ class BoundedCapabilityManager:
         # An INSTALL bound: reconciling drift can shell a package manager once
         # per drifted package, so it inherits the generous install budget rather
         # than the tight uninstall one.
+        # Each package the sync would install is asked as ``plugin:<package>``.
+        # Off denies before the drift read, so a pinned-off host makes no call.
+        denied = await _off_loop(_gov.extensions_off, "sync_plugins")
+        if not denied:
+            for package in await self.plugins_out_of_sync():
+                denied = await _off_loop(_gov.extension_install_denied, "plugin", str(package))
+                if denied:
+                    break
+        if denied:
+            return _refused(denied)
         return await asyncio.wait_for(
             self._inner.sync_plugins(), timeout=CAPABILITY_INSTALL_TIMEOUT
         )

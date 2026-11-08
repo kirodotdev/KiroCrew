@@ -1,12 +1,14 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Webhook } from 'lucide-react'
+import { Bell, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
-import { BrowserPanel } from './settings/BrowserPanel'
 import { RemoteCrewPanel } from './settings/RemoteCrewPanel'
+import { PeoplePanel } from './settings/PeoplePanel'
+import { useSharedCrewCapabilities } from '../hooks/sharedCrew/useSharedCrew'
+import { sharedCrewPreviewOn } from '../api/sharedCrewUi'
 import { isEmbeddedPane } from '../lib/embedded'
 import { DisplayPanel } from './settings/DisplayPanel'
 import { ChatPanel } from './settings/ChatPanel'
@@ -27,7 +29,9 @@ import { PrivacyPanel } from './settings/PrivacyPanel'
 import { SecretsPanel } from './settings/SecretsPanel'
 import { ConnectionsPanel } from './settings/ConnectionsPanel'
 import SettingsSearch from './settings/SettingsSearch'
-import { ContentSkeleton } from '../components/ui'
+import { Btn, ContentSkeleton } from '../components/ui'
+import { DataHomeOwnerStatusNotice } from '../components/DataHomeOwnerNotice'
+import ErrorNotice from '../components/ErrorNotice'
 
 /**
  * Lazy: the coding-agent switch pulls in the Kiro sign-in card and its OIDC
@@ -41,10 +45,23 @@ const AgentBackendTab = lazy(() =>
 const AgentRunSettings = lazy(() =>
   import('./overview/KiroCrewCfgTab').then(m => ({ default: m.AgentRunSettings })),
 )
+/** Lazy: the Browser tab's status card and live-view settings are only needed when that tab opens. */
+const BrowserPanel = lazy(() =>
+  import('./settings/BrowserPanel').then(m => ({ default: m.BrowserPanel })),
+)
+/**
+ * Lazy: the Session Environments card (Coder, Sprites, boxd and Kiro Cloud editors)
+ * mounts only behind its feature preview, so most Settings visits never need it.
+ */
+const SessionEnvironmentsCard = lazy(() =>
+  import('./settings/SessionEnvironmentsCard').then(m => ({ default: m.SessionEnvironmentsCard })),
+)
+import { SettingsCard } from '../components/settings'
 
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
-import { PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { useConfigPendingCount } from './settings/configPendingQuery'
+import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { GuideTrustRootRegion } from '../guide/trustRoot'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
@@ -66,7 +83,8 @@ function buildTabs() {
   const GROUP_PREFERENCES = i18nT('settings.groups.preferences')
   const GROUP_SYSTEM = i18nT('settings.groups.system')
   return [
-    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description') },
+    // OverviewPage's drill-in (`?view=memory&store=…&focus=…`).
+    { key: 'overview', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.overview.label'), icon: <PanelsTopLeft size={16} />, description: i18nT('settings.tabs.overview.description'), drillInParams: ['view', 'store', 'focus'] },
     { key: 'imports', tile: 'var(--tile-blue)', label: i18nT('settings.tabs.imports.label'), icon: <Import size={16} />, description: i18nT('settings.tabs.imports.description') },
     // The coding-agent switch (and the Kiro sign-in card under it) used to be a
     // Developer-page tab, which the sidebar only shows in Developer Mode. First-run
@@ -85,11 +103,13 @@ function buildTabs() {
     { key: 'computer-use', tile: 'var(--tile-indigo)', label: i18nT('settings.tabs.computerUse.label'), icon: <SquareMousePointer className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.computerUse.description') },
     { key: 'webhooks', tile: 'var(--tile-orange)', label: i18nT('settings.tabs.webhooks.label'), icon: <Webhook size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.webhooks.description') },
     { key: 'instances', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.instances.label'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.instances.description') },
+    { key: 'people', tile: 'var(--tile-teal)', label: i18nT('sharedCrew.settings_tab_label'), icon: <Users size={16} />, group: GROUP_SYSTEM, description: i18nT('sharedCrew.settings_tab_description') },
     { key: 'privacy', tile: 'var(--tile-blue)', label: i18nT('privacyDisclosure.settingsLabel'), icon: <Fingerprint className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('privacyDisclosure.settingsDescription') },
     { key: 'security', tile: 'var(--tile-red)', label: i18nT('settings.tabs.security.label'), icon: <ShieldCheck size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.security.description'), hostsSubNav: true },
     { key: 'connections', tile: 'var(--tile-green)', label: i18nT('settings.tabs.connections.label'), icon: <Plug size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.connections.description') },
     { key: 'secrets', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.secrets.label'), icon: <KeyRound size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.secrets.description') },
-    { key: 'developer', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description') },
+    { key: 'session-environments', tile: 'var(--tile-blue)', label: i18nT('sessionEnvironments.title'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('sessionEnvironments.settingsDescription') },
+    { key: 'developer', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description'), hostsSubNav: true },
     // The trailing divider fences off the entries that are not settings at all.
     // About was its only occupant; the release archive is the same kind of thing
     // (a document about the product, not a preference), so it joins the fence
@@ -216,6 +236,10 @@ export default function SettingsPage() {
   // `=== true` is required, not cosmetic: the gateway sends null for a check that
   // never ran or failed, and a truthiness test would keep that dark while a
   // `!== false` test would light it on no evidence.
+  // Every `kirocrew://remote-crew/add` link remounts Remote Crew, so a panel
+  // already on screen comes back on its first tab with the newest link's values
+  // in its add form.
+  const crewAddLinkSeq = useAppSelector(s => s.instances.crewForms?.addLinkSeq ?? 0)
   const gatewayUpdateAvailable = useAppSelector(s => s.dashboard.status?.update_available)
   const desktopUpdateAvailable = useAppSelector(s => s.dashboard.desktopUpdateAvailable)
   const updateAvailable = gatewayUpdateAvailable === true || desktopUpdateAvailable
@@ -226,8 +250,25 @@ export default function SettingsPage() {
   // bare `readPreviewFlag`, so toggling it in Settings > Developer > Feature Previews updates this
   // rail without a reload.
   const webhooksPreview = usePreviewFlag(PREVIEW_WEBHOOKS)
-  const allTabs = buildTabs().filter(t => t.key !== 'webhooks' || webhooksPreview)
-  const tabs = updateAvailable ? allTabs.map(t => (t.key === 'about' ? { ...t, dot: true } : t)) : allTabs
+  const sessionEnvironmentsPreview = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
+  // People exists only while the gateway reports the Shared Crew preview
+  // (`KIROCREW_SHARED_CREW_PREVIEW=1`); a browser setting cannot turn it on.
+  const sharedCrew = useSharedCrewCapabilities()
+  const sharedCrewPreview = sharedCrewPreviewOn(sharedCrew.capabilities)
+  const allTabs = buildTabs().filter(t =>
+    (t.key !== 'webhooks' || webhooksPreview)
+    && (t.key !== 'session-environments' || sessionEnvironmentsPreview)
+    && (t.key !== 'people' || sharedCrewPreview),
+  )
+  // Review nudge: dot on the Security entry while a settings file edited outside
+  // the dashboard waits for Apply or Discard there.
+  const configPending = useConfigPendingCount() > 0
+  const tabs = allTabs.map(t => (
+    t.key === 'about' && updateAvailable ? { ...t, dot: true }
+      : t.key === 'security' && configPending
+        ? { ...t, dot: true, dotLabel: i18nT('pages.settings.securityPanel.configPending.nav_dot') }
+        : t
+  ))
 
   const memorySelection = new URLSearchParams(search)
   const memberMemoryView = pathname.replace(/\/$/, '') === '/settings/overview'
@@ -254,6 +295,17 @@ export default function SettingsPage() {
       footer={<span className="text-[12px] text-muted">{i18nT('pages.settingsPage.kirocrew_v')}{version}</span>}
     >
       {tab => <>
+        <DataHomeOwnerStatusNotice />
+        {sharedCrew.isError && !(tab === 'people' && sharedCrewPreview) && (
+          <div>
+            {/* No hand-off: the active Settings panel may hold an unsaved configuration draft. */}
+            <ErrorNotice
+              message={sharedCrew.error instanceof Error ? sharedCrew.error.message : i18nT('sharedCrew.people_failed')}
+              testId="settings-capabilities-error"
+            />
+            <Btn onClick={() => { void sharedCrew.refetch() }}>{i18nT('components.mobileConnect.try_again')}</Btn>
+          </div>
+        )}
         {tab === 'overview' && <OverviewPanel />}
         {tab === 'imports' && <ImportPanel />}
         {tab === 'agent' && (
@@ -273,15 +325,27 @@ export default function SettingsPage() {
         {tab === 'shortcuts' && <ShortcutsPanel />}
         {tab === 'skills' && <SkillsPanel />}
         {tab === 'channels' && <ChannelsPanel basePath={SETTINGS_BASE_PATH} />}
-        {tab === 'browser' && <BrowserPanel />}
+        {tab === 'browser' && (
+          <Suspense fallback={<ContentSkeleton rows={6} />}>
+            <BrowserPanel />
+          </Suspense>
+        )}
         {tab === 'computer-use' && <GuideTrustRootRegion><ComputerUsePanel /></GuideTrustRootRegion>}
         {tab === 'webhooks' && <WebhooksPanel />}
-        {tab === 'instances' && <RemoteCrewPanel />}
+        {tab === 'instances' && <RemoteCrewPanel key={crewAddLinkSeq} />}
+        {tab === 'people' && sharedCrewPreview && <PeoplePanel />}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <GuideTrustRootRegion><SecurityPanel basePath={SETTINGS_BASE_PATH} /></GuideTrustRootRegion>}
         {tab === 'connections' && <ConnectionsPanel />}
         {tab === 'secrets' && <GuideTrustRootRegion><SecretsPanel /></GuideTrustRootRegion>}
-        {tab === 'developer' && <DeveloperPanel />}
+        {tab === 'session-environments' && sessionEnvironmentsPreview && (
+          <SettingsCard>
+            <Suspense fallback={<ContentSkeleton rows={6} />}>
+              <SessionEnvironmentsCard />
+            </Suspense>
+          </SettingsCard>
+        )}
+        {tab === 'developer' && <DeveloperPanel basePath={SETTINGS_BASE_PATH} />}
         {tab === 'releases' && <ReleasesPanel />}
         {tab === 'about' && <AboutPanel />}
       </>}

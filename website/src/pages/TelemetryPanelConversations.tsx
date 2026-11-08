@@ -14,7 +14,7 @@ import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
 import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
 import { usePersistedBool } from '../hooks/usePersistedBool'
-import { fmtDateNumeric, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
+import { fmtDateNumeric, fmtList, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import {
   type ContextSession,
@@ -86,6 +86,9 @@ type TurnUsageRow = {
   duration_ms?: number
   context_used?: number
   context_window?: number
+  /** Whether the turn streamed any reply text. Absent on rows that do not
+   *  record it, which is unknown, not undelivered. */
+  delivered?: boolean
 }
 
 const DRILL_TH = 'text-left font-normal text-[10px] text-muted uppercase tracking-wide px-2 py-1'
@@ -154,7 +157,12 @@ function SessionTurnsDrilldown({ slot }: { slot: string }) {
       <tbody>
         {turns.map((t, i) => (
           <tr key={`${t.ts}-${i}`} className="border-b border-border/40 last:border-b-0">
-            <td className={`${DRILL_TD} text-muted`}>{fmtNumber(i + 1)}</td>
+            <td className={`${DRILL_TD} text-muted`}>
+              {fmtNumber(i + 1)}
+              {t.delivered === false && (
+                <span className="ml-1.5 font-sans">{i18nT('pages.telemetryPanel.turn_no_reply')}</span>
+              )}
+            </td>
             <td className={`${DRILL_TD} ${DRILL_HIDE_TIME}`}>
               {fmtDateNumeric(t.ts)} {fmtTimeNumeric(t.ts)}
             </td>
@@ -455,7 +463,7 @@ function groupBars(rows: CostRow[], limit: number): SpendBar[] {
       credits: rest.reduce((sum, r) => sum + r.credits, 0),
       // The folded names themselves, so the row says WHAT it folded. The row is
       // inert, and a fold that names nothing reads as something to click.
-      title: rest.map(r => categoryLabel(r.name)).join(', '),
+      title: fmtList(rest.map(r => categoryLabel(r.name))),
       label: (
         <span className="block truncate text-muted">
           {i18nT('pages.telemetryPanel.other_group', { n: fmtNumber(rest.length) })}
@@ -606,7 +614,6 @@ export function SpendTab({ c }: { c: Cost }) {
           title={i18nT('pages.telemetryPanel.top_sessions')}
           rows={sessionBars(c.conversations, c.navigable_category, SPEND_SESSION_ROWS)}
           labelClass="w-[46%]"
-          note={i18nT('pages.telemetryPanel.top_spenders_link_to_chat')}
         />
       </div>
       <div className="border-t border-border mt-4 pt-3">

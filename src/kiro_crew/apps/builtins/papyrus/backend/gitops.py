@@ -280,13 +280,13 @@ def _pin_attributes_sync(cwd: Path) -> None:
     # at ANOTHER repository, `info` and `attributes` are legitimate non-links
     # *inside that repo*, so both inner checks pass and a `GET /git` status poll
     # rewrites a different repository's attributes, outside this project entirely.
-    # Verified before the fix. The rule has to hold for every segment KiroCrew
+    # Verified. The rule has to hold for every segment Kiro Crew
     # traverses by name, not just the leaf.
     #
     # `store.is_reparse_link`, not `is_symlink()`: a Windows directory JUNCTION is a
     # reparse point `is_symlink()` does not report, and it is the link type a user
-    # can create there without elevation — so a symlink-only check left this guard
-    # bypassable on the platform this PR adds support for.
+    # can create there without elevation — so a symlink-only check leaves this guard
+    # bypassable on Windows.
     if (
         store.is_reparse_link(git_dir)
         or store.is_reparse_link(info)
@@ -346,7 +346,8 @@ async def _git(
     """Run ``git <args>`` in *cwd* off the event loop.
 
     Returns ``(returncode, stdout, stderr)``. A timeout kills the process tree
-    and surfaces as :class:`GitError` rather than a silent empty result.
+    and surfaces as :class:`GitError` rather than a silent empty result. On
+    cancel the tree is killed too, then the cancel propagates.
     """
     # Attribute-driven programs are disabled by a file, not by `-c` — see
     # `_pin_attributes_sync` for why the override list cannot cover them.
@@ -510,6 +511,13 @@ async def _git(
                 logger.warning("papyrus: git did not exit after SIGKILL")
         _audit(args[0] if args else "run", str(cwd), "failure", error="timeout")
         raise GitError(f"git {args[0] if args else ''} timed out") from exc
+    except asyncio.CancelledError:
+        # The child runs in its own session, so once this coroutine stops
+        # awaiting it nothing else will stop it: no timeout is left.
+        # kill_and_reap shields the kill, so a repeated cancel cannot skip it.
+        if proc is not None and proc.returncode is None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     except FileNotFoundError as exc:
         _audit(args[0] if args else "run", str(cwd), "failure", error="git not found")
         raise GitError("git is not installed on this host") from exc
@@ -539,8 +547,20 @@ def derive_project_name(url: str) -> str:
     return tail.lower()
 
 
-async def clone(url: str, destination: Path) -> None:
-    """Shallow-clone *url* into *destination*.
+def _publish_clone(staging: Path, destination: Path) -> str:
+    """BLOCKING — move a finished clone into place and return its generation.
+
+    Both happen under the paper's config lock, which a delete also takes, so no
+    delete can land between the move and the read: the generation names the paper
+    this clone made.
+    """
+    with store.config_lock(destination):
+        os.rename(staging, destination)
+        return store.project_generation(destination)
+
+
+async def clone(url: str, destination: Path) -> str:
+    """Shallow-clone *url* into *destination* and return the new paper's generation.
 
     *destination* must NOT exist and must already have been produced by
     :func:`.store.safe_project_dir` — this function does not validate it. The URL
@@ -555,6 +575,10 @@ async def clone(url: str, destination: Path) -> None:
 
     The rename is ``os.rename``, which fails rather than merging if the destination
     appeared meanwhile, so the loser reports a conflict and the winner keeps its tree.
+
+    The generation (:func:`.store.project_generation`) is read in the same locked
+    step as the rename, so a caller can later tell whether the folder still holds
+    the paper this call cloned.
     """
     if not GIT_URL_RE.match(url or ""):
         raise GitError("url must be http(s)://, git://, ssh://, or git@host:path")
@@ -576,7 +600,7 @@ async def clone(url: str, destination: Path) -> None:
     try:
         # Atomic within a filesystem, and it REFUSES to clobber a non-empty directory —
         # which is what makes the loser of a race fail instead of overwriting.
-        await asyncio.to_thread(os.rename, staging, destination)
+        return await asyncio.to_thread(_publish_clone, staging, destination)
     except OSError as exc:
         await _remove_tree(staging)
         raise GitError("a project with that name already exists", output=str(exc))

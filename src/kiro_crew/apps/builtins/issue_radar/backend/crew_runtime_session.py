@@ -14,10 +14,10 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.worker_auto_approve import WorkerAutoApprove
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import slot_history_key
-from kiro_crew.safety_override import safety_override
 
 from . import crew_model, crew_store, provider
 from .crew_runtime_prompt import compose_turn_prompt_async
@@ -83,15 +83,20 @@ def _slot_title(owner: str, repo: str, crew: dict[str, Any], slot_key: str) -> s
 # never expires, and nothing audits it as a grant because the human's click IS
 # the record. A backend stamping it produces an unbounded auto-approval with no
 # activation trail — which is why ``spec_builder`` was made to stop doing exactly
-# that. Crews take the TASK RUNNER's shape instead (scope
-# ``taskrunner:{task_id}:autoapprove``): the record's ``unattended`` flag is only
-# the operator's intent, and the live decision is a ``SafetyOverride`` scoped
-# grant that is SEL-audited fail-closed before it exists, expires by itself, and
-# is re-checked on every single approval.
+# that. Crews take the TASK RUNNER's shape instead: the record's ``unattended``
+# flag is only the operator's intent, and the live decision is a scoped grant
+# that is SEL-audited fail-closed before it exists, expires by itself, and is
+# re-checked on every single approval. The grant is held through the App Kit's
+# worker auto-approve seam, which this app declares in its manifest
+# (``permissions.workerAutoApprove``); the seam lets it reach only its own crew
+# slots and its own scope keys, and ends every grant when the app is disabled.
+
+#: The app's handle on the seam.
+_GRANTS = WorkerAutoApprove(APP_NAME)
 
 # Recorded on every SEL entry for a crew grant, so an auditor can tell an
 # unattended crew's grant from a human's dashboard click.
-GRANT_SOURCE = "issue-radar-crew"
+GRANT_SOURCE = _GRANTS.source
 
 # How long ONE crew grant lives. This is not the renewal interval — the watchdog
 # re-derives the grant every ``watch.POLL_INTERVAL_SEC`` (60s) — it is how long
@@ -103,37 +108,48 @@ GRANT_SOURCE = "issue-radar-crew"
 TRUST_TTL_SECS = 900
 
 
+def _grant_name(crew_id: str) -> str:
+    """The seam's name for one crew's grant."""
+    return f"crew-{crew_id}"
+
+
 def autoapprove_scope(crew_id: str) -> str:
-    """``SafetyOverride`` scope key holding one crew's auto-approve grant.
+    """Scope key holding one crew's auto-approve grant.
 
-    Deliberately shaped like ``taskrunner:{task_id}:autoapprove``. Enforcement is
-    ``safety_override().is_scope_active(scope)``; the crew record's ``unattended``
-    flag carries no authority of its own.
+    Built by the seam inside this app's own namespace. Enforcement is the shared
+    approval path's per-approval ``is_scope_active(scope)``; the crew record's
+    ``unattended`` flag carries no authority of its own.
     """
-    return f"crew:{crew_id}:autoapprove"
+    return _GRANTS.scope(_grant_name(crew_id))
 
 
-def _hold_grant(scope: str) -> bool:
+def _hold_grant(slot: Any, crew_id: str) -> bool:
     """Extend a live grant, or mint a freshly-audited one. True if usable after.
 
     RENEWAL IS A SLIDE, NOT A RE-ACTIVATION, and that choice is load-bearing twice
     over. Re-activating every 60s would write a critical SEL entry per cycle —
     1,440 a day per crew, burying the one activation an auditor came to find — and
-    it would reset ``activated_at``, so ``SafetyOverride``'s 24h ceiling could
-    never be reached and "expiring" would be a word rather than a bound.
-    ``renew_scoped`` is documented as not audited per call for the same reason: it
-    extends an already-audited grant within its already-audited ceiling.
+    it would reset ``activated_at``, so the 24h ceiling could never be reached and
+    "expiring" would be a word rather than a bound. The seam's ``hold`` slides a
+    live grant (not audited per call: it extends an already-audited grant within
+    its already-audited ceiling) and mints only when there is none.
 
     When the ceiling IS reached the slide is refused, and rather than let the grant
-    lapse under a crew that is mid-turn, a NEW grant is minted — which goes through
-    ``activate_scoped`` and so is freshly audited. A crew running for a week
-    therefore leaves one activation record per day, not one for all time.
+    lapse under a crew that is mid-turn, a NEW grant is minted — which is freshly
+    audited. A crew running for a week therefore leaves one activation record per
+    day, not one for all time.
     """
-    so = safety_override()
-    if so.is_scope_active(scope):
-        if so.renew_scoped(scope, source=GRANT_SOURCE, ttl=TRUST_TTL_SECS).renewed:
-            return True
-    return bool(so.activate_scoped(scope, source=GRANT_SOURCE, ttl=TRUST_TTL_SECS).active)
+    return _GRANTS.hold(slot, _grant_name(crew_id), ttl_secs=TRUST_TTL_SECS)
+
+
+def release_grant(crew_id: str, slot: Any = None) -> bool:
+    """End one crew's grant, and clear it from *slot*. True if anything was held."""
+    return _GRANTS.release(_grant_name(crew_id), slot)
+
+
+def release_slot_grant(slot: Any) -> bool:
+    """Clear whatever scoped grant this app's crew *slot* carries. True if any."""
+    return _GRANTS.release_slot(slot)
 
 
 def sync_trust(slot: Any, crew: dict[str, Any]) -> bool:
@@ -145,38 +161,38 @@ def sync_trust(slot: Any, crew: dict[str, Any]) -> bool:
     and not only by the caller, so this function cannot hand a grant to a paused
     crew whatever path reaches it.
 
-    ``slot._trust_scope`` carries the scope key onto the slot, because the consumer
-    of the grant is the shared dashboard approval path — a grant nothing consults
-    is a control in name only. That attribute is the whole opt-in: a slot without
-    it is unaffected by any of this, and the interactive ``slot._trust`` flag is
-    never written here.
+    ``slot._trust_scope`` carries the scope key onto the slot (the seam writes
+    it), because the consumer of the grant is the shared dashboard approval path —
+    a grant nothing consults is a control in name only. That attribute is the whole
+    opt-in: a slot without it is unaffected by any of this, and the interactive
+    ``slot._trust`` flag is never written here.
 
     What bounds the grant, stated plainly because it is a security control: it is
     SEL-audited fail-closed before it exists, it expires ``TRUST_TTL_SECS`` after
     the last watchdog cycle that touched it, it is re-checked on every approval
-    rather than sampled once, and it cannot be extended past ``SafetyOverride``'s
-    24h ceiling without a fresh audited activation. If the audit write fails there
-    is no grant at all and the crew falls back to the ordinary approval path.
+    rather than sampled once, and it cannot be extended past the 24h ceiling
+    without a fresh audited activation. If the audit write fails, or the seam
+    refuses (the app is off or does not declare the grant), there is no grant at
+    all and the crew falls back to the ordinary approval path.
     """
-    scope = autoapprove_scope(str(crew.get("id") or ""))
+    crew_id = str(crew.get("id") or "")
     want = bool(crew.get("unattended")) and is_live(crew)
     had = bool(getattr(slot, "_trust_scope", ""))
     if not want:
-        safety_override().deactivate_scope(scope)
-        slot._trust_scope = ""
+        release_grant(crew_id, slot)
         if had:
             logger.info("issue-radar crew %s: trust revoked", crew.get("id"))
         return False
-    granted = _hold_grant(scope)
-    slot._trust_scope = scope if granted else ""
+    granted = _hold_grant(slot, crew_id)
     if not granted:
-        # ``activate_scoped`` audits fail-closed, so the only way here is a SEL
-        # write that failed. Fail closed too: no grant, and say so loudly, because
-        # the visible symptom is otherwise just a crew that mysteriously stalls on
-        # an approval prompt nobody is watching.
+        # The seam audits fail-closed and refuses an app that is off, so the ways
+        # here are a SEL write that failed or a refused grant. Fail closed too: no
+        # grant, and say so loudly, because the visible symptom is otherwise just a
+        # crew that mysteriously stalls on an approval prompt nobody is watching.
         logger.error(
             "issue-radar crew %s: auto-approve grant REFUSED (its audit could not "
-            "be written); the crew will fall back to interactive approval",
+            "be written, or the app may not hold one); the crew will fall back to "
+            "interactive approval",
             crew.get("id"),
         )
     elif not had:
@@ -381,7 +397,20 @@ async def _capped_run_chat(state: Any, slot: Any, prompt: str) -> None:
             getattr(slot, "key", "?"),
         )
         try:
-            slot.append("error", NO_PERMIT_CARD, "msg msg-err")
+            # Lazy import: this module is a crew_runtime facade owner, so a
+            # module-level import becomes a mirror export the facade must
+            # re-declare. Keeping it local avoids that contract.
+            from kiro_crew.dashboard.gateway_notice import (
+                GATEWAY_NOTICE_CREW_TURN_NO_PERMIT,
+                gateway_notice_meta,
+            )
+
+            slot.append(
+                "error",
+                NO_PERMIT_CARD,
+                "msg msg-err",
+                meta=gateway_notice_meta(GATEWAY_NOTICE_CREW_TURN_NO_PERMIT),
+            )
         except Exception:  # pragma: no cover - the card is never load-bearing
             logger.debug("issue-radar: could not render the no-permit card", exc_info=True)
         _call_if_present(state, "push_slots_update")

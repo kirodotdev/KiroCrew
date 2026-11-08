@@ -97,13 +97,22 @@ class TestBootAdmissionRevet:
         # Builtin is exempt from the gate — start_app_backend was invoked for it.
         assert "core-builtin" in started
 
-    def test_deferred_backends_are_admitted_now_and_spawned_later(
+    def test_backends_spawn_in_one_wave_with_the_bound_port_set(
         self, tmp_path, app_env, monkeypatch
     ):
-        """``defer`` holds a name back from the main spawn wave without skipping its
-        vetting; ``start_deferred_app_backends`` then spawns exactly that set, once.
-        Dev Fleet is deferred so it is handed the gateway's actually-bound port."""
+        """With the gateway's bound port exported, Dev Fleet spawns with every other
+        app and its spawn finds ``KIROCREW_BOUND_PORT`` set, the source of its
+        ``KIROCREW_GATEWAY_ORIGIN``."""
         bmod, started = self._boot_env(monkeypatch)
+        seen_port: dict[str, str | None] = {}
+
+        def _spawn(name):
+            seen_port[name] = os.environ.get("KIROCREW_BOUND_PORT")
+            started.append(name)
+            return None
+
+        monkeypatch.setattr(bmod, "start_app_backend", _spawn)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "5476")
         apps = [
             {
                 "name": "dev-fleet",
@@ -120,16 +129,35 @@ class TestBootAdmissionRevet:
         ]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
         bmod.start_enabled_app_backends()
-        assert started == ["md-notebook"]
-        bmod.start_deferred_app_backends()
-        assert started == ["md-notebook", "dev-fleet"]
-        # A second call spawns nothing: the deferred set was consumed.
-        bmod.start_deferred_app_backends()
-        assert started == ["md-notebook", "dev-fleet"]
+        assert sorted(started) == ["dev-fleet", "md-notebook"]
+        assert seen_port["dev-fleet"] == "5476"
+        assert not hasattr(bmod, "start_deferred_app_backends")
 
-    def test_a_deferred_app_that_is_disabled_is_not_spawned_later(
-        self, tmp_path, app_env, monkeypatch
+    @pytest.mark.parametrize("state", [False, None])
+    def test_an_app_disabled_after_the_listing_is_not_spawned(
+        self, tmp_path, app_env, monkeypatch, state
     ):
+        """The listing is a snapshot taken before the reconcile passes. An app the
+        operator disables meanwhile (or whose state turns unreadable) is not
+        spawned: enablement is re-read right before the spawn, fail-closed."""
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [
+            {
+                "name": name,
+                "enabled": True,
+                "origin": "builtin",
+                "manifest": {"backend": {"entryPoint": "server.py"}},
+            }
+            for name in ("dev-fleet", "md-notebook")
+        ]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        monkeypatch.setattr(
+            bmod, "_app_enabled_state", lambda name: True if name == "md-notebook" else state
+        )
+        bmod.start_enabled_app_backends()
+        assert started == ["md-notebook"]
+
+    def test_a_disabled_builtin_app_is_not_spawned(self, tmp_path, app_env, monkeypatch):
         bmod, started = self._boot_env(monkeypatch)
         apps = [
             {
@@ -141,62 +169,7 @@ class TestBootAdmissionRevet:
         ]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
         bmod.start_enabled_app_backends()
-        bmod.start_deferred_app_backends()
         assert started == []
-
-    def test_a_deferred_app_disabled_between_the_waves_is_not_spawned(
-        self, tmp_path, app_env, monkeypatch
-    ):
-        """The deferral leaves a window (the rest of start_dashboard) in which the
-        operator can run `kirocrew app disable dev-fleet`. The cached admission
-        must not outlive that: enablement is re-read at spawn time, and an
-        unreadable state (None) is treated as not enabled."""
-        bmod, started = self._boot_env(monkeypatch)
-        apps = [
-            {
-                "name": "dev-fleet",
-                "enabled": True,
-                "origin": "builtin",
-                "manifest": {"backend": {"entryPoint": "server.py"}},
-            }
-        ]
-        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
-        bmod.start_enabled_app_backends()
-        assert started == []
-        # Operator disables the app while the gateway is still booting.
-        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
-        bmod.start_deferred_app_backends()
-        assert started == []
-        # And an unreadable state is not a licence to spawn either.
-        bmod.start_enabled_app_backends()
-        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: None)
-        bmod.start_deferred_app_backends()
-        assert started == []
-
-    def test_a_deferred_app_denied_by_governance_between_the_waves_is_not_spawned(
-        self, tmp_path, app_env, monkeypatch
-    ):
-        import kiro_crew.apps.manager as manager
-
-        bmod, started = self._boot_env(monkeypatch)
-        apps = [
-            {
-                "name": "dev-fleet",
-                "enabled": True,
-                "origin": "builtin",
-                "manifest": {"backend": {"entryPoint": "server.py"}},
-            }
-        ]
-        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
-        bmod.start_enabled_app_backends()
-        monkeypatch.setattr(manager, "_app_activation_denied", lambda name: "policy tightened")
-        bmod.start_deferred_app_backends()
-        assert started == []
-
-    def test_dev_fleet_is_the_bound_port_deferred_backend(self):
-        import kiro_crew.apps.backend as bmod
-
-        assert bmod.DEV_FLEET_APP_NAME == "dev-fleet"
 
     def test_spawn_exception_isolated_and_boot_continues(self, tmp_path, app_env, monkeypatch):
         """A per-app spawn failure (e.g. sandbox.wrap_argv fail-closing on macOS 26
@@ -245,22 +218,16 @@ class TestBootAdmissionRevet:
         assert "boom-app" not in result
 
 
-# =============================================================================
 # KIROCREW_DEVFLEET_REPO forwarding (silent-empty-fleet fix)
-# =============================================================================
 
 
 def test_devfleet_repo_survives_the_app_backend_env_allowlist(monkeypatch):
     """The documented dev-fleet repo override must be ABLE to reach the backend.
 
-    The dev-fleet backend runs as a separate process started with
-    ``apps.registry.minimal_env()``, which passes only a fixed safe-key set.
-    ``KIROCREW_DEVFLEET_REPO`` is dev-fleet's highest-priority repo discovery
-    hint, but until it is added to the explicit platform extras the allowlist
-    strips it — the operator sets the documented override, the backend never
-    sees it, and the fleet silently renders empty (the remaining hints are
-    ``KIROCREW_PROJECT_DIR``, which packaged installs point at the app bundle
-    with no ``.git``, and a hardcoded ``~/kirocrew`` fallback).
+    The backend starts with ``apps.registry.minimal_env()``, so unless
+    ``KIROCREW_DEVFLEET_REPO`` is forwarded as a host-grant variable it is stripped and
+    the fleet silently renders empty (``KIROCREW_PROJECT_DIR`` has no ``.git`` on
+    packaged installs).
     """
     from pathlib import Path
 
@@ -271,12 +238,15 @@ def test_devfleet_repo_survives_the_app_backend_env_allowlist(monkeypatch):
     # The generic allowlist does NOT carry it — that is the trap this guards.
     assert "KIROCREW_DEVFLEET_REPO" not in minimal_env()
 
-    # apps/backend.py must therefore add it to the explicit platform extras
-    # (same mechanism that carries KIROCREW_PROJECT_DIR and the
-    # KIROCREW_DEVFLEET_BIN_* trusted-binary overrides).
-    body = Path(bmod.__file__).read_text()
+    # The app's host grants must therefore name it, and apps/backend.py must forward
+    # what they name (the mechanism that also carries the KIROCREW_DEVFLEET_BIN_*
+    # trusted-binary overrides).
+    from kiro_crew.apps import builtin_host_grants
+
+    assert "KIROCREW_DEVFLEET_REPO" in builtin_host_grants.backend_env_names()
+    body = Path(bmod.__file__).read_text(encoding="utf-8")
     assert (
-        '_platform_extra["KIROCREW_DEVFLEET_REPO"]' in body
+        "_host_grants.backend_env_names()" in body
     ), "the KIROCREW_DEVFLEET_REPO override no longer reaches app backends"
 
 
@@ -301,19 +271,10 @@ def test_devfleet_repo_env_wins_repo_discovery(monkeypatch, tmp_path):
 class TestGatewayOriginInjection:
     """Bound-port-gated gateway-origin/proof injection into entryPoint app backends.
 
-    The gateway hands each entryPoint child two generic variables so the child
-    can call BACK to this gateway (for example POST /api/notifications/push on a
-    declared channel): ``KIROCREW_GATEWAY_ORIGIN`` (where the gateway listens)
-    and ``KIROCREW_GATEWAY_ORIGIN_PROOF`` (an HMAC that lets the child confirm
-    the origin came from the gateway that alone holds its secret). The origin is
-    injected ONLY from hard evidence of the port the gateway ACTUALLY bound --
-    the exported ``KIROCREW_BOUND_PORT``, required to be numeric and in
-    1..65535. There is no fallback to an inherited ``KIROCREW_PORT``, the app's
-    own ``PORT``, a config value, or a default: without bound-port evidence the
-    origin (and therefore the proof) is omitted and a backend that needs a
-    callback base fails closed (dormant). The proof additionally requires the
-    app's ``.app_secret``; a secret-less backend gets the origin only. No
-    app-specific variable is ever injected.
+    ``KIROCREW_GATEWAY_ORIGIN`` is injected ONLY from a numeric ``KIROCREW_BOUND_PORT``
+    in 1..65535, with no fallback to ``KIROCREW_PORT``, ``PORT``, config or a default;
+    without it the backend fails closed. ``KIROCREW_GATEWAY_ORIGIN_PROOF`` (an HMAC) also
+    needs the app's ``.app_secret``. No app-specific variable is ever injected.
     """
 
     _SECRET = "test-app-secret-0123456789abcdef"
@@ -399,17 +360,24 @@ class TestGatewayOriginInjection:
         # The proxy secret is still injected when a secret exists.
         assert env["KIROCREW_PROXY_SECRET"] == self._SECRET
 
+    def test_dev_fleet_gets_the_origin_and_no_bound_port(self, tmp_path, app_env, monkeypatch):
+        """Dev Fleet aims its pointer broker at ``KIROCREW_GATEWAY_ORIGIN``; the raw
+        bound port is not passed through to any backend."""
+        name = self._install_backend_app(tmp_path, name="dev-fleet")
+        self._write_secret(name)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "8123")
+
+        _result, env = self._capture_child_env(monkeypatch, name)
+        assert env is not None, "the spawn never reached the Popen boundary"
+        assert env["KIROCREW_GATEWAY_ORIGIN"] == "http://127.0.0.1:8123"
+        assert "KIROCREW_BOUND_PORT" not in env
+
     def test_specific_interface_bind_omits_the_origin(self, tmp_path, app_env, monkeypatch):
         """A specific-interface KIROCREW_BOUND_HOST omits the origin (fail closed).
 
-        A backend's callback carries no Origin header, and the gateway's CSRF
-        barrier trusts an Origin-less mutating request only from a loopback
-        peer — so an origin pointing at a specific interface (10.0.0.7,
-        fd00::7) would have every mutating callback refused at the barrier.
-        Injecting it produces a half-alive backend; omitting it is the same
-        designed dormancy as missing port evidence. The v6-loopback marker
-        ("::1") still injects, bracketed per RFC 3986, and absent evidence
-        stays loopback (the wildcard/loopback bind shapes).
+        The CSRF barrier trusts an Origin-less mutating callback only from a loopback peer,
+        so an origin on 10.0.0.7 would yield a half-alive backend. "::1" still injects,
+        bracketed per RFC 3986, and absent evidence stays loopback.
         """
         name = self._install_backend_app(tmp_path)
         self._write_secret(name)
@@ -639,11 +607,9 @@ class TestGatewayOriginInjection:
 class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
     """``policy_cache`` is bind-mount-hidden in every sandbox tier.
 
-    That is deliberate — it keeps the AGENT's own subprocesses from reading or rewriting
-    the ceiling — but an app backend in cache-only mode resolves the fleet ceiling FROM
-    that file and FAILS CLOSED without it. Without the visibility carve-out the two
-    controls contradict each other and every app backend on a centrally-governed host
-    exits at boot.
+    A cache-only app backend resolves the fleet ceiling FROM that file and fails closed
+    without it, so without the visibility carve-out every backend on a centrally-governed
+    host exits at boot.
     """
 
     def test_the_spawn_passes_the_cache_as_a_visible_dir(self, app_env, tmp_path, monkeypatch):
@@ -814,13 +780,10 @@ class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
 class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
     """The md-notebook spawn's isolated startup, which rides with its mask carve-out.
 
-    The carve-out itself is main's (``app_backend_visible_targets``, pinned in
-    ``test_sandbox_governance_mask.py``). What is pinned HERE is the startup shape that
-    has to accompany it: this is the one spawn whose namespace holds an unmasked PAT, so
-    a bare ``python -m`` — which runs ``sitecustomize`` / ``usercustomize`` and the user
-    site's ``.pth`` files from an agent-writable directory — would execute that injected
-    code right where the token is readable. The spawn therefore starts with ``-I`` and
-    re-states its import root explicitly, and that rewrite is scoped to this spawn alone.
+    The carve-out (``app_backend_visible_targets``) is pinned in
+    ``test_sandbox_governance_mask.py``. This spawn's namespace holds an unmasked PAT, so
+    a bare ``python -m`` would run ``sitecustomize`` and ``.pth`` files from an
+    agent-writable directory; it starts with ``-I``, scoped to this spawn alone.
     """
 
     @staticmethod
@@ -919,6 +882,95 @@ class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
             "a third-party app bought the md-notebook state carve-out with its "
             f"name alone (saw {seen.get('visible')!r})"
         )
+
+
+class TestTheBackendSpawnLiftsTheAppsDeclaredMasks:
+    """``apps/backend.py`` hands an app's ``credentialMasks`` back to its own backend spawn.
+
+    The leaves themselves are pinned in ``test_app_credential_masks.py``; this pins the
+    call site: the lift reaches ``wrap_argv``, keyed on the provenance of the code the
+    spawn executes, never on a fixed source.
+    """
+
+    @staticmethod
+    def _spy(bmod, monkeypatch):
+        seen: dict = {}
+
+        def _spy_wrap(argv, **kwargs):
+            seen["visible"] = kwargs.get("extra_visible_dirs")
+            return (list(argv), None)
+
+        monkeypatch.setattr(bmod, "wrap_argv", _spy_wrap)
+        monkeypatch.setattr(
+            bmod.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("stop"))
+        )
+        return seen
+
+    @staticmethod
+    def _install(tmp_path, name, masks):
+        src = tmp_path / "source" / name
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": name,
+                    "description": "declared credential masks",
+                    "backend": {"entryPoint": "server.py", "healthCheck": "/health"},
+                    "credentialMasks": masks,
+                }
+            )
+        )
+        (src / "server.py").write_text("import time\ntime.sleep(30)\n")
+        install_app(src)
+
+    def test_an_installed_apps_backend_gets_its_declared_leaves_back(
+        self, app_env, tmp_path, monkeypatch
+    ):
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.sandbox import app_declared_mask_targets
+
+        self._install(tmp_path, "masked-app", ["secrets.json"])
+        lifted = app_declared_mask_targets("masked-app", builtin=False)
+        assert lifted, "the declaration resolved to no target, so this pins nothing"
+        seen = self._spy(bmod, monkeypatch)
+
+        bmod.start_app_backend("masked-app")
+
+        assert seen.get("visible") is not None, "the spawn never reached wrap_argv"
+        for path in lifted:
+            assert path in seen["visible"], (
+                "the app's declared mask hides its credential from its own backend "
+                f"(missing {path!r}, saw {seen['visible']!r})"
+            )
+
+    @pytest.mark.parametrize(("name", "builtin"), [("masked-app", False), ("md-notebook", True)])
+    def test_the_lift_is_keyed_on_the_spawned_codes_provenance(
+        self, app_env, tmp_path, monkeypatch, name, builtin
+    ):
+        import kiro_crew.apps.backend as bmod
+
+        if builtin:
+            from kiro_crew.apps.manager import register_builtin_apps
+
+            register_builtin_apps()
+        else:
+            self._install(tmp_path, name, ["secrets.json"])
+        asked: list[tuple[str, bool]] = []
+        sentinel = "/declared-mask-sentinel"
+
+        def _declared(app_name, *, builtin):
+            asked.append((app_name, builtin))
+            return (sentinel,)
+
+        monkeypatch.setattr(bmod, "app_declared_mask_targets", _declared)
+        seen = self._spy(bmod, monkeypatch)
+
+        bmod.start_app_backend(name)
+
+        assert asked == [(name, builtin)]
+        assert sentinel in (seen.get("visible") or ())
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="shebang semantics are POSIX-only")

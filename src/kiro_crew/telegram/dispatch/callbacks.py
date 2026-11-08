@@ -142,8 +142,12 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
         body = data[2:]
         rest, _, flag = body.rpartition(":")
         rid, _, nonce = rest.rpartition(":")
-        trust = flag == "t"
         approved = flag in ("1", "t")
+        # A Trust press under a policy that denies ``trust`` approves this one tool
+        # only; the reply then says "Approved", not "Trusted".
+        from kiro_crew.messaging.session_trust import trust_permitted
+
+        trust = flag == "t" and trust_permitted()
         session_key = self._callback_session_key(
             route,
             cb.chat_id,
@@ -266,13 +270,16 @@ async def on_callback(self: TelegramDispatcher, cb: "TelegramCallback") -> None:
                 store_route_preference=picker.store_route_preference,
             )
         else:
-            outcome = await self._apply_agent(picker.route, value)
+            outcome = await self._apply_agent(picker.route, value, label)
+        # An agent button's label can be a crew's display name, so the audit
+        # records the exact spec id it resolved to instead.
+        audited = value if prefix == "g:" and value else label
         facade.sel().log_api_access(
             caller=str(cb.user_id) or "unknown",
             operation=operation,
             outcome="allowed",
             source="telegram",
-            resources=f"{resource}={label}",
+            resources=f"{resource}={audited}",
         )
         # One edit carries both the result text and the retired keyboard, so
         # the buttons never outlive the choice they represent.

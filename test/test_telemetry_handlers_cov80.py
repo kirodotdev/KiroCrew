@@ -501,7 +501,7 @@ async def test_context_trace_returns_the_per_turn_trace(
 def test_persisted_titles_reads_each_transcript_once() -> None:
     log = MagicMock()
     log.get_metadata = MagicMock(return_value={"title": "zzq persisted"})
-    out = h._persisted_titles(log, ["chat-1-9", "chat-1-9", "chat-2-4"])
+    out = h._persisted_titles(log, ["chat-1-9", "chat-1-9", "chat-2-4"], {})
     assert out == {"chat-1-9": "zzq persisted", "chat-2-4": "zzq persisted"}
     # Deduplicated by TRANSCRIPT key, so the repeated slot costs no second read.
     assert log.get_metadata.call_count == 2
@@ -510,13 +510,13 @@ def test_persisted_titles_reads_each_transcript_once() -> None:
 def test_persisted_titles_drops_the_placeholder_and_the_unnamed() -> None:
     log = MagicMock()
     log.get_metadata = MagicMock(side_effect=[{"title": NEW_SESSION_TITLE}, {}])
-    assert h._persisted_titles(log, ["chat-1-9", "chat-2-4"]) == {}
+    assert h._persisted_titles(log, ["chat-1-9", "chat-2-4"], {}) == {}
 
 
 def test_persisted_titles_survives_an_unreadable_metadata_line() -> None:
     log = MagicMock()
     log.get_metadata = MagicMock(side_effect=OSError("truncated"))
-    assert h._persisted_titles(log, ["chat-1-9"]) == {}
+    assert h._persisted_titles(log, ["chat-1-9"], {}) == {}
 
 
 # --- _with_conversation_titles ----------------------------------------------
@@ -691,6 +691,7 @@ async def test_collection_status_reports_the_effective_switch_state(
         env_pinned=True,
         env_var=h.TELEMETRY_ENV_VAR,
         otlp_configured=True,
+        otlp_destinations=({"name": "ops", "source": "otlp_endpoints", "locked": False},),
     )
     monkeypatch.setattr(h, "_telemetry_cfg", lambda: state)
     monkeypatch.setattr(h, "_telemetry_overlay_pins", lambda leaf: False)
@@ -701,5 +702,6 @@ async def test_collection_status_reports_the_effective_switch_state(
         "env_var": h.TELEMETRY_ENV_VAR,
         "overlay_override": False,
         "otlp_configured": True,
+        "otlp_destinations": [{"name": "ops", "source": "otlp_endpoints", "locked": False}],
         "metrics_dir": str(tmp_path / "m"),
     }

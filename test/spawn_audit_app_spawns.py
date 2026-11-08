@@ -94,6 +94,14 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # the draft-PR route could reuse it (the detector keys by the ENCLOSING function).
         "apps/builtins/auto_improvement/backend/commit.py::materialize_queued_diff",
         "apps/builtins/auto_improvement/backend/deps.py::_gh_authenticated",
+        # `<running interpreter> -m pytest --version` from an empty temp dir: a literal
+        # argv, no repo or agent input, so no conftest can load. It asks whether the gate's
+        # own interpreter has pytest before a run starts.
+        "apps/builtins/auto_improvement/backend/deps.py::gate_pytest_problem",
+        # Its test fixture: `python -m venv --without-pip` into tmp_path, then that bare
+        # interpreter's `-c "import pytest"`. Literal argv, nothing agent-influenced; the
+        # bare venv is the fixture (an interpreter without pytest, like the desktop bundle).
+        "apps/builtins/auto_improvement/tests/test_gate_pytest_preflight.py::python_without_pytest",
         "apps/builtins/auto_improvement/backend/deps.py::install_deps",
         "apps/builtins/auto_improvement/backend/pr_watchers.py::_gh",
         "apps/builtins/auto_improvement/backend/pr_watchers.py::_git",
@@ -112,8 +120,7 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # here; it only edits FILES inside the worktree, and executing those files is
         # routed separately (profiles/github_repo/profile.py::_run).
         "apps/builtins/auto_improvement/spine/agent_discovery.py::_git",
-        "apps/builtins/auto_improvement/spine/driver_commit.py::_apply",
-        "apps/builtins/auto_improvement/spine/driver_commit.py::_stage_winner",
+        "apps/builtins/auto_improvement/spine/driver_commit.py::_git_apply",
         "apps/builtins/auto_improvement/spine/driver_git.py::_git",
         "apps/builtins/auto_improvement/spine/driver_publish.py::_push_with_rebase",
         "apps/builtins/auto_improvement/spine/gate.py::_changed_paths",
@@ -329,6 +336,10 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # completion. No child process, and every payload is a literal in the test
         # file.
         "apps/builtins/issue_radar/tests/test_assignees.py::_await",
+        # Same construct again for the comment-batch route tests: ``asyncio.run``
+        # drives one in-process aiohttp handler coroutine. No child process; every
+        # payload is a literal in the test file.
+        "apps/builtins/issue_radar/tests/test_comment_batch.py::_await",
         # NOT subprocess spawns: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``). These four TEST functions drive Code Review
         # Sage's ``_save_runs`` coroutine to completion without a running loop --
@@ -352,6 +363,13 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         "::test_a_planted_tmp_symlink_is_not_followed",
         "apps/builtins/code_review_sage/tests/test_backend_routes.py"
         "::test_the_predictable_tmp_name_is_never_used",
+        # Same construct and classification: ``asyncio.run`` drives one of the app's
+        # own route coroutines (``_run_review_bg`` against a stub driver, ``_record``
+        # on a private copy of the routes module) to completion. No child process;
+        # every run record is a literal dict built by the test.
+        "apps/builtins/code_review_sage/tests/test_backend_routes_coverage.py::_drive",
+        "apps/builtins/code_review_sage/tests/test_routes_parts_composition_contract.py"
+        "::test_a_patched_function_on_a_copy_is_what_a_moved_caller_awaits",
         # md-notebook shells out to the real git binary rather than a pure-Python
         # implementation, because a server refuses a push from the shallow clone
         # isomorphic-git produces. The command is the literal "git"; the remote
@@ -531,8 +549,8 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # git_divergence.py::count_divergence below.
         "apps/builtins/dev_fleet/npm_preflight.py::_frontend_worktree_clean",
         # _frontend_tree_complete is the predicate's other guard: the on-disk
-        # node_modules completeness check. One read-only spawn: `<npm> ls --all`
-        # with cwd set to <repo>/website. Fixed list-argv, shell-free, no
+        # node_modules completeness check. One read-only spawn: `<npm> ls --all
+        # --json --long` with cwd set to <repo>/website. Fixed list-argv, shell-free, no
         # agent-supplied component -- the binary is the sync's _trusted_bin npm
         # (the same npm probe() uses), the cwd is the operator-configured
         # checkout's website subtree, and the args are literals. `npm ls` only
@@ -576,5 +594,30 @@ BENIGN_APP_SPAWNS: frozenset[str] = frozenset(
         # which a scrubbed-env/filesystem-scoped wrapper would move or forbid.
         "apps/builtins/aws_control/crew/packaging/tests/test_producer.py"
         "::test_cli_subprocess_leaves_no_pycache_in_the_source_tree",
+        # TEST-ONLY, and the spawn is the thing under test: Design Critique's capture
+        # scripts are Node ESM modules, so the only way to call their shipped pure
+        # functions (``hostResolverRule``, ``installSsrfGuard``, ``getPlaywright``) is
+        # a ``node --input-type=module -e <program>`` child. Fixed argv, no shell=True;
+        # the program is a literal built in the test from a ``file://`` URI of the
+        # app's own script and JSON-encoded fixture inputs, the cwd and environment
+        # overrides are the test's own ``tmp_path``. Nothing here is agent-derived.
+        "apps/builtins/design_critique/tests/test_capture_site_resolver_rule.py::_rules",
+        "apps/builtins/design_critique/tests/test_ssrf_guard_fail_closed.py::_run_node",
+        # TEST-ONLY: auto-improvement's git-safety tests. Each builds a repository
+        # under ``tmp_path`` with a fixed ``git`` argv (``init``, ``config``, ``add``,
+        # ``commit``, ``--version``), plants a hook, filter or merge driver in it, then
+        # runs the app's OWN pinned argv (``gate._git_argv``, ``driver_commit._apply_argv``)
+        # against it to prove the planted program never runs. No shell=True and nothing
+        # agent-derived; the repository is the fixture, so sandboxing the spawn would
+        # sandbox the fixture rather than the pin under test.
+        "apps/builtins/auto_improvement/tests/test_ai_spine_gate_fence.py::_git",
+        "apps/builtins/auto_improvement/tests/test_auto_improvement_driver_apply_stdin.py::git",
+        "apps/builtins/auto_improvement/tests/test_auto_improvement_host_git_apply_pins.py::_g",
+        "apps/builtins/auto_improvement/tests/test_auto_improvement_host_git_apply_pins.py"
+        "::test_three_way_apply_runs_no_repo_merge_driver",
+        "apps/builtins/auto_improvement/tests/test_git_safety_config_hooks.py::_git",
+        "apps/builtins/auto_improvement/tests/test_git_safety_config_hooks.py::_git_version",
+        "apps/builtins/auto_improvement/tests/test_git_safety_config_hooks.py"
+        "::test_git_safety_commit_does_not_fire",
     }
 )

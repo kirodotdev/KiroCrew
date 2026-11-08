@@ -63,6 +63,8 @@ def allowed_source_roots(self: ArtifactStore, source_root: str = "") -> list[Pat
     constraint). This method only assembles the roots; it never decides
     containment.
     """
+    from kiro_crew.platform_compat import strip_extended_length_prefix
+
     allowed = [Path.home().resolve(), self._root.resolve().parent]
     try:
 
@@ -87,7 +89,9 @@ def allowed_source_roots(self: ArtifactStore, source_root: str = "") -> list[Pat
                 "source_root %r no longer verifies as a project root; ignoring",
                 source_root,
             )
-    return allowed
+    # Spelled without Windows' ``\\?\`` prefix, like the path each consumer
+    # compares against them.
+    return [strip_extended_length_prefix(r) for r in allowed]
 
 
 def _try_read_source_path(
@@ -112,7 +116,19 @@ def _try_read_source_path(
         # bypass is_sensitive_path. A benign-looking
         # `source_path` with `../../etc/shadow` would otherwise sneak
         # past, since is_sensitive_path() inspects the literal string.
-        p = Path(source_path).expanduser().resolve()
+        # Windows' ``\\?\`` prefix folded off (lexically) so a file resolved
+        # mid-replace compares equal to its plain-spelled root.
+        from kiro_crew.platform_compat import (
+            names_a_verbatim_only_file,
+            strip_extended_length_prefix,
+        )
+
+        resolved = Path(source_path).expanduser().resolve()
+        # The folded path is the one read, so a name only the prefixed spelling
+        # reaches is refused: its plain spelling names a different file.
+        if names_a_verbatim_only_file(resolved):
+            return None
+        p = strip_extended_length_prefix(resolved)
         if not p.is_absolute():
             return None
         if is_sensitive_path(str(p)):
@@ -143,13 +159,8 @@ def _try_read_source_path(
                 source_path,
             )
             return None
-        # Bound the read at the FILE level, not after-the-fact: read
-        # MAX_CONTENT_BYTES+1 bytes from disk, decode (errors='replace'
-        # for invalid sequences). p.read_text() would load the entire
-        # file into memory before the size check — a multi-GB file
-        # pointed to by source_path would exhaust memory before
-        # truncation triggered. Bounding the read caps memory at
-        # MAX_CONTENT_BYTES+1 regardless of file size.
+        # Bound the read at the file level: ``p.read_text()`` would load a
+        # multi-GB file into memory before any size check.
         # Read through the descriptor-pinned helper rather than by name.
         # The containment check above is on a RESOLVED path, which still
         # leaves a check-to-use window: the final component, or an ancestor
@@ -168,10 +179,8 @@ def _try_read_source_path(
             return None
         if len(raw) == MAX_CONTENT_BYTES:
             logger.warning("source file %s hit MAX_CONTENT_BYTES; view is truncated", p)
-        # errors='replace' keeps the artifact viewable even when the
-        # file contains malformed UTF-8 sequences. The byte-level
-        # truncation may chop a multi-byte character at the boundary;
-        # the replace handler emits U+FFFD for that case.
+        # errors='replace' keeps the artifact viewable with malformed UTF-8,
+        # including a multi-byte character the truncation cut in half.
         return raw.decode("utf-8", errors="replace")
     except (OSError, ValueError) as exc:
         logger.warning("failed to read source_path %r: %s", source_path, exc)
@@ -196,7 +205,17 @@ def _try_write_source_path(
         # Same canonicalization as the read side — `.resolve()` prevents
         # symlink-based bypass of is_sensitive_path. Writing through a
         # symlink to a sensitive file is arguably worse than reading.
-        p = Path(source_path).expanduser().resolve()
+        from kiro_crew.platform_compat import (
+            names_a_verbatim_only_file,
+            strip_extended_length_prefix,
+        )
+
+        resolved = Path(source_path).expanduser().resolve()
+        # Written through the folded path, so a verbatim-only name is refused
+        # as on the read side.
+        if names_a_verbatim_only_file(resolved):
+            return False
+        p = strip_extended_length_prefix(resolved)
         if not p.is_absolute():
             return False
         if is_sensitive_path(str(p)):
@@ -215,9 +234,8 @@ def _try_write_source_path(
                 source_path,
             )
             return False
-        # Don't create the file if it never existed — that would be
-        # surprising. The 'Add to artifacts' flow always saves an
-        # existing file, so the file should exist.
+        # Never create the file: the 'Add to artifacts' flow always links an
+        # existing one.
         if not p.exists():
             return False
         # Write through the descriptor-pinned helper, not by name. The
@@ -271,10 +289,8 @@ def relocate(self: ArtifactStore, slug: str, source_path: str, source_root: str 
             )
         art.source_path = source_path
         art.source_root = source_root
-        # Relocate is an explicit "this artifact tracks THIS file" act, so
-        # it promotes a copy into a live pointer. Leaving the flag set would
-        # make the relocation silently inert -- reads and edits would keep
-        # ignoring the very file the user just pointed at.
+        # Relocate is an explicit "track THIS file" act, so it promotes a copy
+        # into a live pointer; otherwise reads and edits would ignore the file.
         art.source_copy_only = False
         self._write_meta(art)
         return art

@@ -37,6 +37,7 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.models import (
 )
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import provider_config
 from kiro_crew.apps.builtins.ops_mission_control.backend.providers import webhook as webhook_mod
+from kiro_crew.apps.builtins.ops_mission_control.backend.registry import OpsProviderRegistry
 from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import describe_secrets
 
 
@@ -183,9 +184,8 @@ async def _handle_state(
     # `is_primary()` -> `_schedule_me()` -> `schedule_file.resolve_login()`, which spawns
     # `gh api user` synchronously (10s timeout) on a cold login cache.
     #
-    # An earlier revision of this handler reasoned that the awaited `resolve_shift()` above
-    # always warms that cache first, so an inline call was safe. That was WRONG, and review
-    # caught it: `resolve_shift` wraps each source in `asyncio.wait_for(...,
+    # The awaited `resolve_shift()` above does NOT always warm that cache first, so an
+    # inline call is not safe: `resolve_shift` wraps each source in `asyncio.wait_for(...,
     # DEFAULT_POLL_TIMEOUT_SECS)`, and a timeout cancels the awaiting coroutine while the
     # `to_thread` worker keeps running — so the poll can give up with `_login_cache` still
     # unset and `describe()` then pays the full spawn, inline, on the loop. "Something
@@ -214,7 +214,7 @@ async def _handle_state(
             "incidents": [inc.to_dict() for inc in open_incidents],
             "counts": counts,
             "blocked": slot_watch.blocked_summary(open_incidents),
-            "providers": [_provider_dict(p) for p in registry.catalog()],
+            "providers": await asyncio.to_thread(_provider_catalog, registry),
             "rotation": rotation_view,
             "ledger": ledger_stats,
             # Shared-ledger git sync. ``ledger_sync.status()`` was written to be
@@ -245,7 +245,7 @@ async def _handle_state(
             # Off-loop: this walks `importlib.metadata.entry_points()`, which enumerates
             # every installed distribution's metadata from disk. `/state` is a POLLED
             # endpoint, so on a fat site-packages (or a cold page cache) that scan pauses
-            # the chat turn and the liveness heartbeat on every poll. Found in review.
+            # the chat turn and the liveness heartbeat on every poll.
             "companions": companions,
             "webhook_queue": webhook_mod.queue_depth(),
         }
@@ -274,7 +274,7 @@ async def _handle_handover(
             slot_watch.reconcile, inc.incident_id, _slot_state(request, slot_key)
         )
 
-    providers = [_provider_dict(p) for p in registry.catalog()]
+    providers = await asyncio.to_thread(_provider_catalog, registry)
     # `describe()` was evaluated INLINE here as an argument — the `to_thread` moved
     # `handover.build` off the loop but the argument is computed before the call, so the
     # `gh` spawn inside `describe()` still ran on it. Both off-loop now.
@@ -337,20 +337,25 @@ async def _handle_incident(request: web.Request) -> web.StreamResponse:
         return web.json_response(
             {"error": "unknown incident", "code": "unknown_incident"}, status=404
         )
-    try:
-        log_file = store.incident_log_path(incident_id)
-        log_path = str(log_file) if log_file.is_file() else ""
-    except (OSError, ValueError):
-        # ``incident_log_path`` validates the id even though we generated it. A
-        # hand-edited index.json is the only way here, and it must not 500 the route.
-        log_path = ""
     return web.json_response(
         {
             "incident": incident.to_dict(),
             "log": await asyncio.to_thread(store.read_log, incident_id),
-            "log_path": log_path,
+            # Off-loop: ``incident_log_path`` creates the incidents dir, then we stat.
+            "log_path": await asyncio.to_thread(_written_log_path, incident_id),
         }
     )
+
+
+def _written_log_path(incident_id: str) -> str:
+    """The postmortem's path when the file exists, else ``""``."""
+    try:
+        log_file = store.incident_log_path(incident_id)
+        return str(log_file) if log_file.is_file() else ""
+    except (OSError, ValueError):
+        # ``incident_log_path`` validates the id even though we generated it. A
+        # hand-edited index.json is the only way here, and it must not 500 the route.
+        return ""
 
 
 async def _handle_signals(
@@ -407,6 +412,16 @@ async def _handle_signals(
     )
 
 
+def _provider_catalog(registry: OpsProviderRegistry) -> list[dict[str, Any]]:
+    """The provider list for the settings UI. Blocking: call through ``asyncio.to_thread``.
+
+    ``catalog()`` asks every adapter ``configured()``, which reads ``config.json`` and the
+    secret store, and ``_provider_dict`` then reads each provider's config and secret
+    status. ``/state`` is the dashboard's hot poll, so those reads must not run on the loop.
+    """
+    return [_provider_dict(p) for p in registry.catalog()]
+
+
 def _provider_dict(info: Any) -> dict[str, Any]:
     return {
         "id": info.id,
@@ -425,7 +440,8 @@ def _provider_dict(info: Any) -> dict[str, Any]:
 async def _handle_providers(
     request: web.Request, *, get_registry: RegistryLookup
 ) -> web.StreamResponse:
-    return web.json_response({"providers": [_provider_dict(p) for p in get_registry().catalog()]})
+    providers = await asyncio.to_thread(_provider_catalog, get_registry())
+    return web.json_response({"providers": providers})
 
 
 async def _handle_rotation(

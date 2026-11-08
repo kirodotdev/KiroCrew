@@ -18,7 +18,11 @@ if TYPE_CHECKING:
         _STRICT_INTERNAL_API_PATHS,
         AMBIGUOUS_LOOPBACK_HOSTS,
         DashboardState,
+        DirectGate,
+        GateRef,
         KiroCrewConfig,
+        PendingEditBlocksSave,
+        SsmGateRef,
         _apply_security_headers,
         _holds_every_loopback_family,
         _is_spa_shell_request,
@@ -33,6 +37,8 @@ if TYPE_CHECKING:
         make_route_latency_middleware,
         mark_audit_claimed,
         reject_compressed_body_middleware,
+        relay_header_strip_middleware,
+        relay_ingress_middleware,
         resolve_dashboard_host,
         sel,
         slot_ownership_middleware,
@@ -118,13 +124,16 @@ def _install_dashboard_middlewares(
     tailnet_host: str,
     configured_host: str,
     dashboard_url: str,
+    tailnet_direct: DirectGate | GateRef | None = None,
+    ssm_gate: SsmGateRef | None = None,
 ) -> None:
     """Install the dashboard's middleware chain on *app*, outermost first.
 
-    The order is a security contract: route latency outermost, then the deny-audit
-    boundary outer to every barrier that can refuse, the host canonicalization,
-    the ``Host`` barrier, the header policy, CSRF, token auth, the SEL request
-    audit and the per-slot ownership checkpoint, with the SPA fallback innermost.
+    The order is a security contract: route latency outermost, then the relay-path
+    header rule, the client-sent relay-header strip just inside it, the deny-audit
+    boundary outer to every barrier that can refuse, the host canonicalization, the
+    ``Host`` barrier, the header policy, CSRF, token auth, the SEL request audit and
+    the per-slot ownership checkpoint, with the SPA fallback innermost.
     ``_register_workflow_lifecycle`` and ``_register_crewmate_prune_gate`` append
     their gates after it. The barriers are built by the entrypoint from the shared
     factories; the layers only this chain uses are built here.
@@ -146,6 +155,9 @@ def _install_dashboard_middlewares(
     # the two layers never drift. Bare /apps/{name} paths (no sub-path) are
     # treated as SPA navigations and served index.html — this fixes browser
     # refresh on e.g. /apps/code-review-sage which has no server-side route.
+    # It also answers a save refused because the file has a pending outside
+    # change, for every handler without its own catch: one 409 with the code the
+    # frontend translates, instead of a generic 500.
     @web.middleware  # type: ignore[misc]
     async def spa_fallback(
         request: web.Request,
@@ -157,6 +169,9 @@ def _install_dashboard_middlewares(
             if _is_spa_shell_request(request):
                 return await handlers.index(request)
             raise
+        except PendingEditBlocksSave as exc:
+            logger.info("save refused: %s has a pending change (%s)", exc.leaf, request.path)
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
 
     # SEL: log mutating API operations
     _sel_log_methods = {"POST", "PUT", "DELETE", "PATCH"}
@@ -209,10 +224,23 @@ def _install_dashboard_middlewares(
         # method / bounded route_template / status_class — never a real path,
         # query, id, or body — so it cannot leak content or explode cardinality.
         make_route_latency_middleware(),
+        # The relay-path header rule (dashboard/kiro_relay): a request the in-process
+        # relay client handed over is verified and served with every x-kiro-relay-*
+        # header removed, before any barrier or auth layer reads a header; every
+        # other request goes on unchanged to the strip below. Outer to the
+        # deny-audit boundary so that boundary, and every layer inside it, sees the
+        # rewritten relayed request (proxied, never loopback).
+        relay_ingress_middleware(strict_internal_paths=_STRICT_INTERNAL_API_PATHS),
+        # Just inside the relay-path rule, and ahead of every barrier, auth layer
+        # and handler: a client-sent ``x-kiro-relay-*`` identity header is dropped
+        # before anything reads it (dashboard/relay_headers.py). Both layers read
+        # the one prefix in relay_headers, and the rule hands on no relay header,
+        # so on a request the rule admitted this layer has nothing to drop.
+        relay_header_strip_middleware,
         # Outer to every barrier that can refuse, so a pre-audit 403 is recorded
         # by POSITION rather than by each deny site remembering to. Inner to the
-        # latency middleware only, which keeps that one's "times the FULL
-        # in-gateway handling" contract intact.
+        # latency middleware and the two relay-header layers only, which keeps the
+        # latency layer's "times the FULL in-gateway handling" contract intact.
         deny_audit_middleware,
         host_canonical_redirect,
         host_validation_middleware,
@@ -231,6 +259,8 @@ def _install_dashboard_middlewares(
             local_only=local_only,
             spa_shell_handler=handlers.index,
             tailnet_trust=tailnet_trust,
+            tailnet_direct=tailnet_direct,
+            ssm_gate=ssm_gate,
         ),
         sel_audit_middleware,
         # Inner to token auth (it reads the ``app`` claim) and to the audit
@@ -239,13 +269,17 @@ def _install_dashboard_middlewares(
         slot_ownership_middleware,
         spa_fallback,
     ]
+    _insert_enterprise_gate(app, spa_shell_handler=handlers.index)
 
     # Verify security invariant: if dashboard_url expands the CSRF origin
     # set for a remote URL, token auth middleware MUST be active.
     if dashboard_url:
         _has_token_auth = any(getattr(mw, "_is_token_auth", False) for mw in app.middlewares)
         if _has_token_auth:
-            app["allowed_origins"] = build_allowed_origins(
+            # Joined to the set already seeded, never in place of it: under --port
+            # auto the seeded set also names the served port, and this rebuild
+            # names only the requested one, so replacing it would drop those.
+            app["allowed_origins"] = app.get("allowed_origins", set()) | build_allowed_origins(
                 port, local_only, configured_host, dashboard_url, tailnet_host=tailnet_host
             )
             logger.info(
@@ -275,7 +309,8 @@ def _install_api_middlewares(
     """Install the headless (``--slack-only``) API server's middleware chain on *app*.
 
     At parity with :func:`_install_dashboard_middlewares` over the MCP route surface
-    both servers mount: route latency outermost, then the deny-audit boundary, the
+    both servers mount: route latency outermost, then the relay-path header rule, the
+    client-sent relay-header strip just inside it, the deny-audit boundary, the
     ``Host`` barrier, CSRF, token auth with no SPA shell, the SEL request audit and
     the per-slot ownership checkpoint. ``_register_workflow_lifecycle`` appends its
     gate after it.
@@ -321,14 +356,20 @@ def _install_api_middlewares(
                 raise
         return await handler(request)  # type: ignore[operator]
 
-    # Explicit ordering mirrors start_dashboard: latency → deny-audit → host →
-    # csrf → token → audit.
+    # Explicit ordering mirrors start_dashboard: latency → relay rule → relay strip →
+    # deny-audit → host → csrf → token → audit.
     app.middlewares[:] = [
         # Outermost: privacy-safe, bounded-cardinality per-route latency (rec #1).
         # The MCP routes are registered AFTER this assignment, so the middleware
         # captures its route-template set LAZILY on the first request (by which
         # point every route is registered) — see make_route_latency_middleware.
         make_route_latency_middleware(),
+        # Same relay-path header rule as the dashboard chain. This server builds no
+        # relay ingress, so the layer hands every request on to the strip below.
+        relay_ingress_middleware(strict_internal_paths=_STRICT_INTERNAL_API_PATHS),
+        # Same client-sent relay-header strip as the dashboard chain, just inside
+        # the rule and ahead of every barrier, auth layer and handler.
+        relay_header_strip_middleware,
         # Outer to every barrier that can refuse: a pre-audit 403 is recorded by
         # POSITION here, not by each deny site remembering to.
         deny_audit_middleware,
@@ -353,3 +394,24 @@ def _install_api_middlewares(
         # per-slot route registered on this server is decided the same way.
         slot_ownership_middleware,
     ]
+    _insert_enterprise_gate(app, spa_shell_handler=None)
+
+
+def _insert_enterprise_gate(app: web.Application, *, spa_shell_handler: Any) -> None:
+    """Put the enterprise gate right after token auth. Nothing in an ``oss`` build.
+
+    Inner to token auth so it only narrows what token auth admitted, and outer
+    to the SEL request audit so its raised 403 is recorded by ``deny_audit``.
+    """
+    from kiro_crew.dashboard.enterprise_gate_middleware import enterprise_gate_middleware_for
+
+    gate_mw = enterprise_gate_middleware_for(app, spa_shell_handler=spa_shell_handler)
+    if gate_mw is None:
+        return
+    index = next(
+        (i for i, mw in enumerate(app.middlewares) if getattr(mw, "_is_token_auth", False)),
+        None,
+    )
+    if index is None:
+        raise RuntimeError("enterprise build: no token auth middleware to place the gate after")
+    app.middlewares.insert(index + 1, gate_mw)

@@ -383,9 +383,7 @@ def test_invalid_utf8_in_the_overlay_does_not_break_adopt(home, capsys):
     assert "autocompact_pct" not in _stored(home)["session"]
 
 
-# --------------------------------------------------------------------------
 # A coerced value: inert bytes that cost a warning on every load.
-# --------------------------------------------------------------------------
 
 
 @pytest.fixture

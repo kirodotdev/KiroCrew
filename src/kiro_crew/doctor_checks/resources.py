@@ -20,25 +20,20 @@ from typing import Any, NamedTuple
 from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import render
 
-# Alias count above which the skill-view census warns. The projection publishes
-# one ``kirocrew-skill-view-*.json`` per distinct agent view into the shared
-# agents directory -- spawns that derive the same view share one file -- and
-# kiro-cli reads EVERY file there on startup, so the count is a startup cost for
-# every session on the host. A healthy host carries roughly authored agents x
-# workspaces; the measured trouble starts past a couple of thousand -- about 8s
-# of prune walk per spawn at 2,360 files, and ``EMFILE: too many open files``
-# from kiro-cli at 15k. A boot drain clears a backlog at gateway start and the
-# per-spawn reclaim covers steady-state orphans, so a count above this is either
-# a backlog this gateway has not drained yet or one it cannot drain (another
-# data home's aliases, an unreadable lease record); the warning tells which.
+# Alias count above which the skill-view census warns. kiro-cli reads EVERY
+# ``kirocrew-skill-view-*.json`` in the shared agents directory on startup, so the
+# count is a startup cost for every session (about 8s of prune walk per spawn at
+# 2,360 files, ``EMFILE`` from kiro-cli at 15k). A count above this is a backlog the
+# gateway has not drained yet or cannot drain (another data home's aliases, an
+# unreadable lease record); the warning tells which.
 #
-# This is the SAME number the projection enforces as a hard ceiling
-# (:data:`kiro_crew.acp.skill_projection.SKILL_VIEW_PROJECTION_CEILING`): at or
-# above it, preparation stops minting new views and falls back to the authored
-# agent, so a host the doctor warns about is a host whose next spawn already fell
-# back. Read through the ``cli_doctor`` facade, not imported by name here: this
-# family binds no project module (test_cli_doctor_refactor_family_reads), and the
-# facade holds the constant so the two can never drift.
+# It is the projection's own hard ceiling
+# (:data:`kiro_crew.acp.skill_projection.SKILL_VIEW_PROJECTION_CEILING`), so a host
+# the doctor warns about already falls back to the authored agent. Read through the
+# ``cli_doctor`` facade: this family binds no project module
+# (test_cli_doctor_refactor_family_reads).
+# It is the floor: ``cli_doctor.skill_view_ceiling`` raises it with the authored
+# agent count, exactly as the projection does.
 _SKILL_VIEW_BACKLOG_WARN = cli_doctor.SKILL_VIEW_PROJECTION_CEILING
 
 
@@ -70,11 +65,9 @@ def _swap_total_kib() -> int | None:
 def _gateway_lock_indeterminate() -> bool:
     """True when the gateway lock probe cannot say whether a gateway runs.
 
-    The distinction :func:`kiro_crew.cli_perf._read_gateway_pid` deliberately
-    collapses (it fails closed, since its caller must not profile the wrong
-    process) but a report must keep: "nobody holds the lock" is a fact about
-    the gateway, an indeterminate probe is a fact about the probe. Any other
-    exception propagates to the caller's own "probe failed" line.
+    :func:`kiro_crew.cli_perf._read_gateway_pid` folds this into "nobody holds the
+    lock" (it fails closed); a report must keep the two apart. Any other exception
+    propagates to the caller's own "probe failed" line.
     """
     from kiro_crew import gateway_lock
 
@@ -88,14 +81,10 @@ def _gateway_lock_indeterminate() -> bool:
 def _gateway_memory_lines() -> list[str]:
     """The ``session ceiling`` and ``gateway rss`` lines of the Memory Pressure section.
 
-    The ceiling is ``session.watchdog_rss_max_mb`` from the loaded config (``0``
-    = disabled, called out as such because an operator reading this section is
-    usually asking "what stops a runaway session tree?"). The RSS is read from
-    the live gateway's pid via the lock-holder oracle ``cli_perf`` already uses,
-    so a stale recorded pid can never be reported as the gateway's memory; no
-    live gateway prints "not running", and a lock probe that cannot answer says
-    so rather than reading as "not running". Every failure degrades to a line saying
-    so — this is advisory and must never abort doctor.
+    The ceiling is ``session.watchdog_rss_max_mb`` (``0`` = disabled, called out
+    because nothing then bounds a runaway session tree). The RSS is read from the
+    lock holder's pid, so a stale recorded pid is never reported. Every failure
+    degrades to a line saying so: this is advisory and must never abort doctor.
     """
     lines: list[str] = []
     try:
@@ -116,12 +105,9 @@ def _gateway_memory_lines() -> list[str]:
     try:
         pid = cli_doctor._read_gateway_pid()
         if pid is None and _gateway_lock_indeterminate():
-            # ``_read_gateway_pid`` folds "the probe could not answer" into the
-            # same None as "nobody holds the lock". On Windows a serving
-            # gateway holds its lock file under a mandatory lock, so the pid
-            # inside cannot be read and the probe is indeterminate -- printing
-            # "not running" there contradicts the Connectivity row of the same
-            # run. Say what is actually known instead.
+            # On Windows a serving gateway holds its lock file under a mandatory
+            # lock, so the pid cannot be read; "not running" would contradict
+            # the Connectivity row of the same run.
             lines.append(
                 "  gateway rss:     ⚠️  could not locate the gateway process to measure "
                 "it (lock probe indeterminate; this does not mean it is stopped)"
@@ -139,30 +125,57 @@ def _gateway_memory_lines() -> list[str]:
     return lines
 
 
+def _windows_inert_limit_lines() -> list[str]:
+    """The ``inert limits`` line: ``resource_limits`` keys Windows accepts but ignores.
+
+    Windows only; an empty list elsewhere. The key list is the one the startup
+    warning uses (``sandbox_slice._WINDOWS_INERT_RESOURCE_LIMIT_KEYS``): every key
+    whose only mechanism is a cgroup/systemd property or a POSIX rlimit. A key counts
+    when set to a non-zero value, as at startup -- and ``max_open_files`` also when
+    UNSET, because unset means the built-in 1024 default, which Windows never
+    installs either. Advisory: never added to ``issues``.
+    """
+    if not cli_doctor.platform_compat.IS_WINDOWS:
+        return []
+    try:
+        from kiro_crew.sandbox_slice import _WINDOWS_INERT_RESOURCE_LIMIT_KEYS
+
+        limits = cli_doctor.KiroCrewConfig.load().resource_limits
+    except Exception:
+        return ["  inert limits:    ⚠  could not read resource_limits"]
+    named = [
+        f"resource_limits.{key}"
+        for key in _WINDOWS_INERT_RESOURCE_LIMIT_KEYS
+        if getattr(limits, key, None)
+    ]
+    if getattr(limits, "max_open_files", 0) is None:
+        named.append("resource_limits.max_open_files (default 1024)")
+    if not named:
+        return ["  inert limits:    ✅ no resource_limits key set that Windows ignores"]
+    return [
+        "  inert limits:    ⚠  set but not enforced on Windows: " + ", ".join(named),
+        "                   The Job object bounds only per-spawn max_processes and "
+        "max_memory_mb; these need a systemd user manager or POSIX rlimits.",
+    ]
+
+
 def _doctor_memory_pressure(issues: list[str]) -> None:
     """Report whether the host can degrade gracefully under memory pressure.
 
-    A Linux host with zero swap and no userspace OOM killer has no pressure
-    release valve: sustained memory pressure evicts file-backed pages (running
-    code included) faster than they re-fault in, and the host livelocks —
-    unresponsive for minutes, sometimes until a power cycle — before the kernel
-    OOM killer's conservative heuristics fire. Either protection alone (swap to
-    absorb the spike, or earlyoom/systemd-oomd to kill a hog early) prevents
-    the freeze, so this warns only when BOTH are absent. When detection is
-    inconclusive it reports "unknown" instead of warning.
+    A Linux host with zero swap and no userspace OOM killer thrashes file-backed
+    pages under sustained pressure and can livelock before the kernel OOM killer
+    fires. Either swap or earlyoom/systemd-oomd prevents it, so this warns only
+    when BOTH are absent, and reports "unknown" when detection is inconclusive.
 
-    Advisory only (never appended to ``issues``): swap sizing and OOM-killer
-    policy are host configuration the user owns — doctor reports the exposure,
-    it does not fail the install over it. Linux-only: the freeze mode and both
-    detection sources are Linux-specific.
+    Advisory only (never appended to ``issues``): swap and OOM-killer policy are
+    host configuration the user owns.
     """
     del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     print("\nMemory Pressure")
-    # What is bounding memory right now, on every platform: the gateway's own
-    # resident set and the per-session tree ceiling the cleanup watchdog
-    # recycles at. Printed before the Linux-only freeze check so a Windows or
-    # macOS operator still sees the numbers that matter for a runaway tree.
+    # Printed on every platform, before the Linux-only freeze check.
     for line in _gateway_memory_lines():
+        print(line)
+    for line in _windows_inert_limit_lines():
         print(line)
     if not sys.platform.startswith("linux"):
         print(
@@ -231,11 +244,8 @@ _ACP_HOT_CPU_PCT = 25.0
 _ACP_LISTED = 5
 
 #: Most processes the census reads from the host's process table, and most one
-#: runtime's tree walk keeps. The two bound different populations (the whole
-#: host, one runtime's descendants). Every field either structure retains is a
-#: fixed-width number the kernel wrote -- ``comm`` is never read -- so the count
-#: is what bounds them, and past either cap the overflow is counted and the
-#: section says so rather than reading as a smaller host.
+#: runtime's tree walk keeps. Past either cap the overflow is counted and printed
+#: rather than reading as a smaller host.
 _ACP_TABLE_CAP = 65_536
 _ACP_TREE_CAP = 4096
 
@@ -402,14 +412,11 @@ def _acp_runtime_census(
     counted only while a process with that pid AND the recorded start identity is
     alive, so a recycled pid is never reported as a runtime.
 
-    A harness outside every recorded root is counted only when the reaper's own
-    report calls it untracked (:func:`kiro_crew.session_pid.
-    _is_untracked_managed_agent_orphan`, against *tracked_pids*, both pid files)
-    AND it names this data home -- the pairing the leaked-runtime reclaim makes,
-    because the reaper's predicate is uid-wide and a pod or a second install on
-    this account is not ours to report. One that still hangs off the running
-    gateway is that gateway's, whatever the registry says. Harness recognition is
-    the reaper's :func:`~kiro_crew.session_pid._cmdline_names_a_harness`.
+    A harness outside every recorded root is counted only when
+    :func:`kiro_crew.session_pid._is_untracked_managed_agent_orphan` calls it
+    untracked AND it names this data home: the reaper's predicate is uid-wide, and
+    a pod or a second install on this account is not ours to report. One that
+    still hangs off the running gateway is that gateway's.
 
     ``None`` when the process table cannot be listed.
     """
@@ -619,14 +626,9 @@ def _acp_cap_lines(census: _AcpCensus) -> list[str]:
 def _doctor_acp_runtimes(issues: list[str]) -> None:
     """How many ACP runtimes are alive, who owns them, and what their backends cost.
 
-    A runtime that outlives its session can keep a core busy with nothing to show
-    for it, and enough of them take the whole host down; this row names them in
-    the ordinary health pass instead of leaving them to a raw ``ps``.
-
-    Advisory only (never appended to ``issues``), and every failure degrades to a
-    line saying the check was skipped: an unreadable process table is a fact
-    about where doctor ran, not a fault in the install. Linux-only, because the
-    census reads procfs.
+    A runtime that outlives its session can keep a core busy, and enough of them
+    take the host down. Advisory only (never appended to ``issues``); every failure
+    degrades to a "check skipped" line. Linux-only: the census reads procfs.
     """
     del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     print("\nACP Runtimes")
@@ -658,20 +660,200 @@ def _doctor_acp_runtimes(issues: list[str]) -> None:
         print(line)
 
 
+# ── Task ceilings (agents slice TasksMax, per-scope TasksMax, thread pools) ──
+# Most scope directories read under the agents slice. A host runs a few dozen;
+# the cap keeps a leak of thousands from turning doctor into a long walk.
+_TASK_SCOPE_SCAN_CAP = 2048
+
+
+class _ScopeTasks(NamedTuple):
+    """Task counts of the live agent scopes, read from the cgroup tree."""
+
+    scopes: int
+    total: int
+    largest: int
+    near_limit: int
+
+
+def _read_scope_tasks(slice_dir: Path, tight_ratio: float) -> _ScopeTasks:
+    """Every ``*.scope`` up to two levels below *slice_dir*, bounded and non-raising.
+
+    A scope counts as near its limit at *tight_ratio* of its ``pids.max``, the
+    band ``resource_status`` applies to the slice.
+    """
+    count = total = largest = near = 0
+    candidates: list[Path] = []
+    try:
+        for child in slice_dir.iterdir():
+            if child.name.endswith(".scope"):
+                candidates.append(child)
+            elif child.name.endswith(".slice") and child.is_dir():
+                candidates.extend(p for p in child.iterdir() if p.name.endswith(".scope"))
+            if len(candidates) >= _TASK_SCOPE_SCAN_CAP:
+                break
+    except OSError:
+        pass
+    for scope in candidates[:_TASK_SCOPE_SCAN_CAP]:
+        current = cli_doctor.sandbox.read_cgroup_int(scope / "pids.current")
+        if current is None:
+            continue
+        limit = cli_doctor.sandbox.read_cgroup_int(scope / "pids.max")
+        count += 1
+        total += current
+        largest = max(largest, current)
+        if limit and current >= limit * tight_ratio:
+            near += 1
+    return _ScopeTasks(count, total, largest, near)
+
+
+def _task_ceiling_lines() -> list[str]:
+    """The Task ceilings rows."""
+    sizing = cli_doctor.host_task_sizing
+    facts = sizing.host_task_facts()
+    rl = cli_doctor.KiroCrewConfig.load().resource_limits
+    lines = [f"  host:        {facts.describe()}"]
+
+    slice_mem = rl.max_total_memory_mb if (rl.max_total_memory_mb or 0) >= 1 else None
+    recommended_slice = sizing.size_slice_tasks(facts, slice_mem)
+    configured_slice = rl.max_total_processes if (rl.max_total_processes or 0) >= 1 else None
+    want_slice = configured_slice or recommended_slice
+    source = "config" if configured_slice else "host-sized"
+    slice_line = f"  slice:       TasksMax {want_slice} ({source})"
+    if configured_slice:
+        slice_line += f", the host-sized value would be {recommended_slice}"
+    lines.append(slice_line)
+
+    # The live reading and its tight band come from resource_status, the one
+    # reader of the slice's task count, so doctor and the resource_status tool
+    # cannot disagree about how full the slice is.
+    from kiro_crew import resource_status
+
+    status = resource_status.probe()
+    slice_dir = cli_doctor.sandbox._agents_slice_cgroup_dir()
+    scopes = (
+        _read_scope_tasks(slice_dir, resource_status._SLICE_TASKS_TIGHT_RATIO)
+        if slice_dir is not None
+        else None
+    )
+    live_text = status.slice_tasks_text()
+    if not live_text:
+        lines.append("  live:        ⏹ the agents slice is not active; nothing measured")
+    else:
+        current, live_max = status.slice_tasks, status.slice_tasks_limit
+        lines.append(f"  live:        {live_text}")
+        if 0 < live_max < want_slice:
+            lines.append(
+                f"               ⚠️  the slice's pids.max {live_max} is below this install's "
+                f"{want_slice}: another gateway or pod wrote it after this one. "
+                "Restarting this gateway writes its value again."
+            )
+        if status.slice_tasks_tight:
+            lines.append(
+                "               ⚠️  close to the ceiling: new sessions fail to start "
+                "(process exited) once it is reached"
+            )
+        if scopes is not None and scopes.scopes:
+            mean = scopes.total / scopes.scopes
+            lines.append(
+                f"  runtimes:    {scopes.scopes} scopes, {mean:.0f} tasks each on average, "
+                f"largest {scopes.largest}"
+            )
+            if live_max > 0:
+                room = int((live_max - current) / mean)
+                note = f"  headroom:    about {room} more runtimes at the observed average"
+                if room < scopes.scopes:
+                    note += " ⚠️  fewer than are running now"
+                    if want_slice < recommended_slice:
+                        note += (
+                            f"; raise resource_limits.max_total_processes toward "
+                            f"{recommended_slice} or unset it"
+                        )
+                lines.append(note)
+
+    configured_scope = rl.max_processes if (rl.max_processes or 0) >= 1 else None
+    scope_value = configured_scope or cli_doctor.sandbox._CGROUP_DEFAULT_MAX_PROCESSES
+    lines.append(
+        f"  per scope:   TasksMax {scope_value} ({'config' if configured_scope else 'default'})"
+    )
+    if scopes is not None and scopes.near_limit:
+        lines.append(
+            f"               ⚠️  {scopes.near_limit} scope(s) in the tight band of "
+            "their own TasksMax"
+        )
+
+    # Spawn order: agent.env over the inherited environment, then
+    # child_env_defaults and the host default fill names still unset. The
+    # gateway's own environment is not read back (the data home's .env loads
+    # in-process, so procfs would be stale); the note below says it wins.
+    agent_cfg = cli_doctor.KiroCrewConfig.load().agent
+    overlay = agent_cfg.env
+    configured_env = agent_cfg.child_env_defaults
+    host_env = sizing.thread_pool_env_defaults(facts)
+    for name in sizing.THREAD_POOL_ENV:
+        if name in overlay:
+            value, origin = overlay[name], "agent.env"
+        elif name in configured_env:
+            value, origin = configured_env[name], "agent.child_env_defaults"
+        elif name in host_env:
+            value, origin = host_env[name], "host-sized"
+        else:
+            value, origin = "unset", "kiro-cli uses one worker per core"
+        lines.append(f"  {name}: {value} ({origin})")
+    lines.append(
+        "               a value already in the gateway's environment (its unit or "
+        "the data home's .env) wins over every source but agent.env"
+    )
+    return lines
+
+
+def _doctor_task_ceilings(issues: list[str]) -> None:
+    """Report the task ceilings in force against the host and the live agent slice.
+
+    The kernel counts threads against ``TasksMax``, so a ceiling that fits a
+    laptop fills on a many-core host where every runtime sizes its pools by core
+    count; the symptom is a session dying with ``process exited (rc=None)``.
+    Advisory only (never appended to ``issues``): the agents slice is shared by
+    every gateway under this user. Linux only: the ceilings are cgroup v2 properties.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    if not sys.platform.startswith("linux"):
+        return
+    print("\nTask ceilings")
+    try:
+        lines = _task_ceiling_lines()
+    except Exception:
+        print("  ceilings:    ⚠️  could not read the host or the agents slice — check skipped")
+        return
+    for line in lines:
+        print(line)
+
+
 # ── Runtime tmpfs headroom (sandbox mount-source roots) ──────────────────────
 # Warn thresholds for the tmpfs roots the sandbox launcher stages bind-mount
-# sources on. Leaked ``tmp*`` mount dirs once filled ``/run/user/$UID`` until its
-# inodes ran out, at which point every tool spawn failed with a bare ``rc=1``.
-# Inode exhaustion is the more likely face on a tmpfs (each leaked dir is tiny
-# but costs an inode), so both free-space and free-inode fractions are checked,
-# plus an absolute inode floor: a small tmpfs at 11% free inodes can still be a
-# few hundred dirs from failure.
-_TMPFS_FREE_PCT_WARN = 10.0
-_TMPFS_FREE_INODES_FLOOR = 1000
+# sources on. Once their inodes run out every tool spawn fails with a bare
+# ``rc=1``; each leaked dir is tiny but costs an inode, so free space, free inodes
+# and an absolute inode floor are all checked. The numbers are the resource_status
+# tool's, so the two never disagree about one directory.
+_TMPFS_FREE_PCT_WARN = cli_doctor.resource_status.TEMP_FREE_PCT_WARN
+_TMPFS_FREE_INODES_FLOOR = cli_doctor.resource_status.TEMP_FREE_INODES_FLOOR
+
+# The shared system temp dir. The sandbox chooser lists ``tempfile.gettempdir()``,
+# which is ``/tmp`` only while ``TMPDIR`` is unset; an agent shell's ``TMPDIR`` is
+# its own scratch dir, so a doctor run from there would otherwise never measure
+# the ``/tmp`` that test homes and AF_UNIX sockets still use.
+_SHARED_TMP = "/tmp"
+
+# A fake HOME left by a test run holds ``.cache/kirocrew`` (the conftest's
+# bytecode and Hypothesis caches resolve under ``~/.cache/kirocrew`` when
+# ``XDG_CACHE_HOME`` is unset). Counting them names the usual cause of a full
+# ``/tmp``. The scan reads top-level entries only and stops at the cap, because
+# the temp dir is shared and can hold a very large number of entries.
+_TEST_HOME_MARKER = (".cache", "kirocrew")
+_TEST_HOME_SCAN_CAP = 4096
 
 
 def _runtime_tmpfs_roots() -> list[str]:
-    """The roots the sandbox would stage mount sources on, in launcher order.
+    """Every root the sandbox may stage mount sources on (the launcher picks the order).
 
     Reuses the sandbox's own chooser rather than hardcoding ``/run/user`` so a
     change to the launcher's fallback chain moves this check with it.
@@ -679,58 +861,79 @@ def _runtime_tmpfs_roots() -> list[str]:
     return cli_doctor.sandbox._mount_source_candidate_roots()
 
 
+def _resource_status_tmp_roots() -> list[str]:
+    """Temp roots the pull diagnostic can measure independently."""
+    return cli_doctor.resource_status.temp_roots()
+
+
+def _measured_tmp_roots() -> list[str]:
+    """Sandbox roots, shared ``/tmp``, then other pull-diagnostic roots."""
+    roots = list(_runtime_tmpfs_roots())
+    if _SHARED_TMP not in roots:
+        roots.append(_SHARED_TMP)
+    for root in _resource_status_tmp_roots():
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _kirocrew_test_homes(root: str) -> tuple[int, bool]:
+    """``(count, capped)``: top-level dirs of *root* that look like test homes.
+
+    ``capped`` is true when the scan stopped at :data:`_TEST_HOME_SCAN_CAP`
+    entries, so the count is a lower bound. An unreadable root counts zero.
+    """
+    count = 0
+    seen = 0
+    try:
+        with os.scandir(root) as it:
+            for entry in it:
+                seen += 1
+                if seen > _TEST_HOME_SCAN_CAP:
+                    return count, True
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+                if os.path.isdir(os.path.join(entry.path, *_TEST_HOME_MARKER)):
+                    count += 1
+    except OSError:
+        return 0, False
+    return count, False
+
+
 def _tmpfs_usage(root: str) -> tuple[float, float, int, int] | None:
     """``(free_space_pct, free_inode_pct, free_inodes, tmp_entries)`` for *root*.
 
-    ``None`` when the root does not exist or cannot be measured, or when the
-    platform has no ``os.statvfs`` (Windows; the doctor section that calls this
-    is Linux-only, so this is belt-and-braces for direct callers). ``tmp_entries``
-    counts the names carrying the sandbox launcher's mount-source prefix
-    (``kirocrew_sb_<pid>_``), so a warning can say how much of the pressure is
-    Kiro Crew's own; every other temporary entry belongs to somebody else and
-    is deliberately not counted, so the cleanup advice never points at it. A
-    filesystem that reports no inode accounting (``f_files == 0``) reads as
-    100% free inodes rather than as exhausted.
+    ``None`` when the root does not exist or cannot be measured. ``tmp_entries``
+    counts only names with the sandbox launcher's mount-source prefix
+    (``kirocrew_sb_<pid>_``), so the cleanup advice never points at another
+    application's files. A filesystem with no inode accounting (``f_files == 0``)
+    reads as 100% free inodes rather than exhausted.
     """
-    statvfs = getattr(os, "statvfs", None)
-    if statvfs is None:
+    reading = cli_doctor.resource_status.temp_headroom(root)
+    if reading is None:
         return None
-    try:
-        st = statvfs(root)
-    except OSError:
-        return None
-    free_space_pct = 100.0 * st.f_bavail / st.f_blocks if st.f_blocks else 100.0
-    if st.f_files:
-        free_inode_pct = 100.0 * st.f_favail / st.f_files
-        free_inodes = int(st.f_favail)
-    else:
-        # No inode accounting (btrfs, some FUSE mounts): both readings say
-        # "not a constraint" so neither the percentage nor the absolute floor
-        # below can fire on a filesystem that cannot run out of inodes.
-        free_inode_pct = 100.0
-        free_inodes = _TMPFS_FREE_INODES_FLOOR
     try:
         with os.scandir(root) as it:
             tmp_entries = sum(1 for e in it if e.name.startswith(cli_doctor._MOUNT_SOURCE_PREFIX))
     except OSError:
         tmp_entries = 0
-    return free_space_pct, free_inode_pct, free_inodes, tmp_entries
+    return reading.free_space_pct, reading.free_inode_pct, reading.free_inodes, tmp_entries
 
 
 def _doctor_runtime_tmpfs(issues: list[str]) -> None:
     """Warn when a sandbox tmp root is close to running out of space or inodes.
 
-    The failure this pre-empts is silent until total: leaked mount-source dirs
-    accumulate in the runtime tmpfs, and once its inodes are gone every sandboxed
-    tool spawn fails with nothing more than ``rc=1``. Reclaim runs on the
-    gateway, but an operator looking at a wall of ``rc=1`` needs somewhere that
-    names the disk. Appended to *issues*: a full tmp root breaks every tool, so
-    it is a fault, not host trivia. Linux only -- the launcher is.
+    Once the runtime tmpfs runs out of inodes every sandboxed tool spawn fails
+    with nothing more than ``rc=1``, so this names the disk. Appended to *issues*:
+    a full tmp root breaks every tool. Linux only, like the launcher.
     """
     if not sys.platform.startswith("linux"):
         return
     print("\nRuntime tmpfs")
-    for root in _runtime_tmpfs_roots():
+    for root in _measured_tmp_roots():
         usage = _tmpfs_usage(root)
         if usage is None:
             print(f"  {root}: ⏭  not present or unreadable")
@@ -748,35 +951,196 @@ def _doctor_runtime_tmpfs(issues: list[str]) -> None:
                 what = "space and inodes"
             print(f"  {root}: ⚠️  low on {what} — {detail}")
             print(
-                "               Sandboxed tool spawns fail with rc=1 once this fills. "
+                "               Sandboxed tool spawns fail with rc=1 once this fills, "
+                "and test runs fail with ENOSPC. "
                 f"Kiro Crew's own leaked mount dirs are the {cli_doctor._MOUNT_SOURCE_PREFIX}* "
-                "entries; a gateway restart reclaims them. Other entries there "
-                "belong to other applications: leave them alone."
+                "entries; a gateway restart reclaims them."
             )
+            homes, capped = _kirocrew_test_homes(root)
+            if homes:
+                at_least = "at least " if capped else ""
+                print(
+                    f"               {at_least}{homes} top-level dirs here look like "
+                    "leftover test homes (they hold .cache/kirocrew), left by test runs "
+                    "that set HOME here. Remove the ones no running process uses."
+                )
+            print("               Other entries belong to other applications: leave them alone.")
             issues.append(f"runtime tmpfs {root} low on {what} ({detail})")
         else:
             print(f"  {root}: ✅ {detail}")
 
 
+# ── Temp directory in use (tmpfs / no swap / age-cleaned) ────────────────────
+# Space and inodes for this directory belong to "Runtime tmpfs" above and the swap
+# total to Memory Pressure; this row adds the filesystem backing
+# ``tempfile.gettempdir()`` and whether ``systemd-tmpfiles`` ages it.
+
+
+def _tmpfiles_ages(temp_dir: str) -> bool | None:
+    """Whether a ``tmpfiles.d`` rule ages *temp_dir*, or ``None`` when unknown.
+
+    Best effort: runs ``systemd-tmpfiles --cat-config`` (resolved through the
+    trusted-bin pin so a PATH-planted shim cannot run) and matches ONLY plain
+    literal rule paths against *temp_dir*.
+
+    A rule path carrying a glob, a ``%`` specifier, a quote or a backslash is never
+    matched literally: those semantics belong to systemd. So the result is ``None``
+    whenever the probe fails, an AGEING rule's path is unresolvable, or an
+    ``x``/``X`` exclusion covers the dir; ``True`` only on a plain literal ageing
+    rule that covers it. Capped at 5s so it can never hang the doctor.
+    """
+    tmpfiles = cli_doctor.platform_compat.trusted_system_bin("systemd-tmpfiles")
+    if tmpfiles is None:
+        return None
+    try:
+        res = cli_doctor.subprocess.run(
+            [tmpfiles, "--cat-config"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except (OSError, cli_doctor.subprocess.SubprocessError):
+        return None
+    if res.returncode != 0:
+        return None
+    target = os.path.realpath(temp_dir)
+    aged = False
+    for raw in res.stdout.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Only the six structural fields (type, path, mode, uid, gid, age) are
+        # checked for quotes: the argument may carry them (stock
+        # ``f+! /run/nologin 0644 - - - "System is booting up."``).
+        structural = line.split(None, 6)[:6]
+        # A quote or backslash there mis-aligns the whitespace split, so the
+        # whole probe is unknown.
+        if any(ch in tok for tok in structural for ch in "\"'\\"):
+            return None
+        fields = line.split()
+        # The base type is the first alpha of field 0 (modifiers like +!=- may
+        # surround it).
+        if len(fields) < 2:
+            continue
+        type_field = fields[0]
+        base_type = next((c for c in type_field if c.isalpha()), "")
+        rule_path = fields[1]
+        age = fields[5] if len(fields) >= 6 else "-"
+        ages = age not in ("", "-")
+
+        # A ``%`` specifier expands to a directory this reader cannot compute
+        # (``q %T 10d`` -> /tmp): unknown when the rule ages, skipped otherwise.
+        if "%" in rule_path:
+            if ages:
+                return None
+            continue
+
+        # A glob is anchored at the directory holding its first metacharacter
+        # (``/tmp/crew-*`` at ``/tmp``). An AGEING glob whose anchor is equal to,
+        # above or below the target could cover it, so unknown; one anchored
+        # elsewhere (``e /var/*/cache``) is skipped.
+        glob_at = min((i for i, ch in enumerate(rule_path) if ch in "*?["), default=-1)
+        if glob_at >= 0:
+            anchor = os.path.dirname(rule_path[:glob_at]) or "/"
+            related = (
+                target == anchor
+                or target.startswith(anchor.rstrip("/") + "/")
+                or anchor.startswith(target.rstrip("/") + "/")
+            )
+            if ages and related:
+                return None
+            continue
+
+        resolved = _realpath_or(rule_path)
+        covers = resolved == target or target.startswith(resolved.rstrip("/") + "/")
+        # An ``x``/``X`` exclusion AT OR ABOVE the target can stop a parent ageing
+        # rule, so unknown; one strictly below only excludes a child.
+        if base_type in ("x", "X") and covers:
+            return None
+        if ages and covers:
+            aged = True
+    return aged
+
+
+def _realpath_or(path: str) -> str:
+    """``os.path.realpath(path)``, or *path* unchanged when it cannot resolve."""
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
+
+
+def _doctor_temp_directories(issues: list[str]) -> None:
+    """Report the temp dir in use: filesystem and ageing policy.
+
+    The path is the one THIS doctor run resolves: a service given a different
+    ``TMPDIR`` is not visible here, so the row names the directory it measured.
+    Warns (advisory, never fails) when the dir is tmpfs with no swap, which
+    throttles under memory pressure. Linux carries the probe; elsewhere the path
+    is printed informationally.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    print("\nTemp directories")
+    try:
+        temp_dir = tempfile.gettempdir()
+    except OSError:
+        # gettempdir() raises when no candidate dir is usable.
+        print("  ⚠️  could not resolve the temp directory (no usable TMPDIR)")
+        return
+    print(f"  path: {temp_dir} (resolved by this doctor run)")
+
+    if not sys.platform.startswith("linux"):
+        print(
+            f"  ⏹ not applicable ({sys.platform} — filesystem type, swap and "
+            "tmpfiles ageing are read from Linux procfs/systemd)"
+        )
+        return
+
+    # Function-local so this family binds no project module at module scope
+    # (test_cli_doctor_refactor_family_reads).
+    from kiro_crew.taskq.store import _linux_mount_type
+
+    fs_type = _linux_mount_type(Path(temp_dir))
+    if fs_type is not None:
+        print(f"  filesystem: {fs_type}")
+    else:
+        print("  filesystem: ⚠️  could not read the mount table")
+
+    # Read only for the tmpfs-with-no-swap warning; Memory Pressure prints it.
+    swap_kib = _swap_total_kib()
+    is_tmpfs = fs_type == "tmpfs"
+
+    aged = _tmpfiles_ages(temp_dir)
+    if aged is True:
+        print("  ageing: ⚠️  a tmpfiles.d rule deletes files here by age")
+    elif aged is False:
+        print("  ageing: ✅ no tmpfiles.d age rule covers this directory")
+    else:
+        print(
+            "  ageing: ⏹ could not determine (systemd-tmpfiles unavailable or the "
+            "probe failed, or a rule this reader cannot resolve — a glob, a "
+            "specifier, or an exclusion — covers this directory)"
+        )
+
+    if is_tmpfs and swap_kib == 0:
+        print(f"  ⚠️  {temp_dir} is tmpfs (RAM-backed) with no swap.")
+        print(
+            "       Its contents count against RAM, so a large write throttles "
+            "the host under memory pressure. Point TMPDIR at a disk-backed path "
+            "for whatever writes here."
+        )
+
+
 # ── kiro-cli installer residue ────────────────────────────────────────────────
-# kiro-cli runs its auto-update check on STARTUP — the ``app.disableAutoupdates``
-# setting is documented as "Disable automatic updates on startup" — and Crew
-# spawns a FRESH kiro-cli per session (``AcpRuntime`` is constructed per session
-# in ``providers/acp_runtime_start.py`` and ``session.py``, and again per Code Review Sage
-# worker). So that check runs once per process START, not once per host per
-# release.
+# kiro-cli runs its auto-update check on every STARTUP and Crew spawns a fresh
+# kiro-cli per session. On Windows the running executable cannot be replaced, so
+# each start can leave one installer behind, reaching tens of gigabytes.
 #
-# On Windows the running executable cannot be replaced, so the downloaded
-# installer can never be applied while a Crew ACP child holds the binary — and
-# the "update pending" state is not cleared after an upgrade either. Nothing in
-# that loop is self-limiting: one installer is left behind per process start, and
-# the residue reaches tens of gigabytes.
-#
-# Crew cannot fix the updater, and must NOT disable updates on the user's behalf:
-# ``app.disableAutoupdates`` is a per-user setting shared with their own
-# interactive CLI, so setting it silently would suppress their security updates.
-# What Crew can do is stop the residue being invisible, since it is Crew's
-# per-session spawning that turns a stale flag into tens of gigabytes.
+# Crew must NOT disable updates on the user's behalf: ``app.disableAutoupdates`` is
+# shared with their own interactive CLI and would suppress their security
+# updates. It can only make the residue visible.
 _CLI_INSTALLER_GLOB = "kiro-installer*"
 
 # One file can be a download still in flight; two or more is residue, because a
@@ -820,16 +1184,11 @@ def _scan_cli_installer_residue(temp_dir: Path) -> tuple[int, int]:
 def _doctor_cli_installer_residue(issues: list[str]) -> None:
     """Report leftover kiro-cli auto-update installers piling up in the temp dir.
 
-    Silent on a healthy host — the common case, and every case on a platform that
-    can replace a running binary — so a normal doctor run gains no noise. This
-    speaks only when residue is actually present, which is why it is not gated on
-    ``platform.system() == "Windows"``: the gate is the evidence on disk, so the
-    check still fires if this failure mode ever appears on another platform.
+    Silent on a healthy host. Gated on the evidence on disk rather than on
+    Windows, so it still fires if this failure mode appears on another platform.
     """
-    # gettempdir() itself probes candidate directories and raises when none is
-    # usable, so it must be inside the guard too: a host with a full or
-    # unwritable temp volume is exactly the host most in need of the rest of the
-    # doctor run, and must not get a traceback instead of it.
+    # gettempdir() raises when no candidate dir is usable; the rest of doctor
+    # must still run on that host.
     try:
         temp_dir = Path(tempfile.gettempdir())
     except OSError:
@@ -838,10 +1197,7 @@ def _doctor_cli_installer_residue(issues: list[str]) -> None:
     if count < _CLI_INSTALLER_RESIDUE_MIN:
         return
 
-    # Capped scans undercount, so say so rather than printing a precise-looking
-    # number that is actually a floor. This applies to the SIZE as well: the scan
-    # stopped summing at the cap, so the total is a floor exactly as the count is,
-    # and rendering it as exact next to a "512+" count would contradict itself.
+    # A capped scan undercounts both the count and the size: print them as floors.
     capped = count >= _CLI_INSTALLER_SCAN_CAP
     count_label = f"{count}+" if capped else str(count)
     if total >= 1073741824:
@@ -868,19 +1224,11 @@ def _doctor_cli_installer_residue(issues: list[str]) -> None:
 def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:
     """Report aged orphaned atomic-write temps and stale backups in the agents dir.
 
-    The shared kiro agents directory accumulates ``<base>.json.<digits>.tmp``
-    orphans and ``*.bak-<digits>`` / ``*.json.bak.<digits>`` backups from the
-    several independent writers that install agents there; nothing else removes
-    them. ``kirocrew doctor`` REPORTS what a sweep would reclaim but never
-    deletes anything itself (``dry_run=True``) — a diagnostic you run *because
-    something broke* must not silently unlink files, including recovery backups,
-    in the same invocation. Actual deletion is left to the fire-and-forget boot
-    sweep, and the report mirrors that sweep's scope: backups are only counted
-    when ``agent.sweep_agents_backups`` is enabled (*sweep_backups*), since Kiro
-    Crew authors none of them and the boot sweep leaves foreign backups alone by
-    default. Advisory only (never appended to ``issues``): reclaimable junk is
-    housekeeping, not a setup fault, and the scan is fail-open so it can never
-    abort the run.
+    Reports what the boot sweep would reclaim and deletes nothing
+    (``dry_run=True``): a diagnostic run because something broke must not unlink
+    recovery backups. Backups are counted only when ``agent.sweep_agents_backups``
+    is enabled (*sweep_backups*), mirroring the boot sweep, since Kiro Crew authors
+    none of them. Advisory only (never appended to ``issues``).
     """
     del issues  # advisory-only diagnostic; keeps the call-site signature uniform
     print("\nAgents Directory")
@@ -954,8 +1302,9 @@ def _doctor_skill_view_residue(agents_dir: Path) -> None:
         print(
             f"{render._INDENT}Another program rewrites the specs in {agents_dir} (a sandbox or"
             f" credential launcher does this on every launch). Kiro Crew tolerates it; if"
-            f" sessions still fail with 'Agent spec ... is not installed', set"
-            f" KIROCREW_NATIVE_SKILL_PROJECTION=0 for the gateway and report it."
+            f" sessions still fail with 'Agent spec ... is not installed', turn projection"
+            f" off (kirocrew config set agent.native_skill_projection false, or"
+            f" KIROCREW_NATIVE_SKILL_PROJECTION=0 for the gateway) and report it."
         )
 
 
@@ -968,20 +1317,11 @@ _RUN_DIR_BACKLOG_WARN = 1000
 def _doctor_run_dirs() -> None:
     """Report, in one line, the run directories the gateway's sweep cannot reclaim.
 
-    Advisory and read-only. A subagent, a stateless cron run or a memory
-    consolidation call gets a directory under the workspace root that the provider
-    marks at first start and reclaims at shutdown; the gateway sweeps what a dead
-    predecessor of its own data home left. A memory consolidation folder is never
-    marked on the by-name walk (Windows), so the census counts it with the
-    unmarked ones. Three figures from one bounded walk, judged by the sweep's own
-    rule: directories from builds that wrote no marker (a name is not provenance,
-    so the sweep deletes nothing it cannot prove Crew made); marked directories
-    this data home cannot act on -- another data home's, an unreadable marker, or
-    a gateway the pid ledger still retains entries for; and marked directories
-    the rule permits yet the sweep keeps for what they hold beyond Crew's own
-    residue -- a folder the by-name walk keeps for kiro-cli's ``.kiro/agents``,
-    or any marked folder that gained a file. Named, never done: the doctor
-    deletes nothing.
+    Advisory and read-only. Three figures from one bounded walk, judged by the
+    sweep's own rule: unmarked directories (a name is not provenance, so the sweep
+    deletes nothing it cannot prove Crew made; a memory consolidation folder on the
+    Windows by-name walk counts here); marked ones this data home cannot act on;
+    and marked ones the sweep keeps because they hold more than Crew's residue.
     """
     from kiro_crew.config.loader import workspace_root
     from kiro_crew.session_pid import retained_gateway_pids
@@ -1028,22 +1368,13 @@ def _doctor_run_dirs() -> None:
 def _doctor_skill_view_census(agents_dir: Path) -> None:
     """Report how many projected skill-view aliases the agents directory holds.
 
-    Advisory and read-only, like the janitor line above it. The count matters
-    because kiro-cli enumerates every file in this directory on every startup
-    and the projection writes one alias per distinct agent view, shared by
-    every spawn of that agent: a backlog from a build that predates the
-    lease-based reclaim reached 28k files on one host and made every session
-    start crawl. The gateway drains its own home's unreferenced aliases -- the
-    whole backlog at boot in lock-bounded batches, a bounded number per spawn
-    after that; the report says
-    exactly which share that covers -- not aliases another data home owns, not
-    lease-named ones while their lease is held -- and refuses to promise any
-    drain while a lease record is unreadable, since the reclaim then keeps
-    everything. Once the census hit a retention bound its counts are floors and
-    the derived ones are not printed at all. The manual fallback is named,
-    never performed, and is a move rather than a delete: the doctor cannot
-    prove who authored a file that merely carries the prefix, and a move is
-    undoable.
+    Advisory and read-only. kiro-cli enumerates every file here on every startup.
+    The gateway drains only its own home's unreferenced aliases, so the report
+    says which share that covers and promises no drain while a lease record is
+    unreadable (the reclaim then keeps everything). Past a retention bound the
+    counts are floors and derived ones are not printed. The manual fallback is a
+    move, not a delete: the doctor cannot prove who authored a file that merely
+    carries the prefix.
     """
     from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
@@ -1077,19 +1408,23 @@ def _doctor_skill_view_census(agents_dir: Path) -> None:
         if foreign:
             detail += f", {foreign}{floor} owned by another Kiro Crew home"
         detail += ")"
-    warn = bool(unreadable) or total > _SKILL_VIEW_BACKLOG_WARN
+    # The same sizing the projection's ceiling uses, so a host the doctor warns
+    # about is still a host whose next spawn falls back.
+    warn_at = cli_doctor.skill_view_ceiling(
+        cli_doctor.count_authored_agent_files(agents_dir), _SKILL_VIEW_BACKLOG_WARN
+    )
+    warn = bool(unreadable) or total > warn_at
     print(f"  skill views: {'⚠️ ' if warn else '✅'} {detail}")
     if truncated:
         print(f"{render._INDENT}(floors: the census stopped at its retention bound)")
     if unreadable:
         print(
-            f"{render._INDENT}{unreadable} lease record(s) in {lease_dir}/ (or in the legacy"
-            f" .kirocrew-skill-projection-leases/ beside the aliases) cannot be read, and"
+            f"{render._INDENT}{unreadable} lease record(s) in {lease_dir}/ cannot be read, and"
             f" the reclaim keeps every alias while one exists. {stopped[0].upper()}"
             f"{stopped[1:]}, move that directory out of the way; every"
             f" live projection republishes its own lease."
         )
-    if total <= _SKILL_VIEW_BACKLOG_WARN:
+    if total <= warn_at:
         return
     if unreadable:
         drain = " Nothing is reclaimed until the unreadable lease record(s) above are gone."

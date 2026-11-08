@@ -1,57 +1,24 @@
-"""``state.json`` stays a WHOLE-FILE rewrite, and this gate is that policy's teeth.
+"""``state.json`` stays a whole-file rewrite, and this gate enforces that policy.
 
-THE POLICY. ``state.json`` is a run's artifact and evidence record, not a
-coordination primitive. Scheduling's source of truth is the durable task queue,
-which carries its own generation fencing. So the write model for ``state.json``
-stays the whole-file rewrite it already is: no revision counter, no
-compare-and-swap retry loop, no per-field or append-merge format. A second
-coordination protocol one layer below the one that already exists buys ordering
-this file does not need, and costs a format every reader must agree on -- the
-state reader, the tombstone pruner, the keep scan, orphan recovery and the
-legacy-record migration.
+``state.json`` is a run's evidence record, not a coordination primitive: the durable task
+queue owns scheduling with its own generation fencing. So no revision counter, CAS loop or
+per-field format, which every reader (state reader, tombstone pruner, keep scan, orphan
+recovery, legacy migration) would have to agree on.
 
-WHAT KEEPS THE WHOLE-FILE REWRITE SAFE. One invariant:
+The invariant: every whole-file write happens at a known site, and each site that can run
+on the event loop carries its own fence. Two interleaved rewrites can roll back fields
+neither writer touched. Off-loop callers share the per-agent lock; the loop cannot wait on
+it (that would block the gateway loop on a pool thread's fsync), so on-loop sites fence
+themselves. Moving a writer off the loop lets it inherit the lock, so the census should
+only shrink.
 
-    Every whole-file ``state.json`` write happens at a KNOWN site, and each site
-    that can run on the event loop carries its own fence.
+"Is it on the loop" is not statically answerable, so rule one pins the site set with
+per-site call counts. Rule two (no write directly in a coroutine body) is decidable and has
+no allowlist. ``asyncio.to_thread(update_state, ...)`` passes the writer as a bare Name and
+has its own gate; ``write_finished_result`` (its ``state_writer``) is listed below.
 
-The rewrite is a read, then a blocking fsync-and-rename, then nothing -- so two
-writers on one agent interleave, and the later one restores a snapshot that
-predates the other's write. Losing the other writer's fields is the visible
-half; rolling back fields NEITHER writer touched is the damaging half. Off-loop
-callers are serialized by the per-agent lock, which closes the class for them.
-On the loop that lock cannot be waited on, because parking the gateway's only
-loop behind a pool thread's fsync is the blocking-call class the repo forbids.
-So an on-loop site carries its own fence instead, and a new site with none is
-the defect this gate refuses to let land.
-
-THE ASYMMETRY CLOSES BY MOVING WRITERS OFF THE LOOP, not by changing the file
-format. A writer that leaves the loop needs no fence of its own: it inherits the
-lock. That is the direction of travel, which is why the census below should
-shrink and never grow.
-
-WHY THE CENSUS IS THE SITES AND NOT "IS IT ON THE LOOP". Every write site today
-sits in a synchronous function that a coroutine calls, so no amount of
-``async def`` inspection can see it: asking "is this on the loop" is not
-statically answerable, while "is this a write site" is exactly answerable. So
-rule one pins the site set with its per-site call count, and a new write
-anywhere fails -- forcing its author to say which fence it carries and whether
-it runs on the loop. Rule two is the sharper case that IS statically decidable:
-a write sitting DIRECTLY in a coroutine body. There are none, and that is a
-measurement, not a wish, so rule two has no allowlist at all.
-
-SCOPE BOUNDARY. ``asyncio.to_thread(update_state, ...)`` passes the writer as a
-bare Name rather than calling it, so the sanctioned off-loop helper is not a site
-here; that route has its own gate, which keeps every off-loop writer on the
-drained helper. ``write_finished_result`` is the one other worker that route
-hands a writer to (as ``state_writer``), so its merge is listed below and a
-direct call to it from a coroutine is caught like any other write.
-
-ONE RECORDING PLACE. An exception is recorded in the census and nowhere else, so
-the fence and the site sit together where the policy lives. The detector matches a
-writer by NAME, so an unrelated object carrying a same-named method reads as a
-site; the remedy there is to rename that symbol or record it, not to add a second
-way of spelling an exception.
+Exceptions are recorded only in the census. The detector matches by name, so for an
+unrelated same-named method, rename it or record it.
 """
 
 from __future__ import annotations
@@ -80,20 +47,20 @@ _STATE_FILE = "state.json"
 #: enclosing function's identity; it is scanned on its own by the top-level walk.
 _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 
-#: THE CENSUS. Every whole-file ``state.json`` write site, with how many calls it
-#: holds and the fence that makes it safe. Keyed by ``(module, function, call)``
-#: and pinned by COUNT, so a second write added inside an already-listed function
-#: fails too.
-#:
-#: This list is expected to SHRINK. Moving a site off the loop lets it inherit
-#: the per-agent lock; a new entry is a new path into a file three fences already
-#: guard, and calls for the policy above to be revisited rather than one more
-#: line here.
-#:
-#: The fence text is prose, and this gate does not re-derive it. A site that
-#: moves on or off the loop keeps the same key, so the commit that moves it
-#: updates or deletes its row here.
+#: The census: every whole-file ``state.json`` write site, its call count and its fence.
+#: Keyed by ``(module, function, call)`` and pinned by count, so a second write inside a
+#: listed function fails too. It should shrink; the fence text is prose the gate does not
+#: re-derive, so a commit that moves a site on or off the loop updates its row.
 _WRITE_SITES: dict[tuple[str, str, str], tuple[int, str]] = {
+    (
+        "kiro_crew/shared_crew/tailscale_invite_store.py",
+        "set_display",
+        "update_state",
+    ): (
+        1,
+        "not a subagent state.json: the Shared Crew store's own update_state "
+        "rewrites invites.json, serialized by that store's _LOCK",
+    ),
     (
         "kiro_crew/execution_context.py",
         "bind_session_execution",
@@ -187,13 +154,9 @@ def _call_label(
 ) -> str | None:
     """Return the write-site label for *call*, or None when it is not one.
 
-    An attribute call (``persistence.update_state(...)``) matches on the
-    attribute: the object it hangs off is not statically knowable and the same
-    whole-file rewrite is reached either way.
-
-    For ``_atomic_write`` the filename is usually built a statement earlier
-    (``p = dir / "state.json"`` then ``_atomic_write(p, state)``), so the literal
-    counts anywhere in the ENCLOSING function, not only in the call itself.
+    An attribute call matches on the attribute, since the object is not statically
+    knowable. For ``_atomic_write`` the ``"state.json"`` literal may sit anywhere in the
+    enclosing function, since the path is usually built a statement earlier.
     """
     fn = call.func
     if isinstance(fn, ast.Name):
@@ -457,92 +420,124 @@ def _labels(source: str) -> list[str]:
     return [label for _p, _f, label, _a, _l in find_write_sites(source)]
 
 
-def test_finds_a_direct_writer_call() -> None:
-    src = "def f(a):\n    update_state(a, keep=False)\n"
-    assert _labels(src) == ["update_state"]
+@pytest.mark.parametrize(
+    ("src", "label"),
+    [
+        pytest.param(
+            "def f(a):\n    update_state(a, keep=False)\n",
+            "update_state",
+            id="test_finds_a_direct_writer_call",
+        ),
+        pytest.param(
+            "def f(a, x):\n    self._persist.update_execution_context(a, x)\n",
+            "update_execution_context",
+            id="test_finds_an_attribute_spelled_call",
+        ),
+        pytest.param(
+            "from kiro_crew.subagent_persistence import update_state as write\n"
+            "def f(a):\n"
+            "    write(a, keep=True)\n",
+            "update_state",
+            id="test_finds_an_aliased_import",
+        ),
+        pytest.param(
+            "def f(a, state_writer):\n    state_writer(a, keep=True)\n",
+            "state_writer",
+            id="test_finds_the_injected_writer_seam",
+        ),
+        pytest.param(
+            'def f(d, s):\n    _atomic_write(d / "state.json", s)\n',
+            "_atomic_write(state.json)",
+            id="test_finds_atomic_write_naming_the_state_file_inline",
+        ),
+        pytest.param(
+            'def f(d, s):\n    p = d / "state.json"\n    _atomic_write(p, s)\n',
+            "_atomic_write(state.json)",
+            id="test_finds_atomic_write_whose_path_is_built_a_statement_earlier",
+        ),
+    ],
+)
+def test_finds_a_write_site(src: str, label: str) -> None:
+    assert _labels(src) == [label]
 
 
-def test_finds_a_writer_call_in_a_sync_helper_and_marks_it_off_body() -> None:
-    src = "def f(a):\n    update_state(a, keep=False)\n"
-    assert [(v[1], v[3]) for v in find_write_sites(src)] == [("f", False)]
+@pytest.mark.parametrize(
+    ("src", "where"),
+    [
+        pytest.param(
+            "def f(a):\n    update_state(a, keep=False)\n",
+            ("f", False),
+            id="test_finds_a_writer_call_in_a_sync_helper_and_marks_it_off_body",
+        ),
+        pytest.param(
+            "async def f(a):\n    update_state(a, keep=False)\n",
+            ("f", True),
+            id="test_marks_a_writer_call_in_a_coroutine_body",
+        ),
+        pytest.param(
+            "async def outer(a):\n    def _write():\n        update_state(a, keep=False)\n"
+            "    return _write\n",
+            ("_write", False),
+            id="test_attributes_a_write_in_a_nested_function_to_that_function",
+        ),
+    ],
+)
+def test_attributes_a_write_site_to_its_function(src: str, where: tuple[str, bool]) -> None:
+    assert [(v[1], v[3]) for v in find_write_sites(src)] == [where]
 
 
-def test_marks_a_writer_call_in_a_coroutine_body() -> None:
-    src = "async def f(a):\n    update_state(a, keep=False)\n"
-    assert [(v[1], v[3]) for v in find_write_sites(src)] == [("f", True)]
-
-
-def test_finds_an_attribute_spelled_call() -> None:
-    src = "def f(a, x):\n    self._persist.update_execution_context(a, x)\n"
-    assert _labels(src) == ["update_execution_context"]
-
-
-def test_finds_an_aliased_import() -> None:
-    src = (
-        "from kiro_crew.subagent_persistence import update_state as write\n"
-        "def f(a):\n"
-        "    write(a, keep=True)\n"
-    )
-    assert _labels(src) == ["update_state"]
-
-
-def test_finds_the_injected_writer_seam() -> None:
-    src = "def f(a, state_writer):\n    state_writer(a, keep=True)\n"
-    assert _labels(src) == ["state_writer"]
-
-
-def test_finds_atomic_write_naming_the_state_file_inline() -> None:
-    src = 'def f(d, s):\n    _atomic_write(d / "state.json", s)\n'
-    assert _labels(src) == ["_atomic_write(state.json)"]
-
-
-def test_finds_atomic_write_whose_path_is_built_a_statement_earlier() -> None:
-    src = 'def f(d, s):\n    p = d / "state.json"\n    _atomic_write(p, s)\n'
-    assert _labels(src) == ["_atomic_write(state.json)"]
-
-
-def test_ignores_atomic_write_of_another_file() -> None:
-    src = 'def f(d, s):\n    _atomic_write(d / "tombstone.json", s)\n'
+@pytest.mark.parametrize(
+    "src",
+    [
+        pytest.param(
+            'def f(d, s):\n    _atomic_write(d / "tombstone.json", s)\n',
+            id="test_ignores_atomic_write_of_another_file",
+        ),
+        # The writer is passed as a bare Name, so it runs in a pool thread under
+        # the per-agent lock. That route has its own gate.
+        pytest.param(
+            "import asyncio\nasync def f(a):\n"
+            "    await asyncio.to_thread(update_state, a, turns=1)\n",
+            id="test_ignores_the_off_loop_helper_form",
+        ),
+        pytest.param(
+            "def f(a, p):\n    p.promote_retention(a, state_writer=update_state)\n",
+            id="test_ignores_a_writer_passed_as_a_keyword_argument",
+        ),
+        pytest.param(
+            "def f(a):\n    a.refresh_state()\n    a.save()\n",
+            id="test_an_unrelated_call_is_not_a_site",
+        ),
+    ],
+)
+def test_is_not_a_write_site(src: str) -> None:
     assert find_write_sites(src) == []
 
 
-def test_ignores_the_off_loop_helper_form() -> None:
-    # The writer is passed as a bare Name, so it runs in a pool thread under the
-    # per-agent lock. That route has its own gate.
-    src = "import asyncio\nasync def f(a):\n    await asyncio.to_thread(update_state, a, turns=1)\n"
-    assert find_write_sites(src) == []
-
-
-def test_ignores_a_writer_passed_as_a_keyword_argument() -> None:
-    src = "def f(a, p):\n    p.promote_retention(a, state_writer=update_state)\n"
-    assert find_write_sites(src) == []
-
-
-def test_attributes_a_write_in_a_nested_function_to_that_function() -> None:
-    src = "async def outer(a):\n    def _write():\n        update_state(a, keep=False)\n    return _write\n"
-    assert [(v[1], v[3]) for v in find_write_sites(src)] == [("_write", False)]
-
-
-def test_module_key_normalises_a_windows_separator() -> None:
-    # The census is keyed on forward slashes, so a backslash spelling would miss
-    # every entry and red this gate on one platform only.
-    base = PureWindowsPath(r"C:\repo\src")
-    path = PureWindowsPath(r"C:\repo\src\kiro_crew\subagent_manager\continuation.py")
-    assert _module_key(path, base) == "kiro_crew/subagent_manager/continuation.py"
-
-
-def test_module_key_keeps_a_posix_path_unchanged() -> None:
-    base = PurePosixPath("/repo/src")
-    path = PurePosixPath("/repo/src/kiro_crew/subagent_persistence.py")
-    assert _module_key(path, base) == "kiro_crew/subagent_persistence.py"
-
-
-def test_module_key_falls_back_to_the_whole_path_off_base() -> None:
-    base = PurePosixPath("/repo/src")
-    path = PurePosixPath("/elsewhere/kiro_crew/x.py")
-    assert _module_key(path, base) == "/elsewhere/kiro_crew/x.py"
-
-
-def test_an_unrelated_call_is_not_a_site() -> None:
-    src = "def f(a):\n    a.refresh_state()\n    a.save()\n"
-    assert find_write_sites(src) == []
+@pytest.mark.parametrize(
+    ("path", "base", "key"),
+    [
+        # The census is keyed on forward slashes, so a backslash spelling would
+        # miss every entry and red this gate on one platform only.
+        pytest.param(
+            PureWindowsPath(r"C:\repo\src\kiro_crew\subagent_manager\continuation.py"),
+            PureWindowsPath(r"C:\repo\src"),
+            "kiro_crew/subagent_manager/continuation.py",
+            id="test_module_key_normalises_a_windows_separator",
+        ),
+        pytest.param(
+            PurePosixPath("/repo/src/kiro_crew/subagent_persistence.py"),
+            PurePosixPath("/repo/src"),
+            "kiro_crew/subagent_persistence.py",
+            id="test_module_key_keeps_a_posix_path_unchanged",
+        ),
+        pytest.param(
+            PurePosixPath("/elsewhere/kiro_crew/x.py"),
+            PurePosixPath("/repo/src"),
+            "/elsewhere/kiro_crew/x.py",
+            id="test_module_key_falls_back_to_the_whole_path_off_base",
+        ),
+    ],
+)
+def test_module_key(path: PurePath, base: PurePath, key: str) -> None:
+    assert _module_key(path, base) == key

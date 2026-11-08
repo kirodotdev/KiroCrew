@@ -4,6 +4,7 @@
 import { AlertTriangle, Save } from 'lucide-react'
 import React from 'react'
 import { i18nT } from '../../../../i18n/t'
+import { fmtList } from '../../../../i18n/format'
 import { stateLabel } from '../../i18nKeys'
 
 interface Props {
@@ -49,7 +50,7 @@ export const EditorFooter: React.FC<Props> = ({
   // A save failure outranks a validation hint: the user already pressed Save, so
   // "it did not save" is the newer and more actionable fact.
   const notice = saveError || (missingStates.length > 0
-    ? i18nT('apps.mochi.editor.missing', { states: missingStates.map(s => stateLabel(s)).join(', ') })
+    ? i18nT('apps.mochi.editor.missing', { states: fmtList(missingStates.map(s => stateLabel(s))) })
     : '')
   return (
     <div style={S.footer}>

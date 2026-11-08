@@ -122,3 +122,10 @@ export function composerDraftStoreFor(key: string): ComposerDraftStore {
     },
   }
 }
+
+/** Forget every draft this tab holds in memory. Tests only: the snapshot is
+ *  module state, so a draft one test leaves would otherwise reach the next. */
+export function __resetComposerDraftsForTests(): void {
+  composerDraftMemory.clear()
+  pendingPosts.clear()
+}

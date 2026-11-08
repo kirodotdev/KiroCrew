@@ -27,6 +27,7 @@ from handlers_messaging_coverage_helpers import (
     _run,
     _state,
 )
+from named_cases_helpers import named_cases
 
 import kiro_crew.config.loader as loader
 import kiro_crew.dashboard.handlers.messaging as mod
@@ -38,9 +39,10 @@ from kiro_crew.secrets import SecretVault
 
 class TestNotificationRoutes:
     def test_list_returns_log_and_unread(self) -> None:
-        state = _state(_notification_log=[{"ts": "1"}], _unread_count=3)
+        notes = [{"ts": "1"}, {"ts": "2", "acked": True}, {"ts": "3", "priority": "passive"}]
+        state = _state(_notification_log=notes)
         resp = _run(mod.api_notifications, _Req(state))
-        assert _payload(resp) == {"notifications": [{"ts": "1"}], "unread": 3}
+        assert _payload(resp) == {"notifications": notes, "unread": 1}
 
     @pytest.mark.parametrize(
         "handler",
@@ -74,20 +76,34 @@ class TestNotificationRoutes:
         state = _state(ack_notification=AsyncMock(return_value=False))
         assert _payload(_run(mod.api_notification_ack, _Req(state, {"ts": "1"}))) == {"ok": False}
 
-    def test_unack_of_a_cron_notification_also_unacks_the_job(self) -> None:
+    def test_unack_of_a_cron_acked_notification_also_unacks_the_job(self) -> None:
         state = _state(
-            _notification_log=[{"ts": "1", "kind": "cron", "job_id": "j1"}],
+            _notification_log=[
+                {
+                    "ts": "1",
+                    "kind": "cron",
+                    "job_id": "j1",
+                    "_cron_ack_item": {"job_id": "j1", "ack_id": "a1"},
+                }
+            ],
             unack_notification=AsyncMock(return_value=True),
         )
         state.crons.unack_job_async = AsyncMock()
         assert _payload(_run(mod.api_notification_unack, _Req(state, {"ts": "1"})))["ok"] is True
-        state.crons.unack_job_async.assert_awaited_once_with("j1")
+        state.crons.unack_job_async.assert_awaited_once_with("j1", "a1")
 
     def test_unack_survives_a_busy_cron_store(self) -> None:
         from kiro_crew.cron import CronStoreBusy
 
         state = _state(
-            _notification_log=[{"ts": "1", "kind": "cron", "job_id": "j1"}],
+            _notification_log=[
+                {
+                    "ts": "1",
+                    "kind": "cron",
+                    "job_id": "j1",
+                    "_cron_ack_item": {"job_id": "j1", "ack_id": "a1"},
+                }
+            ],
             unack_notification=AsyncMock(return_value=True),
         )
         state.crons.unack_job_async = AsyncMock(side_effect=CronStoreBusy("busy"))
@@ -105,7 +121,14 @@ class TestNotificationRoutes:
         from kiro_crew.cron import CronStoreUnreadable
 
         state = _state(
-            _notification_log=[{"ts": "1", "kind": "cron", "job_id": "j1"}],
+            _notification_log=[
+                {
+                    "ts": "1",
+                    "kind": "cron",
+                    "job_id": "j1",
+                    "_cron_ack_item": {"job_id": "j1", "ack_id": "a1"},
+                }
+            ],
             unack_notification=AsyncMock(return_value=True),
         )
         state.crons.unack_job_async = AsyncMock(
@@ -387,21 +410,30 @@ class TestHelpers:
 
     @pytest.mark.parametrize(
         "value,valid",
-        [("kyle@example.com", True), ("", False), ("a" * 260, False), ("no-at-sign", False)],
-    )
-    def test_is_valid_webex_email(self, value: str, valid: bool) -> None:
-        assert mod._is_valid_webex_email(value) is valid
-
-    @pytest.mark.parametrize(
-        "value,valid",
         [
-            ("kyle@example.com", True),
-            ("has space@example.com", False),
-            ("two@@example.com", False),
-            ("nodot@example", False),
+            *named_cases(
+                "test_is_valid_webex_email",
+                "value,valid",
+                [
+                    ("kyle@example.com", True),
+                    ("", False),
+                    ("a" * 260, False),
+                    ("no-at-sign", False),
+                ],
+            ),
+            *named_cases(
+                "test_is_valid_webex_email_shape_rules",
+                "value,valid",
+                [
+                    ("kyle@example.com", True),
+                    ("has space@example.com", False),
+                    ("two@@example.com", False),
+                    ("nodot@example", False),
+                ],
+            ),
         ],
     )
-    def test_is_valid_webex_email_shape_rules(self, value: str, valid: bool) -> None:
+    def test_webex_email_validity(self, value: str, valid: bool) -> None:
         assert mod._is_valid_webex_email(value) is valid
 
     @pytest.mark.parametrize(
@@ -1019,46 +1051,6 @@ class TestSlackManifest:
         assert _payload(_run(mod.api_slack_manifest, _Req(_state())))["alias"] == "kirocrew"
 
 
-class _FakeBus:
-    """Command-bus double: records calls, returns/raises what the test asks for."""
-
-    def __init__(
-        self,
-        *,
-        submit: Any = None,
-        drain: Any = None,
-        complete: bool = True,
-    ) -> None:
-        self._submit = submit if submit is not None else {"id": "c1", "ok": True, "result": 1}
-        self._drain = drain
-        self._complete = complete
-        self.submit_calls: list[tuple[Any, ...]] = []
-        self.drain_calls: list[tuple[Any, int]] = []
-        self.complete_calls: list[tuple[str, bool, Any, Any]] = []
-
-    async def submit(self, session_key: str, op: str, args: dict, *, timeout_ms: int) -> Any:
-        self.submit_calls.append((session_key, op, args, timeout_ms))
-        if isinstance(self._submit, BaseException):
-            raise self._submit
-        return self._submit
-
-    async def drain(self, session_keys: list[str], *, wait_ms: int) -> Any:
-        self.drain_calls.append((session_keys, wait_ms))
-        return self._drain
-
-    async def complete(self, cid: str, ok: bool, *, result: Any = None, error: Any = None) -> bool:
-        self.complete_calls.append((cid, ok, result, error))
-        return self._complete
-
-
-def _install_bus(monkeypatch, bus: _FakeBus) -> _FakeBus:
-    monkeypatch.setattr(mod, "get_command_bus", lambda: bus)
-    return bus
-
-
-_INTERNAL = {"internal_auth": True}
-
-
 class TestDeleteMessage:
     def test_400_on_invalid_json(self) -> None:
         resp = _run(mod.api_delete_message, _Req(_state(), _BAD_JSON))
@@ -1094,12 +1086,6 @@ def test_module_exposes_every_route_handler_under_test() -> None:
         "api_notification_channel_settings",
         "api_slack_pins",
         "api_slack_reactions",
-        "api_browser_token_put",
-        "api_browser_install_get",
-        "api_browser_install_start",
-        "api_browser_view_get",
-        "api_browser_view_start",
-        "api_browser_open",
         "api_teams_config_save",
     ):
         assert callable(getattr(mod, name)), name

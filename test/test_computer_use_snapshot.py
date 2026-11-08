@@ -344,11 +344,11 @@ class TestRendering:
 class TestScreenshotSpoolNamesAreUnique:
     """Two captures in the same millisecond must not resolve to one path.
 
-    Reviewer finding. ``service._shot_lock`` serializes writers within ONE service
+    ``service._shot_lock`` serializes writers within ONE service
     instance but cannot serialize a second PROCESS — the gateway, the CLI and the
     permission-probe child all spool into the same ``tempfile.gettempdir()``
-    directory — so a millisecond-timestamp name let the second write truncate the
-    first, and the first caller was handed a path holding a screenshot of an
+    directory — so a millisecond-timestamp name would let the second write truncate
+    the first, and the first caller would get a path holding a screenshot of an
     application it never asked about. That is a cross-capture pixel leak, not merely
     a lost file.
     """
@@ -714,7 +714,7 @@ class TestSnapshotIndex:
             thread.join()
         assert len(idx) <= 4
 
-    # ── cross-WINDOW isolation (reviewer finding) ──
+    # ── cross-WINDOW isolation ──
 
     def _window(self, key: str, window_id: int, *, count: int, at: float) -> Snapshot:
         app = AppRef(name=key, pid=1, bundle_id=key, window_id=window_id)
@@ -762,7 +762,7 @@ class TestSnapshotIndex:
         two = AppRef(name="Terminal", pid=22, bundle_id="com.apple.Terminal", window_id=9)
         assert one.key == two.key == "com.apple.terminal"
 
-    # ── cross-session isolation (reviewer finding) ──
+    # ── cross-session isolation ──
 
     def test_one_sessions_snapshot_never_resolves_for_another(self):
         """THE finding: the gateway is one process serving every surface.
@@ -910,19 +910,18 @@ class TestRenderedTrailerAndTraits:
 
 class TestTheCeilingRoundTripIsLossless:
     """``_render_snapshot`` flattens every record to a dict and rebuilds it, so the
-    rebuild must be TOTAL over ``ElementRec`` (reviewer finding).
+    rebuild must be TOTAL over ``ElementRec``.
 
-    The pair dropped ``frame``, ``traits`` and ``focused`` — three of the fields the
-    accessibility walk exists to read — so every ``computer_get_state`` reached by a
-    model rendered without rects, without ``(editable)`` and without the focus line,
-    while the response still instructed the model to "add the origin for a screen
-    point" for rects that had been deleted. `editable` is the load-bearing loss: it
-    is the only signal separating a writable text field from a read-only one, so
-    without it the model types into a log pane, gets an ``ok``, and verifies a change
-    that never happened.
+    Dropping ``frame``, ``traits`` or ``focused`` — fields the accessibility walk
+    exists to read — renders every ``computer_get_state`` without rects, without
+    ``(editable)`` or without the focus line, while the response still tells the
+    model to "add the origin for a screen point". `editable` is the load-bearing
+    one: it is the only signal separating a writable text field from a read-only
+    one, so without it the model types into a log pane, gets an ``ok``, and verifies
+    a change that never happened.
 
-    Every OTHER test for these fields calls ``render.render_tree`` directly, which is
-    exactly why none of them caught it — this one goes through ``tools``.
+    Every OTHER test for these fields calls ``render.render_tree`` directly, so
+    none of them covers the round trip — this one goes through ``tools``.
     """
 
     def test_every_ElementRec_field_survives_the_payload_round_trip(self):

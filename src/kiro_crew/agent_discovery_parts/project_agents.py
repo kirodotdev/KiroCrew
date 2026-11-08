@@ -116,23 +116,20 @@ def project_agent_files(
 ) -> list[Path]:
     """Agent config files declared by a project checkout, sorted by stem.
 
-    Returns the kiro-cli-native ``<project>/.kiro/agents/*.json`` and the markdown
-    ``*.md`` form beside it — the only project location the backends resolve
-    ``--agent`` against, and therefore the only one whose names are dispatchable.
-    Dispatchable by the kiro-cli backend, which reads the checkout itself, and by
-    the KAS projection (:func:`kiro_crew.acp.harness.kas.resolve_projected_spec`),
-    which projects a project-only agent's prompt and visible tools and nothing it
-    could grant, and reads the user-level spec for a name both levels declare.
-    Whether a checkout's spec may be projected at all is a governance question (a
+    Returns ``<project>/.kiro/agents/*.json`` and the ``*.md`` form beside it, the
+    only project location the backends resolve ``--agent`` against, so the only
+    dispatchable names. The KAS projection
+    (:func:`kiro_crew.acp.harness.kas.resolve_projected_spec`) projects a
+    project-only agent's prompt and visible tools and nothing it could grant,
+    and reads the user-level spec for a name both levels declare. Whether a
+    checkout's spec may be projected at all is a governance question (a
     checkout can shadow a managed agent), not a question of which form is
     scanned, and the two forms are treated alike here.
 
-    *include_legacy* additionally returns ``<project>/.kiro/*.agent-spec.json``, Kiro
-    Crew's own older convention. It defaults to ``False`` because every dispatch
-    surface (the agent picker, ``spawn_run`` validation, per-turn resolution) must
-    offer only agents the backend can actually activate; a legacy-only name would be
-    accepted here and then fail at ``session/set_mode``. Slack passes ``True`` to
-    keep its pre-existing listing and resolution behavior.
+    *include_legacy* adds ``<project>/.kiro/*.agent-spec.json``. It defaults to
+    ``False`` because dispatch surfaces must offer only agents the backend can
+    activate; a legacy-only name fails at ``session/set_mode``. Slack passes
+    ``True`` for its own listing and resolution.
 
     Returns ``[]`` for a falsy or sensitive *project_dir*, and never raises: an
     unreadable checkout yields no agents rather than failing the caller's scan.
@@ -228,12 +225,9 @@ def project_agent_names(
     Only ``<project>/.kiro/agents/`` (``*.json`` and ``*.md``) contributes, because
     only those names are ones the backend can activate (see :func:`project_agent_files`).
 
-    Cached per project directory and revalidated by :func:`_project_signature`, so a
-    repeat call on an unchanged checkout costs a pair of ``scandir`` walks rather than
-    re-reading and re-parsing every spec. This matters because the per-turn agent
-    resolver calls this on EVERY turn of a project-agent-bound session: bounding the
-    file count is not enough on its own, since the cost that stalls a caller is the
-    reads, not the count.
+    Cached per project directory and revalidated by :func:`_project_signature`, so
+    the per-turn resolver's repeat call costs two ``scandir`` walks, not a parse
+    of every spec.
 
     *operation*/*source* label the SEL denial event emitted on a sensitive
     project directory, exactly as on :func:`_read_agent_spec`: the calling
@@ -287,17 +281,11 @@ def project_agent_names(
 def cached_project_agent_names(project_dir: str | Path | None) -> frozenset[str] | None:
     """Cached names for *project_dir*, or ``None`` when nothing is cached yet.
 
-    Performs **no syscalls at all** — not even the stat pair
-    :func:`project_agent_names` uses to revalidate. That is the point: this is the
-    read the per-turn resolver makes while an event loop is running, where any
-    filesystem access is a potential gateway stall. A caller that needs a fresh
-    answer warms the cache off-loop first (see :func:`project_agent_names`); this
-    then serves it from memory.
-
-    Returning the possibly-stale cached value is deliberate. The alternative on the
-    loop is not "a fresher answer", it is "no answer" — and one turn resolved
-    against a snapshot taken moments earlier is strictly better than a stall or a
-    wrong fallback to the default agent.
+    Makes **no syscalls**, not even the revalidating stat pair: the per-turn
+    resolver calls it on the event loop, where filesystem access can stall the
+    gateway. Callers warm the cache off-loop first. A possibly stale answer is
+    deliberate: on the loop the alternative is a stall or a wrong fallback to
+    the default agent.
     """
     if not project_dir:
         return None
@@ -322,24 +310,17 @@ async def warm_project_agent_names(
 ) -> None:
     """Populate the project name cache from the discovery pool, off the event loop.
 
-    The counterpart to :func:`cached_project_agent_names`: an async caller runs this
-    first so the synchronous, on-loop resolution that follows is a cache HIT rather
-    than a fallback to the default agent.
+    The counterpart to :func:`cached_project_agent_names`: run first so the on-loop
+    resolution that follows is a cache HIT. Only the scan is offloaded; resolution
+    stays inline because ``StopIteration`` cannot pass through a ``Future`` and
+    would hang the awaiting caller.
 
-    Only the scan is offloaded. Resolution itself stays inline on purpose — moving a
-    synchronous resolver into an executor changes its exception semantics, and
-    ``StopIteration`` in particular cannot be delivered through a ``Future``, which
-    hangs the awaiting caller instead of surfacing the error.
+    *operation*/*source* forward to :func:`project_agent_names` so a denial names
+    the requesting surface; the defaults name the warm itself, with channel
+    ``"unknown"`` because it serves several.
 
-    *operation*/*source* forward to :func:`project_agent_names` so a denial hit
-    during the warm names the surface that requested it rather than echoing the
-    helper's own name. The defaults name this hop truthfully: the warm
-    itself is the operation, and the helper serves several channels (dashboard
-    chat, spawn admission), so its channel is ``"unknown"`` unless the caller
-    says otherwise.
-
-    A no-op without a *project_dir*. Best-effort and never raises: failing to warm
-    costs one turn's fallback, and must not break turn handling.
+    A no-op without a *project_dir*. Never raises: a failed warm costs one
+    turn's fallback.
     """
     if not project_dir:
         return

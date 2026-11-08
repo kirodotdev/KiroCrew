@@ -289,7 +289,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: hold, so leaf-only is the only hold available to them:
     #:
     #: * ``credential_redaction.json`` -- the owner's credential-redaction
-    #:   switch, on the same read-only floor as ``file_delivery_consent.json``;
+    #:   switch, on the same read-only floor as ``aws_service_consent.json``;
     #: * ``auth-store-staging`` -- the masked directory the two gateway auth
     #:   stores publish through, so the temp holding a full signing key or
     #:   refresh-chain state is never listable from inside the namespace;
@@ -324,7 +324,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: approved launch. Each sits beside writable siblings, so no parent stand-in
     #: can hold it.
     #:
-    #: One more root-level leaf, three more entries per tier:
+    #: One more root-level directory, three entries per tier:
     #:
     #: * ``gateway_id`` -- the id the Remote Crew cycle guard compares, sealed
     #:   read-only so an agent cannot choose whether a chaining loop is detected.
@@ -361,7 +361,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #: One more root-level directory, three entries per tier:
     #:
     #: * ``engines`` -- the KAS engine bundles ``kirocrew kas install`` lays down
-    #:   (``acp/kas_bundle.py``), sealed read-only like ``playwright-cli`` so a
+    #:   (``acp/kas_bundle.py``), sealed read-only like ``browser-harness`` so a
     #:   sandboxed session cannot rewrite the engine code and Node runtime its
     #:   next session runs. At the data-home root beside writable siblings, so
     #:   leaf-only is the only hold available.
@@ -379,15 +379,136 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   so no sandboxed writer can plant the spec kiro-cli reads there. At the
     #:   data-home root beside writable siblings, so leaf-only is the only hold.
     #:   Three more entries per tier.
-    EXPECTED: dict[str, int] = {"standard": 290, "cc": 297, "strict": 298}
+    #: * ``browser-harness``, ``browser-harness-ipc``, ``browser-profile`` -- the
+    #:   Browser Harness prefix the gateway executes (sealed read-only), the daemon's
+    #:   IPC directory and Kiro's Chromium profile (both hidden). They sit at the
+    #:   data-home root beside writable siblings, exactly where the retired browser
+    #:   CLI's one leaf sat, so leaf-only is the only hold. Three names in, one
+    #:   out, both spellings of the data home: four more entries per tier.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``member-records`` -- each crewmate's permanent rules, goals and DM
+    #:   binding, which the gateway writes on a person's action. Masked at the
+    #:   data-home root beside ``crew-teams`` rather than under the sandbox
+    #:   read-write ``trust/``, so leaf-only for the same reason.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``web-push`` -- the Web Push VAPID key and device subscription secrets
+    #:   (``notifications/push_store.py``), masked as a whole directory so the
+    #:   ``atomic_write`` temps they publish through are hidden too. At the data-home
+    #:   root beside writable siblings, so leaf-only is the only hold.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``secret-request-policy`` -- the mediated-secret request directory: the
+    #:   owner-signed egress policy ``kirocrew secrets authorize`` writes and its
+    #:   authorize lock, masked whole so an agent can neither read the allowlist nor
+    #:   plant an entry. Every publication renames INSIDE it, so the directory's own
+    #:   inode stays the same on a republish. It sits at the data-home root beside
+    #:   writable siblings, so no enclosing directory mask can hold it and leaf-only
+    #:   is the only hold available, the same as ``member-records``.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``browser-recordings`` -- every chat's browser turn replays
+    #:   (``browser_harness.recording``), read only through the owner-only replay
+    #:   routes. Masked whole beside ``browser-profile`` at the data-home root, so
+    #:   leaf-only is the only hold, like ``work-ledger``.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``kas-mcp-launch`` -- the KAS MCP launch snapshots, which hold MCP
+    #:   servers' env values (``sandbox_leaves``). Masked whole at the data-home
+    #:   root beside writable siblings, so leaf-only is the only hold.
+    #:
+    #: One entry per tier for the default home's ``run`` under a relocated data
+    #: home (``sandbox_workspace.prime_voice_runtime_sandbox_paths``):
+    #:
+    #: * ``$HOME/.kiro/crew/run`` -- where every gateway leaves its run-dir pointer,
+    #:   whatever its data home, and the token mint follows that pointer to a
+    #:   launcher it runs outside the sandbox. Sealed read-only so an agent cannot
+    #:   plant one. Only the ``$HOME/.kiro/crew`` spelling is added: the relocated
+    #:   home's own ``run`` is already counted. It sits at the default home's root
+    #:   beside writable siblings, so no enclosing directory mask can hold it and
+    #:   leaf-only is the only hold available. The pointer is published by a rename
+    #:   INSIDE it, so the directory's own inode stays the same on a republish.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``released-sessions`` -- the gateway's pending deletes of released
+    #:   engine records. An entry has the gateway delete the record it names, so
+    #:   a forged one would delete a conversation. It sits at the root, masked,
+    #:   rather than under the sandbox read-write ``trust/``, and is leaf-only for
+    #:   the reason ``panel-dismissals`` is.
+    #:
+    #: One more root-level leaf, three entries per tier:
+    #:
+    #: * ``shared_crew_preview.json`` -- the owner's Shared Crew switch, a file at
+    #:   the data-home root beside writable siblings, so leaf-only is the only
+    #:   hold available, as for ``decisions_consent.json``.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``config-provenance`` -- the gateway's record of the ``config.json`` and
+    #:   ``config.local.json`` objects it published itself, which the launcher's pin
+    #:   reads to tell the gateway's own save from a substituted file. Sealed
+    #:   read-only so an agent cannot vouch for a file of its choosing. The record is
+    #:   republished by a rename INSIDE the directory, so the directory's own inode
+    #:   stays the same, as for ``seed-provenance``; at the data-home root beside
+    #:   writable siblings, so leaf-only is the only hold.
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``kirocrew-bin`` -- the one ``kirocrew`` link ``env.augmented_path`` puts
+    #:   ahead of ``~/.local/bin`` on every agent PATH, sealed read-only so an agent
+    #:   cannot plant the ``kirocrew`` every later lookup runs. The gateway replaces
+    #:   the link by a rename INSIDE the directory, so the directory's own inode
+    #:   stays the same; at the data-home root beside writable siblings, so
+    #:   leaf-only is the only hold, as for ``models``.
+    #: One more root-level directory, ``host-exec-grants`` -- the gateway's record of
+    #: which apps the owner enabled to run code OUTSIDE the sandbox (a Dev Fleet pod).
+    #: The pod gate authorizes on a marker here, so a forged one would start a pod
+    #: outside the jail without an owner enable. Sealed read-only so an agent cannot
+    #: plant one, and no-follow so a pre-upgrade symlink cannot leave the real path
+    #: replaceable. The marker is written by a create INSIDE the directory, so the
+    #: directory's own inode stays the same; at the data-home root beside writable
+    #: siblings, so leaf-only is the only hold, as for ``kirocrew-bin``.
+    EXPECTED: dict[str, int] = {"standard": 325, "cc": 332, "strict": 333}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
         _, leaf_only = _split(tier)
         expected = self.EXPECTED[tier]
-        assert len(leaf_only) <= expected, (
-            f"{tier} now holds {len(leaf_only)} protected names by their own leaf name "
-            f"only, up from {expected}. Each new one is a name a host-side republish can "
-            "leave writable inside a live namespace; hold it with an enclosing directory "
-            "mask instead of adding it here."
-        )
+        assert len(leaf_only) <= expected, _leaf_only_growth_message(tier, len(leaf_only), expected)
+
+    def test_the_growth_message_states_the_root_leaf_decision(self) -> None:
+        """The failure text is the next author's only guidance, so it is pinned.
+
+        It must name both routes: an enclosing mask where the parent can take a
+        stand-in, and the recorded leaf-only decision for a data-home root leaf,
+        whose parent no stand-in can hold.
+        """
+        message = _leaf_only_growth_message("standard", 325, 322)
+        assert "standard now holds 325" in message
+        assert "up from 322" in message
+        assert "enclosing directory mask" in message
+        assert "no stand-in can hold" in message
+        assert "leaf-only by design" in message
+        assert "credential_redaction.json" in message
+        assert "EXPECTED" in message
+
+
+def _leaf_only_growth_message(tier: str, count: int, expected: int) -> str:
+    """The ratchet's failure text for a grown leaf-only count on *tier*."""
+    return (
+        f"{tier} now holds {count} protected names by their own leaf name only, up "
+        f"from {expected}. Each new one is a name a host-side republish can leave "
+        "writable inside a live namespace. If its parent directory can take a "
+        "stand-in, hold it with an enclosing directory mask instead. A leaf at the "
+        "data-home root cannot: no stand-in can hold the root, so such a leaf is "
+        "leaf-only by design, as credential_redaction.json and the other root "
+        "leaves recorded in TestLeafOnlyPopulationIsRecorded are. For one of those, "
+        "raise EXPECTED and record the leaf and its reason beside it in the same diff."
+    )

@@ -621,11 +621,15 @@ class TestSessionsLimitConfig:
     def test_the_default_matches_the_collectors_own(self):
         assert SlackConfig().sessions_limit == _SESSIONS_DEFAULT_LIMIT
 
-    def test_the_loader_reads_the_key(self):
-        assert _build_slack_config({"sessions_limit": 40}).sessions_limit == 40
-
-    def test_the_loader_coerces_a_bad_value(self):
-        assert _build_slack_config({"sessions_limit": "lots"}).sessions_limit == 10
+    @pytest.mark.parametrize(
+        "expected, raw",
+        [
+            pytest.param(40, 40, id="the_loader_reads_the_key"),
+            pytest.param(10, "lots", id="the_loader_coerces_a_bad_value"),
+        ],
+    )
+    def test_the_loader_reads_sessions_limit(self, expected, raw):
+        assert _build_slack_config({"sessions_limit": raw}).sessions_limit == expected
 
     def test_the_spec_quotes_the_production_default(self):
         # The spec states the default in prose. Derived from the dataclass here,

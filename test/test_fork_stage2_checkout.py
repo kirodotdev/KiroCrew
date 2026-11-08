@@ -16,10 +16,8 @@ reports "no verdict", and because these lanes are read by `PR Readiness`, a
 blocking one turns into a permanent block on all external contributions -- the
 exact outcome the same-repo callers' fork skip exists to avoid.
 
-This is pinned as a test because five sibling lanes already agreed on it and
-nothing enforced it: `fork-internal-content-scan.yml` shipped for review without
-either setting, and it took two full review rounds to find. A unanimous
-convention that no test asserts is a convention the sixth copy silently breaks.
+This is pinned as a test because every fork lane must agree on it: a unanimous
+convention that no test asserts is a convention the next copy silently breaks.
 
 WHY THE INVARIANT IS BOUND TO THE DIFFING JOB, not to every checkout
 --------------------------------------------------------------------

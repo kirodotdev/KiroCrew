@@ -1,12 +1,8 @@
 """
-Hole 1 of the skill-view growth: every subagent and stateless cron run got a
-``workspace_root()/<key>`` directory holding one file and nothing ever removed
-it. These tests pin the rule that makes the removal safe -- only the two names
-Crew writes, inside the two directories Crew creates, and ``rmdir`` for every
-directory -- and the invariant behind every decision: a reclaim uses only
-evidence the deciding process OWNS (its registry, its own data home's pid
-ledger), never a liveness probe of a pid another process wrote and never a
-directory another data home marked.
+Reclaiming the ``workspace_root()/<key>`` directory each subagent and stateless cron run
+gets: only the two names Crew writes, inside the two directories it creates, with
+``rmdir`` for every directory. A reclaim uses only evidence the deciding process owns
+(its registry, its own data home's pid ledger), never another process's pid or marker.
 """
 
 from __future__ import annotations
@@ -56,12 +52,9 @@ def _residue_dir(
 ) -> Path:
     """A run directory exactly as a marked spawn leaves it.
 
-    *marked* False is the directory an older build left: same residue, no
-    provenance marker, which only the shutdown path (whose provenance is the
-    factory flag) may reclaim. The marker names this data home and this process
-    unless *home* / *owner_pid* say otherwise; *raw_marker* plants bytes as is.
-    *kiro_cli_agents* adds the empty ``.kiro/agents`` kiro-cli creates in the
-    folder it starts in.
+    *marked* False leaves no provenance marker; only the shutdown path may reclaim that.
+    *home* / *owner_pid* override the marker, *raw_marker* plants bytes as is, and
+    *kiro_cli_agents* adds the empty ``.kiro/agents`` kiro-cli creates.
     """
     work_dir = root / name
     settings = work_dir / ".kiro" / "settings"
@@ -137,6 +130,52 @@ class TestDisposableSessionKey:
             (f"memory-consolidation:work:{'0123456789abcdef' * 2}0", False),
             ("memory-consolidation:work", False),
             (f"memory-consolidation::{'0123456789abcdef' * 2}", False),
+            # judge:<uuid4 hex> (colon; directory name = judge_<hex>)
+            (f"judge:{'a' * 32}", True),
+            (f"judge:{'a' * 31}", False),  # too short
+            (f"judge:{'a' * 33}", False),  # too long
+            ("judge:" + "g" * 32, False),  # non-hex character
+            ("judge-" + "a" * 32, False),  # hyphen form is not the minted shape
+            # taskrunner:refine:<epoch ms>
+            ("taskrunner:refine:1234567890123", True),
+            ("taskrunner:refine:123456789012", False),  # 12 digits (too short)
+            ("taskrunner:refine:12345678901234", False),  # 14 digits (too long)
+            ("taskrunner:refine:notdigits12345", False),
+            ("taskrunner:basic:1234567890123", False),  # wrong tag component
+            ("taskrunner:1234567890123", False),  # missing 'refine' component
+            # hook:default:<epoch s>-<token_hex(6)>
+            ("hook:default:1234567890-abcdef012345", True),
+            ("hook:default:1234567890-abcdef01234", False),  # 11 hex (too short)
+            ("hook:default:1234567890-abcdef0123456", False),  # 13 hex (too long)
+            ("hook:default:1234567890-ABCDEF012345", False),  # uppercase (not [0-9a-f])
+            ("hook:default:1234567890abcdef012345", False),  # no hyphen
+            ("hook:other:1234567890-abcdef012345", False),  # wrong sub-key
+            # wf-author:<wf_run_id>:a<attempt>
+            ("wf-author:wf_000001:a1", True),
+            ("wf-author:wf_000001:a0", True),
+            ("wf-author:wf_000001:a9", True),
+            ("wf-author:wf_1000000:a1", True),  # run id beyond 999999 (7 digits)
+            ("wf-author:wf_00001:a1", False),  # 5-digit run id (below minimum)
+            ("wf-author:wf_000001:aa", False),  # non-digit attempt suffix
+            ("wf-author:wf_000001:1", False),  # missing 'a' prefix in attempt
+            # eval_<name>_<ns> keys are NOT in the table: eval/runner.py sets
+            # provider._client._work_dir = ws (shared workspace), so there is no
+            # per-key derived directory for the sweep to reclaim.
+            ("eval_basic_1234567890123456", False),
+            ("eval_judge", False),
+            # long-lived keys that must never be reclaimed
+            ("slot:abcdef1234567890abcdef12", False),
+            ("dashboard:hook_test", False),
+            ("hook:mywebhook-session", False),
+            # dashboard chat slot key: chat-<counter>-<epoch s> (lives for months)
+            ("chat-1555-1791951467", False),
+            ("chat-69-1785905004", False),
+            # member DM slot key: member-<slug> (long-lived pinned thread)
+            ("member-bug-resolve", False),
+            # member slot key with private memory store: member-<slug>.memory-<store>
+            (f"member-bug-resolve.memory-member-bug-resolve-{'a' * 32}", False),
+            # member session alias: dashboard:<slot key> (the canonical session-map form)
+            ("dashboard:member-bug-resolve", False),
         ],
     )
     def test_only_generated_one_run_key_shapes_are_disposable(
@@ -195,6 +234,120 @@ class TestDisposableSessionKey:
         from kiro_crew.memory_stores import _STORE_NAME_RE
 
         assert _STORE_NAME_RE.pattern == rf"^{session_work_dir._MEMORY_STORE_NAME}\Z"
+
+    def test_judge_key_is_the_uuid4_hex_minted_by_impl_llm(self) -> None:
+        """``impl_llm.py`` mints ``judge:{uuid.uuid4().hex}``; that is 32 lowercase hex chars."""
+        import uuid
+
+        key = f"judge:{uuid.uuid4().hex}"
+        assert session_work_dir.is_disposable_session_key(key) is True
+        name = key.replace(":", "_")
+        assert session_work_dir.DERIVED_NAME_RE.fullmatch(name) is not None
+        assert session_work_dir._is_disposable_dir_name(name) is True
+
+    def test_taskrunner_refine_key_matches_current_epoch_milliseconds(self) -> None:
+        """``taskrunner.py`` mints ``taskrunner:refine:{int(time.time() * 1000)}``."""
+        import time
+
+        key = f"taskrunner:refine:{int(time.time() * 1000)}"
+        assert session_work_dir.is_disposable_session_key(key) is True
+        name = key.replace(":", "_")
+        assert session_work_dir.DERIVED_NAME_RE.fullmatch(name) is not None
+        assert session_work_dir._is_disposable_dir_name(name) is True
+
+    def test_hook_default_key_matches_current_epoch_and_token(self) -> None:
+        """``hooks.py`` mints ``hook:default:{int(time.time())}-{secrets.token_hex(6)}``."""
+        import secrets
+        import time
+
+        key = f"hook:default:{int(time.time())}-{secrets.token_hex(6)}"
+        assert session_work_dir.is_disposable_session_key(key) is True
+        name = key.replace(":", "_")
+        assert session_work_dir.DERIVED_NAME_RE.fullmatch(name) is not None
+        assert session_work_dir._is_disposable_dir_name(name) is True
+
+    def test_wf_author_key_matches_typical_allocator_run_ids(self) -> None:
+        """``service.py`` mints ``wf-author:{wf_run_id}:a{attempt}`` for attempts 1-3."""
+        for run_id, attempt in [("wf_000001", 1), ("wf_999999", 3), ("wf_1000000", 2)]:
+            key = f"wf-author:{run_id}:a{attempt}"
+            assert session_work_dir.is_disposable_session_key(key) is True, key
+            name = key.replace(":", "_")
+            assert session_work_dir.DERIVED_NAME_RE.fullmatch(name) is not None, name
+            assert session_work_dir._is_disposable_dir_name(name) is True, name
+
+    @pytest.mark.parametrize(
+        ("key", "expected"),
+        [
+            (f"issue-radar-ai:octo/hello#12:{'a' * 32}", True),
+            (f"issue-radar-pr-ai:octo/hello.js#7:{'a' * 32}", True),
+            (f"issue-radar-reco:octo/hello_world:{'a' * 32}", True),
+            (f"issue-radar-tagging:octo-org/hello-world:{'a' * 32}", True),
+            (f"issue-radar-ai:group/sub/project#3:{'a' * 32}", True),  # GitLab subgroup
+            (f"issue-radar-reco:group/sub/project:{'a' * 32}", True),
+            (f"issue-radar-ai:octo/hello:{'a' * 32}", False),  # no item number
+            (f"issue-radar-ai:octo/hello#-1:{'a' * 32}", False),  # negative number
+            (f"issue-radar-reco:octo/hello#12:{'a' * 32}", False),  # reco has no number
+            (f"issue-radar-reco:hello:{'a' * 32}", False),  # no owner
+            (f"issue-radar-reco:octo/hello:{'a' * 31}", False),  # short call id
+            (f"issue-radar-tagging:my org/hello:{'a' * 32}", False),  # space: Azure stays
+            ("issue-radar-ai:octo/hello#12", False),  # no call id
+            (f"issue-radar-other:octo/hello:{'a' * 32}", False),  # unknown surface
+        ],
+    )
+    def test_issue_radar_one_run_keys_and_their_directory_names(
+        self, key: str, expected: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The four ``_run_oneshot_model`` keys carry ``/`` and ``#``; their folder is
+        named by ``_session_work_dir``, which writes ``_`` for each ``/``."""
+        from kiro_crew.config import loader_locations
+
+        monkeypatch.setattr(loader_locations, "workspace_root", lambda: tmp_path)
+        name = loader_locations._session_work_dir(key).name
+        assert "/" not in name
+        assert session_work_dir.is_disposable_session_key(key) is expected
+        # The name filter only picks sweep candidates; the marker, written only for
+        # a disposable key, decides. So a refused key's name may still look like one.
+        if expected:
+            assert session_work_dir.DERIVED_NAME_RE.fullmatch(name) is not None
+            assert session_work_dir._is_disposable_dir_name(name) is True
+
+    def test_issue_radar_keys_as_the_routes_mint_them(self, tmp_path: Path, monkeypatch) -> None:
+        """Mirrors the f-strings in ``ai.py``, ``recommendations.py`` and ``tagging.py``."""
+        import uuid
+
+        from kiro_crew.config import loader_locations
+
+        monkeypatch.setattr(loader_locations, "workspace_root", lambda: tmp_path)
+        owner, repo, number = "octo-org", "hello-world", 23880
+        for key in (
+            f"issue-radar-ai:{owner}/{repo}#{int(number)}:{uuid.uuid4().hex}",
+            f"issue-radar-pr-ai:{owner}/{repo}#{int(number)}:{uuid.uuid4().hex}",
+            f"issue-radar-reco:{owner}/{repo}:{uuid.uuid4().hex}",
+            f"issue-radar-tagging:{owner}/{repo}:{uuid.uuid4().hex}",
+        ):
+            name = loader_locations._session_work_dir(key).name
+            assert session_work_dir.is_disposable_session_key(key) is True, key
+            assert session_work_dir._is_disposable_dir_name(name) is True, name
+
+    def test_eval_keys_are_not_disposable(self) -> None:
+        """eval/runner.py points every session at a shared workspace via
+        shared_ws_factory, not a per-key derived directory, so no eval_ key
+        is classified as disposable."""
+        import time
+
+        for key in (
+            "eval_judge",
+            "eval_basic_1234567890123456",
+            f"eval_scenario_{time.monotonic_ns()}",
+        ):
+            assert session_work_dir.is_disposable_session_key(key) is False, key
+            assert session_work_dir._is_disposable_dir_name(key) is False, key
+
+    def test_caller_supplied_hook_session_key_is_not_disposable(self) -> None:
+        """A webhook caller may supply its own ``hook:`` key to continue a session."""
+        # Only hook:default:<ts>-<hex> is one-run; other hook: keys are long-lived.
+        assert session_work_dir.is_disposable_session_key("hook:my-webhook-session") is False
+        assert session_work_dir._is_disposable_dir_name("hook_my-webhook-session") is False
 
 
 class TestMarker:
@@ -356,11 +509,8 @@ class TestReclaimRule:
     def test_the_marker_is_the_only_provenance_the_sweep_accepts(self, tmp_path: Path) -> None:
         """A run-prefixed name under the workspace root is not provenance.
 
-        Someone can make ``workspace_root()/subagent_deadbeef`` and put their own
-        ``.kiro/settings/cli.json`` in it; by name and shape it is residue. No
-        marker means Crew never derived it, so the sweep must leave it however
-        old it is. The shutdown path's provenance is the factory flag, so it does
-        not need the file.
+        Anyone can make a residue-shaped ``subagent_deadbeef``; without the marker the
+        sweep leaves it. The shutdown path relies on the factory flag instead.
         """
         theirs = _residue_dir(tmp_path, "subagent_deadbeef", age_secs=10**6, marked=False)
         assert session_work_dir.reclaim_session_work_dir(theirs, require_marker=True) is False
@@ -544,13 +694,9 @@ class TestReclaimRule:
     ) -> None:
         """The read-only probe and the sweep's reclaim never disagree on one tree.
 
-        The census mirrors the sweep's residue rule in its own read-only walk, so
-        the two could drift if a later change touches one copy and not the other.
-        This runs both over identical fixtures -- residue-only, and residue plus
-        each non-residue shape -- on each walk the platform offers, and asserts
-        ``_run_dir_holds_only_residue`` says *keep* exactly when
-        ``reclaim_session_work_dir`` leaves the directory. If they ever disagree,
-        this goes red.
+        The census copies the sweep's residue rule, so ``_run_dir_holds_only_residue``
+        must say *keep* exactly when ``reclaim_session_work_dir`` leaves the directory,
+        on each walk the platform offers.
         """
         monkeypatch.setattr(session_work_dir.pinned_fs, "supports_pinned_walk", lambda: pinned)
         probed = _residue_dir(tmp_path, "subagent_0000000000000009", owner_pid=PREDECESSOR_PID)
@@ -813,6 +959,28 @@ def _sweep(root: Path, *, retained=frozenset(), live=(), **kwargs) -> int:
     return session_work_dir.sweep_predecessor_work_dirs(
         root, retained_gateway_pids=retained, live_work_dirs=list(live), **kwargs
     )
+
+
+def test_the_sweep_reclaims_a_predecessors_issue_radar_folders(tmp_path: Path) -> None:
+    """A marked issue-radar folder left by a dead predecessor goes; an unmarked one stays."""
+    hexid = "0123456789abcdef" * 2
+    gone = [
+        _residue_dir(tmp_path, name, age_secs=7200, owner_pid=PREDECESSOR_PID)
+        for name in (
+            f"issue-radar-ai_octo_hello#12_{hexid}",
+            f"issue-radar-pr-ai_group_sub_project#3_{hexid}",
+            f"issue-radar-reco_octo_hello_world_{hexid}",
+            f"issue-radar-tagging_octo_hello_{hexid}",
+        )
+    ]
+    unmarked = _residue_dir(
+        tmp_path, f"issue-radar-reco_octo_other_{hexid}", age_secs=7200, marked=False
+    )
+
+    assert _sweep(tmp_path) == len(gone)
+
+    assert not any(p.exists() for p in gone)
+    assert unmarked.exists()
 
 
 class TestSweepBounds:
@@ -1406,14 +1574,9 @@ async def _await_until(predicate: Callable[[], bool], what: str, give_up_at: flo
 class TestRegistryLeavesASiblingsDirectory:
     """Two providers for one KEY derive one directory; the discarded one leaves it.
 
-    The factory flag says "derived from a one-run key", not "this instance is
-    the one the registry kept". Where the registry shuts down a provider whose
-    key another live provider holds -- the loser of a cold-start race, the
-    predecessor of a recycle whose successor is already registered, the
-    bootstrap provider that borrowed a parent's key -- it first tells that
-    provider the directory is not its to reclaim. The live sibling still
-    reclaims at its own shutdown, which is what the ``close_all`` at the end
-    of each test pins.
+    The factory flag does not say which instance the registry kept, so a provider shut
+    down while a live one holds its key (race loser, recycle predecessor, bootstrap) is
+    told first. The final ``close_all`` pins that the live sibling still reclaims.
     """
 
     KEY = "subagent:0123abcd"

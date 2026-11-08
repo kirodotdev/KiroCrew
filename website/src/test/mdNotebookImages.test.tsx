@@ -10,14 +10,21 @@ import { describe, it, expect, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-import { noteDirPath, resolveNoteImageSrc } from '../apps/md-notebook/utils'
+import { noteDirPath, resolveNoteImageSrc, vaultRootImageSrc } from '../apps/md-notebook/utils'
 import { Preview } from '../apps/md-notebook/Preview'
+import { NoteImage } from '../apps/md-notebook/NoteImage'
 
-function renderPreview(content: string, noteDir?: string, onStartEdit = vi.fn()) {
+function renderPreview(
+  content: string,
+  noteDir?: string,
+  onStartEdit = vi.fn(),
+  vaultRoot?: string,
+) {
   render(
     <Preview
       content={content}
       noteDir={noteDir}
+      vaultRoot={vaultRoot}
       onToggleCheckbox={vi.fn()}
       editRange={null}
       onStartEdit={onStartEdit}
@@ -68,6 +75,70 @@ describe('md-notebook/resolveNoteImageSrc', () => {
 
   it('ignores an empty source', () => {
     expect(resolveNoteImageSrc('   ')).toBeNull()
+  })
+})
+
+describe('md-notebook/vaultRootImageSrc', () => {
+  const url = (p: string) => `/api/file-raw?path=${encodeURIComponent(p)}`
+
+  it('reads a root-relative source against the vault root', () => {
+    expect(vaultRootImageSrc('/images/a.png', '/vault')).toBe(url('/vault/images/a.png'))
+  })
+
+  it('does not double the slash when the root ends with one', () => {
+    expect(vaultRootImageSrc('/images/a.png', '/vault/')).toBe(url('/vault/images/a.png'))
+  })
+
+  it('has no second try without a vault root or for a source that is not root-relative', () => {
+    expect(vaultRootImageSrc('/images/a.png')).toBeNull()
+    expect(vaultRootImageSrc('images/a.png', '/vault')).toBeNull()
+    expect(vaultRootImageSrc('https://example.com/a.png', '/vault')).toBeNull()
+    expect(vaultRootImageSrc('~/a.png', '/vault')).toBeNull()
+    expect(vaultRootImageSrc('C:\\a.png', '/vault')).toBeNull()
+    expect(vaultRootImageSrc('/', '/vault')).toBeNull()
+  })
+
+  it('refuses a protocol-relative source', () => {
+    expect(vaultRootImageSrc('//host/share/a.png', '/vault')).toBeNull()
+  })
+
+  it.each([
+    ['dot-dot segment', '/../etc/passwd.png'],
+    ['nested dot-dot', '/images/../../etc/passwd.png'],
+    ['trailing dot-dot', '/images/..'],
+    ['single dot segment', '/images/./a.png'],
+    ['encoded dot-dot', '/%2e%2e/etc/passwd.png'],
+    ['upper-case encoded dot-dot', '/images/%2E%2E/%2E%2E/a.png'],
+    ['half-encoded dot-dot', '/.%2e/a.png'],
+    ['encoded slash', '/images%2f..%2fa.png'],
+    ['encoded backslash', '/images%5c..%5ca.png'],
+    ['backslash dot-dot', '/images\\..\\a.png'],
+    ['NUL byte', '/images/a.png\0.txt'],
+    ['encoded NUL byte', '/images/a%00.png'],
+  ])('refuses %s so the second try cannot leave the vault', (_name, src) => {
+    expect(vaultRootImageSrc(src, '/vault')).toBeNull()
+  })
+
+  it('decodes a percent-encoded file name once, as the endpoint reads a literal path', () => {
+    expect(vaultRootImageSrc('/images/System%20diagram.png', '/vault')).toBe(
+      url('/vault/images/System diagram.png'),
+    )
+    expect(vaultRootImageSrc('/images/caf%C3%A9.png', '/vault')).toBe(url('/vault/images/café.png'))
+  })
+
+  it('keeps a segment with a malformed escape as written', () => {
+    expect(vaultRootImageSrc('/images/100%.png', '/vault')).toBe(url('/vault/images/100%.png'))
+  })
+
+  it('keeps a file name that merely contains dots', () => {
+    expect(vaultRootImageSrc('/images/a..b.png', '/vault')).toBe(url('/vault/images/a..b.png'))
+    expect(vaultRootImageSrc('/images/..hidden.png', '/vault')).toBe(url('/vault/images/..hidden.png'))
+  })
+
+  it('does not widen the absolute first try', () => {
+    // The leading-slash source is still served as an absolute path first,
+    // exactly as before; the vault root is only a fallback.
+    expect(resolveNoteImageSrc('/images/a.png', '/vault/notes')).toBe(url('/images/a.png'))
   })
 })
 
@@ -128,6 +199,24 @@ describe('md-notebook/Preview images', () => {
     fireEvent.error(screen.getByAltText('Missing picture'))
     expect(screen.queryByRole('img')).toBeNull()
     expect(screen.getByText('Missing picture')).toBeTruthy()
+  })
+
+  it('retries a failed source when a new fallback becomes available', () => {
+    const src = '/api/file-raw?path=%2Fvault%2Fa.png'
+    const fallbackSrc = '/api/file-raw?path=%2Fvault%2Fnotes%2Fa.png'
+    const props = { src, alt: 'Missing picture', rawSrc: 'a.png' }
+    const { rerender } = render(<NoteImage {...props} fallbackSrc={null} />)
+    fireEvent.error(screen.getByAltText('Missing picture'))
+    expect(screen.queryByRole('img')).toBeNull()
+    expect(screen.getByText('Missing picture')).toBeTruthy()
+
+    rerender(<NoteImage {...props} fallbackSrc={fallbackSrc} />)
+    expect(screen.queryByRole('img')).not.toBeNull()
+    expect(screen.getByAltText('Missing picture').getAttribute('src')).toBe(src)
+    fireEvent.error(screen.getByAltText('Missing picture'))
+    expect(screen.getByAltText('Missing picture').getAttribute('src')).toBe(fallbackSrc)
+    fireEvent.error(screen.getByAltText('Missing picture'))
+    expect(screen.queryByRole('img')).toBeNull()
   })
 
   it('falls back to the file name when the note gave no alt text', () => {
@@ -200,6 +289,133 @@ describe('md-notebook/Preview images', () => {
   it('keeps click-to-edit on the line holding the image', async () => {
     const onStartEdit = renderPreview('![Diagram](assets/d.png)', '/vault')
     await userEvent.click(screen.getByAltText('Diagram'))
+    expect(onStartEdit).toHaveBeenCalledWith(0, 0)
+  })
+
+  describe('root-relative images', () => {
+    const url = (p: string) => `/api/file-raw?path=${encodeURIComponent(p)}`
+
+    it('tries the absolute path first, then the vault root, then the alt text', () => {
+      renderPreview('![Logo](/images/a.png)', '/vault/notes', vi.fn(), '/vault')
+      expect(screen.getByAltText('Logo').getAttribute('src')).toBe(url('/images/a.png'))
+      fireEvent.error(screen.getByAltText('Logo'))
+      expect(screen.getByAltText('Logo').getAttribute('src')).toBe(url('/vault/images/a.png'))
+      fireEvent.error(screen.getByAltText('Logo'))
+      expect(document.querySelector('img')).toBeNull()
+      expect(screen.getByText('Logo').querySelector('svg')).not.toBeNull()
+    })
+
+    it('stops at the vault root when it loads', () => {
+      renderPreview('![Logo](/images/a.png)', '/vault/notes', vi.fn(), '/vault')
+      fireEvent.error(screen.getByAltText('Logo'))
+      fireEvent.load(screen.getByAltText('Logo'))
+      expect(screen.getByAltText('Logo').getAttribute('src')).toBe(url('/vault/images/a.png'))
+    })
+
+    it('does not retry when the vault root is unknown', () => {
+      renderPreview('![Logo](/images/a.png)', '/vault/notes')
+      fireEvent.error(screen.getByAltText('Logo'))
+      expect(document.querySelector('img')).toBeNull()
+    })
+
+    it('never retries a traversal source under the vault', () => {
+      renderPreview('![Evil](/../etc/a.png)', '/vault/notes', vi.fn(), '/vault')
+      expect(screen.getByAltText('Evil').getAttribute('src')).toBe(url('/../etc/a.png'))
+      fireEvent.error(screen.getByAltText('Evil'))
+      expect(document.querySelector('img')).toBeNull()
+    })
+
+    it('leaves a relative image on its own path with no retry', () => {
+      renderPreview('![Rel](assets/a.png)', '/vault/notes', vi.fn(), '/vault')
+      fireEvent.error(screen.getByAltText('Rel'))
+      expect(document.querySelector('img')).toBeNull()
+    })
+
+    it('starts over from the absolute path when the vault changes', () => {
+      const props = {
+        content: '![Logo](/images/a.png)',
+        noteDir: '/a/notes',
+        onToggleCheckbox: vi.fn(),
+        editRange: null,
+        onStartEdit: vi.fn(),
+        onCommitEdit: vi.fn(),
+        onCancelEdit: vi.fn(),
+        onSplitEdit: vi.fn(),
+      }
+      const { rerender } = render(<Preview {...props} vaultRoot="/a" />)
+      fireEvent.error(screen.getByAltText('Logo'))
+      expect(screen.getByAltText('Logo').getAttribute('src')).toBe(url('/a/images/a.png'))
+      rerender(<Preview {...props} noteDir="/b/notes" vaultRoot="/b" />)
+      expect(screen.getByAltText('Logo').getAttribute('src')).toBe(url('/images/a.png'))
+    })
+  })
+})
+
+describe('md-notebook/Preview Obsidian embeds', () => {
+  const url = (p: string) => `/api/file-raw?path=${encodeURIComponent(p)}`
+
+  it('renders an embed beside a markdown image, trying the vault root, then the note folder', () => {
+    renderPreview('![Arch](assets/a.png) ![[assets/Pasted image 1.png]]', '/vault/notes', vi.fn(), '/vault')
+    expect(screen.getByAltText('Arch').getAttribute('src')).toBe(url('/vault/notes/assets/a.png'))
+    const embed = () => screen.getByAltText('Pasted image 1.png')
+    expect(embed().getAttribute('src')).toBe(url('/vault/assets/Pasted image 1.png'))
+    fireEvent.error(embed())
+    expect(embed().getAttribute('src')).toBe(url('/vault/notes/assets/Pasted image 1.png'))
+    fireEvent.error(embed())
+    expect(document.querySelectorAll('img')).toHaveLength(1)
+    expect(screen.getByText('Pasted image 1.png').querySelector('svg')).not.toBeNull()
+  })
+
+  it('takes a numeric suffix as the display width and any other suffix as the alt text', () => {
+    renderPreview('![[a.png|720]] ![[b.PNG|300x200]] ![[c.svg|Flow chart]]', '/vault', vi.fn(), '/vault')
+    expect(screen.getByAltText('a.png').style.width).toBe('720px')
+    expect(screen.getByAltText('a.png').style.maxWidth).toBe('100%')
+    expect(screen.getByAltText('b.PNG').style.width).toBe('300px')
+    expect(screen.getByAltText('Flow chart').getAttribute('src')).toBe(url('/vault/c.svg'))
+  })
+
+  it('asks for a file name with a percent sign as written', () => {
+    renderPreview('![[50%25 off.png]]', '/vault', vi.fn(), '/vault')
+    expect(screen.getByAltText('50%25 off.png').getAttribute('src')).toBe(url('/vault/50%25 off.png'))
+  })
+
+  it('asks once when the note sits at the vault root', () => {
+    renderPreview('![[a.png]]', '/vault', vi.fn(), '/vault')
+    fireEvent.error(screen.getByAltText('a.png'))
+    expect(document.querySelector('img')).toBeNull()
+  })
+
+  it('reads a ./ or ../ target from the note folder alone, only inside the vault', () => {
+    renderPreview('![[../assets/a.png]] ![[./b.png]] ![[..\\d.png]] ![[sub/../c.png]]', '/vault/notes', vi.fn(), '/vault')
+    expect(screen.getByAltText('a.png').getAttribute('src')).toBe(url('/vault/assets/a.png'))
+    expect(screen.getByAltText('b.png').getAttribute('src')).toBe(url('/vault/notes/b.png'))
+    expect(screen.getByAltText('d.png').getAttribute('src')).toBe(url('/vault/d.png'))
+    fireEvent.error(screen.getByAltText('a.png'))
+    expect(screen.queryByAltText('a.png')).toBeNull()
+    expect(screen.queryByAltText('c.png')).toBeNull()
+  })
+
+  it.each([
+    ['dot-dot segment', '../../etc/a.png'],
+    ['absolute path', '/etc/a.png'],
+    ['backslash dot-dot', '..\\..\\a.png'],
+  ])('never requests a %s target', (_name, target) => {
+    renderPreview(`![[${target}]]`, '/vault/notes', vi.fn(), '/vault')
+    expect(document.querySelector('img')).toBeNull()
+    expect(document.body.textContent).toContain('a.png')
+  })
+
+  it('leaves wikilinks and non-image embeds as they were, in a table cell too', () => {
+    renderPreview(['| A | B |', '| --- | --- |', '| [[Note]] | ![[Other note]] |'].join('\n'), '/vault', vi.fn(), '/vault')
+    expect(document.querySelector('img')).toBeNull()
+    expect(screen.getByText('Note')).toBeTruthy()
+    expect(screen.getByText('Other note')).toBeTruthy()
+    expect(document.body.textContent).toContain('!Other note')
+  })
+
+  it('keeps click-to-edit on the line holding the embed', async () => {
+    const onStartEdit = renderPreview('![[a.png]]', '/vault', vi.fn(), '/vault')
+    await userEvent.click(screen.getByAltText('a.png'))
     expect(onStartEdit).toHaveBeenCalledWith(0, 0)
   })
 })

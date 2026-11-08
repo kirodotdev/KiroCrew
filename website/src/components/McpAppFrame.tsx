@@ -3,6 +3,7 @@ import { Maximize2, Minimize2, Shrink, Expand } from 'lucide-react'
 import { IconButton, IconButtonGroup } from './ui'
 import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { useTheme } from '../hooks/useTheme'
+import { coversPaneProps } from '../hooks/paneVisibility'
 import { i18nT } from '../i18n/t'
 import {
   buildMcpAppSrcdoc,
@@ -340,6 +341,9 @@ function OverlayChrome({
       // out-stack.
       className="fixed inset-0 z-[89] bg-bg/70 backdrop-blur-xs"
       onClick={onClose}
+      // Mounted only while an app is promoted to the overlay, which then sits
+      // over the transcript (paneVisibility, #23564).
+      {...coversPaneProps}
     />
   )
 }

@@ -77,7 +77,10 @@ from kiro_crew.discord.commands import (
 from kiro_crew.discord.renderer import (  # noqa: F401
     _STYLE_DANGER,
     _STYLE_SUCCESS,
-    DiscordApprovalDecider,
+)
+from kiro_crew.discord.renderer import DiscordApprovalDecider
+from kiro_crew.discord.renderer import DiscordApprovalDecider as _APPROVAL_REGISTRY
+from kiro_crew.discord.renderer import (  # noqa: F401
     DiscordRenderer,
     build_model_components,
     session_provenance_tag,
@@ -139,6 +142,7 @@ from kiro_crew.messaging.link import (  # noqa: F401
 )
 from kiro_crew.messaging.queue_drain import (  # noqa: F401
     drain_until_quiet,
+    drain_when_free,
     entry_channel,
     entry_person_origin,
     owner_token,
@@ -392,7 +396,14 @@ class DiscordDispatcher:
             restricted=self._session_restricted,
             conv_log=self.conv_log,
             slot_state=lambda: getattr(self._session_resume, "dashboard_state", None),
-            approvals=Approvals(discard=DiscordApprovalDecider.discard_session),
+            # ``_APPROVAL_REGISTRY`` is ``DiscordApprovalDecider`` under a second
+            # name. Reservations are class state, so the sweep has to reach the
+            # class holding them, and the construction name is a seam callers and
+            # tests substitute to observe the decider a turn builds. Sweeping
+            # through that name aims at the substitute: it raises on a plain
+            # function, and on a stand-in class it clears an empty registry and
+            # leaves the real window armed past the end of its turn.
+            approvals=Approvals(discard=_APPROVAL_REGISTRY.discard_session),
             drift=DISCORD_DRIFT,
         )
 
@@ -452,8 +463,12 @@ class DiscordDispatcher:
         origin_tag: str = "",
         monitor_completion: MonitorCompletionHook | None = None,
         monitor_session_key: str | None = None,
+        skill_trigger_text: str | None = None,
     ) -> MonitorDispatchResult | None:
         """Drive one authorized inbound message through the channel turn pipeline.
+
+        ``skill_trigger_text`` is what skill triggers match when the text was
+        generated rather than typed (an AutoNudge cycle); ``None`` matches the text.
 
         ``interpret_commands`` says whether *text* may execute as a command
         (model-authored text never may). Resume routing is consulted when
@@ -536,6 +551,11 @@ class DiscordDispatcher:
                 thread_id=thread_id,
                 message_id=str(getattr(msg, "message_id", "") or ""),
                 attachments_dropped=len(getattr(msg, "attachments", None) or ()),
+                attachment_names=tuple(
+                    a.get("filename") or ""
+                    for a in getattr(msg, "attachments", None) or ()
+                    if isinstance(a, dict)
+                ),
             )
         if not await admit_inbound_callback(
             self.sessions,
@@ -860,6 +880,7 @@ class DiscordDispatcher:
                 or self._session_key(user_id, thread_id) == monitor_session_key
             )
 
+        _pick_before = self._model_pref.get(scope_id)
         try:
             outcome = await self._channel_turns().answer(
                 Asker(
@@ -884,7 +905,7 @@ class DiscordDispatcher:
                     # ``model`` applies only when this turn COLD-STARTS the session:
                     # the fast path returns a reused session before it consults the
                     # argument, which is exactly what ``!model``'s reply promises.
-                    model=self._model_pref.get(scope_id) or None,
+                    model=_pick_before or None,
                     # A resumed session runs its own persisted agent.
                     agent=None if resumed_key is not None else self._resolve_agent(scope_id),
                 ),
@@ -897,7 +918,22 @@ class DiscordDispatcher:
                     if monitor_completion is not None
                     else None
                 ),
+                skill_trigger_text=skill_trigger_text,
             )
+            if resumed_key is None and outcome.stop_reason is not None:
+                # The pick is what `!model` shows and a cold start re-applies, so
+                # it follows a promotion from a prompt this call ran (a BUSY or
+                # refused wake may be reading another turn's walk), before any
+                # await lets the next prompt reset the walk. Imported here because
+                # this facade's bound names are pinned (composition test).
+                from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
+
+                follow_engine_promotion(
+                    self._model_pref,
+                    scope_id,
+                    self.sessions.get_provider(session_key),
+                    before=_pick_before,
+                )
         finally:
             # Identity-checked: a later turn on this key may have published its own.
             if built and self._active_renderers.get(session_key) is built[0]:
@@ -969,6 +1005,24 @@ class DiscordDispatcher:
             # Whether a person sent any entry this turn collapses.
             person = False
             async with self._queue.lock:
+                # Another turn holds this session's lease (a dashboard, cron or
+                # auto-nudge turn, or another channel's under a unified scope).
+                # Replaying now only reaches ``_handle_busy``, which queues the text
+                # again for this loop to dequeue straight back, flipping the receipt
+                # to "Now answering" each lap with no turn started. Leave the queue
+                # in order and drain once the lease is free.
+                if self.sessions.is_busy(session_key):
+                    drain_when_free(
+                        channel=_CHANNEL,
+                        session_key=session_key,
+                        is_busy=self.sessions.is_busy,
+                    )
+                    logger.debug(
+                        "discord: session %s is held by another turn; its queue drains "
+                        "once the lease is free",
+                        session_key,
+                    )
+                    return
                 while True:
                     item = self.sessions.dequeue(session_key)
                     if item is None:

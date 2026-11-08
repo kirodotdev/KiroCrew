@@ -1,6 +1,7 @@
 """What this install follows and what it shows about releases.
 
-``POST /api/update/auto`` (the auto-update policy), ``POST /api/update/channel``
+``POST /api/update/auto`` (the auto-update policy) and its ``GET`` (the
+config.local.json pin on it), ``POST /api/update/channel``
 (the release lane), ``POST /api/update/revalidate`` (a terminal update's request to
 re-check), and the bundled changelog and release list.
 
@@ -146,6 +147,20 @@ async def api_update_auto(request: web.Request) -> web.Response:
     )
 
 
+async def api_update_auto_pin(request: web.Request) -> web.Response:
+    """GET /api/update/auto — whether config.local.json pins ``auto_update``.
+
+    The switch reads this when it loads, so a pinned install shows the switch
+    held with its note instead of an editable one whose first click is refused
+    (``auto_update_overlay_owned`` above). Read-only and a single file read:
+    the full check (``GET /api/update/check``) carries the same field, but it
+    runs the update check, which a page load must not.
+    """
+    return web.json_response(
+        {"overlay_override": await asyncio.to_thread(overlay_pins, "auto_update")}
+    )
+
+
 def _changelog_path() -> Path | None:
     """Locate CHANGELOG.md across install layouts.
 
@@ -169,9 +184,9 @@ def _changelog_path() -> Path | None:
 
 
 #: Cached CHANGELOG.md body, keyed on ``(path, st_mtime_ns, st_size)``.
-#: Caching avoids reading and decoding the whole file on the event loop on
-#: every ``GET /api/changelog`` request (the About panel re-fetches on each
-#: open, and the file grows with every release). The stat signature keeps a
+#: Caching avoids reading and decoding the whole file on every
+#: ``GET /api/changelog`` request (the About panel re-fetches on each open,
+#: and the file grows with every release). The stat signature keeps a
 #: dev-install edit visible immediately, so the endpoint stays live.
 _changelog_cache: tuple[tuple[str, int, int], str] | None = None
 
@@ -199,8 +214,13 @@ def _read_changelog() -> str:
 
 
 async def api_changelog(request: web.Request) -> web.Response:
-    """GET /api/changelog — read full CHANGELOG.md from project or bundle."""
-    return web.json_response({"content": _read_changelog()})
+    """GET /api/changelog — read full CHANGELOG.md from project or bundle.
+
+    The read runs in a thread: ``_read_changelog`` stats the file on every call
+    and reads the whole file on a cache miss, which must not block the loop.
+    """
+    content = await asyncio.to_thread(_read_changelog)
+    return web.json_response({"content": content})
 
 
 async def api_releases(request: web.Request) -> web.Response:
@@ -252,17 +272,16 @@ async def api_update_channel(request: web.Request) -> web.Response:
     self-updatable layout). That keeps a channel change from ever being an
     unattended, unconsented version jump.
 
-    **Not a governance bypass.** ``UpdatePins`` constrains the git ``source`` and
-    a ``min_version`` floor; it has no release-channel key, so there is no pin
-    for this to escape. When the pins define a command provider the endpoint
-    refuses outright — the provider's commands never read the channel file, so
-    a "successful" switch would be the lying switcher described above. Nor does
-    the endpoint grant a new capability: the channel
-    file is an ordinary file in the data home that the operator can already
-    write. What it adds is an authenticated, allowlist-validated path to the same
-    write. Introducing an enterprise channel pin is a governance change in its
-    own right — the profile parser fails closed on unknown keys, so a new key has
-    to be rolled out before it can be set.
+    **Not a governance bypass.** A channel the policy requires (``updates.channel``,
+    or ``stable`` in an enterprise build with no pin; ``update_layout``
+    ``policy_release_channel``) wins on read, so a switch to any other channel is
+    refused below with ``locked_by_policy`` rather than stored. When the pins
+    define a command provider the endpoint refuses outright — the provider's
+    commands never read the channel file, so a "successful" switch would be the
+    lying switcher described above. Nor does the endpoint grant a new capability:
+    the channel file is an ordinary file in the data home that the operator can
+    already write. What it adds is an authenticated, allowlist-validated path to
+    the same write.
     """
     owner_denied = await require_owner_dashboard_request(request, "update.channel")
     if owner_denied is not None:
@@ -315,6 +334,25 @@ async def api_update_channel(request: web.Request) -> web.Response:
     if layout.is_externally_managed:
         return web.json_response(
             {"error": layout.guidance, "code": "channel_not_applicable_managed"},
+            status=409,
+        )
+
+    # The policy's channel (stable in an enterprise build with no pin) wins on
+    # read, so a file write naming another channel would be ignored.
+    from kiro_crew.edition_locks import LOCKED_BY_POLICY
+    from kiro_crew.platform.update_layout import policy_release_channel
+
+    required = await asyncio.to_thread(policy_release_channel)
+    if required and requested.strip().lower() != required:
+        await _audit_update_event(
+            request,
+            operation="update.channel",
+            outcome="denied",
+            error="locked_by_policy",
+            resources=requested[:32],
+        )
+        return web.json_response(
+            {"error": LOCKED_BY_POLICY, "code": "locked_by_policy", "channel": required},
             status=409,
         )
 
@@ -405,8 +443,11 @@ async def api_update_revalidate(request: web.Request) -> web.Response:
     ``request.remote`` is empty; the secret check is unchanged on both.
     """
     from kiro_crew.dashboard.handlers.core import _unix_peer_is_self
+    from kiro_crew.dashboard.origin import is_ssm_request
 
-    if not is_loopback(request.remote or "") and not _unix_peer_is_self(request):
+    if is_ssm_request(request) or (
+        not is_loopback(request.remote or "") and not _unix_peer_is_self(request)
+    ):
         await _audit_update_event(
             request, operation="update.revalidate", outcome="denied", resources="non-loopback"
         )

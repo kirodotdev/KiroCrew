@@ -103,11 +103,15 @@ describe('useWebSocket chat_thinking status-detail churn', () => {
     data: { slot: 'slot-1', content },
   })
 
-  it('keeps slotStatusDetail[slot] reference-stable across many thought frames', () => {
+  // The status transition lands with the buffered text, on the next frame.
+  const nextFrame = () => act(async () => { await new Promise(r => requestAnimationFrame(() => r(undefined))) })
+
+  it('keeps slotStatusDetail[slot] reference-stable across many thought frames', async () => {
     const store = storeOnSlot1()
     const { ws } = mount(store)
 
     act(() => { ws.simulateMessage(thinking('Let me ')) })
+    await nextFrame()
     const afterFirst = store.getState().chat.slotStatusDetail['slot-1']
     expect(afterFirst).toBeDefined()
     expect(afterFirst.kind).toBe('thinking')
@@ -116,6 +120,7 @@ describe('useWebSocket chat_thinking status-detail churn', () => {
     act(() => {
       for (let i = 0; i < 25; i++) ws.simulateMessage(thinking(`token${i} `))
     })
+    await nextFrame()
 
     // The SAME object — no re-dispatch, so no new map identity, so no
     // whole-map subscriber re-render. A non-idempotent guard would replace the
@@ -123,16 +128,18 @@ describe('useWebSocket chat_thinking status-detail churn', () => {
     expect(store.getState().chat.slotStatusDetail['slot-1']).toBe(afterFirst)
   })
 
-  it('keeps the slotStatusDetail map itself reference-stable across frames', () => {
+  it('keeps the slotStatusDetail map itself reference-stable across frames', async () => {
     const store = storeOnSlot1()
     const { ws } = mount(store)
 
     act(() => { ws.simulateMessage(thinking('first ')) })
+    await nextFrame()
     const mapAfterFirst = store.getState().chat.slotStatusDetail
 
     act(() => {
       for (let i = 0; i < 10; i++) ws.simulateMessage(thinking('more '))
     })
+    await nextFrame()
 
     expect(store.getState().chat.slotStatusDetail).toBe(mapAfterFirst)
   })
@@ -156,11 +163,12 @@ describe('useWebSocket chat_thinking status-detail churn', () => {
     expect(think!.content).toBe('alpha beta gamma')
   })
 
-  it('still sets the detail on a genuine transition back into thinking', () => {
+  it('still sets the detail on a genuine transition back into thinking', async () => {
     const store = storeOnSlot1()
     const { ws } = mount(store)
 
     act(() => { ws.simulateMessage(thinking('thinking first ')) })
+    await nextFrame()
     expect(store.getState().chat.slotStatusDetail['slot-1'].kind).toBe('thinking')
 
     // A tool call moves the detail off 'thinking'...
@@ -176,20 +184,23 @@ describe('useWebSocket chat_thinking status-detail churn', () => {
     // ...and the next thought frame must restore it. Idempotence must not
     // degrade into "only ever dispatch once".
     act(() => { ws.simulateMessage(thinking('back to thinking')) })
+    await nextFrame()
     const restored = store.getState().chat.slotStatusDetail['slot-1']
     expect(restored.kind).toBe('thinking')
     expect(restored).not.toBe(afterTool)
   })
 
-  it('does not overwrite a streaming detail with thinking', () => {
+  it('does not overwrite a streaming detail with thinking', async () => {
     const store = storeOnSlot1()
     const { ws } = mount(store)
 
     act(() => { ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'slot-1', content: 'answer', seq: 1 } }) })
+    await nextFrame()
     expect(store.getState().chat.slotStatusDetail['slot-1'].kind).toBe('streaming')
     const streamingDetail = store.getState().chat.slotStatusDetail['slot-1']
 
     act(() => { ws.simulateMessage(thinking('late thought')) })
+    await nextFrame()
 
     // Visible output outranks reasoning in the status line.
     expect(store.getState().chat.slotStatusDetail['slot-1']).toBe(streamingDetail)

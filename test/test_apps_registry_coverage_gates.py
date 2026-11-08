@@ -331,15 +331,35 @@ class TestOwnerDesignatedRepo:
 
 
 class TestSelCredentialGrant:
-    def test_audit_failure_is_swallowed(self, monkeypatch):
-        monkeypatch.setattr(registry, "_sel_fn", MagicMock(side_effect=RuntimeError("sel down")))
-        registry._sel_credential_grant("op", "https://x/y.git")  # must not raise
+    def test_audit_failure_is_swallowed(self, monkeypatch, caplog):
+        sel_fn = MagicMock(side_effect=RuntimeError("sel down"))
+        monkeypatch.setattr(registry, "_sel_fn", sel_fn)
+        caplog.set_level("DEBUG", logger="kiro_crew.apps.registry")
+        registry._sel_credential_grant("op", "https://x/y.git")
+        sel_fn.assert_called_once_with()
+        messages = [r.getMessage() for r in caplog.records if r.name == "kiro_crew.apps.registry"]
+        assert messages == ["SEL audit log failed for op: sel down"]
 
-    def test_grant_is_logged_when_sel_is_present(self, monkeypatch):
+    def test_grant_is_logged_when_sel_is_present(self, monkeypatch, tmp_path):
         sel_obj = MagicMock()
         monkeypatch.setattr(registry, "_sel_fn", lambda: sel_obj)
         registry._sel_credential_grant("install_from_registry", "https://x/y.git")
         assert sel_obj.log_api_access.call_args.kwargs["outcome"] == "granted"
+
+        from kiro_crew.sel import SecurityEventLog
+
+        monkeypatch.setattr(SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(SecurityEventLog, "_initialized", False)
+        real_sel = SecurityEventLog(base_dir=tmp_path, sync=True)
+        monkeypatch.setattr(registry, "_sel_fn", lambda: real_sel)
+        registry._sel_credential_grant("install_from_registry", "https://x/y.git")
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / "security_events.jsonl").read_text("utf-8").splitlines()
+        ]
+        assert [(r["operation"], r["outcome"]) for r in rows] == [
+            ("install_from_registry", "granted")
+        ]
 
 
 # ---------------------------------------------------------------------------

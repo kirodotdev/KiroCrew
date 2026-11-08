@@ -37,8 +37,10 @@ half-width `.` `,` `?` `!` even between Hangul characters. Full-width
   sentence and none before.
 - **Ellipsis is `…`**, glued to the preceding character: `설치 중…`. Never `...`.
 - **Quotation is `‘ ’`**, nested as `“ ”`. Use it for an interpolated operand too:
-  `‘{{cmd}}’ 신뢰`, never `"{{cmd}}" 신뢰` — the same action quoted two ways is
-  visible to one user in one session.
+  `‘{{version}}’ 업데이트`, never `"{{version}}" 업데이트` — the same value quoted two ways
+  is visible to one user in one session.
+  (Note: trust grant labels render the command in a monospace chip, not in locale
+  quotes. The rule here applies to other interpolated values.)
 - **Keep the dash the English uses.** Where the source has `—`, Korean carries
   `—`, not an ASCII `-`. A hyphen inside a compound or a Markdown bullet is not a
   dash and is left alone.

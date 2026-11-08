@@ -10,6 +10,59 @@
  * authored.
  */
 
+import { i18nT } from '../i18n/t'
+
+/** The job zone that follows the computer Kiro Crew runs on, wherever it travels. */
+export const LOCAL_ZONE = 'local'
+
+/** True when `tz` is the 'local' zone, in any letter case. */
+export function isLocalZone(tz: string | null | undefined): boolean {
+  return typeof tz === 'string' && tz.trim().toLowerCase() === LOCAL_ZONE
+}
+
+/** The IANA zone a job's cron fields are read in now: the server's `effective_tz`
+ *  ('local' and the default resolved there), else the stored name, else UTC (an
+ *  older server that sends no `effective_tz`). Never a name this browser's `Intl`
+ *  refuses, which would throw while the calendar renders. */
+export function jobSourceZone(job: { timezone?: string | null; effective_tz?: string | null }): string {
+  if (isValidTimeZone(job.effective_tz)) return job.effective_tz
+  if (job.timezone && !isLocalZone(job.timezone) && isValidTimeZone(job.timezone)) return job.timezone
+  return 'UTC'
+}
+
+/** The zone caption under a job's schedule: 'Local · Asia/Shanghai' for a job that
+ *  follows the computer, its own zone otherwise, nothing for a job with none. */
+export function jobZoneCaption(job: { timezone?: string | null; effective_tz?: string | null }): string {
+  if (!job.timezone) return ''
+  if (!isLocalZone(job.timezone)) return job.timezone.replace(/_/g, ' ')
+  return i18nT('utils.tz.local_zone_caption', { zone: jobSourceZone(job).replace(/_/g, ' ') })
+}
+
+/** True when `tz` is a zone name this browser's Intl accepts. */
+export function isValidTimeZone(tz: unknown): tz is string {
+  if (typeof tz !== 'string' || !tz) return false
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The browser's own IANA zone, or 'UTC' when it cannot name one.
+ *
+ *  Intl can report no zone at all: on Windows, a new Windows-only zone ID
+ *  (e.g. "British Columbia Standard Time") that the bundled ICU cannot map
+ *  makes `resolvedOptions().timeZone` undefined. */
+export function browserTimeZone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+    return isValidTimeZone(tz) ? tz : 'UTC'
+  } catch {
+    return 'UTC'
+  }
+}
+
 /** Current-week Monday in the given timezone (returns a UTC Date whose
  *  `toLocaleString(..., timeZone=tz)` parts are that Monday at 12:00).
  *

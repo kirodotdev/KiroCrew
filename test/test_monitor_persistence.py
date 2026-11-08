@@ -146,20 +146,17 @@ def test_monitor_creation_surface_is_durable_and_legacy_records_fail_closed() ->
     assert monitor_state_from_dict(legacy).creation_surface is MonitorCreationSurface.UNKNOWN
 
 
-def test_structured_monitor_cadence_must_be_a_positive_integer() -> None:
+@pytest.mark.parametrize("cadence_secs", [0, -1, True, "300"])
+def test_structured_monitor_cadence_must_be_a_positive_integer(cadence_secs) -> None:
     """Structured monitors cannot inherit legacy unlimited or malformed cadence values."""
-    for cadence_secs in (0, -1, True, "300"):
-        try:
-            MonitorState(
-                kind="github_pull_request",
-                target="owner/repo#123",
-                objective="review_ready",
-                created_ts=1_000.0,
-                cadence_secs=cadence_secs,
-            )
-        except ValueError:
-            continue
-        raise AssertionError(f"cadence_secs={cadence_secs!r} was accepted")
+    with pytest.raises(ValueError):
+        MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            cadence_secs=cadence_secs,
+        )
 
 
 def test_wake_count_defaults_to_zero_and_rejects_negative_values() -> None:
@@ -662,10 +659,23 @@ async def test_unknown_monitor_version_is_never_armed(tmp_path) -> None:
         ),
     )
 
+    due = loop.next_due_ts
+
     with patch.object(service, "_arm_timer") as arm_timer:
         service._arm_from_deadline(loop)
+        arm_timer.assert_not_called()
+        # The stored intent belongs to the newer gateway, so the refusal leaves it as is.
+        assert loop.active is True
+        assert loop.next_due_ts == due
 
-    arm_timer.assert_not_called()
+        # Control: the same loop at the version this gateway implements does arm, so
+        # the refusal above is the version check and not some earlier early return.
+        assert loop.monitor is not None
+        loop.monitor.version = MonitorState(
+            kind="github_pull_request", target="o/r#1", objective="review_ready", created_ts=0.0
+        ).version
+        service._arm_from_deadline(loop)
+        assert [c.args[0] for c in arm_timer.call_args_list] == [loop]
 
 
 def test_future_monitor_without_current_identity_is_inert_and_survives_rewrite(tmp_path) -> None:

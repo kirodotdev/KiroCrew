@@ -21,6 +21,8 @@ vi.mock('../api/client', () => ({
 import { interceptSlashCommand } from '../pages/chat/ChatInput'
 import { ApiError, AcceptedBodyUnreadable } from '../api/apiError'
 import { SEND_ABORT_MS } from '../chat-core/transport/sendTurn'
+import { sideClose, sseSideQueue, sseSideResult } from '../store/chatSlice'
+import { clearSideChatDrafts, readSideChatDraft } from '../chat-core/composer/sideChatDrafts'
 
 const SLOT = 'test-slot-1'
 
@@ -253,5 +255,67 @@ describe('/side slash command interception', () => {
     expect(result).toEqual({ intercepted: true, failed: true, error: '409: side turn already in flight', stage: 'turn' })
     // The panel still opened — only the turn was rejected.
     expect(store.getState().chat.activityTab).toBe('side')
+  })
+})
+
+describe('/side question queued behind a running side turn', () => {
+  const initialChat = createTestStore().getState().chat
+  const busyStore = () => createTestStore({
+    chat: {
+      ...initialChat,
+      activeSlot: SLOT,
+      slotSideRestored: { [SLOT]: true },
+      slotSide: {
+        [SLOT]: { messages: [], lastRunId: 'r1', pending: true, streaming: true, openedAtTurnCount: 0, createdAt: '2026-05-20T00:00:00Z' },
+      },
+    },
+  })
+
+  beforeEach(() => { vi.clearAllMocks() })
+
+  it('puts the raw question on its queue card, so a close in another tab can hand it back', async () => {
+    onTestFinished(() => { clearSideChatDrafts() })
+    const store = busyStore()
+    mockSideTurn.mockResolvedValueOnce({ ok: true, queued: true, queue_id: 'q-slash', still_queued: true, depth: 1 })
+
+    await interceptSlashCommand('/side queued from the composer', SLOT, store.dispatch)
+
+    expect(store.getState().chat.slotSide[SLOT]?.queue).toEqual([
+      expect.objectContaining({ id: 'q-slash', content: 'queued from the composer', raw: true }),
+    ])
+  })
+
+  it('hands the question to the side panel draft when another tab closed the conversation before its receipt', async () => {
+    onTestFinished(() => { clearSideChatDrafts() })
+    const store = busyStore()
+    let answer: (body: unknown) => void = () => {}
+    mockSideTurn.mockImplementationOnce(() => new Promise(resolve => { answer = resolve }))
+
+    const pending = interceptSlashCommand('/side asked as it closed', SLOT, store.dispatch)
+    await vi.waitFor(() => expect(mockSideTurn).toHaveBeenCalled())
+    store.dispatch(sideClose(SLOT))
+    answer({ ok: true, queued: true, queue_id: 'q-closed', still_queued: true, depth: 1 })
+    await pending
+
+    expect(readSideChatDraft(SLOT)).toBe('asked as it closed')
+    expect(store.getState().chat.slotSide[SLOT]).toBeUndefined()
+  })
+
+  it('hands the question back when a close dropped its card and the slot reopened before its receipt', async () => {
+    onTestFinished(() => { clearSideChatDrafts() })
+    const store = busyStore()
+    let answer: (body: unknown) => void = () => {}
+    mockSideTurn.mockImplementationOnce(() => new Promise(resolve => { answer = resolve }))
+
+    const pending = interceptSlashCommand('/side asked before a reopen', SLOT, store.dispatch)
+    await vi.waitFor(() => expect(mockSideTurn).toHaveBeenCalled())
+    store.dispatch(sseSideQueue({ slot: SLOT, action: 'push', queue_id: 'q-reopen', content: '[scrubbed]' }))
+    store.dispatch(sideClose(SLOT))
+    store.dispatch(sseSideResult({ slot: SLOT, run_id: 'r2', role: 'user', content: 'replacement question', message_id: 'u2' }))
+    answer({ ok: true, queued: true, queue_id: 'q-reopen', still_queued: true, depth: 1 })
+    await pending
+
+    expect(readSideChatDraft(SLOT)).toBe('asked before a reopen')
+    expect(store.getState().chat.slotSide[SLOT]?.queue ?? []).toEqual([])
   })
 })

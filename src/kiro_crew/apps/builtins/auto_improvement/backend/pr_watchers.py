@@ -129,8 +129,7 @@ _PR_URL_RE = re.compile(r"^https://[^\s]+/(?:pull|merge_requests)/\d+", re.IGNOR
 #: consult and can SPAWN `core.fsmonitor`, and any command runs `core.hooksPath` hooks — so an
 #: agent that (via its auto-approved Bash) sets either would get host-side, out-of-sandbox
 #: execution with the operator's full credentials. `-c` overrides on OUR argv, in global-option
-#: position ahead of `-C`, beat the repo config. Raised by the Opus 5 review — this helper was
-#: the one host-side git surface left out of the D-120/D-121 hardening.
+#: position ahead of `-C`, beat the repo config. Part of the D-120/D-121 hardening.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 
@@ -269,7 +268,6 @@ def setup_isolated_clone(
                 # code the PR never touched and export a patch computed against the wrong
                 # revision. Reachable, not hypothetical: the loop's own reset paths can drop
                 # a generated bug-PR branch from the shared clone before a watcher clones it.
-                # Raised by the GPT review.
                 rmtree_force(dest)
                 return "", (
                     f"could not check out the pull request head {branch!r}: "
@@ -743,8 +741,8 @@ class PRWatcherRegistry:
             if not _needs_attention(status):
                 # A PR that needs no fixing is exactly the one `autoPublish` is for. Without
                 # this call the config key was a DEAD SWITCH: `publish_if_authorized` had no
-                # production caller, so enabling it left green drafts untouched. Raised by
-                # review of this branch. The gate itself is unchanged and fail-closed (open
+                # production caller, so enabling it left green drafts untouched.
+                # The gate itself is unchanged and fail-closed (open
                 # draft, verdict exactly READY, zero failing checks AND at least one check
                 # actually run, no unresolved comments) and it only ever marks ready — it
                 # never merges. Best-effort: a publish failure must not fail the sweep.
@@ -775,9 +773,9 @@ class PRWatcherRegistry:
                 logger.warning("watchers: could not start %s", fp, exc_info=True)
         promoted = self.promote_deferred()
         # NOTE the key names: ``deferredNow`` is the list of fingerprints THIS sweep held
-        # back, while ``active_summary``'s ``deferred`` is the total queue DEPTH. An
-        # earlier version called both "deferred", so the summary's int silently
-        # overwrote the list and callers saw a count where they expected fingerprints.
+        # back, while ``active_summary``'s ``deferred`` is the total queue DEPTH. Naming
+        # both "deferred" would let the summary's int silently overwrite the list, and
+        # callers would see a count where they expect fingerprints.
         return {
             "started": started,
             "deferredNow": deferred,
@@ -911,7 +909,7 @@ class PRWatcherRegistry:
         # the runner's to silently accept: refuse to build ANY watcher runner unless the
         # operator has explicitly acknowledged it via `watcherAcceptEgressRisk` (default OFF),
         # the same one-time-consent shape as `watcherAutoStart`. Read fresh on every build so
-        # turning the flag off immediately stops new passes. Raised by the GPT review.
+        # turning the flag off immediately stops new passes.
         if not _watcher_egress_accepted():
             raise RuntimeError(
                 "watcher runner refused: an unattended agent driven by untrusted PR-comment "
@@ -940,7 +938,7 @@ class PRWatcherRegistry:
             )
             # Same fail-closed contract as `runner._build_runner`: this path did not
             # register the tool-restricted agent AT ALL, so a watcher's unattended nudges
-            # ran with the full-toolset default agent. Raised by review of this branch.
+            # ran with the full-toolset default agent.
             if session_runner.ensure_agent_registered():
                 return session_runner
             # REFUSE, do not fall through. This is the twin of the hole just closed in
@@ -951,7 +949,7 @@ class PRWatcherRegistry:
             # defensible when there is NO provider to route through. Raising rather than
             # returning None because this function's contract is to raise (see the
             # "no agent runner available" exit below); the caller treats it as a failed
-            # pass, not a dead watcher. Raised by the GPT review of this branch.
+            # pass, not a dead watcher.
             raise RuntimeError(
                 "a provider is configured but its tool-restricted agent could not be "
                 "registered — refusing the subprocess fallback so the provider's "
@@ -1154,7 +1152,7 @@ class PRWatcherRegistry:
             # teardown's `_cleanup_clone` then `rmtree`d the only copy. Run the same check on
             # this path: D-100 (failed diff) and D-101 (uncommitted tree) both live INSIDE
             # `_export_is_durable`, so an early return is exactly how work goes missing.
-            # Raised by the Opus review. Record the fault, but do NOT return from the except
+            # Record the fault, but do NOT return from the except
             # branch: a return here runs the finally and then wins over it, so an isolation
             # breach the finally detects could never make this pass terminal. Decide the
             # return AFTER the finally has run.
@@ -1172,7 +1170,7 @@ class PRWatcherRegistry:
                     # attributes pin, or a `hook.*` config the disable scan rejects). We
                     # can neither verify isolation nor probe durability. Retain the clone
                     # directly — it may hold the only copy of this pass's commits — and
-                    # stop trusting this watcher. Do NOT run git again. Raised by GPT review.
+                    # stop trusting this watcher. Do NOT run git again.
                     self._set(
                         st,
                         status=STATUS_ERROR,
@@ -1201,7 +1199,6 @@ class PRWatcherRegistry:
             # `timeout after …` is what `SessionAgentRunner._finish` itself calls an EXPECTED
             # common outcome, and a pass that edited and committed before timing out holds the
             # only copy of that work. Check durability instead of returning blind.
-            # Raised by the Opus review.
             self._retain_if_work_is_undurable(st, clone, attempt)
             return True
         self._log(st, "verdict", f"pass {attempt} done: {str(getattr(result, 'text', ''))[:200]}")
@@ -1274,7 +1271,7 @@ class PRWatcherRegistry:
             # <missing-ref>...HEAD` prints "fatal: ambiguous argument" with empty stdout — so
             # reading stdout alone turned "cannot tell" into "no work" and deleted the clone
             # holding the only copy of the agent's commits. That is the data loss D-83 exists
-            # to prevent, reintroduced by D-83's own guard. Raised by the GPT review.
+            # to prevent, reintroduced by D-83's own guard.
             proc = _git("-C", clone, "diff", f"{self._base_rev(st)}...HEAD", timeout=60)
             if proc.returncode != 0:
                 self._log(
@@ -1297,8 +1294,7 @@ class PRWatcherRegistry:
             # uncommitted door rather than the failed-diff door D-100 closed. `git status
             # --porcelain` is the check that tells "produced nothing" apart from "produced
             # uncommitted work" (it lists tracked edits AND untracked new files), the same
-            # "no work vs cannot tell" distinction, retained-on-uncertainty. Raised by the GPT
-            # review.
+            # "no work vs cannot tell" distinction, retained-on-uncertainty.
             status = _git("-C", clone, "status", "--porcelain", timeout=60)
             if status.returncode != 0:
                 self._log(
@@ -1441,7 +1437,7 @@ def auto_publish_gate(status: dict[str, Any]) -> tuple[bool, str]:
     # `unresolvedThreads`, NOT `unresolvedComments`: `fetch_pr_status` only ever emits the
     # former (`pr_checks.py`), so reading the latter meant this condition's input was always
     # ABSENT — always falsy, never fired. The one control whose job is "do not publish over a
-    # human's open question" was structurally unreachable. Raised by the Opus 5 review.
+    # human's open question" was structurally unreachable.
     if int(status.get("unresolvedThreads") or 0) > 0:
         return False, "unresolved review threads"
     return True, "green: READY, no failing checks, no unresolved threads"
@@ -1572,7 +1568,7 @@ def sweep_orphan_clones(*, clones_root: str | None = None) -> int:
             # race survived in miniature. `_delete_clone_if_unowned` holds `reg._lock` across BOTH
             # the ownership check and the `rmtree`, so a directory proven unowned cannot become
             # owned before it is deleted. The `keep` snapshot stays as a cheap first pass so most
-            # orphans are caught without serializing on the lock. Raised by the GPT review.
+            # orphans are caught without serializing on the lock.
             if _delete_clone_if_unowned(reg, child):
                 removed += 1
         if removed:

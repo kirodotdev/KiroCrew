@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -97,9 +97,11 @@ beforeEach(() => {
 })
 
 describe('Mate chat in ChatPane', () => {
-  it('an empty Mate thread shows no welcome card, only the ordinary empty hint and one composer', async () => {
+  it('an empty Mate thread shows no welcome card, only one composer', async () => {
     const view = renderPane()
-    await view.findByText(/Session ready/)
+    // The empty thread has loaded once its detail read resolved and the composer is up.
+    await waitFor(() => expect(detail).toHaveBeenCalled())
+    await waitFor(() => expect(view.container.querySelectorAll('textarea')).toHaveLength(1))
     expect(view.queryByTestId('assistant-welcome')).toBeNull()
     expect(view.queryByTestId('assistant-welcome-create')).toBeNull()
     expect(view.queryByRole('region', { name: /Mate/ })).toBeNull()

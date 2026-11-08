@@ -16,13 +16,26 @@ import time
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
+if TYPE_CHECKING:
+    # The direct tailnet listener is preview-only: its module is imported at
+    # request time, and only once a gate exists (no-new-work-on-gateway-boot-path).
+    import kiro_crew.dashboard.ssm_gate as ssm_gate_types
+    import kiro_crew.dashboard.tailnet_direct as tailnet_direct_types
+
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
+from kiro_crew.dashboard import tailnet_owner
+from kiro_crew.dashboard.agent_ipc import GRANT_KEY as AGENT_IPC_GRANT_KEY
+from kiro_crew.dashboard.agent_ipc import Binding as AgentIpcBinding
+from kiro_crew.dashboard.agent_ipc import agent_socket_gate, request_on_agent_socket
+from kiro_crew.dashboard.kiro_relay.admission import admit_relay_caller
+from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 from kiro_crew.dashboard.origin import (
     is_https_request,
     is_loopback,
     is_proxied_request,
+    mark_audit_claimed,
 )
 from kiro_crew.dashboard.refresh_tokens import (
     MAX_REFRESH_TTL_SECS,
@@ -48,8 +61,10 @@ from kiro_crew.dashboard.revocation_gen import (  # noqa: F401  # re-exports
     current_revocation_gen_or_none,
 )
 from kiro_crew.dashboard.tailnet import (
+    REFUSE_NOT_ALLOWED,
     ForwardedPeer,
     TailnetTrust,
+    forwarded_peer_refusal,
     is_forwarded_tailnet_request,
     login_allowed,
     peer_pin_key,
@@ -74,7 +89,9 @@ from kiro_crew.dashboard.token_auth_paths import (
     _log_auth,
 )
 from kiro_crew.dashboard.token_auth_tokens import (
+    LINK_NOT_A_SESSION,
     MAX_SESSION_TTL_SECS,
+    OWNER_MINT_CLAIM,
     _b64url_decode,
     _cookie_port_from_host,
     _ct_eq,
@@ -103,6 +120,7 @@ from kiro_crew.dashboard.token_secret import (  # noqa: F401  # re-exports
     _load_or_create_secret,
 )
 from kiro_crew.sel import sel as _sel_fn
+from kiro_crew.shared_crew.identity import publish_actor
 
 
 def internal_path_matches(path: str, entries: Iterable[str]) -> bool:
@@ -122,6 +140,8 @@ def token_auth_middleware(
     local_only: bool = True,
     spa_shell_handler: Callable[..., Any] | None = None,
     tailnet_trust: TailnetTrust | None = None,
+    tailnet_direct: tailnet_direct_types.DirectGate | tailnet_direct_types.GateRef | None = None,
+    ssm_gate: ssm_gate_types.GateRef | None = None,
 ) -> Callable[..., Any]:
     """Factory returning aiohttp middleware for token-based dashboard auth.
 
@@ -150,6 +170,21 @@ def token_auth_middleware(
     resolution) behaviour is byte-for-byte the existing token+IP path, except
     for sessions carrying ``require_peer=1``: those explicitly opt out of the
     fallback and fail closed until the daemon verifies an allowed peer.
+
+    *tailnet_direct* is the gate of the direct tailnet listener
+    (:mod:`kiro_crew.dashboard.tailnet_direct`). It decides only requests whose
+    local socket address is one of this machine's tailnet addresses: those are
+    authenticated by the daemon's ``whois`` of the TCP peer and the login
+    allowlist, with no dashboard token. Every other request, loopback and
+    ``tailscale serve`` alike, runs the token flow unchanged. A
+    :class:`~kiro_crew.dashboard.tailnet_direct.GateRef` is read per request,
+    so the gateway can fill it in after the bind.
+
+    *ssm_gate* is the holder of the SSM listener's gate
+    (:mod:`kiro_crew.dashboard.ssm_gate`). A request whose local socket is the
+    SSM port is decided there, by a Crew invite alone, and never enters the token
+    flow: a forwarded connection looks like a loopback one, so the port, not the
+    request, says it is not the owner.
     """
 
     # NOTE: the signing-secret and revoked-nonce singletons are NOT warmed
@@ -187,6 +222,10 @@ def token_auth_middleware(
             return False, "", "no token", "", "", False
         if query_token:
             valid, uid, reason, app = validate_token_with_app(query_token, use_session_exp=True)
+            if reason == LINK_NOT_A_SESSION:
+                # A ``?token=`` link gets the main path's link rules: its short
+                # click window and a live nonce, never its session lifetime.
+                valid, uid, reason, app = validate_token_with_app(query_token)
             # A stale ``?token=`` must not veto a still-valid session cookie
             # (same rule as the main flow): fall through to the cookie only
             # when the query token failed AND a cookie exists; otherwise the
@@ -204,9 +243,136 @@ def token_auth_middleware(
         valid, uid, reason, app = validate_token_with_app(cookie_token, use_session_exp=True)
         return valid, uid, reason, app, cookie_token, False
 
+    def _current_direct_gate() -> tailnet_direct_types.DirectGate | None:
+        if tailnet_direct is None:
+            return None
+        from kiro_crew.dashboard.tailnet_direct import GateRef
+
+        if isinstance(tailnet_direct, GateRef):
+            return tailnet_direct.gate
+        return tailnet_direct
+
+    async def _direct_tailnet_gate(
+        request: web.Request, handler: object, gate: tailnet_direct_types.DirectGate
+    ) -> tuple[web.StreamResponse | None, object]:
+        """Decide a request on the direct tailnet listener before any token is read.
+
+        Returns ``(response, handler)``. A response is final: a refusal, or the
+        handler's answer for a token-free request the daemon admitted. ``None``
+        hands the request to the token flow, which then also enforces its own
+        credential: that is only an APP token, so an app keeps its scope. A
+        human token or cookie on this listener is ignored, never required.
+        """
+        from kiro_crew.dashboard.tailnet_direct import DIRECT_PEER_REQUEST_KEY
+        from kiro_crew.dashboard.tailnet_direct import refusal_response as tailnet_direct_refusal
+        from kiro_crew.dashboard.tailnet_direct import run_with_reverify
+
+        path = request.path
+        is_ws = (request.headers.get("Upgrade") or "").lower() == "websocket"
+        direct_peer, refusal = await gate.verify(request, fresh=is_ws)
+        if refusal or direct_peer is None:
+            refusal = refusal or "whois_failed"
+            mark_audit_claimed(request)
+            _sel_fn().log_api_access(
+                caller=direct_peer.login if direct_peer is not None else (request.remote or ""),
+                forwarded=is_proxied_request(request),
+                operation="tailnet_direct_auth",
+                outcome="denied",
+                source="token_auth",
+                resources=path,
+                error=refusal,
+            )
+            return tailnet_direct_refusal(request, refusal), handler
+        request[DIRECT_PEER_REQUEST_KEY] = direct_peer
+        # Every response is re-verified while it runs, not only a WebSocket: an
+        # event stream lives as long, and a removed person must lose it too.
+
+        async def _reverified(req: web.Request) -> Any:
+            return await run_with_reverify(req, gate, direct_peer, handler)  # type: ignore[arg-type]
+
+        wrapped: object = _reverified
+        # Machine-to-machine paths stay loopback-only, and the internal secret
+        # is never accepted off loopback.
+        strict = internal_path_matches(path, internal_paths) and not internal_path_matches(
+            path, mixed_internal_paths
+        )
+        if strict or "X-Internal-Secret" in request.headers:
+            mark_audit_claimed(request)
+            _log_auth(request, direct_peer.login, "denied", "tailnet direct: internal path")
+            return _deny(request, "Forbidden"), wrapped
+        # An app credential, in the query or in the port's access cookie (an app
+        # UI's cookie session), runs the token flow so the app keeps its scope.
+        query_token = request.query.get("token") or ""
+        cookie_token = request.cookies.get(f"mc_token_{_cookie_port_from_host(request, port)}", "")
+        if (query_token and claims_an_app_unverified(query_token)) or (
+            cookie_token and claims_an_app_unverified(cookie_token)
+        ):
+            return None, wrapped
+        # The owner's own Tailscale user gets the owner subject (tailnet_owner).
+        subject, unconfirmed = tailnet_owner.direct_subject(request, gate, direct_peer)
+        if unconfirmed is not None:
+            mark_audit_claimed(request)
+            _log_auth(request, direct_peer.login, "denied", "tailnet direct: confirm required")
+            return unconfirmed, wrapped
+        request["user"] = subject
+        request["app"] = ""
+        request["auth_token"] = ""
+        request["auth_tailnet_direct"] = True
+        request["is_dashboard_user"] = True
+        request["auth_from_query_token"] = False
+        _log_auth(request, direct_peer.login, "granted", "tailnet direct whois")
+        await publish_actor(request, trust=tailnet_trust, serve_peer=None)
+        return await wrapped(request), wrapped  # type: ignore[operator]
+
     @web.middleware
     async def middleware(request: web.Request, handler: object) -> web.StreamResponse:
+        ssm = ssm_gate.gate if ssm_gate is not None else None
+        if ssm is not None and ssm.owns(request):
+            from kiro_crew.dashboard import ssm_gate as ssm_gate_module
+
+            return await ssm_gate_module.admit(
+                request,
+                handler,  # type: ignore[arg-type]
+                strict_internal=internal_path_matches(request.path, internal_paths)
+                and not internal_path_matches(request.path, mixed_internal_paths),
+                log_auth=_log_auth,
+                publish=lambda req: publish_actor(req, trust=tailnet_trust, serve_peer=None),
+            )
+        gate = _current_direct_gate()
+        if gate is not None and gate.owns(request):
+            response, handler = await _direct_tailnet_gate(request, handler, gate)
+            if response is not None:
+                return response
+        return await _token_flow(request, handler)
+
+    async def _token_flow(request: web.Request, handler: object) -> web.StreamResponse:
         path = request.path
+
+        # A relay-delivered request (``dashboard/kiro_relay``): the relay is its
+        # authentication, so the person it named is admitted (or refused) here,
+        # before any branch that weighs a Crew credential, a tailnet peer or a
+        # loopback address. No relayed request continues past this point.
+        _relay_caller = published_relay_caller(request)
+        if _relay_caller is not None:
+            _relay_refusal = admit_relay_caller(request, _relay_caller)
+            if _relay_refusal is not None:
+                return _relay_refusal
+            await publish_actor(request, trust=None, serve_peer=None)
+            return await handler(request)  # type: ignore[operator,no-any-return]
+
+        # The agent socket (dashboard/agent_ipc.py) authenticates by a capability
+        # bound to the connecting process and serves internal routes only. It is
+        # decided first and in full: nothing on it reaches a cookie, bypass or
+        # secret arm. An admitted request continues to the internal branch below
+        # with the grant marked.
+        if request_on_agent_socket(request):
+            _ipc_response = await agent_socket_gate(
+                request,
+                internal=internal_path_matches(path, internal_paths)
+                or internal_path_matches(path, mixed_internal_paths),
+            )
+            if _ipc_response is not None:
+                return _ipc_response
 
         # Forwarded-peer resolution (RFC §2), once per request — the WebSocket
         # path therefore resolves once at upgrade, never per frame. ``None`` on
@@ -259,12 +425,9 @@ def token_auth_middleware(
                 # widening this gate exists to stop, so the "unknown policy"
                 # deny would announce itself and then not happen.
                 #
-                # Distinct from the ordinary enabled path, where an unresolved
-                # peer deliberately falls through (fail-closed on identity,
-                # fail-open on availability): there the operator's allowlist is
-                # KNOWN, so availability is the only thing at stake. Here the
-                # restriction itself is missing, and there is nothing left to be
-                # available for.
+                # Distinct from ``forwarded_peer_refusal`` below, which still
+                # admits a whois-named allowlisted login as Unknown: here the
+                # allowlist itself is missing, so no login can be checked.
                 #
                 # ``is_forwarded_tailnet_request`` is what keeps this from being
                 # a lockout: a local request resolves to no peer for an entirely
@@ -282,6 +445,33 @@ def token_auth_middleware(
                 )
                 _log_auth(request, "", "denied", "tailnet identity policy unreadable")
                 return _deny(request, "tailnet login not allowed")
+            # Shared Crew preview only. Without it an unresolved peer falls through
+            # to token auth as before (fail-closed on identity, fail-open on
+            # availability: rfc-tailnet-dashboard-access, "a stopped tailscaled
+            # degrades access, it does not deny it").
+            from kiro_crew.shared_crew.preview import preview_enabled
+
+            refusal = (
+                await forwarded_peer_refusal(request, tailnet_trust, peer)
+                if preview_enabled()
+                else None
+            )
+            if refusal is not None:
+                # The allowlist fails closed: a forwarded tailnet request that
+                # names no allowed login is refused, never admitted unnamed.
+                _sel_fn().log_api_access(
+                    caller=request.remote or "",
+                    forwarded=True,
+                    operation="tailnet_peer_auth",
+                    outcome="denied",
+                    source="token_auth",
+                    resources=path,
+                    error=refusal,
+                )
+                _log_auth(request, "", "denied", f"tailnet identity unverified: {refusal}")
+                if refusal == REFUSE_NOT_ALLOWED:
+                    return _deny(request, "tailnet login not allowed")
+                return _deny(request, "tailnet identity unverified")
         # Audit attribution (RFC §3): when a peer resolved, the trail names a
         # person; otherwise it stays the immediate peer address as today.
         _caller = peer.login if peer is not None else (request.remote or "")
@@ -393,11 +583,14 @@ def token_auth_middleware(
                 _peer_deny = await _verify_unix_peer(request, _unix_sock, path)
                 if _peer_deny is not None:
                     return _peer_deny
+            # Set only by agent_socket_gate above, after it verified a capability
+            # bound to this connection's process; such a request carries no secret.
+            _ipc_granted = isinstance(request.get(AGENT_IPC_GRANT_KEY), AgentIpcBinding)
             _has_secret_header = "X-Internal-Secret" in request.headers
-            if _has_secret_header:
-                _provided_secret = request.headers["X-Internal-Secret"]
+            if _has_secret_header or _ipc_granted:
+                _provided_secret = request.headers.get("X-Internal-Secret", "")
                 # Secret header present — validate it strictly
-                if not internal_secret:
+                if not internal_secret and not _ipc_granted:
                     _sel = _sel_fn()
                     _sel.log_api_access(
                         caller=_caller,
@@ -410,7 +603,7 @@ def token_auth_middleware(
                     )
                     _log_auth(request, "internal", "denied", "no internal secret configured")
                     return _deny(request, "Forbidden")
-                if _ct_eq(internal_secret, _provided_secret):
+                if _ipc_granted or _ct_eq(internal_secret, _provided_secret):
                     _sel = _sel_fn()
                     _sel.log_api_access(
                         caller=_caller,
@@ -419,6 +612,7 @@ def token_auth_middleware(
                         outcome="granted",
                         source="token_auth",
                         resources=path,
+                        error="agent socket capability" if _ipc_granted else "",
                     )
                     _log_auth(request, "internal", "granted", "")
                     # Mark the grant so handlers can distinguish "the internal
@@ -475,6 +669,9 @@ def token_auth_middleware(
                         )
                         _log_auth(request, "internal", "denied", "delegated record missing")
                         return _deny(request, "Forbidden", "caller_record_missing")
+                    await publish_actor(
+                        request, trust=tailnet_trust, serve_peer=None, internal=True
+                    )
                     return await handler(request)  # type: ignore[operator]
                 # Wrong secret → deny (don't fall through). An empty provided
                 # value means the gateway received no credential from this
@@ -568,6 +765,7 @@ def token_auth_middleware(
                     error="cookie auth (no secret header)",
                 )
             _log_auth(request, _audit_uid(_uid), "granted", f"cookie auth for {_uid}")
+            await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
             return await handler(request)  # type: ignore[operator]
         elif _matches_internal:
             if _matches_mixed:
@@ -670,6 +868,7 @@ def token_auth_middleware(
                     "granted",
                     f"mixed non-loopback cookie auth for {_uid}",
                 )
+                await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
                 return await handler(request)  # type: ignore[operator]
             else:
                 # INVARIANT: non-loopback access to strict internal paths is
@@ -830,11 +1029,13 @@ def token_auth_middleware(
             _link_nonce = ""
             _embed_parent_port = ""
             _no_refresh = False
+            _owner_minted = False
             _session_peer_key = ""
             try:
                 payload_bytes = _b64url_decode(token.split(".")[0])
                 data = json.loads(payload_bytes)
                 session_exp = float(data.get("session_exp", 0.0))
+                _owner_minted = str(data.get(OWNER_MINT_CLAIM, "")) == "1"
                 _link_nonce = str(data.get("nonce", ""))
                 # Carry the multi-instance frame-ancestors claim (the embedding
                 # parent dashboard's port) THROUGH the exchange. The framed
@@ -916,11 +1117,16 @@ def token_auth_middleware(
                 # refresh chain is still suppressed below by never being minted.
                 if _no_refresh:
                     _carried["no_refresh"] = "1"
+                # Carried so a former owner's session can be told to sign in
+                # again (see OWNER_MINT_CLAIM). Relabels a denial only.
+                if _owner_minted:
+                    _carried[OWNER_MINT_CLAIM] = "1"
                 session_token = generate_token(
                     user_id,
                     ttl_seconds=_remaining,
                     app=app_name,
                     register_nonce=False,
+                    session=True,
                     peer_key=_session_peer_key,
                     extra=_carried or None,
                 )
@@ -1037,6 +1243,8 @@ def token_auth_middleware(
         if _scope_deny is not None:
             return _scope_deny
 
+        # Attribution only, after every decision above: publishing never denies.
+        await publish_actor(request, trust=tailnet_trust, serve_peer=peer)
         # Proceed to handler
         resp = await handler(request)  # type: ignore[operator]
 
@@ -1160,6 +1368,7 @@ def token_auth_middleware(
                         boot=str(data.get("boot", "")),
                         require_peer=_refresh_require_peer,
                         peer_key=_refresh_peer_key,
+                        owner_mint=_owner_minted,
                     )
                     refresh_remaining = int(refresh_exp - time.time())
                     if refresh_remaining > 0:
@@ -1257,7 +1466,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _APPS_SPA_EXCLUDED_RE,
         _SELF_AUTH_WEBHOOK_METHODS,
         AGENT_HOOK_PATH,
+        AGENT_HOOK_STATUS_PATH,
         CSRF_EXEMPT_EXACT_METHODS,
+        RELAY_VIEWER_TOKEN_PATH,
         SPA_FALLBACK_EXCLUDED_PREFIXES,
         TEAMS_WEBHOOK_PATH,
         UPDATE_REVALIDATE_PATH,
@@ -1285,11 +1496,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         generate_app_secret,
         is_consumed,
         mark_consumed,
+        owner_mint_extra,
         parse_duration,
         proxied_pin_observed,
         revoke_access_cookie,
         revoke_all_sessions,
         token_embed_parent_port,
+        token_owner_minted_unverified,
         try_consume,
         validate_app_secret,
         validate_token,

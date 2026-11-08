@@ -15,8 +15,7 @@ is not zero, and a fold reports how many turns reported a measurement
 measurement itself for exactly that reason.
 
 An `object (empty)` is a map keyed at run time: `usage.by_model` by model name,
-`tools.by_name` by tool name, `subagents.by_id` by agent id, and
-`usage.context.by_source` by context source.
+`tools.by_name` by tool name, and `subagents.by_id` by agent id.
 
 ## `approvals`
 
@@ -113,13 +112,15 @@ An `object (empty)` is a map keyed at run time: `usage.by_model` by model name,
 | `usage.compactions.count` | number |
 | `usage.compactions.freed_pct` | number |
 | `usage.context.blocks` | number |
-| `usage.context.by_source` | object (empty) |
 | `usage.context.chars` | number |
+| `usage.context.chars_per_token` | number |
+| `usage.context.earlier` | number |
 | `usage.context.estimated_turns` | number |
-| `usage.context.sources_omitted` | number |
+| `usage.context.latest` | null |
+| `usage.context.start` | null |
 | `usage.context.tokens` | number |
-| `usage.context.turns` | array |
-| `usage.context.window` | number |
+| `usage.context.trend` | array |
+| `usage.context.turns` | number |
 | `usage.credits` | number |
 | `usage.credits_by_source.background.credits` | number |
 | `usage.credits_by_source.background.reported` | number |

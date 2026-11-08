@@ -533,6 +533,7 @@ class TestNoStoreCallRunsOnTheEventLoop:
             "list_meetings",
             "tasks_path",
             "read_tasks",
+            "read_tasks_for_update",
             "write_tasks",
             "ensure_agent_files",
             "read_agent_outputs",
@@ -626,7 +627,7 @@ class TestNoStoreCallRunsOnTheEventLoop:
         )
 
     def test_the_reported_handler_lists_meetings_off_the_loop(self):
-        """The exact call site the CI reviewer flagged."""
+        """``handle_list_meetings`` lists meetings via ``asyncio.to_thread``."""
         import inspect
 
         from kiro_crew.apps.builtins.meetings.backend.routes import meeting_lifecycle as ml
@@ -790,6 +791,57 @@ class TestTaskWritesAreSerialized:
         # just read the list can still act on what it saw.
         assert [t["id"] for t in task_routes.read_normalized(meeting_id, root)] == ids
 
+    @pytest.mark.parametrize(
+        "raw_ids",
+        [
+            ["x" * 64, "x" * 64],  # an id at the 64-char cap leaves no room for a suffix
+            ["t", "t-2", "t"],  # the plain suffix names another row
+            ["t", "t", "t-1"],  # a later row's own id is not taken by a rename
+            ["t", "t", "t", "t-1"],  # each rename is added to the taken set
+        ],
+    )
+    def test_renamed_task_ids_never_collide(self, root: Path, raw_ids: list[str]) -> None:
+        from kiro_crew.apps.builtins.meetings.backend import store as meetings_store
+        from kiro_crew.apps.builtins.meetings.backend.routes import tasks as task_routes
+
+        meeting_id = "m-collide"
+        meetings_store.write_tasks(
+            meeting_id,
+            [{"id": tid, "description": f"row {i}"} for i, tid in enumerate(raw_ids)],
+            root,
+        )
+        tasks = task_routes.read_normalized(meeting_id, root)
+
+        ids = [t["id"] for t in tasks]
+        assert len(ids) == len(set(ids)), f"duplicate ids survived: {ids}"
+        assert all(len(tid) <= 64 for tid in ids)
+        # A row whose id was unique in the file keeps it.
+        unique_in_file = {tid for tid in raw_ids if raw_ids.count(tid) == 1}
+        for tid in unique_in_file:
+            assert tid in ids
+
+    @pytest.mark.asyncio
+    async def test_deleting_one_of_two_long_duplicate_ids_keeps_the_other(
+        self, app, root: Path
+    ) -> None:
+        from kiro_crew.apps.builtins.meetings.backend import store as meetings_store
+
+        long_id = "x" * 64
+        meetings_store.write_tasks(
+            "standup",
+            [
+                {"id": long_id, "description": "first"},
+                {"id": long_id, "description": "second"},
+            ],
+            root,
+        )
+        async with client_for(app) as client:
+            resp = await client.delete(f"{BASE}/meetings/standup/tasks", json={"id": long_id})
+            assert resp.status == 200, await resp.text()
+            left = (await (await client.get(f"{BASE}/meetings/standup/tasks")).json())["tasks"]
+
+        assert [t["description"] for t in left] == ["second"]
+
     def test_deleting_one_of_two_duplicate_ids_keeps_the_other(self, root: Path) -> None:
         """The consequence the rename prevents, asserted end to end."""
         from kiro_crew.apps.builtins.meetings.backend import store as meetings_store
@@ -812,14 +864,9 @@ class TestTaskWritesAreSerialized:
     def test_every_metadata_writer_holds_the_transaction(self) -> None:
         """Structural: no `write_meeting_meta` outside a `meta_transaction()`.
 
-        This class of bug has four known call sites: the metadata routes, the agent
-        toggle, the dictionary, and stop/start in the session domain. A fix per call
-        site leaves the next one open, so the invariant is asserted over the whole
-        module instead: every function that writes meeting metadata must hold the
-        lock across its read-modify-write.
-
-        AST rather than grep so a call inside a comment or a docstring cannot satisfy
-        it, and so the enclosing function is what gets checked.
+        Asserted over the whole module so a new writer cannot skip the lock across
+        its read-modify-write. AST rather than grep so a call inside a comment or a
+        docstring cannot satisfy it, and so the enclosing function is what gets checked.
         """
         import ast
         from pathlib import Path as _Path
@@ -1176,10 +1223,8 @@ class TestATaskIsNeverFiledTwice:
 
         A filing is prepare -> provider-create -> record and the middle step is an
         AWAIT, which `_TASKS_LOCK` (a threading lock, held only across local file IO)
-        cannot span. So a delete landing inside that gap removed the task while the
-        external item had already been created — leaving an orphan nothing references,
-        while the filing response reported success. Deleting is the other half of the
-        critical section the filing already serializes, so it needs the same lock.
+        cannot span. A delete inside that gap would orphan the created external item
+        while the filing reports success, so deleting takes the same lock.
         """
         import ast
         import inspect
@@ -1206,12 +1251,9 @@ class TestATaskIsNeverFiledTwice:
     def test_recording_a_filing_for_a_vanished_task_fails_loudly(self, tmp_path) -> None:
         """The deeper flaw the lock alone does not fix.
 
-        `_record_filing` must not `break` out of its loop when the id is absent, write
-        the list unchanged, and RETURN — so a task removed by any path the lock does not
-        order (the extractor agent rewriting `tasks.json`, a hand-edit, a future route)
-        produced a real external item plus a success response and no reference to it.
-        It must refuse instead, and must not rewrite the list a concurrent deleter just
-        wrote.
+        A task can vanish by paths the lock does not order (the extractor agent
+        rewriting `tasks.json`, a hand-edit). `_record_filing` must then refuse, not
+        report success, and must not rewrite the list a concurrent deleter just wrote.
         """
         from kiro_crew.apps.builtins.meetings.backend import store
         from kiro_crew.apps.builtins.meetings.backend.providers import tasks as taskprov

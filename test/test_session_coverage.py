@@ -79,9 +79,20 @@ def _stub_provider(**attrs):
         # runtime kwargs mirror; the base class answers None and so does this double.
         "tool_search_settings": None,
         "work_scratch_dir": None,
+        "harness_pin": "",
     }
     base.update(attrs)
     return SimpleNamespace(**base)
+
+
+def _session_messages(caplog) -> list[str]:
+    """Messages ``kiro_crew.session`` logged, and no other logger's.
+
+    caplog's handler sits on the root logger, so it also collects what other
+    loggers and threads on the same xdist worker emit; an "it logged nothing"
+    check over every record depends on run order.
+    """
+    return [r.getMessage() for r in caplog.records if r.name == "kiro_crew.session"]
 
 
 def _register(mgr: SessionManager, key: str, **session_kwargs) -> _Session:
@@ -159,18 +170,20 @@ class TestSessionModel:
         cfg.agent.model = "sonnet"
         assert _session_model(cfg, None) == "sonnet"
 
-    def test_crew_pin_wins_verbatim(self, cfg) -> None:
-        """The factory never sees the crew name, so its pin must be returned
-        as-is rather than left for a lower tier to rediscover."""
+    @pytest.mark.parametrize(
+        "crew_model, expected",
+        [
+            # The factory never sees the crew name, so its pin must be returned
+            # as-is rather than left for a lower tier to rediscover.
+            pytest.param("opus", "opus", id="crew_pin_wins_verbatim"),
+            # ``auto`` on the crew tier means inherit, not "pin the default".
+            pytest.param("auto", "sonnet", id="crew_inherit_spelling_is_not_a_pin"),
+        ],
+    )
+    def test_crew_tier_model(self, cfg, crew_model, expected) -> None:
         cfg.agent.model = "sonnet"
-        cfg.agents["research"] = KiroCrewAgentConfig(model="opus")
-        assert _session_model(cfg, "research") == "opus"
-
-    def test_crew_inherit_spelling_is_not_a_pin(self, cfg) -> None:
-        """``auto`` on the crew tier means inherit, not "pin the default"."""
-        cfg.agent.model = "sonnet"
-        cfg.agents["research"] = KiroCrewAgentConfig(model="auto")
-        assert _session_model(cfg, "research") == "sonnet"
+        cfg.agents["research"] = KiroCrewAgentConfig(model=crew_model)
+        assert _session_model(cfg, "research") == expected
 
     def test_crew_that_defers_continues_on_its_bound_template(self, cfg, monkeypatch) -> None:
         seen: list[str] = []
@@ -208,16 +221,20 @@ def _map_stub(provider: str = "", sid: str | None = None):
 
 
 class TestDetectProviderSwitch:
-    def test_same_provider_is_not_a_switch(self) -> None:
-        assert detect_provider_switch(_map_stub("acp", "sid-1"), "k", "acp") is False
-
-    def test_unset_stored_provider_defaults_to_acp(self) -> None:
-        """An entry written before the provider column existed reads as acp."""
-        assert detect_provider_switch(_map_stub("", "sid-1"), "k", "acp") is False
-
-    def test_different_provider_without_a_stored_sid_is_not_a_switch(self) -> None:
-        """Nothing to discard, so nothing to audit."""
-        assert detect_provider_switch(_map_stub("claude_code", None), "k", "acp") is False
+    @pytest.mark.parametrize(
+        "stored_provider, stored_sid",
+        [
+            pytest.param("acp", "sid-1", id="same_provider_is_not_a_switch"),
+            # An entry written before the provider column existed reads as acp.
+            pytest.param("", "sid-1", id="unset_stored_provider_defaults_to_acp"),
+            # Nothing to discard, so nothing to audit.
+            pytest.param(
+                "claude_code", None, id="different_provider_without_a_stored_sid_is_not_a_switch"
+            ),
+        ],
+    )
+    def test_provider_switch_is_not_detected(self, stored_provider, stored_sid) -> None:
+        assert detect_provider_switch(_map_stub(stored_provider, stored_sid), "k", "acp") is False
 
     def test_different_provider_with_a_stored_sid_is_a_switch(self) -> None:
         with patch("kiro_crew.session.sel") as sel_mock:
@@ -259,9 +276,7 @@ class TestAdoptProvider:
         assert sess.agent == "researcher"
         assert sess.approval_policy == "auto"
 
-    @pytest.mark.parametrize(
-        "start", [FirstTurnState.NOTHING_ARMED, FirstTurnState.FRESH]
-    )
+    @pytest.mark.parametrize("start", [FirstTurnState.NOTHING_ARMED, FirstTurnState.FRESH])
     def test_non_resumed_first_turn_states_survive_adoption(self, start) -> None:
         """Only the RESUMED half of the observation is stale on a replacement.
         The production caller recycles a mid-life, already-claimed session
@@ -496,6 +511,54 @@ class TestParentRuntimeKwargs:
         assert mgr._parent_runtime_kwargs("d1") == {"sandbox_mode": "off"}
 
 
+class TestCompanionInheritsParentGatewaySocket:
+    """The composed socket hand-off, end to end.
+
+    ``TestParentRuntimeKwargs`` pins the mirror list with a ``SimpleNamespace``
+    client, and ``test_session_provider_abort_target`` pins the
+    ``AcpSessionProvider._mcp_gateway_socket`` property on its own. Neither runs
+    a *started* provider -- an ``AcpProvider`` whose ``_client`` is a real
+    ``AcpSessionProvider`` over a runtime that has a socket -- through
+    ``_parent_runtime_kwargs``. That composed path is the one a companion spawn
+    takes: the property feeds the mirror, so the mirror forwards the runtime's
+    socket onto the companion. This pins the two halves together, so a change to
+    either half that breaks the forward is caught.
+    """
+
+    @staticmethod
+    def _started_provider(socket_path: str | None):
+        """An ``AcpProvider`` whose ``_client`` is a real ``AcpSessionProvider``
+        over a runtime, exactly as the startup path leaves it."""
+        from unittest.mock import patch as _patch
+
+        from kiro_crew.acp.runtime import AcpRuntime
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+        from kiro_crew.providers.acp import AcpProvider
+
+        runtime = MagicMock(spec=AcpRuntime)
+        runtime._mcp_gateway_socket = socket_path
+        # Keep the backend mirror out of the assertion surface: a MagicMock would
+        # forward a truthy child Mock as ``acp_backend``. We only pin the socket.
+        runtime.acp_backend = None
+        with _patch("kiro_crew.providers.acp.AcpClient"):
+            provider = AcpProvider(acp_backend="")
+        provider._client = AcpSessionProvider(MagicMock(), runtime)  # type: ignore[assignment]
+        return provider
+
+    def test_socket_is_forwarded_through_the_started_provider(self, mgr) -> None:
+        provider = self._started_provider("/run/kc/gw.sock")
+        _register(mgr, "d1", provider=provider)
+        assert mgr._parent_runtime_kwargs("d1")["mcp_gateway_socket"] == "/run/kc/gw.sock"
+
+    def test_socket_is_omitted_when_the_runtime_has_none(self, mgr) -> None:
+        """A runtime with no socket forwards nothing: the key is absent, not
+        ``None`` (matching ``test_unset_posture_fields_are_omitted_not_nulled``:
+        a forwarded ``None`` reads to the runtime as an explicit "no socket")."""
+        provider = self._started_provider(None)
+        _register(mgr, "d1", provider=provider)
+        assert "mcp_gateway_socket" not in mgr._parent_runtime_kwargs("d1")
+
+
 class TestSessionSharingEligible:
     def test_unknown_parent_is_ineligible(self, mgr) -> None:
         assert mgr.is_session_sharing_eligible("nope") is False
@@ -512,9 +575,7 @@ class TestSessionSharingEligible:
 class TestContinuableKeys:
     def test_cache_hit_needs_no_disk_read(self, mgr) -> None:
         mgr._continuable_keys.add("subagent:a")
-        mgr._continuable_fallback = MagicMock(
-            side_effect=AssertionError("must not consult disk")
-        )
+        mgr._continuable_fallback = MagicMock(side_effect=AssertionError("must not consult disk"))
         assert mgr._is_continuable_key("subagent:a") is True
 
     def test_miss_without_a_fallback_is_stateless(self, mgr) -> None:
@@ -601,9 +662,7 @@ class TestRemoveIfUnclaimed:
         sess.provider.shutdown.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_an_unclaimed_session_unlinks_its_queued_temp_files(
-        self, mgr, tmp_path
-    ) -> None:
+    async def test_an_unclaimed_session_unlinks_its_queued_temp_files(self, mgr, tmp_path) -> None:
         img = tmp_path / "img.png"
         img.write_bytes(b"fake")
         sess = _register(mgr, "dashboard:1", first_turn=FirstTurnState.FRESH)
@@ -636,21 +695,25 @@ class TestRecycleHeartbeat:
 class TestExpireIdle:
     @pytest.mark.asyncio
     async def test_persistent_and_channel_sessions_are_never_swept(self, mgr) -> None:
-        for key in (BACKGROUND_KEY, HEARTBEAT_KEY, "channel:slack:C1"):
-            _register(mgr, key, last_used=0.0)
-        with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
-            await mgr._expire_idle(1)
-        reset.assert_not_awaited()
+        """Run against the real ``reset``, so a swept entry would leave the map."""
+        keys = (BACKGROUND_KEY, HEARTBEAT_KEY, "channel:slack:C1")
+        sessions = {key: _register(mgr, key, last_used=0.0) for key in keys}
+        await mgr._expire_idle(1)
+        for key, sess in sessions.items():
+            assert mgr._sessions[key] is sess
+            sess.provider.shutdown.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_turn_in_flight_is_never_idle(self, mgr) -> None:
+    async def test_a_turn_in_flight_is_never_idle(self, mgr, caplog) -> None:
         """``last_used`` is bumped once per turn, so a turn running longer than
         the timeout looks idle to the arithmetic — the semaphore is the guard."""
         sess = _register(mgr, "dashboard:1", last_used=0.0)
         await sess.semaphore.acquire()
-        with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
-            await mgr._expire_idle(1)
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.session"):
+            with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
+                await mgr._expire_idle(1)
         reset.assert_not_awaited()
+        assert "Idle sweep: 1 checked, 0 expired" in caplog.messages
 
     @pytest.mark.asyncio
     async def test_an_idle_session_is_reset_not_removed(self, mgr) -> None:
@@ -671,6 +734,7 @@ class TestExpireIdle:
         reset.assert_awaited_once_with(
             "dashboard:1", expect_session=sess, skip_if_busy=True, skip_if_injecting=True
         )
+        assert mgr._sessions["dashboard:1"] is sess, "only reset may drop the entry"
 
     @pytest.mark.asyncio
     async def test_an_orphaned_dashboard_session_ignores_the_clock(self, mgr) -> None:
@@ -679,10 +743,11 @@ class TestExpireIdle:
         mgr._active_dashboard_slots = {"dashboard:live"}
         _register(mgr, "dashboard:live")
 
-        with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
+        with patch.object(mgr, "reset", wraps=mgr.reset) as reset:
             await mgr._expire_idle(10_000)
 
         assert [c.args[0] for c in reset.await_args_list] == ["dashboard:gone"]
+        assert set(mgr._sessions) == {"dashboard:live"}
 
     @pytest.mark.asyncio
     async def test_uninitialised_slot_set_orphans_nothing(self, mgr) -> None:
@@ -698,34 +763,38 @@ class TestExpireIdle:
     async def test_a_session_that_turns_busy_before_reset_is_left_running(self, mgr) -> None:
         """The collect->reset window: reset() re-checks atomically and returns
         False, and the sweep must accept that rather than retry or raise."""
-        _register(mgr, "dashboard:1", last_used=0.0)
-        with patch.object(mgr, "reset", AsyncMock(return_value=False)):
+        sess = _register(mgr, "dashboard:1", last_used=0.0)
+        with patch.object(mgr, "reset", AsyncMock(return_value=False)) as reset:
             await mgr._expire_idle(1)
-        # No exception, and the entry was left for the next pass to reconsider.
+        reset.assert_awaited_once()
+        assert mgr._sessions["dashboard:1"] is sess, "left for the next pass"
 
     @pytest.mark.asyncio
     async def test_a_broken_expire_callback_does_not_stop_the_sweep(self, mgr) -> None:
-        _register(mgr, "dashboard:1", last_used=0.0)
+        sess = _register(mgr, "dashboard:1", last_used=0.0)
         mgr.on_session_expire = MagicMock(side_effect=RuntimeError("consolidator down"))
-        with patch.object(mgr, "reset", AsyncMock(return_value=True)) as reset:
-            await mgr._expire_idle(1)
+        await mgr._expire_idle(1)
         mgr.on_session_expire.assert_called_once_with("dashboard:1")
-        reset.assert_awaited_once()
+        assert "dashboard:1" not in mgr._sessions
+        sess.provider.shutdown.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_the_hook_honours_the_disable_gate(self, mgr) -> None:
-        _register(mgr, "dashboard:1", last_used=0.0)
+        sess = _register(mgr, "dashboard:1", last_used=0.0)
         mgr._idle_sweep_enabled = False
-        with patch.object(mgr, "_expire_idle", AsyncMock()) as expire:
-            await mgr._expire_idle_hook()
-        expire.assert_not_awaited()
+        mgr._idle_timeout = 1
+        await mgr._expire_idle_hook()
+        assert mgr._sessions["dashboard:1"] is sess
+        sess.provider.shutdown.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_the_hook_swallows_a_sweep_crash(self, mgr) -> None:
+    async def test_the_hook_swallows_a_sweep_crash(self, mgr, caplog) -> None:
         mgr._idle_sweep_enabled = True
         mgr._idle_timeout = 60
-        with patch.object(mgr, "_expire_idle", AsyncMock(side_effect=RuntimeError("boom"))):
-            await mgr._expire_idle_hook()  # must not propagate into the loop
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.session"):
+            with patch.object(mgr, "_expire_idle", AsyncMock(side_effect=RuntimeError("boom"))):
+                await mgr._expire_idle_hook()
+        assert "Cleanup loop: _expire_idle crashed; continuing" in caplog.messages
 
 
 # ── Stuck-turn observer ─────────────────────────────────────────────────────
@@ -752,47 +821,60 @@ class TestStuckTurnCheck:
     """Detection only — the hook reports and never terminates."""
 
     @pytest.mark.asyncio
-    async def test_an_idle_session_is_not_a_park(self, mgr) -> None:
+    async def test_an_idle_session_is_not_a_park(self, mgr, caplog) -> None:
         _register(mgr, "d1", provider=_parked_provider(_STUCK_TURN_REPORT_SECS + 10))
         mgr.on_stuck_turn = MagicMock()
-        await mgr._stuck_turn_check()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await mgr._stuck_turn_check()
         mgr.on_stuck_turn.assert_not_called()
+        assert mgr._stuck_reported == {}
+        assert _session_messages(caplog) == []
 
     @pytest.mark.asyncio
-    async def test_a_provider_without_a_handle_is_skipped(self, mgr) -> None:
+    async def test_a_provider_without_a_handle_is_skipped(self, mgr, caplog) -> None:
         await _busy(mgr, "d1", _stub_provider())
         mgr.on_stuck_turn = MagicMock()
-        await mgr._stuck_turn_check()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await mgr._stuck_turn_check()
         mgr.on_stuck_turn.assert_not_called()
+        assert mgr._stuck_reported == {}
+        assert _session_messages(caplog) == []
 
     @pytest.mark.asyncio
-    async def test_a_handle_without_the_accessor_is_skipped(self, mgr) -> None:
+    async def test_a_handle_without_the_accessor_is_skipped(self, mgr, caplog) -> None:
         """Duck-typed on the capability, so a transport that lacks it is
         ignored rather than crashing the cleanup pass."""
         provider = _stub_provider()
         provider._handle = SimpleNamespace(parked_for_secs=None)
         await _busy(mgr, "d1", provider)
         mgr.on_stuck_turn = MagicMock()
-        await mgr._stuck_turn_check()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await mgr._stuck_turn_check()
         mgr.on_stuck_turn.assert_not_called()
+        assert mgr._stuck_reported == {}
+        assert _session_messages(caplog) == []
 
     @pytest.mark.asyncio
-    async def test_a_short_park_is_below_the_report_threshold(self, mgr) -> None:
+    async def test_a_short_park_is_below_the_report_threshold(self, mgr, caplog) -> None:
         await _busy(mgr, "d1", _parked_provider(1.0))
         mgr.on_stuck_turn = MagicMock()
-        await mgr._stuck_turn_check()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await mgr._stuck_turn_check()
         mgr.on_stuck_turn.assert_not_called()
+        assert mgr._stuck_reported == {}
+        assert _session_messages(caplog) == []
 
     @pytest.mark.asyncio
-    async def test_a_turn_waiting_for_a_human_is_excluded(self, mgr) -> None:
+    async def test_a_turn_waiting_for_a_human_is_excluded(self, mgr, caplog) -> None:
         """That wait has its own budget (tool_approval_timeout_secs); reporting
         it here would put two components on different clocks."""
-        await _busy(
-            mgr, "d1", _parked_provider(_STUCK_TURN_REPORT_SECS + 10, awaiting=True)
-        )
+        await _busy(mgr, "d1", _parked_provider(_STUCK_TURN_REPORT_SECS + 10, awaiting=True))
         mgr.on_stuck_turn = MagicMock()
-        await mgr._stuck_turn_check()
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await mgr._stuck_turn_check()
         mgr.on_stuck_turn.assert_not_called()
+        assert mgr._stuck_reported == {}
+        assert _session_messages(caplog) == []
 
     @pytest.mark.asyncio
     async def test_a_long_park_is_reported_once_per_park(self, mgr) -> None:
@@ -847,10 +929,15 @@ class TestStuckTurnCheck:
         assert mgr._stuck_reported == {}
 
     @pytest.mark.asyncio
-    async def test_a_broken_callback_does_not_break_the_cleanup_pass(self, mgr) -> None:
+    async def test_a_broken_callback_does_not_break_the_cleanup_pass(self, mgr, caplog) -> None:
+        """An observer must never break its host: the park is still latched and logged."""
         await _busy(mgr, "d1", _parked_provider(_STUCK_TURN_REPORT_SECS + 5))
         mgr.on_stuck_turn = MagicMock(side_effect=RuntimeError("notifier down"))
-        await mgr._stuck_turn_check()  # an observer must never break its host
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+            await mgr._stuck_turn_check()
+        assert mgr._stuck_reported == {"d1": 1.0}
+        assert any("has not been pulled" in m for m in caplog.messages)
+        assert not any("_stuck_turn_check crashed" in m for m in _session_messages(caplog))
 
     @pytest.mark.asyncio
     async def test_the_observer_swallows_its_own_crash(self, mgr, caplog) -> None:
@@ -925,12 +1012,16 @@ class TestSendAbortForSession:
         assert any("abort-push skipped" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_a_raising_provider_never_blocks_the_kill_path(self, mgr) -> None:
+    async def test_a_raising_provider_never_blocks_the_kill_path(self, mgr, caplog) -> None:
         def boom():
             raise RuntimeError("provider is gone")
 
         sess = _Session(provider=_stub_provider(runtime_abort_target=boom))
-        await mgr._send_abort_for_session("d1", sess)  # best-effort, must not raise
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.session"):
+            with patch("kiro_crew.session.schedule_abort_for") as abort:
+                await mgr._send_abort_for_session("d1", sess)
+        abort.assert_not_called()
+        assert "_send_abort_for_session failed for d1" in caplog.messages
 
     @pytest.mark.asyncio
     async def test_a_failing_audit_does_not_block_the_abort(self, mgr) -> None:
@@ -940,17 +1031,32 @@ class TestSendAbortForSession:
             with patch("kiro_crew.session.schedule_abort_for") as abort:
                 await mgr._send_abort_for_session("d1", sess)
         abort.assert_called_once()
+        assert abort.call_args.args[0] is target
+        assert abort.call_args.kwargs["reason"] == "hard-stop session=d1"
 
     @pytest.mark.asyncio
-    async def test_the_audit_record_names_the_runtime_the_target_names(self, mgr) -> None:
+    async def test_the_audit_record_names_the_runtime_the_target_names(
+        self, mgr, tmp_path, monkeypatch
+    ) -> None:
         """The record says which runtime was asked; the target renders that itself."""
+        from kiro_crew import sel as sel_mod
+
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+        (tmp_path / "sel").mkdir()
+        audit = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+        # Leave the process singleton unset so no other caller is handed this log.
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+        monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
         target = RuntimeAbortTarget.build(4242, "/tmp/gw.sock")
         sess = _Session(provider=_stub_provider(runtime_abort_target=lambda: target))
-        audit = MagicMock()
         with patch("kiro_crew.session.sel", return_value=audit):
             with patch("kiro_crew.session.schedule_abort_for"):
                 await mgr._send_abort_for_session("d1", sess)
-        assert audit.log_api_access.call_args.kwargs["resources"] == "pid=4242 session=d1"
+        rows = [e for e in audit.recent() if e["operation"] == "mcp-gateway.abort-initiated"]
+        assert [(r["resources"], r["outcome"]) for r in rows] == [
+            ("pid=4242 session=d1", "initiated")
+        ]
 
 
 # ── Orphan-MCP hook ─────────────────────────────────────────────────────────
@@ -972,12 +1078,14 @@ class TestOrphanMcpHook:
         assert not any("orphaned MCP servers" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
-    async def test_a_sweep_failure_is_swallowed(self, mgr) -> None:
+    async def test_a_sweep_failure_is_swallowed_silently(self, mgr, caplog) -> None:
         with patch(
             "kiro_crew.session._cleanup_orphaned_mcp_servers",
             side_effect=OSError("procfs unreadable"),
         ):
-            await mgr._orphan_mcp_hook()  # preserves the silent-swallow contract
+            with caplog.at_level(logging.DEBUG, logger="kiro_crew.session"):
+                await mgr._orphan_mcp_hook()
+        assert _session_messages(caplog) == []
 
 
 # ── Conversation map seams ──────────────────────────────────────────────────

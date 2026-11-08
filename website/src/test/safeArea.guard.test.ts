@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
+import { compile } from '@tailwindcss/node'
 import { readIndexCss } from './indexCssSource'
 
 /**
@@ -73,15 +74,6 @@ const ALLOWLIST: ReadonlyArray<{ file: string; classes: string; reason: string }
       + 'measured from a face that already sits inside the p-safe shell, so it never hugs an edge.',
   },
   {
-    file: 'src/shell/nav/featureNewTagFlight.tsx',
-    classes: 'fixed left-0 top-0 z-[65] rounded-full pointer-events-none shadow-md',
-    reason:
-      'The Mates intro\'s avatar in flight from the dialog to the rail row\'s "New" tag '
-      + '(FeatureNewTagFlyer). Same shape as CrewFaceFlight: left-0 top-0 is only the transform '
-      + 'origin, and every frame translates it between two boxes measured inside the p-safe shell '
-      + '(the dialog\'s avatar and the rail pill), so it never hugs an edge.',
-  },
-  {
     file: 'src/pages/members/MateEntrance.tsx',
     classes: 'fixed left-0 top-0 origin-top-left will-change-transform',
     reason:
@@ -105,6 +97,14 @@ const INLINE_ALLOWLIST: ReadonlyArray<{ file: string; contains: string; reason: 
       'Decorative theme branding strip: pointerEvents:none, transparent background, height-clamped '
       + 'by data-theme-maxh. It paints ACROSS the top strip, so insetting it would leave an unpainted '
       + 'gap beside the notch, and being click-through it buries no control.',
+  },
+  {
+    file: 'src/pages/chat/BrowserLiveCardCanvas.tsx',
+    contains: "position: 'fixed', left: 0, top: 0, width: 1, height: 1",
+    reason:
+      'The takeover typing proxy: a 1x1, opacity-0, pointer-events:none textarea the phone keyboard '
+      + 'types into. It draws nothing and takes no tap, and each tap moves its top to the tap point, '
+      + 'so no safe-area inset applies to it.',
   },
 ]
 
@@ -138,9 +138,73 @@ function stringLiterals(source: string): string[] {
  *  skip link) or `sm:fixed` is not a mobile screen-edge surface. */
 const hasBareFixed = (literal: string) => /(?:^|\s)fixed(?=\s|$)/.test(literal)
 
-/** `p-safe` / `inset-safe` inset every edge at once, so either satisfies all. */
+/** `p-safe` / `p-safe-or-*` / `inset-safe` inset every edge at once, so any of
+ *  them satisfies all. */
 const hasBlanketInset = (literal: string) =>
-  /(?:^|\s)p-safe(?=\s|$)/.test(literal) || /(?:^|\s)inset-safe(?=\s|$)/.test(literal)
+  /(?:^|\s)p-safe(?:-or-\S+)?(?=\s|$)/.test(literal) || /(?:^|\s)inset-safe(?=\s|$)/.test(literal)
+
+/** `inset-0` pins all four edges at once. The per-edge scan does not list it,
+ *  because a bare full-viewport layer (a dim backdrop, a click-catcher, a
+ *  decorative strip) is meant to bleed to every edge. */
+const hasInsetZero = (literal: string) => /(?:^|\s)inset-0(?=\s|$)/.test(literal)
+
+/** The literal lays out children against its own edges: a flex or grid
+ *  container, or one with unprefixed padding (`p-4`, `px-6`, `p-[10px]`). That
+ *  is what separates a container that holds a dialog or a sheet from a
+ *  backdrop. Padding gated behind a breakpoint (`sm:p-6`) does not count: it is
+ *  not the phone layout. */
+const laysOutChildren = (literal: string) =>
+  /(?:^|\s)(?:flex|inline-flex|grid)(?=\s|$)/.test(literal)
+  || /(?:^|\s)p[xytrblse]?-(?:\d|\[)/.test(literal)
+
+/**
+ * Full-viewport containers whose content is meant to sit under the insets.
+ * Same contract as ALLOWLIST: each entry is a checkable claim, with a reason.
+ */
+const FULL_VIEWPORT_ALLOWLIST: ReadonlyArray<{ file: string; classes: string; reason: string }> = [
+  {
+    file: 'src/components/SideSheet.tsx',
+    classes: 'fixed inset-0 z-[90] flex justify-end',
+    reason:
+      'The row only places the sheet against the right edge. The sheet carries p-safe itself, so its '
+      + 'background reaches the screen edge while its header, body and footer stay clear of the insets.',
+  },
+  {
+    file: 'src/components/OnboardingChapterShell.tsx',
+    classes: 'fixed inset-0 z-[120] flex min-h-0 overflow-y-auto',
+    reason:
+      'SCRIM_CLASS. Below sm the panel fills it and pads its own top and sides (PANEL_CLASS '
+      + 'pt-safe px-safe, dropped from sm) while each footer pads the bottom inset; from sm up the scrim '
+      + 'carries sm:p-safe-or-6. OnboardingChapterShell.test.tsx pins both halves.',
+  },
+  {
+    file: 'src/pages/chat/quickAsk/QuickAskSheet.tsx',
+    classes: 'fixed inset-0 z-50 flex flex-col justify-end bg-black/50',
+    reason:
+      'The column only places the bottom sheet against the bottom edge, under a tap-to-fold backdrop. The '
+      + 'sheet pads its own sides (max(20px, --safe-area-x)) and the bottom inset, so its background '
+      + 'reaches the screen edge while its content stays clear of the insets.',
+  },
+  {
+    file: 'src/components/markdown/Lightbox.tsx',
+    classes: 'fixed inset-0 z-[9999] bg-black/80 flex items-center justify-center overflow-hidden',
+    reason:
+      'Full-screen image viewer: the image is zoomable, pannable content sized from the viewport '
+      + '(90vw/90vh) and is meant to fill the screen, as a photo viewer does. Every control on it '
+      + '(close, zoom, counter, caption) is its own fixed surface with *-safe offsets.',
+  },
+]
+
+/** A width or max-width taken from the viewport minus a fixed gutter:
+ *  `w-[calc(100%-4rem)]`, `max-w-[min(22rem,calc(100vw-2rem))]`. */
+const viewportDerivedWidth = (literal: string) =>
+  /(?:^|\s)(?:min-|max-)?w-\[[^\]]*calc\(100(?:vw|%)\s*-/.test(literal)
+
+/** Placed by its classes against a side edge or the horizontal centre. A
+ *  popover or tooltip placed by script at an anchor (inline `left`, clamped to
+ *  the viewport there) is not: its width cap is only an overflow guard. */
+const anchoredHorizontally = (literal: string) =>
+  /(?:^|\s)(?:left|right)-(?:0|1\/2|safe(?:-(?:offset|or)-\S+)?)(?=\s|$)/.test(literal)
 
 describe('safe-area prerequisites', () => {
   it('keeps viewport-fit=cover in the viewport meta', () => {
@@ -199,6 +263,58 @@ describe('safe-area prerequisites', () => {
   })
 })
 
+/**
+ * What the four-edge utilities actually compile to. The name scan above only
+ * proves a utility exists; a block that drops an edge (a `p-safe-or-*` with no
+ * padding-left) still exists and still compiles, and leaves that edge under the
+ * inset on hardware only. So this asks Tailwind itself, the way
+ * tailwindAlphaTokens.test.ts does.
+ */
+describe('four-edge safe-area utilities compile to every edge', () => {
+  let css = ''
+  beforeAll(async () => {
+    const compiler = await compile(
+      ['@import "tailwindcss/theme.css" layer(theme);', '@import "./src/tailwind-theme.css";',
+        '@tailwind utilities source(none);'].join('\n'),
+      { base: WEBSITE_ROOT, onDependency() {} },
+    )
+    css = compiler.build(['p-safe', 'p-safe-or-4', 'p-safe-or-[10px]', 'px-safe', 'pt-safe'])
+  })
+  const rule = (selector: string) => {
+    const body = css.match(new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\{([^}]*)\\}`))?.[1]
+    expect(body, `${selector} was not emitted`).toBeDefined()
+    return body!
+  }
+
+  it('p-safe pads all four edges from the insets', () => {
+    const body = rule('.p-safe ')
+    expect(body).toContain('padding-top: var(--safe-area-top, env(safe-area-inset-top))')
+    expect(body).toContain('padding-right: env(safe-area-inset-right)')
+    expect(body).toContain('padding-bottom: env(safe-area-inset-bottom)')
+    expect(body).toContain('padding-left: env(safe-area-inset-left)')
+  })
+
+  it.each([
+    ['.p-safe-or-4', 'calc(var(--spacing) * 4)'],
+    ['.p-safe-or-\\[10px\\]', '10px'],
+  ])('%s keeps the gutter and widens it past each inset', (selector, gutter) => {
+    const body = rule(selector)
+    expect(body).toContain(`padding-top: max(var(--safe-area-top, env(safe-area-inset-top)), ${gutter})`)
+    expect(body).toContain(`padding-right: max(env(safe-area-inset-right), ${gutter})`)
+    expect(body).toContain(`padding-bottom: max(env(safe-area-inset-bottom), ${gutter})`)
+    expect(body).toContain(`padding-left: max(env(safe-area-inset-left), ${gutter})`)
+    expect(body.match(/padding-/g)).toHaveLength(4)
+  })
+
+  it('px-safe pads both sides and pt-safe the gated top', () => {
+    const px = rule('.px-safe')
+    expect(px).toContain('padding-right: env(safe-area-inset-right)')
+    expect(px).toContain('padding-left: env(safe-area-inset-left)')
+    expect(px.match(/padding-/g)).toHaveLength(2)
+    expect(rule('.pt-safe')).toContain('padding-top: var(--safe-area-top, env(safe-area-inset-top))')
+  })
+})
+
 describe('fixed surfaces inset themselves from the safe area', () => {
   it('has no screen-edge-pinned fixed element without a safe inset', () => {
     const violations: string[] = []
@@ -232,6 +348,74 @@ describe('fixed surfaces inset themselves from the safe area', () => {
         + 'If it genuinely needs no inset, add it to ALLOWLIST with a reason.\n\n'
         + `Violations:\n${violations.join('\n')}`,
     ).toEqual([])
+  })
+
+  /**
+   * `fixed inset-0` pins all four edges, and the per-edge scan above skips it so
+   * a dim backdrop can bleed to every edge. A container that LAYS OUT a dialog or
+   * a sheet is different: `flex items-center justify-center p-4` lets the dialog
+   * grow to 16px from the viewport edge, which is under the notch in iOS
+   * landscape and under the side controls a foldable's outer display can show.
+   * Apple's guidance for viewport-fit=cover pages is to inset all four edges;
+   * this is the door top/bottom-only fixes left open. `p-safe-or-4` keeps the
+   * 16px gutter and widens it only where an inset is wider.
+   */
+  it('insets every edge of a full-viewport container that lays out a surface', () => {
+    const violations: string[] = []
+    for (const file of walk(SRC)) {
+      const rel = repoRelative(file)
+      for (const literal of stringLiterals(readFileSync(file, 'utf8'))) {
+        if (!hasBareFixed(literal) || !hasInsetZero(literal) || !laysOutChildren(literal)) continue
+        if (hasBlanketInset(literal)) continue
+        if (FULL_VIEWPORT_ALLOWLIST.some(e => rel === e.file && literal.includes(e.classes))) continue
+        violations.push(`${rel}\n    in: ${literal.replace(/\s+/g, ' ').trim().slice(0, 160)}`)
+      }
+    }
+    expect(
+      violations,
+      'A `fixed inset-0` container that lays out its children places them against the raw viewport '
+        + 'edge, so a dialog or sheet inside it can sit under a side inset.\n'
+        + '  had p-<n>      -> p-safe-or-<n>   (same gutter, widened where an inset is wider)\n'
+        + '  had no padding -> p-safe\n'
+        + 'If its content must bleed under the insets, add it to FULL_VIEWPORT_ALLOWLIST with a reason.\n\n'
+        + `Violations:\n${violations.join('\n')}`,
+    ).toEqual([])
+  })
+
+  /**
+   * A centred fixed surface (`left-1/2 -translate-x-1/2`) sized from the
+   * viewport keeps the same gutter on both sides, so `calc(100% - 4rem)` puts
+   * its edges 2rem from the screen edge whatever the insets are. One pinned to
+   * a side (`right-safe-offset-4`) has the same problem on its far side.
+   * Subtracting twice the wider side inset (`--safe-area-x`, design-tokens.css)
+   * keeps both edges clear; it is 0 wherever there is no side inset.
+   */
+  it('takes the side insets out of a viewport-derived width on a fixed surface', () => {
+    const violations: string[] = []
+    for (const file of walk(SRC)) {
+      const rel = repoRelative(file)
+      for (const literal of stringLiterals(readFileSync(file, 'utf8'))) {
+        if (!hasBareFixed(literal) || !viewportDerivedWidth(literal) || !anchoredHorizontally(literal)) continue
+        // Doubling is written as a sum (`x+x`), never `2*x`: a multiplied
+        // inset is one more thing an older engine can reject, and a rejected
+        // width declaration drops the whole inset with it.
+        if (literal.includes('--safe-area-x') && !/w-\[[^\]]*\*[^\]]*--safe-area-x/.test(literal)) continue
+        violations.push(`${rel}\n    in: ${literal.replace(/\s+/g, ' ').trim().slice(0, 160)}`)
+      }
+    }
+    expect(
+      violations,
+      'A fixed surface whose width is the viewport minus a fixed gutter ignores the side insets.\n'
+        + 'Subtract them: w-[calc(100%-max(4rem,var(--safe-area-x)+var(--safe-area-x)))] for calc(100%-4rem).\n\n'
+        + `Violations:\n${violations.join('\n')}`,
+    ).toEqual([])
+  })
+
+  it('declares --safe-area-x as the wider of the two side insets', () => {
+    const tokens = readFileSync(join(SRC, 'styles', 'design-tokens.css'), 'utf8')
+    expect(tokens).toMatch(
+      /--safe-area-x:\s*max\(env\(safe-area-inset-left,\s*0px\),\s*env\(safe-area-inset-right,\s*0px\)\)/,
+    )
   })
 
   /**

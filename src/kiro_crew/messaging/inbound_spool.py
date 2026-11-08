@@ -14,13 +14,12 @@ It records the refused message durably and, on the next start, tells the user
 in that same conversation that the message was never processed, quoting it back
 so a resend is one tap. It does **not** re-drive the message as a turn.
 
-The re-dispatch half was built and then removed. Replaying a spooled entry as
+Replaying a spooled entry as
 the operator's own turn makes the spool a second, parallel INTAKE path into the
 model, and every authorization the live path applies at intake -- the peer
 allow-list, Telegram's forum gate, Discord's thread roster, WhatsApp's group
 gate, conversation rotation -- has to be re-established on it, per channel, and
-kept in step with the live path forever. Ten review rounds re-derived that
-surface one gate at a time. A notice is a proactive SEND, and a proactive send
+kept in step with the live path forever. A notice is a proactive SEND, and a proactive send
 already has exactly one authorization seam in this codebase:
 ``MessagingTransport.may_send_to``. Scoping replay to the notice puts the whole
 feature behind a gate that already exists and is already owned, instead of
@@ -74,7 +73,8 @@ start where the channel is back, and the age horizon bounds it.
 
 Attachments are NOT spooled: an
 ingested attachment lives in a turn-owned temp path that is gone after a
-restart. The entry records how many were dropped and the notice says so.
+restart. The entry records how many were dropped and any names the channel's
+envelope gives them, and the notice lists both.
 
 Three things this module is trusted with, and why each is enforced rather than
 assumed
@@ -161,7 +161,13 @@ RESTART_NOTICE = (
     "processed — nothing is wrong with it. Resend it when you are ready:\n\n{quoted}"
 )
 
-_ATTACHMENT_NOTE = "\n\n(Its {count} attachment(s) are not carried over — resend those too.)"
+_ATTACHMENT_NOTE = "\n\n(Its {count} attachment(s) are not carried over — resend those too{names}.)"
+
+#: How many attachment names an entry keeps, and how long each may be. A name is
+#: sender-controlled data kept on disk, so it is bounded where it is stored, like
+#: the text.
+ATTACHMENT_NAMES_MAX = 10
+ATTACHMENT_NAME_CAP = 100
 
 
 @dataclass(frozen=True)
@@ -203,6 +209,13 @@ class InboundRoute:
     message_id: str = ""
     attachments_dropped: int = 0
 
+    attachment_names: tuple[str, ...] = ()
+    """The name the platform gives each dropped attachment, where it gives one.
+
+    The notice lists them so the user knows which files to resend. Empty when the
+    envelope names none, and the notice then gives the count alone.
+    """
+
 
 @dataclass(frozen=True)
 class SpooledInbound:
@@ -223,6 +236,7 @@ class SpooledInbound:
     message_id: str = ""
     attachments_dropped: int = 0
     spooled_at: float = 0.0
+    attachment_names: tuple[str, ...] = ()
 
     @property
     def dedupe_key(self) -> str:
@@ -268,6 +282,7 @@ class SpooledInbound:
             "message_id": self.message_id,
             "attachments_dropped": self.attachments_dropped,
             "spooled_at": self.spooled_at,
+            "attachment_names": list(self.attachment_names),
         }
 
     @classmethod
@@ -283,6 +298,7 @@ class SpooledInbound:
             conversation_id = str(raw.get("conversation_id") or "")
             text = str(raw.get("text") or "")
             dropped = max(0, int(raw.get("attachments_dropped") or 0))
+            names = raw.get("attachment_names")
             # Text OR media: an entry with neither has nothing to notify about.
             if not channel_type or not conversation_id or (not text and not dropped):
                 return None
@@ -295,6 +311,7 @@ class SpooledInbound:
                 message_id=str(raw.get("message_id") or ""),
                 attachments_dropped=dropped,
                 spooled_at=float(raw.get("spooled_at") or 0.0),
+                attachment_names=_display_names(names) if isinstance(names, list) else (),
             )
         except (TypeError, ValueError):
             return None
@@ -341,6 +358,7 @@ def _refusal_entry(channel_type: str, route: InboundRoute | None) -> SpooledInbo
         thread_id=route.thread_id,
         message_id=route.message_id,
         attachments_dropped=route.attachments_dropped,
+        attachment_names=route.attachment_names,
     )
 
 
@@ -492,7 +510,9 @@ def _spool_lock(path: Path) -> Any:
     _refuse_links(path)
     # O_NOFOLLOW on the lock too: a link planted between the check above and
     # this open would otherwise lock (and create) a file somewhere else.
-    fd = os.open(lock, os.O_CREAT | os.O_RDWR | _O_NOFOLLOW, 0o600)
+    from kiro_crew.platform_compat import open_create_or_existing
+
+    fd = open_create_or_existing(lock, os.O_RDWR | _O_NOFOLLOW, 0o600)
     try:
         with file_lock(fd):
             yield
@@ -505,6 +525,15 @@ def _clamp_text(text: str) -> str:
         return text
     keep = TEXT_CAP - len(_TRUNCATION_MARK)
     return text[: max(0, keep)] + _TRUNCATION_MARK
+
+
+def _display_names(names: Iterable[Any]) -> tuple[str, ...]:
+    """The string *names*, each on one line and bounded, blanks dropped.
+
+    One line, so a name cannot open a line of its own in the quote.
+    """
+    clean = (" ".join(n.split())[:ATTACHMENT_NAME_CAP] for n in names if isinstance(n, str))
+    return tuple(n for n in clean if n)[:ATTACHMENT_NAMES_MAX]
 
 
 class SpoolUnreadable(OSError):
@@ -537,7 +566,7 @@ def _read_entries(path: Path) -> list[SpooledInbound]:
                     continue
                 try:
                     raw = json.loads(stripped)
-                except ValueError:
+                except (ValueError, RecursionError):  # past the nesting limit
                     continue
                 if not isinstance(raw, dict):
                     continue
@@ -598,6 +627,7 @@ def record_refusal_sync(
             message_id=entry.message_id,
             attachments_dropped=entry.attachments_dropped,
             spooled_at=entry.spooled_at or stamp,
+            attachment_names=_display_names(entry.attachment_names),
         )
         if not record.channel_type or not record.conversation_id:
             return False
@@ -794,6 +824,8 @@ def _quote(entry: SpooledInbound, transport: Any) -> str:
     channel-neutral defang: a message injected into a group conversation can
     carry a broadcast mention, and echoing it back unescaped would fire it. The
     defang runs on the QUOTE before it is sized, because it inserts characters.
+    The attachment names are the sender's too, so they join the body first and
+    ride the same defang and cap.
 
     Sized to ``capabilities.max_message_chars``, because the notice PREFIXES the
     quote: a message that fit the platform's cap on the way in overflows the cap
@@ -807,7 +839,13 @@ def _quote(entry: SpooledInbound, transport: Any) -> str:
     """
     body = entry.text
     if entry.attachments_dropped:
-        body += _ATTACHMENT_NOTE.format(count=entry.attachments_dropped)
+        names = ", ".join(entry.attachment_names)
+        unnamed = entry.attachments_dropped - len(entry.attachment_names)
+        if names and unnamed > 0:
+            names += f" and {unnamed} more"
+        body += _ATTACHMENT_NOTE.format(
+            count=entry.attachments_dropped, names=f": {names}" if names else ""
+        )
     quoted = "\n".join(f"> {line}" for line in body.splitlines() or [""])
     capabilities = getattr(transport, "capabilities", None)
     if capabilities is not None:

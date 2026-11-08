@@ -1,18 +1,9 @@
 """The ``agent_backend`` governance scope — additive over a floor, applied at boot.
 
-Two questions decide whether a harness can be selected, and these tests pin the seam
-between them: ``agent_sdk.backends.selectable_backends`` answers "can this BUILD serve it"
-(a capability fact, not governable) and this scope answers "may THIS DEPLOYMENT
-select it".
-
-The semantics under test: an ``allow`` list ADDS to the floor rather than replacing
-the set, so no policy can leave an install with no startable harness.
-
-The ENFORCEMENT POSITION is equally load-bearing and is pinned here too. Policy
-narrows the registry once at boot; nothing downstream gains a check. That is what
-keeps selectability at one gate (harness-parity H4), keeps the single gate free of a
-platform-context read that would re-enter the config load (H3), and keeps the Kiro
-construction path free of an adapter-driven conditional (H13).
+``selectable_backends`` says what the build can serve; this scope says what the
+deployment may select. An ``allow`` list adds to the floor, so no policy leaves an install
+with no startable harness. Policy narrows the registry once at boot, which keeps one gate
+(harness-parity H4) free of a config-load re-entry (H3) and an adapter conditional (H13).
 """
 
 from __future__ import annotations
@@ -68,12 +59,8 @@ def _policy(rule):
 def _registered(monkeypatch, *backends):
     """Pin what the BUILD serves, so a test states its own capability premise.
 
-    Sets the baseline AND the effective set, mirroring what
-    ``register_selectable_backend`` does — a test that set only the effective set
-    would leave the recompute iterating an empty baseline and removing everything.
-
-    The public baseline is ``{"", "kas"}``; a test about claude must widen it or it
-    would be asserting the registry's absence rather than the policy's decision.
+    Sets the baseline and the effective set, as ``register_selectable_backend`` does;
+    the public baseline is ``{"", "kas"}``, so a claude test must widen it.
     """
     monkeypatch.setattr(acp_backends, "_baseline", set(backends))
     monkeypatch.setattr(acp_backends, "_selectable", set(backends))
@@ -290,17 +277,9 @@ class TestFailClosed:
 class TestWhenAPolicyChangeBinds:
     """The contract this scope promises, and the one it deliberately does not.
 
-    ``policy_distribution.apply_ceiling`` replaces ``current_context().governance``
-    mid-process (the poll thread reaches it via ``refresh_now()``). Every OTHER
-    chokepoint reads the ceiling per decision, so the swap is all they need. This scope
-    cannot: its single gate runs inside ``KiroCrewConfig.load()`` and reading a ceiling
-    there re-enters that load (H3), so its state lives in the registry.
-
-    Re-deriving the registry on that path is deliberately NOT done. It would bind the
-    new ceiling for backend SELECTION while leaving sessions and pooled providers
-    already running a denied harness untouched — an enforcement that reads as complete
-    and is not. So the promise is the narrow one that can be kept: decided at gateway
-    start, binding on the next start, stated in the panel and the spec.
+    ``policy_distribution.apply_ceiling`` swaps the ceiling mid-process, but this gate
+    runs inside ``KiroCrewConfig.load()`` (H3), so its state lives in the registry. It is
+    not re-derived: running sessions would keep a denied harness. Binding from next start.
     """
 
     def test_apply_ceiling_does_not_renarrow_the_registry(self, monkeypatch):
@@ -375,11 +354,20 @@ class TestNoSecondGate:
         abg.narrow_selectable_backends()
         assert acp_backends.resolve_selected_backend("claude") == FLOOR
 
-    def test_the_default_falls_back_to_the_kiro_floor_when_kas_is_denied(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "choice",
+        [
+            pytest.param(
+                None, id="test_the_default_falls_back_to_the_kiro_floor_when_kas_is_denied"
+            ),
+            pytest.param("kas", id="test_an_explicit_denied_kas_choice_takes_the_floor"),
+        ],
+    )
+    def test_a_denied_kas_takes_the_floor_whether_defaulted_or_chosen(self, monkeypatch, choice):
         _registered(monkeypatch, FLOOR, "kas")
         _install(_policy({"mode": "deny", "deny": ["kas"]}))
         abg.narrow_selectable_backends()
-        assert acp_backends.resolve_selected_backend(None) == FLOOR
+        assert acp_backends.resolve_selected_backend(choice) == FLOOR
 
     def test_only_an_absent_value_selects_kas(self, monkeypatch):
         # H1/H3: KAS is the default for "no choice made", never the landing spot
@@ -388,12 +376,6 @@ class TestNoSecondGate:
         assert acp_backends.resolve_selected_backend(None) == "kas"
         assert acp_backends.resolve_selected_backend("not-a-backend") == FLOOR
         assert acp_backends.resolve_selected_backend(7) == FLOOR
-
-    def test_an_explicit_denied_kas_choice_takes_the_floor(self, monkeypatch):
-        _registered(monkeypatch, FLOOR, "kas")
-        _install(_policy({"mode": "deny", "deny": ["kas"]}))
-        abg.narrow_selectable_backends()
-        assert acp_backends.resolve_selected_backend("kas") == FLOOR
 
     def test_a_host_unservable_explicit_choice_takes_the_floor(self, monkeypatch):
         _registered(monkeypatch, FLOOR, "kas", "claude")

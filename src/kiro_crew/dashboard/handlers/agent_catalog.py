@@ -9,7 +9,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew import agent_state
+from kiro_crew import agent_state, crew_mode
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
@@ -30,7 +30,9 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     default_template,
     dispatch_kiro_agent,
+    materialized_snapshot_complete,
     refresh_materialized_agents,
+    reset_dangling_default_agent,
 )
 from kiro_crew.dashboard.handlers._shared import _read_session_key, requesting_slot_project
 from kiro_crew.dashboard.handlers.agents import (
@@ -100,6 +102,22 @@ def _agent_runtime_policy(name: str, engine_identity: str) -> dict[str, Any] | N
     return policy if isinstance(policy, dict) else None
 
 
+def _refresh_for_catalog(*, owner: bool) -> None:
+    """The catalog fetch's snapshot refresh, then the owner's heal.
+
+    The refresh skips its scan while nothing it reads has moved
+    (:func:`refresh_materialized_agents` keeps the memo for every caller). The
+    heal runs on every owner fetch over a complete snapshot, because it also
+    reads inputs the memo does not cover (``config.local.json``, the edition's
+    agents, the alias workspace's ``.kiro/agents``). Its first step is an
+    in-memory read of the snapshot, so a fetch with nothing removed does no I/O
+    there.
+    """
+    refresh_materialized_agents(heal_default=False)
+    if owner and materialized_snapshot_complete():
+        reset_dangling_default_agent()
+
+
 def _templates(project_dir: Path | None) -> list[AgentInfo]:
     """Discover shared templates without enrolling members or allocating memory."""
     return _choosable_templates(list_agents(project_dir=project_dir))
@@ -151,8 +169,19 @@ def _session_backend(config: KiroCrewConfig, session_key: str) -> str:
     ``agent.member_acp_backend``, every other chat and a picker with no chat on
     ``agent.acp_backend``. Both fields are already resolved runtime ids after
     ``KiroCrewConfig.load``, so this reads them rather than calling that gate,
-    which logs every member routing. Display-only: no spawn reads this.
+    which logs every member routing. Display-only: no spawn reads this. A
+    crewmate's own harness pin outranks the member route, read as the harness
+    it runs on (a stored ``kiro`` may run on KAS). Known pins that cannot start
+    are shown as stored; unknown text is replaced by a placeholder.
     """
+    from kiro_crew.crewmate_harness import CrewmateHarnessUnavailable, crewmate_stored_pin
+
+    pin = crewmate_stored_pin(config, session_key)
+    if pin is not None:
+        try:
+            return backend_to_stored(pin.resolve())
+        except CrewmateHarnessUnavailable:
+            return pin.display_stored
     if is_member_session_key(session_key):
         return backend_to_stored(config.agent.member_acp_backend)
     return backend_to_stored(config.agent.acp_backend)
@@ -212,9 +241,11 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
         # for the template rows, so the snapshot refresh -- whose landed scan
         # resets a default agent whose template is gone -- rides the same
         # executor call, and the config is read AFTER it so the response names
-        # the default the user will actually get.
+        # the default the user will actually get. The gate skips the scan while
+        # nothing it reads has moved (:class:`_RefreshGate`), so a removal is
+        # still noticed on the first fetch after it.
         def _refreshed_templates() -> tuple[list[AgentInfo], frozenset[str]]:
-            refresh_materialized_agents(heal_default=owner)
+            _refresh_for_catalog(owner=owner)
             discovered = list_agents(project_dir=project_dir)
             # From the WHOLE scan, not the template choices: a crewmate may be
             # bound to an agent the template list withholds.
@@ -270,5 +301,17 @@ async def api_agent_catalog(request: web.Request) -> web.Response:
             "markdown_spec_backends": sorted(
                 backend_to_stored(b) for b in ACP_BACKENDS_MARKDOWN_AGENT_SPECS
             ),
+            # Crew Mode: the conductor a chat switches to when it is turned on
+            # (`agent.crew_mode_agent`), and the whole conductor family, which a
+            # normal chat's agent picker leaves out so Crew Mode is the way in.
+            "crew_mode_agent": (
+                _roster_mask(crew_mode.crew_mode_agent(config))
+                if redact
+                else crew_mode.crew_mode_agent(config)
+            ),
+            "conductor_agents": [
+                _roster_mask(agent) if redact else agent
+                for agent in sorted(crew_mode.conductor_agents(config))
+            ],
         }
     )

@@ -114,6 +114,22 @@ class TestSpawnSDK:
         with pytest.raises(SpawnError, match="denied by policy"):
             asyncio.run(ctx.spawn.run("x", "probe-bg"))
 
+    def test_a_spawn_stopped_before_it_started_raises(self, tmp_path):
+        """Stopped while it waited, the record has an id but no run behind it:
+        returning the id would leave the app polling a run that never exists."""
+        stopped = types.SimpleNamespace(
+            id="sub-7", queued=True, done=True, user_stopped=True, error=""
+        )
+        ctx = build_app_context(
+            "probe",
+            tmp_path,
+            permissions={"spawn": True},
+            spawn_impl=build_spawn_impl(_FakeManager(result=stopped)),
+        )
+        with pytest.raises(SpawnError, match="stopped before it started") as ei:
+            asyncio.run(ctx.spawn.run("x", "probe-bg"))
+        assert ei.value.declined is False
+
     def test_empty_task_is_refused_before_reaching_the_host(self, tmp_path):
         mgr = _FakeManager()
         sdk = SpawnSDK("probe", build_spawn_impl(mgr))
@@ -141,12 +157,8 @@ class TestSpawnSDK:
 class TestSpawnGateConsultsTheAppProfile:
     """The Level-2 (per-app PROFILE) half of the spawn check must run.
 
-    The manager's spawn gate resolves ``capabilities.spawn`` against the parent
-    surface's ceiling AND the active profile. An app spawning through the SDK is
-    only contained by a profile written for THAT app if its name is threaded into
-    the resolution — otherwise the app-bound profile (precedence #1 in
-    ``resolve_active_scope``) is never looked up and a spawn-denying profile is a
-    no-op.
+    The app name must reach the resolution, or the app-bound profile (precedence #1 in
+    ``resolve_active_scope``) is never looked up.
     """
 
     def test_the_gate_receives_the_app_name(self, monkeypatch):
@@ -185,11 +197,8 @@ class TestSpawnGateConsultsTheAppProfile:
 class TestSpawnRejectsAnUnknownAgent:
     """A misspelled agent must fail, not silently run the host default.
 
-    SubagentManager validation replaces an unknown name with "" and runs the
-    host DEFAULT agent with approval_mode="auto" — full tool surface, no prompt.
-    A typo in an app's agent name would therefore ESCALATE from the app's
-    restricted background agent to unrestricted auto-approved execution, so the
-    impl refuses a name it cannot confirm.
+    SubagentManager runs an unknown name as the host DEFAULT agent with
+    approval_mode="auto", so a typo would escalate to unrestricted execution.
     """
 
     def test_unknown_agent_is_refused_before_the_host(self, monkeypatch):
@@ -287,8 +296,11 @@ class TestAgentDiscoveryIsOffloaded:
 
         from kiro_crew.apps import spawn_sdk
 
-        src = inspect.getsource(spawn_sdk.build_spawn_impl)
+        # Both the spawn and the continuation read the app's agents through it.
+        src = inspect.getsource(spawn_sdk._own_agents)
         assert "await asyncio.to_thread(list_agents)" in src
+        assert "_own_agents(" in inspect.getsource(spawn_sdk.build_spawn_impl)
+        assert "_own_agents(" in inspect.getsource(spawn_sdk.build_continue_impl)
 
 
 class TestSpawnSkipsTheScanWhenPrevalidated:

@@ -126,7 +126,7 @@ MANAGED_STUB_LEADER = "kirocrew-core"
 #: already declares, so an opt-in server still reaches only the agents granted it.
 #:
 #: This is ``mcp_discovery._MANAGED_SERVERS_CALLER_AWARE`` minus the leader,
-#: ``kirocrew-computer`` and ``kirocrew-cron``. It is spelled out rather than
+#: ``kirocrew-computer``, ``kirocrew-cron`` and ``kirocrew-secrets``. It is spelled out rather than
 #: derived because this module may import only ``config.fields`` (the config
 #: boundary contract) and ``mcp_discovery`` pulls in aiohttp and the probe
 #: executor. A ratchet test pins the equality, so a new caller-aware server fails
@@ -136,7 +136,8 @@ MANAGED_STUB_LEADER = "kirocrew-core"
 #: per-connection tenant nonce (``mcp_caller.POOLING_REQUIRES_TENANT_NONCE``), so
 #: it stays an explicit choice. ``kirocrew-cron`` is not excluded for a known
 #: hazard: it is simply outside what this layer was measured on, and stays one
-#: operator toggle away like any other server.
+#: operator toggle away like any other server. ``kirocrew-secrets`` is the same:
+#: an opt-in, credential-bearing egress server this layer was not measured on.
 MANAGED_STUB_FOLLOWERS: tuple[str, ...] = (
     "kirocrew-guide",
     "kirocrew-mate",
@@ -257,6 +258,17 @@ class AppSettingsConfig:
             "pinned on the agent or crew all win over it; it wins over the global "
             "default. A model this account cannot run is withheld like any other "
             "pin.",
+        ),
+    )
+    mute_sessions: bool = field(
+        default=False,
+        metadata=_meta(
+            "Mute sessions this app opens",
+            "Mute the chat sessions this app opens, as a session's own mute does: "
+            "a finished turn plays no chime, shows no toast and marks nothing "
+            "unread, and the notes those sessions post arrive silenced. A tool "
+            "approval, a question for you and a failed turn still reach you. "
+            "Your own sessions are unaffected.",
         ),
     )
 
@@ -568,10 +580,10 @@ class McpGatewayConfig:
             "initialize once the session sends it. A backend that stays silent is "
             "failed and reaped so its slot frees; the broker holds the spawn "
             "permit for this same window. Raise it for servers whose startup is "
-            "legitimately slow (large runtimes, remote resolution). On "
-            "Windows the effective deadline is floored at 30 seconds (a "
-            "cold-start floor): a configured value below it is lifted, a "
-            "value above it is used as is.",
+            "legitimately slow (large runtimes, remote resolution). The "
+            "effective deadline is floored at 30 seconds (a cold-start "
+            "floor): a configured value below it is lifted, a value above "
+            "it is used as is.",
             restart=True,
         ),
     )
@@ -716,6 +728,20 @@ class McpGatewayConfig:
             restart=True,
         ),
     )
+    keep_alive_servers: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Keep-Alive Servers",
+            "MCP server names whose shared backend is kept for the whole gateway "
+            "run instead of being drained after idle_timeout_secs. For a server "
+            "that keeps its sign-in only in memory, this makes it sign in once per "
+            "run instead of again after each idle drain. Applies only to a server "
+            "that is stubbed (stub_servers) and shared (enabled); a server not "
+            "named here keeps the idle drain. The max_backends cap and a "
+            "credential-file change can still restart it. Empty by default.",
+            restart=True,
+        ),
+    )
     read_buffer_limit_bytes: int = field(
         default=64 * 1024 * 1024,
         metadata=_meta(
@@ -827,6 +853,16 @@ class InstancesConfig:
             restart=True,
         ),
     )
+    crew_reads_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Agent Crew Reads",
+            "Let the agent read another crew's sessions with the crew= scope of "
+            "search_chat_history, list_sessions and get_chat_session. Default off: a "
+            "peer's transcripts enter the agent's context as untrusted text, so this "
+            "is a separate opt-in on top of Enabled. Read per call; no restart.",
+        ),
+    )
     warm_set_cap: int = field(
         default=_DEFAULT_WARM_SET_CAP,
         metadata=_meta(
@@ -841,6 +877,18 @@ class InstancesConfig:
             "of crews in use makes tab switching look like a connection flap. Past that "
             "ceiling eviction resumes; an explicit value is honoured exactly, including "
             "one below the number of configured crews.",
+        ),
+    )
+    default_destination: str = field(
+        default="",
+        metadata=_meta(
+            "Default Destination Crew",
+            "Instance id of the crew that Send a copy to lists first, marked as the "
+            "default. Empty (the default) keeps every crew in registry order with no "
+            "default. A folder's own default destination crew overrides this for "
+            "sessions in that folder. Nothing is sent without a click: this only "
+            "orders and marks the menu, and an id that names no registered crew is "
+            "ignored.",
         ),
     )
     tunnel_base_port: int = field(
@@ -890,7 +938,9 @@ class InstancesConfig:
             "ssh transport as the tunnel, so a host behind a ProxyCommand or "
             "jump host pays the proxy handshake here too. An explicit value "
             "applies to both transports, so size it for the slowest transport "
-            "you use. Clamped to [10, 120].",
+            "you use. A value below 10, or one that is not a number, is "
+            "discarded with a warning and the transport default is used; a "
+            "value above 120 is clamped to 120.",
         ),
     )
     max_recovery_attempts: int = field(
@@ -903,7 +953,7 @@ class InstancesConfig:
             "drop such as a screen lock or proxy warmup); a forward that re-binds "
             "but whose far end stays dead additionally spends one probe window per "
             "attempt (probe_failure_threshold x probe_interval), so handoff to "
-            "diagnosis takes roughly attempts x (90s + backoff) ~= 16 min at the "
+            "diagnosis takes roughly attempts x (30s + backoff) ~= 6 min at the "
             "default 8. Size this against the longer window.",
         ),
     )
@@ -1049,6 +1099,96 @@ class TunnelConfig:
             "Explicit tunnel name (overrides name_mode). "
             "Note: some tunnel providers prefix your username (e.g. 'foo' becomes '<user>-foo').",
             restart=True,
+        ),
+    )
+    relay_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Kiro Relay",
+            "Let this Crew dial the Kiro relay and serve the requests it delivers, with "
+            "the caller named by the relay. Off by default. It connects only when "
+            "Relay Lease Service URL and Relay Lease Credential are set, so the Crew "
+            "can hold a lease. Without them no relay client starts and the tunnel "
+            "status names the missing setting. While it is off, "
+            "Crew starts no "
+            "relay client, strips every x-kiro-relay-* header from every request and "
+            "trusts none of them. To reach the relay and the lease service through a "
+            "proxy, Remote Control uses only the HTTPS_PROXY and NO_PROXY environment "
+            "variables (ALL_PROXY when HTTPS_PROXY is unset), so a proxy set only in "
+            "macOS System Settings is not used.",
+            restart=True,
+        ),
+    )
+    relay_lease_url: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Lease Service URL",
+            "The base URL of the lease service this Crew calls RenewCrewLease on, to "
+            "hold its lease and get host tokens. Empty (the default) means no host "
+            "token source, so the relay client cannot connect. Must be https:// "
+            "(http:// only for a loopback port-forward).",
+            restart=True,
+        ),
+    )
+    relay_lease_credential: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Lease Credential",
+            "Where the Crew reads its credential for the lease service: secret://NAME "
+            "for a secret stored under Settings > Secrets, or the absolute path of a "
+            "file holding it. Never the credential itself; it is read for each call "
+            "and never logged.",
+            restart=True,
+            # Masked like a secret, in case the credential itself is pasted in.
+            sensitive=True,
+        ),
+    )
+    relay_lease_token_type: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Lease Token Type",
+            "The TokenType the Crew sends with its lease credential. Empty (the "
+            "default) sends none, for an IAM Identity Center, Builder ID or Kiro "
+            "sign-in. EXTERNAL_IDP for a token from an outside identity provider, "
+            "API_KEY for a team Crew's crew API key. Any other value keeps Remote "
+            "Control from starting.",
+            restart=True,
+        ),
+    )
+    relay_viewer_enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Relay Viewer",
+            "Let the desktop app list the remote Crews you can reach through the Kiro "
+            "relay and open them. Off by default, and nothing reads it yet. This is "
+            "the viewer side only: a Crew you open still needs Kiro Relay on where it "
+            "runs.",
+            restart=True,
+        ),
+    )
+    relay_viewer_cps_url: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer Control Plane URL",
+            "The base URL of the control plane the viewer lists remote Crews from and "
+            "gets access tokens from. Empty (the default) means not set up. Must be "
+            "https:// (http:// only for a loopback port-forward). A value that breaks "
+            "that rule is ignored with a warning.",
+            restart=True,
+        ),
+    )
+    relay_viewer_credential: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer Credential",
+            "For testing only: where the viewer reads a test credential to use instead "
+            "of your Kiro sign-in, as secret://NAME for a secret stored under Settings "
+            "> Secrets or the absolute path of a file holding it. Never the credential "
+            "itself. Empty (the default) uses your Kiro sign-in. A value that is not a "
+            "reference is ignored with a warning that does not repeat it.",
+            restart=True,
+            # Masked like a secret, in case the credential itself is pasted in.
+            sensitive=True,
         ),
     )
 

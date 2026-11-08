@@ -7,12 +7,14 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Literal
 
+from kiro_crew.crew_mode import slot_is_crew_mode_root as crew_mode_is_root
 from kiro_crew.dashboard.chat_utils import (
     _broadcast_compaction_result,
     drained_to_thread,
     has_leaked_tool_call,
 )
 from kiro_crew.dashboard.state import durable_row_count
+from kiro_crew.platform import redact_log_via_context
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
@@ -215,6 +217,8 @@ async def _on_clear_status(turn: _ChatTurn, event) -> None:
 
 async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     """An agent switch the session reports mid-turn."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
     _spec_hooks: list
     _spec_hooks_cwd: str | None
     _turn_project = turn._turn_project
@@ -268,9 +272,20 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
             f"📌 Agent switch to {new_agent} was blocked — this thread is "
             f"pinned to {pinned_member}. The next turn restarts on the pinned crew.",
             "msg msg-info",
+            meta=gn.gateway_notice_meta(
+                gn.GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_PINNED,
+                agent=str(new_agent),
+                member=str(pinned_member),
+            ),
         )
         needs_session_reset = True
         turn.needs_session_reset = needs_session_reset
+        # The stream is broken off below with no terminal, so this
+        # turn lands, yet the reset kills a runtime that may still
+        # be mid-answer and the reloaded session may lack the
+        # prompt: a drained merge card goes back to the queue
+        # (``_merge_cards_reached_the_model`` lets a reset before a
+        # real ``end_turn`` win over landing).
         # The vetoed turn DID produce visible output (the notice
         # above) — and more importantly, tool calls completed
         # BEFORE the switch event may have had real side effects.
@@ -285,6 +300,57 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
         # the session reset in _turn_release_session (chat_turn/session_reset.py) tears the
         # switched session down, the same way the tool-rejection paths in
         # _on_permission_prompt bail out of a turn that must not continue.
+        return _Flow.BREAK
+    elif new_agent and new_agent != slot.agent and crew_mode_is_root(slot):
+        # Crew Mode is locked once the chat has a message, and a turn
+        # means it has one (``crew_mode_locked`` on every switch
+        # route): the backend switching its own agent mid-turn would
+        # take the chat off its conductor by the one door the HTTP
+        # lock cannot reach. Vetoed like a member pin: the slot keeps
+        # its agent, the denial is audited and shown, and the session
+        # resets so the next turn starts on the conductor again.
+        # A gate-side log line reads the context-aware redactor, so a
+        # loaded companion's patterns apply (test_security_posture).
+        _crew_veto_agent = redact_log_via_context(event.text or "")
+        logger.warning(
+            "agent switch to %r vetoed on Ultra Mode chat %s",
+            _crew_veto_agent,
+            slot.key,
+        )
+        sel().log_api_access(
+            caller=f"slot={slot.key}",
+            operation="chat_runner.agent_switch",
+            outcome="denied",
+            source="crew_mode_locked",
+            resources=f"slot={slot.key} agent={_crew_veto_agent}",
+            error="an Ultra Mode chat stays on its own agent",
+        )
+        slot.append(
+            "notice",
+            f"📌 Agent switch to {new_agent} was blocked — this chat is in "
+            "Ultra Mode, which stays on its own agent. The next turn restarts "
+            "on that agent.",
+            "msg msg-info",
+            meta=gn.gateway_notice_meta(
+                gn.GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_CREW_MODE, agent=str(new_agent)
+            ),
+        )
+        needs_session_reset = True
+        turn.needs_session_reset = needs_session_reset
+        turn._produced_visible_output = True
+        return _Flow.BREAK
+    elif (
+        new_agent
+        and (_pinned := _channel_pin_blocks(slot, new_agent, _turn_source_channels(turn)))
+        is not None
+    ):
+        # A session linked to a thread of a Slack channel that names its own
+        # agent is served only by that agent (the switch routes refuse the
+        # same move). kiro-cli has already switched, so veto like a member pin.
+        _announce_channel_pinned_veto(slot, new_agent, _pinned, gn)
+        needs_session_reset = True
+        turn.needs_session_reset = needs_session_reset
+        turn._produced_visible_output = True
         return _Flow.BREAK
     elif new_agent:
         # A live provider event can change a template selection.
@@ -333,6 +399,13 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
         except (Exception, asyncio.CancelledError):
             await drained_to_thread(restore_agent_selection, session_key, switch_change)
             raise
+        # The channel pin, read again with no await before the commit: the slot
+        # may have been linked to a pinned channel while the switch was written.
+        _late_pin = _channel_pin_blocks(slot, new_agent, _turn_source_channels(turn))
+        if _late_pin is not None:
+            await drained_to_thread(restore_agent_selection, session_key, switch_change)
+            _announce_channel_pinned_veto(slot, new_agent, _late_pin, gn)
+            return _Flow.BREAK
         slot.agent = new_agent
         # The rest of this turn runs as the new agent, so its tool
         # calls meet the new agent's spec hooks, never the old one's.
@@ -397,3 +470,66 @@ async def _on_todo_update(turn: _ChatTurn, event) -> None:
             _crew_log_turn_no,
             items=(event.todo or {}).get("tasks"),
         )
+
+
+def _announce_channel_pinned_veto(slot, new_agent: str, pinned: str, gn) -> None:
+    """Audit and show a provider switch vetoed on a session linked to a pinned
+    Slack channel; the caller keeps the slot's agent, resets and ends the turn."""
+    logger.warning("agent switch vetoed on Slack-pinned chat %s", slot.key)
+    sel().log_api_access(
+        caller=f"slot={slot.key}",
+        operation="chat_runner.agent_switch",
+        outcome="denied",
+        source="channel_agent_pinned",
+        resources=f"slot={slot.key}",
+        error="a session linked to a pinned Slack channel stays on its agent",
+    )
+    slot.append(
+        "notice",
+        f"📌 Agent switch to {new_agent} was blocked — this chat is linked to a"
+        f" Slack channel served by {pinned}. The next turn restarts on that agent.",
+        "msg msg-info",
+        meta=gn.gateway_notice_meta(
+            gn.GATEWAY_NOTICE_AGENT_SWITCH_BLOCKED_CHANNEL,
+            agent=str(new_agent),
+            channel_agent=str(pinned),
+        ),
+    )
+
+
+def _channel_pin_blocks(
+    slot: object, new_agent: str, source_channels: tuple[str, ...] = ()
+) -> str | None:
+    """The agent a Slack channel requires when a provider switch to *new_agent*
+    (a template) is not it.
+
+    The channels are the one *slot* is linked to, plus *source_channels*: the
+    channels the running turn's words came from, which hold whether or not the
+    slot is still linked. A source channel that could not be read blocks.
+    The provider names the kiro-cli agent it switched to, so it is a template.
+    ``"its own agent"`` stands in when the channel's agent cannot be named.
+    """
+    from kiro_crew.dashboard.slot_queue_repository import UNREADABLE_SOURCE_CHANNEL
+
+    channels = [ch for ch in source_channels if isinstance(ch, str) and ch]
+    if getattr(slot, "_slack_linked", False):
+        linked = getattr(slot, "_slack_channel", "") or ""
+        if linked:
+            channels.append(linked)
+    if not channels:
+        return None
+    from kiro_crew.slack.handler import channel_agent_mismatch
+
+    for channel in channels:
+        if channel == UNREADABLE_SOURCE_CHANNEL:
+            return "its own agent"
+        required = channel_agent_mismatch(channel, new_agent, "template")
+        if required is not None:
+            return required if required != "<unknown>" else "its own agent"
+    return None
+
+
+def _turn_source_channels(turn: object) -> tuple[str, ...]:
+    """The source channels stamped on *turn*; empty when none are."""
+    raw = getattr(turn, "_directive_source_channels", ()) or ()
+    return tuple(raw) if isinstance(raw, tuple) else ()

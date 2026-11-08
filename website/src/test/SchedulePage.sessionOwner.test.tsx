@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { act, screen, waitFor, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import SchedulePage from '../pages/SchedulePage'
 import type { CronJob } from '../types'
@@ -166,7 +166,7 @@ describe('SchedulePage job owner line', () => {
 
     renderWithProviders(<SchedulePage />)
     const row = await screen.findByText('Owned job')
-    row.click()
+    await act(async () => { row.click() })
 
     await waitFor(() => expect(screen.getByText('Owning session')).toBeInTheDocument())
     // The dialog copy of the key (the row line truncates; this one is full).
@@ -187,7 +187,7 @@ describe('SchedulePage job owner line', () => {
 
     renderWithProviders(<SchedulePage />)
     const row = await screen.findByText('Ownerless job')
-    row.click()
+    await act(async () => { row.click() })
 
     await waitFor(() => expect(screen.getByText('Owning session')).toBeInTheDocument())
     // Row line + dialog value both show the empty-state copy.

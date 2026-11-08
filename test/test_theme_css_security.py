@@ -298,6 +298,54 @@ class TestCssVarsSetSync:
             assert kept[v] == "#123456"
 
 
+_TERMINAL_SURFACE_VARS = (
+    "--term-bg",
+    "--term-fg",
+    "--term-cursor",
+    "--term-selection",
+)
+
+
+class TestTerminalSurfaceVars:
+    """The dedicated terminal-surface vars are an optional, additive
+    part of the public theme-pack contract: allowlisted, hex-validated at the
+    trust boundary, and no stricter than any other colour var."""
+
+    def test_terminal_surface_vars_in_allowed_set(self) -> None:
+        for v in _TERMINAL_SURFACE_VARS:
+            assert v in _THEME_CSS_VARS_SET
+
+    def test_validation_accepts_terminal_surface_vars(self) -> None:
+        theme: dict = {
+            "name": "Test",
+            "dark": {"--bg": "#000", "--text": "#fff", "--accent": "#00f"},
+            "light": {"--bg": "#fff", "--text": "#000", "--accent": "#00f"},
+        }
+        for v in _TERMINAL_SURFACE_VARS:
+            theme["dark"][v] = "#123456"
+            theme["light"][v] = "#654321"
+        assert _validate_theme_data(theme) is None
+        kept = _strip_to_allowed_vars(theme["dark"])
+        for v in _TERMINAL_SURFACE_VARS:
+            assert kept[v] == "#123456"
+
+    def test_terminal_surface_var_rejects_css_injection(self) -> None:
+        # A pack cannot smuggle a CSS declaration through a terminal var any more
+        # than through any other colour var: the shared value sanitizer rejects a
+        # semicolon, so the whole theme is rejected.
+        theme: dict = {
+            "name": "Test",
+            "dark": {
+                "--bg": "#000",
+                "--text": "#fff",
+                "--accent": "#00f",
+                "--term-bg": "#000; position:fixed",
+            },
+            "light": {"--bg": "#fff", "--text": "#000", "--accent": "#00f"},
+        }
+        assert _validate_theme_data(theme) is not None
+
+
 class TestAllowlistParity:
     """The backend and frontend allowlists must be the SAME set.
 

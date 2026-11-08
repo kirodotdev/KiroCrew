@@ -382,25 +382,31 @@ class TestRefreshDynamicFieldsSyncsConfigModel:
             _refresh_dynamic_fields(config)
         assert config["model"] == "claude-opus-4.8"
 
-    def test_auto_sentinel_does_not_clobber_agent_model(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        ("config_model", "spec_model"),
+        [
+            # "auto" defers to managed/shipped resolution; it must not overwrite
+            # the existing agent-file model with the literal "auto".
+            pytest.param(
+                "auto", "claude-haiku-4.5", id="test_auto_sentinel_does_not_clobber_agent_model"
+            ),
+            pytest.param(
+                None,
+                "claude-sonnet-4.6",
+                id="test_no_config_model_leaves_agent_model_untouched",
+            ),
+        ],
+    )
+    def test_a_deferring_config_model_leaves_the_agent_model_untouched(
+        self, tmp_path: Path, config_model: str | None, spec_model: str
+    ):
         from kiro_crew.agent import _refresh_dynamic_fields
 
-        # "auto" defers to managed/shipped resolution; it must not overwrite
-        # the existing agent-file model with the literal "auto".
-        mc = self._write_mc_config(tmp_path, "auto")
-        config = {"name": "kirocrew", "model": "claude-haiku-4.5"}
+        mc = self._write_mc_config(tmp_path, config_model)
+        config = {"name": "kirocrew", "model": spec_model}
         with patch("kiro_crew.agent._mc_config_path", return_value=mc):
             _refresh_dynamic_fields(config)
-        assert config["model"] == "claude-haiku-4.5"
-
-    def test_no_config_model_leaves_agent_model_untouched(self, tmp_path: Path):
-        from kiro_crew.agent import _refresh_dynamic_fields
-
-        mc = self._write_mc_config(tmp_path, None)
-        config = {"name": "kirocrew", "model": "claude-sonnet-4.6"}
-        with patch("kiro_crew.agent._mc_config_path", return_value=mc):
-            _refresh_dynamic_fields(config)
-        assert config["model"] == "claude-sonnet-4.6"
+        assert config["model"] == spec_model
 
 
 class TestResetAgentModel:

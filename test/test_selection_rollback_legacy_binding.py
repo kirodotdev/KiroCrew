@@ -18,6 +18,7 @@ import pytest
 from kiro_crew import execution_context as execution
 from kiro_crew.config.sections import MemoryStoreConfig
 from kiro_crew.history import ConversationLog
+from kiro_crew.history_listing_index import SessionListingIndex
 from kiro_crew.session_agent_selection import (
     SelectionChange,
     record_agent_selection,
@@ -107,6 +108,24 @@ def test_rollback_of_a_line_with_no_binding_leaves_none(legacy_store):
     assert "memory_store" not in after
     assert "memory_mode" not in after
     assert execution.EXECUTION_CONTEXT_KEY not in after
+
+
+def test_the_listing_index_shows_the_restored_line_at_once(legacy_store):
+    key = "dashboard_legacy_binding"
+    log = ConversationLog()
+    jobs: list = []
+    # A clock that never reaches the reconcile interval: only the journal can show it.
+    log._listing_index = SessionListingIndex(log, clock=lambda: 0.0, submit=jobs.append)
+    log.update_metadata(key, {"agent": "kirocrew", "memory_mode": "ephemeral"})
+
+    def mode() -> str:
+        return {r["key"]: r["memory_mode"] for r in log.list_sessions_indexed()}[key]
+
+    change = _publish(key)
+    assert mode() == "persistent"
+    restore_agent_selection(key, change)
+    assert mode() == "ephemeral"
+    assert jobs == []
 
 
 def test_selection_change_keeps_its_positional_shape():

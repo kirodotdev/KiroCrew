@@ -237,6 +237,28 @@ class SecretVault:
         self._write_store(_mutate)
         return entry_revision(written)
 
+    def set_if_revision_sync(self, name: str, value: str, revision: str | None) -> str | None:
+        """Store *value* only while *name* still holds *revision*; the new revision or None.
+
+        ``revision=None`` means "only if absent". The check and the write run under
+        one store lock, so a value another writer committed since is never
+        overwritten: the caller re-reads instead. Used where a stale overwrite would
+        lose a single-use credential (an OAuth refresh token).
+        """
+        written: dict[str, str] = {}
+
+        def _mutate(entries: dict) -> dict:
+            entry = entries.get(name)
+            current = entry_revision(entry) if isinstance(entry, dict) else None
+            if current != revision:
+                return entries
+            new = self._encrypt_entry(name, value.encode("utf-8"))
+            written.update(new)
+            return {**entries, name: new}
+
+        self._write_store(_mutate)
+        return entry_revision(written) if written else None
+
     async def delete_if_revision(self, name: str, revision: str) -> bool:
         """Remove *name* only while its stored entry still has *revision*.
 
@@ -552,7 +574,9 @@ class SecretVault:
         """
         self._config_dir.mkdir(parents=True, exist_ok=True)
         lock_path = self._store_path.with_name(".secrets.enc.lock")
-        lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o600)
+        from kiro_crew.platform_compat import open_create_or_existing
+
+        lock_fd = open_create_or_existing(str(lock_path), os.O_WRONLY, 0o600)
         try:
             with file_lock(lock_fd, exclusive=True):
                 yield

@@ -57,6 +57,7 @@ import {
   noteDirPath,
   savePref,
   shiftListItem,
+  vaultContentPath,
 } from './utils'
 import { useMdNotebookPageState } from './useMdNotebookPageState'
 
@@ -84,7 +85,7 @@ export default function MdNotebookPage() {
     autoSyncMins, autoCommit, syncShortcut, fullWidth, recordingShortcutRef, setAutoSyncPref,
     setAutoSyncMinsPref, toggleFullWidth, columnMaxWidth, headerControls, headerBandWidth,
     headerControlsRef, headerBandRef, titleClearance, stackTitle, setSyncShortcutPref,
-    setAutoCommitPref, trashMsg, setTrashMsg, openTrash, lastSyncByVault, contentRef, mtimeRef,
+    setAutoCommitPref, trashMsg, setTrashMsg, openTrash, lastSyncByVault, contentRef, mtimeRef, hashRef,
     dirtyRef, staleBackend, settingsError, flushSave, openNote, edit, markDirty, startBlockEdit,
     cancelBlockEdit, commitBlockEdit, splitBlockEdit, toggleCheckbox, switchVault, newNote,
     isPinned, tree, moveNote, renameNote, removeNote, forgetVault, savePat, setVaultKnowledge,
@@ -126,6 +127,9 @@ export default function MdNotebookPage() {
   // sources. Derived here rather than in `Preview` because the vault's local
   // path lives in this page's state, not in the note body.
   const noteDir = noteDirPath(activeVault, activePath)
+  // Root of the vault's content, which a root-relative image (`/images/a.png`)
+  // falls back to when it is not a real absolute path.
+  const vaultRoot = activeVault ? vaultContentPath(activeVault) : undefined
   // `pending` means "differs from the last commit", which is only actionable when
   // there is a remote the note has not reached yet. On a local-only vault it has
   // no destination, clears itself on the next autosave, and reads as "not saved"
@@ -712,6 +716,7 @@ export default function MdNotebookPage() {
                 gap: '4px',
                 padding: '4px',
                 background: 'var(--card)',
+                border: '1px solid var(--border)',
                 borderRadius: '8px',
               }}
             >
@@ -897,6 +902,7 @@ export default function MdNotebookPage() {
                 setContent(fileConflict.disk)
                 contentRef.current = fileConflict.disk
                 mtimeRef.current = fileConflict.mtime
+                hashRef.current = fileConflict.contentHash ?? null
                 setDirty(false)
                 dirtyRef.current = false
                 setFileConflict(null)
@@ -916,9 +922,10 @@ export default function MdNotebookPage() {
             <button
               type="button"
               onClick={() => {
-                // Keep the editor's version: adopt the fresh mtime so the next
-                // save is accepted, then save.
+                // Keep the editor's version: adopt the disk version's tokens so
+                // the next save is accepted against exactly what was shown, then save.
                 mtimeRef.current = fileConflict.mtime
+                hashRef.current = fileConflict.contentHash ?? null
                 setFileConflict(null)
                 void flushSave()
               }}
@@ -1027,6 +1034,7 @@ export default function MdNotebookPage() {
               <Preview
                 content={content}
                 noteDir={noteDir}
+                vaultRoot={vaultRoot}
                 onToggleCheckbox={toggleCheckbox}
                 editRange={editBlock}
                 onStartEdit={startBlockEdit}

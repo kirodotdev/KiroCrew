@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -26,6 +25,7 @@ if TYPE_CHECKING:
         _LockedSectionWrite,
         _mask_secret,
         _sel,
+        _stored_threshold_pct,
         _threshold_pct_rejection,
         _write_env_or_roll_back,
         channel_restart_required,
@@ -33,7 +33,6 @@ if TYPE_CHECKING:
         ensure_channel_folder,
         is_direct_local_request,
         live,
-        read_config_text,
         run_to_completion,
         stored_folder_name,
     )
@@ -50,11 +49,17 @@ async def _validate_discord_token(token: str) -> str | None:
     """
     import aiohttp  # noqa: F811
 
+    # The bot's own proxy rule, so a host that reaches Discord only through a
+    # proxy verifies the token the way the running bot will use it. Imported
+    # here: the client module is heavy and only this call needs it.
+    from kiro_crew.discord.client import _resolve_proxy
+
     timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.get(
             "https://discord.com/api/v10/users/@me",
             headers={"Authorization": f"Bot {token}"},
+            proxy=_resolve_proxy(),
         ) as resp:
             if 200 <= resp.status < 300:
                 return None
@@ -77,7 +82,10 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
 
     cfg = KiroCrewConfig.load()
     # Off-loop: a secret:// reference is read and decrypted from the vault.
-    creds = await asyncio.to_thread(cfg.load_credentials)
+    # propagate=False: a post-boot dashboard read must not re-seed os.environ,
+    # or a worker-thread setdefault could restore a credential the live watcher
+    # just popped. Boot owns the one propagation.
+    creds = await asyncio.to_thread(cfg.load_credentials, propagate=False)
     token = creds.get(CRED_DISCORD_BOT_TOKEN, "") or cfg.discord.bot_token
     dc = cfg.discord
     state: DashboardState = request.app["state"]
@@ -201,8 +209,18 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
 
     # Config → config.json under "discord" (staged, applied only after Phase 1).
     path = config_path()
+
+    def _read_config() -> object:
+        # The existence check, the read and the parse share one worker-thread hop
+        # (as in feishu_settings.py): a stalled mount must not block the loop on
+        # any of them.
+        # The read half of this read-modify-write starts from what the load reads.
+        from kiro_crew.config.loader import read_config_for_update
+
+        return read_config_for_update(path)
+
     try:
-        data = json.loads(read_config_text(path)) if path.exists() else {}
+        data = await asyncio.to_thread(_read_config)
         if not isinstance(data, dict):
             raise ValueError("config.json is not a JSON object")
     except Exception:
@@ -289,7 +307,7 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
         pct = int(body["soft_threshold_pct"])
-        if pct != int(dc_cfg.get("soft_threshold_pct", 80)):
+        if pct != _stored_threshold_pct(dc_cfg, "soft_threshold_pct", 80):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 

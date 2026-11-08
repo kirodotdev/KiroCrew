@@ -292,7 +292,7 @@ describe('SelectionToolbar — composer mode', () => {
     render(<Harness actions={actions} composer={composer} />)
     await openComposer()
     const copy = screen.getByRole('button', { name: 'Copy' })
-    copy.focus()
+    act(() => { copy.focus() })
     fireEvent.keyDown(copy, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('selection-composer')).toBeNull())
     expect(composer.onClose).toHaveBeenCalledTimes(1)
@@ -1180,7 +1180,7 @@ describe('SelectionToolbar — composer mode, drafts and hidden tabs', () => {
     fireEvent.change(input, { target: { value: 'kept' } })
     // Click-away with a draft keeps the box but moves focus out of it.
     fireEvent.mouseDown(document.body)
-    ;(document.activeElement as HTMLElement | null)?.blur()
+    act(() => { (document.activeElement as HTMLElement | null)?.blur() })
     fireEvent.keyUp(document.body, { key: 'Escape' })
     await waitFor(() => expect(confirmDiscard).toHaveBeenCalledTimes(1))
     await act(async () => { await new Promise(r => setTimeout(r, 20)) })
@@ -1199,7 +1199,8 @@ describe('SelectionToolbar — composer mode, drafts and hidden tabs', () => {
     selectInContainer(screen.getByTestId('container'), 'gamma')
     fireEvent.mouseUp(document, { clientX: 120, clientY: 50 })
     await waitFor(() => expect(composer.onOpen).toHaveBeenCalledTimes(2))
-    expect(screen.queryByText(/^Copy failed/)).toBeNull()
+    // onOpen fires inside the deferred check; the notice clears in a later render.
+    await waitFor(() => expect(screen.queryByText(/^Copy failed/)).toBeNull())
   })
 
   it('a re-select over an emptied box drops a lingering post-failed notice — it belonged to the passage nothing was posted for', async () => {
@@ -1215,7 +1216,7 @@ describe('SelectionToolbar — composer mode, drafts and hidden tabs', () => {
     selectInContainer(screen.getByTestId('container'), 'gamma')
     fireEvent.mouseUp(document, { clientX: 120, clientY: 50 })
     await waitFor(() => expect(composer.onOpen).toHaveBeenCalledTimes(2))
-    expect(screen.queryByText(/Couldn’t save your comment/)).toBeNull()
+    await waitFor(() => expect(screen.queryByText(/Couldn’t save your comment/)).toBeNull())
   })
 
   it('names the way in for touch: "Tap", not "Press Enter"', async () => {

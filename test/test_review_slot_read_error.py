@@ -1,22 +1,14 @@
 """A review lane that cannot read its comment slot must name the read's error.
 
-Every review lane guards its reads of this PR's comments with a six-attempt
-budget: one read finds the lane's own verdict comment, one answers whether the
-lane's slot is already taken, and one confirms on the other side of a failed
-write whether that write landed. Each discards its stderr, so a spent budget
-prints copies of one causeless sentence and the reader cannot tell installation
-throttling -- cured by the re-run the annotation recommends -- from an expired
-credential or a permissions change, each of which spends another full model
-review to land in the same place.
+Each lane's comment reads (own verdict, slot taken, did a failed write land) retry six
+times and discard stderr, so a spent budget cannot tell throttling from an expired
+credential or a permissions change. The reads keep the last attempt's exit status and
+error text and report it ONCE in the failed-publish annotation, scrubbed and bounded,
+without changing what the run claims to have published.
 
-The reads keep the last attempt's exit status and error text and report it ONCE,
-inside the annotation a failed publish already writes. The text is an API error
-body, so it is scrubbed and bounded before it is printed, and the reporting never
-changes what the run claims to have published.
-
-Every publishing lane is covered together because these reads sit inside
-``retry_comment_write`` and ``guarded_comment_upsert``, which
-test_ai_review_workflows_comment_writes.py holds byte-identical across the lanes.
+All lanes are covered together because ``retry_comment_write`` and
+``guarded_comment_upsert`` are held byte-identical across lanes by
+test_ai_review_workflows_comment_writes.py.
 """
 
 from __future__ import annotations
@@ -60,11 +52,9 @@ NOTE_SUFFIX = "${READ_FAILURE_NOTE:+ Cause of the failed comment read: $READ_FAI
 def _bash() -> str | None:
     """A bash that can take native paths and env from this Python process.
 
-    On Windows ``shutil.which("bash")`` usually finds the WSL launcher in
-    System32. That starts a Linux process which translates neither the Windows
-    argv nor the environment, so a scripted ``gh`` on PATH is never found and
-    the script text arrives re-quoted. Git for Windows ships a native-path
-    bash; prefer it, and report none rather than hand back the launcher.
+    On Windows ``shutil.which("bash")`` usually finds the WSL launcher, which translates
+    neither argv nor env, so a scripted ``gh`` is never found. Prefer Git for Windows'
+    bash, and report none rather than the launcher.
     """
     if os.name == "nt":
         git = shutil.which("git")
@@ -212,12 +202,9 @@ class TestTheGuardedReadsKeepTheirError:
     def test_no_guarded_comment_read_discards_its_stderr(self, lane: str) -> None:
         """Every guarded read of this PR's comments captures stderr to a file.
 
-        A read that sends its error to /dev/null cannot report a cause however
-        the annotation is worded, so this is the load-bearing assertion. Scoped
-        to the functions holding the budgeted reads: the one-shot
-        override-notice lookup at step scope is a separate mechanism with its
-        own owner, and its stderr is left as it is rather than given a second,
-        competing reporter here.
+        A read sending its error to /dev/null cannot report a cause. Scoped to the
+        budgeted reads: the one-shot override-notice lookup has its own owner and keeps
+        its stderr as is.
         """
         for region in _owned_regions(lane):
             discarding = [
@@ -229,10 +216,11 @@ class TestTheGuardedReadsKeepTheirError:
 
         script = _publish_step(lane)
         captures = [line for line in script.split("\n") if '2>"$READ_ERR_FILE"' in line]
-        # four guarded reads: the slot occupancy read, the landing confirmation
-        # read on the other side of the write, the verdict lookup, and the
-        # override-body read that decides whether a repeat is allowed.
-        assert len(captures) == 4, f"{lane}: expected 4 captured reads, found {len(captures)}"
+        # five guarded reads: the slot occupancy read, the landing confirmation
+        # read on the other side of the write, the verdict lookup, the
+        # override-body read that decides whether a repeat is allowed, and the
+        # head read that decides the same.
+        assert len(captures) == 5, f"{lane}: expected 5 captured reads, found {len(captures)}"
 
     @pytest.mark.parametrize("lane", COVERED_LANES)
     def test_each_spent_budget_names_its_cause_once(self, lane: str) -> None:
@@ -240,14 +228,21 @@ class TestTheGuardedReadsKeepTheirError:
         script = _publish_step(lane)
         assert script.count("note_read_failure() {") == 1, f"{lane}: one reporter, not two"
         calls = [line for line in script.split("\n") if "note_read_failure " in line]
-        assert len(calls) == 4, f"{lane}: expected 4 reporter calls, found {len(calls)}"
+        assert len(calls) == 5, f"{lane}: expected 5 reporter calls, found {len(calls)}"
+        assert any(
+            "current head to decide whether this write may be repeated" in c for c in calls
+        ), f"{lane}: head read silent"
         assert any("to find this lane's slot" in c for c in calls), f"{lane}: slot read silent"
         assert any("previous write landed" in c for c in calls), f"{lane}: landing read silent"
         assert any(
             "accepted human override" in c for c in calls
         ), f"{lane}: override-body read silent"
         assert any(
-            'comment"' in c and "slot" not in c and "landed" not in c and "override" not in c
+            'comment"' in c
+            and "slot" not in c
+            and "landed" not in c
+            and "override" not in c
+            and "head" not in c
             for c in calls
         ), f"{lane}: verdict read silent"
 
@@ -534,7 +529,7 @@ exit 0
         assert "Resource not accessible by integration" not in out.stdout
 
     def test_an_unreadable_slot_still_publishes_nothing(self, tmp_path: Path) -> None:
-        """Reporting a cause does not license a write the old code refused."""
+        """Reporting a cause does not license a write an unreadable slot refuses."""
         out = self._drive(tmp_path, self._COUNTER.replace("__FAILS__", "6"))
         assert "rc=1" in out.stdout
         assert "created" not in out.stdout, "a spent read budget must not reach the write"
@@ -636,4 +631,36 @@ exit 0
         for line in out.stdout.split("\n"):
             if "failed on attempt" in line:
                 assert "Resource not accessible" not in line, line
+        assert "created" not in out.stdout
+
+    # A replace whose write fails, and whose head read on the repeat is the one
+    # that cannot answer.
+    _HEAD_READ_FAILS = """
+if [ "$1" = "pr" ]; then
+  echo "gh: HTTP 502 Bad Gateway" >&2
+  exit 1
+fi
+case "$2" in
+  */pulls/*)
+    echo "gh: Resource not accessible by integration (HTTP 403)" >&2
+    exit 1
+    ;;
+esac
+exit 0
+"""
+
+    def test_an_unreadable_head_names_that_read(self, tmp_path: Path) -> None:
+        """The head read that decides whether a repeat is allowed reports its cause.
+
+        It stays fail-closed: the repeat is still withheld, and nothing is
+        written past the failed first attempt.
+        """
+        out = self._drive_replace(tmp_path, self._HEAD_READ_FAILS)
+        assert "rc=1" in out.stdout, out.stdout + out.stderr[-1000:]
+        assert "is unreadable, so this write was not repeated" in out.stdout
+        note = [line for line in out.stdout.split("\n") if line.startswith("note=")]
+        assert note and note[0] != "note=", out.stdout
+        assert "current head to decide whether this write may be repeated" in note[0], note[0]
+        assert "exited 1" in note[0], note[0]
+        assert "Resource not accessible by integration" in note[0], note[0]
         assert "created" not in out.stdout

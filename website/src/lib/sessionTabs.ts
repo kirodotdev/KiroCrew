@@ -98,15 +98,19 @@ export function sessionTabsStorageKey(mode?: string): string {
  * (one session, no strip) and never block the chat surface from mounting.
  */
 export function loadSessionTabs(mode: string | undefined, fallback: string | null): string[] {
+  const deduped = readStoredKeys(sessionTabsStorageKey(mode))
+  if (deduped.length) return deduped
+  return fallback ? [fallback] : []
+}
+
+function readStoredKeys(storageKey: string): string[] {
   let stored: unknown
   try {
-    const raw = localStorage.getItem(sessionTabsStorageKey(mode))
+    const raw = localStorage.getItem(storageKey)
     stored = raw ? JSON.parse(raw) : null
   } catch { stored = null }
   const keys = Array.isArray(stored) ? stored.filter((k): k is string => typeof k === 'string' && k.length > 0) : []
-  const deduped = [...new Set(keys)]
-  if (deduped.length) return deduped
-  return fallback ? [fallback] : []
+  return [...new Set(keys)]
 }
 
 /**
@@ -122,6 +126,33 @@ export function saveSessionTabs(
   write: (key: string, value: string) => void,
 ): void {
   write(sessionTabsStorageKey(mode), JSON.stringify(tabs.length > 1 ? tabs : []))
+}
+
+/**
+ * The pinned tabs, under their own key beside the set's (#22775). A separate
+ * key rather than a new shape for the set's, so a stored set reads the same
+ * to a build without pins. Corrupt storage reads as "nothing pinned".
+ */
+export function pinnedSessionTabsStorageKey(mode?: string): string {
+  return `mc-session-tabs-pinned-${mode || 'chat'}`
+}
+
+export function loadPinnedSessionTabs(mode: string | undefined): string[] {
+  return readStoredKeys(pinnedSessionTabsStorageKey(mode))
+}
+
+export function savePinnedSessionTabs(
+  mode: string | undefined,
+  pinned: readonly string[],
+  write: (key: string, value: string) => void,
+): void {
+  write(pinnedSessionTabsStorageKey(mode), JSON.stringify(pinned))
+}
+
+/** `tabs` with the pinned ones first, each group keeping its order. */
+export function pinnedFirst(tabs: readonly string[], pinned: readonly string[]): string[] {
+  const isPinned = new Set(pinned)
+  return [...tabs.filter(k => isPinned.has(k)), ...tabs.filter(k => !isPinned.has(k))]
 }
 
 /** Drop tabs whose session no longer exists on this surface, order preserved. */
@@ -163,6 +194,22 @@ export function replaceSessionTab(tabs: readonly string[], oldKey: string | null
   if (at === -1) return [...tabs, newKey]
   const next = [...tabs]
   next[at] = newKey
+  return next
+}
+
+/**
+ * Move `key` to `toIndex`, every other tab keeping its relative order. The
+ * index is clamped to the strip, so a caller stepping past either end gets the
+ * end rather than a hole. A key that is not a tab leaves the set unchanged.
+ */
+export function moveSessionTab(tabs: readonly string[], key: string, toIndex: number): string[] {
+  const from = tabs.indexOf(key)
+  if (from === -1) return [...tabs]
+  const to = Math.max(0, Math.min(tabs.length - 1, toIndex))
+  if (to === from) return [...tabs]
+  const next = [...tabs]
+  next.splice(from, 1)
+  next.splice(to, 0, key)
   return next
 }
 
@@ -275,5 +322,10 @@ export function tabStatusPulses(status: TabStatus): boolean {
 
 /** Ellipsize a tab label. Returns the input untouched when it already fits. */
 export function truncateTabTitle(title: string, max: number = TAB_TITLE_MAX): string {
-  return title.length > max ? title.slice(0, max) + '…' : title
+  if (title.length <= max) return title
+  // Cut on a code-point boundary: a UTF-16 slice through an emoji would leave
+  // its lone high surrogate, which renders as a replacement glyph.
+  const head = title.slice(0, max)
+  const last = head.charCodeAt(head.length - 1)
+  return (last >= 0xd800 && last <= 0xdbff ? head.slice(0, -1) : head) + '…'
 }

@@ -37,13 +37,13 @@ describe('UserMessage action row with Quote offered', () => {
 
   const rowLabels = () => Array.from(screen.getByTestId('user-more-actions').parentElement!.querySelectorAll(':scope > button')).map(b => b.getAttribute('aria-label'))
 
-  it('shows Quote, Copy and More; Quote and Copy both work from the row', () => {
+  it('shows Quote, Copy and More; Quote and Copy both work from the row', async () => {
     const onQuote = vi.fn()
     render(full(onQuote))
     expect(rowLabels()).toEqual(['Quote message', 'Copy', 'More actions'])
     fireEvent.click(screen.getByTestId('quote-message'))
     expect(onQuote).toHaveBeenCalledTimes(1)
-    fireEvent.click(screen.getByLabelText('Copy'))
+    await act(async () => { fireEvent.click(screen.getByLabelText('Copy')) })
     expect(copyToClipboard).toHaveBeenCalledWith('hi')
   })
 
@@ -221,9 +221,9 @@ describe('a row carrying meta.quote', () => {
     expect(screen.getByTestId('content').closest('.message-bubble')!.className).not.toContain('min-w-64')
   })
 
-  it('Copy copies the whole content, block included', () => {
+  it('Copy copies the whole content, block included', async () => {
     render(<UserMessage content={content} meta={{ quote }} renderContent={renderContent} />)
-    fireEvent.click(screen.getByLabelText('Copy'))
+    await act(async () => { fireEvent.click(screen.getByLabelText('Copy')) })
     expect(copyToClipboard).toHaveBeenCalledWith(content)
   })
 })

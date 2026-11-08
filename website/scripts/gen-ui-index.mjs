@@ -223,7 +223,7 @@ const keyMap = (relPath, name) => {
 
 const { BUILTIN_SURFACE_NAV, CAPABILITY_SUB_ITEM_NAV, capabilitySubItemNav } = await loadTs('src/surfaces/surfaceData.ts')
 const { EXTRA_PAGES, EXTRA_PAGE_TITLE_KEY } = await loadTs('src/components/commandPalette/providers/pagesData.ts')
-const { UI_LOCATION_AREAS, PREVIEW_FLAG_ENABLERS, SETTINGS_TAB_PREVIEW, SEARCH_TERMS, LEGACY_PAGE_CANONICAL } = await loadTs('src/uiLocations/descriptors.ts')
+const { UI_LOCATION_AREAS, PREVIEW_FLAG_ENABLERS, SETTINGS_TAB_PREVIEW, SETTING_PREVIEW, SEARCH_TERMS, LEGACY_PAGE_CANONICAL } = await loadTs('src/uiLocations/descriptors.ts')
 // The registered locations live one file per area; every file there is an
 // input whether or not git tracks it, and the merge refuses an id
 // two areas declare or an area file the aggregator does not list.
@@ -306,10 +306,9 @@ const settingsTabs = adapter('src/pages/SettingsPage.tsx', { container: 'buildTa
 const capabilityTabs = adapter('src/pages/CapabilitiesPage.tsx', { container: 'tabs' })
 // Other SidePanelLayout pages whose tabs are a literal list, keyed by the
 // surface (rail page) they belong to: `tab.<surface>.<key>` at `/<surface>?tab=<key>`.
-const pageTabs = {
-  developer: adapter('src/pages/DeveloperPage.tsx', { container: 'buildTabs' }),
-}
+const pageTabs = {}
 const settingsSubs = {
+  developer: adapter('src/pages/settings/DeveloperPanel.tsx', { container: 'railItems' }),
   chat: adapter('src/pages/settings/ChatPanel.tsx', { container: 'railItems' }),
   display: adapter('src/pages/settings/DisplayPanel.tsx', { container: 'railItems' }),
   notifications: adapter('src/pages/settings/NotificationsPanel.tsx', { container: 'railItems' }),
@@ -352,6 +351,7 @@ const indexInputs = {
   settingsTabs,
   settingsSubs,
   settingsTabPreview: SETTINGS_TAB_PREVIEW,
+  settingPreview: SETTING_PREVIEW,
   settingsEntries,
   agentSettings,
   descriptors: UI_LOCATIONS,

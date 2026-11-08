@@ -2,12 +2,13 @@
 // layout contract and the shell. App.topbarAndShortcuts.test.tsx covers the rest
 // with the same mocks: the top bar's readouts, the global shortcuts and two
 // App.tsx source contracts.
-import { afterAll, describe, it, expect, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { MOBILE_BREAKPOINT } from '../hooks/useIsMobile'
 import { join } from 'node:path'
 import { render, screen, act, fireEvent, waitFor, within } from '@testing-library/react'
-import { renderWithProviders, createTestStore } from './helpers'
+import { renderWithProviders as renderBare, createTestStore } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import { readIndexCss } from './indexCssSource'
 import App, { NavBadge } from '../App'
 import { sseConnected, sseDisconnected, markSlotUnread } from '../store/dashboardSlice'
@@ -87,6 +88,8 @@ vi.mock('../api/client', () => ({
     kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: 'claude' } }),
     system: vi.fn().mockResolvedValue({ mem_used_gb: 4.0, mem_total_gb: 16.0, cpu_pct: 25.0, disk_total_gb: 100.0, disk_free_gb: 60.0 }),
     chatSlotAgent: vi.fn().mockResolvedValue({}),
+    // The left dock reads the roster; an empty one keeps its notice out of these frames.
+    members: vi.fn().mockResolvedValue({ members: [] }),
     chatSlotReasoningEffort: vi.fn().mockResolvedValue({}),
     chatSlotModel: vi.fn().mockResolvedValue({}),
     chatMode: vi.fn().mockResolvedValue({}),
@@ -150,7 +153,22 @@ globalThis.ResizeObserver = class {
   disconnect() {}
 } as typeof ResizeObserver
 
+// Chain: App's shell issues its mount-time queries (apps, instances, system, usage, ...) and each
+// answer updates App. A test that ends on its render returns this wait. It starts in the same tick,
+// before the first answer lands, so none of them lands after the test's last barrier.
+let rendered: ReturnType<typeof renderBare>
+const renderWithProviders: typeof renderBare = (...args) => (rendered = renderBare(...args))
+const shellSettled = (held = 0) =>
+  waitFor(() => expect(rendered.queryClient.isFetching()).toBe(held), namedCeiling('SHELL_QUERIES_SETTLED', 5000))
+
 describe('App routing', () => {
+  // Most rows read the expanded rail's labels; the rail starts collapsed, so
+  // a test that needs the fresh-profile default removes this key itself.
+  beforeEach(() => { localStorage.setItem('mc-nav', '0') })
+  // The backoff tests drive fake timers across awaits; put real ones back even
+  // when one fails before its own finally runs.
+  afterEach(() => { vi.useRealTimers() })
+
   it('reopens the foreign-agent import gate when server onboarding is incomplete', async () => {
     const { api } = await import('../api/client')
     localStorage.setItem('mc-onboarded', '1')
@@ -415,12 +433,15 @@ describe('App routing', () => {
       expect(screen.queryByText('Pick your look')).not.toBeInTheDocument()
       // And nothing may have marked first run complete.
       expect(api.updateThemeConfig).not.toHaveBeenCalledWith({ onboarded: true })
+      // The one query still fetching is the held-open boot.
+      return shellSettled(1)
     })
   })
 
   it('renders chat page at /chat', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+    return shellSettled()
   })
 
   it('sizes the app shell in dvh so mobile browser chrome cannot cover the bottom row', () => {
@@ -431,6 +452,7 @@ describe('App routing', () => {
     const shell = screen.getByTestId('dashboard-shell').closest('.h-screen')
     expect(shell).not.toBeNull()
     expect(shell!.className).toContain('supports-[height:100dvh]:h-dvh')
+    return shellSettled()
   })
 
   // CapabilitiesPage is a lazy route chunk, so it lands after a Suspense tick.
@@ -455,6 +477,7 @@ describe('App routing', () => {
   it('renders logs page at /logs', () => {
     renderWithProviders(<App />, { route: '/logs' })
     expect(screen.getByTestId('logs-page')).toBeInTheDocument()
+    return shellSettled()
   })
 
   // Route-only pages load through React.lazy; each must still mount behind its
@@ -504,9 +527,11 @@ describe('App routing', () => {
     }
   })
 
-  it('redirects unknown routes to /chat', () => {
+  it('redirects unknown routes to /chat', async () => {
     renderWithProviders(<App />, { route: '/nonexistent' })
-    expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+    // Once the app list answers that no adopted former built-in owns the path.
+    expect(await screen.findByTestId('chat-page')).toBeInTheDocument()
+    return shellSettled()
   })
 
   it('renders nav items', () => {
@@ -536,6 +561,7 @@ describe('App routing', () => {
     expect(screen.queryByLabelText('Report an issue on GitHub')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Kiro Discord community')).toBeInTheDocument()
     expect(screen.queryByLabelText('Kiro website (kiro.dev)')).not.toBeInTheDocument()
+    return shellSettled()
   })
 
   it('rail "Report issue" opens the diagnostics Report a Problem modal', async () => {
@@ -551,7 +577,7 @@ describe('App routing', () => {
 
     fireEvent.click(trigger)
     expect(await screen.findByText('What happened?')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /create report/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /prepare issue/i })).toBeInTheDocument()
   })
 
   it('renders the registry-derived Artifacts nav item, without a Knowledge rail item', () => {
@@ -565,6 +591,7 @@ describe('App routing', () => {
     renderWithProviders(<App />, { route: '/chat' })
     expect(screen.getByText('Artifacts')).toBeInTheDocument()
     expect(screen.queryByText('Knowledge')).not.toBeInTheDocument()
+    return shellSettled()
   })
 
   it('does not double-render Secretary when the builtin Secretary app is enabled', async () => {
@@ -694,6 +721,34 @@ describe('App routing', () => {
     }
   })
 
+  it('does not retry the Apps-nav fetch after a permission refusal (#32031)', async () => {
+    // A teammate through the relay is refused /api/apps (`relay_apps_teammate`);
+    // asking again on the backoff only repeats the refusal. A real failure still
+    // retries (the test above).
+    vi.useFakeTimers()
+    try {
+      const { api } = await import('../api/client')
+      const { ApiError } = await import('../api/apiError')
+      const listApps = api.listApps as ReturnType<typeof vi.fn>
+      listApps.mockReset()
+      listApps.mockRejectedValue(new ApiError(
+        403, "Apps aren't available to teammates through the relay.",
+        JSON.stringify({ error: 'refused', code: 'relay_apps_teammate' }),
+      ))
+      renderWithProviders(<App />, { route: '/chat' })
+      await act(async () => { await vi.advanceTimersByTimeAsync(100) })
+      const afterMount = listApps.mock.calls.length
+      // Well past every backoff step the ladder would schedule.
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+      expect(listApps.mock.calls.length).toBe(afterMount)
+    } finally {
+      vi.useRealTimers()
+      // Put back the file's default answer so a later test is not served the refusal.
+      const { api } = await import('../api/client')
+      ;(api.listApps as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue([])
+    }
+  })
+
   it('cancels a pending retry when refreshAppNav is re-triggered (no overlapping chains)', async () => {
     // Regression for the overlapping-retry-chains race: if a trigger
     // (mc:apps-changed / reconnect) fires while a backoff retry from a failed
@@ -754,7 +809,7 @@ describe('App routing', () => {
     listApps.mockRejectedValue(new Error('gateway down'))
     try {
       const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
-      queryClient.setQueryData(['apps'], [])
+      act(() => { queryClient.setQueryData(['apps'], []) })
       expect(queryClient.getQueryState(['apps'])?.isInvalidated).toBe(false)
       act(() => { window.dispatchEvent(new Event('mc:apps-changed')) })
       await waitFor(() => {
@@ -801,7 +856,7 @@ describe('App routing', () => {
   })
 
   it('keeps the sub-agent bot and count in the expanded Sessions rail item', async () => {
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     const store = createTestStore()
 
     renderWithProviders(<App />, { route: '/chat', store })
@@ -830,7 +885,7 @@ describe('App routing', () => {
     // count width, and jsdom computes no layout so a geometry check would be
     // vacuous here), AND it must follow the chord in the same flex line, so the
     // fix is not "the chord is the thing pushed off the right edge instead".
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     localStorage.removeItem(SHORTCUTS_ENABLED_KEY)
     const store = createTestStore()
 
@@ -883,7 +938,7 @@ describe('App routing', () => {
     // at count 1. The count is already in the pill, so the title does not repeat
     // it — asserted below, or the grammar defect returns the moment someone
     // "helpfully" switches these back to ariaLabel.
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     const store = createTestStore()
 
     renderWithProviders(<App />, { route: '/chat', store })
@@ -966,17 +1021,18 @@ describe('App routing', () => {
   })
 
   it('renders Kiro Crew branding', () => {
-    localStorage.removeItem('mc-nav') // expanded sidebar shows the brand text
+    localStorage.setItem('mc-nav', '0') // expanded sidebar shows the brand text
     renderWithProviders(<App />, { route: '/chat' })
     // Brand (logo + name) moved from the top bar into the sidebar menu row.
     // The wordmark renders as two colored segments ('Kiro ' + 'Crew').
     expect(screen.getAllByText('Crew').length).toBeGreaterThan(0)
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('uses installed theme branding in the left rail and browser favicon', async () => {
     const { api } = await import('../api/client')
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     localStorage.setItem('mc-color-theme', 'custom-pearce')
     vi.mocked(api.themes).mockResolvedValueOnce({
       themes: [{ slug: 'pearce', name: 'Pearce CRT', emoji: 'PC', source: 'installed' }],
@@ -1033,6 +1089,7 @@ describe('App routing', () => {
     expect(trigger).not.toHaveClass('border-border', 'bg-card', 'rounded-md', 'rounded-full')
     fireEvent.click(trigger)
     expect(screen.getByRole('dialog', { name: 'Search everywhere' })).toBeInTheDocument()
+    return shellSettled()
   })
 
   it('renders the search trigger in the header centre track, not as a positioned overlay', () => {
@@ -1065,6 +1122,7 @@ describe('App routing', () => {
     // max-two-buttons-per-row rule forbids.
     expect([...centre.children]).toHaveLength(2)
     expect(centre.children[1]).toBe(screen.getByTestId('focus-mode-toggle'))
+    return shellSettled()
   })
 
   it('sizes the top-bar search from the window alone, with equal side tracks', () => {
@@ -1291,7 +1349,7 @@ describe('App routing', () => {
   })
 
   it('resizes the sidebar and main body together with a quick shell transition', () => {
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     // Regression (PR #94): the width transition was gated on a 180ms pulse AND
     // the Activity panel being closed, so the sidebar snapped instead of
     // animating whenever Activity was open (or a slow frame ate the pulse).
@@ -1312,6 +1370,7 @@ describe('App routing', () => {
       transition: 'grid-template-columns 150ms cubic-bezier(0.2, 0, 0, 1)',
     })
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   // ── Shell entrance animation is one-shot ──────────────────────────────────
@@ -1330,6 +1389,7 @@ describe('App routing', () => {
 
     // Re-showing the pane cannot replay an animation that is no longer applied.
     expect(shell).not.toHaveClass('animate-rise')
+    return shellSettled()
   })
 
   it('does not retire the shell entrance from a descendant animation', () => {
@@ -1346,6 +1406,7 @@ describe('App routing', () => {
     fireEvent.animationEnd(child, { animationName: 'rise' })
 
     expect(shell).toHaveClass('animate-rise')
+    return shellSettled()
   })
 
   it('keeps the shell entrance applied for an unrelated keyframe on the shell', () => {
@@ -1355,6 +1416,7 @@ describe('App routing', () => {
     fireEvent.animationEnd(shell, { animationName: 'fade-in' })
 
     expect(shell).toHaveClass('animate-rise')
+    return shellSettled()
   })
 
   it('retires the shell entrance even when the animation is interrupted', () => {
@@ -1375,10 +1437,27 @@ describe('App routing', () => {
     } finally {
       vi.useRealTimers()
     }
+    return shellSettled()
+  })
+
+  it('starts the rail collapsed on a fresh profile and keeps a stored expand', () => {
+    localStorage.removeItem('mc-nav')
+    const { unmount } = renderWithProviders(<App />, { route: '/chat' })
+    let nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(nav).getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
+    unmount()
+
+    localStorage.setItem('mc-nav', '0')
+    renderWithProviders(<App />, { route: '/chat' })
+    nav = screen.getByRole('navigation', { name: 'Main navigation' })
+    expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
+    localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('hosts the collapse control in the nav menu row and hides the Main group heading', () => {
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     renderWithProviders(<App />, { route: '/chat' })
 
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
@@ -1396,10 +1475,11 @@ describe('App routing', () => {
     expect(within(nav).queryByRole('button', { name: 'Collapse sidebar' })).not.toBeInTheDocument()
     expect(localStorage.getItem('mc-nav')).toBe('1')
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('lets the brand toggle expand the rail while preview expand mode is active', () => {
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     renderWithProviders(<App />, { route: '/chat' })
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
 
@@ -1419,10 +1499,11 @@ describe('App routing', () => {
     })
     expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('restores the pre-expand rail state when preview expand mode ends untouched', () => {
-    localStorage.removeItem('mc-nav') // start expanded
+    localStorage.setItem('mc-nav', '0') // start expanded
     renderWithProviders(<App />, { route: '/chat' })
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
     expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
@@ -1437,11 +1518,12 @@ describe('App routing', () => {
     })
     expect(within(nav).getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     // The auto-collapse is transient: it never writes the persisted preference.
-    expect(localStorage.getItem('mc-nav')).toBeNull()
+    expect(localStorage.getItem('mc-nav')).toBe('0')
+    return shellSettled()
   })
 
   it('hides the community row when the sidebar is collapsed', () => {
-    localStorage.removeItem('mc-nav')
+    localStorage.setItem('mc-nav', '0')
     renderWithProviders(<App />, { route: '/chat' })
     const nav = screen.getByRole('navigation', { name: 'Main navigation' })
     const contact = within(nav).getByText('Star us')
@@ -1452,6 +1534,7 @@ describe('App routing', () => {
     expect(wrapper).not.toBeNull()
     expect(wrapper).toHaveAttribute('inert')
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('keeps Request a Feature visible in the header actions cluster in both sidebar states', () => {
@@ -1469,6 +1552,7 @@ describe('App routing', () => {
     expect(screen.getByRole('button', { name: 'Request a Feature' })).toBeInTheDocument()
     expect(localStorage.getItem('mc-nav')).toBe('0')
     localStorage.removeItem('mc-nav')
+    return shellSettled()
   })
 
   it('keeps feature-request instructions hidden from the persisted user message', async () => {
@@ -1515,12 +1599,14 @@ describe('App routing', () => {
     // The dot's accessible name carries the cause; with no auth banner up it
     // is the reconnecting variant (see #9692).
     expect(screen.getByLabelText(/Gateway offline/i)).toBeInTheDocument()
+    return shellSettled()
   })
 
   it('keeps theme controls available from Settings', () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Theme controls live in Settings > Display rather than the shell header.
     expect(screen.getByText('Settings')).toBeInTheDocument()
+    return shellSettled()
   })
 
   it('renders approval mode buttons with tooltips', () => {

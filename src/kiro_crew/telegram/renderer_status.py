@@ -28,29 +28,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.telegram.renderer")
 
 
-# Telegram has no native token streaming: "streaming" meant editing one message
-# on every chunk, and each edit is a full HTTP round-trip + a whole-bubble
-# re-render, which reads as a stutter (WeCom streams frames over a persistent
-# WebSocket, so it stays smooth). Instead we do "block streaming": hold a live
-# "typing…" indicator while the answer forms, then post the finished answer as
-# one clean block. This kills the edit-jank entirely and only touches this
-# renderer -- the shared messaging event stream (and Slack/WeCom) is untouched.
-#
-# Telegram's "typing" chat action lasts ~5s, so refresh it just under that
-# for the duration of a turn (shown while we accumulate before posting).
+# Telegram has no token streaming, and an edit per chunk is a round-trip plus a
+# whole-bubble re-render that stutters. So hold a "typing…" indicator while the
+# answer forms. The chat action lasts ~5s, so refresh it just under that.
 _TYPING_REFRESH_S = 4.0
 
 
 # ── Stall marks on the live bubble ──
-# Telegram has no message-reaction budget to spend on a phase indicator: a bot
-# holds ONE reaction per message (setting is a replace, not an add), its emoji
-# allow-list has no globe/wrench/brand mark, a chat's own available_reactions can
-# narrow it further at any time, and the rate limit is per CHAT — so a reaction
-# per phase competes with the streaming edits this channel already spends. The
-# typing indicator plus the transient "🔧 {tool}…" footer already say "working";
-# what they cannot say is "working, but nothing has moved in a while". These two
-# marks ride the footer the renderer was going to edit anyway, so they cost no
-# extra API class. Same thresholds as the Slack controller's soft/hard stalls.
+# Not reactions: a bot holds ONE reaction per message, the emoji set is narrow
+# and chat-restrictable, and the rate limit is per chat, shared with edits. The
+# marks ride the footer edit already made, so they cost no extra API call. Same
+# thresholds as the Slack controller's soft/hard stalls.
 _SOFT_STALL_S = 15.0
 _HARD_STALL_S = 45.0
 _SOFT_STALL_MARK = "🥱 still working…"
@@ -61,12 +49,9 @@ _HARD_STALL_MARK = "😨 this is taking a while…"
 #: reading of "how close is this conversation to needing /compact".
 _CTX_GAUGE = ((70, "🔴"), (50, "🟠"), (30, "🟡"), (0, "🟢"))
 
-#: The footer is shown only when it carries something ACTIONABLE. Slack posts its
-#: equivalent on every turn, but Slack has a `context` block — a small grey line
-#: — while Telegram's nearest affordance is a quote bar under the answer, and
-#: "Finished in 1s · 🟢 ctx 4%" as a permanent fixture under every reply is noise
-#: that trains the reader to skip the place the real warning will appear. So:
-#: a duration worth noticing, or a context reading worth acting on.
+#: The footer shows only when ACTIONABLE (a notable duration or context reading):
+#: Telegram has no small grey `context` block like Slack, and a quote bar under
+#: every reply trains the reader to skip where the real warning appears.
 _FOOTER_MIN_SECS = 10.0
 _FOOTER_MIN_CTX_PCT = 50
 

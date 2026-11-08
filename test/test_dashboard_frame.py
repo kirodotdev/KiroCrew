@@ -1,12 +1,7 @@
 """The frame: what a template's page must be, and what the minted document grants.
 
-A template's `template.html` is an inert body, never a document. This file pins
-both halves of that: `validate_page` refuses anything that is already a document
-or is too large, and `compose` mints the body into a page whose own policy closes
-egress while allowing the page's script to run.
-
-Kept apart from the write path's tests because the frame knows nothing about who
-filled a field -- it draws whatever payload it is handed.
+`validate_page` refuses a full document or an oversized body; `compose` mints the body
+into a page whose policy closes egress but lets the page's script run.
 """
 
 from __future__ import annotations
@@ -226,11 +221,8 @@ class TestTheComposedDocument:
     def test_the_init_guard_is_installed_before_the_page(self) -> None:
         """It has to see an error in the page's FIRST script.
 
-        Separate scripts are independent, so a throw aborts only the script it
-        happened in and every later one still runs: reaching the beacon says nothing
-        about the page. The guard installed ahead of the page is what makes the
-        difference observable at all, and installed after it would miss exactly the
-        failure that matters most -- a library missing at the top of the page.
+        A throw aborts only its own script, so reaching the beacon proves nothing. The guard
+        must be installed ahead of the page to catch a library missing at the top.
         """
         doc = self.doc()
         flag = dashboard_frame._INIT_FAILED_FLAG
@@ -264,11 +256,16 @@ class TestTheComposedDocument:
             doc.index("JSON.parse(el.textContent)") < probe < doc.index("<h1 data-dashboard-field")
         )
 
-    def test_the_band_does_not_count_as_a_page_that_refills(self) -> None:
-        """The band script runs after the page and listens for the refill event. Through
-        the wrapped ``addEventListener`` it would mark every page refill-capable, and a
-        page that does not redraw would then show stale values instead of reloading."""
-        assert "EventTarget.prototype.addEventListener.call(window" in dashboard_frame._BAND_JS
+    def test_nothing_the_host_adds_after_the_page_listens_for_the_refill(self) -> None:
+        """Only the beacon runs after the page, and it registers no listener for the
+        refill event. A host listener there would pass through the wrapped
+        ``addEventListener`` and mark every page refill-capable, so a page that does
+        not redraw would show old values instead of reloading."""
+        page = self.page()
+        doc = self.doc()
+        after = doc[doc.index(page) + len(page) :]
+        assert after == f"\n<script>{dashboard_frame._BEACON_JS}</script>\n</body>\n</html>\n"
+        assert f"{dashboard_frame.PAGE_EVENT!r}" not in dashboard_frame._BEACON_JS
 
     def test_the_beacon_reports_whether_the_page_refills(self) -> None:
         beacon = dashboard_frame._BEACON_JS
@@ -343,11 +340,32 @@ class TestTheComposedDocument:
         assert "<script>evil()" not in doc
         assert "&lt;/title&gt;&lt;script&gt;evil()" in doc
 
-    def test_the_stale_band_is_host_markup_above_the_page(self) -> None:
-        """A template cannot suppress it: it is not in the fragment, and the page has
-        no way to remove an element it did not create before the reader sees it."""
-        doc = self.doc(stale=True, missing=["entries"])
-        assert doc.index("kirocrew-stale-band") < doc.index("kirocrew-dashboard-data")
+    @pytest.mark.parametrize(
+        "read",
+        [
+            {},
+            {"missing": ["entries"]},
+            {"missing": ["entries", "risk_note"]},
+        ],
+        ids=["current", "missing", "two-missing"],
+    )
+    def test_the_host_draws_no_stale_band_in_any_state(self, read: dict[str, Any]) -> None:
+        """The person is never told some numbers are older: a field that does not
+        resolve is the crewmate's to fix, and its turn block says so. Asked of the
+        composed document and of the body-only compose, in every read shape."""
+        doc = self.doc(**read)
+        body = dashboard_frame.compose_body(
+            "<p data-dashboard-field='entries'>x</p>", dashboard_frame.read_payload({}, **read)
+        )
+        for text in (doc, body):
+            for marker in (
+                "kirocrew-stale-band",
+                "data-dashboard-stale",
+                "data-stale-detail",
+                "Some numbers are older",
+                "from an earlier read",
+            ):
+                assert marker not in text, f"{marker!r} is still in the composed frame"
 
     def test_the_agentic_cells_are_marked(self) -> None:
         """A number the crewmate asserted and a number the log recorded are different
@@ -355,17 +373,17 @@ class TestTheComposedDocument:
         which."""
         assert "data-dashboard-agentic" in self.doc(agentic=["risk_note"])
 
-    def test_a_read_that_will_not_serialize_composes_an_empty_stale_one(self) -> None:
+    def test_a_read_that_will_not_serialize_composes_an_empty_one(self) -> None:
         """A value this module could not encode must not blank somebody's
-        dashboard."""
+        dashboard, and the empty read carries no staleness flag."""
         doc = dashboard_frame.compose("<p>x</p>", {"fields": {"a": object()}})
         island = doc.split('id="kirocrew-dashboard-data">')[1].split("</script>")[0]
-        assert json.loads(island)["stale"] is True
+        assert json.loads(island)["fields"] == {}
+        assert "stale" not in json.loads(island)
 
     def test_an_unresolved_field_keeps_its_last_value_rather_than_blanking(self) -> None:
-        """Blanking would turn one unresolved path into a page of em dashes and make a
-        stale dashboard look like an empty one."""
-        assert "data-dashboard-missing" in self.doc(stale=True, missing=["entries"])
+        """Blanking would turn one unresolved path into a page of em dashes."""
+        assert "data-dashboard-missing" in self.doc(missing=["entries"])
 
     def test_the_read_payload_is_built_one_way_for_the_document_and_the_refill(self) -> None:
         """Two builders could describe the same read differently, which a reader
@@ -375,7 +393,6 @@ class TestTheComposedDocument:
             "fields": {"a": 1},
             "agentic": ["a"],
             "seq": 4,
-            "stale": False,
             "missing": ["b"],
             # Empty rather than absent: a page reads this map unconditionally, and a
             # missing key would make a template branch on whether the host is new.
@@ -440,12 +457,8 @@ class TestTheComposedDocument:
     def test_a_refill_from_anyone_but_the_minting_window_is_dropped(self) -> None:
         """The one sender entitled to refill this page is the window that minted it.
 
-        This frame runs with ``allow-scripts`` and so does every other frame the
-        dashboard embeds, so a sibling running script of its own reaches
-        ``parent.frames[i]`` and can post here. Unchecked, it would replace every
-        recorded cell with values it chose and the page would present them exactly as
-        it presents the host's -- which is the single property the fold-sourced fields
-        exist to guarantee.
+        A sibling ``allow-scripts`` frame reaches ``parent.frames[i]`` and could otherwise
+        replace recorded cells with values shown as the host's.
         """
         doc = self.doc()
         assert "event.source !== parent" in doc
@@ -470,24 +483,17 @@ class TestTheComposedDocument:
 def test_compose_body_carries_the_rules_its_own_markup_needs():
     """The host builds the HEAD, so a body-only compose must bring its stylesheet.
 
-    These rules are not decoration. They are what DIMS a missing cell, underlines an
-    agentic one, and makes the stale band a band rather than a line of plain text -- so
-    a body composed without them renders a page whose own marks say nothing. The slice
-    takes what sits between `<body>` and `</body>`, which is why the head's stylesheet
-    needed carrying explicitly.
-
-    Checked by selector rather than by substring of the whole sheet, so the pin names
-    the three marks that have to keep working instead of freezing the file's text.
+    The rules dim a missing cell and underline an agentic one, and the `<body>` slice drops
+    the head. Checked by selector so the pin names marks, not the file's text.
     """
     body = dashboard_frame.compose_body(
         "<p data-dashboard-field='entries'>x</p>",
-        dashboard_frame.read_payload({"entries": 3}, agentic=[], seq=1, stale=True, missing=["a"]),
+        dashboard_frame.read_payload({"entries": 3}, agentic=[], seq=1, missing=["a"]),
     )
     assert "<style>" in body, "the body-only compose carries no stylesheet at all"
     for selector in (
         "[data-dashboard-missing='true']",
         "[data-dashboard-agentic='true']",
-        "#kirocrew-stale-band",
     ):
         assert selector in body, (
             f"{selector} has no rule in the composed body, so that mark renders "
@@ -495,8 +501,8 @@ def test_compose_body_carries_the_rules_its_own_markup_needs():
         )
     # The stylesheet leads, so the rules are parsed before the markup they apply to.
     assert body.index("<style>") < body.index(
-        'kirocrew-stale-band"'
-    ), "the stylesheet follows the band it styles"
+        "data-dashboard-field='entries'"
+    ), "the stylesheet follows the markup it styles"
 
 
 class TestTheCodeTextOfAPage:

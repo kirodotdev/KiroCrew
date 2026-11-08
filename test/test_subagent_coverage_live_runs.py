@@ -25,12 +25,19 @@ from kiro_crew.testing.wait import async_wait_until
 
 
 class TestShouldUseSessionSharing:
-    def test_disabled_by_config(self) -> None:
+    @pytest.mark.parametrize(
+        "enabled",
+        [
+            pytest.param(False, id="test_disabled_by_config"),
+            pytest.param(True, id="test_eligible_parent_accepted"),
+        ],
+    )
+    def test_config_flag_decides_for_an_eligible_parent(self, enabled: bool) -> None:
         mgr = _manager()
         cfg = MagicMock()
-        cfg.agent.session_sharing = False
+        cfg.agent.session_sharing = enabled
         with patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=cfg):
-            assert mgr._should_use_session_sharing(_info(parent_session_key="dash:1")) is False
+            assert mgr._should_use_session_sharing(_info(parent_session_key="dash:1")) is enabled
 
     def test_config_failure_fails_closed(self) -> None:
         mgr = _manager()
@@ -56,13 +63,6 @@ class TestShouldUseSessionSharing:
         with patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=cfg):
             assert mgr._should_use_session_sharing(_info()) is False
 
-    def test_eligible_parent_accepted(self) -> None:
-        mgr = _manager()
-        cfg = MagicMock()
-        cfg.agent.session_sharing = True
-        with patch("kiro_crew.subagent.KiroCrewConfig.load", return_value=cfg):
-            assert mgr._should_use_session_sharing(_info(parent_session_key="dash:1")) is True
-
 
 class TestGetParentRuntime:
     def test_no_provider(self) -> None:
@@ -87,12 +87,8 @@ class TestGetParentRuntime:
 class TestIsCcProvider:
     """Which HOME tree a session's files live in, asked as a capability.
 
-    ``_is_cc_provider`` reads ``SessionCapabilities.provider_seam`` through
-    ``capabilities_of``, so these tests hand it a provider carrying a real
-    capability record instead of patching a module-level predicate. The third case
-    is the one a bare attribute read gets wrong: a shape that is not a provider
-    must answer False, which is what the ``isinstance`` gate in ``capabilities_of``
-    buys.
+    The providers carry a real capability record. The third case is a non-provider shape,
+    which must answer False through ``capabilities_of``'s ``isinstance`` gate.
     """
 
     @staticmethod
@@ -210,16 +206,15 @@ class TestSteerRun:
         info = _info("a")
         mgr._agents["a"] = info
 
-        async def _finish() -> None:
-            # flake-ok: pre-existing 20 ms delay before the finisher flips done while steer_run polls; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-sleep-as-barrier -- pre-existing 20 ms delay inside the finisher task, moved verbatim; tracked for a de-flake pass
-            await asyncio.sleep(0.02)
+        def _finish_on_first_lookup(_key: object) -> None:
+            # steer_run asks the session manager for a provider once, before its
+            # grace poll starts. The run finishes at that lookup, so the first
+            # poll after the wait sees done and must answer not_running.
             info.done = True
+            return None
 
-        finisher = asyncio.ensure_future(_finish())
+        mgr._sessions.get_provider.side_effect = _finish_on_first_lookup
         ok, detail = await mgr.steer_run("a", "hi")
-        # flake-ok: awaits the finisher task, which ends after its own 20 ms sleep; moved verbatim
-        await finisher
         assert ok is False
         assert detail.startswith("not_running")
 
@@ -273,8 +268,16 @@ class TestFollowUpRun:
 
     def test_audit_helper_swallows_failure(self) -> None:
         mgr = _manager()
-        with patch.object(sa, "sel", side_effect=RuntimeError("sel down")):
-            mgr._audit_followup(_info(), "followup_expired")  # must not raise
+        with patch.object(sa, "sel") as sel:
+            sel.return_value.log_tool_invocation.side_effect = RuntimeError("sel down")
+            mgr._audit_followup(_info("a", parent_session_key="dash:1"), "followup_expired")
+        sel.return_value.log_tool_invocation.assert_called_once_with(
+            session_key="dash:1",
+            source="subagent",
+            tool_name="spawn_steer",
+            outcome="followup_expired",
+            metadata={"subagent_id": "a"},
+        )
 
 
 # ── Cross-platform constants ──────────────────────────────────────────────

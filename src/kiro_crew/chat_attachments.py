@@ -102,6 +102,7 @@ from kiro_crew.messaging.outbound_files import (
     iter_local_refs,
     local_destination,
 )
+from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
 
@@ -294,6 +295,30 @@ def persist_inline_images(
             continue
         out = out[: ref.start] + rewritten + out[ref.end :]
     return out
+
+
+def store_image_file(
+    source: str, *, sessions_dir: Path, stem: str, budget: ImageBudget
+) -> str | None:
+    """``![image](...)`` naming a stored copy of the picture at *source*, or ``None``.
+
+    For a picture the gateway downloaded for a message, which no markup names yet.
+    Same copy contract and *budget* as :func:`persist_inline_images`; ``None`` for
+    anything that would leave a reference alone.
+    """
+    if budget.copies_left <= 0:
+        return None
+    budget.copies_left -= 1
+    try:
+        result = _store_one(source, attachments_dir(sessions_dir, stem), budget)
+    except Exception:
+        logger.debug("chat-attachments: could not preserve an ingested image", exc_info=True)
+        return None
+    if result is None:
+        return None
+    stored, consumed = result
+    budget.bytes_left -= consumed
+    return f"![image]({_encode_destination(stored, angle_wrapped=False)})"
 
 
 #: The digest prefix a stored attachment's basename carries.
@@ -506,7 +531,7 @@ def _store_one(raw_dest: str, target_dir: Path, budget: ImageBudget) -> tuple[st
     if len(data) > budget.session_room:
         _report_full(target_dir)
         return None
-    target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mkdirs_owner_only(target_dir)
     atomic_write(dest, data)
     budget.session_room -= len(data)
     return str(dest), len(data)

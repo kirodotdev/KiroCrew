@@ -87,7 +87,11 @@ def target_url() -> str:
     if url:
         return url
     out = subprocess.run(
-        ["kirocrew", "pod", "url", POD], capture_output=True, text=True, check=True
+        ["kirocrew", "pod", "url", POD],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
     )
     lines = [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
     base = lines[-1] if lines else ""
@@ -120,7 +124,7 @@ window.__moveCur=(x,y)=>{c.style.left=x+'px';c.style.top=y+'px';};})();
 
 def beat_targets(narr_path="assets/audio/narr.json"):
     """Absolute beat times on the footage clock, plus the tail after the last beat."""
-    narr = json.loads((BASE / narr_path).read_text())
+    narr = json.loads((BASE / narr_path).read_text(encoding="utf-8"))
     foot = [line for line in narr["lines"] if line["role"] == "footage"]
     outro = [line for line in narr["lines"] if line["role"] == "outro"][0]
     t0 = foot[0]["start"]

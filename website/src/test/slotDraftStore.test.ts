@@ -62,12 +62,41 @@ describe('slotDraftStore', () => {
       expect(d['chat-1']).toEqual(['/a'])
     })
 
-    it('save swallows QuotaExceededError without throwing', () => {
+    it('save reports whether the write stuck', () => {
       const s = createSlotDraftStore<string>({ key: 'k', storage: 'local', sanitize: isString })
+      expect(s.save({ a: 'b' })).toBe(true)
       const orig = Storage.prototype.setItem
       Storage.prototype.setItem = () => { throw new Error('QuotaExceeded') }
-      try { expect(() => s.save({ a: 'b' })).not.toThrow() }
+      try { expect(s.save({ a: 'b' })).toBe(false) }
       finally { Storage.prototype.setItem = orig }
+    })
+  })
+
+  describe('non-persisting reads', () => {
+    it.each([
+      ['fresh', { slot: 'fresh' }, { slot: Date.now() }],
+      ['expired', { slot: 'expired' }, { slot: 0 }],
+      ['unstamped', { slot: 'legacy' }, {}],
+      ['invalid', { slot: 42 }, { slot: Date.now() }],
+    ])('peek matches load for %s entries without writing', (name, drafts, timestamps) => {
+      const peekKey = `peek-${name}`
+      const loadKey = `load-${name}`
+      localStorage.setItem(peekKey, JSON.stringify(drafts))
+      localStorage.setItem(`${peekKey}-ts`, JSON.stringify(timestamps))
+      localStorage.setItem(loadKey, JSON.stringify(drafts))
+      localStorage.setItem(`${loadKey}-ts`, JSON.stringify(timestamps))
+      const peekStore = createSlotDraftStore<string>({ key: peekKey, storage: 'local', ttlMs: TTL, sanitize: isString })
+      const loadStore = createSlotDraftStore<string>({ key: loadKey, storage: 'local', ttlMs: TTL, sanitize: isString })
+      const setItem = vi.spyOn(Storage.prototype, 'setItem')
+      const removeItem = vi.spyOn(Storage.prototype, 'removeItem')
+
+      const peeked = peekStore.peek()
+
+      expect(setItem).not.toHaveBeenCalled()
+      expect(removeItem).not.toHaveBeenCalled()
+      setItem.mockRestore()
+      removeItem.mockRestore()
+      expect(peeked).toEqual(loadStore.load())
     })
   })
 
@@ -295,6 +324,57 @@ describe('slotDraftStore', () => {
       finally { Storage.prototype.setItem = orig }
       expect(calls[0]).toBe('k-ts')
       expect(calls[1]).toBe('k')
+    })
+
+    it('keeps a slot refreshed by another tab when the cached stamp expires', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const firstTab = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const secondTab = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const drafts: Record<string, string> = {}
+      firstTab.set(drafts, 'chat-x', 'old text'); firstTab.save(drafts)
+
+      vi.setSystemTime(Date.now() + TTL - 1000)
+      expect(firstTab.load()).toEqual({ 'chat-x': 'old text' })
+      const refreshed = secondTab.load()
+      secondTab.set(refreshed, 'chat-x', 'fresh text'); secondTab.save(refreshed)
+      vi.setSystemTime(Date.now() + 2000)
+
+      expect(firstTab.load()).toEqual({ 'chat-x': 'fresh text' })
+      expect(JSON.parse(localStorage.getItem('k') ?? '{}')).toEqual({ 'chat-x': 'fresh text' })
+    })
+
+    it('does not rewind a timestamp refreshed by another tab when saving another slot', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const firstTab = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const secondTab = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const drafts: Record<string, string> = {}
+      firstTab.set(drafts, 'chat-x', 'old text'); firstTab.save(drafts)
+
+      vi.setSystemTime(Date.now() + TTL - 1000)
+      const firstTabDrafts = firstTab.load()
+      const secondTabDrafts = secondTab.load()
+      secondTab.set(secondTabDrafts, 'chat-x', 'fresh text'); secondTab.save(secondTabDrafts)
+      const freshStamp = JSON.parse(localStorage.getItem('k-ts') ?? '{}')['chat-x']
+
+      firstTab.set(firstTabDrafts, 'chat-y', 'other text'); firstTab.save(firstTabDrafts)
+
+      expect(JSON.parse(localStorage.getItem('k-ts') ?? '{}')['chat-x']).toBe(freshStamp)
+    })
+
+    it('peek sees a slot refreshed by another tab after the cached stamp expires', () => {
+      vi.useFakeTimers(); vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+      const firstTab = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const secondTab = createSlotDraftStore<string>({ key: 'k', storage: 'local', ttlMs: TTL, sanitize: isString })
+      const drafts: Record<string, string> = {}
+      firstTab.set(drafts, 'chat-x', 'old text'); firstTab.save(drafts)
+
+      vi.setSystemTime(Date.now() + TTL - 1000)
+      firstTab.load()
+      const refreshed = secondTab.load()
+      secondTab.set(refreshed, 'chat-x', 'fresh text'); secondTab.save(refreshed)
+      vi.setSystemTime(Date.now() + 2000)
+
+      expect(firstTab.peek()).toEqual({ 'chat-x': 'fresh text' })
     })
 
     it('no ttlMs = no timestamp sidecar written', () => {

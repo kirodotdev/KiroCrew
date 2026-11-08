@@ -1,13 +1,8 @@
 """The ``kirocrew-computer`` action verbs, driven through the gateway dispatcher.
 
-Coordinate clicking and drag: a click names an element or a point but not both, the
-click method, button and count are closed enums, ``auto`` never resolves to ``global``,
-cursor motion is wired to the pointer path, and drag is a tool of its own. Also the
-action header's redaction, the skill and spec contract that keyboard verbs need an
-element index, and the snapshot budget the drift and refresh walks reuse.
-
-One topic of the ``test_mcp_computer*.py`` family; the fixtures and dispatch helpers
-the family shares come from ``mcp_computer_helpers.py``.
+Covers click and drag validation, ``auto`` never resolving to ``global``, the action
+header's redaction, the keyboard element-index contract, and the snapshot budget.
+Shared fixtures and dispatch helpers come from ``mcp_computer_helpers.py``.
 """
 
 from __future__ import annotations
@@ -165,21 +160,10 @@ class TestClickEnums:
         assert clean["click_method"] == method
 
     def test_sky_click_IS_a_shipped_method_but_must_be_named(self):
-        """Reverses an earlier decision, deliberately.
+        """``sky_click`` ships, but uses private SkyLight ABI, so it is reachable only by NAME.
 
-        ``sky_click`` needs the PRIVATE SkyLight framework, and this package shipped
-        without it on the grounds that a product should not depend on ABI Apple can
-        remove. What changed the call is that the gap is real and reachable: a canvas
-        window behind another app's overlay cannot be clicked by ANY public method —
-        ``accessibility`` needs an addressable element and ``app_post`` is ignored by
-        renderers that hit-test against the window server. Hit in practice.
-
-        The trade is contained rather than accepted wholesale: the private ABI is
-        quarantined in ``macos_skylight``, it degrades to a refusal naming
-        ``app_post`` when a symbol is absent, and — asserted here — it is reachable
-        only by NAME. ``auto`` never resolves onto it (see
-        ``TestAutoNeverResolvesToAPrivateOrPointerPath``), so a model that did not ask
-        for a private-API path never gets one.
+        It covers a canvas behind another app's overlay, which no public method can click.
+        ``auto`` never resolves onto it (see ``TestAutoNeverResolvesToAPrivateOrPointerPath``).
         """
         assert CLICK_METHOD_SKY_CLICK in CLICK_METHODS
         clean = mcp_computer._validate_args(
@@ -261,13 +245,9 @@ class TestClickEnums:
 class TestAutoNeverResolvesToGlobal:
     """**The invariant.**
 
-    ``auto`` resolving onto ``global`` would let a model take over the operator's
-    physical mouse without ever naming the method. Since the separate pointer opt-in
-    was removed — there is no keystone ``allow_pointer_move`` and no
-    ``capabilities.computer_use_pointer`` row — this resolver is the ONLY thing
-    standing between an ordinary click and the operator's cursor, so it matters more
-    now, not less. Asserted three ways, because a single behavioural case would not
-    survive a refactor of the resolver.
+    ``auto`` resolving onto ``global`` would let a model take the operator's physical
+    mouse without naming the method, and there is no separate pointer opt-in. Asserted
+    three ways so a resolver refactor cannot slip past one case.
     """
 
     @pytest.mark.parametrize(
@@ -313,11 +293,11 @@ class TestAutoNeverResolvesToGlobal:
 
 
 class TestCursorMotionIsWiredToThePointerPath:
-    """Cursor Motion must actually RUN, not merely exist (reviewer finding).
+    """Cursor Motion must actually RUN, not merely exist.
 
-    The overlay supervisor, the motion planner and the AppKit child were all
-    implemented and unit-tested, but nothing in a production dispatch path called
-    them — so the feature could never appear on a user's screen. These pin the
+    The overlay supervisor, the motion planner and the AppKit child are each
+    unit-tested, but unless a production dispatch path calls them the feature
+    never appears on a user's screen. These pin the
     call at the one place it belongs: immediately before a REAL-POINTER gesture.
     """
 
@@ -394,11 +374,8 @@ class TestCursorMotionIsWiredToThePointerPath:
     ):
         """Only ``enabled`` enables. Anything else on the keystone is not a grant.
 
-        ``allow_pointer_move`` is used as the payload precisely because an earlier
-        revision documented it as a second consent switch for the real-pointer path.
-        It was removed by product decision and ``PolicyConfig.from_state`` never reads
-        it, so a keystone carrying it and nothing else must still resolve to DISABLED
-        rather than to "the operator configured something, so presumably yes".
+        ``allow_pointer_move`` looks like a consent switch, but ``PolicyConfig.from_state``
+        never reads it, so a keystone carrying only it resolves to DISABLED.
         """
         keystone.write_text(json.dumps({"allow_pointer_move": True}), encoding="utf-8")
         result = _dispatch(TOOL_CLICK, app=FAKE_FILES_APP.name, x=1, y=2, click_method="global")
@@ -411,12 +388,8 @@ class TestCursorMotionIsWiredToThePointerPath:
     ):
         """A pointer-free click must not travel the real-pointer code path at all.
 
-        ``require_pointer_move`` is now a no-op that only exists so an edition can
-        reintroduce a decision, but the CALL still marks which gestures the code
-        treats as pointer-moving — so an ``AXPress`` or an ``app_post`` click asking
-        for the pointer permit would mean the chokepoint had lost track of which
-        methods warp the cursor, which is the invariant that keeps ``auto`` off the
-        real-pointer path.
+        ``require_pointer_move`` is a no-op, but its CALL marks which gestures move the
+        cursor; an ``app_post`` click asking for it means that tracking is lost.
         """
         from kiro_crew.computer_use import gate as cu_gate
 
@@ -559,18 +532,10 @@ class TestDragTool:
 
 
 class TestTheActionHeaderIsRedacted:
-    """GPT 5.6 BLOCKING, confirmed: the action confirmation bypassed redaction.
+    """The action header of ``"<detail>\\n\\nRefreshed state:\\n<tree>"`` is redacted too.
 
-    Every mutating tool returns ``"<detail>\\n\\nRefreshed state:\\n<tree>"``. The tree
-    half is redacted inside ``render_tree`` — that is the package's primary egress
-    control — but the header was concatenated AFTER that pass, and ``detail`` is not
-    our prose: every driver confirmation interpolates app-supplied text. ``_click_text``
-    embeds ``app.name``, which is the process name macOS reports and is therefore
-    attacker-controlled: a process named ``Notes key=AKIA…`` put a raw credential
-    directly in front of a fully redacted tree.
-
-    A single unredacted egress path is the whole failure — the redaction elsewhere
-    does not help if one line skips it.
+    ``detail`` interpolates app-supplied text such as ``app.name``, which a process can
+    set to ``Notes key=AKIA…``; one unredacted line is the whole failure.
     """
 
     @staticmethod
@@ -608,20 +573,11 @@ class TestTheActionHeaderIsRedacted:
         assert "REDACTED" in out
 
     def test_the_TREE_half_is_not_redacted_a_SECOND_time(self, keystone: Path, fake_backend):
-        """Why the two halves are redacted SEPARATELY rather than as one joined string.
+        """The header and the body are redacted SEPARATELY, never as one joined string.
 
-        ``render_tree`` appends its screenshot note AFTER its own redaction pass, on
-        purpose: the spool path must reach the model byte-exact, and
-        ``redact_credentials``' bare-secret-key heuristic reads a path as one
-        base64-alphabet run, so a pass over the joined text would expose every
-        screenshot path to it (see ``render._render_image_note``).
-
-        So the fix redacts the HEADER only and leaves the already-redacted body
-        untouched. Asserted structurally, because the behavioural shape is not
-        reachable here — a mutating tool's refresh walk is deliberately
-        ``want_image=False``, so no screenshot note appears in an action result at
-        all. A future "just redact the whole response" simplification would pass every
-        behavioural test in this file and break screenshots on the read path.
+        The screenshot spool path is appended after ``render_tree``'s pass and must stay
+        byte-exact; ``redact_credentials`` would read it as a bare secret. Asserted on the
+        source because action results use ``want_image=False`` and carry no screenshot note.
         """
         import inspect
 
@@ -633,18 +589,10 @@ class TestTheActionHeaderIsRedacted:
 
 
 class TestTheSkillContractMatchesTheRuntime:
-    """GPT 5.6 FINDING, confirmed as a DOC bug: the skill advertised an optional index.
+    """The skill and spec say keyboard verbs need an element index, as the runtime enforces.
 
-    ``SKILL.md`` described ``computer_type_text(app, text, element_index?)`` with an
-    "else the focused control" fallback, which the runtime has never allowed —
-    ``_ELEMENT_REQUIRED_TOOLS`` refuses an indexless keyboard call because an unnamed
-    target has no role or subrole for the secure-field check to inspect.
-
-    GPT's prescribed fix was to change the SCHEMA (and the contract) to match. Taken
-    the other way round: the runtime behaviour is the security control and is correct,
-    so the DOC was wrong. This test pins the two together, because a stale contract
-    makes the model discover the refusal by hitting it — which is precisely the
-    trial-and-error the skill exists to remove.
+    ``_ELEMENT_REQUIRED_TOOLS`` refuses an indexless keyboard call: an unnamed target has
+    no role for the secure-field check. A stale doc makes the model learn this by failing.
     """
 
     _SKILL = (
@@ -672,14 +620,9 @@ class TestTheSkillContractMatchesTheRuntime:
         assert "required" in text.lower()
 
     def test_the_SPEC_does_not_claim_indexless_input_works(self):
-        """The stale claim lived in TWO documents, and the second was easy to miss.
+        """The spec lists indexless keyboard input under **What still refuses**.
 
-        `docs/.../computer-use.md` listed "indexless keyboard input — typing into
-        whatever the app has focused works again" under the removed-refusals heading —
-        written during the scope change and never implemented. A reader auditing the
-        security posture from that document would have concluded a control was gone
-        that is in fact still enforced, which is the more dangerous direction for a
-        spec to be wrong in. It is now a row in **What still refuses** instead.
+        A spec claiming the control is gone would mislead a security audit.
         """
         text = self._SPEC.read_text(encoding="utf-8")
         assert "**indexless keyboard input**" not in text
@@ -712,12 +655,7 @@ class TestTheSkillContractMatchesTheRuntime:
     def test_no_worked_example_in_the_skill_omits_a_required_element_index(self):
         """The shipped example must be RUNNABLE, not just the prose correct.
 
-        ``SKILL.md``'s only end-to-end example called
-        ``computer_press_key(app="Finder", key="return")`` twice — both refused by
-        ``_CU_ELEMENT_FIELD`` and again by ``_ELEMENT_REQUIRED_TOOLS`` — while the same
-        file's prose said an index was required. A model following the example hits a
-        refusal on its second call, which is exactly the trial-and-error the skill
-        exists to remove, and prose alone could not catch it.
+        An example call without ``element_index`` is refused, so a model copying it fails.
         """
         text = self._SKILL.read_text(encoding="utf-8")
         offenders: list[str] = []
@@ -736,12 +674,8 @@ class TestTheSkillContractMatchesTheRuntime:
     def test_the_skill_documents_the_truncated_screenshot_suppression(self):
         """Every non-failure message the model can see belongs in the skill's table.
 
-        A suppressed capture on a truncated walk is ROUTINE (a browser or Electron app
-        exceeds the default node budget), and without the note it is emitted with no text at
-        all — the model asked for a screenshot, got none, and had no reason to stop
-        retrying. The note is now in ``types``; asserting the skill quotes it keeps the
-        two from drifting, since ``SKILL.md`` ships to every pip/DMG install and is
-        what tells the model this is an answer rather than a fault.
+        A screenshot suppressed on a truncated walk is routine for browsers; the skill must
+        quote ``TRUNCATED_WINDOW_NOTE`` so the model reads it as an answer, not a fault.
         """
         from kiro_crew.computer_use.types import TRUNCATED_WINDOW_NOTE
 
@@ -756,20 +690,8 @@ class TestTheSkillContractMatchesTheRuntime:
 class TestTheDriftWalkHonoursTheSnapshotBudget:
     """A raised ``max_tree_nodes`` must not make its own elements un-actionable.
 
-    Reviewer finding, reproduced end-to-end. A mutating tool takes no tree-budget
-    arguments, so ``tools`` built the drift-verification request from
-    ``service.snapshot_request()`` — the *config default* (1200) — and discarded the
-    budget the cached snapshot was actually walked at. So ``computer_get_state(app,
-    max_tree_nodes=2001)`` rendered element 1400 with no truncation note, and the
-    follow-up ``computer_click(element_index=1400)`` was refused with
-    ``"… now no element at that index"`` because ``verify_fingerprint`` re-walked at
-    1200. Re-snapshotting reproduced the same tree and the same refusal, so the model
-    had no way out of the loop — on a documented happy path: the MCP schema advertises
-    ``max_tree_nodes`` up to 5000 and the Settings copy says to raise it for dense
-    apps.
-
-    Fixed by stamping ``Snapshot.walk_budget`` in ``service.snapshot`` and re-walking
-    at it.
+    The drift walk re-walks at ``Snapshot.walk_budget``. At the config default (1200),
+    element 1400 from a 2001-node snapshot would be refused on every retry.
     """
 
     @staticmethod

@@ -38,6 +38,8 @@ import {
 import { i18nT } from '../i18n/t'
 import { store } from '../store'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
+import { pathBasename } from '../utils/pathBasename'
+import { safeHttpUrl } from '../lib/safeUrl'
 
 /**
  * How a host surface receives a dispatch failure — the same shape `MarkdownPanel`'s
@@ -406,7 +408,7 @@ export function fileMenuItemMatches(
   const { extensions, kinds } = item.when
   if (kinds.length && !kinds.includes(node.kind)) return false
   if (extensions.length) {
-    const base = node.path.split('/').pop() ?? ''
+    const base = pathBasename(node.path)
     // A leading-dot name (`.gitignore`) is a name, not an extension.
     const dot = base.lastIndexOf('.')
     if (dot <= 0) return false
@@ -455,7 +457,14 @@ export function invokeFileMenuItem(
     item,
     ctx,
     slot ? `dashboard:${slot}` : undefined,
-  ).catch((err: unknown) => {
+  ).then(result => {
+    if (typeof result?.message !== 'string' || !result.message.trim()) return
+    const url = typeof result.url === 'string' ? safeHttpUrl(result.url) : null
+    // Same host bus as AppHost; no app UI, feed write, or implicit navigation.
+    window.dispatchEvent(new CustomEvent('mc:notify', {
+      detail: { source: 'file-menu', message: result.message, url: url ?? undefined, type: 'success' },
+    }))
+  }).catch((err: unknown) => {
     // The thrown value is an `ApiError` carrying the endpoint's own response text (or
     // `HTTP <status>`), so it is already the most specific thing there is to say; the
     // `String` arm covers a non-Error rejection rather than reporting an empty banner.

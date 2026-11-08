@@ -123,12 +123,21 @@ class TestReleaseTagExists:
         monkeypatch.setattr(subprocess, "run", fake_run)
         ec2.release_tag_exists("v0.7.0")
         env = seen["env"]
-        assert {k for k in env if k.startswith("GIT_")} == {
+        # Besides the exec-key pins (GIT_CONFIG_COUNT/KEY_n/VALUE_n), nothing.
+        pins = {k for k in env if k == "GIT_CONFIG_COUNT" or k.startswith("GIT_CONFIG_KEY_")}
+        pins |= {k for k in env if k.startswith("GIT_CONFIG_VALUE_")}
+        assert {k for k in env if k.startswith("GIT_")} - pins == {
             "GIT_CONFIG_GLOBAL",
             "GIT_CONFIG_NOSYSTEM",
             "GIT_TERMINAL_PROMPT",
             "GIT_CEILING_DIRECTORIES",
         }
+        pinned = {
+            env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+            for i in range(int(env["GIT_CONFIG_COUNT"]))
+        }
+        assert pinned["core.fsmonitor"] == "false"
+        assert pinned["core.hooksPath"] == os.devnull
         assert env["GIT_CONFIG_GLOBAL"] == os.devnull
         assert env["GIT_CONFIG_NOSYSTEM"] == "1"
         assert env["GIT_TERMINAL_PROMPT"] == "0"

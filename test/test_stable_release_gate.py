@@ -90,7 +90,7 @@ def _git(repo: Path, *args: str) -> None:
         cwd=repo,
         check=True,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         env={
             **os.environ,
             "GIT_AUTHOR_NAME": "gate test",
@@ -183,7 +183,7 @@ def _run(
         ["bash", "-c", _gate_script()],
         cwd=repo,
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         env={
             "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
             "HOME": str(repo),
@@ -270,6 +270,19 @@ def test_gate_checks_out_full_history() -> None:
     steps = _workflow()["jobs"][GATE_JOB]["steps"]
     checkout = next(s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@"))
     assert checkout["with"]["fetch-depth"] == 0
+
+
+def test_gate_full_history_checkout_is_blobless_and_has_headroom() -> None:
+    """Full history on the runner group only fits with a blobless filter.
+
+    The filter keeps every commit and tag (the gate resolves the stable tag and
+    reads CHANGELOG.md at it) while skipping old blobs; the timeout leaves room
+    for a slow clone instead of cancelling the gate mid-checkout.
+    """
+    job = _workflow()["jobs"][GATE_JOB]
+    checkout = next(s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@"))
+    assert checkout["with"]["filter"] == "blob:none"
+    assert int(job["timeout-minutes"]) >= 20
 
 
 def test_gate_job_can_read_workflow_runs() -> None:

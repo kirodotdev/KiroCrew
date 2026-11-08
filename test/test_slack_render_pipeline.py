@@ -5,42 +5,19 @@ and self-truncates at ``SLACK_MAX_TEXT`` before converting, and each of those
 defeats credential redaction from a different side:
 
 - **redact then convert** -- the ANSI strip *reassembles* a credential the
-  escapes had broken up, so ``AKIA<esc>IOSF...`` sails past the regex and lands
-  on Slack whole.
+  escapes had broken up, so ``AKIA<esc>IOSF...`` reaches Slack whole.
 - **convert then redact** -- the 39,000-char self-truncation cuts a credential in
   half before the regex runs, leaving an unmatchable prefix on the wire.
 
-So there is no ordering a call site can pick that is safe on its own, and before
-this gate every Slack egress path picked one independently: eleven of twelve were
-exposed to one hazard or the other, and the one correct pipeline lived in a
-private helper in ``dashboard/chat_slack.py`` that nobody else could inherit.
+STRUCTURAL tier: :func:`test_no_module_converts_slack_markdown_directly` asserts
+``slack/format.py`` is the ONLY module that calls ``to_slack_mrkdwn``. It polices the
+conversion, not the Slack API calls: a raw ``post_message`` is not covered here
+(``test_slack_post_message_call_sites.py`` pins those counts to a baseline).
 
-Two tiers, deliberately:
+BEHAVIOURAL tier: the ordering tests prove :func:`render_for_slack` and
+:func:`render_one_for_slack` close both hazards.
 
-  STRUCTURAL tier -- :func:`test_no_module_converts_slack_markdown_directly`.
-  An AST scan asserting that ``slack/format.py`` is the ONLY module in
-  ``kiro_crew`` that calls ``to_slack_mrkdwn``. This is what makes alignment a
-  property of the code's shape rather than of whether an author remembered:
-  a newly added egress path cannot render its own way without failing the build,
-  which is precisely the guarantee a per-call-site convention cannot give.
-
-  **Scope, stated so it is not over-read:** this gate polices the CONVERSION
-  primitive, not the Slack API calls. A path that posts raw text to Slack without
-  ever converting it is NOT covered — it skips redaction and still passes the
-  build. Covering that would mean gating ``post_message`` / ``post_blocks``, which
-  carry a great deal of legitimately non-agent text (status lines, error notices,
-  captions) and so cannot be banned outright the way a conversion call can; it is
-  a judgment-tier problem, not a deterministic one. ``security_posture.py`` states
-  the same bound, deliberately, rather than claiming every Slack path is enforced.
-
-  BEHAVIOURAL tier -- the ordering tests below. They prove the pipeline the
-  structural tier funnels everyone into actually closes both hazards, in both
-  the multi-part (:func:`render_for_slack`) and single-message
-  (:func:`render_one_for_slack`) forms.
-
-Escape hatch: a genuinely-justified direct call may carry a trailing
-``# render-ok: <reason>`` comment. Every suppression must state its reason so the
-exception is auditable in review and greppable later.
+A justified direct call may carry a trailing ``# render-ok: <reason>`` comment.
 """
 
 from __future__ import annotations
@@ -107,13 +84,9 @@ def _src_root() -> pathlib.Path:
 def _aliases(tree: ast.Module) -> tuple[set[str], set[str]]:
     """Resolve how a module might name the banned function.
 
-    Returns ``(bare_names, module_names)``:
-      * ``bare_names`` -- locals bound by a ``from ... import to_slack_mrkdwn``,
-        including ``as`` renames, so a bare ``tsm(...)`` still resolves.
-      * ``module_names`` -- locals bound to the ``slack.format`` MODULE, so
-        ``fmt.to_slack_mrkdwn(...)`` resolves too.
-
-    Without both, a single aliased import would silently defeat the gate.
+    Returns ``(bare_names, module_names)``: names bound by ``from ... import
+    to_slack_mrkdwn`` (``as`` renames included) and names bound to the ``slack.format``
+    MODULE. Without both, one aliased import would defeat the gate.
     """
     bare: set[str] = set()
     modules: set[str] = set()
@@ -227,55 +200,67 @@ def test_no_module_converts_slack_markdown_directly() -> None:
 # ── Meta-tests: prove the detector both fires and stays quiet ─────────────────
 
 
-def test_detector_flags_a_bare_aliased_call() -> None:
-    src = (
-        "from kiro_crew.slack.format import to_slack_mrkdwn as tsm\n"
-        "def f(t):\n"
-        "    return tsm(t)\n"
-    )
+@pytest.mark.parametrize(
+    "src",
+    [
+        pytest.param(
+            (
+                "from kiro_crew.slack.format import to_slack_mrkdwn as tsm\n"
+                "def f(t):\n"
+                "    return tsm(t)\n"
+            ),
+            id="test_detector_flags_a_bare_aliased_call",
+        ),
+        pytest.param(
+            (
+                "import kiro_crew.slack.format as fmt\n"
+                "def f(t):\n"
+                "    return fmt.to_slack_mrkdwn(t)\n"
+            ),
+            id="test_detector_flags_a_module_attribute_call",
+        ),
+        pytest.param(
+            (
+                "from kiro_crew.slack.format import to_slack_mrkdwn\n"
+                "def f():\n"
+                '    return to_slack_mrkdwn("render-ok")\n'
+            ),
+            id="test_render_ok_inside_a_string_does_not_suppress",
+        ),
+    ],
+)
+def test_detector_flags_the_call(src: str) -> None:
     assert [v[1] for v in find_violations(src)] == [3]
 
 
-def test_detector_flags_a_module_attribute_call() -> None:
-    src = (
-        "import kiro_crew.slack.format as fmt\n"
-        "def f(t):\n"
-        "    return fmt.to_slack_mrkdwn(t)\n"
-    )
-    assert [v[1] for v in find_violations(src)] == [3]
-
-
-def test_detector_ignores_same_named_method_on_other_objects() -> None:
-    """A method that merely shares the name must not trip the gate."""
-    src = "def f(renderer, t):\n    return renderer.to_slack_mrkdwn(t)\n"
+@pytest.mark.parametrize(
+    "src",
+    [
+        # A method that merely shares the name must not trip the gate.
+        pytest.param(
+            "def f(renderer, t):\n    return renderer.to_slack_mrkdwn(t)\n",
+            id="test_detector_ignores_same_named_method_on_other_objects",
+        ),
+        pytest.param(
+            (
+                "from kiro_crew.slack.format import render_for_slack\n"
+                "def f(t):\n"
+                "    return render_for_slack(t)\n"
+            ),
+            id="test_detector_ignores_the_shared_helpers",
+        ),
+        pytest.param(
+            (
+                "from kiro_crew.slack.format import to_slack_mrkdwn\n"
+                "def f(t):\n"
+                "    return to_slack_mrkdwn(t)  # render-ok: no egress, formats a local preview\n"
+            ),
+            id="test_render_ok_comment_suppresses",
+        ),
+    ],
+)
+def test_detector_passes_the_source(src: str) -> None:
     assert find_violations(src) == []
-
-
-def test_detector_ignores_the_shared_helpers() -> None:
-    src = (
-        "from kiro_crew.slack.format import render_for_slack\n"
-        "def f(t):\n"
-        "    return render_for_slack(t)\n"
-    )
-    assert find_violations(src) == []
-
-
-def test_render_ok_comment_suppresses() -> None:
-    src = (
-        "from kiro_crew.slack.format import to_slack_mrkdwn\n"
-        "def f(t):\n"
-        "    return to_slack_mrkdwn(t)  # render-ok: no egress, formats a local preview\n"
-    )
-    assert find_violations(src) == []
-
-
-def test_render_ok_inside_a_string_does_not_suppress() -> None:
-    src = (
-        "from kiro_crew.slack.format import to_slack_mrkdwn\n"
-        "def f():\n"
-        '    return to_slack_mrkdwn("render-ok")\n'
-    )
-    assert [v[1] for v in find_violations(src)] == [3]
 
 
 # ── BEHAVIOURAL tier: the pipeline closes both hazards ───────────────────────
@@ -303,11 +288,9 @@ class TestRenderForSlackOrdering:
     def test_credential_at_the_conversion_ceiling_is_not_halved(self) -> None:
         """convert-then-redact hazard: the 39k self-truncation must not cut it.
 
-        The filler is newline-free so ``rfind`` cannot snap the cut elsewhere,
-        and the secret starts 10 chars before the ceiling -- so convert-first
-        leaves exactly its first 10 characters behind. A secret placed wholly
-        past the boundary would just be deleted, which is why the obvious
-        version of this test proves nothing.
+        The filler is newline-free so ``rfind`` cannot move the cut, and the secret
+        starts 10 chars before the ceiling. A secret wholly past it would just be
+        deleted and prove nothing.
         """
         filler = "x" * (SLACK_MAX_TEXT - 10)
         assert "\n" not in filler
@@ -690,12 +673,9 @@ class TestConvertedSlackDisplayRedaction:
 class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
     """A converted block dirty only as written keeps its links and emphasis.
 
-    ``_convert_tables`` renders a data row as ``*<header>:* <cell>``, which writes
-    the ``:`` a named-credential pattern needs after a ``SecretAccessKey`` header.
-    That match lives in the literal bytes alone: Slack's reading of the redacted
-    block scans clean, so the block has nothing to settle and must be posted with
-    its native links and emphasis intact. Only a key the Slack reading joins costs
-    the block its markup.
+    ``_convert_tables`` writes ``*<header>:* <cell>``, the ``:`` a named-credential
+    pattern needs after a ``SecretAccessKey`` header. Slack's reading scans clean, so
+    the markup stays; only a key the Slack reading joins costs the block its markup.
     """
 
     _SECRET_VALUE = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -752,11 +732,8 @@ class TestLiteralOnlyRedactionKeepsTheBlockMarkup:
 class TestHeaderCaptionsAreRedactedAtTheSeam:
     """A caption skips conversion, so it needs its own redaction pass.
 
-    Captions like ``⏰ *Cron: <name>*`` are already Slack mrkdwn, so they must not
-    go through ``to_slack_mrkdwn`` -- which also means they skip the pipeline's
-    redaction. They are usually built from LLM-authored data (a cron's name comes
-    from the ``cron_add`` tool), and the hand-rolled ``header + parts[0]`` this
-    replaces had already forgotten to redact one.
+    Captions like ``⏰ *Cron: <name>*`` are already mrkdwn and skip ``to_slack_mrkdwn``,
+    yet carry LLM-authored data (a cron's name comes from ``cron_add``).
     """
 
     def test_a_credential_in_the_caption_is_redacted(self) -> None:
@@ -803,11 +780,9 @@ class TestHeaderCaptionsAreRedactedAtTheSeam:
 class TestFencedCodeSurvivesThePreSplit:
     """A ``` block longer than the pre-split window must not be rewritten.
 
-    Fence state is per-conversion-call. Convert in blocks without carrying it and
-    the block that opens mid-fence is treated as prose, so ``_convert_inline``
-    rewrites the CODE -- turning `**x**` inside a code sample into Slack bold, and
-    mangling anything markdown-shaped the user is quoting verbatim. A fenced region
-    can be longer than any block size, so no choice of cut point avoids this.
+    Fence state is per-conversion-call, so a block opening mid-fence would be read as
+    prose and ``_convert_inline`` would turn `**x**` in the code into Slack bold. No cut
+    point avoids it, since a fence can outgrow any block size.
     """
 
     def _long_fence(self) -> str:
@@ -865,23 +840,27 @@ class TestRenderOneForSlackOrdering:
     def test_it_reports_that_redaction_fired(self) -> None:
         """The streaming caller REPLACES an already-posted message on this flag.
 
-        The answer is streamed incrementally by a per-chunk redactor that sees
-        raw chunks and does not strip ANSI, so it can miss a credential that only
-        becomes matchable after normalisation. Nothing downstream can recover the
-        signal either -- the post-render scan sees text this call already cleaned.
-        So if this flag were not reported, the unredacted stream would stay
-        visible on screen.
+        The per-chunk stream redactor does not strip ANSI, and the post-render scan sees
+        already-cleaned text, so this flag is the only signal to replace the stream.
         """
         obfuscated = _SECRET[:4] + "\x1b[0m" + _SECRET[4:]
         assert render_one_for_slack(f"key {obfuscated}", redactor=_fake_redactor).redacted
 
-    def test_it_reports_no_redaction_for_clean_text(self) -> None:
-        """Otherwise the flag would fire every turn and the overwrite is pointless."""
-        assert not render_one_for_slack("just an ordinary answer", redactor=_fake_redactor).redacted
-
-    def test_stripping_ansi_alone_is_not_reported_as_redaction(self) -> None:
-        """Normalisation is not a disclosure that was caught."""
-        assert not render_one_for_slack("plain \x1b[0m text", redactor=_fake_redactor).redacted
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Otherwise the flag would fire every turn and the overwrite is pointless.
+            pytest.param(
+                "just an ordinary answer", id="test_it_reports_no_redaction_for_clean_text"
+            ),
+            # Normalisation is not a disclosure that was caught.
+            pytest.param(
+                "plain \x1b[0m text", id="test_stripping_ansi_alone_is_not_reported_as_redaction"
+            ),
+        ],
+    )
+    def test_no_redaction_reported(self, text: str) -> None:
+        assert not render_one_for_slack(text, redactor=_fake_redactor).redacted
 
     def test_overflow_is_announced_not_silently_dropped(self) -> None:
         out = render_one_for_slack("y" * (SLACK_MAX_TEXT * 2), redactor=_fake_redactor).text
@@ -902,12 +881,9 @@ class TestRenderOneForSlackOrdering:
     def test_keep_tables_can_only_add_rawness_never_remove_it(self) -> None:
         """An explicit False must NOT defeat the straddle guard.
 
-        The streaming caller passes ``keep_tables=actually_streamed``, which is
-        False on every turn where start_stream returned None. If False forced
-        conversion, each pre-split block would convert independently: a block
-        beginning on a table DATA row makes _convert_tables adopt that row as
-        headers, and _flush_table drops it entirely when no rows follow. So the
-        flag is advisory in one direction only.
+        The caller passes ``keep_tables=actually_streamed``, False when start_stream
+        returned None. A block starting on a table DATA row would make _convert_tables
+        adopt it as headers, and _flush_table drops it when no rows follow.
         """
         rows = "\n".join(f"| r{i} | v{i} |" for i in range(1_500))
         table = f"| a | b |\n| - | - |\n{rows}"
@@ -999,15 +975,17 @@ class TestOptionsChoicesAreRedacted:
         assert "[REDACTED]" in payload
 
     def test_the_button_value_is_redacted_before_it_is_sliced(self) -> None:
-        """The value is echoed back into the session on submit.
+        """The value is echoed back into the session on click.
 
-        ``value`` is ``choice[:150]``. Slicing first can cut a credential into a
-        prefix the regex does not match, so redaction has to precede the
-        slice -- the same ordering hazard as the conversion ceiling.
+        ``value`` is ``choice[:OPTIONS_VALUE_LIMIT]``. Slicing first can cut a
+        credential into a prefix the regex does not match, so redaction has to
+        precede the slice -- the same ordering hazard as the conversion ceiling.
         """
-        pad = "p" * 140
+        from kiro_crew.slack.format import OPTIONS_VALUE_LIMIT
+
+        pad = "p" * (OPTIONS_VALUE_LIMIT - 10)
         blocks = build_options_blocks([pad + _SECRET], redactor=_fake_redactor)
-        value = blocks[0]["elements"][0]["options"][0]["value"]
+        value = blocks[0]["elements"][0]["value"]
         assert _SECRET[:8] not in value, "a credential fragment survived into the value"
 
     def test_an_ansi_split_credential_in_a_choice_is_redacted(self) -> None:
@@ -1026,7 +1004,7 @@ class TestOptionsChoicesAreRedacted:
     def test_ordinary_choices_are_unchanged(self) -> None:
         """Redaction must be identity for text that holds no secret."""
         blocks = build_options_blocks(["Merge it now", "Show me the diff"])
-        labels = [o["text"]["text"] for o in blocks[0]["elements"][0]["options"]]
+        labels = [el["text"]["text"] for el in blocks[0]["elements"] if el["type"] == "button"]
         assert labels == ["Merge it now", "Show me the diff"]
 
 
@@ -1174,20 +1152,9 @@ class TestEmphasisDelimiterRedaction:
     def test_link_patterns_exclude_their_own_delimiters(self, pattern_name, required):
         """Structural guard against re-introducing polynomial backtracking.
 
-        Asserted on the pattern source rather than by timing, deliberately: a
-        wall-clock ratio test for this flakes on a loaded runner (this repo already
-        carries one such test that has to be ignored), while the property that
-        actually prevents the blow-up is static.
-
-        If a negated class admits a delimiter that bounds it, input like
-        ``[[[[[[...`` makes every start position consume the rest of the string
-        before failing, which is quadratic in attacker-supplied text on the egress
-        path (CodeQL ``py/polynomial-redos``). Excluding those delimiters makes a
-        doomed start fail in constant time.
-
-        The patterns live in ``messaging.display_safety`` rather than here: the
-        hazard is not Slack-specific (Telegram and Discord collapse the same
-        syntax), and the shared overflow sink needs the canonicaliser too.
+        Asserted on the pattern source, since a timing test flakes on a loaded runner.
+        A negated class that admits its own delimiter makes ``[[[[[[...`` quadratic
+        (CodeQL ``py/polynomial-redos``). The patterns live in ``messaging.display_safety``.
         """
         from kiro_crew.messaging import display_safety as fmt
 

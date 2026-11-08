@@ -192,8 +192,15 @@ def post_text(pid: int, text: str) -> None:
                 libs.cf.CFRelease(event)
 
 
-def post_scroll(pid: int, delta_y: int, delta_x: int) -> None:
-    """Post one scroll-wheel event to *pid*, in LINE units.
+def post_scroll(
+    pid: int, delta_y: int, delta_x: int, *, at: "tuple[float, float] | None" = None
+) -> None:
+    """Post one scroll-wheel event to *pid*, in LINE units, aimed at *at*.
+
+    *at* is a TOP-LEFT SCREEN point. The target app routes a wheel event to the
+    view under the event's location, and a new event's location is wherever the
+    operator's pointer happens to be. Without *at*, a scroll aimed at a background
+    window lands on whatever the pointer is over, and the target app drops it.
 
     **Never uses the multi-axis constructor.**
     ``CGEventCreateScrollWheelEvent`` is variadic, and ctypes marshals a variadic
@@ -214,6 +221,8 @@ def post_scroll(pid: int, delta_y: int, delta_x: int) -> None:
         libs.cg.CGEventSetIntegerValueField(event, K_CG_SCROLL_DELTA_AXIS_1, c_int64(int(delta_y)))
         libs.cg.CGEventSetIntegerValueField(event, K_CG_SCROLL_DELTA_AXIS_2, c_int64(int(delta_x)))
         libs.cg.CGEventSetFlags(event, c_uint64(0))
+        if at is not None:
+            libs.cg.CGEventSetLocation(event, CGPoint(float(at[0]), float(at[1])))
         libs.cg.CGEventPostToPid(int(pid), event)
     finally:
         libs.cf.CFRelease(event)

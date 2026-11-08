@@ -51,6 +51,11 @@ declared outcome is `fixed`, counted once per distinct judged head):
   - the 5th needs `resolution: removed|narrowed -- <reason>` or
     `resolution: deferred #<issue> pinned-by <test id>`; a class marked
     `risk: security|data-loss|corruption` is never deferred.
+When no span reaches 2 fixes, the PR's own count applies instead: pushes whose previous
+head was blocked (a failed review-lane check run or a CHANGES_REQUESTED review), read
+from the timeline with GET calls only. 3 such pushes apply the 3rd-fix rule's text, 5 the
+5th-fix rule's, and the same count speaks when there is no sweep file or the file holds no
+entry. An unreadable PR skips it silently.
 A PR whose rounds cannot be read skips these rules and says so. No rule asks a person.
 
 SWEEP_ENFORCED is False while the check is in its warn period: the same findings
@@ -85,6 +90,10 @@ MIN_REASON = 20
 GIT_TIMEOUT_S = 20
 SEAM_REPEAT_FIXES = 2
 SEAM_LIMIT_FIXES = 4
+# Pushes that followed a BLOCKED head (`_review_contract.blocked_push_count`): the
+# seam trigger for a PR whose thread holds no marker. Pinned equal to the contract.
+BLOCKED_PUSH_REPEAT = 3
+BLOCKED_PUSH_LIMIT = 5
 SENSITIVE_RISKS = ("security", "data-loss", "corruption")
 # The only `git grep` flags a search line may carry. Anything else (-e, -O,
 # --open-files-in-pager, --no-index, ...) either changes what runs or what is read.
@@ -403,8 +412,41 @@ def _nth(n):
     return "{}{}".format(n, {1: "st", 2: "nd", 3: "rd"}.get(n if n < 20 else n % 10, "th"))
 
 
-def _seam_problems(entry, prior, changed, cwd):
-    """Findings from the 3rd/5th-fix rules; `prior` is the count of earlier fixed heads or None."""
+def _seam_level(prior, pushes):
+    """(level, ordinal, subject): 0 none, 1 repeat, 2 limit. Marker count first, then pushes.
+
+    `prior` counts earlier fixed heads of one span, `pushes` the PR's pushes after a
+    blocked head; either is None when it could not be read.
+    """
+    if prior is not None and prior >= SEAM_REPEAT_FIXES:
+        return 2 if prior >= SEAM_LIMIT_FIXES else 1, _nth(prior + 1), "fix of one span"
+    if pushes is not None and pushes >= BLOCKED_PUSH_REPEAT:
+        return (
+            2 if pushes >= BLOCKED_PUSH_LIMIT else 1,
+            _nth(pushes + 1),
+            "push of this PR after a blocked head",
+        )
+    return 0, "", ""
+
+
+def _seam_text(level, ordinal, subject):
+    if level == 2:
+        return (
+            "this is the {} {}: narrow the scope or defer it with an issue and a pinning "
+            "test, and record `resolution:` (see `sweep_check.py --help`)".format(ordinal, subject)
+        )
+    return (
+        "this is the {} {}: change the approach and record `resolution:`, "
+        "or patch once with a `branches:` table of two or more rows".format(ordinal, subject)
+    )
+
+
+def _seam_problems(entry, prior, changed, cwd, pushes=None):
+    """Findings from the 3rd/5th-fix rules; `prior` is the count of earlier fixed heads or None.
+
+    `pushes` is the PR-level count of pushes after a blocked head, used only when the
+    marker count gives no seam.
+    """
     problems = []
     res = entry["resolution"].strip()
     parsed = RESOLUTION_RE.match(res) if res else None
@@ -429,25 +471,16 @@ def _seam_problems(entry, prior, changed, cwd):
         why = _test_exists(parsed.group("pin"), changed, cwd)
         if why:
             problems.append("resolution pinned-by {}".format(why))
-    if prior is None:
-        return problems
+    level, ordinal, subject = _seam_level(prior, pushes)
     full_table = len(entry["branches"]) >= 2
-    if prior >= SEAM_LIMIT_FIXES and not parsed:
-        problems.append(
-            "this is the {} fix of one span: narrow the scope or defer it with an issue "
-            "and a pinning test, and record `resolution:` (see `sweep_check.py --help`)".format(
-                _nth(prior + 1)
-            )
-        )
-    elif prior >= SEAM_REPEAT_FIXES and not parsed and not full_table:
-        problems.append(
-            "this is the {} fix of one span: change the approach and record `resolution:`, "
-            "or patch once with a `branches:` table of two or more rows".format(_nth(prior + 1))
-        )
+    if level == 2 and not parsed:
+        problems.append(_seam_text(level, ordinal, subject))
+    elif level == 1 and not parsed and not full_table:
+        problems.append(_seam_text(level, ordinal, subject))
     return problems
 
 
-def check_entry(entry, base_ref, branch_ref, changed, prior, cwd):
+def check_entry(entry, base_ref, branch_ref, changed, prior, cwd, pushes=None):
     """Every finding for one entry, as strings."""
     problems = []
     if not entry["class"].strip():
@@ -491,7 +524,7 @@ def check_entry(entry, base_ref, branch_ref, changed, prior, cwd):
                 )
     problems += _check_rows(entry["sites"], "site", changed, cwd, True)
     problems += _check_rows(entry["branches"], "branch", changed, cwd, False)
-    problems += _seam_problems(entry, prior, changed, cwd)
+    problems += _seam_problems(entry, prior, changed, cwd, pushes)
     return problems
 
 
@@ -514,6 +547,33 @@ def fix_counts_from(records, bodies, skip_head=""):
     return {span: len(found) for span, found in contract.fix_rounds(order, rounds).items()}
 
 
+def _pr_repo(pr):
+    """`owner/name` from a `gh pr view --json url` object, or None."""
+    m = re.match(r"https?://[^/]+/([^/]+)/([^/]+)/pull/\d+", pr.get("url") or "")
+    return None if m is None else "{}/{}".format(m.group(1), m.group(2))
+
+
+def _blocked_pushes(cwd):
+    """The PR's pushes after a blocked head, or None when the PR or its timeline is unreadable.
+
+    The marker-free seam count of `_review_contract.blocked_push_count` (GET only,
+    through the safe gh runner); it stops at the limit so a long thread costs few calls.
+    """
+    rc, out, _ = _run(["gh", "pr", "view", "--json", "number,url"], cwd)
+    if rc != 0:
+        return None
+    try:
+        pr = json.loads(out)
+        repo = _pr_repo(pr)
+        if repo is None:
+            return None
+        return _sibling("_review_contract.py").blocked_push_count(
+            repo, pr["number"], _run, stop_at=BLOCKED_PUSH_LIMIT
+        )
+    except (ValueError, KeyError, TypeError, ImportError, SyntaxError, AttributeError):
+        return None
+
+
 def _prior_fix_counts(cwd):
     """{span: earlier fixed heads} from the PR thread, or None when it cannot be read.
 
@@ -525,10 +585,9 @@ def _prior_fix_counts(cwd):
         return None
     try:
         pr = json.loads(out)
-        m = re.match(r"https?://[^/]+/([^/]+)/([^/]+)/pull/\d+", pr.get("url") or "")
-        if m is None:
+        repo = _pr_repo(pr)
+        if repo is None:
             return None
-        repo = "{}/{}".format(m.group(1), m.group(2))
         contract = _sibling("_review_contract.py")
         comments = contract.fetch_disposition_comments(repo, pr["number"], _run)
         if comments is None:
@@ -559,11 +618,36 @@ def _log_metrics(git_dir, started, outcome, entries, findings):
         pass
 
 
-def run(base, git_dir=None, cwd=None, prior_counts=None):
+def _report(path, findings, entries, git_dir, started):
+    """Print the findings (or the clean line), log the metrics row, return the exit code."""
+    if not findings:
+        print(
+            "sweep_check: {} sweep entr{} checked, no findings.".format(
+                entries, "y" if entries == 1 else "ies"
+            )
+        )
+        _log_metrics(git_dir, started, "ok", entries, 0)
+        return EXIT_OK
+    head = "REFUSED" if SWEEP_ENFORCED else "WARNING (warn period, not refused)"
+    print("sweep_check {}: {} finding(s) in {}".format(head, len(findings), path), file=sys.stderr)
+    for f in findings:
+        print("  - " + f, file=sys.stderr)
+    print(
+        "  Fix the sweep file or the code, then push again. Format: sweep_check.py --help",
+        file=sys.stderr,
+    )
+    _log_metrics(
+        git_dir, started, "refused" if SWEEP_ENFORCED else "warned", entries, len(findings)
+    )
+    return EXIT_REFUSED if SWEEP_ENFORCED else EXIT_OK
+
+
+def run(base, git_dir=None, cwd=None, prior_counts=None, blocked_pushes=None):
     """Check the sweep file; return EXIT_OK, EXIT_REFUSED or EXIT_ENV.
 
     `prior_counts` is a callable returning {span: earlier fixed heads} or None;
-    the default reads the PR thread.
+    `blocked_pushes` one returning the PR's pushes after a blocked head or None;
+    the defaults read the PR.
     """
     started = time.monotonic()
     # Sweep searches are repository-relative, so every call runs from the
@@ -580,9 +664,16 @@ def run(base, git_dir=None, cwd=None, prior_counts=None):
             return EXIT_ENV
         git_dir = out.strip()
     path = os.path.join(git_dir, SWEEP_FILE)
+    pushes_of = blocked_pushes or (lambda: _blocked_pushes(cwd))
     if not os.path.isfile(path):
-        _log_metrics(git_dir, started, "no-file", 0, 0)
-        return EXIT_OK
+        # No sweep file is no sweep, even at the 9th push: the PR-level count still speaks.
+        level, ordinal, subject = _seam_level(None, pushes_of())
+        if not level:
+            _log_metrics(git_dir, started, "no-file", 0, 0)
+            return EXIT_OK
+        return _report(
+            path, ["no sweep file: " + _seam_text(level, ordinal, subject)], 0, git_dir, started
+        )
     try:
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
@@ -605,30 +696,18 @@ def run(base, git_dir=None, cwd=None, prior_counts=None):
         print(
             "sweep_check: the PR's rounds could not be read; seam rules skipped.", file=sys.stderr
         )
+    pushes = pushes_of()
     for entry in entries:
         prior = None if counts is None else counts.get(entry["span"], 0)
-        for msg in check_entry(entry, base_ref, branch_ref, changed, prior, cwd):
+        for msg in check_entry(entry, base_ref, branch_ref, changed, prior, cwd, pushes):
             findings.append("span={}: {}".format(entry["span"], msg))
-    if not findings:
-        print(
-            "sweep_check: {} sweep entr{} checked, no findings.".format(
-                len(entries), "y" if len(entries) == 1 else "ies"
-            )
-        )
-        _log_metrics(git_dir, started, "ok", len(entries), 0)
-        return EXIT_OK
-    head = "REFUSED" if SWEEP_ENFORCED else "WARNING (warn period, not refused)"
-    print("sweep_check {}: {} finding(s) in {}".format(head, len(findings), path), file=sys.stderr)
-    for f in findings:
-        print("  - " + f, file=sys.stderr)
-    print(
-        "  Fix the sweep file or the code, then push again. Format: sweep_check.py --help",
-        file=sys.stderr,
-    )
-    _log_metrics(
-        git_dir, started, "refused" if SWEEP_ENFORCED else "warned", len(entries), len(findings)
-    )
-    return EXIT_REFUSED if SWEEP_ENFORCED else EXIT_OK
+    if not entries:
+        # An empty or heading-only file holds no entry to carry the seam rule, so it
+        # speaks like a missing file: the PR-level count still applies.
+        level, ordinal, subject = _seam_level(None, pushes)
+        if level:
+            findings.append("no sweep entries: " + _seam_text(level, ordinal, subject))
+    return _report(path, findings, len(entries), git_dir, started)
 
 
 def main(argv=None):

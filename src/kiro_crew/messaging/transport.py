@@ -9,7 +9,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kiro_crew.messaging.outbound_files import ExtractLimits, OutboundFile
 
 #: The ``configured_targets()`` prefix every transport gives a DIRECT (1:1)
 #: conversation: ``user:<identity>``. A ``thread:`` or room target is a different
@@ -21,12 +24,19 @@ DM_TARGET_PREFIX = "user:"
 
 @dataclass(frozen=True)
 class ConfiguredChannelTarget:
-    """A user-configured destination exposed to the dashboard."""
+    """A user-configured destination exposed to the dashboard.
+
+    ``learned`` marks a destination the transport added from inbound traffic rather
+    than from anything the user configured (a WeCom peer who messaged the bot under
+    ``wecom.allow_all_users``). It may still be offered and sent to, but it never
+    names the channel's owner: :func:`sole_direct_target` skips it.
+    """
 
     target_id: str
     label: str
     available: bool = True
     unavailable_reason: str = ""
+    learned: bool = False
 
     def to_dict(self, channel_type: str) -> dict[str, Any]:
         return {
@@ -47,8 +57,9 @@ def sole_direct_target(targets: Iterable[Any]) -> str:
     the operator — so an owner can only be inferred, and this refuses to infer one
     from an ambiguous list: a target is returned only when the channel advertises
     exactly one available ``user:`` target. Unavailable targets (WeCom may only
-    reply to an inbound message) and thread or room targets (a wider audience than
-    a DM) are not candidates.
+    reply to an inbound message), thread or room targets (a wider audience than
+    a DM) and ``learned`` targets (someone who merely messaged the bot) are not
+    candidates.
 
     Shared by the proactive owner DM (``send_message``'s channel ``session``) and
     by session control's owner-DM audience predicate, so the two cannot disagree
@@ -61,6 +72,7 @@ def sole_direct_target(targets: Iterable[Any]) -> str:
         for target in targets
         if str(getattr(target, "target_id", "") or "").startswith(DM_TARGET_PREFIX)
         and getattr(target, "available", False)
+        and not getattr(target, "learned", False)
     ]
     return direct[0] if len(direct) == 1 else ""
 
@@ -319,6 +331,39 @@ class MessagingTransport(ABC):
     ) -> str:
         """Send ``content`` to a conversation; return a platform message id."""
 
+    async def send_markdown(
+        self, conversation_id: str, content: str, thread_id: str | None = None
+    ) -> str:
+        """Send markdown ``content`` rendered; the default sends it as written.
+
+        A channel whose plain send shows markdown literally overrides this.
+        """
+        return await self.send_message(conversation_id, content, thread_id=thread_id)
+
+    # -- Optional: a picture the dashboard mirror sends -----------------------
+    async def outbound_image_limits(
+        self, conversation_id: str, thread_id: str | None = None
+    ) -> ExtractLimits | None:
+        """The budgets a local image bound for this conversation is extracted under.
+
+        Asked by the dashboard -> channel reply mirror BEFORE it extracts. A
+        channel answers its own renderer's budgets where its renderer would upload
+        a picture to this conversation, and ``None`` where it would not (a room
+        its renderer keeps DM-only, or no picture-send path at all). The default
+        is ``None``: the mirror then names the picture instead of printing a path.
+        """
+        return None
+
+    async def send_outbound_image(
+        self, conversation_id: str, file: OutboundFile, *, thread_id: str | None = None
+    ) -> bool:
+        """Send one extracted image as its own message. True only when it landed.
+
+        *file* carries the bytes extraction validated; the path is provenance and
+        is never re-opened. The default sends nothing.
+        """
+        return False
+
     @abstractmethod
     async def resolve_conversation(self, user_id: str) -> str:
         """Resolve a direct-conversation id for ``user_id`` (``open_dm`` equiv)."""
@@ -348,7 +393,8 @@ class MessagingTransport(ABC):
         return []
 
     async def resolve_configured_target(self, target_id: str) -> tuple[str, str | None] | None:
-        """Resolve an advertised target to ``(conversation_id, thread_id)``."""
+        """Resolve a target id to ``(conversation_id, thread_id)``: one
+        :meth:`configured_targets` advertises, or a spelling the transport documents."""
         return None
 
     # -- Outbound authorization --------------------------------------------

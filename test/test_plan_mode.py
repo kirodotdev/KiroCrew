@@ -60,7 +60,7 @@ def _make_runner(tmp_path: Path, steps_json: list[dict] | None = None) -> TaskRu
 
     if steps_json is not None:
 
-        async def _mock_decompose(spec, work_dir="", task_id="", start_priority=None):
+        async def _mock_decompose(spec, work_dir="", task_id="", start_priority=None, agent=""):
             return runner._parse_tasks(json.dumps(steps_json))
 
         runner._decompose = _mock_decompose  # type: ignore[assignment]
@@ -116,7 +116,7 @@ class TestPlan:
     @pytest.mark.asyncio
     async def test_plan_from_file(self, tmp_path: Path) -> None:
         spec_file = tmp_path / "spec.md"
-        spec_file.write_text("# File Spec\nDo things")
+        spec_file.write_text("# File Spec\nDo things", encoding="utf-8")
         runner = _make_runner(tmp_path, [{"title": "S1"}])
         run = await runner.plan("", source="file", spec_path=str(spec_file))
         assert run.spec_content == "# File Spec\nDo things"
@@ -445,7 +445,6 @@ class TestExecutePlan:
         assert run.tasks[1].status == StepStatus.FAILED
         assert run.error == "Task 2 failed"
 
-        # Cleanup fake tasks
         for i in range(_MAX_CONCURRENT_TASKS):
             runner._tasks.pop(f"fake_{i}", None)
 

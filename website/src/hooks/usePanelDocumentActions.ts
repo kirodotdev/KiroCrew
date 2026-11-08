@@ -7,7 +7,7 @@ import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 import { clearInlineDraft, getInlineDraft, type usePanelTabs } from './usePanelTabs'
 import { i18nT } from '../i18n/t'
 import type { Artifact } from '../types'
-import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../utils/fileReadQuery'
+import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause } from '../utils/fileReadQuery'
 import { announceDashboardPreviewOpened, dashboardPreviewRef, dashboardPreviewTargetFromRef } from '../utils/dashboardPreview'
 import { errMessage } from '../utils/thunkError'
 import { optsForReplace } from '../pages/chat/replaceGuard'
@@ -70,12 +70,12 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
           // The shared fetch carries the backend's binary verdict with the text
           // (from the `X-File-Binary` header), so the tab knows whether it has
           // a buffer to edit at all.
-          queryFn: ({ signal }) => fetchFileRead(filePath, signal),
+          queryFn: ({ signal }) => fetchFileRead(filePath, signal, slot),
           staleTime: FILE_READ_STALE_MS,
         }),
         queryClient.prefetchQuery({
           queryKey: ['file-diff', filePath],
-          queryFn: () => api.fileDiff(filePath),
+          queryFn: () => api.fileDiff(filePath, slot),
         }),
       ])
       const { text, ok, status, binary } = read
@@ -90,7 +90,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
       // read that fills the tab before any panel mounts, so a verdict left
       // behind here would be lost to the panel for good.
       const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-      tabsCtl.openFile(filePath, body, slot, { ...optsForReplace(opts), binary: ok && binary, partial: ok && isPartialRead(read) })
+      tabsCtl.openFile(filePath, body, slot, { ...optsForReplace(opts), binary: ok && binary, partial: ok && partialReadCause(read), placeholder: !ok })
       onOpened?.()
     } catch (e) {
       // The read itself threw (network, aborted). Reported above the composer
@@ -113,12 +113,12 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
       const [read] = await Promise.all([
         queryClient.fetchQuery({
           queryKey: fileReadQueryKey(filePath),
-          queryFn: ({ signal }) => fetchFileRead(filePath, signal),
+          queryFn: ({ signal }) => fetchFileRead(filePath, signal, slot),
           staleTime: FILE_READ_STALE_MS,
         }),
         queryClient.prefetchQuery({
           queryKey: ['file-diff', filePath],
-          queryFn: () => api.fileDiff(filePath),
+          queryFn: () => api.fileDiff(filePath, slot),
         }),
       ])
       const { text, ok, status, binary } = read
@@ -127,7 +127,7 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
         return
       }
       const body = ok ? text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
-      tabsCtl.openWorkingTreeDiff(filePath, body, slot, { binary: ok && binary, partial: ok && isPartialRead(read) })
+      tabsCtl.openWorkingTreeDiff(filePath, body, slot, { binary: ok && binary, partial: ok && partialReadCause(read), placeholder: !ok })
       onOpened?.()
     } catch (e) {
       showActionError(i18nT('pages.chatPage.could_not_read_file_reason', { path: filePath, reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
@@ -216,7 +216,8 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     // draft we reconcile must be the one that owned this save, not whatever slot
     // is active when the write resolves.
     const requestSlot = slotRef.current ?? ''
-    const res = await fetch('/api/file-write', {
+    // Names the chat, so the gateway refuses a write for one that runs remotely.
+    const res = await fetch('/api/file-write' + (requestSlot ? '?slot=' + encodeURIComponent(requestSlot) : ''), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: filePath, content }),

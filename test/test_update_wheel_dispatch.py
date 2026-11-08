@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.frontend import FrontendBuildResult
+
 
 def _init_repo(path) -> None:
     """Make *path* the top level of a real git working tree.
@@ -641,11 +643,15 @@ class TestUpdateDispatch:
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason", lambda *a: ""
         )
+        # The fake `subprocess.run` cannot answer the repo-config probe; that refusal
+        # is covered against a real repo in test_host_git_repo_exec_neutralization.
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
+        )
 
         # The function will call git rev-parse, then git fetch, then git diff.
         # After git diff returns 0 (no new commits), it prints "Already up to date!"
         cs._update()
-        # Verify git commands were issued
         git_calls = [c for c in calls if c[0] == "git"]
         assert any("rev-parse" in c for c in git_calls)
 
@@ -691,6 +697,9 @@ class TestUpdateDivergenceGuard:
         )
         monkeypatch.setattr(
             "kiro_crew.platform.update_governance.update_blocked_reason", lambda *a: ""
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.repo_exec_config_reason", lambda proj, **_k: ""
         )
 
         import kiro_crew.cli_server as cs
@@ -747,7 +756,12 @@ class TestUpdateDivergenceGuard:
         # before these steps, and they are not what these tests assert on.
         monkeypatch.setattr("kiro_crew.cli_server.shutil.which", lambda *_: None)
         monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *_: None)
-        monkeypatch.setattr("kiro_crew.cli_server.build_frontend_sync", lambda *_: None)
+        # The update puts the recorded node dirs first on PATH; restore it at teardown.
+        monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.build_frontend_sync",
+            lambda *_: FrontendBuildResult("built"),
+        )
         monkeypatch.setattr("kiro_crew.cli_server.dep_sync.sync_or_reinstall", lambda *a, **k: 0)
         monkeypatch.setattr("builtins.input", lambda *_: answer)
 

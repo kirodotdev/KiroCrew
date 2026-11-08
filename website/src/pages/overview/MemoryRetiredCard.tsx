@@ -1,10 +1,12 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Undo2, Archive } from 'lucide-react'
 import { api } from '../../api/client'
+import { sliceCodePoints } from '../../utils/codePoints'
 import { Card, CardTitle, Btn, Badge, EmptyState } from '../../components/ui'
 import { fmtNumber, fmtDateTimeNumeric } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { MemoryScopeNotice, memoryQueryRetry } from './MemoryStoreCard'
+import { queryReadFailed } from '../../utils/queryReadFailed'
 
 /**
  * Episodes a semantic write superseded, with a way to put one back.
@@ -53,7 +55,7 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
         {i18nT('memoryV2.replaced_experiences_hint')}
       </p>
       <MemoryScopeNotice error={retired.error} />
-      {!!retired.error && store && <Btn className="mb-3 min-h-11" disabled={retired.isFetching} onClick={() => void retired.refetch()}>{i18nT('memoryV2.retry_read')}</Btn>}
+      {queryReadFailed(retired) && store && <Btn className="mb-3 min-h-11 aria-disabled:opacity-30 aria-disabled:cursor-default" aria-disabled={retired.isFetching || undefined} onClick={() => { if (!retired.isFetching) void retired.refetch() }}>{i18nT('memoryV2.retry_read')}</Btn>}
       {restore.error && <MemoryScopeNotice error={restore.error} />}
       {retired.isPending && <p role="status" className="text-[13px] text-muted">{i18nT('pages.overview.memoryTab.loading')}</p>}
       {!retired.error && !retired.isPending && (
@@ -84,7 +86,7 @@ export default function MemoryRetiredCard({ store }: { store: string; privateMem
                     escapes a text child already, and pre-escaping turns an
                     ampersand in a remembered sentence into `&amp;` on screen. */}
                 <td className="px-2.5 py-2 border-b border-border text-sm">
-                  {row.text.slice(0, TEXT_PREVIEW_CHARS)}
+                  {sliceCodePoints(row.text, 0, TEXT_PREVIEW_CHARS)}
                   {row.text.length > TEXT_PREVIEW_CHARS && <><span className="text-muted">…</span><details className="mt-2"><summary className="cursor-pointer text-muted">{i18nT('memoryV2.view_details')}</summary><p className="mt-2 whitespace-pre-wrap break-words">{row.text}</p></details></>}
                 </td>
                 <td className="px-2.5 py-2 border-b border-border text-sm">

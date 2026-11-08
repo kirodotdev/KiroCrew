@@ -1,22 +1,11 @@
 """The ``standup`` built-in, checked against a fold value a pod really served.
 
-Fold paths first, for the reason every module in this family states: the manifest format
-validates a path's SPELLING and never its target, so a plausible path that resolves to
-nothing ships and renders a blank cell forever with every gate green. Every path here is
-resolved against ``test/fixtures/dashboard_templates/pod_folds.json``.
+The manifest checks a path's spelling, never its target, so every path is resolved against
+``test/fixtures/dashboard_templates/pod_folds.json``.
 
-This page's own risk is its FOUR buckets. "What changed since you last looked" is a
-delta, and the split into finished / claimed-done / still-moving / stuck is derived from
-an item's ``state`` together with its worker's ``status`` -- neither field names the
-buckets alone, and the one a reader most needs (a worker said done, nothing has ruled on
-it) is named by neither. A state the product adds and this page has no bucket for must
-not land in "still moving" and read as healthy, so the bucketing is pinned against
-:mod:`kiro_crew.work_vocab` rather than against this page's own list.
-
-The second risk is the silence band. Every other element on the page shows WORK time, and
-a worker that died 31 minutes ago looks identical to one that is thinking. The band is
-the only element that answers that, so it is required to be computed from a write time
-and to have an honest "no write time on the record" state.
+The four buckets come from ``state`` plus the worker's ``status``, pinned against
+:mod:`kiro_crew.work_vocab` so a new state never reads as healthy "still moving". The
+silence band is computed from a write time and has a "no write time" state.
 """
 
 from __future__ import annotations
@@ -26,9 +15,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+import dashboard_template_checks
 import pytest
 
-from kiro_crew.dashboard_templates.manifest import MAX_FIELDS, ManifestError, load_template
+from kiro_crew.dashboard_templates.manifest import ManifestError, load_template
 from kiro_crew.work_vocab import WORK_ITEM_STATES, WORK_VERDICTS, WORK_WORKER_STATUSES
 
 TEMPLATE_ID = "standup"
@@ -109,13 +99,7 @@ def html(loaded: tuple[Any, str]) -> str:
     return loaded[1]
 
 
-class TestItLoads:
-    def test_the_shared_loader_accepts_it(self, loaded: tuple[Any, str]) -> None:
-        manifest, page = loaded
-        assert manifest.id == TEMPLATE_ID
-        assert manifest.source == "builtin"
-        assert page.strip()
-        assert len(manifest.fields) <= MAX_FIELDS
+class TestItLoads(dashboard_template_checks.TheSharedLoaderAcceptsIt):
 
     def test_only_the_headline_is_agentic(self, loaded: tuple[Any, str]) -> None:
         """The crewmate's own one-sentence read is the one fact no fold records.
@@ -143,7 +127,7 @@ class TestItLoads:
         )
 
 
-class TestEveryFoldPathResolves:
+class TestEveryFoldPathResolves(dashboard_template_checks.EachResolvedValueHasTheDeclaredType):
     @pytest.mark.parametrize("fixture", [POD, SAMPLE], ids=lambda p: p.stem)
     def test_each_path_is_present(self, fixture: Path, loaded: tuple[Any, str]) -> None:
         manifest, _ = loaded
@@ -154,21 +138,6 @@ class TestEveryFoldPathResolves:
             if spec.fold and not _walk(folds.get(spec.fold), spec.path)[0]
         ]
         assert not unresolved, f"unresolved in {fixture.name}: {unresolved}"
-
-    def test_each_resolved_value_has_the_declared_type(self, loaded: tuple[Any, str]) -> None:
-        manifest, _ = loaded
-        folds = _folds(POD)
-        wrong: list[str] = []
-        for spec in manifest.fields.values():
-            if not spec.fold:
-                continue
-            found, value = _walk(folds.get(spec.fold), spec.path)
-            if not found or value is None:
-                continue
-            got = _type_of(value)
-            if got != spec.type:
-                wrong.append(f"{spec.name} declares {spec.type!r} but served {got!r}")
-        assert not wrong, "; ".join(wrong)
 
     def test_a_wrong_path_is_actually_caught(self) -> None:
         """The planted failure, so a resolver answering "found" for everything cannot
@@ -243,11 +212,8 @@ class TestTheFourBuckets:
     def test_the_python_restatement_matches_the_pages_own_order(self, html: str) -> None:
         """The two are allowed to exist only while they agree.
 
-        The restatement above answers "which bucket", and it would answer confidently
-        and wrongly the moment the page's own order changed, so the order is compared.
-        Each probe matches the page's CHECK rather than a bare literal: ``'done'`` also
-        appears as the accepted branch's return value, and matching that would compare
-        the wrong five positions and read as a drift that is not there.
+        Probes match the page's check, not a bare literal: ``'done'`` is also the accepted
+        branch's return value.
         """
         body = re.search(r"function bucket\(it\) \{(.*?)\n      \}", html, re.S)
         assert body
@@ -268,26 +234,12 @@ class TestTheFourBuckets:
         )
 
 
-class TestTheSilenceBand:
-    def test_it_is_computed_from_a_write_time(self, html: str) -> None:
-        """Silence, not work time. Durations on every other element are how long
-        something TOOK, which a dead worker and a thinking one share."""
-        assert "function drawQuiet" in html
-        assert "Date.now() - last" in html, (
-            "the band does not measure time since the last write, so it cannot tell a "
-            "crewmate that is thinking from one that died"
-        )
-
-    def test_it_has_an_honest_state_for_no_write_time_at_all(self, html: str) -> None:
-        """A band that silently draws nothing when it has no timestamp reads as "all
-        good", which is the one answer absence must never produce."""
-        assert "cannot say whether anything is still moving" in html
-
-    def test_the_threshold_is_a_named_constant(self, html: str) -> None:
-        assert re.search(r"var QUIET_MS = \d+ \* \d+ \* \d+;", html), (
-            "the quiet threshold is inlined at its use site, so the page's two readers "
-            "of it can drift apart"
-        )
+class TestNoSilenceBand:
+    def test_the_page_draws_no_freshness_band(self, html: str) -> None:
+        """The person sees no staleness message: a crewmate that stopped writing is
+        its own lead's news, not a band over the person's page."""
+        assert "function drawQuiet" not in html
+        assert "quiet_band" not in html and "quiet_unknown" not in html
 
     def test_a_card_with_no_report_says_so_rather_than_showing_zero(self, html: str) -> None:
         assert "no report yet" in html, (
@@ -296,14 +248,11 @@ class TestTheSilenceBand:
         )
 
 
-class TestItDrawsFromTheHost:
-    def test_it_reaches_no_network(self, html: str) -> None:
-        lowered = html.lower()
-        for forbidden in ("<script src", "fetch(", "xmlhttprequest", "importscripts", "//cdn."):
-            assert forbidden not in lowered, f"reaches the network via {forbidden!r}"
-
-    def test_it_reads_the_hosts_own_field_bag(self, html: str) -> None:
-        assert "window.kirocrew" in html
+class TestItDrawsFromTheHost(
+    dashboard_template_checks.ItReadsTheHostsOwnFieldBag,
+    dashboard_template_checks.ItRendersOnLoadAndOnEveryMessage,
+    dashboard_template_checks.ItReachesNoNetwork,
+):
 
     def test_the_written_tag_is_gated_on_the_hosts_agentic_mark(self, html: str) -> None:
         """``window.kirocrew.agentic`` is a LIST, not an object.
@@ -341,7 +290,3 @@ class TestItDrawsFromTheHost:
         is never shown as a whole one."""
         assert 'data-dashboard-field="moments_dropped"' in html
         assert "truncated" in html
-
-    def test_it_renders_on_load_and_on_every_message(self, html: str) -> None:
-        assert "window.addEventListener('load', render)" in html
-        assert "addEventListener('message'" in html

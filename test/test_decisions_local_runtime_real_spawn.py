@@ -11,6 +11,7 @@ out of scope here: the stand-in replaces the model, and ``sys.executable`` the e
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
 import socket
@@ -29,20 +30,48 @@ from kiro_crew.testing.wait import wait_until
 
 pytestmark = pytest.mark.timeout(120)
 
+_LAUNCHERS = ("plumb_cpu.py", "strands_decider_cpu.py", "laya_cpu.py")
+_TETHER = ("_wait_for_end_of_input", "_exit_when_gateway_lets_go")
+
+
+def launcher_tether(name: str) -> str:
+    """The stdin tether functions of launcher *name*, as source.
+
+    Each launcher is copied into the model's environment alone, so each carries
+    its own copy of the tether; the stand-in runs that same code.
+    """
+    source = (lr.SERVERS_DIR / name).read_text(encoding="utf-8")
+    found = {
+        node.name: ast.get_source_segment(source, node)
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name in _TETHER
+    }
+    assert set(found) == set(_TETHER), f"{name} defines {sorted(found)}"
+    return "\n\n".join(str(found[fn]) for fn in _TETHER)
+
+
 #: The stand-in server: the launcher contract of ``local_servers/*.py`` -- bind
 #: 127.0.0.1 on ``--port``, answer ``/kirocrew-attest`` with the secret, exit at
-#: end of stdin -- and nothing else.
-_STUB = textwrap.dedent("""
+#: end of stdin through the launchers' own tether -- and nothing else.
+_STUB_HEAD = textwrap.dedent("""
     import argparse, os, socketserver, sys, threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     ATTEST = os.environ.pop("KIROCREW_LOCAL_ATTEST", "")
 
-    def _exit_when_gateway_lets_go():
-        sys.stdin.buffer.read()
-        os._exit(0)
+    """)
+_STUB_BODY = textwrap.dedent("""
+
 
     threading.Thread(target=_exit_when_gateway_lets_go, daemon=True).start()
+    if sys.platform == "win32":
+        # A launcher's native imports run while the tether waits. On Windows
+        # numpy's OpenBLAS DLL queries the stdin pipe as it loads, and such a
+        # query waits behind any read left pending on that pipe. PeekNamedPipe
+        # is one; the pause gives a blocking read time to become pending first.
+        import _winapi, msvcrt, time
+        time.sleep(1.0)
+        _winapi.PeekNamedPipe(msvcrt.get_osfhandle(sys.stdin.fileno()), 0)
     p = argparse.ArgumentParser()
     p.add_argument("--weights")
     p.add_argument("--port", type=int)
@@ -70,6 +99,15 @@ _STUB = textwrap.dedent("""
 
     S(("127.0.0.1", args.port), H).serve_forever()
     """)
+_STUB = _STUB_HEAD + launcher_tether(_LAUNCHERS[0]) + _STUB_BODY
+
+
+def test_every_launcher_carries_the_same_stdin_tether():
+    """The stand-in runs the first launcher's tether, so it must be every launcher's."""
+    tethers = {name: launcher_tether(name) for name in _LAUNCHERS}
+    assert sorted(p.name for p in lr.SERVERS_DIR.glob("*.py")) == sorted(_LAUNCHERS)
+    assert len(set(tethers.values())) == 1, "the launchers' stdin tethers differ"
+
 
 _WEIGHT = b"stand-in"
 
@@ -79,6 +117,34 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))
         return int(s.getsockname()[1])
+
+
+#: Ports to try before the run is a failure rather than a lost race.
+_PORT_ATTEMPTS = 5
+
+
+def activate_on_a_free_port(rt: lr.LocalModelRuntime, before=None) -> int:
+    """Activate the stand-in on a port the OS hands out, wait until it runs; the port.
+
+    The runtime needs a number before the server can listen, so the port is picked,
+    released and handed on. On a shared runner another process -- an outgoing connect
+    given it as its ephemeral source port, say -- can hold it by the time the runtime
+    probes it, and the runtime then reports it in use, correctly. That is a lost race,
+    not the subject, so a fresh port is picked (testing-conventions D9). *before* runs
+    on each picked port ahead of the activation.
+    """
+    errors = []
+    for _ in range(_PORT_ATTEMPTS):
+        port = _free_port()
+        if before is not None:
+            before(port)
+        rt.activate(_model(), port)
+        s = _wait(rt, lr.STATE_RUNNING, lr.STATE_ERROR)
+        if s["state"] == lr.STATE_RUNNING:
+            return port
+        assert "already in use" in s["error"], s["error"]
+        errors.append(s["error"])
+    raise AssertionError(f"every picked port was taken: {errors}")
 
 
 def _model() -> local_models.LocalModel:
@@ -165,10 +231,7 @@ def _wait(rt, *states) -> dict:
 
 
 def test_a_real_server_is_attested_running_and_stopped_by_its_stdin(runtime):
-    port = _free_port()
-    runtime.activate(_model(), port)
-    s = _wait(runtime, lr.STATE_RUNNING, lr.STATE_ERROR)
-    assert s["state"] == lr.STATE_RUNNING, s["error"]
+    port = activate_on_a_free_port(runtime)
     assert not lr._port_free(port), "the server holds its port"
     pid = server_pid(runtime)
     runtime.deactivate(wait=True)
@@ -180,11 +243,12 @@ def test_a_real_server_is_attested_running_and_stopped_by_its_stdin(runtime):
     wait_until(lambda: lr._port_free(port), describe=lambda: f"port {port} is not free again")
 
 
-def test_a_listener_that_does_not_know_the_secret_is_not_attested(runtime):
-    port = _free_port()
+def _nothing_attests(port: int) -> None:
     assert lr._health_ok(port, "wrong") is False, "nothing listens yet"
-    runtime.activate(_model(), port)
-    _wait(runtime, lr.STATE_RUNNING)
+
+
+def test_a_listener_that_does_not_know_the_secret_is_not_attested(runtime):
+    port = activate_on_a_free_port(runtime, before=_nothing_attests)
     assert lr._health_ok(port, "not-the-secret") is False
     assert lr._health_ok(port, runtime._run.nonce) is True
 
@@ -197,8 +261,7 @@ _PARENT = textwrap.dedent("""
 
     from pathlib import Path
     rt = t.make_runtime(Path({tmp!r}), setattr)
-    rt.activate(t._model(), {port})
-    t._wait(rt, lr.STATE_RUNNING)
+    t.activate_on_a_free_port(rt)
     print(t.server_pid(rt), flush=True)
     time.sleep(600)
     """)
@@ -206,10 +269,9 @@ _PARENT = textwrap.dedent("""
 
 def test_the_server_does_not_outlive_a_gateway_that_dies(tmp_path):
     """The stdin tether is what ends the server when the gateway is killed outright."""
-    port = _free_port()
     here = str(Path(__file__).resolve().parent)
     src = str(Path(lr.__file__).resolve().parents[2])
-    script = _PARENT.format(paths=[here, src], tmp=str(tmp_path), port=port)
+    script = _PARENT.format(paths=[here, src], tmp=str(tmp_path))
     parent = subprocess.Popen(  # noqa: S603 - fixed argv
         [sys.executable, "-c", script],
         stdout=subprocess.PIPE,
@@ -246,3 +308,19 @@ def test_the_server_does_not_outlive_a_gateway_that_dies(tmp_path):
         except subprocess.TimeoutExpired:
             parent.kill()
             parent.wait(timeout=10)
+
+
+def test_a_picked_port_taken_before_the_server_binds_it_is_picked_again(runtime, monkeypatch):
+    """The picked port held elsewhere by the time the runtime probes it.
+
+    The holder is bound and not listening, the way an outgoing connect's source port
+    is: the runtime's probe reads it taken while a connect to it is refused.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+        held.bind(("127.0.0.1", 0))
+        taken = int(held.getsockname()[1])
+        picks = iter([taken])
+        real = _free_port
+        monkeypatch.setitem(globals(), "_free_port", lambda: next(picks, None) or real())
+        test_a_listener_that_does_not_know_the_secret_is_not_attested(runtime)
+        assert runtime.status()["port"] != taken

@@ -357,7 +357,6 @@ class TestScenarioGitCoordinationE2E:
         diff = await git_coord.get_step_diff(run)
         assert "bar.py" in diff
 
-        # Finalize
         branch = await git_coord.finalize(run)
         assert branch == "kirocrew/task/e2e_test"
 
@@ -396,7 +395,6 @@ class TestScenarioRevertPreservesEarlierWork:
         await git_coord.commit_step(run, step2)
         assert (wt / "bad.py").exists()
 
-        # Revert step 2
         await git_coord.revert_step(run)
         assert not (wt / "bad.py").exists(), "bad.py should be gone after revert"
         assert (wt / "good.py").exists(), "good.py should survive revert"
@@ -737,7 +735,6 @@ class TestScenarioWorktreeIsolation:
 
         await git_coord.init_workspace(run)
 
-        # Create file in worktree
         wt = Path(run.work_dir)
         (wt / "new_file.py").write_text("new")
         step = Step(index=1, title="Add file", description="d")
@@ -790,7 +787,6 @@ class TestScenarioCompletionNotification:
             sessions=sessions, auto_test=False, on_notify=_on_notify, work_dir=tmp_path
         )
 
-        # Patch git_coord to set branch_name
         async def _mock_init(run):
             run.branch_name = "kirocrew/task/test_branch"
 
@@ -953,7 +949,6 @@ class TestScenarioGitRevertReplanE2E:
         await git_coord.commit_step(run, s2)
         assert len(run.commit_hashes) == 2
 
-        # Revert step 2
         await git_coord.revert_step(run)
         assert len(run.commit_hashes) == 1
         assert not (wt / "bad.py").exists()

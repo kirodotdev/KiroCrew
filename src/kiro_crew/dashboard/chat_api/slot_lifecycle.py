@@ -1,44 +1,53 @@
-"""A slot's lifecycle after create: the shared close path and delete, the idle
-cleanup sweep, and the fresh-conversation reset.
+"""A slot's lifecycle after create: the shared close path and delete, and the idle
+cleanup sweep.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
-from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, TypeVar
 
 from aiohttp import web
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_handlers import (
+        _FILE_CHANGES_DRAIN_SECS,
         _GUARDED_WRITE_WAIT_SECS,
+        _SLOW_CLOSE_STAGE_SECS,
         DashboardState,
         NudgeLoop,
         SlotCloseError,
-        _app_cancel_denied,
+        SlotRegistry,
         _ChatSlot,
+        _close_managed,
+        _conductor_line,
         _history_key_for,
         _persist_handover_tail,
         _replacement_shares_transcript,
         _resettle_restricted_key,
-        _subagents_attached_response,
-        _switch_target_busy,
         _sync_dashboard_slots,
+        _teardown_drain_basis,
         _unblock_pending_waits,
         body_int,
         deny_app_slot_access,
         effective_session_key,
+        load_window_off_loop,
         logger,
         loop_slot_keys,
         note_slot_closed,
         read_bounded_json,
+        record_deferred_dismissal,
         save_slot_off_loop,
         sel,
         select_idle_slot_keys,
+        session_deletion_confirmed,
+        slot_history_key,
         slot_not_found,
         time,
     )
+
+_T = TypeVar("_T")
 
 
 def _slot_still_ours(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
@@ -62,6 +71,60 @@ def _slot_still_ours(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
     """
     current = state._slots.get(name)
     return current is None or current is slot
+
+
+async def _restore_original_after_failed_close(
+    state: DashboardState,
+    name: str,
+    slot: "_ChatSlot",
+    retired_loop: "NudgeLoop | None",
+    appended: int = 0,
+) -> bool:
+    """Put a popped original back after its close could not persist it; True if it came back.
+
+    The compensation the plain save-failure arm of :func:`_close_slot` performs,
+    for every arm that reaches the same state -- an original popped from the
+    registry whose unsaved tail did not reach disk. Restored only while the key
+    is still free or still this slot's (:func:`_slot_still_ours`): a replacement
+    already published owns the name, and clobbering it would lose ITS state for
+    the original's. With the tab back, the loop retired for the close comes back
+    too (a restored session with no clock is an abandoned unattended worker),
+    and the app's record of the dismissal is taken back -- only when the tab did
+    come back, since with a replacement on the key the dismissal DID happen for
+    the original. The key-scoped restricted marker is re-derived from whoever
+    holds the name afterwards. The caller reports the close as failed and, for
+    a restored tab, releases the admission fence (``close_slot``'s outer
+    ``finally`` does it for the single-tab close; the sweep does it itself).
+    """
+    restored = _slot_still_ours(state, name, slot)
+    if restored:
+        state._slots[name] = slot
+        _emit_archived_rows(slot, appended)
+    _resettle_restricted_key(state, name)
+    await _restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is slot)
+    if slot._app and restored:
+        from kiro_crew.apps.teardown import (
+            notify_slot_close_undone,  # circular: apps.teardown -> apps.bridges
+        )
+
+        if not await notify_slot_close_undone(slot._app, name):
+            logger.error(
+                "Could not take back the dismissal for app %r on %r; it may still "
+                "consider this slot closed",
+                slot._app,
+                name,
+            )
+    elif slot._app:
+        logger.warning(
+            "Slot %s was taken over while its close was persisting, so app %r keeps "
+            "the dismissal: the original tab is gone and resuming its worker would "
+            "target the replacement now holding this key",
+            name,
+            slot._app,
+        )
+    _sync_dashboard_slots(state)
+    state.push_slots_update()
+    return restored
 
 
 class _NudgeRetireFailed(Exception):
@@ -233,176 +296,6 @@ async def _restore_slot_nudge_loop(
         logger.warning("autonudge loop restore after failed slot close failed", exc_info=True)
 
 
-async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/reset-conversation — a fresh conversation, same slot.
-
-    Drops the slot's resume pointer, so its next turn cold-starts a new native
-    conversation instead of ``session/load``-ing the accumulated one. Everything
-    else survives: the slot stays open, its transcript stays on disk, and the
-    session-map ENTRY keeps its channel linkage.
-
-    This capability existed internally with no way to ask for it. Resume is
-    key-driven — ``resume_sid = self._session_map.get(key)`` — and a slot key is
-    stable by design, so reopening one continues where it left off. That is the
-    point for a tab the user closed and came back to. It is NOT what a caller
-    wants after a long-lived conversation has drifted, filled up, or outlived the
-    thing it was about; and until now the only way to break the link was to
-    DELETE the session from history, which destroys the record to reset the
-    pointer. This separates the two.
-
-    ``discard_conversation``, not ``destroy``: the entry also carries the Slack
-    thread/channel linkage and the reverse index built from it, so dropping the
-    row would silently unlink a mirrored session. The dropped value is stashed as
-    ``discarded_sid``, so this is diagnosable and reversible by hand.
-
-    It is nonetheless a FULL teardown — it shuts the provider down and releases
-    the shared sub-agent runtime — so it takes the same guards the sibling
-    teardown route does, through the same shared helpers rather than a third
-    policy of its own: authorization on the SESSION (not merely the slot),
-    ``provider.has_active_turn()``, ``running``, a sibling alias's turn on the
-    same session (``_switch_target_busy``), and the sub-agent gate. Each of the
-    four protects work the caller cannot see from the outside: a turn running on
-    the session with no dashboard task behind it (an inbound channel message), a
-    turn mid-write, another alias's turn still cold-starting before any provider
-    is registered, and children still running after their parent's turn ended.
-
-    The ``has_active_turn()`` check is a best-effort fast path; the
-    authoritative guard is the discard's ``skip_if_busy``, which probes the
-    per-session SEMAPHORE atomically with the session pop (see
-    :meth:`SessionManager.discard_conversation`). The fast path has a known
-    edge — a turn holding the semaphore but not yet having a prompt in flight
-    is invisible to it — and the atomic guard is what closes it, the same
-    contract the sibling reload route rests on, so the two teardowns keep one
-    notion of "busy". Of the refusal paths, only the atomic guard's decline is
-    SEL-recorded (``outcome="denied"``): it is the one refusal that happens
-    after the route has committed to the teardown, while the fast-path 409s
-    are pre-checks and stay unlogged, as they are on the sibling.
-
-    The transcript is deliberately left in place, which means the tab still shows
-    the earlier messages while the model does not remember them. That is the
-    honest rendering of what happened — the record is the user's, the context was
-    the conversation's — and it is why this is a deliberate action rather than
-    something the gateway does on its own.
-    """
-    state: DashboardState = request.app["state"]
-    name = request.match_info["slot"]
-    slot = state._slots.get(name)
-    if not slot:
-        return slot_not_found()
-
-    # Resolved before authorization, because what has to be authorized is the
-    # SESSION this will clear, not the slot it was reached through.
-    key = effective_session_key(slot)
-
-    # Slot ownership does not imply ownership of that session:
-    # ``get_or_create_slot`` resolves ``linked_session_key`` from the session map
-    # for a name shaped like a channel stem, so an app that names a live channel
-    # thread ends up owning a slot bound to a conversation it has no claim on.
-    # ``_app_cancel_denied`` is the shared policy for exactly that, and it tests
-    # the key the caller will actually act on. Answers an indistinguishable 404,
-    # and runs BEFORE the 409s below so a refusal cannot confirm the slot exists.
-    denied = _app_cancel_denied(request, slot, "slot_reset_conversation", key)
-    if denied is not None:
-        return denied
-
-    # Read the body HERE — after authorization, before the busy guards. Reading it
-    # is an await the CLIENT controls the duration of, and every guard below
-    # protects work that can START during a suspension: a turn admitted after
-    # ``has_active_turn()`` answered False is torn down mid-write by the discard.
-    # Parsing after the guards would widen that window from one event-loop hop to
-    # however long a slow body takes to arrive. The guards must be the last thing
-    # that happens before the teardown.
-    #
-    # An absent body is not an error: this route took no body before, so
-    # refusing one would break every existing caller for a parameter they do
-    # not send. A present-but-malformed body IS refused — "sent nothing" and
-    # "sent garbage" are different facts, and only the first can be defaulted.
-    replay = True
-    body, body_err = await read_bounded_json(request, allow_absent=True)
-    if body_err is not None:
-        return body_err
-    assert body is not None  # read_bounded_json returns (dict, None) on success
-    if "replay" in body:
-        replay = bool(body.get("replay"))
-
-    # A turn in flight on the SESSION, which ``slot.running`` cannot see: that
-    # flag tracks this slot's own task, while an inbound channel message runs a
-    # turn on the linked session with no dashboard task at all. Tearing the
-    # provider down under it loses that turn's output. Same probe, same order as
-    # the sibling reload route — one policy for one teardown.
-    provider = state.sessions.get_provider(key)
-    if provider is not None and provider.has_active_turn():
-        return web.json_response(
-            {"error": "a turn is in flight", "code": "turn_in_flight", "slot": name},
-            status=409,
-        )
-
-    if slot.running:
-        return web.json_response(
-            {
-                "error": "a turn is running on this slot",
-                "code": "turn_in_flight",
-                "slot": name,
-            },
-            status=409,
-        )
-    # ``discard_conversation`` is a full teardown: it also releases the shared
-    # sub-agent runtime the parent's children run on. ``slot.running`` is False
-    # while they keep going — the parent turn ends first — so nothing above
-    # catches it, and the same guard the reload route uses is what does.
-    attached = await _subagents_attached_response(state, slot, key, "slot_reset_conversation")
-    if attached is not None:
-        return attached
-
-    # A SIBLING alias cold-starting on this same session, which the two checks
-    # above cannot see: two slots can drive one session (a channel-linked slot
-    # and its dashboard twin), and while the other one's first turn is still in
-    # ``provider.start()`` this slot's ``running`` is False and no provider is
-    # registered yet. Discarding the resume pointer then reports a reset while
-    # the starting turn brings the old conversation back. ``_switch_target_busy``
-    # is the predicate the switch handlers refuse that window with. It runs
-    # here, after the children probe, because that probe is an await a turn can
-    # begin in, and nothing but the discard follows it. The discard's
-    # ``skip_if_busy`` stays the authority for a registered session; it cannot
-    # see an unregistered one, which is why this read must be the last.
-    if _switch_target_busy(state, slot, key, state.sessions.get_provider(key)):
-        return web.json_response(
-            {"error": "a turn is in flight", "code": "turn_in_flight", "slot": name},
-            status=409,
-        )
-
-    # ``skip_if_busy``: the fast paths above cannot see a turn that holds the
-    # per-session semaphore but has not yet put a prompt in flight (an inbound
-    # channel message between the lease and its first stream event). The discard
-    # probes the semaphore atomically with the session pop, so a turn admitted
-    # after the guards above answered False is refused here instead of being
-    # torn down mid-lease.
-    discarded = await state.sessions.discard_conversation(key, replay=replay, skip_if_busy=True)
-    if not discarded:
-        sel().log_api_access(
-            caller=request.get("app", "") or "dashboard",
-            operation="slot_reset_conversation",
-            outcome="denied",
-            resources=f"slot={name} replay={replay}",
-        )
-        return web.json_response(
-            {"error": "a turn is in flight", "code": "turn_in_flight", "slot": name},
-            status=409,
-        )
-    # The fresh conversation will advertise its own model list, so the previous
-    # one's withhold verdict does not describe this slot. Only on a performed
-    # discard: a refusal above leaves the old conversation (and its verdict) in
-    # place.
-    slot.forget_session_model_state()
-    sel().log_api_access(
-        caller=request.get("app", "") or "dashboard",
-        operation="slot_reset_conversation",
-        outcome="completed",
-        resources=f"slot={name} replay={replay}",
-    )
-    return web.json_response({"slot": name, "reset": True, "replay": replay})
-
-
 def _release_closed_execution(
     state: DashboardState, slot: "_ChatSlot", session_key: str, execution
 ) -> None:
@@ -413,7 +306,7 @@ def _release_closed_execution(
     warm pool when the tab is resumed -- and the ordinary turn-start rebind
     publishes nothing when the selection is unchanged, so withdrawing here leaves
     a resumed member session unvouched and refuses its own-store dispatch until
-    its owner re-selects the agent. That refusal belongs to a restart, which
+    a gate-verified admission re-vouches it. That refusal belongs to a restart, which
     empties the map wholesale, not to closing a tab.
 
     The retained population is bounded by the count cap rather than by a
@@ -519,13 +412,118 @@ async def close_slot(
     name: str,
     *,
     pre_pop_check: Callable[[], None] | None = None,
+    hand_back: bool = True,
 ) -> None:
-    """Close a slot while releasing its admission fence on every aborted path."""
+    """Close a slot while releasing its admission fence on every aborted path.
+
+    A close that returns has committed, so the sessions the closed one managed are
+    handed up the manager line here (a no-op unless ``agent.session_manager_chain``).
+    The idle sweep passes ``hand_back=False``: an idle archive keeps them on it.
+    """
     try:
         await _close_slot(state, slot, name, pre_pop_check=pre_pop_check)
     finally:
         if state.get_slot(name) is slot:
             slot.cancel_close()
+    if hand_back and state.get_slot(name) is not slot:
+        from kiro_crew.dashboard.session_control import hand_back_on_close
+
+        await _timed_close_stage(name, "hand-back", hand_back_on_close(state, slot))
+
+
+async def _timed_close_stage(name: str, stage: str, step: Awaitable[_T]) -> _T:
+    """Await one stage of closing *name*; a warning names it when it is slow."""
+    started = time.monotonic()
+    try:
+        return await step
+    finally:
+        elapsed = time.monotonic() - started
+        if elapsed >= _SLOW_CLOSE_STAGE_SECS:
+            logger.warning("Closing slot %s: %s took %.1fs", name, stage, elapsed)
+
+
+async def _drain_file_changes_flush(slot: "_ChatSlot") -> None:
+    """Wait, bounded, for the turn's in-flight file-change flush before the archival save.
+
+    The cancelled turn's ``finally`` reads the after-content of every file it
+    wrote on a worker thread and attaches the chips when that read returns
+    (``chat_runner._flush_file_changes_off_loop``). The bounded wait on the task
+    above can give up while that read is still running; the archive below would
+    then persist the window WITHOUT the chips, and the attach that follows lands
+    on a slot already out of ``state._slots``, where no later save is admitted.
+    So the archive waits for the flush itself, up to ``_FILE_CHANGES_DRAIN_SECS``.
+    A read still running past that is a stuck filesystem or resolver, not a
+    large file: the chips are dropped from the archive KNOWINGLY, with a warning
+    naming the slot, and the close completes -- a close must never hang on a
+    read that never returns.
+
+    Never raises. A flush that fails leaves the archive to write what the window
+    holds. A cancellation of the CLOSE while it waits here is absorbed, as the
+    bounded task wait above absorbs its own: the slot is already popped, so a
+    close that unwound here would leave the surviving flush attaching chips to a
+    slot no periodic or shutdown save visits, and the archive below is the one
+    write that still reaches disk. The worker thread cannot be cancelled either
+    way, so absorbing the cancel changes only whether the archive runs, never
+    how long the read takes; the deadline keeps counting across it.
+    """
+    flush = getattr(slot, "_file_changes_flush", None)
+    if flush is None or flush.done():
+        return
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _FILE_CHANGES_DRAIN_SECS
+    while not flush.done():
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            logger.warning(
+                "Slot %s closed while its file-change read was still running after "
+                "%.0fs; the archive is written without this turn's file-change chips",
+                slot.key,
+                _FILE_CHANGES_DRAIN_SECS,
+            )
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(flush), timeout=remaining)
+        except asyncio.CancelledError:
+            continue
+        except asyncio.TimeoutError:
+            continue
+        except Exception:
+            return
+
+
+def _emit_archived_rows(slot: "_ChatSlot", appended: int) -> None:
+    """Deliver the rows a broadcast-free archival flush appended, once the slot owns its key again."""
+    if appended <= 0 or not slot._on_message or slot._has_reader:
+        return
+    for msg in slot.messages[-appended:]:
+        if msg.get("role") not in ("chunk", "done", "user"):
+            slot._on_message(slot.key, msg)  # type: ignore[operator]
+
+
+def _hand_off_cards_when_the_turn_ends(
+    state: DashboardState, closed: "_ChatSlot", task: asyncio.Task
+) -> None:
+    """Hand *closed*'s merge cards to an open twin again once its turn *task* ends.
+
+    The close waits for the cancelled turn only so long, and a turn that outlives
+    the wait can put a card it took back on the popped slot when it ends
+    (``_restore_consumed_merge_contexts``). Nothing visits a popped slot again, so
+    that card would wait for a hydration an open twin never gets. Nothing is done
+    when the turn already ended, or when a failed archive save put the slot back
+    in the table, where its own next turn takes the card.
+    """
+    if task.done():
+        return
+    from kiro_crew.dashboard.chat_runner import hand_merge_cards_to_open_twin
+
+    def after_the_turn(_finished: asyncio.Task) -> None:
+        if state._slots.get(closed.key) is closed:
+            return
+        follow_up = asyncio.create_task(hand_merge_cards_to_open_twin(state, closed))
+        state._background_tasks.add(follow_up)
+        follow_up.add_done_callback(state._background_tasks.discard)
+
+    task.add_done_callback(after_the_turn)
 
 
 async def _close_slot(
@@ -618,7 +616,9 @@ async def _close_slot(
     # into the session being closed and resurrect it. See
     # _retire_slot_nudge_loop for why disarming alone does not hold.
     try:
-        retired_loop = await _retire_slot_nudge_loop(name)
+        retired_loop = await _timed_close_stage(
+            name, "nudge-loop retire", _retire_slot_nudge_loop(name)
+        )
     except _NudgeRetireFailed as exc:
         # The loop could not be retired, so the close CANNOT proceed: persisting
         # the slot as closed while the registry still lists the loop is what lets
@@ -667,7 +667,9 @@ async def _close_slot(
             notify_slot_closed,  # circular: apps.teardown -> apps.bridges -> dashboard
         )
 
-        if not await notify_slot_closed(slot._app, name):
+        if not await _timed_close_stage(
+            name, "app close hook", notify_slot_closed(slot._app, name)
+        ):
             # The app could not record the dismissal. Refuse the close rather
             # than leave a worker running behind a tab the user believes is gone.
             await _restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is slot)
@@ -681,7 +683,9 @@ async def _close_slot(
         # There is no await between a successful second retirement and the pop,
         # so a later queued arm revalidates against the now-missing slot.
         try:
-            late_retired_loop = await _retire_slot_nudge_loop(name)
+            late_retired_loop = await _timed_close_stage(
+                name, "late nudge-loop retire", _retire_slot_nudge_loop(name)
+            )
         except _NudgeRetireFailed as exc:
             await _restore_slot_nudge_loop(exc.loop, lambda: state.get_slot(name) is slot)
             from kiro_crew.apps.teardown import (
@@ -729,236 +733,442 @@ async def _close_slot(
             _sync_dashboard_slots(state)
             state.push_slots_update()
             raise
-    state._slots.pop(name, None)
-    # Release any blocking wait before cancelling the task: a question pending on
-    # the blocking POST /api/ask-question path holds an MCP worker on an open
-    # HTTP request, and the slot is going away, so nobody will answer its card.
-    _unblock_pending_waits(state, slot)
-    # Cancel any pending speculative session creation. Without this, an
-    # eager task mid-debounce or mid-handshake outlives the slot; combined
-    # with the task's own post-create liveness re-check this closes both
-    # halves of the delete/recreate race.
-    _eager = getattr(slot, "_eager_spawn_task", None)
-    if _eager is not None and not _eager.done():
-        _eager.cancel()
-    # A pending resume-prefetch TTL timer is deliberately NOT cancelled here:
-    # its removal is conditional (no-ops once the slot is gone or the session
-    # was claimed), while a cancel landing mid-removal would interrupt
-    # provider.shutdown() after the registry entry was already popped and
-    # leak the process holding kiro-cli's native session lock.
-    _teardown_tasks = {task for task in (slot.task,) if task is not None and not task.done()}
-    if _teardown_tasks:
-        for task in _teardown_tasks:
-            task.cancel()
-        try:
-            await asyncio.wait_for(
-                asyncio.shield(asyncio.gather(*_teardown_tasks, return_exceptions=True)),
-                timeout=2.0,
-            )
-        except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-            pass
-    # Post-pop teardown race: across the awaits above (and the app-notify awaits
-    # before the pop) a concurrent same-key recreate — a POST /api/chat or the
-    # session_close MCP verb — can mint a REPLACEMENT slot under `name`. When that
-    # replacement writes the SAME transcript, writing THIS (original) slot as
-    # closed=True would stamp the archive flag on a conversation the replacement is
-    # still using, and the sessions.remove below would tear down the session it now
-    # uses. The original was already popped and its task cancelled, so the close is
-    # effectively complete for it; leave the replacement's slot and session
-    # untouched and report success.
-    #
-    # The gate is TRANSCRIPT sharing, not key ownership, because those are two
-    # different questions and the save answers to the transcript: a linked slot
-    # (channel-, cron- or workflow-born) writes its `linked_session_key`, while an
-    # unbound same-name replacement writes `dashboard:{name}`. Yielding the archive
-    # on that pair would leave the ORIGINAL's transcript with no `closed` flag, and
-    # the channel reconcile reads an absent flag as "never dismissed" and resurfaces
-    # the tab. So a replacement that shares nothing takes nothing: the archive below
-    # runs normally on the original's own file, and only the KEY-SCOPED steps
-    # (`sessions.remove`, the failure-arm restore) still yield to it.
-    #
-    # Yielding the archive is NOT the same as discarding the original's content. Its
-    # own unsaved rows still belong on its own transcript — what must not happen is
-    # the `closed` stamp and the session teardown, not the write.
-    # `_persist_handover_tail` is that distinction made explicit: the same window
-    # this frame was about to save, saved OPEN instead of closed.
-    #
-    # Scope, precisely: this closes the WIDE window — the app-notify awaits before
-    # the pop and the up-to-2.0s task cancel above — and NOT the durable write
-    # itself. `save_slot_off_loop` reaches its commit through the process-wide
-    # default executor, so a recreate can still land between this synchronous
-    # check and the in-lock write. That residual is the one an unguarded close
-    # carries too, and the row it leaves is what a plain sequential
-    # close-then-reopen of a reused key already produces: `closed`/`closed_at` are
-    # slot-owned metadata, so the replacement's next full save drops them, and
-    # `api_chat_slot_resume` compensates a stale flag with an in-lock
-    # compare-and-clear. Closing it AT the commit needs an ownership predicate
-    # evaluated inside `_locked(history_key)` — on the write and on the resume's
-    # read-then-clear both — which is a durable-metadata contract change, not a
-    # loop-side ordering one.
-    if _replacement_shares_transcript(state, name, slot):
-        # Yielding the archive must not silently discard what this slot never got to
-        # disk. The original is out of `_slots` and about to be unreferenced, and
-        # the periodic flush only ever visits `_slots`, so this frame is the last
-        # thing that can persist its tail — as an OPEN-key write, which is the
-        # single difference from the archival save this exit declines.
-        drained = await _persist_handover_tail(state, name, slot)
-        # The key belongs to the replacement now, and so does every KEY-SCOPED
-        # marker sitting on it. Hand the restricted flag over before letting go:
-        # the discard below the save is the only thing that would have cleared the
-        # original's, and this exit skips it. After the drain above, so the marker
-        # is derived from the newest observation of who holds the key.
-        _resettle_restricted_key(state, name)
-        _sync_dashboard_slots(state)
-        state.push_slots_update()
-        if slot._app:
-            # Same decision the failure arm below takes, and it must be as visible:
-            # this is the MORE common hand-over, so a silent one would hide every
-            # ordinary occurrence of an app worker left paused.
-            logger.warning(
-                "Slot %s was recreated while its close was tearing down, so app %r "
-                "keeps the dismissal: the original tab is gone and resuming its "
-                "worker would target the replacement now holding this key",
-                name,
-                slot._app,
-            )
-        if not drained.rows_committed:
-            # The drain was this frame's last chance at those rows, so a close that
-            # reported success here would be reporting durability it does not have —
-            # and unlike the arm below there is nothing to roll back and nothing that
-            # will retry, so the report IS the whole remedy. Same code as the
-            # ordinary save failure: from the caller's side this is one thing, a
-            # close whose history write did not land.
-            raise SlotCloseError("failed to save history", code="history_save_failed")
-        # Otherwise return, do not raise: for the ORIGINAL the close is complete
-        # (popped, task cancelled, tail durable), so every caller — the DELETE
-        # handler and session-control's close_target — must read this as success.
-        return
+    # ── Teardown takeover watch ─────────────────────────────────────────
+    # Opened BEFORE the pop, because the pop is what frees the key for a
+    # same-name recreate: every await in the teardown below (the task-cancel
+    # wait, the app notifications, the saves' executor hops) is a window a
+    # resume can begin in, and a resume that begins mid-teardown fires its
+    # takeover note before any of this frame's saves could open a watch of
+    # their own. Carrying ONE watch across the whole teardown — the archive
+    # save, the hand-over drains, the failure arms — is what lets a
+    # rewrite-shaped write (``_pending_rewrite``) lose to that takeover no
+    # matter which of those writes ends up carrying it. Closed in the
+    # ``finally``, on every exit.
+    _teardown_basis = SlotRegistry.open_takeover_basis(state, name)
     try:
-        await save_slot_off_loop(state, slot, closed=True, closed_at=closed_at, best_effort=False)
-    except Exception:
-        # Save failed — restore slot so data isn't lost
-        logger.error("Failed to save slot %s to history, restoring", name, exc_info=True)
-        # ...but only if the key is still free or still ours. A recreate that
-        # landed while save_slot_off_loop was in flight now owns `name`; blindly
-        # writing `state._slots[name] = slot` would clobber that live replacement
-        # with the failed original. Restore only when the slot is genuinely still
-        # ours (or the key is now empty).
-        restored = _slot_still_ours(state, name, slot)
-        if restored:
-            state._slots[name] = slot
-        else:
-            # Not restored means not referenced: the periodic flush that would have
-            # retried this write only visits `_slots`, so without this the failure
-            # arm's own stated invariant — "restores the slot so data isn't lost" —
-            # is not met for the hand-over case. Re-attempt the write as the
-            # open-key save the state actually is, which also clears a failure that
-            # was only lock contention with the recreate instead of treating one as
-            # permanent, and reports the row count when it is not.
-            #
-            # Its answer needs no branch HERE — unlike the pre-save exit above, this
-            # arm already ends in `SlotCloseError`, so a lost tail is reported to the
-            # caller either way. The drain only decides whether the rows survived.
-            await _persist_handover_tail(state, name, slot)
-            # Whichever way that went, the key-scoped restricted marker has to describe
-        # whoever holds `name` when this frame ends — the restored original, or the
-        # replacement that kept the key. This arm never reaches the discard below
-        # the save, so it settles the marker itself.
-        _resettle_restricted_key(state, name)
-        # Keep monitor admission fenced until every rollback await completes.
-        # ``close_slot`` releases the fence in its outer finally.
-        # The close did not happen, so the loop retired for it must come back —
-        # a restored session with no clock is an abandoned unattended worker.
-        await _restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is slot)
-        # ...and the app's record of the dismissal has to come back too — but ONLY
-        # if the tab did. The notification above already SUCCEEDED, which for a crew
-        # means the worker is durably paused; a close that puts the tab back and
-        # leaves the worker stopped hands the user an error AND a silently disabled
-        # worker. Unwound in reverse order of commitment, which is the only
-        # arrangement that leaves no pair of the three stores disagreeing.
-        #
-        # The undo is COUPLED TO THE RESTORE, not to `_app` alone, because with a
-        # replacement on the key there is no tab to put back: the original is
-        # popped, cancelled, and not coming back, so the dismissal DID happen for it
-        # and taking it back would be a lie with teeth. Resuming a crew re-arms an
-        # autonomous worker whose `slot_key` its watchdog resolves straight through
-        # `state.get_slot(...)` with no ownership test — so the auto-approve grant,
-        # and then an unbounded nudge clock, would land on the USER-owned
-        # replacement now sitting on that key. Leaving the pause is the same answer
-        # the pre-save guard above gives from the identical state, and it is a
-        # first-class visible one (a paused_reason row with a resume control), not a
-        # silent stop.
-        if slot._app and restored:
-            from kiro_crew.apps.teardown import (
-                notify_slot_close_undone,  # circular: apps.teardown -> apps.bridges
-            )
+        state._slots.pop(name, None)
+        # Release any blocking wait before cancelling the task: a question pending on
+        # the blocking POST /api/ask-question path holds an MCP worker on an open
+        # HTTP request, and the slot is going away, so nobody will answer its card.
+        _unblock_pending_waits(state, slot)
+        # Cancel any pending speculative session creation. Without this, an
+        # eager task mid-debounce or mid-handshake outlives the slot; combined
+        # with the task's own post-create liveness re-check this closes both
+        # halves of the delete/recreate race.
+        _eager = getattr(slot, "_eager_spawn_task", None)
+        if _eager is not None and not _eager.done():
+            _eager.cancel()
+        # A pending resume-prefetch TTL timer is deliberately NOT cancelled here:
+        # its removal is conditional (no-ops once the slot is gone or the session
+        # was claimed), while a cancel landing mid-removal would interrupt
+        # provider.shutdown() after the registry entry was already popped and
+        # leak the process holding kiro-cli's native session lock.
+        _teardown_tasks = {task for task in (slot.task,) if task is not None and not task.done()}
+        if _teardown_tasks:
+            for task in _teardown_tasks:
+                task.cancel()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(asyncio.gather(*_teardown_tasks, return_exceptions=True)),
+                    timeout=2.0,
+                )
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                pass
+        await _drain_file_changes_flush(slot)
+        # After the cancelled turn was awaited, so a card it put back is handed over
+        # too: a twin of this chat that stays open is never hydrated, and without this
+        # it would not see a merge card queued here.
+        from kiro_crew.dashboard.chat_runner import hand_merge_cards_to_open_twin
 
-            if not await notify_slot_close_undone(slot._app, name):
-                logger.error(
-                    "Could not take back the dismissal for app %r on %r; it may still "
-                    "consider this slot closed",
+        await _timed_close_stage(
+            name, "merge-card hand-off", hand_merge_cards_to_open_twin(state, slot)
+        )
+        for task in _teardown_tasks:
+            _hand_off_cards_when_the_turn_ends(state, slot, task)
+        # Post-pop teardown race: across the awaits above (and the app-notify awaits
+        # before the pop) a concurrent same-key recreate — a POST /api/chat or the
+        # session_close MCP verb — can mint a REPLACEMENT slot under `name`. When that
+        # replacement writes the SAME transcript, writing THIS (original) slot as
+        # closed=True would stamp the archive flag on a conversation the replacement is
+        # still using, and the sessions.remove below would tear down the session it now
+        # uses. The original was already popped and its task cancelled, so the close is
+        # effectively complete for it; leave the replacement's slot and session
+        # untouched and report success.
+        #
+        # The gate is TRANSCRIPT sharing, not key ownership, because those are two
+        # different questions and the save answers to the transcript: a linked slot
+        # (channel-, cron- or workflow-born) writes its `linked_session_key`, while an
+        # unbound same-name replacement writes `dashboard:{name}`. Yielding the archive
+        # on that pair would leave the ORIGINAL's transcript with no `closed` flag, and
+        # the channel reconcile reads an absent flag as "never dismissed" and resurfaces
+        # the tab. So a replacement that shares nothing takes nothing: the archive below
+        # runs normally on the original's own file, and only the KEY-SCOPED steps
+        # (`sessions.remove`, the failure-arm restore) still yield to it.
+        #
+        # Yielding the archive is NOT the same as discarding the original's content. Its
+        # own unsaved rows still belong on its own transcript — what must not happen is
+        # the `closed` stamp and the session teardown, not the write.
+        # `_persist_handover_tail` is that distinction made explicit: the same window
+        # this frame was about to save, saved OPEN instead of closed.
+        #
+        # Scope, precisely: this closes the WIDE window — the app-notify awaits before
+        # the pop and the up-to-2.0s task cancel above — and NOT the durable write
+        # itself. `save_slot_off_loop` reaches its commit through the process-wide
+        # default executor, so a recreate can still land between this synchronous
+        # check and the in-lock write. That residual is the one an unguarded close
+        # carries too, and the row it leaves is what a plain sequential
+        # close-then-reopen of a reused key already produces: `closed`/`closed_at` are
+        # slot-owned metadata, so the replacement's next full save drops them, and
+        # `api_chat_slot_resume` compensates a stale flag with an in-lock
+        # compare-and-clear. Closing it AT the commit needs an ownership predicate
+        # evaluated inside `_locked(history_key)` — on the write and on the resume's
+        # read-then-clear both — which is a durable-metadata contract change, not a
+        # loop-side ordering one.
+        if _replacement_shares_transcript(state, name, slot):
+            # Yielding the archive must not silently discard what this slot never got to
+            # disk. The original is out of `_slots` and about to be unreferenced, and
+            # the periodic flush only ever visits `_slots`, so this frame is the last
+            # thing that can persist its tail — as an OPEN-key write, which is the
+            # single difference from the archival save this exit declines.
+            drained = await _persist_handover_tail(
+                state,
+                name,
+                slot,
+                takeover_basis=_teardown_drain_basis(state, name, slot, _teardown_basis),
+            )
+            # The key belongs to the replacement now, and so does every KEY-SCOPED
+            # marker sitting on it. Hand the restricted flag over before letting go:
+            # the discard below the save is the only thing that would have cleared the
+            # original's, and this exit skips it. After the drain above, so the marker
+            # is derived from the newest observation of who holds the key.
+            _resettle_restricted_key(state, name)
+            _sync_dashboard_slots(state)
+            state.push_slots_update()
+            if slot._app:
+                # Same decision the failure arm below takes, and it must be as visible:
+                # this is the MORE common hand-over, so a silent one would hide every
+                # ordinary occurrence of an app worker left paused.
+                logger.warning(
+                    "Slot %s was recreated while its close was tearing down, so app %r "
+                    "keeps the dismissal: the original tab is gone and resuming its "
+                    "worker would target the replacement now holding this key",
+                    name,
                     slot._app,
+                )
+            if not drained.rows_committed:
+                # The drain was this frame's last chance at those rows, so a close that
+                # reported success here would be reporting durability it does not have —
+                # and unlike the arm below there is nothing to roll back and nothing that
+                # will retry, so the report IS the whole remedy. Same code as the
+                # ordinary save failure: from the caller's side this is one thing, a
+                # close whose history write did not land.
+                raise SlotCloseError("failed to save history", code="history_save_failed")
+            # Otherwise return, do not raise: for the ORIGINAL the close is complete
+            # (popped, task cancelled, tail durable), so every caller — the DELETE
+            # handler and session-control's close_target — must read this as success.
+            return
+        rows_before = slot.total_messages
+        try:
+            # A turn that outlived the cancel wait has not run its own teardown flush,
+            # and this frame is the last one that can commit the hold before the pop.
+            # The key may already name a replacement, so nothing is delivered live.
+            slot.flush_deferred_notes(broadcast=False, retain=False)
+            archived_ok = await _timed_close_stage(
+                name,
+                "archive save",
+                save_slot_off_loop(
+                    state,
+                    slot,
+                    closed=True,
+                    closed_at=closed_at,
+                    best_effort=False,
+                    # Discriminated, not raw: this archive writes the ORIGINAL's
+                    # routed transcript, and a divergent same-name takeover (an
+                    # unbound recreate over a linked tab) took the key without
+                    # touching that file — its moved watch must not refuse the
+                    # archive the divergent branch of this close deliberately runs.
+                    takeover_basis=_teardown_drain_basis(state, name, slot, _teardown_basis),
+                ),
+            )
+        except Exception:
+            # Save failed — restore slot so data isn't lost
+            logger.error("Failed to save slot %s to history, restoring", name, exc_info=True)
+            # ...but only if the key is still free or still ours. A recreate that
+            # landed while save_slot_off_loop was in flight now owns `name`; blindly
+            # writing `state._slots[name] = slot` would clobber that live replacement
+            # with the failed original. Restore only when the slot is genuinely still
+            # ours (or the key is now empty).
+            restored = _slot_still_ours(state, name, slot)
+            if restored:
+                state._slots[name] = slot
+                _emit_archived_rows(slot, slot.total_messages - rows_before)
+            else:
+                # Not restored means not referenced: the periodic flush that would have
+                # retried this write only visits `_slots`, so without this the failure
+                # arm's own stated invariant — "restores the slot so data isn't lost" —
+                # is not met for the hand-over case. Re-attempt the write as the
+                # open-key save the state actually is, which also clears a failure that
+                # was only lock contention with the recreate instead of treating one as
+                # permanent, and reports the row count when it is not.
+                #
+                # Its answer needs no branch HERE — unlike the pre-save exit above, this
+                # arm already ends in `SlotCloseError`, so a lost tail is reported to the
+                # caller either way. The drain only decides whether the rows survived.
+                await _persist_handover_tail(
+                    state,
+                    name,
+                    slot,
+                    takeover_basis=_teardown_drain_basis(state, name, slot, _teardown_basis),
+                )
+            # Whichever way that went, the key-scoped restricted marker has to describe
+            # whoever holds `name` when this frame ends — the restored original, or the
+            # replacement that kept the key. This arm never reaches the discard below
+            # the save, so it settles the marker itself.
+            _resettle_restricted_key(state, name)
+            # Keep monitor admission fenced until every rollback await completes.
+            # ``close_slot`` releases the fence in its outer finally.
+            # The close did not happen, so the loop retired for it must come back —
+            # a restored session with no clock is an abandoned unattended worker.
+            await _restore_slot_nudge_loop(retired_loop, lambda: state.get_slot(name) is slot)
+            # ...and the app's record of the dismissal has to come back too — but ONLY
+            # if the tab did. The notification above already SUCCEEDED, which for a crew
+            # means the worker is durably paused; a close that puts the tab back and
+            # leaves the worker stopped hands the user an error AND a silently disabled
+            # worker. Unwound in reverse order of commitment, which is the only
+            # arrangement that leaves no pair of the three stores disagreeing.
+            #
+            # The undo is COUPLED TO THE RESTORE, not to `_app` alone, because with a
+            # replacement on the key there is no tab to put back: the original is
+            # popped, cancelled, and not coming back, so the dismissal DID happen for it
+            # and taking it back would be a lie with teeth. Resuming a crew re-arms an
+            # autonomous worker whose `slot_key` its watchdog resolves straight through
+            # `state.get_slot(...)` with no ownership test — so the auto-approve grant,
+            # and then an unbounded nudge clock, would land on the USER-owned
+            # replacement now sitting on that key. Leaving the pause is the same answer
+            # the pre-save guard above gives from the identical state, and it is a
+            # first-class visible one (a paused_reason row with a resume control), not a
+            # silent stop.
+            if slot._app and restored:
+                from kiro_crew.apps.teardown import (
+                    notify_slot_close_undone,  # circular: apps.teardown -> apps.bridges
+                )
+
+                if not await notify_slot_close_undone(slot._app, name):
+                    logger.error(
+                        "Could not take back the dismissal for app %r on %r; it may still "
+                        "consider this slot closed",
+                        slot._app,
+                        name,
+                    )
+            elif slot._app:
+                logger.warning(
+                    "Slot %s was recreated while its close was persisting, so app %r keeps "
+                    "the dismissal: the original tab is gone and resuming its worker would "
+                    "target the replacement now holding this key",
+                    name,
+                    slot._app,
+                )
+            _sync_dashboard_slots(state)
+            state.push_slots_update()
+            raise SlotCloseError("failed to save history", code="history_save_failed")
+        else:
+            if not archived_ok and await asyncio.to_thread(session_deletion_confirmed, state, slot):
+                # Definitive evidence only (a missing file, or a readable line
+                # contradicting the recorded identity): the session was
+                # permanently deleted while this save awaited the lock, and the
+                # delete already disposed of what this frame was archiving. An
+                # unverifiable probe lands in the retry arm below instead —
+                # discarding a tail on a transient stat failure is not a
+                # deletion outcome. Probed BEFORE the takeover branch: a
+                # delete-won refusal can coincide with a moved watch (a resume
+                # noted the key, then the delete landed), and the takeover
+                # drain writes with no deletion guard — its append recreates
+                # the deleted transcript with a fresh metadata line, silently
+                # un-deleting what the user permanently removed. Deletion is
+                # the stronger verdict: there is no transcript left for a
+                # takeover to own.
+                logger.info(
+                    "Slot %s close archive skipped: the session was deleted while "
+                    "the archive awaited the lock",
                     name,
                 )
-        elif slot._app:
-            logger.warning(
-                "Slot %s was recreated while its close was persisting, so app %r keeps "
-                "the dismissal: the original tab is gone and resuming its worker would "
-                "target the replacement now holding this key",
-                name,
-                slot._app,
-            )
-        _sync_dashboard_slots(state)
-        state.push_slots_update()
-        raise SlotCloseError("failed to save history", code="history_save_failed")
-    else:
-        # Through the shared postcondition rather than a bare discard: on the
-        # ordinary close the key is gone and this drops the marker, and a recreate
-        # that landed during the save gets the marker re-derived from ITSELF instead
-        # of inheriting the original's.
-        _resettle_restricted_key(state, name)
-        # Record the DELIBERATE close as a ``session/closed`` crew-log edge with
-        # ``END_REASON_REMOVED`` so a later ``session_status`` gone row for this
-        # worker reads ``closed`` ("finished, nothing to re-dispatch") rather than
-        # ``lost``. This lives HERE, in the one deliberate-close caller, not in
-        # ``SessionManager.remove``: ``remove`` has many callers (archive sweeps,
-        # mid-handshake teardowns, Slack command paths) that are NOT a worker
-        # finishing, and stamping ``removed`` from inside it would make a reaped or
-        # torn-down worker read ``closed`` too. The sid is resolved from the session
-        # MAP (``mapped_sid``, in-memory, no prune), not from a live provider,
-        # because a worker that finished and sat idle may already have been
-        # process-recycled by ``reset`` -- which pops the live session and wrote a
-        # ``reset`` close -- before its tab was closed; the map still names the sid,
-        # and this ``removed`` edge, written after that ``reset``, is the newest
-        # lifecycle entry, so the gone row reads ``closed``.
-        #
-        # AWAITED before the wake below, not fire-and-forget: the conductor is woken
-        # on the strength of this close, and a ``session_status`` it runs then folds
-        # this worker's lifecycle. If the ``removed`` edge had not yet landed, that
-        # fold would read the earlier ``reset`` and report ``lost`` -- a redundant
-        # re-dispatch of a worker that is actually finished. So we hand the append to
-        # ``awaiting_commit`` and only wake once it has committed. Key-scoped
-        # ``_slot_still_ours`` guard first: a recreate can land between the save and
-        # here, and ``_history_key_for(name)`` is the session an unbound replacement
-        # runs on, so emitting for it would mis-stamp a live replacement. Fail-soft
-        # and bounded: a drop or timeout from ``awaiting_commit`` leaves the edge
-        # unwritten and the row reads ``lost`` -- the fail-safe direction (a transient
-        # redundant re-dispatch, never a lost worker), so we wake regardless.
-        if _slot_still_ours(state, name, slot):
-            close_sid = state.sessions.mapped_sid(_history_key_for(name))
-            if close_sid:
-                from kiro_crew.crew_log import emit as crew_log_emit
-                from kiro_crew.metrics.sessions import END_REASON_REMOVED
-
-                await crew_log_emit.awaiting_commit(
-                    lambda on_settled: crew_log_emit.on_session_closed(
-                        close_sid, END_REASON_REMOVED, on_settled=on_settled
-                    ),
-                    what=f"session/closed(removed) for {close_sid}",
+            elif not archived_ok and SlotRegistry.basis_moved(
+                state, _teardown_drain_basis(state, name, slot, _teardown_basis)
+            ):
+                # A refusal is not a commit, and this one names its cause: the
+                # teardown watch moved, so a same-key takeover — published, or a
+                # resume whose read is still queued behind the history lock —
+                # won the ordering and the archive wrote nothing. The transcript
+                # belongs to the takeover now, so take the same exit the
+                # published-replacement branch above takes: drain the original's
+                # own tail (the same watch rides along, so a rewrite-shaped
+                # drain loses to the takeover exactly like the archive did),
+                # yield every key-scoped step, and report the close honestly.
+                # The DISCRIMINATED basis, the same one the archive save was
+                # handed: a divergent same-key takeover that never touched this
+                # slot's routed transcript maps to ``None`` (which
+                # ``basis_moved`` answers ``False`` for), so an unrelated
+                # refusal — the stale-queue guard, say — coinciding with such a
+                # takeover routes to the retry arm below rather than being
+                # mislabeled a settled takeover.
+                drained = await _persist_handover_tail(
+                    state,
+                    name,
+                    slot,
+                    takeover_basis=_teardown_drain_basis(state, name, slot, _teardown_basis),
                 )
-        # Durable, so no rollback can retract this frame — a client pruning its
-        # per-slot cards on it can never be pruning a slot that comes back.
-        state.push_slot_removed(name)
+                if not drained.rows_committed:
+                    # The drain was the popped original's last writer and it did
+                    # not land -- and unlike the published-replacement exit above,
+                    # the takeover here may still be UNPUBLISHED (a resume whose
+                    # read waits on this teardown's watch), so the key can be
+                    # free. Dropping the original then loses its only copy of the
+                    # tail with nothing left to retry. Same compensation as a save
+                    # that raised: the tab comes back while the key is still
+                    # free (the pending resume then dedups to it and the flush
+                    # retries the dirty window); a replacement already on the key
+                    # keeps it, and the failure is reported as the drain's own
+                    # arm already did for the rows.
+                    logger.error(
+                        "Slot %s: the hand-over to a takeover did not land the original's "
+                        "tail; restoring the original where the key allows",
+                        name,
+                    )
+                    await _restore_original_after_failed_close(
+                        state, name, slot, retired_loop, slot.total_messages - rows_before
+                    )
+                    raise SlotCloseError("failed to save history", code="history_save_failed")
+                if state._slots.get(name) is None:
+                    # The taker is still unpublished (its read is pending), so
+                    # the refused archive's ``closed`` marker is OWED, not
+                    # settled: a taker that gives up after this close has
+                    # returned would leave the key to nobody and the transcript
+                    # open, and the recent-session restore would bring back the
+                    # tab the user dismissed. The teardown watch stays open --
+                    # non-truncating, so the taker's read is not held --
+                    # until the taker publishes (the key is live, nothing to
+                    # write) or the last standing taker retracts (its exit
+                    # writes the marker). Nobody standing means write it now.
+                    owed_now = SlotRegistry.hand_basis_to_dismissal(
+                        state,
+                        _teardown_basis,
+                        transcript=slot_history_key(slot),
+                        closed_at=closed_at,
+                        created_at=str(getattr(slot, "_disk_meta_created_at", "") or ""),
+                    )
+                    if (
+                        owed_now is not None
+                        and await asyncio.to_thread(record_deferred_dismissal, state, owed_now)
+                        == "failed"
+                    ):
+                        # Nobody stands to retry an owed write for this key, so
+                        # a marker that did not land is a close that did not
+                        # commit (a publication that took the key meanwhile and
+                        # settled the dismissal is a committed close -- the tab
+                        # is legitimately live): the tail is on disk (the drain committed) and
+                        # the dismissal stays owed on its watch for any later
+                        # exit, but the answer is the failure, not a 200 the
+                        # recent-session restore then contradicts.
+                        _resettle_restricted_key(state, name)
+                        _sync_dashboard_slots(state)
+                        state.push_slots_update()
+                        raise SlotCloseError("failed to save history", code="history_save_failed")
+                _resettle_restricted_key(state, name)
+                _sync_dashboard_slots(state)
+                state.push_slots_update()
+                if slot._app:
+                    logger.warning(
+                        "Slot %s was taken over while its close was persisting, so "
+                        "app %r keeps the dismissal: the original tab is gone and "
+                        "resuming its worker would target the takeover now holding "
+                        "this key",
+                        name,
+                        slot._app,
+                    )
+                return
+            elif not archived_ok:
+                # A refusal is not a commit, and this one is neither a takeover
+                # (the watch did not move) nor a verified deletion — the
+                # stale-queue guard, for one, refuses when another writer
+                # committed a newer queued-prompt value while this save held an
+                # older snapshot. The state is retryable and the popped slot
+                # holds the only copy of its unsaved tail, so this is the same
+                # outcome as a save that raised: restore the tab when the key
+                # is still free, otherwise drain the tail, and report the close
+                # as failed either way rather than discarding acknowledged rows
+                # as if they were archived.
+                logger.warning(
+                    "Slot %s close archive refused (not a deletion, not a takeover); "
+                    "treating the close as failed",
+                    name,
+                )
+                if not _slot_still_ours(state, name, slot):
+                    await _persist_handover_tail(
+                        state,
+                        name,
+                        slot,
+                        takeover_basis=_teardown_drain_basis(state, name, slot, _teardown_basis),
+                    )
+                await _restore_original_after_failed_close(
+                    state, name, slot, retired_loop, slot.total_messages - rows_before
+                )
+                raise SlotCloseError("failed to save history", code="history_save_failed")
+            # Through the shared postcondition rather than a bare discard: on the
+            # ordinary close the key is gone and this drops the marker, and a recreate
+            # that landed during the save gets the marker re-derived from ITSELF instead
+            # of inheriting the original's.
+            _resettle_restricted_key(state, name)
+            # The archival flush ran after the hand-off above, so a held merge card it
+            # queued here goes to an open twin now. After the committed archive: an
+            # await between that flush and the save would reopen the window the
+            # shared-transcript check above closed.
+            await _timed_close_stage(
+                name, "late merge-card hand-off", hand_merge_cards_to_open_twin(state, slot)
+            )
+            # Record the DELIBERATE close as a ``session/closed`` crew-log edge with
+            # ``END_REASON_REMOVED`` so a later ``session_status`` gone row for this
+            # worker reads ``closed`` ("finished, nothing to re-dispatch") rather than
+            # ``lost``. This lives HERE, in the one deliberate-close caller, not in
+            # ``SessionManager.remove``: ``remove`` has many callers (archive sweeps,
+            # mid-handshake teardowns, Slack command paths) that are NOT a worker
+            # finishing, and stamping ``removed`` from inside it would make a reaped or
+            # torn-down worker read ``closed`` too. The sid is resolved from the session
+            # MAP (``mapped_sid``, in-memory, no prune), not from a live provider,
+            # because a worker that finished and sat idle may already have been
+            # process-recycled by ``reset`` -- which pops the live session and wrote a
+            # ``reset`` close -- before its tab was closed; the map still names the sid,
+            # and this ``removed`` edge, written after that ``reset``, is the newest
+            # lifecycle entry, so the gone row reads ``closed``.
+            #
+            # AWAITED before the wake below, not fire-and-forget: the conductor is woken
+            # on the strength of this close, and a ``session_status`` it runs then folds
+            # this worker's lifecycle. If the ``removed`` edge had not yet landed, that
+            # fold would read the earlier ``reset`` and report ``lost`` -- a redundant
+            # re-dispatch of a worker that is actually finished. So we hand the append to
+            # ``awaiting_commit`` and only wake once it has committed. Key-scoped
+            # ``_slot_still_ours`` guard first: a recreate can land between the save and
+            # here, and ``_history_key_for(name)`` is the session an unbound replacement
+            # runs on, so emitting for it would mis-stamp a live replacement. Fail-soft
+            # and bounded: a drop or timeout from ``awaiting_commit`` leaves the edge
+            # unwritten and the row reads ``lost`` -- the fail-safe direction (a transient
+            # redundant re-dispatch, never a lost worker), so we wake regardless.
+            if _slot_still_ours(state, name, slot):
+                close_sid = state.sessions.mapped_sid(_history_key_for(name))
+                if close_sid:
+                    from kiro_crew.crew_log import emit as crew_log_emit
+                    from kiro_crew.metrics.sessions import END_REASON_REMOVED
+
+                    await crew_log_emit.awaiting_commit(
+                        lambda on_settled: crew_log_emit.on_session_closed(
+                            close_sid, END_REASON_REMOVED, on_settled=on_settled
+                        ),
+                        what=f"session/closed(removed) for {close_sid}",
+                    )
+            # Durable, so no rollback can retract this frame — a client pruning its
+            # per-slot cards on it can never be pruning a slot that comes back.
+            state.push_slot_removed(name)
+    finally:
+        SlotRegistry.close_takeover_basis(state, _teardown_basis)
     # The app was already told, and compensated if the persist above failed — see
     # the notify block before the pop and the rollback in the except branch.
     # Kill the per-tab session to free resources. Re-check identity ONE more
@@ -968,17 +1178,32 @@ async def _close_slot(
     # replacement's session no matter which transcript that replacement writes. Skip
     # it unless the key is still ours.
     if _slot_still_ours(state, name, slot):
-        await state.sessions.remove(_history_key_for(name))
+        await _timed_close_stage(
+            name, "session teardown", state.sessions.remove(_history_key_for(name))
+        )
         # Stop the archived session's remote workspace and keep it for retention:
         # background, best effort, a no-op without one. Inside the identity check,
         # so a replacement's is never touched.
         from kiro_crew.coder.retention import feed_notifier, schedule_archived
 
         schedule_archived((_history_key_for(name), closing_key), feed_notifier(state))
+        # The browser tabs that session opened close with it; other chats keep theirs.
+        # A linked slot's session (slack:<ts>) outlives its tab and shares the hub key,
+        # so it keeps its tabs. Imported here, never at boot: it loads the handlers.
+        if not slot.linked_session_key:
+            from kiro_crew.dashboard.handlers.browser_ops import close_chat_tabs
+
+            close_chat_tabs(state, _history_key_for(name))
     _release_closed_execution(state, slot, closing_key, closing_execution)
     _sync_dashboard_slots(state)
     state.push_slot_removed(name)
     state.push_refresh("history")
+    if state._slots.get(name) is None:
+        # Remote dispatch: a hub's work item bound to this slot closes with it.
+        # Imported here, never at boot, and a no-op for a slot bound to none.
+        from kiro_crew.dashboard.handlers.remote_work_item import close_work_item_for_slot
+
+        await _timed_close_stage(name, "work item close", close_work_item_for_slot(name))
 
 
 async def api_chat_slot_delete(request: web.Request) -> web.Response:
@@ -991,6 +1216,12 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     session-control's ``close_target``; this handler adds only the
     DELETE-endpoint's App Kit ownership check and maps the outcome to a
     response.
+
+    When the person closes a conductor (an Ultra Mode root or a Bot thread, no
+    app token), the open sessions it manages close with it, down the whole line.
+    Any other session keeps the sessions it opened. A worker left behind a closed
+    conductor can neither be steered nor report to anyone. A worker that fails
+    to close stays open and is named in ``failed_workers``.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
@@ -1001,10 +1232,14 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     # App ownership check (App Kit §5.2): app can only delete slots it created.
     # Unscoped slots (empty _app) cannot be deleted by app tokens.
     # Dashboard users (empty request_app) can delete anything.
-    denied = deny_app_slot_access(request.get("app", ""), slot, name, "slot_delete")
+    request_app = request.get("app", "")
+    denied = deny_app_slot_access(request_app, slot, name, "slot_delete")
     if denied is not None:
         return denied
 
+    # Read while the slot is still live, with no await before the close: its stamps
+    # need it in the slot table, and the tree membership must be the one it closes.
+    line = None if request_app else _conductor_line(state, name)
     try:
         await close_slot(state, slot, name)
     except SlotCloseError as exc:
@@ -1015,7 +1250,10 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
         # The pre-pop re-check that raises other statuses is session-control's
         # path, not this handler's.
         return web.json_response({"error": exc.message, "code": exc.code}, status=500)
-    return web.json_response({"ok": True})
+    closed, failed = await _close_managed(state, name, line) if line else ([], [])
+    if not closed and not failed:
+        return web.json_response({"ok": True})
+    return web.json_response({"ok": True, "closed_workers": closed, "failed_workers": failed})
 
 
 async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
@@ -1024,6 +1262,8 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     Body: ``{"max_inactive_days": 3, "active_slot": "chat-1-123"}``
     Skips the active slot and pinned sessions.
     """
+    from kiro_crew.dashboard import gateway_notice as gn
+
     state: DashboardState = request.app["state"]
     body, body_err = await read_bounded_json(request, allow_absent=True)
     if body_err is not None:
@@ -1138,136 +1378,332 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         if not removed:
             candidate.cancel_close()
             continue
-        # Same tombstone as the single-tab close: the archive pass must not
-        # race a concurrent channel reconcile into resurrecting the slot. Its
-        # instant is persisted as closed_at for the same teardown-window
-        # reason as the single-tab path.
-        closed_at = note_slot_closed(state, name)
-        # Cancel BEFORE the flush, mirroring the single-tab close at :3271-3276.
-        # The flush promotes a held note's context half into ``_pending_context``,
-        # and the save below is an await a still-running turn resumes across: it
-        # drains and CLEARS that queue, then is cancelled, so the context reaches
-        # nobody. Bounded and shielded; a task outliving the timeout still leaves
-        # ``running`` true, so the collect branch below hands it to the one
-        # batched wait rather than serialising a hung turn's full teardown here.
-        _turn_killed = False
-        if removed.running and removed.task is not None:
-            removed.task.cancel()
-            _turn_killed = True
-            try:
-                await asyncio.wait_for(asyncio.shield(removed.task), timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                pass
-        # Post-pop teardown race (same as the single-tab close, same gate): across
-        # the cancel await above a concurrent same-key recreate can mint a
-        # REPLACEMENT slot under `name`. When that replacement writes the SAME
-        # transcript, saving THIS (original) slot as closed=True would stamp a
-        # conversation it is still using, and the sessions.remove below would tear
-        # down the session it now uses. Skip the ARCHIVE — the closed stamp, the
-        # session teardown, and the ``archived`` report, which must never claim a
-        # live replacement was archived over — while still persisting the original's
-        # own unsaved rows and held notes onto the transcript the two share.
-        #
-        # A replacement that writes a DIFFERENT transcript (an unbound recreate over
-        # a channel-, cron- or workflow-linked tab) takes none of that: leaving the
-        # linked transcript unarchived is what makes the reconcile pass resurface it,
-        # so the archive below runs on the original's own file and only the
-        # key-scoped steps yield.
-        if _replacement_shares_transcript(state, name, removed):
-            # Same obligation as the single-tab hand-over, and here it also covers
-            # the notes: this exit skips the ``flush_deferred_notes()`` below, and
-            # held notes live nowhere but this popped object. The drain flushes them
-            # into the window and writes the whole tail as an OPEN-key save.
-            drained = await _persist_handover_tail(state, name, removed)
-            # Hand the KEY-SCOPED restricted marker to the replacement on the way
-            # out: this exit skips the discard below the save, which is the only
-            # thing that would otherwise have cleared the original's.
-            _resettle_restricted_key(state, name)
-            if not drained.rows_committed:
-                # This frame was the last reference to those rows, so a pass that
-                # said nothing here would report a clean sweep over a slot whose
-                # tail it dropped. ``failed`` is the honest column: the key is not
-                # in ``archived`` either way, and the two together say "not
-                # archived, and something was lost" rather than "nothing to do".
-                failed.append(name)
-            continue
+        # Same teardown takeover watch as the single-tab close, for the same
+        # window: opened before any teardown await so a resume beginning while
+        # this pass cancels the task or waits on the archive is observed by
+        # every save this iteration dispatches. Closed on every exit of the
+        # iteration, ``continue`` included.
+        _teardown_basis = SlotRegistry.open_takeover_basis(state, name)
         try:
-            # Order is unchanged and load-bearing: the cancel above, then the
-            # flush, then the save. What the guard adds is failure handling, and
-            # the flush shares the save's ``except`` arm rather than logging and
-            # falling through. ``_deferred_notes`` has a durable copy in the
-            # slot's metadata line, so a note put back by a partial flush is
-            # not held ONLY by this popped object — a restart replays the
-            # persisted hold. The restore below still
-            # matters for THIS gateway lifetime: falling through would write
-            # the transcript WITHOUT that note, discard the slot, and still
-            # report the key in ``archived`` — delivery deferred to the next
-            # restart and reported as success. Sharing the arm restores the
-            # slot with its notes still held and reports the key in ``failed``
-            # instead.
-            removed.flush_deferred_notes()
-            await save_slot_off_loop(
-                state, removed, closed=True, closed_at=closed_at, best_effort=False
-            )
-        except Exception:
-            logger.error(
-                "Cleanup: failed to flush held notes or archive slot %s", name, exc_info=True
-            )
-            # Restore only if the key is still free or still ours: a recreate that
-            # landed while save_slot_off_loop was in flight now owns `name`, and
-            # blindly writing `state._slots[name] = removed` would clobber that
-            # live replacement with the failed original. Skip the restore in that
-            # case; the error-row / dead-task handling below still applies to the
-            # original object we hold.
-            if _slot_still_ours(state, name, removed):
-                state._slots[name] = removed
-                # The slot is live under its own name again, so its close is
-                # over: release the admission fence or the restored tab refuses
-                # every regenerate, edit-resend and rewind for good.
-                removed.cancel_close()
-            else:
-                # The restore is what this arm's own comment relies on to keep the
-                # flushed notes reachable ("restores the slot with its notes still
-                # held"). Skipping it for a live replacement removes that guarantee,
-                # so drain the tail — flushed notes included — onto the slot's own
-                # transcript instead of dropping the only object holding it.
-                #
-                # Deliberately BEFORE the error row appended below, and that row is
-                # deliberately left in memory on this branch: "the tab was kept" is
-                # false here (the replacement's tab is the one on screen), so
-                # persisting it would put a lie on a transcript a live slot may hold.
-                # The ``failed`` report is what carries the outcome instead — which
-                # is also why the drain's answer needs no branch here, unlike at the
-                # pre-save exit above: this key reaches ``failed`` regardless.
-                await _persist_handover_tail(state, name, removed)
-            # Either way the key-scoped restricted marker must describe whoever holds
-            # `name` now — the restored original, or the replacement that kept it.
-            # This arm never reaches the discard below, so it settles it here.
-            _resettle_restricted_key(state, name)
-            # Restoring the slot does not undo the cancel above, and ``running`` is
-            # derived from the task, so a cancel that already completed reads False:
-            # the tab returns looking idle and dispatchable with that turn's output
-            # silently gone. Report it as an error row instead, and drop the dead
-            # task so nothing downstream treats it as this slot's live turn. A task
-            # that outlived the shielded wait is still running, so the restore loses
-            # nothing there and this stays quiet.
-            if _turn_killed and removed.task is not None and removed.task.done():
-                removed.task = None
-                removed.append(
-                    "error",
-                    "⚠️ Archiving this tab failed after its running turn was "
-                    "cancelled. The tab was kept, but that turn did not finish "
-                    "-- re-send to continue.",
-                    "msg msg-err",
+            # Same tombstone as the single-tab close: the archive pass must not
+            # race a concurrent channel reconcile into resurrecting the slot. Its
+            # instant is persisted as closed_at for the same teardown-window
+            # reason as the single-tab path.
+            closed_at = note_slot_closed(state, name)
+            # Cancel BEFORE the flush, mirroring the single-tab close at :3271-3276.
+            # The flush promotes a held note's context half into ``_pending_context``,
+            # and the save below is an await a still-running turn resumes across: it
+            # drains and CLEARS that queue, then is cancelled, so the context reaches
+            # nobody. Bounded and shielded; a task outliving the timeout still leaves
+            # ``running`` true, so the collect branch below hands it to the one
+            # batched wait rather than serialising a hung turn's full teardown here.
+            _turn_killed = False
+            if removed.running and removed.task is not None:
+                removed.task.cancel()
+                _turn_killed = True
+                try:
+                    await asyncio.wait_for(asyncio.shield(removed.task), timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                    pass
+            # Same obligation as the single-tab close: the cancelled turn's file-change
+            # flush may still be reading on a worker thread past the wait above, and
+            # both writes below (the hand-over drain and the archive) must carry its
+            # chips, or the late attach lands on this popped slot where no save admits it.
+            await _drain_file_changes_flush(removed)
+            # Same hand-off as the single-tab close, for the same reason: an open twin
+            # of this chat is never hydrated again, so it would miss a card queued here.
+            from kiro_crew.dashboard.chat_runner import hand_merge_cards_to_open_twin
+
+            await hand_merge_cards_to_open_twin(state, removed)
+            if _turn_killed and removed.task is not None:
+                _hand_off_cards_when_the_turn_ends(state, removed, removed.task)
+            # Post-pop teardown race (same as the single-tab close, same gate): across
+            # the cancel await above a concurrent same-key recreate can mint a
+            # REPLACEMENT slot under `name`. When that replacement writes the SAME
+            # transcript, saving THIS (original) slot as closed=True would stamp a
+            # conversation it is still using, and the sessions.remove below would tear
+            # down the session it now uses. Skip the ARCHIVE — the closed stamp, the
+            # session teardown, and the ``archived`` report, which must never claim a
+            # live replacement was archived over — while still persisting the original's
+            # own unsaved rows and held notes onto the transcript the two share.
+            #
+            # A replacement that writes a DIFFERENT transcript (an unbound recreate over
+            # a channel-, cron- or workflow-linked tab) takes none of that: leaving the
+            # linked transcript unarchived is what makes the reconcile pass resurface it,
+            # so the archive below runs on the original's own file and only the
+            # key-scoped steps yield.
+            if _replacement_shares_transcript(state, name, removed):
+                # Same obligation as the single-tab hand-over, and here it also covers
+                # the notes: this exit skips the ``flush_deferred_notes()`` below, and
+                # held notes live nowhere but this popped object. The drain flushes them
+                # into the window and writes the whole tail as an OPEN-key save.
+                drained = await _persist_handover_tail(
+                    state,
+                    name,
+                    removed,
+                    takeover_basis=_teardown_drain_basis(state, name, removed, _teardown_basis),
                 )
-            failed.append(name)
-            continue
-        else:
-            # Through the shared postcondition rather than a bare discard, for the
-            # same reason as the single-tab close: an archive that succeeded onto a
-            # key a recreate has since taken must leave the marker describing the
-            # REPLACEMENT, not the original it just wrote out.
-            _resettle_restricted_key(state, name)
+                # Hand the KEY-SCOPED restricted marker to the replacement on the way
+                # out: this exit skips the discard below the save, which is the only
+                # thing that would otherwise have cleared the original's.
+                _resettle_restricted_key(state, name)
+                if not drained.rows_committed:
+                    # This frame was the last reference to those rows, so a pass that
+                    # said nothing here would report a clean sweep over a slot whose
+                    # tail it dropped. ``failed`` is the honest column: the key is not
+                    # in ``archived`` either way, and the two together say "not
+                    # archived, and something was lost" rather than "nothing to do".
+                    failed.append(name)
+                continue
+            rows_before = removed.total_messages
+            handover_attempted = False
+            try:
+                # Order is unchanged and load-bearing: the cancel above, then the
+                # flush, then the save. What the guard adds is failure handling, and
+                # the flush shares the save's ``except`` arm rather than logging and
+                # falling through. ``_deferred_notes`` has a durable copy in the
+                # slot's metadata line, so a note put back by a partial flush is
+                # not held ONLY by this popped object — a restart replays the
+                # persisted hold. The restore below still
+                # matters for THIS gateway lifetime: falling through would write
+                # the transcript WITHOUT that note, discard the slot, and still
+                # report the key in ``archived`` — delivery deferred to the next
+                # restart and reported as success. Sharing the arm restores the
+                # slot with its notes still held and reports the key in ``failed``
+                # instead.
+                # Gated on the hold, because that is the condition the sync load it
+                # replaced sat behind: ``flush_deferred_notes`` returns 0 on an
+                # empty hold before it loads anything. An empty hold has nothing to
+                # flush, so loading would read a whole idle restored tab's
+                # transcript for no delivery, and a read that raises would land in
+                # the arm below and leave the tab unarchivable.
+                if removed._deferred_notes:
+                    await load_window_off_loop(removed)
+                # The preload is an await after the first transcript-sharing check.
+                # A same-key replacement can register while the window is read, so
+                # recheck before flushing and saving the original as closed.
+                if _replacement_shares_transcript(state, name, removed):
+                    handover_attempted = True
+                    drained = await _persist_handover_tail(
+                        state,
+                        name,
+                        removed,
+                        takeover_basis=_teardown_drain_basis(state, name, removed, _teardown_basis),
+                    )
+                    _resettle_restricted_key(state, name)
+                    if not drained.rows_committed:
+                        failed.append(name)
+                    continue
+                removed.flush_deferred_notes(broadcast=False, retain=False)
+                # The flush just queued the held notes' context halves here, merge
+                # cards among them.
+                await hand_merge_cards_to_open_twin(state, removed)
+                # That hand-off can await a transcript read, so recheck for the same
+                # reason as after the preload.
+                if _replacement_shares_transcript(state, name, removed):
+                    handover_attempted = True
+                    drained = await _persist_handover_tail(
+                        state,
+                        name,
+                        removed,
+                        takeover_basis=_teardown_drain_basis(state, name, removed, _teardown_basis),
+                    )
+                    _resettle_restricted_key(state, name)
+                    if not drained.rows_committed:
+                        failed.append(name)
+                    continue
+                archived_ok = await save_slot_off_loop(
+                    state,
+                    removed,
+                    closed=True,
+                    closed_at=closed_at,
+                    best_effort=False,
+                    # Discriminated for the same reason as the single-tab close:
+                    # a divergent takeover's moved watch must not refuse the
+                    # archive of a transcript it never touches.
+                    takeover_basis=_teardown_drain_basis(state, name, removed, _teardown_basis),
+                )
+            except Exception:
+                logger.error(
+                    "Cleanup: failed to flush held notes or archive slot %s", name, exc_info=True
+                )
+                # Restore only if the key is still free or still ours: a recreate that
+                # landed while save_slot_off_loop was in flight now owns `name`, and
+                # blindly writing `state._slots[name] = removed` would clobber that
+                # live replacement with the failed original. Skip the restore in that
+                # case; the error-row / dead-task handling below still applies to the
+                # original object we hold.
+                if _slot_still_ours(state, name, removed):
+                    state._slots[name] = removed
+                    _emit_archived_rows(removed, removed.total_messages - rows_before)
+                    # The slot is live under its own name again, so its close is
+                    # over: release the admission fence or the restored tab refuses
+                    # every regenerate, edit-resend and rewind for good.
+                    removed.cancel_close()
+                else:
+                    # The restore is what this arm's own comment relies on to keep the
+                    # flushed notes reachable ("restores the slot with its notes still
+                    # held"). Skipping it for a live replacement removes that guarantee,
+                    # so drain the tail — flushed notes included — onto the slot's own
+                    # transcript instead of dropping the only object holding it.
+                    #
+                    # Deliberately BEFORE the error row appended below, and that row is
+                    # deliberately left in memory on this branch: "the tab was kept" is
+                    # false here (the replacement's tab is the one on screen), so
+                    # persisting it would put a lie on a transcript a live slot may hold.
+                    # The ``failed`` report is what carries the outcome instead — which
+                    # is also why the drain's answer needs no branch here, unlike at the
+                    # pre-save exit above: this key reaches ``failed`` regardless.
+                    if not handover_attempted:
+                        await _persist_handover_tail(
+                            state,
+                            name,
+                            removed,
+                            takeover_basis=_teardown_drain_basis(
+                                state, name, removed, _teardown_basis
+                            ),
+                        )
+                # Either way the key-scoped restricted marker must describe whoever holds
+                # `name` now — the restored original, or the replacement that kept it.
+                # This arm never reaches the discard below, so it settles it here.
+                _resettle_restricted_key(state, name)
+                # Restoring the slot does not undo the cancel above, and ``running`` is
+                # derived from the task, so a cancel that already completed reads False:
+                # the tab returns looking idle and dispatchable with that turn's output
+                # silently gone. Report it as an error row instead, and drop the dead
+                # task so nothing downstream treats it as this slot's live turn. A task
+                # that outlived the shielded wait is still running, so the restore loses
+                # nothing there and this stays quiet.
+                if _turn_killed and removed.task is not None and removed.task.done():
+                    removed.task = None
+                    removed.append(
+                        "error",
+                        "⚠️ Archiving this tab failed after its running turn was "
+                        "cancelled. The tab was kept, but that turn did not finish "
+                        "-- re-send to continue.",
+                        "msg msg-err",
+                        meta=gn.gateway_notice_meta(
+                            gn.GATEWAY_NOTICE_ARCHIVE_FAILED_TURN_CANCELLED
+                        ),
+                    )
+                failed.append(name)
+                continue
+            else:
+                if not archived_ok and await asyncio.to_thread(
+                    session_deletion_confirmed, state, removed
+                ):
+                    # Definitive evidence only, same rule as the single-tab
+                    # close: the delete already disposed of what this pass was
+                    # archiving, while an unverifiable probe lands in the retry
+                    # arm below. Probed BEFORE the takeover branch, also as in
+                    # the single-tab close: a delete-won refusal coinciding
+                    # with a moved watch must not enter the drain, whose
+                    # unguarded append recreates the deleted transcript.
+                    logger.info(
+                        "Cleanup: archive for slot %s skipped, the session was "
+                        "deleted while the archive awaited the lock",
+                        name,
+                    )
+                elif not archived_ok and SlotRegistry.basis_moved(
+                    state, _teardown_drain_basis(state, name, removed, _teardown_basis)
+                ):
+                    # A refusal is not a commit: the teardown watch moved, so a
+                    # same-key takeover won the ordering and the archive wrote
+                    # nothing. Same exit as the published-replacement branch
+                    # above — drain the original's own tail under the same
+                    # watch, hand over the key-scoped marker, and report the
+                    # key in ``failed`` when the rows did not land; ``archived``
+                    # must not name a conversation whose archive never
+                    # committed. The DISCRIMINATED basis, matching the one the
+                    # archive save was handed: a divergent takeover that never
+                    # touched this slot's routed transcript maps to ``None``,
+                    # so an unrelated refusal routes to the retry arm instead
+                    # of being mislabeled a settled takeover.
+                    drained = await _persist_handover_tail(
+                        state,
+                        name,
+                        removed,
+                        takeover_basis=_teardown_drain_basis(state, name, removed, _teardown_basis),
+                    )
+                    if not drained.rows_committed:
+                        # Same as the single-tab close: the takeover may be
+                        # unpublished and the key free, so the popped original
+                        # -- the only holder of its unsaved tail -- comes back
+                        # rather than being dropped, with its close over
+                        # (``cancel_close`` releases the admission fence, as
+                        # the raised arm below does). ``failed`` carries the
+                        # outcome either way.
+                        if _slot_still_ours(state, name, removed):
+                            state._slots[name] = removed
+                            _emit_archived_rows(removed, removed.total_messages - rows_before)
+                            removed.cancel_close()
+                        _resettle_restricted_key(state, name)
+                        failed.append(name)
+                        continue
+                    if state._slots.get(name) is None:
+                        # Same as the single-tab close: the taker is still
+                        # unpublished, so the refused archive's ``closed``
+                        # marker is owed, not settled -- kept on the watch
+                        # until the taker publishes or the last one standing
+                        # retracts and writes it; written now when nobody stands.
+                        owed_now = SlotRegistry.hand_basis_to_dismissal(
+                            state,
+                            _teardown_basis,
+                            transcript=slot_history_key(removed),
+                            closed_at=closed_at,
+                            created_at=str(getattr(removed, "_disk_meta_created_at", "") or ""),
+                        )
+                        if (
+                            owed_now is not None
+                            and await asyncio.to_thread(record_deferred_dismissal, state, owed_now)
+                            == "failed"
+                        ):
+                            # Same as the single-tab close: a marker that did
+                            # not land, with nobody left to retry it, is a
+                            # sweep that did not commit -- ``failed`` carries
+                            # it rather than ``archived``.
+                            _resettle_restricted_key(state, name)
+                            failed.append(name)
+                            continue
+                    _resettle_restricted_key(state, name)
+                    continue
+                elif not archived_ok:
+                    # Neither a takeover nor a verified deletion: a retryable
+                    # refusal (the stale-queue guard, for one). Same handling
+                    # as a save that raised — restore the tab when the key is
+                    # still free (the periodic flush then retries the write),
+                    # otherwise drain the tail — and report the key in
+                    # ``failed``, never in ``archived``.
+                    logger.warning(
+                        "Cleanup: archive for slot %s refused (not a deletion, not a "
+                        "takeover); reporting it failed",
+                        name,
+                    )
+                    if _slot_still_ours(state, name, removed):
+                        state._slots[name] = removed
+                        _emit_archived_rows(removed, removed.total_messages - rows_before)
+                        # Live under its own name again, so its close is over:
+                        # release the admission fence, as the raised arm does.
+                        removed.cancel_close()
+                    else:
+                        await _persist_handover_tail(
+                            state,
+                            name,
+                            removed,
+                            takeover_basis=_teardown_drain_basis(
+                                state, name, removed, _teardown_basis
+                            ),
+                        )
+                    _resettle_restricted_key(state, name)
+                    failed.append(name)
+                    continue
+                # Through the shared postcondition rather than a bare discard, for the
+                # same reason as the single-tab close: an archive that succeeded onto a
+                # key a recreate has since taken must leave the marker describing the
+                # REPLACEMENT, not the original it just wrote out.
+                _resettle_restricted_key(state, name)
+        finally:
+            SlotRegistry.close_takeover_basis(state, _teardown_basis)
         # Re-check identity ONE more time, and KEY-scoped here rather than
         # transcript-scoped: `_history_key_for(name)` is the session an unbound
         # replacement runs on, so a recreate landing between the save above and here
@@ -1285,6 +1721,11 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             logger.warning("Cleanup: session remove failed for %s", name, exc_info=True)
         else:
             _release_closed_execution(state, removed, closing_key, closing_execution)
+            # Same browser tab close as a single archive (see _close_slot).
+            if not removed.linked_session_key:
+                from kiro_crew.dashboard.handlers.browser_ops import close_chat_tabs
+
+                close_chat_tabs(state, _history_key_for(name))
         # Same retention as a single archive (see _close_slot).
         from kiro_crew.coder.retention import feed_notifier, schedule_archived
 
@@ -1301,6 +1742,14 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         _sync_dashboard_slots(state)
         state.push_slots_update()
         state.push_refresh("history")
+        # Remote dispatch: an archived worker's hub item closes as on a single
+        # close, unless a successor took its key. Imported only when something
+        # was archived.
+        from kiro_crew.dashboard.handlers.remote_work_item import close_work_item_for_slot
+
+        for name in archived:
+            if state._slots.get(name) is None:
+                await close_work_item_for_slot(name)
     if not failed:
         cleanup_outcome = "ok"
     elif archived:

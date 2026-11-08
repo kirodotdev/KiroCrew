@@ -2,6 +2,7 @@ import { useEffect, useState, lazy, Suspense, type ReactNode } from 'react'
 import { TOPBAR_FOCUS_Z, TOPBAR_Z } from '../../lib/themeDecorLayer'
 import { kiroUsageSegment } from './kiroUsageReadout'
 import { metricsSegment, MetricsErrorNotice } from './metricsReadout'
+import { ResourcePostureChip } from './resourcePostureChip'
 import { Bell, Fullscreen, Menu, Plug, Unplug } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { isWinElectron } from '../../lib/electron'
@@ -10,6 +11,7 @@ import { SELECTION_INERT_ATTR } from '../../pages/chat/useSelectionInertOverlays
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { useNotificationSheet, NotificationSheet } from '../notifications/notificationSheet'
 import InstanceTabBar from '../../components/InstanceTabBar'
+import RelayCrewsMenu from '../../components/RelayCrewsMenu'
 import { getTopBarWidgets } from '../../apps/topBarWidgets'
 import { getCapsuleSegments } from '../../apps/capsuleSegments'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
@@ -24,6 +26,10 @@ import { GuideRevealScope } from '../../guide/GuideRevealScope'
 import type { AppShell } from '../appShell'
 import { hiddenChromeProps } from '../focus/focusChrome'
 import { setAgentSwitchNotice } from '../../store/chatSlice'
+import MilestonesIndicator, { MilestonesPill } from '../../components/milestones/MilestonesIndicator'
+import MilestonesSheet from '../../components/milestones/MilestonesSheet'
+import { useExplorePreviewSwitch } from '../../components/milestones/useMilestones'
+import { useExplorePreview } from '../../hooks/usePreviewFlag'
 
 // Lazy, like App.tsx's update-found popup: the pill renders nothing without an update,
 // so its code rides the on-demand chunk instead of the app core.
@@ -91,7 +97,7 @@ function NotificationsBellButton() {
   const { items, open, containerRef, bellRef } = sheet
   // Badge counts attention-worthy rows only (RFC Phase 3): passive and
   // muted-channel (silenced) rows are excluded, mirroring the backend's
-  // _unread_count semantics.
+  // unread_count semantics.
   const unacked = items.filter(n => !n.acked && n.priority !== 'passive' && !n.silenced)
 
   // RFC Phase 4: mirror the unread count onto the desktop dock/taskbar badge.
@@ -149,10 +155,17 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
     toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, slotOwners, commandPalette,
     setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
-    requestFeature, toggleNav, mobileSingle,
+    requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen,
   } = shell
+  // Every Explore surface below mounts only while its Feature Preview is on.
+  // Turning it off closes an open sheet; turning it on reads milestones once.
+  const explore = useExplorePreview()
+  useExplorePreviewSwitch(explore)
   return (
     <>
+      {/* The one Milestones panel; the top-bar indicator, the phone menu row
+          and the milestone notice all open it. */}
+      {explore && <MilestonesSheet />}
       {/* Topbar */}
       {/* stable theming hook — see website/docs/theming-contract.md */}
       <header
@@ -171,7 +184,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
         // more when those rungs still leave contents overflowing
         // (useTopbarCollapse in useAppShell). Desktop only, on purpose: below 768px the
         // phone header's icon-only search and container rungs already fit.
-        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}${isMobile ? '' : ' tb-measured'}`}
+        className={`topbar topbar-glass relative pl-2 pr-3${mobileSingle ? ' topbar-single' : ''}${isMobile ? ' topbar-phone' : ' tb-measured'}`}
         // On a phone the chat title is portaled into this bar, above the
         // transcript: inert while a transcript selection is held, so a dragged
         // handle cannot land on the title (useSelectionInertOverlays).
@@ -264,6 +277,8 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             </button>
           )}
           <InstanceTabBar variant="inline" />
+          {/* Desktop app only, and only while the relay viewer is on: renders nothing otherwise. */}
+          <RelayCrewsMenu />
           </div>
         </div>
         )}
@@ -387,8 +402,28 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             the header still needs its third in-flow child so the actions group
             is not auto-placed into the `auto` centre track (where, as a size
             container, it would collapse to its padding). */}
+        {/* The Crewmates page puts its header here once a crewmate is open.
+            Until then (`pending`, still reading) the page has no drawer bound,
+            so the slot holds a nav-drawer toggle and the bar never sits empty.
+            It wears the logo row's `Menu` glyph, not the roster drawer's panel
+            glyph, so one icon never opens two different drawers. */}
         {isMobile && (mobileSingle
-          ? <div id="mobile-topbar-slot" data-testid="mobile-topbar-slot" className="flex items-center gap-1 min-w-0 h-full" />
+          ? (
+            <div id="mobile-topbar-slot" data-testid="mobile-topbar-slot" className="flex items-center gap-1 min-w-0 h-full">
+              {membersBarPending && (
+                <button
+                  type="button"
+                  className="mc-touch-hit p-2 rounded-md text-text hover:text-text-strong hover:bg-bg-hover cursor-pointer bg-transparent border-none shrink-0"
+                  onClick={toggleNav}
+                  aria-label={i18nT('app.open_menu')}
+                  aria-expanded={mobileNavOpen}
+                  data-testid="mobile-topbar-nav-toggle"
+                >
+                  <Menu size={18} />
+                </button>
+              )}
+            </div>
+          )
           : <span aria-hidden="true" data-testid="topbar-centre-spacer" className="w-0" />
         )}
         {/* Theme decoration: the active theme's center top-bar element (e.g. a
@@ -504,17 +539,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             // Resource pressure indicator — always visible when tight/critical
             if (sysMetrics?.posture && sysMetrics.posture !== 'ample' && sysMetrics.posture !== 'unknown') {
               segments.push(
-                <span
+                <ResourcePostureChip
                   key="resource-health"
-                  className={`${seg} flex items-center gap-1 text-[11px] ${sysMetrics.posture === 'critical' ? 'text-danger' : 'text-warn'}`}
-                  title={sysMetrics.posture === 'critical'
-                    ? i18nT('app.resource_posture_tooltip_critical', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })
-                    : i18nT('app.resource_posture_tooltip_tight', { gb: sysMetrics.availableGb?.toFixed(1) ?? '?' })}
-                >
-                  <span aria-hidden="true" className={`inline-block w-2 h-2 rounded-full ${sysMetrics.posture === 'critical' ? 'bg-danger animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none' : 'bg-warn'}`} />
-                  {!isMobile && <span className="font-medium">{sysMetrics.posture === 'critical' ? i18nT('app.resource_critical') : i18nT('app.resource_tight')}</span>}
-                  {!isMobile && sysMetrics.subagentCap != null && <span className="text-muted text-[10px]">· {i18nT('app.subagent_cap', { cap: String(sysMetrics.subagentCap) })}</span>}
-                </span>
+                  posture={sysMetrics.posture}
+                  availableGb={sysMetrics.availableGb}
+                  subagentCap={sysMetrics.subagentCap}
+                  seg={seg}
+                />
               )
             }
             if (!capsuleCollapsed) {
@@ -569,6 +600,12 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             )
           })()}
           {!isMobile && <MetricsErrorNotice metrics={metrics} />}
+          {/* Explore (RFC "Milestones for New-User Feature Discovery" 4.6): its
+              own pill next to the readout capsule (after the capsule's own
+              metrics notice), not a capsule segment, so the capsule's row of
+              buttons does not grow. Renders nothing until the milestones read
+              says it is on. */}
+          {explore && !isMobile && <MilestonesPill />}
           {/* Extension slot: downstream-registered top-bar widgets (e.g. a
               credential-TTL capsule or spend pill). Empty in the stock build.
               Each widget is isolated in its own ErrorBoundary (fallback=null) so
@@ -604,7 +641,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
           {/* Notifications bell — borderless icon button, rightmost control.
               (The activity-panel open toggle now lives in the session header,
               beside the pop-out control — see ChatPage — so opening the panel
-              no longer narrows this full-width header.) */}
+              no longer narrows this full-width header.) On a phone, which has
+              no readout capsule, the Explore ring sits just before it; with the
+              update pill up the group would hold three controls, so it stands
+              down (the chat page's ⋯ menu carries an Explore row). */}
+          {explore && isMobile && !updateAvailable && <MilestonesIndicator compact />}
           <NotificationsBellButton />
           </div>
         </div>
@@ -619,6 +660,15 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             leading cell. */}
         {mobileSingle && (
           <div className="tb-trail relative h-full flex items-center gap-1.5 shrink-0">
+            {/* The Crewmates page has no overflow menu to carry the update,
+                and this cell holds only the bell there, so the pill itself
+                goes first: still two controls. It keeps its text on the
+                phone, since a bare download glyph does not say "update". */}
+            {membersRoute && updateAvailable && (
+              <Suspense fallback={null}>
+                <UpdatePill showLabel />
+              </Suspense>
+            )}
             <NotificationsBellButton />
             <div id="mobile-topbar-trail-slot" data-testid="mobile-topbar-trail-slot" className="flex items-center empty:hidden" />
           </div>

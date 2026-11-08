@@ -162,20 +162,30 @@ class TestLoadOpenIssuesForReco(unittest.IsolatedAsyncioTestCase):
     async def test_refresh_skips_the_cache_read_entirely(self):
         # The Tagging queue needs this: labels get added on GitHub itself, and a
         # cache-first read keeps reporting those issues as untagged.
+        fresh = [{"number": 8}]
         with (
-            mock.patch.object(store, "read_issues_cache") as read,
-            mock.patch.object(store, "refresh_issues_cache", return_value=[]) as refresh,
+            mock.patch.object(store, "read_issues_cache", return_value=[{"number": 7}]) as read,
+            mock.patch.object(
+                store, "refresh_issues_cache", side_effect=lambda o, r, fetch, **kw: fetch()
+            ) as refresh,
+            mock.patch.object(gh, "list_open_issues", return_value=fresh),
         ):
-            await routes._load_open_issues_for_reco(_key(), refresh=True)
+            got = await routes._load_open_issues_for_reco(_key(), refresh=True)
+        self.assertEqual(got, fresh)
         read.assert_not_called()
         refresh.assert_called_once()
 
     async def test_a_cache_miss_fetches_and_stores_under_one_lock(self):
+        fresh = [{"number": 8}]
         with (
             mock.patch.object(store, "read_issues_cache", return_value=None),
-            mock.patch.object(store, "refresh_issues_cache", return_value=[]) as refresh,
+            mock.patch.object(
+                store, "refresh_issues_cache", side_effect=lambda o, r, fetch, **kw: fetch()
+            ) as refresh,
+            mock.patch.object(gh, "list_open_issues", return_value=fresh),
         ):
-            await routes._load_open_issues_for_reco(_key())
+            got = await routes._load_open_issues_for_reco(_key())
+        self.assertEqual(got, fresh)
         refresh.assert_called_once()
 
 

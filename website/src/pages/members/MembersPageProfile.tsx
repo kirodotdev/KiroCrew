@@ -18,7 +18,7 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type SetStateAction, type RefObject } from 'react'
 import { type NavigateFunction } from 'react-router-dom'
-import { ArrowRight, ChevronRight, Circle } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 // Brand mascot art for the Sessions tab's empty state: a plain <img> URL import,
 // never inline path data, which is what `use-lucide-icons` requires of a
@@ -27,10 +27,15 @@ import workersLeadPose from '../../assets/ghost-poses/pose-7.svg'
 import workerPoseA from '../../assets/ghost-poses/pose-4.svg'
 import workerPoseB from '../../assets/ghost-poses/pose-6.svg'
 import { api, type MemberRosterRow } from '../../api/client'
+import { isNotFoundError } from '../../api/apiError'
+import { CREW_BOARD_POLL_MS, crewBoardQueryKey } from '../../api/crewBoard'
+import { retryPolicy } from '../../api/queryClient'
 import { crewDisplayName } from '../../components/AgentSelector'
-import { useQuery } from '@tanstack/react-query'
-import { timeAgo } from '../../utils/timeAgo'
-import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
+import { AUTONUDGE_LOOPS_QUERY_KEY } from '../../components/autoNudgeLoop'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { i18nT } from '../../i18n/t'
+import CrewOnItsOwn, { patrolLoopOf } from './CrewOnItsOwn'
+import ErrorNotice from '../../components/ErrorNotice'
 import CrewProfilePanel, { type ProfileTab } from './CrewProfilePanel'
 import CrewGoalsPane, { useMemberGoals } from './CrewGoals'
 import CrewHeartbeatRow from './CrewHeartbeat'
@@ -39,11 +44,10 @@ import { createPortal } from 'react-dom'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import CrewNotesTab from './CrewNotesTab'
+import MateSessionsList from './MateSessionsList'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import CrewWakeSection from '../../components/CrewWakeSection'
 import { crewWakeQueryKey, wakesCrew } from '../../components/crew/wakesCrew'
-import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
-import { lastActivityEpoch } from '../chat/sessionOrder'
 import { type MembersPageRosterView } from './MembersPageRoster'
 import { type MembersPageSidePanelState } from './MembersPageSidePanel'
 import { type MembersPageThreadState } from './MembersPageThread'
@@ -51,14 +55,11 @@ import { memberMemoryDisplay, PROFILE_MEMORY_KEYS, type ProfileCardOpen, type TF
 import { type MembersPageCrewEditing } from './useMembersPageCrewEditor'
 import { type MembersPageLayout } from './useMembersPageLayout'
 import { type MembersPageRosterSignals } from './useMembersPageRoster'
-import { type AutomationRecord } from '../../monitoring/automation'
+import { type AutomationRecord, type LegacyGoalLoop } from '../../monitoring/automation'
 import { readSessionAutomationSnapshot } from '../../monitoring/sessionAutomationSnapshot'
 
 // Lazy for the same reason as `CrewEditorDialog` in MembersPage.tsx: its fields come from the crew manager page module.
 const CrewProfileSettings = lazy(() => import('./CrewProfileSettings'))
-/** Punctuation, not prose: joins an activity label to its project name, and a
- *  driving row's title to its status word in the hover title. */
-const PROJECT_SEPARATOR = ' \u00b7 '
 /** The crewmate's face in flight between the identity pill and the docked
  *  Profile card's head: one face moves, two never cross-fade. It used to be a
  *  framer `layoutId` shared by the two faces, but the shared element travels
@@ -86,17 +87,6 @@ export interface FaceFlight {
  *  the only visible change is that it stays on top. */
 export const FACE_FLIGHT_SECS = 0.45
 export const FACE_FLIGHT_EASE: [number, number, number, number] = [0.4, 0, 0.1, 1]
-/** How each shared tab status renders on a driving row. The ORDER lives in
- *  `tabStatus` (lib/sessionTabs.ts) — this only maps its verdict to a dot
- *  class, an i18n label, and whether the label is spoken aloud in the row.
- *  `unread` cannot occur here (no unread set is passed) and reads as idle. */
-const DRIVING_STATUS: Record<TabStatus, { cls: string; text: string; label: string; spoken: boolean }> = {
-  permission: { cls: 'fill-warn text-warn', text: 'text-warn', label: 'pages.chatSidebar.needs_approval', spoken: true },
-  question: { cls: 'fill-info text-info', text: 'text-info', label: 'pages.chatSidebar.needs_your_answer', spoken: true },
-  running: { cls: 'fill-ok text-ok', text: 'text-ok', label: 'pages.membersPage.drawer_working', spoken: false },
-  unread: { cls: 'fill-muted text-muted', text: 'text-muted', label: 'pages.membersPage.driving_idle', spoken: false },
-  idle: { cls: 'fill-muted text-muted', text: 'text-muted', label: 'pages.membersPage.driving_idle', spoken: false },
-}
 
 interface MembersPageProfileStateOptions {
   layout: MembersPageLayout
@@ -197,7 +187,9 @@ export function useMembersPageProfile({ layout, activeName, profile, setProfile 
   // user can see. `openMemberRef` is read rather than closed over so the
   // listener binds once instead of re-binding per selection.
   const openMemberRef = useRef(false)
-  const togglePanel = useCallback(() => {
+  /** The toggle itself. `onRevealed` runs once a reveal has gone through,
+   *  including after the guard's Discard, and never on a refusal or a hide. */
+  const runTogglePanel = useCallback((onRevealed?: () => void) => {
     if (!openMemberRef.current) return
     // Hiding the panel leaves the Profile card mounted, so it cannot discard
     // the schedule draft now hosted there. Revealing still guards the Profile
@@ -206,6 +198,7 @@ export function useMembersPageProfile({ layout, activeName, profile, setProfile 
     const flip = () => {
       if (beside) setDockedOpen((v) => !v)
       else setOverlayOpen((v) => !v)
+      if (!hiding) onRevealed?.()
     }
     const revealAndFoldProfile = () => {
       flip()
@@ -218,6 +211,9 @@ export function useMembersPageProfile({ layout, activeName, profile, setProfile 
     }
     flip()
   }, [beside, dockedOpen, overlayOpen, setDockedOpen, profile, setOverlayOpen, setProfile])
+  const togglePanel = useCallback(() => runTogglePanel(), [runTogglePanel])
+  /** Reveal through the same guard, then run `then` once it has gone through. */
+  const revealPanelThen = useCallback((then: () => void) => runTogglePanel(then), [runTogglePanel])
   useEffect(() => {
     const onToggle = () => togglePanel()
     window.addEventListener('toggle-activity-panel', onToggle)
@@ -226,7 +222,7 @@ export function useMembersPageProfile({ layout, activeName, profile, setProfile 
 
   return {
     pillFaceRef, cardFaceRef, flightFromRef, openProfile, schedGuardRef, schedAtStakeRef, requestCloseProfile,
-    closeDocked, openMemberRef, togglePanel,
+    closeDocked, openMemberRef, togglePanel, revealPanelThen,
   }
 }
 
@@ -236,21 +232,30 @@ interface MembersPageSchedulesOptions {
   crewEditing: MembersPageCrewEditing
   layout: MembersPageLayout
   rosterView: MembersPageRosterView
-  sidePanel: MembersPageSidePanelState
   t: TFn
   profile: ProfileCardOpen | null
   activeSlug: string
   activeMemberName: string
 }
 
-/** The Profile card's Schedules draft, its count and its discard questions. */
+/** The Profile card's Schedules draft, its exit-guard state, its count and its discard questions. */
 export function useMembersPageSchedules({
-  crewEditing, layout, rosterView, sidePanel, t, profile, activeSlug, activeMemberName,
+  crewEditing, layout, rosterView, t, profile, activeSlug, activeMemberName,
 }: MembersPageSchedulesOptions) {
   const { releaseSchedRef } = crewEditing
   const { panelVisible } = layout
   const { activeView } = rosterView
-  const { setSchedAtStake, schedReleased, schedulesMountedRef } = sidePanel
+  // Whether the Schedules tab is holding unsaved work: the state mirror of the two refs
+  // below, read by the facade's published navigation stake and `beforeunload` listener.
+  const [schedAtStake, setSchedAtStake] = useState(false)
+  // Has the user just accepted a discard? Then retention stands down for that one exit.
+  // A ref, not state: the exit that sets it re-renders the page by itself, and the flag
+  // must already be true at that render.
+  const schedReleased = useRef(false)
+  // Whether the Schedules section is mounted. The facade writes it during render
+  // (`schedulesMounted`, in MembersPage.tsx) so the release effect below can read a
+  // value computed after this hook returns.
+  const schedulesMountedRef = useRef(false)
   // What a schedule created from the Schedules tab must carry in its `agent` field --
   // which is the provider template only for a crewmate whose identity the server will
   // KEEP. `wakesCrew` matches a job on `member_id` when there is one, and otherwise
@@ -289,8 +294,7 @@ export function useMembersPageSchedules({
     .filter((j) => wakesCrew(j, activeMemberName, false, activeSlug))
   // Unsaved work inside the Schedules tab. Refs, not state: only the guard below reads
   // them and a re-render per keystroke would remount nothing but cost the panel a pass.
-  // (`schedAtStake`, the state mirror, is declared in MembersPageSidePanel.tsx with the
-  // mount decision that also reads it.)
+  // (`schedAtStake`, the state mirror, is declared at the top of this hook.)
   const schedDraftDirty = useRef(false)
   const schedSaving = useRef(false)
   // The refs are what the synchronous guards read; the state mirror is what the published
@@ -356,6 +360,7 @@ export function useMembersPageSchedules({
   }, [confirmSched, t, releaseSchedRetention])
 
   return {
+    schedAtStake, schedulesMountedRef,
     schedAgentField, profileGoalsQuery, schedulesCountQuery, schedulesForActive, schedDraftDirty, schedSaving,
     setSchedDraftDirty, setSchedSaving, confirmSched, schedConfirmDialog, requestCancelSchedDraft,
     releaseSchedRetention, mayLeaveSchedules,
@@ -393,14 +398,10 @@ export function useMembersPageProfileFlight({
     queryFn: () => readSessionAutomationSnapshot(profileSlot),
     staleTime: 0,
   })
-  const profileMonitorReadState = !profileSlot
-    ? 'ready' as const
-    : profileMonitorQuery.isError
-      ? 'error' as const
-      : profileMonitorQuery.isSuccess || activeAutomation
-        ? 'ready' as const
-        : 'loading' as const
-  const profileAutomation = profileMonitorReadState === 'error'
+  // Fails closed: a read that failed shows no record, so the head face carries
+  // no active mark it cannot prove and the Schedules tab shows no patrol row.
+  const profileReadFailed = !!profileSlot && profileMonitorQuery.isError
+  const profileAutomation = profileReadFailed
     ? null
     : activeAutomation ?? profileMonitorQuery.data ?? null
   // Relative times in the Profile Schedules tab move while the card is open.
@@ -457,8 +458,74 @@ export function useMembersPageProfileFlight({
   useEffect(() => { setFaceFlight(null) }, [activeName])
 
   return {
-    nowTs, reduceMotion, profileDocked, faceFlight, endFaceFlight, profileAutomation, profileMonitorReadState,
+    nowTs, reduceMotion, profileDocked, faceFlight, endFaceFlight, profileAutomation, profileReadFailed,
   }
+}
+
+/**
+ * The Schedules tab's "On its own" row: the crewmate's patrol over the tasks it
+ * handed out (`patrolLoopOf`), with its open-task count from the crew board and
+ * the one control, Pause / Resume. The board read is a masked projection and
+ * 404s for a session that never conducted anything: that is a gap (no count),
+ * not an error, so it is not retried and nothing is shown for it.
+ *
+ * A component, not a hook, and mounted `key`ed by the slot: a refused write and
+ * an in-flight one are THIS crewmate's, and the card itself is not re-keyed on a
+ * crewmate switch, so state held one level up would show crewmate A's refusal
+ * under crewmate B's row.
+ */
+function CrewPatrolRow({ loop, slotKey, nowTs, onBusyChange }: {
+  loop: LegacyGoalLoop
+  slotKey: string
+  nowTs: number
+  /** A write in flight, published to the host so the tab rail and the card's
+   *  leave guard refuse to unmount this row -- and with it the refusal the
+   *  write may come back with -- until it settles. Called false on unmount. */
+  onBusyChange?: (busy: boolean) => void
+}) {
+  const queryClient = useQueryClient()
+  const boardQuery = useQuery({
+    queryKey: crewBoardQueryKey(slotKey),
+    queryFn: () => api.crewBoard(slotKey),
+    enabled: !!slotKey,
+    // Items close while the tab is open; the count follows at the board's cadence.
+    refetchInterval: CREW_BOARD_POLL_MS,
+    retry: (failureCount, error) => !isNotFoundError(error) && retryPolicy(failureCount, error),
+  })
+  const openTasks = boardQuery.data
+    ? boardQuery.data.items.filter((item) => !item.terminal).length
+    : null
+  // No ledger (404) is a gap, not a failure; anything else is said.
+  const countFailed = boardQuery.isError && !isNotFoundError(boardQuery.error)
+  const [writeError, setWriteError] = useState('')
+  const write = useMutation({
+    mutationFn: ({ id, active }: { id: string; active: boolean; slot: string }) => api.autonudgeSetActive(id, active),
+    onMutate: () => setWriteError(''),
+    onSuccess: (_written, vars) => {
+      // The full-registry readers (the roster's patrol marks) and this card's own
+      // snapshot both hold the record the write just changed.
+      void queryClient.invalidateQueries({ queryKey: AUTONUDGE_LOOPS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['session-automation', vars.slot] })
+    },
+    onError: (e: unknown) => setWriteError(e instanceof Error && e.message ? e.message : i18nT('pages.membersPage.patrol_write_failed')),
+  })
+  const busy = write.isPending
+  useEffect(() => {
+    onBusyChange?.(busy)
+    return () => onBusyChange?.(false)
+  }, [busy, onBusyChange])
+  return (
+    <CrewOnItsOwn
+      loop={loop}
+      openTasks={openTasks}
+      nowTs={nowTs}
+      busy={write.isPending}
+      error={writeError}
+      countFailed={countFailed}
+      onPause={() => write.mutate({ id: loop.id, active: false, slot: slotKey })}
+      onResume={() => write.mutate({ id: loop.id, active: true, slot: slotKey })}
+    />
+  )
 }
 
 export type MembersPageProfileFlight = ReturnType<typeof useMembersPageProfileFlight>
@@ -481,13 +548,15 @@ interface MembersPageProfileCardProps {
   activeSlug: string
   activeMemberName: string
   onGoalsDraftChange: (dirty: boolean, busy: boolean) => void
+  /** The Export view's lessons text is typed (see MembersPage's exit guards). */
+  onExportDraftChange?: (dirty: boolean) => void
 }
 
 /** The Profile card, as a docked column or a floating card over the thread column. */
 export function MembersPageProfileCard({
   crewEditing, profileCard, rosterView, thread, sidePanel, schedules, profileFlight, navigate, leave,
   setEditingCrew, profile, threadColumnRef, slotsLoaded, active, activeSlug, activeMemberName,
-  onGoalsDraftChange,
+  onGoalsDraftChange, onExportDraftChange,
 }: MembersPageProfileCardProps) {
   const { t } = useTranslation()
   const { profileRegistryQuery } = crewEditing
@@ -495,13 +564,30 @@ export function MembersPageProfileCard({
   const { isRunning, activeView } = rosterView
   const { activeSlot, freshStart, askFreshStart, confirmedSlot } = thread
   const {
-    profileCardW, openCrewView, openSessionGuarded, drivingSessions,
+    profileCardW, openCrewView, activeMemberKey, drivingSessions,
   } = sidePanel
   const {
     schedAgentField, profileGoalsQuery, schedulesCountQuery, schedulesForActive, setSchedDraftDirty,
     setSchedSaving, requestCancelSchedDraft,
   } = schedules
-  const { nowTs, reduceMotion, profileDocked, faceFlight, profileAutomation, profileMonitorReadState } = profileFlight
+  const { nowTs, reduceMotion, profileDocked, faceFlight, profileAutomation, profileReadFailed } = profileFlight
+  const patrolSlot = activeSlot || active?.slot_key || ''
+  const patrolLoop = patrolLoopOf(profileAutomation)
+  // A failed slot read shows no row (fail closed) but says so: silence here would
+  // read as "nothing wakes this mate". Keyed by slot so a crewmate switch never
+  // carries one crewmate's refused or in-flight write under another's row.
+  // The patrol row's in-flight write joins the Heartbeat row's in the same
+  // guards (tab rail, card leave), combined rather than overwriting each other.
+  const [patrolBusy, setPatrolBusy] = useState(false)
+  const selfBody = profileReadFailed
+    ? (
+      /* No hand-off: the Members page may hold an unsaved schedule or crew-editor
+         draft, and Ask the agent navigates away from it. */
+      <ErrorNotice message={t('pages.membersPage.patrol_read_failed')} testId="crew-patrol-read-error" />
+    )
+    : patrolLoop
+      ? <CrewPatrolRow key={patrolSlot} loop={patrolLoop} slotKey={patrolSlot} nowTs={nowTs} onBusyChange={setPatrolBusy} />
+      : null
   // Notes — the crewmate's own standing notes, read-only (no editor:
   // see CrewNotesTab). Its briefing read is gated on the tab being on
   // screen, like the work log's reads.
@@ -571,65 +657,37 @@ export function MembersPageProfileCard({
       />
     </div>
   ) : null
-  // The card's Sessions tab: the sessions this crewmate is driving — the
-  // worker sessions it opened and steers — and nothing else. Rows use live slots, the sidebar's status vocabulary, and a jump into
-  // the session, in the card's row idiom.
+  // The card's Sessions tab: every session this crewmate dispatched, at any
+  // depth, in the Crew panel's groups. A click expands the row in place and
+  // shows its recap from records only; it never leaves the page.
+  const sessionsEmpty = (
+    // A first-time reader has no model for why a crewmate would open
+    // sessions at all, so the empty box explains the mechanism in plain
+    // words (workers), with the crewmate's own face and two
+    // faded ghost poses standing in for the workers that are not here
+    // yet. The poses are the fixed-palette brand assets, so the fade is
+    // an opacity on the <img>, never a recolour (see GhostPoses.tsx).
+    <div className="rounded-2xl border border-dashed border-border-strong bg-bg px-4 py-7 text-center text-[13px] text-muted leading-relaxed" data-testid="crew-profile-sessions-empty">
+      <div className="flex items-center justify-center gap-2.5 mb-4" aria-hidden="true">
+        <img src={workersLeadPose} alt="" draggable={false} className="h-16 w-16 object-contain select-none" />
+        <ArrowRight size={18} className="text-accent shrink-0" />
+        <img src={workerPoseA} alt="" draggable={false} className="h-[60px] w-[52px] object-contain select-none opacity-30 translate-y-1" />
+        <img src={workerPoseB} alt="" draggable={false} className="h-12 w-11 object-contain select-none opacity-30 translate-y-2.5 -ml-1" />
+      </div>
+      <p className="m-0 font-semibold text-text">{t('pages.membersPage.driving_empty_lead', { name: crewDisplayName(active) })}</p>
+      <p className="m-0 mt-0.5">{t('pages.membersPage.driving_empty_body')}</p>
+    </div>
+  )
   const sessionsBody = (
     <div className="flex flex-col gap-3" data-testid="crew-profile-sessions">
-      {drivingSessions.length === 0 && !slotsLoaded ? (
-        <div className="space-y-2" aria-hidden>
-          <div className="h-12 rounded-2xl bg-bg-hover animate-pulse" />
-          <div className="h-12 rounded-2xl bg-bg-hover animate-pulse" />
-        </div>
-      ) : drivingSessions.length === 0 ? (
-        // A first-time reader has no model for why a crewmate would open
-        // sessions at all, so the empty box explains the mechanism in plain
-        // words (workers), with the crewmate's own face and two
-        // faded ghost poses standing in for the workers that are not here
-        // yet. The poses are the fixed-palette brand assets, so the fade is
-        // an opacity on the <img>, never a recolour (see GhostPoses.tsx).
-        <div className="rounded-2xl border border-dashed border-border-strong bg-bg px-4 py-7 text-center text-[13px] text-muted leading-relaxed" data-testid="crew-profile-sessions-empty">
-          <div className="flex items-center justify-center gap-2.5 mb-4" aria-hidden="true">
-            <img src={workersLeadPose} alt="" draggable={false} className="h-16 w-16 object-contain select-none" />
-            <ArrowRight size={18} className="text-accent shrink-0" />
-            <img src={workerPoseA} alt="" draggable={false} className="h-[60px] w-[52px] object-contain select-none opacity-30 translate-y-1" />
-            <img src={workerPoseB} alt="" draggable={false} className="h-12 w-11 object-contain select-none opacity-30 translate-y-2.5 -ml-1" />
-          </div>
-          <p className="m-0 font-semibold text-text">{t('pages.membersPage.driving_empty_lead', { name: crewDisplayName(active) })}</p>
-          <p className="m-0 mt-0.5">{t('pages.membersPage.driving_empty_body')}</p>
-        </div>
-      ) : (
-        <ul className="list-none m-0 p-0 rounded-2xl border border-border bg-bg overflow-hidden" data-testid="crew-profile-driving">
-          {drivingSessions.map((s) => {
-            const kind = tabStatus(s, [], s.key)
-            const status = DRIVING_STATUS[kind]
-            const label = t(status.label)
-            const activityTs = lastActivityEpoch(s)
-            const title = sessionDisplayTitle(s)
-            return (
-              <li key={s.key} className="border-t border-border first:border-t-0">
-                <button
-                  type="button"
-                  onClick={() => openSessionGuarded(s.key)}
-                  className="w-full flex items-center gap-3 px-3.5 py-3 text-left hover:bg-bg-hover transition-colors cursor-pointer"
-                  title={title + PROJECT_SEPARATOR + label}
-                  data-testid="crew-profile-driving-row"
-                  data-status={kind}
-                >
-                  <Circle size={9} className={`shrink-0 ${status.cls}`} aria-hidden />
-                  <span className="flex-1 min-w-0 leading-tight">
-                    <span className="block text-[13px] font-semibold truncate">{title}</span>
-                    <span className="block text-[11.5px] text-muted truncate">
-                      {label}{activityTs > 0 ? `${PROJECT_SEPARATOR}${timeAgo(activityTs)}` : ''}
-                    </span>
-                  </span>
-                  <ChevronRight size={15} className="text-muted shrink-0" aria-hidden="true" />
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-      )}
+      <MateSessionsList
+        key={activeMemberKey}
+        root={activeMemberKey}
+        mateName={crewDisplayName(active)}
+        liveSlots={drivingSessions}
+        slotsLoaded={slotsLoaded}
+        empty={sessionsEmpty}
+      />
     </div>
   )
   const requestProfileBack = (proceed: () => void) => {
@@ -641,10 +699,16 @@ export function MembersPageProfileCard({
   // tab body at a time), so close and navigation refuse until it settles; the
   // tab rail reads `heartbeatBusy` for the same refusal.
   const [heartbeatBusy, setHeartbeatBusy] = useState(false)
+  const [heartbeatDirty, setHeartbeatDirty] = useState(false)
   const onHeartbeatBusyChange = useCallback((dirty: boolean, busy: boolean) => {
-    onGoalsDraftChange(dirty, busy)
+    setHeartbeatDirty(dirty)
     setHeartbeatBusy(busy)
-  }, [onGoalsDraftChange])
+  }, [])
+  // One publication into the leave guard for both Schedules-tab rows: a patrol
+  // write in flight holds the card exactly as a Heartbeat write does.
+  useEffect(() => {
+    onGoalsDraftChange(heartbeatDirty, heartbeatBusy || patrolBusy)
+  }, [heartbeatDirty, heartbeatBusy, patrolBusy, onGoalsDraftChange])
   // The profile card (crewmate-panel IA): the pill's surface. Notes,
   // Schedules and the work log are ITS tabs/pages now, so the three
   // bodies above mount here instead of on the side panel's strip.
@@ -667,7 +731,7 @@ export function MembersPageProfileCard({
       running={!!isRunning(active)}
       slotKey={activeSlot || active.slot_key}
       automation={profileAutomation ?? null}
-      monitorReadState={profileMonitorReadState}
+      selfBody={selfBody}
       description={profileRegistryQuery.data?.agents.find((a) => a.name === active.name)?.description ?? ''}
       descriptionError={profileRegistryQuery.isError}
       goal={profileGoalsQuery.data?.goals[0]?.text ?? ''}
@@ -688,7 +752,7 @@ export function MembersPageProfileCard({
       newScheduleBody={schedulesBody}
       heartbeatBody={activeSlug && activeMemberName ? <CrewHeartbeatRow slug={activeSlug} member={activeMemberName} onBusyChange={onHeartbeatBusyChange} /> : null}
       heartbeatOn={!!profileGoalsQuery.data?.schedules?.heartbeat}
-      heartbeatBusy={heartbeatBusy}
+      heartbeatBusy={heartbeatBusy || patrolBusy}
       sessionsBody={sessionsBody}
       notesBody={notesBody}
       goalsBody={activeSlug && activeMemberName ? (
@@ -707,6 +771,7 @@ export function MembersPageProfileCard({
       settingsBody={<Suspense fallback={null}><CrewProfileSettings member={activeView} slotKey={confirmedSlot || null} waiting={!confirmedSlot} /></Suspense>}
       onClose={requestCloseProfile}
       onRequestBack={requestProfileBack}
+      onExportDraftChange={onExportDraftChange}
       onEdit={() => setEditingCrew(active.name)}
       onOpenFiles={() => openCrewView('files')}
       onFreshStart={activeSlot && !freshStart.isPending ? askFreshStart : undefined}

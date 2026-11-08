@@ -174,7 +174,7 @@ describe('Discover sub-tabs — URL sync', () => {
     // already be the Updates tab, or a refresh flashes Featured.
     expect(updatesTab().getAttribute('aria-selected')).toBe('true')
     expect(featuredTab().getAttribute('aria-selected')).toBe('false')
-    expect(screen.getByRole('heading', { name: /pages\.appsPage\.update /, level: 3 })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /pages\.appsPage\.updates_hint/, level: 3 })).toBeInTheDocument()
   })
 
   it('clicking the tabs navigates between /apps and /apps/-/updates', async () => {
@@ -229,7 +229,8 @@ describe('Updates sub-page — list rendering', () => {
     // slot, so a clickable sibling would invite a dispatch the hook refuses —
     // a dead click. Mirrors the Update All freeze.
     expect(rowUpdateButtons()[0]).toBeDisabled()
-    expect(mocks.apiUpdateApp).toHaveBeenCalledExactlyOnceWith('notes')
+    // A path install with a registry update: the registry source, never a folder re-copy.
+    expect(mocks.apiUpdateApp).toHaveBeenCalledExactlyOnceWith('notes', 'registry:notes')
 
     await act(async () => { deferred[0].resolve() })
     // Settled: the in-flight form leaves and both rows read Update again.
@@ -282,8 +283,8 @@ describe('Updates sub-page — list rendering', () => {
     )
     // The batch's success lands in the page's own notice surface.
     expect(screen.getByText('pages.appsPage.updated_app {"count":2}')).toBeInTheDocument()
-    expect(mocks.apiUpdateApp).toHaveBeenNthCalledWith(1, 'notes')
-    expect(mocks.apiUpdateApp).toHaveBeenNthCalledWith(2, 'docs')
+    expect(mocks.apiUpdateApp).toHaveBeenNthCalledWith(1, 'notes', 'registry:notes')
+    expect(mocks.apiUpdateApp).toHaveBeenNthCalledWith(2, 'docs', 'registry:docs')
   })
 })
 

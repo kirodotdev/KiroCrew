@@ -1,14 +1,9 @@
 """Behaviour tests for index-backed :meth:`ConversationLog.search_sessions`.
 
-The index is a candidate filter and a text source, never a ranker, so the
-property under test is EQUIVALENCE: for the same corpus and query, an indexed
-search must return exactly what a scanning search returns — same rows, same
-order, same snippets. A ranking change here would be invisible in production
-until somebody noticed their search got worse.
+The index is a filter, never a ranker: an indexed search returns exactly what a scan
+returns (same rows, order, snippets).
 
-The second property is that the index actually avoids work: a session the index
-vouches for and rules out must never be read or folded. That is asserted as a
-fold COUNT, not as elapsed time, matching the convention in
+A session the index rules out is never folded, asserted as a fold COUNT, as in
 ``test_search_sessions_cost``.
 """
 
@@ -30,11 +25,8 @@ pytestmark = pytest.mark.skipif(not fts5_available(), reason="SQLite built witho
 def _close_session_search_indexes(monkeypatch):
     """Close the search index every ``ConversationLog`` lazily opened.
 
-    ``SessionCatalogProjection.search_index`` opens a SQLite connection on the
-    first search/backfill and nothing in these tests closes it, so each log
-    leaked that descriptor. Track every log and release its index at teardown;
-    the index is opened synchronously on this (the test) thread, so the
-    per-thread :meth:`SessionSearchIndex.close` reaches it.
+    ``SessionCatalogProjection.search_index`` opens SQLite lazily on this thread, so the
+    per-thread :meth:`SessionSearchIndex.close` at teardown releases it.
     """
     import kiro_crew.history as _history_mod
 
@@ -180,18 +172,9 @@ def test_vouched_non_matching_sessions_are_never_read(tmp_path, monkeypatch):
 def test_a_match_only_in_a_later_message_is_still_found(tmp_path):
     """Every message must be searchable, not just the first one.
 
-    This is the test that caught ``FOLD_SEPARATOR`` being ``\\x00`` (on SQLite
-    3.40.0/3.45.1; 3.53.1 tokenizes past a NUL and passes either way). FTS5's
-    tokenizers walk the indexed text as a NUL-terminated C string, so the column
-    stored the whole transcript while only the bytes BEFORE the first separator
-    produced postings. The failure was not a missed rank either: a vouched-for
-    session with empty postings reads to ``_index_shortlist`` as proof the
-    session cannot match, so the scan that would have found the hit was skipped
-    and the session became unfindable by anything past its opening message.
-
-    Every other test in this file would still pass under that bug, because they
-    either match on the first message or search a session the index has not
-    vouched for yet and which therefore falls back to a full scan.
+    A NUL ``FOLD_SEPARATOR`` ends FTS5 tokenization on some SQLite builds, and a vouched-for
+    session with no later postings is then skipped by ``_index_shortlist``. Other tests
+    here match on the first message or hit the scan fallback, so only this one catches it.
     """
     log = ConversationLog(base_dir=tmp_path)
     log.append("late", "user", "first message about deployment")
@@ -211,13 +194,8 @@ def test_a_match_only_in_a_later_message_is_still_found(tmp_path):
 def test_fold_separator_does_not_terminate_fts_tokenization(tmp_path):
     """``FOLD_SEPARATOR`` must survive tokenization, not just string storage.
 
-    Asserted against SQLite itself rather than through the search path, so the
-    reason a replacement separator is unacceptable is stated where someone
-    changing the constant will read it. ``\\x00`` passes the first assertion and
-    fails the second on SQLite 3.40.0 and 3.45.1 (trigram stops at a NUL), which
-    is exactly how it went unnoticed. SQLite 3.53.1 tokenizes past a NUL, so
-    there this test passes even with ``\\x00``; the build-independent guard is
-    ``test_no_nul_reaches_the_fts_column``.
+    ``\\x00`` fails the second assertion on SQLite 3.40.0 and 3.45.1 but passes on 3.53.1;
+    the build-independent guard is ``test_no_nul_reaches_the_fts_column``.
     """
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE VIRTUAL TABLE t USING fts5(folded, tokenize='trigram')")
@@ -241,12 +219,8 @@ def test_fold_separator_does_not_terminate_fts_tokenization(tmp_path):
 def test_no_nul_reaches_the_fts_column(tmp_path):
     """No NUL may reach the folded blob, whether from the join or from a message.
 
-    A NUL ends the text for the trigram tokenizer on some SQLite builds (3.40.0,
-    3.45.1) and not on others (3.53.1), so a search-only test proves nothing on a
-    host whose SQLite tokenizes past it. Asserting the stored column and the scan
-    fold carry no NUL holds on every build. A NUL inside one message's own
-    content must not hide the messages after it either. (The session key is not
-    ``nul``: that is a reserved device name on Windows.)
+    Only some SQLite builds stop at a NUL, so this checks the stored column on every build.
+    (The session key is not ``nul``: that is a reserved device name on Windows.)
     """
     log = ConversationLog(base_dir=tmp_path)
     log.append("embedded", "user", "first message about deployment")
@@ -275,11 +249,8 @@ def test_no_nul_reaches_the_fts_column(tmp_path):
 def test_a_lone_surrogate_does_not_stop_the_backfill(tmp_path):
     """One unpaired ``\\udXXX`` escape in a transcript must not cost every older session its row.
 
-    The backfill walks sessions newest first, so a poisoned newest session that
-    raised out of ``sync`` ended every pass before any older one was indexed, and
-    every query kept scanning raw transcripts. The escape is written into the
-    file by hand because ``append`` never produces one; ``json.loads`` turns it
-    into a lone surrogate, which no strict UTF-8 encoder accepts.
+    The backfill walks newest first, so a raise from ``sync`` would stop every pass. The
+    escape is hand-written because ``append`` never produces one.
     """
     scan_log = ConversationLog(base_dir=tmp_path / "scan")
     index_log = ConversationLog(base_dir=tmp_path / "indexed")

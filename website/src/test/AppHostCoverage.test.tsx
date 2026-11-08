@@ -130,8 +130,10 @@ describe('AppHost — guard surfaces', () => {
   it('offers a way back to Apps when there is no app record at all', () => {
     renderHost(undefined as unknown as AppRecord)
 
-    expect(screen.getByTestId('page-title').textContent).toBe('App Not Found')
-    expect(screen.getByTestId('page-subtitle').textContent).toBe('"unknown" is not installed')
+    // The header says the one thing that matters, naming the app; no generic
+    // "App Not Found" title above it and no second line repeating it.
+    expect(screen.getByTestId('page-title').textContent).toBe("unknown isn't installed")
+    expect(screen.queryByTestId('page-subtitle')).toBeNull()
     expect(screen.getByText('Install it from Apps or via CLI')).toBeTruthy()
     expect(screen.queryByTestId('sdk-provider')).toBeNull()
 
@@ -143,12 +145,21 @@ describe('AppHost — guard surfaces', () => {
     renderHost(appRecord({ enabled: false }))
 
     expect(screen.getByTestId('page-title').textContent).toBe('Ledger Lens')
-    expect(screen.getByTestId('page-subtitle').textContent).toBe('This app is disabled')
+    // The body line below already says it is disabled; the header carries no subtitle.
+    expect(screen.queryByTestId('page-subtitle')).toBeNull()
     expect(screen.getByText('Enable this app from Apps to use it.')).toBeTruthy()
     expect(screen.queryByTestId('sdk-provider')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /apps/i }))
     expect(mockNavigate).toHaveBeenCalledWith('/apps')
+  })
+
+  it('explains a built-in skipped at boot instead of loading its bundle', () => {
+    renderHost(appRecord({ unavailable: { reason: 'PermissionError: denied' } }))
+
+    expect(screen.getByTestId('page-title').textContent).toBe('Ledger Lens')
+    expect(screen.getByText(/could not load when the gateway started.*PermissionError: denied/)).toBeTruthy()
+    expect(screen.queryByTestId('sdk-provider')).toBeNull()
   })
 
   it('treats a missing ui.entry as an agent-only app, not an error', () => {
@@ -177,13 +188,17 @@ describe('AppHost — guard surfaces', () => {
 })
 
 describe('AppHost — hosting a real bundle', () => {
-  it('shows a named loading skeleton while the bundle is in flight', async () => {
+  it('paints no loading skeleton in the first frame of a load', async () => {
     renderHost(appRecord())
 
-    const line = screen.getByText(
+    // The fallback waits out a short window before drawing anything, so a fast
+    // bundle never flashes a placeholder. The named skeleton a SLOW bundle gets
+    // after that window, and its manifest-declared shapes, are pinned in
+    // AppHostLoading.test.tsx, where the import settles on the test's clock.
+    expect(screen.queryByTestId('app-loading-fallback')).toBeNull()
+    expect(screen.queryByText(
       (_content, el) => el?.tagName === 'P' && (el.textContent ?? '').startsWith('Loading'),
-    )
-    expect(line.textContent).toContain('Ledger Lens')
+    )).toBeNull()
 
     await settleBundle()
   })
@@ -348,5 +363,29 @@ describe('AppHost — error boundary', () => {
     // boundary has nothing to re-render into.
     expect(screen.getByTestId('page-subtitle').textContent).toBe('App crashed')
     await act(async () => { await Promise.resolve() })
+  })
+})
+
+describe('AppHost — onFailure (a host surface with no room for the fallbacks)', () => {
+  /** The real dynamic import has to reject before React.lazy hands AppHost's `.catch` the error. */
+  const BUNDLE_REJECT_TIMEOUT_MS = 5_000
+
+  it('reports a bundle that fails to load and paints nothing in its place', async () => {
+    const onFailure = vi.fn()
+    const { container } = renderWithProviders(<AppHost app={appRecord()} entry="desktop/pet.mjs" onFailure={onFailure} />)
+    // Chain: React.lazy -> import('/apps/<name>/ui/desktop/pet.mjs') rejects -> AppHost's catch -> onFailure.
+    await waitFor(() => expect(onFailure).toHaveBeenCalledTimes(1), { timeout: BUNDLE_REJECT_TIMEOUT_MS })
+    expect(screen.queryByRole('heading', { level: 3 })).toBeNull()
+    expect(screen.queryByTestId('app-host-load-error')).toBeNull()
+    expect(container.querySelector('[data-testid="sdk-provider"]')?.textContent).toBe('')
+  })
+
+  it('reports an app that throws and renders nothing instead of the crash card', () => {
+    sdk.throwNext = true
+    const onFailure = vi.fn()
+    renderWithProviders(<AppHost app={appRecord()} onFailure={onFailure} />)
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({ message: 'the app blew up during render' }))
+    expect(screen.queryByTestId('page-subtitle')).toBeNull()
+    expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
   })
 })

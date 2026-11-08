@@ -9,6 +9,8 @@ import { i18nT } from '../i18n/t'
 export interface MultiSelectOption {
   value: string
   label: string
+  /** Short monospace text shown after the label, e.g. the id a named row stands for. */
+  hint?: string
   description?: string
   locked?: boolean
 }
@@ -166,7 +168,14 @@ export default function MultiSelect({
                 />
                 <span className="min-w-0 flex-1">
                   {/* Muted text, not an opacity drop, so a locked row reads as unavailable. */}
-                  <span className={`block truncate text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
+                  {option.hint ? (
+                    <span className="flex min-w-0 items-baseline gap-2">
+                      <span className={`min-w-0 truncate text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
+                      <span data-multi-select-hint className="min-w-0 truncate text-[11px] font-mono text-muted">{option.hint}</span>
+                    </span>
+                  ) : (
+                    <span className={`block truncate text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
+                  )}
                   {option.description && <span className="block truncate text-[11px] text-muted">{option.description}</span>}
                 </span>
               </label>

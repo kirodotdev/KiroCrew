@@ -82,6 +82,19 @@ Edit `ui/src/App.tsx`. Your app is a standard React component that uses
 > React instance (so hooks work) and stays a small bundle. Mark these as
 > externals in your build (don't bundle them).
 
+**TypeScript types.** Your dashboard serves the declarations for both
+specifiers at `/vendor/kirocrew-app-sdk.d.ts`, generated from the SDK it hosts.
+Save the file into your UI sources and `tsc` and your editor resolve the imports:
+
+```bash
+curl --fail -o ui/src/kirocrew-app-sdk.d.ts http://localhost:5476/vendor/kirocrew-app-sdk.d.ts
+```
+
+Use your dashboard's address if it is not the default, and fetch the file again
+after you upgrade Kiro Crew. It names some libraries the host uses: keep
+`skipLibCheck: true` in your `tsconfig.json`, as the Vite template does, or
+install their types.
+
 ```tsx
 import { useAppApi, useAppEvents } from '@kirocrew/app-sdk'
 import { Card, CardTitle, PageHeader, StatCard } from '@kirocrew/app-sdk/ui'
@@ -155,9 +168,10 @@ kirocrew app install /absolute/path/to/my-dashboard
 
 Before you enable it, trust the app. Enable refuses every app that is not
 built in, even one that ships only an agent and a skill, until the operator
-trusts it in Settings → Security → Third-party apps. That setting grants this app
-(`agent.apps_trusted`) or all third-party apps (`agent.apps_allow_third_party`
-set to `true`). See
+trusts it. Enabling it from the App Store asks you to trust this app alone
+(`agent.apps_trusted`). Settings → Security → Third-party apps lists and revokes
+those grants, and holds the switch that trusts all third-party apps
+(`agent.apps_allow_third_party` set to `true`). See
 [Publishing Guide](publishing-guide.md#third-party-executable-code-is-off-by-default).
 
 ```bash
@@ -251,6 +265,10 @@ The field reads the same on every surface your app mounts on — a routed `ui.pa
 page and a `contributes.panelTabs` side-panel tab both get it — so you write the
 banner once.
 
+`latestVersion` comes from the source your app was installed from, the one its
+Update installs from. Another registry that publishes an app under the same name
+never answers for yours.
+
 The field is advisory. It tells you what to display, not what to do: your app cannot
 update itself from it, and the gateway re-resolves the app's source when an update is
 actually applied.
@@ -301,13 +319,13 @@ Available in `@kirocrew/app-sdk/ui`:
 `SourceBadge`, `StatCard`, `Skeleton`, `ContentSkeleton`, `EmptyState`,
 `PageHeader`, `Toggle`, `InfoTip`, `SegmentedControl`, `MarkdownRenderer`,
 `Clickable`, `Modal`, `ErrorNotice`, `SettingsSection`, `SettingsCard`,
-`SettingsInput`, `SettingsToggle`, `SettingsSelect`
+`SettingsInput`, `SettingsToggle`, `SettingsSelect`, `Select`, `guideCaution`
 
 ## Shared interaction and locale helpers
 
 The main SDK exports `useImeGuard` so app-owned inputs reuse the host's IME
-Enter protection. It also exports `activeLocale`, `fmtNumber`, `fmtDate`,
-`fmtTime`, `fmtDateTime`, `fmtRelative`, `compareText` and
+Enter protection. It also exports `activeLocale`, `fmtNumber`, `fmtCurrency`,
+`fmtDate`, `fmtTime`, `fmtDateTime`, `fmtRelative`, `compareText` and
 `useLanguageGeneration`. Subscribe with the hook when a memoized component
 needs to repaint on language changes. Apps own their translation catalogs;
 these helpers share locale selection and formatting, not permission to modify
@@ -319,12 +337,24 @@ launch appends to that session's unsent text. Omit
 `autoSend` to send automatically; without `slotKey` this starts a new session.
 `agent` applies only to new sessions. A target must activate successfully before
 its message is used; the SDK does not select another session on failure.
+`memoryMode` (`'persistent'`, `'incognito'` or `'temporary'`) and
+`sessionFolder: false` shape a new session and are ignored with `slotKey`.
+Either one opens a new draft session, like `autoSend: false`, so the message is
+staged for the user to send.
+
+To tell an older host from one with these seams, read `APP_SDK_LEVEL` through a
+namespace import (`import * as sdk from '@kirocrew/app-sdk'`; an older host has
+no such export, so `sdk.APP_SDK_LEVEL` is `undefined` there). A named import of a
+name the host lacks fails the whole bundle at load time.
 
 For Python app hooks with an existing cron grant, use
 `await ctx.cron.set_enabled_async(job_id, False)` to pause an owned job, or
 `True` to resume it without replacing its ID. Use `set_enabled` off-loop.
 `update_job` and `update_job_async` reject `enabled` and `user_paused` arguments;
 use the toggle methods instead. Foreign and missing job IDs are refused.
+`await ctx.cron.run_job_async(job_id)` runs an owned job now, paused or not,
+without touching its schedule. It returns `False` when a run of that job is
+already in flight, and has no sync form.
 
 The `add_job*` methods accept `approval_mode`, `timeout_secs` and `timeout` at
 create time. Pass `approval_mode="auto"` for an unattended agent job: the
@@ -400,6 +430,9 @@ method table are in [API Reference](api-reference.md#python-client).
 ## Publishing Your App
 
 Once your app works locally, publish it to the App Store registry so other
-Kiro Crew users can install it with one click.
+Kiro Crew users can install it with one click. Your app's code stays in a
+dedicated GitHub repository listed in the official registry
+(`kirodotdev/KiroCrewApps`); Kiro Crew accepts no new built-in app, so an app is
+never added to the Kiro Crew package itself.
 
 See [Publishing Guide](publishing-guide.md) for the full workflow.

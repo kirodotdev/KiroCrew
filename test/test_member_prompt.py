@@ -64,12 +64,13 @@ class TestMemberRulesStorage:
         write_member_rules(CREW, member=CREW, text="Never merge PRs.\nAsk before spending money.")
         assert read_member_rules(CREW, CREW) == "Never merge PRs.\nAsk before spending money."
 
-    def test_rules_live_inside_the_trust_subtree(self):
+    def test_rules_live_inside_the_member_records_leaf(self):
         """The rules ARE the boundary the member must not rewrite for itself,
-        so they cannot sit inside the agent-writable member dir."""
+        so they sit in the gateway-only leaf, never the agent-writable member dir."""
         write_member_rules(CREW, member=CREW, text="rule")
         path = member_rules_path(CREW)
-        assert "trust" in path.parts
+        assert "member-records" in path.parts
+        assert "trust" not in path.parts
         assert path.is_file()
         assert not (member_dir(CREW) / path.name).exists()
 
@@ -457,11 +458,8 @@ class TestMemberSectionInjection:
     def test_legitimate_fullwidth_content_survives_scrub_byte_exact(self):
         """The scrub must not rewrite legitimate content.
 
-        Detection runs on a normalized view, but the REWRITE is span-local in
-        the original text — a permanent rule protecting a fullwidth path must
-        reach the member naming that exact path, not its NFKC fold (the member
-        would otherwise receive a subtly different safety boundary than the
-        user wrote).
+        Detection uses a normalized view but the rewrite is span-local, so a rule naming a
+        fullwidth path reaches the member exactly, not as its NFKC fold.
         """
         rule = "Never delete Ａ.txt or ２０２６－plan.md"
         assert _scrub_member_payload(rule) == rule
@@ -751,15 +749,9 @@ class TestMemberSectionInjection:
     def test_plain_chat_on_a_v1_crew_alias_is_not_the_member_desk(self, tmp_path, entrypoint):
         """An ordinary chat whose record resolved to a V1 crew alias.
 
-        Every plain dashboard chat lands on the stock ``default`` alias, which the
-        loader classifies ``selection_kind == "member"`` (a V1-store member is
-        named by that field and ``selection_name`` alone). The record decides
-        whose rules and memory the turn carries, so identity and [PERMANENT
-        RULES] stay. It does NOT decide that the chat is the member's desk: the
-        dashboard passes ``member=`` for a ``mode == "member"`` slot only, and
-        without it the turn gets no working protocol, no briefing and nothing
-        telling it to maintain one -- on the session-start, warm-reinjection and
-        slim-resume legs alike.
+        The stock ``default`` alias has ``selection_kind == "member"``, so identity and
+        [PERMANENT RULES] stay. Only ``member=`` (``mode == "member"`` slots) adds the
+        working protocol and briefing, on all three legs (start, warm, slim resume).
         """
         from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
@@ -846,7 +838,7 @@ class TestMemberSectionInjection:
             assert "members" in ctx  # briefing path points inside the members root
 
     def test_behavior_layer_carries_the_working_protocol(self):
-        # The five protocol clauses the design fixed; a rewrite that drops one
+        # The six protocol clauses the design fixed; a rewrite that drops one
         # should fail here by name, not by silent omission.
         for needle in (
             "not a Q&A bot",
@@ -854,6 +846,7 @@ class TestMemberSectionInjection:
             "escalate ONLY at a true wall",
             "ZERO context",
             "quiet cycle is a successful cycle",
+            "Every word you write as text is shown to the user",
             "[CURRENT ASSIGNMENT]",
         ):
             assert needle in _MEMBER_HOW_YOU_WORK, needle
@@ -881,6 +874,35 @@ class TestMemberSectionInjection:
         assert "write your first briefing" not in ctx
         assert "You own the [CURRENT ASSIGNMENT] section below" not in ctx
         assert "This week: crash issues." not in ctx
+
+    @pytest.mark.parametrize("path", ["fresh", "slim_resume", "post_compaction"])
+    def test_temporary_session_withholds_the_briefing(self, tmp_path, path):
+        """A temporary chat promises no memory reads, so the agent-writable
+        briefing is withheld on every legacy path that delivers the section."""
+        bp = member_briefing_path(CREW)
+        bp.parent.mkdir(parents=True, exist_ok=True)
+        bp.write_text("This week: crash issues.", encoding="utf-8")
+        key = "dashboard:member-code-reviewer"
+        builder = _builder(tmp_path)
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_fake_config()):
+            if path == "fresh":
+                text = builder.build_session_context(
+                    session_key=key, agent=CREW, member=CREW, blocks_reads=True
+                )
+            else:
+                text, _ = builder.build_message(
+                    "status?",
+                    path == "slim_resume",
+                    key,
+                    agent=CREW,
+                    member=CREW,
+                    blocks_reads=True,
+                    resumed=path == "slim_resume",
+                    needs_reinjection=path == "post_compaction",
+                )
+        # ASCII only: build_message folds the header's em dash to "--".
+        assert "withheld by this turn's memory/privacy scope" in text
+        assert "This week: crash issues." not in text
 
 
 def _make_rules_app() -> web.Application:

@@ -38,7 +38,7 @@ from aiohttp import web
 
 from kiro_crew.apps.builtins.personal_shopper.backend.store import PreferenceStore
 from kiro_crew.apps.manager import app_data_dir, is_app_enabled
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_json_or
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.loop_lock import LoopBoundLock
@@ -512,11 +512,9 @@ def _sites_path() -> Path:
 
 async def _handle_get_sites(request: web.Request) -> web.Response:
     def _read():
-        path = _sites_path()
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return {"sites": []}
+        return read_json_or(
+            _sites_path(), {"sites": []}, logger=logger, what="personal shopper sites"
+        )
 
     data = await asyncio.to_thread(_read)
     return web.json_response(data)

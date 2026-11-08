@@ -382,6 +382,77 @@ def _no_systemd_user_session():
         _reset_cgroup_scope_probe()
 
 
+#: The real cgroup v2 mount. A ``memory.reclaim`` write under it drops page cache
+#: from a live cgroup of the operator's, so no test may issue one.
+_REAL_CGROUP_ROOT = pathlib.Path("/sys/fs/cgroup")
+#: Paths of the real-cgroupfs reclaim writes the guard refused, drained per test.
+_REFUSED_REAL_RECLAIM_WRITES: list[str] = []
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _no_real_cgroup_reclaim_write():
+    """Refuse a ``memory.reclaim`` write to the real cgroupfs for the whole session.
+
+    The resource-pressure sampler calls ``sandbox.reclaim_agents_slice_page_cache``
+    every tick, and the slice it reads is the operator's real
+    ``kirocrew-agents.slice`` under ``/sys/fs/cgroup`` (no environment variable
+    redirects that read). On a developer host whose slice sits near its
+    ``memory.high`` with cold cache, any test that drives the sampler would drop the
+    operator's page cache. The writer is the one place every reclaim goes through, so
+    it is replaced with one that refuses a real cgroupfs path and still writes a
+    fabricated tree under a test's temp directory.
+    """
+    from kiro_crew import sandbox_slice
+
+    real_writer = sandbox_slice._write_memory_reclaim
+
+    def guarded_writer(path: pathlib.Path, nbytes: int) -> None:
+        resolved = pathlib.Path(os.path.realpath(path))
+        if resolved == _REAL_CGROUP_ROOT or _REAL_CGROUP_ROOT in resolved.parents:
+            # The reclaim runs in a daemon thread that logs and swallows this
+            # error, so the attempt is also recorded for the per-test check.
+            _REFUSED_REAL_RECLAIM_WRITES.append(str(path))
+            raise AssertionError(f"test tried to write the real cgroupfs: {path}")
+        real_writer(path, nbytes)
+
+    sandbox_slice._write_memory_reclaim = guarded_writer
+    try:
+        yield
+    finally:
+        sandbox_slice._write_memory_reclaim = real_writer
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_refused_real_reclaim_write(_no_real_cgroup_reclaim_write):
+    """Disarm the slice reclaim for the test, and fail it if a real write was refused.
+
+    Every test starts with the reclaim disarmed, so a test that drives the
+    resource-pressure sampler never reaches the operator's live slice: whether
+    that slice is near its ``memory.high`` depends on the host, and a test's
+    result must not. A test of the reclaim itself re-arms it against a
+    fabricated cgroup tree (``test_agents_slice_reclaim.py``'s ``cg`` fixture).
+    The flag is restored afterwards, so a disarm that a test caused does not
+    leak into the next one.
+
+    The refused-write check stays as the backstop. A write refused after its
+    test ended (a reclaim thread nobody joined) is reported by the next test
+    that runs on this worker.
+    """
+    from kiro_crew import sandbox_slice
+
+    was_disarmed = sandbox_slice._SLICE_RECLAIM_DISARMED
+    sandbox_slice._SLICE_RECLAIM_DISARMED = True
+    _REFUSED_REAL_RECLAIM_WRITES.clear()
+    try:
+        yield
+    finally:
+        sandbox_slice._SLICE_RECLAIM_DISARMED = was_disarmed
+    refused = list(_REFUSED_REAL_RECLAIM_WRITES)
+    _REFUSED_REAL_RECLAIM_WRITES.clear()
+    if refused:
+        pytest.fail(f"a test drove a memory.reclaim write to the real cgroupfs: {refused}")
+
+
 @pytest.fixture
 def real_user_session(monkeypatch):
     """Opt ONE test back into the operator's real systemd user session.

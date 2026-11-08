@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from aiohttp import web
@@ -31,6 +32,13 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.dashboard.source_providers.gerrit import (
+    GLOBAL_CREDENTIAL_NAME as GERRIT_GLOBAL_CREDENTIAL_NAME,
+)
+from kiro_crew.dashboard.source_providers.gerrit import (
+    host_credential_name as gerrit_host_credential_name,
+)
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.secrets import SecretVault
 
 logger = logging.getLogger(__name__)
@@ -52,6 +60,10 @@ def _sel():
 
 
 _MANAGED_KIND_JIRA_HOST_TOKEN = "jira_host_token"
+# A Gerrit ``username:HTTP password`` pair for one listed host. One kind for both
+# the lone-host global name and the per-host names: every row names its host, so
+# the panel labels it by host and the hex-suffixed vault name stays a detail.
+_MANAGED_KIND_GERRIT_HTTP_CREDENTIAL = "gerrit_http_credential"
 # A Connections pre-registered OAuth client secret (``connections/oauth_clients``).
 _MANAGED_KIND_CONNECTIONS_CLIENT_SECRET = "connections_client_secret"
 
@@ -155,7 +167,7 @@ async def _channel_credential_owned(request: web.Request, name: str) -> web.Resp
     return web.json_response(
         {
             "error": "this secret holds a channel credential, which a remote session "
-            "cannot change; change it under Settings → Channels on the machine "
+            "cannot change; change it under Settings → Messaging Channels on the machine "
             "running the gateway",
             "code": "managed_by_channels",
         },
@@ -163,7 +175,7 @@ async def _channel_credential_owned(request: web.Request, name: str) -> web.Resp
     )
 
 
-def _managed_secret_config() -> tuple[list[str], bool, bool, bool]:
+def _managed_secret_config() -> tuple[list[str], bool, bool, bool, list[str]]:
     """Return managed-consumer config without making vault listing fail."""
     try:
         config = KiroCrewConfig.load()
@@ -172,9 +184,11 @@ def _managed_secret_config() -> tuple[list[str], bool, bool, bool]:
         # the response carries a non-fatal hint so the UI does not misrepresent
         # "config unreadable" as "no managed integrations enabled".
         logger.debug("Could not load managed-secret configuration", exc_info=True)
-        return ([], False, False, True)
+        return ([], False, False, True, [])
     entries = config.dashboard.jira_auth
     hosts = [normalized for entry in entries if (normalized := normalize_jira_host(entry.host))]
+    # Already normalized by the ``dashboard.gerrit_hosts`` coercer.
+    gerrit_hosts = sorted(set(getattr(config.dashboard, "gerrit_hosts", ())))
     degraded: frozenset[str] = getattr(config, "degraded_sections", frozenset())
     managed_config_error = bool(degraded & {DEGRADED_WHOLE_CONFIG, "dashboard", "wakatime"})
     return (
@@ -182,6 +196,7 @@ def _managed_secret_config() -> tuple[list[str], bool, bool, bool]:
         jira_global_token_applicable(entries),
         bool(config.wakatime.enabled),
         managed_config_error,
+        gerrit_hosts,
     )
 
 
@@ -190,14 +205,17 @@ def _managed_secret_catalog(
     jira_hosts: list[str],
     jira_global_applicable: bool,
     wakatime_enabled: bool,
+    gerrit_hosts: Sequence[str] = (),
 ) -> list[dict[str, str]]:
     """Describe managed vault names the current integration config can consume.
 
     One configured host may use the global token. Multiple hosts must use their
     per-host names. A single host's per-host name is also listed when already
     stored, because the runtime gives it precedence over the global fallback.
-    Values and configured state are not duplicated here: callers already receive
-    the complete ``names`` membership list in the same response.
+    Gerrit follows the same rule, with every row carrying its host so the user
+    never has to derive the hex-suffixed name. Values and configured state are
+    not duplicated here: callers already receive the complete ``names``
+    membership list in the same response.
     """
     name_set = set(names)
     catalog: list[dict[str, str]] = []
@@ -228,6 +246,15 @@ def _managed_secret_catalog(
                     "host": host,
                 }
             )
+    # Gerrit: the lone listed host is served by the global name (unless its
+    # per-host name is already stored, which the provider prefers); two or more
+    # hosts each get their per-host name, and the global one stops applying.
+    gerrit_global_applicable = len(gerrit_hosts) == 1
+    for host in gerrit_hosts:
+        name = gerrit_host_credential_name(host)
+        if gerrit_global_applicable and name not in name_set:
+            name = GERRIT_GLOBAL_CREDENTIAL_NAME
+        catalog.append({"name": name, "kind": _MANAGED_KIND_GERRIT_HTTP_CREDENTIAL, "host": host})
     # Connections OAuth client secrets. Listed only when STORED: the entry field
     # lives on Settings → OAuth Apps, so the Secrets panel's job is to label an
     # existing entry with its owner (not offer an empty slot), and keep a cleanup
@@ -244,7 +271,11 @@ def _managed_secret_catalog(
 
 
 def _unused_stored_secrets(
-    names: list[str], jira_hosts: list[str], jira_global_applicable: bool, wakatime_enabled: bool
+    names: list[str],
+    jira_hosts: list[str],
+    jira_global_applicable: bool,
+    wakatime_enabled: bool,
+    gerrit_hosts: Sequence[str] = (),
 ) -> list[dict[str, str]]:
     """Classify stored integration names that runtime configuration will not use."""
     name_set = set(names)
@@ -256,6 +287,13 @@ def _unused_stored_secrets(
             unused.append({"name": CRED_JIRA_API_TOKEN, "reason": "jira_multi_host"})
         elif jira_host_token_name(jira_hosts[0]) in name_set:
             unused.append({"name": CRED_JIRA_API_TOKEN, "reason": "jira_host_precedence"})
+    if GERRIT_GLOBAL_CREDENTIAL_NAME in name_set and gerrit_hosts:
+        if len(gerrit_hosts) > 1:
+            unused.append({"name": GERRIT_GLOBAL_CREDENTIAL_NAME, "reason": "gerrit_multi_host"})
+        elif gerrit_host_credential_name(gerrit_hosts[0]) in name_set:
+            unused.append(
+                {"name": GERRIT_GLOBAL_CREDENTIAL_NAME, "reason": "gerrit_host_precedence"}
+            )
     return unused
 
 
@@ -340,6 +378,7 @@ async def api_secrets_list(request: web.Request) -> web.Response:
         jira_global_applicable,
         wakatime_enabled,
         managed_config_error,
+        gerrit_hosts,
     ) = await asyncio.to_thread(_managed_secret_config)
     payload: dict[str, object] = {
         "names": names,
@@ -348,6 +387,7 @@ async def api_secrets_list(request: web.Request) -> web.Response:
             jira_hosts,
             jira_global_applicable,
             wakatime_enabled,
+            gerrit_hosts,
         ),
     }
     unused = _unused_stored_secrets(
@@ -355,6 +395,7 @@ async def api_secrets_list(request: web.Request) -> web.Response:
         jira_hosts,
         jira_global_applicable,
         wakatime_enabled,
+        gerrit_hosts,
     )
     if unused:
         payload["unused"] = unused
@@ -421,10 +462,51 @@ async def api_secrets_set(request: web.Request) -> web.Response:
     if owned is not None:
         return owned
 
-    vault = SecretVault(config_dir())
+    cfg_dir = config_dir()
+    vault = SecretVault(cfg_dir)
     # The revision names THIS write (a digest of its ciphertext, never the
     # value), so a caller that may delete it later can delete exactly it.
-    revision = await vault.set_with_revision(name, value)
+    try:
+        revision = await vault.set_with_revision(name, value)
+    except OSError as exc:
+        # The vault write can fail for two different reasons, and the page must
+        # not be told the wrong fix. ``atomic_write`` refuses to write through a
+        # redirecting parent, so a ``.vault`` folder that is a symlink or junction
+        # raises and the secret never lands at the link's target; any other
+        # OSError (a full disk, a permission denial, a read-only filesystem) is a
+        # plain write failure. Each maps to its own typed JSON error the
+        # SecretsPanel can render, rather than an uncaught OSError that aiohttp
+        # answers as a bare 500. The OS message names a local filesystem path, so
+        # it is logged for diagnosis and never returned to the page.
+        logger.warning(
+            "Vault entry '%s' not stored via dashboard: %s",
+            _sanitize_for_log(name),
+            exc,
+        )
+        vault_dir = Path(cfg_dir) / ".vault"
+        if is_link_or_junction(vault_dir):
+            return web.json_response(
+                {
+                    "error": (
+                        "The vault folder is a symlink, so a secret cannot be "
+                        "saved into it safely. Replace the vault folder with a "
+                        "real directory and try again."
+                    ),
+                    "code": "vault_folder_symlinked",
+                },
+                status=409,
+            )
+        return web.json_response(
+            {
+                "error": (
+                    "Could not save to the vault: the folder could not be "
+                    "written to. Check disk space and permissions, then try "
+                    "again."
+                ),
+                "code": "vault_write_failed",
+            },
+            status=500,
+        )
     logger.info("Vault entry '%s' stored via dashboard", _sanitize_for_log(name))
     return web.json_response({"ok": True, "name": name, "revision": revision})
 

@@ -70,12 +70,10 @@ class TestEnableDepsResolution:
 
             response = await handle_enable_app(request)
 
-            # Verify resolve_dependencies was called
             mock_resolve.assert_called_once()
             call_args = mock_resolve.call_args
             assert call_args[0][0] == "test-app"
 
-            # Verify response includes dependency info
             import json
 
             body = json.loads(response.body)

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
 
 let listener: (() => void) | null = null
@@ -11,12 +11,16 @@ const mql = {
   removeEventListener: vi.fn(() => { listener = null }),
 }
 
+// The breakpoint list answers only the width query: every other query (the
+// touch-first and reduced-motion reads) is a fine-pointer desktop's answer.
+const widthOnly = (q: string) => (q.includes('max-width') ? mql : { matches: false })
+
 beforeAll(async () => {
   // Set up mock before importing the hook (module caches mql at load time)
   vi.resetModules()
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
-    value: vi.fn().mockReturnValue(mql),
+    value: vi.fn(widthOnly),
   })
   const mod = await import('../hooks/useIsMobile')
   useIsMobile = mod.useIsMobile
@@ -99,6 +103,54 @@ describe('useIsMobile', () => {
       document.dispatchEvent(new Event('visibilitychange'))
     })
     expect(result.current).toBe(true)
+  })
+
+  describe('form-change continuity', () => {
+    let updates: Array<() => void>
+    beforeEach(() => {
+      updates = []
+      ;(document as unknown as { startViewTransition: unknown }).startViewTransition = vi.fn((update: () => void) => {
+        updates.push(update)
+        return { finished: new Promise(() => {}) }
+      })
+    })
+    afterEach(() => {
+      delete (document as unknown as { startViewTransition?: unknown }).startViewTransition
+      delete document.documentElement.dataset.layoutMorph
+      delete document.documentElement.dataset.layoutMorphEdge
+    })
+
+    it('wraps a resize that crosses the breakpoint in a view transition, flipping every consumer inside it', () => {
+      currentMatches = false
+      const a = renderHook(() => useIsMobile())
+      const b = renderHook(() => useIsMobile())
+      expect(document.startViewTransition).not.toHaveBeenCalled() // not on first load
+
+      act(() => { currentMatches = true; window.dispatchEvent(new Event('resize')) })
+      expect(document.startViewTransition).toHaveBeenCalledTimes(1)
+      // Until the transition's callback runs, every consumer still draws the old
+      // form, even one that re-renders for its own reasons in between.
+      a.rerender(); b.rerender()
+      expect([a.result.current, b.result.current]).toEqual([false, false])
+      act(() => { updates[0]() })
+      expect([a.result.current, b.result.current]).toEqual([true, true])
+    })
+
+    it('does not start one for a resize that stays on the same side of the breakpoint', () => {
+      currentMatches = false
+      renderHook(() => useIsMobile())
+      act(() => { window.dispatchEvent(new Event('resize')) })
+      act(() => { listener?.() })
+      expect(document.startViewTransition).not.toHaveBeenCalled()
+    })
+
+    it('does not start one for a change it only notices when the page comes back', () => {
+      currentMatches = false
+      const { result } = renderHook(() => useIsMobile())
+      act(() => { currentMatches = true; window.dispatchEvent(new Event('pageshow')) })
+      expect(document.startViewTransition).not.toHaveBeenCalled()
+      expect(result.current).toBe(true)
+    })
   })
 
   it('negative control: an unsubscribed event does not refresh the value', () => {

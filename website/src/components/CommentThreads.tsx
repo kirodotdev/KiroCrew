@@ -8,7 +8,7 @@
 //
 // Writes go through the gateway's owner-only mutations, which hold the provider
 // credential and re-verify that the thread belongs to this pull request.
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check, ChevronDown, ChevronRight, CornerDownRight, Loader2, MessageSquare,
   MessageSquarePlus, MessagesSquare, RotateCcw,
@@ -99,12 +99,13 @@ function ThreadComment(
         <button
           type="button"
           onClick={() => setExpanded(v => !v)}
+          aria-expanded={expanded}
           aria-label={expanded
             ? i18nT('components.commentThreads.collapse_comment')
             : i18nT('components.commentThreads.expand_comment')}
           className="flex-shrink-0 p-0.5 rounded text-muted hover:text-text hover:bg-bg-hover border-none bg-transparent cursor-pointer"
         >
-          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          {expanded ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
         </button>
         <span className="font-medium text-text">{c.author || 'someone'}</span>
         {c.kind === 'review' && c.state && (
@@ -159,10 +160,28 @@ function ReplyBox({
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
   const trimmed = text.trim()
+  // Closing unmounts the focused textarea, so focus goes back to the button
+  // that opened it instead of falling to the page. Only when focus is still in
+  // the box (or already on the page): a send can land after the user has moved
+  // on to another field, and that focus is theirs.
+  const openerRef = useRef<HTMLButtonElement>(null)
+  const boxRef = useRef<HTMLDivElement>(null)
+  const refocusOpener = useRef(false)
+  const close = () => {
+    const active = document.activeElement
+    refocusOpener.current = !active || active === document.body || !!boxRef.current?.contains(active)
+    setOpen(false)
+  }
+  useEffect(() => {
+    if (open || !refocusOpener.current) return
+    refocusOpener.current = false
+    openerRef.current?.focus()
+  }, [open])
 
   if (!open) {
     return (
       <button
+        ref={openerRef}
         type="button"
         onClick={() => setOpen(true)}
         className="inline-flex items-center gap-1.5 self-start bg-transparent p-0 text-[12px] text-muted hover:text-accent cursor-pointer"
@@ -182,11 +201,11 @@ function ReplyBox({
       return
     }
     setText('')
-    setOpen(false)
+    close()
   }
 
   return (
-    <div className="flex flex-col gap-1.5">
+    <div ref={boxRef} className="flex flex-col gap-1.5">
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -197,7 +216,7 @@ function ReplyBox({
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
             if (ime.claimEnter(e)) void send()
           }
-          if (e.key === 'Escape') setOpen(false)
+          if (e.key === 'Escape') close()
         }}
         rows={3}
         autoFocus
@@ -225,7 +244,7 @@ function ReplyBox({
         </button>
         <button
           type="button"
-          onClick={() => { setText(''); setOpen(false) }}
+          onClick={() => { setText(''); close() }}
           className="rounded-md bg-transparent px-1.5 py-1 text-[12.5px] text-muted hover:text-text cursor-pointer"
         >
           {i18nT('components.commentThreads.cancel')}
@@ -308,11 +327,12 @@ export default function CommentThreads(
         <div className="flex items-center gap-2 text-[12px] text-muted">
           <MessagesSquare size={12} aria-hidden="true" />
           <span>
-            {threads.length - resolvedCount} {i18nT('components.commentThreads.open')} {resolvedCount} {i18nT('components.commentThreads.resolved')}
+            {i18nT('components.commentThreads.open_count', { count: threads.length - resolvedCount })} · {i18nT('components.commentThreads.resolved_count', { count: resolvedCount })}
           </span>
           <button
             type="button"
             onClick={() => setShowResolved((v) => !v)}
+            aria-expanded={showResolved}
             className="ml-auto bg-transparent p-0 text-[12px] text-accent hover:underline cursor-pointer"
           >
             {showResolved
@@ -349,7 +369,7 @@ export default function CommentThreads(
               )}
               {t.replies.length > 0 && (
                 <span className="text-[10.5px] px-1.5 py-0.5 rounded-full bg-card border border-border tabular-nums">
-                  {t.replies.length + 1} {i18nT('components.commentThreads.messages')}
+                  {i18nT('components.commentThreads.messages_count', { count: t.replies.length + 1 })}
                 </span>
               )}
               {t.resolved && (

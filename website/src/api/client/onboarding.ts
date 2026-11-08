@@ -28,6 +28,29 @@ export interface KiroPrerequisiteStatus {
   bundled_cli: boolean
   setup_allowed: boolean
   /**
+   * Enterprise build only: the gateway's login gate is closed, so it refuses
+   * every API except sign-in. Absent on an oss build. While true the gate shows
+   * the Kiro sign-in screen whatever else the status or another harness says.
+   */
+  enterprise_login_required?: boolean
+  /**
+   * Set with `enterprise_login_required`: the exact command that signs this
+   * enterprise gateway in again (Crew's own vault sign-in). The sign-in screen and
+   * the relock notice show it instead of any kiro-cli login command.
+   */
+  enterprise_sign_in_command?: string
+  /** True when the command ends at `--start-url`: the gateway has no start URL to fill in. */
+  enterprise_sign_in_needs_start_url?: boolean
+  /**
+   * Enterprise build with nobody signed in: the gateway is a sign-in-only app
+   * that serves Crew's own sign-in and nothing else until a sign-in lands.
+   */
+  enterprise_sign_in_only?: boolean
+  /** Set with `enterprise_sign_in_only` once a sign-in landed: start Kiro Crew again. */
+  enterprise_signed_in_restart?: boolean
+  /** Set with `enterprise_signed_in_restart`: the command that starts Kiro Crew again. */
+  enterprise_start_command?: string
+  /**
    * True when the CLI binary is present and executable but could not be
    * VERIFIED because this host cannot build a sandbox (verification runs the
    * binary inside it). A categorically different condition from a missing
@@ -170,6 +193,18 @@ export interface KasBundleStatus {
   progress: { done: number; total: number }
   /** The last install's failure, as the remedy text; '' when none. */
   error: string
+  /**
+   * The route the last KAS spawn in this gateway took, or null before the first.
+   * `automatic` is true when Crew's own engine was chosen because kiro-cli's relay
+   * cannot run here (`reason`: 'no_kiro_cli' | 'kiro_cli_signed_out'). Optional:
+   * an older gateway sends no such key.
+   */
+  route?: {
+    route: 'bundle' | 'relay'
+    automatic: boolean
+    reason: string
+    summary: string
+  } | null
 }
 
 export interface KasLoginStatus {
@@ -264,6 +299,8 @@ export interface AgentImportSkipped {
   category: string
   reason: string
   count?: number
+  /** A caught failure (a read, parse or open that raised), not a deliberate skip. */
+  failed?: boolean
 }
 
 export interface AgentImportScanResponse {

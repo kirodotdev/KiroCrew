@@ -20,7 +20,9 @@ if TYPE_CHECKING:
         ExecutionContext,
         Iterator,
         SubagentDelivery,
+        SubagentEnding,
         _RunCreditAccounting,
+        classify_ending,
     )
 
 
@@ -89,6 +91,11 @@ class SubagentInfo:
     result: str = ""
     result_path: str = ""
     result_truncated: bool = False  # completion-event copy dropped content → summary+path
+    # Whether the run's own reply text was non-empty, read before any notice or
+    # annotation is added to ``result``. None until the runner decides it (a
+    # record that never reached that point); the usage metric then reads
+    # ``result`` instead.
+    returned_reply: bool | None = None
     error: str = ""
     # Machine-readable identifier for ``error``, forwarded by ``POST /api/spawn``
     # as the response's ``code`` so a client can switch on the decision instead of
@@ -102,6 +109,14 @@ class SubagentInfo:
     # record, and the handler answers 429 from that absence.
     error_code: str = ""
     parent_session_key: str = ""
+    # Lineage depth: 1 for a child of a root session (chat, cron, channel),
+    # its parent's depth + 1 for a child of a sub-agent. Set at admission,
+    # which refuses a spawn past ``_MAX_SPAWN_DEPTH``.
+    depth: int = field(default=1, kw_only=True)
+    # The session the spawn tree started from: a nested run's Subagents panel
+    # cards draw in its tab, since a ``subagent:<id>`` parent names none. Set at
+    # admission from the spawning run's record; "" reads as the parent's own key.
+    root_session_key: str = field(default="", kw_only=True)
     memory_mode: str = field(default="persistent", kw_only=True)
     _memory_mode_ready: bool = field(default=True, init=False, repr=False)
     agent: str = ""
@@ -119,6 +134,7 @@ class SubagentInfo:
     silent: bool = False  # suppress completion notification (dashboard + Slack)
     turns: int = 0
     last_tool: str = ""
+    last_tool_call_id: str = ""  # tool_call_id of last_tool; reconnect replay matches it by id
     tool_count: int = (
         0  # count of observed tool calls (incl. auto-approved); drives running-card progress
     )
@@ -144,6 +160,11 @@ class SubagentInfo:
     # ``_exec_started is None`` it also tells the reaper which of the two a
     # parked run is sitting on.
     _awaiting_approval: bool = False
+    # True while the run's AgentSpawn and UserPromptSubmit hooks run, before
+    # its first prompt is sent; exempt from first-prompt silence and idle-stall.
+    _prompt_hooks_running: bool = False
+    # Seconds this attempt spent in those hooks, kept off the startup clock.
+    _prompt_hooks_secs: float = 0.0
     # The in-flight tool hand-off rule, shared with ``AcpSessionHandle`` via
     # ``InFlightToolTracker``. The sub-agent tracks its calls by toolCallId: a
     # native child's call (``sub_session_id`` set) is judged on arrival (so a
@@ -255,6 +276,17 @@ class SubagentInfo:
         return self._reap_reason in _NEUTRAL_REAP_REASONS
 
     @property
+    def run_agent(self) -> str:
+        """The agent this run executes on, for a card's agent chip.
+
+        ``agent`` is only the name the spawn passed, so it is empty for a
+        ``crew=`` or inherited spawn. Those runs execute on the template their
+        execution record names, the same fallback the spawn frame and the
+        run's ``state.json`` use. ``""`` when neither is known.
+        """
+        return self.agent or str(getattr(self.execution_context, "template_id", "") or "")
+
+    @property
     def _inflight_tool(self) -> Any:
         """The :class:`ToolCallState` a stall verdict is read against (``None``
         when no tool is in flight).
@@ -307,12 +339,51 @@ class SubagentInfo:
     # or gives up on it leaves this unset, and so does any route added later that
     # does not say so; a memory-wait expiry's owed mark is cleared only on it.
     _report_delivered: bool = False
+    # True once the parent's own blocking ``spawn_sub_agents`` call answered with
+    # a reply frame carrying this result and that frame was written to the
+    # parent's pipe (``POST /api/spawn/mark-collected``, sent only after the
+    # write). A completion route skips the injection for an announce whose every
+    # member is marked: the parent already holds the result.
+    _collected_inline: bool = False
+    # A mark on any parent: "pending" until the attempt holding the parent's permit when it arrived
+    # (``_inline_token``) ends, then "confirmed" if that turn landed. A revoked
+    # mark clears all three, so the completion is delivered
+    # (``kiro_crew.parent_turns``).
+    _inline_state: str = ""
+    _inline_token: tuple[str, Any, int] | None = None
+    # The attempt holding the parent's turn permit, with its prompt in flight, when
+    # the parent's own tool's spawn request arrived (``POST /api/spawn``), or None
+    # when no such turn held it then, that attempt did not hold it when the spawn
+    # returned, or the spawn did not come from the parent's own session. A done
+    # read stamps ``_seen_done_under`` only under this same attempt, so a call that
+    # reads on after its turn ended never names the attempt of whatever holds the
+    # permit next (a sibling's injection, a retry, the next turn).
+    _spawned_under: tuple[str, Any, int] | None = None
+    # The attempt holding the parent's turn permit that first read this run done
+    # through the parent's own tool (``GET /api/spawn/{id}``), stamped only when it
+    # is the spawning attempt (``_spawned_under``). A mark is held only under that
+    # same attempt, so a mark processed after it ended is never held under a
+    # retry, a next turn, an injection or a compaction holding the permit.
+    _seen_done_under: tuple[str, Any, int] | None = None
     # True once an injection of this report was given up on: every attempt the
     # gateway made failed, so at most a failure notice was queued for the
     # parent's next turn (``notify_injection_failed``). ``_on_done`` still
     # returns, so this is the only sign the parent was never told, and the run
     # loop writes no ``delivered`` tombstone while it is set.
     _report_undelivered: bool = False
+    # True when the shutdown ended this run and left it for the next start: its
+    # parent has a dashboard tab, so the arm that ended it wrote no tombstone.
+    # The report skips ``_on_done`` and marks nothing delivered, so held wave
+    # siblings and owed reports stay visible to the next start's orphan sweep,
+    # which announces the run in that tab, with a resume hint while its
+    # conversation survives. A report made now could only queue in a slot that
+    # does not survive the restart or start a turn the shutdown refuses.
+    _left_for_next_start: bool = False
+    # True once ``create_agent_folder`` wrote this run's ``state.json``: the file
+    # the next start's orphan sweep finds runs by. Kept in memory so the shutdown
+    # can decide which runs to leave to that sweep without reading the disk on
+    # the event loop.
+    _folder_seeded: bool = False
     # True when the gateway QUEUED this completion's injection because the
     # parent's slot was busy. Delivery is not consumption: the announce sits in
     # the slot queue until a turn drains it, and that wait is bounded only by the
@@ -325,6 +396,12 @@ class SubagentInfo:
     _delivery_queued: bool = False
     max_turns: int = 0
     reaped: bool = False
+    # True when ``error`` was written for a deadline or by the reaper, not by
+    # the run itself: the run's own ``wait_for`` timeout, ``_force_reap``'s
+    # synthesis and ``_record_reap_ending``. ``reaped`` alone cannot say this:
+    # the reaper sets it late, also on a run whose own failure was recorded
+    # first, which is the run's ``failed``, not ``reaped``.
+    _deadline_ending: bool = False
     streaming_text: str = ""
     elapsed: float = 0.0
     # Deadline captured when execution starts (``0`` until then). A config
@@ -379,6 +456,10 @@ class SubagentInfo:
     # own id. Like ``model``, a value forces the dedicated-process path -- the
     # shared runtime is the PARENT's process, on the parent's backend.
     backend: str | None = None
+    # The backend the caller asked for, when ``agent.acp_failover`` started this
+    # run on ``backend`` instead; ``None`` when no hop happened. Informational:
+    # ``spawn_status`` and ``spawn_list`` show it, nothing decides on it.
+    failover_from: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
     bare: bool = False
     # Continuable conversations (spawn_run keep=True / spawn_continue):
@@ -396,6 +477,13 @@ class SubagentInfo:
     include_memory: bool = True
     include_lessons: bool = True
     include_project: bool = True
+    # The parent's folder steering directories, resolved when each run of this
+    # child starts (``SubagentManager._parent_steering_dirs``) and handed to
+    # ``build_message`` so the child follows the guides its parent follows. Kept
+    # on the record so a child this run spawns inherits the same set. In memory
+    # only: a retried, drained or continued run resolves it again from its
+    # parent, the same way a chat re-resolves its folder on every rebuild.
+    steering_dirs: tuple[str, ...] = ()
     # The memory silo this child reads and writes, or "" for the global store.
     # Carried rather than derived: `agent` above holds a kiro-cli modeId, a
     # namespace disjoint from cfg.agents, so resolving a store from it answers
@@ -578,6 +666,10 @@ class SubagentInfo:
     # recovery writer while the worker is live re-opens the stale-overwrite race
     # the drain exists to close.
     _state_drain_active: bool = False
+    # The ``(session key, revocation stamp)`` pairs, root first, that this run's
+    # stored ``parent_policy=auto`` rests on (``turn_session.resolve_parent_policy``);
+    # a child of this run inherits them. ``None`` while the run holds no "auto".
+    _approval_lineage: tuple[tuple[str, int], ...] | None = None
     # Set only on the synthetic marker `_conversation_busy` returns for a
     # conversation held by an abandoned state writer, so the two
     # retention callers can say "still settling a state write" instead of
@@ -624,6 +716,9 @@ class SubagentInfo:
     # Set when the run's lane slot was yielded for a wait and a resume entry
     # is queued in admission; cleared when the slot is granted back.
     _resume_pending: bool = False
+    # Awaited children this run released as deferral-held
+    # (``taskq_release_deferred_async``); no wait of this run awaits them again.
+    _deferred_released: set[str] = field(default_factory=set)
     # The run loop's wake-up for a yielded slot: set by ``resume_grant`` when
     # the pump hands the slot back, or by the dependency coordinator's
     # ``on_fail`` when the wait ended in failure (``_wait_failed`` names why).
@@ -657,6 +752,12 @@ class SubagentInfo:
     # non-success completion (stall, cancel, error). The parent must not read
     # it as a finished answer.
     partial: bool = False
+    # True when the run ended NORMALLY but its final segment carries a tool
+    # call written as prose (``has_leaked_tool_call``): that call never ran,
+    # so the requested output may be missing although the run completed.
+    # Notice-only: the outcome stays completed (earlier calls may have taken
+    # effect); the parent is told to check the work (LEAKED_TOOL_CALL_NOTE).
+    leaked_tool_call: bool = False
     # Continue-nudges already spent recovering a ``stalled`` / ``recovering``
     # completion in place (``STOP_RECOVERY_MAX_RETRIES`` budget, shared with
     # the main chat's ``slot._tool_stall_retries``).
@@ -676,21 +777,27 @@ class SubagentInfo:
         return self.tool_count == 0 and self.turns == 0
 
     @property
+    def ending(self) -> SubagentEnding:
+        """The fine-grained ending of this run (see :class:`SubagentEnding`)."""
+        return classify_ending(
+            user_stopped=self.user_stopped,
+            error=self.error,
+            deadline_ending=self._deadline_ending,
+            partial=self.partial,
+        )
+
+    @property
     def outcome(self) -> str:
         """Canonical three-way terminal outcome: 'stopped' | 'failed' | 'completed'.
 
-        THE single source of truth for terminal-state classification. Consumers
-        MUST use this (or the ``outcome`` field carried on every subagent_done
-        emission) instead of re-deriving from ``error``-nullability — the
-        legacy ``error ? failed : completed`` idiom silently misreports a
-        user-stopped agent as completed. ``stopped``/``error`` remain on the
-        wire for compatibility.
+        THE single source of truth for terminal-state classification, folded from
+        :attr:`ending`. Consumers MUST use this (or the ``outcome`` field
+        carried on every subagent_done emission) instead of re-deriving from
+        ``error``-nullability — the legacy ``error ? failed : completed`` idiom
+        silently misreports a user-stopped agent as completed.
+        ``stopped``/``error`` remain on the wire for compatibility.
         """
-        if self.user_stopped:
-            return "stopped"
-        if self.error:
-            return "failed"
-        return "completed"
+        return self.ending.coarse
 
 
 # Callback: (subagent_info) -> None

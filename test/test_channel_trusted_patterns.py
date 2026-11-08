@@ -161,6 +161,24 @@ async def test_name_grant_refusal_falls_through_to_interactive_card(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_declined_grant_card_says_why_it_asks_again(monkeypatch):
+    """The reader trusted this command, so the card that asks again names why
+    -- with the refusal's constant text, never its command-built detail."""
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: MagicMock())
+    refusal = name_grant.Refusal(name_grant.AMBIGUOUS_ENV, "BASH_FUNC_*%% is set")
+    _stub_name_grant_verdict(monkeypatch, refusal)
+    agent = _make_agent(commands={"echo hi"})
+    ch = _make_channel(agent)
+    event = _perm_event(tool_input=json.dumps({"command": "echo hi"}), is_shell=True)
+
+    await _stream_task(agent, ch, _make_client([event, _done()]), "hi")
+
+    (prose,) = [args[1] for args in _approval_posts(ch)]
+    assert prose.endswith(f"\nAsking again even though this is trusted: {refusal.log_text}.")
+    assert refusal.detail not in prose
+
+
+@pytest.mark.asyncio
 async def test_identity_check_reaches_raw_shell_input(monkeypatch):
     """RAW (non-JSON) shell tool_input: ``event.shell_command`` is None, but
     the grant matched the command ``extract_bash_command`` recovered — the

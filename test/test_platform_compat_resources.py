@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -236,8 +237,11 @@ class TestPeakRssIsThisProcesss:
         assert pc.proc_cpu_nanos_for_pid(-1) is None
 
     def test_raise_nofile_soft_limit_is_safe(self):
-        # No-op on Windows; best-effort raise on POSIX. Must never raise.
+        # No-op on Windows; best-effort raise on POSIX. Must never raise, and must
+        # never lower a soft limit that is already above the target.
+        before = pc.nofile_soft_limit()
         pc.raise_nofile_soft_limit(4096)
+        assert pc.nofile_soft_limit() >= before
 
 
 class TestResourceShimFailures:
@@ -264,7 +268,7 @@ class TestResourceShimFailures:
         # The peak reading has ONE source per POSIX platform: VmHWM on Linux,
         # getrusage elsewhere. That source failing is a plain 0, and on Linux
         # the failure must not fall through to getrusage, whose ru_maxrss is
-        # the parent's inherited peak (test_linux_peak_is_its_own_vmhwm).
+        # the parent's inherited peak (test_linux_peak_is_its_own_vmhwm_never_getrusage).
         if not pc.IS_POSIX:
             pytest.skip("POSIX peak-RSS branch")
 
@@ -304,7 +308,7 @@ class TestResourceShimFailures:
         finally:
             pc.resource.setrlimit(pc.resource.RLIMIT_NOFILE, (soft, hard))
 
-    def test_raise_nofile_soft_limit_swallows_setrlimit_error(self, monkeypatch):
+    def test_raise_nofile_soft_limit_swallows_setrlimit_error(self, monkeypatch, caplog):
         # The except branch: if setrlimit raises (e.g. EPERM raising the soft
         # limit on a locked-down host), the shim logs at debug and never raises.
         if not pc.IS_POSIX:
@@ -317,7 +321,10 @@ class TestResourceShimFailures:
         # attempted (and then fails), exercising the try-body + except.
         monkeypatch.setattr(pc.resource, "getrlimit", lambda which: (100, 1_000_000))
         monkeypatch.setattr(pc.resource, "setrlimit", boom)
-        pc.raise_nofile_soft_limit(500)  # must NOT raise out
+        with caplog.at_level(logging.DEBUG, logger=pc.logger.name):
+            pc.raise_nofile_soft_limit(500)  # must NOT raise out
+        notes = [r.getMessage() for r in caplog.records if r.name == pc.logger.name]
+        assert notes == ["Could not raise RLIMIT_NOFILE"]
 
 
 class TestProcSubtreePss:

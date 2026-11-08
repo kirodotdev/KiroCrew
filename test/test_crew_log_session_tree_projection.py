@@ -44,15 +44,9 @@ GATEWAY = "gateway"
 def _isolated_home(tmp_path, monkeypatch):
     """Every test writes into its own data home, never the live one.
 
-    The process-wide projection is dropped too: it is bound to one store, so a test
-    inheriting the previous test's fold would be reading another store's records.
-
-    No write is armed on the real maintenance pool either. ``_debounced_write`` checks
-    the cancellation epoch under the lock but saves OUTSIDE it, so a worker that has
-    already passed that check can still write after teardown bumped the epoch -- landing
-    a file in this test's tmp home after pytest considers it finished. Every test here
-    that wants a checkpoint on disk calls ``flush_checkpoint`` synchronously, so nothing
-    needs the pool and refusing to submit costs no coverage.
+    The process-wide projection is dropped too, since it is bound to one store. No write is
+    armed on the maintenance pool: ``_debounced_write`` saves outside the lock, so a worker
+    could write after teardown. Tests call ``flush_checkpoint`` synchronously instead.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     # The emitter is inert without the flag, and the hook tests below exercise the
@@ -130,11 +124,8 @@ def _remove_unit(sid: str) -> str:
 def _write_unit_unheld(sid: str, slot: str, *, parent: str | None = None) -> None:
     """A real announced unit whose lease nobody holds, for the removal tests.
 
-    ``remove_unit`` asks for SOLE ownership and is refused while any handle that wrote
-    still exists -- and the emitter keeps its handle, which is correct for a live
-    session and is exactly what retention waits out. So a removal test writes the unit
-    directly and drops the handle, rather than asserting a refusal it did not mean to
-    set up.
+    ``remove_unit`` needs sole ownership and the emitter keeps its handle, so the unit is
+    written directly and the handle dropped.
     """
     handle = _log(sid, slot)
     _opened(handle, slot, parent={"slot": parent} if parent else None)
@@ -353,16 +344,11 @@ def test_a_malformed_row_is_dropped_not_coerced():
 
 
 def test_a_second_seed_waits_instead_of_clearing_the_first_ones_removal_record(monkeypatch):
-    """Two seeds must not overlap, and the cost of overlap is a resurrected unit.
+    """A second seed waits, so it cannot clear the first one's removal record.
 
-    ``_forgotten_while_seeding`` belongs to ONE seed. A second seed entering while the
-    first one's scan is still running clears it, so the deletion the first seed had
-    recorded is lost and its install puts the removed unit back. The System page's
-    sampling and the sidebar's lazy seed are exactly two such callers.
-
-    The second caller is let in at the one moment where overlap is possible: from
-    inside the first scan, which is when the first seed holds its removal record and
-    does not hold ``_lock``.
+    ``_forgotten_while_seeding`` belongs to one seed; clearing it mid-scan lets the install
+    resurrect a removed unit. The second caller enters from inside the first scan, the one
+    moment the first seed holds its removal record and not ``_lock``.
     """
     from kiro_crew.crew_log.session_tree import SessionTree, TreeReading, fold_tree
 
@@ -490,6 +476,38 @@ def test_a_root_change_abandons_a_write_armed_for_the_previous_store(tmp_path, m
     assert wrote == [], "a write armed for the previous store still fired after the home moved"
 
 
+def test_a_debounced_write_resolves_no_path_when_it_wakes(tmp_path, monkeypatch):
+    """The root the payload names is decided when the write is armed, not when it fires.
+
+    The worker wakes later on the maintenance pool, when ``_current_root()`` may name the
+    next test's home or the operator's real one.
+    """
+    armed: list[tuple] = []
+    monkeypatch.setattr(
+        "kiro_crew.executors.maintenance_executor",
+        lambda: type("_Pool", (), {"submit": staticmethod(lambda fn, *a: armed.append(a))}),
+    )
+    proj = SessionTreeProjection()  # never seeded: ``_root`` stays None
+    proj.apply(_rec("s-one", "slot-a"))
+    assert len(armed) == 1, "the dirty projection armed no write"
+    target, epoch, root = armed[0]
+    assert root == stp._current_root() and root, "the root was not pinned when armed"
+
+    wrote: list[tuple[dict, object]] = []
+    monkeypatch.setattr(
+        stp, "_save_checkpoint", lambda payload, path=None: wrote.append((payload, path)) or True
+    )
+    monkeypatch.setattr(stp, "CHECKPOINT_DEBOUNCE_SECS", 0)
+
+    def _resolves_late() -> str:
+        raise AssertionError("the worker resolved the data home when it woke")
+
+    monkeypatch.setattr(stp, "_current_root", _resolves_late)
+    proj._debounced_write(target, epoch, root)
+
+    assert [(payload["root"], path) for payload, path in wrote] == [(root, target)]
+
+
 def test_a_checkpoint_naming_another_store_is_discarded_not_trusted():
     """The file says which store it describes, and a mismatch is rebuilt from the log.
 
@@ -519,15 +537,11 @@ def test_a_checkpoint_naming_another_store_is_discarded_not_trusted():
 
 
 def test_the_live_path_refuses_an_over_long_record_but_accepts_one_at_the_limit():
-    """``apply`` is a door into the state, so it carries the same bound as the others.
+    """``apply`` carries the same id length bound as the other doors into the state.
 
-    The emitter passes through whatever the BACKEND named the session; this process does
-    not choose that id and cannot assume it is sane. An over-long one would be retained
-    for the projection's life -- up to ``TREE_UNIT_CAP`` of them -- and then written into
-    the checkpoint. Refused, not truncated: a truncated id is a DIFFERENT id.
-
-    The at-limit half matters as much as the over-limit half: a bound that rejects a
-    legal value is an outage, not a defence.
+    The backend chooses the session id; an over-long one would be retained and checkpointed.
+    Refused, not truncated (a truncated id is a different id), and the at-limit value must
+    still pass.
     """
     from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN, MAX_SHORT_STRING
 
@@ -548,13 +562,10 @@ def test_the_live_path_refuses_an_over_long_record_but_accepts_one_at_the_limit(
 
 
 def test_a_resume_during_the_scan_does_not_erase_the_scanned_creator_edge(monkeypatch):
-    """A held record is better evidence the session EXISTS, not that it has no creator.
+    """A held record proves the session exists, not that it has no creator.
 
-    A resume appends its own ``session/opened`` that need not repeat the creator. If that
-    lands while the seed's scan is running, the held record is PARENTLESS for a sid the
-    scan found parented -- and merging it over the scan persists that child as a root.
-    ``apply`` cannot save it: during a seed there is nothing held yet for it to preserve,
-    so the rule has to live in the merge as well.
+    A resume's ``session/opened`` need not repeat the creator; merged over the scan, that
+    parentless record would persist the child as a root.
     """
     from kiro_crew.crew_log.session_tree import SessionTree, TreeReading, fold_tree
 
@@ -758,15 +769,9 @@ def test_a_moved_data_home_re_seeds_instead_of_serving_the_old_store(tmp_path, m
 def test_an_installed_fold_is_never_reported_as_the_wrong_store(monkeypatch):
     """No reader may see the fold installed and be told the projection is unseeded.
 
-    ``_attach_slot_parents`` ships EVERY row's ``parent`` as null whenever
-    ``seeded_for_current_store`` is false, and the chat sidebar drops its conductor lane
-    when no row carries a creator. So a window where the records are installed and the
-    store identity is not yet stamped costs the sidebar the nesting it had already
-    earned -- it appears and vanishes, with nothing in the log to say why.
-
-    Sampled from ``_schedule_checkpoint``, which the cold seed calls immediately after
-    it installs the records and releases the lock: that call is inside the window if
-    there is one.
+    While ``seeded_for_current_store`` is false ``_attach_slot_parents`` ships every
+    ``parent`` as null and the sidebar drops its conductor lane. Sampled from
+    ``_schedule_checkpoint``, which the cold seed calls right after installing the records.
     """
     _write_unit("s-parent", "slot-a")
     _write_unit("s-child", "slot-b", parent="slot-a")
@@ -791,11 +796,8 @@ def test_an_installed_fold_is_never_reported_as_the_wrong_store(monkeypatch):
 def test_a_store_root_that_cannot_be_read_keeps_the_fold(monkeypatch):
     """An unreadable root is "cannot tell", never "a different store".
 
-    :func:`_current_root` is path arithmetic that CAN fail -- resolving the data home
-    touches the filesystem -- and it answers with an empty string when it does. Read as
-    a store identity that string matches nothing, so one transient fault reported the
-    projection unseeded and the next ``ensure_seeded`` discarded a correct fold to
-    re-scan for it. Every slots frame in between shipped no lineage at all.
+    :func:`_current_root` returns an empty string when resolving the data home fails; read as
+    a store identity it would make ``ensure_seeded`` discard a correct fold.
     """
     _write_unit("s-parent", "slot-a")
     _write_unit("s-child", "slot-b", parent="slot-a")
@@ -921,14 +923,10 @@ def test_a_failed_seed_says_so_at_warning(monkeypatch, caplog):
 
 
 def test_a_restart_keeps_the_edge_the_slots_older_log_recorded():
-    """A restored slot writes a NEW log naming no creator, and the old edge survives.
+    """A restored slot writes a new log naming no creator, and the old edge survives.
 
-    The citation is stamped at ``session_create`` from a witness this process holds and
-    does not persist, so every slot restored after a restart opens a second log with no
-    ``parent``. The edge has to come from the slot's FIRST log, which is on disk and
-    closed -- and the cold seed has to admit that log, not only the live session's
-    newest one. Both halves are asserted here because either alone leaves a sidebar
-    that stops nesting after every gateway restart.
+    The creator witness is not persisted, so the edge must come from the slot's first,
+    closed log, and the cold seed must admit that log.
     """
     _write_unit("s-parent", "slot-a")
     _write_unit("s-child-first", "slot-b", parent="slot-a")
@@ -1088,11 +1086,8 @@ def test_a_removal_that_did_not_happen_keeps_the_record():
 def test_the_edge_carries_the_header_created_at_not_zero(monkeypatch):
     """The emitter forwards the header's ``created_at``, so the fold can order siblings.
 
-    ``CrewLog.header`` is a property. The edge recorder called it, the TypeError was
-    swallowed by the handler that exists so a bookkeeping miss never fails a session
-    open, and every edge folded with 0 -- indistinguishable from a header that really
-    carried none. Nothing observable failed, which is why only a test that reads the
-    value the recorder passed on can catch it.
+    ``CrewLog.header`` is a property; calling it raised a TypeError that the recorder's
+    handler swallowed, folding every edge with 0. Only reading the passed value catches it.
     """
     seen: list[int] = []
     monkeypatch.setattr(
@@ -1169,13 +1164,9 @@ def test_a_retained_projection_failure_record_does_not_keep_the_handle_alive(
 ):
     """A handler that keeps the failure record must not keep the ``CrewLog`` with it.
 
-    ``record_opened`` and ``_schedule_checkpoint`` hold no handle themselves, but both
-    run under ``emit._record_session_tree_edge``, whose ``log`` is a live handle. A
-    traceback taken in either reaches that frame through ``tb_frame.f_back``, so a
-    record carrying ``exc_info`` would carry the handle -- and its write lease -- for as
-    long as a ``MemoryHandler`` or ``caplog`` kept the record. The recorder's own
-    handler is the direct case. Rendered text carries no frames, which is what this
-    proves by dropping the handle while the record is held.
+    Both callees run under ``emit._record_session_tree_edge``, whose ``log`` is a live
+    handle reachable via ``tb_frame.f_back``. A record with ``exc_info`` would hold the
+    handle and its write lease; rendered text holds no frames.
     """
     arm(monkeypatch)
     retained: list[logging.LogRecord] = []
@@ -1252,15 +1243,9 @@ class _HostileValue:
 def test_the_edge_recorder_raises_nothing_into_the_writer_job(monkeypatch, caplog, failure):
     """Nothing the edge recorder does can raise into the writer job that called it.
 
-    The caller is the job that has just appended ``session/opened``, so a raise here
-    would report a landed entry as a failed one. Every step that can fail is driven to
-    fail -- loading the projection, reading the header, folding the record, and the
-    parent and superseded ids themselves -- and the call must return, saying so at debug
-    level.
-
-    Mutation guard: moving the projection import, or the header read, ahead of the
-    recorder's ``try`` lets the matching case raise and reddens it; letting an unreadable
-    header escape its own guard turns a recorded edge into a reported miss.
+    The caller has just appended ``session/opened``, so a raise would report a landed entry
+    as failed. Each step that can fail is made to fail, and the call must return and log at
+    debug level.
     """
     handle: object = _log(f"s-hostile-{failure}", "slot-a")
     parent: object = None
@@ -1380,14 +1365,10 @@ def test_root_depth_is_none_when_the_seed_itself_faulted(monkeypatch):
 
 
 def test_an_over_cap_tree_yields_no_root_only_distribution():
-    """The bias this censoring rule exists to remove.
+    """Past the cap, neither depth nor root counts are written.
 
-    Past :data:`TREE_UNIT_CAP` the reading is permanently ``incomplete``, which is the
-    state the busiest install -- the one with the most delegation -- sits in. A child's
-    depth is withheld there. If a root's zero were still written, the depth counter
-    would report almost every session at depth 0 and the roots gauge would report
-    nothing, which answers "how deep does delegation go" backwards. So both answers
-    have to go absent together.
+    Past :data:`TREE_UNIT_CAP` the reading stays ``incomplete`` and child depths are
+    withheld; writing roots' zeros alone would report nearly every session at depth 0.
     """
     proj = stp.projection()
     proj.ensure_seeded()

@@ -252,7 +252,11 @@ full interval when that nudge turn ends. This prevents active conversation
 from postponing monitoring forever while avoiding a nudge racing a user turn;
 `test_autonudge_deadline.py::test_user_turn_resumes_remaining_time_not_full_interval`
 and `test_delivered_fire_clears_deadline_then_turn_end_starts_fresh` pin both
-sides of the contract. Channel-bound loops re-arm after their unattended turn
+sides of the contract. The `fired` state event carries the cleared deadline, so
+the turn-end re-arm that sets the next one (`_arm_and_announce_deadline`, also
+used when a re-arm was deferred past the fire window) emits `updated`, and the
+dashboard countdown never reads "not yet scheduled" between cycles;
+`test_turn_end_after_fire_announces_the_new_deadline` pins it. Channel-bound loops re-arm after their unattended turn
 in `AutoNudgeService._run_fire_cycle` (`autonudge_service/firing.py`) because they do not
 use the dashboard
 turn-lifecycle hooks.
@@ -359,7 +363,11 @@ The reading itself:
 * `_collapse` folds duplicate rows to one per identity, newest by start time, and
   reports how many raw rows it folded. Rows land in the buckets `failing`, `pending`,
   `passing`, `noise` and `unknown`: an unknown conclusion is `unknown`, and a cancelled
-  or stale row is `noise`.
+  or stale row is `noise`. The fold only arbitrates correctly if BOTH attempts of a
+  re-run are in the payload, so the check-runs read passes `filter=all`: the endpoint
+  defaults to `filter=latest` (one row per name), which would drop the stale attempt
+  server-side before `_collapse` ever sees it, and a verdict that flipped on re-run
+  would then be read as whichever row the server happened to keep.
 * The identity a row folds under is its WORKFLOW, not the app that posted it. Every
   GitHub Actions row carries one app slug, so the slug cannot separate two workflow
   files that each define a job of the same name, and folding those lets one
@@ -377,10 +385,13 @@ The reading itself:
   conservative bucket is kept and the reading reports itself `partial` with a note
   naming the unresolved identity. A redundant look costs a turn, a dropped gate
   costs the merge.
-* A duplicate that cannot be ordered by time keeps the more conservative bucket.
-  Saying so is the READING's job rather than the row's: `partial` and its note are
-  what a consumer reads, and a per-row flag none of them opens would be a field
-  the reading cannot back.
+* A duplicate that cannot be ordered by time -- either row carries no start time --
+  keeps the more conservative bucket. Saying so is the READING's job rather than
+  the row's: where the two rows disagree, the reading reports itself `partial`
+  with a note naming each check whose bucket was chosen, and a per-row flag none
+  of the consumers opens would be a field the reading cannot back. Rows that agree
+  need no note, because nothing was chosen. `checks_complete` stays true: every
+  row was read, and what is short is the ordering, not the board.
 * Comments and reviews are carried WITH their bodies, clipped per item and in
   total, newest first, inside a fetch horizon. The bot's own comments are skipped,
   because otherwise the watch is a feedback loop. A remark whose timestamp cannot
@@ -455,9 +466,11 @@ The structured monitor digests comment bodies to detect that one changed, so an
 in-place edit whose `created_at` never moves still wakes the owner. GitHub
 digests its PR-level issue comments; Azure DevOps digests the comments nested
 inside its PR threads, skipping the `system`-type lifecycle narration it posts on
-its own; both reduce each body to a fixed-width fingerprint and fail closed to an
+its own; GitLab digests its MR notes, skipping GitLab's `system` activity notes
+and inline diff notes (`DiffNote`, or any note with a `position`);
+each reduces every body to a fixed-width fingerprint and fails closed to an
 empty digest (no wake) on an incomplete read. It never interprets what a comment
-says or decides whether an advisory finding is valid, and on GitHub it
+says or decides whether an advisory finding is valid, and on GitHub and GitLab it
 deliberately does not read inline review-thread bodies at all -- it reports only
 the count of unresolved, non-outdated threads there. It reports typed provider
 facts and leaves judgment, source inspection, and any reply to the reactivated

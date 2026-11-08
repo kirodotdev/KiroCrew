@@ -1,13 +1,8 @@
 """A live channel member must not refuse clear-context for its whole lifetime.
 
-`run_channel_agent` takes the session lease once at spawn and releases it only when the
-member dies, so a busy probe that reads the LEASE answers "busy" for as long as the member
-exists. The contract this PR ships says a 409 is retryable once the named roles finish, and
-the banner tells the user to retry when idle -- so a lease-scoped probe makes that retry
-unsatisfiable on any channel with live members, idle ones included.
-
-These drive the REAL `discard_conversation`, not a stub: a stubbed teardown returns whatever
-the test says and so cannot observe the predicate at all.
+`run_channel_agent` holds the session lease for the member's whole life, so a busy probe
+reading the LEASE would make the retryable 409 never clear. These drive the real
+`discard_conversation`; a stubbed teardown cannot observe the predicate.
 """
 
 from __future__ import annotations
@@ -242,13 +237,9 @@ class TestAReacquiredSessionKeepsItsTurnProtection:
 class TestABackgroundSweepLeavesAListeningMemberAlone:
     """A sweep must not tear down the provider a channel listener has cached.
 
-    `run_channel_agent` fetches its provider ONCE and streams every later message through
-    that same object, with no re-fetch anywhere -- so a sweep that recycles the session
-    leaves the listener driving a dead provider, and its stream error is caught, reported
-    and swallowed, leaving the same dead object in place for every message after.
-
-    The user-initiated clear reads the TURN, because the retry it offers has to be able to
-    succeed. A sweep reads the LEASE, because a live member is exactly what it must skip.
+    `run_channel_agent` fetches its provider once and never re-fetches, so a recycled
+    session leaves it on a dead provider. A user clear reads the TURN; a sweep reads the
+    LEASE, because a live member is what it must skip.
     """
 
     @pytest.mark.asyncio
@@ -302,14 +293,10 @@ class TestABackgroundSweepLeavesAListeningMemberAlone:
 
     @pytest.mark.asyncio
     async def test_a_session_the_listener_acquires_still_answers_a_user_clear(self):
-        """The INVARIANT, stated as the outcome it protects rather than as a marker.
+        """With the lease held and the TURN released, the user's clear succeeds.
 
-        A session held for a member's whole listening life must stay distinguishable from a
-        turn in flight, or the user's clear is refused for as long as the member exists. So
-        each acquire path is driven, its TURN released as a finished turn releases it, and the
-        clear must then succeed -- the lease is still held, and holding it alone may not refuse.
-        Naming no mechanism, a rewrite that keeps clears working passes however it does it,
-        and dismantling the arm store does not make this test wrong.
+        Each acquire path is driven. The check names no mechanism, so any rewrite that
+        keeps clears working passes.
         """
         import kiro_crew.channel as channel_mod
 
@@ -383,4 +370,47 @@ class TestABackgroundSweepLeavesAListeningMemberAlone:
         assert not strays, (
             "these acquire sites are in functions no control here drives, so nothing checks "
             f"that a clear still works against the session they hold: {strays}"
+        )
+
+
+class TestTheDiscardOrderingTheClearReadsBack:
+    """Pins the order `api_channel_clear_context` relies on when a teardown outruns its deadline.
+
+    After a timeout the handler reads `has_session` and the resume SID, so the discard must
+    pop both BEFORE awaiting `provider.shutdown()`. Uses the real `SessionManager`.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_session_and_its_sid_are_gone_before_the_shutdown_runs(self):
+        from kiro_crew.session_map import canonical_key
+
+        mgr = SessionManager(
+            KiroCrewConfig(), provider_factory=_provider_factory(active_turn=False)
+        )
+        key = "channel:ch-ops:archivist"
+        provider, _, _ = await mgr.get_or_create(key)
+        mgr.release(key)
+        mgr._session_map.set(key, "pre-clear-sid")
+        seen: dict[str, object] = {}
+
+        async def _observe_at_shutdown():
+            seen["registered"] = mgr.has_session(key)
+            # The raw entry: `SessionMap.get` also needs `<sid>.json` on disk, so it answers
+            # None for this synthetic SID whether or not the clear ran.
+            seen["sid"] = (mgr._session_map._data.get(canonical_key(key)) or {}).get("sid")
+
+        provider.shutdown = MagicMock(side_effect=_observe_at_shutdown)
+
+        assert await mgr.discard_conversation(
+            key, skip_if_busy=True, refuse_only_on_active_turn=True
+        )
+
+        assert seen, "precondition: the shutdown never ran, so nothing was observed"
+        assert seen["registered"] is False, (
+            "the session was still registered while the shutdown ran, so a clear cancelled "
+            "there reports a refusal for a conversation the discard then destroys"
+        )
+        assert not seen["sid"], (
+            f"the resume SID survived into the shutdown ({seen['sid']!r}), so a clear "
+            "cancelled there reads it as kept"
         )

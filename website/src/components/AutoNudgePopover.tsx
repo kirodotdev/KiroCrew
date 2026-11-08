@@ -12,7 +12,7 @@ import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
 
 import { i18nT } from '../i18n/t'
 import { fmtTimeNumeric } from '../i18n/format'
-import { type AutoNudgeLoop, cycleText as loopCycleText, nextCycleText, judgeReading, judgeVerdictTime, loopFinished, PULL_REQUEST_WATCH_KINDS, AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
+import { type AutoNudgeLoop, cycleText as loopCycleText, nextCycleText, judgeReading, judgeVerdictTime, loopFinished, isPullRequestWatchKind, AUTONUDGE_LOOPS_QUERY_KEY } from './autoNudgeLoop'
 export type { AutoNudgeLoop } from './autoNudgeLoop'
 
 interface Props {
@@ -76,7 +76,14 @@ const PAUSED_STATUS_KEY: Record<string, string> = {
   approval_stalled: 'components.autoNudgePopover.paused_approval_stalled',
   structural_terminal: 'components.autoNudgePopover.paused_last_cycle_failed',
   session_start_failures: 'components.autoNudgePopover.paused_last_cycle_failed',
+  interrupted_cycle: 'components.autoNudgePopover.paused_interrupted_cycle',
+  claim_unsaved: 'components.autoNudgePopover.paused_claim_unsaved',
 }
+
+/** The paused reasons whose line says the last cycle could not run, or that its
+ *  progress could not be saved. That is a failure, so it renders through
+ *  `ErrorNotice` instead of the status line. */
+const FAILED_CYCLE_REASONS = new Set(['structural_terminal', 'session_start_failures', 'claim_unsaved'])
 
 /** The three editable fields, as every write of the form sends them. */
 type LoopFields = { message: string; idle_secs: number; max_cycles: number }
@@ -84,6 +91,22 @@ type LoopFields = { message: string; idle_secs: number; max_cycles: number }
 /** A save the store refused because the goal changed (or the gateway reloaded it)
  *  since the form read its baseline: the 409 `goal_stale_baseline`. */
 class StaleGoalBaseline extends Error {}
+
+/** A refused first fire after Start loop (#23803), per slot. The created loop
+ *  re-keys the popover onto its id (`SessionAutomationPopover`), which REMOUNTS
+ *  it, and the websocket frame for the create can do that before the fire even
+ *  answers. So the refusal is published here, and the mounted instance for that
+ *  loop adopts it whenever it lands. It is dropped when that popover closes or
+ *  the notice is dismissed. */
+const startRefusals = new Map<string, { loopId: string, message: string }>()
+const startRefusalListeners = new Set<() => void>()
+function holdStartRefusal(slotKey: string, loopId: string, message: string) {
+  startRefusals.set(slotKey, { loopId, message })
+  startRefusalListeners.forEach(listener => listener())
+}
+function dropStartRefusal(slotKey: string, loopId: string | undefined) {
+  if (startRefusals.get(slotKey)?.loopId === loopId) startRefusals.delete(slotKey)
+}
 
 /** One armed script cron owned by this chat slot. */
 interface SlotWatch {
@@ -111,7 +134,12 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   /* Two-step on the clear only. The erase is irreversible and sits beside the
      primary CTA, so one press asks and the second performs. */
   const [confirmClear, setConfirmClear] = useState(false)
+  /** "Run first cycle now" on the create form (#23803). Unchecked by default:
+   *  Start loop then waits one interval, as before. */
+  const [runFirstNow, setRunFirstNow] = useState(false)
   const [error, setError] = useState('')
+  /** A refused first fire this instance adopted (see `startRefusals`). */
+  const adoptedRefusal = useRef('')
   // Watches armed on this slot, read through the SHARED `cron-jobs` query rather
   // than a private fetch. That key is invalidated by the websocket hook, so a
   // watch deleted or paused elsewhere disappears from an open popover instead of
@@ -254,9 +282,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   // One read seeds all three fields. Runs in an effect (not render) so the
   // render itself performs no storage read/write.
   useEffect(() => {
-    if (!open) return
+    if (!open) { dropStartRefusal(slotKey, loop?.id); adoptedRefusal.current = ''; return }
     hasEdited.current = false
-    setError('')
+    setError(adoptedRefusal.current)
     // A pending confirmation must not survive a close: reopening later would
     // put a primed erase under the next press.
     setConfirmClear(false)
@@ -287,6 +315,24 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- open-edge seed only; loop/slotKey are read fresh each open
   }, [open])
+
+  // Adopt a refused first fire held for THIS loop, now or when it lands. Runs
+  // after the open-edge reset above, so a fresh mount ends on the refusal.
+  // Taken out of the store once adopted, and kept in a ref so StrictMode's
+  // second effect pass (the open-edge reset runs again) still shows it.
+  const loopId = loop?.id
+  useEffect(() => {
+    const adopt = () => {
+      const held = startRefusals.get(slotKey)
+      if (!held || held.loopId !== loopId) return
+      dropStartRefusal(slotKey, loopId)
+      adoptedRefusal.current = held.message
+      setError(held.message)
+    }
+    adopt()
+    startRefusalListeners.add(adopt)
+    return () => { startRefusalListeners.delete(adopt) }
+  }, [slotKey, loopId])
 
   // Flush a pending debounced edit synchronously when the popover closes OR
   // unmounts while open, so edits within the last DRAFT_SAVE_DEBOUNCE_MS
@@ -351,6 +397,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
    *  person. Its controls stay as running (Nudge now still fires a turn), but its
    *  status reads in the warn tone, because the next move is the user's. */
   const waitingOnPerson = runsNow && loop?.waiting_on_person === true
+  /** A paused loop whose stop is a failure (`FAILED_CYCLE_REASONS`): its status is an error. */
+  const failedCycle = !!loop && !loop.active && FAILED_CYCLE_REASONS.has(loop.stopped_reason ?? '')
   const pauseName = i18nT('components.autoNudgePopover.pause_loop')
   /** The fire control names what THIS press does: with no loop it creates and
    *  starts the loop (no fire); on a loop it fires now, resuming first when the
@@ -534,17 +582,32 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     })
   }
 
-  /** Play with no loop: create and start it from the form, NO fire (product
-   *  owner, 2026-10-01): the first nudge goes out after `idle_secs`, or when
-   *  the user presses Play on the running loop. The write's hand-off re-keys
-   *  the popover onto the created id; a refused create lands in this notice. */
+  /** Play with no loop: create and start it from the form. By default NO fire
+   *  (product owner, 2026-10-01): the first nudge goes out after `idle_secs`,
+   *  or when the user presses Play on the running loop. With "Run first cycle
+   *  now" ticked (#23803) the created loop is then fired through the same
+   *  route Nudge now uses, so its refusals (a turn in flight) still apply.
+   *  The fire goes out BEFORE the hand-off, because the hand-off re-keys and
+   *  remounts the popover onto the created id: a refused create lands in this
+   *  notice, and a refused fire reaches the remounted one via `startRefusals`. */
   function startNow() {
     const fields = formFields()
     return runControl(async () => {
-      await writeLoop(
-        { url: '/api/autonudge', method: 'POST', body: { slot_key: slotKey, ...fields } },
-        fields,
-      )
+      const created = await loopWrite.mutateAsync({ url: '/api/autonudge', method: 'POST', body: { slot_key: slotKey, ...fields } })
+      let refusal = ''
+      if (runFirstNow && created?.id) {
+        try {
+          await loopWrite.mutateAsync({ url: `/api/autonudge/${created.id}/fire`, method: 'POST' })
+        } catch (e: unknown) {
+          refusal = e instanceof Error ? e.message : String(e)
+          holdStartRefusal(slotKey, created.id, refusal)
+        }
+      }
+      adoptBaseline(created, fields)
+      adoptStored(created, fields)
+      onChange(created)
+      if (refusal) throw new Error(refusal)
+      if (runFirstNow && created?.id) onFired(created)
     })
   }
 
@@ -568,14 +631,19 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
   const countdownText = nextCycleText(loop, nowTs)
   /** The tooltip only carries a REAL deadline signal (counting or due) — the
    *  "not yet scheduled" placeholder is popover-only, so an armed-but-unscheduled
-   *  loop keeps the plain "Goal active (cycle N)" title. */
-  const titleCountdown = loop?.active && (loop.next_due_ts || 0) > 0 ? countdownText : ''
+   *  loop keeps the plain "Goal active (cycle N)" title, and so does a held one,
+   *  whose status line shows the hold instead of the countdown. */
+  const titleCountdown = runsNow && !waitingOnPerson && (loop?.next_due_ts || 0) > 0 ? countdownText : ''
   /** Cycle readout for the chip, tooltip and popover header ("3/24", or a
    *  bare "3" under an infinite cap). Interpolated as the {{cycle}} VALUE of
    *  the existing strings, so no catalogue text changes. Unlike the countdown
    *  this is safe in aria-label: it changes once per cycle, not once per
    *  second. */
   const cycleText = loopCycleText(loop)
+  /** The trigger's hover title for an active loop, or '' without one. */
+  const activeTitle = loop?.active
+    ? `${interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })}${titleCountdown ? ` · ${titleCountdown}` : ''}`
+    : ''
   /** Which of the finishes, and whether it earns a check mark: a goal the agent
    *  declared reached, a merge and an accepted work ledger do; a pull request
    *  closed without merging ended on a question (reopen or abandon), as did a
@@ -589,7 +657,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
     ? null
     : loop?.stopped_reason === 'stop_sentinel'
       ? { key: 'components.autoNudgePopover.done_stop_file', check: true }
-      : !PULL_REQUEST_WATCH_KINDS.has(loop?.monitor_kind ?? '')
+      : !isPullRequestWatchKind(loop?.monitor_kind)
         ? loop?.monitor_outcome === 'success'
           ? { key: 'components.autoNudgePopover.done_subject_finished', check: true }
           : { key: 'components.autoNudgePopover.done_subject_ended', check: false }
@@ -652,7 +720,9 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      {trigger ? <PopoverTrigger asChild>{trigger}</PopoverTrigger> : (
+      {/* A supplied trigger takes the active title and the refresh too (the
+          slot merges them in); with no active loop it keeps its own tip. */}
+      {trigger ? <PopoverTrigger asChild title={activeTitle || undefined} onMouseEnter={refreshNow} onFocus={refreshNow}>{trigger}</PopoverTrigger> : (
       <PopoverTrigger asChild>
         <button
           className={`h-8 px-2 rounded-lg text-[12px] font-mono flex items-center gap-1 cursor-pointer transition-all bg-transparent border-none shrink-0 whitespace-nowrap ${
@@ -662,7 +732,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
                 : 'text-accent hover:text-accent hover:bg-accent/10 animate-pulse'
               : 'text-muted hover:text-text hover:bg-bg-hover'
           }`}
-          title={loop?.active ? `${interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })}${titleCountdown ? ` · ${titleCountdown}` : ''}` : i18nT('components.autoNudgePopover.set_a_goal')}
+          title={activeTitle || i18nT('components.autoNudgePopover.set_a_goal')}
           // The countdown stays OUT of aria-label (review finding): a
           // per-second label change re-announces the button to screen readers.
           aria-label={loop?.active ? (interrupted ? i18nT('components.autoNudgePopover.goal_interrupted_cycle', { cycle: cycleText }) : i18nT('components.autoNudgePopover.goal_active_cycle', { cycle: cycleText })) : i18nT('components.autoNudgePopover.set_a_goal')}
@@ -692,7 +762,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             <X size={14} />
           </button>
         </div>
-        {loop && (
+        {failedCycle && (
+          /* No hand-off: the popover holds the unsaved goal message, idle and max-cycle inputs. */
+          <ErrorNotice className="mb-2" testId="auto-nudge-status" message={statusText} />
+        )}
+        {loop && !failedCycle && (
           /* Boxed in the state's tone (ok while running, info once finished, warn
              while paused) so the state reads before the form does -- except while
              writes are disabled, where a green box beside the capability note would
@@ -931,7 +1005,7 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
           className="mb-2"
           testId="auto-nudge-error"
           message={error}
-          onDismiss={() => setError('')}
+          onDismiss={() => { adoptedRefusal.current = ''; setError('') }}
         />
 
         {/* THE ACTION ROW (product owner, 2026-10-01). While a loop exists it is
@@ -1009,7 +1083,18 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             </div>
           </div>
         ) : (
-          <div className="flex items-center justify-end gap-2" data-testid="auto-nudge-actions">
+          <div className="flex items-center justify-between gap-2" data-testid="auto-nudge-actions">
+            <label className="flex items-center gap-1.5 text-muted text-[11px] cursor-pointer">
+              <input
+                type="checkbox"
+                aria-label={i18nT('components.autoNudgePopover.run_first_cycle_now')}
+                data-testid="auto-nudge-run-first-now"
+                checked={runFirstNow}
+                disabled={saving || writeDisabled}
+                onChange={e => setRunFirstNow(e.target.checked)}
+              />
+              {i18nT('components.autoNudgePopover.run_first_cycle_now')}
+            </label>
             <div className="flex items-center gap-2" data-testid="auto-nudge-controls">
               <Btn
                 type="button"

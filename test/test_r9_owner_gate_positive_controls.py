@@ -23,6 +23,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew.dashboard.side_state import SideState
+
 pytestmark = pytest.mark.asyncio
 
 OWNER = "U0OWNER0000"
@@ -177,7 +179,7 @@ def _side_app(monkeypatch, middleware, *, slot_app: str):
     dispatch = MagicMock(return_value="run-1")
     monkeypatch.setattr(side, "_dispatch_side_turn", dispatch)
     monkeypatch.setattr(side, "sel", lambda: MagicMock())
-    sidecar = SimpleNamespace(open=True, last_run_id="", is_complete=True, queue=[], messages=[])
+    sidecar = SideState(open=True)
     slot = MagicMock(key="chat-1-1700000000", _app=slot_app)
     slot._side = sidecar
 

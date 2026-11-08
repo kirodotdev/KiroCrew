@@ -17,17 +17,19 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Mapping
+from typing import FrozenSet, Mapping
 
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
 )
 
 # Records from this owner go to the facade's logger, so a filter or a capture keyed on
@@ -115,15 +117,18 @@ def model_refusal_phrase(backend: str) -> str:
 #
 # pi IS a member, and joins under its OWN spelling rather than the default one: the
 # option beside its ``model`` select is ``thought_level``, offering off, minimal,
-# low, medium, high and xhigh, and describing itself as "Set the reasoning effort
-# for this session". ``test/fixtures/acp_frames/pi/session-live.jsonl`` carries that
-# select off a live ``session/new`` result, which is the evidence this membership
-# rests on. A DIFFERENT id is not an absent channel -- resolving the id per harness
+# low, medium and high, plus xhigh and max where the model maps them, and describing
+# itself as "Set the reasoning effort for this session".
+# ``test/fixtures/acp_frames/pi/session-live.jsonl`` carries that select off a live
+# ``session/new`` result, which is the evidence this membership rests on, and
+# ``pi/effort-live.jsonl`` the per-model half: max offered and read back on a model
+# that maps it, absent on one that does not. A DIFFERENT id is not an absent channel -- resolving the id per harness
 # is what ``EFFORT_CONFIG_OPTION_IDS`` below already exists for, and reading the
 # difference as absence is what left this harness reporting no effort control at
 # all. Its vocabulary differs too, and that half is answered by
-# ``EFFORT_CONFIG_OPTION_VALUES``: membership says the channel exists, one table
-# says what to call the OPTION and the other what to call the LEVEL.
+# ``EFFORT_CONFIG_OPTION_ABSENT_FOLDS``: membership says the channel exists, one table
+# says what to call the OPTION and the other what to write for ``max`` on a model
+# that stops at ``xhigh``.
 #
 # deepseek IS a member: the same ``session/new`` result carries both selects, the
 # effort one offering off, low, high and max. It advertises that option under its own
@@ -252,10 +257,24 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # "Effort configuration is currently not available on <model>", and
 # claude-agent-acp rebuilds its effort options per model from
 # ``supportedEffortLevels`` -- so the registry, which knows which model families
-# take a level, is the right authority for them.
+# take a level, is the right authority for a concrete model id. A claude session
+# on no concrete id (``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``) is the one case the
+# registry cannot name, and there the option the adapter built for that model
+# answers instead.
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
     {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
 )
+
+# Backends whose unpinned session serves a pseudo-model rather than a concrete
+# id: the head of the advertised model list, which claude-agent-acp names
+# ``default`` and reports when no model setting applies, or no id at all where a
+# build reports the ``model`` option's current value as ``""``. The registry and
+# its name heuristic recognise neither, so asking them would hide the effort
+# control on every such session and drop a configured level at start. The adapter
+# still rebuilds its effort select for the model it actually serves, so for a
+# member on the pseudo-model that select answers whether a level applies
+# (``AcpProvider.supports_effort``); every concrete id keeps the registry answer.
+ACP_BACKENDS_DEFAULT_PSEUDO_MODEL = frozenset({ACP_BACKEND_CLAUDE})
 
 
 def effort_config_option_id(backend: str) -> str:
@@ -278,34 +297,29 @@ def effort_config_option_id(backend: str) -> str:
 # are per-harness vocabulary rather than a constant.
 #
 # Asked only where the two vocabularies genuinely differ, so most harnesses have no
-# row. Crew's ladder (``kiro_crew.effort.EFFORT_LEVELS``) is low, medium, high,
-# xhigh, max; pi's ``thought_level`` is off, minimal, low, medium, high, xhigh. Every
-# Crew level but ``max`` is spelled identically, so pi's row is exactly that one
-# fold, onto the ceiling its own capture advertises
-# (``test/fixtures/acp_frames/pi/session-live.jsonl``). pi's two EXTRA values are not
-# folds in the other direction and are absent here deliberately: the dropdown is
-# filled from what the harness advertised, so a member picking ``minimal`` sends
-# ``minimal``, and nothing maps a Crew level onto ``off`` -- clearing the level is
-# ``clear_effort``, not a level of its own.
-#
-# A DECLARED fold and not the reactive step-down in
-# ``AcpProvider._set_effort_config_option``, which is why this table exists rather
-# than the ladder being left to cover it. That step-down descends only when the
-# refusal is RECOGNISED, and ``_is_config_value_rejection`` recognises a bare
-# ``-32602`` on per-adapter grounds its own docstring states -- along with the
-# requirement that a harness joining ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`` have
-# its ``-32602`` semantics checked before it joins. The pi corpus carries no
-# config-value refusal at all, so pushing ``max`` to pi would rest on an unchecked
-# guess: read as a value refusal it descends correctly, read as anything else it
-# propagates -- and on the live-change path that resets the session. Folding before
-# the write means pi is never asked for a value it never advertised, and the ladder
-# stays the backstop for the per-model ceilings it was built for.
-EFFORT_CONFIG_OPTION_VALUES: Mapping[str, Mapping[str, str]] = {
+# row, and today none does. pi had one, folding ``max`` onto ``xhigh`` while its
+# capture topped out at ``xhigh``; pi 1.3.0 offers ``max`` itself on a model that
+# maps it (``test/fixtures/acp_frames/pi/effort-live.jsonl``), and the fold sent
+# ``xhigh`` there when the user picked ``max``. pi spells every level it shares with
+# Crew identically, so it needs no row here; the one level it folds, and only where
+# the model lacks it, is in ``EFFORT_CONFIG_OPTION_ABSENT_FOLDS`` below. Either way
+# the push writes only an advertised value, so no refusal shape has to be read.
+EFFORT_CONFIG_OPTION_VALUES: Mapping[str, Mapping[str, str]] = {}
+
+# A fold taken only when the session's advertised list LACKS the level and HAS the
+# fold's target. pi's models before 1.3.0, and a 1.3.0 model that maps ``xhigh`` but
+# not ``max``, top out at ``xhigh``; a ``max`` saved for such a model ran at ``xhigh``
+# and must keep doing so, rather than being hidden and leaving the session on pi's
+# default while the slot still records ``max``. Every other missing level stays
+# hidden, and where ``max`` is advertised it is written as ``max``.
+EFFORT_CONFIG_OPTION_ABSENT_FOLDS: Mapping[str, Mapping[str, str]] = {
     ACP_BACKEND_PI: {"max": "xhigh"},
 }
 
 
-def effort_config_option_value(backend: str, level: str) -> str:
+def effort_config_option_value(
+    backend: str, level: str, advertised: list[str] | None = None
+) -> str:
     """The value *backend*'s effort option spells Crew's *level* with.
 
     The value-side twin of :func:`effort_config_option_id`, read by the same sites
@@ -318,8 +332,17 @@ def effort_config_option_value(backend: str, level: str) -> str:
 
     A backend without a row, and a level a backend already spells the same way, come
     back unchanged, so a harness whose vocabulary matches Crew's is untouched.
+
+    *advertised* is the session's own list of values, where the caller has one. A
+    value it lacks takes the backend's ``EFFORT_CONFIG_OPTION_ABSENT_FOLDS`` row when
+    that row's target IS advertised; otherwise the value comes back as spelled.
     """
-    return EFFORT_CONFIG_OPTION_VALUES.get(backend, {}).get(level, level)
+    value = EFFORT_CONFIG_OPTION_VALUES.get(backend, {}).get(level, level)
+    if advertised and value not in advertised:
+        fold = EFFORT_CONFIG_OPTION_ABSENT_FOLDS.get(backend, {}).get(value)
+        if fold is not None and fold in advertised:
+            return fold
+    return value
 
 
 # Values a backend's effort select offers that mean "no override", not a level.
@@ -329,7 +352,9 @@ def effort_config_option_value(backend: str, level: str) -> str:
 # the advertised levels rather than offered, accepted or stepped down onto.
 # claude-agent-acp also offers ``default``, but outside
 # ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`` the registry, not the advertised
-# list, decides what it may be sent, so it needs no row.
+# list, decides what it may be sent, so it needs no row here. Its ``default`` is
+# what a live clear writes, which ``EFFORT_CONFIG_OPTION_CLEAR_VALUES`` below
+# records; a value hidden here never reaches that check, so no backend has both.
 EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES: Mapping[str, frozenset[str]] = {
     ACP_BACKEND_OPENCODE: frozenset({"default"}),
 }
@@ -339,6 +364,27 @@ def effort_config_option_levels(backend: str, values: list[str]) -> list[str]:
     """*values* advertised by *backend*'s effort option, minus its no-override values."""
     hidden = EFFORT_CONFIG_OPTION_NO_OVERRIDE_VALUES.get(backend, frozenset())
     return [value for value in values if value not in hidden]
+
+
+# The value a backend's effort option takes to DROP a level live, for a backend
+# measured doing so. claude-agent-acp's ``default`` clears the adapter's flag layer
+# and hands effort back to the CLI's own per-model resolution, which is what a cold
+# start with no slot level runs: ``test/fixtures/acp_frames/claude/effort-clear-live.jsonl``
+# writes ``high`` and then ``default`` on one session and reads each back.
+# ``clear_effort`` writes this value instead of asking for a session reset. A backend
+# without a row keeps the reset. Opt-in (harness-parity H6): opencode offers a
+# ``default`` too, but no capture shows what writing it does there, so it has no row.
+#
+# Read ONLY through :func:`effort_config_option_clear_value`, for the reason
+# ``EFFORT_CONFIG_OPTION_IDS`` gives.
+EFFORT_CONFIG_OPTION_CLEAR_VALUES: Mapping[str, str] = {
+    ACP_BACKEND_CLAUDE: "default",
+}
+
+
+def effort_config_option_clear_value(backend: str) -> str | None:
+    """The value that clears *backend*'s effort level live, or None when only a reset does."""
+    return EFFORT_CONFIG_OPTION_CLEAR_VALUES.get(backend)
 
 
 # Backends that resolve the WIRE model id from the provider's OWN advertised list
@@ -378,6 +424,15 @@ def effort_config_option_levels(backend: str, values: list[str]) -> list[str]:
 # values are JSON-encoded ``[provider, model]`` pairs drawn from the harness's live
 # service catalog. Nothing can spell one of those from a stored bare model name, so
 # a pick that did not come from the capture is a pick the session refuses.
+#
+# ``ACP_BACKEND_COPILOT`` is a member for the capture half, and for what membership
+# keeps OFF its picker. Copilot CLI 1.0.100 advertises no model select and no
+# ``models`` block on ``session/new``; ``/model list`` answered "only Auto mode is
+# available on your plan" on the recording account. A non-member's picker is read
+# from kiro-cli's ``--list-models`` catalog, which names models this harness does not
+# serve, so membership is what makes ``GET /api/models`` answer from copilot's own
+# namespace -- ``auto`` alone until a session advertises more, which a session on a
+# plan with model choice can, through the same capture every member uses.
 ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -386,6 +441,7 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_COPILOT,
     }
 )
 
@@ -423,8 +479,11 @@ def resolve_cc_permission_mode(explicit: str | None, backend: str) -> str | None
     Two opt-ins, one answer: the caller's own per-session request (the dashboard
     slot's Auto intent) first, then :data:`CC_PERMISSION_MODE_ENV` for an operator
     who wants every session on the backend's classifier. ``None`` leaves the
-    seeded ``settings.local.json`` without a ``defaultMode`` key at all, which is
-    the backend's own per-tool default -- so with nothing asking, nothing widens.
+    seeded ``settings.local.json`` without a ``defaultMode`` key at all, so the
+    user's own settings name the starting mode. With
+    :data:`CC_PIN_INHERITED_MODE_ENV` on, ``AcpClient._pin_claude_starting_mode``
+    then moves an ``auto`` or ``bypassPermissions`` start of a session that
+    carries Crew's tools to ``default``, at or above the adapter's version floor.
 
     Fail-closed in both axes. A backend that seeds no per-session settings file
     gets ``None``, asked of :data:`ACP_BACKENDS_SEED_LOCAL_SETTINGS` rather than of
@@ -450,12 +509,45 @@ def resolve_cc_permission_mode(explicit: str | None, backend: str) -> str | None
         return CC_PERMISSION_MODE_AUTO
     if requested:
         logger.warning(
-            "permission mode %r is not recognised (only %r is); this session runs on "
-            "the backend's own per-tool default",
+            "permission mode %r is not recognised (only %r is); this session runs as "
+            "if no mode was requested",
             requested,
             CC_PERMISSION_MODE_AUTO,
         )
     return None
+
+
+#: Operator lever, off by default, read by :func:`resolve_cc_pin_inherited_mode`.
+CC_PIN_INHERITED_MODE_ENV = "KIROCREW_CC_PIN_INHERITED_MODE"
+
+
+def resolve_cc_pin_inherited_mode() -> bool:
+    """Whether a claude session that carries Crew's tools has its starting mode pinned.
+
+    Off by default: such a session keeps the mode the user's own settings or its
+    resumed transcript start it in, ``auto`` included. On, an ``auto`` or
+    ``bypassPermissions`` start that Crew did not request is moved to ``default``
+    before the first prompt (``AcpClient._pin_claude_starting_mode``). A truthy
+    value (``1``, ``true``, ``yes``, ``on``) turns it on. Any other value leaves it
+    off, and one that is not a falsy spelling warns, since a lever an operator
+    believes is set should not do nothing in silence.
+    """
+    # Function-scope import: an owner module imports only the standard library and
+    # the facade at module scope (``test_backends_vocabulary_family``).
+    from kiro_crew.constants import ENV_FALSY, ENV_TRUTHY
+
+    raw = os.environ.get(CC_PIN_INHERITED_MODE_ENV, "")
+    value = raw.strip().lower()
+    if value in ENV_TRUTHY:
+        return True
+    if value and value not in ENV_FALSY:
+        logger.warning(
+            "%s=%r is not recognised (set it to 1 to turn it on); the starting-mode "
+            "pin stays off",
+            CC_PIN_INHERITED_MODE_ENV,
+            raw,
+        )
+    return False
 
 
 # Which model-registry NAMESPACE a backend's ids live in. This is a registry index
@@ -501,7 +593,55 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # other harness spells, so a shared bucket would offer the picker ids that only
     # one backend can accept.
     ACP_BACKEND_DEEPSEEK: "deepseek",
+    # copilot gets its own key: its ids are the Copilot service's catalog
+    # (``auto``, ``claude-sonnet-4.5``, ``gpt-5.4`` ...) as that account is entitled
+    # to them, so sharing the ``acp`` bucket would let a Copilot session replace the
+    # list the picker offers for kiro-cli with models kiro-cli cannot serve.
+    ACP_BACKEND_COPILOT: "copilot",
+    # strands gets its own key: its ids are ``provider/model`` strings (or bare
+    # Bedrock ids) the Strands CLI resolves, a vocabulary no other harness serves.
+    ACP_BACKEND_STRANDS: "strands",
 }
+
+
+#: Backends that take their model as a LAUNCH argument and have no model channel on
+#: the ACP wire. The Strands CLI's Python-project mode reads ``--model`` when it
+#: starts and answers no ``session/set_model`` or model config option, so a member's
+#: startup apply sends nothing (the spawn already passed the pin). A switch on an idle
+#: session replaces the process with one launched on the new model, and that process
+#: ``session/load``s the same session id, so the harness replays its own history
+#: (``acp.launch_tuning``). Strands' own TUI switches the same way: it restarts its
+#: worker on the new model. Such a harness advertises no model list either, so its
+#: picker offers ``auto`` and the model Kiro Crew's settings name for it, and an id
+#: another harness's catalog owns is refused rather than relaunched on.
+ACP_BACKENDS_MODEL_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
+
+#: Backends that take their reasoning effort as a LAUNCH argument, by the same
+#: mechanism: the Strands CLI reads ``--effort`` when it starts, so a level is
+#: applied at spawn and a change relaunches the process and reloads the session. A
+#: separate set from the model one because the two flags are separate facts of the
+#: CLI, and a harness can take one at launch and the other on the wire.
+ACP_BACKENDS_EFFORT_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
+
+#: The levels each member of :data:`ACP_BACKENDS_EFFORT_AT_LAUNCH` takes on its argv.
+#: Strands: ``EFFORT_LEVELS`` in ``@strands-agents/harness``, read by
+#: ``cli/arguments.js`` in the pinned 0.2.3; each of Crew's own levels is spelled the
+#: same there.
+EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND: Mapping[str, FrozenSet[str]] = {
+    ACP_BACKEND_STRANDS: frozenset(
+        {"auto", "off", "minimal", "low", "medium", "high", "xhigh", "max"}
+    ),
+}
+
+
+def launch_effort_supported(backend: str, level: str) -> bool:
+    """Whether a launch-effort harness's CLI takes *level* on its argv.
+
+    The one vocabulary a live change, every cold start and the launch argv judge a
+    level by, so a level the switch accepted is the level the next start launches
+    with. ``False`` for any backend outside the table.
+    """
+    return bool(level) and level in EFFORT_LEVELS_AT_LAUNCH_BY_BACKEND.get(backend, ())
 
 
 def model_registry_namespace(backend: str) -> str:

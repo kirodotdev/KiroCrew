@@ -4,16 +4,18 @@ import { type QueryClient, useQueries } from '@tanstack/react-query'
 import type { useDeleteTerminalSession } from '../../../components/CliPanel'
 import { normalizeUrl, setSessionPreviewPending } from '../../../components/WebPreviewPanel'
 import { addTab as addDockTerminal } from '../../../hooks/useBottomTerminal'
+import { registerBrowserStageHost } from '../../../hooks/useBrowserLive.stage'
 import type { usePanelTabs } from '../../../hooks/usePanelTabs'
 import { useRunInTerminalBridge } from '../../../hooks/useRunInTerminalBridge'
+import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
 import { i18nT } from '../../../i18n/t'
 import type { AppDispatch } from '../../../store'
 import { openActivityPanel, refreshSlot, setPendingInput } from '../../../store/chatSlice'
-import type { ChatMessage, ChatSlot } from '../../../types'
+import type { ChatMessage } from '../../../types'
 import { mergeIntoDraft } from '../../../utils/chatDrafts'
 import { detectPreviewUrl, previewFeedDecision } from '../../../utils/detectPreviewUrl'
 import { RUN_IN_TERMINAL_READY_DEADLINE_MS } from '../../../utils/fenceShell'
-import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../../../utils/fileReadQuery'
+import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, partialReadCause } from '../../../utils/fileReadQuery'
 import { safeSetItem } from '../../../utils/safeStorage'
 import { onTerminalReady, sendRawToTerminalSession } from '../../../utils/terminalRegistry'
 import { errMessage } from '../../../utils/thunkError'
@@ -22,9 +24,7 @@ type PanelTabs = ReturnType<typeof usePanelTabs>
 
 interface ChatEventBridgesOptions {
   activeSlot: string | null
-  activeSlotRef: MutableRefObject<string | null>
   messages: ChatMessage[]
-  slots: ChatSlot[]
   dispatch: AppDispatch
   queryClient: QueryClient
   showActionError: (message: string, title?: string) => void
@@ -57,9 +57,7 @@ interface ChatEventBridgesOptions {
  */
 export function useChatEventBridges({
   activeSlot,
-  activeSlotRef,
   messages,
-  slots,
   dispatch,
   queryClient,
   showActionError,
@@ -114,81 +112,28 @@ export function useChatEventBridges({
       setSessionPreviewPending(slot, norm)      // heuristic offer: card only, no open, no load
     }
   }, [messages, activeSlot, dispatch, tabsCtlRef])
-  // Reachability: declare open chat slots to the Electron main process so the
-  // agent command channel polls for them (see listPanelIds) even before the Browser
-  // tab is ever opened — this is what makes the built-in browser the default for a
-  // fresh chat. It is NOT a grant: authorization to drive the built-in browser is
-  // Browser Mode (the Settings toggle), and the main-process gate is just the view
-  // precondition. There is no separate per-session consent registration — the
-  // command channel can only deliver an op for a session key it polls for, and it
-  // must poll before any URL is known, so gating reachability on a per-session
-  // grant would make the whole native path unreachable for a fresh chat.
-  //
-  // EVERY open chat is declared, not just the active one.
-  //
-  // The command channel can only deliver an op for a session key it polls for,
-  // and it must poll BEFORE any URL is known. Declaring only `activeSlot` made
-  // that a moving target, and both consequences were observed live in a diagnostic
-  // run:
-  //   * a chat created and messaged within seconds RACED the registration — the
-  //     navigate reached the gateway first, which answered `no-native-panel` (503)
-  //     because no poller held that key yet, so the proxy fell back to the
-  //     Playwright mirror for the whole turn (observed: slot created at T+0, the
-  //     navigate at T+15s, the key first reported 9 minutes later);
-  //   * a BACKGROUND chat was never reachable at all, even when it was the session
-  //     the agent was acting for.
-  //
-  // Declaring a key is NOT authorization — it grants nothing, and every op still
-  // runs the same gate — so there is no reason to report one key instead of all of
-  // them. Tracking is diffed rather than torn down per change: re-registering the
-  // same keys on every slot-list edit would churn IPC for no reason, and dropping
-  // them mid-turn is exactly the race above.
-  const trackedSlotsRef = useRef<Set<string>>(new Set())
-  const trackableSlotKeys = useMemo(
-    () => slots.map(s => s.key).filter((k): k is string => !!k),
-    [slots],
-  )
-  useEffect(() => {
-    const api = (window as unknown as {
-      browserAPI?: { trackSession?: (id: string, tracked: boolean) => Promise<unknown> }
-    }).browserAPI
-    if (!api?.trackSession) return      // plain browser (no bridge)
-    const want = new Set(trackableSlotKeys)
-    const tracked = trackedSlotsRef.current
-    for (const key of want) {
-      if (tracked.has(key)) continue
-      tracked.add(key)
-      void api.trackSession(key, true)
-    }
-    for (const key of [...tracked]) {
-      if (want.has(key)) continue
-      tracked.delete(key)
-      void api.trackSession(key, false)
-    }
-  }, [trackableSlotKeys])
-  // Native counterpart of the mirror auto-open above. When the agent opens a page
-  // in the BUILT-IN browser, the WebContentsView is created in the Electron main
-  // process but the dashboard owns layout — until the Browser panel mounts and
-  // reports its rect, the page is composited nowhere and the user sees nothing.
-  // So surface the panel on the main process's `browser:agent-opened` signal.
-  //
-  // Same active-slot guard as the mirror path: a background session's page must
-  // not open another session's panel.
-  useEffect(() => {
-    const api = window.browserAPI
-    if (!api?.onAgentOpened) return      // plain browser (no preload bridge)
-    return api.onAgentOpened(({ panelId }) => {
-      if (!panelId || panelId !== activeSlotRef.current) return
-      dispatch(openActivityPanel())
-      tabsCtlRef.current.openView('browser')
-    })
-  }, [dispatch, activeSlotRef, tabsCtlRef])
+  // The live-browser card's Expand and Replay: this page can show the agent's
+  // browser big in its side panel's Preview tab, so it registers as the stage's
+  // host. Without a host (the app-sdk embed) the card opens a full-screen sheet.
+  useEffect(() => registerBrowserStageHost(() => {
+    dispatch(openActivityPanel())
+    tabsCtlRef.current.openView('browser')
+  }), [dispatch, tabsCtlRef])
   // "Run in terminal" from this page's code blocks (useRunInTerminalBridge).
   // The page also answers unscoped requests, as it always has.
+  // The active chat's placement: a chat on a Session Environment runs in its
+  // workspace, so its code blocks must not run in a dock shell here.
+  const runsHere = useSlotRunsHere(activeSlot)
+  const runsHereRef = useRef(runsHere)
+  runsHereRef.current = runsHere
+  const activeSlotRef = useRef(activeSlot)
+  activeSlotRef.current = activeSlot
   const runInTerminalScope = useRunInTerminalBridge({
     queryClient,
     showActionError,
     cwdRef: currentProjectRef,
+    runsHereRef,
+    slotRef: activeSlotRef,
     acceptUnscoped: true,
     deleteTerminalSessionRef,
     terminalReuseRef,
@@ -299,7 +244,7 @@ export function useColdFileTabHydration({ tabsCtl, showActionError }: {
         const text = r.data.ok ? r.data.text : i18nT('pages.chatPage.file_not_found_on_disk_it_may_have_been_moved_or')
         // The verdict is re-established by the same read that refills the
         // buffer -- it was stripped from persistence alongside the content.
-        tabsCtl.patchTab(t.id, { content: text, savedContent: text, binary: r.data.ok && r.data.binary, partial: r.data.ok && isPartialRead(r.data) })
+        tabsCtl.patchTab(t.id, { content: text, savedContent: text, binary: r.data.ok && r.data.binary, partial: r.data.ok && partialReadCause(r.data), placeholder: !r.data.ok })
       } else if ((r.data || r.isError) && !reportedColdReadsRef.current.has(t.id)) {
         // The tab stays cold (its buffer untouched, so the next chip/tree click
         // retries the read) and the failure is reported above the composer.

@@ -1,26 +1,37 @@
 """Tests for the memory and learned-lesson blocks ``ContextBuilder`` injects.
 
-This module pins how a session start reads memory and lessons: the startup lesson
-cap, the episodic-query skip branches with the static guard that keeps
-``build_message`` off the event loop, the ``get_context`` query wiring and the
-vector-store and JSONL lesson fallback, unreadable notebook files at session
-start, and durable model-version references in lessons. The core turn shape
-lives in ``test_context.py`` and the prompt-text blocks in
-``test_context_prompt_text.py``.
+Covers the startup lesson cap, episodic-query skips, ``get_context`` wiring, the JSONL
+lesson fallback and unreadable notebook files. Turn shape is in ``test_context.py``,
+prompt-text blocks in ``test_context_prompt_text.py``.
 """
 
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
 
+import kiro_crew.memory as memory_module
 from conftest import plant_day_link
 from kiro_crew.context import ContextBuilder
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.testing.clock import ManualClock
+
+# A fixed instant near midday UTC. The history reader computes "today" from the process's
+# zone, so the test derives yesterday from the same frozen instant, in that zone.
+_FROZEN_START = 1_767_268_800.0
+
+
+def _pin_history_clock(monkeypatch) -> date:
+    """Freeze the memory module's clock and return the history day before its today."""
+    clock = ManualClock(start=_FROZEN_START, tz=timezone.utc)
+    clock.install(monkeypatch, memory_module, datetime=True)
+    return clock.now().astimezone().date() - timedelta(days=1)
+
 
 # One xdist worker for the whole module. The ``build_message`` call-site ratchet below
 # walks the package through the shared ``source_corpus`` (one memoised file list per
@@ -111,13 +122,10 @@ class TestLessonsCap:
 
 
 class TestBuildMessageOffloadedAtCallSites:
-    """build_message embeds the episodic query via a blocking urllib call to
-    Ollama on new sessions. Async callers (gateway loop coroutines) wrap the
-    whole call in run_in_embed_pool — enforced statically by
-    TestAsyncCallSitesUseToThread below. These tests cover the skip branches
-    (follow-up / minimal-context must never embed) and that build_message
-    remains sync-callable (CLI, 25+ existing tests, and MagicMock-based test
-    doubles all rely on the sync signature).
+    """build_message embeds the episodic query with a blocking call on new sessions.
+
+    Follow-up and minimal-context turns never embed, and build_message stays sync; async
+    callers use run_in_embed_pool (TestAsyncCallSitesUseToThread).
     """
 
     def _builder(self, tmp_path):
@@ -166,19 +174,9 @@ class TestBuildMessageOffloadedAtCallSites:
 class TestAsyncCallSitesUseToThread:
     """Static guard: no async coroutine may call build_message inline.
 
-    Every production call site of ``build_message`` inside an ``async def``
-    must go through ``run_in_embed_pool`` / an executor offload (the episodic
-    query embed blocks). This walks the AST of all gateway-process modules so
-    a future call site reintroducing the inline pattern fails CI rather than
-    shipping a fourth loop-stall bug (22475ceb, _save_lessons, build_message
-    were the first three).
-
-    Scope rules mirror test_no_blocking_call_on_loop.py: a nested ``def`` /
-    ``async def`` / ``lambda`` is a separate frame (a sync helper, a thread
-    target, an offloaded callable such as ``run_in_executor(None, lambda:
-    ctx.build_message(...))``) and is NOT scanned as part of the enclosing
-    coroutine — so both sanctioned offload shapes pass. A ``# loop-ok:
-    <reason>`` trailing comment suppresses a finding.
+    Calls inside an ``async def`` must go through ``run_in_embed_pool`` or an executor.
+    As in test_no_blocking_call_on_loop.py, a nested ``def`` / ``lambda`` is a separate
+    frame, and a ``# loop-ok: <reason>`` trailing comment suppresses a finding.
     """
 
     def test_no_inline_build_message_in_async_functions(self):
@@ -406,12 +404,8 @@ class TestMemoryGetContextQueryWiring:
 class TestUnreadableActivityAtSessionStart:
     """An unreadable notebook file must not abort the session-start build.
 
-    ``build_session_context`` reads ``activity_index`` BEFORE the tolerant
-    activity sections, so a projects file that raises ``OSError`` (a directory
-    in its place, a permission denial) has to be skipped there too; a raise at
-    that call loses the protected preferences with it. A single unreadable
-    history day is skipped by the per-day read itself, and a history failure
-    that is not tied to one day file is skipped by the whole-window guard.
+    ``activity_index`` is read before the tolerant sections, so an ``OSError`` there
+    would lose the protected preferences. History days are skipped per day or per window.
     """
 
     # The sentinels below ride in background blocks the admission loop may drop
@@ -425,19 +419,16 @@ class TestUnreadableActivityAtSessionStart:
             lessons=LessonStore(base_dir=tmp_path),
         )
 
-    def test_history_day_replaced_by_a_directory_keeps_preferences(self, tmp_path):
-        from datetime import date, timedelta
-
+    def test_history_day_replaced_by_a_directory_keeps_preferences(self, tmp_path, monkeypatch):
+        # Pin the clock before any write, so the entries and the read share one "today".
+        yesterday = _pin_history_clock(monkeypatch)
         builder = self._builder(tmp_path)
         store = builder.get_memory_for(None)
         store.init()
         store.write_preferences("# User Preferences\n\n- PREF_SENTINEL\n")
         store.write_projects("PROJECT_SENTINEL")
         store.append_history("VALID_HISTORY_SENTINEL")
-        # flake-ok: pre-existing local-date read for the history window, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing local-date read for the history window, moved verbatim; tracked for a de-flake pass
-        unreadable_day = (date.today() - timedelta(days=1)).isoformat()
-        (store._history_dir / f"{unreadable_day}.md").mkdir()
+        (store._history_dir / f"{yesterday.isoformat()}.md").mkdir()
 
         ctx = builder.build_session_context()
 
@@ -447,10 +438,9 @@ class TestUnreadableActivityAtSessionStart:
         assert "## Recent History" in ctx
         assert "VALID_HISTORY_SENTINEL" in ctx
 
-    def test_history_day_link_keeps_preferences_without_target(self, tmp_path):
+    def test_history_day_link_keeps_preferences_without_target(self, tmp_path, monkeypatch):
         """Session startup skips a linked history day without exposing its target."""
-        from datetime import date, timedelta
-
+        yesterday = _pin_history_clock(monkeypatch)
         builder = self._builder(tmp_path)
         store = builder.get_memory_for(None)
         store.init()
@@ -459,10 +449,7 @@ class TestUnreadableActivityAtSessionStart:
         outside.mkdir()
         secret = outside / "secret.txt"
         secret.write_text("SECRET_SENTINEL", encoding="utf-8")
-        # flake-ok: pre-existing local-date read for the history window, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing local-date read for the history window, moved verbatim; tracked for a de-flake pass
-        yesterday = (date.today() - timedelta(days=1)).isoformat()
-        plant_day_link(store._history_dir / f"{yesterday}.md", secret)
+        plant_day_link(store._history_dir / f"{yesterday.isoformat()}.md", secret)
         store.append_history("VALID_HISTORY_SENTINEL")
 
         ctx = builder.build_session_context()

@@ -27,12 +27,15 @@ import os
 import socket
 import subprocess
 import sys
+import time
 import types
+from ctypes import wintypes
 from pathlib import Path
 
 import pytest
 
 from kiro_crew import platform_compat as pc
+from kiro_crew.testing.wait import default_timeout
 
 # Tests here read or build the macOS libc and libproc handles, so each one starts
 # with both caches unbuilt and puts them back after (see conftest.py).
@@ -50,8 +53,16 @@ pytestmark = pytest.mark.usefixtures("fresh_darwin_libc_handles")
     ],
 )
 def test_native_tcp_peer_identifies_client_process_not_server(family, host):
+    # One lost-run deadline for the whole exchange (D1/D8), not 10 s per call: a
+    # fresh interpreter can take longer than that to start and connect on a loaded
+    # runner, which is how the IPv6 lane lost this test.
+    deadline = time.monotonic() + default_timeout()
+
+    def remaining() -> float:
+        return max(deadline - time.monotonic(), 0.1)
+
     with socket.socket(family) as listener:
-        listener.settimeout(10)
+        listener.settimeout(remaining())
         listener.bind((host, 0))
         listener.listen()
         child = subprocess.Popen(
@@ -70,7 +81,13 @@ def test_native_tcp_peer_identifies_client_process_not_server(family, host):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         try:
-            accepted, _ = listener.accept()
+            try:
+                accepted, _ = listener.accept()
+            except TimeoutError:
+                pytest.fail(
+                    f"the client child never connected to {host} before the deadline "
+                    f"(child exit code: {child.poll()})"
+                )
             # A Windows venv launcher may exec a different interpreter PID.
             assert child.stdout is not None
             client_pid = int(child.stdout.readline())
@@ -84,7 +101,12 @@ def test_native_tcp_peer_identifies_client_process_not_server(family, host):
                 assert pc.get_tcp_peer_pid((server[0], server[1] % 65535 + 1), client) is None
                 assert pc.get_tcp_peer_pid(("203.0.113.1", server[1]), client) is None
         finally:
-            child.communicate(b"x", timeout=10)
+            try:
+                child.communicate(b"x", timeout=remaining())
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate()
+                raise
 
 
 def test_tcp_peer_identity_unavailable_on_unknown_platform(monkeypatch):
@@ -116,6 +138,219 @@ def test_macos_tcp_peer_requires_an_exact_unique_connection(monkeypatch, host, s
     assert pc.get_tcp_peer_pid((host, 1000), (host, 2000)) == (
         2468 if scenario == "match" else None
     )
+
+
+class TestOpenedPathIdentityMatches:
+    def test_windows_accepts_alias_when_native_file_ids_match(self, monkeypatch):
+        closed: list[int] = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_open_without_following", lambda _path: 202)
+        monkeypatch.setattr(
+            pc,
+            "_windows_file_identity",
+            lambda fd: (77, b"same-file-id") if fd in (101, 202) else None,
+        )
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda _fd: types.SimpleNamespace(st_file_attributes=0),
+        )
+        monkeypatch.setattr(pc.os, "close", closed.append)
+
+        assert pc.opened_path_identity_matches(101, r"C:\\PROGRA~1\\skill") is True
+        assert closed == [202]
+
+    def test_windows_refuses_opposite_file_identity(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_open_without_following", lambda _path: 202)
+        monkeypatch.setattr(
+            pc,
+            "_windows_file_identity",
+            lambda fd: (77, bytes([fd % 256])),
+        )
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda _fd: types.SimpleNamespace(st_file_attributes=0),
+        )
+        monkeypatch.setattr(pc.os, "close", lambda _fd: None)
+
+        assert pc.opened_path_identity_matches(101, r"C:\\long\\skill") is False
+
+    def test_windows_accepts_mixed_fileidinfo_and_legacy_identity(self, monkeypatch):
+        """A FileIdInfo capability split must compare both handles as legacy IDs."""
+        calls: list[tuple[int, bool]] = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_open_without_following", lambda _path: 202)
+
+        def identity(fd, *, legacy_only=False):
+            calls.append((fd, legacy_only))
+            if legacy_only:
+                return 77, b"F064" + b"same-legacy-id"
+            return (
+                (77, b"F128" + b"opened-128-id")
+                if fd == 101
+                else (
+                    77,
+                    b"F064" + b"probe-legacy-id",
+                )
+            )
+
+        monkeypatch.setattr(pc, "_windows_file_identity", identity)
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda _fd: types.SimpleNamespace(st_file_attributes=0),
+        )
+        monkeypatch.setattr(pc.os, "close", lambda _fd: None)
+
+        assert pc.opened_path_identity_matches(101, r"C:\\mixed\\skill") is True
+        assert calls == [(101, False), (202, False), (101, True), (202, True)]
+
+    def test_windows_refuses_mixed_identity_when_legacy_ids_differ(self, monkeypatch):
+        """Mixed capability is not a grant unless the common legacy IDs agree."""
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_open_without_following", lambda _path: 202)
+
+        def identity(fd, *, legacy_only=False):
+            if legacy_only:
+                return 77, b"F064" + bytes([fd])
+            return (
+                (77, b"F128" + b"opened-128-id")
+                if fd == 101
+                else (
+                    77,
+                    b"F064" + b"probe-legacy-id",
+                )
+            )
+
+        monkeypatch.setattr(pc, "_windows_file_identity", identity)
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda _fd: types.SimpleNamespace(st_file_attributes=0),
+        )
+        monkeypatch.setattr(pc.os, "close", lambda _fd: None)
+
+        assert pc.opened_path_identity_matches(101, r"C:\\mixed\\other") is False
+
+    def test_windows_refuses_a_share_denied_probe_open(self, monkeypatch):
+        """A probe that cannot share-open remains unverifiable, never matching."""
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            pc,
+            "_win_open_without_following",
+            lambda _path: (_ for _ in ()).throw(PermissionError(errno.EACCES, "sharing violation")),
+        )
+        monkeypatch.setattr(
+            pc,
+            "_windows_file_identity",
+            lambda *_args, **_kwargs: pytest.fail("unopened probe has no identity"),
+        )
+
+        assert pc.opened_path_identity_matches(101, r"C:\\locked\\skill") is False
+
+    def test_windows_refuses_a_reparse_probe_even_with_matching_id(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_win_open_without_following", lambda _path: 202)
+        monkeypatch.setattr(pc, "_windows_file_identity", lambda _fd: (77, b"same"))
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda fd: types.SimpleNamespace(
+                st_file_attributes=(pc._WIN_FILE_ATTRIBUTE_REPARSE_POINT if fd == 202 else 0)
+            ),
+        )
+        monkeypatch.setattr(pc.os, "close", lambda _fd: None)
+
+        assert pc.opened_path_identity_matches(101, r"C:\\linked\\skill") is False
+
+    def test_windows_file_open_treats_none_attributes_as_absent(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(
+            pc,
+            "_win_open_without_following",
+            lambda _path, *, deny_write=False: 202,
+        )
+        monkeypatch.setattr(
+            pc.os,
+            "fstat",
+            lambda _fd: types.SimpleNamespace(st_file_attributes=None),
+        )
+
+        assert pc.open_file_no_reparse(r"C:\\skill\\SKILL.md") == 202
+
+    def test_non_windows_never_reopens_the_path(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            pc,
+            "_win_open_without_following",
+            lambda _path: pytest.fail("POSIX must keep descriptor-path checks"),
+        )
+
+        assert pc.opened_path_identity_matches(101, "/tmp/skill") is False
+
+    def test_opened_file_identity_uses_posix_descriptor_identity(self, tmp_path, monkeypatch):
+        # Pin the branch under test, as the Windows sibling below does: on a native
+        # Windows host the unpatched call returns the 128-bit native file id.
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        path = tmp_path / "identity"
+        path.write_bytes(b"value")
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            opened = os.fstat(fd)
+            assert pc.opened_file_identity(fd) == (opened.st_dev, opened.st_ino)
+        finally:
+            os.close(fd)
+
+    def test_opened_file_identity_uses_windows_native_identity(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_file_identity", lambda fd: (91, b"native-id"))
+
+        assert pc.opened_file_identity(17) == (91, b"native-id")
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="native Windows handle identity")
+    @pytest.mark.parametrize("entry_kind", ["file", "directory"])
+    def test_native_windows_same_path_shares_identity(self, tmp_path, entry_kind):
+        path = tmp_path / f"native-{entry_kind}-identity"
+        if entry_kind == "directory":
+            path.mkdir()
+            fd = pc.pin_directory(path)
+        else:
+            path.write_bytes(b"identity")
+            fd = pc.open_file_no_reparse(path)
+        try:
+            identity = pc._windows_file_identity(fd)
+            assert identity is not None
+            assert pc.opened_path_identity_matches(fd, path) is True
+        finally:
+            os.close(fd)
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="native Windows 8.3 path semantics")
+    def test_native_windows_short_and_long_paths_share_identity(self, tmp_path):
+        long_path = tmp_path / "skill identity directory"
+        long_path.mkdir()
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetShortPathNameW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+        ]
+        kernel32.GetShortPathNameW.restype = wintypes.DWORD
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = kernel32.GetShortPathNameW(str(long_path), buffer, len(buffer))
+        if (
+            length == 0
+            or length >= len(buffer)
+            or buffer.value.casefold() == str(long_path).casefold()
+        ):
+            pytest.skip("8.3 aliases are disabled on this volume")
+        fd = pc.pin_directory(long_path)
+        try:
+            assert pc.opened_path_identity_matches(fd, long_path) is True
+            assert pc.opened_path_identity_matches(fd, buffer.value) is True
+        finally:
+            os.close(fd)
 
 
 class TestPlatformFlags:
@@ -365,9 +600,17 @@ class TestFileLock:
     def test_shared_lock_round_trips(self, tmp_path):
         lock = tmp_path / ".test-sh.lock"
         lock.write_text("")
-        with open(lock, "r") as fh:
-            with pc.file_lock(fh.fileno(), exclusive=False):
-                pass  # no exception = pass
+        other = os.open(str(lock), os.O_RDWR)
+        try:
+            with open(lock, "r") as fh:
+                with pc.file_lock(fh.fileno(), exclusive=False):
+                    pass
+                # Leaving the block released the lock while fh is still open: a
+                # second descriptor takes it exclusively at once.
+                assert pc.try_acquire_lock(other, exclusive=True) is True
+                pc.release_lock(other)
+        finally:
+            os.close(other)
 
     def test_flock_exclusive_alias_runs_body(self, tmp_path):
         lock = tmp_path / ".test-ex.lock"
@@ -382,10 +625,15 @@ class TestFileLock:
         # The fd-handoff form (cron_history) — acquire now, release later.
         lock = tmp_path / ".test-pair.lock"
         fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT, 0o600)
+        other = os.open(str(lock), os.O_WRONLY)
         try:
             pc.acquire_lock(fd, exclusive=True)
+            assert pc.try_acquire_lock(other, exclusive=True) is False, "the lock is held"
             pc.release_lock(fd)
+            assert pc.try_acquire_lock(other, exclusive=True) is True, "release freed it"
+            pc.release_lock(other)
         finally:
+            os.close(other)
             os.close(fd)
 
     def test_try_acquire_lock_succeeds_on_free_file(self, tmp_path):
@@ -679,8 +927,11 @@ class TestProcessCwd:
 
         monkeypatch.setattr(subprocess, "run", explode)
         monkeypatch.setattr(subprocess, "Popen", explode)
-        pc.process_cwd(os.getpid())
-        pc.process_cwd(2_000_000_000)
+        cwd = pc.process_cwd(os.getpid())
+        # The answer still comes back without a subprocess (None only on a host
+        # with neither /proc nor libproc, which test_returns_own_cwd skips on).
+        assert cwd is None or os.path.samefile(cwd, os.getcwd())
+        assert pc.process_cwd(2_000_000_000) is None
 
     @staticmethod
     def _fake_libproc(path: bytes, *, filled: int | None = None):
@@ -783,55 +1034,6 @@ class TestFindListeningPids:
         monkeypatch.setattr(pc.os, "readlink", lambda path: "socket:[12345]")
 
         assert pc.process_owns_loopback_listener(4242, 7777, proc_root=proc_root) is True
-
-    def test_windows_listener_probe_marks_browser_capable(self, monkeypatch):
-        """Use real Windows/Darwin attribution there; both synthetic shapes elsewhere."""
-        from kiro_crew.browser_cli import view as browser_view
-
-        def _assert_capable(port: int) -> None:
-            assert pc.process_owns_loopback_listener(os.getpid(), port) is True
-            browser_view._invalidate_listener_lookup_self_test_cache()
-            try:
-                assert browser_view._listener_lookup_functional() is True
-                assert browser_view._structurally_blind_listener_attribution() is False
-            finally:
-                browser_view._invalidate_listener_lookup_self_test_cache()
-
-        if sys.platform in {"win32", "darwin"}:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-                listener.bind(("127.0.0.1", 0))
-                listener.listen(1)
-                _assert_capable(int(listener.getsockname()[1]))
-            return
-
-        monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(pc, "IS_LINUX", False)
-        monkeypatch.setattr(pc, "IS_POSIX", False)
-        monkeypatch.setattr(
-            pc,
-            "_windows_loopback_listener_owner_pids",
-            lambda port: {os.getpid()},
-        )
-        _assert_capable(45613)
-
-        monkeypatch.setattr(pc, "IS_WINDOWS", False)
-        monkeypatch.setattr(pc, "IS_LINUX", False)
-        monkeypatch.setattr(pc, "IS_POSIX", True)
-        monkeypatch.setattr(pc, "listening_pid_tool", lambda: "lsof")
-        monkeypatch.setattr(
-            pc,
-            "trusted_system_bin",
-            lambda name: "/usr/bin/lsof" if name == "lsof" else None,
-        )
-        monkeypatch.setattr(
-            pc,
-            "probe_port_listeners",
-            lambda port, process_pid=None: (
-                [pc.PortListener(os.getpid(), "127.0.0.1", "4")],
-                True,
-            ),
-        )
-        _assert_capable(45613)
 
 
 class TestProcessCommandLine:
@@ -1050,13 +1252,17 @@ class TestUtf8Console:
         assert os.environ["PYTHONUTF8"] == "1"
         assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
-    def test_ensure_utf8_console_is_safe_to_call(self):
+    def test_ensure_utf8_console_is_safe_to_call(self, monkeypatch):
         # Publishes the child environment on every OS and reconfigures the
         # current stdout/stderr only on Windows. Either way it must never raise
         # (it swallows non-reconfigurable streams), and must be idempotent (safe
         # to call from both __main__ and cli.main).
+        monkeypatch.setenv("PYTHONUTF8", "0")
+        monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
         pc.ensure_utf8_console()
         pc.ensure_utf8_console()
+        assert os.environ["PYTHONUTF8"] == "1"
+        assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
     def test_emoji_print_does_not_raise_after_call(self, capsys):
         # The bug this guards: KiroCrew prints non-ASCII glyphs everywhere, and on
@@ -1118,7 +1324,7 @@ class _TtyTextIOWrapper(io.TextIOWrapper):
 
 
 class TestLineBufferedStdout:
-    STATUS_LINE = "👻 Kiro Crew gateway starting…"
+    STATUS_LINE = "👻 Kiro Crew gateway running — press Ctrl+C to stop"
 
     def test_status_line_reaches_a_non_tty_stdout_as_printed(self, monkeypatch):
         # A pipe or a file (the journal under systemd, the Desktop supervisor's

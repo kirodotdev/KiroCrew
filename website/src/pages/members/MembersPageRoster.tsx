@@ -21,7 +21,7 @@
  * change even when every test of the moved code still passes.
  */
 import { Fragment, useCallback, useMemo, useRef, useState } from 'react'
-import { Check, Circle, FileUp, Goal, MessageCircleQuestionMark, Plus, Star, X, Zap } from 'lucide-react'
+import { Check, Circle, FileUp, MessageCircleQuestionMark, Plus, Radar, Star, X, Zap } from 'lucide-react'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
 import { useTranslation } from 'react-i18next'
@@ -29,7 +29,7 @@ import { api, type MemberRosterRow } from '../../api/client'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { MEMBERS_ROSTER_QUERY_KEY } from '../../api/membersQuery'
 import { useMutation, type QueryClient } from '@tanstack/react-query'
-import { fmtList } from '../../i18n/format'
+import { fmtList, fmtNumber } from '../../i18n/format'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
@@ -40,7 +40,7 @@ import { hasNoCrewmates, listedByDefault, parseSort, parseSourceFilter, parseSta
 import ResizeHandle from '../../components/ResizeHandle'
 import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { ListDock } from '../../components/ListDock'
-import { tabStatus } from '../../lib/sessionTabs'
+import { busySlotKeys, liveMateThreads, mateNeedsYouByKey } from '../../lib/crewMode'
 import TeamGroupHeader from './TeamGroupHeader'
 import CrewmateImportDialog from './CrewmateImportDialog'
 import { useMemberProjection } from '../../state/useMemberProjection'
@@ -48,6 +48,7 @@ import type { RosterView } from '../../state/memberProjectionTypes'
 import type { CrewmateIdentity } from '../chat/CrewmateMessage'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { type ChatSlot } from '../../types'
+import { useAppSelector } from '../../store'
 import { type MembersPageProfileFlight } from './MembersPageProfile'
 import { CrewmateEmptyHero, MemberRow } from './MembersPageRosterRows'
 import { ROSTER_MAX, ROSTER_MIN, type GoneNotice, type PostCreateFailure, type TFn } from './membersPageModel'
@@ -102,7 +103,9 @@ const STATUS_ICON: Record<MemberStatusFilter, (active: boolean) => React.ReactNo
   // unread state whose roster dot reads `var(--ok)` (`MemberRow`, in MembersPageRosterRows.tsx),
   // and for the sidebar chip that was rebound in #10488 (#10479).
   unread: (active) => <Circle size={12} className={active ? 'text-[var(--ok)]' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--ok)' } : {})} />,
-  patrolling: (active) => <Goal size={12} className={active ? 'text-accent' : 'text-muted'} />,
+  // Radar, not Goal: the Goal glyph is the roster row's "has a goal" mark
+  // (CrewmateRowBody), and this row filters on watch, a different state.
+  patrolling: (active) => <Radar size={12} className={active ? 'text-accent' : 'text-muted'} />,
 }
 /** The A–Z row reuses the sidebar menu's label. The activity row does NOT
  *  reuse the sidebar's "Newest": on a list of people that reads as "newest
@@ -130,31 +133,26 @@ export function useMembersPageRosterView({
 }: MembersPageRosterViewOptions) {
   const { projectionSlug, members } = rosterRead
   const { teamsQ } = teamsRead
-  const liveRunning = useMemo(() => {
-    const byKey: Record<string, boolean> = {}
-    for (const s of liveSlots) {
-      if (s.mode === 'member') byKey[s.key] = !!(s.running || s.subagents_running)
-    }
-    return byKey
-  }, [liveSlots])
+  // A child queued behind the spawn caps has not started, so `subagents_running`
+  // misses it, yet the gateway still refuses a new turn on that session: the
+  // queued depth counts as busy here as it does in the Command Bar. A session the
+  // mate dispatched counts too, keyed by its `mate_root` whether or not the mate
+  // thread's tab is live.
+  const subagentQueued = useAppSelector((s) => s.chat.subagentQueued)
+  const busyKeys = useMemo(() => busySlotKeys(liveSlots, subagentQueued), [liveSlots, subagentQueued])
+  const liveThreads = useMemo(() => liveMateThreads(liveSlots), [liveSlots])
   const isRunning = useCallback(
     (m: MemberRosterRow) => {
       const key = slotKeyOf(m)
-      return key && key in liveRunning ? liveRunning[key] : m.running
+      if (!key) return m.running
+      if (busyKeys.has(key)) return true
+      return liveThreads.has(key) ? false : m.running
     },
-    [slotKeyOf, liveRunning],
+    [slotKeyOf, busyKeys, liveThreads],
   )
   // A member turn parked on the user — an approval or a question — read off
-  // the same slot frames; `tabStatus` is the shared ranking of those two.
-  const liveNeedsYou = useMemo(() => {
-    const byKey: Record<string, boolean> = {}
-    for (const sl of liveSlots) {
-      if (sl.mode !== 'member') continue
-      const st = tabStatus(sl, [], sl.key)
-      byKey[sl.key] = st === 'permission' || st === 'question'
-    }
-    return byKey
-  }, [liveSlots])
+  // the same slot frames, through the map the dock's mate rows read too.
+  const liveNeedsYou = useMemo(() => mateNeedsYouByKey(liveSlots), [liveSlots])
   // The active member's projected roster view over its server row: the drawer
   // Configuration and header read config fields (kiro_agent/model/workspace/
   // memory_store) and last_active_ts from the projection when present, the row
@@ -255,10 +253,21 @@ export function useMembersPageRosterView({
   // The optimistic flip and its revert are per-ROW functional patches on the
   // roster cache, not a whole-roster snapshot restore: two members starred in
   // quick succession must not have the second's failure undo the first.
+  // An unstar also zeroes `star_order`, as the server does, so the dock order
+  // and its drag writes never read a slot the server has already cleared.
+  // `starOrder` restores the row's slot when a failed unstar is reverted.
   const patchStar = useCallback(
-    (name: string, starred: boolean) =>
+    (name: string, starred: boolean, starOrder?: number) =>
       queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
-        rows?.map((r) => (r.name === name ? { ...r, starred } : r)),
+        rows?.map((r) =>
+          r.name !== name
+            ? r
+            : !starred
+              ? { ...r, starred, star_order: 0 }
+              : starOrder === undefined
+                ? { ...r, starred }
+                : { ...r, starred, star_order: starOrder },
+        ),
       ),
     [queryClient],
   )
@@ -288,7 +297,7 @@ export function useMembersPageRosterView({
       // Same reason as onSuccess: a refetch that started after onMutate's
       // cancel must not land its snapshot on top of the final row.
       await queryClient.cancelQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY })
-      patchStar(m.name, !next)
+      patchStar(m.name, !next, m.star_order)
       // Localized copy, never the raw server text: the client throws the
       // response body (or `HTTP 500`), which is neither translated nor
       // meant for a user. The journaled report is recovered from that
@@ -459,12 +468,12 @@ export function MembersPageRosterColumn({
   const { roster, rosterPinned, rosterFolded, rosterShown, rosterAsideRef, setRosterPin } = layout
   const { closeRosterDrawer, rosterDrawerAvailable } = drawers
   const {
-    isRunning, filter, setFilter, filterMenuOpen, setFilterMenuOpen, starredOnly, sourceFilter,
+    filter, setFilter, filterMenuOpen, setFilterMenuOpen, starredOnly, sourceFilter,
     toggleStarredOnly, pickSource, statusFilter, toggleStatus, setRawSort, sort, clearFilters, setStarError,
     starError, starPending, toggleStar, rowsReady, shownMembers,
   } = rosterView
   const {
-    isUnread, patrol, automationOf, isNeedsYou, sortedMembers, filterCounts, narrowed, filteredOut, allHidden,
+    patrol, automationOf, signalsOf, sortedMembers, filterCounts, narrowed, filteredOut, allHidden,
     hiddenCount, hiddenNames,
   } = rosterSignals
   const { reduceMotion } = profileFlight
@@ -643,8 +652,9 @@ export function MembersPageRosterColumn({
                 ? '\u2014'
                 : narrowed
                   ? t('pages.membersPage.member_count_filtered', {
-                      shown: sortedMembers.length,
+                      shown: fmtNumber(sortedMembers.length),
                       count: shownMembers.length,
+                      n: fmtNumber(shownMembers.length),
                     })
                   : t('pages.membersPage.member_count', { count: shownMembers.length })}
             </div>
@@ -924,7 +934,6 @@ export function MembersPageRosterColumn({
                         <MemberRow
                           key={m.name}
                           m={m}
-                          t={t}
                           activeName={activeName}
                           // In the drawer a pick closes it first, so the switch
                           // lands on the entry below the drawer's duplicate.
@@ -932,9 +941,7 @@ export function MembersPageRosterColumn({
                           toggleStar={toggleStar}
                           starPending={starPending}
                           slotKeyOf={slotKeyOf}
-                          isRunning={isRunning}
-                          isUnread={isUnread}
-                          isNeedsYou={isNeedsYou}
+                          signalsOf={signalsOf}
                           automationOf={automationOf}
                           // No layout projection under the drawer's compositor-
                           // driven slide (registerDrawerTargets' precondition).

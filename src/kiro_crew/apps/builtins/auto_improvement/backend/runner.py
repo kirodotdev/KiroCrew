@@ -47,7 +47,7 @@ from typing import Any
 
 from kiro_crew.dashboard.crash_dump_store import current_process_identity, pid_identity_alive
 
-from . import clone_setup, store
+from . import clone_setup, deps, store
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,9 @@ STATUS_RUNNING = "running"
 STATUS_CALIBRATING = "calibrating"
 STATUS_STOPPING = "stopping"
 STATUS_DONE = "done"
+#: A run or calibration that ended because a stop was asked for (the Stop button,
+#: disabling the app, gateway shutdown) rather than by finishing on its own.
+STATUS_STOPPED = "stopped"
 STATUS_ERROR = "error"
 
 #: Filename of the last run's terminal record, written beside the archive's own
@@ -110,7 +113,7 @@ TERMINAL_RECORD_NAME = "run.state.json"
 #: restart cut off and is read back as an error; one whose run is still live elsewhere is
 #: reported as running; any other non-terminal record is stale, hand-edited or unjudgeable here
 #: and is ignored. See :func:`_in_flight_writer_alive`.
-_PERSISTABLE_STATUSES = frozenset({STATUS_DONE, STATUS_ERROR})
+_PERSISTABLE_STATUSES = frozenset({STATUS_DONE, STATUS_STOPPED, STATUS_ERROR})
 
 #: The error a run reports after a restart cut it off before its terminal transition.
 INTERRUPTED_BY_RESTART = "interrupted by a restart before it finished"
@@ -178,7 +181,7 @@ class RunState:
     #: statuses). Resolving at write time could therefore file this run's outcome under a
     #: DIFFERENT repository and leave its own workspace with no record at all. Bound at the
     #: same instant as the driver's ``archive_root``, so the record and the archive can never
-    #: land in different workspaces. Raised by the GPT review of this branch.
+    #: land in different workspaces.
     record_path: Path | None = None
     #: True when this state was read back from the in-flight record of a run that is live
     #: outside this supervisor.
@@ -239,6 +242,17 @@ def _unsandboxed_agent_accepted() -> bool:
     """
     config = store.read_json(store.config_path(), {}) or {}
     return bool(config.get("acceptUnsandboxedAgentRisk") is True)
+
+
+def _refuse_without_gate_pytest() -> None:
+    """Refuse a run or calibration when the gate interpreter cannot run pytest.
+
+    Otherwise every candidate is recorded as the agent's invalid test while no test
+    ever ran. ``RuntimeError`` so the start route answers 409 with the message.
+    """
+    problem = deps.gate_pytest_problem()
+    if problem:
+        raise RuntimeError(f"refusing to start: {problem}")
 
 
 def _terminal_record_path() -> Path:
@@ -386,8 +400,8 @@ def _redact_activity(value: Any) -> Any:
     timestamps and every other field survive, so the operator still sees that a run is
     progressing and what kind of step it is on.
     """
-    # Function-local ON PURPOSE, not an oversight — review flagged it against
-    # `top-level-imports`. The `try/except` around the import IS the fail-closed mechanism: if
+    # Function-local ON PURPOSE despite `top-level-imports`. The `try/except` around
+    # the import IS the fail-closed mechanism: if
     # the redactor cannot be imported, this returns a placeholder and the run keeps going with
     # nothing unscanned served. Hoisted to module scope, the same failure becomes an
     # ImportError at MODULE LOAD, which takes the whole app's backend down instead of
@@ -503,7 +517,7 @@ class RunSupervisor:
                 # `GET /run` response as the literal `Infinity` -- not valid JSON, so the
                 # browser's `JSON.parse` rejects the WHOLE payload and the app shows nothing.
                 # Declining the record leaves the supervisor idle, which is what every other
-                # corrupt-record path already does. Raised by the GPT review of this branch.
+                # corrupt-record path already does.
                 logger.warning(
                     "%s: ignoring the terminal run record -- it carries a non-finite number",
                     store.APP_NAME,
@@ -713,6 +727,7 @@ class RunSupervisor:
         """The body of :meth:`_build_driver`, which owns the clone lock. Split out so the
         lock acquisition is a single visible statement rather than an indent over 100
         lines — and so a future edit cannot add an early ``return`` that skips it."""
+        _refuse_without_gate_pytest()
 
         # Put the clone on the CONFIGURED branch BEFORE building the profile. A fresh
         # clone sits on the repo default (main); a run targeting another branch would
@@ -726,7 +741,7 @@ class RunSupervisor:
         # that diff comes back empty, `scoped_relpaths` returns None ("no scope"), and
         # the edit fence silently widens from "what this branch changed" to the whole
         # repo. Checking out first makes the scope reflect the branch actually under
-        # test. Raised by review of this branch.
+        # test.
         clone_dir = str(config.get("clone") or "").strip()
         branch = str(config.get("branch") or "").strip() or "main"
         if clone_dir:
@@ -756,7 +771,7 @@ class RunSupervisor:
                 # HEAD the clone happens to hold would discover, edit, and push the WRONG
                 # branch's code, the exact silent-wrong-branch harm the checkout exists to
                 # prevent. A scopeDiffBase makes it worse (a mis-scoped edit fence), but the
-                # base case is already unsafe. Raised by the GPT review of this branch.
+                # base case is already unsafe.
                 scoped = str(config.get("scopeDiffBase") or "").strip()
                 extra = (
                     " and the configured scopeDiffBase would resolve against the wrong HEAD"
@@ -976,11 +991,16 @@ class RunSupervisor:
         with self._lock:
             if self._in_flight():
                 raise RuntimeError(f"a run is already active (run_id={self._state.run_id})")
+            admitted_at = self._stop_seq
+        _refuse_without_gate_pytest()
 
         run_id = f"cal-{int(time.time())}"
         with self._lock:
             if self._in_flight():
                 raise RuntimeError(f"a run is already active (run_id={self._state.run_id})")
+            if self._stop_seq != admitted_at:
+                # A stop (or the app being disabled) landed during the pytest probe.
+                raise RuntimeError("the calibration was stopped before it started")
             self._stop_requested = False
             self._state = RunState(
                 status=STATUS_CALIBRATING, run_id=run_id, started_at=time.time(), stage="calibrate"
@@ -1023,7 +1043,6 @@ class RunSupervisor:
             # tree exposed — a manual draft mutating the clone mid-baseline yields a ruler
             # calibrated against two different revisions. `_build_driver`'s lock does NOT
             # cover this path: calibration has its own checkout and never goes through it.
-            # Raised by the GPT review.
             with clone_lock():
 
                 from ..profiles import build_profile
@@ -1046,7 +1065,7 @@ class RunSupervisor:
                         # RAISE rather than calibrate against an arbitrary HEAD: a ruler proven
                         # on the wrong branch's code is misleading, and `checkout_branch` only
                         # returns False when the branch exists nowhere. The operator fixes the
-                        # branch and re-runs. Raised by the GPT review of this branch.
+                        # branch and re-runs.
                         raise RuntimeError(
                             f"refusing to calibrate: could not check out {branch} ({note}) — "
                             "the ruler would be proven against the wrong revision"
@@ -1148,8 +1167,7 @@ class RunSupervisor:
                 # on a background thread: if the operator retargets (or starts another repo's
                 # calibration) while this one measures, the bare call would drop this ruler into
                 # a DIFFERENT workspace, overwriting its ruler with one calibrated on unrelated
-                # code. Deriving the path from the captured `config` pins it. Raised by the GPT
-                # review of this branch.
+                # code. Deriving the path from the captured `config` pins it.
                 ruler_path = (
                     store_mod.data_dir()
                     / "repos"
@@ -1229,7 +1247,7 @@ class RunSupervisor:
     def _mark_stopped(self) -> None:
         """Record a cooperative calibration stop as a clean terminal state (no error)."""
         with self._lock:
-            self._state.status = STATUS_DONE
+            self._state.status = STATUS_STOPPED
             self._state.stage = ""
             self._state.finished_at = time.time()
             self._state.activity.append({"t": time.time(), "note": "calibration stopped"})
@@ -1344,9 +1362,14 @@ class RunSupervisor:
                 self._state.stage = ""
                 offline = self._state.offline_reason
                 if not offline:
-                    self._state.status = STATUS_DONE
+                    # A driver that returns after a stop request ended because it was
+                    # asked to, not because it finished its cycles.
+                    stopped = self._stop_requested
+                    self._state.status = STATUS_STOPPED if stopped else STATUS_DONE
                     self._state.finished_at = time.time()
-                    self._state.activity.append({"t": time.time(), "note": "run finished"})
+                    self._state.activity.append(
+                        {"t": time.time(), "note": "run stopped" if stopped else "run finished"}
+                    )
             if offline:
                 # A clean return is NOT success here. With no agent runner the profile's
                 # discovery early-returns an empty candidate list, so every cycle finds
@@ -1407,7 +1430,10 @@ class RunSupervisor:
             status = st.status
             if status in (STATUS_RUNNING, STATUS_STOPPING) and not alive and not st.owned_elsewhere:
                 clean = not st.error and not st.offline_reason
-                status = STATUS_DONE if clean else STATUS_ERROR
+                if not clean:
+                    status = STATUS_ERROR
+                else:
+                    status = STATUS_STOPPED if status == STATUS_STOPPING else STATUS_DONE
             return {
                 "status": status,
                 "run_id": st.run_id,
@@ -1445,12 +1471,18 @@ class RunSupervisor:
                     "stopped": False,
                     "note": "no active run",
                 }
-            self._stop_requested = True
-            self._state.status = STATUS_STOPPING
-            self._state.activity.append({"t": time.time(), "note": "stop requested"})
+            # A run that already reached its terminal status is only writing its record.
+            # It keeps that outcome and gets no stop signal, but is still joined below so a
+            # shutdown waits for the record to land.
+            settled_status = self._state.status
+            settled = settled_status in _PERSISTABLE_STATUSES
+            if not settled:
+                self._stop_requested = True
+                self._state.status = STATUS_STOPPING
+                self._state.activity.append({"t": time.time(), "note": "stop requested"})
             run_id = self._state.run_id
 
-        if driver is not None:
+        if driver is not None and not settled:
             try:
                 driver.request_stop()
             except Exception:  # noqa: BLE001 — a stop must never raise at the caller
@@ -1462,6 +1494,10 @@ class RunSupervisor:
             # Not started yet; `_stop_requested` is already set for it to read.
             pass
         stopped = not thread.is_alive()
+        if settled:
+            # The outcome was decided before the join; a run started since then is not
+            # this one, so report the snapshot rather than re-reading the state.
+            return {"status": settled_status, "run_id": run_id, "stopped": stopped}
         with self._lock:
             return {
                 "status": self._state.status if stopped else STATUS_STOPPING,

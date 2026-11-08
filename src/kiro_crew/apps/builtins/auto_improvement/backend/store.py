@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.manager import app_data_dir
-from kiro_crew.atomic_write import read_json_or
+from kiro_crew.atomic_write import read_json_or, replace_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ APP_NAME = "auto-improvement"
 #: REJECTED by ``save_session`` after ``openSession`` had already seeded the chat
 #: slot, so the link was lost and every retry spawned another orphaned chat. 250
 #: clears the longest real key while keeping ``<key>.json`` (255-char component
-#: limit on ext4/APFS/NTFS) safely in bounds. Raised by the GPT review.
+#: limit on ext4/APFS/NTFS) safely in bounds.
 _SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,249}$")
 
 
@@ -103,7 +103,7 @@ def workspace_key(config: dict | None = None) -> str:
     # could apply one repository's queued diff to another. The digest carries the distinction
     # the slug throws away; the slug stays in front so the directory is still recognizable.
     # Lower-cased before hashing because GitHub repository names are case-insensitive, so
-    # `owner/A-B` and `owner/a-b` must keep sharing one workspace. Raised by the GPT review.
+    # `owner/A-B` and `owner/a-b` must keep sharing one workspace.
     digest = hashlib.sha256(f"{repo.lower()}\x00{branch}".encode("utf-8")).hexdigest()[:10]
     return f"{readable}__{digest}"
 
@@ -207,7 +207,7 @@ def write_json_atomic(path: Path, payload: Any) -> None:
             json.dump(payload, handle, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp, path)
+        replace_with_retry(tmp, path)
     except BaseException:
         try:
             os.unlink(tmp)

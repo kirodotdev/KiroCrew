@@ -29,13 +29,12 @@ from handlers_memory_coverage_helpers import (  # noqa: F401 -- the autouse fixt
 )
 
 import kiro_crew.dashboard.handlers.memory as mem_mod
+from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
 
-# ---------------------------------------------------------------------------
 # stats / migrate / import / context-preview / observability / promote
-# ---------------------------------------------------------------------------
 
 
 class TestStatsMigrateImport:
@@ -338,6 +337,8 @@ class TestPromote:
             '{"min_count": -1e999}',
             '{"min_count": [3]}',
             '{"min_count": null}',
+            # A JSON integer past float range: float() raises OverflowError.
+            '{"min_sim": 1' + "0" * 400 + "}",
         ],
     )
     async def test_infinite_or_non_number_min_count_is_400(self, raw: str) -> None:
@@ -355,7 +356,7 @@ class TestPromote:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
-            ('{"min_count": -2}', (-2, 0.75)),
+            ('{"min_count": 2}', (2, 0.75)),
             ('{"min_count": 99999999999999999999999}', (99999999999999999999999, 0.75)),
         ],
     )
@@ -371,9 +372,7 @@ class TestPromote:
         store.promote_episodic_patterns.assert_called_once_with(*expected)
 
 
-# ---------------------------------------------------------------------------
 # consolidate
-# ---------------------------------------------------------------------------
 
 
 def _consolidator() -> Any:
@@ -394,11 +393,8 @@ def _write_incognito_transcript(log: Any, key: str) -> None:
 async def _seed_incognito_transcript(log: Any, key: str) -> None:
     """Write a closed incognito transcript for *key*, off the event loop.
 
-    The header rewrite ends in ``atomic_write.replace_with_retry``. That helper
-    retries a Windows sharing violation (a scanner or indexer briefly holding
-    the file just written) only when NO event loop runs in the calling thread.
-    On the test's own loop the first ``PermissionError`` is raised at once, so
-    the write runs in a worker thread, as the product's own callers do.
+    ``atomic_write.replace_with_retry`` retries a Windows sharing violation only when no
+    event loop runs in the calling thread, so the write runs in a worker thread.
     """
     await asyncio.to_thread(_write_incognito_transcript, log, key)
 
@@ -410,7 +406,8 @@ class TestConsolidate:
     ) -> None:
         """Pin the seeding helper above to the retrying path.
 
-        A seed run on the loop thread re-raises the first simulated violation.
+        The seed replaces the file twice (``append`` then the header rewrite); the one
+        simulated violation hits the first and is retried, so three replaces are counted.
         """
         from windows_sim import replace_sharing_violation
 
@@ -422,7 +419,7 @@ class TestConsolidate:
         log = ConversationLog(base_dir=tmp_path / "sessions")
         with replace_sharing_violation(match="dashboard_ghost-1.jsonl", times=1) as sim:
             await _seed_incognito_transcript(log, "dashboard:ghost-1")
-        assert sim["n"] == 2
+        assert sim["n"] == 3
         assert log.get_metadata("dashboard:ghost-1")["memory_mode"] == "incognito"
 
     @pytest.mark.asyncio
@@ -529,8 +526,7 @@ class TestConsolidate:
         assert "s1" in cons._running
         # Drain the spawned task so nothing is left pending at loop teardown.
         for task in list(cons._tasks):
-            # flake-ok: pre-existing await of a task this test drives to completion moved verbatim; tracked for a de-flake pass
-            await task
+            await await_until(task, what="the spawned consolidation task never finished")
         cons._consolidate.assert_awaited_once_with("s1", False)
 
     # -- the target's memory mode, not only the caller's ---------------------------
@@ -622,13 +618,9 @@ class TestConsolidate:
     async def test_private_channel_thread_named_by_its_stem_is_refused(self) -> None:
         """A Slack thread flagged ``!incognito`` is refused when named by its stem.
 
-        ``list_sessions`` hands out the filename stem (``slack_<ts>``) while the
-        thread's durable flag lives under the live key (``slack:<ts>``) in the
-        session map and its transcript header carries no ``memory_mode`` at all,
-        so a handler that resolves the raw stem reads the thread as persistent.
-        The flag is seeded in a real ``SessionMap`` and the process-local privacy
-        trackers start empty, so the stem has to be unfolded by the map and the
-        flag hydrated from disk -- the path a gateway restart leaves behind.
+        The stem is ``slack_<ts>`` but the flag lives under ``slack:<ts>`` and the header
+        has no ``memory_mode``. A real ``SessionMap`` with empty in-process trackers forces
+        the post-restart path: unfold the stem and read the flag from disk.
         """
         from kiro_crew.history import ConversationLog
         from kiro_crew.messaging import privacy_mode
@@ -684,8 +676,7 @@ class TestConsolidate:
             "key": "dashboard:p1",
         }
         for task in list(cons._tasks):
-            # flake-ok: pre-existing await of a task this test drives to completion moved verbatim; tracked for a de-flake pass
-            await task
+            await await_until(task, what="the spawned consolidation task never finished")
         cons._consolidate.assert_awaited_once_with("dashboard:p1", False)
 
     @pytest.mark.asyncio
@@ -694,12 +685,9 @@ class TestConsolidate:
     ) -> None:
         """A channel stem with no session-map entry is refused from its header.
 
-        The live resolution answers ``persistent`` for every channel key the map
-        does not flag, without probing the transcript; a stem whose entry the map
-        does not hold would therefore dispatch and answer ``200 {"ok": true}``
-        for a pass ``_consolidate`` refuses on the header -- and the Memory tab
-        would count it as summarized. The header is the modifier's own record, so
-        the route probes it too.
+        The live resolution answers ``persistent`` for unflagged keys, so without a
+        header probe the route would answer ``200 {"ok": true}`` for a pass
+        ``_consolidate`` refuses.
         """
         from kiro_crew.config.paths import config_dir
         from kiro_crew.history import ConversationLog
@@ -736,9 +724,7 @@ class TestConsolidate:
         assert not cons._running
 
 
-# ---------------------------------------------------------------------------
 # graph error path
-# ---------------------------------------------------------------------------
 
 
 class TestMemoryGraphFailure:

@@ -441,16 +441,14 @@ async def _execute_stored_proposal(
     # execution paths converge on `_execute_authorized`; this makes their FOLLOW-UP converge
     # too. `result.ok and not result.simulated` for the same reason: a `noop`-simulated write
     # changed nothing at the provider, so rechecking it would read the still-firing alarm as
-    # a failure and charge a miss to the cited ledger entries. Found in review.
+    # a failure and charge a miss to the cited ledger entries.
     # `result.suppressed_secs or payload.get("duration_secs")` — the SINK's reported window
     # first, identical to `_handle_action`. Datadog aliases `resolve` onto a bounded mute, and
     # only `EXPIRING_ACTIONS` (i.e. `silence`) gets a `duration_secs` from the route, so reading
-    # the payload alone scheduled a five-minute recheck against a four-hour suppression and
-    # charged a false miss to the cited ledger entries. The fix landed on the direct-action path
-    # and not here, which is this PR's recurring lesson in miniature: the two paths converge on
-    # `_execute_authorized` for the WRITE, so their follow-up has to converge too, and a fix
-    # applied one layer up does not protect a path that does not pass through it. Found in
-    # review (GPT 5.6).
+    # the payload alone schedules a five-minute recheck against a four-hour suppression and
+    # charges a false miss to the cited ledger entries. The two paths converge on
+    # `_execute_authorized` for the WRITE, so their follow-up has to converge too: a fix
+    # applied one layer up does not protect a path that does not pass through it.
     verification = verify_after = ""
     if result.ok and not result.simulated:
         verification, verify_after = await asyncio.to_thread(

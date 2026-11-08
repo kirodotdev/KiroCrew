@@ -16,6 +16,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT as DEFAULT_ENDPOINT
 from kiro_crew.config.sections import DECISION_PROVIDER_MODEL_DEFAULT as DEFAULT_MODEL
@@ -31,26 +32,38 @@ class TestIsLoopbackEndpoint:
     @pytest.mark.parametrize(
         "endpoint",
         [
-            "http://127.0.0.1:8102/v1/systemone",
-            "http://127.9.9.9:8102/v1/systemone",
-            "https://127.0.0.1:8443/v1/systemone",
-            "http://[::1]:8104/v1/systemone",
-            "http://[::ffff:127.0.0.1]:8102/v1/systemone",
-            "http://[::ffff:7f00:1]:8102/v1/systemone",
-            "http://127.1:8102/v1/systemone",
-            "http://0x7f.1:8102/v1/systemone",
-            "http://2130706433:8102/v1/systemone",
-            "http://0177.0.0.1:8102/v1/systemone",
-            "http://127.0.0.1/v1/systemone",
-            "  http://127.0.0.1:8102/v1/systemone  ",
-            # IDNA-normalised by yarl, which is what aiohttp dials.
-            "http://127\u30020\u30020\u30021:8102/v1/systemone",
-            "http://127\uff0e0\uff0e0\uff0e1:8102/v1/systemone",
-            "http://127\uff610\uff610\uff611:8102/v1/systemone",
-            "http://\u2460\u2461\u2466.0.0.1:8102/v1/systemone",
+            *named_cases(
+                "test_a_literal_loopback_address_is_local",
+                "endpoint",
+                [
+                    "http://127.0.0.1:8102/v1/systemone",
+                    "http://127.9.9.9:8102/v1/systemone",
+                    "https://127.0.0.1:8443/v1/systemone",
+                    "http://[::1]:8104/v1/systemone",
+                    "http://[::ffff:127.0.0.1]:8102/v1/systemone",
+                    "http://[::ffff:7f00:1]:8102/v1/systemone",
+                    "http://127.1:8102/v1/systemone",
+                    "http://0x7f.1:8102/v1/systemone",
+                    "http://2130706433:8102/v1/systemone",
+                    "http://0177.0.0.1:8102/v1/systemone",
+                    "http://127.0.0.1/v1/systemone",
+                    "  http://127.0.0.1:8102/v1/systemone  ",
+                    # IDNA-normalised by yarl, which is what aiohttp dials.
+                    "http://127\u30020\u30020\u30021:8102/v1/systemone",
+                    "http://127\uff0e0\uff0e0\uff0e1:8102/v1/systemone",
+                    "http://127\uff610\uff610\uff611:8102/v1/systemone",
+                    "http://\u2460\u2461\u2466.0.0.1:8102/v1/systemone",
+                ],
+            ),
+            *named_cases(
+                "test_the_unspecified_address_dials_this_machine_and_is_local",
+                "endpoint",
+                ["http://0.0.0.0:8102/v1/systemone", "http://[::]:8102/v1/systemone"],
+                ids=["any-address-v4", "any-address-v6"],
+            ),
         ],
     )
-    def test_a_literal_loopback_address_is_local(self, endpoint):
+    def test_a_local_address_is_loopback(self, endpoint):
         assert local_models.is_loopback_endpoint(endpoint) is True
 
     def test_mapped_loopback_is_local_even_where_ipaddress_says_otherwise(self, monkeypatch):
@@ -65,14 +78,6 @@ class TestIsLoopbackEndpoint:
         assert (
             local_models.is_loopback_endpoint("http://[::ffff:127.0.0.1]:8102/v1/systemone") is True
         )
-
-    @pytest.mark.parametrize(
-        "endpoint",
-        ["http://0.0.0.0:8102/v1/systemone", "http://[::]:8102/v1/systemone"],
-        ids=["any-address-v4", "any-address-v6"],
-    )
-    def test_the_unspecified_address_dials_this_machine_and_is_local(self, endpoint):
-        assert local_models.is_loopback_endpoint(endpoint) is True
 
     @pytest.mark.parametrize(
         "endpoint",
@@ -184,6 +189,24 @@ class TestCatalog:
                 spec = line.split(";", 1)[0]
                 assert "==" in spec or "/archive/" in spec, line
                 assert not any(op in spec for op in (">", "<", "~=", "!=")), line
+
+    def test_plumb_pins_a_jevk5_that_answers_a_choice_of_any_size(self):
+        """skills.select offers up to MAX_CANDIDATES skills plus a "none" option in one
+        Choice. jevk5 before v0.2.2 letters at most 16 options and drops the connection
+        on a 17th, so every larger menu came back as a provider error. Each commit here
+        was checked to answer a 30-option Choice through its own server."""
+        from kiro_crew.decisions.local_runtime import SERVERS_DIR
+        from kiro_crew.decisions.points.skills_select import MAX_CANDIDATES
+
+        any_size = {"1ca7762ec33f94ad3161cdf464bb591a2414097d": "v0.2.2"}
+        plumb = next(m for m in local_models.LOCAL_MODELS if m.id == "plumb-4b")
+        lock = (SERVERS_DIR / plumb.requirements).read_text(encoding="utf-8")
+        pins = [line for line in lock.splitlines() if line.startswith("jevk5 @ ")]
+
+        assert MAX_CANDIDATES + 1 > 16
+        assert len(pins) == 1, pins
+        commit = pins[0].rsplit("/", 1)[1].removesuffix(".tar.gz")
+        assert commit in any_size, commit
 
     def test_every_weight_file_is_pinned_and_served_from_the_model_cdn(self):
         for m in local_models.LOCAL_MODELS:

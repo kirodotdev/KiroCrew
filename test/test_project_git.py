@@ -375,7 +375,7 @@ class TestNoGitSubprocess:
         assert info["branch"] == "trunk"
 
     def test_config_include_directive_is_never_read(self, repo, tmp_path):
-        """The exact mechanism from the review finding.
+        """A config ``include`` directive must not make git read a caller-named file.
 
         The planted file is deliberately named and worded neutrally: what matters
         is that a git invocation reads an ARBITRARY caller-named file, not what

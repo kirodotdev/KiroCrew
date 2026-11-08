@@ -85,12 +85,27 @@ concurrency:
 jobs:
   probe:
     name: Probe official MCP static metadata
-    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
-    timeout-minutes: 10
+    # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays off the CodeBuild fleet.
+    # Use the larger-runner label upstream; forks cannot reach the org group.
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && 'kirocrew-linux-4-core' || 'ubuntu-latest' }}
+    # 10 min for the probe, plus the 20 min the gh wrapper may spend in total
+    # waiting out a spent API rate limit.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # A night whose state restore fails on a spent API rate limit never
+      # probes, and the next night finds its artifact missing and loses the
+      # streaks. So every `gh` call goes through the rate-limit-aware wrapper
+      # (.github/actions/gh-rate-limit).
+      - name: Install rate-limit-aware gh
+        uses: ./.github/actions/gh-rate-limit
+        with:
+          max-wait: "1200"
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

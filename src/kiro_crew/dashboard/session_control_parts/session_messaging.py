@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.context_assembly.markers import _apply_marker_spans, _marker_spans
+from kiro_crew.dashboard import session_managers
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
@@ -25,7 +26,6 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     SessionControlError,
     _audit,
     _caller_is_ownership_fenced,
-    _created_by_other,
     caller_slot_key,
     prewarm_enabled_check,
 )
@@ -377,9 +377,26 @@ async def send_to_target(
     # reach that surface. The length gate above deliberately measures the RAW body:
     # redaction can only shrink the text, so validating the raw form is the honest
     # limit and keeps the error keyed to what the caller actually sent.
-    prompt = _SEND_PROVENANCE.format(
-        caller=caller_key or "unknown", via=via or "session_send"
-    ) + _neutralize_send_provenance(sanitize_outbound(body))
+    envelope = _SEND_PROVENANCE.format(caller=caller_key or "unknown", via=via or "session_send")
+    prompt = envelope + _neutralize_send_provenance(sanitize_outbound(body))
+
+    # The structured cross-session sender, stamped by the gateway onto the row the
+    # delivery appends (``meta.relay``). The receiver's transcript draws the
+    # incoming session-message card from THIS, not by parsing the ``[sent by
+    # session …]`` prefix — a peer cannot forge it the way it could type the
+    # envelope into its own composer, because only this path writes it. Carries the
+    # sender's key and the verb; the sender's display title is resolved client-side
+    # from the live roster, so no name is pinned here. ``envelope`` says where the
+    # provenance line sits in the delivered text (``relay_spans``), so the bubble
+    # drops it by position. Imported here, not at module level, so the facade
+    # serves no new name.
+    from kiro_crew.dashboard import relay_spans
+
+    relay_meta = {
+        "senderKey": caller_key or "unknown",
+        "via": via or "session_send",
+        relay_spans.ENVELOPE_KEY: relay_spans.leading_span(envelope),
+    }
 
     steered = False
     requeued = False
@@ -438,7 +455,12 @@ async def send_to_target(
         # peer must not inherit the composer's exemption from the LINKED drop.
         async def _steer_delivery() -> str:
             return await session_deliver.deliver(
-                state, slot, prompt, session_deliver.peer(steer=True), admission=admission
+                state,
+                slot,
+                prompt,
+                session_deliver.peer(steer=True),
+                admission=admission,
+                relay_meta=relay_meta,
             )
 
         delivery_progress.steer_await_entered = True
@@ -450,10 +472,10 @@ async def send_to_target(
         # directly, the cancellation unwinds THROUGH the RPC and skips that
         # coroutine's single reconciliation tail, while the bytes may already have
         # reached kiro-cli: the turn then runs text no `slot.append` recorded, and
-        # `_steer_delivery_ids` / `_steer_send_ids` / `_steer_user_origin` /
-        # `_steer_admissions` are never popped. Nothing else pops them --
-        # `_settle_consumed_steers` clears only the attachment and decision-strip
-        # maps, and `_requeue_unconsumed_steers` returns early once settling emptied
+        # `_steer_delivery_ids` / `_steer_send_ids` are never popped. Nothing else
+        # pops them -- `_settle_consumed_steers` releases the steer's provenance,
+        # attachment and decision-strip records but neither id map, and
+        # `_requeue_unconsumed_steers` returns early once settling emptied
         # `_pending_steers`. The surviving `_steer_delivery_ids` entry then refuses
         # this exact text on that slot forever (the one-per-text guard reads that
         # dict) and `retained_steer_count` never falls back below
@@ -502,6 +524,7 @@ async def send_to_target(
                 prompt,
                 session_deliver.peer(steer=False),
                 queue_meta=send_origin_meta(state, caller_key),
+                relay_meta=relay_meta,
             )
             logger.info(
                 "session_send: orphaned steer to %s came back unavailable and was "
@@ -693,6 +716,7 @@ async def send_to_target(
                 # stamp is what lets that drop be reported back to us instead of
                 # ending at the target's own transcript.
                 queue_meta=send_origin_meta(state, caller_key),
+                relay_meta=relay_meta,
             )
             == session_deliver.DELIVERED_TURN
         )
@@ -783,11 +807,12 @@ def _timeout_delivery_observation(
 
 
 def broadcast_audience(state: "DashboardState", caller_key: str) -> list[str]:
-    """The slot keys *caller_key* created and can still address, sorted.
+    """The slot keys *caller_key* manages and can still address, sorted.
 
-    The DEFAULT audience of a broadcast: a conductor's own workers. Read from the
-    live slots' ``_created_by`` — the same field the ownership fence
-    (:func:`_created_by_other`) reads — so the default audience is by construction
+    The DEFAULT audience of a broadcast: a conductor's own workers, the ones it
+    created and the ones handed to it. Read from :func:`session_managers.holder`
+    (the creator until a ``session_handoff`` names another) -- the manager the
+    fence reads for ``send`` -- so the default audience is by construction
     a subset of what the fence would admit, and an audience this returns can still
     be refused per target (a worker that went incognito, gained a channel mirror,
     or is an app's) by the gate each delivery runs. Nothing here authorizes.
@@ -803,7 +828,7 @@ def broadcast_audience(state: "DashboardState", caller_key: str) -> list[str]:
     out = [
         key
         for key, slot in list(state._slots.items())
-        if key != caller_key and not _created_by_other(slot, caller_key)
+        if key != caller_key and session_managers.holder(slot) == caller_key
     ]
     return sorted(out)
 
@@ -830,6 +855,7 @@ async def broadcast_to_targets(
     message: str,
     mode: str,
     targets: "list[str] | None" = None,
+    all_created: bool = False,
     caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Deliver *message* to several sessions at once, one at a time.
@@ -841,10 +867,17 @@ async def broadcast_to_targets(
     the first; one telling them "stop, the issue was already fixed" wants the
     second, and the difference is worth eight turns of latency.
 
-    ``targets`` omitted means :func:`broadcast_audience` — the sessions this caller
-    created. Naming them explicitly is for the subset case, and every named target
-    goes through the same :func:`authorize_target` gate, so an explicit list can
-    only ever be as permissive as one send at a time.
+    A call selects its audience in exactly one of two ways. ``targets`` names the
+    sessions, or ``all_created=True`` means :func:`broadcast_audience` — every
+    session this caller created. ``targets`` that is absent, ``None`` or empty
+    selects nobody, so a call with neither is refused ``target_required`` and a call
+    with both is refused ``audience_conflict``; nothing is sent in either case.
+    The default is deliberately NOT the whole fleet: some clients drop an empty
+    list from a tool call, so ``targets=[]`` reaches this function as an omission,
+    and an omission that meant "everyone" would turn a caller's empty audience into
+    a fleet-wide send. Every named target goes through the same
+    :func:`authorize_target` gate, so an explicit list can only ever be as
+    permissive as one send at a time.
 
     PARTIAL DELIVERY IS THE NORMAL OUTCOME and the return shape says so per
     target. A target closed between the audience read and its own delivery, one
@@ -915,7 +948,23 @@ async def broadcast_to_targets(
         ownership_fenced=ownership_fenced,
     )
 
-    explicit = targets is not None
+    # An empty list and an absent one are the same thing here: the bytes a client
+    # that drops empty containers sends are identical for both, so the answer must
+    # not depend on telling them apart.
+    explicit = bool(targets)
+    if explicit and all_created:
+        raise SessionControlError(
+            "pass targets or all: true, not both",
+            code="audience_conflict",
+            status=400,
+        )
+    if not explicit and not all_created:
+        raise SessionControlError(
+            "no audience selected: name the sessions in targets, or pass "
+            "all: true to reach every session you created",
+            code="target_required",
+            status=400,
+        )
     if explicit:
         # THE CAP, CHECKED BEFORE ANYTHING RESOLVES. Below the resolution loop this
         # check is correct and useless: reaching it costs one `_resolve_slot` per
@@ -959,13 +1008,14 @@ async def broadcast_to_targets(
                 seen.add(identity)
                 audience.append(slot.key if slot is not None else name)
         if not audience:
-            # The caller named targets and not one of them is usable. Both silent
-            # answers are wrong here: falling back to the default audience turns a
-            # malformed argument into an accidental fleet-wide send, and reporting
-            # "delivered 0 of 0" hides a call that never had a chance of working.
+            # The caller named targets and not one of them is usable (every name was
+            # blank). Both silent answers are wrong here: falling back to the
+            # all-created audience turns a malformed argument into an accidental
+            # fleet-wide send, and reporting "delivered 0 of 0" hides a call that
+            # never had a chance of working.
             raise SessionControlError(
-                "targets was given but names no session; omit it to reach every "
-                "session you created",
+                "targets was given but names no session; name the sessions, or "
+                "pass all: true to reach every session you created",
                 code="target_required",
                 status=400,
             )

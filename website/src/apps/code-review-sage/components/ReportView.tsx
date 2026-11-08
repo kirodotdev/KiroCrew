@@ -12,6 +12,7 @@
 // MarkdownRenderer (which sanitizes), the outbound PR link is validated with
 // safeHttpUrl, and code `snippet`s render verbatim in a <pre> (never markdown).
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 import {
   ChevronRight, ClipboardCheck, ExternalLink, Loader2, MessageSquarePlus, Share2, ShieldCheck,
 } from 'lucide-react'
@@ -247,12 +248,12 @@ function ReportRowCard({
                 { scope: row.blast })}</Pill>
               {live.red > 0 && (
                 <span className="inline-flex items-center rounded-full bg-danger-subtle text-danger-text px-2 py-0.5 text-[11px] font-medium whitespace-nowrap">
-                  {live.red} {i18nT('apps.codeReviewSage.components.reportView.blocking')}
+                  {i18nT('apps.codeReviewSage.components.reportView.blocking_count', { count: live.red })}
                 </span>
               )}
               {live.yellow > 0 && (
                 <span className="inline-flex items-center rounded-full bg-warn-subtle text-warn-text px-2 py-0.5 text-[11px] font-medium whitespace-nowrap">
-                  {live.yellow} {i18nT('apps.codeReviewSage.components.reportView.should_fix')}
+                  {i18nT('apps.codeReviewSage.components.reportView.should_fix_count', { count: live.yellow })}
                 </span>
               )}
               {moved && (
@@ -522,12 +523,15 @@ export default function ReportView({
           </span>
         ) : actions}
         {report.report_slug ? (
-          <a
-            href={`/artifacts/${report.report_slug}`}
+          // A router <Link>, not a bare <a href>: the click goes through the
+          // router, so in an app pop-out window the page opens in the main
+          // window instead of loading the dashboard in the pop-out.
+          <Link
+            to={`/artifacts/${report.report_slug}`}
             className="inline-flex items-center gap-1.5 text-[12.5px] text-accent hover:underline"
           >
             <ExternalLink size={13} aria-hidden="true" /> {i18nT('apps.codeReviewSage.components.reportView.open_shared_copy')}
-          </a>
+          </Link>
         ) : onArchive ? (
           <button
             type="button"

@@ -247,9 +247,14 @@ async def batch_embed_items(request: web.Request) -> web.Response:
     store = _store(request)
     embedder = request.app.get("knowledge_embedder")
     if not embedder:
-        return web.json_response({"error": "Embedding not enabled"}, status=400)
+        return web.json_response(
+            {"error": "Embedding not enabled", "code": "knowledge_embedding_disabled"}, status=400
+        )
     if not await embedder.is_available_async():
-        return web.json_response({"error": "Embedding model not available"}, status=503)
+        return web.json_response(
+            {"error": "Embedding model not available", "code": "knowledge_embedding_unavailable"},
+            status=503,
+        )
 
     body, body_err = await read_bounded_json(request, max_bytes=None, allow_absent=True)
     if body_err is not None:

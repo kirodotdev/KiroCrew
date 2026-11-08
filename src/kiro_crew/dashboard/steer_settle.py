@@ -11,9 +11,14 @@ from __future__ import annotations
 import re
 
 from kiro_crew.acp._dispatch import redact_text
+from kiro_crew.agent_sdk.backends import escape_user_message_markup
 
 #: kiro-cli wraps each injected steer in this envelope inside the echo text.
 _BLOCK_RE = re.compile(r"<user_message>\n(.*?)\n</user_message>", re.DOTALL)
+
+
+def _settlement_key(message: str) -> str:
+    return redact_text(escape_user_message_markup(message.strip()))
 
 
 def settle_consumed_steers(
@@ -43,6 +48,8 @@ def settle_consumed_steers(
     A NON-empty echo carrying no envelope is treated as one bare block rather than
     as no evidence, so it settles only the entry it EQUALS -- unrelated prose still
     matches nothing and still settles nothing.
+
+    Crew escapes each wrapped steer, so its echoed blocks split only one way.
     """
     if not snapshot.strip():
         return list(pending)
@@ -83,7 +90,8 @@ def settle_consumed_steers(
     # and a falsely-unmatched steer is requeued — running an
     # already-injected question a second time, on exactly the questions where
     # that is least acceptable. Both sides go through the same redactor.
-    keys = [redact_text(message.strip()) for message in pending]
+    # ``wrap_user_message`` escapes each steer, so its echoed blocks split one way.
+    keys = [_settlement_key(message) for message in pending]
     group_size: dict[str, int] = {}
     group_raw: dict[str, set[str]] = {}
     for message, key in zip(pending, keys):
@@ -120,3 +128,21 @@ def settle_consumed_steers(
         else:
             remaining.append(message)
     return remaining
+
+
+def possibly_consumed_steers(pending: list[str], snapshot: str) -> list[str]:
+    """Return collision-group entries that *snapshot* may have consumed."""
+    groups: dict[str, list[str]] = {}
+    for message in pending:
+        groups.setdefault(_settlement_key(message), []).append(message)
+
+    ambiguous: set[str] = set()
+    for key, messages in groups.items():
+        if len({message.strip() for message in messages}) < 2:
+            continue
+        representative = messages[0]
+        remaining = settle_consumed_steers([representative] * len(messages), snapshot)
+        echoed_count = len(messages) - len(remaining)
+        if 0 < echoed_count < len(messages):
+            ambiguous.add(key)
+    return [message for message in pending if _settlement_key(message) in ambiguous]

@@ -308,8 +308,11 @@ def _ensure_venv(engine_root: Path, log: list[str], uv_bin: str) -> bool:
         log.append("the engine checkout has no mcp-local directory")
         return False
     log.append("resolving engine dependencies…")
+    # `--frozen` installs the engine's `uv.lock` as pinned: without it uv re-resolves a
+    # lock it judges stale and can pick an `mcp` major the engine cannot import. The
+    # agents' `uv run` passes it for the same reason.
     code, out = _run(
-        [uv_bin, "sync", "--project", str(mcp_dir)],
+        [uv_bin, "sync", "--frozen", "--project", str(mcp_dir)],
         cwd=str(engine_root),
         timeout=UV_SYNC_TIMEOUT,
     )
@@ -603,8 +606,8 @@ def provision() -> ProvisionOutcome:
     #
     # The enable path and the boot reconcile both call `bridges.register_app`, and
     # `bridges._placeholder_values` computes this app's `{UV_BIN}` / `{ENGINE_ROOT}` /
-    # `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` in the GATEWAY from the data home and the
-    # installed package — the same values this provisioner resolves. So the agents and
+    # `{ENGINE_MCP_DIR}` / `{APP_PROMPTS}` (through this app's `agent_placeholders.py`)
+    # in the GATEWAY from the data home and the installed package — the same values this provisioner resolves. So the agents and
     # skill land without provisioning registering anything, and this call was redundant.
     #
     # It was also a race we could only narrow, never close. Provisioning is a detached

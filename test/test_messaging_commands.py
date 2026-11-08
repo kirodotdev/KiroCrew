@@ -701,6 +701,17 @@ class TestSpawn:
         assert reply.startswith("⚠️ Subagent `r2` was not started: waiting for memory")
 
     @pytest.mark.asyncio
+    async def test_a_spawn_stopped_before_it_started_is_not_announced(self) -> None:
+        """Stopped while it waited: queued, done and user-stopped with no error.
+        Nothing runs, so the reply must not announce a start."""
+        manager = MagicMock(max_concurrent=2)
+        manager.spawn.return_value = SimpleNamespace(
+            id="s1", queued=True, done=True, user_stopped=True, error=""
+        )
+        reply = await spawn_task_reply("do it", manager) or ""
+        assert reply == "⚠️ Subagent `s1` was stopped before it started; nothing ran."
+
+    @pytest.mark.asyncio
     async def test_an_empty_argument_declines(self) -> None:
         assert await spawn_task_reply("", MagicMock()) is None
         assert await spawn_command_reply("spawn    ", MagicMock()) is None
@@ -821,9 +832,13 @@ class TestCron:
         svc.remove_job_async = AsyncMock(return_value=True)
 
         with patch("kiro_crew.messaging.commands.sel") as mock_sel:
-            await cron_command_reply("cron remove all", svc, source="telegram", caller="7")
-            await cron_command_reply("cron remove j1", svc, source="telegram", caller="7")
+            all_out = await cron_command_reply(
+                "cron remove all", svc, source="telegram", caller="7"
+            )
+            one_out = await cron_command_reply("cron remove j1", svc, source="telegram", caller="7")
 
+        assert "Removed 1 cron job(s)" in (all_out or "") and "`j1`" in (all_out or "")
+        assert one_out == "✅ Removed cron job `j1`"
         svc.remove_jobs.assert_awaited_once_with(["j1"], actor="7", source="telegram")
         svc.remove_job_async.assert_awaited_once_with("j1", actor="7", source="telegram")
         mock_sel.return_value.log_api_access.assert_not_called()
@@ -838,8 +853,9 @@ class TestCron:
         svc.remove_jobs = AsyncMock(return_value=(["j1"], []))
 
         with patch("kiro_crew.messaging.commands.sel") as mock_sel:
-            await cron_command_reply("cron remove all", svc, source="webex")
+            out = await cron_command_reply("cron remove all", svc, source="webex")
 
+        assert "Removed 1 cron job(s)" in (out or "") and "`j1`" in (out or "")
         svc.remove_jobs.assert_awaited_once_with(["j1"], actor="webex", source="webex")
         mock_sel.return_value.log_api_access.assert_not_called()
 

@@ -251,6 +251,112 @@ def test_missing_canonical_member_record_is_an_error(members):
         execution.read_session_execution("dashboard_damaged")
 
 
+def test_a_chat_on_an_undeclared_store_names_the_store_and_the_remedy(members):
+    """A reopened chat whose store left config names it and says how to recover."""
+    from kiro_crew.history import ConversationLog
+
+    ConversationLog().update_metadata("slack:C1:123.456", {"memory_store": "work-crew"})
+    with pytest.raises(UnknownMemoryStore) as refused:
+        execution.read_session_execution("slack:C1:123.456")
+    message = refused.value.args[0]
+    assert "Memory store declaration is unavailable" in message
+    assert "'work-crew'" in message
+    assert "restore its entry under memory_stores in config.json or config.local.json" in message
+    assert "open a new chat" in message
+    assert "Global was not used" in message
+
+
+@pytest.mark.parametrize(
+    ("flags", "named", "fix"),
+    [
+        ({"_base_unreadable": True}, "config.json could not be read", "fix that file"),
+        ({"_overlay_unreadable": True}, "config.local.json could not be read", "fix that file"),
+        (
+            {"_base_unreadable": True, "_overlay_unreadable": True},
+            "config.json and config.local.json could not be read",
+            "fix those files",
+        ),
+    ],
+)
+def test_an_unreadable_config_is_named_instead_of_the_store_entry(members, flags, named, fix):
+    """With a config file unreadable the stores it declares are gone; the file is the fix."""
+    from kiro_crew.history import ConversationLog
+
+    for flag, value in flags.items():
+        setattr(members, flag, value)
+    ConversationLog().update_metadata("slack:C1:123.456", {"memory_store": "work-crew"})
+    with pytest.raises(UnknownMemoryStore) as refused:
+        execution.read_session_execution("slack:C1:123.456")
+    message = refused.value.args[0]
+    assert "Memory store declaration is unavailable for 'work-crew'" in message
+    assert named in message
+    assert fix in message
+    assert "restore its entry" not in message
+
+
+def test_a_declared_v1_store_still_reads_as_no_member_execution(members):
+    from kiro_crew.history import ConversationLog
+
+    members.memory_stores["work-crew"] = MemoryStoreConfig(memory_version=1)
+    ConversationLog().update_metadata("slack:C1:123.456", {"memory_store": "work-crew"})
+    assert execution.read_session_execution("slack:C1:123.456") is None
+
+
+def test_an_entry_without_a_valid_version_names_that_entry(members):
+    from kiro_crew.history import ConversationLog
+
+    members.memory_stores["work-crew"] = SimpleNamespace(memory_version="2")
+    members._overlay_unreadable = True
+    ConversationLog().update_metadata("slack:C1:123.456", {"memory_store": "work-crew"})
+    with pytest.raises(UnknownMemoryStore) as refused:
+        execution.read_session_execution("slack:C1:123.456")
+    message = refused.value.args[0]
+    assert "Memory store declaration is unavailable for 'work-crew'" in message
+    assert "has no valid memory_version (1 or 2)" in message
+    assert "no longer declared" not in message
+    assert "config.local.json could not be read and may hold the rest of that entry" in message
+
+
+@pytest.mark.parametrize("store", ["", "default"])
+def test_the_global_store_never_reaches_the_declaration_check(members, store):
+    from kiro_crew.history import ConversationLog
+
+    ConversationLog().update_metadata("slack:C1:123.456", {"memory_store": store})
+    assert execution.read_session_execution("slack:C1:123.456") is None
+
+
+def test_a_bad_store_name_keeps_its_own_refusal(members):
+    from kiro_crew.history import ConversationLog
+
+    ConversationLog().update_metadata("slack:C1:123.456", {"memory_store": "Bad Name"})
+    with pytest.raises(UnknownMemoryStore) as refused:
+        execution.read_session_execution("slack:C1:123.456")
+    assert refused.value.args[0].startswith("invalid memory store name")
+
+
+def test_the_real_loader_names_an_unreadable_config_json(tmp_path, monkeypatch):
+    """The unreadable flag the refusal reads is the one the loader actually sets."""
+    from kiro_crew.config import loader
+    from kiro_crew.config.resolution import reset_degraded_observations
+    from kiro_crew.history import ConversationLog
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setattr(loader, "config_path", lambda: tmp_path / "config.json")
+    monkeypatch.setattr(loader, "config_local_path", lambda: tmp_path / "config.local.json")
+    monkeypatch.setattr(loader, "config_dir", lambda: tmp_path)
+    (tmp_path / "config.json").write_text("{broken", encoding="utf-8")
+    loader._invalidate_config_cache()
+    try:
+        ConversationLog().update_metadata("slack:C1:123.456", {"memory_store": "work-crew"})
+        with pytest.raises(UnknownMemoryStore) as refused:
+            execution.read_session_execution("slack:C1:123.456")
+    finally:
+        loader._invalidate_config_cache()
+        reset_degraded_observations()
+    assert "config.json could not be read" in refused.value.args[0]
+    assert "fix that file" in refused.value.args[0]
+
+
 def test_subagent_owns_context_after_parent_disappears(members):
     from kiro_crew.subagent_persistence import create_agent_folder, read_run_execution
 
@@ -357,8 +463,8 @@ def test_cancelled_persistent_selection_withdraws_the_vouched_identity(members):
     #
     # `restore_agent_selection` routes every rollback through this one seam before
     # it touches the record, so the seam is where the withdrawal belongs. The cost
-    # is that own-store dispatch waits for the owner to re-select the agent, which
-    # binds afresh through the durable path -- the recovery the spec documents.
+    # is that own-store dispatch waits for a gate-verified admission to re-vouch the
+    # session -- the recovery the spec documents.
     admitted = execution.resolve_member_execution(members, "alice")
     published = execution.resolve_member_execution(members, "bob")
     key = "dashboard:cancelled-persistent"
@@ -391,10 +497,17 @@ def test_every_binder_declares_whether_it_vouches():
     import ast
     from pathlib import Path
 
-    root = Path(execution.__file__).parent
+    from source_corpus import parsed_candidates
+
+    root = Path(execution.__file__).resolve().parent
     actual: dict[tuple[str, str], str] = {}
-    for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    # A matched call spells ``bind_session_execution`` as its Name or Attribute, so a
+    # file without that text cannot hold one, and the corpus parses only the ~20 that
+    # do. Parsing every module and mapping the parent of every node cost ~34 s of CPU
+    # on a fast host and passed the 120 s per-test timeout on a hosted runner.
+    for path, _source, tree in parsed_candidates(
+        require_any=("bind_session_execution",), skip_syntax_errors=False
+    ):
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -417,8 +530,12 @@ def test_every_binder_declares_whether_it_vouches():
             actual[(path.relative_to(root).as_posix(), enclosing)] = keywords.get("vouch", "ABSENT")
 
     # ABSENT means the default: publish the record, claim NO own-store authority.
-    # The fork carries its store from the SOURCE session's record, and the subagent
-    # binder runs on keys that never reach the vouch, so neither may vouch.
+    # The subagent binders run on keys that never reach the vouch, so they may not.
+    #
+    # The fork carries its store from the SOURCE session's record, so it never
+    # vouches on that record's word: `source_vouch_agrees` answers True only when
+    # this gateway already vouches the source for the same member and store, and a
+    # source that rewrote its record to a peer's store carries nothing.
     #
     # The vouched population is CALLERS whose session key can reach `create_session`
     # -- a real dashboard slot key that `caller_slot_key` can resolve -- because a
@@ -448,7 +565,9 @@ def test_every_binder_declares_whether_it_vouches():
     expected = {
         ("cron_service/identity.py", "rebind_cron_session_template"): "False",
         ("mate_config_migration.py", "_repoint_member_threads"): "False",
-        ("dashboard/chat_fork.py", "_bind_fork_execution"): "ABSENT",
+        ("dashboard/chat_fork.py", "_bind_fork_execution"): (
+            "source_vouch_agrees(source[0], execution)"
+        ),
         (
             "dashboard/chat_persistence_parts/member_store.py",
             "_pin_private_agent_assignment",
@@ -459,6 +578,12 @@ def test_every_binder_declares_whether_it_vouches():
         ("session_agent_selection.py", "record_agent_selection"): "vouch",
         ("subagent_manager/run_turn.py", "publish_execution"): "ABSENT",
         ("subagent_persistence_state.py", "bind_session_memory_mode"): "ABSENT",
+        # A test of the auto-improvement app publishing each role's execution on a
+        # test-owned key, which never reaches the vouch.
+        (
+            "apps/builtins/auto_improvement/tests/test_auto_improvement_members.py",
+            "test_owner_recovery_preserves_healthy_role",
+        ): "ABSENT",
     }
     assert actual == expected
 
@@ -523,6 +648,18 @@ def test_a_publication_does_not_vouch_unless_it_asks(members):
     # that asks does get vouched.
     execution.bind_session_execution(asked, alice, vouch=True)
     assert execution.read_vouched_session_execution(asked).member_id == alice.member_id
+
+
+def test_a_fork_source_vouch_agrees_only_for_the_same_memory_mode(members):
+    # The fork's vouch check compares the memory mode, as the restart self-heal
+    # does. Only a persistent session is ever vouched, so a child asking under
+    # another mode gets no vouch from it.
+    source = "dashboard:persistent-source"
+    alice = execution.resolve_member_execution(members, "alice")
+    execution.bind_session_execution(source, alice, vouch=True)
+
+    assert execution.source_vouch_agrees(source, alice) is True
+    assert execution.source_vouch_agrees(source, alice.with_mode("incognito")) is False
 
 
 def test_old_close_cannot_clear_reused_session_identity(members):

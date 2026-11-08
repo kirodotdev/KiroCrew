@@ -157,11 +157,12 @@ export interface DriveUsage {
 
 /**
  * Payload of `GET /drive/{account}`. Before the bucket is created the whole
- * body is `{exists:false}`; once created it also carries the bucket name, its
- * region and a (5-minute cached) usage report.
+ * body is `{exists:false, searched_region}` (the one region discovery looked
+ * in; absent from older backends); once created it also carries the bucket
+ * name, its region and a (5-minute cached) usage report.
  */
 export type DriveStatus =
-  | { exists: false }
+  | { exists: false; searched_region?: string }
   | {
       exists: true
       bucket: string
@@ -462,6 +463,10 @@ export interface RemoteBackup {
   others: number
   truncated: boolean
   max: number
+  /** Kinds whose listing stopped at the backend page cap with keys left unread.
+   *  Archive names sort oldest first, so the unread ones are the newest. Absent
+   *  from a backend older than the cap, which reads as none. */
+  archives_truncated?: string[]
 }
 
 /**
@@ -478,6 +483,13 @@ export interface InstallIdentity {
  * Payload of `GET /backup/{account}`. `runs` holds the last local run per kind;
  * `remote` lists the archive in the bucket (null when it could not be read,
  * with the reason in `remoteError`). `nightly` is the scheduled-snapshot toggle.
+ * `nightlyBlocked` is why THAT snapshot grant cannot run on the account being
+ * viewed, or absent when it can. Same shape and reasoning as
+ * `nightlySessionsBlocked`: the grant reads back as the owner set it, while this
+ * says whether the schedule reaches the account they are looking at. The snapshot
+ * kind has only the `other_account` condition -- the grant is recorded per account
+ * while the loop runs for the default one, so a grant on a non-default account is
+ * authorized and never runs.
  * `nightlySessions` is the SEPARATE grant for the scheduled sessions archive,
  * and is absent from an older backend, which reads as off -- the safe direction
  * for a field that authorizes uploading transcripts.
@@ -497,6 +509,7 @@ export interface InstallIdentity {
  */
 export interface BackupStatus {
   nightly: boolean
+  nightlyBlocked?: string | null
   nightlySessions?: boolean
   nightlySessionsBlocked?: string | null
   runs: Partial<Record<BackupKind, BackupRun>>

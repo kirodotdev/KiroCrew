@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { watchCursorAway } from '../lib/cursorAway'
 import { useTouchReplay } from './useTouchReplay'
+import { ESCAPE_PRIORITY, useEscapeLayer } from './useEscapeLayer'
 
 /** Delay before a hover opens the surface. Sweeping the pointer ACROSS a
  *  trigger on the way somewhere else must not fire it — the surface only
@@ -354,41 +355,25 @@ export function useHoverIntent(options: Options = {}): HoverIntent {
   useEffect(() => {
     if (!open) return
     const onPointerDown = (e: PointerEvent) => { if (!insideAnchors(e.target)) close() }
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.isComposing) return
-      // CAPTURE phase, and both preventDefault and stopPropagation.
-      //
-      // Escape belongs to the topmost dismissible surface, and while this
-      // surface is up that is this one. Other document-level Escape handlers
-      // exist — ChatInput cancels an in-progress dictation, and it defers only
-      // to `[role="dialog"]`, which this menu is not. On the BUBBLE phase the
-      // winner would be whichever listener happened to register first, so
-      // opening the flyout mid-dictation and pressing Escape would discard the
-      // captured audio instead of closing the flyout. Capture runs before every
-      // bubble listener regardless of registration order, `stopPropagation`
-      // then keeps them from seeing it at all, and `preventDefault` covers the
-      // ones (ChatInput included) that gate on `defaultPrevented`.
-      e.preventDefault()
-      e.stopPropagation()
-      close()
-      // Hand focus back. The surface's rows are focusable, so if the keyboard
-      // opened it, focus is INSIDE a subtree that is about to unmount —
-      // leaving `document.activeElement` on <body>, which restarts the next Tab
-      // from the top of the page and never re-announces the trigger's state.
-      // Only when focus is actually in there: an Escape during a hover-open
-      // must not yank focus away from wherever the user was typing.
-      if (insideAnchors(document.activeElement)) triggerRef?.current?.focus()
-    }
     document.addEventListener('pointerdown', onPointerDown)
-    document.addEventListener('keydown', onKeyDown, true)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown)
-      // Same `true` as the add: a capture listener removed without it stays
-      // registered, so every open would leak one and old closures would keep
-      // firing against a closed surface.
-      document.removeEventListener('keydown', onKeyDown, true)
-    }
-  }, [open, close, insideAnchors, triggerRef])
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [open, close, insideAnchors])
+
+  // While open, this surface is the topmost dismissible one, so it answers
+  // Escape above the composer through the shared Escape stack (useEscapeLayer):
+  // a dictation or an optimize in flight never also hears the press.
+  useEscapeLayer(open, e => {
+    if (e.isComposing) return 'yield'
+    close()
+    // Hand focus back. The surface's rows are focusable, so if the keyboard
+    // opened it, focus is INSIDE a subtree that is about to unmount —
+    // leaving `document.activeElement` on <body>, which restarts the next Tab
+    // from the top of the page and never re-announces the trigger's state.
+    // Only when focus is actually in there: an Escape during a hover-open
+    // must not yank focus away from wherever the user was typing.
+    if (insideAnchors(document.activeElement)) triggerRef?.current?.focus()
+    return 'take'
+  }, ESCAPE_PRIORITY.flyout)
 
   // A blur only means "leaving" when focus lands OUTSIDE both anchors. Moving
   // focus from the trigger INTO the surface necessarily blurs the trigger, and

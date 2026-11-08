@@ -15,7 +15,7 @@ import { render } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { HarnessLogo } from '../components/HarnessLogo'
 
-const BRANDED = ['claude', 'codex', 'deepseek', 'goose', 'opencode', 'pi'] as const
+const BRANDED = ['claude', 'codex', 'copilot', 'deepseek', 'goose', 'opencode', 'pi'] as const
 
 const maskOf = (id: string): string => {
   const html = renderToStaticMarkup(<HarnessLogo id={id} />)

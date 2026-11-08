@@ -11,6 +11,7 @@ callers use; this module never imports it. A new extension point of this kind go
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -18,6 +19,7 @@ from typing import (
     Callable,
     Dict,
     List,
+    Mapping,
     Optional,
     Protocol,
     Sequence,
@@ -39,7 +41,10 @@ class TunnelProvider(Protocol):
 
     Public default = disabled/no-op (the ``tunnel/manager.py`` stub).  The
     companion supplies the internal tunnel supervisor (the Tunnels primitive
-    itself is owned by PartyRock and out of scope).
+    itself is owned by PartyRock and out of scope).  The public composition puts
+    the Kiro relay client (``relay_client.provider.RelayTunnelProvider``) here
+    instead only when ``tunnel.relay_enabled`` is on; a companion's own provider
+    is never replaced by it.
 
     WIRED: the ``tunnel/manager.py`` stub ``TunnelManager`` delegates its
     ``start`` / ``stop`` / ``public_url`` UNCONDITIONALLY to
@@ -215,6 +220,54 @@ class RemoteProvisioner:
     confirm_before_launch: str = ""
 
 
+@dataclass(frozen=True)
+class CloudInstancePolicy:
+    """What an edition adds to the IAM role of every EC2 crew it launches.
+
+    Some organizations require each EC2 instance to run a host agent (monitoring,
+    inventory, patch compliance) whose permissions come from a managed policy that
+    already exists in every account. The built-in launcher attaches only Session
+    Manager's policy, and its permissions boundary caps the role to that, so such
+    an instance is non-compliant from the moment it boots. This descriptor is how
+    an edition says what those organizations need, without the public build naming
+    any one of them.
+
+    ``managed_policy_arns`` are attached to the instance role beside Session
+    Manager's. Each is a full IAM policy ARN; ``{account}`` stands for the launch
+    account's id, for a policy that exists at the same path in every account.
+
+    ``boundary_statements`` are ``Allow`` statements appended to the instance
+    permissions boundary. A boundary is a ceiling, so without them an attached
+    policy is capped back to Session Manager and grants nothing. They do not grant
+    anything themselves: the role can use a statement here only if an attached
+    policy also allows it.
+
+    Empty by default, and an empty descriptor leaves the launch, the boundary
+    document and the launcher policy byte-identical to a build without this seam.
+    ``cloud/host_policy.py`` validates both lists and refuses a launch whose
+    descriptor fails validation.
+    """
+
+    managed_policy_arns: Tuple[str, ...] = ()
+    boundary_statements: Tuple[Dict[str, Any], ...] = ()
+
+
+class CloudInstancePolicyProvider(Protocol):
+    """The edition's additions to every EC2 crew's instance role.
+
+    Public default = :class:`CloudInstancePolicy` with both lists empty.
+    """
+
+    def instance_policy(self) -> CloudInstancePolicy:
+        """Return the managed policies and boundary statements to add.
+
+        WIRED: ``cloud/host_policy.py::instance_policy`` reads this, and through it
+        ``cloud/iam.py`` (boundary document and the launcher-policy addendum) and
+        ``cloud/ec2.py`` (the template's ``ExtraManagedPolicyArns``).
+        """
+        ...
+
+
 class RemoteProvisionerProvider(Protocol):
     """Edition-contributed remote-instance provisioners.
 
@@ -286,15 +339,77 @@ class OtlpDestination:
     ``Session.auth`` is re-evaluated on every request, so a short-lived OIDC/SSO
     id_token or STS credential is re-read on each export instead of being frozen
     at construction — which is exactly what ``OTEL_EXPORTER_OTLP_HEADERS``, the
-    only injection point before this seam, cannot avoid.  Static per-destination
-    headers need no field of their own: ``Session.headers`` already carries them
-    per destination, where that env var is process-wide.
+    only injection point before this seam, cannot avoid.  A destination built in
+    code that needs fixed headers sets them on ``Session.headers``; one declared
+    as data uses ``headers_env`` below.
+
+    ``allow``, ``point_attributes`` and ``resource_allow`` are the three NARROWING
+    fields.  They keep this seam add-only in the direction that matters: each one
+    can only reduce or label what THIS destination receives, and none of them can
+    widen it, reach the local JSONL sink, or touch another destination.  All three
+    default to today's behaviour, so an existing destination is byte-identical.
+
+    - ``allow`` -- when set, a metric whose NAME is not in the set is dropped
+      before encoding for this destination.  ``None`` means send every metric the
+      core collected, which is what an operator's own collector gets.  The set
+      holds full instrument names, ``kirocrew.`` prefix included.
+    - ``point_attributes`` -- fixed key/value pairs added to every exported data
+      point of this destination.  Values are constants fixed at construction; keys
+      are checked at construction against a short reviewed allowlist
+      (``metrics.destination_filter.ALLOWED_POINT_ATTRIBUTE_KEYS``) and an
+      unreviewed key REFUSES the destination rather than silently dropping the
+      label.  A pair here wins over a same-named attribute already on the point,
+      because a receiving side that routes on the value must not be steerable from
+      a call site.
+    - ``resource_allow`` -- when set, this destination's exported batches carry a
+      Resource reduced to these keys.  The Resource is SHARED by the local sink
+      and every destination, and it carries host- and install-scoped keys; a
+      destination that may receive only a few of them says so here.  A key absent
+      from the shared Resource is simply absent -- nothing is invented.  ``None``
+      sends the Resource as built.
+
+    All three are enforced by an exporter WRAPPER the core builds
+    (``metrics/destination_filter.py``), outside this descriptor: a destination
+    declares the narrowing, the core performs it, and the wrapper rebuilds the
+    batch rather than mutating SDK objects another exporter also reads.
+
+    ``headers_env``, ``temporality`` and ``process_env_credentials`` describe how
+    THIS destination's exporter is built, for a destination declared as data (a
+    ``telemetry.otlp_endpoints`` entry) rather than in code with a ``session``.
+    They exist because a ``requests.Session`` per entry would be built on every
+    egress-posture read, which must stay cheap:
+
+    - ``headers_env`` -- header name -> ENVIRONMENT VARIABLE name. The core reads
+      each variable when it builds the exporter, so the value never sits on this
+      descriptor or in a config file. A variable that is unset or blank refuses
+      the destination: it gets no reader, and nothing else changes. There is no
+      field for a literal header value, so no credential has to be written into
+      ``config.json``.
+    - ``temporality`` -- ``""`` (default) builds the reader exactly as the core
+      always has (``metrics.temporality.otlp_preference``); ``"delta"`` and
+      ``"cumulative"`` pin every instrument kind for this reader only, so
+      ``OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE`` cannot move it.
+    - ``process_env_credentials`` -- ``True`` (default) leaves the exporter's own
+      fallbacks in place: with no headers of its own it sends the process-wide
+      ``OTEL_EXPORTER_OTLP_METRICS_HEADERS`` / ``OTEL_EXPORTER_OTLP_HEADERS``, and
+      with no ``session`` it may load the OTel credential-provider session. That
+      is what ``telemetry.otlp_endpoint`` and a destination built in code always
+      got. ``False`` builds the exporter so neither fallback can apply: the
+      destination sends only the headers it declared. Every
+      ``telemetry.otlp_endpoints`` entry is ``False``, so a credential meant for
+      one collector does not reach another host the operator added later.
     """
 
     name: str
     endpoint: str
     signals: "frozenset[str]"
     session: Optional[Any] = None
+    allow: "Optional[frozenset[str]]" = None
+    point_attributes: "Mapping[str, str]" = MappingProxyType({})
+    resource_allow: "Optional[frozenset[str]]" = None
+    headers_env: "Mapping[str, str]" = MappingProxyType({})
+    temporality: str = ""
+    process_env_credentials: bool = True
 
 
 class FeedbackTrackerProvider(Protocol):
@@ -327,10 +442,11 @@ class FeedbackTrackerProvider(Protocol):
         Default) leaves today's behaviour byte-for-byte.
 
         *bundle* carries the facts a report wants: ``filename``,
-        ``total_redactions``, ``path_collapses`` and ``provenance`` (release,
-        channel). Never put ``bundle.zip_path`` in the URL: it sits under the
-        data home and leaks the OS login. *note* is the user's free text,
-        untrusted; percent-encode it or leave it out.
+        ``total_redactions``, ``path_collapses`` (host-name replacements
+        included) and ``provenance`` (release, channel). Never put
+        ``bundle.zip_path`` in the URL: it sits under the data home and leaks
+        the OS login. *note* is the user's free text, untrusted; percent-encode
+        it or leave it out.
 
         *prefill* says which surface the link is for. ``True`` is the dashboard,
         which renders the URL from a JSON field no redactor scans, so a long
@@ -344,6 +460,135 @@ class FeedbackTrackerProvider(Protocol):
         while keeping the bundle usable, without a standalone fallback. Any other
         error, a non-string or an empty string degrades to the public link.
         v1 addition (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
+
+class AcceptanceCheckProvider(Protocol):
+    """The edition's checks behind ``kirocrew acceptance-check`` (``edition_check``)."""
+
+    def run_acceptance_check(self, check: str, ref: str) -> int:
+        """Print the JSON report for *check* about *ref* and return the exit code.
+
+        WIRED: the ``acceptance-check`` branch of ``kiro_crew.cli.main``. Exit codes
+        and report: platform-context.md, "Acceptance check command". v1 addition
+        (no ``CONTRACT_VERSION`` bump).
+        """
+        ...
+
+
+@dataclass(frozen=True)
+class BrowserCredentialTarget:
+    """The browser :meth:`BrowserCredentialProvider.cookies` is filling.
+
+    ``kind`` is always ``"kiro_chromium"`` when the provider is called (the core
+    never asks for the person's own Chrome or Edge); ``headless`` says whether it
+    has a window; ``reason`` is ``"start"`` (a launch or relaunch) or
+    ``"source_changed"`` (an agent navigation found
+    :meth:`BrowserCredentialProvider.fingerprint` or ``browser.credentials``
+    changed since the last apply).
+    """
+
+    kind: str
+    headless: bool
+    reason: str
+
+
+class BrowserCredentialProvider(Protocol):
+    """Session cookies for Kiro's own Chromium.
+
+    Kiro's Chromium starts with an empty profile, so a site behind a sign-in the
+    agent cannot perform is a login wall. An edition that already holds the user's
+    session for its own sites supplies it here. WIRED:
+    ``browser_harness.supervisor.HarnessSupervisor`` (the gateway, outside every
+    sandbox) calls it at each start of Kiro's Chromium and before an agent
+    navigation when :meth:`fingerprint` or the settings changed, then writes the
+    cookies with CDP ``Storage.setCookies`` on the gateway's own connection to the
+    browser -- never through the agent's ``browser`` tool -- before the daemon (and
+    so any agent op) is up. Never called for the person's own Chrome or Edge.
+
+    OPT-IN: nothing but :meth:`name`, :meth:`default_settings` and
+    :meth:`fingerprint` is called while ``browser.credentials.enabled`` is off, and
+    a cookie is set only when its domain is in BOTH :meth:`domains` and
+    ``browser.credentials.domains``. A provider that reads a file should use
+    ``browser_harness.credential_files`` (``read_source_file``,
+    ``source_fingerprint``) and raise its ``CredentialSourceError``: a missing or
+    refused file then reads as a status, not a failure.
+
+    :meth:`domains`, :meth:`cookies` and :meth:`status` run in a worker thread,
+    bounded at 15 s each
+    (``browser_harness.credentials.PROVIDER_TIMEOUT_SECS``); blocking I/O is fine
+    there. :meth:`fingerprint` runs in a worker thread bounded at 2 s.
+    :meth:`name` and :meth:`default_settings` may be read on the gateway's event
+    loop (an apply and a navigation's re-pull check ask for
+    them), so they must answer from memory: return constants, never do I/O.
+    A raise or a timeout is reduced to a fixed reason code and the browser starts
+    without the cookies: never put a secret in an exception message, and never
+    log a value yourself.
+
+    The agent must not be able to read whatever this provider reads from. The
+    provider runs in the gateway, so its own files need no sandbox access; the
+    edition keeps them HIDDEN with its own ``SandboxPolicy`` / ``SecurityOverlay``
+    paths. The core never widens a sandbox scope for it.
+    """
+
+    def name(self) -> Optional[str]:
+        """A short display name ("Company sign-in"), or ``None`` for no provider.
+
+        ``None`` (the public Default) disables every other method: they are not
+        called. Shown as ``credentials.provider`` in ``GET /api/browser/status``.
+        """
+        ...
+
+    def domains(self) -> Sequence[str]:
+        """The host names this provider serves (``"example.com"``).
+
+        Each covers itself and its subdomains. A cookie whose domain is not one of
+        these, or under one, is dropped. A single label, an IP literal,
+        a wildcard or a host with a port is ignored as a declaration.
+        """
+        ...
+
+    def cookies(self, target: BrowserCredentialTarget) -> Sequence[Dict[str, Any]]:
+        """The cookies to set, in CDP ``Network.CookieParam`` shape.
+
+        Each needs string ``name``, ``value`` and an explicit ``domain``; ``path``
+        (default ``/``), boolean ``secure`` and ``httpOnly``, and ``sameSite``
+        (``Strict|Lax|None``) are optional. A cookie whose ``expires`` (unix
+        seconds) has passed, or with a control character or a non-boolean flag, is
+        dropped, not the batch. Each is set as a SESSION cookie (``expires``
+        removed, so nothing reaches the profile on disk and it is gone when the
+        browser closes). Raise
+        ``browser_harness.credential_files.CredentialSourceError`` for a missing or
+        refused source: it becomes the status code, ``needs_refresh`` for a
+        missing one.
+        """
+        ...
+
+    def fingerprint(self) -> Optional[str]:
+        """A short string that changes whenever the source changes, or ``None``.
+
+        Called before every agent navigation, bounded at 2 s, so it must be cheap:
+        a file's ``stat`` (``credential_files.source_fingerprint``), never a read.
+        A changed value re-pulls :meth:`cookies` into the live browser before the
+        page loads; ``None`` means "cannot tell" and nothing is re-pulled.
+        """
+        ...
+
+    def status(self) -> Optional[Dict[str, Any]]:
+        """The source's own state for Settings, read after each apply. Never a value.
+
+        ``needs_refresh`` (bool: the person should re-run the sign-in) and
+        ``message`` (edition-authored, shown as-is, at most 200 printable
+        characters). Other keys are ignored. ``None`` for none.
+        """
+        ...
+
+    def default_settings(self) -> Dict[str, Any]:
+        """Edition defaults for an UNSET ``browser.credentials`` key.
+
+        ``{"enabled": bool, "domains": [...]}``; either may be omitted. A value the
+        owner set always wins. ``{}`` leaves the core default: off, no domains.
         """
         ...
 
@@ -406,7 +651,10 @@ class SttStreamSession(Protocol):
     it could not start; ``feed()`` takes 16 kHz mono Int16 PCM and answers False
     once the session stops accepting audio; ``events()`` yields
     ``{"type": "partial"|"final", "text": str}`` or ``{"type": "error",
-    "message": str}``; ``finish()`` ends the input so the trailing finals arrive;
+    "message": str, "code": str}``, where ``code`` is optional and core relays it
+    only when it is one of ``stt_stream.RELAYED_SESSION_ERROR_CODES`` (any other
+    code, or none, reaches the client as ``stt_session_failed``); ``finish()``
+    ends the input so the trailing finals arrive;
     ``close()`` releases everything and is idempotent.
     """
 
@@ -432,6 +680,22 @@ class SttProvider(Protocol):
     ``transcribe.availability_detail`` and the STT capability list call
     :meth:`check`, and ``/api/ws/stt`` calls :meth:`open_stream` when
     ``streaming`` is true. A built-in name never reaches any of them.
+
+    A provider that identifies languages among ``stt.transcribe_languages`` may
+    also set an optional ``identifies_languages = True``. Core then offers the
+    mixed-language picker for it; the provider reads the candidates from
+    ``stt_config.transcribe_language_identification`` itself.
+
+    A streaming provider whose backend decides how long one session runs may set
+    an optional ``owns_session_limit = True``. Core then applies no duration cap
+    to its sessions and advertises no ``max_duration_ms``: the backend's limit is
+    the only one, so it can change without a client release. When the backend
+    ends a session at its limit, the provider emits ``{"type": "error", "code":
+    "stt_max_duration_exceeded"}`` and the dashboard shows its length-limit
+    message. Such a provider must bound its own I/O (connect and read timeouts),
+    since no core deadline will end a session whose backend stops answering.
+    Without the attribute, core's ``_MAX_STREAM_DURATION_SECS`` applies as it
+    does to the built-in providers.
 
     Core may call any method from any event loop. A provider must not keep a
     loop-bound client (an aiohttp or httpx session) across calls: it creates one
@@ -538,10 +802,19 @@ class TelemetryProvider(Protocol):
         ALONGSIDE (never instead of) the built-in local JSONL reader.  An empty
         sequence means local-only, with no network egress.
 
-        The public default returns one destination when
-        ``telemetry.otlp_endpoint`` is a non-empty string and nothing when it is
-        not, so a standalone build stays byte-identical to the hardcoded
-        endpoint-only exporter this replaced.  An edition overrides it to reach
+        The public default returns one destination per configured entry:
+        ``telemetry.otlp_endpoint`` first when it is a non-empty string (with no
+        narrowing, byte-identical to the endpoint-only exporter this replaced),
+        then each enabled ``telemetry.otlp_endpoints`` entry
+        (``metrics/otlp_endpoints.py``).  Nothing when neither is set.
+
+        An edition that overrides it and should keep the operator's entries
+        returns ``metrics.otlp_endpoints.config_destinations(cfg)`` first and its
+        own destinations after; an override that does not call it drops them.  A
+        destination returned here from code is not config, so config cannot remove
+        or turn it off: that is how a build ships a collector that is on by
+        default and locked.  It still obeys every gate below, and the Privacy
+        panel lists it as set by the build.  An edition overrides it to reach
         its own collector — including one whose credential ROTATES during
         process lifetime, which the once-at-construction
         ``OTEL_EXPORTER_OTLP_HEADERS`` injection cannot express.

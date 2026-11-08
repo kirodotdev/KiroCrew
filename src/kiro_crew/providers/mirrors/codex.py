@@ -16,23 +16,21 @@ re-derivation apply unchanged. What is codex-specific is what this module adds o
 top, and both rules were MEASURED against a real ``codex-acp`` rather than
 inferred (``test/test_codex_session_mcp.py::test_real_codex_acp_accepts_the_crew_stdio_element``):
 
-1. **What an element whose transport the agent did not advertise costs is
-   keyed on the element's SHAPE, and both answers are measured.** ``codex-acp``
-   1.11.0 advertises ``agentCapabilities.mcpCapabilities`` as ``{"acp": false,
-   "http": true, "sse": false}``. An ``sse`` element that parses as its
-   transport -- one carrying the schema-required ``headers`` array, which is
-   the shape Crew's translation emits -- is refused with ``-32600`` (``Codex
+1. **One element the adapter will not take costs the whole session, and
+   which elements those are is measured.** ``codex-acp`` advertises
+   ``agentCapabilities.mcpCapabilities`` as ``{"acp": false, "http": true,
+   "sse": false}`` (1.11.0 through 2.3.0). An ``sse`` element that parses as
+   its transport -- one carrying the schema-required ``headers`` array, which
+   is the shape Crew's translation emits -- is refused with ``-32600`` (``Codex
    doesn't support MCP SSE transport protocol``), and the refusal fails the
-   WHOLE ``session/new``: every server in the array lost over one entry. An
-   ``sse`` element that does NOT parse as its transport (the same element
-   without ``headers``) falls to the untagged variant and is accepted with an
-   ordinary ``sessionId``, as a deliberately meaningless ``{"type":
-   "nonsense-type"}`` control is: no error reaches the client, and the session
-   comes up carrying a server the adapter never wired. Either way the array
-   sent is not the array honoured, which makes
-   :func:`drop_unadvertised_transports` load-bearing from both directions: on
-   Crew's own array it keeps one unsupported entry from costing the session,
-   and on a malformed one it is the only check at all. It reads the
+   WHOLE ``session/new``: every server in the array lost over one entry. Since
+   2.3.0 the adapter validates the array against the ACP schema, so an element
+   that parses as no variant -- the same ``sse`` element without ``headers``,
+   a meaningless ``{"type": "nonsense-type"}`` control, a stdio element with no
+   ``command`` -- fails the whole ``session/new`` too, with ``-32602``. Up to
+   2.2.2 those were accepted with an ordinary ``sessionId`` and silently never
+   wired. That makes :func:`drop_unadvertised_transports` load-bearing: it
+   keeps one unsupported entry from costing the session. It reads the
    advertisement from THIS session's ``initialize`` rather than from a
    constant, so a version that gains or loses a transport needs no edit here.
    Stdio is exempt because ACP states every agent MUST support it.
@@ -50,14 +48,13 @@ inferred (``test/test_codex_session_mcp.py::test_real_codex_acp_accepts_the_crew
    belongs to.
 
 The SCOPE of that first rule is as load-bearing as the rule, because a fatal
-reading of it argues for projecting nothing at all. What IS fatal is narrow and
-named: a schema-complete element of an unadvertised transport. A malformed stdio
-element — one missing ``command``, or an array member that is not an object —
-leaves ``session/new`` succeeding with the bad element dropped, and a bare
-unadvertised ``sse`` element leaves it succeeding with that element accepted and
-unwired. So the projection narrows the array rather than withholding it, and the
-narrowing has to be exact in both directions: an entry it lets through either
-costs the session outright or costs one tool that nothing downstream reports.
+reading of it argues for projecting nothing at all. What IS fatal is named: an
+element of an unadvertised transport, or one that parses as no ACP variant. The
+shared translator never emits the second kind (it skips an entry with neither a
+``command`` nor a ``url``), and :func:`drop_unadvertised_transports` drops the
+first. So the projection narrows the array rather than withholding it, and the
+narrowing has to be exact: an entry it lets through that the adapter refuses
+costs the session outright.
 """
 
 from __future__ import annotations
@@ -70,8 +67,13 @@ from typing import Any, Mapping
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.session_mcp import CONTROL_PLANE_SERVERS, session_mcp_projection
 from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+from kiro_crew.mcp_gateway import STUB_MODULE
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+from kiro_crew.mcp_gateway.hashing import expand_stub_flags
 from kiro_crew.members import MEMBER_DISPATCH_SERVER
 from kiro_crew.providers.mirrors.base import (
+    RESOURCES_NO_READER,
+    TOOLS_SETTINGS_GATE_CHANNEL,
     AgentConfigMirror,
     Concern,
     Disposition,
@@ -95,6 +97,99 @@ _D = Disposition
 _ACP_BASELINE_TRANSPORT = "stdio"
 
 
+def _stub_registered_servers(args: Any) -> list[str] | None:
+    """Every ``--server`` value a broker-stub argv names, or ``None`` if it is not one.
+
+    ``None`` when the argv is not a list of strings, its flag envelope cannot be
+    read, or it does not run :data:`~kiro_crew.mcp_gateway.STUB_MODULE` -- an
+    element that is not the gateway's stub is not vouched for by the gateway.
+    """
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        return None
+    try:
+        argv = expand_stub_flags(args)
+    except ValueError:
+        return None
+    if not any(
+        token == "-m" and i + 1 < len(argv) and argv[i + 1] == STUB_MODULE
+        for i, token in enumerate(argv)
+    ):
+        return None
+    servers: list[str] = []
+    for i, token in enumerate(argv):
+        if not isinstance(token, str):
+            return None
+        if token == "--server":
+            if i + 1 >= len(argv) or not isinstance(argv[i + 1], str):
+                return None
+            servers.append(argv[i + 1])
+        elif token.startswith("--server="):
+            servers.append(token.partition("=")[2])
+    return servers
+
+
+def is_session_bound_crew_stub(stub: Mapping[str, Any], session_token: str) -> bool:
+    """Whether *stub* is the gateway's broker stub for one of Crew's servers, for THIS session.
+
+    Crew's identity-bound servers are withheld on codex because an element the
+    spec describes cannot carry this session's identity. A broker stub is the one
+    form that can still work here: the gateway rewriter authored it from the
+    managed launch, the session it serves is named by the stub token the broker
+    checks on every call, and gatewayd hands the server that caller per call. So
+    this admits exactly that shape and nothing near it:
+
+    * the name is one of Crew's identity-bound servers
+      (:func:`_identity_bound_crew_servers`) that consumes the per-call caller
+      gatewayd injects (``managed_server_is_session_bound`` is False for it). A
+      server that reads identity from its own process could serve only one
+      session from a pooled backend, so it is not admitted;
+    * it is a stdio element whose argv runs the broker stub module and registers
+      under exactly one ``--server``, that same name;
+    * its ``env`` is exactly one pair: :data:`STUB_SESSION_TOKEN_ENV` carrying
+      *session_token*, which must be nonempty. The gateway clears a stub's env and
+      the client adds only that token, so any other pair, a second token, or a
+      token naming another session means the element is not this session's stub.
+
+    Fails closed: anything unreadable answers ``False``. Grants and restrictions
+    are not decided here; the caller still applies them.
+    """
+    from kiro_crew.mcp_discovery_managed import managed_server_is_session_bound
+
+    if not session_token:
+        return False
+    server = stub.get("name")
+    if not isinstance(server, str) or server not in _identity_bound_crew_servers():
+        return False
+    if managed_server_is_session_bound(server):
+        return False
+    return _is_stub_for(stub, server, session_token)
+
+
+def _is_stub_for(stub: Mapping[str, Any], server: str, session_token: str) -> bool:
+    """Whether *stub* is exactly the broker-stub shape for *server* bound to *session_token*."""
+    if not session_token:
+        return False
+    if stub.get("name") != server:
+        return False
+    if str(stub.get("type") or _ACP_BASELINE_TRANSPORT) != _ACP_BASELINE_TRANSPORT:
+        return False
+    command = stub.get("command")
+    if not isinstance(command, str) or not command:
+        return False
+    if _stub_registered_servers(stub.get("args")) != [server]:
+        return False
+    env = stub.get("env")
+    if not isinstance(env, list) or len(env) != 1:
+        return False
+    pair = env[0]
+    return (
+        isinstance(pair, Mapping)
+        and set(pair) == {"name", "value"}
+        and pair.get("name") == STUB_SESSION_TOKEN_ENV
+        and pair.get("value") == session_token
+    )
+
+
 def drop_unadvertised_transports(
     elements: list[dict[str, Any]], advertised: Mapping[str, Any] | None
 ) -> list[dict[str, Any]]:
@@ -107,22 +202,20 @@ def drop_unadvertised_transports(
     constant would make a released adapter that gains ``sse``, or drops ``http``,
     silently wrong here; asking the session removes the whole class.
 
-    Why this is not tidiness: what codex-acp does with an element whose transport
-    it declares unsupported depends on the element's shape, and neither answer is
-    one a client can live with. A schema-complete element (an ``sse`` entry with
-    its ``headers`` array, the shape Crew emits) is refused with ``-32600`` and the
-    refusal fails the WHOLE ``session/new``. A bare one falls to the untagged
-    variant and is accepted: ``session/new`` succeeds, and the server it names is
-    never wired, so a client trusting ``mcpCapabilities`` to be enforced gets a
-    healthy-looking session with a silently absent tool. This filter is therefore
-    what keeps one unsupported entry from costing the session, and the only guard
-    that the array Crew sends is the array the adapter honours — and the array is
-    the only channel Crew has onto that session.
+    Why this is not tidiness: codex-acp refuses an element whose transport it
+    declares unsupported, and the refusal fails the WHOLE ``session/new``. A
+    schema-complete element (an ``sse`` entry with its ``headers`` array, the
+    shape Crew emits) is refused with ``-32600``; since 2.3.0 a bare one, or an
+    unknown tag, is refused with ``-32602`` (up to 2.2.2 those were accepted and
+    never wired). This filter is therefore what keeps one unsupported entry from
+    costing the session -- and the array is the only channel Crew has onto that
+    session.
 
     **An unknown advertisement keeps stdio only.** The fail-safe direction, and not
     an arbitrary one: ACP requires every agent to support stdio, so it is the one
     transport that cannot be refused, while anything else with no positive claim
-    behind it risks being accepted and left unwired. Callers pass what
+    behind it risks failing the whole ``session/new`` (2.2.2 and earlier: accepted
+    and left unwired). Callers pass what
     ``initialize`` returned; an empty mapping means the handshake has not been
     read yet.
 
@@ -139,8 +232,7 @@ def drop_unadvertised_transports(
             continue
         logger.warning(
             "codex session MCP: dropping server %r — this session's agent did not advertise "
-            "the %r transport (mcpCapabilities=%r); left in, a schema-complete entry fails "
-            "the whole session/new with -32600 and a bare one is accepted and never wired",
+            "the %r transport (mcpCapabilities=%r); left in, it fails the whole session/new",
             element.get("name"),
             transport,
             dict(claims),
@@ -270,7 +362,10 @@ def codex_elements(
     appearing unusable -- :func:`codex_withheld_servers` drops them upstream of
     this function. The projection additionally reconstructs an explicitly granted
     dashboard entry before attaching identity; its broker stub may carry verified
-    per-call identity instead. The work ledger remains withheld.
+    per-call identity instead. Every other identity-bound server is admitted only
+    as the gateway's broker stub bound to this session's token
+    (:func:`is_session_bound_crew_stub`); a spec-described entry for one stays
+    withheld and is never handed a credential.
 
     A folded name is still claimed only once, first writer keeping it: two spec
     entries CAN legitimately fold together (``"my server"`` and ``"my_server"``),
@@ -359,6 +454,8 @@ def codex_projection(
         agent,
         stub_server_names=stub_server_names,
         work_dir=work_dir,  # type: ignore[arg-type]
+        # A crewmate's worker reads its own spec by its session's record.
+        session_key=session_key,
     )
     withheld = codex_withheld_servers(projection.restricted)
     kept: list[dict[str, Any]] = []
@@ -392,9 +489,14 @@ def codex_projection(
             continue
         name = stub.get("name")
         # A dashboard stub is produced by the gateway rewriter, which rebuilds
-        # managed launches and verifies each caller. Keep the spec restrictions.
+        # managed launches and verifies each caller. Any other Crew server's stub
+        # is admitted only in its exact gateway shape, bound to this session's
+        # token. All keep the spec restrictions.
+        admissible = name == MEMBER_DISPATCH_SERVER or is_session_bound_crew_stub(
+            stub, session_token
+        )
         if name in withheld and not (
-            name == MEMBER_DISPATCH_SERVER
+            admissible
             and name not in projection.restricted
             and name not in projection.disabled_servers
         ):
@@ -447,9 +549,9 @@ class CodexMirror(AgentConfigMirror):
                 "acp.session_mcp.session_mcp_servers and then narrowed by this "
                 "module three ways. (1) An entry whose transport THIS session's "
                 "agent did not advertise is dropped (drop_unadvertised_transports, "
-                "reading initialize's mcpCapabilities), because codex-acp accepts "
-                "such an entry silently and never wires it, so this filter is the only "
-                "guard that the array Crew sends is the array the adapter honours. "
+                "reading initialize's mcpCapabilities), because codex-acp fails the "
+                "whole session/new over such an entry (2.2.2 and earlier accepted a "
+                "bare one silently and never wired it). "
                 "(2) A third-party server whose spec narrows it per tool is "
                 "omitted, not forwarded un-narrowed, and a narrowed CONTROL-PLANE "
                 "tool is refused at the approval request instead -- see "
@@ -462,7 +564,11 @@ class CodexMirror(AgentConfigMirror):
                 "holding it. Every OTHER managed Crew server is withheld rather than "
                 "mounted credential-less, since it would answer not_bound to every "
                 "call, and that set is DERIVED as the managed servers minus the "
-                "control plane -- see _identity_bound_crew_servers. The array and "
+                "control plane -- see _identity_bound_crew_servers. Gateway "
+                "broker stubs are the exceptions, since gatewayd verifies their "
+                "caller and supplies it per call: a granted dashboard stub, and any "
+                "other caller-aware Crew server's stub only in its exact shape bound "
+                "to this session's stub token (is_session_bound_crew_stub). The array and "
                 "the withhold set come from ONE parse of the spec "
                 "(session_mcp_projection), so a narrowing that lands between two "
                 "reads of a user-writable file cannot leave a narrowed server "
@@ -562,8 +668,7 @@ class CodexMirror(AgentConfigMirror):
             ),
             Concern.RESOURCES: Ruling(
                 _D.WITHHELD,
-                "same as PROMPT -- steering files are injected as context text, not "
-                "projected into a backend's config",
+                RESOURCES_NO_READER,
             ),
             Concern.HOOKS: Ruling(
                 _D.NO_CHANNEL,
@@ -578,6 +683,18 @@ class CodexMirror(AgentConfigMirror):
                 "a Crew-owned CODEX_HOME overlay under create-or-decline -- Crew "
                 "writes no codex file today, which is why this needs a decision "
                 "rather than a writer",
+            ),
+            Concern.TOOLS_SETTINGS: Ruling(
+                _D.NO_CHANNEL,
+                "kiro-cli's per-tool settings (shell denyByDefault and allowedCommands, the "
+                "write allowlist, deniedPaths, web_fetch.blocked) have no field on codex-acp's "
+                "session/new and Crew writes no codex file, and Crew feeds this session's "
+                "permission requests no spec allowlist, so the field is applied nowhere. Its "
+                "subagent.availableAgents is the exception: Crew's spawn gate reads it from the "
+                "parent's spec on every backend (subagent_parts/agent_policy.py), so no notice "
+                "names it. A new chat session whose spec sets it gets one notice naming what of "
+                "it goes unapplied (dashboard/chat_turn/turn_spec_hooks.py)",
+                channel=TOOLS_SETTINGS_GATE_CHANNEL,
             ),
         }
 

@@ -46,7 +46,7 @@ def test_provider_implements_the_whole_abc():
 
 
 def test_no_per_account_provider_key_is_registered(monkeypatch):
-    """A provider id is validated at the HTTP boundary against ^[a-z0-9-]{1,32}$, so a
+    """A provider id is validated at the HTTP boundary against ^[a-z0-9_-]{1,32}$, so a
     colon-qualified per-account key would be listed in the picker and rejected on
     submit. A row that 400s when clicked is worse than no row."""
     import re as _re
@@ -282,6 +282,34 @@ def test_an_orphaned_distribution_without_a_bucket_raises_and_creates_nothing(mo
     assert "nothing was changed" in msg
     assert spy.created_buckets == [], "a half-present drive must not be rebuilt"
     assert spy.created_distributions == [], "a half-present drive must not be rebuilt"
+
+
+def test_a_drive_built_in_another_region_is_shared_not_refused(monkeypatch, payload):
+    """The drive is one per ACCOUNT, so a second install whose profile region (us-west-2)
+    differs from the region the drive was built in (us-east-1) must find the SAME drive.
+    Its regional tag query cannot see the bucket, but the distribution's origin names the
+    bucket's region; reading the drive as half-present there would refuse every publish
+    from that install, with no way out."""
+    _stub_profiles(monkeypatch, ["alpha"])  # profile region us-west-2
+    spy = _EngineSpy(bucket_region="us-east-1")
+    spy.install(monkeypatch)
+    _publish(pd.PersonalDriveProvider(), payload)
+    assert spy.created_buckets == [], "the account's drive must be shared, not rebuilt"
+    assert spy.created_distributions == [], "the account's drive must be shared, not rebuilt"
+
+
+def test_an_untagged_bucket_at_the_origin_is_still_a_half_present_drive(monkeypatch, payload):
+    """The origin only says WHERE to look. The bucket there must still carry the drive tag,
+    so an origin pointing at a bucket the tag query does not report is the same
+    half-present refusal as before, and nothing is built."""
+    _stub_profiles(monkeypatch, ["alpha"])
+    spy = _EngineSpy(bucket_region="us-east-1", buckets=[])
+    spy.install(monkeypatch)
+    with pytest.raises(PublishError) as exc:
+        _publish(pd.PersonalDriveProvider(), payload)
+    assert "bucket is missing" in str(exc.value)
+    assert spy.created_buckets == []
+    assert spy.created_distributions == []
 
 
 def test_total_absence_no_bucket_no_distribution_still_creates(monkeypatch, payload):
@@ -662,26 +690,14 @@ def test_serving_notice_returns_no_code_when_the_link_will_resolve(monkeypatch):
     assert code == ""
 
 
-def _notice_code(res) -> str:
-    """The notice_code carried on a PublishResult.
-
-    The field is added to PublishResult by the seam half of this change (contract);
-    reading it defensively lets Section A's own gate run whether or not that half has
-    landed yet, while still asserting the value once it exists.
-    """
-    return getattr(res, "notice_code", "__ABSENT__")
-
-
 def test_a_rolling_out_publish_carries_the_rolling_out_code(monkeypatch, payload):
     """A2 -- the code must ride back on the result the module returns, not just the text,
     so the frontend can select its per-case string."""
     _stub_profiles(monkeypatch, ["alpha"])
     _EngineSpy(status="InProgress").install(monkeypatch)
     res = _publish(pd.PersonalDriveProvider(), payload)
-    code = _notice_code(res)
-    if code != "__ABSENT__":
-        assert code == "rolling_out"
-    # Regardless of the seam field's landing order, the human text still reflects it.
+    assert res.notice_code == "rolling_out"
+    # The human text names the state too, not only the code.
     assert "rolling out" in res.notice.lower()
 
 
@@ -691,9 +707,7 @@ def test_a_disabled_publish_carries_the_disabled_code(monkeypatch, payload):
     _stub_profiles(monkeypatch, ["alpha"])
     _EngineSpy(enabled=False).install(monkeypatch)
     res = _publish(pd.PersonalDriveProvider(), payload)
-    code = _notice_code(res)
-    if code != "__ABSENT__":
-        assert code == "distribution_disabled"
+    assert res.notice_code == "distribution_disabled"
     assert "DISABLED" in res.notice
 
 
@@ -714,9 +728,7 @@ def test_an_unreadable_rollout_state_carries_the_unknown_code(monkeypatch, paylo
     monkeypatch.setattr(pd.engine, "distribution_status", _status)
     res = _publish(pd.PersonalDriveProvider(), payload)
     assert res.external_id, "the handle for the uploaded object must come back"
-    code = _notice_code(res)
-    if code != "__ABSENT__":
-        assert code == "unknown"
+    assert res.notice_code == "unknown"
     assert "did not report" in res.notice
 
 
@@ -727,9 +739,7 @@ def test_a_healthy_publish_carries_no_notice_code(monkeypatch, payload):
     _EngineSpy(status="Deployed", enabled=True).install(monkeypatch)
     res = _publish(pd.PersonalDriveProvider(), payload)
     assert res.notice == ""
-    code = _notice_code(res)
-    if code != "__ABSENT__":
-        assert code == ""
+    assert res.notice_code == ""
 
 
 def test_an_unreadable_rollout_state_still_returns_the_handle(monkeypatch, payload):
@@ -845,10 +855,10 @@ def test_an_unreadable_enabled_flag_cannot_clear_a_stored_notice(monkeypatch, pa
     provider = pd.PersonalDriveProvider()
     real = pd.engine._checked
 
-    def _checked(args, profile, action="", timeout=0):
+    def _checked(args, profile, action="", timeout=0, **kw):
         if args[:2] == ["cloudfront", "get-distribution-config"]:
             raise pd.engine.AWSError("Throttling: rate exceeded")
-        return real(args, profile, action=action, timeout=timeout)
+        return real(args, profile, action=action, timeout=timeout, **kw)
 
     monkeypatch.setattr(pd.engine, "_checked", _checked)
     # Deployed status, so the rollout branch is not what produces the answer.
@@ -863,10 +873,10 @@ def test_unreadable_distribution_config_does_not_block_publishing(monkeypatch, p
     spy.install(monkeypatch)
     real = pd.engine._checked
 
-    def _checked(args, profile, action="", timeout=0):
+    def _checked(args, profile, action="", timeout=0, **kw):
         if args[:2] == ["cloudfront", "get-distribution-config"]:
             raise pd.engine.AWSError("AccessDenied")
-        return real(args, profile, action=action, timeout=timeout)
+        return real(args, profile, action=action, timeout=timeout, **kw)
 
     monkeypatch.setattr(pd.engine, "_checked", _checked)
     assert _publish(pd.PersonalDriveProvider(), payload).view_url
@@ -912,10 +922,10 @@ def test_an_unreadable_attachment_does_not_block_publishing(monkeypatch, payload
     spy.install(monkeypatch)
     real = pd.engine._checked
 
-    def _checked(args, profile, action="", timeout=0):
+    def _checked(args, profile, action="", timeout=0, **kw):
         if args[:2] == ["cloudfront", "get-distribution-config"]:
             raise pd.engine.AWSError("AccessDenied")
-        return real(args, profile, action=action, timeout=timeout)
+        return real(args, profile, action=action, timeout=timeout, **kw)
 
     monkeypatch.setattr(pd.engine, "_checked", _checked)
     assert _publish(pd.PersonalDriveProvider(), payload).view_url

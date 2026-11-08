@@ -12,6 +12,7 @@ import unicodedata
 from pathlib import Path
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.artifact_store import rules
 from kiro_crew.artifacts import ArtifactStore, ArtifactValidationError, normalize_tag
@@ -23,6 +24,7 @@ from kiro_crew.validation import (
     strip_hidden_unicode,
     validate_tool_args,
 )
+from kiro_crew.validation_parts import artifact_schemas
 
 NFD_CAFE = "cafe\u0301"  # e + combining acute: two code points
 NFC_CAFE = "caf\u00e9"  # precomposed e-acute: one code point
@@ -37,18 +39,38 @@ class TestNormalizeTag:
     @pytest.mark.parametrize(
         "tag",
         [
-            "\u58f2\u4e0a",  # 売上 (CJK ideographs)
-            NFC_CAFE,
-            "M\u00fcnchen",
-            "\u0939\u093f\u0928\u094d\u0926\u0940",  # हिन्दी: vowel signs are marks NFC keeps apart
-            "\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac",  # Ελληνικά
-            "\u0440\u0443\u0441\u0441\u043a\u0438\u0439",  # русский
-            "\u0627\u0644\u0639\u0631\u0628\u064a\u0629",  # العربية
-            "\u65e5\u672c\u8a9e2026",  # letters and digits mixed
-            "\u0661\u0662\u0663",  # Arabic-Indic digits: N* is admitted, not just 0-9
+            *named_cases(
+                "test_letters_marks_and_digits_of_any_script_are_admitted",
+                "tag",
+                [
+                    "\u58f2\u4e0a",  # 売上 (CJK ideographs)
+                    NFC_CAFE,
+                    "M\u00fcnchen",
+                    "\u0939\u093f\u0928\u094d\u0926\u0940",  # हिन्दी: vowel signs are marks NFC keeps apart
+                    "\u0395\u03bb\u03bb\u03b7\u03bd\u03b9\u03ba\u03ac",  # Ελληνικά
+                    "\u0440\u0443\u0441\u0441\u043a\u0438\u0439",  # русский
+                    "\u0627\u0644\u0639\u0631\u0628\u064a\u0629",  # العربية
+                    "\u65e5\u672c\u8a9e2026",  # letters and digits mixed
+                    "\u0661\u0662\u0663",  # Arabic-Indic digits: N* is admitted, not just 0-9
+                ],
+            ),
+            *named_cases(
+                "test_existing_ascii_tags_pass_unchanged",
+                "tag",
+                [
+                    "release",
+                    "v1.2",
+                    "ns:name",
+                    "snake_case",
+                    "kebab-case",
+                    "9lives",
+                    "A.B_C:d-e",
+                    "a" * 64,
+                ],
+            ),
         ],
     )
-    def test_letters_marks_and_digits_of_any_script_are_admitted(self, tag: str) -> None:
+    def test_an_admitted_tag_passes_unchanged(self, tag: str) -> None:
         assert normalize_tag(tag) == tag
 
     def test_the_stored_spelling_is_nfc(self) -> None:
@@ -57,31 +79,41 @@ class TestNormalizeTag:
 
     @pytest.mark.parametrize(
         "tag",
-        ["release", "v1.2", "ns:name", "snake_case", "kebab-case", "9lives", "A.B_C:d-e", "a" * 64],
-    )
-    def test_existing_ascii_tags_pass_unchanged(self, tag: str) -> None:
-        assert normalize_tag(tag) == tag
-
-    @pytest.mark.parametrize(
-        "tag",
         [
-            "cr\n",  # the ``$`` anchor's before-newline match must stay closed
-            "a" * 63 + "\n",  # 64 code points, so the newline is what is refused
-            "tab\tx",
-            "nul\x00x",
-            "bad tag with spaces",
-            "a\u00a0b",  # no-break space is whitespace too
-            "a\u200bb",  # zero-width space (format)
-            "a\u202eb",  # right-to-left override (format)
-            "a\ufeffb",  # byte-order mark (format)
+            *named_cases(
+                "test_control_format_and_whitespace_characters_are_rejected",
+                "tag",
+                [
+                    "cr\n",  # the ``$`` anchor's before-newline match must stay closed
+                    "a" * 63 + "\n",  # 64 code points, so the newline is what is refused
+                    "tab\tx",
+                    "nul\x00x",
+                    "bad tag with spaces",
+                    "a\u00a0b",  # no-break space is whitespace too
+                    "a\u200bb",  # zero-width space (format)
+                    "a\u202eb",  # right-to-left override (format)
+                    "a\ufeffb",  # byte-order mark (format)
+                ],
+            ),
+            *named_cases(
+                "test_symbols_and_other_punctuation_are_rejected",
+                "tag",
+                ["a/b", "a'b", "a,b", "a\U0001f642", "a\u20ac", "a+b", "a@b"],
+            ),
+            *named_cases(
+                "test_enclosing_marks_are_rejected",
+                "tag",
+                [
+                    "1\ufe0f\u20e3",  # keycap digit one: digit + VS16 + COMBINING ENCLOSING KEYCAP
+                    "1\u20e3",  # the keycap renders as an emoji without the selector too
+                    "a\u20dd",  # COMBINING ENCLOSING CIRCLE
+                    "a\u0488",  # COMBINING CYRILLIC HUNDRED THOUSANDS SIGN
+                    "a\u1abe",  # COMBINING PARENTHESES OVERLAY
+                ],
+            ),
         ],
     )
-    def test_control_format_and_whitespace_characters_are_rejected(self, tag: str) -> None:
-        with pytest.raises(ValueError, match="is not allowed in a tag"):
-            normalize_tag(tag)
-
-    @pytest.mark.parametrize("tag", ["a/b", "a'b", "a,b", "a\U0001f642", "a\u20ac", "a+b", "a@b"])
-    def test_symbols_and_other_punctuation_are_rejected(self, tag: str) -> None:
+    def test_a_disallowed_character_is_rejected(self, tag: str) -> None:
         with pytest.raises(ValueError, match="is not allowed in a tag"):
             normalize_tag(tag)
 
@@ -143,22 +175,6 @@ class TestNormalizeTag:
                 "rules._DEFAULT_IGNORABLE_UNICODE_VERSION"
             )
         assert unicodedata.unidata_version == rules._DEFAULT_IGNORABLE_UNICODE_VERSION
-
-    @pytest.mark.parametrize(
-        "tag",
-        [
-            "1\ufe0f\u20e3",  # keycap digit one: digit + VS16 + COMBINING ENCLOSING KEYCAP
-            "1\u20e3",  # the keycap renders as an emoji without the selector too
-            "a\u20dd",  # COMBINING ENCLOSING CIRCLE
-            "a\u0488",  # COMBINING CYRILLIC HUNDRED THOUSANDS SIGN
-            "a\u1abe",  # COMBINING PARENTHESES OVERLAY
-        ],
-    )
-    def test_enclosing_marks_are_rejected(self, tag: str) -> None:
-        # ``Me`` marks draw a shape around their base: that is a symbol or an
-        # emoji, not a letter, so they are refused with the symbols.
-        with pytest.raises(ValueError, match="is not allowed in a tag"):
-            normalize_tag(tag)
 
     @pytest.mark.parametrize(
         "tag",
@@ -410,6 +426,71 @@ class TestMcpGateReadsTheSameRule:
         ):
             validate_tool_args(self._save_args("ok", "-bad"), ARTIFACT_SAVE_SCHEMA)
 
+    @pytest.mark.parametrize("tag", ["nl\n", "a" * 64 + "\n", "trail ", "\tlead"])
+    def test_save_refuses_an_edge_whitespace_tag_like_the_store(self, tag: str) -> None:
+        # The gate hands the raw tag to the one rule, so an edge-whitespace tag
+        # (a newline-ending tag among them) is refused on the MCP save path
+        # exactly as the store refuses it, rather than being trimmed and accepted.
+        with pytest.raises(ValidationError, match="tags"):
+            validate_tool_args(self._save_args(tag), ARTIFACT_SAVE_SCHEMA)
+
+    def test_update_refuses_a_newline_ending_tag_like_the_store(self) -> None:
+        with pytest.raises(ValidationError, match=r"U\+000A"):
+            validate_tool_args({"slug": "x", "tags": ["nl\n"]}, ARTIFACT_UPDATE_SCHEMA)
+
+    def test_list_filter_refuses_a_newline_ending_tag_like_the_store(self) -> None:
+        with pytest.raises(ValidationError, match=r"U\+000A"):
+            validate_tool_args({"tag": "nl\n"}, ARTIFACT_LIST_SCHEMA)
+
+    @pytest.mark.parametrize("tag", [" cr", "cr ", " cr ", "\tcr"])
+    def test_space_padded_tag_is_refused_on_both_the_gate_and_the_store(
+        self, store: ArtifactStore, tag: str
+    ) -> None:
+        # A leading or trailing space is edge whitespace the tag rule refuses.
+        # The MCP save gate and the store both hold the raw tag to that rule, so
+        # neither accepts a space-padded tag (the gate does not trim it first).
+        with pytest.raises(ValidationError, match="tags"):
+            validate_tool_args(self._save_args(tag), ARTIFACT_SAVE_SCHEMA)
+        with pytest.raises(ArtifactValidationError, match="invalid tag"):
+            store.create(name="x", content="a", tags=[tag])
+
+    def test_whitespace_only_list_filter_is_refused_not_ignored(self) -> None:
+        # A whitespace-only filter is not an empty filter: the gate holds it to
+        # the tag rule and refuses it, rather than trimming it to "" and listing
+        # everything.
+        with pytest.raises(ValidationError, match="tag"):
+            validate_tool_args({"tag": "  "}, ARTIFACT_LIST_SCHEMA)
+
+    def test_a_decomposed_tag_at_the_nfc_cap_is_accepted_on_both_paths(
+        self, store: ArtifactStore
+    ) -> None:
+        # A tag whose decomposed form is over 64 code points but whose NFC form
+        # is within the cap: the length rule lives only in ``normalize_tag`` (on
+        # the NFC form), so the gate does not count the raw code points and
+        # accepts it, storing the NFC spelling the store stores.
+        decomposed = "e\u0301" * rules.MAX_TAG_LEN  # 128 code points raw, 64 after NFC
+        nfc = "\u00e9" * rules.MAX_TAG_LEN
+        cleaned = validate_tool_args(self._save_args(decomposed), ARTIFACT_SAVE_SCHEMA)
+        assert cleaned["tags"] == [nfc]
+        assert validate_tool_args({"tag": decomposed}, ARTIFACT_LIST_SCHEMA)["tag"] == nfc
+        art = store.create(name="x", content="a", tags=[decomposed])
+        assert art.tags == [nfc]
+
+    def test_a_tag_over_the_nfc_cap_is_refused_on_both_paths(self, store: ArtifactStore) -> None:
+        over = "a" * (rules.MAX_TAG_LEN + 1)
+        with pytest.raises(ValidationError, match="at most 64 characters"):
+            validate_tool_args(self._save_args(over), ARTIFACT_SAVE_SCHEMA)
+        with pytest.raises(ArtifactValidationError, match="at most 64 characters"):
+            store.create(name="x", content="a", tags=[over])
+
+    def test_a_tag_over_the_raw_anti_abuse_bound_is_refused_by_the_gate(self) -> None:
+        # The field pass keeps a generous raw ceiling so an unbounded string
+        # never reaches NFC normalization. It sits far above any tag the store
+        # accepts, so it only ever stops abuse, not a real tag.
+        huge = "a" * (artifact_schemas.MAX_RAW_TAG_LEN + 1)
+        with pytest.raises(ValidationError, match="max length"):
+            validate_tool_args(self._save_args(huge), ARTIFACT_SAVE_SCHEMA)
+
     @pytest.mark.parametrize("tag", ["-bad", "a/b"])
     def test_list_filter_refuses_with_the_rules_reason(self, tag: str) -> None:
         with pytest.raises(ValidationError, match="tag"):
@@ -429,18 +510,26 @@ class TestMcpGateReadsTheSameRule:
             "\U0001f642",
             "\u58f2" * 64,
             "\u58f2" * 65,
-            "ops\ufe0f",  # the sanitizer keeps a variation selector (Mn): both readers see it
+            "ops\ufe0f",  # a variation selector (Mn): the tag rule keeps it, both readers see it
             "1\ufe0f\u20e3",
-            "\u3164x",  # HANGUL FILLER is a letter (Lo) to the sanitizer too
-            "\uff4f\uff50\uff53",  # full-width letters are letters (Ll) to the sanitizer
-            "x" + "\u0301" * 5,  # a stack of marks is marks (Mn) to the sanitizer
+            "\u3164x",  # HANGUL FILLER is a letter (Lo) to the rule too
+            "\uff4f\uff50\uff53",  # full-width letters are letters (Ll) to the rule
+            "x" + "\u0301" * 5,  # a stack of marks is marks (Mn) to the rule
             "\u0e19\u0e49\u0e33",  # น้ำ: SARA AM is kept by both
+            # Edge whitespace reaches both readers raw: the gate hands a tag to
+            # the rule untrimmed, so a newline-ending tag is refused on both paths.
+            "nl\n",
+            "a" * 64 + "\n",
+            "  spaced  ",
+            "\ttab",
+            "trail ",
         ],
     )
-    def test_store_and_gate_agree_on_visible_text(self, store: ArtifactStore, tag: str) -> None:
-        # Visible text only: the gate's sanitizer strips hidden characters and edge
-        # whitespace before the rule runs, so those inputs reach the two readers as
-        # different strings by design.
+    def test_store_and_gate_agree_on_the_raw_tag(self, store: ArtifactStore, tag: str) -> None:
+        # Both the store and the MCP gate judge the caller's raw string through
+        # ``normalize_tag`` without sanitizing it first, so any input -- hidden
+        # characters and edge whitespace included -- reaches the two readers as
+        # the same string and gets the same verdict.
         try:
             store.create(name="x", content="a", tags=[tag])
             store_accepts = True

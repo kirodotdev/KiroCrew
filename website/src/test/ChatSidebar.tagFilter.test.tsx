@@ -7,7 +7,7 @@
  * lane (unlike Folders), so `board view on` is covered too.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -34,7 +34,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -320,7 +327,7 @@ describe('chat sidebar — filter menu Tags section', () => {
       // Wait for the tag vocabulary to load and actually exclude the target,
       // which is the precondition the reveal effect's filter-drop branch tests.
       await waitFor(() => expect(utils.queryByText('beta session')).toBeNull())
-      utils.store.dispatch(requestSlotReveal('k-beta'))
+      act(() => { utils.store.dispatch(requestSlotReveal('k-beta')) })
       await waitFor(() =>
         expect(JSON.parse(localStorage.getItem('mc-session-tag-filter') || '[]')).toEqual([]))
       expect(utils.queryByText('beta session')).not.toBeNull()

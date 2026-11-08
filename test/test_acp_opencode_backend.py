@@ -1,19 +1,8 @@
 """The opencode spawn path: how it is found, how it is made to ask, and how that is proven.
 
-Three things are pinned here, and they fail apart:
-
-* **Resolution.** A binary that serves ACP itself takes the plain-binary ladder --
-  explicit override, mise, PATH -- and reports the path it searched when absent.
-* **The routing seed.** The permission setting travels in the child's environment,
-  merged over whatever the operator already put there, so nothing is written into a
-  checked-out repository.
-* **The read-back.** What makes this harness's routing VERIFIED rather than
-  declared: the harness's own resolved configuration is read back and compared, off
-  the event loop, before the first prompt.
-
-The read-back's refusal vocabulary is exercised through
-``acp_tool_gate.seeded_setting_issue``, which owns it, rather than by asserting on
-message wording at the call site.
+Pinned: resolution (override, mise, PATH), the routing seed (in the child's env, so
+nothing is written into the repo), and the read-back of the resolved config before the
+first prompt. Refusal wording belongs to ``acp_tool_gate.seeded_setting_issue``.
 """
 
 from __future__ import annotations
@@ -67,19 +56,9 @@ class TestResolutionLadder:
     def test_an_executable_override_wins(self, monkeypatch, tmp_path):
         """The override outranks the two rungs below it.
 
-        Executability is STUBBED rather than created on disk: what a file has to be
-        for the host to call it runnable differs per platform (a mode bit here, a
-        PATHEXT suffix there), and this test is about rung ORDER. The next test
-        covers the case where the override is not runnable.
-
-        The mise stub answers ``/never/reached`` so a dropped override rung shows up
-        as that value in ``resolved``. Bind the expected answer -- the resolver's own
-        casing normalization, with the same ``or`` fallback it applies -- to a
-        variable before comparing, as ``test_path_is_the_last_rung`` does: written
-        inline, ``assert resolved == norm(x) or x`` parses as
-        ``(resolved == norm(x)) or x``, and a non-empty tmp_path string on the right
-        of ``or`` makes the whole assert unfalsifiable, so the rung this test exists
-        for would be pinned by nothing.
+        Executability is stubbed because "runnable" differs per platform. Bind the
+        expected value first: inline, ``assert resolved == norm(x) or x`` parses as
+        ``(resolved == norm(x)) or x`` and can never fail.
         """
         binary = tmp_path / "opencode"
         binary.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -487,12 +466,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
     def test_the_child_environment_is_scrubbed_like_the_spawns(self, tmp_path, monkeypatch):
         """The read-back child is a FOREIGN harness binary, so it gets the same scrub.
 
-        It runs BEFORE the session spawn that would scrub, so inheriting the
-        gateway's environment verbatim would hand a third-party binary every channel
-        token, cloud secret and agent socket the spawn path exists to strip -- a few
-        lines ahead of the code that strips them. The sandbox wrap the caller applies
-        confines the child's filesystem reads; it does not empty its environment,
-        which is why both controls are needed.
+        It runs before the spawn that scrubs, and the sandbox wrap confines file reads
+        but does not empty the env, so both controls are needed.
         """
         seen: dict = {}
 
@@ -519,13 +494,8 @@ class TestTheReadBackReportsFailureRatherThanAssuming:
     def test_the_child_sees_the_session_overlay_the_spawn_applies(self, tmp_path, monkeypatch):
         """The read-back resolves config in the SAME environment the session will run in.
 
-        This harness reads its config LOCATION from the environment (``XDG_CONFIG_HOME``,
-        ``OPENCODE_CONFIG``), and the spawn applies a per-session overlay -- a cron
-        job's ``env`` among its sources -- on top of the gateway's. A read-back that
-        skipped the overlay would resolve a different set of config files than the
-        session it vouches for, so a permissive value reachable only through the
-        overlay would pass verification unseen. The overlay is applied BEFORE the
-        scrub, so it cannot smuggle back what the scrub strips either.
+        Config location comes from the env (``XDG_CONFIG_HOME``, ``OPENCODE_CONFIG``), so
+        skipping the overlay would verify other files. It applies before the scrub.
         """
         seen: dict = {}
 
@@ -617,14 +587,9 @@ class TestAgentLevelPermissionWalk:
 class _OpencodeLaunchRig:
     """``OpencodeLaunch.resolve_spawn`` driven against fakes at the adapter's own seams.
 
-    The resolution, the session's MCP warm, the sandbox preflight, the sandbox wrap,
-    the version probe, the read-back child and their cleanups each answer a fixed
-    value and record, in order, that they ran, on which thread and with what. What a
-    test asserts is what the launch DID with them.
-
-    The launch starts TWO wrapped children of the harness binary -- the version
-    probe and the routing read-back -- so each seam's event names which child it
-    served (``wrap_version``/``wrap_readback``, ``unlink_version``/``unlink_readback``).
+    Each seam answers a fixed value and records, in order, its thread and arguments.
+    Two wrapped children run (version probe, read-back), so events name which one
+    (``wrap_version``/``wrap_readback``, ``unlink_version``/``unlink_readback``).
     """
 
     BIN = "/opt/bin/opencode"
@@ -1191,11 +1156,9 @@ def test_an_out_of_range_major_refuses_before_the_read_back(monkeypatch, tmp_pat
 class TestATrailingAskRuleOutranksTheRulesBeforeIt:
     """OpenCode checks rules in order and the LAST match wins; ``"*"`` matches all.
 
-    The seed's ``"*": "ask"`` is merged in AFTER a lower source's per-tool keys,
-    because the harness merges sources key by key. Measured on opencode 1.18.30 and
-    1.18.32: with ``{"bash": "allow"}`` in the operator's global ``opencode.json`` the
-    resolved map is ``{"bash": "allow", "*": "ask"}`` and ``bash`` asks before it
-    runs. Main refused that map, so every session on such a host was refused.
+    Sources merge key by key, so ``"*": "ask"`` lands after a lower source's keys.
+    On opencode 1.18.30 and 1.18.32 ``{"bash": "allow", "*": "ask"}`` makes ``bash`` ask,
+    so that map must be accepted.
     """
 
     def test_a_trailing_ask_after_an_allowed_tool_is_ask(self):

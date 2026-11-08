@@ -19,6 +19,7 @@ import { ApiError } from '../api/apiError'
 import { setArtifactEditing } from '../utils/artifactEditGuard'
 import { hasPendingArtifactWrite } from '../lib/artifactWrites'
 import type { Artifact } from '../types'
+import type { PierreEditorHandle } from '../pierre'
 
 import { i18nT } from '../i18n/t'
 import { usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../components/NavigationLeaveGuard'
@@ -172,12 +173,25 @@ export function useArtifactDetailPageEditor({
     setRenaming(true)
   }, [artifact, setNameDraft, setRenaming])
 
-  const commitRename = useCallback(async () => {
-    const next = nameDraft.trim()
+  // The input is about to unmount, which would drop keyboard focus to the body
+  // and lose the user's place. A keyboard close (Enter/Escape) hands it back to
+  // the title it was opened from; a pointer blur moves nothing, because
+  // redirecting focus off the element the user clicked is the context change
+  // WCAG 3.2.2 forbids. Only focus the unmount dropped is taken back.
+  const closeRename = useCallback((restore: boolean) => {
     setRenaming(false)
-    // The input is about to unmount, which would drop keyboard focus to the body
-    // and lose the user's place. Hand it back to the control they opened it from.
-    requestAnimationFrame(() => titleButtonRef.current?.focus())
+    if (!restore) return
+    requestAnimationFrame(() => {
+      const at = document.activeElement
+      if (at === null || at === document.body) titleButtonRef.current?.focus({ preventScroll: true })
+    })
+  }, [setRenaming])
+  const cancelRename = useCallback(() => closeRename(true), [closeRename])
+
+  // restore=true for a keyboard commit (Enter); a pointer blur passes false.
+  const commitRename = useCallback(async (restore = false) => {
+    const next = nameDraft.trim()
+    closeRename(restore)
     if (!artifact || !next || next === artifact.name) return
     // Mark BEFORE awaiting: an unmount racing this PATCH would otherwise see a
     setSaveError(null)
@@ -190,7 +204,7 @@ export function useArtifactDetailPageEditor({
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err))
     }
-  }, [artifact, nameDraft, queryClient, slug, setRenaming, setSaveError])
+  }, [artifact, closeRename, nameDraft, queryClient, slug, setSaveError])
 
   // ── Edit / save / cancel / revert handlers ────────────────────────────────
   const startEditing = useCallback(() => {
@@ -209,11 +223,21 @@ export function useArtifactDetailPageEditor({
   // since typed into does not yank them back into edit mode; guarded on
   // `!editing` so it never fights a manual Cancel.
   const autoOpenedRef = useRef(false)
+  // The editor it opens takes the caret once, when its handle attaches, so
+  // typing lands in it; the Edit button leaves focus where it is. A jump, not
+  // focus(): the handle holds a jump until Pierre binds, and places a caret.
+  const focusOnAttachRef = useRef(false)
+  const editorRef = useCallback((handle: PierreEditorHandle | null) => {
+    if (handle === null || !focusOnAttachRef.current) return
+    focusOnAttachRef.current = false
+    handle.jumpToLine(1)
+  }, [])
   useEffect(() => {
     if (!justCreatedBlank || autoOpenedRef.current) return
     if (!artifact || !editable) return
     if ((artifact.content ?? '') !== '') return
     autoOpenedRef.current = true
+    focusOnAttachRef.current = true
     startEditing()
   }, [justCreatedBlank, artifact, editable, startEditing])
 
@@ -299,6 +323,7 @@ export function useArtifactDetailPageEditor({
   // generation also stops a write still on the wire from re-arming the notice.
   const endEditing = useCallback(() => {
     editGenerationRef.current += 1
+    focusOnAttachRef.current = false
     setEditing(false)
     setEditedContent('')
     setSaveError(null)
@@ -541,8 +566,8 @@ export function useArtifactDetailPageEditor({
 
   return {
     reprobing, reprobeError, reprobeNotice, addTag, removeTag, pinning, togglePin, changingKind, changeKind,
-    titleButtonRef, startRenaming, commitRename, startEditing, endEditing, cancelEditing, handleSave,
-    flushLiveEdits, handleSnapshotLive,
+    titleButtonRef, startRenaming, commitRename, cancelRename, startEditing, endEditing, cancelEditing, handleSave,
+    flushLiveEdits, handleSnapshotLive, editorRef,
   }
 }
 

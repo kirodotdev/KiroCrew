@@ -308,6 +308,24 @@ test("isNewerVersion understands the prerelease stamps this app ships", () => {
   assert.strictEqual(isNewerVersion("0.5.0-nightly.20260801t000000", "0.3.0"), true);
 });
 
+test("isNewerVersion ranks a fourth build-number part when the first three tie", () => {
+  assert.strictEqual(isNewerVersion("0.12.0.4", "0.12.0.3"), true);
+  assert.strictEqual(isNewerVersion("0.12.0.3", "0.12.0.4"), false);
+  assert.strictEqual(isNewerVersion("0.12.0.4", "0.12.0.4"), false);
+  assert.strictEqual(isNewerVersion("0.12.0.10", "0.12.0.9"), true, "numeric, not text");
+  assert.strictEqual(isNewerVersion("0.12.0.4", "0.12.0"), true, "a missing fourth part counts as .0");
+  assert.strictEqual(isNewerVersion("0.12.0", "0.12.0.4"), false);
+  assert.strictEqual(isNewerVersion("0.12.0.0", "0.12.0"), false);
+  // The first three parts still decide whenever they differ.
+  assert.strictEqual(isNewerVersion("0.11.0.3", "0.10.0.3"), true);
+  assert.strictEqual(isNewerVersion("0.12.1", "0.12.0.9"), true);
+  assert.strictEqual(isNewerVersion("0.12.0.9", "0.12.1"), false);
+  // A prerelease of the same core is unchanged: the release core is newer.
+  assert.strictEqual(isNewerVersion("0.12.0.4", "0.12.0-rc.5"), true);
+  assert.strictEqual(isNewerVersion("0.12.0-rc.5", "0.12.0.3"), false);
+  assert.strictEqual(isNewerVersion("0.12.0-rc.6", "0.12.0-rc.5"), true);
+});
+
 test("isNewerVersion: unrankable input is null (fail-open, never a false 'not newer')", () => {
   assert.strictEqual(isNewerVersion("", "1.0.0"), null);
   assert.strictEqual(isNewerVersion("1.0.0", undefined), null);
@@ -994,14 +1012,21 @@ test("the update runtime loads without Electron and without load-time effects", 
   const updateFiles = [nodePath.join(electronDir, "auto-update.js")];
   const runtimeDir = nodePath.join(electronDir, "runtime", "update");
   const owners = nodeFs.readdirSync(runtimeDir).filter((name) => name.endsWith(".js")).sort();
-  assert.deepStrictEqual(owners, ["feed-lane.js", "freshness-gate.js", "managed-lane.js", "state-reporter.js"]);
+  assert.deepStrictEqual(owners, [
+    "feed-lane.js", "freshness-gate.js", "managed-lane.js", "policy-channel.js", "state-reporter.js",
+  ]);
   // Who composes whom: the facade composes the two lanes and the reporter; the
-  // feed lane composes its own freshness gate, which the facade never sees.
+  // feed lane composes its own freshness gate, which the facade never sees; the
+  // IPC registrar reads the policy channel and hands it to the facade.
   const composedBy = {
     "feed-lane.js": { file: updateFiles[0], path: "./runtime/update/feed-lane" },
     "managed-lane.js": { file: updateFiles[0], path: "./runtime/update/managed-lane" },
     "state-reporter.js": { file: updateFiles[0], path: "./runtime/update/state-reporter" },
     "freshness-gate.js": { file: nodePath.join(runtimeDir, "feed-lane.js"), path: "./freshness-gate" },
+    "policy-channel.js": {
+      file: nodePath.join(electronDir, "ipc-registrar.js"),
+      path: "./runtime/update/policy-channel",
+    },
   };
   for (const owner of owners) {
     updateFiles.push(nodePath.join(runtimeDir, owner));
@@ -1111,6 +1136,8 @@ test("getInfo and every lifecycle payload keep their key order", async () => {
     "channel",
     "stampedChannel",
     "channelSwitchable",
+    "channelLockedByPolicy",
+    "requiredChannel",
     "channelPreference",
     "laneVersion",
     "runningAheadOfLane",

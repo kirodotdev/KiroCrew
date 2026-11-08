@@ -1,31 +1,19 @@
 """Uninstalling an app drops its conversations' resume pointers.
 
-The bug: a slot key an app chooses is often DETERMINISTIC — one slot per object it
-tracks, named after that object. ``session.py``'s
-``resume_sid = self._session_map.get(key)`` therefore hands the next slot under that
-name the PREVIOUS conversation, which is correct while the app is installed and wrong
-once it is gone: reinstall, open the same object, and the first turn resumes a
-transcript from code that is gone.
+An app's slot keys are often DETERMINISTIC, so after a reinstall
+``resume_sid = self._session_map.get(key)`` would resume a transcript from code that
+is gone.
 
-Two things decide whether a fix works, and each has its own load-bearing negative.
+Ownership is read from the conversation's own metadata line (every save stamps
+``app``): a closed slot is the normal state before an uninstall, and both
+``_ChatSlot._app`` and ``open_slots.json`` lose it.
 
-**Where ownership is read from.** It must outlive the tab, because a closed app slot
-is the mainline state before an uninstall — the user closes it, then uninstalls.
-``_ChatSlot._app`` dies with the gateway and a closed slot leaves ``_slots`` in a
-running one; ``open_slots.json`` is no better, since it tracks tabs to REOPEN and a
-closed slot leaves it at the next flush while the resume pointer deliberately stays.
-The record that already survives both is the conversation's own metadata line, which
-every save — including the save that closes a tab — stamps with ``app``.
+``SessionMap``'s rule 3: a throwaway instance is READ-ONLY, since each write rewrites
+the whole file from one snapshot. The in-gateway path clears through the LIVE map; the
+CLI path refuses while a gateway is up.
 
-**Who does the writing.** ``SessionMap``'s rule 3: a throwaway instance is READ-ONLY,
-because two instances that loaded ``_data`` independently do not merge — each write
-is a whole-file rewrite of one snapshot. So the in-gateway path clears through the
-LIVE map, and the gateway-less CLI path refuses outright while a gateway is up rather
-than drop rows that map has not flushed.
-
-The third negative is the disable path: ``deregister_app`` runs on disable too, and
-App Store Sync is a disable/enable pair, so cleaning up there would discard every
-long-lived conversation's accumulated context on every sync.
+Disable does not clean up: App Store Sync is a disable/enable pair, and cleaning there
+would discard every conversation's context on every sync.
 """
 
 from __future__ import annotations
@@ -202,17 +190,9 @@ def test_the_cli_path_drops_the_pointer_when_no_gateway_owns_the_map(tmp_path, m
 def test_the_cli_path_declines_while_a_gateway_owns_the_map(tmp_path, monkeypatch):
     """A detached write here would be worse than doing nothing.
 
-    A running gateway holds a long-lived map whose ``_data`` loaded at startup;
-    every write rewrites the whole file from that snapshot. So this process's write
-    would be undone by the live map's next mutation (restoring the pointer) AND
-    would drop whatever that map recorded since this process read — costing an
-    unrelated session its sid or its channel link. Leaving the pointer is the
-    pre-existing behaviour; corrupting a stranger's session is not.
-
-    The lock is really HELD here, not stubbed. That is what makes this a test of
-    mutual exclusion rather than of a question asked before acting — a gateway
-    starting between such a question and the write would walk straight into the
-    case the question was meant to exclude.
+    The live map's next whole-file write would restore the pointer AND drop rows written
+    since this process read. The lock is really HELD here, not stubbed, so this tests
+    mutual exclusion rather than a check a starting gateway could race.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     SessionMap().set(OWNED, "sid-app", provider="acp")
@@ -312,15 +292,9 @@ def test_deregister_does_NOT_drop_pointers(tmp_path, monkeypatch):
 def test_the_in_gateway_path_clears_inside_the_lock_via_the_live_map(tmp_path):
     """Two invariants of the in-gateway path, pinned where they are easy to undo.
 
-    It must clear through the LIVE map (``sessions.discard_conversation``) — a
-    throwaway instance's write is reversed by the live map's next mutation and takes
-    unflushed rows with it (``SessionMap``'s rule 3), and it also tears the live
-    session down so a still-open tab cannot re-record a sid on its next turn.
-
-    And it must run INSIDE ``app_lifecycle_lock``: outside it, a concurrent reinstall
-    of the same app can take that lock the moment this handler releases it and be
-    serving the same slot key again before the clear lands, so the pointer dropped
-    is the NEW installation's.
+    It clears through the LIVE map (``sessions.discard_conversation``), which also tears
+    the session down so an open tab cannot re-record a sid. It runs INSIDE
+    ``app_lifecycle_lock``, or a racing reinstall could lose its NEW pointer to the clear.
     """
     src = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -350,11 +324,8 @@ def test_the_in_gateway_path_clears_inside_the_lock_via_the_live_map(tmp_path):
 def test_a_pointer_the_live_map_has_not_flushed_is_still_found(tmp_path, monkeypatch):
     """The enumeration must come from the caller's live map, not from the file.
 
-    A running gateway's map holds ``_data`` in memory; the file lags it by whatever
-    it has not flushed. Here the pointer for ``OWNED`` exists only in memory, which
-    is exactly the state a turn that has just recorded a sid leaves behind. A
-    detached enumeration reads the file, finds nothing, and the uninstall reports a
-    clean sweep while the pointer a reinstall will resume is still there.
+    The pointer for ``OWNED`` exists only in memory, as a turn that just recorded a sid
+    leaves it; a file read would miss it and report a clean sweep.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     _seed_transcript(tmp_path, OWNED, app=APP)
@@ -385,13 +356,10 @@ def test_the_caller_s_key_set_still_only_yields_keys_this_app_owns(tmp_path, mon
 
 
 def test_the_in_gateway_path_enumerates_through_the_live_manager(tmp_path):
-    """Pinned as source shape, matching the sibling test above.
+    """Pinned as source shape: no fallback to the detached enumeration.
 
-    One invariant, cheap to undo by hand: the handler must not fall back to the
-    detached enumeration (``app_conversation_keys(name)`` with no key set). The
-    detached read lags this gateway's map by whatever it has not flushed, so an
-    enumeration taken there can omit a key whose pointer already exists — and the
-    clear, which goes through the live map, then leaves it for a reinstall.
+    ``app_conversation_keys(name)`` with no key set reads the file, which lags the live
+    map, so it can omit a key whose pointer already exists.
     """
     src = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -502,14 +470,9 @@ def test_the_cli_path_also_suppresses_the_next_cold_start_s_replay(tmp_path, mon
 def test_the_suppression_follows_the_pointer_and_stops_where_it_does(tmp_path, monkeypatch):
     """The index stays keyed on "still holds a sid", and that boundary is a choice.
 
-    ``OWNED2`` here has already had its pointer cleared — by a provider switch, or a
-    poisoned-conversation escalation — so this uninstall has no pointer of its own to
-    drop and does not flag it either. Its transcript survives, so a cold start under
-    that key can still replay it. Widening to "every transcript this app owns" means
-    enumerating transcripts rather than session-map rows, which is a different and
-    much wider index than the one this change argues for; the narrow answer fails
-    toward the pre-existing behaviour, and the wide one is a separate decision. Pinned
-    so that widening it is deliberate rather than accidental.
+    ``OWNED2``'s pointer is already cleared, so it is not flagged and its transcript can
+    still replay on a cold start. Widening to every transcript the app owns is a separate,
+    wider index; pinned so widening is deliberate.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     smap = SessionMap()
@@ -551,12 +514,9 @@ def test_the_suppression_flag_is_one_shot(tmp_path, monkeypatch):
 def test_the_in_gateway_path_suppresses_replay_and_finishes_durable(tmp_path):
     """Source shape again, for the two invariants a refactor silently drops.
 
-    ``discard_conversation``'s default is ``replay=True``, which actively DISCARDS
-    any standing suppression — so omitting the keyword is worse than neutral. And
-    ``clear_sid`` on the loop only schedules a debounced flush, so the handler would
-    answer success while the drop is still only in memory; a restart inside that
-    window brings the stale sid back with the app already gone. The CLI path states
-    the same invariant as ``flush()`` before releasing the lock.
+    ``discard_conversation`` defaults to ``replay=True``, which DISCARDS any standing
+    suppression. ``clear_sid`` only schedules a debounced flush, so without the flush a
+    restart can bring the stale sid back.
     """
     src = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -659,11 +619,8 @@ def test_the_flag_stops_holding_the_row_alive_once_consumed(tmp_path, monkeypatc
 def test_both_suppression_markers_are_consumed_together():
     """The gateway sets two markers; a chain that stops at the first leaves one.
 
-    ``discard_conversation(replay=False)`` sets the in-memory marker and
-    ``suppress_replay_persistently`` sets the durable one, so an ``elif`` tail
-    consumes only memory on the first cold start and the surviving disk flag then
-    makes a LATER cold start of the NEW installation start empty for no reason —
-    a fix for stale history turned into amnesia about live history.
+    An ``elif`` tail consumes only the in-memory marker, and the surviving disk flag then
+    makes a LATER cold start of the NEW installation start empty.
     """
     src = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -726,20 +683,10 @@ async def test_a_flush_that_fails_does_not_abandon_the_rest_of_the_uninstall(
 ):
     """The durable write is bookkeeping, so it must not abort the teardown around it.
 
-    By the time Step 6 runs, ``uninstall_app`` has already removed the app's files —
-    the uninstall is past the point of being retried as a whole. The flush is the one
-    call in that step still outside the per-key ``try``, so an ENOSPC or a permission
-    error there raised straight out of the handler and skipped everything after it:
+    By Step 6 the app's files are gone. A raising flush would skip
     ``invalidate_app_secret_cache``, ``_unregister_notification_channels`` and
-    ``forget_app_hooks``. A stale slot-close hook is the worst of those — it makes the
-    removed app's leftover tabs UNDISMISSABLE, which is a user-visible dead end far
-    past the cost of the pointer the flush failed to persist.
-
-    The CLI sibling already states this rule: ``discard_app_session_pointers`` wraps
-    its ``flush()`` and answers ``SessionPointerCleanup(failed=True)`` rather than
-    raising. Here the report shape is ``uninstall_log``, which is how the same handler
-    already surfaces a failed ``onUninstall`` script — reported, not raised, and not
-    reported as clean either.
+    ``forget_app_hooks``, and a stale slot-close hook makes leftover tabs UNDISMISSABLE.
+    The failure is reported through ``uninstall_log``, not raised and not reported clean.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     _seed_transcript(tmp_path, OWNED, app=APP)
@@ -855,18 +802,10 @@ async def test_a_flush_that_fails_does_not_abandon_the_rest_of_the_uninstall(
 async def test_a_teardown_that_raises_still_leaves_the_suppression_durable(tmp_path, monkeypatch):
     """The half that already committed cannot be undone by the half that failed.
 
-    ``discard_conversation`` clears the sid and sets the in-memory suppression INSIDE
-    its registry lock, and only then awaits ``provider.shutdown()`` — whose own
-    ``finally`` deliberately lets an exception propagate rather than carry it past the
-    child cancel (``session_lifecycle_parts/teardown.py``). So by the time this can raise, the pointer
-    is already gone and the ONLY thing standing between the user and the bug this step
-    exists to prevent is the suppression flag.
-
-    Left to the per-key ``except``, that key got neither the persistent flag nor the
-    flush: a gateway restart before the reinstall then loses the memory-only flag, the
-    transcript is still on disk, and the new installation's first turn is handed the
-    removed app's history by ``build_session_replay``. Nothing self-corrects it — the
-    key was never recorded as needing suppression.
+    ``discard_conversation`` clears the sid before awaiting ``provider.shutdown()``, which
+    may raise. The pointer is then gone, so the persistent suppression and the flush must
+    still happen: otherwise a restart loses the memory-only flag and
+    ``build_session_replay`` hands the reinstall the removed app's history.
     """
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     _seed_transcript(tmp_path, OWNED, app=APP)

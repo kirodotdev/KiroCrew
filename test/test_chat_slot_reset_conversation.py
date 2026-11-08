@@ -130,6 +130,38 @@ class TestTheReplayParameter:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("sent", "read"),
+        [
+            ("false", False),
+            ("0", False),
+            ("OFF", False),
+            ("no", False),
+            ("true", True),
+            (1, True),
+            (0, False),
+            (None, False),
+            ("yes please", True),
+        ],
+    )
+    async def test_a_spelled_replay_reads_as_it_spells(self, sent, read):
+        """``bool("false")`` is True; a spelled false must not replay."""
+        state = _state(_slot("chat-1-foo"))
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/chat-1-foo/reset-conversation",
+                json={"replay": sent},
+            )
+            body = await resp.json()
+
+        assert resp.status == 200
+        assert body["replay"] is read
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "dashboard:chat-1-foo", replay=read, skip_if_busy=True
+        )
+
+    @pytest.mark.asyncio
     async def test_a_body_less_post_still_works(self):
         """The route took no body before this parameter existed."""
         state = _state(_slot("chat-1-foo"))
@@ -142,18 +174,9 @@ class TestTheReplayParameter:
     def test_the_body_is_read_before_the_busy_guards(self):
         """Source-order guard: reading the body must not widen the teardown race.
 
-        ``await read_bounded_json(...)`` is a suspension whose duration the CLIENT
-        controls. Every busy guard below it protects work that can START during a
-        suspension — a turn admitted after ``has_active_turn()`` answered False is
-        then torn down mid-write by the discard. Parsing the body after the guards
-        would stretch that window from one event-loop hop to however long a slow
-        body takes to arrive, so the guards must be the LAST thing before the
-        teardown.
-
-        Asserted on the source rather than on behaviour because the failure is an
-        interleaving: a test that posts a slow body and races a concurrent turn
-        would be exactly the timing-dependent flake the testing conventions
-        forbid, and it would pass on a fast machine with the bug present.
+        ``read_bounded_json`` suspends for as long as the CLIENT likes, and a turn admitted
+        then is torn down mid-write, so the guards must come last before the teardown.
+        Asserted on source: a behavioural race test would be timing-dependent.
         """
         import inspect
 
@@ -213,9 +236,10 @@ class TestItClearsTheRightThing:
         """
         state = _state(_slot("chat-1-foo"))
 
-        await _post(_make_app(state), "chat-1-foo")
+        status, body = await _post(_make_app(state), "chat-1-foo")
 
         state.sessions.destroy.assert_not_awaited()
+        assert (status, body.get("reset")) == (200, True)
 
 
 class TestItRefusesWhenItCannotBeSafe:
@@ -300,13 +324,8 @@ class TestItRefusesWhenItCannotBeSafe:
     async def test_a_semaphore_held_turn_with_no_prompt_in_flight_is_refused(self):
         """The edge every fast path above misses, closed by the atomic guard.
 
-        The channel-message shape: an inbound message on a linked session has
-        acquired the per-session semaphore but not yet put a prompt in flight,
-        so ``has_active_turn()`` answers False and ``slot.running`` is False by
-        construction (no dashboard task exists). Only ``discard_conversation``'s
-        ``skip_if_busy`` — the semaphore probed atomically with the session
-        pop — sees it, and its False return must surface as the same
-        ``turn_in_flight`` 409 the fast paths give, not as a success.
+        A channel message holds the semaphore with no prompt in flight; only
+        ``discard_conversation``'s ``skip_if_busy`` sees it, and must give 409 ``turn_in_flight``.
         """
         state = _state(_slot("slack_123.456", linked="slack:123.456"), active_turn=False)
         # Behave like the real primitive against a busy session: refuse when
@@ -394,11 +413,8 @@ class TestAppScope:
     async def test_an_app_cannot_reset_a_channel_session_its_slot_is_bound_to(self):
         """Owning the slot is not owning the session.
 
-        ``get_or_create_slot`` resolves ``linked_session_key`` from the session map
-        for a name shaped like a channel stem, so an app that names a live channel
-        thread ends up OWNING a slot bound to a conversation it has no claim on.
-        Authorizing on slot ownership alone would turn that binding into capability
-        escalation — the app could wipe a channel conversation's resume pointer.
+        An app naming a channel stem owns a slot bound to that channel's session, so
+        slot ownership alone would let it wipe the channel's resume pointer.
         """
         state = _state(_slot("slack_123.456", app=OWNER, linked="slack:123.456"))
 

@@ -6,9 +6,12 @@ written from source on every start (``agent_materialization.service_agents``).
 The crewmate's file, ``~/.kiro/mates/agents/<id>.json``, extends the WORKER only,
 additively: its prompt after the base's, servers and skills the base lacks (a
 base server always wins), and the ``allowedTools`` and ``tools`` selectors for
-those servers. Its restrictions (``excludedTools``, ``disabledTools``, MCP-page
+those servers and for a non-managed server the base declares
+(:func:`base_server_selections`). Its restrictions (``excludedTools``, ``disabledTools``, MCP-page
 switch-offs, :func:`globally_disabled_refs`) narrow whoever declared them;
-``model``, ``permissions`` and ``hooks`` are ignored. The merged spec is governed
+its ``hooks``, ``permissions`` and ``toolsSettings`` are layered on exactly
+(:mod:`kiro_crew.mate_spec_policy`); ``model`` is ignored. Nothing from the file
+reaches the conductor. The merged spec is governed
 and the projection re-applies the ceiling, so an addition never lifts the worker
 above POLICY ∩ PROFILE. Stateless.
 """
@@ -16,8 +19,9 @@ above POLICY ∩ PROFILE. Stateless.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import crewmate_prompts
 from kiro_crew.agent_files import (
@@ -26,6 +30,9 @@ from kiro_crew.agent_files import (
     is_mate_service_agent,
 )
 from kiro_crew.user_json import copy_json_document
+
+if TYPE_CHECKING:
+    from kiro_crew.config.loader import KiroCrewConfig
 
 logger = logging.getLogger(__name__)
 
@@ -46,9 +53,12 @@ MISSING_CAPABILITY_PREFIX = "MISSING CAPABILITY:"
 
 #: The worker's own principles, appended to its source-defined prompt
 #: (``service_agents._install_mate_worker_agent``). Its crewmate is the one that
-#: can ask the user for a tool, so a gap goes back to it, named.
-MATE_WORKER_PROMPT = crewmate_prompts.fill(
-    "worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX
+#: can ask the user for a tool, so a gap goes back to it, named. The coding rules
+#: after them are the same text ``kirocrew-worker`` carries.
+MATE_WORKER_PROMPT = (
+    crewmate_prompts.fill("worker.principles", missing_prefix=MISSING_CAPABILITY_PREFIX)
+    + "\n\n"
+    + crewmate_prompts.text("worker.coding_rules")
 )
 
 #: The sub-agent tools a crewmate's conductor does not mount. Its hand-off is a
@@ -76,18 +86,51 @@ MATE_CONDUCTOR_EXCLUDED_TOOLS = tuple(
 )
 
 
-def is_conductor_execution(execution: Any) -> bool:
+def is_conductor_execution(execution: Any, config: Any = None) -> bool:
     """Whether *execution* (an attested ``ExecutionContext``) is a crewmate's conductor chat.
 
-    Positive identity: a ``member`` selection running the conductor template. A
-    worker the crewmate opened is a ``template`` selection on the worker, so it
-    answers False, as does a missing record.
+    Positive identity: a ``member`` selection that chats on the conductor. Given
+    *config*, that is :func:`member_record_template` with the member's current
+    binding, the rule its chat dispatches by, so a thread whose record kept an
+    older template is still its crewmate's conductor. Without *config* only the
+    record's own template is read. A worker the crewmate opened is a ``template``
+    selection on the worker, so it answers False, as does a missing record.
     """
-    return (
-        execution is not None
-        and getattr(execution, "selection_kind", "") == "member"
-        and member_chat_template(getattr(execution, "template_id", "")) == MATE_CONDUCTOR_AGENT
-    )
+    if execution is None or getattr(execution, "selection_kind", "") != "member":
+        return False
+    template_id = getattr(execution, "template_id", "")
+    if member_chat_template(template_id) == MATE_CONDUCTOR_AGENT:
+        return True
+    if config is None:
+        return False
+    bound = bound_kiro_agent_for(config, getattr(execution, "member_id", None))
+    return member_record_template(template_id, bound) == MATE_CONDUCTOR_AGENT
+
+
+def bound_kiro_agent_for(config: Any, member_id: Any) -> str:
+    """The ``kiro_agent`` *member_id*'s row in *config* binds, else ``""``. In memory."""
+    from kiro_crew.execution_context import member_config_for_id
+
+    if not member_id:
+        return ""
+    try:
+        _, binding = member_config_for_id(config, member_id)
+    except Exception:  # noqa: BLE001 - an unknown or ambiguous id binds nothing
+        return ""
+    return str(getattr(binding, "kiro_agent", "") or "")
+
+
+def member_record_template(template_id: str, bound_kiro_agent: str = "") -> str:
+    """The agent a ``member`` record chats on, given its member's current binding.
+
+    The conductor when *bound_kiro_agent* (the member's ``kiro_agent`` in config
+    now) owns a crewmate file, whatever older template the record kept; else
+    :func:`member_chat_template` on the record's own *template_id*. The one rule the
+    chat (``session_agent_selection``) and :func:`is_conductor_execution` share.
+    """
+    if bound_kiro_agent and is_mate_owned_agent(bound_kiro_agent):
+        return MATE_CONDUCTOR_AGENT
+    return member_chat_template(template_id)
 
 
 def member_chat_template(template_id: str) -> str:
@@ -105,12 +148,15 @@ def is_legacy_binding(name: str, binding: Any) -> bool:
     """Whether ``config.agents[name]`` is a legacy built-in binding, not a crewmate.
 
     Positive signature: a ``builtin`` binding that never got a member identity
-    (an older install's ``assistant``). The roster surfaces do not list it as a
-    crewmate. The reserved ``default`` member is excluded by name, and a
-    user-created crewmate on shared memory (``source`` ``kirocrew``, no id yet)
-    stays listed.
+    (an older install's ``assistant``, the built-in ``kirocrew-conductor``).
+    ``GET /api/agents`` lists one only once its DM thread holds a message, the
+    rule ``GET /api/members`` applies to every non-dashboard-created row. The
+    reserved ``default`` member is excluded by name, and a user-created crewmate
+    on shared memory (``source`` ``kirocrew``, no id yet) is not legacy.
     """
-    if name == "default" or getattr(binding, "source", "") != "builtin":
+    if name == "default":
+        return False
+    if getattr(binding, "source", "") != "builtin":
         return False
     return not str(getattr(binding, "member_id", "") or "").strip()
 
@@ -130,8 +176,11 @@ def conductor_mcp_servers() -> frozenset[str]:
 
 #: The conductor-only ``kirocrew-mate`` tools the worker does not mount: the
 #: worker does the work, and a capability it lacks is reported back to the
-#: conductor, which alone asks the user for an addition.
-MATE_WORKER_EXCLUDED_TOOLS = ("@kirocrew-mate/request_capabilities",)
+#: conductor, which alone reads the catalog and asks the user for an addition.
+MATE_WORKER_EXCLUDED_TOOLS = (
+    "@kirocrew-mate/request_capabilities",
+    "@kirocrew-mate/find_capabilities",
+)
 
 #: The parts of a crewmate's file that extend the worker. A template copied in as
 #: the worker's extra kit (``mate_worker_kit``) copies exactly these.
@@ -142,7 +191,10 @@ def is_mate_owned_agent(kiro_agent: str) -> bool:
     """Whether *kiro_agent* names a crewmate-owned file and nothing at the user level.
 
     Read from the materialized-agents snapshot, which the crewmate writers update.
-    An unknown name is rescanned off the loop; on the loop the answer is False.
+    An unknown name is rescanned off the loop. On the loop a rescan is scheduled
+    and the answer comes from :func:`_mate_file_on_disk`, two file stats, so a
+    crewmate created a moment ago (its file written by another process) chats on
+    the conductor and never on its own file.
     """
     import asyncio
 
@@ -157,15 +209,39 @@ def is_mate_owned_agent(kiro_agent: str) -> bool:
         # Not in the snapshot at all: a file another process wrote (the command
         # line's create) or one written before any scan. Off the loop it is
         # rescanned here; on the loop a rescan is scheduled and this one call
-        # answers from the snapshot as it is.
+        # answers from the two files a full scan would weigh, not a rescan.
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             loader.refresh_materialized_agents(heal_default=False)
         else:
             loader.schedule_materialized_agents_refresh()
-            return False
+            return _mate_file_on_disk(kiro_agent)
     return kiro_agent in loader._MATERIALIZED_MATE_ONLY
+
+
+def _mate_file_on_disk(kiro_agent: str) -> bool:
+    """Whether ``<mates>/<kiro_agent>.json`` exists and ``<agents>/<kiro_agent>.json`` does not.
+
+    The on-loop answer for a name the snapshot does not know yet: two ``stat``
+    calls, no directory scan. A user-level file of that name wins, the rule the
+    full scan applies, so a real user agent is never read as a crewmate. The mate
+    conductor and worker share the crewmate folder and are never a crewmate's file.
+    A name that is not a plain file stem, or a stat that fails, answers False.
+    """
+    from kiro_crew.agent_files import is_mate_service_agent
+    from kiro_crew.config import paths as paths_mod
+
+    if is_mate_service_agent(kiro_agent) or Path(kiro_agent).name != kiro_agent:
+        return False
+    if kiro_agent in (".", ".."):
+        return False
+    try:
+        if (paths_mod.kiro_agents_dir() / f"{kiro_agent}.json").exists():
+            return False
+        return (paths_mod.mate_agents_dir() / f"{kiro_agent}.json").is_file()
+    except (OSError, ValueError):
+        return False
 
 
 def member_chat_agent(kiro_agent: str) -> str:
@@ -219,6 +295,23 @@ def _server_of(ref: str) -> str:
     if not ref.startswith("@"):
         return ""
     return ref[1:].split("/", 1)[0]
+
+
+def covered_by(ref: str, selectors: Iterable[str]) -> bool:
+    """Whether a strictly broader selector grants everything *ref* selects.
+
+    Grant/approval decisions use ``mcp_refs.entry_reaches``; this is deduplication.
+    """
+    refs = set(selectors)
+    return (ref != "*" and "*" in refs) or (
+        ref.startswith("@") and "/" in ref and f"@{_server_of(ref)}" in refs
+    )
+
+
+def collapse_selectors(refs: Iterable[str]) -> list[str]:
+    """Keep unique selectors in order, omitting those covered by a broader one."""
+    unique = dict.fromkeys(refs)
+    return [ref for ref in unique if not covered_by(ref, unique)]
 
 
 def _strings(value: Any) -> list[str]:
@@ -292,14 +385,20 @@ def worker_additions(base: dict[str, Any], mate_spec: dict[str, Any]) -> dict[st
     additions: dict[str, Any] = {"prompt": prompt, "mcpServers": added_servers}
     # The file's own selectors for the servers it adds, so a template that
     # mounts one tool of a server does not hand the worker the whole server.
-    additions["tools"] = server_selectors(mate_spec, added_servers)
+    additions["tools"] = [
+        *server_selectors(mate_spec, added_servers),
+        *base_server_selections(base, mate_spec, "tools"),
+    ]
     for key in ("resources", "skills"):
         have = set(_strings(base.get(key)))
         additions[key] = [s for s in dict.fromkeys(_strings(mate_spec.get(key))) if s not in have]
     additions["allowedTools"] = [
-        ref
-        for ref in dict.fromkeys(_strings(mate_spec.get("allowedTools")))
-        if _server_of(ref) in added_servers
+        *(
+            ref
+            for ref in dict.fromkeys(_strings(mate_spec.get("allowedTools")))
+            if _server_of(ref) in added_servers
+        ),
+        *base_server_selections(base, mate_spec, "allowedTools"),
     ]
     # A restriction, not an addition: the file's per-tool limits count for EVERY
     # server it names, a base server included, because the server entry the base
@@ -312,7 +411,37 @@ def worker_additions(base: dict[str, Any], mate_spec: dict[str, Any]) -> dict[st
     # well. Only the NAME is carried: the base's entry keeps its transport, and the
     # merge mutes it. (A server the file adds keeps its own ``disabled`` above.)
     additions["disabledServers"] = disabled_base_servers(base, mate_spec)
+    # The file's hooks, permission rules and tool settings, kept whole: the
+    # merge layers them on exactly or refuses (``mate_spec_policy.layer_policy``).
+    from kiro_crew.mate_spec_policy import policy_of
+
+    additions.update(policy_of(mate_spec))
     return additions
+
+
+def base_server_selections(base: dict[str, Any], mate_spec: dict[str, Any], key: str) -> list[str]:
+    """The file's own *key* selectors for servers the worker *base* declares.
+
+    The base declares some servers without selecting their tools; a Bot whose
+    file names ``@server`` or ``@server/tool`` for one of them gets those tools.
+    Only explicit selectors count: a ``*`` in the file selects the servers the
+    file adds, never every server the base declares. Crew's own managed servers
+    keep the base's selection, so the file cannot widen the control plane.
+    """
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+
+    # A base server the file switches off selects nothing.
+    base_servers = (
+        set(_servers(base.get("mcpServers")))
+        - set(KIROCREW_BIN_MCP_SERVERS)
+        - set(disabled_base_servers(base, mate_spec))
+    )
+    have = _strings(base.get(key))
+    return [
+        ref
+        for ref in dict.fromkeys(_strings(mate_spec.get(key)))
+        if _server_of(ref) in base_servers and ref not in have and not covered_by(ref, have)
+    ]
 
 
 def disabled_base_servers(base: dict[str, Any], mate_spec: dict[str, Any]) -> list[str]:
@@ -364,15 +493,18 @@ def merge_worker_spec(base: dict[str, Any], additions: dict[str, Any]) -> dict[s
         extra_items = _strings(additions.get(key))
         if extra_items:
             spec[key] = list(dict.fromkeys([*_strings(spec.get(key)), *extra_items]))
+    # Selectors reach a server the file adds, and one the base declares
+    # (``base_server_selections`` already chose which of those count).
+    selectable = set(servers) - set(muted)
     tools = _strings(spec.get("tools"))
     if "*" not in tools:
         for ref in _strings(additions.get("tools")):
-            if _server_of(ref) in added and ref not in tools:
+            if _server_of(ref) in selectable and ref not in tools:
                 tools.append(ref)
     spec["tools"] = tools
     allowed = _strings(spec.get("allowedTools"))
     for ref in _strings(additions.get("allowedTools")):
-        if _server_of(ref) in added and ref not in allowed:
+        if _server_of(ref) in selectable and ref not in allowed:
             allowed.append(ref)
     # A muted server's approvals grant nothing; drop them so none outlives the mute.
     allowed = [ref for ref in allowed if _server_of(ref) not in muted]
@@ -399,6 +531,11 @@ def merge_worker_spec(base: dict[str, Any], additions: dict[str, Any]) -> dict[s
             if isinstance(approve, list) and tool in approve:
                 entry["autoApprove"] = [t for t in approve if t != tool]
     spec["allowedTools"] = allowed
+    from kiro_crew.mate_spec_policy import POLICY_KEYS, layer_policy
+
+    # Raises ``SpecPolicyUncarried`` (a ``WorkerKitUnreadable``) for a field that
+    # cannot land exactly, so the worker is refused rather than run looser.
+    layer_policy(spec, {k: additions[k] for k in POLICY_KEYS if k in additions}, worker=True)
     # The ceiling applies to the MERGED spec, not to the file alone: a grant the
     # file carries for a server it adds is withheld here exactly as it would be
     # on any other spec Crew writes.
@@ -478,13 +615,28 @@ def _with_global_tool_offs(base: dict[str, Any], additions: dict[str, Any]) -> d
     return out
 
 
-def resolve_worker_spec(base: dict[str, Any], member_id: str | None) -> dict[str, Any]:
+def resolve_worker_spec(
+    base: dict[str, Any],
+    member_id: str | None,
+    *,
+    refuse_tool_limits: bool = False,
+    refuse_spec_policy: bool = False,
+    mcp_tool_limits_carried: bool = False,
+) -> dict[str, Any]:
     """The worker spec a session of *member_id*'s worker runs on.
 
     *base* has its prompt literal. No member, or a member not on its own file, gives
     the governed base less its revocations. A binding on its own file whose file is
     absent or shadowed, or an unreadable file or record, raises
-    :class:`WorkerKitUnreadable` (fail closed).
+    :class:`WorkerKitUnreadable` (fail closed). With *refuse_tool_limits* (a host
+    that cannot honour single-tool limits), a file that sets any refuses with
+    ``capability_tool_limits_unsupported``, judged on the same read the merge uses;
+    with *mcp_tool_limits_carried* too (a host that carries the MCP half,
+    ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS``), only what
+    :func:`uncarried_tool_limits_of` names refuses.
+    With *refuse_spec_policy* (a host that applies none of ``hooks``, ``permissions``
+    and ``toolsSettings``), a file that sets any refuses with
+    :class:`~kiro_crew.mate_spec_policy.SpecPolicyUncarried` naming them.
     """
     from kiro_crew import mate_approval_revocations as revocations
 
@@ -495,7 +647,7 @@ def resolve_worker_spec(base: dict[str, Any], member_id: str | None) -> dict[str
         claimed = _claimed_file(member_id)
         if claimed:
             raise WorkerKitUnreadable(
-                f"crewmate {member_id!r}: its own file {claimed!r} is missing or shadowed "
+                f"Bot {member_id!r}: its own file {claimed!r} is missing or shadowed "
                 f"by a user-level agent, so its worker would run without its limits"
             )
         return revocations.strip(
@@ -519,15 +671,26 @@ def resolve_worker_spec(base: dict[str, Any], member_id: str | None) -> dict[str
             mate_spec["prompt"] = ""
     except agent_specs.AgentSpecUnreadable as exc:
         logger.warning(
-            "crewmate %r: its worker file %r is unreadable; refusing the worker",
+            "Bot %r: its worker file %r is unreadable; refusing the worker",
             member_id,
             name,
             exc_info=True,
         )
         raise WorkerKitUnreadable(
-            f"crewmate {member_id!r}: its worker file {name!r} cannot be read, so its "
-            f"worker would run without the crewmate's own limits; fix or re-save the file"
+            f"Bot {member_id!r}: its worker file {name!r} cannot be read, so its "
+            f"worker would run without the Bot's own limits; fix or re-save the file"
         ) from exc
+    limits_of = uncarried_tool_limits_of if mcp_tool_limits_carried else tool_limits_of
+    if refuse_tool_limits and limits_of(mate_spec):
+        from kiro_crew.session_capabilities import CapabilityStartupError
+
+        raise CapabilityStartupError("capability_tool_limits_unsupported")
+    if refuse_spec_policy:
+        from kiro_crew.mate_spec_policy import policy_of, uncarried
+
+        carried = policy_of(mate_spec)
+        if carried:
+            raise uncarried(sorted(carried), "this backend does not apply them; run the Bot on kas")
     additions = worker_additions(base, mate_spec)
     # An approval the owner took away in Approvals stays away, base-granted or not.
     return revocations.strip(
@@ -578,7 +741,7 @@ def _claimed_crewmate_file(member_id: str, config: Any = None) -> str:
     try:
         return claimed if crewmate_file_on_record(claimed) else ""
     except MateConfigError:
-        logger.warning("crewmate owner record unreadable; %r stays refused", claimed)
+        logger.warning("Bot owner record unreadable; %r stays refused", claimed)
         return claimed
 
 
@@ -589,15 +752,16 @@ def _revoked_or_refuse(member_id: str, file_id: str) -> list[str]:
         return revocations.revoked(file_id)
     except revocations.RevocationsUnreadable as exc:
         raise WorkerKitUnreadable(
-            f"crewmate {member_id!r}: the approvals its owner revoked cannot be read "
+            f"Bot {member_id!r}: the approvals its owner revoked cannot be read "
             f"(revoked-approvals.json), so its worker would run them again; fix the file"
         ) from exc
 
 
 def mate_service_scope_spec(agent: str, session_key: str) -> tuple[dict | None, Path] | None:
     """``(spec or None when unreadable, path)`` the crewmate conductor's or worker's
-    skill scope reads, else ``None``: their specs live in the crewmate folder, which
-    the roster does not list. A worker's is its session's merged spec."""
+    skill scope and Crew-fired spec hooks read, else ``None``: their specs live in
+    the crewmate folder, which the roster does not list. A worker's is its session's
+    merged spec; the conductor's is the stock spec."""
     from kiro_crew.agent_sdk import agent_specs
     from kiro_crew.config import paths as paths_mod
 
@@ -654,6 +818,28 @@ def cron_worker_execution(execution: Any, config: Any = None) -> Any:
     return execution.with_template(MATE_WORKER_AGENT, MATE_WORKER_AGENT)
 
 
+def spawn_worker_execution(execution: Any) -> Any:
+    """The worker execution a sub-agent selected as a crewmate runs, else ``None``.
+
+    A ``spawn_run(crew=...)`` (or ``target_member``) with no ``agent`` resolves
+    the crewmate to a ``member`` selection on the agent its chat runs on. For a
+    crewmate that owns its file that is the conductor, which hands work off
+    rather than doing it. The run is work, so it runs on that crewmate's worker
+    instead, member, store, mode and app kept: the record shape a hand-off and a
+    scheduled turn give the worker (:func:`cron_worker_execution`). Answered
+    from the record alone, so it reads no file and is safe on the event loop.
+    ``None`` for any other record.
+    """
+    if (
+        execution is None
+        or getattr(execution, "selection_kind", "") != "member"
+        or not getattr(execution, "member_id", None)
+        or getattr(execution, "template_id", "") != MATE_CONDUCTOR_AGENT
+    ):
+        return None
+    return execution.with_template(MATE_WORKER_AGENT, MATE_WORKER_AGENT)
+
+
 def note_worker_session(session_key: str, execution: Any) -> bool:
     """Publish *session_key* as a crewmate's worker when its record says so.
 
@@ -670,16 +856,26 @@ def note_worker_session(session_key: str, execution: Any) -> bool:
     if not is_own_worker_execution(execution):
         forget_crewmate_worker_session(session_key)
         return False
-    note_crewmate_worker_session(session_key)
+    note_crewmate_worker_session(session_key, str(execution.member_id))
     return True
 
 
-def worker_session_spec(literal_base: dict[str, Any], session_key: str) -> dict[str, Any]:
+def worker_session_spec(
+    literal_base: dict[str, Any],
+    session_key: str,
+    *,
+    refuse_tool_limits: bool = False,
+    refuse_spec_policy: bool = False,
+    mcp_tool_limits_carried: bool = False,
+) -> dict[str, Any]:
     """The spec a crewmate's worker session on *session_key* runs: base plus its kit.
 
     The harness-neutral seam; *literal_base* has its prompt literal. The crewmate
     comes from the session's own execution record, never a supplied name; a session
-    with no record or no member is refused (:class:`WorkerKitUnreadable`). Blocking.
+    with no record or no member is refused (:class:`WorkerKitUnreadable`). KAS's
+    projection reads it, and so does the session MCP projection the member-capable
+    mirrored hosts read (``acp.session_mcp.session_mcp_projection``, keyed by the
+    session). Blocking.
     """
     from kiro_crew.execution_context import read_session_execution
 
@@ -694,27 +890,52 @@ def worker_session_spec(literal_base: dict[str, Any], session_key: str) -> dict[
         )
         raise WorkerKitUnreadable(
             f"worker session {session_key}: its execution record cannot be read, so "
-            f"its crewmate (and that crewmate's limits) is unknown"
+            f"its Bot (and that Bot's limits) is unknown"
         ) from exc
     if execution is not None:
         member_id = execution.member_id
     if not member_id:
         raise WorkerKitUnreadable(
-            f"worker session {session_key}: it names no crewmate, so whose limits apply is unknown"
+            f"worker session {session_key}: it names no Bot, so whose limits apply is unknown"
+        )
+    if refuse_tool_limits or refuse_spec_policy:
+        return resolve_worker_spec(
+            literal_base,
+            member_id,
+            refuse_tool_limits=refuse_tool_limits,
+            refuse_spec_policy=refuse_spec_policy,
+            mcp_tool_limits_carried=mcp_tool_limits_carried,
         )
     return resolve_worker_spec(literal_base, member_id)
 
 
-def crewmate_worker_backend(agent_cfg: Any) -> str:
+def crewmate_worker_backend(config: KiroCrewConfig, crewmate: str | None = None) -> str:
     """The backend a crewmate's worker runs on: its crewmate's, through the one gate.
 
-    ``agent.member_acp_backend`` as the loader reads it (a stored ``kiro`` already
-    reads as KAS) crossed through ``resolve_selected_backend``, the same gate
-    ``members.select_provider_backend`` applies to the member route.
+    *crewmate* is the crewmate's ``config.agents`` key. Its own harness pin
+    (``agents.<name>.acp_backend``) wins and fails closed through the pre-gate
+    check (H17), raising
+    :class:`~kiro_crew.crewmate_harness.CrewmateHarnessUnavailable` as
+    ``crewmate_harness.crewmate_backend_pin`` does for the worker's own session
+    before ``members.select_provider_backend`` runs.
+    Without a pin it is ``agent.member_acp_backend`` as the loader reads it (a
+    stored ``kiro`` already reads as KAS) crossed through
+    ``resolve_selected_backend``, the same gate the member route applies.
+
+    *config* is the whole loaded config, never its ``agent`` section: the pin
+    lives in ``config.agents``, so a section passed here raises instead of
+    silently reading as no pin and no member route.
     """
     from kiro_crew.acp_backends import resolve_selected_backend
+    from kiro_crew.crewmate_harness import pinned_backend
 
-    return resolve_selected_backend(getattr(agent_cfg, "member_acp_backend", ""))
+    if not hasattr(config, "agent"):
+        raise TypeError("crewmate_worker_backend takes the whole config, not its agent section")
+    return pinned_backend(
+        config,
+        crewmate,
+        resolve_selected_backend(getattr(config.agent, "member_acp_backend", "")),
+    )
 
 
 def worker_kit_backend_refusal(backend: str) -> str | None:
@@ -728,11 +949,121 @@ def worker_kit_backend_refusal(backend: str) -> str | None:
         return None
     able = ", ".join(sorted(backend_to_stored(b) for b in ACP_BACKENDS_MATE_WORKER_KIT))
     return (
-        f"a crewmate's worker runs on its crewmate's backend "
+        f"a Bot's worker runs on its Bot's backend "
         f"({backend_to_stored(backend)}), which cannot carry the worker's own tools, "
         f"servers and switched-off tools for one session; set agent.member_acp_backend "
         f"to {able}"
     )
+
+
+def crewmate_tool_limited_servers(
+    member_id: str, *, mcp_tool_limits_carried: bool = False
+) -> tuple[str, ...]:
+    """What crewmate *member_id*'s own file narrows for its worker, sorted.
+
+    The member rule on the file (``tool_limited_servers``: an entry's
+    ``disabledTools``), plus every entry of its own ``excludedTools`` (as a copied
+    kit keeps them): the server an ``@server`` / ``@server/tool`` names, or the
+    native tool itself. The worker spec carries all of them as ``excludedTools``
+    (:func:`worker_additions`), which only ``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``
+    honour. A server the file mutes whole is not counted. With
+    *mcp_tool_limits_carried*, only what :func:`uncarried_tool_limits_of` names.
+    Blocking.
+    """
+    from kiro_crew.agent_sdk import agent_specs
+    from kiro_crew.config import paths as paths_mod
+
+    name = mate_file_for_member(member_id) if member_id else ""
+    if not name:
+        return ()
+    try:
+        spec = agent_specs.load_agent_spec(paths_mod.mate_agents_dir(), name)
+    except agent_specs.AgentSpecUnreadable:
+        return ()
+    return uncarried_tool_limits_of(spec) if mcp_tool_limits_carried else tool_limits_of(spec)
+
+
+def tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
+    """What crewmate file *spec* narrows for its worker (see
+    :func:`crewmate_tool_limited_servers`), from this one parse."""
+    from kiro_crew.agent_capabilities import tool_limited_servers
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    limited = set(tool_limited_servers(spec))
+    servers = _servers(spec.get("mcpServers"))
+    for ref in _strings(spec.get("excludedTools")):
+        server = _server_of(ref)
+        if not server:
+            # A native tool: the mirrored hosts project no exclusion for it either.
+            if ref.strip():
+                limited.add(ref.strip())
+        elif not (server in servers and mcp_entry_is_muted(servers[server])):
+            limited.add(server)
+    return tuple(sorted(limited))
+
+
+#: Characters that make an ``excludedTools`` entry a pattern rather than one name.
+_GLOB_CHARS = frozenset("*?[")
+
+#: The server kiro-cli reads ``@builtin`` / ``@builtin/<tool>`` as: its own native
+#: tools (``kas_permissions._BUILTIN_PREFIX``), which no MCP deny names.
+_BUILTIN_SERVER = "builtin"
+
+
+def _unreadable_tool_names(value: Any) -> bool:
+    """Whether a set ``disabledTools`` *value* is not a list of non-blank tool names."""
+    if not value:
+        return False
+    return not isinstance(value, list) or not all(
+        isinstance(tool, str) and tool.strip() for tool in value
+    )
+
+
+def uncarried_tool_limits_of(spec: dict[str, Any]) -> tuple[str, ...]:
+    """The ``excludedTools`` entries of crewmate file *spec* no MCP deny can carry.
+
+    A host in ``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS`` carries a switched-off
+    MCP tool (``disabledTools``, ``@server/tool``) and a whole excluded server
+    (``@server``) as a deny naming that tool or server. What is left is a native
+    tool (``shell``, ``fs_write``, or ``@builtin`` and ``@builtin/<tool>``, which
+    kiro-cli reads as its native tools) and any entry, ``disabledTools`` included, with a
+    wildcard or no tool after its ``/``, which names no one tool such a deny could
+    spell, so the worker is refused rather than run wider. A ``disabledTools`` that
+    is set but is not a list of tool names names that server, since no deny can be
+    read from it. A server the file mutes whole is not counted, as in
+    :func:`tool_limits_of`.
+    """
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+
+    servers = _servers(spec.get("mcpServers"))
+    refs = [*_strings(spec.get("excludedTools")), *disabled_tool_refs(servers)]
+    uncarried: set[str] = {
+        name
+        for name, entry in servers.items()
+        if _unreadable_tool_names(entry.get("disabledTools")) and not mcp_entry_is_muted(entry)
+    }
+    for ref in refs:
+        ref = ref.strip()
+        server = _server_of(ref)
+        if server and server in servers and mcp_entry_is_muted(servers[server]):
+            continue
+        native = not server or server.strip() == _BUILTIN_SERVER
+        if ref and (native or ref.endswith("/") or _GLOB_CHARS & set(ref)):
+            uncarried.add(ref)
+    return tuple(sorted(uncarried))
+
+
+def worker_prompt_in_context_block(session_key: str) -> bool:
+    """Whether worker *session_key* gets its prompt only from the context block.
+
+    Answered by the session's own live provider, recorded at allocation
+    (``mate_worker_prompt_in_context``, membership of its backend in
+    ``ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT``), never by the config, which
+    can name another backend while this session runs.
+    """
+    from kiro_crew.members import crewmate_worker_prompt_in_context
+
+    return crewmate_worker_prompt_in_context(session_key)
 
 
 def member_worker_spec(member: str) -> dict[str, Any]:

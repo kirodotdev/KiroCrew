@@ -1,19 +1,8 @@
 """Tests for ``GET /api/sessions/clearable/count`` and its shared selector.
 
-A bulk delete's confirmation needs to state how many
-sessions it will remove. ``DELETE /api/sessions`` offered no way to learn that
-before committing, so this endpoint answers it and nothing else.
-
-Two properties carry the feature and each has tests here:
-
-- the endpoint is READ-ONLY. Proven by naming the survivors — the files are
-  still on disk afterwards, byte-identical, with unchanged mtimes. An
-  "assert nothing was deleted" would pass just as happily against an empty
-  directory, which is why it is not the assertion used.
-- the count and the delete resolve the SAME set, because they call one
-  selector that takes no cutoff. A count the delete does not honour is worse
-  than no count: a filtered count would report a subset of what the unfiltered
-  delete permanently unlinks.
+The endpoint is read-only, proven by naming survivors byte-identical with unchanged mtimes
+("nothing deleted" would pass on an empty directory). The count and the delete call one
+selector with no cutoff, so they resolve the same set.
 """
 
 from __future__ import annotations
@@ -70,7 +59,7 @@ def _fake_state(
     raising_keys = raising_keys or set()
 
     conv_log = MagicMock()
-    conv_log.list_sessions.return_value = sessions
+    conv_log.list_sessions_indexed.return_value = sessions
 
     def _get_metadata_status(k: str) -> tuple[dict, bool]:
         if k in raising_keys:
@@ -160,6 +149,24 @@ def test_open_tab_is_excluded_and_reported_as_skipped() -> None:
     clearable, skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == [k2]
+    assert skipped == 1
+
+
+def test_an_open_tabs_double_prefixed_file_is_excluded_too() -> None:
+    # A resume round-trip leaves `dashboard_dashboard_<slot>`; the canonical fold
+    # maps it to the open tab, the same fold the Older-sessions list and the
+    # session search use, so the bulk clear leaves it alone as well.
+    doubled = "dashboard_dashboard_chat-1"
+    state, _ = _fake_state(
+        [{"key": doubled}, {"key": "plain"}], slots={"chat-1": _FakeSlot("chat-1")}
+    )
+    state.conversation_log._canonical_key.side_effect = lambda k: k.replace(
+        "dashboard_dashboard_", "dashboard:"
+    )
+
+    clearable, skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
+
+    assert clearable == ["plain"]
     assert skipped == 1
 
 
@@ -284,11 +291,8 @@ async def test_an_individual_delete_excludes_and_reports_unparseable_metadata(
 async def test_count_and_bulk_delete_resolve_the_same_set() -> None:
     """The property that makes the count worth displaying.
 
-    Same fixture through both paths: whatever the selector reports is exactly what
-    the delete removes, named explicitly on both sides. This is the only test in
-    the suite that can see the two drifting apart — the delete's own suite stays
-    green if the selector's pinned exclusion is removed, because the atomic
-    ``skip_pinned`` still catches it and the counts work out identically.
+    The selector's report equals what the delete removes. The delete's own suite cannot
+    see drift: the atomic ``skip_pinned`` masks a dropped pinned exclusion.
     """
     k_open, k_pinned = _history_key_for("chat-1"), "pinned-one"
     sessions = [{"key": k_open}, {"key": k_pinned}, {"key": "plain-a"}, {"key": "plain-b"}]
@@ -456,6 +460,45 @@ async def test_user_only_clear_deletes_exactly_the_listed_rows(tmp_path) -> None
 
     assert before - _on_disk(tmp_path) == listed_keys
     assert {"subagent_abc123", "secretary_daily"} <= _on_disk(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_user_only_clear_rechecks_content_after_the_indexed_listing(tmp_path) -> None:
+    """The user-content filter sees another process's write after the reconcile.
+
+    The pane, count, and clear share indexed rows and the index's content answer,
+    which costs no stat per row. Until the reconcile, the count and the clear
+    still read the transcript as empty, so they agree with the pane. After the
+    reconcile, each request sees the message and the clear removes the transcript.
+    """
+    from kiro_crew.dashboard.handlers import api_sessions
+    from kiro_crew.history_listing_index import SessionListingIndex
+
+    log = _seed_mixed_history(tmp_path)
+    jobs: list = []
+    log._listing_index = SessionListingIndex(log, clock=lambda: 0.0, submit=jobs.append)
+    state = _real_state(log)
+
+    listed = json.loads(
+        (await api_sessions(_query_request(state, {"user_only": "1"}))).body.decode("utf-8")
+    )
+    assert {row["key"] for row in listed["sessions"]} == {"dashboard_used"}
+    never_used = tmp_path / "dashboard_chat-3-1790874654.jsonl"
+    with never_used.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"role": "user", "content": "written by another process"}) + "\n")
+
+    count = await api_sessions_clearable_count(_query_request(state, {"user_only": "1"}))
+    assert json.loads(count.body.decode("utf-8")) == {"sessions": 1}
+    # The fixed clock never makes a reconcile due; run the one the pool would.
+    assert log._listing_index.reconcile()
+    count = await api_sessions_clearable_count(_query_request(state, {"user_only": "1"}))
+    assert json.loads(count.body.decode("utf-8")) == {"sessions": 2}
+    with patch("kiro_crew.dashboard.handlers.sel"):
+        resp = await api_sessions_clear(_query_request(state, {"user_only": "1"}))
+    body = json.loads(resp.body.decode("utf-8"))
+    assert (body["ok"], body["cleared"], body["skipped"]) == (True, 2, 0)
+    assert not never_used.exists()
+    assert jobs == []
 
 
 @pytest.mark.asyncio

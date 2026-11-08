@@ -95,14 +95,9 @@ class TestInstallAgentRemote:
 class TestFixStaleManagedCommand:
     """Tests for _fix_stale_managed_command.
 
-    The managed invocation is delegated to ``_kirocrew_mcp_invocation`` (the
-    single source of truth), which returns a runnable ``(command, args)`` —
-    either a standalone ``kirocrew`` binary (POSIX ``bin/kirocrew`` / Windows
-    ``Scripts\\kirocrew.exe``) or the ``<interpreter> -m kiro_crew <sub>``
-    fallback. ``_fix_stale_managed_command`` must rewrite BOTH command and args
-    onto the spec (rewriting only the command silently dropped the fallback's
-    args and spawned a bare ``kirocrew`` that isn't on PATH — the Windows
-    ``command not found: kirocrew`` regression)."""
+    ``_kirocrew_mcp_invocation`` returns ``(command, args)``: a ``kirocrew`` binary or
+    the ``<interpreter> -m kiro_crew <sub>`` fallback. Both must be rewritten; the
+    command alone drops the fallback's args and spawns a bare ``kirocrew`` not on PATH."""
 
     @pytest.fixture(autouse=True)
     def _reset_cache(self):
@@ -170,9 +165,13 @@ class TestFixStaleManagedCommand:
         with patch(
             "kiro_crew.agent._kirocrew_mcp_invocation", return_value=(sys.executable, ["mcp-core"])
         ) as inv:
-            _fix_stale_managed_command("kirocrew-core", {"command": "x", "args": []})
-            _fix_stale_managed_command("kirocrew-core", {"command": "y", "args": []})
+            first = {"command": "x", "args": []}
+            second = {"command": "y", "args": []}
+            _fix_stale_managed_command("kirocrew-core", first)
+            _fix_stale_managed_command("kirocrew-core", second)
         inv.assert_called_once()  # cached after the first resolve
+        # The second spec is repaired from the cached answer, not left stale.
+        assert first == second == {"command": sys.executable, "args": ["mcp-core"]}
 
     def test_a_cached_command_from_a_pruned_install_is_re_resolved(self, tmp_path):
         """A cached launcher whose install an update removed is not served
@@ -300,17 +299,11 @@ class TestSharedServerToolsRegistration:
     def test_non_boolean_disabled_shared_server_is_not_mounted(
         self, tmp_path, monkeypatch, caplog, value
     ) -> None:
-        """The mount-side read shares the launch predicate: a shared entry whose
-        ``disabled`` is not a boolean is read FAIL-CLOSED and stripped from
-        ``tools``/``allowedTools`` exactly as a literal ``true`` is, so the row
-        the dashboard shows as Disabled is a server no session mounts. Red for
-        ``null`` and ``0`` under the truthiness read this replaced, which
-        mounted -- and auto-approved -- them.
+        """A non-boolean shared ``disabled`` is read fail-closed and not mounted.
 
-        The rebuild also SAYS why, through the same bounded warn-once ledger the
-        listing uses: a headless install rebuilds without a dashboard read, and
-        would otherwise strip the mount silently. One line per (server, value
-        shape) whichever path reports first, so a second rebuild is quiet."""
+        It is stripped from ``tools``/``allowedTools`` like ``true``; a truthiness read
+        would mount and auto-approve ``null`` and ``0``. The rebuild warns once per
+        (server, value shape), since a headless install has no dashboard to show it."""
         from kiro_crew.agent import rebuild_agent_config
 
         agent_dir = tmp_path / "agents"
@@ -370,14 +363,11 @@ class TestSharedServerToolsRegistration:
     def test_a_higher_priority_false_never_argues_a_lower_scope_mute_away(
         self, tmp_path, monkeypatch
     ) -> None:
-        """Three sources: the shared file mutes ``my-srv`` with ``null`` (read
-        fail-closed), the store says ``disabled: false`` and wins the merge, and
-        the agent config keeps a selective ``@my-srv/tool`` ref. The rendered
-        entry must say ``disabled: true`` -- the multi-scope predicate: one mute
-        anywhere mutes, and priority never un-mutes -- or kiro-cli launches a
-        server every surface calls muted. Red under the non-boolean-only
-        coercion: the merged ``false`` passed the ``isinstance(..., bool)`` check
-        and was emitted as ``disabled: false``."""
+        """One mute in any scope mutes; a higher-priority ``false`` never un-mutes.
+
+        The shared file mutes ``my-srv`` with ``null`` (fail-closed) and the store's
+        ``disabled: false`` wins the merge, yet the entry must render ``disabled: true``.
+        """
         from kiro_crew.agent import rebuild_agent_config
 
         agent_dir = tmp_path / "agents"
@@ -526,32 +516,46 @@ class TestManagedToolsInProcessNamesOnly:
 
         Every app is held enabled for the comparison: the full build omits a
         disabled app's tools (``mcp_tools.apps.advertised``), while the names-only
-        build takes the declaration and names them all without reading enablement
-        -- the one state in which the two legitimately differ.
+        build takes the declaration and names them all without reading enablement.
+        Every shipped app is held installed too: the full build lists the tools of
+        the installed apps' manifests (``mcp_tools.app_tools.advertised``), while the
+        names-only build names every tool a shipped manifest declares, the deny
+        universe. Those are the states in which the two legitimately differ.
         """
         import kiro_crew.mcp_core as core
+        import kiro_crew.mcp_tools.app_tools as app_tools
         import kiro_crew.mcp_tools.apps as apps_tools
+        from kiro_crew.apps import app_agent_tools
         from kiro_crew.mcp_discovery import _managed_tools_in_process
 
         monkeypatch.setattr(apps_tools, "app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(app_tools, "app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(app_agent_tools, "declared_tools", app_agent_tools.shipped_tools)
         full = [t["name"] for t in core._list_tools()]
         got = _managed_tools_in_process("kirocrew-core")
         assert got == full
         assert len(got) == len(set(got))  # no duplicates
 
     def test_the_live_value_builders_are_not_invoked(self) -> None:
-        """The two descriptions that reach for a live value — the agents-directory
-        scan in ``spawn`` and the config read in ``control`` — must NOT run on the
-        names-only path, because that caller discards every description.
+        """The names-only path never runs the live-value description builders.
 
-        Spying the expensive step directly (per the issue's acceptance): the
-        directory scan (``spawn.mcp_core.list_agents``) and the config read
-        (``control.KiroCrewConfig.load``) are asserted to receive zero calls.
+        That caller discards every description, so ``spawn.mcp_core.list_agents`` and
+        ``control.KiroCrewConfig.load`` must receive zero calls.
         """
         import kiro_crew.mcp_tools.control as control
         import kiro_crew.mcp_tools.spawn as spawn
+        from kiro_crew.apps import app_agent_tools
         from kiro_crew.mcp_discovery import _managed_tools_in_process
+        from kiro_crew.platform import current_context
 
+        # The gateway reads these names with its platform context installed. A test
+        # process has none, and the first read of the shipped app tree would compose
+        # the default one, which loads config once; install it first, so the count
+        # below measures the description builders whatever ran earlier in the worker.
+        current_context()
+        # The app tools' deny universe is read once per process; drop that read so it
+        # is measured here too, whatever ran earlier in the worker.
+        app_agent_tools.shipped_tools.cache_clear()
         scan = MagicMock(return_value=[])
         cfg_load = MagicMock(side_effect=AssertionError("config read ran on names-only path"))
         with (

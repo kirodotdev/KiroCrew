@@ -125,8 +125,10 @@ def _scan_transcript(path: Path) -> tuple[str, int]:
                     continue
                 try:
                     record = json.loads(line)
-                except ValueError:
-                    # Malformed line: skip, don't lose the rest
+                except (ValueError, RecursionError):
+                    # Malformed line: skip, don't lose the rest. RecursionError
+                    # too: a line nested past the interpreter's limit raises it
+                    # from json.loads, and it is not a ValueError.
                     logger.debug("digest: skipping malformed line in %r", path)
                     continue
 
@@ -169,7 +171,7 @@ def _scan_cli_log(path: Path) -> tuple[int, int]:
                     continue
                 try:
                     record = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):
                     continue
 
                 if not isinstance(record, dict):
@@ -209,7 +211,7 @@ def _first_message_from_cli(path: Path) -> str:
                     continue
                 try:
                     record = json.loads(line)
-                except ValueError:
+                except (ValueError, RecursionError):
                     continue
 
                 if not isinstance(record, dict):

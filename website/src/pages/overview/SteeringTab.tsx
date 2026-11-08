@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Compass, Link2, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
@@ -11,6 +11,10 @@ import SearchableSelect from '../../components/SearchableSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useListDetailView } from '../../hooks/useListDetailView'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
+import { bestFilterMatch } from '../../utils/filterSelection'
+import { useConfirm } from '../../components/ConfirmDialog'
 import type { SteeringFile, SteeringList } from '../../types'
 
 import { parseErrorCode } from '../../utils/errorReport'
@@ -141,6 +145,19 @@ function InclusionChip({ file, showDefault = false }: { file: SteeringFile; show
   )
 }
 
+/** A linked entry the server lists by name only: its target is outside the
+ *  folders the dashboard may read, so there is no body to fetch or show.
+ *  `=== false` keeps a listing that predates the field readable. */
+const notShown = (file: SteeringFile | null | undefined) => file?.linked === true && file.readable === false
+
+/** Why a linked entry is read-only, as one sentence: the target to edit when
+ *  the dashboard can read it, or that it is not shown when it cannot. */
+function linkedReason(file: SteeringFile): string {
+  return notShown(file)
+    ? i18nT('pages.overview.steeringTab.linked_not_shown')
+    : i18nT('pages.overview.steeringTab.linked_read_only', { target: file.target })
+}
+
 /** Icon-only marker on a linked row.
  *
  *  A linked document loads into every session like any other steering file, but
@@ -157,7 +174,7 @@ function LinkedChip({ file }: { file: SteeringFile }) {
   return (
     <span
       data-testid="steering-linked-chip"
-      title={i18nT('pages.overview.steeringTab.linked_read_only', { target: file.target })}
+      title={linkedReason(file)}
       className="text-muted shrink-0 inline-flex items-center"
     >
       <Link2 className="lucide-inline" aria-hidden />
@@ -328,7 +345,7 @@ function isProjectConflict(err: unknown): boolean {
   const body = (err as { body?: unknown }).body
   // The CODE is the identity, and it is required — 409 alone is not enough on
   // these routes, because create already answers 409 for a name collision
-  // ("'x.md' already exists") with no code. Treating a bare 409 as a project
+  // ("'x.md' already exists", code `steering_exists`). Treating a bare 409 as a project
   // conflict showed "the active project changed" over a collision and re-listed
   // for nothing. Anything without this code keeps the server's own message.
   return parseErrorCode(typeof body === 'string' ? body : undefined) === 'steering_project_changed'
@@ -352,9 +369,14 @@ const EDITOR_CLASS =
 const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 h-[calc(100vh-260px)] supports-[height:100svh]:h-[calc(100svh-260px)] min-h-[420px]'
 
 export default function SteeringTab() {
+  const { confirm, confirmDialog } = useConfirm()
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
+  // The live selection, for the delete's completion: it lands after an await,
+  // by which point the user may have opened, or started editing, another file.
+  const selectedKeyRef = useRef(selectedKey)
+  useEffect(() => { selectedKeyRef.current = selectedKey }, [selectedKey])
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   /** The project key in force when the draft was loaded.
@@ -404,7 +426,7 @@ export default function SteeringTab() {
     return slot ? `dashboard:${slot}` : undefined
   })
 
-  const { data, isLoading, isFetching, refetch } = useQuery<SteeringList>({
+  const { data, isLoading, isFetching, refetch, error: listError } = useQuery<SteeringList>({
     queryKey: ['steering', slotKey ?? null],
     queryFn: () => api.steeringFiles(slotKey),
   })
@@ -431,13 +453,15 @@ export default function SteeringTab() {
    *  project when the chat slot has been re-pointed since the list was drawn. */
   const projectKey = data?.project_key
 
-  const { data: detail } = useQuery({
+  const { data: detail, error: detailError } = useQuery({
     // projectKey is part of the identity, not decoration: `workspace/api.md`
     // names a DIFFERENT file in a different project, so a key without it serves
     // project A's cached body as project B's file.
     queryKey: ['steering-file', selectedKey, slotKey ?? null, projectKey ?? null],
     queryFn: () => api.steeringFile(selectedKey!, slotKey),
-    enabled: !!selectedKey,
+    // A not-shown link has no body the server will serve; asking would only
+    // manufacture a 404.
+    enabled: !!selectedKey && !notShown(files.find(f => f.key === selectedKey)),
   })
 
   const createFile = useMutation({
@@ -448,6 +472,7 @@ export default function SteeringTab() {
       setNewName('')
       setNewBody(newTemplate())
       if (res?.key) {
+        userPickedRef.current = true
         setSelectedKey(res.key)
         // Drop any cached detail for this key: a file deleted and recreated
         // under the same name would otherwise populate the editor from the
@@ -518,13 +543,19 @@ export default function SteeringTab() {
   })
 
   const deleteFile = useMutation({
-    mutationFn: (key: string) => api.deleteSteering(key, slotKey, projectKey),
-    onSuccess: (_res, key) => {
-      setSelectedKey(null)
-      setEditing(false)
+    mutationFn: ({ key, slotKey, projectKey }: { key: string; slotKey?: string; projectKey?: string }) =>
+      api.deleteSteering(key, slotKey, projectKey),
+    onSuccess: (_res, { key, projectKey }) => {
+      if (selectedKeyRef.current === key) {
+        setSelectedKey(null)
+        setEditing(false)
+      }
       // Remove, not invalidate: the file is gone, so its cached detail must
       // not survive to seed a later file created under the same key.
-      queryClient.removeQueries({ queryKey: ['steering-file', key] })
+      queryClient.removeQueries({
+        queryKey: ['steering-file', key],
+        predicate: query => key.startsWith('user/') || query.queryKey[3] === (projectKey ?? null),
+      })
       queryClient.invalidateQueries({ queryKey: ['steering'] })
     },
   })
@@ -576,13 +607,29 @@ export default function SteeringTab() {
   // Narrow viewport shows one pane at a time; a desktop shows both.
   const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
 
+  // A long list is cut at the pane's height, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more rows sit below (see MORE_BELOW_MASK). A filter changes the rows, not
+  // the scroller's own box, so no observer on the scroller sees it.
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  useEffect(() => { remeasureList() }, [filtered, remeasureList])
+
   // Keep a valid selection; suspended while editing so an unsaved draft is
-  // never discarded by a background refetch reordering the list.
+  // never discarded by a background refetch reordering the list. A file the
+  // user opened stays open while the filter still shows it; one this effect
+  // opened by itself moves to the best match for what was typed.
+  const userPickedRef = useRef(false)
   useEffect(() => {
     if (editing) return
     if (filtered.length === 0) { if (selectedKey !== null) setSelectedKey(null); return }
-    if (!selectedKey || !filtered.some(f => f.key === selectedKey)) setSelectedKey(filtered[0].key)
-  }, [filtered, selectedKey, editing])
+    const visible = !!selectedKey && filtered.some(f => f.key === selectedKey)
+    if (visible && (userPickedRef.current || !filter.trim())) return
+    const best = bestFilterMatch(filtered, filter, f => [f.key, f.name])
+    if (best && best.key !== selectedKey) {
+      userPickedRef.current = false
+      setSelectedKey(best.key)
+    }
+  }, [filtered, selectedKey, editing, filter])
 
   // Default the create dialog to the scope that exists.
   useEffect(() => { setNewSource(hasProject ? 'workspace' : 'user') }, [hasProject])
@@ -615,7 +662,7 @@ export default function SteeringTab() {
     return Object.keys(out).length ? out : undefined
   }
 
-  const select = (f: SteeringFile) => { setSelectedKey(f.key); setEditing(false); openDetail() }
+  const select = (f: SteeringFile) => { userPickedRef.current = true; setSelectedKey(f.key); setEditing(false); openDetail() }
 
   const renderRow = (f: SteeringFile) => {
     const isSel = f.key === selectedKey
@@ -635,7 +682,7 @@ export default function SteeringTab() {
         <div className="flex items-center gap-1.5 min-w-0">
           <span className="text-[13px] font-semibold text-text truncate flex-1">{f.rel}</span>
           <LinkedChip file={f} />
-          <InclusionChip file={f} />
+          {!notShown(f) && <InclusionChip file={f} />}
           <span className="text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold shrink-0">
             {sourceLabel(f.source)}
           </span>
@@ -648,6 +695,7 @@ export default function SteeringTab() {
   const rootHint = roots.map(r => r.path).join('  ·  ')
 
   return (<>
+    {confirmDialog}
     <Modal
       open={creating}
       onClose={() => setCreateDialog(false)}
@@ -774,11 +822,22 @@ export default function SteeringTab() {
           )}
         </div>
         <div className="ml-auto flex items-center gap-2">
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.steeringTab.refresh_steering_files')}>
+          {/* Inert while a refresh runs, so the name carries the reason: an inert
+              "Refresh steering files" reads as unavailable, not busy. `aria-disabled`
+              plus the guard, NOT `disabled`: `disabled` leaves the tab order and
+              drops a keyboard user's focus to the page for the whole refresh. */}
+          <Btn onClick={() => { if (!isFetching) void refetch() }} aria-disabled={isFetching || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-label={isFetching ? i18nT('pages.overview.steeringTab.refreshing_steering_files') : i18nT('pages.overview.steeringTab.refresh_steering_files')}>
             <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
           </Btn>
         </div>
       </div>
+
+      {/* A failed list read, first load or Refresh. The list below is the last good
+          read, so without this a failed refresh looks like one with no changes.
+          No hand-off: an open file's unsaved edits may still be in the editor. */}
+      {listError && (
+        <ErrorNotice className="mb-3" message={(listError as Error).message} testId="steering-list-failure" />
+      )}
 
       {/* No hand-off: a failed save leaves the open file's unsaved edits in the editor. */}
       {mutError && !fieldErrorShown && (
@@ -807,9 +866,13 @@ export default function SteeringTab() {
         />
       ) : (
         <div className={PANE_SHELL_CLASS}>
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.steeringTab.steering_files')}>
-            {filtered.map(renderRow)}
-            {filtered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.steeringTab.no_files_match_query', { query: filter })}</div>}
+          {/* The rows scroll in an inner box: a mask clips everything outside
+              the masked element, so on the pane it would also fade the border. */}
+          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 flex flex-col border border-border rounded-md`}>
+            <div ref={attachList} className={`flex-1 min-h-0 overflow-y-auto p-2 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`} role="listbox" aria-label={i18nT('pages.overview.steeringTab.steering_files')}>
+              {filtered.map(renderRow)}
+              {filtered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.steeringTab.no_files_match_query', { query: filter })}</div>}
+            </div>
           </div>}
 
           {showDetail && <div className="flex-1 min-w-0 flex flex-col border border-border rounded-md bg-card overflow-hidden">
@@ -836,7 +899,9 @@ export default function SteeringTab() {
                     {/* No LinkedChip here: the read-only banner directly below
                       * states the full sentence, and a header chip is what
                       * pushed Edit/Delete onto a second line. */}
-                    <InclusionChip file={selected} showDefault />
+                    {/* A not-shown link's mode is unknown: its front matter is
+                      * never read, so the default would be a guess. */}
+                    {!notShown(selected) && <InclusionChip file={selected} showDefault />}
                     {/* The absolute path is reference detail, not identity: it
                         never fits beside the name on a phone and would push the
                         actions off the row. */}
@@ -852,9 +917,7 @@ export default function SteeringTab() {
                         * title says why, naming the target file to edit instead. */}
                       <Btn
                         disabled={detail === undefined || selectedReadOnly}
-                        title={selectedReadOnly
-                          ? i18nT('pages.overview.steeringTab.linked_read_only', { target: selected.target })
-                          : undefined}
+                        title={selectedReadOnly ? linkedReason(selected) : undefined}
                         onClick={() => { setDraft(detail?.content ?? ''); setDraftProjectKey(projectKey); setDraftMode(unrecognizedMode(selected) ? '' : (selected.inclusion || 'always')); setDraftPattern(selected.file_match_pattern || ''); /* An unrecognised declaration resolves to `always`, so seeding either
    side from it is wrong, and the two failures are opposite. Seeding the
    BASE from it makes picking `always` a no-op, leaving the warning chip
@@ -867,10 +930,18 @@ export default function SteeringTab() {
                       <Btn
                         danger
                         disabled={selectedReadOnly}
-                        title={selectedReadOnly
-                          ? i18nT('pages.overview.steeringTab.linked_read_only', { target: selected.target })
-                          : undefined}
-                        onClick={() => { if (confirm(i18nT('pages.overview.steeringTab.delete_confirm', { path: selected.rel }))) deleteFile.mutate(selected.key) }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
+                        title={selectedReadOnly ? linkedReason(selected) : undefined}
+                        onClick={async () => {
+                          if (selectedReadOnly || deleteFile.isPending) return
+                          const { key, rel } = selected
+                          const target = { key, slotKey, projectKey }
+                          const ok = await confirm({
+                            title: i18nT('pages.overview.steeringTab.delete'),
+                            body: <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.steeringTab.delete_confirm', { path: rel })}</p>,
+                            confirmLabel: i18nT('pages.overview.steeringTab.delete'),
+                          })
+                          if (ok) deleteFile.mutate(target)
+                        }}>{i18nT('pages.overview.steeringTab.delete')}</Btn>
                     </>)}
                   </div>
                 </div>
@@ -885,7 +956,7 @@ export default function SteeringTab() {
                     <div className="mb-3 rounded-md border border-border bg-bg-elevated p-3">
                       <p className="text-[12px] leading-relaxed text-muted">
                         <Link2 className="lucide-inline" aria-hidden />{' '}
-                        {i18nT('pages.overview.steeringTab.linked_read_only', { target: selected.target })}
+                        {linkedReason(selected)}
                       </p>
                     </div>
                   )}
@@ -921,7 +992,14 @@ export default function SteeringTab() {
                   <div className="flex-1 min-h-0">
                     {editing
                       ? <textarea className={EDITOR_CLASS} aria-label={i18nT('pages.overview.steeringTab.edit_2', { path: selected.rel })} value={draft} onChange={e => setDraft(e.target.value)} />
-                      : detail === undefined
+                      : notShown(selected)
+                        ? null
+                        // A refused read (413 too large, 404 gone) is said, not
+                        // left as an endless "Loading…". View mode only, so
+                        // no draft is in play and the hand-off is safe.
+                        : detailError && detail === undefined
+                          ? <ErrorNotice message={(detailError as Error).message} askAgent />
+                          : detail === undefined
                         ? <div className="text-muted text-[13px]">{i18nT('pages.overview.steeringTab.loading')}</div>
                         : <div className="text-sm leading-relaxed"><MarkdownRenderer content={steeringBody(detail.content)} /></div>}
                   </div>

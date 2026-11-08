@@ -197,7 +197,6 @@ class TestCommentStore:
         )
         store.add_comment("test-art", c)
 
-        # Read raw file
         path = store.root / "test-art" / "comments.json"
         assert path.exists()
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -214,7 +213,7 @@ class TestCommentStore:
     def test_tolerant_load_malformed(self, store):
         """Malformed comments.json returns empty list."""
         path = store.root / "test-art" / "comments.json"
-        path.write_text("not json at all")
+        path.write_text("not json at all", encoding="utf-8")
         comments = store.list_comments("test-art")
         assert comments == []
 

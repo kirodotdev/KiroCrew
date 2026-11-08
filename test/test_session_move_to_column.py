@@ -397,14 +397,25 @@ class TestTool:
         assert out.startswith("Error: 2 columns share the name")
         assert _drops(dash) == []
 
-    def test_an_unknown_column_is_refused_before_any_write(self) -> None:
-        out, dash = _move({"session": "chat-3-300", "column": "Nope"})
-        assert out.startswith("Error: no board column matches")
-        assert _drops(dash) == []
-
-    def test_an_unknown_session_is_refused_before_any_write(self) -> None:
-        out, dash = _move({"session": "ghost", "column": "Done"})
-        assert out.startswith("Error:")
+    @pytest.mark.parametrize(
+        "session, column, error_prefix",
+        [
+            pytest.param(
+                "chat-3-300",
+                "Nope",
+                "Error: no board column matches",
+                id="an_unknown_column_is_refused_before_any_write",
+            ),
+            pytest.param(
+                "ghost", "Done", "Error:", id="an_unknown_session_is_refused_before_any_write"
+            ),
+        ],
+    )
+    def test_an_unknown_target_is_refused_before_any_write(
+        self, session, column, error_prefix
+    ) -> None:
+        out, dash = _move({"session": session, "column": column})
+        assert out.startswith(error_prefix)
         assert _drops(dash) == []
 
     def test_an_over_long_column_is_refused_by_the_schema(self) -> None:

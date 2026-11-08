@@ -24,7 +24,10 @@
  * too. This extension reads and opens it once at load,
  * registers each server with pi's built-in MCP support, and refuses any call to
  * a Kiro Crew server name that pi resolved to a different server: a same-named
- * entry in pi's own `mcp.json` outranks an extension's registration.
+ * entry in pi's own `mcp.json` outranks an extension's registration. The file
+ * also carries those servers' MCP instructions, which pi does not put in the
+ * prompt for a directly declared server, so this extension appends them to the
+ * system prompt of each run.
  *
  * And it carries a user's mid-turn message (a steer) into the running turn. pi-acp
  * has no steer verb, so the host writes each steer as its own file in the same
@@ -44,7 +47,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createDecipheriv } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -62,6 +65,9 @@ const MCP_HANDOFF_ENV = "KIROCREW_PI_MCP_HANDOFF";
 
 /** Marker the handoff file carries, beside the session nonce. */
 const MCP_HANDOFF_MARKER = "kiro-crew-mcp";
+
+/** Names the file in the session's scratch window this process reports its MCP registration in. */
+const MCP_RECEIPT_ENV = "KIROCREW_PI_MCP_RECEIPT";
 
 /**
  * The hex AES-256-GCM key that opens THIS process's handoff file. The file sits in
@@ -296,15 +302,27 @@ function serverKey(server: string): string {
   return server.replace(/-/g, "_");
 }
 
-/** The servers the host handed this session, or null when it handed none. */
-function readMcpHandoff(): Record<string, Record<string, unknown>> | null {
+/**
+ * Why the handoff did or did not yield servers, as the registration receipt names
+ * it: "loaded", "none" (no handoff was named), "unreadable" (the file could not be
+ * read), "malformed" (not a handoff file), or "unsealed" (its seal does not open
+ * under this session's nonce and key: another session's file, or a damaged one).
+ */
+type HandoffStatus = "loaded" | "none" | "unreadable" | "malformed" | "unsealed";
+
+/** The servers (and their MCP instructions) the host handed this session, and how reading them went. */
+function readMcpHandoff(): {
+  status: HandoffStatus;
+  servers: Record<string, Record<string, unknown>> | null;
+  instructions?: Record<string, string>;
+} {
   const path = process.env[MCP_HANDOFF_ENV];
-  if (!path) return null;
+  if (!path) return { status: "none", servers: null };
   let raw: string;
   try {
     raw = readFileSync(path, "utf8");
   } catch {
-    return null;
+    return { status: "unreadable", servers: null };
   }
   // Read once. Where the artifact directory is writable to this process the file
   // goes now; inside Kiro Crew's sandbox that directory is read-only here, and
@@ -314,23 +332,47 @@ function readMcpHandoff(): Record<string, Record<string, unknown>> | null {
   } catch {
     // read-only mount: the host removes it
   }
+  const malformed = { status: "malformed" as const, servers: null };
   let body: unknown;
   try {
     body = JSON.parse(raw);
   } catch {
-    return null;
+    return malformed;
   }
-  if (!body || typeof body !== "object") return null;
+  if (!body || typeof body !== "object") return malformed;
   const record = body as Record<string, unknown>;
   const nonce = process.env[NONCE_ENV] ?? "";
-  if (record[MCP_HANDOFF_MARKER] !== 1 || !nonce) return null;
+  if (record[MCP_HANDOFF_MARKER] !== 1 || !nonce) return malformed;
   // The session binding is the seal itself: this process's nonce is the
   // associated data, so a file sealed for any other nonce does not open.
   const opened = openSeal(record, nonce, MCP_KEY_ENV);
-  if (!opened || typeof opened !== "object") return null;
+  if (!opened || typeof opened !== "object") return { status: "unsealed", servers: null };
   const servers = (opened as Record<string, unknown>).servers;
-  if (!servers || typeof servers !== "object" || Array.isArray(servers)) return null;
-  return servers as Record<string, Record<string, unknown>>;
+  if (!servers || typeof servers !== "object" || Array.isArray(servers)) return malformed;
+  const instructions: Record<string, string> = {};
+  const given = (opened as Record<string, unknown>).instructions;
+  if (given && typeof given === "object" && !Array.isArray(given)) {
+    for (const [name, text] of Object.entries(given)) {
+      if (typeof text === "string" && text && name in servers) instructions[name] = text;
+    }
+  }
+  return { status: "loaded", servers: servers as Record<string, Record<string, unknown>>, instructions };
+}
+
+// Heads the section this extension adds to pi's system prompt. pi lists a server's
+// MCP instructions only for servers it does not declare directly, and Kiro Crew
+// declares its own directly, so the extension carries them in itself.
+const MCP_INSTRUCTIONS_HEADING = "# MCP Server Instructions";
+// Marks the section as this extension's own, so the once-guard below never
+// mistakes an agent prompt that happens to carry the heading for it.
+const MCP_INSTRUCTIONS_SENTINEL = "<!-- kiro-crew:mcp-instructions -->";
+
+/** The system-prompt section for *instructions* of the servers not in *shadowed*, or "". */
+function mcpInstructionsSection(instructions: Record<string, string>, shadowed: Set<string>): string {
+  const parts = Object.entries(instructions)
+    .filter(([name]) => !shadowed.has(name))
+    .map(([name, text]) => `## ${name}\n${text}`);
+  return parts.length === 0 ? "" : `${MCP_INSTRUCTIONS_SENTINEL}\n${MCP_INSTRUCTIONS_HEADING}\n\n${parts.join("\n\n")}`;
 }
 
 /**
@@ -368,7 +410,16 @@ export default function (pi: ExtensionAPI) {
   const crewServers = new Map<string, string>();
   // Kiro Crew server names whose tools this session must not run.
   const shadowed = new Set<string>();
-  const handoff = readMcpHandoff();
+  // Why each of those is not Kiro Crew's server, for the registration receipt:
+  // "refused" (pi or another extension rejected the registration), "replaced"
+  // (pi holds a different server under the name), "mcp_json" (pi's own mcp.json
+  // declares it), "mcp_json_unreadable" (an mcp.json exists and cannot be read).
+  const causes = new Map<string, string>();
+  const {
+    status: handoffStatus,
+    servers: handoff,
+    instructions: handoffInstructions,
+  } = readMcpHandoff();
   for (const [name, config] of Object.entries(handoff ?? {})) {
     crewServers.set(name, mcpToolPrefix(name));
     try {
@@ -376,11 +427,11 @@ export default function (pi: ExtensionAPI) {
     } catch {
       // Another extension holds the name, or pi refused it: not Kiro Crew's server.
       shadowed.add(name);
+      causes.set(name, "refused");
     }
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    if (crewServers.size === 0) return;
     const registered = new Map(
       pi.getMcpServers().map((server) => [server.name, server] as const),
     );
@@ -388,8 +439,14 @@ export default function (pi: ExtensionAPI) {
     for (const name of crewServers.keys()) {
       const mine = registered.get(name);
       const expected = JSON.stringify(handoff?.[name] ?? null);
-      if (!mine || JSON.stringify(mine.config) !== expected) shadowed.add(name);
-      if (fileKeys === null || fileKeys.has(serverKey(name))) shadowed.add(name);
+      if (!mine || JSON.stringify(mine.config) !== expected) {
+        shadowed.add(name);
+        if (!causes.has(name)) causes.set(name, mine ? "replaced" : "refused");
+      }
+      if (fileKeys === null || fileKeys.has(serverKey(name))) {
+        shadowed.add(name);
+        causes.set(name, fileKeys === null ? "mcp_json_unreadable" : "mcp_json");
+      }
     }
     if (shadowed.size > 0 && ctx.hasUI) {
       ctx.ui.notify(
@@ -399,6 +456,32 @@ export default function (pi: ExtensionAPI) {
         "warning",
       );
     }
+    const receipt = process.env[MCP_RECEIPT_ENV];
+    if (receipt && process.env[NONCE_ENV]) {
+      try {
+        // The private scratch window is writable; the gate's own directory is
+        // sealed read-only.
+        writeFileSync(receipt, JSON.stringify({
+          "kiro-crew-mcp-registration": 1,
+          nonce: process.env[NONCE_ENV],
+          handoff: handoffStatus,
+          registered: [...crewServers.keys()].filter(name => !shadowed.has(name)),
+          unregistered: Object.fromEntries(
+            [...shadowed].map(name => [name, causes.get(name) ?? "refused"]),
+          ),
+        }), { mode: 0o600, flag: "wx" });
+      } catch {
+        // The host treats a missing or stale receipt as an unconfirmed handoff.
+      }
+    }
+  });
+
+  // Each run's system prompt gets the instructions of the Kiro Crew servers this
+  // session mounted, once: a prompt that already carries the section is left alone.
+  pi.on("before_agent_start", async (event) => {
+    const section = mcpInstructionsSection(handoffInstructions ?? {}, shadowed);
+    if (!section || event.systemPrompt.includes(MCP_INSTRUCTIONS_SENTINEL)) return;
+    return { systemPrompt: `${event.systemPrompt}\n\n${section}` };
   });
 
   pi.registerCommand(PROBE_COMMAND, {

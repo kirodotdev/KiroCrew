@@ -253,12 +253,14 @@ def _agent_roster_row(
     name to another route sees the mask, which happens only for a name containing
     credential- or URL-shaped text.
 
-    ``scope`` is never masked: it is a literal written here, not record content.
+    ``scope`` and ``owns_mate_file`` are never masked: each is a literal, not
+    record content. ``owns_mate_file`` starts ``False`` here; the roster handler
+    sets it for a row whose binding resolves to its own mate file.
     The annotation is ``dict[str, object]`` rather than ``dict[str, str]`` because
-    of ONE field: ``avatar`` is a structured ``dict`` the dashboard needs verbatim
-    (see ``_roster_avatar``). Every other value is a ``str`` -- ``_roster_mask``
-    returns one for every input, including the non-strings the loader lets
-    through.
+    of two fields: ``avatar`` is a structured ``dict`` the dashboard needs verbatim
+    (see ``_roster_avatar``), and ``owns_mate_file`` is a ``bool``. Every other
+    value is a ``str`` -- ``_roster_mask`` returns one for every input, including
+    the non-strings the loader lets through.
 
     Excluded on purpose, each verified to have NO consumer in ``website/src``:
     ``watchdog_tool_stall_suspect_secs`` and ``watchdog_tool_stall_hard_cap_secs``
@@ -295,6 +297,11 @@ def _agent_roster_row(
         # record field.
         "scope": scope,
         "kiro_agent": _roster_mask(agent_cfg.kiro_agent),
+        # Whether the binding resolves to the crewmate's own mate file
+        # (``mate_capabilities.owns_mate_file``). ``False`` here; the roster
+        # handler sets it, so the Built from label follows the rule the editor's
+        # in-place path uses. A literal bool, never record content.
+        "owns_mate_file": False,
         "workspace": _roster_mask(agent_cfg.workspace),
         "memory_store": _roster_mask(agent_cfg.memory_store),
         "model": _roster_mask(agent_cfg.model),

@@ -582,8 +582,8 @@ def acquire_singleton_lock(socket_path: str | os.PathLike[str]) -> Optional[int]
     # O_CLOEXEC keeps the fd out of spawned backends. It does not exist on
     # Windows, where PEP 446 already makes every fd Python opens
     # non-inheritable, so the flag is simply absent there.
-    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
-    fd = os.open(str(lock_file), flags, 0o600)
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
+    fd = platform_compat.open_create_or_existing(str(lock_file), flags, 0o600)
     if not platform_compat.try_acquire_lock(fd, exclusive=True):
         os.close(fd)
         return None
@@ -787,12 +787,16 @@ async def remove_stale(socket_path: str | os.PathLike[str]) -> None:
     POSIX only in effect: a Windows named pipe has no persistent name -- the
     kernel drops it when the last handle closes -- so there is nothing to
     clean up and nothing that could block a rebind.
+
+    Every filesystem touch runs in a worker thread: the caller is the
+    gateway's event loop (the manager's respawn) or gatewayd's, and a stat
+    on a slow state directory would stall every session on it.
     """
     if platform_compat.IS_WINDOWS:
         return
     path = Path(socket_path)
     try:
-        st = os.stat(path)
+        st = await asyncio.to_thread(os.stat, path)
     except FileNotFoundError:
         return
     if not stat.S_ISSOCK(st.st_mode):
@@ -810,7 +814,7 @@ async def remove_stale(socket_path: str | os.PathLike[str]) -> None:
         )
         return
     try:
-        path.unlink()
+        await asyncio.to_thread(path.unlink)
     except FileNotFoundError:
         return
     except OSError as exc:

@@ -8,6 +8,7 @@ A new restriction applied after the masks goes here.
 """
 
 import ctypes
+import fnmatch
 import os
 import platform as _plat
 import stat
@@ -34,15 +35,15 @@ def scrub_env(launch):
     environ["KIROCREW_SANDBOX_LEVEL"] = launch.sandbox_level
 
     # Root-owned files under /etc/ssh/ssh_config.d/ appear as nobody:nobody inside the
-    # user namespace because uid 0 is unmapped, and ssh refuses to load them. Bypass
-    # them with -F /dev/null.
+    # user namespace because uid 0 is unmapped, and ssh refuses to load them. An
+    # explicit -F skips the system config and its includes: the user's own
+    # ~/.ssh/config when this tier leaves it readable and ssh would load it, else
+    # /dev/null.
     if not environ.get("GIT_SSH_COMMAND"):
-        environ["GIT_SSH_COMMAND"] = (
-            "ssh -F /dev/null -o IdentityFile=~/.ssh/id_rsa"
-            " -o IdentityFile=~/.ssh/id_ecdsa"
-            " -o IdentityFile=~/.ssh/id_ed25519"
-            " -o UserKnownHostsFile=~/.ssh/known_hosts"
-            "%s" % launch.strict_host_key_opt
+        environ["GIT_SSH_COMMAND"] = "ssh -F %s%s -o UserKnownHostsFile=~/.ssh/known_hosts%s" % (
+            _git_ssh_config_file(launch),
+            _git_ssh_identity_opts(launch),
+            launch.strict_host_key_opt,
         )
 
     # Gradle would otherwise leave a daemon running after this sandboxed command exits,
@@ -59,6 +60,158 @@ def scrub_env(launch):
         environ["GRADLE_OPTS"] = (
             environ.get("GRADLE_OPTS", "") + " -Dorg.gradle.daemon=false"
         ).strip()
+
+
+def _git_ssh_identity_opts(launch):
+    """The ``-o IdentityFile=`` options for the default ``GIT_SSH_COMMAND``.
+
+    Only the named keys that exist, read after the masks are placed, so a strict
+    tier's tmpfs ``~/.ssh`` is what is looked at. A user-supplied ``IdentityFile``
+    that is missing is an error-level line on every ssh call ("no such identity"),
+    which reads as a failed fetch although the command exits 0.
+
+    The set offered never grows past these three: an explicit ``IdentityFile``
+    replaces ssh's own default list, which also tries ``id_dsa`` and the ``_sk``
+    and ``id_xmss`` keys. So when none of the three exists, all three are still
+    named, as before, rather than none, which would hand the choice back to that
+    wider default list.
+    """
+    # A local, not a module constant: a part holds only definitions below its marker.
+    names = ("id_rsa", "id_ecdsa", "id_ed25519")
+    present = [name for name in names if os.path.isfile(os.path.join(launch.ssh_dir, name))]
+    return "".join(" -o IdentityFile=~/.ssh/%s" % name for name in present or names)
+
+
+def _git_ssh_config_file(launch):
+    """The ``-F`` argument for the default ``GIT_SSH_COMMAND``: ``~/.ssh/config`` or ``/dev/null``.
+
+    ``-F /dev/null`` keeps ssh off the system config, whose root-owned includes it
+    refuses inside the namespace, but it also drops the user's own config, so a git
+    host reachable only through a ``ProxyCommand``, a ``ProxyJump`` or a host alias
+    there cannot be resolved. The user's file is named instead only when the tier
+    leaves ``~/.ssh`` readable (the strict tier's stand-in holds only ``known_hosts``)
+    and ssh would load it here (:func:`_ssh_config_loadable`), because ssh exits on a
+    config it refuses rather than ignoring it. Anything else keeps ``/dev/null``.
+    """
+    config = os.path.join(launch.ssh_dir, "config")
+    if launch.hide_ssh or not _ssh_config_loadable(launch, config, 0):
+        return "/dev/null"
+    # GIT_SSH_COMMAND is parsed by sh: quote a path carrying anything but plain characters.
+    if all(ch.isalnum() or ch in "/._-+@:," for ch in config):
+        return config
+    return "'%s'" % config.replace("'", "'\\''")
+
+
+def _ssh_config_loadable(launch, path, depth):
+    """Whether ssh would load the config at *path*, and every file it includes, here.
+
+    Read after the masks, so any mask over ``~/.ssh`` counts. Each file must be a
+    regular file, not followed through a link, owned by this uid and not writable by
+    group or others: ssh's own check, and inside the namespace a root-owned file reads
+    as ``nobody`` and fails it. Every ``Include`` must name a path under ``~/.ssh``
+    (relative ones resolve there, as ssh resolves them in a user config), with a glob
+    only in its last component, and every file it matches must pass the same test. A
+    missing main config, a read error, or a chain deeper than
+    eight levels is not loadable; an include that matches nothing is
+    fine, as ssh skips it.
+    """
+    if depth > 8:
+        return False
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return depth > 0
+    except OSError:
+        return False
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != launch.real_uid or info.st_mode & 0o022:
+            return False
+        with os.fdopen(os.dup(fd), "rb") as fh:
+            text = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    ssh_prefix = launch.ssh_dir.rstrip("/") + "/"
+    for line in text.splitlines():
+        words = _ssh_config_words(line)
+        if not words or words[0].lower() != "include":
+            continue
+        for word in words[1:]:
+            if word.startswith("~/.ssh/"):
+                word = ssh_prefix + word[len("~/.ssh/") :]
+            elif not word.startswith(("/", "~")):
+                word = ssh_prefix + word
+            parent, leaf = os.path.split(word)
+            if (
+                not word.startswith(ssh_prefix)
+                or "/../" in word + "/"
+                # ssh expands a backslash escape in a path; this check would read
+                # a different name than ssh opens.
+                or "\\" in word
+                or any(ch in parent for ch in "*?[$%")
+                or any(ch in leaf for ch in "$%")
+            ):
+                return False
+            if any(ch in leaf for ch in "*?["):
+                try:
+                    names = os.listdir(parent)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    return False
+                # glob(3), which ssh uses, matches a leading dot only literally.
+                matches = [
+                    os.path.join(parent, n)
+                    for n in names
+                    if fnmatch.fnmatchcase(n, leaf)
+                    and (not n.startswith(".") or leaf.startswith("."))
+                ]
+            else:
+                matches = [word]
+            for match in matches:
+                if not _ssh_config_loadable(launch, match, depth + 1):
+                    return False
+    return True
+
+
+def _ssh_config_words(line):
+    """*line* split the way ssh splits a config line: quotes group, ``#`` starts a comment.
+
+    The keyword is separated from its arguments by whitespace, by one ``=``, or by
+    one ``=`` with whitespace on either side.
+    """
+    text = line.strip()
+    end = 0
+    while end < len(text) and not text[end].isspace() and text[end] != "=":
+        end += 1
+    if not end or text[0] == "#":
+        return []
+    rest = text[end:].lstrip()
+    if rest.startswith("="):
+        rest = rest[1:]
+    words, word, quote, started = [text[:end]], "", None, False
+    for ch in rest:
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                word += ch
+        elif ch in "\"'":
+            quote, started = ch, True
+        elif ch.isspace():
+            if started:
+                words.append(word)
+            word, started = "", False
+        elif ch == "#" and not started:
+            break
+        else:
+            word += ch
+            started = True
+    if started:
+        words.append(word)
+    return words
 
 
 def drop_privileges(launch):
@@ -369,9 +522,26 @@ def enter_exec_cwd(launch):
     a writable or populated directory could be handed a spec that directory holds.
     Runs after the hardlinked-credential scan, which walks the workspace the launcher
     was started in.
+
+    With no ``exec_cwd`` the launcher still enters the directory it was started in
+    again, by the name it had before any mount, so the command it runs sees that
+    directory through the seals too. When that name does not reach a directory, the
+    command starts in the filesystem root instead of the old directory.
     """
     target = launch.exec_cwd
     if not target:
+        if launch.inherited_cwd:
+            try:
+                os.chdir(launch.inherited_cwd)
+                return
+            except OSError:
+                pass
+        try:
+            os.chdir(os.sep)
+        except OSError as exc:
+            sys.exit(
+                "sandbox: FATAL — cannot leave the inherited directory (%s)" % (exc.strerror or exc)
+            )
         return
     try:
         os.chdir(target)

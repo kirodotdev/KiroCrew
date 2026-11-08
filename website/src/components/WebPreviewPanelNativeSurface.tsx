@@ -134,7 +134,7 @@ export default function WebPreviewPanelNativeSurface({ native, annotate, draft, 
               // Disabled = muted fill, not accent-at-40%: on dark themes a faded
               // accent still reads as clickable, and this button is disabled
               // exactly while the first note is being typed.
-              className="inline-flex items-center gap-1.5 text-[12px] px-2.5 h-6 rounded-md bg-accent text-white hover:opacity-90 transition-opacity cursor-pointer border-none disabled:bg-bg-hover disabled:text-muted disabled:cursor-default disabled:hover:opacity-100"
+              className="inline-flex items-center gap-1.5 text-[12px] px-2.5 h-6 rounded-md bg-accent text-accent-fg hover:opacity-90 transition-opacity cursor-pointer border-none disabled:bg-bg-hover disabled:text-muted disabled:cursor-default disabled:hover:opacity-100"
               title={i18nT('components.webPreviewPanel.annotate_send_tooltip')}
               data-testid="browser-annotations-send"
             >
@@ -168,7 +168,7 @@ export default function WebPreviewPanelNativeSurface({ native, annotate, draft, 
                   data-testid={editing?.id === a.id ? 'browser-annotation-editing' : undefined}
                 >
                   <span
-                    className="shrink-0 min-w-[18px] h-[18px] px-1.5 rounded-full text-[11px] font-semibold text-white text-center leading-[18px]"
+                    className="shrink-0 min-w-[18px] h-[18px] px-1.5 rounded-full text-[11px] font-semibold text-accent-fg text-center leading-[18px]"
                     // Marker identity colour, matching the on-page badges; not
                     // the danger hue, which belongs to Remove and the armed Clear.
                     style={{ backgroundColor: 'var(--accent)' }}
@@ -202,7 +202,7 @@ export default function WebPreviewPanelNativeSurface({ native, annotate, draft, 
                       <button
                         type="button"
                         onClick={commitNote}
-                        className="text-[12px] px-2 h-6 rounded-md bg-accent text-white border-none cursor-pointer hover:opacity-90 transition-opacity shrink-0"
+                        className="text-[12px] px-2 h-6 rounded-md bg-accent text-accent-fg border-none cursor-pointer hover:opacity-90 transition-opacity shrink-0"
                       >
                         {i18nT('components.webPreviewPanel.annotate_save')}
                       </button>

@@ -267,7 +267,7 @@ async def _handle_issue_state(request: web.Request) -> web.Response:
     if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
         return web.json_response({"error": "'number' must be a positive integer"}, status=400)
 
-    state = (body.get("state") or "").strip().lower()
+    state = routes._str_field(body, "state").lower()
     if state not in ("open", "closed"):
         return web.json_response({"error": "state must be 'open' or 'closed'"}, status=400)
     state_reason = body.get("state_reason")

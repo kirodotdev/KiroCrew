@@ -28,8 +28,10 @@ from .errors import (
 #: bound keeps every individual segment inside a path component. Bounding a
 #: segment's SIZE and the segment COUNT below together bound the whole parsed
 #: value, keeping ``owner/repo`` well inside the one argv element it rides in.
+#: Anchored with ``\Z``, not ``$``: ``$`` also matches before a final newline, so
+#: a segment one newline past the bound would still match.
 GITLAB_MAX_SEGMENT_CHARS = 255
-SEGMENT_RE = re.compile(rf"^[A-Za-z0-9._-]{{1,{GITLAB_MAX_SEGMENT_CHARS}}}$")
+SEGMENT_RE = re.compile(rf"^[A-Za-z0-9._-]{{1,{GITLAB_MAX_SEGMENT_CHARS}}}\Z")
 _URL_PATH_SEPARATOR = "/"
 
 #: GitLab's own ceiling on how deep a group may sit. ``Namespace`` validates

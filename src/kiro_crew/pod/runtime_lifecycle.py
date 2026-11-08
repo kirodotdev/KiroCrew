@@ -17,12 +17,13 @@ import subprocess
 import time
 from pathlib import Path
 
-from kiro_crew.pod import launchd, runtime, runtime_home
+from kiro_crew.pod import home_liveness, launchd
+from kiro_crew.pod import limits as pod_limits
+from kiro_crew.pod import runtime, runtime_home
 from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import PodConfig
 
-# --------------------------------------------------------------------------- #
 # Sentinel in stop_pod's stdout meaning the pod NAME was reclaimed by a new pod
 # mid-teardown (down/up race). The old pod is gone, but per-name state (the env
 # file pinning CHECKOUT=) now belongs to the NEW pod and must not be deleted.
@@ -96,8 +97,9 @@ def loaded_teardown_hook(cfg: PodConfig, name: str) -> bool | None:
 
 
 def _install_pod_dropin(cfg: PodConfig, name: str) -> subprocess.CompletedProcess | None:
-    """Pin pod *name* to its checkout binary, or return a start-blocking failure."""
-    checkout = runtime.read_env_file(cfg, name).get("CHECKOUT", "")
+    """Pin pod *name* to its checkout binary and its ceilings, or return a failure."""
+    env_data = runtime.read_env_file(cfg, name)
+    checkout = env_data.get("CHECKOUT", "")
     if not checkout:
         return subprocess.CompletedProcess(
             args=[],
@@ -110,7 +112,19 @@ def _install_pod_dropin(cfg: PodConfig, name: str) -> subprocess.CompletedProces
             ),
         )
     try:
-        unit_mod.install_dropin(cfg, name, Path(checkout).expanduser())
+        limits = pod_limits.from_env(env_data)
+    except pod_limits.LimitError as exc:
+        # Refused rather than defaulted: a hand-edited ceiling the operator meant
+        # must not silently become 4G, and systemd would reject a malformed one
+        # with a parse error that names neither the file nor the key.
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=f"pod {name!r} has an invalid ceiling in {cfg.env_file(name)}: {exc}",
+        )
+    try:
+        unit_mod.install_dropin(cfg, name, Path(checkout).expanduser(), limits)
     except (OSError, ValueError) as exc:
         return subprocess.CompletedProcess(
             args=[],
@@ -253,6 +267,58 @@ def halt_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         return runtime.systemctl("stop", runtime.pod_unit(cfg, name))
 
 
+def restart_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
+    """Stop pod *name*, KEEP its HOME, and start it again from its env file.
+
+    :func:`halt_pod` followed by :func:`start_pod` under one hold of the name
+    mutex, so a concurrent ``down`` cannot reclaim the home in the gap. The start
+    re-renders the per-pod drop-in (Linux), plist (macOS) or wrapper (Windows)
+    from the env file, which is how a changed ``MEMORY=`` / ``CPU=`` takes effect
+    without reclaiming sessions, config, installed apps or downloaded models.
+
+    A pod that is not running is simply started, so ``restart`` also revives a pod
+    that crashed and left its home behind. A failed halt is returned unchanged and
+    nothing is started: the old gateway may still be serving.
+
+    Refused on Windows before anything is stopped. The Windows stop keeps the run
+    receipt and the home, and the Windows start refuses to boot over either, so a
+    halt-then-start there would stop the gateway and leave it down.
+    """
+    if runtime.IS_WINDOWS:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=(
+                "pod restart is not supported on Windows: a Windows pod cannot start "
+                "again over the home and run record its stop keeps. Nothing was "
+                f"stopped. `kirocrew pod down {name}` then `kirocrew pod up {name}` "
+                "restarts it with a fresh home."
+            ),
+        )
+    with runtime.pod_name_mutex(cfg, name):
+        # Checked before the halt: the Linux start re-validates these and refuses a
+        # bad one, so a hand-edited or now over-cap value found only then would
+        # leave a healthy pod stopped. Other platforms are checked too, so a value
+        # every platform records is never left unvalidated.
+        try:
+            pod_limits.from_env(runtime.read_env_file(cfg, name))
+        except pod_limits.LimitError as exc:
+            return subprocess.CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout="",
+                stderr=(
+                    f"pod {name!r} has an invalid ceiling in {cfg.env_file(name)}: {exc}. "
+                    "Nothing was stopped."
+                ),
+            )
+        halted = halt_pod(cfg, name)
+        if halted.returncode != 0:
+            return halted
+        return start_pod(cfg, name)
+
+
 def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     """Stop pod *name* and reclaim its isolated HOME, or say why it could not.
 
@@ -298,11 +364,38 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         # Read the cgroup path BEFORE stopping: systemd clears ControlGroup on
         # an inactive unit.
         procs_file = cgroup_procs_file(cfg, name)
+        # Also read BEFORE stopping, which leaves every unit inactive: whether
+        # systemd was running anything as this pod. When it was not, nothing the
+        # stop and the drain end can be using the HOME, so whatever still does
+        # runs outside the unit (a gateway started without it, or a child that
+        # outlived one) and only the pod's own evidence can clear the delete. A
+        # name with no HOME has nothing to reclaim and keeps the plain stop.
+        idle_home = cfg.home_dir(name).exists() and (
+            runtime.unit_state(cfg, name)[0] in ("inactive", "failed")
+        )
         cp = runtime.systemctl("stop", runtime.pod_unit(cfg, name))
         if cp.returncode != 0:
-            # The unit may still be live; deleting its HOME here is exactly the
-            # race this ordering exists to avoid.
-            return cp
+            if not idle_home:
+                # The unit may still be live; deleting its HOME here is exactly
+                # the race this ordering exists to avoid.
+                return cp
+            # `stop` refuses a unit systemd cannot load ("not loaded"), the shape
+            # of every orphan whose template is gone. There is nothing to stop.
+            cp = subprocess.CompletedProcess(args=cp.args, returncode=0, stdout=cp.stdout or "")
+        if idle_home:
+            blocker = home_liveness.reclaim_blocker(cfg.home_dir(name), home_liveness.proc_links())
+            if blocker is not None:
+                return subprocess.CompletedProcess(
+                    args=[],
+                    returncode=1,
+                    stdout=cp.stdout or "",
+                    stderr=(
+                        f"systemd runs nothing as {runtime.pod_unit(cfg, name)}, but {blocker}, "
+                        f"so its isolated HOME at {runtime_home.resolved_pod_home(cfg, name)} "
+                        f"was NOT deleted. Stop what runs there, then retry "
+                        f"`kirocrew pod down {name}`."
+                    ),
+                )
         survivors = drain_cgroup(procs_file) if procs_file is not None else []
         # Resolved, because cleanup_home reports the resolved path: on a host
         # whose home is a symlink, naming it both ways reads as two directories.

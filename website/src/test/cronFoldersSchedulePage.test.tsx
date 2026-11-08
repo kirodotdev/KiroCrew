@@ -107,6 +107,24 @@ describe('SchedulePage cron folders', () => {
     expect(screen.queryByText('Hidden Job')).not.toBeInTheDocument()
   })
 
+  it('the folder toggle says whether the folder is open', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).cronFolders.mockResolvedValue([{ id: 'f1', name: 'Production', order: 1 }])
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob('j1', 'Hidden Job', 'f1')],
+    })
+
+    renderWithProviders(<SchedulePage />)
+    // Folders load from their own query, so the job row can show before its folder header.
+    const toggle = await screen.findByLabelText('Collapse folder Production')
+    expect(screen.getByText('Hidden Job')).toBeInTheDocument()
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+    fireEvent.click(toggle)
+    expect(screen.queryByText('Hidden Job')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Expand folder Production')).toHaveAttribute('aria-expanded', 'false')
+  })
+
   it('renders folder actions menu button for each folder header', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).cronFolders.mockResolvedValue([{ id: 'f1', name: 'To Delete', order: 1 }])
@@ -235,6 +253,67 @@ describe('SchedulePage cron folders', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
     // Name preserved
     expect(input).toHaveValue('Bad Folder')
+  })
+
+  it('a quick second Enter or click while the create is in flight sends one POST', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).cronFolders.mockResolvedValue([])
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob('j1', 'Some Job')] })
+    // Hold the create open so the repeat lands while it is still in flight.
+    let settle: (v: { id: string; name: string; order: number }) => void = () => {}
+    vi.mocked(api).createCronFolder.mockImplementation(
+      () => new Promise(resolve => { settle = resolve }),
+    )
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Some Job')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /New folder/ }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+
+    const input = screen.getByLabelText('New folder name')
+    fireEvent.change(input, { target: { value: 'Twice' } })
+    const createBtn = within(screen.getByRole('dialog')).getByRole('button', { name: 'Create' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.click(createBtn)
+
+    expect(api.createCronFolder).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(createBtn).toBeDisabled())
+    // The button says the create is running, not merely switched off.
+    expect(createBtn).toHaveTextContent('Creating…')
+    // The dialog holds until the POST settles: Escape and Cancel do not drop it.
+    const cancelBtn = within(screen.getByRole('dialog')).getByRole('button', { name: 'Cancel' })
+    expect(cancelBtn).toBeDisabled()
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+
+    settle({ id: 'f-new', name: 'Twice', order: 1 })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(api.createCronFolder).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failed create re-enables submit and keeps the typed name', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).cronFolders.mockResolvedValue([])
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob('j1', 'Some Job')] })
+    vi.mocked(api).createCronFolder.mockRejectedValueOnce(new Error('Network error'))
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Some Job')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /New folder/ }))
+    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
+
+    const input = screen.getByLabelText('New folder name')
+    fireEvent.change(input, { target: { value: 'Retry Me' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    await waitFor(() => expect(screen.getByText('Network error')).toBeInTheDocument())
+    const createBtn = within(screen.getByRole('dialog')).getByRole('button', { name: 'Create' })
+    expect(createBtn).toBeEnabled()
+    expect(input).toHaveValue('Retry Me')
+
+    // The retry goes through: the guard was released.
+    fireEvent.click(createBtn)
+    await waitFor(() => expect(api.createCronFolder).toHaveBeenCalledTimes(2))
   })
 
   it('bypasses collapsed folder state when filter is active', async () => {

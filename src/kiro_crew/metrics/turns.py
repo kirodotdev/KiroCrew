@@ -46,7 +46,10 @@ from __future__ import annotations
 import logging
 
 from kiro_crew.messaging.link import telemetry_channel_of
+from kiro_crew.metrics.harness import ATTR_HARNESS, HARNESS_UNKNOWN
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.metrics.turn_completed import emit_turn_completed
+from kiro_crew.metrics.usage_attrs import TRIGGER_OTHER
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +179,31 @@ def emit_turn_duration(
     elapsed_ms: int | float | None = None,
     model: str = "",
     provider: str = "",
+    harness: str = HARNESS_UNKNOWN,
+    trigger: str = TRIGGER_OTHER,
+    origin: str | None = None,
 ) -> None:
     """Emit one ``kirocrew.turn.duration`` sample (best-effort, never raises).
+
+    Also emits the exportable pair, ``kirocrew.turn.completed`` and
+    ``kirocrew.turn.completed.duration``, via
+    :func:`kiro_crew.metrics.turn_completed.emit_turn_completed`, so
+    the local and the exported reading describe one population with one outcome.
+    ``trigger`` is who started the turn (``metrics.usage_attrs``), and a caller
+    that passes nothing records ``other``. ``origin`` overrides the origin
+    derived from ``session_key``, for a surface whose key does not say where the
+    input arrived (a webhook).
+
+    ``harness`` is the EFFECTIVE harness of the session that ran the turn, as
+    :func:`kiro_crew.metrics.harness.harness_of` resolved it from the live
+    provider at the emit site. It is always sent, and a caller that passes
+    nothing is recorded as ``unknown``. It is written as given: ``harness_of``
+    already maps every input into
+    :data:`~kiro_crew.metrics.harness.HARNESS_VALUES`, so the set stays closed
+    without a second check here. ``provider``
+    cannot answer "which harness" (``acp`` covers kiro-cli, Codex and others),
+    which is why this is a separate attribute. The usage family below carries
+    the same value from the same caller.
 
     ``duration_ms`` is the provider-reported duration and ``elapsed_ms`` the
     locally measured wall clock; the first non-zero wins. Both are needed
@@ -215,6 +241,16 @@ def emit_turn_duration(
     empty-string label. See :func:`_model_attrs` for the cardinality argument.
     """
     value = duration_ms or elapsed_ms
+    # Before the zero-duration return: the counter counts every finished turn,
+    # including one whose surface measured no duration at all.
+    emit_turn_completed(
+        value,
+        session_key=session_key,
+        outcome=outcome,
+        trigger=trigger,
+        harness=harness,
+        origin=origin,
+    )
     if not value:
         return
     attrs: dict = {"outcome": outcome or OUTCOME_UNCLASSIFIED}
@@ -225,6 +261,7 @@ def emit_turn_duration(
     except Exception:
         pass
     attrs.update(_model_attrs(model, provider))
+    attrs[ATTR_HARNESS] = harness
     try:
         get_recorder().histogram(TURN_METRIC, value, unit="ms", attrs=attrs)
     except Exception:
@@ -277,6 +314,7 @@ def emit_turn_usage(
     cost_usd: object = 0.0,
     model: str = "",
     provider: str = "",
+    harness: str = HARNESS_UNKNOWN,
 ) -> None:
     """Emit this turn's token / billing samples (best-effort, never raises).
 
@@ -296,10 +334,13 @@ def emit_turn_usage(
     moves a token. An absent series reads as absent, which is the truth.
 
     Attributes are deliberately just ``direction`` (tokens only) plus
-    ``model``/``provider``. ``outcome`` and ``session_source`` are NOT carried:
-    they exist on ``kirocrew.turn.duration``, which samples the same turns, so
-    adding them here would multiply these series by two more dimensions to answer
-    a question the duration instrument already answers.
+    ``model``/``provider`` and ``harness``, the value :func:`emit_turn_duration`
+    documents. ``harness`` is here because spend per harness is a question the
+    duration instrument cannot answer, and it mostly follows ``model``, so it adds
+    few series. ``outcome`` and ``session_source`` are NOT carried: they exist on
+    ``kirocrew.turn.duration``, which samples the same turns, so adding them here
+    would multiply these series by two more dimensions to answer a question the
+    duration instrument already answers.
 
     The four emits are written out rather than looped over a table of
     (name, value, unit) tuples. A loop reads shorter but hides each instrument's
@@ -308,7 +349,7 @@ def emit_turn_usage(
     first argument of every ``histogram(...)`` call — a loop variable there is
     exactly how an unregistered histogram slips onto OTEL's default buckets.
     """
-    attrs = _model_attrs(model, provider)
+    attrs = {**_model_attrs(model, provider), ATTR_HARNESS: harness}
     tokens_in = _positive(input_tokens)
     tokens_out = _positive(output_tokens)
     credit_amount = _positive(credits)

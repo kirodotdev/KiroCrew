@@ -58,7 +58,11 @@ concurrency:
 jobs:
   fork-design-review:
     name: Fork Design Review
-    runs-on: ubuntu-latest
+    # `kirocrew-runners` larger-runner group, targeted by GROUP not label; see
+    # "Larger runners for the review lanes and CodeQL" in
+    # docs/ci/ci-and-reviews.md.
+    runs-on:
+      group: kirocrew-runners
     timeout-minutes: 30
     # Only for a SUCCESSFUL Stage 1 run that was itself a fork pull_request.
     if: >-
@@ -83,7 +87,7 @@ jobs:
       # -- advisory, so it reads as neutral rather than red and the lane silently
       # stops reviewing. Full rationale and exfil analysis: fork-opus-review.yml.
       - name: Harden runner (egress allowlist)
-        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2 # v2.22.2
         with:
           egress-policy: block
           disable-telemetry: true
@@ -125,9 +129,11 @@ jobs:
           # that exists. Mirrors the gh_retry convention pr-readiness.yml adopted
           # for the same single-shot failure mode (#2753). stderr is deliberately
           # NOT discarded any more, so a failing query says why.
+          # api.github.com, though allowlisted, can refuse connections here for
+          # about a minute, so the backoff below outlasts that.
           gh_read() {
             local attempt rc=1 out
-            for attempt in 1 2 3; do
+            for attempt in 1 2 3 4 5 6; do
               if out="$("$@")"; then
                 printf '%s' "$out"
                 return 0
@@ -137,7 +143,7 @@ jobs:
                 # else branch -- that would report a failed query as success.
                 rc=$?
               fi
-              if [ "$attempt" -lt 3 ]; then
+              if [ "$attempt" -lt 6 ]; then
                 echo "resolver query attempt $attempt failed; retrying" >&2
                 sleep $((attempt * 5))
               fi
@@ -163,7 +169,7 @@ jobs:
                            and .head.ref == $ref
                            and .head.sha == $sha)]
               ')"; then
-            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 3 attempts; see the errors above"
+            echo "::error::could not query open PRs while resolving $head_sha - the query itself failed on all 6 attempts; see the errors above"
             exit 1
           fi
           candidate_count="$(printf '%s' "$candidates" | jq -r 'length')"
@@ -192,7 +198,7 @@ jobs:
 
           # Authoritative base SHA straight from the PR (NOT from the artifact).
           if ! base_sha="$(gh_read gh api "repos/$REPO/pulls/$pr" --jq '.base.sha')"; then
-            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 3 attempts; see the errors above"
+            echo "::error::could not read base.sha for PR #$pr - the query itself failed on all 6 attempts; see the errors above"
             exit 1
           fi
           if [ -z "$base_sha" ] || [ "$base_sha" = "null" ]; then
@@ -1423,7 +1429,7 @@ jobs:
           retry_comment_write() {
             local slot="$1" needle="$2" body_file="$3" target="$4"
             local attempt landed head_now ov_body
-            local occupied slot_ok slot_id mine_id slot_rc ov_rc
+            local occupied slot_ok slot_id mine_id slot_rc ov_rc head_rc
             shift 4
             # Two reads here answer two DIFFERENT questions, which is why they
             # match on two different needles.
@@ -1579,8 +1585,12 @@ jobs:
               # a body pre-image or a conditional write, and this API offers
               # neither an If-Match nor an edit history.
               if [ "$attempt" -gt 1 ]; then
-                if ! head_now="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>/dev/null)" \
-                  || [ -z "$head_now" ]; then
+                head_rc=0
+                head_now="$(gh api "repos/$REPO/pulls/$PR" --jq '.head.sha' 2>"$READ_ERR_FILE")" || head_rc=$?
+                if [ "$head_rc" -ne 0 ] || [ -z "$head_now" ]; then
+                  if [ "$head_rc" -ne 0 ]; then
+                    note_read_failure "$head_rc" "reading this PR's current head to decide whether this write may be repeated" "$READ_ERR_FILE"
+                  fi
                   echo "Whether $HEAD is still this PR's head is unreadable, so this write was not repeated: a repeat can replace a newer head's verdict with a superseded one. Re-run this lane to publish this verdict."
                   retain_unpublished_verdict publication_unknown 1 "$needle" "$body_file" "$@"
                   return 1
@@ -2025,6 +2035,8 @@ jobs:
           # alone; rows from this run or an older one are still swept.
           if [ -n "${HEAD:-}" ] && [ -n "${PR:-}" ]; then
             enc="$(jq -rn '"Design Review" | @uri')"
+            # No `filter=all` needed: the default can drop only completed rows,
+            # never a non-completed one (measured in #10116).
             stranded="$(gh api --method GET \
               "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100" \
               --jq ".check_runs[]

@@ -101,18 +101,32 @@ _VALUE_ROUTES = frozenset({("PATCH", "/api/config/kirocrew"), ("PUT", "/api/dash
 _BACKGROUND: set[asyncio.Task[Any]] = set()
 
 
-def _audit(caller: str, operation: str, outcome: str, error: str = "") -> None:
+def _audit(
+    caller: str, operation: str, outcome: str, error: str = "", *, resources: str = "/api/cards"
+) -> None:
     try:
         sel().log_api_access(
             caller=caller or "unknown",
             operation=operation,
             outcome=outcome,
             source="dashboard",
-            resources="/api/cards",
+            resources=resources,
             error=error,
         )
     except Exception:  # pragma: no cover - an audit must never change the outcome
         logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
+def _card_resources(card: dict[str, Any]) -> str:
+    """The audit resource for a workflow card's rows; every other card keeps ``/api/cards``.
+
+    A workflow card puts runnable code into the library, so its proposal row names
+    the card and its kind, and the owner's decline (the one decision no route
+    records) gets a row of its own. Its save is the definition route's own row.
+    """
+    if card.get("kind") not in catalog.WORKFLOW_KINDS:
+        return "/api/cards"
+    return f"/api/cards/{card.get('id') or ''} {card.get('kind')}"
 
 
 def _refusal(exc: CardError | catalog.CardCatalogError) -> web.Response:
@@ -484,18 +498,114 @@ async def api_cards_agent_propose(request: web.Request) -> web.Response:
             raise CardError(400, "invalid_body", f"unknown field '{unknown[0][:64]}'")
     except CardError as exc:
         return _refusal(exc)
-    if str(body.get("kind") or "") in catalog.SELF_ONLY_KINDS:
+    kind = str(body.get("kind") or "")
+    if kind in catalog.SELF_ONLY_KINDS:
         # A crewmate raises its own page offer through its kirocrew-mate tool, so the
         # asked-once record is kept; propose_change never raises it.
-        return _refusal(CardError(403, "self_only", "only the crewmate itself can offer this"))
+        return _refusal(CardError(403, "self_only", "only the Bot itself can offer this"))
+    if kind in catalog.GATEWAY_RESOLVED_KINDS:
+        # The server entry on this card is one the gateway built; a caller-named
+        # entry would be a launch line the agent wrote.
+        _audit(sk, "cards.propose", "denied", "gateway_resolved")
+        return _refusal(
+            CardError(403, "use_request_server", "ask for an MCP server with request_server")
+        )
+    params = body.get("params")
+    if (
+        kind == catalog.KIND_CREWMATE_CAPABILITIES
+        and isinstance(params, dict)
+        and "origins" in params
+    ):
+        # Where each server comes from is the gateway's own record, written only
+        # by ``request_capabilities`` after it resolves the named additions
+        # (``member_self``); a caller never supplies one.
+        _audit(sk, "cards.propose", "denied", "origins_not_accepted")
+        return _refusal(
+            CardError(400, "invalid_param", "'origins' is set by the gateway, not the caller")
+        )
+    if kind == catalog.KIND_CREWMATE_CAPABILITIES and await asyncio.to_thread(
+        _crewmate_drives_capabilities_off, request.app["state"], slot_key, sk
+    ):
+        _audit(sk, "cards.propose", "denied", "dynamic_capabilities_off")
+        return _refusal(
+            CardError(
+                403,
+                "dynamic_capabilities_off",
+                "a Bot asks for its worker's capabilities with request_capabilities, "
+                "which offers the user the Preview first; use that instead",
+            )
+        )
+    if kind in catalog.WORKFLOW_KINDS and await asyncio.to_thread(
+        _crewmate_caller, request.app["state"], slot_key, sk
+    ):
+        # The library is the owner's, global to every crewmate; a crewmate (its
+        # chat or its worker) asks the owner's assistant instead.
+        _audit(sk, "cards.propose", "denied", "workflow_crewmate_caller")
+        return _refusal(
+            CardError(
+                403,
+                "owner_assistant_only",
+                "only the main assistant's own dashboard chat can propose a saved workflow",
+            )
+        )
     return await propose_for_caller(
         request,
         slot_key,
         sk,
-        kind=str(body.get("kind") or ""),
+        kind=kind,
         params=body.get("params"),
         reason=body.get("reason"),
     )
+
+
+def _crewmate_caller(state: Any, slot_key: str, sk: str) -> bool:
+    """Whether the caller is a crewmate's own thread or one of its workers. Blocking."""
+    from kiro_crew import members
+    from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
+
+    if is_crewmate_thread(state.get_slot(slot_key)):
+        return True
+    return members.is_crewmate_worker_session(slot_key) or members.is_crewmate_worker_session(sk)
+
+
+def _crewmate_drives_capabilities_off(state: Any, slot_key: str, sk: str) -> bool:
+    """A crewmate (its chat or its worker) asking for a capability card it may not raise.
+
+    While that crewmate's Dynamic capabilities preview is off
+    (``kiro_crew.crewmate_dynamic_capabilities``) the crewmate-driven capability
+    path is withheld, ``propose_change`` included. A worker whose crewmate
+    cannot be named counts as off. Any other caller -- the main assistant asked
+    to add a tool to a crewmate -- proposes the card as before. Blocking.
+    """
+    from kiro_crew import crewmate_dynamic_capabilities as dyn
+    from kiro_crew import members
+    from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
+
+    slot = state.get_slot(slot_key)
+    if is_crewmate_thread(slot):
+        return dyn.restricted_for(slot.agent)
+    if members.is_crewmate_worker_session(slot_key) or members.is_crewmate_worker_session(sk):
+        return dyn.restricted_for(_worker_crewmate(slot))
+    return False
+
+
+def _worker_crewmate(slot: Any) -> str:
+    """The crewmate a worker *slot* runs for, from its execution record, else ``""``."""
+    if slot is None:
+        return ""
+    try:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+        from kiro_crew.dashboard.crewmate_approval import crewmate_name_for
+        from kiro_crew.execution_context import read_session_execution
+
+        record = read_session_execution(slot_history_key(slot))
+        if record is None:
+            return ""
+        return crewmate_name_for(KiroCrewConfig.load(), record) or ""
+    except Exception:  # noqa: BLE001 - an unnamed crewmate counts as off
+        logger.debug("worker Bot unreadable for %s", getattr(slot, "key", ""), exc_info=True)
+        return ""
 
 
 async def propose_for_caller(
@@ -571,7 +681,7 @@ async def propose_for_caller(
     await chat_cards.load_conversation_window(request.app["state"], public)
     chat_cards.record_change_proposed(request.app["state"], public)
     delivered = await _broadcast(request.app["state"], public)
-    _audit(sk, "cards.propose", "ok")
+    _audit(sk, "cards.propose", "ok", resources=_card_resources(public))
     return web.json_response({**public, "delivered_clients": delivered})
 
 
@@ -660,7 +770,7 @@ async def _run_stage_sweep(store: CardStore) -> None:
         await store.warm()  # the store's first load is disk work, off the loop
         await asyncio.to_thread(crewmate_stage.sweep, _live_import_shas(store))
     except Exception:  # pragma: no cover - a sweep must never fail a card read
-        logger.debug("staged crewmate sweep failed", exc_info=True)
+        logger.debug("staged Bot sweep failed", exc_info=True)
 
 
 async def propose_app_card(app: web.Application, app_name: str, params: Any) -> dict[str, Any]:
@@ -783,7 +893,7 @@ async def api_members_import(request: web.Request) -> web.Response:
     except OSError:
         _unhold(held)
         held = ""
-        logger.warning("could not keep the checked crewmate file", exc_info=True)
+        logger.warning("could not keep the checked Bot file", exc_info=True)
         return web.json_response(
             {"error": "the file could not be kept for the card", "code": "stage_failed"},
             status=500,
@@ -937,7 +1047,15 @@ async def api_cards_cancel(request: web.Request) -> web.Response:
         rec = store.get(request.match_info["card_id"])
         revert = store.snapshot(rec)
         store.cancel(rec, body.get("revision"))
-        return web.json_response(await _publish(request, rec, revert))
+        published = await _publish(request, rec, revert)
+        if rec.get("kind") in catalog.WORKFLOW_KINDS:
+            _audit(
+                str(request.get("user") or "owner"),
+                "cards.decline",
+                "rejected",
+                resources=_card_resources(rec),
+            )
+        return web.json_response(published)
     except CardError as exc:
         return _refusal(exc)
 
@@ -977,7 +1095,23 @@ def route_key(request: web.Request) -> tuple[str, str] | None:
     if not isinstance(template, str):
         return None
     key = (request.method.upper(), template)
-    return key if key in catalog.HOOKED_ROUTES else None
+    if key not in catalog.HOOKED_ROUTES:
+        return None
+    from kiro_crew.agent_url_path import B64_ROUTE_ALIASES
+
+    # A base64url crew route is the same route as its path-form twin: one
+    # template for the card step, its memory line and its undo guard.
+    return (key[0], B64_ROUTE_ALIASES.get(template, template))
+
+
+def route_match_info(request: web.Request) -> dict[str, str]:
+    """The matched path parameters, with a base64url crew name decoded into ``name``."""
+    info = dict(request.match_info)
+    if "name_b64" in info:
+        from kiro_crew.agent_url_path import decode_agent_name
+
+        info["name"] = decode_agent_name(info.pop("name_b64")) or ""
+    return info
 
 
 async def _read_body(request: web.Request) -> tuple[Any, bool]:
@@ -1270,7 +1404,8 @@ def _arm_card_undo_cron_guard(
     path = str(plan_step.get("path", ""))
     after = rec.get("after") or {}
     method = str(plan_step.get("method", "")).upper()
-    if method == "PUT" and path.startswith("/api/agents/") and kind == catalog.KIND_CREWMATE_UPDATE:
+    crew_put = path == "/api/agents" or path.startswith("/api/agents/")
+    if method == "PUT" and crew_put and kind == catalog.KIND_CREWMATE_UPDATE:
         from kiro_crew.dashboard.handlers.undo_identity_guard import (
             REQ_CARD_UNDO_CREWMATE_EXPECT,
         )
@@ -1343,10 +1478,10 @@ async def change_card_middleware(
         body, ok = await _read_body(request)
         if not ok:
             return await handler(request)
-        before = await _before_value(route, body, dict(request.match_info))
+        before = await _before_value(route, body, route_match_info(request))
         resp = await handler(request)
         if 200 <= resp.status < 300:
-            _record_memory(route, dict(request.match_info), body, before, "via settings page")
+            _record_memory(route, route_match_info(request), body, before, "via settings page")
         return resp
     return await _run_card_step(request, handler, route, card_id)
 
@@ -1453,7 +1588,7 @@ async def _run_card_step(
                 "changed_since_apply",
                 "this changed after the card was applied; undo refused",
             )
-        before = await _before_value(route, body, dict(request.match_info))
+        before = await _before_value(route, body, route_match_info(request))
         if mutates:
             # Persist-before-you-publish: the admission is on disk before the
             # route writes anything, so a gateway that stops mid-step reloads
@@ -1536,7 +1671,7 @@ async def _run_card_step(
     if route in catalog.MEMORY_ROUTES and not partial_unnamed:
         _record_memory(
             route,
-            dict(request.match_info),
+            route_match_info(request),
             memory_body,
             before,
             "via change card" if op == catalog.OP_APPLY else "via change card undo",
@@ -1671,6 +1806,41 @@ async def _complete(request: web.Request, rec: dict[str, Any], *, partial: bool)
         undo_reason=reason,
         status=cards.STATUS_PARTIAL if partial else cards.STATUS_APPLIED,
     )
+    from kiro_crew import crewmate_dynamic_capabilities
+
+    # The nudge is the crewmate-driven capability path: that
+    # crewmate's Dynamic capabilities preview
+    # (``kiro_crew.crewmate_dynamic_capabilities``). The card names its crewmate.
+    raw_params = rec.get("params")
+    params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
+    if rec["kind"] == catalog.KIND_CREWMATE_CAPABILITIES and await asyncio.to_thread(
+        crewmate_dynamic_capabilities.enabled_for, str(params.get("member") or "")
+    ):
+        # A card press starts no turn: tell the crewmate, so the work that waited
+        # on the capability moves to a worker that has it.
+        from kiro_crew.dashboard import goal_setup
+
+        goal_setup.schedule_capabilities_nudge(
+            request.app.get("state"),
+            rec["slot_key"],
+            str(rec.get("title") or ""),
+            card_member=str(params.get("member") or ""),
+        )
+    from kiro_crew import mate_tool_access
+
+    if rec["kind"] == catalog.KIND_CREWMATE_UPDATE and mate_tool_access.is_tool_access_card(params):
+        # The user turned the crewmate's preview on (Turn on): the request that
+        # raised this card becomes its own capabilities card, and the conductor
+        # is reloaded onto the request tools and told.
+        from kiro_crew.dashboard import goal_setup
+
+        goal_setup.schedule_tool_access_nudge(
+            request.app.get("state"),
+            rec["slot_key"],
+            app=request.app,
+            session_key=str(rec.get("session_key") or ""),
+            card_member=str(params.get("name") or ""),
+        )
 
 
 def register_change_card_routes(app: web.Application) -> None:
@@ -1681,6 +1851,9 @@ def register_change_card_routes(app: web.Application) -> None:
     app.router.add_get("/api/cards/agent/diagnose", api_cards_agent_diagnose)
     app.router.add_post("/api/cards/agent/propose", api_cards_agent_propose)
     app.router.add_get("/api/cards/agent/status", api_cards_agent_status)
+    from kiro_crew.dashboard.handlers.template_server_request import api_cards_agent_request_server
+
+    app.router.add_post("/api/cards/agent/request-server", api_cards_agent_request_server)
     app.router.add_get("/api/cards/pending", api_cards_pending)
     app.router.add_post("/api/cards/{card_id}/preview", api_cards_preview)
     app.router.add_post("/api/cards/{card_id}/cancel", api_cards_cancel)

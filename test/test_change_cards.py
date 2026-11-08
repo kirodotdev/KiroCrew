@@ -24,6 +24,7 @@ from change_cards_helpers import (
     _propose_capability,
     _reload,
 )
+from named_cases_helpers import named_cases
 
 from kiro_crew import change_card_catalog as catalog
 from kiro_crew.context_blocks import render_change_card_results, split_blocks
@@ -55,15 +56,34 @@ def test_a_secret_card_has_no_value_field_at_all():
 @pytest.mark.parametrize(
     "path,before,after,risk",
     [
-        ("agent.approval_mode", "interactive", "auto", "widen"),
-        ("agent.approval_mode", "auto", "interactive", "tighten"),
-        ("agent.sandbox", "strict", "off", "widen"),
-        ("skills.approval_required", True, False, "widen"),
-        ("dashboard.folder_sort", "name", "recent", "normal"),
-        ("dashboard.some_token_thing", "a", "b", "widen"),
+        *named_cases(
+            "test_setting_risk_is_computed_from_the_diff",
+            "path,before,after,risk",
+            [
+                ("agent.approval_mode", "interactive", "auto", "widen"),
+                ("agent.approval_mode", "auto", "interactive", "tighten"),
+                ("agent.sandbox", "strict", "off", "widen"),
+                ("skills.approval_required", True, False, "widen"),
+                ("dashboard.folder_sort", "name", "recent", "normal"),
+                ("dashboard.some_token_thing", "a", "b", "widen"),
+            ],
+        ),
+        *named_cases(
+            "test_newly_classified_paths_read_their_class_on_the_card",
+            "path,before,after,risk",
+            [
+                ("dashboard.tailscale.pin_scope", "node", "login", "widen"),
+                ("dashboard.tailscale.pin_scope", "login", "node", "tighten"),
+                ("knowledge.auto_add_documents", False, True, "widen"),
+                ("knowledge.auto_add_documents", True, False, "tighten"),
+                ("agent.acp_backend", "", "claude", "code_exec"),
+                ("session.pool_agent", "", "builder", "code_exec"),
+                ("telemetry.enabled", False, True, "normal"),
+            ],
+        ),
     ],
 )
-def test_setting_risk_is_computed_from_the_diff(path, before, after, risk):
+def test_a_setting_reads_its_risk_from_the_diff(path, before, after, risk):
     p = {"path": path, "value": after}
     assert catalog.build_preview("setting.change", p, {"value": before}, {})["risk"] == risk
 
@@ -335,11 +355,11 @@ def test_crewmate_cards_name_the_crewmate_the_way_the_user_knows_it():
     )
     before = {"exists": True, "fields": {"description": "old"}}
     preview = catalog.build_preview("crewmate.update", p, before, {"label": "Rock"})
-    assert preview["title"] == "Update mate “Rock”"
+    assert preview["title"] == "Update Bot “Rock”"
     assert preview["scope"]["members"] == ["Rock"]
     assert preview["apply"][0]["path"] == "/api/agents/scout"
     plain = catalog.build_preview("crewmate.update", p, before, {})
-    assert plain["title"] == "Update mate “scout”"
+    assert plain["title"] == "Update Bot “scout”"
     assert plain["scope"]["members"] == ["scout"]
 
 
@@ -484,6 +504,27 @@ def test_memory_descriptions_carry_names_only():
     assert text == "changed config chat.verbosity standard→ultra-brief"
 
 
+def test_memory_line_says_a_deny_rule_was_edited_not_disabled():
+    # The PATCH also edits pattern and note; a body without ``enabled`` must not
+    # read as "disabled" in the operator's history.
+    route = ("PATCH", "/api/security/denied-commands/user/{id}")
+    text = catalog.describe_manual_change(route, {"id": "user-1"}, {"pattern": "x", "note": ""})
+    assert text == "edited denied-command rule user-1"
+    text = catalog.describe_manual_change(route, {"id": "user-1"}, {"enabled": False})
+    assert text == "disabled denied-command rule user-1"
+
+
+def test_memory_names_the_server_a_settings_connect_started():
+    # Settings → MCP posts an owner-configured server as ``{"server": ...}``, not
+    # ``{"slug": ...}``; the memory line must name it instead of reading "null".
+    text = catalog.describe_manual_change(
+        ("POST", "/api/connections/mint"), {}, {"server": "atlassian"}
+    )
+    assert text == "started connecting atlassian"
+    text = catalog.describe_manual_change(("POST", "/api/connections/mint"), {}, {"slug": "github"})
+    assert text == "started connecting github"
+
+
 def test_every_hooked_route_is_a_real_registered_route():
     sources = "\n".join(
         p.read_text(encoding="utf-8")
@@ -554,7 +595,7 @@ def test_a_failed_first_step_is_retryable_and_a_failed_later_step_is_partial():
     store.record_failure(rec, op="apply", index=1, status=500, body=None)
     assert rec["status"] == "partial"
     assert rec["result"]["summary"] == (
-        "Created mate “Scout”, but its goal or its schedule was not saved"
+        "Created Bot “Scout”, but its goal or its schedule was not saved"
     )
 
 

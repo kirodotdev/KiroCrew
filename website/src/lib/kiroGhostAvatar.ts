@@ -259,13 +259,30 @@ export const WORKING_EYES: Record<string, string> = {
  * the artwork is smaller than the full-tier excursion, so headroom is made, not
  * assumed.
  */
-const BODY_MOTION: Record<
+export const BODY_MOTION: Record<
   WorkingIntensity,
   { fitScale: number; fitDrop: number; rise: number; sink: number; stretch: number; sway: number; secs: number }
 > = {
   subtle: { fitScale: 0.97, fitDrop: 12, rise: 14, sink: 5, stretch: 0.02, sway: 1.6, secs: 2.4 },
   full: { fitScale: 0.94, fitDrop: 28, rise: 34, sink: 12, stretch: 0.05, sway: 3.2, secs: 1.6 },
 }
+
+/** Tile edge the body-motion offsets and origins are written in. */
+export const BODY_TILE = 1200
+
+/** Transform origins of the body-motion groups, in the 1200-unit tile: the fit
+ *  shrinks about the centre, the sway pivots just below it, and the squash is
+ *  anchored at the hem so the ghost stretches up off the floor. */
+export const BODY_ORIGINS = {
+  fit: [600, 600],
+  sway: [600, 620],
+  sq: [600, 985],
+} as const satisfies Record<string, readonly [number, number]>
+
+/** Sway runs slower than the bob so the two never line up into one rocking beat. */
+export const SWAY_TEMPO = 1.85
+
+const px = ([x, y]: readonly [number, number]) => `${x}px ${y}px`
 
 /** The `<style>` block for a working avatar. Eye idiom tempo is shared across
  *  tiers — at roster size the eye is barely legible, so only body amplitude
@@ -289,10 +306,10 @@ export function workingStyle(intensity: WorkingIntensity): string {
     '@keyframes kg-spin{to{transform:rotate(360deg)}}' +
     '@keyframes kg-hb{0%,40%,100%{transform:scale(1)}12%{transform:scale(1.3)}26%{transform:scale(1.1)}}' +
     '@keyframes kg-cyblink{0%,86%,96%,100%{transform:scaleY(1)}91%{transform:scaleY(0.05)}}' +
-    `.kg-fit{transform:translateY(${m.fitDrop}px) scale(${m.fitScale});transform-origin:600px 600px}` +
-    `.kg-sway{animation:kg-sway ${m.secs * 1.85}s ease-in-out infinite;transform-origin:600px 620px}` +
+    `.kg-fit{transform:translateY(${m.fitDrop}px) scale(${m.fitScale});transform-origin:${px(BODY_ORIGINS.fit)}}` +
+    `.kg-sway{animation:kg-sway ${m.secs * SWAY_TEMPO}s ease-in-out infinite;transform-origin:${px(BODY_ORIGINS.sway)}}` +
     `.kg-bob{animation:kg-bob ${m.secs}s ease-in-out infinite}` +
-    `.kg-sq{animation:kg-sq ${m.secs}s ease-in-out infinite;transform-origin:600px 985px}` +
+    `.kg-sq{animation:kg-sq ${m.secs}s ease-in-out infinite;transform-origin:${px(BODY_ORIGINS.sq)}}` +
     '.kg-blink{animation:kg-blink 2.6s infinite}' +
     '.kg-look{animation:kg-look 4.4s ease-in-out infinite}' +
     '.kg-drowse{animation:kg-drowse 3.6s ease-in-out infinite}' +

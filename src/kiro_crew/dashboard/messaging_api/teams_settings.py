@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 import os
 from typing import TYPE_CHECKING
 
@@ -29,7 +28,6 @@ if TYPE_CHECKING:
         ensure_channel_folder,
         is_direct_local_request,
         live,
-        read_config_text,
         run_to_completion,
         stored_folder_name,
     )
@@ -50,7 +48,11 @@ async def api_teams_config_get(request: web.Request) -> web.Response:
 
     cfg = KiroCrewConfig.load()
     # Off-loop: a secret:// reference is read and decrypted from the vault.
-    creds = await asyncio.to_thread(cfg.load_credentials)
+    # propagate=False: a post-boot dashboard read must not re-seed os.environ,
+    # or a worker-thread setdefault could restore a credential the live watcher
+    # just popped. Boot owns the one propagation; the live applier owns mutations
+    # after it.
+    creds = await asyncio.to_thread(cfg.load_credentials, propagate=False)
     # Off-loop too: find_spec and the PEP 668 marker check touch the filesystem.
     # find_spec locates PyJWT without importing it, so this keeps the boot-path
     # rule above.
@@ -329,7 +331,9 @@ async def _teams_config_save(request: web.Request) -> web.Response:
             # Offload read_text + json.loads to a thread so a slow filesystem
             # cannot stall the async event loop.
             def _read_config_15() -> dict:
-                data = json.loads(read_config_text(_p15_cfg)) if _p15_cfg.exists() else {}
+                from kiro_crew.config.loader import read_config_for_update
+
+                data = read_config_for_update(_p15_cfg)
                 if not isinstance(data, dict):
                     raise ValueError("config.json is not a JSON object")
                 return data
@@ -387,8 +391,18 @@ async def _teams_config_save(request: web.Request) -> web.Response:
     applied: list[str] = []
     async with _get_config_lock():
         path = config_path()
+
+        def _read_config() -> object:
+            # The existence check, the read and the parse share one worker-thread hop
+            # (as in feishu_settings.py): a stalled mount must not block the loop on
+            # any of them.
+            # The read half of this read-modify-write starts from what the load reads.
+            from kiro_crew.config.loader import read_config_for_update
+
+            return read_config_for_update(path)
+
         try:
-            data = json.loads(read_config_text(path)) if path.exists() else {}
+            data = await asyncio.to_thread(_read_config)
             if not isinstance(data, dict):
                 raise ValueError("config.json is not a JSON object")
         except Exception:

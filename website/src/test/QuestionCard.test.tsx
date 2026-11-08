@@ -153,6 +153,19 @@ describe('QuestionCard', () => {
     expect(notif).toHaveAttribute('aria-pressed', 'true')
   })
 
+  it('names the single-select options group by its question and describes its one-choice rule', () => {
+    render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} />)
+    const group = screen.getByRole('group', { name: 'What is your favorite color?' })
+    expect(group).toHaveAccessibleDescription('Choose one option. Choose it again to clear it.')
+    expect(group).toContainElement(screen.getByText('Red').closest('button'))
+  })
+
+  it('describes the multi-select options group with its many-choice rule', () => {
+    render(<QuestionCard questions={multiQuestion} onSubmit={vi.fn()} />)
+    const group = screen.getByRole('group', { name: 'Which features do you want?' })
+    expect(group).toHaveAccessibleDescription('Choose one or more options.')
+  })
+
   it('submit button disabled when nothing selected', () => {
     render(<QuestionCard questions={singleQuestion} onSubmit={vi.fn()} />)
     const submit = screen.getByText('Submit').closest('button')!

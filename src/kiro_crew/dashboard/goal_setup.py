@@ -65,6 +65,7 @@ def kickoff_prompt(
     *,
     has_mate_tools: bool = True,
     dashboard_line: str = "",
+    ledger: bool = False,
 ) -> str | None:
     """The hidden turn's text, built from the goal record as stored.
 
@@ -73,7 +74,9 @@ def kickoff_prompt(
     ``kirocrew-mate`` tools (*has_mate_tools*) the milestones are written in
     the chat for the user to add on the Goals tab. *dashboard_line* is
     ``goal_reminder.dashboard_line`` (the build line on an empty tab, or the one-time
-    page offer on a template page), added last.
+    page offer on a template page), added last. *ledger*
+    (:func:`kiro_crew.member_mate_tools.member_has_ledger_tools`) tracks the
+    research worker as an item in the crewmate's work ledger.
     """
     numbers = member_goals.goal_numbers(rec)
     if goal_id not in numbers:
@@ -90,6 +93,21 @@ def kickoff_prompt(
     )
     if has_krs:
         step3 += T("goal_setup.kickoff_has_milestones")
+    # The Heartbeat is the switch that makes the mate work on its own, so the
+    # moment a goal is saved is when it is offered; once on, nothing is asked.
+    # A goal card carries that offer itself (its Heartbeat checkbox), and the
+    # answer is stored with the goal, so a goal set on a card, or a Heartbeat
+    # once declined there, is never asked about again in the chat.
+    if (rec.get("schedules") or {}).get(member_goals.CADENCE_HEARTBEAT) or (
+        rec.get("heartbeat_offer") in member_goals.HEARTBEAT_OFFER_ANSWERS
+    ):
+        step1_tail = T("goal_setup.kickoff_ask_nothing")
+    else:
+        step1_tail = T(
+            "goal_setup.kickoff_heartbeat_tools"
+            if has_mate_tools
+            else "goal_setup.kickoff_heartbeat_no_tools"
+        )
     lines = [
         crewmate_prompts.fill(
             "goal_setup.kickoff_head",
@@ -97,8 +115,11 @@ def kickoff_prompt(
             goal_id=goal_id,
             goal=member_goals.scrub_text(goal["text"]),
             listing="\n".join(listing),
+        )
+        + step1_tail,
+        crewmate_prompts.fill(
+            "goal_setup.kickoff_step2_ledger" if ledger else "goal_setup.kickoff_step2", n=n
         ),
-        crewmate_prompts.fill("goal_setup.kickoff_step2", n=n),
         step3 + T("goal_setup.kickoff_unmeasured"),
         T(
             "goal_setup.kickoff_step4_tools"
@@ -152,32 +173,30 @@ async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> st
             if again is slot:
                 dispatch_hidden_turn(state, slot, prompt, human_seen=True)
                 return "started"
-        if skip == "skipped: the mate's thread is not open" or loop.time() >= deadline:
+        if skip == "skipped: the Bot's thread is not open" or loop.time() >= deadline:
             return skip or "skipped: timed out"
         await asyncio.sleep(POLL_SECS)
 
 
-def _goal_prompt(goal_id: str, slug: str = "") -> Build:
+def _goal_prompt(goal_id: str, slug: str = "", member: str = "") -> Build:
     def build(rec: dict[str, Any], tools: bool) -> str | None:
         from kiro_crew.dashboard.goal_reminder import dashboard_line
+        from kiro_crew.member_mate_tools import member_has_ledger_tools
 
         return kickoff_prompt(
             rec,
             goal_id,
             has_mate_tools=tools,
             dashboard_line=dashboard_line(slug, rec, has_mate_tools=tools),
+            ledger=bool(member) and member_has_ledger_tools(member),
         )
 
     return build
 
 
-#: The Heartbeat in the check-ins offer. It is off by default and only a check-ins
-#: card or the Goals tab turns it on, so the offer names it and what each wake costs.
-_HEARTBEAT_OFFER = (
-    "and what the Heartbeat does: a run every so often that keeps the work moving "
-    "while they are away, with this chat staying quiet and your Dashboard tab "
-    "showing what it did, each run using credits."
-)
+#: The reminders a confirmed milestones card offers. The Heartbeat is not among
+#: them: it was offered when the goal was saved (``kickoff_prompt``), asked once.
+_REMINDERS = (member_goals.CADENCE_DAILY, member_goals.CADENCE_WEEKLY, member_goals.CADENCE_MONTHLY)
 
 
 def milestones_prompt(
@@ -195,7 +214,7 @@ def milestones_prompt(
     if not krs:
         return None
     sched = rec.get("schedules") or {}
-    any_on = any(sched.get(c) for c in member_goals.CADENCES)
+    any_on = any(sched.get(c) for c in _REMINDERS)
     lines = [crewmate_prompts.text("goal_setup.milestones_head"), ""]
     for kr in krs:
         text = member_goals.scrub_text(str(kr.get("text") or ""))
@@ -209,22 +228,9 @@ def milestones_prompt(
     if any_on:
         lines.append(crewmate_prompts.text("goal_setup.milestones_running"))
     elif has_mate_tools:
-        lines.append(
-            "Reply in the user's language: acknowledge them in a sentence, then offer "
-            "check-ins with set_check_ins. Say in one plain sentence each what the Daily "
-            "Goal Reminder, the Weekly report and the Monthly review would do for them, "
-            + _HEARTBEAT_OFFER
-            + " Propose the ones that fit this goal, and let the card decide."
-        )
+        lines.append(crewmate_prompts.text("goal_setup.milestones_offer_tools"))
     else:
-        lines.append(
-            "Reply in the user's language: acknowledge them in a sentence, then offer "
-            "check-ins. Say in one plain sentence each what the Daily Goal Reminder, the "
-            "Weekly report and the Monthly review would do for them, "
-            + _HEARTBEAT_OFFER
-            + " Suggest the ones that fit this goal, and tell the user they turn them on "
-            "on your Goals tab (the Heartbeat on your Schedules tab)."
-        )
+        lines.append(crewmate_prompts.text("goal_setup.milestones_offer_no_tools"))
     if dashboard_line:
         lines.extend(["", dashboard_line])
     return "\n".join(lines)
@@ -282,7 +288,7 @@ def schedule_nudge(state: Any, slug: str, member: str, goal_id: str) -> None:
     One waiting nudge per crewmate: a newer save, of this goal or another,
     replaces it.
     """
-    _schedule(state, slug, slug, member, _goal_prompt(goal_id, slug), "goal setup")
+    _schedule(state, slug, slug, member, _goal_prompt(goal_id, slug, member), "goal setup")
 
 
 def schedule_milestones_nudge(state: Any, slug: str, member: str) -> None:
@@ -308,6 +314,118 @@ def _milestones_build(slug: str) -> Build:
         )
 
     return build
+
+
+def capabilities_prompt(added: str) -> str:
+    """The hidden turn after the user applies the crewmate's capabilities card.
+
+    Without it the grant sat unused: a card press starts no turn, and a worker
+    that was already running cannot see what was added, so nothing moved until
+    the user typed. *added* is the card's title, which names what was added.
+    """
+    return crewmate_prompts.fill(
+        "goal_setup.capabilities_added", added=member_goals.scrub_text(added)
+    )
+
+
+def tool_access_prompt(raised: bool = True) -> str:
+    """The hidden turn after the user turns the crewmate's preview on (the opt-in card).
+
+    *raised* when the request that raised the card is now up as its own
+    capabilities card; otherwise the crewmate is asked to look and ask again.
+    """
+    key = "goal_setup.tool_access_on" if raised else "goal_setup.tool_access_on_ask"
+    return crewmate_prompts.text(key)
+
+
+def schedule_tool_access_nudge(
+    state: Any, slot_key: str, *, app: Any = None, session_key: str = "", card_member: str
+) -> None:
+    """Raise the held request, reload the crewmate's conductor, then wake it.
+
+    The opt-in card (``kiro_crew.mate_tool_access``) turned on this crewmate's
+    Dynamic capabilities. First the ``request_capabilities`` call that raised it
+    becomes its own capabilities card in the same thread
+    (``member_self.continue_after_opt_in``), so the crewmate does not ask again.
+    Its conductor's context now names ``find_capabilities``; a running conductor
+    keeps the session-start context it began with, so the SAME session is reloaded
+    (conversation kept, ``crewmate_worker_reload.reload_if_idle``) and then told
+    what happened.
+    Only a crewmate's own pinned thread is told, and only for a card that turned
+    on THAT crewmate's flag (*card_member*, the card's ``params.name``): a card for
+    another crewmate raised in this thread wakes nobody here.
+    """
+    from kiro_crew.dashboard.crewmate_worker_reload import reload_if_idle
+    from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
+
+    slot = state.get_slot(slot_key) if state is not None else None
+    if slot is None or not is_crewmate_thread(slot):
+        return
+    member = slot.agent
+    if not member or card_member != member:
+        return
+
+    async def start() -> None:
+        raised = False
+        if app is not None and session_key:
+            from kiro_crew.dashboard.handlers.member_self import continue_after_opt_in
+
+            try:
+                why = await continue_after_opt_in(app, slot_key, session_key, member)
+            except Exception:  # noqa: BLE001 - the wake below asks the crewmate again
+                logger.warning("held capabilities request of %s failed", member, exc_info=True)
+                why = "failed"
+            raised = not why
+            if why:
+                logger.info("held capabilities request of %s not raised: %s", member, why)
+        await reload_if_idle(state, slot)
+        slug = await asyncio.to_thread(members_mod.member_slug, member)
+        _schedule(
+            state,
+            f"{slug}:tool-access",
+            slug,
+            member,
+            lambda _rec, _tools: tool_access_prompt(raised),
+            "tool access on",
+        )
+
+    task = asyncio.get_running_loop().create_task(start())
+    _tasks(state)[f"{slot_key}:tool-access-start"] = task
+    task.add_done_callback(lambda _t: _tasks(state).pop(f"{slot_key}:tool-access-start", None))
+
+
+def schedule_capabilities_nudge(state: Any, slot_key: str, added: str, *, card_member: str) -> None:
+    """Tell the crewmate of thread *slot_key* that its capabilities card was applied.
+
+    Once its thread is idle, through the same wait as the other goal nudges.
+    Only a crewmate's own pinned thread is told, and only for a card that changed
+    THAT crewmate's worker (*card_member*, the card's ``params.member``): a card
+    for another crewmate raised in this thread wakes nobody here.
+    """
+    from kiro_crew.dashboard.mate_thread_wakes import is_crewmate_thread
+
+    slot = state.get_slot(slot_key) if state is not None else None
+    if slot is None or not is_crewmate_thread(slot):
+        return
+    member = slot.agent
+    if not member or card_member != member:
+        return
+
+    async def start() -> None:
+        # The slug read loads the config, so it runs off the loop.
+        slug = await asyncio.to_thread(members_mod.member_slug, member)
+        _schedule(
+            state,
+            f"{slug}:capabilities",
+            slug,
+            member,
+            lambda _rec, _tools: capabilities_prompt(added),
+            "capabilities added",
+        )
+
+    task = asyncio.get_running_loop().create_task(start())
+    _tasks(state)[f"{slot_key}:capabilities-start"] = task
+    task.add_done_callback(lambda _t: _tasks(state).pop(f"{slot_key}:capabilities-start", None))
 
 
 def removed_prompt(rec: dict[str, Any], goal_id: str, *, has_mate_tools: bool = True) -> str | None:

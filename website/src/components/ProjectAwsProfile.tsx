@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api, type ProjectAwsProfile } from '../api/client'
 import { ApiError } from '../api/apiError'
+import { isDeadlineError, retryThroughRestart } from '../api/queryClient'
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
 
@@ -16,15 +17,31 @@ export const projectAwsProfileQueryKey = (project: string) => ['project-aws-prof
 /** The binding read shared by the pill status and the picker section. A 403 is the
  *  owner-only gate answering a non-owner, which is an expected outcome, not a failure. */
 function useProjectAwsProfile(project: string) {
-  const query = useQuery({
+  // Typed: `retryThroughRestart` takes `error: unknown`, which would widen the inferred error type.
+  const query = useQuery<ProjectAwsProfile, Error>({
     queryKey: projectAwsProfileQueryKey(project),
     queryFn: () => api.projectAwsProfile(project),
     staleTime: 60_000,
-    retry: false,
+    // A failure is a standing notice, so a gateway restart or a dropped link is
+    // ridden out first (see `retryThroughRestart`).
+    retry: retryThroughRestart,
     enabled: !!project,
   })
   const refused = query.error instanceof ApiError && query.error.status === 403
   return { ...query, refused }
+}
+
+/** The headline for a failed read. A timeout, a dropped connection or a proxy's
+ *  502/503/504 means the gateway did not answer, which says nothing about the project's
+ *  AWS profile; saying "could not read the profile" sends the user to fix credentials
+ *  that are fine. A 500 is the handler itself failing to read, so it keeps that text. */
+function readFailureText(error: Error): string {
+  const unreachable = isDeadlineError(error)
+    || error instanceof TypeError
+    || (error instanceof ApiError && [502, 503, 504].includes(error.status))
+  return i18nT(unreachable
+    ? 'components.projectAwsProfile.read_unreachable'
+    : 'components.projectAwsProfile.read_failed')
 }
 
 function statusTitle(data: ProjectAwsProfile, profile: string): string {
@@ -54,13 +71,13 @@ export default function ProjectAwsProfileStatus({ project, shelfCompact }: { pro
     // No hand-off: this segment renders inside the chat composer (ChatInput), whose unsent
     // message draft shares this tree; the hand-off's navigation would unmount it.
     return (
-      <span className="inline-flex items-center gap-1 min-w-0" data-aws-status="read-failed">
+      <span className="inline-flex items-center gap-1 min-w-0 overflow-hidden" data-aws-status="read-failed">
         <span className="opacity-40 shrink-0" aria-hidden="true">·</span>
         <ErrorNotice
           variant="inline"
           className="min-w-0"
           messageClassName="truncate"
-          message={i18nT('components.projectAwsProfile.read_failed')}
+          message={readFailureText(error)}
           messageTooltip={error.message}
         />
       </span>
@@ -72,7 +89,7 @@ export default function ProjectAwsProfileStatus({ project, shelfCompact }: { pro
   const title = statusTitle(data, profile)
   return (
     <span
-      className={`inline-flex items-center gap-1 min-w-0 ${warn ? 'text-warn' : 'text-muted'}`}
+      className={`inline-flex items-center gap-1 min-w-0 overflow-hidden ${warn ? 'text-warn' : 'text-muted'}`}
       title={title}
       data-aws-status={data.status || 'ok'}
     >
@@ -132,7 +149,7 @@ export function ProjectAwsProfileSection({ project, errorHandoff = false, onHand
           className="whitespace-normal"
           askAgent={errorHandoff}
           onHandoff={onHandoff}
-          title={i18nT('components.projectAwsProfile.read_failed')}
+          title={readFailureText(error)}
           message={error.message}
         />
       </div>

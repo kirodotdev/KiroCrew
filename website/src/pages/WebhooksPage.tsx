@@ -183,12 +183,13 @@ function usedAgo(ts: number | null | undefined): string {
 function durationLabel(ms: number): string {
   if (!ms) return '—'
   if (ms < 1000) return fmtUnit(ms, 'millisecond')
-  if (ms < 60_000) {
+  // Round to whole seconds once, before the minute test and the split, so 59.6s
+  // reads `1m 0s` (not `60s`) and 119.6s reads `2m 0s` (not `1m 60s`).
+  const secs = Math.round(ms / 1000)
+  if (secs < 60) {
     return fmtUnit(ms / 1000, 'second', { maximumFractionDigits: ms < 10_000 ? 1 : 0 })
   }
-  return fmtDuration(
-    [[Math.floor(ms / 60_000), 'minute'], [Math.round((ms % 60_000) / 1000), 'second']],
-  )
+  return fmtDuration([[Math.floor(secs / 60), 'minute'], [secs % 60, 'second']])
 }
 
 function sizeLabel(chars: number): string {
@@ -621,7 +622,7 @@ export default function WebhooksPage() {
               onClick={() => select({ kind: 'token', id: token.id })}
               dot={<Dot className={token.enabled !== false ? 'bg-ok' : 'bg-muted'} />}
               title={token.label}
-              subtitle={`${i18nT('pages.channelPage.agent')}: ${token.agent || '—'}`}
+              subtitle={i18nT('pages.webhooksPage.token_agent', { agent: token.agent || '—' })}
               age={usedAgo(token.last_used_at)}
               testId={`webhook-row-token-${token.id}`}
             />
@@ -787,7 +788,7 @@ export default function WebhooksPage() {
                 onClick={() => { setRevealed(null); setDismissArmed(false) }}
                 data-testid="webhook-reveal-dismiss-confirm"
               >
-                <X size={13} /> {i18nT('pages.webhooksPage.confirm_hide')} {i18nT('pages.webhooksPage.permanently')}
+                <X size={13} /> {i18nT('pages.webhooksPage.confirm_hide_permanently')}
               </Btn>
             )
             : (
@@ -868,7 +869,7 @@ export default function WebhooksPage() {
           <div className="min-w-0">
             <div className="text-[14px] font-semibold text-text-strong truncate">{selectedToken.label}</div>
             <div className="text-[12px] text-muted truncate">
-              {i18nT('pages.channelPage.agent')}: {selectedToken.agent || '—'}
+              {i18nT('pages.webhooksPage.token_agent', { agent: selectedToken.agent || '—' })}
             </div>
           </div>
           <Badge variant={selectedToken.enabled !== false ? 'ok' : 'muted'} className="ml-auto shrink-0">
@@ -1040,7 +1041,7 @@ export default function WebhooksPage() {
           {FRESHNESS[selectedContext.freshness].label()}
         </Badge>}
       >
-        {FRESHNESS[selectedContext.freshness].effect()} {i18nT('pages.webhooksPage.context_goes_stale_after_1_hour_and_expires_afte')}
+        {i18nT('pages.webhooksPage.context_freshness_note', { effect: FRESHNESS[selectedContext.freshness].effect() })}
       </Banner>
 
       <Section
@@ -1049,6 +1050,7 @@ export default function WebhooksPage() {
           <Btn
             danger
             data-testid="webhook-delete-context"
+            onKeyDown={ignoreHeldActivation}
             onClick={() => (confirmDelete === selectedContext.hook_id
               ? deleteContext.mutate(selectedContext.hook_id)
               : setConfirmDelete(selectedContext.hook_id))}
@@ -1070,7 +1072,7 @@ export default function WebhooksPage() {
               <span className="text-muted">{FRESHNESS[selectedContext.freshness].effect()}</span>
             </span>
           )],
-          [i18nT('pages.webhooksPage.stored_size'), `${fmtNumber(selectedContext.context_chars)} chars`],
+          [i18nT('pages.webhooksPage.stored_size'), i18nT('pages.webhooksPage.stored_chars', { count: selectedContext.context_chars, n: fmtNumber(selectedContext.context_chars) })],
         ]}
         />
         {confirmDelete === selectedContext.hook_id && (
@@ -1082,7 +1084,7 @@ export default function WebhooksPage() {
 
       <Section
         title={i18nT('pages.webhooksPage.stored_context_summary')}
-        right={<Badge variant="muted">{fmtNumber(selectedContext.context_chars)} {i18nT('pages.webhooksPage.chars')}</Badge>}
+        right={<Badge variant="muted">{i18nT('pages.webhooksPage.stored_chars', { count: selectedContext.context_chars, n: fmtNumber(selectedContext.context_chars) })}</Badge>}
       >
         {selectedContext.context_summary
           ? (
@@ -1492,6 +1494,14 @@ function SigningBadge({ required, tokenId }: { required: boolean; tokenId: strin
   )
 }
 
+/** A two-step destructive button arms in place, so the key that armed it is
+ *  still on it. A held Enter or Space repeats, and each repeat clicks a
+ *  focused button, which would confirm with no second press. Ignore repeats;
+ *  a fresh press still works. */
+function ignoreHeldActivation(e: React.KeyboardEvent) {
+  if (e.repeat && (e.key === 'Enter' || e.key === ' ')) e.preventDefault()
+}
+
 /** Picks which form the shared request example is shown in. Static labels, no
  *  motion — the snippet below it is what changes. */
 function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
@@ -1501,6 +1511,14 @@ function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
   onConfirm: () => void
   onCancel: () => void
 }) {
+  // Keep unmounts itself, which would drop focus to the page: hand it back to
+  // Revoke, only after a Keep press so nothing is stolen on render.
+  const revokeRef = useRef<HTMLButtonElement>(null)
+  const keptRef = useRef(false)
+  useEffect(() => {
+    if (!confirming && keptRef.current) revokeRef.current?.focus()
+    keptRef.current = false
+  }, [confirming])
   if (token.legacy) {
     return (
       <span className="text-[12px] text-muted">
@@ -1514,13 +1532,15 @@ function RevokeButton({ token, confirming, onArm, onConfirm, onCancel }: {
         <span className="w-full text-right text-[12px] text-muted">{i18nT('pages.webhooksPage.calls_using_it_start_failing_with_401')}</span>
       )}
       <Btn
+        ref={revokeRef}
         danger
         data-testid={`webhook-revoke-${token.id}`}
         onClick={() => (confirming ? onConfirm() : onArm())}
+        onKeyDown={ignoreHeldActivation}
       >
         <Trash2 size={13} /> {confirming ? i18nT('pages.webhooksPage.confirm_revoke') : i18nT('pages.webhooksPage.revoke')}
       </Btn>
-      {confirming && <Btn onClick={onCancel}>{i18nT('pages.webhooksPage.keep')}</Btn>}
+      {confirming && <Btn onClick={() => { keptRef.current = true; onCancel() }}>{i18nT('pages.webhooksPage.keep')}</Btn>}
     </span>
   )
 }

@@ -29,6 +29,10 @@ export type HoverPin = {
   seenOrder: string[]
   heights: Record<string, number>
   headerPxAbove: number
+  /** Date-header pixels above the row inside its own "Group by kind" section:
+   *  those after the nearest section header above it. Absent on a pin captured
+   *  where no section header is drawn, where it equals `headerPxAbove`. */
+  sectionHeaderPxAbove?: number
   headerH: number
   staleSide: boolean
 }

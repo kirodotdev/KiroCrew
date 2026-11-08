@@ -90,6 +90,14 @@ def test_the_rest_of_the_frame_is_unchanged():
     assert data["slot"]
 
 
+def test_the_frame_carries_the_last_tool_call_id():
+    """The reducer matches the replay to the card's newest tool row by this id,
+    so an approval that bumped ``tool_count`` without a frame adds no row."""
+    data = build_subagent_snapshot(_agent(last_tool_call_id="tc-1"), now=1000.0)
+    assert data["last_tool_call_id"] == "tc-1"
+    assert build_subagent_snapshot(_agent(), now=1000.0)["last_tool_call_id"] == ""
+
+
 def test_the_frame_carries_the_childs_own_session_key():
     """The Session Breakdown tree fetches each node's OWN context-trace by this
     key, so the snapshot must name where the sub-agent writes its ctx_blocks:

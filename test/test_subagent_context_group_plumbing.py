@@ -1,15 +1,9 @@
 """Tests for the plumbing that carries context-group flags to the sub-agent.
 
-The flags are decided once, by the parent, at spawn. Every path that
-re-materializes a run from stored fields must carry them, or a run silently
-executes with a different context scope than the one its caller asked for:
-
-- the **stagger queue**, which is where most members of a large fan-out sit
-  before starting, and
-- the **retry** endpoint, which re-spawns from the failed record.
-
-``spawn_continue`` is deliberately NOT in that list: a resumed session skips
-context rebuilding entirely, so the flags cannot apply to it.
+The parent decides the flags at spawn, and every path that re-materializes a run from stored
+fields must carry them: the stagger queue (where most of a large fan-out waits) and the
+retry endpoint. ``spawn_continue`` is not in that list: a resumed session skips context
+rebuilding, so the flags cannot apply to it.
 """
 
 from __future__ import annotations
@@ -168,13 +162,10 @@ class TestQueueRoundTrip:
 
 
 class TestContinuationInheritsScope:
-    """A continuation REBUILDS session context, so it must inherit the scope.
+    """A continuation rebuilds session context, so it must inherit the scope.
 
-    ``get_or_create`` returns ``is_new=True`` even when it restores the session
-    via ``session/load`` (``resumed`` is separate and gates only thread
-    history), so ``build_message`` runs the full session-context path on a
-    follow-up turn. Un-inherited, a run spawned without memory would silently
-    regain it.
+    ``get_or_create`` returns ``is_new=True`` even after ``session/load``, so
+    ``build_message`` runs the full context path; un-inherited, a memoryless run regains it.
     """
 
     def test_inherits_from_the_live_record(self):
@@ -183,24 +174,38 @@ class TestContinuationInheritsScope:
         mgr._agents["conv1"] = original
         assert mgr._inherited_context_groups("conv1") == (False, True, False)
 
-    def test_falls_back_to_persisted_scope(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            pytest.param(
+                {"context_groups": "lessons,project"},
+                (False, True, True),
+                id="test_falls_back_to_persisted_scope",
+            ),
+            # An empty recorded scope means "all withheld", not "unknown".
+            pytest.param(
+                {"context_groups": ""},
+                (False, False, False),
+                id="test_all_groups_withheld_is_not_confused_with_a_legacy_run",
+            ),
+            pytest.param(
+                {"id": "old"},
+                (True, True, True),
+                id="test_run_predating_the_field_defaults_to_all_on",
+            ),
+        ],
+    )
+    def test_falls_back_to_the_persisted_record(self, monkeypatch, state, expected):
         mgr = _mgr()
-        monkeypatch.setattr(
-            "kiro_crew.subagent.read_state",
-            lambda _id: {"context_groups": "lessons,project"},
-        )
-        assert mgr._inherited_context_groups("gone") == (False, True, True)
+        seen: list[str] = []
 
-    def test_all_groups_withheld_is_not_confused_with_a_legacy_run(self, monkeypatch):
-        """An empty recorded scope means "all withheld", not "unknown"."""
-        mgr = _mgr()
-        monkeypatch.setattr("kiro_crew.subagent.read_state", lambda _id: {"context_groups": ""})
-        assert mgr._inherited_context_groups("stripped") == (False, False, False)
+        def _read_state(agent_id):
+            seen.append(agent_id)
+            return state
 
-    def test_run_predating_the_field_defaults_to_all_on(self, monkeypatch):
-        mgr = _mgr()
-        monkeypatch.setattr("kiro_crew.subagent.read_state", lambda _id: {"id": "old"})
-        assert mgr._inherited_context_groups("old") == (True, True, True)
+        monkeypatch.setattr("kiro_crew.subagent.read_state", _read_state)
+        assert mgr._inherited_context_groups("gone") == expected
+        assert seen == ["gone"]
 
     def test_continue_conversation_forwards_the_inherited_scope(self, monkeypatch):
         """End-to-end: the flags reach spawn(), not just the helper."""
@@ -221,15 +226,11 @@ class TestContinuationInheritsScope:
         assert captured["include_project"] is True
 
     def test_continue_conversation_runs_where_the_run_ran(self, monkeypatch, tmp_path):
-        """A continuation must carry the CALLER's cwd into spawn(), verbatim.
+        """A continuation must carry the caller's cwd into spawn(), verbatim.
 
-        ``spawn`` resolves an empty cwd to the POOL project before it validates the
-        agent name, so a run spawned against a project-local agent came back
-        "unknown agent" — and every caller reads a non-busy error as unresumable
-        and respawns from the digest alone, dropping the conversation the call
-        exists to preserve. The cwd is the caller's to supply (see
-        ``recorded_cwd``): discovering it here would put a blocking filesystem
-        probe on the gateway's event loop.
+        An empty cwd resolves to the pool project before agent validation, so a
+        project-local agent reads "unknown agent" and callers respawn from the digest alone.
+        Discovering the cwd here would put a blocking filesystem probe on the event loop.
         """
         mgr = _mgr()
         mgr._agents["conv3"] = SubagentInfo(id="conv3", task="t")

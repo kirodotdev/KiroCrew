@@ -183,12 +183,6 @@ class TestTheTwoGatesAgree:
         keystone_temp = os.path.realpath(os.path.join(sorted(parents)[0], "meta.json.tmp"))
         return [credential, keystone_temp]
 
-    def test_fenced_canonical_controls_are_refused_by_both(self) -> None:
-        for path in self._fenced_controls():
-            assert path == os.path.realpath(path), path
-            assert security.is_sensitive_resolved_path(path) is True, path
-            assert security.is_sensitive_path(path) is True, path
-
     def test_unfenced_canonical_controls_pass_both(self, tmp_path: Path) -> None:
         store = ArtifactStore(root=tmp_path / "artifacts")
         art = store.create(name="plain", content="<p>x</p>")

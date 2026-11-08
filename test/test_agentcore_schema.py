@@ -9,6 +9,7 @@ before it can land in Policy.json or a systemd Environment= line.
 from __future__ import annotations
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.platform.agentcore_schema import (
     AGENTCORE_GATEWAY_URL_MAX,
@@ -32,17 +33,32 @@ class TestNormalizeAgentcoreGatewayUrl:
 
     @pytest.mark.parametrize(
         "url",
-        (
-            "http://gateway.example.test/mcp",
-            "https://user:pass@gateway.example.test/mcp",
-            "https://user@gateway.example.test/mcp",
-            "https://gateway.example.test/mcp#frag",
-            "https://",
-            "not-a-url",
-            "ftp://gateway.example.test/mcp",
-        ),
+        [
+            *named_cases(
+                "test_rejects_insecure_or_credentialed_urls",
+                "url",
+                (
+                    "http://gateway.example.test/mcp",
+                    "https://user:pass@gateway.example.test/mcp",
+                    "https://user@gateway.example.test/mcp",
+                    "https://gateway.example.test/mcp#frag",
+                    "https://",
+                    "not-a-url",
+                    "ftp://gateway.example.test/mcp",
+                ),
+            ),
+            *named_cases(
+                "test_rejects_internal_whitespace",
+                "url",
+                (
+                    "https://gateway.example.test/mcp\nExecStartPre=/bin/true",
+                    "https://gateway.example.test/mcp\t$(id)",
+                    "https://gateway.example.test/mcp extra",
+                ),
+            ),
+        ],
     )
-    def test_rejects_insecure_or_credentialed_urls(self, url: str) -> None:
+    def test_rejects_an_unsafe_gateway_url(self, url: str) -> None:
         with pytest.raises(ValueError, match="https URL without credentials"):
             normalize_agentcore_gateway_url(url)
 
@@ -50,18 +66,6 @@ class TestNormalizeAgentcoreGatewayUrl:
         url = "https://gateway.example.test/" + ("a" * AGENTCORE_GATEWAY_URL_MAX)
         assert len(url) > AGENTCORE_GATEWAY_URL_MAX
         with pytest.raises(ValueError, match="exceeds"):
-            normalize_agentcore_gateway_url(url)
-
-    @pytest.mark.parametrize(
-        "url",
-        (
-            "https://gateway.example.test/mcp\nExecStartPre=/bin/true",
-            "https://gateway.example.test/mcp\t$(id)",
-            "https://gateway.example.test/mcp extra",
-        ),
-    )
-    def test_rejects_internal_whitespace(self, url: str) -> None:
-        with pytest.raises(ValueError, match="https URL without credentials"):
             normalize_agentcore_gateway_url(url)
 
 

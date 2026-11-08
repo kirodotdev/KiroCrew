@@ -327,11 +327,14 @@ def test_a_source_grown_after_fstat_aborts_at_the_first_excess_byte(
             )
         return st
 
-    monkeypatch.setattr(os, "fstat", lying_fstat)
-    copied = pinned_fs.copy_file_pinned(
-        str(src), str(dst), max_bytes=16, on_skip=lambda r, p: reasons.append((r, p))
-    )
-    monkeypatch.undo()
+    with monkeypatch.context() as mp:
+        mp.setattr(os, "fstat", lying_fstat)
+        copied = pinned_fs.copy_file_pinned(
+            str(src),
+            str(dst),
+            max_bytes=16,
+            on_skip=lambda r, p: reasons.append((r, p)),
+        )
 
     assert copied is False
     assert reasons and reasons[0][0] == pinned_fs.SKIP_TOO_LARGE
@@ -898,12 +901,11 @@ def test_merge_consults_the_gate_before_writing_any_core_file(
 def test_a_linked_destination_root_raises_the_refusal_not_a_raw_oserror(
     tmp_path: Path,
 ) -> None:
-    """`O_NOFOLLOW` already refused it; the gap was that it escaped as a traceback.
+    """`O_NOFOLLOW` refuses it, and the refusal must not escape as a traceback.
 
-    Every other refusal on this surface is one type the CLI boundary contains, and this
-    one arrived as a bare `ELOOP`/`ENOTDIR`, so a restore ended in a stack trace instead
-    of the sentence explaining what to remove. Found by my own probe of a review finding,
-    then named by the reviewer.
+    Every other refusal on this surface is one type the CLI boundary contains. A bare
+    `ELOOP`/`ENOTDIR` would end a restore in a stack trace instead of the sentence
+    explaining what to remove.
     """
     src = tmp_path / "source"
     src.mkdir()

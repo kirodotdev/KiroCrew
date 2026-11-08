@@ -94,27 +94,23 @@ class TestSessionTaskCard:
         resume_btn = [b for b in buttons if "Resume" in b["text"]["text"]]
         assert len(resume_btn) == 1
 
-    def test_active_status_emoji(self):
+    @pytest.mark.parametrize(
+        ("status", "emoji"),
+        [
+            pytest.param("active", "🟢", id="test_active_status_emoji"),
+            pytest.param("paused", "⏸️", id="test_paused_status_emoji"),
+        ],
+    )
+    def test_status_emoji(self, status, emoji):
         blocks = session_task_card(
             idx=0,
             key="s",
             title="T",
             agent="a",
-            status="active",
+            status=status,
             messages=[],
         )
-        assert "🟢" in blocks[0]["title"]
-
-    def test_paused_status_emoji(self):
-        blocks = session_task_card(
-            idx=0,
-            key="s",
-            title="T",
-            agent="a",
-            status="paused",
-            messages=[],
-        )
-        assert "⏸️" in blocks[0]["title"]
+        assert emoji in blocks[0]["title"]
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +146,31 @@ def setup_interactions(mock_orch, monkeypatch):
     return interactions
 
 
+@pytest.fixture
+def audit(tmp_path, monkeypatch):
+    """A real, synchronous security event log under tmp_path, read back by the tests."""
+    from kiro_crew import sel as sel_mod
+
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    (tmp_path / "sel").mkdir()
+    log = sel_mod.SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+    # Leave the process singleton unset so no other caller is handed this log.
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(sel_mod.SecurityEventLog, "_initialized", False)
+    return log
+
+
+def _rows(audit) -> list[tuple[str, str, str]]:
+    """``(operation, caller, outcome)`` of each stored row, oldest first."""
+    return [(e["operation"], e["caller_identity"], e["outcome"]) for e in reversed(audit.recent())]
+
+
+def _ended(audit) -> list[tuple[str, str]]:
+    """``(operation, resources)`` of each stored row, oldest first."""
+    return [(e["operation"], e["resources"]) for e in reversed(audit.recent())]
+
+
 class TestHandleInlineStop:
     @pytest.mark.asyncio
     async def test_denied_for_non_owner(self, setup_interactions, mock_orch):
@@ -163,11 +184,15 @@ class TestHandleInlineStop:
             mock_sel.return_value.log_tool_invocation = MagicMock()
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OTHER")
 
-        # stop_turn should NOT be called
         mock_orch.sessions.stop_turn.assert_not_called()
+        mock_sel.return_value.log_api_access.assert_called_once()
+        audit = mock_sel.return_value.log_api_access.call_args.kwargs
+        assert audit["caller"] == "U_OTHER"
+        assert audit["outcome"] == "denied"
+        assert audit["resources"] == "sess-key"
 
     @pytest.mark.asyncio
-    async def test_allowed_soft_stop(self, setup_interactions, mock_orch):
+    async def test_allowed_soft_stop(self, setup_interactions, mock_orch, audit):
         """Owner clicks stop → stop_turn called, on_soft callback invoked."""
         interactions = setup_interactions
 
@@ -182,8 +207,8 @@ class TestHandleInlineStop:
         action = {"value": "my-session"}
 
         with patch("kiro_crew.slack.interactions.sel") as mock_sel:
-            mock_sel.return_value.log_api_access = MagicMock()
-            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log_api_access = MagicMock(wraps=audit.log_api_access)
+            mock_sel.return_value.log_tool_invocation = MagicMock(wraps=audit.log_tool_invocation)
             await interactions._handle_inline_stop(payload, action, "C1", "msg_ts", "U_OWNER")
 
         # Immediate feedback: "Stopping..."
@@ -192,9 +217,13 @@ class TestHandleInlineStop:
         mock_orch.slack.update_message.assert_any_call("C1", "msg_ts", text="⏹ Execution stopped.")
         # SEL tool invocation logged
         mock_sel.return_value.log_tool_invocation.assert_called_once()
+        assert _rows(audit) == [
+            ("slack.inline_stop", "U_OWNER", "allowed"),
+            ("inline_stop", "my-session", "soft"),
+        ]
 
     @pytest.mark.asyncio
-    async def test_hard_stop_callback(self, setup_interactions, mock_orch):
+    async def test_hard_stop_callback(self, setup_interactions, mock_orch, audit):
         """Hard stop invokes on_hard callback with reset message."""
         interactions = setup_interactions
 
@@ -208,13 +237,17 @@ class TestHandleInlineStop:
         action = {"value": "sess-x"}
 
         with patch("kiro_crew.slack.interactions.sel") as mock_sel:
-            mock_sel.return_value.log_api_access = MagicMock()
-            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log_api_access = MagicMock(wraps=audit.log_api_access)
+            mock_sel.return_value.log_tool_invocation = MagicMock(wraps=audit.log_tool_invocation)
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
 
         mock_orch.slack.update_message.assert_any_call(
             "C1", "ts1", text="⛔ Execution stopped — session reset."
         )
+        assert _rows(audit) == [
+            ("slack.inline_stop", "U_OWNER", "allowed"),
+            ("inline_stop", "sess-x", "hard"),
+        ]
 
     @pytest.mark.asyncio
     async def test_idle_outcome_shows_nothing_running(self, setup_interactions, mock_orch):
@@ -255,6 +288,8 @@ class TestHandleInlineStop:
             mock_sel.return_value.log_tool_invocation = MagicMock()
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
             assert mock_orch.sessions.stop_turn.await_args.kwargs.get("force") is None
+            # The decline was shown, so the presser's repeat is armed.
+            assert sl._stop_declined_markers != {}
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
             assert mock_orch.sessions.stop_turn.await_args.kwargs["force"] is True
             assert mock_orch.sessions.stop_turn.await_args.kwargs["preserve_queue"] is True
@@ -284,20 +319,21 @@ class TestHandleInlineStop:
         sl._stop_declined_markers.clear()
 
     @pytest.mark.asyncio
-    async def test_no_session_key_returns_early(self, setup_interactions, mock_orch):
+    async def test_no_session_key_returns_early(self, setup_interactions, mock_orch, audit):
         """Empty session key → SEL 'invalid' log, no stop_turn."""
         interactions = setup_interactions
         payload = {"user": {"id": "U_OWNER"}}
         action = {"value": ""}
 
         with patch("kiro_crew.slack.interactions.sel") as mock_sel:
-            mock_sel.return_value.log_api_access = MagicMock()
-            mock_sel.return_value.log_tool_invocation = MagicMock()
+            mock_sel.return_value.log_api_access = MagicMock(wraps=audit.log_api_access)
+            mock_sel.return_value.log_tool_invocation = MagicMock(wraps=audit.log_tool_invocation)
             await interactions._handle_inline_stop(payload, action, "C1", "ts1", "U_OWNER")
 
         mock_orch.sessions.stop_turn.assert_not_called()
         mock_sel.return_value.log_api_access.assert_called_once()
         assert mock_sel.return_value.log_api_access.call_args[1]["outcome"] == "invalid"
+        assert _rows(audit) == [("slack.inline_stop", "U_OWNER", "invalid")]
 
 
 # ---------------------------------------------------------------------------
@@ -307,55 +343,65 @@ class TestHandleInlineStop:
 
 class TestHandleSessionEnd:
     @pytest.mark.asyncio
-    async def test_end_by_session_id(self, setup_interactions, mock_orch):
-        """Session end uses find_key_by_sid to resolve the key."""
+    @pytest.mark.parametrize(
+        ("found_key", "has_session", "value", "removed"),
+        [
+            # find_key_by_sid resolves the key.
+            pytest.param(
+                "resolved-key", False, "sid-abc", "resolved-key", id="test_end_by_session_id"
+            ),
+            # find_key_by_sid misses, so the value is tried as a direct session key.
+            pytest.param(
+                None, True, "direct-key", "direct-key", id="test_end_falls_back_to_direct_key"
+            ),
+        ],
+    )
+    async def test_end_resolves_key(
+        self, setup_interactions, mock_orch, found_key, has_session, value, removed, audit
+    ):
         interactions = setup_interactions
-        mock_orch.sessions.find_key_by_sid = MagicMock(return_value="resolved-key")
-        mock_orch.sessions.has_session = MagicMock(return_value=False)
+        mock_orch.sessions.find_key_by_sid = MagicMock(return_value=found_key)
+        mock_orch.sessions.has_session = MagicMock(return_value=has_session)
         mock_orch.sessions.remove = AsyncMock()
         mock_orch.consolidator = None
         payload = {"user": {"id": "U_OWNER"}, "response_url": ""}
-        action = {"value": "sid-abc"}
+        action = {"value": value}
 
         with patch("kiro_crew.slack.interactions.sel") as mock_sel:
-            mock_sel.return_value.log_api_access = MagicMock()
+            mock_sel.return_value.log_api_access = MagicMock(wraps=audit.log_api_access)
             await interactions._handle_session_end(payload, action, "C1", "ts1", "U_OWNER")
 
-        mock_orch.sessions.remove.assert_called_once_with("resolved-key")
+        mock_orch.sessions.find_key_by_sid.assert_called_once_with(value)
+        mock_orch.sessions.remove.assert_called_once_with(removed)
+        assert _ended(audit) == [("slack.session_end", value)]
 
     @pytest.mark.asyncio
-    async def test_end_falls_back_to_direct_key(self, setup_interactions, mock_orch):
-        """When find_key_by_sid returns None, falls back to has_session(value)."""
-        interactions = setup_interactions
-        mock_orch.sessions.find_key_by_sid = MagicMock(return_value=None)
-        mock_orch.sessions.has_session = MagicMock(return_value=True)
-        mock_orch.sessions.remove = AsyncMock()
-        mock_orch.consolidator = None
-        payload = {"user": {"id": "U_OWNER"}, "response_url": ""}
-        action = {"value": "direct-key"}
-
-        with patch("kiro_crew.slack.interactions.sel") as mock_sel:
-            mock_sel.return_value.log_api_access = MagicMock()
-            await interactions._handle_session_end(payload, action, "C1", "ts1", "U_OWNER")
-
-        mock_orch.sessions.remove.assert_called_once_with("direct-key")
-
-    @pytest.mark.asyncio
-    async def test_end_rejected_for_non_owner(self, setup_interactions, mock_orch):
+    async def test_end_rejected_for_non_owner(self, setup_interactions, mock_orch, caplog):
         """Non-owner cannot end sessions."""
         interactions = setup_interactions
         mock_orch.sessions.remove = AsyncMock()
+        mock_orch.sessions.find_key_by_sid = MagicMock(return_value="some-key")
         payload = {"user": {"id": "U_OTHER"}, "response_url": ""}
         action = {"value": "some-key"}
 
+        caplog.set_level("WARNING", logger="kiro_crew.slack.interactions")
         with patch("kiro_crew.slack.interactions.sel") as mock_sel:
             mock_sel.return_value.log_api_access = MagicMock()
             await interactions._handle_session_end(payload, action, "C1", "ts1", "U_OTHER")
 
+        rejections = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "kiro_crew.slack.interactions" and "session_end rejected" in r.getMessage()
+        ]
+        assert rejections == ["session_end rejected: non-owner U_OTHER"]
+        mock_orch.sessions.find_key_by_sid.assert_not_called()
         mock_orch.sessions.remove.assert_not_called()
+        mock_sel.return_value.log_api_access.assert_not_called()
+        mock_orch.slack.update_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_end_with_consolidator(self, setup_interactions, mock_orch):
+    async def test_end_with_consolidator(self, setup_interactions, mock_orch, audit):
         """Session end triggers consolidator before removal."""
         interactions = setup_interactions
         mock_orch.sessions.find_key_by_sid = MagicMock(return_value="key-1")
@@ -367,11 +413,16 @@ class TestHandleSessionEnd:
         action = {"value": "sid-with-consol"}
 
         with patch("kiro_crew.slack.interactions.sel") as mock_sel:
-            mock_sel.return_value.log_api_access = MagicMock()
+            mock_sel.return_value.log_api_access = MagicMock(wraps=audit.log_api_access)
             await interactions._handle_session_end(payload, action, "C1", "ts1", "U_OWNER")
 
         mock_orch.consolidator.consolidate_session.assert_called_once_with("key-1")
         mock_orch.sessions.remove.assert_called_once_with("key-1")
+        # The consolidation is audited against the resolved key, not the raw value.
+        assert _ended(audit) == [
+            ("slack.session_end", "sid-with-consol"),
+            ("consolidate_session_slack_end", "key-1"),
+        ]
 
     @pytest.mark.asyncio
     async def test_end_updates_message_when_no_response_url(self, setup_interactions, mock_orch):
@@ -536,3 +587,127 @@ class TestWorkingBlockDashboardLinkGate:
         assert _link_ids(working), working
         assert footers, "footer not posted"
         assert not any(_link_ids(f) for f in footers), footers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("streaming", "click_on", "question", "rotate", "wait"),
+    [
+        # The answer streams through chat.startStream and is half written.
+        (True, "append_stream", "hi", False, False),
+        # Only the placeholders are up: no answer message exists yet.
+        (False, "post", "hi", False, False),
+        # A voice memo: its Slack message has no text, so no question row is imported.
+        (True, "append_stream", "", False, False),
+        # Slack refuses the next append, so the rest streams into a new message.
+        (True, "append_stream", "hi", True, False),
+        # Then a wait seals that answer and the text after it opens another message.
+        (True, "append_stream", "hi", True, True),
+    ],
+)
+async def test_a_mid_turn_link_ends_with_the_turns_final_answer(
+    tmp_path, monkeypatch, streaming, click_on, question, rotate, wait
+):
+    """The Link click lands mid-turn and the import reads the thread as it stands
+    then; the slot still ends on the final answer, with no placeholder row."""
+    import importlib
+
+    from chat_test_helpers import _make_state
+
+    from conftest import MockSlackClient
+    from kiro_crew.acp.types import EVENT_TOOL_CALL
+    from kiro_crew.dashboard import chat_persistence
+    from kiro_crew.providers.base import LLMEvent
+    from kiro_crew.slack import handler, interactions
+
+    handler_tests = importlib.import_module("test_slack_handler")
+    provider = handler_tests.FakeProvider(
+        [
+            LLMEvent(kind="text_chunk", text="the first half, "),
+            LLMEvent(kind="text_chunk", text="then the rest. "),
+            *(
+                [
+                    LLMEvent(
+                        kind=EVENT_TOOL_CALL, title="wait", tool_name="wait", tool_call_id="w1"
+                    ),
+                    LLMEvent(kind="text_chunk", text="after the wait"),
+                ]
+                if wait
+                else []
+            ),
+        ]
+    )
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    monkeypatch.setattr(chat_persistence, "save_slot_off_loop", AsyncMock(return_value=True))
+    state = _make_state(tmp_path)
+
+    class _Slack(MockSlackClient):
+        imported: list[str] | None = None
+        refuse = False
+
+        async def fetch_thread_replies(
+            self, channel, thread_ts, limit=200, warn_on_pagination=True
+        ):
+            # ``conversations.replies``: the thread as the posts and edits so far left it.
+            thread = {"msg1": {"user": "U1", "text": question, "ts": "msg1"}}
+            for kind, action in self.actions:
+                if kind in ("post", "blocks", "start_stream"):
+                    thread[action["ts"]] = {
+                        "bot_id": "B1",
+                        "text": action["text"] or "",
+                        "ts": action["ts"],
+                    }
+                elif kind in ("update", "append_stream") and action["ts"] in thread:
+                    old = thread[action["ts"]]["text"] if kind == "append_stream" else ""
+                    thread[action["ts"]]["text"] = old + action["text"]
+                elif kind == "delete":
+                    thread.pop(action["ts"], None)
+            self.imported = [m["text"] for m in thread.values()]
+            return list(thread.values())
+
+        async def _click(self, kind):
+            if kind == click_on and self.imported is None:
+                assert await interactions._import_thread_to_slot(self, state, "C1", "thread1")
+
+        async def post_message(self, channel, text, thread_ts=None):
+            ts = await super().post_message(channel, text, thread_ts)
+            await self._click("post")
+            return ts
+
+        async def append_stream(self, channel, ts, text):
+            if self.refuse and self.imported is not None:
+                self.refuse = False
+                return False
+            ok = await super().append_stream(channel, ts, text)
+            await self._click("append_stream")
+            return ok
+
+    slack = _Slack()
+    slack.refuse = rotate
+    slack._stream_enabled = streaming
+    with (
+        patch.object(handler, "_dashboard_state", state),
+        patch.object(handler, "get_dashboard_state", return_value=state),
+    ):
+        await handler.handle_message(
+            slack, handler_tests.FakeSessionManager(provider), "C1", "hi", "thread1", "msg1", "U1"
+        )
+
+    # The click came while the turn ran: Working was up and the answer unfinished.
+    assert slack.imported and "Working…" in slack.imported, slack.imported
+    assert not any("then the rest" in text for text in slack.imported), slack.imported
+    assert sum(kind == "start_stream" for kind, _ in slack.actions) == (
+        int(streaming) + rotate + wait
+    )
+    slot = state.get_linked_slot("thread1")
+    # After a wait the imported row keeps the answer it read and the new text is
+    # appended: it never overwrites the answer from before the wait.
+    answer = (
+        [("assistant", "the first half, "), ("assistant", "after the wait")]
+        if wait
+        else [("assistant", "the first half, then the rest.")]
+    )
+    assert [(m["role"], m["content"]) for m in slot.messages] == [
+        *([("user", question)] if question else []),
+        *answer,
+    ]

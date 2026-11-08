@@ -22,6 +22,7 @@ import json
 from typing import Any
 from unittest.mock import patch
 
+import mcp_tool_set_checks
 import pytest
 
 from kiro_crew import mcp_crew_log as server
@@ -73,7 +74,7 @@ def _entry(seq: int, etype: str = "turn/started", data: Any = None, **over: Any)
     return row
 
 
-class TestTheToolSetIsRatcheted:
+class TestTheToolSetIsRatcheted(mcp_tool_set_checks.TheDeclaredSetMatchesWhatIsAdvertised):
     """The whole point of the server: three reads, and no way to add a write."""
 
     def test_exactly_three_tools_by_name(self) -> None:
@@ -82,9 +83,6 @@ class TestTheToolSetIsRatcheted:
             "crew_log_read",
             "crew_log_projection",
         ]
-
-    def test_the_declared_set_matches_what_is_advertised(self) -> None:
-        assert server.TOOLS == tuple(t["name"] for t in server._list_tools())
 
     def test_no_tool_name_reads_as_a_write(self) -> None:
         """A name-level ratchet, so a write cannot arrive under a read's clothing."""
@@ -131,9 +129,15 @@ class TestTheToolSetIsRatcheted:
 
 class TestUnitResolution:
     def test_a_raw_unit_id_is_passed_through_untouched(self) -> None:
-        with patch.object(server, "_get", return_value=_page([_entry(1)])) as got:
-            _call("crew_log_read", unit=UNIT)
+        def fake_get(path: str, *a: Any, **k: Any) -> dict[str, Any]:
+            if f"/units/{UNIT}/page" in path:
+                return _page([_entry(1)])
+            return {"error": "not_found", "message": f"no route {path}"}
+
+        with patch.object(server, "_get", side_effect=fake_get) as got:
+            out = _call("crew_log_read", unit=UNIT)
         assert f"/units/{UNIT}/page" in got.call_args[0][0]
+        assert (out["unit"], out["returned"]) == (UNIT, 1)
 
     def test_a_slot_key_is_resolved_through_the_gateway(self) -> None:
         seen: list[str] = []
@@ -157,8 +161,17 @@ class TestUnitResolution:
 
     def test_self_resolves_through_the_strict_gate_and_sends_that_key(self) -> None:
         """``self`` is the caller's own key, resolved once and sent as itself."""
-        with patch.object(server, "_get", return_value={"unit": UNIT}) as got:
-            server._call_tool("crew_log_projection", {"unit": "self", "name": "status"})
+
+        def fake_get(path: str, *a: Any, session_key: str = "", **k: Any) -> dict[str, Any]:
+            if session_key != CALLER:
+                return {"error": "forbidden", "message": f"not {session_key!r}'s unit"}
+            return {"unit": UNIT}
+
+        with patch.object(server, "_get", side_effect=fake_get) as got:
+            out = json.loads(
+                server._call_tool("crew_log_projection", {"unit": "self", "name": "status"})
+            )
+        assert out == {"unit": UNIT}
         assert f"key={CALLER.replace(':', '%3A')}" in got.call_args_list[0][0][0]
         assert got.call_args_list[0].kwargs["session_key"] == CALLER
 
@@ -317,11 +330,14 @@ class TestEveryRequestCarriesTheStrictlyResolvedKey:
     def test_resolving_another_session_key_still_sends_the_callers_own(self) -> None:
         """Naming somebody else's key must not change WHOSE authority the read has."""
 
-        def fake_get(path: str, *a: Any, **k: Any) -> dict[str, Any]:
+        def fake_get(path: str, *a: Any, session_key: str = "", **k: Any) -> dict[str, Any]:
+            if session_key != CALLER:
+                return {"error": "forbidden", "message": f"not {session_key!r}'s unit"}
             return {"unit": UNIT} if "/resolve" in path else _page([_entry(1)])
 
         with patch.object(server, "_get", side_effect=fake_get) as got:
-            _call("crew_log_read", unit="chat-9-1789617503")
+            out = _call("crew_log_read", unit="chat-9-1789617503")
+        assert (out["unit"], out["returned"]) == (UNIT, 1)
         assert [c.kwargs.get("session_key") for c in got.call_args_list] == [CALLER, CALLER]
 
     @pytest.mark.parametrize(

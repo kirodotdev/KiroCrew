@@ -7,7 +7,7 @@ The member-dispatch mount on both paths, ``load_session`` against
 import asyncio
 import json
 import sys
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
@@ -15,6 +15,7 @@ from acp_runtime_helpers import _pinned_kiro_cli_version  # noqa: F401
 from acp_runtime_helpers import _stub_sel_for_permission_tests  # noqa: F401
 from acp_runtime_helpers import (
     _await_pending,
+    _drain,
     _feed,
     _make_runtime,
     _replying_send,
@@ -25,6 +26,7 @@ from acp_runtime_helpers import (
 from kiro_crew.acp.runtime import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
@@ -33,6 +35,26 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.testing.wait import await_until
+
+
+def _kas_turn_frame(session_id: str, *, replay: bool) -> dict:
+    """A ``session/update`` as KAS sends one, replayed on load or live.
+
+    Shape from ``test/fixtures/acp_frames/kas/mcp-live-apply-live.jsonl``.
+    """
+    kiro = {"agentMode": "kirocrew", "replay": True} if replay else {"agentMode": "kirocrew"}
+    return {
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": session_id,
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "PURPLE-OTTER-42"},
+                "_meta": {"kiro": kiro},
+            },
+        },
+    }
 
 
 def _identity_tokens(elements):
@@ -56,16 +78,9 @@ def _identity_tokens(elements):
 def _without_identity_env(elements):
     """*elements* with the per-session identity VALUE dropped from each.
 
-    Lets a comparison assert on the stub SET — names, commands, args, and every
-    other env pair — without asserting that two different sessions were given the
-    same session token, which they must not be.
-
-    Only the VALUE is excluded, never the pair's presence: the pair is rewritten to
-    a fixed placeholder rather than removed, so an element that stops carrying a
-    token at all still differs from one that carries a different token. Removing it
-    outright is what made the ratchet blind to a token disappearing — the
-    comparison alone cannot see presence, so :func:`_identity_tokens` is asserted
-    beside it.
+    Two sessions must get different tokens, so only the value is masked. The pair is
+    kept as a placeholder, not removed, so a missing token still shows; presence is
+    asserted via :func:`_identity_tokens`.
     """
     out = []
     for element in elements:
@@ -87,16 +102,9 @@ def _without_identity_env(elements):
 class TestRuntimeMemberDispatchDisabled:
     """A switched-off dashboard server is not mounted on EITHER runtime path.
 
-    ``AcpRuntime`` composes the array for an ``ACP_BACKENDS_ACP_RUNTIME`` host, and the
-    member entry it appends is outside every rule that array is filtered by -- the
-    ``tools`` allowlist that keeps a disabled server out of a projected array never
-    sees an element appended after it. ``disabled`` also has no per-tool or per-call
-    spelling, so no harness can refuse a call to a server it was handed: not mounting
-    it is the only place the operator's switch-off can be honoured.
-
-    Both paths are pinned because ``session/load`` RE-INITIALIZES the session's
-    servers, so a resume that did not ask would re-mount a server the original
-    ``session/new`` withheld.
+    The appended member entry escapes the ``tools`` allowlist, and ``disabled`` has no
+    per-call form, so not mounting is the only enforcement. ``session/load`` re-inits
+    servers, so the resume path is pinned too.
     """
 
     MEMBER_KEY = "dashboard_member-autofix"
@@ -170,13 +178,8 @@ class TestRuntimeMemberDispatchDisabled:
     def test_the_scope_comes_from_the_one_decider(self):
         """The switch-off has to be read where this host resolves its agent.
 
-        ``session_mcp`` resolves a spec project-nearest and does NOT fall back, so on a
-        host that runs the USER-level agent (KAS) a same-named file in the checkout would
-        decide the answer for a session that never reads it: a disable written where that
-        session's agent actually lives would read as "not disabled" and the withdrawn
-        server would mount. Asserted against ``overlay_project_scope`` rather than
-        against a literal, because that function is the decider the array's own
-        projection uses and these two must not come apart.
+        On KAS (user-level agent) a same-named checkout file would otherwise decide it.
+        Compared to ``overlay_project_scope``, the array projection's decider, not a literal.
         """
         from kiro_crew.acp.runtime import _disable_check_scope
         from kiro_crew.agent_sdk.backends import overlay_project_scope
@@ -193,15 +196,8 @@ class TestRuntimeMemberDispatchDisabled:
     async def test_the_kas_grant_follows_the_withhold(self, monkeypatch, tmp_path, disabled):
         """Withholding the mount has to withhold the GRANT with it.
 
-        ``member_dispatch=True`` widens the KAS agent payload: the dashboard server joins
-        ``tools`` and the member verbs join ``allowedTools``, which is an approval-free
-        path. A grant that outlived the withhold would leave a switched-off server both
-        named and pre-approved on the very session that is not mounting it -- worse than
-        an unguarded mount, because nothing would even ask.
-
-        Read off the flag reaching ``_kas_custom_agents`` rather than off a KAS wire
-        payload: ``create_session`` enters that seam for every host (it answers None for a
-        non-KAS one), so the decision is observable without a KAS session to drive.
+        ``member_dispatch=True`` adds the member verbs to ``allowedTools``, an approval-free
+        path. Read off the flag reaching ``_kas_custom_agents``, which every host enters.
         """
         from kiro_crew.acp.harness.base import SessionExtras
 
@@ -209,7 +205,9 @@ class TestRuntimeMemberDispatchDisabled:
         rt, _, _ = _make_runtime()
         seen: list[bool] = []
 
-        async def _capture(_agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+        async def _capture(
+            _agent, *, member_dispatch=False, crew_panel=False, session_key="", **_kw
+        ):
             seen.append(member_dispatch)
             return SessionExtras(custom_agents=None, derived_spec_snapshot=None)
 
@@ -227,11 +225,8 @@ class TestRuntimeMemberDispatchDisabled:
     def test_the_resume_path_carries_the_same_grant_expression(self):
         """The resume half, pinned where it can be: its own source.
 
-        The seam is entered only for KAS on that path -- by design, so the kiro resume
-        reaches a comparison and stops -- and driving a KAS resume needs the whole
-        re-attach and activation bracket this suite's fake transport does not answer. A
-        source pin still fails if the term is dropped from one path and kept on the other,
-        which is the drift that matters: the two halves of one feature disagreeing.
+        A KAS resume needs a re-attach bracket the fake transport cannot answer. The source
+        pin still catches the term dropped from one path only.
         """
         import inspect
 
@@ -395,12 +390,8 @@ class TestAcpRuntimeLoadSession:
     async def test_load_session_moves_a_resumed_session_off_an_unserved_default(self, monkeypatch):
         """The resume path is the second half of the served-default check.
 
-        session/load echoes ``currentModelId`` like session/new does, and a
-        session persisted before the served list changed can come back on a
-        default the account does not serve. load_session must run
-        ``ensure_served_default`` after storing the response, exactly as
-        create_session does, so the first prompt after a resume cannot fail with
-        "no access to model".
+        A resumed session can come back on a default the account does not serve, so
+        load_session runs ``ensure_served_default`` like create_session.
         """
         from kiro_crew.acp.types import ACP_BACKEND_KIRO, METHOD_SET_MODEL
 
@@ -476,16 +467,94 @@ class TestAcpRuntimeLoadSession:
         # The queue registered before the send must be cleaned up on failure.
         assert "sid-y" not in rt._session_queues
 
+    async def _load_with_frames(self, monkeypatch, frames, *, require_replay):
+        """Run load_session with the real reader, the engine sending *frames*
+        before it answers the load. Returns (runtime, result-or-exception)."""
+        rt, reader, _ = _make_runtime()
+        rt._can_load_session = True
+        evict = AsyncMock()
+        terminate = AsyncMock()
+        monkeypatch.setattr(rt, "evict_session", evict)
+        monkeypatch.setattr(rt, "terminate_session", terminate)
+
+        async def _fake_send(method, params, timeout=None):
+            if method == METHOD_SESSION_LOAD:
+                for frame in frames:
+                    _feed(reader, frame)
+                await _drain(reader)
+                return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        reader_task = await _start_reader(rt)
+        try:
+            try:
+                outcome = await rt.load_session(
+                    "", "sid-r", agent="kirocrew", require_replay=require_replay
+                )
+            except AcpRuntimeError as exc:
+                outcome = exc
+        finally:
+            await _stop_reader(reader_task)
+        return rt, evict, terminate, outcome
+
+    @pytest.mark.asyncio
+    async def test_a_load_that_replayed_turns_is_a_resume(self, monkeypatch):
+        """Record present: the engine replays the stored turns, so the load stands."""
+        frames = [_kas_turn_frame("sid-r", replay=True), _kas_turn_frame("sid-r", replay=True)]
+        rt, evict, terminate, outcome = await self._load_with_frames(
+            monkeypatch, frames, require_replay=True
+        )
+        assert isinstance(outcome, AcpSessionHandle)
+        assert outcome.session_id == "sid-r"
+        assert "sid-r" in rt._session_queues
+        evict.assert_not_awaited()
+        terminate.assert_not_awaited()
+        assert rt._load_replay_frames == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "frames",
+        [
+            pytest.param([], id="nothing_sent"),
+            # A live frame for this id is not a replayed turn.
+            pytest.param([_kas_turn_frame("sid-r", replay=False)], id="no_replay_marker"),
+            # Another session's replay says nothing about this one.
+            pytest.param([_kas_turn_frame("sid-other", replay=True)], id="other_session"),
+        ],
+    )
+    async def test_a_load_that_replayed_nothing_is_refused(self, monkeypatch, frames):
+        """Record missing: KAS answers with a new empty record, which is refused
+        and evicted so the caller replays Kiro Crew's own history."""
+        rt, evict, terminate, outcome = await self._load_with_frames(
+            monkeypatch, frames, require_replay=True
+        )
+        assert isinstance(outcome, AcpRuntimeError)
+        assert "replayed no earlier turn" in str(outcome)
+        # Evicted, never deleted: a wrong refusal must not lose a real record.
+        evict.assert_awaited_once_with("sid-r")
+        terminate.assert_not_awaited()
+        assert "sid-r" not in rt._session_queues
+        assert rt._load_replay_frames == {}
+
+    @pytest.mark.asyncio
+    async def test_a_load_that_does_not_require_replay_is_unchanged(self, monkeypatch):
+        """kiro-cli resumes and the KAS MCP re-injection load do not ask, so a load
+        with no replayed turn still stands for them."""
+        rt, evict, terminate, outcome = await self._load_with_frames(
+            monkeypatch, [], require_replay=False
+        )
+        assert isinstance(outcome, AcpSessionHandle)
+        evict.assert_not_awaited()
+        terminate.assert_not_awaited()
+        assert rt._load_replay_frames == {}
+
     @pytest.mark.asyncio
     async def test_load_session_reinjects_the_kas_agent_definition(self, monkeypatch):
         """Resume must re-send the agent, for the same reason session/new sends it.
 
-        KAS registers client agents PER SESSION and has no ``--agent`` flag, so a
-        resumed session that is not handed them again advertises only the modes it
-        can find on disk — and that set is not a superset of what session/new had,
-        because KAS skips an agent profile written for kiro-cli. Omitting this made
-        the requested mode genuinely absent on resume, and the mode guard then
-        refused the load rather than silently running the backend default.
+        KAS registers client agents per session and skips kiro-cli profiles on disk, so
+        without it the requested mode is absent and the mode guard refuses the load.
         """
         from kiro_crew.acp._dispatch import build_session_new_params
 
@@ -499,7 +568,9 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+        async def _fake_agents(
+            agent, *, member_dispatch=False, crew_panel=False, session_key="", **_kw
+        ):
             from kiro_crew.acp.harness import SessionExtras
 
             return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
@@ -529,12 +600,8 @@ class TestAcpRuntimeLoadSession:
     async def test_the_kas_resume_report_reads_the_hoisted_array(self, monkeypatch):
         """The session report must name the array the resume SENT, post-hoist.
 
-        ``hoist_managed_servers`` moves a managed server out of the agent definition
-        and into the session array, so on KAS the array the wire carries is not the
-        one the roster was bound from. The report and the stall diagnostic read that
-        binding, so a resume that re-assigned only the request param would describe
-        servers it did not send -- the pre-hoist roster -- while the session ran on
-        the hoisted one.
+        On KAS ``hoist_servers_for_session`` changes the array, so rebinding only the
+        request param would make the report describe the pre-hoist roster.
         """
         rt, _, _ = _make_runtime()
         rt._can_load_session = True
@@ -546,7 +613,9 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+        async def _fake_agents(
+            agent, *, member_dispatch=False, crew_panel=False, session_key="", **_kw
+        ):
             from kiro_crew.acp.harness import SessionExtras
 
             return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
@@ -561,7 +630,7 @@ class TestAcpRuntimeLoadSession:
         reported: list[list] = []
         monkeypatch.setattr(rt, "_send_and_await", _fake_send)
         monkeypatch.setattr(rt, "_kas_custom_agents", _fake_agents)
-        monkeypatch.setattr(runtime_mod, "hoist_managed_servers", _hoist)
+        monkeypatch.setattr(runtime_mod, "hoist_servers_for_session", _hoist)
         monkeypatch.setattr(
             rt,
             "_guard_unresolved_mcp_refs",
@@ -585,11 +654,8 @@ class TestAcpRuntimeLoadSession:
     async def test_kas_hoisted_control_plane_carries_the_session_token(self, monkeypatch, resume):
         """On KAS the managed servers reach the wire through the hoist, token included.
 
-        The runtime stamps the per-session token onto its array BEFORE
-        ``hoist_managed_servers`` runs, and on KAS that array is empty: every
-        managed server arrives through the hoist. A hoisted ``kirocrew-core``
-        without the token reads its tool policy unattested and refuses every call
-        as ``identity_unattested`` -- memory, logs, spawn_run -- on every session.
+        The token is stamped before the hoist, onto an array that is empty on KAS. Without
+        it ``kirocrew-core`` refuses every call as ``identity_unattested``.
         """
         rt, _, _ = _make_runtime()
         rt._can_load_session = True
@@ -603,7 +669,9 @@ class TestAcpRuntimeLoadSession:
                 return {"sessionId": "sid-kas-new"}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+        async def _fake_agents(
+            agent, *, member_dispatch=False, crew_panel=False, session_key="", **_kw
+        ):
             from kiro_crew.acp.harness import SessionExtras
 
             return SessionExtras(
@@ -670,7 +738,9 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+        async def _fake_agents(
+            agent, *, member_dispatch=False, crew_panel=False, session_key="", **_kw
+        ):
             from kiro_crew.acp.harness import SessionExtras
 
             return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": []}])
@@ -705,7 +775,9 @@ class TestAcpRuntimeLoadSession:
                 return {"modes": {"currentModeId": "kirocrew"}, "models": []}
             return {}
 
-        async def _fake_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+        async def _fake_agents(
+            agent, *, member_dispatch=False, crew_panel=False, session_key="", **_kw
+        ):
             from kiro_crew.acp.harness import SessionExtras
 
             calls.append(agent)
@@ -784,15 +856,10 @@ class TestAcpRuntimeLoadSession:
 
     @pytest.mark.asyncio
     async def test_load_session_redeclares_pooled_stubs(self, tmp_path, monkeypatch):
-        """A resumed session must re-declare the pooled broker
-        stubs. session/load re-initializes the session's MCP servers, so a []
-        sent here applies: the stubs stop shadowing the
-        agent spec's same-named entries and kiro-cli spawns its own copy of
-        every pooled server, silently un-pooling the session for life.
+        """A resumed session must re-declare the pooled broker stubs.
 
-        Asserts on the EMITTED mcpServers of both requests: load_session must
-        carry exactly the entries create_session injects for the same agent +
-        overlay. Mutating the fix back to [] fails the first assert."""
+        session/load re-inits MCP servers, so a [] would make kiro-cli spawn its own copy
+        of every pooled server. Asserts load_session emits what create_session does."""
         from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER
 
         overlay = tmp_path / "agents"
@@ -839,20 +906,9 @@ class TestAcpRuntimeLoadSession:
             "kirocrew-mate",
         ]
 
-        # Parity with create_session for the same agent + overlay: the two
-        # injection paths must never diverge.
-        #
-        # The per-session token's VALUE is the one part that legitimately differs:
-        # each session start mints its own (``_own_stub_session``) and these are two
-        # different sessions. So the value is normalised and everything else --
-        # ``command``, ``args``, every other env pair -- is compared byte-for-byte,
-        # because the parity this guards is the stub SET, and re-declaring a
-        # different one is what silently un-pools a resumed session.
-        #
-        # PRESENCE is asserted separately and is not part of the normalisation: a
-        # comparison that dropped the pair from both sides would pass just as
-        # happily if one path stopped carrying a token at all, which is the
-        # regression this file is the only guard for.
+        # Parity with create_session. Only the token value differs (each session mints
+        # its own, ``_own_stub_session``), so it is masked; token presence is asserted
+        # separately.
         await rt.create_session(cwd="/w", agent="kirocrew")
         new_params = next(p for m, p in sent if m == METHOD_SESSION_NEW)
         load_tokens = _identity_tokens(load_params["mcpServers"])
@@ -1128,3 +1184,84 @@ async def test_failed_session_init_oauth_does_not_leak_to_reused_id():
             if task is not None and not task.done():
                 task.cancel()
         await _stop_reader(reader_task)
+
+
+@pytest.mark.asyncio
+async def test_kiro_create_session_never_feeds_or_persists_the_advertised_model_cache(
+    monkeypatch,
+):
+    """The kiro path gains no call for an adapter-only feature (harness-parity H13).
+
+    The advertised-model feed and persist are gated at the call site on the
+    backends whose served list is the authority. kiro is not one of them, so
+    creating a kiro session must never reach either, even though session/new
+    carries models.
+    """
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KIRO
+    feed = MagicMock()
+    monkeypatch.setattr(AcpSessionHandle, "_feed_advertised_model_cache", feed)
+    spy = AsyncMock()
+    monkeypatch.setattr(AcpSessionHandle, "_persist_advertised_models_if_changed", spy)
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_NEW:
+            return {
+                "sessionId": "sid-kiro",
+                "models": {
+                    "availableModels": [{"modelId": "claude-opus-4.8", "name": "Opus"}],
+                    "currentModelId": "claude-opus-4.8",
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    handle = await rt.create_session(cwd="/w", agent="kirocrew")
+
+    assert handle.session_id == "sid-kiro"
+    feed.assert_not_called()
+    spy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_kiro_load_session_never_feeds_or_persists_the_advertised_model_cache(
+    monkeypatch,
+):
+    """The resume path carries the same kiro gate as create (harness-parity H13).
+
+    session/load echoes the model list like session/new does, so the kiro resume
+    must skip both the feed and the persist for the same reason the kiro create
+    does.
+    """
+    rt, _, _ = _make_runtime()
+    rt._acp_backend = ACP_BACKEND_KIRO
+    rt._can_load_session = True
+    feed = MagicMock()
+    monkeypatch.setattr(AcpSessionHandle, "_feed_advertised_model_cache", feed)
+    spy = AsyncMock()
+    monkeypatch.setattr(AcpSessionHandle, "_persist_advertised_models_if_changed", spy)
+
+    async def _fake_send(method, params, timeout=None):
+        if method == METHOD_SESSION_LOAD:
+            return {
+                "modes": {"currentModeId": "kirocrew"},
+                "models": {
+                    "availableModels": [{"modelId": "claude-opus-4.8", "name": "Opus"}],
+                    "currentModelId": "claude-opus-4.8",
+                },
+            }
+        return {}
+
+    monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+
+    handle = await rt.load_session(
+        "/home/u/.kiro/sessions/cli/sid-123.json",
+        "sid-123",
+        cwd="/work",
+        agent="kirocrew",
+    )
+
+    assert handle.session_id == "sid-123"
+    feed.assert_not_called()
+    spy.assert_not_awaited()

@@ -5,15 +5,18 @@ interface field is a ``Default*`` adapter — i.e. today's open-source behavior.
 ``bootstrap_context`` is the single entry point boot calls: it builds the
 default context, resolves the profile, and (for a non-standalone profile) swaps
 in the companion-composed context after validating the contract version and the
-ADD-only security floor.
+ADD-only security floor. An enterprise build with no companion installed keeps
+the default context under the enterprise profile (see
+:func:`_enterprise_on_core_defaults`).
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence, cast
 
+from kiro_crew import edition
 from kiro_crew.platform.context import (
     CONTRACT_VERSION,
     PROFILE_STANDALONE,
@@ -23,13 +26,16 @@ from kiro_crew.platform.context import (
     set_context,
 )
 from kiro_crew.platform.defaults import (
+    DefaultAcceptanceCheckProvider,
     DefaultAgentCatalogProvider,
     DefaultAgentExecutableResolver,
     DefaultAgentIdentityProvider,
     DefaultAgentRuntime,
     DefaultAppRegistryPolicy,
     DefaultAppsLoader,
+    DefaultBrowserCredentialProvider,
     DefaultCapabilityManager,
+    DefaultCloudInstancePolicyProvider,
     DefaultCredentialPolicy,
     DefaultDashboardContributor,
     DefaultDeniedRuleProvider,
@@ -68,7 +74,7 @@ from kiro_crew.platform.security_authority import PolicyAuthority, assert_securi
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.platform.interfaces import TelemetryProvider
+    from kiro_crew.platform.interfaces import TelemetryProvider, TunnelProvider
 
 logger = logging.getLogger(__name__)
 
@@ -132,11 +138,56 @@ def compose_telemetry_provider(cfg: "KiroCrewConfig") -> "TelemetryProvider":
     """
     eps = plugin_entry_points()
     profile = resolve_profile(cfg, entry_points=eps)
-    if profile == PROFILE_STANDALONE:
+    if profile == PROFILE_STANDALONE or _enterprise_on_core_defaults(eps):
         return DefaultTelemetryProvider()
     companion = _checked_companion(profile, cfg, eps)
     assert_security_floor(companion.security)
-    return companion.telemetry
+    # The calling process installs no context, so the core cannot read a ceiling
+    # for these destinations: the provider carries the companion's own.
+    return cast(
+        "TelemetryProvider",
+        _PolicyBoundTelemetry(
+            companion.telemetry,
+            getattr(companion, "governance", None),
+            getattr(getattr(companion, "credentials", None), "redact", None),
+        ),
+    )
+
+
+class _PolicyBoundTelemetry:
+    """The companion's telemetry provider, plus the ceiling its OTLP export obeys.
+
+    ``governance_ceiling`` is what ``metrics.provider`` holds destinations and each
+    export to in a process with no context, and ``governance_redact`` is the
+    companion's credential redaction its SEL rows go through there. Every other
+    attribute, including ``otlp_destinations`` (or its absence), is the wrapped
+    provider's own.
+    """
+
+    def __init__(self, inner: object, ceiling: object | None, redact: object = None) -> None:
+        self._inner = inner
+        self.governance_ceiling = ceiling
+        self.governance_redact = redact
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+def _enterprise_on_core_defaults(eps: "Sequence[Any]") -> bool:
+    """Does this enterprise build boot on the core defaults, with no companion?
+
+    True only for an enterprise build (the build-time edition, which no env var or
+    config changes) with no ``kirocrew.plugins`` entry point at all. The governance
+    fetch and every enterprise gate live in the core and key off the edition, so a
+    companion adds nothing such a build needs (RFC rfc-crew-enterprise-edition,
+    D1). *eps* is the answer of a scan that succeeded: in an
+    enterprise build ``plugin_entry_points`` raises rather than answer ``[]`` when
+    it cannot read the metadata. Any installed entry point still goes through discovery,
+    so a broken, rejected, ambiguous or contract-mismatched companion fails closed
+    exactly as before. An ``oss`` build never takes this path: there a
+    non-standalone profile with no companion still fails closed.
+    """
+    return edition.is_enterprise() and not eps
 
 
 def _checked_companion(
@@ -172,6 +223,25 @@ def _reset_boot_state() -> None:
     global _BOOTED
     with _BOOT_LOCK:
         _BOOTED = False
+
+
+def _public_tunnel_provider(cfg: "KiroCrewConfig") -> "TunnelProvider":
+    """The tunnel slot's provider in the public composition.
+
+    The no-op :class:`DefaultTunnelProvider`, unless ``tunnel.relay_enabled`` turns
+    on the Kiro relay client. A companion composes its own context and its own
+    provider, so it never reaches this choice. The relay client is imported only
+    when the setting is on, so a process composing the defaults with the relay off,
+    a short-lived hook among them, never loads it.
+    """
+    from kiro_crew.edition_locks import relay_selected
+
+    if not relay_selected(cfg):
+        return DefaultTunnelProvider()
+    from kiro_crew.relay_client.provider import public_tunnel_provider
+
+    provider: "TunnelProvider" = public_tunnel_provider(cfg)
+    return provider
 
 
 def build_default_context(
@@ -220,14 +290,17 @@ def build_default_context(
         package_manager=DefaultPackageManager(),
         knowledge=DefaultKnowledgeProvider(),
         memory_files=DefaultMemoryFilesProvider(),
-        tunnel=DefaultTunnelProvider(),
+        tunnel=_public_tunnel_provider(cfg),
         telemetry=DefaultTelemetryProvider(),
         dashboard=DefaultDashboardContributor(),
         jail=DefaultJailProvider(),
         mobile_connect=DefaultMobileConnectProvider(),
         remote_provisioners=DefaultRemoteProvisionerProvider(),
+        cloud_instance_policy=DefaultCloudInstancePolicyProvider(),
         feedback=DefaultFeedbackTrackerProvider(),
+        browser_credentials=DefaultBrowserCredentialProvider(),
         speech=DefaultSpeechProviderRegistry(),
+        acceptance_checks=DefaultAcceptanceCheckProvider(),
         feature_apps=(),
         governance=governance,
     )
@@ -272,15 +345,19 @@ def _refresh_stt_for_edition(cfg: "KiroCrewConfig") -> None:
 def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     """Build, validate, install, and return the active platform context.
 
-    Standalone: returns the all-defaults context.  Non-standalone: discovers the
-    companion context (fail-closed), validates the contract version and the
-    ADD-only security floor, then installs it as the process-global context.
+    Standalone: returns the all-defaults context.  Enterprise build with no
+    companion: the all-defaults context under the enterprise profile.  Otherwise
+    non-standalone: discovers the companion context (fail-closed), validates the
+    contract version and the ADD-only security floor, then installs it as the
+    process-global context.
     """
     eps = plugin_entry_points()
     profile = resolve_profile(cfg, entry_points=eps)
     ctx = build_default_context(cfg, profile=profile)
 
-    if profile != PROFILE_STANDALONE:
+    if _enterprise_on_core_defaults(eps):
+        logger.info("Enterprise build with no companion: composed the core defaults")
+    elif profile != PROFILE_STANDALONE:
         companion = _checked_companion(profile, cfg, eps)
         assert_security_floor(companion.security)
         ctx = companion
@@ -397,8 +474,17 @@ KAS_CLI_FLOOR_DEFAULT_NOTICE = (
     "Update kiro-cli and restart Kiro Crew to use KAS."
 )
 
+#: The notice when the user picked Kiro CLI: the pick runs on KAS only while
+#: kiro-cli offers its v3 engine, so on this kiro-cli it keeps the v2 launch.
+KAS_CLI_FLOOR_KIRO_NOTICE = (
+    "Kiro CLI is selected and {reason}, so Kiro Crew keeps running kiro-cli's v2 "
+    "engine. kiro-cli is retiring v2: run `kiro-cli update` and restart Kiro Crew."
+)
 
-def apply_kas_cli_floor(cfg: "KiroCrewConfig", *, kas_defaulted: bool = False) -> str | None:
+
+def apply_kas_cli_floor(
+    cfg: "KiroCrewConfig", *, kas_defaulted: bool = False, kiro_selected: bool = False
+) -> str | None:
     """Fall back to kiro-cli when KAS is configured but this kiro-cli cannot serve it.
 
     The same ``acp --help`` probe ``kirocrew doctor`` reports from, turned into a
@@ -409,9 +495,11 @@ def apply_kas_cli_floor(cfg: "KiroCrewConfig", *, kas_defaulted: bool = False) -
     changed.
 
     Probes only when KAS is what this install would run — the main or member
-    backend — and still selectable. An unknown verdict (no pinned kiro-cli, a
-    failed spawn) leaves KAS selected: the floor never acts on a fact it could not
-    establish.
+    backend — or the main backend is a stored Kiro CLI pick (*kiro_selected*), and
+    KAS is still selectable. An unknown verdict (no pinned kiro-cli, a failed spawn)
+    leaves KAS selected and a Kiro CLI pick on kiro-cli's v2 launch: the floor never
+    acts on a fact it could not establish. Only a probe that ran and names the v3
+    engine moves a Kiro CLI pick onto KAS (``confirm_kiro_cli_offers_kas``).
 
     Called by the gateway alone, after :func:`bootstrap_context`, so it reads the
     policy-narrowed set. Not part of ``bootstrap_context`` itself: that runs in
@@ -423,29 +511,58 @@ def apply_kas_cli_floor(cfg: "KiroCrewConfig", *, kas_defaulted: bool = False) -
     """
     from kiro_crew.acp_backends import (
         ACP_BACKEND_KAS,
+        ACP_BACKEND_KIRO,
+        governance_floor_backend,
         mark_backend_unservable,
         resolve_selected_backend,
         selectable_backends,
     )
+    from kiro_crew.agent_sdk.backends import confirm_kiro_cli_offers_kas, kiro_cli_pick_backend
 
     agent = cfg.agent
-    if ACP_BACKEND_KAS not in (agent.acp_backend, agent.member_acp_backend):
+    kas_roles = ACP_BACKEND_KAS in (agent.acp_backend, agent.member_acp_backend)
+    kiro_pick = kiro_selected and agent.acp_backend == ACP_BACKEND_KIRO
+    if not (kas_roles or kiro_pick):
         return None
     if agent.kas_bundle:
         # The bundle route spawns Kiro Crew's own engine and never runs kiro-cli,
         # so kiro-cli's engine support is not a fact about this host's KAS. Acting
-        # on it would silently move a bundle-route user back onto kiro-cli.
+        # on it would silently move a bundle-route user back onto kiro-cli, and a
+        # Kiro CLI pick there stays on kiro-cli rather than on the bundled engine.
         return None
     if ACP_BACKEND_KAS not in selectable_backends():
         return None
-    from kiro_crew.agent_sdk import kas_engine_unsupported_reason
+    from kiro_crew.agent_sdk import kas_engine_verdict
 
-    reason = kas_engine_unsupported_reason()
+    offers_kas, reason = kas_engine_verdict()
+    if offers_kas:
+        # Positive evidence only: from here a Kiro CLI pick moves to the KAS path
+        # (``KIRO_SELECTION_BACKEND``), including one the user makes later in this
+        # process, so the verdict is recorded whatever the boot backend was.
+        confirm_kiro_cli_offers_kas()
+        if kiro_pick:
+            agent.acp_backend = kiro_cli_pick_backend()
+        return None
     if reason is None:
         return None
+    if governance_floor_backend() == ACP_BACKEND_KAS:
+        # Enterprise (RFC D6): KAS is the floor, so it is never marked unservable and
+        # nothing falls back to kiro-cli. ``enterprise_boot.require_kas_harness`` already
+        # refused a start whose main sessions run KAS, or recorded the verdict so each
+        # session on KAS is refused at its own start; only a Kiro CLI pick's notice holds.
+        if not kiro_pick:
+            return None
+        notice = KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=reason)
+        logger.warning(notice)
+        return notice
     mark_backend_unservable(ACP_BACKEND_KAS, reason)
     agent.acp_backend = resolve_selected_backend(agent.acp_backend)
-    template = KAS_CLI_FLOOR_DEFAULT_NOTICE if kas_defaulted else KAS_CLI_FLOOR_NOTICE
-    notice = template.format(reason=reason)
+    parts = []
+    if kiro_pick:
+        parts.append(KAS_CLI_FLOOR_KIRO_NOTICE.format(reason=reason))
+    if kas_roles:
+        template = KAS_CLI_FLOOR_DEFAULT_NOTICE if kas_defaulted else KAS_CLI_FLOOR_NOTICE
+        parts.append(template.format(reason=reason))
+    notice = " ".join(parts)
     logger.warning(notice)
     return notice

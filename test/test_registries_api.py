@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from named_cases_helpers import named_cases
 
 from kiro_crew.apps import routes
 from kiro_crew.apps.routes import (
@@ -45,14 +46,12 @@ def _setup_env(tmp_path, monkeypatch):
     home = tmp_path / "kirocrew-home"
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
-    # Create empty config
     cfg = home / "config.json"
     cfg.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
         "kiro_crew.apps.routes.config_path",
         lambda: str(cfg),
     )
-    # Mock SEL
     mock_sel = MagicMock()
     monkeypatch.setattr("kiro_crew.apps.routes.sel", lambda: mock_sel)
     # Mock bridges/backend to avoid side effects
@@ -143,7 +142,6 @@ class TestPutRegistries:
             assert len(data["registries"]) == 1
             assert data["registries"][0]["repo"] == "IdentityApps"
 
-            # Verify persisted to config
             saved = json.loads(cfg.read_text(encoding="utf-8"))
             assert len(saved["registries"]) == 1
 
@@ -1022,45 +1020,45 @@ class TestIsSafeRepoIdentifier:
     @pytest.mark.parametrize(
         "url",
         [
-            "ssh://git.example.com/team/MyApps",  # userless
-            "ssh://dev@git.example.com/team/MyApps",  # user@
-            "ssh://git.example.com:2222/org/app",  # userless + port
-            "ssh://user@git.example.com:22/org/app.git",  # user@ + port + .git
-            "ssh://host/path",  # minimal valid
+            *named_cases(
+                "test_accepts_valid_ssh_urls",
+                "url",
+                [
+                    "ssh://git.example.com/team/MyApps",  # userless
+                    "ssh://dev@git.example.com/team/MyApps",  # user@
+                    "ssh://git.example.com:2222/org/app",  # userless + port
+                    "ssh://user@git.example.com:22/org/app.git",  # user@ + port + .git
+                    "ssh://host/path",  # minimal valid
+                ],
+            ),
+            *named_cases(
+                "test_accepts_valid_https_urls",
+                "url",
+                [
+                    "https://github.com/acme/apps",
+                    "https://github.com/acme/apps.git",
+                    "https://host:8443/org/app",
+                ],
+            ),
+            *named_cases(
+                "test_accepts_valid_scp_urls",
+                "url",
+                [
+                    "git@github.com:acme/apps.git",
+                    "deploy@host:path",
+                ],
+            ),
+            *named_cases(
+                "test_accepts_bare_names",
+                "url",
+                [
+                    "BareName",
+                    "My-Org_Apps",
+                ],
+            ),
         ],
     )
-    def test_accepts_valid_ssh_urls(self, url):
-        assert _is_safe_repo_identifier(url) is True
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "https://github.com/acme/apps",
-            "https://github.com/acme/apps.git",
-            "https://host:8443/org/app",
-        ],
-    )
-    def test_accepts_valid_https_urls(self, url):
-        assert _is_safe_repo_identifier(url) is True
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "git@github.com:acme/apps.git",
-            "deploy@host:path",
-        ],
-    )
-    def test_accepts_valid_scp_urls(self, url):
-        assert _is_safe_repo_identifier(url) is True
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "BareName",
-            "My-Org_Apps",
-        ],
-    )
-    def test_accepts_bare_names(self, url):
+    def test_accepts_a_valid_repo_identifier(self, url):
         assert _is_safe_repo_identifier(url) is True
 
     # --- rejected forms ---
@@ -1068,46 +1066,46 @@ class TestIsSafeRepoIdentifier:
     @pytest.mark.parametrize(
         "url",
         [
-            "http://github.com/acme/apps",  # plaintext MITM vector
-            "http://host/path",
+            *named_cases(
+                "test_rejects_http_plaintext",
+                "url",
+                [
+                    "http://github.com/acme/apps",  # plaintext MITM vector
+                    "http://host/path",
+                ],
+            ),
+            *named_cases(
+                "test_rejects_path_traversal",
+                "url",
+                [
+                    "../etc/passwd",
+                    "ssh://host/path/../escape",
+                    "https://host/org/../admin",
+                ],
+            ),
+            *named_cases(
+                "test_rejects_shell_metacharacters",
+                "url",
+                [
+                    "ssh://host/path;rm -rf /",
+                    "https://host/path|cat /etc/shadow",
+                    "ssh://host/$(whoami)/app",
+                    "https://host/`id`/app",
+                    "ssh://host/path&bg",
+                ],
+            ),
+            *named_cases(
+                "test_rejects_ambiguous_forms",
+                "url",
+                [
+                    "",  # empty
+                    "host:path",  # scp without user — ambiguous
+                    "acme/apps",  # owner/repo shorthand
+                ],
+            ),
         ],
     )
-    def test_rejects_http_plaintext(self, url):
-        assert _is_safe_repo_identifier(url) is False
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "../etc/passwd",
-            "ssh://host/path/../escape",
-            "https://host/org/../admin",
-        ],
-    )
-    def test_rejects_path_traversal(self, url):
-        assert _is_safe_repo_identifier(url) is False
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "ssh://host/path;rm -rf /",
-            "https://host/path|cat /etc/shadow",
-            "ssh://host/$(whoami)/app",
-            "https://host/`id`/app",
-            "ssh://host/path&bg",
-        ],
-    )
-    def test_rejects_shell_metacharacters(self, url):
-        assert _is_safe_repo_identifier(url) is False
-
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "",  # empty
-            "host:path",  # scp without user — ambiguous
-            "acme/apps",  # owner/repo shorthand
-        ],
-    )
-    def test_rejects_ambiguous_forms(self, url):
+    def test_rejects_an_unsafe_repo_identifier(self, url):
         assert _is_safe_repo_identifier(url) is False
 
 

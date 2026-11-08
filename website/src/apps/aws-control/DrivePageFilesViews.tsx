@@ -58,6 +58,24 @@ const SEARCH_COLUMNS: LibraryColumn[] = [
  * `ListObjectsV2` actually returns, so it is what the column shows. A key with
  * no extension gets a dash rather than an invented category.
  */
+/**
+ * The "Move to folder…" item's label. Moves run one at a time, so while one is
+ * in flight every row's item is disabled; the reason is written into the item
+ * itself. A tooltip would not do: a disabled Radix item takes no pointer
+ * events, so its `title` never shows, and a keyboard reader never hovers.
+ */
+function MoveToLabel({ busy }: { busy: boolean }) {
+  if (!busy) return <>{i18nT('apps.awsControl.console.move_to')}</>
+  return (
+    <span className="flex flex-col gap-0.5">
+      <span>{i18nT('apps.awsControl.console.move_to')}</span>
+      <span className="text-[11px] text-muted leading-snug" data-testid="move-to-busy">
+        {i18nT('apps.awsControl.console.move_to_busy')}
+      </span>
+    </span>
+  )
+}
+
 function objectKind(key: string): string {
   const name = key.split('/').pop() ?? key
   const dot = name.lastIndexOf('.')
@@ -464,7 +482,7 @@ export function DriveFilesGrid({ pane }: { pane: DriveFilesPane }) {
                     <Share2 size={13} />{i18nT('apps.awsControl.console.share')}
                   </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => openMove(f.key)} disabled={moveBusy} data-testid="drive-grid-move">
-                    <FolderInput size={13} />{i18nT('apps.awsControl.console.move_to')}
+                    <FolderInput size={13} /><MoveToLabel busy={moveBusy} />
                   </DropdownMenuItem>
                   <DropdownMenuItem onSelect={() => openConfirmDelete(f.key)} data-testid="drive-grid-delete">
                     <Trash2 size={13} />{i18nT('apps.awsControl.console.delete')}
@@ -766,7 +784,7 @@ export function DriveFilesTable({ pane }: { pane: DriveFilesPane }) {
                           <Share2 size={13} />{i18nT('apps.awsControl.console.share')}
                         </DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => openMove(f.key)} disabled={moveBusy} data-testid="drive-move">
-                          <FolderInput size={13} />{i18nT('apps.awsControl.console.move_to')}
+                          <FolderInput size={13} /><MoveToLabel busy={moveBusy} />
                         </DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => openConfirmDelete(f.key)} data-testid="drive-delete">
                           <Trash2 size={13} />{i18nT('apps.awsControl.console.delete')}

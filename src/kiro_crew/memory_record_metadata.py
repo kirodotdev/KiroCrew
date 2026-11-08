@@ -144,6 +144,10 @@ _DERIVED = {"embedding", "last_accessed_at", "access_count", "id", "kind", "meta
 # A physical rewrite changes this clock without changing the remembered content.
 # Keep it in revision snapshots as provenance, but not in the idempotency digest.
 _HASH_DERIVED = _DERIVED | {"updated_at"}
+# Who proposed a change, how sure it was and when it was seen are not the change:
+# consolidation proposes as a new source every session, so one change re-proposed
+# each time must still match the pending row.
+_PROPOSAL_PROVENANCE = _HASH_DERIVED | {"source", "confidence", "source_ref", "observed_at"}
 
 
 #: Every additive object, by name: :func:`ensure_schema` builds them and
@@ -425,6 +429,10 @@ def limit_v1_accepted_history(db: sqlite3.Connection, record_id: str | None = No
     Callers establish V1 ownership before using this helper. A normal write
     examines only its record; opening a V1 store also bounds existing journals.
     Proposal statuses, current metadata and monotonic IDs are never changed.
+
+    The open-time pass deletes only for records already over the limit. Under
+    implicit transactions any DML begins a write and takes the write lock, even
+    one that matches no row, so a steady-state open must issue none.
     """
     record_ids = (
         [record_id]
@@ -432,7 +440,9 @@ def limit_v1_accepted_history(db: sqlite3.Connection, record_id: str | None = No
         else [
             row[0]
             for row in db.execute(
-                "SELECT DISTINCT record_id FROM memory_revisions WHERE status = 'accepted'"
+                "SELECT record_id FROM memory_revisions WHERE status = 'accepted' "
+                "GROUP BY record_id HAVING count(*) > ?",
+                (V1_ACCEPTED_REVISION_LIMIT,),
             )
         ]
     )
@@ -568,6 +578,20 @@ def sync_record(
     return result
 
 
+def _proposed_change(after_json: str, metadata_json: str) -> str:
+    """A proposal's stored after/metadata JSON without its provenance."""
+    return _json(
+        [
+            {
+                key: value
+                for key, value in json.loads(part).items()
+                if key not in _PROPOSAL_PROVENANCE
+            }
+            for part in (after_json, metadata_json)
+        ]
+    )
+
+
 def propose_conflict(
     db: sqlite3.Connection,
     *,
@@ -584,15 +608,14 @@ def propose_conflict(
     current = get_record_metadata(db, record_id)
     patch = normalize_metadata(metadata)
     revision = int(current.get("revision", 0))
-    payload = _json(snapshot(after))
-    row = db.execute(
-        "SELECT id FROM memory_revisions WHERE record_id=? AND base_revision=? "
-        "AND status='conflict' AND after_json=? AND source=? AND operation=? "
-        "AND metadata_json=? LIMIT 1",
-        (record_id, revision, payload, source, operation, _json(patch)),
-    ).fetchone()
-    if row:
-        return int(row[0])
+    change = _proposed_change(_json(snapshot(after)), _json(patch))
+    for row in db.execute(
+        "SELECT id, after_json, metadata_json FROM memory_revisions WHERE record_id=? "
+        "AND base_revision=? AND status='conflict' AND operation=? ORDER BY id",
+        (record_id, revision, operation),
+    ):
+        if _proposed_change(row[1], row[2]) == change:
+            return int(row[0])
     return _append_revision(
         db,
         record_id=record_id,

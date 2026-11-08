@@ -56,16 +56,17 @@ async function main() {
         deviceScaleFactor: 2,
       })
       const page = await context.newPage()
-      await stubDashboardApi(page, { slots, theme: s.theme })
+      await stubDashboardApi(page, {
+        slots, theme: s.theme,
+        localStorageEntries: {
+          'mc-color-theme': s.attr,
+          'mc-privacy-notice-v1': '1',
+          // Keeps the rail expanded: the row is folded away at max-height:0
+          // when collapsed.
+          'mc-nav': '0',
+        },
+      })
       logPageProblems(page)
-      // Runs after the stub's own init script, so it survives its
-      // localStorage.clear(). mc-nav '0' keeps the rail expanded — the row is
-      // folded away at max-height:0 when collapsed.
-      await page.addInitScript(attr => {
-        localStorage.setItem('mc-color-theme', attr)
-        localStorage.setItem('mc-privacy-notice-v1', '1')
-        localStorage.setItem('mc-nav', '0')
-      }, s.attr)
 
       await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
       // Assert on the applied palette rather than sleeping: a shot taken

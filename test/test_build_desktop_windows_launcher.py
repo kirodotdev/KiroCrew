@@ -31,8 +31,8 @@ SCRIPT = Path(__file__).parent.parent / "packaging" / "build-desktop.sh"
 BUILD_WORKFLOW = Path(__file__).parent.parent / ".github" / "workflows" / "build.yml"
 
 
-def _render_cmd_launcher() -> list[str]:
-    """Extract the ``printf`` format for ``kirocrew.cmd`` and render its lines.
+def _render_cmd_launcher(subdir: str = "bin") -> list[str]:
+    """Extract the ``printf`` format for ``<subdir>/kirocrew.cmd`` and render its lines.
 
     Rendering mirrors what the shell does with a single-quoted ``printf`` format
     and no arguments: ``%%`` -> ``%``, ``\\\\`` -> ``\\``, ``\\r\\n`` -> CRLF.  The
@@ -42,10 +42,10 @@ def _render_cmd_launcher() -> list[str]:
     # decode it: pin the encoding.
     text = SCRIPT.read_text(encoding="utf-8")
     m = re.search(
-        r"printf '([^']*)' > \"\$out/bin/kirocrew\.cmd\"",
+        rf"printf '([^']*)' > \"\$out/{subdir}/kirocrew\.cmd\"",
         text,
     )
-    assert m, "kirocrew.cmd printf not found in packaging/build-desktop.sh"
+    assert m, f"{subdir}/kirocrew.cmd printf not found in packaging/build-desktop.sh"
     fmt = m.group(1)
     rendered = fmt.replace("%%", "%").replace("\\\\", "\\").replace("\\r\\n", "\r\n")
     assert rendered.endswith("\r\n"), "every .cmd line must end in CRLF"
@@ -54,7 +54,7 @@ def _render_cmd_launcher() -> list[str]:
     return lines
 
 
-def _workflow_cmd_launcher() -> list[str]:
+def _workflow_cmd_launcher(subdir: str = "bin") -> list[str]:
     """The Windows installer workflow writes its own copy of the shim.
 
     ``build.yml`` builds the Windows backend in PowerShell and writes
@@ -65,11 +65,44 @@ def _workflow_cmd_launcher() -> list[str]:
     """
     text = BUILD_WORKFLOW.read_text(encoding="utf-8")
     m = re.search(
-        r"\(Join-Path \$out \"bin\\kirocrew\.cmd\"\) `\s*\n\s*-Value @\(([^\n]*)\)",
+        rf"\(Join-Path \$out \"{subdir}\\kirocrew\.cmd\"\) `\s*\n\s*-Value @\(([^\n]*)\)",
         text,
     )
-    assert m, "kirocrew.cmd Set-Content not found in .github/workflows/build.yml"
+    assert m, f"{subdir}\\kirocrew.cmd Set-Content not found in .github/workflows/build.yml"
     return re.findall(r"'([^']*)'", m.group(1))
+
+
+def test_bundle_replaces_the_pip_scripts_launcher_in_both_writers():
+    """Neither bundle writer may ship pip's ``Scripts\\kirocrew.exe``.
+
+    pip writes that ``.exe`` with the BUILD machine's absolute ``python.exe``
+    path in its shebang, so on any installed copy it fails with "Fatal error in
+    launcher". Both writers must delete it (and any ``kirocrew-script.py``) and
+    put the relocatable shim in its place, with the same lines as ``bin\\``'s:
+    ``Scripts\\`` is one level below the bundle root too, so ``%~dp0..`` names
+    the same interpreter.
+    """
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert re.search(
+        r'rm -f "\$out/Scripts/kirocrew\.exe" "\$out/Scripts/kirocrew-script\.py"', script
+    ), "build-desktop.sh must delete pip's Scripts/kirocrew.exe from the bundle"
+    workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
+    assert re.search(
+        r'Remove-Item [^\n]*`\s*\n\s*-LiteralPath \(Join-Path \$out "Scripts\\kirocrew\.exe"\), '
+        r'\(Join-Path \$out "Scripts\\kirocrew-script\.py"\)',
+        workflow,
+    ), "build.yml must delete pip's Scripts\\kirocrew.exe from the bundle"
+
+    assert _render_cmd_launcher("Scripts") == _render_cmd_launcher("bin")
+    assert _workflow_cmd_launcher("Scripts") == _render_cmd_launcher("bin")
+
+    # The shim is written AFTER the deletion, so the removal cannot take it.
+    assert script.index('rm -f "$out/Scripts/kirocrew.exe"') < script.index(
+        '> "$out/Scripts/kirocrew.cmd"'
+    )
+    assert workflow.index('"Scripts\\kirocrew-script.py")') < workflow.index(
+        '(Join-Path $out "Scripts\\kirocrew.cmd")'
+    )
 
 
 def test_build_workflow_writes_the_same_cmd_launcher():

@@ -545,19 +545,11 @@ def _same_git_target(a: str, b: str) -> bool:
 # must live inside the registry repo") only fires when withheld credentials
 # are a plausible cause — an owner who hits a typo'd branch or a DNS blip must
 # NOT be told to restructure their repositories. Matched case-insensitively.
+#
+# The SSH credential refusal is matched separately by
+# :func:`_is_ssh_auth_refusal`, because its method list varies in content and
+# order.
 _GIT_AUTH_FAILURE_MARKERS = (
-    # SSH credential refusal ONLY. The bare token "permission denied" also
-    # appears in a LOCAL filesystem error — an unwritable clone destination
-    # emits `fatal: could not create work tree dir '…': Permission denied` —
-    # so matching it mislabels a disk-permission failure as withheld remote
-    # credentials and shows the "move the repo inside the registry" hint on an
-    # error that has nothing to do with credentials. SSH's real auth-refusal
-    # wording always carries the method parenthetical (`git@host: Permission
-    # denied (publickey).`, also `(publickey,password)` /
-    # `(publickey,keyboard-interactive)`), which a local errno `Permission
-    # denied` never has — so anchor on `permission denied (publickey` (open
-    # paren, no close, to catch every comma-separated method list).
-    "permission denied (publickey",
     "authentication failed",
     "could not read username",
     "could not read password",
@@ -567,6 +559,64 @@ _GIT_AUTH_FAILURE_MARKERS = (
     "invalid username or password",
 )
 
+# SSH credential refusal ONLY. The bare token "permission denied" also appears
+# in a LOCAL filesystem error — an unwritable clone destination emits
+# `fatal: could not create work tree dir '…': Permission denied` — so matching
+# it would mislabel a disk-permission failure as withheld remote credentials
+# and show the "move the repo inside the registry" hint on an error that has
+# nothing to do with credentials. SSH's auth-refusal wording always carries a
+# parenthesized, comma-separated list of the server's auth methods, in the
+# server's own order: `git@host: Permission denied (publickey).`,
+# `(publickey,password)`, `(publickey,keyboard-interactive)` and
+# `(keyboard-interactive,publickey)` all occur. A local errno `Permission
+# denied` never has that list, so the check requires one: method names that
+# start with a letter and contain no spaces, comma-separated, closed by `)`.
+# Matched against lowercased text.
+_SSH_REFUSAL_PREFIX = "permission denied ("
+_SSH_METHOD_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789@._+-")
+
+
+def _ssh_method_list_closes(low: str, pos: int) -> bool:
+    """Whether a method list starting at *pos* in *low* is closed by ``)``.
+
+    Reads one character at a time and stops at the first one that cannot
+    continue the list: each name starts with ``a``-``z`` and uses only
+    :data:`_SSH_METHOD_CHARS`, names are separated by single commas, and the
+    list ends at ``)``.
+    """
+    name_start = True
+    for i in range(pos, len(low)):
+        ch = low[i]
+        if name_start:
+            if not ("a" <= ch <= "z"):
+                return False
+            name_start = False
+        elif ch == ")":
+            return True
+        elif ch == ",":
+            name_start = True
+        elif ch not in _SSH_METHOD_CHARS:
+            return False
+    return False
+
+
+def _is_ssh_auth_refusal(low: str) -> bool:
+    """Whether lowercased *low* holds an SSH ``Permission denied (<methods>)``.
+
+    Each ``permission denied (`` occurrence is checked in turn. The next
+    search starts right after the current prefix, so an occurrence inside a
+    rejected list is still checked. A list stops at its first space or
+    ``(``, and the prefix holds both, so text is read a bounded number of
+    times and the check stays linear in the length of *low*.
+    """
+    start = low.find(_SSH_REFUSAL_PREFIX)
+    while start >= 0:
+        body_start = start + len(_SSH_REFUSAL_PREFIX)
+        if _ssh_method_list_closes(low, body_start):
+            return True
+        start = low.find(_SSH_REFUSAL_PREFIX, body_start)
+    return False
+
 
 # Known NON-auth failure classes, mapped to a fixed derived label. This is an
 # allowlist emitting a CONSTANT string per class — never a slice of raw git
@@ -574,10 +624,21 @@ _GIT_AUTH_FAILURE_MARKERS = (
 # banner (PR-1418 lesson: free-text stderr passthrough cannot be closed by
 # shape enumeration). Matched case-insensitively; first match wins.
 _GIT_FAILURE_CLASS_LABELS: tuple[tuple[str, str], ...] = (
+    # libcurl's proxy phrasings ("Could not resolve proxy: …", "Received HTTP code
+    # 407 from proxy after CONNECT", "CONNECT tunnel failed, response 407", "Proxy
+    # CONNECT aborted"). Each carries a space, so no URL path segment matches.
+    # Listed before "could not resolve" so a proxy name failure is named as one.
+    ("could not resolve proxy", "the proxy host could not be resolved"),
+    ("from proxy", "the proxy refused the connection"),
+    ("connect tunnel failed", "the proxy refused the connection"),
+    ("proxy connect", "the proxy refused the connection"),
     ("could not resolve", "host could not be resolved"),
     ("connection timed out", "the connection timed out"),
     ("connection refused", "the connection was refused"),
     ("network is unreachable", "the network was unreachable"),
+    # After the three above: libcurl prefixes them with "Failed to connect to …",
+    # and the specific cause is the more useful label.
+    ("failed to connect", "the connection failed"),
     ("remote branch", "the requested branch does not exist"),
     # Anchored on git's own ref-error phrasing ("couldn't find remote ref …",
     # "remote ref … does not exist"), NOT the bare token "does not exist": that
@@ -610,11 +671,53 @@ _GIT_FAILURE_CLASS_LABELS: tuple[tuple[str, str], ...] = (
 def _git_output_is_auth_shaped(text: str) -> bool:
     """Whether *text* matches a known auth/permission failure class.
 
-    Strict allowlist — see :data:`_GIT_AUTH_FAILURE_MARKERS`. Never echoes
-    *text*; returns only a boolean.
+    Strict allowlist — see :data:`_GIT_AUTH_FAILURE_MARKERS` and
+    :func:`_is_ssh_auth_refusal`. Never echoes *text*; returns only a boolean.
     """
     low = text.lower()
+    if _is_ssh_auth_refusal(low):
+        return True
     return any(marker in low for marker in _GIT_AUTH_FAILURE_MARKERS)
+
+
+#: The labels above that mean the remote was never reached. A credentialed
+# transport's output is already reduced to one of these labels, so matching the
+# labels covers both the raw and the redacted text. ``"timed out"`` also catches
+# the fetch helper's own timeout, the usual symptom of a proxy-only network.
+_GIT_NETWORK_FAILURE_MARKERS: tuple[str, ...] = (
+    "could not resolve",
+    "could not be resolved",
+    "from proxy",
+    "connect tunnel failed",
+    "proxy connect",
+    "proxy refused",
+    "failed to connect",
+    "connection failed",
+    "timed out",
+    "connection refused",
+    "connection was refused",
+    "network is unreachable",
+    "network was unreachable",
+)
+
+#: Fixed text appended to a fetch, pull or clone error when the remote was not
+#: reached. A constant: it names the variables to check, never their values, so a
+#: proxy URL's ``user:password@`` cannot reach the banner.
+_GIT_NETWORK_FAILURE_HINT = "check your network and proxy settings (HTTPS_PROXY, NO_PROXY)"
+
+
+def _git_network_failure_hint(text: str) -> str:
+    """:data:`_GIT_NETWORK_FAILURE_HINT` when *text* says the remote was not reached, else ``""``.
+
+    Never echoes *text*.
+    """
+    # A `remote:` line is text the server chose to send, not a client-side result.
+    low = "\n".join(
+        line for line in text.lower().splitlines() if not line.lstrip().startswith("remote:")
+    )
+    if any(marker in low for marker in _GIT_NETWORK_FAILURE_MARKERS):
+        return _GIT_NETWORK_FAILURE_HINT
+    return ""
 
 
 def _redacted_git_failure_class(text: str) -> str:

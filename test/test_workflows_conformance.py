@@ -94,6 +94,7 @@ EXPECTED_CTX_METHODS: dict[str, tuple[bool, list[tuple[str, str, bool]]]] = {
             ("cwd", "KEYWORD_ONLY", True),
             ("session", "KEYWORD_ONLY", True),
             ("nudge", "KEYWORD_ONLY", True),
+            ("backend", "KEYWORD_ONLY", True),
         ],
     ),
     "parallel": (
@@ -163,6 +164,32 @@ EXPECTED_CTX_METHODS: dict[str, tuple[bool, list[tuple[str, str, bool]]]] = {
             ("self", "POSITIONAL_OR_KEYWORD", False),
             ("channel", "POSITIONAL_OR_KEYWORD", False),
             ("text", "POSITIONAL_OR_KEYWORD", False),
+        ],
+    ),
+    "open_session": (
+        True,
+        [
+            ("self", "POSITIONAL_OR_KEYWORD", False),
+            ("name", "POSITIONAL_OR_KEYWORD", True),
+            ("folder_id", "KEYWORD_ONLY", True),
+            ("agent", "KEYWORD_ONLY", True),
+            ("model", "KEYWORD_ONLY", True),
+        ],
+    ),
+    "send_to_session": (
+        True,
+        [
+            ("self", "POSITIONAL_OR_KEYWORD", False),
+            ("slot", "POSITIONAL_OR_KEYWORD", False),
+            ("message", "POSITIONAL_OR_KEYWORD", False),
+        ],
+    ),
+    "set_session_mode": (
+        True,
+        [
+            ("self", "POSITIONAL_OR_KEYWORD", False),
+            ("slot", "POSITIONAL_OR_KEYWORD", False),
+            ("mode", "POSITIONAL_OR_KEYWORD", False),
         ],
     ),
 }

@@ -1,19 +1,11 @@
 """The per-app model setting, ``apps.<name>.model``.
 
-A user can choose the model an app's sessions and background spawns start on, from
-the app's row in Settings. It is strictly opt-in, so these tests pin both halves of
-that contract:
+* unset or ``""``, every app session and spawn resolves exactly as without it;
+* set, it sits below every more specific pick (session, app, agent or crew) and above
+  the global default, only for slots and spawns the app owns.
 
-* unset or ``""``, every app session and spawn resolves EXACTLY as it does without
-  the setting -- no default moves, so nothing costs more;
-* set, it sits below everything more specific (the session's own pick, the app's
-  own pick such as a Research campaign or the Spec Builder default, a model the
-  agent or crew pins) and above the global default, and only for a slot or spawn
-  the app owns.
-
-A pin the account cannot run takes the existing path: the Settings write refuses
-it, and the turn hands it to the session as the same ``model`` request every other
-default rides, which the provider withholds rather than sends.
+A model the account cannot run is refused by the Settings write and withheld by the
+provider.
 """
 
 from __future__ import annotations
@@ -92,11 +84,11 @@ class TestAppsTable:
     def test_a_pick_round_trips(self, tmp_path):
         cfg = _config(tmp_path)
         assert cfg.apps == {APP: AppSettingsConfig(model=APP_PIN)}
-        assert cfg.to_dict()["apps"] == {APP: {"model": APP_PIN}}
+        assert cfg.to_dict()["apps"] == {APP: {"model": APP_PIN, "mute_sessions": False}}
 
     def test_an_unmodelled_key_inside_an_entry_survives_a_save(self, tmp_path):
         cfg = _load_config(tmp_path, {"apps": {APP: {"model": APP_PIN, "later": 1}}})
-        assert cfg.to_dict()["apps"][APP] == {"model": APP_PIN, "later": 1}
+        assert cfg.to_dict()["apps"][APP] == {"model": APP_PIN, "mute_sessions": False, "later": 1}
 
     @pytest.mark.parametrize(
         "raw",
@@ -116,6 +108,11 @@ class TestAppsTable:
     def test_inherit_spellings_read_empty(self, tmp_path, value):
         cfg = _config(tmp_path, app_model=value)
         assert app_model_pin(cfg, APP) == ""
+
+    @pytest.mark.parametrize("value", [True, False, "true", 1, None])
+    def test_only_the_json_true_mutes_an_apps_sessions(self, tmp_path, value):
+        cfg = _load_config(tmp_path, {"apps": {APP: {"mute_sessions": value}}})
+        assert cfg.apps[APP].mute_sessions is (value is True)
 
     def test_an_unknown_app_reads_empty(self, tmp_path):
         cfg = _config(tmp_path)
@@ -230,11 +227,8 @@ class TestResolveAppSpawnModel:
     def test_the_default_crews_pin_does_not_block_a_spawn(self, tmp_path, _no_template_pin):
         """The spawn's agent tier is the spawn session's, and a pinned crew is not it.
 
-        The ``default`` crewmate pins a model, which is its agent tier when a
-        session names it. A spawn of the app's own template is not that crew: its
-        session ignores the default crew's pin and starts on the global default.
-        Judging the spawn by the crew's tier would therefore drop the per-app
-        setting for a spawn that never runs on the crew's model.
+        A spawn of the app's own template ignores the ``default`` crewmate's pin, so the
+        crew's tier must not drop the per-app setting.
         """
         from kiro_crew.config.loader import _agent_tier_model, _model_scope_filter
         from kiro_crew.session import _session_model
@@ -504,6 +498,21 @@ class TestSettingsWrite:
         spec = core._editable_config_spec(path)
         assert spec is not None
         assert spec["validate_fn"] is core._validate_role_model
+
+    @pytest.mark.asyncio
+    async def test_an_apps_session_mute_is_written_under_the_app(self, _cfg_file):
+        async with TestClient(TestServer(_patch_app())) as c:
+            resp = await c.patch(
+                "/api/config/kirocrew", json={"path": f"apps.{APP}.mute_sessions", "value": True}
+            )
+            assert resp.status == 200
+            refused = await c.patch(
+                "/api/config/kirocrew", json={"path": f"apps.{APP}.mute_sessions", "value": "yes"}
+            )
+            assert refused.status == 400
+        assert (
+            json.loads(_cfg_file.read_text(encoding="utf-8"))["apps"][APP]["mute_sessions"] is True
+        )
 
     @pytest.mark.parametrize(
         "path",

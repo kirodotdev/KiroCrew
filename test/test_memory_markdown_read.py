@@ -74,6 +74,9 @@ class _EmptyVectorStore:
     def close(self) -> None:
         pass
 
+    def recorded_embedding_space(self) -> None:
+        return None
+
     def get_all_semantic(self) -> list:
         return []
 
@@ -561,7 +564,7 @@ class TestAtomicMemoryWrites:
         ms = _store(tmp_path)
         ms.init()
 
-        def boom(src: object, dst: object) -> None:
+        def boom(src: object, dst: object, **kwargs: object) -> None:
             raise OSError("simulated replace failure")
 
         # Patch the rename step inside the atomic_write helper the memory
@@ -995,22 +998,27 @@ class TestMemoryCliWiring:
         ns = mock_cmd.call_args[0][0]
         assert (ns.target, ns.format, ns.since) == (None, "md", None)
 
-    def test_memory_export_include_markdown_defaults_off(self) -> None:
+    def test_memory_export_include_markdown_defaults_off(self, tmp_path: Path) -> None:
+        out = tmp_path / "export.json"
+        ms = _populated_store(tmp_path)
         with (
-            patch.object(sys, "argv", ["kirocrew", "memory", "export"]),
-            patch("kiro_crew.cli_commands._memory_cmd") as mock_cmd,
+            patch.object(sys, "argv", ["kirocrew", "memory", "export", "--output", str(out)]),
+            patch.object(cli_commands, "declared_store", _EmptyVectorStore),
+            patch.object(cli_commands, "_markdown_memory_store", lambda: ms),
         ):
             from kiro_crew.cli import main
 
             main()
-        assert mock_cmd.call_args[0][0].include_markdown is False
+        assert list(json.loads(out.read_text(encoding="utf-8"))) == [
+            "semantic",
+            "episodic",
+            "events",
+        ]
 
 
 # ── memory search: the markdown layer is reachable by keyword ──
-# The FTS5 index over preferences/projects/daily-history is written on every
-# append and rebuilt by both the heartbeat and the gateway, but nothing ever
-# queried it, and `memory search` resolved to the VECTOR store. These pin the
-# markdown layer as searchable while keeping the old output shape available.
+# `memory search` queries the FTS5 index over preferences, projects and daily history,
+# beside the VECTOR store; `--layer vector` keeps the single-section output unchanged.
 
 
 class _NoEpisodicVectorStore:
@@ -1114,7 +1122,7 @@ class TestMemoryHistorySearch:
     def test_layer_vector_stays_unlabelled_even_with_hits(
         self, tmp_path: Path, capsys: pytest.CaptureFixture
     ) -> None:
-        """Back-compat: the single-section output keeps its previous shape."""
+        """Back-compat: the single-section output stays unlabelled."""
         ms = _populated_store(tmp_path)
         ms.rebuild_index()
         with patch.object(cli_commands, "_markdown_memory_store", lambda: ms):
@@ -1314,7 +1322,6 @@ class TestLinkedWorkspaceAncestorGate:
         assert "- prefers pytest" in ms.markdown_snapshot()["preferences"]["content"]
 
 
-# ---------------------------------------------------------------------------
 # Member manual-profile guards and database history/index integrity
 #
 # The default store above degrades an unreadable file to an empty entry. A
@@ -1322,7 +1329,6 @@ class TestLinkedWorkspaceAncestorGate:
 # index are held in SQLite, independent of any old file copies. These exercise
 # ``MemoryStore`` through the dashboard's
 # ``markdown_memory_for_store`` so the store is the one the handlers bind.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

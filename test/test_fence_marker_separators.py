@@ -7,8 +7,6 @@ any whitespace, underscore or hyphen run, or nothing at all.
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from conftest import assert_rejected_without_backtracking
@@ -46,16 +44,20 @@ def test_matcher_has_no_adjacent_nullable_classes() -> None:
     assert r"[\s_-]*\s*" not in pattern
 
 
-def test_long_whitespace_run_is_linear() -> None:
-    payloads = [
-        ">>>END" + " " * 3200 + "x",
-        ">>>END" + " " * 3200 + "UNTRUSTED" + " " * 3200 + "x",
-        "\u00e9>>>END" + " " * 3200 + "x",
-    ]
-    start = time.perf_counter()
-    for payload in payloads:
-        ctx._neutralize_fence_markers(payload)
-    assert time.perf_counter() - start < 0.5
+@pytest.mark.parametrize(
+    "build_pump",
+    [
+        lambda n: ">>>END" + " " * n + "x",
+        lambda n: ">>>END" + " " * n + "UNTRUSTED" + " " * n + "x",
+        lambda n: "\u00e9>>>END" + " " * n + "x",
+    ],
+    ids=["after-head", "between-words", "non-ascii-prefix"],
+)
+def test_long_whitespace_run_is_linear(build_pump) -> None:
+    def reject(text: str) -> None:
+        assert isinstance(ctx._neutralize_fence_markers(text), str)
+
+    assert_rejected_without_backtracking(reject, build_pump, budget_seconds=0.5)
 
 
 @pytest.mark.parametrize(

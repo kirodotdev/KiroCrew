@@ -60,7 +60,11 @@ async def api_member_greet(request: web.Request) -> web.Response:
             {"error": "invalid member slug", "code": "invalid_member_slug"}, status=400
         )
     try:
-        outcome = await maybe_start_first_greeting(state, slug)
+        # The tab's rendered language: the welcome's only language signal on
+        # an install that follows the browser (mate_welcome.hidden_turn_language).
+        outcome = await maybe_start_first_greeting(
+            state, slug, request.headers.get("X-UI-Lang", "")
+        )
     except Exception:
         logger.warning("first welcome failed to start for %r", slug, exc_info=True)
         return web.json_response(
@@ -121,7 +125,7 @@ async def api_member_fresh_start(request: web.Request) -> web.Response:
     dashboard passes.
     """
     from kiro_crew.dashboard import chat_handlers as ch
-    from kiro_crew.dashboard import chat_runner as runner
+    from kiro_crew.dashboard.chat_runner import _answer_slash_without_channel
 
     denied = await _deny_app_caller(request, "members.fresh_start")
     if denied is not None:
@@ -191,7 +195,7 @@ async def api_member_fresh_start(request: web.Request) -> web.Response:
     # longer remembers what is above it. A session that still refuses the discard
     # keeps it queued for its next turn boundary, as /clear does.
     reset_at = datetime.now(timezone.utc).isoformat()
-    outcome = await runner._answer_slash_without_channel(state, slot, key, "/clear")
+    outcome = await _answer_slash_without_channel(state, slot, key, "/clear")
     cleared = outcome == "discarded"
     # Whether the fold boundary landed in the member's own log, so the client
     # can tell "durable, survives a reload" from "this session's own fold

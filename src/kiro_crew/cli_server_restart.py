@@ -33,7 +33,9 @@ from kiro_crew.cli_server_peer import (
     _owner_verified_secret_urlopen,
 )
 from kiro_crew.cli_server_stop import (
+    _config_dir_owner,
     _pid_exited,
+    _refuse_desktop_supervised,
     _refuse_if_lock_held,
     _refuse_lock_holder,
     _refuse_service_alias,
@@ -57,6 +59,7 @@ from kiro_crew.port_resolution import (
 )
 from kiro_crew.sel import sel
 from kiro_crew.service import controller as service_controller
+from kiro_crew.service import linux as svc_linux
 from kiro_crew.service.common import RESTART_NOT_UP, RESTART_REFUSED, RESTART_UNCONFIRMED
 
 
@@ -106,9 +109,9 @@ def _incumbent_from_lock_holder(port: int, *, shutdown_acknowledged: bool) -> li
     ladder as the port-lookup path.
 
     *shutdown_acknowledged* says whether ``_stop`` returned, i.e. a gateway
-    accepted the authenticated shutdown. Only then is a live Kiro Crew holder
-    the exiting incumbent, and only then is it returned as ``[holder_pid]`` to
-    be waited on. Returns ``[]`` when the lock is free or its recorded holder
+    accepted the authenticated shutdown. Only then is the live holder the
+    exiting incumbent, and only then is it returned as ``[holder_pid]`` to be
+    waited on, whatever its argv reads. Returns ``[]`` when the lock is free or its recorded holder
     is dead (nothing left to outwait). Every other live holder -- a foreign
     process, or a Kiro Crew gateway that did not acknowledge the shutdown
     (``_stop`` has already refused it) -- is refused through
@@ -133,7 +136,13 @@ def _incumbent_from_lock_holder(port: int, *, shutdown_acknowledged: bool) -> li
         sys.exit(1)
     if holder.pid is None or not holder.alive:
         return []
-    if shutdown_acknowledged and _is_kirocrew_process(holder.pid):
+    # No argv check here. The holder is already named twice without it: a gateway answered the shutdown that carries this home's generation
+    # secret, and the kernel says this pid holds this home's lock. argv would
+    # only refuse a gateway whose spawn shape the patterns miss, and strand
+    # the user with no gateway. The pid is only WAITED on, never signalled,
+    # so dropping the check cannot widen what gets stopped. A holder that is
+    # not really exiting just makes the wait time out and restart refuse.
+    if shutdown_acknowledged:
         return [holder.pid]
     _refuse_lock_holder("gateway_restart", port, holder.pid)
 
@@ -208,8 +217,9 @@ _GatewayLogMark = tuple[int | None, int | None, int]
 def _gateway_log_mark() -> _GatewayLogMark | None:
     """Record which file gateway.log is and how long it is, before a replacement spawns.
 
-    The replacement rotates a non-empty gateway.log to gateway.log.prev at boot
-    (``cli._setup_cli_logging``) and writes everything after that into a fresh file, so
+    The replacement rotates a non-empty gateway.log to gateway.log.prev once it holds
+    the gateway lock (``cli_logging._start_gateway_log_after_lock``) and writes
+    everything after that into a fresh file, so
     a size alone cannot say where its output starts: the identity says whether the file
     read later is still the one measured here. ``None`` when gateway.log cannot be
     stat'ed, which makes the relay print nothing rather than an older gateway's lines
@@ -362,10 +372,11 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
     # overload resolution on the build fleet). POSIX: start_new_session=True (own
     # session/group, immune to SIGHUP); creationflags resolves to 0 (no-op).
     # Windows: there is no setsid (start_new_session is silently ignored), so
-    # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP gives the child its own
-    # console-less process group that survives the parent. The flags come from
-    # platform_compat (getattr) so referencing them doesn't fail mypy's
-    # [attr-defined] check on Linux where subprocess.* lacks them.
+    # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP gives the child its own process
+    # group that survives the parent and a hidden console of its own, which its
+    # console children inherit instead of each opening a visible window. The
+    # flags come from platform_compat (getattr) so referencing them doesn't fail
+    # mypy's [attr-defined] check on Linux where subprocess.* lacks them.
     proc = subprocess.Popen(  # noqa: S603 — argv from trusted sources
         argv,
         stdin=subprocess.DEVNULL,
@@ -374,7 +385,9 @@ def _spawn_detached_gateway(port: int | None = None) -> subprocess.Popen[bytes]:
         close_fds=True,
         cwd=str(Path.home()),
         start_new_session=platform_compat.IS_POSIX,
-        creationflags=(platform_compat.DETACHED_PROCESS | platform_compat.CREATE_NEW_PROCESS_GROUP),
+        creationflags=(
+            platform_compat._SUBPROCESS_NO_WINDOW | platform_compat.CREATE_NEW_PROCESS_GROUP
+        ),
     )
     return proc
 
@@ -461,10 +474,12 @@ _RESTART_READY_POLL_INTERVAL = 0.5
 # case costs a fraction of a second.
 _RESTART_STOP_TIMEOUT = 30.0
 
-# Verdicts returned by :func:`_wait_gateway_ready`. The two failure modes are
-# kept apart because they need different operator action: a replacement that
-# DIED is a refused/broken startup (read the log), while one that never became
-# READY is still running and may simply be slow.
+# Verdicts returned by :func:`_wait_gateway_ready`. The failure modes are kept
+# apart because they need different operator action: a replacement that DIED is
+# a refused/broken startup (read the log), one that never became READY is still
+# running and may simply be slow, and an UNCONFIRMED one leaves a port answering
+# ``/api/ready`` that the run marker does not tie to the replacement, where a
+# re-run would stop a gateway that may be serving.
 _READY_OK = "ready"
 
 
@@ -472,6 +487,9 @@ _READY_DIED = "died"
 
 
 _READY_TIMEOUT = "timeout"
+
+
+_READY_UNCONFIRMED = "unconfirmed"
 
 
 def _probe_gateway_ready(port: int, timeout: int = 3) -> int:
@@ -537,8 +555,8 @@ def _replacement_is_serving(port: int, prior_pid: int | None) -> bool:
     So an unreadable marker returns ``False``: the caller keeps polling until a
     marker appears or the deadline passes. The cost is a gateway whose marker
     write failed (the write is best-effort, wrapped in ``except Exception``)
-    being reported as "not ready" while it is in fact serving. That is the right
-    way to be wrong here — a misleading timeout leaves a working gateway and an
+    being reported as unconfirmed while it is in fact serving. That is the right
+    way to be wrong here — an unconfirmed report leaves a working gateway and an
     accurate ``kirocrew token``, whereas a false success leaves the operator
     believing a dead replacement is up.
     """
@@ -561,8 +579,10 @@ def _wait_gateway_ready(
     """Poll until the spawned gateway actually serves *port*, or fail.
 
     Returns ``(_READY_OK, None)`` once the replacement answers ``/api/ready``,
-    ``(_READY_DIED, exit_status)`` as soon as the child has exited, or
-    ``(_READY_TIMEOUT, None)`` when the deadline passes with it still up.
+    ``(_READY_DIED, exit_status)`` as soon as the child has exited, or, when the
+    deadline passes with it still up, ``(_READY_UNCONFIRMED, None)`` if the last
+    probe got a 200 that :func:`_replacement_is_serving` could not attribute to
+    the replacement and ``(_READY_TIMEOUT, None)`` otherwise.
 
     Two details earn their keep:
 
@@ -594,7 +614,8 @@ def _wait_gateway_ready(
         status = proc.poll()
         if status is not None:
             return _READY_DIED, status
-        if _probe_gateway_ready(port) == 200 and _replacement_is_serving(port, prior_pid):
+        answered = _probe_gateway_ready(port) == 200
+        if answered and _replacement_is_serving(port, prior_pid):
             return _READY_OK, None
         now = time.monotonic()
         if not checkpoint_printed and checkpoint <= now < deadline:
@@ -604,8 +625,88 @@ def _wait_gateway_ready(
             status = proc.poll()
             if status is not None:
                 return _READY_DIED, status
-            return _READY_TIMEOUT, None
+            return (_READY_UNCONFIRMED if answered else _READY_TIMEOUT), None
         time.sleep(_RESTART_READY_POLL_INTERVAL)
+
+
+def _died_replacement_message(pid: int, exit_status: int | None, port: int) -> str:
+    """What ``restart`` prints when the replacement gateway exited at once.
+
+    It claims nothing is serving *port* only after a probe gets no HTTP answer.
+    An HTTP answer does not identify the listener as a gateway, so the message
+    names only the answering port. A replacement refused because another process
+    still owns the config dir can leave that owner's gateway answering; "nothing
+    is serving" would send the operator to debug a dashboard that is up.
+    The owner is named only when the lock names one.
+    """
+    logs = "   To see why it exited, run: kirocrew logs -f"
+    if _probe_gateway_ready(port) == 0:
+        return (
+            f"❌ Replacement gateway (pid {pid}) died immediately "
+            f"(exit status {exit_status}). Nothing is serving port {port}.\n"
+            f"   A replacement that exits at once is usually refused startup — "
+            f"another process still owning {config_dir()}, or a broken config.\n"
+            f"{logs}"
+        )
+    owner = ""
+    found = _config_dir_owner(port)
+    if found is not None:
+        holder_pid, from_desktop = found
+        if from_desktop:
+            owner = (
+                f"   The Kiro Crew desktop app (pid {holder_pid}) owns {config_dir()}, "
+                f"so the replacement was refused. Restart it from the app.\n"
+            )
+        else:
+            owner = (
+                f"   pid {holder_pid} still owns {config_dir()}, "
+                f"so the replacement was refused.\n"
+            )
+    return (
+        f"❌ Replacement gateway (pid {pid}) exited at once "
+        f"(exit status {exit_status}). Port {port} still answers HTTP.\n"
+        f"{owner}{logs}"
+    )
+
+
+def _signing_key_refusal_lines() -> list[str]:
+    """Repair steps to print when a gateway that just failed to start sits on a truncated key.
+
+    The gateway's own refusal (``slack.gateway.signing_key_preflight``) prints these
+    steps to its stderr, which a detached or service-managed gateway sends to a log
+    the person running ``kirocrew restart`` has not opened. Repeating them here puts
+    the fix in the terminal that asked for the restart.
+
+    Same read-only ``lstat`` look ``kirocrew doctor`` takes, with the same sandbox
+    evidence and the same ``open_is_denied`` guard, so a sandbox mask over a
+    healthy key never gets the file-removing steps. Any
+    error answers ``[]``: this only adds a hint to a failure already reported.
+    """
+    try:
+        from kiro_crew import sandbox
+        from kiro_crew.dashboard import token_secret
+        from kiro_crew.service.common import restart_command_hint
+
+        # Same two bits doctor and the boot preflight pass: a foreign macOS
+        # Seatbelt sandbox can leave the real key readable, so the open-refusal
+        # cross-check applies only when that verdict is the sole signal.
+        confined = sandbox.agent_confinement_evidence() is not None
+        state, key_path = token_secret.signing_key_health(
+            confined=confined,
+            require_denied_open=confined and not sandbox.agent_confinement_is_kirocrew_own(),
+        )
+        # A short key this process cannot open may be the sandbox's mode-0 mask
+        # over a healthy key; doctor withholds the removal steps there too.
+        if state != "short" or token_secret.open_is_denied(key_path):
+            return []
+        steps = token_secret.signing_key_remedy(key_path, restart_command_hint())
+    except Exception:  # noqa: BLE001 - a hint on an already-reported failure
+        return []
+    return [
+        f"   The token signing key at {key_path} is shorter than 32 bytes, so the "
+        "gateway refuses to start. Repair it by hand:",
+        *(f"     {step}" for step in steps),
+    ]
 
 
 def _print_token_url(port: int) -> None:
@@ -703,6 +804,7 @@ def _restart(cli_port: int | None = None) -> None:
        An attempted restart never falls through to the listener path, which
        cannot see a service gateway bound to a unix socket, would misreport the
        outcome, and would spawn an unmanaged gateway beside an installed unit.
+       An installed service that is stopped, with no gateway running, is refused.
     2. Otherwise, SIGTERM the foreground gateway via the existing
        lsof+SIGTERM path used by ``kirocrew stop``, then spawn a
        detached replacement and **verify it is serving** before reporting
@@ -803,6 +905,9 @@ def _restart(cli_port: int | None = None) -> None:
                 lines.append(
                     "   The service manager restarted nothing; run `kirocrew restart` again."
                 )
+            if any(f.kind == RESTART_NOT_UP for f in failures):
+                # A unit that is not up after a restart may be refusing to boot.
+                lines.extend(_signing_key_refusal_lines())
             print("\n".join(lines))
             sys.exit(1)
 
@@ -813,6 +918,40 @@ def _restart(cli_port: int | None = None) -> None:
         # process on the port and spawn a detached replacement beside it.
         if _refuse_service_alias("gateway_restart", port):
             sys.exit(1)
+
+        # Our unit is stopped and no gateway runs: never start one outside it.
+        unit = service_controller.installed_unit_path()
+        if unit is not None and not service_controller.unit_is_ours(unit):
+            # The system file is not our loaded unit (an alias of another unit, or
+            # a file the manager does not load); our per-user unit may still be
+            # installed beside it.
+            unit = svc_linux.user_unit_path()
+        running = True
+        if unit is not None and not platform_compat.find_listening_pids(port):
+            try:
+                running = lock_holder(config_dir()).pid is not None
+            except LockProbeError:
+                pass
+        if unit is not None and not running:
+            sel().log_api_access(
+                caller="cli",
+                operation="gateway_restart",
+                outcome="denied",
+                source="cli",
+                resources=f"port={port} reason=service_installed_not_running",
+            )
+            print(
+                f"❌ The kirocrew {service_controller.service_scope(unit)} service is "
+                f"installed ({unit}) but stopped; start it with your service manager. "
+                "No gateway was started outside it."
+            )
+            sys.exit(1)
+
+    # The desktop app is another manager: it starts its gateway again when the
+    # gateway goes away, so a restart from here would race it. With --port it
+    # applies only when this home's gateway is the one on that port.
+    if _refuse_desktop_supervised("gateway_restart", port, explicit_port=cli_port is not None):
+        sys.exit(1)
 
     # No service active — bounce the foreground gateway and detach a fresh one.
     # Reuse _stop() for the SIGTERM path so behavior stays in sync if _stop
@@ -968,11 +1107,12 @@ def _restart(cli_port: int | None = None) -> None:
     ready_timeout = _resolve_restart_ready_timeout()
     verdict, exit_status = _wait_gateway_ready(proc, port, prior_marker_pid, ready_timeout)
     if verdict != _READY_OK:
-        reason = (
-            f"replacement_died exit={exit_status}"
-            if verdict == _READY_DIED
-            else f"replacement_not_ready_within={ready_timeout}s"
-        )
+        if verdict == _READY_DIED:
+            reason = f"replacement_died exit={exit_status}"
+        elif verdict == _READY_UNCONFIRMED:
+            reason = f"replacement_unconfirmed_within={ready_timeout}s"
+        else:
+            reason = f"replacement_not_ready_within={ready_timeout}s"
         sel().log_api_access(
             caller="cli",
             operation="gateway_restart",
@@ -981,18 +1121,28 @@ def _restart(cli_port: int | None = None) -> None:
             resources=f"port={port} via=fork pid={pid} reason={reason}",
         )
         if verdict == _READY_DIED:
-            print(
-                f"❌ Replacement gateway (pid {pid}) died immediately "
-                f"(exit status {exit_status}). Nothing is serving port {port}.\n"
-                f"   A replacement that exits at once is usually refused startup — "
-                f"another process still owning {config_dir()}, or a broken config.\n"
-                f"   To see why it exited, run: kirocrew logs -f"
-            )
+            print(_died_replacement_message(pid, exit_status, port))
             tail = _gateway_log_lines_since(log_mark)
             if tail:
                 print("   Its last lines in gateway.log:")
                 for line in tail:
                     print(f"     {line}")
+            else:
+                # The relayed lines already carry the gateway's own refusal and
+                # its repair steps; only an empty relay needs them restated.
+                refusal = _signing_key_refusal_lines()
+                if refusal:
+                    print("\n".join(refusal))
+        elif verdict == _READY_UNCONFIRMED:
+            print(
+                f"❌ Port {port} answers /api/ready, but within {ready_timeout}s "
+                f"restart could not confirm that replacement gateway (pid {pid}) "
+                f"is the one serving it.\n"
+                f"   It may already be serving; re-running restart would stop it.\n"
+                f"   Restart identifies it by its run marker: check that "
+                f"{config_dir() / run_marker.RUN_DIR_NAME} is writable.\n"
+                f"   To read its log, run: kirocrew logs -f"
+            )
         else:
             print(
                 f"❌ Replacement gateway (pid {pid}) did not become ready within "

@@ -473,7 +473,7 @@ def test_a_notice_is_recorded_without_touching_the_text_path() -> None:
     """
     src = _runner_source()
     assert re.search(
-        r"\n\s*(?:turn\.)?assistant_text \+= safe_chunk\n"
+        r"\n\s*(?:(?:turn\.)?assistant_text \+= safe_chunk|turn\.append_assistant_text\(safe_chunk\))\n"
         r"\s*if event\.control_notice:\n"
         r"(?:\s*#[^\n]*\n)*"
         r"\s*_compaction_notice_chunks\.append\(safe_chunk\)",

@@ -40,7 +40,14 @@ vi.mock('framer-motion', async () => {
       }
       return React.createElement(tag, { ...clean, ref }, props.children as React.ReactNode)
     })
-  const motion = new Proxy({}, { get: (_t, tag: string) => make(tag) })
+  // One component per tag: a fresh type on every read would remount the subtree.
+  const byTag = new Map<string, ReturnType<typeof make>>()
+  const motion = new Proxy({}, {
+    get: (_t, tag: string) => {
+      if (!byTag.has(tag)) byTag.set(tag, make(tag))
+      return byTag.get(tag)
+    },
+  })
   return {
     motion,
     AnimatePresence: ({ children }: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, children),
@@ -184,7 +191,7 @@ describe('ChatSidebar - board-view folder create open-as-tab gestures', () => {
     const { container, store } = renderSidebar(onOpen)
     fireEvent.click(colPlus(container), { ctrlKey: true, shiftKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false, requestSeq: expect.any(Number) }))
     // The create itself did not activate; the tab opener switches after the tab exists.
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
     await waitFor(() => expect(mocks.dropSlotToColumn).toHaveBeenCalledWith(NEW_KEY, COL_A))
@@ -195,7 +202,7 @@ describe('ChatSidebar - board-view folder create open-as-tab gestures', () => {
     const { container, store } = renderSidebar(onOpen)
     fireEvent.click(colEmptyRow(container), { ctrlKey: true, shiftKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false, requestSeq: expect.any(Number) }))
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
   })
 

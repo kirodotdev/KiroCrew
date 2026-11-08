@@ -2,27 +2,32 @@ import { memo, useEffect, useRef, useState } from 'react'
 import { GitBranch, Lightbulb, MessageSquarePlus, Plus, X } from 'lucide-react'
 import type { FollowupItem } from '../store/chatSlice'
 import ErrorNotice from './ErrorNotice'
+import { reportUiControlClick } from '../lib/uiControlTelemetry'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export interface FollowUpCardProps {
   items: FollowupItem[]
-  /** Pre-fill THIS session's composer with the item's expanded prompt. */
-  onAddToSession: (item: FollowupItem) => void
+  /**
+   * Pre-fill THIS session's composer with the item's expanded prompt, and drop
+   * that one item from the card. `index` is the item's position in `items`.
+   */
+  onAddToSession: (item: FollowupItem, index: number) => void
   /**
    * Create a git worktree, open a session scoped to it, and pre-fill that
-   * session's composer. Rejects with a user-facing message on failure (branch
+   * session's composer. On success only that one item leaves the card; its
+   * siblings stay. Rejects with a user-facing message on failure (branch
    * exists, not a git repo, git unavailable) which the card renders inline.
    */
-  onStartInWorktree: (item: FollowupItem) => Promise<void>
+  onStartInWorktree: (item: FollowupItem, index: number) => Promise<void>
   /**
    * Open a new session in this session's project directory (where a new chat
    * starts by default when it has none) and pre-fill its composer, with no git
    * involved. The primary action when there is no repository to branch from.
    * Rejects with a user-facing message on failure, rendered inline like the
-   * worktree route's.
+   * worktree route's. On success only that one item leaves the card.
    */
-  onStartInNewChat: (item: FollowupItem) => Promise<void>
+  onStartInNewChat: (item: FollowupItem, index: number) => Promise<void>
   /** Drop this single suggestion; siblings stay. */
   onSkip: (index: number) => void
   /**
@@ -106,8 +111,9 @@ function FollowUpCard({
       delete next[index]
       return next
     })
+    reportUiControlClick(canWorktree ? 'followup_start_worktree' : 'followup_start_chat')
     try {
-      await (canWorktree ? onStartInWorktree(item) : onStartInNewChat(item))
+      await (canWorktree ? onStartInWorktree(item, index) : onStartInNewChat(item, index))
     } catch (err) {
       // Drop the error if the card's items changed under us: `index` no longer
       // refers to the item this request was for.
@@ -177,7 +183,7 @@ function FollowUpCard({
                 </button>
               )}
               <button
-                onClick={() => onAddToSession(item)}
+                onClick={() => { reportUiControlClick('followup_add_session'); onAddToSession(item, index) }}
                 disabled={busyIndex !== null}
                 title={i18nT('components.followUpCard.pre_fill_this_session_s_composer_with_the_expand')}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-border text-muted bg-bg hover:text-text hover:border-accent/40"
@@ -185,7 +191,7 @@ function FollowUpCard({
                 <Plus size={13} aria-hidden="true" /> {i18nT('components.followUpCard.add_to_this_session')}
               </button>
               <button
-                onClick={() => onSkip(index)}
+                onClick={() => { reportUiControlClick('followup_skip'); onSkip(index) }}
                 disabled={busyIndex !== null}
                 title={i18nT('components.followUpCard.dismiss_this_suggestion')}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-transparent text-muted hover:text-text bg-transparent"

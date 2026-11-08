@@ -54,8 +54,8 @@ advice:
   with another account's activation could send that agent commands in the
   window. Winning ``run`` takes ``lambda:CreateMicrovmAuthToken`` in the OWNER's
   account, so on this lane's single-owner deployment that caller already holds
-  the owner's own AWS access. Closing the window for a shared account is tracked
-  as a follow-up.
+  the owner's own AWS access. This lane serves neither a shared account nor a
+  roster; adding either means closing the window first.
 * **No ``Server`` header.** The default names the interpreter version.
 
 The crew itself is NOT on this port. The front process binds loopback on this
@@ -954,10 +954,9 @@ def _handle_run_once(body: bytes) -> "dict[str, Any]":
         encoding = payload_encoding(body)
     except Exception as exc:  # noqa: BLE001
         # Length and the exception TYPE only. The body carries a single-use
-        # activation code, so its content must never reach a log -- which is
-        # also why the earlier version of this line, logging only the length,
-        # left three failed launches with no cause at all. The fix is a better
-        # decoder, not a louder log.
+        # activation code, so its content must never reach a log. The length
+        # alone leaves a failed launch with no cause, hence the type; the
+        # real fix for an unreadable body is a better decoder, not a louder log.
         log("run.payload_unreadable", bytes=len(body), error=type(exc).__name__)
         return {"ok": True, "repeat": False}
 

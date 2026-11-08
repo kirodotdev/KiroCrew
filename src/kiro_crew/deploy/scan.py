@@ -15,7 +15,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from kiro_crew.security.redaction import _credential_matches
+from kiro_crew.security import iter_credential_matches
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ def scan_content(text: str) -> list[Finding]:
         return len(findings) >= _MAX_FINDINGS
 
     # Canonical credential patterns (from kiro_crew.security), scanned in linear time.
-    for m in _credential_matches(text):
+    for m in iter_credential_matches(text):
         if _capped():
             break
         findings.append(Finding("credential", _mask_credential(m.group(0)),

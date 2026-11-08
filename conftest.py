@@ -46,7 +46,7 @@ this" contract failed at least once:
   worker.
 * **The inherited shell environment.** The entries ``name_grant`` refuses as
   inherited preloads are removed for each test's duration and restored
-  afterwards: the ``_ENV_PRELOAD_VARS`` names (``BASH_ENV``, ``ENV``, ...) and
+  afterwards: the ``_ENV_PRELOAD_VARS`` names (``BASH_ENV``, ``SHELLOPTS``, ...) and
   exported bash functions (``BASH_FUNC_*`` keys, or the legacy bare-name
   spelling whose value starts with ``() {``). RHEL-family hosts export ``which``
   as a function from ``/etc/profile.d/which2.sh``, and that refusal is checked
@@ -352,17 +352,22 @@ from conftest_floor_reporting import (  # noqa: E402,F401 -- bound for pytest an
 
 # Teardown joins and the globals put back after every test.
 from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and for tests
+    _EMBED_EVICTOR_THREAD,
     _EXECUTOR_JOIN_SECS,
     _TELEMETRY_CONSENT_THREAD,
+    _cancel_session_tree_checkpoints,
     _drain_windows_proactor_finalizers,
     _join_install_receipt_workers,
     _join_test_loop_executor,
+    _live_embed_evictors,
     _live_telemetry_consent_workers,
+    _no_leaked_embed_evictor,
     _no_leaked_telemetry_exporter,
     _restore_hooks_integration_globals,
     _restore_log_queue_listener,
     _restore_log_record_factory,
     _restore_logger_levels,
+    _restore_relay_gateway_ingress,
     _resume_crew_log_eager_fold,
     _retire_crew_log_eager_fold,
 )
@@ -370,6 +375,7 @@ from conftest_floor_restores import (  # noqa: E402,F401 -- bound for pytest and
 # Host seams and process singletons pinned for every test.
 from conftest_floor_seams import (  # noqa: E402,F401 -- bound for pytest and for tests
     _isolate_agent_state_sidecar,
+    _isolate_kiro_cli_sign_in_store,
     _isolate_launchd_paths,
     _isolate_pre_exec_stops,
     _isolate_sandbox_mount_source_roots,
@@ -393,6 +399,8 @@ from conftest_floor_services import (  # noqa: E402,F401 -- bound for pytest and
     _HOST_SERVICE_EXEC_ALLOWED_MODULES,
     _SERVICE_MANAGERS,
     _block_host_service_mutation,
+    _fail_on_refused_real_reclaim_write,
+    _no_real_cgroup_reclaim_write,
     _no_systemd_user_session,
     _refusal_reason,
     real_user_session,
@@ -431,12 +439,11 @@ def _scrub_inherited_preload_env(_floor_monkeypatch):
     such a host 79 of the 163 tests in ``test/test_name_grant.py`` observed
     ``inherited_env_can_redefine_programs`` instead of the code they assert, while
     Ubuntu CI (no ``which2.sh``) stayed green (issue #8395). The detector's OTHER half
-    is host state just as easily: a login profile exporting ``BASH_ENV``, or a
-    container image setting ``ENV``, reproduces the same failure shape with no
-    ``which2.sh`` anywhere. The PRODUCT behaviour is correct -- an inherited preload
-    genuinely can redefine a program the agent runs -- the gap was that this floor
-    pins the data home, the credential env and the temp base, but not the environment
-    the run inherited.
+    is host state just as easily: a login profile exporting ``BASH_ENV`` reproduces
+    the same failure shape with no ``which2.sh`` anywhere. The PRODUCT behaviour is
+    correct -- an inherited preload genuinely can redefine a program the agent runs
+    -- the gap was that this floor pins the data home, the credential env and the
+    temp base, but not the environment the run inherited.
 
     The predicate is IMPORTED from ``name_grant`` rather than restated, so the scrub
     and the detector cannot drift apart, and it mirrors BOTH halves the detector
@@ -927,6 +934,9 @@ def pytest_runtest_teardown(item, nextitem):
     # fresh daemon nothing holds a handle to. Stopping the worker once its producers are
     # quiescent is what makes the stop final.
     wedged_eager_fold = _retire_crew_log_eager_fold()
+    # After the fold worker is stopped: it is the fold that arms these, so a write armed
+    # by its last entries is cancelled here rather than re-armed after the cancel.
+    _cancel_session_tree_checkpoints()
     # After every step above: a cancelled task's ``finally`` or a drained writer can
     # itself call ``get_recorder()`` and schedule a consent re-read, and a worker
     # scheduled by teardown must still be joined under this test's pins.

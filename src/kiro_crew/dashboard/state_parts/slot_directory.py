@@ -26,6 +26,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
+from kiro_crew.dashboard.slot_buffers import MAX_SLOT_KEY_CHARS
 from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
 from kiro_crew.dashboard.state_parts.dashboard_services import _registry_for
 from kiro_crew.dashboard.state_parts.transcript_rows import chat_message_note
@@ -34,6 +35,7 @@ from kiro_crew.messaging.link import (
     is_channel_session_key,
     split_namespaced_channel_id,
 )
+from kiro_crew.milestones import record as record_milestone
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
@@ -44,7 +46,8 @@ logger = logging.getLogger("kiro_crew.dashboard.state")
 
 #: The single ceiling on live slots, owned by the module that owns the slot
 #: table (see :meth:`DashboardState.live_slot_count`). Every path that allocates
-#: a slot -- session create, chat fork, session import -- tests ``live_slot_count()``
+#: a slot -- session create, chat fork, session import, the workflow result
+#: fallback (``workflow_inject``) -- tests ``live_slot_count()``
 #: against this one number, so raising the ceiling is a single edit and no entry
 #: point can silently drift to a different limit.
 MAX_LIVE_SLOTS = 500
@@ -54,7 +57,7 @@ MAX_LIVE_SLOTS = 500
 #: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
 #: distribution, so a single automated creator working through a nudge loop can
 #: reach 500 on its own and every later create -- including the person opening a
-#: new chat tab -- gets the 429. That is the availability half of the cap: a
+#: new chat tab -- gets the 409. That is the availability half of the cap: a
 #: bounded resource that one caller may exhaust entirely is not bounded from
 #: anybody else's point of view.
 #:
@@ -165,16 +168,12 @@ def _ascii_slot_key(name: str) -> str:
 _SLOT_KEY_FILENAME_UNSAFE_RE = re.compile(r"[^\w\-.]", flags=re.ASCII)
 
 
-# Longest slot key kept verbatim. A transcript is ``<stem>.jsonl`` -- the stem
-# is ``dashboard_<key>`` for a dashboard slot and the key itself for a channel
-# slot -- and filesystems refuse a name over 255 bytes (ENAMETOOLONG). So a key
-# longer than this could never have had a transcript of either kind; only such
-# a key is shortened, and a key whose transcript may already exist keeps its
-# spelling so a restart still finds it. A longer key keeps its first
-# ``_SLOT_KEY_KEEP_CHARS`` characters plus ``-`` and a short sha256 of the whole
-# folded key: a valid filename stem, stable across calls, distinct per name, and
-# short enough to stay unchanged when folded again.
-_SLOT_KEY_MAX_CHARS = 255 - len(".jsonl")
+# A key longer than ``MAX_SLOT_KEY_CHARS`` (defined in ``slot_buffers``, which
+# says why that is the bound) keeps its first ``_SLOT_KEY_KEEP_CHARS`` characters
+# plus ``-`` and a short sha256 of the whole folded key: a valid filename stem,
+# stable across calls, distinct per name, and short enough to stay unchanged
+# when folded again.
+_SLOT_KEY_MAX_CHARS = MAX_SLOT_KEY_CHARS
 
 
 _SLOT_KEY_KEEP_CHARS = 180
@@ -270,7 +269,7 @@ def get_slot(self: DashboardState, name: str) -> _ChatSlot | None:
     layer for any construction path that keeps the slot registered while it
     awaits: acquisition must not hand out a not-yet-finalized session.
     ``serialize_slots`` hides it from the payload; resume dedup reads
-    ``_slots`` directly (``_live_slot_resume_response``), so a resuming slot
+    ``_slots`` directly (``_live_slot_resume_payload``), so a resuming slot
     stays discoverable for dedup while acquisition through this door is
     refused.
     """
@@ -405,11 +404,19 @@ def resolve_slot(self: DashboardState, name: str) -> _ChatSlot | None:
 
 
 def link_slack(self: DashboardState, slot_name: str, thread_ts: str, channel_id: str) -> None:
-    """Update a slot's Slack link state and persist to SessionStore."""
+    """Update a slot's Slack link state and persist to SessionStore.
+
+    Raises ``AnchorHandoffRefused``, changing nothing, when *thread_ts* is a
+    Slack code channel's anchor owned by another slot: see
+    ``slack.code_channels.binding.check_anchor_handoff``.
+    """
     slot = self._slots.get(slot_name)
     if not slot:
         logger.warning("slack link skipped: no live slot %r (chat closed?)", slot_name)
         return
+    from kiro_crew.slack.code_channels.binding import check_anchor_handoff
+
+    check_anchor_handoff(thread_ts, slot_name)
     # A thread handoff is ONE action with TWO persisted writes: the previous
     # owner's link is cleared and this slot's is claimed. Each write rewrites
     # the whole session map, so as two separate writes they are separately
@@ -603,6 +610,10 @@ def get_or_create_slot(
         # block must not become a suspension point, or callers could observe
         # a half-configured slot.
         increment_user_session_count_off_loop()
+        # Milestones derive state only from persistent, non-ephemeral chats.
+        # The write runs off-loop and never raises.
+        if not ephemeral and memory_mode in (None, "", "persistent"):
+            record_milestone("chats-opened")
     if memory_mode and memory_mode != "persistent":
         self._restricted_keys.add(f"dashboard:{name}")
     if ephemeral:
@@ -645,6 +656,11 @@ def get_or_create_slot(
             if isinstance(resolved, str) and is_channel_session_key(resolved):
                 slot.linked_session_key = resolved
                 self.note_crew_log_class(slot)
+    # The history key is final now: share the binding of any live alias on it, so
+    # this slot and its peers hold one project directory for their one session.
+    from kiro_crew.dashboard.transcript_binding import bind_transcript
+
+    bind_transcript(self, slot)
     try:
         if self.sessions:
             from kiro_crew.dashboard.chat_utils import effective_session_key

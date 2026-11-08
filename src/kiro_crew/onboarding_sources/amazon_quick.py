@@ -182,7 +182,7 @@ def _profile_roots(scan: _Scan) -> list[Path]:
                 _MAX_PROFILES, candidates(), key=lambda path: (path.name.casefold(), path.name)
             )
         except OSError:
-            scan.diagnostic("profiles", "read_failed")
+            scan.diagnostic("profiles", "read_failed", failed=True)
         else:
             for child in children:
                 keep(child)

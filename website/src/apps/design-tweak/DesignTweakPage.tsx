@@ -22,6 +22,7 @@ import {
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
 import { FolderBody } from '../../components/FolderBody'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../../components/ui/dropdown-menu'
@@ -354,7 +355,7 @@ function RequestGroup({
                 onClick={(e: React.MouseEvent) => { e.stopPropagation(); onResend?.(req) }}
                 disabled={!!sending}
                 className="w-full flex items-center justify-center gap-2 px-4 py-2 rounded-md text-[12px] font-semibold cursor-pointer mt-0.5 disabled:cursor-wait"
-                style={{ background: 'var(--danger)', color: '#fff', opacity: sending ? 0.7 : 1, border: 0 }}
+                style={{ background: 'var(--danger)', color: 'var(--danger-fg)', opacity: sending ? 0.7 : 1, border: 0 }}
               >
                 <Send size={13} />
                 {sending
@@ -379,7 +380,7 @@ export default function DesignTweak() {
     setNewPath, detecting, devOpen, setDevOpen, devDraft, setDevDraft, starting, devError, histOpen,
     setHistOpen, previewId, setPreviewNonce, dimsOpen, setDimsOpen, dims, setDimsFor, mode, status,
     setStatus, bridgeError, setBridgeError, reqOpen, sendingId, iframeRef, projects, booting, refresh,
-    withFollowUpLabels, toggleReq, postToOverlay, railW, onDragStart, selected, connected, switchTo,
+    withFollowUpLabels, toggleReq, postToOverlay, railW, railResize, selected, connected, switchTo,
     connect, disconnect, removeProject, addProject, pickFolder, sendRequest, missingIds, resendRequest,
     previewProject, myPending, myHistory, previewSrc, previewState, previewNote, isDevServer,
     markFramed, pinItems, focusComment, openInChat, archiveReq, deleteComment, setDevServer,
@@ -542,6 +543,7 @@ export default function DesignTweak() {
                           autoFocus
                           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPath(e.target.value)}
                           {...ime.bindEnter({ onEnter: () => addProject() })}
+                          aria-label={i18nT('apps.designTweak.projects.path_label')}
                           placeholder={i18nT('apps.designTweak.projects.path_placeholder')}
                           className="flex-1 h-8 px-2 rounded-md bg-bg-elevated border border-border text-[12px] text-text"
                         />
@@ -659,6 +661,7 @@ export default function DesignTweak() {
             )}
             <button
               onClick={() => setHistOpen(!histOpen)}
+              aria-expanded={histOpen}
               className="w-full flex items-center gap-2 px-5 text-[15px] font-bold text-text cursor-pointer hover:bg-bg-elevated/40"
               style={{ height: '56px' }}   /* match the right-panel action bar height */
             >
@@ -677,15 +680,14 @@ export default function DesignTweak() {
           OUT of the tab order: the width it adjusts is cosmetic, both panels
           scroll and stay fully operable at any width, so there is no content or
           control here that only the pointer can reach. */}
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- pointer-only splitter: `onMouseDown` starts the drag, and a separator with no tab stop has no keyboard operation to mirror it with */}
       <div
         role="separator"
         aria-orientation="vertical"
         aria-label={i18nT('apps.designTweak.layout.drag_to_resize')}
-        onMouseDown={onDragStart}
+        {...railResize}
         title={i18nT('apps.designTweak.layout.drag_to_resize')}
         className="shrink-0 cursor-col-resize"
-        style={{ width: '11px' }}
+        style={{ width: '11px', touchAction: 'none' }}
       />
 
       {/* ================= RIGHT PANEL (bordered container: preview + action bar) ================= */}
@@ -879,6 +881,7 @@ export default function DesignTweak() {
             <div className="relative">
               <button
                 onClick={() => setDimsOpen(!dimsOpen)}
+                aria-expanded={dimsOpen}
                 className="flex items-center gap-2 h-8 px-3 rounded-xl text-[13px] text-text cursor-pointer hover:bg-bg-elevated"
               >
                 <Monitor size={15} />
@@ -949,6 +952,7 @@ export default function DesignTweak() {
                           autoFocus
                           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDevDraft(e.target.value)}
                           {...ime.bindEnter({ onEnter: () => setDevServer(devDraft.trim()), onEscape: () => { setDevOpen(false); setDevDraft('') } })}
+                          aria-label={i18nT('apps.designTweak.devServer.url_label')}
                           placeholder={i18nT('apps.designTweak.devServer.url_placeholder')}
                           className="h-8 px-2 rounded-md bg-bg-elevated border border-border text-[12px] text-text"
                           style={{ width: '190px' }}
@@ -976,7 +980,12 @@ export default function DesignTweak() {
             >
               <RefreshCw size={15} />
             </button>
-            <div
+            {/* Preview / Edit is a mode of the same preview frame (Edit turns
+                the overlay's element picking on), not a panel switch, so it is
+                a radio group: the chosen mode is announced, not shown by
+                colour alone (#32040). */}
+            <RadioChipGroup
+              ariaLabel={i18nT('apps.designTweak.modes.label')}
               className="flex items-center gap-1"
               style={{
                 background: 'rgba(0,0,0,0.25)',   // theme-agnostic "darker" recessed track
@@ -984,6 +993,8 @@ export default function DesignTweak() {
               }}
             >
               <button
+                type="button"
+                {...radioChip(mode === 'preview')}
                 onClick={() => setEditMode('preview')}
                 className={`flex items-center justify-center gap-1.5 h-8 px-3 text-[13px] font-bold cursor-pointer transition-all ${mode === 'preview' ? 'text-accent-fg' : 'text-text hover:text-text'}`}
                 style={{ borderRadius: '10px', background: mode === 'preview' ? 'var(--accent)' : 'transparent' }}
@@ -992,6 +1003,8 @@ export default function DesignTweak() {
                 {i18nT('apps.designTweak.modes.preview')}
               </button>
               <button
+                type="button"
+                {...radioChip(mode === 'edit')}
                 onClick={() => setEditMode('edit')}
                 className={`flex items-center justify-center gap-1.5 h-8 px-3 text-[13px] font-bold cursor-pointer transition-all ${mode === 'edit' ? 'text-accent-fg' : 'text-text hover:text-text'}`}
                 style={{ borderRadius: '10px', background: mode === 'edit' ? 'var(--accent)' : 'transparent' }}
@@ -999,7 +1012,7 @@ export default function DesignTweak() {
                 <Pencil size={14} />
                 {i18nT('apps.designTweak.modes.edit')}
               </button>
-            </div>
+            </RadioChipGroup>
           </div>
         </div>
       </div>

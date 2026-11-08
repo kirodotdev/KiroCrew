@@ -121,6 +121,27 @@ Resources:
         - Key: kirocrew:microvm
           Value: !Ref StackTag
 
+  # Plain-HTTP requests are refused outright. Every real reader and writer (the
+  # AWS CLI upload, the image build) already uses HTTPS, so this costs nothing
+  # and keeps a misconfigured endpoint from sending the crew bundle in clear.
+  RecipeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref RecipeBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt RecipeBucket.Arn
+              - !Sub "${RecipeBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
   ImageBuildRole:
     Type: AWS::IAM::Role
     Properties:
@@ -174,8 +195,13 @@ Resources:
   #     becomes one role per crew.
   #
   #     It grants exactly what a guest needs to come up and be reached: the SSM
-  #     managed-node core policy, its own two secrets, and decrypt on the key
-  #     those secrets are encrypted under.
+  #     managed-node core policy, read on the secrets under the lane's prefix,
+  #     and decrypt on the key those secrets are encrypted under. The read is
+  #     scoped to the prefix (``GetSecretValue`` on ``${SecretPathPrefix}/*``
+  #     below), not to one crew's own two secrets, because the role is shared by
+  #     every crew in this single-owner lane -- so each guest can read every
+  #     crew's control and identity secret, which is the containment a per-crew
+  #     role would add and this lane accepts (see the single-owner note above).
   HybridActivationRole:
     Type: AWS::IAM::Role
     Properties:

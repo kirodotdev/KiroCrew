@@ -182,7 +182,7 @@ const setup = () => userEvent.setup({ advanceTimers: (ms: number) => { vi.advanc
 
 /** Open the "Set up a new one" tab. */
 async function openSetupTab(u: ReturnType<typeof setup>) {
-  await u.click(await screen.findByRole('button', { name: /Set up a new one/i }))
+  await u.click(await screen.findByRole('radio', { name: /Set up a new one/i }))
 }
 
 beforeEach(() => {
@@ -227,6 +227,11 @@ afterEach(() => {
 
 /** Open a crew row's overflow menu — Edit / Stop / Start / Delete / Remove live there. */
 async function openRowMenu(u: ReturnType<typeof setup>, name: RegExp = /More actions/i) {
+  // An open menu takes focus in an effect, inside React's own flush, which blurs a field the test typed in. user-event
+  // answers that blur with a `change` event through a nested act(), and that nested act ends the flush's act scope early:
+  // every update after it in the same flush warns. Blur the field first, in an act() of its own, as pressing the trigger does.
+  const typing = document.activeElement
+  if (typing instanceof HTMLInputElement) act(() => typing.blur())
   await u.click(await screen.findByRole('button', { name }))
 }
 
@@ -641,6 +646,43 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
     await u.click(await screen.findByRole('button', { name: /Copy policy JSON/ }))
     await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('{"Version":"2012-10-17"}'))
     expect(await screen.findByRole('button', { name: /Copied/ })).toBeInTheDocument()
+  })
+
+  it('names the second policy when the edition attaches host policies', async () => {
+    // The main policy has no room for the host-policy grant, so a user who copies
+    // only it would launch into a denied attach; the gateway's notice says so.
+    vi.mocked(api.listInstances).mockResolvedValue(list([]))
+    vi.mocked(api.cloudPreflight).mockResolvedValue({ ...PREFLIGHT_OK, cloudformation_reachable: false })
+    vi.mocked(api.cloudIamPolicy).mockResolvedValue({
+      policy: '{"Version":"2012-10-17"}',
+      host_policies: '{"Version":"2012-10-17","Statement":[]}',
+      host_policies_notice: 'apply a second policy: kirocrew cloud iam-policy --host-policies',
+    })
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openSetupTab(u)
+
+    await u.click(await screen.findByRole('button', { name: /Copy policy JSON/ }))
+    await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith('{"Version":"2012-10-17"}'))
+    // Status beside the button, not an error: the copy succeeded.
+    const notice = await screen.findByText(/iam-policy --host-policies/)
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice.closest('[role="alert"]')).toBeNull()
+  })
+
+  it('shows a second policy the gateway could not build as an error', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(list([]))
+    vi.mocked(api.cloudPreflight).mockResolvedValue({ ...PREFLIGHT_OK, cloudformation_reachable: false })
+    vi.mocked(api.cloudIamPolicy).mockResolvedValue({
+      policy: '{"Version":"2012-10-17"}',
+      host_policies_error: "the edition's instance-role policy is invalid",
+    })
+    const u = setup()
+    renderWithProviders(<RemoteCrewPanel />)
+    await openSetupTab(u)
+
+    await u.click(await screen.findByRole('button', { name: /Copy policy JSON/ }))
+    expect(await screen.findByText(/instance-role policy is invalid/)).toBeInTheDocument()
   })
 
   it('surfaces a failure to fetch the IAM policy rather than silently copying nothing', async () => {
@@ -1232,7 +1274,7 @@ describe('RemoteCrewPanel — editing a crew', () => {
       'disabled:border-dashed',
       'disabled:cursor-not-allowed',
     )
-    expect(screen.getByRole('button', { name: /Set up a new one/i })).toBeEnabled()
+    expect(screen.getByRole('radio', { name: /Set up a new one/i })).toBeEnabled()
     // Stop waiting is the in-form exit from a save whose request never returns.
     expect(form.getByRole('button', { name: /^Stop waiting$/i })).toBeEnabled()
 
@@ -1336,10 +1378,10 @@ describe('RemoteCrewPanel — editing a crew', () => {
     await u.clear(host)
     await u.type(host, 'dev-box-1-corrected')
 
-    await u.click(screen.getByRole('button', { name: /Set up a new one/i }))
+    await u.click(screen.getByRole('radio', { name: /Set up a new one/i }))
     expect(screen.queryByRole('group', { name: /Edit dev-box-1/i })).not.toBeInTheDocument()
 
-    await u.click(screen.getByRole('button', { name: /Your crews|Crews/i }))
+    await u.click(screen.getByRole('radio', { name: /Your crews|Crews/i }))
     const reopened = within(await screen.findByRole('group', { name: /Edit dev-box-1/i }))
     expect((reopened.getByRole('textbox', { name: /SSH host/i }) as HTMLInputElement).value).toBe(
       'dev-box-1-corrected',
@@ -1374,8 +1416,8 @@ describe('RemoteCrewPanel — editing a crew', () => {
     await act(async () => {
       await u.click(screen.getByRole('button', { name: 'Refresh' }))
     })
-    await u.click(screen.getByRole('button', { name: /Set up a new one/i }))
-    await u.click(screen.getByRole('button', { name: /Your crews/i }))
+    await u.click(screen.getByRole('radio', { name: /Set up a new one/i }))
+    await u.click(screen.getByRole('radio', { name: /Your crews/i }))
     await screen.findByRole('group', { name: /Edit dev-box-1/i })
 
     // The port moved externally, which is a machine coordinate, so the save is

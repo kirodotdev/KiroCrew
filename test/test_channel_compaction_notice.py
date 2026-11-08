@@ -1,8 +1,7 @@
 """Auto-compaction notice on channel-originated sessions (Slack + Discord).
 
-Before this, ``SessionManager``'s compact callback was dashboard-only: it
-returned early for any key that did not start with ``dashboard:``, so a Slack
-thread or Discord DM was compacted in silence. These tests pin the channel leg:
+``SessionManager``'s compact callback must notify channel keys too, not only
+``dashboard:`` ones. These tests pin the channel leg:
 
   * the notice text (copy, pct rounding, per-channel manual command);
   * Slack delivery into the session's persisted thread, gated on the
@@ -21,6 +20,7 @@ All against fakes — no real transport, session manager, or network.
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -33,6 +33,8 @@ from kiro_crew.dashboard.chat_compaction_notice import (
     notice_text,
 )
 from kiro_crew.messaging.link import ChannelLink
+
+_NOTICE_LOGGER = "kiro_crew.dashboard.chat_compaction_notice"
 
 
 class _SlackClient:
@@ -132,11 +134,9 @@ def _state(
 def _permit_governance():
     """Permit BOTH governance gates on the notice path.
 
-    There are two, resolved differently: this module's Slack gate holds
-    ``vet_and_audit`` as a module-scope name, while ``chat_runner``'s transport
-    ladder imports it inside the function (so it must be patched at its source).
-    A test that patched only one would leave the other reading the host's real
-    governance profile.
+    The Slack gate holds ``vet_and_audit`` at module scope, while ``chat_runner``
+    imports it inside the function, so it is patched at its source; patching only one
+    would leave the other reading the host's real governance profile.
     """
     permit = SimpleNamespace(permitted=True)
     with (
@@ -250,14 +250,17 @@ class TestSlackDelivery:
 
         assert client.posted == []
 
-    async def test_swallows_post_failure(self) -> None:
+    async def test_swallows_post_failure(self, caplog: pytest.LogCaptureFixture) -> None:
         state = _state(
             slack_client=_SlackClient(fail=True),
             sessions=_Sessions(slack_link=("ts-1", "C123")),
         )
         # A failed notice must not propagate into the compaction task.
-        with _permit_governance():
+        with caplog.at_level(logging.DEBUG, logger=_NOTICE_LOGGER), _permit_governance():
             await deliver_channel_compaction_notice(state, "slack:ts-1", 90.0, success=True)
+
+        logged = [r.getMessage() for r in caplog.records if r.name == _NOTICE_LOGGER]
+        assert logged == ["compact notice: slack delivery failed for slack:ts-1"]
 
     async def test_swallows_map_failure(self) -> None:
         client = _SlackClient()
@@ -392,17 +395,21 @@ class TestTransportDelivery:
 
         assert transport.sent == []
 
-    async def test_swallows_send_failure(self) -> None:
+    async def test_swallows_send_failure(self, caplog: pytest.LogCaptureFixture) -> None:
         transport = _Transport(fail=True)
         state = _state(
             transport=transport,
             sessions=_Sessions(origin=ChannelLink("discord", channel_id="chan-9")),
         )
 
-        with _permit_governance():
+        with caplog.at_level(logging.DEBUG, logger=_NOTICE_LOGGER), _permit_governance():
             await deliver_channel_compaction_notice(
                 state, "discord:kirocrew:direct:u1", 90.0, success=True
             )
+
+        logged = [r.getMessage() for r in caplog.records if r.name == _NOTICE_LOGGER]
+        assert logged == ["compact notice: discord delivery failed for discord:kirocrew:direct:u1"]
+        assert transport.sent == []
 
 
 @pytest.mark.asyncio

@@ -97,7 +97,18 @@ def test_managed_secret_names_cover_every_shipped_preregistered_provider():
     names = managed_client_secret_names()
     assert names["CONNECTIONS_GITHUB_CLIENT_SECRET"] == "github"
     assert names["CONNECTIONS_ASANA_CLIENT_SECRET"] == "asana"
-    assert set(names.values()) == {"github", "asana"}
+    # Google Drive is the hyphenated case: the vault name upper-cases the slug.
+    assert names["CONNECTIONS_GOOGLE_DRIVE_CLIENT_SECRET"] == "google-drive"
+    assert set(names.values()) == {
+        "github",
+        "asana",
+        "gmail",
+        "google-drive",
+        "google-calendar",
+        "google-sheets",
+        "google-docs",
+        "google-slides",
+    }
 
 
 # ── validators ──
@@ -751,6 +762,28 @@ def test_rebuild_strips_a_cleared_client_only_from_a_managed_entry(monkeypatch):
     }
     out = agent._apply_operator_oauth_client("github", deepcopy(stale), managed=True)
     assert out == {"url": GITHUB_MCP_URL, "oauth": {"issuer": "https://i"}}
+
+
+@pytest.mark.parametrize("crew_owns", [True, False])
+def test_rebuild_keeps_the_client_out_of_the_spec_under_crew_custody(monkeypatch, crew_owns):
+    # Flag on + KAS: Crew signs in from the vault and KAS drops the block, so the
+    # plaintext copy has no reader. Flag off: kiro-cli needs it, as before.
+    from kiro_crew import agent
+    from kiro_crew.connections import crew_oauth
+
+    monkeypatch.setattr(crew_oauth, "enabled", lambda: crew_owns)
+    monkeypatch.setattr(crew_oauth, "_chat_backend_is_kas", lambda: True)
+    monkeypatch.setattr(
+        "kiro_crew.connections.oauth_clients.resolve_oauth_client", lambda *a, **k: _resolved()
+    )
+    monkeypatch.setattr(agent, "_load_json", lambda *_a, **_k: {})
+    monkeypatch.setattr("kiro_crew.secrets.SecretVault", lambda *_a, **_k: object())
+    out = agent._apply_operator_oauth_client("github", {"url": GITHUB_MCP_URL}, managed=True)
+    keys = set(out.get("oauth", {}))
+    if crew_owns:
+        assert not keys & {"clientId", "clientSecret", "redirectUri"}
+    else:
+        assert {"clientId", "clientSecret", "redirectUri"} <= keys
 
 
 def test_rebuild_binds_the_client_at_write_time_not_at_the_server_pass(tmp_path, monkeypatch):

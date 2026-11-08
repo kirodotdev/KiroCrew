@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -40,21 +42,34 @@ from typing import Any
 # function-local import is invisible to `patch`. Safe to import eagerly because
 # nothing in this dependency set imports this module back — only routes.py and the
 # security handlers do, and both already depend on all of it.
+from kiro_crew import platform_compat
 from kiro_crew.apps.backend import (
+    _PORT_PROBE_TIMEOUT,
     recorded_backend_port,
     stop_app_backend,
     unstopped_backend_port,
 )
 from kiro_crew.apps.bridges import deregister_app
 from kiro_crew.apps.hooks_integration import (
+    loaded_hook_manifest,
     on_app_disable,
     stop_app_startup_hooks,
 )
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script
+from kiro_crew.apps.manifest import lifecycle_timeout_seconds
+from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact
 
 logger = logging.getLogger(__name__)
+
+#: How long a port still listening right after the stop is re-probed before it is
+#: reported live. The stop signals the backend's whole process group but waits only
+#: on the root it spawned, and a sandboxed backend's root is the sandbox wrapper,
+#: which exits before the server inside it has closed its listening socket.
+PORT_RELEASE_GRACE_SECONDS = 2.0
+#: The pause between those re-probes.
+PORT_RELEASE_POLL_SECONDS = 0.05
 
 
 @dataclass
@@ -81,6 +96,108 @@ class TeardownResult:
     @property
     def ok(self) -> bool:
         return not self.failures
+
+
+async def stop_backend_and_observe(
+    name: str,
+    *,
+    recorded: Callable[[str], int | None] | None = None,
+    stop: Callable[[str], Any] | None = None,
+    probe: Callable[..., int | None] | None = None,
+) -> tuple[int | None, bool]:
+    """Stop *name*'s backend and report what the port probe could establish.
+
+    The one spelling of the hint / stop / probe sequence. Disable and trust
+    withdrawal reach it through :func:`teardown_app_runtime`; uninstall calls it
+    directly, because the uninstall handler runs the other teardown steps itself.
+
+    ``recorded``, ``stop`` and ``probe`` default to this module's
+    ``recorded_backend_port``, ``stop_app_backend`` and ``unstopped_backend_port``,
+    read at call time. The uninstall handler passes its own module's bindings of
+    the same three functions, so each caller keeps the patch seams its tests use.
+
+    Returns the port the backend is STILL listening on once
+    :func:`_observe_until_released` has waited out the release grace, if any, and
+    whether the probe had gateway-owned evidence of which port to look at. Both
+    halves are needed, because ``None`` from the probe means "nothing observed", NOT
+    "definitely stopped": with no recorded port the probe falls back to the
+    declared one in ``app.json``, which sits inside the app directory and is
+    writable by any app trusted to run code. An app's own lifecycle code can
+    relabel that port, or drop its ``entryPoint``, so the fallback can probe the
+    wrong port and answer ``None``.
+
+    ``stop_app_backend``'s own return value is not trusted. It is ``False`` both
+    for "there was nothing to stop" (never started, already dead) and for
+    "something is running that I did not stop" (a fixed-port backend never
+    adopted at boot, an adoption with no usable PIDs), and ``True`` only says the
+    process it was TRACKING is gone, which is silent about a detached worker the
+    app spawned for itself. Those need opposite handling, so the port is
+    OBSERVED after every attempt, success included.
+
+    The hint is captured BEFORE the stop because the stop drops both the live
+    tracking entry and the pidfile record, and those are the only gateway-owned
+    evidence of which port this backend actually used.
+    """
+    read_hint = recorded or recorded_backend_port
+    stop_backend = stop or stop_app_backend
+    observe = probe or unstopped_backend_port
+    loop = asyncio.get_running_loop()
+    port_hint = await loop.run_in_executor(subprocess_executor(), read_hint, name)
+    await loop.run_in_executor(subprocess_executor(), stop_backend, name)
+    live_port = await loop.run_in_executor(
+        subprocess_executor(), lambda: _observe_until_released(observe, name, port_hint)
+    )
+    return live_port, port_hint is not None
+
+
+def _observe_until_released(
+    observe: Callable[..., int | None], name: str, port_hint: int | None
+) -> int | None:
+    """Probe *name*'s port until it stops listening or the grace runs out.
+
+    The stop's group signal reaches every process in the backend's group, but its
+    wait covers only the root, so the probe can run while a server inside a sandbox
+    wrapper is still closing its socket, and a single probe at that moment reads a
+    backend on its way out as one that is "still running ... not ours to stop".
+    The port is therefore re-probed for :data:`PORT_RELEASE_GRACE_SECONDS`; a port
+    still listening when that bound is reached is returned, and every caller
+    reports it.
+
+    Once a listener has been seen, a later probe that misses it is not taken as
+    the release on its own word: the probe answers ``None`` on a connect timeout
+    too, and the probes this loop repeats can fill the backlog of a listener that
+    stopped accepting. Only :func:`port_released` confirming that port ends the
+    wait early.
+    """
+    live_port = observe(name, port_hint=port_hint)
+    deadline = time.monotonic() + PORT_RELEASE_GRACE_SECONDS
+    while live_port is not None and time.monotonic() < deadline:
+        time.sleep(PORT_RELEASE_POLL_SECONDS)
+        if observe(name, port_hint=port_hint) is None and port_released(live_port):
+            return None
+    return live_port
+
+
+def port_released(port: int) -> bool:
+    """Whether nothing is left listening on loopback *port*, by positive evidence.
+
+    A refused connect is that evidence. A connect that neither succeeds nor is
+    refused is not: a listener whose backlog is full drops the handshake and the
+    connect times out while the socket is still bound. That case is settled by a
+    port->PID lookup that completes and finds no LISTEN socket, which is also what
+    answers on Windows, where a refused loopback connect is reported only after
+    retries that outlast the probe timeout. A lookup that cannot complete answers
+    ``False``, so the port is still reported.
+    """
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=_PORT_PROBE_TIMEOUT):
+            return False
+    except ConnectionRefusedError:
+        return True
+    except OSError:
+        pass
+    listeners, completed = platform_compat.probe_port_listeners(port)
+    return completed and not listeners
 
 
 async def teardown_app_runtime(
@@ -213,7 +330,7 @@ async def teardown_app_runtime(
     # metadata claims otherwise.
     #
     # `withdrawing_trust` overrides EVERYTHING here, and that resolves a genuine
-    # tension between two opposite review findings about this exact line:
+    # tension between two opposite risks on this exact line:
     #
     #   (a) "revoking a disabled app LAUNCHES its code" — the security operation
     #       becoming a way to execute the app.
@@ -251,7 +368,10 @@ async def teardown_app_runtime(
             script_output = await run_lifecycle_script(
                 name,
                 on_disable,
-                timeout=int(setup.get("onDisableTimeout", 30)),
+                # The stored record keeps the manifest as written: clamp (and log) here.
+                timeout=lifecycle_timeout_seconds(
+                    setup.get("onDisableTimeout"), app_name=name, field_name="onDisableTimeout"
+                ),
                 action="on_disable",
             )
             if script_output.get("failed"):
@@ -311,33 +431,13 @@ async def teardown_app_runtime(
     # The backend process is stopped for EVERY app, self-managed included: it is the
     # thing actually executing third-party code.
     #
-    # The RETURN VALUE is not sufficient on its own, and neither is its absence.
-    # `stop_app_backend` answers `False` for two opposite situations — nothing to
-    # stop (never started, already dead), and something running it did not stop (a
-    # fixed-port backend the gateway never adopted at boot, or an adoption with no
-    # usable PIDs). Only the second is a failure, and the flag cannot tell them
-    # apart, so the port is OBSERVED instead. That asymmetry is deliberate:
-    # reporting a failure whenever the flag is false would make trust UNREVOKABLE
-    # for any enabled app whose backend had merely crashed, and refusing to
-    # withdraw a permission is worse than the window it would close.
-    #
-    # The probe runs after EVERY attempt, success included. A `True` return only
-    # says "the process I was tracking is gone" — it says nothing about a detached
-    # worker the app spawned itself, which keeps the declared fixed port and keeps
-    # executing. Gating the observation on the flag was the same mistake in
-    # miniature that this comment argues against one paragraph up: it trusted a
-    # claim about the runtime instead of looking at it.
+    # Only an observed live port is a failure; `stop_backend_and_observe` explains
+    # why the stop's own flag is not trusted. Reporting a failure whenever the flag
+    # is false would make trust UNREVOKABLE for any enabled app whose backend had
+    # merely crashed, and refusing to withdraw a permission is worse than the
+    # window it would close.
     try:
-        # Captured BEFORE the stop: `stop_app_backend` drops both the live tracking
-        # entry and the pidfile record, and those are the only gateway-owned
-        # evidence of which port this backend actually used.
-        port_hint = await loop.run_in_executor(
-            subprocess_executor(), recorded_backend_port, name
-        )
-        await loop.run_in_executor(subprocess_executor(), stop_app_backend, name)
-        live_port = await loop.run_in_executor(
-            subprocess_executor(), lambda: unstopped_backend_port(name, port_hint=port_hint)
-        )
+        live_port, _ = await stop_backend_and_observe(name)
         if live_port is not None:
             logger.warning(
                 "backend for app %r is still listening on port %s after stop",
@@ -371,6 +471,60 @@ async def teardown_app_runtime(
             logger.warning("deregistering app %r failed: %s", name, exc, exc_info=True)
             _fail(f"deregister failed: {exc}")
 
+    return TeardownResult(warnings=warnings, failures=failures)
+
+
+async def stop_app_hooks_for_uninstall(name: str) -> TeardownResult:
+    """Stop *name*'s in-process code before an uninstall removes its files.
+
+    The uninstall handler runs its own backend stop and deregistration, so it does
+    not call :func:`teardown_app_runtime`; this is the in-process half that it
+    would otherwise skip. Without it an uninstalled app's ``backend.hooks`` routes
+    stay in the route registry and keep answering, its ``on_shutdown`` never runs,
+    and its job runs and SDK entry survive, until the hook reconciler's next tick
+    notices the app is gone. Disable has no such window, because it reaches
+    ``on_app_disable`` through :func:`teardown_app_runtime`.
+
+    The CALLER holds ``app_lifecycle_lock(name)`` and has already proven retained
+    startup ownership clear under it (``_refuse_while_startup_hook_runs``), which
+    is why ``startup_stopped=True`` is passed instead of checking a second time.
+
+    ``on_shutdown`` is resolved from the manifest the hooks were LOADED from and
+    runs only when one is retained, the same rule the reconciler applies to an
+    uninstalled app: a retained manifest exists only for an app the gateway loaded
+    healthily, so an app that was never started does not get its shutdown code
+    launched by its own removal. Every stopping step runs regardless.
+
+    ``failures`` names residual execution (cron jobs that may fire, a startup hook
+    still running, job workers still running); ``warnings`` names a failed
+    ``on_shutdown``. Never raises.
+    """
+    warnings: list[str] = []
+    failures: list[str] = []
+    await notify_app_disabled(name)
+    retained = loaded_hook_manifest(name)
+    try:
+        result = await on_app_disable(
+            name,
+            {"name": name, "manifest": retained or {}},
+            run_app_hooks=retained is not None,
+            bounded_startup_cleanup=True,
+            startup_stopped=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - uninstall must still remove the app
+        logger.warning("in-process teardown failed for app %r: %s", name, exc, exc_info=True)
+        return TeardownResult(warnings=[], failures=[redact(f"hooks disable failed: {exc}")])
+    for key, value in (result.items() if isinstance(result, dict) else ()):
+        if key == "hooks_shutdown":
+            if value == "failed":
+                warnings.append(
+                    "the app's own on_shutdown hook failed, so anything it had "
+                    "buffered may not have been saved — its code was still stopped"
+                )
+        elif isinstance(value, str) and value.startswith(("failed:", "partial:")):
+            failures.append(redact(f"{key.replace('_', ' ')} incomplete: {value}"))
+        else:
+            logger.info("uninstall teardown of %r: %s: %s", name, key, value)
     return TeardownResult(warnings=warnings, failures=failures)
 
 
@@ -420,7 +574,11 @@ async def notify_app_disabled(app: str) -> None:
 
     Never raises: the teardown has to complete whether or not the app could stand
     its workers down, for the same reason every other step here pushes through.
+
+    The app's worker auto-approve grants end FIRST, before its own hook runs, so a
+    hook that fails or stalls cannot keep one alive (``worker_auto_approve``).
     """
+    revoke_worker_auto_approve(app)
     hook = _APP_DISABLE_HOOKS.get(app)
     if hook is None:
         return

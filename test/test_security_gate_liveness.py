@@ -334,7 +334,7 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised again, from 29,293, for the ``engines`` leaf in ``paths.py``: the KAS
 #: engine bundle the gateway installs and later executes joins the file-tool floor
-#: beside ``playwright-cli`` -- one entry and its reason. No matcher moved.
+#: beside ``browser-harness`` -- one entry and its reason. No matcher moved.
 #:
 #: Raised again, from 29,296, for the hosts-file parse in ``argv_floor.py``
 #: telling apart the two halves of its cache key: a file that moves mid-parse is
@@ -503,7 +503,228 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 8, from 32,518, for one ``_WRITE_PROTECTED_HOME_PATHS`` entry in
 #: ``paths_lists``: the crewmate agent folder, write-denied to the agent file tools
 #: like ``~/.kiro/agents``. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_526
+#:
+#: Raised by 1, from 32,526, for one ``_CREW_SECRET_LEAVES`` entry in ``paths_lists``:
+#: ``member-records``, the gateway-only leaf a crewmate's rules, goals and DM binding
+#: live in. Data, not rule logic.
+#:
+#: Raised by 3, from 32,527, for the ``web-push`` leaf in ``paths_lists`` (the Web
+#: Push key and device secrets): the leaf and its two-line reason. No rule changed.
+#:
+#: Raised again, from 32,530, for ``redaction_patterns``' optional native pre-filter: the
+#: loader that accepts ``kc_native`` only when its fingerprint matches the Python gate,
+#: the fingerprint itself, a debug line when a build's fingerprint does not match, and
+#: the dispatcher that falls back to the Python gate (kept verbatim as
+#: ``_might_contain_credential_py``) on a missing, stale, disabled or failing module.
+#: Seventy-one lines. No pattern moved and no pass changed.
+#:
+#: Raised by 12, from 32,601, for the crewmate folder's state files in ``paths_lists``
+#: (owners, kits, revoked approvals, tool access, migration ledger), write-denied
+#: like the folder itself. Data, not rule logic: the matcher is unchanged.
+#:
+#: Raised by 3, from 32,613, for the enterprise install-tree write fence in
+#: ``paths``: one import and one ``or`` clause on the write gate, plus the blank line
+#: isort puts after the import. The matcher lives outside the package
+#: (``kiro_crew.edition_install_fence``).
+#:
+#: Raised by 19, from 32,616, for the ``rm`` floor's own segment walk: reserved
+#: words (``then``, ``do``, ``!``, ``time`` …) keep command position, a quoted
+#: substitution may expand to nothing in the program word, and
+#: ``#`` / ``<<`` inside an unpaired ``${…}`` / ``$[…]`` open no comment or heredoc.
+#: Each command is read with and without that tracking. Deny-only: no allow widened.
+#:
+#: Raised by 8, from 32,635, for the ``rm`` floor's program word: an unquoted
+#: ``$x`` / ``${…}`` / ``$1`` there may be unset, so ``${x}rm`` is read as ``rm``.
+#: A word already read as ``rm`` keeps that reading. Deny-only: no allow widened.
+#: Raised by 25, from 32,643, for ``exfil.restore_allowed_links``: an allowed host with several
+#: different addresses in one reply pairs its placeholders with its records by order
+#: instead of staying blocked, but only on a row marked ``blocked_links_ordered``, and
+#: every address put back must be the whole URL match that starts where it lands;
+#: plus the redactor's ``_ordered_out`` flag for a link rewritten inside a longer one.
+#: Display-time only; no redaction rule, pattern or threshold moved.
+#: Raised by 125, from 32,668, for ``shell_commands``: the shared quote-aware command
+#: reader (words with quote state and raw offsets, redirections, the live separator)
+#: that the ``rm`` floor's segment walk moved into, net of the walk it replaced, and
+#: the carve-out's first word in ``exfil_bash``. No rule, pattern or verdict moved.
+#: Raised by 5, from 32,793, for ``vm_stat``, ``uptime`` and ``free`` in the read-only
+#: allowlist of ``readonly_bash`` plus their two-line note. Table data, no matcher change.
+#:
+#: Raised again, from 32,798, by one line: the per-template MCP additions record joins
+#: the read floor (``_CREW_SECRET_LEAVES``), because an approved entry's ``env`` or
+#: ``headers`` can hold an API key and only the floor masks it from a foreign child.
+#:
+#: Set to the measured 32,826: the package measures 32,799, plus 3 for one
+#: ``_CREW_SECRET_LEAVES`` entry in ``paths_lists``:
+#: the mediated-secret request directory (``secret-request-policy``), denied to the
+#: agent file tools as a whole. Data, not rule logic: the matcher is unchanged.
+#:
+#:
+#:
+#:
+#: Raised again, from 32,802, for a real new rule in ``redaction_patterns.py``: the
+#: Telegram-bot-token branch (``_CREDENTIAL_PATTERNS``) false-positives on a long
+#: CDK-generated ARN, whose account-id/resource boundary shares that branch's bare
+#: ``<digits>:<30+ run>`` shape. Two new compiled patterns (an alternation with the
+#: branch dropped, and an ARN-account-id look-behind) plus the ``_credential_matches``
+#: rejection arm that retries past a hit on that shape sitting in an ARN, mirroring the
+#: existing JWT rejection arm beside it. The ARN-prefix check is left-bounded by
+#: ``_ARN_PREFIX_MAX_LOOKBACK`` so it stays constant-time per hit -- an unbounded
+#: ``search(text, 0, hit)`` would be quadratic over the multi-ARN output this rule
+#: targets, which is the loop-stall shape this very file guards. The exemption also
+#: requires the hit's own digit run to be exactly 12 digits (``_ARN_ACCOUNT_ID_12_DIGITS_RE``),
+#: the invariant length of an AWS account id, so a genuine Telegram token (6-10 digit
+#: bot id) placed right after a real ARN prefix is NOT exempted and still redacts.
+#: This raise and the raises above it are independent additions to the same ratchet,
+#: so the number below is re-MEASURED off the tree, not the sum of the deltas. The
+#: count also carries the five new owner names this rule adds to the ``redaction``
+#: facade's ``TYPE_CHECKING`` mirror manifest (the two ARN-prefix regexes, the lookback
+#: constant, the 12-digit account-id regex and the sans-Telegram alternation), which
+#: ``test_facade_mirror_guards`` requires name everything the facade forwards.
+#: Then for ``_arn_exemption_withheld``: twelve digits alone do not prove an account
+#: id, so the exemption needs the whole tail to fullmatch a CDK-generated name
+#: (``_CDK_RESOURCE_NAME_RE`` over ``_CDK_WORDS``, capped by ``_CDK_NAME_MAX_LEN``), and
+#: is still withheld when the account is a zero-padded 6-10 digit bot id
+#: (``_BOT_ID_LENGTHS``). Four constants, one predicate, its call in the rejection arm,
+#: their comments and their manifest lines; the exemption only narrows.
+#: Raised again, from 32,899, for ``redaction.py``'s hold on a whole SRI digest that a
+#: streamed delta cuts: it is counted on top of the ARN exemption above.
+#: Raised again, from 32,909, for ``redaction.py``'s ELB target-group exemption in the
+#: bare-secret pass: the closed ``_ELB_TARGET_GROUP_ARN_RE`` shape, its two span
+#: helpers, the lazy lookup in pass 3 that honours ``judged_sri_values``, and their
+#: comments; the exemption only narrows what pass 3 redacts.
+#: Raised by 177, from 32,970, for the ``rm`` floor reading each nested-shell payload
+#: through the shared reader, and ``shell_commands.redirect_hidden_payloads``: a redirect
+#: before the ``-c`` operand hides no payload. Deny-only: no allow widened.
+#: Raised by 25, from 33,147, for ``rm_floor._expands_nothing`` and
+#: ``_literal_shell_script``: a single-quoted ``\\$`` stays literal only in a lone
+#: ``<shell> -c`` / ``<<<`` script that expands nothing, judged once per command.
+#: Raised again for ``shell_normalizer._shell_option_run``: the nested payload reader
+#: takes the word a shell runs after the options and redirections that follow a shell's
+#: own ``-c`` (``bash -c -x '<script>'``). One forward scanner, its lazy per-position
+#: memos and the own-option-run scope; the reader only adds payloads. Re-measured.
+#: Raised by 189, from 33,334, for ``s3_direction``: the fail-closed reader that
+#: narrows the three ``aws s3 cp|mv|sync`` upload rows away on a download. It
+#: reads only plain literal words (the shared quote walk, ``shlex`` for the split),
+#: a fixed aws CLI flag table and exactly two operands, and refuses everything
+#: else, so the rows keep main's text and deny whatever it cannot read. Plus its
+#: branch in ``deny_gate``'s narrowing adapter, the raw command it is handed so
+#: a character that case-folds to ASCII is refused, ``EffectiveDenied`` so only a
+#: shipped row narrows (an operator's identical copy stays denied), and one facade
+#: import. It reads POSIX shell only, so it narrows nothing on Windows, where a
+#: hook runs under cmd.exe, and its verdict is cached once per command so a
+#: command of many segments is not re-read per segment. A regex alternative was
+#: tried first and lost twice to bash word splitting.
+#: Then by 197 more for the allowed link hosts. 43 are the
+#: ``redaction_allowed_host_used`` audit event in ``exfil.py``. It shares
+#: ``_log_operator_list_use`` with the OAuth extension event, so the event
+#: construction was folded into one helper rather than copied, and the
+#: allowed-host list reuses ``_OAUTH_EXTENSION_HOST_RE`` instead of a second host
+#: regex. Its per-process dedupe memo carries a count ceiling so revoked hosts
+#: cannot grow it without bound. 87 make the list's narrowing auditable: the
+#: render scope's workspace in that event and its memo key, the ``*.localhost``
+#: refusal and its reason, and one ``redaction.allowed_hosts.dropped_invalid``
+#: event per file when a load drops entries. 15 are the revoke epoch and scoped
+#: workspace the render memo keys on, so a re-allowed host is audited again
+#: on a memoized history render, and 6 the one lock a revoke and a render share
+#: on that memo, and 1 the facade import of the shared SEL helper from
+#: ``exfil_oauth``. 18 are ``allowed_host_use_unaudited``, which the save-time
+#: display-verdict projection opens so a render nobody reads writes no use
+#: event, and 5 the 63-letter top-level label cap beside the shared regex. 22
+#: carry the revoke epoch a render read before its hosts into the use audit, so
+#: a render in flight across a revoke does not re-add the memo entry. No check
+#: was relaxed.
+#: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
+#: (``paths_lists``): one entry and its two-line note; the floor only grows.
+#: Raised by 12, from 33,723, for the Salesforce consumer-key shape that an
+#: ``oauth_endpoints.json`` endpoint accepts in ``client_id`` (``exfil_oauth``): the
+#: shape regex, the operator-listed lookup that reads the file only for that shape,
+#: its once-per-endpoint audit, and the second counterfactual keyword that keeps
+#: MCP discovery from assuming an operator entry. No check was relaxed elsewhere.
+#: Raised by 217 more, from 33,735, for a person's in-session override of one deny rule
+#: (``docs/request-for-change/rfc-deny-session-override.md``): 137 are
+#: ``deny_waiver`` (reading a refusal's key, the governance-pin and overlay checks
+#: that keep a key unwaivable, and the check against the per-transport backend
+#: sets that ``agent_sdk`` owns), and the other 80 are ``deny_gate``'s new lines
+#: (``_DenyWaiver`` plus one skip at each return site, which has to sit in
+#: ``is_denied`` beside the refusal it steps aside, and keeping a waived push out
+#: of ``push_allowed``); main left no headroom. ``deny_waiver``
+#: stays in this package, not beside its dashboard reader, so the sensitive-change,
+#: security-scope and denial-differential lanes keep reviewing it. No rule was
+#: dropped and no check relaxed: an empty ``waived`` judges every call as before.
+#: Raised by 7 more, to 33,959, for ``deny_waiver.deny_key_is_self_guard`` and its
+#: use in ``_DenyWaiver``: it keeps every self-protection floor, the unverifiable
+#: push key and every self-protection or credential-exfil rule out of the override
+#: entirely, so the change only narrows what can be waived.
+#: Raised by 8 more, to 33,967, for the ``kirocrew-bin`` entry in
+#: ``paths_lists._WRITE_PROTECTED_HOME_PATHS``: the file-edit tool may not write the
+#: link that decides which ``kirocrew`` an agent shell runs. Deny-only.
+#: Raised by 345 more, from 33,967, for Outlook on the web and Slack links, matched by
+#: structure in ``redaction_entropy._chat_mail_link_spans`` with no pattern: a mail or
+#: calendar item id is base64 with its ``+``, ``/`` and ``=`` percent-escaped, and a
+#: Slack ``client`` link joins its ids and message timestamp into one 40+ char run, so
+#: pass 3 masked both. The link is split by ``urllib.parse.urlsplit``, its host compared
+#: exactly against the four Outlook hosts or a ``slack.com`` host, its path segments
+#: compared as exact tokens, and its ids checked character by character; an Outlook id
+#: must also decode to one whole Exchange id (a folder or message entry id with its
+#: fixed bytes in place), and no piece of the link, cut also at each ``%XX`` escape and
+#: decoded per escaped segment, may be a whole key. No pass widened and no threshold
+#: moved.
+#: Raised by 40 more, from 34,312, for ``exfil_git_object._exfil_blob_hit``: the base64-blob
+#: heuristic judged through one helper that skips a maximal match which is exactly
+#: a SHA-1 git object name (40 lowercase hex digits), so a commit permalink with
+#: the hash in its query renders. Data and one narrowing helper in their own owner
+#: module beside ``exfil.py``, with its header; no pattern moved.
+#: Raised by 170 more, from 34,352, for ``reveal_store`` (the owner reveal of a
+#: removed credential, RFC redaction §7): a bounded, memory-only store with one
+#: owner-gated reader, plus the optional ``reveal_id`` record key in
+#: ``credential_sources``. Nothing is relaxed: redaction still replaces every
+#: value in every saved copy, channel, log and model replay.
+#: Raised by one, from 34,522, for the TickTick consent host in ``exfil_oauth``'s
+#: ``_OAUTH_AUTHORIZATION_ENDPOINTS``: one allowlist entry, no new machinery. Re-measured.
+#: Raised by one, from 34,523, for the Railway consent host in the same set, likewise.
+#: Raised by 175 more, from 34,524, for here-documents in the shared reader
+#: (``shell_commands.read_commands(heredocs=True)``: each body handed to its command,
+#: the substitutions of an unquoted body read once) and the rm floor's use of it (a body
+#: a shell reads, a command after a heredoc, a ``\n`` escape in ``$'...'``). Deny-only:
+#: the default read is unchanged and nothing the floor refused is allowed now; the
+#: walk is bounded by ``rm_floor._WALK_BUDGET_CHARS``.
+#: Raised by 34, from 34,699, to the package's measured size on main: the 175 above
+#: were counted on a base without the security fixes that merged before it, so main
+#: landed over budget. No code changes; nothing is relaxed. Re-measured.
+#: Raised by 20, from 34,733, for the git publish check in ``argv_floor_git``: a git
+#: option word with an unquoted expansion (``git -C $d push ...``) can word-split into
+#: the subcommand and refspecs, so it is handed to the ``$`` check. Deny-only. Re-measured.
+#: Raised by 24, from 34,753, for ``rm_floor._carrier_home``: each ``$HOME`` the carrier
+#: command leaves live is read as home in a nested payload. Deny-only. Re-measured.
+#: Raised by 25, from 34,777, for the prior spellings of the two interpreter-payload
+#: rows in ``_LEGACY_RULE_ID_BY_PATTERN``, so a policy that pinned a row keeps pinning
+#: it, and the catalog comment on why their call names stand bare (both rows match
+#: exactly what they matched). Nothing is relaxed. Re-measured.
+#: Raised by 43, from 34,802, for ``redaction_switch.owner_may_disable``: the governance
+#: gate on the owner's Files-view redaction switch and the stored-OFF read that obeys it
+#: (55 lines; the rest fit in the headroom main had left). Re-measured.
+#: Raised by 10, from 34,845, to the package's measured size on main: the headroom the
+#: 55 above were counted against was spent by the linear-time credential scans that
+#: merged before them, so main landed over budget. No code changes; nothing is relaxed.
+#: Re-measured.
+#: Raised by 39, from 34,855, for pass 4's prefix snapshot: ``redact_credentials`` takes
+#: an optional ``token_param_prefixes`` that replaces pass 4's live read, the diagram scan
+#: (``_document_link_spans``, ``_plantuml_verdict``) hands it to its nested call, and
+#: ``_well_formed_token_param_prefixes`` is the one shape gate the live read and a
+#: snapshot share. No rule, pattern or pass changed. Re-measured.
+#: Raised by 107, from 34,894, for ``scan_history`` reading ``sessions/*.jsonl``
+#: (``memory_audit``): the transcript row shapes, the fold of one tool call's rows
+#: by ``tool_call_id``, the non-shell tool kinds, row-time merge across files and
+#: the unreadable-file finding, so ``security audit`` never reports an unread
+#: scan as clean. No check was relaxed.
+#: Raised by 4, from 35,001, for the two endorsed-copy leaves on the read+write floor in
+#: ``paths_lists`` (copies of leaves already there). Re-measured.
+#: Raised by 31, from 35,005, for ``text_redaction.ends_plain_sentence``:
+#: the dashboard's sentence-end check moved here unchanged so the Slack stream
+#: shares it; the dashboard copy was deleted. Re-measured.
+#: Raised by 4, from 35,036, for the Bearer branch's ``bearer_prefix`` group and pass
+#: 1's value-only span. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_040
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

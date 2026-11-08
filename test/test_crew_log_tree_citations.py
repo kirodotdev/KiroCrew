@@ -35,47 +35,38 @@ def placed(citations: list[tuple[str, str | None]], **kwargs: object) -> dict[st
 
 
 class TestItServesATreeThatIsNotSessionsAndNotWork:
-    def test_a_tree_of_work_boards_hung_on_parent_item(self) -> None:
-        """The node kind the item's own half B was about.
-
-        A work BOARD hangs under one item of a parent board
-        (``WorkBoardConductor.parent_item``), which is the only parent link the work
-        vocabulary has -- a board's items are flat. Nothing about that reaches this
-        function except the ids.
-        """
-        assert placed(
-            [
-                ("board:root", None),
-                ("board:api", "board:root"),
-                ("board:ui", "board:root"),
-                ("board:ui-icons", "board:ui"),
-            ]
-        ) == {
-            "board:root": (None, False),
-            "board:api": ("board:root", False),
-            "board:ui": ("board:root", False),
-            "board:ui-icons": ("board:ui", False),
-        }
-
-    def test_a_tree_of_artifact_folders(self) -> None:
-        """A second node kind, to show the first was not a special case."""
-        assert placed([("/", None), ("/designs", "/"), ("/designs/v3", "/designs")]) == {
-            "/": (None, False),
-            "/designs": ("/", False),
-            "/designs/v3": ("/designs", False),
-        }
-
-    def test_a_tree_of_issues_linked_by_blocked_by(self) -> None:
-        """A third, whose ids are integers-as-strings and whose edge means something else.
-
-        The function does not know what a parent MEANS, which is the generalization: a
-        blocked-by link and a creator link fold the same way.
-        """
-        assert placed([("18642", None), ("21659", "18642"), ("21660", "21659")]) == {
-            "18642": (None, False),
-            "21659": ("18642", False),
-            "21660": ("21659", False),
-        }
+    @pytest.mark.parametrize(
+        "citations",
+        [
+            # A work BOARD hangs under one item of a parent board
+            # (``WorkBoardConductor.parent_item``), which is the only parent link the
+            # work vocabulary has -- a board's items are flat. Nothing about that
+            # reaches this function except the ids.
+            pytest.param(
+                [
+                    ("board:root", None),
+                    ("board:api", "board:root"),
+                    ("board:ui", "board:root"),
+                    ("board:ui-icons", "board:ui"),
+                ],
+                id="test_a_tree_of_work_boards_hung_on_parent_item",
+            ),
+            # A second node kind, to show the first was not a special case.
+            pytest.param(
+                [("/", None), ("/designs", "/"), ("/designs/v3", "/designs")],
+                id="test_a_tree_of_artifact_folders",
+            ),
+            # A third, whose ids are integers-as-strings and whose edge means
+            # something else. The function does not know what a parent MEANS, which is
+            # the generalization: a blocked-by link and a creator link fold the same way.
+            pytest.param(
+                [("18642", None), ("21659", "18642"), ("21660", "21659")],
+                id="test_a_tree_of_issues_linked_by_blocked_by",
+            ),
+        ],
+    )
+    def test_any_node_kind_is_placed_under_its_cited_parent(self, citations) -> None:
+        assert placed(citations) == {node: (parent, False) for node, parent in citations}
 
     def test_the_result_is_the_node_kind_free_placement_type(self) -> None:
         """``node``/``parent``, not ``slot``/``parent_slot``: the caller's nodes are its own."""

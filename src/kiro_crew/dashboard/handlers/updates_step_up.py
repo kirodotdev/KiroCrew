@@ -49,10 +49,13 @@ def _loopback_peer(request: web.Request) -> bool:
     marks are honoured too, so a local-secret-authenticated caller passes
     however it connected.
     """
+    from kiro_crew.dashboard.origin import is_ssm_request, request_is_unix_socket
+    from kiro_crew.dashboard.urls import is_loopback
+
+    if is_ssm_request(request):
+        return False
     if request.get("internal_auth") or request.get("peer_verified"):
         return True
-    from kiro_crew.dashboard.origin import request_is_unix_socket
-    from kiro_crew.dashboard.urls import is_loopback
 
     if request_is_unix_socket(request):
         return True
@@ -135,7 +138,9 @@ async def _arm_packaged_app(request: web.Request) -> web.Response:
                 {"error": "version must be a string", "code": "invalid_version"}, status=400
             )
         version = (raw or "").strip()
-    if version and _downgrade_target_below_min_version(version, _release_channel()):
+    if version and _downgrade_target_below_min_version(
+        version, await asyncio.to_thread(_release_channel)
+    ):
         error = "selected release is below the required minimum version"
         await _audit_update_event(
             request, operation="update.arm", outcome="denied", error=error, resources=f"v{version}"
@@ -379,7 +384,9 @@ async def api_update_arm_status(request: web.Request) -> web.Response:
     # dropped, so the card does not flicker back on the next poll.
     if resolve_provider() is not None or (
         req.target_version
-        and _downgrade_target_below_min_version(req.target_version, _release_channel())
+        and _downgrade_target_below_min_version(
+            req.target_version, await asyncio.to_thread(_release_channel)
+        )
     ):
         await asyncio.to_thread(requests.clear)
         await _audit_update_event(
@@ -565,6 +572,27 @@ async def api_update_approve(request: web.Request) -> web.Response:
                     "governance": True,
                 },
                 status=409,
+            )
+        )
+    # The request was armed on a channel; a policy pinned since (``updates.channel``)
+    # decides which channel this host may take code from, as the source pin does.
+    # The same check the engine runs under the lock, asked here so the refusal is
+    # audited and named before the apply starts.
+    from kiro_crew.platform.wheel_engine import check_policy_channel
+
+    try:
+        await asyncio.to_thread(check_policy_channel, pending.channel)
+    except WheelUpdateError as exc:
+        error = str(exc)
+        await _audit(
+            "denied",
+            error=error,
+            resources=f"v{pending.version} ({pending.channel})",
+        )
+        return await _refuse(
+            web.json_response(
+                {"error": error, "code": "approve_blocked_by_policy", "governance": True},
+                status=403,
             )
         )
     try:

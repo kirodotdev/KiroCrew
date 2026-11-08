@@ -208,7 +208,8 @@ def allocation_identity(owner: Any, key: str, session: Any) -> dict[str, Any]:
     (``session_compaction._restart_held``) so the two cannot drift: agent,
     approval policy, cwd, bound channel, the model the allocation selected, the
     crew member, the per-spawn backend, the ``extra_env`` and
-    ``reasoning_effort_override`` the caller passed, and an app's launch copy.
+    ``reasoning_effort_override`` the caller passed, an app's launch copy, and a
+    sub-agent's ``include_memory=False``.
     """
     backend = getattr(session, "backend_override", None)
     env = getattr(session, "extra_env", None)
@@ -229,6 +230,7 @@ def allocation_identity(owner: Any, key: str, session: Any) -> dict[str, Any]:
         # An app's launch copy (``apps.agent_launch``): the successor is asked for
         # the same copy, never the bare name kiro-cli resolves project-first.
         **({"app_launch_agent": launch} if isinstance(launch, str) and launch else {}),
+        **({"include_memory": False} if getattr(session, "include_memory", True) is False else {}),
     }
 
 

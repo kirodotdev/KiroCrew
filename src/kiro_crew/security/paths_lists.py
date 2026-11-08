@@ -199,6 +199,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # too. The channel's own client opens it directly rather than through this
     # gate, so pairing keeps working.
     "whatsapp",
+    # Web Push: the VAPID private key and every device's push secret, enough to raise
+    # OS banners on the owner's devices. Opened directly by the notification subsystem.
+    "web-push",
     # The Notes builtin's vault registry. It is not a secret, but it stores each
     # vault's on-disk ``localPath``, which auto-sync trusts and runs ``git
     # add``/``commit``/``push`` against. A prompt-injected agent that could
@@ -314,6 +317,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # straight off disk, and a corrupted record reads as ABSENT to the store —
     # silent loss the conductor cannot see. No legitimate file-tool reader.
     "work-ledger",
+    # Browser turn replays (``browser_harness.recording``): per-chat frames of the
+    # pages seen. Only the owner-only replay routes read them, like the ledgers.
+    "browser-recordings",
     # The cross-process work root (``work_root``). Not credentials either: the
     # hazard is WRITE, and it is specific to this root's deterministic keys. A key
     # is an issue or pull-request number so a later run can compute it again, so a
@@ -358,13 +364,19 @@ _CREW_SECRET_LEAVES: list[str] = [
     # operator's logged-in browser without them seeing a prompt. The gateway hands
     # it to the CLI through the environment, so nothing legitimate opens the file.
     "playwright-extension-token",
-    # Gateway-executed browser launcher and its vendored package tree. Agent
-    # subprocesses receive a READONLY sandbox view so their browser commands can
-    # run it; file tools must not inspect or replace the executable the
-    # unsandboxed gateway later uses for startup cleanup and owner launches.
-    "playwright-cli",
+    # The Browser Harness venv the gateway executes for its daemon and helper
+    # worker, with Kiro's Chromium beside it (``browser_harness.install``).
+    # READONLY in-sandbox, fenced from file tools so the interpreter cannot be swapped.
+    "browser-harness",
+    # The Harness daemon's runtime directory: its IPC socket (the Windows port file
+    # carries the IPC token), pid file and log (``browser_harness.supervisor``).
+    # Whoever can open the socket drives the user's Chrome, so only the gateway may.
+    "browser-harness-ipc",
+    # Kiro's Chromium profile. Cookies from a takeover login live here, and the
+    # agent must never read them as a file; also sandbox-masked.
+    "browser-profile",
     # KAS engine bundles the gateway installs then executes (``acp.kas_bundle``);
-    # same class as ``playwright-cli``: READONLY in-sandbox, fenced from file tools.
+    # same class as ``browser-harness``: READONLY in-sandbox, fenced from file tools.
     "engines",
     # Legacy SEL HMAC key location (pre-``trust/`` installs, and any stale file
     # a backup restore resurrects). Kept alongside the ``trust``
@@ -405,6 +417,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``sandbox._CREW_READONLY_LEAVES``, which this entry does not touch: the
     # reader it fences is the AGENT'S OWN FILE TOOLS.
     "member-memory-bindings",
+    "template-mcp-additions",  # approved MCP entries' env/headers; as the bindings above
     "security_events.jsonl",
     # Rotated SEL segments. sel_rotation.py closes the live log at a size cap and renames
     # it into this directory, so a segment holds exactly the same audit records
@@ -495,6 +508,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # is ``sandbox._CREW_HIDDEN_LEAVES``. Opened only by the gateway and by the
     # operator's own ``kirocrew agent create`` / ``delete``, never by an agent tool.
     "crew-teams",
+    "member-records",  # crewmate rules/goals/DM bindings; mirror: sandbox._CREW_HIDDEN_LEAVES
     # Subagent panel dismissals (``subagent_persistence.record_panel_dismissal``):
     # one file per run whose finished card the operator dismissed, which the
     # panel's durable reader consults to keep that card hidden. It decides what
@@ -505,6 +519,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # is ``sandbox._CREW_HIDDEN_LEAVES``. Deliberately NOT under ``trust/``,
     # which stays sandbox read-write for SEL. Only the gateway opens it.
     "panel-dismissals",
+    # Pending deletes of released engine records (``released_sessions``); also masked.
+    "released-sessions",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),
@@ -561,6 +577,10 @@ _CREW_SECRET_LEAVES: list[str] = [
     # shell. The dashboard PUT handler is the only writer and it opens the path
     # directly, not through this gate, so the operator's Settings toggle still works.
     "computer_use.json",
+    # Verbatim endorsed copies of the two leaves above (``config.loosening_provenance``);
+    # no OS mask: their directory is a read-only bind that in-sandbox loaders read.
+    "config-provenance/endorsed/denied_commands.json",
+    "config-provenance/endorsed/computer_use.json",
     # Browser Mode's durable ENABLE gate. Same class of control as
     # ``computer_use.json`` directly above: while it is present the browse proxy
     # is registered and the ``browser_*`` tools are in the agent's tool list,
@@ -622,18 +642,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``/api/decisions/consent`` handler is the only writer and opens the path
     # directly, not through this gate.
     "decisions_consent.json",
-    # Recorded consent to deliver a file whose contents the credential scanner
-    # flagged. Same class of control as ``aws_service_consent.json`` above: the
-    # record is what AUTHORIZES a flagged file past four independent content
-    # gates, so an agent that could write it would consent on the owner's behalf
-    # to shipping the owner's secrets. Reading it is fenced too -- the file says
-    # which delivery destinations the owner has already blessed, which tells an
-    # agent where a flagged file would land unrefused, and that is reconnaissance
-    # it should not get for free from the shared gate. The authenticated,
-    # owner-gated dashboard ``/api/file-delivery/consent`` handler is the ONLY
-    # writer and opens the path directly, not through this gate, so it keeps
-    # working; there is deliberately no CLI verb to fence.
-    "file_delivery_consent.json",
+    # The owner's Shared Crew preview switch. The record is what AUTHORIZES the
+    # Crew to open to other people on the next start, so an agent that could
+    # write it would share the owner's machine on the owner's behalf. The
+    # owner-only ``/api/shared-crew/preview`` handler is the only writer and
+    # opens the path directly, not through this gate.
+    "shared_crew_preview.json",
     "ssh_auth_sock_consent.json",
     # The owner's credential-redaction switch. Same class of control as the
     # consent records above: the record is what AUTHORIZES the credential scrubber
@@ -645,20 +659,6 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``/api/security/credential-redaction`` handler is the only writer and opens
     # the path directly, not through this gate.
     "credential_redaction.json",
-    # The single-use step-up nonce that authorizes RECORDING a flagged-file
-    # delivery grant. A whole DIRECTORY, not a leaf file, because arming writes a
-    # sibling ``.tmp`` and renames it into place. It lives in its OWN top-level
-    # leaf rather than under ``trust/`` on purpose: ``trust/`` is sandbox-VISIBLE
-    # (it holds SEL append targets an in-sandbox MCP server writes), so a
-    # prompt-injected agent could FORGE a nonce there with a runtime-constructed
-    # shell path (the acknowledged evadable tier) and then drive the owner's
-    # loopback browser to POST that chosen nonce -- recording a grant with no
-    # human present. This leaf has NO in-sandbox reader (the gateway writes it on
-    # arm, the host ``kirocrew file-delivery approve`` reads it), so it is also
-    # bind-masked in ``sandbox._CREW_HIDDEN_LEAVES``; masking is what actually
-    # closes the forge path, since the text/argv file gate alone does not stop a
-    # runtime-constructed shell write.
-    "file-delivery-consent-pending",
     "token_signing.key",
     "refresh_chains.json",
     # The staging directory the two leaves above publish through. Both are masked as
@@ -682,6 +682,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens these paths directly rather than through this gate, so publishing keeps
     # working.
     "auth-store-staging",
+    # Mediated-secret owner-signed egress policy: writable, it would let an agent try
+    # to authorize its own origin. Only the gateway and owner CLI open it, directly.
+    "secret-request-policy",
     ".local_secret",
     # Durable channel transport state: Teams' conversation -> serviceUrl and
     # identity -> conversation maps, and Telegram's getUpdates cursor. Two shapes of
@@ -759,6 +762,9 @@ _CREW_SECRET_LEAVES: list[str] = [
     # the launcher and read the sealed extension. This floor still keeps the agent's
     # own file tools out; the controls cover different readers rather than cancelling.
     "pi-gate",
+    # KAS MCP launch snapshots hold servers' env values (``acp.kas_env_launch``); the
+    # ``pi-gate`` split: readable in the sandbox for the launcher, fenced from file tools.
+    "kas-mcp-launch",
     # Encrypted secret vault directory — denylists the entire subdirectory so
     # the key file, ciphertext store, lock, and atomic-write temp files are all
     # unreadable to the agent through any Kiro Crew-mediated channel.
@@ -912,14 +918,6 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
     # config.json / config.local.json: security-relevant resource ceilings.
-    # playwright-cli-config.json: the browse launch config
-    # (browser_cli/launch.py). It holds no secret and the CLI must READ it on
-    # every invocation, so it is write-protected rather than sensitive. But it is
-    # an INPUT TO A SECURITY DECISION: the schema accepts
-    # ``launchOptions.chromiumSandbox``, so an agent that could rewrite it would
-    # turn the browser sandbox OFF for every later browse, and the change persists
-    # until the next gateway start re-converges the file. Kiro Crew generates it
-    # directly and does NOT route through this gate, so its own write still works.
     # subagents: the canonical run records a cold continuation restores app
     # ownership from. Gateway writers bypass this tool gate; an agent may read a
     # run's results but cannot turn an app-owned run into a personal run. Its
@@ -935,7 +933,6 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     for leaf in (
         "config.json",
         "config.local.json",
-        "playwright-cli-config.json",
         "subagents",
         "app-agent-launch",
     )
@@ -962,9 +959,9 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
 
 
 _WRITE_PROTECTED_HOME_PATHS += [
-    # The cloud launcher's config. WRITE-protected for the same reason as
-    # ``playwright-cli-config.json`` above and by the same placement-not-logic fix:
-    # it holds no credential (its own module docstring is explicit that it stores a
+    # The cloud launcher's config. WRITE-protected by the placement-not-logic fix
+    # (the gate refuses only the agent's own file-edit tool, the product's own
+    # writers bypass it): it holds no credential (its own module docstring is explicit that it stores a
     # profile NAME, and the Fargate block stores secret names and ARNs, never
     # values), and the gateway must READ it on every request to build the remote
     # provisioner list, so sealing it against reads would break the Set-up tab.
@@ -1069,6 +1066,14 @@ _WRITE_PROTECTED_HOME_PATHS += [
     # gate, so first-run fetches, re-downloads after a failed check and the embedding
     # model install all keep working; only the agent's file-edit tool is refused.
     f"{prefix}/models"
+    for prefix in _CREW_HOME_PREFIXES
+]
+
+
+_WRITE_PROTECTED_HOME_PATHS += [
+    # This install's ``kirocrew`` link (``env_own_kirocrew``), ahead of ~/.local/bin
+    # on every PATH Kiro Crew builds: a write would choose the ``kirocrew`` agents run.
+    f"{prefix}/kirocrew-bin"
     for prefix in _CREW_HOME_PREFIXES
 ]
 
@@ -1207,6 +1212,14 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
     for leaf in ("seed-provenance", "settings_seeds.json")
 ]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The gateway's config publication record (``config.write_provenance``). Same shape
+    # as the settings-seed record above: no secret, so READS stay open; a WRITE would let
+    # an agent vouch for a substituted config file at the launcher's pin. Its only writer
+    # is ``write_provenance.staging_hook``, outside this gate.
+    f"{prefix}/config-provenance"
+    for prefix in _CREW_HOME_PREFIXES
+]
 
 
 _WRITE_PROTECTED_HOME_PATHS += [
@@ -1292,6 +1305,15 @@ _WRITE_PROTECTED_HOME_PATHS += [_KIRO_AGENTS_DIR]
 # specs in the agents-dir format, fenced like it. Only gateway handlers write it, directly.
 _KIRO_MATE_AGENTS_DIR = ".kiro/mates/agents"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_MATE_AGENTS_DIR]
+# Its siblings: who owns each crewmate file, revoked approvals, the tool-access
+# record and the migration ledger. Only gateway handlers write them.
+_KIRO_MATE_STATE_LEAVES: tuple[str, ...] = (
+    ".kiro/mates/owners.json",
+    ".kiro/mates/revoked-approvals.json",
+    ".kiro/mates/tool-access.json",
+    ".kiro/mates/migrated.json",
+)
+_WRITE_PROTECTED_HOME_PATHS += list(_KIRO_MATE_STATE_LEAVES)
 
 
 # ── kiro-cli global MCP registry (~/.kiro/settings/mcp.json) ──
@@ -1341,13 +1363,14 @@ _KIRO_CLI_WRITE_TIER_LEAVES: tuple[str, ...] = (
     _KIRO_AGENTS_DIR,
     _KIRO_SETTINGS_MCP_JSON,
     _KIRO_MATE_AGENTS_DIR,
+    *_KIRO_MATE_STATE_LEAVES,
 )
 
 
 # Other harnesses' own permission files: the same threat, anchored like the leaves above.
 _NATIVE_ALLOW_STORE_LEAVES: tuple[str, ...] = native_allow_stores.home_leaves()
 _WRITE_PROTECTED_HOME_PATHS += list(_NATIVE_ALLOW_STORE_LEAVES)
-_native_store_write = native_allow_stores.matches_store  # a project's claude settings
+_native_store_write = native_allow_stores.matches_store  # a project's own harness config
 
 _WRITE_PROTECTED_HOME_PATHS += [
     # Operator-authored panel templates (agent_panel.py). WRITE-protected rather

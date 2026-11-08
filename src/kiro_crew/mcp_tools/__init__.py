@@ -44,6 +44,9 @@ DOMAIN_MODULES: tuple[str, ...] = (
     "workflows",
     "apps",
     "browser",
+    "server_request",
+    # Last: the tools installed apps declare. A core name always wins over an app's.
+    "app_tools",
 )
 
 
@@ -63,7 +66,8 @@ def build_tool_list(*, names_only: bool = False) -> list[dict[str, Any]]:
     ``spawn.schemas`` (a user-level agents directory scan) and ``control.schemas``
     (a config read) -- are told not to, so a names-only read never performs that
     work. The names and their order are identical to a full build with every app
-    enabled; only the descriptions differ (empty under ``names_only``), and the
+    enabled and every shipped app installed (``app_tools.schemas`` names the tools of
+    every shipped manifest, the deny universe); only the descriptions differ (empty under ``names_only``), and the
     caller discards those anyway. This is what lets those builders carry NO
     ``get_running_loop`` skip of their own: asking for descriptors does not pull
     in the live reads. The same rule covers ``advertised()``: the names-only path

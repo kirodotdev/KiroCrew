@@ -229,17 +229,13 @@ def _coerce_index(raw: Any, *, strict: bool = False) -> dict[str, Incident]:
 
     ``strict`` is the update path, and it refuses on a rule about CONTENT rather than a list
     of shapes: **deserialize, re-serialize, and refuse if anything that was on disk did not
-    survive.** Three review rounds each found the same class of loss one layer deeper than
-    the last -- the document root, then a row, then a nested field like ``"signal": []``
-    coerced to an empty ``Signal`` -- because each fix enumerated a shape, and any
-    enumeration can be beaten by a deeper example. This rule cannot: it covers the root, the
-    rows, the nested fields and every layer beneath them at once, and it is the invariant the
-    docstrings were already claiming.
+    survive.** A list of shapes can always be beaten by a deeper example -- the document
+    root, a row, a nested field like ``"signal": []`` coerced to an empty ``Signal``. This
+    rule cannot: it covers the root, the rows, the nested fields and every layer beneath them
+    at once.
 
-    That is also why this reader now has FEWER checks than it did a round ago. The
-    ``isinstance`` guards for the row and the nested fields are gone, because dropping a row
-    or blanking a field is exactly what the round trip detects. A smaller diff is the honest
-    signal that this is the real rule rather than another patch on top of one.
+    That is also why this reader has no ``isinstance`` guards for the row and the nested
+    fields: dropping a row or blanking a field is exactly what the round trip detects.
 
     Why it matters on the mutation path specifically: the caller rewrites the WHOLE file from
     what this returns, so any content the coercion quietly replaced is destroyed. The display
@@ -291,8 +287,8 @@ def _coerce_index(raw: Any, *, strict: bool = False) -> dict[str, Incident]:
             # `expire_stale_proposals` iterates `index.values()` and writes back with
             # `index[inc.incident_id] = ...`, so a row stored under `INV-1` whose id says
             # `INV-9` is REKEYED on the next expiry sweep -- leaving `INV-1` behind as a
-            # duplicate, or overwriting a real `INV-9`. Found in review (GPT 5.6), and it is
-            # the one hole the equivalence rule could not close on its own: the corruption
+            # duplicate, or overwriting a real `INV-9`. This is the one hole the equivalence
+            # rule cannot close on its own: the corruption
             # manifests at WRITE time, not at read time.
             if str(survived.get("incident_id", "")) != str(key):
                 raise CorruptDocumentError(
@@ -374,10 +370,10 @@ def _read_index_for_update() -> dict[str, Incident]:
     except UnicodeDecodeError as exc:
         # A file that is not valid UTF-8 never reaches `json.loads`, so it arrives as
         # `UnicodeDecodeError` -- which is a `ValueError` but NOT a `JSONDecodeError`. Left
-        # unwrapped it slips past every corruption clause in this change and lands in the
-        # tolerant `except (KeyError, ValueError, OSError)` arms instead, silently swallowed:
-        # the exact accidental tolerance this change exists to close, reached through a
-        # sibling exception type. Found in review (GPT 5.6). Wrapped so a corrupt byte stream
+        # unwrapped it slips past every corruption clause and lands in the tolerant
+        # `except (KeyError, ValueError, OSError)` arms instead, silently swallowed: an
+        # accidental tolerance reached through a sibling exception type. Wrapped so a
+        # corrupt byte stream
         # is one condition regardless of which decoder noticed it first.
         raise CorruptDocumentError(
             f"index is not valid UTF-8: {exc.reason}",
@@ -404,7 +400,7 @@ class _IndexLock:
 
     def __enter__(self) -> _IndexLock:
         lock_file = incidents_dir() / _LOCK_FILENAME
-        self._fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
+        self._fd = platform_compat.open_create_or_existing(str(lock_file), os.O_RDWR, 0o600)
         platform_compat.acquire_lock(self._fd, exclusive=True)
         return self
 
@@ -1072,7 +1068,7 @@ def expire_stale_proposals(*, now: str = "") -> list[str]:
             # inconsistent one the old form MOVED the record, duplicating it or overwriting a
             # real incident. The strict reader now refuses such a document, so this is
             # belt-and-braces -- but the function that rewrites the index should not be the one
-            # relying on the reader to have checked. Found in review (GPT 5.6).
+            # relying on the reader to have checked.
             index[key] = replace(inc, proposed_action=proposal)
             touched.append(inc.incident_id)
         if touched:

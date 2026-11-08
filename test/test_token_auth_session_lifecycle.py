@@ -60,7 +60,6 @@ def test_evict_expired_removes_old_entries() -> None:
     # Evict with current time > 1000
     _state.evict_expired(2000.0)
 
-    # Verify expired entries were removed
     with _state._lock:
         pin_key = _token_pin_key(token)
         assert pin_key not in _state._peer_bindings, "expired pin should be evicted"
@@ -314,9 +313,18 @@ async def test_api_logout_success_revokes_sessions() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("duration_arg, expected_ttl", [("", 3600), ("2h", 7200), ("30m", 1800)])
-async def test_dashboard_sel_log(duration_arg: str, expected_ttl: int) -> None:
+async def test_dashboard_sel_log(
+    duration_arg: str, expected_ttl: int, tmp_path, monkeypatch
+) -> None:
     """!dashboard logs SEL with operation='slack.dashboard_token', caller, and ttl."""
+    import json
+
+    from kiro_crew.sel import SecurityEventLog
     from kiro_crew.slack.handler import _handle_slash_command
+
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(SecurityEventLog, "_initialized", False)
+    real_log = SecurityEventLog(base_dir=tmp_path, sync=True)
 
     slack = MagicMock()
     slack.post_message = AsyncMock(return_value=None)
@@ -336,12 +344,17 @@ async def test_dashboard_sel_log(duration_arg: str, expected_ttl: int) -> None:
         patch("kiro_crew.dashboard.origin.socket.gethostbyname", return_value="10.0.0.1"),
         patch("kiro_crew.slack.allowlist.sel") as mock_sel,
     ):
-        mock_log = MagicMock()
+        mock_log = MagicMock(wraps=real_log.log_api_access)
         mock_sel.return_value.log_api_access = mock_log
         await _handle_slash_command(
             cmd_text, slack, sessions, "C123", "ts1", "ts2", "sess1", "U_TEST"
         )
 
+    lines = (tmp_path / "security_events.jsonl").read_text("utf-8").splitlines()
+    rows = [json.loads(line) for line in lines]
+    assert [(r["operation"], r["outcome"], r["resources"]) for r in rows] == [
+        ("slack.dashboard_token", "ok", f"ttl={expected_ttl}")
+    ]
     mock_log.assert_called_once_with(
         caller="U_TEST",
         operation="slack.dashboard_token",
@@ -569,6 +582,32 @@ async def test_url_token_exchanged_for_distinct_session_cookie() -> None:
     url_nonce = _json.loads(_b64url_decode(url_token.split(".")[0]))["nonce"]
     cookie_nonce = _json.loads(_b64url_decode(cookie.value.split(".")[0]))["nonce"]
     assert url_nonce != cookie_nonce
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner_minted", [True, False])
+async def test_exchange_carries_owner_mint_claim_to_both_cookies(owner_minted) -> None:
+    """The owner-mint claim survives the link→session exchange on the access
+    cookie AND the refresh cookie, and is never added to a link without it."""
+    from kiro_crew.dashboard.refresh_tokens import refresh_token_owner_minted
+    from kiro_crew.dashboard.token_auth_tokens import (
+        owner_mint_extra,
+        token_owner_minted_unverified,
+    )
+
+    mw = token_auth_middleware()
+    url_token = generate_token(
+        "U_OWNER",
+        ttl_seconds=MAX_SESSION_TTL_SECS,  # flake-ok: a token lifetime claim, not a wait
+        extra=owner_mint_extra() if owner_minted else None,
+    )
+    resp = await mw(_make_request(query={"token": url_token}, remote="10.0.0.4"), _ok_handler)
+    assert resp.status == 200
+    cookie = resp.cookies.get("mc_token_5476")
+    refresh = resp.cookies.get(refresh_cookie_name(5476))
+    assert cookie is not None and refresh is not None
+    assert token_owner_minted_unverified(cookie.value) is owner_minted
+    assert refresh_token_owner_minted(refresh.value) is owner_minted
 
 
 @pytest.mark.asyncio

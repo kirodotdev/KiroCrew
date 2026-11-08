@@ -6,7 +6,10 @@ import ErrorNotice from './ErrorNotice'
 import { Btn } from './ui'
 import { i18nT } from '../i18n/t'
 import { earlierConversationRenderer, foldEarlierConversation } from './EarlierConversation'
+import { crewmateBrowserLiveRenderer } from './chat/crewmateBrowserLive'
 import type { ChatPaneProps } from './ChatPaneProps'
+import { useAppDispatch } from '../store'
+import { speakReply } from '../pages/chat/speakReply'
 
 /**
  * `ChatPane`'s transcript content. `useChatPaneRenderers` builds the row set the
@@ -19,10 +22,11 @@ import type { ChatPaneProps } from './ChatPaneProps'
 
 type Messages = Parameters<typeof foldEarlierConversation>[0]
 
-export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, resume: { continuable, interrupted, continuing, onContinue } }: {
+export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, messages, foldBefore, revealActions = false, resume: { continuable, interrupted, continuing, onContinue } }: {
   slotKey: string
   busyMode: ComposerBusyMode
   onFileOpen?: ChatPaneProps['onFileOpen']
+  onOpenCrewTab?: (slot: string) => void
   crewmate?: CrewmateIdentity
   crewmateTranscript: TranscriptRendererOptions['crewmateTranscript']
   onSessionOpen?: (key: string) => void
@@ -32,6 +36,9 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
   foldBefore?: string
   /** The Resume press for this slot (`useChatPaneContinue`), for the newest error row. */
   resume: { continuable: boolean; interrupted: boolean; continuing: boolean; onContinue: () => void }
+  /** The browser blocked this slot's playback: a crewmate reply shows its
+   *  action row without hover, so the notice's More → Read aloud is reachable. */
+  revealActions?: boolean
 }) {
   // Split-view panes draw the SAME transcript rows as the single-chat surface,
   // through the SDK's row registry: the live ToolCallLine (purpose / input /
@@ -51,6 +58,8 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
   }, [])
   // The fresh-start fold opens per fresh start: a newer one closes it again.
   const [openFold, setOpenFold] = useState<string | undefined>(undefined)
+  const dispatch = useAppDispatch()
+  const onSpeak = useCallback((content: string) => speakReply(dispatch, slotKey, content), [dispatch, slotKey])
   const foldOpen = !!foldBefore && openFold === foldBefore
   const listMessages = useMemo(
     () => foldEarlierConversation(messages, foldBefore, foldOpen),
@@ -59,6 +68,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
   const baseRenderers = useMemo(
     () => createTranscriptRenderers({
       slot: slotKey,
+      revealSlot: slotKey,
       toolDisclosure,
       onToolDisclosureChange: setToolDisclosureFor,
       // A steer-only surface has no steer/queue concept to explain, so a
@@ -67,6 +77,7 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
       // Attachment cards / @mention chips open through the host's file viewer
       // (#9487); without it they render without an opener.
       onFileOpen,
+      onOpenCrewTab,
       crewmate,
       crewmateTranscript,
       // Session links resolve through the SAME renderer path the single-chat
@@ -81,15 +92,21 @@ export function useChatPaneRenderers({ slotKey, busyMode, onFileOpen, crewmate, 
       interrupted,
       continuing,
       onContinue,
+      // A crewmate's reply offers Read aloud like a Sessions reply. Only the
+      // crewmate thread is read aloud off the active chat (`storeFocusedSlot`),
+      // so a split pane keeps its menu as it is.
+      onSpeak: crewmate ? onSpeak : undefined,
+      revealActions: !!crewmate && revealActions,
     }),
-    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue],
+    [slotKey, toolDisclosure, setToolDisclosureFor, busyMode, onFileOpen, onOpenCrewTab, crewmate, crewmateTranscript, onSessionOpen, sessions, activeSession, continuable, interrupted, continuing, onContinue, onSpeak, revealActions],
   )
-  const renderers = useMemo(
-    () => (foldBefore
-      ? [earlierConversationRenderer(foldOpen, () => setOpenFold(foldOpen ? undefined : foldBefore)), ...baseRenderers]
-      : baseRenderers),
-    [baseRenderers, foldBefore, foldOpen],
-  )
+  const renderers = useMemo(() => {
+    // A crewmate's chat keeps each turn's browser call as a card row (crewmateBrowserLive).
+    const rows = crewmate ? [crewmateBrowserLiveRenderer(slotKey), ...baseRenderers] : baseRenderers
+    return foldBefore
+      ? [earlierConversationRenderer(foldOpen, () => setOpenFold(foldOpen ? undefined : foldBefore)), ...rows]
+      : rows
+  }, [baseRenderers, foldBefore, foldOpen, crewmate, slotKey])
 
   return { listMessages, renderers }
 }
@@ -136,9 +153,8 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
           liveness the status line and footer read): its current step
           is on screen, so "hasn't said anything" would sit under a
           line that shows it busy. */}
-      {messages.length === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
-        <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
-          {crewmate && paneMessages.length > 0 ? (
+      {messages.length === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && crewmate && paneMessages.length > 0 && (
+        <div className="text-center text-muted text-[13px] px-4 py-8" data-testid="crewmate-quiet-hint">
             <>
               <div>{i18nT('components.chatPane.crewmate_quiet', { name: crewmate.label || crewmate.name })}</div>
               {/* Where the work went: Profile > Sessions. A link when the host
@@ -157,9 +173,6 @@ export function ChatPaneAboveRows({ slotKey, activeSlot, messages, paneMessages,
                 <div className="mt-1" data-testid="crewmate-quiet-where">{i18nT('components.chatPane.crewmate_quiet_where')}</div>
               )}
             </>
-          ) : (
-            i18nT('components.chatPane.session_ready_type_a_message_to_start')
-          )}
         </div>
       )}
       {/* Suppressed on the active slot: that pane renders the store's full

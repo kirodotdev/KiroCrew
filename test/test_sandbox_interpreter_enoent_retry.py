@@ -25,6 +25,10 @@ import importlib
 import pathlib
 import subprocess
 import sys
+import threading
+import time as _real_time
+import types
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -45,6 +49,69 @@ def _enoent(filename: str | None) -> FileNotFoundError:
     exc = FileNotFoundError(2, "No such file or directory")
     exc.filename = filename
     return exc
+
+
+@contextmanager
+def _patched_sleep(*, side_effect=None):
+    """Rebind the retry loops' clock through the sandbox facade, thread-safely.
+
+    The ENOENT retry loops call ``time.sleep`` through ``sandbox_rlimit``'s
+    ``time`` name. Patching ``time.sleep`` on the stdlib module object
+    (``patch.object(sandbox_mod.time, "sleep", ...)``) replaces the clock for the
+    WHOLE xdist worker -- every other thread, library and event loop reads the
+    fake while it holds, so a background sweeper (history_cache's
+    ``_idle_sweep_loop``) waking in the patch window loses its 60s pacing and
+    spins. The ``tests-are-deterministic`` anchor (and ``test-determinism.yaml``'s
+    ``test-stdlib-clock-rebound`` rule) call for rebinding the module's own
+    ``time`` NAME to a clock instead of mutating the shared module.
+
+    ``time`` is one of the names the ``kiro_crew.sandbox`` facade mirrors onto
+    every carved owner (``sandbox_rlimit`` among them), so the rebind MUST go
+    through the facade -- ``patch.object(sandbox_mod, "time", proxy)`` -- not onto
+    an owner directly: ``test_facade_mirror_guards`` refuses a direct owner patch
+    of a mirrored name, because the facade's undo would then leak that owner's
+    value into the others. Patching the facade propagates the proxy to every
+    owner through the mirror and leaves the stdlib ``time`` module untouched, so
+    no other module or thread sees the fake.
+
+    The proxy wraps the real ``time`` module and overrides only ``sleep`` with a
+    ``MagicMock`` (so callers can assert on it); its default short-circuits a
+    sleep made ON THE INSTALLING THREAD -- the one running the code under test --
+    and delegates a sleep from any other thread to the real ``time.sleep``, so a
+    sibling that reached this binding keeps its pacing. ``side_effect`` overrides
+    that for the owner thread.
+    """
+    owner = threading.get_ident()
+    sleep_mock = MagicMock(name="sleep")
+
+    def _sleep(duration):
+        if threading.get_ident() != owner:
+            # A sleep from another thread keeps its real pacing: never spin.
+            return _real_time.sleep(duration)
+        if side_effect is not None:
+            return side_effect(duration)
+        return None
+
+    sleep_mock.side_effect = _sleep
+    proxy = types.SimpleNamespace(
+        **{name: getattr(_real_time, name) for name in dir(_real_time) if not name.startswith("__")}
+    )
+    proxy.sleep = sleep_mock
+    with patch.object(sandbox_mod, "time", proxy):
+        yield sleep_mock
+
+
+@contextmanager
+def _recording_sleep():
+    """``_patched_sleep`` wrapper that also collects the owner thread's durations.
+
+    Yields ``(slept, sleep_mock)``: ``slept`` is the list of durations the code
+    under test asked for, captured on the installing thread only, so a sibling's
+    sleep on another thread cannot pollute it.
+    """
+    slept: list[float] = []
+    with _patched_sleep(side_effect=slept.append) as sleep_mock:
+        yield slept, sleep_mock
 
 
 def _prepared(cmd: list[str] | None = None):
@@ -80,6 +147,59 @@ def _isolated_cron_registries(monkeypatch):
     monkeypatch.setattr(cron, "_CANCELLED_PROC_JOBS", set())
     monkeypatch.setattr(cron, "_RUNNING_PROCS", {})
     yield cron
+
+
+class TestTheSleepPatchIsThreadHermetic:
+    """The retry tests rebind the clock on ``sandbox_rlimit`` only, so a sibling
+    xdist test sleeping on another thread keeps the REAL clock -- it must neither
+    land in the recorded durations nor lose its pacing. This is the flake the
+    helper exists to stop (a sibling's ``time.sleep(60)`` made ``slept ==
+    [0.25, 0.5]`` fail with stray 60.0 entries), and the spin a whole-worker
+    ``time.sleep`` patch would cause in a background thread it never meant to."""
+
+    def test_the_owner_threads_retry_sleeps_are_recorded(self):
+        # Driving the real retry path (not a bare time.sleep) proves the proxy is
+        # wired into the code under test: two transient ENOENTs then a success.
+        launched = MagicMock(name="Popen")
+        attempts = [_enoent(sys.executable), _enoent(sys.executable), launched]
+        with (
+            _recording_sleep() as (slept, _sleep_mock),
+            _prepared(),
+            patch.object(sandbox_mod.subprocess, "Popen", side_effect=attempts),
+        ):
+            assert sandbox_mod.popen_limited(["/bin/echo", "hi"]) is launched
+        assert slept == list(_INTERPRETER_ENOENT_DELAYS[:2])
+
+    def test_a_sibling_threads_sleep_does_not_pollute_the_recorded_durations(self):
+        # A sibling thread reaching the SAME patched binding keeps the real clock
+        # and must not land in `slept` -- exactly as another xdist test's sleep
+        # on another thread would not. The sibling goes through the proxy's own
+        # sleep (the yielded mock), never a bare time.sleep literal.
+        with _recording_sleep() as (slept, sleep_mock):
+
+            def _sibling() -> None:
+                for _ in range(3):
+                    sleep_mock(0.0)
+
+            other = threading.Thread(target=_sibling)
+            other.start()
+            other.join()
+
+            # An owner-thread sleep still records.
+            sleep_mock(0.25)
+
+        assert slept == [0.25]
+
+    def test_the_stdlib_time_module_keeps_its_real_sleep(self):
+        """The rebind goes through the facade's ``time`` NAME, so the stdlib
+        ``time`` module is never mutated -- no other module or thread reads a
+        fake clock. Reverted on exit."""
+        real_sleep = _real_time.sleep
+        assert sandbox_mod.time is _real_time
+        with _patched_sleep():
+            assert _real_time.sleep is real_sleep  # stdlib module untouched
+            assert sandbox_mod.time is not _real_time  # facade name rebound
+        assert sandbox_mod.time is _real_time  # restored on exit
 
 
 class TestIsTransientInterpreterEnoent:
@@ -121,11 +241,10 @@ class TestPopenLimitedToleratesAnAbsentInterpreter:
                 raise outcome
             return outcome
 
-        slept: list[float] = []
         with (
+            _recording_sleep() as (slept, _sleep),
             _prepared([*_LAUNCHER_CMD, "--token", "sensitive-argv-value"]),
             patch.object(sandbox_mod.subprocess, "Popen", side_effect=fake_popen),
-            patch.object(sandbox_mod.time, "sleep", side_effect=slept.append),
         ):
             got = sandbox_mod.popen_limited(["/bin/echo", "hi"])
 
@@ -147,7 +266,7 @@ class TestPopenLimitedToleratesAnAbsentInterpreter:
         with (
             _prepared(),
             patch.object(sandbox_mod.subprocess, "Popen", side_effect=raised) as popen,
-            patch.object(sandbox_mod.time, "sleep"),
+            _patched_sleep(),
         ):
             with pytest.raises(FileNotFoundError) as caught:
                 sandbox_mod.popen_limited(["/bin/echo", "hi"])
@@ -164,7 +283,7 @@ class TestPopenLimitedToleratesAnAbsentInterpreter:
                 "Popen",
                 side_effect=_enoent("/nonexistent/workdir"),
             ) as popen,
-            patch.object(sandbox_mod.time, "sleep") as sleep,
+            _patched_sleep() as sleep,
         ):
             with pytest.raises(FileNotFoundError):
                 sandbox_mod.popen_limited(["/bin/echo", "hi"])
@@ -178,7 +297,7 @@ class TestPopenLimitedToleratesAnAbsentInterpreter:
             patch.object(
                 sandbox_mod.subprocess, "Popen", side_effect=PermissionError(13, "nope")
             ) as popen,
-            patch.object(sandbox_mod.time, "sleep") as sleep,
+            _patched_sleep() as sleep,
         ):
             with pytest.raises(PermissionError):
                 sandbox_mod.popen_limited(["/bin/echo", "hi"])
@@ -192,7 +311,7 @@ class TestPopenLimitedToleratesAnAbsentInterpreter:
         with (
             _prepared([missing, "--version"]),
             patch.object(sandbox_mod.subprocess, "Popen", side_effect=_enoent(missing)) as popen,
-            patch.object(sandbox_mod.time, "sleep") as sleep,
+            _patched_sleep() as sleep,
         ):
             with pytest.raises(FileNotFoundError):
                 sandbox_mod.popen_limited([missing, "--version"])
@@ -249,7 +368,7 @@ class TestAbortRetryClosesTheCancellationWindow:
         with (
             _prepared(),
             patch.object(sandbox_mod.subprocess, "Popen", side_effect=fake_popen),
-            patch.object(sandbox_mod.time, "sleep"),
+            _patched_sleep(),
         ):
             with pytest.raises(FileNotFoundError):
                 sandbox_mod.popen_limited(["/bin/echo", "hi"], abort_retry=lambda: True)
@@ -260,14 +379,18 @@ class TestAbortRetryClosesTheCancellationWindow:
 
     def test_without_abort_retry_the_budget_is_still_spent(self):
         """Negative control: the abort is what shortens it, not the ENOENT."""
+        launched = MagicMock(name="Popen")
         attempts = [_enoent(sys.executable)] * len(_INTERPRETER_ENOENT_DELAYS)
-        attempts.append(MagicMock(name="Popen"))
+        attempts.append(launched)
         with (
+            _recording_sleep() as (slept, _sleep),
             _prepared(),
-            patch.object(sandbox_mod.subprocess, "Popen", side_effect=attempts),
-            patch.object(sandbox_mod.time, "sleep"),
+            patch.object(sandbox_mod.subprocess, "Popen", side_effect=attempts) as popen,
         ):
-            sandbox_mod.popen_limited(["/bin/echo", "hi"])
+            assert sandbox_mod.popen_limited(["/bin/echo", "hi"]) is launched
+
+        assert popen.call_count == len(_INTERPRETER_ENOENT_DELAYS) + 1
+        assert slept == list(_INTERPRETER_ENOENT_DELAYS)
 
     def test_a_false_abort_retry_does_not_stop_the_retry(self):
         sentinel = MagicMock(name="Popen")
@@ -275,7 +398,7 @@ class TestAbortRetryClosesTheCancellationWindow:
         with (
             _prepared(),
             patch.object(sandbox_mod.subprocess, "Popen", side_effect=attempts),
-            patch.object(sandbox_mod.time, "sleep"),
+            _patched_sleep(),
         ):
             got = sandbox_mod.popen_limited(["/bin/echo", "hi"], abort_retry=lambda: False)
         assert got is sentinel
@@ -701,11 +824,10 @@ class TestRunLimitedToleratesAnAbsentInterpreter:
                 raise outcome
             return outcome
 
-        slept: list[float] = []
         with (
+            _recording_sleep() as (slept, _sleep),
             _prepared(),
             patch.object(sandbox_mod.subprocess, "run", side_effect=fake_run),
-            patch.object(sandbox_mod.time, "sleep", side_effect=slept.append),
         ):
             got = sandbox_mod.run_limited(["/bin/echo", "hi"])
 
@@ -721,7 +843,7 @@ class TestRunLimitedToleratesAnAbsentInterpreter:
         with (
             _prepared(),
             patch.object(sandbox_mod.subprocess, "run", side_effect=raised) as run,
-            patch.object(sandbox_mod.time, "sleep"),
+            _patched_sleep(),
         ):
             with pytest.raises(FileNotFoundError) as caught:
                 sandbox_mod.run_limited(["/bin/echo", "hi"])
@@ -735,7 +857,7 @@ class TestRunLimitedToleratesAnAbsentInterpreter:
             patch.object(
                 sandbox_mod.subprocess, "run", side_effect=_enoent("/nonexistent/workdir")
             ) as run,
-            patch.object(sandbox_mod.time, "sleep") as sleep,
+            _patched_sleep() as sleep,
         ):
             with pytest.raises(FileNotFoundError):
                 sandbox_mod.run_limited(["/bin/echo", "hi"])
@@ -748,7 +870,7 @@ class TestRunLimitedToleratesAnAbsentInterpreter:
         with (
             _prepared([missing, "--version"]),
             patch.object(sandbox_mod.subprocess, "run", side_effect=_enoent(missing)) as run,
-            patch.object(sandbox_mod.time, "sleep") as sleep,
+            _patched_sleep() as sleep,
         ):
             with pytest.raises(FileNotFoundError):
                 sandbox_mod.run_limited([missing, "--version"])
@@ -762,7 +884,7 @@ class TestRunLimitedToleratesAnAbsentInterpreter:
         with (
             _prepared(),
             patch.object(sandbox_mod.subprocess, "run", side_effect=exc),
-            patch.object(sandbox_mod.time, "sleep"),
+            _patched_sleep(),
         ):
             with pytest.raises(subprocess.CalledProcessError) as caught:
                 sandbox_mod.run_limited(["/bin/echo", "hi"])
@@ -810,7 +932,8 @@ class TestCreateSubprocessLimitedToleratesAnAbsentInterpreter:
     @pytest.mark.asyncio
     async def test_the_backoff_never_blocks_the_event_loop(self):
         """time.sleep here would freeze the gateway for ~3.75s -- the core hazard."""
-        attempts = [_enoent(sys.executable), MagicMock(name="Process")]
+        proc = MagicMock(name="Process")
+        attempts = [_enoent(sys.executable), proc]
 
         async def fake_exec(*_args, **_kwargs):
             outcome = attempts.pop(0)
@@ -818,16 +941,21 @@ class TestCreateSubprocessLimitedToleratesAnAbsentInterpreter:
                 raise outcome
             return outcome
 
-        async def fake_sleep(_d):
-            return None
+        slept: list[float] = []
+
+        async def fake_sleep(d):
+            slept.append(d)
 
         with (
             self._shimmed(),
             patch.object(sandbox_mod.asyncio, "create_subprocess_exec", side_effect=fake_exec),
             patch.object(sandbox_mod.asyncio, "sleep", side_effect=fake_sleep),
-            patch.object(sandbox_mod.time, "sleep") as blocking,
+            _patched_sleep() as blocking,
         ):
-            await sandbox_mod.create_subprocess_limited("/bin/echo", "hi")
+            got = await sandbox_mod.create_subprocess_limited("/bin/echo", "hi")
+
+        assert got is proc
+        assert slept == list(_INTERPRETER_ENOENT_DELAYS[:1])
 
         blocking.assert_not_called()
 
@@ -1003,7 +1131,7 @@ class TestTheStrictShellProbeNoLongerLatchesOnABlip:
             patch.object(cron, "cgroup_scope_argv", side_effect=lambda a: a),
             patch.object(cron, "_clean_cron_env", return_value={}),
             patch.object(sandbox_mod.subprocess, "run", side_effect=fake_run),
-            patch.object(sandbox_mod.time, "sleep"),
+            _patched_sleep(),
         ):
             got = cron._shell_is_posix_strict(shell)
 
@@ -1030,7 +1158,7 @@ class TestTheStrictShellProbeNoLongerLatchesOnABlip:
             patch.object(cron, "_clean_cron_env", return_value={}),
             patch.object(sandbox_mod, "_INTERPRETER_ENOENT_DELAYS", ()),
             patch.object(sandbox_mod.subprocess, "run", side_effect=_enoent(sys.executable)),
-            patch.object(sandbox_mod.time, "sleep"),
+            _patched_sleep(),
         ):
             got = cron._shell_is_posix_strict(shell)
 
@@ -1104,7 +1232,7 @@ class TestACancelDuringTheShellProbeIsNotLost:
             patch.object(cron, "_clean_cron_env", return_value={}),
             patch.object(cron.os.path, "isfile", return_value=True),
             patch.object(sandbox_mod.subprocess, "run", side_effect=fake_run),
-            patch.object(sandbox_mod.time, "sleep", side_effect=lambda _d: on_backoff()),
+            _patched_sleep(side_effect=lambda _d: on_backoff()),
         )
 
     @pytest.mark.skipif(

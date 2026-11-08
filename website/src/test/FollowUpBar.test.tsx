@@ -189,6 +189,18 @@ describe('FollowUpBar', () => {
       expect(screen.getByRole('tooltip').textContent).toMatch(/double-click/i)
     })
 
+    it('opens the chip tooltip below, off an approval card that sits above the chips', () => {
+      render(<FollowUpBar options={['Go']} picked={new Set()} onSelect={() => {}} onSend={() => {}} />)
+      // Mid-screen, so 'above' would fit and only the chosen side decides.
+      const chip = screen.getByRole('button', { name: 'Go' })
+      const rect = { top: 400, bottom: 420, left: 10, right: 60, width: 50, height: 20, x: 10, y: 400, toJSON: () => ({}) } as DOMRect
+      const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue(rect)
+      chip.getClientRects = () => [rect] as unknown as DOMRectList
+      fireEvent.focus(chip)
+      expect(screen.getByRole('tooltip')).toHaveAttribute('data-placement', 'below')
+      spy.mockRestore()
+    })
+
     it('names the ↑ send segment in the tooltip hint when the segment is visible', () => {
       // The click/double-click sentence never mentioned the visible arrow, so a
       // first-time reader could not tell "where the safe click ends and the

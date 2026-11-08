@@ -43,7 +43,7 @@ ALLOWED_KINDS = frozenset(
         "svg",  # standalone svg
         "json",  # structured data
         "text",  # plain text
-        "image",  # generated image (source_path points to PNG/JPEG)
+        "image",  # raster image; create_image stores its bytes in an asset.<ext> sidecar
         "webapp",  # a deployed web application; rendered as an infra control card
         # A dynamic dashboard's LAYOUT package -- bound_to / model / view / theme
         # as JSON, never values. Validated on every write by
@@ -536,6 +536,10 @@ def _markdown_misclassification_reason(content: str, source_path: str) -> str | 
 
 
 def _validate_source(source: str) -> str:
+    # Checked first: a list or object is unhashable, so the set lookup below
+    # would raise TypeError instead of the validation error callers map to 400.
+    if not isinstance(source, str):
+        raise ArtifactValidationError(f"source must be str, got {type(source).__name__}")
     if source not in ALLOWED_SOURCES:
         raise ArtifactValidationError(
             f"invalid source {source!r}: must be one of {sorted(ALLOWED_SOURCES)}"

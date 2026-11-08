@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 
 from .store_issues import _read_list_snapshot
 from .store_repos import repo_data_dir
@@ -65,7 +65,7 @@ def _pulls_cache_lock(owner: str, repo: str, root: Path | None, state: str):
     path = pulls_cache_path(owner, repo, root, state)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(".json.lock")
-    lock_path.touch(exist_ok=True)
+    lock_path.touch(mode=0o600, exist_ok=True)
     with open(lock_path, "r+") as fd:
         with platform_compat.file_lock(fd.fileno(), exclusive=True):
             yield
@@ -115,8 +115,8 @@ def read_pulls_cache(
     if not path.is_file():
         return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict) or data.get("schema") != PULLS_CACHE_SCHEMA:
         return None
@@ -148,8 +148,8 @@ def apply_pr_checks_to_list_cache(
         # full refresh cannot be clobbered by this partial update (or vice versa).
         with _pulls_cache_lock(owner, repo, root, state):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, FileNotFoundError):
+                data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError, FileNotFoundError):
                 continue
             if not isinstance(data, dict) or data.get("schema") != PULLS_CACHE_SCHEMA:
                 continue
@@ -200,8 +200,8 @@ def apply_pr_state_change_to_caches(
     if path.is_file():
         with _pulls_cache_lock(owner, repo, root, leaving):
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, FileNotFoundError):
+                data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError, FileNotFoundError):
                 data = None
             if isinstance(data, dict) and data.get("schema") == PULLS_CACHE_SCHEMA:
                 rows = data.get("pulls") or []
@@ -346,8 +346,8 @@ def read_pr_detail_cache(
         except OSError:
             return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if not isinstance(data, dict) or data.get("schema") != PR_DETAIL_CACHE_SCHEMA:
         return None

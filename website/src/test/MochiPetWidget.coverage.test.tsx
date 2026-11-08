@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => {
     dragEnd: vi.fn(),
     dragMouseup: vi.fn(),
     reportWalkDistance: vi.fn(),
+    petReady: vi.fn(),
     // ── subscriptions ──
     onSetActive: on('setActive'),
     onDisplaysInfo: on('displaysInfo'),
@@ -80,7 +81,8 @@ const mocks = vi.hoisted(() => {
       ;(cb as (...a: unknown[]) => void)(...args)
     }
   }
-  return { api, emit, clearListeners: () => listeners.clear() }
+  const listenerCount = (event: string) => listeners.get(event)?.size ?? 0
+  return { api, emit, listenerCount, clearListeners: () => listeners.clear() }
 })
 
 vi.mock('../apps/mochi/src/mochiApi', () => ({ api: mocks.api }))
@@ -126,7 +128,7 @@ async function tick(ms = 0): Promise<void> {
  */
 async function mountActive(): Promise<void> {
   render(<PetWidget />)
-  // 300ms saved-position read (useDrag) + 500ms activation fallback (useDisplayActivation).
+  // Past the 300ms saved-position read (useDrag).
   await tick(600)
   await act(async () => { mocks.emit('setActive', true) })
 }
@@ -168,6 +170,16 @@ describe('PetWidget overlay activation', () => {
 
     await act(async () => { mocks.emit('setActive', true, 300, 400, false) })
     expect(container.querySelector('img')).not.toBeNull()
+  })
+
+  it('asks the main process for its activation once its listener is mounted', async () => {
+    const listeningAtReady: number[] = []
+    api.petReady.mockImplementation(() => {
+      listeningAtReady.push(mocks.listenerCount('setActive'))
+    })
+    render(<PetWidget />)
+    await tick(0)
+    expect(listeningAtReady).toEqual([1])
   })
 
   it('unmounts the pet again when the overlay is deactivated', async () => {

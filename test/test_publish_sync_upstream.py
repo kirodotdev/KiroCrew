@@ -503,7 +503,6 @@ async def test_upstream_status_reports_local_ahead_on_wrapper_revision_bump(
     """Widget with stale wrapper_revision shows local_ahead even if content hasn't changed."""
     art = store.create(name="W", content="<p>x</p>", kind="widget")
     _track_publication(store, art.slug)
-    # Simulate wrapper bump.
     monkeypatch.setattr(publish_sync, "WRAPPER_REVISION", publish_sync.WRAPPER_REVISION + 1)
     fake_client.get_response = _remote_get(tmp_path, "ignored", version=1, sha="sha-v1")
     status = await publish_sync.upstream_status(art.slug)

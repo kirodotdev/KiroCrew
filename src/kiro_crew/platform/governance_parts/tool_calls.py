@@ -165,11 +165,13 @@ def classify_tool_title(tool_name: str) -> Tuple[Tuple[str, str], ...]:
 
     * ``mcp__…`` → ``("mcp", "@server/tool")`` — the headline case.
     * ``Running: <cmd>`` → ``("commands", "<cmd>")``.
-    * ``Reading <path>`` → ``("filesystem.read", "<path>")`` — kiro-cli's
-      file-read tool title carries the path after the prefix, so the path
-      ScopedRuleset (deny-oriented read block) applies at the name gate.  An
-      ungoverned ``filesystem.read`` scope permits (the standalone default), so
-      this is a no-op unless a policy/profile governs read paths.
+    * ``Reading <rest>`` → ``("filesystem.read", "<rest>")`` — kiro-cli's
+      file-read title names the target after the prefix (a path, a file name
+      with a line range, or a label such as ``listing workspace``), and the path
+      ScopedRuleset applies to it at the name gate.  An ungoverned
+      ``filesystem.read`` scope permits (the standalone default), so this is a
+      no-op unless a policy/profile governs read paths.  ``gate_decision`` drops
+      this pair when the call's arguments name the read path.
     * unprefixed → BOTH ``("commands", <title>)`` and ``("tools", <title>)`` —
       whichever scope the operator actually governs applies; the other is a
       no-op (an ungoverned scope permits).
@@ -231,6 +233,16 @@ _UNANCHORED_TARGET_ITEM = "\x00<governance:edit-target-unanchored-unverifiable>"
 #: BESIDE the literal guest path, not instead of it: a deny is still checked against
 #: the path the guest opens, and an allow-mode confinement additionally refuses.
 _GUEST_UNVERIFIABLE_ITEM = "\x00<governance:guest-target-unverifiable>"
+
+
+#: Same never-permittable construction, for a scope a proven host built-in is
+#: judged in (``gate_decision``'s ``own_scopes``) whose arguments name no target
+#: there: a pathless ``grep`` searches a directory the gate cannot see. An
+#: allow-mode confinement refuses it; a deny-mode or ungoverned scope permits it.
+#: Absolute on purpose: the path matcher anchors a relative item at the gateway's
+#: working directory, which would put a relative marker inside a workspace
+#: allow-prefix whenever the gateway runs there.
+_NO_TARGET_ITEM = "/\x00<governance:own-scope-target-absent-unverifiable>"
 
 
 def _governed_targets(
@@ -302,7 +314,8 @@ def classify_tool_args(
       ``_UNANCHORED_TARGET_ITEM`` (see below) instead of a path.
     * ``kind == "read"`` with a path argument →
       ``("filesystem.read", "<path>")``
-      (redundant with the ``Reading`` title path, harmless — both must permit).
+      (``gate_decision`` judges the read on it in place of the ``Reading``
+      title's pair).
     * ``kind == "fetch"`` with a ``url`` → ``("network.egress", "<host>")`` —
       the host is extracted from the URL so the ``host`` matcher applies.
 

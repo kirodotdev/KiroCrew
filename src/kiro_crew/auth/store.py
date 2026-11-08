@@ -19,9 +19,12 @@ concern, not reimplemented here.
 from __future__ import annotations
 
 import enum
+import hashlib
 import json
 import logging
 import os
+import secrets
+import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -49,6 +52,16 @@ _PRIORITY = ("external_idp", "builder_id", "identity_center", "social")
 #: kind before handing it to the store (the same tuple, public name).
 KNOWN_IDENTITIES: tuple[str, ...] = _PRIORITY
 
+#: Refresh refusals this process saw: (vault dir, slot) -> digest of the refused
+#: refresh token. Kept apart from the marker file so a write that fails still
+#: leaves the refusal visible here (:meth:`TokenStore.refused_in_process`).
+_REFUSED_IN_PROCESS: dict[tuple[str, str], str] = {}
+_REFUSED_LOCK = threading.Lock()
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
 
 class SocialProvider(enum.Enum):
     """Social login provider, spelled as the Kiro auth service expects on the wire."""
@@ -64,7 +77,8 @@ class KasToken:
     ``provider`` is the governance classification KAS keys off — one of
     ``BuilderId`` / ``Google`` / ``Github`` / ``Enterprise`` / ``ExternalIdp`` /
     ``Internal``. ``profile_arn`` is mandatory for enterprise/IdC identities and feeds
-    the ``X-Kiro-Profile-Arn`` header; social/Builder ID may omit it.
+    the ``X-Kiro-Profile-Arn`` header. Builder ID stores none (it has no profile to
+    look up); the engine is given a fixed one, :func:`kiro_crew.auth.provider.kas_profile_arn`.
     """
 
     access_token: str
@@ -78,6 +92,7 @@ class KasToken:
     # IdC refresh needs the dynamically-registered client credentials.
     client_id: str | None = None
     client_secret: str | None = None
+    client_secret_expires_at: int | None = None  # RegisterClient's, epoch seconds
     token_endpoint: str | None = None  # external_idp refresh
     extra: dict = field(default_factory=dict)
 
@@ -224,6 +239,44 @@ class TokenStore:
         make_owner_only_dir(self._kas_dir)
         return self._kas_dir / f"refresh-{identity}.lock"
 
+    def signout_lock_path(self) -> Path:
+        """Path to the store-wide sign-out lock (owner-only ``kas`` dir).
+
+        One lock for the whole store, taken OUTSIDE any identity's refresh lock:
+        a sign-out holds it across every slot's delete and the generation bump,
+        and a login holds it across its generation compare and its save, so the
+        two cannot interleave between the compare and the write. Order is always
+        sign-out lock, then an identity's refresh lock, never the reverse.
+        """
+        self._assert_unlinked()
+        make_owner_only_dir(self._kas_dir)
+        return self._kas_dir / "signout.lock"
+
+    def with_signout_lock(self, action: Callable[[], None]) -> None:
+        """Run ``action`` while holding the store-wide sign-out lock.
+
+        Same flock discipline as :meth:`_with_refresh_lock`; lock failures are
+        ``TokenStoreError``. ``action`` may take identity refresh locks inside
+        (``save`` and ``delete`` do), never the other way round.
+        """
+        try:
+            from kiro_crew.platform_compat import open_create_or_existing
+
+            fd = open_create_or_existing(str(self.signout_lock_path()), os.O_RDWR, 0o600)
+        except OSError as err:
+            raise TokenStoreError("could not take the sign-out lock") from err
+        try:
+            try:
+                acquire_lock(fd, exclusive=True)
+            except OSError as err:
+                raise TokenStoreError("could not take the sign-out lock") from err
+            try:
+                action()
+            finally:
+                release_lock(fd)
+        finally:
+            os.close(fd)
+
     def _with_refresh_lock(self, identity: str, action: Callable[[], None]) -> None:
         """Run ``action`` while holding the identity's refresh lock (:meth:`lock_path`).
 
@@ -235,7 +288,9 @@ class TokenStore:
         rather than proceeding unserialized); lock failures are ``TokenStoreError``.
         """
         try:
-            fd = os.open(str(self.lock_path(identity)), os.O_RDWR | os.O_CREAT, 0o600)
+            from kiro_crew.platform_compat import open_create_or_existing
+
+            fd = open_create_or_existing(str(self.lock_path(identity)), os.O_RDWR, 0o600)
         except OSError as err:
             raise TokenStoreError(f"could not take the refresh lock for {identity}") from err
         try:
@@ -384,14 +439,20 @@ class TokenStore:
             # not be removed is a stale diagnostic, not a failed operation.
             logger.debug("could not clear refresh-rejected marker for %s", identity, exc_info=True)
 
-    def mark_refresh_rejected(self, identity: str) -> None:
+    def mark_refresh_rejected(self, identity: str, refresh_token: str | None = None) -> None:
         """Record that the issuer refused this identity's refresh token.
 
         Called by the refresher from inside the identity's refresh lock, so it needs
-        no lock of its own. Best-effort: a marker that cannot be written costs the
-        dashboard its explicit "expired" wording, not the refusal itself, which the
-        caller still raises. Never raises.
+        no lock of its own. Given *refresh_token* (the refused one), the refusal is
+        also kept in this process's memory BEFORE the marker is written, so a check
+        in this process (:meth:`refused_in_process`) still sees it when the write
+        fails (a full disk). The marker file is best-effort: one that cannot be
+        written costs other processes the refusal's wording, not the refusal itself,
+        which the caller still raises. Never raises.
         """
+        if refresh_token:
+            with _REFUSED_LOCK:
+                _REFUSED_IN_PROCESS[(str(self._kas_dir), identity)] = _digest(refresh_token)
         try:
             path = self._refresh_rejected_path(identity)  # ValueError for an unknown kind
             self._assert_unlinked()
@@ -399,6 +460,34 @@ class TokenStore:
             path.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
         except (OSError, TokenStoreError, ValueError):
             logger.debug("could not record refresh-rejected marker for %s", identity, exc_info=True)
+
+    def refused_in_process(self, token: KasToken) -> bool:
+        """Did THIS process see the issuer refuse *token*'s refresh token?
+
+        Keyed on a digest of the refused refresh token, so a new sign-in in the
+        slot (another refresh token, saved by any process) is never read as refused.
+        """
+        if not token.refresh_token:
+            return False
+        with _REFUSED_LOCK:
+            refused = _REFUSED_IN_PROCESS.get((str(self._kas_dir), token.identity))
+        return refused is not None and secrets.compare_digest(refused, _digest(token.refresh_token))
+
+    def refresh_rejected_strict(self, identity: str) -> datetime | None:
+        """Like :meth:`refresh_rejected`, but a marker it cannot read RAISES.
+
+        For a fail-closed reader (the enterprise gate): only a marker that is not
+        there is "not refused". A marker that exists but cannot be parsed still
+        records a refusal, so it answers now.
+        """
+        try:
+            raw = self._refresh_rejected_path(identity).read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return None
+        try:
+            return _parse_dt(raw)
+        except ValueError:
+            return datetime.now(timezone.utc)
 
     def refresh_rejected(self, identity: str) -> datetime | None:
         """When the issuer last refused this identity's refresh token, or ``None``.
@@ -414,6 +503,89 @@ class TokenStore:
             return _parse_dt(raw)
         except ValueError:
             return None
+
+    # ── sign-out generation: one marker every process that empties the vault bumps ──
+
+    def _signout_generation_path(self) -> Path:
+        return self._kas_dir / "signed-out"
+
+    def signout_generation(self) -> str:
+        """An opaque value that changes on every sign-out, ``""`` before the first.
+
+        A login reads it when it begins and again, under :meth:`with_signout_lock`,
+        right before it persists its credential
+        (:meth:`KasLoginService._persist_and_finish`); a different value means a
+        sign-out landed in between -- from ANY process on this host, the gateway's
+        own sign-out or a ``kirocrew kas logout`` in a shell -- and the credential
+        must not be written into the vault that sign-out just emptied. The gateway's
+        in-memory epoch covers only its own pending logins; this is the same guard
+        across processes. An unreadable marker reads as ``""``, so a login that began
+        before the marker existed still refuses once one is written.
+        """
+        try:
+            return self._signout_generation_path().read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            return ""
+
+    def bump_signout_generation(self) -> None:
+        """Record a sign-out so a login begun before it refuses to persist.
+
+        Called by every sign-out path after the slots are deleted, inside
+        :meth:`with_signout_lock`. NOT best-effort, unlike the refresh-rejected
+        marker: the marker IS the fence that keeps a login pending in another
+        process from re-filling the vault this sign-out emptied, so a marker that
+        cannot be written raises ``TokenStoreError`` and the sign-out reports
+        failure -- the slots are already gone, but "signed out" must not be
+        published while a pending approval can still undo it. A fresh random
+        value rather than a counter, so two processes bumping at once cannot land
+        on one value a pending login already read.
+        """
+        try:
+            self._assert_unlinked()
+            make_owner_only_dir(self._kas_dir)
+            self._signout_generation_path().write_text(secrets.token_hex(16), encoding="utf-8")
+        except OSError as err:
+            raise TokenStoreError("could not record the sign-out generation") from err
+
+    # ── sign-in generation: one marker every completed sign-in bumps ──
+
+    def _signin_generation_path(self) -> Path:
+        return self._kas_dir / "signed-in"
+
+    def signin_generation(self) -> str:
+        """An opaque value that changes on every completed sign-in, ``""`` before the first.
+
+        Folded into the vault's identity fingerprint
+        (:func:`kiro_crew.auth.bridge.vault_identity_claims`). Two accounts of the
+        same kind can come back with the same ``profileArn``, so none of the
+        fingerprinted claims tells them apart; this marker does, because every
+        sign-in writes a new value and a token refresh writes none. An unreadable
+        marker reads as ``""``.
+        """
+        try:
+            return self._signin_generation_path().read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            return ""
+
+    def bump_signin_generation(self) -> None:
+        """Record a completed sign-in, so the fingerprint reads it as an account change.
+
+        Called by the login service right before it saves the new credential,
+        inside :meth:`with_signout_lock`. A same-account re-sign-in bumps it too:
+        the model catalog then goes cold and the session sweep retires once,
+        which is the safe answer when the server cannot say which account it is.
+        A fresh random value rather than a counter, like
+        :meth:`bump_signout_generation`. NOT best-effort: raises
+        ``TokenStoreError`` when the marker cannot be written, and the login then
+        fails before the credential is saved, because a saved sign-in the
+        fingerprint cannot see would keep serving the previous account's state.
+        """
+        try:
+            self._assert_unlinked()
+            make_owner_only_dir(self._kas_dir)
+            self._signin_generation_path().write_text(secrets.token_hex(16), encoding="utf-8")
+        except OSError as err:
+            raise TokenStoreError("could not record the sign-in generation") from err
 
     def resolve(self) -> KasToken | None:
         """Return the highest-priority stored token (External > Builder > Social).
@@ -450,3 +622,22 @@ class TokenStore:
             return True
         stored = set(self._vault.list_names())
         return not any(identity in stored for identity in _PRIORITY)
+
+    def write_stamp(self) -> str:
+        """An opaque value that changes whenever the vault file is rewritten.
+
+        One ``stat`` of ``secrets.enc``; nothing is read or decrypted, so it is
+        cheap enough to call on every dashboard poll. Every write is an atomic
+        replace, so a sign-in, a refresh that persisted a token, and a sign-out
+        each yield a new inode and a new value. ``"absent"`` when the file does
+        not exist; ``""`` when it could not be examined (unknown, and stable, so
+        a caller comparing two unknowns sees no change rather than churning).
+        """
+        try:
+            self._assert_unlinked()
+            st = os.stat(self._vault._store_path)
+        except FileNotFoundError:
+            return "absent"
+        except (OSError, TokenStoreError):
+            return ""
+        return f"{st.st_dev}:{st.st_ino}:{st.st_size}:{st.st_mtime_ns}"

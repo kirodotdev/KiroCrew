@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from pathlib import Path
 from unittest import mock
 
@@ -22,9 +23,12 @@ from meetings_helpers import (  # noqa: F401
     root_fixture,
 )
 
+from kiro_crew import llm_helpers
+from kiro_crew.apps import agent_turn_sdk
 from kiro_crew.apps.builtins.meetings.backend import constants as k
 from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
+from kiro_crew.apps.builtins.meetings.backend.domain.translate import TranslationQueue
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -93,17 +97,17 @@ class TestAgentQueue:
     @pytest.mark.asyncio
     async def test_flush_joins_and_clears(self):
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager)
+        queue = sess.AgentQueue(name="n", key="meetings-k", agent="a", sessions=manager)
         queue.queue = ["line one", "line two"]
         await queue.flush()
-        assert manager.calls == [("k", "a", "line one\n\nline two")]
+        assert manager.calls == [("meetings-k", "a", "line one\n\nline two")]
         assert queue.queue == []
-        assert manager.released == ["k"]
+        assert manager.released == ["meetings-k"]
 
     @pytest.mark.asyncio
     async def test_flush_skips_when_busy(self):
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", sessions=manager)
+        queue = sess.AgentQueue(name="n", key="meetings-k", sessions=manager)
         queue.queue = ["text"]
         queue.busy = True
         await queue.flush()
@@ -113,7 +117,7 @@ class TestAgentQueue:
     @pytest.mark.asyncio
     async def test_timer_flush_defers_while_kickoff_is_initializing(self):
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", sessions=manager)
+        queue = sess.AgentQueue(name="n", key="meetings-k", sessions=manager)
         queue.queue = ["direct message"]
         queue._initializing = True
 
@@ -125,13 +129,13 @@ class TestAgentQueue:
     @pytest.mark.asyncio
     async def test_flush_noop_when_empty(self):
         manager = FakeSessionManager()
-        await sess.AgentQueue(name="n", key="k", sessions=manager).flush()
+        await sess.AgentQueue(name="n", key="meetings-k", sessions=manager).flush()
         assert manager.calls == []
 
     @pytest.mark.asyncio
     async def test_batch_char_cap(self):
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", sessions=manager)
+        queue = sess.AgentQueue(name="n", key="meetings-k", sessions=manager)
         queue.queue = ["x" * (k.MAX_BATCH_CHARS + 1000)]
         await queue.flush()
         assert len(manager.calls[0][2]) == k.MAX_BATCH_CHARS
@@ -139,7 +143,7 @@ class TestAgentQueue:
     @pytest.mark.asyncio
     async def test_breaker_trips_after_max_failures(self):
         manager = FakeSessionManager(fail=True)
-        queue = sess.AgentQueue(name="n", key="k", sessions=manager, batch_interval=0)
+        queue = sess.AgentQueue(name="n", key="meetings-k", sessions=manager, batch_interval=0)
         for _ in range(k.MAX_DISPATCH_FAILURES):
             queue.queue = ["text"]
             await queue.flush()
@@ -153,7 +157,7 @@ class TestAgentQueue:
     @pytest.mark.asyncio
     async def test_backoff_grows_then_caps(self):
         manager = FakeSessionManager(fail=True)
-        queue = sess.AgentQueue(name="n", key="k", sessions=manager, batch_interval=0)
+        queue = sess.AgentQueue(name="n", key="meetings-k", sessions=manager, batch_interval=0)
         seen: list[float] = []
         for _ in range(k.MAX_DISPATCH_FAILURES):
             queue.queue = ["text"]
@@ -163,7 +167,7 @@ class TestAgentQueue:
         assert seen[-1] <= k.BACKOFF_CAP_SECS
 
     def test_resume_resets_breaker_but_preserves_kickoff_attempts(self):
-        queue = sess.AgentQueue(name="n", key="k")
+        queue = sess.AgentQueue(name="n", key="meetings-k")
         queue._fail_count = k.MAX_DISPATCH_FAILURES
         queue._backoff = 120.0
         queue._kickoff_attempts = 2
@@ -175,10 +179,10 @@ class TestAgentQueue:
     @pytest.mark.asyncio
     async def test_flush_now_forces_dispatch(self):
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager)
+        queue = sess.AgentQueue(name="n", key="meetings-k", agent="a", sessions=manager)
         queue.queue = ["urgent"]
         await queue.flush_now()
-        assert manager.calls == [("k", "a", "urgent")]
+        assert manager.calls == [("meetings-k", "a", "urgent")]
 
     @pytest.mark.asyncio
     async def test_forced_drain_skips_pending_kickoff_and_rearms_timer(
@@ -226,7 +230,8 @@ class TestAgentQueue:
 
         provider = HangingProvider()
 
-        async def get_or_create(_key: str, agent: str | None = None, **_kwargs):
+        async def get_or_create(key: str, agent: str | None = None, **_kwargs):
+            manager.agents[key] = agent or ""
             return provider, True, False
 
         manager.get_or_create = get_or_create  # type: ignore[method-assign]
@@ -256,7 +261,9 @@ class TestAgentQueue:
     @pytest.mark.asyncio
     async def test_flush_soon_replaces_the_sleeping_batch_timer(self):
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager, batch_interval=60)
+        queue = sess.AgentQueue(
+            name="n", key="meetings-k", agent="a", sessions=manager, batch_interval=60
+        )
         queue.enqueue("meeting opening")
         sleeping = queue._flush_task
         assert sleeping is not None
@@ -266,7 +273,7 @@ class TestAgentQueue:
         assert queue._flush_task is not sleeping
         assert queue._flush_task is not None
         await await_until(queue._flush_task, what="the batch flush task")
-        assert manager.calls == [("k", "a", "meeting opening")]
+        assert manager.calls == [("meetings-k", "a", "meeting opening")]
         assert queue.queue == []
 
     @pytest.mark.asyncio
@@ -281,7 +288,9 @@ class TestAgentQueue:
                 await release.wait()
             delivered.append(text)
 
-        queue = sess.AgentQueue(name="n", key="k", sessions=FakeSessionManager(), batch_interval=60)
+        queue = sess.AgentQueue(
+            name="n", key="meetings-k", sessions=FakeSessionManager(), batch_interval=60
+        )
         queue.queue = ["turn already running"]
         with mock.patch.object(sess, "dispatch_to_agent", slow_dispatch):
             queue.flush_soon()
@@ -314,7 +323,9 @@ class TestAgentQueue:
             started.set()
             await release.wait()
 
-        queue = sess.AgentQueue(name="n", key="k", sessions=FakeSessionManager(), batch_interval=60)
+        queue = sess.AgentQueue(
+            name="n", key="meetings-k", sessions=FakeSessionManager(), batch_interval=60
+        )
         queue.queue = ["live turn"]
         monkeypatch.setattr(sess.asyncio, "sleep", controlled_sleep)
         with mock.patch.object(sess, "dispatch_to_agent", slow_dispatch):
@@ -334,7 +345,7 @@ class TestAgentQueue:
 
     @pytest.mark.asyncio
     async def test_no_session_manager_is_a_dispatch_failure(self):
-        queue = sess.AgentQueue(name="n", key="k", sessions=None, batch_interval=0)
+        queue = sess.AgentQueue(name="n", key="meetings-k", sessions=None, batch_interval=0)
         queue.queue = ["text"]
         await queue.flush()
         assert queue.fail_count == 1
@@ -342,7 +353,7 @@ class TestAgentQueue:
 
     def test_enqueue_off_loop_does_not_raise(self):
         # A sync context has no running loop; enqueue must still record the line.
-        queue = sess.AgentQueue(name="n", key="k")
+        queue = sess.AgentQueue(name="n", key="meetings-k")
         queue.enqueue("line")
         assert queue.queue == ["line"]
 
@@ -355,7 +366,7 @@ class TestAgentQueue:
         transcript — notes that skip the end of what was said, with no error.
         """
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager)
+        queue = sess.AgentQueue(name="n", key="meetings-k", agent="a", sessions=manager)
         # Three lines, each just over half the cap: only the first can fit.
         line = "x" * (k.MAX_BATCH_CHARS // 2 + 10)
         queue.queue = [line, line, line]
@@ -371,7 +382,7 @@ class TestAgentQueue:
     async def test_a_single_oversized_line_is_consumed_not_requeued(self):
         """Keeping an un-sendable line forever would wedge the queue."""
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager)
+        queue = sess.AgentQueue(name="n", key="meetings-k", agent="a", sessions=manager)
         queue.queue = ["y" * (k.MAX_BATCH_CHARS + 500)]
 
         await queue.flush()
@@ -398,7 +409,7 @@ class TestAgentQueue:
             delivered.append(text)
 
         queue = sess.AgentQueue(
-            name="n", key="k", agent="a", sessions=FakeSessionManager(), batch_interval=0
+            name="n", key="meetings-k", agent="a", sessions=FakeSessionManager(), batch_interval=0
         )
         queue.queue = ["spoken before the stop"]
         with mock.patch.object(sess, "dispatch_to_agent", slow_dispatch):
@@ -424,7 +435,9 @@ class TestAgentQueue:
         """
         manager = FakeSessionManager()
         line = "x" * (k.MAX_BATCH_CHARS // 2 + 10)  # two lines cannot share a batch
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager, batch_interval=0)
+        queue = sess.AgentQueue(
+            name="n", key="meetings-k", agent="a", sessions=manager, batch_interval=0
+        )
         queue.queue = [line, line, line]
 
         await _finished(queue.flush_now(), "the full drain")
@@ -443,7 +456,9 @@ class TestAgentQueue:
         exists to prevent, reached through the guard meant to bound it.
         """
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager, batch_interval=0)
+        queue = sess.AgentQueue(
+            name="n", key="meetings-k", agent="a", sessions=manager, batch_interval=0
+        )
         queue.queue = ["first line"]
 
         # Fail the first dispatch, then recover — the transient case.
@@ -473,7 +488,9 @@ class TestAgentQueue:
         which is why it carries a timeout.
         """
         manager = FakeSessionManager(fail=True)
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager, batch_interval=0)
+        queue = sess.AgentQueue(
+            name="n", key="meetings-k", agent="a", sessions=manager, batch_interval=0
+        )
         queue.queue = ["never lands"]
 
         await _finished(queue.flush_now(), "the drain with permanent failure")
@@ -493,7 +510,9 @@ class TestAgentQueue:
         """
         manager = FakeSessionManager()
         line = "x" * (k.MAX_BATCH_CHARS // 2 + 10)
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager, batch_interval=0)
+        queue = sess.AgentQueue(
+            name="n", key="meetings-k", agent="a", sessions=manager, batch_interval=0
+        )
         queue.queue = [line, line, line]
 
         queue._schedule_flush()
@@ -510,7 +529,7 @@ class TestAgentQueue:
             raise RuntimeError("dispatch down")
 
         queue = sess.AgentQueue(
-            name="n", key="k", agent="a", sessions=FakeSessionManager(), batch_interval=0
+            name="n", key="meetings-k", agent="a", sessions=FakeSessionManager(), batch_interval=0
         )
         queue.queue = ["a", "b"]
         with mock.patch.object(sess, "dispatch_to_agent", boom):
@@ -527,7 +546,9 @@ class TestAgentQueue:
         would mean "flush in 30 seconds".
         """
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager, batch_interval=30)
+        queue = sess.AgentQueue(
+            name="n", key="meetings-k", agent="a", sessions=manager, batch_interval=30
+        )
         queue.enqueue("line")
         sleeping_task = queue._flush_task
         assert sleeping_task is not None
@@ -536,18 +557,18 @@ class TestAgentQueue:
         # The sleeping timer task must be cancelled, not completed: flush_now
         # aborts the wait rather than letting the 30 s interval run.
         assert sleeping_task.cancelled(), "flush_now waited out the timer instead of cancelling it"
-        assert manager.calls == [("k", "a", "line")]
+        assert manager.calls == [("meetings-k", "a", "line")]
 
     @pytest.mark.asyncio
     async def test_a_batch_under_the_cap_still_takes_everything(self):
         """The common path is unchanged: normal traffic flushes in one batch."""
         manager = FakeSessionManager()
-        queue = sess.AgentQueue(name="n", key="k", agent="a", sessions=manager)
+        queue = sess.AgentQueue(name="n", key="meetings-k", agent="a", sessions=manager)
         queue.queue = ["one", "two", "three"]
 
         await queue.flush()
 
-        assert manager.calls == [("k", "a", "one\n\ntwo\n\nthree")]
+        assert manager.calls == [("meetings-k", "a", "one\n\ntwo\n\nthree")]
         assert queue.queue == []
 
 
@@ -614,6 +635,18 @@ class TestAbandoned:
 class TestMeetingSession:
     def _session(self, root: Path, **kwargs) -> sess.MeetingSession:
         return sess.MeetingSession(meeting_id="m", config=store.read_config(root), **kwargs)
+
+    @staticmethod
+    def _queued(session: sess.MeetingSession) -> deque[str]:
+        """Install a real translation queue; return its live pending lines.
+
+        These tests run with no event loop, so the queue keeps what it was given
+        and never starts a worker to translate it.
+        """
+        session.translations = TranslationQueue(
+            meeting_id="m", language="ja", runner=lambda prompt: ""
+        )
+        return session.translations._pending
 
     def test_creates_a_queue_per_enabled_agent_plus_extractor(self, root: Path):
         session = self._session(root)
@@ -683,19 +716,14 @@ class TestMeetingSession:
         filter then drops rather than translating nothing.
         """
         session = self._session(root)
-        session.translations = mock.Mock()
+        queued = self._queued(session)
         session.broadcast(f"we discussed {k.CHAT_PREFIX} yesterday")
-        session.translations.enqueue.assert_called_once_with(
-            f"we discussed {k.CHAT_PREFIX} yesterday"
-        )
-        session.translations.enqueue.reset_mock()
         session.broadcast(f"{k.CHAT_PREFIX}room availability is limited")
-        session.translations.enqueue.assert_called_once_with(
-            f"{k.CHAT_PREFIX}room availability is limited"
-        )
-        session.translations.enqueue.reset_mock()
         session.broadcast(k.CHAT_PREFIX)
-        session.translations.enqueue.assert_called_once_with("")
+        assert list(queued) == [
+            f"we discussed {k.CHAT_PREFIX} yesterday",
+            f"{k.CHAT_PREFIX}room availability is limited",
+        ]
 
     def test_a_max_length_typed_line_keeps_its_full_payload_in_translation(self, root: Path):
         """The transcript cap is charged against the payload, not the marker.
@@ -706,18 +734,18 @@ class TestMeetingSession:
         from the raw line first, so a max-length payload survives intact.
         """
         session = self._session(root)
-        session.translations = mock.Mock()
+        queued = self._queued(session)
         payload = "x" * k.MAX_TRANSCRIPT_CHARS
         session.broadcast(f"{k.CHAT_PREFIX} {payload}")
-        session.translations.enqueue.assert_called_once_with(payload)
+        assert list(queued) == [payload]
 
     def test_broadcast_translates_the_dictionary_corrected_speech_line(self, root: Path):
         """A speech line's translation source is the corrected text, unprefixed."""
         sess.shared_dictionary().load_terms([{"correct": "DynamoDB", "aliases": ["dynamo db"]}])
         session = self._session(root)
-        session.translations = mock.Mock()
+        queued = self._queued(session)
         session.broadcast("we switched to dynamo db")
-        session.translations.enqueue.assert_called_once_with("we switched to DynamoDB")
+        assert list(queued) == ["we switched to DynamoDB"]
 
     def test_expiry(self, root: Path):
         session = self._session(root)
@@ -759,8 +787,10 @@ class TestMeetingSession:
 
     @pytest.mark.asyncio
     async def test_lifecycle_broadcast_skips_pending_kickoff_but_flushes_healthy_queue(
-        self, root: Path
+        self, root: Path, monkeypatch: pytest.MonkeyPatch
     ):
+        # A queue with no agent starts as the default template, by its name.
+        monkeypatch.setattr(agent_turn_sdk, "_default_agent", lambda: "host-default")
         manager = FakeSessionManager()
         session = sess.MeetingSession(
             meeting_id="m", sessions=manager, config=store.read_config(root)
@@ -783,7 +813,7 @@ class TestMeetingSession:
         await _finished(sess.broadcast_system(session, k.SYSTEM_MEETING_ENDED), "broadcast_system")
 
         assert manager.calls == [
-            (healthy.key, "", k.SYSTEM_MEETING_ENDED),
+            (healthy.key, "host-default", k.SYSTEM_MEETING_ENDED),
         ]
         assert pending.pending_kickoff == "kickoff contract"
         assert pending.queue == [k.SYSTEM_MEETING_ENDED]
@@ -926,6 +956,7 @@ class TestInitAgents:
                     yield None
 
         async def get_or_create(key: str, agent: str | None = None, **_kwargs):
+            manager.agents[key] = agent or ""
             return BarrierProvider(key), True, False
 
         monkeypatch.setattr(manager, "get_or_create", get_or_create)
@@ -1111,6 +1142,7 @@ class TestInitAgents:
 
         async def get_or_create(key: str, agent: str | None = None, **kwargs):
             if "note-taker" in key:
+                manager.agents[key] = agent or ""
                 return HangingProvider(), True, False
             return await original_get_or_create(key, agent=agent, **kwargs)
 
@@ -1147,6 +1179,7 @@ class TestInitAgents:
 
         async def get_or_create(key: str, agent: str | None = None, **kwargs):
             if "optional-agent" in key:
+                manager.agents[key] = agent or ""
                 return HangingProvider(), True, False
             return await original_get_or_create(key, agent=agent, **kwargs)
 
@@ -1205,6 +1238,7 @@ class TestInitAgents:
             nonlocal first
             if first:
                 first = False
+                manager.agents[key] = agent or ""
                 return HangingProvider(), True, False
             return await original_get_or_create(key, agent=agent, **kwargs)
 
@@ -1248,7 +1282,7 @@ class TestInitAgents:
             if len(attempts) == 1:
                 raise RuntimeError("retry me")
 
-        queue = sess.AgentQueue(name="n", key="k", sessions=FakeSessionManager())
+        queue = sess.AgentQueue(name="n", key="meetings-k", sessions=FakeSessionManager())
         queue.pending_kickoff = "kickoff contract"
         queue.queue = ["opening transcript"]
 
@@ -1278,7 +1312,7 @@ class TestInitAgents:
 
         monkeypatch.setattr(sess, "_AGENT_INIT_TIMEOUT_SECS", 0.01)
         monkeypatch.setattr(sess, "_AGENT_KICKOFF_BUDGET_CAP_SECS", 0.04)
-        queue = sess.AgentQueue(name="n", key="k", sessions=FakeSessionManager())
+        queue = sess.AgentQueue(name="n", key="meetings-k", sessions=FakeSessionManager())
         queue.pending_kickoff = "kickoff contract"
         queue.queue = ["opening transcript"]
 
@@ -1298,11 +1332,23 @@ class TestInitAgents:
     ):
         manager = FakeSessionManager()
         completed: list[str] = []
-        base_budget = 0.1
+        budgets: list[float | None] = []
+        calls = 0
+        redelivery_started = asyncio.Event()
+        release_redelivery = asyncio.Event()
 
-        class SlowProvider:
+        class SlowKickoffProvider:
             async def stream(self, message: str):
-                await asyncio.sleep(base_budget * 1.5)
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    # The first kickoff never finishes inside the init budget.
+                    await asyncio.Event().wait()
+                elif calls == 2:
+                    # The redelivered kickoff stays in flight until the test has
+                    # read the budget it was given, then finishes inside it.
+                    redelivery_started.set()
+                    await release_redelivery.wait()
                 completed.append(message)
                 if False:  # pragma: no cover - makes this an async generator
                     yield None
@@ -1310,12 +1356,19 @@ class TestInitAgents:
             async def cancel(self, *, wait_ack_timeout: float = 0.0):
                 return "acked"
 
-        async def get_or_create(_key: str, agent: str | None = None, **_kwargs):
-            return SlowProvider(), True, False
+        async def get_or_create(key: str, agent: str | None = None, **_kwargs):
+            manager.agents[key] = agent or ""
+            return SlowKickoffProvider(), True, False
+
+        real_dispatch = sess.dispatch_to_agent
+
+        async def recording_dispatch(*args, timeout_secs=None, **kwargs):
+            budgets.append(timeout_secs)
+            await real_dispatch(*args, timeout_secs=timeout_secs, **kwargs)
 
         monkeypatch.setattr(manager, "get_or_create", get_or_create)
-        monkeypatch.setattr(sess, "_AGENT_INIT_TIMEOUT_SECS", base_budget)
-        monkeypatch.setattr(sess, "_AGENT_KICKOFF_BUDGET_CAP_SECS", base_budget * 4)
+        monkeypatch.setattr(sess, "dispatch_to_agent", recording_dispatch)
+        monkeypatch.setattr(sess, "_AGENT_INIT_TIMEOUT_SECS", 0.01)
         session = sess.MeetingSession(
             meeting_id="m",
             sessions=manager,
@@ -1326,10 +1379,26 @@ class TestInitAgents:
 
         await sess._safe_dispatch(session, "note-taker", "OUTPUT_FILE contract", "")
         assert queue.pending_kickoff == "OUTPUT_FILE contract"
+        assert completed == []
 
+        # A redelivery budget no loaded runner can exhaust, so the result depends
+        # only on the budget formula and the release signal below.
+        base_budget = 30.0
+        monkeypatch.setattr(sess, "_AGENT_INIT_TIMEOUT_SECS", base_budget)
+        monkeypatch.setattr(sess, "_AGENT_KICKOFF_BUDGET_CAP_SECS", base_budget * 4)
         queue.queue = ["opening transcript"]
-        await queue.flush()
+        flush = asyncio.ensure_future(queue.flush())
+        try:
+            await await_until(redelivery_started, what="the kickoff redelivery")
+            assert budgets == [0.01, base_budget * 2]
+            assert completed == []
+            release_redelivery.set()
+            assert await await_until(flush, what="the redelivery flush") is False
+        finally:
+            if not flush.done():
+                flush.cancel()
 
+        assert budgets == [0.01, base_budget * 2, None]
         assert completed == ["OUTPUT_FILE contract", "opening transcript"]
         assert queue.pending_kickoff is None
         assert queue.queue == []
@@ -1344,7 +1413,7 @@ class TestInitAgents:
         ):
             budgets.append(timeout_secs)
 
-        queue = sess.AgentQueue(name="n", key="k", sessions=FakeSessionManager())
+        queue = sess.AgentQueue(name="n", key="meetings-k", sessions=FakeSessionManager())
         queue.pending_kickoff = "kickoff contract"
         queue._kickoff_attempts = 2
 
@@ -1374,12 +1443,13 @@ class TestInitAgents:
         manager = FakeSessionManager()
 
         async def get_or_create(key: str, agent: str | None = None, **_kwargs):
+            manager.agents[key] = agent or ""
             return HangingProvider(), True, False
 
         monkeypatch.setattr(manager, "get_or_create", get_or_create)
         monkeypatch.setattr(sess, "_AGENT_INIT_TIMEOUT_SECS", 0.01)
         monkeypatch.setattr(sess, "_AGENT_KICKOFF_BUDGET_CAP_SECS", 0.04)
-        queue = sess.AgentQueue(name="n", key="k", sessions=manager)
+        queue = sess.AgentQueue(name="n", key="meetings-k", sessions=manager)
         queue.pending_kickoff = "kickoff contract"
         queue.queue = ["opening transcript"]
 
@@ -1435,7 +1505,8 @@ class TestInitAgents:
                     await await_until(closed, what="the provider stream closing")
                 return cancel_outcome
 
-        async def get_or_create(*_args, **_kwargs):
+        async def get_or_create(key: str, agent: str | None = None, **_kwargs):
+            manager.agents[key] = agent or ""
             return ActiveTurnProvider(), True, False
 
         def release(key: str):
@@ -1447,7 +1518,7 @@ class TestInitAgents:
 
         with pytest.raises(asyncio.TimeoutError, match="agent turn exceeded 0s"):
             await asyncio.wait_for(
-                sess.dispatch_to_agent(manager, "k", "kickoff", timeout_secs=0.01),
+                sess.dispatch_to_agent(manager, "meetings-k", "kickoff", timeout_secs=0.01),
                 timeout=2,
             )
 
@@ -1455,7 +1526,7 @@ class TestInitAgents:
         if cancel_outcome == "acked":
             expected.append("terminal")
         assert events == [*expected, "closed", "release"]
-        assert manager.released == ["k"]
+        assert manager.released == ["meetings-k"]
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("cancel_outcome", ["acked", "timeout", "error"])
@@ -1482,18 +1553,19 @@ class TestInitAgents:
             finally:
                 events.append("closed")
 
-        async def get_or_create(*_args, **_kwargs):
+        async def get_or_create(key: str, agent: str | None = None, **_kwargs):
+            manager.agents[key] = agent or ""
             return ActiveTurnProvider(), True, False
 
         def release(key: str):
             events.append("release")
             manager.released.append(key)
 
-        monkeypatch.setattr(sess, "stream_and_collect", collect)
+        monkeypatch.setattr(llm_helpers, "stream_and_collect", collect)
         monkeypatch.setattr(manager, "get_or_create", get_or_create)
         monkeypatch.setattr(manager, "release", release)
         dispatch = asyncio.create_task(
-            sess.dispatch_to_agent(manager, "k", "kickoff", timeout_secs=30)
+            sess.dispatch_to_agent(manager, "meetings-k", "kickoff", timeout_secs=30)
         )
         try:
             await await_until(started, what="the stream started")
@@ -1504,8 +1576,8 @@ class TestInitAgents:
             if cancel_outcome == "acked":
                 manager.reset.assert_not_awaited()
             else:
-                manager.reset.assert_awaited_once_with("k")
-            assert manager.released == ["k"]
+                manager.reset.assert_awaited_once_with("meetings-k")
+            assert manager.released == ["meetings-k"]
         finally:
             dispatch.cancel()
             await asyncio.gather(dispatch, return_exceptions=True)
@@ -1514,6 +1586,7 @@ class TestInitAgents:
     async def test_kickoff_timeout_starts_after_session_acquisition(
         self, monkeypatch: pytest.MonkeyPatch
     ):
+        monkeypatch.setattr(agent_turn_sdk, "_default_agent", lambda: "host-default")
         manager = FakeSessionManager()
         acquired = False
         original_get_or_create = manager.get_or_create
@@ -1532,9 +1605,11 @@ class TestInitAgents:
         monkeypatch.setattr(manager, "get_or_create", get_or_create)
         monkeypatch.setattr(sess.asyncio, "wait_for", wait_for_after_acquire)
 
-        await sess.dispatch_to_agent(manager, "k", "OUTPUT_FILE: /tmp/note.md", timeout_secs=1)
+        await sess.dispatch_to_agent(
+            manager, "meetings-k", "OUTPUT_FILE: /tmp/note.md", timeout_secs=1
+        )
 
-        assert manager.calls == [("k", "", "OUTPUT_FILE: /tmp/note.md")]
+        assert manager.calls == [("meetings-k", "host-default", "OUTPUT_FILE: /tmp/note.md")]
 
     @pytest.mark.asyncio
     async def test_broadcast_system_flushes_immediately(self, root: Path):
@@ -1587,12 +1662,14 @@ class TestDispatchThreadsGovernanceIdentity:
         provider = mock.MagicMock()
         sessions = mock.MagicMock()
         sessions.get_or_create = mock.AsyncMock(return_value=(provider, False, False))
+        # The reused session records the agent it runs, as the real manager does.
+        sessions.get_agent = mock.MagicMock(return_value="meetings-note-taker")
         sessions.release = mock.MagicMock()
 
-        with mock.patch.object(sess, "stream_and_collect", fake_stream):
+        with mock.patch.object(llm_helpers, "stream_and_collect", fake_stream):
             await sess.dispatch_to_agent(
                 sessions,
-                "meetings:m1:note-taker",
+                "meetings-note-taker-m1",
                 "a line",
                 "meetings-note-taker",
                 hooks=mock.MagicMock(),
@@ -1600,10 +1677,10 @@ class TestDispatchThreadsGovernanceIdentity:
 
         # `app` is the load-bearing one — without it there is no profile to resolve.
         assert captured.get("app") == k.APP_NAME
-        assert captured.get("session_key") == "meetings:m1:note-taker"
+        assert captured.get("session_key") == "meetings-note-taker-m1"
         assert captured.get("agent") == "meetings-note-taker"
         # And the gate is still the authority for this path.
-        assert captured.get("approval_policy") is sess.ToolApprovalPolicy.HOOK_BASED
+        assert captured.get("approval_policy") is llm_helpers.ToolApprovalPolicy.HOOK_BASED
 
     def test_stream_and_collect_forwards_the_app_to_the_gate(self):
         """AST: the shared helper must pass `app` on to `hooks.on_tool_call`.
@@ -1615,8 +1692,6 @@ class TestDispatchThreadsGovernanceIdentity:
         import ast
         import importlib
         import inspect
-
-        from kiro_crew import llm_helpers
 
         # The facade and every owner module it is composed from, parsed as one tree.
         modules = [llm_helpers, *map(importlib.import_module, llm_helpers._OWNERS)]

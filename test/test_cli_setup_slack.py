@@ -1,30 +1,17 @@
 """``kirocrew setup --slack`` — the tokens are checked BEFORE they are stored.
 
-The wizard asks Slack about every value at the moment it is pasted, so a typo, a
-revoked token, or a channel ID pasted where the member ID belongs is reported at
-the prompt rather than hours later as a "Slack disabled" line in the gateway
-log. The properties that matter are:
+Rules pinned:
 
-* a token Slack REJECTS is reported with Slack's own code and re-asked, and the
-  value that finally lands in ``.env`` is the accepted one;
-* a value Slack keeps refusing replaces nothing on disk;
-* a member ID is format-checked with no network at all — ``C…`` is a channel and
-  ``B…`` is a bot — while ``W…`` (Enterprise Grid) is a valid member ID and must
-  never be refused;
-* an UNREACHABLE Slack is not a rejection: being offline must not cost the
-  operator the credentials they just typed;
-* only ``user_not_found`` / ``users_not_found`` indict a member ID; a missing
-  ``users:read`` scope indicts the CHECK, so it degrades to unverifiable rather
-  than refusing the operator's own ID;
-* the check runs only at a terminal — off one nobody can see the verdict, and
-  re-asking would eat the next line of a piped answer file and misassign every
-  remaining answer, so the step stays exactly as it was;
-* the wizard offers to restart only a gateway that is ALREADY running, and
-  survives a service manager that refuses the restart — the tokens are already
-  on disk by then.
+* a REJECTED token shows Slack's code and is re-asked; a value refused for good writes
+  nothing to disk;
+* member IDs are format-checked offline: ``C…`` and ``B…`` refused, ``W…`` (Enterprise
+  Grid) accepted;
+* an UNREACHABLE Slack is not a rejection, and a missing ``users:read`` scope makes the
+  check unverifiable, not a refusal;
+* the check runs only at a terminal: re-asking would eat a piped answer file's lines;
+* the restart offer covers only a gateway ALREADY running, and survives a refused restart.
 
-Every Slack call is stubbed at ``slack_sdk`` (the helpers import it lazily, so
-patching the module attribute is enough): no test here reaches the network.
+No test here reaches the network.
 """
 
 from __future__ import annotations
@@ -72,11 +59,8 @@ def _api_error(code: str) -> SlackApiError:
 def _install(monkeypatch: pytest.MonkeyPatch, client: type[_FakeWebClient]) -> None:
     """Put *client* in place of the ``WebClient`` name ``cli_setup`` actually calls.
 
-    Patched at the CONSUMER, not at ``slack_sdk.web.WebClient``: ``cli_setup``
-    imports the class at module scope (per the top-level-imports convention), so it
-    holds its own reference and patching the source module would silently no-op --
-    the check would then run against real Slack and the assertion would read
-    ``None``.
+    Patched at the CONSUMER: ``cli_setup`` imports the class at module scope, so
+    patching ``slack_sdk.web.WebClient`` would no-op and reach real Slack.
     """
     monkeypatch.setattr("kiro_crew.cli_setup.WebClient", client)
 
@@ -130,13 +114,8 @@ def _tty(monkeypatch: pytest.MonkeyPatch, interactive: bool) -> None:
 def no_restart(monkeypatch: pytest.MonkeyPatch) -> None:
     """No test may bounce the developer's own gateway.
 
-    Patched at the primitives the offer consults — no active service, no
-    listener — so the offer itself still runs for real (and takes its "nothing
-    is running" branch), while an actual ``_restart`` would fail loudly.
-
-    ``listening_pid_tool_available`` is pinned True as well, or every "nothing is
-    running" assertion here would depend on whether the test host happens to have
-    ``lsof`` under the trusted directories.
+    Patched at the primitives (no service, no listener), so the offer runs for real.
+    ``listening_pid_tool_available`` is pinned True so results do not depend on ``lsof``.
     """
 
     def _never() -> None:
@@ -285,6 +264,94 @@ class TestSetupSlackTokens:
         assert not env_file.exists()
         assert fake_slack.calls == []
 
+    def test_a_save_keeps_every_line_it_does_not_own(
+        self, env_file: Path, fake_slack: type[_FakeWebClient], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only the Slack lines change: comments, blank lines, an indented
+        comment and a spaced unrelated key keep their exact text and order."""
+        kept = ["# Kiro Crew credentials", "", "# Weixin", "WEIXIN_TOKEN = w  ", "  # FLAG=off"]
+        env_file.write_text(
+            "\n".join([kept[0], f"{CRED_SLACK_APP_TOKEN}=xapp-old", *kept[1:]]) + "\n",
+            encoding="utf-8",
+        )
+        _tty(monkeypatch, False)
+        _answers(monkeypatch, "y", "xapp-new", "xoxb-new", "U03T18B4Y23")
+
+        cs._setup_slack_tokens()
+
+        assert env_file.read_text(encoding="utf-8").splitlines() == [
+            kept[0],
+            f"{CRED_SLACK_APP_TOKEN}=xapp-new",
+            *kept[1:],
+            f"{CRED_SLACK_BOT_TOKEN}=xoxb-new",
+            f"{CRED_OWNER_ID}=U03T18B4Y23",
+        ]
+
+
+@pytest.mark.usefixtures("fake_slack")
+class TestOtherSpellingsOfASavedName:
+    """On Windows ``slack_bot_token`` IS ``SLACK_BOT_TOKEN``, and boot keeps the
+    first non-empty spelling in ``.env``; on POSIX they are separate variables."""
+
+    _OLD = (
+        "slack_app_token=xapp-old\n"
+        "slack_bot_token=xoxb-old\n"
+        "kirocrew_owner_id=U0OLDOWNER1\n"
+        "OTHER_KEY=keep\n"
+    )
+
+    def _run(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch, *, windows: bool
+    ) -> list[list[str]]:
+        monkeypatch.setattr(cs.platform_compat, "IS_WINDOWS", windows)
+        env_file.write_text(self._OLD, encoding="utf-8")
+        _tty(monkeypatch, True)
+        _answers(monkeypatch, "y", "xapp-new", "xoxb-new", "U03T18B4Y23")
+
+        cs._setup_slack_tokens()
+
+        return [line.split("=", 1) for line in env_file.read_text(encoding="utf-8").splitlines()]
+
+    def test_on_windows_the_new_values_replace_every_spelling(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lines = self._run(env_file, monkeypatch, windows=True)
+
+        assert sorted(lines) == [
+            [CRED_OWNER_ID, "U03T18B4Y23"],
+            ["OTHER_KEY", "keep"],
+            [CRED_SLACK_APP_TOKEN, "xapp-new"],
+            [CRED_SLACK_BOT_TOKEN, "xoxb-new"],
+        ]
+
+    def test_on_windows_enter_keeps_the_owner_in_force_behind_an_empty_spelling(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(cs.platform_compat, "IS_WINDOWS", True)
+        env_file.write_text(f"{CRED_OWNER_ID}=\nkirocrew_owner_id=U0SAVED0001\n", encoding="utf-8")
+        _tty(monkeypatch, True)
+        prompts = _answers(monkeypatch, "y", "xapp-new", "xoxb-new", "")
+
+        cs._setup_slack_tokens()
+
+        assert "[U0SAVED0001]" in prompts[-1]
+        lines = env_file.read_text(encoding="utf-8").splitlines()
+        assert [ln for ln in lines if ln.upper().startswith(CRED_OWNER_ID + "=")] == [
+            f"{CRED_OWNER_ID}=U0SAVED0001"
+        ]
+
+    def test_on_posix_a_differently_cased_name_is_left_alone(
+        self, env_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lines = self._run(env_file, monkeypatch, windows=False)
+
+        assert lines[:4] == [line.split("=", 1) for line in self._OLD.splitlines()]
+        assert dict(lines[4:]) == {
+            CRED_SLACK_APP_TOKEN: "xapp-new",
+            CRED_SLACK_BOT_TOKEN: "xoxb-new",
+            CRED_OWNER_ID: "U03T18B4Y23",
+        }
+
 
 class TestVerifySlackSecret:
     """The token check mirrors the dashboard's: two calls, three verdicts."""
@@ -388,15 +455,9 @@ class TestVerifySlackOwnerId:
 class TestRejectedOwnerIdKeepsVerifiedTokens:
     """A rejected OPTIONAL field must not cost the operator a verified REQUIRED one.
 
-    The member ID is optional at write time, so abandoning the save over it
-    discarded two tokens Slack had just confirmed -- the one outcome the
-    verify-as-you-type flow exists to prevent.
-
-    Every test here takes ``env_file``. That fixture is not decoration: these tests
-    drive the real credential WRITE, and the writer resolves its target through
-    ``cs.env_path()``. Patching ``cs.KIROCREW_HOME`` does not redirect that, so
-    without ``env_file`` the write lands in the developer's own
-    ``~/.kiro/crew/.env`` and replaces live Slack tokens with these fakes.
+    Every test takes ``env_file``: the real write resolves ``cs.env_path()``, which
+    ``cs.KIROCREW_HOME`` does not redirect, so without it the developer's own
+    ``~/.kiro/crew/.env`` would be overwritten.
     """
 
     def test_tokens_are_written_and_owner_is_left_unset(

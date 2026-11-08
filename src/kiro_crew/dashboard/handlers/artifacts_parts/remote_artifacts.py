@@ -23,6 +23,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import (
 )
 from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _REMOTE_PROVIDER_TIMEOUT_S,
+    _anchor_int_error,
     _audit,
     _err,
     _json_response,
@@ -215,7 +216,7 @@ async def api_remote_artifacts_clone(request: web.Request) -> web.Response:
     external_id = str(body.get("external_id") or "").strip()
     if not external_id:
         return _err("external_id is required")
-    gov_denial = _publish_governance_denied(request, provider_name)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, provider_name))
     if gov_denial is not None:
         _audit(
             tool="artifact_clone",
@@ -589,13 +590,17 @@ async def api_remote_artifact_post_comment(request: web.Request) -> web.Response
     if len(text) > 10000:
         return _err("text exceeds 10000 chars")
     text = _redact_text(text)
+    if isinstance(body.get("anchor"), dict):
+        anchor_int_error = _anchor_int_error(body["anchor"])
+        if anchor_int_error is not None:
+            return _err(anchor_int_error)
 
     # Writing a comment to a provider-hosted artifact is outbound egress (bytes
     # leave the box), so it goes through the same fail-closed capabilities.publish
     # gate as artifact publish and the local shared-comment path — otherwise a
     # policy denying publish for this provider would be bypassed. No local mirror
     # to fall back to here, so a denial is an audited 403.
-    gov_denial = _publish_governance_denied(request, provider_name)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, provider_name))
     if gov_denial is not None:
         _audit(
             tool="remote_artifact_post_comment",
@@ -688,7 +693,7 @@ async def api_remote_artifact_reply_comment(request: web.Request) -> web.Respons
     text = _redact_text(text)
 
     # Replying is outbound egress to the provider — same fail-closed publish gate.
-    gov_denial = _publish_governance_denied(request, provider_name)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, provider_name))
     if gov_denial is not None:
         _audit(
             tool="remote_artifact_reply_comment",
@@ -763,7 +768,7 @@ async def api_remote_artifact_mark_review(request: web.Request) -> web.Response:
     comment_id = request.match_info["comment_id"]
 
     # Advancing a thread's status mutates provider-side state — same publish gate.
-    gov_denial = _publish_governance_denied(request, provider_name)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, provider_name))
     if gov_denial is not None:
         _audit(
             tool="remote_artifact_mark_review",
@@ -837,7 +842,7 @@ async def api_remote_artifact_delete_comment(request: web.Request) -> web.Respon
     comment_id = request.match_info["comment_id"]
 
     # Deleting a provider comment mutates provider-side state — same publish gate.
-    gov_denial = _publish_governance_denied(request, provider_name)
+    gov_denial = await _run_off_loop(lambda: _publish_governance_denied(request, provider_name))
     if gov_denial is not None:
         _audit(
             tool="remote_artifact_delete_comment",

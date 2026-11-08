@@ -33,6 +33,10 @@ from kiro_crew.session import CONSOLIDATE_KEY
 from kiro_crew.testing import fake_acp_backend
 from kiro_crew.testing.harness import fake_acp_backend_launcher
 
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
+
 _USAGE_TARGET = "kiro_crew.dashboard.handlers.usage.persist_token_record_async"
 
 
@@ -79,9 +83,10 @@ async def _run_jobs(sessions: object, store: Path, jobs: list[str]) -> list[list
     """Run *jobs* through ``_call_llm``; the live records after each job."""
     seen = []
     for prompt in jobs:
-        # The fake answers in prose, so the JSON parse fails and the job returns
-        # None; the request it sent is what these tests are about.
-        await consolidation_pass._call_llm(_consolidator(sessions), prompt)
+        # The fake answers in prose, so the reply is unusable; the request it
+        # sent is what these tests are about.
+        with contextlib.suppress(history_consolidation._ConsolidationReplyUnusable):
+            await consolidation_pass._call_llm(_consolidator(sessions), prompt)
         seen.append(_records(store))
     return seen
 

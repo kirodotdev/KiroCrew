@@ -62,7 +62,7 @@ def test_evidence_requires_executed_passing_spec_and_manifest(
         return rc
 
     monkeypatch.setattr(evidence.subprocess, "call", run)
-    gw = SimpleNamespace(port=12345, token="fixture-token")
+    gw = SimpleNamespace(port=12345, token="fixture-token", home=tmp_path)
     if spec_ok and not skipped and rc == 0 and has_manifest:
         evidence._run_scenario(scenario, gw, website, str(tmp_path), tmp_path)
     else:

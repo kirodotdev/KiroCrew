@@ -13,6 +13,7 @@ as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import mimetypes
 import os
@@ -48,6 +49,10 @@ from kiro_crew.apps.registry import (
     minimal_env,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
+from kiro_crew.apps.registry_pipeline.subprocess_env import (
+    _git_network_env,
+    _proxy_env_has_credentials,
+)
 from kiro_crew.apps.routes_static import _CONTENT_TYPES
 from kiro_crew.dashboard.conditional_get import conditional_response
 from kiro_crew.pinned_fs import (
@@ -459,6 +464,9 @@ async def _fetch_git_blob(
         logger.warning("blob clone credential target did not match repository identity")
         return False
     credentialed_transport = credential_target != git_url
+    # A proxy URL holding a password is a credential too: it takes the split path,
+    # so no checkout-time filter inherits it (see `_proxy_env_has_credentials`).
+    isolate_transport = credentialed_transport or _proxy_env_has_credentials(git_url)
 
     # SSRF gate: a configured external registry's (untrusted) index can list an
     # app ``repo`` pointing at an internal address (e.g. ``https://127.0.0.1/x``)
@@ -517,7 +525,7 @@ async def _fetch_git_blob(
             clone_mode = "strict"
             clone_env = anonymous_git_env()
         clone_root = Path(tmp_root)
-        if credentialed_transport:
+        if isolate_transport:
             # A combined credentialed clone performs fetch and checkout in one
             # process. Repository-controlled filters (and checkout-time hooks)
             # would therefore inherit the one-shot URL rewrite containing the
@@ -567,7 +575,7 @@ async def _fetch_git_blob(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=clone_env,
+                env=_git_network_env(clone_env, git_url),
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT)
@@ -625,7 +633,7 @@ async def _fetch_git_blob(
         if tmp_root:
             await asyncio.to_thread(platform_compat.rmtree_force, tmp_root)
 
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(functools.partial(cache_path.parent.mkdir, parents=True, exist_ok=True))
     await asyncio.to_thread(cache_path.write_bytes, data)
     return True
 
@@ -755,7 +763,7 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid path"}, status=400)
 
     # Safe to create directories now that path is validated
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(functools.partial(cache_path.parent.mkdir, parents=True, exist_ok=True))
 
     if not await asyncio.to_thread(cache_path.is_file):
         # Same-repo credential carve-out, extended to the blob chokepoint:
@@ -858,10 +866,16 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
         outcome="served",
         resources=f"repo={_strip_git_target_userinfo(repo)} path={file_path}",
     )
+    # The same sandbox CSP as the app-art route above, for the same reason: these
+    # bytes come from a registry author's repo, and a top-level open of a scripted
+    # `.svg` would otherwise run as a document on the dashboard's own origin. It
+    # does not apply when the bytes load as an `<img>`, so store rendering is
+    # unchanged.
     return web.FileResponse(  # type: ignore[return-value]
         cache_path,
         headers={
             "Content-Type": content_type,
             "Cache-Control": "public, max-age=86400",  # 24h browser cache
+            "Content-Security-Policy": "default-src 'none'; sandbox",
         },
     )

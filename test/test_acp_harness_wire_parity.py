@@ -197,7 +197,9 @@ async def _capture(backend: str, monkeypatch: pytest.MonkeyPatch) -> dict[str, A
     # write is neither on the wire nor this gate's business.
     monkeypatch.setattr(runtime_mod, "publish_session_token", lambda token, key: None)
 
-    async def _fake_kas_agents(agent, *, member_dispatch=False, crew_panel=False, session_key=""):
+    async def _fake_kas_agents(
+        agent, *, member_dispatch=False, crew_panel=False, session_key="", session_cwd=None
+    ):
         # The real projection reads ~/.kiro/agents; the GATE it is behind is what
         # this capture is about, so the payload is pinned and the gate is not.
         from kiro_crew.acp.harness import SessionExtras
@@ -376,7 +378,7 @@ def test_handshake_params_come_from_the_shared_constants() -> None:
     assert isinstance(PROTOCOL_VERSION_KAS, int)
     assert KAS_CLIENT_CAPABILITIES == {
         **ACP_CLIENT_CAPABILITIES,
-        "_meta": {"kiro": {"settings": {}, "openExternalUrl": True}},
+        "_meta": {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}},
     }
 
 

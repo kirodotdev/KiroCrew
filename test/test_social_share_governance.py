@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import governance_capability_checks
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -101,15 +102,7 @@ def _rows_for(fake: MagicMock, scope: str) -> list[dict]:
 # ── The catalog row ───────────────────────────────────────────────────────
 
 
-class TestScopeCatalog:
-    def test_row_is_registered_as_a_default_on_capability(self) -> None:
-        from kiro_crew.platform.governance import CAPABILITY, SCOPE_CATALOG
-
-        spec = SCOPE_CATALOG[_SCOPE]
-        assert spec.kind == CAPABILITY
-        # A policy that governs some OTHER capabilities.* row must not silently
-        # withdraw a menu entry it never mentioned.
-        assert spec.capability_default is True
+class TestScopeCatalog(governance_capability_checks.RowIsRegisteredAsADefaultOnCapability):
 
     def test_a_policy_can_actually_express_the_pin(self) -> None:
         from kiro_crew.platform.governance import CapabilityGate, parse_policy
@@ -286,11 +279,17 @@ class TestDashboardConfigEndpoint:
             assert (await (await client.get("/api/dashboard/config")).json())[
                 "social_share_enabled"
             ] is True
-            assert len(_governance_rows(fake_sel)) == 3 * len(_ENDPOINT_SCOPES)
-            assert [r["outcome"] for r in _rows_for(fake_sel, _SCOPE)] == [
-                "denied",
-                "denied",
-                "allowed",
+            # A permitted entry also asks each site of the ``sites`` list (one row
+            # each); a withdrawn entry asks none, so the two pinned reads had none.
+            assert len(_governance_rows(fake_sel)) == 3 * len(_ENDPOINT_SCOPES) + len(
+                social_share.SHARE_SITES
+            )
+            share_rows = _rows_for(fake_sel, _SCOPE)
+            assert [r["outcome"] for r in share_rows] == ["denied", "denied", "allowed"] + [
+                "allowed"
+            ] * len(social_share.SHARE_SITES)
+            assert [r["item"] for r in share_rows[3:]] == [
+                f"sites:{s}" for s in social_share.SHARE_SITES
             ]
 
     @pytest.mark.asyncio

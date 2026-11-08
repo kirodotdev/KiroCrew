@@ -631,3 +631,37 @@ describe('deriveFollowUpOptions empty-result identity', () => {
     expect(a.followUpSourceKey).not.toBeNull()
   })
 })
+
+describe('deriveFollowUpOptions across a say-nothing reply', () => {
+  // A quiet patrol cycle answers with a bare U+200B. The transcript does not draw that
+  // row, so the question above it is still what the user reads, and its chips stay.
+  const silent = (content = '\u200b'): ChatMessage => assistant(content)
+
+  it('keeps the chips of the question above an invisible-only reply', () => {
+    const asked = assistant(OPTIONS_MSG)
+    const derived = deriveFollowUpOptions([user('go'), asked, silent()], false)
+    expect(derived.followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+    expect(derived.followUpSourceKey).toBe(deriveFollowUpOptions([user('go'), asked], false).followUpSourceKey)
+  })
+
+  it('crosses a run of them, whitespace and other format characters included', () => {
+    const rows = [user('go'), assistant(OPTIONS_MSG), silent(), silent(' \u200b\n'), silent('\u2060')]
+    expect(deriveFollowUpOptions(rows, false).followUpOptions).toEqual(['Alpha', 'Beta', 'Gamma'])
+  })
+
+  it('still clears the chips when a later reply has words', () => {
+    const rows = [user('go'), assistant(OPTIONS_MSG), silent(), assistant('Done, nothing to pick.')]
+    expect(deriveFollowUpOptions(rows, false).followUpOptions).toEqual([])
+  })
+
+  it('does not cross an invisible reply that carries file changes, which is drawn', () => {
+    const withChips: ChatMessage = { ...silent(), meta: { file_changes: [{ path: '/a', kind: 'edit' }] } }
+    const rows = [user('go'), assistant(OPTIONS_MSG), withChips]
+    expect(deriveFollowUpOptions(rows, false).followUpOptions).toEqual([])
+  })
+
+  it('does not reach past the user turn the silent reply answered', () => {
+    const rows = [assistant(OPTIONS_MSG), user('Beta'), silent()]
+    expect(deriveFollowUpOptions(rows, false).followUpOptions).toEqual([])
+  })
+})

@@ -37,8 +37,8 @@ vi.mock('../../hooks/useVoiceInput', () => ({
   },
   voiceInputSupported: true,
 }))
-vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => undefined }))
-vi.mock('../../hooks/voiceTranscriptInbox', () => ({ redeliverPending: () => {} }))
+vi.mock('../../hooks/usePushToTalk', () => ({ usePushToTalk: () => ({ config: { enabled: false, mode: 'hybrid', binding: { code: 'AltRight' }, holdMs: 500 }, phase: 'idle', holding: false }) }))
+vi.mock('../../hooks/voiceTranscriptInbox', () => ({ redeliverPending: () => {}, deliveringHeld: () => false }))
 vi.mock('../../lib/haptic', () => ({ haptic: () => {} }))
 vi.mock('../../api/client', () => ({
   api: {
@@ -114,6 +114,27 @@ describe('submit on release: batch', () => {
     act(() => { t.view.result.current.stopVoice('finish') })
     t.batchAnswers('hello there')
     expect(t.inputRef.current).toBe('hello there')
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+  })
+
+  it('a send stop sends with the setting off, once the transcript lands', async () => {
+    const t = mount({ submit: false })
+    await t.startRecording()
+    act(() => { t.view.result.current.stopVoice('send') })
+    t.render()
+    expect(t.onAutoSubmit).not.toHaveBeenCalled()
+    t.batchAnswers('hello there')
+    expect(t.sent).toEqual(['hello there'])
+    t.render(); t.render()
+    expect(t.onAutoSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('a send stop keeps a draft when the person typed before it settled', async () => {
+    const t = mount({ submit: false })
+    await t.startRecording()
+    act(() => { t.view.result.current.stopVoice('send') })
+    t.inputRef.current = 'typed by hand'
+    t.batchAnswers('hello there')
     expect(t.onAutoSubmit).not.toHaveBeenCalled()
   })
 

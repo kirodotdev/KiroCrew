@@ -1,11 +1,15 @@
-import { useState } from 'react'
-import { useDebouncedValue } from '../../apps/file-explorer/hooks'
+import { useEffect, useRef, useState } from 'react'
+import { useDebouncedValue } from '../../hooks/useDebouncedValue'
+import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Files, Diff, Search, X, RefreshCw, FileText, Folder } from 'lucide-react'
+import { Files, Diff, Search, X, RefreshCw, FileText, Folder, Eye, EyeOff } from 'lucide-react'
 import { api } from '../../api/client'
+import { SHOW_HIDDEN_FILES_KEY } from '../../api/client/files'
 import { fileGrep, type FileGrepHit } from '../../api/fileGrep'
+import ChatDropOverlay, { useChatFileDrop } from '../../components/ChatDropOverlay'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import {
   gitFilterRefusalCause,
   gitFilterRefusalCopyKey,
@@ -24,8 +28,12 @@ import { cn } from '../../lib/utils'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { PierreWorkspaceTree, type TreeReveal } from '../../pierre/tree'
 import { mergeTreeMatches } from '../../lib/treeSearchMatches'
+import { treeIsPartial } from '../../pierre/treeFolderListings'
 import { findReport, reportForError } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
+import { pathBasename, relativeToRoot, stripTrailingSeparators } from '../../utils/pathBasename'
+import { useDirectoryUpload } from './useDirectoryUpload'
+import NewFileDialog from './NewFileDialog'
 
 /** Rail width bounds; the grip clamps between them. */
 const RAIL_MIN_W = 300
@@ -55,13 +63,13 @@ const CONTENT_MIN_CHARS = 2
 /** Keystroke debounce before a content search leaves the browser. A filename
  *  filter is local and instant; a content search is a bounded walk on the
  *  gateway, so it waits for the typing to settle. */
-const CONTENT_DEBOUNCE_MS = 250
+export const CONTENT_DEBOUNCE_MS = 250
 
 /** Shortest name query the filename search answers (`api_file_search`). */
 const NAME_SEARCH_MIN_CHARS = 2
 
 /** Keystroke debounce before a filename search past the tree's cap leaves the browser. */
-const NAME_SEARCH_DEBOUNCE_MS = 200
+export const NAME_SEARCH_DEBOUNCE_MS = 200
 
 /** Rows one filename search past the cap asks for: enough to find a folder by a
  *  partial name, and well under the server's own ceiling. */
@@ -107,32 +115,26 @@ export type TreeState = 'no-dir' | 'error' | 'recoverable' | 'ready'
  *  error beside `useTreeState`'s verdict -- the hand-off on a tree notice is keyed on the server's
  *  message, which the verdict does not carry. Same key, so react-query dedupes a second observer
  *  into the one request. */
-export function useTreeQuery(projectDir: string | null | undefined) {
+export function useTreeQuery(projectDir: string | null | undefined, active = true) {
   return useQuery({
     queryKey: ['project-tree', projectDir ?? ''],
     queryFn: () => api.projectTree(projectDir ?? ''),
-    enabled: !!projectDir,
+    // Off while hidden, or a window focus would re-walk the project for a tab
+    // nobody is looking at: any one enabled observer of the key refetches it.
+    enabled: !!projectDir && active,
     retry: false,
     staleTime: 10_000,
   })
 }
 
-export function useTreeState(projectDir: string | null | undefined): TreeState {
-  const q = useTreeQuery(projectDir)
+export function useTreeState(projectDir: string | null | undefined, active = true): TreeState {
+  const q = useTreeQuery(projectDir, active)
   if (!projectDir) return 'no-dir'
   if (!q.isError) return 'ready'
   // A deadline or codeless failure can answer differently on Refresh. A refusal or missing
   // root cannot, which is why FolderPanel names and re-reads the tree only in the first case.
   const cause = searchErrorCause(q.error)
   return cause === 'timed_out' || cause === 'failed' ? 'recoverable' : 'error'
-}
-
-/** A hit's path as the rail shows it: relative to the searched root, because the
- *  absolute prefix is the same on every row and is what pushes the informative
- *  tail out of a 300px rail. */
-function shortenPath(path: string, root: string): string {
-  if (root && path.startsWith(root)) return path.slice(root.length).replace(/^\//, '')
-  return path
 }
 
 /**
@@ -172,9 +174,10 @@ function HighlightedPreview({ text, query }: { text: string; query: string }) {
  * location badge for a document hit, and a one-line preview with the match
  * marked.
  */
-function ContentResults({ query, projectDir, onOpen }: {
+function ContentResults({ query, projectDir, active, onOpen }: {
   query: string
   projectDir: string
+  active: boolean
   onOpen: (hit: FileGrepHit) => void
 }) {
   const { t } = useTranslation()
@@ -183,7 +186,7 @@ function ContentResults({ query, projectDir, onOpen }: {
   const { data, isFetching, error } = useQuery({
     queryKey: ['file-grep', projectDir, settled],
     queryFn: () => fileGrep(projectDir, settled),
-    enabled: enabled && !!projectDir,
+    enabled: enabled && !!projectDir && active,
     retry: false,
     // The same query re-run on a re-mount is the same answer: the rail remounts
     // on tab navigation, and re-walking the project for a query already on
@@ -299,7 +302,9 @@ function ContentResults({ query, projectDir, onOpen }: {
             >
               <div className="flex items-center gap-1 text-[11.5px] text-text truncate">
                 <FileText size={11} className="shrink-0 opacity-60" />
-                <span className="truncate">{shortenPath(hit.file, data?.root ?? projectDir)}</span>
+                {/* Relative to the searched root: the absolute prefix is the same on every
+                    row and pushes the informative tail out of a 300px rail. */}
+                <span className="truncate">{relativeToRoot(hit.file, data?.root ?? projectDir)}</span>
                 {/* A document has no line to jump to, so the row names the place
                     inside itself instead — "p 3", "slide 7", "Sheet1 row 12".
                     The note above the list says the click opens the document at
@@ -336,8 +341,9 @@ function ContentResults({ query, projectDir, onOpen }: {
  * folder in the tree (loading its own listing when it is past the cap); a file
  * hit opens the file.
  */
-function NameSearchResults({ query, projectRoot, treeRows, onOpenFile, onRevealFolder }: {
+function NameSearchResults({ query, projectRoot, active, treeRows, onOpenFile, onRevealFolder }: {
   query: string
+  active: boolean
   /** The files the (cut) tree already holds. The search walks under its own
    *  budget and can miss one of them, so they join its hits (`mergeTreeMatches`). */
   treeRows: { paths: readonly string[] }
@@ -352,7 +358,7 @@ function NameSearchResults({ query, projectRoot, treeRows, onOpenFile, onRevealF
   const { data, isFetching, error } = useQuery({
     queryKey: ['rail-name-search', projectRoot, settled],
     queryFn: ({ signal }) => api.fileSearch(settled, projectRoot, signal, undefined, NAME_SEARCH_LIMIT),
-    enabled,
+    enabled: enabled && active,
     retry: false,
     staleTime: 10_000,
     placeholderData: (previous, previousQuery) =>
@@ -513,13 +519,12 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
     setReveal(null)
   }
 
-  const { isError: treeError, error: treeErr, data: treeData } = useTreeQuery(projectDir)
+  const { isError: treeError, error: treeErr, data: treeData } = useTreeQuery(projectDir, active)
   const { data: status, error: statusError } = useQuery({
     queryKey: ['git-status', projectDir],
     queryFn: () => api.projectGitStatus(projectDir),
-    enabled: !!projectDir,
-    refetchInterval: active ? 5_000 : false,
-    refetchOnWindowFocus: active,
+    enabled: !!projectDir && active,
+    refetchInterval: 5_000,
   })
   const changedCount = status?.files?.length ?? 0
   // The server caps the listing at 500 and says so. Unless the badge reads that
@@ -538,11 +543,47 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
       )}`
     : t('pages.chat.fileBrowserRail.changed')
 
+  // A drop anywhere on the rail uploads into the project root: the overlay
+  // covers the tree, so no row under the pointer is visible to choose. A
+  // specific folder is reached through its row menu's "Upload files…". The
+  // tree computes the same fallback (`tree?.root ?? projectDir`) because the
+  // backend answers with the realpath, which can differ from a symlinked
+  // projectDir.
+  const root = treeData?.root ?? projectDir
+  // The name the Files tab header shows for the project (FilesHomePanel).
+  const rootName = pathBasename(stripTrailingSeparators(projectDir)) || projectDir
+
+  const {
+    uploadFiles, pickAndUpload, createFile, folderLabel, progress: uploadProgress, error: uploadError, dismissError,
+    success: uploadSuccess, dismissSuccess, fileInput,
+  } = useDirectoryUpload(projectDir, root)
+  // The directory a row's "New file…" asked for, while its dialog is open.
+  const [newFileDir, setNewFileDir] = useState<string | null>(null)
+  const { active: dragOver, dropTargetProps } = useChatFileDrop((dataTransfer) => {
+    const files = Array.from(dataTransfer.files)
+    if (!files.length) return
+    void uploadFiles(root, files)
+  })
+
   // Both queries poll (10s tree / 5s status); this is the "I changed something
   // outside the app, show me now" escape hatch. `refetchQueries` (not
   // `invalidateQueries`) so `refreshing` tracks the actual network round trip
   // and the spinner reflects real work.
   const qc = useQueryClient()
+
+  // "Show hidden files", off by default. The listings read it when they fetch
+  // (`api/client/files.ts`), so a flip -- here, in a sibling rail or in another tab --
+  // refetches both. The persisted write runs in the hook's own effect, declared before
+  // this one, so the refetch already sees the new value.
+  const [showHidden, setShowHidden] = usePersistedBool(SHOW_HIDDEN_FILES_KEY, false)
+  const listedHidden = useRef(showHidden)
+  useEffect(() => {
+    if (listedHidden.current === showHidden) return
+    listedHidden.current = showHidden
+    void qc.invalidateQueries({ queryKey: ['project-tree'] })
+    void qc.invalidateQueries({ queryKey: ['browse-files'] })
+  }, [showHidden, qc])
+
   const [refreshing, setRefreshing] = useState(false)
   const refresh = async () => {
     // A second press mid-flight is a no-op, not a restart: `refetchQueries` cancels and
@@ -587,7 +628,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
   const contentMode = searchMode === 'content'
   // The tree filter finds only what the tree holds. Past its cap the name query
   // goes to the filename search instead.
-  const treeTruncated = treeData?.truncated === true
+  const treeTruncated = treeIsPartial(treeData)
   const nameSearch = !contentMode && !changedMode && treeTruncated
     && query.trim().length >= NAME_SEARCH_MIN_CHARS
   const projectRoot = (treeData?.root ?? projectDir).replace(/[/\\]+$/, '')
@@ -615,9 +656,11 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
         />
       )}
       <div
+        {...dropTargetProps}
         style={fill ? undefined : { width: rail.width }}
-        className={cn('min-h-0 flex flex-col', fill ? 'flex-1 min-w-0' : 'shrink-0 border-l border-border')}
+        className={cn('relative min-h-0 flex flex-col', fill ? 'flex-1 min-w-0' : 'shrink-0 border-l border-border')}
       >
+        <ChatDropOverlay active={dragOver} label={t('pages.chat.fileBrowserRail.drop_to_upload', { folder: rootName })} />
         <div className="flex items-center gap-1.5 px-2 h-[40px] shrink-0 border-b border-border">
           {/* All/Changed scopes the TREE, and Content mode has no tree. Left
               rendered it kept its "Changed" highlight while the content results
@@ -685,6 +728,28 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             )}
           </div>
           <button
+            onClick={() => setShowHidden(v => !v)}
+            aria-pressed={showHidden}
+            className={cn(
+              'flex flex-none items-center justify-center gap-1 h-[26px] px-1.5 rounded-[7px] border cursor-pointer transition-colors',
+              // "On" is the accent fill; the tooltip names what a click does next.
+              showHidden
+                ? 'bg-accent/15 text-accent border-accent/30'
+                : 'bg-bg-elevated border-border text-muted hover:text-text hover:border-border-strong',
+            )}
+            title={showHidden
+              ? t('pages.chat.fileBrowserRail.hide_hidden_files')
+              : t('pages.chat.fileBrowserRail.show_hidden_files_hint')}
+            aria-label={t('pages.chat.fileBrowserRail.show_hidden_files')}
+            data-testid="file-browser-rail-show-hidden"
+          >
+            {showHidden ? <Eye size={12} className="shrink-0" /> : <EyeOff size={12} className="shrink-0" />}
+            {/* A word beside the eye: an eye alone reads as "preview". */}
+            <span aria-hidden className="text-[11px] leading-none">
+              {t('pages.chat.fileBrowserRail.hidden_files_short')}
+            </span>
+          </button>
+          <button
             onClick={refresh}
             // Inert-but-focusable while busy, like FolderPanel's header Refresh and
             // WorkspacePicker's Retry: `aria-disabled` plus the in-handler guard, NOT
@@ -697,8 +762,10 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
               'flex flex-none items-center justify-center h-[26px] rounded-[7px] bg-bg-elevated border border-border text-muted hover:text-text hover:border-border-strong cursor-pointer transition-colors aria-disabled:opacity-40 aria-disabled:cursor-default',
               treeNoticeNamesRefresh ? 'gap-1 px-1.5' : 'w-[26px]',
             )}
-            title={t('pages.chat.fileBrowserRail.refresh')}
-            aria-label={t('pages.chat.fileBrowserRail.refresh')}
+            // While inert the name says why, keyed on the same flag as `aria-disabled`: a
+            // disabled "Refresh" reads as unavailable, not busy.
+            title={refreshing ? t('pages.chat.fileBrowserRail.refreshing') : t('pages.chat.fileBrowserRail.refresh')}
+            aria-label={refreshing ? t('pages.chat.fileBrowserRail.refreshing') : t('pages.chat.fileBrowserRail.refresh')}
           >
             <RefreshCw size={12} className={refreshing ? 'animate-spin' : ''} />
             {/* When the notice names "Refresh" as the remedy, the control it names has to
@@ -796,11 +863,36 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
             />
           </div>
         )}
+        {(uploadProgress || uploadSuccess) && (
+          <div className="px-2 pt-1.5 shrink-0 flex flex-col gap-1.5">
+            <StatusNotice tone="info" message={uploadProgress} testId="file-browser-rail-upload-progress" />
+            <StatusNotice
+              tone="info"
+              message={uploadSuccess}
+              onDismiss={dismissSuccess}
+              testId="file-browser-rail-upload-success"
+            />
+          </div>
+        )}
+        {/* Files rail, no draft to lose on hand-off: the tree itself holds no
+            unsaved input, so askAgent is safe to leave on. */}
+        {uploadError && (
+          <div className="px-2 pt-1.5 shrink-0">
+            <ErrorNotice
+              variant="inline"
+              message={uploadError}
+              askAgent
+              onDismiss={dismissError}
+              testId="file-browser-rail-upload-error"
+            />
+          </div>
+        )}
         <div className="flex-1 min-h-0 flex flex-col py-1.5 pl-1">
           {contentMode ? (
             <ContentResults
               query={query}
               projectDir={projectDir}
+              active={active}
               // A text hit carries the line it matched on. A document hit has no
               // navigable position (line 0), and passing 0 would ask for a line
               // that does not exist, so the file simply opens at its start.
@@ -824,6 +916,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
                 <NameSearchResults
                   query={query}
                   projectRoot={projectRoot}
+                  active={active}
                   treeRows={{ paths: treeData?.paths ?? [] }}
                   onOpenFile={abs => onFileOpen(abs, false)}
                   onRevealFolder={rel => {
@@ -841,17 +934,34 @@ export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext
                   persistExpansion
                   onFileOpen={(abs) => onFileOpen(abs, changedMode)}
                   onAddToContext={onAddToContext}
+                  onUploadRequest={pickAndUpload}
+                  onNewFileRequest={setNewFileDir}
                   searchQuery={nameSearch ? null : query || null}
                   selectedPath={selectedPath ?? null}
                   onOpenFolder={onOpenFolder ? folder => onOpenFolder(`${projectRoot}/${folder}`) : undefined}
                   reveal={reveal}
                   onRevealed={() => setReveal(null)}
+                  active={active}
                 />
               </div>
             </>
           )}
         </div>
       </div>
+      {fileInput}
+      {newFileDir !== null && (
+        <NewFileDialog
+          folder={folderLabel(newFileDir)}
+          onCreate={name => createFile(newFileDir, name)}
+          onCreated={path => {
+            setNewFileDir(null)
+            // A requested line opens the source editor, so a new markdown file
+            // is ready to type into rather than an empty preview.
+            onFileOpen(path, false, { line: 1 })
+          }}
+          onClose={() => setNewFileDir(null)}
+        />
+      )}
     </>
   )
 }

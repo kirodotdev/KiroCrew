@@ -40,28 +40,40 @@ MAX_PUBLISHED_PARENTS = 1024
 class PublishedQueueDepths:
     """Last published ``subagent_queued`` depth per parent session key."""
 
-    __slots__ = ("_depths",)
+    __slots__ = ("_depths", "_labels")
 
     def __init__(self) -> None:
         self._depths: dict[str, int] = {}
+        # The wait label (``reason`` plus its figures) the same frame carried,
+        # held only beside a non-zero depth, so a reload's first slots frame
+        # can say WHY the rows wait and not only how many.
+        self._labels: dict[str, dict[str, object]] = {}
 
-    def record(self, parent_session_key: str, depth: object) -> None:
+    def record(
+        self, parent_session_key: str, depth: object, label: dict[str, object] | None = None
+    ) -> None:
         """Remember the depth a frame just published for *parent_session_key*.
 
-        A depth that is not an int (a malformed frame) leaves the entry as it
-        was, rather than guessing a count for it.
+        *label* is the frame's wait label; a frame without one forgets the
+        label held before it, as the client does. A depth that is not an int
+        (a malformed frame) leaves the entry as it was, rather than guessing a
+        count for it.
         """
         if not parent_session_key or not isinstance(depth, int) or isinstance(depth, bool):
             return
         # Re-inserted, not updated in place, so the dict's order is recency and
         # the eviction below drops the parent that published longest ago.
         self._depths.pop(parent_session_key, None)
+        self._labels.pop(parent_session_key, None)
         if depth <= 0:
             return
         self._depths[parent_session_key] = depth
+        if label:
+            self._labels[parent_session_key] = dict(label)
         while len(self._depths) > MAX_PUBLISHED_PARENTS:
             evicted = next(iter(self._depths))
             del self._depths[evicted]
+            self._labels.pop(evicted, None)
             logger.debug("Published queue depth table full; dropped %s", evicted)
 
     def get(self, parent_session_key: str) -> int:
@@ -72,6 +84,12 @@ class PublishedQueueDepths:
         """Every held entry (parent session key -> depth), as a copy."""
         return dict(self._depths)
 
+    def labels(self) -> dict[str, dict[str, object]]:
+        """Every held wait label (parent session key -> label), oldest publish
+        first, as copies."""
+        return {k: dict(v) for k, v in self._labels.items()}
+
     def forget(self, parent_session_key: str) -> None:
         """Drop *parent_session_key*'s entry (its parent ended)."""
         self._depths.pop(parent_session_key, None)
+        self._labels.pop(parent_session_key, None)

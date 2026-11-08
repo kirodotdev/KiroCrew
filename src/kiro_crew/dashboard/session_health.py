@@ -475,6 +475,8 @@ def snapshot_state(
     snap = HealthSnapshot(wall_now=wall, mono_now=mono)
     if state is None:
         return snap
+    from kiro_crew.dashboard.chat_utils_slots import session_key_for
+
     subagents = _getattr_soft(state, "subagents", None)
     children = _children_by_parent(subagents) if subagents is not None else {}
     slots = _getattr_soft(state, "_slots", None)
@@ -483,11 +485,10 @@ def snapshot_state(
             skey = str(key)
             if _is_internal(skey):
                 continue
-            kids = children.get(skey, 0)
-            if not kids:
-                # Children are keyed by the EFFECTIVE session key; try it too.
-                eff = _getattr_soft(slot, "linked_session_key", "") or ""
-                kids = children.get(str(eff), 0) if eff else 0
+            # A child records its parent's EFFECTIVE session key: the channel
+            # key for a channel-born slot, else ``dashboard:<slot>``.
+            linked = str(_getattr_soft(slot, "linked_session_key", "") or "")
+            kids = children.get(session_key_for(skey, linked), 0) or children.get(skey, 0)
             try:
                 snap.slots.append(snapshot_slot(slot, children_running=kids, mono_now=mono))
             except Exception:

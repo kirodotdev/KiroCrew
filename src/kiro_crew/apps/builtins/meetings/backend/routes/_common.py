@@ -717,7 +717,7 @@ def hooks_of(request: web.Request) -> Any:
 
     ``context_builder.hooks`` is where the dashboard chat path reads it from: the permission
     phase ``_on_permission_request`` (``chat_turn/tool_approval.py``). When it is absent (a bare
-    test app), None makes ``stream_and_collect`` fall back to its always-enforced deny checks, which
+    test app), None makes the agent turn fall back to its always-enforced deny checks, which
     still cover deny patterns and sensitive paths.
     """
     state = request.app.get("state")

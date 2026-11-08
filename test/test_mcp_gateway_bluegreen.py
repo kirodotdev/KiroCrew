@@ -1,11 +1,8 @@
 """Tests for blue-green backend cutover on credential rotation.
 
-Verifies that when a credential rotation triggers, in-use backends are moved
-to the draining list (invisible to acquire), new acquires spawn fresh
-backends, and draining backends are reaped when refcount hits 0 or deadline
-expires. Also covers the credential-file watcher (content-digest change
-detection, first-observation baseline) and the seam-routed
-``--credential-watch-path`` argv threading in :class:`GatewayManager`.
+On rotation, in-use backends drain (invisible to acquire) and are reaped at refcount 0
+or the deadline. Also covers the credential-file watcher and the
+``--credential-watch-path`` argv in :class:`GatewayManager`.
 """
 
 from __future__ import annotations
@@ -188,7 +185,6 @@ async def test_idle_backends_still_evicted_as_before() -> None:
     pool = BackendPool(max_backends=10)
     key = _make_pool_key()
     backend = _make_mock_backend(key, refcount=0)
-    # Make it look old
     backend.last_used_at = time.monotonic() - 1000
     await pool.add(key, backend)
 
@@ -276,7 +272,7 @@ async def test_drain_deadline_default_used() -> None:
     assert entry.deadline >= before + DRAIN_DEADLINE_SECS - 1.0
 
 
-# --- gatewayd drain-and-rewarm handler ---------------------------------------
+# gatewayd drain-and-rewarm handler
 
 
 @pytest.mark.asyncio
@@ -495,17 +491,10 @@ def test_credwatch_streaming_digest_matches_oneshot(tmp_path: Path) -> None:
 
 
 def _atomic_cred_write(cred: Path, data: bytes) -> None:
-    """Create or replace the credential file ATOMICALLY (write a sibling temp,
-    then ``os.replace`` it into place).
+    """Create or replace the credential file atomically via a sibling temp and ``os.replace``.
 
-    ``Path.write_bytes`` truncates-then-writes non-atomically, leaving a brief
-    window where the file exists but is empty/partial. The ~10 ms credential
-    poller (which runs its digest read in a worker thread) can observe that
-    transient state as a distinct content change and fire a spurious EXTRA time
-    on the native Windows matrix — the same truncate race documented on
-    ``test_credwatch_no_fire_on_byte_identical_rewrite``. A real credential
-    refresh daemon rotates atomically; mirror that here so the watcher sees a
-    single absent→present (or old→new) transition on every OS.
+    ``Path.write_bytes`` truncates first, and the ~10 ms poller can read the empty file
+    and fire an extra time (seen on Windows). Real refresh daemons rotate atomically.
     """
     import os
 
@@ -517,15 +506,9 @@ def _atomic_cred_write(cred: Path, data: bytes) -> None:
 async def _resilient_cred_unlink(cred: Path) -> None:
     """Delete the credential, tolerating the transient Windows sharing violation.
 
-    On Windows a file cannot be deleted while another handle holds it open
-    without ``FILE_SHARE_DELETE`` — which the watcher's worker-thread digest read
-    (a plain ``open(..., "rb")``) does not grant. The test's ``unlink`` therefore
-    races that read and raises ``PermissionError`` (``WinError 32``); POSIX allows
-    deleting an open file, so this never reproduces locally. Retry within a
-    bounded window — exactly what an external credential deleter/rotator does —
-    until the watcher releases the handle between polls. The file still fully
-    EXISTS during the retries, so the watcher keeps reading the unchanged
-    baseline and does not fire until the delete finally lands.
+    The watcher's digest read opens without ``FILE_SHARE_DELETE``, so on Windows the
+    ``unlink`` can raise ``PermissionError`` (``WinError 32``). Retry in a bounded window;
+    the file still exists meanwhile, so the watcher does not fire early.
     """
 
     def _unlinked() -> bool:
@@ -540,13 +523,10 @@ async def _resilient_cred_unlink(cred: Path) -> None:
 
 
 class _ProbeBarrier:
-    """Counts ``watch_credential`` probe cycles so a test can await "N polls
-    have completed" instead of sleeping a wall-clock guess.
+    """Counts ``watch_credential`` probe cycles so a test can await N polls.
 
-    Sleeping is what flakes on Windows. Sleeping 50ms hoping the baseline probe
-    has run, then writing the rotation, races: on a runner with ~15.6ms timer
-    granularity and slower file IO the write can land BEFORE the baseline probe,
-    so the baseline captures the rotated bytes and no change is ever detected.
+    A sleep races on Windows (~15.6 ms timers): the rotation can land before the
+    baseline probe, so no change is ever detected.
 
     Pass an instance as ``on_probe_complete``. The watcher invokes it once per
     cycle, on every branch.
@@ -668,16 +648,9 @@ async def test_credwatch_no_fire_on_byte_identical_rewrite(tmp_path: Path) -> No
         )
     )
     await barrier.wait_for(1)  # baseline established
-    # Simulate a no-op refresh (byte-identical content, moved mtime) by touching
-    # ONLY the mtime — do NOT physically rewrite. The watcher's identity is
-    # (mtime, content-hash), so re-writing the SAME bytes is indistinguishable
-    # from an mtime touch; but a real ``write_bytes`` truncates-then-writes
-    # NON-atomically, and the ~10ms poller can read that transient empty/partial
-    # file (digest != baseline -> a spurious fire, then a second fire when the
-    # full bytes reappear). That truncate race — not the property under test — is
-    # what fails this on Windows. An mtime bump alone reproduces the exact
-    # observable state a well-behaved (atomic) refresh daemon leaves behind and is
-    # deterministic on every OS.
+    # A no-op refresh: touch only the mtime. Rewriting the same bytes with
+    # ``write_bytes`` truncates first, and the ~10ms poller can read the empty file
+    # and fire. An mtime bump leaves the state an atomic refresh daemon leaves.
     import os
 
     st = cred.stat()
@@ -699,9 +672,11 @@ async def test_credwatch_fires_on_content_change(tmp_path: Path) -> None:
     cred.write_bytes(b"secret-v1")
     stop = asyncio.Event()
     fired = asyncio.Event()
+    fires: list[bytes] = []
     barrier = _ProbeBarrier()
 
     async def _on_change() -> None:
+        fires.append(cred.read_bytes())
         fired.set()
 
     task = asyncio.create_task(
@@ -721,8 +696,12 @@ async def test_credwatch_fires_on_content_change(tmp_path: Path) -> None:
     st = cred.stat()
     os.utime(cred, (st.st_atime, st.st_mtime + 10.0))  # defeat coarse mtime gate
     await await_until(fired, what="the rotation firing")
+    # One rotation is one fire: the fired content becomes the new baseline.
+    await barrier.wait_for(barrier.count + 2)
     stop.set()
     await task
+
+    assert fires == [b"secret-v2"]
 
 
 @pytest.mark.asyncio
@@ -739,9 +718,11 @@ async def test_credwatch_fires_on_content_change_with_unchanged_mtime(tmp_path: 
     baseline_mtime = cred.stat().st_mtime
     stop = asyncio.Event()
     fired = asyncio.Event()
+    fires: list[bytes] = []
     barrier = _ProbeBarrier()
 
     async def _on_change() -> None:
+        fires.append(cred.read_bytes())
         fired.set()
 
     task = asyncio.create_task(
@@ -762,8 +743,11 @@ async def test_credwatch_fires_on_content_change_with_unchanged_mtime(tmp_path: 
     os.utime(cred, (baseline_mtime, baseline_mtime))
 
     await await_until(fired, what="the rotation firing")
+    await barrier.wait_for(barrier.count + 2)
     stop.set()
     await task
+
+    assert fires == [b"secret-v2"]
 
 
 @pytest.mark.asyncio

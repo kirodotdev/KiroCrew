@@ -60,6 +60,7 @@ export const GUIDE_PREDICATE_EVALUATORS: Record<UiRuntimePredicateId, () => bool
   crewmate_danger_zone_open: () => reported('crewmate_danger_zone_open'),
   crewmate_place_pane_open: () => reported('crewmate_place_pane_open'),
   crewmate_model_pane_open: () => reported('crewmate_model_pane_open'),
+  crewmate_panel_not_docked: () => reported('crewmate_panel_not_docked'),
   no_response_running: () => reported('no_response_running'),
   mouse_input: () => reported('mouse_input'),
   phone_connect_available: () => reported('phone_connect_available'),
@@ -69,7 +70,6 @@ export const GUIDE_PREDICATE_EVALUATORS: Record<UiRuntimePredicateId, () => bool
 
 /** One evaluator per gate, like predicates; a preview flag is read from storage directly. */
 export const GUIDE_GATE_EVALUATORS: Record<UiGateId, () => boolean | null> = {
-  developer_mode: () => reported('developer_mode'),
   terminal_enabled: () => reported('terminal_enabled'),
 }
 
@@ -274,6 +274,7 @@ export const GUIDE_PREDICATE_TEXT_KEYS: Record<UiRuntimePredicateId, string> = {
   crewmate_danger_zone_open: 'components.guideLayer.predicate_crewmate_danger_zone_open',
   crewmate_place_pane_open: 'components.guideLayer.predicate_crewmate_place_pane_open',
   crewmate_model_pane_open: 'components.guideLayer.predicate_crewmate_model_pane_open',
+  crewmate_panel_not_docked: 'components.guideLayer.predicate_crewmate_panel_not_docked',
   no_response_running: 'components.guideLayer.predicate_no_response_running',
   mouse_input: 'components.guideLayer.predicate_mouse_input',
   phone_connect_available: 'components.guideLayer.predicate_phone_connect_available',
@@ -299,6 +300,5 @@ export const GUIDE_SELECTION_TEXT_KEYS: Record<typeof UI_SELECTION_SCOPES[UiSele
 
 /** A gate with no setting to name says what it needs in its own words. */
 export const GUIDE_GATE_TEXT_KEYS: Record<UiGateId, string> = {
-  developer_mode: 'components.guideLayer.gate_developer_mode',
   terminal_enabled: 'components.guideLayer.gate_terminal_enabled',
 }

@@ -32,10 +32,9 @@ function browseCards(page: Page) {
  * An installed app in the Library launchpad grid. Each app renders as a
  * LaunchpadTile whose root carries `data-testid="launchpad-tile-<name>"`
  * (the app NAME, e.g. "projects" -- not the display name). Anchoring on the
- * testid also keeps the lookup unambiguous: the tile's pin badge and
- * overflow trigger are buttons whose accessible names CONTAIN the display
- * name ("Pin Task Runner to the sidebar", "More actions for Task Runner"),
- * and an installed builtin also appears in the nav rail.
+ * testid also keeps the lookup unambiguous: the tile's overflow trigger is a
+ * button whose accessible name CONTAINS the display name ("More actions for
+ * Task Runner"), and an installed builtin also appears in the nav rail.
  */
 function launchpadTile(page: Page, appName: string) {
   return page.getByTestId(`launchpad-tile-${appName}`)
@@ -196,8 +195,8 @@ test.describe('App Page — /apps/:name', () => {
 
   test('nonexistent app shows not-found state via AppHost', async ({ page }) => {
     await page.goto('/apps/this-definitely-does-not-exist-zyx', { waitUntil: 'domcontentloaded' })
-    // AppHost renders AppNotFound with subtitle containing "is not installed"
-    await expect(page.locator('text=is not installed')).toBeVisible({ timeout: 10000 })
+    // AppHost renders AppNotFound titled "<requested name> isn't installed"
+    await expect(page.getByText("this-definitely-does-not-exist-zyx isn't installed")).toBeVisible({ timeout: 10000 })
   })
 
   test('/apps/:name does NOT collide with /:builtinApp catch-all', async ({ page }) => {
@@ -205,7 +204,7 @@ test.describe('App Page — /apps/:name', () => {
     // (single segment), so there is no precedence conflict.
     await page.goto('/apps/fake-precedence-test', { waitUntil: 'domcontentloaded' })
     // Wait for AppPage to finish loading — renders not-found for unknown apps
-    await expect(page.locator('text=is not installed')).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText("fake-precedence-test isn't installed")).toBeVisible({ timeout: 10000 })
     const url = page.url()
     expect(url).not.toContain('/chat')
   })

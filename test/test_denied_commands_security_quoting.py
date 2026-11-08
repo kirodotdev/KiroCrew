@@ -103,8 +103,7 @@ class TestDenyMatchingIsQuoteNormalized:
     def test_nested_shell_payloads_are_viewed_in_their_own_right(self):
         """A shell's ``-c`` argument is a COMMAND, and ``shlex`` strips only the
         OUTER quoting level -- so the payload's own inner quoting survives the
-        parent's re-join and the rule still misses it.  Found by the GPT 5.6
-        review lane on this change.  Every literal payload spelling
+        parent's re-join and the rule still misses it.  Every literal payload spelling
         ``_nested_shell_payloads`` recognises must therefore be viewed too.
         """
         for cmd in (
@@ -169,7 +168,7 @@ class TestDenyMatchingIsQuoteNormalized:
         """Forensics needs both halves.  The view names the command that WOULD
         have run; only the raw spelling shows the evasion.  The full input is
         already in ``operation``, so what the extra field adds is WHICH segment
-        normalized into the match (Design Review suggestion).
+        normalized into the match.
         """
         from kiro_crew import security
 
@@ -200,8 +199,8 @@ class TestDenyMatchingIsQuoteNormalized:
 
         The PR that added this view asserted that
         ``is_denied_synthesized_target`` needs no normalized view because its
-        input is gate-constructed rather than shell text.  Pinning that
-        assumption (Design Review suggestion) DISPROVED it: the ``path`` VALUE is
+        input is gate-constructed rather than shell text.  That assumption does
+        not hold: the ``path`` VALUE is
         model-authored, and ``_normalize_search_path`` resolves home variables and
         dot segments but not quoting, so a quote character survives into the
         synthesized target and a path-keyed operator rule can miss it the same way
@@ -983,9 +982,9 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
             assert is_denied(cmd) is not None, f"empty word escaped the rule: {cmd!r}"
 
     def test_the_tolerant_rule_family_does_not_regress(self):
-        """``chmod`` was denied BEFORE this change, by a rule that tolerates the
-        extra separator, so it is the control that proves the fix did not trade
-        one family for another."""
+        """``chmod`` is denied by a rule that tolerates the extra separator, so it
+        is the control that proves the empty-word handling did not trade one
+        family for another."""
         for cmd in (
             "chmod 777 /etc/passwd",
             'chmod "" 777 /etc/passwd',
@@ -1005,7 +1004,7 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
             assert is_denied(cmd) is not None, f"nested empty word escaped: {cmd!r}"
 
     def test_the_tokenizer_still_reports_the_element(self):
-        """The fix is in the RECOGNIZER, not the lexer.  ``_shell_tokens`` is
+        """The empty word is handled in the RECOGNIZER, not the lexer.  ``_shell_tokens`` is
         documented as argv the way a POSIX shell hands it over, and an
         empty-quoted word really is an element of that argv -- so it stays, and
         the ~19 path-normalizer consumers see unchanged tokens.  Only the view
@@ -1029,14 +1028,13 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         )
 
     def test_the_elided_view_is_added_and_never_substituted(self):
-        """A rule that REQUIRES an intervening token matched the double-spaced
-        view, so replacing that view instead of adding beside it REMOVED an
+        """A rule that REQUIRES an intervening token matches the double-spaced
+        view, so replacing that view instead of adding beside it would REMOVE an
         existing denial.
 
-        Found by the GPT 5.6 review lane and reproduced against the merge-base:
-        with a custom rule ``rm -rf .* ./data``, the spelling
-        ``r""m -rf "" ./data`` was refused before this change and became allowed
-        when the plain join was dropped -- the rule matches neither the elided
+        With a custom rule ``rm -rf .* ./data``, the spelling
+        ``r""m -rf "" ./data`` is refused only through the plain join; with the
+        plain join dropped it is allowed -- the rule matches neither the elided
         view nor the command's canonical spelling ``rm -rf ./data``, which that
         rule never covered.  The ``r""m`` spelling is what isolates it: the
         simpler ``rm -rf "" ./data`` keeps a raw-view match, because ``.*``
@@ -1095,7 +1093,7 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
                 yield at, word, " ".join(words[:at] + [word] + words[at:])
 
     def test_inserting_an_empty_word_at_any_boundary_changes_no_view(self):
-        """The mechanical catch the issue's pattern harvest asked for, expressed
+        """The mechanical catch for the whole empty-word class, expressed
         against the VIEW instead of rule by rule.
 
         The harvest proposed asserting that inserting ``""`` at each argument
@@ -1121,8 +1119,8 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
     def test_the_deny_decision_follows_the_view_for_every_boundary(self):
         """The view property above, carried through to the decision the gate
         actually returns.  The non-git bases are decided by the deny TIERS;
-        the git base is enforced by the argv floor, swept here now that its
-        empty-word gap is closed (an interposed word now denies at
+        the git base is enforced by the argv floor, swept here too because it
+        has no empty-word gap (an interposed word denies at
         every boundary -- via the protected-branch rule where the parse holds,
         via the ungated anti-obfuscation branch where it does not)."""
         from kiro_crew import security
@@ -1143,9 +1141,9 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         solely by an argv floor (``_git_publish_floor_tags``).  Its entry
         detector's raw-text pass still requires the program and subcommand
         adjacent, but the normalizer second pass
-        (``_is_git_push_via_normalizer``) now skips empty and whitespace-only
-        argv words when seeking the subcommand, so an interposed empty word no
-        longer hides the push from the floor.  The widening is deliberate
+        (``_is_git_push_via_normalizer``) skips empty and whitespace-only
+        argv words when seeking the subcommand, so an interposed empty word does
+        not hide the push from the floor.  The widening is deliberate
         fail-closed OVER-detection: git does not ignore a zero-width word (it
         takes it as its command name and exits), so a spelling this newly
         reaches either fails to run a push at all or was already reached in
@@ -1175,7 +1173,7 @@ class TestEmptyArgvElementDoesNotBreakTheDenyView:
         # itself: the end-to-end deny above can also arrive via the ungated
         # parse-failure branch, and the flag spellings below already match the
         # pass-1 raw regex, so only a direct call proves the normalizer seek
-        # now steps over the empty word (and, for the flag rows, that a global
+        # steps over the empty word (and, for the flag rows, that a global
         # flag still consumes its empty argument without drifting off the
         # subcommand position).
         for cmd in (

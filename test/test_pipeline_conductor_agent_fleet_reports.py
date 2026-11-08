@@ -1,10 +1,8 @@
 """Pipeline-conductor fleet probe: how a worker's tail is read.
 
-Topic classes of ``TestFleetProbe`` in ``test_pipeline_conductor_agent.py``, one per
-section of it: the tail index, TERMINAL and sticky BLOCKED, decoration on the protocol
-prefix, the delivery counters, NOPROGRESS, and backward compatibility together with the
-standing behaviours these must not break. They run the real script over hand-authored
-fixtures through ``FleetProbeHarness``.
+Topic classes for ``TestFleetProbe``: the tail index, TERMINAL and sticky BLOCKED, prefix
+decoration, delivery counters, NOPROGRESS and backward compatibility. Each runs the real
+script over hand-written fixtures through ``FleetProbeHarness``.
 """
 
 from __future__ import annotations
@@ -51,11 +49,8 @@ class TestFleetProbeTailIndex(FleetProbeHarness):
     def test_the_index_stays_monotonic_past_the_parse_cap(self, tmp_path, capsys, monkeypatch):
         """Counted from the START of the file, not the start of the parse window.
 
-        A window-relative count saturates once a transcript passes ``tail_bytes``
-        and then stays frozen while the session talks -- reading, at exactly the
-        sizes real worker sessions reach, as the deadlock the index exists to
-        detect. Here the transcript is deliberately far larger than the cap, and
-        the rows are the session's OWN so they count.
+        A window-relative count freezes past ``tail_bytes`` and reads as deadlock. The
+        rows here are the session's OWN, so they count.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-big"], tail_bytes=2000)
@@ -174,13 +169,8 @@ class TestFleetProbeTerminal(FleetProbeHarness):
     def test_blocked_survives_the_heartbeats_that_follow_it(self, tmp_path, capsys, monkeypatch):
         """A ruling owed must not be lost to SAMPLING.
 
-        The probe samples; it does not subscribe. The protocol tells a blocked
-        worker to keep reporting status, so the worker's own next ``WORKING:``
-        overwrites the only message a newest-message classifier reads, and the
-        debt becomes invisible on both sides: the worker holds position waiting
-        for a ruling, the conductor never learns it owes one. Nothing is
-        suppressed here and nothing is deferred -- the signal is simply never
-        observed. So ``BLOCKED`` is sticky, and a heartbeat cannot clear it.
+        The probe reads the newest message, and a blocked worker's next ``WORKING:``
+        would hide the debt. So ``BLOCKED`` is sticky, and a heartbeat cannot clear it.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-blocked"])
@@ -235,15 +225,10 @@ class TestFleetProbeTerminal(FleetProbeHarness):
         assert "BLOCKED" in self._run(mod, cfg, capsys)
 
     def test_a_real_report_clears_a_sticky_blocked(self, tmp_path, capsys, monkeypatch):
-        """Only a heartbeat is transparent. A worker that was blocked and then
-        files ``PR``/``GREEN``/``STANDDOWN`` has moved on, and continuing to
-        demand a ruling for it would manufacture the opposite error.
+        """Only a heartbeat is transparent: ``PR``/``GREEN``/``STANDDOWN`` clears it.
 
-        What is asserted is the CLEARING, not what fires in its place. A report
-        followed by a heartbeat has always been quiet -- the heartbeat is the
-        newest message -- and that is pre-existing behaviour this extension does
-        not change; ``test_a_real_report_after_a_blocker_fires_on_its_own`` covers
-        the case where the report IS the newest message.
+        This asserts the CLEARING only; ``test_a_real_report_after_a_blocker_fires_on_its_own``
+        covers the report being the newest message.
         """
         mod = self._mod()
         for tag, line in (
@@ -347,11 +332,8 @@ class TestFleetProbeDecoration(FleetProbeHarness):
     def test_a_bolded_prefix_still_classifies(self, tmp_path, capsys, monkeypatch):
         """A tag matched at position zero is defeated by ANY leading decoration.
 
-        ``**BLOCKED:**`` puts an asterisk where the tag has to be, so the match
-        fails and the line falls through as no-prefix -- and on a fresh transcript
-        IDLE does not fire either, so the report is not delayed, it is silent.
-        Emphasis is ordinary formatting habit rather than a protocol violation, so
-        the reader normalises instead of the writer remembering.
+        On a fresh transcript IDLE does not fire either, so ``**BLOCKED:**`` would be
+        silent. Emphasis is ordinary habit, so the reader normalises it.
         """
         mod = self._mod()
         cases = {
@@ -539,7 +521,9 @@ class TestFleetProbeDeliveryCounters(FleetProbeHarness):
         self._session(sessions, "s-fine", "WORKING: healthy")
         out = self._run(mod, cfg, capsys)
         assert "deliver init-timeout 1, watchdog 1" in out
-        assert "| foreign 0 |" in out  # 2d's counter sits before deliver
+        # 2d's counter sits before deliver; the helper's proc root is absent, so
+        # the counter reads as unmeasured.
+        assert "| foreign n/a |" in out
 
     def test_delivery_patterns_are_configurable(self, tmp_path, capsys, monkeypatch):
         mod = self._mod()
@@ -743,12 +727,8 @@ class TestFleetProbeNoProgress(FleetProbeHarness):
     def test_a_second_disposition_does_not_destroy_the_first(self, tmp_path, capsys, monkeypatch):
         """An answered report must not re-present because a later tag was marked.
 
-        The handled set holds ONE entry per key, so marking a condition tag
-        (``IDLE``/``NOPROGRESS``) over an answered payload tag must not overwrite
-        the record that the payload was dealt with -- otherwise the answered ruling
-        fires again, sending the conductor to re-adjudicate something it has
-        already decided. The payload disposition is preserved beside the new
-        entry, which is the shape ``proto`` already uses for the terminal reading.
+        The handled set holds ONE entry per key, so marking ``IDLE``/``NOPROGRESS`` keeps
+        the payload disposition beside it (the shape ``proto`` uses for terminal).
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-two"], idle_alert_secs=100)
@@ -787,11 +767,8 @@ class TestFleetProbeNoProgress(FleetProbeHarness):
     ):
         """The needle matches a row's own opening, not text inside one.
 
-        Nudges quote things, and a nudge that quoted a transcript row would
-        otherwise advance the index -- defeating the detector in exactly the
-        inbound-row case it guards. Valid JSONL already prevents the obvious
-        version (``json.dumps`` escapes the inner quotes), so this pins the
-        line-anchoring that makes the count correct WITHOUT relying on that.
+        A nudge quoting a transcript row must not advance the index. ``json.dumps``
+        escaping already prevents it; this pins the line-anchoring on its own.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-quoted"], idle_alert_secs=100)
@@ -824,12 +801,8 @@ class TestFleetProbeNoProgress(FleetProbeHarness):
     def test_an_inbound_nudge_does_not_advance_the_index(self, tmp_path, capsys, monkeypatch):
         """The index counts what the SESSION produced, never what arrived.
 
-        A transcript holds nudges, injected recovery notices and user turns
-        alongside the session's own rows. Counting all of them means the
-        conductor's own nudge advances the index of the worker it just nudged, so
-        a wedged session reads as progress at exactly the moment the conductor
-        pokes it -- the false negative the index exists to prevent. Tool rows DO
-        count: a session running tools is working even while it is silent.
+        Otherwise the conductor's own nudge reads as progress from a wedged worker.
+        Tool rows DO count: a session running tools is working.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-poked"], idle_alert_secs=100)
@@ -1014,7 +987,7 @@ class TestFleetProbeCompatibility(FleetProbeHarness):
         self._session(tmp_path / "sessions", "s-1", "WORKING: fine")
         out = self._run(mod, cfg, capsys)
         assert re.search(
-            r"OK 1 watched, 0 fired \| .*\| banned 0 \| foreign 0 \| "
+            r"OK 1 watched, 0 fired \| .*\| banned n/a \| foreign n/a \| "
             r"deliver init-timeout 0, watchdog 0",
             out,
         ), out
@@ -1025,10 +998,8 @@ class TestFleetProbeCompatibility(FleetProbeHarness):
         """An IDLE disposition expires: a nudged-but-still-silent worker has to
         re-alert rather than vanish behind its own disposition.
 
-        The session emits one more line after the mark, so the index moves and
-        this stays a test of the CLOCK. A session that produces nothing after a
-        disposition is the NOPROGRESS case, which is a different tag with the same
-        expiry.
+        The session emits one more line after the mark, so the index moves and this
+        tests the CLOCK, not NOPROGRESS.
         """
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-quiet"], idle_alert_secs=100)

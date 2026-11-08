@@ -1,12 +1,34 @@
 # Skills
 
-Skills are directories containing `SKILL.md` files. Global skills live in `~/.kiro/crew/skills/`.
+Skills are directories containing `SKILL.md` files. Global skills live in `~/.kiro/crew/skills/`. For project skills and what kiro-cli shares, see [Where Skills, Steering and Agents Live](#where-skills-steering-and-agents-live).
 
 ## How Skills Work
 
 - **Always-on skills**: `always: true` injects full content into every eligible session. A project's own always-on skills share a smaller project budget; one that does not fit is left out and listed in the session with a pointer to read it instead.
 - **On-demand skills**: the session starts with a summary; the agent can load the full file when it applies.
 - **Triggered skills**: when `skills.max_triggered` is positive, matching positive triggers inject the skill; the default is `0`, which disables per-turn trigger matching.
+
+## Auto-generated skills
+
+Open **Settings > Skills** and turn on **Auto-generate skills from sessions**.
+It is off by default. Eligible session excerpts need at least
+`skills.auto_min_tool_calls` tool calls (five by default), must pass the
+sensitive-content checks, and must demonstrate a procedure a future session
+could reuse on a different target. Incognito and Temporary chats do not produce
+candidates. A long session alone does not qualify, and duplicate procedures do
+not become new skills.
+
+**Require approval before generated skills go live** is on by default. Review
+pending candidates under **Customize > Skills** before approving them. Turning
+that setting off lets new prose-only skills go live without review. Skills
+containing scripts always require approval, and so does an update to a skill
+that is already live: it waits in the same queue, marked **Update**. The
+**Stop requiring skill approval…** button on a pending-skill notification only
+opens that setting, so it changes nothing about updates.
+
+The separate `skills.auto_refine_on_deviation` setting, off by default, works
+differently: when it is on, a session that finds a better procedure for a
+generated skill it used rewrites that skill in place, without review.
 
 ## Skill Structure
 
@@ -47,6 +69,7 @@ Instructions, examples, and reference material that the agent reads when this sk
 | `name` | No | Display name; the loader uses the directory-relative path when it is absent. |
 | `description` | No | Summary used in skill listings; the loader falls back to the directory-relative path. |
 | `always` | No | `true` to inject full content every eligible session. |
+| `inclusion` | No | Not read on a skill: it is the [steering](steering-and-hooks.md) key. A skill that sets `inclusion: always` without `always: true` stays on demand, and the log names its file once. Add `always: true`; the two keys can sit side by side. |
 | `triggers` | No | Comma-separated phrases. A positive phrase matches when at least 70% of its words appear in the user text. Case is ignored. Prefix a phrase with `=` to match it exactly as written, for a name that is also an ordinary word: `=Word` fires on "Word" but not on "word". Prefix with `!` for a negative trigger; every negative-trigger word must appear to exclude the skill. |
 | `inject_on_trigger` | No | Defaults to `true`. For non-project skills, `false` contributes a one-line pointer instead of the full body. Trusted project skills always inject their body. |
 | `repo_scope` | No | Restricts injection to a session whose active project or an ancestor contains the specified relative path. |
@@ -60,7 +83,7 @@ warning naming the file. Re-save it as UTF-8 to load it.
 
 ### Via Dashboard
 
-Overview → Skills tab → "+ New" button → enter name and content.
+Customize → Skills → Create New Skill → enter name and content.
 
 ### Via Chat
 
@@ -74,6 +97,25 @@ Create `~/.kiro/crew/skills/my-skill/SKILL.md` with frontmatter and content.
 
 Kiro Crew ships with built-in skills that are synced from the packaged skills directory on startup. These cover common workflows like URL shortening, code search, and writing assistance.
 
+## Telling Where a Skill Came From
+
+A script that copies only your own skills out of `~/.kiro/crew/skills/` (to a backup or a dotfiles repository, say) can tell them apart from the ones Kiro Crew put there, with no gateway running. These markers are the supported way to do it.
+
+| Marker | Where | Means |
+|---|---|---|
+| `.builtin-skill-provenance` | a file in the skill's folder | a built-in skill (a hidden `.<name>.superseded` copy carries it too) |
+| `.kirocrew-managed` | a file in the skill's folder | a deploy skill Kiro Crew manages (`artifact-deploy`, `deploy-web`) |
+| `.app-skill-links.json` | one file in `~/.kiro/crew/skills/` | the app that owns each app-skill link |
+| `app:` | a line in the frontmatter of a skill that also carries `.builtin-skill-provenance` | that built-in skill belongs to the named app |
+
+An app skill is a link (a junction on Windows) into the app's own folder, so it has no folder of its own to hold a marker. `.app-skill-links.json` lists each such link by its path under the skills folder, the `<app>/<skill>` link and the flat `<skill>` link alike, with the app that owns it:
+
+```json
+{"format": 1, "links": {"dev-fleet/pod-e2e": {"app": "dev-fleet"}, "pod-e2e": {"app": "dev-fleet"}}}
+```
+
+Kiro Crew rewrites it from the links on disk whenever it links or unlinks an app's skills, so a hand edit does not last.
+
 ## Skill Sources and Priority
 
 1. `~/.kiro/crew/skills/` — global skills.
@@ -86,10 +128,23 @@ The startup sync also copies `$KIROCREW_PROJECT_DIR/skills/` and packaged built-
 
 The dashboard can grant trust only to the requesting chat's active project. Before recording a grant, Kiro Crew canonicalizes the path, requires an existing readable directory, and verifies that the reviewed canonical key still matches; trusted project skills are then read from `<project>/.kiro/skills/`. Revoking the grant stops those project skills from loading.
 
+## Where Skills, Steering and Agents Live
+
+The default folders for each of these, in user and project scope. Project scope is the chat's project folder. For skills, the table describes the default agent's skill catalog, the one its `skill_search` reads; what a custom agent gets depends on its mapping and the harness ([Mapping Skills to an Agent](agents.md#mapping-skills-to-an-agent)). There is no separate rules folder: steering files are the rules, and they live under `~/.kiro/`, not `~/.kiro/crew/`.
+
+| Asset | User scope | Project scope | Shared with kiro-cli? |
+|---|---|---|---|
+| Skills | `~/.kiro/crew/skills/` (moved by `KIROCREW_HOME`), plus any extra skill paths | `<project>/.kiro/skills/`, once you [trust that project](#project-skill-trust) | The project folder, yes. kiro-cli's `~/.kiro/skills/`, no: it is not in the catalog until you add it under **Settings → Skills → Extra skill paths**. |
+| Steering | `~/.kiro/steering/**/*.md` | `<project>/.kiro/steering/**/*.md` | Yes, the same folders ([Where they live](steering-and-hooks.md#where-they-live)) |
+| `AGENTS.md` | none | `<project>/AGENTS.md` | Yes, the same file |
+| Agents | `~/.kiro/agents/` | `<project>/.kiro/agents/` | Yes, the same folders kiro-cli looks up `--agent` in ([Custom agents](agents.md#custom-agents)) |
+
+MCP servers and your kiro-cli login carry over as [What carries over](coming-from-kiro-cli.md#what-carries-over) describes. This table covers what Kiro Crew and kiro-cli read, not Kiro IDE.
+
 ## Importing Skills from a GitHub Repository
 
-Settings → Skills → Discover searches a public registry and, when what you type
-looks like a repository address, your own GitHub repositories:
+Customize → Skills → Add Skill searches a public registry and, when what you
+type looks like a repository address, your own GitHub repositories:
 
 ```
 acme/widgets                           every skill in the repo, default branch

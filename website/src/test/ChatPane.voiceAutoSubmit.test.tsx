@@ -21,7 +21,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer, { setActiveSlot, sseChatMessage } from '../store/chatSlice'
-import dashboardReducer from '../store/dashboardSlice'
+import dashboardReducer, { sseSlots } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
 import { __resetComposerSendHoldsForTests, holdComposerSend } from '../utils/composerSendHolds'
@@ -50,6 +50,7 @@ vi.mock('../api/client', () => ({
     dashboardConfig: vi.fn().mockImplementation(() => Promise.resolve({ decisions_enabled: cfg.decisions })),
     getDecisionsConsent: vi.fn().mockImplementation(() => Promise.resolve({ permits: cfg.decisions })),
     sttConfig: vi.fn().mockResolvedValue({ enabled: true, streaming: true, dictation_panel: true, provider: 'transcribe', available: true }),
+    crewWorkers: vi.fn().mockResolvedValue({ root: 'gone-root', root_closed: true, root_title: 'Closed goal', workers: [] }),
   },
   SEARCH_MIN_CHARS: 2,
   ApiError: class ApiError extends Error {
@@ -89,16 +90,17 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
+import { crewModePreviewOn } from './crewModePreview'
 
 const SLOT = 'pane-slot'
 
-function makeStore(running: boolean, subagentsOnly: boolean) {
+function makeStore(running: boolean, subagentsOnly: boolean, crewRoot = '') {
   const store = configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
       dashboard: {
         status: null, connected: true,
-        slots: [{ key: SLOT, messages: 0, running, subagents_running: subagentsOnly, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+        slots: [{ key: SLOT, messages: 0, running, subagents_running: subagentsOnly, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(crewRoot ? { crew_root: crewRoot } : {}) }],
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -197,6 +199,37 @@ describe('pane voice auto-submit follows the busy-send mode', { timeout: 20_000 
     expect(steerArgOf(call)).toBe(true)
   })
 
+  it('sends nothing when the conductor closes while a crew member is dictating, and keeps the dictation', async () => {
+    // The box turns off when the conductor closes; an endpoint that arrives
+    // after that must not post the dictation around the gate.
+    vi.mocked(api.crewWorkers).mockResolvedValue({ root: 'live-root', workers: [] } as never)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = makeStore(false, false, 'live-root')
+    store.dispatch(sseSlots([...store.getState().dashboard.slots, { key: 'live-root', messages: 1, running: false, crew_mode_root: true } as never]))
+    vi.spyOn(appStore, 'getState').mockImplementation(store.getState)
+    render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatPane slotKey={SLOT} />
+            </MemoryRouter>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    const input = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    const mic = await screen.findByRole('button', { name: /voice input/i })
+    await act(async () => { fireEvent.click(mic) })
+    await act(async () => { voice.onPartial?.('dictated words') })
+    expect(input.value).toBe('dictated words')
+    // The conductor's tab closes: its row leaves the slot list.
+    await act(async () => { store.dispatch(sseSlots(store.getState().dashboard.slots.filter(s => s.key !== 'live-root'))) })
+    await act(async () => { voice.onEndpoint?.(); await Promise.resolve() })
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(input.value).toBe('dictated words')
+  })
+
   it('sends nothing while an upload holds the composer, even where it would steer', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const store = makeStore(true, false)
@@ -225,3 +258,6 @@ describe('pane voice auto-submit follows the busy-send mode', { timeout: 20_000 
     expect(input.value).toBe('dictated words')
   })
 })
+
+// Last, after the file's own hooks that clear localStorage: Crew Mode is a feature preview.
+crewModePreviewOn()

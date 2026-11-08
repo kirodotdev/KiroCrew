@@ -27,9 +27,8 @@ from kiro_crew.session_map import ConversationOwnershipConflict
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the autouse fixture of test_discord_sessions.py and the suites split out of it, moved verbatim; none of them calls monkeypatch.undo()
-def _isolated_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+def _isolated_home(tmp_path, _floor_monkeypatch):
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
 
 
 class _Client(MultipartFake):
@@ -265,6 +264,10 @@ class _Sessions:
 
     async def try_acquire(self, key: str) -> bool:
         self.targeted.append(("try_acquire", key))
+        return False
+
+    def is_retiring(self, key: str) -> bool:
+        self.targeted.append(("is_retiring", key))
         return False
 
     def clear_queue(self, key: str, owned_by: Any = None) -> None:

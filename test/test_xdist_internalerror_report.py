@@ -14,6 +14,8 @@ to reproduce it. They fail on base with ImportError: the hooks did not exist.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from conftest import (
@@ -112,3 +114,25 @@ def test_node_without_gateway_id_is_still_recorded():
     pytest_testnodedown(object(), "worker crashed hard")
 
     assert _crashed_workers == [("<unknown worker>", "worker crashed hard")]
+
+
+def test_clean_finish_with_assigned_work_names_the_case(capsys):
+    """xdist's ``assert not crashitem`` with no recorded crash names the clean finish."""
+    queue = {"test/test_x.py::test_a": {"test/test_x.py::test_a": False}, "g": {"b": False}}
+    dsession = SimpleNamespace(sched=SimpleNamespace(workqueue=queue))
+
+    def worker_workerfinished(self, node, crashitem):  # the xdist DSession frame that asserts
+        assert not crashitem, (crashitem, node)
+
+    with pytest.raises(AssertionError) as excinfo:
+        worker_workerfinished(dsession, _FakeNode("gw0"), "test/test_x.py::test_a")
+    result = pytest_internalerror(excrepr="INTERNALERROR> assert not crashitem", excinfo=excinfo)
+
+    assert result is None
+    err = capsys.readouterr().err
+    assert "worker gw0 finished while still assigned work" in err
+    assert "never started: test/test_x.py::test_a" in err
+    assert "The scheduler still queued 2 selected items" in err
+    assert "Re-run the shard" in err
+    assert "Worker gw0's session_end progress record" in err
+    assert "crashed-worker" not in err

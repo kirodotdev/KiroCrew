@@ -32,15 +32,9 @@ from kiro_crew.testing.wait import await_until
 class TestInboundReplayResolvesItsSpoolWhenScheduled:
     """The detached replay pass reads the spool THIS boot resolved, not a later one.
 
-    ``_start_channel_transports`` schedules ``_replay_spooled_inbound`` as a detached
-    task, and the pass reads the spool on a worker thread (``asyncio.to_thread``).
-    Resolving ``spool_path()`` there means resolving the data home at whatever
-    moment the thread runs -- under the suite, after the starting test's
-    ``KIROCREW_HOME`` pin is gone. Five full runs left
-    ``~/.kiro/crew/inbound-spool/refused.jsonl.lock`` in the operator's REAL data
-    home exactly this way. The scheduler now resolves the path on the loop as it
-    creates the task; this pins that the path the pass receives is the one in
-    force at schedule time.
+    The pass reads the spool on a worker thread, which may run after the test's
+    ``KIROCREW_HOME`` pin is gone and write a lock into the REAL data home. So
+    ``spool_path()`` is resolved on the loop when ``_replay_spooled_inbound`` is scheduled.
     """
 
     @pytest.mark.asyncio
@@ -158,11 +152,9 @@ class TestConnectSlackResilience:
 class TestUnreadyChannelBadge:
     """An ENABLED channel that cannot start owes the operator a reason.
 
-    Its factory returns None silently, so ``channel_status`` reported
-    ``{connected: False, error: ""}``, byte-identical to a channel nobody
-    configured, which System > Services deliberately filters out. The badge is what
-    makes the two distinguishable, and it names the missing credential rather than
-    only producing a row.
+    Its factory returns None silently, so without the badge ``channel_status`` matches
+    a channel nobody configured, which System > Services filters out. The badge names
+    the missing credential.
     """
 
     def _orch_with(self, **sections):
@@ -174,7 +166,7 @@ class TestUnreadyChannelBadge:
             section = getattr(orch._cfg, name)
             for key, value in values.items():
                 object.__setattr__(section, key, value)
-        orch._cfg.load_credentials = lambda: {}
+        orch._cfg.load_credentials = lambda **kw: {}
         boot = tuple(ChannelDescriptor(channel_type=name, start=AsyncMock()) for name in sections)
         return orch, boot
 
@@ -187,16 +179,18 @@ class TestUnreadyChannelBadge:
         # guessing which of several a channel needs.
         assert "TELEGRAM_BOT_TOKEN" in error
 
-    def test_a_disabled_channel_is_not_badged(self):
-        """It has nothing to report, and a row for it would be the noise the
-        Services filter exists to remove."""
-        orch, boot = self._orch_with(telegram={"enabled": False, "bot_token": ""})
-        orch._badge_unready_channels(boot)
-        assert not isinstance(orch.dashboard_state.telegram_connect_error, str)
-
-    def test_a_ready_channel_is_not_badged(self):
-        """A credentialed channel is the gateway's own outcome to report."""
-        orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": "12345:AA"})
+    @pytest.mark.parametrize(
+        ("enabled", "bot_token"),
+        [
+            # A disabled channel has nothing to report, and a row for it would be
+            # the noise the Services filter exists to remove.
+            pytest.param(False, "", id="test_a_disabled_channel_is_not_badged"),
+            # A credentialed channel is the gateway's own outcome to report.
+            pytest.param(True, "12345:AA", id="test_a_ready_channel_is_not_badged"),
+        ],
+    )
+    def test_channel_is_not_badged(self, enabled: bool, bot_token: str):
+        orch, boot = self._orch_with(telegram={"enabled": enabled, "bot_token": bot_token})
         orch._badge_unready_channels(boot)
         assert not isinstance(orch.dashboard_state.telegram_connect_error, str)
 
@@ -210,12 +204,19 @@ class TestUnreadyChannelBadge:
         """Best-effort by construction: a diagnostic must not stop a transport."""
         orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": ""})
         orch._cfg.load_credentials = MagicMock(side_effect=RuntimeError("cred store down"))
-        orch._badge_unready_channels(boot)  # must not raise
+        orch._badge_unready_channels(boot)
+        # propagate=False: a post-boot read must not re-seed os.environ with a
+        # credential the live .env watcher just removed.
+        orch._cfg.load_credentials.assert_called_once_with(propagate=False)
+        assert not isinstance(orch.dashboard_state.telegram_connect_error, str)
 
     def test_no_dashboard_state_is_tolerated(self):
         orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": ""})
         orch.dashboard_state = None
-        orch._badge_unready_channels(boot)  # must not raise
+        orch._cfg.load_credentials = MagicMock(return_value={})
+        orch._badge_unready_channels(boot)
+        # The missing dashboard is the gate: the credential store is never read.
+        orch._cfg.load_credentials.assert_not_called()
 
 
 class TestChannelTransportStartGate:
@@ -314,10 +315,16 @@ class TestChannelTransportStartGate:
         self._install_policy(None)
         orch = _make_orchestrator()
         self._enable_all_transports(orch)
+        names = ("wecom", "telegram", "discord", "webex")
+        clients = {name: MagicMock(name=f"{name}_client") for name in names}
         with contextlib.ExitStack() as stack:
             mocks = self._patch_starts(stack)
+            for name, client in clients.items():
+                mocks[name].return_value = client
             await orch._start_channel_transports(descriptors=self._descriptors)
 
+        # Every started transport's client is held as a live handle.
+        assert orch._channel_handles == clients
         mocks["wecom"].assert_awaited_once()
         mocks["telegram"].assert_awaited_once()
         mocks["discord"].assert_awaited_once()
@@ -689,27 +696,13 @@ _UNCREDENTIALED_CHANNEL_TYPES = (
 class TestChannelSkipReasonAtTransportStart:
     """The enabled-but-uncredentialed WARNING must fire on the real start path.
 
-    The channel registry's enabled-only gate never calls a channel factory
-    when ``_<channel>_enabled`` is False — for a disabled AND for an
-    enabled-but-uncredentialed channel alike — so a factory-level log can
-    never be reached in production. The skip reason is therefore logged by
-    ``_start_channel_transports`` at the decision point, which runs AFTER
-    ``KIROCREW_READY`` (outside the boot-path window), via the seven-channel
-    table feeding ``warn_if_channel_uncredentialed``. These pin that wiring
-    for every collapsed-flag channel, generalizing the WeCom-only
-    class; the helper's message contract is
-    pinned in ``test_wecom_gateway.py``.
+    The registry never calls a factory when ``_<channel>_enabled`` is False, so the
+    reason is logged by ``_start_channel_transports`` via
+    ``warn_if_channel_uncredentialed``; its message is pinned in ``test_wecom_gateway.py``.
 
-    Rows that make a ``_<channel>_enabled`` flag True (fully-credentialed
-    cases) stub the governance gate to deny, so ``registry.start_channels``
-    skips every factory and no transport or network is ever touched; the
-    WARNING under test fires before either.
-
-    Capture is scoped to WARNING+: the wiring contract here is the
-    warning-level diagnostic (exactly one, or none), so an unrelated DEBUG/INFO
-    line some channel module may grow on the skip path must not flake these.
-    Helper-level COMPLETE silence (no records at any level) stays pinned in
-    ``test_wecom_gateway.py``.
+    Fully-credentialed rows stub the governance gate to deny, so no transport or
+    network is touched; the WARNING fires before that. Capture is WARNING+ so an
+    unrelated DEBUG/INFO line on the skip path cannot flake these.
     """
 
     def _build(

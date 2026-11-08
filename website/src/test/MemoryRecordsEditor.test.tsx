@@ -5,6 +5,8 @@ import { renderWithProviders } from './helpers'
 import MemoryRecordsEditor from '../pages/overview/MemoryRecordsEditor'
 import SidePanelLayout from '../components/SidePanelLayout'
 import type { MemoryRecord } from '../types/memoryEditing'
+import { ApiError } from '../api/apiError'
+import { i18nT } from '../i18n/t'
 
 const { api, viewport } = vi.hoisted(() => ({ viewport: { mobile: false }, api: { vectorSemanticWrite: vi.fn(), memoryRecordHistory: vi.fn(), memoryRecords: vi.fn(), memoryRecordsRefresh: vi.fn(), memoryQuerySelectionRefresh: vi.fn(), memoryEditPreview: vi.fn(), memoryEditPreviewPage: vi.fn(), memoryEditApply: vi.fn(), memoryRecall: vi.fn(), memoryStores: vi.fn(), themes: vi.fn(), themeDetail: vi.fn(), themeBoot: vi.fn() } }))
 vi.mock('../api/client', () => ({ api }))
@@ -157,6 +159,17 @@ describe('memory record editing in both lineages', () => {
     fireEvent.submit(value.closest('form')!)
     await screen.findByText('Saved')
     expect(api.vectorSemanticWrite).toHaveBeenCalledTimes(2)
+  })
+
+  it('names a coded global fact refusal from the catalog, not its English prose', async () => {
+    api.vectorSemanticWrite.mockRejectedValueOnce(new ApiError(403, 'owner authorization required', JSON.stringify({ error: 'owner authorization required', code: 'owner_only' })))
+    mount(); await screen.findByText('Contact 0: old@example.com')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Key (e.g. pref.backend.framework)' }), { target: { value: 'project.language' } })
+    const value = screen.getByRole('textbox', { name: 'Value' })
+    fireEvent.change(value, { target: { value: 'Use TypeScript' } })
+    fireEvent.submit(value.closest('form')!)
+    await screen.findByText(i18nT('pages.overview.vectorMemoryCard.semantic_err_owner_only'))
+    expect(screen.queryByText('owner authorization required')).toBeNull()
   })
 
   it.each([{ store: 'member-review', privateMemory: true }, { store: 'member-review', privateMemory: false }, { store: 'default', privateMemory: true }])('never exposes the global writer in $store with privateMemory=$privateMemory', async props => {

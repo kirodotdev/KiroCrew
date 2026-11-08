@@ -31,6 +31,14 @@ describe('isAppNavigable', () => {
     expect(isAppNavigable(app({ enabled: undefined }))).toBe(false)
   })
 
+  it('rejects a built-in the gateway skipped at boot', () => {
+    // Its routes were never registered, so its page would fail: no rail row,
+    // no palette entry, no destination.
+    const skipped = app({ unavailable: { reason: 'PermissionError: denied' } })
+    expect(isAppNavigable(skipped)).toBe(false)
+    expect(appNavTarget(skipped)).toBeNull()
+  })
+
   it('rejects an app with no UI pages', () => {
     expect(isAppNavigable(app({ manifest: { ui: { pages: [] } } }))).toBe(false)
     expect(isAppNavigable(app({ manifest: { ui: {} } }))).toBe(false)
@@ -239,5 +247,103 @@ describe('appNavTarget icon resolution', () => {
       expect(t?.iconUrl).toBe('')
       expect(t?.iconUrlDark).toBe('')
     }
+  })
+})
+
+describe('appNavTarget — inactive icon (ui.pages[].iconInactiveUrl)', () => {
+  function withInactive(value: unknown, name = 'demo'): AppNavRecord {
+    return app({
+      name,
+      manifest: { ui: { pages: [{ route: '/demo', iconInactiveUrl: value as string }] } },
+    })
+  }
+
+  it('is empty when the manifest declares none, so the row keeps one icon', () => {
+    expect(appNavTarget(app())?.inactiveIconUrl).toBe('')
+  })
+
+  it('resolves a relative value against the app UI asset route, as documented', () => {
+    expect(appNavTarget(withInactive('icon-inactive.svg'))?.inactiveIconUrl)
+      .toBe('/apps/demo/ui/icon-inactive.svg')
+    expect(appNavTarget(withInactive('./assets/idle icon.png', 'my app'))?.inactiveIconUrl)
+      .toBe('/apps/my%20app/ui/assets/idle%20icon.png')
+  })
+
+  it('passes a built-in client-art path through unchanged', () => {
+    expect(appNavTarget(withInactive('/app-assets/demo/idle.svg'))?.inactiveIconUrl)
+      .toBe('/app-assets/demo/idle.svg')
+  })
+
+  it('refuses a host, a scheme, a dot segment, an API path or a non-string', () => {
+    // The rail renders for every enabled app on every load, so a value it
+    // honoured would be a request the manifest author chose.
+    for (const bad of [
+      'https://evil.example/i.png', '//evil.example/i.png', '/\t/evil.example/i.png',
+      'javascript:alert(1)', '../../api/tips/next', 'a/%2e%2e/%2e%2e/api/x', '/api/apps',
+      ' icon.svg', 'ic\ton.svg', '', {}, 7,
+      // Valid JSON, but encodeURIComponent throws on it: must not break the rail.
+      'idle-\ud800.svg',
+    ]) {
+      expect(appNavTarget(withInactive(bad))?.inactiveIconUrl, String(bad)).toBe('')
+    }
+  })
+
+  it('reads only the FIRST page, the one the rail row opens', () => {
+    const t = appNavTarget(app({
+      manifest: { ui: { pages: [{ route: '/a' }, { route: '/b', iconInactiveUrl: 'b.svg' }] } },
+    }))
+    expect(t?.inactiveIconUrl).toBe('')
+  })
+})
+
+describe('appNavTarget — an adopted former built-in', () => {
+  // The gateway moved this record from the wheel's built-in to its registry copy.
+  // Route and glyph come from the gateway's adoption row (the wheel pin), never
+  // from the app's manifest.
+  function adopted(over: Partial<AppNavRecord> = {}): AppNavRecord {
+    return app({
+      name: 'former-builtin',
+      origin: 'registry',
+      adoption: { state: 'adopted', legacyNav: { route: '/former-builtin', icon: 'ShoppingBag' } },
+      manifest: { ui: { entry: 'dist/index.mjs', pages: [{ route: '/apps/former-builtin', label: 'Former' }] } },
+      ...over,
+    })
+  }
+
+  it('keeps the legacy route, the bare nav id and the legacy glyph', () => {
+    const t = appNavTarget(adopted())
+    expect(t?.route).toBe('/former-builtin')
+    expect(t?.id).toBe('former-builtin')
+    expect(t?.iconName).toBe('ShoppingBag')
+    expect(t?.glyphAllowed).toBe(true)
+    // Still not a builtin: nothing downstream may treat it as first-party.
+    expect(t?.builtin).toBe(false)
+  })
+
+  it('drops a glyph the rail has no icon for, and keeps the route', () => {
+    const t = appNavTarget(adopted({ adoption: { state: 'adopted', legacyNav: { route: '/former-builtin', icon: 'constructor' } } }))
+    expect(t?.route).toBe('/former-builtin')
+    expect(t?.iconName).toBe('')
+  })
+
+  it.each([
+    ['a state other than adopted', { adoption: { state: 'staged' as const, legacyNav: { route: '/former-builtin', icon: 'ShoppingBag' } } }],
+    ['no legacy nav', { adoption: { state: 'adopted' as const } }],
+    ['a route outside the grammar', { adoption: { state: 'adopted' as const, legacyNav: { route: '/apps/x', icon: 'ShoppingBag' } } }],
+    ['a builtin-owned record', { origin: 'builtin' }],
+    ['no bundle to render', { manifest: { ui: { pages: [{ route: '/apps/former-builtin' }] } } }],
+  ])('routes as an ordinary registry app with %s', (_label, over) => {
+    const t = appNavTarget(adopted(over as Partial<AppNavRecord>))
+    expect(t?.route).not.toBe('/former-builtin')
+    expect(t?.glyphAllowed).toBe(over.origin === 'builtin')
+  })
+
+  it('leaves a non-adopted registry record unchanged', () => {
+    const t = appNavTarget(app({ name: 'third-party', origin: 'registry', manifest: { ui: { entry: 'x.mjs', pages: [{ route: '/x', icon: 'ShoppingBag' }] } } }))
+    expect(t).toMatchObject({ route: '/apps/third-party', id: 'app-third-party', glyphAllowed: false, iconName: 'ShoppingBag' })
+  })
+
+  it('still sends an orphaned adopted record to the migration page', () => {
+    expect(appNavTarget(adopted({ orphaned: true }))?.route).toBe('/apps/migrate/former-builtin')
   })
 })

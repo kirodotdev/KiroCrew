@@ -168,10 +168,10 @@ async def _stt_startup_prewarm() -> None:
     #
     # Without it a boot warm is a guess about intent that costs whatever the chosen
     # model weighs, on every launch, for `idle_evict_secs`. `large-v3-turbo` measured
-    # 1861 MB peak RSS on a reviewer's Mac -- and on a desktop install the gateway
+    # 1861 MB peak RSS on a Mac -- and on a desktop install the gateway
     # restarts with the app, so an 8 GB machine pays that per launch whether or not
     # its owner ever dictates that session. The pointer-down prewarm still covers the
-    # case, exactly as it did before this task; only the speculative half is skipped.
+    # case; only the speculative half is skipped.
     #
     # The margin is the model's own size again rather than a tuned constant: the
     # resident cost is roughly the weights plus working buffers, so "twice the
@@ -305,10 +305,10 @@ def _register_stt_hooks(app: web.Application) -> None:
     # provider is not re-handshaken on every decision. Gated on the module having been
     # imported at all: a gateway that never made a decision has nothing to close.
     async def _decision_http_shutdown(app_: web.Application) -> None:
-        if "kiro_crew.decisions.impl_jev" not in sys.modules:
+        if "kiro_crew.decisions.impl_systemone" not in sys.modules:
             return
-        from kiro_crew.decisions import impl_jev
+        from kiro_crew.decisions import impl_systemone
 
-        await impl_jev.close_sessions()
+        await impl_systemone.close_sessions()
 
     app.on_cleanup.append(_decision_http_shutdown)

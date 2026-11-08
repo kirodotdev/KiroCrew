@@ -49,6 +49,9 @@ describe('AppDetailPage module boundary', () => {
   it('names its owners', () => {
     expect(OWNERS).toEqual([
       'AppDetailPageArt.tsx',
+      'AppDetailPageLocalOnlyNotice.tsx',
+      'appDetailPageLabels.ts',
+      'appDetailPageLocalSwitch.ts',
       'appDetailPageTypes.ts',
     ])
   })

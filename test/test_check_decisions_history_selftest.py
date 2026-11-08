@@ -1,11 +1,8 @@
 """The decision-ledger-history self-test reads its own diagnostics everywhere.
 
-``scripts/check_decisions_history.py --test`` asserts that a rejecting probe's
-output names the ledger child it rejected. The head-side validators print paths
-as the platform renders them — backslash separators on native Windows — while
-``DECISIONS_DIR`` is slash-separated, so an unfixed match reports a correct
-rejection as ``missing rejection and path`` and fails the self-test that
-``kirocrew-prepare-pr`` runs on every contribution.
+Validators print backslash paths on Windows while ``DECISIONS_DIR`` uses slashes, so a
+raw match in ``scripts/check_decisions_history.py --test`` would report a correct
+rejection as ``missing rejection and path``.
 """
 
 from __future__ import annotations
@@ -15,7 +12,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
+
+# 10x the worst call-phase duration observed on Windows in run 39959306936
+# shard 1: the test completed the call phase in 13.7 s on a loaded GitHub
+# runner.  The test-level @pytest.mark.timeout is set to twice this value so
+# pytest-timeout ends the test by raising a Timeout exception before it can
+# kill the xdist worker and silently drop any pending tests.
+_SELFTEST_HANG_GUARD_SECS = 140
 
 #: A rejection line's shape, with the parts after the path the way
 #: ``entries_in_tree`` words them for a directory child.
@@ -96,9 +102,15 @@ def test_other_childs_rejection_does_not_match() -> None:
     assert not gate._names_ledger_child(report, "notes.txt")
 
 
+@pytest.mark.timeout(300)
 def test_self_test_passes_on_this_platform() -> None:
-    """The whole self-test stays green, so the gate floor keeps working here."""
-    result = subprocess.run(
+    """The whole self-test stays green, so the gate floor keeps working here.
+
+    A subprocess keeps ``_self_test()``'s ``redirect_stdout/stderr`` and ``os.chdir``
+    out of other tests' capture state. ``_SELFTEST_HANG_GUARD_SECS`` is 10x the worst
+    CI call time (13.7 s on Windows); ``-X utf8`` fixes the encoding.
+    """
+    proc = subprocess.Popen(
         [
             sys.executable,
             "-X",
@@ -106,9 +118,18 @@ def test_self_test_passes_on_this_platform() -> None:
             str(ROOT / "scripts" / "check_decisions_history.py"),
             "--test",
         ],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
-        timeout=60,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
+    try:
+        stdout, _ = proc.communicate(timeout=_SELFTEST_HANG_GUARD_SECS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, _ = proc.communicate()
+        pytest.fail(
+            f"_self_test() subprocess did not finish within "
+            f"{_SELFTEST_HANG_GUARD_SECS}s (hang guard). Partial output: {stdout}"
+        )
+    assert proc.returncode == 0, stdout

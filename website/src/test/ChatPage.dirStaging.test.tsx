@@ -43,22 +43,18 @@ vi.mock('../api/client', () => ({
     // slot carries none) -- FilePickerMenu relativizes against the search
     // response's own `root`, not the `project` prop directly, so a mock that
     // ignored the query would give every slot the same root regardless of its
-    // actual project. Queries against '/repo/src' include a sentinel 'config.ts'
-    // row absent from the '/repo' set, giving tests a real DOM signal that
-    // rootRef.current has advanced to '/repo/src' before a click fires.
+    // actual project. The SAME rows come back for every root, so a row's text
+    // cannot tell the roots apart: the picker itself must not show one
+    // project's rows under another (FilePickerMenu's `placeholderData`).
     fileSearch: vi.fn().mockImplementation((_q: string, project?: string) => {
-      const root = project || '/repo'
       const mtime = Math.floor(Date.now() / 1000) - 60
-      const results = root === '/repo/src'
-        ? [
-            { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime, kind: 'file' },
-            { path: '/repo/src/config.ts', name: 'config.ts', size: 5, mtime, kind: 'file' },
-          ]
-        : [
-            { path: '/repo/src/widgets', name: 'widgets', size: 0, mtime, kind: 'dir' },
-            { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime, kind: 'file' },
-          ]
-      return Promise.resolve({ root, results })
+      return Promise.resolve({
+        root: project || '/repo',
+        results: [
+          { path: '/repo/src/widgets', name: 'widgets', size: 0, mtime, kind: 'dir' },
+          { path: '/repo/src/main.ts', name: 'main.ts', size: 10, mtime, kind: 'file' },
+        ],
+      })
     }),
   },
   SEARCH_MIN_CHARS: 2,
@@ -199,6 +195,11 @@ async function stageFolder() {
 beforeEach(() => {
   sessionStorage.clear()
   localStorage.clear()
+  // Call history is file-scoped; each test reads only its own (a send test
+  // reads `sendChat.mock.calls[0]`, which is another test's send otherwise).
+  vi.mocked(api.fileSearch).mockClear()
+  vi.mocked(api.sendChat).mockClear()
+  vi.mocked(api.createChatSlot).mockClear()
 })
 
 describe('ChatPage staged folder references', { timeout: 15_000 }, () => {
@@ -422,17 +423,10 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
 
     const taB = screen.getByLabelText('Message input') as HTMLTextAreaElement
     fireEvent.change(taB, { target: { value: '@mai' } })
-    // `placeholderData` keeps slot-a's results on screen while slot-b's query
-    // is in flight; 'main.ts' appears in both sets so row presence is not a
-    // reliable signal. 'config.ts' exists only in '/repo/src' results, so its
-    // appearance in [role="option"] proves rootRef.current has advanced to
-    // '/repo/src' and selectionFor() will compute '@main.ts', not '@src/main.ts'.
-    await screen.findByText('config.ts', undefined, { timeout: 3000 })
-    await waitFor(() => {
-      const opt = [...document.querySelectorAll('[role="option"]')].find(el => el.textContent?.includes('main.ts'))
-      if (!opt) throw new Error('main.ts option row not found yet')
-      fireEvent.mouseDown(opt)
-    }, { timeout: 3000 })
+    // Clicked the moment a row shows, as a user would: the picker must never
+    // offer slot-a's rows (relativized against slot-a's root) as slot-b's.
+    const rowB = await screen.findByText('main.ts', undefined, { timeout: 3000 })
+    fireEvent.mouseDown(rowB)
     // Under slot-b's project the SAME absolute file relativizes to a bare
     // `@main.ts`, overwriting pickedFileTokens' shared entry for this path.
     await waitFor(() => expect(taB.value).toContain('@main.ts'))
@@ -442,7 +436,7 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     act(() => { store.dispatch(setActiveSlot('slot-a')) })
     await screen.findByLabelText('Remove')
     const taA2 = screen.getByLabelText('Message input') as HTMLTextAreaElement
-    expect(taA2.value).toContain('@src/main.ts')
+    await waitFor(() => expect(taA2.value).toContain('@src/main.ts'))
   })
 
   it('sending in one slot does not blank another slot\'s recorded file token (pickedFileTokens is not wiped wholesale)', async () => {
@@ -672,10 +666,8 @@ describe('ChatPage file-chip remove parity', { timeout: 15_000 }, () => {
     // computes a DIFFERENT rel for the identical absolute path.
     act(() => { store.dispatch(updateSlot({ key: 'slot-a', project: '/repo/src' })) })
     fireEvent.change(ta, { target: { value: ta.value + ' and @mai' } })
-    // 'config.ts' exists only in '/repo/src' results; waiting for it in
-    // [role="option"] is a real DOM signal that rootRef.current has advanced
-    // to '/repo/src', so selectionFor() computes '@main.ts' on the click.
-    await screen.findByText('config.ts', undefined, { timeout: 3000 })
+    // As in the cross-slot test above, no settle wait: the FIRST query's
+    // (project '/repo') rows must not stand in for the re-rooted query.
     // The file is already staged (its chip shows "main.ts" too), so the
     // dropdown's OWN "main.ts" row is now ambiguous against the chip's text
     // -- scope to an actual [role="option"] row, re-queried on every retry
@@ -1774,7 +1766,7 @@ describe('ChatPage terminal session identity', () => {
     act(() => store.dispatch(sseSlots([row])))
     const box = screen.getByRole('textbox', { name: 'Message input' })
     fireEvent.change(box, { target: { value: '! pwd' } })
-    expect(screen.getByText('Terminal commands are unavailable for sessions on another server. Remove the leading ! to return to chat.')).toBeVisible()
+    await waitFor(() => expect(screen.getByText('Terminal commands are unavailable for sessions on another server. Remove the leading ! to return to chat.')).toBeVisible())
     act(() => store.dispatch(sseSlots([])))
     expect(store.getState().chat.activeSlot).toBe('retained-remote')
     expect(store.getState().dashboard.slots).toHaveLength(0)

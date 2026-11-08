@@ -89,8 +89,7 @@ def systemd_run_resolvable(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-# nosemgrep: kirocrew.test-autouse-shared-monkeypatch -- the sandbox argv suites' autouse reset; none of them calls monkeypatch.undo()
-def clean_backend(monkeypatch):
+def clean_backend(_floor_monkeypatch):
     """Reset cached backend between tests.
 
     Also neutralize the host's real kiro internal-sandbox setting: on a macOS
@@ -115,12 +114,12 @@ def clean_backend(monkeypatch):
     exercises the real function through the name it imported, with
     ``subprocess.run`` patched.
     """
-    monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
-    monkeypatch.setattr(
+    _floor_monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+    _floor_monkeypatch.setattr(
         "kiro_crew.sandbox._KIRO_INTERNAL_SETTINGS_PATH",
         "/nonexistent/kirocrew-test/amazon-internal.json",
     )
-    monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
+    _floor_monkeypatch.setattr(sandbox_mod, "_ssh_supports_accept_new", lambda: True)
     # Reset one-shot warning flags
     if hasattr(sandbox_mod.wrap_argv, "_warned"):
         delattr(sandbox_mod.wrap_argv, "_warned")

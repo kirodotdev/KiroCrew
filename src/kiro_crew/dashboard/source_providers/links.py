@@ -21,6 +21,8 @@ from kiro_crew.dashboard.source_providers.contract import RepoRef, SourceRef
 _GITLAB_PATH_MARKERS: tuple[tuple[str, str], ...] = (
     ("/-/merge_requests/", "change"),
     ("/-/issues/", "issue"),
+    # GitLab's newer work-item URL for an issue; it shares the issue number space.
+    ("/-/work_items/", "issue"),
 )
 # GitHub keeps issues and pull requests in one number space under two path
 # segments. The captured segment is what derives the kind.
@@ -90,7 +92,7 @@ def _parse_gitlab_path(path: str) -> tuple[str, int, str]:
     """Split a GitLab MR/issue path into (project, number, kind) or raise ``ValueError``."""
     # String ops instead of a regex: the previous /(.+)/-/merge_requests/
     # pattern backtracked polynomially on adversarial paths. The
-    # two markers are scanned independently and the RIGHTMOST valid one wins,
+    # markers are scanned independently and the RIGHTMOST valid one wins,
     # preserving the original ``rfind`` semantics (a project path that itself
     # contains the marker text is still split at the last occurrence) without
     # reintroducing an alternating pattern.
@@ -104,6 +106,10 @@ def _parse_gitlab_path(path: str) -> tuple[str, int, str]:
         project = path[1:idx]
         number_text = path[idx + len(marker) :]
         if not project or not number_text.isdigit():
+            continue
+        # A group-level work item (an epic, /groups/<g>/-/work_items/<n>) is
+        # not a project issue: the project issues API can never fetch it.
+        if marker == "/-/work_items/" and project.lower().startswith("groups/"):
             continue
         best_idx = idx
         best = (project, int(number_text), kind)
@@ -255,6 +261,85 @@ def _bitbucket_server_ref(host: str, path: str) -> SourceRef:
     )
 
 
+# Gerrit (PolyGerrit) keeps a change at ``<context>/c/<project>/+/<number>``,
+# optionally followed by the patchset (``/2``) and the file or comment the link
+# was copied from (``/2/path/to/file``, ``/comment/<id>/``). The project may span
+# several segments (``platform/hal``), so the grammar is anchored on the ``c``
+# and ``+`` segments around it rather than on positions from the end.
+_GERRIT_PROJECT_SEGMENT_RE = re.compile(r"[A-Za-z0-9._~-]{1,128}")
+_GERRIT_MAX_PROJECT_SEGMENTS = 16
+_GERRIT_URL_HINT = "Expected a Gerrit URL like https://<host>/c/<project>/+/123."
+
+
+def _gerrit_ref(host: str, path: str) -> SourceRef:
+    """Build a Gerrit ``SourceRef`` for an already-authorized host.
+
+    ``repo`` is the Gerrit project (slashes included), ``owner`` stays empty
+    (Gerrit has no owner namespace), and ``project`` is the instance's context
+    path (``""`` at the root, ``/gerrit`` behind a reverse proxy) so every REST
+    call is built under the same context path the link used. The canonical URL
+    keeps a patchset pin when the link carried one and drops any file or comment
+    suffix; a pinned and an unpinned link to one change collapse to one identity
+    because :attr:`SourceRef.identity` excludes the URL.
+    """
+    segments = path.split(_URL_PATH_SEPARATOR)
+    if len(segments) < 5 or segments[0] != "":
+        raise ValueError(_GERRIT_URL_HINT)
+    # The FIRST ``c`` segment opens the change route: a context path is almost
+    # never a bare ``c``, while a project may legitimately contain one.
+    try:
+        c_index = segments.index("c", 1)
+    except ValueError:
+        raise ValueError(_GERRIT_URL_HINT) from None
+    try:
+        plus_index = segments.index("+", c_index + 2)
+    except ValueError:
+        raise ValueError(_GERRIT_URL_HINT) from None
+    context = segments[1:c_index]
+    project_segments = segments[c_index + 1 : plus_index]
+    tail = segments[plus_index + 1 :]
+    if not tail:
+        raise ValueError(_GERRIT_URL_HINT)
+    number_text = tail[0]
+    if (
+        not project_segments
+        or len(project_segments) > _GERRIT_MAX_PROJECT_SEGMENTS
+        or any(
+            segment in {".", ".."} or not _GERRIT_PROJECT_SEGMENT_RE.fullmatch(segment)
+            for segment in project_segments
+        )
+        or not (number_text.isascii() and number_text.isdigit() and len(number_text) <= 15)
+        or int(number_text) <= 0
+        or len(context) > 8
+        or any(
+            segment in {".", ".."} or not _BITBUCKET_SERVER_CONTEXT_SEGMENT_RE.fullmatch(segment)
+            for segment in context
+        )
+    ):
+        raise ValueError(_GERRIT_URL_HINT)
+    number = int(number_text)
+    # A second all-digit segment is the patchset the link pins. Anything else
+    # there (a ``2..3`` range, ``comment``) and everything after is UI state.
+    patchset = ""
+    if len(tail) > 1 and tail[1].isascii() and tail[1].isdigit() and 0 < len(tail[1]) <= 6:
+        if int(tail[1]) > 0:
+            patchset = f"/{int(tail[1])}"
+    prefix = "".join(f"/{segment}" for segment in context)
+    project = _URL_PATH_SEPARATOR.join(project_segments)
+    canonical_path = f"{prefix}/c/{project}/+/{number}{patchset}"
+    normalized = urlunparse(("https", host, canonical_path, "", "", ""))
+    return SourceRef(
+        contract.GERRIT_PROVIDER,
+        normalized,
+        host,
+        "",
+        project,
+        number,
+        project=prefix,
+        kind="change",
+    )
+
+
 def parse_source_url(raw_url: str) -> SourceRef:
     """Validate and normalize a supported pull/merge-request or issue URL.
 
@@ -262,8 +347,9 @@ def parse_source_url(raw_url: str) -> SourceRef:
     self-managed GitLab instance is accepted only when its exact ``host[:port]``
     appears in the operator's ``dashboard.github_hosts`` or
     ``dashboard.gitlab_hosts`` allowlist, and a Bitbucket Server pull request only
-    when its host is in ``dashboard.bitbucket_server_hosts``, so browser input can
-    never choose which instance a credential-bearing read talks to.
+    when its host is in ``dashboard.bitbucket_server_hosts`` (a Gerrit change
+    likewise through ``dashboard.gerrit_hosts``), so browser input can never
+    choose which instance a credential-bearing read talks to.
     Exact parsed-host checks prevent URLs that merely mention a trusted host in
     their path, query, or userinfo from reaching a provider CLI.
 
@@ -308,6 +394,9 @@ def parse_source_url(raw_url: str) -> SourceRef:
     # providers, so placing it after GitHub Enterprise and GitLab is a backstop.
     if host and candidate in hosts._allowed_bitbucket_server_hosts():
         return _bitbucket_server_ref(candidate, path)
+    # Gerrit: the same allowlist-only recognition, for the same reason.
+    if host and candidate in hosts._allowed_gerrit_hosts():
+        return _gerrit_ref(candidate, path)
 
     # Jira: Atlassian Cloud (``*.atlassian.net``) is recognized automatically --
     # the suffix is Atlassian-operated, so it identifies the product the way
@@ -332,8 +421,9 @@ def parse_source_url(raw_url: str) -> SourceRef:
         "host listed in dashboard.github_hosts), gitlab.com merge requests and "
         "issues, merge requests or issues on a GitLab host listed in "
         "dashboard.gitlab_hosts, pull requests on a Bitbucket Server host listed "
-        "in dashboard.bitbucket_server_hosts, and Jira issues on *.atlassian.net "
-        "or a host listed in dashboard.jira_hosts are supported."
+        "in dashboard.bitbucket_server_hosts, changes on a Gerrit host listed in "
+        "dashboard.gerrit_hosts, and Jira issues on *.atlassian.net or a host "
+        "listed in dashboard.jira_hosts are supported."
     )
 
 

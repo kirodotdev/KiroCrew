@@ -118,6 +118,7 @@ const DOC = {
   path: 'One.md',
   content: '# Hello\n\nBody text',
   mtime: 7,
+  contentHash: 'hash-read',
   meta: { frontmatter: {}, tags: [], links: [] },
   backlinks: [{ sourcePath: 'folder/Two.md', line: 3, context: 'see [[One]]' }],
 }
@@ -130,15 +131,19 @@ const DOC = {
  */
 const TREE_READY = { timeout: 5000 }
 
-function renderPage() {
+async function renderPage() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   })
-  return render(
-    <QueryClientProvider client={client}>
-      <MdNotebookPage />
-    </QueryClientProvider>,
-  )
+  let view!: ReturnType<typeof render>
+  await act(async () => {
+    view = render(
+      <QueryClientProvider client={client}>
+        <MdNotebookPage />
+      </QueryClientProvider>,
+    )
+  })
+  return view
 }
 
 /** Render, wait for the panel, then open `One.md`. */
@@ -225,7 +230,7 @@ describe('MdNotebookPage', () => {
       resolveVaults = resolve
     })
     mockApi.listVaults.mockReturnValue(pending)
-    renderPage()
+    await renderPage()
     expect(screen.getByText('Loading…')).toBeTruthy()
     await act(async () => {
       resolveVaults({ vaults: [], hasPat: false, hasGhAuth: false })
@@ -495,7 +500,9 @@ describe('MdNotebookPage', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS)
     })
-    expect(mockApi.saveNote).toHaveBeenCalledWith('v1', 'One.md', '# Hello\n\nEdited body', 7)
+    expect(mockApi.saveNote).toHaveBeenCalledWith(
+      'v1', 'One.md', '# Hello\n\nEdited body', 7, 'hash-read',
+    )
   })
 
   // ── save guard ────────────────────────────────────────────────────────────
@@ -509,7 +516,7 @@ describe('MdNotebookPage', () => {
     })
     mockApi.saveNote.mockRejectedValueOnce(
       Object.assign(new Error('stale'), {
-        body: { code: 'ESTALE', mtime: 99, disk: 'theirs' },
+        body: { code: 'ESTALE', mtime: 99, disk: 'theirs', contentHash: 'hash-disk' },
       }),
     )
     // Sync flushes the pending edit immediately, which is what trips the guard.
@@ -533,12 +540,27 @@ describe('MdNotebookPage', () => {
     expect(screen.queryByText('This note changed on disk since you opened it.')).toBeNull()
   })
 
-  it("keeps the editor's version, re-saving it against the fresh mtime", async () => {
+  it("keeps the editor's version, re-saving it against the disk version's tokens", async () => {
     await reachDiskConflict()
     await userEvent.click(screen.getByRole('button', { name: 'Keep my version' }))
-    // 99 is the mtime the backend reported with the refusal — without adopting it
-    // the retry would be refused again forever.
-    await waitFor(() => expect(mockApi.saveNote).toHaveBeenCalledWith('v1', 'One.md', 'mine', 99))
+    // 99 and hash-disk are what the backend reported with the refusal — without
+    // adopting them the retry would be refused again forever.
+    await waitFor(() =>
+      expect(mockApi.saveNote).toHaveBeenCalledWith('v1', 'One.md', 'mine', 99, 'hash-disk'),
+    )
+  })
+
+  it("guards the next save with the disk version's hash after taking it", async () => {
+    await reachDiskConflict()
+    await userEvent.click(screen.getByRole('button', { name: 'Use the version on disk' }))
+    vi.useFakeTimers()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Markdown source' }), {
+      target: { value: 'theirs, edited' },
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SAVE_DEBOUNCE_MS)
+    })
+    expect(mockApi.saveNote).toHaveBeenLastCalledWith('v1', 'One.md', 'theirs, edited', 99, 'hash-disk')
   })
 
   // ── sync ──────────────────────────────────────────────────────────────────

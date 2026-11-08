@@ -92,11 +92,13 @@ import html
 import os
 import re
 import tempfile
+from functools import cache
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
-from markdown_it import MarkdownIt
-from markdown_it.token import Token
+if TYPE_CHECKING:
+    from markdown_it import MarkdownIt
+    from markdown_it.token import Token
 
 from kiro_crew.dashboard.session_transfer import _egress_tmp_dir, _rm_import_temps
 
@@ -173,12 +175,24 @@ def _escape_cell(value: str) -> str:
 
 # ── the structural guard ───────────────────────────────────────────────────────
 
-#: The CommonMark parser every message is checked against, with raw HTML kept so
-#: that an HTML block is parsed as one rather than as escaped text. The
-#: ``commonmark`` preset is the spec and nothing more: no tables, no strikethrough,
-#: no extensions a particular forge may or may not have — the file is promised to
-#: render under CommonMark, and that is what is verified.
-_PARSER = MarkdownIt("commonmark", {"html": True})
+
+@cache
+def _parser() -> MarkdownIt:
+    """The CommonMark parser every message is checked against.
+
+    Raw HTML is kept so that an HTML block is parsed as one rather than as
+    escaped text. The ``commonmark`` preset is the spec and nothing more: no
+    tables, no strikethrough, no extensions a particular forge may or may not
+    have — the file is promised to render under CommonMark, and that is what is
+    verified.
+
+    Built on first use: this module loads on every gateway start (via the chat
+    routes) and ``markdown_it`` costs ~35 ms to import, so only an export pays it.
+    """
+    from markdown_it import MarkdownIt
+
+    return MarkdownIt("commonmark", {"html": True})
+
 
 #: Stand-in for the next role heading. It is parsed exactly where the real
 #: heading will be, after the separator, and a message is "closed" when the
@@ -245,7 +259,7 @@ def _probe(content: str, closers: list[str], boundary: str) -> list[Token]:
     message = content if content.endswith("\n") else content + "\n"
     if closers:
         message += "\n".join(closers) + "\n"
-    return _PARSER.parse(f"{message}{_SEPARATOR}## {boundary}\n")
+    return _parser().parse(f"{message}{_SEPARATOR}## {boundary}\n")
 
 
 def _markdown_need(tokens: list[Token], boundary: str) -> tuple[bool, str | None]:

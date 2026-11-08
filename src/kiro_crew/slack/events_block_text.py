@@ -3,6 +3,8 @@
 ``_extract_blocks_text`` renders rich-text, section, context and table blocks to plain
 lines within one character budget (``_MAX_RECOVERED_TEXT_CHARS``). On top of it,
 ``_extract_shared_text`` recovers a forwarded message's text from its attachments,
+``_forwarded_messages`` turns each share attachment into a ``ForwardedMessage`` for the
+shared untrusted-content fence (``kiro_crew.slack.format``),
 ``_extract_table_text`` renders pasted-spreadsheet ``table`` blocks, and
 ``_extract_trusted_bot_attachment_text`` recovers an admitted trusted bot's attachment
 text. ``_route_message`` reads an inbound message's text through these.
@@ -17,6 +19,12 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Iterable, Iterator, Literal, overload
+
+from kiro_crew.slack.format import (
+    ForwardedMessage,
+    count_forwarded_files,
+    forwarded_files_from_slack,
+)
 
 logger = logging.getLogger("kiro_crew.slack.events")
 
@@ -328,6 +336,50 @@ def _normalize_message_blocks(raw: list) -> list[dict]:
     return result
 
 
+def _is_share_attachment(att: object) -> bool:
+    """True for a forwarded-message attachment (``is_share``/``is_msg_unfurl``)."""
+    return isinstance(att, dict) and bool(att.get("is_share") or att.get("is_msg_unfurl"))
+
+
+def _has_share_attachments(event: dict) -> bool:
+    """True when the event carries any forwarded-message share attachment.
+
+    Detected whether or not top-level ``text`` is set, so a native forward that
+    arrives WITH a note (the note in ``text``, the forwarded body in
+    ``attachments``) is still recognized as a forward.
+    """
+    attachments = event.get("attachments")
+    return isinstance(attachments, list) and any(_is_share_attachment(a) for a in attachments)
+
+
+def _extract_share_attachment_text(att: dict) -> str:
+    """Recover message text from ONE share attachment: text, then blocks, then fallback.
+
+    ``att["blocks"]`` is already a flat block list; ``att["message_blocks"]`` is
+    a wrapper list that must be normalized first. The fallback is used only when
+    it is not a generic Slack placeholder.
+    """
+    att_text = _string_field(att, "text")
+    if att_text:
+        return att_text
+    att_blocks = att.get("blocks")
+    if isinstance(att_blocks, list) and att_blocks:
+        extracted = _extract_blocks_text(att_blocks)
+        if extracted:
+            return extracted
+    msg_blocks = att.get("message_blocks")
+    if msg_blocks:
+        normalized = _normalize_message_blocks(msg_blocks)
+        if normalized:
+            extracted = _extract_blocks_text(normalized)
+            if extracted:
+                return extracted
+    fallback = _string_field(att, "fallback")
+    if fallback and fallback not in _SLACK_BLOCK_FALLBACKS:
+        return fallback
+    return ""
+
+
 def _extract_shared_text(event: dict) -> str:
     """Recover message text from forwarded-message attachments.
 
@@ -346,35 +398,10 @@ def _extract_shared_text(event: dict) -> str:
         attachments = []
     parts: list[str] = []
     for att in attachments:
-        if not isinstance(att, dict):
-            continue
-        if not (att.get("is_share") or att.get("is_msg_unfurl")):
-            continue
-        att_text = _string_field(att, "text")
-        if att_text:
-            parts.append(att_text)
-            continue
-        # text is empty — try blocks before falling back to the generic fallback.
-        # att["blocks"] is already a flat block list; att["message_blocks"] is a
-        # wrapper list that must be normalized first.
-        att_blocks = att.get("blocks")
-        if isinstance(att_blocks, list) and att_blocks:
-            extracted = _extract_blocks_text(att_blocks)
+        if _is_share_attachment(att):
+            extracted = _extract_share_attachment_text(att)
             if extracted:
                 parts.append(extracted)
-                continue
-        msg_blocks = att.get("message_blocks")
-        if msg_blocks:
-            normalized = _normalize_message_blocks(msg_blocks)
-            if normalized:
-                extracted = _extract_blocks_text(normalized)
-                if extracted:
-                    parts.append(extracted)
-                    continue
-        # Last resort: use fallback unless it's a generic Slack placeholder
-        fallback = _string_field(att, "fallback")
-        if fallback and fallback not in _SLACK_BLOCK_FALLBACKS:
-            parts.append(fallback)
     # If attachments yielded nothing, try event-level blocks (Slack sometimes
     # puts the real content there for shared messages).
     if not parts:
@@ -386,11 +413,60 @@ def _extract_shared_text(event: dict) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
-def _extract_table_text(event: dict) -> str:
-    """Render pasted-spreadsheet ``table`` blocks of *event* and its non-link-preview attachments."""
+def _forwarded_messages(event: dict, *, has_note: bool) -> list[ForwardedMessage]:
+    """One :class:`ForwardedMessage` per share attachment that carries text or files.
+
+    Each forwarded message keeps its own body, files and provenance (author,
+    channel, ts, permalink), and the tables in its own blocks. Event-level
+    ``blocks`` belong to the owner's note when there is one (*has_note*), so
+    they are read only for a note-less forward: then, when no attachment yields
+    a body, the event-level recovery (``_extract_shared_text``) fills the first
+    one, and event-level tables go into the first one too, inside the fence.
+    """
+    entries: list[tuple[dict, str]] = []
+    for att in event.get("attachments") or []:
+        if _is_share_attachment(att):
+            body = _extract_share_attachment_text(att)
+            att_tables = _extract_table_text({"blocks": att.get("blocks")})
+            if att_tables and att_tables not in body:
+                body = f"{body}\n\n{att_tables}" if body else att_tables
+            entries.append((att, body))
+    if entries and not has_note:
+        if not any(body for _, body in entries):
+            event_fallback = _extract_shared_text(event)
+            if event_fallback:
+                entries[0] = (entries[0][0], event_fallback)
+        tables = _extract_table_text(event, include_attachments=False)
+        if tables and not any(tables in body for _, body in entries):
+            att, body = entries[0]
+            entries[0] = (att, f"{body}\n\n{tables}" if body else tables)
+    forwards: list[ForwardedMessage] = []
+    for att, body in entries:
+        files = forwarded_files_from_slack(att.get("files"))
+        if not (body or files):
+            continue
+        forwards.append(
+            ForwardedMessage(
+                text=body,
+                files=files,
+                author_id=_string_field(att, "author_id"),
+                channel=_string_field(att, "channel_id"),
+                ts=_string_field(att, "ts"),
+                from_url=_string_field(att, "from_url"),
+                omitted_files=max(0, count_forwarded_files(att.get("files")) - len(files)),
+            )
+        )
+    return forwards
+
+
+def _extract_table_text(event: dict, *, include_attachments: bool = True) -> str:
+    """Render pasted-spreadsheet ``table`` blocks of *event* and its non-link-preview attachments.
+
+    ``include_attachments=False`` reads only the event-level ``blocks``.
+    """
     blocks = event.get("blocks")
     blocks = list(blocks) if isinstance(blocks, list) else []
-    for att in event.get("attachments") or []:
+    for att in (event.get("attachments") or []) if include_attachments else []:
         if (
             isinstance(att, dict)
             and not att.get("from_url")
@@ -427,7 +503,7 @@ def _extract_trusted_bot_attachment_text(event: dict) -> str:
             break
         if not isinstance(attachment, dict):
             continue
-        if attachment.get("is_share") or attachment.get("is_msg_unfurl"):
+        if _is_share_attachment(attachment):
             continue
         # Placeholder classification needs the bounded candidate, not its output-sized
         # prefix: a later attachment may have only one output character left.

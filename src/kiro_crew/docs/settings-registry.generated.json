@@ -19,42 +19,86 @@
       "label": "Update the gateway automatically",
       "tab": "about",
       "route": "/settings/about?highlight=key%3Aauto_update",
-      "description": "Installs a new release once no work is running and restarts the gateway, on installs that can update themselves.",
+      "description": "Restarts the gateway to install a new release once no work is running. When off, it stays on its current version.",
       "configKey": "auto_update"
     },
     {
-      "id": "browser.attach-token",
-      "label": "Extension token (optional)",
-      "tab": "browser",
-      "route": "/settings/browser?highlight=browser.attach-token"
+      "id": "agent.kiro-sign-in",
+      "label": "Sign out or switch Kiro account",
+      "tab": "agent",
+      "route": "/settings/agent?highlight=agent.kiro-sign-in",
+      "description": "Log out of the Kiro sign-in your agents use, or sign in with another account."
     },
     {
-      "id": "browser.use-the-built-in-browser",
-      "label": "Use the built-in browser",
+      "id": "browser.max-frame-rate",
+      "label": "Max frame rate",
       "tab": "browser",
-      "route": "/settings/browser?highlight=key%3Adashboard.use_builtin_browser",
-      "configKey": "dashboard.use_builtin_browser"
+      "route": "/settings/browser?highlight=key%3Abrowser.live.max_fps",
+      "hint": "60 is the most this machine streams. Nothing is sent while the card is off screen.",
+      "configKey": "browser.live.max_fps"
+    },
+    {
+      "id": "browser.quality",
+      "label": "Quality",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=key%3Abrowser.live.quality",
+      "hint": "Auto adapts to your link: a slow link lowers the frame rate first and keeps the picture sharp.",
+      "configKey": "browser.live.quality"
+    },
+    {
+      "id": "browser.run-with-no-window",
+      "label": "Run with no window",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=browser.run-with-no-window",
+      "hint": "Kiro’s Chromium runs with no window, for a machine with no display. Turning this off keeps Kiro’s Chromium, with a window."
+    },
+    {
+      "id": "browser.show-the-live-view-in-chat",
+      "label": "Show the live view in chat",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=key%3Abrowser.live.enabled",
+      "hint": "When Kiro uses the browser, the turn shows a live card. Click the picture to take over.",
+      "configKey": "browser.live.enabled"
+    },
+    {
+      "id": "browser.which-browser",
+      "label": "Which browser",
+      "tab": "browser",
+      "route": "/settings/browser?highlight=key%3Abrowser.choice",
+      "hint": "Automatic tries your Chrome, then Edge on Windows, then Kiro’s Chromium. A hand pick skips that order.",
+      "configKey": "browser.choice"
+    },
+    {
+      "id": "channels.agent-sessions-slack",
+      "label": "Agent sessions (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.agent_sessions",
+      "hint": "Slack threads show a live status and title, and a Stop button that stops the agent's current reply.",
+      "configKey": "slack.agent_sessions"
     },
     {
       "id": "channels.allowed-emails-webex",
       "label": "Allowed emails (Webex)",
       "tab": "channels",
       "route": "/settings/channels/webex?highlight=channels.allowed-emails-webex",
-      "description": "Webex account emails permitted to DM the bot. Empty = nobody (fail closed) — anyone in an org can message a Webex bot, so add only your own."
+      "description": "Empty lets nobody message it.",
+      "hint": "Webex account emails permitted to DM the bot. Empty = nobody (fail closed) — anyone in an org can message a Webex bot, so add only your own."
     },
     {
       "id": "channels.allowed-enterprise-orgs-slack",
       "label": "Allowed enterprise orgs (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.allowed-enterprise-orgs-slack",
-      "description": "Enterprise Grid org or workspace IDs to allow (starts with E or T). On Enterprise Grid, list the org's E… ID and each workspace's T… ID: messages are checked by workspace, so a list with only the E… ID denies every message. Leave empty to allow all orgs."
+      "description": "On Enterprise Grid, list each workspace's T… ID too. Empty allows all orgs.",
+      "hint": "Enterprise Grid org or workspace IDs to allow (starts with E or T). On Enterprise Grid, list the org's E… ID and each workspace's T… ID: messages are checked by workspace, so a list with only the E… ID denies every message. Leave empty to allow all orgs."
     },
     {
       "id": "channels.allowed-handles-imessage",
       "label": "Allowed handles (iMessage)",
       "tab": "channels",
       "route": "/settings/channels/imessage?highlight=channels.allowed-handles-imessage",
-      "description": "Phone numbers or Apple Account emails allowed to message the agent. Empty denies everyone — anyone who knows this Mac's handle can send to it, so there is no safe default. Formatting is ignored."
+      "description": "Empty lets nobody message it.",
+      "hint": "Phone numbers or Apple Account emails allowed to message the agent. Empty denies everyone — anyone who knows this Mac's handle can send to it, so there is no safe default. Formatting is ignored."
     },
     {
       "id": "channels.allowed-numbers-whatsapp",
@@ -68,13 +112,20 @@
       "label": "Allowed space IDs (Webex)",
       "tab": "channels",
       "route": "/settings/channels/webex?highlight=channels.allowed-space-ids-webex",
-      "description": "Empty means no space is answered, so turning the switch on alone grants nothing. The sender must also be on the allowed-emails list. A space ID is an opaque string — list yours with:\ncurl -H \"Authorization: Bearer $WEBEX_BOT_TOKEN\" https://webexapis.com/v1/rooms"
+      "description": "Empty means no space is answered.",
+      "hint": "Empty means no space is answered, so turning the switch on alone grants nothing. The sender must also be on the allowed-emails list. A space ID is an opaque string — list yours with:\ncurl -H \"Authorization: Bearer $WEBEX_BOT_TOKEN\" https://webexapis.com/v1/rooms"
     },
     {
       "id": "channels.allowed-user-ids-discord",
       "label": "Allowed user IDs (Discord)",
       "tab": "channels",
       "route": "/settings/channels/discord?highlight=channels.allowed-user-ids-discord"
+    },
+    {
+      "id": "channels.allowed-user-ids-feishu",
+      "label": "Allowed user IDs (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.allowed-user-ids-feishu"
     },
     {
       "id": "channels.allowed-user-ids-telegram",
@@ -100,14 +151,16 @@
       "label": "Allowed users (email or AAD object id) (Teams)",
       "tab": "channels",
       "route": "/settings/channels/teams?highlight=channels.allowed-users-email-or-aad-object-id-teams",
-      "description": "Azure AD UPNs/emails OR object ids permitted to DM the bot. Teams activities reliably carry the object id (email is often absent), so object ids work out of the box. Empty = nobody (fail closed)."
+      "description": "Empty lets nobody message it.",
+      "hint": "Azure AD UPNs/emails OR object ids permitted to DM the bot. Teams activities reliably carry the object id (email is often absent), so object ids work out of the box. Empty = nobody (fail closed)."
     },
     {
       "id": "channels.answer-in-group-spaces-webex",
       "label": "Answer in group spaces (Webex)",
       "tab": "channels",
       "route": "/settings/channels/webex?highlight=channels.answer-in-group-spaces-webex",
-      "description": "Off by default. A reply in a space is visible to everyone in it, including people not on the allowed-emails list."
+      "description": "Everyone in a space sees the reply, even people not on the list.",
+      "hint": "Off by default. A reply in a space is visible to everyone in it, including people not on the allowed-emails list."
     },
     {
       "id": "channels.app-client-id-teams",
@@ -121,14 +174,23 @@
       "label": "App password (client secret) (Teams)",
       "tab": "channels",
       "route": "/settings/channels/teams?highlight=channels.app-password-client-secret-teams",
-      "description": "Azure Bot client secret. Stored only in .env (never config.json)."
+      "hint": "Azure Bot client secret. Stored only in .env (never config.json)."
+    },
+    {
+      "id": "channels.code-channels-slack",
+      "label": "Code channels (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.code_channels",
+      "description": "On: lets the agent open a Slack channel for each coding task, with a context bar and a diff tab, invite you to it, and post and keep notes there under its own name. Your Slack app gets 5 permissions for this. Off: nothing changes, and you can remove the permissions in Slack later. Slack is rolling code channels out gradually, so your workspace may not have them yet.",
+      "configKey": "slack.code_channels"
     },
     {
       "id": "channels.connect-new-sessions-to-slack-automatically-slack",
       "label": "Connect new sessions to Slack automatically (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=key%3Aslack.auto_link_sessions",
-      "description": "Every new dashboard session gets a Slack thread on its first message, in your private direct message with the bot. Sessions started by cron, apps or sub-agents, sessions that began in Slack or another messaging app, and incognito or temporary sessions are left alone. A session connected this way does not count as a Slack session for the folder setting below: it stays where it is in the sidebar, and only conversations that start in Slack are filed.",
+      "description": "Posts every new dashboard chat to your Slack DM with the bot.",
+      "hint": "Every new dashboard session gets a Slack thread on its first message, in your private direct message with the bot. Sessions started by cron, apps or sub-agents, sessions that began in Slack or another messaging app, and incognito or temporary sessions are left alone. A session connected this way does not count as a Slack session for the folder setting below: it stays where it is in the sidebar, and only conversations that start in Slack are filed.",
       "configKey": "slack.auto_link_sessions"
     },
     {
@@ -136,14 +198,14 @@
       "label": "Enable iMessage channel (iMessage)",
       "tab": "channels",
       "route": "/settings/channels/imessage?highlight=channels.enable-imessage-channel-imessage",
-      "description": "Start the channel at gateway boot on this Mac."
+      "hint": "Start the channel at gateway boot on this Mac."
     },
     {
       "id": "channels.enable-teams-channel-teams",
       "label": "Enable Teams channel (Teams)",
       "tab": "channels",
       "route": "/settings/channels/teams?highlight=channels.enable-teams-channel-teams",
-      "description": "Start the channel at gateway boot when the App ID + password are set."
+      "hint": "Start the channel at gateway boot when the App ID + password are set."
     },
     {
       "id": "channels.enable-the-wechat-channel-wechat",
@@ -162,13 +224,33 @@
       "label": "Enable Webex channel (Webex)",
       "tab": "channels",
       "route": "/settings/channels/webex?highlight=channels.enable-webex-channel-webex",
-      "description": "Start the channel at gateway boot when a token is set."
+      "hint": "Start the channel at gateway boot when a token is set."
+    },
+    {
+      "id": "channels.feishu-app-id",
+      "label": "Feishu app ID",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.feishu-app-id",
+      "description": "The App ID from your custom app’s Credentials page in the Feishu developer console."
+    },
+    {
+      "id": "channels.feishu-app-secret",
+      "label": "Feishu app secret",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.feishu-app-secret",
+      "description": "The App Secret shown next to the App ID on the same Credentials page."
     },
     {
       "id": "channels.file-sessions-in-a-folder-discord",
       "label": "File sessions in a folder (Discord)",
       "tab": "channels",
       "route": "/settings/channels/discord?highlight=channels.file-sessions-in-a-folder-discord"
+    },
+    {
+      "id": "channels.file-sessions-in-a-folder-feishu",
+      "label": "File sessions in a folder (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.file-sessions-in-a-folder-feishu"
     },
     {
       "id": "channels.file-sessions-in-a-folder-imessage",
@@ -223,63 +305,70 @@
       "label": "Folder name (Discord)",
       "tab": "channels",
       "route": "/settings/channels/discord?highlight=channels.folder-name-discord",
-      "description": "Created for you when you save these settings, if it does not exist yet."
+      "hint": "Created for you when you save these settings, if it does not exist yet."
+    },
+    {
+      "id": "channels.folder-name-feishu",
+      "label": "Folder name (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.folder-name-feishu",
+      "hint": "Created for you when you save these settings, if it does not exist yet."
     },
     {
       "id": "channels.folder-name-imessage",
       "label": "Folder name (iMessage)",
       "tab": "channels",
       "route": "/settings/channels/imessage?highlight=channels.folder-name-imessage",
-      "description": "Created for you when you save these settings, if it does not exist yet."
+      "hint": "Created for you when you save these settings, if it does not exist yet."
     },
     {
       "id": "channels.folder-name-slack",
       "label": "Folder name (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.folder-name-slack",
-      "description": "Created for you when you save these settings, if it does not exist yet."
+      "hint": "Created for you when you save these settings, if it does not exist yet."
     },
     {
       "id": "channels.folder-name-teams",
       "label": "Folder name (Teams)",
       "tab": "channels",
       "route": "/settings/channels/teams?highlight=channels.folder-name-teams",
-      "description": "Created for you when you save these settings, if it does not exist yet."
+      "hint": "Created for you when you save these settings, if it does not exist yet."
     },
     {
       "id": "channels.folder-name-telegram",
       "label": "Folder name (Telegram)",
       "tab": "channels",
       "route": "/settings/channels/telegram?highlight=channels.folder-name-telegram",
-      "description": "Created for you when you save these settings, if it does not exist yet."
+      "hint": "Created for you when you save these settings, if it does not exist yet."
     },
     {
       "id": "channels.folder-name-webex",
       "label": "Folder name (Webex)",
       "tab": "channels",
       "route": "/settings/channels/webex?highlight=channels.folder-name-webex",
-      "description": "Created for you when you save these settings, if it does not exist yet."
+      "hint": "Created for you when you save these settings, if it does not exist yet."
     },
     {
       "id": "channels.folder-name-wechat",
       "label": "Folder name (WeChat)",
       "tab": "channels",
       "route": "/settings/channels/weixin?highlight=channels.folder-name-wechat",
-      "description": "Created for you when you turn this on, if it does not exist yet."
+      "hint": "Created for you when you turn this on, if it does not exist yet."
     },
     {
       "id": "channels.folder-name-wecom",
       "label": "Folder name (WeCom)",
       "tab": "channels",
       "route": "/settings/channels/wecom?highlight=channels.folder-name-wecom",
-      "description": "Created for you when you save these settings, if it does not exist yet."
+      "hint": "Created for you when you save these settings, if it does not exist yet."
     },
     {
       "id": "channels.folder-name-whatsapp",
       "label": "Folder name (WhatsApp)",
       "tab": "channels",
       "route": "/settings/channels/whatsapp?highlight=channels.folder-name-whatsapp",
-      "description": "Created for you when you turn this on, if it does not already exist."
+      "hint": "Created for you when you turn this on, if it does not already exist."
     },
     {
       "id": "channels.hard-context-threshold-teams",
@@ -307,28 +396,28 @@
       "label": "Messages database path (iMessage)",
       "tab": "channels",
       "route": "/settings/channels/imessage?highlight=channels.messages-database-path-imessage",
-      "description": "Override where the Messages database is read from. Leave empty to use the default location."
+      "hint": "Override where the Messages database is read from. Leave empty to use the default location."
     },
     {
       "id": "channels.owner-slack-member-id-slack",
       "label": "Owner Slack member ID (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.owner-slack-member-id-slack",
-      "description": "The one member who can always interact with the bot (KIROCREW_OWNER_ID). Starts with U or W."
+      "description": "Your Slack member ID (KIROCREW_OWNER_ID): in Slack, open your profile, select ⋮, then Copy member ID. Starts with U or W."
     },
     {
       "id": "channels.phase-reactions-slack",
       "label": "Phase reactions (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.phase-reactions-slack",
-      "description": "Show phase-aware emoji reactions (queued → thinking → coding → done) on messages."
+      "hint": "Add 👀 to a message while it is answered (only where Slack shows no thread status) and 😱 if the turn fails."
     },
     {
       "id": "channels.reply-in-thread-webex",
       "label": "Reply in thread (Webex)",
       "tab": "channels",
       "route": "/settings/channels/webex?highlight=channels.reply-in-thread-webex",
-      "description": "Reply under the message's own thread when it has one, which keeps a busy space readable."
+      "hint": "Reply under the message's own thread when it has one, which keeps a busy space readable."
     },
     {
       "id": "channels.seconds-between-unprompted-replies-whatsapp",
@@ -341,14 +430,14 @@
       "label": "Send replies over (iMessage)",
       "tab": "channels",
       "route": "/settings/channels/imessage?highlight=channels.send-replies-over-imessage",
-      "description": "Which service outbound replies use. Inbound is unaffected — messages are accepted whichever service they arrive over."
+      "hint": "Which service outbound replies use. Inbound is unaffected — messages are accepted whichever service they arrive over."
     },
     {
       "id": "channels.show-thinking-slack",
       "label": "Show thinking (Slack)",
       "tab": "channels",
       "route": "/settings/channels/slack?highlight=channels.show-thinking-slack",
-      "description": "Post the model's reasoning as a thread reply. Disable to keep responses concise."
+      "hint": "Post the model's reasoning as a thread reply. Disable to keep responses concise."
     },
     {
       "id": "channels.slack-app-token-slack",
@@ -376,6 +465,12 @@
       "label": "Soft context threshold % (Discord)",
       "tab": "channels",
       "route": "/settings/channels/discord?highlight=channels.soft-context-threshold-discord"
+    },
+    {
+      "id": "channels.soft-context-threshold-feishu",
+      "label": "Soft context threshold % (Feishu)",
+      "tab": "channels",
+      "route": "/settings/channels/feishu?highlight=channels.soft-context-threshold-feishu"
     },
     {
       "id": "channels.soft-context-threshold-teams",
@@ -441,7 +536,7 @@
       "label": "Auto-Compact Threshold",
       "tab": "chat",
       "route": "/settings/chat/advanced?highlight=key%3Asession.autocompact_pct",
-      "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
+      "hint": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions. Does not apply to KAS sessions, which compact on their own.",
       "configKey": "session.autocompact_pct"
     },
     {
@@ -526,11 +621,19 @@
       "configKey": "agent.refusal_fallback_model"
     },
     {
+      "id": "chat.copy-on-select",
+      "label": "Copy on select",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.copy-on-select",
+      "hint": "Copy text to the clipboard as soon as you select it in the conversation with the mouse. The Quote, Ask about this and Copy row still opens."
+    },
+    {
       "id": "chat.default-memory-mode",
       "label": "Default Memory Mode",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=key%3Adashboard.default_memory_mode",
-      "description": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
+      "description": "Persistent saves new memory, Incognito saves none, Temporary starts blank and saves none.",
+      "hint": "Persistent uses what it knows and saves new memory. Incognito uses what it knows but saves no new memory. Temporary starts blank and saves no new memory. Every chat still appears in History. You can change the mode for any chat.",
       "configKey": "dashboard.default_memory_mode"
     },
     {
@@ -538,8 +641,7 @@
       "label": "Default Model",
       "tab": "chat",
       "route": "/settings/chat/models?highlight=chat.default-model",
-      "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Mates, or pick one inside a session to override it there.",
-      "hint": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open."
+      "hint": "Which model new sessions start with when their agent pins none. Set a model per agent under Customize → Bots, or pick one inside a session to override it there. Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open."
     },
     {
       "id": "chat.default-reasoning-effort",
@@ -553,8 +655,7 @@
       "label": "Default Sidebar Folder for New Chats",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=key%3Adashboard.default_session_folder",
-      "description": "The sidebar folder new chats are filed into when you start one without choosing a folder. It groups chats in the sidebar; it is not a folder on disk.",
-      "hint": "The chat uses the folder's linked project and agent, as New chat in folder does.",
+      "hint": "The sidebar folder new chats are filed into when you start one without choosing a folder. It groups chats in the sidebar; it is not a folder on disk. The chat uses the folder's linked project and agent, as New chat in folder does.",
       "configKey": "dashboard.default_session_folder"
     },
     {
@@ -569,7 +670,7 @@
       "label": "Dim Inactive Panes",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=chat.dim-inactive-panes",
-      "description": "In split view, fade every pane that does not have keyboard focus. When off, all panes stay at full brightness and the accent border marks the focused one."
+      "hint": "In split view, fade every pane that does not have keyboard focus. When off, all panes stay at full brightness and the accent border marks the focused one."
     },
     {
       "id": "chat.double-click-to-edit-your-messages",
@@ -577,6 +678,12 @@
       "tab": "chat",
       "route": "/settings/chat/transcript?highlight=chat.double-click-to-edit-your-messages",
       "hint": "When off, a double-click on your message selects a word as in any text."
+    },
+    {
+      "id": "chat.exact-threshold",
+      "label": "Exact Threshold (%)",
+      "tab": "chat",
+      "route": "/settings/chat/advanced?highlight=chat.exact-threshold"
     },
     {
       "id": "chat.fallback-model",
@@ -622,6 +729,20 @@
       "hint": "Expand history sidebar by default"
     },
     {
+      "id": "chat.include-subfolder-contents-in-folder-counts",
+      "label": "Include Subfolder Contents in Folder Counts",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.include-subfolder-contents-in-folder-counts",
+      "hint": "A folder's count adds up everything inside its subfolders too, so a collapsed folder shows how much it holds"
+    },
+    {
+      "id": "chat.jump-to-the-bottom-when-you-send",
+      "label": "Jump to the bottom when you send",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.jump-to-the-bottom-when-you-send",
+      "hint": "When off, sending a message leaves the transcript where it is."
+    },
+    {
       "id": "chat.keep-side-panel-open",
       "label": "Keep Side Panel Open",
       "tab": "chat",
@@ -634,14 +755,15 @@
       "label": "Link Previews",
       "tab": "chat",
       "route": "/settings/chat/transcript?highlight=chat.link-previews",
-      "description": "Show a favicon and page title instead of the raw URL. This machine then fetches every link the model outputs, so each linked site sees a request from your IP address."
+      "description": "Each linked site sees a request from your IP address.",
+      "hint": "Show a favicon and page title instead of the raw URL. This machine then fetches every link the model outputs, so each linked site sees a request from your IP address."
     },
     {
       "id": "chat.mcp-apps-in-side-panel",
       "label": "MCP Apps in Side Panel",
       "tab": "chat",
       "route": "/settings/chat/sidepanel?highlight=chat.mcp-apps-in-side-panel",
-      "description": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat. The panel opens automatically."
+      "hint": "Render interactive MCP Apps (such as Excalidraw diagrams) in the right side panel instead of inline in the chat. The panel opens automatically."
     },
     {
       "id": "chat.merge-queued-messages",
@@ -681,6 +803,12 @@
       "hint": "A click opens the session in its own session tab instead of replacing the active tab's session."
     },
     {
+      "id": "chat.optimize-before-sending",
+      "label": "Optimize Before Sending",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.optimize-before-sending"
+    },
+    {
       "id": "chat.pin-summary-in-side-panel",
       "label": "Pin Summary in Side Panel",
       "tab": "chat",
@@ -700,28 +828,56 @@
       "label": "Plain diffs",
       "tab": "chat",
       "route": "/settings/chat/transcript?highlight=chat.plain-diffs",
-      "description": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs."
+      "hint": "Render diffs as plain unified-diff text instead of syntax-highlighted colour. Uses less memory on large diffs."
     },
     {
       "id": "chat.pr-and-issue-chips-on-session-cards",
       "label": "PR and Issue Chips on Session Cards",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=chat.pr-and-issue-chips-on-session-cards",
-      "description": "Show a chip on each session's sidebar card for every pull request, merge request and issue mentioned in that session. Turning it off also stops the periodic provider calls that keep those chips up to date."
+      "hint": "Show a chip on each session's sidebar card for every pull request, merge request and issue mentioned in that session. Turning it off also stops the periodic provider calls that keep those chips up to date."
+    },
+    {
+      "id": "chat.preferred-reply-language",
+      "label": "Preferred Reply Language",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.preferred-reply-language",
+      "hint": "Code, commit messages and PR text keep the project's own language."
     },
     {
       "id": "chat.prevent-sleep-while-running",
       "label": "Prevent sleep while running",
       "tab": "chat",
       "route": "/settings/chat/advanced?highlight=key%3Adashboard.prevent_sleep",
-      "hint": "Keep your computer awake while a task is running",
+      "hint": "Keep your computer awake while a task is running. On some Windows laptops (Modern Standby), locking the screen can still let it sleep, so keep the screen on for long tasks.",
       "configKey": "dashboard.prevent_sleep"
+    },
+    {
+      "id": "chat.preview-lines-on-session-cards",
+      "label": "Preview Lines on Session Cards",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.preview-lines-on-session-cards",
+      "hint": "How many lines the latest-message preview can use before it is cut off"
     },
     {
       "id": "chat.quick-send",
       "label": "Quick Send",
       "tab": "chat",
       "route": "/settings/chat/composer?highlight=chat.quick-send"
+    },
+    {
+      "id": "chat.recall-sent-messages-with-arrow-keys",
+      "label": "Recall Sent Messages with Arrow Keys",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.recall-sent-messages-with-arrow-keys",
+      "hint": "In an empty message input, or with the cursor at its very start, ↑ brings back a message you sent in this chat and ↓ moves forward again. Turn it off to keep ↑ and ↓ for moving the cursor."
+    },
+    {
+      "id": "chat.require-a-second-escape-to-stop-the-turn",
+      "label": "Require a second Escape to stop the turn",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.require-a-second-escape-to-stop-the-turn",
+      "hint": "When on, the first Escape in the message input only shows a hint. A second Escape while the hint shows stops the running turn."
     },
     {
       "id": "chat.response-verbosity",
@@ -785,13 +941,20 @@
       "label": "Show Full Titles While Scrolling",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=chat.show-full-titles-while-scrolling",
-      "hint": "While you scroll the session list, titles the sidebar cuts off show in full"
+      "hint": "While you scroll the session list, cut-off titles show in full"
+    },
+    {
+      "id": "chat.show-optimize-prompt",
+      "label": "Show Optimize Prompt",
+      "tab": "chat",
+      "route": "/settings/chat/composer?highlight=chat.show-optimize-prompt"
     },
     {
       "id": "chat.show-pasted-text-in-full",
       "label": "Show Pasted Text in Full",
       "tab": "chat",
-      "route": "/settings/chat/composer?highlight=chat.show-pasted-text-in-full"
+      "route": "/settings/chat/composer?highlight=chat.show-pasted-text-in-full",
+      "description": "A very large paste can make the input slow."
     },
     {
       "id": "chat.show-thinking-inline",
@@ -819,7 +982,8 @@
       "label": "Soft-stop budget (seconds)",
       "tab": "chat",
       "route": "/settings/chat/composer?highlight=chat.soft-stop-budget-seconds",
-      "description": "How long to wait for the agent to honor a Stop press before forcefully killing the session. Longer budgets preserve session state more often but make stops feel laggy when agents are stuck in long tool calls."
+      "description": "After this, Stop kills the session.",
+      "hint": "How long to wait for the agent to honor a Stop press before forcefully killing the session. Longer budgets preserve session state more often but make stops feel laggy when agents are stuck in long tool calls."
     },
     {
       "id": "chat.spell-check-message-input",
@@ -840,6 +1004,15 @@
       "label": "Split View (Session Grid)",
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=chat.split-view-session-grid"
+    },
+    {
+      "id": "chat.start-new-chats-in-ultra-mode",
+      "label": "Start New Chats in Ultra Mode",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.new_chat_crew_mode",
+      "description": "Ultra Mode runs each task in its own chat and reports back on the new chat's Board. You can turn it off on any new chat before the first message.",
+      "hint": "Not for Incognito or Temporary chats, or chats on another agent.",
+      "configKey": "dashboard.new_chat_crew_mode"
     },
     {
       "id": "chat.style-markdown-while-typing",
@@ -891,6 +1064,13 @@
       "hint": "Immediate mode shows raw chunks as they arrive. Smooth mode buffers and fades text in at a steady pace."
     },
     {
+      "id": "chat.title-lines-on-session-cards",
+      "label": "Title Lines on Session Cards",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=chat.title-lines-on-session-cards",
+      "hint": "How many lines a session title can use before it is cut off"
+    },
+    {
       "id": "chat.tool-calls-start-expanded",
       "label": "Tool calls start expanded",
       "tab": "chat",
@@ -939,28 +1119,29 @@
       "label": "Attach screenshots",
       "tab": "computer-use",
       "route": "/settings/computer-use?highlight=computer-use.attach-screenshots",
-      "description": "Also capture the target window and pass its file path. The accessibility tree stays the primary channel; windows containing a password field are never captured."
+      "description": "Windows with a password field are never captured.",
+      "hint": "Also capture the target window and pass its file path. The accessibility tree stays the primary channel; windows containing a password field are never captured."
     },
     {
       "id": "computer-use.enable-computer-use",
       "label": "Enable computer use",
       "tab": "computer-use",
       "route": "/settings/computer-use?highlight=computer-use.enable-computer-use",
-      "description": "Let the agent read desktop app windows through accessibility and act on their controls. Off until you turn it on here — an agent cannot enable it."
+      "hint": "Let the agent read desktop app windows through accessibility and act on their controls. Off until you turn it on here — an agent cannot enable it."
     },
     {
       "id": "computer-use.max-tree-nodes",
       "label": "Max tree nodes",
       "tab": "computer-use",
       "route": "/settings/computer-use?highlight=computer-use.max-tree-nodes",
-      "description": "How many controls one window reading returns. A window with more than this gets truncated, and the agent is told so. Raise it for dense apps (a spreadsheet, an IDE); lower it to spend fewer tokens per reading."
+      "hint": "How many controls one window reading returns. A window with more than this gets truncated, and the agent is told so. Raise it for dense apps (a spreadsheet, an IDE); lower it to spend fewer tokens per reading."
     },
     {
       "id": "computer-use.screenshot-width",
       "label": "Screenshot width",
       "tab": "computer-use",
       "route": "/settings/computer-use?highlight=computer-use.screenshot-width",
-      "description": "Longest edge of the screenshot, in pixels. Smaller is cheaper and faster to read; larger keeps small text legible if the agent has to fall back to the image."
+      "hint": "Longest edge of the screenshot, in pixels. Smaller is cheaper and faster to read; larger keeps small text legible if the agent has to fall back to the image."
     },
     {
       "id": "computer-use.show-cursor-motion",
@@ -1002,137 +1183,235 @@
       "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
     },
     {
+      "id": "connections.oauth-client-gmail",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-gmail",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-google-drive",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-google-drive",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-google-calendar",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-google-calendar",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-google-sheets",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-google-sheets",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-google-docs",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-google-docs",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "connections.oauth-client-google-slides",
+      "label": "OAuth app",
+      "tab": "connections",
+      "route": "/settings/connections?highlight=connections.oauth-client-google-slides",
+      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+    },
+    {
+      "id": "developer.also-send-screenshots-of-the-agent-s-browser-tab",
+      "label": "Also send screenshots of the agent's browser tab",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.also-send-screenshots-of-the-agent-s-browser-tab",
+      "description": "Turn this off to keep screenshots on this machine.",
+      "hint": "On by default once a decision model is on; turn it off to keep screenshots on this machine. Sends a screenshot before and after a step to check it, and a screenshot to find a target drawn on a canvas, which the outline cannot see. No screenshot is taken while a password field is on the page or while you have taken over the browser. A System One endpoint, hosted or on your own SageMaker endpoint, accepts screenshots; a local model gets the outline only. On a SageMaker endpoint this starts off: turn it on yourself to send screenshots there."
+    },
+    {
       "id": "developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
       "label": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
+      "route": "/settings/developer/feature-previews?highlight=developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help",
       "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to Jev, which then says which ones to keep. It can only remove them — never add one, never reorder them — and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on."
     },
     {
       "id": "developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
       "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
+      "route": "/settings/developer/feature-previews?highlight=developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
       "description": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
     },
     {
       "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
       "label": "Also send tool-call arguments so Jev can flag risky calls",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
+      "route": "/settings/developer/feature-previews?highlight=developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
       "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
     },
     {
       "id": "developer.artifact-deploy",
       "label": "Artifact Deploy",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.artifact-deploy",
-      "description": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet."
+      "route": "/settings/developer/feature-previews?highlight=developer.artifact-deploy",
+      "description": "Each deploy costs money in your AWS account and is public.",
+      "hint": "Publish an artifact to a public HTTPS URL in your own AWS account. Off by default: every deploy spends money in your account and serves the content on the open internet."
     },
     {
       "id": "developer.automatic-cards-for-all-sessions",
       "label": "Automatic cards for all sessions",
       "tab": "developer",
-      "route": "/settings/developer?highlight=key%3Adashboard.dynamic_dashboard_cards",
+      "route": "/settings/developer/feature-previews?highlight=key%3Adashboard.dynamic_dashboard_cards",
       "description": "Summaries of each session’s recent work and next steps, shown on the All Dashboards page, which the Sessions list’s ⋮ menu opens. A model call writes each one, so they use model credits.",
       "configKey": "dashboard.dynamic_dashboard_cards"
+    },
+    {
+      "id": "developer.bot-sessions-on-the-bot-s-profile",
+      "label": "Bot sessions on the bot's profile",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.bot-sessions-on-the-bot-s-profile",
+      "description": "Moves a bot's chats to its Sessions tab.",
+      "hint": "Moves the chats a bot opens out of your Sessions list, Recents and grid, onto that bot's Sessions tab. The bot's own chat stays where it is, and History and search still find every chat."
     },
     {
       "id": "developer.chat-on-a-crew",
       "label": "Chat on a crew",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.chat-on-a-crew",
-      "description": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished."
+      "route": "/settings/developer/feature-previews?highlight=developer.chat-on-a-crew",
+      "description": "Starts chats on a connected remote crew.",
+      "hint": "Adds “New chat on crew” to the create menu, which starts a session on a remote crew — another machine you have connected under Settings > Remote Crew — and shows each connected crew’s sessions in their own group in the Sessions list. Unfinished."
     },
     {
       "id": "developer.composable-layout",
       "label": "Composable layout",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.composable-layout",
-      "description": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
+      "route": "/settings/developer/feature-previews?highlight=developer.composable-layout",
+      "description": "Developer-only test harness, with no visible change.",
+      "hint": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
     },
     {
       "id": "developer.decisions-jev",
       "label": "Decisions (Jev)",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.decisions-jev",
-      "description": "A small, fast model makes quick calls for Kiro Crew, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up."
-    },
-    {
-      "id": "developer.developer-mode",
-      "label": "Developer Mode",
-      "tab": "developer",
-      "route": "/settings/developer?highlight=developer.developer-mode",
-      "hint": "Show Developer page in sidebar with Logs, System metrics, and Memory internals"
+      "route": "/settings/developer/feature-previews?highlight=developer.decisions-jev",
+      "hint": "A small, fast model makes quick calls for Kiro Crew, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up."
     },
     {
       "id": "developer.earlier-conversation-one-decision-may-carry-in-characters",
       "label": "Earlier conversation one decision may carry, in characters",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.earlier-conversation-one-decision-may-carry-in-characters",
-      "description": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine."
+      "route": "/settings/developer/feature-previews?highlight=developer.earlier-conversation-one-decision-may-carry-in-characters",
+      "description": "A larger number sends more of the conversation off this machine.",
+      "hint": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine."
+    },
+    {
+      "id": "developer.explore",
+      "label": "Explore",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.explore",
+      "description": "Features to try, in the top bar.",
+      "hint": "Adds Explore to the top bar: features to try, your progress, and a Try today card on a new chat."
     },
     {
       "id": "developer.folder-conductor",
       "label": "Folder conductor",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.folder-conductor",
-      "description": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
+      "route": "/settings/developer/feature-previews?highlight=developer.folder-conductor",
+      "description": "Moves the chat that started a folder's chats to the top.",
+      "hint": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
+    },
+    {
+      "id": "developer.github-sign-in-by-kiro-crew",
+      "label": "GitHub sign-in by Kiro Crew",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.github-sign-in-by-kiro-crew",
+      "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Customize > Connections.",
+      "hint": "Kiro Crew signs in to GitHub itself. Disconnect GitHub on Connections to remove access."
     },
     {
       "id": "developer.jev-api-key",
       "label": "Jev API key",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.jev-api-key",
+      "route": "/settings/developer/feature-previews?highlight=developer.jev-api-key",
       "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
-    },
-    {
-      "id": "developer.mates",
-      "label": "Mates",
-      "tab": "developer",
-      "route": "/settings/developer?highlight=developer.mates",
-      "hint": "The Mates page: every agent you have, each with its own thread. Still being built, so it is not offered until you turn this on."
     },
     {
       "id": "developer.model-for-the-small-model-judge",
       "label": "Model for the small-model judge",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.model-for-the-small-model-judge",
-      "description": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
+      "route": "/settings/developer/feature-previews?highlight=developer.model-for-the-small-model-judge",
+      "hint": "Only used when the judge above is the small model. Leave it on the judge agent's own model unless you want a cheaper one."
     },
     {
-      "id": "developer.reply-threads-on-mate-chat-messages",
-      "label": "Reply threads on mate chat messages",
+      "id": "developer.remote-dispatch",
+      "label": "Remote dispatch",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.reply-threads-on-mate-chat-messages",
-      "hint": "Let any message in a mate's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted."
+      "route": "/settings/developer/feature-previews?highlight=key%3Awork_ledger.remote_dispatch",
+      "description": "Runs Ultra Mode tasks on connected machines.",
+      "hint": "Lets Ultra Mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
+      "configKey": "work_ledger.remote_dispatch"
+    },
+    {
+      "id": "developer.reply-threads-on-bot-chat-messages",
+      "label": "Reply threads on bot chat messages",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.reply-threads-on-bot-chat-messages",
+      "hint": "Let any message in a bot's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted."
     },
     {
       "id": "developer.run-a-local-gateway",
       "label": "Run a local gateway",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.run-a-local-gateway",
-      "description": "Start a gateway on this machine. Leave it on unless this app's port already reaches a crew on another machine, or the app cannot connect the next time it opens, which is when this takes effect. That needs the crew saved for this port with “Set Remote Host…” in the Connection menu, plus a tunnel: tick “Keep an SSH tunnel to this crew open” there (macOS and Linux) or keep your own SSH tunnel running. Settings → Remote Crew connections stop when this is off, so they do not count."
+      "route": "/settings/developer/feature-previews?highlight=developer.run-a-local-gateway",
+      "description": "Leave it on unless “Set Remote Host…” and a tunnel already reach a crew. Otherwise the app cannot connect.",
+      "hint": "Start a gateway on this machine. Leave it on unless this app's port already reaches a crew on another machine, or the app cannot connect the next time it opens, which is when this takes effect. That needs the crew saved for this port with “Set Remote Host…” in the Connection menu, plus a tunnel: tick “Keep an SSH tunnel to this crew open” there (macOS and Linux) or keep your own SSH tunnel running. Settings → Remote Crew connections stop when this is off, so they do not count."
     },
     {
       "id": "developer.run-kas-on-kiro-crew-s-own-engine",
       "label": "Run KAS on Kiro Crew's own engine",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
+      "route": "/settings/developer/feature-previews?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
       "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts."
+    },
+    {
+      "id": "developer.session-environments",
+      "label": "Session Environments",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.session-environments",
+      "description": "Runs a chat in its own remote workspace.",
+      "hint": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message."
+    },
+    {
+      "id": "developer.shared-crew",
+      "label": "Shared Crew",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.shared-crew",
+      "description": "People tab, invites and shared sessions"
+    },
+    {
+      "id": "developer.ultra-mode",
+      "label": "Ultra Mode",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.ultra-mode",
+      "description": "Hands a chat's tasks to a crew.",
+      "hint": "Lets a chat hand tasks to a crew and track them on a Board."
     },
     {
       "id": "developer.webhooks",
       "label": "Webhooks",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.webhooks",
+      "route": "/settings/developer/feature-previews?highlight=developer.webhooks",
       "hint": "Inbound webhook tokens, registered contexts, and run history. The API works; the page is not finished."
     },
     {
       "id": "developer.which-judge-answers",
       "label": "Which judge answers",
       "tab": "developer",
-      "route": "/settings/developer?highlight=developer.which-judge-answers"
+      "route": "/settings/developer/feature-previews?highlight=developer.which-judge-answers"
     },
     {
       "id": "display.command-completion",
@@ -1141,6 +1420,13 @@
       "route": "/settings/display/terminal?highlight=key%3Adashboard.terminal.completion.enabled",
       "hint": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
       "configKey": "dashboard.terminal.completion.enabled"
+    },
+    {
+      "id": "display.copy-on-select",
+      "label": "Copy on select",
+      "tab": "display",
+      "route": "/settings/display/terminal?highlight=display.copy-on-select",
+      "hint": "Copy text to the clipboard as soon as you select it in the terminal with the mouse. The selection toolbar still opens."
     },
     {
       "id": "display.cursor-style",
@@ -1185,6 +1471,14 @@
       "tab": "display",
       "route": "/settings/display/zoom?highlight=display.enable-ligatures",
       "hint": "Render programming ligatures (=>, !=, ->) when the custom font has them. Code and diffs in messages are unaffected."
+    },
+    {
+      "id": "display.explore",
+      "label": "Explore",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=key%3Adashboard.milestones_enabled",
+      "hint": "Show Explore in the top bar and a Try today card on a new chat.",
+      "configKey": "dashboard.milestones_enabled"
     },
     {
       "id": "display.external-terminal-app",
@@ -1236,6 +1530,13 @@
       "hint": "Chat bubbles or CLI-style line-by-line output"
     },
     {
+      "id": "display.keep-running-in-the-background-after-closing-the-window",
+      "label": "Keep running in the background after closing the window",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.keep-running-in-the-background-after-closing-the-window",
+      "hint": "Closing the window hides Kiro Crew and keeps your sessions and jobs running. Turn this off to make the close button quit the app. A gateway this app started stops with it, and a gateway it only connects to keeps running."
+    },
+    {
       "id": "display.language",
       "label": "Language",
       "tab": "display",
@@ -1250,6 +1551,12 @@
       "hint": "Light or dark appearance for the dashboard"
     },
     {
+      "id": "display.overlays",
+      "label": "Overlays",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.overlays"
+    },
+    {
       "id": "display.palette",
       "label": "Palette",
       "tab": "display",
@@ -1257,12 +1564,39 @@
       "hint": "Choose a color palette for your sidebar sessions."
     },
     {
+      "id": "display.persona",
+      "label": "Persona",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.persona"
+    },
+    {
       "id": "display.reuse-the-current-terminal",
       "label": "Reuse the current terminal",
       "tab": "display",
       "route": "/settings/display/terminal?highlight=key%3Adashboard.terminal.reuse_current",
-      "description": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",
+      "description": "Copies the command for you to paste. It is never run for you.",
+      "hint": "Copies the command instead of running it: Run in terminal focuses the terminal tab you have selected and copies the command, so you can paste it into that shell while keeping its working directory, environment, and any active login session. With no terminal open, it still copies the command for you to paste — it is never run for you.",
       "configKey": "dashboard.terminal.reuse_current"
+    },
+    {
+      "id": "display.show-tray-icon",
+      "label": "Show tray icon",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.show-tray-icon",
+      "hint": "Shows Kiro Crew in the system tray, or the menu bar on macOS, so you can open its window or quit from there."
+    },
+    {
+      "id": "display.show-unread-dot-on-session-cards",
+      "label": "Show unread dot on session cards",
+      "tab": "display",
+      "route": "/settings/display/sidebar?highlight=key%3Adashboard.show_unread_dot",
+      "configKey": "dashboard.show_unread_dot"
+    },
+    {
+      "id": "display.sounds",
+      "label": "Sounds",
+      "tab": "display",
+      "route": "/settings/display/theme?highlight=display.sounds"
     },
     {
       "id": "display.theme",
@@ -1346,6 +1680,20 @@
       "tab": "notifications",
       "route": "/settings/notifications/alerts?highlight=notifications.mark-sessions-unread-only-when-they-need-you",
       "hint": "A background session is marked unread when its agent finishes or waits on your answer, instead of on every new message."
+    },
+    {
+      "id": "notifications.mute-sounds",
+      "label": "Mute sounds",
+      "tab": "notifications",
+      "route": "/settings/notifications/sound?highlight=notifications.mute-sounds",
+      "hint": "Silences notification sounds for a while, then turns them back on by itself. Notifications still arrive."
+    },
+    {
+      "id": "notifications.notify-me-even-when-kiro-crew-is-closed",
+      "label": "Notify me even when Kiro Crew is closed",
+      "tab": "notifications",
+      "route": "/settings/notifications/alerts?highlight=notifications.notify-me-even-when-kiro-crew-is-closed",
+      "description": "Sends alerts to this device even after you close Kiro Crew. System notifications stop once you close it."
     },
     {
       "id": "notifications.notify-when-a-background-chat-finishes",
@@ -1477,6 +1825,13 @@
       "description": "Off shows files the dashboard opens for you — the chat side panel's Files tab, and the Library and Artifacts previews — as written, in your own dashboard only. On by default. Conversations in this dashboard, Slack, and messaging channels stay redacted. Changing it reloads the files you have open (unsaved edits are kept) and closes file-comparison (diff) views."
     },
     {
+      "id": "security.config-pending",
+      "label": "Settings files changed outside {{productName}}",
+      "tab": "security",
+      "route": "/settings/security/posture?highlight=security.config-pending",
+      "description": "Review edits made to settings files outside {{productName}}, then apply or discard them."
+    },
+    {
       "id": "security.trust-every-third-party-app",
       "label": "Trust every third-party app",
       "tab": "security",
@@ -1495,6 +1850,50 @@
       "tab": "security",
       "route": "/settings/security/rules?highlight=security.your-custom-denies",
       "description": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules."
+    },
+    {
+      "id": "session-environments.coder-url",
+      "label": "Coder URL",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.coder_url",
+      "hint": "Use the deployment URL without credentials, query parameters, or fragments, for example https://coder.example.com.",
+      "configKey": "session_environments.coder_url"
+    },
+    {
+      "id": "session-environments.default-for-new-chats",
+      "label": "Default for new chats",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=session-environments.default-for-new-chats",
+      "hint": "New chats you start in the dashboard run here unless you pick another profile in the “Run this chat on” menu before the first message. Existing chats, scheduled jobs and channel conversations keep running where they do now."
+    },
+    {
+      "id": "session-environments.machine-size",
+      "label": "Machine size",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=session-environments.machine-size",
+      "description": "Larger sizes bill more while the machine runs.",
+      "hint": "A snapshot keeps the size it was saved with, so this applies only to profiles without one. Larger sizes bill more while the machine runs."
+    },
+    {
+      "id": "session-environments.secret-name-for-the-token-usually-sprites-token",
+      "label": "Secret name for the token (usually SPRITES_TOKEN)",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=session-environments.secret-name-for-the-token-usually-sprites-token",
+      "hint": "The name the token is stored under in Settings → Secrets. Change it only to use a different saved token."
+    },
+    {
+      "id": "session-environments.start-new-chats-on-a-profile",
+      "label": "Start new chats on a profile",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.default_profile",
+      "configKey": "session_environments.default_profile"
+    },
+    {
+      "id": "session-environments.stop-workspaces-when-kiro-crew-shuts-down",
+      "label": "Stop workspaces when Kiro Crew shuts down",
+      "tab": "session-environments",
+      "route": "/settings/session-environments?highlight=key%3Asession_environments.stop_on_shutdown",
+      "configKey": "session_environments.stop_on_shutdown"
     },
     {
       "id": "shortcuts.enable-shortcuts",
@@ -1528,7 +1927,8 @@
       "label": "Extra skill paths",
       "tab": "skills",
       "route": "/settings/skills?highlight=key%3Askills.extra_paths",
-      "description": "Folders to load extra skills from, one path per line. Spaces around a path and blank lines are ignored. Skills found there are read-only, and a skill in your own skills folder wins on a duplicate name. Changes apply without a restart.",
+      "description": "One folder path per line.",
+      "hint": "Folders to load extra skills from, one path per line. Spaces around a path and blank lines are ignored. Skills found there are read-only, and a skill in your own skills folder wins on a duplicate name. Changes apply without a restart.",
       "configKey": "skills.extra_paths"
     },
     {
@@ -1536,7 +1936,8 @@
       "label": "Require approval before generated skills go live",
       "tab": "skills",
       "route": "/settings/skills?highlight=key%3Askills.approval_required",
-      "description": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless.",
+      "description": "Off lets new skills without scripts go live without your approval.",
+      "hint": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets new prose-only skills publish automatically; skills that bundle scripts, and any update to an existing skill, always require approval, unless skills.auto_refine_on_deviation is on.",
       "configKey": "skills.approval_required"
     },
     {
@@ -1579,8 +1980,7 @@
       "id": "voice.aws-region-transcribe",
       "label": "AWS Region (Transcribe)",
       "tab": "voice",
-      "route": "/settings/voice?highlight=voice.aws-region-transcribe",
-      "description": "AWS region for Transcribe"
+      "route": "/settings/voice?highlight=voice.aws-region-transcribe"
     },
     {
       "id": "voice.custom-model-file",
@@ -1669,7 +2069,7 @@
       "label": "Mixed languages",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.transcribe_languages",
-      "hint": "Languages people switch between in one recording, such as Vietnamese and English. With two or more picked, Amazon Transcribe detects the language of each part and transcribes it in that language. Streaming dictation only, one dialect per language.",
+      "hint": "Languages people switch between in one recording, such as Vietnamese and English. With two or more picked, dictation detects the language of each part and transcribes it in that language. Streaming dictation only, one dialect per language.",
       "configKey": "stt.transcribe_languages"
     },
     {
@@ -1710,6 +2110,14 @@
       "route": "/settings/voice?highlight=voice.shortcut-key"
     },
     {
+      "id": "voice.slide-up-and-right-to-send",
+      "label": "Slide up and right to send",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=key%3Astt.slide_to_send",
+      "hint": "On the phone's hold-to-talk bar, slide up and to the right before letting go to send, or to steer the agent while it works. Sliding straight up still cancels. Only while 'Send when I stop recording' is off.",
+      "configKey": "stt.slide_to_send"
+    },
+    {
       "id": "voice.speed",
       "label": "Speed",
       "tab": "voice",
@@ -1736,14 +2144,15 @@
       "label": "Tap vs. hold cutoff",
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.tap-vs-hold-cutoff",
-      "description": "Only used by “Both”. Hold the key longer than this to talk; a quicker tap starts recording and leaves it on."
+      "hint": "Only used by “Both”. Hold the key longer than this to talk; a quicker tap starts recording and leaves it on."
     },
     {
       "id": "voice.tidy-up-transcripts-with-ai",
       "label": "Tidy up transcripts with AI",
       "tab": "voice",
       "route": "/settings/voice?highlight=key%3Astt.polish",
-      "description": "Sends the finished text, never the audio, to the AI model you already chat with, which fixes punctuation and capitalisation. Your words are never changed.",
+      "description": "Sends the text, never the audio, to the model you chat with.",
+      "hint": "Sends the finished text, never the audio, to the AI model you already chat with, which fixes punctuation and capitalisation. Your words are never changed.",
       "configKey": "stt.polish"
     },
     {

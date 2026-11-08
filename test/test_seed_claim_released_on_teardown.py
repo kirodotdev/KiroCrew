@@ -311,7 +311,12 @@ class TestTeardownTouchesNothingItDoesNotHold:
         assert not sp._sidecar_path().exists()
         assert not (tmp_path / ".claude").exists()
 
-    def test_a_sibling_teardown_does_not_release_the_owners_claim(self, tmp_path):
+    def test_a_sibling_teardown_does_not_release_the_owners_claim(self, tmp_path, monkeypatch):
+        # Another settings source defines availableModels, so the warm cache is written.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         owner = _client(tmp_path, model=_SERVED[0])
         owner._write_claude_local_settings()
         path = _settings(tmp_path)

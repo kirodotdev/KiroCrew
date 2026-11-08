@@ -185,7 +185,7 @@ def test_a_live_shell_permission_request_carries_the_harness_tool(backend):
 @pytest.mark.parametrize("backend", _MIRRORS)
 def test_a_backend_with_no_table_gets_no_harness_tool_id(backend):
     # The same frames on a backend with no name table build the event as before.
-    assert _permission_event(backend, as_backend=ACP_BACKEND_CLAUDE).harness_tool_id == ""
+    assert _permission_event(backend, as_backend=ACP_BACKEND_CODEX).harness_tool_id == ""
 
 
 def test_opencodes_later_titles_name_the_command_not_the_tool():
@@ -726,6 +726,9 @@ def test_a_user_spec_deny_hook_still_blocks_under_a_shadowing_project_spec(
         )
     )
     assert [c for _, c, _, _ in ran] == ["user-deny.sh"] and reason is not None
+    # Read from the user-level tree, so tagged as such: the deny-list exemption
+    # and kiro-cli's exit contract key on this tag.
+    assert [h.spec_origin for h in turn.hooks] == ["user"]
     hooks, unreadable, _ = asyncio.run(
         chat_runner._prepare_spec_hooks(
             None, None, _provider(backend, str(project)), "a1", is_new=False

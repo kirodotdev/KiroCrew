@@ -7,7 +7,7 @@
 // stays in useState.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { i18nT } from '../../../i18n/t'
 import {
@@ -19,6 +19,7 @@ import {
   type MeetingMeta,
   type MeetingStatus,
   type MeetingsConfig,
+  type NoteSaveOrder,
   type Task,
   type TranscriptResponse,
   type TranscriptSegment,
@@ -26,6 +27,13 @@ import {
 } from '../api'
 import { useMeetingTranscription } from './useMeetingTranscription'
 import { useNoteDraft } from './useNoteDraft'
+
+/** One id per meeting view, naming it as a note editor; only uniqueness matters. */
+function newNoteEditorId(): string {
+  const uuid = globalThis.crypto?.randomUUID?.()
+  if (uuid) return uuid
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`
+}
 
 /** Transcript segments arrive with overlap; a repeat inside this window is dropped. */
 const DEDUP_WINDOW_MS = 5000
@@ -109,7 +117,9 @@ export function newSegmentText(
 ): string {
   const trimmed = text.trim()
   if (!trimmed) return ''
-  if (now - previous.ts >= DEDUP_WINDOW_MS || !previous.text) return trimmed
+  // Absolute: a held final is released after a predecessor's trailing final
+  // that arrived LATER, so `now` can precede `previous.ts`.
+  if (Math.abs(now - previous.ts) >= DEDUP_WINDOW_MS || !previous.text) return trimmed
   if (trimmed === previous.text) return ''
   if (trimmed.startsWith(previous.text)) {
     // A growing final: send only what was added.
@@ -321,10 +331,22 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // whichever settles first would re-enable the controls while the other is
   // still in flight. The ref flips before the mutation starts, immune to
   // closure staleness, so the second click is a no-op instead. The DISPLAY
-  // half of the pending state is not tracked here — it derives from the
-  // mutation itself (`statusMutation.isPending ? variables : null`), the same
-  // spelling `filing` uses below.
+  // half derives from the mutation itself (`statusMutation.isPending ?
+  // variables : null`, the same spelling `filing` uses below) once the request
+  // is out; `flushingStatus` covers the window before it, because every status
+  // change flushes the held finals first and the mutation is not pending yet
+  // while that runs, so the control that was clicked would otherwise read as
+  // idle for up to `FLUSH_TIMEOUT_MS`. Set with the latch, cleared where the
+  // latch clears.
   const statusInFlightRef = useRef(false)
+  const [flushingStatus, setFlushingStatus] = useState<MeetingStatus | null>(null)
+  // End's latch, holding the in-flight stop. End flushes first too, and a
+  // second click inside that window would otherwise queue a second stop; the
+  // repeat gets the same promise, so a caller awaiting it still follows the one
+  // stop that is running. `stopRequested` is its display half, true from the
+  // click until that stop settles.
+  const stopInFlightRef = useRef<Promise<boolean> | null>(null)
+  const [stopRequested, setStopRequested] = useState(false)
 
   const metaQuery = useQuery({
     queryKey: [...scope, 'meta'],
@@ -406,8 +428,23 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // exit flush report unsaved typing as safe to leave. A loaded note keeps saving.
   const noteLoadFailed = noteQuery.isError && noteQuery.data === undefined
 
+  // Every note save this view SENDS is numbered here, at send time. The
+  // tab-close save below skips the mutation's queue, so it and an autosave still on
+  // the wire are two concurrent PUTs the server may store in either order; with
+  // this pair it drops whichever is older, instead of letting it overwrite the
+  // newest text after the page is gone. Numbered at the call, not in `mutationFn`,
+  // because a queued save runs later than it was sent.
+  const noteEditorRef = useRef<string | null>(null)
+  noteEditorRef.current ??= newNoteEditorId()
+  const noteSeqRef = useRef(0)
+  const nextNoteOrder = (): NoteSaveOrder => ({
+    editor: noteEditorRef.current ?? newNoteEditorId(),
+    seq: ++noteSeqRef.current,
+  })
+
   const noteMutation = useMutation({
-    mutationFn: (content: string) => meetingsApi.saveNote(meetingId, content),
+    mutationFn: ({ content, order }: { content: string; order: NoteSaveOrder }) =>
+      meetingsApi.saveNote(meetingId, content, { order }),
     onSuccess: response => {
       // Seed the cache from the response instead of invalidating: an invalidate
       // would refetch and hand the editor a value mid-keystroke.
@@ -470,10 +507,12 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     meetingId,
     serverContent: noteQuery.data?.content,
     loadFailed: noteLoadFailed,
-    save: content => noteMutation.mutateAsync(content),
+    save: content => noteMutation.mutateAsync({ content, order: nextNoteOrder() }),
     // Outside the mutation's scope on purpose: the tab-close save cannot wait in
     // that queue, because the page is gone before the save ahead of it settles.
-    saveNow: content => meetingsApi.saveNote(meetingId, content, { keepalive: true }),
+    // Its `order` is what keeps the save it skipped from landing over it.
+    saveNow: content =>
+      meetingsApi.saveNote(meetingId, content, { keepalive: true, order: nextNoteOrder() }),
     uploadImage: uploadNoteImage,
   })
 
@@ -646,14 +685,19 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
 
   const onCaption = useCallback((text: string) => setCaption(text), [])
 
-  /** Returns `false` for an overlapping repeat, which suppresses its dispatch. */
-  const onSegment = useCallback((text: string): string | false => {
-    const now = Date.now()
-    const fresh = newSegmentText(text, lastSegmentRef.current, now)
+  /**
+   * Returns `false` for an overlapping repeat, which suppresses its dispatch.
+   *
+   * Judged at `at`, the time the final ARRIVED: finals held behind a draining
+   * lease are released together, and timing them by the release would read two
+   * utterances heard seconds apart as one repeat inside the window.
+   */
+  const onSegment = useCallback((text: string, at = Date.now()): string | false => {
+    const fresh = newSegmentText(text, lastSegmentRef.current, at)
     if (!fresh) return false
     // Track the FULL text, not the suffix: the next segment's overlap is against
     // everything recognized so far, not just the part last dispatched.
-    lastSegmentRef.current = { text: text.trim(), ts: now }
+    lastSegmentRef.current = { text: text.trim(), ts: at }
     return fresh
   }, [])
 
@@ -712,7 +756,9 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // Also guarded on `connecting`: pausing the meeting between the worklet loading
   // and the server's 'ready' frame leaves `active` false, so without the `connecting`
   // check the stop() branch never fires and buffered PCM is flushed after 'ready',
-  // persisting pause-window speech into the notes and tasks.
+  // persisting pause-window speech into the notes and tasks. `isStarting()` covers
+  // the step before that: a pause while the permission prompt is open publishes
+  // neither flag, and stopping there is what releases the stream granted later.
   //
   // A TERMINAL server error frame (streaming off, no consent, ...) `halts` the
   // hook: its own `start()` refuses until `stop()` runs, whatever order the
@@ -731,7 +777,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     if (mayOpen && !t.active && !t.connecting && !t.halted) {
       void t.start()
     }
-    if (!mayOpen && (t.active || t.connecting || t.halted)) {
+    if (!mayOpen && (t.active || t.connecting || t.halted || t.isStarting())) {
       t.stop()
     }
   }, [status, ingressReady, transcriptFull, transcriptionActive, transcriptionConnecting, transcriptionHalted])
@@ -837,6 +883,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
         ])
       } finally {
         statusInFlightRef.current = false
+        setFlushingStatus(null)
       }
     },
     onError: error => failureNotice(error, i18nT('apps.meetings.session.statusFailed')),
@@ -846,10 +893,19 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // another status change is pending is dropped rather than queued: the server
   // serializes them anyway, and replaying a stale intent after the first change
   // settles would move the meeting somewhere the user no longer means.
+  //
+  // A status change closes ingress, so the finals still held behind a draining
+  // lease, and every dispatch still retrying, must land first: one that reaches
+  // the server after the change is refused and lost from the notes.
+  //
+  // End is the other exit of the review view and shares this gate: a Back that
+  // landed first would unmount the only surface a failed stop is reported on,
+  // so neither is accepted while the other is in flight.
   const requestStatus = (next: MeetingStatus) => {
-    if (statusInFlightRef.current) return
+    if (statusInFlightRef.current || stopInFlightRef.current) return
     statusInFlightRef.current = true
-    statusMutation.mutate(next)
+    setFlushingStatus(next)
+    void transcriptionRef.current.flush().then(() => statusMutation.mutate(next))
   }
 
   const stopMutation = useMutation({
@@ -859,7 +915,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       invalidate()
       void queryClient.invalidateQueries({ queryKey: ['meetings', 'list'] })
     },
-    onError: error => failureNotice(error, i18nT('apps.meetings.session.stopFailed')),
+    // A failed stop is reported by the review view, beside the close control,
+    // through `stopError`; a feed notice on top of it would say it twice.
   })
 
   // The saved title goes straight into the cache so the header shows it at once.
@@ -947,13 +1004,23 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     onSuccess: () => invalidate(),
   })
 
+  const fileTaskKey = [...scope, 'fileTask'] as const
   const fileTaskMutation = useMutation({
+    mutationKey: fileTaskKey,
     mutationFn: (taskId: string) => meetingsApi.fileTask(meetingId, taskId),
     onSuccess: () => {
       notify(i18nT('apps.meetings.session.taskFiled'), { type: 'success' })
       invalidate()
     },
     onError: error => failureNotice(error, i18nT('apps.meetings.session.taskFileFailed')),
+  })
+
+  // Every filing still in flight, not only the latest: `fileTaskMutation.variables`
+  // names only the last call, so a second File would make the first look settled
+  // and its row archivable while its provider call is still running.
+  const filingIds = useMutationState({
+    filters: { mutationKey: fileTaskKey, status: 'pending' },
+    select: mutation => mutation.state.variables as string,
   })
 
   const reviewTaskMutation = useMutation({
@@ -1057,6 +1124,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     setTranslationOpen,
     loading: initQuery.isLoading || metaQuery.isLoading,
     error: (initQuery.error ?? metaQuery.error) as Error | null,
+    /** Why the last End failed, kept for the review view until the next End's request starts. */
+    stopError: stopMutation.error,
     agentsPaused: Boolean(live?.agents_paused),
     syncing: metaQuery.isFetching || outputsQuery.isFetching || transcriptQuery.isFetching,
     setSelectedPreset,
@@ -1067,8 +1136,39 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       pause: () => requestStatus('paused'),
       resume: () => requestStatus('active'),
       review: () => requestStatus('reviewing'),
-      backToMeeting: () => requestStatus('paused'),
-      stop: () => stopMutation.mutate(),
+      // Leaving the review view ends that End: the error of a stop that
+      // failed is reset here, so a later Review opens without the notice of a
+      // stop it never tried.
+      backToMeeting: () => {
+        // Nothing to reset, or to leave, while an End is still running: the
+        // view disables Back then, and the hook stays safe on its own.
+        if (stopInFlightRef.current) return
+        stopMutation.reset()
+        requestStatus('paused')
+      },
+      // Ending closes ingress too, so it flushes first, as `requestStatus` does,
+      // and is latched the same way. The promise resolves to whether the stop
+      // landed and never rejects: the failure is already the notice the
+      // mutation posts. So the review view can leave the meeting once the stop
+      // has landed and stay to retry when it has not, and a caller that does
+      // not wait on it has nothing to catch.
+      stop: () => {
+        if (stopInFlightRef.current) return stopInFlightRef.current
+        // Dropped, not queued, while a status change is in flight (see
+        // `requestStatus`): resolved false, so the view stays as it is.
+        if (statusInFlightRef.current) return Promise.resolve(false)
+        setStopRequested(true)
+        const stop = transcriptionRef.current
+          .flush()
+          .then(() => stopMutation.mutateAsync())
+          .then(() => true, () => false)
+          .finally(() => {
+            stopInFlightRef.current = null
+            setStopRequested(false)
+          })
+        stopInFlightRef.current = stop
+        return stop
+      },
       rename: (title: string) => renameMutation.mutateAsync(title),
       mute: (agentId: string, muted: boolean) => muteMutation.mutate({ agentId, muted }),
       toggleAgent: (agentId: string, enable: boolean) =>
@@ -1104,6 +1204,20 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
         ? conflictMessage(err)
         : i18nT('apps.meetings.session.startFailed')
     })(),
+    /** The meeting a 409 start refusal names, so the notice can open it.
+     *  `null` when the start did not fail on another meeting or the server
+     *  supplied no id. */
+    startBlockingMeeting: (() => {
+      const err = startMutation.error
+      if (!(err instanceof MeetingsApiError) || err.status !== 409 || !err.blockingMeetingId) {
+        return null
+      }
+      return {
+        id: err.blockingMeetingId,
+        title: err.blockingMeetingTitle,
+        reviewing: err.blockingMeetingStatus === 'reviewing',
+      }
+    })(),
     /** The last transcription error while the meeting is active, for the
      *  inline ErrorNotice (shown instead of a toast). */
     transcriptionErrorMessage,
@@ -1116,10 +1230,13 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     dismissTranscriptionError: () => setTranscriptionError(null),
     pending: {
       starting: startMutation.isPending,
-      stopping: stopMutation.isPending,
-      /** The target status of an in-flight pause/resume/review change, or null. */
-      settingStatus: statusMutation.isPending ? statusMutation.variables ?? null : null,
+      /** True from the End click until its stop settles, the flush included. */
+      stopping: stopMutation.isPending || stopRequested,
+      /** The target status of a pause/resume/review change, from its click until it settles, or null. */
+      settingStatus: statusMutation.isPending ? statusMutation.variables ?? null : flushingStatus,
       filing: fileTaskMutation.isPending ? fileTaskMutation.variables : null,
+      /** Every action item with a filing in flight, oldest first. */
+      filingIds,
     },
   }
 }

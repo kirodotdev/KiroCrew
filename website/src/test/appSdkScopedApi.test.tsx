@@ -368,6 +368,14 @@ describe('scoped request options and HTTP errors', () => {
     })
   })
 
+  it('marks the gateway signed-out 403 as authRequired, and no other 403 (#20398)', async () => {
+    const api = getScopedApi(['/api/apps/test'])
+    fetchMock.mockResolvedValueOnce(new Response('{"error":"auth required"}', { status: 403, headers: { 'X-Auth-Required': 'true' } }))
+    await expect(api.post('/api/apps/test/item', {})).rejects.toMatchObject({ status: 403, authRequired: true })
+    fetchMock.mockResolvedValueOnce(new Response('{"error":"forbidden"}', { status: 403 }))
+    await expect(api.post('/api/apps/test/item', {})).rejects.toMatchObject({ status: 403, authRequired: false })
+  })
+
   it('uses statusText if the error body cannot be read', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: false, status: 503, statusText: 'Unavailable',

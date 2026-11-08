@@ -8,6 +8,7 @@ import { isTerminalApprovalRefusal } from '../api/apiError'
 import { baseCommandLabel } from '../utils/trustPatterns'
 import { haptic } from '../lib/haptic'
 
+import { Trans } from 'react-i18next'
 import { i18nT } from '../i18n/t'
 import { guideTrustRoot, GuideTrustRootProvider } from '../guide/trustRoot'
 type ApprovalCardProps = {
@@ -34,7 +35,8 @@ type ApprovalCardProps = {
   trustBaseLabelKey?: string
   /** Post-decision confirmation per trust tier, so the card restates the
       scope the reader just granted instead of one sentence for all three.
-      A tier without a key keeps the generic confirmation. */
+      A tier without a key keeps the generic confirmation. A `trust_command`
+      key shows the command through a `<mono/>` slot, never `{{cmd}}`. */
   trustedLabelKeys?: Partial<Record<'trust' | 'trust_command' | 'trust_base', string>>
   /** Extra interpolation values for the keys above (e.g. the agent role),
       beside the `cmd` / `base` the card supplies itself. */
@@ -110,12 +112,17 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
   // knows which binary its grant would cover.
   const baseCmd = hasCommand ? (baseCommand || normalized.split(/\s+/)[0] || normalized) : ''
   const trustValues = { cmd: hasCommand ? normalized : '', base: baseCommandLabel(baseCmd), ...labelValues }
-  const trustedLabel = (tier: 'trust' | 'trust_command' | 'trust_base') =>
-    i18nT(trustedLabelKeys?.[tier] ?? 'components.approvalCard.trusted_auto_approving_future_calls', trustValues)
-  // The showButtons branch renders its own i18n "Running:" label, so a shell
-  // title (which carries the "Running: " prefix) must be de-prefixed there to
-  // avoid "Running: Running: …". The wrench branch renders no label, so the
-  // raw title keeps its verb ("Running: " / "Reading ") for context.
+  // Only the exact-command tier goes through Trans, with the command as the
+  // <mono/> chip's child, so it is never parsed as markup. The other tiers stay
+  // on i18nT, which shows every value as plain text.
+  const trustedLabel = (tier: 'trust' | 'trust_command' | 'trust_base') => tier === 'trust_command'
+    ? <Trans i18nKey={trustedLabelKeys?.trust_command ?? 'components.approvalCard.trusted_auto_approving_future_calls'} values={trustValues}
+      components={{ mono: <span className="bg-bg-elevated px-1.5 py-0.5 rounded font-mono break-all border border-border">{trustValues.cmd}</span> }} />
+    : i18nT(trustedLabelKeys?.[tier] ?? 'components.approvalCard.trusted_auto_approving_future_calls', trustValues)
+  // The showButtons branch is a pending request: it reads "<title> wants to
+  // run", so a shell title is de-prefixed there -- a "Running:" verb would say
+  // the command already runs (#28883). The wrench branch has no sentence, so
+  // the raw title keeps its verb ("Running: " / "Reading ") for context.
   const displayTitle = showButtons && isShell ? normalized : title
   const btnClass = 'px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all'
 
@@ -123,7 +130,9 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
     <div className={`bg-card border border-border border-l-[3px] ${borderColor} rounded-md px-3.5 py-2.5 text-sm animate-scale-in`} {...guideTrustRoot}>
       {toolInput
         ? <><strong>{i18nT('components.approvalCard.tool_approval_requested')}</strong></>
-        : <>{showButtons ? <><Package className="lucide-inline" /> {i18nT('components.approvalCard.running')} </> : <><Wrench className="lucide-inline" /> </>}<strong>{displayTitle}</strong>{showButtons ? ' wants to run' : ''}</>
+        : <>{showButtons ? <><Package className="lucide-inline" /> </> : <><Wrench className="lucide-inline" /> </>}{showButtons
+            ? <Trans i18nKey="components.approvalCard.title_wants_to_run" components={{ title: <strong>{displayTitle}</strong> }} />
+            : <strong>{displayTitle}</strong>}</>
       }
       {toolInput && <ToolInputPreview toolInput={toolInput} threshold={200} />}
       {showButtons && !decided && !failure?.terminal && (

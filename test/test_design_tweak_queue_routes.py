@@ -135,7 +135,6 @@ class TestDeleteComment:
 
         assert resp.code == 200
         assert resp.payload["ok"] is True
-        # Verify on-disk state
         fp = server._request_file(isolated_queue, "req1")
         saved = json.loads(fp.read_text())
         cids = [c["cid"] for c in saved["comments"]]
@@ -687,7 +686,6 @@ class TestSubmitFollowUp:
         assert resp.payload["ok"] is True
         assert resp.payload["state"] == "draft"
         assert resp.payload["commentCount"] == 1
-        # Verify file was created
         rid = resp.payload["id"]
         fp = server._request_file(isolated_queue, rid)
         assert fp.exists()

@@ -34,7 +34,10 @@ from kiro_crew.engine_context import (
     BREAKDOWN_SCHEMA,
     HISTORY_PARTS,
     KNOWN_CATEGORIES,
+    LIST_CATEGORIES,
     MAX_COUNT,
+    MEDIA_PARTS,
+    SUB_PARTS,
     count,
 )
 
@@ -76,6 +79,15 @@ def _stamp(value: Any) -> int | None:
     return int(value) if value > 0 else None
 
 
+def _scaled(value: Any, factor: int) -> float | None:
+    """*value* times *factor*, rounded, when it is a usable number, else ``None``."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return float(round(value * factor))
+
+
 def parse_breakdown(raw: Any) -> dict[str, Any] | None:
     """The numbers of one ``contextBreakdown`` object, or ``None`` when unusable.
 
@@ -107,6 +119,52 @@ def parse_breakdown(raw: Any) -> dict[str, Any] | None:
             out[field] = value
     if raw.get("compacted") is True:
         out["compacted"] = True
+    # The engine's own share of each category, one decimal, kept in tenths of a
+    # percent: the bar is drawn from these, so it matches what the engine reports.
+    percent = {
+        name: tenths
+        for name, body in categories.items()
+        if name in kept
+        and isinstance(body, dict)
+        and (tenths := count(_scaled(body.get("percent"), 10))) is not None
+    }
+    if percent:
+        out["percent"] = percent
+    counts = {
+        name: n
+        for name in LIST_CATEGORIES
+        if isinstance(body := categories.get(name), dict)
+        and (n := count(body.get("count"))) is not None
+    }
+    if counts:
+        out["counts"] = counts
+    parts = {
+        f"{category}.{field}": n
+        for category, wire, field in SUB_PARTS
+        if isinstance(body := categories.get(category), dict)
+        and (n := count(body.get(wire))) is not None
+    }
+    if parts:
+        out["parts"] = parts
+    window = raw.get("window")
+    if isinstance(window, dict):
+        size = count(window.get("sizeTokens"))
+        # Thousandths of a percent: 5.8616% is kept as 5862.
+        usage = count(_scaled(window.get("usagePercentage"), 1000))
+        win = {
+            key: value
+            for key, value in (("size_tokens", size), ("usage_milli", usage))
+            if value is not None
+        }
+        if win:
+            out["window"] = win
+    media = raw.get("media")
+    if isinstance(media, dict):
+        kept_media = {
+            field: n for wire, field in MEDIA_PARTS if (n := count(media.get(wire))) is not None
+        }
+        if kept_media:
+            out["media"] = kept_media
     history = categories.get("history")
     if isinstance(history, dict):
         parts = {

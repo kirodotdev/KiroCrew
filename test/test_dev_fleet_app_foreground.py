@@ -25,9 +25,7 @@ import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 
-# =============================================================================
 # Foreground last-resort restart
-# =============================================================================
 
 
 def _mk_kcbin(tmp_path: Path, name: str = "kirocrew") -> Path:
@@ -51,6 +49,7 @@ def _fg(
     ports: "list[int] | None" = None,
     pids: "dict[int, int] | None" = None,
     confined: "str | None" = None,
+    desktop: bool = False,
 ):
     """A ForegroundBackend wired to fakes. Returns (backend, spawned_argvs)."""
     from kiro_crew.apps.builtins.dev_fleet import gateway_service as gs
@@ -69,6 +68,7 @@ def _fg(
         pid_exists=lambda p: alive,
         spawn=spawn if spawn is not None else default_spawn,
         confinement=lambda: confined,
+        desktop_supervised=lambda p: desktop,
     )
     return backend, spawned
 
@@ -143,6 +143,77 @@ async def test_foreground_backend_refuses_when_confined(tmp_path):
     ok, err = await fg.restart_detached()
     assert not ok and "sandbox" in err
     assert spawned == []
+
+
+@pytest.mark.asyncio
+async def test_foreground_backend_reports_a_desktop_supervised_gateway(tmp_path):
+    """The CLI's restart refuses the desktop app's gateway, so the backend says
+    so up front instead of spawning a restart that changes nothing."""
+    kc = _mk_kcbin(tmp_path)
+    fg, _ = _fg(tmp_path, launcher=str(kc), desktop=True)
+    assert await fg.status() == "desktop_app_supervised"
+
+
+@pytest.mark.asyncio
+async def test_restart_of_a_desktop_supervised_gateway_names_the_app(monkeypatch, tmp_path):
+    """Restart spawns nothing, latches nothing, and names the in-app restart."""
+    kc = _mk_kcbin(tmp_path)
+    fg, spawned = _fg(tmp_path, launcher=str(kc), desktop=True)
+    monkeypatch.setattr(live_mod, "_gateway_backend", lambda: None)
+    monkeypatch.setattr(live_mod, "_live_user_unit_status", AsyncMock(return_value="no_systemd"))
+    monkeypatch.setattr(live_mod, "_foreground_backend", lambda: fg)
+    monkeypatch.setattr(live_mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+
+    res = await mod._restart_gateway()
+
+    assert res["ok"] is False
+    assert "desktop app runs this gateway" in res["error"]
+    assert "Settings → About → Restart gateway" in res["error"]
+    assert spawned == []
+    assert mod._MAKE_LIVE_COMMITTED is False
+
+
+@pytest.mark.asyncio
+async def test_restart_of_a_service_launched_gateway_spawns_nothing(monkeypatch, tmp_path):
+    """A `kirocrew service install` unit's gateway is its manager's to restart: a
+    detached restart would run in the unit's cgroup and die with the gateway it
+    stops. Restart spawns nothing and names the service, not a foreground one."""
+    from kiro_crew.config.loader import consume_managed_service_launch_environment
+
+    monkeypatch.setenv("KIROCREW_SERVICE_MANAGED", "1")
+    # The gateway takes the marker out of its environment at start and keeps it.
+    consume_managed_service_launch_environment()
+    kc = _mk_kcbin(tmp_path)
+    fg, spawned = _fg(tmp_path, launcher=str(kc))
+    assert await fg.status() == "ok"
+    monkeypatch.setattr(live_mod, "_gateway_backend", lambda: None)
+    monkeypatch.setattr(live_mod, "_live_user_unit_status", AsyncMock(return_value="no_user_unit"))
+    monkeypatch.setattr(live_mod, "_foreground_backend", lambda: fg)
+    monkeypatch.setattr(live_mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
+
+    res = await mod._restart_gateway()
+
+    assert res["ok"] is False
+    assert "service install` unit" in res["error"] and "kirocrew restart" in res["error"]
+    assert "foreground" not in res["error"]
+    assert spawned == []
+    assert mod._MAKE_LIVE_COMMITTED is False
+
+
+def test_default_desktop_supervised_asks_the_cli_check_for_that_port(monkeypatch):
+    from kiro_crew import cli_server_stop
+    from kiro_crew.apps.builtins.dev_fleet import gateway_service as gs
+
+    seen = []
+
+    def probe(port, *, explicit_port):
+        seen.append((port, explicit_port))
+        return (2**22 + 1, 2**22 + 2) if port == 7777 else None
+
+    monkeypatch.setattr(cli_server_stop, "desktop_app_supervisor", probe)
+    assert gs.default_desktop_supervised(7777) is True
+    assert gs.default_desktop_supervised(7778) is False
+    assert seen == [(7777, True), (7778, True)]
 
 
 def test_default_confinement_detects_sandbox_marker(monkeypatch):
@@ -273,15 +344,23 @@ async def test_make_live_foreground_spawn_failure_keeps_advisory(monkeypatch, tm
 @pytest.mark.asyncio
 async def test_make_live_foreground_unavailable_keeps_advisory(monkeypatch, tmp_path):
     """Eligible codes without a usable foreground gateway (no/ambiguous marker,
-    unresolvable binary, confined backend) keep the pre-existing staged_only
-    behaviour."""
+    unresolvable binary, confined backend, a service-launched gateway) keep the
+    pre-existing staged_only behaviour."""
     kc = _mk_kcbin(tmp_path)
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
     for label, fg_kwargs in (
         ("no_marker", dict(ports=[], pids={}, launcher=None)),
         ("confined", dict(launcher=str(kc), confined="backend is sandboxed")),
+        # The CLI's restart refuses a desktop-supervised gateway, so a spawn
+        # would latch a cutover that never lands.
+        ("desktop", dict(launcher=str(kc), desktop=True)),
+        # A generated service definition launched the gateway, so its manager
+        # owns the restart (last: the marker stays set).
+        ("service_managed", dict(launcher=str(kc))),
     ):
+        if label == "service_managed":
+            monkeypatch.setenv("KIROCREW_SERVICE_MANAGED", "1")
         _stub_make_live(monkeypatch, wt, unit_status="no_systemd", pointer_dir=ptr_dir / label)
         monkeypatch.setattr(live_mod, "_MAKE_LIVE_COMMITTED", False, raising=False)
         fg, spawned = _fg(tmp_path, **fg_kwargs)
@@ -290,6 +369,9 @@ async def test_make_live_foreground_unavailable_keeps_advisory(monkeypatch, tmp_
         res = await mod._make_live(str(wt), dry_run=False)
         assert res["ok"] is True and res["staged_only"] is True, f"{label}: {res}"
         assert res["manual_restart"] in res["notice"]
+        # Only the desktop case says to quit the app first: the CLI refuses
+        # the app's gateway while the app runs.
+        assert ("quit the app, then run" in res["notice"]) is (label == "desktop"), label
         assert spawned == []
         assert mod._MAKE_LIVE_COMMITTED is False
 
@@ -342,27 +424,17 @@ async def test_gateway_start_id_foreground_fallback(monkeypatch, tmp_path):
         assert await mod._gateway_start_id() is None
 
 
-# ---------------------------------------------------------------------------
-# Regression tests: make-live artifact validation inside the cutover lock
-# ---------------------------------------------------------------------------
+# Make-live artifact validation inside the cutover lock
 
 
 @pytest.mark.asyncio
 @_POSIX_ONLY
 async def test_make_live_artifact_changed_before_lock_is_revalidated(monkeypatch, tmp_path):
-    """Artifacts that are valid at early-probe time but gone before the lock
-    is acquired are caught by the in-lock re-validation.
+    """Artifacts valid at early-probe time but gone before the lock is acquired
+    are caught by the in-lock re-validation: ``missing_venv``, no pointer.
 
-    A side-effecting lock wrapper removes the venv binary at the instant the
-    lock is acquired, reproducing a concurrent provision that replaces the
-    binary between the early check and the commit.  The cutover must refuse
-    with ``missing_venv`` and must NOT write the pointer.
-
-    Without the production fix the early probe passes, the lock is acquired,
-    and the cutover proceeds to write the pointer and stage a restart — the
-    stale validation is never repeated and the race window is not closed.
-    This test proves the ordering by observing the final response code and
-    the pointer-file state.
+    The lock wrapper removes the venv binary as the lock is entered, like a
+    concurrent provision between the early check and the commit.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
@@ -371,9 +443,6 @@ async def test_make_live_artifact_changed_before_lock_is_revalidated(monkeypatch
 
     kcbin = wt / ".venv" / "bin" / "kirocrew"
 
-    # Wrap _MAKE_LIVE_LOCK so that entering the lock removes the binary,
-    # simulating a concurrent rebuild that completes between the early probe
-    # and the lock-acquire.
     real_lock = asyncio.Lock()
 
     class _SideEffectLock:
@@ -384,7 +453,6 @@ async def test_make_live_artifact_changed_before_lock_is_revalidated(monkeypatch
 
         async def __aenter__(self):
             await real_lock.__aenter__()
-            # Binary vanishes at the moment the lock body begins.
             kcbin.unlink(missing_ok=True)
             return self
 
@@ -411,19 +479,10 @@ async def test_make_live_artifact_changed_before_lock_is_revalidated(monkeypatch
 @pytest.mark.asyncio
 @_POSIX_ONLY
 async def test_make_live_artifact_checks_are_executor_offloaded(monkeypatch, tmp_path):
-    """The artifact filesystem checks (``is_file`` / ``os.access``) are
-    submitted to ``loop.run_in_executor`` rather than called inline on the
-    event loop, preventing a slow or network-backed filesystem from stalling
-    all Dev Fleet requests.
-
-    The test wraps ``subprocess_executor()`` to record every callable submitted
-    via ``loop.run_in_executor``.  A helper named ``_validate_artifacts_sync``
-    must be submitted at least twice — once for the early probe and once for
-    the in-lock re-validation — proving the checks are offloaded.
-
-    Without the production fix, the checks are plain synchronous expressions
-    (``kcbin.is_file()``, ``os.access()``, ``dist_index.is_file()``) executed
-    inline; no callable named ``_validate_artifacts_sync`` is ever submitted.
+    """The artifact checks (``is_file`` / ``os.access``) go through
+    ``loop.run_in_executor`` so a slow filesystem cannot stall all Dev Fleet
+    requests: ``_validate_artifacts_sync`` is submitted for the early probe and
+    again for the in-lock re-validation.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
@@ -433,11 +492,7 @@ async def test_make_live_artifact_checks_are_executor_offloaded(monkeypatch, tmp
 
     submitted_qualnames: list[str] = []
 
-    # Intercept every run_in_executor call by wrapping the event loop's method.
-    # asyncio.get_running_loop() inside _make_live returns the SAME object that
-    # asyncio.get_event_loop() returns under pytest-asyncio's per-test loop.
-    # We patch the loop object's method directly so the intercept is in place
-    # when _make_live calls loop.run_in_executor(…).
+    # _make_live's get_running_loop() is this same per-test loop object.
     running_loop = asyncio.get_running_loop()
     real_run_in_executor = running_loop.run_in_executor
 
@@ -510,8 +565,7 @@ async def test_gateway_pointer_flows_call_no_filesystem_primitive_on_the_loop_th
     (``os.stat``/``lstat``, ``readlink``, ``os.path.exists``/``realpath``/
     ``samefile``, ``shutil.which``) and fail if ANY of them runs on the loop thread
     while the gateway-side flows run — the live-target read (``pointer_state``), the
-    service-manager resolution behind it and the cutover itself. A primitive nobody
-    enumerated is exactly the one the next review finds."""
+    service-manager resolution behind it and the cutover itself."""
     # Fixture work first: it resolves paths on this very thread, which the traps
     # below must not count.
     expected_live = str(tmp_path.resolve())
@@ -537,24 +591,12 @@ async def test_gateway_pointer_flows_call_no_filesystem_primitive_on_the_loop_th
     loop_thread = threading.get_ident()
     on_loop: list[str] = []
 
-    # The trap stays a catch-all: it must still see EVERY product filesystem
-    # read on the loop thread, including ones outside ``tmp_path`` — the
-    # isolation fixture's data-home pointer (``read_previous_target`` /
-    # ``_staged_target``) and the running checkout's ``src/`` that steps 1–2
-    # reach before the cutover stub redirects them. The only calls that must not
-    # count are pytest's own lazy imports: under ``-n auto`` the first test in a
-    # worker to touch ``pygments`` / ``_pytest.assertion.rewrite`` / ``_pytest._io``
-    # triggers ``lstat``/``realpath`` walks over the interpreter and
-    # ``site-packages`` to resolve each module's ``__file__``; when that lands on
-    # the loop thread inside the trapped window a path-blind trap miscounts them
-    # as product work. So EXCLUDE (never allow-list): drop a call only when its
-    # path is under the interpreter prefixes or a ``site-packages``/
-    # ``dist-packages`` tree. Everything else — any product path, anywhere — is
-    # still recorded, so a regression that moves a real read onto the loop still
-    # fails the test.
-    #
-    # Classification is pure string work (``abspath``/``normpath``, no
-    # ``stat``/``lstat``/``realpath``), so it never re-enters one of the traps.
+    # The trap must see EVERY product read on the loop thread, inside ``tmp_path``
+    # or not. Under ``-n auto`` pytest's own lazy imports (``pygments``,
+    # ``_pytest.assertion.rewrite``) walk the interpreter and ``site-packages``
+    # with ``lstat``/``realpath``, so EXCLUDE (never allow-list) only paths under
+    # the interpreter prefixes or a ``site-packages``/``dist-packages`` tree.
+    # Classification is pure string work, so it never re-enters a trap.
     _real_fspath = os.fspath
     _real_fsdecode = os.fsdecode
 

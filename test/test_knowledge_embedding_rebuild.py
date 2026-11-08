@@ -17,10 +17,33 @@ import pytest
 from knowledge_helpers import store_fixture  # noqa: F401
 
 from kiro_crew.embeddings import PRIORITY_NORMAL
+from kiro_crew.testing.clock import ManualClock
 
-# ---------------------------------------------------------------------------
+# The wall time the tests freeze the rebuild job and the watcher at: a fixed local noon.
+_FROZEN_LOCAL = datetime(2026, 6, 16, 12, 0)
+
+
+@pytest.fixture
+def frozen_now(monkeypatch) -> datetime:
+    """Freeze the clock the rebuild job and the watcher judge a job row's age by.
+
+    The single-flight guard, the stale-row sweep and the retry backoff compare a
+    row's stamp with the product's ``datetime.now()``, so the stamps a test writes
+    and the reading the product takes must be one instant. ``timestamp()`` reads
+    ``_FROZEN_LOCAL`` in the process's zone, so the installed ``datetime.now()``
+    answers exactly ``_FROZEN_LOCAL`` whatever the host's zone. The install goes
+    through the ``ingestion`` facade, which writes every owner that binds
+    ``datetime`` (the rebuild module among them); the watcher reads its own.
+    """
+    from kiro_crew.knowledge import ingestion, watcher
+
+    clock = ManualClock(start=_FROZEN_LOCAL.timestamp())
+    clock.install(monkeypatch, ingestion, time=False, datetime=True)
+    clock.install(monkeypatch, watcher, time=False, datetime=True)
+    return _FROZEN_LOCAL
+
+
 # Embedding rebuild background job
-# ---------------------------------------------------------------------------
 
 
 class _FakeEmbedder:
@@ -332,14 +355,12 @@ class TestWatcherSelfHeal:
         assert watcher._reembed_task is None
         assert embedder.embedded_titles == []
 
-    async def test_single_flight_skips_when_job_processing(self, store):
+    async def test_single_flight_skips_when_job_processing(self, store, frozen_now):
         # A dashboard rebuild already in flight (fresh updated_at) -> watcher does
         # not stack a second.
         embedder = _FakeEmbedder()
         store.add_item("stale", "body", "document")
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        now = datetime.now().isoformat()
+        now = frozen_now.isoformat()
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
             "VALUES ('inflight0001', NULL, 'processing', ?, ?)",
@@ -352,7 +373,7 @@ class TestWatcherSelfHeal:
         assert watcher._reembed_task is None
         assert embedder.embedded_titles == []
 
-    async def test_stale_processing_row_does_not_block(self, store):
+    async def test_stale_processing_row_does_not_block(self, store, frozen_now):
         # A 'processing' row whose updated_at is older than the staleness window is
         # from a crash that bypassed cleanup -> the guard ignores it and the watcher
         # starts a fresh rebuild rather than being permanently blocked.
@@ -360,9 +381,7 @@ class TestWatcherSelfHeal:
 
         embedder = _FakeEmbedder()
         store.add_item("stale", "body", "document")
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        old = (datetime.now() - _REBUILD_STALE_AFTER - timedelta(minutes=1)).isoformat()
+        old = (frozen_now - _REBUILD_STALE_AFTER - timedelta(minutes=1)).isoformat()
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
             "VALUES ('dead00000001', NULL, 'processing', ?, ?)",
@@ -376,16 +395,14 @@ class TestWatcherSelfHeal:
         await watcher._reembed_task
         assert embedder.embedded_titles == ["stale"]
 
-    async def test_cancelled_job_row_is_finalized_not_left_processing(self, store):
+    async def test_cancelled_job_row_is_finalized_not_left_processing(self, store, frozen_now):
         # If the rebuild task is cancelled (e.g. app shutdown), the job row must be
         # finalized to 'cancelled' and the CancelledError re-raised -- otherwise the
         # row stays 'processing' and permanently blocks the single-flight guard.
         embedder = _FakeEmbedder()
         store.add_item("item", "body", "document")
         watcher = self._watcher(store, embedder)
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        now = datetime.now().isoformat()
+        now = frozen_now.isoformat()
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
             "VALUES ('cancel000001', NULL, 'processing', ?, ?)",
@@ -431,12 +448,8 @@ class TestEmbedSignature:
     def test_dim_change_moves_both_identities(self):
         """A width change at a CONSTANT model id must move BOTH space identities.
 
-        The ratchet on the fold. ``dim`` is exactly the axis a KB signature over
-        ``model`` alone cannot see — a custom GGUF re-quantized to a different
-        projection, a backend adopting the model's own width — and an identity
-        that misses it leaves the KB serving old-width vectors as if nothing had
-        changed. Asserting BOTH here is what makes dropping the input from either
-        half fail a test rather than ship.
+        A re-quantized GGUF can change ``dim`` alone; an identity that misses it
+        keeps serving old-width vectors.
         """
         from kiro_crew.embeddings import embedding_space_signature
         from kiro_crew.knowledge.embedder import embed_signature
@@ -447,11 +460,8 @@ class TestEmbedSignature:
     def test_the_two_identities_partition_spaces_identically(self):
         """Whatever the inputs, the two identities agree on "same vector space?".
 
-        For every pair of ``(model, dim)`` combinations, memory's signature and
-        the knowledge library's must be equal for exactly the same pairs. This is
-        the property that matters, but on its own it is satisfied by any injective
-        hash over the same fields -- see the derivation test below for the half it
-        cannot reach.
+        Any injective hash over the same fields passes this; the derivation test
+        below covers the rest.
         """
         from kiro_crew.embeddings import embedding_space_signature
         from kiro_crew.knowledge.embedder import embed_signature
@@ -469,16 +479,9 @@ class TestEmbedSignature:
     def test_the_kb_identity_is_derived_from_memorys_not_reassembled(self, monkeypatch):
         """The KB's space identity is a FUNCTION of memory's, not a twin of it.
 
-        Agreement on ``(model, dim)`` is not derivation: an independently
-        assembled hash over the same two fields agrees on every input and is
-        still a second definition of "same vector space", so the next field added
-        to ``embedding_space_signature`` reaches memory alone.
-
-        Observed by DISPLACING the shared function and watching the KB's value
-        follow. Substituting one that ignores ``dim`` must collapse the KB's two
-        widths onto one signature and keep its two models apart -- which holds
-        only if every ``(model, dim)`` input reaches ``embed_signature`` through
-        that one function.
+        A twin hash would miss the next field added to
+        ``embedding_space_signature``. Swapping in one that ignores ``dim`` must
+        collapse the KB's two widths and keep its two models apart.
         """
         from kiro_crew import embeddings as embeddings_mod
         from kiro_crew.knowledge.embedder import embed_signature
@@ -570,15 +573,13 @@ class TestRebuildFailureAccounting:
         ok_row = store.db.execute("SELECT embedding_sig FROM items WHERE id = ?", (ok,)).fetchone()
         assert ok_row["embedding_sig"] is not None
 
-    async def test_job_row_tracks_items_failed(self, store):
+    async def test_job_row_tracks_items_failed(self, store, frozen_now):
         from kiro_crew.knowledge.ingestion import rebuild_embeddings
 
         for t in ("a", "b", "c"):
             store.add_item(t, "body", "document")
         store.db.commit()
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        now = datetime.now().isoformat()
+        now = frozen_now.isoformat()
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
             "VALUES ('jobfail00001', NULL, 'processing', ?, ?)",
@@ -594,10 +595,9 @@ class TestRebuildFailureAccounting:
         assert job["items_processed"] == 2
         assert job["items_failed"] == 1
 
-    async def test_watcher_backs_off_recently_failed_item(self, store):
-        # A perpetually-failing item keeps a stale sig; once it has a recent
-        # embedded_at attempt stamp, the watcher's stale count excludes it so it
-        # doesn't re-trigger a rebuild every scan (post-merge retrigger-loop fix).
+    async def test_watcher_backs_off_recently_failed_item(self, store, frozen_now):
+        # A recent embedded_at attempt stamp keeps a perpetually-failing item out
+        # of the stale count, so it does not re-trigger a rebuild every scan.
         from kiro_crew.knowledge.embedder import embedder_signature
         from kiro_crew.knowledge.ingestion import count_stale_items
 
@@ -607,9 +607,7 @@ class TestRebuildFailureAccounting:
         # Stale sig but attempted just now -> in backoff window -> not counted.
         store.db.execute(
             "UPDATE items SET embedded_at = ? WHERE id = ?",
-            # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-            # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-            (datetime.now().isoformat(), item),
+            (frozen_now.isoformat(), item),
         )
         store.db.commit()
         assert count_stale_items(store, sig) == 0
@@ -622,20 +620,22 @@ class TestRebuildFailureAccounting:
 @pytest.mark.asyncio
 class TestRebuildLostUpdateRace:
     async def test_concurrent_write_skips_stale_vector_update(self, store):
-        # If a concurrent writer (file re-ingest) bumps the row's updated_at past the
-        # rebuild's read snapshot while the embedder is working, the rebuild's UPDATE
-        # must not land -- otherwise a new-content row gets an old-content vector
-        # stamped "current". The guarded UPDATE drops on the contended row.
+        # A re-ingest bumping updated_at past the rebuild's snapshot mid-embed must
+        # make the guarded UPDATE drop, or new content gets an old-content vector.
         import sqlite3
 
         from kiro_crew.knowledge.ingestion import rebuild_embeddings
 
         item = store.add_item("racey", "old body", "document")
         store.db.commit()
-        # embed_for_item runs in a worker thread (run_in_executor), so it cannot
-        # touch the main-thread sqlite connection. The concurrent writer opens its
-        # OWN connection to the same db file -- which is exactly the real race
-        # (ingestion writing while a rebuild embeds).
+        # The rebuild reads this stamp as its snapshot; the concurrent write lands a
+        # minute past it, so the write is later than the snapshot whatever the clock reads.
+        snapshot = store.db.execute(
+            "SELECT updated_at FROM items WHERE id = ?", (item,)
+        ).fetchone()["updated_at"]
+        bumped_at = (datetime.fromisoformat(snapshot) + timedelta(minutes=1)).isoformat()
+        # embed_for_item runs in a worker thread and cannot use the main-thread
+        # connection, so the writer opens its OWN connection, as real ingestion does.
         db_path = store.db.execute("PRAGMA database_list").fetchall()[0]["file"]
 
         class _RacingEmbedder(_FakeEmbedder):
@@ -645,15 +645,11 @@ class TestRebuildLostUpdateRace:
                 self._iid = iid
 
             def embed_for_item(self, title, summary, content=None, *, priority=PRIORITY_NORMAL):
-                # Simulate a concurrent ingestion write landing mid-embed: bump
-                # updated_at into the future relative to the rebuild's snapshot.
                 conn = sqlite3.connect(self._path, timeout=30, isolation_level=None)
                 try:
                     conn.execute(
                         "UPDATE items SET updated_at = ? WHERE id = ?",
-                        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-                        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-                        ((datetime.now() + timedelta(minutes=1)).isoformat(), self._iid),
+                        (bumped_at, self._iid),
                     )
                 finally:
                     conn.close()
@@ -683,14 +679,12 @@ class TestStartRebuildJobSingleFlight:
         ).fetchone()["c"]
         assert n == 1
 
-    async def test_stale_processing_rows_swept_to_abandoned(self, store):
+    async def test_stale_processing_rows_swept_to_abandoned(self, store, frozen_now):
         # Crashed leftovers (stale 'processing' rows) are finalized to 'abandoned'
         # when a new rebuild claims the slot, so they don't accumulate forever.
         from kiro_crew.knowledge.ingestion import _REBUILD_STALE_AFTER, start_rebuild_job
 
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        old = (datetime.now() - _REBUILD_STALE_AFTER - timedelta(minutes=1)).isoformat()
+        old = (frozen_now - _REBUILD_STALE_AFTER - timedelta(minutes=1)).isoformat()
         for i in range(3):
             store.db.execute(
                 "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
@@ -714,15 +708,13 @@ class TestStartRebuildJobSingleFlight:
 
 @pytest.mark.asyncio
 class TestDashboardRebuildCancel:
-    async def test_dashboard_job_cancel_finalizes_row(self, store):
+    async def test_dashboard_job_cancel_finalizes_row(self, store, frozen_now):
         # Same cancel-finalization contract as the watcher, in the dashboard wrapper.
         from kiro_crew.dashboard.handlers.knowledge import _rebuild_embeddings_job
 
         embedder = _FakeEmbedder()
         store.add_item("item", "body", "document")
-        # flake-ok: pre-existing naive local stamp written into the test's own rows, moved verbatim; tracked for a de-flake pass
-        # nosemgrep: kirocrew.test-naive-local-time -- pre-existing naive stamp for the test's own rows, moved verbatim; tracked for a de-flake pass
-        now = datetime.now().isoformat()
+        now = frozen_now.isoformat()
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
             "VALUES ('dashcancel01', NULL, 'processing', ?, ?)",

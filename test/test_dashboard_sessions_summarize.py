@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -20,6 +21,10 @@ from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.dashboard.handlers import api_sessions_summarize
 from kiro_crew.dashboard.handlers import sessions as sessions_handlers
 from kiro_crew.history import ConversationLog, HistoryLockTimeout, TranscriptBusy
+
+#: These tests start background helper turns, which are skipped while the host's
+#: memory posture is critical (see ``ample_host_free_memory``).
+pytestmark = pytest.mark.usefixtures("ample_host_free_memory")
 
 
 class _FakeBgSession:
@@ -355,3 +360,31 @@ class TestSessionsSummarizeHandler:
             resp = await c.post("/api/sessions/summarize", json={"keys": ["alpha"]})
             assert (await resp.json())["summaries"]["alpha"] == reply
         assert log.get_cached_summary("alpha") == reply
+
+
+class TestSessionsSummarizeTranscriptCheckOffLoop:
+    @pytest.mark.asyncio
+    async def test_transcript_existence_is_checked_off_the_event_loop(self, tmp_path, monkeypatch):
+        """``has_log`` stats the transcript (and a legacy path) for each of up to
+        eight keys, so a dashboard caller's check must run in a worker thread,
+        as the app-caller branch's ownership check already does. A present key
+        is still summarized and a missing one still skipped. Mutation: call
+        ``log.has_log(key)`` inline again -- red on the thread assertion."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("alpha", "user", "help me tune the redis timeout")
+        real_has_log = ConversationLog.has_log
+        checked_on: list[tuple[str, int]] = []
+
+        def _recording_has_log(self, key):
+            checked_on.append((key, threading.get_ident()))
+            return real_has_log(self, key)
+
+        monkeypatch.setattr(ConversationLog, "has_log", _recording_has_log)
+        loop_thread = threading.get_ident()
+        async with TestClient(TestServer(_make_app(log, "Tuning redis timeout", []))) as c:
+            resp = await c.post("/api/sessions/summarize", json={"keys": ["alpha", "ghost"]})
+            assert resp.status == 200
+            assert (await resp.json())["summaries"] == {"alpha": "Tuning redis timeout"}
+
+        assert [key for key, _ in checked_on] == ["alpha", "ghost"]
+        assert all(thread != loop_thread for _, thread in checked_on), checked_on

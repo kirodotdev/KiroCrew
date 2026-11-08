@@ -21,9 +21,7 @@ from apps_registry_coverage_helpers import _config_with, _fake_sandbox, _FakePro
 from conftest import requires_symlinks
 from kiro_crew.apps import registry
 
-# ---------------------------------------------------------------------------
 # Candidate resolution / provenance pinning
-# ---------------------------------------------------------------------------
 
 
 class TestCandidateResolution:
@@ -417,9 +415,7 @@ class TestServerPlatform:
         assert info["os"] and info["arch"]
 
 
-# ---------------------------------------------------------------------------
 # Git provenance reader
-# ---------------------------------------------------------------------------
 
 
 class TestResolvedCloneCommit:
@@ -571,11 +567,13 @@ class TestCloneOriginUrl:
     async def test_timeout_kills_the_group_and_yields_none(self, tmp_path, monkeypatch):
         (tmp_path / ".git").mkdir()
 
+        hang_release = asyncio.Event()
+
         class _Hang(_FakeProc):
             async def communicate(self):
-                # flake-ok: pre-existing hang in the fake communicate that the patched wait_for times out at once, moved verbatim; tracked for a de-flake pass
-                # nosemgrep: kirocrew.test-sleep-as-barrier -- the fake communicate's hang, moved verbatim; tracked for a de-flake pass
-                await asyncio.sleep(30)
+                # The patched wait_for times this call out at once and closes it, so this body never runs.
+                # The event is released in the test's finally, so a run that did reach it still ends.
+                await hang_release.wait()
                 return b"", b""
 
         _fake_sandbox(monkeypatch, [_Hang()])
@@ -586,8 +584,11 @@ class TestCloneOriginUrl:
 
         monkeypatch.setattr(registry, "_kill_process_group", _kill)
         monkeypatch.setattr(registry.asyncio, "wait_for", _immediate_timeout)
-        assert await registry._clone_origin_url(tmp_path) is None
-        assert killed == [31337]
+        try:
+            assert await registry._clone_origin_url(tmp_path) is None
+            assert killed == [31337]
+        finally:
+            hang_release.set()
 
 
 async def _immediate_timeout(awaitable, timeout=None):
@@ -599,9 +600,7 @@ async def _immediate_timeout(awaitable, timeout=None):
     raise asyncio.TimeoutError
 
 
-# ---------------------------------------------------------------------------
 # Stale checkout sweep
-# ---------------------------------------------------------------------------
 
 
 class TestStaleCheckoutSweep:
@@ -675,14 +674,22 @@ class TestStaleCheckoutSweep:
         assert not d.exists()
 
     @pytest.mark.asyncio
-    async def test_async_sweep_never_fails_the_install(self, tmp_path, monkeypatch):
+    async def test_async_sweep_never_fails_the_install(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(registry, "_app_sources_dir", lambda: tmp_path)
 
+        swept: list[Path] = []
+
         def _boom(sources_dir, now_ts):
+            swept.append(sources_dir)
             raise RuntimeError("sweep exploded")
 
         monkeypatch.setattr(registry, "_sweep_stale_checkouts_sync", _boom)
-        await registry._sweep_stale_checkouts()  # must not raise
+        caplog.set_level("DEBUG", logger="kiro_crew.apps.registry")
+        await registry._sweep_stale_checkouts()
+        assert swept == [tmp_path]
+        records = [r for r in caplog.records if r.name == "kiro_crew.apps.registry"]
+        assert [r.getMessage() for r in records] == ["Stale checkout sweep failed (best-effort)"]
+        assert records[0].exc_info is not None
 
     def test_is_stale_candidate(self, tmp_path):
         assert registry._is_stale_candidate(tmp_path / "a.stale-0123abcd") is True
@@ -690,9 +697,7 @@ class TestStaleCheckoutSweep:
         assert registry._is_stale_candidate(tmp_path / "a") is False
 
 
-# ---------------------------------------------------------------------------
 # Process-group kill
-# ---------------------------------------------------------------------------
 
 
 class TestKillProcessGroup:
@@ -738,6 +743,8 @@ class TestKillProcessGroup:
         monkeypatch.setattr(registry.platform_compat, "kill_process_tree_async", _tree_kill)
         monkeypatch.setattr(registry, "_KILL_GRACE_PERIOD", 0.01)
 
+        stubborn_release = asyncio.Event()
+
         class _Stubborn(_FakeProc):
             def __init__(self) -> None:
                 super().__init__(returncode=0)
@@ -751,14 +758,16 @@ class TestKillProcessGroup:
                 self.wait_calls += 1
                 if not self._reaped:
                     self._reaped = True
-                    # flake-ok: pre-existing hang in the fake process's first wait, which the kill path reaps, moved verbatim; tracked for a de-flake pass
-                    # nosemgrep: kirocrew.test-sleep-as-barrier -- the fake process's first-wait hang, moved verbatim; tracked for a de-flake pass
-                    await asyncio.sleep(5)
+                    # Never set here: the kill path's grace wait_for cancels this first wait, then reaps the child.
+                    await stubborn_release.wait()
                 self.returncode = 0
                 return 0
 
         proc = _Stubborn()
-        await registry._kill_process_group(proc)
+        try:
+            await registry._kill_process_group(proc)
+        finally:
+            stubborn_release.set()
         assert sent == [
             registry.platform_compat.SIGTERM,
             registry.platform_compat.SIGKILL,
@@ -776,6 +785,8 @@ class TestKillProcessGroup:
         monkeypatch.setattr(registry.platform_compat, "kill_process_tree_async", _tree_kill)
         monkeypatch.setattr(registry, "_KILL_GRACE_PERIOD", 0.01)
 
+        stubborn_release = asyncio.Event()
+
         class _Stubborn(_FakeProc):
             def __init__(self) -> None:
                 super().__init__(returncode=0)
@@ -789,14 +800,16 @@ class TestKillProcessGroup:
                 self.wait_calls += 1
                 if not self._reaped:
                     self._reaped = True
-                    # flake-ok: pre-existing hang in the fake process's first wait, which the kill path reaps, moved verbatim; tracked for a de-flake pass
-                    # nosemgrep: kirocrew.test-sleep-as-barrier -- the fake process's first-wait hang, moved verbatim; tracked for a de-flake pass
-                    await asyncio.sleep(5)
+                    # Never set here: the kill path's grace wait_for cancels this first wait, then reaps the child.
+                    await stubborn_release.wait()
                 self.returncode = 0
                 return 0
 
         proc = _Stubborn()
-        await registry._kill_process_group(proc)
+        try:
+            await registry._kill_process_group(proc)
+        finally:
+            stubborn_release.set()
         assert signals == [
             registry.platform_compat.SIGTERM,
             registry.platform_compat.SIGKILL,

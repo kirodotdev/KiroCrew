@@ -1,6 +1,8 @@
 import { api } from '../../api/client'
+import type { SendRaceFields } from '../../api/client/chat'
 import { noteUserChat } from '../../api/membersQuery'
 import { queryClient } from '../../api/queryClient'
+import { noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 import { confirmedDelivered, readSendReceipt, SendReceiptBody, SendResponseLike } from '../../utils/sendDelivery'
 
 /** The one send-id minter lives in `utils/sendDelivery`; re-exported here so a
@@ -96,13 +98,16 @@ export interface SendWirePayload {
   message: string
   slot?: string
   meta?: Record<string, unknown>
-  /** See `SendTurnOptions.steer`. Only the dashboard wire forwards it: an
-   *  app embed cannot steer (the server refuses app-authenticated steers). */
+  /** See `SendTurnOptions.steer`. The dashboard wire and the app-sdk wire both
+   *  forward it. The gateway steers only a person's send: an app-token caller
+   *  that asks to steer is queued instead, and its receipt says `queued`. */
   steer?: boolean | 'auto'
   /** Human crewmate DM priority, validated by the gateway. Dashboard only. */
   responsive?: boolean
   /** See `SendTurnOptions.colorTheme`. Dashboard wire only. */
   colorTheme?: string
+  /** See `SendTurnOptions.race`. Dashboard wire only. */
+  race?: SendRaceFields
 }
 
 /**
@@ -177,7 +182,9 @@ export function settleUnderSignal<T>(
 
 /** The dashboard client's wire: `POST /api/chat?ws=1` with the session key. */
 const dashboardSendWire: SendWire = (payload, signal) =>
-  api.sendChat(payload.message, payload.slot, payload.colorTheme, signal, payload.meta, payload.steer, ...(payload.responsive ? [true] : []))
+  payload.race
+    ? api.sendChat(payload.message, payload.slot, payload.colorTheme, signal, payload.meta, payload.steer, payload.responsive ? true : undefined, payload.race)
+    : api.sendChat(payload.message, payload.slot, payload.colorTheme, signal, payload.meta, payload.steer, ...(payload.responsive ? [true] : []))
 
 export interface SendTurnOptions {
   /** Wire text, already serialized (dir tokens, file markers). The server
@@ -202,6 +209,10 @@ export interface SendTurnOptions {
   /** The active colour theme, so a widget the turn renders inherits it. Sent
    *  only by surfaces that own a theme (ChatPage); embeds and panes omit it. */
   colorTheme?: string
+  /** Shared Crew first submit wins: the session revision this send is based on,
+   *  a deliberate Send now after a lost race, and the retry key. A lost race
+   *  comes back `refused` with a `send_race` body naming who sent first. */
+  race?: SendRaceFields
   /** Which fetch seam carries the POST. Defaults to the dashboard client. */
   wire?: SendWire
 }
@@ -232,6 +243,7 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
         steer: opts.steer,
         ...(opts.responsive ? { responsive: true } : {}),
         colorTheme: opts.colorTheme,
+        ...(opts.race ? { race: opts.race } : {}),
       },
       controller.signal,
     )
@@ -250,6 +262,9 @@ export async function sendTurn(opts: SendTurnOptions): Promise<SendReceipt> {
     // Accepted either way: the send is the DM's newest message, which the
     // Crewmates list orders by.
     noteUserChat(queryClient, opts.slot)
+    // A person's steer into a Crew Mode worker says whether it reached the
+    // worker's ledger; a delivered-but-unrecorded one is shown under its composer.
+    if (opts.slot) noteCrewSteerReceipt(opts.slot, body)
     if (confirmedDelivered(body)) return { status: 'dispatched', body }
     return { status: 'queued', body }
   } catch (e: unknown) {

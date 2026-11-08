@@ -198,6 +198,8 @@ describe('ArtifactDetailPage — mutation paths', () => {
     vi.mocked(api).artifactEvents = vi.fn().mockResolvedValue({ slug: SLUG, events: [] })
     vi.mocked(api).artifactComments = vi.fn().mockResolvedValue({ comments: [] })
     vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([])
+    // The companion panel shows the chat once the bound session has opened.
+    vi.mocked(api).chatSlotDetail = vi.fn().mockResolvedValue({ messages: [], has_more: false, total: 0 })
     vi.mocked(api).updateArtifact = vi.fn().mockResolvedValue({})
     vi.mocked(api).artifactFolders = vi.fn().mockResolvedValue({ folders: [] })
     vi.mocked(api).getArtifactPublishProviders = vi
@@ -317,7 +319,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
     })
     evt.preventDefault() // Pierre's capture handler already claimed it.
     expect(evt.defaultPrevented).toBe(true)
-    document.dispatchEvent(evt)
+    act(() => { document.dispatchEvent(evt) })
     await waitFor(() =>
       expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, {
         content: '# keyboard',
@@ -387,8 +389,12 @@ describe('ArtifactDetailPage — mutation paths', () => {
     await waitFor(() =>
       expect(vi.mocked(api).updateArtifact).toHaveBeenCalledWith(SLUG, { snapshot: true }),
     )
+    // The snapshot holds `saving` (and so disables the Version select) until its three refetches land.
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /Version/i })).toBeEnabled())
     vi.mocked(api).updateArtifact = vi.fn().mockRejectedValue(new Error('snapshot refused'))
-    await chooseMore('Snapshot')
+    // The rejected mock settles in microtasks, so the click that starts the handler owns those updates.
+    const snapshotItem = await findMoreItem('Snapshot')
+    await act(async () => { fireEvent.click(snapshotItem) })
     await waitFor(() => expect(screen.getByText('snapshot refused')).toBeInTheDocument())
   })
 
@@ -463,6 +469,14 @@ describe('ArtifactDetailPage — mutation paths', () => {
     )
   })
 
+  it('hands focus to the add-tag button when a tag is removed', async () => {
+    await mount(mkArtifact({ tags: ['ops', 'cr'] }))
+    const remove = screen.getByLabelText('Remove tag ops')
+    remove.focus()
+    fireEvent.click(remove)
+    expect(screen.getByLabelText('Add a tag')).toHaveFocus()
+  })
+
   it('surfaces a tag-write failure', async () => {
     await mount(mkArtifact({ tags: ['ops'] }))
     vi.mocked(api).updateArtifact = vi.fn().mockRejectedValue(new Error('tags rejected'))
@@ -495,6 +509,42 @@ describe('ArtifactDetailPage — mutation paths', () => {
     fireEvent.keyDown(input, { key: 'Escape' })
     await waitFor(() => expect(screen.getByLabelText('Add a tag').tagName).toBe('BUTTON'))
     expect(vi.mocked(api).updateArtifact).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['Escape', 'draft'],
+    ['Enter', 'release'],
+    [',', 'oncall'],
+  ])('returns focus to the add-tag button when %s closes the input', async (key, tag) => {
+    await mount(mkArtifact({ tags: [] }))
+    fireEvent.click(screen.getByLabelText('Add a tag'))
+    const input = await screen.findByLabelText('Add a tag')
+    input.focus()
+    fireEvent.change(input, { target: { value: tag } })
+    fireEvent.keyDown(input, { key })
+    await waitFor(() => expect(screen.getByLabelText('Add a tag').tagName).toBe('BUTTON'))
+    expect(screen.getByLabelText('Add a tag')).toHaveFocus()
+  })
+
+  it.each([['Enter'], [' ']])(
+    'cancels the default of a %j that closes the tag input, so it cannot click the refocused button',
+    async (key) => {
+      await mount(mkArtifact({ tags: [] }))
+      fireEvent.click(screen.getByLabelText('Add a tag'))
+      const input = await screen.findByLabelText('Add a tag')
+      fireEvent.change(input, { target: { value: 'release' } })
+      // fireEvent returns false when a handler called preventDefault.
+      expect(fireEvent.keyDown(input, { key })).toBe(false)
+    },
+  )
+
+  it('leaves focus alone when the tag input closes on blur', async () => {
+    await mount(mkArtifact({ tags: [] }))
+    fireEvent.click(screen.getByLabelText('Add a tag'))
+    const input = await screen.findByLabelText('Add a tag')
+    fireEvent.blur(input)
+    await waitFor(() => expect(screen.getByLabelText('Add a tag').tagName).toBe('BUTTON'))
+    expect(screen.getByLabelText('Add a tag')).not.toHaveFocus()
   })
 
   it('blurring the tag input commits a typed tag and discards an empty one', async () => {
@@ -620,6 +670,56 @@ describe('ArtifactDetailPage — mutation paths', () => {
     }
   })
 
+  const WEBVIEW_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0 Mobile Safari/537.36'
+
+  it.each([
+    ['markdown' as const, 'CR Queue-v2.md', 'text/plain'],
+    ['widget' as const, 'CR Queue-v2.html', 'text/html'],
+  ])('in an Android in-app browser a %s downloads the same bytes from a gateway URL, not a blob', async (kind, name, mime) => {
+    const ua = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(WEBVIEW_UA)
+    vi.mocked(api).artifactDownloadUrl = vi.fn().mockResolvedValue({ url: '/api/artifact-downloads/abc' })
+    const hrefs: string[] = []
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function mockClick(this: HTMLAnchorElement) {
+        hrefs.push(`${this.getAttribute('href')} ${this.download}`)
+      })
+    const create = vi.fn(() => 'blob:download')
+    const origCreate = URL.createObjectURL
+    URL.createObjectURL = create as typeof URL.createObjectURL
+    try {
+      await mount(mkArtifact({ kind, content: 'body', name: 'CR Queue' }))
+      await chooseMore('Download')
+      await waitFor(() => expect(hrefs.length).toBe(1))
+      expect(hrefs[0]).toBe(`/api/artifact-downloads/abc ${name}`)
+      const [sentName, sentType, sentBody] = vi.mocked(api).artifactDownloadUrl.mock.calls[0]
+      expect([sentName, sentType]).toEqual([name, mime])
+      // A widget sends the page's own export, which carries its CSP, not the raw content.
+      if (kind === 'widget') expect(sentBody).toContain('Content-Security-Policy')
+      else expect(sentBody).toBe('body')
+      expect(create).not.toHaveBeenCalled()
+    } finally {
+      click.mockRestore()
+      ua.mockRestore()
+      URL.createObjectURL = origCreate
+    }
+  })
+
+  it('in an Android in-app browser a failed hand-off shows an error and builds no blob', async () => {
+    const ua = vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue(WEBVIEW_UA)
+    vi.mocked(api).artifactDownloadUrl = vi.fn().mockRejectedValue(new Error('offline'))
+    const cap = captureDownload()
+    try {
+      await mount(mkArtifact({ kind: 'markdown', content: 'body', name: 'CR Queue' }))
+      await chooseMore('Download')
+      expect(await screen.findByText('Download failed')).toBeInTheDocument()
+      expect(cap.seen).toEqual([])
+    } finally {
+      cap.restore()
+      ua.mockRestore()
+    }
+  })
+
   // ── publish + popout toolbar branches ─────────────────────────────────────
   it('the Publish button toggles the publish panel', async () => {
     await mount(mkArtifact())
@@ -667,7 +767,7 @@ describe('ArtifactDetailPage — mutation paths', () => {
   it('opens More from the keyboard and moves focus into the menu', async () => {
     await mount(mkArtifact())
     const trigger = moreButton()
-    trigger.focus()
+    act(() => { trigger.focus() })
     fireEvent.keyDown(trigger, { key: 'Enter' })
     const menu = await screen.findByRole('menu')
     expect(trigger).toHaveAttribute('aria-expanded', 'true')
@@ -926,6 +1026,9 @@ describe('ArtifactDetailPage — mutation paths', () => {
       .fn()
       .mockResolvedValue({ key: 'slot-new', title: 'Artifact: CR Queue' })
     vi.mocked(api).chatSlotContext = vi.fn().mockResolvedValue({ ok: true })
+    vi.mocked(api).chatSlots = vi.fn().mockResolvedValue([
+      { key: 'slot-new', title: 'Artifact: CR Queue', messages: 0, running: false, artifact: SLUG },
+    ])
     await mount(mkArtifact())
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
     await screen.findByTestId('chat-page')
@@ -1310,6 +1413,18 @@ describe('ArtifactDetailPage — upstream sync banner', () => {
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument(), PUBLISHED_LINE_WAIT)
     expect(screen.queryByRole('link', { name: /Open published page/i })).toBeNull()
     expect(screen.queryByText(/Published to/)).toBeNull()
+  })
+
+  // PublishProvider.source_problem: the provider's reason the remote copy could
+  // not be read reaches the page inline, and the local copy stays open.
+  it('shows why the remote copy cannot be read', async () => {
+    vi.mocked(api).upstreamStatus = vi.fn().mockResolvedValue({
+      source_notice: 'The remote copy is in the trash.',
+      source_notice_code: 'remote_trashed',
+    })
+    await mount(mkArtifact({ publication }))
+    expect(await screen.findByText('The remote copy is in the trash.', {}, PUBLISHED_LINE_WAIT)).toBeInTheDocument()
+    expect(screen.getByText('CR Queue')).toBeInTheDocument()
   })
 
   it('shows no published link when the publication carries no URL', async () => {

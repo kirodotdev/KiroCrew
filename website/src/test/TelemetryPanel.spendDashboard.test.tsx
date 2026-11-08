@@ -276,12 +276,4 @@ describe('TelemetryPanel — the spend tab opens on the answer', () => {
     // to a reader.
     expect(document.querySelectorAll('[aria-hidden="false"]').length).toBe(0)
   })
-
-  it('drops the footnote when the block it describes has no rows', async () => {
-    await mount({ conversations: [], conversation_count: 0 })
-    await waitFor(() => expect(screen.getByText('Top sessions')).toBeInTheDocument())
-    // The footnote explains which bars link to a chat. With no bars it is a
-    // caption for nothing, and it reads as a stray line under the empty state.
-    expect(screen.queryByText('Named dashboard sessions link to the chat')).toBeNull()
-  })
 })

@@ -1,32 +1,12 @@
 """The CI runner watchdog must heal exactly the orphaned-runner shape and nothing else.
 
-``scripts/ci/runner_watchdog.py`` cancels and re-runs a ``ci.yml`` run whose
-CodeBuild-routed job has sat *queued* with no runner past a threshold. Every
-guard rail exists because the alternative is a watchdog that cancels a
-healthy run: a job that is merely slow to dispatch, a run that is young, a run
-held by its concurrency group, a fork the token cannot re-run, a run the
-watchdog already re-ran twice, or a run a human re-ran between the listing
-and the heal.
+``scripts/ci/runner_watchdog.py`` cancels and re-runs a run whose CodeBuild-routed
+job has sat queued with no runner past a threshold. Each guard rail keeps it from
+cancelling a healthy run. The GitHub API is a fake that records every write.
 
-The second family of tests pins ownership: once a cancel is accepted the
-watchdog must see it through to a re-run -- escalating to force-cancel, sharing
-one wait budget across runs, and on the next tick recovering a run whose cancel
-landed after the budget ran out -- because a cancelled run that nobody re-runs
-has lost its verdict for good.
-
-The GitHub API is a fake that records every write, so each test pins both the
-verdict and the exact calls made. Nothing here touches the network.
-
-This file holds the orphaned shape, the holds that keep a slow fleet from
-looking dead, the runs that look stuck but are not, and the guard rails on
-which runs a tick may touch and how it lists them. The rest of the family
-lives beside it: ``test_ci_runner_watchdog_ownership.py`` (the re-check before
-the cancel, and the ownership family above),
-``test_ci_runner_watchdog_recovery.py`` (the next tick's recovery and
-pull-request runs), ``test_ci_runner_watchdog_cli.py`` (the entry point, its
-output and rate limits), ``test_ci_runner_watchdog_workflows.py`` (the watched
-set and the read bound) and ``test_ci_runner_watchdog_supersession.py`` (a
-superseded orphan, and a re-run attempt). The shared fake and builders are in
+This file holds the orphaned shape, the saturation holds, look-alike runs and the
+listing guard rails. Sibling files ``test_ci_runner_watchdog_{ownership,recovery,cli,
+workflows,supersession}.py`` hold the rest; shared builders are in
 ``ci_runner_watchdog_helpers.py``.
 """
 
@@ -51,6 +31,7 @@ from ci_runner_watchdog_helpers import (
     _posts,
     _run,
     _sweep,
+    _ts,
     _verdict_of,
     wd,
 )
@@ -82,8 +63,8 @@ def test_the_label_prefix_is_matched_even_with_an_override_suffix() -> None:
     assert not wd.is_codebuild_job({})
 
 
-def test_the_rerun_is_the_whole_run_so_the_runner_label_is_recomputed() -> None:
-    """A failed-jobs re-run would reuse the first attempt's `changes` outputs and its stale label."""
+def test_the_rerun_is_the_whole_run_so_changes_runs_again() -> None:
+    """A failed-jobs re-run would reuse the cancelled attempt's `changes` outputs."""
     api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
     _, outcomes = _sweep(api)
     assert outcomes == {1: wd.OUTCOME_HEALED}
@@ -183,16 +164,10 @@ def _incident_siblings(*, queued_minutes_ago: float = 94) -> list[dict[str, Any]
 
 
 def test_prompt_sibling_starts_on_the_orphans_own_queue_clear_a_slow_start_elsewhere() -> None:
-    """The measured incident: thirteen siblings on the orphan's label started in 23 s,
-    the fourteenth sat for an hour and a half, and a 7-minute start on ANOTHER fleet
-    held it unhealed for six hours.
+    """A prompt own-queue reading heals, though another fleet shows a slow start.
 
-    The orphan's own queue served thirteen jobs promptly after it queued, so the
-    reading for that queue is DISPATCHING and the run is healed. The slow start on the
-    large fleet is a fact about that fleet's capacity, not this queue's.
-
-    Negative control: judged without the queue, the fleet-wide reading sees the slow
-    start and holds; that is the hold that kept the run stuck.
+    The slow start on the large fleet says nothing about this queue's capacity; read
+    label-blind it would hold the run stuck, as the control below shows.
     """
     orphan = _job(11, minutes_ago=94)
     slow_elsewhere = _job(
@@ -229,10 +204,8 @@ def test_a_slow_start_on_the_orphans_own_queue_holds_though_the_rest_of_the_flee
 ):
     """Scoping cuts both ways: a saturated own queue holds even when other fleets are quick.
 
-    Run 2 shares the orphan's queue and served a job after a 6-minute wait; run 3 on
-    the large fleet served one in seconds. Label-blind, the slow start would hold
-    anyway, so the test also pins that the detail NAMES the own-queue reading -- the
-    difference a reader of the tick log needs.
+    Label-blind, the slow start would hold anyway, so the test also pins that the
+    detail names the own-queue reading.
     """
     slow_same_queue = _job(
         21, status="in_progress", minutes_ago=8, started_minutes_ago=2, runner_name="r", run_id=2
@@ -267,16 +240,10 @@ def test_a_slow_start_on_the_orphans_own_queue_holds_though_the_rest_of_the_flee
 def test_a_same_queue_prompt_start_does_not_lift_the_partial_evidence_hold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The unread-run hold guards against a slow start nobody read, and a same-queue
-    prompt start does not rule one out.
+    """A same-queue prompt start does not rule out a slow start on an unread run.
 
-    Same listing as the partial-hold pin, except the prompt start is on the orphan's
-    own queue. The own-queue reading is derived from the starts this sweep read; a
-    slow start on that same queue would turn it into SATURATED, and an unread
-    30-minute run can hold exactly that start. The retained candidates carry no queue
-    attribution that could rule it out, so the sweep holds either way and posts
-    nothing. Negative control: the same listing with the unread run gone heals, so the
-    hold is the unread run's, not the start's.
+    Retained unread candidates carry no queue attribution, so the sweep holds. Without
+    the unread run the same listing heals, so the hold is the unread run's.
     """
     monkeypatch.setattr(wd, "LIVE_CLASSIFY_READS", 2)
     monkeypatch.setattr(wd, "LIVE_EVIDENCE_RESERVE", 1)
@@ -411,11 +378,7 @@ def test_orphans_spanning_two_queues_get_the_label_blind_reading() -> None:
 def test_a_young_runs_start_still_counts_as_evidence_though_the_run_is_not_actionable() -> None:
     """A run the classifier refuses to act on still feeds the evidence set.
 
-    Run 2 is 3 minutes old, so it is SKIPPED_YOUNG and nothing will be done to it,
-    but its served start is what the hold on run 1 is judged against. It is also
-    younger than the saturation line, so it cannot hold a wait that crossed it and can
-    only ever report the fleet dispatching -- which is why the evidence reserve
-    prefers runs old enough to report the other way.
+    Run 2 is SKIPPED_YOUNG, but its served start is what run 1's hold is judged against.
     """
     young = _run(2, minutes_ago=3, branch="other")
     prompt = _job(
@@ -600,7 +563,9 @@ def test_a_rate_limit_on_the_fresh_evidence_read_has_an_accurate_outcome() -> No
             r"[?&]page=1(?![0-9])", path
         ):
             reads["in_progress"] += 1
-            if reads["in_progress"] > 1:
+            # Two first pages per gather: the bounded listing and its young-band
+            # evidence page, so the third is the re-read's.
+            if reads["in_progress"] > 2:
                 raise wd.ApiError(
                     403,
                     "API rate limit exceeded for installation ID 12345",
@@ -987,7 +952,7 @@ def test_the_candidate_listing_is_repo_wide_and_paginated() -> None:
     and never the repo-wide `/actions/runs?status=` call this asserts."""
     runs = [_run(i, minutes_ago=200 - i) for i in range(1, 131)]
     api = FakeApi({"in_progress": list(reversed(runs))}, {})
-    listed = wd.list_all_candidate_runs(api, REPO)
+    listed, _aborted, _truncated = wd.gather_all_candidate_runs(api, REPO)
     # Every watched run is examined -- all 130, not the newest 50 -- so the oldest
     # (the orphans) are never truncated away.
     assert sorted(int(r["id"]) for r in listed) == list(range(1, 131))
@@ -1010,16 +975,10 @@ def test_the_candidate_listing_is_repo_wide_and_paginated() -> None:
 
 
 def test_a_short_page_does_not_end_the_repo_wide_listing() -> None:
-    """The endpoint returns pages below `per_page` mid-listing, so a short page is
-    not the tail.
+    """The endpoint returns pages below `per_page` mid-listing, so a short page is not the tail.
 
-    Measured against `status=queued` on this repository: 98, then 100, then 100,
-    then 99, while `total_count` stands at 927 and a six-hour-old `fast-gate.yml`
-    orphan holding `main`'s concurrency slot sits on page seven.
-
-    The negative control below is the reverted rule -- stop at the first page
-    shorter than `PAGE_SIZE` -- run over the same pages: it reads page one only and
-    never sees the deep orphan.
+    Measured on `status=queued`: pages of 98, 100, 100, 99 with an orphan on page seven.
+    The control below stops at the first short page and never sees the deep orphan.
     """
     pages = [
         [_run(1000 + i, minutes_ago=5) for i in range(98)],
@@ -1052,13 +1011,8 @@ def test_a_short_page_does_not_end_the_repo_wide_listing() -> None:
 def test_the_workflow_scoped_listing_does_not_end_on_a_short_page_either() -> None:
     """The same rule, at the second site that reads this index.
 
-    ``list_runs`` is workflow-scoped, but it queries the SAME status-filtered runs
-    index, which returns pages below ``per_page`` mid-listing. A short page there is
-    no more the tail than it is repo-wide, so the cap or an empty page ends it.
-
-    Negative control: the reverted rule -- break at the first page shorter than
-    ``PAGE_SIZE`` -- over the same pages keeps 3 of the 5 runs, so a sample of 5
-    would be drawn from a third of its index.
+    ``list_runs`` is workflow-scoped but reads the same status-filtered index, so only
+    the cap or an empty page ends it. The control stops at the short page and keeps 3 of 5.
     """
     short_then_more = [
         [_run(1, minutes_ago=1), _run(2, minutes_ago=2), _run(3, minutes_ago=3)],
@@ -1085,15 +1039,9 @@ def test_the_workflow_scoped_listing_does_not_end_on_a_short_page_either() -> No
 def test_the_jobs_listing_does_not_end_on_a_short_page_and_bounds_by_total_count() -> None:
     """Third site reading a paginated listing, with a cheaper tail than the runs index.
 
-    ``filter=latest`` is the same shape of post-paging filter as ``status=``, so a
-    re-run run's jobs page can come back short mid-listing. A job dropped for that
-    reason is a queued fleet job the tick never sees, and queued fleet jobs ARE the
-    orphan evidence. Unlike the runs index this payload carries ``total_count``, so
-    the tail is known exactly: reading stops there, with no extra empty-page call on
-    top of the one page a normal run needs.
-
-    Negative control: the reverted rule -- stop at the first page below ``PAGE_SIZE``
-    -- over the same pages keeps 2 of the 3 jobs and loses the queued fleet job.
+    ``filter=latest`` filters after paging like ``status=``, so a short page can drop a
+    queued fleet job, which is the orphan evidence. This payload carries
+    ``total_count``, so reading stops there with no extra empty-page call.
     """
     fleet_job = _job(999, status="queued", codebuild=True)
     pages = [
@@ -1127,14 +1075,8 @@ def test_the_jobs_listing_does_not_end_on_a_short_page_and_bounds_by_total_count
 def test_a_short_page_does_not_end_the_branch_listing_either() -> None:
     """Fourth site, and the one where a short page silently refuses a safe re-run.
 
-    ``newest_run_id_for_branch`` pages until it has SEEN the run being judged; that
-    sighting is the proof the listing reached far enough to trust its answer. Reading
-    a short page as the tail raises ``LookupInconclusive`` while the judged run sits
-    on the very next page, which declines a re-run the evidence allows and leaves a
-    cancelled run behind a green tick.
-
-    Negative control: the reverted rule over the same pages ends at page one and the
-    lookup raises.
+    ``newest_run_id_for_branch`` pages until it has seen the judged run. Taking a short
+    page as the tail raises ``LookupInconclusive`` and leaves a cancelled run unhealed.
     """
     judged = wd.RunVerdict(
         run_id=42,
@@ -1173,14 +1115,8 @@ def test_a_short_page_does_not_end_the_branch_listing_either() -> None:
 def test_a_truncated_live_listing_fails_the_tick_instead_of_only_warning() -> None:
     """A tick that could not look as deep as an orphan sits is not a clean tick.
 
-    The depth needed to reach an orphan is the run arrival rate times the orphan's
-    age, so a cap set past the whole measured set today re-truncates short of an
-    orphan under load growth. The paging logs a ``::warning::``, which nobody is
-    required to read, so truncation also carries a tick-level verdict and an outcome
-    inside ``FAILED_OUTCOMES`` -- the same device the rate-limit abort uses.
-
-    Negative control: the ``::warning::`` alone, which is what shipped before, leaves
-    the outcome set empty and the tick exits 0.
+    Load growth can push an orphan past any fixed cap, and nobody has to read a
+    ``::warning::``, so truncation also carries an outcome in ``FAILED_OUTCOMES``.
     """
     full_page = [_run(1000 + i, minutes_ago=5) for i in range(wd.PAGE_SIZE)]
 
@@ -1202,30 +1138,40 @@ def test_a_truncated_live_listing_fails_the_tick_instead_of_only_warning() -> No
     outcomes = {wd.LISTING_TRUNCATED_MARKER_ID: wd.OUTCOME_LISTING_TRUNCATED}
     assert wd.FAILED_OUTCOMES & set(outcomes.values())
 
-    # Negative control: warning only, which is what shipped before this change.
+    # Negative control: a warning alone leaves no failed outcome.
     control_outcomes: dict[int, str] = {}
     assert not (wd.FAILED_OUTCOMES & set(control_outcomes.values()))
 
 
-def _ceilinged_listing(queued: list[dict[str, Any]]) -> tuple[FakeApi, list[str]]:
+def _ceilinged_listing(
+    queued: list[dict[str, Any]], api: FakeApi | None = None
+) -> tuple[FakeApi, list[str]]:
     """A runs index that serves ``queued`` the way GitHub does past its ceiling.
 
-    Newest first, filtered by ``created=<=…`` when given, ``total_count`` for the
-    filtered set, and an EMPTY page past result ``REPO_LISTING_RESULT_CEILING``.
+    Newest first, filtered by ``created=<=…`` or ``created=>…`` when given,
+    ``total_count`` for the filtered set, and an EMPTY page past result
+    ``REPO_LISTING_RESULT_CEILING``. Given an ``api``, only its repo-wide queued
+    listing is replaced and every other read goes to it as before.
     """
-    api = FakeApi({}, {})
+    fallback = api.get if api is not None else None
+    api = api or FakeApi({}, {})
     queries: list[str] = []
 
     def serve(path: str) -> Any:
         queries.append(path)
-        params = dict(urllib.parse.parse_qsl(path.partition("?")[2]))
-        if params.get("status") != "queued":
+        base, _, query = path.partition("?")
+        params = dict(urllib.parse.parse_qsl(query))
+        if not base.endswith("/actions/runs") or params.get("status") != "queued":
+            if fallback is not None:
+                return fallback(path)
             return {"total_count": 0, "workflow_runs": []}
         rows = sorted(queued, key=lambda run: run["created_at"], reverse=True)
         created = params.get("created")
-        if created is not None:
-            assert created.startswith("<="), created
+        if created is not None and created.startswith("<="):
             rows = [run for run in rows if run["created_at"] <= created[2:]]
+        elif created is not None:
+            assert created.startswith(">"), created
+            rows = [run for run in rows if run["created_at"] > created[1:]]
         page, size = int(params["page"]), int(params["per_page"])
         start = (page - 1) * size
         if start >= wd.REPO_LISTING_RESULT_CEILING:
@@ -1286,6 +1232,213 @@ def test_the_window_cap_bounds_the_quota_and_reports_what_it_could_not_read() ->
     assert len(queued_reads) <= windows * (wd.REPO_LISTING_MAX_PAGES + 1)
 
 
+def test_candidate_threshold_puts_orphan_aged_runs_on_page_one() -> None:
+    """With ``created=<=<threshold>``, an orphan-aged run is on page one.
+
+    Unbounded, windowing cannot narrow past 1,200 runs created in one second
+    (``test_a_window_that_cannot_narrow_still_fails_the_tick``); one best-effort page
+    of them still comes back for evidence.
+    """
+    recent = [_run(i, minutes_ago=3, status="queued") for i in range(1, 1201)]
+    orphan = _run(9999, minutes_ago=20, status="queued")
+    api, queries = _ceilinged_listing(recent + [orphan])
+    logged: list[str] = []
+    runs, aborted, truncated = wd.gather_all_candidate_runs(
+        api, REPO, candidate_threshold=_ts(5), log=logged.append
+    )
+    assert aborted is None
+    assert truncated == []
+    ids = {int(run["id"]) for run in runs}
+    assert 9999 in ids
+    # The evidence page: exactly one page of the young band, no deeper.
+    assert len(ids - {9999}) == wd.PAGE_SIZE * wd.EVIDENCE_LISTING_PAGES
+    assert any("created=%3E" in query for query in queries)
+    # Its shortfall is a plain note, so it cannot bury a real truncation warning.
+    assert not any(line.startswith("::warning::") for line in logged)
+
+
+def test_candidate_threshold_includes_saturation_capable_band() -> None:
+    """The bound is ``now - saturation_wait``, not ``now - orphan_after``: the 5-to-15
+    minute band can carry a slow start (``_can_carry_a_slow_start``), so it stays in
+    the bounded listing. Runs under five minutes come back through the evidence page.
+    """
+    too_young = [_run(i, minutes_ago=3, status="queued") for i in range(1, 6)]
+    capable = [_run(100 + i, minutes_ago=10, status="queued") for i in range(1, 6)]
+    orphan = _run(9999, minutes_ago=20, status="queued")
+    api, _ = _ceilinged_listing(too_young + capable + [orphan])
+    runs, aborted, truncated = wd.gather_all_candidate_runs(
+        api, REPO, candidate_threshold=_ts(5), log=lambda _l: None
+    )
+    assert aborted is None
+    assert truncated == []
+    assert {int(run["id"]) for run in runs} == {9999, *range(1, 6), *range(101, 106)}
+
+
+def test_an_orphan_behind_young_runs_is_healed_on_a_bounded_reread() -> None:
+    """Sweep and pre-cancel re-read are both bounded at ``now - saturation_wait``, and
+    a young band that fits within YOUNG_BAND_MAX_PAGES leaves nothing unread: the
+    orphan is cancelled and re-run."""
+    young = [_run(20_000 + i, minutes_ago=3, status="queued") for i in range(80)]
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, queries = _ceilinged_listing(young, api)
+    _verdicts, outcomes = _sweep(api)
+    assert outcomes == {1: wd.OUTCOME_HEALED}
+    queued = [query for query in queries if "status=queued" in query]
+    # Sweep: one bounded pass + one evidence page (EVIDENCE_LISTING_PAGES=1, stops at cap).
+    # Re-read: one bounded pass + two evidence queries (page 1 = 80 runs, page 2 = empty,
+    # confirms exhaustion before stopping; YOUNG_BAND_MAX_PAGES allows up to 5 pages).
+    assert sum("created=%3C%3D" in query for query in queued) == 2
+    assert sum("created=%3E" in query for query in queued) == 3
+
+
+def test_young_runs_past_the_evidence_page_hold_the_cancel() -> None:
+    """The issue's repro: 1,200 runs three minutes old ahead of an orphan. Bounded,
+    neither listing is truncated, so the tick is not failed for reach. But the
+    re-read's young-band pass lists only the newest 500 (YOUNG_BAND_MAX_PAGES pages),
+    and the unlisted 700 sit just under the line and cross it while the cancels are
+    judged. They stand as one unread candidate, so the partial-evidence hold holds
+    the cancel, as it would for any unread run old enough to hold a slow start.
+    Negative control: without that candidate the run is cancelled and re-run."""
+    burst = [_run(20_000 + i, minutes_ago=3, status="queued") for i in range(1200)]
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, _ = _ceilinged_listing(burst, api)
+    clock = _Clock()
+    listing = api.get
+
+    def get(path: str) -> Any:
+        # Each read takes 50 ms, as real reads take time: the cancel is judged
+        # after the re-read, not at the instant it was taken. Short enough that the
+        # listed young runs (three minutes old) stay under the line all tick.
+        clock.sleep(0.05)
+        return listing(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lambda _l: None
+    )
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert not _posts(api, "/cancel")
+    assert wd.LISTING_TRUNCATED_MARKER_ID not in outcomes
+    assert not (wd.FAILED_OUTCOMES & set(outcomes.values()))
+
+
+def test_young_burst_from_unwatched_workflow_does_not_hold_the_cancel() -> None:
+    """An exhausted young band of unwatched-workflow runs does not hold the cancel:
+    all runs were read, none are watched, nothing can hold a slow start.
+    The burst is small enough to fit within YOUNG_BAND_MAX_PAGES so the band is
+    fully exhausted and the exhausted-with-no-watched path is exercised."""
+    burst = [
+        _run(20_000 + i, minutes_ago=3, status="queued", workflow="not-watched.yml")
+        for i in range(100)
+    ]
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, _ = _ceilinged_listing(burst, api)
+    clock = _Clock()
+    listing = api.get
+
+    def get(path: str) -> Any:
+        clock.sleep(0.05)
+        return listing(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lambda _l: None
+    )
+    # Band exhausted with no watched runs: no hold, cancel fires.
+    assert _verdict_of(verdicts, 1).verdict != wd.SKIPPED_PARTIAL_EVIDENCE
+    assert len(_posts(api, "/cancel")) == 1
+
+
+def test_watched_run_at_position_101_is_held() -> None:
+    """A watched run past the first young-band page is found when the pre-cancel
+    re-read uses YOUNG_BAND_MAX_PAGES. The band overflows the cap (501 total), so
+    the cancel is held fail-closed: we read the watched run at page 2 but there is
+    still one unlisted run, and we cannot know whether that unlisted run could hold
+    a slow start."""
+    # 100 unwatched young runs (page 1, newest) + 1 watched young run (page 2,
+    # position 101) + 400 more unwatched (pages 2-5) = 501 total. Cap at 5 pages
+    # lists 500; 1 unlisted run triggers the hold.
+    unwatched_newest = [
+        _run(20_000 + i, minutes_ago=1, status="queued", workflow="not-watched.yml")
+        for i in range(100)
+    ]
+    watched_101 = [_run(21_000, minutes_ago=2, status="queued")]
+    unwatched_rest = [
+        _run(22_000 + i, minutes_ago=3, status="queued", workflow="not-watched.yml")
+        for i in range(400)
+    ]
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, _ = _ceilinged_listing(unwatched_newest + watched_101 + unwatched_rest, api)
+    clock = _Clock()
+    listing = api.get
+
+    def get(path: str) -> Any:
+        clock.sleep(0.05)
+        return listing(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lambda _l: None
+    )
+    # Cap hit: fail closed, cancel held even though the watched run at position 101
+    # IS listed within the 5-page cap.
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert not _posts(api, "/cancel")
+
+
+def test_young_band_page_cap_holds_the_cancel() -> None:
+    """When the young band overflows YOUNG_BAND_MAX_PAGES the pre-cancel re-read
+    cannot see the full band; the cancel is held fail-closed regardless of the
+    workflows in the listed portion."""
+    # PAGE_SIZE * YOUNG_BAND_MAX_PAGES + 1 young runs to guarantee the cap is hit.
+    cap_overflow = [
+        _run(20_000 + i, minutes_ago=3, status="queued", workflow="not-watched.yml")
+        for i in range(wd.PAGE_SIZE * wd.YOUNG_BAND_MAX_PAGES + 1)
+    ]
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, _ = _ceilinged_listing(cap_overflow, api)
+    clock = _Clock()
+    listing = api.get
+
+    def get(path: str) -> Any:
+        clock.sleep(0.05)
+        return listing(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = wd.run_watchdog(
+        api, _policy(), clock=clock.now, sleep=clock.sleep, log=lambda _l: None
+    )
+    # Cap hit: fail closed, cancel held even though all listed runs are unwatched.
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_PARTIAL_EVIDENCE
+    assert not _posts(api, "/cancel")
+
+
+def test_a_short_pre_cancel_reread_fails_closed_rather_than_cancelling() -> None:
+    """Runs past the line that the re-read could not list may hold the slow start the
+    hold exists to see, so a truncated re-read cancels nothing and reds the tick.
+    The burst arrives between the sweep and the re-read: 1,200 runs created in one
+    second ten minutes ago, past the line, so the bound cannot exclude them and the
+    window cannot narrow past them. Negative control: dropping the truncation (as
+    ``gather_all_candidate_runs`` without the truncation check cancels and re-runs the run here."""
+    queued: list[dict[str, Any]] = []
+    api = FakeApi({"in_progress": [_run(1)]}, {1: [_job(11)]})
+    api, _ = _ceilinged_listing(queued, api)
+    listing = api.get
+
+    def get(path: str) -> Any:
+        if "/actions/runs/1/jobs" in path and not queued:
+            queued.extend(_run(20_000 + i, minutes_ago=10, status="queued") for i in range(1200))
+        return listing(path)
+
+    api.get = get  # type: ignore[method-assign]
+    verdicts, outcomes = _sweep(api)
+    assert outcomes[1] == wd.OUTCOME_LISTING_TRUNCATED
+    assert wd.OUTCOME_LISTING_TRUNCATED in wd.FAILED_OUTCOMES
+    assert _verdict_of(verdicts, 1).verdict == wd.SKIPPED_NO_DISPATCH_EVIDENCE
+    assert not _posts(api, "/cancel")
+    assert not _posts(api, "/force-cancel")
+
+
 def test_the_repo_wide_paging_respects_its_page_cap() -> None:
     """A listing that always returns a full page would page forever; the cap stops it.
     Negative control: reverted code has no `_iter_repo_runs` and no repo-wide page cap,
@@ -1304,12 +1457,8 @@ def test_cancelled_recovery_reaches_a_deep_orphan_inside_the_reachable_window(
 ) -> None:
     """A recently cancelled, old-created run sits on page nine and is recovered.
 
-    The recovery cap equals the live one, because ``REPO_LISTING_RESULT_CEILING``
-    bounds both at the API's reachable window: a deeper cap names pages this
-    endpoint never serves. Two controls: a 2-page cap cannot reach page nine, and a
-    run past the ceiling cannot be reached at ANY cap -- which is why truncation is
-    reported
-    rather than silently tolerated.
+    A 2-page cap cannot reach it. A run past ``REPO_LISTING_RESULT_CEILING`` is
+    unreachable at any cap, which is why truncation is reported rather than tolerated.
     """
 
     def api_with_deep_orphan() -> FakeApi:
@@ -1340,11 +1489,8 @@ def test_cancelled_recovery_reaches_a_deep_orphan_inside_the_reachable_window(
         )
 
     recovery_cap = wd.RECOVERY_LISTING_MAX_PAGES
-    # This cap equals the live-listing one: REPO_LISTING_RESULT_CEILING bounds BOTH
-    # at the API's reachable window, so a deeper recovery cap would name pages this
-    # endpoint never serves. What this test pins is that a recently cancelled run
-    # whose CREATION is old sits deep in the index and is recovered from inside that
-    # window.
+    # Equal to the live cap: REPO_LISTING_RESULT_CEILING bounds both at the API's
+    # reachable window, and a deeper cap would name pages never served.
     assert (
         recovery_cap == wd.REPO_LISTING_MAX_PAGES <= wd.REPO_LISTING_RESULT_CEILING // wd.PAGE_SIZE
     )
@@ -1372,11 +1518,8 @@ def test_cancelled_recovery_reaches_a_deep_orphan_inside_the_reachable_window(
 def test_repo_listing_warns_only_when_its_own_total_count_is_not_reached() -> None:
     """Reach is judged against ``total_count``, not against the page cap.
 
-    The cap cannot be the signal, because at ``REPO_LISTING_RESULT_CEILING`` the
-    endpoint serves an EMPTY page: measured on this repository, page 11 of
-    `status=queued&per_page=100` returns no runs and `total_count: 0`, not a 422. A
-    walk that ended on that page looks exactly like one that reached the tail, so
-    only the count says which happened.
+    At ``REPO_LISTING_RESULT_CEILING`` the endpoint serves an empty page with
+    `total_count: 0`, not a 422, so only the count tells it from the real tail.
     """
     full_page = [{"id": i, "path": ".github/workflows/ci.yml"} for i in range(wd.PAGE_SIZE)]
     saturated = FakeApi({}, {})
@@ -1442,15 +1585,8 @@ def test_repo_listing_warns_only_when_its_own_total_count_is_not_reached() -> No
 def test_a_shortfall_from_churn_warns_but_does_not_fail_the_tick() -> None:
     """``total_count`` is a page-one snapshot of a set that MUTATES mid-walk.
 
-    A run that leaves ``queued`` between two page reads lands as ``yielded < total``
-    with every page delivered, so treating any shortfall as an unread tail fails the
-    tick on churn -- which on a busy repository is most ticks, and a signal that
-    fires for a non-reason is the one nobody reads. The tick fails only where the
-    shortfall has a nameable cause: the page cap was spent, or an empty page came
-    back at the result ceiling.
-
-    Negative control: the rule that recorded EVERY shortfall records this one, so
-    the sink is non-empty and the tick goes red for a set that merely moved.
+    Churn gives ``yielded < total`` on most busy ticks, so the tick fails only on a
+    nameable cause: the page cap was spent, or an empty page came back at the ceiling.
     """
     ceiling_pages = wd.REPO_LISTING_RESULT_CEILING // wd.PAGE_SIZE
 

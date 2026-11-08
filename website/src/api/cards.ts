@@ -28,6 +28,7 @@ export const CARD_KINDS = [
   'crewmate.check_ins',
   'crewmate.dashboard_page',
   'template.update',
+  'template.mcp_server',
   'mcp.install',
   'mcp.add_custom',
   'mcp.toggle',
@@ -36,6 +37,8 @@ export const CARD_KINDS = [
   'trust.app',
   'denied_command',
   'folder.steering',
+  'workflow.save',
+  'workflow.update',
 ] as const
 export type CardKind = typeof CARD_KINDS[number]
 
@@ -52,7 +55,30 @@ export interface CardChange {
   remove?: unknown[]
   /** A `goal` row: which goal, by the number the Goals tab shows. */
   number?: number
+  /** A capabilities card's plain line for one addition, worded by the dashboard. */
+  addition?: CardAddition
+  /** A raw row a card with plain lines keeps behind its Details. */
+  detail?: boolean
+  /** A goal card's Heartbeat checkbox row (`heartbeat_offer`): the minutes it runs every. */
+  interval?: number
+  /** The same row: the most runs a day at that interval. */
+  per_day?: number
 }
+
+/** One thing a capabilities card gives a crewmate's worker. */
+export type CardAddition =
+  | {
+    kind: 'server'
+    name: string
+    /** `gateway`: already running here; `registry`: installed from the MCP registry; `card`: set up by the card. */
+    origin: 'gateway' | 'registry' | 'card'
+    registry_id?: string
+    /** Tools that run without asking, after the governance ceiling. */
+    auto_approve: string[]
+    /** The draft grants the whole server: every tool runs without asking. */
+    auto_approve_all?: boolean
+  }
+  | { kind: 'skill'; name: string }
 
 /** A value the gateway cannot know at proposal time. `user` is typed by the
  *  person (a secret's value); `step` is a field an earlier step's real response
@@ -88,7 +114,8 @@ export interface Card {
   widen?: boolean
   title: string
   changes: CardChange[]
-  scope?: { members: string[]; count: number }
+  /** `only_this_member`: the gateway's mark that the one member IS the card's own subject. */
+  scope?: { members: string[]; count: number; only_this_member?: boolean }
   reason?: string
   editable: string[]
   params: Record<string, unknown>
@@ -246,7 +273,18 @@ export function mergeCard(list: readonly Card[] | undefined, c: Card): Card[] {
 }
 
 /** Fold one owner `card_update` frame into that slot's cards cache. */
+/** The Workflows tab's library query, which a workflow card's save changes. */
+export const WORKFLOW_DEFINITIONS_QUERY_KEY = ['workflow-definitions'] as const
+
+/** Whether *card* is a workflow-library card that has written to the library. */
+export function wroteWorkflowLibrary(card: Pick<Card, 'kind' | 'status'>): boolean {
+  return card.kind.startsWith('workflow.') && (card.status === 'applied' || card.status === 'partial')
+}
+
 export function applyCardUpdate(queryClient: QueryClient, card: unknown): void {
   if (!isCard(card)) return
   queryClient.setQueryData<Card[]>(cardsQueryKey(card.slot_key), prev => mergeCard(prev, card))
+  // The library list is cached without expiry; a save another tab pressed must
+  // show there without a reload.
+  if (wroteWorkflowLibrary(card)) void queryClient.invalidateQueries({ queryKey: WORKFLOW_DEFINITIONS_QUERY_KEY })
 }

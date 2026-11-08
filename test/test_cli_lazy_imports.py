@@ -1,33 +1,13 @@
 """Regression guards for cli.py's module-scope import weight.
 
-``cli.py`` imports ``cli_commands`` (~556 ms), ``cli_server`` (~549 ms,
-pulling ``slack.gateway``) and ``dashboard.state`` (pulling ``vector_memory``
-→ ``numpy``, ~56 MB) inside the one ``main()`` dispatch branch that uses each
-name, not at module scope. At module scope every CLI invocation and — worse —
-every long-lived MCP stdio server (``kirocrew mcp-core`` / ``mcp-cron`` /
-``mcp-computer``) would pay ~1.3 s and ~112 MB for subcommands that never run;
-a fresh ``import kiro_crew.cli`` instead costs ~0.5 s / ~54 MB.
+``cli_commands``, ``cli_server`` and ``dashboard.state`` (numpy) are imported inside the
+``main()`` branch that uses each; at module scope every CLI call and MCP stdio server
+would pay ~1.3 s and ~112 MB. Pinned: a fresh import loads none of them, every local
+import in ``main()`` and the ``cli_parser_*`` registrars resolves, the stdio servers
+still answer, and ``boot_platform`` runs before mcp-core dispatch.
 
-The tests here keep it that way:
-
-1. **Ratchet** — a fresh interpreter that imports ``kiro_crew.cli`` must not
-   end up with any of the heavy modules in ``sys.modules``.  Without this, the
-   next module-scope import silently undoes the win (the two historical
-   ``# noqa: E402`` blocks show that already happened once).
-2. **Dispatch integrity** — every function-local ``from kiro_crew.* import``
-   inside ``main()`` and the ``cli_parser_*`` registrars it calls must resolve.
-   A typo in a moved import is otherwise only discovered at runtime by the user
-   who runs that one subcommand.
-3. **Stdio servers still serve** — ``mcp-core`` / ``mcp-cron`` answer
-   ``initialize`` + ``tools/list`` over stdio end-to-end through the real CLI
-   entry point.
-4. **Security prelude ordering** — ``boot_platform`` still runs before the
-   mcp-core dispatch branch, and a ``PlatformCompositionError`` still aborts
-   rather than downgrading.
-
-Fresh-interpreter checks run in subprocesses: the warm test process has long
-since imported the heavy modules, so an in-process ``sys.modules`` assertion
-would be vacuous.
+Fresh-interpreter checks run in subprocesses: the warm test process has the heavy
+modules already, so an in-process ``sys.modules`` assertion would be vacuous.
 """
 
 from __future__ import annotations
@@ -71,6 +51,7 @@ _BANNED_AFTER_CLI_IMPORT = (
     "kiro_crew.cli_commands_security",
     "kiro_crew.cli_commands_eval",
     "kiro_crew.cli_commands_learn",
+    "kiro_crew.cli_commands_secrets",
     "kiro_crew.cli_server",
     "kiro_crew.slack.gateway",
     "kiro_crew.dashboard.state",
@@ -97,9 +78,9 @@ def test_cli_import_does_not_load_heavy_modules(tmp_path: Path) -> None:
     # otherwise; the interpreter resolves kiro_crew from the installed package,
     # not from the directory it runs in, so nothing here needs the checkout.
     res = subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-X", "utf8", "-c", code],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8",
         timeout=120,
         cwd=tmp_path,
     )
@@ -169,16 +150,10 @@ def _read_line(
 ) -> str:
     """One handshake line within ``budget``, or a named failure — never a blocked worker.
 
-    A bare ``proc.stdout.readline()`` on a server that boots but neither answers
-    nor closes stdout blocks until the suite's ``--timeout=120`` fires, which
-    reports as an un-attributed pytest timeout instead of the "no <what>
-    response" assertion this helper's caller is written to make — and on Windows
-    pytest-timeout has no SIGALRM, so it kills the xdist worker outright, the
-    caller's ``finally`` never runs, and the ``python -m kiro_crew`` child is
-    left alive holding the worker's pipes. Reading on a daemon thread with a
-    join deadline converts that lost RUN into a failed TEST that names itself.
-    30s is generous for a cold interpreter plus server boot and stays well
-    under the suite timeout, so the failure lands here and not on the worker.
+    A bare ``readline()`` on a silent server blocks until the suite timeout, and on
+    Windows (no SIGALRM) that kills the xdist worker and leaks the child. A daemon
+    thread with a join deadline turns it into a named failure; 30s stays under the
+    suite timeout.
     """
     stream = proc.stdout
     assert stream is not None
@@ -193,11 +168,11 @@ def _read_line(
 def _stdio_roundtrip(subcommand: str, tmp_path: Path) -> list[str]:
     """Start ``kirocrew <subcommand>`` over stdio; return the tools/list names."""
     proc = subprocess.Popen(
-        [sys.executable, "-m", "kiro_crew", subcommand],
+        [sys.executable, "-X", "utf8", "-m", "kiro_crew", subcommand],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=True, encoding="utf-8",
         # Confined to the test's directory: the server is pinned to a
         # throwaway home already, and its cwd must not be the checkout either.
         cwd=tmp_path,
@@ -279,7 +254,7 @@ def test_boot_platform_runs_before_mcp_core_dispatch(monkeypatch) -> None:
     assert order == ["boot_platform", "dispatch"]
 
 
-def test_platform_composition_error_still_aborts_mcp_core(monkeypatch) -> None:
+def test_platform_composition_error_still_aborts_mcp_core(monkeypatch, capsys) -> None:
     """A composition failure aborts BEFORE dispatch — no silent downgrade."""
 
     def _raise(*_a, **_k):
@@ -293,6 +268,33 @@ def test_platform_composition_error_still_aborts_mcp_core(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "kiro_crew.mcp_core", fake_mcp_core)
 
     monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "mcp-core"])
-    with pytest.raises(PlatformCompositionError):
+    with pytest.raises(SystemExit) as exited:
         cli.main()
+    assert exited.value.code == 1
     assert dispatched == [], "mcp-core dispatched despite a failed platform composition"
+    err = capsys.readouterr().err
+    assert "❌ companion missing" in err
+    assert "Traceback" not in err
+
+
+def test_a_policy_error_reaches_policy_validate_as_one_line(monkeypatch, capsys) -> None:
+    """`kirocrew policy validate` on a policy with a typo'd key: the error the
+    composition raised, on one line with exit 1, and the command never runs."""
+
+    def _raise(*_a, **_k):
+        raise PlatformCompositionError("unknown governed key 'sandbox.enabeld' (fail-closed)")
+
+    monkeypatch.setattr(cli, "boot_platform", _raise)
+    ran: list[bool] = []
+    monkeypatch.setattr(
+        "kiro_crew.cli_commands._policy", lambda *_a, **_k: ran.append(True)
+    )
+    monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "policy", "validate"])
+    with pytest.raises(SystemExit) as exited:
+        cli.main()
+    assert exited.value.code == 1
+    assert ran == []
+    err = capsys.readouterr().err
+    assert "❌ unknown governed key 'sandbox.enabeld' (fail-closed)" in err
+    assert "kirocrew doctor" in err
+    assert "Traceback" not in err

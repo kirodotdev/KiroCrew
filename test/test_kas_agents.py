@@ -32,6 +32,7 @@ from kiro_crew.acp.kas_agents import (
     resolve_prompt,
     to_client_custom_agent,
 )
+from kiro_crew.acp.kas_permissions import CREW_ANSWERED_BUILTINS_KEY
 from kiro_crew.agent_discovery import (
     WELCOME_MESSAGE_MAX_CHARS,
     spec_welcome_message,
@@ -60,9 +61,13 @@ class TestRequiredFields:
         with pytest.raises(KasAgentTranslationError):
             to_client_custom_agent("", _spec(), "p")
 
-    def test_empty_prompt_is_refused(self):
+    def test_an_empty_prompt_is_carried_as_the_key(self):
+        # KAS needs `prompt` present, not non-empty.
+        assert to_client_custom_agent("kirocrew", _spec(), "")["prompt"] == ""
+
+    def test_a_non_string_prompt_is_refused(self):
         with pytest.raises(KasAgentTranslationError):
-            to_client_custom_agent("kirocrew", _spec(), "   ")
+            to_client_custom_agent("kirocrew", _spec(), None)  # type: ignore[arg-type]
 
 
 class TestReservedIds:
@@ -229,6 +234,118 @@ class TestTheSpecIsSpelledInKasToolIds:
             "fs_append",
         ]
 
+    def test_web_search_mounts_the_engine_s_remote_tool(self):
+        """KAS serves web search as ``remote_web_search``; the kiro-cli name
+        alone matches no KAS tool, so the agent would have no web search."""
+        out = to_client_custom_agent("a", _spec(tools=["web_fetch", "web_search"]), "p")
+        assert out["tools"] == ["web_fetch", "web_search", "remote_web_search"]
+
+    def test_use_subagent_mounts_the_engine_s_sub_agent_tool(self):
+        """KAS registers kiro-cli's ``use_subagent`` as ``invoke_sub_agent``; the
+        kiro-cli name alone matches no KAS tool, so an agent whose spec asks for
+        sub-agents could never call the ones its ``availableAgents`` names."""
+        out = to_client_custom_agent("a", _spec(tools=["fs_read", "use_subagent"]), "p")
+        assert out["tools"] == [
+            "fs_read",
+            "read_file",
+            "list_directory",
+            "use_subagent",
+            "invoke_sub_agent",
+        ]
+
+    def test_the_subagent_alias_mounts_grants_and_excludes_like_use_subagent(self):
+        """kiro-cli accepts ``subagent`` for its sub-agent tool. An unattended
+        agent listing it must get the same mount, grant and exclusion on KAS."""
+        alias = to_client_custom_agent(
+            "a", _spec(tools=["subagent"], allowedTools=["subagent"]), "p"
+        )
+        crew = to_client_custom_agent(
+            "a", _spec(tools=["use_subagent"], allowedTools=["use_subagent"]), "p"
+        )
+        assert alias["tools"] == crew["tools"] == ["use_subagent", "invoke_sub_agent"]
+        assert alias["permissions"] == crew["permissions"]
+        assert {"capability": "subagent", "effect": "allow"} in alias["permissions"]["rules"]
+        out = to_client_custom_agent("a", _spec(tools=["*"], excludedTools=["subagent"]), "p")
+        assert out["excludedTools"] == ["use_subagent", "invoke_sub_agent"]
+
+    @pytest.mark.parametrize(
+        ("alias", "crew"),
+        [
+            ("fsRead", "fs_read"),
+            ("fsWrite", "fs_write"),
+            ("executeCmd", "execute_bash"),
+            ("execute_cmd", "execute_bash"),
+            ("agent_crew", "use_subagent"),
+            ("@builtin/fs_read", "fs_read"),
+            ("@builtin/execute_cmd", "execute_bash"),
+            ("@builtin/write", "fs_write"),
+            ("@builtin/shell", "execute_bash"),
+        ],
+    )
+    def test_kiro_cli_tool_aliases_mount_and_grant_like_the_crew_name(self, alias, crew):
+        """kiro-cli parses each alias as the same built-in (P1-11): on KAS it must
+        mount, exclude and grant exactly what the Crew name does."""
+        a = to_client_custom_agent("a", _spec(tools=[alias], allowedTools=[alias]), "p")
+        c = to_client_custom_agent("a", _spec(tools=[crew], allowedTools=[crew]), "p")
+        assert a["tools"] == c["tools"]
+        assert a.get("permissions") == c.get("permissions")
+        assert a.get(CREW_ANSWERED_BUILTINS_KEY) == c.get(CREW_ANSWERED_BUILTINS_KEY)
+        x = to_client_custom_agent("a", _spec(tools=["*"], excludedTools=[alias]), "p")
+        y = to_client_custom_agent("a", _spec(tools=["*"], excludedTools=[crew]), "p")
+        assert x["excludedTools"] == y["excludedTools"]
+
+    def test_an_unknown_builtin_ref_is_left_as_written(self):
+        """Only names kiro-cli trusts after ``@builtin/`` are folded."""
+        out = to_client_custom_agent("a", _spec(tools=["@builtin/read_file"]), "p")
+        assert out["tools"] == ["@builtin/read_file"]
+
+    @pytest.mark.parametrize("entry", ["@builtin", "@builtin/", "@builtin/*"])
+    def test_allowed_tools_builtin_grants_every_builtin(self, entry):
+        """kiro-cli's ``@builtin`` auto-approves every built-in (P1-12). It is no
+        MCP server: no ``builtin/*`` rule, and each built-in is granted by name."""
+        out = to_client_custom_agent(
+            "a", _spec(tools=["*"], allowedTools=[entry], mcpServers={"srv": {"command": "x"}}), "p"
+        )
+        rules = out["permissions"]["rules"]
+        assert not [r for r in rules if r["capability"] == "mcp"]
+        assert {"capability": "web_fetch", "effect": "allow"} in rules
+        assert {"capability": "subagent", "effect": "allow"} in rules
+        assert {"execute_bash", "fs_read", "fs_write"} <= set(out[CREW_ANSWERED_BUILTINS_KEY])
+
+    def test_allowed_tools_star_grants_builtins_and_the_spec_s_servers(self):
+        """kiro-cli's ``*`` auto-approves every tool (P1-12): the built-ins and
+        every server the spec mounts."""
+        out = to_client_custom_agent(
+            "a", _spec(tools=["*"], allowedTools=["*"], mcpServers={"srv": {"command": "x"}}), "p"
+        )
+        rules = out["permissions"]["rules"]
+        assert {"capability": "mcp", "match": ["srv/*"], "effect": "allow"} in rules
+        assert {"capability": "web_search", "effect": "allow"} in rules
+        assert "execute_bash" in out[CREW_ANSWERED_BUILTINS_KEY]
+
+    def test_the_ceiling_judges_each_name_star_expands_to(self, monkeypatch):
+        """``*`` is no way past the ceiling: each name it spells out is asked."""
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: ref != "@srv")
+        out = to_client_custom_agent(
+            "a", _spec(tools=["*"], allowedTools=["*"], mcpServers={"srv": {"command": "x"}}), "p"
+        )
+        assert not [r for r in out["permissions"]["rules"] if r["capability"] == "mcp"]
+
+    def test_the_ceiling_judges_the_subagent_alias_under_the_crew_name(self, monkeypatch):
+        """Folded before the ceiling is asked: a ceiling that withholds
+        ``use_subagent`` withholds the alias too, so it carries no grant past it."""
+        asked: list[str] = []
+
+        def ceiling(ref: str) -> bool:
+            asked.append(ref)
+            return ref != "use_subagent"
+
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", ceiling)
+        out = to_client_custom_agent("a", _spec(tools=["*"], allowedTools=["subagent"]), "p")
+        assert asked == ["use_subagent"]
+        rules = (out.get("permissions") or {}).get("rules", [])
+        assert not [r for r in rules if r["capability"] == "subagent" and r["effect"] == "allow"]
+
     def test_excluded_tools_are_widened_the_same_way(self):
         """The restricting direction: excluding ``fs_read`` for kiro-cli must not
         leave ``read_file`` mounted on KAS."""
@@ -251,23 +368,19 @@ class TestTheSpecIsSpelledInKasToolIds:
         spec can name. A tag (``read``, ``@builtin``) would also match but grants
         by class rather than by tool, so none appears here."""
         registry = Path(__file__).resolve().parent / "fixtures" / "kas_builtin_tool_ids.json"
-        registered = set(json.loads(registry.read_text(encoding="utf-8"))["registered"])
+        reg = json.loads(registry.read_text(encoding="utf-8"))
+        registered = set(reg["registered"]) | set(reg["remote"]["ids"])
         for kiro_cli_name, family in KAS_TOOL_FAMILY_BY_KIRO_CLI_NAME.items():
-            assert kiro_cli_name in {"fs_read", "fs_write", "grep", "glob"}
+            assert kiro_cli_name in {
+                "fs_read",
+                "fs_write",
+                "grep",
+                "glob",
+                "web_search",
+                "use_subagent",
+            }
             assert set(family) <= registered, kiro_cli_name
             assert kiro_cli_name not in family, "a family lists the OTHER engine's ids"
-
-    def test_expand_is_pure_and_order_preserving(self):
-        entries = ["@a", "fs_read", "@b", "fs_read"]
-        assert expand_kiro_cli_tool_names(entries) == [
-            "@a",
-            "fs_read",
-            "read_file",
-            "list_directory",
-            "@b",
-        ]
-        assert entries == ["@a", "fs_read", "@b", "fs_read"], "input untouched"
-        assert expand_kiro_cli_tool_names([]) == []
 
 
 class TestDeliberateOmissions:
@@ -690,14 +803,11 @@ class TestPromptResolution:
                 resolve_prompt({"prompt": target}, agent_id="a", agents_dir=tmp_path)
 
     def test_proc_environ_prompt_is_refused(self, tmp_path):
-        # /proc/self/environ would leak the gateway's own environment. It must be
-        # refused either way: on POSIX it is absolute and caught by the pseudo-fs
-        # denylist ("not an allowed location"); on Windows it is not absolute (no
-        # drive letter), so it is treated as a relative prompt and rejected for
-        # escaping the agent directory. Both are fail-closed rejections.
-        with pytest.raises(
-            KasAgentTranslationError, match="not an allowed location|escapes the agent directory"
-        ):
+        # /proc/self/environ would leak the gateway's own environment. On POSIX it
+        # is caught by the pseudo-fs denylist; on Windows it has no drive, so it
+        # resolves to a `<drive>:\proc\...` that does not exist and the read fails.
+        # Both are fail-closed rejections.
+        with pytest.raises(KasAgentTranslationError, match="not an allowed location|unreadable"):
             resolve_prompt(
                 {"prompt": "file:///proc/self/environ"}, agent_id="a", agents_dir=tmp_path
             )
@@ -711,19 +821,28 @@ class TestPromptResolution:
         )
         assert out == "expert prompt"
 
-    def test_relative_prompt_escaping_the_agents_dir_is_refused(self, tmp_path):
-        with pytest.raises(KasAgentTranslationError, match="escapes"):
-            resolve_prompt({"prompt": "file://../../etc/passwd"}, agent_id="a", agents_dir=tmp_path)
+    def test_a_relative_prompt_may_climb_out_of_the_agents_dir(self, tmp_path):
+        # A user reported (0.11.0.3) `file://../prompts/x.md`, which kiro-cli loads,
+        # refused on KAS as escaping the agent directory.
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (tmp_path / "prompts").mkdir()
+        (tmp_path / "prompts" / "x.md").write_text("shared prompt", encoding="utf-8")
+        out = resolve_prompt({"prompt": "file://../prompts/x.md"}, agent_id="a", agents_dir=agents)
+        assert out == "shared prompt"
 
     @pytest.mark.parametrize("bad", [None, "", "   "])
-    def test_empty_prompt_falls_back_to_the_kas_constant(self, bad, tmp_path, caplog):
-        # KAS requires a non-empty prompt; a missing or blank string is an
-        # intentionally prompt-less agent (e.g. kirocrew-lite ships "prompt": ""),
-        # so the projection substitutes the small inline fallback constant
-        # instead of crashing the session.
+    def test_a_prompt_less_spec_resolves_to_an_empty_prompt(self, bad, tmp_path):
+        # On kiro-cli a prompt-less spec runs on kiro-cli's own default
+        # prompt with nothing added. KAS registers an agent whose prompt is ""
+        # and layers nothing on its own default, so that is what goes out -- not
+        # Crew's background-worker brief, which says the agent has no tools.
+        assert resolve_prompt({"prompt": bad}, agent_id="my-agent", agents_dir=tmp_path) == ""
+
+    @pytest.mark.parametrize("bad", [None, "", "   "])
+    def test_only_the_background_agent_gets_the_kas_brief(self, bad, tmp_path):
         out = resolve_prompt({"prompt": bad}, agent_id="kirocrew-lite", agents_dir=tmp_path)
         assert out == _KAS_FALLBACK_PROMPT
-        assert "falling back to the lightweight KAS prompt" in caplog.text
 
     @pytest.mark.parametrize("bad", [7, 3.14, True, [], {}, ["x"]])
     def test_non_string_prompt_is_refused_not_defaulted(self, bad, tmp_path):
@@ -745,6 +864,18 @@ class TestPromptResolution:
         with pytest.raises(KasAgentTranslationError, match="unreadable"):
             resolve_prompt({"prompt": f"file://{p}"}, agent_id="a", agents_dir=tmp_path)
 
+    def test_missing_file_prompt_names_the_spec_dir_and_the_remedy(self, tmp_path):
+        # A spec left behind by an uninstalled tool points at a prompt that no
+        # longer exists; the refusal must say where the spec lives and what to do.
+        gone = tmp_path / "gone" / "prompt.md"
+        with pytest.raises(KasAgentTranslationError) as excinfo:
+            resolve_prompt({"prompt": f"file://{gone}"}, agent_id="old", agents_dir=tmp_path)
+        message = str(excinfo.value)
+        assert "unreadable" in message
+        assert str(tmp_path) in message
+        assert "delete the 'old' spec" in message
+        assert "choose another agent" in message
+
     def test_build_projects_a_prompt_less_spec_with_the_fallback(self, tmp_path):
         (tmp_path / "kirocrew-lite.json").write_text(
             json.dumps({"name": "kirocrew-lite", "tools": [], "prompt": ""}), encoding="utf-8"
@@ -754,6 +885,17 @@ class TestPromptResolution:
         assert agents[0]["prompt"] == _KAS_FALLBACK_PROMPT
         # Tool restriction is preserved — the fallback only supplies a prompt.
         assert agents[0]["tools"] == []
+
+    def test_build_projects_a_user_prompt_less_spec_with_an_empty_prompt(self, tmp_path):
+        # The key stays on the wire: KAS refuses an entry without `prompt` and
+        # falls the session back to its `vibe` mode.
+        (tmp_path / "helper.json").write_text(
+            json.dumps({"name": "helper", "tools": ["fs_read"]}), encoding="utf-8"
+        )
+        spec = load_agent_spec(tmp_path, "helper")
+        agents = build_kas_custom_agents(tmp_path, "helper", spec)
+        assert "prompt" in agents[0]
+        assert agents[0]["prompt"] == ""
 
 
 def test_the_batch_cap_matches_the_schema():
@@ -931,6 +1073,27 @@ class TestSpecLookup:
         message = str(exc.value)
         assert "AlphaPackage-kirocrew.json" in message
         assert "BetaPackage-kirocrew.json" in message
+
+    def test_the_refusal_names_every_claimant_and_how_to_repair_it(self, tmp_path):
+        """Three installed packages each vend their own spec under one name.
+        The refused session start is all the user sees, so it names every file
+        with its full path and says the repair that works: keep one, delete
+        the others or change their declared ``name``. Renaming a file is not a
+        repair, because the scan matches the declared name, and the message
+        says so."""
+        for package in ("AlphaPackage", "BetaPackage", "GammaPackage"):
+            self._write(tmp_path, f"{package}-kirocrew.json", description=package)
+
+        with pytest.raises(KasAgentTranslationError) as exc:
+            load_agent_spec(tmp_path, "kirocrew")
+
+        message = str(exc.value)
+        assert message.startswith("3 specs declare the name 'kirocrew' with differing content")
+        for package in ("AlphaPackage", "BetaPackage", "GammaPackage"):
+            assert repr(str(tmp_path / f"{package}-kirocrew.json")) in message
+        assert "keep exactly one: delete the others" in message
+        assert 'change the "name" field inside all but one' in message
+        assert "Renaming a file alone does not help" in message
 
     def test_two_identical_specs_declaring_one_name_are_projected(self, tmp_path):
         """A package installer that flattens dependencies writes the same spec

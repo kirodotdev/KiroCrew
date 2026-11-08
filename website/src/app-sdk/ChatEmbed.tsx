@@ -6,8 +6,15 @@
  * only chat-state imports are the pure queue-hydration helpers, so a queued
  * send renders here exactly as the dashboard's QueueStack shows it.
  *
- * State management: polling via useQuery refetchInterval.
- * Poll faster during streaming (1s), slower when idle (5s). A poll that keeps
+ * State management: one bounded slot read (useQuery), issued on a push signal
+ * when the host has one and on a poll otherwise. A host that passes `slotPush`
+ * (slotPush.ts) signals each change to this slot over its realtime channel;
+ * the embed re-reads at once, coalescing a burst into at most one read in
+ * flight plus one trailing read, and while that channel is up the poll is only
+ * a backstop (5s running, 15s idle). Without the channel, or while it is down,
+ * it polls faster during streaming (1s), slower when idle (5s). A read that
+ * fails always falls back to that cadence, so the stall below is noticed on
+ * the same clock with or without push. A poll that keeps
  * failing backs off to at most 30s, and once it has kept failing for
  * EMBED_STALL_MS (counted from its first failure) the page on screen is
  * flagged as stale instead of still reading as running.
@@ -26,8 +33,12 @@
  * `allowedApiPaths` grant for `/api/chat` still gates the POST.
  *
  * The composer is the chat-core `Composer` root with its Editor and Send atoms
- * (`chat-core/composer/atoms.tsx`), both store-free; Send queues while a turn
- * runs. The root's Voice atom is off for this surface (`EMBED_CAPABILITIES`).
+ * (`chat-core/composer/atoms.tsx`), both store-free. While a turn runs, Send
+ * steers or queues as the person's busy-send choice for the slot says, the
+ * same choice the dashboard composer reads (`BusySendButton`). A new line on a
+ * markdown list item continues the list, as in the dashboard composer
+ * (`chat-input/listContinuation.ts`). The root's Voice atom is off for this
+ * surface (`EMBED_CAPABILITIES`).
  * The `/` command and `@` file pickers are the dashboard composer's own
  * (`chat-core/composer/pickers.ts`), reading through the app's scoped client
  * and shown only when the host app declared their endpoints
@@ -35,10 +46,11 @@
  *
  * `hide` lets a host remove parts (`ChatEmbedHideKey`). Each key gates the one
  * place its part mounts, and a hidden part is not mounted at all. Hiding never
- * adds: every grant check still applies to what stays.
+ * adds: every grant check still applies to what stays. `renderers` restyles
+ * transcript rows through the list's registry and removes nothing.
  */
 import { useRef, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, focusManager } from '@tanstack/react-query'
 import { Loader2, Paperclip } from 'lucide-react'
 import ChatMessageList, { type VirtualTranscriptHandle } from './ChatMessageList'
 import ErrorNotice from '../components/ErrorNotice'
@@ -52,10 +64,12 @@ import PasteHighlightLayer from '../components/PasteHighlightLayer'
 import PasteHoverLayer from '../components/PasteHoverLayer'
 import { isRawPasteChord } from '../components/composerPastePolicy'
 import { mergeCarriedDraft, type PasteBlock } from '../utils/pasteTokens'
+import type { ResizeInfo } from '../utils/resizeImage'
 import { useEmbedAttachments } from './useEmbedAttachments'
 import { ComposerAttach } from '../chat-core/composer/Attach'
 import { JumpToBottomButton } from './ChatScrollChrome'
 import FollowUpBar from '../components/FollowUpBar'
+import EmbedQuestionCard, { useEmbedPendingQuestion } from './EmbedQuestionCard'
 import ChatFooter from '../pages/chat/ChatFooter'
 import { deriveFollowUpOptions } from './protocol'
 import { useComposerDraft } from './useComposerDraft'
@@ -68,15 +82,21 @@ import { appApiSendWire } from './appSendWire'
 import { sendTurn, mintSendId } from '../chat-core/transport/sendTurn'
 import { Composer, type ComposerCapabilities } from '../chat-core/composer/Composer'
 import { ComposerEditor, ComposerSend } from '../chat-core/composer/atoms'
+import { useBusySendMode } from '../components/BusySendButton'
+import { useTextareaListContinuation } from '../components/chat-input/listContinuation'
 import { ComposerPickerMenus } from '../chat-core/composer/PickerMenus'
 import { EMBED_HIDDEN_COMMANDS, useEmbedPickers } from './useEmbedPickers'
+import { useEmbedSendRefocus } from './useEmbedSendRefocus'
 import { sendFailureCopy, deliveryUnconfirmedCopy } from '../chat-core/transport/receiptCopy'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { drainEmbedRecovery, stashEmbedRecovery, subscribeEmbedRecovery, type PendingEmbedRecovery } from './embedSendRecovery'
 import { retireSendTail, sendTailProof, hostProofBaseline, calmLineHolds, isOwnUserRow, rowKey, type HostSendProof, type SendTail } from './embedSendTails'
 import { embedReadPath, isEmbedCursor, mergeEmbedRead, type EmbedCursor } from './embedIncrementalRead'
+import { useSlotPush } from './slotPush'
 import type { ChatMessage } from '../types'
 import type { ChatEmbedHideKey } from './chatEmbedHide'
+import type { MessageRenderer } from './messageRenderers'
+import { ProseFencesContext, proseFenceSet } from '../components/codeBlockProse'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from '../components/QueueStack'
 import { hydrateQueuedBubbles, normalizeQueueEntries } from '../store/chatSlice'
@@ -135,7 +155,12 @@ export interface ChatEmbedProps {
    * `pastes` it expanded, when it has any. A host forwards it as `meta` on its
    * own chat POST; forwarding `sendId` lets the embed prove by id that a send
    * whose `onSend` rejected did land. A host that ignores `meta` keeps the
-   * text-match fallback (#21686).
+   * text-match fallback.
+   *
+   * The embed cannot tell what a host endpoint does with a send made while a
+   * turn runs, so with `onSend` the busy Send says Queue. Without it, the
+   * embed's own send follows the person's busy-send choice (Steer or Queue),
+   * so a host that set `onSend` only to steer leaves it out.
    */
   onSend?: (message: string, meta?: ChatEmbedSendMeta) => Promise<unknown> | void
   /**
@@ -174,6 +199,33 @@ export interface ChatEmbedProps {
    * stays off either way. Omitted, every part shows as before.
    */
   hide?: readonly ChatEmbedHideKey[]
+  /**
+   * Transcript row renderers, handed straight to `ChatMessageList` and merged
+   * by `mergeRenderers`: searched after the kind-matched built-ins and before
+   * the role-keyed ones. An entry reusing a built-in id replaces it, and with
+   * it every role that entry drew; a role claim without `match` outranks that
+   * role's built-in refinement rows (an assistant claim takes the compaction
+   * notice too). One claiming an undrawn role adds a row type. To restyle the
+   * reply, claim exactly what the built-in `assistant` entry resolves and wrap
+   * its render (docs/app-kit/api-reference.md, "Restyling rows"). They change
+   * how rows look only;
+   * the composer, Stop, queue, approvals and follow-ups stay, and removing a
+   * part is `hide`'s job. The list memoizes the merged registry on this
+   * array's identity, so pass a stable array (a module constant or a
+   * `useMemo`): a fresh array every render re-merges and redraws every row.
+   * Omitted, the built-in rows render as before.
+   */
+  renderers?: readonly MessageRenderer[]
+  /**
+   * Fence tags this chat draws wrapped, as it draws `markdown` and `text`
+   * fences: lines soft-wrap at the block's edge instead of scrolling sideways.
+   * The tag is the first word of the fence's info string, matched without
+   * regard to case. Use it for a fence the app defines to carry prose or a
+   * record (a proposed reply, a ticket update), not source code, which keeps
+   * its horizontal scroll. The reader's Wrap toggle still works on each block.
+   * Omitted, only the built-in prose tags wrap.
+   */
+  proseFences?: readonly string[]
 }
 
 /** Stable empty transcript. A fresh `[]` fallback would be a new identity on every
@@ -262,6 +314,8 @@ interface EmbedSendVars {
   msg: string
   meta?: ChatEmbedSendMeta
   files: string[]
+  /** The resize info of `files`, kept for a restore after `clear` drops it. */
+  resized: Record<string, ResizeInfo>
   sentPastes: PasteBlock[]
   draftText: string
   /** A chip send: it never consumed the draft, so nothing is handed back. */
@@ -269,6 +323,10 @@ interface EmbedSendVars {
   sendId: string
   slot: string
   hostProof?: HostSendProof
+  /** Ask the gateway to put this send into the running turn (`sendTurn`'s
+   *  `steer`). Decided when the send is made, so a turn that ends while it is
+   *  in flight does not change what the person pressed. */
+  steer: boolean
 }
 
 /** Whether the poll shows THIS optimistic send. The default path stamps
@@ -309,6 +367,15 @@ export const EMBED_STREAM_IDLE_MS = RUNNING_POLL_MS * 2 + 500
 export const EMBED_STALL_MS = 10_000
 /** Ceiling of the failing poll's back-off. Exported for tests. */
 export const EMBED_STALL_POLL_MAX_MS = 30_000
+/** Backstop poll while the host's push channel is up and reads succeed: a
+ *  change the channel failed to signal still shows within this long. Exported
+ *  for tests. */
+export const EMBED_PUSH_BACKSTOP_RUNNING_MS = 5000
+export const EMBED_PUSH_BACKSTOP_IDLE_MS = 15_000
+/** Least time between two push-triggered reads, so a streamed reply's chunks
+ *  re-read the slot a few times a second rather than once per chunk. Exported
+ *  for tests. */
+export const EMBED_PUSH_MIN_GAP_MS = 250
 
 interface PollState {
   status: string
@@ -340,13 +407,18 @@ export function embedOutageMs(runs: FailureRuns, key: string, state: PollState):
   return state.errorUpdatedAt - run.since
 }
 
-/** Next poll delay. A healthy poll runs at the running/idle cadence. A failing
- *  one keeps that cadence until the outage reaches EMBED_STALL_MS (so the stall
- *  is noticed on time), then waits as long as the outage has lasted, up to the
- *  ceiling, so a dead endpoint is not hit every second forever. Exported for
- *  tests. */
-export function embedPollInterval(state: PollState, outage: number): number {
-  const base = state.data?.running ? RUNNING_POLL_MS : 5000
+/** Next poll delay. A healthy poll runs at the running/idle cadence, or at the
+ *  backstop cadence while `pushed` (the host's push channel is up). A failing
+ *  one ignores `pushed`: it keeps the running/idle cadence until the outage
+ *  reaches EMBED_STALL_MS (so the stall is noticed on time), then waits as long
+ *  as the outage has lasted, up to the ceiling, so a dead endpoint is not hit
+ *  every second forever. Exported for tests. */
+export function embedPollInterval(state: PollState, outage: number, pushed = false): number {
+  const running = state.data?.running
+  if (pushed && state.status !== 'error') {
+    return running ? EMBED_PUSH_BACKSTOP_RUNNING_MS : EMBED_PUSH_BACKSTOP_IDLE_MS
+  }
+  const base = running ? RUNNING_POLL_MS : 5000
   if (state.status !== 'error' || outage < EMBED_STALL_MS) return base
   return Math.min(EMBED_STALL_POLL_MAX_MS, Math.max(base, outage))
 }
@@ -363,12 +435,21 @@ function ChatEmbed({
   onFileOpen,
   onArtifactOpen,
   hide,
+  renderers,
+  proseFences,
 }: ChatEmbedProps) {
   const api = useAppApi()
   const hidden = (key: ChatEmbedHideKey) => hide?.includes(key) === true
+  // Keyed on the tags, not the array, so a host that passes a fresh literal
+  // each render does not redraw every code block.
+  const proseKey = (proseFences ?? []).join('\n')
+  const proseFenceTags = useMemo(() => proseFenceSet(proseKey ? proseKey.split('\n') : []), [proseKey])
   // The parking scope for receipts that outlive this instance: this app's
   // embeds for this slot (see embedSendRecovery).
-  const appName = useAppInfo().name
+  const appInfo = useAppInfo()
+  const appName = appInfo.name
+  // A host that predates the flag leaves it unset: visible.
+  const hostActive = appInfo.active !== false
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const lastHashRef = useRef('')
   // The transcript is ChatMessageList's virtualized mount: it owns the scroller
@@ -411,6 +492,12 @@ function ChatEmbed({
   // stall notice so both measure the same outage.
   const failureRunsRef = useRef<FailureRuns>(new Map())
   const queryClient = useQueryClient()
+  // The host's push channel (slotPush.ts). The poll cadence asks it at each
+  // tick whether it signals THIS slot now, so a slot that changes hands, or is
+  // listed only after mount, is judged by its owner at that moment. The state
+  // only re-renders on a connection change, so the cadence moves at once then.
+  const slotPush = useSlotPush()
+  const [, setPushLive] = useState(() => slotPush?.connected(slotKey) ?? false)
   const { data: slotData, refetch, isPlaceholderData, isError, isFetching, status, dataUpdatedAt, errorUpdatedAt } = useQuery({
     queryKey: ['app-sdk-embed', slotKey, limit],
     // Incremental: the held page's cursor is echoed, and only the rows after
@@ -432,8 +519,94 @@ function ChatEmbed({
     refetchInterval: (query) => embedPollInterval(
       query.state,
       embedOutageMs(failureRunsRef.current, `${String(query.queryKey[1])}:${String(query.queryKey[2])}`, query.state),
+      slotPush?.connected(slotKey) ?? false,
     ),
   })
+
+  // Push-triggered reads. A signal re-reads now; signals that arrive while a
+  // read is in flight collapse into one trailing read, spaced at least
+  // EMBED_PUSH_MIN_GAP_MS after the last. `cancelRefetch: false` joins a read
+  // already in flight instead of aborting it, so a fast stream cannot starve
+  // every read. Each connect (reconnects included) re-reads once: a change made
+  // while the channel was down was never signalled. Attaching to a channel
+  // that is already up re-reads a cached page too, because frames that came
+  // while this embed was unmounted refreshed nothing. While the page or the
+  // host tab is hidden no push read is sent: signals only mark one read
+  // pending, and it is sent once both are visible. The poll pauses only for a
+  // hidden page; an inactive host tab keeps its cadence.
+  const refetchRef = useRef(refetch)
+  refetchRef.current = refetch
+  const limitRef = useRef(limit)
+  limitRef.current = limit
+  const hostActiveRef = useRef(hostActive)
+  hostActiveRef.current = hostActive
+  const flushHiddenRef = useRef<() => void>(() => {})
+  useEffect(() => {
+    if (!slotPush) { setPushLive(false); return }
+    setPushLive(slotPush.connected(slotKey))
+    let disposed = false
+    let inFlight = false
+    let dirty = false
+    let pending = false
+    let lastAt = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const queryState = () => queryClient.getQueryState(['app-sdk-embed', slotKey, limitRef.current])
+    const visible = () => hostActiveRef.current && focusManager.isFocused()
+    // A failing read is the poll's to retry, on its backing-off cadence: a
+    // push read would hit the failing endpoint every gap while frames keep
+    // coming. The signal is dropped, not held: the poll's next good read
+    // already carries the change.
+    const failing = () => queryState()?.status === 'error'
+    const run = () => {
+      timer = undefined
+      if (disposed) return
+      if (failing()) return
+      if (!visible()) { pending = true; return }
+      // A read this loop did not start (a poll) may be in flight. Joining it
+      // reuses a request sent before the change, so one more read follows.
+      if (queryState()?.fetchStatus === 'fetching') dirty = true
+      inFlight = true
+      lastAt = Date.now()
+      void refetchRef.current({ cancelRefetch: false }).finally(() => {
+        inFlight = false
+        if (dirty && !disposed) { dirty = false; schedule() }
+      })
+    }
+    const schedule = () => {
+      if (failing()) return
+      if (!visible()) { pending = true; return }
+      if (inFlight) { dirty = true; return }
+      if (timer !== undefined) return
+      timer = setTimeout(run, Math.max(0, lastAt + EMBED_PUSH_MIN_GAP_MS - Date.now()))
+    }
+    const flushHidden = () => {
+      if (disposed || !pending || !visible()) return
+      pending = false
+      schedule()
+    }
+    flushHiddenRef.current = flushHidden
+    const unfocus = focusManager.subscribe(flushHidden)
+    const unwatch = slotPush.watch(slotKey, {
+      onChange: schedule,
+      onConnection: (up) => {
+        setPushLive(up)
+        if (up) schedule()
+      },
+    })
+    // A cached page with no read under way: re-read it. A first read in
+    // flight was sent at mount, after anything this embed missed.
+    const held = queryState()
+    if (slotPush.connected(slotKey) && held?.dataUpdatedAt && held.fetchStatus !== 'fetching') schedule()
+    return () => {
+      disposed = true
+      if (timer !== undefined) clearTimeout(timer)
+      unwatch()
+      unfocus()
+      if (flushHiddenRef.current === flushHidden) flushHiddenRef.current = () => {}
+    }
+  }, [slotPush, slotKey, queryClient])
+  // The host tab coming back sends the read held while it was hidden.
+  useEffect(() => { if (hostActive) flushHiddenRef.current() }, [hostActive])
 
   // The last SETTLED page for this slot. A placeholder covers the in-flight
   // window of a widen, but a REJECTED widen leaves the wider key with no data
@@ -575,9 +748,13 @@ function ChatEmbed({
    *  after the answer settles" and "a later user message clears them" behave identically
    *  here too — an agent's follow-up choices should never be silently dropped just
    *  because the surface embedding them is thinner. */
+  /** The slot's pending ask_question card, read through the slot's own question
+   *  route (see EmbedQuestionCard). While one is up the follow-up chips stand
+   *  down, as on every other surface. */
+  const { pending: pendingQuestion, loadFailed: questionLoadFailed } = useEmbedPendingQuestion(api, slotKey, running)
   const { followUpOptions, followUpMulti, followUpSourceKey } = useMemo(
-    () => deriveFollowUpOptions(messages, running),
-    [messages, running]
+    () => deriveFollowUpOptions(messages, running, !!pendingQuestion),
+    [messages, running, pendingQuestion]
   )
 
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file —
@@ -669,6 +846,19 @@ function ChatEmbed({
     valueFromUserRef: draftFromUserRef, optimizingRef: notOptimizingRef, onChange: setDraft, onPasteBlocksChange: pastes.set,
     inputRef: textareaRef as React.RefObject<HTMLTextAreaElement>, ime,
   })
+  /** Markdown list continuation, the main composer's own: a new line on a
+   *  list item continues it (the next number, the same bullet, an unchecked
+   *  task box) and ends it on an empty item, and Backspace where an item's
+   *  text begins removes its whole marker. It hooks the textarea's
+   *  `beforeinput`, which every new-line path ends in (Shift+Enter, a phone's
+   *  Return), so it needs the element itself: the editor gets one callback ref
+   *  that feeds both this and the draft's own `textareaRef`. */
+  const listContinuation = useTextareaListContinuation(pasteBlocksRef, ime, undo.endUndoBurst)
+  const attachListContinuation = listContinuation.ref
+  const setEditorRef = useCallback((el: HTMLTextAreaElement | null) => {
+    textareaRef.current = el
+    attachListContinuation(el)
+  }, [textareaRef, attachListContinuation])
   // An "unconfirmed" notice answers the question "did it go out?". Proof is a
   // USER row for THIS send anywhere in the polled window, recognised by
   // identity ONLY: a row carrying this send's `meta.sendId` (or naming it in
@@ -791,7 +981,7 @@ function ChatEmbed({
   const applyRecovery = useCallback((rec: PendingEmbedRecovery) => {
     const restore = rec.restoreText == null ? undefined : restoreIntoComposer(rec.restoreText, rec.restorePastes)
     // Staged files ride back with the text, so a retry needs no new upload.
-    if (rec.restoreFiles?.length) restoreFiles(rec.restoreFiles)
+    if (rec.restoreFiles?.length) restoreFiles(rec.restoreFiles, rec.restoreResized)
     setSendTails(prev => [...prev.filter(t => t.sendId !== rec.tail.sendId), { ...rec.tail, restore, restoreFiles: rec.restoreFiles }])
   }, [restoreIntoComposer, restoreFiles])
 
@@ -876,7 +1066,7 @@ function ChatEmbed({
    *  hand back -- a chip send never consumed the draft. Shared by the receipt
    *  branches and `onError`, so a send that throws recovers like a refused one. */
   const deliverOutcome = useCallback((
-    { files, sentPastes, draftText, override, sendId, slot }: EmbedSendVars,
+    { files, resized, sentPastes, draftText, override, sendId, slot }: EmbedSendVars,
     tail: PendingEmbedRecovery['tail'],
   ) => {
     // The text is going back to the composer: drop this send's optimistic
@@ -884,7 +1074,7 @@ function ChatEmbed({
     setPending(list => list.filter(p => p.sendId !== sendId))
     const rec: PendingEmbedRecovery = override
       ? { tail }
-      : { tail, restoreText: draftText, ...(files.length ? { restoreFiles: files } : {}), ...(sentPastes.length ? { restorePastes: sentPastes } : {}) }
+      : { tail, restoreText: draftText, ...(files.length ? { restoreFiles: files } : {}), ...(Object.keys(resized).length ? { restoreResized: resized } : {}), ...(sentPastes.length ? { restorePastes: sentPastes } : {}) }
     if (mountedRef.current && slotKeyRef.current === slot) applyRecovery(rec)
     else stashEmbedRecovery({ app: appName, slot }, rec)
   }, [applyRecovery, appName])
@@ -894,7 +1084,7 @@ function ChatEmbed({
     // whitespace and all -- a recovery must give back what the user typed, not
     // what the wire carried.
     mutationFn: async (vars: EmbedSendVars) => {
-      const { msg, meta, override, sendId, slot, hostProof } = vars
+      const { msg, meta, override, sendId, slot, hostProof, steer } = vars
       const deliver = (tail: PendingEmbedRecovery['tail']) => deliverOutcome(vars, tail)
       // The copy is the core's (`receiptCopy.ts`, shared with SideChat): a
       // refusal FRAMED as a failed send rather than the server's bare sentence
@@ -920,7 +1110,7 @@ function ChatEmbed({
         }
         return
       }
-      const receipt = await sendTurn({ message: msg, slot, meta: { ...meta, sendId }, wire })
+      const receipt = await sendTurn({ message: msg, slot, meta: { ...meta, sendId }, ...(steer ? { steer: true } : {}), wire })
       // `transport-error` is not handled: the app-sdk wire never yields it (a raw
       // rejection is indeterminate -> `response-late`), so a clause for it here
       // would be dead code kept for symmetry.
@@ -943,6 +1133,23 @@ function ChatEmbed({
     },
     onSettled: () => { void refetch() },
   })
+
+  const { rowRef: composerRowRef, armRefocus } = useEmbedSendRefocus(sendMutation.isPending, textareaRef)
+
+  // What a send does while a turn runs: the person's busy-send choice for this
+  // slot, the one the dashboard composer's split button writes, else the
+  // Settings → Chat default (shipped as Steer). The embed is a dashboard page,
+  // so its send is the person's own and the gateway steers it like the main
+  // composer's. A steer the gateway cannot make (no live turn client, a turn
+  // still waiting for admission, an app-token caller) comes back `queued`, and
+  // the receipt branch moves the row to the queue strip. `auto` steers here,
+  // as it does in the main composer when the Decisions seam is not offered: the
+  // embed cannot ask whether it is. Two cases keep Queue: a host `onSend`,
+  // which posts on its own endpoint and carries no steer flag, and a stop
+  // under way, where the main composer falls back to a plain send too.
+  const [busySendMode] = useBusySendMode(slotKey)
+  const stopping = !!shown?.stopping || (shown?.stop_state != null && shown.stop_state !== 'idle')
+  const steerWhileBusy = !onSend && running && !stopping && busySendMode !== 'queue'
 
   /** `override` carries the text a follow-up chip's send arrow supplies (double-click
    *  or the send segment); without it the draft is the source of truth. Every call
@@ -972,6 +1179,7 @@ function ChatEmbed({
       setDraft('')
       closePickers()
       pastes.install([])
+      armRefocus()
     }
     // A fresh id and the slot the send belongs to: the yardstick for "did the
     // poll show THIS send", and the address a receipt is delivered to if this
@@ -993,6 +1201,7 @@ function ChatEmbed({
     const meta: ChatEmbedSendMeta | undefined = turn?.meta.files || sentPastes.length
       ? { ...(turn?.meta.files ? { files: turn.meta.files } : {}), ...(sentPastes.length ? { pastes: sentPastes } : {}) }
       : undefined
+    const resized = Object.fromEntries(files.filter(p => attachments.resizedInfo[p]).map(p => [p, attachments.resizedInfo[p]]))
     if (files.length) attachments.clear()
     storeSentPastes(turn?.storedPaste)
     // No `sendId` on the optimistic row's meta: it would read as this send's
@@ -1006,20 +1215,23 @@ function ChatEmbed({
       slot: slotKey,
       sendId,
       row: { role: 'user', content: msg, cls: 'user', ts, meta: { clientTs: ts, optimistic: true, ...(sentPastes.length ? { pastes: sentPastes } : {}) } },
-      asQueued: running,
+      // A steer goes into the running turn, so its copy is a transcript row,
+      // not a queue card. A steer the gateway demotes is moved to the queue
+      // strip by the `queued` receipt.
+      asQueued: running && !steerWhileBusy,
       viaHost: onSend != null,
       text: msg,
       before,
     }])
-    sendMutation.mutate({ msg, meta, files, sentPastes, draftText, override: override != null, sendId, slot: slotKey, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
-  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, attachments, closePickers, pastes])
+    sendMutation.mutate({ msg, meta, files, resized, sentPastes, draftText, override: override != null, sendId, slot: slotKey, steer: steerWhileBusy, ...(hostBaseline ? { hostProof: { text: msg, slot: slotKey, ...hostBaseline } } : {}) })
+  }, [draft, setDraft, sendMutation, slotKey, onSend, serverMessages, shown, running, steerWhileBusy, attachments, closePickers, pastes, armRefocus])
 
   const pickerLabel = attachments.uploading
     ? i18nT('appSdk.chatEmbed.uploading_files')
     : i18nT('components.chatInput.attach_files')
 
   // Stop sits where Send does while a turn runs and the draft is empty (a
-  // draft mid-turn still sends, which queues it), as in the main composer.
+  // draft mid-turn still sends, which steers or queues it), as in the main composer.
   const refetchNow = useCallback(() => { void refetch() }, [refetch])
   const serverTurn = typeof shown?.turn === 'number' ? `${shown.turn_gen ?? ''}:${shown.turn}` : undefined
   // The main chat's press protocol (chat-core/stop/useStopPress) over the
@@ -1029,14 +1241,14 @@ function ChatEmbed({
     (force: boolean) => sendEmbedStop(api, slotKey, force).finally(refetchNow),
     [api, slotKey, refetchNow],
   )
-  const { stopState, onStop, stopError, stopDeclined } = useStopPress({
+  const { stopState, onStop, stopError, stopErrorDetail, stopDeclined } = useStopPress({
     slotKey, busy: running, serverStopState: shown?.stop_state, sendStop,
     turnScoped: true, turnKey: serverTurn, serverStopDeclined: shown?.stop_declined === true,
   })
   // Staged files count as a draft, as in the main composer's
   // `composerHasDraft`: Stop must not take the place of sending them.
   // A hidden Stop leaves Send in place: an empty draft cannot send, and a
-  // typed one queues, exactly as it does beside a visible Stop.
+  // typed one steers or queues, exactly as it does beside a visible Stop.
   const showStop = !hidden('stop') && running && !draft.trim() && attachments.files.length === 0
   // Says what Stop does now, not "again": the warning also shows to a reader
   // who opened or returned to the embed after someone else's press.
@@ -1047,7 +1259,7 @@ function ChatEmbed({
   )
   const { escaped: killingEscaped } = useStopEscapeHatch(stopState)
   // What the next press does, shown only while the Stop button is on screen
-  // (a draft swaps it for Send, which queues). It shows beside a failure
+  // (a draft swaps it for Send, which steers or queues). It shows beside a failure
   // notice too: a press that never got an answer keeps `soft_pending`, so the
   // next press is a force stop, and its cost must be said before it is made.
   const pressHint = !showStop ? null
@@ -1168,59 +1380,63 @@ function ChatEmbed({
       {/* canTrust: this embed's approve routes through the slot approve
           endpoint (above), which records standing trust — the one mount
           allowed to offer the tier (#5434). */}
-      <ChatMessageList
-        ref={listRef}
-        messages={shownMessages}
-        running={running}
-        onApprove={approve}
-        onApproveBatch={approveBatch}
-        canTrust
-        toolDetails={!hidden('toolDetails')}
-        onFileOpen={onFileOpen}
-        onArtifactOpen={onArtifactOpen}
-        // No hand-off: the embed's composer draft is unsaved local state that
-        // the hand-off's navigation to the main chat would discard.
-        handOff={false}
-        transcript={{
-          sessionId: `embed:${slotKey}`,
-          followOutput: !!startAtBottom,
-          initialPlacement: startAtBottom ? 'bottom' : 'top',
-          onAtBottomChange: setIsAtBottom,
-          scrollerStyle: { paddingTop: 16, paddingBottom: 16, minHeight: 0 },
+      {/* A host's own prose fences wrap like the built-in ones (`proseFences`). */}
+      <ProseFencesContext.Provider value={proseFenceTags}>
+        <ChatMessageList
+          ref={listRef}
+          messages={shownMessages}
+          running={running}
+          onApprove={approve}
+          onApproveBatch={approveBatch}
+          canTrust
+          toolDetails={!hidden('toolDetails')}
+          onFileOpen={onFileOpen}
+          onArtifactOpen={onArtifactOpen}
+          renderers={renderers}
           // No hand-off: the embed's composer draft is unsaved local state that
           // the hand-off's navigation to the main chat would discard.
-          earlier: { hasMore: canWiden, loading: widening, failed: widenFailed, onLoad: widenFailed ? retryWiden : widen, handOff: false },
-          aboveRows: loadFailed ? (
-            <div className="mx-4 my-3 flex items-start gap-2">
-              <ErrorNotice className="flex-1" testId="chat-embed-load-error" message={i18nT('components.chatPane.history_load_failed')} />
-              <button
-                type="button"
-                className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer hover:text-accent-hover"
-                onClick={() => { void refetch() }}
-              >
-                {i18nT('components.chatPane.retry')}
-              </button>
-            </div>
-          ) : messages.length === 0 && !running && !titlePending ? (
-            <div className="text-center text-muted text-[13px] py-10">{i18nT('appSdk.chatEmbed.session_ready_type_a_message_to_start')}</div>
-          ) : undefined,
-          // The main chat's working indicator (ChatFooter, shared with ChatPage
-          // and ChatPane), after the last row, so a running turn reads as "the
-          // reply is coming" where the reply will land. The poll carries the
-          // stop phase but no compaction state, so the compaction branch never applies.
-          belowRows: (
-            <ChatFooter
-              running={running}
-              stopping={shown?.stopping ?? false}
-              stopState={stopState}
-              state={running ? 'streaming' : ''}
-              lastRole={tail?.role ?? ''}
-              streamTick={tail?.role === 'streaming' ? (tail.content?.length ?? 0) : 0}
-              streamIdleMs={EMBED_STREAM_IDLE_MS}
-            />
-          ),
-        }}
-      />
+          handOff={false}
+          transcript={{
+            sessionId: `embed:${slotKey}`,
+            followOutput: !!startAtBottom,
+            initialPlacement: startAtBottom ? 'bottom' : 'top',
+            onAtBottomChange: setIsAtBottom,
+            scrollerStyle: { paddingTop: 16, paddingBottom: 16, minHeight: 0 },
+            // No hand-off: the embed's composer draft is unsaved local state that
+            // the hand-off's navigation to the main chat would discard.
+            earlier: { hasMore: canWiden, loading: widening, failed: widenFailed, onLoad: widenFailed ? retryWiden : widen, handOff: false },
+            aboveRows: loadFailed ? (
+              <div className="mx-4 my-3 flex items-start gap-2">
+                <ErrorNotice className="flex-1" testId="chat-embed-load-error" message={i18nT('components.chatPane.history_load_failed')} />
+                <button
+                  type="button"
+                  className="text-[12px] text-accent underline bg-transparent border-none cursor-pointer hover:text-accent-hover"
+                  onClick={() => { void refetch() }}
+                >
+                  {i18nT('components.chatPane.retry')}
+                </button>
+              </div>
+            ) : messages.length === 0 && !running && !titlePending ? (
+              <div className="text-center text-muted text-[13px] py-10">{i18nT('appSdk.chatEmbed.session_ready_type_a_message_to_start')}</div>
+            ) : undefined,
+            // The main chat's working indicator (ChatFooter, shared with ChatPage
+            // and ChatPane), after the last row, so a running turn reads as "the
+            // reply is coming" where the reply will land. The poll carries the
+            // stop phase but no compaction state, so the compaction branch never applies.
+            belowRows: (
+              <ChatFooter
+                running={running}
+                stopping={shown?.stopping ?? false}
+                stopState={stopState}
+                state={running ? 'streaming' : ''}
+                lastRole={tail?.role ?? ''}
+                streamTick={tail?.role === 'streaming' ? (tail.content?.length ?? 0) : 0}
+                streamIdleMs={EMBED_STREAM_IDLE_MS}
+              />
+            ),
+          }}
+        />
+      </ProseFencesContext.Provider>
       {/* The send-tail row is announced visually by the new-message scroll;
           a screen-reader user would otherwise only notice the button
           re-enabling. A polite live region carries the same text. */}
@@ -1252,6 +1468,21 @@ function ChatEmbed({
       )}
 
       {aboveComposer && <div className="shrink-0">{aboveComposer}</div>}
+
+      <EmbedQuestionCard
+        key={slotKey}
+        api={api}
+        slot={slotKey}
+        pending={pendingQuestion}
+        loadFailed={questionLoadFailed}
+        onRestore={(slot, text, notice) => {
+          // Same rule as a refused send: an embed that is gone (or now shows
+          // another slot) parks the answer for the next embed of that slot.
+          if (mountedRef.current && slotKeyRef.current === slot) { restoreIntoComposer(text); return true }
+          stashEmbedRecovery({ app: appName, slot }, { tail: { role: 'error', content: notice, sendId: mintSendId() }, restoreText: text })
+          return false
+        }}
+      />
 
       {/* fuseBelow off: the embed's input row is a flat strip, not the
           dock's glass the front card slides under, so the stack stands as
@@ -1307,7 +1538,7 @@ function ChatEmbed({
       )}
 
       {/* The press hints describe the Stop button, so they show only while it
-          is on screen; typing a draft swaps it for Send, which queues. The
+          is on screen; typing a draft swaps it for Send, which steers or queues. The
           strip carries the line the composer row would draw, so it reads as
           the top of the composer, not as the transcript's last row; under an
           attachment strip the line is already drawn above. */}
@@ -1321,7 +1552,9 @@ function ChatEmbed({
             // No hand-off: the embed's composer draft is unsaved local state that the hand-off's navigation to the main chat would discard.
             <ErrorNotice
               testId="chat-embed-stop-error"
-              message={pressHint ? i18nT('appSdk.chatEmbed.stop_did_not_go_through') : stopError}
+              title={!pressHint && stopErrorDetail ? stopError : undefined}
+              message={pressHint ? i18nT('appSdk.chatEmbed.stop_did_not_go_through') : (stopErrorDetail || stopError)}
+              messagePlacement="below"
             />
           )}
           {pressHint && <div className={stopError ? 'pt-1' : ''}>{pressHint}</div>}
@@ -1330,6 +1563,7 @@ function ChatEmbed({
 
       <Composer slotKey={slotKey} value={draft} onChange={setDraft} pastes={pastes} capabilities={EMBED_CAPABILITIES}>
         <div
+          ref={composerRowRef}
           className={`flex items-end gap-2 px-3 py-2 shrink-0 ${frameless ? '' : `${attachments.notice || attachments.files.length || attachments.uploadingNames.length || stopError || pressHint ? '' : 'border-t'} border-border bg-bg-accent`}`}
         >
           {attachments.granted && (
@@ -1366,7 +1600,7 @@ function ChatEmbed({
           <div className="relative flex-1 min-w-0 rounded-md bg-bg-elevated">
             <PasteHighlightLayer ref={pasteEditor.mirrorRef} value={draft} blocks={pastes.blocks} typo={`${EMBED_EDITOR_TYPO} border-transparent rounded-md`} />
             <ComposerEditor
-              ref={textareaRef}
+              ref={setEditorRef}
               rows={1}
               {...composition}
               onBlur={e => { composition.onBlur(e); pasteEditor.hoverRef.current?.handleMouseLeave() }}
@@ -1375,6 +1609,9 @@ function ChatEmbed({
               className={`relative block w-full min-h-[38px] resize-none overflow-y-auto [scrollbar-gutter:stable] ${EMBED_EDITOR_TYPO} bg-transparent border-border rounded-md text-text outline-hidden focus-visible:border-accent transition-colors`}
               onEdit={(value, caret) => { draftFromUserRef.current = true; openPickersForText(value, value.slice(0, caret)) }}
               onKeyDown={e => {
+                // Tells the list continuation which keydown made the next line
+                // break, so an IME's commit Enter does not start a list item.
+                listContinuation.onKeyDown(e)
                 pasteEditor.noteKeyDown(e)
                 // Cmd/Ctrl+Shift+V pastes the text in full, once.
                 pasteEditor.rawPasteRef.current = isRawPasteChord(e)
@@ -1416,9 +1653,10 @@ function ChatEmbed({
             <StopControls stopState={stopState} killingEscaped={killingEscaped} stopWithTap={onStop} inlineHints={false} guideTarget={false} />
           ) : (
             <ComposerSend
-              className="p-2 min-h-0 rounded-md disabled:opacity-40"
+              className="p-2 min-h-0 rounded-md"
               onSend={() => send()}
               running={running}
+              busyAction={steerWhileBusy ? 'steer' : 'queue'}
               pending={sendMutation.isPending}
               hasAttachments={attachments.files.length > 0}
               uploading={attachments.uploading}

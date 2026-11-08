@@ -23,19 +23,50 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         ValidationError,
         _redact,
+        _session_turn_holding,
         _spawn_scope_refusal,
+        body_int,
+        body_not_object_error,
+        canonical_key,
         dashboard_slot_key,
         effective_session_key,
         effort_applied_note,
         effort_drop_reason,
         effort_pending_note,
         internal_memory_scope,
+        ledger_of,
+        parent_project_dirs,
         parent_template_allowlists,
         parent_work_supported,
         spawn_parent_claim,
+        stopped_before_start,
         validate_tool_args,
         warm_project_agents_for_spawn,
     )
+
+
+#: ``code`` for a start that was stopped while it waited, so it never ran (see
+#: :func:`kiro_crew.subagent_wait_reasons.stopped_before_start`). A route that
+#: tested only ``done and error`` would read that record as a started run.
+STOPPED_BEFORE_START_CODE = "stopped_before_start"
+
+
+def _stopped_before_start(info: Any, *, counted: bool = False) -> web.Response | None:
+    """409 ``stopped_before_start`` when *info* is a start stopped while it waited.
+
+    None for every other answer, so the caller goes on to its success body. A
+    start that ended in an error is the caller's typed rejection, not this.
+    ``counted`` adds ``counted: true`` for ``POST /api/spawn``, whose wave
+    reconcile reads it.
+    """
+    if not stopped_before_start(info):
+        return None
+    error = "the run was stopped before it started; nothing ran"
+    if counted:
+        return web.json_response(
+            {"error": error, "code": STOPPED_BEFORE_START_CODE, "counted": True}, status=409
+        )
+    return web.json_response({"error": error, "code": STOPPED_BEFORE_START_CODE}, status=409)
 
 
 async def _spawn_request_memory_mode(
@@ -69,13 +100,83 @@ def _slot_for_parent(state: DashboardState, parent: str) -> Any | None:
     return canonical or (same_parent[0] if same_parent else None)
 
 
-async def _requested_backend(raw: object) -> tuple[str | None, web.Response | None]:
-    """The backend a spawn request names, as a backend id, or its refusal.
+def _backend_name(backend: str) -> str:
+    """*backend*'s id in the spelling a request uses (``"kiro"`` for Kiro's ``""``)."""
+    from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 
-    ``(None, None)`` when the request names none: the run starts on the gateway
-    default exactly as before. The request spells backends the way a governance
-    rule does (``"kiro"``, not the empty id), so an agent can name every backend
-    and a falsy value is never mistaken for one.
+    return POLICY_ID_BY_BACKEND.get(backend, backend)
+
+
+async def _failover_backend(
+    raw: str, verdict: str, available: list[str]
+) -> tuple[str | None, tuple[str, ...]]:
+    """Walk ``agent.acp_failover``'s chain from *raw* to a member that can start.
+
+    Returns ``(backend id, ())`` on a hop, else ``(None, tried)`` where *tried* is
+    the chain members the walk tried and found unable to start, in order, so the
+    refusal names only what it checked: empty when the policy did not apply or
+    *raw* is the chain's last member. The walk advances by index, never revisits a member, and stops
+    after ``len(chain)`` hops. Chain names are config spelling, read through
+    ``backend_from_stored`` (``"kiro"`` is Kiro's ``""``). A member outside
+    *available* is never started: *available* is this spawn's fresh,
+    governance-narrowed probe, so a member a ceiling denied since the block was
+    written is not even probed. The config read is ``KiroCrewConfig.load``'s
+    fingerprint-checked cache, not a re-parse of ``config.json``.
+    """
+    from kiro_crew.acp_backends import backend_from_stored
+    from kiro_crew.acp_failover import failover_policy, next_failover_backend
+    from kiro_crew.config import KiroCrewConfig
+
+    policy = failover_policy((await asyncio.to_thread(KiroCrewConfig.load)).agent.acp_failover)
+    if not policy.enabled or raw not in policy.chain or verdict not in policy.triggers:
+        return None, ()
+    current, seen = raw, {raw}
+    tried: list[str] = []
+    for _ in range(len(policy.chain)):
+        nxt = next_failover_backend(
+            current=current, chain=policy.chain, triggers=policy.triggers, verdict=verdict
+        )
+        if nxt is None or nxt in seen:
+            break
+        seen.add(nxt)
+        candidate = backend_from_stored(nxt)
+        if isinstance(candidate, str) and candidate in available:
+            if not _enterprise_kiro_successor(candidate):
+                return candidate, ()
+        tried.append(nxt)
+        current = nxt
+    return None, tuple(tried)
+
+
+def _enterprise_kiro_successor(backend: str) -> bool:
+    """Whether *backend* is the Kiro CLI harness offered as an AUTOMATIC successor in an
+    enterprise build, which never takes one (RFC D6).
+
+    The Kiro CLI harness is being retired, so an enterprise build runs it only as an
+    explicit pick the policy allows, never as a failover target. ``False`` in ``oss``.
+    """
+    from kiro_crew import edition
+    from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+
+    return edition.is_enterprise() and backend == ACP_BACKEND_KIRO
+
+
+def _chain_note(tried: tuple[str, ...]) -> str:
+    """The refusal's suffix naming the failover members tried, or ``""`` when none was."""
+    return f"; agent.acp_failover also tried {list(tried)}, and none can start" if tried else ""
+
+
+async def _requested_backend(
+    raw: object,
+) -> tuple[str | None, str | None, web.Response | None]:
+    """The backend a spawn starts on, the name it replaced, or the refusal.
+
+    ``(None, None, None)`` when the request names none: the run starts on the
+    gateway default exactly as before. The middle value is the requested name
+    when ``agent.acp_failover`` moved the run to another backend, else ``None``.
+    The request spells backends the way a governance rule does (``"kiro"``, not
+    the empty id), so an agent can name every backend and a falsy value is never
+    mistaken for one.
 
     A backend is available when governance allows it AND this machine has it
     installed (``probe_backend``; a probe that could not decide does not block).
@@ -89,7 +190,7 @@ async def _requested_backend(raw: object) -> tuple[str | None, web.Response | No
     from kiro_crew.agent_sdk.backend_install import MISSING, probe_backend
 
     if raw is None or raw == "":
-        return None, None
+        return None, None, None
     by_name = {name: backend for backend, name in POLICY_ID_BY_BACKEND.items()}
     selectable = selectable_backend_values()
     # Off the loop: a probe shells out and walks the filesystem (cached briefly).
@@ -102,44 +203,69 @@ async def _requested_backend(raw: object) -> tuple[str | None, web.Response | No
     names = sorted(POLICY_ID_BY_BACKEND.get(b, b) for b in available)
     backend = by_name.get(raw) if isinstance(raw, str) else None
     if backend is not None and backend in available:
-        return backend, None
-    if backend not in states:
-        return None, web.json_response(
-            {
-                "error": f"backend {raw!r} is not available; choose one of {names}",
-                "code": "unknown_backend",
-                "backends": names,
-            },
-            status=400,
+        return backend, None, None
+
+    if backend is None or backend not in states or not isinstance(raw, str):
+        # Unknown, or not selectable here: never fails over.
+        return (
+            None,
+            None,
+            web.json_response(
+                {
+                    "error": f"backend {raw!r} is not available; choose one of {names}",
+                    "code": "unknown_backend",
+                    "backends": names,
+                },
+                status=400,
+            ),
         )
     state = states[backend]
+    code = "backend_restart_required" if state.restart_required else "backend_not_installed"
+    # Selectable but unable to start: the operator's failover chain, when it is on
+    # and names this refusal as a trigger, may start a later member instead. The
+    # caller is told (see ``api_spawn``), because the prompt then goes to another
+    # vendor.
+    hop, tried = await _failover_backend(raw, code, available)
+    if hop is not None:
+        return hop, raw, None
+    chain_note = _chain_note(tried)
     if state.restart_required:
-        return None, web.json_response(
-            {
-                "error": (
-                    f"backend {raw!r} was installed after the gateway started;"
-                    f" restart the gateway to use it. Choose one of {names}"
-                ),
-                "code": "backend_restart_required",
-                "backends": names,
-            },
-            status=400,
+        return (
+            None,
+            None,
+            web.json_response(
+                {
+                    "error": (
+                        f"backend {raw!r} was installed after the gateway started;"
+                        f" restart the gateway to use it. Choose one of {names}{chain_note}"
+                    ),
+                    "code": "backend_restart_required",
+                    "backends": names,
+                    # The agent.acp_failover members tried; [] when none was.
+                    "failover_chain": list(tried),
+                },
+                status=400,
+            ),
         )
     # Allowed here but not installed on this machine: say how to install it.
     missing = ", ".join(state.missing_components) or "unknown"
-    error = (
-        f"backend {raw!r} is not installed on this machine (missing: {missing});"
-        f" choose one of {names}"
-    )
-    return None, web.json_response(
-        {
-            "error": error,
-            "code": "backend_not_installed",
-            "backends": names,
-            # "" when the probe names no installer for this backend.
-            "install_command": state.install_command,
-        },
-        status=400,
+    return (
+        None,
+        None,
+        web.json_response(
+            {
+                "error": (
+                    f"backend {raw!r} is not installed on this machine (missing: {missing});"
+                    f" choose one of {names}{chain_note}"
+                ),
+                "code": "backend_not_installed",
+                "backends": names,
+                # "" when the probe names no installer for this backend.
+                "install_command": state.install_command,
+                "failover_chain": list(tried),
+            },
+            status=400,
+        ),
     )
 
 
@@ -205,10 +331,27 @@ async def api_spawn(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     if not state.subagents:
         return web.json_response({"error": "subagents not available"}, status=503)
+    # The attempt holding the caller's own session when this request arrived, read
+    # before the handler awaits anything (the body, the attestation read, the
+    # memory-mode read): a tool call reaches the gateway under the turn that issued
+    # it, and a turn cut while the handler awaits must not lend its successor's
+    # attempt to the spawn. Used below only when the body names that same session.
+    caller_session = request.headers.get("X-Session-Key", "")
+    arrived_under = _session_turn_holding(request, state, caller_session or None)
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
+    # The parent's project scope, read as soon as the request names its parent
+    # and before any later await (the backend probe, the memory-scope and
+    # record reads), so a parent session that ends meanwhile cannot shrink the
+    # scope the gate checks now and the queued row records. Dict reads only;
+    # a non-string parent is refused below and reads no scope here.
+    asked_parent = body.get("parent_session", "")
+    parent_dirs = list(parent_project_dirs(asked_parent)) if isinstance(asked_parent, str) else []
     try:
         cleaned = validate_tool_args(
             {
@@ -238,12 +381,12 @@ async def api_spawn(request: web.Request) -> web.Response:
     task = (cleaned.get("task") or "").strip()
     if not task:
         return web.json_response({"error": "task is required"}, status=400)
-    backend, backend_refusal = await _requested_backend(cleaned.get("backend"))
+    backend, failover_from, backend_refusal = await _requested_backend(cleaned.get("backend"))
     if backend_refusal is not None:
         return backend_refusal
-    model_refusal = _qualified_model_refusal(
-        request, cleaned.get("model") or "", backend, cleaned.get("backend")
-    )
+    # The name of the backend the run starts on, as the request spells it.
+    ran_on = _backend_name(backend) if backend is not None else None
+    model_refusal = _qualified_model_refusal(request, cleaned.get("model") or "", backend, ran_on)
     if model_refusal is not None:
         return model_refusal
     parent_session = body.get("parent_session", "")
@@ -295,6 +438,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         MemoryStoreRef,
         derive_execution,
         read_session_execution,
+        recordless_parent_execution,
     )
 
     crew = cleaned.get("target_member") or cleaned.get("crew") or ""
@@ -320,12 +464,29 @@ async def api_spawn(request: web.Request) -> web.Response:
             (
                 parent_execution.template_id,
                 await asyncio.to_thread(
-                    parent_template_allowlists, parent_session, parent_execution.template_id
+                    parent_template_allowlists,
+                    parent_session,
+                    parent_execution.template_id,
+                    parent_dirs,
                 ),
             )
             if parent_execution is not None
             else ("", ())
         )
+        if parent_execution is None and parent_session and not agent:
+            # A parent with no execution record yet (a channel conversation whose
+            # first turn is not saved) hands its child its live selection, as
+            # ``resolve_spawn_execution`` does, instead of the default template below.
+            inherited = state.sessions.get_agent_selection(parent_session)
+            if inherited != ("template", ""):
+                parent_execution = await asyncio.to_thread(
+                    recordless_parent_execution,
+                    inherited,
+                    agent="",
+                    memory_store="",
+                    memory_mode=admitted_mode,
+                    app="",
+                )
         if parent_execution is None:
             parent_execution = ExecutionContext(
                 None, MemoryStoreRef("default"), "template", agent or "kirocrew"
@@ -357,39 +518,92 @@ async def api_spawn(request: web.Request) -> web.Response:
     batch_id = str(body.get("batch_id", "") or "")[:32]
     if batch_id and not batch_id.isalnum():
         return web.json_response({"error": "batch_id must be alphanumeric"}, status=400)
+    # The ``spawn_sub_agents`` call this member belongs to (transport-layer, set
+    # by kirocrew-core): validated like batch_id, bounded, never LLM-schema.
+    call_id = body.get("call_id", "") or ""
+    if (
+        not isinstance(call_id, str)
+        or len(call_id) > 32
+        or (call_id and not (call_id.isascii() and call_id.isalnum()))
+    ):
+        return web.json_response(
+            {
+                "error": "call_id must be ASCII letters and digits, at most 32 characters",
+                "code": "invalid_call_id",
+            },
+            status=400,
+        )
     try:
-        batch_total = max(0, min(int(body.get("batch_total", 0) or 0), 1000))
-    except (TypeError, ValueError, OverflowError):
+        batch_total = max(0, min(body_int(body.get("batch_total", 0) or 0), 1000))
+    except (TypeError, ValueError):
         batch_total = 0
+    # Fair admission (Shared Crew): a child of whatever runs in the parent
+    # session, charged to that work's initiator. Refused before the manager
+    # counts the submission, so the refusal carries no ``counted``.
+    from kiro_crew.shared_crew.admission_entry import admit_subagent
+
+    child_admission = await admit_subagent(request, state, parent_session)
+    if child_admission.rejected:
+        return child_admission.refusal_response()
+    from kiro_crew.shared_crew.admission_gate import Admission
+    from kiro_crew.shared_crew.admission_link import link_spawn
+
+    run_id = await link_spawn(child_admission, state.subagents)
+    if run_id is None:
+        await child_admission.abandon()
+        return Admission(None, "rejected", store_unavailable=True).refusal_response()
     # The async moment preceding the synchronous spawn(): warm here so the
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
         await warm_project_agents_for_spawn(state, cwd)
-    info = await _spawn_on_loop(
-        state,
-        task,
-        parent_session_key=parent_session,
-        agent=agent,
-        max_turns=max_turns,
-        cwd=cwd,
-        model=model or None,
-        reasoning_effort=reasoning_effort,
-        backend=backend,
-        label=str(cleaned.get("label") or ""),
-        approval_mode=approval_mode or None,
-        silent=silent,
-        batch_id=batch_id,
-        batch_total=batch_total,
-        keep=keep,
-        include_memory=cleaned.get("include_memory", True) is not False,
-        include_lessons=cleaned.get("include_lessons", True) is not False,
-        include_project=cleaned.get("include_project", True) is not False,
-        memory_store=child_memory_store,
-        crew=crew,
-        _memory_mode=admitted_mode,
-        _execution_context=admitted_execution.to_record(),
-        _parent_spawn_policy=parent_spawn_policy,
-    )
+    # The attempt of the parent's turn that issued this spawn, read when the
+    # request arrived (``arrived_under``); ``None`` unless the parent's own session
+    # asks while a turn holds its permit with its prompt in flight. A member of a
+    # ``spawn_sub_agents`` call records it only when it is the attempt the call's
+    # first member named (``ParentTurnLedger.call_attempt``), so a call cut between
+    # two of its POSTs records nothing for its later members. A body with no
+    # ``call_id`` (an older client, the CLI, ``spawn_run``) is judged alone.
+    spawned_under = arrived_under if parent_session and parent_session == caller_session else None
+    ledger = ledger_of(getattr(state, "sessions", None)) if call_id and parent_session else None
+    if ledger is not None:
+        spawned_under = ledger.call_attempt(canonical_key(parent_session), call_id, spawned_under)
+    from kiro_crew.shared_crew.admission_entry import admitted_scope
+
+    with admitted_scope(child_admission):
+        info = await _spawn_on_loop(
+            state,
+            task,
+            parent_session_key=parent_session,
+            agent=agent,
+            max_turns=max_turns,
+            cwd=cwd,
+            model=model or None,
+            reasoning_effort=reasoning_effort,
+            backend=backend,
+            # Only on a hop, so a spawn that did not fail over passes exactly
+            # what it did before.
+            **({"failover_from": failover_from} if failover_from else {}),
+            label=str(cleaned.get("label") or ""),
+            approval_mode=approval_mode or None,
+            silent=silent,
+            batch_id=batch_id,
+            batch_total=batch_total,
+            keep=keep,
+            include_memory=cleaned.get("include_memory", True) is not False,
+            include_lessons=cleaned.get("include_lessons", True) is not False,
+            include_project=cleaned.get("include_project", True) is not False,
+            memory_store=child_memory_store,
+            crew=crew,
+            _memory_mode=admitted_mode,
+            _execution_context=admitted_execution.to_record(),
+            _parent_spawn_policy=parent_spawn_policy,
+            _parent_project_dirs=parent_dirs,
+            **({"_preassigned_id": run_id} if run_id else {}),
+        )
+    if not info or (info.done and info.error):
+        await child_admission.abandon()
+    else:
+        await child_admission.attach_child(info.id, session_key=f"subagent:{info.id}")
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
         # refused for capacity — tell the client so it does NOT reconcile
@@ -419,12 +633,40 @@ async def api_spawn(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Accepted (and counted) by mgr.spawn, then stopped before its claim: no run
+    # and no card will follow, so "spawned" would leave the caller waiting.
+    stopped = _stopped_before_start(info, counted=True)
+    if stopped is not None:
+        return stopped
+    # Recorded only when the same attempt still holds the permit after the
+    # spawn. A defence that changes no outcome: an attempt that ended while the
+    # spawn awaited never holds the permit again (the ledger never reuses an
+    # epoch), so recording it would hold nothing, and this way the child names
+    # no attempt rather than a dead one. A done read of this run is stamped only
+    # under the attempt it records (``api_spawn_status``), so a mark made under
+    # any other holds nothing.
+    if spawned_under is not None and (
+        _session_turn_holding(request, state, parent_session) == spawned_under
+    ):
+        info._spawned_under = spawned_under
+        # A member the admission gate queued came back as a stand-in record; the
+        # pump builds the real one, with the same id, when it starts it, so the
+        # attempt is carried to that record (``SubagentManager.carry_spawn_attempt``).
+        carry = getattr(state.subagents, "carry_spawn_attempt", None)
+        if getattr(info, "queued", False) is True and not info.done and callable(carry):
+            carry(info.id, spawned_under)
     resp: dict[str, object] = {
         "id": info.id,
         "task": task,
         "status": "spawned",
         "parent_work_supported": can_work,
     }
+    if ran_on is not None:
+        resp["backend"] = ran_on
+    if failover_from is not None:
+        # Moved by agent.acp_failover: the caller asked for one backend and the
+        # prompt went to another vendor, so the receipt says so.
+        resp["failover_from"] = failover_from
     # A row the gate DEFERRED or HELD (memory floor, critical posture, adaptive
     # cap at 0, macOS kernel memory pressure) is accepted and keyed like any
     # other -- same ``id``, counted in its wave -- but it is not running and may
@@ -584,6 +826,9 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    not_object = body_not_object_error(body)
+    if not_object is not None:
+        return not_object
     task = str(body.get("task", "") or "").strip()
     if not task:
         return web.json_response({"error": "task is required", "code": "task_required"}, status=400)
@@ -606,8 +851,8 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     agent = str(body.get("agent", "") or "")
     model = str(body.get("model", "") or "")
     try:
-        max_turns = max(0, min(int(body.get("max_turns", 0) or 0), 1000))
-    except (TypeError, ValueError, OverflowError):
+        max_turns = max(0, min(body_int(body.get("max_turns", 0) or 0), 1000))
+    except (TypeError, ValueError):
         max_turns = 0
     # The run's own cwd, resolved OFF the event loop: a continuation has to run
     # where the run ran (a project-local agent does not resolve against the pool
@@ -615,17 +860,42 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     # `continue_conversation` is synchronous. Doing it here keeps the gateway
     # responsive even when the recorded path lives on a stalled mount.
     resumed_cwd = await asyncio.to_thread(state.subagents.recorded_cwd, conv_id)
-    info = await _continue_on_loop(
-        state,
-        conv_id,
-        task,
-        parent_session_key=parent_session,
-        agent=agent,
-        model=model or None,
-        max_turns=max_turns,
-        cwd=resumed_cwd,
-        _memory_mode=admitted_mode,
-    )
+    from kiro_crew.shared_crew.admission_entry import admit_subagent
+
+    child_admission = await admit_subagent(request, state, parent_session)
+    if child_admission.rejected:
+        return child_admission.refusal_response()
+    from kiro_crew.shared_crew.admission_entry import admitted_scope
+    from kiro_crew.shared_crew.admission_gate import Admission
+    from kiro_crew.shared_crew.admission_link import link_spawn
+
+    run_id = await link_spawn(child_admission, state.subagents)
+    if run_id is None:
+        await child_admission.abandon()
+        return Admission(None, "rejected", store_unavailable=True).refusal_response()
+    with admitted_scope(child_admission):
+        info = await _continue_on_loop(
+            state,
+            conv_id,
+            task,
+            parent_session_key=parent_session,
+            agent=agent,
+            model=model or None,
+            max_turns=max_turns,
+            cwd=resumed_cwd,
+            _memory_mode=admitted_mode,
+            **({"_preassigned_id": run_id} if run_id else {}),
+        )
+    if not info or (info.done and info.error):
+        await child_admission.abandon()
+    else:
+        # A continuation runs on its conversation's session key
+        # (``subagent:<original-id>``), so that is the key its nested spawns name.
+        await child_admission.attach_child(
+            info.id,
+            session_key=getattr(info, "conversation_key", "") or f"subagent:{info.id}",
+            also=(f"subagent:{info.id}",),
+        )
     if not info:
         return web.json_response(
             {
@@ -646,4 +916,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         if info.error.startswith("conversation_gone"):
             return web.json_response({"error": info.error, "code": "conversation_gone"}, status=404)
         return web.json_response({"error": info.error, "code": _SPAWN_REJECTED_CODE}, status=400)
+    stopped = _stopped_before_start(info)
+    if stopped is not None:
+        return stopped
     return web.json_response({"id": info.id, "conversation": conv_id, "status": "spawned"})

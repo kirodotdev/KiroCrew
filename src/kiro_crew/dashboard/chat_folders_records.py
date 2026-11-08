@@ -17,6 +17,9 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.config.loader import KiroCrewConfig, config_dir
+from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
+from kiro_crew.dashboard.chat_folder_order import next_folder_order
 from kiro_crew.dashboard.chat_folders_icons import _is_single_emoji, _is_valid_folder_color
 from kiro_crew.dashboard.chat_folders_paths import (
     _folder_project_overlap_denied,
@@ -33,7 +36,9 @@ from kiro_crew.dashboard.token_auth import (
     refuse_unattributable_caller,
     request_origin,
 )
+from kiro_crew.instances.crew_ref import clean_crew_ref
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.owner_only_files import OWNER_ONLY_FILE_MODE
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.dashboard.chat_folders")
@@ -51,6 +56,36 @@ logger = logging.getLogger("kiro_crew.dashboard.chat_folders")
 #: authoritative while the lock is held, which is the same reason the parent is
 #: re-checked and ``order`` recounted there.
 MAX_CHAT_FOLDERS = 500
+
+#: PATCH fields that change how the sidebar draws a folder rather than what the
+#: folder is. A person changing only these has not claimed the folder:
+#: collapsing it to look past it, or a drag that renumbers its siblings. They are
+#: also the only fields a mate's home folder takes from anyone.
+LAYOUT_ONLY_FIELDS = frozenset({"collapsed", "order"})
+
+#: The longest ``default_prompt`` a folder keeps. Every slots frame carries the
+#: whole folder list, so this bounds what each folder adds to every frame.
+MAX_FOLDER_DEFAULT_PROMPT_CHARS = 4000
+
+#: The data-home file :func:`migrate_folder_member_labels` writes once it has run.
+FOLDER_MEMBER_LABELS_MARKER = "folder_member_labels_migrated"
+
+
+def clean_folder_default_prompt(raw: object) -> str:
+    """A folder's ``default_prompt`` as stored, kept as typed: ``None`` or blank is ``""``.
+
+    Raises:
+        FolderCreateError: a non-string, or one longer than
+            :data:`MAX_FOLDER_DEFAULT_PROMPT_CHARS`.
+    """
+    if raw is None:
+        return ""
+    if not isinstance(raw, str) or len(raw) > MAX_FOLDER_DEFAULT_PROMPT_CHARS:
+        raise FolderCreateError(
+            f"default_prompt must be text of at most {MAX_FOLDER_DEFAULT_PROMPT_CHARS} characters",
+            "default_prompt_invalid",
+        )
+    return raw if raw.strip() else ""
 
 
 def _validate_folder_tags(state: DashboardState, raw: Any) -> tuple[list[str] | None, str | None]:
@@ -450,8 +485,9 @@ class FolderCapError(FolderCreateError):
 
     Split from :class:`FolderCreateError` for the same reason
     :class:`FolderOwnershipError` is: the folder API answers it differently
-    (429, a retryable capacity refusal, not a plain 400), so a caller must be
-    able to tell it apart without string-matching the message.
+    (409, a capacity refusal that clears only when a folder is deleted, so a
+    retry cannot help; not a plain 400), and a caller must be able to tell it
+    apart without string-matching the message.
     """
 
     def __init__(self) -> None:
@@ -461,12 +497,27 @@ class FolderCapError(FolderCreateError):
         )
 
 
+class FolderMateHomeLockedError(FolderOwnershipError):
+    """Refused because the parent sits in a mate's home and the caller is not that mate.
+
+    A subclass of :class:`FolderOwnershipError` so a caller that already treats
+    an ownership refusal as a denied security decision (the scaffold audits it
+    as one) does the same here; the folder API answers it with its own code.
+    """
+
+    def __init__(self) -> None:
+        FolderCreateError.__init__(
+            self, "this folder belongs to a Bot and is managed for you", "mate_home_locked"
+        )
+
+
 # Named by the path callers import them from: a traceback or a log line renders a raised
 # class as ``module.qualname``, so the owner module must not leak into it.
 FolderCreateError.__module__ = "kiro_crew.dashboard.chat_folders"
 FolderOwnershipError.__module__ = "kiro_crew.dashboard.chat_folders"
 FolderNameExistsError.__module__ = "kiro_crew.dashboard.chat_folders"
 FolderCapError.__module__ = "kiro_crew.dashboard.chat_folders"
+FolderMateHomeLockedError.__module__ = "kiro_crew.dashboard.chat_folders"
 
 
 async def create_folder_record(
@@ -476,6 +527,8 @@ async def create_folder_record(
     parent_id: str = "",
     project_dir: str = "",
     default_agent: str = "",
+    default_destination_crew: str = "",
+    default_prompt: object = "",
     color: str = "",
     icon: str = "",
     request_app: str = "",
@@ -490,93 +543,55 @@ async def create_folder_record(
 ) -> dict[str, Any]:
     """Validate one folder and append it to the store under the folders lock.
 
-    The single create path. Callers that build folders for the user — the folder
-    API below, project scaffolding — go through here, so none of them can end up
-    with weaker path validation, a dangling ``parent_id``, weaker app-ownership
-    isolation, or an unserialized store write than the others get. What stays
-    with the caller is what differs between them: the response shape, the audit
-    entry, and when to push a slots update (once per folder for a single create,
-    once for a whole scaffold).
+    The single create path, so every caller gets the same path validation,
+    ``parent_id`` check, app-ownership isolation and serialized store write.
+    The caller keeps the response shape, the audit entry and the slots push.
 
-    ``request_app`` is the calling app's identity (empty when a person is
-    calling): it is stamped as ``owner_app`` and gates nesting under folders
-    other apps own. Never taken from a request body — a caller that could name
-    its own owner could name someone else's (see ``_folder_owner_app``).
+    ``request_app`` is the calling app's identity (empty for a person), stamped
+    as ``owner_app``. Never take it from a request body: a caller that could
+    name its own owner could name someone else's (see ``_folder_owner_app``).
 
-    ``tags`` is a shape-checked list of tag ids the caller wants copied onto
-    every new chat filed into this folder (the folder API validates the request
-    shape and answers 400 ``tags_invalid`` itself). The AUTHORITATIVE vocabulary
-    intersection still runs here, under ``tags_write_lock``, at the point of
-    application — the invariant every tag consumer follows (see
-    api_chat_slot_tags / the channel filing): a tag deletion committing between
-    the caller's shape check and this write must not be persisted onto the new
-    folder, and the strip pass a deletion runs cannot see a folder that is not
-    yet in the store. Included in the folder dict only when the intersection is
-    non-empty — the same optional-key shape as ``color``, so a tagless folder
-    keeps the record it has on disk today.
-
-    ``icon`` is an optional explicit emoji for the folder glyph, validated
-    grapheme-exact like every stored icon and included in the folder dict only
-    when non-empty — the same optional-key shape as ``color``. An absent icon
-    never triggers generation: creation leaves the folder on the default
-    glyph, and the only path that spawns the generator is an explicit
-    ``regenerate_icon`` request against an existing folder.
+    ``tags`` is shape-checked by the caller; the vocabulary intersection runs
+    here under ``tags_write_lock``, so a tag deleted between the check and this
+    write is not persisted (the deletion's strip pass cannot see this folder
+    yet). ``tags`` and ``icon`` are stored only when non-empty, like ``color``;
+    an absent icon never triggers generation.
 
     Returns:
         The created folder, exactly as it was appended to the store.
 
-    ``unique_project_dir`` makes "one folder per directory" atomic: the check
-    runs inside the locked append, so two concurrent creators of the same
-    ``project_dir`` cannot both observe it absent and both persist a folder —
-    the loser is refused with code ``folder_project_dir_exists`` and can read
-    the winner's folder after the fact. Off by default because the folder API
-    has always allowed a person to point two folders at one directory by hand;
-    only a caller whose own contract is "additive, skip what exists" (the
-    scaffold) opts in.
+    ``unique_project_dir`` and ``refuse_duplicate_name`` run their check inside
+    the locked append, so two racing creators cannot both persist. Names compare
+    trimmed and case-folded, as the MCP path walk does; a name collision with a
+    folder the caller's own principal owns returns that folder with
+    ``"reused": True``. Both are off by default because a person may hold two
+    folders on one directory or with one name.
 
-    ``require_resolved_project_dir`` refuses a ``project_dir`` whose validation
-    resolves to a different path than the caller named (code
-    ``folder_project_dir_moved``). A caller that sets it is asserting its input
-    is already canonical — the scaffold passes paths its scan just resolved and
-    walked, so a resolution that lands elsewhere means a path component was
-    swapped (typically for a symlink) between the scan and this create, and
-    persisting the resolved target would bind the folder to a directory the
-    scan never confirmed. Off by default because the folder API proper accepts
-    ``~`` and symlinked paths from a person by design; resolution moving those
-    is the feature, not an attack.
+    ``require_resolved_project_dir`` refuses a ``project_dir`` that resolves
+    elsewhere than named (``folder_project_dir_moved``): for the scaffold, a moved
+    resolution means a component was swapped (often for a symlink) after its scan.
 
-    ``refuse_duplicate_name`` makes "one folder of this name per parent" atomic
-    the same way: the sibling test runs inside the locked append, against EVERY
-    sibling whoever owns it, and a collision raises
-    :class:`FolderNameExistsError`. Names compare trimmed and case-folded, the
-    rule the MCP path walk matches segments by. Off by default because the
-    sidebar lets a person hold two folders of one name; the folder API turns it
-    on for agent callers, whose mkdir -p would otherwise fork a duplicate when
-    two walks race or when the caller cannot see the existing folder. When the
-    one colliding sibling already belongs to the caller's own principal, it is
-    returned instead (with ``"reused": True`` on the returned copy), so a lost
-    race resolves to the winner's folder in the same request.
-
-    ``home_slot`` is the caller's own session (see :func:`caller_home_slot`).
-    A non-person principal may nest directly under the folder that session is
-    filed in, even when the person owns that folder. The slot's ``folder_id``
-    is read under the lock, where the parent is decided.
-
-    ``created_by_session`` is the agent session this create is attributed to
-    (see :func:`agent_creator_key`); it is stored as :data:`CREATED_BY_SESSION`
-    on a NEW folder only, never on a reused one. ``claim_parent_for_person`` is
-    set when the person is creating: nesting into a folder claims that parent,
-    so its mark is removed under the same lock as the append.
+    ``home_slot`` (see :func:`caller_home_slot`) lets a non-person principal nest
+    under the folder its own session is filed in; its ``folder_id`` is read under
+    the lock. ``created_by_session`` is stored as :data:`CREATED_BY_SESSION` on a
+    NEW folder only. ``claim_parent_for_person`` removes the parent's mark under
+    the same lock as the append.
 
     Raises:
         FolderCreateError: if the folder was refused (unusable name, missing
             parent, unusable ``project_dir``, unknown color, non-emoji
-            ``icon``, or a ``unique_project_dir`` collision).
+            ``icon``, an unusable ``default_prompt``, or a
+            ``unique_project_dir`` collision).
         FolderOwnershipError: if an app tried to nest under a folder it does
             not own.
+        FolderMateHomeLockedError: if the parent is a mate's home folder, or
+            inside one, and ``request_app`` is not that mate.
         FolderNameExistsError: if ``refuse_duplicate_name`` is set and the
             parent already holds a folder of this name.
     """
+
+    # Function-local: ``mate_folders`` imports this module for the folder cap.
+    from kiro_crew.dashboard.mate_folders import refuses_write_into
 
     name = name.strip()[:100]
     if not name:
@@ -614,6 +629,7 @@ async def create_folder_record(
         # Same contract shape as ``color``: a stored icon is always a single
         # grapheme-exact emoji, whichever caller created the folder.
         raise FolderCreateError("icon must be a single emoji", "icon_invalid")
+    default_prompt = clean_folder_default_prompt(default_prompt)
     # Off-loop like project_dir: each entry's realpath + isdir + sensitive-path
     # scan touches the filesystem, and the scaffold calls this once per folder.
     resolved_steering: list[str] = []
@@ -626,12 +642,13 @@ async def create_folder_record(
     folder: dict[str, Any] = {
         "id": uuid.uuid4().hex[:12],
         "name": name,
-        "order": len(state._folders),
+        "order": next_folder_order(state._folders),
         "collapsed": False,
         "hidden": False,
         "parent_id": parent_id,
         "project_dir": project_dir,
         "default_agent": default_agent,
+        "default_destination_crew": clean_crew_ref(default_destination_crew),
         # Epoch seconds, a JSON number, so the sidebar and the MCP tree read it
         # with the same rule they read ``order`` by. It is what the sidebar's
         # ``created`` folder sort orders on; a row from before this key existed
@@ -642,6 +659,8 @@ async def create_folder_record(
         folder["color"] = color
     if icon:
         folder["icon"] = icon
+    if default_prompt:
+        folder["default_prompt"] = default_prompt
     if resolved_steering:
         # Omitted when empty, like ``color``/``tags``: "absent means none" stays
         # the single on-disk representation.
@@ -661,6 +680,10 @@ async def create_folder_record(
         parent = next((f for f in folders if f["id"] == parent_id), None) if parent_id else None
         if parent_id and parent is None:
             return False, "parent_not_found"
+        # A mate's home and its subtree take folders from that mate only. Decided
+        # under the lock, where the parent's place in the tree is current.
+        if parent is not None and refuses_write_into(folders, parent_id, request_app):
+            return False, "mate_home_locked"
         # The ceiling is tested here, under the lock, for the same reason the parent
         # is re-checked here: `len(folders)` is only authoritative while the lock is
         # held, so a pre-lock test lets concurrent creators each pass a cap that is
@@ -704,7 +727,7 @@ async def create_folder_record(
                 return False, "reused"
             if twins:
                 return False, "name_exists"
-        folder["order"] = len(folders)  # recount under the lock
+        folder["order"] = next_folder_order(folders)  # recount under the lock
         if claim_parent_for_person and parent is not None:
             parent.pop(CREATED_BY_SESSION, None)
         folders.append(folder)
@@ -723,6 +746,8 @@ async def create_folder_record(
     if create_err == "parent_not_found":
         # The parent was deleted while this request waited for the lock.
         raise FolderCreateError("parent folder not found", "folder_parent_not_found")
+    if create_err == "mate_home_locked":
+        raise FolderMateHomeLockedError()
     if create_err == "forbidden_parent":
         raise FolderOwnershipError()
     if create_err == "project_dir_exists":
@@ -734,6 +759,47 @@ async def create_folder_record(
     if create_err == "reused":
         return reused[0]
     return folder
+
+
+async def migrate_folder_member_labels(state: DashboardState, cfg: KiroCrewConfig) -> None:
+    """Rewrite each folder Default agent that holds a crewmate's label to that crewmate's key.
+
+    The folder picker once listed crewmates by key, so a person who knew a crewmate
+    by its label saved the label, and the create route binds a label as a template,
+    without the crewmate's model, workspace or memory. A label that is itself a key,
+    or that two crewmates share, is left as saved. Runs once per data home
+    (:data:`FOLDER_MEMBER_LABELS_MARKER`): a template picked later under the same
+    name is the person's choice and stays. A config whose crewmates could not be
+    read, or a failed write, leaves the marker unwritten, so the next start tries
+    again. Never raises.
+    """
+    marker = config_dir() / FOLDER_MEMBER_LABELS_MARKER
+    try:
+        if {DEGRADED_WHOLE_CONFIG, "agents"} & cfg.degraded_sections:
+            return
+        if await asyncio.to_thread(marker.exists):
+            return
+        shown_by: dict[str, list[str]] = {}
+        for key, agent in cfg.agents.items():
+            if agent.display_name and agent.display_name not in cfg.agents:
+                shown_by.setdefault(agent.display_name, []).append(key)
+
+        def _rewrite(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
+            changed = False
+            for folder in folders:
+                keys = shown_by.get(str(folder.get("default_agent") or ""), [])
+                if len(keys) == 1:
+                    folder["default_agent"] = keys[0]
+                    changed = True
+            return changed, changed
+
+        if await state.mutate_folders(_rewrite):
+            state.push_slots_update()
+        await asyncio.to_thread(marker.touch, mode=OWNER_ONLY_FILE_MODE)
+    except Exception:
+        logger.warning(
+            "folder Default agent migration failed; it runs again next start", exc_info=True
+        )
 
 
 def _caller_reaches_a_channel(request: web.Request, caller_key: str) -> bool:
@@ -778,4 +844,31 @@ def _agent_in_channel_reachable_session(request: web.Request) -> bool:
     """A conversation resumed from a channel keeps the session's dashboard: key."""
     return _audit_origin(request)[0] != "dashboard" and _caller_reaches_a_channel(
         request, request.headers.get("X-Session-Key", "").strip()
+    )
+
+
+def refuse_channel_reachable_agent(
+    request: web.Request, operation: str, resources: str = ""
+) -> web.Response | None:
+    """The 403 for an agent reshaping the person's sidebar from a session a channel can
+    drive, or ``None``. The person's browser is never refused."""
+    if not _agent_in_channel_reachable_session(request):
+        return None
+    sel().log_api_access(
+        caller=_audit_origin(request)[1],
+        operation=operation,
+        outcome="denied",
+        source="channel_containment",
+        resources=resources,
+        error="agent sidebar write from a session a channel can drive",
+    )
+    return web.json_response(
+        {
+            "error": (
+                "this session can receive turns from a channel conversation, so an "
+                "agent cannot change the person's sidebar from it"
+            ),
+            "code": "channel_reachable_caller",
+        },
+        status=403,
     )

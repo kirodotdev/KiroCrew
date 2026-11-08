@@ -103,6 +103,8 @@ import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
+from kiro_crew.metrics.harness import ATTR_HARNESS, HARNESS_UNKNOWN, HARNESS_VALUES, harness_of
+
 logger = logging.getLogger(__name__)
 
 #: Session lifetime, in ms. Registered in ``metrics/provider.py``'s bucket table
@@ -201,6 +203,19 @@ _MAX_LIVE_SESSIONS = 4096
 _live_lock = threading.Lock()
 _live_starts: dict[str, float] = {}
 
+# Who caused each key's most recent session start (``trigger_source``). Kept past
+# the session's end, unlike ``_live_starts``, because a compaction that fails to
+# start a successor re-records the OLD session's start, and that session's opener
+# has not changed. Bounded the same way as ``_live_starts``. Read only by
+# :func:`started_trigger_of`.
+_start_triggers: dict[str, str] = {}
+
+# The EFFECTIVE harness of each LIVE generation in ``_live_starts``, for the
+# ``harness`` label on :data:`SESSION_DURATION_METRIC`. Written and popped with
+# ``_live_starts``, under the same lock hold. A crashed session reads it from its
+# crumb instead.
+_start_harnesses: dict[str, str] = {}
+
 # Orders the two WORKER-THREAD paths that touch crumb files: the writer, and the
 # backfill's read-decide-unlink. Both run off the loop, so a hold across
 # filesystem latency costs a worker and never the gateway's responsiveness --
@@ -261,8 +276,27 @@ def _session_source(session_key: str) -> str:
     return telemetry_channel_of(session_key)
 
 
-async def record_session_started(session_key: str) -> None:
+async def record_session_started(
+    session_key: str, provider: object = None, *, trigger: str | None = None
+) -> None:
     """Record one session start; never raises.
+
+    The counter carries ``session_kind`` (a rollup of ``session_source``, so it
+    adds no series) and ``trigger_source``, who caused the session to open. A key
+    whose kind fixes the opener (cron, sub-agent, workflow, task runner,
+    heartbeat, background) uses that. Otherwise *trigger* is used when the caller
+    states one, else the trigger the running turn declared
+    (``usage_attrs.current_trigger``), else ``other`` -- never ``user`` by
+    default. See :func:`kiro_crew.metrics.usage_attrs.session_start_trigger`.
+
+    *provider* is the provider the registry entry was just built around. It
+    labels the counter with that session's EFFECTIVE ``harness``
+    (:func:`kiro_crew.metrics.harness.harness_of`), so a per-session or
+    per-agent ``acp_backend`` override shows up as its own harness rather than
+    the install default the ``kirocrew.harness`` resource attribute carries.
+    ``None`` labels it ``unknown``. The same value labels this session's
+    duration sample: it is kept in memory for a clean end and written into the
+    crumb for a crashed one.
 
     The start time goes into an in-memory table keyed by session key. The crumb on
     disk is written on a worker thread, awaited before returning. The table is
@@ -297,6 +331,7 @@ async def record_session_started(session_key: str) -> None:
     if not session_key:
         return
     started_at = time.time()
+    harness = harness_of(provider)
     orphaned: list[tuple[str, float]] = []
     with _live_lock:
         previous = _live_starts.get(session_key)
@@ -309,11 +344,13 @@ async def record_session_started(session_key: str) -> None:
             # overwrote the file.
             orphaned.append((session_key, previous))
         _live_starts[session_key] = started_at
+        _start_harnesses[session_key] = harness
         if len(_live_starts) > _MAX_LIVE_SESSIONS:
             # A registry this large is not real; drop the oldest half rather than
             # growing for the process lifetime. Costs samples, never memory.
             oldest = sorted(_live_starts.items(), key=lambda kv: kv[1])
             for stale_key, stale_at in oldest[: len(oldest) // 2]:
+                _start_harnesses.pop(stale_key, None)
                 if _live_starts.pop(stale_key, None) is not None:
                     orphaned.append((stale_key, stale_at))
     if _crumbs_enabled():
@@ -325,7 +362,7 @@ async def record_session_started(session_key: str) -> None:
             # happened -- and doing those unlinks here rather than on the loop
             # keeps up to half a table's worth of filesystem I/O off it without
             # opening a second cancellation window.
-            await asyncio.to_thread(_write_crumb, session_key, started_at, tuple(orphaned))
+            await asyncio.to_thread(_write_crumb, session_key, started_at, tuple(orphaned), harness)
         except Exception:
             logger.debug("session start crumb handoff failed", exc_info=True)
     # Counted LAST, after the only cancellable point in this function. Emitted
@@ -335,10 +372,44 @@ async def record_session_started(session_key: str) -> None:
     # denominator every session-scoped rate is read against.
     try:
         from kiro_crew.metrics.events import emit_counter
+        from kiro_crew.metrics.usage_attrs import (
+            ATTR_SESSION_KIND,
+            ATTR_TRIGGER_SOURCE,
+            current_trigger,
+            session_kind_of_source,
+            session_start_trigger,
+        )
 
-        emit_counter(SESSION_STARTED_COUNTER, {"session_source": _session_source(session_key)})
+        source = _session_source(session_key)
+        kind = session_kind_of_source(source)
+        trig = session_start_trigger(kind, explicit=trigger or current_trigger())
+        with _live_lock:
+            _start_triggers[session_key] = trig
+            if len(_start_triggers) > _MAX_LIVE_SESSIONS:
+                for stale in list(_start_triggers)[: len(_start_triggers) // 2]:
+                    _start_triggers.pop(stale, None)
+        emit_counter(
+            SESSION_STARTED_COUNTER,
+            {
+                "session_source": source,
+                ATTR_HARNESS: harness,
+                ATTR_SESSION_KIND: kind,
+                ATTR_TRIGGER_SOURCE: trig,
+            },
+        )
     except Exception:
         logger.debug("session started counter failed", exc_info=True)
+
+
+def started_trigger_of(session_key: str) -> str | None:
+    """The ``trigger_source`` the most recent start of *session_key* recorded.
+
+    For a caller that re-records a start of the SAME session (a compaction
+    recycle that kept the old session), so it keeps its original opener. ``None``
+    when this process recorded no start for the key.
+    """
+    with _live_lock:
+        return _start_triggers.get(session_key)
 
 
 async def discard_session_start(session_key: str) -> None:
@@ -376,6 +447,7 @@ async def discard_session_start(session_key: str) -> None:
         return
     with _live_lock:
         started_at = _live_starts.pop(session_key, None)
+        _start_harnesses.pop(session_key, None)
     if started_at is None:
         # Nothing of OURS to remove, so remove nothing. The crumbs sharing this
         # key's digest belong to other processes or to earlier runs of this one,
@@ -422,6 +494,7 @@ def _write_crumb(
     session_key: str,
     started_at: float,
     orphaned: tuple[tuple[str, float], ...] = (),
+    harness: str = HARNESS_UNKNOWN,
 ) -> None:
     """Persist *session_key*'s open-session crumb; never raises.
 
@@ -466,6 +539,7 @@ def _write_crumb(
                 # different process and must not look like this one.
                 "pid": os.getpid(),
                 "start_id": _own_start_id(),
+                "harness": harness,
             },
             ensure_ascii=True,
         )
@@ -628,6 +702,7 @@ async def record_session_ended(session_key: str, *, end_reason: str) -> None:
         return
     with _live_lock:
         started_at = _live_starts.pop(session_key, None)
+        harness = _start_harnesses.pop(session_key, HARNESS_UNKNOWN)
     if started_at is None:
         # No generation of ours to consume, so nothing is unlinked. A removal with
         # no live entry never wrote a crumb in this process -- the entry was
@@ -636,7 +711,7 @@ async def record_session_ended(session_key: str, *, end_reason: str) -> None:
         # runs. Unlinking those unconditionally was the sibling-clobbering bug.
         return
     try:
-        _emit_duration(session_key, time.time() - started_at, end_reason)
+        _emit_duration(session_key, time.time() - started_at, end_reason, harness)
     except Exception:
         logger.debug("session end emit failed", exc_info=True)
     # Consumed OUTSIDE the table lock and OFF the loop. Removing the file even when
@@ -683,20 +758,22 @@ async def record_sessions_ended(session_keys: Iterable[str], *, end_reason: str)
     if not keys:
         return
     consumed: list[tuple[str, float]] = []
+    harnesses: list[str] = []
     with _live_lock:
         for key in keys:
             started_at = _live_starts.pop(key, None)
             if started_at is not None:
                 consumed.append((key, started_at))
+                harnesses.append(_start_harnesses.pop(key, HARNESS_UNKNOWN))
     if not consumed:
         return
     # One clock reading for the whole set: these sessions ended together, and
     # letting each sample drift by its position in the loop would report the
     # ordering of a teardown as a difference in lifetime.
     ended_at = time.time()
-    for key, started_at in consumed:
+    for (key, started_at), harness in zip(consumed, harnesses):
         try:
-            _emit_duration(key, ended_at - started_at, end_reason)
+            _emit_duration(key, ended_at - started_at, end_reason, harness)
         except Exception:
             logger.debug("session end emit failed", exc_info=True)
     try:
@@ -731,7 +808,19 @@ def backfill_crashed_sessions(started_before: float | None = None) -> int:
             # writer and one generation, so a session registering mid-scan gets a
             # file of its own and never shares a name with anything here.
             with _crumb_io_lock:
-                key, started_at, pid, start_id = _read_crumb(path)
+                try:
+                    key, started_at, pid, start_id, harness = _read_crumb(path)
+                except OSError as exc:
+                    # Present but unreadable right now (a sharing violation, an
+                    # ACL): the owner is undecidable, so the crumb stays for a
+                    # later boot to judge, as _owner_still_running's fail-closed
+                    # rule requires.
+                    logger.debug(
+                        "session crumb %s unreadable (%s); kept for a later boot",
+                        path.name,
+                        type(exc).__name__,
+                    )
+                    continue
                 if _owner_still_running(pid, start_id):
                     # A LIVE session, in this process or a sibling. Reaping it
                     # would both invent a crash and delete the evidence of the
@@ -750,15 +839,17 @@ def backfill_crashed_sessions(started_before: float | None = None) -> int:
             ended_at = _last_activity(key)
             if ended_at is None:
                 continue
-            if _emit_duration(key, ended_at - started_at, END_REASON_CRASHED):
+            if _emit_duration(key, ended_at - started_at, END_REASON_CRASHED, harness):
                 emitted += 1
     except Exception:
         logger.debug("crashed-session backfill failed", exc_info=True)
     return emitted
 
 
-def _emit_duration(session_key: str, seconds: float, end_reason: str) -> bool:
+def _emit_duration(session_key: str, seconds: float, end_reason: str, harness: str) -> bool:
     """Record one histogram sample. Returns whether a sample was emitted.
+
+    *harness* is the effective harness the session's start recorded.
 
     A non-positive lifetime is skipped rather than recorded, for the reason
     ``metrics/turns.py`` gives: an absent sample reads as "no data" on the
@@ -773,7 +864,11 @@ def _emit_duration(session_key: str, seconds: float, end_reason: str) -> bool:
             SESSION_DURATION_METRIC,
             seconds * 1000.0,
             unit="ms",
-            attrs={"end_reason": end_reason, "session_source": _session_source(session_key)},
+            attrs={
+                "end_reason": end_reason,
+                "session_source": _session_source(session_key),
+                ATTR_HARNESS: harness,
+            },
             description="Session lifetime (ms), by how the session ended.",
         )
         return True
@@ -782,23 +877,34 @@ def _emit_duration(session_key: str, seconds: float, end_reason: str) -> bool:
         return False
 
 
-def _read_crumb(path: Path) -> tuple[str, float | None, object, object]:
-    """Return ``(session_key, started_at, pid, start_id)`` from *path*.
+def _read_crumb(path: Path) -> tuple[str, float | None, object, object, str]:
+    """Return ``(session_key, started_at, pid, start_id, harness)`` from *path*.
 
-    ``("", None, None, None)`` when the file is missing, unreadable or malformed.
+    ``("", None, None, None, "unknown")`` when the file is missing or malformed.
+    Raises ``OSError`` when the file exists but cannot be read, so the caller can
+    keep a crumb whose owner it cannot judge instead of reaping it as malformed.
     ``pid`` / ``start_id`` are absent on crumbs written before ownership existed.
+    ``harness`` is ``unknown`` for a crumb written before it was recorded, or one
+    holding a value outside the closed set.
     """
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return "", None, None, None, HARNESS_UNKNOWN
+    try:
+        payload = json.loads(raw.decode("utf-8"))
     except Exception:
-        return "", None, None, None
+        return "", None, None, None, HARNESS_UNKNOWN
     if not isinstance(payload, dict):
-        return "", None, None, None
+        return "", None, None, None, HARNESS_UNKNOWN
     key = payload.get("key")
     started = payload.get("started_at")
     if not isinstance(key, str) or not isinstance(started, (int, float)):
-        return "", None, None, None
-    return key, float(started), payload.get("pid"), payload.get("start_id")
+        return "", None, None, None, HARNESS_UNKNOWN
+    harness = payload.get("harness")
+    if not isinstance(harness, str) or harness not in HARNESS_VALUES:
+        harness = HARNESS_UNKNOWN
+    return key, float(started), payload.get("pid"), payload.get("start_id"), harness
 
 
 def _last_activity(session_key: str) -> float | None:

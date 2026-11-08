@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { useState } from 'react'
 import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
@@ -38,7 +38,6 @@ vi.mock('../../api/client', () => ({
     // The warm greeting's read of the crewmate's work ledger. No ledger is the
     // state every case not about the greeting wants: the chat opens bare.
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
-    memberRecap: vi.fn(() => Promise.reject(new Error('no recap in this test'))),
     memberThread: vi.fn(),
     memberActivity: vi.fn(() => Promise.resolve({ slug: '', member: '', capped: false, entries: [] })),
     memberProjections: vi.fn(() => Promise.resolve({ asOfSeq: 0, values: {} })),
@@ -51,6 +50,12 @@ vi.mock('../../api/client', () => ({
     // The card's list and the pushed section read one cron list and filter it per
     // crewmate. Each case sets its own jobs.
     crons: vi.fn(() => Promise.resolve({ jobs: [] })),
+    // The Export view's plan and its one lessons draft.
+    memberExportPreview: vi.fn(() => Promise.resolve({
+      name: 'oncall', filename: 'oncall.crewmate', description: '', model: '', dashboard: '', avatar: '',
+      rules: null, goals: null, crons: [], skills: [], mcp_servers: [], mcp_in_file: false, left_out: [], fingerprint: 'f',
+    })),
+    memberExportLessonsDraft: vi.fn(() => Promise.resolve({ text: '' })),
     // The create the draft-guard cases drive; each one controls its own resolution.
     createCron: vi.fn(() => Promise.resolve({ ok: true, id: 'j-new' })),
     updateCron: vi.fn(() => Promise.resolve({ ok: true })),
@@ -97,7 +102,6 @@ vi.mock('../../utils/terminalRegistry', () => ({
   useTerminalEnabled: () => true,
   useTerminalTitle: () => 'Terminal',
 }))
-vi.mock('../../hooks/useDevMode', () => ({ useDevMode: () => false }))
 vi.mock('../../components/ChatPane', () => ({
   // Driving-session and quiet-chat links are page-owned exits from the pushed
   // schedule form, so the stub exposes both callbacks directly. File and Side
@@ -316,7 +320,7 @@ describe('MembersPage Profile card Schedules tab', () => {
     vi.mocked(api.crons).mockResolvedValue({ jobs: [] } as never)
     await openCrewmate()
     const list = await openSchedulesTab()
-    expect(await within(list).findByTestId('crew-schedule-empty')).toHaveTextContent(/Nothing wakes this mate on its own yet/i)
+    expect(await within(list).findByTestId('crew-schedule-empty')).toHaveTextContent(/Nothing wakes this bot on its own yet/i)
     // No `0` anywhere — not on the rail, not in the list.
     expect(screen.queryByTestId('member-schedules-count')).toBeNull()
     expect(within(screen.getByTestId('crew-profile-tabs')).queryByText('0')).toBeNull()
@@ -339,9 +343,10 @@ describe('MembersPage Profile card Schedules tab', () => {
     await openCrewmate()
     const list = await openSchedulesTab()
     await waitFor(() => expect(vi.mocked(api.crons)).toHaveBeenCalled())
-    await new Promise((r) => setTimeout(r, 50))
+    // The failed read is handled once the list draws its error line; the empty line is withheld with it.
+    await screen.findByTestId('crew-schedule-error')
     expect(within(list).queryByTestId('crew-schedule-empty')).toBeNull()
-    expect(list).not.toHaveTextContent(/Nothing wakes this mate/i)
+    expect(list).not.toHaveTextContent(/Nothing wakes this bot/i)
   })
 
   it('a row opens that job on the Schedule page; the footer opens the page itself', async () => {
@@ -397,11 +402,11 @@ describe('MembersPage Profile card — New schedule', () => {
     // second "What wakes this crewmate" and no second close control under the bar.
     expect(section).toHaveAttribute('data-chromeless', 'true')
     expect(within(section).queryByTestId('crew-wake-add')).toBeNull()
-    expect(within(page).queryByText('What wakes this mate')).toBeNull()
+    expect(within(page).queryByText('What wakes this bot')).toBeNull()
     expect(within(page).queryAllByRole('button', { name: /cancel new schedule/i })).toHaveLength(0)
     // The form's pinned-crew hint speaks this page's noun: the reader is on the
     // crewmate's Profile, not in the crew editor the editor's sentence names.
-    expect(within(section).getByText("Created from this mate's profile, so the job runs as this mate.")).toBeInTheDocument()
+    expect(within(section).getByText("Created from this bot's profile, so the job runs as this bot.")).toBeInTheDocument()
     expect(within(section).queryByText(/this crew's editor/)).toBeNull()
     // A clean form: back pops to the list with no question asked.
     fireEvent.click(screen.getByTestId('crew-profile-back'))
@@ -538,6 +543,25 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
   })
 
+  it('asks before a click beside the card or the identity pill drops typed Export lessons', async () => {
+    await openCrewmate()
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    const card = await screen.findByTestId('crew-profile-panel')
+    fireEvent.click(within(card).getByRole('tab', { name: 'Profile' }))
+    fireEvent.click(await screen.findByTestId('crew-profile-export'))
+    // The export view is a lazy import, then it waits on its preview query.
+    fireEvent.click(within(await screen.findByTestId('crew-export-lessons', {}, { timeout: 5000 })).getByRole('switch'))
+    fireEvent.change(await screen.findByTestId('crew-export-lessons-editor'), { target: { value: '# Lessons' } })
+
+    fireEvent.click(screen.getByTestId('crew-profile-modal'))
+    await answer('Cancel')
+    expect(screen.getByDisplayValue('# Lessons')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId('member-identity-pill'))
+    await answer('Discard')
+    await waitFor(() => expect(screen.queryByTestId('crew-profile-panel')).toBeNull())
+  })
+
   it('will not close the card while a create is in flight — no prompt, no discard', async () => {
     // A POST already sent cannot be cancelled by unmounting, so that window refuses
     // outright; it is typed-but-unsent work that asks.
@@ -546,11 +570,19 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     const section = await openDraft()
     fireEvent.click(within(section).getByTestId('crew-wake-create-submit'))
     await waitFor(() => expect(api.createCron).toHaveBeenCalled())
+    // "Nothing opens within 120 ms" runs on a fake clock installed once the render has settled. A real sleep let
+    // SidePanel (its 180 ms motion timer) and ThemeProvider update outside act() when the host was loaded.
+    vi.useFakeTimers()
+    onTestFinished(() => { vi.useRealTimers() })
     fireEvent.click(screen.getByTestId('crew-profile-close'))
-    await new Promise((r) => setTimeout(r, 120))
+    await act(async () => { await vi.advanceTimersByTimeAsync(120) })
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(screen.getByTestId('crew-profile-panel')).toBeInTheDocument()
-    act(() => { release({ ok: true, id: 'j-new' }) })
+    // Real timers again: the waits below poll on them.
+    vi.useRealTimers()
+    await act(async () => { release({ ok: true, id: 'j-new' }) })
+    // A saved schedule closes the form (CrewWakeSection onCreated): the completion has landed once it is gone.
+    await waitFor(() => expect(screen.queryByTestId('crew-wake-create-submit')).toBeNull())
   })
 
   it('asks before a mate switch from the switcher discards a draft, and remounts the card once it does', async () => {
@@ -684,6 +716,73 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     }
   })
 
+  it('a trackpad swipe that would reveal the panel over a draft asks first; Cancel leaves it hidden and the next swipe asks again', async () => {
+    await openDraft()
+    // Side Chat is the tab on show (this strip is otherwise Dashboard alone), so a
+    // reveal that lands on Dashboard is the swipe's doing.
+    fireEvent.click(screen.getByRole('button', { name: 'Open side chat' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Side Chat' })).toHaveAttribute('aria-selected', 'true'))
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    await waitFor(() => expect(screen.queryByTestId('side-panel-root')).toBeNull())
+    const page = screen.getByTestId('members-page')
+    /** A leftward two-finger run at explicit event times, `t0` onwards. */
+    const swipeLeft = (t0: number) => act(() => {
+      for (let i = 0; i < 12; i++) {
+        const ev = new WheelEvent('wheel', { deltaX: 15, deltaY: 0, bubbles: true, cancelable: true })
+        Object.defineProperty(ev, 'timeStamp', { value: t0 + i * 16 })
+        page.dispatchEvent(ev)
+      }
+    })
+    const t0 = performance.now()
+    swipeLeft(t0)
+    // The guard is asked BEFORE anything moves: no sheet was mounted to drag.
+    expect(screen.queryByTestId('member-side-panel')).toBeNull()
+    await answer('Cancel')
+    // Refused: nothing slid, nothing is left half-open, the draft is untouched.
+    expect(screen.queryByTestId('member-side-panel')).toBeNull()
+    expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()
+    // The next swipe is not eaten: it reaches the guard again, and Discard opens.
+    swipeLeft(t0 + 5000)
+    await answer('Discard')
+    await screen.findByTestId('side-panel-root')
+    // Accepted: it opens on Dashboard, as a drag would.
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Dashboard' })).toHaveAttribute('aria-selected', 'true'))
+  })
+
+  it('under reduced motion, keeping the draft when a swipe asks leaves the saved tab alone', async () => {
+    const real = window.matchMedia
+    window.matchMedia = ((q: string) => ({
+      matches: q.includes('prefers-reduced-motion'), media: q, onchange: null,
+      addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {},
+      dispatchEvent: () => false,
+    })) as typeof window.matchMedia
+    onTestFinished(() => { window.matchMedia = real })
+    await openDraft()
+    // The Files tab appears once the slot's environment read answers: wait for it.
+    fireEvent.click(screen.getByRole('button', { name: 'Open side chat' }))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Side Chat' })).toHaveAttribute('aria-selected', 'true'))
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    await waitFor(() => expect(screen.queryByTestId('side-panel-root')).toBeNull())
+    const page = screen.getByTestId('members-page')
+    const t0 = performance.now()
+    // A clear leftward swipe: under reduced motion it switches once, at its end.
+    act(() => {
+      for (let i = 0; i < 12; i++) {
+        const ev = new WheelEvent('wheel', { deltaX: 15, deltaY: 0, bubbles: true, cancelable: true })
+        Object.defineProperty(ev, 'timeStamp', { value: t0 + i * 16 })
+        page.dispatchEvent(ev)
+      }
+    })
+    await answer('Cancel')
+    expect(screen.queryByTestId('side-panel-root')).toBeNull()
+    // Reveal by the header chord, Discard: the panel shows the tab it had.
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    await answer('Discard')
+    await screen.findByTestId('side-panel-root')
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Side Chat' })).toHaveAttribute('aria-selected', 'true'))
+    expect(screen.getByRole('tab', { name: 'Dashboard' })).toHaveAttribute('aria-selected', 'false')
+  })
+
   it('Side Chat switches the side panel without asking or unmounting a dirty Profile draft', async () => {
     await openDraft()
     fireEvent.click(screen.getByRole('button', { name: 'Open side chat' }))
@@ -726,7 +825,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
     await waitFor(() => expect(screen.queryByTestId('crew-profile-panel')).toBeNull())
     expect(screen.queryByDisplayValue('Check the board')).toBeNull()
     expect(await screen.findByTestId('side-panel-root')).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('Workspace from a FLOATING Profile opens Files without asking — the card and its draft stay mounted', async () => {
@@ -742,7 +841,7 @@ describe('MembersPage Profile card — unsaved schedule draft', () => {
 
     fireEvent.click(screen.getByTestId('crew-profile-workspace'))
 
-    await waitFor(() => expect(screen.getByRole('tab', { name: 'Files' })).toHaveAttribute('aria-selected', 'true'))
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Workspace' })).toHaveAttribute('aria-selected', 'true'))
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(screen.getByTestId('crew-profile-modal')).toBeInTheDocument()
     expect(screen.getByDisplayValue('Check the board')).toBeInTheDocument()

@@ -5,9 +5,11 @@
 // anything is still pending — that is the whole point of the step, and it is why
 // upstream called this view the task review.
 
-import { Archive, ArchiveRestore, CheckCheck, CircleCheck, ExternalLink, Send } from 'lucide-react'
+import { useId } from 'react'
+import { Archive, ArchiveRestore, CheckCheck, CircleCheck, ExternalLink, Loader2, Send } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
+import ErrorNotice from '../../components/ErrorNotice'
 import { Badge, Btn, Card, CardTitle, EmptyState, SendBtn, StatCard } from '../../components/ui'
 import { PRIORITY_LABEL_KEY, type Task, type TranscriptSegment } from './api'
 import TranscriptPanel from './components/TranscriptPanel'
@@ -33,6 +35,18 @@ interface Props {
   transcriptFull: boolean
   provider: string
   filing: string | null
+  /** Every action item with a filing in flight; `filing` names only the latest. */
+  filingIds?: readonly string[]
+  /** True while the stop that End asked for is in flight, its flush included. */
+  closing: boolean
+  /** Why the last End failed, shown beside the close control until End is tried again. */
+  closeError: string | null
+  /**
+   * True while the Back the user asked for is in flight: the close control is
+   * disabled meanwhile, as Back is while closing, because a stop that failed
+   * after Back had unmounted this view would be reported nowhere.
+   */
+  leaving: boolean
   onBack: () => void
   onClose: () => void
   onFile: (taskId: string) => void
@@ -47,6 +61,10 @@ export default function TaskReviewView({
   transcriptFull,
   provider,
   filing,
+  filingIds = [],
+  closing,
+  closeError,
+  leaving,
   onBack,
   onClose,
   onFile,
@@ -57,12 +75,22 @@ export default function TaskReviewView({
   const archived = tasks.filter(task => task.review_status === 'archived')
   const filed = tasks.filter(task => task.review_status === 'pushed')
   const canClose = pending.length === 0
+  const inFlight = new Set(filingIds)
+  if (filing) inFlight.add(filing)
+  // Items being filed are left out, as their own Archive buttons are disabled. An
+  // archive that lands while a filing is in flight sticks when the filing fails,
+  // so an item the user chose to file is silently archived and the meeting can close.
+  const archivable = pending.filter(task => !inFlight.has(task.id))
+  const skipsFiling = archivable.length < pending.length
+  const skipsId = useId()
 
   return (
     <div className="flex flex-col lg:flex-row h-full overflow-hidden">
       <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
         <div className="flex-none px-4 md:px-6 py-4 border-b border-border flex items-center gap-3">
-          <Btn onClick={onBack}>{i18nT('apps.meetings.review.backToMeeting')}</Btn>
+          {/* Disabled while the stop End asked for is in flight: the two exits
+              would otherwise race, a status change against a stop. */}
+          <Btn onClick={onBack} disabled={closing}>{i18nT('apps.meetings.review.backToMeeting')}</Btn>
           <h2 className="text-lg font-semibold text-text-strong">
             {i18nT('apps.meetings.review.title')}
           </h2>
@@ -72,13 +100,23 @@ export default function TaskReviewView({
               : i18nT('apps.meetings.review.remaining', { count: pending.length })}
           </Badge>
           {pending.length > 0 && (
-            <Btn
-              className="ml-auto"
-              onClick={() => pending.forEach(task => onArchive(task.id))}
-            >
-              <Archive className="lucide-inline" />
-              {i18nT('apps.meetings.review.archiveAll')}
-            </Btn>
+            <div className="ml-auto flex items-center gap-2">
+              {skipsFiling && (
+                <span id={skipsId} className="text-[12px] text-muted">
+                  {i18nT('apps.meetings.review.archiveSkipsFiling')}
+                </span>
+              )}
+              <Btn
+                onClick={() => archivable.forEach(task => onArchive(task.id))}
+                disabled={archivable.length === 0}
+                aria-describedby={skipsFiling ? skipsId : undefined}
+              >
+                <Archive className="lucide-inline" />
+                {skipsFiling && archivable.length > 0
+                  ? i18nT('apps.meetings.review.archiveOthers', { count: archivable.length })
+                  : i18nT('apps.meetings.review.archiveAll')}
+              </Btn>
+            </div>
           )}
         </div>
 
@@ -119,7 +157,7 @@ export default function TaskReviewView({
                     </div>
                     <Btn
                       onClick={() => onArchive(task.id)}
-                      disabled={filing === task.id}
+                      disabled={inFlight.has(task.id)}
                       aria-label={i18nT('apps.meetings.review.archive')}
                     >
                       <Archive className="lucide-inline" />
@@ -127,11 +165,11 @@ export default function TaskReviewView({
                     </Btn>
                     <SendBtn
                       onClick={() => onFile(task.id)}
-                      disabled={filing === task.id}
+                      disabled={inFlight.has(task.id)}
                       aria-label={i18nT('apps.meetings.review.file')}
                     >
                       <Send className="lucide-inline" />
-                      {filing === task.id
+                      {inFlight.has(task.id)
                         ? i18nT('apps.meetings.review.filing')
                         : i18nT('apps.meetings.review.file')}
                     </SendBtn>
@@ -208,16 +246,34 @@ export default function TaskReviewView({
           )}
         </div>
 
-        <div className="flex-none px-4 md:px-6 py-4 border-t border-border flex justify-center">
+        <div className="flex-none px-4 md:px-6 py-4 border-t border-border flex flex-col items-center gap-3">
+          {/* No hand-off: the meeting's note may hold an unsaved draft, and
+              every exit of this view goes through the note check in `leave()`,
+              which a hand-off would navigate past. Retrying End is the action a
+              failed stop leaves. Hidden while that retry is in flight: the
+              control says what it is waiting for, and the notice returns if
+              this stop fails too. */}
+          <ErrorNotice message={closing ? null : closeError} className="w-full max-w-md" />
           <SendBtn
             onClick={onClose}
-            disabled={!canClose}
-            aria-label={i18nT('apps.meetings.review.closeMeeting')}
+            // Disabled while the stop it asked for is in flight: End flushes the
+            // held finals first, and a repeat inside that window must not queue
+            // a second stop. `aria-busy` is the pending state itself, and the
+            // label says what the wait is for.
+            disabled={!canClose || closing || leaving}
+            aria-busy={closing}
+            aria-label={closing
+              ? i18nT('apps.meetings.review.closing')
+              : i18nT('apps.meetings.review.closeMeeting')}
           >
-            <CheckCheck className="lucide-inline" />
-            {canClose
-              ? i18nT('apps.meetings.review.closeMeeting')
-              : i18nT('apps.meetings.review.closeBlocked', { count: pending.length })}
+            {closing
+              ? <Loader2 className="lucide-inline animate-spin" aria-hidden="true" />
+              : <CheckCheck className="lucide-inline" />}
+            {closing
+              ? i18nT('apps.meetings.review.closing')
+              : canClose
+                ? i18nT('apps.meetings.review.closeMeeting')
+                : i18nT('apps.meetings.review.closeBlocked', { count: pending.length })}
           </SendBtn>
         </div>
       </div>

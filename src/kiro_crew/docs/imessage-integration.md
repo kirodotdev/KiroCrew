@@ -73,16 +73,19 @@ It does not use the platform's own outbound flag alone for that. In a self-chat
 every message belongs to your account in both directions, and Messages writes
 that attribution asynchronously — the bridge's watch waits 500ms expressly so a
 correction can land — so a reply can come back looking exactly like something you
-typed. The channel instead remembers what it just sent, for 30 seconds, and
-ignores that coming back. Without it the agent answers its own reply and the
-conversation never stops.
+typed. The channel instead remembers what it recently sent and when, and ignores
+a message with those words that is dated within 30 seconds of the send, however
+late it arrives: on an account with other devices, Messages can deliver copies of
+a self-chat message hours or days later, each dated when it was first sent.
+Without this the agent answers its own reply and the conversation never stops.
 
 **One consequence, and it applies to every chat rather than only this one:** if
-you send the agent back the **exact** text it has just sent you, within those 30
-seconds, that message is read as the echo and ignored — no reply, and nothing
-said about it. Send anything else, or wait, and it goes through normally. The
-alternative is worse: the only way to tell a returning message from the agent's
-own is the platform's attribution, and trusting that is what produced the loop.
+you send the agent back the **exact** text it has just sent you, dated within 30
+seconds of its send, that message is read as the echo and ignored: no reply, and
+nothing said about it. Send anything else, or wait, and it goes through normally.
+The alternative is worse: the only way to tell a returning message from the
+agent's own is the platform's attribution, and trusting that is what produced the
+loop.
 
 ## What a conversation looks like
 
@@ -105,6 +108,7 @@ Commands, sent as an ordinary message:
 |---|---|
 | `/new` (or `/start`) | Start a fresh conversation |
 | `/compact` | Compress the conversation's context |
+| `/stop` (or `/cancel`) | Stop the reply that is running |
 | `/help` | List these commands |
 
 ## Settings reference

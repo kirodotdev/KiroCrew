@@ -386,7 +386,7 @@ def pack_slot_file(
 
     ``"no-pack"`` when the id does not resolve to a pack (the route's 404 with
     ``pack_not_found``), ``None`` when the pack exists but no slot in the chain
-    has readable content (``slot_not_found``). Blocking; run in a worker.
+    has a non-empty file (``slot_not_found``). Blocking; run in a worker.
     """
     ident = safe_pack_id(pack_id)
     if ident is None:
@@ -407,7 +407,11 @@ def pack_slot_file(
             if fmt is None:
                 continue
             content = store._read_pack_file(pack_dir, filename)
-            if content is None:
+            # An empty file has no art. ``pack_detail`` leaves such a slot out
+            # of its metadata answer and the client falls back past it, so the
+            # chain moves on here too: both sides resolve the same slot, and the
+            # renderer the client picked matches the bytes served.
+            if not content:
                 continue
             return candidate, content, fmt
     return None

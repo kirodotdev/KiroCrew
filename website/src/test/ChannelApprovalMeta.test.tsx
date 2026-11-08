@@ -106,7 +106,7 @@ describe('ChannelPage approval card with meta', () => {
     fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
     const items = screen.getAllByRole('menuitem').map(i => i.textContent ?? '')
     expect(items).toHaveLength(2)
-    expect(items[0]).toBe('Trust “cat f | wc -l” for @Researcher — until Kiro Crew restarts')
+    expect(items[0]).toBe('Trust cat f | wc -l for @Researcher — until Kiro Crew restarts')
     expect(items[1]).toBe(BLANKET)
     // On the prose path the first token would have offered "cat" -- a grant the
     // endpoint refuses (pattern_underivable). No item names it.
@@ -119,7 +119,7 @@ describe('ChannelPage approval card with meta', () => {
     fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
     const items = screen.getAllByRole('menuitem')
     expect(items.map(i => i.textContent)).toEqual([
-      'Trust “ls -la /tmp” for @Researcher — until Kiro Crew restarts',
+      'Trust ls -la /tmp for @Researcher — until Kiro Crew restarts',
       'Trust all ls commands for @Researcher — until Kiro Crew restarts',
       BLANKET,
     ])
@@ -138,7 +138,22 @@ describe('ChannelPage approval card with meta', () => {
     fireEvent.click(screen.getAllByRole('menuitem')[0])
     await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
       .toHaveBeenCalledWith('ch1', 'a1', 'trust_command', 'ls -la /tmp'))
-    expect(screen.getByText('Trusted — “ls -la /tmp” is auto-approved for @Researcher until Kiro Crew restarts')).toBeInTheDocument()
+    const chip = screen.getByText('ls -la /tmp', { selector: 'span' })
+    expect(chip.parentElement!.textContent!.trim()).toBe('Trusted — ls -la /tmp is auto-approved for @Researcher until Kiro Crew restarts')
+  })
+
+  it.each([
+    [0, 'trust_command', 'ls -la /tmp'],
+    [1, 'trust_base', 'ls *'],
+  ])('does not promise auto-approval on a host the server says refuses every name grant (#29787, item %i)', async (item, action, pattern) => {
+    mockApi([approval(SIMPLE, { ...simpleMeta, name_grants_refused: '1' })])
+    await renderPage()
+    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    fireEvent.click(screen.getAllByRole('menuitem')[item])
+    await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
+      .toHaveBeenCalledWith('ch1', 'a1', action, pattern))
+    expect(screen.getByText("Approved this run — this host's shell setup means @Researcher will still ask each time")).toBeInTheDocument()
+    expect(screen.queryByText(/auto-approved/)).not.toBeInTheDocument()
   })
 
   it('offers only blanket trust for a non-shell tool even when the prose looks like a shell card', async () => {
@@ -210,5 +225,16 @@ describe('ApprovalCard meta-driven props', () => {
     fireEvent.click(items[1])
     expect(onApprove).toHaveBeenCalledWith('trust_base', 'rm *')
     expect(screen.getByText('Trusted — auto-approving future calls')).toBeInTheDocument()
+  })
+
+  it('shows a trusted command ending in a closing quote once, verbatim in its chip (#23893)', async () => {
+    // Tag-shaped text too: the chip shows it as typed, never as markup.
+    const cmd = 'echo “<i>hi</i>”'
+    render(<ApprovalCard title={`Running: ${cmd}`} toolInput="" showButtons labelValues={{ role: 'Researcher' }}
+      trustedLabelKeys={{ trust_command: 'components.approvalCard.trusted_channel_command' }} onApprove={noop} />)
+    fireEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    fireEvent.click(screen.getAllByRole('menuitem')[0])
+    const chip = await screen.findByText(cmd, { selector: 'span' })
+    expect(chip.parentElement!.textContent!.trim()).toBe(`Trusted — ${cmd} is auto-approved for @Researcher until Kiro Crew restarts`)
   })
 })

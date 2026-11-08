@@ -148,8 +148,9 @@ _spawn_publication_owner: ContextVar[AppProcess | None] = ContextVar(
 # `_processes`.
 _restart_attempts: dict[str, int] = {}
 # Monotonic lifecycle identity for restart handoffs. Every deliberate stop and every
-# public/external start advances the generation and records which transition won; the
-# restart's own spawn deliberately does neither. Protected by ``_lock``. Transition
+# public/external start advances the generation and records which transition won, and a
+# refusal that cannot clear records a STOP (``restart._keep_down``); the restart's own
+# spawn deliberately does neither. Protected by ``_lock``. Transition
 # bumps additionally take ``_health_reconcile_lock`` so a post-spawn compare + teardown
 # is atomic with respect to a later explicit start.
 _LIFECYCLE_START = "start"
@@ -197,8 +198,12 @@ def _await_inflight_spawn(app_name: str, timeout: float = 20.0) -> AppProcess | 
     try:
         safe = re.sub(r"[^A-Za-z0-9._-]", "_", app_name) or "_"
         lock_dir = config_dir() / "app_backend_locks"
-        lock_dir.mkdir(parents=True, exist_ok=True)
-        _probe_fd = os.open(str(lock_dir / f"{safe}.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+        from kiro_crew.owner_only_files import mkdirs_owner_only
+
+        mkdirs_owner_only(lock_dir)
+        _probe_fd = platform_compat.open_create_or_existing(
+            str(lock_dir / f"{safe}.lock"), os.O_RDWR, 0o600
+        )
         try:
             if platform_compat.try_acquire_lock(_probe_fd, exclusive=True):
                 owner_gone = True
@@ -348,8 +353,10 @@ def app_backend_lifecycle_flock(app_name: str) -> Iterator[None]:
     """
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", app_name) or "_"
     lock_dir = config_dir() / "app_backend_locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(lock_dir / f"{safe}.lock"), os.O_CREAT | os.O_RDWR, 0o644)
+    from kiro_crew.owner_only_files import mkdirs_owner_only
+
+    mkdirs_owner_only(lock_dir)
+    fd = platform_compat.open_create_or_existing(str(lock_dir / f"{safe}.lock"), os.O_RDWR, 0o600)
     try:
         with platform_compat.flock_exclusive(fd):
             yield

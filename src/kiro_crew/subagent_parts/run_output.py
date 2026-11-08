@@ -142,12 +142,19 @@ class SubagentDelivery:
     reconciler would have written, outcome included. Settling writes it in place
     of the ``delivered`` mark, so a cut-off or failed orphan is not relabelled
     completed, and *elapsed* and *credits* go unused.
+
+    *leaked_process* marks a COMPLETED run whose teardown could not end its
+    process (``SubagentInfo._leaked_process``). The ``delivered`` tombstone the
+    settle writes then carries the flag, so the next start ends the survivor
+    (``list_leaked_processes``); without it the tombstone ends the run and the
+    process is reached by nothing.
     """
 
     agent_id: str
     elapsed: float
     credits: float
     report_owed: bool = False
+    leaked_process: bool = False
     tombstone: dict[str, Any] | None = field(default=None, hash=False)
 
 
@@ -199,6 +206,14 @@ class _RunCreditAccounting:
             return
         self.total = _sum_usage(self.total, usage)
         self.info.credits = self._valid_credits(self.total.credits) or 0.0
+
+    def live_credits(self) -> float:
+        """Settled credits plus what the attempt in flight has billed so far."""
+        settled = self._valid_credits(self.info.credits) or 0.0
+        if not self.pending:
+            return settled
+        usage = provider_last_turn_usage(self.provider, since=self.stats_before, consume=False)
+        return settled + (self._valid_credits(getattr(usage, "credits", None)) or 0.0)
 
 
 def _timeout_context(

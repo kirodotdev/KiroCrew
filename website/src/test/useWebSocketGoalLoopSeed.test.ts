@@ -187,6 +187,81 @@ describe('useWebSocket automation seed vs live frames', () => {
     expect(queryClient.getQueryData(['session-automation', LOOP.slot_key])).toEqual(newer)
   })
 
+  it('carries a running per-slot cold read into the sidebar map (#24787)', async () => {
+    renderHook(() => useWebSocket(), { wrapper })
+    act(() => { WS_INSTANCES[0].simulateOpen() })
+
+    // The chat page's cold read lands in React Query only, never in Redux.
+    const coldRead = normalizeAutomationRecord({ ...LOOP, cycle_count: 95, max_cycles: 400 })
+    queryClient.setQueryData(['session-automation', LOOP.slot_key], coldRead)
+
+    await act(async () => {
+      seedDeferred.resolve({ enabled: true, loops: [LOOP] })
+      await Promise.all([seedDeferred.promise, resolveEmptyMonitors()])
+    })
+
+    expect(automations()[LOOP.slot_key]).toMatchObject({ cycleCount: 95, maxCycles: 400 })
+  })
+
+  it('does not let a cold read that lands after a stop frame restore the chip', async () => {
+    const freshLegacy = newDeferred()
+    const freshMonitors = newDeferred()
+    vi.mocked(api.autonudgeList)
+      .mockImplementationOnce(() => seedDeferred.promise as ReturnType<typeof api.autonudgeList>)
+      .mockImplementationOnce(() => freshLegacy.promise as ReturnType<typeof api.autonudgeList>)
+    vi.mocked(api.monitorsList)
+      .mockImplementationOnce(() => monitorSeedDeferred.promise as ReturnType<typeof api.monitorsList>)
+      .mockImplementationOnce(() => freshMonitors.promise as ReturnType<typeof api.monitorsList>)
+    renderHook(() => useWebSocket(), { wrapper })
+    act(() => { WS_INSTANCES[0].simulateOpen() })
+    await act(async () => {
+      seedDeferred.resolve({ enabled: true, loops: [] })
+      await Promise.all([seedDeferred.promise, resolveEmptyMonitors()])
+    })
+
+    // The chat page's cold read starts while the loop still runs.
+    const coldRead = newDeferred()
+    void queryClient.fetchQuery({
+      queryKey: ['session-automation', LOOP.slot_key],
+      queryFn: () => coldRead.promise,
+    }).catch(() => {})
+    act(() => {
+      WS_INSTANCES[0].simulateMessage({
+        type: 'autonudge_state',
+        data: { event: 'expired', slot: LOOP.slot_key, loop: { ...LOOP, active: false } },
+      })
+    })
+    act(() => { WS_INSTANCES[0].simulateOpen() })
+
+    await act(async () => {
+      coldRead.resolve(normalizeAutomationRecord(LOOP))
+      await coldRead.promise
+      await Promise.resolve()
+    })
+    await act(async () => {
+      freshLegacy.resolve({ enabled: true, loops: [{ ...LOOP, active: false }] })
+      freshMonitors.resolve({ enabled: true, monitors: [] })
+      await Promise.all([freshLegacy.promise, freshMonitors.promise])
+    })
+
+    expect(automations()[LOOP.slot_key]).toBeUndefined()
+  })
+
+  it('does not carry a stopped per-slot cold read into the sidebar map', async () => {
+    renderHook(() => useWebSocket(), { wrapper })
+    act(() => { WS_INSTANCES[0].simulateOpen() })
+
+    queryClient.setQueryData(['session-automation', LOOP.slot_key],
+      normalizeAutomationRecord({ ...LOOP, active: false }))
+
+    await act(async () => {
+      seedDeferred.resolve({ enabled: true, loops: [LOOP] })
+      await Promise.all([seedDeferred.promise, resolveEmptyMonitors()])
+    })
+
+    expect(automations()[LOOP.slot_key]).toBeUndefined()
+  })
+
   it('does not overwrite a per-slot snapshot written after the seed started', async () => {
     renderHook(() => useWebSocket(), { wrapper })
     act(() => { WS_INSTANCES[0].simulateOpen() })

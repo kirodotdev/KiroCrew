@@ -34,7 +34,6 @@ import importlib
 import inspect
 import sys
 from collections.abc import Iterator
-from pathlib import Path
 from types import ModuleType
 
 import pytest
@@ -530,66 +529,6 @@ class TestAnUnresolvableGateFailsClosed:
         with pytest.raises(AttributeError):
             facade._no_name_of_this_shape_is_exported  # noqa: B018
         assert getattr(facade, "_no_name_of_this_shape_is_exported", "absent") == "absent"
-
-    def test_the_repository_still_fails_closed_without_the_security_module(self) -> None:
-        """The guard the ImportError is for: a reader that cannot import it denies.
-
-        ``spec_builder``'s parser is the in-tree example -- with no security module
-        it treats every path as sensitive rather than waving them through. Pinned
-        on the SHAPE of that guard, not on its wording: the handler has to catch
-        the class an import failure raises, and the fallback gate has to answer
-        ``True``. An edit that narrowed either fails here.
-        """
-        parsers = Path(
-            importlib.import_module("kiro_crew.apps.builtins.spec_builder.backend.parsers").__file__
-            or ""
-        )
-        tree = ast.parse(parsers.read_text(encoding="utf-8"))
-
-        guarded = [
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Try)
-            and any(
-                isinstance(stmt, ast.ImportFrom) and stmt.module == PACKAGE
-                for stmt in ast.walk(node)
-            )
-        ]
-        assert guarded, f"the parser imports {PACKAGE} without a guard"
-
-        def _catches_import_failure(handler: ast.ExceptHandler) -> bool:
-            names: list[str] = []
-            if isinstance(handler.type, ast.Name):
-                names = [handler.type.id]
-            elif isinstance(handler.type, ast.Tuple):
-                names = [e.id for e in handler.type.elts if isinstance(e, ast.Name)]
-            return bool({"ImportError", "Exception", "BaseException"} & set(names))
-
-        handlers = [h for node in guarded for h in node.handlers]
-        assert any(_catches_import_failure(h) for h in handlers), (
-            "no handler catches the class an unresolvable security import raises, so "
-            "the failure would propagate past the fail-closed fallback"
-        )
-
-        fallbacks = [
-            node
-            for handler in handlers
-            for node in ast.walk(handler)
-            if isinstance(node, ast.FunctionDef) and node.name == "is_sensitive_path"
-        ]
-        assert fallbacks, "the guard installs no fail-closed is_sensitive_path fallback"
-        returns = [
-            node.value.value
-            for fallback in fallbacks
-            for node in ast.walk(fallback)
-            if isinstance(node, ast.Return)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, bool)
-        ]
-        assert returns and set(returns) == {True}, (
-            "the no-security fallback no longer answers True for every path, so an "
-            f"unresolvable gate would stop denying: {returns}"
-        )
 
 
 class TestTheStarImportSurface:

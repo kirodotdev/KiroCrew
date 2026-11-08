@@ -1,12 +1,13 @@
 // The reactive token re-mint budget, the mc-switch-instance gate, the load-timeout
 // verdict, the iframe-mounted journal and mc-embedded-boot attribution are tested in
 // InstancesViewport.paneLoad.test.tsx; both suites share InstancesViewportTestUtils.tsx.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest'
 import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstancesViewport from '../components/InstancesViewport'
 import { removeWarm, setActiveId, setWarm } from '../store/instancesSlice'
+import { connectInstanceInto } from '../lib/connectInstance'
 import {
   consumeChatHandoff,
   installSoftNavigate,
@@ -15,6 +16,8 @@ import {
 } from '../utils/errorReport'
 import { __resetInstanceFailuresForTests } from '../utils/instanceFailureReport'
 import { mockConnectedCd1 } from './InstancesViewportTestUtils'
+import { CHAT_COMPLETE_NOTIFY_KEY, saveChatCompleteNotify } from '../hooks/chatCompleteNotify'
+import { namedCeiling } from './namedCeiling'
 
 // The postinstall patch (scripts/patch-happy-dom-iframe.mjs) makes happy-dom's
 // disabled-iframe path dispatch 'load' instead of throwing DOMException when
@@ -60,12 +63,17 @@ vi.mock('../api/client', () => ({
     updateInstance: vi.fn().mockResolvedValue({}),
     addInstance: vi.fn().mockResolvedValue({ id: 'added-1' }),
     refreshInstanceToken: vi.fn().mockResolvedValue({ state: 'connected', local_port: 7778, token: 'tok' }),
+    themes: vi.fn().mockResolvedValue({ themes: [] }), // unmocked, the theme catalog read retries forever
   },
 }))
 import { api } from '../api/client'
 
+const defaultConnectInstance = vi.mocked(api.connectInstance).getMockImplementation()!
+
 beforeEach(() => {
   vi.clearAllMocks()
+  // clearAllMocks keeps implementations, so restore the connect default between tests.
+  vi.mocked(api.connectInstance).mockReset().mockImplementation(defaultConnectInstance)
   vi.mocked(isEmbeddedPane).mockReturnValue(false)
   // Module-level state in the failure recorder: without this the de-dup from an
   // earlier test would suppress the report a later one asserts on.
@@ -653,6 +661,24 @@ describe('InstancesViewport', () => {
     __resetFocusMode()
   })
 
+  it('relays the chat-complete toast opt-in and re-sends it when Settings flips it (#20191)', async () => {
+    onTestFinished(() => { localStorage.removeItem(CHAT_COMPLETE_NOTIFY_KEY) })
+    mockConnectedCd1()
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: { 'cd-1': true } },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await waitFor(() => expect(document.querySelector('iframe')).toBeTruthy())
+    const post = vi.fn()
+    Object.defineProperty(document.querySelector('iframe'), 'contentWindow', { get: () => ({ postMessage: post }) })
+    const lastModel = () => post.mock.calls.at(-1)?.[0]
+
+    act(() => { saveChatCompleteNotify(true) })
+    await waitFor(() => expect(lastModel()).toMatchObject({ type: 'mc-host-model', chatCompleteNotify: true }))
+    act(() => { saveChatCompleteNotify(false) })
+    await waitFor(() => expect(lastModel()).toMatchObject({ type: 'mc-host-model', chatCompleteNotify: false }))
+  })
+
   it('takes chrome visibility from the ACTIVE pane only', async () => {
     // A pane's peeked header is the only thing on screen when that pane fills the
     // window, so the host has to act on its report — the traffic lights are AppKit
@@ -678,7 +704,7 @@ describe('InstancesViewport', () => {
     await waitFor(() => expect(focusChromeVisible()).toBe(true))
 
     // A report from a pane that is NOT active is ignored.
-    setFocusChromeVisible(false)
+    act(() => { setFocusChromeVisible(false) })
     // Separate act: the component tracks the active id in a ref written during
     // render, so the switch has to COMMIT before the message is delivered —
     // otherwise the listener still sees cd-1 as active and the test would pass
@@ -801,6 +827,121 @@ describe('InstancesViewport', () => {
       const { w1, post1 } = await renderTwoPanes()
       await send(watch('w-1'), 7778, w1)
       expect(post1).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('trackpad finger phases for a pane (mc-scroll-touch-watch)', () => {
+    // A remote crew's pane reads its own wheels, but the real finger-down /
+    // finger-up comes only from the shell's preload, which a cross-origin pane
+    // does not have. The host listens for it and forwards each phase to the pane
+    // on screen, at that pane's exact origin.
+    function installBridge() {
+      const bridge = { subs: 0, stops: 0, emit: null as ((phase: unknown) => void) | null }
+      ;(window as Window & { electronAPI?: unknown }).electronAPI = {
+        onScrollTouch: (cb: (phase: unknown) => void) => {
+          bridge.subs += 1
+          bridge.emit = cb
+          return () => { bridge.stops += 1; bridge.emit = null }
+        },
+      }
+      return bridge
+    }
+    afterEach(() => { delete (window as Window & { electronAPI?: unknown }).electronAPI })
+
+    const frameFor = (port: number) =>
+      [...document.querySelectorAll('iframe')].find(f => f.src.includes(`:${port}`)) as HTMLIFrameElement
+    const send = (data: unknown, port: number, source: Window | null) =>
+      act(async () => {
+        window.dispatchEvent(new MessageEvent('message', {
+          data, origin: `http://127.0.0.1:${port}`, source,
+        }))
+      })
+    async function renderTwoPanes() {
+      mockConnectedCd1()
+      const store = createTestStore({
+        instances: {
+          warm: { 'cd-1': { port: 7778, token: 'tok' }, 'cd-2': { port: 7779, token: 'tok2' } },
+          activeId: 'cd-1', mru: ['cd-1', 'cd-2'], unread: {}, ready: { 'cd-1': true, 'cd-2': true },
+        },
+      })
+      const view = renderWithProviders(<InstancesViewport />, { store })
+      await waitFor(() => expect(frameFor(7778)).toBeDefined())
+      await waitFor(() => expect(frameFor(7779)).toBeDefined())
+      const fakeWindow = (el: HTMLIFrameElement) => {
+        const w = { postMessage: vi.fn() } as unknown as Window
+        Object.defineProperty(el, 'contentWindow', { configurable: true, get: () => w })
+        return w
+      }
+      const w1 = fakeWindow(frameFor(7778))
+      const w2 = fakeWindow(frameFor(7779))
+      return { store, view, w1, w2, post1: vi.mocked(w1.postMessage), post2: vi.mocked(w2.postMessage) }
+    }
+    const watch = (id: string) => ({ type: 'mc-scroll-touch-watch', v: 1, id })
+    const phases = (post: ReturnType<typeof vi.fn>) =>
+      post.mock.calls.filter(([d]) => (d as { type?: string }).type === 'mc-scroll-touch')
+
+    it('forwards each phase to the active pane only, at its own origin', async () => {
+      const bridge = installBridge()
+      const { store, w1, w2, post1, post2 } = await renderTwoPanes()
+
+      await send(watch('t-1'), 7778, w1)
+      await send(watch('t-2'), 7779, w2)
+      // One bridge subscription however many panes listen.
+      expect(bridge.subs).toBe(1)
+
+      act(() => { bridge.emit!('begin') })
+      expect(post1).toHaveBeenLastCalledWith(
+        { type: 'mc-scroll-touch', v: 1, id: 't-1', phase: 'begin' }, 'http://127.0.0.1:7778',
+      )
+      expect(phases(post2)).toHaveLength(0)
+
+      // The pane on screen changes: the phases follow it.
+      await act(async () => { store.dispatch(setActiveId('cd-2')) })
+      act(() => { bridge.emit!('end') })
+      expect(post2).toHaveBeenLastCalledWith(
+        { type: 'mc-scroll-touch', v: 1, id: 't-2', phase: 'end' }, 'http://127.0.0.1:7779',
+      )
+      expect(phases(post1)).toHaveLength(1)
+      for (const call of [...post1.mock.calls, ...post2.mock.calls]) expect(call[1]).not.toBe('*')
+    })
+
+    it('ignores a request from the wrong frame, a bad id or an unknown version', async () => {
+      const bridge = installBridge()
+      const { w1, w2 } = await renderTwoPanes()
+      // cd-1's origin, but the message came from another frame's window.
+      await send(watch('t-spoof'), 7778, w2)
+      await send({ ...watch('t-v2'), v: 2 }, 7778, w1)
+      await send({ type: 'mc-scroll-touch-watch', v: 1, id: 'x'.repeat(65) }, 7778, w1)
+      await send({ type: 'mc-scroll-touch-watch', v: 1, id: 7 }, 7778, w1)
+      expect(bridge.subs).toBe(0)
+    })
+
+    it("drops the bridge on the last pane's cancel, and only for its own watch", async () => {
+      const bridge = installBridge()
+      const { w1, w2, post1 } = await renderTwoPanes()
+      await send(watch('t-1'), 7778, w1)
+      await send({ type: 'mc-scroll-touch-cancel', v: 1, id: 'other' }, 7778, w1)
+      // Another frame cannot cancel cd-1's watch.
+      await send({ type: 'mc-scroll-touch-cancel', v: 1, id: 't-1' }, 7778, w2)
+      expect(bridge.stops).toBe(0)
+      await send({ type: 'mc-scroll-touch-cancel', v: 1, id: 't-1' }, 7778, w1)
+      expect(bridge.stops).toBe(1)
+      expect(bridge.emit).toBeNull()
+      expect(phases(post1)).toHaveLength(0)
+    })
+
+    it('releases the bridge on unmount', async () => {
+      const bridge = installBridge()
+      const { view, w1 } = await renderTwoPanes()
+      await send(watch('t-1'), 7778, w1)
+      view.unmount()
+      expect(bridge.stops).toBe(1)
+    })
+
+    it('stays silent without a native bridge', async () => {
+      const { w1, post1 } = await renderTwoPanes()
+      await send(watch('t-1'), 7778, w1)
+      expect(phases(post1)).toHaveLength(0)
     })
   })
 
@@ -985,9 +1126,9 @@ describe('InstancesViewport', () => {
 
       // Focus mode OFF: a switch must NOT touch chrome state (it is
       // unconditionally visible and owned by the surfaces themselves).
-      setFocusModeEnabled(false)
+      act(() => { setFocusModeEnabled(false) })
       expect(focusModeEnabled()).toBe(false)
-      setFocusChromeVisible(true)
+      act(() => { setFocusChromeVisible(true) })
       await act(async () => { store.dispatch(setActiveId('cd-2')) })
       expect(focusChromeVisible()).toBe(true)
     } finally {
@@ -1004,12 +1145,9 @@ describe('InstancesViewport', () => {
     expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
 
     // The embedded SPA announces readiness from its validated loopback origin.
-    window.dispatchEvent(
-      new MessageEvent('message', {
-        data: { type: 'mc-embedded-ready', v: 1 },
-        origin: 'http://127.0.0.1:7778',
-      }),
-    )
+    await act(async () => {
+      window.dispatchEvent(new MessageEvent('message', { data: { type: 'mc-embedded-ready', v: 1 }, origin: 'http://127.0.0.1:7778' }))
+    })
     await waitFor(() => expect(store.getState().instances.ready['cd-1']).toBe(true))
     await waitFor(() => expect(screen.queryByText(/Loading pane/i)).toBeNull())
   })
@@ -1145,6 +1283,28 @@ describe('InstancesViewport', () => {
     expect(screen.queryByText(/ssh unreachable/i)).toBeNull()
   })
 
+  it('an auto-connect refusal for the active crew shows its reason on the panel (#29777)', async () => {
+    // The tunnel is up but the remote gateway is not: the poll says connected
+    // with no error, and every connect is refused. The refusal comes from the
+    // auto-connect fan-out, not this viewport's Retry.
+    mockConnectedCd1()
+    vi.mocked(api.connectInstance).mockRejectedValue(new Error('check that its remote gateway is running'))
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
+    })
+    renderWithProviders(<InstancesViewport />, { store })
+    await act(async () => {
+      await connectInstanceInto(store.dispatch, 'cd-1', 'auto-connect').catch(() => {})
+    })
+    expect(await screen.findByTestId('instances-viewport-panel-error')).toHaveTextContent(
+      'check that its remote gateway is running',
+    )
+    // The reason the panel shows is the one the agent hand-off carries.
+    installSoftNavigate(() => {})
+    await userEvent.click(await screen.findByRole('button', { name: /agent/i }))
+    expect(consumeChatHandoff() ?? '').toContain('check that its remote gateway is running')
+  })
+
 
   describe('script-error heal (poisoned HTTP cache)', () => {
     // The pane's index.html shell posts this when its entry <script type=module>
@@ -1154,12 +1314,14 @@ describe('InstancesViewport', () => {
     // reloads -- exactly once per Retry, so a 404 the gateway is really serving
     // cannot spin clear/reload forever.
     const scriptError = (origin = 'http://127.0.0.1:7778') =>
-      window.dispatchEvent(
-        new MessageEvent('message', {
-          data: { type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: `${origin}/assets/main-krfrL6rl.js?token=x` },
-          origin,
-        }),
-      )
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            data: { type: 'mc-embedded-boot', v: 1, stage: 'script-error', src: `${origin}/assets/main-krfrL6rl.js?token=x` },
+            origin,
+          }),
+        )
+      })
     const withBridge = (impl: (origin: string) => Promise<boolean>) => {
       const clear = vi.fn(impl)
       ;(window as unknown as { electronAPI: unknown }).electronAPI = { clearPaneHttpCache: clear }
@@ -1228,9 +1390,9 @@ describe('InstancesViewport', () => {
       expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
       // The retraction is not gated on the heal budget: a second script-error
       // (budget spent, no reload) still leaves the pane un-ready.
-      window.dispatchEvent(
-        new MessageEvent('message', { data: { type: 'mc-embedded-ready', v: 1 }, origin: 'http://127.0.0.1:7778' }),
-      )
+      act(() => {
+        window.dispatchEvent(new MessageEvent('message', { data: { type: 'mc-embedded-ready', v: 1 }, origin: 'http://127.0.0.1:7778' }))
+      })
       await waitFor(() => expect(store.getState().instances.ready['cd-1']).toBe(true))
       scriptError()
       await waitFor(() => expect(store.getState().instances.ready['cd-1']).toBeUndefined())
@@ -1281,7 +1443,8 @@ describe('InstancesViewport', () => {
       const store = createTestStore({
         instances: { warm: { 'cd-1': { port: 7778, token: 'tok' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {}, ready: {} },
       })
-      renderWithProviders(<InstancesViewport />, { store })
+      const { queryClient } = renderWithProviders(<InstancesViewport />, { store })
+      await waitFor(() => expect(queryClient.isFetching()).toBe(0), namedCeiling('PANE_READS_SETTLED', 5000))
       expect(await screen.findByText(/Loading pane/i)).toBeInTheDocument()
       const before = document.querySelector('iframe') as HTMLIFrameElement
       scriptError('http://127.0.0.1:9999')

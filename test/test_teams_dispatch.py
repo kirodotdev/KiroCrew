@@ -148,6 +148,13 @@ class FakeSessions:
         self.acquired.append(key)
         return self._acquire
 
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
+
     def has_session(self, key) -> bool:
         return self._p is not None
 
@@ -447,6 +454,8 @@ class TestCommands:
 
         dropped = [call.kwargs["route"].attachments_dropped for call in spool.await_args_list]
         assert dropped == [0, 1]
+        names = [call.kwargs["route"].attachment_names for call in spool.await_args_list]
+        assert names == [(), ("log.txt",)]
 
     @pytest.mark.asyncio
     async def test_closed_admission_never_spools_a_restricted_resumed_session(

@@ -3,10 +3,12 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { api, ApiError, type SkillScriptValidation } from '../../api/client'
+import ProjectSkillsPlatformHint from '../../components/ProjectSkillsPlatformHint'
 import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
 import AskAgentButton from '../../components/AskAgentButton'
 import { Badge, Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
+import HoverTip from '../../components/HoverTip'
 import Modal from '../../components/Modal'
 import SkillForm, { assembleSkillContent, parseSkillContent, skillPathProblem, skillPostPath, type SkillFormData } from '../../components/SkillForm'
 import SkillDirectoryBrowser from '../../components/SkillDirectoryBrowser'
@@ -15,11 +17,15 @@ import DiffBlock from '../../components/DiffBlock'
 import ErrorNotice from '../../components/ErrorNotice'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useListDetailView } from '../../hooks/useListDetailView'
+import { useScrollEdgesY } from '../../hooks/useScrollEdges'
+import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 import SkillContextBudget from './SkillContextBudget'
-import { SKILL_SORTS, sortSkills, type SkillSort } from './skillSort'
+import { SKILL_SORTS, pendingCreatedAt, sortByCreated, sortSkills, type SkillSort } from './skillSort'
+import { bestFilterMatch } from '../../utils/filterSelection'
 import SimpleSelect from '../../components/SimpleSelect'
+import { useConfirm } from '../../components/ConfirmDialog'
 
 import { Trans } from 'react-i18next'
 
@@ -28,6 +34,7 @@ import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
+import { putRowBack, takeRow } from '../../lib/optimisticRemoval'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
 /**
@@ -95,6 +102,7 @@ function sourceLabel(source: Skill['source']): string | null {
 }
 
 export default function SkillsTab() {
+  const { confirm, cancel, confirmDialog } = useConfirm()
   const provider = useProvider()
   const queryClient = useQueryClient()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -139,6 +147,9 @@ export default function SkillsTab() {
   // Entering the budget view PUSHES a history entry so browser Back returns to
   // Skills; leaving via the in-app affordance replaces (pops back cleanly).
   const viewBudget = searchParams.get('view') === 'budget'
+  useEffect(() => {
+    if (viewBudget) cancel()
+  }, [viewBudget, cancel])
   const showBudget = () => setSearchParams(prev => { const next = new URLSearchParams(prev); next.set('view', 'budget'); return next })
   const hideBudget = () => setSearchParams(prev => { const next = new URLSearchParams(prev); next.delete('view'); return next }, { replace: true })
 
@@ -147,7 +158,7 @@ export default function SkillsTab() {
   // justification that Context Budget is a deliberate, user-initiated path.
   // The doorway label is now static; the data is fetched when the user opens it.
 
-  const { data: skills = [], isLoading, isFetching, refetch } = useQuery<Skill[]>({
+  const { data: skills = [], isLoading, isFetching, refetch, error: listError } = useQuery<Skill[]>({
     queryKey: ['skills'],
     queryFn: () => api.skills(),
     // Fetch fresh on each mount so an approved/edited skill is reflected the
@@ -165,6 +176,16 @@ export default function SkillsTab() {
   // runs must not open an editor on the skill the user just left.
   const selectedKeyRef = useRef(selectedKey)
   useEffect(() => { selectedKeyRef.current = selectedKey }, [selectedKey])
+  // Gives mutation callbacks a fresh view of detailEditing without capturing
+  // a stale closure value: the deleteSkill onSuccess fires after an await,
+  // by which point the user may have entered edit mode since the mutation
+  // started, so reading detailEditing directly from the closure yields the
+  // value at call time, not the current value. Written during render (not in
+  // an effect) so the ref is current before any passive effects flush — a
+  // useEffect sync would share the same post-commit batch as useMutation's
+  // observer.setOptions and lose the same race this ref is meant to close.
+  const detailEditingRef = useRef(detailEditing)
+  detailEditingRef.current = detailEditing
 
   const createSkill = useMutation({
     mutationFn: ({ name, content }: { name: string; content: string }) => api.createSkill(name, content),
@@ -283,20 +304,25 @@ export default function SkillsTab() {
       // report a stale outcome as current. A fresh failure re-sets it.
       setDeleteError(null)
       await queryClient.cancelQueries({ queryKey: ['skills'] })
-      const prev = queryClient.getQueryData<Skill[]>(['skills'])
+      const removed = takeRow(queryClient.getQueryData<Skill[]>(['skills']), s => s.key === key)
       queryClient.setQueryData<Skill[]>(['skills'], old => old?.filter(s => s.key !== key) ?? [])
-      return { prev }
+      return { removed }
     },
-    onSuccess: () => {
+    onSuccess: (_data, key) => {
+      // A row picked while the delete was in flight is the user's choice now,
+      // so only the deleted skill's own selection is torn down.
       // An OPEN editor must survive this teardown, whatever its save state:
       // dropping the selection or the editing flag unmounts it (a null
       // selection alone does, via the placeholder branch), which discards a
       // typed-but-unsaved draft outright and leaves an in-flight PUT's later
-      // rejection with nothing to render it. `!detailEditing` covers both — a
-      // pending save can only exist while the editor is open, since every
-      // path that leaves it is disabled or no-ops during the save window.
-      // Outside the editor, the original teardown applies.
-      if (!detailEditing) {
+      // rejection with nothing to render it. `!detailEditingRef.current` covers
+      // both — a pending save can only exist while the editor is open, since
+      // every path that leaves it is disabled or no-ops during the save window.
+      // Outside the editor, the original teardown applies. The ref is used
+      // rather than the state variable to avoid a stale closure: onSuccess
+      // executes after an async await, and the user may have entered edit mode
+      // after the mutation was called but before it resolved.
+      if (!detailEditingRef.current && selectedKeyRef.current === key) {
         setSelectedKey(null)
         setDetailEditing(false)
       }
@@ -306,15 +332,17 @@ export default function SkillsTab() {
       queryClient.invalidateQueries({ queryKey: ['discover-skills'] })
     },
     onError: (err: Error, key, context) => {
-      if (context?.prev) queryClient.setQueryData(['skills'], context.prev)
-      // Rollback first (above, unchanged), then say why the row came back:
+      // Only this skill's row comes back: a whole-list snapshot would also
+      // revive a skill another delete removed while this one was in flight.
+      queryClient.setQueryData<Skill[]>(['skills'], old => putRowBack(old, context?.removed, s => s.key === key))
+      // Rollback first (above), then say why the row came back:
       // reversing the optimistic write alone re-renders the deleted row with
       // no explanation, which reads as the delete silently not working.
       // The report is looked up by the ORIGINAL message before it is framed.
       // The banner names the skill the way the ROW does (its display name,
-      // from the rollback snapshot — guaranteed to hold the deleted skill),
-      // so the reader matches banner to row without decoding the raw key.
-      const target = context?.prev?.find(s => s.key === key)
+      // from the row this delete removed), so the reader matches banner to
+      // row without decoding the raw key.
+      const target = context?.removed?.row
       const code = err instanceof ApiError ? parseErrorCode(err.body) : undefined
       // The frame ALWAYS carries the skill name and the word "delete" — a bare
       // hint next to several rows would name neither what failed nor on which
@@ -351,18 +379,33 @@ export default function SkillsTab() {
   // Narrow viewport shows one pane at a time; a desktop shows both.
   const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
 
+  // A long list is cut at the pane's height, and with the scrollbar hidden
+  // until scroll a mouse user saw a list that just ended. The bottom fade says
+  // more rows sit below (see MORE_BELOW_MASK). A filter or sort changes the
+  // rows, not the scroller's own box, so no observer on the scroller sees it.
+  const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
+  useEffect(() => { remeasureList() }, [allFiltered, remeasureList])
+
   // Keep a valid selection: default to the first skill, and recover if the
   // current selection is filtered out or deleted.  Suspended while editing:
   // selectedSkill is derived from the *unfiltered* skills array, so the
   // editor stays mounted even if the skill is filtered out of the list —
   // auto-reselecting here would silently discard unsaved form changes.
+  // A row the user clicked stays open while the filter still shows it. A row
+  // this effect opened by itself is only a default, so a new filter moves it
+  // to the best match for what was typed.
+  const userPickedRef = useRef(false)
   useEffect(() => {
     if (detailEditing) return
     if (allFiltered.length === 0) { if (selectedKey !== null) setSelectedKey(null); return }
-    if (!selectedKey || !allFiltered.some(s => s.key === selectedKey)) {
-      setSelectedKey(allFiltered[0].key)
+    const visible = !!selectedKey && allFiltered.some(s => s.key === selectedKey)
+    if (visible && (userPickedRef.current || !skillFilter.trim())) return
+    const best = bestFilterMatch(allFiltered, skillFilter, s => [s.name, s.key, displayName(s)])
+    if (best && best.key !== selectedKey) {
+      userPickedRef.current = false
+      setSelectedKey(best.key)
     }
-  }, [allFiltered, selectedKey, detailEditing])
+  }, [allFiltered, selectedKey, detailEditing, skillFilter])
 
   // Moving on to another skill also retires a delete failure — but only one
   // the user could have SEEN: the test is the banner's own render gate
@@ -388,6 +431,7 @@ export default function SkillsTab() {
     if (detailEditing && !showDetail && selectedSkill) { openDetail(); return }
     if (!(detailEditing && showDetail)) setDeleteError(null)
     setEditReadError('')
+    userPickedRef.current = true
     setSelectedKey(s.key); setDetailEditing(false); openDetail()
   }
 
@@ -442,6 +486,7 @@ export default function SkillsTab() {
   }
 
   if (isLoading) return (<>
+    {confirmDialog}
     <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">{i18nT('pages.overview.skillsTab.skills')} <InfoTip text={i18nT('pages.overview.skillsTab.on_demand_skills_loaded_when_the_agent_determine')} /> <Btn primary disabled>{i18nT('pages.overview.skillsTab.create_new_skill')}</Btn></h4>
     <Card>
       <div className="flex items-center gap-2 mb-3"><div className="h-8 max-w-[480px] flex-1 rounded-md animate-pulse" style={{ background: 'var(--border)', opacity: 0.5 }} /></div>
@@ -455,7 +500,7 @@ export default function SkillsTab() {
   </>)
 
   // Control plane: full-page budget view, deep-linkable via ?view=budget.
-  if (viewBudget) return <SkillContextBudget onBack={hideBudget} />
+  if (viewBudget) return <>{confirmDialog}<SkillContextBudget onBack={hideBudget} /></>
 
   // One predicate for the Create button's `disabled` and its onClick guard, so
   // the two can never disagree — a keyboard activation that races the disabled
@@ -467,7 +512,9 @@ export default function SkillsTab() {
     && !createSkill.isPending
 
   return (<>
-    <PendingSkillsPanel />
+    {confirmDialog}
+    <PendingSkillsPanel sort={skillSort} />
+    <ProjectSkillsPlatformHint />
     <ProjectSkillsTrustList />
     {/* Create Skill Modal */}
     {/* The gate reads the SANITIZED name and category, not the raw ones and not
@@ -518,11 +565,16 @@ export default function SkillsTab() {
               i18nT('pages.overview.skillsTab.sort_default'),
               i18nT('pages.overview.skillsTab.sort_most_used'),
               i18nT('pages.overview.skillsTab.sort_recently_used'),
+              i18nT('pages.overview.skillsTab.sort_newest_first'),
             ]}
             value={skillSort}
             onChange={v => setSkillSort(v as SkillSort)}
           />
-          <Btn onClick={() => refetch()} disabled={isFetching} aria-label={i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
+          {/* Inert while a refresh runs, so the name carries the reason: an inert
+              "Refresh skills" reads as unavailable, not busy. `aria-disabled` plus
+              the guard, NOT `disabled`: `disabled` leaves the tab order and drops a
+              keyboard user's focus to the page for the whole refresh. */}
+          <Btn onClick={() => { if (!isFetching) void refetch() }} aria-disabled={isFetching || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-default" aria-label={isFetching ? i18nT('pages.overview.skillsTab.refreshing_skills') : i18nT('pages.overview.skillsTab.refresh_skills')} {...uiLocation('skills.refresh')}><RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} /></Btn>
         </div>
       </div>
 
@@ -546,6 +598,12 @@ export default function SkillsTab() {
            draft. */
         <ErrorNotice className="mb-3" askAgent={!detailEditing} message={deleteError?.message} report={deleteError?.report} onDismiss={() => setDeleteError(null)} testId="skill-delete-failure" />
       )}
+      {/* A failed list read, first load or Refresh. The list below is the last good
+          read, so without this a failed refresh looks like one with no changes.
+          No hand-off: an open edit session may still hold the only copy of a draft. */}
+      {listError && (
+        <ErrorNotice className="mb-3" message={listError.message} testId="skill-list-failure" />
+      )}
       {/* A save failure whose editor is NOT mounted: a viewport crossing
         * (desktop -> phone) can hide the detail pane while the edit session
         * stays latched, so a PUT that rejects afterwards has no editor to
@@ -567,20 +625,22 @@ export default function SkillsTab() {
         /* List-detail: skill list (pane 1) on the left, then the directory
          *  browser (panes 2+3: file tree + file content) on the right. */
         <div className={PANE_SHELL_CLASS}>
-          {/* Pane 1 — skill list.  ``scrollbar-overlay`` keeps the scrollbar
-           *  hidden until hover and overlays it so the row width never shifts
-           *  between scrollable and non-scrollable states. */}
-          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 overflow-y-auto scrollbar-overlay border border-border rounded-md p-2`} role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
-            {localSkills.map(renderRow)}
-            {packageSkills.length > 0 && (
-              <div className="mt-2">
-                <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1" title={i18nT('pages.overview.skillsTab.skills_from_read_only', { name: provider.labels.pluginRegistryName })}>
-                  {provider.labels.pluginRegistryName.toUpperCase()}
+          {/* Pane 1 — skill list. */}
+          {/* The rows scroll in an inner box: a mask clips everything outside
+              the masked element, so on the pane it would also fade the border. */}
+          {showList && <div className={`${isMobile ? 'w-full' : 'w-[240px]'} shrink-0 flex flex-col border border-border rounded-md`}>
+            <div ref={attachList} className={`flex-1 min-h-0 overflow-y-auto p-2 ${listEdges.bottom ? MORE_BELOW_MASK : ''}`} role="listbox" aria-label={i18nT('pages.overview.skillsTab.skills')}>
+              {localSkills.map(renderRow)}
+              {packageSkills.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-[11px] text-aim font-semibold tracking-wider px-2 py-1.5 mb-1" title={i18nT('pages.overview.skillsTab.skills_from_read_only', { name: provider.labels.pluginRegistryName })}>
+                    {provider.labels.pluginRegistryName.toUpperCase()}
+                  </div>
+                  {packageSkills.map(renderRow)}
                 </div>
-                {packageSkills.map(renderRow)}
-              </div>
-            )}
-            {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.skillsTab.no_skills_match_query', { query: skillFilter })}</div>}
+              )}
+              {allFiltered.length === 0 && <div className="text-muted/70 text-[12px] italic px-2 py-2">{i18nT('pages.overview.skillsTab.no_skills_match_query', { query: skillFilter })}</div>}
+            </div>
           </div>}
 
           {/* Panes 2+3 — directory browser, or the edit form */}
@@ -690,7 +750,16 @@ export default function SkillsTab() {
                           would clear the second's failure notice, and the
                           optimistic snapshots would restore each other's
                           rows. One delete at a time, like the create modal. */}
-                      <Btn danger disabled={deleteSkill.isPending} onClick={() => { if (deleteSkill.isPending) return; if (confirm(i18nT('pages.overview.skillsTab.delete_confirm', { name: selectedSkill.key }))) deleteSkill.mutate(selectedSkill.key) }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
+                      <Btn danger disabled={deleteSkill.isPending} onClick={async () => {
+                        if (deleteSkill.isPending) return
+                        const key = selectedSkill.key
+                        const ok = await confirm({
+                          title: i18nT('pages.overview.skillsTab.delete'),
+                          body: <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.skillsTab.delete_confirm', { name: key })}</p>,
+                          confirmLabel: i18nT('pages.overview.skillsTab.delete'),
+                        })
+                        if (ok) deleteSkill.mutate(key)
+                      }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
                     </div>
                   )}
                 </div>
@@ -699,7 +768,10 @@ export default function SkillsTab() {
                     <ErrorNotice askAgent title={i18nT('pages.overview.skillsTab.edit_read_failed_title')} message={editReadError} messagePlacement="below" onDismiss={() => setEditReadError('')} testId="skill-edit-read-failure" />
                   </div>
                 )}
-                <InjectionRow skill={selectedSkill} />
+                {/* Keyed like the browser below: the row's pending and error
+                    state belongs to one skill and must not follow the
+                    selection to the next. */}
+                <InjectionRow key={selectedSkill.key} skill={selectedSkill} />
                 <div className="flex-1 min-h-0 p-3">
                   <SkillDirectoryBrowser key={selectedSkill.key} skillKey={selectedSkill.key} skill={selectedSkill} />
                 </div>
@@ -830,6 +902,9 @@ interface PendingDetail {
   /** True when the live skill advanced past the version this was merged from. */
   stale_base?: boolean
   script_validation?: SkillScriptValidation
+  /** sha256 of the candidate as this read served it. Approve sends it back and
+   *  the server refuses (409 `pending_skill_changed`) if the file moved since. */
+  content_sha256?: string
 }
 
 /** A refused approve, parsed from the ApiError body (code + findings report). */
@@ -876,9 +951,10 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   /** True when the queue holds a flagged candidate — the only shape where the
       disabled fade can be misread as a validation state. */
   mixedQueue?: boolean
-  onApprove: (slug: string) => void
-  onDismiss: (slug: string) => void
+  onApprove: (slug: string, contentSha256: string) => void
+  onDismiss: (slug: string, contentSha256?: string) => void
 }) {
+  const { confirm, confirmDialog } = useConfirm()
   const [open, setOpen] = useState(false)
   const rowRef = useRef<HTMLDivElement>(null)
   // Deliberately an effect and not a `useState(autoOpen)` initializer: the panel
@@ -910,6 +986,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   })
   return (
     <div ref={rowRef} className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}>
+      {confirmDialog}
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-strong truncate">
@@ -945,7 +1022,7 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
               : p.description}
           </div>
         </div>
-        <Btn onClick={() => setOpen(o => !o)}>{open ? i18nT('pages.overview.skillsTab.hide') : i18nT('pages.overview.skillsTab.review')}</Btn>
+        <Btn aria-expanded={open} onClick={() => setOpen(o => !o)}>{open ? i18nT('pages.overview.skillsTab.hide') : i18nT('pages.overview.skillsTab.review')}</Btn>
         {/* An update whose target was archived/removed after staging has nothing
             to apply, and a stale update (live moved on since the merge) would
             replace the newer approved content — the backend refuses both, so keep
@@ -955,8 +1032,8 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
           // while it flies -- and stays there when it fails. Either way what is
           // shown is not known to be the file Approve would promote.
           const detailUnconfirmed = detailFetchStatus !== 'idle' || !!detailReadError
-          const approveDisabled = !open || !detail || detailUnconfirmed || (isUpdate && (!detail.diff || !!detail.stale_base))
-          return (
+          const approveDisabled = !open || !detail || !detail.content_sha256 || detailUnconfirmed || (isUpdate && (!detail.diff || !!detail.stale_base))
+          const approve = (
             <Btn
               /* Non-primary while the candidate is flagged AND the button is
                  enabled: a bright primary button beside "approving will be
@@ -966,15 +1043,31 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
                  (grey-vs-faded-purple on a mixed queue read as two different
                  controls). It stays ENABLED when flagged — the server is the
                  authority and a fixed script can be retried — and the visible
-                 hint under the row header says so in plain words. No `title`:
-                 it would restate the already-visible hint. */
+                 hint under the row header says so in plain words. No `title`
+                 for the flagged state: it would restate that visible hint. */
               primary={approveDisabled || p.script_validation?.ok !== false}
-              disabled={approveDisabled}
-              onClick={() => onApprove(p.slug)}
+              /* Collapsed, aria-disabled rather than disabled: a disabled
+                 button gets no hover or focus, so its tip could never say
+                 that Review comes first. The click guard below holds it, and
+                 the aria-disabled classes repeat a disabled primary's look. */
+              aria-disabled={!open || undefined}
+              disabled={open && approveDisabled}
+              className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
+              onClick={() => { if (!approveDisabled && detail?.content_sha256) onApprove(p.slug, detail.content_sha256) }}
             >{i18nT('pages.overview.skillsTab.approve')}</Btn>
           )
+          return open ? approve : <HoverTip label={i18nT('pages.overview.skillsTab.approve_review_first')}>{approve}</HoverTip>
         })()}
-        <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }))) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
+        <Btn danger onClick={async () => {
+          const slug = p.slug
+          const contentSha256 = detail?.content_sha256
+          const ok = await confirm({
+            title: i18nT('pages.overview.skillsTab.dismiss'),
+            body: <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name })}</p>,
+            confirmLabel: i18nT('pages.overview.skillsTab.dismiss'),
+          })
+          if (ok) onDismiss(slug, contentSha256)
+        }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
       </div>
       {p.script_validation?.ok === false && approveRefusal?.code !== 'script_validation_failed' && (
         /* Visible everywhere the flagged badge is, collapsed AND expanded:
@@ -1146,7 +1239,8 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   )
 }
 
-function PendingSkillsPanel() {
+function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
   const qc = useQueryClient()
   // Shared ['skills'] cache (same key/fn as the tab's own list): read-only
   // here, resolving a not-found notice's "approved or dismissed" — whether a
@@ -1208,6 +1302,12 @@ function PendingSkillsPanel() {
   // Stable identity per fetch: the prune effect below depends on this, and a
   // fresh array every render would re-run it continuously.
   const pending: PendingSkill[] = useMemo(() => data?.pending ?? [], [data])
+  // Display order only: candidates carry no usage, so only Newest first
+  // reorders them; every lookup by slug keeps reading `pending`.
+  const shownPending = useMemo(
+    () => (sort === 'created' ? sortByCreated(pending, pendingCreatedAt) : pending),
+    [pending, sort],
+  )
   // Why the last Approve click was refused, per slug. Server prose stays out of
   // the UI: the coded body picks a catalog message, and the findings report
   // renders next to the card so the user learns WHAT was flagged.
@@ -1273,8 +1373,9 @@ function PendingSkillsPanel() {
     })
   }, [pending, isSuccess])
   const approve = useMutation({
-    mutationFn: (slug: string) => api.approvePendingSkill(slug),
-    onMutate: (slug: string) => {
+    mutationFn: ({ slug, contentSha256 }: { slug: string; contentSha256: string }) =>
+      api.approvePendingSkill(slug, contentSha256),
+    onMutate: ({ slug }) => {
       // A retry starts clean; a stale refusal must not outlive the click that
       // supersedes it. The panel-level notice is cleared ONLY when it is about
       // THIS candidate: approving row A must not erase an unresolved failure
@@ -1288,7 +1389,7 @@ function PendingSkillsPanel() {
         return next
       })
     },
-    onError: (err, slug) => {
+    onError: (err, { slug }) => {
       let code: string | undefined
       let reason: string | undefined
       const report: Record<string, string[]> = {}
@@ -1313,6 +1414,8 @@ function PendingSkillsPanel() {
           ? i18nT('pages.overview.skillsTab.approve_failed_script_validation')
           : code === 'live_skill_exists'
             ? i18nT('pages.overview.skillsTab.approve_failed_live_exists')
+            : code === 'pending_skill_changed'
+            ? i18nT('pages.overview.skillsTab.approve_failed_changed')
             : code === 'pending_skill_not_found'
               ? i18nT('pages.overview.skillsTab.approve_failed_not_found')
               : i18nT('pages.overview.skillsTab.approve_failed_generic', {
@@ -1338,6 +1441,11 @@ function PendingSkillsPanel() {
           candidateCreatedAt: pending.find(p => p.slug === slug)?.created_at,
         },
       }))
+      // The file changed after the read the user approved: read it again so the
+      // panel shows what is on disk now; Approve waits for that read to land.
+      if (code === 'pending_skill_changed') {
+        qc.invalidateQueries({ queryKey: ['skills-pending-detail', slug] })
+      }
       // A refused approve can mean the queue moved under us (approved/dismissed
       // elsewhere) — refetch so a not-found card disappears instead of lingering.
       // The refetch UNMOUNTS the row and its per-row notice with it, which
@@ -1379,7 +1487,7 @@ function PendingSkillsPanel() {
         qc.invalidateQueries({ queryKey: ['skills'] })
       }
     },
-    onSuccess: (_data, slug) => {
+    onSuccess: (_data, { slug }) => {
       setApproveRefusals(prev => {
         if (!(slug in prev)) return prev
         const next = { ...prev }
@@ -1406,14 +1514,15 @@ function PendingSkillsPanel() {
     },
   })
   const dismiss = useMutation({
-    mutationFn: (slug: string) => api.dismissPendingSkill(slug),
-    onMutate: (slug: string) => {
+    mutationFn: ({ slug, contentSha256 }: { slug: string; contentSha256?: string }) =>
+      api.dismissPendingSkill(slug, contentSha256),
+    onMutate: ({ slug }) => {
       // A retry starts clean; a stale failure notice must not outlive the
       // click that supersedes it — but only THIS candidate's notice: a
       // dismiss on row A is not a retry of row B's failure.
       setPanelError(prev => (prev?.about?.slug === slug ? null : prev))
     },
-    onError: (err, slug) => {
+    onError: (err, { slug }) => {
       // Same duck-typed body handling as the approve path: a coded reason maps
       // to catalog text. An UNCODED reason is system vocabulary ("gateway
       // restarting") that means nothing to a dashboard user — the catalog
@@ -1427,9 +1536,15 @@ function PendingSkillsPanel() {
       // into a generic server error with no refetch.
       const notFound =
         code === 'pending_skill_not_found' || (err as { status?: unknown }).status === 404
+      const changed = !notFound && code === 'pending_skill_changed'
       const reason = notFound
         ? i18nT('pages.overview.skillsTab.candidate_no_longer_pending')
-        : i18nT('pages.overview.skillsTab.dismiss_failed_reason_uncoded')
+        : changed
+          ? i18nT('pages.overview.skillsTab.dismiss_failed_reason_changed')
+          : i18nT('pages.overview.skillsTab.dismiss_failed_reason_uncoded')
+      // The file moved after the read the user dismissed: read it again so the
+      // card shows what a retry would dismiss.
+      if (changed) qc.invalidateQueries({ queryKey: ['skills-pending-detail', slug] })
       const row = pending.find(p => p.slug === slug)
       const name = row?.name ?? slug
       // Same rule as the approve path: an update's outcome is not observable
@@ -1469,7 +1584,7 @@ function PendingSkillsPanel() {
         qc.invalidateQueries({ queryKey: ['skills'] })
       }
     },
-    onSuccess: (_data, slug) => {
+    onSuccess: (_data, { slug }) => {
       // Same reason as approve: a dismissal the user just performed must not
       // come back as "someone resolved this already".
       if (slug === reviewSlug) setReviewSlug(null)
@@ -1490,11 +1605,8 @@ function PendingSkillsPanel() {
     },
   })
   const dismissAll = useMutation({
-    mutationFn: () => api.dismissAllPendingSkills(pending.map(p => p.slug)),
+    mutationFn: (slugs: string[]) => api.dismissAllPendingSkills(slugs),
     onMutate: () => {
-      // Unconditional, unlike the per-row mutations: Dismiss All targets EVERY
-      // pending candidate, so any per-candidate failure notice is about a
-      // subject this very click retries — its outcome supersedes them all.
       setPanelError(null)
     },
     onError: (err) => {
@@ -1524,7 +1636,7 @@ function PendingSkillsPanel() {
   // panelError keeps the panel mounted for the same reason: a not-found
   // approve refusal empties the queue via refetch, and unmounting would eat
   // the very notice explaining why the row vanished.
-  if (pending.length === 0 && !reviewMissing && !panelError) return null
+  if (pending.length === 0 && !reviewMissing && !panelError) return <div className="mb-2" hidden={!confirmOpen}>{confirmDialog}</div>
   // Resolve "approved or dismissed" from the live list the same error branch
   // refetched: an approved candidate reappears there under its name. Settled
   // only once that refetch completes SUCCESSFULLY — a stale cache cannot claim
@@ -1542,11 +1654,11 @@ function PendingSkillsPanel() {
   // No top margin on the root, for the same reason as the tab's heading below:
   // this panel is the Skills tab's FIRST in-flow element whenever it renders,
   // and the pane already owns the gap under the tab strip. It is also WHY that
-  // heading drops its margin outright instead of using `first:mt-0` — this panel
-  // returns null when there is nothing pending, so the heading moves in and out
-  // of `:first-child` with the pending count.
+  // heading drops its margin outright instead of using `first:mt-0`: this panel
+  // stays mounted even when it has no in-flow content.
   return (
     <div className="mb-2">
+      {confirmDialog}
       {/* Suppressed when the ONLY thing to show is the resolved-candidate
           notice: a "Pending review (0)" heading over a sentence explaining
           there is nothing to review reads like a broken count. */}
@@ -1554,7 +1666,17 @@ function PendingSkillsPanel() {
         <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
           {i18nT('pages.overview.skillsTab.pending_review_count', { count: pending.length })}
           <InfoTip text={i18nT('pages.overview.skillsTab.auto_generated_skill_candidates_awaiting_your_ap')} />
-          <Btn danger className="ml-auto text-[11px]" onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_all_confirm', { count: pending.length }))) dismissAll.mutate() }}>{i18nT('pages.overview.skillsTab.dismiss_all')}</Btn>
+          <Btn danger className="ml-auto text-[11px]" onClick={async () => {
+            if (dismissAll.isPending) return
+            // Snapshot the queue so confirmation does not authorize later arrivals.
+            const slugs = pending.map(p => p.slug)
+            const ok = await confirm({
+              title: i18nT('pages.overview.skillsTab.dismiss_all'),
+              body: <p className="m-0" style={{ overflowWrap: 'anywhere' }}>{i18nT('pages.overview.skillsTab.dismiss_all_confirm', { count: slugs.length })}</p>,
+              confirmLabel: i18nT('pages.overview.skillsTab.dismiss_all'),
+            })
+            if (ok) dismissAll.mutate(slugs)
+          }}>{i18nT('pages.overview.skillsTab.dismiss_all')}</Btn>
         </h4>
       )}
       {pending.length > 0 && (
@@ -1601,15 +1723,15 @@ function PendingSkillsPanel() {
       {pending.length > 0 && (
         <Card>
           <div className="space-y-2">
-            {pending.map(p => (
+            {shownPending.map(p => (
               <PendingCandidateRow
                 key={p.slug}
                 p={p}
                 autoOpen={p.slug === reviewSlug}
                 approveRefusal={approveRefusals[p.slug]}
                 mixedQueue={pending.some(c => c.script_validation?.ok === false)}
-                onApprove={s => approve.mutate(s)}
-                onDismiss={s => dismiss.mutate(s)}
+                onApprove={(slug, contentSha256) => approve.mutate({ slug, contentSha256 })}
+                onDismiss={(s, contentSha256) => dismiss.mutate({ slug: s, contentSha256 })}
               />
             ))}
           </div>

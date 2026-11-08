@@ -127,7 +127,7 @@ _CHECK_PAGE_SIZE = 100
 _MAX_CHECK_PAGES = 12
 
 #: Comments and reviews carried, newest first. The judge reads the recent end:
-#: a pull request twenty review rounds deep holds hundreds of remarks and the one
+#: a long-running pull request holds hundreds of remarks and the one
 #: that needs an answer is at the tail.
 _MAX_REMARKS = 6
 
@@ -401,6 +401,25 @@ class PrObservation:
         the one case that needs them.
         """
         return bool(self.merged_at) or self.state == "MERGED"
+
+    @property
+    def is_conflicting(self) -> bool:
+        """Whether an open, read head conflicts with its base.
+
+        ``mergeable`` is computed lazily by the forge, so ``UNKNOWN`` right after
+        the base moves reads as not conflicting here: the next read settles it.
+        ``BEHIND`` is deliberately not a conflict: where protection requires an
+        up-to-date head, every sync is BEHIND again at the next base commit, so
+        waking on it would re-sync a busy base's loop every read interval.
+        """
+        if not self.reached or self.is_terminal:
+            return False
+        # The structured monitor's normalizer, so one predicate says what conflicts.
+        # Imported here: that module pulls in the apps and cron graphs, which the
+        # autonudge facade (imported by every MCP server process) must not load.
+        from kiro_crew.monitoring.github_pull_request import _normalize_mergeability
+
+        return _normalize_mergeability(self.mergeability, self.merge_state) == "conflicting"
 
     def bucket(self, name: str) -> tuple[str, ...]:
         """The check identities in one bucket, sorted for a stable reading."""
@@ -885,8 +904,9 @@ def _workflow_of(item: dict, resolved: dict[str, str] | None = None) -> str:
 
 #: Which bucket survives when duplicate rows for one identity cannot be ordered by
 #: time. A row saying "something may be wrong or unfinished" outranks an "all good"
-#: row. The reading itself says so too: an unresolved identity is one of the notes
-#: that make the whole observation ``partial``, which is what a consumer reads.
+#: row. The reading itself says so too: an unresolved identity and an undated
+#: duplicate that disagrees are each a note that makes the whole observation
+#: ``partial``, which is what a consumer reads.
 _UNDATED_RANK = {"failing": 4, "unknown": 3, "pending": 2, "passing": 1, "noise": 0}
 
 
@@ -911,10 +931,12 @@ def _family_of(item: dict) -> str:
 
 def _collapse(
     rows: list, resolved: dict[str, str] | None = None
-) -> tuple[tuple[CheckRow, ...], int]:
+) -> tuple[tuple[CheckRow, ...], int, tuple[str, ...]]:
     """Fold raw rows into one :class:`CheckRow` per identity, newest per name.
 
-    Returns the rows and how many raw rows were folded. Deduping is DATA, not a
+    Returns the rows, how many raw rows were folded, and the names of the rows
+    whose bucket is a choice because an undated duplicate disagreed with them --
+    the caller turns those into a note on the reading. Deduping is DATA, not a
     judgment: a re-run leaves both the old row and the new one on the board, so a
     tally over raw rows counts a superseded attempt as a current one. Recency is
     the arbiter in both directions -- a re-run green supersedes a stale red and a
@@ -929,6 +951,7 @@ def _collapse(
     """
     per_key: dict[tuple[str, str, str], CheckRow] = {}
     unordered: set[tuple[str, str, str]] = set()
+    undated: set[tuple[str, str, str]] = set()
     runs: dict[tuple[str, str, str], str] = {}
     seen = 0
     for item in rows:
@@ -959,12 +982,17 @@ def _collapse(
             if started >= previous.started_at:
                 per_key[key] = CheckRow(qualified, bare, bucket, started)
             continue
-        # Recency cannot arbitrate -- neither row is dated, or the identity is not
-        # known to be one lane. Keep the more conservative bucket and say the row is
-        # a choice rather than a reading.
+        # Recency cannot arbitrate -- either row is undated, or the identity is not
+        # known to be one lane. Keep the more conservative bucket. Where the rows
+        # disagree on an identity that IS one lane, the kept bucket is a choice
+        # rather than a reading, so it is recorded for the reading's note; the
+        # unresolved-identity case already has its own note from the caller.
+        if bucket != previous.bucket:
+            undated.add(key)
         if _UNDATED_RANK.get(bucket, 0) > _UNDATED_RANK.get(previous.bucket, 0):
             per_key[key] = CheckRow(qualified, bare, bucket, started or previous.started_at)
-    return tuple(per_key.values()), seen
+    chosen = tuple(sorted(per_key[key].name for key in undated - unordered))
+    return tuple(per_key.values()), seen, chosen
 
 
 def _remarks(data: dict, clock: float) -> tuple[tuple[Remark, ...], int]:
@@ -1165,9 +1193,21 @@ def _fetch_counted(
 
 
 def _fetch_checks(transport: _Transport, repo: str, head: str) -> tuple[list[dict], int, bool, str]:
-    """``(rows, declared, complete, note)`` for one head's check runs."""
+    """``(rows, declared, complete, note)`` for one head's check runs.
+
+    ``filter=all`` is not optional here. The ``commits/{ref}/check-runs`` endpoint
+    defaults to ``filter=latest``, which returns only the most recent run per name
+    -- and :func:`_collapse` is built on the opposite guarantee: that a re-run
+    leaves BOTH the stale row and the fresh one on the board, so recency can
+    arbitrate between them in either direction (a re-run green superseding a stale
+    red, a re-run red superseding a stale green). Under the default the stale row
+    is gone before this reader sees it, the fold has nothing to arbitrate, and a
+    verdict that flipped on re-run is read as whatever the server happened to keep.
+    So the query asks for history explicitly; ``_fetch_counted`` appends its
+    ``per_page``/``page`` pair after the ``?`` already present here.
+    """
     return _fetch_counted(
-        transport, f"repos/{repo}/commits/{head}/check-runs", "check_runs", "check runs"
+        transport, f"repos/{repo}/commits/{head}/check-runs?filter=all", "check_runs", "check runs"
     )
 
 
@@ -1247,7 +1287,14 @@ def fetch(message: object, *, budget_secs: float = _TICK_BUDGET_SECS) -> PrObser
     status_rows, status_declared, statuses_ok, status_note = _fetch_statuses(transport, repo, head)
     if status_note:
         incomplete.append(status_note)
-    checks, folded = _collapse([*check_rows, *status_rows], workflows)
+    checks, folded, chosen = _collapse([*check_rows, *status_rows], workflows)
+    if chosen:
+        # Every row was read, so the board is complete; what is short is the
+        # ordering. The bucket kept is the conservative one, and the note says it
+        # was chosen rather than read.
+        incomplete.append(
+            "undated duplicate checks, kept the more conservative bucket: " + ", ".join(chosen)
+        )
     return observation(
         STATUS_PARTIAL if incomplete else STATUS_OK,
         tuple(incomplete),
@@ -1256,6 +1303,41 @@ def fetch(message: object, *, budget_secs: float = _TICK_BUDGET_SECS) -> PrObser
         checks_read=folded,
         checks_complete=complete and statuses_ok and workflows_whole,
         **common,
+    )
+
+
+def fetch_state(message: object) -> PrObservation:
+    """The pull request's own state, mergeability and head: one ``gh`` call, no board.
+
+    For readers that only ask "has it ended?" or "does the head need a re-sync?" --
+    a held loop and an ungated loop's between-cycle read -- where :func:`fetch`'s
+    paginated check board would cost several calls a tick to answer nothing they
+    use. The observation carries no checks and no remarks, so it must never be
+    published as a monitor's reading. Never raises for a forge failure; a
+    ``ValueError`` still escapes for a message that can never be valid.
+    """
+    repo, pr, host = _parse_config(message)
+    data = _fetch_core(_Transport(host, budget_secs=_GH_TIMEOUT_SECS), repo, pr)
+    if data is None:
+        return PrObservation(
+            repo=repo,
+            pr=pr,
+            host=host,
+            status=STATUS_UNAVAILABLE,
+            observed_at=time.time(),
+            incomplete=("pull request unread",),
+        )
+    return PrObservation(
+        repo=repo,
+        pr=pr,
+        host=host,
+        status=STATUS_OK,
+        observed_at=time.time(),
+        state=str(data.get("state") or "").upper(),
+        mergeability=str(data.get("mergeable") or "").upper(),
+        merge_state=str(data.get("mergeStateStatus") or "").upper(),
+        head=str(data.get("headRefOid") or ""),
+        merged_at=str(data.get("mergedAt") or ""),
     )
 
 

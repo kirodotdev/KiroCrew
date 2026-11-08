@@ -28,7 +28,7 @@ from kiro_crew import user_json
 from kiro_crew.atomic_write import atomic_write_at
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.platform_compat import is_link_or_junction, open_file_no_reparse, pin_directory
-from kiro_crew.pod import launchd, runtime
+from kiro_crew.pod import home_liveness, launchd, runtime
 from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import PodConfig
 from kiro_crew.pod.runtime import PodError
@@ -689,6 +689,11 @@ def _runtime_auth_store_mappings() -> tuple[StoreMapping, ...]:
 _RUNTIME_AUTH_STORE_FILE_CAP = 512
 
 
+#: Where kiro-cli 3 unpacks its engine, at a store's root. Never staged: it outgrows the
+#: cap, kiro-cli unpacks it again when absent, and a partial copy fails at boot.
+_RUNTIME_ENGINE_DIR = "kas"
+
+
 #: Filename suffixes that make a staged file a SQLite DATABASE rather than bytes to
 #: copy. Snapshotted through the backup API (see :func:`_snapshot_sqlite_pinned`), so
 #: a live writer cannot hand the pod a torn generation.
@@ -759,7 +764,7 @@ def _snapshot_sqlite_pinned(
     Read-only on the source (``mode=ro``), so staging a pod can never write to the
     operator's live store.
     """
-    import sqlite3
+    from kiro_crew._sqlite_compat import sqlite3
 
     tmp_name = f".{dst_name}.staging"
     src_fd: int | None = None
@@ -812,14 +817,54 @@ def _snapshot_sqlite_pinned(
                     os.close(fd)
 
 
+#: Opens a staged file without following a link at the leaf or blocking on a FIFO.
+_STAGE_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+
+
+def _staged_file_mode(src_mode: int) -> int:
+    """The owner-only mode a staged file gets: ``0o700`` if the source is owner-executable.
+
+    kiro-cli runs its engine with the ``node`` binary it keeps in this store, so a
+    staged copy without owner execute makes the pod's kiro-cli exit at boot. Only
+    ``S_IXUSR`` is read from the source. Group and other bits are never granted.
+    """
+    return 0o700 if src_mode & stat.S_IXUSR else 0o600
+
+
+def _restore_owner_exec_pinned(dst_dir_fd: int, name: str) -> None:
+    """Give owner execute back to a ``0o600`` copy that an earlier boot staged.
+
+    A restart reuses the pod's os-home and staging is create-only, so such a copy
+    would stay unrunnable on every later boot. Only a regular file with one link,
+    opened without following a link, at exactly ``0o600`` changes. Any other mode is
+    the pod's own choice. ``fchmod`` on that descriptor cannot reach another inode,
+    and the pod's bytes are never replaced. Best-effort, like the rest of staging.
+    """
+    try:
+        fd = os.open(name, _STAGE_OPEN_FLAGS, dir_fd=dst_dir_fd)
+    except OSError:
+        return
+    try:
+        st = os.fstat(fd)
+        if stat.S_ISREG(st.st_mode) and st.st_nlink == 1 and stat.S_IMODE(st.st_mode) == 0o600:
+            os.fchmod(fd, stat.S_IRWXU)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def _stage_runtime_auth_store(os_home: Path, mapping: StoreMapping) -> int:
     """Mirror one HOME-relative runtime auth store into *os_home*. Best-effort.
 
     Same discipline as the SSO-cache staging above: every directory is created
     through a PINNED no-follow descriptor so a link planted at any component cannot
     redirect the copy, every level is forced to ``0o700`` and every file to
-    ``0o600``, and copies are create-only so a pod that already refreshed its own
-    credential is not clobbered.
+    ``0o600``, or ``0o700`` when the source is owner-executable (see
+    :func:`_staged_file_mode`), and copies are create-only so a pod that already
+    refreshed its own credential is not clobbered. The one exception to
+    create-only is :func:`_restore_owner_exec_pinned`, which gives owner execute
+    back to an executable an earlier boot staged at ``0o600``.
 
     A SQLite database is SNAPSHOTTED rather than copied, and its ``-wal`` / ``-shm``
     / ``-journal`` sidecars are skipped entirely -- see
@@ -836,7 +881,8 @@ def _stage_runtime_auth_store(os_home: Path, mapping: StoreMapping) -> int:
     reports. The whole tree is mirrored rather than a chosen filename, because this
     store's internal layout is the runtime's own contract (kiro-cli resolves its
     token from it through the ``dirs`` crate) and guessing a name is what made the
-    SSO-cache staging a silent no-op in an earlier revision.
+    SSO-cache staging a silent no-op in an earlier revision. The engine directory,
+    :data:`_RUNTIME_ENGINE_DIR`, is left out: kiro-cli unpacks it itself.
     """
     source_root = mapping.source
     parts = mapping.staged_relative.parts
@@ -859,7 +905,12 @@ def _stage_runtime_auth_store(os_home: Path, mapping: StoreMapping) -> int:
             return 0  # no such store on this host; nothing to mirror
         fds.append(source_root_fd)
         for dirpath, dirnames, filenames in os.walk(source_root):
+            # Only this level's descriptors are used; holding every level's runs out.
+            pinned_fs.close_all(fds[1:])
+            del fds[1:]
             rel = Path(dirpath).relative_to(source_root)
+            if not rel.parts and _RUNTIME_ENGINE_DIR in dirnames:
+                dirnames.remove(_RUNTIME_ENGINE_DIR)
             # Recreate this level under the pod home, pinned at every component.
             target = os_home
             try:
@@ -909,18 +960,37 @@ def _stage_runtime_auth_store(os_home: Path, mapping: StoreMapping) -> int:
                         f"{_RUNTIME_AUTH_STORE_FILE_CAP} files; staging stopped"
                     )
                     return staged
+                # Opened here so the mode comes from the inode whose bytes are
+                # copied. copy_file_pinned takes ownership of the descriptor.
                 try:
-                    pinned_fs.copy_file_pinned(
+                    src_fd = os.open(name, _STAGE_OPEN_FLAGS, dir_fd=src_dir_fd)
+                except OSError:
+                    continue
+                try:
+                    src_st = os.fstat(src_fd)
+                except OSError:
+                    os.close(src_fd)
+                    continue
+                try:
+                    copied = pinned_fs.copy_file_pinned(
                         str(Path(dirpath) / name),
-                        dir_fd=src_dir_fd,
-                        name=name,
+                        src_fd=src_fd,
                         dst_dir_fd=dst_dir_fd,
                         dst_name=name,
                         skip_existing=True,
-                        force_mode=0o600,
+                        force_mode=_staged_file_mode(src_st.st_mode),
                     )
                 except OSError:
                     continue
+                # copy_file_pinned's own source screen: a source it refuses to
+                # copy cannot cause a repair either.
+                if (
+                    not copied
+                    and stat.S_ISREG(src_st.st_mode)
+                    and src_st.st_nlink == 1
+                    and src_st.st_mode & stat.S_IXUSR
+                ):
+                    _restore_owner_exec_pinned(dst_dir_fd, name)
                 staged += 1
     finally:
         pinned_fs.close_all(fds)
@@ -1115,7 +1185,8 @@ def _stage_runtime_auth_store_windows(os_home: Path, mapping: StoreMapping) -> i
     ``_snapshot_sqlite_pinned`` copies through ``dir_fd`` descriptors, and a
     per-file copy of a live database's file set cannot be consistent. A store
     whose token lives in a database therefore stages nothing and the pod boots
-    signed-out, which the boot-time viability probe reports.
+    signed-out, which the boot-time viability probe reports. The engine directory,
+    :data:`_RUNTIME_ENGINE_DIR`, is left out here too.
 
     Returns the number of files staged, and never raises: an unreadable host
     store just means the pod prompts for sign-in inside itself.
@@ -1128,6 +1199,8 @@ def _stage_runtime_auth_store_windows(os_home: Path, mapping: StoreMapping) -> i
         if not source_root.is_dir() or pinned_fs.is_reparse_point(source_root):
             return 0
         for dirpath, dirnames, filenames in os.walk(source_root):
+            pinned_fs.close_all(fds)  # each level pins its own chain again
+            fds.clear()
             # ``os.walk`` DESCENDS into a junction on this platform: a directory
             # reparse point is just a directory to it. The file loop below screens
             # each leaf, but a junction planted anywhere under the host's auth store
@@ -1137,6 +1210,8 @@ def _stage_runtime_auth_store_windows(os_home: Path, mapping: StoreMapping) -> i
             # screened the traversal itself has already happened.
             dirnames[:] = [d for d in dirnames if not pinned_fs.is_reparse_point(Path(dirpath) / d)]
             rel = Path(dirpath).relative_to(source_root)
+            if not rel.parts and _RUNTIME_ENGINE_DIR in dirnames:
+                dirnames.remove(_RUNTIME_ENGINE_DIR)
             level_fds: list[int] = []
             target = os_home
             try:
@@ -1185,6 +1260,9 @@ def _stage_runtime_auth_store_windows(os_home: Path, mapping: StoreMapping) -> i
                         str(target / name),
                         src_fd=src_fd,
                         skip_existing=True,
+                        # No exec-bit rule, unlike the POSIX twin: Windows decides
+                        # executability by extension, so a staged node.exe runs at
+                        # any mode, and NTFS keeps no POSIX mode to repair.
                         force_mode=0o600,
                     )
                 except (OSError, ValueError):
@@ -1324,14 +1402,13 @@ def _seed_pod_os_home(os_home: Path) -> None:
         # NOTHING host-derived is staged into `<os-home>/.aws/sso/cache`. The
         # directory is created (above, pinned and 0o700) because the pod's own
         # kiro-cli writes its MCP OAuth grants there, and that is ALL it ever
-        # holds. An earlier revision copied the host's SSO tokens in, which a
-        # security review correctly flagged: the corridor that keeps the grant
-        # store writable also made those copied HOST bearer tokens readable to any
-        # agent shell in the pod. Live acceptance settled that the copy was never
+        # holds. Copying the host's SSO tokens in is unsafe: the corridor that
+        # keeps the grant store writable would also make those copied HOST bearer
+        # tokens readable to any agent shell in the pod. The copy is not
         # load-bearing -- sign-in comes from the runtime's own data store staged
-        # just above, not from this cache -- so the copy is deleted rather than
-        # hidden. Deleting the material beats masking it from the process that has
-        # to write beside it.
+        # just above, not from this cache -- so there is no copy rather than a
+        # hidden one. Not staging the material beats masking it from the process
+        # that has to write beside it.
     finally:
         pinned_fs.close_all(fds)
 
@@ -1388,13 +1465,13 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
         # macOS writes a per-pod plist at `up` and drops it at `down`, so its
         # presence means the pod is installed rather than orphaned. Windows does
         # the same with its per-pod `.cmd` wrapper. systemd's template unit is
-        # machine-wide, so liveness is the only signal there.
+        # machine-wide, so there the pod's own evidence says whether it is live.
         if runtime.IS_MACOS and launchd.plist_path(cfg, p.name).exists():
             continue
         if runtime.IS_WINDOWS and win_backend.task_script_path(cfg, p.name).exists():
             continue
-        out.append(p.name)
-    return sorted(out)
+        out.append(p)
+    return sorted(p.name for p in home_liveness.unused(out))
 
 
 #: How many times :func:`cleanup_home` re-attempts the removal, and how long it

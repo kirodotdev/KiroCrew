@@ -109,9 +109,9 @@ export function humaniseScopeLeaf(leaf: string): string {
     .join(' ')
 }
 
-/** Pluralize a count with its noun, e.g. 3 → "3 rules", 1 → "1 rule". */
+/** A rule count in the active language, e.g. 3 → "3 rules", 1 → "1 rule". */
 function nRules(n: number): string {
-  return `${n} ${n === 1 ? 'rule' : 'rules'}`
+  return i18nT('pages.settings.securityPanel.rule_count', { count: n })
 }
 
 /** Short human label for one governed ruleset (or a composed intersection).

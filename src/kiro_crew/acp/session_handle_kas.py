@@ -1,7 +1,9 @@
 """What KAS speaks beyond ACP on a session.
 
 Its hooks requests (list, session start, execute), the checkpoint rewind of an
-unanswered prompt, and its own session-update discriminants (mode, session info).
+unanswered prompt, the verbs behind a person's ``/context``, ``/knowledge`` and
+``/code`` (``kas_command_call``), and its own session-update discriminants (mode,
+session info).
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -9,10 +11,12 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_compaction_failed_at``, ``_compaction_terminal_seen``,
 ``_hook_tasks``, ``_kas_prompt_row``, ``_last_kas_mode_id``, ``kas_auto_approved``,
-``kas_projected_agent``, ``last_compaction_transient``.
+``kas_crew_answered``, ``kas_crew_answered_commands``, ``kas_spec_denies``,
+``kas_spec_shell_allowlist``, ``kas_spec_write_allowlist``, ``kas_spec_shell_readonly``,
+``kas_crew_answered_paths``, ``kas_projected_agent``, ``last_compaction_transient``.
 
-Instance fields read: ``_crew_agent``, ``_listed_hooks``, ``_prompt_starts``,
-``_runtime``, ``_session_id``, ``_session_key``, ``_turn_done``,
+Instance fields read: ``_bound_cwd``, ``_crew_agent``, ``_engine_fallback``, ``_listed_hooks``,
+``_prompt_starts``, ``_runtime``, ``_session_id``, ``_session_key``, ``_turn_done``,
 ``kas_registered_agents``, ``last_prompt_stats``.
 """
 
@@ -25,8 +29,14 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp import kas_profile, kas_wire
 from kiro_crew.acp._dispatch import kas_crew_agent_id, redact_text
-from kiro_crew.acp.client import compaction_failure_detail, compaction_failure_is_transient
+from kiro_crew.acp.client import (
+    AcpError,
+    compaction_failure_detail,
+    compaction_failure_is_transient,
+)
+from kiro_crew.acp.engine_fallback import KAS_KIND_MODEL_FALLBACK, normalize_kas
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKENDS_HOOKS_LIST,
     EVENT_AGENT_SWITCHED,
     EVENT_COMPACTION_STATUS,
@@ -34,6 +44,9 @@ from kiro_crew.acp.types import (
     EVENT_STEER_CONSUMED,
     EVENT_STEER_QUEUED,
     METHOD_KAS_CHECKPOINT_REVERT,
+    METHOD_KAS_CODE_INTELLIGENCE,
+    METHOD_KAS_KNOWLEDGE,
+    METHOD_KAS_SESSION_CONTEXT,
     UPDATE_AGENT_MESSAGE_CHUNK,
     UPDATE_AGENT_THOUGHT_CHUNK,
     UPDATE_CURRENT_MODE,
@@ -95,6 +108,53 @@ async def discard_unanswered_prompt(self: AcpSessionHandle) -> bool:
     )
     result = getattr(await self._wait_for_response(req_id, timeout=10.0), "result", None)
     return isinstance(result, dict) and result.get("success") is True
+
+
+#: The KAS verbs :func:`kas_command_call` may send, by the slash command a person
+#: typed (``/context <sub>``, ``/knowledge``, ``/code``). Any other command is
+#: refused, so this is not a general pipe to the engine.
+_KAS_COMMAND_METHODS = {
+    "context": METHOD_KAS_SESSION_CONTEXT,
+    "knowledge": METHOD_KAS_KNOWLEDGE,
+    "code": METHOD_KAS_CODE_INTELLIGENCE,
+}
+
+
+async def kas_command_call(
+    self: AcpSessionHandle, command: str, params: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Send *command*'s KAS verb (:data:`_KAS_COMMAND_METHODS`) for this session.
+
+    Its answer, or None when *command* is not one of them, the backend is not
+    KAS, or the engine did not list the method in ``initialize``'s
+    ``_meta.kiro.extensionMethods`` (fails closed: no record means no verb).
+    A JSON-RPC error or a timeout answers ``{"success": False, "message": ...}``
+    with the redacted reason, so the caller always has something to show.
+    The session id is this handle's own; *params* cannot name another session.
+    """
+    is_kas = getattr(self._runtime, "acp_backend", None) == ACP_BACKEND_KAS
+    method = _KAS_COMMAND_METHODS.get(command, "")
+    if not method or not is_kas:
+        return None
+    caps = getattr(self._runtime, "_agent_capabilities", None)
+    meta = caps.get("_meta") if isinstance(caps, dict) else None
+    kiro = meta.get("kiro") if isinstance(meta, dict) else None
+    methods = kiro.get("extensionMethods") if isinstance(kiro, dict) else None
+    if not (isinstance(methods, list) and method in methods):
+        return None
+    try:
+        req_id = await self._send_awaited(method, {**params, "sessionId": self._session_id})
+        msg = await self._wait_for_response(req_id, timeout=_KAS_COMMAND_TIMEOUT_SECS)
+    except AcpError as exc:
+        return {"success": False, "message": redact_text(str(exc))}
+    result = getattr(msg, "result", None)
+    return result if isinstance(result, dict) else {"success": False}
+
+
+#: How long a person's ``/context``, ``/knowledge`` or ``/code`` waits for KAS.
+#: The same bound as a kiro-cli command (``send_command``); ``/code init``
+#: starts language servers before it answers.
+_KAS_COMMAND_TIMEOUT_SECS = 60.0
 
 
 def _is_kas_hooks_request(self: AcpSessionHandle, msg: JsonRpcMessage) -> bool:
@@ -264,10 +324,35 @@ def _handle_kas_update(
         # -- chosen by wire id, so a built-in of the same name never inherits
         # the crewmate's approvals.
         if self.kas_projected_agent:
-            from kiro_crew.acp.kas_agents import switched_auto_approved
+            from kiro_crew.acp.kas_agents import (
+                switched_auto_approved,
+                switched_crew_answered,
+                switched_crew_answered_commands,
+                switched_shell_allowlist,
+                switched_shell_readonly,
+            )
+            from kiro_crew.acp.kas_write_allowlist import (
+                switched_answered_paths,
+                switched_write_allowlist,
+            )
 
             self.kas_projected_agent = crew_id
             self.kas_auto_approved = switched_auto_approved(registered, mode_id)
+            self.kas_crew_answered = switched_crew_answered(registered, mode_id)
+            self.kas_crew_answered_commands = switched_crew_answered_commands(registered, mode_id)
+            self.kas_spec_shell_allowlist = switched_shell_allowlist(registered, mode_id)
+            self.kas_spec_write_allowlist = switched_write_allowlist(
+                registered, mode_id, getattr(self, "_bound_cwd", "")
+            )
+            from kiro_crew.acp.kas_spec_denies import switched_spec_denies
+
+            self.kas_spec_denies = switched_spec_denies(
+                registered, mode_id, getattr(self, "_bound_cwd", "")
+            )
+            self.kas_spec_shell_readonly = switched_shell_readonly(registered, mode_id)
+            self.kas_crew_answered_paths = switched_answered_paths(
+                registered, mode_id, getattr(self, "_bound_cwd", "")
+            )
         return [AcpEvent(kind=EVENT_AGENT_SWITCHED, text=crew_id)]
     if session_update == UPDATE_SESSION_INFO:
         return self._handle_kas_session_info(update)
@@ -353,6 +438,11 @@ def _handle_kas_session_info(self: AcpSessionHandle, update: dict) -> list[AcpEv
             # (redacted + bounded by the helper).
             summary = compaction_failure_detail(kiro)
         return [AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)]
+    if kind == KAS_KIND_MODEL_FALLBACK:
+        # KAS moved this turn onto another model, or could not. Applied to the
+        # resolved model first, so the usage of whatever answers next is credited
+        # to the model that produced it.
+        return self._engine_fallback.events(self, normalize_kas(kiro))
     if kind in kas_wire.STEERING_KINDS:
         # KAS mid-turn steer echo. kiro-cli sends these as `session/update`
         # discriminants (handled by the "steer" action); KAS instead puts the

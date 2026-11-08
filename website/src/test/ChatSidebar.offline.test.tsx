@@ -31,7 +31,9 @@ const { switchSlotMock, resumeFromHistoryMock } = vi.hoisted(() => ({
   // needs its own `unwrap` to match that shape now that chat-sidebar/HistoryPane.tsx's resume
   // handler chains off it (#3624). Never-resolving is fine — these tests only
   // assert the dispatch call happened, not what resume does after it resolves.
-  resumeFromHistoryMock: vi.fn(() => ({ type: 'chat/resumeFromHistory/pending', meta: {}, unwrap: () => new Promise(() => {}) })),
+  // The pending reducer reads `meta.arg.key` and `meta.startedAt`, as on a
+  // real pending action.
+  resumeFromHistoryMock: vi.fn((arg?: unknown) => ({ type: 'chat/resumeFromHistory/pending', meta: { arg, requestId: 'r-offline', startedAt: 0 }, unwrap: () => new Promise(() => {}) })),
 }))
 
 vi.mock('../store/chatSlice', async (importOriginal) => {

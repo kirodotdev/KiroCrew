@@ -61,15 +61,23 @@ export function langFor(ext: string): string {
  * the Pierre editor work entirely from `content` and don't need a path.
  */
 export const ContentRenderer = memo(function ContentRenderer({
-  isRichType, fileType, filePath, content, editing,
+  isRichType, richSource = false, fileType, filePath, content, editing,
   lang, lineNums, wordWrap, onChange, onSave,
   previewRef, displayContent, isMarkdown,
-  markdownClassName, previewStyle, flush, editorRef, diffBase, diffSplit, diffExpandUnchanged,
+  markdownClassName, previewStyle, flush, editorRef, diffBase, diffSplit, diffExpandUnchanged, onLiveDiffDegraded,
+  onFileOpen, onFolderOpen,
 }: {
   isRichType: boolean
+  /** A text-backed rich type (json, csv, ...) shown as its source: the code
+   *  editor replaces its viewer. Only meaningful with `editing`. */
+  richSource?: boolean
   fileType: string
   /** Required for `image` / `pdf` (URL construction). Optional otherwise. */
   filePath?: string
+  /** Where a path chip in the markdown preview opens a file or folder. Absent, a
+   *  chip falls back to revealing the path on the host. */
+  onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
+  onFolderOpen?: (path: string) => void
   content: string
   editing: boolean
   lang: string
@@ -96,6 +104,9 @@ export const ContentRenderer = memo(function ContentRenderer({
   diffExpandUnchanged?: boolean
   /** Split vs unified layout for the live-diff editing surface. */
   diffSplit?: boolean
+  /** Live-diff editing only: whether the code editor dropped its live diff
+   *  for being over the inline budget (see `PierreEditorImpl`). */
+  onLiveDiffDegraded?: (degraded: boolean) => void
 }) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const codeFile = useMemo(
@@ -109,6 +120,7 @@ export const ContentRenderer = memo(function ContentRenderer({
     }),
     [lineNums, wordWrap],
   )
+  const viewer = isRichType && !(richSource && editing)
   const inner = (
     <>
       {isRichType && fileType === 'image' && filePath && <ImageViewer filePath={filePath} />}
@@ -165,17 +177,17 @@ export const ContentRenderer = memo(function ContentRenderer({
           </div>
         ) : <SvgViewer content={content} />
       )}
-      {isRichType && fileType === 'csv' && <CsvViewer content={content} filePath={filePath ?? ''} />}
-      {isRichType && fileType === 'json' && <JsonViewer content={content} />}
-      {isRichType && fileType === 'jsonl' && <JsonlViewer content={content} />}
-      {isRichType && fileType === 'html' && <HtmlViewer content={content} />}
+      {viewer && fileType === 'csv' && <CsvViewer content={content} filePath={filePath ?? ''} />}
+      {viewer && fileType === 'json' && <JsonViewer content={content} />}
+      {viewer && fileType === 'jsonl' && <JsonlViewer content={content} />}
+      {viewer && fileType === 'html' && <HtmlViewer content={content} />}
       {isRichType && fileType === 'pdf' && filePath && <PdfViewer filePath={filePath} />}
       {isRichType && fileType === 'sheet' && filePath && <SheetViewer filePath={filePath} />}
       {isRichType && fileType === 'office' && filePath && <OfficeViewer filePath={filePath} />}
       {isRichType && fileType === 'video' && filePath && <MediaPlayer filePath={filePath} kind="video" />}
       {isRichType && fileType === 'audio' && filePath && <MediaPlayer filePath={filePath} kind="audio" />}
-      {isRichType && fileType === 'excalidraw' && <ExcalidrawViewer content={content} />}
-      {!isRichType && editing && (
+      {viewer && fileType === 'excalidraw' && <ExcalidrawViewer content={content} />}
+      {(!isRichType || richSource) && editing && (
         <CodeEditor
           content={content}
           lang={lang}
@@ -189,12 +201,13 @@ export const ContentRenderer = memo(function ContentRenderer({
           diffBase={diffBase}
           diffSplit={diffSplit}
           diffExpandUnchanged={diffExpandUnchanged}
+          onLiveDiffDegraded={onLiveDiffDegraded}
         />
       )}
       {!isRichType && !editing && isMarkdown && (
         <div ref={previewRef as React.RefObject<HTMLDivElement>} className={markdownClassName ?? 'msg-content text-sm leading-relaxed'}>
           <BasePathCtx.Provider value={filePath || null}>
-            <MarkdownRenderer content={displayContent} sourcePos />
+            <MarkdownRenderer content={displayContent} sourcePos onFileOpen={onFileOpen} onFolderOpen={onFolderOpen} />
           </BasePathCtx.Provider>
         </div>
       )}

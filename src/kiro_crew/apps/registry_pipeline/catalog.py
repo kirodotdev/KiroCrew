@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import platform as _platform
+import re
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +27,9 @@ from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.caches import (
     _expire_cache_file,
     _external_registry_cache_identity,
+    _installed_manifest_cache_path,
     _manifest_cache_path,
+    _manifest_negative_cache_path,
     _read_external_registry_cache,
 )
 from kiro_crew.apps.registry_pipeline.checkout import _communicate_with_timeout
@@ -46,9 +49,14 @@ from kiro_crew.apps.registry_pipeline.indexes import (
     _registry_sign_in_refused,
 )
 from kiro_crew.apps.registry_pipeline.manifests import _resolve_manifest
-from kiro_crew.apps.registry_pipeline.sources import _effective_registries, _load_registry_file
+from kiro_crew.apps.registry_pipeline.sources import (
+    _edition_registry_rows,
+    _effective_registries,
+    _load_registry_file,
+)
 from kiro_crew.apps.registry_pipeline.store_art import _prewarm_owner_tier_store_assets
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env
+from kiro_crew.apps.version import parse_version as _parse_version
 from kiro_crew.sandbox import (
     create_subprocess_limited,
     sandboxed_spawn_argv,
@@ -392,27 +400,56 @@ def _trust_repository_bindings(
     return bindings
 
 
+#: A whole version string: an optional ``v``, a numeric release, then an optional
+#: pre-release (``-beta.1``, ``-1``, or ``rc3`` with no separator) and build
+#: metadata. Anything else (``1.0.0 <b>``, ``latest``) is not a version, so it
+#: never reads as newer.
+_VERSION_STRING_RE = re.compile(
+    r"v?\d+(?:\.\d+)*(?:-[0-9A-Za-z][0-9A-Za-z.-]*|\.?[A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z.-]+)?"
+)
+
+
 def _version_newer(registry_ver: str, installed_ver: str) -> bool:
     """Return True if registry version is strictly newer than installed.
 
-    Compares semver-style version strings (major.minor.patch).
-    Pre-release suffixes (e.g. ``-beta.1``) and build metadata
-    (e.g. ``+build.123``) are stripped before comparison.
-    Falls back to False if parsing fails (conservative).
+    Compares the numeric release (major.minor.patch) through
+    :func:`kiro_crew.apps.version.parse_version`, the parser every other version
+    check uses, so a PEP 440 suffix with no separator (``0.4.0rc3``) and a leading
+    ``v`` are read like ``-beta.1`` and ``+build``. Falls back to False when either
+    side is not a whole version string (conservative).
     """
-
-    def _parse(v: str) -> tuple[int, ...]:
-        # Strip pre-release and build metadata: "1.2.3-beta.1+build" → "1.2.3"
-        base = v.split("-", 1)[0].split("+", 1)[0]
-        parts = [int(x) for x in base.split(".")[:3]]
-        while len(parts) < 3:
-            parts.append(0)
-        return tuple(parts)
-
+    if not (isinstance(registry_ver, str) and isinstance(installed_ver, str)):
+        return False
+    registry_ver, installed_ver = registry_ver.strip(), installed_ver.strip()
+    if not (
+        _VERSION_STRING_RE.fullmatch(registry_ver) and _VERSION_STRING_RE.fullmatch(installed_ver)
+    ):
+        return False
     try:
-        return _parse(registry_ver) > _parse(installed_ver)
-    except (ValueError, AttributeError):
+        registry_release = _parse_version(registry_ver)
+        installed_release = _parse_version(installed_ver)
+    except ValueError:
         return False  # Conservative: don't flag update on parse failure
+    if registry_release != installed_release:
+        return registry_release > installed_release
+    # Same release: a final build is newer than a pre-release of it (0.4.0 over
+    # 0.4.0rc3). Two pre-releases of one release are not ordered, so they stay
+    # conservative.
+    return _is_prerelease(installed_ver) and not _is_prerelease(registry_ver)
+
+
+#: The leading ``v`` and numeric release of a whole version string.
+_VERSION_RELEASE_RE = re.compile(r"v?\d+(?:\.\d+)*")
+
+
+def _is_prerelease(version: str) -> bool:
+    """Whether *version* carries a pre-release part after its numeric release.
+
+    *version* has already matched :data:`_VERSION_STRING_RE`. Build metadata
+    (``+build.9``) is not a pre-release.
+    """
+    release = _VERSION_RELEASE_RE.match(version)
+    return bool(release and version[release.end() :].split("+", 1)[0])
 
 
 async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
@@ -488,6 +525,8 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
         # derived from each row's FULL source coordinates, so a row whose
         # branch/repo changed in the new index expires the old coordinates'
         # cache (via the prior row) as well as priming a miss for the new ones.
+        # Each row's failed-fetch marker is expired with it, so a refresh
+        # retries a source whose last listing fetch failed.
         expire_paths: set[Path] = set()
         for e in (prior or []) + entries:
             if not isinstance(e, dict):
@@ -495,6 +534,8 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
             entry_name = e.get("name")
             if isinstance(entry_name, str) and entry_name:
                 expire_paths.add(_manifest_cache_path(e))
+                expire_paths.add(_installed_manifest_cache_path(e))
+                expire_paths.add(_manifest_negative_cache_path(e))
         for cache_path in expire_paths:
             await asyncio.to_thread(_expire_cache_file, cache_path)
         # Prewarmed after the loop, and AFTER this expiry, so an owner-tier
@@ -513,6 +554,13 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     for reg, entries in fresh:
         await _prewarm_owner_tier_store_assets(reg, entries)
 
+    # An index-tier registry has no prewarm, so the branch tip of an app installed
+    # from one of its versionless rows is read here, after the same expiry.
+    from kiro_crew.apps.installed_app_tips import refresh_installed_tips
+
+    for reg, entries in fresh:
+        await refresh_installed_tips(reg, entries)
+
     # Re-warm so the response's app count reflects post-refresh state (and
     # untouched registries read their still-valid caches).
     apps = await list_registry()
@@ -527,6 +575,29 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     }
 
 
+#: Why a manifest shell string (``detectInstalled``, ``openCommand``) is not run
+#: on native Windows. The one copy of the text: the install precheck and the open
+#: route report it too. It sits here, not beside ``NATIVE_WINDOWS_HOOK_REFUSAL`` in
+#: ``install``, because this module is the lowest owner that needs it.
+NATIVE_WINDOWS_SHELL_REFUSAL = (
+    "manifest shell commands are not supported on native Windows (they run through /bin/sh)"
+)
+
+
+def _manifest_shell_platform_refusal() -> str | None:
+    """Why a manifest shell string cannot run on this host, or None when it can.
+
+    ``detectInstalled`` and ``openCommand`` run through ``/bin/sh -c``, and native
+    Windows has no ``/bin/sh``: the spawn would raise ``FileNotFoundError``, which
+    a caller swallowing ``OSError`` reads as a wrong answer ("not installed"), and
+    the open route never gets that far (a display-less host reads as remote). The
+    same policy as ``NATIVE_WINDOWS_HOOK_REFUSAL`` for the lifecycle hooks.
+    """
+    if platform_compat.IS_POSIX:
+        return None
+    return NATIVE_WINDOWS_SHELL_REFUSAL
+
+
 async def _detect_installed_probe(
     entries: list[dict[str, Any]],
     installed_map: dict[str, dict[str, Any]],
@@ -535,12 +606,16 @@ async def _detect_installed_probe(
 
     Names already known to the app manager (present in *installed_map*) are
     skipped, as are names whose execution policy denies the probe. A probe
-    timeout or ``OSError`` is swallowed and treated as not-installed. Shared by
+    timeout or ``OSError`` is swallowed and treated as not-installed. On native
+    Windows no probe starts, since there is no ``/bin/sh`` to run it through: the
+    names read not-installed and one WARNING names the reason. Shared by
     ``list_registry`` (offline path) and ``_append_external_registry_apps``
     (online path) so both probe identically -- an app installed OUTSIDE the app
     manager reads installed on either path.
     """
     detected: set[str] = set()
+    platform_refusal = _manifest_shell_platform_refusal()
+    not_run: list[str] = []
     for entry in entries:
         name = entry.get("name", "")
         if name in installed_map:
@@ -556,6 +631,9 @@ async def _detect_installed_probe(
         )
         if denied:
             logger.debug("Skipping registry detectInstalled for %s: %s", name, denied)
+            continue
+        if platform_refusal:
+            not_run.append(name)
             continue
         try:
 
@@ -597,6 +675,8 @@ async def _detect_installed_probe(
                 logger.info("Detected external install: %s", name)
         except (asyncio.TimeoutError, OSError):
             pass  # detection failed, treat as not installed
+    if not_run:
+        logger.warning("detectInstalled not run for %s: %s", ", ".join(not_run), platform_refusal)
     return detected
 
 
@@ -877,6 +957,16 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     install resolves by (which would point install-by-name at the wrong repo).
     A ``builtin`` row naming a builtin this build cannot register is dropped the
     same way, and keeps its reservation the same way.
+
+    Edition rows (the ``AppsLoader.registry_rows`` seam) are added to the
+    published list on the same ADD-only terms ``_load_registry_file`` adds them to
+    the seed: a catalog row or a bundled seed row wins a name collision, the first
+    of two edition rows sharing a name wins, and the filters below judge them like
+    any other row.
+    Replacing the seed with the catalog would otherwise drop every edition row
+    whenever the catalog is reachable. They carry no display copy of their own,
+    so like external rows they pay the manifest fetch, and they are probed with
+    ``detectInstalled`` -- the same treatment ``list_registry`` gives them.
     """
     # Off the event loop: the first call after a cache expiry does network I/O.
     rows = await asyncio.to_thread(official_catalog.list_catalog_rows)
@@ -886,6 +976,39 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     seed_by_name = {
         e["name"]: e for e in installable if isinstance(e, dict) and isinstance(e.get("name"), str)
     }
+    seen = {row.get("name") for row in rows}
+    rows = list(rows)
+    edition_rows: list[dict[str, Any]] = []
+    for row in await asyncio.to_thread(_edition_registry_rows):
+        name = row.get("name")
+        if name in seen:
+            continue
+        seen.add(name)
+        # Install-by-name resolves through ``_load_registry_file``, where a bundled
+        # seed row wins a same-name edition row. List the edition row only when it
+        # is the row its name installs, or its card would show one app and Install
+        # another. Its own names cannot simply be reserved: the merged seed already
+        # carries every surviving edition row, so that would drop them all.
+        seed = seed_by_name.get(name)
+        if seed is not None and seed != row:
+            continue
+        edition_rows.append(dict(row))
+    if edition_rows:
+        # An edition row is a bare ``app-registry.json`` row (name and source
+        # coordinates, no display copy), so it is dressed exactly as
+        # ``list_registry`` dresses it offline: the index author is snapshotted
+        # before the manifest merge overwrites ``author``, and display copy and
+        # ``version`` come from the app's own app.json.
+        for row in edition_rows:
+            row["_index_author"] = row.get("author")
+        resolved_edition = await asyncio.gather(
+            *[_resolve_manifest(row) for row in edition_rows],
+            return_exceptions=True,
+        )
+        edition_rows = [
+            r if isinstance(r, dict) else edition_rows[i] for i, r in enumerate(resolved_edition)
+        ]
+        rows.extend(edition_rows)
     installable_names = set(seed_by_name)
     # Reserve every catalog name BEFORE the git filter, plus every seed name, so
     # an external row can never shadow a catalog/seed name — including a catalog
@@ -902,13 +1025,28 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     # Only paid when it can change the answer. With every `git` row already seeded
     # the fetch cannot unlock anything, so the storefront's hot path keeps costing
     # one cached read.
-    fresh_installable: dict[str, dict[str, Any]] = {}
-    if any(
+    #
+    # The fresh fetch and the external-registry rows do not depend on each other:
+    # the external rows are deduplicated against ``reserved_names``, which is
+    # settled above and never reads the fetch. So the two run at the same time,
+    # and the listing waits for the slower one instead of for both in turn.
+    needs_fresh_installable = any(
         row.get("source", {}).get("type") == "git" and row.get("name") not in installable_names
         for row in rows
-    ):
-        fresh_installable = await asyncio.to_thread(_catalog_installable_rows)
-        installable_names |= set(fresh_installable)
+    )
+
+    async def _fresh_installable_rows() -> dict[str, dict[str, Any]]:
+        if not needs_fresh_installable:
+            return {}
+        return await asyncio.to_thread(_catalog_installable_rows)
+
+    installed = await asyncio.to_thread(list_installed_apps)
+    installed_map = {a["name"]: a for a in installed}
+    fresh_installable, (external_rows, external_detected) = await asyncio.gather(
+        _fresh_installable_rows(),
+        _append_external_registry_apps([], reserved_names, installed_map),
+    )
+    installable_names |= set(fresh_installable)
     rows = [
         row
         for row in rows
@@ -938,9 +1076,14 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
         install_row = seed_by_name.get(name) or fresh_installable.get(name)
         resolved_repositories[name] = _entry_git_url(install_row) if install_row is not None else ""
 
-    installed = await asyncio.to_thread(list_installed_apps)
-    installed_map = {a["name"]: a for a in installed}
-    rows, detected = await _append_external_registry_apps(rows, reserved_names, installed_map)
+    # Probed like every seed row is offline, so an edition app installed outside
+    # the app manager reads installed on either path.
+    edition_names = {row.get("name") for row in edition_rows}
+    detected = await _detect_installed_probe(
+        [row for row in rows if row.get("name") in edition_names], installed_map
+    )
+    rows.extend(external_rows)
+    detected |= external_detected
     trust_repositories = _trust_repository_bindings(rows, installed_map, resolved_repositories)
     return _apply_trust_fields(
         _enrich_with_install_status(rows, installed_map, detected),
@@ -989,8 +1132,15 @@ def _resolve_registry_row(name: str) -> tuple[dict[str, Any] | None, str]:
 
     catalog_row: dict[str, Any] | None = None
     catalog_failed = False
+    no_install_source = False
     try:
         catalog_row = official_catalog.inventory_for_install(name)
+    except official_catalog.CatalogNoInstallSource:
+        # The catalog answered: it lists this app with no install coordinates.
+        # Still a refusal (the catalog is curating the name), but not an outage.
+        catalog_failed = True
+        no_install_source = True
+        logger.warning("official catalog lists the app without install coordinates")
     except official_catalog.CatalogUnavailable:
         catalog_failed = True
         # The caller may be classifying a config-derived grant name, and catalog
@@ -1016,6 +1166,12 @@ def _resolve_registry_row(name: str) -> tuple[dict[str, Any] | None, str]:
         # code under a name the owner already permitted for execution. The local
         # cache cannot be consulted to decide -- it is agent-writable, which is the
         # surface `inventory_for_install` refuses to read in the first place.
+        if no_install_source:
+            return None, (
+                "the official catalog lists the requested app but gives it no "
+                "install source, so it cannot be installed from the registry yet "
+                "— refusing to resolve it from another source."
+            )
         detail = (
             "is bundled and may carry an official commit pin"
             if seed_row is not None
@@ -1064,7 +1220,9 @@ def resolve_installed_trust_repository(
     New registry installs persist ``sourceUrl`` and are bound directly to that
     immutable install provenance.  Older installs predate that field, but retain
     the ``registry:<name>`` source marker; for those records, resolve the same
-    current authoritative row a legacy update would use.  A genuinely local or
+    current authoritative row a legacy update would use.  A marketplace install
+    (``source = "market:<ref>@<n>"``) binds to ``market:<ref>``, so a grant
+    recorded for local-folder code never covers it.  A genuinely local or
     self-registered app has neither form of registry provenance and remains a
     valid repository-less app.
 
@@ -1082,6 +1240,18 @@ def resolve_installed_trust_repository(
     storefront/grant path remains the only caller that may perform that blocking
     migration lookup, and already offloads it.
     """
+    # Imported here so the registry facade's star import gains no new names.
+    from kiro_crew.apps.market_source import is_market_source, market_trust_coordinate
+
+    source = app.get("source", "")
+    if is_market_source(source):
+        # A marketplace app binds its grant to its listing, never to a local
+        # folder: a non-empty coordinate is what keeps an ``apps_trusted_local``
+        # grant from covering it. A malformed marker is unresolved, so the
+        # grant path refuses instead of recording a local grant.
+        coordinate = market_trust_coordinate(source)
+        return bool(coordinate), coordinate
+
     source_url = app.get("sourceUrl", "")
     source_url = source_url if isinstance(source_url, str) else ""
     if _git_target_is_unsupported(source_url):
@@ -1090,7 +1260,6 @@ def resolve_installed_trust_repository(
     if repository:
         return True, repository
 
-    source = app.get("source", "")
     if not isinstance(source, str) or not is_registry_source(source):
         return True, ""
 
@@ -1172,6 +1341,12 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
                 candidates.insert(0, row)
             else:
                 candidates.append(row)
+    except official_catalog.CatalogUnavailable:
+        # Raised, not swallowed into an empty set: the caller must be able to tell
+        # "the catalog could not be asked" from "no candidate offers this source",
+        # or an outage reads as a source mismatch. Raising still offers nothing and
+        # still reaches no external cache below.
+        raise
     except Exception:  # noqa: BLE001 - a failed lookup is not "no pin"; see below
         # A seed candidate names the SAME repository as the catalog row it shadows,
         # so provenance-pinned resolution would accept it and deliver a branch-tip
@@ -1208,7 +1383,8 @@ def _pinned_registry_entry(name: str, meta: dict[str, Any]) -> dict[str, Any] | 
     equal what was recorded at install time, so neither a row that reuses the
     name on a different repo nor a different registry publishing the same
     name/URL pair can stand in for the pinned source.  Returns None when no
-    candidate matches.
+    candidate matches; raises :class:`official_catalog.CatalogUnavailable` when
+    the official catalog could not be consulted to build the candidate set.
     """
     want_url = str(meta.get("sourceUrl", "") or "")
     want_registry = str(meta.get("sourceRegistry", "") or "")
@@ -1253,7 +1429,25 @@ def _resolve_install_entry(name: str) -> tuple[dict[str, Any] | None, str]:
             # A refusal, not an absence: report the cause so the user is not sent
             # looking for a missing app during a catalog outage.
             return None, str(exc)
-    entry = _pinned_registry_entry(name, meta)
+    try:
+        # The update itself, so the same real-fetch rule as the install above.
+        with official_catalog.install_attempt():
+            entry = _pinned_registry_entry(name, meta)
+    except official_catalog.CatalogNoInstallSource:
+        return None, (
+            "the official catalog lists the requested app but gives it no "
+            "install source, so it cannot be updated from the registry yet "
+            "— refusing to update it from another source."
+        )
+    except official_catalog.CatalogUnavailable:
+        # Fixed text, as in `_resolve_registry_row`: the exception can quote the
+        # name and the fetched document, and this reason is returned and SEL-logged.
+        logger.warning("official catalog lookup for a pinned update is unavailable")
+        return None, (
+            "the official catalog could not be reached to confirm the requested "
+            "app's recorded source — refusing to update it from another source. "
+            "Retry when the catalog is reachable."
+        )
     if entry is None:
         # ``pinned_url`` can contain clone credentials. It is comparison state,
         # never API/audit text: the caller returns and SEL-logs this reason.

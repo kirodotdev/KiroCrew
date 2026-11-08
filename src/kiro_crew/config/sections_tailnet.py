@@ -14,6 +14,15 @@ from kiro_crew.config.sections_defaults import SectionReader
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
+#: Every config path whose ``true`` opens the dashboard to the tailnet, so a
+#: ceiling pinning ``capabilities.tailnet_origin`` off refuses that write. One
+#: tuple for every write chokepoint (the dashboard PATCH and ``config set``).
+TAILNET_OPENING_PATHS = (
+    "dashboard.tailscale.enabled",
+    "dashboard.tailscale.trust_identity",
+    "dashboard.shared_crew.tailnet_direct",
+)
+
 
 @dataclass
 class TailscaleConfig:
@@ -55,7 +64,11 @@ class TailscaleConfig:
             "Tailscale logins permitted when trust_identity is on. Mandatory: "
             "a shared tailnet can have hundreds of members, so identity trust "
             "without an allowlist would hand each of them the dashboard. A "
-            "verified peer whose login is not listed is denied.",
+            "verified peer whose login is not listed is denied. Under the Shared "
+            "Crew preview (requires KIROCREW_SHARED_CREW_PREVIEW=1) this list only "
+            "seeds, at the first start, who may get in alongside you and accepted "
+            "Crew invites; after that adding a login admits nobody, and removing "
+            "one removes that person at the next start.",
             restart=True,
         ),
     )
@@ -227,7 +240,7 @@ def _tailscale_config_from(
         # A LIST whose entries are not usable logins, e.g. [1] or ["a@b", None].
         # The comprehension below silently drops them, so an all-invalid
         # narrowing parses to [] — indistinguishable from "no restriction
-        # configured", which is the exact silent widening this fix exists to
+        # configured", which is the exact silent widening this branch exists to
         # stop, and the same entry-level shape publish.allowed_destinations
         # already handles. An EMPTY list is NOT this case: that is a readable,
         # if mistaken, statement, and the trust_identity rule below already

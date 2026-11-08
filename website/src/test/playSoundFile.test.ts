@@ -117,3 +117,48 @@ describe('playSoundFile', () => {
     expect(() => playSoundFile('/x', 0.5)).not.toThrow()
   })
 })
+
+/**
+ * `onRelease` is how a caller frees what backs the url (a `blob:` URL of a
+ * user's sound file). It must run exactly once on EVERY path, or that blob is
+ * pinned until the page unloads.
+ */
+describe('playSoundFile onRelease', () => {
+  const flush = () => new Promise(r => setTimeout(r, 0))
+
+  it('runs once when the element finishes, even if an error follows', () => {
+    const onRelease = vi.fn()
+    playSoundFile('/x', 0.5, onRelease)
+    expect(onRelease).not.toHaveBeenCalled()
+    built[0].onended?.()
+    built[0].onerror?.()
+    expect(onRelease).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs once on an error', () => {
+    const onRelease = vi.fn()
+    playSoundFile('/x', 0.5, onRelease)
+    built[0].onerror?.()
+    expect(onRelease).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs once when play() is refused', async () => {
+    rejectPlay = true
+    const onRelease = vi.fn()
+    playSoundFile('/x', 0.5, onRelease)
+    await flush()
+    expect(onRelease).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs at once when nothing is played: zero volume, empty url, no Audio, or a throwing constructor', () => {
+    const calls: Array<() => void> = []
+    const track = () => { const f = vi.fn(); calls.push(f); return f }
+    playSoundFile('/x', 0, track())
+    playSoundFile('', 0.5, track())
+    install(undefined)
+    playSoundFile('/x', 0.5, track())
+    install(class { constructor() { throw new Error('no media support') } })
+    playSoundFile('/x', 0.5, track())
+    for (const f of calls) expect(f).toHaveBeenCalledTimes(1)
+  })
+})

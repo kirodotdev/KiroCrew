@@ -44,6 +44,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("gateway-pid", "Print the PID holding this home's gateway lock (JSON)"),
             ("logs", "Show gateway logs"),
             ("token", "Print a dashboard access URL with auth token"),
+            ("open", "Open the desktop app on a session (kirocrew:// deep link)"),
             ("logout", "Revoke all active dashboard sessions"),
             ("ledger-sweep", "List finished session/work ledgers; --purge deletes them"),
             ("update", "Update Kiro Crew to the latest version"),
@@ -85,14 +86,14 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("app", "Manage Kiro Crew apps"),
             ("agent", "Manage Kiro Crew agent definitions"),
             ("workspace", "Manage workspace definitions"),
+            ("acceptance-check", "Answer a goal acceptance check an installed edition provides"),
         ),
     ),
     (
         "Security and privacy",
         (
-            ("secrets", "Migrate .env credentials into the encrypted secret vault"),
+            ("secrets", "Encrypted secret vault: import .env credentials, authorize origins"),
             ("security", "Security audit and deny list"),
-            ("file-delivery", "Approve delivery of scanner-flagged files (host step-up)"),
             ("policy", "Inspect the governance security policy + profiles"),
             ("telemetry", "Inspect or disable anonymous usage telemetry"),
         ),
@@ -190,7 +191,10 @@ def render_epilog(width: int = 13) -> str:
     for index, (section, commands) in enumerate(COMMAND_GROUPS):
         lines.append(f"{section}:")
         for name, summary in commands:
-            lines.append(f"  {name:<{width}}{summary}")
+            if len(name) < width:
+                lines.append(f"  {name:<{width}}{summary}")
+            else:  # argparse's shape for a name wider than the column
+                lines.extend([f"  {name}", f"  {'':<{width}}{summary}"])
         lines.append("")
         if index == 0:
             lines.extend([_ORIENTATION, ""])

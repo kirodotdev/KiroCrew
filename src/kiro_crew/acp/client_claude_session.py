@@ -13,9 +13,10 @@ Instance fields written: ``_claude_inline_settings``,
 ``_claude_local_settings_excluded``, ``_claude_shipped_restrictions``,
 ``_claude_side_read_denies``.
 
-Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_permission_mode``,
-``_session_id``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
-``_side_read_only``.
+Instance fields read: ``_agent_version``, ``_agent_version_read``, ``_include_memory``,
+``_mcp_mount_servers``, ``_permission_mode``, ``_session_id``, ``_session_key``,
+``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``, ``_side_read_only``,
+``_spec_shell_allowlist``, ``_spec_write_allowlist``, ``_spec_zero_tools``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -25,16 +26,21 @@ import json
 import logging
 import os
 import re
-import stat
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.acp.claude_settings_sources import (
+    CLAUDE_SETTINGS_MAX_BYTES,
+    read_claude_settings_bytes,
+)
 from kiro_crew.acp.client_permissions import _scrub_observed
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS
+from kiro_crew.acp.spec_tools_allowlists import claude_ask_rules_for_allowlists
 from kiro_crew.acp.transport_errors import AcpError, AcpTimeoutError
 from kiro_crew.acp.types import METHOD_SET_MODE
+from kiro_crew.agent_sdk.backends import resolve_cc_pin_inherited_mode
 from kiro_crew.security import sandbox_credential_targets
 from kiro_crew.user_json import loads_user_json
 
@@ -53,7 +59,7 @@ logger = logging.getLogger("kiro_crew.acp.client")
 #: carries can pre-approve a Crew tool.
 _CLAUDE_CREW_GOVERNED_SETTING_SOURCES: tuple[str, ...] = ("user",)
 
-#: The permission mode Crew pins on such a session before its first prompt. It asks
+#: The permission mode Crew pins on a claude session before its first prompt. It asks
 #: the host about every call Crew's own settings do not deny.
 _CLAUDE_PINNED_MODE = "default"
 
@@ -79,6 +85,15 @@ _CLAUDE_SIDE_READ_ONLY_ASK_RULES: tuple[str, ...] = (
     "WebFetch",
     "WebSearch",
 )
+
+#: The Claude Code switch that turns its auto-memory off for the whole session: it
+#: neither loads ``<config dir>/projects/<project key>/memory/MEMORY.md`` nor writes
+#: a memory file. Read by the CLI from its process env, where it wins over the
+#: ``autoMemoryEnabled`` setting (Claude Code 2.1.318). Sent in
+#: ``_meta.claudeCode.options.env`` and in the flag tier's ``settings.env`` for an
+#: incognito or temporary session, and for a sub-agent spawned with
+#: ``include_memory=false``.
+_CLAUDE_DISABLE_AUTO_MEMORY_ENV = "CLAUDE_CODE_DISABLE_AUTO_MEMORY"
 
 #: gitignore's pattern characters. A rule written from a real path escapes them, as
 #: Claude Code does for a path the user approves, so a directory named ``[x]`` is
@@ -184,8 +199,8 @@ _CLAUDE_PROJECT_UNCARRIED_GUARD_KEYS: tuple[str, ...] = ("hooks", "sandbox")
 #: Crew's inline settings can only narrow what runs.
 _CLAUDE_CARRIED_PERMISSION_KEYS: tuple[str, ...] = ("deny", "ask")
 
-#: Ceiling on a project settings file read only to collect its deny rules.
-_CLAUDE_PROJECT_SETTINGS_MAX_BYTES = 1 << 20
+#: The shared settings-read ceiling, kept under this name for its importers.
+_CLAUDE_PROJECT_SETTINGS_MAX_BYTES = CLAUDE_SETTINGS_MAX_BYTES
 
 
 def _project_settings_restrictions(path: Path) -> list[tuple[str, str]] | None:
@@ -206,43 +221,18 @@ def _project_settings_restrictions(path: Path) -> list[tuple[str, str]] | None:
     :data:`_CLAUDE_PROJECT_UNCARRIED_GUARD_KEYS`, whose restriction leaving the
     tier out would drop.
 
-    Bounded and non-blocking like :meth:`AcpClient._settings_path_holds`: the
-    path is attacker-influenced, so ``O_NOFOLLOW`` and ``O_NONBLOCK`` on the open
-    and a size ceiling on the read. A file that changes after this read can only
+    Read through :func:`~kiro_crew.acp.claude_settings_sources.read_claude_settings_bytes`:
+    the path is attacker-influenced, so links are refused and the read is bounded
+    and non-blocking. A file that changes after this read can only
     have GAINED a rule Crew did not carry; it can never add an allow, because the
     tier still does not load.
     """
     try:
-        if path.is_symlink():
-            return None
-    except OSError:
-        return None
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    try:
-        fd = os.open(path, flags)
+        raw = read_claude_settings_bytes(path, follow_links=False)
     except FileNotFoundError:
         return []
-    except OSError:
+    if raw is None:
         return None
-    try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > _CLAUDE_PROJECT_SETTINGS_MAX_BYTES:
-            return None
-        chunks: list[bytes] = []
-        total = 0
-        while total <= _CLAUDE_PROJECT_SETTINGS_MAX_BYTES:
-            chunk = os.read(fd, _CLAUDE_PROJECT_SETTINGS_MAX_BYTES + 1 - total)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-        if total > _CLAUDE_PROJECT_SETTINGS_MAX_BYTES:
-            return None
-        raw = b"".join(chunks)
-    except OSError:
-        return None
-    finally:
-        os.close(fd)
     try:
         # A hand-edited settings file may carry a leading UTF-8 byte-order mark,
         # and its rules must still be carried.
@@ -298,7 +288,8 @@ def _exclude_foreign_local_settings(self: AcpClient, local_settings: Path, paylo
     channel, so a project file that sets either refuses the exclusion.
 
     Refused, keeping the array withheld, when this session asked for a
-    permission mode of its own (the pin sets only the asking mode), when
+    permission mode other than :data:`_CLAUDE_PINNED_MODE` (the pin sets only
+    the asking mode, so a request for that mode is honoured), when
     a project file cannot be examined or sets ``hooks`` or ``sandbox``, or
     when the adapter that
     answered the handshake is below
@@ -313,7 +304,10 @@ def _exclude_foreign_local_settings(self: AcpClient, local_settings: Path, paylo
     if self._claude_adapter_below_setting_sources_floor():
         self._log_claude_adapter_below_floor(local_settings, whose)
         return False
-    if getattr(self, "_permission_mode", None):
+    requested = getattr(self, "_permission_mode", None)
+    # A request for the pinned mode is what the pin below sets anyway, so it
+    # needs no file of its own; only a different mode does.
+    if requested and requested != _CLAUDE_PINNED_MODE:
         logger.warning(
             "%s %s and this session requested permission mode "
             "%r, which cannot be pinned without that file; the session runs without "
@@ -429,6 +423,16 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     under it always ships beside it; excluding the tier is never the
     widening direction.
 
+    A session whose spec declares ``"tools": []`` (``_spec_zero_tools``, the
+    background ``kirocrew-lite`` helpers) mounts no tool at all: ``tools`` is
+    empty, so no built-in exists for an allow rule in any settings file to
+    pre-approve, ``strictMcpConfig`` keeps the harness's own user, project and
+    plugin servers out, and bypass is off. The wire array it ships beside must be
+    empty too, which :func:`refuse_claude_zero_tool_mounts` checks first.
+
+    A Bot's worker session (``members.is_crewmate_worker_session``) gets
+    ``strictMcpConfig`` too, so a worker runs only the servers its spec grants.
+
     A Side Chat session (``side_read_only``) also gets the read-only shape:
     ``tools`` limited to the read built-ins, ``strictMcpConfig``, bypass off,
     and inline settings that add an ``ask`` rule per read built-in, deny the host's
@@ -438,6 +442,15 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
     session needs; the deny rules are what keep an allow rule or an
     additional directory there from reaching a sensitive path. A side session
     with no deny rules to carry raises ``AcpError`` instead of starting.
+
+    An incognito or temporary session (``memory_mode`` not ``persistent``), and a
+    sub-agent spawned with ``include_memory=false`` (``_include_memory``), gets
+    ``CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`` in ``env`` and in ``settings.env``, so
+    Claude Code's auto-memory neither reads nor writes the project's memory
+    files. The adapter spreads ``env`` over its own process env, so nothing it
+    sets there is lost; ``settings.env`` is the flag tier, which Claude Code
+    applies after the user, project and local tiers' ``env``, so none of those
+    can set the switch back.
     """
     options: dict[str, Any] = {}
     excluded = getattr(self, "_claude_local_settings_excluded", False) or getattr(
@@ -451,6 +464,40 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
             inline = getattr(self, "_session_mcp_inline_settings", None)
         if isinstance(inline, dict) and inline:
             options["settings"] = dict(inline)
+    # The spec's shell and write allowlists' ask rules ride the envelope whether or
+    # not ``settings.local.json`` is Crew's: a declined project file still loads,
+    # and its allow rules would otherwise approve those calls without a request.
+    # Built from the allowlists this session's requests are stamped with.
+    allowlist_asks = claude_ask_rules_for_allowlists(
+        getattr(self, "_spec_shell_allowlist", None),
+        getattr(self, "_spec_write_allowlist", None),
+    )
+    if allowlist_asks:
+        carried_settings = dict(options.get("settings") or {})
+        carried_permissions = dict(carried_settings.get("permissions") or {})
+        ask = list(carried_permissions.get("ask") or [])
+        ask.extend(rule for rule in allowlist_asks if rule not in ask)
+        carried_permissions["ask"] = ask
+        carried_settings["permissions"] = carried_permissions
+        options["settings"] = carried_settings
+    if getattr(self, "_spec_zero_tools", False):
+        # The spec declares ``"tools": []`` (the background ``kirocrew-lite``
+        # helpers). Without ``tools`` the adapter mounts Claude Code's whole
+        # built-in preset, and an allow rule in the user's or the project's
+        # settings runs a call there unasked, so no permission request reaches
+        # Crew. Without ``strictMcpConfig`` it mounts the user's, the project's
+        # and plugins' servers beside the wire array.
+        options["tools"] = []
+        options["strictMcpConfig"] = True
+        options["allowDangerouslySkipPermissions"] = False
+    from kiro_crew.members import is_crewmate_worker_session
+
+    if is_crewmate_worker_session(getattr(self, "_session_key", None)):
+        # A Bot's worker runs the servers its per-session spec grants, which the
+        # wire array already carries. Without this the harness also starts every
+        # server in the user's own config, the project's ``.mcp.json`` and
+        # plugins, once per worker.
+        options["strictMcpConfig"] = True
     if getattr(self, "_side_read_only", False):
         # A Side Chat session: only the read built-ins exist, so no allow rule
         # in the user's settings can pre-approve a write. No MCP server either
@@ -479,6 +526,18 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
         side_settings["permissions"] = side_permissions
         side_settings["disableAllHooks"] = True
         options["settings"] = side_settings
+    if self.memory_mode != "persistent" or not getattr(self, "_include_memory", True):
+        # Claude Code's auto-memory reads the project's MEMORY.md into the
+        # session and writes memory files with no permission request. The
+        # adapter spreads this env over its own process env. Claude Code then
+        # copies each settings tier's ``env`` over the process env, so a user
+        # or project ``env`` could set the switch back; the flag tier
+        # (``settings``) is copied last, so it carries the switch too. Copied,
+        # never mutated: the inline and Side Chat settings are shared dicts.
+        options.setdefault("env", {})[_CLAUDE_DISABLE_AUTO_MEMORY_ENV] = "1"
+        flag = dict(options.get("settings") or {})
+        flag["env"] = {**dict(flag.get("env") or {}), _CLAUDE_DISABLE_AUTO_MEMORY_ENV: "1"}
+        options["settings"] = flag
     # What this envelope ships, recorded as it is built: the session freezes
     # these deny and ask rules at creation, and a later re-seed (``_reseed_after_capture``)
     # moves the live inline settings without reaching the session.
@@ -491,6 +550,22 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
             shipped.update((kind, rule) for rule in rules if isinstance(rule, str))
     self._claude_shipped_restrictions = frozenset(shipped)
     return {"claudeCode": {"options": options}}
+
+
+def refuse_claude_zero_tool_mounts(spec_zero_tools: bool, mcp_servers: Any) -> None:
+    """Refuse a zero-tool claude session whose wire array mounts a server.
+
+    On a session whose spec declares ``"tools": []``, :func:`_claude_session_meta`
+    removes every built-in and keeps the harness's own servers out, so the wire
+    array is the one channel left that could mount a tool. The mirror withholds
+    every server such a spec does not reference, so a non-empty array is a
+    composition defect: ``AcpError``, and the session is not started.
+    """
+    if spec_zero_tools and mcp_servers:
+        raise AcpError(
+            'a claude session whose spec declares "tools": [] was composed with '
+            f"{len(mcp_servers)} MCP server(s), so it was not started"
+        )
 
 
 def _claude_session_excludes_local(self: AcpClient) -> bool:
@@ -549,16 +624,35 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     between. A pin that fails stops the harness: the session never runs with
     Crew's tools under a mode that approves on its own.
 
-    Runs only on the exclusion path (:meth:`_claude_session_excludes_local`)
-    and on a Side Chat session (``side_read_only``), whose READ_ONLY gate
-    has no approver behind it. A session whose settings file Crew wrote is
-    not pinned: a user ``~/.claude`` mode reaching it is the inherited-config
-    gap the spec names, not something this path adds. The exclusion is never
-    taken when Crew requested a mode of its own, or when the installed adapter
-    is below :data:`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, and Side Chat
-    runs no tools on such an adapter; if the adapter that answered the
-    handshake reports a version below it anyway, the session is stopped here.
-    Any other session gains no call (harness-parity H13).
+    Runs on the exclusion path (:meth:`_claude_session_excludes_local`) and
+    on a Side Chat session (``side_read_only``), whose READ_ONLY gate has no
+    approver behind it. Any other session keeps the mode it started in unless
+    ``KIROCREW_CC_PIN_INHERITED_MODE`` is on (``resolve_cc_pin_inherited_mode``,
+    off by default): a user ``~/.claude`` mode reaching it is the
+    inherited-config gap the spec names. With the setting on, the pin also
+    runs on every session whose start sent Crew's MCP array; a session that
+    sent none is left alone. There a reported mode that is the one Crew
+    requested (the ``auto`` opt-in) is the session's own and is kept; any
+    other approving mode is pinned, so a requested ``auto`` that resumes in
+    ``bypassPermissions`` is moved too. With no request the seed names no
+    ``defaultMode``, so a ``session/new`` starts in the mode the user's own
+    settings name (a ``~/.claude`` ``auto``, for one). A ``session/load``
+    starts in the mode its transcript was left in, whatever was requested.
+
+    The exclusion is never taken when Crew requested a mode of its own, or
+    when the installed adapter is below
+    :data:`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, and Side Chat runs no
+    tools on such an adapter; if the adapter that answered the handshake
+    reports a version below it anyway, an excluded or Side Chat session is
+    stopped here. A session the setting brings in keeps the mode it started
+    in on such an adapter, because the pin has not been checked on an
+    adapter older than 0.84.0. A session that starts in a mode that asks
+    gains no call, and the kiro path never reaches this method
+    (harness-parity H13).
+
+    A session whose spec declares ``"tools": []`` is stopped below the same
+    floor, since its empty ``tools`` option is what removes the built-ins, but
+    is not pinned: it mounts no tool, so its mode approves nothing.
 
     Observed on claude-agent-acp 0.84.0
     (``test/fixtures/claude_mode_pin/``): ``session/new`` and
@@ -572,27 +666,42 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     window between the writer's read and the session's creation.
     """
     excludes_local = self._claude_session_excludes_local()
-    if not (excludes_local or getattr(self, "_side_read_only", False)):
+    side = getattr(self, "_side_read_only", False)
+    zero_tools = getattr(self, "_spec_zero_tools", False)
+    depends_on_options = excludes_local or side or zero_tools
+    if not depends_on_options and not resolve_cc_pin_inherited_mode():
         return
-    if self._claude_adapter_below_setting_sources_floor():
-        # The installed package passed the floor, but the adapter that answered
-        # the handshake did not: it may have ignored the session's options.
+    below_floor = self._claude_adapter_below_setting_sources_floor()
+    # The array this start sent. The re-seed after the capture cleared the
+    # projection cache, so deriving it again here would read the spec and the
+    # settings files on the event loop.
+    if not depends_on_options and (below_floor or not getattr(self, "_mcp_mount_servers", None)):
+        return
+    if below_floor:
+        # The adapter that answered the handshake is below the floor, or named no
+        # version: it may have ignored the session's options.
         await self._kill_process(force=True)
         raise AcpError(
             "the claude-agent-acp that answered the handshake is not verified to "
             "honour settingSources or the other session options, so a session "
             "that depends on them was stopped before its first prompt"
         )
+    if zero_tools and not (excludes_local or side):
+        # A zero-tool session mounts no tool, so its mode has nothing to approve.
+        return
     if excludes_local:
         await self._verify_claude_project_denies_unchanged()
     session_id = resp.get("sessionId") or self._session_id
     modes = resp.get("modes")
     current = modes.get("currentModeId") if isinstance(modes, dict) else None
-    if isinstance(current, str) and current not in _CLAUDE_GATE_ESCAPING_MODES:
+    requested = None if (excludes_local or side) else self._permission_mode
+    if isinstance(current, str) and (
+        current not in _CLAUDE_GATE_ESCAPING_MODES or current == requested
+    ):
         return
     logger.warning(
-        "claude session started in mode %r while carrying Crew's tools; "
-        "pinning %r before the first prompt",
+        "claude session started in mode %r, which approves calls without asking "
+        "Crew's gate or was not reported; pinning %r before the first prompt",
         _scrub_observed(current if isinstance(current, str) else ""),
         _CLAUDE_PINNED_MODE,
     )
@@ -605,5 +714,6 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
         await self._kill_process(force=True)
         raise AcpError(
             "could not pin the asking permission mode on a claude session that "
-            "carries Crew's tools; the session was stopped"
+            "started in a mode which approves on its own, or reported none; the "
+            "session was stopped"
         ) from exc

@@ -16,6 +16,7 @@ import unittest
 from unittest import mock
 from unittest.mock import AsyncMock
 
+import issue_radar_route_checks
 from aiohttp import web
 from issue_radar_routes_ai_coverage_helpers import (
     _body,
@@ -77,12 +78,13 @@ class TestIssuesFirstPage(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 routes,
                 "_handle_issues_first_page",
-                new=AsyncMock(return_value=web.json_response({})),
+                new=AsyncMock(return_value=web.json_response({"branch": "first_page"})),
             ) as branch,
         ):
-            await routes._handle_issues(
+            response = await routes._handle_issues(
                 _get("issues", {"owner": "o", "repo": "r", "first_page": "1"})
             )
+        self.assertEqual(_body(response), {"branch": "first_page"})
         branch.assert_awaited_once()
 
     async def test_the_closed_state_never_takes_the_fast_path(self):
@@ -144,12 +146,13 @@ class TestPullsFirstPage(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 routes,
                 "_handle_pulls_first_page",
-                new=AsyncMock(return_value=web.json_response({})),
+                new=AsyncMock(return_value=web.json_response({"branch": "first_page"})),
             ) as branch,
         ):
-            await routes._handle_pulls(
+            response = await routes._handle_pulls(
                 _get("pulls", {"owner": "o", "repo": "r", "first_page": "1"})
             )
+        self.assertEqual(_body(response), {"branch": "first_page"})
         branch.assert_awaited_once()
 
 
@@ -308,13 +311,9 @@ class TestIssuesListPollPolicy(unittest.IsolatedAsyncioTestCase):
 # ── investigation record ─────────────────────────────────────────────────────
 
 
-class TestItemKind(unittest.TestCase):
+class TestItemKind(issue_radar_route_checks.AbsentAndEmptyDefaultToIssue, unittest.TestCase):
     """``None`` means INVALID, so the caller answers 400 rather than silently
     reading the wrong record: on GitLab the kind is part of an item's identity."""
-
-    def test_absent_and_empty_default_to_issue(self):
-        self.assertEqual(routes._item_kind(None), "issue")
-        self.assertEqual(routes._item_kind(""), "issue")
 
     def test_the_known_kinds_pass_through(self):
         for kind in provider.ITEM_KINDS:

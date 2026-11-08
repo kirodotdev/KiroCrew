@@ -84,6 +84,12 @@ class TestSettingsWithheldCause:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The owner's availableModels lists only model A; the sibling needs B.
+        # Another settings source defines availableModels, so the owner's seed
+        # carries a list at all.
+        monkeypatch.setattr(
+            "kiro_crew.acp.client_claude_seed.other_sources_define_available_models",
+            lambda *a, **k: True,
+        )
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": _SERVED_A})
         _client(tmp_path, model=_MODEL_A)._write_claude_local_settings()
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": _SERVED_B})

@@ -66,8 +66,12 @@ from kiro_crew.dashboard.channel_folders import (
     folder_id_for_name,
     lookup_channel_folder,
 )
-from kiro_crew.dashboard.chat_title import apply_manual_title
-from kiro_crew.dashboard.chat_utils import _sync_dashboard_slots, effective_session_key
+from kiro_crew.dashboard.channel_titles import rename_channel_title_live  # noqa: F401 (import path)
+from kiro_crew.dashboard.chat_utils import (
+    _sync_dashboard_slots,
+    effective_session_key,
+    slot_history_key,
+)
 from kiro_crew.dashboard.slot_persistence.message_entries import remember_unknown_row_fields
 from kiro_crew.dashboard.state import (
     _normalize_slot_key,
@@ -75,12 +79,18 @@ from kiro_crew.dashboard.state import (
     note_crew_log_class,
     row_mid,
 )
+from kiro_crew.dashboard.transcript_binding import (
+    bind_transcript,
+    seed_autocompact_from_disk,
+    seed_project_from_disk,
+)
 from kiro_crew.history import HUMAN_TURN_META_KEY, carry_provenance, is_incognito_transcript
 from kiro_crew.history_projection import METADATA_LINE_CORRUPT
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.upload_gate import live_dashboard_slot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew.attribution import Principal, stamp_principal_author
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -190,7 +200,7 @@ def project_channel_turn_live(
                     broadcast_user=broadcast_user,
                     # A PERSON sent this into the channel. See
                     # history.HUMAN_TURN_META_KEY for why the marker is explicit.
-                    meta={HUMAN_TURN_META_KEY: True},
+                    meta=stamp_principal_author({HUMAN_TURN_META_KEY: True}, Principal.unknown()),
                 )
             )
             or ""
@@ -253,35 +263,6 @@ def project_channel_row_live(
         except Exception:
             logger.debug("channel turn projection: slot push failed", exc_info=True)
     return mid or None
-
-
-async def rename_channel_title_live(
-    dashboard_state: Any,
-    session_key: str,
-    title: str,
-) -> bool:
-    """Rename the open dashboard slot for *session_key* and keep every view aligned.
-
-    Returns ``False`` when no live slot owns the session, so the channel can fall
-    back to its conversation-log-only path. A live slot is authoritative once it
-    exists: changing only transcript metadata lets its later save rewrite the old
-    in-memory title over the new one. So the live slot is renamed through
-    :func:`~kiro_crew.dashboard.chat_title.apply_manual_title`, the code the
-    sidebar rename and ``session_rename`` share: the slot is updated
-    synchronously, its title epoch bumped so a background titler stands down,
-    the title persisted through the epoch-aware helper, then broadcast.
-
-    The save is best-effort by dashboard contract. A failed immediate metadata
-    write leaves the updated live slot authoritative, and a later slot save can
-    recover it; the dashboard's own rename endpoint makes the same trade.
-    """
-    slot = live_dashboard_slot(dashboard_state, session_key)
-    if slot is None:
-        return False
-
-    if not await apply_manual_title(dashboard_state, slot, title):
-        logger.warning("channel title update is live but not yet durable for %s", session_key)
-    return True
 
 
 def _close_time(meta: dict[str, Any], file_mtime: float | None) -> float | None:
@@ -479,6 +460,7 @@ def _rebind_unbound_channel_slot(
         return False
     slot.linked_session_key = session_key
     note_crew_log_class(state, slot)
+    bind_transcript(state, slot)
     # Flagged, or the periodic flush skips it and the next restart refuses all over again.
     slot._dirty = True
     # The rebind changes the slot's effective key, so the registry still holds the
@@ -587,6 +569,11 @@ def surface_channel_session(
     # without created_at, so the delete-won guard's evidence gate engages.
     slot._disk_meta_created_at = str(meta.get("created_at") or "")
     slot._disk_meta_observed = bool(meta)
+    # The channel slot carries ``linked_session_key`` from construction, so the
+    # resolved key is the file just observed. The delete witnesses compare it
+    # against the live write target to tell a routing drift apart from a
+    # delete-recreate.
+    slot._disk_meta_key = slot_history_key(slot)
     slot._memory_assignment_from_history = True
     # Model and reasoning_effort go through the shared restore helper so this
     # path validates them exactly like the persistence loaders and History
@@ -608,11 +595,13 @@ def surface_channel_session(
         # Restore the per-session compaction threshold, mirroring the
         # persistence loaders: without this, a surfaced slot's field stays
         # None and the next save overwrites the persisted override with null.
+        # A live alias's threshold, which the slot just joined, is newer than
+        # this snapshot and stays (``seed_autocompact_from_disk``).
         # Local import: chat_persistence imports from this module, so a
         # module-level import here would be circular.
         from kiro_crew.dashboard.chat_persistence import _validate_autocompact_pct
 
-        slot.autocompact_pct = _validate_autocompact_pct(meta["autocompact_pct"])
+        seed_autocompact_from_disk(state, slot, _validate_autocompact_pct(meta["autocompact_pct"]))
         if slot.autocompact_pct is not None and state.sessions:
             state.sessions.set_autocompact_pct(effective_session_key(slot), slot.autocompact_pct)
     # The session's own turn time limit, for the same reason: without it a
@@ -633,8 +622,7 @@ def surface_channel_session(
         slot.workspace = meta["workspace"]
     if meta.get("memory_store"):
         slot.memory_store = str(meta["memory_store"])
-    if meta.get("project"):
-        slot.project = meta["project"]
+    seed_project_from_disk(state, slot, meta.get("project") or "")
     if meta.get("channel_folder_filed"):
         slot._channel_folder_filed = True
     # Persisted tags are applied on EVERY surface, not just first filing: the
@@ -1015,6 +1003,85 @@ def _hold_every_channel_key(state: "DashboardState") -> None:
         state.push_slots_update()
 
 
+def linked_channel_slot(state: Any, session_key: str) -> "_ChatSlot | None":
+    """The open tab bound to channel session *session_key*, or ``None``.
+
+    Found by the slot name the reconciler derives from the key and accepted only
+    when the slot is BOUND to that very session: a slot that merely carries the
+    name (unbound, or bound elsewhere) is not this conversation's tab, and
+    projecting into it would show one conversation's turn in another's window.
+    """
+    if not session_key or not is_channel_session_key(session_key):
+        return None
+    slots = getattr(state, "_slots", None)
+    if not isinstance(slots, dict):
+        return None
+    slot = slots.get(channel_slot_name(session_key))
+    if slot is None or getattr(slot, "linked_session_key", "") != session_key:
+        return None
+    return slot
+
+
+async def refresh_linked_channel_slot(state: Any, session_key: str) -> int:
+    """Pull the rows the channel just wrote into *session_key*'s open tab, now.
+
+    The one-session twin of the reconcile pass's refresh step, for a writer that
+    knows exactly which conversation it just appended to (a channel turn writing
+    its live tool steps) and must not pay a scan of every channel session per
+    row. Same rules, same lock: :func:`refresh_channel_window` is the only code
+    that moves a bound tab's window, it runs only on an idle, clean slot
+    (:func:`_window_refresh_is_safe`), and the reconcile lock keeps this from
+    interleaving with a full pass reading the same file. Returns the number of
+    rows appended.
+
+    The window's mtime watermark is deliberately left where it was. It is what
+    tells the full pass that the file has moved on, and a file mtime is coarse: a
+    row this pull reads and a reply appended a few milliseconds later can share
+    one stamp, so a watermark advanced here would make the pass that follows the
+    reply read "nothing newer" and leave the reply off the tab. Left alone, the
+    next full pass re-reads once, appends only what is new, and advances it.
+    """
+    log = getattr(state, "conversation_log", None)
+    if log is None:
+        return 0
+    async with _reconcile_lock(state):
+        slot = linked_channel_slot(state, session_key)
+        if slot is None or not _window_refresh_is_safe(slot):
+            return 0
+        messages = await asyncio.to_thread(log.read_messages, session_key)
+        # Re-checked after the read: the tab may have closed, or a turn started
+        # on it, while the file was being read.
+        if linked_channel_slot(state, session_key) is not slot or not _window_refresh_is_safe(slot):
+            return 0
+        appended = refresh_channel_window(slot, messages, slot._channel_window_mtime)
+        if appended:
+            state.push_slots_update()
+        return appended
+
+
+def channel_tool_result_frame(
+    slot_key: str, tool_call_id: str, tool_output: str, *, final: bool
+) -> dict[str, Any]:
+    """The ``tool_result`` frame a channel turn's tool result shows on its open tab.
+
+    The dashboard's own result frame, built here because a channel turn's output
+    reaching the tab is this module's boundary: the output is redacted and capped
+    by the same helper a dashboard turn uses, with the in-band markers a dashboard
+    turn consumes before it shows the output taken out rather than shown.
+    """
+    from kiro_crew import mcp_apps_render, session_directive
+    from kiro_crew.dashboard.chat_utils import _redact_tool_field
+
+    output = session_directive.strip_marker(tool_output or "")
+    output = mcp_apps_render.strip_marker(output)
+    return {
+        "slot": slot_key,
+        "tool_call_id": _redact_tool_field(tool_call_id),
+        "output": _redact_tool_field(output),
+        "final": final,
+    }
+
+
 async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) -> int:
     """One reconcile pass. Returns the number of slots surfaced.
 
@@ -1033,7 +1100,7 @@ async def reconcile_channel_slots(state: "DashboardState", window_minutes: int) 
     return surfaced
 
 
-#: Per-state memo of each channel tab's last-seen ``linked_turn_running``. Keyed
+#: Per-state memo of each tab's last-seen ``linked_turn_running``. Keyed
 #: weakly for the same reason as ``_RECONCILE_LOCKS``.
 _LINKED_RUNNING_SEEN: "weakref.WeakKeyDictionary[Any, dict[str, bool]]" = (
     weakref.WeakKeyDictionary()
@@ -1041,15 +1108,13 @@ _LINKED_RUNNING_SEEN: "weakref.WeakKeyDictionary[Any, dict[str, bool]]" = (
 
 
 def _linked_running_flipped(state: "DashboardState") -> bool:
-    """Whether any channel tab's channel-path turn started or ended since last pass.
+    """Whether any tab's linked-session turn started or ended since last pass.
 
     A turn the channel path runs holds the linked session's lease and no task
-    on the tab, so its end raises no slots push of its own: the reconciler's
-    push fires only when transcript rows changed, and the lease is often
-    released after the reply row was already pulled in -- or with no row at all
-    (an in-channel stop, a failure posted only to the channel). Without this the
-    sidebar kept showing the finished turn as running until some unrelated push.
-    Bounds that lag to one reconcile interval.
+    on the tab, so its start raises no slots push of its own, and its end only
+    the release observer's (``wire_session_release_listener``), which a release
+    absorbed after a reset never reaches: the reconciler's push fires only when
+    transcript rows changed. Bounds both lags to one reconcile interval.
     """
     seen = _LINKED_RUNNING_SEEN.get(state)
     if seen is None:
@@ -1057,8 +1122,6 @@ def _linked_running_flipped(state: "DashboardState") -> bool:
         _LINKED_RUNNING_SEEN[state] = seen
     now: dict[str, bool] = {}
     for name, slot in list(getattr(state, "_slots", {}).items()):
-        if not is_channel_session_key(getattr(slot, "linked_session_key", "") or ""):
-            continue
         try:
             now[name] = bool(slot.linked_turn_running)
         except Exception:

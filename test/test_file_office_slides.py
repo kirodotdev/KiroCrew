@@ -9,10 +9,14 @@ for real.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import hashlib
+import io
 import json
 import os
+import sys
+import types
 import zipfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,6 +31,8 @@ from kiro_crew.dashboard.handlers.office_slides import (
     api_file_office_slide,
     api_file_office_slides,
 )
+from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.office_slides"
 
@@ -371,6 +377,56 @@ async def test_spawn_routes_through_the_strict_sandbox_chokepoint(tmp_path):
     spawned = spawn.await_args
     assert list(spawned.args) == argv
     assert spawned.kwargs["cwd"] == str(work)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_conversion_kills_soffice(tmp_path, monkeypatch):
+    """Cancelling the conversion must not orphan ``soffice``.
+
+    The child runs in its own session, so nothing else stops it once
+    ``_run_soffice`` stops awaiting it. A cancel (gateway shutdown or restart)
+    that skipped the kill would leave LibreOffice parsing an untrusted deck with
+    no deadline left. The child must be handed to ``kill_and_reap`` before the
+    cancel propagates.
+    """
+    work = tmp_path / "work"
+    (work / "out").mkdir(parents=True)
+    started = asyncio.Event()
+    killed = asyncio.Event()
+
+    async def _wait() -> int:
+        started.set()
+        await killed.wait()
+        return -9
+
+    proc = MagicMock()
+    proc.stdout = None
+    proc.stderr = None
+    proc.returncode = None
+    proc.pid = UNALLOCATABLE_PID
+    proc.wait = _wait
+    reaped: list[object] = []
+
+    async def _kill_and_reap(child, *, timeout=None):  # noqa: ARG001
+        reaped.append(child)
+        child.returncode = -9
+        killed.set()
+
+    async def _prepare(partial_fn, executor=None):  # noqa: ARG001
+        return list(partial_fn.args[0]), dict(partial_fn.keywords["env"]), None
+
+    monkeypatch.setattr(mod.platform_compat, "kill_and_reap", _kill_and_reap)
+    argv = mod._soffice_argv("/usr/bin/soffice", work / "profile", work / "out", work / "deck.pptx")
+    with (
+        patch(f"{_MOD}.shielded_prepare_off_loop", _prepare),
+        patch(f"{_MOD}.create_subprocess_limited", AsyncMock(return_value=proc)),
+    ):
+        task = asyncio.create_task(mod._run_soffice(argv, work))
+        await await_until(started, what="the conversion awaiting soffice")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await await_until(task, what="the cancelled conversion finishing")
+    assert reaped == [proc], "a cancelled conversion left soffice running"
 
 
 def test_soffice_argv_is_a_list_with_a_private_profile(tmp_path):
@@ -843,6 +899,79 @@ def test_deck_text_stops_accumulating_at_the_screen_char_cap(monkeypatch):
     assert truncated is True
 
 
+def test_every_pdfium_call_of_a_render_holds_the_process_wide_lock(monkeypatch):
+    """pdfium is not thread-safe even across documents, and two decks with different
+    digests rasterize on two transfer-pool threads, so every pdfium call a render
+    makes, each close included, must hold the one process-wide lock."""
+    lock = getattr(mod, "_PDFIUM_LOCK", None)
+    calls: list[tuple[str, bool]] = []
+
+    def call(name: str) -> None:
+        calls.append((name, lock is not None and lock.locked()))
+
+    class _Image:
+        width, height = 4, 3
+
+        def save(self, buf, **_kwargs):
+            buf.write(b"png")
+
+    class _Bitmap:
+        def to_pil(self):
+            call("bitmap.to_pil")
+            return _Image()
+
+        def close(self):
+            call("bitmap.close")
+
+    class _Page:
+        def get_textpage(self):
+            call("page.get_textpage")
+            return self
+
+        def get_text_bounded(self):
+            call("textpage.get_text_bounded")
+            return ""
+
+        def get_size(self):
+            call("page.get_size")
+            return (4.0, 3.0)
+
+        def render(self, scale):
+            call("page.render")
+            return _Bitmap()
+
+        def close(self):
+            call("page.close")
+
+    class _Doc:
+        def __init__(self, pdf, autoclose):
+            call("document.open")
+
+        def __len__(self):
+            call("document.len")
+            return 1
+
+        def __getitem__(self, i):
+            call("document.get_page")
+            return _Page()
+
+        def close(self):
+            call("document.close")
+
+    class _Staging:
+        def open_regular(self, name, *, subdir=None):
+            return io.BytesIO()
+
+        def create(self, name):
+            return io.BytesIO()
+
+    monkeypatch.setitem(sys.modules, "pypdfium2", types.SimpleNamespace(PdfDocument=_Doc))
+    slides, _truncated, _hashes = mod._rasterize(_Staging(), "a.pdf")
+    assert len(slides) == 1
+    assert [name for name, held in calls if not held] == [], calls
+    assert ("bitmap.close", True) in calls, "the rendered bitmap was left for a finalizer"
+
+
 @_PINNED
 @pytest.mark.asyncio
 async def test_a_deck_whose_text_is_too_large_to_fully_screen_is_not_rendered(
@@ -887,16 +1016,11 @@ def test_read_manifest_rejects_a_manifest_for_another_digest(cache):
 
 
 def test_soffice_path_returns_none_when_nothing_is_discovered(monkeypatch):
-    """No candidate on PATH or at the fixed install root: the lazy app lookup
-    returns falsy and `soffice_path` passes it straight back (the deck degrades
-    to the text outline) without calling the validator."""
-    fake_engine = MagicMock()
-    fake_engine.optional_dep_path.return_value = ""
+    """No candidate on PATH or at the fixed install root: core discovery returns
+    falsy and `soffice_path` passes it straight back (the deck degrades to the text
+    outline) without calling the validator."""
     with (
-        patch.dict(
-            "sys.modules",
-            {"kiro_crew.apps.builtins.pptx_maker.backend": MagicMock(engine=fake_engine)},
-        ),
+        patch.object(mod.soffice_discovery, "find_soffice", return_value=""),
         patch(f"{_MOD}.validate_provider_executable") as validate,
     ):
         assert mod.soffice_path() == ""
@@ -908,13 +1032,8 @@ def test_soffice_path_refuses_an_executable_that_fails_the_provenance_check(monk
     (planted by an agent on a writable PATH dir, wrong owner, world-writable)
     must NOT run: `soffice_path` swallows the rejection and returns None so the
     deck degrades instead of executing an attacker's binary."""
-    fake_engine = MagicMock()
-    fake_engine.optional_dep_path.return_value = "/tmp/planted/soffice"
     with (
-        patch.dict(
-            "sys.modules",
-            {"kiro_crew.apps.builtins.pptx_maker.backend": MagicMock(engine=fake_engine)},
-        ),
+        patch.object(mod.soffice_discovery, "find_soffice", return_value="/tmp/planted/soffice"),
         patch(
             f"{_MOD}.validate_provider_executable",
             side_effect=Exception("refused: agent-writable path"),
@@ -926,29 +1045,31 @@ def test_soffice_path_refuses_an_executable_that_fails_the_provenance_check(monk
 def test_soffice_path_returns_the_validated_canonical_path(monkeypatch):
     """When discovery finds a real `soffice` that passes provenance, its
     validated canonical path is what runs."""
-    fake_engine = MagicMock()
-    fake_engine.optional_dep_path.return_value = "/usr/bin/soffice"
     with (
-        patch.dict(
-            "sys.modules",
-            {"kiro_crew.apps.builtins.pptx_maker.backend": MagicMock(engine=fake_engine)},
-        ),
+        patch.object(mod.soffice_discovery, "find_soffice", return_value="/usr/bin/soffice"),
         patch(f"{_MOD}.validate_provider_executable", return_value="/usr/bin/soffice") as validate,
     ):
         assert mod.soffice_path() == "/usr/bin/soffice"
     validate.assert_called_once_with("/usr/bin/soffice")
 
 
-def test_soffice_hint_delegates_to_the_app(monkeypatch):
-    """The install command shown for a missing `soffice` comes from the app's
-    own per-OS hint, not a second copy here."""
-    fake_preview = MagicMock()
-    fake_preview.soffice_hint.return_value = "apt-get install libreoffice"
-    with patch.dict(
-        "sys.modules",
-        {"kiro_crew.apps.builtins.pptx_maker.backend": MagicMock(preview_tools=fake_preview)},
+def test_soffice_discovery_needs_no_app(monkeypatch):
+    """Slide previews resolve `soffice` and its hint with no app package importable:
+    the discovery is a core capability, so no core feature depends on an app."""
+    blocked = {
+        "kiro_crew.apps.builtins.pptx_maker": None,
+        "kiro_crew.apps.builtins.pptx_maker.backend": None,
+    }
+    with (
+        patch.dict("sys.modules", blocked),
+        patch.object(mod.soffice_discovery.shutil, "which", return_value="/usr/bin/soffice"),
+        patch(f"{_MOD}.validate_provider_executable", side_effect=lambda p: p),
+        patch.object(
+            mod.soffice_discovery, "soffice_install_hint", return_value="apt-get install x"
+        ),
     ):
-        assert mod.soffice_hint() == "apt-get install libreoffice"
+        assert mod.soffice_path() == "/usr/bin/soffice"
+        assert mod.soffice_hint() == "apt-get install x"
 
 
 # --- eviction: the by-name fallback for platforms without descriptor ops ------

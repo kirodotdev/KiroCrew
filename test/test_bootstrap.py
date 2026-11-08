@@ -8,6 +8,7 @@ stub the import and the pip spawn — no real installs, no network.
 
 from __future__ import annotations
 
+import gc
 import importlib.util
 import subprocess
 from configparser import ConfigParser
@@ -145,8 +146,40 @@ def test_non_mcp_argv_takes_the_cli_path(monkeypatch):
     ran: list[str] = []
     monkeypatch.setattr(_bootstrap.sys, "argv", ["kirocrew", "gateway"])
     monkeypatch.setattr(_bootstrap, "_import_cli", lambda: lambda: ran.append("cli"))
-    _bootstrap.main()
+    try:
+        _bootstrap.main()
+    finally:
+        gc.enable()  # `gateway` leaves it off for run() to turn back on after bind
     assert ran == ["cli"]
+
+
+@pytest.mark.parametrize(
+    "argv, gc_on_during_import",
+    [
+        pytest.param(["kirocrew", "gateway"], False, id="gateway"),
+        pytest.param(["kirocrew", "status"], True, id="other-command"),
+    ],
+)
+def test_gateway_imports_the_cli_with_cyclic_gc_off(monkeypatch, argv, gc_on_during_import):
+    """Only ``gateway`` imports its module graph with GC off; boot turns it back on after bind."""
+    seen: list[bool] = []
+
+    def _import():
+        seen.append(gc.isenabled())
+        return lambda: None
+
+    monkeypatch.setattr(_bootstrap.sys, "argv", argv)
+    monkeypatch.setattr(_bootstrap, "_import_cli", _import)
+    was_enabled = gc.isenabled()
+    gc.enable()
+    try:
+        _bootstrap.main()
+    finally:
+        if was_enabled:
+            gc.enable()
+        else:
+            gc.disable()
+    assert seen == [gc_on_during_import]
 
 
 # ── _self_heal ──

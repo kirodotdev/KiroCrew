@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -554,6 +555,25 @@ async def test_discover_repo_job_clone_failure_blocked(monkeypatch, tmp_path) ->
     assert "repository not found" in out["blocked"]["detail"]
 
 
+@pytest.mark.asyncio
+async def test_discover_repo_job_resolves_clones_dir_off_the_loop(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # _clones_dir() reaches config_dir() and mkdirs; it must not run on the loop thread.
+    loop_thread = threading.get_ident()
+    seen: list[int] = []
+
+    def fake_clones_dir() -> Path:
+        seen.append(threading.get_ident())
+        return tmp_path
+
+    async def fake_run(cmd, timeout, env=None):  # type: ignore[no-untyped-def]
+        return (128, "", "fatal: repository not found")
+
+    monkeypatch.setattr(routes, "_clones_dir", fake_clones_dir)
+    monkeypatch.setattr(routes, "_run", fake_run)
+    await routes._discover_repo_job("https://example.com/r.git", ["93.184.216.34"], "/usr/bin/git")
+    assert seen and all(t != loop_thread for t in seen)
+
+
 # ── POST /discover: every kind branch ──
 
 
@@ -630,6 +650,31 @@ async def test_discover_repo_git_unavailable(monkeypatch, tmp_path) -> None:  # 
     )
     assert resp.status == 200
     assert isinstance(resp.body, bytes) and b"git is not available" in resp.body
+
+
+@pytest.mark.asyncio
+async def test_discover_repo_resolves_git_off_the_loop(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+    # _tool("git") stats the trusted dirs; only the thread moves, the resolution is the same.
+    monkeypatch.setattr(routes, "_uploads_dir", lambda: tmp_path)
+    loop_thread = threading.get_ident()
+    seen: list[tuple[str, int]] = []
+
+    async def fake_resolve(u, allow_loopback=True):  # type: ignore[no-untyped-def]
+        return ["93.184.216.34"]
+
+    def fake_tool(name: str) -> str:
+        seen.append((name, threading.get_ident()))
+        return "/usr/bin/git"
+
+    monkeypatch.setattr(routes, "_resolve_vetted", fake_resolve)
+    monkeypatch.setattr(routes, "_tool", fake_tool)
+    monkeypatch.setattr(routes, "_start_job", lambda work: "job-repo")
+    resp = await routes._handle_discover(
+        _Req({"kind": "repo", "value": "https://example.com/r.git"})  # type: ignore[arg-type]
+    )
+    assert isinstance(resp.body, bytes) and json.loads(resp.body)["job"] == "job-repo"
+    assert [n for n, _ in seen] == ["git"]
+    assert all(t != loop_thread for _, t in seen)
 
 
 @pytest.mark.asyncio

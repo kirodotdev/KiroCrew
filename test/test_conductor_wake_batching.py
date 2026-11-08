@@ -87,9 +87,19 @@ def _instrument_arms(svc, arms: "list[float | None]") -> None:
     for, so the task is a stand-in. What it keeps is what ``_window_open`` consults: the
     push mark cleared on every arm, exactly as the real ``_arm_timer`` clears it, and a
     LIVE entry in ``_timers`` for the loop -- without one the window would read as closed
-    and every report would arm, which is the opposite of what these cases measure. The
-    service's own ``stop`` cancels what is left in that table.
+    and every report would arm, which is the opposite of what these cases measure. Every
+    stand-in parks on one event this helper owns. The next arm cancels the stand-in it
+    replaces, and ``stop`` cancels what is left in that table and is then followed by
+    setting the event, so a park ends on a signal the test sets and is not left waiting.
     """
+    release = asyncio.Event()
+    real_stop = svc.stop
+
+    def _stop(*args, **kwargs) -> None:
+        try:
+            real_stop(*args, **kwargs)
+        finally:
+            release.set()
 
     def _spy(armed, delay=None) -> None:
         arms.append(delay)
@@ -97,10 +107,10 @@ def _instrument_arms(svc, arms: "list[float | None]") -> None:
         stale = svc._timers.get(armed.id)
         if stale is not None:
             stale.cancel()
-        # flake-ok: pre-existing hour-long parked sleep standing in for a live armed timer, which the next arm or svc.stop() cancels, moved verbatim; tracked for a de-flake pass
-        svc._timers[armed.id] = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
+        svc._timers[armed.id] = asyncio.get_running_loop().create_task(release.wait())
 
     svc._arm_timer = _spy  # type: ignore[method-assign]
+    svc.stop = _stop  # type: ignore[method-assign]
 
 
 def test_a_burst_inside_one_window_costs_one_turn_naming_every_item(tmp_path, monkeypatch):
@@ -340,12 +350,9 @@ def test_the_default_window_stays_on_the_seconds_scale():
 def test_a_report_after_the_armed_tick_was_cancelled_opens_its_own_window(tmp_path, monkeypatch):
     """A cancelled timer closes the window, even though the push mark survives the cancel.
 
-    ``_cancel_timer`` retires the task and drops the wake and floor-tick claims, but not
-    the push mark -- and a user message in the watched session cancels exactly that way.
-    If the mark alone opened the window, every report arriving before that user's turn
-    ended would join a window nothing will ever close, arm nothing, and wait out the
-    loop's whole cadence. The timer table is what settles it: the cancel POPS the task,
-    so the next report finds no armed tick and arms one of its own.
+    A user message cancels via ``_cancel_timer``, which keeps the push mark; if the mark
+    opened the window, later reports would wait the whole cadence. The cancel pops the
+    timer, so the next report arms its own tick.
     """
     first = _bind(WORKER)
     second = _bind(WORKER_B)

@@ -24,25 +24,11 @@ LOGGER_NAME = "kiro_crew.session_pid_sig"
 def records_from_this_module(caplog, level="ERROR"):
     """Captured records this module emitted — scoped by LOGGER as well as level.
 
-    ``caplog.at_level(..., logger=LOGGER_NAME)`` scopes the *level* it captures
-    at; it does not scope *which* loggers land in ``caplog.records``, which
-    still collects everything that propagates to the root handler. So counting
-    by level alone makes every assertion below depend on whether an unrelated
-    test happened to emit an ERROR inside the same window.
-
-    That is not hypothetical: CI saw nine ``asyncio`` "Task was destroyed but it
-    is pending!" records — leaked ``SessionManager._cleanup_loop()`` tasks from
-    other tests sharing the xdist worker, reported whenever those task objects
-    were collected — turn ``assert len(errors) == 1`` into ``assert 10 == 1``.
-    Nothing about this module had changed.
-
-    Scoping by logger name is strictly narrower than scoping by level: these
-    assertions still require an exact count, they just do not count other
-    people's records as ours.
+    ``caplog.at_level(..., logger=LOGGER_NAME)`` scopes only the level; ``caplog.records``
+    still collects every logger, so other tests on the same xdist worker (e.g. asyncio
+    "Task was destroyed" errors) would break exact counts.
     """
-    return [
-        r for r in caplog.records if r.levelname == level and r.name == LOGGER_NAME
-    ]
+    return [r for r in caplog.records if r.levelname == level and r.name == LOGGER_NAME]
 
 
 @pytest.fixture
@@ -51,29 +37,24 @@ def cfg(tmp_path):
     mapping-file dir (config_dir) and the canonical trust-root path accessor
     (sel_hmac_key_path — single source of truth owned by sel.py).
 
-    ``_sel_hmac_key_bytes`` is stubbed to ``None`` so these tests exercise the
-    FILE path in isolation: the in-memory recovery fallback depends on a live
-    ``SecurityEventLog`` singleton, which other tests in the same process may
-    or may not have initialized. Its own behavior is covered by
-    ``TestTrustRootRecovery``.
+    ``_sel_hmac_key_bytes`` is ``None`` to test the FILE path alone: the in-memory
+    fallback depends on a ``SecurityEventLog`` singleton other tests may have set up
+    (covered by ``TestTrustRootRecovery``).
 
-    ``platform_compat.get_process_start_id`` is pinned to ``None`` (no start
-    token) so the fixture is deterministic: the fake pids used here (4242,
-    1000, ...) can be LIVE processes on the test host, and a live pid would
-    otherwise make ``publish_session_pid`` capture a real start token and
-    change the exact ``.txt`` bytes these tests assert on. Recycle-guard
-    tests (``TestPidRecycleGuard``) re-patch it per test with controlled
-    values.
+    ``platform_compat.get_process_start_id`` is ``None`` because fake pids like 4242
+    can be live on the host, and a real start token would change the ``.txt`` bytes.
     """
     (tmp_path / "sel_hmac.key").write_bytes(b"\x01" * 32)
-    with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
-         patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=None), \
-         patch.object(platform_compat, "get_process_start_id", return_value=None), \
-         patch.object(
-             session_pid_sig,
-             "sel_hmac_key_path",
-             return_value=tmp_path / "sel_hmac.key",
-         ):
+    with (
+        patch.object(session_pid_sig, "config_dir", return_value=tmp_path),
+        patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=None),
+        patch.object(platform_compat, "get_process_start_id", return_value=None),
+        patch.object(
+            session_pid_sig,
+            "sel_hmac_key_path",
+            return_value=tmp_path / "sel_hmac.key",
+        ),
+    ):
         session_pid_sig._reported.clear()
         yield tmp_path
         session_pid_sig._reported.clear()
@@ -93,9 +74,7 @@ class TestPublish:
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)  # signed
         (cfg / "sel_hmac.key").unlink()
         session_pid_sig.publish_session_pid(4242, "dashboard:rekeyed")
-        assert (
-            cfg / "session_pid_4242.txt"
-        ).read_text(encoding="utf-8") == "dashboard:rekeyed"
+        assert (cfg / "session_pid_4242.txt").read_text(encoding="utf-8") == "dashboard:rekeyed"
         assert not (cfg / "session_pid_4242.sig").exists()
 
     def test_rekey_overwrites_both_files(self, cfg):
@@ -134,18 +113,14 @@ class TestVerify:
 
     def test_unsigned_txt_refused(self, cfg):
         """FORGERY: bare .txt written without the SEL key."""
-        (cfg / "session_pid_4242.txt").write_text(
-            "dashboard:victim", encoding="utf-8"
-        )
+        (cfg / "session_pid_4242.txt").write_text("dashboard:victim", encoding="utf-8")
         assert session_pid_sig.verify_session_pid(4242) == ""
 
     def test_tampered_txt_refused(self, cfg):
         """FORGERY: legitimate pair, then the .txt is redirected at another
         slot — the old signature does not match."""
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        (cfg / "session_pid_4242.txt").write_text(
-            "dashboard:victim", encoding="utf-8"
-        )
+        (cfg / "session_pid_4242.txt").write_text("dashboard:victim", encoding="utf-8")
         assert session_pid_sig.verify_session_pid(4242) == ""
 
     def test_replayed_pair_under_other_pid_refused(self, cfg):
@@ -174,9 +149,7 @@ class TestVerify:
         (cfg / "sel_hmac.key").unlink()
         with caplog.at_level("WARNING", logger=session_pid_sig.logger.name):
             assert session_pid_sig.verify_session_pid(4242) == ""
-        assert any(
-            "trust-root key absent/short" in r.getMessage() for r in caplog.records
-        )
+        assert any("trust-root key absent/short" in r.getMessage() for r in caplog.records)
 
     def test_symlinked_mapping_files_refused_on_read(self, cfg):
         """READ-SIDE SYMLINK ATTACK: after a legitimate publish, an agent
@@ -320,30 +293,19 @@ class TestLenientReader:
 
 
 class TestPidRecycleGuard:
-    """The mapping and its MAC binding only the pid NUMBER let a recycled pid
-    keep verifying and answer with the previous owner's session key until the
-    next restart's orphan sweep. Publication also records the process START
-    TOKEN (``platform_compat.get_process_start_id``
-    — the same incarnation identity ``session_pid_tracking.py``'s
-    ``<gw>:<pid>:<start_token>`` sweep records use), the signature covers it,
-    and BOTH readers refuse on a proven mismatch.
+    """The mapping records and signs the process START TOKEN, so a recycled pid is refused.
 
-    The asymmetry under test: a MISMATCH is positive evidence of a recycled
-    pid → refuse; an ABSENT recorded token (legacy file) or an UNREADABLE
-    live token (Windows, exited process) is merely unknown → resolve as
-    before the guard existed.
+    A MISMATCH proves a recycle and both readers refuse; an absent recorded token
+    (legacy file) or an unreadable live token (Windows, exited process) is unknown
+    and still resolves.
     """
 
     @staticmethod
     def _live_token(value):
-        return patch.object(
-            platform_compat, "get_process_start_id", return_value=value
-        )
+        return patch.object(platform_compat, "get_process_start_id", return_value=value)
 
     def test_recycled_pid_refused_by_strict_resolver(self, cfg):
-        """HEADLINE (red against pre-fix main): publish under one process
-        incarnation, present another incarnation of the same pid number —
-        the strict resolver must refuse, not answer with the old key."""
+        """Another incarnation of the same pid number is refused by the strict resolver."""
         with self._live_token("111"):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
         with self._live_token("222"):
@@ -368,12 +330,8 @@ class TestPidRecycleGuard:
     def test_a_recycled_mapping_attests_no_membership(self, cfg):
         """A proven recycle discards the TENANT SECTION too, not just the key.
 
-        The roster belonged to the pid's previous owner. Carried through the
-        refusal it would still satisfy ``shared`` (``tenant_count > 1``), which
-        is one half of ``peer_resolve``'s stop condition (``session_key or
-        shared``) -- so a mapping this very function disproved would become the
-        peer walk's ANSWER, and ``admits`` would then deny a legitimate caller
-        against a stale roster with a ``peer_session_mismatch`` 403.
+        A stale roster would still satisfy ``shared``, stopping ``peer_resolve``'s walk,
+        and ``admits`` would deny a legitimate caller with ``peer_session_mismatch``.
         """
         with self._live_token("111"):
             session_pid_sig.publish_session_pid(
@@ -391,10 +349,10 @@ class TestPidRecycleGuard:
         assert mapping.tenant_count == 0
 
     def test_legacy_tokenless_file_still_resolves(self, cfg):
-        """BACKWARD COMPATIBILITY: a signed mapping written before the
-        format change (no token line, MAC over ``"<pid>:<session_key>"``)
-        must not read as tampered or as a mismatch, even when the live
-        token IS readable (absent recorded token = unknown, not mismatch)."""
+        """A tokenless mapping (MAC over ``"<pid>:<session_key>"``) still resolves.
+
+        An absent recorded token is unknown, not a mismatch, even with a readable live token.
+        """
         key = b"\x01" * 32
         (cfg / "session_pid_4242.txt").write_text(SESSION_KEY, encoding="utf-8")
         (cfg / "session_pid_4242.sig").write_text(
@@ -420,9 +378,7 @@ class TestPidRecycleGuard:
         because the session key itself contains colons."""
         with self._live_token("111"):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        assert (
-            cfg / "session_pid_4242.txt"
-        ).read_text(encoding="utf-8") == f"{SESSION_KEY}\n111"
+        assert (cfg / "session_pid_4242.txt").read_text(encoding="utf-8") == f"{SESSION_KEY}\n111"
 
     def test_signature_covers_the_token(self, cfg):
         """Flipping ONLY the token line invalidates the MAC — even when the
@@ -430,9 +386,7 @@ class TestPidRecycleGuard:
         here is the signature's, not the recycle check's."""
         with self._live_token("111"):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        (cfg / "session_pid_4242.txt").write_text(
-            f"{SESSION_KEY}\n222", encoding="utf-8"
-        )
+        (cfg / "session_pid_4242.txt").write_text(f"{SESSION_KEY}\n222", encoding="utf-8")
         with self._live_token("222"):
             assert session_pid_sig.verify_session_pid(4242) == ""
 
@@ -472,10 +426,12 @@ class TestNoNofollowPlatform:
     plus a post-open ``(st_dev, st_ino)`` identity check. The identity check
     closes the lstat->open TOCTOU window: a path swapped to a symlink in
     that window opens the symlink's TARGET, whose identity can never match
-    the vetted regular file. Simulated on POSIX by removing ``O_NOFOLLOW``."""
+    the vetted regular file. Simulated on POSIX by removing ``O_NOFOLLOW``;
+    on Windows the attribute is already absent, so the ``delattr`` is a no-op
+    and the tests exercise the real platform path directly."""
 
     def test_regular_file_still_reads(self, cfg, monkeypatch):
-        monkeypatch.delattr("os.O_NOFOLLOW")
+        monkeypatch.delattr("os.O_NOFOLLOW", raising=False)
         (cfg / "session_pid_4242.txt").write_text(SESSION_KEY, encoding="utf-8")
         assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
 
@@ -486,20 +442,18 @@ class TestNoNofollowPlatform:
         handle's identity mismatches the vetted one."""
         import os as _os
 
-        monkeypatch.delattr("os.O_NOFOLLOW")
+        monkeypatch.delattr("os.O_NOFOLLOW", raising=False)
         target = cfg / "session_pid_4242.txt"
         target.write_text(SESSION_KEY, encoding="utf-8")
         decoy = tmp_path / "vetted-then-swapped"
         decoy.write_text("x", encoding="utf-8")
         real_lstat = _os.lstat
-        monkeypatch.setattr(
-            "os.lstat", lambda p, *a, **k: real_lstat(decoy)
-        )
+        monkeypatch.setattr("os.lstat", lambda p, *a, **k: real_lstat(decoy))
         assert session_pid_sig.read_session_pid_txt(4242) == ""
 
     def test_symlink_present_at_lstat_refused(self, cfg, monkeypatch, tmp_path):
         """The pre-check itself still refuses a symlink already in place."""
-        monkeypatch.delattr("os.O_NOFOLLOW")
+        monkeypatch.delattr("os.O_NOFOLLOW", raising=False)
         secret = tmp_path / "victim-secret"
         secret.write_text("hunter2", encoding="utf-8")
         (cfg / "session_pid_4242.txt").symlink_to(secret)
@@ -524,15 +478,11 @@ class TestDomainSeparation:
         # A MAC computed with the RAW root key (the SEL scheme) must differ
         # from the stored sidecar MAC — proving the root key is not used
         # directly to sign the sidecar.
-        raw_mac = hmac.new(
-            root, f"4242:{SESSION_KEY}".encode("utf-8"), hashlib.sha256
-        ).hexdigest()
+        raw_mac = hmac.new(root, f"4242:{SESSION_KEY}".encode("utf-8"), hashlib.sha256).hexdigest()
         assert stored != raw_mac
 
         # The stored MAC matches the DERIVED-subkey scheme.
-        subkey = hmac.new(
-            root, session_pid_sig._SUBKEY_DOMAIN, hashlib.sha256
-        ).digest()
+        subkey = hmac.new(root, session_pid_sig._SUBKEY_DOMAIN, hashlib.sha256).digest()
         derived_mac = hmac.new(
             subkey, f"4242:{SESSION_KEY}".encode("utf-8"), hashlib.sha256
         ).hexdigest()
@@ -540,21 +490,15 @@ class TestDomainSeparation:
 
 
 class TestTrustRootRecovery:
-    """SEL signs from key bytes it cached at init, while this protocol re-reads
-    the file on every call. The shared accessor re-resolves a key that MOVED
-    (a concurrent legacy -> ``trust/`` migration), so what reaches
-    recovery is the residue no path can resolve: a key deleted, unreadable,
-    truncated, or replaced by bytes that are not the anchor. Those would
-    otherwise take this protocol down for the life of the process — with a
-    healthy audit chain giving no hint. Recovery reads the same bytes SEL
-    validated at init.
+    """A key file deleted, unreadable, truncated or replaced recovers from SEL's cached bytes.
+
+    SEL caches the key at init while this protocol re-reads the file each call; a
+    moved key is already re-resolved by the shared accessor.
     """
 
     def test_missing_file_recovers_from_live_sel_key(self, cfg):
         (cfg / "sel_hmac.key").unlink()
-        with patch.object(
-            session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-        ):
+        with patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
             assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
 
@@ -564,9 +508,10 @@ class TestTrustRootRecovery:
         these bytes still fails closed. Silence would move the original silent
         failure one layer over instead of removing it."""
         (cfg / "sel_hmac.key").unlink()
-        with patch.object(
-            session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-        ), caplog.at_level("ERROR", logger=LOGGER_NAME):
+        with (
+            patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32),
+            caplog.at_level("ERROR", logger=LOGGER_NAME),
+        ):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
         errors = records_from_this_module(caplog)
         assert len(errors) == 1
@@ -577,9 +522,10 @@ class TestTrustRootRecovery:
 
     def test_broken_file_report_is_throttled_per_path(self, cfg, caplog):
         (cfg / "sel_hmac.key").unlink()
-        with patch.object(
-            session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-        ), caplog.at_level("DEBUG", logger=LOGGER_NAME):
+        with (
+            patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32),
+            caplog.at_level("DEBUG", logger=LOGGER_NAME),
+        ):
             session_pid_sig.publish_session_pid(1, SESSION_KEY)
             session_pid_sig.publish_session_pid(2, SESSION_KEY)
             session_pid_sig.publish_session_pid(3, SESSION_KEY)
@@ -599,18 +545,14 @@ class TestTrustRootRecovery:
         """SEL validates the length only at init, this protocol on every call —
         so a post-init truncation is exactly the asymmetry to recover from."""
         (cfg / "sel_hmac.key").write_bytes(b"\x01" * 8)
-        with patch.object(
-            session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-        ):
+        with patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32):
             assert session_pid_sig._load_hmac_key() == b"\x01" * 32
 
     def test_readable_file_wins_over_live_sel_key(self, cfg):
         """The file is the anchor every OTHER process resolves independently, so
         a readable file must never be overridden by this process's memory —
         otherwise a publisher signs with bytes its verifier does not have."""
-        with patch.object(
-            session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x02" * 32
-        ):
+        with patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x02" * 32):
             assert session_pid_sig._load_hmac_key() == b"\x01" * 32
 
     def test_no_file_and_no_live_key_still_fails_closed(self, cfg):
@@ -646,10 +588,9 @@ class TestTrustRootRelocationIsFollowed:
             log._hmac_key_file = tmp_path / "sel_hmac.key"
             assert not (tmp_path / "sel_hmac.key").exists()
 
-            with patch.object(
-                session_pid_sig, "config_dir", return_value=tmp_path
-            ), patch.object(
-                session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\xfe" * 32
+            with (
+                patch.object(session_pid_sig, "config_dir", return_value=tmp_path),
+                patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\xfe" * 32),
             ):
                 session_pid_sig._reported.clear()
                 loaded = session_pid_sig._load_hmac_key()
@@ -674,9 +615,7 @@ class TestSigningUnavailableReport:
         silence the other for the rest of the process."""
         (cfg / "sel_hmac.key").unlink()
         with caplog.at_level("ERROR", logger=LOGGER_NAME):
-            with patch.object(
-                session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-            ):
+            with patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32):
                 session_pid_sig.publish_session_pid(4242, SESSION_KEY)
             # Same path, but the in-memory fallback is gone now.
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
@@ -736,17 +675,11 @@ class TestSigningUnavailableReport:
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
         assert len(records_from_this_module(caplog)) == 2
 
-    def test_a_stray_error_from_another_logger_is_not_counted_as_ours(
-        self, cfg, caplog
-    ):
-        """Guards `records_from_this_module` against being narrowed back to a
-        level-only filter.
+    def test_a_stray_error_from_another_logger_is_not_counted_as_ours(self, cfg, caplog):
+        """`records_from_this_module` filters by logger, not only by level.
 
-        Every count in this class is exact, and `caplog.records` collects every
-        record that propagates — not only this module's. A leaked asyncio task
-        being destroyed inside the window (observed in CI) must therefore not be
-        counted as one of our reports, or these assertions fail for a reason
-        that has nothing to do with the code under test.
+        `caplog.records` collects every propagating record, so a leaked asyncio task's
+        error inside the window must not count as ours.
         """
         (cfg / "sel_hmac.key").unlink()
         with caplog.at_level("ERROR", logger=LOGGER_NAME):
@@ -761,9 +694,7 @@ class TestSigningUnavailableReport:
         assert str(cfg / "sel_hmac.key") in ours[0].getMessage()
         # The stray record really was captured — this test would be vacuous if
         # caplog had filtered it out for us.
-        assert any(
-            r.name == "asyncio" and r.levelname == "ERROR" for r in caplog.records
-        )
+        assert any(r.name == "asyncio" and r.levelname == "ERROR" for r in caplog.records)
 
 
 class TestSigningHealth:
@@ -785,8 +716,10 @@ class TestSigningHealth:
         """Asking the question must not create the trust root it asks about,
         and must not put a mkdir + key write behind a read-only command."""
         with patch("kiro_crew.sel.SecurityEventLog") as sel_cls:
-            session_pid_sig.signing_health()
+            ok, path = session_pid_sig.signing_health()
         sel_cls.assert_not_called()
+        assert ok is True
+        assert path == cfg / "sel_hmac.key"
 
     def test_is_not_wired_into_the_gateway_boot_path(self):
         """`no-new-work-on-gateway-boot-path` forbids a new awaited step before
@@ -795,9 +728,7 @@ class TestSigningHealth:
 
         from kiro_crew.dashboard import token_auth
 
-        assert "signing_health" not in inspect.getsource(
-            token_auth.warm_auth_singletons
-        )
+        assert "signing_health" not in inspect.getsource(token_auth.warm_auth_singletons)
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are POSIX-only")

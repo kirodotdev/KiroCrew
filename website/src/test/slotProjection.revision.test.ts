@@ -50,6 +50,20 @@ describe('reading a frame', () => {
     expect(kindOf({ slot: SLOT })).toBe('bare')
   })
 
+  it('reads a non-work fold frame without a value as bare, and seeds nothing either way', () => {
+    // The gateway sends every slot fold but `work` without its value. A valued
+    // one was never seeded (no cache key is kept by fold for it), so both shapes
+    // end on the router's re-read of the board and its ancestors;
+    // `useWebSocket.frameTrace.test.ts` pins that the two traces are identical.
+    expect(kindOf({ slot: SLOT, fold: 'workstreams', revision: 3 })).toBe('bare')
+    const client = new QueryClient()
+    const valued = takeFoldedSlotProjection(frame(4, ['w'], 'workstreams'))
+    expect(valued.kind).toBe('folded')
+    if (valued.kind !== 'folded') return
+    expect(seedFoldedProjection(client, SLOT, valued.frame)).toBe(false)
+    expect(client.getQueryCache().getAll()).toEqual([])
+  })
+
   it.each([
     ['no slot', { fold: 'work', revision: 1, value: {} }],
     ['no fold', { slot: SLOT, revision: 1, value: {} }],

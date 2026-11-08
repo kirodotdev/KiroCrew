@@ -20,10 +20,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import signal
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Mapping, NamedTuple
 
 from kiro_crew import agent_scratch, platform_compat
 from kiro_crew.acp import launch as launch_mod
@@ -38,9 +39,11 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_NODE_ADAPTER_PACKAGES,
     ACP_BACKEND_PROCESS_NAMES,
+    CODEX_CLI_ADAPTER_MISSING,
+    CODEX_CLI_OVERRIDE_UNUSABLE,
+    CODEX_CLI_UNRESOLVED,
     NODE_ADAPTER_ENTRY_SEGMENTS,
 )
-from kiro_crew.browser_cli.launch import browser_session_env, browser_socket_env
 from kiro_crew.env import augmented_path, describe_search_path
 from kiro_crew.identity_stores import IDENTITY_STORE_ROOTS
 from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
@@ -101,6 +104,10 @@ _CODEX_ACP_PKG_ENTRY = Path(CODEX_ACP_NPM_PKG, *NODE_ADAPTER_ENTRY_SEGMENTS)
 _CODEX_ACP_DEP_MARKER = launch_mod.ACP_SDK_DEP_MARKER
 # Explicit override, spelled the way the adapter's own documentation spells it.
 _ENV_CODEX_ACP_BIN = "CODEX_ACP_BIN"
+# The ``codex`` binary codex-acp spawns ``app-server`` from: the adapter reads
+# CODEX_PATH itself, and otherwise runs this script from its npm dependency.
+_ENV_CODEX_PATH = "CODEX_PATH"
+_CODEX_CLI_ENTRY = Path("@openai", "codex", "bin", "codex.js")
 
 
 class _KiroExecutableTrustError(RuntimeError):
@@ -259,6 +266,109 @@ def codex_acp_not_found_message(search_path: str) -> str:
         f"dependency), or set {_ENV_CODEX_ACP_BIN} to its entry script. "
         f"The 'codex' CLI alone does not serve ACP."
     )
+
+
+#: Suffixes Node runs as a script; a ``CODEX_PATH`` or adapter entry ending in one
+#: is launched as ``[node, script]`` rather than executed directly.
+_NODE_SCRIPT_SUFFIXES = frozenset({".js", ".mjs", ".cjs"})
+
+#: :attr:`CodexCliResolution.reason` values (declared in
+#: :mod:`kiro_crew.agent_sdk.backends_launch`). Empty means ``argv`` is set.
+
+
+class CodexCliResolution(NamedTuple):
+    """What :func:`resolve_codex_cli` found, and why not when it found nothing.
+
+    ``reason`` separates the three failures a caller words differently: a set but
+    unusable ``CODEX_PATH`` (``detail`` says why), no codex-acp adapter at all, and
+    an adapter that WAS found but whose ``@openai/codex`` dependency could not be
+    located from it (a launcher shim, a native adapter binary, no node).
+    """
+
+    argv: list[str] | None
+    search_path: str
+    reason: str = ""
+    detail: str = ""
+
+
+#: Named by the path callers import it from, like ``_KiroExecutableTrustError``.
+CodexCliResolution.__module__ = "kiro_crew.acp.client"
+
+
+def _node_for_script(script: str, search_path: str) -> str | None:
+    """The node the adapter ladder would pick for *script*."""
+    return launch_mod._resolve_node_for_script(script) or shutil.which("node", path=search_path)
+
+
+def _codex_path_override(override: str) -> CodexCliResolution:
+    """Resolve a set ``CODEX_PATH`` to an absolute argv, or say why it cannot run.
+
+    Absolute against the gateway's cwd, because the dictation child is spawned
+    from an empty temporary directory where a relative path does not resolve. A
+    script is realpath'd and run with node; a native binary must be executable.
+    """
+    search_path = augmented_path(os.environ.get("PATH", ""))
+    path = os.path.abspath(override)
+    if not os.path.isfile(path):
+        return CodexCliResolution(
+            None, search_path, CODEX_CLI_OVERRIDE_UNUSABLE, f"CODEX_PATH={path} is not a file."
+        )
+    if Path(path).suffix.lower() in _NODE_SCRIPT_SUFFIXES:
+        script = os.path.realpath(path)
+        node = _node_for_script(script, search_path)
+        if node is None:
+            return CodexCliResolution(
+                None,
+                search_path,
+                CODEX_CLI_OVERRIDE_UNUSABLE,
+                f"CODEX_PATH={path} is a Node script, but node was not found.",
+            )
+        return CodexCliResolution([node, script], search_path)
+    if not platform_compat.is_executable_file(path):
+        return CodexCliResolution(
+            None, search_path, CODEX_CLI_OVERRIDE_UNUSABLE, f"CODEX_PATH={path} is not executable."
+        )
+    return CodexCliResolution([path], search_path)
+
+
+def resolve_codex_cli() -> CodexCliResolution:
+    """The argv prefix for the ``codex`` CLI the codex-acp adapter would run.
+
+    The adapter's own choice, so a caller that talks to ``codex app-server``
+    directly runs the same binary as the Codex model provider: ``CODEX_PATH``
+    when it is set, else the ``@openai/codex`` script resolved the way Node
+    resolves the adapter's bare import, from the adapter entry's real path. The
+    adapter is found by :func:`_resolve_codex_acp_bin`, so there is no second
+    search ladder. A set ``CODEX_PATH`` that cannot run is reported, never
+    skipped in favour of the adapter: the operator chose it.
+    """
+    override = os.environ.get(_ENV_CODEX_PATH)
+    if override:
+        return _codex_path_override(override)
+    adapter_argv, search_path = _resolve_codex_acp_bin()
+    if not adapter_argv:
+        return CodexCliResolution(None, search_path, CODEX_CLI_ADAPTER_MISSING)
+    unresolved = CodexCliResolution(None, search_path, CODEX_CLI_UNRESOLVED)
+    if len(adapter_argv) > 2:
+        return unresolved
+    entry = os.path.realpath(adapter_argv[-1])
+    if len(adapter_argv) == 2:
+        node: str | None = adapter_argv[0]
+    elif Path(entry).suffix.lower() in _NODE_SCRIPT_SUFFIXES:
+        # An executable npm bin link (``npm i -g``): the ladder runs it as-is and its
+        # shebang picks node. The same node rungs the ladder uses for a script.
+        node = _node_for_script(entry, search_path)
+    else:
+        # A native adapter or a launcher shim (Volta, asdf): no node_modules tree
+        # to find the Codex dependency in.
+        node = None
+    if node is None:
+        return unresolved
+    for node_modules in launch_mod._node_module_search_dirs(Path(entry).parent):
+        script = node_modules / _CODEX_CLI_ENTRY
+        if script.is_file():
+            return CodexCliResolution([node, str(script)], search_path)
+    return unresolved
 
 
 #: The data-root override variables the identity store consults, DERIVED from
@@ -558,6 +668,7 @@ def apply_pod_bundle_spawn(
     argv: list[str],
     *,
     backend: str,
+    internal_sandbox: bool | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> tuple[list[str], bool]:
     """Resolve a pod child's kiro-cli spawn: which binary, and who sandboxes it.
@@ -568,10 +679,12 @@ def apply_pod_bundle_spawn(
     cause, made here once for both ACP transports rather than restated in each.
 
     **Outside a pod this is a no-op by construction**: *argv* is returned
-    unchanged and ``delegate_internal_sandbox`` is plain membership in
-    ``ACP_BACKENDS_INTERNAL_SANDBOX``, byte-identical to what both call sites
-    computed inline before. The exception is stated POSITIVELY (pod condition
-    true) and gated on exactly the conditions that make
+    unchanged and ``delegate_internal_sandbox`` is *internal_sandbox*, the
+    launch's own verdict (``spawn_delegates_to_internal_sandbox``, decided from
+    the spawn plan because a harness's route decides it). ``None`` reads plain
+    membership in ``ACP_BACKENDS_INTERNAL_SANDBOX``, for a caller with no plan.
+    The exception is stated POSITIVELY (pod condition true) and gated on exactly
+    the conditions that make
     :func:`_apply_pod_home_remap` fire -- the pod marker compared exactly to
     ``"1"``, membership in ``ACP_BACKENDS_POD_HOME_REMAP``, and a
     ``KIROCREW_OS_HOME`` to point at -- never on a backend negation, so a harness
@@ -615,7 +728,9 @@ def apply_pod_bundle_spawn(
     something unlaunchable; a pod whose child cannot bootstrap is meant to be refused
     loudly at ``pod up``, not papered over here.
     """
-    delegate = backend in ACP_BACKENDS_INTERNAL_SANDBOX
+    delegate = (
+        backend in ACP_BACKENDS_INTERNAL_SANDBOX if internal_sandbox is None else internal_sandbox
+    )
     env = os.environ if environ is None else environ
     if env.get("KIROCREW_POD") != "1":
         return argv, delegate
@@ -754,8 +869,6 @@ def _launch_tools() -> LaunchTools:
         augmented_path=augmented_path,
         scrub_agent_subprocess_env=scrub_agent_subprocess_env,
         apply_pod_home_remap=_apply_pod_home_remap,
-        browser_session_env=browser_session_env,
-        browser_socket_env=browser_socket_env,
         inject_xdist_auto_cap=inject_xdist_auto_cap,
         bind_voice_safe_agent_workspace_async=bind_voice_safe_agent_workspace_async,
         create_subprocess_limited=create_subprocess_limited,

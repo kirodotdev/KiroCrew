@@ -1,20 +1,16 @@
 """Channel switching and the standalone gateway restart.
 
-Two capabilities that complete the non-desktop update flow:
-
-* ``POST /api/update/channel`` moves a feed-checkable install onto another
-  release lane. The channel name becomes a path segment in every feed URL and an
-  argument in the recommended installer command, so the allowlist is the load-
-  bearing guard and is asserted here directly.
-* ``POST /api/restart`` restarts the gateway WITHOUT updating. Before it existed,
-  a wheel install that had just run the copied installer command in a terminal
-  was still executing the old code with no in-app way to reload.
+* ``POST /api/update/channel`` switches release lane. The name becomes a feed URL
+  path segment and an installer argument, so the allowlist is asserted directly.
+* ``POST /api/restart`` restarts the gateway WITHOUT updating, so a wheel install
+  can reload after running the installer command in a terminal.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from unittest.mock import DEFAULT, MagicMock, patch
 
@@ -24,6 +20,8 @@ from aiohttp import web
 from kiro_crew.dashboard.handlers import updates
 from kiro_crew.platform import update_layout
 from kiro_crew.platform.update_layout import InstallLayout
+
+_UPDATES_LOGGER = "kiro_crew.dashboard.handlers.updates"
 
 
 @pytest.fixture(autouse=True)
@@ -168,11 +166,8 @@ class TestChannelEndpoint:
     ):
         """The invalidation must not re-read ``$KIROCREW_HOME/channel``.
 
-        The endpoint is a coroutine, and ``release_channel()`` is a synchronous
-        ``read_text`` on the data home — which the operator may have put on NFS or
-        SMB, where a read can stall long enough to freeze the event loop and the
-        liveness heartbeat with it. The validated channel is already in hand from
-        the write, so any read here is both a stall risk and redundant.
+        ``release_channel()`` is a sync ``read_text`` on a data home that may be on
+        NFS, so it can freeze the loop; the validated channel is already in hand.
         """
         update_layout.set_release_channel("stable")
 
@@ -503,11 +498,8 @@ class TestChannelEndpoint:
 class TestUpdateRevalidate:
     """``POST /api/update/revalidate`` — the CLI's post-update badge reconcile.
 
-    Authenticated over loopback + the local secret (the CLI path), NOT the
-    browser owner gate — a raw ``X-Local-Secret`` request carries no owner
-    identity, so an owner-gated endpoint would 403 the CLI and the fix would be
-    inert. These rows pin that the auth the CLI actually sends is accepted and
-    that a wrong/absent secret or a non-loopback origin is refused.
+    Auth is loopback + local secret, NOT the owner gate: an ``X-Local-Secret`` call
+    has no owner identity and would get 403. A wrong secret or remote origin is refused.
     """
 
     @staticmethod
@@ -710,7 +702,9 @@ class TestRestartEndpoint:
         resp = asyncio.run(_run())
         assert resp.status == 200
 
-    def test_a_restart_failure_is_surfaced_not_swallowed(self):
+    def test_a_restart_failure_is_surfaced_not_swallowed(self, caplog):
+        caplog.set_level(logging.ERROR, logger=_UPDATES_LOGGER)
+
         async def _boom(_state: object) -> None:
             raise RuntimeError("exec failed")
 
@@ -725,6 +719,9 @@ class TestRestartEndpoint:
         state = asyncio.run(_run())
         # The user is told, rather than left watching a spinner that never ends.
         assert state.push_update_progress.called
+        logged = [r for r in caplog.records if r.name == _UPDATES_LOGGER]
+        assert [r.getMessage() for r in logged] == ["Gateway restart failed"]
+        assert str(logged[0].exc_info[1]) == "exec failed"
 
     def test_duplicate_requests_share_one_restart_task(self):
         """Double-clicks cannot race two successors for one gateway port."""

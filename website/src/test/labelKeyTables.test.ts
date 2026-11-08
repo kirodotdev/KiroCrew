@@ -24,7 +24,6 @@ import { EFFORT_LABEL_KEY, effortLabel } from '../lib/effort'
 import { FILTER_LABEL_KEY, FILTER_DESCRIPTION_KEY, SORT_LABEL_KEY } from '../pages/ChatSidebar'
 import { STAT_LABEL_KEY } from '../pages/OverviewPage'
 import { NEW_MENU_LABEL_KEY, NEW_MENU_DESC_KEY } from '../pages/chat/SidePanel'
-import { STATE_LABEL_KEY } from '../apps/auto-research/ResearchLabPage'
 
 function flatten(obj: unknown, prefix = ''): Record<string, string> {
   const out: Record<string, string> = {}
@@ -40,7 +39,9 @@ function flatten(obj: unknown, prefix = ''): Record<string, string> {
 const en = flatten((CATALOGS.en as { translation: unknown }).translation)
 const zh = flatten((CATALOGS['zh-CN'] as { translation: unknown }).translation)
 
-const TABLES: Record<string, Record<string, string>> = {
+// `null` is a legitimate value in NEW_MENU_DESC_KEY: a row whose label already
+// says it all renders no second line, so there is no key to resolve.
+const TABLES: Record<string, Record<string, string | null>> = {
   EFFORT_LABEL_KEY,
   FILTER_LABEL_KEY,
   FILTER_DESCRIPTION_KEY,
@@ -48,13 +49,14 @@ const TABLES: Record<string, Record<string, string>> = {
   STAT_LABEL_KEY,
   NEW_MENU_LABEL_KEY,
   NEW_MENU_DESC_KEY,
-  STATE_LABEL_KEY,
 }
 
 describe('user-visible label tables hold catalog keys', () => {
   for (const [name, table] of Object.entries(TABLES)) {
+    const keys = Object.values(table).filter((key): key is string => key !== null)
+
     it(`${name}: every value is a key that exists in English`, () => {
-      const missing = Object.values(table).filter(key => !(key in en))
+      const missing = keys.filter(key => !(key in en))
       expect(missing).toEqual([])
     })
 
@@ -75,7 +77,7 @@ describe('user-visible label tables hold catalog keys', () => {
         // locale ships it verbatim (matching components.gitPanel.title, which
         // the sidecar documents as do-not-translate).
         'pages.chat.sidePanel.menu_git'])
-      const untranslated = Object.values(table)
+      const untranslated = keys
         .filter(key => !SYMBOLIC.has(key) && !BORROWED.has(key))
         .filter(key => zh[key] === en[key])
       expect(untranslated).toEqual([])

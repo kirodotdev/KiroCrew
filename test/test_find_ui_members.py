@@ -36,11 +36,7 @@ def _conditions(placement: dict[str, Any]) -> list[str]:
 
 
 def _has_preview_flag(placement: dict[str, Any]) -> bool:
-    # The Crewmates preview prerequisite every control on the page carries.
-    return any(
-        r["kind"] == "preview_flag" and r.get("setting_id") == "developer.mates"
-        for r in placement["requires"]
-    )
+    return any(r["kind"] == "preview_flag" for r in placement["requires"])
 
 
 # (query, lang, id, path in the query's language, conditions)
@@ -50,100 +46,100 @@ _GOLDENS = [
         "make a new crewmate",
         "en",
         "members.new",
-        ["Mates", "New mate"],
+        ["Bots", "New bot"],
         ["no_crewmates"],
     ),
-    ("新建队友", "zh-CN", "members.new", ["队友", "新建队友"], ["no_crewmates"]),
+    ("新建队友", "zh-CN", "members.new", ["Bot", "新建 Bot"], ["no_crewmates"]),
     (
         "advanced crewmate setup",
         "en",
         "members.new-advanced",
-        ["Mates", "Advanced"],
+        ["Bots", "Advanced"],
         ["no_crewmates"],
     ),
-    ("高级队友设置", "zh-CN", "members.new-advanced", ["队友", "高级"], ["no_crewmates"]),
+    ("高级队友设置", "zh-CN", "members.new-advanced", ["Bot", "高级"], ["no_crewmates"]),
     # Crewmates page: the header "Add…" menu, once a crewmate exists.
     (
         "advanced crewmate setup",
         "en",
         "members.add-menu",
-        ["Mates", "Add…"],
+        ["Bots", "Add…"],
         ["has_crewmates"],
     ),
     (
         "高级队友设置",
         "zh-CN",
         "members.add-menu",
-        ["队友", "添加…"],
+        ["Bot", "添加…"],
         ["has_crewmates"],
     ),
-    ("添加队友", "zh-CN", "members.add-menu", ["队友", "添加…"], ["has_crewmates"]),
+    ("添加队友", "zh-CN", "members.add-menu", ["Bot", "添加…"], ["has_crewmates"]),
     # Crewmates page: the open crewmate.
     (
         "edit my crewmate",
         "en",
         "members.edit",
-        ["Mates", "Profile"],
+        ["Bots", "Profile"],
         ["crewmate_selected"],
     ),
-    ("编辑队友", "zh-CN", "members.edit", ["队友", "资料卡"], ["crewmate_selected"]),
+    ("编辑队友", "zh-CN", "members.edit", ["Bot", "资料卡"], ["crewmate_selected"]),
     (
         "crewmate details",
         "en",
         "members.details",
-        ["Mates", "Dashboard & files"],
+        ["Bots", "Dashboard & files"],
         ["crewmate_selected", "crewmate_panel_not_docked"],
     ),
     (
         "队友详情",
         "zh-CN",
         "members.details",
-        ["队友", "仪表板和文件"],
+        ["Bot", "仪表板和文件"],
         ["crewmate_selected", "crewmate_panel_not_docked"],
     ),
     # Customize > Crewmates.
-    ("add a new agent", "en", "agents.add", ["Customize", "Mates", "New mate"], []),
-    ("创建代理", "zh-CN", "agents.add", ["自定义", "队友", "新建队友"], []),
+    ("add a new agent", "en", "agents.add", ["Customize", "Bots", "New bot"], []),
+    ("创建代理", "zh-CN", "agents.add", ["自定义", "Bot", "新建 Bot"], []),
     (
         "create a crewmate",
         "en",
         "agents.create-first",
-        ["Customize", "Mates", "Create your first mate"],
+        ["Customize", "Bots", "Create your first bot"],
         ["no_crewmates"],
     ),
     (
         "创建队友",
         "zh-CN",
         "agents.create-first",
-        ["自定义", "队友", "创建你的第一位队友"],
+        ["自定义", "Bot", "创建你的第一个 Bot"],
         ["no_crewmates"],
     ),
     (
         "change my crewmate's avatar",
         "en",
         "agents.edit-avatar",
-        ["Customize", "Mates", "General", "Edit avatar"],
+        ["Customize", "Bots", "General", "Edit avatar"],
         ["crewmate_editor_open"],
     ),
     (
         "修改头像",
         "zh-CN",
         "agents.edit-avatar",
-        ["自定义", "队友", "常规", "编辑头像"],
+        ["自定义", "Bot", "常规", "编辑头像"],
         ["crewmate_editor_open"],
     ),
     (
         "delete an agent",
         "en",
         "agents.delete",
-        ["Customize", "Mates", "Danger Zone", "Delete mate"],
+        ["Customize", "Bots", "Danger Zone", "Delete bot"],
         ["crewmate_editor_open"],
     ),
     (
         "删除代理",
         "zh-CN",
         "agents.delete",
-        ["自定义", "队友", "危险区域", "删除队友"],
+        ["自定义", "Bot", "危险区域", "删除 Bot"],
         ["crewmate_editor_open"],
     ),
 ]
@@ -157,9 +153,8 @@ def test_crewmate_controls_are_found_with_their_path_and_state(
     (placement,) = hit["placements"]
     assert _path(placement) == path
     assert _conditions(placement) == conds
-    # Crewmates is still a preview: every control ON that page names the switch
-    # that shows it, and a crew control on Customize names none.
-    assert _has_preview_flag(placement) == placement["route"].startswith("/members")
+    # Crewmates needs no opt-in: no crew control names a preview switch.
+    assert not _has_preview_flag(placement)
 
 
 def test_creating_a_crewmate_names_every_host_and_the_state_that_draws_it() -> None:

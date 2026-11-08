@@ -13,13 +13,9 @@ from kiro_crew import snapshot as snap
 class TestRecoveryRefusesToSaveATreeItCannotCopyWhole:
     """The rollback SAVE is `_backup_tree_or_refuse`, and it must refuse a link.
 
-    Superseded contract: the old `_copytree_rollback` preserved a symlink so a
-    save-then-restore round trip kept it. That helper is gone. Replace mode runs
-    `rmtree` on the live tree AFTER the save, so a symlink the save cannot faithfully copy
-    is a file the restore would delete with nothing to put back. `_backup_tree_or_refuse`
-    therefore reports a skipped link as FATAL and REFUSES the whole save before any
-    mutation, rather than making a partial backup. Refusing is the stronger guarantee, so
-    this pins the refusal -- not the old preservation.
+    Replace mode runs `rmtree` on the live tree after the save, so a link the save cannot
+    copy would be deleted with nothing to put back; the whole save is refused before any
+    mutation instead.
     """
 
     def test_a_tree_with_a_link_is_refused_rather_than_partially_backed_up(

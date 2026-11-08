@@ -1,14 +1,18 @@
 /**
  * Settings -> Security -> Denied commands: the built-in rules grouped by
- * category, the user's own deny patterns and their add input, and the
- * policy-pinned and floor-locked tooltip keys the governance rows reuse. One of
- * the sections `SecurityPanel.tsx` composes.
+ * category, the user's own deny patterns (sortable, each editable in a dialog)
+ * and their add input, and the policy-pinned and floor-locked tooltip keys the
+ * governance rows reuse. One of the sections `SecurityPanel.tsx` composes.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Lock, AlertTriangle, ChevronRight, ChevronDown, Plus, Trash2 } from 'lucide-react'
+import { motion } from 'framer-motion'
+import { Lock, AlertTriangle, ArrowDownAZ, ChevronRight, ChevronDown, MoreHorizontal, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useImeGuard } from '../../hooks/useImeGuard'
-import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
+import { useMenuOpensDialog } from '../../hooks/useMenuOpensDialog'
+import { useReducedMotion } from '../../hooks/useReducedMotion'
+import { Badge, Btn, IconButton, Input, Toggle, Checkbox } from '../../components/ui'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import { SettingsSection, SettingsCard } from '../../components/settings'
 import Modal from '../../components/Modal'
 import InfoTip from '../../components/InfoTip'
@@ -16,6 +20,7 @@ import {
   api, type DeniedCommandsData, type DeniedCommandRule, type DeniedUserRule,
 } from '../../api/client'
 import { i18nT } from '../../i18n/t'
+import { compareText, fmtNumber } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
 import { trustFailureMessage } from './SecurityPanelTrust'
 
@@ -202,61 +207,151 @@ function CategoryGroup({
   )
 }
 
-/** A single user-authored denied-command row (Card B). */
-function CustomDenyRow({ rule, onToggle, onDelete, error, errorHandoff }: { rule: DeniedUserRule; onToggle: (next: boolean) => void; onDelete: () => void; error?: string; errorHandoff?: boolean }) {
+/** A single user-authored denied-command row (Card B). Two controls, per
+ *  `max-two-buttons-per-row`: the switch, and a menu holding Edit and Delete.
+ *  `menu` is the section's one menu-to-dialog focus hand-off. */
+function CustomDenyRow({ rule, onToggle, onEdit, onDelete, menu, error, errorHandoff }: { rule: DeniedUserRule; onToggle: (next: boolean) => void; onEdit: () => void; onDelete: () => void; menu: ReturnType<typeof useMenuOpensDialog>; error?: string; errorHandoff?: boolean }) {
+  // `layout` so a row the A-Z sort moves is followed to its new place, not
+  // teleported; `position` animates only the offset. Off under reduced motion.
+  const reduceMotion = useReducedMotion()
   return (
-    <div className="py-2">
+    <motion.div layout={reduceMotion ? false : 'position'} className="py-2">
       <div className="flex items-center gap-2.5">
         <div className="flex-1 min-w-0">
           <code className="block overflow-x-auto text-[12px] font-mono text-text whitespace-pre-wrap break-all">{rule.pattern}</code>
           {/* The note is what the agent is shown when this rule fires, so surface it
-              next to the pattern it explains rather than hiding it behind an edit
-              affordance that does not exist (rules are create-only). */}
+              next to the pattern it explains rather than only in the edit dialog. */}
           {rule.note ? <p className="mt-0.5 text-[11px] text-muted whitespace-pre-wrap break-words">{rule.note}</p> : null}
         </div>
         <Toggle checked={rule.enabled} onChange={onToggle} label={rule.pattern} />
-        <button
-          type="button"
-          className="shrink-0 text-muted hover:text-danger transition-colors bg-transparent border-none cursor-pointer p-1"
-          onClick={onDelete}
-          aria-label={i18nT('pages.settings.securityPanel.delete_pattern', { name: rule.pattern })}
-        >
-          <Trash2 size={14} />
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <IconButton
+              aria-label={i18nT('pages.settings.securityPanel.pattern_actions', { name: rule.pattern })}
+              onPointerDown={menu.rememberOpener}
+              onKeyDown={menu.rememberOpener}
+            >
+              <MoreHorizontal size={14} />
+            </IconButton>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" onCloseAutoFocus={menu.onCloseAutoFocus}>
+            <DropdownMenuItem onSelect={() => menu.openLayer(onEdit)}>
+              <Pencil className="lucide-inline" /> {i18nT('pages.settings.securityPanel.edit')}
+            </DropdownMenuItem>
+            {/* The red sits on a plain wrapper: the item owns its own color. */}
+            <DropdownMenuItem
+              onSelect={onDelete}
+              aria-label={i18nT('pages.settings.securityPanel.delete_pattern', { name: rule.pattern })}
+            >
+              <span className="inline-flex items-center gap-2 text-danger">
+                <Trash2 className="lucide-inline" /> {i18nT('pages.settings.securityPanel.delete')}
+              </span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       {/* The rejected toggle/delete for THIS row, beside the controls that
           caused it. `errorHandoff` is the section's call on whether the
           add-pattern draft below is empty (No hand-off otherwise: that draft). */}
       <ErrorNotice variant="inline" className="mt-1" message={error} askAgent={!!errorHandoff} testId={error ? `denied-rule-error-${rule.id}` : undefined} />
-    </div>
+    </motion.div>
   )
 }
 
-/** Add-a-custom-pattern input with client-side RegExp validation (Card B).
+/** The rule an Edit dialog was opened on, and its two drafts. */
+type EditTarget = { rule: DeniedUserRule; pattern: string; note: string }
+type EditFields = { pattern?: string; note?: string }
+
+/** Edit a custom deny (Card B): the add row's two fields, prefilled. Only the
+ *  fields the reader changed are sent, and the server checks each exactly as it
+ *  checks an add, so a rejection (a regex Python cannot compile, an unsafe one,
+ *  a note carrying the refusal prefix) shows here and keeps the drafts. Closing
+ *  (Cancel, Escape) changes nothing. */
+function EditDenyModal({ target, onChange, onSave, onClose, busy, error }: { target: EditTarget | null; onChange: (next: EditTarget) => void; onSave: (fields: EditFields) => void; onClose: () => void; busy: boolean; error: string }) {
+  const ime = useImeGuard()
+  // The pattern is a regex, where a space is part of what it matches, so it is
+  // compared and sent exactly as typed; trimming only decides "is it blank".
+  // The note is prose read back to the agent, so it is trimmed like the add's.
+  const pattern = target?.pattern ?? ''
+  const blank = !pattern.trim()
+  const note = target?.note.trim() ?? ''
+  const fields: EditFields = {
+    ...(target && pattern !== target.rule.pattern && { pattern }),
+    ...(target && note !== (target.rule.note ?? '').trim() && { note }),
+  }
+  const changed = Object.keys(fields).length > 0
+  const save = () => { if (!blank && changed && !busy) onSave(fields) }
+  return (
+    <Modal
+      open={target !== null}
+      onClose={onClose}
+      guideTrustRoot
+      guardAccidentalDismiss={changed}
+      dismissDisabled={busy}
+      title={i18nT('pages.settings.securityPanel.edit_custom_deny')}
+      maxWidth={480}
+      footer={
+        <>
+          <Btn onClick={onClose} disabled={busy}>{i18nT('pages.settings.securityPanel.cancel')}</Btn>
+          <Btn primary onClick={save} disabled={busy || blank || !changed}>{i18nT('pages.settings.securityPanel.save')}</Btn>
+        </>
+      }
+    >
+      {target && (
+        <div className="flex flex-col gap-1.5">
+          <Input
+            value={target.pattern}
+            onChange={e => onChange({ ...target, pattern: e.target.value })}
+            {...ime.bindEnter({ onEnter: save })}
+            disabled={busy}
+            aria-label={i18nT('pages.settings.securityPanel.custom_deny_pattern')}
+          />
+          <Input
+            value={target.note}
+            onChange={e => onChange({ ...target, note: e.target.value })}
+            {...ime.bindEnter({ onEnter: save })}
+            disabled={busy}
+            placeholder={i18nT('pages.settings.securityPanel.optional_why_shown_to_the_agent_when_this_rule_fir')}
+            aria-label={i18nT('pages.settings.securityPanel.custom_deny_note')}
+            maxLength={200}
+          />
+          {/* No hand-off: the edit drafts in this dialog. */}
+          <ErrorNotice message={error} />
+        </div>
+      )}
+    </Modal>
+  )
+}
+
+/** Add-a-custom-pattern input (Card B).
  *
  *  `value` and `note` are CONTROLLED from the panel shell rather than held here,
  *  because the rules section unmounts when the reader picks another rail section
  *  — local state would silently discard a half-typed deny pattern or note.
- *  `error` stays local: it is derived from the value and costs nothing to
- *  recompute. */
-function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submitError }: { value: string; onChange: (next: string) => void; note: string; onNoteChange: (next: string) => void; onAdd: (pattern: string, note: string) => void; busy: boolean; submitError: string }) {
+ *
+ *  There is no client-side regex check. The gate matches with Python `re`, whose
+ *  syntax is not JavaScript's: `(?P<name>...)`, `\A` and `\Z` compile there and
+ *  throw in `new RegExp()`, while some JS-only forms are a Python error. A
+ *  browser parse would refuse valid rules and wave through invalid ones, so the
+ *  server's `re.compile` is the one judge; its 400 (`invalid regex: ...`) reaches
+ *  the reader through `submitError`. */
+function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submitError }: { value: string; onChange: (next: string) => void; note: string; onNoteChange: (next: string) => void; onAdd: (pattern: string, note: string) => Promise<unknown>; busy: boolean; submitError: string }) {
   const ime = useImeGuard()
-  const [error, setError] = useState('')
 
+  // Enter reaches `submit` from both inputs, which stay editable while an add
+  // is in flight: a second Enter would post the same rule again, and the
+  // server mints a fresh id for each, so it would list twice. `busy` only
+  // arrives on the next render, so a synchronous latch covers two Enters
+  // landing before it; it is released when the add settles.
+  const submitting = useRef(false)
   const submit = () => {
     const pattern = value.trim()
-    if (!pattern) return
-    try {
-      new RegExp(pattern)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : i18nT('pages.settings.securityPanel.invalid_regular_expression'))
-      return
-    }
-    setError('')
+    if (!pattern || busy || submitting.current) return
+    submitting.current = true
     // Deliberately does NOT clear the drafts. The server can still reject this
     // (a note carrying the refusal prefix is a 400), and clearing here would
     // discard text the operator has to retype. The parent clears on SUCCESS.
-    onAdd(pattern, note.trim())
+    void onAdd(pattern, note.trim()).finally(() => { submitting.current = false })
   }
 
   return (
@@ -264,7 +359,7 @@ function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submit
       <div className="flex items-center gap-2">
         <Input
           value={value}
-          onChange={e => { onChange(e.target.value); if (error) setError('') }}
+          onChange={e => onChange(e.target.value)}
           {...ime.bindEnter({ onEnter: submit })}
           placeholder={i18nT('pages.settings.securityPanel.add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi')}
           aria-label={i18nT('pages.settings.securityPanel.custom_deny_pattern')}
@@ -288,20 +383,13 @@ function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submit
           maxLength={200}
         />
       </div>
-      {/* Two surfaces, because they have two sources. `error` is invalid-regex
-          feedback on the input the user is still typing — a form hint, not a
-          failure to diagnose, so it stays plain text. `submitError` carries a
-          SERVER rejection (e.g. a note carrying the refusal prefix): without it
-          the 400 is silent, the list does not change, and Add looks like it did
-          nothing. Local hint wins — it is about what is on screen. */}
-      {error ? (
-        <p className="text-[12px] text-danger mt-1.5 mb-0" data-testid="deny-pattern-hint">{error}</p>
-      ) : (
-        /* No hand-off: the pattern (`value`) and note (`note`) the user typed are
-           kept on a rejected add so they can be corrected — the navigation would
-           discard both. */
-        <ErrorNotice message={submitError} className="mt-1.5" />
-      )}
+      {/* `submitError` carries the SERVER rejection (a pattern `re` cannot
+          compile, an unsafe regex, a note carrying the refusal prefix): without
+          it the 400 is silent, the list does not change, and Add looks like it
+          did nothing. No hand-off: the pattern (`value`) and note (`note`) the
+          user typed are kept on a rejected add so they can be corrected — the
+          navigation would discard both. */}
+      <ErrorNotice message={submitError} className="mt-1.5" />
     </div>
   )
 }
@@ -337,6 +425,11 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
   // this set is EXPANDED. Keeps the 137-rule list scannable.
   const [expandedCats, setExpandedCats] = useState<Set<string>>(() => new Set())
   const [filter, setFilter] = useState('')
+  // Card B's order: insertion order (the default) or A-Z by pattern. Display
+  // only: every enabled pattern is evaluated, so order never changes a match.
+  const [sortAZ, setSortAZ] = useState(false)
+  const [editing, setEditing] = useState<EditTarget | null>(null)
+  const menu = useMenuOpensDialog()
 
   // The acknowledgment checkbox resets whenever the modal opens or closes.
   useEffect(() => { setAck(false) }, [confirm])
@@ -395,6 +488,22 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
     onSuccess: applySnapshot,
     onError: (err: unknown, v) => setRuleError({ id: v.id, message: trustFailureMessage(err) }),
   })
+  const editUser = useMutation({
+    mutationFn: (v: { id: string; fields: EditFields }) => api.editUserDeniedCommand(v.id, v.fields),
+    onSuccess: (snap: DeniedCommandsData) => {
+      applySnapshot(snap)
+      setEditing(null)
+      menu.returnFocus()
+    },
+  })
+  const openEdit = (rule: DeniedUserRule) => {
+    editUser.reset()
+    setEditing({ rule, pattern: rule.pattern, note: rule.note ?? '' })
+  }
+  const closeEdit = () => {
+    setEditing(null)
+    menu.returnFocus()
+  }
   const deleteUser = useMutation({
     mutationFn: (id: string) => api.deleteUserDeniedCommand(id),
     onMutate: () => setRuleError(null),
@@ -437,12 +546,12 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
   }, [grouped, query, idQuery])
 
   const visibleUserRules = useMemo(() => {
-    const rules = dc?.user_added ?? []
-    if (!query) return rules
-    return rules.filter(r =>
-      r.id.toLowerCase().includes(idQuery)
+    const rules = (dc?.user_added ?? []).filter(r =>
+      !query
+      || r.id.toLowerCase().includes(idQuery)
       || r.pattern.toLowerCase().includes(query))
-  }, [dc, query, idQuery])
+    return sortAZ ? [...rules].sort((a, b) => compareText(a.pattern, b.pattern)) : rules
+  }, [dc, query, idQuery, sortAZ])
 
   const matchedRules = Object.values(visibleGroups).reduce((n, rules) => n + rules.length, 0)
   const nothingMatches = filtering && matchedRules === 0 && visibleUserRules.length === 0
@@ -476,6 +585,18 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
   // navigation would discard them, so the button is offered only while both
   // are empty.
   const errorHandoff = !draft.trim() && !noteDraft.trim()
+
+  // The server's rejection of the LAST add, shown only while the form still
+  // holds exactly what was sent (compared trimmed, as submit() sends it). Once
+  // the reader edits either field the rejection describes text that is gone,
+  // and an "invalid regex" line under a corrected pattern reads as a refusal
+  // of the new one.
+  const addRejectionForDraft = addUser.isError
+    && addUser.variables
+    && draft.trim() === addUser.variables.pattern
+    && noteDraft.trim() === addUser.variables.note
+    ? trustFailureMessage(addUser.error)
+    : ''
 
   // Whether the row that owns `ruleError` is on screen right now. A write can be
   // rejected after the user has typed a filter that drops the row, or folded its
@@ -582,12 +703,12 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
             <div className="flex items-center justify-between mt-1 mb-0.5">
               {/* While filtering, report matched-of-total as a RATIO — but keep
                   every category badge on its full enabled/total, so a filter can
-                  never make the gate read as smaller than it is. A ratio also
-                  sidesteps count grammar, so this needs no plural forms. */}
+                  never make the gate read as smaller than it is. The noun agrees
+                  with the total, so the total is the plural count. */}
               <span className="text-[11px] text-muted tabular-nums">
                 {filtering
-                  ? <>{matchedRules} / {dc.builtins.length} {i18nT('pages.settings.securityPanel.rules')}</>
-                  : <>{Object.keys(grouped).length} {i18nT('pages.settings.securityPanel.categories')} {dc.builtins.length} {i18nT('pages.settings.securityPanel.rules')}</>}
+                  ? i18nT('pages.settings.securityPanel.rules_matched', { matched: fmtNumber(matchedRules), count: dc.builtins.length, n: fmtNumber(dc.builtins.length) })
+                  : <>{i18nT('pages.settings.securityPanel.categories_count', { count: Object.keys(grouped).length, n: fmtNumber(Object.keys(grouped).length) })} {i18nT('pages.settings.securityPanel.rules_count', { count: dc.builtins.length, n: fmtNumber(dc.builtins.length) })}</>}
               </span>
               {/* Hidden while filtering: matches render open regardless, so both
                   controls would record state the user cannot see take effect. */}
@@ -650,7 +771,19 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
 
       {/* Card B — Your custom denies */}
       <SettingsCard index={1}>
-        <div className="text-[13px] font-semibold text-text" data-setting-label={i18nT('pages.settings.securityPanel.your_custom_denies')}>{i18nT('pages.settings.securityPanel.your_custom_denies')}</div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[13px] font-semibold text-text" data-setting-label={i18nT('pages.settings.securityPanel.your_custom_denies')}>{i18nT('pages.settings.securityPanel.your_custom_denies')}</div>
+          {(dc?.user_added.length ?? 0) > 1 && (
+            <IconButton
+              variant={sortAZ ? 'active' : 'default'}
+              aria-pressed={sortAZ}
+              aria-label={i18nT('pages.settings.securityPanel.sort_patterns_a_z')}
+              onClick={() => setSortAZ(v => !v)}
+            >
+              <ArrowDownAZ size={14} />
+            </IconButton>
+          )}
+        </div>
         <div className="text-[12px] text-muted mt-0.5 mb-1 leading-relaxed">
           {i18nT('pages.settings.securityPanel.add_your_own_deny_patterns_python_compatible_reg')}
         </div>
@@ -661,7 +794,9 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
                 key={rule.id}
                 rule={rule}
                 onToggle={next => toggleUser.mutate({ id: rule.id, enabled: next })}
+                onEdit={() => openEdit(rule)}
                 onDelete={() => deleteUser.mutate(rule.id)}
+                menu={menu}
                 error={ruleError?.id === rule.id ? ruleError.message : undefined}
                 errorHandoff={errorHandoff}
               />
@@ -675,8 +810,19 @@ export function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteD
             {i18nT('pages.settings.securityPanel.custom_patterns_hidden_by_filter')}
           </div>
         )}
-        <AddDenyInput value={draft} onChange={onDraftChange} note={noteDraft} onNoteChange={onNoteDraftChange} onAdd={(pattern, note) => addUser.mutate({ pattern, note })} busy={addUser.isPending} submitError={addUser.isError ? trustFailureMessage(addUser.error) : ''} />
+        <AddDenyInput value={draft} onChange={onDraftChange} note={noteDraft} onNoteChange={onNoteDraftChange} onAdd={(pattern, note) => addUser.mutateAsync({ pattern, note }).catch(() => undefined)} busy={addUser.isPending} submitError={addRejectionForDraft} />
       </SettingsCard>
+
+      {/* A rejection describes the text that was sent, so an edit to either
+          field clears it (the fields are disabled while a save is in flight). */}
+      <EditDenyModal
+        target={editing}
+        onChange={next => { editUser.reset(); setEditing(next) }}
+        onSave={fields => editing && editUser.mutate({ id: editing.rule.id, fields })}
+        onClose={closeEdit}
+        busy={editUser.isPending}
+        error={editUser.isError ? trustFailureMessage(editUser.error) : ''}
+      />
 
       {/* ── Confirm modal (disable a built-in rule / disable all) ── */}
       <Modal

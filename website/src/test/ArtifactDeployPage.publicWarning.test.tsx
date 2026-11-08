@@ -48,6 +48,22 @@ describe('ArtifactDeployPage public-by-link warning (#3493)', () => {
     expect(screen.getByText(/don't publish anything you wouldn't put on the open internet/)).toBeDefined()
   })
 
+  it.each([
+    [/How this is secured/, /The origin bucket is private/],
+    [/Getting started \(one-time AWS setup\)/, /1\. Authenticate to AWS/],
+  ])('the %s toggle says whether its section is open and hides its icons', async (title, body) => {
+    render(<ArtifactDeployPage />, { wrapper })
+    const toggle = (await screen.findByText(title)).closest('[role="button"]') as HTMLElement
+
+    expect(toggle).toHaveAttribute('aria-expanded', String(screen.queryByText(body) !== null))
+    const before = toggle.getAttribute('aria-expanded')
+    for (const svg of toggle.querySelectorAll('svg')) expect(svg).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(toggle)
+    const after = toggle.getAttribute('aria-expanded')
+    expect(after).not.toBe(before)
+    expect(screen.queryByText(body) !== null).toBe(after === 'true')
+  })
+
   it('shows the warning on the Pending confirmations card, next to the confirm button', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = String(input)

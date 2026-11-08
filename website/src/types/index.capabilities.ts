@@ -125,6 +125,10 @@ export interface Skill {
    *  `deliveries` is. Drives the Skills list's "last used" text and its
    *  Recently used sort. */
   last_used_at?: number | null
+  /** Unix time (seconds) from the SKILL.md frontmatter's `created_at`;
+   *  `null`/absent when none is recorded (never the file's mtime). Drives the
+   *  Newest first sort. */
+  created_at?: number | null
   /** False when the SKILL.md lives outside the directory Kiro Crew owns (e.g. a
    *  `skills.extra_paths` entry). Such a skill is listed but not ours to rewrite,
    *  so the injection toggle must not be offered — the endpoint refuses it. */
@@ -143,6 +147,12 @@ export interface Skill {
 export interface SkillBudgetRow {
   key: string
   name: string
+  /** SKILL.md frontmatter description, `""` when the skill has none. Optional:
+   *  an older gateway behind a remote hub does not send it. */
+  description?: string
+  /** Where the skill came from: shipped with the product, registered by an
+   *  app the user installed, or the user's own. Optional as above. */
+  origin?: 'builtin' | 'app' | 'user'
   size_bytes: number
   deliveries: number | null
   /** null when the cost is not measurable: an `always: true` skill is injected
@@ -207,8 +217,13 @@ export interface SteeringFile {
    *  Optional: an absent field fails OPEN (editable), see `selectedReadOnly`. */
   editable?: boolean
   /** Resolved symlink target (display path, home collapsed to `~`); `''` when
-   *  the entry is not linked. */
+   *  the entry is not linked, or when it is linked but not readable. */
   target?: string
+  /** False for a linked entry whose target lies outside the folders the
+   *  dashboard may read: it is listed by name so the tab matches what sessions
+   *  load, but the server refuses to read it and sends no target, size or
+   *  metadata. Optional: an absent field reads as readable. */
+  readable?: boolean
 }
 
 /** Response shape of ``GET /api/steering``. */
@@ -367,6 +382,8 @@ export interface McpCustomSpec {
   url?: string
   /** Authorable on remote (url) specs; read responses redact every stored value. */
   headers?: Record<string, string>
+  /** OAuth scopes a remote spec requests; the backend writes them as `oauthScopes`. */
+  scopes?: string[]
 }
 
 /** GET /api/mcp/custom/{name} — editable spec; header values are redacted. */
@@ -412,6 +429,9 @@ export interface McpServer {
    *  alongside `authChallenge`; absent is "unknown", which is why the sign-in
    *  wording is gated on an explicit `false`. */
   authGrantPresent?: boolean
+  /** Crew holds this server's sign-in (`dashboard.feature_previews.crew_oauth` on KAS):
+   *  `authGrantPresent` is Crew's, and KAS chats use it through Crew. */
+  authCrewHeld?: boolean
   /** The owner added this remote server from the dashboard, at this url, so the
    *  table may offer the in-place sign-in on it. Absent or false for a server
    *  an agent, a session or a hand edit added. */
@@ -448,6 +468,10 @@ export interface McpServer {
    *  mounted into new sessions. Distinct from `enabled`, which is the user's own
    *  choice and is never overwritten by this. */
   probeFailing?: boolean
+  /** Set when the latest default-agent rebuild left this server out of the
+   *  agent, so its tools never reach a chat. `command` is the declared command
+   *  that was not found. Absent when the server was mounted. */
+  agentDropped?: { command: string; reason: 'command_not_found' }
 }
 
 export interface McpApplyChange {

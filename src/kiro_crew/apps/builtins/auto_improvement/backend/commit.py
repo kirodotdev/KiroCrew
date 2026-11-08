@@ -20,6 +20,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+from kiro_crew.git_tmp_packs import reap_stale_tmp_packs
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.security import redact
 
@@ -60,7 +61,7 @@ _BASE_REF = "refs/auto-improvement/commit-base"
 #: A module-level lock rather than one per clone: there is exactly one configured clone per
 #: install, and a per-path map would add eviction bookkeeping for no gain. `RLock` so a future
 #: caller that already holds it (e.g. commit calling into another guarded helper) cannot
-#: self-deadlock. Raised by the Opus 5 review of this branch.
+#: self-deadlock.
 _CLONE_LOCK = threading.RLock()
 
 
@@ -68,8 +69,7 @@ _CLONE_LOCK = threading.RLock()
 #: `_GIT_SAFE_CONFIG` in the driver. These commands run on the HOST as the gateway user against
 #: the tree the sandboxed agent edits, so a repo-written hook pointed at by `core.hooksPath`, or
 #: a `core.fsmonitor` program, would execute host-side (outside the sandbox) on the next
-#: add/commit/checkout. `-c` overrides on OUR argv beat the repo's own config. Raised by the GPT
-#: review.
+#: add/commit/checkout. `-c` overrides on OUR argv beat the repo's own config.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 
@@ -131,7 +131,13 @@ def materialize_queued_diff(
 
     base_ref_local = _BASE_REF
     if remote_url:
-        fetch = _git(clone, "fetch", "--quiet", remote_url, f"+refs/heads/{branch}:{_BASE_REF}")
+        # A fetch killed by `_git`'s timeout leaves its in-progress
+        # ``tmp_pack_*`` behind in this clone. Reap it in a ``finally`` so both
+        # the failure return and the raised ``TimeoutExpired`` are covered.
+        try:
+            fetch = _git(clone, "fetch", "--quiet", remote_url, f"+refs/heads/{branch}:{_BASE_REF}")
+        finally:
+            reap_stale_tmp_packs(clone)
         if fetch.returncode != 0:
             return {
                 "ok": False,
@@ -167,8 +173,22 @@ def materialize_queued_diff(
             ),
         }
 
+    # Host-side, in the clone the agent edits: `apply` reads the index (spawning
+    # `core.fsmonitor`) and converts files through `filter.<name>.clean`/`smudge`
+    # (measured on git 2.47), so it carries the same pins and attributes pin as
+    # every other call here rather than a bare argv.
+    require_pinned(clone)
     apply_proc = subprocess.run(
-        ["git", "-C", str(clone), "apply", "--index", "-"],
+        [
+            "git",
+            "-C",
+            str(clone),
+            *_GIT_SAFE_CONFIG,
+            *hook_off_args(clone),
+            "apply",
+            "--index",
+            "-",
+        ],
         # Binary stdin preserves patch newlines on Windows; surrogateescape
         # restores any non-UTF-8 bytes exactly as captured.
         input=diff_text.encode("utf-8", errors="surrogateescape"),
@@ -300,6 +320,7 @@ def _commit_finding_locked(fp: str) -> dict[str, object]:
         "diff.external=",
         "diff",
         "--no-ext-diff",
+        "--no-textconv",
         f"{base_ref_local}..HEAD",
         timeout=_GIT_TIMEOUT_S,
     )
@@ -335,7 +356,7 @@ def _commit_finding_locked(fp: str) -> dict[str, object]:
     # reached. The earlier failure points in this function already reset; these last two
     # returned with the commit intact. The durable queue copy is untouched, so a retry still
     # has everything it needs, and the message says "queued" rather than "committed locally"
-    # because after the reset that is what is true. Raised by the GPT review of this branch.
+    # because after the reset that is what is true.
     if not url:
         _git(clone, "reset", "--hard", base_ref_local)
         return {
@@ -387,7 +408,7 @@ def _commit_message(body_path: Path, fp: str) -> str:
     except Exception:  # noqa: BLE001 - a commit message is permanent, pushed git history
         # FAIL CLOSED: the message becomes unwipeable git history the moment it is pushed,
         # so an unscannable agent-authored subject must NOT be committed verbatim. Fall
-        # back to the fixed, prose-free subject. Raised by the GPT review of this branch.
+        # back to the fixed, prose-free subject.
         logger.warning("commit-message redaction failed; using the fixed subject", exc_info=True)
         return f"auto-improvement: apply verified change {fp[:12]}"
     return subject

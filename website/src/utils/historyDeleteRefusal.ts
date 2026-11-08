@@ -7,7 +7,7 @@
  * catalogs carry one localized sentence per cause -- and never from `error`,
  * which would show English in eleven other languages.
  *
- * The codes mirror `CRON_*_CODE` in `src/kiro_crew/dashboard/handlers/sessions.py`.
+ * The codes mirror `CRON_*_CODE` in `src/kiro_crew/dashboard/handlers/sessions_parts/delete_claim.py`.
  * They are distinct because their remedies are: unknown cron ownership wants
  * the by-id release plus transcript-metadata repair, a busy cron store wants a
  * retry, and an unreadable one wants the store file repaired. A rejection

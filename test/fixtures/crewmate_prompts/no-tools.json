@@ -8,5 +8,7 @@
   ],
   "has_mate_tools": false,
   "has_session_tools": false,
-  "heartbeat_minutes": 60
+  "heartbeat_minutes": 60,
+  "worker_servers": [],
+  "gateway_has_beyond_worker": []
 }

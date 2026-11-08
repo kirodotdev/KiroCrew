@@ -75,14 +75,10 @@ def test_goose_carries_its_mcp_servers_on_the_session_array() -> None:
 
 
 def test_goose_is_not_in_the_capability_sets_it_has_no_evidence_for() -> None:
-    """Absence is a decision here, not an oversight, so it is pinned as one.
+    """goose stays out of sets the wire gives no evidence for.
 
-    Each of these would make a claim the wire does not support: a shared process, a
-    steer method, or an internal sandbox that would displace the credential mask
-    this harness depends on.
-
-    ``ACP_BACKENDS_COMPACT`` is deliberately NOT in this list: goose is a member,
-    on the driven capture the sibling test below names.
+    An internal sandbox would displace the credential mask goose depends on. goose is
+    in ``ACP_BACKENDS_COMPACT`` (see the sibling test).
     """
     assert GOOSE not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
     assert GOOSE not in sdk_backends.ACP_BACKENDS_STEER
@@ -277,16 +273,9 @@ def test_the_auto_mode_is_never_sent() -> None:
 def test_the_restore_read_back_is_not_inside_the_load_try() -> None:
     """A refusal must not be reachable by the handler that treats it as a failed load.
 
-    ``AcpToolGateUnroutable`` subclasses ``AcpError``, and the ``session/load`` block
-    catches ``(AcpError, AcpTimeoutError)`` and logs-and-continues. With the read-back
-    inside that ``try``, a session restored in the auto-approving mode had its refusal
-    read as "load did not work" -- and by then ``_session_id`` and ``_resumed`` were
-    set, so the ``session/new`` fallback was skipped as well and the permissive session
-    ran with no gate on any tool call.
-
-    Asserted structurally because no unit test can reach it: the swallowing happens in
-    an async method that needs a live transport, and the ONLY visible symptom is a
-    session that works.
+    ``AcpToolGateUnroutable`` subclasses ``AcpError``, which the ``session/load`` block
+    swallows, so a refusal there would leave an auto-approving session ungated. Checked
+    structurally: the only runtime symptom is a session that works.
     """
     import ast
     import inspect
@@ -320,11 +309,8 @@ def test_the_restore_read_back_is_not_inside_the_load_try() -> None:
 def test_goose_gets_its_own_mcp_array_at_both_session_call_sites() -> None:
     """Membership in the array set must be ANSWERED, not merely declared.
 
-    ``_pooled_mcp_servers`` returns ``[]`` for every backend in ``MIRRORS``, handing
-    that half to the mirror -- so a backend in the set with no splice of its own gets
-    ``mcpServers: []`` and holds none of Crew's tools AND none of the pooled broker
-    stubs, while working in every visible respect. That is strictly worse than being
-    outside the set.
+    ``_pooled_mcp_servers`` returns ``[]`` for backends in ``MIRRORS``, so one with no
+    splice of its own would silently get ``mcpServers: []``.
     """
     import ast
     import inspect
@@ -391,11 +377,8 @@ CORPUS = Path(__file__).parent / "fixtures" / "acp_frames" / "goose"
 def _corpus_update(fixture: str, tool_call_id: str) -> dict:
     """The ``tool_call`` update for *tool_call_id*, read from the committed corpus.
 
-    Read rather than transcribed on purpose. A transcription is a second copy of the
-    wire that drifts from it silently -- which is exactly what happened here: the frame
-    below was hand-copied WITHOUT the ``_meta`` its capture carried, because the
-    fixture-building scrub had dropped the object whole, and three reviewers then reasoned
-    about goose from a frame that misrepresented goose.
+    Read rather than transcribed: a hand copy drifts from the wire silently, for
+    example by losing its ``_meta``.
     """
     for line in (CORPUS / fixture).read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -443,11 +426,8 @@ def _goose_tool_call_frame() -> dict:
 def test_the_shell_fixture_carries_the_harness_tool_identity() -> None:
     """The committed shell frame must still carry ``_meta.goose.toolCall``.
 
-    This pair is the ONLY thing on that frame which says what the tool is: goose sends no
-    ACP ``kind`` on the branch Crew selects, the title is a formatter's prose, and
-    ``rawInput`` is the model's argument map. A reduction that removes it turns the
-    corpus into evidence for a claim the wire does not make, so the fixture is pinned
-    here and an over-scrub fails loudly instead of quietly.
+    goose sends no ACP ``kind`` here, so this pair is the only tool identity on the
+    frame; an over-scrubbed fixture fails here.
     """
     update = _goose_shell_update()
     assert update["_meta"]["goose"]["toolCall"] == {
@@ -498,12 +478,8 @@ def test_the_live_frame_yields_the_server_and_the_bare_tool() -> None:
 def test_a_goose_builtin_is_not_misidentified_as_mcp() -> None:
     """The builtin shell names an extension, and it must still report NO MCP server.
 
-    goose models its builtins as extensions, so the shell call fills the very field an
-    MCP call fills: ``extensionName: developer``. Reporting that as a server would make a
-    host command look served -- and a non-empty server is what
-    ``child_mcp_identity_trusted`` and ``_is_mcp_tool_approval`` both read as proof it
-    was. The pair is recognised as this harness's own shell instead, so the server is
-    empty while the tool name survives.
+    goose sets ``extensionName: developer`` on its shell; a non-empty server would make
+    ``child_mcp_identity_trusted`` and ``_is_mcp_tool_approval`` treat a host command as MCP.
     """
     from kiro_crew.acp._dispatch import _kiro_mcp_server_name, _kiro_tool_name
 
@@ -627,11 +603,8 @@ def test_the_command_deny_tier_reaches_a_classified_goose_shell_call() -> None:
 def test_a_tool_call_no_channel_classified_is_refused_on_the_auto_approve_path() -> None:
     """Fail closed: neither an ACP ``kind`` nor a ``_meta`` identity means REFUSE.
 
-    Not a hypothetical frame -- it is the corpus shell frame with its ``_meta`` removed,
-    which is precisely the shape the fixture carried while the scrub was over-broad. On an
-    auto-approve path there is no human to fall back to, and nothing about the call can be
-    checked against either deny set, so the request is rejected and audited rather than
-    answered.
+    The frame is the corpus shell frame without ``_meta``. With no human to ask and no
+    way to check either deny set, the request is rejected and audited.
     """
     import asyncio
 
@@ -822,11 +795,8 @@ def test_a_frame_with_no_channel_is_recorded_as_unclassified() -> None:
 def test_the_refusal_is_scoped_to_harnesses_that_publish_a_channel() -> None:
     """A kind-less frame is refused on goose and NOT on a harness with no channel.
 
-    The safety evidence that a harness classifies every tool class is its recorded corpus,
-    which is a handful of frames -- enough to show a ``kind`` present, never enough to
-    prove none is ever missing. So the refusal is confined to harnesses that opted into an
-    identity channel, where an unclassified frame contradicts the harness's own contract.
-    Everything else keeps today's behaviour, whatever its frames happen to omit.
+    A small corpus cannot prove a ``kind`` is never missing, so the refusal applies only
+    where the harness opted into an identity channel.
     """
     from kiro_crew.acp.types import AcpEvent
 
@@ -842,8 +812,8 @@ def test_the_refusal_is_scoped_to_harnesses_that_publish_a_channel() -> None:
 
     assert _client(GOOSE)._unclassified_tool_call(event) is True
     for other in (
-        # kiro-cli publishes a channel and is still OUT: two recorded frames of two tool
-        # classes is not the measurement membership rests on, so it keeps today's path.
+        # kiro-cli publishes a channel and is still OUT: four of its built-ins send no
+        # classification (test_the_kiro_corpus_records_built_ins_that_classify_as_nothing).
         acp_backends.ACP_BACKEND_KIRO,
         acp_backends.ACP_BACKEND_OPENCODE,
         acp_backends.ACP_BACKEND_CODEX,
@@ -913,54 +883,77 @@ def _tool_call_updates(directory: Path) -> list[tuple[str, dict]]:
     return found
 
 
-def test_every_opted_in_backend_classifies_each_recorded_tool_call() -> None:
-    """The measurement membership in ``ACP_BACKENDS_META_IDENTITY`` owes, per backend.
+def _recorded_calls_classified_as_nothing(backend: str) -> list[str]:
+    """``<file>:<tool>`` for each recorded ``tool_call`` the client caches as unclassified.
 
-    Opting a backend into the fail-closed refusal rests on a claim: every tool call it
-    emits is classifiable, by an ACP ``kind`` or by its own identity channel. This PR held
-    kas OUT on the ground that its coverage was not measured -- and the same standard
-    applies to every backend held IN. So this is the corpus-derived pin: for each member of
-    the set, each committed ``tool_call`` frame in its corpus is classified by the SAME
-    readers the client uses -- an ACP ``kind``, or the harness's own builtin-shell pair,
-    or a tool identity from a ``_meta`` channel. Measured through the readers rather than
-    through a per-row key so the pin exercises the real classification path and the table
-    carries no membership claim of its own. Corpus-derived rather than a list of ids, in
-    the shape of the protocol-version ratchet, so a backend added to the set tomorrow is
-    measured against its own recordings without editing this test; a backend whose corpus
-    has no ``tool_call`` at all fails rather than passing vacuously.
+    Each frame goes through ``AcpClient._extract_tool_event``, which writes the cache
+    ``_unclassified_tool_call`` refuses on, so no second predicate stands beside it. A
+    superset of what is refused: a call that never asks permission is counted too. Fails
+    on a corpus with no ``tool_call``, which would otherwise measure nothing.
     """
     from acp_frame_replay_harness import fixture_dir_name
 
-    from kiro_crew.acp._dispatch import (
-        _kiro_mcp_server_name,
-        _kiro_tool_name,
-        is_shell_kind,
-        meta_builtin_shell,
-    )
+    from kiro_crew.acp._dispatch import _kiro_tool_name
+    from kiro_crew.acp.types import AcpPromptStats, JsonRpcMessage
 
-    corpus_root = Path(__file__).parent / "fixtures" / "acp_frames"
+    corpus = Path(__file__).parent / "fixtures" / "acp_frames" / fixture_dir_name(backend)
+    updates = _tool_call_updates(corpus)
+    assert updates, f"{backend!r} records no tool_call to measure"
+    client = _stub(backend)
+    for cache in (
+        "_tool_call_inputs",
+        "_tool_call_input_redacted",
+        "_tool_call_is_shell",
+        "_tool_call_unclassified",
+        "_tool_call_mcp_server",
+        "_tool_call_tool_name",
+        "_tool_call_params",
+        "_tool_call_diff_path",
+    ):
+        setattr(client, cache, {})
+    client.last_prompt_stats = AcpPromptStats()
+    denied: list[str] = []
+    for name, update in updates:
+        msg = JsonRpcMessage(method="session/update", params={"sessionId": "s", "update": update})
+        client._extract_tool_event(msg)
+        if client._tool_call_unclassified.get(update["toolCallId"]):
+            denied.append(f"{name}:{_kiro_tool_name(update)}")
+    return denied
 
-    def _classified(update: dict) -> bool:
-        kind = update.get("kind")
-        has_kind = isinstance(kind, str) and bool(kind)
-        return (
-            has_kind
-            or is_shell_kind(kind)
-            or meta_builtin_shell(update)
-            or bool(_kiro_tool_name(update))
-            or bool(_kiro_mcp_server_name(update))
-        )
 
+def test_every_opted_in_backend_classifies_each_recorded_tool_call() -> None:
+    """The measurement membership in ``ACP_BACKENDS_META_IDENTITY`` owes, per backend.
+
+    No committed ``tool_call`` frame of a member may be one the client caches as
+    unclassified. Derived from the corpus, so a new member is measured without editing
+    this test.
+    """
     for backend in sorted(acp_backends.ACP_BACKENDS_META_IDENTITY):
-        updates = _tool_call_updates(corpus_root / fixture_dir_name(backend))
-        assert updates, f"{backend!r} is opted in but its corpus records no tool_call"
-        unclassified = [name for name, update in updates if not _classified(update)]
+        unclassified = _recorded_calls_classified_as_nothing(backend)
         assert unclassified == [], (
-            f"{backend!r} is in ACP_BACKENDS_META_IDENTITY, so a deny-set session refuses a "
-            f"tool_call it cannot classify -- yet no reader classifies these recorded "
+            f"{backend!r} is in ACP_BACKENDS_META_IDENTITY, so a session refuses a "
+            f"tool_call the client cannot classify -- and it cannot classify these recorded "
             f"frames: {unclassified}. Either the harness omits every channel on a real tool "
             "class (then shrink the set) or the fixture misrepresents the wire."
         )
+
+
+def test_the_kiro_corpus_records_built_ins_that_classify_as_nothing() -> None:
+    """Why kiro-cli is not a member: four of its built-ins send no classification.
+
+    Live on kiro-cli 3.1.0 (``kiro/tool-classes-*-live.jsonl``, one built-in per turn),
+    ``todo_list``, ``knowledge``, ``subagent`` and ``goal`` carry no ACP
+    ``kind`` and no MCP server, only ``_meta.kiro.toolName``. ``knowledge`` and
+    ``subagent`` then ask permission, so admitting kiro-cli would refuse both on any
+    session whose spec enables them.
+    """
+    found = _recorded_calls_classified_as_nothing(acp_backends.ACP_BACKEND_KIRO)
+    assert {entry.split(":", 1)[1] for entry in found} == {
+        "todo_list",
+        "knowledge",
+        "subagent",
+        "goal",
+    }, found
 
 
 def _deny_set_client(backend: str, placed: list[str]) -> AcpClient:
@@ -1092,11 +1085,8 @@ def _mode_update_frames() -> list[dict]:
 def test_a_mid_session_move_off_the_required_mode_stops_the_harness() -> None:
     """The read-back proves where a session STARTED; this holds it there.
 
-    The corpus records goose reporting ``auto`` on its own connection after a
-    ``set_mode`` -- the frame a session emits as it stops asking. In ``auto`` no
-    permission request reaches Crew, so this notification is the last chance to refuse:
-    the harness is killed and the turn fails with the gate's own reason, exactly as the
-    open/restore read-back does for the same mode.
+    In ``auto`` no permission request reaches Crew, so this notification is the last
+    chance to refuse: the harness is killed and the turn fails with the gate's reason.
     """
     import asyncio
 
@@ -1146,14 +1136,47 @@ def test_the_mode_tripwire_is_gated_on_the_read_back_predicate() -> None:
     auto = next(
         f for f in _mode_update_frames() if f["params"]["update"]["currentModeId"] == "auto"
     )
+    from unittest.mock import AsyncMock
+
     for backend in sorted(acp_backends.ACP_BACKENDS_KNOWN - {GOOSE}):
         client = _stub(backend)
-        client._kill_process = None  # type: ignore[assignment]  # would raise if reached
+        client._kill_process = AsyncMock()  # type: ignore[method-assign]
+        assert client._is_goose is False, backend
         asyncio.run(
             client._tripwire_goose_mode(
                 JsonRpcMessage(**{k: auto[k] for k in ("method", "params")})
             )
         )
+        assert client._kill_process.await_count == 0, backend
+
+
+def test_the_mode_tripwire_log_scrubs_the_reported_mode(caplog) -> None:
+    """The error line carries the same scrubbed mode the audit row does, not the raw id."""
+    import asyncio
+
+    from kiro_crew.acp.types import JsonRpcMessage
+
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    client = _stub()
+    client._session_id = "goose-session-1"
+
+    async def _kill(force: bool = False) -> None:
+        return None
+
+    client._kill_process = _kill  # type: ignore[method-assign]
+    frame = JsonRpcMessage(
+        method="session/update",
+        params={
+            "sessionId": "goose-session-1",
+            "update": {"sessionUpdate": "current_mode_update", "currentModeId": secret},
+        },
+    )
+    with caplog.at_level(logging.ERROR), pytest.raises(AcpToolGateUnroutable):
+        asyncio.run(client._tripwire_goose_mode(frame))
+
+    lines = [r.getMessage() for r in caplog.records if "mid-session" in r.getMessage()]
+    assert lines, caplog.text
+    assert all(secret not in line for line in lines), lines
 
 
 def test_the_codex_rawinput_channel_still_answers_first() -> None:
@@ -1203,12 +1226,9 @@ def test_the_argv_names_the_builtin_extension() -> None:
 def test_the_resolution_ladder_prefers_the_explicit_override(monkeypatch, tmp_path) -> None:
     """Override, then mise, then PATH -- the plain-binary ladder, not the Node one.
 
-    Executability is STUBBED rather than created on disk, the way the opencode and pi
-    ladders' tests do it: what a file has to be for the host to call it runnable is a
-    mode bit on POSIX and a suffix in ``_WINDOWS_RUNNABLE_HOOK_SUFFIXES`` on Windows, so
-    an extensionless fake resolves on one platform and not the other. This test is about
-    rung ORDER, and the rung below is stubbed to a sentinel so a host that has the
-    harness on PATH cannot pass it for the wrong reason.
+    Executability is stubbed because it differs by platform (mode bit vs
+    ``_WINDOWS_RUNNABLE_HOOK_SUFFIXES``). The lower rung is a sentinel so goose on PATH
+    cannot pass it.
     """
     fake = tmp_path / "goose"
     fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -1698,12 +1718,8 @@ def test_a_cancel_answers_the_open_permission_request_as_cancelled(
 def test_a_keyring_only_goose_is_told_how_to_store_its_key_where_it_can_read_it() -> None:
     """The one goose sign-in that ``goose configure`` alone cannot fix.
 
-    goose keeps keys in the OS keyring by default, which the sandboxed child
-    cannot reach. goose 1.52.0, run live with a provider configured and its key
-    only in the keyring, opens the session and answers the first
-    ``session/prompt`` with this frame. The message must name the file-storage
-    switch: telling that operator to run ``goose configure`` again only puts the
-    key back in the keyring.
+    The sandboxed child cannot reach the OS keyring (frame from goose 1.52.0), so the
+    message names the file-storage switch; ``goose configure`` alone keeps the keyring.
     """
     from kiro_crew.acp.client import _format_acp_error
 
@@ -1776,14 +1792,17 @@ class TestGooseEffortReachesAThinkingModel:
 
     @pytest.mark.asyncio
     async def test_the_level_is_written_under_thinking_effort(self, tmp_path) -> None:
-        from unittest.mock import AsyncMock
+        from unittest.mock import AsyncMock, call
 
         provider = _goose_provider(tmp_path, _config_option_sets()[0])
         provider._client.set_config_option = AsyncMock()
 
         await provider._set_effort_config_option("high")
 
-        provider._client.set_config_option.assert_awaited_once_with("thinking_effort", "high")
+        # goose's own option id, and only the requested level: no ladder walk.
+        assert provider._client.set_config_option.await_args_list == [
+            call("thinking_effort", "high")
+        ]
 
     def test_a_non_thinking_model_offers_no_control(self, tmp_path) -> None:
         """``off`` alone: every write reads back ``off``, so no dropdown is offered."""

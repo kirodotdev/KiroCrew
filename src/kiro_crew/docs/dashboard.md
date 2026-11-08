@@ -24,7 +24,7 @@ If the dashboard doesn't load after setup:
 
 ### Chat (`/chat`)
 
-Multi-session parallel chat with full Markdown rendering, syntax-highlighted code blocks, Mermaid diagrams, and clickable file paths. A confirmed local file link in an agent reply opens that file in the chat side panel; a `:line` suffix opens the file at that line instead of navigating the browser back to Chat. A link that leaves the dashboard (a web page, or an editor or mail link) always goes where it points: when its text is a file path (a repo file linked to its GitHub page, say), clicking it opens the link, not the local file, and the path is not turned into a clickable path chip. A reply can also offer a file it wrote as a one-click **Open file** chip under the reply, with a hidden `<!-- kirocrew:open-file path="/abs/path" -->` marker (absolute paths only). The chip opens nothing by itself: a click opens the file in the side panel exactly as clicking its path does. To get one after each note, ask your agent (for example in its instructions) to add the marker for the files it writes.
+Multi-session parallel chat with full Markdown rendering, syntax-highlighted code blocks, Mermaid diagrams, PlantUML diagrams (drawn when the gateway host has PlantUML 1.2023.9 or later as a `plantuml` command on `PATH`; otherwise the fence stays a code block), and clickable file paths. A confirmed local file link in an agent reply opens that file in the chat side panel; a `:line` suffix opens the file at that line instead of navigating the browser back to Chat. A link that leaves the dashboard (a web page, or an editor or mail link) always goes where it points: when its text is a file path (a repo file linked to its GitHub page, say), clicking it opens the link, not the local file, and the path is not turned into a clickable path chip. A reply can also offer a file it wrote as a one-click **Open file** chip under the reply, with a hidden `<!-- kirocrew:open-file path="/abs/path" -->` marker (absolute paths only). The chip opens nothing by itself: a click opens the file in the side panel exactly as clicking its path does. To get one after each note, ask your agent (for example in its instructions) to add the marker for the files it writes.
 
 - **Multiple tabs**: each tab runs its own agent session in parallel.
 - **Agent selection**: pick an agent before starting a chat, or switch mid-session.
@@ -36,7 +36,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Edit & resend**: edit and resend previous user messages with history preserved. From an empty composer, ⌘↑ (macOS) or Ctrl+↑ opens the last user message for editing.
 - **Fork session**: fork a session into a new tab with full context carried over.
 - **Regenerate replies**: regenerate assistant replies with variant history navigation.
-- **Prompt history**: ↑/↓ arrow keys navigate through previous prompts.
+- **Prompt history**: ↑/↓ arrow keys navigate through previous prompts. To keep the arrow keys for moving the cursor only, turn off **Recall Sent Messages with Arrow Keys** under Settings → Chat → Composer.
 - **Tool purpose pills**: tool call labels show purpose text, persisted across reloads.
 - **Batch tool rejection**: reject multiple pending tool approvals at once.
 - **Cancel queued messages**: cancel button for messages waiting in the queue.
@@ -52,23 +52,38 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **File upload**: on desktop, use **Upload file** from the `+` menu or drop a file into Chat. On a phone or other touch device, tap `+` to open the native system Files picker directly. Both paths accept images and regular files such as `.zip`, `.csv`, and `.docx`.
 - **Folder management**: create, rename, and organize sessions into sidebar folders with indent borders.
 - **Per-channel session folders**: optional, off by default — every messaging channel's settings panel can file conversations that start there into a named sidebar folder, marked with the channel's brand mark. Config key: `<channel>.session_folder` ("" = off). The folder is created when the setting is saved, so the surfacing path only ever reads the folder store; a configured folder that no longer exists (config.json hand-edited, or the folder deleted) leaves conversations unfiled until the next save recreates it. Filing applies as each conversation is first surfaced; a session moved by hand afterwards stays where it was put.
-- **Session colors**: per-session color picker for visual organization.
+- **Session colors**: per-session color picker for visual organization. The last custom color you give a session while its color menu is open joins a row of recent colors under the palette when the menu closes, so one click puts it on another session. The row keeps the eight most recently used, in this browser.
+
+#### Tags
+
+Tags are labels you put on sessions. Every session shares one list of tags, so a change to a tag shows wherever that tag appears.
+
+- **Create a tag**: type a name in the **New tag…** box at the bottom of the tag picker or of the **Manage tags…** panel, and press Enter. A new tag gets the default gray color; change it afterwards in **Manage tags…**.
+- **Assign tags to a session**: choose **Tags…** from the session's `⋮` menu (on its sidebar row, or right-click the row) or from the chat header menu. In **Assign tags**, click a tag to add it to the session, and click it again to remove it.
+- **Manage tags**: open the `⋮` (**More options**) menu at the top of the Sessions list and choose **Manage tags…**. Each row in the panel is one tag:
+  - **Recolor**: click the color square at the start of the row, then pick a color from the palette that opens below the row. Picking a color saves it, and Escape closes the palette without a change.
+  - **Rename**: click the tag's name and type. Enter or clicking away saves the new name, and Escape puts the old one back. An empty name is not saved.
+  - **Status tag**: click the ⚡ to flag the tag as a status tag, and click it again to make it a regular tag. A status tag marks a workflow state, such as the one a board column filters on, so a session normally carries one at a time. The ⚡ of a regular tag shows when you hover the row or move to it with Tab, and on a device without hover it is always shown while it can be used.
+  - **Delete**: hover the row (or move to it with Tab) and click the ✕ at its end. The dashboard asks you to confirm first. Deleting a tag removes it from every session, folder and board column that has it. On a device without hover, such as a phone, the ✕ is always shown.
+  - **Agent permissions**: below each tag, choose **Human only**, **Agent: add only** or **Agent: add & remove** to set whether agents may put the tag on sessions or take it off. An older tag shows **Set up agent permissions** instead; press it before choosing a permission or flagging the tag as a status tag.
+
+A board column's **Filter & manage tags** view lists the same tags. There you can rename and delete a tag, but clicking its color square adds it to or removes it from the column's filter rather than recoloring it. Agents work with tags through their own tag tools, described in [Session control](session-control.md#tags); those tools cannot delete a tag.
 
 ### Settings (`/settings/*`)
 
-Settings uses tabbed panels for Overview, Imports, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Remote Crew, Privacy, Security, Connections, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
+Settings uses tabbed panels for Overview, Import / Export, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Remote Crew, Privacy, Security, Connections, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
 
 ### Customize (`/capabilities`)
 
-Tabbed management for mates, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.
+Tabbed management for Bots, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.
 
 ### Schedule (`/schedule`)
 
 Create and manage cron jobs, organize them in folders, and switch between list, calendar, and execution views.
 
-### Developer (`/developer`)
+### Developer (`/settings/developer`)
 
-Tabbed developer views for logs, system metrics, telemetry, storage, MCP pooling, memory, configuration, debug tools, and the session archive. The former standalone `/system` page is the System tab here. The agent backend lives in **Settings → Agent Harness**; an old `/developer?tab=agent-backend` link forwards there.
+**Settings → Developer** lists its pages beside the content: Feature Previews first, then the developer views for logs, system metrics, telemetry, storage, memory, configuration, debug tools, and the session archive (`/settings/developer/<page>`, e.g. `/settings/developer/system`). Every page is always listed. An old `/developer?tab=<page>` link redirects to the same page here, and `/developer?tab=agent-backend` forwards to **Settings → Agent Harness**. MCP Management is no longer a Developer page: `/developer?tab=mcp-pool` and `/settings/developer/mcp-pool` redirect to **Customize → Connections → MCP Servers**, where it is a section below the servers list.
 
 ### Logs (`/logs`)
 
@@ -119,6 +134,18 @@ receive its ready frame leaves the existing owner in place and also closes the
 failed candidate without waiting indefinitely on its transport; a reconnect
 with no live owner (a reload) always converges, even while the shell is
 streaming output continuously.
+
+**Detached shells.** A shell keeps running while no browser is attached, through
+a reload, a dropped network or a sleeping laptop, and the next connection
+reattaches to it. Once it has been detached for `dashboard.terminal.orphan_timeout_s`
+seconds (default `43200`, 12 hours; values below `60` count as `60`), the gateway
+ends the shell and every process it started, logs a warning, records a
+`terminal.session.reap` security event and posts a "Terminal closed" bell note.
+When a new terminal would exceed `dashboard.terminal.max_sessions`, the shell
+that has had no browser attached the longest (at least a minute) is ended the
+same way to make room, so shells left behind on another device cannot block new
+terminals. A gateway restart also ends every shell. Run work that must outlive either inside
+`tmux` or `screen`.
 
 **Selection toolbar.** Highlighting text in a terminal shows a floating toolbar with **Send to chat** and **Copy**. Send to chat appends the selection to the chat composer draft (never overwrites the draft, never auto-sends), annotated with a `Terminal output (path):` header — using the live `cwd` value when the backend has reported one, else the terminal's spawn directory — and wrapped in a code fence so the agent reads it as literal output. Copy places the raw selection on the clipboard.
 

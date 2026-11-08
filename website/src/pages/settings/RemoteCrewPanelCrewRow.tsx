@@ -40,7 +40,10 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from '../../components/ui/dropdown-menu'
-import ErrorNotice from '../../components/ErrorNotice'
+import ErrorNotice, { ErrorNoticeMenuItem } from '../../components/ErrorNotice'
+import ErrorBoundary from '../../components/ErrorBoundary'
+import { getCrewRowActions } from '../../components/remoteCrewRowActions'
+import { findReport, type ErrorReport } from '../../utils/errorReport'
 import { copyToClipboard } from '../../utils/clipboard'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
 import { i18nT } from '../../i18n/t'
@@ -155,6 +158,51 @@ const coordsOf = (inst: InstanceView): CloudCoords => ({
 /** The one line that says what a crew's on/off switch does; every switch points at it. */
 export const CREW_SWITCH_HINT_ID = 'remote-crew-switch-hint'
 
+/** The "on but not active yet" banner that mutes Connect. The disabled Connect
+ *  button points its `aria-describedby` here, so a keyboard or screen-reader
+ *  user gets the restart reason a hover `title` on a disabled button never
+ *  surfaces. */
+export const CREW_NEEDS_RESTART_BANNER_ID = 'remote-crew-needs-restart'
+
+/** The notice for a contributed row-action component that threw. */
+function rowActionsFailed(name: string, error: Error): string {
+  return i18nT('pages.settings.remoteCrewPanel.row_actions_failed', { name, error: error.message || String(error) })
+}
+
+/**
+ * The journal entry the boundary wrote for this crash, so the hand-off carries
+ * its stack and scope rather than only the sentence on screen. The boundary
+ * journals in `componentDidCatch`, which runs after its fallback first renders,
+ * so the lookup waits for the commit.
+ */
+function useCrashReport(error: Error): ErrorReport | undefined {
+  const [report, setReport] = useState<ErrorReport | undefined>(undefined)
+  useEffect(() => {
+    setReport(findReport(error.message || error.name))
+  }, [error])
+  return report
+}
+
+/** In the overflow menu, where the contribution's items were expected. */
+function RowActionsMenuCrash({ error, inst }: { error: Error; inst: InstanceView }) {
+  const report = useCrashReport(error)
+  const message = rowActionsFailed(inst.name, error)
+  const id = `crew-row-actions-error-${inst.id}`
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <ErrorNotice id={id} variant="inline" className="px-2 py-1.5" message={message} report={report} />
+      <ErrorNoticeMenuItem Item={DropdownMenuItem} message={message} describedBy={id} report={report} />
+    </>
+  )
+}
+
+/** Under the row header. Hand-off on: the row holds no draft here (the edit form is its own subtree). */
+function RowActionsDetailCrash({ error, name }: { error: Error; name: string }) {
+  const report = useCrashReport(error)
+  return <ErrorNotice variant="inline" className="mt-2" askAgent message={rowActionsFailed(name, error)} report={report} />
+}
+
 export function CrewRow({
   inst,
   cloudTag,
@@ -162,6 +210,7 @@ export function CrewRow({
   deleting,
   confirmDelete,
   confirmRemove,
+  connectBlocked,
   onConnect,
   onDisconnect,
   onSetEnabled,
@@ -194,6 +243,11 @@ export function CrewRow({
   deleting: boolean
   confirmDelete: boolean
   confirmRemove: boolean
+  /** The gateway was enabled but not yet restarted, so connecting cannot work
+   *  until it restarts (the same `active === false` state that shows the
+   *  "not active yet" banner). Mutes Connect so the button agrees with the
+   *  banner instead of looking fully clickable. */
+  connectBlocked: boolean
   onConnect: (id: string) => void
   onDisconnect: (id: string) => void
   onSetEnabled: (id: string, enabled: boolean) => void
@@ -265,6 +319,10 @@ export function CrewRow({
   // A fargate crew has no dashboard; while its forward is up, the card shows
   // the turn URL the status carries instead of offering something to open.
   const turnUrl = inst.connection_method === 'fargate' && connected ? inst.status?.turn_url || '' : ''
+  // Lifecycle controls a contributed provisioner draws for the crews it made.
+  // A tag-correlated row is the core's own EC2 crew, whose lifecycle is above.
+  const rowActions = isCloud ? undefined : getCrewRowActions(inst)
+  const rowActionsDisabled = !!busy || deleting || transient
   return (
     <div className="py-2.5 border-b border-border last:border-b-0" data-crew-id={inst.id}>
     <div className="flex items-start justify-between gap-3">
@@ -303,7 +361,7 @@ export function CrewRow({
                 : target}
             {reportedOnly
               ? ''
-              : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.port_2')} ${inst.remote_port}`}
+              : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.remote_port_value', { port: inst.remote_port })}`}
           </div>
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
             {!inst.disabled && <StatusBadge status={inst.status} />}
@@ -351,7 +409,17 @@ export function CrewRow({
             <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
           </Btn>
         ) : inst.disabled ? null : (
-          <Btn primary onClick={() => onConnect(inst.id)} disabled={!!busy || deleting}>
+          <Btn
+            primary
+            onClick={() => onConnect(inst.id)}
+            disabled={!!busy || deleting || connectBlocked}
+            // A `title` on a disabled button is unreliable: many browsers never
+            // show it on hover, and it is not keyboard- or screen-reader-reachable.
+            // While connecting is blocked, point the button at the restart banner
+            // so the reason is in its accessible description too.
+            title={connectBlocked ? i18nT('pages.settings.instancesPanel.connect_disabled_needs_restart') : undefined}
+            aria-describedby={connectBlocked ? CREW_NEEDS_RESTART_BANNER_ID : undefined}
+          >
             <Plug className="lucide-inline" /> {busy === `connect:${inst.id}` ? i18nT('pages.settings.instancesPanel.connecting') : i18nT('pages.settings.instancesPanel.connect')}
           </Btn>
         )}
@@ -430,6 +498,16 @@ export function CrewRow({
             <DropdownMenuItem className="gap-2 text-[13px]" onSelect={() => onEdit(inst.id)}>
               <Pencil className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.edit_settings')}
             </DropdownMenuItem>
+            {rowActions?.menuItems && (
+              <ErrorBoundary
+                scope={`crew-row-actions:${rowActions.provisionerId}`}
+                // A throw costs this crew its extra items, not the menu. Say so in
+                // the menu, where the missing items were expected.
+                fallback={error => <RowActionsMenuCrash error={error} inst={inst} />}
+              >
+                <rowActions.menuItems inst={inst} disabled={rowActionsDisabled} />
+              </ErrorBoundary>
+            )}
             {isCloud ? (
               <>
                 <DropdownMenuSeparator />
@@ -480,6 +558,14 @@ export function CrewRow({
         )}
       </div>
     </div>
+    {rowActions?.detail && (
+      <ErrorBoundary
+        scope={`crew-row-detail:${rowActions.provisionerId}`}
+        fallback={error => <RowActionsDetailCrash error={error} name={inst.name} />}
+      >
+        <rowActions.detail inst={inst} disabled={rowActionsDisabled} />
+      </ErrorBoundary>
+    )}
     {turnUrl && <TurnUrlField url={turnUrl} crewName={inst.name} />}
     {/* BELOW the row header, and naming its crew. Rendered above the name it read
         as a page-level warning banner about the whole panel, and with several rows

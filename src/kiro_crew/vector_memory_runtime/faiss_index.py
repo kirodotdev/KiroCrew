@@ -115,11 +115,7 @@ def save_faiss_index(store: VectorMemoryStore) -> None:
                     },
                     sort_keys=True,
                 )
-                store.db.execute(
-                    "INSERT INTO memory_meta (key,value,updated_at) VALUES (?,?,?) "
-                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
-                    ("faiss_content_signature", stamp, vm._now_iso()),
-                )
+                store._write_meta_in_transaction("faiss_content_signature", stamp)
                 store._faiss_data_version = store._sqlite_data_version()
                 store.db.commit()
                 store._faiss_writes_since_save = 0

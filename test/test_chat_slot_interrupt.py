@@ -333,7 +333,6 @@ class TestChatSlotInterrupt:
     @pytest.mark.asyncio
     async def test_empty_queue_returns_400(self, _patch_sel):
         slot = _ChatSlot("test")
-        # Make slot appear running
         mock_task = MagicMock()
         mock_task.done.return_value = False
         slot.task = mock_task
@@ -365,7 +364,6 @@ class TestChatSlotInterrupt:
             data = await resp.json()
             assert data["ok"] is True
             assert data["outcome"] == "soft"
-            # Verify preserve_queue=True was passed
             state.sessions.stop_turn.assert_awaited_once()
             call_kwargs = state.sessions.stop_turn.call_args.kwargs
             assert call_kwargs["preserve_queue"] is True
@@ -487,13 +485,8 @@ class TestRefusalRecoverySkippedOnCancel:
 class TestRefusalRecoveryOnBackendAbort:
     """A ``cancelled`` stop reason is not, by itself, a user cancel.
 
-    Measured on codex-acp 1.11.0 / codex 0.153.4: a command approval advertises
-    ``allow_once``, ``accept_execpolicy_amendment`` and ``cancel`` -- no
-    ``decline`` -- so the host's policy deny can only answer ``cancel``, and
-    codex aborts the turn with ``stopReason: "cancelled"`` before the model is
-    called again. A recovery gate keyed on the wire stop reason reads that as a
-    Stop press and skips, which makes every policy block on codex a silent stop.
-    The gate takes the host's own Stop signal instead, and only that.
+    codex-acp 1.11.0 offers no ``decline``, so a policy deny answers ``cancel`` and the
+    turn ends ``stopReason: "cancelled"``. The gate reads the host's own Stop signal only.
     """
 
     REFUSALS = [("python3 -c ...", "Blocked by security policy: credential-exfil-kirocrew-token")]

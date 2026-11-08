@@ -1,11 +1,13 @@
-"""Process-tree readers for the liveness oracle: the ``/proc`` helpers and the darwin
+"""Process-tree readers for the liveness oracle: ``/proc`` helpers and darwin
 ``libproc`` backend.
 
-Every reader is best-effort and answers None or empty on any error, so a probe never
-raises into the oracle. The ``/proc`` helpers take ``proc_root``, so a test hands them a
-fake tree; :func:`select_darwin_backend` picks :class:`LibprocBackend` on a host without
-procfs. A new process-tree reader goes in this module; :mod:`kiro_crew.acp.liveness`
-re-exports every name here.
+Verdict readers are best-effort and answer None or empty on an error, so an
+introspection failure never raises into liveness policy. Signal authorization
+uses the separate ``strict_*`` readers: one unreadable task or child branch
+answers None and withholds the whole cleanup tree. The ``/proc`` helpers take
+``proc_root`` so tests can hand them a fake tree; :func:`select_darwin_backend`
+picks :class:`LibprocBackend` on a host without procfs. A new process-tree reader
+goes in this module; :mod:`kiro_crew.acp.liveness` re-exports every name here.
 """
 
 from __future__ import annotations
@@ -84,6 +86,66 @@ def iter_descendants(proc_root: str, pid: int) -> list[int]:
                     continue
                 if cpid not in visited:
                     stack.append(cpid)
+    return order
+
+
+def strict_direct_children(proc_root: str, pid: int) -> list[int] | None:
+    """Return every direct child of *pid*, or None if any branch is unreadable.
+
+    Cleanup authority cannot use :func:`direct_children`'s empty-on-error
+    contract. Every numeric task must expose its ``children`` file, every token
+    must be a positive PID, and one child cannot appear under two task rows.
+    """
+    try:
+        tids = os.listdir(f"{proc_root}/{pid}/task")
+    except OSError:
+        return None
+    numeric_tids = [tid for tid in tids if tid.isdigit()]
+    if not numeric_tids:
+        return None
+    children: list[int] = []
+    seen: set[int] = set()
+    for tid in numeric_tids:
+        raw = _read_text(f"{proc_root}/{pid}/task/{tid}/children")
+        if raw is None:
+            return None
+        for token in raw.split():
+            try:
+                child = int(token)
+            except ValueError:
+                return None
+            if child <= 0:
+                return None
+            if child in seen:
+                return None
+            seen.add(child)
+            children.append(child)
+    return children
+
+
+def strict_descendants(proc_root: str, pid: int) -> list[int] | None:
+    """Return ``[pid, *descendants]`` only after a complete procfs walk.
+
+    A process disappearing, an unreadable task row, or one PID appearing below
+    two parents makes the snapshot inconclusive. This stricter contract is for
+    signal authorization; liveness keeps using :func:`iter_descendants`.
+    """
+    order = [pid]
+    parents: dict[int, int] = {}
+    index = 0
+    while index < len(order):
+        parent = order[index]
+        index += 1
+        children = strict_direct_children(proc_root, parent)
+        if children is None:
+            return None
+        for child in children:
+            previous_parent = parents.get(child)
+            if child == pid or (previous_parent is not None and previous_parent != parent):
+                return None
+            if previous_parent is None:
+                parents[child] = parent
+                order.append(child)
     return order
 
 
@@ -306,6 +368,13 @@ _DARWIN_CPU_KEY = "darwin_cpu"
 # Evidence label naming what the darwin movement probe can and cannot see: CPU
 # time across the subtree, no IO — libproc has no per-process byte counter.
 _DARWIN_CPU_LABEL = "darwin cpu-only"
+# Smallest subtree CPU delta, in nanoseconds per sample, the darwin probes count
+# as movement: one Linux clock tick (10 ms at the usual 100 Hz). libproc reports
+# CPU time at nanosecond resolution, so the idle timers of the runtime's MCP
+# servers move the sum on every sample; ``/proc`` reads whole ticks, so that
+# housekeeping reads as zero there. Below this floor a darwin sample reads flat,
+# which is the same answer the Linux walk gives for the same quiet tree.
+_DARWIN_CPU_FLOOR_NANOS = 10_000_000
 
 
 @dataclass(frozen=True)
@@ -329,10 +398,12 @@ class DarwinProcessBackend(Protocol):
 
     ``descendants`` answers the whole live subtree under ``root_pid`` (the root
     itself excluded, any order, zombies may be included) or None when the tree
-    cannot be enumerated. The two are kept apart because only an enumerated
-    tree supports the absent-shell-child claim. ``row`` describes one live
-    process, or answers None for one that is gone, a zombie, or unreadable —
-    the shapes the ``/proc`` walk skips as ``stat is None or state == "Z"``.
+    cannot be enumerated. ``direct_children`` returns one parent's complete
+    child set or None; cleanup uses that narrower edge to bind a shell root to
+    its harness. The two are kept apart because only an enumerated tree supports
+    the absent-shell-child claim. ``row`` describes one live process, or answers
+    None for one that is gone, a zombie, or unreadable — the shapes the ``/proc``
+    walk skips as ``stat is None or state == "Z"``.
     ``cpu_nanos`` is the process's total CPU time, None when unreadable.
     ``established_tcp`` counts the process's ESTABLISHED TCP sockets to a
     non-loopback peer, None when unreadable. It is optional: the oracle reads a backend without it as having
@@ -340,6 +411,8 @@ class DarwinProcessBackend(Protocol):
     """
 
     def descendants(self, root_pid: int) -> list[int] | None: ...
+
+    def direct_children(self, parent_pid: int) -> list[int] | None: ...
 
     def row(self, pid: int) -> ProcessRow | None: ...
 
@@ -358,10 +431,16 @@ class LibprocBackend:
     otherwise, where only the program-basename rule can match.
     """
 
+    def direct_children(self, parent_pid: int) -> list[int] | None:
+        # proc_listchildpids answers [] for both a childless and an unknown pid;
+        # the parent's own facts make only the first one an observable edge set.
+        if platform_compat.darwin_process_facts(parent_pid) is None:
+            return None
+        return platform_compat.darwin_child_pids(parent_pid)
+
     def descendants(self, root_pid: int) -> list[int] | None:
-        # A root that cannot be read has no observable tree: proc_listchildpids
-        # answers 0 for an unknown pid exactly as for a childless one, so the
-        # root's own facts are what separate "empty" from "gone".
+        # Only the root needs facts to tell "empty" from "gone"; an inner node
+        # that is a zombie or already reaped is still part of a live tree here.
         if platform_compat.darwin_process_facts(root_pid) is None:
             return None
         order: list[int] = []
@@ -408,4 +487,63 @@ def select_darwin_backend(proc_root: str) -> DarwinProcessBackend | None:
     """
     if sys.platform == "darwin" and not os.path.exists(proc_root):
         return LibprocBackend()
+    return None
+
+
+# ── Windows process backend (Toolhelp, shell-tool checks only) ──
+
+# Evidence label for the Windows movement probe: CPU time across the processes
+# started since the dispatch, from ``GetProcessTimes``; no byte counter is read.
+_WINDOWS_CPU_LABEL = "windows cpu-only"
+# Seconds between the Windows FILETIME epoch (1601-01-01) and the Unix epoch.
+_FILETIME_UNIX_OFFSET_SECS = 11_644_473_600
+
+
+class WinProcessBackend:
+    """The Windows backend for the oracle's SHELL-tool check, which only proves life.
+
+    The MCP and model-wait probes keep their no-tree readings. Every read is
+    query-only (a Toolhelp snapshot, ``GetProcessTimes`` and
+    ``GetExitCodeProcess`` through query-limited handles): nothing is opened
+    with terminate rights and nothing is signalled.
+    """
+
+    def descendants_created(self, root_pid: int) -> dict[int, float] | None:
+        """*root_pid*'s live descendants -> creation time in Unix seconds.
+
+        The walk is :func:`platform_compat.attributed_descendants`, so a child
+        created before the parent it is listed under (a recycled pid's stray) is
+        left out with its subtree. A descendant that has exited, or whose
+        creation time cannot be read, is left out too: leaving a process out
+        can only keep the verdict UNKNOWN. None when the root's own creation
+        time cannot be read or the root has exited. A failed snapshot reads as
+        no descendants.
+        """
+        root_token = platform_compat.process_start_time(root_pid)
+        if not root_token or not platform_compat.pid_exists(root_pid):
+            return None
+        out: dict[int, float] = {}
+        for pid in platform_compat.attributed_descendants(root_pid, root_token):
+            try:
+                # FILETIME: 100 ns ticks since 1601-01-01.
+                created = int(platform_compat.process_start_time(pid) or "") / 10_000_000
+            except ValueError:
+                continue
+            if platform_compat.pid_exists(pid):
+                out[pid] = created - _FILETIME_UNIX_OFFSET_SECS
+        return out
+
+    def cpu_nanos(self, pid: int) -> int | None:
+        return platform_compat.proc_cpu_nanos_for_pid(pid)
+
+
+def select_windows_backend(proc_root: str) -> WinProcessBackend | None:
+    """The Windows backend for *proc_root*, or None.
+
+    Selected on the platform AND on ``proc_root`` being absent, as
+    :func:`select_darwin_backend` is, so a fake ``/proc`` tree handed to the
+    oracle under test keeps the ``/proc`` walk on any host.
+    """
+    if platform_compat.IS_WINDOWS and not os.path.exists(proc_root):
+        return WinProcessBackend()
     return None

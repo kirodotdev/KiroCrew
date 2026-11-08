@@ -46,14 +46,12 @@ logger = logging.getLogger("kiro_crew.dashboard.token_auth")
 # so artifact and widget frames load a real document instead. See
 # dashboard/handlers/sandbox_doc.py for the full security model.
 # Same exposure class as /assets/: static non-secret files.
-# /browser-view/ is the same-origin relay for the Playwright CLI browser view:
-# auth is the per-instance capability token embedded in the path, minted by
-# the view supervisor and disclosed only through the cookie-authed, owner-gated
-# /api/browser/view payload (the panel frames the relay in an opaque-origin
-# sandbox that carries no cookies, exactly like /artifact-app/ above). The
-# relay constant-time-compares the token BEFORE running its per-request
-# ownership probes and answers a uniform 404 without it. See
-# dashboard/handlers/browser_view_relay.py for the full security model.
+# /app-frame/ and /app-frame-fetch/ are an app frame (a link-preview card or a message action):
+# the frame document (auth: an HMAC path token) and its ctx.fetch (auth: the
+# capability in the X-KiroCrew-Capability header, never a cookie), both minted by
+# the session-authed mints under /api/apps/<name>/. The frame is an
+# opaque-origin sandbox that does not reliably send a cookie. See
+# apps/app_frame.py for the full security model.
 _BYPASS_PREFIXES = (
     "/assets/",
     "/static/",
@@ -61,20 +59,14 @@ _BYPASS_PREFIXES = (
     "/vendor/",
     "/artifact-app/",
     "/sandbox-doc/",
-    "/browser-view/",
+    "/app-frame/",
+    "/app-frame-fetch/",
 )
 _BYPASS_EXACT = {
     "/logo.png",
     # Alias of /logo.png for clients that hardcode the favicon path instead of
     # parsing <link rel="icon"> — same handler, same static-asset exposure.
     "/favicon.ico",
-    # The bare relay path (no trailing slash, so the /browser-view/ prefix
-    # above misses it). It is a registered relay route carrying no token
-    # segment, and the relay's contract is a UNIFORM 404 for every tokenless
-    # or wrong-token request — without this entry the middleware answers 403
-    # first, handing an unauthenticated prober a response that distinguishes
-    # the bare path from the tokened misses.
-    "/browser-view",
     "/manifest.json",
     "/sw.js",
     "/pcm-worklet.js",
@@ -157,8 +149,22 @@ _SELF_AUTH_WEBHOOK_METHODS = frozenset({"POST"})
 #: under another method stays on the ordinary token gate.
 UPDATE_REVALIDATE_PATH = "/api/update/revalidate"
 
+#: The inbound agent webhook's read half: the caller that started a run reads how
+#: it ended. Its handler (api_hooks_agent_status) checks the same webhook bearer
+#: the POST does and answers only for that source's own runs. GET only; HEAD and
+#: every other method stay behind the ordinary gate.
+AGENT_HOOK_STATUS_PATH = "/api/hooks/agent/status"
+
+#: The relay viewer's access token mint for the desktop app's main process, which
+#: holds the local secret and no dashboard token. Its handler (api_relay_viewer_token)
+#: admits only loopback or the same-user unix socket, the X-Local-Secret and a
+#: verified host process, the /api/token/local admission. POST only.
+RELAY_VIEWER_TOKEN_PATH = "/api/relay-viewer/token"
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
     AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+    AGENT_HOOK_STATUS_PATH: frozenset({"GET"}),
+    RELAY_VIEWER_TOKEN_PATH: frozenset({"POST"}),
     TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
     UPDATE_REVALIDATE_PATH: _SELF_AUTH_WEBHOOK_METHODS,
 }
@@ -202,12 +208,24 @@ CSRF_EXEMPT_EXACT_METHODS: dict[str, frozenset[str]] = {
 }
 
 
-def is_csrf_exempt(path: str, method: str) -> bool:
-    """Whether *path* + *method* is a webhook exempt from the CSRF Origin check.
+# An app frame.s fetch (``apps/app_frame.py``) is exempt on every
+# method for the reason the webhook is: its handler reads no cookie at all and
+# authenticates the capability in the ``X-KiroCrew-Capability`` header, which a
+# cross-origin page can neither obtain nor forge. The exemption is REQUIRED: the
+# caller is an opaque-origin sandboxed frame, whose writes carry ``Origin: null``
+# and so always fail the Origin check. The prefix is spelled out in
+# ``is_csrf_exempt`` below.
 
-    The single read point for :data:`CSRF_EXEMPT_EXACT_METHODS`, so both dashboard
-    middleware chains share one exemption rather than a literal list each.
+
+def is_csrf_exempt(path: str, method: str) -> bool:
+    """Whether *path* + *method* is exempt from the CSRF Origin check.
+
+    The single read point for :data:`CSRF_EXEMPT_EXACT_METHODS` and the
+    app-frame fetch prefix, so both dashboard middleware chains share one
+    exemption rather than a literal list each.
     """
+    if path.startswith("/app-frame-fetch/"):
+        return True
     return method in CSRF_EXEMPT_EXACT_METHODS.get(path, frozenset())
 
 
@@ -253,12 +271,11 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     # 200 and render nothing, and a future non-/api GET registered beside it in
     # routes/realtime.py would inherit the same silent fallback.
     "/feature-videos/",
-    # The browser-view relay (handlers/browser_view_relay.py). A data route
-    # authenticated by its own capability path token: its handler must always
-    # answer — the uniform 404 without the token, the proxied view with it —
-    # never the SPA shell, which would render the dashboard inside the
-    # Browser panel's own frame.
-    "/browser-view",
+    # An app frame and its fetch (apps/app_frame.py):
+    # token-credentialed data routes that must never answer with the shell, which
+    # would load the dashboard inside the app.s frame.
+    "/app-frame/",
+    "/app-frame-fetch/",
 )
 
 # App window entries (`/app-windows/<app>/<name>.html`) are their own Vite bundles, served

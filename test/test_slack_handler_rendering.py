@@ -78,11 +78,8 @@ class TestSplitMessage:
     def _split_with_timeout(self, text, limit, seconds=5.0):
         """Run split_message in a daemon thread; return (parts, timed_out).
 
-        Guards against the historical infinite loop: when ``limit`` was <= the
-        length of the continuation marker, ``chunk_limit`` went <= 0, ``cut``
-        became 0, the remainder never shrank, and the loop ran forever. We use a
-        bounded join instead of relying on the global pytest timeout so the
-        failure is a clear assertion rather than a 120s hang.
+        A ``limit`` at or below the continuation marker's length must not loop forever;
+        the bounded join turns that into an assertion rather than a 120s hang.
         """
         import threading
 
@@ -132,6 +129,47 @@ class TestSplitMessage:
         parts = split_message(text)
         assert len(parts) == 1
         assert not parts[-1].endswith(CONTINUATION)
+
+
+class TestSplitMessageSkipsAnEarlyBreak:
+    """A line break too near the chunk's start must not cost a whole message."""
+
+    CHUNK = SLACK_MSG_LIMIT - len(CONTINUATION)
+
+    def test_a_short_first_line_before_one_long_line_costs_no_message(self):
+        parts = split_message("Hi\n" + "x" * 5000)
+        assert parts == ["Hi\n" + "x" * (self.CHUNK - 3) + CONTINUATION, "x" * (5003 - self.CHUNK)]
+
+    def test_a_short_first_line_before_long_prose_costs_no_message(self):
+        text = "Hi\n" + "word " * 1500
+        parts = split_message(text)
+        assert len(parts) == 2
+        assert parts[0].startswith("Hi\nword word")
+        assert "".join(p.removesuffix(CONTINUATION) for p in parts) == text
+
+    def test_a_line_break_a_quarter_in_is_still_taken(self):
+        parts = split_message("a" * 1000 + "\n" + "b" * 3500)
+        assert parts == ["a" * 1000 + CONTINUATION, "b" * 3500]
+
+    def test_an_early_line_break_falls_through_to_a_later_one(self):
+        text = "Title\n" + "w" * 2000 + "\n" + "z" * 2500
+        assert split_message(text) == ["Title\n" + "w" * 2000 + CONTINUATION, "z" * 2500]
+
+    def test_a_line_that_fits_a_chunk_behind_a_short_lead_in_moves_whole(self):
+        url = "https://example.com/" + "a" * (self.CHUNK - 23)
+        parts = split_message("Open:\n" + url + "\n" + "t" * 100)
+        assert parts[:2] == ["Open:" + CONTINUATION, url + CONTINUATION]
+
+    def test_a_last_line_that_fits_the_last_post_moves_whole(self):
+        # The last post has no CONTINUATION, so it holds up to SLACK_MSG_LIMIT.
+        url = "https://example.com/" + "a" * (SLACK_MSG_LIMIT - 30)
+        assert self.CHUNK < len(url) <= SLACK_MSG_LIMIT
+        assert split_message("Lead-in line\n" + url) == ["Lead-in line" + CONTINUATION, url]
+
+    def test_link_prose_behind_a_short_lead_in_is_cut_hard_not_at_a_space(self):
+        text = "Hi\n" + "[a link label](https://example.com) " * 150
+        parts = split_message(text)
+        assert parts[0] == text[: self.CHUNK] + CONTINUATION
 
 
 class TestCronMessageSplitting:
@@ -301,13 +339,13 @@ class TestReactionOverrides:
 
     def test_defaults_without_overrides(self):
         result, unknown = _build_phase_emojis({})
-        assert result["done"] == "lobster"
-        assert result["queued"] == "eyes"
+        assert result == {"queued": "eyes", "error": "scream"}
+        assert "lobster" not in result.values()
         assert unknown == []
 
     def test_override_applies(self):
-        result, unknown = _build_phase_emojis({"done": "sparkle"})
-        assert result["done"] == "sparkle"
+        result, unknown = _build_phase_emojis({"error": "sparkle"})
+        assert result["error"] == "sparkle"
         assert result["queued"] == "eyes"  # others unchanged
         assert unknown == []
 
@@ -340,79 +378,30 @@ class TestContextFooter:
     # ── Threshold boundary tests ──
 
     @pytest.mark.asyncio
-    async def test_green_at_zero(self):
-        text, _ = await self._get_footer(0.0)
-        assert "🟢" in text
-        assert "ctx 0%" in text
-
-    @pytest.mark.asyncio
-    async def test_boundary_29_rounds_to_yellow(self):
-        """29.9 rounds to 30 → 🟡 (not green). Icon and display are consistent."""
-        text, _ = await self._get_footer(29.9)
-        assert "🟡" in text
-        assert "ctx 30%" in text
-
-    @pytest.mark.asyncio
-    async def test_green_at_29_exact(self):
-        text, _ = await self._get_footer(29.4)
-        assert "🟢" in text
-        assert "ctx 29%" in text
-
-    @pytest.mark.asyncio
-    async def test_yellow_at_exactly_30(self):
-        text, _ = await self._get_footer(30.0)
-        assert "🟡" in text
-        assert "ctx 30%" in text
-
-    @pytest.mark.asyncio
-    async def test_boundary_49_rounds_to_orange(self):
-        """49.9 rounds to 50 → 🟠. Icon and display are consistent."""
-        text, _ = await self._get_footer(49.9)
-        assert "🟠" in text
-        assert "ctx 50%" in text
-
-    @pytest.mark.asyncio
-    async def test_yellow_at_49_exact(self):
-        text, _ = await self._get_footer(49.4)
-        assert "🟡" in text
-        assert "ctx 49%" in text
-
-    @pytest.mark.asyncio
-    async def test_orange_at_exactly_50(self):
-        text, _ = await self._get_footer(50.0)
-        assert "🟠" in text
-        assert "ctx 50%" in text
-
-    @pytest.mark.asyncio
-    async def test_boundary_69_rounds_to_red(self):
-        """69.9 rounds to 70 → 🔴. Icon and display are consistent."""
-        text, _ = await self._get_footer(69.9)
-        assert "🔴" in text
-        assert "ctx 70%" in text
-
-    @pytest.mark.asyncio
-    async def test_orange_at_69_exact(self):
-        text, _ = await self._get_footer(69.4)
-        assert "🟠" in text
-        assert "ctx 69%" in text
-
-    @pytest.mark.asyncio
-    async def test_red_at_exactly_70(self):
-        text, _ = await self._get_footer(70.0)
-        assert "🔴" in text
-        assert "ctx 70%" in text
-
-    @pytest.mark.asyncio
-    async def test_red_at_99(self):
-        text, _ = await self._get_footer(99.0)
-        assert "🔴" in text
-        assert "ctx 99%" in text
-
-    @pytest.mark.asyncio
-    async def test_red_at_100(self):
-        text, _ = await self._get_footer(100.0)
-        assert "🔴" in text
-        assert "ctx 100%" in text
+    @pytest.mark.parametrize(
+        ("pct", "icon", "shown"),
+        [
+            pytest.param(0.0, "🟢", "ctx 0%", id="test_green_at_zero"),
+            # 29.9 rounds to 30 → 🟡 (not green). Icon and display are consistent.
+            pytest.param(29.9, "🟡", "ctx 30%", id="test_boundary_29_rounds_to_yellow"),
+            pytest.param(29.4, "🟢", "ctx 29%", id="test_green_at_29_exact"),
+            pytest.param(30.0, "🟡", "ctx 30%", id="test_yellow_at_exactly_30"),
+            # 49.9 rounds to 50 → 🟠. Icon and display are consistent.
+            pytest.param(49.9, "🟠", "ctx 50%", id="test_boundary_49_rounds_to_orange"),
+            pytest.param(49.4, "🟡", "ctx 49%", id="test_yellow_at_49_exact"),
+            pytest.param(50.0, "🟠", "ctx 50%", id="test_orange_at_exactly_50"),
+            # 69.9 rounds to 70 → 🔴. Icon and display are consistent.
+            pytest.param(69.9, "🔴", "ctx 70%", id="test_boundary_69_rounds_to_red"),
+            pytest.param(69.4, "🟠", "ctx 69%", id="test_orange_at_69_exact"),
+            pytest.param(70.0, "🔴", "ctx 70%", id="test_red_at_exactly_70"),
+            pytest.param(99.0, "🔴", "ctx 99%", id="test_red_at_99"),
+            pytest.param(100.0, "🔴", "ctx 100%", id="test_red_at_100"),
+        ],
+    )
+    async def test_threshold_icon_and_display(self, pct, icon, shown):
+        text, _ = await self._get_footer(pct)
+        assert icon in text
+        assert shown in text
 
     # ── Format and structure ──
 
@@ -521,6 +510,67 @@ class TestToSlackMrkdwnTruncation:
 
         assert to_slack_mrkdwn("hello world") == "hello world"
 
+    def test_an_early_line_break_does_not_cut_away_the_text(self):
+        from kiro_crew.slack.format import SLACK_MAX_TEXT, to_slack_mrkdwn
+
+        text = "Hi\n" + "x" * (SLACK_MAX_TEXT + 5000)
+        out = to_slack_mrkdwn(text)
+        assert out == text[:SLACK_MAX_TEXT] + f"\n\n_…truncated ({len(text)} chars total)_"
+
+    def test_a_line_break_a_quarter_in_is_still_the_cut(self):
+        from kiro_crew.slack.format import SLACK_MAX_TEXT, to_slack_mrkdwn
+
+        head = "a" * (SLACK_MAX_TEXT // 2)
+        text = head + "\n" + "b" * SLACK_MAX_TEXT
+        assert to_slack_mrkdwn(text) == head + f"\n\n_…truncated ({len(text)} chars total)_"
+
+
+class TestTruncatedOverflowCut:
+    """``_truncated`` keeps one message's worth of text and announces the rest."""
+
+    def test_an_early_line_break_does_not_cut_away_the_text(self):
+        from kiro_crew.slack.format import _truncated
+
+        text = "Hi\n" + "x" * 5000
+        notice = f"\n\n_…truncated ({len(text)} chars total)_"
+        assert _truncated(text, 3900) == [text[: 3900 - len(notice)] + notice]
+
+    def test_a_line_break_a_quarter_in_is_still_the_cut(self):
+        from kiro_crew.slack.format import _truncated
+
+        text = "a" * 2000 + "\n" + "b" * 3000
+        assert _truncated(text, 3900) == [
+            "a" * 2000 + f"\n\n_…truncated ({len(text)} chars total)_"
+        ]
+
+
+class TestToSlackMrkdwnInlineCode:
+    """Slack shows inline code as written, so its markers are never rewritten."""
+
+    def test_bold_and_strike_markers_inside_inline_code_are_kept(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("call `f(**kwargs)` now") == "call `f(**kwargs)` now"
+        assert to_slack_mrkdwn("`a~~b~~c` and ~~gone~~") == "`a~~b~~c` and ~gone~"
+
+    def test_emphasis_around_a_code_span_still_converts(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("**a `b` c**") == "*a `b` c*"
+        assert to_slack_mrkdwn("~~a `x` b~~") == "~a `x` b~"
+
+    def test_a_backslash_inside_code_does_not_reach_past_the_span(self):
+        """A backslash is literal inside code, so `C:\\` closes on its own."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn("Use `C:\\` then **bold** and `x`.")
+        assert out == "Use `C:\\` then *bold* and `x`."
+
+    def test_an_escaped_backtick_outside_code_opens_nothing(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("\\`a **b** `c`") == "\\`a *b* `c`"
+
 
 class TestToSlackMrkdwnKeepTables:
     """Tests for the keep_tables parameter in to_slack_mrkdwn."""
@@ -540,6 +590,39 @@ class TestToSlackMrkdwnKeepTables:
         result = to_slack_mrkdwn(self.TABLE, keep_tables=True)
         assert "| Model | Cost |" in result
         assert "•" not in result
+
+    def test_a_lone_pipe_row_is_never_swallowed(self):
+        """A pipe line with no separator under it is prose, not a header."""
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        assert to_slack_mrkdwn("Legend:\n| a | b |\nend") == "Legend:\n| a | b |\nend"
+
+    def test_a_table_inside_a_code_fence_is_left_alone(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        src = "```\n| a | b |\n|---|---|\n| 1 | 2 |\n```"
+        assert to_slack_mrkdwn(src) == src
+
+    def test_a_table_in_a_tilde_or_longer_fence_is_left_alone(self):
+        from kiro_crew.slack.format import _convert_tables
+
+        table = "| a | b |\n|---|---|\n| 1 | 2 |"
+        for src in (f"~~~\n{table}\n~~~", f"````\n```\n{table}\n````"):
+            assert _convert_tables(src) == src
+
+    def test_escaped_and_inline_code_pipes_stay_in_their_cell(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        escaped = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| a \\| b | or |")
+        assert escaped == "• *op:* a | b | *meaning:* or"
+        code = to_slack_mrkdwn("| op | meaning |\n|---|---|\n| `a|b` | or |")
+        assert code == "• *op:* `a|b` | *meaning:* or"
+
+    def test_an_empty_row_keeps_its_place(self):
+        from kiro_crew.slack.format import to_slack_mrkdwn
+
+        out = to_slack_mrkdwn("| a | b |\n|---|---|\n| 1 | 2 |\n|  |  |\n| 3 | 4 |")
+        assert out == "• *a:* 1 | *b:* 2\n• —\n• *a:* 3 | *b:* 4"
 
     def test_keep_tables_still_converts_headings(self):
         from kiro_crew.slack.format import to_slack_mrkdwn
@@ -561,80 +644,74 @@ class TestToSlackMrkdwnKeepTables:
 class TestToSlackMrkdwnImages:
     """Markdown IMAGE syntax must survive conversion untouched.
 
-    Slack mrkdwn has no image form, so running an image through the
-    ``[text](url)`` -> ``<url|text>`` rewrite emits a stray ``!`` in front of a
-    clickable link to a destination Slack cannot open (a local path is not even
-    reachable from Slack's servers). Raw passthrough is what the reader can act
-    on, and it matches Discord, whose renderer rewrites no links at all.
+    Slack mrkdwn has no image form, so the link rewrite would emit a stray ``!`` before
+    a link Slack cannot open (a local path). Raw passthrough matches Discord.
     """
 
-    def test_image_with_local_path_is_untouched(self):
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            pytest.param(
+                "![shot](/tmp/x.png)",
+                "![shot](/tmp/x.png)",
+                id="test_image_with_local_path_is_untouched",
+            ),
+            pytest.param(
+                "![diagram](https://example.com/d.png)",
+                "![diagram](https://example.com/d.png)",
+                id="test_image_with_http_url_is_untouched",
+            ),
+            pytest.param(
+                "[docs](https://example.com)",
+                "<https://example.com|docs>",
+                id="test_regular_link_still_converts",
+            ),
+            pytest.param(
+                "see ![a](/x.png) and [b](https://y)",
+                "see ![a](/x.png) and <https://y|b>",
+                id="test_mixed_line_converts_only_the_link",
+            ),
+            # CommonMark reads ``\![x](p)`` as an escaped literal ``!`` followed by a
+            # LINK, so a strict reader would convert it. This converter has no
+            # backslash-unescaping layer, so honouring that in detection alone would
+            # emit ``\!<p|x>`` -- a stray literal backslash in place of a stray ``!``.
+            # Passing it through raw also matches ``image_artifacts._IMAGE_MD_RE``,
+            # which registers ``\![x](p)`` as an image on the dashboard side.
+            pytest.param(
+                r"\![x](p)", r"\![x](p)", id="test_escaped_bang_is_still_treated_as_an_image"
+            ),
+            # No space between ``!`` and ``[``: CommonMark binds the ``!`` into image
+            # syntax, so this is an image, not "exclamation mark, then link".
+            pytest.param(
+                "Wow![click](https://x)",
+                "Wow![click](https://x)",
+                id="test_sentence_bang_before_a_link_is_an_image_per_commonmark",
+            ),
+            pytest.param(
+                "```\n![a](/x.png)\n```",
+                "```\n![a](/x.png)\n```",
+                id="test_image_inside_a_code_fence_is_untouched",
+            ),
+        ],
+    )
+    def test_image_passthrough_and_link_conversion(self, text, expected):
         from kiro_crew.slack.format import to_slack_mrkdwn
 
-        assert to_slack_mrkdwn("![shot](/tmp/x.png)") == "![shot](/tmp/x.png)"
-
-    def test_image_with_http_url_is_untouched(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        text = "![diagram](https://example.com/d.png)"
-        assert to_slack_mrkdwn(text) == text
-
-    def test_regular_link_still_converts(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        assert to_slack_mrkdwn("[docs](https://example.com)") == "<https://example.com|docs>"
-
-    def test_mixed_line_converts_only_the_link(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        out = to_slack_mrkdwn("see ![a](/x.png) and [b](https://y)")
-        assert out == "see ![a](/x.png) and <https://y|b>"
-
-    def test_escaped_bang_is_still_treated_as_an_image(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        # CommonMark reads ``\![x](p)`` as an escaped literal ``!`` followed by a
-        # LINK, so a strict reader would convert it. This converter has no
-        # backslash-unescaping layer, so honouring that in detection alone would
-        # emit ``\!<p|x>`` -- a stray literal backslash in place of a stray ``!``.
-        # Passing it through raw also matches ``image_artifacts._IMAGE_MD_RE``,
-        # which registers ``\![x](p)`` as an image on the dashboard side.
-        assert to_slack_mrkdwn(r"\![x](p)") == r"\![x](p)"
-
-    def test_sentence_bang_before_a_link_is_an_image_per_commonmark(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        # No space between ``!`` and ``[``: CommonMark binds the ``!`` into image
-        # syntax, so this is an image, not "exclamation mark, then link".
-        assert to_slack_mrkdwn("Wow![click](https://x)") == "Wow![click](https://x)"
-
-    def test_image_inside_a_code_fence_is_untouched(self):
-        from kiro_crew.slack.format import to_slack_mrkdwn
-
-        text = "```\n![a](/x.png)\n```"
-        assert to_slack_mrkdwn(text) == text
+        assert to_slack_mrkdwn(text) == expected
 
 
 class TestMermaidSequenceArrows:
-    """Regression: dashed sequence-diagram arrows were rendered by a dead branch.
+    """Dashed sequence-diagram arrows keep their type and point left-to-right.
 
-    In ``_mermaid_sequence`` the dashed-arrow line was::
-
-        arrow = "⇠" if ">>" in arrow_type else "⇠"   # both branches identical
-
-    so (1) a dashed reply ``-->>`` and a dashed open ``-->`` rendered identically
-    (the message-type distinction Mermaid encodes was silently lost), and (2) both
-    pointed LEFT (``⇠``) while ``src``/``dst`` are laid out left-to-right, so the
-    arrow pointed back at the source — the opposite direction from the solid arrows
-    ``->>`` (``→``) and ``->`` (``⇢``) on the same diagram.
+    ``-->>`` and ``-->`` must render differently, and both point from ``src`` to
+    ``dst`` like the solid ``->>`` (``→``) and ``->`` (``⇢``), never back (``⇠``).
     """
 
     @staticmethod
     def _seq(line: str) -> str:
-        from kiro_crew.slack.format import _mermaid_sequence
+        from kiro_crew.slack.format import _convert_mermaid
 
-        # _mermaid_sequence skips the first line ("sequenceDiagram")
-        return _mermaid_sequence("sequenceDiagram\n" + line)
+        return _convert_mermaid("```mermaid\nsequenceDiagram\n" + line + "\n```")
 
     def test_dashed_arrows_point_same_direction_as_solid(self):
         # All four arrow types describe A talking to B; none should point back at A.
@@ -793,12 +870,9 @@ class TestBuildTimingFooter:
 def _handler_clock(monkeypatch, monotonic) -> None:
     """Give the handler and its composed owners *monotonic*, and nothing else.
 
-    ``handler.time`` IS the stdlib ``time`` module, so patching an attribute on it
-    rebinds ``time.monotonic`` for the whole worker: asyncio's loop clock and every
-    other thread read the fake too, and a frozen fake strands every timer the turn
-    awaits. The owners read ``time`` from the handler's globals
-    (``_facade_compose.compose``), so rebinding that NAME reaches each elapsed-time
-    read the turn makes while the rest of the process keeps the real clock.
+    ``handler.time`` IS the stdlib module, so patching its attribute would freeze
+    asyncio's loop clock too. The owners read ``time`` from the handler's globals
+    (``_facade_compose.compose``), so rebinding that NAME is enough.
     """
     from kiro_crew.slack import handler
 
@@ -901,7 +975,6 @@ class TestToolElapsedTimer:
         # Just verify the handler completes without hanging (timer not blocking)
         await handle_message(slack, sessions, "C1", "read it", None, "msg1", "U1")
 
-        # Verify tool completion was recorded
         task_appends = [a for a in slack.actions if a[0] == "append_task"]
         complete_tasks = [t for t in task_appends if t[1].get("status") == "complete"]
         assert len(complete_tasks) >= 1
@@ -990,7 +1063,7 @@ class TestToolElapsedTimer:
         sessions = FakeSessionManager(provider)
         await handle_message(slack, sessions, "C1", "read it", None, "msg1", "U1")
 
-        # Verify the 30s sleep was attempted (updater was started)
+        # The 30s sleep is the updater's: seeing it proves the updater started.
         assert 30 in sleep_calls
 
     @pytest.mark.asyncio
@@ -1061,11 +1134,8 @@ class _StreamAppendRefusedOnceSlack(MockSlackClient):
 class TestTaskCardNeverAbandonsTheStream:
     """A refused task card must not cost the reader their in-progress message.
 
-    Rotating on a task-card failure stops the stream the reader is watching and
-    continues the same answer in a NEW message, so the thread reads as a reply
-    that failed followed minutes later by an unexplained second reply. A task
-    card is decoration, so skipping it withholds no answer text;
-    ``_append_stream`` still rotates when real text is refused.
+    Rotating would split the answer into a second message. A task card is decoration,
+    so it is skipped; ``_append_stream`` still rotates when real text is refused.
     """
 
     @pytest.mark.asyncio

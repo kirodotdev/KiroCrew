@@ -47,6 +47,11 @@ _READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
     "whoami",
     "hostname",
     "uname",
+    # Memory/load counters: no option writes or runs a program. Kept off: `sysctl`
+    # (`-w`, `key=value` write) and `ps` / `top` (`ps e` prints other envs).
+    "vm_stat",
+    "uptime",
+    "free",
     "readlink",
     "realpath",
     "basename",
@@ -237,8 +242,8 @@ _INDIRECT_LIST_FLAGS_BY_PREFIX: dict[str, tuple[str, ...]] = {
 # so both names are listed rather than branching on `sys.platform`.
 #
 # The whole `+` prefix is refused rather than the dangerous letters (`!` shell,
-# `|` pipe-to-shell, `v` editor, `s` save-to-file), because enumerating them is the
-# denylist this PR exists to argue against: the set is the pager's command
+# `|` pipe-to-shell, `v` editor, `s` save-to-file), because enumerating them is a
+# denylist, the shape this module avoids: the set is the pager's command
 # language, and it grows without asking.
 _PAGER_STARTUP_VERBS: frozenset[str] = frozenset(("less", "more"))
 
@@ -535,10 +540,8 @@ _SORT_READONLY_LONG: frozenset[str] = frozenset(
 # checked for a second axis the other accept-lists did not have to face: whether the
 # same LETTER means different things in different `date` implementations.
 #
-# `-d` IS on the list, and the reason it is here is worth recording because an earlier
-# revision of this change left it OFF on the belief that BSD/macOS `date -d` sets the
-# kernel's daylight-saving value. That belief came from documentation, not from the
-# implementations, and checking the implementations showed it is false on every
+# `-d` IS on the list. Documentation suggests BSD/macOS `date -d` sets the kernel's
+# daylight-saving value, but the implementations show that is false on every
 # platform that ships today. Read from each project's own `getopt(3)` string:
 #
 #   GNU coreutils      `-d STRING`  parses and PRINTS  (verified by execution, 8.22)
@@ -617,7 +620,7 @@ _HOSTNAME_READONLY_LONG: frozenset[str] = frozenset(
 
 
 # `file`'s surface, from its own `--help`. It reached an accept-list rather than a
-# `-C` denylist entry because that is the shape this change keeps converging on: an
+# `-C` denylist entry because that is the shape this module converges on: an
 # unlisted option prompts instead of passing, so a flag missing from the help text
 # costs a prompt rather than a write. `git blame --textconv` is the reason that
 # distinction is not academic.
@@ -642,7 +645,7 @@ _HOSTNAME_READONLY_LONG: frozenset[str] = frozenset(
 #
 # `p`/`--preserve-date` is absent too, and it is the subtlest of the three exclusions.
 # It LOOKS read-only because it RESTORES the access time rather than setting a caller
-# chosen one -- which is how it was originally, and wrongly, admitted here. Restoring
+# chosen one -- which makes it easy to admit by mistake. Restoring
 # still requires a `utimes()` call on the named path, and the `ctime` that call bumps is
 # NOT restorable. So the option erases the evidence that a file was read while leaving a
 # permanent metadata modification behind: the wrong side of read-only in both directions.

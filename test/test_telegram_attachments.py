@@ -11,13 +11,20 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from telegram_helpers import _drop_live_config_snapshot  # noqa: F401
+from telegram_helpers import _dispatcher
 
+from kiro_crew.config import live
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.messaging.attachments import cleanup
+from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.telegram.attachments import (
     _to_attachment,
     append_attachment_context,
@@ -170,6 +177,33 @@ class TestDispatchExtraction:
         assert len(received[0].attachments) == 1
         assert received[0].attachments[0]["mime_type"] == "video/mp4"
 
+    def test_gif_is_taken_once_as_the_animation(self):
+        """The Bot API sets ``document`` beside ``animation`` for one GIF.
+
+        Both describe the same file, so reading both downloads it twice and
+        hands the agent the same file twice in one turn.
+        """
+        client, received = self._make_client()
+        gif = {
+            "file_id": "gif1",
+            "file_unique_id": "g1",
+            "file_name": "funny.gif.mp4",
+            "mime_type": "video/mp4",
+            "file_size": 20000,
+        }
+        update = self._base_update(caption="lol", animation=dict(gif), document=dict(gif))
+        self._run(client, update)
+        assert len(received) == 1
+        assert [a["file_unique_id"] for a in received[0].attachments] == ["g1"]
+
+    def test_document_without_animation_is_still_taken(self):
+        client, received = self._make_client()
+        update = self._base_update(
+            document={"file_id": "d1", "file_unique_id": "u1", "file_name": "a.gif"},
+        )
+        self._run(client, update)
+        assert [a["file_unique_id"] for a in received[0].attachments] == ["u1"]
+
 
 # ── _to_attachment normalization ───────────────────────────────────────────────
 
@@ -263,7 +297,6 @@ class TestProcessTelegramAttachments:
         result = await process_telegram_attachments(client, attachments)
         assert len(result.image_paths) == 1
         assert os.path.exists(result.image_paths[0])
-        # Clean up
         for p in result.temp_paths:
             os.unlink(p)
 
@@ -437,3 +470,54 @@ class TestReExport:
             assert (
                 "stt_available" not in mod_src
             ), f"{mod.__name__} still does its own STT-availability check"
+
+
+# ── telegram.max_text_inject_kb ────────────────────────────────────────────────
+
+
+class TestTextInjectLimit:
+    @pytest.mark.parametrize(
+        ("section", "kept_chars", "tail"),
+        [
+            ({}, 50 * 1024, "\n[… truncated]"),
+            ({"max_text_inject_kb": 100}, 80 * 1024, ""),
+            ({"max_text_inject_kb": 0}, 1024, "\n[… truncated]"),
+        ],
+        ids=["unset-keeps-50-kib", "set-to-100-kib", "zero-raised-to-1-kib"],
+    )
+    def test_the_key_sets_how_much_of_a_text_file_reaches_the_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, section, kept_chars, tail
+    ) -> None:
+        """An 80 KiB CSV is cut at 50 KiB by default, whole at 100, and at the 1 KiB floor for 0."""
+        body = ("2026-01-02,BUY,12.50\n" * 4000)[: 80 * 1024]
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        (tmp_path / "config.json").write_text(json.dumps({"telegram": section}), encoding="utf-8")
+        d, cli, _sess = _dispatcher({7})
+        live.reset_for_tests()
+        live.watch().prime(KiroCrewConfig.load())
+
+        async def _download(file_id: str, dest: str) -> None:
+            Path(dest).write_text(body, encoding="utf-8")
+
+        cli.download_file = AsyncMock(side_effect=_download)  # type: ignore[attr-defined]
+        csv = {
+            "file_id": "f1",
+            "file_name": "tx.csv",
+            "mime_type": "text/csv",
+            "file_size": len(body),
+        }
+        asyncio.run(
+            d.handle_message(
+                InboundMessage(
+                    channel_type="telegram",
+                    user_id="7",
+                    conversation_id="7",
+                    text="totals?",
+                    attachments=[csv],
+                )
+            )
+        )
+
+        prompt = d.ctx_builder.build_calls[-1]["text"]  # type: ignore[attr-defined]
+        injected = prompt.split("[File: tx.csv]\n", 1)[1].split("\n[End of file]", 1)[0]
+        assert injected == body[:kept_chars] + tail

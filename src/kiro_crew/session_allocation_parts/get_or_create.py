@@ -21,19 +21,23 @@ Instance fields read: ``_closing``, ``_deps``, ``_lock``, ``_owner``, ``_start_s
 
 Through ``state`` it also changes the ending fence's and the capability records in place
 (``spawning_reservations``, ``invalidated_reservations``, ``refused_spawns``,
-``capability_failures``) and reads ``ending_keys``.
+``capability_failures``) and reads ``ending_keys``. It also adds and removes an eager
+start's announcement (``speculative_starts``), which a real claim of no higher start
+priority joins.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_MODEL_AT_LAUNCH
 from kiro_crew.agent_sdk.kas_floor_wait import await_kas_floor_verdict
 from kiro_crew.aws_project_profiles import (
     AWS_PROFILE_ENV,
@@ -64,6 +68,62 @@ from kiro_crew.start_priority import (
 
 if TYPE_CHECKING:
     from kiro_crew.session_allocation import LLMProvider, ProviderFactory, SessionAllocationService
+
+
+def _model_is_a_launch_argument(provider: Any) -> bool:
+    """Whether *provider*'s harness reads its model at launch, so a switch relaunches it."""
+    backend = getattr(getattr(provider, "client", None), "backend", None)
+    return isinstance(backend, str) and backend in ACP_BACKENDS_MODEL_AT_LAUNCH
+
+
+def _stored_cwd_is_hidden_scratch(stored_cwd: str, shared_scratch: object) -> bool:
+    """Whether a resumed session's recorded cwd is a scratch tree its new process cannot read.
+
+    Each process gets its own directory under the scratch root, and the sandbox hides
+    every other one. A conversation that worked in its ``$KIROCREW_SCRATCH`` records
+    that directory as its cwd, but its next process gets a fresh tree, so the old one
+    is hidden from it and the child cannot read its own working directory (kiro-cli
+    exits at start-up with ``EPERM ... uv_cwd`` on macOS). The tree the spawn shares
+    (``shared_scratch``) is re-exposed to it, so a cwd inside that one is kept. With the
+    sandbox off (after the governance floor) nothing is hidden, so the cwd is kept too.
+    Native Windows applies no scratch-root mask at all: a Kiro spawn is delegated to
+    Kiro's own sandbox and Crew has no Windows sandbox backend, so the cwd is kept there.
+    """
+    from kiro_crew import platform_compat
+    from kiro_crew.agent_scratch import scratch_root
+    from kiro_crew.sandbox_tiers import _clamp_sandbox_mode, configured_sandbox_mode
+
+    path = Path(os.path.realpath(stored_cwd))
+    if not path.is_relative_to(os.path.realpath(scratch_root())):
+        return False
+    if platform_compat.IS_WINDOWS:
+        return False
+    try:
+        if _clamp_sandbox_mode(configured_sandbox_mode()) == "off":
+            return False
+    except Exception:
+        # An unreadable floor counts as masked: the session then starts in its
+        # default directory, which it can always read.
+        pass
+    if shared_scratch is not None and path.is_relative_to(os.path.realpath(str(shared_scratch))):
+        return False
+    return True
+
+
+#: ``startup_notice`` token for a start that left a hidden scratch cwd behind.
+HIDDEN_SCRATCH_CWD_NOTICE = "hidden_scratch_cwd_skipped"
+
+
+def _note_skipped_hidden_cwd(provider: Any, skipped_cwd: str) -> None:
+    """Tell the chat its folder could not be reopened, once, on the provider's start."""
+    if not skipped_cwd or getattr(provider, "startup_notice", None) is not None:
+        # A notice the start itself left (a cloud reopen) is not overwritten.
+        return
+    provider.startup_notice = (
+        HIDDEN_SCRATCH_CWD_NOTICE,
+        f"This chat's folder {skipped_cwd} was a temporary folder from an earlier "
+        "run and can't be opened anymore. The chat now works in the default folder.",
+    )
 
 
 async def _session_runs_remotely(session_key: str) -> bool:
@@ -128,14 +188,20 @@ async def _reacquire_and_validate(
 
 
 def _release_reacquired(self: SessionAllocationService, key: str, session: Any) -> None:
-    """Give back the permit :meth:`_reacquire_and_validate` took, unless a reset already did.
+    """Give back the permit :meth:`_reacquire_and_validate` took, unless a teardown already did.
 
-    A reset that pops the session while this task waits for the lock records
+    A teardown that pops the session while this task waits for the lock records
     this task as the permit's holder and releases the permit to wake the
-    claimants parked on it (``session_lifecycle._wake_turn_waiters``), so a
+    claimants parked on it (``session_lifecycle.retire_turn_permit``), so a
     second release here would over-release it. Only a popped session can
     carry that record, so a session still registered is always released.
     """
+    # The holding ends here whichever branch gives the permit back, so the record
+    # goes first: a teardown that pops the session later must not name this task
+    # as the holder of a permit it has given back (or one already handed to the
+    # next claimant), or it would release that permit a second time.
+    if session.turn_owner is asyncio.current_task():
+        session.turn_owner = None
     if self._sessions.get(key) is not session and self._owner.absorb_orphaned_release(key):
         return
     session.semaphore.release()
@@ -149,6 +215,10 @@ async def _evict_stale_session(self: SessionAllocationService, key: str, session
             del self._sessions[key]
             self.advance_ownership_generation(key)
             dead = session.provider
+            # Same lock hold as the removal, before any await: a turn still
+            # holding this permit is recorded and its parked claimants woken,
+            # exactly as every lifecycle teardown verb does.
+            self._owner.retire_turn_permit(key, session)
             # Same tick as the removal. Left unrecorded, the start crumb
             # survives and the next boot calls this a crash.
             await record_session_ended(key, end_reason=END_REASON_EVICTED)
@@ -338,29 +408,53 @@ async def get_or_create(
             # reservation (the ending caller's post-pass read must not count
             # it), waits outside the lock, and comes back to this door.
             held = reserved_key in self.state.ending_keys
+            started: asyncio.Event | None = None
             if not held:
                 self._allocation_reservations.setdefault(reserved_key, set()).add(token)
                 self.advance_ownership_generation(reserved_key)
+                # An eager start announces itself in the same lock hold that
+                # finds no session, so a real claim arriving while it runs can
+                # join it (``_get_or_create_impl``) instead of spawning a
+                # second process for the key.
+                starts = self.state.speculative_starts
+                if (
+                    speculative
+                    and reserved_key not in starts
+                    and reserved_key not in self._sessions
+                ):
+                    started = asyncio.Event()
+                    starts[reserved_key] = (started, start_priority)
         if held:
             fence_deadline = await self.wait_for_ending_fence(reserved_key, fence_deadline)
             continue
         try:
-            result = await self._get_or_create_impl(
-                reserved_key,
-                agent=agent,
-                channel_id=channel_id,
-                approval_policy=approval_policy,
-                model=model,
-                cwd=cwd,
-                extra_env=extra_env,
-                speculative=speculative,
-                speculative_resume=speculative_resume,
-                wait_if_busy=wait_if_busy,
-                _won_race_retries=_won_race_retries,
-                _reservation=token,
-                start_priority=start_priority,
-                **extra_factory_kwargs,
-            )
+            try:
+                result = await self._get_or_create_impl(
+                    reserved_key,
+                    agent=agent,
+                    channel_id=channel_id,
+                    approval_policy=approval_policy,
+                    model=model,
+                    cwd=cwd,
+                    extra_env=extra_env,
+                    speculative=speculative,
+                    speculative_resume=speculative_resume,
+                    wait_if_busy=wait_if_busy,
+                    _won_race_retries=_won_race_retries,
+                    _reservation=token,
+                    start_priority=start_priority,
+                    **extra_factory_kwargs,
+                )
+            finally:
+                # Every exit -- registered, refused, failed, cancelled -- ends
+                # the announcement, so a joined claim never waits on a start
+                # that is over. A failed start leaves no session, and the
+                # joined claim then cold-starts as it would have.
+                if started is not None:
+                    entry = self.state.speculative_starts.get(reserved_key)
+                    if entry is not None and entry[0] is started:
+                        del self.state.speculative_starts[reserved_key]
+                    started.set()
         except SessionEndingError:
             # The key was fenced while this allocation was in flight: a door
             # of the body refused it -- at registration, with the provider
@@ -434,10 +528,19 @@ async def _get_or_create_impl(
     # no provider factory is handed a key it does not know; each retry below
     # hands it back.
     app_name = str(extra_factory_kwargs.pop("app_name", "") or "")
+    # The app whose governance profile the session runs under, for a caller
+    # (a subagent's spawn) that must carry an app's governance without taking
+    # its model. Defaults to ``app_name``: an app slot's own session is both.
+    owning_app = str(extra_factory_kwargs.pop("owning_app", "") or "") or app_name
     # The app launch copy kiro-cli is asked for in place of ``agent``
     # (``apps.agent_launch``); ``agent`` stays the session's identity. Stamped
     # on the cold-started provider below, never handed to a factory.
     app_launch_agent = str(extra_factory_kwargs.pop("app_launch_agent", "") or "")
+    # Opt-in for a caller that tells the user about a dropped folder (the dashboard
+    # chat): only then does an explicit cwd in a hidden scratch tree fall back to the
+    # default directory. Any other caller keeps its cwd, so a start there fails loudly
+    # instead of running in another repository. Never handed to a factory.
+    fallback_hidden_cwd = bool(extra_factory_kwargs.pop("fallback_hidden_cwd", False))
     from kiro_crew.execution_context import read_session_execution
 
     execution = await asyncio.to_thread(read_session_execution, key)
@@ -446,6 +549,7 @@ async def _get_or_create_impl(
     stale_provider: LLMProvider | None = None
     stale_session: Any | None = None
     claimed: Any | None = None
+    joined_start: asyncio.Event | None = None
     factory: ProviderFactory
     try:
         async with self._lock:
@@ -484,6 +588,11 @@ async def _get_or_create_impl(
                         stale_session = session
                         del self._sessions[key]
                         self.advance_ownership_generation(key)
+                        # Same lock hold as the removal, before any await: a
+                        # turn still holding the dead session's permit is
+                        # recorded and its parked claimants woken, as in
+                        # ``_evict_stale_session``.
+                        owner.retire_turn_permit(key, session)
                         # Same tick as the removal. Left unrecorded, the
                         # start crumb survives and the next boot calls this
                         # a crash rather than an eviction.
@@ -509,6 +618,22 @@ async def _get_or_create_impl(
                 if not owner._provider_factory:
                     raise RuntimeError("No provider factory configured")
                 factory = owner._provider_factory
+                # An eager start for this key is still running: a real claim
+                # waits for it below rather than spawning a second process --
+                # unless the claim outranks it. The eager start waits in every
+                # start queue at its own priority, so a person's FOREGROUND
+                # claim joining a BACKGROUND start would wait behind background
+                # work; that claim cold-starts at its own priority, as before.
+                entry = self.state.speculative_starts.get(key)
+                if (
+                    not speculative
+                    and entry is not None
+                    and not (
+                        start_priority is StartPriority.FOREGROUND
+                        and entry[1] is StartPriority.BACKGROUND
+                    )
+                ):
+                    joined_start = entry[0]
     finally:
         if stale_provider is not None:
             if stale_session is not None:
@@ -521,6 +646,32 @@ async def _get_or_create_impl(
                     key,
                     exc_info=True,
                 )
+
+    if joined_start is not None:
+        # Join the eager start, then claim through the front door: it finds
+        # the session that start registered, or -- when the start failed or
+        # was refused -- no session and no announcement, and cold-starts as
+        # this claim would have without the join.
+        await joined_start.wait()
+        return await owner.get_or_create(
+            key,
+            agent=agent,
+            channel_id=channel_id,
+            approval_policy=approval_policy,
+            model=model,
+            cwd=cwd,
+            extra_env=extra_env,
+            speculative=speculative,
+            speculative_resume=speculative_resume,
+            wait_if_busy=wait_if_busy,
+            _won_race_retries=_won_race_retries,
+            start_priority=start_priority,
+            app_name=app_name,
+            app_launch_agent=app_launch_agent,
+            owning_app=owning_app,
+            fallback_hidden_cwd=fallback_hidden_cwd,
+            **extra_factory_kwargs,
+        )
 
     if claimed is not None:
         session = claimed
@@ -569,6 +720,8 @@ async def _get_or_create_impl(
             start_priority=start_priority,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
+            owning_app=owning_app,
+            fallback_hidden_cwd=fallback_hidden_cwd,
             **extra_factory_kwargs,
         )
 
@@ -595,6 +748,28 @@ async def _get_or_create_impl(
         stored_cwd = owner._session_map.get_cwd(key)
         if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
             effective_cwd = stored_cwd
+    # A caller's own cwd (a dashboard chat's project) can name an earlier process's
+    # scratch tree as well: the sandbox hides it from the new process, so every MCP
+    # server the session starts there fails to spawn. A resumed cwd is always
+    # checked; a caller's own only when it opted in (``fallback_hidden_cwd``).
+    skipped_hidden_cwd = ""
+    cwd_is_hidden = False
+    if effective_cwd and (fallback_hidden_cwd or not cwd):
+        cwd_is_hidden = await asyncio.to_thread(
+            _stored_cwd_is_hidden_scratch,
+            str(effective_cwd),
+            extra_factory_kwargs.get("shared_scratch"),
+        )
+    if cwd_is_hidden:
+        self._deps.logger.warning(
+            "session %s: not starting in %s, an earlier process's scratch "
+            "directory the sandbox hides from this one; starting in the "
+            "default directory",
+            key,
+            effective_cwd,
+        )
+        skipped_hidden_cwd = str(effective_cwd)
+        effective_cwd = None
     claim_crew = extra_factory_kwargs.get("crew_agent")
     session_agent = agent
     preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
@@ -683,7 +858,9 @@ async def _get_or_create_impl(
     elif app_launch_agent:
         # A pooled child was spawned as the pool's agent, never as this copy.
         pool_decision = "bypass_app_launch"
-    elif memory_mode != "persistent":
+    elif memory_mode != "persistent" or extra_factory_kwargs.get("include_memory") is False:
+        # A pooled child's session/new went out without what such a session
+        # sends: on claude, the switch that keeps Claude Code's auto-memory out.
         pool_decision = "bypass_restricted_context"
     elif member_context:
         # Native launch documents are captured before session creation.
@@ -727,7 +904,8 @@ async def _get_or_create_impl(
     pooled = None if pool_decision else await owner._drain_and_claim(agent)
     if not pool_decision:
         pool_decision = "hit" if pooled is not None else "miss_empty"
-    owner._record_pool_decision(pool_decision, key)
+    if pooled is None:
+        owner._record_pool_decision(pool_decision, key)
     # Assigned by the cold-start branch inside its semaphore section (the
     # spawn-identity stamp read there must already run under the shield);
     # the pool-claim branch leaves it None and is shielded after the
@@ -735,6 +913,7 @@ async def _get_or_create_impl(
     starting_pid: int | None = None
     if pooled is not None:
         provider = pooled
+        launch_pin = False
         # A warm-pool claim owns a LIVE process from this line on -- the pool
         # path's spawn door. Marked exactly like a cold start past its
         # pre-spawn check, so a claim the ending fence refuses at registration
@@ -745,6 +924,8 @@ async def _get_or_create_impl(
         cast(Any, provider).memory_mode = memory_mode
         if self._deps.is_acp_provider(provider):
             cast(Any, provider).member_context = member_context
+            # Trusted: the caller's slot app, never transcript metadata.
+            cast(Any, provider).owning_app = owning_app
         try:
             if self._deps.is_acp_provider(provider):
                 claim_kwarg = extra_factory_kwargs.get("crew_agent")
@@ -834,6 +1015,11 @@ async def _get_or_create_impl(
                                 switch_model,
                                 pool_model,
                             )
+                        elif _model_is_a_launch_argument(provider):
+                            # The harness takes its model only at launch, so a
+                            # switch would relaunch the claimed process: the
+                            # chat cold-starts on the pin instead, which is cheaper.
+                            launch_pin = True
                         else:
                             await cast(Any, provider).client.set_model(_send_model)
                             self._deps.logger.info(
@@ -841,7 +1027,7 @@ async def _get_or_create_impl(
                                 _send_model,
                             )
                 _effort_override = extra_factory_kwargs.get("reasoning_effort_override")
-                if _effort_override:
+                if _effort_override and not launch_pin:
                     _eff = str(_effort_override)
                     try:
                         if not await provider.change_effort(_eff):
@@ -867,19 +1053,36 @@ async def _get_or_create_impl(
                             key or "?",
                             exc_info=True,
                         )
-            self._deps.logger.info(
-                "Claimed warm-pool process for %s (agent=%s)",
-                key,
-                agent or owner._pool_agent,
-            )
-            owner._schedule_replenish()
+            if launch_pin:
+                # Same teardown as any failed claim, then the cold start below. The
+                # reservation stays in the spawning set the claim put it in, so an
+                # ending caller's read still sees a process in flight; the cold
+                # start's own fence check and cleanup take it from there exactly as
+                # for a fresh spawn.
+                owner._dispatch_hard_kill(provider)
+                owner._schedule_replenish()
+                pooled = None
+                pool_decision = "bypass_model_at_launch"
+            else:
+                self._deps.logger.info(
+                    "Claimed warm-pool process for %s (agent=%s)",
+                    key,
+                    agent or owner._pool_agent,
+                )
+                owner._schedule_replenish()
         except (asyncio.CancelledError, Exception):
+            owner._record_pool_decision(pool_decision, key)
             owner._dispatch_hard_kill(provider)
             raise
-    else:
+        owner._record_pool_decision(pool_decision, key)
+    if pooled is None:
         # A defaulted KAS waits (bounded) for the kiro-cli floor's verdict, so
         # the factory below picks the backend the verdict decided.
         await await_kas_floor_verdict(member=_is_member_key(key))
+        # The verdict can install a new factory before it releases this wait (a
+        # confirmed v3 reloads the live config), so a waiting spawn takes the
+        # factory in force now, not the one it copied before waiting.
+        factory = owner._provider_factory or factory
         provider = factory(
             key,
             agent=agent,
@@ -893,6 +1096,8 @@ async def _get_or_create_impl(
         if self._deps.is_acp_provider(provider):
             cast(Any, provider).member_context = member_context
             cast(Any, provider).app_launch_agent = app_launch_agent
+            # Trusted: the caller's slot app, never transcript metadata.
+            cast(Any, provider).owning_app = owning_app
         if memory_mode != "persistent":
             resume_sid = None
         provider_switched = False
@@ -952,18 +1157,36 @@ async def _get_or_create_impl(
                     if provider.process_instance:
                         raise CapabilityStartupError("capability_runtime_not_fresh")
                     await asyncio.to_thread(verify_saved, preparation, provider.cwd)
-                # A crewmate's worker runs with its kit, or not at all: a backend
-                # that cannot carry the per-session spec would run the bare on-disk
-                # base with the crewmate's switched-off tools back (H6 opt-in).
+                # A crewmate's worker runs with its per-session spec, or not at
+                # all, under the member chat's two codes (H6 opt-in): a backend
+                # that cannot carry that spec (``ACP_BACKENDS_MATE_WORKER_KIT``),
+                # and, for a crewmate whose file turns off single tools, one that
+                # cannot honour them for a worker (``ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS``:
+                # KAS carries them as the worker spec's ``excludedTools``). One that
+                # carries only their MCP half (``ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS``)
+                # refuses only the rest.
                 from kiro_crew.members import is_crewmate_worker_session
 
-                if (
-                    is_crewmate_worker_session(key)
-                    and provider.mate_worker_kit_supported is not True
-                ):
+                if is_crewmate_worker_session(key):
                     from kiro_crew.session_capabilities import CapabilityStartupError
 
-                    raise CapabilityStartupError("worker_kit_harness_unsupported")
+                    if provider.mate_worker_kit_supported is not True:
+                        raise CapabilityStartupError("capability_harness_unsupported")
+                    # The prompt channel is this provider's, fixed for the session.
+                    from kiro_crew.members import note_crewmate_worker_prompt_channel
+
+                    note_crewmate_worker_prompt_channel(
+                        key, provider.mate_worker_prompt_in_context is True
+                    )
+                    # A fast path: the projection refuses on the spec it builds too.
+                    if provider.mate_worker_tool_limits_supported is not True:
+                        limited = await asyncio.to_thread(
+                            _worker_tool_limited_servers,
+                            key,
+                            provider.mate_worker_mcp_tool_limits_supported is True,
+                        )
+                        if limited:
+                            raise CapabilityStartupError("capability_tool_limits_unsupported")
                 # The key may have been fenced while this call waited for the
                 # semaphore or the reads above: refuse before a process is
                 # spawned that the registration door would only refuse later.
@@ -1021,6 +1244,7 @@ async def _get_or_create_impl(
         starting_pid = spawn_pid(provider)
         if starting_pid is not None:
             self._starting_pids.add(starting_pid)
+    _note_skipped_hidden_cwd(provider, skipped_hidden_cwd)
 
     won_race_session: Any | None = None
     duplicate_provider: LLMProvider | None = None
@@ -1108,6 +1332,7 @@ async def _get_or_create_impl(
                 session.requested_model = model or ""
                 session.backend_override = extra_factory_kwargs.get("backend_override")
                 session.app_launch_agent = app_launch_agent
+                session.include_memory = extra_factory_kwargs.get("include_memory") is not False
                 session.extra_env = dict(caller_env) if caller_env else None
                 session.reasoning_effort_override = extra_factory_kwargs.get(
                     "reasoning_effort_override"
@@ -1137,7 +1362,7 @@ async def _get_or_create_impl(
                 # earlier cleanup path may kill unconditionally.
                 await acquire_session_lease(provider)
                 try:
-                    await record_session_started(key)
+                    await record_session_started(key, provider)
                 except BaseException:
                     # See open_task_session: a cancellation here would leave a
                     # registered session whose provider the caller is about to
@@ -1157,7 +1382,7 @@ async def _get_or_create_impl(
                 # entries down with the session it removes. What a
                 # forced stop parked for this key lands at the queue head;
                 # the drains for those entries' channels are woken by the
-                # release that ends this claim (``_wake_adopted_drains``).
+                # release that ends this claim (it reads ``adopted_parked``).
                 if adopt_parked_queue(session, key):
                     session.adopted_parked = True
                 self._deps.logger.info(
@@ -1269,10 +1494,25 @@ async def _get_or_create_impl(
             start_priority=start_priority,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
+            owning_app=owning_app,
+            fallback_hidden_cwd=fallback_hidden_cwd,
             **extra_factory_kwargs,
         )
 
     return result
+
+
+def _worker_tool_limited_servers(key: str, mcp_carried: bool = False) -> tuple[str, ...]:
+    """The servers whose single tools worker *key*'s crewmate file turns off.
+
+    With *mcp_carried*, only the limits no MCP deny carries. Blocking.
+    """
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.mate_worker import crewmate_tool_limited_servers
+
+    execution = read_session_execution(key)
+    member_id = str(getattr(execution, "member_id", "") or "") if execution is not None else ""
+    return crewmate_tool_limited_servers(member_id, mcp_tool_limits_carried=mcp_carried)
 
 
 def _is_crewmate_worker_key(key: str) -> bool:

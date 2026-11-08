@@ -200,7 +200,7 @@ class ActionResult:
     #:
     #: Reported by the sink rather than inferred at the boundary because only the adapter
     #: knows its provider aliased one verb onto another. Defaults 0, so a sink that has not
-    #: heard of this field keeps the previous schedule. Found in review (GPT 5.6).
+    #: heard of this field keeps the previous schedule.
     suppressed_secs: int = 0
 
 

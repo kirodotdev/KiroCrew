@@ -49,7 +49,7 @@ and do not delete them.
 |---|---|
 | `sso_status.py` | No-op stubs so the dashboard and the Slack handlers keep the same symbols. Reports `available: False`. |
 | `dashboard/handlers/sso_login.py` | Keeps the `api_sso_login_ws` symbol that `dashboard/routes/connections.py` routes at `/api/sso-login` when `DashboardContributor.sso_login_handler()` returns `None`; accepts the WebSocket, reports unavailable, closes. Spawns no subprocess. |
-| `tunnel/manager.py` | A thin wrapper that delegates lifecycle **unconditionally** to `current_context().tunnel`. The public core ships `DefaultTunnelProvider`, a no-op, so there is deliberately no edition branch in the manager itself. |
+| `tunnel/manager.py` | A thin wrapper that delegates lifecycle **unconditionally** to `current_context().tunnel`. The public core ships `DefaultTunnelProvider`, a no-op, so there is deliberately no edition branch in the manager itself. The one public provider is the Kiro relay client, composed in its place only when `tunnel.relay_enabled` is on (off by default); `DefaultTunnelProvider` itself stays a no-op. |
 | `website/src/rum.ts` | An inert no-op stub. Keep it inert; never add `aws-rum-web`. |
 
 ## OSS-flipped defaults
@@ -63,9 +63,14 @@ STT extras.
 
 - The **Channels** app is hidden from the App Store, and the **Board** app is removed.
   An upstream sync must not restore either.
-- **The built-in app set is closed.** The `no-new-builtin-apps` rule in `AUTOSDE.yaml`
-  blocks restoring those two and blocks any NEW built-in app: new apps ship as external
-  apps through the KiroCrewApps registry.
+- **The built-in app set is closed, and it is being emptied.** Kiro Crew accepts no
+  new built-in app: every app, first-party included, lives in a dedicated GitHub
+  repository listed in the official registry (`kirodotdev/KiroCrewApps`). The
+  built-ins that still ship move out one at a time without changing anything for the
+  people who already use them
+  ([decision](../decisions/2026-11-01-kiro-crew-accepts-no-new-built-in-apps.md)).
+  The `no-new-builtin-apps` rule in `AUTOSDE.yaml` blocks restoring those two and
+  blocks any NEW built-in app, per-app core table row, or app-specific core MCP tool.
 
 ## Keep the generic security controls
 

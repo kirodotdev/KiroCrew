@@ -7,9 +7,7 @@ from kiro_crew.skills_dedupe import (
     VERDICT_NEW,
     VERDICT_UPDATE,
     build_dedupe_prompt,
-    metadata_dedupe,
     metadata_dedupe_verdict,
-    parse_dedupe_response,
     parse_dedupe_verdict,
 )
 
@@ -26,61 +24,6 @@ def test_prompt_lists_candidate_and_all_existing():
     assert "auto/rotate-logs" in prompt
     assert "resolve deployment timeouts" in prompt
     assert "NONE" in prompt
-
-
-def test_parse_exact_key():
-    assert parse_dedupe_response("auto/deploy-timeout", ["auto/deploy-timeout"]) == "auto/deploy-timeout"
-
-
-def test_parse_key_with_prose_and_fences():
-    reply = "```\nauto/rotate-logs\n```"
-    assert parse_dedupe_response(reply, ["auto/deploy-timeout", "auto/rotate-logs"]) == "auto/rotate-logs"
-
-
-def test_parse_none():
-    assert parse_dedupe_response("NONE", ["auto/deploy-timeout"]) is None
-    assert parse_dedupe_response("None of these apply.", ["auto/deploy-timeout"]) is None
-
-
-def test_parse_longer_key_is_not_substring_matched():
-    # A distinct, longer key must NOT resolve to a shorter existing one via
-    # substring containment (that would drop a real new candidate).
-    assert parse_dedupe_response("auto/deploy-helper-v2", ["auto/deploy-helper"]) is None
-    # The exact existing key still matches when the judge names it verbatim.
-    assert (
-        parse_dedupe_response("auto/deploy-helper", ["auto/deploy-helper"])
-        == "auto/deploy-helper"
-    )
-
-
-def test_parse_unknown_key_returns_none():
-    assert parse_dedupe_response("auto/does-not-exist", ["auto/deploy-timeout"]) is None
-
-
-def test_metadata_dedupe_match():
-    cand = {"slug": "fix-deploy", "description": "resolve deployment timeouts", "triggers": "deploy"}
-    got = metadata_dedupe(cand, _EXISTING, judge_fn=lambda _p: "auto/deploy-timeout")
-    assert got == "auto/deploy-timeout"
-
-
-def test_metadata_dedupe_no_match():
-    cand = {"slug": "brand-new", "description": "totally unrelated thing", "triggers": "xyz"}
-    got = metadata_dedupe(cand, _EXISTING, judge_fn=lambda _p: "NONE")
-    assert got is None
-
-
-def test_metadata_dedupe_no_existing_or_no_judge():
-    cand = {"slug": "x", "description": "y", "triggers": "z"}
-    assert metadata_dedupe(cand, [], judge_fn=lambda _p: "auto/deploy-timeout") is None
-    assert metadata_dedupe(cand, _EXISTING, judge_fn=None) is None
-
-
-def test_metadata_dedupe_fails_open_on_judge_error():
-    def boom(_p):
-        raise RuntimeError("model down")
-
-    cand = {"slug": "x", "description": "y", "triggers": "z"}
-    assert metadata_dedupe(cand, _EXISTING, judge_fn=boom) is None
 
 
 # --- Tri-state verdict --------------------------------------------------------
@@ -165,13 +108,55 @@ def test_metadata_dedupe_verdict_dup_and_update():
     ) == (VERDICT_UPDATE, "auto/deploy-timeout")
 
 
-def test_wrapper_equivalence_with_verdict():
-    # The thin wrapper returns the matched key for both DUP and UPDATE, else None.
-    cand = {"slug": "fix-deploy", "description": "resolve deployment timeouts", "triggers": "deploy"}
-    assert metadata_dedupe(
-        cand, _EXISTING, judge_fn=lambda _p: "DUP auto/deploy-timeout"
-    ) == "auto/deploy-timeout"
-    assert metadata_dedupe(
-        cand, _EXISTING, judge_fn=lambda _p: "UPDATE auto/deploy-timeout"
-    ) == "auto/deploy-timeout"
-    assert metadata_dedupe(cand, _EXISTING, judge_fn=lambda _p: "NONE") is None
+# --- End punctuation and quoting around the key ------------------------------
+
+
+def test_verdict_dup_key_with_trailing_period():
+    assert parse_dedupe_verdict(
+        "DUP auto/deploy-timeout.", ["auto/deploy-timeout"]
+    ) == (VERDICT_DUP, "auto/deploy-timeout")
+
+
+def test_verdict_update_key_with_trailing_periods():
+    assert parse_dedupe_verdict(
+        "UPDATE auto/rotate-logs...", ["auto/deploy-timeout", "auto/rotate-logs"]
+    ) == (VERDICT_UPDATE, "auto/rotate-logs")
+
+
+def test_verdict_dup_key_with_trailing_bang():
+    assert parse_dedupe_verdict(
+        "DUP auto/deploy-timeout!", ["auto/deploy-timeout"]
+    ) == (VERDICT_DUP, "auto/deploy-timeout")
+
+
+def test_verdict_dup_key_in_backticks():
+    assert parse_dedupe_verdict(
+        "DUP `auto/deploy-timeout`", ["auto/deploy-timeout"]
+    ) == (VERDICT_DUP, "auto/deploy-timeout")
+
+
+def test_verdict_dup_plain_key():
+    assert parse_dedupe_verdict(
+        "DUP auto/deploy-timeout", ["auto/deploy-timeout"]
+    ) == (VERDICT_DUP, "auto/deploy-timeout")
+
+
+def test_verdict_bare_none_token():
+    assert parse_dedupe_verdict("NONE", ["auto/deploy-timeout"]) == (VERDICT_NEW, None)
+    assert parse_dedupe_verdict("NONE.", ["auto/deploy-timeout"]) == (VERDICT_NEW, None)
+    # A judge that answers with the verdict's name instead of the NONE token.
+    assert parse_dedupe_verdict("NEW", ["auto/deploy-timeout"]) == (VERDICT_NEW, None)
+
+
+def test_verdict_trailing_period_does_not_invent_a_key():
+    # Stripping the period must still only match a real existing key.
+    assert parse_dedupe_verdict(
+        "DUP auto/does-not-exist.", ["auto/deploy-timeout"]
+    ) == (VERDICT_NEW, None)
+    assert parse_dedupe_verdict(
+        "DUP auto/deploy-helper-v2.", ["auto/deploy-helper"]
+    ) == (VERDICT_NEW, None)
+    # A period inside the key is part of the key, not end punctuation.
+    assert parse_dedupe_verdict(
+        "DUP auto/deploy.timeout", ["auto/deploy"]
+    ) == (VERDICT_NEW, None)

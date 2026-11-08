@@ -664,7 +664,7 @@ def test_outside_a_bounded_call_the_resolver_never_asks_the_pool(monkeypatch, tm
     deadline armed.  Were its anchor rebuild to go through the child it would hold a
     child for up to the pool's ceiling and queue AHEAD of the event loop's bounded
     requests -- eight walkers could pin both children and every loop-side gate call
-    would then refuse "no free child", uncharged, forever (found in review).  So with
+    would then refuse "no free child", uncharged, forever.  So with
     no deadline armed the resolver answers in this interpreter and the executor is
     never even constructed.
     """

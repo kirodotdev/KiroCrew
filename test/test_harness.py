@@ -18,6 +18,7 @@ the expensive kind of green.
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import os
 import queue
@@ -39,6 +40,7 @@ from kiro_crew.testing.harness import (
     GatewayHandle,
     GatewaySpawnError,
     _drain_stderr,
+    _end_escaped_descendants,
     _resolve_workspace_src,
     _StdoutPump,
     _terminate_process_group,
@@ -639,7 +641,10 @@ def test_terminate_on_windows_survives_a_failed_tree_kill() -> None:
             ),
             patch("kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS", 0.2),
         ):
-            _terminate_process_group(proc)  # must not raise
+            swept = _terminate_process_group(proc)
+        # The root outlived the failed kill, so the tree is NOT reported gone:
+        # the caller must keep the gateway's HOME.
+        assert swept is False
     finally:
         proc.kill()
         proc.wait(timeout=30)
@@ -680,8 +685,8 @@ def test_terminate_pgid_noop_when_pid_gone() -> None:
     # stall a fresh child process >5s under load (two consecutive Dry Run
     # failures on with TimeoutExpired at timeout=5).
     proc.wait(timeout=30)
-    # Reaped — getpgid raises ProcessLookupError, terminate_pgid swallows it.
-    terminate_pgid(proc.pid)
+    # Reaped: the group is empty, which counts as carried through teardown.
+    assert terminate_pgid(proc.pid) is True
 
 
 @_POSIX_ONLY
@@ -1571,6 +1576,96 @@ class TestTeardownDoesNotTrustTheRootsExit:
             "and must name it rather than leave it to be looked up"
         )
 
+    @pytest.mark.parametrize("escaped_ended", [True, False])
+    def test_a_live_roots_verdict_waits_on_its_escaped_descendants(
+        self, monkeypatch, escaped_ended: bool
+    ) -> None:
+        """With the group gone, a saved child outside it still decides the verdict.
+
+        A descendant in another process group is out of the group kill's reach, so
+        after the group is gone it is handed to ``_end_escaped_descendants`` with its
+        recorded token. One still alive there keeps the HOME, because it can still be
+        writing into it.
+        """
+        from kiro_crew.testing import harness as h
+
+        ended: list[dict[int, str]] = []
+        monkeypatch.setattr(h.platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(h.platform_compat, "process_descendants", lambda pid: [])
+        monkeypatch.setattr(h.platform_compat, "pgroup_of", lambda pid: 7)
+        monkeypatch.setattr(h, "terminate_pgid", lambda pid, grace=None, pgid=None, wait=None: True)
+        monkeypatch.setattr(h, "_await_group_gone", lambda pgid: True)
+        monkeypatch.setattr(
+            h,
+            "_end_escaped_descendants",
+            lambda escaped: (ended.append(dict(escaped)), escaped_ended)[1],
+        )
+
+        verdict = h._terminate_process_group(self._LiveProc(), {5151: "token"})
+
+        assert ended == [{5151: "token"}], (
+            "the saved child in group 7 must be handed to _end_escaped_descendants "
+            "with its recorded token"
+        )
+        assert verdict is escaped_ended
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("pidfd", [True, False], ids=["pidfd", "no-pidfd"])
+def test_escaped_descendant_with_a_different_identity_is_not_killed(
+    pidfd: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved pid now held by another process is left running.
+
+    The snapshot's token stands in for a descendant that exited and whose pid
+    was reissued: the live process at that pid has a different creation time.
+    """
+    if not pidfd:
+        monkeypatch.delattr(os, "pidfd_open", raising=False)
+    stranger = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert platform_compat.process_start_time(stranger.pid) not in (None, "not-its-token")
+        assert _end_escaped_descendants({stranger.pid: "not-its-token"}) is True
+        assert stranger.poll() is None, "teardown killed a process it could not identify"
+    finally:
+        stranger.kill()
+        stranger.wait(timeout=10)
+
+
+@_POSIX_ONLY
+def test_a_refused_pidfd_still_kills_a_matching_descendant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host whose kernel refuses pidfd_open falls back to the re-checked kill."""
+
+    def refused(_pid: int) -> int:
+        raise OSError(errno.ENOSYS, "pidfd_open not implemented")
+
+    monkeypatch.setattr(os, "pidfd_open", refused, raising=False)
+    # A grandchild, so its parent exits and init reaps it: no zombie of ours
+    # keeps its identity readable after the kill.
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import subprocess, sys\n"
+            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "print(c.pid, flush=True)\n",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    assert parent.stdout is not None
+    grandchild = int(parent.stdout.readline().strip())
+    parent.wait(timeout=10)
+    token = platform_compat.process_start_time(grandchild)
+    assert token is not None
+    try:
+        assert _end_escaped_descendants({grandchild: token}) is True
+        assert not platform_compat.pid_exists(grandchild), "a refused pidfd skipped the kill"
+    finally:
+        _end_descendant_pinned(grandchild, token)
+
 
 @_POSIX_ONLY
 def test_dead_root_ends_saved_in_group_child() -> None:
@@ -1773,6 +1868,22 @@ def test_harness_environment_skips_the_model_download_by_default(tmp_path, monke
     assert env["KIROCREW_HOME"] == str(tmp_path)
     assert env["KIRO_HOME"] == str(tmp_path / "kiro")
     assert env["PYTHONUNBUFFERED"] == "1"
+    # The adoption pin table is the test's own, absent and so empty: a harness
+    # boot never fetches a shipped pin from GitHub.
+    from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV
+
+    pins = Path(env[HARNESS_PINS_ENV])
+    assert pins.parent == tmp_path and not pins.exists()
+
+
+def test_harness_environment_pins_the_adoption_table_over_an_inherited_one(
+    tmp_path, monkeypatch
+) -> None:
+    from kiro_crew.apps.builtin_adoption_pins import HARNESS_PINS_ENV
+
+    monkeypatch.setenv(HARNESS_PINS_ENV, "/operator/pins.json")
+    env = harness_environment(tmp_path, tmp_path / "src")
+    assert env[HARNESS_PINS_ENV] == str(tmp_path / "harness-adoption-pins.json")
 
 
 def test_harness_environment_can_arm_the_download_path_for_one_gateway(

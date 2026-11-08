@@ -19,8 +19,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew import __version__
-from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.cron import format_schedule
+from kiro_crew.cron import format_schedule, job_zone_name
 from kiro_crew.dashboard.handlers import get_update_info
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.platform import current_context
@@ -118,7 +117,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
             # aggregate of the launch predicate over every scope, so a server
             # switched off in the shared config -- or muted by a non-boolean
             # ``disabled`` -- is not advertised as a capability here.
-            servers = [s for s in list_servers() if not s.disabled]
+            servers = [s for s in await asyncio.to_thread(list_servers) if not s.disabled]
             skills = await asyncio.to_thread(lambda: _get_skills_loader().list_skills())
 
             # Slack caps a single section's text at 3000 chars. MCP servers and
@@ -175,24 +174,14 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
         if orch.cron_svc is not None:
             jobs = orch.cron_svc.list_jobs(include_disabled=True)
             if jobs:
-                try:
-                    _tz = KiroCrewConfig.load().timezone
-                except Exception:
-                    _tz = ""
-                if not _tz and orch.slack is not None:
-                    try:
-                        profile = await orch.slack.get_user_profile(user_id)
-                        _tz = profile.get("timezone", "")
-                    except Exception:
-                        _tz = ""
                 lines = []
                 for j in jobs[:15]:
                     status = "✅" if j.enabled else "⏸️"
-                    # Each job carries its own timezone; honour it first and
-                    # fall back to the configured/viewer zone only when the job
-                    # has none, matching the scheduler and the other cron
-                    # display surfaces.
-                    sched = format_schedule(j.schedule, tz_name=getattr(j, "timezone", "") or _tz)
+                    # The zone the scheduler fires the job in: its own, else the
+                    # configured one, else the host's (format_schedule resolves
+                    # it). Never the viewer's Slack zone, which would show a
+                    # different instant than the one the job runs at.
+                    sched = format_schedule(j.schedule, tz_name=job_zone_name(j))
                     raw = f"{status} *{j.name}* — `{sched}`"
                     lines.append(redact_credentials(redact_exfiltration_urls(raw)[0])[0])
                 if len(jobs) > 15:

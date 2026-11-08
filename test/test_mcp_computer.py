@@ -1,45 +1,15 @@
 """The ``kirocrew-computer`` MCP server — a THIN SHIM (``mcp_computer.py``).
 
-The architecture this file pins: the stdio MCP process implements **nothing**. It
-resolves the caller's session identity STRICTLY, forwards over loopback with the
-internal-secret handshake, and relays text. All governance evaluation, all
-accessibility / capture work and all SEL auditing happen in the GATEWAY.
+The stdio process implements nothing: it resolves the session STRICTLY, forwards over
+loopback with the internal-secret handshake, and relays text. Governance, capture and
+SEL auditing happen in the GATEWAY, because the PreToolUse gate
+(``hooks._governance_denial``) fails OPEN by policy. The fail-CLOSED gate is the
+keystone enable at the top of ``computer_use/tools.py``'s chokepoint.
 
-That split exists because ``hooks._governance_denial`` — the PreToolUse gate — is
-fail-**OPEN** by deliberate repo policy (a governance glitch must not wedge every
-tool call on every surface), so it cannot be the sole authorization point for a
-surface that can read a password field's ``AXValue``. The fail-CLOSED gate is the
-keystone primary enable, read at the top of ``computer_use/tools.py``'s ordered
-chokepoint: a keystone that is missing, unreadable or disabled refuses the call
-outright. ``computer_use/gate.py::require_computer_use`` is audit-only — it
-unconditionally permits and records the call — and the refusals downstream of the
-enable (the operator's target policy, the element and pointer shape checks) need
-the OS-resolved app identity and the addressed element's role, which only the
-gateway-side tool body has.
-
-Two halves are tested here:
-
-* **the shim** — driven through ``_list_tools`` / ``_call_tool`` with the HTTP leg
-  stubbed. Asserts tools/list is EMPTY while the keystone says disabled, that
-  ``_resolve_session_key_strict`` (never the forgeable lenient resolver) is what
-  gates the call, that an unresolved key DENIES, that the module never imports
-  ctypes, and the schema-parity invariant that every advertised tool has a
-  validation entry;
-* **the gateway dispatcher** — ``computer_use/tools.py::dispatch_tool`` against the
-  shipped ``FakeComputerUseBackend``. Asserts the ordered chokepoint's refusals
-  name their cause, that a result NEVER carries an image content block, that an
-  AKIA-shaped fixture comes back masked, and that SEL records a
-  ``tool_invocation`` on both success and failure.
-
-The pointer verbs (click targeting, the click enums, ``auto`` never resolving to
-``global``, cursor motion, drag), the redacted action header, the skill contract and the
-drift walk's snapshot budget are in ``test_mcp_computer_actions.py``, and the
-unresolved-session placeholder and the real ``_invoke`` wire in
-``test_mcp_computer_sessions.py``. The fixtures and dispatch helpers the family shares
-live in ``mcp_computer_helpers.py``.
-
-No native calls, no real window, no subprocess, no event loop needed for the
-blocking dispatcher.
+Two halves are tested here: the shim (``_list_tools`` / ``_call_tool`` with HTTP
+stubbed) and the gateway dispatcher (``dispatch_tool`` against
+``FakeComputerUseBackend``). Pointer verbs and the action header are in
+``test_mcp_computer_actions.py``; sessions in ``test_mcp_computer_sessions.py``.
 """
 
 from __future__ import annotations
@@ -91,12 +61,9 @@ from kiro_crew.validation import MCP_COMPUTER_SCHEMAS, ValidationError
 def ceiling(home: Path, monkeypatch: pytest.MonkeyPatch):
     """Install a governance POLICY ceiling for the duration of one test.
 
-    Mirrors ``test_computer_use_gate.py::_install_ceiling``: compose the default
-    context and swap in a parsed ceiling, so the dispatcher's calls into
-    ``gate.apply_observation_ceiling`` / ``permitted_observation_channels`` see a
-    real policy. ``_PROFILES_DIR`` is pinned under the tmp home so a developer's own
-    ``~/.kiro/crew/profiles`` cannot decide the outcome, and the profile store cache
-    is dropped on both sides.
+    Mirrors ``test_computer_use_gate.py::_install_ceiling``. ``_PROFILES_DIR`` is
+    pinned under the tmp home so a developer's own ``~/.kiro/crew/profiles`` cannot
+    decide the outcome.
     """
     import dataclasses
 
@@ -220,10 +187,7 @@ def test_every_REQUIRED_validated_field_is_advertised_as_required(keystone: Path
     """The other direction, which is not merely cosmetic.
 
     A ``required`` list looser than the validator's teaches the model a call shape
-    that is refused every single time — it conforms to the advertised schema, so
-    the model has no way to learn better, and it retries the same rejected call.
-    This is exactly how ``computer_press_key`` and ``computer_type_text`` drifted
-    when ``element_index`` was tightened to required in the validator only.
+    that is always refused, and it retries the same rejected call.
     """
     _enable(keystone)
     for tool in mcp_computer._list_tools():
@@ -242,19 +206,9 @@ def test_every_REQUIRED_validated_field_is_advertised_as_required(keystone: Path
 def test_element_required_tools_demand_the_index_in_the_validator_too(tool: str):
     """**The third layer.** ``MCP_COMPUTER_SCHEMAS`` must require what the chokepoint does.
 
-    Three layers have to agree that ``element_index`` is mandatory, and two of them
-    silently disagreed: ``validation.py`` gave ``computer_type_text`` and
-    ``computer_press_key`` the OPTIONAL field spec (the one that exists for
-    ``computer_click``, which legitimately takes coordinates instead), so an indexless
-    call passed the validator and was refused one step later by
-    ``tools._ELEMENT_REQUIRED_TOOLS``. Enforcement held — that raise is converted to a
-    refusal at ``tools.dispatch_tool`` — but the comments on both sides then described
-    the *other* layer's behaviour, and one of them invited a reader to delete the
-    chokepoint check as unreachable.
-
-    The two existing parity tests could not catch it: both compare the ADVERTISED
-    schema against the VALIDATOR, and here those two agreed with each other while the
-    validator disagreed with the chokepoint. This asserts that last edge.
+    The parity tests above compare the advertised schema with the validator; this pins
+    the validator against ``tools._ELEMENT_REQUIRED_TOOLS``. Only ``computer_click``
+    may take coordinates instead of an index.
     """
     required = {field.name for field in MCP_COMPUTER_SCHEMAS[tool].fields if field.required}
     assert "element_index" in required, (
@@ -362,22 +316,11 @@ def test_shim_uses_the_strict_session_resolver_not_the_lenient_one():
 def test_an_unresolved_session_key_PROCEEDS_with_an_empty_identity(
     keystone: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """**An unresolved identity is NOT a refusal** — it proceeds, empty.
+    """**An unresolved identity is NOT a refusal**; it proceeds, empty.
 
-    This inverts an earlier revision, deliberately. The shim does not refuse an unproven key, though it is indistinguishable from an
-    unattended surface. Two reasons:
-
-    * the unattended-surface rule was removed by product decision, so there is no
-      longer a surface class to protect;
-    * neither accepted identity source EXISTS for a GUI-launched kiro-cli on macOS —
-      both come from a launcher above the process, and a GUI launch has none (the
-      ``mcp_computer`` module docstring names which launcher supplies each) — so the
-      refusal made the feature unusable on its only supported platform, which is how
-      it was found.
-
-    The call reaches the gateway. What is lost is audit ATTRIBUTION, not a control —
-    and the key it carries is a per-PROCESS placeholder rather than the empty string,
-    for the aliasing reason in ``TestUnresolvedSessionsAreNamespaced`` below.
+    A GUI-launched kiro-cli on macOS has neither accepted identity source, so a refusal
+    would make the feature unusable there. Only audit attribution is lost; the key is a
+    per-process placeholder (see ``TestUnresolvedSessionsAreNamespaced``).
     """
     _enable(keystone)
     posted: list[Any] = []
@@ -395,10 +338,8 @@ def test_an_unresolved_session_key_PROCEEDS_with_an_empty_identity(
 def test_the_shim_carries_no_identity_refusal_at_all(keystone: Path):
     """Guard the removal itself, so it cannot creep back as a "small" safety net.
 
-    A future author reading ``_resolve_session_key_strict`` will be tempted to add
-    ``if not session_key: return refusal`` — that is exactly the line that broke
-    macOS. Asserted as an absence because the behavioural test above passes just as
-    well with a refusal that happens to be unreachable.
+    An ``if not session_key: return refusal`` line breaks macOS. Asserted as an absence
+    because the test above also passes with an unreachable refusal.
     """
     src = inspect.getsource(mcp_computer)
     assert "could not be identified" not in src
@@ -518,16 +459,9 @@ async def test_gateway_dispatch_runs_on_the_bounded_subprocess_pool(
 ):
     """The gateway's dispatch leg uses ``subprocess_executor``, NOT the default pool.
 
-    A dispatch performs accessibility round-trips into ANOTHER process, so a hung
-    target application parks the worker for the driver's whole messaging timeout —
-    the "can block on a wedged external resource" class ``subprocess_executor``
-    exists to contain (it is what ``computer_use.tools.dispatch`` already uses). On
-    the DEFAULT pool a handful of wedged desktop calls starve every other
-    ``run_in_executor(None, …)`` user in the gateway *and* the loop's own
-    ``getaddrinfo``, turning one unresponsive app into a gateway-wide stall.
-
-    Pinned by recording WHICH executor the handler hands the work to, because the
-    defect is invisible in behaviour — both pools return the same answer.
+    A hung target app parks the worker for the driver's whole timeout; on the default
+    pool a few of those starve the gateway and the loop's ``getaddrinfo``. Pinned by
+    recording the executor, since both pools return the same answer.
     """
     from kiro_crew.dashboard.handlers import computer_use as cu_api
     from kiro_crew.executors import subprocess_executor
@@ -555,11 +489,8 @@ async def test_gateway_dispatch_runs_on_the_bounded_subprocess_pool(
 class _InvokeRequest(dict):
     """The minimum ``api_computer_use_invoke`` touches: ``.json()``, path, mapping.
 
-    A hand-rolled stand-in rather than a ``TestClient``: this case asserts an
-    internal executor choice, so mounting a real server (and the middleware that
-    would set ``internal_auth``) would add moving parts without adding coverage.
-    Pre-authorized, because the secret enforcement itself is covered against the
-    REAL middleware in ``test_computer_use_api.py``.
+    Pre-authorized: the secret check runs against the real middleware in
+    ``test_computer_use_api.py``.
     """
 
     path = "/api/computer-use/invoke"
@@ -837,11 +768,8 @@ def test_no_result_ever_carries_an_image_content_block(
 ):
     """**Text only, by construction.**
 
-    ``validation.build_tool_response`` is the transport's single exit and emits
-    only ``{"type": "text"}``; an image block is not expressible. So "tree first,
-    relay the screenshot as a path" is a property of the transport rather than a
-    policy someone can regress. Asserted through the real response builder for
-    every tool's output.
+    ``validation.build_tool_response`` is the transport's single exit and emits only
+    ``{"type": "text"}``, so a screenshot can only travel as a path.
     """
     from kiro_crew.validation import build_tool_response
 
@@ -915,11 +843,8 @@ def test_drift_refusal_is_redacted_like_every_other_result(
 ):
     """A fingerprint-drift refusal goes through the SAME egress pass as a result.
 
-    The refusal embeds ``render.describe_record`` for BOTH the cached and the fresh
-    element, i.e. two verbatim accessibility titles — so a token sitting in the
-    element that drifted (a key in a status bar, a secret in a notes window) would
-    reach the model on the one path that skipped ``policy.redact_result``, while the
-    identical text inside a rendered tree comes back masked.
+    The refusal quotes both the cached and the fresh element's titles verbatim, so it
+    must pass ``policy.redact_result`` like a rendered tree.
     """
     _enable(keystone)
     _get_state()
@@ -962,12 +887,8 @@ def test_credential_shaped_fixture_comes_back_masked(
 ):
     """An AKIA-shaped literal in a tree node is REDACTED on the way out.
 
-    Not belt-and-suspenders: accessibility values are arbitrary user content and
-    live probes observed real filesystem paths, volume names and document names in
-    trees and window titles. This is the primary egress control for tree text.
-
-    The fixture is the canonical PUBLIC documentation key, which is why it is safe
-    to have on disk in ``test/``.
+    This is the primary egress control for tree text, which is arbitrary user content.
+    The fixture is the PUBLIC documentation key, so it is safe on disk.
     """
     _enable(keystone)
     state = _get_state()
@@ -1011,13 +932,10 @@ def test_sel_records_a_tool_invocation_on_success(
 
 
 def test_sel_records_a_PRE_GATE_refusal(keystone: Path, fake_backend: FakeComputerUseBackend):
-    """The audit hole between the gate's denials and ``_audit_allowed``.
+    """A refusal that returns before the gate still records itself.
 
-    Reviewer finding: a schema ``ValidationError``, an unknown tool, a bad
-    ``click_method``, a stale index, an unparseable key and the paste refusal all
-    return WITHOUT reaching the gate — so nothing was recorded. An audit trail with a
-    gap at "malformed or refused attempts" is the wrong shape here: a burst of them is
-    exactly the signal an investigation wants.
+    Validation errors, unknown tools, stale indices and bad keys never reach the gate,
+    and a burst of them is exactly what an investigation wants to see.
     """
     _enable(keystone)
     with patch("kiro_crew.computer_use.tools.sel") as sel_factory:
@@ -1054,7 +972,7 @@ def test_a_refusal_audit_carries_NO_desktop_detail(
 
 
 def test_a_validation_refusal_is_audited_too(keystone: Path, fake_backend: FakeComputerUseBackend):
-    """The exact case in the finding: a bad argument never reaches the gate."""
+    """A bad argument never reaches the gate, so it is audited as refused."""
     _enable(keystone)
     with patch("kiro_crew.computer_use.tools.sel") as sel_factory:
         recorder = MagicMock()
@@ -1079,12 +997,8 @@ def test_an_audit_failure_never_turns_a_refusal_into_a_crash(
 def test_every_refusal_exit_goes_through_an_AUDITED_helper():
     """Structural: no refusal may return ``Error: …`` inline.
 
-    Reviewer finding, twice — first the ``_refusal`` path, then six static pre-gate
-    sites that returned ``f"{ERROR_PREFIX}{…}"`` directly and so produced no SEL
-    record. Behavioural tests can only cover the refusals someone thought to write a
-    case for, which is exactly how the second batch survived the first fix. This
-    asserts over the AST instead: the ONLY functions allowed to build that string are
-    the two helpers that audit first.
+    A site that returns ``f"{ERROR_PREFIX}{…}"`` directly produces no SEL record, so
+    only the two helpers that audit first may build that string.
     """
     import ast
     import inspect
@@ -1114,7 +1028,7 @@ def test_every_refusal_exit_goes_through_an_AUDITED_helper():
 
 
 def test_a_static_pre_gate_refusal_is_audited(keystone: Path, fake_backend: FakeComputerUseBackend):
-    """The exact case in the finding: a malformed pointer request."""
+    """A malformed pointer request is refused with static prose and still audited."""
     _enable(keystone)
     with patch("kiro_crew.computer_use.tools.sel") as sel_factory:
         recorder = MagicMock()
@@ -1144,7 +1058,7 @@ def test_an_unknown_tool_refusal_is_audited(keystone: Path):
 
 
 def test_sel_records_the_resolved_identity_not_the_agents_claim(
-    keystone: Path, fake_backend: FakeComputerUseBackend
+    keystone: Path, fake_backend: FakeComputerUseBackend, sel_private_root: Path
 ):
     """The audited target is the identity the driver RESOLVED.
 
@@ -1153,12 +1067,12 @@ def test_sel_records_the_resolved_identity_not_the_agents_claim(
     the gate is fed the resolved identity.
     """
     _enable(keystone)
-    with patch("kiro_crew.computer_use.tools.sel") as sel_factory:
-        recorder = MagicMock()
-        sel_factory.return_value = recorder
-        # Query by a loose fragment; the audit must carry the resolved label.
-        _dispatch(TOOL_GET_STATE, app="fake files")
-    assert recorder.log_tool_invocation.call_args.kwargs["resources"] == FAKE_FILES_APP.label
+    # Query by a loose fragment; the stored audit row must carry the resolved label.
+    _dispatch(TOOL_GET_STATE, app="fake files")
+    log = sel_private_root / "security_events.jsonl"
+    rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["resources"] == FAKE_FILES_APP.label
+    assert not [r for r in rows if "fake files" in r["resources"]], rows
 
 
 def test_denial_text_does_not_disclose_the_ceiling(

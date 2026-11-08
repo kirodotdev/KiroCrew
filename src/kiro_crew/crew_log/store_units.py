@@ -12,6 +12,8 @@ be proved is refused.
 
 from __future__ import annotations
 
+import os
+import time
 from collections.abc import Collection
 from pathlib import Path
 from typing import Any
@@ -112,11 +114,15 @@ def unprovable_session_units() -> int:
 
     A slot-keyed fold reaches its units through their headers, so a unit this
     cannot read is a unit no fold will see; a caller that must know its fold was
-    complete asks this first.
+    complete asks this first. The session tree's checkpoint folder sits beside the
+    units and is not one, so it is skipped by name, as the tree's own seed skips it.
     """
+    # circular import: the checkpoint module imports the store facade this owner feeds.
+    from kiro_crew.crew_log.checkpoint import CHECKPOINT_DIR
+
     try:
         root = _checked_crew_log_root(KIND_SESSION)
-        names = sorted(child.name for child in root.iterdir())
+        names = sorted(child.name for child in root.iterdir() if child.name != CHECKPOINT_DIR)
     except (CrewLogError, OSError):
         return 0
     return sum(1 for name in names if _proved_header(root / name) is None)
@@ -127,6 +133,84 @@ def unprovable_session_units() -> int:
 #: either the old triple or the new one; two threads racing rebuild it twice, which
 #: costs a scan and cannot produce a wrong answer. ``None`` means nothing is cached.
 _slot_index: "tuple[tuple[Any, ...], dict[str, tuple[str, ...]], tuple[str, ...]] | None" = None
+
+#: ``[0]`` is ``(stat, triple, first_listed_ns, verified)`` for the ``_slot_index``
+#: triple, or None. *stat* is the root stat taken just before the listing that produced
+#: *triple*; *first_listed_ns* is the monotonic time the first listing under that stat
+#: COMPLETED; *verified* says a second listing, whose stat was taken at least
+#: :data:`_RACY_WINDOW_NS` after that completion, saw the same stat and the same names. Only a verified record is served without a
+#: listing. Tied to the triple by identity, so a triple written any other way -- a
+#: rebuild, a test planting one -- is never served on a stat it was not built under. A
+#: one-slot list mutated in place, never rebound, so the store facade can bind the same
+#: object (``_slot_index`` is the one rebound global).
+_SLOT_INDEX_TRUST: "list[tuple[tuple[Any, ...] | None, object, int, bool] | None]" = [None]
+
+#: How long after the first listing under a stat the confirming listing must wait. A
+#: filesystem stamps a change with a clock that ticks coarser than a listing takes (a
+#: kernel tick on ext4 and xfs, 2 s on FAT), so a create landing in the same tick as the
+#: listed state can leave mtime, ctime and link count all equal. Every such create
+#: happens within one tick of the first listing, so a second listing taken a full window
+#: later sees it by name. After that, a change can only stamp a later tick than the one
+#: the stat holds, so an equal stat means an equal directory. Only the root's own stamps
+#: are compared with each other; the local clock measures elapsed time and is never
+#: compared with a filesystem stamp, so a data home whose server clock is off this
+#: host's is handled the same way. This is git's "racily clean" rule without its clock
+#: comparison.
+_RACY_WINDOW_NS = 2_000_000_000
+
+#: ``[0]`` is ``(root identity, {name: (slot, unit id, createdAt order) or None}, map)``
+#: from the last full listing: every child whose header was proved, None for one that
+#: names no slot, and the ``_slot_index`` triple that listing built. Unproven children
+#: are absent, so the next listing reads them again. A one-slot list mutated in place,
+#: like :data:`_SLOT_INDEX_TRUST`.
+_PROVED_ROWS: (
+    "list[tuple[tuple[Any, ...], dict[str, tuple[str, str, int] | None], object] | None]"
+) = [None]
+
+
+def _monotonic_ns() -> int:
+    """The local elapsed-time clock the confirming listing waits on."""
+    return time.monotonic_ns()
+
+
+def _root_stat_key(root: Path) -> "tuple[Any, ...] | None":
+    """The root's identity, change stamps and link count, from one ``stat``.
+
+    None when the root will not stat.
+    """
+    try:
+        stat = root.stat()
+    except OSError:
+        return None
+    return (
+        str(root),
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        stat.st_nlink,
+        stat.st_size,
+    )
+
+
+def _next_trust(
+    stat_key: "tuple[Any, ...] | None", triple: object, started_ns: int, done_ns: int
+) -> "tuple[tuple[Any, ...] | None, object, int, bool] | None":
+    """The trust record after a listing under *stat_key* produced *triple*.
+
+    *started_ns* is read before this call's stat and *done_ns* after its listing. A
+    listing under the same stat as a record for the same triple confirms it when its stat
+    was taken a full window after that record's first listing COMPLETED, so a stall
+    anywhere inside either call cannot shrink the gap between the two looks. Any other
+    listing starts a new, unconfirmed record stamped with its own completion.
+    """
+    if stat_key is None:
+        return None
+    held = _SLOT_INDEX_TRUST[0]
+    if held is not None and held[0] == stat_key and held[1] is triple:
+        confirmed = held[3] or started_ns - held[2] >= _RACY_WINDOW_NS
+        return (stat_key, triple, held[2], confirmed)
+    return (stat_key, triple, done_ns, False)
 
 
 def _slot_root_fingerprint(root: Path, names: "list[str]") -> "tuple[Any, ...]":
@@ -203,8 +287,35 @@ def session_units_by_slot(*, strict: bool = False) -> "dict[str, tuple[str, ...]
     global _slot_index
     try:
         root = _checked_crew_log_root(KIND_SESSION)
-        names = sorted(child.name for child in root.iterdir())
     except (CrewLogError, OSError):
+        if strict:
+            raise
+        return {}
+    # The O(1) answer. One ``stat`` of the root, compared with the stat the cached map
+    # was listed and confirmed under; equal means no unit has appeared or disappeared
+    # since, in this process or any other (see ``_RACY_WINDOW_NS``), so the listing and
+    # its sort are skipped. Children the map could not prove are still re-checked: a
+    # header published inside an existing directory does not touch the root's stat.
+    now_ns = _monotonic_ns()
+    stat_key = _root_stat_key(root)
+    cached = _slot_index
+    trust = _SLOT_INDEX_TRUST[0]
+    if (
+        cached is not None
+        and trust is not None
+        and trust[1] is cached
+        and trust[3]
+        and stat_key is not None
+        and trust[0] == stat_key
+        and not _any_now_provable(root, cached[2])
+    ):
+        if strict:
+            _refuse_unprovable_unit(root, cached[2])
+        return cached[1]
+    try:
+        names = sorted(os.listdir(root))
+        listed_ns = _monotonic_ns()
+    except OSError:
         # No store, or one that could not be scanned. A read takes the empty listing;
         # a caller that would VALIDATE against the listing passes ``strict`` and gets
         # the failure instead, because an empty listing taken for a scan that failed
@@ -215,12 +326,37 @@ def session_units_by_slot(*, strict: bool = False) -> "dict[str, tuple[str, ...]
     fingerprint = _slot_root_fingerprint(root, names)
     cached = _slot_index
     if cached is not None and cached[0] == fingerprint and not _any_now_provable(root, cached[2]):
+        _SLOT_INDEX_TRUST[0] = _next_trust(stat_key, cached, now_ns, listed_ns)
         if strict:
             _refuse_unprovable_unit(root, cached[2])
         return cached[1]
     rows: "dict[str, list[tuple[int, str]]]" = {}
     unproven: list[str] = []
+    # Headers proved by the previous listing of this same root are reused, so a rebuild
+    # reads only the units that are new since then. A header is written once
+    # and never rewritten, and a unit's directory name folds from its id, so a name seen
+    # in both listings is the same unit with the same header. Names that left the listing
+    # are dropped from the memo, so a purged unit recreated later is read again.
+    # shortcut: a purge AND re-create of the same unit id between two listings, never seen
+    # absent, keeps the old header; unit ids are fresh per ACP session, so this does not
+    # happen in a gateway. Key the memo on each directory's inode if that ever changes.
+    # Reused only while the map it was built with is still the cached one, so a caller
+    # that drops ``_slot_index`` to force a fresh scan gets every header read again.
+    root_id = fingerprint[:3]
+    held_memo = _PROVED_ROWS[0]
+    prior = (
+        held_memo[1]
+        if held_memo is not None and held_memo[0] == root_id and held_memo[2] is _slot_index
+        else {}
+    )
+    memo: "dict[str, tuple[str, str, int] | None]" = {}
     for name in names:
+        if name in prior:
+            row = prior[name]
+            memo[name] = row
+            if row is not None:
+                rows.setdefault(row[0], []).append((row[2], row[1]))
+            continue
         parsed = _proved_header(root / name)
         if parsed is None:
             # Kept, not forgotten. ``create`` makes the directory and PUBLISHES the
@@ -240,15 +376,20 @@ def session_units_by_slot(*, strict: bool = False) -> "dict[str, tuple[str, ...]
             # Provable as a store but not attributable to a slot -- a session that
             # never ran on one. It is not a pending unit and cannot become one: the
             # header is written once. So it is not re-checked.
+            memo[name] = None
             continue
         created = parsed.get("createdAt")
         # A header with no usable ``createdAt`` still belongs to the slot, and
         # dropping it would silently lose that unit's updates. It sorts FIRST, the
         # position that lets any dated unit's later state win over it.
         order = created if isinstance(created, int) and not isinstance(created, bool) else 0
+        memo[name] = (unit_slot, unit_id, order)
         rows.setdefault(unit_slot, []).append((order, unit_id))
     by_slot = {key: tuple(unit for _order, unit in sorted(found)) for key, found in rows.items()}
-    _slot_index = (fingerprint, by_slot, tuple(unproven))
+    built = (fingerprint, by_slot, tuple(unproven))
+    _PROVED_ROWS[0] = (root_id, memo, built)
+    _slot_index = built
+    _SLOT_INDEX_TRUST[0] = _next_trust(stat_key, built, now_ns, listed_ns)
     if strict:
         _refuse_unprovable_unit(root, tuple(unproven))
     return by_slot
@@ -489,37 +630,52 @@ def unit_opened_previous(kind: str, unit_id: str) -> "str | None":
     Read-only: it takes no lease and writes nothing, so it cannot disturb a crew log
     another process is appending to.
     """
+    return unit_opening(kind, unit_id)[1]
+
+
+def unit_opening(kind: str, unit_id: str) -> "tuple[bool, str | None]":
+    """``(landed, previous)`` for *unit_id*'s ``session/opened``.
+
+    *landed* is True only when the unit's own proved header is followed by its
+    ``session/opened`` entry, whatever that entry says about a predecessor. It is what
+    tells a unit that STARTS a chain (landed, previous None) from one whose opening
+    entry has not been written yet (not landed): :func:`unit_opened_previous` answers
+    None for both. Both lines are written once and never rewritten, so a landed answer
+    stands for as long as the file lives. *previous* is exactly
+    :func:`unit_opened_previous`'s answer.
+    """
     require_kind(kind)
     try:
         named = _checked_crew_log_root(kind) / _store_name(unit_id)
         if is_link(named):
-            return None
+            return False, None
         directory = crew_log_dir(kind, unit_id)
         if is_link(directory):
-            return None
+            return False, None
         segments = [
             (first, child)
             for child in directory.iterdir()
             if (first := _segment_first_seq(child)) is not None
         ]
     except (CrewLogError, OSError):
-        return None
+        return False, None
     if not segments:
-        return None
+        return False, None
     segments.sort(key=lambda pair: pair[0])
     try:
         header, entry, _has_line = read_head(segments[0][1])
     except OSError:
-        return None
+        return False, None
     if header is None or entry is None:
-        return None
+        return False, None
     own_id = header.get("id")
     if not isinstance(own_id, str) or not own_id or _store_name(own_id) != directory.name:
-        return None
+        return False, None
+    # Every answer from here on is final: line 2 is written once, right after the header.
     if entry.type != "session/opened":
-        return None
+        return True, None
     previous = entry.data.get("previous")
     if not isinstance(previous, dict):
-        return None
+        return True, None
     sid = previous.get("sid")
-    return sid if isinstance(sid, str) and sid else None
+    return True, (sid if isinstance(sid, str) and sid else None)
